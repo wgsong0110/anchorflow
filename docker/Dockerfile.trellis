@@ -38,5 +38,13 @@ RUN pip install --no-cache-dir spconv-cu118
 RUN git clone https://github.com/autonomousvision/mip-splatting.git /tmp/mip-splatting \
     && pip install --no-cache-dir /tmp/mip-splatting/submodules/diff-gaussian-rasterization/
 
+# kaolin — TRELLIS's package import chain (mesh/flexicubes) imports it even for
+# gaussian-only output. Prebuilt wheel for torch 2.1.2/cu118.
+RUN pip install --no-cache-dir kaolin==0.16.0 \
+        -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.1.2_cu118.html
+# re-pin transformers AFTER kaolin (kaolin pulls a transformers that requires
+# torch>=2.4 and disables the PyTorch backend our DINOv2 encoder needs)
+RUN pip install --no-cache-dir "transformers==4.44.2"
+
 ENV PYTHONPATH=/opt/TRELLIS
 WORKDIR /workspace
