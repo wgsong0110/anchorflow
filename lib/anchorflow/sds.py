@@ -86,52 +86,74 @@ class SVDGuidance:
                            dtype=self.dtype, device=self.device)
         return ids
 
-    # --- SDS -------------------------------------------------------------- #
-    def sds_loss(self, frames, cond_image, w_power=0.0):
-        """frames [T,3,H,W] (grad), cond_image [3,H,W]. Returns scalar SDS loss.
-
-        w(sigma) = sigma**w_power ; w_power=0 -> uniform weighting.
-        """
-        T = frames.shape[0]
-        x0 = self.encode_frames(frames)                         # [1,T,4,h,w] grad
-        B = x0.shape[0]
-
-        img_emb = self._clip_embed(cond_image)                  # [1,1,1024]
-        cond_lat = self._cond_latent(cond_image)                # [1,4,h,w]
-        cond_lat = cond_lat.unsqueeze(1).repeat(1, T, 1, 1, 1)  # [1,T,4,h,w]
-        time_ids = self._time_ids()
-
-        # sample one sigma (log-uniform in a practical band)
+    # --- shared UNet eval ------------------------------------------------- #
+    def _sample_sigma(self):
         u = torch.rand(1, device=self.device)
         log_s = torch.log(torch.tensor(self.sigma_min, device=self.device)) * (1 - u) \
             + torch.log(torch.tensor(self.sigma_max, device=self.device)) * u
-        sigma = log_s.exp()
-        t = 0.25 * torch.log(sigma)                             # continuous c_noise
+        return log_s.exp()
 
+    @torch.no_grad()
+    def _eps_pred(self, z, sigma, cond_lat, img_emb, time_ids):
+        """Predict eps for noised latent z at sigma with CFG. z: [1,T,4,h,w]."""
+        t = 0.25 * torch.log(sigma)
+        zin = z / (sigma ** 2 + 1).sqrt()
+        zin2 = torch.cat([zin, zin], dim=0)
+        clat2 = torch.cat([torch.zeros_like(cond_lat), cond_lat], dim=0)
+        emb2 = torch.cat([torch.zeros_like(img_emb), img_emb], dim=0)
+        tid2 = torch.cat([time_ids, time_ids], dim=0)
+        v = self.unet(torch.cat([zin2, clat2], dim=2), t,
+                      encoder_hidden_states=emb2, added_time_ids=tid2,
+                      return_dict=False)[0]
+        v_u, v_c = v.chunk(2)
+        v = v_u + self.guidance_scale * (v_c - v_u)
+        x0_pred = v * (-sigma / (sigma ** 2 + 1).sqrt()) + z / (sigma ** 2 + 1)
+        return (z - x0_pred) / sigma
+
+    def _cond(self, cond_image, T):
+        img_emb = self._clip_embed(cond_image)
+        cond_lat = self._cond_latent(cond_image).unsqueeze(1).repeat(1, T, 1, 1, 1)
+        return cond_lat, img_emb, self._time_ids()
+
+    def _apply(self, x0, grad):
+        grad = torch.nan_to_num(grad)
+        if self.grad_clip:
+            grad = grad.clamp(-self.grad_clip, self.grad_clip)
+        target = (x0 - grad).detach()
+        return 0.5 * F.mse_loss(x0.float(), target.float(), reduction="sum") / x0.shape[0]
+
+    # --- SDS -------------------------------------------------------------- #
+    def sds_loss(self, frames, cond_image, w_power=0.0):
+        """Standard SDS: grad = w(sigma) * (eps_pred - noise)."""
+        T = frames.shape[0]
+        x0 = self.encode_frames(frames)                         # [1,T,4,h,w] grad
+        cond_lat, img_emb, time_ids = self._cond(cond_image, T)
+        sigma = self._sample_sigma()
         with torch.no_grad():
             noise = torch.randn_like(x0)
-            z = x0 + sigma * noise                              # EDM noised latent
-            zin = z / (sigma ** 2 + 1).sqrt()                   # c_in scaling
-            # classifier-free guidance: [uncond(zeros cond), cond]
-            zin2 = torch.cat([zin, zin], dim=0)
-            clat2 = torch.cat([torch.zeros_like(cond_lat), cond_lat], dim=0)
-            emb2 = torch.cat([torch.zeros_like(img_emb), img_emb], dim=0)
-            tid2 = torch.cat([time_ids, time_ids], dim=0)
-            unet_in = torch.cat([zin2, clat2], dim=2)           # channel concat -> 8
-            v = self.unet(unet_in, t, encoder_hidden_states=emb2,
-                          added_time_ids=tid2, return_dict=False)[0]
-            v_u, v_c = v.chunk(2)
-            v = v_u + self.guidance_scale * (v_c - v_u)
-            # v-prediction -> x0 -> eps
-            x0_pred = v * (-sigma / (sigma ** 2 + 1).sqrt()) + z / (sigma ** 2 + 1)
-            eps_pred = (z - x0_pred) / sigma
-            w = sigma ** w_power
-            grad = w * (eps_pred - noise)
-            grad = torch.nan_to_num(grad)
-            if self.grad_clip:
-                grad = grad.clamp(-self.grad_clip, self.grad_clip)
+            z = x0 + sigma * noise
+            eps = self._eps_pred(z, sigma, cond_lat, img_emb, time_ids)
+            grad = (sigma ** w_power) * (eps - noise)
+        return self._apply(x0, grad)
 
-        # SpecifyGradient: d(loss)/d(x0) = grad
-        target = (x0 - grad).detach()
-        loss = 0.5 * F.mse_loss(x0.float(), target.float(), reduction="sum") / B
-        return loss
+    # --- Motion Distillation Sampling (DreamPhysics, AAAI'25) -------------- #
+    def mds_loss(self, frames, cond_image, w_power=0.0):
+        """MDS: grad = w(sigma) * (eps_pred(video) - eps_pred(static frame-0)).
+
+        Differencing against the static frame-0 clip cancels the per-frame
+        appearance bias, so the gradient carries *motion* only — the fix
+        DreamPhysics introduced for SVD's weak motion signal. Same sigma and
+        noise are used for both clips so the difference is pure model response.
+        """
+        T = frames.shape[0]
+        x0 = self.encode_frames(frames)                         # [1,T,4,h,w] grad
+        with torch.no_grad():
+            static = frames[0:1].expand(T, -1, -1, -1)          # frame-0 repeated
+            x0_static = self.encode_frames(static)
+            cond_lat, img_emb, time_ids = self._cond(cond_image, T)
+            sigma = self._sample_sigma()
+            noise = torch.randn_like(x0)
+            eps_dyn = self._eps_pred(x0 + sigma * noise, sigma, cond_lat, img_emb, time_ids)
+            eps_stat = self._eps_pred(x0_static + sigma * noise, sigma, cond_lat, img_emb, time_ids)
+            grad = (sigma ** w_power) * (eps_dyn - eps_stat)
+        return self._apply(x0, grad)
