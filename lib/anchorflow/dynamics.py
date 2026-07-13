@@ -122,6 +122,12 @@ class GNSDynamics(nn.Module):
             InteractionNetwork(hidden) for _ in range(message_passing_steps)
         )
         self.decoder = mlp([hidden, hidden, out_dim], layernorm=False)
+        # zero-init the decoder output layer so the GNN starts as (near-)zero
+        # acceleration — the rollout stays at rest initially instead of diverging
+        # to NaN, then learns motion gradually. Critical for SDS-through-rollout.
+        last = [m for m in self.decoder.modules() if isinstance(m, nn.Linear)][-1]
+        nn.init.zeros_(last.weight)
+        nn.init.zeros_(last.bias)
         self.in_norm = Normalizer(base_node_in)
         self.out_norm = Normalizer(out_dim)
 

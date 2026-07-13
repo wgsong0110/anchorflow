@@ -227,8 +227,12 @@ def main():
         out = guidance(img_list, cond_image, num_frames=T)
         loss = sum(v for k, v in out.items() if k.startswith("loss_")) * cfg.train.lambda_sds
         loss = loss + R.total(node_seq, conn_idx, conn_w, lambdas=tuple(cfg.train.reg))
+        if not torch.isfinite(loss):
+            print(f"[{step}] non-finite loss — skipping step")
+            continue
         loss.backward(retain_graph=True)
-        torch.nn.utils.clip_grad_norm_(gnn.parameters(), cfg.train.grad_clip)
+        all_params = [p for grp in opt.param_groups for p in grp["params"]]
+        torch.nn.utils.clip_grad_norm_(all_params, cfg.train.grad_clip)
         opt.step()
 
         lv = float(loss.item())
