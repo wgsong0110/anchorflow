@@ -7,4 +7,8 @@
 set -euo pipefail
 DP=${1:?usage: patch_dreamphysics.sh /path/to/DreamPhysics}
 sed -i '/import tinycudann as tcnn/d' "$DP/utils/threestudio_utils.py"
-echo "patched $DP (removed tinycudann import)"
+# diffusers>=0.28 renamed the SVD pipeline's image_processor -> video_processor
+# (svd_guidance only uses pil_to_numpy/numpy_to_pt, inherited by VideoProcessor).
+sed -i 's/self\.pipe\.image_processor/self.pipe.video_processor/' \
+    "$DP/video_distillation/svd_guidance.py"
+echo "patched $DP (removed tinycudann import; image_processor->video_processor)"
