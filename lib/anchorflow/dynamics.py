@@ -168,8 +168,10 @@ def rollout(model, p0, p1, fixed, steps, cfg, rebuild_graph=True, z=None,
     """
     ctx = torch.enable_grad() if grad else torch.no_grad()
     with ctx:
-        if not grad:
-            model.eval()
+        # eval mode disables the Normalizer's running-stat accumulation, which
+        # otherwise mutates buffers in-place across the rollout's forward calls
+        # and corrupts saved tensors for backward. Grad still flows in eval mode.
+        model.eval()
         dev = p0.device
         fixed = fixed.to(dev)
         p_prev, p_cur = p0.clone(), p1.clone()

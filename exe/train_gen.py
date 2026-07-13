@@ -141,7 +141,6 @@ def main():
         canon_xyz, node_num=cfg.train.node_num, latent_dim=cfg.train.latent_dim,
         K=cfg.train.K, seed=cfg.train.seed)
     anchors = anchors.to(device)
-    w_bind, idx_bind = anchors.cal_nn_weight(canon_xyz)    # fixed binding [N,K]
     conn_idx, conn_w = R.connectivity(anchors.canonical, K=cfg.train.arap_k)
     fixed = torch.zeros(anchors.num, dtype=torch.bool, device=device)
 
@@ -185,6 +184,9 @@ def main():
 
     for step in range(start, cfg.train.steps):
         opt.zero_grad()
+        # recompute RBF binding each step (weights depend on learnable radius/
+        # node_weight) so the graph is fresh — no stale-graph reuse across steps
+        w_bind, idx_bind = anchors.cal_nn_weight(canon_xyz)
         # autoregressive rollout of anchor state from rest, driven by z_i
         node_seq = rollout(gnn, anchors.canonical, anchors.canonical, fixed,
                            steps=T - 2, cfg=graph_cfg, z=anchors.z, grad=True)  # [T,M,3]
