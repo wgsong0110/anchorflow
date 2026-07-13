@@ -164,7 +164,7 @@ def build_graph(pos, cfg):
 #  autoregressive rollout                                                     #
 # --------------------------------------------------------------------------- #
 def rollout(model, p0, p1, fixed, steps, cfg, rebuild_graph=True, z=None,
-            grad=False):
+            grad=False, accel_scale=0.1, damping=0.98):
     """Free-running rollout from two seed frames p0, p1.
 
     Returns predicted positions [steps+2, N, 3] (including the two seeds).
@@ -189,7 +189,11 @@ def rollout(model, p0, p1, fixed, steps, cfg, rebuild_graph=True, z=None,
                 edge_index = build_graph(p_cur.detach(), cfg)   # topology only
             vel = p_cur - p_prev
             acc = model(p_cur, vel, fixed, edge_index, z)
-            p_next = p_cur + vel + acc
+            # bound per-step acceleration (tanh) + damp velocity so the rollout
+            # cannot explode regardless of GNN output — keeps warp/SVD well-
+            # conditioned and prevents NaN in SDS-through-rollout training.
+            acc = torch.tanh(acc) * accel_scale
+            p_next = p_cur + damping * vel + acc
             if fixed.any():
                 p_next = torch.where(fixed[:, None], fixed_pos_full(fixed_pos, fixed, p_next), p_next)
             out.append(p_next)
