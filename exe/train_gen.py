@@ -114,7 +114,10 @@ def main():
                               device=device)
     params = load_params_from_gs(gaussians, pipe)
     pos, cov = params["pos"], params["cov3D_precomp"]
-    screen_pts, opacity, shs = params["screen_points"], params["opacity"], params["shs"]
+    # we optimise only {GNN, z_i, anchor params}; the canonical Gaussians are
+    # frozen -> detach their opacity/SH so they stay out of the autograd graph
+    screen_pts = params["screen_points"]
+    opacity, shs = params["opacity"].detach(), params["shs"].detach()
     keep = opacity[:, 0] > preprocessing_params["opacity_threshold"]
     pos, cov, opacity, screen_pts, shs = pos[keep], cov[keep], opacity[keep], \
         screen_pts[keep], shs[keep]
@@ -214,7 +217,8 @@ def main():
                 delta_r=camera_params.get("delta_r", 0.0))
             rast = initialize_resterize(cam, gaussians, pipe, background)
             colors = convert_SH(shs, cam, gaussians, p_r, None)
-            img, _ = rast(means3D=p_r, means2D=screen_pts, shs=None,
+            means2D = torch.zeros_like(p_r, requires_grad=True)  # fresh per frame
+            img, _ = rast(means3D=p_r, means2D=means2D, shs=None,
                           colors_precomp=colors, opacities=opacity,
                           scales=None, rotations=None, cov3D_precomp=c_r)
             img_list.append(img)
@@ -223,7 +227,7 @@ def main():
         out = guidance(img_list, cond_image, num_frames=T)
         loss = sum(v for k, v in out.items() if k.startswith("loss_")) * cfg.train.lambda_sds
         loss = loss + R.total(node_seq, conn_idx, conn_w, lambdas=tuple(cfg.train.reg))
-        loss.backward()
+        loss.backward(retain_graph=True)
         torch.nn.utils.clip_grad_norm_(gnn.parameters(), cfg.train.grad_clip)
         opt.step()
 
