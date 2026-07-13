@@ -37,3 +37,15 @@ train:
   reg: [1.0, 0.1, 0.01]
   log_every: 20
   ckpt_every: 50
+
+  # --- user-specifiable initial conditions (optional) --------------------- #
+  # The rollout seeds from these instead of rest. Coords are in the normalized
+  # frame: the object is centred at ~[1,1,1] with roughly unit scale, so a
+  # velocity of 0.05 ≈ 5% of the object size per step. Omit `init` for rest start.
+  # init:
+  #   velocity:   [0.0, 0.0, 0.0]     # global initial velocity (per-step)
+  #   pos_offset: [0.0, 0.0, 0.0]     # global initial position offset
+  #   learnable:  false               # true -> also optimise these under SDS
+  #   regions:                        # per-anchor overrides by bounding box
+  #     - box: [0.0, 2.0, 0.0, 2.0, 0.0, 0.6]   # e.g. lower half (legs)
+  #       velocity: [0.0, 0.0, 0.05]            # kick legs upward

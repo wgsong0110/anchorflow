@@ -159,6 +159,37 @@ def main():
     conn_idx, conn_w = R.connectivity(anchors.canonical, K=cfg.train.arap_k)
     fixed = torch.zeros(anchors.num, dtype=torch.bool, device=device)
 
+    # ---- user-specifiable initial conditions (anchor position + velocity) --- #
+    # config `train.init` (all optional; coords in the normalized frame):
+    #   velocity:   [vx,vy,vz]   global initial velocity (per-step displacement)
+    #   pos_offset: [ox,oy,oz]   global initial position offset
+    #   regions:    [{box:[x0,x1,y0,y1,z0,z1], velocity:[...], pos_offset:[...]}]
+    #   learnable:  bool         optimise the init offset/velocity under SDS too
+    M, c = anchors.num, anchors.canonical
+    init_offset = torch.zeros(M, 3, device=device)
+    init_vel = torch.zeros(M, 3, device=device)
+    icfg = dict(cfg.train.get("init", {}) or {})
+
+    def _put(sel, spec):
+        if spec.get("pos_offset") is not None:
+            init_offset[sel] = torch.tensor(list(spec["pos_offset"]), device=device).float()
+        if spec.get("velocity") is not None:
+            init_vel[sel] = torch.tensor(list(spec["velocity"]), device=device).float()
+
+    _put(slice(None), icfg)                                 # global
+    for rgn in (icfg.get("regions") or []):                 # per-region overrides
+        b = rgn["box"]
+        sel = ((c[:, 0] >= b[0]) & (c[:, 0] <= b[1]) & (c[:, 1] >= b[2]) &
+               (c[:, 1] <= b[3]) & (c[:, 2] >= b[4]) & (c[:, 2] <= b[5]))
+        _put(sel, dict(rgn))
+    init_params = []
+    if icfg.get("learnable", False):
+        init_offset = torch.nn.Parameter(init_offset)
+        init_vel = torch.nn.Parameter(init_vel)
+        init_params = [init_offset, init_vel]
+    print(f"[init] |offset|={float(init_offset.detach().norm()):.3f} "
+          f"|vel|={float(init_vel.detach().norm()):.3f} learnable={bool(init_params)}")
+
     gnn = GNSDynamics(hidden=cfg.train.hidden,
                       message_passing_steps=cfg.train.mp_steps,
                       latent_dim=cfg.train.latent_dim).to(device)
@@ -170,7 +201,8 @@ def main():
 
     opt = torch.optim.Adam(
         [{"params": gnn.parameters(), "lr": cfg.train.lr_gnn},
-         {"params": anchors.parameters(), "lr": cfg.train.lr_anchor}])
+         {"params": anchors.parameters(), "lr": cfg.train.lr_anchor}]
+        + ([{"params": init_params, "lr": cfg.train.lr_anchor}] if init_params else []))
 
     guidance = SVDGuidance(OmegaConf.load(args.guidance_config).guidance)
     cond_image = Image.open(args.cond).convert("RGB")   # drop alpha (TRELLIS PNGs are RGBA)
@@ -184,12 +216,17 @@ def main():
             anchors.load_state_dict(st["anchors"])
             opt.load_state_dict(st["opt"])
             load_rng_state(st.get("rng"))
+            if st.get("init") and init_params:              # learnable init state
+                with torch.no_grad():
+                    init_offset.copy_(st["init"]["offset"].to(device))
+                    init_vel.copy_(st["init"]["vel"].to(device))
             start = st["step"] + 1
             print(f"[resume] from step {start}")
 
     def collect():
         return {"gnn": (gnn._orig_mod if hasattr(gnn, "_orig_mod") else gnn).state_dict(),
-                "anchors": anchors.state_dict(), "opt": opt.state_dict()}
+                "anchors": anchors.state_dict(), "opt": opt.state_dict(),
+                "init": {"offset": init_offset.detach().cpu(), "vel": init_vel.detach().cpu()}}
 
     def sync_r2():
         if args.r2_dest:
@@ -232,7 +269,8 @@ def main():
         # node_weight) so the graph is fresh — no stale-graph reuse across steps
         w_bind, idx_bind = anchors.cal_nn_weight(canon_xyz)
         # autoregressive rollout of anchor state from rest, driven by z_i
-        node_seq = rollout(gnn, anchors.canonical, anchors.canonical, fixed,
+        p0 = anchors.canonical + init_offset                # user/learned initial state
+        node_seq = rollout(gnn, p0, p0 + init_vel, fixed,
                            steps=T - 2, cfg=graph_cfg, z=anchors.z, grad=True,
                            recenter=True)                  # [T,M,3], drift-free
         # gradient-checkpoint each frame's render -> only one frame's graph is
@@ -269,7 +307,8 @@ def main():
     rf = cfg.train.get("render_frames", T)      # can exceed T (autonomous extrapolation)
     w_bind, idx_bind = anchors.cal_nn_weight(canon_xyz)
     with torch.no_grad():
-        node_seq = rollout(gnn, anchors.canonical, anchors.canonical, fixed,
+        p0 = anchors.canonical + init_offset
+        node_seq = rollout(gnn, p0, p0 + init_vel, fixed,
                            steps=rf - 2, cfg=graph_cfg, z=anchors.z, grad=False,
                            recenter=True)
         for t in range(rf):
