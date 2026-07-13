@@ -1,0 +1,42 @@
+# TRELLIS image (image -> canonical 3DGS .ply) for anchorflow asset generation.
+# SEPARATE from the training image: TRELLIS uses mip-splatting's
+# diff_gaussian_rasterization, which name-clashes with the INRIA one in the
+# training image. Only for `exe/gen_canonical.py`. Built via GitHub Actions.
+# Deps mirror TRELLIS setup.sh --basic --xformers --spconv --mipgaussian for
+# torch 2.1.2 / cu118 (Gaussian output only; mesh/RF backends skipped).
+FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-devel
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TORCH_CUDA_ARCH_LIST="8.6;8.9"
+ENV FORCE_CUDA=1
+ENV ATTN_BACKEND=xformers
+ENV SPCONV_ALGO=native
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git build-essential ninja-build libglm-dev ffmpeg libgl1 libglib2.0-0 \
+        curl tmux \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --recursive https://github.com/microsoft/TRELLIS /opt/TRELLIS
+
+# --basic
+RUN pip install --no-cache-dir \
+        pillow imageio imageio-ffmpeg tqdm easydict opencv-python-headless \
+        scipy ninja rembg onnxruntime trimesh open3d xatlas pyvista pymeshfix \
+        igraph transformers einops plyfile omegaconf
+RUN pip install --no-cache-dir \
+        "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8"
+
+# --xformers (torch 2.1.2 / cu118, exact wheel from TRELLIS setup.sh)
+RUN pip install --no-cache-dir xformers==0.0.23.post1 \
+        --index-url https://download.pytorch.org/whl/cu118
+
+# --spconv
+RUN pip install --no-cache-dir spconv-cu118
+
+# --mipgaussian (Gaussian renderer; CUDA compile)
+RUN git clone https://github.com/autonomousvision/mip-splatting.git /tmp/mip-splatting \
+    && pip install --no-cache-dir /tmp/mip-splatting/submodules/diff-gaussian-rasterization/
+
+ENV PYTHONPATH=/opt/TRELLIS
+WORKDIR /workspace
