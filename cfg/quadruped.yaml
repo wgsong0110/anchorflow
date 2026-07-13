@@ -1,0 +1,38 @@
+# TRELLIS-generated quadruped (typical_creature_quadruped). transform2origin
+# normalises any asset to the same centred unit frame, so the ball camera is a
+# reasonable starting point. rotation_degree [0] since TRELLIS already exports Z-up.
+preprocessing:
+  opacity_threshold: 0.02
+  rotation_degree: [0]
+  rotation_axis: [0]
+
+camera:
+  mpm_space_viewpoint_center: [1.0, 1.0, 1.0]
+  mpm_space_vertical_upward_axis: [0, 0, 1]
+  default_camera_index: -1
+  show_hint: false
+  init_azimuthm: -30
+  init_elevation: 15
+  init_radius: 4.0
+  delta_a: 0.0
+  delta_e: 0.0
+  delta_r: 0.0
+
+train:
+  node_num: 512
+  latent_dim: 8
+  K: 4
+  hidden: 128
+  mp_steps: 6
+  arap_k: 10
+  seed: 0
+  frames: 14
+  render_frames: 30
+  steps: 2               # framing/asset-loading check first; bump to 400 after
+  lr_gnn: 2.0e-4
+  lr_anchor: 2.0e-4
+  grad_clip: 1.0
+  lambda_sds: 1.0e-4
+  reg: [1.0, 0.1, 0.01]
+  log_every: 1
+  ckpt_every: 1
