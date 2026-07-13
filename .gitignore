@@ -1,0 +1,10 @@
+build/
+dist/
+*.egg
+*.egg-info/
+*.o
+*.so
+__pycache__/
+*.pyc
+*.log
+.cuda-hash

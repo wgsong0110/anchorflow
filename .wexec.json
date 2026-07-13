@@ -1,0 +1,4 @@
+{
+  "setup": "",
+  "cuda_build": { "release_tag": "cuda-build" }
+}
