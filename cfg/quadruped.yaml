@@ -13,7 +13,7 @@ camera:
   show_hint: false
   init_azimuthm: -30
   init_elevation: 15
-  init_radius: 4.0
+  init_radius: 2.2
   delta_a: 0.0
   delta_e: 0.0
   delta_r: 0.0
@@ -29,11 +29,11 @@ train:
   frames: 14
   render_frames: 30
   max_gaussians: 60000    # match ball density (fits 24GB under retain_graph)
-  steps: 2               # framing/asset check first; bump to 400 after
+  steps: 400
   lr_gnn: 2.0e-4
   lr_anchor: 2.0e-4
   grad_clip: 1.0
   lambda_sds: 1.0e-4
   reg: [1.0, 0.1, 0.01]
-  log_every: 1
-  ckpt_every: 1
+  log_every: 20
+  ckpt_every: 50
