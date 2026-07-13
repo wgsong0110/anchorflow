@@ -43,9 +43,9 @@ from utils.transformation_utils import (
     generate_rotation_matrices, apply_rotations, transform2origin,
     shift2center111, apply_cov_rotations, apply_inverse_rotations,
     undotransform2origin, undoshift2center111, apply_inverse_cov_rotations,
+    get_center_view_worldspace_and_observant_coordinate,
 )
-from utils.camera_view_utils import (
-    get_center_view_worldspace_and_observant_coordinate, get_camera_view)
+from utils.camera_view_utils import get_camera_view
 from utils.render_utils import convert_SH
 from scene.gaussian_model import GaussianModel
 from video_distillation.svd_guidance import SVDGuidance
