@@ -148,10 +148,11 @@ def main():
     gnn = GNSDynamics(hidden=cfg.train.hidden,
                       message_passing_steps=cfg.train.mp_steps,
                       latent_dim=cfg.train.latent_dim).to(device)
-    try:
-        gnn = torch.compile(gnn, dynamic=True)
-    except Exception as e:
-        print(f"[warn] torch.compile off: {e}")
+    if cfg.train.get("compile", False):      # off by default: its long CPU compile
+        try:                                  # phase looks idle to the cost watchdog
+            gnn = torch.compile(gnn, dynamic=True)
+        except Exception as e:
+            print(f"[warn] torch.compile off: {e}")
 
     opt = torch.optim.Adam(
         [{"params": gnn.parameters(), "lr": cfg.train.lr_gnn},
