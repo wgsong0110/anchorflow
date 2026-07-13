@@ -1,0 +1,37 @@
+# Per-scene GNN distillation config (quadruped). Camera/preprocessing mirror
+# DreamPhysics's scene config fields; `train` is anchorflow-specific.
+
+preprocessing:
+  opacity_threshold: 0.02
+  rotation_degree: [0.0]
+  rotation_axis: [0]
+
+camera:
+  mpm_space_viewpoint_center: [0.5, 0.5, 0.5]
+  mpm_space_vertical_upward_axis: [0, 0, 1]
+  default_camera_index: 0
+  show_hint: false
+  init_azimuthm: 0
+  init_elevation: 0
+  init_radius: 3.0
+
+train:
+  # anchors / GNN
+  node_num: 512          # SC-GS default
+  latent_dim: 8          # actuation latent z_i dim
+  K: 4                   # LBS / graph neighbours
+  hidden: 128
+  mp_steps: 6
+  arap_k: 10
+  seed: 0
+  # rollout / render
+  frames: 14             # SVD base (img2vid); 25 for -xt if VRAM allows
+  # optimization
+  steps: 3000
+  lr_gnn: 1.0e-3
+  lr_anchor: 1.0e-3
+  grad_clip: 1.0
+  lambda_sds: 1.0e-4     # DreamPhysics scales guidance loss by 1e-4
+  reg: [1.0, 0.1, 0.01]  # (arap, elastic, acc)
+  log_every: 10
+  ckpt_every: 100
