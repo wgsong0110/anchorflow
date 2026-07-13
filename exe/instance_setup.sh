@@ -19,4 +19,15 @@ huggingface-cli download tyhuang/DreamPhysics --repo-type dataset \
     --include "model/ball/*" --local-dir . >/dev/null 2>&1 || \
     echo "warn: ball download issue"
 
+# rclone + R2 for automatic result upload. Creds come from env (NOT committed):
+#   R2_ACCESS_KEY / R2_SECRET / R2_ENDPOINT (pass from host at setup time).
+if [ -n "${R2_ACCESS_KEY:-}" ]; then
+    command -v rclone >/dev/null 2>&1 || \
+        (apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq rclone >/dev/null 2>&1)
+    mkdir -p ~/.config/rclone
+    printf '[r2]\ntype = s3\nprovider = Cloudflare\naccess_key_id = %s\nsecret_access_key = %s\nendpoint = %s\nacl = private\n' \
+        "$R2_ACCESS_KEY" "$R2_SECRET" "$R2_ENDPOINT" > ~/.config/rclone/rclone.conf
+    echo "rclone R2 configured (auto result upload enabled)"
+fi
+
 echo "instance setup done: $(ls model/ball 2>/dev/null | tr '\n' ' ')"

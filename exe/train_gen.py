@@ -97,6 +97,9 @@ def main():
     ap.add_argument("--config", required=True, help="scene/camera + train yaml")
     ap.add_argument("--guidance_config", default="./config/guidance/svd_guidance.yaml")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--r2_dest", default=None,
+                    help="rclone dest (e.g. r2:storage/result/anchorflow/ball) — "
+                         "outputs are auto-synced here at each checkpoint + at end")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--white_bg", type=bool, default=True)
     args = ap.parse_args()
@@ -179,6 +182,10 @@ def main():
         return {"gnn": (gnn._orig_mod if hasattr(gnn, "_orig_mod") else gnn).state_dict(),
                 "anchors": anchors.state_dict(), "opt": opt.state_dict()}
 
+    def sync_r2():
+        if args.r2_dest:
+            os.system(f"rclone copy {args.out} {args.r2_dest} >/dev/null 2>&1")
+
     T = cfg.train.frames
     graph_cfg = {"graph": "knn", "k": cfg.train.K, "rebuild_graph": False}
     best = float("inf")
@@ -241,6 +248,7 @@ def main():
         if step % cfg.train.ckpt_every == 0:
             ckpt.save(step, collect(), metric=lv, is_best=(lv < best))
             best = min(best, lv)
+            sync_r2()                            # crash-safe: push to R2 each ckpt
 
     ckpt.save(cfg.train.steps - 1, collect(), metric=best, is_best=False)
     print(f"[done] commit={gh} best={best:.4e} -> {args.out}")
@@ -277,6 +285,9 @@ def main():
             cv2.imwrite(os.path.join(args.out, f"{t:04d}.png".rjust(8, "0")), arr)
     save_video(args.out, os.path.join(args.out, "rollout.mp4"))
     print(f"[video] wrote rollout.mp4 ({rf} frames) -> {args.out}")
+    sync_r2()
+    if args.r2_dest:
+        print(f"[r2] synced -> {args.r2_dest}")
 
 
 if __name__ == "__main__":
