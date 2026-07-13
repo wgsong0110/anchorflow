@@ -48,13 +48,20 @@ def cov_from_scale_rot(scaling, rotation):
 # --- per-anchor rotation from canonical->now (weighted Procrustes) -------- #
 def anchor_rotations(canonical, now, K=8):
     """Estimate a per-anchor rotation aligning its rest neighbourhood to the
-    deformed one (SC-GS p2dR / ARAP local rotation). Returns R [M,3,3]."""
-    _, idx = knn(canonical, canonical, min(K + 1, canonical.shape[0]))
-    idx = idx[:, 1:]                                          # drop self -> [M,K]
-    src = canonical[idx] - canonical[:, None]                 # rest edges [M,K,3]
-    tgt = now[idx] - now[:, None]                             # now edges  [M,K,3]
-    w = torch.ones(src.shape[:-1], device=canonical.device)   # uniform weights
-    return geom.procrustes_rotation(src, tgt, w)             # [M,3,3]
+    deformed one (SC-GS p2dR / ARAP local rotation). Returns R [M,3,3].
+
+    Computed under no_grad: the rotation is *estimated* (ARAP-style), not
+    differentiated. This is essential — the Procrustes SVD backward is NaN when
+    the neighbourhood is (near-)undeformed (repeated singular values, e.g. at
+    rest), which otherwise poisons the whole model on the first step. Gradient
+    to the anchor motion flows through the LBS translation term instead."""
+    with torch.no_grad():
+        _, idx = knn(canonical, canonical, min(K + 1, canonical.shape[0]))
+        idx = idx[:, 1:]                                      # drop self -> [M,K]
+        src = canonical[idx] - canonical[:, None]             # rest edges [M,K,3]
+        tgt = now[idx] - now[:, None]                         # now edges  [M,K,3]
+        w = torch.ones(src.shape[:-1], device=canonical.device)
+        return geom.procrustes_rotation(src, tgt, w)         # [M,3,3] (detached)
 
 
 def _blend_quat(quat, w, idx):
