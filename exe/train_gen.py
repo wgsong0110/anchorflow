@@ -164,7 +164,7 @@ def main():
          {"params": anchors.parameters(), "lr": cfg.train.lr_anchor}])
 
     guidance = SVDGuidance(OmegaConf.load(args.guidance_config).guidance)
-    cond_image = Image.open(args.cond)
+    cond_image = Image.open(args.cond).convert("RGB")   # drop alpha (TRELLIS PNGs are RGBA)
 
     ckpt = CheckpointManager(args.out)
     start = 0
