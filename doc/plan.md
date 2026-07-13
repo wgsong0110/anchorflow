@@ -23,7 +23,34 @@ video-SDS 4D generation of self-actuated objects.**
   (2-frame) state. **SSM/Mamba deferred to v2**, adopted only if long-horizon
   autonomous rollout becomes the headline and needs bounded-recurrence stability.
 - **Loss = video-diffusion SDS** (+ ARAP/regularizers from SC-GS).
+- **Video backbone = SVD (Stable Video Diffusion, image-conditioned)**. The
+  canonical render is frame-0; SVD supplies the motion prior. Identity-preserving,
+  easy to attach. (Action-controllability is weak — revisit text+video in v2 if we
+  need *specified* actions.)
+- **Canonical 3DGS asset = TRELLIS (image→3DGS `.ply`, MIT, `JeffreyXiang/TRELLIS-image-large`)**.
+  SC-GS already demonstrates consuming a TRELLIS `.ply` (`edit_gui.py`). Same
+  subject image seeds both the canonical GS *and* the SVD prior → consistent.
 - Synthetic `synth.py` demoted from "idea validation" to **GNN-core unit test**.
+
+## Canonical asset (subject) — how we get it
+
+We generate on demand rather than hunt a specific pre-made `.ply`:
+
+1. Pick a **neutral rest-pose** image of a self-actuated subject (v1 first target:
+   a simple quadruped or humanoid where SVD has a strong motion prior — e.g. a
+   standing horse/dog or a front-facing person). Source: stock/CC image or a
+   text-to-image gen; keep the pose canonical (standing, arms/legs neutral).
+2. `TRELLIS(image) → save_ply()` → canonical 3DGS `.ply` (xyz, opacity, scale, rot, SH).
+3. Feed `.ply` as SC-GS's static Gaussians; FPS → control nodes.
+4. Same image = SVD frame-0 conditioning during SDS.
+
+Zero-generation smoke-test fallback: grab any public object `.ply` (a TRELLIS
+example / Voxel51 GS) just to exercise the LBS warp before wiring TRELLIS.
+
+Runs on GPU env (TRELLIS ~5GB weights + CUDA deps; not on this arm64 host).
+Local `~/datasets/dnerf` (jumpingjacks/mutant/trex/standup) kept as an alt
+subject source, but D-NeRF needs full dynamic training to yield a canonical GS —
+TRELLIS is the faster path.
 
 ## What we reuse vs replace (grounded in the SC-GS code we read)
 
@@ -78,11 +105,7 @@ tuned) → FPS nodes → GNN rollout → warp → render clip → SDS + ARAP →
 
 ## Open questions (must resolve before step 3)
 
-1. **Video-diffusion backbone → control modality.**
-   - SVD (image-cond): animate the canonical render as frame-0; preserves identity,
-     easy to attach; weak action control.
-   - Text+video (VideoCrafter / CogVideoX / ModelScope): "a person walking" —
-     action-controllable. Preferred if we want *specified* self-actuation.
+1. ~~Video-diffusion backbone~~ **RESOLVED → SVD (image-conditioned).**
 2. **Actuation signal `z_i` form**: free per-node latent (SDS-optimized) vs learned
    phase oscillator vs initial-velocity seed. Determines controllability.
 3. **SDS-through-rollout-through-render stability**: TBPTT window, per-step grad
