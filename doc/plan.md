@@ -11,6 +11,33 @@ self-actuated motion into a spatially-coherent, forward-simulatable GNN dynamics
 Novelty framing: **GNN dynamics as a structural (spatial-coherence) prior for
 video-SDS 4D generation of self-actuated objects.**
 
+## FINAL architecture (locked) — per-scene GNN, DreamPhysics fork
+
+Fork DreamPhysics (`tyhuang0428/DreamPhysics`); **swap its MPM simulator for our
+GNN**, keep everything else (SVDGuidance video-SDS, SVD/ModelScope pretrained
+diffusion, rasterizer, render/camera utils, per-scene loop).
+
+Per scene (exactly one GNN, optimized per scene — mirrors DreamPhysics optimizing
+its material field per scene):
+```
+canonical 3DGS (TRELLIS) -> FPS anchors -> GNN autoregressive rollout (z_i)
+  -> LBS warp -> per-Gaussian (pos, cov, rot) -> rasterize -> clip
+  -> DreamPhysics SVDGuidance (SVD video-SDS, +MDS) -> backprop
+  -> optimize {GNN weights, per-node actuation latent z_i}
+```
+Mapping to DreamPhysics: MPM -> GNN ; material field E -> {GNN weights + z_i} ;
+loss/model -> identical (their SVDGuidance + SVD). No cross-scene weight sharing,
+no separate pretraining, no multi-object set. One quadruped asset starts it.
+
+Seam (svd_simulation.py): replace the `MPM_Simulator_WARP` + `p2g2p` loop +
+`export_particle_{x,cov,R}` block with GNN-rollout->LBS producing per-frame
+(pos, cov, rot); rasterize + `guidance(img_list, input_image)` + backward unchanged;
+optimizer steps {GNN, z_i} instead of `update_param` on E.
+
+Consequence to manage: per-scene GNN is higher-DOF than a material field, so SDS
+is harder — lean on graph inductive bias + ARAP/elastic/acc reg + MDS to constrain
+the motion manifold. `synth`/GNS core stays as an offline sanity unit-test only.
+
 ## Decisions locked
 
 - **Task = generation (per-object SDS distillation)**, not reconstruction. No
