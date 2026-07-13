@@ -241,6 +241,39 @@ def main():
     ckpt.save(cfg.train.steps - 1, collect(), metric=best, is_best=False)
     print(f"[done] commit={gh} best={best:.4e} -> {args.out}")
 
+    # --- render the learned self-actuated rollout to a video --------------- #
+    import cv2
+    from utils.save_video import save_video
+    rf = cfg.train.get("render_frames", T)      # can exceed T (autonomous extrapolation)
+    w_bind, idx_bind = anchors.cal_nn_weight(canon_xyz)
+    with torch.no_grad():
+        node_seq = rollout(gnn, anchors.canonical, anchors.canonical, fixed,
+                           steps=rf - 2, cfg=graph_cfg, z=anchors.z, grad=False)
+        for t in range(rf):
+            R_k = W.anchor_rotations(anchors.canonical, node_seq[t])
+            p, c6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_bind, idx_bind,
+                                  anchors.canonical, node_seq[t], R_k)
+            p_r = apply_inverse_rotations(
+                undotransform2origin(undoshift2center111(p), scale_origin, mean_pos), rot_mats)
+            c_r = apply_inverse_cov_rotations(c6 / (scale_origin * scale_origin), rot_mats)
+            cam = get_camera_view(
+                args.model_path, default_camera_index=camera_params["default_camera_index"],
+                center_view_world_space=view_center, observant_coordinates=observ,
+                show_hint=camera_params["show_hint"], init_azimuthm=camera_params["init_azimuthm"],
+                init_elevation=camera_params["init_elevation"], init_radius=camera_params["init_radius"],
+                move_camera=False, current_frame=t,
+                delta_a=camera_params.get("delta_a", 0.0), delta_e=camera_params.get("delta_e", 0.0),
+                delta_r=camera_params.get("delta_r", 0.0))
+            rast = initialize_resterize(cam, gaussians, pipe, background)
+            colors = convert_SH(shs, cam, gaussians, p_r, None)
+            m2d = torch.zeros_like(p_r)
+            img, _ = rast(means3D=p_r, means2D=m2d, shs=None, colors_precomp=colors,
+                          opacities=opacity, scales=None, rotations=None, cov3D_precomp=c_r)
+            arr = (255 * img.permute(1, 2, 0).clamp(0, 1).cpu().numpy()[..., ::-1]).astype("uint8")
+            cv2.imwrite(os.path.join(args.out, f"{t:04d}.png".rjust(8, "0")), arr)
+    save_video(args.out, os.path.join(args.out, "rollout.mp4"))
+    print(f"[video] wrote rollout.mp4 ({rf} frames) -> {args.out}")
+
 
 if __name__ == "__main__":
     main()

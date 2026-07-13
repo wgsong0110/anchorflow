@@ -26,11 +26,12 @@ train:
   arap_k: 10
   seed: 0
   frames: 14            # SVD base img2vid
-  steps: 2              # tiny — first validate the loop runs end-to-end
+  render_frames: 30     # render past the SVD window (autonomous extrapolation)
+  steps: 400            # real run
   lr_gnn: 1.0e-3
   lr_anchor: 1.0e-3
   grad_clip: 1.0
   lambda_sds: 1.0e-4
   reg: [1.0, 0.1, 0.01]
-  log_every: 1
-  ckpt_every: 1
+  log_every: 20
+  ckpt_every: 100
