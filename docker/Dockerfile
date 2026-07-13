@@ -13,8 +13,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tmux openssh-client curl \
     && rm -rf /var/lib/apt/lists/*
 
-# INRIA 3DGS rasterizer (2-return, as DreamPhysics uses) + simple-knn
-RUN git clone --recursive https://github.com/graphdeco-inria/gaussian-splatting /opt/gs \
+# INRIA 3DGS pinned to the DreamPhysics-era commit (472689c0, parent of the
+# 2024-08-21 "new release" that rewrote Camera + rasterizer). This keeps the
+# rasterizer .so, scene/Camera, and gaussian_renderer all API-compatible with
+# DreamPhysics (2-return rasterize, gt_alpha_mask Camera). /opt/gs is reused on
+# the instance (symlinked as DreamPhysics/gaussian-splatting) so Python + .so match.
+RUN git clone https://github.com/graphdeco-inria/gaussian-splatting /opt/gs \
+    && cd /opt/gs && git checkout 472689c0dc70417448fb451bf529ae532d32c095 \
+    && git submodule update --init --recursive \
     && pip install --no-cache-dir /opt/gs/submodules/diff-gaussian-rasterization \
     && pip install --no-cache-dir /opt/gs/submodules/simple-knn
 
