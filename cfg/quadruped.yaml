@@ -28,7 +28,8 @@ train:
   seed: 0
   frames: 14
   render_frames: 30
-  steps: 2               # framing/asset-loading check first; bump to 400 after
+  max_gaussians: 60000    # match ball density (fits 24GB under retain_graph)
+  steps: 2               # framing/asset check first; bump to 400 after
   lr_gnn: 2.0e-4
   lr_anchor: 2.0e-4
   grad_clip: 1.0

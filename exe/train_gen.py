@@ -124,6 +124,14 @@ def main():
     keep = opacity[:, 0] > preprocessing_params["opacity_threshold"]
     pos, cov, opacity, screen_pts, shs = pos[keep], cov[keep], opacity[keep], \
         screen_pts[keep], shs[keep]
+    # subsample dense assets (TRELLIS outputs ~1M gaussians) so the 14-frame
+    # render graph fits in VRAM under retain_graph
+    maxg = int(cfg.train.get("max_gaussians", 0))
+    if maxg and pos.shape[0] > maxg:
+        sel = torch.randperm(pos.shape[0], device=pos.device)[:maxg]
+        pos, cov, opacity, screen_pts, shs = pos[sel], cov[sel], opacity[sel], \
+            screen_pts[sel], shs[sel]
+        print(f"[subsample] {keep.sum().item()} -> {maxg} gaussians")
 
     rot_mats = generate_rotation_matrices(
         torch.tensor(preprocessing_params["rotation_degree"]),
