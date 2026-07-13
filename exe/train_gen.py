@@ -27,6 +27,7 @@ import subprocess
 import sys
 
 import torch
+from torch.utils.checkpoint import checkpoint
 from omegaconf import OmegaConf
 from PIL import Image
 
@@ -197,6 +198,31 @@ def main():
     T = cfg.train.frames
     graph_cfg = {"graph": "knn", "k": cfg.train.K, "rebuild_graph": False}
     best = float("inf")
+
+    def render_frame(node_now, t_int, w_bind, idx_bind):
+        """Deform Gaussians by the anchors at this frame and rasterize -> [3,H,W].
+        Wrapped in gradient checkpointing at the call site so only one frame's
+        render graph is alive at a time (fits the full ~1.18M-gaussian asset in 24GB)."""
+        R_k = W.anchor_rotations(anchors.canonical, node_now)
+        p, c6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_bind, idx_bind,
+                              anchors.canonical, node_now, R_k)
+        p_r = apply_inverse_rotations(
+            undotransform2origin(undoshift2center111(p), scale_origin, mean_pos), rot_mats)
+        c_r = apply_inverse_cov_rotations(c6 / (scale_origin * scale_origin), rot_mats)
+        cam = get_camera_view(
+            args.model_path, default_camera_index=camera_params["default_camera_index"],
+            center_view_world_space=view_center, observant_coordinates=observ,
+            show_hint=camera_params["show_hint"], init_azimuthm=camera_params["init_azimuthm"],
+            init_elevation=camera_params["init_elevation"], init_radius=camera_params["init_radius"],
+            move_camera=False, current_frame=int(t_int),
+            delta_a=camera_params.get("delta_a", 0.0), delta_e=camera_params.get("delta_e", 0.0),
+            delta_r=camera_params.get("delta_r", 0.0))
+        rast = initialize_resterize(cam, gaussians, pipe, background)
+        colors = convert_SH(shs, cam, gaussians, p_r, None)
+        m2d = torch.zeros_like(p_r, requires_grad=True)
+        img, _ = rast(means3D=p_r, means2D=m2d, shs=None, colors_precomp=colors,
+                      opacities=opacity, scales=None, rotations=None, cov3D_precomp=c_r)
+        return img
     ckpt.install_signal_handler(lambda: ckpt.save(step, collect(), rolling=False))
     print(f"[start] N={canon_xyz.shape[0]} anchors={anchors.num} T={T} commit={gh}")
 
@@ -207,37 +233,13 @@ def main():
         w_bind, idx_bind = anchors.cal_nn_weight(canon_xyz)
         # autoregressive rollout of anchor state from rest, driven by z_i
         node_seq = rollout(gnn, anchors.canonical, anchors.canonical, fixed,
-                           steps=T - 2, cfg=graph_cfg, z=anchors.z, grad=True)  # [T,M,3]
-
-        img_list = []
-        for t in range(T):
-            R_k = W.anchor_rotations(anchors.canonical, node_seq[t])
-            p, c6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_bind, idx_bind,
-                                  anchors.canonical, node_seq[t], R_k)
-            # undo normalization -> original GS frame for rendering
-            p_r = apply_inverse_rotations(
-                undotransform2origin(undoshift2center111(p), scale_origin, mean_pos),
-                rot_mats)
-            c_r = apply_inverse_cov_rotations(c6 / (scale_origin * scale_origin), rot_mats)
-            cam = get_camera_view(
-                args.model_path, default_camera_index=camera_params["default_camera_index"],
-                center_view_world_space=view_center, observant_coordinates=observ,
-                show_hint=camera_params["show_hint"],
-                init_azimuthm=camera_params["init_azimuthm"],
-                init_elevation=camera_params["init_elevation"],
-                init_radius=camera_params["init_radius"], move_camera=False,
-                current_frame=t,
-                delta_a=camera_params.get("delta_a", 0.0),
-                delta_e=camera_params.get("delta_e", 0.0),
-                delta_r=camera_params.get("delta_r", 0.0))
-            rast = initialize_resterize(cam, gaussians, pipe, background)
-            colors = convert_SH(shs, cam, gaussians, p_r, None)
-            means2D = torch.zeros_like(p_r, requires_grad=True)  # fresh per frame
-            img, _ = rast(means3D=p_r, means2D=means2D, shs=None,
-                          colors_precomp=colors, opacities=opacity,
-                          scales=None, rotations=None, cov3D_precomp=c_r)
-            img_list.append(img)
-        img_list = torch.stack(img_list)                   # [T,3,H,W]
+                           steps=T - 2, cfg=graph_cfg, z=anchors.z, grad=True,
+                           recenter=True)                  # [T,M,3], drift-free
+        # gradient-checkpoint each frame's render -> only one frame's graph is
+        # resident at a time, so the full (un-subsampled) asset fits in 24GB.
+        img_list = torch.stack([
+            checkpoint(render_frame, node_seq[t], t, w_bind, idx_bind, use_reentrant=False)
+            for t in range(T)])                            # [T,3,H,W]
 
         out = guidance(img_list, cond_image, num_frames=T)
         loss = sum(v for k, v in out.items() if k.startswith("loss_")) * cfg.train.lambda_sds
@@ -268,27 +270,10 @@ def main():
     w_bind, idx_bind = anchors.cal_nn_weight(canon_xyz)
     with torch.no_grad():
         node_seq = rollout(gnn, anchors.canonical, anchors.canonical, fixed,
-                           steps=rf - 2, cfg=graph_cfg, z=anchors.z, grad=False)
+                           steps=rf - 2, cfg=graph_cfg, z=anchors.z, grad=False,
+                           recenter=True)
         for t in range(rf):
-            R_k = W.anchor_rotations(anchors.canonical, node_seq[t])
-            p, c6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_bind, idx_bind,
-                                  anchors.canonical, node_seq[t], R_k)
-            p_r = apply_inverse_rotations(
-                undotransform2origin(undoshift2center111(p), scale_origin, mean_pos), rot_mats)
-            c_r = apply_inverse_cov_rotations(c6 / (scale_origin * scale_origin), rot_mats)
-            cam = get_camera_view(
-                args.model_path, default_camera_index=camera_params["default_camera_index"],
-                center_view_world_space=view_center, observant_coordinates=observ,
-                show_hint=camera_params["show_hint"], init_azimuthm=camera_params["init_azimuthm"],
-                init_elevation=camera_params["init_elevation"], init_radius=camera_params["init_radius"],
-                move_camera=False, current_frame=t,
-                delta_a=camera_params.get("delta_a", 0.0), delta_e=camera_params.get("delta_e", 0.0),
-                delta_r=camera_params.get("delta_r", 0.0))
-            rast = initialize_resterize(cam, gaussians, pipe, background)
-            colors = convert_SH(shs, cam, gaussians, p_r, None)
-            m2d = torch.zeros_like(p_r)
-            img, _ = rast(means3D=p_r, means2D=m2d, shs=None, colors_precomp=colors,
-                          opacities=opacity, scales=None, rotations=None, cov3D_precomp=c_r)
+            img = render_frame(node_seq[t], t, w_bind, idx_bind)
             arr = (255 * img.permute(1, 2, 0).clamp(0, 1).cpu().numpy()[..., ::-1]).astype("uint8")
             cv2.imwrite(os.path.join(args.out, f"{t:04d}.png".rjust(8, "0")), arr)
     save_video(args.out, os.path.join(args.out, "rollout.mp4"))

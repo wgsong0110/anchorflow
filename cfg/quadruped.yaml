@@ -28,7 +28,7 @@ train:
   seed: 0
   frames: 14
   render_frames: 30
-  max_gaussians: 60000    # match ball density (fits 24GB under retain_graph)
+  max_gaussians: 0        # 0 = use full asset (gradient checkpointing fits 1.18M in 24GB)
   steps: 400
   lr_gnn: 2.0e-4
   lr_anchor: 2.0e-4

@@ -164,7 +164,7 @@ def build_graph(pos, cfg):
 #  autoregressive rollout                                                     #
 # --------------------------------------------------------------------------- #
 def rollout(model, p0, p1, fixed, steps, cfg, rebuild_graph=True, z=None,
-            grad=False, accel_scale=0.1, damping=0.98):
+            grad=False, accel_scale=0.1, damping=0.98, recenter=False):
     """Free-running rollout from two seed frames p0, p1.
 
     Returns predicted positions [steps+2, N, 3] (including the two seeds).
@@ -198,7 +198,13 @@ def rollout(model, p0, p1, fixed, steps, cfg, rebuild_graph=True, z=None,
                 p_next = torch.where(fixed[:, None], fixed_pos_full(fixed_pos, fixed, p_next), p_next)
             out.append(p_next)
             p_prev, p_cur = p_cur, p_next
-        return torch.stack(out, dim=0)
+        seq = torch.stack(out, dim=0)                 # [T,M,3]
+        if recenter:
+            # anti-drift: hold the anchor centre-of-mass at the rest COM every
+            # frame, so the GNN must ARTICULATE in place instead of translating
+            # the whole object out of view (the global-drift failure mode).
+            seq = seq - seq.mean(1, keepdim=True) + seq[:1].mean(1, keepdim=True)
+        return seq
 
 
 def fixed_pos_full(fixed_pos, fixed, like):
