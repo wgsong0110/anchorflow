@@ -1,0 +1,36 @@
+# Loop-validation config on DreamPhysics's known-good `ball` asset.
+# preprocessing/camera values copied from DreamPhysics config/physics/ball_config.json.
+preprocessing:
+  opacity_threshold: 0.02
+  rotation_degree: [90]
+  rotation_axis: [0]
+
+camera:
+  mpm_space_viewpoint_center: [0.95, 1.07, 1]
+  mpm_space_vertical_upward_axis: [0, 0, 1]
+  default_camera_index: -1
+  show_hint: false
+  init_azimuthm: -120
+  init_elevation: 0
+  init_radius: 4.11
+  delta_a: 0.4
+  delta_e: 0.0
+  delta_r: 0.0
+
+train:
+  node_num: 256
+  latent_dim: 8
+  K: 4
+  hidden: 128
+  mp_steps: 6
+  arap_k: 10
+  seed: 0
+  frames: 14            # SVD base img2vid
+  steps: 2              # tiny — first validate the loop runs end-to-end
+  lr_gnn: 1.0e-3
+  lr_anchor: 1.0e-3
+  grad_clip: 1.0
+  lambda_sds: 1.0e-4
+  reg: [1.0, 0.1, 0.01]
+  log_every: 1
+  ckpt_every: 1

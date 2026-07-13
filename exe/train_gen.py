@@ -71,11 +71,17 @@ def git_hash():
 def load_canonical(model_path):
     from plyfile import PlyData
     import math
-    names = [p.name for p in PlyData.read(model_path)["vertex"].properties
+    if os.path.isdir(model_path):            # DreamPhysics-style model dir
+        from utils.system_utils import searchForMaxIteration
+        it = searchForMaxIteration(os.path.join(model_path, "point_cloud"))
+        ply = os.path.join(model_path, "point_cloud", f"iteration_{it}", "point_cloud.ply")
+    else:
+        ply = model_path
+    names = [p.name for p in PlyData.read(ply)["vertex"].properties
              if p.name.startswith("f_rest_")]
     sh = int(math.sqrt((len(names) + 3) // 3)) - 1
     g = GaussianModel(sh)
-    g.load_ply(model_path)
+    g.load_ply(ply)
     return g
 
 
@@ -194,7 +200,10 @@ def main():
                 init_azimuthm=camera_params["init_azimuthm"],
                 init_elevation=camera_params["init_elevation"],
                 init_radius=camera_params["init_radius"], move_camera=False,
-                current_frame=t)
+                current_frame=t,
+                delta_a=camera_params.get("delta_a", 0.0),
+                delta_e=camera_params.get("delta_e", 0.0),
+                delta_r=camera_params.get("delta_r", 0.0))
             rast = initialize_resterize(cam, gaussians, pipe, background)
             colors = convert_SH(shs, cam, gaussians, p_r, None)
             img, _ = rast(means3D=p_r, means2D=screen_pts, shs=None,
