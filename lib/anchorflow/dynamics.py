@@ -101,28 +101,36 @@ class Normalizer(nn.Module):
 class GNSDynamics(nn.Module):
     """Autoregressive anchor dynamics.
 
-    node input features : [velocity(3), fixed_flag(1)]      -> 4
+    node input features : [velocity(3), fixed_flag(1)] (+ actuation latent z_i)
     edge input features : [rel_disp(3), dist(1)]            -> 4
     output              : normalised acceleration (3)
+
+    ``latent_dim`` > 0 appends a per-node actuation latent z_i to the node input
+    (the internal-drive signal for self-actuated motion — optimised under SDS).
+    Only the kinematic part is Normalizer-standardised; z_i is passed raw so the
+    running stats don't fight the latent's own optimisation. latent_dim=0 recovers
+    the plain GNS used by the synth unit test.
     """
 
     def __init__(self, hidden=128, message_passing_steps=6,
-                 node_in=4, edge_in=4, out_dim=3):
+                 latent_dim=0, base_node_in=4, edge_in=4, out_dim=3):
         super().__init__()
-        self.node_encoder = mlp([node_in, hidden, hidden])
+        self.latent_dim = latent_dim
+        self.node_encoder = mlp([base_node_in + latent_dim, hidden, hidden])
         self.edge_encoder = mlp([edge_in, hidden, hidden])
         self.processor = nn.ModuleList(
             InteractionNetwork(hidden) for _ in range(message_passing_steps)
         )
         self.decoder = mlp([hidden, hidden, out_dim], layernorm=False)
-        self.in_norm = Normalizer(node_in)
+        self.in_norm = Normalizer(base_node_in)
         self.out_norm = Normalizer(out_dim)
 
     # --- single-step prediction ------------------------------------------- #
-    def predict_accel(self, pos, vel, fixed, edge_index):
+    def predict_accel(self, pos, vel, fixed, edge_index, z=None):
         """Predict *un-normalised* per-node acceleration for one step."""
-        node_feat = torch.cat([vel, fixed.float().unsqueeze(-1)], dim=-1)
-        node_feat = self.in_norm(node_feat)
+        kin = torch.cat([vel, fixed.float().unsqueeze(-1)], dim=-1)
+        kin = self.in_norm(kin)
+        node_feat = kin if z is None else torch.cat([kin, z], dim=-1)
         e = G.edge_features(pos, edge_index)
         h = self.node_encoder(node_feat)
         e = self.edge_encoder(e)
@@ -131,8 +139,8 @@ class GNSDynamics(nn.Module):
         acc_norm = self.decoder(h)
         return self.out_norm.inverse(acc_norm), acc_norm
 
-    def forward(self, pos, vel, fixed, edge_index):
-        acc, _ = self.predict_accel(pos, vel, fixed, edge_index)
+    def forward(self, pos, vel, fixed, edge_index, z=None):
+        acc, _ = self.predict_accel(pos, vel, fixed, edge_index, z)
         return acc
 
 
@@ -149,26 +157,40 @@ def build_graph(pos, cfg):
 # --------------------------------------------------------------------------- #
 #  autoregressive rollout                                                     #
 # --------------------------------------------------------------------------- #
-@torch.no_grad()
-def rollout(model, p0, p1, fixed, steps, cfg, rebuild_graph=True):
+def rollout(model, p0, p1, fixed, steps, cfg, rebuild_graph=True, z=None,
+            grad=False):
     """Free-running rollout from two seed frames p0, p1.
 
     Returns predicted positions [steps+2, N, 3] (including the two seeds).
+    ``z`` is the per-node actuation latent (or None). ``grad=True`` keeps the
+    graph differentiable end-to-end (needed for SDS backprop through the rollout);
+    ``grad=False`` runs under no_grad for evaluation.
     """
-    model.eval()
-    dev = p0.device
-    fixed = fixed.to(dev)
-    p_prev, p_cur = p0.clone(), p1.clone()
-    out = [p_prev, p_cur]
-    edge_index = build_graph(p_cur, cfg)
-    fixed_pos = p0[fixed]
-    for _ in range(steps):
-        if rebuild_graph:
-            edge_index = build_graph(p_cur, cfg)
-        vel = p_cur - p_prev
-        acc = model(p_cur, vel, fixed, edge_index)
-        p_next = p_cur + vel + acc
-        p_next[fixed] = fixed_pos                       # hold pinned anchors
-        out.append(p_next)
-        p_prev, p_cur = p_cur, p_next
-    return torch.stack(out, dim=0)
+    ctx = torch.enable_grad() if grad else torch.no_grad()
+    with ctx:
+        if not grad:
+            model.eval()
+        dev = p0.device
+        fixed = fixed.to(dev)
+        p_prev, p_cur = p0.clone(), p1.clone()
+        out = [p_prev, p_cur]
+        edge_index = build_graph(p_cur, cfg)
+        fixed_pos = p0[fixed]
+        for _ in range(steps):
+            if rebuild_graph:
+                edge_index = build_graph(p_cur.detach(), cfg)   # topology only
+            vel = p_cur - p_prev
+            acc = model(p_cur, vel, fixed, edge_index, z)
+            p_next = p_cur + vel + acc
+            if fixed.any():
+                p_next = torch.where(fixed[:, None], fixed_pos_full(fixed_pos, fixed, p_next), p_next)
+            out.append(p_next)
+            p_prev, p_cur = p_cur, p_next
+        return torch.stack(out, dim=0)
+
+
+def fixed_pos_full(fixed_pos, fixed, like):
+    """Scatter pinned-node positions back into an [N,3] frame (grad-safe)."""
+    full = like.clone()
+    full[fixed] = fixed_pos
+    return full

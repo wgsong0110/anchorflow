@@ -103,6 +103,22 @@ tuned) → FPS nodes → GNN rollout → warp → render clip → SDS + ARAP →
 5. **Autonomous extrapolation**: roll past the SDS window; measure stability. This
    is the headline-claim experiment and the go/no-go for v2 SSM.
 
+## CUDA custom-kernel optimization (requirement)
+
+Every hot path that admits a speedup gets a fused custom CUDA kernel, built via
+the project CI (`cuda-build.yml`, content-hash) — **never built on this arm64
+host or the instance**. Rule: **pure-torch reference first (correctness), then
+CUDA kernel, gated by a numerical parity test vs the reference.**
+
+Kernel candidates (hot paths, run every rendered frame over ~10^5 Gaussians):
+- `lib/lbs/` — fused per-Gaussian KNN(control nodes) + RBF weight + LBS blend
+  (translation + local-frame rotation). Replaces the torch cdist+topk+einsum path.
+- `lib/gnnscatter/` — fused edge message + segment-sum aggregation for the GNN
+  processor (replaces `index_add_` per layer).
+- (later) batched 3×3 weighted-Procrustes for per-node rotation, if torch SVD is a bottleneck.
+
+Keep each CUDA lib small/independent (per infra rules) so CI builds them in parallel.
+
 ## Open questions (must resolve before step 3)
 
 1. ~~Video-diffusion backbone~~ **RESOLVED → SVD (image-conditioned).**
