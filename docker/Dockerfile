@@ -2,7 +2,7 @@
 # Built via GitHub Actions (x86). No MPM/warp/taichi, no tiny-cuda-nn/nvdiffrast
 # (trimmed from the DreamPhysics path). CUDA exts compile ahead-of-time via
 # TORCH_CUDA_ARCH_LIST + FORCE_CUDA (no GPU needed at build).
-FROM pytorch/pytorch:2.0.1-cuda11.8-cudnn8-devel
+FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-devel
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TORCH_CUDA_ARCH_LIST="8.6;8.9"
@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir \
         diffusers==0.29.2 transformers==4.41.2 accelerate==0.30.1 \
         safetensors huggingface_hub tensorboard rembg onnxruntime
 
-# xformers matched to torch 2.0.1 (memory-efficient attention for SVD)
-RUN pip install --no-cache-dir xformers==0.0.22 || echo "xformers optional: skipped"
+# xformers matched to torch 2.1.2 (memory-efficient attention for SVD)
+RUN pip install --no-cache-dir xformers==0.0.23.post1 || echo "xformers optional: skipped"
 
 WORKDIR /workspace
