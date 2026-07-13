@@ -31,7 +31,9 @@ from omegaconf import OmegaConf
 from PIL import Image
 
 # --- DreamPhysics / 3DGS stack (reused verbatim) -------------------------- #
-from utils.decode_param import decode_param_json
+# NB: we deliberately avoid `utils.decode_param` (it imports warp + MPM at module
+# level) — camera/preprocessing come from our yaml config instead, so the image
+# needs no warp/taichi/MPM.
 from utils.render_utils import load_params_from_gs, initialize_resterize
 from utils.transformation_utils import (
     generate_rotation_matrices, apply_rotations, transform2origin,
@@ -92,9 +94,7 @@ def main():
     gh = git_hash()
 
     cfg = OmegaConf.load(args.config)
-    _, _, _, preprocessing_params, camera_params = decode_param_json(args.config) \
-        if args.config.endswith(".json") else (None, None, None,
-                                                cfg.preprocessing, cfg.camera)
+    preprocessing_params, camera_params = cfg.preprocessing, cfg.camera
 
     # ---- load canonical Gaussians, mask, normalize (as DreamPhysics) ------ #
     gaussians = load_canonical(args.model_path)
