@@ -30,6 +30,10 @@ import torch
 from omegaconf import OmegaConf
 from PIL import Image
 
+# INRIA gaussian-splatting (scene/, gaussian_renderer/) is cloned inside the
+# DreamPhysics dir; add it to the path exactly as DreamPhysics's svd_simulation does.
+sys.path.append("gaussian-splatting")
+
 # --- DreamPhysics / 3DGS stack (reused verbatim) -------------------------- #
 # NB: we deliberately avoid `utils.decode_param` (it imports warp + MPM at module
 # level) — camera/preprocessing come from our yaml config instead, so the image
@@ -72,8 +76,9 @@ def load_canonical(model_path):
     from plyfile import PlyData
     import math
     if os.path.isdir(model_path):            # DreamPhysics-style model dir
-        from utils.system_utils import searchForMaxIteration
-        it = searchForMaxIteration(os.path.join(model_path, "point_cloud"))
+        import glob
+        its = glob.glob(os.path.join(model_path, "point_cloud", "iteration_*"))
+        it = max(int(p.split("iteration_")[-1]) for p in its)
         ply = os.path.join(model_path, "point_cloud", f"iteration_{it}", "point_cloud.ply")
     else:
         ply = model_path
