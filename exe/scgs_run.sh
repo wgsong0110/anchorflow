@@ -135,6 +135,14 @@ if grep -q '^import dearpygui.dearpygui as dpg' "$SCGS_ROOT/train_gui.py"; then
   log "guarded dearpygui import in train_gui.py (headless; GUI unused)"
 fi
 
+# SC-GS's blender/transforms loader builds the image with dtype=np.byte (signed
+# int8) -> 255 overflows AND PIL can't map int8 RGBA ("Cannot handle (1,1,4) |i1").
+# Must be uint8. Idempotent one-char fix to dataset_readers.py.
+if grep -q 'dtype=np.byte' "$SCGS_ROOT/scene/dataset_readers.py"; then
+  sed -i 's/dtype=np\.byte/dtype=np.uint8/g' "$SCGS_ROOT/scene/dataset_readers.py"
+  log "patched dataset_readers.py np.byte -> np.uint8 (RGBA image build)"
+fi
+
 # ---------------------------------------------------------------------------
 # 3. Assemble train_gui.py flags.
 #    Multi-view / real scenes: NO --is_blender (nodes init from the point cloud,
