@@ -119,6 +119,9 @@ def main():
     node_traj = torch.tensor(np.load(args.node_traj), dtype=torch.float32, device=device)  # [T,M,3]
     node_traj = apply_rotations(node_traj.reshape(-1, 3), rot_mats).reshape(node_traj.shape)
     node_traj = shift2center111((node_traj - mean_pos) / scale_origin)   # match transform2origin
+    node_traj = node_traj.detach()          # supervision target + IC: a constant,
+    # else its transform graph (via scale_origin/mean_pos) is shared across steps
+    # and freed after the first backward -> "backward a second time".
     T_traj = node_traj.shape[0]
 
     # ---- anchors from MoSca canonical (frame 0), + GNN⊗SSM ---------------- #
