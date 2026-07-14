@@ -123,6 +123,19 @@ if [ "$FMT" = "neu3d" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 2b. Headless: train_gui.py hard-imports dearpygui at module load, but every
+#     dpg.* call is guarded by `if self.gui:` (we run WITHOUT --gui). dearpygui's
+#     prebuilt .so needs a newer GLIBCXX than the conda base ships, so the import
+#     alone crashes before training starts. Guard it (stub dpg=None). Idempotent —
+#     removing the unused import, not installing libs to satisfy it.
+# ---------------------------------------------------------------------------
+if grep -q '^import dearpygui.dearpygui as dpg' "$SCGS_ROOT/train_gui.py"; then
+  sed -i 's/^import dearpygui.dearpygui as dpg/try:\n    import dearpygui.dearpygui as dpg\nexcept Exception:\n    dpg = None/' \
+      "$SCGS_ROOT/train_gui.py"
+  log "guarded dearpygui import in train_gui.py (headless; GUI unused)"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Assemble train_gui.py flags.
 #    Multi-view / real scenes: NO --is_blender (nodes init from the point cloud,
 #    not random), NO --gt_alpha_mask_as_scene_mask. --eval holds out a test view
