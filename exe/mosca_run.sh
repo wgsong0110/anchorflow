@@ -103,8 +103,8 @@ if [ "$need_bundle" -eq 1 ]; then
   mkdir -p "$W"
   TMPD="$(mktemp -d)"
   # gdown is in MoSca's requirements.txt (pre-installed).
-  gdown --fuzzy "https://drive.google.com/file/d/${WEIGHTS_GDRIVE_ID}/view" \
-        -O "$TMPD/mosca_weights.zip"
+  gdown "https://drive.google.com/uc?id=${WEIGHTS_GDRIVE_ID}" \
+        -O "$TMPD/mosca_weights.zip" || gdown "${WEIGHTS_GDRIVE_ID}" -O "$TMPD/mosca_weights.zip"
   unzip -q -o "$TMPD/mosca_weights.zip" -d "$TMPD/unz"
   # Place each checkpoint at its exact expected path regardless of the zip's
   # internal folder layout.
