@@ -227,6 +227,12 @@ def main():
                 pl.unet.set_attention_slice(1)
             except Exception:
                 pass
+        # recompute UNet activations in backward instead of storing them — the
+        # dominant MDS memory cost (SVD UNet over Tf frames). Quality-neutral.
+        try:
+            pl.unet.enable_gradient_checkpointing()
+        except Exception:
+            pass
     cond_image = Image.open(args.cond).convert("RGB")
     Tf = cfg.train.frames
     cam_p = cfg.camera
