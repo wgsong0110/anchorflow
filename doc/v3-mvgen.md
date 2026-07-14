@@ -10,9 +10,15 @@ reconstructor (SC-GS)**. No SDS in this front-end — the motion + views come fr
 a pretrained multi-view video diffusion model.
 
 ```
-subject.png ─▶ [SV4D 2.0] ─▶ V views × T frames (known azimuths)
+subject.png ─▶ [SV4D 2.0 × N elevations] ─▶ (n_az × n_elev) views × T frames
                               + per-view poses + per-frame times ─▶ [SC-GS] ─▶ 4D GS
 ```
+
+**Default is now a DENSE grid: 8 azimuths × 3 elevations = 24 views** (variant
+`sv4d2_8views`, `--elevations -20,0,20`). Earlier the front-end ran SV4D **once**
+at a single elevation (0°) → only 4 spatial views. That was too sparse: SC-GS's
+dense-bootstrap gaussians collapsed to 0 points and the run **crashed**. Running
+SV4D once per elevation and merging with elevation-aware poses fixes this.
 
 ## Model survey — what is ACTUALLY runnable today (2026-07)
 
@@ -48,6 +54,21 @@ Object should be centered on a plain background (`--remove_bg=True` uses rembg).
 **Output:** per-view mp4s written to
 `{output_folder}/{model_name}/{base_count:06d}_v{view:03d}.mp4`
 (one video per view — **not** a grid).
+
+**Only the NOVEL views are saved** (verified in `simple_video_sample_4d2.py`:
+the save loop iterates `view_indices = arange(V)+1`). The input view (view 0,
+azimuth 0) is **not** emitted as an mp4. So the sorted files `_v001.._v00V` map to
+`azimuths_deg[1:]` (i.e. `[30,75,…,330]` for 8views), **not** `azimuths_deg[0:V]`.
+`gen_mv_video.py`'s `novel_azimuths()` uses `[1:]`; the previous packer used
+`[0:V]`, an **off-by-one** that mis-labeled every view's azimuth — now fixed.
+
+**`elevations_deg` is a single elevation per run**, broadcast to every view
+(`elevations_deg = [E]*n_views` in the sampler), so all V saved novel views are
+rendered at absolute elevation `E`. To get elevation diversity we therefore call
+the sampler **once per elevation** (`--elevations_deg=E`) and merge the runs. Each
+elevation writes to a **distinct output subfolder** (`_work/sv4d2_out/elev_pXX` /
+`elev_mXX`) so the identically-named `{model_name}/{base_count}_v{view}.mp4` files
+from different elevations never overwrite one another.
 
 **Two checkpoints (variant chosen by `--model_path` basename):**
 
@@ -93,12 +114,37 @@ guarantee. `exe/gen_mv_video.py` writes:
 - **`timestamps.json`** — `T` shared per-frame times in `[0,1]`, `num_views`, fps.
 - **`images/view_KK/TTTTT.png`** — decoded frames, per view.
 
-Geometry: camera at `(r·cosE·sinA, r·sinE, r·cosE·cosA)` looking at origin, up
-`+y`; `--radius 2.0`, `--fov_deg 33.8` (SV4D's orbital renders are ~30–40°;
-tunable — only relative consistency matters, absolute scale is a gauge the
-reconstructor absorbs). Times are **identical across views** (streams are
-synchronized), so timestamp `t` means the same instant in every view — exactly
-what a multi-view 4D reconstructor assumes.
+**Elevation-aware camera math (the key fix).** Each view now carries its OWN
+`(azimuth A, elevation E)` and the c2w is built from BOTH (previously the whole
+ring shared one elevation). For a view at `(A, E)`:
+
+```
+eye = ( r·cos E · sin A ,  r·sin E ,  r·cos E · cos A )        # position on the sphere
+z   = normalize(eye - origin)          # camera +z (points away from target, OpenGL)
+x   = normalize(world_up × z),  world_up = (0,1,0)
+y   = z × x
+c2w = [ x | y | z | eye ]  (4×4, OpenGL/blender transform_matrix)
+```
+
+Elevation `E` enters through `eye`: `+E` lifts the camera (`+y`) and shrinks the
+horizontal radius by `cos E`; the look-at then tilts the camera **down** toward
+the origin (and `−E` tilts it up). At `E=0` this reduces to the old azimuth-only
+ring. Sanity-checked numerically: `|eye| = r` for all `(A,E)`, camera forward
+`−z` dotted with `−êye = 1.0` (looks exactly at origin), `det(R)=1`.
+
+`--radius 2.0`, `--fov_deg 33.8` (SV4D's orbital renders are ~30–40°; tunable —
+only relative consistency matters, absolute scale is a gauge the reconstructor
+absorbs). Times are **identical across views** (streams are synchronized), so
+timestamp `t` means the same instant in every view — exactly what a multi-view 4D
+reconstructor assumes. The shared per-frame `time ∈ [0,1]` (T timesteps) is the
+same across all views and all elevations.
+
+**View indexing.** Views are enumerated `view_00 .. view_{V−1}` across the full
+`azimuth × elevation` grid (elevation-major: all azimuths of the first elevation,
+then the next elevation, …). For the default 8×3 that is `V=24` views. The input
+viewpoint (az 0, elev 0) is never in the set (SV4D doesn't save it); az 0 is not a
+novel azimuth, so **no viewpoint is duplicated across elevation runs** — every
+`(az, elev)` pair is a distinct camera.
 
 ## Interface contract with the SC-GS stage
 
@@ -111,9 +157,11 @@ representation v1 planned to drive with a GNN, now **initialized from real
 multi-view supervision** instead of SDS.
 
 - Coordinate frame: `transform_matrix` is blender/OpenGL c2w (SC-GS/D-NeRF native).
-- Time: normalized `[0,1]`, shared across views.
-- Views: 5 total for `sv4d2` (input + 4), 9 for `sv4d2_8views` (input + 8); view 0
-  is the input azimuth.
+- Time: normalized `[0,1]`, shared across views AND elevations.
+- Views (default): `sv4d2_8views` × `--elevations -20,0,20` → **24 views**
+  (8 novel azimuths × 3 elevations). `sv4d2` gives 4 novel az → 12 views at the
+  same 3 elevations. Only novel views are emitted (the input az-0 view is not
+  saved by the sampler), so no viewpoint is duplicated across elevation runs.
 
 ## Weights & how they download
 
@@ -132,8 +180,10 @@ Per infra rules, set `HF_HOME=/data/huggingface` and `chmod -R 777` the cache.
   is `--encoding_t=1 --decoding_t=1` (defaults 8/4) and/or `--img_size=512`;
   practically it targets a 40 GB-class GPU (A100/L40S) at 576² · 21 frames,
   fitting ≤24 GB only with the reduced `encoding_t/decoding_t`. Runtime scales
-  with `num_steps` (50 default; 20 is faster/lower quality) × frames × views —
-  order minutes to tens of minutes per subject on an A100.
+  with `num_steps` (50 default; 20 is faster/lower quality) × frames × views, and
+  now **× n_elevations** (the sampler is invoked once per elevation — default 3×).
+  Peak VRAM is unchanged (elevations run sequentially, not batched). Order tens of
+  minutes per subject on an A100 for the default 3-elevation grid.
 
 ## `Dockerfile.mvgen` deps sketch
 
@@ -162,9 +212,12 @@ ENV HF_HOME=/data/huggingface
   is SVD img2vid, the resulting 4D motion is only as good as SVD's guess — the
   weak point vs v1's action-controllable ambition. Supplying a real driving video
   (`--video`) bypasses this.
-- **Fixed, sparse view set.** Only 4 (or 8) novel azimuths at a single elevation
-  (0°). No elevation diversity → top/bottom of the object are unconstrained for
-  the reconstructor.
+- **View density (was: fixed & sparse).** The old single-elevation run gave only
+  4 novel azimuths at 0° → SC-GS's dense bootstrap collapsed to 0 gaussians and
+  **crashed**. Fixed by the multi-elevation grid (default 8 az × 3 elev = 24
+  views), which also constrains top/bottom of the object. Elevation coverage is
+  still bounded by what SV4D renders plausibly (roughly ±20–30° off-plane);
+  extreme top/bottom remain weakly constrained. Add more `--elevations` if needed.
 - **Absolute camera scale is a gauge.** We emit a consistent-but-assumed FOV/radius;
   verify against the SC-GS scene scale (`--fov_deg`, `--radius`) if reconstruction
   geometry looks squashed/stretched.
