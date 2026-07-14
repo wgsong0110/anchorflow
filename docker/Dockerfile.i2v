@@ -1,0 +1,17 @@
+# v3 img2vid image — Wan 2.2 I2V (upgrade over SVD-XT). SEPARATE from the SV4D/sgm
+# image (torch 2.0-2.1): Wan needs diffusers-from-source + torch >= 2.4. The two
+# stages hand off a mono-frames folder on disk / R2. Built on x86 CI only.
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-devel
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ffmpeg libgl1 libglib2.0-0 curl tmux && rm -rf /var/lib/apt/lists/*
+
+# diffusers MUST be from source for Wan 2.2 (WanImageToVideoPipeline / AutoencoderKLWan).
+RUN pip install --no-cache-dir \
+        "git+https://github.com/huggingface/diffusers" \
+        transformers accelerate imageio imageio-ffmpeg ftfy \
+        "numpy>=2" safetensors huggingface_hub
+
+ENV HF_HOME=/data/huggingface
+WORKDIR /workspace
