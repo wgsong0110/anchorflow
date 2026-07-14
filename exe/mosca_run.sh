@@ -160,17 +160,25 @@ fi
 #     120000) from its stored target path. Idempotent.
 # ---------------------------------------------------------------------------
 cd "$MOSCA_ROOT"
-if git -C "$MOSCA_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-  n=0
-  while IFS= read -r f; do
-    [ -z "$f" ] && continue
-    tgt="$(cat "$MOSCA_ROOT/$f" 2>/dev/null)"
-    case "$tgt" in
-      */*|*.py|*.yaml) ln -sfn "$tgt" "$MOSCA_ROOT/$f" && n=$((n+1));;
-    esac
-  done < <(git -C "$MOSCA_ROOT" ls-files -s | awk '$1=="120000"{print $4}')
-  log "materialized $n in-repo symlinks"
-fi
+# MoSca commits these as tiny TEXT files whose whole content is the link target
+# (e.g. lib_mosca/camera.py = "../lib_moca/camera.py"); a plain `git clone` leaves
+# them as-is. Detect by content: a small file whose sole line is a relative path
+# that resolves to an existing file -> replace with a real symlink. Idempotent
+# (already-symlinked files are skipped by the -type f filter).
+n=0
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  tgt="$(tr -d '\n' < "$f")"
+  case "$tgt" in
+    ./*|../*)
+      d="$(dirname "$f")"
+      if [ -e "$d/$tgt" ] && [ "$(wc -l < "$f")" -le 1 ]; then
+        ln -sfn "$tgt" "$f" && n=$((n+1))
+      fi ;;
+  esac
+done < <(find "$MOSCA_ROOT/lib_mosca" "$MOSCA_ROOT/lib_moca" "$MOSCA_ROOT/lib_render" \
+              -type f -name '*.py' -size -128c 2>/dev/null)
+log "materialized $n in-repo pointer files as symlinks"
 
 # MoSca's src-backup (setup_recon_ws) does `cp -r profile lib_prior ...` from the
 # current working directory, so we must run from the repo root.
