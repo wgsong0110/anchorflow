@@ -46,6 +46,20 @@ init:  h_i^0 = encode([e_i, z_i, init_vel_i, init_pos_i])
 | `_radius,_node_weight` | RBF-LBS binding | yes | no |
 | `init_vel/init_pos` | initial conditions | (opt.) | yes (MDS) |
 
+## MoSca interface (investigated)
+- Input = **frames dir** `ws/images/*.png` (not video); camera solved. Two stages:
+  `mosca_precompute.py` (BootsTAPIR tracks + mono depth + RAFT flow + masks) →
+  `mosca_reconstruct.py` (BA cameras → scaffold → photometric Gaussians).
+- **Anchor trajectory = `scf._node_xyz` [T,M,3]** (+ `_node_rotation` [T,M,4] SE3).
+  Canonical = pick reference frame (frame 0): `_node_xyz[0]` [M,3].
+- Binding: `DynSCFGaussian` — canonical `_xyz`/`attach_ind`/`ref_time`, RBF skinning over
+  node KNN (`topo_knn_ind`, `node_sigma`), DQB warp; `d.forward(t)` → frame-t Gaussians.
+- Load: `MoSca.load_from_ckpt(mosca.pth)` / `DynSCFGaussian.load_from_ckpt(d_model.pth)`.
+- **dt: MoSca uses integer frame index, unit dt (no physical fps).** So our SSM
+  **Δt = 1 (frame units)** matches MoSca; physical time only if we supply dt = 1/fps.
+- Deps (own CI image): torch2.1.0/cu118 + PyG + rasterizer×3 + pytorch3d + mmcv-full 1.7.2
+  + xformers/cupy + priors (RAFT/BootsTAPIR/depth). JAX = eval-only (not needed).
+
 ## Status / TODO
 - DONE: `ssm_dynamics.py` (DiagonalSSM + SSMDynamics + ssm_rollout, explicit p/v/a),
   `anchors.py` gains `e_i` intrinsic + `z_i` control. Long-rollout stability verified (numpy).

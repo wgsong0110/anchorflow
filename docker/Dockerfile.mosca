@@ -1,0 +1,43 @@
+# MoSca image (monocular video -> 4D motion scaffold = anchor trajectories) for
+# anchorflow v2. SEPARATE image (heavy, own rasterizers). Mirrors MoSca install.sh
+# for torch 2.1.0 / cu118. JAX (eval-only) skipped. Built via GitHub Actions.
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-devel
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TORCH_CUDA_ARCH_LIST="8.6;8.9"
+ENV FORCE_CUDA=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git build-essential ninja-build libglm-dev ffmpeg libgl1 libglib2.0-0 \
+        curl tmux && rm -rf /var/lib/apt/lists/*
+
+RUN git clone https://github.com/JiahuiLei/MoSca /opt/MoSca
+
+# pytorch3d + fvcore/iopath + xformers (prebuilt conda channels, as install.sh)
+RUN conda install -y -c fvcore -c iopath -c conda-forge fvcore iopath \
+ && conda install -y -c bottler nvidiacub \
+ && conda install -y -c pytorch3d pytorch3d \
+ && conda install -y -c xformers xformers
+
+# PyG (torch 2.1.0 / cu118 wheels)
+RUN pip install --no-cache-dir pyg_lib torch_scatter torch_geometric torch_sparse \
+        torch_cluster torch_spline_conv \
+        -f https://data.pyg.org/whl/torch-2.1.0+cu118.html
+
+# MoSca python deps (jax_requirements = eval only -> skipped)
+RUN pip install --no-cache-dir -r /opt/MoSca/requirements.txt
+
+# CUDA render extensions (compile)
+RUN pip install --no-cache-dir /opt/MoSca/lib_render/simple-knn \
+ && pip install --no-cache-dir /opt/MoSca/lib_render/diff-gaussian-rasterization-alphadep-add3 \
+ && pip install --no-cache-dir /opt/MoSca/lib_render/diff-gaussian-rasterization-alphadep \
+ && pip install --no-cache-dir /opt/MoSca/lib_render/gof-diff-gaussian-rasterization
+
+RUN pip install --no-cache-dir "opencv-python==4.10.0.84" cupy-cuda11x \
+ && pip install --no-cache-dir -U scikit-learn scipy
+# mmcv-full (old; some depth priors need it) — best effort
+RUN pip install --no-cache-dir mmcv-full==1.7.2 || echo "mmcv-full skipped"
+
+ENV PYTHONPATH=/opt/MoSca
+ENV GS_BACKEND=native_add3
+WORKDIR /workspace
