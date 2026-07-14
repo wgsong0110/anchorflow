@@ -45,6 +45,8 @@ from video_distillation.svd_guidance import SVDGuidance
 from anchorflow.anchors import AnchorSet
 from anchorflow.ssm_dynamics import SSMDynamics, ssm_rollout
 from anchorflow.arap_solve import complete_ic
+from anchorflow.completion import CompletionGNN, pretrain_completion
+from anchorflow.ssm_dynamics import build_graph as build_anchor_graph
 from anchorflow import warp as W
 from anchorflow import reg as R
 from anchorflow.checkpoint import CheckpointManager, load_rng_state
@@ -221,7 +223,26 @@ def main():
     use_handles = bool(hmask.any())
     pos_std = float(icfg.get("handle_pos_std", 0.1))
     vel_std = float(icfg.get("handle_vel_std", 0.05))
-    print(f"[v2] IC handles={int(hmask.sum())}/{anchors.num} (ARAP-completed)")
+
+    # learned (amortized) ARAP completion — self-supervised pretrain, then MDS
+    # fine-tune (grad flows through it). Falls back to the hard ARAP solve if off.
+    comp = None
+    anchor_edge = build_anchor_graph(anchors.canonical, graph_cfg)
+    if cfg.train.get("use_completion_nn", True):
+        comp = CompletionGNN(hidden=cfg.train.hidden, mp_steps=cfg.train.mp_steps).to(device)
+        pretrain_completion(comp, anchors.canonical, conn_idx, conn_w, anchor_edge,
+                            steps=cfg.train.get("comp_pretrain_steps", 1500),
+                            p_handle=0.1, pos_std=pos_std)
+        opt.add_param_group({"params": comp.parameters(), "lr": cfg.train.lr_gnn})
+
+    def complete(hmask_, hpos, hvel):
+        if comp is not None:                                # learned completion
+            p0 = comp(anchors.canonical, hmask_, hpos, anchor_edge)
+            p1 = comp(anchors.canonical, hmask_, hpos + dt * hvel, anchor_edge)
+            return p0 - anchors.canonical, (p1 - p0) / dt
+        return complete_ic(anchors.canonical, conn_idx, conn_w, hmask_, hpos, hvel, dt=dt)
+    print(f"[v2] IC handles={int(hmask.sum())}/{anchors.num} "
+          f"completion={'NN' if comp is not None else 'ARAP'}")
 
     for step in range(cfg.train.mds_steps):
         opt.zero_grad()
@@ -231,7 +252,7 @@ def main():
             hpos[hmask] += pos_std * torch.randn((int(hmask.sum()), 3), device=device)
             hvel = torch.zeros(anchors.num, 3, device=device)
             hvel[hmask] = vel_std * torch.randn((int(hmask.sum()), 3), device=device)
-            ipos, ivel = complete_ic(anchors.canonical, conn_idx, conn_w, hmask, hpos, hvel, dt=dt)
+            ipos, ivel = complete(hmask, hpos, hvel)        # learned NN or hard ARAP
         else:                                               # fallback: rest + random per-anchor vel
             ipos = zero
             ivel = cfg.train.get("init_vel_std", 0.02) * torch.randn(anchors.num, 3, device=device)
