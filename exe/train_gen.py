@@ -205,6 +205,19 @@ def main():
         + ([{"params": init_params, "lr": cfg.train.lr_anchor}] if init_params else []))
 
     guidance = SVDGuidance(OmegaConf.load(args.guidance_config).guidance)
+    pl = getattr(guidance, "pipe", None)                # quality-neutral SVD mem savings
+    if pl is not None:
+        try:
+            pl.vae.enable_tiling(); pl.vae.enable_slicing()
+        except Exception:
+            pass
+        try:
+            pl.unet.enable_xformers_memory_efficient_attention()
+        except Exception:
+            try:
+                pl.unet.set_attention_slice(1)
+            except Exception:
+                pass
     cond_image = Image.open(args.cond).convert("RGB")   # drop alpha (TRELLIS PNGs are RGBA)
 
     ckpt = CheckpointManager(args.out)
