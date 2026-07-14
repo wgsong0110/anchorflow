@@ -30,4 +30,13 @@ if [ -n "${R2_ACCESS_KEY:-}" ]; then
     echo "rclone R2 configured (auto result upload enabled)"
 fi
 
+# fused LBS CUDA kernel — download the prebuilt .so from the cuda-lbs release
+# (compiled in CI in the anchorflow image; never compiled on the instance).
+LBS="$WS/anchorflow/lib/lbs"
+curl -sL "https://api.github.com/repos/wgsong0110/anchorflow/releases/tags/cuda-lbs" \
+  | grep -oE '"browser_download_url":[^,]*\.so"' | grep -oE 'https[^"]+' \
+  | while read u; do curl -sL "$u" -o "$LBS/$(basename "$u")"; done
+PYTHONPATH="$WS/anchorflow/lib" python -c \
+  "import lbs; print('lbs cuda kernel:', lbs._HAVE_CUDA)" 2>/dev/null || echo "lbs kernel: torch fallback"
+
 echo "instance setup done: $(ls model/ball 2>/dev/null | tr '\n' ' ')"

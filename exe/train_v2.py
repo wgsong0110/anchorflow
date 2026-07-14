@@ -22,6 +22,9 @@ import os
 import subprocess
 import sys
 
+# reclaim allocator fragmentation (quality-neutral) — must precede torch cuda init
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import numpy as np
 import torch
 from torch.utils.checkpoint import checkpoint
@@ -165,6 +168,22 @@ def main():
     view_center, observ = get_center_view_worldspace_and_observant_coordinate(
         center, up, rot_mats, scale_origin, mean_pos)
     guidance = SVDGuidance(OmegaConf.load(args.guidance_config).guidance)
+    # quality-neutral SVD memory savings: VAE tiling/slicing + UNet attention slicing
+    for pipe_attr in ("pipe",):
+        pl = getattr(guidance, pipe_attr, None)
+        if pl is None:
+            continue
+        try:
+            pl.vae.enable_tiling(); pl.vae.enable_slicing()
+        except Exception:
+            pass
+        try:
+            pl.unet.enable_xformers_memory_efficient_attention()
+        except Exception:
+            try:
+                pl.unet.set_attention_slice(1)
+            except Exception:
+                pass
     cond_image = Image.open(args.cond).convert("RGB")
     Tf = cfg.train.frames
     cam_p = cfg.camera

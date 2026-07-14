@@ -1,0 +1,36 @@
+name: cuda-build-lbs
+
+# Compile the lib/lbs CUDA kernel inside the anchorflow image (matching torch/cuda),
+# publish the .so as a release asset. The instance downloads it (never compiles).
+on:
+  push:
+    branches: [master]
+    paths: ['lib/lbs/**', '.github/workflows/cuda-build.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build lbs .so in the anchorflow image
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/w" -w /w/lib/lbs \
+            -e TORCH_CUDA_ARCH_LIST="8.6;8.9" -e FORCE_CUDA=1 \
+            ghcr.io/wgsong0110/anchorflow:latest \
+            python setup.py build_ext --inplace
+          sudo chown -R $(id -u):$(id -g) lib/lbs || true
+          ls -la lib/lbs/*.so
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cuda-lbs
+          files: lib/lbs/*.so
+          fail_on_unmatched_files: true
