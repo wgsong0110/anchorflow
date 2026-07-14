@@ -152,6 +152,26 @@ if [ -f "$UNIWRAP" ]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# 2c. Materialize in-repo symlinks. MoSca ships source symlinks (e.g.
+#     lib_mosca/camera.py -> ../lib_moca/camera.py). Our image `git clone` stored
+#     them as PLAIN-TEXT files (core.symlinks off on the builder), so Python reads
+#     the link target as code -> SyntaxError. Rebuild every git symlink (mode
+#     120000) from its stored target path. Idempotent.
+# ---------------------------------------------------------------------------
+cd "$MOSCA_ROOT"
+if git -C "$MOSCA_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  n=0
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    tgt="$(cat "$MOSCA_ROOT/$f" 2>/dev/null)"
+    case "$tgt" in
+      */*|*.py|*.yaml) ln -sfn "$tgt" "$MOSCA_ROOT/$f" && n=$((n+1));;
+    esac
+  done < <(git -C "$MOSCA_ROOT" ls-files -s | awk '$1=="120000"{print $4}')
+  log "materialized $n in-repo symlinks"
+fi
+
 # MoSca's src-backup (setup_recon_ws) does `cp -r profile lib_prior ...` from the
 # current working directory, so we must run from the repo root.
 cd "$MOSCA_ROOT"
