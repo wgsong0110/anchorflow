@@ -68,6 +68,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--frames", type=int, default=25)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--damping", type=float, default=1.0, help="velocity friction γ (<1 bounds rollout)")
     ap.add_argument("--orbit", action="store_true", help="orbit camera during rollout")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -123,7 +124,7 @@ def main():
     with torch.no_grad():
         seq = ssm_rollout(model, anchors.canonical, zero, anchors.e, anchors.z,
                           zero, zero, steps=args.frames - 1, cfg=graph_cfg, dt=dt,
-                          grad=False, recenter=True)
+                          grad=False, recenter=True, damping=args.damping)
 
     # ---- camera (identical setup to train_v2) ----------------------------- #
     center = torch.tensor(cfg.camera.mpm_space_viewpoint_center).reshape(1, 3).to(device)
