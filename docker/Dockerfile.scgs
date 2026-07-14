@@ -38,7 +38,7 @@ RUN pip install --no-cache-dir /opt/SC-GS/submodules/diff-gaussian-rasterization
 # train.py import piq.LPIPS, pytorch_msssim.ms_ssim, dearpygui, plyfile, lpips,
 # skimage at module top.
 RUN pip install --no-cache-dir \
-        opencv-python Pillow PyYAML scipy tqdm imageio plyfile piq \
+        "numpy<2" opencv-python Pillow PyYAML scipy tqdm imageio plyfile piq \
         dearpygui lpips pytorch_msssim matplotlib scikit-image
 
 # Optional (safe to skip for the default deform_type=node + MLP recipe we run):
