@@ -52,7 +52,12 @@
 #     NAME            run name / output subdir           (default scene)
 #     NODE_NUM        number of control nodes (anchors)  (default 512)
 #     HYPER_DIM       hyper-coord dim (2 for real scenes,8 for D-NeRF) (default 2)
-#     ITERS           training iterations                (default 80000)
+#     ITERS           training iterations (main phase)   (default 30000)
+#                     A good SC-GS reconstruction does NOT need 90000; 30000 is a
+#                     solid default that finishes far faster. Raise for hero runs.
+#     SAVE_EVERY      main-phase checkpoint cadence       (default 2000)
+#                     Saves point_cloud + deform + resume_state.json every SAVE_EVERY
+#                     main-phase iters, so a preempted run never loses > SAVE_EVERY.
 #     RESOLUTION      image downscale factor             (default 2)
 #     NUM_FRAMES      T for Neu3D (# frames/cam); patches the hard-coded 24
 #                     in scene/__init__.py               (default: auto-count)
@@ -67,7 +72,8 @@ GPU_ID="${GPU_ID:-0}"
 NAME="${NAME:-scene}"
 NODE_NUM="${NODE_NUM:-512}"
 HYPER_DIM="${HYPER_DIM:-2}"
-ITERS="${ITERS:-80000}"
+ITERS="${ITERS:-30000}"
+SAVE_EVERY="${SAVE_EVERY:-2000}"
 RESOLUTION="${RESOLUTION:-2}"
 IS_BLENDER="${IS_BLENDER:-0}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -144,15 +150,40 @@ if grep -q 'dtype=np.byte' "$SCGS_ROOT/scene/dataset_readers.py"; then
 fi
 
 # ---------------------------------------------------------------------------
+# 2c. Crash / preemption-safe RESUME. Instances can be stopped at any time, so
+#     make SC-GS's train_gui.py: (a) reconcile partial checkpoints so the two
+#     independent loaders (Scene point_cloud + DeformModel deform) always agree
+#     on the same fully-written iteration, (b) write resume_state.json as an
+#     atomic commit marker at each save, and (c) drive the main phase to
+#     opt.iterations by self.iteration (not a fixed step count) so a restart
+#     continues to the target instead of overshooting. scgs_resume_patch.py is
+#     idempotent (guarded by '# [anchorflow-resume]' markers) -- safe every run.
+# ---------------------------------------------------------------------------
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python "$HERE/scgs_resume_patch.py" "$SCGS_ROOT/train_gui.py"
+log "ensured crash-safe resume patch on train_gui.py (idempotent)"
+
+# ---------------------------------------------------------------------------
 # 3. Assemble train_gui.py flags.
 #    Multi-view / real scenes: NO --is_blender (nodes init from the point cloud,
 #    not random), NO --gt_alpha_mask_as_scene_mask. --eval holds out a test view
 #    (Neu3D: camera 0). --init_isotropic_gs_with_all_colmap_pcl guards against
 #    control-node init failure on self-captured scenes (readme.md "2024-03-06").
 # ---------------------------------------------------------------------------
+# Dense --save_iterations so a preemption never costs more than SAVE_EVERY main-
+# phase iters. These refer to the MAIN-phase self.iteration (the node-bootstrap
+# phase is never checkpointed). SC-GS auto-appends args.iterations too.
+SAVE_ITERS=""
+i="$SAVE_EVERY"
+while [ "$i" -lt "$ITERS" ]; do SAVE_ITERS="$SAVE_ITERS $i"; i=$((i + SAVE_EVERY)); done
+SAVE_ITERS="$SAVE_ITERS $ITERS"
+log "save cadence: every $SAVE_EVERY main-phase iters ->$SAVE_ITERS"
+
 ARGS=( --source_path "$WS" --model_path "$MODEL_PATH"
        --deform_type node --node_num "$NODE_NUM" --hyper_dim "$HYPER_DIM"
        --iterations "$ITERS" --resolution "$RESOLUTION" --eval )
+# shellcheck disable=SC2206
+ARGS+=( --save_iterations $SAVE_ITERS )
 if [ "$IS_BLENDER" = "1" ]; then
   # D-NeRF synthetic recipe (matches train_gui.sh)
   ARGS+=( --is_blender --gt_alpha_mask_as_scene_mask --local_frame --W 800 --H 800 )
@@ -167,9 +198,13 @@ log "train command:"
 echo "    python train_gui.py ${ARGS[*]}"
 
 # ---------------------------------------------------------------------------
-# 4. Train. SC-GS auto-resumes: Scene(load_iteration=-1) + deform.load_weights(-1)
-#    reload the latest saved iteration under $MODEL_PATH_node, so re-running the
-#    same command continues from the last checkpoint.
+# 4. Train. Re-running the SAME command auto-resumes (crash/preemption-safe):
+#    _anchorflow_reconcile_checkpoints() prunes any partial newer save, then
+#    Scene(load_iteration=-1) + deform.load_weights(-1) reload the latest
+#    consistent iteration under ${MODEL_PATH}_node and the main phase continues
+#    to --iterations. If preempted during the (unsaved, <=10000-iter) node
+#    bootstrap, that short phase simply re-runs from scratch. Just relaunch this
+#    script -- no extra flags needed to resume.
 # ---------------------------------------------------------------------------
 cd "$SCGS_ROOT"
 python train_gui.py "${ARGS[@]}"
