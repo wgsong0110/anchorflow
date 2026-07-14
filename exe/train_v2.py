@@ -227,12 +227,15 @@ def main():
                 pl.unet.set_attention_slice(1)
             except Exception:
                 pass
-        # recompute UNet activations in backward instead of storing them — the
-        # dominant MDS memory cost (SVD UNet over Tf frames). Quality-neutral.
-        try:
-            pl.unet.enable_gradient_checkpointing()
-        except Exception:
-            pass
+        # recompute activations in backward instead of storing them. SDS injects
+        # the UNet grad directly (no UNet backward), so the dominant MDS backward
+        # cost is the VAE ENCODER over Tf frames -> checkpoint it. Quality-neutral.
+        for mod in ("vae", "unet"):
+            m = getattr(pl, mod, None)
+            try:
+                m.enable_gradient_checkpointing()
+            except Exception:
+                pass
     cond_image = Image.open(args.cond).convert("RGB")
     Tf = cfg.train.frames
     cam_p = cfg.camera
