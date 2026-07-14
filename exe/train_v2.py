@@ -82,6 +82,8 @@ def main():
     ap.add_argument("--node_traj", required=True, help="MoSca node_traj.npy [T,M,3]")
     ap.add_argument("--canonical", required=True, help="MoSca canonical.ply")
     ap.add_argument("--cond", required=True, help="SVD cond image (subject)")
+    ap.add_argument("--model_dir", required=True,
+                    help="DreamPhysics-style dir with cameras.json (camera intrinsics)")
     ap.add_argument("--config", required=True)
     ap.add_argument("--guidance_config", default="./config/guidance/svd_guidance.yaml")
     ap.add_argument("--out", required=True)
@@ -158,7 +160,10 @@ def main():
     if resume is not None:
         model.load_state_dict(resume["model"]); anchors.load_state_dict(resume["anchors"])
         if comp is not None and resume.get("comp") is not None:
-            comp.load_state_dict(resume["comp"]); comp_pretrained = True
+            comp.load_state_dict(resume["comp"])
+            # comp is only truly pretrained once MDS started; a stage-1 ckpt holds
+            # the pre-pretrain (near zero-init) comp -> must re-run pretrain.
+            comp_pretrained = (resume.get("stage") == "mds")
         opt.load_state_dict(resume["opt"])
         load_rng_state(resume.get("rng"))
         if resume.get("stage") == "sup":
@@ -233,7 +238,7 @@ def main():
         p_r = apply_inverse_rotations(
             undotransform2origin(undoshift2center111(p), scale_origin, mean_pos), rot_mats)
         c_r = apply_inverse_cov_rotations(c6 / (scale_origin * scale_origin), rot_mats)
-        cam = get_camera_view(args.canonical, default_camera_index=cam_p.get("default_camera_index", -1),
+        cam = get_camera_view(args.model_dir, default_camera_index=cam_p.get("default_camera_index", -1),
                               center_view_world_space=view_center, observant_coordinates=observ,
                               show_hint=cam_p.get("show_hint", False),
                               init_azimuthm=cam_p.init_azimuthm, init_elevation=cam_p.init_elevation,
