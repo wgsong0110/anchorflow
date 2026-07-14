@@ -45,7 +45,7 @@ def fps(points, n, seed=0):
 
 
 class AnchorSet(nn.Module):
-    def __init__(self, canonical, latent_dim=8, K=4, radius_init=None):
+    def __init__(self, canonical, latent_dim=8, e_dim=8, K=4, radius_init=None):
         super().__init__()
         M = canonical.shape[0]
         self.K = K
@@ -55,8 +55,12 @@ class AnchorSet(nn.Module):
             radius_init = 0.1 * float(rng) + 1e-7
         self._radius = nn.Parameter(torch.full((M,), float(torch.log(torch.tensor(radius_init)))))
         self._node_weight = nn.Parameter(torch.zeros(M))
+        # z : actuation/control latent (varied per-IC during MDS)
         self.z = nn.Parameter(0.01 * torch.randn(M, latent_dim)) if latent_dim > 0 \
             else None
+        # e : intrinsic per-anchor identity embedding (learned, FIXED across ICs —
+        #     "what this anchor is": which part / joint-vs-rigid / material-like)
+        self.e = nn.Parameter(0.01 * torch.randn(M, e_dim)) if e_dim > 0 else None
 
     @property
     def radius(self):
@@ -84,6 +88,11 @@ class AnchorSet(nn.Module):
         return w, idx
 
     @classmethod
-    def from_gaussians(cls, gaussian_xyz, node_num=512, latent_dim=8, K=4, seed=0):
+    def from_gaussians(cls, gaussian_xyz, node_num=512, latent_dim=8, e_dim=8, K=4, seed=0):
         idx = fps(gaussian_xyz, node_num, seed=seed)
-        return cls(gaussian_xyz[idx].detach(), latent_dim=latent_dim, K=K), idx
+        return cls(gaussian_xyz[idx].detach(), latent_dim=latent_dim, e_dim=e_dim, K=K), idx
+
+    @classmethod
+    def from_trajectory(cls, canonical, latent_dim=8, e_dim=8, K=4):
+        """Anchors whose canonical positions come from a MoSca scaffold (not FPS)."""
+        return cls(canonical.detach(), latent_dim=latent_dim, e_dim=e_dim, K=K)
