@@ -180,6 +180,11 @@ done < <(find "$MOSCA_ROOT/lib_mosca" "$MOSCA_ROOT/lib_moca" "$MOSCA_ROOT/lib_re
               -type f -name '*.py' -size -128c 2>/dev/null)
 log "materialized $n in-repo pointer files as symlinks"
 
+# Pure-python runtime deps the reconstruct chain imports but that are missing from
+# the image: lpips (perceptual loss), evo (trajectory eval). No compilation.
+python -c "import lpips" 2>/dev/null || { log "installing lpips"; pip install -q lpips; }
+python -c "import evo"   2>/dev/null || { log "installing evo";   pip install -q evo; }
+
 # MoSca's src-backup (setup_recon_ws) does `cp -r profile lib_prior ...` from the
 # current working directory, so we must run from the repo root.
 cd "$MOSCA_ROOT"
