@@ -140,6 +140,31 @@ def main():
     graph_cfg = {"graph": "knn", "k": cfg.train.K, "rebuild_graph": False}
     ckpt = CheckpointManager(args.out)
 
+    # completion NN is created up-front (before any opt.load_state_dict) so its
+    # optimizer param group exists at resume time -> optimizer structure matches.
+    anchor_edge = build_anchor_graph(anchors.canonical, graph_cfg)
+    comp = None
+    if cfg.train.get("use_completion_nn", True):
+        comp = CompletionGNN(hidden=cfg.train.hidden, mp_steps=cfg.train.mp_steps).to(device)
+        opt.add_param_group({"params": comp.parameters(), "lr": cfg.train.lr_gnn})
+
+    # ---- resume (lossless): model/anchors/comp/opt + RNG + stage/step ------ #
+    sup_start = mds_start = 0
+    comp_pretrained = False
+    resume = ckpt.load() if args.resume else None
+    if resume is not None:
+        model.load_state_dict(resume["model"]); anchors.load_state_dict(resume["anchors"])
+        if comp is not None and resume.get("comp") is not None:
+            comp.load_state_dict(resume["comp"]); comp_pretrained = True
+        opt.load_state_dict(resume["opt"])
+        load_rng_state(resume.get("rng"))
+        if resume.get("stage") == "sup":
+            sup_start = resume["step"] + 1
+        else:                                            # resumed into MDS
+            sup_start, mds_start = cfg.train.sup_steps, resume["step"] + 1
+        print(f"[v2] RESUMED stage={resume.get('stage')} step={resume['step']} "
+              f"-> sup_start={sup_start} mds_start={mds_start}")
+
     def sync_r2():
         if args.r2_dest:
             os.system(f"rclone copy {args.out} {args.r2_dest} >/dev/null 2>&1")
@@ -148,7 +173,7 @@ def main():
     print(f"[v2] N={canon_xyz.shape[0]} anchors={anchors.num} T={T_traj} dt={dt} commit={gh}")
     p0 = node_traj[0]
     v0 = node_traj[1] - node_traj[0]                        # measured initial velocity
-    for step in range(cfg.train.sup_steps):
+    for step in range(sup_start, cfg.train.sup_steps):
         opt.zero_grad()
         seq = ssm_rollout(model, p0, v0, anchors.e, anchors.z, zero, zero,
                           steps=T_traj - 1, cfg=graph_cfg, dt=dt, grad=True,
@@ -160,9 +185,16 @@ def main():
         opt.step()
         if step % cfg.train.log_every == 0:
             print(f"[sup {step}] traj_mse={float(loss):.4e}")
-    ckpt.save(0, {"model": model.state_dict(), "anchors": anchors.state_dict(),
-                  "opt": opt.state_dict(), "stage": "sup"}, rolling=False)
-    sync_r2()
+        if step % cfg.train.ckpt_every == 0:
+            ckpt.save(step, {"model": model.state_dict(), "anchors": anchors.state_dict(),
+                             "comp": comp.state_dict() if comp is not None else None,
+                             "opt": opt.state_dict(), "stage": "sup"})
+    if sup_start < cfg.train.sup_steps:
+        ckpt.save(cfg.train.sup_steps - 1,
+                  {"model": model.state_dict(), "anchors": anchors.state_dict(),
+                   "comp": comp.state_dict() if comp is not None else None,
+                   "opt": opt.state_dict(), "stage": "sup"})
+        sync_r2()
     print("[v2] supervised pretrain done")
 
     # ================= Stage 2: MDS refine (IC generalization) ============ #
@@ -224,16 +256,13 @@ def main():
     pos_std = float(icfg.get("handle_pos_std", 0.1))
     vel_std = float(icfg.get("handle_vel_std", 0.05))
 
-    # learned (amortized) ARAP completion — self-supervised pretrain, then MDS
-    # fine-tune (grad flows through it). Falls back to the hard ARAP solve if off.
-    comp = None
-    anchor_edge = build_anchor_graph(anchors.canonical, graph_cfg)
-    if cfg.train.get("use_completion_nn", True):
-        comp = CompletionGNN(hidden=cfg.train.hidden, mp_steps=cfg.train.mp_steps).to(device)
+    # learned (amortized) ARAP completion — self-supervised pretrain (skipped if a
+    # resume already restored trained comp weights), then MDS fine-tune. Falls back
+    # to the hard ARAP solve when disabled. (comp + its opt group made up-front.)
+    if comp is not None and not comp_pretrained:
         pretrain_completion(comp, anchors.canonical, conn_idx, conn_w, anchor_edge,
                             steps=cfg.train.get("comp_pretrain_steps", 1500),
                             p_handle=0.1, pos_std=pos_std)
-        opt.add_param_group({"params": comp.parameters(), "lr": cfg.train.lr_gnn})
 
     def complete(hmask_, hpos, hvel):
         if comp is not None:                                # learned completion
@@ -244,7 +273,7 @@ def main():
     print(f"[v2] IC handles={int(hmask.sum())}/{anchors.num} "
           f"completion={'NN' if comp is not None else 'ARAP'}")
 
-    for step in range(cfg.train.mds_steps):
+    for step in range(mds_start, cfg.train.mds_steps):
         opt.zero_grad()
         z = anchors.z + cfg.train.get("z_jitter", 0.1) * torch.randn_like(anchors.z)
         if use_handles:                                     # randomize handles -> ARAP feasible IC
@@ -273,7 +302,8 @@ def main():
             print(f"[mds {step}] loss={float(loss):.4e}")
         if step % cfg.train.ckpt_every == 0:
             ckpt.save(step, {"model": model.state_dict(), "anchors": anchors.state_dict(),
-                             "opt": opt.state_dict(), "stage": "mds"}, rolling=False)
+                             "comp": comp.state_dict() if comp is not None else None,
+                             "opt": opt.state_dict(), "stage": "mds"})
             sync_r2()
     print(f"[v2] done commit={gh} -> {args.out}")
     sync_r2()
