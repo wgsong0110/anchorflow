@@ -185,7 +185,8 @@ def main():
         opt.zero_grad()
         seq = ssm_rollout(model, p0, v0, anchors.e, anchors.z, zero, zero,
                           steps=T_traj - 1, cfg=graph_cfg, dt=dt, grad=True,
-                          recenter=False)                   # match actual trajectory
+                          recenter=False,                   # match actual trajectory
+                          damping=cfg.train.get("damping", 1.0))
         loss = ((seq - node_traj) ** 2).mean()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(
@@ -303,12 +304,18 @@ def main():
             ipos = zero
             ivel = cfg.train.get("init_vel_std", 0.02) * torch.randn(anchors.num, 3, device=device)
         seq = ssm_rollout(model, anchors.canonical + ipos, ivel, anchors.e, z, ivel, ipos,
-                          steps=Tf - 1, cfg=graph_cfg, dt=dt, grad=True, recenter=True)
+                          steps=Tf - 1, cfg=graph_cfg, dt=dt, grad=True, recenter=True,
+                          damping=cfg.train.get("damping", 1.0))
         img_list = torch.stack([
             checkpoint(render_frame, seq[t], t, use_reentrant=False) for t in range(Tf)])
         out = guidance(img_list, cond_image, num_frames=Tf)
         loss = sum(v for k, v in out.items() if k.startswith("loss_")) * cfg.train.lambda_sds
         loss = loss + R.total(seq, conn_idx, conn_w, lambdas=tuple(cfg.train.reg))
+        # stability: penalize any anchor drifting > stab_bound from canonical so the
+        # learned autonomous dynamics stay bounded (no open-loop explosion).
+        disp = (seq - anchors.canonical).norm(dim=-1)          # [T, M]
+        l_stab = torch.relu(disp - cfg.train.get("stab_bound", 1e9)).mean()
+        loss = loss + cfg.train.get("lambda_stab", 0.0) * l_stab
         if not torch.isfinite(loss):
             print(f"[mds {step}] non-finite, skip"); continue
         loss.backward(retain_graph=True)

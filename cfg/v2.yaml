@@ -27,6 +27,9 @@ train:
   ssm_dim: 128
   accel_scale: 0.1
   dt: 1.0                # MoSca = unit frame dt
+  damping: 0.9          # velocity friction γ — bounds open-loop autonomous rollout
+  stab_bound: 1.2       # per-anchor displacement (from canonical) allowed before penalty
+  lambda_stab: 1.0      # weight of the rollout-stability (anti-explosion) loss
   # rollout
   frames: 14             # MDS render clip
   # stage 1 — supervised on MoSca trajectory
