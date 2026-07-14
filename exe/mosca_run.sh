@@ -105,7 +105,13 @@ if [ "$need_bundle" -eq 1 ]; then
   # gdown is in MoSca's requirements.txt (pre-installed).
   gdown "https://drive.google.com/uc?id=${WEIGHTS_GDRIVE_ID}" \
         -O "$TMPD/mosca_weights.zip" || gdown "${WEIGHTS_GDRIVE_ID}" -O "$TMPD/mosca_weights.zip"
-  unzip -q -o "$TMPD/mosca_weights.zip" -d "$TMPD/unz"
+  mkdir -p "$TMPD/unz"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -q -o "$TMPD/mosca_weights.zip" -d "$TMPD/unz"
+  else
+    python -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" \
+      "$TMPD/mosca_weights.zip" "$TMPD/unz"
+  fi
   # Place each checkpoint at its exact expected path regardless of the zip's
   # internal folder layout.
   place(){ # <basename> <dest>
