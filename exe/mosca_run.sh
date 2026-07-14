@@ -128,6 +128,30 @@ else
 fi
 [ -f "$RAFT_PTH" ] || { echo "ERROR: RAFT weight missing at $RAFT_PTH" >&2; exit 1; }
 
+# ---------------------------------------------------------------------------
+# 2b. UniDepth <-> torch 2.1 TorchScript compat patch.
+#     Latest UniDepth (pulled by torch.hub `main`) annotates jit-scripted fns with
+#     PEP-604 unions (`int | tuple[int,int]`), which torch 2.1's TorchScript
+#     compiler rejects (eager py3.10 is fine). We (a) flip the wrapper's
+#     force_reload off so a patched cache survives, (b) pre-fetch the repo into the
+#     hub cache (the import error is expected & ignored -- files land first), and
+#     (c) disable @torch.jit.script across the cached tree so it runs eager.
+#     UniDepth is needed for dep_mode=uni AND as the metric-alignment reference.
+# ---------------------------------------------------------------------------
+UNIWRAP="$MOSCA_ROOT/lib_prior/depth_models/unidepth_wrapper.py"
+if [ -f "$UNIWRAP" ]; then
+  log "applying UniDepth<->torch2.1 TorchScript compat patch"
+  sed -i 's/force_reload=True/force_reload=False/g' "$UNIWRAP"
+  python -c "import torch; torch.hub.load('lpiccinelli-eth/UniDepth','UniDepth',version='v2',backbone='vitl14',pretrained=False,trust_repo=True,force_reload=True)" >/dev/null 2>&1 || true
+  UNIDIR="$(ls -d "$TORCH_HOME"/hub/*UniDepth* 2>/dev/null | head -n1)"
+  if [ -n "$UNIDIR" ]; then
+    find "$UNIDIR" -name '*.py' -exec sed -i 's/@torch\.jit\.script/# (torch2.1-compat off) @torch.jit.script/g' {} +
+    echo "  patched jit.script in $UNIDIR"
+  else
+    echo "  WARN: UniDepth cache dir not found after prefetch (will retry live)"
+  fi
+fi
+
 # MoSca's src-backup (setup_recon_ws) does `cp -r profile lib_prior ...` from the
 # current working directory, so we must run from the repo root.
 cd "$MOSCA_ROOT"
