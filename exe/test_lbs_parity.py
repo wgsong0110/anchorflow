@@ -29,9 +29,11 @@ def main():
     out_ref = _lbs_blend_torch(x, w, idx, a_rest, a2, R)
     fwd_err = (out_cuda - out_ref).abs().max().item()
     (out_cuda.sum()).backward(); (out_ref.sum()).backward()
-    bwd_err = (a1.grad - a2.grad).abs().max().item()
-    print(f"forward max_err={fwd_err:.3e}  backward(grad a_now) max_err={bwd_err:.3e}")
-    ok = fwd_err < 1e-4 and bwd_err < 1e-4
+    # backward uses float atomicAdd over ~N elements -> compare RELATIVE error
+    # (absolute accumulation error scales with grad magnitude; ~1e-6 relative).
+    bwd_rel = ((a1.grad - a2.grad).abs().max() / a2.grad.abs().max().clamp(min=1e-9)).item()
+    print(f"forward max_err={fwd_err:.3e}  backward(grad a_now) rel_err={bwd_rel:.3e}")
+    ok = fwd_err < 1e-4 and bwd_rel < 1e-4
     print("PARITY", "PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 
