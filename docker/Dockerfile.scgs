@@ -1,0 +1,52 @@
+# SC-GS image (multi-view video -> canonical 3DGS + sparse control nodes = anchor
+# trajectories) for anchorflow v3. SEPARATE image (heavy, own rasterizers).
+# Mirrors docker/Dockerfile.mosca (same torch 2.1.0 / cu118 base, same pytorch3d
+# wheel channel). Built via GitHub Actions on x86 -- NEVER on the arm64 host.
+#
+# Consumes exe/scgs_run.sh (train_gui.py) + exe/scgs_export.py. Repo: yihua7/SC-GS.
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-devel
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TORCH_CUDA_ARCH_LIST="8.6;8.9"
+ENV FORCE_CUDA=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git build-essential ninja-build libglm-dev ffmpeg libgl1 libglib2.0-0 \
+        curl tmux && rm -rf /var/lib/apt/lists/*
+
+# SC-GS repo WITH submodules (.gitmodules: submodules/simple-knn [gitlab bkerbl],
+# submodules/diff-gaussian-rasterization [ashawkey fork -> depth + alpha render]).
+RUN git clone --recursive https://github.com/yihua7/SC-GS /opt/SC-GS
+
+# pytorch3d (prebuilt wheel for py3.10/cu118/torch2.1.0) + fvcore/iopath.
+# REQUIRED by SC-GS: pytorch3d.ops.knn_points (LBS kNN skinning), ball_query,
+# cot_laplacian. Same wheel channel as Dockerfile.mosca. (CUB is bundled in CUDA
+# 11.8 so nvidiacub is unnecessary.)
+RUN pip install --no-cache-dir fvcore iopath \
+ && pip install --no-cache-dir pytorch3d \
+      -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu118_pyt210/download.html
+
+# CUDA render extensions (compile with FORCE_CUDA + arch list above).
+#   diff-gaussian-rasterization = ashawkey fork (adds depth + alpha), NOT vanilla INRIA.
+#   simple-knn                  = gitlab bkerbl.
+RUN pip install --no-cache-dir /opt/SC-GS/submodules/diff-gaussian-rasterization \
+ && pip install --no-cache-dir /opt/SC-GS/submodules/simple-knn
+
+# SC-GS python deps. This mirrors /opt/SC-GS/requirements.txt but RELAXES the two
+# pins that have no py3.10 wheel and break on torch 2.1.0 (Pillow==7.0.0,
+# opencv-python==4.5.5.62); everything else matches the repo list. train_gui.py /
+# train.py import piq.LPIPS, pytorch_msssim.ms_ssim, dearpygui, plyfile, lpips,
+# skimage at module top.
+RUN pip install --no-cache-dir \
+        opencv-python Pillow PyYAML scipy tqdm imageio plyfile piq \
+        dearpygui lpips pytorch_msssim matplotlib scikit-image
+
+# Optional (safe to skip for the default deform_type=node + MLP recipe we run):
+#   tinycudann     -> only for --use_hash (HashDeformNetwork); skipped (needs its
+#                     own CUDA build, not needed by scgs_run.sh).
+#   torch_batch_svd-> optional SVD speedup; SC-GS falls back to torch.svd if absent.
+RUN pip install --no-cache-dir git+https://github.com/KinglittleQ/torch-batch-svd.git \
+      || echo "torch_batch_svd skipped (optional; falls back to torch.svd)"
+
+ENV PYTHONPATH=/opt/SC-GS
+WORKDIR /workspace

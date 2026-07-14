@@ -93,9 +93,9 @@ dataset format in `scene/__init__.py`.
 ### Dataset formats (auto-detected by `Scene`)
 | trigger file under `source_path`        | reader                    | notes |
 |-----------------------------------------|---------------------------|-------|
-| `poses_bounds.npy`                      | `readPlenopticVideoDataset` (Neu3D) | **multi-view video** — best fit for anchorflow |
+| `transforms_train.json`                 | `readNerfSyntheticInfo` → `readCamerasFromTransforms` | **v3 SV4D handoff** — reads per-frame `time` (genuine multi-view video time); `--is_blender` only for true synthetic |
+| `poses_bounds.npy`                      | `readPlenopticVideoDataset` (Neu3D) | alt multi-view video; **force-holds-out cam 0** (`hold_id=[0]`) under `--eval` |
 | `sparse/` or `colmap_sparse/`           | `readColmapSceneInfo`     | monocular-style; `fid = int(digits in name)/(N-1)` |
-| `transforms_train.json`                 | `readNerfSyntheticInfo`   | D-NeRF synthetic; use `--is_blender` |
 | `dataset.json`                          | `readNerfiesInfo`         | Nerfies/HyperNeRF |
 | `train_meta.json`                       | `readCMUSceneInfo`        | PanopticSports; `fid = t/150`, 20 timesteps hard-coded |
 
@@ -115,6 +115,54 @@ $WS/
 - **Gotcha:** `Scene.__init__` calls the reader with a **hard-coded
   `num_images=24`**. `scgs_run.sh` sed-patches this to the real per-camera frame
   count (`NUM_FRAMES`) so all timesteps are used.
+
+### Dataset handoff (v3: `gen_mv_video.py` → `scgs_run.sh`)
+
+**Resolved contract: the D-NeRF/blender `transforms_*.json` layout** (not Neu3D).
+`exe/gen_mv_video.py` emits exactly this, and SC-GS's Blender loader consumes it
+directly, so no repacking is needed.
+
+- **What gen writes** (into `--out`):
+  ```
+  $WS/
+    transforms_train.json     # {camera_angle_x, frames:[{file_path, time, transform_matrix}, ...]}
+    transforms_test.json      # copy of train (loader opens it under --eval)
+    images/view_XX/TTTTT.png  # V per-view frame sequences (V*T frame entries total)
+    cameras.json  timestamps.json   # metadata (ignored by SC-GS; for anchorflow/debug)
+  ```
+  Each `frames[]` entry carries `transform_matrix` = **OpenGL/blender c2w** (camera
+  looks −z, +y up) and `time` ∈ [0,1], shared across views (streams synchronized).
+  `file_path` is extension-less (`./images/view_00/00000`); the loader appends `.png`.
+
+- **What SC-GS does with it** (`scene/__init__.py:46` detects `transforms_train.json`
+  → `sceneLoadTypeCallbacks["Blender"]` = `readNerfSyntheticInfo` →
+  `readCamerasFromTransforms`, `scene/dataset_readers.py:284`):
+  - **per-frame time is honored**: `if 'time' in frame: frame_time = frame['time']`
+    → `CameraInfo(..., fid=frame_time)`. This is the whole reason we can use the
+    blender loader for *video* (it is NOT synthetic-static-only).
+  - poses: `matrix = inv(transform_matrix)`, `R = -transpose(matrix[:3,:3])` with
+    `R[:,0] = -R[:,0]`, `T = -matrix[:3,3]` (standard 3DGS OpenGL→internal convert).
+  - RGB frames get a full-α mask (no `rgba/` sibling dir), so alpha compositing is a
+    no-op; square 576² images make the loader's `FovX/FovY` swap harmless.
+
+- **Why this over Neu3D** (`poses_bounds.npy`): the Neu3D reader
+  (`readCamerasFromNpy`) **force-holds-out camera 0** (`hold_id=[0]`) as the test
+  view under `--eval` — that is our *input* azimuth (0°), the most reliable view —
+  and requires an LLFF pose conversion + the hard-coded `num_images=24` sed-patch.
+  The blender path keeps every view for training and needs neither.
+
+- **Flag:** run with **`IS_BLENDER=0`** (the `scgs_run.sh` default). The blender
+  *loader* is auto-selected by the presence of `transforms_train.json` and is
+  independent of `--is_blender`; keeping `--is_blender` OFF gives the real
+  multi-view recipe (control nodes FPS-initialised from the point cloud,
+  `hyper_dim=2`, time-embedder freq 10). Reserve `IS_BLENDER=1` for genuine D-NeRF
+  synthetic single-object scenes only.
+
+- **End-to-end:**
+  ```bash
+  python exe/gen_mv_video.py --image subject.png --out /workspace/scene   # mvgen image
+  WS=/workspace/scene bash exe/scgs_run.sh                                 # scgs image (IS_BLENDER=0)
+  ```
 
 ### Train command (what `scgs_run.sh` runs, multi-view real scene)
 ```bash

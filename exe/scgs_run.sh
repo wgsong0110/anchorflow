@@ -19,13 +19,25 @@
 # plus cfg_args (the exact flags). scgs_export.py reads that whole dir.
 #
 # Input : $WS holding a dataset in ONE of SC-GS's auto-detected layouts:
-#   * Neu3D / plenoptic (multi-view video, RECOMMENDED):
-#         $WS/poses_bounds.npy                LLFF poses, one row per camera
-#         $WS/frames/<camXX>/<0000.png..>     per-camera posed frame sequence
-#         $WS/points3D.ply                    (optional; else random init)
+#   * SV4D multi-view video (transforms_*.json, THE v3 CONTRACT -- what
+#     exe/gen_mv_video.py emits and what this script targets):
+#         $WS/transforms_train.json   D-NeRF/blender: per-frame transform_matrix
+#                                     (OpenGL c2w) + per-frame `time` in [0,1]
+#         $WS/transforms_test.json    (copy of train)
+#         $WS/images/view_XX/*.png    per-view posed frame sequence
+#     Read by SC-GS's Blender loader (scene/dataset_readers.py:readCamerasFromTransforms
+#     via sceneLoadTypeCallbacks["Blender"]; scene/__init__.py detects it on
+#     transforms_train.json). That loader sets fid = frame['time'] when present, so
+#     multi-view video with genuine per-frame time works WITHOUT --is_blender.
+#     >>> Keep IS_BLENDER=0 for SV4D multi-view <<< (control nodes then init from the
+#     point cloud, hyper_dim=2, time freq 10). Set IS_BLENDER=1 ONLY for true D-NeRF
+#     synthetic single-object 360 scenes (random node init, hyper_dim=8, freq 6,
+#     alpha-mask recipe).
+#   * Neu3D / plenoptic (alt multi-view): $WS/poses_bounds.npy (LLFF, one row per
+#     camera) + $WS/frames/<camXX>/*.png  [+ optional points3D.ply]. NOTE its reader
+#     force-holds-out camera 0 (hold_id=[0]) under --eval, wasting the input view.
 #   * COLMAP  : $WS/sparse/0/*.bin  + $WS/images/*   (monocular-style; fid from
 #               the digits in each image name / (N-1))
-#   * D-NeRF  : $WS/transforms_train.json + frames  (synthetic; add --is_blender)
 #   * CMU/PanopticSports: $WS/train_meta.json + init_pt_cld.npz
 # Output: $WS/outputs/<name>_node/{point_cloud,deform,cfg_args}
 #   -> printed at the end as   SCGS_CKPT=<that dir>
@@ -80,6 +92,18 @@ elif [ -f "$WS/train_meta.json" ];       then FMT="cmu"
 elif [ -f "$WS/dataset.json" ];          then FMT="nerfies"
 else echo "ERROR: no recognized SC-GS dataset under $WS" >&2; exit 1; fi
 log "detected dataset format: $FMT"
+
+# transforms_*.json is the v3 SV4D handoff -> SC-GS's Blender loader
+# (readCamerasFromTransforms) reads per-frame `time`. Make the --is_blender choice
+# loud: OFF = SV4D multi-view recipe (correct for gen_mv_video output); ON = true
+# D-NeRF synthetic single-object recipe.
+if [ "$FMT" = "blender" ]; then
+  if [ "$IS_BLENDER" = "1" ]; then
+    log "transforms dataset + IS_BLENDER=1 -> D-NeRF SYNTHETIC recipe (--is_blender)."
+  else
+    log "transforms dataset + IS_BLENDER=0 -> SV4D MULTI-VIEW recipe (per-frame time via Blender loader, --is_blender OFF)."
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Neu3D only: patch the hard-coded num_images=24 in scene/__init__.py to the

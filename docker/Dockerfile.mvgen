@@ -1,0 +1,54 @@
+# SV4D 2.0 image (single image -> synchronized multi-view video with known camera
+# azimuths) for anchorflow v3. SEPARATE image (heavy diffusion stack). Mirrors the
+# torch 2.1.0 / cu118 base of Dockerfile.mosca. Built via GitHub Actions on x86 --
+# NEVER on the arm64 host.
+#
+# Consumes exe/gen_mv_video.py, which (1) animates the still with a diffusers
+# SVD-XT img2vid bootstrap, then (2) runs Stability-AI/generative-models
+# scripts/sampling/simple_video_sample_4d2.py (the `sgm` / SV4D 2.0 sampler).
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-devel
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TORCH_CUDA_ARCH_LIST="8.6;8.9"
+ENV FORCE_CUDA=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git build-essential ninja-build ffmpeg libgl1 libglib2.0-0 \
+        curl tmux && rm -rf /var/lib/apt/lists/*
+
+# generative-models repo (SV4D 2.0 lives here; no submodules needed for sampling).
+RUN git clone https://github.com/Stability-AI/generative-models /opt/generative-models
+WORKDIR /opt/generative-models
+
+# (1) SV4D / sgm deps. requirements/pt2.txt is the repo's ONLY requirements file
+# (README "PyTorch 2.0" install + CI hatch env both use it). It already pins the
+# sampler's runtime deps: fire, einops, kornia==0.6.9, open-clip-torch, opencv,
+# imageio[ffmpeg], rembg, transformers==4.19.1, xformers, pytorch-lightning, etc.
+# torch>=2.0.1 is satisfied by the base's 2.1.0 (pip keeps the base torch); the
+# torch-2.0-coupled pins (triton==2.0.0, torchdata==0.6.1) only matter for the
+# training data pipeline, not the SV4D sampler, and install standalone.
+RUN pip install --no-cache-dir -r requirements/pt2.txt
+
+# (2) install the `sgm` package itself (PYTHONPATH also set below for scripts.*).
+RUN pip install --no-cache-dir .
+
+# (3) sdata / datapipelines -- README step 4 ("Install sdata for training"). Not
+# imported by the sampler, but kept to match upstream and satisfy any sgm import.
+RUN pip install --no-cache-dir \
+      "git+https://github.com/Stability-AI/datapipelines.git@main#egg=sdata" \
+      || echo "sdata skipped (training-only)"
+
+# (4) diffusers SVD-XT stack for the img2vid bootstrap in exe/gen_mv_video.py
+# (StableVideoDiffusionPipeline from stabilityai/stable-video-diffusion-img2vid-xt).
+# Installed LAST so its newer transformers wins: SV4D inference uses open_clip for
+# video conditioning (sgm.modules.encoders VideoPredictionEmbedderWithEncoder), so
+# upgrading transformers off the sgm-pinned 4.19.1 is safe for the sampler while
+# giving diffusers the version it needs.
+RUN pip install --no-cache-dir -U diffusers transformers accelerate \
+ && pip install --no-cache-dir rembg imageio imageio-ffmpeg huggingface_hub
+
+# HF cache on the shared data volume (per infra rules); checkpoints/ (the
+# sv4d2*.safetensors) are mounted or `huggingface-cli download`ed at runtime.
+ENV HF_HOME=/data/huggingface
+ENV PYTHONPATH=/opt/generative-models
+WORKDIR /workspace
