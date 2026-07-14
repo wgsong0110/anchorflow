@@ -43,3 +43,13 @@ train:
   reg: [1.0, 0.1, 0.01]  # arap, elastic, acc
   log_every: 20
   ckpt_every: 100
+
+  # --- initial-condition handles (optional) ------------------------------ #
+  # Specify a FEW anchors (by bounding box, normalized frame) as handles. MDS
+  # randomizes only these and ARAP-completes to the closest feasible full pose
+  # (raise a leg -> the structure follows rigidly). Omit `handles` -> rest + random.
+  init:
+    handle_pos_std: 0.1     # random handle position offset (per MDS step)
+    handle_vel_std: 0.05    # random handle velocity
+    # handles:
+    #   - box: [0.0, 2.0, 0.0, 2.0, 0.0, 0.6]   # e.g. lower half (legs)

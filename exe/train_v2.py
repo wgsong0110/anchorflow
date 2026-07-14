@@ -44,6 +44,7 @@ from video_distillation.svd_guidance import SVDGuidance
 
 from anchorflow.anchors import AnchorSet
 from anchorflow.ssm_dynamics import SSMDynamics, ssm_rollout
+from anchorflow.arap_solve import complete_ic
 from anchorflow import warp as W
 from anchorflow import reg as R
 from anchorflow.checkpoint import CheckpointManager, load_rng_state
@@ -209,12 +210,32 @@ def main():
                       opacities=opacity, scales=None, rotations=None, cov3D_precomp=c_r)
         return img
 
+    # initial-condition handles: a subset of anchors (config boxes). MDS randomizes
+    # ONLY the handles and ARAP-completes to a feasible full IC (closest as-rigid pose).
+    icfg = dict(cfg.train.get("init", {}) or {})
+    hmask = torch.zeros(anchors.num, dtype=torch.bool, device=device)
+    for rgn in (icfg.get("handles") or []):
+        b = rgn["box"]; c = anchors.canonical
+        hmask |= ((c[:, 0] >= b[0]) & (c[:, 0] <= b[1]) & (c[:, 1] >= b[2]) &
+                  (c[:, 1] <= b[3]) & (c[:, 2] >= b[4]) & (c[:, 2] <= b[5]))
+    use_handles = bool(hmask.any())
+    pos_std = float(icfg.get("handle_pos_std", 0.1))
+    vel_std = float(icfg.get("handle_vel_std", 0.05))
+    print(f"[v2] IC handles={int(hmask.sum())}/{anchors.num} (ARAP-completed)")
+
     for step in range(cfg.train.mds_steps):
         opt.zero_grad()
-        # sample an initial condition: randomize control z + init velocity
         z = anchors.z + cfg.train.get("z_jitter", 0.1) * torch.randn_like(anchors.z)
-        ivel = cfg.train.get("init_vel_std", 0.02) * torch.randn(anchors.num, 3, device=device)
-        seq = ssm_rollout(model, anchors.canonical, ivel, anchors.e, z, ivel, zero,
+        if use_handles:                                     # randomize handles -> ARAP feasible IC
+            hpos = anchors.canonical.clone()
+            hpos[hmask] += pos_std * torch.randn((int(hmask.sum()), 3), device=device)
+            hvel = torch.zeros(anchors.num, 3, device=device)
+            hvel[hmask] = vel_std * torch.randn((int(hmask.sum()), 3), device=device)
+            ipos, ivel = complete_ic(anchors.canonical, conn_idx, conn_w, hmask, hpos, hvel, dt=dt)
+        else:                                               # fallback: rest + random per-anchor vel
+            ipos = zero
+            ivel = cfg.train.get("init_vel_std", 0.02) * torch.randn(anchors.num, 3, device=device)
+        seq = ssm_rollout(model, anchors.canonical + ipos, ivel, anchors.e, z, ivel, ipos,
                           steps=Tf - 1, cfg=graph_cfg, dt=dt, grad=True, recenter=True)
         img_list = torch.stack([
             checkpoint(render_frame, seq[t], t, use_reentrant=False) for t in range(Tf)])
