@@ -13,11 +13,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN git clone https://github.com/JiahuiLei/MoSca /opt/MoSca
 
-# pytorch3d + fvcore/iopath + xformers (prebuilt conda channels, as install.sh)
-RUN conda install -y -c fvcore -c iopath -c conda-forge fvcore iopath \
- && conda install -y -c bottler nvidiacub \
- && conda install -y -c pytorch3d pytorch3d \
- && conda install -y -c xformers xformers
+# pytorch3d (prebuilt wheel for py3.10/cu118/torch2.1.0) + fvcore/iopath + xformers.
+# (conda channels don't resolve for this torch/py combo; CUB is bundled in CUDA 11.8
+# so nvidiacub is unnecessary.)
+RUN pip install --no-cache-dir fvcore iopath \
+ && pip install --no-cache-dir pytorch3d \
+      -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu118_pyt210/download.html \
+ && pip install --no-cache-dir xformers==0.0.22.post7 \
+      --index-url https://download.pytorch.org/whl/cu118
 
 # PyG (torch 2.1.0 / cu118 wheels)
 RUN pip install --no-cache-dir pyg_lib torch_scatter torch_geometric torch_sparse \

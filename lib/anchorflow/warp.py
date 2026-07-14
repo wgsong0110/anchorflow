@@ -21,6 +21,11 @@ import torch
 from . import geom
 from .anchors import knn
 
+try:                                                # fused CUDA LBS (optional)
+    from lbs import lbs_blend as _lbs_blend
+except Exception:
+    _lbs_blend = None
+
 
 # --- covariance <-> 6-vector (upper triangular xx,xy,xz,yy,yz,zz) --------- #
 def cov6_to_mat3(c):
@@ -88,12 +93,16 @@ def lbs_warp(gauss_xyz, gauss_cov6, w, idx, anchor_canon, anchor_now,
     """
     if anchor_R is None:
         anchor_R = anchor_rotations(anchor_canon, anchor_now)
-    t = anchor_now - anchor_canon                             # [M,3]
-    a_rest = anchor_canon[idx]                                # [N,K,3]
-    Rk = anchor_R[idx]                                        # [N,K,3,3]
-    rel = (gauss_xyz[:, None] - a_rest)                       # [N,K,3]
-    Ax = torch.einsum("nkab,nkb->nka", Rk, rel) + a_rest + t[idx]
-    pos = (w[..., None] * Ax).sum(1)                          # [N,3]
+    # pos = Σ_k w_k (R_j(x-a_rest_j) + a_now_j)  [a_rest+t == a_now]. Fused CUDA
+    # kernel when built (grad -> anchor_now), else the torch reference below.
+    if _lbs_blend is not None and gauss_xyz.is_cuda:
+        pos = _lbs_blend(gauss_xyz, w, idx, anchor_canon, anchor_now, anchor_R)
+    else:
+        a_rest = anchor_canon[idx]                            # [N,K,3]
+        Rk = anchor_R[idx]                                    # [N,K,3,3]
+        rel = (gauss_xyz[:, None] - a_rest)                   # [N,K,3]
+        Ax = torch.einsum("nkab,nkb->nka", Rk, rel) + anchor_now[idx]
+        pos = (w[..., None] * Ax).sum(1)                      # [N,3]
 
     quat = geom.matrix_to_quat(anchor_R)                     # [M,4]
     qg = _blend_quat(quat, w, idx)                            # [N,4]
