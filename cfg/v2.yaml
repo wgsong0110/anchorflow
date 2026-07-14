@@ -1,0 +1,45 @@
+# anchorflow v2 (MoSca-grounded GNN⊗SSM). Coords in the normalized frame.
+preprocessing:
+  opacity_threshold: 0.02
+  rotation_degree: [0]
+  rotation_axis: [0]
+
+camera:
+  mpm_space_viewpoint_center: [1.0, 1.0, 1.0]
+  mpm_space_vertical_upward_axis: [0, 0, 1]
+  default_camera_index: -1
+  show_hint: false
+  init_azimuthm: -30
+  init_elevation: 15
+  init_radius: 2.2
+  delta_a: 0.0
+  delta_e: 0.0
+  delta_r: 0.0
+
+train:
+  # anchors / model
+  latent_dim: 8          # z_i control latent
+  e_dim: 8               # e_i intrinsic identity
+  K: 4
+  arap_k: 10
+  hidden: 128
+  mp_steps: 6
+  ssm_dim: 128
+  accel_scale: 0.1
+  dt: 1.0                # MoSca = unit frame dt
+  # rollout
+  frames: 14             # MDS render clip
+  # stage 1 — supervised on MoSca trajectory
+  sup_steps: 1000
+  # stage 2 — MDS refine (IC generalization)
+  mds_steps: 2000
+  z_jitter: 0.1          # per-step z randomization
+  init_vel_std: 0.02     # per-step initial-velocity randomization
+  # optimization
+  lr_gnn: 2.0e-4
+  lr_anchor: 2.0e-4
+  grad_clip: 1.0
+  lambda_sds: 1.0e-4
+  reg: [1.0, 0.1, 0.01]  # arap, elastic, acc
+  log_every: 20
+  ckpt_every: 100
