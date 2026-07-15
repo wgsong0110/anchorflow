@@ -132,8 +132,13 @@ def image_to_mono_frames(image_path, frames_dir, n_frames, size, seed):
 # (2) monocular video -> SV4D 2.0 multi-view videos (per-view mp4s)
 # --------------------------------------------------------------------------- #
 def run_sv4d2(input_path, out_dir, variant, n_frames, num_steps, img_size,
-              elevation_deg, seed, remove_bg, low_vram):
+              elevations_list, seed, remove_bg, low_vram):
     """Invoke the real SV4D 2.0 sampler (Fire CLI) as a subprocess.
+
+    elevations_list: PER-VIEW absolute elevations, length n_views = 1 (input v0)
+    + n_novel. SV4D encodes elevation RELATIVE to v0, so a genuine per-view list
+    renders each novel view at its own elevation in ONE run (a scalar broadcast
+    would collapse every relative elevation to 0 -> geometrically-false grid).
 
     Writes per-view mp4s to {out_dir}/{model_name}/{base_count:06d}_v{view:03d}.mp4
     """
@@ -141,6 +146,7 @@ def run_sv4d2(input_path, out_dir, variant, n_frames, num_steps, img_size,
     model_path = os.path.join("checkpoints", cfg["ckpt"])
     script = os.path.join(GENMODELS_DIR, SV4D2_SCRIPT)
 
+    elev_arg = "[" + ",".join(str(float(e)) for e in elevations_list) + "]"
     cmd = [
         sys.executable, script,
         f"--input_path={input_path}",
@@ -149,7 +155,7 @@ def run_sv4d2(input_path, out_dir, variant, n_frames, num_steps, img_size,
         f"--n_frames={n_frames}",
         f"--num_steps={num_steps}",
         f"--img_size={img_size}",
-        f"--elevations_deg={elevation_deg}",
+        f"--elevations_deg={elev_arg}",
         f"--seed={seed}",
     ]
     if remove_bg:
@@ -335,10 +341,11 @@ def main():
                     help="SV4D2 output frames per view (native T extended auto-regressively)")
     ap.add_argument("--num_steps", type=int, default=50)
     ap.add_argument("--img_size", type=int, default=576)
-    ap.add_argument("--elevations", default="-20,0,20",
-                    help="comma-separated elevations (deg); SV4D runs ONCE PER "
-                         "elevation, and the variant's azimuth set is rendered at "
-                         "each -> a dense az x elev view grid (default -20,0,20)")
+    ap.add_argument("--elevations", default="30,-30,15,-15,30,-30,15,-15",
+                    help="PER-NOVEL-VIEW elevations (deg): 1 value (broadcast) or "
+                         "n_novel values, one per azimuth. SV4D runs ONCE and renders "
+                         "each novel view at its own elevation relative to the input "
+                         "-> genuine 3D coverage (default: 8-view up/down spread)")
     ap.add_argument("--seed", type=int, default=23)
     ap.add_argument("--remove_bg", action="store_true", help="rembg on plain-bg input")
     ap.add_argument("--low_vram", action="store_true", help="encoding_t=1 decoding_t=1")
@@ -351,14 +358,20 @@ def main():
     ap.add_argument("--fps", type=float, default=10.0, help="timestamp fps metadata")
     args = ap.parse_args()
 
-    elevations = [float(e.strip()) for e in args.elevations.split(",") if e.strip() != ""]
-    if not elevations:
-        ap.error("--elevations parsed to an empty list")
-    azimuths = novel_azimuths(args.variant)     # saved-view azimuths (input az excluded)
-    n_az, n_elev = len(azimuths), len(elevations)
-    print(f"[gen_mv_video] variant={args.variant}  target grid: "
-          f"V={n_az * n_elev} ({n_az} az x {n_elev} elev)  "
-          f"azimuths(deg)={azimuths}  elevations(deg)={elevations}")
+    azimuths = novel_azimuths(args.variant)     # novel-view azimuths (input az excluded)
+    n_az = len(azimuths)
+    # PER-VIEW novel elevations (length n_az). SV4D encodes elevation relative to
+    # the input view, so a per-view list renders genuine per-view elevations in ONE
+    # run — real 3D coverage. (A single scalar per run collapses all relative
+    # elevations to 0, producing identical images falsely placed at diff elevations.)
+    novel_elevs = [float(e.strip()) for e in args.elevations.split(",") if e.strip() != ""]
+    if len(novel_elevs) == 1:
+        novel_elevs = novel_elevs * n_az
+    if len(novel_elevs) != n_az:
+        ap.error(f"--elevations must be 1 or {n_az} values (got {len(novel_elevs)})")
+    input_elev = 0.0                            # v0 (input view) assumed elevation
+    print(f"[gen_mv_video] variant={args.variant}  V={n_az} novel views (ONE SV4D run)  "
+          f"azimuths(deg)={azimuths}  novel_elevs(deg)={novel_elevs}")
 
     os.makedirs(args.out, exist_ok=True)
     work = os.path.join(args.out, "_work")
@@ -378,23 +391,21 @@ def main():
     # (2)+(3) run SV4D 2.0 ONCE PER ELEVATION and merge into one az x elev grid.
     # Each elevation writes to a DISTINCT subfolder so the identically-named
     # per-view mp4s ({model_name}/{base_count}_v{view}.mp4) never collide.
+    sv4d_out = os.path.join(work, "sv4d2_out")
+    view_mp4s = run_sv4d2(sv4d_input, sv4d_out, args.variant, args.n_frames,
+                          args.num_steps, args.img_size,
+                          [input_elev] + novel_elevs,        # v0 + per-view novel
+                          args.seed, args.remove_bg, args.low_vram)
+    # sorted _v001.._v00V <-> (azimuths[i], novel_elevs[i]).
+    if len(view_mp4s) != n_az:
+        print(f"[warn] got {len(view_mp4s)} views, expected {n_az} "
+              f"(azimuths={azimuths}). Pairing by sorted order.")
     views = []
-    for e in elevations:
-        tag = f"elev_{e:+.0f}".replace("+", "p").replace("-", "m")   # elev_p20 / elev_m20 / elev_p0
-        sv4d_out = os.path.join(work, "sv4d2_out", tag)
-        view_mp4s = run_sv4d2(sv4d_input, sv4d_out, args.variant, args.n_frames,
-                              args.num_steps, args.img_size, e,
-                              args.seed, args.remove_bg, args.low_vram)
-        # sorted _v001.._v00V <-> novel azimuths[0:] at this elevation.
-        if len(view_mp4s) != n_az:
-            print(f"[warn] elevation {e}: got {len(view_mp4s)} views, "
-                  f"expected {n_az} (azimuths={azimuths}). Pairing by sorted order.")
-        for a, p in zip(azimuths, view_mp4s):
-            views.append({"azimuth_deg": a, "elevation_deg": e,
-                          "frames": decode_mp4(p)})
+    for a, e, p in zip(azimuths, novel_elevs, view_mp4s):
+        views.append({"azimuth_deg": a, "elevation_deg": e, "frames": decode_mp4(p)})
 
-    # (3) pack the full grid into a posed, timestamped dataset.
-    write_dataset(args.out, views, n_az, elevations,
+    # (3) pack into a posed, timestamped dataset (each view keeps its own az+elev).
+    write_dataset(args.out, views, n_az, novel_elevs,
                   args.radius, args.fov_deg, args.img_size, args.fps)
 
     print(f"\n[gen_mv_video] done -> {args.out}  "
