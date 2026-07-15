@@ -85,7 +85,8 @@ def main():
         # gaussian-splatting getWorld2View2 wants R (c2w rot) and T (w2c trans)
         T = -Rc.T @ eye
         cam = Cam(Rc.astype(np.float32), T.astype(np.float32), fov, fov, args.res, args.res)
-        out = render(cam, g, pipe, bg)["render"]
+        with torch.no_grad():
+            out = render(cam, g, pipe, bg)["render"]
         arr = (out.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
         frames.append(arr)
         imageio.imwrite(os.path.join(args.out, f"{t:05d}.png"), arr)
