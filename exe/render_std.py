@@ -57,13 +57,23 @@ def main():
     ap.add_argument("--radius_scale", type=float, default=2.2, help="radius = this * bbox_diag")
     ap.add_argument("--elev", type=float, default=15.0)
     ap.add_argument("--white", action="store_true")
+    ap.add_argument("--min_opacity", type=float, default=0.0)
+    ap.add_argument("--max_scale", type=float, default=1e9, help="drop gaussians with any scale>this")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
     names = [p.name for p in PlyData.read(args.ply)["vertex"].properties
              if p.name.startswith("f_rest_")]
     sh = int(math.sqrt((len(names) + 3) // 3)) - 1 if names else 0
-    g = GaussianModel(sh); g.load_ply(g_path := args.ply); g.active_sh_degree = sh
+    g = GaussianModel(sh); g.load_ply(args.ply); g.active_sh_degree = sh
+    if args.min_opacity > 0 or args.max_scale < 1e9:
+        op = g.get_opacity[:, 0]
+        sc = g.get_scaling.max(1).values
+        keep = (op > args.min_opacity) & (sc < args.max_scale)
+        for a in ["_xyz", "_opacity", "_scaling", "_rotation", "_features_dc", "_features_rest"]:
+            setattr(g, a, getattr(g, a)[keep])
+        print(f"[render_std] filter kept {int(keep.sum())}/{keep.numel()} "
+              f"(opacity>{args.min_opacity}, scale<{args.max_scale})")
     pipe = Pipe()
     bg = torch.tensor([1., 1, 1] if args.white else [0, 0, 0], device="cuda")
 
