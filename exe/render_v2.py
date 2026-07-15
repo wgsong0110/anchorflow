@@ -73,6 +73,8 @@ def main():
     ap.add_argument("--static", action="store_true", help="diagnostic: render canonical (no rollout)")
     ap.add_argument("--radius", type=float, default=None,
                     help="absolute camera radius in ORIGINAL frame (overrides cfg/auto)")
+    ap.add_argument("--no_warp", action="store_true",
+                    help="diagnostic: render raw canonical (skip LBS warp)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     device = "cuda"
@@ -150,9 +152,12 @@ def main():
     for t in range(args.frames):
         node_now = seq[t]
         with torch.no_grad():
-            Rk = W.anchor_rotations(anchors.canonical, node_now)
-            p, c6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_bind, idx_bind,
-                                  anchors.canonical, node_now, Rk)
+            if args.no_warp:
+                p, c6 = canon_xyz, canon_cov6
+            else:
+                Rk = W.anchor_rotations(anchors.canonical, node_now)
+                p, c6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_bind, idx_bind,
+                                      anchors.canonical, node_now, Rk)
             p_r = apply_inverse_rotations(
                 undotransform2origin(undoshift2center111(p), scale_origin, mean_pos), rot_mats)
             c_r = apply_inverse_cov_rotations(c6 / (scale_origin * scale_origin), rot_mats)
