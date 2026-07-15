@@ -71,6 +71,8 @@ def main():
     ap.add_argument("--damping", type=float, default=1.0, help="velocity friction γ (<1 bounds rollout)")
     ap.add_argument("--orbit", action="store_true", help="orbit camera during rollout")
     ap.add_argument("--static", action="store_true", help="diagnostic: render canonical (no rollout)")
+    ap.add_argument("--radius", type=float, default=None,
+                    help="absolute camera radius in ORIGINAL frame (overrides cfg/auto)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     device = "cuda"
@@ -136,6 +138,13 @@ def main():
     view_center, observ = get_center_view_worldspace_and_observant_coordinate(
         center, up, rot_mats, scale_origin, mean_pos)
     cam_p = cfg.camera
+    # The scene is rendered in the ORIGINAL (reconstruction) frame, but cfg radius
+    # is calibrated for the size-1.0 normalized object. Scale it by the object's
+    # true size (1/scale_origin) so the camera sits at the right distance for any
+    # reconstruction. (DreamPhysics assets had scale_origin~1, so this was a no-op.)
+    render_radius = (args.radius if args.radius is not None
+                     else float(cam_p.init_radius) / float(scale_origin))
+    print(f"[render_v2] scale_origin={float(scale_origin):.3f} render_radius={render_radius:.3f}")
 
     frames = []
     for t in range(args.frames):
@@ -153,7 +162,7 @@ def main():
                 center_view_world_space=view_center, observant_coordinates=observ,
                 show_hint=cam_p.get("show_hint", False),
                 init_azimuthm=cam_p.init_azimuthm, init_elevation=cam_p.init_elevation,
-                init_radius=cam_p.init_radius, move_camera=False, current_frame=int(t),
+                init_radius=render_radius, move_camera=False, current_frame=int(t),
                 delta_a=da, delta_e=cam_p.get("delta_e", 0.0), delta_r=cam_p.get("delta_r", 0.0))
             rast = initialize_resterize(cam, gaussians, pipe, background)
             colors = convert_SH(shs, cam, gaussians, p_r, None)
