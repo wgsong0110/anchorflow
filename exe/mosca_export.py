@@ -43,11 +43,17 @@ def main():
     t = args.ref_frame
     with torch.no_grad():
         mu = d.get_xyz().detach()                             # world canonical [N,3]
-        # opacity/scaling/rotation/SH at rest: use the leaf params (pre-activation)
         from plyfile import PlyData, PlyElement
         xyz = mu.cpu().numpy()
+        # opacity: MoSca o_act = sigmoid == INRIA's opacity_activation, so the raw
+        # logit is already correct for the INRIA renderer.
         opacity = d._opacity.detach().cpu().numpy()
-        scaling = d._scaling.detach().cpu().numpy()
+        # scaling: MoSca s_act is SIGMOID-bounded (scale = min_s + sigmoid(x)*(max_s-min_s),
+        # max_scale~0.1) — NOT exp. The INRIA renderer applies exp() to the stored value,
+        # so we must store log(actual_scale) so exp() recovers MoSca's true scale.
+        # (Writing the raw sigmoid-logit made exp() blow scales up to ~55 -> starburst.)
+        scale_actual = d.s_act(d._scaling).detach().clamp(min=1e-8)
+        scaling = torch.log(scale_actual).cpu().numpy()
         rotation = d._rotation.detach().cpu().numpy()
         f_dc = d._features_dc.detach().reshape(xyz.shape[0], -1).cpu().numpy()
         rest = getattr(d, "_features_rest", None)
