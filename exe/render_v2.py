@@ -75,6 +75,8 @@ def main():
                     help="absolute camera radius in ORIGINAL frame (overrides cfg/auto)")
     ap.add_argument("--no_warp", action="store_true",
                     help="diagnostic: render raw canonical (skip LBS warp)")
+    ap.add_argument("--cov_scale", type=float, default=1.0,
+                    help="diagnostic: multiply rendered covariance (probe gaussian size)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     device = "cuda"
@@ -161,6 +163,7 @@ def main():
             p_r = apply_inverse_rotations(
                 undotransform2origin(undoshift2center111(p), scale_origin, mean_pos), rot_mats)
             c_r = apply_inverse_cov_rotations(c6 / (scale_origin * scale_origin), rot_mats)
+            c_r = c_r * args.cov_scale
             da = cam_p.get("delta_a", 0.0) + (t * 2.0 if args.orbit else 0.0)
             cam = get_camera_view(
                 args.model_dir, default_camera_index=cam_p.get("default_camera_index", -1),
