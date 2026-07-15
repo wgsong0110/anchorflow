@@ -39,10 +39,11 @@ class Cam:
 
 
 def look_at(eye, center, up):
-    f = (center - eye); f = f / np.linalg.norm(f)
-    s = np.cross(f, up); s = s / np.linalg.norm(s)
-    u = np.cross(s, f)
-    R = np.stack([s, u, -f], 1)          # camera-to-world rotation (cols)
+    # 3DGS/Colmap convention: camera looks down +z in view space.
+    f = (center - eye); f = f / np.linalg.norm(f)   # forward = +z (toward object)
+    s = np.cross(f, up); s = s / np.linalg.norm(s)  # right = +x
+    u = np.cross(s, f)                              # up
+    R = np.stack([s, u, f], 1)           # c2w rotation cols=[right, up, forward]
     return R, eye
 
 
