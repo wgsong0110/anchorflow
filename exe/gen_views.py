@@ -192,6 +192,11 @@ def main():
     print(f"[gen_views] N={xyz.shape[0]} center={np.round(center,2)} "
           f"diag={diag:.2f} radius={radius:.2f}")
 
+    # Save (possibly rotated) PLY so train/render scripts use correct geometry
+    ply_out = os.path.join(args.out, "scene.ply")
+    g.save_ply(ply_out)
+    print(f"[gen_views] saved PLY → {ply_out}")
+
     cameras_meta = []
     for i, az in enumerate(azimuths):
         print(f"\n[gen_views] view {i}/{n_views}  az={az:.0f}°  el={args.elevation:.0f}°")
