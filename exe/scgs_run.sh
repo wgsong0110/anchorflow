@@ -190,6 +190,21 @@ if [ "$IS_BLENDER" = "1" ]; then
 else
   # Real multi-view video recipe
   ARGS+=( --init_isotropic_gs_with_all_colmap_pcl )
+  # [anchorflow] ROOT-CAUSE FIX for the node-bootstrap "reshape 0 elements" crash
+  # (train_gui.py L1390 at iterations_node_sampling). It is NOT a too-few-views
+  # problem. The node-bootstrap gaussians are a StandardGaussianModel(all_the_same=
+  # True): get_scaling returns ONE uniform scale (_scaling.mean()) for ALL of them.
+  # SC-GS's world-space big-point prune (get_scaling.max > 0.1*cameras_extent)
+  # activates once iteration > opacity_reset_interval (size_threshold=20). On our
+  # SV4D scenes cameras sit at radius ~2 (cameras_extent~2.05 => 0.1*extent~0.205),
+  # while the uniform node scale grows to ~0.34 -> EVERY node gaussian trips
+  # big_points_ws -> ALL pruned -> N=0 -> reshape crash. D-NeRF survives only
+  # because its radius-~4 cameras give a larger extent. The scale/extent ratio is
+  # invariant to uniform camera rescaling, so moving cameras cannot fix it; instead
+  # push opacity_reset_interval past iterations_node_sampling(7500) so size_threshold
+  # never activates during the bootstrap. Verified: N holds ~97k through 7500, the
+  # downsample to 512 control nodes succeeds, main phase trains normally.
+  ARGS+=( --opacity_reset_interval 8000 )
 fi
 # shellcheck disable=SC2206
 [ -n "$EXTRA_ARGS" ] && ARGS+=( $EXTRA_ARGS )
