@@ -79,7 +79,10 @@ def load_ply(path, sh=0):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--node_traj", required=True, help="MoSca node_traj.npy [T,M,3]")
+    ap.add_argument("--node_traj", default=None,
+                    help="MoSca node_traj.npy [T,M,3]; OMIT for a static canonical "
+                         "(DreamPhysics/PhysDreamer 3DGS) -> anchors sampled by FPS, "
+                         "supervised stage skipped, pure video-SDS (MDS) training.")
     ap.add_argument("--canonical", required=True, help="MoSca canonical.ply")
     ap.add_argument("--cond", required=True, help="SVD cond image (subject)")
     ap.add_argument("--model_dir", required=True,
@@ -117,19 +120,29 @@ def main():
     canon_xyz = pos.detach().to(device)
     canon_cov6 = cov.detach().to(device)
 
-    # ---- MoSca node trajectory -> SAME normalized frame ------------------- #
-    node_traj = torch.tensor(np.load(args.node_traj), dtype=torch.float32, device=device)  # [T,M,3]
-    node_traj = apply_rotations(node_traj.reshape(-1, 3), rot_mats).reshape(node_traj.shape)
-    node_traj = shift2center111((node_traj - mean_pos) / scale_origin)   # match transform2origin
-    node_traj = node_traj.detach()          # supervision target + IC: a constant,
-    # else its transform graph (via scale_origin/mean_pos) is shared across steps
-    # and freed after the first backward -> "backward a second time".
-    T_traj = node_traj.shape[0]
+    # ---- node trajectory (MoSca) OR static canonical (DreamPhysics) ------- #
+    static_mode = args.node_traj is None
+    if not static_mode:
+        node_traj = torch.tensor(np.load(args.node_traj), dtype=torch.float32, device=device)  # [T,M,3]
+        node_traj = apply_rotations(node_traj.reshape(-1, 3), rot_mats).reshape(node_traj.shape)
+        node_traj = shift2center111((node_traj - mean_pos) / scale_origin)   # match transform2origin
+        node_traj = node_traj.detach()      # supervision target + IC: a constant,
+        # else its transform graph (via scale_origin/mean_pos) is shared across steps
+        # and freed after the first backward -> "backward a second time".
+        T_traj = node_traj.shape[0]
+    else:
+        node_traj, T_traj = None, 0
 
-    # ---- anchors from MoSca canonical (frame 0), + GNN⊗SSM ---------------- #
-    anchors = AnchorSet.from_trajectory(
-        node_traj[0], latent_dim=cfg.train.latent_dim, e_dim=cfg.train.e_dim,
-        K=cfg.train.K).to(device)
+    # ---- anchors: MoSca scaffold (frame 0) OR FPS on the static canonical -- #
+    if not static_mode:
+        anchors = AnchorSet.from_trajectory(
+            node_traj[0], latent_dim=cfg.train.latent_dim, e_dim=cfg.train.e_dim,
+            K=cfg.train.K).to(device)
+    else:
+        anchors, _ = AnchorSet.from_gaussians(
+            canon_xyz, node_num=cfg.train.node_num,
+            latent_dim=cfg.train.latent_dim, e_dim=cfg.train.e_dim, K=cfg.train.K)
+        anchors = anchors.to(device)
     w_bind, idx_bind = anchors.cal_nn_weight(canon_xyz)
     conn_idx, conn_w = R.connectivity(anchors.canonical, K=cfg.train.arap_k)
     fixed = torch.zeros(anchors.num, dtype=torch.bool, device=device)
@@ -178,33 +191,37 @@ def main():
             os.system(f"rclone copy {args.out} {args.r2_dest} >/dev/null 2>&1")
 
     # ================= Stage 1: supervised on MoSca trajectory ============= #
-    print(f"[v2] N={canon_xyz.shape[0]} anchors={anchors.num} T={T_traj} dt={dt} commit={gh}")
-    p0 = node_traj[0]
-    v0 = node_traj[1] - node_traj[0]                        # measured initial velocity
-    for step in range(sup_start, cfg.train.sup_steps):
-        opt.zero_grad()
-        seq = ssm_rollout(model, p0, v0, anchors.e, anchors.z, zero, zero,
-                          steps=T_traj - 1, cfg=graph_cfg, dt=dt, grad=True,
-                          recenter=False,                   # match actual trajectory
-                          damping=cfg.train.get("damping", 1.0))
-        loss = ((seq - node_traj) ** 2).mean()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            [p for g in opt.param_groups for p in g["params"]], cfg.train.grad_clip)
-        opt.step()
-        if step % cfg.train.log_every == 0:
-            print(f"[sup {step}] traj_mse={float(loss):.4e}")
-        if step % cfg.train.ckpt_every == 0:
-            ckpt.save(step, {"model": model.state_dict(), "anchors": anchors.state_dict(),
-                             "comp": comp.state_dict() if comp is not None else None,
-                             "opt": opt.state_dict(), "stage": "sup"})
-    if sup_start < cfg.train.sup_steps:
-        ckpt.save(cfg.train.sup_steps - 1,
-                  {"model": model.state_dict(), "anchors": anchors.state_dict(),
-                   "comp": comp.state_dict() if comp is not None else None,
-                   "opt": opt.state_dict(), "stage": "sup"})
-        sync_r2()
-    print("[v2] supervised pretrain done")
+    # Skipped entirely in static-canonical mode (no GT trajectory to fit): the
+    # dynamics are learned purely from the video-SDS prior in Stage 2.
+    print(f"[v2] N={canon_xyz.shape[0]} anchors={anchors.num} T={T_traj} dt={dt} "
+          f"mode={'static-SDS' if static_mode else 'mosca-grounded'} commit={gh}")
+    if not static_mode:
+        p0 = node_traj[0]
+        v0 = node_traj[1] - node_traj[0]                    # measured initial velocity
+        for step in range(sup_start, cfg.train.sup_steps):
+            opt.zero_grad()
+            seq = ssm_rollout(model, p0, v0, anchors.e, anchors.z, zero, zero,
+                              steps=T_traj - 1, cfg=graph_cfg, dt=dt, grad=True,
+                              recenter=False,               # match actual trajectory
+                              damping=cfg.train.get("damping", 1.0))
+            loss = ((seq - node_traj) ** 2).mean()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                [p for g in opt.param_groups for p in g["params"]], cfg.train.grad_clip)
+            opt.step()
+            if step % cfg.train.log_every == 0:
+                print(f"[sup {step}] traj_mse={float(loss):.4e}")
+            if step % cfg.train.ckpt_every == 0:
+                ckpt.save(step, {"model": model.state_dict(), "anchors": anchors.state_dict(),
+                                 "comp": comp.state_dict() if comp is not None else None,
+                                 "opt": opt.state_dict(), "stage": "sup"})
+        if sup_start < cfg.train.sup_steps:
+            ckpt.save(cfg.train.sup_steps - 1,
+                      {"model": model.state_dict(), "anchors": anchors.state_dict(),
+                       "comp": comp.state_dict() if comp is not None else None,
+                       "opt": opt.state_dict(), "stage": "sup"})
+            sync_r2()
+        print("[v2] supervised pretrain done")
 
     # ================= Stage 2: MDS refine (IC generalization) ============ #
     center = torch.tensor(cfg.camera.mpm_space_viewpoint_center).reshape(1, 3).to(device)
