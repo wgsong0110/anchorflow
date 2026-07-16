@@ -190,6 +190,14 @@ if [ "$IS_BLENDER" = "1" ]; then
 else
   # Real multi-view video recipe
   ARGS+=( --init_isotropic_gs_with_all_colmap_pcl )
+  # [anchorflow] BACKGROUND FIX: our SV4D multi-view frames are object-on-WHITE
+  # RGB (no alpha; verified bg=255). Without --white_background SC-GS sets
+  # self.background=[0,0,0] (train_gui.py:174) and renders/optimizes against a BLACK
+  # bg while the GT images have a WHITE bg -> the model wastes capacity growing a
+  # white "fake background" haze of Gaussians, opacity collapses (mean~0.02), the
+  # object never forms, and renders come out blank (mixed black/white) at PSNR~14.
+  # Matching the render bg to the data (white) frees the model to fit the object.
+  ARGS+=( --white_background )
   # [anchorflow] ROOT-CAUSE FIX for the node-bootstrap "reshape 0 elements" crash
   # (train_gui.py L1390 at iterations_node_sampling). It is NOT a too-few-views
   # problem. The node-bootstrap gaussians are a StandardGaussianModel(all_the_same=
