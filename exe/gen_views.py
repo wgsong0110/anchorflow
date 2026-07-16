@@ -160,6 +160,9 @@ def main():
     ap.add_argument("--model", default="stabilityai/stable-video-diffusion-img2vid-xt")
     ap.add_argument("--render_only", action="store_true",
                     help="skip SVD, only render static views")
+    ap.add_argument("--rot_x_deg", type=float, default=0.0,
+                    help="rotate scene around X axis before rendering "
+                         "(wolf needs +90 to stand upright: z-up->y-up)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -172,6 +175,13 @@ def main():
 
     print(f"[gen_views] loading {args.ply}")
     g = load_gaussian(args.ply)
+    if args.rot_x_deg != 0.0:
+        ang = math.radians(args.rot_x_deg)
+        c, s = math.cos(ang), math.sin(ang)
+        Rx = torch.tensor([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=torch.float32)
+        with torch.no_grad():
+            g._xyz.data = g._xyz.data @ Rx.T.to(g._xyz.device)
+        print(f"[gen_views] applied rot_x={args.rot_x_deg}°")
     bg = torch.tensor([1., 1, 1] if args.white else [0, 0, 0], device="cuda")
 
     # object center + radius from Gaussian positions
