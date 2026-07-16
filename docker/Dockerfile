@@ -8,8 +8,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TORCH_CUDA_ARCH_LIST="8.6;8.9"
 ENV FORCE_CUDA=1
 
+# libegl1/libgles2/libosmesa6: pyrender headless (EGL/OSMesa) for GLB multi-view render
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git build-essential ninja-build libglm-dev ffmpeg libgl1 libglib2.0-0 \
+        libegl1 libgles2 libosmesa6 \
         tmux openssh-client curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -35,5 +37,9 @@ RUN pip install --no-cache-dir \
 
 # xformers matched to torch 2.1.2 (memory-efficient attention for SVD)
 RUN pip install --no-cache-dir xformers==0.0.23.post1 || echo "xformers optional: skipped"
+
+# pyrender+trimesh: headless GLB multi-view render; objaverse: asset download;
+# gsplat: 3DGS rasterizer (CUDA ext compiles at build via FORCE_CUDA + arch list)
+RUN pip install --no-cache-dir pyrender trimesh objaverse gsplat
 
 WORKDIR /workspace
