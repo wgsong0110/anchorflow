@@ -90,10 +90,12 @@ def load_view0(dataset):
     f0 = sorted([f for f in d["frames"] if "/view_00/" in f["file_path"]],
                 key=lambda f: f["file_path"])[0]
     c2w = np.array(f0["transform_matrix"], dtype=np.float32)
+    matrix = np.linalg.inv(c2w)
+    R = -np.transpose(matrix[:3, :3]); T = -matrix[:3, 3]   # SC-GS blender-loader convention
     img_path = os.path.join(dataset, f0["file_path"].lstrip("./"))
     if not os.path.exists(img_path):
         img_path += ".png"
-    return c2w, fovx, img_path
+    return R.astype(np.float32), T.astype(np.float32), fovx, img_path
 
 
 def silhouette(arr, thr=0.95):
@@ -128,12 +130,10 @@ def main():
     g._scaling = torch.nn.Parameter(g._scaling + math.log(scale))   # log-scale shift
 
     # ---- azimuth search against real view_00 ----
-    c2w, fovx, img_path = load_view0(args.dataset)
+    R, T, fovx, img_path = load_view0(args.dataset)
     fovy = fovx
-    Rc = c2w[:3, :3]; eye = c2w[:3, 3]
-    T = -Rc.T @ eye
     W = H = args.res
-    cam = Cam(Rc.astype(np.float32), T.astype(np.float32), fovx, fovy, W, H)
+    cam = Cam(R, T, fovx, fovy, W, H)
     gt = np.array(Image.open(img_path).convert("RGB").resize((W, H))) / 255.0
     gt_fg = silhouette(gt)
     pipe = Pipe(); bg = torch.tensor([1., 1, 1], device="cuda")
@@ -147,7 +147,7 @@ def main():
         g._xyz = torch.nn.Parameter(xyz_backup.clone()); g._rotation = torch.nn.Parameter(q_backup.clone())
         apply_world_R(g, rot_y(float(az)))
         with torch.no_grad():
-            out = render(cam, g, pipe, bg)["render"].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
+            out = render(cam, g, pipe, bg, 0.0, 0.0, 0.0)["render"].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
         fg = silhouette(out)
         inter = (fg & gt_fg).sum(); union = (fg | gt_fg).sum()
         iou = inter / max(union, 1)
