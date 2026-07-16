@@ -413,7 +413,7 @@ def main():
                   args.radius, args.fov_deg, args.img_size, args.fps)
 
     print(f"\n[gen_mv_video] done -> {args.out}  "
-          f"(V={len(views)} = {n_az} az x {n_elev} elev)")
+          f"(V={len(views)} = {n_az} az x {len(ring_elevs)} elev)")
 
 
 if __name__ == "__main__":
