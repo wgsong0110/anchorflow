@@ -109,6 +109,9 @@ def main():
     ap.add_argument("--dataset", required=True, help="SV4D ficus_ds (transforms + images)")
     ap.add_argument("--out", required=True, help="points3d.ply path")
     ap.add_argument("--target_diam", type=float, default=1.2)
+    ap.add_argument("--z2y_deg", type=float, default=-90.0,
+                    help="rot_x degrees to map the scene up-axis (+z) to +y. "
+                         "ficus=-90; some DreamPhysics scenes (wolf) need +90 to stand upright.")
     ap.add_argument("--az_step", type=float, default=15.0)
     ap.add_argument("--res", type=int, default=400)
     ap.add_argument("--dump_dir", default=None, help="save az-search renders for inspection")
@@ -125,7 +128,7 @@ def main():
 
     # 1) centre, 2) z-up->y-up, 3) scale  (positions; also rotate gaussian frames)
     g._xyz = torch.nn.Parameter((g._xyz - center).contiguous())
-    apply_world_R(g, rot_x(-90.0))
+    apply_world_R(g, rot_x(args.z2y_deg))
     g._xyz = torch.nn.Parameter((g._xyz * scale).contiguous())
     g._scaling = torch.nn.Parameter(g._scaling + math.log(scale))   # log-scale shift
 
