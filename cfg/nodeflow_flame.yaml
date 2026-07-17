@@ -1,0 +1,29 @@
+white_bg: false
+
+model:
+  n_nodes: 512
+  n_frames: 21
+  hidden: 64
+  n_gnn_layers: 3
+  k_node: 8
+  k_gauss: 4
+
+views:
+  n_views: 21
+  elevation: 0.0
+  radius_scale: 2.5
+  fov: 45.0
+  res: 576
+
+train:
+  iters: 30000
+  lr_gnn:    1.0e-3
+  lr_traj:   2.0e-3
+  lr_init:   2.0e-3
+  lambda_ssim:   0.2
+  lambda_arap:   0.05
+  lambda_smooth: 0.01
+  lambda_init:   1.0e-4
+  grad_clip:     1.0
+  log_every:     100
+  ckpt_every:    2000

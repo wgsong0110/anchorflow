@@ -147,7 +147,7 @@ def main():
     if args.views:
         views = [int(x) for x in args.views.split(",")]
 
-    bg = torch.tensor([1., 1, 1] if args.white else [0, 0, 0], device=dev)
+    bg = torch.tensor([1., 1., 1.] if args.white else [0., 0., 0.], device=dev)
 
     for v in views:
         frames = []

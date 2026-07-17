@@ -236,7 +236,7 @@ def main():
     V = dataset.n_views
     T = dataset.n_frames
 
-    bg = torch.tensor([1., 1, 1] if cfg.get("white_bg", True) else [0, 0, 0],
+    bg = torch.tensor([1., 1., 1.] if cfg.get("white_bg", True) else [0., 0., 0.],
                       device=dev)
 
     # --- model ---
