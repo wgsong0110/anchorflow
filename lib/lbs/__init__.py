@@ -15,6 +15,12 @@ try:
 except Exception:
     _HAVE_CUDA = False
 
+try:
+    from ._C import cov_warp as _cov_warp_cuda
+    _HAVE_COV_CUDA = True
+except Exception:
+    _HAVE_COV_CUDA = False
+
 
 class _LBSBlend(torch.autograd.Function):
     @staticmethod
@@ -41,3 +47,16 @@ def lbs_blend(x, w, idx, a_rest, a_now, R):
     if _HAVE_CUDA and x.is_cuda:
         return _LBSBlend.apply(x, w, idx, a_rest, a_now, R)
     return _lbs_blend_torch(x, w, idx, a_rest, a_now, R)
+
+
+def cov_warp(quat, w, idx, cov6):
+    """Fused covariance warp: cov6' = R(q̄) · cov6 · R(q̄)^T with q̄ the
+    weighted, sign-aligned quaternion mean over the K bound anchors.
+
+    Forward only — anchor rotations are Procrustes-estimated under no_grad in
+    the reference, so nothing here needs a gradient. Falls back to torch.
+    """
+    if _HAVE_COV_CUDA and cov6.is_cuda:
+        return _cov_warp_cuda(quat.contiguous(), w.contiguous(),
+                              idx.contiguous().long(), cov6.contiguous())
+    return None

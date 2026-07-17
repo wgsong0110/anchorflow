@@ -81,7 +81,94 @@ torch::Tensor lbs_backward(torch::Tensor grad_out, torch::Tensor w, torch::Tenso
   return grad_a_now;
 }
 
+
+// ---------------------------------------------------------------------------
+// Fused covariance warp (forward only).
+//   qg[n]   = normalize( sum_k w[n,k] * sign_k * quat[idx[n,k]] )   (wxyz)
+//   sign_k  = sign(dot(quat[idx[n,k]], quat[idx[n,0]]))   (0 -> +1)
+//   Rg[n]   = quat_to_matrix(qg[n])
+//   out6[n] = mat3_to_cov6( Rg * cov6_to_mat3(cov6[n]) * Rg^T )
+// Parity target: warp._blend_quat + geom.quat_to_matrix + Rg@S@Rg^T.
+// The torch path materialises [N,K,4] and several [N,3,3] tensors (~90MB+ of
+// traffic per frame at N=1.85M); this reads cov6+quat and writes cov6 only.
+// Anchor rotations are detached in the reference (Procrustes under no_grad) and
+// this is used under no_grad, so no backward is needed.
+template <typename S>
+__global__ void cov_warp_kernel(
+    const S* __restrict__ quat,     // [M,4] wxyz
+    const S* __restrict__ w,        // [N,K]
+    const long* __restrict__ idx,   // [N,K]
+    const S* __restrict__ cov6,     // [N,6]
+    S* __restrict__ out6,           // [N,6]
+    int N, int K) {
+  int n = blockIdx.x * blockDim.x + threadIdx.x;
+  if (n >= N) return;
+
+  // --- weighted, sign-aligned quaternion mean -------------------------------
+  long j0 = idx[n*K+0];
+  S r0 = quat[j0*4+0], r1 = quat[j0*4+1], r2 = quat[j0*4+2], r3 = quat[j0*4+3];
+  S q0 = 0, q1 = 0, q2 = 0, q3 = 0;
+  for (int k = 0; k < K; ++k) {
+    long j = idx[n*K+k];
+    S wk = w[n*K+k];
+    S a0 = quat[j*4+0], a1 = quat[j*4+1], a2 = quat[j*4+2], a3 = quat[j*4+3];
+    S d = a0*r0 + a1*r1 + a2*r2 + a3*r3;
+    S sg = (d > 0) ? (S)1 : ((d < 0) ? (S)-1 : (S)1);   // sign(0) -> +1
+    q0 += wk * sg * a0; q1 += wk * sg * a1;
+    q2 += wk * sg * a2; q3 += wk * sg * a3;
+  }
+  S nrm = sqrt(q0*q0 + q1*q1 + q2*q2 + q3*q3);
+  if (nrm > (S)1e-12) { q0 /= nrm; q1 /= nrm; q2 /= nrm; q3 /= nrm; }
+  else { q0 = 1; q1 = q2 = q3 = 0; }
+
+  // --- quat(wxyz) -> R ------------------------------------------------------
+  S tx = 2*q1, ty = 2*q2, tz = 2*q3;
+  S twx = tx*q0, twy = ty*q0, twz = tz*q0;
+  S txx = tx*q1, txy = ty*q1, txz = tz*q1;
+  S tyy = ty*q2, tyz = tz*q2, tzz = tz*q3;
+  S R00 = 1-(tyy+tzz), R01 = txy-twz,     R02 = txz+twy;
+  S R10 = txy+twz,     R11 = 1-(txx+tzz), R12 = tyz-twx;
+  S R20 = txz-twy,     R21 = tyz+twx,     R22 = 1-(txx+tyy);
+
+  // --- S from cov6 [xx,xy,xz,yy,yz,zz] --------------------------------------
+  S sxx = cov6[n*6+0], sxy = cov6[n*6+1], sxz = cov6[n*6+2];
+  S syy = cov6[n*6+3], syz = cov6[n*6+4], szz = cov6[n*6+5];
+
+  // --- M = R*S  then  C = M*R^T (symmetric; only 6 entries stored) ----------
+  S m00 = R00*sxx + R01*sxy + R02*sxz;
+  S m01 = R00*sxy + R01*syy + R02*syz;
+  S m02 = R00*sxz + R01*syz + R02*szz;
+  S m10 = R10*sxx + R11*sxy + R12*sxz;
+  S m11 = R10*sxy + R11*syy + R12*syz;
+  S m12 = R10*sxz + R11*syz + R12*szz;
+  S m20 = R20*sxx + R21*sxy + R22*sxz;
+  S m21 = R20*sxy + R21*syy + R22*syz;
+  S m22 = R20*sxz + R21*syz + R22*szz;
+
+  out6[n*6+0] = m00*R00 + m01*R01 + m02*R02;   // xx
+  out6[n*6+1] = m00*R10 + m01*R11 + m02*R12;   // xy
+  out6[n*6+2] = m00*R20 + m01*R21 + m02*R22;   // xz
+  out6[n*6+3] = m10*R10 + m11*R11 + m12*R12;   // yy
+  out6[n*6+4] = m10*R20 + m11*R21 + m12*R22;   // yz
+  out6[n*6+5] = m20*R20 + m21*R21 + m22*R22;   // zz
+}
+
+torch::Tensor cov_warp(torch::Tensor quat, torch::Tensor w, torch::Tensor idx,
+                       torch::Tensor cov6) {
+  const int N = w.size(0), K = w.size(1);
+  auto out6 = torch::empty({N, 6}, cov6.options());
+  const int threads = 256, blocks = (N + threads - 1) / threads;
+  AT_DISPATCH_FLOATING_TYPES(cov6.scalar_type(), "cov_warp", ([&] {
+    cov_warp_kernel<scalar_t><<<blocks, threads>>>(
+        quat.data_ptr<scalar_t>(), w.data_ptr<scalar_t>(),
+        idx.data_ptr<long>(), cov6.data_ptr<scalar_t>(),
+        out6.data_ptr<scalar_t>(), N, K);
+  }));
+  return out6;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("forward", &lbs_forward, "LBS position blend forward");
   m.def("backward", &lbs_backward, "LBS position blend backward (grad a_now)");
+  m.def("cov_warp", &cov_warp, "Fused covariance warp (quat blend + R S R^T)");
 }

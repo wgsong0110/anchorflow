@@ -26,6 +26,11 @@ try:                                                # fused CUDA LBS (optional)
 except Exception:
     _lbs_blend = None
 
+try:                                                # fused CUDA covariance warp
+    from lbs import cov_warp as _cov_warp
+except Exception:
+    _cov_warp = None
+
 
 # --- covariance <-> 6-vector (upper triangular xx,xy,xz,yy,yz,zz) --------- #
 def cov6_to_mat3(c):
@@ -105,6 +110,17 @@ def lbs_warp(gauss_xyz, gauss_cov6, w, idx, anchor_canon, anchor_now,
         pos = (w[..., None] * Ax).sum(1)                      # [N,3]
 
     quat = geom.matrix_to_quat(anchor_R)                     # [M,4]
+
+    # Fused CUDA path: the torch branch below materialises [N,K,4] plus several
+    # [N,3,3] tensors (~90MB+ of traffic per frame at N=1.85M) and dominates
+    # lbs_warp (93% of its time). anchor_R is detached (Procrustes under
+    # no_grad), so the covariance carries no gradient and a forward-only kernel
+    # is exact. Rg is returned lazily only when a caller needs it.
+    if _cov_warp is not None and gauss_cov6.is_cuda and not torch.is_grad_enabled():
+        cov6_out = _cov_warp(quat, w.detach(), idx, gauss_cov6)
+        if cov6_out is not None:
+            return pos, cov6_out, None
+
     qg = _blend_quat(quat, w, idx)                            # [N,4]
     Rg = geom.quat_to_matrix(qg)                             # [N,3,3]
 
