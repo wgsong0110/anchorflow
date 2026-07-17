@@ -1,0 +1,40 @@
+name: build-3dgs-torch251
+
+# Build INRIA 3DGS CUDA extensions (diff-gaussian-rasterization + simple-knn)
+# against torch 2.5.1 / cu121 so they are ABI-compatible with the generic
+# pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel instance (the anchorflow image's
+# prebuilt .so are torch 2.1.2 and won't load there). GPU not needed: FORCE_CUDA=1
+# + TORCH_CUDA_ARCH_LIST compiles ahead-of-time. Pinned to the DreamPhysics-era
+# commit 472689c0 so the rasterizer API matches train_nodeflow.py.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Build wheels in torch 2.5.1 cu121 image
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/out" \
+            -e TORCH_CUDA_ARCH_LIST="8.6;8.9" -e FORCE_CUDA=1 \
+            pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel bash -c '
+              set -e
+              apt-get update -qq && apt-get install -y -qq git build-essential ninja-build >/dev/null 2>&1
+              pip install -q wheel
+              git clone -q https://github.com/graphdeco-inria/gaussian-splatting /gs
+              cd /gs
+              git checkout -q 472689c0dc70417448fb451bf529ae532d32c095
+              git submodule update --init --recursive
+              pip wheel ./submodules/diff-gaussian-rasterization -w /out --no-deps --no-build-isolation
+              pip wheel ./submodules/simple-knn                  -w /out --no-deps --no-build-isolation
+              ls -la /out/*.whl
+            '
+          sudo chown -R $(id -u):$(id -g) *.whl || true
+          ls -la *.whl
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cuda-3dgs-torch251
+          files: '*.whl'
+          fail_on_unmatched_files: true
