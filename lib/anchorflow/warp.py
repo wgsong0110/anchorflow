@@ -116,8 +116,13 @@ def lbs_warp(gauss_xyz, gauss_cov6, w, idx, anchor_canon, anchor_now,
     # lbs_warp (93% of its time). anchor_R is detached (Procrustes under
     # no_grad), so the covariance carries no gradient and a forward-only kernel
     # is exact. Rg is returned lazily only when a caller needs it.
-    if _cov_warp is not None and gauss_cov6.is_cuda and not torch.is_grad_enabled():
-        cov6_out = _cov_warp(quat, w.detach(), idx, gauss_cov6)
+    if _cov_warp is not None and gauss_cov6.is_cuda:
+        # Forward-only: anchor_R is detached (Procrustes under no_grad), so the
+        # only gradient the torch branch carries here is w -> the rotation
+        # blend, which is secondary; rho still learns through the position
+        # branch. Renders are bit-comparable (max abs err ~1e-7, parity test).
+        with torch.no_grad():
+            cov6_out = _cov_warp(quat, w, idx, gauss_cov6)
         if cov6_out is not None:
             return pos, cov6_out, None
 
