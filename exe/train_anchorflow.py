@@ -271,14 +271,10 @@ def main():
             start = ckpt["step"] + 1
             print(f"[train] resumed from step {start}")
 
-    # ── torch.compile (encode only — no t dependency, no recompilation) ──────
+    # GNN is tiny (205 nodes, hidden=128); bottleneck is SVD UNet — no compile needed
     torch.set_float32_matmul_precision("high")   # TF32 for fp32 matmuls
-    try:
-        encode_fn = torch.compile(model.encode)
-        print("[train] torch.compile(encode) enabled")
-    except Exception as e:
-        encode_fn = model.encode
-        print(f"[train] torch.compile skip ({e})")
+    encode_fn = model.encode
+    print("[train] eager mode (GNN too small to benefit from compile)")
 
     def sync_r2():
         if args.r2:
