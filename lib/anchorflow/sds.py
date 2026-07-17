@@ -32,7 +32,7 @@ import torch.nn.functional as F
 
 
 class SVDGuidance:
-    def __init__(self, model_id="stabilityai/stable-video-diffusion-img2vid",
+    def __init__(self, model_id="stabilityai/stable-video-diffusion-img2vid-xt",
                  device="cuda", dtype=torch.float16,
                  sigma_min=0.05, sigma_max=20.0, guidance_scale=3.0,
                  motion_bucket_id=127, fps=7, noise_aug=0.02,
@@ -100,6 +100,7 @@ class SVDGuidance:
     @torch.no_grad()
     def _eps_pred(self, z, sigma, cond_lat, img_emb, time_ids):
         """Predict eps for noised latent z at sigma with CFG. z: [1,T,4,h,w]."""
+        z = z.to(self.dtype)
         t = 0.25 * torch.log(sigma)
         zin = z / (sigma ** 2 + 1).sqrt()
         zin2 = torch.cat([zin, zin], dim=0)

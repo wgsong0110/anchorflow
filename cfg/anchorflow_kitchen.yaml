@@ -3,7 +3,7 @@ t2n_views: 4          # number of views used for tokens_to_nodes
 
 model:
   n_nodes:     256
-  n_frames:    14     # SVD-base frame count (lower VRAM than XT's 25)
+  n_frames:    25     # SVD-XT native frame count
   hidden:      128
   n_gnn_layers: 4
   k_node:      8
