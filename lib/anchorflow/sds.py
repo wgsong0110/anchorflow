@@ -1,32 +1,25 @@
 """Score-Distillation-Sampling (SDS) guidance from Stable Video Diffusion.
 
-Distils SVD's motion prior into our rendered rollout: render a clip of T frames,
-push its SDS gradient back through the renderer -> LBS warp -> GNN.
-
-SVD specifics (verified against diffusers v0.31 `StableVideoDiffusionPipeline`
-and the SVD-XT configs):
-  - UNet = UNetSpatioTemporalConditionModel, latents are 5-D [B, T, C, H, W].
+SVD specifics:
+  - UNetSpatioTemporalConditionModel; latents [B, T, C, H, W].
   - EulerDiscreteScheduler, v_prediction, continuous timestep = 0.25*ln(sigma).
-    c_in = 1/sqrt(sigma^2+1); x0 = v*(-sigma/sqrt(sigma^2+1)) + z/(sigma^2+1)
-    with implicit sigma_data = 1; noised latent z = x0 + sigma*noise.
-  - Conditioning: (a) CLIP image embed -> encoder_hidden_states [B,1,1024];
-    (b) VAE-encoded (noise-augmented) cond frame, broadcast over T and concatenated
-    on the CHANNEL dim (dim=2) -> UNet in_channels 8 = 4 noisy + 4 cond;
-    (c) added_time_ids = [fps-1, motion_bucket_id, noise_aug_strength].
-  - CFG: single batched (2B) UNet call; uncond half has zeroed image embed/latent.
+  - Conditioning: CLIP image embed + VAE-encoded cond frame (concat on channel dim).
+  - CFG: uncond half has zeroed image embed/latent.
 
-SDS gradient (v-prediction -> eps):
-    eps_pred = (z - x0_pred) / sigma
-    grad     = w(sigma) * (eps_pred - noise)      # backpropped into x0 (latents)
+MDS (DreamPhysics, AAAI'25):
+    grad = w(sigma) * (eps_pred(video) - eps_pred(static_frame0))
 
-Uncertain bits (flagged, tunable, verify on the instance):
-  * VAE scaling_factor placement for SVD's temporal VAE (encode side).
-  * sigma sampling range (config sigma_max=700 is impractical; we sample a mid band).
-  * guidance scale for SDS (SVD native max=3; SDS often wants more).
+Optimisations:
+  - UNet + image_encoder on GPU permanently (no CPU offload overhead)
+  - encode_frames: batch T frames in one VAE call (OOM fallback to per-frame)
+  - static frame-0: encode once, repeat in latent space
+  - MDS: batch eps_dyn+eps_stat into a single UNet call (batch=4)
+    with OOM fallback to 2 sequential calls (batch=2 each)
 """
 
 from __future__ import annotations
 
+import gc
 import torch
 import torch.nn.functional as F
 
@@ -40,13 +33,12 @@ class SVDGuidance:
         from diffusers import StableVideoDiffusionPipeline
         pipe = StableVideoDiffusionPipeline.from_pretrained(
             model_id, torch_dtype=dtype, variant="fp16")
-        # VAE needs grad flow → keep on GPU in float32
+        # VAE: GPU fp32 (grad flows through encode)
         self.vae = pipe.vae.to(device, torch.float32).eval()
-        # UNet + image_encoder are frozen → CPU offload to save ~3 GB VRAM
-        self.unet = pipe.unet.to("cpu").eval()
-        self.image_encoder = pipe.image_encoder.to("cpu").eval()
+        # UNet + image_encoder: GPU fp16 (frozen, no transfer overhead)
+        self.unet = pipe.unet.to(device, dtype).eval()
+        self.image_encoder = pipe.image_encoder.to(device, dtype).eval()
         self.feature_extractor = pipe.feature_extractor
-        self.video_processor = getattr(pipe, "video_processor", None)
         for m in (self.vae, self.unet, self.image_encoder):
             m.requires_grad_(False)
         self.device, self.dtype = device, dtype
@@ -55,103 +47,113 @@ class SVDGuidance:
         self.motion_bucket_id, self.fps, self.noise_aug = motion_bucket_id, fps, noise_aug
         self.vae_scale = pipe.vae.config.scaling_factor if use_vae_scaling else 1.0
         self.num_frames = self.unet.config.num_frames
-        # memory-efficient attention (reduces peak activation ~4x for temporal attn)
         try:
             self.unet.enable_xformers_memory_efficient_attention()
             print("[SVDGuidance] xformers attention enabled")
         except Exception:
             try:
                 self.unet.set_attention_slice("auto")
-                print("[SVDGuidance] attention slicing enabled")
+                print("[SVDGuidance] attention slicing enabled (xformers unavailable)")
             except Exception:
                 pass
         del pipe
-        import gc; gc.collect()
+        gc.collect()
         torch.cuda.empty_cache()
         self.grad_clip = grad_clip
-        self.num_frames = self.unet.config.num_frames
 
     # --- encoders --------------------------------------------------------- #
     @torch.no_grad()
     def _clip_embed(self, cond_image):
-        """cond_image: [3,H,W] in [0,1]. -> encoder_hidden_states [1,1,1024]."""
+        """cond_image: [3,H,W] in [0,1]. -> [1,1,1024] fp16."""
         img = cond_image[None] * 2 - 1
         img = F.interpolate(img, (224, 224), mode="bilinear", align_corners=False)
         img = (img + 1) / 2
         px = self.feature_extractor(images=img, do_normalize=True,
                                     do_center_crop=False, do_resize=False,
                                     do_rescale=False, return_tensors="pt").pixel_values
-        # temporarily move image_encoder to GPU
-        self.image_encoder.to(self.device)
         emb = self.image_encoder(px.to(self.device, self.dtype)).image_embeds
-        self.image_encoder.to("cpu")
-        torch.cuda.empty_cache()
         return emb.unsqueeze(1)                                  # [1,1,1024]
 
     @torch.no_grad()
     def _cond_latent(self, cond_image):
-        """VAE-encode the noise-augmented conditioning frame -> [1,4,h,w] float32."""
+        """VAE-encode noise-augmented conditioning frame -> [1,4,h,w] float32."""
         img = (cond_image[None] * 2 - 1).to(self.device).float()
         img = img + self.noise_aug * torch.randn_like(img)
         return self.vae.encode(img).latent_dist.mode()
 
     def encode_frames(self, frames):
-        """frames: [T,3,H,W] in [0,1], WITH grad. -> latents [1,T,4,h,w] float32."""
-        x = (frames * 2 - 1).float()                       # [T,3,H,W] float32
+        """frames: [T,3,H,W] in [0,1], WITH grad. -> [1,T,4,h,w] float32."""
+        x = (frames * 2 - 1).float()
         try:
-            # batched encode — works at 192×192 (~300MB peak), fast
-            lat = self.vae.encode(x).latent_dist.mode() * self.vae_scale  # [T,4,h,w]
-            return lat.unsqueeze(0)                         # [1,T,4,h,w]
+            lat = self.vae.encode(x).latent_dist.mode() * self.vae_scale
+            return lat.unsqueeze(0)                              # [1,T,4,h,w]
         except RuntimeError:
-            # OOM fallback: per-frame loop
-            lats = []
-            for t in range(x.shape[0]):
-                lat = self.vae.encode(x[t:t+1]).latent_dist.mode() * self.vae_scale
-                lats.append(lat)
+            lats = [self.vae.encode(x[i:i+1]).latent_dist.mode() * self.vae_scale
+                    for i in range(x.shape[0])]
             return torch.stack(lats, dim=1)
 
     def _time_ids(self):
-        ids = torch.tensor([[self.fps - 1, self.motion_bucket_id, self.noise_aug]],
-                           dtype=self.dtype, device=self.device)
-        return ids
+        return torch.tensor([[self.fps - 1, self.motion_bucket_id, self.noise_aug]],
+                            dtype=self.dtype, device=self.device)
 
-    # --- shared UNet eval ------------------------------------------------- #
     def _sample_sigma(self):
         u = torch.rand(1, device=self.device)
-        log_s = torch.log(torch.tensor(self.sigma_min, device=self.device)) * (1 - u) \
-            + torch.log(torch.tensor(self.sigma_max, device=self.device)) * u
+        log_s = (torch.log(torch.tensor(self.sigma_min, device=self.device)) * (1 - u)
+                 + torch.log(torch.tensor(self.sigma_max, device=self.device)) * u)
         return log_s.exp()
 
-    @torch.no_grad()
-    def _eps_pred(self, z, sigma, cond_lat, img_emb, time_ids):
-        """Predict eps for noised latent z at sigma with CFG. z: [1,T,4,h,w]."""
-        z = z.to(self.dtype)
+    # --- UNet helper ------------------------------------------------------ #
+    def _unet_forward(self, z_batch, cond_lat_batch, emb_batch, tid_batch, sigma):
+        """One UNet forward (arbitrary batch size). Returns v-predictions."""
         t = 0.25 * torch.log(sigma)
-        zin = z / (sigma ** 2 + 1).sqrt()
-        zin2 = torch.cat([zin, zin], dim=0)
-        clat2 = torch.cat([torch.zeros_like(cond_lat), cond_lat], dim=0)
-        emb2 = torch.cat([torch.zeros_like(img_emb), img_emb], dim=0)
-        tid2 = torch.cat([time_ids, time_ids], dim=0)
-        # cast all UNet inputs to fp16 (UNet weights are fp16)
-        dt = self.dtype
-        zin2  = zin2.to(dt);  clat2 = clat2.to(dt)
-        emb2  = emb2.to(dt);  tid2  = tid2.to(dt)
-        # temporarily move UNet to GPU, run, move back
-        self.unet.to(self.device)
-        v = self.unet(torch.cat([zin2, clat2], dim=2), t,
-                      encoder_hidden_states=emb2, added_time_ids=tid2,
+        z_in = (z_batch / (sigma ** 2 + 1).sqrt()).to(self.dtype)
+        c_in = cond_lat_batch.to(self.dtype)
+        e_in = emb_batch.to(self.dtype)
+        ti_in = tid_batch.to(self.dtype)
+        v = self.unet(torch.cat([z_in, c_in], dim=2), t,
+                      encoder_hidden_states=e_in, added_time_ids=ti_in,
                       return_dict=False)[0]
-        self.unet.to("cpu")
-        torch.cuda.empty_cache()
+        return v
+
+    @torch.no_grad()
+    def _eps_pred_single(self, z, sigma, cond_lat, img_emb, time_ids):
+        """CFG eps prediction for one video clip. z: [1,T,4,h,w]."""
+        B2_z   = torch.cat([z, z], dim=0)
+        B2_cl  = torch.cat([torch.zeros_like(cond_lat), cond_lat], dim=0)
+        B2_emb = torch.cat([torch.zeros_like(img_emb), img_emb], dim=0)
+        B2_tid = time_ids.expand(2, -1)
+        v = self._unet_forward(B2_z, B2_cl, B2_emb, B2_tid, sigma)
         v_u, v_c = v.chunk(2)
-        v = v_u + self.guidance_scale * (v_c - v_u)
-        x0_pred = v * (-sigma / (sigma ** 2 + 1).sqrt()) + z / (sigma ** 2 + 1)
+        v_cfg = v_u + self.guidance_scale * (v_c - v_u)
+        x0_pred = v_cfg * (-sigma / (sigma ** 2 + 1).sqrt()) + z / (sigma ** 2 + 1)
         return (z - x0_pred) / sigma
 
-    def _cond(self, cond_image, T):
-        img_emb = self._clip_embed(cond_image)
-        cond_lat = self._cond_latent(cond_image).unsqueeze(1).repeat(1, T, 1, 1, 1)
-        return cond_lat, img_emb, self._time_ids()
+    @torch.no_grad()
+    def _eps_pred_mds(self, z_dyn, z_stat, sigma, cond_lat, img_emb, time_ids):
+        """Fused CFG for both dynamic and static clips in one UNet call (batch=4).
+        Falls back to two sequential calls (batch=2) on OOM."""
+        zeros_cl  = torch.zeros_like(cond_lat)
+        zeros_emb = torch.zeros_like(img_emb)
+        tid4 = time_ids.expand(4, -1)
+
+        def _cfg(v_batch, z_ref):
+            v_u_d, v_c_d, v_u_s, v_c_s = v_batch.chunk(4)
+            def _x0(v, z): return v * (-sigma / (sigma**2 + 1).sqrt()) + z / (sigma**2 + 1)
+            eps_d = (z_dyn - _x0(v_u_d + self.guidance_scale * (v_c_d - v_u_d), z_dyn)) / sigma
+            eps_s = (z_stat - _x0(v_u_s + self.guidance_scale * (v_c_s - v_u_s), z_stat)) / sigma
+            return eps_d, eps_s
+
+        try:
+            B4_z   = torch.cat([z_dyn, z_dyn, z_stat, z_stat], dim=0)
+            B4_cl  = torch.cat([zeros_cl, cond_lat, zeros_cl, cond_lat], dim=0)
+            B4_emb = torch.cat([zeros_emb, img_emb, zeros_emb, img_emb], dim=0)
+            v = self._unet_forward(B4_z, B4_cl, B4_emb, tid4, sigma)
+            return _cfg(v, None)
+        except RuntimeError:
+            # OOM: fall back to two sequential CFG calls
+            eps_d = self._eps_pred_single(z_dyn,  sigma, cond_lat, img_emb, time_ids)
+            eps_s = self._eps_pred_single(z_stat, sigma, cond_lat, img_emb, time_ids)
+            return eps_d, eps_s
 
     def _apply(self, x0, grad):
         grad = torch.nan_to_num(grad)
@@ -160,41 +162,42 @@ class SVDGuidance:
         target = (x0 - grad).detach()
         return 0.5 * F.mse_loss(x0.float(), target.float(), reduction="sum") / x0.shape[0]
 
+    def _cond(self, cond_image, T):
+        img_emb  = self._clip_embed(cond_image)
+        cond_lat = self._cond_latent(cond_image).unsqueeze(1).repeat(1, T, 1, 1, 1)
+        return cond_lat, img_emb, self._time_ids()
+
     # --- SDS -------------------------------------------------------------- #
     def sds_loss(self, frames, cond_image, w_power=0.0):
-        """Standard SDS: grad = w(sigma) * (eps_pred - noise)."""
-        T = frames.shape[0]
-        x0 = self.encode_frames(frames)                         # [1,T,4,h,w] grad
+        T  = frames.shape[0]
+        x0 = self.encode_frames(frames)
         cond_lat, img_emb, time_ids = self._cond(cond_image, T)
         sigma = self._sample_sigma()
         with torch.no_grad():
             noise = torch.randn_like(x0)
-            z = x0 + sigma * noise
-            eps = self._eps_pred(z, sigma, cond_lat, img_emb, time_ids)
-            grad = (sigma ** w_power) * (eps - noise)
+            eps   = self._eps_pred_single(x0 + sigma * noise, sigma,
+                                          cond_lat, img_emb, time_ids)
+            grad  = (sigma ** w_power) * (eps - noise)
         return self._apply(x0, grad)
 
     # --- Motion Distillation Sampling (DreamPhysics, AAAI'25) -------------- #
     def mds_loss(self, frames, cond_image, w_power=0.0):
-        """MDS: grad = w(sigma) * (eps_pred(video) - eps_pred(static frame-0)).
-
-        Differencing against the static frame-0 clip cancels the per-frame
-        appearance bias, so the gradient carries *motion* only — the fix
-        DreamPhysics introduced for SVD's weak motion signal. Same sigma and
-        noise are used for both clips so the difference is pure model response.
-        """
-        T = frames.shape[0]
-        x0 = self.encode_frames(frames)                         # [1,T,4,h,w] grad
+        """MDS: grad = w(sigma) * (eps(video) - eps(static frame-0)).
+        Single UNet forward for both clips (batch=4, OOM fallback to batch=2×2)."""
+        T  = frames.shape[0]
+        x0 = self.encode_frames(frames)                          # [1,T,4,h,w] w/ grad
         with torch.no_grad():
-            # encode frame-0 once, repeat in latent space (no need to re-run VAE T times)
-            lat0 = self.vae.encode(
+            # static: encode frame-0 once, expand in latent space
+            lat0     = self.vae.encode(
                 (frames[0:1] * 2 - 1).float()
             ).latent_dist.mode() * self.vae_scale                # [1,4,h,w]
-            x0_static = lat0.unsqueeze(0).expand(1, T, -1, -1, -1)  # [1,T,4,h,w]
+            x0_stat  = lat0.unsqueeze(0).expand(1, T, -1, -1, -1)  # [1,T,4,h,w]
             cond_lat, img_emb, time_ids = self._cond(cond_image, T)
-            sigma = self._sample_sigma()
-            noise = torch.randn_like(x0)
-            eps_dyn = self._eps_pred(x0 + sigma * noise, sigma, cond_lat, img_emb, time_ids)
-            eps_stat = self._eps_pred(x0_static + sigma * noise, sigma, cond_lat, img_emb, time_ids)
+            sigma    = self._sample_sigma()
+            noise    = torch.randn_like(x0)
+            z_dyn    = x0      + sigma * noise
+            z_stat   = x0_stat + sigma * noise
+            eps_dyn, eps_stat = self._eps_pred_mds(
+                z_dyn, z_stat, sigma, cond_lat, img_emb, time_ids)
             grad = (sigma ** w_power) * (eps_dyn - eps_stat)
         return self._apply(x0, grad)
