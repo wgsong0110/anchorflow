@@ -115,10 +115,14 @@ def main():
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--white_bg", action="store_true")
     ap.add_argument("--no-t2n", action="store_true")
+    ap.add_argument("--iters", type=int, default=None,
+                    help="override cfg.train.iters (fit a wall-clock budget)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
     cfg = OmegaConf.load(args.cfg)
+    if args.iters is not None:
+        cfg.train.iters = args.iters
     dev, gh = "cuda", git_hash()
     T = cfg.model.n_frames
 
