@@ -9,7 +9,7 @@ model:
   k_node:      8
   k_gauss:     4
   z0_dim:      3      # initial velocity [K,3]; z0_dim is ignored, kept for compat
-  dt:          0.01   # integration step size (physics units per frame)
+  dt:          0.1    # integration step; disp~dt*z0*T = ~4% of scene diag over clip
   res:         192    # render resolution (H=W); latent 24x24 with attn slicing
 
 train:
