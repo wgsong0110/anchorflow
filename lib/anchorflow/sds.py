@@ -22,6 +22,7 @@ from __future__ import annotations
 import gc
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 class SVDGuidance:
@@ -81,11 +82,25 @@ class SVDGuidance:
         img = img + self.noise_aug * torch.randn_like(img)
         return self.vae.encode(img).latent_dist.mode()
 
-    def encode_frames(self, frames):
-        """frames: [T,3,H,W] in [0,1], WITH grad. -> [1,T,4,h,w] float32."""
+    def encode_frames(self, frames, use_checkpoint=True):
+        """frames: [T,3,H,W] in [0,1], WITH grad. -> [1,T,4,h,w] float32.
+
+        The VAE encoder stores ~12GB of conv activations for T=25 at 256x168 —
+        by far the largest allocation in a training step. Checkpointing it costs
+        one extra encoder forward in backward (~124ms) but frees that 12GB,
+        which is what lets the rasteriser keep its graph instead of being
+        checkpointed (~267ms of recompute per step).
+        """
         x = (frames * 2 - 1).float()
+
+        def _enc(z):
+            return self.vae.encode(z).latent_dist.mode()
+
         try:
-            lat = self.vae.encode(x).latent_dist.mode() * self.vae_scale
+            if use_checkpoint and x.requires_grad:
+                lat = checkpoint(_enc, x, use_reentrant=False) * self.vae_scale
+            else:
+                lat = _enc(x) * self.vae_scale
             return lat.unsqueeze(0)                              # [1,T,4,h,w]
         except RuntimeError:
             lats = [self.vae.encode(x[i:i+1]).latent_dist.mode() * self.vae_scale

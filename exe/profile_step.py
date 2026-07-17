@@ -148,15 +148,27 @@ def main():
 
     frames = tm(f"5. LBS+render {T}프레임 (checkpoint)", render_all_ckpt)
     peak_ckpt = torch.cuda.max_memory_allocated() // (1024**2)
+    del frames; torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
 
-    tm("6. VAE encode_frames (grad)", lambda: svd.encode_frames(frames))
+    frames = tm(f"5b. LBS+render {T}프레임 (graph 유지)", render_all_plain)
+    peak_plain = torch.cuda.max_memory_allocated() // (1024**2)
+
+    m0 = torch.cuda.memory_allocated() // (1024**2)
+    tm("6. VAE encode (checkpoint)", lambda: svd.encode_frames(frames))
+    m1 = torch.cuda.memory_allocated() // (1024**2)
+    print(f"     -> VAE checkpoint 메모리 증가: {m1-m0} MiB")
+    torch.cuda.empty_cache()
+    m0 = torch.cuda.memory_allocated() // (1024**2)
+    tm("6b. VAE encode (graph 유지)",
+       lambda: svd.encode_frames(frames, use_checkpoint=False))
+    m1 = torch.cuda.memory_allocated() // (1024**2)
+    print(f"     -> VAE graph 메모리 증가: {m1-m0} MiB")
+    torch.cuda.empty_cache()
 
     print("\n=== MDS 전체 (forward) ===")
     loss = tm("7. mds_loss (cache 사용)",
               lambda: svd.mds_loss(frames, cond_image=frame0,
                                    w_power=cfg.mds.w_power, cond_cache=cond))
-    tm("7b. mds_loss (cache 없이)",
-       lambda: svd.mds_loss(frames, cond_image=frame0, w_power=cfg.mds.w_power))
 
     print("\n=== backward ===")
     tm("8. loss.backward()", lambda: loss.backward(retain_graph=True))
@@ -166,7 +178,8 @@ def main():
     print("\n=== 메모리 ===")
     print(f"  peak allocated: {torch.cuda.max_memory_allocated()//(1024**2)} MiB")
     print(f"  peak reserved:  {torch.cuda.max_memory_reserved()//(1024**2)} MiB")
-    print(f"  (checkpoint 경로 peak: {peak_ckpt} MiB)")
+    print(f"  render checkpoint peak: {peak_ckpt} MiB")
+    print(f"  render graph-유지  peak: {peak_plain} MiB")
 
 
 if __name__ == "__main__":

@@ -141,9 +141,8 @@ def main():
         return render(cam, g, Pipe(), bg)["render"]
 
     def render_ckpt(cam, xyz):
-        """Checkpointed render: recompute in backward instead of storing the
-        rasteriser's activations. At G=1.85M x T=25 the stored graph alone OOMs
-        a 24GB card."""
+        """Checkpointed render. Only needed if the VAE keeps its activations;
+        with encode_frames checkpointed there is room for the raster graph."""
         return checkpoint(lambda x: render_at(cam, x), xyz, use_reentrant=False)
 
     def render_canonical(cam):
@@ -264,7 +263,7 @@ def main():
         frames = [frame0]
         for i in range(T - 1):
             disp = model.lbs_frame(node_disps[i])        # [G, 3]
-            frames.append(render_ckpt(cam, canonical_xyz + disp))
+            frames.append(render_at(cam, canonical_xyz + disp))
         frames_t = torch.stack(frames, dim=0)            # [T, 3, H, W]
 
         opt.zero_grad()
