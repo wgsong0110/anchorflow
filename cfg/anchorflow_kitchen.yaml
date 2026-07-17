@@ -8,20 +8,22 @@ model:
   n_gnn_layers: 4
   k_node:      8
   k_gauss:     4
-  z0_dim:      32
+  z0_dim:      3      # initial velocity [K,3]; z0_dim is ignored, kept for compat
+  dt:          0.01   # integration step size (physics units per frame)
   res:         192    # render resolution (H=W); latent 24x24 with attn slicing
 
 train:
-  iters:        30000
-  n_views:      8     # cameras sampled from COLMAP for training
-  z0_bank_size: 16    # number of initial states in bank
-  lr_gnn:       1.0e-4
-  lr_z0:        5.0e-4
-  lambda_arap:  0.001
-  lambda_z0:    1.0e-5
-  grad_clip:    1.0
-  log_every:    50
-  ckpt_every:   1000
+  iters:         30000
+  n_views:       8     # cameras sampled from COLMAP for training
+  z0_bank_size:  16    # number of initial velocities in bank
+  z0_init_scale: 0.05  # std of initial velocity (scene-units per integration step)
+  lr_gnn:        1.0e-4
+  lr_z0:         5.0e-4
+  lambda_arap:   0.001
+  lambda_z0:     1.0e-5
+  grad_clip:     1.0
+  log_every:     50
+  ckpt_every:    1000
 
 mds:
   sigma_min:        0.05

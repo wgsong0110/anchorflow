@@ -3,21 +3,13 @@
 
 Pipeline:
   1. Build anchor nodes via tokens_to_nodes (DINOv2 semantic) or FPS fallback
-  2. NodeFlow GNN: (canonical_pos, z0) + time → Gaussian displacements
-  3. z0_bank [B, K, z0_dim]: bank of learnable initial states (initial velocities)
+  2. NodeFlow GNN: canonical_pos → scene features h [K,H]  (once per step)
+     Physics integration: vel[t] = z0 + dt*cumsum(acc), disp[t] = dt*cumsum(vel)
+  3. z0_bank [B, K, 3]: bank of learnable initial velocities
      - each MDS step samples one z0 → renders T-frame clip → MDS loss
-     - both GNN weights and z0_bank[k] are updated simultaneously
+     - both GNN weights and z0_bank are updated simultaneously
   4. SVD MDS loss: grad = w*(eps(video) - eps(static_frame0))
      - frame-0 is always canonical render (plausible SVD conditioning image)
-
-Optimisations applied:
-  - torch.compile on GNN forward
-  - VAE encode with torch.cuda.amp (autocast)
-  - Gradient checkpointing on GNN layers
-  - Mixed-precision UNet (fp16)
-  - Per-step single-camera single-z0 sampling (low VRAM per step)
-  - torch.no_grad on SVD UNet (frozen)
-  - Fourier time embedding in decoder (better temporal generalisation)
 
 Usage (on GPU instance):
     cd /workspace/anchorflow
@@ -173,13 +165,12 @@ def main():
 
     bg = torch.tensor([1., 1., 1.] if cfg.get("white_bg", True) else [0., 0., 0.], device=dev)
 
-    # ── cameras (spread N_views from COLMAP) ──────────────────────────────────
+    # ── cameras ───────────────────────────────────────────────────────────────
     cameras = load_colmap_cameras(args.col, cfg.train.n_views, cfg.model.res)
     V = len(cameras)
     T = cfg.model.n_frames
     print(f"[train] cameras={V}  T={T}  res={cfg.model.res}")
 
-    # ── render helper (used for tokens_to_nodes + training) ──────────────────
     def render_fn(cam):
         with torch.no_grad():
             return render_gaussians(
@@ -192,7 +183,7 @@ def main():
     node_pos = None
     if not args.no_t2n:
         try:
-            from anchorflow.tokens_to_nodes import tokens_to_nodes, _dino_model
+            from anchorflow.tokens_to_nodes import tokens_to_nodes
             import anchorflow.tokens_to_nodes as t2n_mod
             print("[train] building semantic nodes via tokens_to_nodes ...")
             node_pos = tokens_to_nodes(
@@ -203,7 +194,6 @@ def main():
                 n_nodes=cfg.model.n_nodes,
                 device=dev,
             )
-            # free DINOv2 immediately to reclaim ~350MB VRAM before SVD loads
             if t2n_mod._dino_model is not None:
                 del t2n_mod._dino_model
                 t2n_mod._dino_model = None
@@ -217,6 +207,7 @@ def main():
             torch.cuda.empty_cache()
 
     # ── model ─────────────────────────────────────────────────────────────────
+    dt = float(cfg.model.get("dt", 1.0))
     model = NodeFlow(
         canonical_xyz  = canonical_xyz,
         node_positions = node_pos,
@@ -226,36 +217,37 @@ def main():
         n_gnn_layers   = cfg.model.n_gnn_layers,
         k_node         = cfg.model.k_node,
         k_gauss        = cfg.model.k_gauss,
-        z0_dim         = cfg.model.z0_dim,
+        dt             = dt,
     ).to(dev)
     K = model.n_nodes
-    print(f"[train] nodes={K}  hidden={cfg.model.hidden}  z0_dim={cfg.model.z0_dim}")
+    print(f"[train] nodes={K}  hidden={cfg.model.hidden}  dt={dt}")
 
-    # ── z0_bank [B, K, z0_dim] ────────────────────────────────────────────────
+    # z0_bank [B, K, 3]: initial velocities; non-zero scale ensures non-zero motion
     B = cfg.train.z0_bank_size
+    z0_init_scale = float(cfg.train.get("z0_init_scale", 0.05))
     z0_bank = torch.nn.Parameter(
-        torch.randn(B, K, cfg.model.z0_dim, device=dev) * 0.01
+        torch.randn(B, K, 3, device=dev) * z0_init_scale
     )
-    print(f"[train] z0_bank  size={B}")
+    print(f"[train] z0_bank  shape={list(z0_bank.shape)}  init_scale={z0_init_scale}")
 
     # ── SVD MDS guidance ──────────────────────────────────────────────────────
     print("[train] loading SVD for MDS guidance ...")
     svd = SVDGuidance(
-        sigma_min      = cfg.mds.sigma_min,
-        sigma_max      = cfg.mds.sigma_max,
-        guidance_scale = cfg.mds.guidance_scale,
+        sigma_min        = cfg.mds.sigma_min,
+        sigma_max        = cfg.mds.sigma_max,
+        guidance_scale   = cfg.mds.guidance_scale,
         motion_bucket_id = cfg.mds.motion_bucket_id,
-        grad_clip      = cfg.mds.grad_clip,
-        device         = dev,
+        grad_clip        = cfg.mds.grad_clip,
+        device           = dev,
     )
 
     # ── optimiser ────────────────────────────────────────────────────────────
     gnn_params = (list(model.node_encoder.parameters()) +
                   list(model.gnn_layers.parameters()) +
-                  list(model.decoder.parameters()))
+                  list(model.accel_decoder.parameters()))
     opt = torch.optim.Adam([
-        {"params": gnn_params,   "lr": cfg.train.lr_gnn},
-        {"params": [z0_bank],    "lr": cfg.train.lr_z0},
+        {"params": gnn_params, "lr": cfg.train.lr_gnn},
+        {"params": [z0_bank],  "lr": cfg.train.lr_z0},
     ])
 
     # ── resume ────────────────────────────────────────────────────────────────
@@ -271,10 +263,7 @@ def main():
             start = ckpt["step"] + 1
             print(f"[train] resumed from step {start}")
 
-    # GNN is tiny (205 nodes, hidden=128); bottleneck is SVD UNet — no compile needed
-    torch.set_float32_matmul_precision("high")   # TF32 for fp32 matmuls
-    encode_fn = model.encode
-    print("[train] eager mode (GNN too small to benefit from compile)")
+    torch.set_float32_matmul_precision("high")   # TF32
 
     def sync_r2():
         if args.r2:
@@ -284,45 +273,43 @@ def main():
 
     # ── training loop ─────────────────────────────────────────────────────────
     for step in range(start, cfg.train.iters):
-        k = rng.randint(0, B - 1)            # sample from bank
-        v = rng.randint(0, V - 1)            # sample camera
-        z0  = z0_bank[k]                     # [K, z0_dim]
+        k = rng.randint(0, B - 1)
+        v = rng.randint(0, V - 1)
+        z0  = z0_bank[k]          # [K, 3] — initial velocity for this trajectory
         cam = cameras[v]
 
-        # frame-0: canonical render (no grad needed; SVD conditions on it)
         with torch.no_grad():
             frame0 = render_fn(cam).clamp(0, 1)   # [3, H, W]
 
-        # encode once per step (GNN; t-independent)
-        h = encode_fn(z0)                             # [K, H]
+        # scene encoding: canonical structure only, z0-independent
+        h = model.encode_scene()                   # [K, H]
 
-        # batch-decode all T-1 time steps in one MLP forward pass
-        t_vals = torch.arange(1, T, dtype=torch.float32, device=dev)
-        all_disps = model.decode_batch(h, t_vals)     # [T-1, G, 3]
+        # physics rollout: acc(t) → vel(t) → disp(t), fully vectorised
+        all_disps = model.rollout(h, z0)           # [T-1, G, 3]
 
-        # render frames (rasterizer is not batchable, still a Python loop)
+        # render T frames
         frames = [frame0]
         for i in range(T - 1):
-            xyz_def = canonical_xyz + all_disps[i]    # [G, 3]
+            xyz_def = canonical_xyz + all_disps[i]
             img = render_gaussians(
                 cam, xyz_def,
                 gauss["opacities"], gauss["scales"],
                 gauss["rotations"], gauss["colors"], bg,
             )
             frames.append(img)
-        frames_t = torch.stack(frames, dim=0)         # [T, 3, H, W]
+        frames_t = torch.stack(frames, dim=0)      # [T, 3, H, W]
 
         opt.zero_grad()
 
-        # MDS loss (DreamPhysics: motion-only gradient)
+        # MDS loss
         loss = svd.mds_loss(frames_t, cond_image=frame0, w_power=cfg.mds.w_power)
 
-        # ARAP regularisation (reuse already-encoded h)
+        # ARAP
         if cfg.train.lambda_arap > 0:
-            t_reg = float(rng.randint(1, T - 1))
-            loss  = loss + cfg.train.lambda_arap * model.arap_loss(h, t_reg)
+            t_reg = rng.randint(1, T - 1)
+            loss  = loss + cfg.train.lambda_arap * model.arap_loss(h, z0, t_reg)
 
-        # z0_bank magnitude regularisation (keep initial states small / plausible)
+        # z0 magnitude regularisation
         if cfg.train.lambda_z0 > 0:
             loss = loss + cfg.train.lambda_z0 * (z0_bank ** 2).mean()
 
@@ -336,8 +323,9 @@ def main():
         opt.step()
 
         if step % cfg.train.log_every == 0:
+            z0_rms = float(z0_bank.detach().pow(2).mean().sqrt())
             print(f"[{step}/{cfg.train.iters}] loss={float(loss):.4f}  "
-                  f"k={k}  v={v}")
+                  f"k={k}  v={v}  z0_rms={z0_rms:.4f}")
 
         if step % cfg.train.ckpt_every == 0:
             ckpt_mgr.save(step, {
@@ -346,7 +334,6 @@ def main():
                 "z0_bank": z0_bank.data,
                 "step":    step,
             })
-            # save one rollout video for inspection
             _save_rollout(step, model, z0_bank, cameras[0], canonical_xyz,
                           gauss, bg, T, args.out)
             sync_r2()
@@ -365,17 +352,20 @@ def main():
 
 @torch.no_grad()
 def _save_rollout(step, model, z0_bank, cam, canon_xyz, gauss, bg, T, out):
-    frames = []
-    # render all bank entries side-by-side for frame T//2
-    t_mid = T // 2
-    B = z0_bank.shape[0]
+    H, W = cam.image_height, cam.image_width
+    B    = z0_bank.shape[0]
     cols = min(B, 4)
     rows = math.ceil(B / cols)
-    H, W = cam.image_height, cam.image_width
+
+    # scene features (shared across all bank entries)
+    h = model.encode_scene()
+
+    # bank preview at t=T//2
+    t_mid  = T // 2
     canvas = np.zeros((rows * H, cols * W, 3), np.uint8)
     for bi in range(B):
-        z0 = z0_bank[bi]
-        disp = model(z0, float(t_mid))
+        z0   = z0_bank[bi]
+        disp = model(h, z0, t_mid)   # [G, 3]
         img  = render_gaussians(
             cam, canon_xyz + disp,
             gauss["opacities"], gauss["scales"], gauss["rotations"],
@@ -384,16 +374,21 @@ def _save_rollout(step, model, z0_bank, cam, canon_xyz, gauss, bg, T, out):
         arr = (img.clamp(0,1).permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
         r, c = divmod(bi, cols)
         canvas[r*H:(r+1)*H, c*W:(c+1)*W] = arr
-    path = os.path.join(out, f"bank_t{t_mid:02d}_step{step:06d}.png")
-    Image.fromarray(canvas).save(path)
+    Image.fromarray(canvas).save(
+        os.path.join(out, f"bank_t{t_mid:02d}_step{step:06d}.png"))
 
-    # also save a single rollout video for bank entry 0
+    # single rollout video for bank entry 0
     frames = []
-    for t in range(T):
-        z0   = z0_bank[0]
-        disp = model(z0, float(t))
-        img  = render_gaussians(
-            cam, canon_xyz + disp,
+    disps  = model.rollout(h, z0_bank[0])   # [T-1, G, 3]
+    frame0 = render_gaussians(
+        cam, canon_xyz,
+        gauss["opacities"], gauss["scales"], gauss["rotations"],
+        gauss["colors"], bg,
+    )
+    frames.append(frame0)
+    for i in range(T - 1):
+        img = render_gaussians(
+            cam, canon_xyz + disps[i],
             gauss["opacities"], gauss["scales"], gauss["rotations"],
             gauss["colors"], bg,
         )
