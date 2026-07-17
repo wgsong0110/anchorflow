@@ -109,7 +109,11 @@ def load_colmap_cameras(col_dir: str, n_views: int, res: int) -> list:
         W0, H0 = cam.width, cam.height
         S   = min(W0, H0)
         fov = 2 * math.atan(S / (2 * f))
-        R   = qvec2rotmat(im.qvec).astype(np.float32)
+        # qvec2rotmat gives the W2C rotation; getWorld2View2 transposes what it
+        # receives, so it must be handed the C2W rotation (as 3DGS's own
+        # readColmapCameras does). Without this transpose the view matrix is
+        # inverted and the cameras point away from the scene.
+        R   = np.transpose(qvec2rotmat(im.qvec)).astype(np.float32)
         T   = np.array(im.tvec, dtype=np.float32)
         cams.append(Cam(R, T, fov, fov, res, res))
     return cams
