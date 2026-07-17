@@ -16,14 +16,14 @@ views:
   res: 576
 
 train:
-  iters: 30000
-  lr_gnn:    1.0e-3
-  lr_traj:   2.0e-3
-  lr_init:   2.0e-3
+  iters: 20000
+  lr_gnn:    2.0e-3
+  lr_traj:   2.0e-2
+  lr_init:   1.0e-2
   lambda_ssim:   0.2
-  lambda_arap:   0.05
-  lambda_smooth: 0.01
-  lambda_init:   1.0e-4
+  lambda_arap:   0.002
+  lambda_smooth: 0.0005
+  lambda_init:   0.0
   grad_clip:     1.0
   log_every:     100
   ckpt_every:    2000
