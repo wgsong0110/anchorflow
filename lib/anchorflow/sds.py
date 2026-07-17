@@ -212,12 +212,13 @@ class SVDGuidance:
         return self._apply(x0, grad)
 
     # --- Motion Distillation Sampling (DreamPhysics, AAAI'25) -------------- #
-    def mds_loss(self, frames, cond_image, w_power=0.0, cond_cache=None):
+    def mds_loss(self, frames, cond_image, w_power=0.0, cond_cache=None,
+                 vae_checkpoint=True):
         """MDS: grad = w(sigma) * (eps(video) - eps(static frame-0)).
         Single UNet forward for both clips (batch=4, OOM fallback to batch=2×2).
         cond_cache: precompute_cond() output for this camera (frame-0 is fixed)."""
         T  = frames.shape[0]
-        x0 = self.encode_frames(frames)                          # [1,T,4,h,w] w/ grad
+        x0 = self.encode_frames(frames, use_checkpoint=vae_checkpoint)
         with torch.no_grad():
             if cond_cache is not None:
                 lat0     = cond_cache["lat0"]

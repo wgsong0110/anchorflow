@@ -151,51 +151,44 @@ def main():
 
     frames = tm(f"5. LBS+render {T}프레임 (checkpoint)", render_all_ckpt)
     peak_ckpt = torch.cuda.max_memory_allocated() // (1024**2)
-    del frames; torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
-
-    frames = tm(f"5b. LBS+render {T}프레임 (graph 유지)", render_all_plain)
-    peak_plain = torch.cuda.max_memory_allocated() // (1024**2)
+    peak_plain = 0
 
     m0 = torch.cuda.memory_allocated() // (1024**2)
     tm("6. VAE encode (checkpoint)", lambda: svd.encode_frames(frames))
     m1 = torch.cuda.memory_allocated() // (1024**2)
     print(f"     -> VAE checkpoint 메모리 증가: {m1-m0} MiB")
-    torch.cuda.empty_cache()
-    m0 = torch.cuda.memory_allocated() // (1024**2)
-    tm("6b. VAE encode (graph 유지)",
-       lambda: svd.encode_frames(frames, use_checkpoint=False))
-    m1 = torch.cuda.memory_allocated() // (1024**2)
-    print(f"     -> VAE graph 메모리 증가: {m1-m0} MiB")
-    torch.cuda.empty_cache()
 
-    print("\n=== MDS 전체 (forward) ===")
-    loss = tm("7. mds_loss (cache 사용)",
-              lambda: svd.mds_loss(frames, cond_image=frame0,
-                                   w_power=cfg.mds.w_power, cond_cache=cond))
-
-    print("\n=== backward ===")
-    tm("8. loss.backward()", lambda: loss.backward())
+    del frames; torch.cuda.empty_cache()
 
     # end-to-end step, exactly as training runs it
     print("\n=== 전체 step (실제 학습 경로) ===")
     torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
-    def full_step():
-        h_ = model.encode_scene()
-        nd_ = model.rollout_nodes(h_, z0)
-        fr = [frame0]
-        for i in range(T - 1):
-            d = model.lbs_frame(nd_[i])
-            fr.append(checkpoint(lambda x: render_at(cam, x), canon + d,
-                                 use_reentrant=False))
-        ft = torch.stack(fr, 0)
-        l = svd.mds_loss(ft, cond_image=frame0, w_power=cfg.mds.w_power,
-                         cond_cache=cond)
-        l.backward()
-        if z0.grad is not None: z0.grad = None
-        model.zero_grad(set_to_none=True)
-        return l
-    tm("9. 전체 step (fwd+bwd)", full_step, n=3)
-    print(f"     peak: {torch.cuda.max_memory_allocated()//(1024**2)} MiB")
+    def full_step(vae_ckpt):
+        def _f():
+            h_ = model.encode_scene()
+            nd_ = model.rollout_nodes(h_, z0)
+            fr = [frame0]
+            for i in range(T - 1):
+                d = model.lbs_frame(nd_[i])
+                fr.append(checkpoint(lambda x: render_at(cam, x), canon + d,
+                                     use_reentrant=False))
+            ft = torch.stack(fr, 0)
+            l = svd.mds_loss(ft, cond_image=frame0, w_power=cfg.mds.w_power,
+                             cond_cache=cond, vae_checkpoint=vae_ckpt)
+            l.backward()
+            if z0.grad is not None: z0.grad = None
+            model.zero_grad(set_to_none=True)
+            return l
+        return _f
+
+    for label, vc in [("VAE checkpoint", True), ("VAE graph 유지", False)]:
+        torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
+        try:
+            tm(f"9. 전체 step ({label})", full_step(vc), n=3)
+            print(f"     peak: {torch.cuda.max_memory_allocated()//(1024**2)} MiB")
+        except torch.OutOfMemoryError:
+            print(f"  9. 전체 step ({label}): OOM")
+            torch.cuda.empty_cache()
 
     tm.report()
 
