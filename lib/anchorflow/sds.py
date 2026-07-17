@@ -117,6 +117,10 @@ class SVDGuidance:
         clat2 = torch.cat([torch.zeros_like(cond_lat), cond_lat], dim=0)
         emb2 = torch.cat([torch.zeros_like(img_emb), img_emb], dim=0)
         tid2 = torch.cat([time_ids, time_ids], dim=0)
+        # cast all UNet inputs to fp16 (UNet weights are fp16)
+        dt = self.dtype
+        zin2  = zin2.to(dt);  clat2 = clat2.to(dt)
+        emb2  = emb2.to(dt);  tid2  = tid2.to(dt)
         # temporarily move UNet to GPU, run, move back
         self.unet.to(self.device)
         v = self.unet(torch.cat([zin2, clat2], dim=2), t,
