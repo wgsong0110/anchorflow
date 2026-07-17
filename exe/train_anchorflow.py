@@ -271,12 +271,13 @@ def main():
             start = ckpt["step"] + 1
             print(f"[train] resumed from step {start}")
 
-    # ── torch.compile ─────────────────────────────────────────────────────────
+    # ── torch.compile (encode only — no t dependency, no recompilation) ──────
+    torch.set_float32_matmul_precision("high")   # TF32 for fp32 matmuls
     try:
-        fwd = torch.compile(model)
-        print("[train] torch.compile enabled")
+        encode_fn = torch.compile(model.encode)
+        print("[train] torch.compile(encode) enabled")
     except Exception as e:
-        fwd = model
+        encode_fn = model.encode
         print(f"[train] torch.compile skip ({e})")
 
     def sync_r2():
@@ -296,10 +297,13 @@ def main():
         with torch.no_grad():
             frame0 = render_fn(cam).clamp(0, 1)   # [3, H, W]
 
-        # render frames t=1..T-1 (with grad through z0 and GNN)
+        # encode once per step (GNN; t-independent) — 24× speedup vs per-frame
+        h = encode_fn(z0)                             # [K, H]
+
+        # render frames t=1..T-1 (with grad through z0 and h)
         frames = [frame0]
         for t in range(1, T):
-            gauss_disp = fwd(z0, float(t))           # [G, 3]
+            gauss_disp = model.decode(h, float(t))    # [G, 3]
             xyz_def    = canonical_xyz + gauss_disp   # [G, 3]
             img = render_gaussians(
                 cam, xyz_def,
@@ -314,10 +318,10 @@ def main():
         # MDS loss (DreamPhysics: motion-only gradient)
         loss = svd.mds_loss(frames_t, cond_image=frame0, w_power=cfg.mds.w_power)
 
-        # ARAP regularisation (sample random t > 0)
+        # ARAP regularisation (reuse already-encoded h)
         if cfg.train.lambda_arap > 0:
             t_reg = float(rng.randint(1, T - 1))
-            loss  = loss + cfg.train.lambda_arap * model.arap_loss(z0.detach(), t_reg)
+            loss  = loss + cfg.train.lambda_arap * model.arap_loss(h, t_reg)
 
         # z0_bank magnitude regularisation (keep initial states small / plausible)
         if cfg.train.lambda_z0 > 0:

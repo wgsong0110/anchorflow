@@ -138,41 +138,44 @@ class NodeFlow(nn.Module):
         emb = torch.cat([ang.sin(), ang.cos()])  # [2*t_feat]
         return emb.unsqueeze(0).expand(K, -1)    # [K, 2*t_feat]
 
-    # ── forward ─────────────────────────────────────────────────────────────
+    # ── encode: GNN pass (t-independent; call once per step) ────────────────
+    def encode(self, z0: torch.Tensor) -> torch.Tensor:
+        """z0 [K, z0_dim] → node features h [K, H]. Call once per step."""
+        h = self.node_encoder(torch.cat([self.node_pos, z0], dim=-1))
+        for layer in self.gnn_layers:
+            h = layer(h, self.node_edge)
+        return h
+
+    # ── decode: time-conditioned displacement from cached h ──────────────────
+    def decode(self, h: torch.Tensor, t: float) -> torch.Tensor:
+        """h [K, H], t float → [G, 3] Gaussian displacement."""
+        G   = self.canonical_xyz.shape[0]
+        dev = self.node_pos.device
+        if t <= 0.0:
+            return torch.zeros(G, 3, device=dev)
+        K = self.n_nodes
+        t_norm    = t / max(self.n_frames - 1, 1)
+        t_emb     = self._t_emb(t_norm, K)
+        node_disp = self.decoder(torch.cat([h, t_emb.to(h.dtype)], dim=-1))  # [K, 3]
+        nd_nb      = node_disp[self.gauss_node_idx]                           # [G, kG, 3]
+        return (self.gauss_node_w.unsqueeze(-1) * nd_nb).sum(1)               # [G, 3]
+
+    # ── forward: kept for compatibility (rollout / arap) ─────────────────────
     def forward(self, z0: torch.Tensor, t: float) -> torch.Tensor:
         """
         z0  : [K, z0_dim]  initial state sampled from z0_bank
         t   : float ∈ [0, T-1]; t=0 → zero displacement (canonical)
         Returns [G, 3] Gaussian displacement.
         """
-        G = self.canonical_xyz.shape[0]
-        dev = self.node_pos.device
-        if t <= 0.0:
-            return torch.zeros(G, 3, device=dev)
-
-        K = self.n_nodes
-        h = self.node_encoder(torch.cat([self.node_pos, z0], dim=-1))   # [K, H]
-        for layer in self.gnn_layers:
-            h = layer(h, self.node_edge)
-
-        t_norm = t / max(self.n_frames - 1, 1)
-        t_emb  = self._t_emb(t_norm, K)                                  # [K, 2*f]
-        node_disp = self.decoder(torch.cat([h, t_emb.to(h.dtype)], dim=-1))  # [K, 3]
-
-        # LBS: weighted aggregation from nodes to Gaussians
-        nd_nb     = node_disp[self.gauss_node_idx]                       # [G, kG, 3]
-        gauss_disp = (self.gauss_node_w.unsqueeze(-1) * nd_nb).sum(1)   # [G, 3]
-        return gauss_disp
+        return self.decode(self.encode(z0), t)
 
     # ── regularisation ───────────────────────────────────────────────────────
-    def arap_loss(self, z0: torch.Tensor, t: float) -> torch.Tensor:
+    def arap_loss(self, h: torch.Tensor, t: float) -> torch.Tensor:
+        """h [K, H] already encoded; returns ARAP loss at time t."""
         if t <= 0:
             return torch.tensor(0.0, device=self.node_pos.device)
-        h = self.node_encoder(torch.cat([self.node_pos, z0], dim=-1))
-        for layer in self.gnn_layers:
-            h = layer(h, self.node_edge)
-        t_norm = t / max(self.n_frames - 1, 1)
-        t_emb  = self._t_emb(t_norm, self.n_nodes)
+        t_norm    = t / max(self.n_frames - 1, 1)
+        t_emb     = self._t_emb(t_norm, self.n_nodes)
         node_disp = self.decoder(torch.cat([h, t_emb.to(h.dtype)], dim=-1))
         node_now  = self.node_pos + node_disp
         src, dst  = self.arap_edge
