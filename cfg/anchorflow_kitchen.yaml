@@ -1,0 +1,32 @@
+white_bg: false
+t2n_views: 4          # number of views used for tokens_to_nodes
+
+model:
+  n_nodes:     256
+  n_frames:    25     # SVD-XT native frame count
+  hidden:      128
+  n_gnn_layers: 4
+  k_node:      8
+  k_gauss:     4
+  z0_dim:      32
+  res:         512    # render resolution (H=W)
+
+train:
+  iters:        30000
+  n_views:      8     # cameras sampled from COLMAP for training
+  z0_bank_size: 16    # number of initial states in bank
+  lr_gnn:       1.0e-4
+  lr_z0:        5.0e-4
+  lambda_arap:  0.001
+  lambda_z0:    1.0e-5
+  grad_clip:    1.0
+  log_every:    50
+  ckpt_every:   1000
+
+mds:
+  sigma_min:        0.05
+  sigma_max:        20.0
+  guidance_scale:   3.0
+  motion_bucket_id: 127
+  w_power:          0.0   # weight schedule power (0 = uniform)
+  grad_clip:        1.0
