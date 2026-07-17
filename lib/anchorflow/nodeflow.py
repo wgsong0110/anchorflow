@@ -159,7 +159,39 @@ class NodeFlow(nn.Module):
             h = layer(h, self.node_edge)
         return h
 
+    def lbs_frame(self, node_disp: torch.Tensor) -> torch.Tensor:
+        """node_disp [K,3] → Gaussian disp [G,3]. Per-frame LBS.
+
+        Use this instead of rollout() on large scenes: the batched form
+        materialises [T,G,kG,3], which is ~2GB at G=1.85M/T=25.
+        """
+        nd_nb = node_disp[self.gauss_node_idx]                  # [G,kG,3]
+        return (self.gauss_node_w.unsqueeze(-1) * nd_nb).sum(1)  # [G,3]
+
     # ── physics rollout (vectorised) ─────────────────────────────────────────
+    def rollout_nodes(self, h: torch.Tensor, z0: torch.Tensor) -> torch.Tensor:
+        """Node-space rollout → [T-1, K, 3]. No LBS, so memory stays O(T*K).
+
+        Integration (symplectic Euler, step size dt):
+            vel[t]  = z0 + dt * cumsum(acc)[t-1]
+            disp[t] = dt * cumsum(vel)[t-1]
+        """
+        T   = self.n_frames
+        K   = self.n_nodes
+        dev = self.node_pos.device
+        dt  = self.dt
+
+        t_idx   = torch.arange(1, T, device=dev, dtype=torch.float32)
+        t_norms = t_idx / max(T - 1, 1)
+        t_emb   = self._t_emb_batch(t_norms)                      # [T-1, 2*t_feat]
+
+        h_exp   = h.unsqueeze(0).expand(T - 1, -1, -1)            # [T-1, K, H]
+        t_exp   = t_emb.unsqueeze(1).expand(-1, K, -1).to(h.dtype)
+        acc     = self.accel_decoder(torch.cat([h_exp, t_exp], dim=-1))  # [T-1,K,3]
+
+        vel = z0.unsqueeze(0) + dt * acc.cumsum(0)                # [T-1, K, 3]
+        return dt * vel.cumsum(0)                                 # [T-1, K, 3]
+
     def rollout(self, h: torch.Tensor, z0: torch.Tensor) -> torch.Tensor:
         """
         h   : [K, H]   scene features from encode_scene()
