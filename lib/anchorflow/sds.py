@@ -80,20 +80,20 @@ class SVDGuidance:
 
     @torch.no_grad()
     def _cond_latent(self, cond_image):
-        """VAE-encode the noise-augmented conditioning frame -> [1,4,h,w]."""
-        img = (cond_image[None] * 2 - 1).to(self.device, self.dtype)
+        """VAE-encode the noise-augmented conditioning frame -> [1,4,h,w] float32."""
+        img = (cond_image[None] * 2 - 1).to(self.device).float()
         img = img + self.noise_aug * torch.randn_like(img)
         return self.vae.encode(img).latent_dist.mode()
 
     def encode_frames(self, frames):
-        """frames: [T,3,H,W] in [0,1], WITH grad. -> latents [1,T,4,h,w].
-        Encode frame-by-frame to avoid OOM on 25-frame sequences."""
+        """frames: [T,3,H,W] in [0,1], WITH grad. -> latents [1,T,4,h,w] float32.
+        VAE stays in float32; encode frame-by-frame to avoid OOM."""
         lats = []
         for t in range(frames.shape[0]):
-            x = (frames[t:t+1] * 2 - 1).to(self.dtype)   # [1,3,H,W]
+            x = (frames[t:t+1] * 2 - 1).float()           # [1,3,H,W] float32
             lat = self.vae.encode(x).latent_dist.mode() * self.vae_scale
             lats.append(lat)                                # [1,4,h,w]
-        return torch.stack(lats, dim=1)                    # [1,T,4,h,w]
+        return torch.stack(lats, dim=1)                    # [1,T,4,h,w] float32
 
     def _time_ids(self):
         ids = torch.tensor([[self.fps - 1, self.motion_bucket_id, self.noise_aug]],
