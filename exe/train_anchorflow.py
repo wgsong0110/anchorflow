@@ -71,18 +71,27 @@ def look_at(eye, center, up):
 
 
 def make_orbit_cameras(xyz, n_views, res, elevation=15.0,
-                       fov_deg=50.0, radius_scale=2.5) -> list:
+                       fov_deg=50.0, radius_scale=2.5,
+                       az_min=0.0, az_max=360.0) -> list:
     """Spherical-orbit cameras derived from the Gaussian bbox (same convention
-    as gen_views.py). Use for object-centric scenes with no matching COLMAP."""
+    as gen_views.py). Use for object-centric scenes with no matching COLMAP.
+
+    az_min/az_max restrict the arc. The lego capture has reconstructed
+    background geometry (back wall) that occludes the subject near az 0-60, so
+    those angles carry no usable signal; sweep only the arc that sees it.
+    """
     lo, hi = xyz.min(0).values.cpu().numpy(), xyz.max(0).values.cpu().numpy()
     center = ((lo + hi) * 0.5).astype(np.float32)
     diag   = float(np.linalg.norm(hi - lo))
     radius = radius_scale * diag * 0.5
     fov    = math.radians(fov_deg)
     el     = math.radians(elevation)
+    span   = az_max - az_min
+    # endpoint-exclusive only on a full 360 sweep (else az_min == az_max)
+    denom  = n_views if span >= 359.9 else max(n_views - 1, 1)
     cams   = []
     for i in range(n_views):
-        az  = math.radians(360.0 * i / n_views)
+        az  = math.radians(az_min + span * i / denom)
         eye = center + radius * np.array([
             math.cos(el) * math.sin(az),
             math.sin(el),
@@ -92,7 +101,8 @@ def make_orbit_cameras(xyz, n_views, res, elevation=15.0,
         T = -Rc.T @ eye
         cams.append(Cam(Rc, T, fov, fov, res, res))
     print(f"[train] orbit cameras: center={center.round(3)} diag={diag:.2f} "
-          f"radius={radius:.2f} elev={elevation}° fov={fov_deg}°")
+          f"radius={radius:.2f} elev={elevation}° fov={fov_deg}° "
+          f"az={az_min:.0f}-{az_max:.0f}°")
     return cams
 
 
@@ -191,6 +201,8 @@ def main():
     ap.add_argument("--elevation",    type=float, default=15.0)
     ap.add_argument("--fov_deg",      type=float, default=50.0)
     ap.add_argument("--radius_scale", type=float, default=2.5)
+    ap.add_argument("--az_min",       type=float, default=0.0)
+    ap.add_argument("--az_max",       type=float, default=360.0)
     ap.add_argument("--cfg",    required=True)
     ap.add_argument("--out",    required=True)
     ap.add_argument("--r2",     default=None)
@@ -221,6 +233,7 @@ def main():
             canonical_xyz, cfg.train.n_views, cfg.model.res,
             elevation=args.elevation, fov_deg=args.fov_deg,
             radius_scale=args.radius_scale,
+            az_min=args.az_min, az_max=args.az_max,
         )
     V = len(cameras)
     T = cfg.model.n_frames
