@@ -274,8 +274,10 @@ def main():
         frames_t = torch.stack(frames, dim=0)            # [T, 3, H, W]
 
         opt.zero_grad()
+        # VAE graph is 169ms/step cheaper than checkpointing it and still fits
+        # (peak ~20.7GB) once the render is checkpointed.
         loss = svd.mds_loss(frames_t, cond_image=frame0, w_power=cfg.mds.w_power,
-                            cond_cache=cond_cache[v])
+                            cond_cache=cond_cache[v], vae_checkpoint=False)
 
         if cfg.train.lambda_arap > 0:
             t_reg = rng.randint(1, T - 1)
