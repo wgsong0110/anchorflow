@@ -55,6 +55,16 @@ class SVDGuidance:
         self.motion_bucket_id, self.fps, self.noise_aug = motion_bucket_id, fps, noise_aug
         self.vae_scale = pipe.vae.config.scaling_factor if use_vae_scaling else 1.0
         self.num_frames = self.unet.config.num_frames
+        # memory-efficient attention (reduces peak activation ~4x for temporal attn)
+        try:
+            self.unet.enable_xformers_memory_efficient_attention()
+            print("[SVDGuidance] xformers attention enabled")
+        except Exception:
+            try:
+                self.unet.set_attention_slice("auto")
+                print("[SVDGuidance] attention slicing enabled")
+            except Exception:
+                pass
         del pipe
         import gc; gc.collect()
         torch.cuda.empty_cache()
