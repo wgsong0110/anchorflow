@@ -49,14 +49,15 @@ class SVDGuidance:
         self.video_processor = getattr(pipe, "video_processor", None)
         for m in (self.vae, self.unet, self.image_encoder):
             m.requires_grad_(False)
-        del pipe
-        import gc; gc.collect()
-        torch.cuda.empty_cache()
         self.device, self.dtype = device, dtype
         self.sigma_min, self.sigma_max = sigma_min, sigma_max
         self.guidance_scale = guidance_scale
         self.motion_bucket_id, self.fps, self.noise_aug = motion_bucket_id, fps, noise_aug
         self.vae_scale = pipe.vae.config.scaling_factor if use_vae_scaling else 1.0
+        self.num_frames = self.unet.config.num_frames
+        del pipe
+        import gc; gc.collect()
+        torch.cuda.empty_cache()
         self.grad_clip = grad_clip
         self.num_frames = self.unet.config.num_frames
 
