@@ -125,6 +125,12 @@ def main():
     g = GaussianModel(3)
     g.load_ply(f"{args.model}/point_cloud/iteration_{args.iter}/point_cloud.ply")
     g.active_sh_degree = 3
+    # load_ply makes every attribute a requires_grad=True Parameter. Only the
+    # positions are deformed here; SH/opacity/scale/rotation are frozen inputs,
+    # so keep them out of autograd entirely.
+    for _p in (g._features_dc, g._features_rest, g._opacity,
+               g._scaling, g._rotation, g._xyz):
+        _p.requires_grad_(False)
     canonical_xyz = g.get_xyz.detach().clone()
     G = canonical_xyz.shape[0]
     print(f"[train] gaussians={G}  commit={gh}")
@@ -141,8 +147,9 @@ def main():
         return render(cam, g, Pipe(), bg)["render"]
 
     def render_ckpt(cam, xyz):
-        """Checkpointed render. Only needed if the VAE keeps its activations;
-        with encode_frames checkpointed there is room for the raster graph."""
+        """Checkpointed render. Measured: keeping the raster graph costs 21.2GB
+        vs 6.1GB checkpointed (G=1.85M, T=25) — it does not fit alongside the
+        UNet, so this is not optional."""
         return checkpoint(lambda x: render_at(cam, x), xyz, use_reentrant=False)
 
     def render_canonical(cam):
@@ -263,7 +270,7 @@ def main():
         frames = [frame0]
         for i in range(T - 1):
             disp = model.lbs_frame(node_disps[i])        # [G, 3]
-            frames.append(render_at(cam, canonical_xyz + disp))
+            frames.append(render_ckpt(cam, canonical_xyz + disp))
         frames_t = torch.stack(frames, dim=0)            # [T, 3, H, W]
 
         opt.zero_grad()

@@ -84,9 +84,12 @@ def main():
     g = GaussianModel(3)
     g.load_ply(f"{args.model}/point_cloud/iteration_30000/point_cloud.ply")
     g.active_sh_degree = 3
+    for _p in (g._features_dc, g._features_rest, g._opacity,
+               g._scaling, g._rotation, g._xyz):
+        _p.requires_grad_(False)
     canon = g.get_xyz.detach().clone()
     G = canon.shape[0]
-    print(f"  gaussians={G}  LBS_CUDA={_LBS_CUDA}")
+    print(f"  gaussians={G}  LBS_CUDA={_LBS_CUDA}  (gaussian attrs frozen)")
 
     cj = json.load(open(f"{args.model}/cameras.json"))[0]
     rot = np.array(cj["rotation"], dtype=np.float32); pos = np.array(cj["position"], dtype=np.float32)
@@ -171,7 +174,28 @@ def main():
                                    w_power=cfg.mds.w_power, cond_cache=cond))
 
     print("\n=== backward ===")
-    tm("8. loss.backward()", lambda: loss.backward(retain_graph=True))
+    tm("8. loss.backward()", lambda: loss.backward())
+
+    # end-to-end step, exactly as training runs it
+    print("\n=== 전체 step (실제 학습 경로) ===")
+    torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
+    def full_step():
+        h_ = model.encode_scene()
+        nd_ = model.rollout_nodes(h_, z0)
+        fr = [frame0]
+        for i in range(T - 1):
+            d = model.lbs_frame(nd_[i])
+            fr.append(checkpoint(lambda x: render_at(cam, x), canon + d,
+                                 use_reentrant=False))
+        ft = torch.stack(fr, 0)
+        l = svd.mds_loss(ft, cond_image=frame0, w_power=cfg.mds.w_power,
+                         cond_cache=cond)
+        l.backward()
+        if z0.grad is not None: z0.grad = None
+        model.zero_grad(set_to_none=True)
+        return l
+    tm("9. 전체 step (fwd+bwd)", full_step, n=3)
+    print(f"     peak: {torch.cuda.max_memory_allocated()//(1024**2)} MiB")
 
     tm.report()
 
