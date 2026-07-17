@@ -40,13 +40,18 @@ class SVDGuidance:
         from diffusers import StableVideoDiffusionPipeline
         pipe = StableVideoDiffusionPipeline.from_pretrained(
             model_id, torch_dtype=dtype, variant="fp16")
-        self.vae = pipe.vae.to(device).eval()
-        self.unet = pipe.unet.to(device).eval()
-        self.image_encoder = pipe.image_encoder.to(device).eval()
+        # VAE needs grad flow → keep on GPU in float32
+        self.vae = pipe.vae.to(device, torch.float32).eval()
+        # UNet + image_encoder are frozen → CPU offload to save ~3 GB VRAM
+        self.unet = pipe.unet.to("cpu").eval()
+        self.image_encoder = pipe.image_encoder.to("cpu").eval()
         self.feature_extractor = pipe.feature_extractor
         self.video_processor = getattr(pipe, "video_processor", None)
         for m in (self.vae, self.unet, self.image_encoder):
             m.requires_grad_(False)
+        del pipe
+        import gc; gc.collect()
+        torch.cuda.empty_cache()
         self.device, self.dtype = device, dtype
         self.sigma_min, self.sigma_max = sigma_min, sigma_max
         self.guidance_scale = guidance_scale
@@ -65,7 +70,11 @@ class SVDGuidance:
         px = self.feature_extractor(images=img, do_normalize=True,
                                     do_center_crop=False, do_resize=False,
                                     do_rescale=False, return_tensors="pt").pixel_values
+        # temporarily move image_encoder to GPU
+        self.image_encoder.to(self.device)
         emb = self.image_encoder(px.to(self.device, self.dtype)).image_embeds
+        self.image_encoder.to("cpu")
+        torch.cuda.empty_cache()
         return emb.unsqueeze(1)                                  # [1,1,1024]
 
     @torch.no_grad()
@@ -107,9 +116,13 @@ class SVDGuidance:
         clat2 = torch.cat([torch.zeros_like(cond_lat), cond_lat], dim=0)
         emb2 = torch.cat([torch.zeros_like(img_emb), img_emb], dim=0)
         tid2 = torch.cat([time_ids, time_ids], dim=0)
+        # temporarily move UNet to GPU, run, move back
+        self.unet.to(self.device)
         v = self.unet(torch.cat([zin2, clat2], dim=2), t,
                       encoder_hidden_states=emb2, added_time_ids=tid2,
                       return_dict=False)[0]
+        self.unet.to("cpu")
+        torch.cuda.empty_cache()
         v_u, v_c = v.chunk(2)
         v = v_u + self.guidance_scale * (v_c - v_u)
         x0_pred = v * (-sigma / (sigma ** 2 + 1).sqrt()) + z / (sigma ** 2 + 1)

@@ -192,19 +192,29 @@ def main():
     node_pos = None
     if not args.no_t2n:
         try:
-            from anchorflow.tokens_to_nodes import tokens_to_nodes
+            from anchorflow.tokens_to_nodes import tokens_to_nodes, _dino_model
+            import anchorflow.tokens_to_nodes as t2n_mod
             print("[train] building semantic nodes via tokens_to_nodes ...")
             node_pos = tokens_to_nodes(
                 canonical_xyz,
                 gauss["opacities"],
                 render_fn,
-                cameras[:cfg.get("t2n_views", 4)],   # use first 4 cams for efficiency
+                cameras[:cfg.get("t2n_views", 4)],
                 n_nodes=cfg.model.n_nodes,
                 device=dev,
             )
+            # free DINOv2 immediately to reclaim ~350MB VRAM before SVD loads
+            if t2n_mod._dino_model is not None:
+                del t2n_mod._dino_model
+                t2n_mod._dino_model = None
+            import gc; gc.collect()
+            torch.cuda.empty_cache()
+            print("[train] DINOv2 freed")
         except Exception as e:
             print(f"[train] tokens_to_nodes failed ({e}), falling back to FPS")
             node_pos = None
+            import gc; gc.collect()
+            torch.cuda.empty_cache()
 
     # ── model ─────────────────────────────────────────────────────────────────
     model = NodeFlow(

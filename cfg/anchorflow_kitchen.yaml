@@ -9,7 +9,7 @@ model:
   k_node:      8
   k_gauss:     4
   z0_dim:      32
-  res:         384    # render resolution (H=W) — lower to fit 24GB
+  res:         256    # render resolution (H=W); latent 32x32 to fit 24GB
 
 train:
   iters:        30000
