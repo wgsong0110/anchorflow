@@ -293,14 +293,17 @@ def main():
         with torch.no_grad():
             frame0 = render_fn(cam).clamp(0, 1)   # [3, H, W]
 
-        # encode once per step (GNN; t-independent) — 24× speedup vs per-frame
+        # encode once per step (GNN; t-independent)
         h = encode_fn(z0)                             # [K, H]
 
-        # render frames t=1..T-1 (with grad through z0 and h)
+        # batch-decode all T-1 time steps in one MLP forward pass
+        t_vals = torch.arange(1, T, dtype=torch.float32, device=dev)
+        all_disps = model.decode_batch(h, t_vals)     # [T-1, G, 3]
+
+        # render frames (rasterizer is not batchable, still a Python loop)
         frames = [frame0]
-        for t in range(1, T):
-            gauss_disp = model.decode(h, float(t))    # [G, 3]
-            xyz_def    = canonical_xyz + gauss_disp   # [G, 3]
+        for i in range(T - 1):
+            xyz_def = canonical_xyz + all_disps[i]    # [G, 3]
             img = render_gaussians(
                 cam, xyz_def,
                 gauss["opacities"], gauss["scales"],

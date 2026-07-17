@@ -160,6 +160,27 @@ class NodeFlow(nn.Module):
         nd_nb      = node_disp[self.gauss_node_idx]                           # [G, kG, 3]
         return (self.gauss_node_w.unsqueeze(-1) * nd_nb).sum(1)               # [G, 3]
 
+    def decode_batch(self, h: torch.Tensor, t_vals: torch.Tensor) -> torch.Tensor:
+        """Batch decode all frames at once.
+        h      : [K, H]
+        t_vals : [T] float tensor of time steps (all > 0)
+        Returns  [T, G, 3] Gaussian displacements.
+        """
+        T_batch = t_vals.shape[0]
+        K = self.n_nodes
+        scale = max(self.n_frames - 1, 1)
+        t_norms = t_vals / scale                              # [T]
+        # Fourier time embedding: [T, 2*t_feat]
+        ang = t_norms.unsqueeze(1) * self.t_freqs.unsqueeze(0) * math.pi  # [T, t_feat]
+        t_emb = torch.cat([ang.sin(), ang.cos()], dim=1)                    # [T, 2*t_feat]
+        # Expand h over T: [T, K, H]
+        h_exp = h.unsqueeze(0).expand(T_batch, -1, -1)                     # [T, K, H]
+        t_exp = t_emb.unsqueeze(1).expand(-1, K, -1).to(h.dtype)           # [T, K, 2*t_feat]
+        dec_in = torch.cat([h_exp, t_exp], dim=-1)                         # [T, K, H+2f]
+        node_disp = self.decoder(dec_in)                                    # [T, K, 3]
+        nd_nb = node_disp[:, self.gauss_node_idx, :]                       # [T, G, kG, 3]
+        return (self.gauss_node_w.unsqueeze(-1) * nd_nb).sum(2)            # [T, G, 3]
+
     # ── forward: kept for compatibility (rollout / arap) ─────────────────────
     def forward(self, z0: torch.Tensor, t: float) -> torch.Tensor:
         """

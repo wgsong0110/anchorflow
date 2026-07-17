@@ -96,14 +96,19 @@ class SVDGuidance:
         return self.vae.encode(img).latent_dist.mode()
 
     def encode_frames(self, frames):
-        """frames: [T,3,H,W] in [0,1], WITH grad. -> latents [1,T,4,h,w] float32.
-        VAE stays in float32; encode frame-by-frame to avoid OOM."""
-        lats = []
-        for t in range(frames.shape[0]):
-            x = (frames[t:t+1] * 2 - 1).float()           # [1,3,H,W] float32
-            lat = self.vae.encode(x).latent_dist.mode() * self.vae_scale
-            lats.append(lat)                                # [1,4,h,w]
-        return torch.stack(lats, dim=1)                    # [1,T,4,h,w] float32
+        """frames: [T,3,H,W] in [0,1], WITH grad. -> latents [1,T,4,h,w] float32."""
+        x = (frames * 2 - 1).float()                       # [T,3,H,W] float32
+        try:
+            # batched encode — works at 192×192 (~300MB peak), fast
+            lat = self.vae.encode(x).latent_dist.mode() * self.vae_scale  # [T,4,h,w]
+            return lat.unsqueeze(0)                         # [1,T,4,h,w]
+        except RuntimeError:
+            # OOM fallback: per-frame loop
+            lats = []
+            for t in range(x.shape[0]):
+                lat = self.vae.encode(x[t:t+1]).latent_dist.mode() * self.vae_scale
+                lats.append(lat)
+            return torch.stack(lats, dim=1)
 
     def _time_ids(self):
         ids = torch.tensor([[self.fps - 1, self.motion_bucket_id, self.noise_aug]],
@@ -181,8 +186,11 @@ class SVDGuidance:
         T = frames.shape[0]
         x0 = self.encode_frames(frames)                         # [1,T,4,h,w] grad
         with torch.no_grad():
-            static = frames[0:1].expand(T, -1, -1, -1)          # frame-0 repeated
-            x0_static = self.encode_frames(static)
+            # encode frame-0 once, repeat in latent space (no need to re-run VAE T times)
+            lat0 = self.vae.encode(
+                (frames[0:1] * 2 - 1).float()
+            ).latent_dist.mode() * self.vae_scale                # [1,4,h,w]
+            x0_static = lat0.unsqueeze(0).expand(1, T, -1, -1, -1)  # [1,T,4,h,w]
             cond_lat, img_emb, time_ids = self._cond(cond_image, T)
             sigma = self._sample_sigma()
             noise = torch.randn_like(x0)
