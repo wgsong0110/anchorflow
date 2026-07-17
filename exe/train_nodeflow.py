@@ -274,6 +274,15 @@ def main():
         start = resume["step"] + 1
         print(f"[train] resumed from step {start}")
 
+    # torch.compile the GNN forward for speed (model itself stays uncompiled so
+    # state_dict / optimizer / resume keep clean, checkpoint-compatible keys).
+    try:
+        fwd = torch.compile(model)
+        print("[train] torch.compile enabled")
+    except Exception as e:
+        fwd = model
+        print(f"[train] torch.compile unavailable ({e}); running eager")
+
     def sync_r2():
         if args.r2:
             os.system(f"rclone copy {args.out} {args.r2} >/dev/null 2>&1")
@@ -291,7 +300,7 @@ def main():
         opt.zero_grad()
 
         # forward: GNN → Gaussian displacements
-        gauss_disp = model(v, float(t))                       # [G,3]
+        gauss_disp = fwd(v, float(t))                         # [G,3]
         xyz_def = canonical_xyz + gauss_disp                   # [G,3] deformed
 
         # render

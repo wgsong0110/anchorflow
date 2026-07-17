@@ -15,7 +15,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Build wheels in torch 2.5.1 cu121 image
+      - uses: actions/checkout@v4
+      - name: Build wheels + lbs kernel in torch 2.5.1 cu121 image
         run: |
           docker run --rm -v "${{ github.workspace }}:/out" \
             -e TORCH_CUDA_ARCH_LIST="8.6;8.9" -e FORCE_CUDA=1 \
@@ -29,12 +30,17 @@ jobs:
               git submodule update --init --recursive
               pip wheel ./submodules/diff-gaussian-rasterization -w /out --no-deps --no-build-isolation
               pip wheel ./submodules/simple-knn                  -w /out --no-deps --no-build-isolation
-              ls -la /out/*.whl
+              # anchorflow LBS custom CUDA kernel (memory/speed) matched to torch 2.5.1
+              cd /out/lib/lbs && python setup.py build_ext --inplace
+              cp /out/lib/lbs/_C*.so /out/lbs_C.cpython-311-x86_64-linux-gnu.so
+              ls -la /out/*.whl /out/lbs_C*.so
             '
-          sudo chown -R $(id -u):$(id -g) *.whl || true
-          ls -la *.whl
+          sudo chown -R $(id -u):$(id -g) *.whl lbs_C*.so || true
+          ls -la *.whl lbs_C*.so
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: cuda-3dgs-torch251
-          files: '*.whl'
+          files: |
+            *.whl
+            lbs_C*.so
           fail_on_unmatched_files: true
