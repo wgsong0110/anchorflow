@@ -27,6 +27,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import numpy as np
 import torch
 import imageio.v2 as iio
+from torch.utils.checkpoint import checkpoint
 from omegaconf import OmegaConf
 from PIL import Image
 
@@ -139,6 +140,12 @@ def main():
         g._xyz = xyz
         return render(cam, g, Pipe(), bg)["render"]
 
+    def render_ckpt(cam, xyz):
+        """Checkpointed render: recompute in backward instead of storing the
+        rasteriser's activations. At G=1.85M x T=25 the stored graph alone OOMs
+        a 24GB card."""
+        return checkpoint(lambda x: render_at(cam, x), xyz, use_reentrant=False)
+
     def render_canonical(cam):
         with torch.no_grad():
             return render_at(cam, canonical_xyz).clamp(0, 1)
@@ -246,7 +253,7 @@ def main():
         frames = [frame0]
         for i in range(T - 1):
             disp = model.lbs_frame(node_disps[i])        # [G, 3]
-            frames.append(render_at(cam, canonical_xyz + disp))
+            frames.append(render_ckpt(cam, canonical_xyz + disp))
         frames_t = torch.stack(frames, dim=0)            # [T, 3, H, W]
 
         opt.zero_grad()
