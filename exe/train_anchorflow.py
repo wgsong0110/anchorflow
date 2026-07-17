@@ -1,22 +1,29 @@
 #!/usr/bin/env python
-"""AnchorFlow: MDS-based dynamic 3DGS via semantic anchor nodes + z0-bank.
+"""AnchorFlow: semantic anchor nodes + GNN⊗SSM dynamics on a canonical 3DGS.
 
-Canonical asset = the official INRIA 3DGS pretrained scene, rendered with its
-own bundled cameras.json and the official gaussian_renderer.render (SH degree 3,
-background per cfg_args). No hand-tuned camera parameters anywhere.
+Deformation = OUR method (unchanged):
+    tokens_to_nodes -> AnchorSet -> SSMDynamics/ssm_rollout -> lbs_warp
+    GNN (spatial) ⊗ per-node diagonal SSM (temporal) -> acceleration,
+    explicit integration  p' = p + v·dt,  v' = γ(v + a·dt).
 
-Pipeline:
-  1. Anchor nodes over the WHOLE scene (FPS, or tokens_to_nodes for semantic)
-  2. NodeFlow GNN: canonical node positions -> scene features h [K,H]
-     Physics: vel[t] = z0 + dt*cumsum(acc), disp[t] = dt*cumsum(vel)
-  3. z0_bank [B, K, 3]: learnable initial velocities, one sampled per step
-  4. SVD MDS loss: grad = w*(eps(video) - eps(static_frame0))
+Node selection + learnable-parameter update follow "From Tokens to Nodes"
+(arXiv:2510.02732):
+    - semantic / dynamic-tendency node allocation (tokens_to_nodes)
+    - RBF binding with LEARNABLE node radii:
+        w_ij = exp(-|x_j - c_i|^2 / (2*rho_i^2)) / sum_k(...)        [AnchorSet]
+    - Gaussian attributes optimised alongside the anchors (--lr_gaussian)
+    - ARAP regularisation
 
-Usage:
-    python exe/train_anchorflow.py \
-        --model /workspace/gs_official/kitchen \
-        --cfg   cfg/anchorflow_kitchen.yaml \
-        --out   /workspace/anchorflow_out --resume
+Canonical asset + camera + renderer are the official INRIA release
+(point_cloud.ply + bundled cameras.json + gaussian_renderer.render, SH3,
+background per cfg_args). No hand-tuned camera parameters.
+
+Supervision (--sup):
+    mds   : SVD Motion Distillation Sampling (DreamPhysics)  [diffusion prior]
+    video : per-view generated clips, direct photometric      [paper-style]
+
+    python exe/train_anchorflow.py --model /workspace/gs_official/kitchen \
+        --cfg cfg/anchorflow_kitchen.yaml --out /workspace/af_mds --sup mds
 """
 from __future__ import annotations
 
@@ -29,7 +36,6 @@ import torch
 import imageio.v2 as iio
 from torch.utils.checkpoint import checkpoint
 from omegaconf import OmegaConf
-from PIL import Image
 
 sys.path.append("/workspace/gaussian-splatting")
 from scene.gaussian_model import GaussianModel
@@ -37,14 +43,16 @@ from gaussian_renderer import render
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix, focal2fov
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-from anchorflow.nodeflow import NodeFlow
+from anchorflow.anchors import AnchorSet
+from anchorflow.ssm_dynamics import SSMDynamics, ssm_rollout
+from anchorflow.graph import knn_graph
+from anchorflow import warp as W
 from anchorflow.checkpoint import CheckpointManager, load_rng_state
-from anchorflow.sds import SVDGuidance
 
 
 class Cam:
-    def __init__(self, R, T, fovx, fovy, W, H):
-        self.image_width, self.image_height = W, H
+    def __init__(self, R, T, fovx, fovy, Wd, Hd):
+        self.image_width, self.image_height = Wd, Hd
         self.FoVx, self.FoVy = fovx, fovy
         self.znear, self.zfar = 0.01, 100.0
         w2v = torch.tensor(getWorld2View2(R, T)).T.cuda()
@@ -56,17 +64,12 @@ class Cam:
 
 class Pipe:
     convert_SHs_python = False
-    compute_cov3D_python = False
+    compute_cov3D_python = True      # we supply the warped covariance
     debug = False
     antialiasing = False
 
 
-def load_official_cameras(model_dir: str, n_views: int, long_side: int) -> list:
-    """cameras.json -> Cam list, evenly spaced over the capture.
-
-    3DGS stores the C2W rotation and the camera centre; FoV is
-    resolution-independent so downscaling only changes W/H.
-    """
+def load_official_cameras(model_dir, n_views, long_side):
     cams_json = json.load(open(f"{model_dir}/cameras.json"))
     idx = np.linspace(0, len(cams_json) - 1, n_views).round().astype(int)
     cams = []
@@ -74,14 +77,12 @@ def load_official_cameras(model_dir: str, n_views: int, long_side: int) -> list:
         c = cams_json[int(i)]
         rot = np.array(c["rotation"], dtype=np.float32)
         pos = np.array(c["position"], dtype=np.float32)
-        R, T = rot, -rot.T @ pos
-        W, H = c["width"], c["height"]
-        fovx, fovy = focal2fov(c["fx"], W), focal2fov(c["fy"], H)
-        s = long_side / max(W, H)
-        # VAE needs multiples of 8
-        W8 = max(8, int(round(W * s / 8)) * 8)
-        H8 = max(8, int(round(H * s / 8)) * 8)
-        cams.append(Cam(R, T, fovx, fovy, W8, H8))
+        Wd, Hd = c["width"], c["height"]
+        fovx, fovy = focal2fov(c["fx"], Wd), focal2fov(c["fy"], Hd)
+        s = long_side / max(Wd, Hd)
+        W8 = max(8, int(round(Wd * s / 8)) * 8)
+        H8 = max(8, int(round(Hd * s / 8)) * 8)
+        cams.append(Cam(rot, -rot.T @ pos, fovx, fovy, W8, H8))
     print(f"[train] cameras={len(cams)} (official cameras.json) "
           f"{cams[0].image_width}x{cams[0].image_height}")
     return cams
@@ -89,9 +90,8 @@ def load_official_cameras(model_dir: str, n_views: int, long_side: int) -> list:
 
 def git_hash():
     try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
-        ).decode().strip()
+        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"],
+                                       stderr=subprocess.DEVNULL).decode().strip()
     except Exception:
         return "nogit"
 
@@ -104,86 +104,71 @@ def save_video(frames, path, fps=8):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model",  required=True,
-                    help="official 3DGS model dir (has point_cloud/ + cameras.json)")
-    ap.add_argument("--iter",   type=int, default=30000, help="pretrained iteration")
-    ap.add_argument("--cfg",    required=True)
-    ap.add_argument("--out",    required=True)
-    ap.add_argument("--r2",     default=None)
+    ap.add_argument("--model", required=True)
+    ap.add_argument("--iter", type=int, default=30000)
+    ap.add_argument("--cfg", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--sup", choices=["mds", "video"], default="mds")
+    ap.add_argument("--videos", default=None,
+                    help="--sup video: dir with view_XX.mp4 target clips")
+    ap.add_argument("--r2", default=None)
     ap.add_argument("--resume", action="store_true")
-    ap.add_argument("--white_bg", action="store_true",
-                    help="match cfg_args white_background (kitchen: False)")
-    ap.add_argument("--no-t2n", action="store_true", help="skip tokens_to_nodes, use FPS")
+    ap.add_argument("--white_bg", action="store_true")
+    ap.add_argument("--no-t2n", action="store_true")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
     cfg = OmegaConf.load(args.cfg)
-    dev = "cuda"
-    gh = git_hash()
+    dev, gh = "cuda", git_hash()
+    T = cfg.model.n_frames
 
     # ── official pretrained scene ────────────────────────────────────────────
     g = GaussianModel(3)
     g.load_ply(f"{args.model}/point_cloud/iteration_{args.iter}/point_cloud.ply")
     g.active_sh_degree = 3
-    # load_ply makes every attribute a requires_grad=True Parameter. Only the
-    # positions are deformed here; SH/opacity/scale/rotation are frozen inputs,
-    # so keep them out of autograd entirely.
-    for _p in (g._features_dc, g._features_rest, g._opacity,
-               g._scaling, g._rotation, g._xyz):
-        _p.requires_grad_(False)
-    canonical_xyz = g.get_xyz.detach().clone()
-    G = canonical_xyz.shape[0]
-    print(f"[train] gaussians={G}  commit={gh}")
+    canon_xyz = g.get_xyz.detach().clone()
+    G = canon_xyz.shape[0]
+    print(f"[train] gaussians={G}  commit={gh}  sup={args.sup}")
+
+    canon_cov6 = W.cov_from_scale_rot(g.get_scaling.detach(),
+                                      g._rotation.detach()).detach()
 
     bg = torch.tensor([1., 1., 1.] if args.white_bg else [0., 0., 0.], device=dev)
-
-    T = cfg.model.n_frames
     cameras = load_official_cameras(args.model, cfg.train.n_views, cfg.model.res)
     V = len(cameras)
 
-    def render_at(cam, xyz):
-        """Official renderer with deformed positions. Gradients flow via xyz."""
+    def render_with(cam, xyz, cov6):
         g._xyz = xyz
+        g.get_covariance = lambda scaling_modifier=1.0: cov6
         return render(cam, g, Pipe(), bg)["render"]
-
-    def render_ckpt(cam, xyz):
-        """Checkpointed render. Measured: keeping the raster graph costs 21.2GB
-        vs 6.1GB checkpointed (G=1.85M, T=25) — it does not fit alongside the
-        UNet, so this is not optional."""
-        return checkpoint(lambda x: render_at(cam, x), xyz, use_reentrant=False)
 
     def render_canonical(cam):
         with torch.no_grad():
-            return render_at(cam, canonical_xyz).clamp(0, 1)
+            return render_with(cam, canon_xyz, canon_cov6).clamp(0, 1)
 
-    # sanity: cameras must actually see the scene
     img0 = render_canonical(cameras[0])
     cover = float((img0.max(0).values > 0.01).float().mean())
     print(f"[train] cam[0] coverage={cover*100:.1f}%  mean={float(img0.mean()):.3f}")
     if cover < 0.02:
         sys.exit("[train] ABORT: cameras do not see the scene")
 
-    # ── scene extent (1-99 pct, robust to floaters) ─────────────────────────
-    # All G gaussians, no subsampling: this is only a scale statistic, and
-    # 1.85M x 3 is well inside torch.quantile's limit.
-    _q = canonical_xyz.float()
+    _q = canon_xyz.float()
     extent = float((torch.quantile(_q, 0.99, dim=0)
                     - torch.quantile(_q, 0.01, dim=0)).norm())
     del _q
     print(f"[train] scene extent={extent:.2f}")
 
-    # ── anchor nodes over the whole scene ───────────────────────────────────
+    # ── anchor nodes: paper's semantic / dynamic-tendency allocation ────────
     node_pos = None
     if not args.no_t2n:
         try:
             from anchorflow.tokens_to_nodes import tokens_to_nodes
             import anchorflow.tokens_to_nodes as t2n_mod
-            print("[train] building semantic nodes via tokens_to_nodes ...")
+            print("[train] tokens_to_nodes (semantic + dynamic tendency) ...")
             node_pos = tokens_to_nodes(
-                canonical_xyz, g.get_opacity.detach(),
-                render_canonical, cameras[:cfg.get("t2n_views", 4)],
-                n_nodes=cfg.model.n_nodes, device=dev,
-            )
+                canon_xyz, g.get_opacity.detach(), render_canonical,
+                cameras[:cfg.get("t2n_views", 4)],
+                n_nodes=cfg.model.n_nodes, device=dev)
             if t2n_mod._dino_model is not None:
                 del t2n_mod._dino_model
                 t2n_mod._dino_model = None
@@ -194,50 +179,100 @@ def main():
             node_pos = None
             import gc; gc.collect(); torch.cuda.empty_cache()
 
+    # ── AnchorSet: learnable rho (paper), node_weight, z (actuation), e (id) ─
+    z_dim = int(cfg.model.get("z_dim", 8))
+    e_dim = int(cfg.model.get("e_dim", 8))
+    kG = int(cfg.model.k_gauss)
+    if node_pos is not None:
+        anchors = AnchorSet.from_trajectory(node_pos, latent_dim=z_dim,
+                                            e_dim=e_dim, K=kG).to(dev)
+    else:
+        anchors, _ = AnchorSet.from_gaussians(canon_xyz, node_num=cfg.model.n_nodes,
+                                              latent_dim=z_dim, e_dim=e_dim, K=kG)
+        anchors = anchors.to(dev)
+    M = anchors.num
+    print(f"[train] anchors={M}  z_dim={z_dim} e_dim={e_dim} k_gauss={kG}")
+
+    # ── OUR dynamics: GNN ⊗ SSM -> accel -> explicit integration ────────────
     dt = float(cfg.model.get("dt", 0.1))
-    model = NodeFlow(
-        canonical_xyz=canonical_xyz, node_positions=node_pos,
-        n_nodes=cfg.model.n_nodes, n_frames=T,
-        hidden=cfg.model.hidden, n_gnn_layers=cfg.model.n_gnn_layers,
-        k_node=cfg.model.k_node, k_gauss=cfg.model.k_gauss, dt=dt,
-    ).to(dev)
-    K = model.n_nodes
-    print(f"[train] nodes={K}  hidden={cfg.model.hidden}  dt={dt}")
+    accel_scale = float(cfg.model.get("accel_scale", 0.01)) * extent
+    model = SSMDynamics(hidden=cfg.model.hidden,
+                        mp_steps=int(cfg.model.get("mp_steps", cfg.model.n_gnn_layers)),
+                        ssm_dim=int(cfg.model.get("ssm_dim", cfg.model.hidden)),
+                        e_dim=e_dim, z_dim=z_dim,
+                        accel_scale=accel_scale).to(dev)
+    graph_cfg = {"graph": "knn", "k": int(cfg.model.k_node)}
+    damping = float(cfg.train.get("damping", 1.0))
+    print(f"[train] SSMDynamics dt={dt} accel_scale={accel_scale:.4f} damping={damping}")
 
-    # z0 scaled to the scene: dt*|z0|*T ~= z0_motion * extent
-    z0_motion = float(cfg.train.get("z0_motion", 0.01))
-    z0_std = z0_motion * extent / (dt * max(T - 1, 1))
-    B = cfg.train.z0_bank_size
-    z0_bank = torch.nn.Parameter(torch.randn(B, K, 3, device=dev) * z0_std)
-    print(f"[train] z0_bank {list(z0_bank.shape)}  std={z0_std:.4f} "
-          f"(~{z0_motion*100:.1f}% of extent per clip)")
+    # z = actuation, varied per initial condition (ssm_dynamics docstring)
+    B = int(cfg.train.z0_bank_size)
+    v0_motion = float(cfg.train.get("z0_motion", 0.01))
+    v0_std = v0_motion * extent / (dt * max(T - 1, 1))
+    z_bank = torch.nn.Parameter(0.01 * torch.randn(B, M, z_dim, device=dev))
+    v0_bank = torch.nn.Parameter(torch.randn(B, M, 3, device=dev) * v0_std)
+    print(f"[train] z_bank {list(z_bank.shape)}  v0_std={v0_std:.4f}")
 
-    print("[train] loading SVD for MDS guidance ...")
-    svd = SVDGuidance(
-        sigma_min=cfg.mds.sigma_min, sigma_max=cfg.mds.sigma_max,
-        guidance_scale=cfg.mds.guidance_scale,
-        motion_bucket_id=cfg.mds.motion_bucket_id,
-        grad_clip=cfg.mds.grad_clip, device=dev,
-    )
+    # ── learnable params (paper optimises gaussians + anchors) ──────────────
+    for p in (g._features_dc, g._features_rest, g._opacity, g._scaling,
+              g._rotation, g._xyz):
+        p.requires_grad_(False)
+    lr_g = float(cfg.train.get("lr_gaussian", 0.0))
+    groups = [
+        {"params": list(model.parameters()), "lr": float(cfg.train.lr_gnn)},
+        {"params": list(anchors.parameters()),
+         "lr": float(cfg.train.get("lr_anchor", 1e-3))},
+        {"params": [z_bank, v0_bank], "lr": float(cfg.train.lr_z0)},
+    ]
+    if lr_g > 0:
+        gp = [g._features_dc, g._features_rest, g._opacity, g._scaling, g._rotation]
+        for p in gp:
+            p.requires_grad_(True)
+        groups.append({"params": gp, "lr": lr_g})
+        print(f"[train] gaussian attrs optimised (lr={lr_g})")
+    else:
+        print("[train] gaussian attrs frozen (lr_gaussian=0)")
+    opt = torch.optim.Adam(groups)
 
-    gnn_params = (list(model.node_encoder.parameters())
-                  + list(model.gnn_layers.parameters())
-                  + list(model.accel_decoder.parameters()))
-    opt = torch.optim.Adam([
-        {"params": gnn_params, "lr": cfg.train.lr_gnn},
-        {"params": [z0_bank],  "lr": cfg.train.lr_z0},
-    ])
+    # ── supervision ─────────────────────────────────────────────────────────
+    svd = cond_cache = gt_videos = None
+    frame0_cache = [render_canonical(c) for c in cameras]
+    if args.sup == "mds":
+        from anchorflow.sds import SVDGuidance
+        print("[train] loading SVD for MDS ...")
+        svd = SVDGuidance(sigma_min=cfg.mds.sigma_min, sigma_max=cfg.mds.sigma_max,
+                          guidance_scale=cfg.mds.guidance_scale,
+                          motion_bucket_id=cfg.mds.motion_bucket_id,
+                          grad_clip=cfg.mds.grad_clip, device=dev)
+        cond_cache = [svd.precompute_cond(f0, T) for f0 in frame0_cache]
+        torch.cuda.empty_cache()
+    else:
+        if not args.videos:
+            sys.exit("[train] --sup video requires --videos DIR")
+        gt_videos = []
+        for v in range(V):
+            p = os.path.join(args.videos, f"view_{v:02d}.mp4")
+            fr = [torch.from_numpy(np.asarray(f)).permute(2, 0, 1).float().cuda() / 255.
+                  for f in iio.mimread(p, memtest=False)[:T]]
+            clip = torch.stack(fr, 0)
+            if clip.shape[-2:] != (cameras[v].image_height, cameras[v].image_width):
+                clip = torch.nn.functional.interpolate(
+                    clip, size=(cameras[v].image_height, cameras[v].image_width),
+                    mode="bilinear", align_corners=False)
+            gt_videos.append(clip)
+        print(f"[train] target clips: {len(gt_videos)} x {tuple(gt_videos[0].shape)}")
 
     ckpt_mgr = CheckpointManager(args.out)
     start = 0
     if args.resume:
-        ckpt = ckpt_mgr.load()
-        if ckpt is not None:
-            model.load_state_dict(ckpt["model"])
-            opt.load_state_dict(ckpt["opt"])
-            z0_bank.data.copy_(ckpt["z0_bank"])
-            load_rng_state(ckpt.get("rng"))
-            start = ckpt["step"] + 1
+        ck = ckpt_mgr.load()
+        if ck is not None:
+            model.load_state_dict(ck["model"])
+            anchors.load_state_dict(ck["anchors"])
+            opt.load_state_dict(ck["opt"])
+            z_bank.data.copy_(ck["z_bank"]); v0_bank.data.copy_(ck["v0_bank"])
+            load_rng_state(ck.get("rng"))
+            start = ck["step"] + 1
             print(f"[train] resumed from step {start}")
 
     torch.set_float32_matmul_precision("high")
@@ -246,84 +281,95 @@ def main():
         if args.r2:
             os.system(f"rclone copy {args.out} {args.r2} >/dev/null 2>&1")
 
-    # frame-0 is the canonical render: fixed per camera. Cache it and every
-    # frame-0-derived SVD term (CLIP embed, static latent, cond latent) instead
-    # of recomputing them every step.
-    print("[train] caching frame0 + SVD conditioning per camera ...")
-    frame0_cache = [render_canonical(c) for c in cameras]
-    cond_cache = [svd.precompute_cond(f0, T) for f0 in frame0_cache]
-    torch.cuda.empty_cache()
+    def rollout_positions(k, grad=True):
+        p0, v0 = anchors.canonical, v0_bank[k]
+        return ssm_rollout(model, p0, v0, anchors.e, z_bank[k],
+                           init_vel=v0, init_pos=p0, steps=T - 1,
+                           cfg=graph_cfg, dt=dt, grad=grad, damping=damping)
 
+    arap_edge = knn_graph(anchors.canonical.detach(), k=min(6, M - 1))
     rng = random.Random(42)
 
     for step in range(start, cfg.train.iters):
         k = rng.randint(0, B - 1)
         v = rng.randint(0, V - 1)
-        z0, cam = z0_bank[k], cameras[v]
+        cam = cameras[v]
 
-        frame0 = frame0_cache[v]
+        p_seq = rollout_positions(k)                       # [T, M, 3]
+        # rho is learnable -> recompute the binding every step
+        w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
 
-        h = model.encode_scene()
-        # node-space rollout; LBS per frame (batched LBS would be ~2GB at G=1.85M)
-        node_disps = model.rollout_nodes(h, z0)          # [T-1, K, 3]
+        frames = []
+        for t in range(T):
+            def _f(pt, wb=w_b, ib=idx_b):
+                pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, wb, ib,
+                                          anchors.canonical, pt)
+                return render_with(cam, pos, cov6)
+            frames.append(checkpoint(_f, p_seq[t], use_reentrant=False))
+        frames_t = torch.stack(frames, 0)                  # [T,3,H,W]
 
-        frames = [frame0]
-        for i in range(T - 1):
-            disp = model.lbs_frame(node_disps[i])        # [G, 3]
-            frames.append(render_ckpt(cam, canonical_xyz + disp))
-        frames_t = torch.stack(frames, dim=0)            # [T, 3, H, W]
-
-        opt.zero_grad()
-        # VAE graph is 169ms/step cheaper than checkpointing it and still fits
-        # (peak ~20.7GB) once the render is checkpointed.
-        loss = svd.mds_loss(frames_t, cond_image=frame0, w_power=cfg.mds.w_power,
-                            cond_cache=cond_cache[v], vae_checkpoint=False)
+        opt.zero_grad(set_to_none=True)
+        if args.sup == "mds":
+            loss = svd.mds_loss(frames_t, cond_image=frame0_cache[v],
+                                w_power=cfg.mds.w_power, cond_cache=cond_cache[v],
+                                vae_checkpoint=False)
+        else:
+            loss = float(cfg.train.get("lambda_rgb", 1.0)) * \
+                (frames_t - gt_videos[v]).abs().mean()
 
         if cfg.train.lambda_arap > 0:
-            t_reg = rng.randint(1, T - 1)
-            loss = loss + cfg.train.lambda_arap * model.arap_loss(h, z0, t_reg)
+            t_r = rng.randint(1, T - 1)
+            src, dst = arap_edge
+            d_rest = (anchors.canonical[src] - anchors.canonical[dst]).norm(dim=-1)
+            d_now = (p_seq[t_r][src] - p_seq[t_r][dst]).norm(dim=-1)
+            loss = loss + cfg.train.lambda_arap * ((d_now - d_rest) ** 2).mean()
         if cfg.train.lambda_z0 > 0:
-            loss = loss + cfg.train.lambda_z0 * (z0_bank ** 2).mean()
+            loss = loss + cfg.train.lambda_z0 * (z_bank ** 2).mean()
 
         if not torch.isfinite(loss):
             print(f"[{step}] non-finite loss, skip")
             continue
 
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(gnn_params + [z0_bank], cfg.train.grad_clip)
+        torch.nn.utils.clip_grad_norm_(
+            [p for gr in opt.param_groups for p in gr["params"]],
+            cfg.train.grad_clip)
         opt.step()
 
         if step % cfg.train.log_every == 0:
             with torch.no_grad():
-                travel = float(model.lbs_frame(node_disps[-1]).norm(dim=-1).max())
-            print(f"[{step}/{cfg.train.iters}] loss={float(loss):.4f}  k={k} v={v}  "
-                  f"z0_rms={float(z0_bank.detach().pow(2).mean().sqrt()):.4f}  "
-                  f"travel={travel:.3f} ({travel/extent*100:.2f}%)")
+                travel = float((p_seq[-1] - anchors.canonical).norm(dim=-1).max())
+                rho = float(anchors.radius.mean())
+            print(f"[{step}/{cfg.train.iters}] loss={float(loss):.4f} k={k} v={v} "
+                  f"travel={travel:.3f} ({travel/extent*100:.2f}%) rho={rho:.3f}")
 
         if step % cfg.train.ckpt_every == 0:
-            ckpt_mgr.save(step, {
-                "model": model.state_dict(), "opt": opt.state_dict(),
-                "z0_bank": z0_bank.data, "step": step,
-            })
-            _save_rollout(step, model, z0_bank, cameras[0], canonical_xyz,
-                          render_at, T, args.out)
+            ckpt_mgr.save(step, {"model": model.state_dict(),
+                                 "anchors": anchors.state_dict(),
+                                 "opt": opt.state_dict(), "z_bank": z_bank.data,
+                                 "v0_bank": v0_bank.data, "step": step})
+            _save_rollout(step, rollout_positions, anchors, canon_xyz, canon_cov6,
+                          render_with, cameras[0], T, args.out)
             sync_r2()
 
-    ckpt_mgr.save(cfg.train.iters - 1, {
-        "model": model.state_dict(), "opt": opt.state_dict(),
-        "z0_bank": z0_bank.data, "step": cfg.train.iters - 1,
-    })
+    ckpt_mgr.save(cfg.train.iters - 1,
+                  {"model": model.state_dict(), "anchors": anchors.state_dict(),
+                   "opt": opt.state_dict(), "z_bank": z_bank.data,
+                   "v0_bank": v0_bank.data, "step": cfg.train.iters - 1})
     sync_r2()
-    print(f"[train] done  commit={gh} -> {args.out}")
+    print(f"[train] done commit={gh} -> {args.out}")
 
 
 @torch.no_grad()
-def _save_rollout(step, model, z0_bank, cam, canon, render_at, T, out):
-    h = model.encode_scene()
-    node_disps = model.rollout_nodes(h, z0_bank[0])
-    frames = [render_at(cam, canon).clamp(0, 1)]
-    for i in range(T - 1):
-        frames.append(render_at(cam, canon + model.lbs_frame(node_disps[i])).clamp(0, 1))
+def _save_rollout(step, rollout_positions, anchors, canon_xyz, canon_cov6,
+                  render_with, cam, T, out):
+    p_seq = rollout_positions(0, grad=False)
+    w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
+    frames = []
+    for t in range(T):
+        pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_b, idx_b,
+                                  anchors.canonical, p_seq[t])
+        frames.append(render_with(cam, pos, cov6).clamp(0, 1))
     path = os.path.join(out, f"rollout_step{step:06d}.mp4")
     save_video(frames, path)
     print(f"  saved rollout -> {path}")
