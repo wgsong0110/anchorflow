@@ -62,6 +62,40 @@ class Cam:
         self.tanfovy = math.tan(fovy * 0.5)
 
 
+def look_at(eye, center, up):
+    f = (center - eye); f /= np.linalg.norm(f)
+    s = np.cross(f, up); s /= np.linalg.norm(s)
+    u = np.cross(s, f)
+    R = np.stack([s, u, f], axis=1)
+    return R.astype(np.float32), eye.astype(np.float32)
+
+
+def make_orbit_cameras(xyz, n_views, res, elevation=15.0,
+                       fov_deg=50.0, radius_scale=2.5) -> list:
+    """Spherical-orbit cameras derived from the Gaussian bbox (same convention
+    as gen_views.py). Use for object-centric scenes with no matching COLMAP."""
+    lo, hi = xyz.min(0).values.cpu().numpy(), xyz.max(0).values.cpu().numpy()
+    center = ((lo + hi) * 0.5).astype(np.float32)
+    diag   = float(np.linalg.norm(hi - lo))
+    radius = radius_scale * diag * 0.5
+    fov    = math.radians(fov_deg)
+    el     = math.radians(elevation)
+    cams   = []
+    for i in range(n_views):
+        az  = math.radians(360.0 * i / n_views)
+        eye = center + radius * np.array([
+            math.cos(el) * math.sin(az),
+            math.sin(el),
+            math.cos(el) * math.cos(az),
+        ], dtype=np.float32)
+        Rc, _ = look_at(eye, center, np.array([0., 1., 0.], dtype=np.float32))
+        T = -Rc.T @ eye
+        cams.append(Cam(Rc, T, fov, fov, res, res))
+    print(f"[train] orbit cameras: center={center.round(3)} diag={diag:.2f} "
+          f"radius={radius:.2f} elev={elevation}° fov={fov_deg}°")
+    return cams
+
+
 def load_colmap_cameras(col_dir: str, n_views: int, res: int) -> list:
     extr = read_extrinsics_binary(f"{col_dir}/sparse/0/images.bin")
     intr = read_intrinsics_binary(f"{col_dir}/sparse/0/cameras.bin")
@@ -144,7 +178,15 @@ def save_video(frames_hw3: list, path: str, fps: int = 8):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ply",    required=True, help="canonical 3DGS .ply")
-    ap.add_argument("--col",    required=True, help="COLMAP directory (sparse/0/)")
+    ap.add_argument("--col",    default=None,
+                    help="COLMAP directory (sparse/0/); required for --cams colmap")
+    ap.add_argument("--cams",   choices=["orbit", "colmap"], default="orbit",
+                    help="orbit = spherical cameras from the Gaussian bbox "
+                         "(object-centric scenes); colmap = poses from --col. "
+                         "Only use colmap when the PLY was reconstructed FROM that COLMAP.")
+    ap.add_argument("--elevation",    type=float, default=15.0)
+    ap.add_argument("--fov_deg",      type=float, default=50.0)
+    ap.add_argument("--radius_scale", type=float, default=2.5)
     ap.add_argument("--cfg",    required=True)
     ap.add_argument("--out",    required=True)
     ap.add_argument("--r2",     default=None)
@@ -166,10 +208,19 @@ def main():
     bg = torch.tensor([1., 1., 1.] if cfg.get("white_bg", True) else [0., 0., 0.], device=dev)
 
     # ── cameras ───────────────────────────────────────────────────────────────
-    cameras = load_colmap_cameras(args.col, cfg.train.n_views, cfg.model.res)
+    if args.cams == "colmap":
+        if not args.col:
+            sys.exit("[train] --cams colmap requires --col")
+        cameras = load_colmap_cameras(args.col, cfg.train.n_views, cfg.model.res)
+    else:
+        cameras = make_orbit_cameras(
+            canonical_xyz, cfg.train.n_views, cfg.model.res,
+            elevation=args.elevation, fov_deg=args.fov_deg,
+            radius_scale=args.radius_scale,
+        )
     V = len(cameras)
     T = cfg.model.n_frames
-    print(f"[train] cameras={V}  T={T}  res={cfg.model.res}")
+    print(f"[train] cameras={V} ({args.cams})  T={T}  res={cfg.model.res}")
 
     def render_fn(cam):
         with torch.no_grad():
@@ -177,6 +228,25 @@ def main():
                 cam, canonical_xyz,
                 gauss["opacities"], gauss["scales"], gauss["rotations"],
                 gauss["colors"], bg,
+            )
+
+    # ── render sanity check ──────────────────────────────────────────────────
+    # A near-empty render means the cameras do not see the Gaussians (e.g. a PLY
+    # paired with a COLMAP from a different scene). Distilling on a blank image
+    # silently produces zero motion, so fail loudly here instead.
+    for ci, c in enumerate(cameras):
+        img = render_fn(c).clamp(0, 1)
+        cover = float((img.max(0).values > 0.01).float().mean())
+        if ci == 0 or cover < 0.02:
+            print(f"[train] cam[{ci}] coverage={cover*100:.2f}%  mean={float(img.mean()):.4f}")
+        if cover < 0.02:
+            sys.exit(
+                f"[train] ABORT: cam[{ci}] renders {cover*100:.2f}% non-empty pixels.\n"
+                f"        The cameras are not looking at the Gaussians.\n"
+                f"        --cams={args.cams}"
+                + (f" --col={args.col}\n        Is the PLY really reconstructed "
+                   f"from this COLMAP? Try --cams orbit." if args.cams == "colmap" else
+                   "\n        Try adjusting --radius_scale / --fov_deg / --elevation.")
             )
 
     # ── anchor nodes ─────────────────────────────────────────────────────────
