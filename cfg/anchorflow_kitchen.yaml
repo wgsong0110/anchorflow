@@ -3,13 +3,13 @@ t2n_views: 4          # number of views used for tokens_to_nodes
 
 model:
   n_nodes:     256
-  n_frames:    25     # SVD-XT native frame count
+  n_frames:    14     # SVD-base frame count (lower VRAM than XT's 25)
   hidden:      128
   n_gnn_layers: 4
   k_node:      8
   k_gauss:     4
   z0_dim:      32
-  res:         512    # render resolution (H=W)
+  res:         384    # render resolution (H=W) — lower to fit 24GB
 
 train:
   iters:        30000

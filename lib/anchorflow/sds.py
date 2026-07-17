@@ -32,7 +32,7 @@ import torch.nn.functional as F
 
 
 class SVDGuidance:
-    def __init__(self, model_id="stabilityai/stable-video-diffusion-img2vid-xt",
+    def __init__(self, model_id="stabilityai/stable-video-diffusion-img2vid",
                  device="cuda", dtype=torch.float16,
                  sigma_min=0.05, sigma_max=20.0, guidance_scale=3.0,
                  motion_bucket_id=127, fps=7, noise_aug=0.02,
@@ -76,10 +76,14 @@ class SVDGuidance:
         return self.vae.encode(img).latent_dist.mode()
 
     def encode_frames(self, frames):
-        """frames: [T,3,H,W] in [0,1], WITH grad. -> latents [1,T,4,h,w]."""
-        x = (frames * 2 - 1).to(self.dtype)
-        lat = self.vae.encode(x).latent_dist.mode() * self.vae_scale
-        return lat.unsqueeze(0)                                  # [1,T,4,h,w]
+        """frames: [T,3,H,W] in [0,1], WITH grad. -> latents [1,T,4,h,w].
+        Encode frame-by-frame to avoid OOM on 25-frame sequences."""
+        lats = []
+        for t in range(frames.shape[0]):
+            x = (frames[t:t+1] * 2 - 1).to(self.dtype)   # [1,3,H,W]
+            lat = self.vae.encode(x).latent_dist.mode() * self.vae_scale
+            lats.append(lat)                                # [1,4,h,w]
+        return torch.stack(lats, dim=1)                    # [1,T,4,h,w]
 
     def _time_ids(self):
         ids = torch.tensor([[self.fps - 1, self.motion_bucket_id, self.noise_aug]],
