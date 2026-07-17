@@ -18,6 +18,11 @@ import torch.nn as nn
 
 from .anchors import fps
 
+try:                                  # fused CUDA LBS (lib/lbs)
+    from lbs import lbs_blend as _lbs_blend_cuda, _HAVE_CUDA as _LBS_CUDA
+except Exception:
+    _LBS_CUDA = False
+
 
 # ── GraphSAGE layer ──────────────────────────────────────────────────────────
 
@@ -136,6 +141,19 @@ class NodeFlow(nn.Module):
         freqs = 2.0 ** torch.arange(t_feat).float()
         self.register_buffer("t_freqs", freqs)
 
+        # Constant operands that reduce the fused SC-GS LBS kernel to a pure
+        # displacement blend: out[g] = sum_k w[g,k] * node_disp[idx[g,k]].
+        # The kernel keeps no [G,kG,3] intermediate (~89MB/frame at G=1.85M);
+        # its backward is the weighted scatter-add we need. Non-persistent so
+        # they stay out of the checkpoint.
+        self._use_lbs_cuda = _LBS_CUDA
+        if _LBS_CUDA:
+            self.register_buffer("_lbs_x0",    torch.zeros(G, 3), persistent=False)
+            self.register_buffer("_lbs_arest", torch.zeros(K, 3), persistent=False)
+            self.register_buffer("_lbs_eye",
+                                 torch.eye(3).expand(K, 3, 3).contiguous(),
+                                 persistent=False)
+
     # ── helpers ──────────────────────────────────────────────────────────────
     def _t_emb_batch(self, t_vals: torch.Tensor) -> torch.Tensor:
         """t_vals [T] (normalised 0-1) → [T, 2*t_feat]."""
@@ -165,6 +183,10 @@ class NodeFlow(nn.Module):
         Use this instead of rollout() on large scenes: the batched form
         materialises [T,G,kG,3], which is ~2GB at G=1.85M/T=25.
         """
+        if self._use_lbs_cuda and node_disp.is_cuda:
+            return _lbs_blend_cuda(self._lbs_x0, self.gauss_node_w,
+                                   self.gauss_node_idx, self._lbs_arest,
+                                   node_disp, self._lbs_eye)
         nd_nb = node_disp[self.gauss_node_idx]                  # [G,kG,3]
         return (self.gauss_node_w.unsqueeze(-1) * nd_nb).sum(1)  # [G,3]
 

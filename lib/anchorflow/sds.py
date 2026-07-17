@@ -167,6 +167,22 @@ class SVDGuidance:
         cond_lat = self._cond_latent(cond_image).unsqueeze(1).repeat(1, T, 1, 1, 1)
         return cond_lat, img_emb, self._time_ids()
 
+    @torch.no_grad()
+    def precompute_cond(self, cond_image, T):
+        """Cache the frame-0-derived terms. frame-0 is the canonical render, so
+        for a fixed camera these never change across steps: CLIP embed, the
+        static latent, and the conditioning latent are all recomputed every step
+        otherwise."""
+        lat0 = self.vae.encode(
+            (cond_image[None] * 2 - 1).float()
+        ).latent_dist.mode() * self.vae_scale                  # [1,4,h,w]
+        return {
+            "img_emb":  self._clip_embed(cond_image),
+            "lat0":     lat0,
+            "cond_lat": self._cond_latent(cond_image).unsqueeze(1).repeat(1, T, 1, 1, 1),
+            "time_ids": self._time_ids(),
+        }
+
     # --- SDS -------------------------------------------------------------- #
     def sds_loss(self, frames, cond_image, w_power=0.0):
         T  = frames.shape[0]
@@ -181,18 +197,25 @@ class SVDGuidance:
         return self._apply(x0, grad)
 
     # --- Motion Distillation Sampling (DreamPhysics, AAAI'25) -------------- #
-    def mds_loss(self, frames, cond_image, w_power=0.0):
+    def mds_loss(self, frames, cond_image, w_power=0.0, cond_cache=None):
         """MDS: grad = w(sigma) * (eps(video) - eps(static frame-0)).
-        Single UNet forward for both clips (batch=4, OOM fallback to batch=2×2)."""
+        Single UNet forward for both clips (batch=4, OOM fallback to batch=2×2).
+        cond_cache: precompute_cond() output for this camera (frame-0 is fixed)."""
         T  = frames.shape[0]
         x0 = self.encode_frames(frames)                          # [1,T,4,h,w] w/ grad
         with torch.no_grad():
-            # static: encode frame-0 once, expand in latent space
-            lat0     = self.vae.encode(
-                (frames[0:1] * 2 - 1).float()
-            ).latent_dist.mode() * self.vae_scale                # [1,4,h,w]
+            if cond_cache is not None:
+                lat0     = cond_cache["lat0"]
+                cond_lat = cond_cache["cond_lat"]
+                img_emb  = cond_cache["img_emb"]
+                time_ids = cond_cache["time_ids"]
+            else:
+                # static: encode frame-0 once, expand in latent space
+                lat0 = self.vae.encode(
+                    (frames[0:1] * 2 - 1).float()
+                ).latent_dist.mode() * self.vae_scale            # [1,4,h,w]
+                cond_lat, img_emb, time_ids = self._cond(cond_image, T)
             x0_stat  = lat0.unsqueeze(0).expand(1, T, -1, -1, -1)  # [1,T,4,h,w]
-            cond_lat, img_emb, time_ids = self._cond(cond_image, T)
             sigma    = self._sample_sigma()
             noise    = torch.randn_like(x0)
             z_dyn    = x0      + sigma * noise

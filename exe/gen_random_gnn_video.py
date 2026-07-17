@@ -90,10 +90,12 @@ def main():
     G = canon.shape[0]
     print(f"[rand-gnn] gaussians={G}")
 
-    # scene extent from the bulk of the scene (1-99 pct), robust to floaters
-    p1 = torch.quantile(canon[torch.randperm(G, device=dev)[:200000]].float(), 0.01, dim=0)
-    p99 = torch.quantile(canon[torch.randperm(G, device=dev)[:200000]].float(), 0.99, dim=0)
-    extent = float((p99 - p1).norm())
+    # scene extent from the bulk of the scene (1-99 pct), robust to floaters.
+    # All G gaussians, no subsampling.
+    _q = canon.float()
+    extent = float((torch.quantile(_q, 0.99, dim=0)
+                    - torch.quantile(_q, 0.01, dim=0)).norm())
+    del _q
     print(f"[rand-gnn] scene extent(1-99pct diag)={extent:.2f}")
 
     # ── untrained NodeFlow over the WHOLE scene ──────────────────────────────

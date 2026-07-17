@@ -158,9 +158,12 @@ def main():
         sys.exit("[train] ABORT: cameras do not see the scene")
 
     # ── scene extent (1-99 pct, robust to floaters) ─────────────────────────
-    sub = canonical_xyz[torch.randperm(G, device=dev)[:200000]].float()
-    extent = float((torch.quantile(sub, 0.99, dim=0)
-                    - torch.quantile(sub, 0.01, dim=0)).norm())
+    # All G gaussians, no subsampling: this is only a scale statistic, and
+    # 1.85M x 3 is well inside torch.quantile's limit.
+    _q = canonical_xyz.float()
+    extent = float((torch.quantile(_q, 0.99, dim=0)
+                    - torch.quantile(_q, 0.01, dim=0)).norm())
+    del _q
     print(f"[train] scene extent={extent:.2f}")
 
     # ── anchor nodes over the whole scene ───────────────────────────────────
@@ -237,6 +240,14 @@ def main():
         if args.r2:
             os.system(f"rclone copy {args.out} {args.r2} >/dev/null 2>&1")
 
+    # frame-0 is the canonical render: fixed per camera. Cache it and every
+    # frame-0-derived SVD term (CLIP embed, static latent, cond latent) instead
+    # of recomputing them every step.
+    print("[train] caching frame0 + SVD conditioning per camera ...")
+    frame0_cache = [render_canonical(c) for c in cameras]
+    cond_cache = [svd.precompute_cond(f0, T) for f0 in frame0_cache]
+    torch.cuda.empty_cache()
+
     rng = random.Random(42)
 
     for step in range(start, cfg.train.iters):
@@ -244,7 +255,7 @@ def main():
         v = rng.randint(0, V - 1)
         z0, cam = z0_bank[k], cameras[v]
 
-        frame0 = render_canonical(cam)
+        frame0 = frame0_cache[v]
 
         h = model.encode_scene()
         # node-space rollout; LBS per frame (batched LBS would be ~2GB at G=1.85M)
@@ -257,7 +268,8 @@ def main():
         frames_t = torch.stack(frames, dim=0)            # [T, 3, H, W]
 
         opt.zero_grad()
-        loss = svd.mds_loss(frames_t, cond_image=frame0, w_power=cfg.mds.w_power)
+        loss = svd.mds_loss(frames_t, cond_image=frame0, w_power=cfg.mds.w_power,
+                            cond_cache=cond_cache[v])
 
         if cfg.train.lambda_arap > 0:
             t_reg = rng.randint(1, T - 1)
