@@ -349,12 +349,22 @@ def main():
         if args.r2:
             os.system(f"rclone copy {args.out} {args.r2} >/dev/null 2>&1")
 
-    def rollout_positions(k, steps=None, grad=True):
+    def rollout_positions(k, steps=None, bptt_start=0, grad=True):
         p0, v0 = anchors.canonical, v0_bank[k]
         s = (T - 1) if steps is None else steps
         return ssm_rollout(model, p0, v0, anchors.e, z_bank[k],
                            init_vel=v0, init_pos=p0, steps=s,
+                           bptt_start=bptt_start,
                            cfg=graph_cfg, dt=dt, grad=grad, damping=damping)
+
+    # curriculum: bptt window grows from bptt_w0 to T-1 over bptt_warmup_frac of training
+    bptt_w0   = int(cfg.train.get("bptt_window_start", 50))
+    bptt_w1   = int(cfg.train.get("bptt_window_end",   T - 1))
+    bptt_frac = float(cfg.train.get("bptt_warmup_frac", 0.8))
+
+    def current_bptt_window(step):
+        r = min(step / max(cfg.train.iters * bptt_frac, 1), 1.0)
+        return int(bptt_w0 + (bptt_w1 - bptt_w0) * r)
 
     arap_edge = knn_graph(anchors.canonical.detach(), k=min(6, M - 1))
     rng = random.Random(42)
@@ -366,19 +376,24 @@ def main():
         opt.zero_grad(set_to_none=True)
 
         if args.sup == "frames":
-            max_rt = int(cfg.train.get("max_rollout_t", len(gt_frames_cpu) - 1))
-            t_r = rng.randint(0, min(len(gt_frames_cpu) - 1, max_rt))
+            Tf = len(gt_frames_cpu)
+            window = current_bptt_window(step)
+            # sample [a, b] with b = a + window, uniformly over all valid positions
+            a = rng.randint(0, max(0, Tf - 1 - window))
+            b = min(a + window, Tf - 1)
             cam = train_cam_single
-            p_seq = rollout_positions(k, steps=t_r)        # [t_r+1, M, 3]
+            # no-grad prefix [0,a], grad suffix [a,b]
+            p_seq = rollout_positions(k, steps=b, bptt_start=a)  # [b+1, M, 3]
             w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
             def _f(pt, wb=w_b, ib=idx_b):
                 pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, wb, ib,
                                           anchors.canonical, pt)
                 return render_with(cam, pos, cov6)
-            frame_pred = checkpoint(_f, p_seq[-1], use_reentrant=False)
-            gt_f = gt_frames_cpu[t_r].to(dev)
+            frame_pred = checkpoint(_f, p_seq[b], use_reentrant=False)
+            gt_f = gt_frames_cpu[b].to(dev)
             loss = float(cfg.train.get("lambda_rgb", 1.0)) * (frame_pred - gt_f).abs().mean()
-            arap_pt = p_seq[-1]
+            t_r = b
+            arap_pt = p_seq[b]
         else:
             v = rng.randint(0, V - 1)
             cam = cameras[v]

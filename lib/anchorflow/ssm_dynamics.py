@@ -88,7 +88,8 @@ def build_graph(pos, cfg):
 
 
 def ssm_rollout(model, p0, v0, e, z, init_vel, init_pos, steps, cfg, dt,
-                grad=True, rebuild_graph=False, recenter=False, damping=1.0):
+                grad=True, rebuild_graph=False, recenter=False, damping=1.0,
+                bptt_start=0):
     """Roll out T = steps+1 frames from (p0, v0). e,z,init_* are per-anchor [M,·].
 
     Explicit (p,v,a) integration — position from previous position+velocity, only
@@ -96,20 +97,28 @@ def ssm_rollout(model, p0, v0, e, z, init_vel, init_pos, steps, cfg, dt,
 
     `damping` ∈ (0,1] multiplies velocity each step (friction) so a persistent
     acceleration can't accumulate velocity/position unboundedly — the open-loop
-    autonomous rollout stays bounded instead of exploding. 1.0 = no damping."""
+    autonomous rollout stays bounded instead of exploding. 1.0 = no damping.
+
+    `bptt_start`: steps before this index are run without gradient (p,v,h detached
+    at that boundary). Enables truncated BPTT: rollout [0, steps] with gradient
+    only over [bptt_start, steps], so gradient chain length = steps - bptt_start."""
     ctx = torch.enable_grad() if grad else torch.no_grad()
     with ctx:
         h = model.init_hidden(e, z, init_vel, init_pos)
         p, v = p0, v0
         out = [p]
         edge_index = build_graph(p.detach(), cfg)
-        for _ in range(steps):
+        for i in range(steps):
             if rebuild_graph:
                 edge_index = build_graph(p.detach(), cfg)
             h, a = model.step(p, v, h, e, z, edge_index, dt)
             p_next = p + v * dt                    # p^{t+1} = p^t + v^t·dt
             v = damping * (v + a * dt)             # v^{t+1} = γ·(v^t + a^t·dt)
             p = p_next
+            if i < bptt_start - 1:               # detach before gradient window
+                p = p.detach()
+                v = v.detach()
+                h = [x.detach() for x in h] if isinstance(h, (list, tuple)) else h.detach()
             out.append(p)
         seq = torch.stack(out, dim=0)              # [T, M, 3]
         if recenter:                               # anti-drift: hold COM at rest

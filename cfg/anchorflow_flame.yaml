@@ -22,7 +22,9 @@ train:
   z0_bank_size:  16
   z0_motion:     0.01
   damping:         0.9
-  max_rollout_t:   50    # cap rollout length for frames mode (50 steps ≈ 1.7s)
+  bptt_window_start: 50   # initial gradient window [a, b], b-a=50
+  bptt_window_end:   299  # final window = full sequence (curriculum over training)
+  bptt_warmup_frac:  0.8  # reach full window at 80% of iters
   lr_gnn:          1.0e-4
   lr_anchor:       1.0e-3
   lr_z0:           5.0e-4
