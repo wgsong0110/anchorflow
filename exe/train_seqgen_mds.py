@@ -191,7 +191,14 @@ def main():
 
     # ── load canonical 3DGS ─────────────────────────────────────────────────
     ply_path = f"{args.model}/point_cloud/iteration_{args.ply_iter}/point_cloud.ply"
-    g = GaussianModel(3)
+    # read hyper_dim from SC-GS cfg_args (saved alongside the model)
+    _hyper_dim = 0
+    _cfg_args_path = f"{args.model}/cfg_args"
+    if os.path.exists(_cfg_args_path):
+        import ast
+        _ns = eval(open(_cfg_args_path).read().strip(), {"Namespace": lambda **kw: kw})
+        _hyper_dim = _ns.get("hyper_dim", 0) if isinstance(_ns, dict) else 0
+    g = GaussianModel(3, fea_dim=_hyper_dim)
     g.load_ply(ply_path)
     g.active_sh_degree = 3
     canon_xyz  = g.get_xyz.detach().clone()        # [G, 3]
