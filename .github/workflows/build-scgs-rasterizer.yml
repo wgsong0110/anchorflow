@@ -1,0 +1,35 @@
+name: build-scgs-rasterizer
+
+# Build SC-GS custom diff-gaussian-rasterization that returns (image, radii, depth, alpha)
+# Uses commit d986da0 from yihua7/SC-GS submodule
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build SC-GS rasterizer wheel
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/out" \
+            -e TORCH_CUDA_ARCH_LIST="8.6;8.9" -e FORCE_CUDA=1 \
+            pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel bash -c '
+              set -e
+              apt-get update -qq && apt-get install -y -qq git build-essential ninja-build >/dev/null 2>&1
+              pip install -q wheel
+              git clone -q https://github.com/yihua7/SC-GS /scgs
+              cd /scgs
+              git submodule update --init --recursive
+              pip wheel ./submodules/diff-gaussian-rasterization -w /out --no-deps --no-build-isolation
+              ls -la /out/*.whl
+            '
+          sudo chown -R $(id -u):$(id -g) *.whl || true
+          ls -la *.whl
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cuda-scgs-rasterizer
+          files: "*.whl"
+          fail_on_unmatched_files: true
