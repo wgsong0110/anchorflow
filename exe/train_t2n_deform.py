@@ -319,21 +319,25 @@ def main():
             if not os.path.exists(gt_path):
                 print(f"[eval] GT not found: {gt_path}, skip")
                 continue
-            gt_fr = [torch.from_numpy(np.asarray(f)).permute(2, 0, 1).float().cuda() / 255.
-                     for f in iio.mimread(gt_path, memtest=False)[:T]]
-            gt_clip = torch.stack(gt_fr, 0)
-            if gt_clip.shape[-2:] != (H8, W8):
-                gt_clip = torch.nn.functional.interpolate(
-                    gt_clip, size=(H8, W8), mode="bilinear", align_corners=False)
+            # load + resize on CPU to avoid OOM (raw frames can be 2704x2028)
+            gt_frames_cpu = []
+            for f in iio.mimread(gt_path, memtest=False)[:T]:
+                fr = torch.from_numpy(np.asarray(f)).permute(2, 0, 1).float() / 255.
+                if fr.shape[-2:] != (H8, W8):
+                    fr = torch.nn.functional.interpolate(
+                        fr.unsqueeze(0), size=(H8, W8), mode="bilinear", align_corners=False
+                    ).squeeze(0)
+                gt_frames_cpu.append(fr)
 
             with torch.no_grad():
                 w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
                 psnrs = []
-                for t in range(min(T, gt_clip.shape[0])):
+                for t in range(min(T, len(gt_frames_cpu))):
                     pos_t, cov6_t, _ = W.lbs_warp(
                         canon_xyz, canon_cov6, w_b, idx_b, anchors.canonical, p_traj[t])
                     pred = render_with(eval_cam, pos_t, cov6_t).clamp(0, 1)
-                    mse = (pred - gt_clip[t]).pow(2).mean()
+                    gt_t = gt_frames_cpu[t].cuda()
+                    mse = (pred - gt_t).pow(2).mean()
                     if mse > 0:
                         psnrs.append(-10 * torch.log10(mse).item())
             avg = float(np.mean(psnrs)) if psnrs else 0.
