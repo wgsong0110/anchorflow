@@ -14,10 +14,10 @@ model:
   k_gauss:      4
   dt:           0.1
   accel_scale:  0.01
-  res:          256
+  res:          540      # higher resolution for T2N reproduction (was 256)
 
 train:
-  iters:         30000
+  iters:         50000
   n_views:       1       # MoDGS protocol: cam0 training only
   z0_bank_size:  16
   z0_motion:     0.01
@@ -31,7 +31,14 @@ train:
   lambda_z0:     1.0e-5
   grad_clip:     1.0
   log_every:     100
-  ckpt_every:    1000
+  ckpt_every:    2000
+
+# T2N spline-specific (K keyframes for CubicHermiteTrajectory)
+t2n_spline:
+  K:             20
+  lambda_track:  50.0
+  lambda_depth:  0.1
+  lambda_mask:   0.5
 
 mds:
   sigma_min:        0.05
