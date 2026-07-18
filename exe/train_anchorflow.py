@@ -366,7 +366,8 @@ def main():
         opt.zero_grad(set_to_none=True)
 
         if args.sup == "frames":
-            t_r = rng.randint(0, len(gt_frames_cpu) - 1)
+            max_rt = int(cfg.train.get("max_rollout_t", len(gt_frames_cpu) - 1))
+            t_r = rng.randint(0, min(len(gt_frames_cpu) - 1, max_rt))
             cam = train_cam_single
             p_seq = rollout_positions(k, steps=t_r)        # [t_r+1, M, 3]
             w_b, idx_b = anchors.cal_nn_weight(canon_xyz)

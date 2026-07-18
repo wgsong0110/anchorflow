@@ -21,15 +21,16 @@ train:
   n_views:       1       # MoDGS protocol: cam0 training only
   z0_bank_size:  16
   z0_motion:     0.01
-  damping:       1.0
-  lr_gnn:        1.0e-4
-  lr_anchor:     1.0e-3
-  lr_z0:         5.0e-4
-  lr_gaussian:   0.0
-  lambda_rgb:    1.0
-  lambda_arap:   0.001
-  lambda_z0:     1.0e-5
-  grad_clip:     1.0
+  damping:         0.9
+  max_rollout_t:   50    # cap rollout length for frames mode (50 steps ≈ 1.7s)
+  lr_gnn:          1.0e-4
+  lr_anchor:       1.0e-3
+  lr_z0:           5.0e-4
+  lr_gaussian:     0.0
+  lambda_rgb:      1.0
+  lambda_arap:     0.05
+  lambda_z0:       1.0e-5
+  grad_clip:       0.5
   log_every:     100
   ckpt_every:    2000
 
