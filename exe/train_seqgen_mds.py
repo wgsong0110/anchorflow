@@ -277,7 +277,7 @@ def main():
     print("[train] cache ready")
 
     # ── checkpoint manager ───────────────────────────────────────────────────
-    ckpt_mgr = CheckpointManager(args.out, keep=3)
+    ckpt_mgr = CheckpointManager(args.out, keep_last=3)
     start_step = 0
     if args.resume:
         ck = ckpt_mgr.load_latest()
