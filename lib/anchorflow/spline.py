@@ -100,9 +100,11 @@ class CubicHermiteTrajectory(nn.Module):
 
         # Combined design matrix [T, 2K]
         H = torch.cat([H_pos, H_vel], dim=1)  # [T, 2K]
-        # Solve least-squares for each node dim
-        # params [2K, M, 3]
-        params, _ = torch.linalg.lstsq(H, x.reshape(T, M * 3))[:2]
+        # Solve least-squares for each node dim: (H^T H)^{-1} H^T x
+        rhs = x.reshape(T, M * 3)  # [T, M*3]
+        HtH = H.T @ H + 1e-6 * torch.eye(2 * K, device=dev)
+        Htr = H.T @ rhs             # [2K, M*3]
+        params = torch.linalg.solve(HtH, Htr)  # [2K, M*3]
         params = params.reshape(2 * K, M, 3)
         with torch.no_grad():
             self.P.copy_(params[:K])
