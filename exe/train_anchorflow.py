@@ -148,6 +148,10 @@ def main():
                     help="comma-sep frame dirs for PSNR eval (e.g. .../cam05,.../cam06)")
     ap.add_argument("--eval_cam_idxs", default=None,
                     help="comma-sep camera indices matching eval_frames (e.g. 5,6)")
+    ap.add_argument("--eval_max_frames", type=int, default=None,
+                    help="evaluate only the first N frames (default: all T frames)")
+    ap.add_argument("--eval_only", action="store_true",
+                    help="skip training, load ckpt_last.pt and run eval only")
     ap.add_argument("--r2", default=None)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--white_bg", action="store_true")
@@ -392,6 +396,15 @@ def main():
 
     rollout_cam0 = train_cam_single if args.sup == "frames" else cameras[0]
 
+    if args.eval_only:
+        if args.eval_frames and args.eval_cam_idxs:
+            eval_T = args.eval_max_frames if args.eval_max_frames else T
+            _do_eval(args, cfg, rollout_positions, anchors, canon_xyz, canon_cov6,
+                     render_with, eval_T, dev, args.out, gh)
+        else:
+            print("[eval_only] --eval_frames and --eval_cam_idxs required")
+        return
+
     for step in range(start, cfg.train.iters):
         k = rng.randint(0, B - 1)
         opt.zero_grad(set_to_none=True)
@@ -495,8 +508,9 @@ def main():
     sync_r2()
 
     if args.eval_frames and args.eval_cam_idxs:
+        eval_T = args.eval_max_frames if args.eval_max_frames else T
         _do_eval(args, cfg, rollout_positions, anchors, canon_xyz, canon_cov6,
-                 render_with, T, dev, args.out, gh)
+                 render_with, eval_T, dev, args.out, gh)
 
     print(f"[train] done commit={gh} -> {args.out}")
 
