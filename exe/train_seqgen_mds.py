@@ -28,7 +28,7 @@ import imageio.v2 as iio
 from torch.utils.checkpoint import checkpoint
 from omegaconf import OmegaConf
 
-sys.path.append("/workspace/gaussian-splatting")
+sys.path.append("/workspace/SC-GS")
 from scene.gaussian_model import GaussianModel
 from gaussian_renderer import render
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix, focal2fov
