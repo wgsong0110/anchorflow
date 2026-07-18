@@ -27,7 +27,7 @@ Supervision (--sup):
 """
 from __future__ import annotations
 
-import argparse, json, math, os, random, subprocess, sys
+import argparse, glob, json, math, os, random, subprocess, sys
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -97,6 +97,24 @@ def load_official_cameras(model_dir, n_views, long_side):
     return cams
 
 
+def load_cam_by_idx(cam_data, long_side):
+    if "rotation" in cam_data:
+        rot = np.array(cam_data["rotation"], dtype=np.float32)
+        pos = np.array(cam_data["position"], dtype=np.float32)
+        Wd, Hd = cam_data["width"], cam_data["height"]
+        fovx, fovy = focal2fov(cam_data["fx"], Wd), focal2fov(cam_data["fy"], Hd)
+        T_vec = -rot.T @ pos
+    else:
+        rot = np.array(cam_data["R"], dtype=np.float32)
+        T_vec = np.array(cam_data["T"], dtype=np.float32)
+        Wd, Hd = cam_data["W"], cam_data["H"]
+        fovx, fovy = cam_data["fov_x"], cam_data["fov_y"]
+    s = long_side / max(Wd, Hd)
+    W8 = max(8, int(round(Wd * s / 8)) * 8)
+    H8 = max(8, int(round(Hd * s / 8)) * 8)
+    return Cam(rot, T_vec, fovx, fovy, W8, H8)
+
+
 def git_hash():
     try:
         return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"],
@@ -117,9 +135,19 @@ def main():
     ap.add_argument("--iter", type=int, default=30000)
     ap.add_argument("--cfg", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--sup", choices=["mds", "video"], default="mds")
+    ap.add_argument("--sup", choices=["mds", "video", "frames"], default="mds")
     ap.add_argument("--videos", default=None,
                     help="--sup video: dir with view_XX.mp4 target clips")
+    ap.add_argument("--frames", default=None,
+                    help="--sup frames: dir with 000000.jpg ... (real N3DV cam0)")
+    ap.add_argument("--cameras", default=None,
+                    help="cameras.json path (default: model/cameras.json)")
+    ap.add_argument("--cam_idx", type=int, default=0,
+                    help="camera index for --sup frames training cam")
+    ap.add_argument("--eval_frames", default=None,
+                    help="comma-sep frame dirs for PSNR eval (e.g. .../cam05,.../cam06)")
+    ap.add_argument("--eval_cam_idxs", default=None,
+                    help="comma-sep camera indices matching eval_frames (e.g. 5,6)")
     ap.add_argument("--r2", default=None)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--white_bg", action="store_true")
@@ -253,6 +281,8 @@ def main():
 
     # ── supervision ─────────────────────────────────────────────────────────
     svd = cond_cache = gt_videos = None
+    gt_frames_cpu = None
+    train_cam_single = None
     frame0_cache = [render_canonical(c) for c in cameras]
     if args.sup == "mds":
         from anchorflow.sds import SVDGuidance
@@ -263,7 +293,7 @@ def main():
                           grad_clip=cfg.mds.grad_clip, device=dev)
         cond_cache = [svd.precompute_cond(f0, T) for f0 in frame0_cache]
         torch.cuda.empty_cache()
-    else:
+    elif args.sup == "video":
         if not args.videos:
             sys.exit("[train] --sup video requires --videos DIR")
         gt_videos = []
@@ -278,6 +308,27 @@ def main():
                     mode="bilinear", align_corners=False)
             gt_videos.append(clip)
         print(f"[train] target clips: {len(gt_videos)} x {tuple(gt_videos[0].shape)}")
+    else:  # frames
+        if not args.frames:
+            sys.exit("[train] --sup frames requires --frames DIR")
+        cam_json_path = args.cameras or f"{args.model}/cameras.json"
+        cams_json_all = json.load(open(cam_json_path))
+        train_cam_single = load_cam_by_idx(cams_json_all[args.cam_idx], cfg.model.res)
+        flist = sorted(glob.glob(os.path.join(args.frames, "*.jpg")) +
+                       glob.glob(os.path.join(args.frames, "*.png")))
+        gt_frames_cpu = []
+        for fpath in flist[:T]:
+            img = iio.imread(fpath)
+            img_t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.
+            if img_t.shape[1:] != (train_cam_single.image_height, train_cam_single.image_width):
+                img_t = torch.nn.functional.interpolate(
+                    img_t.unsqueeze(0),
+                    size=(train_cam_single.image_height, train_cam_single.image_width),
+                    mode="bilinear", align_corners=False).squeeze(0)
+            gt_frames_cpu.append(img_t)
+        print(f"[train] frames: cam_idx={args.cam_idx} "
+              f"{train_cam_single.image_width}x{train_cam_single.image_height} "
+              f"n={len(gt_frames_cpu)}")
 
     ckpt_mgr = CheckpointManager(args.out)
     start = 0
@@ -298,47 +349,62 @@ def main():
         if args.r2:
             os.system(f"rclone copy {args.out} {args.r2} >/dev/null 2>&1")
 
-    def rollout_positions(k, grad=True):
+    def rollout_positions(k, steps=None, grad=True):
         p0, v0 = anchors.canonical, v0_bank[k]
+        s = (T - 1) if steps is None else steps
         return ssm_rollout(model, p0, v0, anchors.e, z_bank[k],
-                           init_vel=v0, init_pos=p0, steps=T - 1,
+                           init_vel=v0, init_pos=p0, steps=s,
                            cfg=graph_cfg, dt=dt, grad=grad, damping=damping)
 
     arap_edge = knn_graph(anchors.canonical.detach(), k=min(6, M - 1))
     rng = random.Random(42)
 
+    rollout_cam0 = train_cam_single if args.sup == "frames" else cameras[0]
+
     for step in range(start, cfg.train.iters):
         k = rng.randint(0, B - 1)
-        v = rng.randint(0, V - 1)
-        cam = cameras[v]
+        opt.zero_grad(set_to_none=True)
 
-        p_seq = rollout_positions(k)                       # [T, M, 3]
-        # rho is learnable -> recompute the binding every step
-        w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
-
-        frames = []
-        for t in range(T):
+        if args.sup == "frames":
+            t_r = rng.randint(0, len(gt_frames_cpu) - 1)
+            cam = train_cam_single
+            p_seq = rollout_positions(k, steps=t_r)        # [t_r+1, M, 3]
+            w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
             def _f(pt, wb=w_b, ib=idx_b):
                 pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, wb, ib,
                                           anchors.canonical, pt)
                 return render_with(cam, pos, cov6)
-            frames.append(checkpoint(_f, p_seq[t], use_reentrant=False))
-        frames_t = torch.stack(frames, 0)                  # [T,3,H,W]
-
-        opt.zero_grad(set_to_none=True)
-        if args.sup == "mds":
-            loss = svd.mds_loss(frames_t, cond_image=frame0_cache[v],
-                                w_power=cfg.mds.w_power, cond_cache=cond_cache[v],
-                                vae_checkpoint=False)
+            frame_pred = checkpoint(_f, p_seq[-1], use_reentrant=False)
+            gt_f = gt_frames_cpu[t_r].to(dev)
+            loss = float(cfg.train.get("lambda_rgb", 1.0)) * (frame_pred - gt_f).abs().mean()
+            arap_pt = p_seq[-1]
         else:
-            loss = float(cfg.train.get("lambda_rgb", 1.0)) * \
-                (frames_t - gt_videos[v]).abs().mean()
+            v = rng.randint(0, V - 1)
+            cam = cameras[v]
+            t_r = v
+            p_seq = rollout_positions(k)                   # [T, M, 3]
+            w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
+            frames = []
+            for t in range(T):
+                def _f(pt, wb=w_b, ib=idx_b):
+                    pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, wb, ib,
+                                              anchors.canonical, pt)
+                    return render_with(cam, pos, cov6)
+                frames.append(checkpoint(_f, p_seq[t], use_reentrant=False))
+            frames_t = torch.stack(frames, 0)              # [T,3,H,W]
+            if args.sup == "mds":
+                loss = svd.mds_loss(frames_t, cond_image=frame0_cache[v],
+                                    w_power=cfg.mds.w_power, cond_cache=cond_cache[v],
+                                    vae_checkpoint=False)
+            else:  # video
+                loss = float(cfg.train.get("lambda_rgb", 1.0)) * \
+                    (frames_t - gt_videos[v]).abs().mean()
+            arap_pt = p_seq[rng.randint(1, T - 1)]
 
         if cfg.train.lambda_arap > 0:
-            t_r = rng.randint(1, T - 1)
             src, dst = arap_edge
             d_rest = (anchors.canonical[src] - anchors.canonical[dst]).norm(dim=-1)
-            d_now = (p_seq[t_r][src] - p_seq[t_r][dst]).norm(dim=-1)
+            d_now = (arap_pt[src] - arap_pt[dst]).norm(dim=-1)
             loss = loss + cfg.train.lambda_arap * ((d_now - d_rest) ** 2).mean()
         if cfg.train.lambda_z0 > 0:
             loss = loss + cfg.train.lambda_z0 * (z_bank ** 2).mean()
@@ -355,9 +421,10 @@ def main():
 
         if step % cfg.train.log_every == 0:
             with torch.no_grad():
-                travel = float((p_seq[-1] - anchors.canonical).norm(dim=-1).max())
+                p_last = p_seq[-1]
+                travel = float((p_last - anchors.canonical).norm(dim=-1).max())
                 rho = float(anchors.radius.mean())
-            print(f"[{step}/{cfg.train.iters}] loss={float(loss):.4f} k={k} v={v} "
+            print(f"[{step}/{cfg.train.iters}] loss={float(loss):.4f} k={k} v={t_r} "
                   f"travel={travel:.3f} ({travel/extent*100:.2f}%) rho={rho:.3f}")
 
         if step % cfg.train.ckpt_every == 0:
@@ -366,7 +433,7 @@ def main():
                                  "opt": opt.state_dict(), "z_bank": z_bank.data,
                                  "v0_bank": v0_bank.data, "step": step})
             _save_rollout(step, rollout_positions, anchors, canon_xyz, canon_cov6,
-                          render_with, cameras[0], T, args.out)
+                          render_with, rollout_cam0, T, args.out)
             sync_r2()
 
     ckpt_mgr.save(cfg.train.iters - 1,
@@ -374,6 +441,11 @@ def main():
                    "opt": opt.state_dict(), "z_bank": z_bank.data,
                    "v0_bank": v0_bank.data, "step": cfg.train.iters - 1})
     sync_r2()
+
+    if args.eval_frames and args.eval_cam_idxs:
+        _do_eval(args, cfg, rollout_positions, anchors, canon_xyz, canon_cov6,
+                 render_with, T, dev, args.out, gh)
+
     print(f"[train] done commit={gh} -> {args.out}")
 
 
@@ -390,6 +462,48 @@ def _save_rollout(step, rollout_positions, anchors, canon_xyz, canon_cov6,
     path = os.path.join(out, f"rollout_step{step:06d}.mp4")
     save_video(frames, path)
     print(f"  saved rollout -> {path}")
+
+
+@torch.no_grad()
+def _do_eval(args, cfg, rollout_positions, anchors, canon_xyz, canon_cov6,
+             render_with, T, dev, out, gh):
+    cam_json_path = args.cameras or f"{args.model}/cameras.json"
+    cams_json_all = json.load(open(cam_json_path))
+    eval_dirs = [d.strip() for d in args.eval_frames.split(",")]
+    eval_idxs = [int(i.strip()) for i in args.eval_cam_idxs.split(",")]
+
+    p_seq = rollout_positions(0, grad=False)               # [T, M, 3]
+    w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
+
+    psnrs = []
+    for cam_idx, fdir in zip(eval_idxs, eval_dirs):
+        cam = load_cam_by_idx(cams_json_all[cam_idx], cfg.model.res)
+        flist = sorted(glob.glob(os.path.join(fdir, "*.jpg")) +
+                       glob.glob(os.path.join(fdir, "*.png")))
+        mse_sum = 0.0
+        cnt = 0
+        for t, fpath in enumerate(flist[:T]):
+            gt = iio.imread(fpath)
+            gt_t = torch.from_numpy(gt).permute(2, 0, 1).float().to(dev) / 255.
+            if gt_t.shape[1:] != (cam.image_height, cam.image_width):
+                gt_t = torch.nn.functional.interpolate(
+                    gt_t.unsqueeze(0), size=(cam.image_height, cam.image_width),
+                    mode="bilinear", align_corners=False).squeeze(0)
+            pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_b, idx_b,
+                                      anchors.canonical, p_seq[t])
+            pred = render_with(cam, pos, cov6).clamp(0, 1)
+            mse_sum += (pred - gt_t).pow(2).mean().item()
+            cnt += 1
+        psnr = -10 * math.log10(max(mse_sum / max(cnt, 1), 1e-10))
+        psnrs.append(psnr)
+        print(f"  [eval] cam{cam_idx:02d}: PSNR={psnr:.2f} dB  ({cnt} frames)")
+
+    mean_psnr = sum(psnrs) / len(psnrs) if psnrs else 0.0
+    print(f"[eval] mean PSNR={mean_psnr:.2f} dB  commit={gh}")
+    with open(os.path.join(out, "eval_psnr.txt"), "w") as f:
+        for ci, p in zip(eval_idxs, psnrs):
+            f.write(f"cam{ci:02d}: {p:.4f}\n")
+        f.write(f"mean: {mean_psnr:.4f}\n")
 
 
 if __name__ == "__main__":
