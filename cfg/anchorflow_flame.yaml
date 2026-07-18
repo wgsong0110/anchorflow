@@ -3,7 +3,7 @@ t2n_views: 4
 
 model:
   n_nodes:      256
-  n_frames:     50
+  n_frames:     300      # full N3DV sequence (300 frames @ 30fps)
   hidden:       128
   n_gnn_layers: 4
   mp_steps:     4
@@ -17,8 +17,8 @@ model:
   res:          256
 
 train:
-  iters:         10000
-  n_views:       1
+  iters:         30000
+  n_views:       1       # MoDGS protocol: cam0 training only
   z0_bank_size:  16
   z0_motion:     0.01
   damping:       1.0

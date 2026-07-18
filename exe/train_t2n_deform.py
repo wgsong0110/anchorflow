@@ -114,6 +114,8 @@ def main():
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--white_bg", action="store_true")
     ap.add_argument("--no-t2n", action="store_true")
+    ap.add_argument("--eval_views", default=None,
+                    help="comma-separated camera indices for PSNR eval (e.g. '5,6')")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -287,6 +289,67 @@ def main():
                    "p_traj": p_traj.data, "step": cfg.train.iters - 1})
     sync_r2()
     print(f"[t2n] done commit={gh} -> {args.out}")
+
+    # ── eval on hold-out cameras (e.g. cam5, cam6 per MoDGS protocol) ─────────
+    if args.eval_views:
+        eval_idxs = [int(x) for x in args.eval_views.split(",")]
+        cams_json = json.load(open(f"{args.model}/cameras.json"))
+        long_side = cfg.model.res
+        eval_psnrs = {}
+        for ei in eval_idxs:
+            c = cams_json[ei]
+            if "rotation" in c:
+                rot = np.array(c["rotation"], dtype=np.float32)
+                pos = np.array(c["position"], dtype=np.float32)
+                Wd, Hd = c["width"], c["height"]
+                fovx, fovy = focal2fov(c["fx"], Wd), focal2fov(c["fy"], Hd)
+                T_cam = -rot.T @ pos
+            else:
+                rot = np.array(c["R"], dtype=np.float32)
+                T_cam = np.array(c["T"], dtype=np.float32)
+                Wd, Hd = c["W"], c["H"]
+                fovx, fovy = c["fov_x"], c["fov_y"]
+            s = long_side / max(Wd, Hd)
+            W8 = max(8, int(round(Wd * s / 8)) * 8)
+            H8 = max(8, int(round(Hd * s / 8)) * 8)
+            eval_cam = Cam(rot, T_cam, fovx, fovy, W8, H8)
+
+            # load GT video for this camera (cam05.mp4 / view_05.mp4 etc.)
+            gt_path = os.path.join(args.videos, f"view_{ei:02d}.mp4")
+            if not os.path.exists(gt_path):
+                print(f"[eval] GT not found: {gt_path}, skip")
+                continue
+            gt_fr = [torch.from_numpy(np.asarray(f)).permute(2, 0, 1).float().cuda() / 255.
+                     for f in iio.mimread(gt_path, memtest=False)[:T]]
+            gt_clip = torch.stack(gt_fr, 0)
+            if gt_clip.shape[-2:] != (H8, W8):
+                gt_clip = torch.nn.functional.interpolate(
+                    gt_clip, size=(H8, W8), mode="bilinear", align_corners=False)
+
+            with torch.no_grad():
+                w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
+                psnrs = []
+                for t in range(min(T, gt_clip.shape[0])):
+                    pos_t, cov6_t, _ = W.lbs_warp(
+                        canon_xyz, canon_cov6, w_b, idx_b, anchors.canonical, p_traj[t])
+                    pred = render_with(eval_cam, pos_t, cov6_t).clamp(0, 1)
+                    mse = (pred - gt_clip[t]).pow(2).mean()
+                    if mse > 0:
+                        psnrs.append(-10 * torch.log10(mse).item())
+            avg = float(np.mean(psnrs)) if psnrs else 0.
+            eval_psnrs[f"cam{ei:02d}"] = avg
+            print(f"[eval] cam{ei:02d}: PSNR={avg:.2f} dB  ({len(psnrs)} frames)")
+            _save_rollout(cfg.train.iters - 1, p_traj, anchors, canon_xyz, canon_cov6,
+                          lambda cam, xyz, cov6: render_with(eval_cam, xyz, cov6),
+                          eval_cam, T, args.out)
+            os.rename(
+                os.path.join(args.out, f"rollout_step{cfg.train.iters-1:06d}.mp4"),
+                os.path.join(args.out, f"rollout_eval_cam{ei:02d}.mp4"))
+
+        if eval_psnrs:
+            mean_psnr = float(np.mean(list(eval_psnrs.values())))
+            print(f"[eval] mean PSNR ({','.join(eval_psnrs.keys())}): {mean_psnr:.2f} dB")
+        sync_r2()
 
 
 @torch.no_grad()
