@@ -115,6 +115,8 @@ def main():
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--white_bg", action="store_true")
     ap.add_argument("--no-t2n", action="store_true")
+    ap.add_argument("--n_views", type=int, default=None,
+                        help="override cfg.train.n_views (e.g. 1 for single-view)")
     ap.add_argument("--iters", type=int, default=None,
                     help="override cfg.train.iters (fit a wall-clock budget)")
     args = ap.parse_args()
@@ -123,6 +125,8 @@ def main():
     cfg = OmegaConf.load(args.cfg)
     if args.iters is not None:
         cfg.train.iters = args.iters
+    if args.n_views is not None:
+        cfg.train.n_views = args.n_views
     dev, gh = "cuda", git_hash()
     T = cfg.model.n_frames
 
