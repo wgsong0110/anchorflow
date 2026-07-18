@@ -140,7 +140,7 @@ def traj_to_frames(traj, canon_xyz, canon_cov6, anchors, g, bg, cam, pipe,
         pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_b, idx_b,
                                    anchors.canonical, pt)
         g._xyz = pos
-        g.get_covariance = lambda scaling_modifier=1.0: cov6
+        g.get_covariance = lambda scaling_modifier=1.0, **kw: cov6
         return render(cam, g, pipe, bg)["render"]
 
     frames = []
@@ -220,7 +220,7 @@ def main():
     def render_canonical(cam):
         with torch.no_grad():
             g._xyz = canon_xyz
-            g.get_covariance = lambda scaling_modifier=1.0: canon_cov6
+            g.get_covariance = lambda scaling_modifier=1.0, **kw: canon_cov6
             return render(cam, g, pipe, bg)["render"].clamp(0, 1)
 
     # sanity check
@@ -370,7 +370,7 @@ def _save_rollout(step, model, anchors, N, T, extent, dev,
         pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_b, idx_b,
                                    anchors.canonical, traj[t])
         g._xyz = pos
-        g.get_covariance = lambda scaling_modifier=1.0: cov6
+        g.get_covariance = lambda scaling_modifier=1.0, **kw: cov6
         frames.append(render(cam, g, pipe, bg)["render"].clamp(0, 1))
     path = os.path.join(out, f"rollout_{step:06d}.mp4")
     save_video(frames, path)
