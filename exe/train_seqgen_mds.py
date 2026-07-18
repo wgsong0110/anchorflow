@@ -179,6 +179,10 @@ def main():
     # MDS
     ap.add_argument("--w_power",  type=float, default=0.0)
     ap.add_argument("--lambda_arap", type=float, default=0.01)
+    ap.add_argument("--res",        type=int, default=None,
+                    help="override cfg.model.res (render long side)")
+    ap.add_argument("--n_views",    type=int, default=None,
+                    help="override cfg.train.n_views")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -187,6 +191,10 @@ def main():
         cfg.train.iters = args.iters
     if args.n_nodes is not None:
         cfg.model.n_nodes = args.n_nodes
+    if args.res is not None:
+        cfg.model.res = args.res
+    if args.n_views is not None:
+        cfg.train.n_views = args.n_views
     if args.n_frames is not None:
         cfg.model.n_frames = args.n_frames
 
