@@ -66,14 +66,23 @@ def load_official_cameras(model_dir, n_views, long_side):
     cams = []
     for i in idx:
         c = cams_json[int(i)]
-        rot = np.array(c["rotation"], dtype=np.float32)
-        pos = np.array(c["position"], dtype=np.float32)
-        Wd, Hd = c["width"], c["height"]
-        fovx, fovy = focal2fov(c["fx"], Wd), focal2fov(c["fy"], Hd)
+        if "rotation" in c:
+            # INRIA format: rotation=R_wc, position=camera_center, fx, fy, width, height
+            rot = np.array(c["rotation"], dtype=np.float32)
+            pos = np.array(c["position"], dtype=np.float32)
+            Wd, Hd = c["width"], c["height"]
+            fovx, fovy = focal2fov(c["fx"], Wd), focal2fov(c["fy"], Hd)
+            T = -rot.T @ pos  # t_cw
+        else:
+            # gen_views.py format: R=R_wc, T=t_cw, fov_x, fov_y, W, H
+            rot = np.array(c["R"], dtype=np.float32)
+            T = np.array(c["T"], dtype=np.float32)
+            Wd, Hd = c["W"], c["H"]
+            fovx, fovy = c["fov_x"], c["fov_y"]
         s = long_side / max(Wd, Hd)
         W8 = max(8, int(round(Wd * s / 8)) * 8)
         H8 = max(8, int(round(Hd * s / 8)) * 8)
-        cams.append(Cam(rot, -rot.T @ pos, fovx, fovy, W8, H8))
+        cams.append(Cam(rot, T, fovx, fovy, W8, H8))
     return cams
 
 
