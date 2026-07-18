@@ -89,38 +89,52 @@ def build_graph(pos, cfg):
 
 def ssm_rollout(model, p0, v0, e, z, init_vel, init_pos, steps, cfg, dt,
                 grad=True, rebuild_graph=False, recenter=False, damping=1.0,
-                bptt_start=0):
-    """Roll out T = steps+1 frames from (p0, v0). e,z,init_* are per-anchor [M,·].
+                bptt_start=0, return_states=False):
+    """Roll out T = steps+1 frames from (p0, v0). Returns positions [T, M, 3].
 
-    Explicit (p,v,a) integration — position from previous position+velocity, only
-    acceleration comes from the SSM hidden state. Returns positions [T, M, 3].
-
-    `damping` ∈ (0,1] multiplies velocity each step (friction) so a persistent
-    acceleration can't accumulate velocity/position unboundedly — the open-loop
-    autonomous rollout stays bounded instead of exploding. 1.0 = no damping.
-
-    `bptt_start`: steps before this index are run without gradient (p,v,h detached
-    at that boundary). Enables truncated BPTT: rollout [0, steps] with gradient
-    only over [bptt_start, steps], so gradient chain length = steps - bptt_start."""
+    bptt_start: detach p/v/h before this step index (truncated BPTT).
+    return_states: if True, also return list of (p,v,h) CPU tensors at each t."""
     ctx = torch.enable_grad() if grad else torch.no_grad()
     with ctx:
         h = model.init_hidden(e, z, init_vel, init_pos)
         p, v = p0, v0
         out = [p]
+        states = [(p.detach().cpu(), v.detach().cpu(), h.detach().cpu())] \
+                 if return_states else None
         edge_index = build_graph(p.detach(), cfg)
         for i in range(steps):
             if rebuild_graph:
                 edge_index = build_graph(p.detach(), cfg)
             h, a = model.step(p, v, h, e, z, edge_index, dt)
-            p_next = p + v * dt                    # p^{t+1} = p^t + v^t·dt
-            v = damping * (v + a * dt)             # v^{t+1} = γ·(v^t + a^t·dt)
+            p_next = p + v * dt
+            v = damping * (v + a * dt)
             p = p_next
-            if i < bptt_start - 1:               # detach before gradient window
-                p = p.detach()
-                v = v.detach()
-                h = [x.detach() for x in h] if isinstance(h, (list, tuple)) else h.detach()
+            if i < bptt_start - 1:
+                p = p.detach(); v = v.detach(); h = h.detach()
             out.append(p)
-        seq = torch.stack(out, dim=0)              # [T, M, 3]
-        if recenter:                               # anti-drift: hold COM at rest
+            if return_states:
+                states.append((p.detach().cpu(), v.detach().cpu(), h.detach().cpu()))
+        seq = torch.stack(out, dim=0)
+        if recenter:
             seq = seq - seq.mean(1, keepdim=True) + seq[:1].mean(1, keepdim=True)
+        if return_states:
+            return seq, states
         return seq
+
+
+def ssm_rollout_from(model, p0, v0, h0, e, z, steps, cfg, dt,
+                     grad=True, damping=1.0):
+    """Rollout from a given state (p0,v0,h0) for `steps` steps — no bptt needed
+    because the caller is responsible for detaching the initial state."""
+    ctx = torch.enable_grad() if grad else torch.no_grad()
+    with ctx:
+        p, v, h = p0, v0, h0
+        out = [p]
+        edge_index = build_graph(p.detach(), cfg)
+        for _ in range(steps):
+            h, a = model.step(p, v, h, e, z, edge_index, dt)
+            p_next = p + v * dt
+            v = damping * (v + a * dt)
+            p = p_next
+            out.append(p)
+        return torch.stack(out, dim=0)             # [steps+1, M, 3]

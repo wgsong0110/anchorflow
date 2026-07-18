@@ -44,7 +44,7 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix, focal2fov
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from anchorflow.anchors import AnchorSet
-from anchorflow.ssm_dynamics import SSMDynamics, ssm_rollout
+from anchorflow.ssm_dynamics import SSMDynamics, ssm_rollout, ssm_rollout_from
 from anchorflow.graph import knn_graph
 from anchorflow import warp as W
 from anchorflow.checkpoint import CheckpointManager, load_rng_state
@@ -349,13 +349,34 @@ def main():
         if args.r2:
             os.system(f"rclone copy {args.out} {args.r2} >/dev/null 2>&1")
 
-    def rollout_positions(k, steps=None, bptt_start=0, grad=True):
+    def rollout_positions(k, steps=None, bptt_start=0, grad=True, return_states=False):
         p0, v0 = anchors.canonical, v0_bank[k]
         s = (T - 1) if steps is None else steps
         return ssm_rollout(model, p0, v0, anchors.e, z_bank[k],
                            init_vel=v0, init_pos=p0, steps=s,
                            bptt_start=bptt_start,
-                           cfg=graph_cfg, dt=dt, grad=grad, damping=damping)
+                           cfg=graph_cfg, dt=dt, grad=grad, damping=damping,
+                           return_states=return_states)
+
+    # ── state cache: avoid no-grad prefix rollout cost every step ────────────
+    # _state_cache[k][t] = (p_t, v_t, h_t) on CPU tensors, refreshed every cache_every steps
+    cache_every = int(cfg.train.get("cache_every", 200))
+    _state_cache = [[None] * T for _ in range(B)]
+    _cache_valid = [False]          # mutable one-element list so closure can mutate it
+
+    def _refresh_state_cache():
+        with torch.no_grad():
+            for k_c in range(B):
+                p0 = anchors.canonical.detach()
+                v0 = v0_bank[k_c].detach()
+                _, states = ssm_rollout(
+                    model, p0, v0, anchors.e, z_bank[k_c].detach(),
+                    init_vel=v0, init_pos=p0, steps=T - 1,
+                    cfg=graph_cfg, dt=dt, grad=False, damping=damping,
+                    return_states=True)
+                _state_cache[k_c] = states      # list of T+1 (p_cpu, v_cpu, h_cpu)
+        _cache_valid[0] = True
+        print(f"[cache] refreshed B={B} x T={T}")
 
     # curriculum: bptt window grows from bptt_w0 to T-1 over bptt_warmup_frac of training
     bptt_w0   = int(cfg.train.get("bptt_window_start", 50))
@@ -376,24 +397,39 @@ def main():
         opt.zero_grad(set_to_none=True)
 
         if args.sup == "frames":
+            # refresh state cache periodically
+            if step % cache_every == 0 or not _cache_valid[0]:
+                _refresh_state_cache()
+
             Tf = len(gt_frames_cpu)
             window = current_bptt_window(step)
-            # sample [a, b] with b = a + window, uniformly over all valid positions
             a = rng.randint(0, max(0, Tf - 1 - window))
             b = min(a + window, Tf - 1)
             cam = train_cam_single
-            # no-grad prefix [0,a], grad suffix [a,b]
-            p_seq = rollout_positions(k, steps=b, bptt_start=a)  # [b+1, M, 3]
+
+            if a == 0 or _state_cache[k][a] is None:
+                # no-grad prefix + grad suffix via bptt_start
+                p_seq = rollout_positions(k, steps=b, bptt_start=a, grad=True)
+                p_b = p_seq[b]
+            else:
+                # start from cached state at t=a (detached), window steps with grad
+                p_a_cpu, v_a_cpu, h_a_cpu = _state_cache[k][a]
+                p_seq = ssm_rollout_from(
+                    model, p_a_cpu.to(dev), v_a_cpu.to(dev), h_a_cpu.to(dev),
+                    anchors.e, z_bank[k], steps=b - a,
+                    cfg=graph_cfg, dt=dt, grad=True, damping=damping)
+                p_b = p_seq[-1]
+
             w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
             def _f(pt, wb=w_b, ib=idx_b):
                 pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, wb, ib,
                                           anchors.canonical, pt)
                 return render_with(cam, pos, cov6)
-            frame_pred = checkpoint(_f, p_seq[b], use_reentrant=False)
+            frame_pred = checkpoint(_f, p_b, use_reentrant=False)
             gt_f = gt_frames_cpu[b].to(dev)
             loss = float(cfg.train.get("lambda_rgb", 1.0)) * (frame_pred - gt_f).abs().mean()
             t_r = b
-            arap_pt = p_seq[b]
+            arap_pt = p_b
         else:
             v = rng.randint(0, V - 1)
             cam = cameras[v]

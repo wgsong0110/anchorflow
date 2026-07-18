@@ -25,6 +25,7 @@ train:
   bptt_window_start: 50   # initial gradient window [a, b], b-a=50
   bptt_window_end:   299  # final window = full sequence (curriculum over training)
   bptt_warmup_frac:  0.8  # reach full window at 80% of iters
+  cache_every:       200  # refresh state cache every N steps
   lr_gnn:          1.0e-4
   lr_anchor:       1.0e-3
   lr_z0:           5.0e-4
