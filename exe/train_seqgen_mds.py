@@ -259,8 +259,8 @@ def main():
     arap_edge = knn_graph(anchors.canonical.detach(), k=arap_k)
 
     # ── optimizer ────────────────────────────────────────────────────────────
-    opt = torch.optim.AdamW(model.parameters(), lr=float(cfg.train.lr),
-                            weight_decay=1e-4)
+    _lr = float(cfg.train.get("lr", 1e-4))
+    opt = torch.optim.AdamW(model.parameters(), lr=_lr, weight_decay=1e-4)
 
     # ── SVD guidance (MDS) ───────────────────────────────────────────────────
     svd_model_id = cfg.get("svd_model", "stabilityai/stable-video-diffusion-img2vid-xt")
