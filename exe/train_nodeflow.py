@@ -36,7 +36,7 @@ import imageio
 from omegaconf import OmegaConf
 from PIL import Image
 
-sys.path.append("gaussian-splatting")
+sys.path.append("/workspace/SC-GS")
 from scene.gaussian_model import GaussianModel
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 from diff_gaussian_rasterization import (

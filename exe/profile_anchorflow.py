@@ -8,7 +8,7 @@ import numpy as np
 from plyfile import PlyData
 from omegaconf import OmegaConf
 
-sys.path.append("gaussian-splatting")
+sys.path.append("/workspace/SC-GS")
 from scene.gaussian_model import GaussianModel
 from scene.colmap_loader import read_extrinsics_binary, read_intrinsics_binary, qvec2rotmat
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix

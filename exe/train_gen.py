@@ -33,7 +33,7 @@ from PIL import Image
 
 # INRIA gaussian-splatting (scene/, gaussian_renderer/) is cloned inside the
 # DreamPhysics dir; add it to the path exactly as DreamPhysics's svd_simulation does.
-sys.path.append("gaussian-splatting")
+sys.path.append("/workspace/SC-GS")
 
 # --- DreamPhysics / 3DGS stack (reused verbatim) -------------------------- #
 # NB: we deliberately avoid `utils.decode_param` (it imports warp + MPM at module

@@ -26,7 +26,7 @@ import imageio
 from omegaconf import OmegaConf
 from PIL import Image
 
-sys.path.append("gaussian-splatting")
+sys.path.append("/workspace/SC-GS")
 from utils.render_utils import load_params_from_gs, initialize_resterize, convert_SH
 from utils.transformation_utils import (
     transform2origin, shift2center111, undotransform2origin, undoshift2center111,

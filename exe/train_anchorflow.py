@@ -37,10 +37,15 @@ import imageio.v2 as iio
 from torch.utils.checkpoint import checkpoint
 from omegaconf import OmegaConf
 
-sys.path.append("/workspace/gaussian-splatting")
+sys.path.append("/workspace/SC-GS")
 from scene.gaussian_model import GaussianModel
-from gaussian_renderer import render
+from gaussian_renderer import render as _render_scgs
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix, focal2fov
+
+
+def render(cam, g, pipe, bg):
+    zeros = torch.zeros_like(g.get_xyz)
+    return _render_scgs(cam, g, pipe, bg, d_xyz=zeros, d_rotation=0.0, d_scaling=zeros)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from anchorflow.anchors import AnchorSet
