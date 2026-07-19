@@ -362,13 +362,28 @@ def main():
             z_bank.data.copy_(ck["z_bank"]); v0_bank.data.copy_(ck["v0_bank"])
             load_rng_state(ck.get("rng"))
             start = ck["step"] + 1
-            print(f"[train] resumed from step {start}")
+            expected = cfg.train.iters - 1
+            if ck["step"] < expected - cfg.train.ckpt_every:
+                print(f"[train] WARNING: resumed from step {ck['step']} "
+                      f"but expected ~{expected}. "
+                      f"Checkpoint may be stale (R2 sync may have failed previously).")
+            else:
+                print(f"[train] resumed from step {start}")
+        else:
+            if args.iters is not None and args.iters <= cfg.train.iters:
+                # Short-run rollout-only mode: no ckpt found → abort rather than retrain
+                sys.exit(f"[train] ABORT: --resume specified but no checkpoint found in {args.out}. "
+                         f"Cannot do rollout-only run without a checkpoint.")
 
     torch.set_float32_matmul_precision("high")
 
     def sync_r2():
         if args.r2:
-            os.system(f"rclone copy {args.out} {args.r2} >/dev/null 2>&1")
+            for _retry in range(3):
+                ret = os.system(f"rclone copy {args.out} {args.r2} >/dev/null 2>&1")
+                if ret == 0:
+                    break
+                print(f"[sync_r2] retry {_retry+1}/3 failed")
 
     def rollout_positions(k, steps=None, bptt_start=0, grad=True, return_states=False):
         p0, v0 = anchors.canonical, v0_bank[k]
