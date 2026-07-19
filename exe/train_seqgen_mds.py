@@ -276,7 +276,6 @@ def main():
     ).to(dev)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[train] SeqGen params={n_params/1e6:.2f}M", flush=True)
-    model = torch.compile(model)
 
     # ── ARAP edge graph (regulariser) ────────────────────────────────────────
     arap_k = min(6, N - 1)
@@ -307,7 +306,7 @@ def main():
         cond_cache.append(svd.precompute_cond(f0, T))
     print("[train] cache ready", flush=True)
 
-    # ── checkpoint manager ───────────────────────────────────────────────────
+    # ── checkpoint manager (load BEFORE torch.compile to keep key names) ─────
     ckpt_mgr = CheckpointManager(args.out, keep_last=3)
     start_step = 0
     if args.resume:
@@ -317,6 +316,9 @@ def main():
             opt.load_state_dict(ck["opt"])
             start_step = ck.get("step", 0) + 1
             print(f"[train] resumed from step {start_step - 1}", flush=True)
+
+    # compile after resume so state_dict keys stay undecorated
+    model = torch.compile(model)
 
     # ── training loop ────────────────────────────────────────────────────────
     K_cond = args.k_cond
