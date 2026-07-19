@@ -1,4 +1,5 @@
 {
-  "setup": "",
+  "image": "ghcr.io/wgsong0110/anchorflow:latest",
+  "setup": "git clone --depth 1 https://github.com/yihua7/SC-GS /workspace/SC-GS 2>/dev/null || true",
   "cuda_build": { "release_tag": "cuda-build" }
 }
