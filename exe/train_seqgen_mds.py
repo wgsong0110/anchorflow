@@ -182,6 +182,8 @@ def main():
     ap.add_argument("--lambda_ic",   type=float, default=0.05,
                     help="cosine IC loss weight: penalises direction mismatch "
                          "between generated first-step displacement and cond_vel")
+    ap.add_argument("--lambda_smooth", type=float, default=0.01,
+                    help="temporal smoothness: penalises frame-to-frame position jumps")
     ap.add_argument("--res",        type=int, default=None,
                     help="override cfg.model.res (render long side)")
     ap.add_argument("--n_views",    type=int, default=None,
@@ -303,6 +305,7 @@ def main():
     vel_scale = args.vel_scale
     lambda_arap = args.lambda_arap
     lambda_ic = args.lambda_ic
+    lambda_smooth = args.lambda_smooth
     w_power = args.w_power
     log_every  = int(cfg.train.log_every)
     ckpt_every = int(cfg.train.ckpt_every)
@@ -348,6 +351,12 @@ def main():
             disp = traj[1, cond_ids] - traj[0, cond_ids]  # [K, 3]
             cos_sim = torch.nn.functional.cosine_similarity(disp, cond_vel, dim=-1)  # [K]
             loss = loss + lambda_ic * (1.0 - cos_sim).mean()
+
+        # temporal smoothness: penalise abrupt position jumps across frames
+        if lambda_smooth > 0:
+            vel = traj[1:] - traj[:-1]           # [T-1, N, 3]
+            acc = vel[1:] - vel[:-1]              # [T-2, N, 3]
+            loss = loss + lambda_smooth * (acc ** 2).mean()
 
         if not torch.isfinite(loss):
             print(f"[{step}] non-finite loss, skip")
