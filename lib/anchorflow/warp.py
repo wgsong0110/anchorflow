@@ -17,9 +17,67 @@ straight back to the anchor positions (hence to the GNN + actuation latents).
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 
-from . import geom
 from .anchors import knn
+
+
+# --- quaternion / rotation helpers (inlined from geom.py) ------------------- #
+
+def _quat_normalize(q):
+    return F.normalize(q, dim=-1)
+
+
+def _quat_to_matrix(q):
+    """[...,4] wxyz -> [...,3,3]."""
+    q = _quat_normalize(q)
+    w, x, y, z = q.unbind(-1)
+    tx, ty, tz = 2 * x, 2 * y, 2 * z
+    twx, twy, twz = tx * w, ty * w, tz * w
+    txx, txy, txz = tx * x, ty * x, tz * x
+    tyy, tyz, tzz = ty * y, tz * y, tz * z
+    o = torch.stack([
+        1 - (tyy + tzz), txy - twz, txz + twy,
+        txy + twz, 1 - (txx + tzz), tyz - twx,
+        txz - twy, tyz + twx, 1 - (txx + tyy),
+    ], dim=-1)
+    return o.reshape(q.shape[:-1] + (3, 3))
+
+
+def _matrix_to_quat(M):
+    """[...,3,3] -> [...,4] wxyz (pytorch3d-style branchless)."""
+    m = M.reshape(M.shape[:-2] + (9,))
+    m00, m01, m02, m10, m11, m12, m20, m21, m22 = m.unbind(-1)
+    q_abs = torch.sqrt(torch.clamp(torch.stack([
+        1.0 + m00 + m11 + m22,
+        1.0 + m00 - m11 - m22,
+        1.0 - m00 + m11 - m22,
+        1.0 - m00 - m11 + m22,
+    ], dim=-1), min=0.0))
+    quat_by_rijk = torch.stack([
+        torch.stack([q_abs[..., 0] ** 2, m21 - m12, m02 - m20, m10 - m01], dim=-1),
+        torch.stack([m21 - m12, q_abs[..., 1] ** 2, m10 + m01, m02 + m20], dim=-1),
+        torch.stack([m02 - m20, m10 + m01, q_abs[..., 2] ** 2, m12 + m21], dim=-1),
+        torch.stack([m10 - m01, m20 + m02, m21 + m12, q_abs[..., 3] ** 2], dim=-1),
+    ], dim=-2)
+    flr = torch.tensor(0.1).to(q_abs)
+    quat_candidates = quat_by_rijk / (2.0 * torch.maximum(q_abs[..., None], flr))
+    idx = q_abs.argmax(dim=-1)
+    out = torch.gather(quat_candidates, -2,
+                       idx[..., None, None].expand(q_abs.shape[:-1] + (1, 4))).squeeze(-2)
+    return _quat_normalize(out)
+
+
+def _procrustes_rotation(src_edges, tgt_edges, weight):
+    """Weighted Kabsch rotation (ARAP local frame)."""
+    D = torch.diag_embed(weight)
+    S = src_edges.transpose(-1, -2) @ D @ tgt_edges
+    U, sig, Vh = torch.linalg.svd(S)
+    V = Vh.transpose(-1, -2)
+    R = V @ U.transpose(-1, -2)
+    flip = torch.ones_like(sig)
+    flip[..., -1] = torch.linalg.det(R)
+    return (V * flip[..., None, :]) @ U.transpose(-1, -2)
 
 try:                                                # fused CUDA LBS (optional)
     from lbs import lbs_blend as _lbs_blend
@@ -49,7 +107,7 @@ def mat3_to_cov6(M):
 def cov_from_scale_rot(scaling, rotation):
     """Canonical 3DGS covariance S = R diag(s^2) R^T -> [N,6].
     scaling [N,3] (activated), rotation [N,4] quaternion (raw)."""
-    R = geom.quat_to_matrix(rotation)                         # [N,3,3]
+    R = _quat_to_matrix(rotation)                              # [N,3,3]
     S = R * scaling[:, None, :]                                # R @ diag(s)
     cov = S @ S.transpose(-1, -2)                              # R diag(s^2) R^T
     return mat3_to_cov6(cov)
@@ -71,7 +129,7 @@ def anchor_rotations(canonical, now, K=8):
         src = canonical[idx] - canonical[:, None]             # rest edges [M,K,3]
         tgt = now[idx] - now[:, None]                         # now edges  [M,K,3]
         w = torch.ones(src.shape[:-1], device=canonical.device)
-        return geom.procrustes_rotation(src, tgt, w)         # [M,3,3] (detached)
+        return _procrustes_rotation(src, tgt, w)              # [M,3,3] (detached)
 
 
 def _blend_quat(quat, w, idx):
@@ -81,7 +139,7 @@ def _blend_quat(quat, w, idx):
     sign = torch.sign((q * ref).sum(-1, keepdim=True))
     sign = torch.where(sign == 0, torch.ones_like(sign), sign)
     q = q * sign
-    return geom.quat_normalize((w[..., None] * q).sum(1))    # [N,4]
+    return _quat_normalize((w[..., None] * q).sum(1))         # [N,4]
 
 
 # --- the warp --------------------------------------------------------------- #
@@ -109,7 +167,7 @@ def lbs_warp(gauss_xyz, gauss_cov6, w, idx, anchor_canon, anchor_now,
         Ax = torch.einsum("nkab,nkb->nka", Rk, rel) + anchor_now[idx]
         pos = (w[..., None] * Ax).sum(1)                      # [N,3]
 
-    quat = geom.matrix_to_quat(anchor_R)                     # [M,4]
+    quat = _matrix_to_quat(anchor_R)                          # [M,4]
 
     # Fused CUDA path: the torch branch below materialises [N,K,4] plus several
     # [N,3,3] tensors (~90MB+ of traffic per frame at N=1.85M) and dominates
@@ -127,7 +185,7 @@ def lbs_warp(gauss_xyz, gauss_cov6, w, idx, anchor_canon, anchor_now,
             return pos, cov6_out, None
 
     qg = _blend_quat(quat, w, idx)                            # [N,4]
-    Rg = geom.quat_to_matrix(qg)                             # [N,3,3]
+    Rg = _quat_to_matrix(qg)                                  # [N,3,3]
 
     S = cov6_to_mat3(gauss_cov6)
     cov = Rg @ S @ Rg.transpose(-1, -2)
