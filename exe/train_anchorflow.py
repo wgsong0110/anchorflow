@@ -200,7 +200,7 @@ def main():
 
     def render_with(cam, xyz, cov6):
         g._xyz = xyz
-        g.get_covariance = lambda scaling_modifier=1.0: cov6
+        g.get_covariance = lambda scaling_modifier=1.0, **_kw: cov6
         return render(cam, g, Pipe(), bg)["render"]
 
     def render_canonical(cam):
