@@ -53,6 +53,11 @@ class SVDGuidance:
         else:
             print("[SVDGuidance] UNet to GPU ...", flush=True)
             self.unet = pipe.unet.to(device, dtype).eval()
+            try:
+                self.unet.enable_xformers_memory_efficient_attention()
+                print("[SVDGuidance] xformers enabled", flush=True)
+            except Exception:
+                pass
             print("[SVDGuidance] CLIP to GPU ...", flush=True)
             self.image_encoder = pipe.image_encoder.to(device, dtype).eval()
         print("[SVDGuidance] requires_grad=False ...", flush=True)

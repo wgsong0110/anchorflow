@@ -307,7 +307,7 @@ def main():
                           guidance_scale=cfg.mds.guidance_scale,
                           motion_bucket_id=cfg.mds.motion_bucket_id,
                           grad_clip=cfg.mds.grad_clip, device=dev,
-                          cpu_offload_unet=True)
+                          cpu_offload_unet=False)
         cond_cache = []
         for _vi, _f0 in enumerate(frame0_cache):
             print(f"[train] precompute_cond view {_vi}/{len(frame0_cache)} ...", flush=True)
@@ -468,11 +468,9 @@ def main():
             w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
             frames = []
             for t in range(T):
-                def _f(pt, wb=w_b, ib=idx_b):
-                    pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, wb, ib,
-                                              anchors.canonical, pt)
-                    return render_with(cam, pos, cov6)
-                frames.append(checkpoint(_f, p_seq[t], use_reentrant=False))
+                pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_b, idx_b,
+                                          anchors.canonical, p_seq[t])
+                frames.append(render_with(cam, pos, cov6))
             frames_t = torch.stack(frames, 0)              # [T,3,H,W]
             if args.sup == "mds":
                 loss = svd.mds_loss(frames_t, cond_image=frame0_cache[v],
@@ -507,7 +505,8 @@ def main():
                 travel = float((p_last - anchors.canonical).norm(dim=-1).max())
                 rho = float(anchors.radius.mean())
             print(f"[{step}/{cfg.train.iters}] loss={float(loss):.4f} k={k} v={t_r} "
-                  f"travel={travel:.3f} ({travel/extent*100:.2f}%) rho={rho:.3f}")
+                  f"travel={travel:.3f} ({travel/extent*100:.2f}%) rho={rho:.3f}",
+                  flush=True)
 
         if step % cfg.train.ckpt_every == 0:
             ckpt_mgr.save(step, {"model": model.state_dict(),
