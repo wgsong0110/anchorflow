@@ -90,7 +90,7 @@ def load_cameras(model_dir, n_views, long_side):
         W8 = max(8, int(round(Wd * s / 8)) * 8)
         H8 = max(8, int(round(Hd * s / 8)) * 8)
         cams.append(Cam(rot, T_vec, fovx, fovy, W8, H8))
-    print(f"[train] cameras={len(cams, flush=True)}  {cams[0].image_width}x{cams[0].image_height}")
+    print(f"[train] cameras={len(cams)}  {cams[0].image_width}x{cams[0].image_height}", flush=True)
     return cams
 
 
