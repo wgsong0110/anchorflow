@@ -48,6 +48,10 @@ RUN pip install --no-cache-dir \
 # xformers matched to torch 2.5.1 (memory-efficient attention for SVD UNet)
 RUN pip install --no-cache-dir xformers==0.0.28.post3 || echo "xformers optional: skipped"
 
+# pytorch3d: SC-GS render.py needs knn_points (no prebuilt wheel for torch2.5.1+cu121;
+# build from source — FORCE_CUDA + arch list set above handle the CUDA ext).
+RUN pip install --no-cache-dir "git+https://github.com/facebookresearch/pytorch3d.git@stable"
+
 # pyrender+trimesh: headless GLB multi-view render;
 # gsplat: 3DGS rasterizer (CUDA ext compiles at build via FORCE_CUDA + arch list)
 RUN pip install --no-cache-dir pyrender trimesh gsplat
