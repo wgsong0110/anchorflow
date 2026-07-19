@@ -308,7 +308,11 @@ def main():
                           motion_bucket_id=cfg.mds.motion_bucket_id,
                           grad_clip=cfg.mds.grad_clip, device=dev,
                           cpu_offload_unet=True)
-        cond_cache = [svd.precompute_cond(f0, T) for f0 in frame0_cache]
+        cond_cache = []
+        for _vi, _f0 in enumerate(frame0_cache):
+            print(f"[train] precompute_cond view {_vi}/{len(frame0_cache)} ...", flush=True)
+            cond_cache.append(svd.precompute_cond(_f0, T))
+        print("[train] cond_cache done", flush=True)
         torch.cuda.empty_cache()
     elif args.sup == "video":
         if not args.videos:
