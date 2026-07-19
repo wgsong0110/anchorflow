@@ -41,9 +41,9 @@ class SVDGuidance:
         self.cpu_offload_unet = cpu_offload_unet
         if cpu_offload_unet:
             # UNet + image_encoder stay on CPU; moved to GPU only when needed.
-            # Saves ~5GB VRAM at the cost of ~2-3s/step transfer overhead.
-            self.unet = pipe.unet.to("cpu", dtype).eval()
-            self.image_encoder = pipe.image_encoder.to("cpu", dtype).eval()
+            # from_pretrained already loads to CPU in the right dtype — no .to() needed.
+            self.unet = pipe.unet.eval()
+            self.image_encoder = pipe.image_encoder.eval()
             print("[SVDGuidance] UNet+CLIP on CPU (cpu_offload_unet=True)")
         else:
             self.unet = pipe.unet.to(device, dtype).eval()
