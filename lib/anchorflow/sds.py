@@ -58,26 +58,20 @@ class SVDGuidance:
         print("[SVDGuidance] requires_grad=False ...", flush=True)
         for m in (self.vae, self.unet, self.image_encoder):
             m.requires_grad_(False)
-        print("[SVDGuidance] del pipe / gc ...", flush=True)
         self.device, self.dtype = device, dtype
         self.sigma_min, self.sigma_max = sigma_min, sigma_max
         self.guidance_scale = guidance_scale
         self.motion_bucket_id, self.fps, self.noise_aug = motion_bucket_id, fps, noise_aug
         self.vae_scale = pipe.vae.config.scaling_factor if use_vae_scaling else 1.0
+        print(f"[SVDGuidance] num_frames ...", flush=True)
         self.num_frames = self.unet.config.num_frames
-        if not cpu_offload_unet:
-            try:
-                self.unet.enable_xformers_memory_efficient_attention()
-                print("[SVDGuidance] xformers attention enabled")
-            except Exception:
-                try:
-                    self.unet.set_attention_slice("auto")
-                    print("[SVDGuidance] attention slicing enabled (xformers unavailable)")
-                except Exception:
-                    pass
+        print(f"[SVDGuidance] num_frames={self.num_frames} del pipe ...", flush=True)
         del pipe
+        print("[SVDGuidance] gc.collect ...", flush=True)
         gc.collect()
+        print("[SVDGuidance] empty_cache ...", flush=True)
         torch.cuda.empty_cache()
+        print("[SVDGuidance] init done", flush=True)
         self.grad_clip = grad_clip
 
     # --- encoders --------------------------------------------------------- #
