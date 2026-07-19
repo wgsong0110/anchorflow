@@ -311,7 +311,7 @@ def main():
     ckpt_mgr = CheckpointManager(args.out, keep_last=3)
     start_step = 0
     if args.resume:
-        ck = ckpt_mgr.load_latest()
+        ck = ckpt_mgr.load()
         if ck is not None:
             model.load_state_dict(ck["model"])
             opt.load_state_dict(ck["opt"])
