@@ -179,6 +179,9 @@ def main():
     # MDS
     ap.add_argument("--w_power",  type=float, default=0.0)
     ap.add_argument("--lambda_arap", type=float, default=0.01)
+    ap.add_argument("--lambda_ic",   type=float, default=0.05,
+                    help="cosine IC loss weight: penalises direction mismatch "
+                         "between generated first-step displacement and cond_vel")
     ap.add_argument("--res",        type=int, default=None,
                     help="override cfg.model.res (render long side)")
     ap.add_argument("--n_views",    type=int, default=None,
@@ -299,6 +302,7 @@ def main():
     K_cond = args.k_cond
     vel_scale = args.vel_scale
     lambda_arap = args.lambda_arap
+    lambda_ic = args.lambda_ic
     w_power = args.w_power
     log_every  = int(cfg.train.log_every)
     ckpt_every = int(cfg.train.ckpt_every)
@@ -339,6 +343,12 @@ def main():
             d_now  = (traj[t_r][src] - traj[t_r][dst]).norm(dim=-1)
             loss = loss + lambda_arap * ((d_now - d_rest) ** 2).mean()
 
+        # IC cosine loss: first-step displacement of cond nodes should align with cond_vel
+        if lambda_ic > 0:
+            disp = traj[1, cond_ids] - traj[0, cond_ids]  # [K, 3]
+            cos_sim = torch.nn.functional.cosine_similarity(disp, cond_vel, dim=-1)  # [K]
+            loss = loss + lambda_ic * (1.0 - cos_sim).mean()
+
         if not torch.isfinite(loss):
             print(f"[{step}] non-finite loss, skip")
             continue
@@ -350,8 +360,11 @@ def main():
         if step % log_every == 0:
             with torch.no_grad():
                 travel = float((traj[-1] - anchors.canonical).norm(dim=-1).max())
+                disp_log = traj[1, cond_ids] - traj[0, cond_ids]
+                cos_log = float(torch.nn.functional.cosine_similarity(
+                    disp_log, cond_vel, dim=-1).mean())
             print(f"[{step}/{cfg.train.iters}] loss={float(loss):.4f} "
-                  f"v={v} k={K_cond} travel={travel:.3f} "
+                  f"ic_cos={cos_log:.3f} v={v} k={K_cond} travel={travel:.3f} "
                   f"({travel/extent*100:.1f}%)")
 
         if step % ckpt_every == 0 or step == cfg.train.iters - 1:
