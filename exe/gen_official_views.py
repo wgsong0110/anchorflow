@@ -67,7 +67,15 @@ def main():
     mbid = args.motion_bucket_id if args.motion_bucket_id is not None \
         else int(cfg.mds.motion_bucket_id)
 
-    g = GaussianModel(3)
+    # read hyper_dim from cfg_args if present (SC-GS models may use fea_dim>0)
+    _cfg_args_path = f"{args.model}/cfg_args"
+    _hyper_dim = 0
+    if os.path.exists(_cfg_args_path):
+        import re as _re
+        _m = _re.search(r"hyper_dim=(\d+)", open(_cfg_args_path).read())
+        if _m:
+            _hyper_dim = int(_m.group(1))
+    g = GaussianModel(3, fea_dim=_hyper_dim)
     g.load_ply(f"{args.model}/point_cloud/iteration_{args.iter}/point_cloud.ply")
     g.active_sh_degree = 3
     print(f"[gen] gaussians={g.get_xyz.shape[0]}")

@@ -177,7 +177,14 @@ def main():
     T = cfg.model.n_frames
 
     # ── official pretrained scene ────────────────────────────────────────────
-    g = GaussianModel(3)
+    _cfg_args_path = f"{args.model}/cfg_args"
+    _hyper_dim = 0
+    if os.path.exists(_cfg_args_path):
+        import re as _re
+        _m = _re.search(r"hyper_dim=(\d+)", open(_cfg_args_path).read())
+        if _m:
+            _hyper_dim = int(_m.group(1))
+    g = GaussianModel(3, fea_dim=_hyper_dim)
     g.load_ply(f"{args.model}/point_cloud/iteration_{args.iter}/point_cloud.ply")
     g.active_sh_degree = 3
     canon_xyz = g.get_xyz.detach().clone()
