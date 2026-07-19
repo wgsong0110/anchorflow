@@ -4,7 +4,7 @@ t2n_views: 4
 
 model:
   n_nodes:      512    # humanoid needs more anchors than kitchen
-  n_frames:     25     # SVD-XT
+  n_frames:     14     # SVD base (25 OOMs on RTX3090 24GB with 76K gaussians)
   hidden:       128
   n_gnn_layers: 4
   mp_steps:     4

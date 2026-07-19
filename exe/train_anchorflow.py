@@ -306,7 +306,8 @@ def main():
         svd = SVDGuidance(sigma_min=cfg.mds.sigma_min, sigma_max=cfg.mds.sigma_max,
                           guidance_scale=cfg.mds.guidance_scale,
                           motion_bucket_id=cfg.mds.motion_bucket_id,
-                          grad_clip=cfg.mds.grad_clip, device=dev)
+                          grad_clip=cfg.mds.grad_clip, device=dev,
+                          cpu_offload_unet=True)
         cond_cache = [svd.precompute_cond(f0, T) for f0 in frame0_cache]
         torch.cuda.empty_cache()
     elif args.sup == "video":

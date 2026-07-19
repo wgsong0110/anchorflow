@@ -30,16 +30,24 @@ class SVDGuidance:
                  device="cuda", dtype=torch.float16,
                  sigma_min=0.05, sigma_max=20.0, guidance_scale=3.0,
                  motion_bucket_id=127, fps=7, noise_aug=0.02,
-                 use_vae_scaling=True, grad_clip=1.0):
+                 use_vae_scaling=True, grad_clip=1.0,
+                 cpu_offload_unet=False):
         from diffusers import StableVideoDiffusionPipeline
         pipe = StableVideoDiffusionPipeline.from_pretrained(
             model_id, torch_dtype=dtype, variant="fp16")
         # VAE: GPU fp32 (grad flows through encode)
         self.vae = pipe.vae.to(device, torch.float32).eval()
-        # UNet + image_encoder: GPU fp16 (frozen, no transfer overhead)
-        self.unet = pipe.unet.to(device, dtype).eval()
-        self.image_encoder = pipe.image_encoder.to(device, dtype).eval()
         self.feature_extractor = pipe.feature_extractor
+        self.cpu_offload_unet = cpu_offload_unet
+        if cpu_offload_unet:
+            # UNet + image_encoder stay on CPU; moved to GPU only when needed.
+            # Saves ~5GB VRAM at the cost of ~2-3s/step transfer overhead.
+            self.unet = pipe.unet.to("cpu", dtype).eval()
+            self.image_encoder = pipe.image_encoder.to("cpu", dtype).eval()
+            print("[SVDGuidance] UNet+CLIP on CPU (cpu_offload_unet=True)")
+        else:
+            self.unet = pipe.unet.to(device, dtype).eval()
+            self.image_encoder = pipe.image_encoder.to(device, dtype).eval()
         for m in (self.vae, self.unet, self.image_encoder):
             m.requires_grad_(False)
         self.device, self.dtype = device, dtype
@@ -72,7 +80,12 @@ class SVDGuidance:
         px = self.feature_extractor(images=img, do_normalize=True,
                                     do_center_crop=False, do_resize=False,
                                     do_rescale=False, return_tensors="pt").pixel_values
+        if self.cpu_offload_unet:
+            self.image_encoder.to(self.device)
         emb = self.image_encoder(px.to(self.device, self.dtype)).image_embeds
+        if self.cpu_offload_unet:
+            self.image_encoder.to("cpu")
+            torch.cuda.empty_cache()
         return emb.unsqueeze(1)                                  # [1,1,1024]
 
     @torch.no_grad()
@@ -125,9 +138,14 @@ class SVDGuidance:
         c_in = cond_lat_batch.to(self.dtype)
         e_in = emb_batch.to(self.dtype)
         ti_in = tid_batch.to(self.dtype)
+        if self.cpu_offload_unet:
+            self.unet.to(self.device)
         v = self.unet(torch.cat([z_in, c_in], dim=2), t,
                       encoder_hidden_states=e_in, added_time_ids=ti_in,
                       return_dict=False)[0]
+        if self.cpu_offload_unet:
+            self.unet.to("cpu")
+            torch.cuda.empty_cache()
         return v
 
     @torch.no_grad()
