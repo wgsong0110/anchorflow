@@ -29,6 +29,7 @@ train:
   lr_gaussian:   0.0
   lambda_rgb:    1.0
   lambda_arap:   0.001
+  lambda_smooth: 0.01
   lambda_z0:     1.0e-5
   grad_clip:     1.0
   log_every:     50

@@ -488,6 +488,10 @@ def main():
             loss = loss + cfg.train.lambda_arap * ((d_now - d_rest) ** 2).mean()
         if cfg.train.lambda_z0 > 0:
             loss = loss + cfg.train.lambda_z0 * (z_bank ** 2).mean()
+        lam_smooth = float(cfg.train.get("lambda_smooth", 0.0))
+        if lam_smooth > 0 and isinstance(p_seq, torch.Tensor) and p_seq.shape[0] > 1:
+            diffs = p_seq[1:] - p_seq[:-1]   # [T-1, M, 3]
+            loss = loss + lam_smooth * diffs.pow(2).mean()
 
         if not torch.isfinite(loss):
             print(f"[{step}] non-finite loss, skip")
