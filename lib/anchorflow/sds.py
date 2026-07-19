@@ -33,23 +33,32 @@ class SVDGuidance:
                  use_vae_scaling=True, grad_clip=1.0,
                  cpu_offload_unet=False):
         from diffusers import StableVideoDiffusionPipeline
+        print("[SVDGuidance] from_pretrained ...", flush=True)
         pipe = StableVideoDiffusionPipeline.from_pretrained(
             model_id, torch_dtype=dtype, variant="fp16")
+        print("[SVDGuidance] VAE to GPU fp32 ...", flush=True)
         # VAE: GPU fp32 (grad flows through encode)
         self.vae = pipe.vae.to(device, torch.float32).eval()
+        print("[SVDGuidance] VAE ready", flush=True)
         self.feature_extractor = pipe.feature_extractor
         self.cpu_offload_unet = cpu_offload_unet
         if cpu_offload_unet:
             # UNet + image_encoder stay on CPU; moved to GPU only when needed.
             # from_pretrained already loads to CPU in the right dtype — no .to() needed.
+            print("[SVDGuidance] UNet eval (CPU) ...", flush=True)
             self.unet = pipe.unet.eval()
+            print("[SVDGuidance] CLIP eval (CPU) ...", flush=True)
             self.image_encoder = pipe.image_encoder.eval()
-            print("[SVDGuidance] UNet+CLIP on CPU (cpu_offload_unet=True)")
+            print("[SVDGuidance] UNet+CLIP on CPU (cpu_offload_unet=True)", flush=True)
         else:
+            print("[SVDGuidance] UNet to GPU ...", flush=True)
             self.unet = pipe.unet.to(device, dtype).eval()
+            print("[SVDGuidance] CLIP to GPU ...", flush=True)
             self.image_encoder = pipe.image_encoder.to(device, dtype).eval()
+        print("[SVDGuidance] requires_grad=False ...", flush=True)
         for m in (self.vae, self.unet, self.image_encoder):
             m.requires_grad_(False)
+        print("[SVDGuidance] del pipe / gc ...", flush=True)
         self.device, self.dtype = device, dtype
         self.sigma_min, self.sigma_max = sigma_min, sigma_max
         self.guidance_scale = guidance_scale
