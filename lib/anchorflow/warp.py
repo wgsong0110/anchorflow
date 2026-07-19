@@ -114,7 +114,17 @@ def cov_from_scale_rot(scaling, rotation):
 
 
 # --- per-anchor rotation from canonical->now (weighted Procrustes) -------- #
-def anchor_rotations(canonical, now, K=8):
+def anchor_rotations_cache(canonical, K=8):
+    """Precompute the constant parts of anchor_rotations (knn idx + rest edges).
+    Call once after anchors are set up; pass results to anchor_rotations()."""
+    with torch.no_grad():
+        _, idx = knn(canonical, canonical, min(K + 1, canonical.shape[0]))
+        idx = idx[:, 1:]                                      # [M, K]
+        src = canonical[idx] - canonical[:, None]             # [M, K, 3]
+    return idx, src
+
+
+def anchor_rotations(canonical, now, K=8, _idx=None, _src=None):
     """Estimate a per-anchor rotation aligning its rest neighbourhood to the
     deformed one (SC-GS p2dR / ARAP local rotation). Returns R [M,3,3].
 
@@ -122,14 +132,18 @@ def anchor_rotations(canonical, now, K=8):
     differentiated. This is essential — the Procrustes SVD backward is NaN when
     the neighbourhood is (near-)undeformed (repeated singular values, e.g. at
     rest), which otherwise poisons the whole model on the first step. Gradient
-    to the anchor motion flows through the LBS translation term instead."""
+    to the anchor motion flows through the LBS translation term instead.
+
+    Pass _idx, _src from anchor_rotations_cache() to skip the knn/edge recompute."""
     with torch.no_grad():
-        _, idx = knn(canonical, canonical, min(K + 1, canonical.shape[0]))
-        idx = idx[:, 1:]                                      # drop self -> [M,K]
-        src = canonical[idx] - canonical[:, None]             # rest edges [M,K,3]
-        tgt = now[idx] - now[:, None]                         # now edges  [M,K,3]
-        w = torch.ones(src.shape[:-1], device=canonical.device)
-        return _procrustes_rotation(src, tgt, w)              # [M,3,3] (detached)
+        if _idx is None:
+            _, _idx = knn(canonical, canonical, min(K + 1, canonical.shape[0]))
+            _idx = _idx[:, 1:]
+        if _src is None:
+            _src = canonical[_idx] - canonical[:, None]
+        tgt = now[_idx] - now[:, None]                        # now edges  [M,K,3]
+        w = torch.ones(_src.shape[:-1], device=canonical.device)
+        return _procrustes_rotation(_src, tgt, w)             # [M,3,3] (detached)
 
 
 def _blend_quat(quat, w, idx):

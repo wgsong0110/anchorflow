@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from anchorflow.anchors import AnchorSet
 from anchorflow.graph import knn_graph
 from anchorflow import warp as W
+from anchorflow.warp import anchor_rotations_cache
 from anchorflow.seqgen import SeqGen
 from anchorflow.sds import SVDGuidance
 from anchorflow.checkpoint import CheckpointManager
@@ -89,7 +90,7 @@ def load_cameras(model_dir, n_views, long_side):
         W8 = max(8, int(round(Wd * s / 8)) * 8)
         H8 = max(8, int(round(Hd * s / 8)) * 8)
         cams.append(Cam(rot, T_vec, fovx, fovy, W8, H8))
-    print(f"[train] cameras={len(cams)}  {cams[0].image_width}x{cams[0].image_height}")
+    print(f"[train] cameras={len(cams, flush=True)}  {cams[0].image_width}x{cams[0].image_height}")
     return cams
 
 
@@ -128,24 +129,33 @@ def sample_velocities(N: int, K: int, extent: float, device: str,
 # ── rollout → frames ──────────────────────────────────────────────────────────
 
 def traj_to_frames(traj, canon_xyz, canon_cov6, anchors, g, bg, cam, pipe,
-                   use_checkpoint=True):
+                   use_checkpoint=True, _w_b=None, _idx_b=None,
+                   _arot_idx=None, _arot_src=None):
     """Render [T, 3, H, W] from node trajectory [T, N, 3].
 
     Uses LBS warp: each Gaussian follows its K nearest anchor nodes.
     Checkpointing is applied per-frame to bound peak VRAM.
+
+    Pass precomputed _w_b/_idx_b (from anchors.cal_nn_weight) and
+    _arot_idx/_arot_src (from anchor_rotations_cache) to avoid recomputing
+    per-step constants inside the loop and during checkpoint recompute.
     """
-    w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
-
-    def _render_frame(pt):
-        pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_b, idx_b,
-                                   anchors.canonical, pt)
-        g._xyz = pos
-        g.get_covariance = lambda scaling_modifier=1.0, **kw: cov6
-        return render(cam, g, pipe, bg)["render"]
-
     frames = []
     for t in range(traj.shape[0]):
         pt = traj[t]
+        # anchor_R is under no_grad and detached — safe to compute outside
+        # checkpoint so backward recompute doesn't redo the Procrustes SVD.
+        with torch.no_grad():
+            anchor_R = W.anchor_rotations(anchors.canonical, pt,
+                                          _idx=_arot_idx, _src=_arot_src)
+
+        def _render_frame(pt, _R=anchor_R):
+            pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, _w_b, _idx_b,
+                                       anchors.canonical, pt, anchor_R=_R)
+            g._xyz = pos
+            g.get_covariance = lambda scaling_modifier=1.0, **kw: cov6
+            return render(cam, g, pipe, bg)["render"]
+
         if use_checkpoint and pt.requires_grad:
             frames.append(checkpoint(_render_frame, pt, use_reentrant=False))
         else:
@@ -223,7 +233,7 @@ def main():
     canon_cov6 = W.cov_from_scale_rot(
         g.get_scaling.detach(), g._rotation.detach()).detach()
     G_cnt = canon_xyz.shape[0]
-    print(f"[train] gaussians={G_cnt}  T={T}  commit={gh}")
+    print(f"[train] gaussians={G_cnt}  T={T}  commit={gh}", flush=True)
 
     bg = torch.tensor([1., 1., 1.] if args.white_bg else [0., 0., 0.], device=dev)
     pipe = Pipe()
@@ -239,13 +249,13 @@ def main():
     # sanity check
     img0 = render_canonical(cameras[0])
     cover = float((img0.max(0).values > 0.01).float().mean())
-    print(f"[train] cam[0] coverage={cover*100:.1f}%")
+    print(f"[train] cam[0] coverage={cover*100:.1f}%", flush=True)
     if cover < 0.02:
         sys.exit("[train] ABORT: cameras do not see the scene")
 
     extent = float((torch.quantile(canon_xyz, 0.99, dim=0)
                     - torch.quantile(canon_xyz, 0.01, dim=0)).norm())
-    print(f"[train] scene extent={extent:.3f}")
+    print(f"[train] scene extent={extent:.3f}", flush=True)
 
     # ── anchor nodes (FPS) ──────────────────────────────────────────────────
     N_nodes = int(cfg.model.n_nodes)
@@ -254,7 +264,7 @@ def main():
         K=int(cfg.model.k_gauss))
     anchors = anchors.to(dev)
     N = anchors.num
-    print(f"[train] anchor nodes={N}")
+    print(f"[train] anchor nodes={N}", flush=True)
 
     # ── SeqGen model ─────────────────────────────────────────────────────────
     model = SeqGen(
@@ -265,11 +275,19 @@ def main():
         n_heads=args.n_heads,
     ).to(dev)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"[train] SeqGen params={n_params/1e6:.2f}M")
+    print(f"[train] SeqGen params={n_params/1e6:.2f}M", flush=True)
+    model = torch.compile(model)
 
     # ── ARAP edge graph (regulariser) ────────────────────────────────────────
     arap_k = min(6, N - 1)
     arap_edge = knn_graph(anchors.canonical.detach(), k=arap_k)
+
+    # ── precompute per-step constants (Gaussian→anchor binding + arot cache) ──
+    print("[train] precomputing LBS binding weights...", flush=True)
+    with torch.no_grad():
+        _w_b, _idx_b = anchors.cal_nn_weight(canon_xyz)
+        _arot_idx, _arot_src = anchor_rotations_cache(anchors.canonical)
+    print(f"[train] binding done  w_b={_w_b.shape}  idx_b={_idx_b.shape}", flush=True)
 
     # ── optimizer ────────────────────────────────────────────────────────────
     _lr = float(cfg.train.get("lr", 1e-4))
@@ -280,14 +298,14 @@ def main():
     svd = SVDGuidance(model_id=svd_model_id, device=dev)
 
     # Precompute per-camera frame-0 conditioning cache (canonical render)
-    print("[train] precomputing MDS conditioning cache...")
+    print("[train] precomputing MDS conditioning cache...", flush=True)
     cond_cache = []
     frame0_cache = []
     for cam in cameras:
         f0 = render_canonical(cam)
         frame0_cache.append(f0)
         cond_cache.append(svd.precompute_cond(f0, T))
-    print("[train] cache ready")
+    print("[train] cache ready", flush=True)
 
     # ── checkpoint manager ───────────────────────────────────────────────────
     ckpt_mgr = CheckpointManager(args.out, keep_last=3)
@@ -298,7 +316,7 @@ def main():
             model.load_state_dict(ck["model"])
             opt.load_state_dict(ck["opt"])
             start_step = ck.get("step", 0) + 1
-            print(f"[train] resumed from step {start_step - 1}")
+            print(f"[train] resumed from step {start_step - 1}", flush=True)
 
     # ── training loop ────────────────────────────────────────────────────────
     K_cond = args.k_cond
@@ -327,7 +345,9 @@ def main():
 
         # render frames: [T, 3, H, W]
         frames_t = traj_to_frames(traj, canon_xyz, canon_cov6, anchors,
-                                  g, bg, cam, pipe, use_checkpoint=True)
+                                  g, bg, cam, pipe, use_checkpoint=True,
+                                  _w_b=_w_b, _idx_b=_idx_b,
+                                  _arot_idx=_arot_idx, _arot_src=_arot_src)
 
         # MDS loss
         loss = svd.mds_loss(
@@ -359,7 +379,7 @@ def main():
             loss = loss + lambda_smooth * (acc ** 2).mean()
 
         if not torch.isfinite(loss):
-            print(f"[{step}] non-finite loss, skip")
+            print(f"[{step}] non-finite loss, skip", flush=True)
             continue
 
         loss.backward()
@@ -372,7 +392,7 @@ def main():
                 disp_log = traj[1, cond_ids] - traj[0, cond_ids]
                 cos_log = float(torch.nn.functional.cosine_similarity(
                     disp_log, cond_vel, dim=-1).mean())
-            print(f"[{step}/{cfg.train.iters}] loss={float(loss):.4f} "
+            print(f"[{step}/{cfg.train.iters}] loss={float(loss, flush=True):.4f} "
                   f"ic_cos={cos_log:.3f} v={v} k={K_cond} travel={travel:.3f} "
                   f"({travel/extent*100:.1f}%)")
 
@@ -382,7 +402,7 @@ def main():
             _save_rollout(step, model, anchors, N, T, extent, dev,
                           canon_xyz, canon_cov6, g, bg, cameras[0], pipe, args.out)
 
-    print(f"[train] done commit={gh} -> {args.out}")
+    print(f"[train] done commit={gh} -> {args.out}", flush=True)
 
 
 @torch.no_grad()
@@ -404,7 +424,7 @@ def _save_rollout(step, model, anchors, N, T, extent, dev,
         frames.append(render(cam, g, pipe, bg)["render"].clamp(0, 1))
     path = os.path.join(out, f"rollout_{step:06d}.mp4")
     save_video(frames, path)
-    print(f"  [rollout] saved -> {path}")
+    print(f"  [rollout] saved -> {path}", flush=True)
 
 
 if __name__ == "__main__":
