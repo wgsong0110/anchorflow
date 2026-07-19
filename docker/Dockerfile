@@ -40,7 +40,7 @@ RUN git clone https://github.com/yihua7/SC-GS /opt/scgs \
 #   ModelScope path — not applicable to the SVD path we use).
 RUN pip install --no-cache-dir \
         "numpy<2" scipy tqdm packaging einops jaxtyping typeguard \
-        omegaconf==2.3.0 plyfile==1.0.3 lpips \
+        omegaconf==2.3.0 plyfile==1.0.3 lpips piq \
         opencv-python-headless imageio "imageio[ffmpeg]" \
         diffusers==0.29.2 transformers==4.41.2 accelerate==0.30.1 \
         safetensors huggingface_hub tensorboard rembg onnxruntime
