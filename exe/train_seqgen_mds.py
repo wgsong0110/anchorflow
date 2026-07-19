@@ -394,9 +394,9 @@ def main():
                 disp_log = traj[1, cond_ids] - traj[0, cond_ids]
                 cos_log = float(torch.nn.functional.cosine_similarity(
                     disp_log, cond_vel, dim=-1).mean())
-            print(f"[{step}/{cfg.train.iters}] loss={float(loss, flush=True):.4f} "
+            print(f"[{step}/{cfg.train.iters}] loss={float(loss):.4f} "
                   f"ic_cos={cos_log:.3f} v={v} k={K_cond} travel={travel:.3f} "
-                  f"({travel/extent*100:.1f}%)")
+                  f"({travel/extent*100:.1f}%)", flush=True)
 
         if step % ckpt_every == 0 or step == cfg.train.iters - 1:
             ckpt_mgr.save(step, {"model": model.state_dict(),
