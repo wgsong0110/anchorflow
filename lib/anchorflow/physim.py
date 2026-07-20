@@ -1,153 +1,176 @@
-"""Differentiable mass-spring simulator on the anchor graph.
+"""GNN-based differentiable physics simulator (GNNSim).
 
-Each anchor is a mass point.  Spring stiffness is per-node (k_i); the
-per-edge stiffness is the mean of the two endpoint values.  Damping is a
-single global scalar.  Euler integration runs for T steps.
+Replaces the fixed Hookean SpringSim with learned message passing:
+
+  - Intra-object edges : local spring/deformation dynamics within each object
+  - Inter-object edges : boundary forces between objects (pot ↔ trunk ↔ leaf)
+  - External force     : impulse at t=0 only (wind gust)
+  - Gravity            : constant downward body force every step
+
+At each time step the GNN computes a per-anchor acceleration, then Euler
+integration updates velocity and position.  The graph topology is built once
+from canonical positions + object IDs and reused across all T steps.
 
 Learnable parameters
-    _log_stiffness  [N]  per-node spring stiffness (softplus activation)
-    _log_damping    []   global viscous damping coefficient (softplus)
-
-External force
-    f_ext  [3]  uniform body force applied to every node (wind, gravity …).
-    Sampled randomly per training step; magnitude and direction are the
-    "conditioning signal" analogous to SeqGen's cond_vel.
+    obj_emb          [n_obj, 16]  object-type embedding
+    intra_edge_mlp   MLP for intra-object message computation
+    inter_edge_mlp   MLP for inter-object message computation
+    node_mlp         MLP mapping aggregated messages → acceleration [3]
 """
-
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
-from .graph import knn_graph
 
 
-class SpringSim(nn.Module):
-    def __init__(self, canonical: torch.Tensor, T: int = 25,
-                 dt: float = 0.04, K: int = 6, mass: float = 1.0,
-                 stiffness_init: float = 10.0, damping_init: float = 1.0,
-                 pin_ratio: float = 0.0, gravity: float = 0.0,
-                 gravity_axis: int = 2):
-        """
-        canonical    [N, 3]  rest positions (registered as buffer, not learned)
-        T                    number of frames to simulate (including frame 0)
-        dt                   Euler timestep
-        K                    knn degree for the spring graph
-        mass                 scalar node mass (fixed)
-        pin_ratio            fraction of lowest-Z anchors to pin (0 = none)
-        gravity              constant downward acceleration (along -gravity_axis)
-        gravity_axis         world axis index that is 'up' (2 = Z-up)
-        """
+# ── helpers ────────────────────────────────────────────────────────────────── #
+
+def _mlp(in_d: int, hid: int, out_d: int, layers: int = 3) -> nn.Sequential:
+    seq = [nn.Linear(in_d, hid), nn.SiLU()]
+    for _ in range(layers - 2):
+        seq += [nn.Linear(hid, hid), nn.SiLU()]
+    seq.append(nn.Linear(hid, out_d))
+    return nn.Sequential(*seq)
+
+
+# ── GNNSim ─────────────────────────────────────────────────────────────────── #
+
+class GNNSim(nn.Module):
+    """GNN physics simulator with intra/inter-object hierarchical message passing."""
+
+    def __init__(
+        self,
+        canonical: torch.Tensor,        # [M, 3]  anchor rest positions
+        anchor_obj: torch.Tensor,        # [M]     long, 0-indexed object ID
+        anchor_colors: torch.Tensor,     # [M, 3]  SH0 albedo (0-1)
+        intra_edge_index: torch.Tensor,  # [2, E_intra]
+        intra_rest: torch.Tensor,        # [E_intra]  canonical distances
+        inter_edge_index: torch.Tensor,  # [2, E_inter]
+        inter_rest: torch.Tensor,        # [E_inter]
+        T: int = 14,
+        dt: float = 0.04,
+        hidden_dim: int = 128,
+        gravity: float = 2.0,
+        gravity_axis: int = 2,           # axis index that points 'up' (2 = Z)
+    ):
         super().__init__()
-        N = canonical.shape[0]
-        self.T = T
-        self.dt = dt
-        self.mass = mass
-        self.gravity = gravity
+        self.T   = T
+        self.dt  = dt
+        self.gravity      = gravity
         self.gravity_axis = gravity_axis
+        self.hidden_dim   = hidden_dim
 
-        self.register_buffer("canonical", canonical.clone())
+        n_obj = int(anchor_obj.max().item()) + 1
+        self.n_obj = n_obj
+        OBJ_DIM = 16
 
-        # pin mask: lowest-Z anchors are fixed (boundary condition)
-        if pin_ratio > 0.0:
-            z = canonical[:, gravity_axis]
-            threshold = z.quantile(pin_ratio)
-            pin_mask = z <= threshold
-        else:
-            pin_mask = torch.zeros(N, dtype=torch.bool)
-        self.register_buffer("pin_mask", pin_mask)  # [N]
+        self.register_buffer("canonical",         canonical.clone().float())
+        self.register_buffer("anchor_obj",        anchor_obj)
+        self.register_buffer("anchor_colors",     anchor_colors.float())
+        self.register_buffer("intra_edge_index",  intra_edge_index)
+        self.register_buffer("intra_rest",        intra_rest.float())
+        self.register_buffer("inter_edge_index",  inter_edge_index)
+        self.register_buffer("inter_rest",        inter_rest.float())
 
-        # spring graph (fixed topology from rest config)
-        edge_index = knn_graph(canonical.detach(), K)   # [2, E]
-        self.register_buffer("edge_index", edge_index)
+        # Object-type embedding
+        self.obj_emb = nn.Embedding(n_obj, OBJ_DIM)
 
-        src, dst = edge_index
-        rest_len = (canonical[src] - canonical[dst]).norm(dim=-1)
-        self.register_buffer("rest_lengths", rest_len)  # [E]
+        # ── Edge MLPs ──────────────────────────────────────────────────────── #
+        # Intra edge input:
+        #   xi[3], xj[3], vi[3], vj[3],        — dynamic state
+        #   disp_i[3], disp_j[3],               — displacement from canonical
+        #   rest_len[1]                          — rest length
+        #   = 19
+        INTRA_IN = 3 + 3 + 3 + 3 + 3 + 3 + 1
+        self.intra_edge_mlp = _mlp(INTRA_IN, hidden_dim, hidden_dim)
 
-        # learnable params
-        self._log_stiffness = nn.Parameter(
-            torch.full((N,), float(torch.log(torch.tensor(stiffness_init)))))
-        self._log_damping = nn.Parameter(
-            torch.tensor(float(torch.log(torch.tensor(damping_init)))))
+        # Inter edge input: same + object embeddings of both endpoints
+        #   = 19 + OBJ_DIM + OBJ_DIM
+        INTER_IN = INTRA_IN + OBJ_DIM + OBJ_DIM
+        self.inter_edge_mlp = _mlp(INTER_IN, hidden_dim, hidden_dim)
+
+        # ── Node MLP ───────────────────────────────────────────────────────── #
+        # Input:
+        #   intra_agg[hidden],  inter_agg[hidden],  — aggregated messages
+        #   f_node[3],                              — external (gravity + impulse)
+        #   x0[3], color[3], obj_emb[OBJ_DIM],     — static node features
+        #   v[3]                                    — current velocity
+        NODE_IN = hidden_dim + hidden_dim + 3 + 3 + 3 + OBJ_DIM + 3
+        self.node_mlp = _mlp(NODE_IN, hidden_dim, 3)
+
+    # ── internal helpers ───────────────────────────────────────────────────── #
 
     @property
-    def stiffness(self) -> torch.Tensor:
-        return F.softplus(self._log_stiffness)              # [N] > 0
+    def _static(self) -> torch.Tensor:
+        """[M, 3+3+OBJ_DIM] canonical pos + colour + obj embedding (cached)."""
+        emb = self.obj_emb(self.anchor_obj)                       # [M, 16]
+        return torch.cat([self.canonical, self.anchor_colors, emb], dim=-1)
 
-    @property
-    def damping(self) -> torch.Tensor:
-        return F.softplus(self._log_damping)                # scalar > 0
+    def _intra_agg(self, x: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        src, dst = self.intra_edge_index
+        feat = torch.cat([
+            x[src], x[dst],
+            v[src], v[dst],
+            x[src] - self.canonical[src],
+            x[dst] - self.canonical[dst],
+            self.intra_rest[:, None],
+        ], dim=-1)                                                 # [E, 19]
+        msg  = self.intra_edge_mlp(feat)                          # [E, d]
+        agg  = torch.zeros(x.shape[0], self.hidden_dim, device=x.device)
+        agg.scatter_add_(0, dst[:, None].expand_as(msg), msg)
+        return agg                                                 # [M, d]
+
+    def _inter_agg(self, x: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        if self.inter_edge_index.shape[1] == 0:
+            return torch.zeros(x.shape[0], self.hidden_dim, device=x.device)
+        src, dst = self.inter_edge_index
+        obj_src = self.obj_emb(self.anchor_obj[src])              # [E, 16]
+        obj_dst = self.obj_emb(self.anchor_obj[dst])              # [E, 16]
+        feat = torch.cat([
+            x[src], x[dst],
+            v[src], v[dst],
+            x[src] - self.canonical[src],
+            x[dst] - self.canonical[dst],
+            self.inter_rest[:, None],
+            obj_src, obj_dst,
+        ], dim=-1)                                                 # [E, 19+32]
+        msg  = self.inter_edge_mlp(feat)                          # [E, d]
+        agg  = torch.zeros(x.shape[0], self.hidden_dim, device=x.device)
+        agg.scatter_add_(0, dst[:, None].expand_as(msg), msg)
+        return agg                                                 # [M, d]
+
+    # ── forward ───────────────────────────────────────────────────────────── #
 
     def forward(self, f_ext: torch.Tensor) -> torch.Tensor:
-        """Simulate under uniform external force f_ext [3].
-
-        Returns trajectory [T, N, 3] where traj[0] == canonical.
-        Pinned nodes (pin_mask) are held at their canonical positions.
         """
-        src, dst = self.edge_index                          # [E] each
-        k = self.stiffness                                  # [N]
-        c = self.damping                                    # scalar
-        L = self.rest_lengths                               # [E]
+        f_ext [3] : impulse applied at t=0 (wind gust direction × magnitude).
+        Returns trajectory [T, M, 3] where traj[0] == canonical.
+        """
+        M  = self.canonical.shape[0]
+        x  = self.canonical.clone()
+        v  = torch.zeros_like(x)
 
-        # per-edge stiffness: mean of the two endpoint values
-        k_edge = (k[src] + k[dst]) * 0.5                   # [E]
-
-        # constant gravity force (acts on free nodes only)
+        # Gravity: constant downward acceleration
         g_vec = torch.zeros(3, device=f_ext.device, dtype=f_ext.dtype)
-        if self.gravity != 0.0:
-            g_vec[self.gravity_axis] = -self.gravity * self.mass  # downward
+        g_vec[self.gravity_axis] = -self.gravity
 
-        pin = self.pin_mask                                 # [N] bool
+        static = self._static                                      # [M, 22]
+        traj   = [x]
 
-        x = self.canonical.clone()
-        v = torch.zeros_like(x)
-        traj = [x]
+        for t in range(self.T - 1):
+            ia = self._intra_agg(x, v)                            # [M, d]
+            ra = self._inter_agg(x, v)                            # [M, d]
 
-        for _ in range(self.T - 1):
-            xi = x[src]                                     # [E, 3]
-            xj = x[dst]                                     # [E, 3]
-            diff = xj - xi                                  # [E, 3]
-            dist = diff.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-            direction = diff / dist                         # [E, 3] unit vec
+            # External force: gravity always, impulse only at t=0
+            f_node = g_vec.unsqueeze(0).expand(M, -1).clone()
+            if t == 0:
+                f_node = f_node + f_ext.unsqueeze(0)
 
-            # Hookean spring: F = k * (|xj-xi| - L_rest) * direction
-            stretch = dist.squeeze(-1) - L                  # [E]
-            F_spring = k_edge[:, None] * stretch[:, None] * direction  # [E, 3]
+            node_in = torch.cat([ia, ra, f_node, static, v], dim=-1)
+            a = self.node_mlp(node_in)                            # [M, 3]
 
-            # accumulate spring forces (Newton's 3rd law)
-            F = torch.zeros_like(x)
-            F = F.scatter_add(0, src[:, None].expand_as(F_spring), -F_spring)
-            F = F.scatter_add(0, dst[:, None].expand_as(F_spring),  F_spring)
-
-            # external + gravity + viscous damping
-            F = F + (f_ext + g_vec).unsqueeze(0) - c * v
-
-            # zero force on pinned nodes → they stay put
-            F = F.masked_fill(pin[:, None], 0.0)
-
-            # Euler step
-            v = v + (self.dt / self.mass) * F
+            v = v + self.dt * a
             x = x + self.dt * v
-
-            # restore pinned nodes to canonical
-            x = torch.where(pin[:, None], self.canonical, x)
-            v = v.masked_fill(pin[:, None], 0.0)
-
             traj.append(x)
 
-        return torch.stack(traj, dim=0)                     # [T, N, 3]
-
-    def save(self, path: str):
-        torch.save({
-            "state_dict": self.state_dict(),
-            "T": self.T, "dt": self.dt, "mass": self.mass,
-        }, path)
-
-    @classmethod
-    def load(cls, path: str, canonical: torch.Tensor, **kw) -> "SpringSim":
-        ck = torch.load(path, map_location="cpu")
-        obj = cls(canonical, T=ck["T"], dt=ck["dt"], mass=ck["mass"], **kw)
-        obj.load_state_dict(ck["state_dict"])
-        return obj
+        return torch.stack(traj, dim=0)                           # [T, M, 3]

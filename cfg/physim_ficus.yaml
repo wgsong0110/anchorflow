@@ -1,23 +1,23 @@
-# ficus wind — physics simulator (mass-spring + SVD MDS)
+# ficus wind — GNN physics simulator (hierarchical object graph + SVD MDS)
 white_bg: false
-t2n_views: 4
 
 sim:
-  T:       14       # frames per simulation
-  dt:      0.04     # Euler timestep
-  K:       6        # spring graph knn degree
-  mass:    1.0
-  stiffness_init: 1.0
-  damping_init:   0.3
-  pin_ratio:      0.15   # bottom 15% Z anchors fixed (pot)
-  gravity:        2.0    # downward acceleration along -Z
+  T:            14       # frames per simulation
+  dt:           0.04     # Euler timestep
+  hidden_dim:   128      # GNN hidden dimension
+  gravity:      2.0      # downward acceleration (−Z axis)
+  gravity_axis: 2        # Z-up
+  n_objects:    4        # SAM2 cluster count (pot / trunk / branches / leaves)
+  k_intra:      12       # KNN degree within same object
+  k_inter:      4        # cross-object boundary connections
+  sam2_checkpoint: null  # set to path if SAM2 available
+  sam2_cfg:      null    # e.g. "sam2.1_hiera_large"
 
 train:
   iters:      10000
   n_views:    4
-  lr:         1.0e-3
-  f_scale:    0.3     # max external force magnitude relative to scene extent
-  w_power:    0.0
+  lr:         3.0e-4
+  f_scale:    0.3        # impulse magnitude relative to scene extent
   grad_clip:  1.0
   log_every:  50
   ckpt_every: 500

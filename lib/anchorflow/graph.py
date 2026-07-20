@@ -74,6 +74,82 @@ def _symmetrize(edge: torch.Tensor, N: int, loop: bool) -> torch.Tensor:
     return torch.stack([src, dst], dim=0).long()
 
 
+def build_hierarchical_graph(
+    anchor_xyz: torch.Tensor,   # [M, 3]
+    anchor_obj: torch.Tensor,   # [M] long, object IDs
+    k_intra: int = 12,
+    k_inter: int = 4,
+) -> tuple:
+    """Build intra-object KNN + inter-object boundary edges (both bidirectional).
+
+    Returns:
+        intra_edge_index [2, E_intra]
+        intra_rest       [E_intra]   canonical distances
+        inter_edge_index [2, E_inter]
+        inter_rest       [E_inter]   canonical distances
+    """
+    M     = anchor_xyz.shape[0]
+    n_obj = int(anchor_obj.max().item()) + 1
+    dev   = anchor_xyz.device
+
+    intra_pairs: list[tuple] = []
+    inter_pairs: list[tuple] = []
+
+    for oi in range(n_obj):
+        idx_i = (anchor_obj == oi).nonzero(as_tuple=True)[0]
+        if len(idx_i) < 2:
+            continue
+        xyz_i = anchor_xyz[idx_i]
+
+        # ── intra-object KNN ──────────────────────────────────────────── #
+        k = min(k_intra, len(idx_i) - 1)
+        d = torch.cdist(xyz_i, xyz_i)
+        d.fill_diagonal_(float("inf"))
+        nbrs = d.topk(k, largest=False).indices       # [len_i, k]
+        for li in range(len(idx_i)):
+            for lj in nbrs[li].tolist():
+                intra_pairs.append((int(idx_i[li]), int(idx_i[lj])))
+
+        # ── inter-object boundary edges ───────────────────────────────── #
+        for oj in range(n_obj):
+            if oi >= oj:          # avoid double-counting (symmetrize later)
+                continue
+            idx_j = (anchor_obj == oj).nonzero(as_tuple=True)[0]
+            if len(idx_j) == 0:
+                continue
+            xyz_j = anchor_xyz[idx_j]
+            d_cross = torch.cdist(xyz_i, xyz_j)       # [len_i, len_j]
+
+            # Only boundary anchors: bottom 30% closest distance to the other object
+            min_dist = d_cross.min(dim=1).values
+            thresh   = min_dist.quantile(0.30)
+            border   = (min_dist <= thresh).nonzero(as_tuple=True)[0]
+
+            k2 = min(k_inter, len(idx_j))
+            nbrs_j = d_cross[border].topk(k2, largest=False).indices  # [|border|, k2]
+            for bi, li in enumerate(border.tolist()):
+                for lj in nbrs_j[bi].tolist():
+                    inter_pairs.append((int(idx_i[li]), int(idx_j[lj])))
+
+    def _to_edge(pairs):
+        if not pairs:
+            return (torch.zeros(2, 0, dtype=torch.long, device=dev),
+                    torch.zeros(0, device=dev))
+        t    = torch.tensor(pairs, dtype=torch.long, device=dev).T  # [2, E]
+        both = torch.cat([t, t.flip(0)], dim=1)
+        key, _ = torch.unique(both[0] * M + both[1], return_inverse=True)
+        src, dst = key // M, key % M
+        edge = torch.stack([src, dst], dim=0)
+        rest = (anchor_xyz[src] - anchor_xyz[dst]).norm(dim=-1)
+        return edge, rest
+
+    intra_edge, intra_rest = _to_edge(intra_pairs)
+    inter_edge, inter_rest = _to_edge(inter_pairs)
+
+    print(f"[graph] intra edges={intra_edge.shape[1]}  inter edges={inter_edge.shape[1]}", flush=True)
+    return intra_edge, intra_rest, inter_edge, inter_rest
+
+
 def edge_features(pos: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
     """Relative displacement + distance for every edge -> [E, 4].
 
