@@ -135,12 +135,13 @@ def assign_anchor_objects(
 ) -> torch.Tensor:
     """Weighted majority vote: Gaussian object IDs → anchor object IDs [M]."""
     N, K = binding_idx.shape
-    votes = torch.zeros(n_anchors, n_objects, dtype=torch.float32)
+    dev   = binding_weights.device
+    obj   = gaussian_object_ids.to(dev)
+    votes = torch.zeros(n_anchors, n_objects, dtype=torch.float32, device=dev)
     for k in range(K):
-        w   = binding_weights[:, k]       # [N]
-        aidx = binding_idx[:, k]          # [N] anchor index
-        obj  = gaussian_object_ids        # [N]
-        oh   = torch.zeros(N, n_objects)
+        w    = binding_weights[:, k]       # [N]
+        aidx = binding_idx[:, k]           # [N]
+        oh   = torch.zeros(N, n_objects, device=dev)
         oh.scatter_(1, obj.unsqueeze(1), w.unsqueeze(1))
         votes.scatter_add_(0, aidx.unsqueeze(1).expand(-1, n_objects), oh)
-    return votes.argmax(dim=1)            # [M] long
+    return votes.argmax(dim=1)             # [M] long
