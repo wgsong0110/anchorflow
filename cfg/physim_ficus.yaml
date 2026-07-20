@@ -2,7 +2,8 @@
 white_bg: false
 
 sim:
-  T:            14       # frames per simulation
+  T:            25       # frames per simulation
+  grad_steps:   5        # truncated BPTT chunk size (frame t → t-5 only)
   dt:           0.04     # Euler timestep
   hidden_dim:   128      # GNN hidden dimension
   gravity:      2.0      # downward acceleration (−Z axis)

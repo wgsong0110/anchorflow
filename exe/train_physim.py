@@ -383,8 +383,9 @@ def main():
         v_idx = step % V
         cam   = train_cams[v_idx]
 
-        f_ext = sample_impulse(extent, f_scale, dev)
-        traj  = sim(f_ext)                                        # [T, M, 3]
+        f_ext      = sample_impulse(extent, f_scale, dev)
+        grad_steps = int(cfg.sim.get("grad_steps", 5))
+        traj       = sim(f_ext, grad_steps=grad_steps)            # [T, M, 3]
 
         frames_t = traj_to_frames(traj, canon_xyz, canon_cov6, anchors,
                                    g, bg, cam, pipe, use_checkpoint=True,

@@ -141,27 +141,35 @@ class GNNSim(nn.Module):
 
     # ── forward ───────────────────────────────────────────────────────────── #
 
-    def forward(self, f_ext: torch.Tensor) -> torch.Tensor:
+    def forward(self, f_ext: torch.Tensor,
+                grad_steps: int = 5) -> torch.Tensor:
         """
-        f_ext [3] : impulse applied at t=0 (wind gust direction × magnitude).
+        f_ext      [3] : impulse applied at t=0 (wind gust).
+        grad_steps     : chunk size for truncated BPTT.
+                         x and v are detached at every grad_steps boundary,
+                         so frame t's loss gradient flows back at most
+                         grad_steps steps (e.g. frame 20 → step 15 only).
         Returns trajectory [T, M, 3] where traj[0] == canonical.
         """
         M  = self.canonical.shape[0]
         x  = self.canonical.clone()
         v  = torch.zeros_like(x)
 
-        # Gravity: constant downward acceleration
         g_vec = torch.zeros(3, device=f_ext.device, dtype=f_ext.dtype)
         g_vec[self.gravity_axis] = -self.gravity
 
         static = self._static                                      # [M, 22]
-        traj   = [x]
+        traj   = [x.detach()]                                      # frame 0 never needs grad
 
         for t in range(self.T - 1):
-            ia = self._intra_agg(x, v)                            # [M, d]
-            ra = self._inter_agg(x, v)                            # [M, d]
+            # Chunk boundary: detach state to limit BPTT depth to grad_steps
+            if t > 0 and t % grad_steps == 0:
+                x = x.detach()
+                v = v.detach()
 
-            # External force: gravity always, impulse only at t=0
+            ia = self._intra_agg(x, v)
+            ra = self._inter_agg(x, v)
+
             f_node = g_vec.unsqueeze(0).expand(M, -1).clone()
             if t == 0:
                 f_node = f_node + f_ext.unsqueeze(0)
