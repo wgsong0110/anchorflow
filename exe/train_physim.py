@@ -396,7 +396,7 @@ def main():
             frames_t,
             cond_image  = frame0_cache[v_idx],
             cond_cache  = cond_cache[v_idx],
-            vae_checkpoint = False,
+            vae_checkpoint = True,
         )
 
         if not torch.isfinite(loss):
