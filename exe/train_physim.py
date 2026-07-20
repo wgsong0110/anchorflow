@@ -178,15 +178,19 @@ def main():
     gh = git_hash()
 
     # ── 3DGS canonical scene ─────────────────────────────────────────────────
-    g = GaussianModel(3)
+    _cfg_args_path = os.path.join(args.model, "cfg_args")
+    _hyper_dim = 0
+    if os.path.exists(_cfg_args_path):
+        _ns = eval(open(_cfg_args_path).read().strip(), {"Namespace": lambda **kw: kw})
+        _hyper_dim = _ns.get("hyper_dim", 0) if isinstance(_ns, dict) else 0
+    g = GaussianModel(3, fea_dim=_hyper_dim)
     ply = os.path.join(args.model, "point_cloud",
                        f"iteration_{args.ply_iter}", "point_cloud.ply")
     g.load_ply(ply)
-    g.cuda()
-    canon_xyz  = g.get_xyz.detach()
-    scales_act = g.get_scaling.detach()
-    rots_act   = g.get_rotation.detach()
-    canon_cov6 = W.cov_from_scale_rot(scales_act, rots_act).detach()
+    g.active_sh_degree = 3
+    canon_xyz  = g.get_xyz.detach().clone()
+    canon_cov6 = W.cov_from_scale_rot(
+        g.get_scaling.detach(), g._rotation.detach()).detach()
     bg = torch.tensor([1., 1., 1.] if (args.white_bg or cfg.get("white_bg")) else [0., 0., 0.],
                       device=dev)
     pipe = Pipe()
