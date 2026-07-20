@@ -3,7 +3,7 @@ white_bg: false
 t2n_views: 4
 
 sim:
-  T:       25       # frames per simulation
+  T:       14       # frames per simulation
   dt:      0.04     # Euler timestep
   K:       6        # spring graph knn degree
   mass:    1.0
@@ -12,7 +12,7 @@ sim:
 
 train:
   iters:      10000
-  n_views:    8
+  n_views:    4
   lr:         1.0e-3
   f_scale:    0.05    # max external force magnitude relative to scene extent
   w_power:    0.0
