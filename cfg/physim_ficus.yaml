@@ -16,7 +16,7 @@ sim:
 
 train:
   iters:      10000
-  n_views:    4
+  n_views:    2
   lr:         3.0e-4
   f_scale:    0.3        # impulse magnitude relative to scene extent
   grad_clip:  1.0
