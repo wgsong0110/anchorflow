@@ -9,6 +9,8 @@ sim:
   mass:    1.0
   stiffness_init: 1.0
   damping_init:   0.3
+  pin_ratio:      0.15   # bottom 15% Z anchors fixed (pot)
+  gravity:        2.0    # downward acceleration along -Z
 
 train:
   iters:      10000

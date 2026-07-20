@@ -221,7 +221,11 @@ def main():
         mass=float(cfg.sim.mass),
         stiffness_init=float(cfg.sim.stiffness_init),
         damping_init=float(cfg.sim.damping_init),
+        pin_ratio=float(cfg.sim.get("pin_ratio", 0.0)),
+        gravity=float(cfg.sim.get("gravity", 0.0)),
     ).to(dev)
+    n_pinned = int(sim.pin_mask.sum())
+    print(f"[train] pinned={n_pinned}/{sim.pin_mask.shape[0]}  gravity={cfg.sim.get('gravity',0.0)}", flush=True)
     print(f"[train] SpringSim  T={T}  edges={sim.edge_index.shape[1]}", flush=True)
 
     opt = torch.optim.Adam(sim.parameters(), lr=float(cfg.train.lr))

@@ -26,21 +26,37 @@ from .graph import knn_graph
 class SpringSim(nn.Module):
     def __init__(self, canonical: torch.Tensor, T: int = 25,
                  dt: float = 0.04, K: int = 6, mass: float = 1.0,
-                 stiffness_init: float = 10.0, damping_init: float = 1.0):
+                 stiffness_init: float = 10.0, damping_init: float = 1.0,
+                 pin_ratio: float = 0.0, gravity: float = 0.0,
+                 gravity_axis: int = 2):
         """
-        canonical   [N, 3]  rest positions (registered as buffer, not learned)
-        T                   number of frames to simulate (including frame 0)
-        dt                  Euler timestep
-        K                   knn degree for the spring graph
-        mass                scalar node mass (fixed)
+        canonical    [N, 3]  rest positions (registered as buffer, not learned)
+        T                    number of frames to simulate (including frame 0)
+        dt                   Euler timestep
+        K                    knn degree for the spring graph
+        mass                 scalar node mass (fixed)
+        pin_ratio            fraction of lowest-Z anchors to pin (0 = none)
+        gravity              constant downward acceleration (along -gravity_axis)
+        gravity_axis         world axis index that is 'up' (2 = Z-up)
         """
         super().__init__()
         N = canonical.shape[0]
         self.T = T
         self.dt = dt
         self.mass = mass
+        self.gravity = gravity
+        self.gravity_axis = gravity_axis
 
         self.register_buffer("canonical", canonical.clone())
+
+        # pin mask: lowest-Z anchors are fixed (boundary condition)
+        if pin_ratio > 0.0:
+            z = canonical[:, gravity_axis]
+            threshold = z.quantile(pin_ratio)
+            pin_mask = z <= threshold
+        else:
+            pin_mask = torch.zeros(N, dtype=torch.bool)
+        self.register_buffer("pin_mask", pin_mask)  # [N]
 
         # spring graph (fixed topology from rest config)
         edge_index = knn_graph(canonical.detach(), K)   # [2, E]
@@ -68,6 +84,7 @@ class SpringSim(nn.Module):
         """Simulate under uniform external force f_ext [3].
 
         Returns trajectory [T, N, 3] where traj[0] == canonical.
+        Pinned nodes (pin_mask) are held at their canonical positions.
         """
         src, dst = self.edge_index                          # [E] each
         k = self.stiffness                                  # [N]
@@ -76,6 +93,13 @@ class SpringSim(nn.Module):
 
         # per-edge stiffness: mean of the two endpoint values
         k_edge = (k[src] + k[dst]) * 0.5                   # [E]
+
+        # constant gravity force (acts on free nodes only)
+        g_vec = torch.zeros(3, device=f_ext.device, dtype=f_ext.dtype)
+        if self.gravity != 0.0:
+            g_vec[self.gravity_axis] = -self.gravity * self.mass  # downward
+
+        pin = self.pin_mask                                 # [N] bool
 
         x = self.canonical.clone()
         v = torch.zeros_like(x)
@@ -97,12 +121,20 @@ class SpringSim(nn.Module):
             F = F.scatter_add(0, src[:, None].expand_as(F_spring), -F_spring)
             F = F.scatter_add(0, dst[:, None].expand_as(F_spring),  F_spring)
 
-            # body force + viscous damping
-            F = F + f_ext.unsqueeze(0) - c * v
+            # external + gravity + viscous damping
+            F = F + (f_ext + g_vec).unsqueeze(0) - c * v
+
+            # zero force on pinned nodes → they stay put
+            F = F.masked_fill(pin[:, None], 0.0)
 
             # Euler step
             v = v + (self.dt / self.mass) * F
             x = x + self.dt * v
+
+            # restore pinned nodes to canonical
+            x = torch.where(pin[:, None], self.canonical, x)
+            v = v.masked_fill(pin[:, None], 0.0)
+
             traj.append(x)
 
         return torch.stack(traj, dim=0)                     # [T, N, 3]
