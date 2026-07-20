@@ -392,11 +392,12 @@ def main():
                                    _w_b=_w_b, _idx_b=_idx_b,
                                    _arot_idx=_arot_idx, _arot_src=_arot_src)
 
+        # Only backprop through the last grad_steps frames (where gradient flows)
         loss = svd.mds_loss(
-            frames_t,
+            frames_t[-grad_steps:],
             cond_image  = frame0_cache[v_idx],
             cond_cache  = cond_cache[v_idx],
-            vae_checkpoint = True,
+            vae_checkpoint = False,
         )
 
         if not torch.isfinite(loss):
