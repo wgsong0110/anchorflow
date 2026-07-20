@@ -339,14 +339,15 @@ def main():
     svd_model_id = cfg.get("svd_model", "stabilityai/stable-video-diffusion-img2vid-xt")
     svd = SVDGuidance(model_id=svd_model_id, device=dev)
 
-    print("[train] precomputing MDS conditioning ...", flush=True)
+    grad_steps = int(cfg.sim.get("grad_steps", 5))
+    print(f"[train] precomputing MDS conditioning (T_loss={grad_steps}) ...", flush=True)
     cond_cache   = []
     frame0_cache = []
     for cam in train_cams:
         with torch.no_grad():
             f0 = render_gs(cam, g, pipe, bg)
         frame0_cache.append(f0)
-        cond_cache.append(svd.precompute_cond(f0, T))
+        cond_cache.append(svd.precompute_cond(f0, grad_steps))
     print("[train] cache ready", flush=True)
 
     # ── checkpoint ────────────────────────────────────────────────────────── #
@@ -383,9 +384,8 @@ def main():
         v_idx = step % V
         cam   = train_cams[v_idx]
 
-        f_ext      = sample_impulse(extent, f_scale, dev)
-        grad_steps = int(cfg.sim.get("grad_steps", 5))
-        traj       = sim(f_ext, grad_steps=grad_steps)            # [T, M, 3]
+        f_ext = sample_impulse(extent, f_scale, dev)
+        traj  = sim(f_ext, grad_steps=grad_steps)                 # [T, M, 3]
 
         frames_t = traj_to_frames(traj, canon_xyz, canon_cov6, anchors,
                                    g, bg, cam, pipe, use_checkpoint=True,
