@@ -76,7 +76,7 @@ class GNNSim(nn.Module):
         EDGE_IN = hidden_dim * 2 + 3 + STATIC * 2   # rel(3)+static_i+static_j
         self.edge_mlp = _mlp(EDGE_IN, hidden_dim, hidden_dim)
 
-        self.enc_mlp  = _mlp(hidden_dim * 2, hidden_dim, hidden_dim)
+        self.enc_mlp  = _mlp(hidden_dim * 2, hidden_dim, hidden_dim, bias_last=False)
         self.pool_mlp = _mlp(hidden_dim, hidden_dim, latent_dim)
 
         # ── SSM (GRU) ────────────────────────────────────────────────────── #
