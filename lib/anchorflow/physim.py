@@ -112,9 +112,10 @@ class GNNSim(nn.Module):
     def _decode(self, node_enc: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
         """Returns a_gnn [M, 3]. h: [1, L]."""
         h_broad = h.expand(self.M, -1)                          # [M, L]
-        return torch.tanh(
+        a = torch.tanh(
             self.dec_mlp(torch.cat([node_enc, h_broad], dim=-1))
         ) * self.max_accel
+        return a - a.mean(dim=0, keepdim=True)                  # zero-center: no net force
 
     def forward(self, f_ext: torch.Tensor, grad_steps: int = 5) -> torch.Tensor:
         """
