@@ -137,6 +137,7 @@ class GNNSim(nn.Module):
             node_enc       = self._encode(x, v, static, src, dst)
             y, h           = self.ssm(node_enc, h)                  # per-node SSM
             a_gnn          = torch.tanh(self.dec_mlp(y)) * self.max_accel
+            a_gnn          = a_gnn - a_gnn.mean(dim=0, keepdim=True)
 
             a = a_gnn + g_vec.unsqueeze(0)
             if t == 0:
@@ -168,6 +169,7 @@ class GNNSim(nn.Module):
             node_enc = self._encode(x, v, static, src, dst)
             y, h     = self.ssm(node_enc, h)
             a_gnn    = torch.tanh(self.dec_mlp(y)) * self.max_accel
+            a_gnn    = a_gnn - a_gnn.mean(dim=0, keepdim=True)
             accels.append(a_gnn.clone())
 
             a = a_gnn + g_vec.unsqueeze(0)
