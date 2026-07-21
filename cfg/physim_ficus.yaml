@@ -10,9 +10,9 @@ sim:
   k_nn:         16       # KNN degree (spatial, no object distinction)
   gravity:      5.0      # downward acceleration (−Z axis)
   gravity_axis: 2        # Z-up
-  damping:      0.1      # velocity damping per step: v *= (1 - damping)
-  k_restore:    2.0      # spring constant pulling back to canonical position
-  max_accel:    10.0     # tanh soft-clamp on GNN acceleration output
+  damping:      0.2      # velocity damping per step: v *= (1 - damping)
+  k_restore:    10.0     # spring constant pulling back to canonical position
+  max_accel:    5.0      # tanh soft-clamp on GNN acceleration output
 
 train:
   iters:      10000
