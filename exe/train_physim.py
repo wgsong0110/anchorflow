@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse, json, math, os, subprocess, sys
+from PIL import Image, ImageDraw
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -143,6 +144,58 @@ def traj_to_frames(traj, canon_xyz, canon_cov6, anchors, g, bg, cam, pipe,
     return torch.stack(frames, dim=0)
 
 
+def _project(xyz: torch.Tensor, cam) -> tuple:
+    """World [N, 3] → screen (px [N], py [N], valid [N]) all CPU float."""
+    N    = xyz.shape[0]
+    dev  = xyz.device
+    ones = torch.ones(N, 1, device=dev, dtype=xyz.dtype)
+    xyzw = torch.cat([xyz, ones], dim=1)
+    clip = xyzw @ cam.full_proj_transform
+    w    = clip[:, 3]
+    ndc  = clip[:, :2] / w.unsqueeze(1).clamp(min=1e-8)
+    W, H = cam.image_width, cam.image_height
+    px   = (ndc[:, 0] + 1.0) * 0.5 * W - 0.5
+    py   = (ndc[:, 1] + 1.0) * 0.5 * H - 0.5
+    valid = (px >= 0) & (px < W) & (py >= 0) & (py < H) & (w > 0)
+    return px.cpu().float(), py.cpu().float(), valid.cpu()
+
+
+def _overlay_anchors(frame_t: torch.Tensor, anchor_xyz: torch.Tensor,
+                     accel: torch.Tensor, cam, accel_scale: float = 0.03
+                     ) -> torch.Tensor:
+    """Overlay anchor dots (yellow) and accel arrows (orange) on a frame.
+
+    frame_t     [3, H, W] float [0,1]
+    anchor_xyz  [M, 3]  current anchor positions
+    accel       [M, 3]  per-anchor acceleration
+    Returns     [3, H, W] float [0,1]
+    """
+    img_np = (frame_t.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255
+              ).astype(np.uint8)
+    img  = Image.fromarray(img_np)
+    draw = ImageDraw.Draw(img)
+
+    px, py, valid = _project(anchor_xyz.float(), cam)
+    px_np = px.numpy(); py_np = py.numpy(); v_np = valid.numpy()
+
+    # accel arrow endpoint in world space
+    a_end        = anchor_xyz + accel * accel_scale
+    epx, epy, ev = _project(a_end.float(), cam)
+    epx_np = epx.numpy(); epy_np = epy.numpy(); ev_np = ev.numpy()
+
+    for i in range(len(px_np)):
+        if not v_np[i]:
+            continue
+        x0, y0 = float(px_np[i]), float(py_np[i])
+        if ev_np[i]:
+            x1, y1 = float(epx_np[i]), float(epy_np[i])
+            draw.line([(x0, y0), (x1, y1)], fill=(255, 120, 0), width=1)
+        r = 2
+        draw.ellipse([(x0 - r, y0 - r), (x0 + r, y0 + r)], fill=(255, 255, 0))
+
+    return torch.from_numpy(np.array(img)).permute(2, 0, 1).float() / 255.0
+
+
 def save_video(frames, path, fps=8):
     arr = [(f.clamp(0,1).permute(1,2,0).cpu().numpy()*255).astype(np.uint8)
            for f in frames]
@@ -174,18 +227,22 @@ def _save_rollout(step, sim, anchors, T, extent, dev,
     _w_b, _idx_b = anchors.cal_nn_weight(canon_xyz)
     _arot_idx, _arot_src = anchor_rotations_cache(anchors.canonical)
     all_frames = []
+    cam = rollout_cams[0]
     # 4 cardinal impulse directions × first rollout camera
     for axis, sign in [(0, 1), (1, 1), (0, -1), (1, -1)]:
         d = torch.zeros(3, device=dev)
         d[axis] = sign
-        f_ext = d * f_scale * extent
-        traj  = sim(f_ext)
+        f_ext  = d * f_scale * extent
+        traj, accels = sim.forward_debug(f_ext)           # [T,M,3] each
         frames = traj_to_frames(traj, canon_xyz, canon_cov6, anchors,
-                                  g, bg, rollout_cams[0], pipe,
+                                  g, bg, cam, pipe,
                                   use_checkpoint=False,
                                   _w_b=_w_b, _idx_b=_idx_b,
                                   _arot_idx=_arot_idx, _arot_src=_arot_src)
-        all_frames.extend(list(frames))
+        # overlay anchor dots + accel arrows
+        overlaid = [_overlay_anchors(frames[t], traj[t], accels[t], cam)
+                    for t in range(len(frames))]
+        all_frames.extend(overlaid)
     path = os.path.join(out, f"rollout_{step:06d}.mp4")
     save_video(all_frames, path)
     print(f"  [rollout] {path}", flush=True)

@@ -126,3 +126,49 @@ class GNNSim(nn.Module):
             traj.append(x)
 
         return torch.stack(traj, dim=0)                   # [T, M, 3]
+
+    @torch.no_grad()
+    def forward_debug(self, f_ext: torch.Tensor):
+        """Same as forward but also returns per-frame accelerations.
+
+        Returns:
+            traj   [T, M, 3]
+            accels [T, M, 3]  — accel at frame 0 is zeros (canonical, no step)
+        """
+        M   = self.M
+        x   = self.canonical.clone()
+        v   = torch.zeros_like(x)
+
+        g_vec = torch.zeros(3, device=f_ext.device, dtype=f_ext.dtype)
+        g_vec[self.gravity_axis] = -self.gravity
+
+        static = self._static
+        src, dst = self.edge_index
+
+        traj   = [x.clone()]
+        accels = [torch.zeros(M, 3, device=f_ext.device)]  # frame 0 placeholder
+
+        for t in range(self.T - 1):
+            state = self.state_mlp(torch.cat([x, v], dim=-1))
+
+            feat = torch.cat([
+                state[src], state[dst],
+                static[src], static[dst],
+                self.rest_len[:, None],
+            ], dim=-1)
+            msg = self.edge_mlp(feat)
+            agg = torch.zeros(M, self.hidden_dim, device=x.device)
+            agg.scatter_add_(0, dst[:, None].expand_as(msg), msg)
+
+            f_node = g_vec.unsqueeze(0).expand(M, -1).clone()
+            if t == 0:
+                f_node = f_node + f_ext.unsqueeze(0)
+
+            a = self.node_mlp(torch.cat([agg, state, f_node], dim=-1))
+            accels.append(a.clone())
+
+            v = v + self.dt * a
+            x = x + self.dt * v
+            traj.append(x.clone())
+
+        return torch.stack(traj, dim=0), torch.stack(accels, dim=0)  # [T,M,3] each
