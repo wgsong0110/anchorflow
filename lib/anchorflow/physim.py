@@ -19,11 +19,12 @@ import torch
 import torch.nn as nn
 
 
-def _mlp(in_d: int, hid: int, out_d: int, layers: int = 3) -> nn.Sequential:
+def _mlp(in_d: int, hid: int, out_d: int, layers: int = 3,
+         bias_last: bool = True) -> nn.Sequential:
     seq = [nn.Linear(in_d, hid), nn.SiLU()]
     for _ in range(layers - 2):
         seq += [nn.Linear(hid, hid), nn.SiLU()]
-    seq.append(nn.Linear(hid, out_d))
+    seq.append(nn.Linear(hid, out_d, bias=bias_last))
     return nn.Sequential(*seq)
 
 
@@ -82,7 +83,8 @@ class GNNSim(nn.Module):
         self.ssm = nn.GRUCell(latent_dim, latent_dim)
 
         # ── Decoder ──────────────────────────────────────────────────────── #
-        self.dec_mlp = _mlp(hidden_dim + latent_dim, hidden_dim, 3)
+        # bias_last=False: prevents systematic directional bias at init
+        self.dec_mlp = _mlp(hidden_dim + latent_dim, hidden_dim, 3, bias_last=False)
 
     @property
     def _static(self) -> torch.Tensor:
@@ -149,7 +151,7 @@ class GNNSim(nn.Module):
             f_ext_t = g_vec.unsqueeze(0).expand(M, -1).clone()
             if t == 0:
                 f_ext_t = f_ext_t + f_ext.unsqueeze(0) * imp_mask
-            a = a_gnn + f_ext_t - self.k_restore * (x - self.canonical)
+            a = a_gnn + f_ext_t
 
             v = v * (1.0 - self.damping) + self.dt * a
             x = x + self.dt * v
@@ -188,7 +190,7 @@ class GNNSim(nn.Module):
             f_ext_t = g_vec.unsqueeze(0).expand(M, -1).clone()
             if t == 0:
                 f_ext_t = f_ext_t + f_ext.unsqueeze(0) * imp_mask
-            a = a_gnn + f_ext_t - self.k_restore * (x - self.canonical)
+            a = a_gnn + f_ext_t
 
             v = v * (1.0 - self.damping) + self.dt * a
             x = x + self.dt * v
