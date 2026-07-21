@@ -161,9 +161,12 @@ def _project(xyz: torch.Tensor, cam) -> tuple:
 
 
 def _overlay_anchors(frame_t: torch.Tensor, anchor_xyz: torch.Tensor,
-                     accel: torch.Tensor, cam, accel_scale: float = 0.03
+                     accel: torch.Tensor, cam, arrow_px: float = 15.0
                      ) -> torch.Tensor:
-    """Overlay anchor dots (yellow) and accel arrows (orange) on a frame.
+    """Overlay anchor dots (yellow) and accel direction arrows (orange).
+
+    Arrow length is fixed at arrow_px pixels regardless of accel magnitude,
+    so the direction is always visible. Zero-accel anchors get no arrow.
 
     frame_t     [3, H, W] float [0,1]
     anchor_xyz  [M, 3]  current anchor positions
@@ -175,21 +178,35 @@ def _overlay_anchors(frame_t: torch.Tensor, anchor_xyz: torch.Tensor,
     img  = Image.fromarray(img_np)
     draw = ImageDraw.Draw(img)
 
+    # project anchor positions to screen
     px, py, valid = _project(anchor_xyz.float(), cam)
     px_np = px.numpy(); py_np = py.numpy(); v_np = valid.numpy()
 
-    # accel arrow endpoint in world space
-    a_end        = anchor_xyz + accel * accel_scale
-    epx, epy, ev = _project(a_end.float(), cam)
-    epx_np = epx.numpy(); epy_np = epy.numpy(); ev_np = ev.numpy()
+    # project accel tip (small world offset to get screen direction)
+    a_np  = accel.cpu().float().numpy()          # [M, 3]
+    a_mag = np.linalg.norm(a_np, axis=1, keepdims=True)  # [M, 1]
+    a_dir = np.where(a_mag > 1e-6, a_np / (a_mag + 1e-8), 0.0)  # [M, 3]
+    tip_world = anchor_xyz.float() + torch.from_numpy(a_dir).to(anchor_xyz.device) * 0.1
+    tpx, tpy, tv = _project(tip_world, cam)
+    tpx_np = tpx.numpy(); tpy_np = tpy.numpy()
 
     for i in range(len(px_np)):
         if not v_np[i]:
             continue
         x0, y0 = float(px_np[i]), float(py_np[i])
-        if ev_np[i]:
-            x1, y1 = float(epx_np[i]), float(epy_np[i])
-            draw.line([(x0, y0), (x1, y1)], fill=(255, 120, 0), width=1)
+
+        # accel arrow: fixed arrow_px length in screen space
+        if a_mag[i, 0] > 1e-6 and tv[i]:
+            dx = tpx_np[i] - px_np[i]
+            dy = tpy_np[i] - py_np[i]
+            d  = math.sqrt(dx * dx + dy * dy)
+            if d > 0.1:
+                scale = arrow_px / d
+                x1 = x0 + dx * scale
+                y1 = y0 + dy * scale
+                draw.line([(x0, y0), (x1, y1)], fill=(255, 120, 0), width=1)
+
+        # anchor dot
         r = 2
         draw.ellipse([(x0 - r, y0 - r), (x0 + r, y0 + r)], fill=(255, 255, 0))
 
