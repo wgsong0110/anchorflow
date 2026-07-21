@@ -415,9 +415,18 @@ def main():
         v_idx = step % V
         cam   = train_cams[v_idx]
 
+        _profile = (step < 3)   # print timing for first 3 steps
+        def _t(label, t0):
+            if not _profile: return t0
+            torch.cuda.synchronize()
+            print(f"  [time] {label:40s} {(time.time()-t0)*1000:6.0f}ms", flush=True)
+            return time.time()
+        import time as _time; _t0 = _time.time()
+
         f_ext = torch.zeros(3, device=dev)
         # Full BPTT: grad_steps=T means detach never triggers
         traj  = sim(f_ext, grad_steps=T)                          # [T, M, 3]
+        _t0 = _t("GNN forward (T=25)", _t0)
 
         # ── pass 1: no_grad render → SDS latent gradient ──────────────────── #
         with torch.no_grad():
@@ -426,8 +435,10 @@ def main():
                 g, bg, cam, pipe, use_checkpoint=False,
                 _w_b=_w_b, _idx_b=_idx_b,
                 _arot_idx=_arot_idx, _arot_src=_arot_src)        # [T, 3, H, W]
+        _t0 = _t("no_grad render T=25 frames", _t0)
         lat_grad = svd.compute_mds_grad(
             frames_nograd, cond_cache=cond_cache[v_idx])          # [1, T, 4, h, w]
+        _t0 = _t("compute_mds_grad (SVD UNet)", _t0)
 
         # ── pass 2: re-render sampled frames with grad → surrogate loss ──────── #
         # Sample T_grad evenly-spaced frames to keep GPU memory manageable.
@@ -439,16 +450,19 @@ def main():
             g, bg, cam, pipe, use_checkpoint=True,
             _w_b=_w_b, _idx_b=_idx_b,
             _arot_idx=_arot_idx, _arot_src=_arot_src)            # [T_grad, 3, H, W]
+        _t0 = _t("re-render T_grad=5 (checkpoint)", _t0)
         x0     = svd.encode_frames(frames_grad, use_checkpoint=True)  # [1,T_grad,4,h,w]
         target = (x0 - lat_grad[:, t_sample]).detach()
         loss   = 0.5 * F.mse_loss(x0.float(), target.float(),
                                     reduction="sum") / len(t_sample)
+        _t0 = _t("VAE encode + loss", _t0)
 
         if not torch.isfinite(loss):
             print(f"[{step}] non-finite loss, skip", flush=True)
             continue
 
         loss.backward()
+        _t0 = _t("backward", _t0)
         torch.nn.utils.clip_grad_norm_(sim.parameters(), grad_clip)
         opt.step()
 
