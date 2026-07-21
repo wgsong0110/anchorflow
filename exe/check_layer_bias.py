@@ -49,7 +49,7 @@ def run(graph_path, n_nodes, k_nn, hidden_dim, latent_dim, node_dim, dev):
         v = torch.zeros_like(x)
 
         # ── 1. state_mlp ────────────────────────────────────────── #
-        state = sim.state_mlp(torch.cat([x, v], dim=-1))   # [M, H]
+        state = sim.state_mlp(torch.cat([x, v, static], dim=-1))  # [M, H]
 
         # ── 2. edge_mlp ─────────────────────────────────────────── #
         rel  = x[src] - x[dst]
