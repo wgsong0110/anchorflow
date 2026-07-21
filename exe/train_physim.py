@@ -370,7 +370,8 @@ def main():
     svd_model_id = cfg.get("svd_model", "stabilityai/stable-video-diffusion-img2vid-xt")
     svd = SVDGuidance(model_id=svd_model_id, device=dev)
 
-    print(f"[train] precomputing MDS conditioning (T={T}) ...", flush=True)
+    grad_steps = int(cfg.sim.get("grad_steps", 5))   # #frames sampled for grad pass
+    print(f"[train] precomputing MDS conditioning (T={T}, T_grad={grad_steps}) ...", flush=True)
     cond_cache   = []
     frame0_cache = []
     for cam in train_cams:
