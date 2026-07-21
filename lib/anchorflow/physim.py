@@ -118,7 +118,7 @@ class GNNSim(nn.Module):
 
     def forward(self, f_ext: torch.Tensor, grad_steps: int = 5) -> torch.Tensor:
         """
-        f_ext [3]: impulse at t=0.
+        f_ext [M, 3]: per-node impulse at t=0 (zero for unselected nodes).
         grad_steps: ignored (full BPTT; kept for API compat).
         Returns traj [T, M, 3].
         """
@@ -133,11 +133,6 @@ class GNNSim(nn.Module):
         src, dst = self.edge_index
         h        = torch.zeros(1, self.latent_dim, device=x.device, dtype=x.dtype)
 
-        n_imp    = max(1, int(M * self.impulse_frac))
-        imp_idx  = torch.randperm(M, device=f_ext.device)[:n_imp]
-        imp_mask = torch.zeros(M, 1, device=f_ext.device)
-        imp_mask[imp_idx] = 1.0
-
         traj = [x.detach()]
 
         for t in range(self.T - 1):
@@ -145,10 +140,9 @@ class GNNSim(nn.Module):
             h = self.ssm(z, h)                                   # GRU: [1, L]
             a_gnn = self._decode(node_enc, h)
 
-            f_ext_t = g_vec.unsqueeze(0).expand(M, -1).clone()
+            a = a_gnn + g_vec.unsqueeze(0)
             if t == 0:
-                f_ext_t = f_ext_t + f_ext.unsqueeze(0) * imp_mask
-            a = a_gnn + f_ext_t
+                a = a + f_ext
 
             v = v * (1.0 - self.damping) + self.dt * a
             x = x + self.dt * v
@@ -158,7 +152,7 @@ class GNNSim(nn.Module):
 
     @torch.no_grad()
     def forward_debug(self, f_ext: torch.Tensor):
-        """Returns (traj [T,M,3], accels [T,M,3])."""
+        """f_ext [M, 3]. Returns (traj [T,M,3], accels [T,M,3])."""
         M   = self.M
         x   = self.canonical.clone()
         v   = torch.zeros_like(x)
@@ -170,11 +164,6 @@ class GNNSim(nn.Module):
         src, dst = self.edge_index
         h        = torch.zeros(1, self.latent_dim, device=x.device, dtype=x.dtype)
 
-        n_imp    = max(1, int(M * self.impulse_frac))
-        imp_idx  = torch.randperm(M, device=f_ext.device)[:n_imp]
-        imp_mask = torch.zeros(M, 1, device=f_ext.device)
-        imp_mask[imp_idx] = 1.0
-
         traj   = [x.clone()]
         accels = [torch.zeros(M, 3, device=x.device)]
 
@@ -184,10 +173,9 @@ class GNNSim(nn.Module):
             a_gnn = self._decode(node_enc, h)
             accels.append(a_gnn.clone())                         # GNN pure output
 
-            f_ext_t = g_vec.unsqueeze(0).expand(M, -1).clone()
+            a = a_gnn + g_vec.unsqueeze(0)
             if t == 0:
-                f_ext_t = f_ext_t + f_ext.unsqueeze(0) * imp_mask
-            a = a_gnn + f_ext_t
+                a = a + f_ext
 
             v = v * (1.0 - self.damping) + self.dt * a
             x = x + self.dt * v

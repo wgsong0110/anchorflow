@@ -227,13 +227,17 @@ def git_hash():
         return "nogit"
 
 
-def sample_impulse(extent: float, f_scale: float, device: str) -> torch.Tensor:
-    """Random horizontal direction × random magnitude."""
-    d = torch.randn(3, device=device)
-    d[2] *= 0.2          # mostly horizontal (less vertical impulse)
-    d = F.normalize(d, dim=0)
-    mag = torch.rand(1, device=device).item() * f_scale * extent
-    return d * mag
+def sample_impulse(M: int, impulse_frac: float,
+                   extent: float, f_scale: float, device: str) -> torch.Tensor:
+    """Per-node random direction × random magnitude, sparse (impulse_frac nodes)."""
+    d   = F.normalize(torch.randn(M, 3, device=device), dim=-1)
+    mag = torch.rand(M, 1, device=device) * f_scale * extent
+    f   = d * mag                                         # [M, 3]
+    n_imp   = max(1, int(M * impulse_frac))
+    imp_idx = torch.randperm(M, device=device)[:n_imp]
+    mask    = torch.zeros(M, 1, device=device)
+    mask[imp_idx] = 1.0
+    return f * mask                                       # [M, 3]
 
 
 @torch.no_grad()
@@ -245,7 +249,8 @@ def _save_rollout(step, sim, anchors, T, extent, dev,
     _arot_idx, _arot_src = anchor_rotations_cache(anchors.canonical)
     all_frames = []
     cam = rollout_cams[0]
-    f_ext = torch.zeros(3, device=dev)
+    M_sim = sim.M if hasattr(sim, "M") else sim._orig_mod.M
+    f_ext = torch.zeros(M_sim, 3, device=dev)
     traj, accels = sim.forward_debug(f_ext)               # [T,M,3] each
     frames = traj_to_frames(traj, canon_xyz, canon_cov6, anchors,
                               g, bg, cam, pipe,
@@ -426,7 +431,9 @@ def main():
             return _time.time()
         _t0 = _time.time()
 
-        f_ext = sample_impulse(extent, f_scale, dev)
+        f_ext = sample_impulse(sim._orig_mod.M if hasattr(sim, "_orig_mod") else sim.M,
+                               float(cfg.sim.get("impulse_frac", 0.5)),
+                               extent, f_scale, dev)
         # Full BPTT: grad_steps=T means detach never triggers
         traj  = sim(f_ext, grad_steps=T)                          # [T, M, 3]
         _t0 = _t("GNN forward (T=25)", _t0)
