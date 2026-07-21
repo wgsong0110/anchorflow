@@ -239,6 +239,32 @@ class SVDGuidance:
         return self._apply(x0, grad)
 
     # --- Motion Distillation Sampling (DreamPhysics, AAAI'25) -------------- #
+    @torch.no_grad()
+    def compute_mds_grad(self, frames, cond_cache, w_power=0.0):
+        """Compute MDS gradient w.r.t. VAE latents without building a grad graph.
+
+        frames     : [T, 3, H, W] in [0,1], no_grad OK
+        cond_cache : precompute_cond() output
+        Returns    : lat_grad [1, T, 4, h, w]  — ∂loss/∂x0
+        """
+        T  = frames.shape[0]
+        x0 = self.encode_frames(frames, use_checkpoint=False)   # [1,T,4,h,w]
+        lat0     = cond_cache["lat0"]
+        cond_lat = cond_cache["cond_lat"]
+        img_emb  = cond_cache["img_emb"]
+        time_ids = cond_cache["time_ids"]
+        x0_stat  = lat0.unsqueeze(0).expand(1, T, -1, -1, -1)
+        sigma    = self._sample_sigma()
+        noise    = torch.randn_like(x0)
+        eps_dyn, eps_stat = self._eps_pred_mds(
+            x0 + sigma * noise, x0_stat + sigma * noise,
+            sigma, cond_lat, img_emb, time_ids)
+        grad = (sigma ** w_power) * (eps_dyn - eps_stat)
+        grad = torch.nan_to_num(grad)
+        if self.grad_clip:
+            grad = grad.clamp(-self.grad_clip, self.grad_clip)
+        return grad                                              # [1, T, 4, h, w]
+
     def mds_loss(self, frames, cond_image, w_power=0.0, cond_cache=None,
                  vae_checkpoint=True):
         """MDS: grad = w(sigma) * (eps(video) - eps(static frame-0)).

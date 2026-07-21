@@ -370,15 +370,14 @@ def main():
     svd_model_id = cfg.get("svd_model", "stabilityai/stable-video-diffusion-img2vid-xt")
     svd = SVDGuidance(model_id=svd_model_id, device=dev)
 
-    grad_steps = int(cfg.sim.get("grad_steps", 5))
-    print(f"[train] precomputing MDS conditioning (T_loss={grad_steps}) ...", flush=True)
+    print(f"[train] precomputing MDS conditioning (T={T}) ...", flush=True)
     cond_cache   = []
     frame0_cache = []
     for cam in train_cams:
         with torch.no_grad():
             f0 = render_gs(cam, g, pipe, bg)
         frame0_cache.append(f0)
-        cond_cache.append(svd.precompute_cond(f0, grad_steps))
+        cond_cache.append(svd.precompute_cond(f0, T))
     print("[train] cache ready", flush=True)
 
     # ── checkpoint ────────────────────────────────────────────────────────── #
@@ -416,20 +415,29 @@ def main():
         cam   = train_cams[v_idx]
 
         f_ext = torch.zeros(3, device=dev)
-        traj  = sim(f_ext, grad_steps=grad_steps)                 # [T, M, 3]
+        # Full BPTT: grad_steps=T means detach never triggers
+        traj  = sim(f_ext, grad_steps=T)                          # [T, M, 3]
 
-        frames_t = traj_to_frames(traj, canon_xyz, canon_cov6, anchors,
-                                   g, bg, cam, pipe, use_checkpoint=True,
-                                   _w_b=_w_b, _idx_b=_idx_b,
-                                   _arot_idx=_arot_idx, _arot_src=_arot_src)
+        # ── pass 1: no_grad render → SDS latent gradient ──────────────────── #
+        with torch.no_grad():
+            frames_nograd = traj_to_frames(
+                traj.detach(), canon_xyz, canon_cov6, anchors,
+                g, bg, cam, pipe, use_checkpoint=False,
+                _w_b=_w_b, _idx_b=_idx_b,
+                _arot_idx=_arot_idx, _arot_src=_arot_src)        # [T, 3, H, W]
+        lat_grad = svd.compute_mds_grad(
+            frames_nograd, cond_cache=cond_cache[v_idx])          # [1, T, 4, h, w]
 
-        # Only backprop through the last grad_steps frames (where gradient flows)
-        loss = svd.mds_loss(
-            frames_t[-grad_steps:],
-            cond_image  = frame0_cache[v_idx],
-            cond_cache  = cond_cache[v_idx],
-            vae_checkpoint = False,
-        )
+        # ── pass 2: re-render with grad (checkpointed) → surrogate loss ─────── #
+        frames_grad = traj_to_frames(
+            traj, canon_xyz, canon_cov6, anchors,
+            g, bg, cam, pipe, use_checkpoint=True,
+            _w_b=_w_b, _idx_b=_idx_b,
+            _arot_idx=_arot_idx, _arot_src=_arot_src)            # [T, 3, H, W]
+        x0     = svd.encode_frames(frames_grad, use_checkpoint=True)  # [1,T,4,h,w]
+        target = (x0 - lat_grad).detach()
+        loss   = 0.5 * F.mse_loss(x0.float(), target.float(),
+                                    reduction="sum") / T
 
         if not torch.isfinite(loss):
             print(f"[{step}] non-finite loss, skip", flush=True)
@@ -442,7 +450,7 @@ def main():
         if step % log_every == 0:
             with torch.no_grad():
                 travel = float((traj[-1] - anchors.canonical).norm(dim=-1).max())
-            print(f"[{step}/{iters}] loss={float(loss):.4f}  v={v_idx}"
+            print(f"[{step}/{iters}] loss={loss.item():.4f}  v={v_idx}"
                   f"  travel={travel:.4f} ({travel/extent*100:.1f}%)", flush=True)
 
         if step % ckpt_every == 0 or step == iters - 1:
