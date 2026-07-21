@@ -120,7 +120,8 @@ def plot_results(raws_dict, dirs_dict, out_path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt",       default=None)
+    ap.add_argument("--ckpt",       default=None,  help="path to ckpt_stepXXX.pt")
+    ap.add_argument("--graph",      default=None,  help="path to graph.pt (edge_index, rest_len)")
     ap.add_argument("--n_nodes",    type=int, default=512)
     ap.add_argument("--n_samples",  type=int, default=200)
     ap.add_argument("--k_nn",       type=int, default=16)
@@ -132,11 +133,38 @@ def main():
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # Load graph if provided (to match checkpoint's node/edge counts)
+    if args.graph and os.path.exists(args.graph):
+        gd = torch.load(args.graph, map_location="cpu", weights_only=False)
+        edge_index_fixed = gd["edge_index"]
+        rest_len_fixed   = gd["rest_len"]
+        M = args.n_nodes
+        canonical_fixed  = torch.randn(M, 3) * 0.5
+        anchor_colors_fixed = torch.rand(M, 3)
+        print(f"Loaded graph: {edge_index_fixed.shape[1]} edges")
+    else:
+        edge_index_fixed = None
+
+    def _make_sim():
+        if edge_index_fixed is not None:
+            M = args.n_nodes
+            return GNNSim(
+                canonical=canonical_fixed,
+                anchor_colors=anchor_colors_fixed,
+                edge_index=edge_index_fixed,
+                rest_len=rest_len_fixed,
+                T=2, hidden_dim=args.hidden_dim,
+                latent_dim=args.latent_dim, node_dim=args.node_dim,
+                k_restore=0.0, gravity=0.0,
+            ).to(dev)
+        else:
+            return build_sim(args, dev)
+
     raws_dict = {}
     dirs_dict = {}
 
     # ── Random init ──────────────────────────────────────────────────────── #
-    sim_rand = build_sim(args, dev)
+    sim_rand = _make_sim()
     sim_rand.eval()
     raw, dirs = collect_dirs(sim_rand, args.n_samples, args.latent_dim, dev)
     raws_dict["random init"] = raw
@@ -145,15 +173,15 @@ def main():
 
     # ── Trained checkpoint ────────────────────────────────────────────────── #
     if args.ckpt and os.path.exists(args.ckpt):
-        sim_tr = build_sim(args, dev)
-        ck = torch.load(args.ckpt, map_location=dev)
+        sim_tr = _make_sim()
+        ck = torch.load(args.ckpt, map_location=dev, weights_only=False)
         state = ck.get("sim", ck)
-        sim_tr.load_state_dict(state, strict=False)
+        sim_tr.load_state_dict(state, strict=True)
         sim_tr.eval()
         raw_tr, dirs_tr = collect_dirs(sim_tr, args.n_samples, args.latent_dim, dev)
-        raws_dict["trained"] = raw_tr
-        dirs_dict["trained"] = dirs_tr
-        print_stats("trained", raw_tr, dirs_tr)
+        raws_dict["trained (step 1000)"] = raw_tr
+        dirs_dict["trained (step 1000)"] = dirs_tr
+        print_stats("trained (step 1000)", raw_tr, dirs_tr)
 
     plot_results(raws_dict, dirs_dict, args.out)
 
