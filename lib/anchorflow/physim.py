@@ -179,8 +179,8 @@ class GNNSim(nn.Module):
                 f_node = f_node + f_ext.unsqueeze(0)
 
             a = self.node_mlp(torch.cat([agg, state, f_node], dim=-1))
+            accels.append(a.clone())           # GNN pure output (before restoring)
             a = a - self.k_restore * (x - self.canonical)
-            accels.append(a.clone())
 
             v = v * (1.0 - self.damping) + self.dt * a
             x = x + self.dt * v
