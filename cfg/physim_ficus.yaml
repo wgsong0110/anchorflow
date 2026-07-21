@@ -12,6 +12,7 @@ sim:
   gravity_axis: 2        # Z-up
   damping:      0.1      # velocity damping per step: v *= (1 - damping)
   k_restore:    2.0      # spring constant pulling back to canonical position
+  max_accel:    10.0     # tanh soft-clamp on GNN acceleration output
 
 train:
   iters:      10000

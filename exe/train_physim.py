@@ -364,6 +364,7 @@ def main():
         gravity_axis  = int(cfg.sim.get("gravity_axis", 2)),
         damping       = float(cfg.sim.get("damping", 0.1)),
         k_restore     = float(cfg.sim.get("k_restore", 2.0)),
+        max_accel     = float(cfg.sim.get("max_accel", 10.0)),
     ).to(dev)
     n_params = sum(p.numel() for p in sim.parameters())
     print(f"[train] GNNSim params={n_params:,}  T={T}", flush=True)

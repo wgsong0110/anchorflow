@@ -42,6 +42,7 @@ class GNNSim(nn.Module):
         gravity_axis: int = 2,
         damping: float = 0.1,          # velocity damping per step: v *= (1 - damping)
         k_restore: float = 2.0,        # spring constant pulling back to canonical
+        max_accel: float = 10.0,       # tanh soft-clamp on GNN acceleration output
     ):
         super().__init__()
         M = canonical.shape[0]
@@ -53,6 +54,7 @@ class GNNSim(nn.Module):
         self.hidden_dim   = hidden_dim
         self.damping      = damping
         self.k_restore    = k_restore
+        self.max_accel    = max_accel
 
         self.register_buffer("canonical",     canonical.clone().float())
         self.register_buffer("anchor_colors", anchor_colors.float())
@@ -123,7 +125,7 @@ class GNNSim(nn.Module):
                 f_node = f_node + f_ext.unsqueeze(0)
 
             # ── acceleration → Euler integration ─────────────────────────── #
-            a = self.node_mlp(torch.cat([agg, state, f_node], dim=-1))  # [M, 3]
+            a = torch.tanh(self.node_mlp(torch.cat([agg, state, f_node], dim=-1))) * self.max_accel  # soft-clamped GNN accel
             a = a - self.k_restore * (x - self.canonical)               # restoring force
             v = v * (1.0 - self.damping) + self.dt * a                  # damped integration
             x = x + self.dt * v
