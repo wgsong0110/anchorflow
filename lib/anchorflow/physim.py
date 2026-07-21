@@ -71,9 +71,9 @@ class GNNSim(nn.Module):
         STATIC = node_dim
 
         # ── Encoder ──────────────────────────────────────────────────────── #
-        self.state_mlp = _mlp(6 + STATIC, hidden_dim, hidden_dim, bias_last=False)
+        self.state_mlp = _mlp(6, hidden_dim, hidden_dim, bias_last=False)
 
-        EDGE_IN = hidden_dim * 2 + 3   # state_src + state_dst + rel
+        EDGE_IN = hidden_dim * 2 + STATIC * 2   # state_src + state_dst + static_src + static_dst
         self.edge_mlp = _mlp(EDGE_IN, hidden_dim, hidden_dim, bias_last=False)
 
         self.enc_mlp  = _mlp(hidden_dim * 2, hidden_dim, hidden_dim, bias_last=False)
@@ -94,11 +94,10 @@ class GNNSim(nn.Module):
                 static: torch.Tensor,
                 src: torch.Tensor, dst: torch.Tensor):
         """Returns (node_enc [M, H], z [1, L])."""
-        state   = self.state_mlp(torch.cat([x, v, static], dim=-1))  # [M, H]
-        rel     = x[src] - x[dst]                               # [E, 3]
+        state   = self.state_mlp(torch.cat([x, v], dim=-1))        # [M, H]
         feat = torch.cat([
             state[src], state[dst],
-            rel,
+            static[src], static[dst],
         ], dim=-1)
         msg = self.edge_mlp(feat)                                # [E, H]
         agg = torch.zeros(self.M, self.hidden_dim, device=x.device)
