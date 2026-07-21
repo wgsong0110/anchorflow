@@ -359,7 +359,7 @@ def main():
         T             = T,
         dt            = float(cfg.sim.dt),
         hidden_dim    = int(cfg.sim.get("hidden_dim", 256)),
-        latent_dim    = int(cfg.sim.get("latent_dim", 256)),
+        d_state       = int(cfg.sim.get("d_state", 16)),
         node_dim      = int(cfg.sim.get("node_dim", 32)),
         gravity       = float(cfg.sim.get("gravity", 5.0)),
         gravity_axis  = int(cfg.sim.get("gravity_axis", 2)),

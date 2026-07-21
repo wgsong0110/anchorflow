@@ -1,0 +1,34 @@
+name: cuda-build-ssm
+
+on:
+  push:
+    branches: [master]
+    paths: ['lib/ssm/**', '.github/workflows/cuda-build-ssm.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build ssm .so in the anchorflow image
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/w" -w /w/lib/ssm \
+            -e TORCH_CUDA_ARCH_LIST="8.6;8.9" -e FORCE_CUDA=1 \
+            ghcr.io/wgsong0110/anchorflow:latest \
+            python setup.py build_ext --inplace
+          sudo chown -R $(id -u):$(id -g) lib/ssm || true
+          ls -la lib/ssm/*.so
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cuda-ssm
+          files: lib/ssm/*.so
+          fail_on_unmatched_files: true

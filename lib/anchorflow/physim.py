@@ -1,30 +1,32 @@
-"""GNN physics simulator: GNN Encoder → GRU SSM → GNN Decoder.
+"""GNN physics simulator: GNN Encoder → per-node Selective SSM → GNN Decoder.
 
 Architecture per step t:
-  Encoder : [x,v] → state_mlp → edge_mlp → scatter_add → enc_mlp → node_enc
-            mean(node_enc) → pool_mlp → z^t   (global latent)
-  SSM     : GRUCell(z^t, h^{t-1}) → h^t       (temporal context)
-  Decoder : dec_mlp([node_enc, h^t broadcast]) → tanh * max_accel → a_gnn
-  Physics : a = a_gnn + gravity + impulse(t=0, random subset)
-                       − k_restore*(x − canonical)
+  Encoder : PE(x,v) → state_mlp → edge_mlp([state,static]) → mean_pool
+            → enc_mlp([agg, state]) → node_enc  [M, H]
+  SSM     : SelectiveSSM(node_enc_i, h_i) → y_i, h_i_new   (per node)
+  Decoder : dec_mlp(y) → tanh * max_accel → a_gnn  [M, 3]
+  Physics : a = a_gnn + impulse(t=0)
             v = v*(1−damp) + dt*a;   x = x + dt*v
 
-GRU is used as the SSM: same gating mechanism as Mamba but implemented in
-PyTorch core (no CUDA extension needed). The key architectural insight is the
-GNN encoder → global latent → temporal SSM → GNN decoder pipeline.
+SelectiveSSM is a Mamba-style per-node SSM with CUDA kernel (lib/ssm).
+Each node maintains an independent hidden state h_i [D, N], enabling
+self-propelled dynamics where each part has its own internal state.
 """
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-PE_FREQS = 6  # Fourier PE 주파수 수; 입력 D차원 → D*(1+2*PE_FREQS)차원
+from ssm import SelectiveSSM
+
+PE_FREQS = 6  # Fourier PE frequencies; D → D*(1+2*PE_FREQS)
 
 
 def _fourier_pe(x: torch.Tensor) -> torch.Tensor:
-    """x [N, D] → [N, D*(1+2*PE_FREQS)] (Fourier positional encoding)."""
+    """x [N, D] → [N, D*(1+2*PE_FREQS)]"""
     freqs = 2.0 ** torch.arange(PE_FREQS, device=x.device, dtype=x.dtype)
-    args  = x.unsqueeze(-1) * freqs          # [N, D, L]
+    args  = x.unsqueeze(-1) * freqs
     return torch.cat([x, args.sin().flatten(-2), args.cos().flatten(-2)], dim=-1)
 
 
@@ -45,15 +47,16 @@ class GNNSim(nn.Module):
         edge_index: torch.Tensor,      # [2, E]
         rest_len: torch.Tensor,        # [E]
         T: int = 25,
-        dt: float = 0.1,
+        dt: float = 0.05,
         hidden_dim: int = 256,
         node_dim: int = 32,
         latent_dim: int = 256,
-        gravity: float = 5.0,
+        d_state: int = 16,
+        gravity: float = 0.0,
         gravity_axis: int = 2,
-        damping: float = 0.1,
-        k_restore: float = 2.0,
-        max_accel: float = 10.0,
+        damping: float = 0.2,
+        k_restore: float = 0.0,
+        max_accel: float = 5.0,
         impulse_frac: float = 0.5,
         **kwargs,
     ):
@@ -65,9 +68,7 @@ class GNNSim(nn.Module):
         self.gravity      = gravity
         self.gravity_axis = gravity_axis
         self.hidden_dim   = hidden_dim
-        self.latent_dim   = latent_dim
         self.damping      = damping
-        self.k_restore    = k_restore
         self.max_accel    = max_accel
         self.impulse_frac = impulse_frac
 
@@ -79,76 +80,63 @@ class GNNSim(nn.Module):
         self.node_emb = nn.Embedding(M, node_dim)
         STATIC = node_dim
 
-        # ── Encoder ──────────────────────────────────────────────────────── #
         PE_DIM = 3 * (1 + 2 * PE_FREQS)          # 3*(1+12) = 39
+
+        # ── Encoder ──────────────────────────────────────────────────────── #
         self.state_mlp = _mlp(PE_DIM * 2, hidden_dim, hidden_dim, bias_last=False)
 
-        EDGE_IN = hidden_dim * 2 + STATIC * 2   # state_src + state_dst + static_src + static_dst
+        EDGE_IN = hidden_dim * 2 + STATIC * 2
         self.edge_mlp = _mlp(EDGE_IN, hidden_dim, hidden_dim, bias_last=False)
 
         self.enc_mlp  = _mlp(hidden_dim * 2, hidden_dim, hidden_dim, bias_last=False)
-        self.pool_mlp = _mlp(hidden_dim, hidden_dim, latent_dim, bias_last=False)
 
-        # ── SSM (GRU) ────────────────────────────────────────────────────── #
-        self.ssm = nn.GRUCell(latent_dim, latent_dim)
+        # ── Per-node Selective SSM ────────────────────────────────────────── #
+        self.ssm = SelectiveSSM(d_model=hidden_dim, d_state=d_state)
 
         # ── Decoder ──────────────────────────────────────────────────────── #
-        self.dec_mlp = _mlp(hidden_dim + latent_dim, hidden_dim, 3, bias_last=False)
+        self.dec_mlp = _mlp(hidden_dim, hidden_dim, 3, bias_last=False)
 
     @property
     def _static(self) -> torch.Tensor:
         idx = torch.arange(self.M, device=self.canonical.device)
-        return self.node_emb(idx)                                # [M, node_dim]
+        return self.node_emb(idx)
 
-    def _encode(self, x: torch.Tensor, v: torch.Tensor,
-                static: torch.Tensor,
-                src: torch.Tensor, dst: torch.Tensor):
-        """Returns (node_enc [M, H], z [1, L])."""
-        state   = self.state_mlp(torch.cat([_fourier_pe(x), _fourier_pe(v)], dim=-1))  # [M, H]
-        feat = torch.cat([
-            state[src], state[dst],
-            static[src], static[dst],
-        ], dim=-1)
-        msg = self.edge_mlp(feat)                                # [E, H]
-        agg = torch.zeros(self.M, self.hidden_dim, device=x.device)
+    def _encode(self, x, v, static, src, dst):
+        """Returns node_enc [M, H]."""
+        state    = self.state_mlp(
+            torch.cat([_fourier_pe(x), _fourier_pe(v)], dim=-1))   # [M, H]
+        feat     = torch.cat([state[src], state[dst],
+                               static[src], static[dst]], dim=-1)
+        msg      = self.edge_mlp(feat)                               # [E, H]
+        agg      = torch.zeros(self.M, self.hidden_dim, device=x.device)
         agg.scatter_add_(0, dst[:, None].expand_as(msg), msg)
-        deg = torch.zeros(self.M, device=x.device).scatter_add_(
+        deg      = torch.zeros(self.M, device=x.device).scatter_add_(
             0, dst, torch.ones(dst.shape[0], device=x.device))
-        agg = agg / deg.unsqueeze(1).clamp(min=1)                # mean aggregation
-        node_enc = self.enc_mlp(torch.cat([agg, state], dim=-1))  # [M, H]
-        z        = self.pool_mlp(node_enc.mean(dim=0, keepdim=True))  # [1, L]
-        return node_enc, z
-
-    def _decode(self, node_enc: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
-        """Returns a_gnn [M, 3]. h: [1, L]."""
-        h_broad = h.expand(self.M, -1)                          # [M, L]
-        return torch.tanh(
-            self.dec_mlp(torch.cat([node_enc, h_broad], dim=-1))
-        ) * self.max_accel
+        agg      = agg / deg.unsqueeze(1).clamp(min=1)
+        node_enc = self.enc_mlp(torch.cat([agg, state], dim=-1))
+        return node_enc
 
     def forward(self, f_ext: torch.Tensor, grad_steps: int = 5) -> torch.Tensor:
         """
-        f_ext [M, 3]: per-node impulse at t=0 (zero for unselected nodes).
-        grad_steps: ignored (full BPTT; kept for API compat).
+        f_ext [M, 3]: per-node impulse at t=0.
         Returns traj [T, M, 3].
         """
-        M   = self.M
-        x   = self.canonical.clone()
-        v   = torch.zeros_like(x)
+        x    = self.canonical.clone()
+        v    = torch.zeros_like(x)
 
         g_vec = torch.zeros(3, device=f_ext.device, dtype=f_ext.dtype)
         g_vec[self.gravity_axis] = -self.gravity
 
         static   = self._static
         src, dst = self.edge_index
-        h        = torch.zeros(1, self.latent_dim, device=x.device, dtype=x.dtype)
+        h        = self.ssm.init_state(self.M, x.device, x.dtype)  # [M, D, N]
 
         traj = [x.detach()]
 
         for t in range(self.T - 1):
-            node_enc, z = self._encode(x, v, static, src, dst)
-            h = self.ssm(z, h)                                   # GRU: [1, L]
-            a_gnn = self._decode(node_enc, h)
+            node_enc       = self._encode(x, v, static, src, dst)
+            y, h           = self.ssm(node_enc, h)                  # per-node SSM
+            a_gnn          = torch.tanh(self.dec_mlp(y)) * self.max_accel
 
             a = a_gnn + g_vec.unsqueeze(0)
             if t == 0:
@@ -158,30 +146,29 @@ class GNNSim(nn.Module):
             x = x + self.dt * v
             traj.append(x)
 
-        return torch.stack(traj, dim=0)                          # [T, M, 3]
+        return torch.stack(traj, dim=0)
 
     @torch.no_grad()
     def forward_debug(self, f_ext: torch.Tensor):
-        """f_ext [M, 3]. Returns (traj [T,M,3], accels [T,M,3])."""
-        M   = self.M
-        x   = self.canonical.clone()
-        v   = torch.zeros_like(x)
+        """Returns (traj [T,M,3], accels [T,M,3])."""
+        x    = self.canonical.clone()
+        v    = torch.zeros_like(x)
 
         g_vec = torch.zeros(3, device=f_ext.device, dtype=f_ext.dtype)
         g_vec[self.gravity_axis] = -self.gravity
 
         static   = self._static
         src, dst = self.edge_index
-        h        = torch.zeros(1, self.latent_dim, device=x.device, dtype=x.dtype)
+        h        = self.ssm.init_state(self.M, x.device, x.dtype)
 
         traj   = [x.clone()]
-        accels = [torch.zeros(M, 3, device=x.device)]
+        accels = [torch.zeros(self.M, 3, device=x.device)]
 
         for t in range(self.T - 1):
-            node_enc, z = self._encode(x, v, static, src, dst)
-            h = self.ssm(z, h)
-            a_gnn = self._decode(node_enc, h)
-            accels.append(a_gnn.clone())                         # GNN pure output
+            node_enc = self._encode(x, v, static, src, dst)
+            y, h     = self.ssm(node_enc, h)
+            a_gnn    = torch.tanh(self.dec_mlp(y)) * self.max_accel
+            accels.append(a_gnn.clone())
 
             a = a_gnn + g_vec.unsqueeze(0)
             if t == 0:

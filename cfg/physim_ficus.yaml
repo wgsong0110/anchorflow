@@ -6,7 +6,8 @@ sim:
   grad_steps:   5        # #frames sampled for grad pass (T_grad)
   dt:           0.05     # Euler timestep
   hidden_dim:   256      # GNN hidden / node-enc dimension
-  latent_dim:   256      # global latent dimension (GRU SSM I/O)
+  latent_dim:   256      # (unused, kept for compat)
+  d_state:      16       # per-node SSM state dimension N
   node_dim:     32       # per-anchor learnable embedding size
   k_nn:         16       # KNN degree (spatial, no object distinction)
   gravity:      0.0      # downward acceleration (−Z axis)
