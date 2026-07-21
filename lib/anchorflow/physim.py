@@ -71,19 +71,18 @@ class GNNSim(nn.Module):
         STATIC = node_dim
 
         # ── Encoder ──────────────────────────────────────────────────────── #
-        self.state_mlp = _mlp(6, hidden_dim, hidden_dim)
+        self.state_mlp = _mlp(6, hidden_dim, hidden_dim, bias_last=False)
 
         EDGE_IN = hidden_dim * 2 + 3 + STATIC * 2   # rel(3)+static_i+static_j
-        self.edge_mlp = _mlp(EDGE_IN, hidden_dim, hidden_dim)
+        self.edge_mlp = _mlp(EDGE_IN, hidden_dim, hidden_dim, bias_last=False)
 
         self.enc_mlp  = _mlp(hidden_dim * 2, hidden_dim, hidden_dim, bias_last=False)
-        self.pool_mlp = _mlp(hidden_dim, hidden_dim, latent_dim)
+        self.pool_mlp = _mlp(hidden_dim, hidden_dim, latent_dim, bias_last=False)
 
         # ── SSM (GRU) ────────────────────────────────────────────────────── #
         self.ssm = nn.GRUCell(latent_dim, latent_dim)
 
         # ── Decoder ──────────────────────────────────────────────────────── #
-        # bias_last=False: prevents systematic directional bias at init
         self.dec_mlp = _mlp(hidden_dim + latent_dim, hidden_dim, 3, bias_last=False)
 
     @property
