@@ -21,9 +21,9 @@ import torch.nn as nn
 
 def _mlp(in_d: int, hid: int, out_d: int, layers: int = 3,
          bias_last: bool = True) -> nn.Sequential:
-    seq = [nn.Linear(in_d, hid), nn.SiLU()]
+    seq = [nn.Linear(in_d, hid), nn.LayerNorm(hid), nn.SiLU()]
     for _ in range(layers - 2):
-        seq += [nn.Linear(hid, hid), nn.SiLU()]
+        seq += [nn.Linear(hid, hid), nn.LayerNorm(hid), nn.SiLU()]
     seq.append(nn.Linear(hid, out_d, bias=bias_last))
     return nn.Sequential(*seq)
 
