@@ -428,16 +428,20 @@ def main():
         lat_grad = svd.compute_mds_grad(
             frames_nograd, cond_cache=cond_cache[v_idx])          # [1, T, 4, h, w]
 
-        # ── pass 2: re-render with grad (checkpointed) → surrogate loss ─────── #
+        # ── pass 2: re-render sampled frames with grad → surrogate loss ──────── #
+        # Sample T_grad evenly-spaced frames to keep GPU memory manageable.
+        # GNN has full T-step gradient graph; we just inject signal at these frames.
+        t_sample = list(range(0, T, max(1, T // grad_steps)))[:grad_steps]
+        traj_sample = traj[t_sample]                               # [T_grad, M, 3]
         frames_grad = traj_to_frames(
-            traj, canon_xyz, canon_cov6, anchors,
+            traj_sample, canon_xyz, canon_cov6, anchors,
             g, bg, cam, pipe, use_checkpoint=True,
             _w_b=_w_b, _idx_b=_idx_b,
-            _arot_idx=_arot_idx, _arot_src=_arot_src)            # [T, 3, H, W]
-        x0     = svd.encode_frames(frames_grad, use_checkpoint=True)  # [1,T,4,h,w]
-        target = (x0 - lat_grad).detach()
+            _arot_idx=_arot_idx, _arot_src=_arot_src)            # [T_grad, 3, H, W]
+        x0     = svd.encode_frames(frames_grad, use_checkpoint=True)  # [1,T_grad,4,h,w]
+        target = (x0 - lat_grad[:, t_sample]).detach()
         loss   = 0.5 * F.mse_loss(x0.float(), target.float(),
-                                    reduction="sum") / T
+                                    reduction="sum") / len(t_sample)
 
         if not torch.isfinite(loss):
             print(f"[{step}] non-finite loss, skip", flush=True)
