@@ -104,6 +104,9 @@ class GNNSim(nn.Module):
         msg = self.edge_mlp(feat)                                # [E, H]
         agg = torch.zeros(self.M, self.hidden_dim, device=x.device)
         agg.scatter_add_(0, dst[:, None].expand_as(msg), msg)
+        deg = torch.zeros(self.M, device=x.device).scatter_add_(
+            0, dst, torch.ones(dst.shape[0], device=x.device))
+        agg = agg / deg.unsqueeze(1).clamp(min=1)                # mean aggregation
         node_enc = self.enc_mlp(torch.cat([agg, state], dim=-1))  # [M, H]
         z        = self.pool_mlp(node_enc.mean(dim=0, keepdim=True))  # [1, L]
         return node_enc, z
