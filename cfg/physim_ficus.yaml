@@ -4,7 +4,7 @@ white_bg: false
 sim:
   T:            25       # frames per simulation
   grad_steps:   5        # #frames sampled for grad pass (T_grad)
-  dt:           0.02     # Euler timestep (small to avoid drift without k_restore)
+  dt:           0.05     # Euler timestep
   hidden_dim:   256      # GNN hidden / node-enc dimension
   latent_dim:   256      # global latent dimension (GRU SSM I/O)
   node_dim:     32       # per-anchor learnable embedding size
@@ -12,7 +12,7 @@ sim:
   gravity:      0.0      # downward acceleration (−Z axis)
   gravity_axis: 2        # Z-up
   damping:      0.2      # velocity damping per step: v *= (1 - damping)
-  k_restore:    10.0     # spring constant pulling back to canonical position
+  k_restore:    0.0      # spring constant pulling back to canonical position
   max_accel:    5.0      # tanh soft-clamp on GNN acceleration output
   impulse_frac: 0.5      # fraction of nodes receiving f_ext impulse (random per step)
 
