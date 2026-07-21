@@ -18,6 +18,15 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+PE_FREQS = 6  # Fourier PE 주파수 수; 입력 D차원 → D*(1+2*PE_FREQS)차원
+
+
+def _fourier_pe(x: torch.Tensor) -> torch.Tensor:
+    """x [N, D] → [N, D*(1+2*PE_FREQS)] (Fourier positional encoding)."""
+    freqs = 2.0 ** torch.arange(PE_FREQS, device=x.device, dtype=x.dtype)
+    args  = x.unsqueeze(-1) * freqs          # [N, D, L]
+    return torch.cat([x, args.sin().flatten(-2), args.cos().flatten(-2)], dim=-1)
+
 
 def _mlp(in_d: int, hid: int, out_d: int, layers: int = 3,
          bias_last: bool = True) -> nn.Sequential:
@@ -71,7 +80,8 @@ class GNNSim(nn.Module):
         STATIC = node_dim
 
         # ── Encoder ──────────────────────────────────────────────────────── #
-        self.state_mlp = _mlp(6, hidden_dim, hidden_dim, bias_last=False)
+        PE_DIM = 3 * (1 + 2 * PE_FREQS)          # 3*(1+12) = 39
+        self.state_mlp = _mlp(PE_DIM * 2, hidden_dim, hidden_dim, bias_last=False)
 
         EDGE_IN = hidden_dim * 2 + STATIC * 2   # state_src + state_dst + static_src + static_dst
         self.edge_mlp = _mlp(EDGE_IN, hidden_dim, hidden_dim, bias_last=False)
@@ -94,7 +104,7 @@ class GNNSim(nn.Module):
                 static: torch.Tensor,
                 src: torch.Tensor, dst: torch.Tensor):
         """Returns (node_enc [M, H], z [1, L])."""
-        state   = self.state_mlp(torch.cat([x, v], dim=-1))        # [M, H]
+        state   = self.state_mlp(torch.cat([_fourier_pe(x), _fourier_pe(v)], dim=-1))  # [M, H]
         feat = torch.cat([
             state[src], state[dst],
             static[src], static[dst],

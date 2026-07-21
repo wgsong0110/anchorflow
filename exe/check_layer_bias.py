@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from anchorflow.physim import GNNSim
+from anchorflow.physim import GNNSim, _fourier_pe
 from anchorflow.graph import knn_graph
 
 
@@ -49,7 +49,7 @@ def run(graph_path, n_nodes, k_nn, hidden_dim, latent_dim, node_dim, dev):
         v = torch.zeros_like(x)
 
         # ── 1. state_mlp ────────────────────────────────────────── #
-        state = sim.state_mlp(torch.cat([x, v], dim=-1))          # [M, H]
+        state = sim.state_mlp(torch.cat([_fourier_pe(x), _fourier_pe(v)], dim=-1))  # [M, H]
 
         # ── 2. edge_mlp ─────────────────────────────────────────── #
         feat = torch.cat([state[src], state[dst],
