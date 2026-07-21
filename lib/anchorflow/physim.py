@@ -35,11 +35,13 @@ class GNNSim(nn.Module):
         edge_index: torch.Tensor,      # [2, E]  KNN graph (both directions)
         rest_len: torch.Tensor,        # [E]     canonical edge lengths
         T: int = 25,
-        dt: float = 0.04,
-        hidden_dim: int = 128,
-        node_dim: int = 16,            # per-anchor learnable embedding size
+        dt: float = 0.1,
+        hidden_dim: int = 256,
+        node_dim: int = 32,            # per-anchor learnable embedding size
         gravity: float = 5.0,
         gravity_axis: int = 2,
+        damping: float = 0.1,          # velocity damping per step: v *= (1 - damping)
+        k_restore: float = 2.0,        # spring constant pulling back to canonical
     ):
         super().__init__()
         M = canonical.shape[0]
@@ -49,6 +51,8 @@ class GNNSim(nn.Module):
         self.gravity      = gravity
         self.gravity_axis = gravity_axis
         self.hidden_dim   = hidden_dim
+        self.damping      = damping
+        self.k_restore    = k_restore
 
         self.register_buffer("canonical",     canonical.clone().float())
         self.register_buffer("anchor_colors", anchor_colors.float())
@@ -120,7 +124,8 @@ class GNNSim(nn.Module):
 
             # ── acceleration → Euler integration ─────────────────────────── #
             a = self.node_mlp(torch.cat([agg, state, f_node], dim=-1))  # [M, 3]
-            v = v + self.dt * a
+            a = a - self.k_restore * (x - self.canonical)               # restoring force
+            v = v * (1.0 - self.damping) + self.dt * a                  # damped integration
             x = x + self.dt * v
             traj.append(x)
 
@@ -164,9 +169,10 @@ class GNNSim(nn.Module):
                 f_node = f_node + f_ext.unsqueeze(0)
 
             a = self.node_mlp(torch.cat([agg, state, f_node], dim=-1))
+            a = a - self.k_restore * (x - self.canonical)
             accels.append(a.clone())
 
-            v = v + self.dt * a
+            v = v * (1.0 - self.damping) + self.dt * a
             x = x + self.dt * v
             traj.append(x.clone())
 

@@ -358,10 +358,12 @@ def main():
         rest_len      = rest_len,
         T             = T,
         dt            = float(cfg.sim.dt),
-        hidden_dim    = int(cfg.sim.get("hidden_dim", 128)),
-        node_dim      = int(cfg.sim.get("node_dim", 16)),
+        hidden_dim    = int(cfg.sim.get("hidden_dim", 256)),
+        node_dim      = int(cfg.sim.get("node_dim", 32)),
         gravity       = float(cfg.sim.get("gravity", 5.0)),
         gravity_axis  = int(cfg.sim.get("gravity_axis", 2)),
+        damping       = float(cfg.sim.get("damping", 0.1)),
+        k_restore     = float(cfg.sim.get("k_restore", 2.0)),
     ).to(dev)
     n_params = sum(p.numel() for p in sim.parameters())
     print(f"[train] GNNSim params={n_params:,}  T={T}", flush=True)
