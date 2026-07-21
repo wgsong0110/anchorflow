@@ -1,17 +1,17 @@
-"""GNN-based differentiable physics simulator (GNNSim).
+"""GNN physics simulator: GNN Encoder → GRU SSM → GNN Decoder.
 
-Each anchor has:
-  - static features  : canonical position x0, SH0 colour, per-anchor learnable embedding
-  - dynamic state    : current position x, velocity v → embedded by state_mlp
+Architecture per step t:
+  Encoder : [x,v] → state_mlp → edge_mlp → scatter_add → enc_mlp → node_enc
+            mean(node_enc) → pool_mlp → z^t   (global latent)
+  SSM     : GRUCell(z^t, h^{t-1}) → h^t       (temporal context)
+  Decoder : dec_mlp([node_enc, h^t broadcast]) → tanh * max_accel → a_gnn
+  Physics : a = a_gnn + gravity + impulse(t=0, random subset)
+                       − k_restore*(x − canonical)
+            v = v*(1−damp) + dt*a;   x = x + dt*v
 
-Per step:
-  1. state_mlp([x, v]) → state embedding [hidden]
-  2. edge_mlp([state_i, state_j, static_i, static_j, rest_len]) → message [hidden]
-  3. scatter_add → per-node aggregation
-  4. node_mlp([agg, state, f_node]) → acceleration [3]
-  5. Euler: v += dt*a,  x += dt*v
-
-Graph: single spatial KNN (k_nn), no object-level distinction.
+GRU is used as the SSM: same gating mechanism as Mamba but implemented in
+PyTorch core (no CUDA extension needed). The key architectural insight is the
+GNN encoder → global latent → temporal SSM → GNN decoder pipeline.
 """
 from __future__ import annotations
 
@@ -30,20 +30,22 @@ def _mlp(in_d: int, hid: int, out_d: int, layers: int = 3) -> nn.Sequential:
 class GNNSim(nn.Module):
     def __init__(
         self,
-        canonical: torch.Tensor,       # [M, 3]  anchor rest positions
-        anchor_colors: torch.Tensor,   # [M, 3]  SH0 albedo (0-1)
-        edge_index: torch.Tensor,      # [2, E]  KNN graph (both directions)
-        rest_len: torch.Tensor,        # [E]     canonical edge lengths
+        canonical: torch.Tensor,       # [M, 3]
+        anchor_colors: torch.Tensor,   # [M, 3]
+        edge_index: torch.Tensor,      # [2, E]
+        rest_len: torch.Tensor,        # [E]
         T: int = 25,
         dt: float = 0.1,
         hidden_dim: int = 256,
-        node_dim: int = 32,            # per-anchor learnable embedding size
+        node_dim: int = 32,
+        latent_dim: int = 256,
         gravity: float = 5.0,
         gravity_axis: int = 2,
-        damping: float = 0.1,          # velocity damping per step: v *= (1 - damping)
-        k_restore: float = 2.0,        # spring constant pulling back to canonical
-        max_accel: float = 10.0,       # tanh soft-clamp on GNN acceleration output
-        impulse_frac: float = 0.5,     # fraction of nodes receiving f_ext impulse
+        damping: float = 0.1,
+        k_restore: float = 2.0,
+        max_accel: float = 10.0,
+        impulse_frac: float = 0.5,
+        **kwargs,
     ):
         super().__init__()
         M = canonical.shape[0]
@@ -53,6 +55,7 @@ class GNNSim(nn.Module):
         self.gravity      = gravity
         self.gravity_axis = gravity_axis
         self.hidden_dim   = hidden_dim
+        self.latent_dim   = latent_dim
         self.damping      = damping
         self.k_restore    = k_restore
         self.max_accel    = max_accel
@@ -63,33 +66,62 @@ class GNNSim(nn.Module):
         self.register_buffer("edge_index",    edge_index)
         self.register_buffer("rest_len",      rest_len.float())
 
-        # per-anchor learnable embedding → encodes material/stiffness/mass
         self.node_emb = nn.Embedding(M, node_dim)
+        STATIC = node_dim
 
-        STATIC   = node_dim                   # per-anchor learnable emb only
-
-        # [x, v] (6) → hidden state embedding
+        # ── Encoder ──────────────────────────────────────────────────────── #
         self.state_mlp = _mlp(6, hidden_dim, hidden_dim)
 
-        # [state_i, state_j, rel_disp(3), dist(1), stretch(1), static_i, static_j, rest_len]
         EDGE_IN = hidden_dim * 2 + 5 + STATIC * 2 + 1
         self.edge_mlp = _mlp(EDGE_IN, hidden_dim, hidden_dim)
 
-        # [agg, state] → internal acceleration [3]  (external forces added outside)
-        NODE_IN = hidden_dim + hidden_dim
-        self.node_mlp = _mlp(NODE_IN, hidden_dim, 3)
+        self.enc_mlp  = _mlp(hidden_dim * 2, hidden_dim, hidden_dim)
+        self.pool_mlp = _mlp(hidden_dim, hidden_dim, latent_dim)
+
+        # ── SSM (GRU) ────────────────────────────────────────────────────── #
+        self.ssm = nn.GRUCell(latent_dim, latent_dim)
+
+        # ── Decoder ──────────────────────────────────────────────────────── #
+        self.dec_mlp = _mlp(hidden_dim + latent_dim, hidden_dim, 3)
 
     @property
     def _static(self) -> torch.Tensor:
         idx = torch.arange(self.M, device=self.canonical.device)
-        return self.node_emb(idx)                          # [M, node_dim]
+        return self.node_emb(idx)                                # [M, node_dim]
+
+    def _encode(self, x: torch.Tensor, v: torch.Tensor,
+                static: torch.Tensor,
+                src: torch.Tensor, dst: torch.Tensor):
+        """Returns (node_enc [M, H], z [1, L])."""
+        state   = self.state_mlp(torch.cat([x, v], dim=-1))     # [M, H]
+        rel     = x[src] - x[dst]                               # [E, 3]
+        dist    = rel.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        stretch = dist - self.rest_len[:, None]
+        feat = torch.cat([
+            state[src], state[dst],
+            rel, dist, stretch,
+            static[src], static[dst],
+            self.rest_len[:, None],
+        ], dim=-1)
+        msg = self.edge_mlp(feat)                                # [E, H]
+        agg = torch.zeros(self.M, self.hidden_dim, device=x.device)
+        agg.scatter_add_(0, dst[:, None].expand_as(msg), msg)
+        node_enc = self.enc_mlp(torch.cat([agg, state], dim=-1))  # [M, H]
+        z        = self.pool_mlp(node_enc.mean(dim=0, keepdim=True))  # [1, L]
+        return node_enc, z
+
+    def _decode(self, node_enc: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
+        """Returns a_gnn [M, 3]. h: [1, L]."""
+        h_broad = h.expand(self.M, -1)                          # [M, L]
+        return torch.tanh(
+            self.dec_mlp(torch.cat([node_enc, h_broad], dim=-1))
+        ) * self.max_accel
 
     def forward(self, f_ext: torch.Tensor, grad_steps: int = 5) -> torch.Tensor:
         """
-        f_ext      [3] : impulse at t=0 (wind gust direction × magnitude).
-        grad_steps     : chunked BPTT — detach x,v every grad_steps steps.
-
-        Returns trajectory [T, M, 3];  traj[0] == canonical (no grad).
+        f_ext [3]: impulse at t=0.
+        grad_steps: ignored (full BPTT; kept for API compat).
+        Returns traj [T, M, 3].
         """
         M   = self.M
         x   = self.canonical.clone()
@@ -98,61 +130,36 @@ class GNNSim(nn.Module):
         g_vec = torch.zeros(3, device=f_ext.device, dtype=f_ext.dtype)
         g_vec[self.gravity_axis] = -self.gravity
 
-        static = self._static                              # [M, 22]  fixed per forward
+        static   = self._static
         src, dst = self.edge_index
+        h        = torch.zeros(1, self.latent_dim, device=x.device, dtype=x.dtype)
+
+        n_imp    = max(1, int(M * self.impulse_frac))
+        imp_idx  = torch.randperm(M, device=f_ext.device)[:n_imp]
+        imp_mask = torch.zeros(M, 1, device=f_ext.device)
+        imp_mask[imp_idx] = 1.0
 
         traj = [x.detach()]
 
-        # random subset of nodes that receive the impulse
-        n_imp = max(1, int(self.M * self.impulse_frac))
-        imp_idx = torch.randperm(self.M, device=f_ext.device)[:n_imp]
-        imp_mask = torch.zeros(self.M, 1, device=f_ext.device)
-        imp_mask[imp_idx] = 1.0
-
         for t in range(self.T - 1):
-            if t > 0 and t % grad_steps == 0:
-                x = x.detach()
-                v = v.detach()
+            node_enc, z = self._encode(x, v, static, src, dst)
+            h = self.ssm(z, h)                                   # GRU: [1, L]
+            a_gnn = self._decode(node_enc, h)
 
-            # ── state embedding ───────────────────────────────────────────── #
-            state = self.state_mlp(torch.cat([x, v], dim=-1))  # [M, hidden]
-
-            # ── edge messages ─────────────────────────────────────────────── #
-            rel     = x[src] - x[dst]                            # [E, 3]
-            dist    = rel.norm(dim=-1, keepdim=True).clamp(min=1e-8)  # [E, 1]
-            stretch = dist - self.rest_len[:, None]              # [E, 1]
-            feat = torch.cat([
-                state[src], state[dst],
-                rel, dist, stretch,
-                static[src], static[dst],
-                self.rest_len[:, None],
-            ], dim=-1)                                     # [E, EDGE_IN]
-            msg  = self.edge_mlp(feat)                    # [E, hidden]
-            agg  = torch.zeros(M, self.hidden_dim, device=x.device)
-            agg.scatter_add_(0, dst[:, None].expand_as(msg), msg)
-
-            # ── acceleration → Euler integration ─────────────────────────── #
-            a = torch.tanh(self.node_mlp(torch.cat([agg, state], dim=-1))) * self.max_accel
-            # external forces added outside GNN: gravity + random-subset impulse at t=0
             f_ext_t = g_vec.unsqueeze(0).expand(M, -1).clone()
             if t == 0:
                 f_ext_t = f_ext_t + f_ext.unsqueeze(0) * imp_mask
-            a = a + f_ext_t
-            a = a - self.k_restore * (x - self.canonical)               # restoring force
-            v = v * (1.0 - self.damping) + self.dt * a                  # damped integration
+            a = a_gnn + f_ext_t - self.k_restore * (x - self.canonical)
+
+            v = v * (1.0 - self.damping) + self.dt * a
             x = x + self.dt * v
             traj.append(x)
 
-        return torch.stack(traj, dim=0)                   # [T, M, 3]
+        return torch.stack(traj, dim=0)                          # [T, M, 3]
 
     @torch.no_grad()
     def forward_debug(self, f_ext: torch.Tensor):
-        """Same as forward but also returns per-frame accelerations.
-
-        Returns:
-            traj   [T, M, 3]
-            accels [T, M, 3]  — accel at frame 0 is zeros (canonical, no step)
-        """
+        """Returns (traj [T,M,3], accels [T,M,3])."""
         M   = self.M
         x   = self.canonical.clone()
         v   = torch.zeros_like(x)
@@ -160,43 +167,31 @@ class GNNSim(nn.Module):
         g_vec = torch.zeros(3, device=f_ext.device, dtype=f_ext.dtype)
         g_vec[self.gravity_axis] = -self.gravity
 
-        static = self._static
+        static   = self._static
         src, dst = self.edge_index
+        h        = torch.zeros(1, self.latent_dim, device=x.device, dtype=x.dtype)
 
-        traj   = [x.clone()]
-        accels = [torch.zeros(M, 3, device=f_ext.device)]  # frame 0 placeholder
-
-        n_imp = max(1, int(self.M * self.impulse_frac))
-        imp_idx = torch.randperm(self.M, device=f_ext.device)[:n_imp]
-        imp_mask = torch.zeros(self.M, 1, device=f_ext.device)
+        n_imp    = max(1, int(M * self.impulse_frac))
+        imp_idx  = torch.randperm(M, device=f_ext.device)[:n_imp]
+        imp_mask = torch.zeros(M, 1, device=f_ext.device)
         imp_mask[imp_idx] = 1.0
 
+        traj   = [x.clone()]
+        accels = [torch.zeros(M, 3, device=x.device)]
+
         for t in range(self.T - 1):
-            state = self.state_mlp(torch.cat([x, v], dim=-1))
+            node_enc, z = self._encode(x, v, static, src, dst)
+            h = self.ssm(z, h)
+            a_gnn = self._decode(node_enc, h)
+            accels.append(a_gnn.clone())                         # GNN pure output
 
-            rel     = x[src] - x[dst]
-            dist    = rel.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-            stretch = dist - self.rest_len[:, None]
-            feat = torch.cat([
-                state[src], state[dst],
-                rel, dist, stretch,
-                static[src], static[dst],
-                self.rest_len[:, None],
-            ], dim=-1)
-            msg = self.edge_mlp(feat)
-            agg = torch.zeros(M, self.hidden_dim, device=x.device)
-            agg.scatter_add_(0, dst[:, None].expand_as(msg), msg)
-
-            a = self.node_mlp(torch.cat([agg, state], dim=-1))
-            accels.append(a.clone())           # GNN pure output (before ext force + restoring)
             f_ext_t = g_vec.unsqueeze(0).expand(M, -1).clone()
             if t == 0:
                 f_ext_t = f_ext_t + f_ext.unsqueeze(0) * imp_mask
-            a = a + f_ext_t
-            a = a - self.k_restore * (x - self.canonical)
+            a = a_gnn + f_ext_t - self.k_restore * (x - self.canonical)
 
             v = v * (1.0 - self.damping) + self.dt * a
             x = x + self.dt * v
             traj.append(x.clone())
 
-        return torch.stack(traj, dim=0), torch.stack(accels, dim=0)  # [T,M,3] each
+        return torch.stack(traj, dim=0), torch.stack(accels, dim=0)

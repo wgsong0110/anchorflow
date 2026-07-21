@@ -3,9 +3,10 @@ white_bg: false
 
 sim:
   T:            25       # frames per simulation
-  grad_steps:   5        # truncated BPTT chunk size
+  grad_steps:   5        # #frames sampled for grad pass (T_grad)
   dt:           0.1      # Euler timestep
-  hidden_dim:   256      # GNN hidden dimension
+  hidden_dim:   256      # GNN hidden / node-enc dimension
+  latent_dim:   256      # global latent dimension (GRU SSM I/O)
   node_dim:     32       # per-anchor learnable embedding size
   k_nn:         16       # KNN degree (spatial, no object distinction)
   gravity:      5.0      # downward acceleration (−Z axis)
