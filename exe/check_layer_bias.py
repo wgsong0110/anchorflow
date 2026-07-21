@@ -53,8 +53,7 @@ def run(graph_path, n_nodes, k_nn, hidden_dim, latent_dim, node_dim, dev):
 
         # ── 2. edge_mlp ─────────────────────────────────────────── #
         rel  = x[src] - x[dst]
-        feat = torch.cat([state[src], state[dst], rel,
-                          static[src], static[dst]], dim=-1)
+        feat = torch.cat([state[src], state[dst], rel], dim=-1)
         msg  = sim.edge_mlp(feat)                           # [E, H]
 
         # ── 3. agg (mean pool) ──────────────────────────────────── #
