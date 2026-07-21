@@ -360,6 +360,7 @@ def main():
         damping       = float(cfg.sim.get("damping", 0.1)),
         k_restore     = float(cfg.sim.get("k_restore", 2.0)),
         max_accel     = float(cfg.sim.get("max_accel", 10.0)),
+        impulse_frac  = float(cfg.sim.get("impulse_frac", 0.5)),
     ).to(dev)
     n_params = sum(p.numel() for p in sim.parameters())
     print(f"[train] GNNSim params={n_params:,}  T={T}", flush=True)

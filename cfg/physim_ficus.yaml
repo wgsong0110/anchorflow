@@ -13,6 +13,7 @@ sim:
   damping:      0.2      # velocity damping per step: v *= (1 - damping)
   k_restore:    10.0     # spring constant pulling back to canonical position
   max_accel:    5.0      # tanh soft-clamp on GNN acceleration output
+  impulse_frac: 0.5      # fraction of nodes receiving f_ext impulse (random per step)
 
 train:
   iters:      10000

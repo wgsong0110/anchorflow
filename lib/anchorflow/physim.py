@@ -43,6 +43,7 @@ class GNNSim(nn.Module):
         damping: float = 0.1,          # velocity damping per step: v *= (1 - damping)
         k_restore: float = 2.0,        # spring constant pulling back to canonical
         max_accel: float = 10.0,       # tanh soft-clamp on GNN acceleration output
+        impulse_frac: float = 0.5,     # fraction of nodes receiving f_ext impulse
     ):
         super().__init__()
         M = canonical.shape[0]
@@ -55,6 +56,7 @@ class GNNSim(nn.Module):
         self.damping      = damping
         self.k_restore    = k_restore
         self.max_accel    = max_accel
+        self.impulse_frac = impulse_frac
 
         self.register_buffer("canonical",     canonical.clone().float())
         self.register_buffer("anchor_colors", anchor_colors.float())
@@ -101,6 +103,12 @@ class GNNSim(nn.Module):
 
         traj = [x.detach()]
 
+        # random subset of nodes that receive the impulse
+        n_imp = max(1, int(self.M * self.impulse_frac))
+        imp_idx = torch.randperm(self.M, device=f_ext.device)[:n_imp]
+        imp_mask = torch.zeros(self.M, 1, device=f_ext.device)
+        imp_mask[imp_idx] = 1.0
+
         for t in range(self.T - 1):
             if t > 0 and t % grad_steps == 0:
                 x = x.detach()
@@ -125,10 +133,10 @@ class GNNSim(nn.Module):
 
             # ── acceleration → Euler integration ─────────────────────────── #
             a = torch.tanh(self.node_mlp(torch.cat([agg, state], dim=-1))) * self.max_accel
-            # external forces added outside GNN: gravity + impulse at t=0
-            f_ext_t = g_vec.unsqueeze(0).expand(M, -1)
+            # external forces added outside GNN: gravity + random-subset impulse at t=0
+            f_ext_t = g_vec.unsqueeze(0).expand(M, -1).clone()
             if t == 0:
-                f_ext_t = f_ext_t + f_ext.unsqueeze(0)
+                f_ext_t = f_ext_t + f_ext.unsqueeze(0) * imp_mask
             a = a + f_ext_t
             a = a - self.k_restore * (x - self.canonical)               # restoring force
             v = v * (1.0 - self.damping) + self.dt * a                  # damped integration
@@ -158,6 +166,11 @@ class GNNSim(nn.Module):
         traj   = [x.clone()]
         accels = [torch.zeros(M, 3, device=f_ext.device)]  # frame 0 placeholder
 
+        n_imp = max(1, int(self.M * self.impulse_frac))
+        imp_idx = torch.randperm(self.M, device=f_ext.device)[:n_imp]
+        imp_mask = torch.zeros(self.M, 1, device=f_ext.device)
+        imp_mask[imp_idx] = 1.0
+
         for t in range(self.T - 1):
             state = self.state_mlp(torch.cat([x, v], dim=-1))
 
@@ -176,9 +189,9 @@ class GNNSim(nn.Module):
 
             a = self.node_mlp(torch.cat([agg, state], dim=-1))
             accels.append(a.clone())           # GNN pure output (before ext force + restoring)
-            f_ext_t = g_vec.unsqueeze(0).expand(M, -1)
+            f_ext_t = g_vec.unsqueeze(0).expand(M, -1).clone()
             if t == 0:
-                f_ext_t = f_ext_t + f_ext.unsqueeze(0)
+                f_ext_t = f_ext_t + f_ext.unsqueeze(0) * imp_mask
             a = a + f_ext_t
             a = a - self.k_restore * (x - self.canonical)
 
