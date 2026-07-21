@@ -4,7 +4,7 @@ white_bg: false
 sim:
   T:            25       # frames per simulation
   grad_steps:   5        # truncated BPTT chunk size
-  dt:           0.04     # Euler timestep
+  dt:           0.1      # Euler timestep
   hidden_dim:   128      # GNN hidden dimension
   node_dim:     16       # per-anchor learnable embedding size
   k_nn:         16       # KNN degree (spatial, no object distinction)
