@@ -151,7 +151,11 @@ class GNNSim(nn.Module):
 
     @torch.no_grad()
     def forward_debug(self, f_ext: torch.Tensor):
-        """Returns (traj [T,M,3], accels [T,M,3])."""
+        """Returns (traj [T,M,3], accels_zc [T,M,3], accels_raw [T,M,3]).
+
+        accels_zc  — after zero-centering (what the physics actually uses)
+        accels_raw — before zero-centering (raw decoder output)
+        """
         x    = self.canonical.clone()
         v    = torch.zeros_like(x)
 
@@ -162,15 +166,17 @@ class GNNSim(nn.Module):
         src, dst = self.edge_index
         h        = self.ssm.init_state(self.M, x.device, x.dtype)
 
-        traj   = [x.clone()]
-        accels = [torch.zeros(self.M, 3, device=x.device)]
+        traj       = [x.clone()]
+        accels_zc  = [torch.zeros(self.M, 3, device=x.device)]
+        accels_raw = [torch.zeros(self.M, 3, device=x.device)]
 
         for t in range(self.T - 1):
-            node_enc = self._encode(x, v, static, src, dst)
-            y, h     = self.ssm(node_enc, h)
-            a_gnn    = torch.tanh(self.dec_mlp(y)) * self.max_accel
-            a_gnn    = a_gnn - a_gnn.mean(dim=0, keepdim=True)
-            accels.append(a_gnn.clone())
+            node_enc  = self._encode(x, v, static, src, dst)
+            y, h      = self.ssm(node_enc, h)
+            a_raw     = torch.tanh(self.dec_mlp(y)) * self.max_accel
+            a_gnn     = a_raw - a_raw.mean(dim=0, keepdim=True)
+            accels_raw.append(a_raw.clone())
+            accels_zc.append(a_gnn.clone())
 
             a = a_gnn + g_vec.unsqueeze(0)
             if t == 0:
@@ -180,4 +186,6 @@ class GNNSim(nn.Module):
             x = x + self.dt * v
             traj.append(x.clone())
 
-        return torch.stack(traj, dim=0), torch.stack(accels, dim=0)
+        return (torch.stack(traj, dim=0),
+                torch.stack(accels_zc, dim=0),
+                torch.stack(accels_raw, dim=0))

@@ -160,42 +160,19 @@ def _project(xyz: torch.Tensor, cam) -> tuple:
     return px.cpu().float(), py.cpu().float(), valid.cpu()
 
 
-def _overlay_anchors(frame_t: torch.Tensor, anchor_xyz: torch.Tensor,
-                     accel: torch.Tensor, cam, arrow_px: float = 15.0
-                     ) -> torch.Tensor:
-    """Overlay anchor dots (yellow) and accel direction arrows (orange).
-
-    Arrow length is fixed at arrow_px pixels regardless of accel magnitude,
-    so the direction is always visible. Zero-accel anchors get no arrow.
-
-    frame_t     [3, H, W] float [0,1]
-    anchor_xyz  [M, 3]  current anchor positions
-    accel       [M, 3]  per-anchor acceleration
-    Returns     [3, H, W] float [0,1]
-    """
-    img_np = (frame_t.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255
-              ).astype(np.uint8)
-    img  = Image.fromarray(img_np)
-    draw = ImageDraw.Draw(img)
-
-    # project anchor positions to screen
-    px, py, valid = _project(anchor_xyz.float(), cam)
-    px_np = px.numpy(); py_np = py.numpy(); v_np = valid.numpy()
-
-    # project accel tip (small world offset to get screen direction)
-    a_np  = accel.cpu().float().numpy()          # [M, 3]
-    a_mag = np.linalg.norm(a_np, axis=1, keepdims=True)  # [M, 1]
-    a_dir = np.where(a_mag > 1e-6, a_np / (a_mag + 1e-8), 0.0)  # [M, 3]
+def _draw_arrows(draw, anchor_xyz, accel, cam, px_np, py_np, v_np,
+                 color, arrow_px=15.0):
+    """Draw fixed-length arrows for each anchor."""
+    a_np  = accel.cpu().float().numpy()
+    a_mag = np.linalg.norm(a_np, axis=1, keepdims=True)
+    a_dir = np.where(a_mag > 1e-6, a_np / (a_mag + 1e-8), 0.0)
     tip_world = anchor_xyz.float() + torch.from_numpy(a_dir).to(anchor_xyz.device) * 0.1
     tpx, tpy, tv = _project(tip_world, cam)
     tpx_np = tpx.numpy(); tpy_np = tpy.numpy()
-
     for i in range(len(px_np)):
         if not v_np[i]:
             continue
         x0, y0 = float(px_np[i]), float(py_np[i])
-
-        # accel arrow: fixed arrow_px length in screen space
         if a_mag[i, 0] > 1e-6 and tv[i]:
             dx = tpx_np[i] - px_np[i]
             dy = tpy_np[i] - py_np[i]
@@ -204,9 +181,36 @@ def _overlay_anchors(frame_t: torch.Tensor, anchor_xyz: torch.Tensor,
                 scale = arrow_px / d
                 x1 = x0 + dx * scale
                 y1 = y0 + dy * scale
-                draw.line([(x0, y0), (x1, y1)], fill=(255, 120, 0), width=1)
+                draw.line([(x0, y0), (x1, y1)], fill=color, width=1)
 
-        # anchor dot
+
+def _overlay_anchors(frame_t: torch.Tensor, anchor_xyz: torch.Tensor,
+                     accel_zc: torch.Tensor, cam,
+                     accel_raw: torch.Tensor | None = None,
+                     arrow_px: float = 15.0) -> torch.Tensor:
+    """Overlay anchor dots and accel arrows.
+
+    accel_zc  (orange) — zero-centered acceleration
+    accel_raw (cyan)   — raw decoder output before zero-centering
+    """
+    img_np = (frame_t.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255
+              ).astype(np.uint8)
+    img  = Image.fromarray(img_np)
+    draw = ImageDraw.Draw(img)
+
+    px, py, valid = _project(anchor_xyz.float(), cam)
+    px_np = px.numpy(); py_np = py.numpy(); v_np = valid.numpy()
+
+    if accel_raw is not None:
+        _draw_arrows(draw, anchor_xyz, accel_raw, cam, px_np, py_np, v_np,
+                     color=(0, 220, 255), arrow_px=arrow_px)   # cyan = raw
+    _draw_arrows(draw, anchor_xyz, accel_zc, cam, px_np, py_np, v_np,
+                 color=(255, 120, 0), arrow_px=arrow_px)        # orange = zc
+
+    for i in range(len(px_np)):
+        if not v_np[i]:
+            continue
+        x0, y0 = float(px_np[i]), float(py_np[i])
         r = 2
         draw.ellipse([(x0 - r, y0 - r), (x0 + r, y0 + r)], fill=(255, 255, 0))
 
@@ -251,13 +255,14 @@ def _save_rollout(step, sim, anchors, T, extent, dev,
     cam = rollout_cams[0]
     M_sim = sim.M if hasattr(sim, "M") else sim._orig_mod.M
     f_ext = torch.zeros(M_sim, 3, device=dev)
-    traj, accels = sim.forward_debug(f_ext)               # [T,M,3] each
+    traj, accels_zc, accels_raw = sim.forward_debug(f_ext)  # [T,M,3] each
     frames = traj_to_frames(traj, canon_xyz, canon_cov6, anchors,
                               g, bg, cam, pipe,
                               use_checkpoint=False,
                               _w_b=_w_b, _idx_b=_idx_b,
                               _arot_idx=_arot_idx, _arot_src=_arot_src)
-    overlaid = [_overlay_anchors(frames[t], traj[t], accels[t], cam)
+    overlaid = [_overlay_anchors(frames[t], traj[t], accels_zc[t], cam,
+                                  accel_raw=accels_raw[t])
                 for t in range(len(frames))]
     all_frames.extend(overlaid)
     path = os.path.join(out, f"rollout_{step:06d}.mp4")
