@@ -73,7 +73,7 @@ class GNNSim(nn.Module):
         # ── Encoder ──────────────────────────────────────────────────────── #
         self.state_mlp = _mlp(6, hidden_dim, hidden_dim)
 
-        EDGE_IN = hidden_dim * 2 + 5 + STATIC * 2 + 1
+        EDGE_IN = hidden_dim * 2 + 4 + STATIC * 2   # rel(3)+dist(1)+static_i+static_j
         self.edge_mlp = _mlp(EDGE_IN, hidden_dim, hidden_dim)
 
         self.enc_mlp  = _mlp(hidden_dim * 2, hidden_dim, hidden_dim)
@@ -98,12 +98,10 @@ class GNNSim(nn.Module):
         state   = self.state_mlp(torch.cat([x, v], dim=-1))     # [M, H]
         rel     = x[src] - x[dst]                               # [E, 3]
         dist    = rel.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-        stretch = dist - self.rest_len[:, None]
         feat = torch.cat([
             state[src], state[dst],
-            rel, dist, stretch,
+            rel, dist,
             static[src], static[dst],
-            self.rest_len[:, None],
         ], dim=-1)
         msg = self.edge_mlp(feat)                                # [E, H]
         agg = torch.zeros(self.M, self.hidden_dim, device=x.device)
