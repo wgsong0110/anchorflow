@@ -415,13 +415,14 @@ def main():
         v_idx = step % V
         cam   = train_cams[v_idx]
 
+        import time as _time
         _profile = (step < 3)   # print timing for first 3 steps
         def _t(label, t0):
             if not _profile: return t0
             torch.cuda.synchronize()
-            print(f"  [time] {label:40s} {(time.time()-t0)*1000:6.0f}ms", flush=True)
-            return time.time()
-        import time as _time; _t0 = _time.time()
+            print(f"  [time] {label:40s} {(_time.time()-t0)*1000:6.0f}ms", flush=True)
+            return _time.time()
+        _t0 = _time.time()
 
         f_ext = torch.zeros(3, device=dev)
         # Full BPTT: grad_steps=T means detach never triggers
