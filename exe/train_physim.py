@@ -2,9 +2,8 @@
 """GNN physics simulator training with SVD MDS supervision.
 
 Pipeline:
-  1. SAM2 multi-view segmentation → per-anchor object IDs
-  2. Build hierarchical graph (intra + inter object edges)
-  3. Train GNNSim: impulse at t=0 + gravity → T-frame trajectory → MDS loss
+  1. Build spatial KNN graph over anchors (no object segmentation)
+  2. Train GNNSim: impulse at t=0 + gravity → T-frame trajectory → MDS loss
 
 Usage:
     python exe/train_physim.py \\
@@ -36,8 +35,7 @@ from anchorflow.anchors import AnchorSet
 from anchorflow import warp as W
 from anchorflow.warp import anchor_rotations_cache
 from anchorflow.physim import GNNSim
-from anchorflow.graph import build_hierarchical_graph
-from anchorflow.segment import segment_gaussians, assign_anchor_objects
+from anchorflow.graph import knn_graph
 from anchorflow.sds import SVDGuidance
 from anchorflow.checkpoint import CheckpointManager
 
@@ -229,7 +227,7 @@ def main():
     pipe = Pipe()
     print(f"[train] gaussians={len(canon_xyz)}", flush=True)
 
-    # SH0 albedo colour for segmentation
+    # SH0 albedo colour for node features
     gauss_colors = g.get_features[:, 0, :].detach()          # [N, 3] SH0 DC
     gauss_colors = (gauss_colors * 0.2820948 + 0.5).clamp(0, 1)  # approx RGB
 
@@ -252,56 +250,19 @@ def main():
     rollout_cams = zup_cameras(8, radius=2.0, z=z_center + 0.3,
                                target=(0, 0, z_center), fov_deg=50, res=res)
 
-    # ── segmentation ──────────────────────────────────────────────────────── #
-    seg_path = os.path.join(args.out, "anchor_obj.pt")
-    if os.path.exists(seg_path):
-        anchor_obj = torch.load(seg_path, map_location=dev)
-        print(f"[train] loaded segmentation from {seg_path}", flush=True)
-    else:
-        print("[train] running segmentation ...", flush=True)
-        # Render canonical views for SAM2
-        seg_renders = []
-        with torch.no_grad():
-            for cam in train_cams:
-                seg_renders.append(render_gs(cam, g, pipe, bg))
-
-        n_obj = int(cfg.sim.get("n_objects", 4))
-        gauss_obj = segment_gaussians(
-            gaussian_xyz=canon_xyz,
-            cameras=train_cams,
-            renders=seg_renders,
-            n_objects=n_obj,
-            gaussian_colors=gauss_colors,
-            sam2_checkpoint=cfg.sim.get("sam2_checkpoint", None),
-            sam2_cfg=cfg.sim.get("sam2_cfg", None),
-            device=dev,
-        )
-        _w_b_seg, _idx_b_seg = anchors.cal_nn_weight(canon_xyz)
-        anchor_obj = assign_anchor_objects(
-            gauss_obj, _idx_b_seg, _w_b_seg,
-            n_anchors=anchors.canonical.shape[0], n_objects=n_obj,
-        ).to(dev)
-        torch.save(anchor_obj, seg_path)
-        print(f"[train] segmentation saved → {seg_path}", flush=True)
-        for oi in range(int(anchor_obj.max()) + 1):
-            print(f"  object {oi}: {int((anchor_obj == oi).sum())} anchors", flush=True)
-
-    # ── hierarchical graph ────────────────────────────────────────────────── #
+    # ── KNN graph ─────────────────────────────────────────────────────────── #
     graph_path = os.path.join(args.out, "graph.pt")
     if os.path.exists(graph_path):
         gd = torch.load(graph_path, map_location=dev)
-        intra_ei, intra_r = gd["intra_ei"], gd["intra_r"]
-        inter_ei, inter_r = gd["inter_ei"], gd["inter_r"]
+        edge_index, rest_len = gd["edge_index"], gd["rest_len"]
         print(f"[train] loaded graph from {graph_path}", flush=True)
     else:
-        intra_ei, intra_r, inter_ei, inter_r = build_hierarchical_graph(
-            anchors.canonical,
-            anchor_obj,
-            k_intra=int(cfg.sim.get("k_intra", 12)),
-            k_inter=int(cfg.sim.get("k_inter", 4)),
-        )
-        torch.save({"intra_ei": intra_ei, "intra_r": intra_r,
-                    "inter_ei": inter_ei, "inter_r": inter_r}, graph_path)
+        k_nn = int(cfg.sim.get("k_nn", 16))
+        edge_index = knn_graph(anchors.canonical, k=k_nn)
+        src, dst   = edge_index
+        rest_len   = (anchors.canonical[src] - anchors.canonical[dst]).norm(dim=-1)
+        torch.save({"edge_index": edge_index, "rest_len": rest_len}, graph_path)
+        print(f"[train] KNN graph k={k_nn}  edges={edge_index.shape[1]}", flush=True)
 
     # anchor SH0 colour (for node features in GNN)
     _w_b, _idx_b = anchors.cal_nn_weight(canon_xyz)
@@ -317,18 +278,16 @@ def main():
     # ── GNNSim ────────────────────────────────────────────────────────────── #
     T   = int(cfg.sim.T)
     sim = GNNSim(
-        canonical        = anchors.canonical,
-        anchor_obj       = anchor_obj,
-        anchor_colors    = anchor_colors,
-        intra_edge_index = intra_ei,
-        intra_rest       = intra_r,
-        inter_edge_index = inter_ei,
-        inter_rest       = inter_r,
-        T                = T,
-        dt               = float(cfg.sim.dt),
-        hidden_dim       = int(cfg.sim.get("hidden_dim", 128)),
-        gravity          = float(cfg.sim.get("gravity", 2.0)),
-        gravity_axis     = int(cfg.sim.get("gravity_axis", 2)),
+        canonical     = anchors.canonical,
+        anchor_colors = anchor_colors,
+        edge_index    = edge_index,
+        rest_len      = rest_len,
+        T             = T,
+        dt            = float(cfg.sim.dt),
+        hidden_dim    = int(cfg.sim.get("hidden_dim", 128)),
+        node_dim      = int(cfg.sim.get("node_dim", 16)),
+        gravity       = float(cfg.sim.get("gravity", 5.0)),
+        gravity_axis  = int(cfg.sim.get("gravity_axis", 2)),
     ).to(dev)
     n_params = sum(p.numel() for p in sim.parameters())
     print(f"[train] GNNSim params={n_params:,}  T={T}", flush=True)

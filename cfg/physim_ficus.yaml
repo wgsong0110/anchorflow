@@ -1,24 +1,21 @@
-# ficus wind — GNN physics simulator (hierarchical object graph + SVD MDS)
+# ficus wind — GNN physics simulator (spatial KNN graph + SVD MDS)
 white_bg: false
 
 sim:
   T:            25       # frames per simulation
-  grad_steps:   5        # truncated BPTT chunk size (frame t → t-5 only)
+  grad_steps:   5        # truncated BPTT chunk size
   dt:           0.04     # Euler timestep
   hidden_dim:   128      # GNN hidden dimension
+  node_dim:     16       # per-anchor learnable embedding size
+  k_nn:         16       # KNN degree (spatial, no object distinction)
   gravity:      5.0      # downward acceleration (−Z axis)
   gravity_axis: 2        # Z-up
-  n_objects:    4        # SAM2 cluster count (pot / trunk / branches / leaves)
-  k_intra:      12       # KNN degree within same object
-  k_inter:      4        # cross-object boundary connections
-  sam2_checkpoint: null  # set to path if SAM2 available
-  sam2_cfg:      null    # e.g. "sam2.1_hiera_large"
 
 train:
   iters:      10000
   n_views:    2
   lr:         3.0e-4
-  f_scale:    3.0        # impulse magnitude relative to scene extent (10× larger)
+  f_scale:    3.0        # impulse magnitude relative to scene extent
   grad_clip:  1.0
   log_every:  50
   ckpt_every: 500
