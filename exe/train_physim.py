@@ -424,7 +424,7 @@ def main():
             return _time.time()
         _t0 = _time.time()
 
-        f_ext = torch.zeros(3, device=dev)
+        f_ext = sample_impulse(extent, f_scale, dev)
         # Full BPTT: grad_steps=T means detach never triggers
         traj  = sim(f_ext, grad_steps=T)                          # [T, M, 3]
         _t0 = _t("GNN forward (T=25)", _t0)

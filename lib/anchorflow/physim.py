@@ -73,8 +73,8 @@ class GNNSim(nn.Module):
         EDGE_IN = hidden_dim * 2 + 5 + STATIC * 2 + 1
         self.edge_mlp = _mlp(EDGE_IN, hidden_dim, hidden_dim)
 
-        # [agg, state, f_node] → acceleration [3]
-        NODE_IN = hidden_dim + hidden_dim + 3
+        # [agg, state] → internal acceleration [3]  (external forces added outside)
+        NODE_IN = hidden_dim + hidden_dim
         self.node_mlp = _mlp(NODE_IN, hidden_dim, 3)
 
     @property
@@ -123,13 +123,13 @@ class GNNSim(nn.Module):
             agg  = torch.zeros(M, self.hidden_dim, device=x.device)
             agg.scatter_add_(0, dst[:, None].expand_as(msg), msg)
 
-            # ── external force ────────────────────────────────────────────── #
-            f_node = g_vec.unsqueeze(0).expand(M, -1).clone()
-            if t == 0:
-                f_node = f_node + f_ext.unsqueeze(0)
-
             # ── acceleration → Euler integration ─────────────────────────── #
-            a = torch.tanh(self.node_mlp(torch.cat([agg, state, f_node], dim=-1))) * self.max_accel  # soft-clamped GNN accel
+            a = torch.tanh(self.node_mlp(torch.cat([agg, state], dim=-1))) * self.max_accel
+            # external forces added outside GNN: gravity + impulse at t=0
+            f_ext_t = g_vec.unsqueeze(0).expand(M, -1)
+            if t == 0:
+                f_ext_t = f_ext_t + f_ext.unsqueeze(0)
+            a = a + f_ext_t
             a = a - self.k_restore * (x - self.canonical)               # restoring force
             v = v * (1.0 - self.damping) + self.dt * a                  # damped integration
             x = x + self.dt * v
@@ -174,12 +174,12 @@ class GNNSim(nn.Module):
             agg = torch.zeros(M, self.hidden_dim, device=x.device)
             agg.scatter_add_(0, dst[:, None].expand_as(msg), msg)
 
-            f_node = g_vec.unsqueeze(0).expand(M, -1).clone()
+            a = self.node_mlp(torch.cat([agg, state], dim=-1))
+            accels.append(a.clone())           # GNN pure output (before ext force + restoring)
+            f_ext_t = g_vec.unsqueeze(0).expand(M, -1)
             if t == 0:
-                f_node = f_node + f_ext.unsqueeze(0)
-
-            a = self.node_mlp(torch.cat([agg, state, f_node], dim=-1))
-            accels.append(a.clone())           # GNN pure output (before restoring)
+                f_ext_t = f_ext_t + f_ext.unsqueeze(0)
+            a = a + f_ext_t
             a = a - self.k_restore * (x - self.canonical)
 
             v = v * (1.0 - self.damping) + self.dt * a
