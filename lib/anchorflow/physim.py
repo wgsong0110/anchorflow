@@ -58,7 +58,7 @@ class GNNSim(nn.Module):
         # per-anchor learnable embedding → encodes material/stiffness/mass
         self.node_emb = nn.Embedding(M, node_dim)
 
-        STATIC   = 3 + 3 + node_dim          # x0 + colour + emb  = 22
+        STATIC   = node_dim                   # per-anchor learnable emb only
 
         # [x, v] (6) → hidden state embedding
         self.state_mlp = _mlp(6, hidden_dim, hidden_dim)
@@ -74,8 +74,7 @@ class GNNSim(nn.Module):
     @property
     def _static(self) -> torch.Tensor:
         idx = torch.arange(self.M, device=self.canonical.device)
-        emb = self.node_emb(idx)                           # [M, node_dim]
-        return torch.cat([self.canonical, self.anchor_colors, emb], dim=-1)  # [M, 22]
+        return self.node_emb(idx)                          # [M, node_dim]
 
     def forward(self, f_ext: torch.Tensor, grad_steps: int = 5) -> torch.Tensor:
         """
