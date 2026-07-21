@@ -69,8 +69,8 @@ class GNNSim(nn.Module):
         # [x, v] (6) → hidden state embedding
         self.state_mlp = _mlp(6, hidden_dim, hidden_dim)
 
-        # [state_i, state_j, static_i, static_j, rest_len]
-        EDGE_IN = hidden_dim * 2 + STATIC * 2 + 1
+        # [state_i, state_j, rel_disp(3), dist(1), stretch(1), static_i, static_j, rest_len]
+        EDGE_IN = hidden_dim * 2 + 5 + STATIC * 2 + 1
         self.edge_mlp = _mlp(EDGE_IN, hidden_dim, hidden_dim)
 
         # [agg, state, f_node] → acceleration [3]
@@ -110,8 +110,12 @@ class GNNSim(nn.Module):
             state = self.state_mlp(torch.cat([x, v], dim=-1))  # [M, hidden]
 
             # ── edge messages ─────────────────────────────────────────────── #
+            rel     = x[src] - x[dst]                            # [E, 3]
+            dist    = rel.norm(dim=-1, keepdim=True).clamp(min=1e-8)  # [E, 1]
+            stretch = dist - self.rest_len[:, None]              # [E, 1]
             feat = torch.cat([
                 state[src], state[dst],
+                rel, dist, stretch,
                 static[src], static[dst],
                 self.rest_len[:, None],
             ], dim=-1)                                     # [E, EDGE_IN]
@@ -157,8 +161,12 @@ class GNNSim(nn.Module):
         for t in range(self.T - 1):
             state = self.state_mlp(torch.cat([x, v], dim=-1))
 
+            rel     = x[src] - x[dst]
+            dist    = rel.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+            stretch = dist - self.rest_len[:, None]
             feat = torch.cat([
                 state[src], state[dst],
+                rel, dist, stretch,
                 static[src], static[dst],
                 self.rest_len[:, None],
             ], dim=-1)
