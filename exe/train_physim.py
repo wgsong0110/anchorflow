@@ -245,21 +245,16 @@ def _save_rollout(step, sim, anchors, T, extent, dev,
     _arot_idx, _arot_src = anchor_rotations_cache(anchors.canonical)
     all_frames = []
     cam = rollout_cams[0]
-    # 4 cardinal impulse directions × first rollout camera
-    for axis, sign in [(0, 1), (1, 1), (0, -1), (1, -1)]:
-        d = torch.zeros(3, device=dev)
-        d[axis] = sign
-        f_ext  = d * f_scale * extent
-        traj, accels = sim.forward_debug(f_ext)           # [T,M,3] each
-        frames = traj_to_frames(traj, canon_xyz, canon_cov6, anchors,
-                                  g, bg, cam, pipe,
-                                  use_checkpoint=False,
-                                  _w_b=_w_b, _idx_b=_idx_b,
-                                  _arot_idx=_arot_idx, _arot_src=_arot_src)
-        # overlay anchor dots + accel arrows
-        overlaid = [_overlay_anchors(frames[t], traj[t], accels[t], cam)
-                    for t in range(len(frames))]
-        all_frames.extend(overlaid)
+    f_ext = torch.zeros(3, device=dev)
+    traj, accels = sim.forward_debug(f_ext)               # [T,M,3] each
+    frames = traj_to_frames(traj, canon_xyz, canon_cov6, anchors,
+                              g, bg, cam, pipe,
+                              use_checkpoint=False,
+                              _w_b=_w_b, _idx_b=_idx_b,
+                              _arot_idx=_arot_idx, _arot_src=_arot_src)
+    overlaid = [_overlay_anchors(frames[t], traj[t], accels[t], cam)
+                for t in range(len(frames))]
+    all_frames.extend(overlaid)
     path = os.path.join(out, f"rollout_{step:06d}.mp4")
     save_video(all_frames, path)
     print(f"  [rollout] {path}", flush=True)
@@ -420,7 +415,7 @@ def main():
         v_idx = step % V
         cam   = train_cams[v_idx]
 
-        f_ext = sample_impulse(extent, f_scale, dev)
+        f_ext = torch.zeros(3, device=dev)
         traj  = sim(f_ext, grad_steps=grad_steps)                 # [T, M, 3]
 
         frames_t = traj_to_frames(traj, canon_xyz, canon_cov6, anchors,
