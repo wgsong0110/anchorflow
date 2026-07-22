@@ -303,9 +303,10 @@ def main():
                         ssm_dim=int(cfg.model.get("ssm_dim", cfg.model.hidden)),
                         e_dim=e_dim, z_dim=z_dim,
                         accel_scale=accel_scale).to(dev)
+    model.step = torch.compile(model.step)
     graph_cfg = {"graph": "knn", "k": int(cfg.model.k_node)}
     damping = float(cfg.train.get("damping", 1.0))
-    print(f"[train] SSMDynamics dt={dt} accel_scale={accel_scale:.4f} damping={damping}")
+    print(f"[train] SSMDynamics dt={dt} accel_scale={accel_scale:.4f} damping={damping} (step compiled)")
 
     # z = actuation, varied per initial condition (ssm_dynamics docstring)
     B = int(cfg.train.z0_bank_size)
