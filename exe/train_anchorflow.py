@@ -458,7 +458,9 @@ def main():
     if args.sup == "frames" and train_cam_single is not None:
         rollout_cam0 = train_cam_single
     else:
-        z_center = float(anchors.canonical[:, 2].mean())
+        z_min    = float(anchors.canonical[:, 2].min())
+        z_max    = float(anchors.canonical[:, 2].max())
+        z_center = (z_min + z_max) * 0.5   # bbox center (not mean — mean is biased high)
         _radius  = float((anchors.canonical[:, :2].norm(dim=-1).max()) * 2.5)
         _radius  = max(_radius, 1.5)
         rollout_cam0 = zup_orbit_cameras(
