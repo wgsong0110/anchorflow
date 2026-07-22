@@ -74,6 +74,35 @@ class Pipe:
     antialiasing = False
 
 
+def _normalize(v):
+    return v / (np.linalg.norm(v) + 1e-8)
+
+
+def make_lookat_cam(pos, target=(0, 0, 0), up=(0, 0, 1), fov_deg=50, W=256, H=256):
+    """Build a look-at camera (Z-up convention)."""
+    pos    = np.array(pos,    dtype=np.float32)
+    target = np.array(target, dtype=np.float32)
+    up     = np.array(up,     dtype=np.float32)
+    fwd    = _normalize(target - pos)
+    right  = _normalize(np.cross(fwd, up))
+    up2    = np.cross(right, fwd)
+    rot    = np.stack([right, -up2, fwd], axis=1)   # C2W rotation
+    T_vec  = -(rot.T @ pos)
+    fov    = math.radians(fov_deg)
+    return Cam(rot, T_vec, fov, fov, W, H)
+
+
+def zup_orbit_cameras(n_views, radius, z, target, fov_deg=50, res=256):
+    """Evenly-spaced cameras in the XY plane looking at target, up=Z."""
+    cams = []
+    for i in range(n_views):
+        theta = 2 * math.pi * i / n_views
+        pos = (radius * math.cos(theta), radius * math.sin(theta), z)
+        cams.append(make_lookat_cam(pos, target=target, up=(0, 0, 1),
+                                    fov_deg=fov_deg, W=res, H=res))
+    return cams
+
+
 def load_official_cameras(model_dir, n_views, long_side):
     cams_json = json.load(open(f"{model_dir}/cameras.json"))
     idx = np.linspace(0, len(cams_json) - 1, n_views).round().astype(int)
@@ -426,7 +455,15 @@ def main():
     arap_edge = knn_graph(anchors.canonical.detach(), k=min(6, M - 1))
     rng = random.Random(42)
 
-    rollout_cam0 = train_cam_single if args.sup == "frames" else cameras[0]
+    if args.sup == "frames" and train_cam_single is not None:
+        rollout_cam0 = train_cam_single
+    else:
+        z_center = float(anchors.canonical[:, 2].mean())
+        _radius  = float((anchors.canonical[:, :2].norm(dim=-1).max()) * 2.5)
+        _radius  = max(_radius, 1.5)
+        rollout_cam0 = zup_orbit_cameras(
+            1, radius=_radius, z=z_center + _radius * 0.2,
+            target=(0, 0, z_center), fov_deg=50, res=cfg.model.res)[0]
 
     if args.eval_only:
         if args.eval_frames and args.eval_cam_idxs:
