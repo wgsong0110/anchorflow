@@ -248,38 +248,50 @@ def main():
     del _q
     print(f"[train] scene extent={extent:.2f}")
 
-    # ── anchor nodes: paper's semantic / dynamic-tendency allocation ────────
-    node_pos = None
-    if not args.no_t2n:
-        try:
-            from anchorflow.tokens_to_nodes import tokens_to_nodes
-            import anchorflow.tokens_to_nodes as t2n_mod
-            print("[train] tokens_to_nodes (semantic + dynamic tendency) ...")
-            node_pos = tokens_to_nodes(
-                canon_xyz, g.get_opacity.detach(), render_canonical,
-                cameras[:cfg.get("t2n_views", 4)],
-                n_nodes=cfg.model.n_nodes, device=dev)
-            if t2n_mod._dino_model is not None:
-                del t2n_mod._dino_model
-                t2n_mod._dino_model = None
-            import gc; gc.collect(); torch.cuda.empty_cache()
-            print("[train] DINOv2 freed")
-        except Exception as e:
-            print(f"[train] tokens_to_nodes failed ({e}) -> FPS")
-            node_pos = None
-            import gc; gc.collect(); torch.cuda.empty_cache()
-
-    # ── AnchorSet: learnable rho (paper), node_weight, z (actuation), e (id) ─
+    # ── AnchorSet ────────────────────────────────────────────────────────────
     z_dim = int(cfg.model.get("z_dim", 8))
     e_dim = int(cfg.model.get("e_dim", 8))
     kG = int(cfg.model.k_gauss)
-    if node_pos is not None:
-        anchors = AnchorSet.from_trajectory(node_pos, latent_dim=z_dim,
-                                            e_dim=e_dim, K=kG).to(dev)
+
+    # Peek at checkpoint before running tokens_to_nodes so we can skip t2n on resume.
+    # tokens_to_nodes is non-deterministic; re-running it produces a different node
+    # count and breaks load_state_dict when resuming.
+    ckpt_mgr = CheckpointManager(args.out)
+    _ck_peek = ckpt_mgr.load() if args.resume else None
+
+    if _ck_peek is not None:
+        canonical_resume = _ck_peek["anchors"]["canonical"]
+        anchors = AnchorSet(canonical_resume, latent_dim=z_dim, e_dim=e_dim, K=kG).to(dev)
+        print(f"[train] resume: anchors={canonical_resume.shape[0]} from ckpt (skip t2n)")
     else:
-        anchors, _ = AnchorSet.from_gaussians(canon_xyz, node_num=cfg.model.n_nodes,
-                                              latent_dim=z_dim, e_dim=e_dim, K=kG)
-        anchors = anchors.to(dev)
+        node_pos = None
+        if not args.no_t2n:
+            try:
+                from anchorflow.tokens_to_nodes import tokens_to_nodes
+                import anchorflow.tokens_to_nodes as t2n_mod
+                print("[train] tokens_to_nodes (semantic + dynamic tendency) ...")
+                node_pos = tokens_to_nodes(
+                    canon_xyz, g.get_opacity.detach(), render_canonical,
+                    cameras[:cfg.get("t2n_views", 4)],
+                    n_nodes=cfg.model.n_nodes, device=dev)
+                if t2n_mod._dino_model is not None:
+                    del t2n_mod._dino_model
+                    t2n_mod._dino_model = None
+                import gc; gc.collect(); torch.cuda.empty_cache()
+                print("[train] DINOv2 freed")
+            except Exception as e:
+                print(f"[train] tokens_to_nodes failed ({e}) -> FPS")
+                node_pos = None
+                import gc; gc.collect(); torch.cuda.empty_cache()
+
+        if node_pos is not None:
+            anchors = AnchorSet.from_trajectory(node_pos, latent_dim=z_dim,
+                                                e_dim=e_dim, K=kG).to(dev)
+        else:
+            anchors, _ = AnchorSet.from_gaussians(canon_xyz, node_num=cfg.model.n_nodes,
+                                                  latent_dim=z_dim, e_dim=e_dim, K=kG)
+            anchors = anchors.to(dev)
+
     M = anchors.num
     print(f"[train] anchors={M}  z_dim={z_dim} e_dim={e_dim} k_gauss={kG}")
 
@@ -380,10 +392,10 @@ def main():
               f"{train_cam_single.image_width}x{train_cam_single.image_height} "
               f"n={len(gt_frames_cpu)}")
 
-    ckpt_mgr = CheckpointManager(args.out)
+    # ckpt_mgr already created above; reuse _ck_peek
     start = 0
     if args.resume:
-        ck = ckpt_mgr.load()
+        ck = _ck_peek
         if ck is not None:
             model.load_state_dict(ck["model"])
             anchors.load_state_dict(ck["anchors"])
@@ -400,7 +412,6 @@ def main():
                 print(f"[train] resumed from step {start}")
         else:
             if args.iters is not None and args.iters <= cfg.train.iters:
-                # Short-run rollout-only mode: no ckpt found → abort rather than retrain
                 sys.exit(f"[train] ABORT: --resume specified but no checkpoint found in {args.out}. "
                          f"Cannot do rollout-only run without a checkpoint.")
 
