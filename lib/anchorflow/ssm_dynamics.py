@@ -89,7 +89,7 @@ def build_graph(pos, cfg):
 
 def ssm_rollout(model, p0, v0, e, z, init_vel, init_pos, steps, cfg, dt,
                 grad=True, rebuild_graph=False, recenter=False, damping=1.0,
-                bptt_start=0, return_states=False):
+                bptt_start=0, return_states=False, vel_smooth=0.1):
     """Roll out T = steps+1 frames from (p0, v0). Returns positions [T, M, 3].
 
     bptt_start: detach p/v/h before this step index (truncated BPTT).
@@ -112,7 +112,7 @@ def ssm_rollout(model, p0, v0, e, z, init_vel, init_pos, steps, cfg, dt,
             src_e, dst_e = edge_index
             v_agg = torch.zeros_like(v).scatter_add_(0, dst_e.unsqueeze(1).expand(-1, 3), v[src_e])
             deg_v = torch.zeros(v.shape[0], device=v.device).scatter_add_(0, dst_e, torch.ones(dst_e.shape[0], device=v.device))
-            v = 0.9 * v + 0.1 * (v_agg / deg_v.unsqueeze(1).clamp(min=1))
+            v = (1 - vel_smooth) * v + vel_smooth * (v_agg / deg_v.unsqueeze(1).clamp(min=1))
             p = p_next
             if i < bptt_start - 1:
                 p = p.detach(); v = v.detach(); h = h.detach()
@@ -128,7 +128,7 @@ def ssm_rollout(model, p0, v0, e, z, init_vel, init_pos, steps, cfg, dt,
 
 
 def ssm_rollout_from(model, p0, v0, h0, e, z, steps, cfg, dt,
-                     grad=True, damping=1.0):
+                     grad=True, damping=1.0, vel_smooth=0.1):
     """Rollout from a given state (p0,v0,h0) for `steps` steps — no bptt needed
     because the caller is responsible for detaching the initial state."""
     ctx = torch.enable_grad() if grad else torch.no_grad()
@@ -143,7 +143,7 @@ def ssm_rollout_from(model, p0, v0, h0, e, z, steps, cfg, dt,
             src_e, dst_e = edge_index
             v_agg = torch.zeros_like(v).scatter_add_(0, dst_e.unsqueeze(1).expand(-1, 3), v[src_e])
             deg_v = torch.zeros(v.shape[0], device=v.device).scatter_add_(0, dst_e, torch.ones(dst_e.shape[0], device=v.device))
-            v = 0.9 * v + 0.1 * (v_agg / deg_v.unsqueeze(1).clamp(min=1))
+            v = (1 - vel_smooth) * v + vel_smooth * (v_agg / deg_v.unsqueeze(1).clamp(min=1))
             p = p_next
             out.append(p)
         return torch.stack(out, dim=0)             # [steps+1, M, 3]

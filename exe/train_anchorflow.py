@@ -306,7 +306,8 @@ def main():
     model.step = torch.compile(model.step)
     graph_cfg = {"graph": "knn", "k": int(cfg.model.k_node)}
     damping = float(cfg.train.get("damping", 1.0))
-    print(f"[train] SSMDynamics dt={dt} accel_scale={accel_scale:.4f} damping={damping} (step compiled)")
+    vel_smooth = float(cfg.train.get("vel_smooth", 0.1))
+    print(f"[train] SSMDynamics dt={dt} accel_scale={accel_scale:.4f} damping={damping} vel_smooth={vel_smooth} (step compiled)")
 
     # z = actuation, varied per initial condition (ssm_dynamics docstring)
     B = int(cfg.train.z0_bank_size)
@@ -433,6 +434,7 @@ def main():
                            init_vel=v0, init_pos=p0, steps=s,
                            bptt_start=bptt_start,
                            cfg=graph_cfg, dt=dt, grad=grad, damping=damping,
+                           vel_smooth=vel_smooth,
                            return_states=return_states)
 
     # ── state cache: avoid no-grad prefix rollout cost every step ────────────
@@ -513,7 +515,8 @@ def main():
                 p_seq = ssm_rollout_from(
                     model, p_a_cpu.to(dev), v_a_cpu.to(dev), h_a_cpu.to(dev),
                     anchors.e, z_bank[k], steps=b - a,
-                    cfg=graph_cfg, dt=dt, grad=True, damping=damping)
+                    cfg=graph_cfg, dt=dt, grad=True, damping=damping,
+                    vel_smooth=vel_smooth)
                 p_b = p_seq[-1]
 
             w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
