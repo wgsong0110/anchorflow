@@ -14,7 +14,7 @@ model:
   k_node:       8
   k_gauss:      4
   dt:           0.1
-  accel_scale:  0.02
+  accel_scale:  0.05
   res:          256
 
 train:

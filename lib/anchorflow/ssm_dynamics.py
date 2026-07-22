@@ -112,7 +112,7 @@ def ssm_rollout(model, p0, v0, e, z, init_vel, init_pos, steps, cfg, dt,
             src_e, dst_e = edge_index
             v_agg = torch.zeros_like(v).scatter_add_(0, dst_e.unsqueeze(1).expand(-1, 3), v[src_e])
             deg_v = torch.zeros(v.shape[0], device=v.device).scatter_add_(0, dst_e, torch.ones(dst_e.shape[0], device=v.device))
-            v = 0.5 * v + 0.5 * (v_agg / deg_v.unsqueeze(1).clamp(min=1))
+            v = 0.9 * v + 0.1 * (v_agg / deg_v.unsqueeze(1).clamp(min=1))
             p = p_next
             if i < bptt_start - 1:
                 p = p.detach(); v = v.detach(); h = h.detach()
@@ -143,7 +143,7 @@ def ssm_rollout_from(model, p0, v0, h0, e, z, steps, cfg, dt,
             src_e, dst_e = edge_index
             v_agg = torch.zeros_like(v).scatter_add_(0, dst_e.unsqueeze(1).expand(-1, 3), v[src_e])
             deg_v = torch.zeros(v.shape[0], device=v.device).scatter_add_(0, dst_e, torch.ones(dst_e.shape[0], device=v.device))
-            v = 0.5 * v + 0.5 * (v_agg / deg_v.unsqueeze(1).clamp(min=1))
+            v = 0.9 * v + 0.1 * (v_agg / deg_v.unsqueeze(1).clamp(min=1))
             p = p_next
             out.append(p)
         return torch.stack(out, dim=0)             # [steps+1, M, 3]
