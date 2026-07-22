@@ -5,7 +5,7 @@ Architecture per step t:
   Encoder : PE(x,v) → state_mlp → edge_mlp([state,static]) → mean_pool
             → enc_mlp([agg, state]) → node_enc  [M, H]
   SSM     : SelectiveSSM(node_enc_i, h_i) → y_i, h_i_new   (per node)
-  Decoder : dec_mlp(y) → tanh * max_accel → a_gnn  [M, 3]  (zero-centered)
+  Decoder : dec_mlp(y) → tanh * max_accel → a_gnn  [M, 3]
   Physics : a = a_gnn + impulse(t=0)
             v = v*(1−damp) + dt*a;   x = x + dt*v
 
@@ -147,7 +147,6 @@ class GNNSim(nn.Module):
             node_enc       = self._encode(x, v, static, src, dst)
             y, h           = self.ssm(node_enc, h)                  # per-node SSM
             a_gnn          = torch.tanh(self.dec_mlp(y)) * self.max_accel
-            a_gnn          = a_gnn - a_gnn.mean(dim=0, keepdim=True)
 
             a = a_gnn + g_vec.unsqueeze(0)
             if t == 0:
@@ -184,9 +183,8 @@ class GNNSim(nn.Module):
         for t in range(self.T - 1):
             node_enc  = self._encode(x, v, static, src, dst)
             y, h      = self.ssm(node_enc, h)
-            a_raw     = torch.tanh(self.dec_mlp(y)) * self.max_accel
-            a_gnn     = a_raw - a_raw.mean(dim=0, keepdim=True)
-            accels_raw.append(a_raw.clone())
+            a_gnn     = torch.tanh(self.dec_mlp(y)) * self.max_accel
+            accels_raw.append(a_gnn.clone())
             accels_zc.append(a_gnn.clone())
 
             a = a_gnn + g_vec.unsqueeze(0)
