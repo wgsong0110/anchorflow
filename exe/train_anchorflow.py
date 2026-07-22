@@ -465,7 +465,7 @@ def main():
         _radius  = max(_radius, 1.5)
         rollout_cam0 = zup_orbit_cameras(
             1, radius=_radius, z=z_center + _radius * 0.2,
-            target=(0, 0, z_center), fov_deg=50, res=cfg.model.res)[0]
+            target=(0, 0, z_center), fov_deg=65, res=cfg.model.res)[0]
 
     if args.eval_only:
         if args.eval_frames and args.eval_cam_idxs:
