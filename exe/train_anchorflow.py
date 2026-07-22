@@ -615,16 +615,27 @@ def main():
 @torch.no_grad()
 def _save_rollout(step, rollout_positions, anchors, canon_xyz, canon_cov6,
                   render_with, cam, T, out):
+    import time
+    t0 = time.perf_counter()
     p_seq = rollout_positions(0, grad=False)
+    torch.cuda.synchronize()
+    t1 = time.perf_counter()
     w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
+    torch.cuda.synchronize()
+    t2 = time.perf_counter()
     frames = []
     for t in range(T):
         pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, w_b, idx_b,
                                   anchors.canonical, p_seq[t])
         frames.append(render_with(cam, pos, cov6).clamp(0, 1))
+    torch.cuda.synchronize()
+    t3 = time.perf_counter()
     path = os.path.join(out, f"rollout_step{step:06d}.mp4")
     save_video(frames, path)
-    print(f"  saved rollout -> {path}")
+    t4 = time.perf_counter()
+    print(f"  saved rollout -> {path}  "
+          f"[rollout={t1-t0:.2f}s knn={t2-t1:.2f}s render={t3-t2:.2f}s "
+          f"video={t4-t3:.2f}s total={t4-t0:.2f}s]")
 
 
 @torch.no_grad()
