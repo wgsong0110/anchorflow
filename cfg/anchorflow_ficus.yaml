@@ -35,6 +35,7 @@ train:
   grad_clip:     1.0
   log_every:     50
   ckpt_every:    1000
+  rollout_every: 200
 
 mds:
   sigma_min:        0.05

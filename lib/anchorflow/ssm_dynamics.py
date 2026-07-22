@@ -77,17 +77,6 @@ class SSMDynamics(nn.Module):
         u = self.to_ssm(x)                                          # spatial-aware SSM input
         h = self.ssm.step(h, u, dt)                                # temporal recurrence
         a = torch.tanh(self.decoder(h)) * self.accel_scale         # acceleration
-
-        # neighbor-averaged accel blending: prevents anchors splitting apart at inference
-        M = a.shape[0]
-        src, dst = edge_index
-        a_agg = torch.zeros_like(a).scatter_add_(
-            0, dst.unsqueeze(1).expand(-1, 3), a[src])
-        deg = torch.zeros(M, device=a.device).scatter_add_(
-            0, dst, torch.ones(dst.shape[0], device=a.device))
-        a_agg = a_agg / deg.unsqueeze(1).clamp(min=1)
-        a = 0.5 * a + 0.5 * a_agg
-
         return h, a
 
 
@@ -119,6 +108,11 @@ def ssm_rollout(model, p0, v0, e, z, init_vel, init_pos, steps, cfg, dt,
             h, a = model.step(p, v, h, e, z, edge_index, dt)
             p_next = p + v * dt
             v = damping * (v + a * dt)
+            # velocity smoothing: MPM P2G→G2P equivalent — neighbors enforce coherent velocity field
+            src_e, dst_e = edge_index
+            v_agg = torch.zeros_like(v).scatter_add_(0, dst_e.unsqueeze(1).expand(-1, 3), v[src_e])
+            deg_v = torch.zeros(v.shape[0], device=v.device).scatter_add_(0, dst_e, torch.ones(dst_e.shape[0], device=v.device))
+            v = 0.5 * v + 0.5 * (v_agg / deg_v.unsqueeze(1).clamp(min=1))
             p = p_next
             if i < bptt_start - 1:
                 p = p.detach(); v = v.detach(); h = h.detach()
@@ -146,6 +140,10 @@ def ssm_rollout_from(model, p0, v0, h0, e, z, steps, cfg, dt,
             h, a = model.step(p, v, h, e, z, edge_index, dt)
             p_next = p + v * dt
             v = damping * (v + a * dt)
+            src_e, dst_e = edge_index
+            v_agg = torch.zeros_like(v).scatter_add_(0, dst_e.unsqueeze(1).expand(-1, 3), v[src_e])
+            deg_v = torch.zeros(v.shape[0], device=v.device).scatter_add_(0, dst_e, torch.ones(dst_e.shape[0], device=v.device))
+            v = 0.5 * v + 0.5 * (v_agg / deg_v.unsqueeze(1).clamp(min=1))
             p = p_next
             out.append(p)
         return torch.stack(out, dim=0)             # [steps+1, M, 3]

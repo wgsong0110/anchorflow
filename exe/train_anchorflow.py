@@ -586,13 +586,16 @@ def main():
                   f"travel={travel:.3f} ({travel/extent*100:.2f}%) rho={rho:.3f}",
                   flush=True)
 
+        rollout_every = getattr(cfg.train, "rollout_every", cfg.train.ckpt_every)
+        if step % rollout_every == 0:
+            _save_rollout(step, rollout_positions, anchors, canon_xyz, canon_cov6,
+                          render_with, rollout_cam0, T, args.out)
+            sync_r2()
         if step % cfg.train.ckpt_every == 0:
             ckpt_mgr.save(step, {"model": model.state_dict(),
                                  "anchors": anchors.state_dict(),
                                  "opt": opt.state_dict(), "z_bank": z_bank.data,
                                  "v0_bank": v0_bank.data, "step": step})
-            _save_rollout(step, rollout_positions, anchors, canon_xyz, canon_cov6,
-                          render_with, rollout_cam0, T, args.out)
             sync_r2()
 
     ckpt_mgr.save(cfg.train.iters - 1,
