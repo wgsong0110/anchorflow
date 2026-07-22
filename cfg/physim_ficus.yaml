@@ -14,7 +14,7 @@ sim:
   gravity_axis: 2        # Z-up
   damping:      0.2      # velocity damping per step: v *= (1 - damping)
   k_restore:    0.0      # spring constant pulling back to canonical position
-  max_accel:    5.0      # tanh soft-clamp on GNN acceleration output
+  max_accel:    0.1      # multiplier; actual = max_accel * scene_extent
   impulse_frac: 0.5      # fraction of nodes receiving f_ext impulse (random per step)
 
 train:

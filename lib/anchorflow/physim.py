@@ -1,16 +1,17 @@
 """GNN physics simulator: GNN Encoder → per-node Selective SSM → GNN Decoder.
 
 Architecture per step t:
+  h0      : h0_enc(PE(canonical), static) → per-node initial hidden state [M, D, N]
   Encoder : PE(x,v) → state_mlp → edge_mlp([state,static]) → mean_pool
             → enc_mlp([agg, state]) → node_enc  [M, H]
   SSM     : SelectiveSSM(node_enc_i, h_i) → y_i, h_i_new   (per node)
-  Decoder : dec_mlp(y) → tanh * max_accel → a_gnn  [M, 3]
+  Decoder : dec_mlp(y) → tanh * max_accel → a_gnn  [M, 3]  (zero-centered)
   Physics : a = a_gnn + impulse(t=0)
             v = v*(1−damp) + dt*a;   x = x + dt*v
 
-SelectiveSSM is a Mamba-style per-node SSM with CUDA kernel (lib/ssm).
-Each node maintains an independent hidden state h_i [D, N], enabling
-self-propelled dynamics where each part has its own internal state.
+h0_enc gives each node a distinct starting hidden state from its canonical
+position and identity, breaking the symmetry that causes directional bias.
+max_accel is auto-scaled to 0.1 * scene extent to prevent flying-away.
 """
 from __future__ import annotations
 
@@ -56,7 +57,7 @@ class GNNSim(nn.Module):
         gravity_axis: int = 2,
         damping: float = 0.2,
         k_restore: float = 0.0,
-        max_accel: float = 5.0,
+        max_accel: float = 0.1,   # multiplier; actual = max_accel * scene_extent
         impulse_frac: float = 0.5,
         **kwargs,
     ):
@@ -69,8 +70,11 @@ class GNNSim(nn.Module):
         self.gravity_axis = gravity_axis
         self.hidden_dim   = hidden_dim
         self.damping      = damping
-        self.max_accel    = max_accel
         self.impulse_frac = impulse_frac
+
+        # scale max_accel to scene extent so it's resolution-independent
+        extent = (canonical.max(dim=0).values - canonical.min(dim=0).values).norm().item()
+        self.max_accel = max_accel * max(extent, 1e-3)
 
         self.register_buffer("canonical",     canonical.clone().float())
         self.register_buffer("anchor_colors", anchor_colors.float())
@@ -81,6 +85,11 @@ class GNNSim(nn.Module):
         STATIC = node_dim
 
         PE_DIM = 3 * (1 + 2 * PE_FREQS)          # 3*(1+12) = 39
+
+        # ── Per-node h0 initializer ───────────────────────────────────────── #
+        # Encodes canonical position + identity → initial SSM hidden state.
+        # Gives each node a distinct h0, breaking the all-zeros symmetry.
+        self.h0_enc = _mlp(PE_DIM + STATIC, hidden_dim, hidden_dim, bias_last=False)
 
         # ── Encoder ──────────────────────────────────────────────────────── #
         self.state_mlp = _mlp(PE_DIM * 2, hidden_dim, hidden_dim, bias_last=False)
@@ -129,7 +138,8 @@ class GNNSim(nn.Module):
 
         static   = self._static
         src, dst = self.edge_index
-        h        = self.ssm.init_state(self.M, x.device, x.dtype)  # [M, D, N]
+        h0       = self.h0_enc(torch.cat([_fourier_pe(self.canonical), static], dim=-1))
+        h        = h0.unsqueeze(-1).expand(-1, -1, self.ssm.d_state).contiguous()
 
         traj = [x.detach()]
 
@@ -164,7 +174,8 @@ class GNNSim(nn.Module):
 
         static   = self._static
         src, dst = self.edge_index
-        h        = self.ssm.init_state(self.M, x.device, x.dtype)
+        h0       = self.h0_enc(torch.cat([_fourier_pe(self.canonical), static], dim=-1))
+        h        = h0.unsqueeze(-1).expand(-1, -1, self.ssm.d_state).contiguous()
 
         traj       = [x.clone()]
         accels_zc  = [torch.zeros(self.M, 3, device=x.device)]
