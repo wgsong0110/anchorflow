@@ -77,6 +77,17 @@ class SSMDynamics(nn.Module):
         u = self.to_ssm(x)                                          # spatial-aware SSM input
         h = self.ssm.step(h, u, dt)                                # temporal recurrence
         a = torch.tanh(self.decoder(h)) * self.accel_scale         # acceleration
+
+        # neighbor-averaged accel blending: prevents anchors splitting apart at inference
+        M = a.shape[0]
+        src, dst = edge_index
+        a_agg = torch.zeros_like(a).scatter_add_(
+            0, dst.unsqueeze(1).expand(-1, 3), a[src])
+        deg = torch.zeros(M, device=a.device).scatter_add_(
+            0, dst, torch.ones(dst.shape[0], device=a.device))
+        a_agg = a_agg / deg.unsqueeze(1).clamp(min=1)
+        a = 0.5 * a + 0.5 * a_agg
+
         return h, a
 
 
