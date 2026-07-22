@@ -82,7 +82,7 @@ class SelectiveSSM(nn.Module):
 
         # Learnable parameters
         self.A_log = nn.Parameter(torch.log(torch.rand(d_model, d_state) + 0.5))
-        self.D_vec = nn.Parameter(torch.ones(d_model))
+        self.D_vec = nn.Parameter(torch.zeros(d_model))
 
     def init_state(self, M: int, device, dtype) -> torch.Tensor:
         return torch.zeros(M, self.d_model, self.d_state, device=device, dtype=dtype)
