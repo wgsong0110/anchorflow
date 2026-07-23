@@ -1,0 +1,47 @@
+# ficus wind (DreamPhysics 60k checkpoint, white bg)
+white_bg: true
+t2n_views: 4
+
+model:
+  n_nodes:      512
+  n_frames:     14
+  hidden:       128
+  n_gnn_layers: 4
+  mp_steps:     4
+  ssm_dim:      128
+  z_dim:        8
+  e_dim:        8
+  k_node:       8
+  k_gauss:      4
+  dt:           0.1
+  accel_scale:  0.05
+  res:          256
+
+train:
+  iters:         30000
+  n_views:       8
+  z0_bank_size:  16
+  z0_motion:     0.02
+  damping:       0.9
+  lr_gnn:        1.0e-4
+  lr_anchor:     1.0e-3
+  lr_z0:         5.0e-4
+  lr_gaussian:   0.0
+  lambda_rgb:    1.0
+  lambda_arap:         0.5
+  lambda_accel_smooth: 0.01
+  lambda_smooth:       0.01
+  lambda_z0:           1.0e-5
+  vel_smooth:    0.5
+  grad_clip:     1.0
+  log_every:     50
+  ckpt_every:    1000
+  rollout_every: 200
+
+mds:
+  sigma_min:        0.05
+  sigma_max:        20.0
+  guidance_scale:   3.0
+  motion_bucket_id: 127
+  w_power:          0.0
+  grad_clip:        1.0
