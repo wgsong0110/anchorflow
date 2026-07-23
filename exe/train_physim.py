@@ -577,9 +577,13 @@ def main():
 
         if step % log_every == 0:
             with torch.no_grad():
-                travel = float((traj[-1] - anchors.canonical).norm(dim=-1).max())
+                _traj_log = traj if use_sds else sim(f_vid if use_vid else
+                    torch.zeros(sim._orig_mod.M if hasattr(sim,"_orig_mod") else sim.M,
+                                3, device=dev), grad_steps=T)
+                travel = float((_traj_log[-1] - anchors.canonical).norm(dim=-1).max())
             vid_str = f"  vid={loss_vid.item():.4f}" if use_vid else ""
-            print(f"[{step}/{iters}] loss={loss.item():.4f}{vid_str}  v={v_idx}"
+            v_str   = f"  v={v_idx}" if use_sds else ""
+            print(f"[{step}/{iters}] loss={loss.item():.4f}{vid_str}{v_str}"
                   f"  travel={travel:.4f} ({travel/extent*100:.1f}%)", flush=True)
 
         if step % ckpt_every == 0 or step == iters - 1:
