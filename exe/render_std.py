@@ -70,7 +70,7 @@ def main():
     names = [p.name for p in PlyData.read(args.ply)["vertex"].properties
              if p.name.startswith("f_rest_")]
     sh = int(math.sqrt((len(names) + 3) // 3)) - 1 if names else 0
-    g = GaussianModel(sh); g.load_ply(args.ply); g.active_sh_degree = sh
+    g = GaussianModel(sh, fea_dim=0); g.load_ply(args.ply); g.active_sh_degree = sh
     if args.min_opacity > 0 or args.max_scale < 1e9:
         op = g.get_opacity[:, 0]
         sc = g.get_scaling.max(1).values
