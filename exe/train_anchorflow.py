@@ -285,6 +285,8 @@ def main():
         cfg.train.iters = args.iters
     if args.n_views is not None:
         cfg.train.n_views = args.n_views
+    if cfg.get("white_bg", False):
+        args.white_bg = True
     dev, gh = "cuda", git_hash()
     T = cfg.model.n_frames
 
