@@ -105,10 +105,9 @@ def load_video_dataset(vid_dir: str, res: int):
         frames_sorted = sorted(by_view[view], key=lambda x: x["time"])
         # Camera from first frame (all frames same camera)
         c2w = np.array(frames_sorted[0]["transform_matrix"], dtype=np.float32)
-        R   = c2w[:3, :3]   # C2W rotation
-        t   = c2w[:3,  3]   # C2W translation
-        R_w2c = R.T
-        T_w2c = -R_w2c @ t
+        R   = c2w[:3, :3]   # C2W rotation  (R_c2w)
+        t   = c2w[:3,  3]   # C2W translation (camera position)
+        T_w2c = -(R.T @ t)  # world-to-camera translation
         # Load one image to get size
         img0_path = os.path.join(vid_dir, frames_sorted[0]["file_path"] + ".png")
         img0 = Image.open(img0_path)
@@ -117,7 +116,8 @@ def load_video_dataset(vid_dir: str, res: int):
         s  = res / max(Wd, Hd)
         W8 = max(8, int(round(Wd * s / 8)) * 8)
         H8 = max(8, int(round(Hd * s / 8)) * 8)
-        vid_cams.append(Cam(R_w2c, T_w2c, fovx, fovy, W8, H8))
+        # getWorld2View2 expects R_c2w (not R_w2c) as first arg
+        vid_cams.append(Cam(R, T_w2c, fovx, fovy, W8, H8))
         # Load frames
         tensors = []
         for f in frames_sorted:
