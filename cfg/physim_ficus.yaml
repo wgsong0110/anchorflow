@@ -1,5 +1,5 @@
 # ficus wind — GNN physics simulator (spatial KNN graph + SVD MDS)
-white_bg: false
+white_bg: true
 
 sim:
   T:            25       # frames per simulation

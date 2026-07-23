@@ -356,7 +356,7 @@ def main():
     canon_xyz  = g.get_xyz.detach().clone()
     canon_cov6 = W.cov_from_scale_rot(
         g.get_scaling.detach(), g._rotation.detach()).detach()
-    bg   = torch.tensor([0., 0., 0.], device=dev)
+    bg   = torch.tensor([1., 1., 1.] if cfg.get("white_bg", False) else [0., 0., 0.], device=dev)
     pipe = Pipe()
     print(f"[train] gaussians={len(canon_xyz)}", flush=True)
 
