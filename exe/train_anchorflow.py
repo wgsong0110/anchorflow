@@ -163,17 +163,69 @@ def save_video(frames, path, fps=8):
     iio.mimsave(path, arr, fps=fps, quality=8)
 
 
+def load_nerf_vid_dataset(vid_dir, res):
+    """Load GT frames + cameras from NeRF-Blender transforms_train.json.
+
+    Applies the NeRF-Blender → COLMAP convention flip (c2w[:,1:3] *= -1) so
+    that the cameras match the coordinate system the SC-GS model was trained in.
+
+    Returns:
+        vid_cams   : list[Cam]  one per view
+        vid_frames : list[list[Tensor]]  [V][F]  float [3,H,W] cuda
+    """
+    from PIL import Image
+    from collections import defaultdict
+    meta   = json.load(open(os.path.join(vid_dir, "transforms_train.json")))
+    fovx   = float(meta["camera_angle_x"])
+    by_view = defaultdict(list)
+    for f in meta["frames"]:
+        view = f["file_path"].split("/")[-2]
+        by_view[view].append(f)
+    views = sorted(by_view.keys())
+    vid_cams, vid_frames = [], []
+    W8 = H8 = res  # updated below from first image
+    for view in views:
+        frames_sorted = sorted(by_view[view], key=lambda x: x["time"])
+        c2w = np.array(frames_sorted[0]["transform_matrix"], dtype=np.float32)
+        c2w[:, 1:3] *= -1          # NeRF-Blender → COLMAP convention
+        R   = c2w[:3, :3]          # R_c2w in COLMAP
+        t   = c2w[:3,  3]
+        T_w2c = -(R.T @ t)
+        img0_path = os.path.join(vid_dir, frames_sorted[0]["file_path"] + ".png")
+        img0 = Image.open(img0_path)
+        Wd, Hd = img0.size
+        fovy = 2 * math.atan(math.tan(fovx / 2) * Hd / Wd)
+        s    = res / max(Wd, Hd)
+        W8   = max(8, int(round(Wd * s / 8)) * 8)
+        H8   = max(8, int(round(Hd * s / 8)) * 8)
+        vid_cams.append(Cam(R, T_w2c, fovx, fovy, W8, H8))
+        tensors = []
+        for fr in frames_sorted:
+            path = os.path.join(vid_dir, fr["file_path"] + ".png")
+            img  = Image.open(path).convert("RGB").resize((W8, H8), Image.LANCZOS)
+            t_   = torch.from_numpy(
+                np.array(img, dtype=np.float32) / 255.0
+            ).permute(2, 0, 1).cuda()
+            tensors.append(t_)
+        vid_frames.append(tensors)
+    print(f"[train] nerf_vid: {len(views)} views x {len(vid_frames[0])} frames "
+          f"{W8}x{H8} fovx={fovx:.3f}")
+    return vid_cams, vid_frames
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--iter", type=int, default=30000)
     ap.add_argument("--cfg", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--sup", choices=["mds", "video", "frames"], default="mds")
+    ap.add_argument("--sup", choices=["mds", "video", "frames", "nerf_vid"], default="mds")
     ap.add_argument("--videos", default=None,
                     help="--sup video: dir with view_XX.mp4 target clips")
     ap.add_argument("--frames", default=None,
                     help="--sup frames: dir with 000000.jpg ... (real N3DV cam0)")
+    ap.add_argument("--vid_dir", default=None,
+                    help="--sup nerf_vid: NeRF-Blender dataset dir (transforms_train.json + PNG)")
     ap.add_argument("--cameras", default=None,
                     help="cameras.json path (default: model/cameras.json)")
     ap.add_argument("--cam_idx", type=int, default=0,
@@ -372,6 +424,12 @@ def main():
                     mode="bilinear", align_corners=False)
             gt_videos.append(clip)
         print(f"[train] target clips: {len(gt_videos)} x {tuple(gt_videos[0].shape)}")
+    elif args.sup == "nerf_vid":
+        if not args.vid_dir:
+            sys.exit("[train] --sup nerf_vid requires --vid_dir DIR")
+        vid_cams, vid_frames = load_nerf_vid_dataset(args.vid_dir, cfg.model.res)
+        n_vid_views  = len(vid_cams)
+        n_vid_frames = len(vid_frames[0])
     else:  # frames
         if not args.frames:
             sys.exit("[train] --sup frames requires --frames DIR")
@@ -528,6 +586,24 @@ def main():
             gt_f = gt_frames_cpu[b].to(dev)
             loss = float(cfg.train.get("lambda_rgb", 1.0)) * (frame_pred - gt_f).abs().mean()
             t_r = b
+            arap_pt = p_b
+        elif args.sup == "nerf_vid":
+            v_vid  = rng.randint(0, n_vid_views - 1)
+            j_vid  = rng.randint(0, n_vid_frames - 1)
+            step_j = min(T - 1, round(j_vid / max(n_vid_frames - 1, 1) * (T - 1)))
+            cam_v  = vid_cams[v_vid]
+            t_r    = v_vid
+            p_seq  = rollout_positions(k, steps=step_j, grad=True)
+            p_b    = p_seq[step_j]
+            w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
+            def _fv(pt, wb=w_b, ib=idx_b, _cv=cam_v):
+                pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, wb, ib,
+                                           anchors.canonical, pt)
+                return render_with(_cv, pos, cov6)
+            frame_pred = checkpoint(_fv, p_b, use_reentrant=False)
+            gt_frame   = vid_frames[v_vid][j_vid]
+            loss       = float(cfg.train.get("lambda_rgb", 1.0)) * \
+                (frame_pred - gt_frame).abs().mean()
             arap_pt = p_b
         else:
             v = rng.randint(0, V - 1)
