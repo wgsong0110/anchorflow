@@ -22,13 +22,13 @@ train:
   n_views:       8
   z0_bank_size:  16
   z0_motion:     0.02
-  damping:       1.0
+  damping:       0.9
   lr_gnn:        1.0e-4
   lr_anchor:     1.0e-3
   lr_z0:         5.0e-4
   lr_gaussian:   0.0
   lambda_rgb:    1.0
-  lambda_arap:         0.05
+  lambda_arap:         0.5
   lambda_accel_smooth: 0.01
   lambda_smooth:       0.01
   lambda_z0:           1.0e-5
