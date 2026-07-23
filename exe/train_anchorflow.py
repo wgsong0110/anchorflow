@@ -593,7 +593,7 @@ def main():
             step_j = min(T - 1, round(j_vid / max(n_vid_frames - 1, 1) * (T - 1)))
             cam_v  = vid_cams[v_vid]
             t_r    = v_vid
-            p_seq  = rollout_positions(k, steps=step_j, grad=True)
+            p_seq  = rollout_positions(k, steps=step_j, bptt_start=step_j, grad=True)
             p_b    = p_seq[step_j]
             w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
             def _fv(pt, wb=w_b, ib=idx_b, _cv=cam_v):
