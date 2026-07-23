@@ -208,9 +208,38 @@ def load_nerf_vid_dataset(vid_dir, res):
             ).permute(2, 0, 1).cuda()
             tensors.append(t_)
         vid_frames.append(tensors)
+    # load optical flows if available
+    flow_dir = os.path.join(vid_dir, "flows")
+    vid_flows = []  # [V][F-1] Tensor [H, W, 2] cuda  or empty list
+    if os.path.exists(flow_dir):
+        for view in views:
+            vf = []
+            frames_sorted = sorted(by_view[view], key=lambda x: x["time"])
+            for i in range(len(frames_sorted) - 1):
+                p = os.path.join(flow_dir, view, f"flow_{i:04d}.npy")
+                if os.path.exists(p):
+                    flow_np = np.load(p)  # [H, W, 2]
+                    # resize to match vid frame resolution
+                    fh = torch.from_numpy(flow_np)  # [H, W, 2]
+                    if fh.shape[0] != H8 or fh.shape[1] != W8:
+                        fh = torch.nn.functional.interpolate(
+                            fh.permute(2, 0, 1).unsqueeze(0),
+                            size=(H8, W8), mode="bilinear", align_corners=False
+                        )[0].permute(1, 2, 0)
+                        # scale flow values proportionally
+                        fh[..., 0] *= W8 / flow_np.shape[1]
+                        fh[..., 1] *= H8 / flow_np.shape[0]
+                    vf.append(fh.cuda())
+            vid_flows.append(vf)
+        has_flows = any(len(vf) > 0 for vf in vid_flows)
+        if has_flows:
+            print(f"[train] nerf_vid flows loaded from {flow_dir}")
+    else:
+        vid_flows = [[] for _ in views]
+
     print(f"[train] nerf_vid: {len(views)} views x {len(vid_frames[0])} frames "
           f"{W8}x{H8} fovx={fovx:.3f}")
-    return vid_cams, vid_frames
+    return vid_cams, vid_frames, vid_flows
 
 
 def main():
@@ -239,6 +268,8 @@ def main():
     ap.add_argument("--eval_only", action="store_true",
                     help="skip training, load ckpt_last.pt and run eval only")
     ap.add_argument("--r2", default=None, help="override R2 destination (default: r2:storage/result/anchorflow/<out_basename>)")
+    ap.add_argument("--lambda_flow", type=float, default=0.1,
+                    help="weight for optical flow supervision (0 = disabled)")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--white_bg", action="store_true")
     ap.add_argument("--no-t2n", action="store_true")
@@ -427,7 +458,7 @@ def main():
     elif args.sup == "nerf_vid":
         if not args.vid_dir:
             sys.exit("[train] --sup nerf_vid requires --vid_dir DIR")
-        vid_cams, vid_frames = load_nerf_vid_dataset(args.vid_dir, cfg.model.res)
+        vid_cams, vid_frames, vid_flows = load_nerf_vid_dataset(args.vid_dir, cfg.model.res)
         n_vid_views  = len(vid_cams)
         n_vid_frames = len(vid_frames[0])
     else:  # frames
@@ -605,6 +636,50 @@ def main():
             gt_frame   = vid_frames[v_vid][j_vid]
             loss       = float(cfg.train.get("lambda_rgb", 1.0)) * \
                 (frame_pred - gt_frame).abs().mean()
+
+            # optical flow loss
+            lambda_flow = args.lambda_flow
+            if lambda_flow > 0 and step_j > 0 and vid_flows and vid_flows[v_vid] and j_vid > 0:
+                gt_flow = vid_flows[v_vid][j_vid - 1]  # [H, W, 2] frame j-1 → j
+                p_prev  = p_seq[step_j - 1].detach()
+                # Gaussian positions at prev and curr step
+                with torch.no_grad():
+                    pos_prev, _, _ = W.lbs_warp(canon_xyz, canon_cov6, w_b, idx_b,
+                                                 anchors.canonical, p_prev)
+                pos_curr, _, _ = W.lbs_warp(canon_xyz, canon_cov6, w_b, idx_b,
+                                             anchors.canonical, p_b)
+                # project to 2D pixel coords
+                N_gs = pos_prev.shape[0]
+                ones = torch.ones(N_gs, 1, device=dev)
+                H_img, W_img = cam_v.image_height, cam_v.image_width
+                fpt = cam_v.full_proj_transform  # [4,4]
+                def _proj(pts):
+                    c = torch.cat([pts, ones], dim=1) @ fpt  # [N, 4]
+                    w_ = c[:, 3].clamp(min=1e-6)
+                    ndc = c[:, :2] / w_.unsqueeze(1)
+                    px = (ndc[:, 0] + 1.0) * 0.5 * W_img - 0.5
+                    py = (ndc[:, 1] + 1.0) * 0.5 * H_img - 0.5
+                    return torch.stack([px, py], dim=1)  # [N, 2]
+                uv_prev = _proj(pos_prev.detach())  # [N, 2]
+                uv_curr = _proj(pos_curr)           # [N, 2]
+                pred_flow_2d = uv_curr - uv_prev.detach()  # [N, 2] pixel displacement
+
+                # sample GT flow at prev Gaussian locations via grid_sample
+                uv_norm = (uv_prev.detach() /
+                           torch.tensor([W_img - 1, H_img - 1], device=dev, dtype=torch.float32)
+                           ) * 2 - 1  # [N, 2] in [-1,1]
+                grid = uv_norm.unsqueeze(0).unsqueeze(0)  # [1,1,N,2]
+                gt_flow_t = gt_flow.permute(2, 0, 1).unsqueeze(0)  # [1,2,H,W]
+                gt_at_pts = torch.nn.functional.grid_sample(
+                    gt_flow_t, grid, align_corners=True, padding_mode="border"
+                )[0, :, 0, :].T  # [N, 2]
+
+                valid = ((uv_prev[:, 0] >= 0) & (uv_prev[:, 0] < W_img) &
+                         (uv_prev[:, 1] >= 0) & (uv_prev[:, 1] < H_img) &
+                         (torch.cat([pos_prev, ones], dim=1) @ fpt)[:, 3] > 0).detach()
+                if valid.any():
+                    loss = loss + lambda_flow * (pred_flow_2d[valid] - gt_at_pts[valid]).abs().mean()
+
             arap_pt = p_b
         else:
             v = rng.randint(0, V - 1)
