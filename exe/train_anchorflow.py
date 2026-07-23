@@ -238,7 +238,7 @@ def main():
                     help="evaluate only the first N frames (default: all T frames)")
     ap.add_argument("--eval_only", action="store_true",
                     help="skip training, load ckpt_last.pt and run eval only")
-    ap.add_argument("--r2", required=True, help="R2 destination, e.g. r2:storage/result/anchorflow/af_ficus")
+    ap.add_argument("--r2", default=None, help="override R2 destination (default: r2:storage/result/anchorflow/<out_basename>)")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--white_bg", action="store_true")
     ap.add_argument("--no-t2n", action="store_true")
@@ -477,13 +477,14 @@ def main():
 
     torch.set_float32_matmul_precision("high")
 
+    r2_dest = args.r2 or f"r2:storage/result/anchorflow/{os.path.basename(args.out)}"
+
     def sync_r2():
-        if args.r2:
-            for _retry in range(3):
-                ret = os.system(f"rclone copy {args.out} {args.r2} >/dev/null 2>&1")
-                if ret == 0:
-                    break
-                print(f"[sync_r2] retry {_retry+1}/3 failed")
+        for _retry in range(3):
+            ret = os.system(f"rclone copy {args.out} {r2_dest} >/dev/null 2>&1")
+            if ret == 0:
+                break
+            print(f"[sync_r2] retry {_retry+1}/3 failed")
 
     def rollout_positions(k, steps=None, bptt_start=0, grad=True, return_states=False):
         p0, v0 = anchors.canonical, v0_bank[k]
