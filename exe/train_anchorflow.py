@@ -238,7 +238,7 @@ def main():
                     help="evaluate only the first N frames (default: all T frames)")
     ap.add_argument("--eval_only", action="store_true",
                     help="skip training, load ckpt_last.pt and run eval only")
-    ap.add_argument("--r2", default=None)
+    ap.add_argument("--r2", required=True, help="R2 destination, e.g. r2:storage/result/anchorflow/af_ficus")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--white_bg", action="store_true")
     ap.add_argument("--no-t2n", action="store_true")
