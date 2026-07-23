@@ -26,3 +26,5 @@ train:
   log_every:  50
   ckpt_every: 500
   res:        256
+  lambda_vid: 1.0
+  lr_vid:     1.0e-3

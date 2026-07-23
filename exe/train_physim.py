@@ -80,6 +80,58 @@ def make_camera(pos, target=(0,0,0), up=(0,0,1), fov_deg=50, W=256, H=256) -> Ca
     return Cam(rot, T_vec, fov, fov, W, H)
 
 
+def load_video_dataset(vid_dir: str, res: int):
+    """Load GT video frames + cameras from NeRF-style transforms_train.json.
+
+    Returns:
+        vid_cams   : list[Cam]  length V  (one per view)
+        vid_frames : list[list[Tensor]]  [V][n_frames]  float [3,H,W] cuda
+    """
+    import torchvision.transforms.functional as TF
+    meta   = json.load(open(os.path.join(vid_dir, "transforms_train.json")))
+    fovx   = float(meta["camera_angle_x"])
+
+    # Group frames by view
+    from collections import defaultdict
+    by_view = defaultdict(list)
+    for f in meta["frames"]:
+        view = f["file_path"].split("/")[-2]   # view_XX
+        by_view[view].append(f)
+    views = sorted(by_view.keys())
+
+    vid_cams   = []
+    vid_frames = []
+    for view in views:
+        frames_sorted = sorted(by_view[view], key=lambda x: x["time"])
+        # Camera from first frame (all frames same camera)
+        c2w = np.array(frames_sorted[0]["transform_matrix"], dtype=np.float32)
+        R   = c2w[:3, :3]   # C2W rotation
+        t   = c2w[:3,  3]   # C2W translation
+        R_w2c = R.T
+        T_w2c = -R_w2c @ t
+        # Load one image to get size
+        img0_path = os.path.join(vid_dir, frames_sorted[0]["file_path"] + ".png")
+        img0 = Image.open(img0_path)
+        Wd, Hd = img0.size
+        fovy  = 2 * math.atan(math.tan(fovx / 2) * Hd / Wd)
+        s  = res / max(Wd, Hd)
+        W8 = max(8, int(round(Wd * s / 8)) * 8)
+        H8 = max(8, int(round(Hd * s / 8)) * 8)
+        vid_cams.append(Cam(R_w2c, T_w2c, fovx, fovy, W8, H8))
+        # Load frames
+        tensors = []
+        for f in frames_sorted:
+            path = os.path.join(vid_dir, f["file_path"] + ".png")
+            img  = Image.open(path).convert("RGB").resize((W8, H8), Image.LANCZOS)
+            t_   = torch.from_numpy(np.array(img, dtype=np.float32) / 255.0
+                                    ).permute(2, 0, 1).cuda()
+            tensors.append(t_)
+        vid_frames.append(tensors)
+    print(f"[vid] loaded {len(vid_cams)} views × {len(vid_frames[0])} frames "
+          f"({W8}×{H8})", flush=True)
+    return vid_cams, vid_frames
+
+
 def load_cameras_json(model_dir: str, n_views: int, res: int) -> list:
     """Load cameras from SC-GS cameras.json (original training cameras)."""
     cams_json = json.load(open(f"{model_dir}/cameras.json"))
@@ -281,6 +333,8 @@ def main():
     ap.add_argument("--cfg",      required=True)
     ap.add_argument("--resume",   action="store_true")
     ap.add_argument("--n_nodes",  type=int, default=512)
+    ap.add_argument("--vid_dir",  default=None,
+                    help="path to NeRF-style video dataset for GT supervision")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -393,6 +447,17 @@ def main():
         cond_cache.append(svd.precompute_cond(f0, T))
     print("[train] cache ready", flush=True)
 
+    # ── GT video supervision ───────────────────────────────────────────────── #
+    use_vid = args.vid_dir is not None
+    if use_vid:
+        vid_cams, vid_frames = load_video_dataset(args.vid_dir, res)
+        M_sim = sim.M if hasattr(sim, "M") else sim._orig_mod.M
+        f_vid = torch.nn.Parameter(torch.zeros(M_sim, 3, device=dev))
+        opt_vid = torch.optim.Adam([f_vid], lr=float(cfg.train.get("lr_vid", 1e-3)))
+        lambda_vid = float(cfg.train.get("lambda_vid", 1.0))
+        n_vid_frames = len(vid_frames[0])
+        print(f"[vid] GT supervision enabled  lambda={lambda_vid}", flush=True)
+
     # ── checkpoint ────────────────────────────────────────────────────────── #
     ckpt_mgr   = CheckpointManager(args.out, keep_last=3)
     start_step = 0
@@ -402,6 +467,9 @@ def main():
             sim.load_state_dict(ck["sim"])
             opt.load_state_dict(ck["opt"])
             start_step = ck.get("step", 0) + 1
+            if use_vid and "f_vid" in ck:
+                f_vid.data.copy_(ck["f_vid"])
+                opt_vid.load_state_dict(ck["opt_vid"])
             print(f"[train] resumed from step {start_step - 1}", flush=True)
 
     sim = torch.compile(sim)
@@ -423,6 +491,30 @@ def main():
     for step in range(start_step, iters):
         sim.train()
         opt.zero_grad()
+
+        # ── GT video supervision pass ──────────────────────────────────────── #
+        if use_vid:
+            opt_vid.zero_grad()
+            v_vid  = step % len(vid_cams)
+            j_vid  = torch.randint(0, n_vid_frames, (1,)).item()
+            step_j = min(T - 1, round(j_vid / (n_vid_frames - 1) * (T - 1)))
+            traj_vid = sim(f_vid, grad_steps=T)
+            pos_j = traj_vid[step_j]
+            with torch.no_grad():
+                aR_j = W.anchor_rotations(anchors.canonical, pos_j,
+                                          _idx=_arot_idx, _src=_arot_src)
+            def _vid_frame(p, _R=aR_j):
+                pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, _w_b, _idx_b,
+                                           anchors.canonical, p, anchor_R=_R)
+                g._xyz = pos
+                g.get_covariance = lambda sc=1.0, **kw: cov6
+                return render_gs(vid_cams[v_vid], g, pipe, bg)
+            frame_pred = checkpoint(_vid_frame, pos_j, use_reentrant=False)
+            gt_frame   = vid_frames[v_vid][j_vid]
+            loss_vid   = lambda_vid * F.l1_loss(frame_pred, gt_frame)
+            loss_vid.backward()
+            torch.nn.utils.clip_grad_norm_([f_vid], grad_clip)
+            opt_vid.step()
 
         v_idx = step % V
         cam   = train_cams[v_idx]
@@ -484,13 +576,15 @@ def main():
         if step % log_every == 0:
             with torch.no_grad():
                 travel = float((traj[-1] - anchors.canonical).norm(dim=-1).max())
-            print(f"[{step}/{iters}] loss={loss.item():.4f}  v={v_idx}"
+            vid_str = f"  vid={loss_vid.item():.4f}" if use_vid else ""
+            print(f"[{step}/{iters}] loss={loss.item():.4f}{vid_str}  v={v_idx}"
                   f"  travel={travel:.4f} ({travel/extent*100:.1f}%)", flush=True)
 
         if step % ckpt_every == 0 or step == iters - 1:
             raw = sim._orig_mod if hasattr(sim, "_orig_mod") else sim
+            extra = {"f_vid": f_vid.data, "opt_vid": opt_vid.state_dict()} if use_vid else {}
             ckpt_mgr.save(step, {"sim": raw.state_dict(),
-                                  "opt": opt.state_dict(), "step": step})
+                                  "opt": opt.state_dict(), "step": step, **extra})
             _save_rollout(step, raw, anchors, T, extent, dev,
                           canon_xyz, canon_cov6, g, bg, rollout_cams, pipe,
                           args.out, f_scale=f_scale)
