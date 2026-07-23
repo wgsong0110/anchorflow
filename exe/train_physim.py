@@ -335,6 +335,8 @@ def main():
     ap.add_argument("--n_nodes",  type=int, default=512)
     ap.add_argument("--vid_dir",  default=None,
                     help="path to NeRF-style video dataset for GT supervision")
+    ap.add_argument("--no_sds",   action="store_true",
+                    help="skip SVD MDS loss (GT video supervision only)")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -433,19 +435,22 @@ def main():
     opt = torch.optim.Adam(sim.parameters(), lr=float(cfg.train.lr))
 
     # ── SVD guidance ──────────────────────────────────────────────────────── #
-    svd_model_id = cfg.get("svd_model", "stabilityai/stable-video-diffusion-img2vid-xt")
-    svd = SVDGuidance(model_id=svd_model_id, device=dev)
-
-    grad_steps = int(cfg.sim.get("grad_steps", 5))   # #frames sampled for grad pass
-    print(f"[train] precomputing MDS conditioning (T={T}, T_grad={grad_steps}) ...", flush=True)
-    cond_cache   = []
-    frame0_cache = []
-    for cam in train_cams:
-        with torch.no_grad():
-            f0 = render_gs(cam, g, pipe, bg)
-        frame0_cache.append(f0)
-        cond_cache.append(svd.precompute_cond(f0, T))
-    print("[train] cache ready", flush=True)
+    use_sds = not args.no_sds
+    if use_sds:
+        svd_model_id = cfg.get("svd_model", "stabilityai/stable-video-diffusion-img2vid-xt")
+        svd = SVDGuidance(model_id=svd_model_id, device=dev)
+        grad_steps = int(cfg.sim.get("grad_steps", 5))
+        print(f"[train] precomputing MDS conditioning (T={T}, T_grad={grad_steps}) ...", flush=True)
+        cond_cache   = []
+        frame0_cache = []
+        for cam in train_cams:
+            with torch.no_grad():
+                f0 = render_gs(cam, g, pipe, bg)
+            frame0_cache.append(f0)
+            cond_cache.append(svd.precompute_cond(f0, T))
+        print("[train] cache ready", flush=True)
+    else:
+        print("[train] SDS disabled (--no_sds)", flush=True)
 
     # ── GT video supervision ───────────────────────────────────────────────── #
     use_vid = args.vid_dir is not None
@@ -516,62 +521,59 @@ def main():
             torch.nn.utils.clip_grad_norm_([f_vid], grad_clip)
             opt_vid.step()
 
-        v_idx = step % V
-        cam   = train_cams[v_idx]
+        if not use_sds:
+            loss = torch.tensor(0.0, device=dev)
+        else:
+            v_idx = step % V
+            cam   = train_cams[v_idx]
 
-        import time as _time
-        _profile = (step < 3)   # print timing for first 3 steps
-        def _t(label, t0):
-            if not _profile: return t0
-            torch.cuda.synchronize()
-            print(f"  [time] {label:40s} {(_time.time()-t0)*1000:6.0f}ms", flush=True)
-            return _time.time()
-        _t0 = _time.time()
+            import time as _time
+            _profile = (step < 3)
+            def _t(label, t0):
+                if not _profile: return t0
+                torch.cuda.synchronize()
+                print(f"  [time] {label:40s} {(_time.time()-t0)*1000:6.0f}ms", flush=True)
+                return _time.time()
+            _t0 = _time.time()
 
-        f_ext = sample_impulse(sim._orig_mod.M if hasattr(sim, "_orig_mod") else sim.M,
-                               float(cfg.sim.get("impulse_frac", 0.5)),
-                               extent, f_scale, dev)
-        # Full BPTT: grad_steps=T means detach never triggers
-        traj  = sim(f_ext, grad_steps=T)                          # [T, M, 3]
-        _t0 = _t("GNN forward (T=25)", _t0)
+            f_ext = sample_impulse(sim._orig_mod.M if hasattr(sim, "_orig_mod") else sim.M,
+                                   float(cfg.sim.get("impulse_frac", 0.5)),
+                                   extent, f_scale, dev)
+            traj  = sim(f_ext, grad_steps=T)
+            _t0 = _t("GNN forward (T=25)", _t0)
 
-        # ── pass 1: no_grad render → SDS latent gradient ──────────────────── #
-        with torch.no_grad():
-            frames_nograd = traj_to_frames(
-                traj.detach(), canon_xyz, canon_cov6, anchors,
-                g, bg, cam, pipe, use_checkpoint=False,
+            with torch.no_grad():
+                frames_nograd = traj_to_frames(
+                    traj.detach(), canon_xyz, canon_cov6, anchors,
+                    g, bg, cam, pipe, use_checkpoint=False,
+                    _w_b=_w_b, _idx_b=_idx_b,
+                    _arot_idx=_arot_idx, _arot_src=_arot_src)
+            _t0 = _t("no_grad render T=25 frames", _t0)
+            lat_grad = svd.compute_mds_grad(frames_nograd, cond_cache=cond_cache[v_idx])
+            _t0 = _t("compute_mds_grad (SVD UNet)", _t0)
+
+            t_sample = list(range(0, T, max(1, T // grad_steps)))[:grad_steps]
+            traj_sample = traj[t_sample]
+            frames_grad = traj_to_frames(
+                traj_sample, canon_xyz, canon_cov6, anchors,
+                g, bg, cam, pipe, use_checkpoint=True,
                 _w_b=_w_b, _idx_b=_idx_b,
-                _arot_idx=_arot_idx, _arot_src=_arot_src)        # [T, 3, H, W]
-        _t0 = _t("no_grad render T=25 frames", _t0)
-        lat_grad = svd.compute_mds_grad(
-            frames_nograd, cond_cache=cond_cache[v_idx])          # [1, T, 4, h, w]
-        _t0 = _t("compute_mds_grad (SVD UNet)", _t0)
+                _arot_idx=_arot_idx, _arot_src=_arot_src)
+            _t0 = _t("re-render T_grad=5 (checkpoint)", _t0)
+            x0     = svd.encode_frames(frames_grad, use_checkpoint=True)
+            target = (x0 - lat_grad[:, t_sample]).detach()
+            loss   = 0.5 * F.mse_loss(x0.float(), target.float(),
+                                        reduction="sum") / len(t_sample)
+            _t0 = _t("VAE encode + loss", _t0)
 
-        # ── pass 2: re-render sampled frames with grad → surrogate loss ──────── #
-        # Sample T_grad evenly-spaced frames to keep GPU memory manageable.
-        # GNN has full T-step gradient graph; we just inject signal at these frames.
-        t_sample = list(range(0, T, max(1, T // grad_steps)))[:grad_steps]
-        traj_sample = traj[t_sample]                               # [T_grad, M, 3]
-        frames_grad = traj_to_frames(
-            traj_sample, canon_xyz, canon_cov6, anchors,
-            g, bg, cam, pipe, use_checkpoint=True,
-            _w_b=_w_b, _idx_b=_idx_b,
-            _arot_idx=_arot_idx, _arot_src=_arot_src)            # [T_grad, 3, H, W]
-        _t0 = _t("re-render T_grad=5 (checkpoint)", _t0)
-        x0     = svd.encode_frames(frames_grad, use_checkpoint=True)  # [1,T_grad,4,h,w]
-        target = (x0 - lat_grad[:, t_sample]).detach()
-        loss   = 0.5 * F.mse_loss(x0.float(), target.float(),
-                                    reduction="sum") / len(t_sample)
-        _t0 = _t("VAE encode + loss", _t0)
+            if not torch.isfinite(loss):
+                print(f"[{step}] non-finite loss, skip", flush=True)
+                continue
 
-        if not torch.isfinite(loss):
-            print(f"[{step}] non-finite loss, skip", flush=True)
-            continue
-
-        loss.backward()
-        _t0 = _t("backward", _t0)
-        torch.nn.utils.clip_grad_norm_(sim.parameters(), grad_clip)
-        opt.step()
+            loss.backward()
+            _t0 = _t("backward", _t0)
+            torch.nn.utils.clip_grad_norm_(sim.parameters(), grad_clip)
+            opt.step()
 
         if step % log_every == 0:
             with torch.no_grad():
