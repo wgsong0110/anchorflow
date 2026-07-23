@@ -676,7 +676,7 @@ def main():
 
                 valid = ((uv_prev[:, 0] >= 0) & (uv_prev[:, 0] < W_img) &
                          (uv_prev[:, 1] >= 0) & (uv_prev[:, 1] < H_img) &
-                         (torch.cat([pos_prev, ones], dim=1) @ fpt)[:, 3] > 0).detach()
+                         ((torch.cat([pos_prev, ones], dim=1) @ fpt)[:, 3] > 0)).detach()
                 if valid.any():
                     loss = loss + lambda_flow * (pred_flow_2d[valid] - gt_at_pts[valid]).abs().mean()
 
