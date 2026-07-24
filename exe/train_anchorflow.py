@@ -649,71 +649,30 @@ def main():
             arap_pt = p_b
         elif args.sup == "nerf_vid":
             v_vid  = rng.randint(0, n_vid_views - 1)
-            j_vid  = rng.randint(0, cur_max_j)
-            step_j = min(T - 1, round(j_vid / max(n_vid_frames - 1, 1) * (T - 1)))
             cam_v  = vid_cams[v_vid]
             t_r    = v_vid
-            p_seq  = rollout_positions(k, steps=step_j, bptt_start=step_j, grad=True)
-            p_b    = p_seq[step_j]
+            # roll out to max curriculum frame with full BPTT
+            max_step_j = min(T - 1, round(cur_max_j / max(n_vid_frames - 1, 1) * (T - 1)))
+            p_seq  = rollout_positions(k, steps=max_step_j, bptt_start=0, grad=True)
             w_b, idx_b = anchors.cal_nn_weight(canon_xyz)
-            def _fv(pt, wb=w_b, ib=idx_b, _cv=cam_v):
-                pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, wb, ib,
-                                           anchors.canonical, pt)
-                return render_with(_cv, pos, cov6)
-            frame_pred = checkpoint(_fv, p_b, use_reentrant=False)
-            gt_frame   = vid_frames[v_vid][j_vid]
-            loss       = float(cfg.train.get("lambda_rgb", 1.0)) * \
-                (frame_pred - gt_frame).abs().mean()
-
-            # optical flow loss
-            lambda_flow = args.lambda_flow
-            if lambda_flow > 0 and step_j > 0 and vid_flows and vid_flows[v_vid] and j_vid > 0:
-                gt_flow = vid_flows[v_vid][j_vid - 1]  # [H, W, 2] frame j-1 → j
-                p_prev  = p_seq[step_j - 1].detach()
-                # Gaussian positions at prev and curr step
-                with torch.no_grad():
-                    pos_prev, _, _ = W.lbs_warp(canon_xyz, canon_cov6, w_b, idx_b,
-                                                 anchors.canonical, p_prev)
-                pos_curr, _, _ = W.lbs_warp(canon_xyz, canon_cov6, w_b, idx_b,
-                                             anchors.canonical, p_b)
-                # project to 2D pixel coords
-                N_gs = pos_prev.shape[0]
-                ones = torch.ones(N_gs, 1, device=dev)
-                H_img, W_img = cam_v.image_height, cam_v.image_width
-                fpt = cam_v.full_proj_transform  # [4,4]
-                def _proj(pts):
-                    c = torch.cat([pts, ones], dim=1) @ fpt  # [N, 4]
-                    w_ = c[:, 3].clamp(min=1e-6)
-                    ndc = c[:, :2] / w_.unsqueeze(1)
-                    px = (ndc[:, 0] + 1.0) * 0.5 * W_img - 0.5
-                    py = (ndc[:, 1] + 1.0) * 0.5 * H_img - 0.5
-                    return torch.stack([px, py], dim=1)  # [N, 2]
-                uv_prev = _proj(pos_prev.detach())  # [N, 2]
-                uv_curr = _proj(pos_curr)           # [N, 2]
-                pred_flow_2d = uv_curr - uv_prev.detach()  # [N, 2] pixel displacement
-
-                # sample GT flow at prev Gaussian locations via grid_sample
-                uv_norm = (uv_prev.detach() /
-                           torch.tensor([W_img - 1, H_img - 1], device=dev, dtype=torch.float32)
-                           ) * 2 - 1  # [N, 2] in [-1,1]
-                grid = uv_norm.unsqueeze(0).unsqueeze(0)  # [1,1,N,2]
-                gt_flow_t = gt_flow.permute(2, 0, 1).unsqueeze(0)  # [1,2,H,W]
-                gt_at_pts = torch.nn.functional.grid_sample(
-                    gt_flow_t, grid, align_corners=True, padding_mode="border"
-                )[0, :, 0, :].T  # [N, 2]
-
-                valid = ((uv_prev[:, 0] >= 0) & (uv_prev[:, 0] < W_img) &
-                         (uv_prev[:, 1] >= 0) & (uv_prev[:, 1] < H_img) &
-                         ((torch.cat([pos_prev, ones], dim=1) @ fpt)[:, 3] > 0)).detach()
-                if valid.any():
-                    loss = loss + lambda_flow * (pred_flow_2d[valid] - gt_at_pts[valid]).abs().mean()
-
-            arap_pt = p_b
+            # compute loss over all frames 0..cur_max_j
+            frame_losses = []
+            for j_vid in range(cur_max_j + 1):
+                step_j = min(T - 1, round(j_vid / max(n_vid_frames - 1, 1) * (T - 1)))
+                p_b = p_seq[step_j]
+                gt_frame = vid_frames[v_vid][j_vid]
+                def _fv(pt, wb=w_b, ib=idx_b, _cv=cam_v):
+                    pos, cov6, _ = W.lbs_warp(canon_xyz, canon_cov6, wb, ib,
+                                               anchors.canonical, pt)
+                    return render_with(_cv, pos, cov6)
+                frame_pred = checkpoint(_fv, p_b, use_reentrant=False)
+                frame_losses.append((frame_pred - gt_frame).abs().mean())
+            loss = float(cfg.train.get("lambda_rgb", 1.0)) * torch.stack(frame_losses).mean()
+            arap_pt = p_seq[max_step_j]
 
             # curriculum: update RGB loss EMA and advance max_j if ready
             with torch.no_grad():
-                rgb_l = float(cfg.train.get("lambda_rgb", 1.0)) * \
-                    (frame_pred.detach() - gt_frame).abs().mean().item()
+                rgb_l = float(loss.detach().item())
             _loss_ema = rgb_l if _loss_ema is None else \
                 _ema_alpha * _loss_ema + (1 - _ema_alpha) * rgb_l
             if _loss_ema_init is None:
