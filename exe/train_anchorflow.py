@@ -583,6 +583,17 @@ def main():
             print("[eval_only] --eval_frames and --eval_cam_idxs required")
         return
 
+    # curriculum state (nerf_vid only)
+    cur_max_j         = int(cfg.train.get("cur_start_frames", 1))
+    cur_threshold     = float(cfg.train.get("cur_threshold", 0.05))
+    cur_min_steps     = int(cfg.train.get("cur_min_steps", 300))
+    cur_last_advance  = start
+    _loss_ema         = None
+    _ema_alpha        = 0.98
+    if args.sup == "nerf_vid":
+        print(f"[curriculum] start max_j={cur_max_j}/{n_vid_frames-1}  "
+              f"threshold={cur_threshold}  min_steps={cur_min_steps}")
+
     for step in range(start, cfg.train.iters):
         k = rng.randint(0, B - 1)
         opt.zero_grad(set_to_none=True)
@@ -624,7 +635,7 @@ def main():
             arap_pt = p_b
         elif args.sup == "nerf_vid":
             v_vid  = rng.randint(0, n_vid_views - 1)
-            j_vid  = rng.randint(0, n_vid_frames - 1)
+            j_vid  = rng.randint(0, cur_max_j)
             step_j = min(T - 1, round(j_vid / max(n_vid_frames - 1, 1) * (T - 1)))
             cam_v  = vid_cams[v_vid]
             t_r    = v_vid
@@ -684,6 +695,20 @@ def main():
                     loss = loss + lambda_flow * (pred_flow_2d[valid] - gt_at_pts[valid]).abs().mean()
 
             arap_pt = p_b
+
+            # curriculum: update RGB loss EMA and advance max_j if ready
+            with torch.no_grad():
+                rgb_l = float(cfg.train.get("lambda_rgb", 1.0)) * \
+                    (frame_pred.detach() - gt_frame).abs().mean().item()
+            _loss_ema = rgb_l if _loss_ema is None else \
+                _ema_alpha * _loss_ema + (1 - _ema_alpha) * rgb_l
+            if (_loss_ema < cur_threshold and
+                    step - cur_last_advance >= cur_min_steps and
+                    cur_max_j < n_vid_frames - 1):
+                cur_max_j += 1
+                cur_last_advance = step
+                print(f"[curriculum] step={step} rgb_ema={_loss_ema:.4f} "
+                      f"-> max_j={cur_max_j}/{n_vid_frames-1}", flush=True)
         else:
             v = rng.randint(0, V - 1)
             cam = cameras[v]
