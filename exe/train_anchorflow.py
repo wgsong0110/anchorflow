@@ -584,20 +584,29 @@ def main():
         return
 
     # curriculum state (nerf_vid only)
+    _use_curriculum       = (args.sup == "nerf_vid")
     cur_max_j             = int(cfg.train.get("cur_start_frames", 1))
     cur_threshold         = float(cfg.train.get("cur_threshold", 0.05))
     cur_min_steps         = int(cfg.train.get("cur_min_steps", 300))
     cur_post_steps        = int(cfg.train.get("cur_post_steps", 5000))
+    cur_min_total_steps   = int(cfg.train.get("cur_min_total_steps", 10000))
     cur_last_advance      = start
+    cur_full_advance      = None   # step when max_j first reached n_vid_frames-1
     _loss_ema             = None
     _ema_alpha            = 0.98
-    end_step              = cfg.train.iters
-    if args.sup == "nerf_vid":
+    if args.resume and _ck_peek is not None:
+        cur_max_j       = _ck_peek.get("cur_max_j", cur_max_j)
+        cur_full_advance = _ck_peek.get("cur_full_advance", None)
+        cur_last_advance = _ck_peek.get("cur_last_advance", start)
+        _loss_ema        = _ck_peek.get("cur_loss_ema", None)
+    if _use_curriculum:
         print(f"[curriculum] start max_j={cur_max_j}/{n_vid_frames-1}  "
               f"threshold={cur_threshold}  min_steps={cur_min_steps}  "
-              f"post_steps={cur_post_steps}")
+              f"post_steps={cur_post_steps}  min_total={cur_min_total_steps}")
 
-    for step in range(start, end_step):
+    import itertools
+    _step_iter = itertools.count(start) if _use_curriculum else range(start, cfg.train.iters)
+    for step in _step_iter:
         k = rng.randint(0, B - 1)
         opt.zero_grad(set_to_none=True)
 
@@ -711,9 +720,9 @@ def main():
                 cur_max_j += 1
                 cur_last_advance = step
                 if cur_max_j == n_vid_frames - 1:
-                    end_step = max(end_step, step + cur_post_steps)
+                    cur_full_advance = step
                     print(f"[curriculum] step={step} rgb_ema={_loss_ema:.4f} "
-                          f"-> FULL (max_j={cur_max_j})  end_step={end_step}", flush=True)
+                          f"-> FULL (max_j={cur_max_j})", flush=True)
                 else:
                     print(f"[curriculum] step={step} rgb_ema={_loss_ema:.4f} "
                           f"-> max_j={cur_max_j}/{n_vid_frames-1}", flush=True)
@@ -774,7 +783,9 @@ def main():
                 p_last = p_seq[-1]
                 travel = float((p_last - anchors.canonical).norm(dim=-1).max())
                 rho = float(anchors.radius.mean())
-            print(f"[{step}/{cfg.train.iters}] loss={float(loss):.4f} k={k} v={t_r} "
+            total_steps = cfg.train.iters if not _use_curriculum else \
+                f"cur:{cur_max_j}/{n_vid_frames-1}"
+            print(f"[{step}/{total_steps}] loss={float(loss):.4f} k={k} v={t_r} "
                   f"travel={travel:.3f} ({travel/extent*100:.2f}%) rho={rho:.3f}",
                   flush=True)
 
@@ -783,17 +794,32 @@ def main():
             _save_rollout(step, rollout_positions, anchors, canon_xyz, canon_cov6,
                           render_with, rollout_cam0, T, args.out)
             sync_r2()
+        _cur_state = {"cur_max_j": cur_max_j, "cur_full_advance": cur_full_advance,
+                      "cur_last_advance": cur_last_advance, "cur_loss_ema": _loss_ema}
         if step % cfg.train.ckpt_every == 0:
             ckpt_mgr.save(step, {"model": model.state_dict(),
                                  "anchors": anchors.state_dict(),
                                  "opt": opt.state_dict(), "z_bank": z_bank.data,
-                                 "v0_bank": v0_bank.data, "step": step})
+                                 "v0_bank": v0_bank.data, "step": step,
+                                 **_cur_state})
             sync_r2()
 
-    ckpt_mgr.save(cfg.train.iters - 1,
+        # curriculum termination
+        if _use_curriculum and cur_full_advance is not None:
+            post = step - cur_full_advance
+            if post >= cur_post_steps and step + 1 >= cur_min_total_steps:
+                print(f"[curriculum] done at step={step+1}  "
+                      f"post={post} >= {cur_post_steps}  "
+                      f"total={step+1} >= {cur_min_total_steps}", flush=True)
+                break
+
+    _final_step = step
+    ckpt_mgr.save(_final_step,
                   {"model": model.state_dict(), "anchors": anchors.state_dict(),
                    "opt": opt.state_dict(), "z_bank": z_bank.data,
-                   "v0_bank": v0_bank.data, "step": cfg.train.iters - 1})
+                   "v0_bank": v0_bank.data, "step": _final_step, **_cur_state})
+    _save_rollout(_final_step, rollout_positions, anchors, canon_xyz, canon_cov6,
+                  render_with, rollout_cam0, T, args.out)
     sync_r2()
 
     if args.eval_frames and args.eval_cam_idxs:

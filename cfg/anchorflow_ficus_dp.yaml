@@ -18,7 +18,7 @@ model:
   res:          256
 
 train:
-  iters:         30000
+  iters:         30000   # used only for MDS; nerf_vid uses curriculum termination
   n_views:       8
   z0_bank_size:  16
   z0_motion:     0.02
@@ -34,10 +34,11 @@ train:
   lambda_z0:           1.0e-5
   vel_smooth:    0.5
   grad_clip:     1.0
-  cur_start_frames: 1
-  cur_threshold:    0.05
-  cur_min_steps:    300
-  cur_post_steps:   5000
+  cur_start_frames:   1
+  cur_threshold:      0.05
+  cur_min_steps:      300
+  cur_post_steps:     5000
+  cur_min_total_steps: 10000
   log_every:     50
   ckpt_every:    1000
   rollout_every: 200
