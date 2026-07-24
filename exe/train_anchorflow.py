@@ -395,7 +395,8 @@ def main():
     print(f"[train] SSMDynamics dt={dt} accel_scale={accel_scale:.4f} damping={damping} vel_smooth={vel_smooth} (step compiled)")
 
     # z = actuation, varied per initial condition (ssm_dynamics docstring)
-    B = int(cfg.train.z0_bank_size)
+    # nerf_vid has a single GT motion → bank size forced to 1
+    B = 1 if args.sup == "nerf_vid" else int(cfg.train.z0_bank_size)
     v0_motion = float(cfg.train.get("z0_motion", 0.01))
     v0_std = v0_motion * extent / (dt * max(T - 1, 1))
     z_bank = torch.nn.Parameter(0.01 * torch.randn(B, M, z_dim, device=dev))
