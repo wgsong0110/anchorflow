@@ -37,6 +37,7 @@ train:
   cur_start_frames: 1
   cur_threshold:    0.05
   cur_min_steps:    300
+  cur_post_steps:   5000
   log_every:     50
   ckpt_every:    1000
   rollout_every: 200

@@ -584,17 +584,20 @@ def main():
         return
 
     # curriculum state (nerf_vid only)
-    cur_max_j         = int(cfg.train.get("cur_start_frames", 1))
-    cur_threshold     = float(cfg.train.get("cur_threshold", 0.05))
-    cur_min_steps     = int(cfg.train.get("cur_min_steps", 300))
-    cur_last_advance  = start
-    _loss_ema         = None
-    _ema_alpha        = 0.98
+    cur_max_j             = int(cfg.train.get("cur_start_frames", 1))
+    cur_threshold         = float(cfg.train.get("cur_threshold", 0.05))
+    cur_min_steps         = int(cfg.train.get("cur_min_steps", 300))
+    cur_post_steps        = int(cfg.train.get("cur_post_steps", 5000))
+    cur_last_advance      = start
+    _loss_ema             = None
+    _ema_alpha            = 0.98
+    end_step              = cfg.train.iters
     if args.sup == "nerf_vid":
         print(f"[curriculum] start max_j={cur_max_j}/{n_vid_frames-1}  "
-              f"threshold={cur_threshold}  min_steps={cur_min_steps}")
+              f"threshold={cur_threshold}  min_steps={cur_min_steps}  "
+              f"post_steps={cur_post_steps}")
 
-    for step in range(start, cfg.train.iters):
+    for step in range(start, end_step):
         k = rng.randint(0, B - 1)
         opt.zero_grad(set_to_none=True)
 
@@ -707,8 +710,13 @@ def main():
                     cur_max_j < n_vid_frames - 1):
                 cur_max_j += 1
                 cur_last_advance = step
-                print(f"[curriculum] step={step} rgb_ema={_loss_ema:.4f} "
-                      f"-> max_j={cur_max_j}/{n_vid_frames-1}", flush=True)
+                if cur_max_j == n_vid_frames - 1:
+                    end_step = max(end_step, step + cur_post_steps)
+                    print(f"[curriculum] step={step} rgb_ema={_loss_ema:.4f} "
+                          f"-> FULL (max_j={cur_max_j})  end_step={end_step}", flush=True)
+                else:
+                    print(f"[curriculum] step={step} rgb_ema={_loss_ema:.4f} "
+                          f"-> max_j={cur_max_j}/{n_vid_frames-1}", flush=True)
         else:
             v = rng.randint(0, V - 1)
             cam = cameras[v]
