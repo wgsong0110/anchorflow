@@ -586,22 +586,24 @@ def main():
     # curriculum state (nerf_vid only)
     _use_curriculum       = (args.sup == "nerf_vid")
     cur_max_j             = int(cfg.train.get("cur_start_frames", 1))
-    cur_threshold         = float(cfg.train.get("cur_threshold", 0.05))
+    cur_rel_threshold     = float(cfg.train.get("cur_rel_threshold", 0.75))
     cur_min_steps         = int(cfg.train.get("cur_min_steps", 300))
     cur_post_steps        = int(cfg.train.get("cur_post_steps", 5000))
     cur_min_total_steps   = int(cfg.train.get("cur_min_total_steps", 10000))
     cur_last_advance      = start
     cur_full_advance      = None   # step when max_j first reached n_vid_frames-1
     _loss_ema             = None
+    _loss_ema_init        = None   # captured at first step; threshold = init * rel_threshold
     _ema_alpha            = 0.98
     if args.resume and _ck_peek is not None:
-        cur_max_j       = _ck_peek.get("cur_max_j", cur_max_j)
-        cur_full_advance = _ck_peek.get("cur_full_advance", None)
-        cur_last_advance = _ck_peek.get("cur_last_advance", start)
-        _loss_ema        = _ck_peek.get("cur_loss_ema", None)
+        cur_max_j        = _ck_peek.get("cur_max_j", cur_max_j)
+        cur_full_advance  = _ck_peek.get("cur_full_advance", None)
+        cur_last_advance  = _ck_peek.get("cur_last_advance", start)
+        _loss_ema         = _ck_peek.get("cur_loss_ema", None)
+        _loss_ema_init    = _ck_peek.get("cur_loss_ema_init", None)
     if _use_curriculum:
         print(f"[curriculum] start max_j={cur_max_j}/{n_vid_frames-1}  "
-              f"threshold={cur_threshold}  min_steps={cur_min_steps}  "
+              f"rel_threshold={cur_rel_threshold}  min_steps={cur_min_steps}  "
               f"post_steps={cur_post_steps}  min_total={cur_min_total_steps}")
 
     import itertools
@@ -714,7 +716,10 @@ def main():
                     (frame_pred.detach() - gt_frame).abs().mean().item()
             _loss_ema = rgb_l if _loss_ema is None else \
                 _ema_alpha * _loss_ema + (1 - _ema_alpha) * rgb_l
-            if (_loss_ema < cur_threshold and
+            if _loss_ema_init is None:
+                _loss_ema_init = _loss_ema
+            cur_abs_threshold = _loss_ema_init * cur_rel_threshold
+            if (_loss_ema < cur_abs_threshold and
                     step - cur_last_advance >= cur_min_steps and
                     cur_max_j < n_vid_frames - 1):
                 cur_max_j += 1
@@ -722,9 +727,11 @@ def main():
                 if cur_max_j == n_vid_frames - 1:
                     cur_full_advance = step
                     print(f"[curriculum] step={step} rgb_ema={_loss_ema:.4f} "
+                          f"(thr={cur_abs_threshold:.4f}={_loss_ema_init:.4f}*{cur_rel_threshold}) "
                           f"-> FULL (max_j={cur_max_j})", flush=True)
                 else:
                     print(f"[curriculum] step={step} rgb_ema={_loss_ema:.4f} "
+                          f"(thr={cur_abs_threshold:.4f}={_loss_ema_init:.4f}*{cur_rel_threshold}) "
                           f"-> max_j={cur_max_j}/{n_vid_frames-1}", flush=True)
         else:
             v = rng.randint(0, V - 1)
@@ -795,7 +802,8 @@ def main():
                           render_with, rollout_cam0, T, args.out)
             sync_r2()
         _cur_state = {"cur_max_j": cur_max_j, "cur_full_advance": cur_full_advance,
-                      "cur_last_advance": cur_last_advance, "cur_loss_ema": _loss_ema}
+                      "cur_last_advance": cur_last_advance, "cur_loss_ema": _loss_ema,
+                      "cur_loss_ema_init": _loss_ema_init}
         if step % cfg.train.ckpt_every == 0:
             ckpt_mgr.save(step, {"model": model.state_dict(),
                                  "anchors": anchors.state_dict(),

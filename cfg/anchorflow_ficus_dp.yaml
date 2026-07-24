@@ -35,7 +35,7 @@ train:
   vel_smooth:    0.5
   grad_clip:     1.0
   cur_start_frames:   1
-  cur_threshold:      0.05
+  cur_rel_threshold:  0.75
   cur_min_steps:      300
   cur_post_steps:     5000
   cur_min_total_steps: 10000
