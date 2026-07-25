@@ -187,11 +187,12 @@ def load_nerf_vid_dataset(vid_dir, res):
     for view in views:
         frames_sorted = sorted(by_view[view], key=lambda x: x["time"])
         c2w = np.array(frames_sorted[0]["transform_matrix"], dtype=np.float32)
-        # NeRF-Blender → COLMAP convention (matches SC-GS training dataset reader)
-        c2w[:, 1:3] *= -1
-        R     = c2w[:3, :3]
-        t     = c2w[:3,  3]
-        T_w2c = -(R.T @ t)
+        # Exact formula from SC-GS readCamerasFromTransforms:
+        #   matrix = inv(c2w), R = -matrix[:3,:3].T with col0 negated, T = -matrix[:3,3]
+        matrix = np.linalg.inv(c2w)
+        R = -np.transpose(matrix[:3, :3])
+        R[:, 0] = -R[:, 0]
+        T_w2c = -matrix[:3, 3]
         img0_path = os.path.join(vid_dir, frames_sorted[0]["file_path"] + ".png")
         img0 = Image.open(img0_path)
         Wd, Hd = img0.size
