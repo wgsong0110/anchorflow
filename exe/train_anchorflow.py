@@ -187,9 +187,7 @@ def load_nerf_vid_dataset(vid_dir, res):
     for view in views:
         frames_sorted = sorted(by_view[view], key=lambda x: x["time"])
         c2w = np.array(frames_sorted[0]["transform_matrix"], dtype=np.float32)
-        R   = c2w[:3, :3]          # R_c2w (NeRF-Blender convention, matches SC-GS)
-        t   = c2w[:3,  3]
-        T_w2c = -(R.T @ t)
+        cam_pos = c2w[:3, 3]
         img0_path = os.path.join(vid_dir, frames_sorted[0]["file_path"] + ".png")
         img0 = Image.open(img0_path)
         Wd, Hd = img0.size
@@ -197,6 +195,13 @@ def load_nerf_vid_dataset(vid_dir, res):
         s    = res / max(Wd, Hd)
         W8   = max(8, int(round(Wd * s / 8)) * 8)
         H8   = max(8, int(round(Hd * s / 8)) * 8)
+        # build look-at camera (Z-up, target=origin) matching rollout camera convention
+        _fwd = _normalize(np.array([0., 0., 0.], dtype=np.float32) - cam_pos)
+        _up  = np.array([0., 0., 1.], dtype=np.float32)
+        _right = _normalize(np.cross(_fwd, _up))
+        _up2   = np.cross(_right, _fwd)
+        R = np.stack([_right, -_up2, _fwd], axis=1)
+        T_w2c = -(R.T @ cam_pos)
         vid_cams.append(Cam(R, T_w2c, fovx, fovy, W8, H8))
         tensors = []
         for fr in frames_sorted:
