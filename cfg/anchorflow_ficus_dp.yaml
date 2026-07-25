@@ -26,7 +26,7 @@ train:
   lr_gnn:        1.0e-4
   lr_anchor:     1.0e-3
   lr_z0:         5.0e-4
-  lr_gaussian:   0.0
+  lr_gaussian:   1.0e-4
   lambda_rgb:    1.0
   lambda_arap:         0.5
   lambda_accel_smooth: 0.01
