@@ -187,8 +187,7 @@ def load_nerf_vid_dataset(vid_dir, res):
     for view in views:
         frames_sorted = sorted(by_view[view], key=lambda x: x["time"])
         c2w = np.array(frames_sorted[0]["transform_matrix"], dtype=np.float32)
-        c2w[:, 1:3] *= -1          # NeRF-Blender → COLMAP convention
-        R   = c2w[:3, :3]          # R_c2w in COLMAP
+        R   = c2w[:3, :3]          # R_c2w (NeRF-Blender convention, matches SC-GS)
         t   = c2w[:3,  3]
         T_w2c = -(R.T @ t)
         img0_path = os.path.join(vid_dir, frames_sorted[0]["file_path"] + ".png")
@@ -564,6 +563,8 @@ def main():
 
     if args.sup == "frames" and train_cam_single is not None:
         rollout_cam0 = train_cam_single
+    elif args.sup == "nerf_vid":
+        rollout_cam0 = vid_cams[0]
     else:
         z_min    = float(anchors.canonical[:, 2].min())
         z_max    = float(anchors.canonical[:, 2].max())
