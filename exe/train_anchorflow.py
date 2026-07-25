@@ -303,6 +303,20 @@ def main():
     g = GaussianModel(3, fea_dim=_hyper_dim)
     g.load_ply(f"{args.model}/point_cloud/iteration_{args.iter}/point_cloud.ply")
     g.active_sh_degree = 3
+    # SC-GS node canonical positions are Z-up (plant axis along Z, pot at -Z, leaves at +Z).
+    # Training cameras are Y-up. Apply Rx(-90°): (x,y,z) → (x,z,-y) to stand the plant upright.
+    with torch.no_grad():
+        old_xyz = g._xyz.data
+        g._xyz.data = torch.stack([old_xyz[:,0], old_xyz[:,2], -old_xyz[:,1]], dim=1)
+        # Quaternion: q_new = q_R ⊗ q_old, q_R = Rx(-90°) = (cos-45°, sin-45°, 0, 0)
+        rw, rx = 0.70710678, -0.70710678
+        q = g._rotation.data  # [N,4] (w,x,y,z)
+        g._rotation.data = torch.stack([
+            rw*q[:,0] - rx*q[:,1],
+            rw*q[:,1] + rx*q[:,0],
+            rw*q[:,2] + rx*q[:,3],
+            rw*q[:,3] - rx*q[:,2],
+        ], dim=1)
     canon_xyz = g.get_xyz.detach().clone()
     G = canon_xyz.shape[0]
     print(f"[train] gaussians={G}  commit={gh}  sup={args.sup}")
