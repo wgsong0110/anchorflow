@@ -195,9 +195,9 @@ def load_nerf_vid_dataset(vid_dir, res):
         s    = res / max(Wd, Hd)
         W8   = max(8, int(round(Wd * s / 8)) * 8)
         H8   = max(8, int(round(Hd * s / 8)) * 8)
-        # build look-at camera (Z-up, target=origin) matching rollout camera convention
+        # build look-at camera (Y-up, target=origin) matching Blender/NeRF-Blender convention
         _fwd = _normalize(np.array([0., 0., 0.], dtype=np.float32) - cam_pos)
-        _up  = np.array([0., 0., 1.], dtype=np.float32)
+        _up  = np.array([0., 1., 0.], dtype=np.float32)
         _right = _normalize(np.cross(_fwd, _up))
         _up2   = np.cross(_right, _fwd)
         R = np.stack([_right, -_up2, _fwd], axis=1)
