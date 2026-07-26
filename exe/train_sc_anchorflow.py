@@ -260,6 +260,8 @@ def main():
     ap.add_argument("--dt",        type=float, default=0.05)
     ap.add_argument("--damping",   type=float, default=0.98)
     ap.add_argument("--accel_scale", type=float, default=0.01)
+    ap.add_argument("--eval_every", type=int, default=1000,
+                    help="full-T all-view PSNR/SSIM eval cadence (SC-GS-comparable; 0 disables)")
     ap.add_argument("--frames_per_step", type=int, default=6,
                     help="random subset of T frames to render+loss per step "
                          "(rollout still runs the full T frames; render/backward "
@@ -340,7 +342,7 @@ def main():
     refresh_binding()
 
     # ── rollout helper ────────────────────────────────────────────────────────
-    def rollout():
+    def rollout(grad=True):
         p0 = anchors.canonical
         edge_index = build_graph(p0.detach(), graph_cfg)
         v0 = ic_net(ic_dir, anchors.e, p0, edge_index)
@@ -348,9 +350,41 @@ def main():
             model, p0, v0, anchors.e, anchors.z,
             init_vel=v0, init_pos=p0, steps=T - 1,
             bptt_start=args.bptt_start,
-            cfg=graph_cfg, dt=args.dt, grad=True,
+            cfg=graph_cfg, dt=args.dt, grad=grad,
             damping=args.damping, vel_smooth=0.1,
             return_rotations=True)   # [T, M, 3], [T, M, 4]
+
+    best_psnr = {"value": -1.0, "step": -1}
+
+    @torch.no_grad()
+    def eval_psnr_ssim():
+        """Full-T, all-view render under no_grad -- PSNR/SSIM (SC-GS-comparable,
+        printed in the same 'Best PSNR=.. in Iteration ..' style)."""
+        anchor_seq, anchor_rot_seq = rollout(grad=False)
+        w, idx = _w_cache[0], _idx_cache[0]
+        gauss_xyz = gaussians.get_xyz
+        d_xyz_all, d_rot_all = lbs_d_xyz_rot_batched(
+            w, idx, anchors.canonical, anchor_seq, anchor_rot_seq)
+        mse_sum, ssim_sum, n = 0.0, 0.0, 0
+        for t in range(T):
+            for vi in range(V):
+                cam = cams[vi]
+                cam.fid = torch.tensor([t / max(T - 1, 1)], device=dev)
+                pkg = _gs_render(cam, gaussians, pipe, bg,
+                                  d_xyz_all[t], d_rot_all[t], torch.zeros_like(d_xyz_all[t]),
+                                  d_rot_as_res=True)
+                rendered = pkg["render"]
+                gt = frames[vi][t]
+                mse_sum += F.mse_loss(rendered, gt).item()
+                ssim_sum += 1 - ssim_loss(rendered, gt).item()
+                n += 1
+        mse = mse_sum / n
+        psnr = -10 * math.log10(max(mse, 1e-10))
+        ssim = ssim_sum / n
+        if psnr > best_psnr["value"]:
+            best_psnr["value"], best_psnr["step"] = psnr, step
+        print(f"[step {step}] Eval: PSNR={psnr:.5f} SSIM={ssim:.5f} "
+              f"Best PSNR={best_psnr['value']:.5f} in step {best_psnr['step']}")
 
     # ── SC-GS densification params (mirrors SC-GS defaults) ──────────────────
     densify_from  = 500
@@ -482,6 +516,10 @@ def main():
             avg = running_loss / log_every
             running_loss = 0.0
             pbar.set_postfix(loss=f"{avg:.4f}", n=gaussians.get_xyz.shape[0])
+
+        # ── PSNR/SSIM eval (SC-GS-comparable cadence/format) ────────────────────
+        if args.eval_every > 0 and (step % args.eval_every == 0 or step == args.iters - 1):
+            eval_psnr_ssim()
 
         # ── checkpoint + save ─────────────────────────────────────────────────
         if (step + 1) % save_every == 0 or step == args.iters - 1:
