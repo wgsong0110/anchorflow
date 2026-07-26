@@ -66,6 +66,27 @@ class Cam:
         self.fid = None   # set per-frame during training
 
 
+class ICNet(torch.nn.Module):
+    """Infers per-anchor response magnitude from direction + anchor identity.
+
+    User controls ic_dir (direction) at inference; ICNet infers ic_mag (magnitude)
+    from ic_dir and the anchor's learned identity embedding e.
+    """
+    def __init__(self, e_dim=8, hidden=64):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(3 + e_dim, hidden),
+            torch.nn.SiLU(),
+            torch.nn.Linear(hidden, hidden),
+            torch.nn.SiLU(),
+            torch.nn.Linear(hidden, 1),
+        )
+
+    def forward(self, ic_dir, e):
+        x = torch.cat([F.normalize(ic_dir, dim=-1), e], dim=-1)
+        return F.softplus(self.net(x).squeeze(-1))   # [M], positive
+
+
 class Pipe:
     convert_SHs_python  = False
     compute_cov3D_python = False
@@ -222,11 +243,14 @@ def main():
     M = anchors.num
     print(f"[train] anchors={M}")
 
-    # learnable initial conditions:
-    #   ic_dir [M,3]: direction of initial acceleration (user-controllable at inference)
-    #   ic_mag [M]:   per-anchor response magnitude (learned from data, not user-controlled)
+    # ic_dir [M,3]: user-controllable initial condition (direction of initial acceleration)
+    #   - learned during training to fit this video's actual IC
+    #   - replaced by user input at inference (for some/all anchors)
     ic_dir = torch.nn.Parameter(torch.zeros(M, 3, device=dev))
-    ic_mag = torch.nn.Parameter(torch.zeros(M, device=dev))   # softplus → positive magnitude
+
+    # ICNet: infers ic_mag from (ic_dir, anchor identity e) — NOT user-controlled
+    #   - optimization target that learns "how strongly does each anchor respond to a given direction"
+    ic_net = ICNet(e_dim=args.e_dim, hidden=64).to(dev)
 
     # ── SSMDynamics ───────────────────────────────────────────────────────────
     extent = 2 * 1.3   # initial estimate
@@ -242,7 +266,8 @@ def main():
     dyn_opt = torch.optim.Adam([
         {"params": list(model.parameters())},
         {"params": list(anchors.parameters())},
-        {"params": [ic_dir, ic_mag]},
+        {"params": [ic_dir]},
+        {"params": list(ic_net.parameters())},
     ], lr=args.lr_dyn)
 
     # ── LBS binding cache ─────────────────────────────────────────────────────
@@ -261,7 +286,8 @@ def main():
     def rollout():
         p0 = anchors.canonical
         # initial velocity derived from ic_dir: direction only, magnitude = accel_scale
-        v0 = F.normalize(ic_dir, dim=-1) * F.softplus(ic_mag).unsqueeze(-1)
+        ic_mag = ic_net(ic_dir, anchors.e)
+        v0 = F.normalize(ic_dir, dim=-1) * ic_mag.unsqueeze(-1)
         return ssm_rollout(
             model, p0, v0, anchors.e, anchors.z,
             init_vel=v0, init_pos=p0, steps=T - 1,
@@ -289,7 +315,7 @@ def main():
             model.load_state_dict(state["model"])
             anchors.load_state_dict(state["anchors"])
             ic_dir.data.copy_(state["ic_dir"])
-            ic_mag.data.copy_(state["ic_mag"])
+            ic_net.load_state_dict(state["ic_net"])
             dyn_opt.load_state_dict(state["dyn_opt"])
             # Gaussians: load latest PLY (highest iteration)
             import glob as _glob
@@ -396,7 +422,7 @@ def main():
                 "model":     model.state_dict(),
                 "anchors":   anchors.state_dict(),
                 "ic_dir":    ic_dir.data,
-                "ic_mag":    ic_mag.data,
+                "ic_net":    ic_net.state_dict(),
                 "dyn_opt":   dyn_opt.state_dict(),
             }, os.path.join(args.out, "ckpt_last.pt"))
             print(f"[step {step+1}] saved  gaussians={gaussians.get_xyz.shape[0]}")
