@@ -63,6 +63,16 @@ class SSMDynamics(nn.Module):
         self.to_ssm = mlp([hidden, ssm_dim])
         self.ssm = DiagonalSSM(ssm_dim)                             # temporal
         self.decoder = mlp([ssm_dim, hidden, 3], layernorm=False)   # h -> accel
+        # h -> per-anchor rotation (residual quaternion, SC-GS d_rot_as_res
+        # convention: normalize([1,0,0,0] + d_rotation)). Directly predicted from
+        # the same hidden state as acceleration -- no Procrustes/SVD anywhere, so
+        # there is no degenerate-singular-value NaN path and gradient flows to
+        # the anchor dynamics normally. Zero-init so rollout starts at identity
+        # rotation (matches the accel decoder's zero-init rationale).
+        self.rot_decoder = mlp([ssm_dim, hidden, 4], layernorm=False)
+        last = [m for m in self.rot_decoder.modules() if isinstance(m, nn.Linear)][-1]
+        nn.init.zeros_(last.weight)
+        nn.init.zeros_(last.bias)
         self.h0_enc = mlp([e_dim + z_dim + 3 + 3, ssm_dim])         # [e,z,ivel,ipos]
 
     def init_hidden(self, e, z, init_vel, init_pos):
@@ -77,7 +87,8 @@ class SSMDynamics(nn.Module):
         u = self.to_ssm(x)                                          # spatial-aware SSM input
         h = self.ssm.step(h, u, dt)                                # temporal recurrence
         a = torch.tanh(self.decoder(h)) * self.accel_scale         # acceleration
-        return h, a
+        d_rot = self.rot_decoder(h)                                 # [M,4] residual quat
+        return h, a, d_rot
 
 
 def build_graph(pos, cfg):
@@ -89,23 +100,28 @@ def build_graph(pos, cfg):
 
 def ssm_rollout(model, p0, v0, e, z, init_vel, init_pos, steps, cfg, dt,
                 grad=True, rebuild_graph=False, recenter=False, damping=1.0,
-                bptt_start=0, return_states=False, vel_smooth=0.1):
+                bptt_start=0, return_states=False, vel_smooth=0.1,
+                return_rotations=False):
     """Roll out T = steps+1 frames from (p0, v0). Returns positions [T, M, 3].
 
     bptt_start: detach p/v/h before this step index (truncated BPTT).
-    return_states: if True, also return list of (p,v,h) CPU tensors at each t."""
+    return_states: if True, also return list of (p,v,h) CPU tensors at each t.
+    return_rotations: if True, also return per-anchor residual quaternions
+        [T, M, 4] (raw, un-normalized; frame 0 is identity [1,0,0,0])."""
     ctx = torch.enable_grad() if grad else torch.no_grad()
     with ctx:
         h = model.init_hidden(e, z, init_vel, init_pos)
         p, v = p0, v0
         out = [p]
+        rot_out = [torch.zeros(p.shape[0], 4, device=p.device).index_fill_(1, torch.tensor([0], device=p.device), 1.0)] \
+                  if return_rotations else None
         states = [(p.detach().cpu(), v.detach().cpu(), h.detach().cpu())] \
                  if return_states else None
         edge_index = build_graph(p.detach(), cfg)
         for i in range(steps):
             if rebuild_graph:
                 edge_index = build_graph(p.detach(), cfg)
-            h, a = model.step(p, v, h, e, z, edge_index, dt)
+            h, a, d_rot = model.step(p, v, h, e, z, edge_index, dt)
             p_next = p + v * dt
             v = damping * (v + a * dt)
             # velocity smoothing: MPM P2G→G2P equivalent — neighbors enforce coherent velocity field
@@ -117,27 +133,36 @@ def ssm_rollout(model, p0, v0, e, z, init_vel, init_pos, steps, cfg, dt,
             if i < bptt_start - 1:
                 p = p.detach(); v = v.detach(); h = h.detach()
             out.append(p)
+            if return_rotations:
+                rot_out.append(d_rot)
             if return_states:
                 states.append((p.detach().cpu(), v.detach().cpu(), h.detach().cpu()))
         seq = torch.stack(out, dim=0)
         if recenter:
             seq = seq - seq.mean(1, keepdim=True) + seq[:1].mean(1, keepdim=True)
+        if return_rotations:
+            rot_seq = torch.stack(rot_out, dim=0)               # [T,M,4]
+            if return_states:
+                return seq, rot_seq, states
+            return seq, rot_seq
         if return_states:
             return seq, states
         return seq
 
 
 def ssm_rollout_from(model, p0, v0, h0, e, z, steps, cfg, dt,
-                     grad=True, damping=1.0, vel_smooth=0.1):
+                     grad=True, damping=1.0, vel_smooth=0.1, return_rotations=False):
     """Rollout from a given state (p0,v0,h0) for `steps` steps — no bptt needed
     because the caller is responsible for detaching the initial state."""
     ctx = torch.enable_grad() if grad else torch.no_grad()
     with ctx:
         p, v, h = p0, v0, h0
         out = [p]
+        rot_out = [torch.zeros(p.shape[0], 4, device=p.device).index_fill_(1, torch.tensor([0], device=p.device), 1.0)] \
+                  if return_rotations else None
         edge_index = build_graph(p.detach(), cfg)
         for _ in range(steps):
-            h, a = model.step(p, v, h, e, z, edge_index, dt)
+            h, a, d_rot = model.step(p, v, h, e, z, edge_index, dt)
             p_next = p + v * dt
             v = damping * (v + a * dt)
             src_e, dst_e = edge_index
@@ -146,4 +171,9 @@ def ssm_rollout_from(model, p0, v0, h0, e, z, steps, cfg, dt,
             v = (1 - vel_smooth) * v + vel_smooth * (v_agg / deg_v.unsqueeze(1).clamp(min=1))
             p = p_next
             out.append(p)
-        return torch.stack(out, dim=0)             # [steps+1, M, 3]
+            if return_rotations:
+                rot_out.append(d_rot)
+        seq = torch.stack(out, dim=0)               # [steps+1, M, 3]
+        if return_rotations:
+            return seq, torch.stack(rot_out, dim=0)  # + [steps+1, M, 4]
+        return seq

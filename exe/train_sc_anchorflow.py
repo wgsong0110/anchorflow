@@ -42,6 +42,7 @@ sys.path.insert(0, _lib)
 from anchorflow.anchors import AnchorSet
 from anchorflow.ssm_dynamics import SSMDynamics, ssm_rollout, build_graph
 from anchorflow import warp as W
+import lbs as _lbs_cuda
 
 
 # ── Camera wrapper ───────────────────────────────────────────────────────────
@@ -186,12 +187,33 @@ def init_gaussians_random(n_pts=100_000, extent=1.3):
     return pcd
 
 
-# ── LBS warp: anchor displacement → per-Gaussian d_xyz ───────────────────────
-def lbs_d_xyz(gauss_xyz, w, idx, anchor_canon, anchor_now):
-    """Simple translation-only LBS (no rotation warp — faster, sufficient for init)."""
-    d_anchor = anchor_now - anchor_canon             # [K, 3]
-    d_per    = d_anchor[idx]                         # [N, K, 3]
-    return (w[..., None] * d_per).sum(1)             # [N, 3]  weighted sum
+# ── LBS warp: anchor displacement + rotation → per-Gaussian d_xyz/d_rot ──────
+def lbs_d_xyz_rot(gauss_xyz, w, idx, anchor_canon, anchor_now, anchor_d_rot):
+    """Translation + rotation LBS. anchor_d_rot [M,4] is the per-anchor residual
+    quaternion straight from SSMDynamics.rot_decoder (zero-init -> identity at
+    step 0). Directly predicted (no Procrustes/SVD), so it carries gradient to
+    the dynamics model like the position branch. Matches SC-GS's own
+    ControlNodeWarp.forward (d_rot_as_res branch): rotation = weighted sum of
+    the per-node residual quaternions, passed to the renderer with
+    d_rot_as_res=True (renderer normalizes [1,0,0,0] + d_rotation)."""
+    d_anchor = anchor_now - anchor_canon              # [M, 3]
+    d_xyz = (w[..., None] * d_anchor[idx]).sum(1)      # [N, 3]
+    d_rot = (w[..., None] * anchor_d_rot[idx]).sum(1)  # [N, 4]
+    return d_xyz, d_rot
+
+
+def lbs_d_xyz_rot_batched(w, idx, anchor_canon, anchor_now_batch, anchor_d_rot_batch):
+    """Same as lbs_d_xyz_rot but for a batch of B frames at once: one fused
+    CUDA kernel call (lib/lbs rot_batch_forward/backward) instead of B
+    separate per-frame python-loop gathers. Profiling showed the per-frame
+    gather (IndexBackward0 / _index_put_impl_) is almost entirely
+    CPU-dispatch-bound (many tiny kernel launches, not GPU-compute-bound) --
+    this fuses gather + weighted-sum for both d_xyz and d_rot into a single
+    kernel launch (falls back to the torch path if the CUDA ext isn't built).
+    w, idx: [N, K]   anchor_canon: [M, 3]
+    anchor_now_batch: [B, M, 3]   anchor_d_rot_batch: [B, M, 4]
+    returns d_xyz [B, N, 3], d_rot [B, N, 4]"""
+    return _lbs_cuda.lbs_blend_rot_batched(w, idx, anchor_canon, anchor_now_batch, anchor_d_rot_batch)
 
 
 # ── SSIM (simple window=11) ───────────────────────────────────────────────────
@@ -238,6 +260,12 @@ def main():
     ap.add_argument("--dt",        type=float, default=0.05)
     ap.add_argument("--damping",   type=float, default=0.98)
     ap.add_argument("--accel_scale", type=float, default=0.01)
+    ap.add_argument("--frames_per_step", type=int, default=6,
+                    help="random subset of T frames to render+loss per step "
+                         "(rollout still runs the full T frames; render/backward "
+                         "is ~T/frames_per_step cheaper -- rasterizer backward is "
+                         "78%% of step time by profiling). Last frame (t=T-1) is "
+                         "always included since it's the hardest/most drift-prone.")
     ap.add_argument("--lambda_ssim",  type=float, default=0.2)
     ap.add_argument("--bptt_start", type=int, default=0,
                     help="detach rollout before this frame (0=full BPTT)")
@@ -321,7 +349,8 @@ def main():
             init_vel=v0, init_pos=p0, steps=T - 1,
             bptt_start=args.bptt_start,
             cfg=graph_cfg, dt=args.dt, grad=True,
-            damping=args.damping, vel_smooth=0.1)   # [T, M, 3]
+            damping=args.damping, vel_smooth=0.1,
+            return_rotations=True)   # [T, M, 3], [T, M, 4]
 
     # ── SC-GS densification params (mirrors SC-GS defaults) ──────────────────
     densify_from  = 500
@@ -366,8 +395,8 @@ def main():
     for step in pbar:
         gaussians.update_learning_rate(step)
 
-        # ── rollout: [T, M, 3] anchor positions ─────────────────────────────
-        anchor_seq = rollout()
+        # ── rollout: [T, M, 3] anchor positions, [T, M, 4] anchor rotations ──
+        anchor_seq, anchor_rot_seq = rollout()
 
         # ── photometric loss over all T frames ───────────────────────────────
         total_loss = torch.tensor(0.0, device=dev)
@@ -376,22 +405,35 @@ def main():
         w   = _w_cache[0]
         idx = _idx_cache[0]
 
-        gauss_xyz  = gaussians.get_xyz                      # [N, 3]
-
-        # Accumulate grad stats for densification (need first frame)
+        # Accumulate grad stats for densification (need first rendered frame)
         viewspace_pt = None
         visibility   = None
 
-        for t in range(T):
+        # rendering (esp. rasterizer backward) dominates step time -- rollout
+        # itself still runs all T steps (needed for correct GNN+SSM state),
+        # but we only render/loss a random subset. Last frame (T-1) is always
+        # included since it's the most drift-prone / hardest to get right.
+        k = min(args.frames_per_step, T)
+        frame_idxs = set(random.sample(range(T - 1), k - 1)) if k > 1 else set()
+        frame_idxs.add(T - 1)
+        frame_idxs = sorted(frame_idxs)
+
+        # one batched gather for all k selected frames instead of k separate
+        # small gathers -- profiling showed the per-frame gather is CPU
+        # dispatch-bound (many tiny kernel launches), not GPU-compute-bound
+        d_xyz_all, d_rotation_all = lbs_d_xyz_rot_batched(
+            w, idx, anchors.canonical, anchor_seq[frame_idxs], anchor_rot_seq[frame_idxs])
+
+        for i, t in enumerate(frame_idxs):
             vi = random.randrange(V)                        # random view for this frame
             cam = cams[vi]
             cam.fid = torch.tensor([t / max(T - 1, 1)], device=dev)
 
-            anchor_now = anchor_seq[t]                      # [M, 3]
-            d_xyz = lbs_d_xyz(gauss_xyz, w, idx, anchors.canonical, anchor_now)
+            d_xyz      = d_xyz_all[i]                       # [N, 3]
+            d_rotation = d_rotation_all[i]                  # [N, 4]
 
             pkg  = _gs_render(cam, gaussians, pipe, bg,
-                              d_xyz, 0.0, torch.zeros_like(d_xyz),
+                              d_xyz, d_rotation, torch.zeros_like(d_xyz),
                               d_rot_as_res=True)
             rendered = pkg["render"]
             gt       = frames[vi][t]
@@ -400,12 +442,12 @@ def main():
                  + args.lambda_ssim * ssim_loss(rendered, gt)
             total_loss = total_loss + loss
 
-            # Collect densification stats from frame 0 (one view per step)
-            if t == 0 and step < densify_until:
+            # Collect densification stats from the first rendered frame this step
+            if i == 0 and step < densify_until:
                 viewspace_pt = pkg["viewspace_points"]
                 visibility   = pkg["visibility_filter"]
 
-        total_loss = total_loss / T
+        total_loss = total_loss / len(frame_idxs)
 
         # ── backward ─────────────────────────────────────────────────────────
         gaussians.optimizer.zero_grad(set_to_none=True)

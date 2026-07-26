@@ -742,8 +742,8 @@ def main():
             with torch.no_grad():
                 h0_as = model.init_hidden(anchors.e, z_bank[k],
                                           v0_bank[k], anchors.canonical)
-            _, a0 = model.step(anchors.canonical, v0_bank[k], h0_as.detach(),
-                               anchors.e, z_bank[k], arap_edge, dt)
+            _, a0, _ = model.step(anchors.canonical, v0_bank[k], h0_as.detach(),
+                                  anchors.e, z_bank[k], arap_edge, dt)
             loss = loss + lam_as * (a0[src_a] - a0[dst_a]).pow(2).mean()
         if cfg.train.lambda_z0 > 0:
             loss = loss + cfg.train.lambda_z0 * (z_bank ** 2).mean()

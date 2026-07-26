@@ -7,6 +7,7 @@
 #include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <vector>
 
 template <typename S>
 __global__ void lbs_forward_kernel(
@@ -167,8 +168,127 @@ torch::Tensor cov_warp(torch::Tensor quat, torch::Tensor w, torch::Tensor idx,
   return out6;
 }
 
+// ---------------------------------------------------------------------------
+// Fused batched anchor-LBS displacement + residual-rotation blend (forward +
+// backward). Replaces train_sc_anchorflow.py's per-frame python loop of
+// (gather -> weighted sum) calls -- one launch handles all B sampled frames
+// for all N Gaussians. No Procrustes/rotation-matrix here: d_rot is the
+// SSMDynamics.rot_decoder residual quaternion, predicted directly (parity
+// target: lbs_d_xyz_rot_batched in train_sc_anchorflow.py).
+//   d_xyz[b,n] = sum_k w[n,k] * ( a_now[b,idx[n,k]] - a_canon[idx[n,k]] )
+//   d_rot[b,n] = sum_k w[n,k] *   a_drot[b,idx[n,k]]
+// Differentiable w.r.t. w, a_now, a_drot (a_canon is a fixed buffer, idx is int).
+#define LBS_ROT_MAX_K 16
+
+template <typename S>
+__global__ void lbs_rot_batch_fwd_kernel(
+    const S* __restrict__ w,          // [N,K]
+    const long* __restrict__ idx,     // [N,K]
+    const S* __restrict__ a_canon,    // [M,3]
+    const S* __restrict__ a_now,      // [B,M,3]
+    const S* __restrict__ a_drot,     // [B,M,4]
+    S* __restrict__ out_xyz,          // [B,N,3]
+    S* __restrict__ out_rot,          // [B,N,4]
+    int N, int K, int M, int B) {
+  int n = blockIdx.x * blockDim.x + threadIdx.x;
+  if (n >= N) return;
+  long ix[LBS_ROT_MAX_K]; S wv[LBS_ROT_MAX_K];
+  for (int k = 0; k < K; ++k) { ix[k] = idx[n*K+k]; wv[k] = w[n*K+k]; }
+  for (int b = 0; b < B; ++b) {
+    S o0=0, o1=0, o2=0, q0=0, q1=0, q2=0, q3=0;
+    for (int k = 0; k < K; ++k) {
+      long j = ix[k]; S wk = wv[k];
+      const S* an = a_now + (b*M+j)*3;
+      const S* ac = a_canon + j*3;
+      o0 += wk*(an[0]-ac[0]); o1 += wk*(an[1]-ac[1]); o2 += wk*(an[2]-ac[2]);
+      const S* ar = a_drot + (b*M+j)*4;
+      q0 += wk*ar[0]; q1 += wk*ar[1]; q2 += wk*ar[2]; q3 += wk*ar[3];
+    }
+    S* ox = out_xyz + (b*N+n)*3; ox[0]=o0; ox[1]=o1; ox[2]=o2;
+    S* orow = out_rot + (b*N+n)*4; orow[0]=q0; orow[1]=q1; orow[2]=q2; orow[3]=q3;
+  }
+}
+
+template <typename S>
+__global__ void lbs_rot_batch_bwd_kernel(
+    const S* __restrict__ grad_out_xyz, // [B,N,3]
+    const S* __restrict__ grad_out_rot, // [B,N,4]
+    const S* __restrict__ w,            // [N,K]
+    const long* __restrict__ idx,       // [N,K]
+    const S* __restrict__ a_canon,      // [M,3]
+    const S* __restrict__ a_now,        // [B,M,3]
+    const S* __restrict__ a_drot,       // [B,M,4]
+    S* __restrict__ grad_w,             // [N,K]
+    S* __restrict__ grad_a_now,         // [B,M,3]
+    S* __restrict__ grad_a_drot,        // [B,M,4]
+    int N, int K, int M, int B) {
+  int n = blockIdx.x * blockDim.x + threadIdx.x;
+  if (n >= N) return;
+  long ix[LBS_ROT_MAX_K]; S wv[LBS_ROT_MAX_K]; S gw[LBS_ROT_MAX_K];
+  for (int k = 0; k < K; ++k) { ix[k] = idx[n*K+k]; wv[k] = w[n*K+k]; gw[k] = 0; }
+  for (int b = 0; b < B; ++b) {
+    const S* gxyz = grad_out_xyz + (b*N+n)*3;
+    const S* grot = grad_out_rot + (b*N+n)*4;
+    S gx0=gxyz[0], gx1=gxyz[1], gx2=gxyz[2];
+    S gr0=grot[0], gr1=grot[1], gr2=grot[2], gr3=grot[3];
+    for (int k = 0; k < K; ++k) {
+      long j = ix[k]; S wk = wv[k];
+      const S* an = a_now + (b*M+j)*3;
+      const S* ac = a_canon + j*3;
+      S d0=an[0]-ac[0], d1=an[1]-ac[1], d2=an[2]-ac[2];
+      const S* ar = a_drot + (b*M+j)*4;
+      gw[k] += gx0*d0 + gx1*d1 + gx2*d2 + gr0*ar[0]+gr1*ar[1]+gr2*ar[2]+gr3*ar[3];
+      S* gan = grad_a_now + (b*M+j)*3;
+      atomicAdd(&gan[0], wk*gx0); atomicAdd(&gan[1], wk*gx1); atomicAdd(&gan[2], wk*gx2);
+      S* gar = grad_a_drot + (b*M+j)*4;
+      atomicAdd(&gar[0], wk*gr0); atomicAdd(&gar[1], wk*gr1);
+      atomicAdd(&gar[2], wk*gr2); atomicAdd(&gar[3], wk*gr3);
+    }
+  }
+  for (int k = 0; k < K; ++k) grad_w[n*K+k] = gw[k];
+}
+
+std::vector<torch::Tensor> lbs_rot_batch_forward(
+    torch::Tensor w, torch::Tensor idx, torch::Tensor a_canon,
+    torch::Tensor a_now, torch::Tensor a_drot) {
+  int N = w.size(0), K = w.size(1), M = a_canon.size(0), B = a_now.size(0);
+  TORCH_CHECK(K <= LBS_ROT_MAX_K, "lbs_rot_batch: K exceeds compiled max");
+  auto out_xyz = torch::empty({B, N, 3}, a_now.options());
+  auto out_rot = torch::empty({B, N, 4}, a_drot.options());
+  int threads = 256, blocks = (N + threads - 1) / threads;
+  AT_DISPATCH_FLOATING_TYPES(a_now.scalar_type(), "lbs_rot_batch_fwd", ([&] {
+    lbs_rot_batch_fwd_kernel<scalar_t><<<blocks, threads>>>(
+        w.data_ptr<scalar_t>(), idx.data_ptr<long>(), a_canon.data_ptr<scalar_t>(),
+        a_now.data_ptr<scalar_t>(), a_drot.data_ptr<scalar_t>(),
+        out_xyz.data_ptr<scalar_t>(), out_rot.data_ptr<scalar_t>(), N, K, M, B);
+  }));
+  return {out_xyz, out_rot};
+}
+
+std::vector<torch::Tensor> lbs_rot_batch_backward(
+    torch::Tensor grad_out_xyz, torch::Tensor grad_out_rot,
+    torch::Tensor w, torch::Tensor idx, torch::Tensor a_canon, torch::Tensor a_now,
+    torch::Tensor a_drot) {
+  int N = w.size(0), K = w.size(1), M = a_canon.size(0), B = a_now.size(0);
+  auto grad_w = torch::zeros_like(w);
+  auto grad_a_now = torch::zeros_like(a_now);
+  auto grad_a_drot = torch::zeros_like(a_drot);
+  int threads = 256, blocks = (N + threads - 1) / threads;
+  AT_DISPATCH_FLOATING_TYPES(a_now.scalar_type(), "lbs_rot_batch_bwd", ([&] {
+    lbs_rot_batch_bwd_kernel<scalar_t><<<blocks, threads>>>(
+        grad_out_xyz.data_ptr<scalar_t>(), grad_out_rot.data_ptr<scalar_t>(),
+        w.data_ptr<scalar_t>(), idx.data_ptr<long>(), a_canon.data_ptr<scalar_t>(),
+        a_now.data_ptr<scalar_t>(), a_drot.data_ptr<scalar_t>(),
+        grad_w.data_ptr<scalar_t>(), grad_a_now.data_ptr<scalar_t>(),
+        grad_a_drot.data_ptr<scalar_t>(), N, K, M, B);
+  }));
+  return {grad_w, grad_a_now, grad_a_drot};
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("forward", &lbs_forward, "LBS position blend forward");
   m.def("backward", &lbs_backward, "LBS position blend backward (grad a_now)");
   m.def("cov_warp", &cov_warp, "Fused covariance warp (quat blend + R S R^T)");
+  m.def("rot_batch_forward", &lbs_rot_batch_forward, "Batched LBS d_xyz+d_rot forward");
+  m.def("rot_batch_backward", &lbs_rot_batch_backward, "Batched LBS d_xyz+d_rot backward");
 }
