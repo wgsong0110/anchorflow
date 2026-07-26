@@ -57,7 +57,7 @@ class SSMDynamics(nn.Module):
         super().__init__()
         self.accel_scale = accel_scale
         self.use_ssm = use_ssm   # ablation: False -> memoryless per-step GNN (h=u, no recurrence)
-        self.node_enc = mlp([3 + 3 + e_dim + z_dim, hidden, hidden])  # [p, v, e, z]
+        self.node_enc = mlp([3 + e_dim + z_dim, hidden, hidden])     # [v, e, z]
         self.edge_enc = mlp([edge_in, hidden, hidden])
         self.processor = nn.ModuleList(
             InteractionNetwork(hidden) for _ in range(mp_steps))     # spatial
@@ -80,7 +80,7 @@ class SSMDynamics(nn.Module):
         return self.h0_enc(torch.cat([e, z, init_vel, init_pos], dim=-1))
 
     def step(self, p, v, h, e, z, edge_index, dt):
-        node = self.node_enc(torch.cat([p, v, e, z], dim=-1))       # abs position now included
+        node = self.node_enc(torch.cat([v, e, z], dim=-1))
         edge = self.edge_enc(G.edge_features(p, edge_index))
         x = node
         for layer in self.processor:                                # GNN message passing
