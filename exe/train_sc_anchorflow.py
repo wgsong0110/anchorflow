@@ -222,9 +222,9 @@ def main():
     M = anchors.num
     print(f"[train] anchors={M}")
 
-    # initial conditions (learnable): rest position offset + initial velocity
-    p0_offset = torch.nn.Parameter(torch.zeros(M, 3, device=dev))
-    v0        = torch.nn.Parameter(torch.zeros(M, 3, device=dev))
+    # learnable initial condition: direction of initial acceleration per anchor
+    # magnitude is fixed to accel_scale; only direction is optimized
+    ic_dir = torch.nn.Parameter(torch.zeros(M, 3, device=dev))
 
     # ── SSMDynamics ───────────────────────────────────────────────────────────
     extent = 2 * 1.3   # initial estimate
@@ -240,7 +240,7 @@ def main():
     dyn_opt = torch.optim.Adam([
         {"params": list(model.parameters())},
         {"params": list(anchors.parameters())},
-        {"params": [p0_offset, v0]},
+        {"params": [ic_dir]},
     ], lr=args.lr_dyn)
 
     # ── LBS binding cache ─────────────────────────────────────────────────────
@@ -257,7 +257,9 @@ def main():
 
     # ── rollout helper ────────────────────────────────────────────────────────
     def rollout():
-        p0 = anchors.canonical + p0_offset
+        p0 = anchors.canonical
+        # initial velocity derived from ic_dir: direction only, magnitude = accel_scale
+        v0 = F.normalize(ic_dir, dim=-1) * model.accel_scale
         return ssm_rollout(
             model, p0, v0, anchors.e, anchors.z,
             init_vel=v0, init_pos=p0, steps=T - 1,
@@ -284,8 +286,7 @@ def main():
             state = torch.load(ckpt, map_location=dev)
             model.load_state_dict(state["model"])
             anchors.load_state_dict(state["anchors"])
-            p0_offset.data.copy_(state["p0_offset"])
-            v0.data.copy_(state["v0"])
+            ic_dir.data.copy_(state["ic_dir"])
             dyn_opt.load_state_dict(state["dyn_opt"])
             # Gaussians: load latest PLY (highest iteration)
             import glob as _glob
@@ -391,8 +392,7 @@ def main():
                 "step":      step,
                 "model":     model.state_dict(),
                 "anchors":   anchors.state_dict(),
-                "p0_offset": p0_offset.data,
-                "v0":        v0.data,
+                "ic_dir":    ic_dir.data,
                 "dyn_opt":   dyn_opt.state_dict(),
             }, os.path.join(args.out, "ckpt_last.pt"))
             print(f"[step {step+1}] saved  gaussians={gaussians.get_xyz.shape[0]}")
