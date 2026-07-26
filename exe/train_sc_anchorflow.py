@@ -384,7 +384,7 @@ def main():
         if psnr > best_psnr["value"]:
             best_psnr["value"], best_psnr["step"] = psnr, step
         print(f"[step {step}] Eval: PSNR={psnr:.5f} SSIM={ssim:.5f} "
-              f"Best PSNR={best_psnr['value']:.5f} in step {best_psnr['step']}")
+              f"Best PSNR={best_psnr['value']:.5f} in step {best_psnr['step']}", flush=True)
 
     # ── SC-GS densification params (mirrors SC-GS defaults) ──────────────────
     densify_from  = 500
