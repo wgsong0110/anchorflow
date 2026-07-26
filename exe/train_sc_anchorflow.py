@@ -40,7 +40,7 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 _lib = os.path.join(os.path.dirname(__file__), "..", "lib")
 sys.path.insert(0, _lib)
 from anchorflow.anchors import AnchorSet
-from anchorflow.ssm_dynamics import SSMDynamics, ssm_rollout
+from anchorflow.ssm_dynamics import SSMDynamics, ssm_rollout, build_graph
 from anchorflow import warp as W
 
 
@@ -67,24 +67,53 @@ class Cam:
 
 
 class ICNet(torch.nn.Module):
-    """Infers per-anchor response magnitude from direction + anchor identity.
+    """GNN that propagates sparse ic_dir to v0 for ALL anchors.
 
-    User controls ic_dir (direction) at inference; ICNet infers ic_mag (magnitude)
-    from ic_dir and the anchor's learned identity embedding e.
+    Specified anchors   (ic_dir ≠ 0): v0 = normalize(ic_dir) × GNN-predicted magnitude
+    Unspecified anchors (ic_dir = 0): v0 = full GNN prediction (direction + magnitude)
+                                       inferred from neighbouring specified anchors
+
+    node input : [normalize(ic_dir)(3), is_specified(1), e(e_dim)]
+    edge input : [rel_dir(3), dist(1)]
+    output     : v0 [M, 3]
     """
-    def __init__(self, e_dim=8, hidden=64):
+    def __init__(self, e_dim=8, hidden=64, mp_steps=3):
         super().__init__()
-        self.net = torch.nn.Sequential(
-            torch.nn.Linear(3 + e_dim, hidden),
-            torch.nn.SiLU(),
-            torch.nn.Linear(hidden, hidden),
-            torch.nn.SiLU(),
-            torch.nn.Linear(hidden, 1),
+        from anchorflow.dynamics import InteractionNetwork
+        self.node_enc = torch.nn.Sequential(
+            torch.nn.Linear(3 + 1 + e_dim, hidden), torch.nn.SiLU(),
+            torch.nn.Linear(hidden, hidden), torch.nn.LayerNorm(hidden),
+        )
+        self.edge_enc = torch.nn.Sequential(
+            torch.nn.Linear(4, hidden), torch.nn.SiLU(),
+            torch.nn.Linear(hidden, hidden), torch.nn.LayerNorm(hidden),
+        )
+        self.processor = torch.nn.ModuleList(
+            [InteractionNetwork(hidden) for _ in range(mp_steps)])
+        self.decoder = torch.nn.Sequential(
+            torch.nn.Linear(hidden, hidden), torch.nn.SiLU(),
+            torch.nn.Linear(hidden, 3),
         )
 
-    def forward(self, ic_dir, e):
-        x = torch.cat([F.normalize(ic_dir, dim=-1), e], dim=-1)
-        return F.softplus(self.net(x).squeeze(-1))   # [M], positive
+    def forward(self, ic_dir, e, pos, edge_index):
+        is_spec = (ic_dir.norm(dim=-1, keepdim=True) > 1e-6).float()   # [M,1]
+        h = self.node_enc(torch.cat([
+            F.normalize(ic_dir, dim=-1), is_spec, e], dim=-1))
+
+        src, dst = edge_index
+        rel  = pos[src] - pos[dst]
+        dist = rel.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        ef   = self.edge_enc(torch.cat([rel / dist, dist], dim=-1))
+
+        for layer in self.processor:
+            h, ef = layer(h, edge_index, ef)
+
+        v0_pred = self.decoder(h)                                        # [M,3]
+
+        # specified: keep user direction, take magnitude from GNN
+        mag = v0_pred.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        v0_spec = F.normalize(ic_dir, dim=-1) * mag
+        return torch.where(is_spec.bool(), v0_spec, v0_pred)
 
 
 class Pipe:
@@ -285,9 +314,8 @@ def main():
     # ── rollout helper ────────────────────────────────────────────────────────
     def rollout():
         p0 = anchors.canonical
-        # initial velocity derived from ic_dir: direction only, magnitude = accel_scale
-        ic_mag = ic_net(ic_dir, anchors.e)
-        v0 = F.normalize(ic_dir, dim=-1) * ic_mag.unsqueeze(-1)
+        edge_index = build_graph(p0.detach(), graph_cfg)
+        v0 = ic_net(ic_dir, anchors.e, p0, edge_index)
         return ssm_rollout(
             model, p0, v0, anchors.e, anchors.z,
             init_vel=v0, init_pos=p0, steps=T - 1,
