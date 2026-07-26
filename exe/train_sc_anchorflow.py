@@ -260,6 +260,10 @@ def main():
     ap.add_argument("--dt",        type=float, default=0.05)
     ap.add_argument("--damping",   type=float, default=0.98)
     ap.add_argument("--accel_scale", type=float, default=0.01)
+    ap.add_argument("--no_ssm", action="store_true",
+                    help="ablation: disable SSM temporal recurrence (h=u every step, "
+                         "memoryless per-step GNN decode) to isolate whether the SSM "
+                         "itself is the bottleneck vs SC-GS")
     ap.add_argument("--eval_every", type=int, default=1000,
                     help="full-T all-view PSNR/SSIM eval cadence (SC-GS-comparable; 0 disables)")
     ap.add_argument("--frames_per_step", type=int, default=6,
@@ -316,10 +320,12 @@ def main():
     model  = SSMDynamics(
         hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
         e_dim=args.e_dim, z_dim=args.z_dim,
-        accel_scale=args.accel_scale * extent).to(dev)
+        accel_scale=args.accel_scale * extent,
+        use_ssm=not args.no_ssm).to(dev)
     graph_cfg = {"graph": "knn", "k": 8}
     print(f"[train] SSMDynamics hidden={args.hidden} mp={args.mp_steps} "
-          f"ssm={args.ssm_dim} dt={args.dt} accel_scale={args.accel_scale*extent:.4f}")
+          f"ssm={args.ssm_dim} dt={args.dt} accel_scale={args.accel_scale*extent:.4f} "
+          f"use_ssm={not args.no_ssm}")
 
     # ── optimizers ────────────────────────────────────────────────────────────
     dyn_opt = torch.optim.Adam([

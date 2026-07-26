@@ -53,9 +53,10 @@ class DiagonalSSM(nn.Module):
 
 class SSMDynamics(nn.Module):
     def __init__(self, hidden=128, mp_steps=6, ssm_dim=128, e_dim=8, z_dim=8,
-                 edge_in=4, accel_scale=0.1):
+                 edge_in=4, accel_scale=0.1, use_ssm=True):
         super().__init__()
         self.accel_scale = accel_scale
+        self.use_ssm = use_ssm   # ablation: False -> memoryless per-step GNN (h=u, no recurrence)
         self.node_enc = mlp([3 + e_dim + z_dim, hidden, hidden])     # [v, e, z]
         self.edge_enc = mlp([edge_in, hidden, hidden])
         self.processor = nn.ModuleList(
@@ -85,7 +86,7 @@ class SSMDynamics(nn.Module):
         for layer in self.processor:                                # GNN message passing
             x, edge = layer(x, edge_index, edge)
         u = self.to_ssm(x)                                          # spatial-aware SSM input
-        h = self.ssm.step(h, u, dt)                                # temporal recurrence
+        h = self.ssm.step(h, u, dt) if self.use_ssm else u         # temporal recurrence (or bypass)
         a = torch.tanh(self.decoder(h)) * self.accel_scale         # acceleration
         d_rot = self.rot_decoder(h)                                 # [M,4] residual quat
         return h, a, d_rot
