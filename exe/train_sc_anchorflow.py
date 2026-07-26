@@ -222,9 +222,11 @@ def main():
     M = anchors.num
     print(f"[train] anchors={M}")
 
-    # learnable initial condition: direction of initial acceleration per anchor
-    # magnitude is fixed to accel_scale; only direction is optimized
+    # learnable initial conditions:
+    #   ic_dir [M,3]: direction of initial acceleration (user-controllable at inference)
+    #   ic_mag [M]:   per-anchor response magnitude (learned from data, not user-controlled)
     ic_dir = torch.nn.Parameter(torch.zeros(M, 3, device=dev))
+    ic_mag = torch.nn.Parameter(torch.zeros(M, device=dev))   # softplus → positive magnitude
 
     # ── SSMDynamics ───────────────────────────────────────────────────────────
     extent = 2 * 1.3   # initial estimate
@@ -240,7 +242,7 @@ def main():
     dyn_opt = torch.optim.Adam([
         {"params": list(model.parameters())},
         {"params": list(anchors.parameters())},
-        {"params": [ic_dir]},
+        {"params": [ic_dir, ic_mag]},
     ], lr=args.lr_dyn)
 
     # ── LBS binding cache ─────────────────────────────────────────────────────
@@ -259,7 +261,7 @@ def main():
     def rollout():
         p0 = anchors.canonical
         # initial velocity derived from ic_dir: direction only, magnitude = accel_scale
-        v0 = F.normalize(ic_dir, dim=-1) * model.accel_scale
+        v0 = F.normalize(ic_dir, dim=-1) * F.softplus(ic_mag).unsqueeze(-1)
         return ssm_rollout(
             model, p0, v0, anchors.e, anchors.z,
             init_vel=v0, init_pos=p0, steps=T - 1,
@@ -287,6 +289,7 @@ def main():
             model.load_state_dict(state["model"])
             anchors.load_state_dict(state["anchors"])
             ic_dir.data.copy_(state["ic_dir"])
+            ic_mag.data.copy_(state["ic_mag"])
             dyn_opt.load_state_dict(state["dyn_opt"])
             # Gaussians: load latest PLY (highest iteration)
             import glob as _glob
@@ -393,6 +396,7 @@ def main():
                 "model":     model.state_dict(),
                 "anchors":   anchors.state_dict(),
                 "ic_dir":    ic_dir.data,
+                "ic_mag":    ic_mag.data,
                 "dyn_opt":   dyn_opt.state_dict(),
             }, os.path.join(args.out, "ckpt_last.pt"))
             print(f"[step {step+1}] saved  gaussians={gaussians.get_xyz.shape[0]}")
