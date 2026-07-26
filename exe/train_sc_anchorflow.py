@@ -264,6 +264,10 @@ def main():
                     help="ablation: disable SSM temporal recurrence (h=u every step, "
                          "memoryless per-step GNN decode) to isolate whether the SSM "
                          "itself is the bottleneck vs SC-GS")
+    ap.add_argument("--predict_velocity", action="store_true",
+                    help="ablation: decoder output is velocity directly (single "
+                         "integration p'=p+v*dt) instead of acceleration (double "
+                         "integration p'=p+v*dt, v'=v+a*dt)")
     ap.add_argument("--eval_every", type=int, default=1000,
                     help="full-T all-view PSNR/SSIM eval cadence (SC-GS-comparable; 0 disables)")
     ap.add_argument("--frames_per_step", type=int, default=6,
@@ -321,11 +325,12 @@ def main():
         hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
         e_dim=args.e_dim, z_dim=args.z_dim,
         accel_scale=args.accel_scale * extent,
-        use_ssm=not args.no_ssm).to(dev)
+        use_ssm=not args.no_ssm,
+        predict_velocity=args.predict_velocity).to(dev)
     graph_cfg = {"graph": "knn", "k": 8}
     print(f"[train] SSMDynamics hidden={args.hidden} mp={args.mp_steps} "
           f"ssm={args.ssm_dim} dt={args.dt} accel_scale={args.accel_scale*extent:.4f} "
-          f"use_ssm={not args.no_ssm}")
+          f"use_ssm={not args.no_ssm} predict_velocity={args.predict_velocity}")
 
     # ── optimizers ────────────────────────────────────────────────────────────
     dyn_opt = torch.optim.Adam([

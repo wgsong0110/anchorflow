@@ -53,10 +53,14 @@ class DiagonalSSM(nn.Module):
 
 class SSMDynamics(nn.Module):
     def __init__(self, hidden=128, mp_steps=6, ssm_dim=128, e_dim=8, z_dim=8,
-                 edge_in=4, accel_scale=0.1, use_ssm=True):
+                 edge_in=4, accel_scale=0.1, use_ssm=True, predict_velocity=False):
         super().__init__()
         self.accel_scale = accel_scale
         self.use_ssm = use_ssm   # ablation: False -> memoryless per-step GNN (h=u, no recurrence)
+        # ablation: True -> decoder output IS the (damped) velocity directly
+        # (single integration: p'=p+v*dt) instead of an acceleration that gets
+        # integrated into v first (double integration: p'=p+v*dt, v'=v+a*dt).
+        self.predict_velocity = predict_velocity
         self.node_enc = mlp([3 + e_dim + z_dim, hidden, hidden])     # [v, e, z]
         self.edge_enc = mlp([edge_in, hidden, hidden])
         self.processor = nn.ModuleList(
@@ -87,7 +91,7 @@ class SSMDynamics(nn.Module):
             x, edge = layer(x, edge_index, edge)
         u = self.to_ssm(x)                                          # spatial-aware SSM input
         h = self.ssm.step(h, u, dt) if self.use_ssm else u         # temporal recurrence (or bypass)
-        a = torch.tanh(self.decoder(h)) * self.accel_scale         # acceleration
+        a = torch.tanh(self.decoder(h)) * self.accel_scale         # accel, or velocity if predict_velocity
         d_rot = self.rot_decoder(h)                                 # [M,4] residual quat
         return h, a, d_rot
 
@@ -124,7 +128,7 @@ def ssm_rollout(model, p0, v0, e, z, init_vel, init_pos, steps, cfg, dt,
                 edge_index = build_graph(p.detach(), cfg)
             h, a, d_rot = model.step(p, v, h, e, z, edge_index, dt)
             p_next = p + v * dt
-            v = damping * (v + a * dt)
+            v = damping * a if model.predict_velocity else damping * (v + a * dt)
             # velocity smoothing: MPM P2G→G2P equivalent — neighbors enforce coherent velocity field
             src_e, dst_e = edge_index
             v_agg = torch.zeros_like(v).scatter_add_(0, dst_e.unsqueeze(1).expand(-1, 3), v[src_e])
@@ -165,7 +169,7 @@ def ssm_rollout_from(model, p0, v0, h0, e, z, steps, cfg, dt,
         for _ in range(steps):
             h, a, d_rot = model.step(p, v, h, e, z, edge_index, dt)
             p_next = p + v * dt
-            v = damping * (v + a * dt)
+            v = damping * a if model.predict_velocity else damping * (v + a * dt)
             src_e, dst_e = edge_index
             v_agg = torch.zeros_like(v).scatter_add_(0, dst_e.unsqueeze(1).expand(-1, 3), v[src_e])
             deg_v = torch.zeros(v.shape[0], device=v.device).scatter_add_(0, dst_e, torch.ones(dst_e.shape[0], device=v.device))
