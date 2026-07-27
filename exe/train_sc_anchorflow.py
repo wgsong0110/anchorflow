@@ -290,6 +290,11 @@ def main():
                     help="[hop mode] weight on the fine-vs-coarse hop-chain position "
                          "consistency loss (both chains share the same h0/spatial embed; "
                          "enforces the flow-composition property Φ(Δt2)∘Φ(Δt1)=Φ(Δt1+Δt2))")
+    ap.add_argument("--consist_detach_fine", action="store_true",
+                    help="[hop mode] detach the fine path in the consistency loss (only "
+                         "the coarse path is trained to match it) instead of pulling both "
+                         "chains toward each other -- keeps the photometrically-supervised "
+                         "fine path from being tugged by a loss that isn't pixel-grounded")
     ap.add_argument("--eval_every", type=int, default=1000,
                     help="full-T all-view PSNR/SSIM eval cadence (SC-GS-comparable; 0 disables)")
     ap.add_argument("--frames_per_step", type=int, default=6,
@@ -354,7 +359,8 @@ def main():
         print(f"[train] HopDynamics hidden={args.hidden} mp={args.mp_steps} "
               f"ssm={args.ssm_dim} dt={args.dt} n_time_freqs={args.n_time_freqs} "
               f"lambda_arap={args.lambda_arap} lambda_ic={args.lambda_ic} "
-              f"lambda_consist={args.lambda_consist}")
+              f"lambda_consist={args.lambda_consist} "
+              f"consist_detach_fine={args.consist_detach_fine}")
     else:
         model  = SSMDynamics(
             hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
@@ -624,7 +630,9 @@ def main():
             # ── fine/coarse hop-chain consistency: both chains share the same
             # h0/spatial embed: Φ(Δt2)∘Φ(Δt1) should equal Φ(Δt1+Δt2). ──────────
             if p_coarse is not None and args.lambda_consist > 0:
-                consist_terms = [F.mse_loss(p_fine[t], p_coarse[t])
+                fine_ref = (lambda t: p_fine[t].detach()) if args.consist_detach_fine \
+                           else (lambda t: p_fine[t])
+                consist_terms = [F.mse_loss(fine_ref(t), p_coarse[t])
                                   for t in coarse_idxs if t != 0]
                 if consist_terms:
                     loss_consist = sum(consist_terms) / len(consist_terms)
