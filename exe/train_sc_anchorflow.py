@@ -656,6 +656,15 @@ def main():
         dyn_opt.zero_grad(set_to_none=True)
         total_loss.backward()
 
+        # ── PSNR/SSIM eval (SC-GS-comparable: measured *before* this step's
+        # densify/opacity-reset, exactly mirroring SC-GS's train_gui.py, where
+        # training_report() runs before the densify/reset block. Evaluating
+        # after reset -- as we previously did -- captures the freshly-zeroed
+        # opacity's worst-case render, which SC-GS's own logged curve never
+        # shows since it logs the pre-reset state instead) ─────────────────────
+        if args.eval_every > 0 and (step % args.eval_every == 0 or step == args.iters - 1):
+            eval_psnr_ssim()
+
         # ── densification ────────────────────────────────────────────────────
         if step < densify_until and viewspace_pt is not None:
             gaussians.max_radii2D[visibility] = torch.max(
@@ -692,10 +701,6 @@ def main():
             pbar.set_postfix(loss=f"{avg:.4f}", n=gaussians.get_xyz.shape[0])
             with open(loss_csv_path, "a") as f:
                 f.write(f"{step},{avg}," + ",".join(f"{term_avgs[k]}" for k in term_names) + "\n")
-
-        # ── PSNR/SSIM eval (SC-GS-comparable cadence/format) ────────────────────
-        if args.eval_every > 0 and (step % args.eval_every == 0 or step == args.iters - 1):
-            eval_psnr_ssim()
 
         # ── checkpoint + save ─────────────────────────────────────────────────
         if (step + 1) % save_every == 0 or step == args.iters - 1:
