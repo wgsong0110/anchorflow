@@ -856,11 +856,15 @@ def main():
 
             # Instances can be destroyed at any time -- push every checkpoint
             # straight to R2 as it's written, not as a manual afterthought.
-            # Best-effort: silently skipped if rclone isn't configured.
+            # Loud on failure: a silently-skipped backup (e.g. rclone missing)
+            # is indistinguishable from a successful one until the instance is
+            # already gone and the checkpoint is unrecoverable.
             r2_dest = f"r2:storage/result/anchorflow/{os.path.basename(args.out)}/"
             for f in (ply_path, ckpt_path, os.path.join(args.out, "losses.csv")):
-                subprocess.run(["rclone", "copy", f, r2_dest],
-                                check=False, capture_output=True, timeout=120)
+                r = subprocess.run(["rclone", "copy", f, r2_dest],
+                                    check=False, capture_output=True, timeout=120, text=True)
+                if r.returncode != 0:
+                    print(f"[step {step+1}] WARNING: R2 backup FAILED for {f}: {r.stderr.strip()}")
 
     print("[train] done.")
 
