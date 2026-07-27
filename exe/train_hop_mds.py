@@ -150,7 +150,9 @@ def main():
     ap.add_argument("--e_dim",     type=int, default=8)
     ap.add_argument("--dt",        type=float, default=0.05)
     ap.add_argument("--n_time_freqs", type=int, default=6)
-    ap.add_argument("--lr_dyn",    type=float, default=3e-4)
+    ap.add_argument("--lr_dyn",    type=float, default=1e-4,
+                    help="matches train_seqgen_mds.py's own MDS-training default "
+                         "(1e-4), not train_sc_anchorflow.py's photometric default (3e-4)")
     ap.add_argument("--lambda_arap",   type=float, default=1e-2)
     ap.add_argument("--lambda_smooth", type=float, default=1e-2,
                     help="2nd-order (acceleration) temporal-smoothness penalty on "
