@@ -490,24 +490,23 @@ def main():
         h_by_t   = {t: h[b]     for b, t in enumerate(times)}
         return p_by_t, rot_by_t, h_by_t
 
-    def hop_frame_idxs():
-        """Coarse/rendered checkpoint sample: like the rollout-mode sampler
-        (always includes T-1), but also always includes frame 1 (T-1's
-        counterpart at the near end -- keeps the hardest-to-reach checkpoints
-        on both sides in every step's sample). --frames_per_step 1 is a
-        special case: exactly one fully-random frame, no forced inclusion --
-        matches SC-GS's train_gui.py, which pops a single random (view,
-        frame) pair per iteration (viewpoint_stack.pop(randint(...))) rather
-        than rendering several frames per step like our default."""
-        k = min(args.frames_per_step, T)
-        if k <= 1:
-            return [random.randint(1, T - 1)]
-        pool = list(range(2, T - 1))
-        n_random = max(0, k - 2)
-        chosen = set(random.sample(pool, min(n_random, len(pool))))
-        chosen.add(1)
-        chosen.add(T - 1)
-        return sorted(chosen)
+    _vf_pool = [[]]
+
+    def sample_vf_pairs(k):
+        """Pop k (view, frame) pairs without replacement from a persistent,
+        shuffled pool covering every (view, frame) combination (frame in
+        1..T-1) -- refills+reshuffles when exhausted. Matches SC-GS's
+        train_gui.py exactly: viewpoint_stack.pop(randint(...)) from a stack
+        of ALL (view,frame) camera entries, no forced-frame bias (frame 1/
+        T-1 aren't specially included -- that bias existed only to support
+        the now-removed ic loss, which needed frame 1 in every step)."""
+        pairs = []
+        for _ in range(k):
+            if not _vf_pool[0]:
+                _vf_pool[0] = [(v, t) for v in range(V) for t in range(1, T)]
+                random.shuffle(_vf_pool[0])
+            pairs.append(_vf_pool[0].pop())
+        return pairs
 
     def hop_direct(times, spatial):
         """Non-autoregressive coarse estimate: each t in `times` is reached by
@@ -639,19 +638,26 @@ def main():
         visibility   = None
 
         if hop_mode:
-            # render_idxs: same sampling as always (size=frames_per_step,
-            # forces frames 1 and T-1). coarse = each of these frames reached
-            # by one independent hop straight from init_h -- this is what
-            # gets rendered. fine = for each frame independently, a fresh
-            # walk from init_h through --fine_hops subsampled intermediates
-            # -- not rendered, not chained across frames, only used below for
+            # vf_pairs: frames_per_step (view,frame) pairs popped without
+            # replacement from the persistent SC-GS-style pool (no forced-
+            # frame bias). render_idxs = the distinct frames among them --
+            # coarse/fine hop computation only needs one entry per distinct
+            # frame, even if two pairs this step share a frame with
+            # different views. coarse = each distinct frame reached by one
+            # independent hop straight from init_h -- this is what gets
+            # rendered. fine = for each frame independently, a fresh walk
+            # from init_h through --fine_hops subsampled intermediates --
+            # not rendered, not chained across frames, only used below for
             # the coarse/fine consistency loss.
-            render_idxs = hop_frame_idxs()
+            vf_pairs = sample_vf_pairs(min(args.frames_per_step, V * (T - 1)))
+            render_idxs = sorted(set(t for _, t in vf_pairs))
             spatial = hop_spatial()
             p_coarse, rot_coarse, h_coarse = hop_direct(render_idxs, spatial)
             p_fine, rot_fine, h_fine = hop_fine_batch(render_idxs, args.fine_hops, spatial)
             anchor_now_stack = torch.stack([p_coarse[t] for t in render_idxs], dim=0)
             anchor_rot_stack = torch.stack([rot_coarse[t] for t in render_idxs], dim=0)
+            frame_to_i = {t: i for i, t in enumerate(render_idxs)}
+            render_pairs = [(vi, t, frame_to_i[t]) for vi, t in vf_pairs]
         else:
             # rendering (esp. rasterizer backward) dominates step time -- rollout
             # itself still runs all T steps (needed for correct GNN+SSM state),
@@ -664,6 +670,7 @@ def main():
             render_idxs = sorted(render_idxs)
             anchor_now_stack = anchor_seq[render_idxs]
             anchor_rot_stack = anchor_rot_seq[render_idxs]
+            render_pairs = [(random.randrange(V), t, i) for i, t in enumerate(render_idxs)]
 
         # one batched gather for all k selected frames instead of k separate
         # small gathers -- profiling showed the per-frame gather is CPU
@@ -671,8 +678,7 @@ def main():
         d_xyz_all, d_rotation_all = lbs_d_xyz_rot_batched(
             w, idx, anchors.canonical, anchor_now_stack, anchor_rot_stack)
 
-        for i, t in enumerate(render_idxs):
-            vi = random.randrange(V)                        # random view for this frame
+        for pair_i, (vi, t, i) in enumerate(render_pairs):
             cam = cams[vi]
             cam.fid = torch.tensor([t / max(T - 1, 1)], device=dev)
 
@@ -690,13 +696,13 @@ def main():
             total_loss = total_loss + loss
             render_loss_sum = render_loss_sum + loss
 
-            # Collect densification stats from the first rendered frame this step
-            if i == 0 and step < densify_until:
+            # Collect densification stats from the first rendered pair this step
+            if pair_i == 0 and step < densify_until:
                 viewspace_pt = pkg["viewspace_points"]
                 visibility   = pkg["visibility_filter"]
 
-        total_loss = total_loss / len(render_idxs)
-        render_loss_sum = render_loss_sum / len(render_idxs)
+        total_loss = total_loss / len(render_pairs)
+        render_loss_sum = render_loss_sum / len(render_pairs)
         loss_consist = arap_loss = torch.tensor(0.0, device=dev)
 
         if hop_mode:
