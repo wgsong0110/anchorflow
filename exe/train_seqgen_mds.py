@@ -86,9 +86,15 @@ def load_cameras(model_dir, n_views, long_side):
             T_vec = np.array(c["T"], dtype=np.float32)
             Wd, Hd = c["W"], c["H"]
             fovx, fovy = c["fov_x"], c["fov_y"]
+        # Round to a multiple of 64, not 8: SVD's spatio-temporal UNet needs
+        # both dims 64-aligned (VAE 8x downsample + ~3 further UNet halvings).
+        # 8-alignment is enough for square renders (256x256 stays 64-aligned
+        # by luck) but real, non-square captures like bonsai/kitchen
+        # (3118x2078 -> 256x168 at 8-rounding) hit a skip-connection size
+        # mismatch inside unet_3d_blocks (168 % 64 != 0).
         s = long_side / max(Wd, Hd)
-        W8 = max(8, int(round(Wd * s / 8)) * 8)
-        H8 = max(8, int(round(Hd * s / 8)) * 8)
+        W8 = max(64, int(round(Wd * s / 64)) * 64)
+        H8 = max(64, int(round(Hd * s / 64)) * 64)
         cams.append(Cam(rot, T_vec, fovx, fovy, W8, H8))
     print(f"[train] cameras={len(cams)}  {cams[0].image_width}x{cams[0].image_height}", flush=True)
     return cams
