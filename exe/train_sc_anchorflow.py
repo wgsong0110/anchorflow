@@ -16,7 +16,7 @@ Usage:
 """
 from __future__ import annotations
 
-import sys, os, math, json, random, argparse
+import sys, os, math, json, random, argparse, subprocess
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import numpy as np
@@ -832,8 +832,17 @@ def main():
             else:
                 ckpt_dict["ic_dir"] = ic_dir.data
                 ckpt_dict["ic_net"] = ic_net.state_dict()
-            torch.save(ckpt_dict, os.path.join(args.out, "ckpt_last.pt"))
+            ckpt_path = os.path.join(args.out, "ckpt_last.pt")
+            torch.save(ckpt_dict, ckpt_path)
             print(f"[step {step+1}] saved  gaussians={gaussians.get_xyz.shape[0]}")
+
+            # Instances can be destroyed at any time -- push every checkpoint
+            # straight to R2 as it's written, not as a manual afterthought.
+            # Best-effort: silently skipped if rclone isn't configured.
+            r2_dest = f"r2:storage/result/anchorflow/{os.path.basename(args.out)}/"
+            for f in (ply_path, ckpt_path, os.path.join(args.out, "losses.csv")):
+                subprocess.run(["rclone", "copy", f, r2_dest],
+                                check=False, capture_output=True, timeout=120)
 
     print("[train] done.")
 
