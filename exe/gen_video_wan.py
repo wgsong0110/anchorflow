@@ -50,6 +50,10 @@ def main():
     ap.add_argument("--guidance_scale", type=float, default=5.0)
     ap.add_argument("--model_id", default="Wan-AI/Wan2.1-I2V-14B-480P-Diffusers")
     ap.add_argument("--max_area", type=int, default=480 * 832)
+    ap.add_argument("--offload_transformer", action="store_true",
+                    help="leaf-level CPU<->GPU offload the transformer too (needed "
+                         "on 24GB cards; leave off on 40GB+ where it fits resident "
+                         "and offloading would only slow things down)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -69,18 +73,29 @@ def main():
     # single 24GB GPU in bf16 otherwise (~56-80GB unoptimized). Keeps whichever
     # blocks aren't actively computing on CPU, streamed in/out on demand --
     # official diffusers pattern for Wan on consumer GPUs.
+    #
+    # Leaf-level offloading of the *transformer* is what actually dominates
+    # step time (it runs every single denoising step, streaming every leaf
+    # submodule CPU<->GPU each time), unlike the text encoder (runs once per
+    # video, so offloading it is essentially free). On a 40GB+ GPU the
+    # transformer (~28GB bf16) fits resident on-device on its own -- only
+    # offload it if --offload_transformer is passed (needed on 24GB cards).
     from diffusers.hooks.group_offloading import apply_group_offloading
     onload_device = torch.device("cuda")
     offload_device = torch.device("cpu")
     apply_group_offloading(pipe.text_encoder,
         onload_device=onload_device, offload_device=offload_device,
         offload_type="block_level", num_blocks_per_group=4)
-    pipe.transformer.enable_group_offload(
-        onload_device=onload_device, offload_device=offload_device,
-        offload_type="leaf_level", use_stream=True)
+    if args.offload_transformer:
+        pipe.transformer.enable_group_offload(
+            onload_device=onload_device, offload_device=offload_device,
+            offload_type="leaf_level", use_stream=True)
+    else:
+        pipe.transformer.to(onload_device)
     pipe.vae.to(onload_device)
     pipe.image_encoder.to(onload_device)
-    print("[gen_video_wan] pipeline ready (group offloading applied)", flush=True)
+    print(f"[gen_video_wan] pipeline ready (transformer "
+          f"{'offloaded' if args.offload_transformer else 'resident on GPU'})", flush=True)
 
     image = Image.open(args.image).convert("RGB")
     aspect_ratio = image.height / image.width
