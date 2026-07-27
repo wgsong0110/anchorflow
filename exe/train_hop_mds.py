@@ -22,12 +22,28 @@ motion (its role is analogous to SeqGen's random (cond_ids, cond_vel)
 conditioning in train_seqgen_mds.py, just via an abstract latent instead of
 literal per-node velocities).
 
+Two input modes:
+  1. NeRF-Blender dynamic dataset ply (--ply + --data): canonical Gaussians
+     from a completed train_sc_anchorflow.py run on a Blender-format dataset
+     (T = that dataset's own frame count).
+  2. Publicly-released static real-scene reconstruction (--model_dir): a
+     pretrained INRIA 3DGS checkpoint (cameras.json + point_cloud/iteration_N/
+     point_cloud.ply, e.g. mip-NeRF360's "bonsai" or "kitchen" from
+     https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip)
+     -- no dynamic dataset needed at all since MDS supplies its own motion
+     signal; T is a free choice (--n_frames) since the scene has no inherent
+     video length.
+
 Usage:
   python exe/train_hop_mds.py \\
       --ply /workspace/ficus_sc_af_hop_coarseonly/point_cloud_060000.ply \\
       --data /workspace/ficus_ds_wind \\
       --out  /workspace/ficus_sc_af_hop_mds \\
       --iters 20000
+
+  python exe/train_hop_mds.py \\
+      --model_dir /workspace/gs_official/bonsai --ply_iter 30000 \\
+      --out /workspace/bonsai_hop_mds --n_frames 14 --n_views 8 --iters 20000
 """
 from __future__ import annotations
 
@@ -54,6 +70,9 @@ sys.path.insert(0, _lib)
 from train_sc_anchorflow import (
     GaussianModel, Pipe, load_blender_dataset, lbs_d_xyz_rot_batched,
 )
+# COLMAP/cameras.json loader for real (INRIA-pretrained) static scenes --
+# also module-level in train_seqgen_mds.py, never runs its main() on import.
+from train_seqgen_mds import load_cameras
 from anchorflow.anchors import AnchorSet
 from anchorflow.ssm_dynamics import HopDynamics, build_graph
 from anchorflow import warp as W
@@ -94,10 +113,27 @@ def render_frames_checkpointed(cam, gaussians, pipe, bg, d_xyz_all, d_rot_all,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ply", required=True,
-                    help="pretrained canonical point_cloud_*.ply -- frozen, "
+    ap.add_argument("--ply", default=None,
+                    help="[Blender mode] pretrained canonical point_cloud_*.ply -- frozen, "
                          "no further optimization (MDS gives no appearance signal)")
-    ap.add_argument("--data",  required=True, help="NeRF-Blender dataset dir (cameras only)")
+    ap.add_argument("--data",  default=None, help="[Blender mode] NeRF-Blender dataset dir (cameras only)")
+    ap.add_argument("--model_dir", default=None,
+                    help="[static-scene mode] INRIA pretrained checkpoint dir "
+                         "(cameras.json + point_cloud/iteration_N/point_cloud.ply), "
+                         "e.g. a mip-NeRF360 scene like bonsai/kitchen -- mutually "
+                         "exclusive with --ply/--data")
+    ap.add_argument("--ply_iter", type=int, default=30000,
+                    help="[static-scene mode] which point_cloud/iteration_N to load")
+    ap.add_argument("--n_frames", type=int, default=14,
+                    help="[static-scene mode] T -- free choice, the scene has no "
+                         "inherent video length (matches this project's other MDS "
+                         "configs, cfg/anchorflow_*.yaml)")
+    ap.add_argument("--n_views", type=int, default=8,
+                    help="[static-scene mode] number of cameras to sample "
+                         "(evenly spaced by index) from cameras.json")
+    ap.add_argument("--white_bg", action="store_true",
+                    help="[static-scene mode] both bonsai/kitchen use "
+                         "white_background=false (per their own cfg_args) -- default black")
     ap.add_argument("--out",   required=True)
     ap.add_argument("--iters", type=int, default=20_000)
     ap.add_argument("--res",   type=int, default=256,
@@ -130,23 +166,40 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     dev = "cuda"
-    bg  = torch.tensor([1., 1., 1.], device=dev)
+    static_mode = args.model_dir is not None
+    if static_mode:
+        assert args.ply is None and args.data is None, \
+            "--model_dir is mutually exclusive with --ply/--data"
+    else:
+        assert args.ply is not None and args.data is not None, \
+            "Blender mode needs both --ply and --data"
+    # Blender mode is always composited onto white in load_blender_dataset;
+    # bonsai/kitchen's own cfg_args both say white_background=False -> black.
+    bg = torch.tensor([0., 0., 0.] if (static_mode and not args.white_bg) else [1., 1., 1.],
+                       device=dev)
     gh = git_hash()
 
-    # ── cameras (GT frames loaded but unused -- MDS needs no ground truth) ───
-    cams, _frames_unused = load_blender_dataset(args.data, args.res)
-    V = len(cams)
-    T = len(_frames_unused[0])
-    del _frames_unused
+    # ── cameras + frozen canonical Gaussians ──────────────────────────────────
+    if static_mode:
+        cams = load_cameras(args.model_dir, args.n_views, args.res)
+        V = len(cams)
+        T = args.n_frames
+        ply_path = f"{args.model_dir}/point_cloud/iteration_{args.ply_iter}/point_cloud.ply"
+    else:
+        # GT frames loaded but unused -- MDS needs no ground truth
+        cams, _frames_unused = load_blender_dataset(args.data, args.res)
+        V = len(cams)
+        T = len(_frames_unused[0])
+        del _frames_unused
+        ply_path = args.ply
 
-    # ── frozen canonical Gaussians (pretrained appearance; never updated) ────
     gaussians = GaussianModel(3)
-    gaussians.load_ply(args.ply)
+    gaussians.load_ply(ply_path)
     gaussians.active_sh_degree = 3
     for p in (gaussians._xyz, gaussians._features_dc, gaussians._features_rest,
               gaussians._scaling, gaussians._rotation, gaussians._opacity):
         p.requires_grad_(False)
-    print(f"[train] gaussians={gaussians.get_xyz.shape[0]} (frozen, from {args.ply})  "
+    print(f"[train] gaussians={gaussians.get_xyz.shape[0]} (frozen, from {ply_path})  "
           f"V={V} T={T}  commit={gh}", flush=True)
 
     # ── anchors (canonical buffer fixed; e/radius/node_weight trainable) ─────
