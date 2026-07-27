@@ -28,6 +28,18 @@ from a single fixed camera, cams[0] -- this is single-view monocular i2v
 generation + monocular photometric training, not multi-view. All N videos
 share that same viewpoint; the anchors/network never see any other camera.
 
+OBSERVED MOTION CONTENT (checked by hand, frame 0 vs frame 13, 8 seeds each,
+default motion_bucket_id=127 inherited from gen_video.py -- not tuned here):
+  - kitchen (lego bulldozer on a table): visible motion in ~all 8 seeds --
+    the bulldozer consistently shifts/rotates slightly. Plausible object
+    motion, close to what you'd want to supervise on.
+  - bonsai (potted plant + flowers): mostly near-static across seeds (6/8
+    videos show almost no change frame-to-frame); the other 2 show large
+    change, but it looks like SVD hallucinating/warping the flowers into a
+    different blob rather than plausible wind-driven motion. Not reliable
+    "wind blowing" content -- if bonsai motion quality matters, raising
+    motion_bucket_id (or picking seeds after inspection) is worth trying.
+
 Usage:
   python exe/train_hop_i2v.py \\
       --model_dir /workspace/gs_official/bonsai --ply_iter 30000 \\
