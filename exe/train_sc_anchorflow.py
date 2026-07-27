@@ -449,46 +449,53 @@ def main():
             grad=grad, h0=init_h, spatial=spatial)
         return p_by_t, rot_by_t, h_by_t, spatial
 
-    def hop_fine_batch(times, n_hops, spatial):
-        """Batched independent fine walks: for every t in `times`, sample a
-        FIXED number (n_hops) of intermediate frames from (0,t) -- e.g.
-        n_hops=2, t=6 might pick {3,5} -- and hop init_h through them fresh,
-        landing on t. Each frame's walk is fully independent (never chained
-        to another frame's, so each frame's consistency-loss gradient stays
-        isolated -- no shared-prefix entanglement like hop_forward()'s one
-        continuous chain), but computed len(times) at a time: at each depth,
-        every frame's hop is issued as ONE model.hop_batch() call instead of
-        len(times) separate model.hop() calls. Frames whose sampled path is
-        shorter than the batch's max length are padded with Δt=0 hops --
-        an exact identity no-op (decay=exp(0)=1 so h is unchanged) -- with
-        their position delta masked out so it isn't double-counted."""
+    def hop_direct(times, spatial):
+        """Non-autoregressive coarse estimate: each t in `times` is reached by
+        exactly ONE hop directly from init_h (Δt=t*dt) -- independent of every
+        other t, no chaining, UNCHANGED regardless of the fine design below.
+        This is what gets rendered/photometrically supervised. All len(times)
+        hops are issued as a single model.hop_batch() call (mutually
+        independent -- one shared depth, different Δt per frame)."""
         B = len(times)
         M = spatial.shape[0]
-        dev = spatial.device
-        paths = []
-        for t in times:
-            pool = list(range(1, t))
-            n = min(n_hops, len(pool))
-            paths.append(sorted(random.sample(pool, n)) + [t])
-        max_len = max(len(p) for p in paths)
-        dt_mat = torch.zeros(B, max_len, device=dev)
-        mask = torch.zeros(B, max_len, device=dev)
-        for b, path in enumerate(paths):
-            prev = 0
-            for i, pt in enumerate(path):
-                dt_mat[b, i] = (pt - prev) * args.dt
-                mask[b, i] = 1.0
-                prev = pt
-        h = init_h.unsqueeze(0).expand(B, M, -1).clone()
-        p = anchors.canonical.unsqueeze(0).expand(B, M, -1).clone()
-        d_rot = None
-        for i in range(max_len):
-            d_p, d_rot, h = model.hop_batch(spatial, h, anchors.e, dt_mat[:, i])
-            p = p + d_p * mask[:, i].view(B, 1, 1)
-        p_by_t   = {t: p[b]     for b, t in enumerate(times)}
-        rot_by_t = {t: d_rot[b] for b, t in enumerate(times)}
-        h_by_t   = {t: h[b]     for b, t in enumerate(times)}
+        dt = torch.tensor([t * args.dt for t in times], device=spatial.device)
+        h0 = init_h.unsqueeze(0).expand(B, M, -1)
+        d_p, d_rot, h = model.hop_batch(spatial, h0, anchors.e, dt)
+        canonical = anchors.canonical
+        p_by_t   = {t: canonical + d_p[b] for b, t in enumerate(times)}
+        rot_by_t = {t: d_rot[b]           for b, t in enumerate(times)}
+        h_by_t   = {t: h[b]               for b, t in enumerate(times)}
         return p_by_t, rot_by_t, h_by_t
+
+    def hop_fine_from_prev_coarse(render_idxs, p_coarse, h_coarse, n_hops, spatial):
+        """fine: for each t_i in sorted render_idxs, an independent walk that
+        starts from the PREVIOUS frame's coarse state (t_{i-1}'s p_coarse/
+        h_coarse, DETACHED -- coarse is frozen, never touched by this) instead
+        of from init_h, then hops through n_hops subsampled intermediate
+        frames in (t_{i-1}, t_i), landing on t_i. coarse itself (hop_direct)
+        is completely unaffected -- only fine's starting point changes. The
+        first (smallest) frame this step has no "previous" frame, so it
+        falls back to init_h/canonical, matching coarse's own t=0 anchor."""
+        sc = sorted(render_idxs)
+        p_fine, rot_fine, h_fine = {}, {}, {}
+        prev_t = 0
+        for t in sc:
+            if prev_t == 0:
+                start_p, start_h = anchors.canonical, init_h
+            else:
+                start_p, start_h = p_coarse[prev_t].detach(), h_coarse[prev_t].detach()
+            pool = list(range(prev_t + 1, t))
+            n = min(n_hops, len(pool))
+            path = sorted(random.sample(pool, n)) + [t]
+            pf, hf, pt_prev = start_p, start_h, prev_t
+            d_rot_f = None
+            for pt in path:
+                d_pf, d_rot_f, hf = model.hop(spatial, hf, anchors.e, (pt - pt_prev) * args.dt)
+                pf = pf + d_pf
+                pt_prev = pt
+            p_fine[t], rot_fine[t], h_fine[t] = pf, d_rot_f, hf
+            prev_t = t
+        return p_fine, rot_fine, h_fine
 
     _vf_pool = [[]]
 
@@ -507,29 +514,6 @@ def main():
                 random.shuffle(_vf_pool[0])
             pairs.append(_vf_pool[0].pop())
         return pairs
-
-    def hop_direct(times, spatial):
-        """Non-autoregressive coarse estimate: each t in `times` is reached by
-        exactly ONE hop directly from init_h (Δt=t*dt) -- independent of every
-        other t, no chaining. This is what gets rendered/photometrically
-        supervised. All len(times) hops are issued as a single
-        model.hop_batch() call (they're mutually independent -- one shared
-        depth, different Δt per frame -- the same batching principle as
-        hop_fine_batch()) instead of len(times) separate model.hop() calls.
-        Compared in the consistency loss against hop_fine_batch()'s
-        independent walk to the same times, both starting from the same
-        init_h -- does jumping straight to t match actually walking there
-        through the real intermediate GNN/SSM states?"""
-        B = len(times)
-        M = spatial.shape[0]
-        dt = torch.tensor([t * args.dt for t in times], device=spatial.device)
-        h0 = init_h.unsqueeze(0).expand(B, M, -1)
-        d_p, d_rot, h = model.hop_batch(spatial, h0, anchors.e, dt)
-        canonical = anchors.canonical
-        p_by_t   = {t: canonical + d_p[b] for b, t in enumerate(times)}
-        rot_by_t = {t: d_rot[b]           for b, t in enumerate(times)}
-        h_by_t   = {t: h[b]               for b, t in enumerate(times)}
-        return p_by_t, rot_by_t, h_by_t
 
     best_psnr = {"value": -1.0, "step": -1}
 
@@ -643,17 +627,21 @@ def main():
             # frame bias). render_idxs = the distinct frames among them --
             # coarse/fine hop computation only needs one entry per distinct
             # frame, even if two pairs this step share a frame with
-            # different views. coarse = each distinct frame reached by one
-            # independent hop straight from init_h -- this is what gets
-            # rendered. fine = for each frame independently, a fresh walk
-            # from init_h through --fine_hops subsampled intermediates --
-            # not rendered, not chained across frames, only used below for
-            # the coarse/fine consistency loss.
+            # different views. coarse = UNCHANGED: each distinct frame
+            # reached by one independent, batched hop straight from init_h
+            # -- this is what gets rendered. fine = for each frame, an
+            # independent walk starting from the PREVIOUS frame's coarse
+            # state (detached) instead of from init_h, through --fine_hops
+            # subsampled intermediates -- not rendered, only used below for
+            # the coarse/fine consistency loss (local: does coarse's one hop
+            # from t_{i-1} match walking there through real intermediate
+            # states, both starting from the same real point?).
             vf_pairs = sample_vf_pairs(min(args.frames_per_step, V * (T - 1)))
             render_idxs = sorted(set(t for _, t in vf_pairs))
             spatial = hop_spatial()
             p_coarse, rot_coarse, h_coarse = hop_direct(render_idxs, spatial)
-            p_fine, rot_fine, h_fine = hop_fine_batch(render_idxs, args.fine_hops, spatial)
+            p_fine, rot_fine, h_fine = hop_fine_from_prev_coarse(
+                render_idxs, p_coarse, h_coarse, args.fine_hops, spatial)
             anchor_now_stack = torch.stack([p_coarse[t] for t in render_idxs], dim=0)
             anchor_rot_stack = torch.stack([rot_coarse[t] for t in render_idxs], dim=0)
             frame_to_i = {t: i for i, t in enumerate(render_idxs)}
