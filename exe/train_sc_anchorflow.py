@@ -287,14 +287,21 @@ def main():
                          "ic_dir a literal, user-steerable initial-velocity parameter even "
                          "though the decoder no longer integrates velocity explicitly")
     ap.add_argument("--lambda_consist", type=float, default=1.0,
-                    help="[hop mode] weight on the fine-vs-coarse hop-chain position "
-                         "consistency loss (both chains share the same h0/spatial embed; "
-                         "enforces the flow-composition property Φ(Δt2)∘Φ(Δt1)=Φ(Δt1+Δt2))")
-    ap.add_argument("--consist_detach_fine", action="store_true",
-                    help="[hop mode] detach the fine path in the consistency loss (only "
-                         "the coarse path is trained to match it) instead of pulling both "
-                         "chains toward each other -- keeps the photometrically-supervised "
-                         "fine path from being tugged by a loss that isn't pixel-grounded")
+                    help="[hop mode] weight on the coarse-vs-shadow-fine hop-chain "
+                         "consistency loss. coarse (the rendered/photometric checkpoint "
+                         "chain) is authoritative; at each consecutive coarse segment "
+                         "(a,b), a shadow chain hops through 1 intermediate frame starting "
+                         "from coarse's own real (position, hidden state) at a, and its "
+                         "result at b is compared (position + hidden state) against "
+                         "coarse's own real state at b -- enforces the flow-composition "
+                         "property Φ(Δt2)∘Φ(Δt1)=Φ(Δt1+Δt2) locally, without confounding "
+                         "from cumulative drift over the rest of the trajectory")
+    ap.add_argument("--consist_detach", choices=["none", "target", "shadow"], default="target",
+                    help="[hop mode] 'target' (default): detach coarse's own real state at "
+                         "b (the photometrically-grounded target) so only the shadow "
+                         "(intermediate-hop) branch is trained to match it. 'shadow': detach "
+                         "the shadow branch instead (train coarse's own trajectory toward "
+                         "it). 'none': both pull toward each other symmetrically")
     ap.add_argument("--eval_every", type=int, default=1000,
                     help="full-T all-view PSNR/SSIM eval cadence (SC-GS-comparable; 0 disables)")
     ap.add_argument("--frames_per_step", type=int, default=6,
@@ -360,7 +367,7 @@ def main():
               f"ssm={args.ssm_dim} dt={args.dt} n_time_freqs={args.n_time_freqs} "
               f"lambda_arap={args.lambda_arap} lambda_ic={args.lambda_ic} "
               f"lambda_consist={args.lambda_consist} "
-              f"consist_detach_fine={args.consist_detach_fine}")
+              f"consist_detach={args.consist_detach}")
     else:
         model  = SSMDynamics(
             hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
@@ -413,11 +420,15 @@ def main():
             damping=args.damping, vel_smooth=0.1,
             return_rotations=True)   # [T, M, 3], [T, M, 4]
 
-    def hop_forward(frame_idxs, coarse_idxs=None, grad=True):
-        """HopDynamics mode: sequential but only through frame_idxs (and,
-        separately, coarse_idxs from the same shared h0/spatial embed, for
-        the fine/coarse consistency loss). z = ic_net's propagated output
-        (repurposes the old "initial velocity" role as a control code)."""
+    def hop_forward(times, grad=True):
+        """HopDynamics mode: one autoregressive chain, hopping only through
+        `times`. z = ic_net's propagated output (repurposes the old "initial
+        velocity" role as a control code). Returns per-visited-time position,
+        rotation, AND hidden-state dicts (h_by_t is needed so the coarse/fine
+        consistency loss can branch a shadow chain from a real intermediate
+        state instead of only comparing final outputs), plus z/spatial so the
+        caller can issue extra one-off model.hop() calls sharing the same
+        embedding without recomputing it."""
         p0 = anchors.canonical
         edge_index = build_graph(p0.detach(), graph_cfg)
         z = ic_net(ic_dir, anchors.e, p0, edge_index)          # [M,3], repurposed as z
@@ -425,21 +436,16 @@ def main():
         with ctx:
             spatial = model.spatial_embed(anchors.e, edge_index, p0)
             h0 = model.init_hidden(anchors.e, z)
-        p_fine, rot_fine, _ = hop_rollout(
-            model, p0, anchors.e, z, edge_index, frame_idxs, args.dt,
+        p_by_t, rot_by_t, h_by_t = hop_rollout(
+            model, p0, anchors.e, z, edge_index, times, args.dt,
             grad=grad, h0=h0, spatial=spatial)
-        p_coarse = rot_coarse = None
-        if coarse_idxs:
-            p_coarse, rot_coarse, _ = hop_rollout(
-                model, p0, anchors.e, z, edge_index, coarse_idxs, args.dt,
-                grad=grad, h0=h0, spatial=spatial)
-        return p_fine, rot_fine, p_coarse, rot_coarse, z
+        return p_by_t, rot_by_t, h_by_t, z, spatial
 
     def hop_frame_idxs():
-        """Fine subsample: like the rollout-mode sampler (always includes
-        T-1), but also always includes frame 1 (needed for the initial-
-        velocity-consistency loss -- the empirical v_implied is computed
-        from canonical -> frame 1)."""
+        """Coarse/rendered checkpoint sample: like the rollout-mode sampler
+        (always includes T-1), but also always includes frame 1 (needed for
+        the initial-velocity-consistency loss -- the empirical v_implied is
+        computed from canonical -> frame 1)."""
         k = min(args.frames_per_step, T)
         pool = list(range(2, T - 1))
         n_random = max(0, k - 2)
@@ -448,14 +454,20 @@ def main():
         chosen.add(T - 1)
         return sorted(chosen)
 
-    def hop_coarse_idxs(frame_idxs):
-        """Further subsample of frame_idxs (every other one) -- by construction
-        at least one fine frame sits between consecutive coarse frames. T-1 is
-        force-included so the consistency check also covers the longest hop."""
-        if len(frame_idxs) < 3:
-            return list(frame_idxs)
-        coarse = sorted(set(frame_idxs[::2]) | {frame_idxs[-1]})
-        return coarse
+    def hop_shadow_segments(coarse_idxs):
+        """For each consecutive pair (a,b) in coarse_idxs with a gap > 1,
+        pick one intermediate frame m in (a,b) -- the fine/shadow chain hops
+        a -> m -> b, starting from coarse's own real (p, h) at a, so it can
+        be compared against coarse's own real (p, h) at b. Segments with
+        gap == 1 have no room for an intermediate frame (coarse's own single
+        hop already covers them) and are skipped."""
+        sc = sorted(coarse_idxs)
+        segs = []
+        for a, b in zip(sc, sc[1:]):
+            if b - a > 1:
+                m = random.randint(a + 1, b - 1)
+                segs.append((a, m, b))
+        return segs
 
     best_psnr = {"value": -1.0, "step": -1}
 
@@ -561,15 +573,14 @@ def main():
         visibility   = None
 
         if hop_mode:
-            # sequential, but only through the sampled (fine) frames -- and,
-            # separately, a coarser subsample sharing the same h0/spatial embed
-            # (for the fine/coarse consistency loss). Frame 1 and T-1 are
-            # always included (initial-velocity consistency / hardest-reach).
-            frame_idxs = hop_frame_idxs()
-            coarse_idxs = hop_coarse_idxs(frame_idxs)
-            p_fine, rot_fine, p_coarse, rot_coarse, _z = hop_forward(frame_idxs, coarse_idxs)
-            anchor_now_stack = torch.stack([p_fine[t] for t in frame_idxs], dim=0)
-            anchor_rot_stack = torch.stack([rot_fine[t] for t in frame_idxs], dim=0)
+            # coarse: the sequential, rendered/photometric checkpoint chain
+            # (size=frames_per_step, always includes frames 1 and T-1). The
+            # fine/shadow consistency check happens separately below, branching
+            # off coarse's own real (position, hidden state) at each segment.
+            render_idxs = hop_frame_idxs()
+            p_by_t, rot_by_t, h_by_t, z, spatial = hop_forward(render_idxs)
+            anchor_now_stack = torch.stack([p_by_t[t] for t in render_idxs], dim=0)
+            anchor_rot_stack = torch.stack([rot_by_t[t] for t in render_idxs], dim=0)
         else:
             # rendering (esp. rasterizer backward) dominates step time -- rollout
             # itself still runs all T steps (needed for correct GNN+SSM state),
@@ -577,11 +588,11 @@ def main():
             # included since it's the most drift-prone / hardest to get right.
             anchor_seq, anchor_rot_seq = rollout()
             k = min(args.frames_per_step, T)
-            frame_idxs = set(random.sample(range(T - 1), k - 1)) if k > 1 else set()
-            frame_idxs.add(T - 1)
-            frame_idxs = sorted(frame_idxs)
-            anchor_now_stack = anchor_seq[frame_idxs]
-            anchor_rot_stack = anchor_rot_seq[frame_idxs]
+            render_idxs = set(random.sample(range(T - 1), k - 1)) if k > 1 else set()
+            render_idxs.add(T - 1)
+            render_idxs = sorted(render_idxs)
+            anchor_now_stack = anchor_seq[render_idxs]
+            anchor_rot_stack = anchor_rot_seq[render_idxs]
 
         # one batched gather for all k selected frames instead of k separate
         # small gathers -- profiling showed the per-frame gather is CPU
@@ -589,7 +600,7 @@ def main():
         d_xyz_all, d_rotation_all = lbs_d_xyz_rot_batched(
             w, idx, anchors.canonical, anchor_now_stack, anchor_rot_stack)
 
-        for i, t in enumerate(frame_idxs):
+        for i, t in enumerate(render_idxs):
             vi = random.randrange(V)                        # random view for this frame
             cam = cams[vi]
             cam.fid = torch.tensor([t / max(T - 1, 1)], device=dev)
@@ -613,37 +624,59 @@ def main():
                 viewspace_pt = pkg["viewspace_points"]
                 visibility   = pkg["visibility_filter"]
 
-        total_loss = total_loss / len(frame_idxs)
-        render_loss_sum = render_loss_sum / len(frame_idxs)
+        total_loss = total_loss / len(render_idxs)
+        render_loss_sum = render_loss_sum / len(render_idxs)
         loss_ic = loss_consist = arap_loss = torch.tensor(0.0, device=dev)
 
         if hop_mode:
             # ── initial-velocity consistency: keep ic_dir a literal, user-
             # steerable initial velocity even though the decoder no longer
-            # integrates velocity -- frame 1 is always in frame_idxs, so
-            # v_implied is the actual empirical initial velocity of the path
-            # the network just generated. ────────────────────────────────────
-            v_implied = (p_fine[1] - anchors.canonical) / args.dt
-            loss_ic = F.mse_loss(ic_dir, v_implied)
+            # integrates velocity -- frame 1 is always in the rendered/coarse
+            # chain, so v_implied is the actual empirical initial velocity of
+            # the path the network just generated. v_implied is detached: this
+            # loss only calibrates ic_dir to describe the network's behaviour,
+            # it must not also pull the HopDynamics model's own weights (which
+            # are governed by the photometric/consistency/ARAP losses instead)
+            # -- ic_net still gets ample gradient from those losses via z. ───
+            v_implied = (p_by_t[1] - anchors.canonical) / args.dt
+            loss_ic = F.mse_loss(ic_dir, v_implied.detach())
             total_loss = total_loss + args.lambda_ic * loss_ic
 
-            # ── fine/coarse hop-chain consistency: both chains share the same
-            # h0/spatial embed: Φ(Δt2)∘Φ(Δt1) should equal Φ(Δt1+Δt2). ──────────
-            if p_coarse is not None and args.lambda_consist > 0:
-                fine_ref = (lambda t: p_fine[t].detach()) if args.consist_detach_fine \
-                           else (lambda t: p_fine[t])
-                consist_terms = [F.mse_loss(fine_ref(t), p_coarse[t])
-                                  for t in coarse_idxs if t != 0]
+            # ── coarse/shadow-fine consistency: coarse (rendered, above) is
+            # authoritative. At each consecutive coarse segment (a,b), hop a
+            # shadow chain a -> m -> b (m = one intermediate frame) starting
+            # from coarse's own real (p, h) at a, then compare the shadow's
+            # result at b against coarse's own real (p, h) at b -- position
+            # AND hidden state -- enforcing the flow-composition property
+            # locally, without confounding from the rest of the trajectory's
+            # drift. args.consist_detach picks which side is the fixed target.
+            if args.lambda_consist > 0:
+                segs = hop_shadow_segments(render_idxs)
+                consist_terms = []
+                for a, m, b in segs:
+                    dt1 = (m - a) * args.dt
+                    d_p1, _, h1 = model.hop(spatial, h_by_t[a], anchors.e, z, dt1)
+                    p1 = p_by_t[a] + d_p1
+                    dt2 = (b - m) * args.dt
+                    d_p2, _, h2 = model.hop(spatial, h1, anchors.e, z, dt2)
+                    p_shadow, h_shadow = p1 + d_p2, h2
+                    p_target, h_target = p_by_t[b], h_by_t[b]
+                    if args.consist_detach == "target":
+                        p_target, h_target = p_target.detach(), h_target.detach()
+                    elif args.consist_detach == "shadow":
+                        p_shadow, h_shadow = p_shadow.detach(), h_shadow.detach()
+                    consist_terms.append(F.mse_loss(p_shadow, p_target)
+                                          + F.mse_loss(h_shadow, h_target))
                 if consist_terms:
                     loss_consist = sum(consist_terms) / len(consist_terms)
                     total_loss = total_loss + args.lambda_consist * loss_consist
 
-            # ── ARAP regularizer (SC-GS-style; same as rollout mode but sampled
-            # from the frames we actually computed this step) ──────────────────
+            # ── ARAP regularizer (SC-GS-style; sampled from the rendered/
+            # coarse checkpoints computed this step) ────────────────────────
             if args.lambda_arap > 0:
-                arap_ts = random.sample(frame_idxs, min(2, len(frame_idxs)))
+                arap_ts = random.sample(render_idxs, min(2, len(render_idxs)))
                 arap_loss = sum(
-                    W.anchor_arap_loss(anchors.canonical, p_fine[t], K=8,
+                    W.anchor_arap_loss(anchors.canonical, p_by_t[t], K=8,
                                        _idx=_arap_idx, _src=_arap_src)
                     for t in arap_ts) / len(arap_ts)
                 total_loss = total_loss + args.lambda_arap * arap_loss

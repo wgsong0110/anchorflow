@@ -270,13 +270,16 @@ def hop_rollout(model, canonical, e, z, edge_index, times, dt_base, grad=True,
     frames to reach frame T-1.
 
     Pass h0/spatial explicitly to continue a chain from a previously-computed
-    state (needed for the fine/coarse consistency check: both chains start
-    from the *same* h0, not from a fresh init_hidden() each).
+    state (needed for the coarse/shadow-fine consistency check: the shadow
+    chain branches from this chain's own real (p, h) at an intermediate time,
+    not from a fresh init_hidden() each).
 
     Returns:
-      p_by_t   dict {t: [M,3]}   (includes t=0 -> canonical)
-      rot_by_t dict {t: [M,4]}   (includes t=0 -> identity [1,0,0,0])
-      h_final  [M, ssm_dim]      hidden state after the last hop (for chaining)
+      p_by_t   dict {t: [M,3]}       (includes t=0 -> canonical)
+      rot_by_t dict {t: [M,4]}       (includes t=0 -> identity [1,0,0,0])
+      h_by_t   dict {t: [M,ssm_dim]} (includes t=0 -> h0; hidden state after
+                                       the hop landing on t, for branching a
+                                       shadow chain from any visited time)
     """
     ctx = torch.enable_grad() if grad else torch.no_grad()
     with ctx:
@@ -288,6 +291,7 @@ def hop_rollout(model, canonical, e, z, edge_index, times, dt_base, grad=True,
         p_by_t = {0: canonical}
         rot_by_t = {0: torch.zeros(M, 4, device=canonical.device)
                        .index_fill_(1, torch.tensor([0], device=canonical.device), 1.0)}
+        h_by_t = {0: h0}
         p, h, prev_t = canonical, h0, 0
         for t in times:
             if t == 0:
@@ -297,5 +301,6 @@ def hop_rollout(model, canonical, e, z, edge_index, times, dt_base, grad=True,
             p = p + d_p
             p_by_t[t] = p
             rot_by_t[t] = d_rot
+            h_by_t[t] = h
             prev_t = t
-        return p_by_t, rot_by_t, h
+        return p_by_t, rot_by_t, h_by_t
