@@ -578,7 +578,7 @@ def main():
             # fine/shadow consistency check happens separately below, branching
             # off coarse's own real (position, hidden state) at each segment.
             render_idxs = hop_frame_idxs()
-            p_by_t, rot_by_t, h_by_t, z, spatial = hop_forward(render_idxs)
+            p_by_t, rot_by_t, h_by_t, spatial = hop_forward(render_idxs)
             anchor_now_stack = torch.stack([p_by_t[t] for t in render_idxs], dim=0)
             anchor_rot_stack = torch.stack([rot_by_t[t] for t in render_idxs], dim=0)
         else:
