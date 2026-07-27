@@ -34,13 +34,33 @@ print('  lbs._HAVE_COV_CUDA      =', lbs._HAVE_COV_CUDA)
 print('  lbs._HAVE_ROT_BATCH_CUDA=', lbs._HAVE_ROT_BATCH_CUDA)
 " || echo "  WARNING: lib/lbs import failed -- training will fall back to (slower) pure torch"
 
-echo "[setup] rclone + R2 (for the dataset step below; creds from env, never committed)"
+echo "[setup] rclone binary (installed unconditionally -- training's checkpoint
+       backup and the dataset pull below both need it even if creds show up
+       later; previously this was gated on R2_ACCESS_KEY being set, so any
+       instance created without that env var silently never got rclone at
+       all, and every checkpoint backup failed for the whole run)"
+command -v rclone >/dev/null 2>&1 || \
+    (apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq rclone >/dev/null 2>&1)
+
+echo "[setup] R2 credentials (from env, never committed)"
 if [ -n "${R2_ACCESS_KEY:-}" ] && [ ! -f ~/.config/rclone/rclone.conf ]; then
-    command -v rclone >/dev/null 2>&1 || \
-        (apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq rclone >/dev/null 2>&1)
     mkdir -p ~/.config/rclone
     printf '[r2]\ntype = s3\nprovider = Cloudflare\naccess_key_id = %s\nsecret_access_key = %s\nendpoint = %s\nacl = private\n' \
         "$R2_ACCESS_KEY" "$R2_SECRET" "$R2_ENDPOINT" > ~/.config/rclone/rclone.conf
+fi
+if command -v rclone >/dev/null 2>&1; then
+    echo "  rclone binary: OK"
+else
+    echo "  rclone binary: MISSING (apt install failed) -- R2 backups will NOT work"
+fi
+if [ -f ~/.config/rclone/rclone.conf ]; then
+    echo "  R2 credentials: configured"
+else
+    echo "  R2 credentials: MISSING -- R2_ACCESS_KEY/R2_SECRET/R2_ENDPOINT were not"
+    echo "    passed at instance creation. Checkpoint backups during training WILL"
+    echo "    silently fail (loudly now -- see train_sc_anchorflow.py's WARNING on"
+    echo "    rclone non-zero exit) until this is fixed, e.g.:"
+    echo "    mkdir -p ~/.config/rclone && printf '[r2]\\ntype = s3\\nprovider = Cloudflare\\naccess_key_id = %s\\nsecret_access_key = %s\\nendpoint = %s\\nacl = private\\n' \"\$R2_ACCESS_KEY\" \"\$R2_SECRET\" \"\$R2_ENDPOINT\" > ~/.config/rclone/rclone.conf"
 fi
 
 echo "[setup] ficus_ds_wind dataset (R2: r2:storage/datasets/anchorflow/ficus_ds_wind)"
