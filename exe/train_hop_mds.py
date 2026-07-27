@@ -100,7 +100,12 @@ def main():
     ap.add_argument("--data",  required=True, help="NeRF-Blender dataset dir (cameras only)")
     ap.add_argument("--out",   required=True)
     ap.add_argument("--iters", type=int, default=20_000)
-    ap.add_argument("--res",   type=int, default=576)
+    ap.add_argument("--res",   type=int, default=256,
+                    help="MDS/SVD render resolution -- matches this project's other "
+                         "MDS configs (cfg/anchorflow_*.yaml all use 256, not the "
+                         "576 used for photometric training; the SVD VAE+UNet "
+                         "forward over T frames at once is the memory bottleneck, "
+                         "not the rasterizer)")
     ap.add_argument("--n_anchors", type=int, default=256)
     ap.add_argument("--k_gauss",   type=int, default=4)
     ap.add_argument("--hidden",    type=int, default=128)
