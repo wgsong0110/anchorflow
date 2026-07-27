@@ -513,18 +513,23 @@ def main():
         """Non-autoregressive coarse estimate: each t in `times` is reached by
         exactly ONE hop directly from init_h (Δt=t*dt) -- independent of every
         other t, no chaining. This is what gets rendered/photometrically
-        supervised (cheap: k independent single hops instead of a sequential
-        walk). Compared in the consistency loss against hop_forward()'s
-        autoregressive walk through the same times, both starting from the
-        same init_h -- does jumping straight to t match actually walking
-        there through the real intermediate GNN/SSM states?"""
-        p_by_t, rot_by_t, h_by_t = {}, {}, {}
+        supervised. All len(times) hops are issued as a single
+        model.hop_batch() call (they're mutually independent -- one shared
+        depth, different Δt per frame -- the same batching principle as
+        hop_fine_batch()) instead of len(times) separate model.hop() calls.
+        Compared in the consistency loss against hop_fine_batch()'s
+        independent walk to the same times, both starting from the same
+        init_h -- does jumping straight to t match actually walking there
+        through the real intermediate GNN/SSM states?"""
+        B = len(times)
+        M = spatial.shape[0]
+        dt = torch.tensor([t * args.dt for t in times], device=spatial.device)
+        h0 = init_h.unsqueeze(0).expand(B, M, -1)
+        d_p, d_rot, h = model.hop_batch(spatial, h0, anchors.e, dt)
         canonical = anchors.canonical
-        for t in times:
-            d_p, d_rot, h = model.hop(spatial, init_h, anchors.e, t * args.dt)
-            p_by_t[t] = canonical + d_p
-            rot_by_t[t] = d_rot
-            h_by_t[t] = h
+        p_by_t   = {t: canonical + d_p[b] for b, t in enumerate(times)}
+        rot_by_t = {t: d_rot[b]           for b, t in enumerate(times)}
+        h_by_t   = {t: h[b]               for b, t in enumerate(times)}
         return p_by_t, rot_by_t, h_by_t
 
     best_psnr = {"value": -1.0, "step": -1}
