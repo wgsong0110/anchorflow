@@ -442,8 +442,14 @@ def main():
         """Coarse/rendered checkpoint sample: like the rollout-mode sampler
         (always includes T-1), but also always includes frame 1 (T-1's
         counterpart at the near end -- keeps the hardest-to-reach checkpoints
-        on both sides in every step's sample)."""
+        on both sides in every step's sample). --frames_per_step 1 is a
+        special case: exactly one fully-random frame, no forced inclusion --
+        matches SC-GS's train_gui.py, which pops a single random (view,
+        frame) pair per iteration (viewpoint_stack.pop(randint(...))) rather
+        than rendering several frames per step like our default."""
         k = min(args.frames_per_step, T)
+        if k <= 1:
+            return [random.randint(1, T - 1)]
         pool = list(range(2, T - 1))
         n_random = max(0, k - 2)
         chosen = set(random.sample(pool, min(n_random, len(pool))))
