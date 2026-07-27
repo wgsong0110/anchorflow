@@ -52,6 +52,15 @@ class DiagonalSSM(nn.Module):
         decay = torch.exp(-dt * F.softplus(self.log_rate))      # (dim,) in (0,1)
         return decay * h + (1 - decay) * self.in_proj(u)
 
+    def step_batch(self, h, u, dt):
+        """h,u: [B,M,dim]; dt: [B] (one Δt per batch element, broadcast
+        across all M anchors and the dim channels within it) -- lets a batch
+        of B independent per-frame walks each advance by their own Δt in a
+        single call, instead of one step() call per (frame, depth) pair."""
+        dt_b = dt.reshape(-1, 1, 1)
+        decay = torch.exp(-dt_b * F.softplus(self.log_rate))
+        return decay * h + (1 - decay) * self.in_proj(u)
+
 
 class SSMDynamics(nn.Module):
     def __init__(self, hidden=128, mp_steps=6, ssm_dim=128, e_dim=8, z_dim=8,
@@ -209,6 +218,15 @@ def _time_encoding(dt, n_freqs=6):
     return torch.cat([dt_t.reshape(1), torch.sin(args), torch.cos(args)], dim=0)
 
 
+def _time_encoding_batch(dt, n_freqs=6):
+    """Batched version of _time_encoding: dt [B] (one Δt per batch element)
+    -> [B, 1 + 2*n_freqs]."""
+    dt_t = torch.as_tensor(dt, dtype=torch.float32)
+    freqs = 2.0 ** torch.arange(n_freqs, dtype=torch.float32, device=dt_t.device)
+    args = dt_t[:, None] * freqs[None, :] * math.pi
+    return torch.cat([dt_t[:, None], torch.sin(args), torch.cos(args)], dim=-1)
+
+
 class HopDynamics(nn.Module):
     def __init__(self, hidden=128, mp_steps=6, ssm_dim=128, e_dim=8,
                  edge_in=4, n_time_freqs=6):
@@ -250,6 +268,24 @@ class HopDynamics(nn.Module):
         te = te.expand(h.shape[0], -1)
         u = self.hop_in(torch.cat([spatial, e, h, te], dim=-1))
         h_next = self.ssm.step(h, u, float(dt))
+        d_p = self.decoder(h_next)
+        d_rot = self.rot_decoder(h_next)
+        return d_p, d_rot, h_next
+
+    def hop_batch(self, spatial, h, e, dt):
+        """Batched hop: h [B,M,ssm_dim], dt [B] (one Δt per batch element,
+        broadcast across all M anchors within it), spatial/e [M,...] shared
+        across the batch. Lets B independent per-frame walks each advance one
+        depth in a single call, instead of B separate hop() calls. Returns
+        (d_p [B,M,3], d_rot [B,M,4], h_next [B,M,ssm_dim])."""
+        B, M = h.shape[0], h.shape[1]
+        dt_t = torch.as_tensor(dt, dtype=torch.float32, device=h.device)
+        te = _time_encoding_batch(dt_t, self.n_time_freqs)          # [B, time_dim]
+        te = te[:, None, :].expand(B, M, -1)
+        spatial_b = spatial[None, :, :].expand(B, M, -1)
+        e_b = e[None, :, :].expand(B, M, -1)
+        u = self.hop_in(torch.cat([spatial_b, e_b, h, te], dim=-1))
+        h_next = self.ssm.step_batch(h, u, dt_t)
         d_p = self.decoder(h_next)
         d_rot = self.rot_decoder(h_next)
         return d_p, d_rot, h_next
