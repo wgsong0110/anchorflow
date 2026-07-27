@@ -516,6 +516,11 @@ def main():
             if plys:
                 gaussians.load_ply(plys[-1])
                 gaussians.training_setup(opt_params)
+                # training_setup resets xyz_gradient_accum/denom to the loaded
+                # point count but not max_radii2D -- it stays at the pre-load
+                # size and desyncs densify_and_prune's boolean masking.
+                gaussians.max_radii2D = torch.zeros(
+                    (gaussians.get_xyz.shape[0],), device=dev)
             start = state["step"] + 1
             refresh_binding()
             print(f"[train] resumed from step {start}")
