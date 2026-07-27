@@ -669,8 +669,11 @@ def main():
             render_idxs = sorted(set(t for _, t in vf_pairs))
             spatial = hop_spatial()
             p_coarse, rot_coarse, h_coarse = hop_direct(render_idxs, spatial)
-            p_fine, rot_fine, h_fine = hop_fine_from_prev_coarse(
-                render_idxs, p_coarse, h_coarse, args.fine_hops, spatial)
+            if args.lambda_consist > 0:
+                p_fine, rot_fine, h_fine = hop_fine_from_prev_coarse(
+                    render_idxs, p_coarse, h_coarse, args.fine_hops, spatial)
+            else:
+                p_fine = rot_fine = h_fine = None   # skip: consistency loss disabled, fine unused
             anchor_now_stack = torch.stack([p_coarse[t] for t in render_idxs], dim=0)
             anchor_rot_stack = torch.stack([rot_coarse[t] for t in render_idxs], dim=0)
             frame_to_i = {t: i for i, t in enumerate(render_idxs)}
