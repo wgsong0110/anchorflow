@@ -24,6 +24,8 @@ Per-anchor inputs:
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -182,3 +184,118 @@ def ssm_rollout_from(model, p0, v0, h0, e, z, steps, cfg, dt,
         if return_rotations:
             return seq, torch.stack(rot_out, dim=0)  # + [steps+1, M, 4]
         return seq
+
+
+# =============================================================================
+# HopDynamics -- variable-Δt, sparse-hop dynamics (middle ground between the
+# fully-sequential SSMDynamics rollout above and a fully non-autoregressive
+# per-frame regression). Only hops between the frames actually sampled for a
+# training step (instead of a fixed small dt for every one of the T frames),
+# each hop conditioned explicitly on its own Δt (not assumed constant), and
+# outputs the position DELTA directly (no separate velocity state to
+# integrate). See lib/anchorflow/warp.py's anchor_arap_loss for the ARAP
+# analogue this composes with; see hop_rollout()'s docstring for the
+# fine/coarse consistency + initial-velocity-consistency losses this design
+# is meant to support from the training script.
+# =============================================================================
+
+def _time_encoding(dt, n_freqs=6):
+    """NeRF-style positional encoding of a scalar Δt (same Δt for every anchor
+    in a hop -- it's the gap between two selected frames, not per-anchor).
+    Returns [1 + 2*n_freqs]."""
+    dt_t = torch.as_tensor(dt, dtype=torch.float32)
+    freqs = 2.0 ** torch.arange(n_freqs, dtype=torch.float32, device=dt_t.device)
+    args = dt_t * freqs * math.pi
+    return torch.cat([dt_t.reshape(1), torch.sin(args), torch.cos(args)], dim=0)
+
+
+class HopDynamics(nn.Module):
+    def __init__(self, hidden=128, mp_steps=6, ssm_dim=128, e_dim=8, z_dim=8,
+                 edge_in=4, n_time_freqs=6):
+        super().__init__()
+        self.n_time_freqs = n_time_freqs
+        time_dim = 1 + 2 * n_time_freqs
+        # one-time spatial embedding over the (fixed) canonical anchor graph --
+        # unlike SSMDynamics, this never needs recomputing mid-rollout since
+        # there is no "current position" until a hop has actually been taken.
+        self.node_enc = mlp([e_dim, hidden, hidden])
+        self.edge_enc = mlp([edge_in, hidden, hidden])
+        self.processor = nn.ModuleList(
+            InteractionNetwork(hidden) for _ in range(mp_steps))
+        self.hop_in = mlp([hidden + e_dim + z_dim + ssm_dim + time_dim, hidden, ssm_dim])
+        self.ssm = DiagonalSSM(ssm_dim)
+        self.decoder = mlp([ssm_dim, hidden, 3], layernorm=False)      # -> Δp (delta, not velocity)
+        last = [m for m in self.decoder.modules() if isinstance(m, nn.Linear)][-1]
+        nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
+        # rotation is NOT accumulated across hops -- like SSMDynamics.rot_decoder,
+        # this gives the FULL residual quaternion for the frame just reached,
+        # freshly from that hop's resulting h (matches the d_rot_as_res
+        # convention used everywhere else in this codebase).
+        self.rot_decoder = mlp([ssm_dim, hidden, 4], layernorm=False)
+        last2 = [m for m in self.rot_decoder.modules() if isinstance(m, nn.Linear)][-1]
+        nn.init.zeros_(last2.weight); nn.init.zeros_(last2.bias)
+        self.h0_enc = mlp([e_dim + z_dim, ssm_dim])
+
+    def spatial_embed(self, e, edge_index, canonical):
+        node = self.node_enc(e)
+        edge = self.edge_enc(G.edge_features(canonical, edge_index))
+        x = node
+        for layer in self.processor:
+            x, edge = layer(x, edge_index, edge)
+        return x                                                       # [M, hidden]
+
+    def init_hidden(self, e, z):
+        return self.h0_enc(torch.cat([e, z], dim=-1))
+
+    def hop(self, spatial, h, e, z, dt):
+        """One hop of Δt (python float / 0-d tensor, shared by all anchors).
+        Returns (d_p [M,3], d_rot [M,4], h_next [M,ssm_dim])."""
+        te = _time_encoding(dt, self.n_time_freqs).to(h.device)
+        te = te.expand(h.shape[0], -1)
+        u = self.hop_in(torch.cat([spatial, e, z, h, te], dim=-1))
+        h_next = self.ssm.step(h, u, float(dt))
+        d_p = self.decoder(h_next)
+        d_rot = self.rot_decoder(h_next)
+        return d_p, d_rot, h_next
+
+
+def hop_rollout(model, canonical, e, z, edge_index, times, dt_base, grad=True,
+                h0=None, spatial=None):
+    """Hop through `times` (sorted list of positive frame indices; t=0 is the
+    implicit, trivial starting point -- canonical position, identity
+    rotation, no network call). Each hop's Δt is the actual gap between
+    consecutive visited frames (times[i] - times[i-1]) * dt_base, not a fixed
+    per-step constant -- this is the key difference from ssm_rollout, which
+    always advances by exactly dt_base and must visit every one of the T
+    frames to reach frame T-1.
+
+    Pass h0/spatial explicitly to continue a chain from a previously-computed
+    state (needed for the fine/coarse consistency check: both chains start
+    from the *same* h0, not from a fresh init_hidden() each).
+
+    Returns:
+      p_by_t   dict {t: [M,3]}   (includes t=0 -> canonical)
+      rot_by_t dict {t: [M,4]}   (includes t=0 -> identity [1,0,0,0])
+      h_final  [M, ssm_dim]      hidden state after the last hop (for chaining)
+    """
+    ctx = torch.enable_grad() if grad else torch.no_grad()
+    with ctx:
+        if spatial is None:
+            spatial = model.spatial_embed(e, edge_index, canonical)
+        if h0 is None:
+            h0 = model.init_hidden(e, z)
+        M = canonical.shape[0]
+        p_by_t = {0: canonical}
+        rot_by_t = {0: torch.zeros(M, 4, device=canonical.device)
+                       .index_fill_(1, torch.tensor([0], device=canonical.device), 1.0)}
+        p, h, prev_t = canonical, h0, 0
+        for t in times:
+            if t == 0:
+                continue
+            dt_hop = (t - prev_t) * dt_base
+            d_p, d_rot, h = model.hop(spatial, h, e, z, dt_hop)
+            p = p + d_p
+            p_by_t[t] = p
+            rot_by_t[t] = d_rot
+            prev_t = t
+        return p_by_t, rot_by_t, h

@@ -40,7 +40,7 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 _lib = os.path.join(os.path.dirname(__file__), "..", "lib")
 sys.path.insert(0, _lib)
 from anchorflow.anchors import AnchorSet
-from anchorflow.ssm_dynamics import SSMDynamics, ssm_rollout, build_graph
+from anchorflow.ssm_dynamics import SSMDynamics, ssm_rollout, build_graph, HopDynamics, hop_rollout
 from anchorflow import warp as W
 import lbs as _lbs_cuda
 
@@ -271,6 +271,25 @@ def main():
     ap.add_argument("--lambda_arap", type=float, default=1e-2,
                     help="ARAP regularizer weight on anchor motion (matches "
                          "SC-GS's own 1e-2 default; 0 disables)")
+    ap.add_argument("--dynamics_mode", choices=["rollout", "hop"], default="rollout",
+                    help="'rollout': fixed-dt sequential SSMDynamics rollout over all T "
+                         "frames (original). 'hop': HopDynamics -- sequential but only "
+                         "through the sampled frames, each hop's own (variable) Δt fed "
+                         "explicitly, decoder outputs the position delta directly "
+                         "(middle ground between full autoregression and one-shot "
+                         "per-frame regression)")
+    ap.add_argument("--n_time_freqs", type=int, default=6,
+                    help="[hop mode] number of NeRF-style Δt positional-encoding bands")
+    ap.add_argument("--lambda_ic", type=float, default=1.0,
+                    help="[hop mode] weight on ||ic_dir - v_implied||^2, where v_implied "
+                         "= (p(frame 1) - canonical) / dt is the actual initial velocity "
+                         "of the generated path (frame 1 is always in frame_idxs) -- keeps "
+                         "ic_dir a literal, user-steerable initial-velocity parameter even "
+                         "though the decoder no longer integrates velocity explicitly")
+    ap.add_argument("--lambda_consist", type=float, default=1.0,
+                    help="[hop mode] weight on the fine-vs-coarse hop-chain position "
+                         "consistency loss (both chains share the same h0/spatial embed; "
+                         "enforces the flow-composition property Φ(Δt2)∘Φ(Δt1)=Φ(Δt1+Δt2))")
     ap.add_argument("--eval_every", type=int, default=1000,
                     help="full-T all-view PSNR/SSIM eval cadence (SC-GS-comparable; 0 disables)")
     ap.add_argument("--frames_per_step", type=int, default=6,
@@ -322,19 +341,32 @@ def main():
     #   - optimization target that learns "how strongly does each anchor respond to a given direction"
     ic_net = ICNet(e_dim=args.e_dim, hidden=64).to(dev)
 
-    # ── SSMDynamics ───────────────────────────────────────────────────────────
+    # ── dynamics model ────────────────────────────────────────────────────────
     extent = 2 * 1.3   # initial estimate
-    model  = SSMDynamics(
-        hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
-        e_dim=args.e_dim, z_dim=args.z_dim,
-        accel_scale=args.accel_scale * extent,
-        use_ssm=not args.no_ssm,
-        predict_velocity=args.predict_velocity).to(dev)
+    hop_mode = args.dynamics_mode == "hop"
+    if hop_mode:
+        # ICNet's raw [M,3] output (direction+magnitude propagated from ic_dir)
+        # is repurposed as the control code z (replaces anchors.z, which is
+        # unused in this mode) -- see --lambda_ic docstring.
+        model = HopDynamics(
+            hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
+            e_dim=args.e_dim, z_dim=3, n_time_freqs=args.n_time_freqs).to(dev)
+        print(f"[train] HopDynamics hidden={args.hidden} mp={args.mp_steps} "
+              f"ssm={args.ssm_dim} dt={args.dt} n_time_freqs={args.n_time_freqs} "
+              f"lambda_arap={args.lambda_arap} lambda_ic={args.lambda_ic} "
+              f"lambda_consist={args.lambda_consist}")
+    else:
+        model  = SSMDynamics(
+            hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
+            e_dim=args.e_dim, z_dim=args.z_dim,
+            accel_scale=args.accel_scale * extent,
+            use_ssm=not args.no_ssm,
+            predict_velocity=args.predict_velocity).to(dev)
+        print(f"[train] SSMDynamics hidden={args.hidden} mp={args.mp_steps} "
+              f"ssm={args.ssm_dim} dt={args.dt} accel_scale={args.accel_scale*extent:.4f} "
+              f"use_ssm={not args.no_ssm} predict_velocity={args.predict_velocity} "
+              f"lambda_arap={args.lambda_arap}")
     graph_cfg = {"graph": "knn", "k": 8}
-    print(f"[train] SSMDynamics hidden={args.hidden} mp={args.mp_steps} "
-          f"ssm={args.ssm_dim} dt={args.dt} accel_scale={args.accel_scale*extent:.4f} "
-          f"use_ssm={not args.no_ssm} predict_velocity={args.predict_velocity} "
-          f"lambda_arap={args.lambda_arap}")
 
     # ── optimizers ────────────────────────────────────────────────────────────
     dyn_opt = torch.optim.Adam([
@@ -361,8 +393,9 @@ def main():
     # needs to be refreshed) ────────────────────────────────────────────────────
     _arap_idx, _arap_src = W.anchor_rotations_cache(anchors.canonical, K=8)
 
-    # ── rollout helper ────────────────────────────────────────────────────────
+    # ── rollout helper(s) ─────────────────────────────────────────────────────
     def rollout(grad=True):
+        """SSMDynamics mode: fixed-dt sequential rollout over all T frames."""
         p0 = anchors.canonical
         edge_index = build_graph(p0.detach(), graph_cfg)
         v0 = ic_net(ic_dir, anchors.e, p0, edge_index)
@@ -374,13 +407,62 @@ def main():
             damping=args.damping, vel_smooth=0.1,
             return_rotations=True)   # [T, M, 3], [T, M, 4]
 
+    def hop_forward(frame_idxs, coarse_idxs=None, grad=True):
+        """HopDynamics mode: sequential but only through frame_idxs (and,
+        separately, coarse_idxs from the same shared h0/spatial embed, for
+        the fine/coarse consistency loss). z = ic_net's propagated output
+        (repurposes the old "initial velocity" role as a control code)."""
+        p0 = anchors.canonical
+        edge_index = build_graph(p0.detach(), graph_cfg)
+        z = ic_net(ic_dir, anchors.e, p0, edge_index)          # [M,3], repurposed as z
+        ctx = torch.enable_grad() if grad else torch.no_grad()
+        with ctx:
+            spatial = model.spatial_embed(anchors.e, edge_index, p0)
+            h0 = model.init_hidden(anchors.e, z)
+        p_fine, rot_fine, _ = hop_rollout(
+            model, p0, anchors.e, z, edge_index, frame_idxs, args.dt,
+            grad=grad, h0=h0, spatial=spatial)
+        p_coarse = rot_coarse = None
+        if coarse_idxs:
+            p_coarse, rot_coarse, _ = hop_rollout(
+                model, p0, anchors.e, z, edge_index, coarse_idxs, args.dt,
+                grad=grad, h0=h0, spatial=spatial)
+        return p_fine, rot_fine, p_coarse, rot_coarse, z
+
+    def hop_frame_idxs():
+        """Fine subsample: like the rollout-mode sampler (always includes
+        T-1), but also always includes frame 1 (needed for the initial-
+        velocity-consistency loss -- the empirical v_implied is computed
+        from canonical -> frame 1)."""
+        k = min(args.frames_per_step, T)
+        pool = list(range(2, T - 1))
+        n_random = max(0, k - 2)
+        chosen = set(random.sample(pool, min(n_random, len(pool))))
+        chosen.add(1)
+        chosen.add(T - 1)
+        return sorted(chosen)
+
+    def hop_coarse_idxs(frame_idxs):
+        """Further subsample of frame_idxs (every other one) -- by construction
+        at least one fine frame sits between consecutive coarse frames. T-1 is
+        force-included so the consistency check also covers the longest hop."""
+        if len(frame_idxs) < 3:
+            return list(frame_idxs)
+        coarse = sorted(set(frame_idxs[::2]) | {frame_idxs[-1]})
+        return coarse
+
     best_psnr = {"value": -1.0, "step": -1}
 
     @torch.no_grad()
     def eval_psnr_ssim():
         """Full-T, all-view render under no_grad -- PSNR/SSIM (SC-GS-comparable,
         printed in the same 'Best PSNR=.. in Iteration ..' style)."""
-        anchor_seq, anchor_rot_seq = rollout(grad=False)
+        if hop_mode:
+            p_full, rot_full, _, _, _ = hop_forward(list(range(1, T)), grad=False)
+            anchor_seq = torch.stack([p_full[t] for t in range(T)], dim=0)
+            anchor_rot_seq = torch.stack([rot_full[t] for t in range(T)], dim=0)
+        else:
+            anchor_seq, anchor_rot_seq = rollout(grad=False)
         w, idx = _w_cache[0], _idx_cache[0]
         gauss_xyz = gaussians.get_xyz
         d_xyz_all, d_rot_all = lbs_d_xyz_rot_batched(
@@ -449,10 +531,7 @@ def main():
     for step in pbar:
         gaussians.update_learning_rate(step)
 
-        # ── rollout: [T, M, 3] anchor positions, [T, M, 4] anchor rotations ──
-        anchor_seq, anchor_rot_seq = rollout()
-
-        # ── photometric loss over all T frames ───────────────────────────────
+        # ── photometric loss over the sampled frames ─────────────────────────
         total_loss = torch.tensor(0.0, device=dev)
 
         # recompute binding weights (anchors._radius, _node_weight can change)
@@ -463,20 +542,34 @@ def main():
         viewspace_pt = None
         visibility   = None
 
-        # rendering (esp. rasterizer backward) dominates step time -- rollout
-        # itself still runs all T steps (needed for correct GNN+SSM state),
-        # but we only render/loss a random subset. Last frame (T-1) is always
-        # included since it's the most drift-prone / hardest to get right.
-        k = min(args.frames_per_step, T)
-        frame_idxs = set(random.sample(range(T - 1), k - 1)) if k > 1 else set()
-        frame_idxs.add(T - 1)
-        frame_idxs = sorted(frame_idxs)
+        if hop_mode:
+            # sequential, but only through the sampled (fine) frames -- and,
+            # separately, a coarser subsample sharing the same h0/spatial embed
+            # (for the fine/coarse consistency loss). Frame 1 and T-1 are
+            # always included (initial-velocity consistency / hardest-reach).
+            frame_idxs = hop_frame_idxs()
+            coarse_idxs = hop_coarse_idxs(frame_idxs)
+            p_fine, rot_fine, p_coarse, rot_coarse, _z = hop_forward(frame_idxs, coarse_idxs)
+            anchor_now_stack = torch.stack([p_fine[t] for t in frame_idxs], dim=0)
+            anchor_rot_stack = torch.stack([rot_fine[t] for t in frame_idxs], dim=0)
+        else:
+            # rendering (esp. rasterizer backward) dominates step time -- rollout
+            # itself still runs all T steps (needed for correct GNN+SSM state),
+            # but we only render/loss a random subset. Last frame (T-1) is always
+            # included since it's the most drift-prone / hardest to get right.
+            anchor_seq, anchor_rot_seq = rollout()
+            k = min(args.frames_per_step, T)
+            frame_idxs = set(random.sample(range(T - 1), k - 1)) if k > 1 else set()
+            frame_idxs.add(T - 1)
+            frame_idxs = sorted(frame_idxs)
+            anchor_now_stack = anchor_seq[frame_idxs]
+            anchor_rot_stack = anchor_rot_seq[frame_idxs]
 
         # one batched gather for all k selected frames instead of k separate
         # small gathers -- profiling showed the per-frame gather is CPU
         # dispatch-bound (many tiny kernel launches), not GPU-compute-bound
         d_xyz_all, d_rotation_all = lbs_d_xyz_rot_batched(
-            w, idx, anchors.canonical, anchor_seq[frame_idxs], anchor_rot_seq[frame_idxs])
+            w, idx, anchors.canonical, anchor_now_stack, anchor_rot_stack)
 
         for i, t in enumerate(frame_idxs):
             vi = random.randrange(V)                        # random view for this frame
@@ -503,16 +596,45 @@ def main():
 
         total_loss = total_loss / len(frame_idxs)
 
-        # ── ARAP regularizer (SC-GS-style: penalize local-rigidity violation of
-        # anchor motion; ports SC-GS's utils/deform_utils.cal_arap_error via the
-        # existing no_grad Procrustes rotation estimator) ───────────────────────
-        if args.lambda_arap > 0:
-            arap_ts = random.sample(range(1, T), min(2, T - 1))  # skip t=0 (zero stretch)
-            arap_loss = sum(
-                W.anchor_arap_loss(anchors.canonical, anchor_seq[t], K=8,
-                                   _idx=_arap_idx, _src=_arap_src)
-                for t in arap_ts) / len(arap_ts)
-            total_loss = total_loss + args.lambda_arap * arap_loss
+        if hop_mode:
+            # ── initial-velocity consistency: keep ic_dir a literal, user-
+            # steerable initial velocity even though the decoder no longer
+            # integrates velocity -- frame 1 is always in frame_idxs, so
+            # v_implied is the actual empirical initial velocity of the path
+            # the network just generated. ────────────────────────────────────
+            v_implied = (p_fine[1] - anchors.canonical) / args.dt
+            loss_ic = F.mse_loss(ic_dir, v_implied)
+            total_loss = total_loss + args.lambda_ic * loss_ic
+
+            # ── fine/coarse hop-chain consistency: both chains share the same
+            # h0/spatial embed: Φ(Δt2)∘Φ(Δt1) should equal Φ(Δt1+Δt2). ──────────
+            if p_coarse is not None and args.lambda_consist > 0:
+                consist_terms = [F.mse_loss(p_fine[t], p_coarse[t])
+                                  for t in coarse_idxs if t != 0]
+                if consist_terms:
+                    loss_consist = sum(consist_terms) / len(consist_terms)
+                    total_loss = total_loss + args.lambda_consist * loss_consist
+
+            # ── ARAP regularizer (SC-GS-style; same as rollout mode but sampled
+            # from the frames we actually computed this step) ──────────────────
+            if args.lambda_arap > 0:
+                arap_ts = random.sample(frame_idxs, min(2, len(frame_idxs)))
+                arap_loss = sum(
+                    W.anchor_arap_loss(anchors.canonical, p_fine[t], K=8,
+                                       _idx=_arap_idx, _src=_arap_src)
+                    for t in arap_ts) / len(arap_ts)
+                total_loss = total_loss + args.lambda_arap * arap_loss
+        else:
+            # ── ARAP regularizer (SC-GS-style: penalize local-rigidity violation
+            # of anchor motion; ports SC-GS's utils/deform_utils.cal_arap_error
+            # via the existing no_grad Procrustes rotation estimator) ──────────
+            if args.lambda_arap > 0:
+                arap_ts = random.sample(range(1, T), min(2, T - 1))  # skip t=0 (zero stretch)
+                arap_loss = sum(
+                    W.anchor_arap_loss(anchors.canonical, anchor_seq[t], K=8,
+                                       _idx=_arap_idx, _src=_arap_src)
+                    for t in arap_ts) / len(arap_ts)
+                total_loss = total_loss + args.lambda_arap * arap_loss
 
         # ── backward ─────────────────────────────────────────────────────────
         gaussians.optimizer.zero_grad(set_to_none=True)
