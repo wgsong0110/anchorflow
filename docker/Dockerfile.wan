@@ -1,0 +1,29 @@
+# Lightweight image for Wan2.1-I2V-14B video generation only -- no 3DGS
+# rasterizer/CUDA-ext builds needed here (unlike the main Dockerfile), since
+# generation takes a plain PNG (a canonical Gaussian render already produced
+# elsewhere) as its conditioning image rather than rendering one itself.
+#
+# Separate from the main anchorflow image on purpose: the main image pins
+# diffusers==0.29.2 for the existing SVDGuidance (MDS) code path, which
+# predates Wan2.1 support in diffusers. Bumping diffusers in-place risked
+# breaking that existing SVD-based code, so this is a dedicated image instead.
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git tmux openssh-client curl rclone ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# diffusers Wan support landed well before this; ftfy is required by the
+# T5/UMT5 tokenizer path per the official Wan usage docs. accelerate needed
+# for apply_group_offloading/enable_group_offload (block/leaf-level CPU<->GPU
+# offloading -- the only way Wan2.1-I2V-14B's ~56-80GB bf16 footprint fits on
+# a single RTX 3090's 24GB).
+RUN pip install --no-cache-dir \
+        "numpy<2" ftfy imageio "imageio[ffmpeg]" opencv-python-headless \
+        pillow torchvision \
+        diffusers>=0.35.0 transformers>=4.46.0 accelerate>=1.0.0 \
+        safetensors huggingface_hub
+
+WORKDIR /workspace
