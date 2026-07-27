@@ -549,9 +549,22 @@ def main():
     @torch.no_grad()
     def eval_psnr_ssim():
         """Full-T, all-view render under no_grad -- PSNR/SSIM (SC-GS-comparable,
-        printed in the same 'Best PSNR=.. in Iteration ..' style)."""
+        printed in the same 'Best PSNR=.. in Iteration ..' style).
+
+        hop mode always evaluates autoregressively EXCEPT when
+        --lambda_consist 0 (non-autoregressive-only ablation): in that case
+        the autoregressive path is never trained at all (no consistency
+        loss ever touches it), so evaluating through it would just measure
+        an untrained, meaningless number -- use the non-autoregressive
+        (hop_direct) path instead, since that's the only one this run's
+        model was ever actually supervised to produce."""
         if hop_mode:
-            p_full, rot_full, _, _ = hop_forward(list(range(1, T)), grad=False)
+            times = list(range(1, T))
+            if args.lambda_consist > 0:
+                p_full, rot_full, _, _ = hop_forward(times, grad=False)
+            else:
+                spatial = hop_spatial(grad=False)
+                p_full, rot_full, _ = hop_direct(times, spatial)
             anchor_seq = torch.stack([p_full[t] for t in range(T)], dim=0)
             anchor_rot_seq = torch.stack([rot_full[t] for t in range(T)], dim=0)
         else:
