@@ -34,11 +34,12 @@ print('  lbs._HAVE_COV_CUDA      =', lbs._HAVE_COV_CUDA)
 print('  lbs._HAVE_ROT_BATCH_CUDA=', lbs._HAVE_ROT_BATCH_CUDA)
 " || echo "  WARNING: lib/lbs import failed -- training will fall back to (slower) pure torch"
 
-echo "[setup] rclone binary (installed unconditionally -- training's checkpoint
-       backup and the dataset pull below both need it even if creds show up
-       later; previously this was gated on R2_ACCESS_KEY being set, so any
+echo "[setup] rclone binary (baked into the ghcr.io/wgsong0110/anchorflow image
+       itself -- not installed here. Previously this was apt-installed at
+       instance startup and gated behind R2_ACCESS_KEY being set, so any
        instance created without that env var silently never got rclone at
-       all, and every checkpoint backup failed for the whole run)"
+       all, and every checkpoint backup failed for the whole run. Fallback
+       apt-get kept below only for instances still on an older image.)"
 command -v rclone >/dev/null 2>&1 || \
     (apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq rclone >/dev/null 2>&1)
 

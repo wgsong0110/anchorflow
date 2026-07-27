@@ -22,7 +22,7 @@ ENV FORCE_CUDA=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git build-essential ninja-build libglm-dev ffmpeg libgl1 libglib2.0-0 \
         libegl1 libgles2 libosmesa6 \
-        tmux openssh-client curl unzip \
+        tmux openssh-client curl unzip rclone \
     && rm -rf /var/lib/apt/lists/*
 
 # SC-GS diff-gaussian-rasterization (4-return: color, radii, depth, alpha).
