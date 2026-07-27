@@ -210,7 +210,7 @@ def _time_encoding(dt, n_freqs=6):
 
 
 class HopDynamics(nn.Module):
-    def __init__(self, hidden=128, mp_steps=6, ssm_dim=128, e_dim=8, z_dim=8,
+    def __init__(self, hidden=128, mp_steps=6, ssm_dim=128, e_dim=8,
                  edge_in=4, n_time_freqs=6):
         super().__init__()
         self.n_time_freqs = n_time_freqs
@@ -222,7 +222,7 @@ class HopDynamics(nn.Module):
         self.edge_enc = mlp([edge_in, hidden, hidden])
         self.processor = nn.ModuleList(
             InteractionNetwork(hidden) for _ in range(mp_steps))
-        self.hop_in = mlp([hidden + e_dim + z_dim + ssm_dim + time_dim, hidden, ssm_dim])
+        self.hop_in = mlp([hidden + e_dim + ssm_dim + time_dim, hidden, ssm_dim])
         self.ssm = DiagonalSSM(ssm_dim)
         self.decoder = mlp([ssm_dim, hidden, 3], layernorm=False)      # -> Δp (delta, not velocity)
         last = [m for m in self.decoder.modules() if isinstance(m, nn.Linear)][-1]
@@ -234,7 +234,6 @@ class HopDynamics(nn.Module):
         self.rot_decoder = mlp([ssm_dim, hidden, 4], layernorm=False)
         last2 = [m for m in self.rot_decoder.modules() if isinstance(m, nn.Linear)][-1]
         nn.init.zeros_(last2.weight); nn.init.zeros_(last2.bias)
-        self.h0_enc = mlp([e_dim + z_dim, ssm_dim])
 
     def spatial_embed(self, e, edge_index, canonical):
         node = self.node_enc(e)
@@ -244,22 +243,19 @@ class HopDynamics(nn.Module):
             x, edge = layer(x, edge_index, edge)
         return x                                                       # [M, hidden]
 
-    def init_hidden(self, e, z):
-        return self.h0_enc(torch.cat([e, z], dim=-1))
-
-    def hop(self, spatial, h, e, z, dt):
+    def hop(self, spatial, h, e, dt):
         """One hop of Δt (python float / 0-d tensor, shared by all anchors).
         Returns (d_p [M,3], d_rot [M,4], h_next [M,ssm_dim])."""
         te = _time_encoding(dt, self.n_time_freqs).to(h.device)
         te = te.expand(h.shape[0], -1)
-        u = self.hop_in(torch.cat([spatial, e, z, h, te], dim=-1))
+        u = self.hop_in(torch.cat([spatial, e, h, te], dim=-1))
         h_next = self.ssm.step(h, u, float(dt))
         d_p = self.decoder(h_next)
         d_rot = self.rot_decoder(h_next)
         return d_p, d_rot, h_next
 
 
-def hop_rollout(model, canonical, e, z, edge_index, times, dt_base, grad=True,
+def hop_rollout(model, canonical, e, edge_index, times, dt_base, grad=True,
                 h0=None, spatial=None):
     """Hop through `times` (sorted list of positive frame indices; t=0 is the
     implicit, trivial starting point -- canonical position, identity
@@ -269,10 +265,12 @@ def hop_rollout(model, canonical, e, z, edge_index, times, dt_base, grad=True,
     always advances by exactly dt_base and must visit every one of the T
     frames to reach frame T-1.
 
-    Pass h0/spatial explicitly to continue a chain from a previously-computed
-    state (needed for the coarse/shadow-fine consistency check: the shadow
-    chain branches from this chain's own real (p, h) at an intermediate time,
-    not from a fresh init_hidden() each).
+    Pass h0 explicitly (the directly-learned init_h) -- there is no
+    ic_dir/ic_net/z anywhere in this mode, so h0 must always be supplied by
+    the caller. Pass spatial to continue a chain from a previously-computed
+    embedding (needed for the coarse/shadow-fine consistency check: the
+    shadow chain branches from this chain's own real (p, h) at an
+    intermediate time, reusing the same spatial embedding).
 
     Returns:
       p_by_t   dict {t: [M,3]}       (includes t=0 -> canonical)
@@ -285,8 +283,6 @@ def hop_rollout(model, canonical, e, z, edge_index, times, dt_base, grad=True,
     with ctx:
         if spatial is None:
             spatial = model.spatial_embed(e, edge_index, canonical)
-        if h0 is None:
-            h0 = model.init_hidden(e, z)
         M = canonical.shape[0]
         p_by_t = {0: canonical}
         rot_by_t = {0: torch.zeros(M, 4, device=canonical.device)
@@ -297,7 +293,7 @@ def hop_rollout(model, canonical, e, z, edge_index, times, dt_base, grad=True,
             if t == 0:
                 continue
             dt_hop = (t - prev_t) * dt_base
-            d_p, d_rot, h = model.hop(spatial, h, e, z, dt_hop)
+            d_p, d_rot, h = model.hop(spatial, h, e, dt_hop)
             p = p + d_p
             p_by_t[t] = p
             rot_by_t[t] = d_rot

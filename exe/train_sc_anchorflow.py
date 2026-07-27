@@ -280,12 +280,6 @@ def main():
                          "per-frame regression)")
     ap.add_argument("--n_time_freqs", type=int, default=6,
                     help="[hop mode] number of NeRF-style Δt positional-encoding bands")
-    ap.add_argument("--lambda_ic", type=float, default=1.0,
-                    help="[hop mode] weight on ||ic_dir - v_implied||^2, where v_implied "
-                         "= (p(frame 1) - canonical) / dt is the actual initial velocity "
-                         "of the generated path (frame 1 is always in frame_idxs) -- keeps "
-                         "ic_dir a literal, user-steerable initial-velocity parameter even "
-                         "though the decoder no longer integrates velocity explicitly")
     ap.add_argument("--lambda_consist", type=float, default=1.0,
                     help="[hop mode] weight on the coarse-vs-shadow-fine hop-chain "
                          "consistency loss. coarse (the rendered/photometric checkpoint "
@@ -344,31 +338,32 @@ def main():
     M = anchors.num
     print(f"[train] anchors={M}")
 
-    # ic_dir [M,3]: user-controllable initial condition (direction of initial acceleration)
-    #   - learned during training to fit this video's actual IC
-    #   - replaced by user input at inference (for some/all anchors)
-    ic_dir = torch.nn.Parameter(torch.zeros(M, 3, device=dev))
-
-    # ICNet: infers ic_mag from (ic_dir, anchor identity e) — NOT user-controlled
-    #   - optimization target that learns "how strongly does each anchor respond to a given direction"
-    ic_net = ICNet(e_dim=args.e_dim, hidden=64).to(dev)
-
     # ── dynamics model ────────────────────────────────────────────────────────
     extent = 2 * 1.3   # initial estimate
     hop_mode = args.dynamics_mode == "hop"
+    ic_dir = ic_net = init_h = None
     if hop_mode:
-        # ICNet's raw [M,3] output (direction+magnitude propagated from ic_dir)
-        # is repurposed as the control code z (replaces anchors.z, which is
-        # unused in this mode) -- see --lambda_ic docstring.
+        # init_h: the initial hidden state is a directly-learned free parameter
+        # (trained by the photometric/consistency/ARAP losses like anything
+        # else), not derived from a user-facing IC parameter -- there's no
+        # ic_dir/ic_net/z in this mode at all.
+        init_h = torch.nn.Parameter(torch.zeros(M, args.ssm_dim, device=dev))
         model = HopDynamics(
             hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
-            e_dim=args.e_dim, z_dim=3, n_time_freqs=args.n_time_freqs).to(dev)
+            e_dim=args.e_dim, n_time_freqs=args.n_time_freqs).to(dev)
         print(f"[train] HopDynamics hidden={args.hidden} mp={args.mp_steps} "
               f"ssm={args.ssm_dim} dt={args.dt} n_time_freqs={args.n_time_freqs} "
-              f"lambda_arap={args.lambda_arap} lambda_ic={args.lambda_ic} "
+              f"lambda_arap={args.lambda_arap} "
               f"lambda_consist={args.lambda_consist} "
               f"consist_detach={args.consist_detach}")
     else:
+        # ic_dir [M,3]: user-controllable initial condition (direction of
+        # initial acceleration) -- learned during training to fit this
+        # video's actual IC, replaced by user input at inference.
+        ic_dir = torch.nn.Parameter(torch.zeros(M, 3, device=dev))
+        # ICNet: infers ic_mag from (ic_dir, anchor identity e) -- NOT
+        # user-controlled, learns "how strongly does each anchor respond".
+        ic_net = ICNet(e_dim=args.e_dim, hidden=64).to(dev)
         model  = SSMDynamics(
             hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
             e_dim=args.e_dim, z_dim=args.z_dim,
@@ -382,12 +377,16 @@ def main():
     graph_cfg = {"graph": "knn", "k": 8}
 
     # ── optimizers ────────────────────────────────────────────────────────────
-    dyn_opt = torch.optim.Adam([
+    dyn_params = [
         {"params": list(model.parameters())},
         {"params": list(anchors.parameters())},
-        {"params": [ic_dir]},
-        {"params": list(ic_net.parameters())},
-    ], lr=args.lr_dyn)
+    ]
+    if hop_mode:
+        dyn_params.append({"params": [init_h]})
+    else:
+        dyn_params.append({"params": [ic_dir]})
+        dyn_params.append({"params": list(ic_net.parameters())})
+    dyn_opt = torch.optim.Adam(dyn_params, lr=args.lr_dyn)
 
     # ── LBS binding cache ─────────────────────────────────────────────────────
     _w_cache  = [None]
@@ -422,30 +421,28 @@ def main():
 
     def hop_forward(times, grad=True):
         """HopDynamics mode: one autoregressive chain, hopping only through
-        `times`. z = ic_net's propagated output (repurposes the old "initial
-        velocity" role as a control code). Returns per-visited-time position,
-        rotation, AND hidden-state dicts (h_by_t is needed so the coarse/fine
-        consistency loss can branch a shadow chain from a real intermediate
-        state instead of only comparing final outputs), plus z/spatial so the
-        caller can issue extra one-off model.hop() calls sharing the same
-        embedding without recomputing it."""
+        `times`, starting from the directly-learned init_h (no ic_dir/ic_net/z
+        anywhere in this mode). Returns per-visited-time position, rotation,
+        AND hidden-state dicts (h_by_t is needed so the coarse/fine consistency
+        loss can branch a shadow chain from a real intermediate state instead
+        of only comparing final outputs), plus spatial so the caller can issue
+        extra one-off model.hop() calls sharing the same embedding without
+        recomputing it."""
         p0 = anchors.canonical
         edge_index = build_graph(p0.detach(), graph_cfg)
-        z = ic_net(ic_dir, anchors.e, p0, edge_index)          # [M,3], repurposed as z
         ctx = torch.enable_grad() if grad else torch.no_grad()
         with ctx:
             spatial = model.spatial_embed(anchors.e, edge_index, p0)
-            h0 = model.init_hidden(anchors.e, z)
         p_by_t, rot_by_t, h_by_t = hop_rollout(
-            model, p0, anchors.e, z, edge_index, times, args.dt,
-            grad=grad, h0=h0, spatial=spatial)
-        return p_by_t, rot_by_t, h_by_t, z, spatial
+            model, p0, anchors.e, edge_index, times, args.dt,
+            grad=grad, h0=init_h, spatial=spatial)
+        return p_by_t, rot_by_t, h_by_t, spatial
 
     def hop_frame_idxs():
         """Coarse/rendered checkpoint sample: like the rollout-mode sampler
-        (always includes T-1), but also always includes frame 1 (needed for
-        the initial-velocity-consistency loss -- the empirical v_implied is
-        computed from canonical -> frame 1)."""
+        (always includes T-1), but also always includes frame 1 (T-1's
+        counterpart at the near end -- keeps the hardest-to-reach checkpoints
+        on both sides in every step's sample)."""
         k = min(args.frames_per_step, T)
         pool = list(range(2, T - 1))
         n_random = max(0, k - 2)
@@ -476,7 +473,7 @@ def main():
         """Full-T, all-view render under no_grad -- PSNR/SSIM (SC-GS-comparable,
         printed in the same 'Best PSNR=.. in Iteration ..' style)."""
         if hop_mode:
-            p_full, rot_full, _, _, _ = hop_forward(list(range(1, T)), grad=False)
+            p_full, rot_full, _, _ = hop_forward(list(range(1, T)), grad=False)
             anchor_seq = torch.stack([p_full[t] for t in range(T)], dim=0)
             anchor_rot_seq = torch.stack([rot_full[t] for t in range(T)], dim=0)
         else:
@@ -525,8 +522,11 @@ def main():
             state = torch.load(ckpt, map_location=dev)
             model.load_state_dict(state["model"])
             anchors.load_state_dict(state["anchors"])
-            ic_dir.data.copy_(state["ic_dir"])
-            ic_net.load_state_dict(state["ic_net"])
+            if hop_mode:
+                init_h.data.copy_(state["init_h"])
+            else:
+                ic_dir.data.copy_(state["ic_dir"])
+                ic_net.load_state_dict(state["ic_net"])
             dyn_opt.load_state_dict(state["dyn_opt"])
             # Gaussians: load latest PLY (highest iteration)
             import glob as _glob
@@ -550,7 +550,7 @@ def main():
     save_every = 10_000
     pbar = trange(start, args.iters, desc="train")
     running_loss = 0.0
-    term_names = ["render", "arap", "ic", "consist"]
+    term_names = ["render", "arap", "consist"]
     running_terms = {k: 0.0 for k in term_names}
     loss_csv_path = os.path.join(args.out, "losses.csv")
     if not os.path.exists(loss_csv_path):
@@ -626,22 +626,9 @@ def main():
 
         total_loss = total_loss / len(render_idxs)
         render_loss_sum = render_loss_sum / len(render_idxs)
-        loss_ic = loss_consist = arap_loss = torch.tensor(0.0, device=dev)
+        loss_consist = arap_loss = torch.tensor(0.0, device=dev)
 
         if hop_mode:
-            # ── initial-velocity consistency: keep ic_dir a literal, user-
-            # steerable initial velocity even though the decoder no longer
-            # integrates velocity -- frame 1 is always in the rendered/coarse
-            # chain, so v_implied is the actual empirical initial velocity of
-            # the path the network just generated. v_implied is detached: this
-            # loss only calibrates ic_dir to describe the network's behaviour,
-            # it must not also pull the HopDynamics model's own weights (which
-            # are governed by the photometric/consistency/ARAP losses instead)
-            # -- ic_net still gets ample gradient from those losses via z. ───
-            v_implied = (p_by_t[1] - anchors.canonical) / args.dt
-            loss_ic = F.mse_loss(ic_dir, v_implied.detach())
-            total_loss = total_loss + args.lambda_ic * loss_ic
-
             # ── coarse/shadow-fine consistency: coarse (rendered, above) is
             # authoritative. At each consecutive coarse segment (a,b), hop a
             # shadow chain a -> m -> b (m = one intermediate frame) starting
@@ -655,10 +642,10 @@ def main():
                 consist_terms = []
                 for a, m, b in segs:
                     dt1 = (m - a) * args.dt
-                    d_p1, _, h1 = model.hop(spatial, h_by_t[a], anchors.e, z, dt1)
+                    d_p1, _, h1 = model.hop(spatial, h_by_t[a], anchors.e, dt1)
                     p1 = p_by_t[a] + d_p1
                     dt2 = (b - m) * args.dt
-                    d_p2, _, h2 = model.hop(spatial, h1, anchors.e, z, dt2)
+                    d_p2, _, h2 = model.hop(spatial, h1, anchors.e, dt2)
                     p_shadow, h_shadow = p1 + d_p2, h2
                     p_target, h_target = p_by_t[b], h_by_t[b]
                     if args.consist_detach == "target":
@@ -730,7 +717,6 @@ def main():
         running_loss += float(total_loss)
         running_terms["render"]  += float(render_loss_sum)
         running_terms["arap"]    += float(arap_loss)
-        running_terms["ic"]      += float(loss_ic)
         running_terms["consist"] += float(loss_consist)
 
         # ── logging ───────────────────────────────────────────────────────────
@@ -747,14 +733,18 @@ def main():
         if (step + 1) % save_every == 0 or step == args.iters - 1:
             ply_path = os.path.join(args.out, f"point_cloud_{step+1:06d}.ply")
             gaussians.save_ply(ply_path)
-            torch.save({
+            ckpt_dict = {
                 "step":      step,
                 "model":     model.state_dict(),
                 "anchors":   anchors.state_dict(),
-                "ic_dir":    ic_dir.data,
-                "ic_net":    ic_net.state_dict(),
                 "dyn_opt":   dyn_opt.state_dict(),
-            }, os.path.join(args.out, "ckpt_last.pt"))
+            }
+            if hop_mode:
+                ckpt_dict["init_h"] = init_h.data
+            else:
+                ckpt_dict["ic_dir"] = ic_dir.data
+                ckpt_dict["ic_net"] = ic_net.state_dict()
+            torch.save(ckpt_dict, os.path.join(args.out, "ckpt_last.pt"))
             print(f"[step {step+1}] saved  gaussians={gaussians.get_xyz.shape[0]}")
 
     print("[train] done.")
