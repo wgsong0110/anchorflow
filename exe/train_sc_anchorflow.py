@@ -565,6 +565,11 @@ def main():
             else:
                 spatial = hop_spatial(grad=False)
                 p_full, rot_full, _ = hop_direct(times, spatial)
+                # hop_direct only covers t in `times` (1..T-1) -- unlike
+                # hop_rollout it has no implicit t=0 entry, so add it here.
+                p_full[0] = anchors.canonical
+                rot_full[0] = torch.zeros(anchors.num, 4, device=anchors.canonical.device)
+                rot_full[0][:, 0] = 1.0
             anchor_seq = torch.stack([p_full[t] for t in range(T)], dim=0)
             anchor_rot_seq = torch.stack([rot_full[t] for t in range(T)], dim=0)
         else:
