@@ -298,8 +298,11 @@ def main():
         rendered = render_frames_checkpointed(cams[0], gaussians, pipe, bg,
                                                d_xyz_all, d_rot_all, T, use_checkpoint=True)
 
+        # ssim_loss only accepts a single [3,H,W] pair (unsqueezes internally
+        # for conv2d) -- average it frame-by-frame over the T-frame batch.
+        ssim_sum = sum(ssim_loss(rendered[t], gt[t]) for t in range(T)) / T
         loss_photo = (1 - args.lambda_ssim) * l1_loss(rendered, gt) \
-                   + args.lambda_ssim * ssim_loss(rendered, gt)
+                   + args.lambda_ssim * ssim_sum
         total_loss = loss_photo
 
         loss_arap = torch.tensor(0.0, device=dev)
