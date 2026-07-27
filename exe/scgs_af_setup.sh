@@ -43,11 +43,11 @@ if [ -n "${R2_ACCESS_KEY:-}" ] && [ ! -f ~/.config/rclone/rclone.conf ]; then
         "$R2_ACCESS_KEY" "$R2_SECRET" "$R2_ENDPOINT" > ~/.config/rclone/rclone.conf
 fi
 
-echo "[setup] ficus_ds_wind dataset (R2: r2:datasets/anchorflow/ficus_ds_wind)"
+echo "[setup] ficus_ds_wind dataset (R2: r2:storage/datasets/anchorflow/ficus_ds_wind)"
 if [ -d "$WS/ficus_ds_wind" ] && [ -n "$(ls -A "$WS/ficus_ds_wind" 2>/dev/null)" ]; then
     echo "  already present, skipping"
 elif command -v rclone >/dev/null 2>&1 && [ -f ~/.config/rclone/rclone.conf ]; then
-    rclone copy r2:datasets/anchorflow/ficus_ds_wind "$WS/ficus_ds_wind" --progress
+    rclone copy r2:storage/datasets/anchorflow/ficus_ds_wind "$WS/ficus_ds_wind" --progress
 else
     echo "  SKIPPED: rclone not configured on this instance."
     echo "  Either pass R2_ACCESS_KEY/R2_SECRET/R2_ENDPOINT at instance creation"
