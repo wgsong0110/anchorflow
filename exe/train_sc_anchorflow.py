@@ -268,6 +268,9 @@ def main():
                     help="ablation: decoder output is velocity directly (single "
                          "integration p'=p+v*dt) instead of acceleration (double "
                          "integration p'=p+v*dt, v'=v+a*dt)")
+    ap.add_argument("--lambda_arap", type=float, default=1e-2,
+                    help="ARAP regularizer weight on anchor motion (matches "
+                         "SC-GS's own 1e-2 default; 0 disables)")
     ap.add_argument("--eval_every", type=int, default=1000,
                     help="full-T all-view PSNR/SSIM eval cadence (SC-GS-comparable; 0 disables)")
     ap.add_argument("--frames_per_step", type=int, default=6,
@@ -330,7 +333,8 @@ def main():
     graph_cfg = {"graph": "knn", "k": 8}
     print(f"[train] SSMDynamics hidden={args.hidden} mp={args.mp_steps} "
           f"ssm={args.ssm_dim} dt={args.dt} accel_scale={args.accel_scale*extent:.4f} "
-          f"use_ssm={not args.no_ssm} predict_velocity={args.predict_velocity}")
+          f"use_ssm={not args.no_ssm} predict_velocity={args.predict_velocity} "
+          f"lambda_arap={args.lambda_arap}")
 
     # ── optimizers ────────────────────────────────────────────────────────────
     dyn_opt = torch.optim.Adam([
@@ -351,6 +355,11 @@ def main():
         _idx_cache[0] = idx
 
     refresh_binding()
+
+    # ── ARAP loss cache (K-NN graph over the fixed canonical anchor positions --
+    # geometric only, independent of anchors._radius/_node_weight, so this never
+    # needs to be refreshed) ────────────────────────────────────────────────────
+    _arap_idx, _arap_src = W.anchor_rotations_cache(anchors.canonical, K=8)
 
     # ── rollout helper ────────────────────────────────────────────────────────
     def rollout(grad=True):
@@ -493,6 +502,17 @@ def main():
                 visibility   = pkg["visibility_filter"]
 
         total_loss = total_loss / len(frame_idxs)
+
+        # ── ARAP regularizer (SC-GS-style: penalize local-rigidity violation of
+        # anchor motion; ports SC-GS's utils/deform_utils.cal_arap_error via the
+        # existing no_grad Procrustes rotation estimator) ───────────────────────
+        if args.lambda_arap > 0:
+            arap_ts = random.sample(range(1, T), min(2, T - 1))  # skip t=0 (zero stretch)
+            arap_loss = sum(
+                W.anchor_arap_loss(anchors.canonical, anchor_seq[t], K=8,
+                                   _idx=_arap_idx, _src=_arap_src)
+                for t in arap_ts) / len(arap_ts)
+            total_loss = total_loss + args.lambda_arap * arap_loss
 
         # ── backward ─────────────────────────────────────────────────────────
         gaussians.optimizer.zero_grad(set_to_none=True)

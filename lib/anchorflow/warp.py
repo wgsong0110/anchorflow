@@ -146,6 +146,27 @@ def anchor_rotations(canonical, now, K=8, _idx=None, _src=None):
         return _procrustes_rotation(_src, tgt, w)             # [M,3,3] (detached)
 
 
+def anchor_arap_loss(canonical, now, K=8, _idx=None, _src=None):
+    """As-Rigid-As-Possible penalty on anchor motion (SC-GS utils/deform_utils.py
+    cal_arap_error, ported to our anchor graph). For each anchor's K-nearest
+    rest-pose neighbours, estimate the best-fit local rotation R (Procrustes,
+    no_grad -- same NaN-avoidance rationale as anchor_rotations) mapping rest
+    edges to current edges, then penalize the residual ("stretch") between the
+    actual current edges and the rigidly-rotated rest edges. R and the rest
+    edges are both detached, so gradient flows only through `now` (i.e. into
+    the anchor dynamics), exactly like the LBS translation term.
+
+    Pass _idx, _src from anchor_rotations_cache() (constant -- computed once,
+    since it only depends on the fixed canonical positions)."""
+    if _idx is None or _src is None:
+        _idx, _src = anchor_rotations_cache(canonical, K=K)
+    R = anchor_rotations(canonical, now, K=K, _idx=_idx, _src=_src)  # [M,3,3] detached
+    tgt = now[_idx] - now[:, None]                                  # [M,K,3] (grad -> now)
+    pred = torch.einsum("mab,mkb->mka", R, _src)                    # rigidly-rotated rest edges
+    stretch = tgt - pred
+    return stretch.pow(2).sum(-1).mean()
+
+
 def _blend_quat(quat, w, idx):
     """Weighted quaternion mean over K neighbours (sign-aligned). -> [N,4]."""
     q = quat[idx]                                            # [N,K,4]
