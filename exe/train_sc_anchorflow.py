@@ -527,12 +527,19 @@ def main():
     save_every = 10_000
     pbar = trange(start, args.iters, desc="train")
     running_loss = 0.0
+    term_names = ["render", "arap", "ic", "consist"]
+    running_terms = {k: 0.0 for k in term_names}
+    loss_csv_path = os.path.join(args.out, "losses.csv")
+    if not os.path.exists(loss_csv_path):
+        with open(loss_csv_path, "w") as f:
+            f.write("step,total," + ",".join(term_names) + "\n")
 
     for step in pbar:
         gaussians.update_learning_rate(step)
 
         # ── photometric loss over the sampled frames ─────────────────────────
         total_loss = torch.tensor(0.0, device=dev)
+        render_loss_sum = torch.tensor(0.0, device=dev)
 
         # recompute binding weights (anchors._radius, _node_weight can change)
         w   = _w_cache[0]
@@ -588,6 +595,7 @@ def main():
             loss = (1 - args.lambda_ssim) * l1_loss(rendered, gt) \
                  + args.lambda_ssim * ssim_loss(rendered, gt)
             total_loss = total_loss + loss
+            render_loss_sum = render_loss_sum + loss
 
             # Collect densification stats from the first rendered frame this step
             if i == 0 and step < densify_until:
@@ -595,6 +603,8 @@ def main():
                 visibility   = pkg["visibility_filter"]
 
         total_loss = total_loss / len(frame_idxs)
+        render_loss_sum = render_loss_sum / len(frame_idxs)
+        loss_ic = loss_consist = arap_loss = torch.tensor(0.0, device=dev)
 
         if hop_mode:
             # ── initial-velocity consistency: keep ic_dir a literal, user-
@@ -663,12 +673,20 @@ def main():
         dyn_opt.step()
 
         running_loss += float(total_loss)
+        running_terms["render"]  += float(render_loss_sum)
+        running_terms["arap"]    += float(arap_loss)
+        running_terms["ic"]      += float(loss_ic)
+        running_terms["consist"] += float(loss_consist)
 
         # ── logging ───────────────────────────────────────────────────────────
         if step % log_every == 0 and step > 0:
             avg = running_loss / log_every
+            term_avgs = {k: v / log_every for k, v in running_terms.items()}
             running_loss = 0.0
+            running_terms = {k: 0.0 for k in term_names}
             pbar.set_postfix(loss=f"{avg:.4f}", n=gaussians.get_xyz.shape[0])
+            with open(loss_csv_path, "a") as f:
+                f.write(f"{step},{avg}," + ",".join(f"{term_avgs[k]}" for k in term_names) + "\n")
 
         # ── PSNR/SSIM eval (SC-GS-comparable cadence/format) ────────────────────
         if args.eval_every > 0 and (step % args.eval_every == 0 or step == args.iters - 1):
