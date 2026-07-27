@@ -87,7 +87,7 @@ def main():
     mod_value = pipe.vae_scale_factor_spatial * pipe.transformer.config.patch_size[1]
     height = round(np.sqrt(args.max_area * aspect_ratio)) // mod_value * mod_value
     width = round(np.sqrt(args.max_area / aspect_ratio)) // mod_value * mod_value
-    image = image.resize((width, height))
+    image = image.resize((width, height), Image.LANCZOS)
     print(f"[gen_video_wan] conditioning image resized to {width}x{height}", flush=True)
 
     for i in range(args.n_videos):
