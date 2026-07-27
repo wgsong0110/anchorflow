@@ -475,26 +475,55 @@ def main():
         frames in (t_{i-1}, t_i), landing on t_i. coarse itself (hop_direct)
         is completely unaffected -- only fine's starting point changes. The
         first (smallest) frame this step has no "previous" frame, so it
-        falls back to init_h/canonical, matching coarse's own t=0 anchor."""
+        falls back to init_h/canonical, matching coarse's own t=0 anchor.
+
+        Each frame's start point (coarse[t_{i-1}]) is already available --
+        coarse is fully computed upfront by hop_direct, independent of any
+        fine computation -- so different frames' fine walks remain mutually
+        independent and are batched together (same padding+mask trick as
+        before, just with a per-frame starting point gathered from coarse
+        instead of a shared init_h)."""
         sc = sorted(render_idxs)
-        p_fine, rot_fine, h_fine = {}, {}, {}
+        B = len(sc)
+        M = spatial.shape[0]
+        dev = spatial.device
+        canonical = anchors.canonical
+
+        starts_p, starts_h, paths = [], [], []
         prev_t = 0
         for t in sc:
             if prev_t == 0:
-                start_p, start_h = anchors.canonical, init_h
+                starts_p.append(canonical)
+                starts_h.append(init_h)
             else:
-                start_p, start_h = p_coarse[prev_t].detach(), h_coarse[prev_t].detach()
+                starts_p.append(p_coarse[prev_t].detach())
+                starts_h.append(h_coarse[prev_t].detach())
             pool = list(range(prev_t + 1, t))
             n = min(n_hops, len(pool))
-            path = sorted(random.sample(pool, n)) + [t]
-            pf, hf, pt_prev = start_p, start_h, prev_t
-            d_rot_f = None
-            for pt in path:
-                d_pf, d_rot_f, hf = model.hop(spatial, hf, anchors.e, (pt - pt_prev) * args.dt)
-                pf = pf + d_pf
-                pt_prev = pt
-            p_fine[t], rot_fine[t], h_fine[t] = pf, d_rot_f, hf
+            paths.append(sorted(random.sample(pool, n)) + [t])
             prev_t = t
+
+        max_len = max(len(p) for p in paths)
+        dt_mat = torch.zeros(B, max_len, device=dev)
+        mask = torch.zeros(B, max_len, device=dev)
+        prev_t = 0
+        for b, (t, path) in enumerate(zip(sc, paths)):
+            pt_prev = prev_t
+            for i, pt in enumerate(path):
+                dt_mat[b, i] = (pt - pt_prev) * args.dt
+                mask[b, i] = 1.0
+                pt_prev = pt
+            prev_t = t
+
+        p = torch.stack(starts_p, dim=0)
+        h = torch.stack(starts_h, dim=0)
+        d_rot = None
+        for i in range(max_len):
+            d_p, d_rot, h = model.hop_batch(spatial, h, anchors.e, dt_mat[:, i])
+            p = p + d_p * mask[:, i].view(B, 1, 1)
+        p_fine   = {t: p[b]     for b, t in enumerate(sc)}
+        rot_fine = {t: d_rot[b] for b, t in enumerate(sc)}
+        h_fine   = {t: h[b]     for b, t in enumerate(sc)}
         return p_fine, rot_fine, h_fine
 
     _vf_pool = [[]]
