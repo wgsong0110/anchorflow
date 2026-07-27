@@ -284,15 +284,21 @@ def main():
                     help="[hop mode] weight on the coarse-vs-fine consistency loss. "
                          "coarse: each rendered frame t is a single, independent hop "
                          "directly from init_h (Δt=t*dt) -- non-autoregressive, cheap, "
-                         "gets the photometric gradient. fine: the same frames reached by "
-                         "one continuous autoregressive walk from init_h through all of "
-                         "them in sequence -- not rendered, exists only for this loss. "
-                         "Compares position + hidden state at each frame: does jumping "
-                         "straight there match actually walking there?")
+                         "gets the photometric gradient. fine: for the SAME frame t, an "
+                         "independent walk from init_h through --fine_hops randomly-"
+                         "subsampled intermediate frames in (0,t), computed fresh per "
+                         "frame (not chained to any other frame's fine walk, so each "
+                         "frame's gradient stays isolated) -- not rendered, exists only "
+                         "for this loss. Compares position + hidden state at each frame: "
+                         "does jumping straight there match actually walking there?")
+    ap.add_argument("--fine_hops", type=int, default=2,
+                    help="[hop mode] number of intermediate frames randomly subsampled "
+                         "(fixed count, independent per rendered frame) for that frame's "
+                         "fine/consistency reference walk from init_h")
     ap.add_argument("--consist_detach", choices=["none", "coarse", "fine"], default="coarse",
                     help="[hop mode] 'coarse' (default): detach the (photometrically-"
                          "grounded, rendered) direct-from-h0 estimate so only the fine "
-                         "(autoregressive-from-h0) chain is trained to match it. 'fine': "
+                         "(independent-walk-from-h0) chain is trained to match it. 'fine': "
                          "detach the fine chain instead (train coarse's direct estimate "
                          "toward it). 'none': both pull toward each other symmetrically")
     ap.add_argument("--eval_every", type=int, default=1000,
@@ -418,25 +424,49 @@ def main():
             damping=args.damping, vel_smooth=0.1,
             return_rotations=True)   # [T, M, 3], [T, M, 4]
 
-    def hop_forward(times, grad=True):
-        """HopDynamics "fine" mode: one continuous autoregressive chain,
-        hopping through `times` in sequence, starting from the directly-
-        learned init_h (no ic_dir/ic_net/z anywhere in this mode). Used both
-        for full-T eval (always autoregressive, per user's instruction) and,
-        during training, as the fine/consistency reference for hop_direct()'s
-        non-autoregressive coarse estimate at the same times. Returns per-
-        visited-time position, rotation, and hidden-state dicts, plus spatial
-        (the one-time GNN embedding over the canonical graph) so callers can
-        issue extra one-off model.hop() calls without recomputing it."""
+    def hop_spatial(grad=True):
+        """One-time GNN embedding over the canonical anchor graph, shared by
+        every hop() call this step (coarse, and each independent fine walk)."""
         p0 = anchors.canonical
         edge_index = build_graph(p0.detach(), graph_cfg)
         ctx = torch.enable_grad() if grad else torch.no_grad()
         with ctx:
-            spatial = model.spatial_embed(anchors.e, edge_index, p0)
+            return model.spatial_embed(anchors.e, edge_index, p0)
+
+    def hop_forward(times, grad=True):
+        """HopDynamics full-T eval mode: one continuous autoregressive chain,
+        hopping through `times` in sequence, starting from the directly-
+        learned init_h (no ic_dir/ic_net/z anywhere in this mode). Only used
+        for eval_psnr_ssim() (always autoregressive, per user's instruction)
+        -- during training, each rendered frame's fine reference is instead a
+        separate, independent walk (hop_fine_frame()), not this shared chain."""
+        p0 = anchors.canonical
+        edge_index = build_graph(p0.detach(), graph_cfg)
+        spatial = hop_spatial(grad=grad)
         p_by_t, rot_by_t, h_by_t = hop_rollout(
             model, p0, anchors.e, edge_index, times, args.dt,
             grad=grad, h0=init_h, spatial=spatial)
         return p_by_t, rot_by_t, h_by_t, spatial
+
+    def hop_fine_frame(t, n_hops, spatial):
+        """Independent fine walk to reach frame t: sample a FIXED number
+        (n_hops) of intermediate frames from (0,t) -- e.g. n_hops=2, t=6 might
+        pick {3,5} -- sort them, then hop init_h through them in order,
+        finally landing on t. Computed fresh from init_h for every frame,
+        never chained to another frame's fine walk, so each frame's
+        consistency-loss gradient stays isolated (no shared-prefix
+        entanglement across frames, unlike hop_forward()'s one continuous
+        chain)."""
+        pool = list(range(1, t))
+        n = min(n_hops, len(pool))
+        path = sorted(random.sample(pool, n)) + [t]
+        p, h, prev = anchors.canonical, init_h, 0
+        d_rot = None
+        for pt in path:
+            d_p, d_rot, h = model.hop(spatial, h, anchors.e, (pt - prev) * args.dt)
+            p = p + d_p
+            prev = pt
+        return p, d_rot, h
 
     def hop_frame_idxs():
         """Coarse/rendered checkpoint sample: like the rollout-mode sampler
@@ -585,12 +615,16 @@ def main():
             # render_idxs: same sampling as always (size=frames_per_step,
             # forces frames 1 and T-1). coarse = each of these frames reached
             # by one independent hop straight from init_h -- this is what
-            # gets rendered. fine = the same frames reached by one continuous
-            # autoregressive walk from init_h -- not rendered, only used
-            # below for the coarse/fine consistency loss.
+            # gets rendered. fine = for each frame independently, a fresh
+            # walk from init_h through --fine_hops subsampled intermediates
+            # -- not rendered, not chained across frames, only used below for
+            # the coarse/fine consistency loss.
             render_idxs = hop_frame_idxs()
-            p_fine, rot_fine, h_fine, spatial = hop_forward(render_idxs)
+            spatial = hop_spatial()
             p_coarse, rot_coarse, h_coarse = hop_direct(render_idxs, spatial)
+            p_fine, rot_fine, h_fine = {}, {}, {}
+            for t in render_idxs:
+                p_fine[t], rot_fine[t], h_fine[t] = hop_fine_frame(t, args.fine_hops, spatial)
             anchor_now_stack = torch.stack([p_coarse[t] for t in render_idxs], dim=0)
             anchor_rot_stack = torch.stack([rot_coarse[t] for t in render_idxs], dim=0)
         else:
