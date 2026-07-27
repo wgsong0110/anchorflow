@@ -281,21 +281,20 @@ def main():
     ap.add_argument("--n_time_freqs", type=int, default=6,
                     help="[hop mode] number of NeRF-style Δt positional-encoding bands")
     ap.add_argument("--lambda_consist", type=float, default=1.0,
-                    help="[hop mode] weight on the coarse-vs-shadow-fine hop-chain "
-                         "consistency loss. coarse (the rendered/photometric checkpoint "
-                         "chain) is authoritative; at each consecutive coarse segment "
-                         "(a,b), a shadow chain hops through 1 intermediate frame starting "
-                         "from coarse's own real (position, hidden state) at a, and its "
-                         "result at b is compared (position + hidden state) against "
-                         "coarse's own real state at b -- enforces the flow-composition "
-                         "property Φ(Δt2)∘Φ(Δt1)=Φ(Δt1+Δt2) locally, without confounding "
-                         "from cumulative drift over the rest of the trajectory")
-    ap.add_argument("--consist_detach", choices=["none", "target", "shadow"], default="target",
-                    help="[hop mode] 'target' (default): detach coarse's own real state at "
-                         "b (the photometrically-grounded target) so only the shadow "
-                         "(intermediate-hop) branch is trained to match it. 'shadow': detach "
-                         "the shadow branch instead (train coarse's own trajectory toward "
-                         "it). 'none': both pull toward each other symmetrically")
+                    help="[hop mode] weight on the coarse-vs-fine consistency loss. "
+                         "coarse: each rendered frame t is a single, independent hop "
+                         "directly from init_h (Δt=t*dt) -- non-autoregressive, cheap, "
+                         "gets the photometric gradient. fine: the same frames reached by "
+                         "one continuous autoregressive walk from init_h through all of "
+                         "them in sequence -- not rendered, exists only for this loss. "
+                         "Compares position + hidden state at each frame: does jumping "
+                         "straight there match actually walking there?")
+    ap.add_argument("--consist_detach", choices=["none", "coarse", "fine"], default="coarse",
+                    help="[hop mode] 'coarse' (default): detach the (photometrically-"
+                         "grounded, rendered) direct-from-h0 estimate so only the fine "
+                         "(autoregressive-from-h0) chain is trained to match it. 'fine': "
+                         "detach the fine chain instead (train coarse's direct estimate "
+                         "toward it). 'none': both pull toward each other symmetrically")
     ap.add_argument("--eval_every", type=int, default=1000,
                     help="full-T all-view PSNR/SSIM eval cadence (SC-GS-comparable; 0 disables)")
     ap.add_argument("--frames_per_step", type=int, default=6,
@@ -420,14 +419,15 @@ def main():
             return_rotations=True)   # [T, M, 3], [T, M, 4]
 
     def hop_forward(times, grad=True):
-        """HopDynamics mode: one autoregressive chain, hopping only through
-        `times`, starting from the directly-learned init_h (no ic_dir/ic_net/z
-        anywhere in this mode). Returns per-visited-time position, rotation,
-        AND hidden-state dicts (h_by_t is needed so the coarse/fine consistency
-        loss can branch a shadow chain from a real intermediate state instead
-        of only comparing final outputs), plus spatial so the caller can issue
-        extra one-off model.hop() calls sharing the same embedding without
-        recomputing it."""
+        """HopDynamics "fine" mode: one continuous autoregressive chain,
+        hopping through `times` in sequence, starting from the directly-
+        learned init_h (no ic_dir/ic_net/z anywhere in this mode). Used both
+        for full-T eval (always autoregressive, per user's instruction) and,
+        during training, as the fine/consistency reference for hop_direct()'s
+        non-autoregressive coarse estimate at the same times. Returns per-
+        visited-time position, rotation, and hidden-state dicts, plus spatial
+        (the one-time GNN embedding over the canonical graph) so callers can
+        issue extra one-off model.hop() calls without recomputing it."""
         p0 = anchors.canonical
         edge_index = build_graph(p0.detach(), graph_cfg)
         ctx = torch.enable_grad() if grad else torch.no_grad()
@@ -457,20 +457,23 @@ def main():
         chosen.add(T - 1)
         return sorted(chosen)
 
-    def hop_shadow_segments(coarse_idxs):
-        """For each consecutive pair (a,b) in coarse_idxs with a gap > 1,
-        pick one intermediate frame m in (a,b) -- the fine/shadow chain hops
-        a -> m -> b, starting from coarse's own real (p, h) at a, so it can
-        be compared against coarse's own real (p, h) at b. Segments with
-        gap == 1 have no room for an intermediate frame (coarse's own single
-        hop already covers them) and are skipped."""
-        sc = sorted(coarse_idxs)
-        segs = []
-        for a, b in zip(sc, sc[1:]):
-            if b - a > 1:
-                m = random.randint(a + 1, b - 1)
-                segs.append((a, m, b))
-        return segs
+    def hop_direct(times, spatial):
+        """Non-autoregressive coarse estimate: each t in `times` is reached by
+        exactly ONE hop directly from init_h (Δt=t*dt) -- independent of every
+        other t, no chaining. This is what gets rendered/photometrically
+        supervised (cheap: k independent single hops instead of a sequential
+        walk). Compared in the consistency loss against hop_forward()'s
+        autoregressive walk through the same times, both starting from the
+        same init_h -- does jumping straight to t match actually walking
+        there through the real intermediate GNN/SSM states?"""
+        p_by_t, rot_by_t, h_by_t = {}, {}, {}
+        canonical = anchors.canonical
+        for t in times:
+            d_p, d_rot, h = model.hop(spatial, init_h, anchors.e, t * args.dt)
+            p_by_t[t] = canonical + d_p
+            rot_by_t[t] = d_rot
+            h_by_t[t] = h
+        return p_by_t, rot_by_t, h_by_t
 
     best_psnr = {"value": -1.0, "step": -1}
 
@@ -579,14 +582,17 @@ def main():
         visibility   = None
 
         if hop_mode:
-            # coarse: the sequential, rendered/photometric checkpoint chain
-            # (size=frames_per_step, always includes frames 1 and T-1). The
-            # fine/shadow consistency check happens separately below, branching
-            # off coarse's own real (position, hidden state) at each segment.
+            # render_idxs: same sampling as always (size=frames_per_step,
+            # forces frames 1 and T-1). coarse = each of these frames reached
+            # by one independent hop straight from init_h -- this is what
+            # gets rendered. fine = the same frames reached by one continuous
+            # autoregressive walk from init_h -- not rendered, only used
+            # below for the coarse/fine consistency loss.
             render_idxs = hop_frame_idxs()
-            p_by_t, rot_by_t, h_by_t, spatial = hop_forward(render_idxs)
-            anchor_now_stack = torch.stack([p_by_t[t] for t in render_idxs], dim=0)
-            anchor_rot_stack = torch.stack([rot_by_t[t] for t in render_idxs], dim=0)
+            p_fine, rot_fine, h_fine, spatial = hop_forward(render_idxs)
+            p_coarse, rot_coarse, h_coarse = hop_direct(render_idxs, spatial)
+            anchor_now_stack = torch.stack([p_coarse[t] for t in render_idxs], dim=0)
+            anchor_rot_stack = torch.stack([rot_coarse[t] for t in render_idxs], dim=0)
         else:
             # rendering (esp. rasterizer backward) dominates step time -- rollout
             # itself still runs all T steps (needed for correct GNN+SSM state),
@@ -635,41 +641,32 @@ def main():
         loss_consist = arap_loss = torch.tensor(0.0, device=dev)
 
         if hop_mode:
-            # ── coarse/shadow-fine consistency: coarse (rendered, above) is
-            # authoritative. At each consecutive coarse segment (a,b), hop a
-            # shadow chain a -> m -> b (m = one intermediate frame) starting
-            # from coarse's own real (p, h) at a, then compare the shadow's
-            # result at b against coarse's own real (p, h) at b -- position
-            # AND hidden state -- enforcing the flow-composition property
-            # locally, without confounding from the rest of the trajectory's
-            # drift. args.consist_detach picks which side is the fixed target.
+            # ── coarse/fine consistency: coarse (rendered, above -- one
+            # independent hop straight from init_h per frame) vs fine (the
+            # same frames reached by one continuous autoregressive walk from
+            # init_h) -- does jumping straight to t match actually walking
+            # there? args.consist_detach picks which side is the fixed
+            # target (default: detach coarse, since it's the photometrically-
+            # grounded one, and train fine to match it). ────────────────────
             if args.lambda_consist > 0:
-                segs = hop_shadow_segments(render_idxs)
                 consist_terms = []
-                for a, m, b in segs:
-                    dt1 = (m - a) * args.dt
-                    d_p1, _, h1 = model.hop(spatial, h_by_t[a], anchors.e, dt1)
-                    p1 = p_by_t[a] + d_p1
-                    dt2 = (b - m) * args.dt
-                    d_p2, _, h2 = model.hop(spatial, h1, anchors.e, dt2)
-                    p_shadow, h_shadow = p1 + d_p2, h2
-                    p_target, h_target = p_by_t[b], h_by_t[b]
-                    if args.consist_detach == "target":
-                        p_target, h_target = p_target.detach(), h_target.detach()
-                    elif args.consist_detach == "shadow":
-                        p_shadow, h_shadow = p_shadow.detach(), h_shadow.detach()
-                    consist_terms.append(F.mse_loss(p_shadow, p_target)
-                                          + F.mse_loss(h_shadow, h_target))
-                if consist_terms:
-                    loss_consist = sum(consist_terms) / len(consist_terms)
-                    total_loss = total_loss + args.lambda_consist * loss_consist
+                for t in render_idxs:
+                    p_c, h_c = p_coarse[t], h_coarse[t]
+                    p_f, h_f = p_fine[t], h_fine[t]
+                    if args.consist_detach == "coarse":
+                        p_c, h_c = p_c.detach(), h_c.detach()
+                    elif args.consist_detach == "fine":
+                        p_f, h_f = p_f.detach(), h_f.detach()
+                    consist_terms.append(F.mse_loss(p_f, p_c) + F.mse_loss(h_f, h_c))
+                loss_consist = sum(consist_terms) / len(consist_terms)
+                total_loss = total_loss + args.lambda_consist * loss_consist
 
             # ── ARAP regularizer (SC-GS-style; sampled from the rendered/
             # coarse checkpoints computed this step) ────────────────────────
             if args.lambda_arap > 0:
                 arap_ts = random.sample(render_idxs, min(2, len(render_idxs)))
                 arap_loss = sum(
-                    W.anchor_arap_loss(anchors.canonical, p_by_t[t], K=8,
+                    W.anchor_arap_loss(anchors.canonical, p_coarse[t], K=8,
                                        _idx=_arap_idx, _src=_arap_src)
                     for t in arap_ts) / len(arap_ts)
                 total_loss = total_loss + args.lambda_arap * arap_loss
