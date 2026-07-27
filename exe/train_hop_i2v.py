@@ -23,6 +23,11 @@ shared and see gradients from all N videos every epoch -- so the *network*
 learns a general, consistent "h0 -> plausible motion" mapping, and each
 h0_bank[i] just picks out which realization.
 
+FIXED CAMERA: every generated video and every rendered/training frame comes
+from a single fixed camera, cams[0] -- this is single-view monocular i2v
+generation + monocular photometric training, not multi-view. All N videos
+share that same viewpoint; the anchors/network never see any other camera.
+
 Usage:
   python exe/train_hop_i2v.py \\
       --model_dir /workspace/gs_official/bonsai --ply_iter 30000 \\
