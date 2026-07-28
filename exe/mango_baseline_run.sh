@@ -127,7 +127,34 @@ OPACITY_RESET=15000
 # start (negligible risk) instead of after real training has happened.
 DENSIFY_FROM_ITER=500
 
-echo "[mango_baseline_run] node_num=$NODE_NUM hyper_dim=$HYPER_DIM iters=$ITERS opacity_reset=$OPACITY_RESET densify_from_iter=$DENSIFY_FROM_ITER"
+# ── Lesson 6: node densify/prune corrupts rendering at node_force_densify_
+# prune_step (default 10000) -- a SECOND, independent collapse cause ────────
+# Even with Lesson 5's fix, a live run (2026-07-28) collapsed again: opacity
+# was confirmed HEALTHY and steadily improving through iteration 10000
+# (point_cloud/iteration_10000.ply: sigmoid(opacity) mean 0.048->0.15->0.39->
+# 0.48 across saved checkpoints, N stable at 660) -- then eval froze to the
+# same all-white PSNR signature (14.843050003051758) from iteration 11000
+# onward. node_force_densify_prune_step=10000 (default, unconditional, fires
+# once regardless of enable_dp) and node_densify_from_iter=10000 (default,
+# starts the REGULAR periodic node densify schedule) both land exactly at
+# this boundary. Reading mango/time_utils.py's DeformNetworkNode.densify():
+# it prunes/splits `self.gs` -- a separate GaussianModel instance built
+# during node-bootstrap (DeformNetworkNode.init_gaussians()) -- and syncs
+# `self.gs._xyz.data = self.nodes[..., :3]`. This object is distinct from
+# the trainer's own self.gaussians (the one actually rendered in main
+# phase), and nothing in the surrounding code re-syncs the two afterward --
+# so a node densify/prune event during main-phase training plausibly
+# desyncs the skinning weights (cal_nn_weight) from the actual render
+# Gaussians without raising an error, silently breaking every subsequent
+# render. Fix: disable node densify/prune entirely for this run (push both
+# past the total iteration count) -- trades away adaptive node refinement
+# for avoiding the corruption; node count stays fixed at whatever bootstrap
+# produced (comparable to SC-GS not needing this same tradeoff since its own
+# node densify apparently doesn't hit the same desync).
+NODE_DENSIFY_FROM_ITER=999999
+NODE_FORCE_DENSIFY_PRUNE_STEP=999999
+
+echo "[mango_baseline_run] node_num=$NODE_NUM hyper_dim=$HYPER_DIM iters=$ITERS opacity_reset=$OPACITY_RESET densify_from_iter=$DENSIFY_FROM_ITER node_densify_from_iter=$NODE_DENSIFY_FROM_ITER"
 
 # ── Direct-to-R2 backup, not a manual afterthought ─────────────────────────
 # Same convention as scgs_baseline_run.sh -- push checkpoints/logs to R2 as
@@ -166,5 +193,7 @@ python train.py \
   --node_num "$NODE_NUM" \
   --opacity_reset_interval "$OPACITY_RESET" \
   --densify_from_iter "$DENSIFY_FROM_ITER" \
+  --node_densify_from_iter "$NODE_DENSIFY_FROM_ITER" \
+  --node_force_densify_prune_step "$NODE_FORCE_DENSIFY_PRUNE_STEP" \
   --iterations "$ITERS" \
   --save_iterations 10000 20000 30000 40000 50000 "$ITERS"
