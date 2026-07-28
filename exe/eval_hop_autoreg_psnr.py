@@ -46,12 +46,12 @@ from arguments import ModelParams, PipelineParams, get_combined_args
 from utils.image_utils import psnr as psnr_fn
 from utils.image_utils import ssim as ssim_fn
 
-sys.argv = [sys.argv[0], "--model_path", args.model_path, "--source_path", args.source_path]
+sys.argv = [sys.argv[0], "--model_path", args.model_path, "--source_path", args.source_path,
+            "--deform_type", "node"]
 parser = argparse.ArgumentParser()
 model_p = ModelParams(parser, sentinel=True)
 pipeline_p = PipelineParams(parser)
 parser.add_argument("--iteration", default=-1, type=int)
-parser.add_argument("--deform-type", type=str, default="node")  # checkpoint dir already ends in "_node"
 cargs = get_combined_args(parser)
 cargs.source_path = args.source_path  # explicit override, checkpoint's saved path may not exist here
 dataset = model_p.extract(cargs)
