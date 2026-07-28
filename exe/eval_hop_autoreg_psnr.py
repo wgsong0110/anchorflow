@@ -54,6 +54,11 @@ ap.add_argument("--fixed_view_consecutive_n", type=int, default=0,
                       "tests whether small-dt specifically is undertrained, vs. hop-count alone). "
                       "Overrides --fixed_view_random_n and --fixed_view_stride when set.")
 ap.add_argument("--fixed_view_start", type=int, default=0)
+ap.add_argument("--use_teacher", action="store_true",
+                 help="render with SC-GS's OWN trained node_deform network (no HopDynamics "
+                      "monkeypatch) -- lets --fixed_view_video show the teacher's own "
+                      "reconstruction at the same synthetic fixed-camera/swept-time query as a "
+                      "reference, since no real GT exists for those (camera, time) combos.")
 args = ap.parse_args()
 
 _lib = "/workspace/anchorflow/lib"
@@ -155,7 +160,10 @@ class HopNodeDeform:
         }
 
 
-deform.deform.node_deform = HopNodeDeform()
+if args.use_teacher:
+    print("[eval] --use_teacher set: rendering with SC-GS's own node network, HopDynamics unused")
+else:
+    deform.deform.node_deform = HopNodeDeform()
 
 # ---- render + measure ----
 views_sorted = sorted(views, key=lambda v: float(v.fid))
@@ -216,12 +224,14 @@ if args.fixed_view_video:
         if render_indices[-1] != T - 1:
             render_indices.append(T - 1)
         frame_indices = [i for i in render_indices if i != 0]
-    p_full, rot_full, h_full = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
-                                            times=frame_indices, dt_base=dt_base, grad=False, h0=init_h)
-    p_full[0], rot_full[0], h_full[0] = anchors.canonical, torch.zeros(M, 4, device=dev), init_h
+    if not args.use_teacher:
+        p_full, rot_full, h_full = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
+                                                times=frame_indices, dt_base=dt_base, grad=False, h0=init_h)
+        p_full[0], rot_full[0], h_full[0] = anchors.canonical, torch.zeros(M, 4, device=dev), init_h
     print(f"[eval] fixed_view_video: {len(render_indices)} rendered frames via {len(frame_indices)} hops "
           f"(stride={args.fixed_view_stride}, random_n={args.fixed_view_random_n}, "
-          f"consecutive_n={args.fixed_view_consecutive_n}, start={args.fixed_view_start})")
+          f"consecutive_n={args.fixed_view_consecutive_n}, start={args.fixed_view_start}, "
+          f"use_teacher={args.use_teacher})")
 
     fixed_view = scene.getTrainCameras()[args.fixed_view_idx]
     if dataset.load2gpu_on_the_fly:
@@ -229,16 +239,18 @@ if args.fixed_view_video:
 
     frames2 = []
     for i in render_indices:
-        pos, rot, h = p_full[i], rot_full[i], h_full[i]
-        lrot = model.local_rotation(h)
+        if not args.use_teacher:
+            pos, rot, h = p_full[i], rot_full[i], h_full[i]
+            lrot = model.local_rotation(h)
 
-        class _Fixed:
-            def __call__(self, t, **kwargs):
-                return {"d_xyz": pos - canonical, "d_rotation": rot,
-                        "d_scaling": torch.zeros(M, 3, device=dev), "local_rotation": lrot,
-                        "hidden": h, "d_opacity": None, "d_color": None}
+            class _Fixed:
+                def __call__(self, t, **kwargs):
+                    return {"d_xyz": pos - canonical, "d_rotation": rot,
+                            "d_scaling": torch.zeros(M, 3, device=dev), "local_rotation": lrot,
+                            "hidden": h, "d_opacity": None, "d_color": None}
 
-        deform.deform.node_deform = _Fixed()
+            deform.deform.node_deform = _Fixed()
+        # else: deform.deform.node_deform is untouched -- SC-GS's own trained network
         fid = torch.tensor([times_f[i]], device=dev)
         time_input = deform.deform.expand_time(fid)
         d_values = deform.step(gaussians.get_xyz.detach(), time_input, feature=gaussians.feature,
