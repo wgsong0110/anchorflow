@@ -33,13 +33,21 @@ from anchorflow.anchors import AnchorSet
 from anchorflow.ssm_dynamics import HopDynamics, build_graph, hop_rollout
 
 
-def quat_geodesic_loss(pred, target):
-    """1 - |cos angle| between two (possibly unnormalized) quaternion batches
-    [N,4]. Sign-invariant (q and -q represent the same rotation)."""
-    pred = torch.nn.functional.normalize(pred, dim=-1, eps=1e-8)
-    target = torch.nn.functional.normalize(target, dim=-1, eps=1e-8)
-    cos = (pred * target).sum(dim=-1)
-    return (1.0 - cos.abs()).mean()
+def quat_mse_loss(pred, target):
+    """Plain MSE on raw (unnormalized) quaternion components [N,4].
+
+    NOT normalize()-based on purpose: rot_decoder's last layer is
+    zero-initialized (outputs exactly [0,0,0,0] at step 0), and
+    F.normalize's gradient at the exact zero vector vanishes (norm()'s
+    x/||x|| gradient is 0/0 there) -- a normalize()-based geodesic loss
+    gets permanently stuck at that fixed point since it never receives a
+    nonzero gradient to escape zero-init. Plain MSE has no such singularity:
+    its gradient at pred=0 is simply -2*target, always well-defined and
+    nonzero whenever target != 0. Confirmed empirically (2026-07-28):
+    training with the normalize()-based loss left rot loss frozen at
+    exactly 1.000000 for 145+ steps while pos loss moved fine.
+    """
+    return torch.nn.functional.mse_loss(pred, target)
 
 
 def main():
@@ -60,6 +68,13 @@ def main():
     ap.add_argument("--anchor_k", type=int, default=4)
     ap.add_argument("--ckpt_every", type=int, default=1000)
     ap.add_argument("--resume", type=str, default=None)
+    ap.add_argument("--frames_per_step", type=int, default=0,
+                     help="if >0, visit a random subset of this many frame indices per step "
+                          "instead of all T-1 (hop_rollout already takes the actual gap between "
+                          "visited frames as dt, so subsampling is a free ~T/frames_per_step "
+                          "speedup, not an approximation of the dynamics -- every frame still "
+                          "gets supervised, just spread across different random subsets over "
+                          "many steps instead of all-at-once every step).")
     args = ap.parse_args()
 
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=os.path.dirname(__file__),
@@ -103,26 +118,32 @@ def main():
         print(f"[resume] from step {start_step}")
 
     lr_final = args.lr * args.lr_final_ratio
-    frame_indices = list(range(1, T))  # hop_rollout visits t=1..T-1; t=0 is implicit canonical/identity
+    all_frames = list(range(1, T))  # hop_rollout visits t=1..T-1; t=0 is implicit canonical/identity
+    import random, math
 
     pbar = trange(start_step, args.iters, desc="hop_autoreg")
     for step in pbar:
         t = min(step / max(args.iters - 1, 1), 1.0)
-        import math
         lr = math.exp(math.log(args.lr) * (1 - t) + math.log(lr_final) * t)
         for g in opt.param_groups:
             g["lr"] = lr
 
+        if args.frames_per_step > 0 and args.frames_per_step < len(all_frames):
+            frame_indices = sorted(random.sample(all_frames, args.frames_per_step))
+        else:
+            frame_indices = all_frames
+
         p_by_t, rot_by_t, _ = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
                                            times=frame_indices, dt_base=dt_base, grad=True, h0=init_h)
 
-        pred_pos = torch.stack([p_by_t[i] for i in frame_indices], dim=0)   # [T-1,M,3]
-        pred_rot = torch.stack([rot_by_t[i] for i in frame_indices], dim=0)  # [T-1,M,4]
-        tgt_pos = teacher_pos[1:]
-        tgt_rot = teacher_rot[1:]
+        pred_pos = torch.stack([p_by_t[i] for i in frame_indices], dim=0)   # [len(frame_indices),M,3]
+        pred_rot = torch.stack([rot_by_t[i] for i in frame_indices], dim=0)
+        idx_t = torch.tensor(frame_indices, device=dev)
+        tgt_pos = teacher_pos[idx_t]
+        tgt_rot = teacher_rot[idx_t]
 
         loss_pos = torch.nn.functional.mse_loss(pred_pos, tgt_pos)
-        loss_rot = quat_geodesic_loss(pred_rot.reshape(-1, 4), tgt_rot.reshape(-1, 4))
+        loss_rot = quat_mse_loss(pred_rot.reshape(-1, 4), tgt_rot.reshape(-1, 4))
         loss = loss_pos + args.lambda_rot * loss_rot
 
         opt.zero_grad(set_to_none=True)
