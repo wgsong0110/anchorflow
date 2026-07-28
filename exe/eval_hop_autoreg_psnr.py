@@ -35,6 +35,7 @@ args = ap.parse_args()
 
 _lib = "/workspace/anchorflow/lib"
 sys.path.insert(0, _lib)
+sys.path.insert(0, os.getcwd())  # SC-GS repo root (`scene`, `gaussian_renderer`, ...) -- script runs from elsewhere
 from anchorflow.anchors import AnchorSet
 from anchorflow.ssm_dynamics import HopDynamics, build_graph, hop_rollout
 
