@@ -30,7 +30,7 @@ from tqdm import trange
 _lib = os.path.join(os.path.dirname(__file__), "..", "lib")
 sys.path.insert(0, _lib)
 from anchorflow.anchors import AnchorSet
-from anchorflow.ssm_dynamics import HopDynamics, build_graph, hop_rollout
+from anchorflow.ssm_dynamics import HopDynamics, build_graph
 
 
 def quat_mse_loss(pred, target):
@@ -69,13 +69,18 @@ def main():
     ap.add_argument("--anchor_k", type=int, default=4)
     ap.add_argument("--ckpt_every", type=int, default=1000)
     ap.add_argument("--resume", type=str, default=None)
-    ap.add_argument("--frames_per_step", type=int, default=0,
-                     help="if >0, visit a random subset of this many frame indices per step "
-                          "instead of all T-1 (hop_rollout already takes the actual gap between "
-                          "visited frames as dt, so subsampling is a free ~T/frames_per_step "
-                          "speedup, not an approximation of the dynamics -- every frame still "
-                          "gets supervised, just spread across different random subsets over "
-                          "many steps instead of all-at-once every step).")
+    ap.add_argument("--curriculum_start_len", type=int, default=8,
+                     help="rollout length (consecutive next-frame hops from t=0) at step 0")
+    ap.add_argument("--curriculum_iters", type=int, default=0,
+                     help="steps to linearly ramp rollout length from curriculum_start_len to T-1 "
+                          "(full trajectory); 0 = default to iters//2. Held at T-1 after this point.")
+    ap.add_argument("--tbptt_chunk", type=int, default=50,
+                     help="detach (h, p) from the autograd graph every this many hops during the "
+                          "rollout, bounding backprop-through-time length once curriculum length "
+                          "exceeds it (each hop's d_p/d_rot/local_rotation is still directly "
+                          "supervised via the loss at every visited frame regardless -- this only "
+                          "cuts how far a later frame's loss can backprop into earlier hops' "
+                          "weights). 0 disables (full BPTT through the whole rollout).")
     args = ap.parse_args()
 
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=os.path.dirname(__file__),
@@ -122,8 +127,9 @@ def main():
         print(f"[resume] from step {start_step}")
 
     lr_final = args.lr * args.lr_final_ratio
-    all_frames = list(range(1, T))  # hop_rollout visits t=1..T-1; t=0 is implicit canonical/identity
-    import random, math
+    curriculum_iters = args.curriculum_iters or (args.iters // 2)
+    max_len = T - 1  # full trajectory: t=1..T-1
+    import math
 
     pbar = trange(start_step, args.iters, desc="hop_autoreg")
     for step in pbar:
@@ -132,27 +138,41 @@ def main():
         for g in opt.param_groups:
             g["lr"] = lr
 
-        if args.frames_per_step > 0 and args.frames_per_step < len(all_frames):
-            frame_indices = sorted(random.sample(all_frames, args.frames_per_step))
-        else:
-            frame_indices = all_frames
+        # Curriculum: always hop from t=0, one dt_base-sized next-frame step at a
+        # time (no variable dt) -- ramp the rollout length L linearly from
+        # curriculum_start_len up to the full trajectory (max_len) over
+        # curriculum_iters steps, then hold at max_len. This directly trains the
+        # exact regime needed at dense-inference time (many consecutive small-dt
+        # hops), instead of a random-dt/random-subset regime that never covered
+        # long consecutive chains (see 2026-07-28 divergence diagnosis).
+        frac = min(step / max(curriculum_iters, 1), 1.0)
+        L = min(max_len, args.curriculum_start_len + int(frac * (max_len - args.curriculum_start_len)))
 
-        p_by_t, rot_by_t, h_by_t = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
-                                                times=frame_indices, dt_base=dt_base, grad=True, h0=init_h)
+        spatial = model.spatial_embed(anchors.e, edge_index, anchors.canonical)
+        p, h = anchors.canonical, init_h
+        pred_pos_list, pred_rot_list, pred_lrot_list = [], [], []
+        for i in range(1, L + 1):
+            d_p, d_rot, h = model.hop(spatial, h, anchors.e, dt_base)
+            p = p + d_p
+            pred_pos_list.append(p)
+            pred_rot_list.append(d_rot)
+            pred_lrot_list.append(model.local_rotation(h))
+            if args.tbptt_chunk > 0 and i % args.tbptt_chunk == 0:
+                h = h.detach()
+                p = p.detach()
 
-        pred_pos = torch.stack([p_by_t[i] for i in frame_indices], dim=0)   # [len(frame_indices),M,3]
-        pred_rot = torch.stack([rot_by_t[i] for i in frame_indices], dim=0)
-        idx_t = torch.tensor(frame_indices, device=dev)
-        tgt_pos = teacher_pos[idx_t]
-        tgt_rot = teacher_rot[idx_t]
+        pred_pos = torch.stack(pred_pos_list, dim=0)   # [L,M,3]
+        pred_rot = torch.stack(pred_rot_list, dim=0)
+        tgt_pos = teacher_pos[1:L + 1]
+        tgt_rot = teacher_rot[1:L + 1]
 
         loss_pos = torch.nn.functional.mse_loss(pred_pos, tgt_pos)
         loss_rot = quat_mse_loss(pred_rot.reshape(-1, 4), tgt_rot.reshape(-1, 4))
         loss = loss_pos + args.lambda_rot * loss_rot
 
         if teacher_local_rot is not None:
-            pred_local_rot = torch.stack([model.local_rotation(h_by_t[i]) for i in frame_indices], dim=0)
-            tgt_local_rot = teacher_local_rot[idx_t]
+            pred_local_rot = torch.stack(pred_lrot_list, dim=0)
+            tgt_local_rot = teacher_local_rot[1:L + 1]
             loss_local_rot = quat_mse_loss(pred_local_rot.reshape(-1, 4), tgt_local_rot.reshape(-1, 4))
             loss = loss + args.lambda_local_rot * loss_local_rot
         else:
@@ -163,7 +183,7 @@ def main():
         opt.step()
 
         if step % 20 == 0:
-            pbar.set_postfix({"loss": f"{loss.item():.6f}", "pos": f"{loss_pos.item():.6f}",
+            pbar.set_postfix({"L": L, "loss": f"{loss.item():.6f}", "pos": f"{loss_pos.item():.6f}",
                                "rot": f"{loss_rot.item():.6f}", "lrot": f"{loss_local_rot.item():.6f}",
                                "lr": f"{lr:.2e}"})
 
