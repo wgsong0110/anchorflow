@@ -59,6 +59,10 @@ def main():
     ap.add_argument("--lr_final_ratio", type=float, default=0.05)
     ap.add_argument("--lambda_rot", type=float, default=0.1)
     ap.add_argument("--lambda_local_rot", type=float, default=0.1)
+    ap.add_argument("--lambda_anchor", type=float, default=1.0,
+                     help="weight on the anchor-space distillation loss (pos+rot+local_rot vs the "
+                          "SC-GS teacher trajectory). Set to 0 with --photo_model_path for a "
+                          "photometric-loss-ONLY run (no anchor-trajectory supervision at all).")
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--mp_steps", type=int, default=6)
     ap.add_argument("--ssm_dim", type=int, default=128)
@@ -254,15 +258,17 @@ def main():
 
         loss_pos = torch.nn.functional.mse_loss(pred_pos, tgt_pos)
         loss_rot = quat_mse_loss(pred_rot.reshape(-1, 4), tgt_rot.reshape(-1, 4))
-        loss = loss_pos + args.lambda_rot * loss_rot
+        anchor_loss = loss_pos + args.lambda_rot * loss_rot
 
         if teacher_local_rot is not None:
             pred_local_rot = torch.stack(pred_lrot_list, dim=0)
             tgt_local_rot = teacher_local_rot[idx_t]
             loss_local_rot = quat_mse_loss(pred_local_rot.reshape(-1, 4), tgt_local_rot.reshape(-1, 4))
-            loss = loss + args.lambda_local_rot * loss_local_rot
+            anchor_loss = anchor_loss + args.lambda_local_rot * loss_local_rot
         else:
             loss_local_rot = torch.zeros((), device=dev)
+
+        loss = args.lambda_anchor * anchor_loss
 
         if photo_enabled:
             n_sample = min(args.photo_views_per_step, len(frame_indices))
