@@ -191,7 +191,12 @@ def main():
         bg_color = [1, 1, 1] if photo_dataset.white_background else [0, 0, 0]
         photo_bg = torch.tensor(bg_color, dtype=torch.float32, device=dev)
         photo_views = photo_scene.getTrainCameras()
-        assert len(photo_views) == T, (len(photo_views), T, "extraction and SC-GS train-camera counts must match 1:1")
+        # readNerfSyntheticInfo appends test cams after the real train cams when
+        # cfg_args has eval=False (true for our jumpingjacks checkpoint) -- so
+        # getTrainCameras() can be longer than T (200 real + 20 test = 220), but
+        # the first T entries are still the real train frames in original order,
+        # matching our extraction's frame indices 1:1. Only require >=, not ==.
+        assert len(photo_views) >= T, (len(photo_views), T, "SC-GS must have at least as many train cameras as our extraction's T")
         print(f"[photo] enabled: {len(photo_views)} train views from {args.photo_model_path}, "
               f"lambda={args.lambda_photo} views_per_step={args.photo_views_per_step}")
 
