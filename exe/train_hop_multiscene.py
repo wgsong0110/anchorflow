@@ -217,7 +217,7 @@ def main():
                     "opt": opt.state_dict(), "args": vars(args), "commit": commit}
             torch.save(ckpt, os.path.join(args.out, "ckpt_last.pt"))
             torch.save(ckpt, os.path.join(args.out, f"ckpt_{step:06d}.pt"))
-            ema_str = " ".join(f"{k}={v:.6f}" for k, v in ema_loss.items())
+            ema_str = " ".join(f"{k}={v:.6f}" if v is not None else f"{k}=n/a" for k, v in ema_loss.items())
             print(f"\n[step {step}] saved -- ema_loss: {ema_str}", flush=True)
 
     print("[train] done.")
