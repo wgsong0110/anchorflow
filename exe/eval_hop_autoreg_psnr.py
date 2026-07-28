@@ -31,6 +31,7 @@ ap.add_argument("--iteration", type=int, default=-1)
 ap.add_argument("--traj", required=True, help="*_anchor_traj*.pt used to train the HopDynamics model")
 ap.add_argument("--hop_ckpt", required=True, help="HopDynamics ckpt_*.pt from train_hop_autoreg_anchortraj.py")
 ap.add_argument("--split", default="test", choices=["train", "test"])
+ap.add_argument("--save_video", default=None, help="if set, path to write a render|gt side-by-side mp4")
 args = ap.parse_args()
 
 _lib = "/workspace/anchorflow/lib"
@@ -135,8 +136,10 @@ class HopNodeDeform:
 deform.deform.node_deform = HopNodeDeform()
 
 # ---- render + measure ----
+views_sorted = sorted(views, key=lambda v: float(v.fid))
 psnr_list, ssim_list = [], []
-for view in views:
+frames = []
+for view in views_sorted:
     if dataset.load2gpu_on_the_fly:
         view.load2device()
     fid = view.fid
@@ -151,7 +154,16 @@ for view in views:
     gt_image = torch.clamp(view.original_image.to(dev), 0.0, 1.0)
     psnr_list.append(psnr_fn(image[None], gt_image[None]).mean())
     ssim_list.append(ssim_fn(image[None], gt_image[None], data_range=1.0).mean())
+    if args.save_video:
+        side_by_side = torch.cat([image, gt_image[:3]], dim=2)  # concat along width
+        frames.append((side_by_side.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8"))
 
 psnr_mean = torch.stack(psnr_list).mean().item()
 ssim_mean = torch.stack(ssim_list).mean().item()
 print(f"[eval] split={args.split} n_views={len(views)} PSNR={psnr_mean:.4f} SSIM={ssim_mean:.4f}")
+
+if args.save_video:
+    import imageio
+    os.makedirs(os.path.dirname(args.save_video) or ".", exist_ok=True)
+    imageio.mimwrite(args.save_video, frames, fps=10, quality=8)
+    print(f"[eval] wrote {len(frames)} frames (render|gt) -> {args.save_video}")
