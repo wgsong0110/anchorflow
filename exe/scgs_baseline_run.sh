@@ -38,8 +38,12 @@ cd "$SCGS_ROOT"
 # and exits 0 after ~9s having only imported its dependencies. The real
 # entry point -- the one with the argparse, the training loop, node
 # bootstrapping, everything -- is train_gui.py. Use --gui is NOT required;
-# it runs fine in terminal-only mode without it (its dearpygui import is
-# already guarded with try/except ImportError in this repo).
+# it runs fine in terminal-only mode without it. Note: its
+# `import dearpygui.dearpygui as dpg` at module top is NOT guarded (an
+# earlier version of this comment claimed otherwise) -- dearpygui must be
+# installed even when --gui is never passed, or the import crashes before
+# argparse runs. It's in the Dockerfile now; if running on an older image,
+# `pip install dearpygui` first.
 ENTRY="train_gui.py"
 
 # ── Lesson 3: node-bootstrap "reshape 0 elements" crash ────────────────────
