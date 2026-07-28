@@ -256,7 +256,17 @@ def main():
     ap.add_argument("--ssm_dim",   type=int, default=128)
     ap.add_argument("--e_dim",     type=int, default=8)
     ap.add_argument("--z_dim",     type=int, default=8)
-    ap.add_argument("--lr_dyn",    type=float, default=3e-4,  help="SSM+AnchorSet lr")
+    ap.add_argument("--lr_dyn",    type=float, default=3e-4,  help="SSM+AnchorSet lr (initial)")
+    ap.add_argument("--lr_dyn_final_ratio", type=float, default=0.01,
+                    help="dyn_opt lr decays exponentially from --lr_dyn to "
+                         "--lr_dyn * this ratio over lr_dyn_decay_steps -- was "
+                         "flat for the whole run before, unlike SC-GS's own "
+                         "DeformModel (which decays position_lr_init*5 -> "
+                         "position_lr_final over deform_lr_max_steps=40_000, "
+                         "half of its own 80_000-iter default budget)")
+    ap.add_argument("--lr_dyn_decay_steps", type=int, default=None,
+                    help="defaults to --iters // 2 (matches SC-GS's own ratio "
+                         "of deform_lr_max_steps to its 80_000-iter default)")
     ap.add_argument("--dt",        type=float, default=0.05)
     ap.add_argument("--damping",   type=float, default=0.98)
     ap.add_argument("--accel_scale", type=float, default=0.01)
@@ -392,6 +402,19 @@ def main():
         dyn_params.append({"params": [ic_dir]})
         dyn_params.append({"params": list(ic_net.parameters())})
     dyn_opt = torch.optim.Adam(dyn_params, lr=args.lr_dyn)
+
+    # dyn_opt lr decay (log-linear, matching SC-GS's own get_expon_lr_func
+    # convention for its DeformModel) -- was flat at args.lr_dyn for the
+    # entire run before, unlike SC-GS's own decaying deform-network lr.
+    lr_dyn_final = args.lr_dyn * args.lr_dyn_final_ratio
+    lr_dyn_decay_steps = args.lr_dyn_decay_steps or (args.iters // 2)
+
+    def update_dyn_lr(step):
+        t = min(max(step / lr_dyn_decay_steps, 0.0), 1.0)
+        lr = math.exp(math.log(args.lr_dyn) * (1 - t) + math.log(lr_dyn_final) * t)
+        for g in dyn_opt.param_groups:
+            g["lr"] = lr
+        return lr
 
     # ── LBS binding cache ─────────────────────────────────────────────────────
     _w_cache  = [None]
@@ -602,11 +625,17 @@ def main():
     # ── SC-GS densification params (mirrors SC-GS defaults) ──────────────────
     densify_from  = 500
     densify_every = 100
-    densify_until = 15_000
+    # Was hardcoded to 15_000 despite this comment already claiming to mirror
+    # SC-GS -- SC-GS's own default (arguments/__init__.py) is 50_000. At
+    # 15_000, densify/prune froze for the last 75% of a 60k-iter run instead
+    # of the last 37.5% of SC-GS's own 80k-iter run, leaving any floaters or
+    # under-split regions formed after step 15k permanently uncorrected.
+    densify_until = 50_000
     opacity_reset_every = 3000
     max_grad      = 0.0002
     min_opacity   = 0.005
     max_screen    = 20
+    oneupSHdegree_step = 1000
 
     pipe = Pipe()
 
@@ -655,6 +684,13 @@ def main():
 
     for step in pbar:
         gaussians.update_learning_rate(step)
+        update_dyn_lr(step)
+        # SC-GS's own train_gui.py calls this every oneupSHdegree_step iters
+        # (0->3 over the run) -- was missing here entirely, so every run so
+        # far trained/rendered at SH degree 0 (DC-only, no view-dependent
+        # color) for its full duration instead of ramping to degree 3.
+        if step % oneupSHdegree_step == 0:
+            gaussians.oneupSHdegree()
 
         # ── photometric loss over the sampled frames ─────────────────────────
         total_loss = torch.tensor(0.0, device=dev)
