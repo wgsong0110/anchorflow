@@ -87,13 +87,22 @@ OPACITY_RESET=8000
 
 echo "[scgs_baseline_run] entry=$ENTRY node_num=$NODE_NUM hyper_dim=$HYPER_DIM iters=$ITERS opacity_reset=$OPACITY_RESET"
 
+# ── Lesson 7: SC-GS silently appends "_<deform_type>" to model_path ────────
+# train_gui.py: `if not args.model_path.endswith(args.deform_type):
+# args.model_path = ... + f'_{args.deform_type}'`. deform_type defaults to
+# 'node' (see Lesson 1) and is never overridden here, so the real output dir
+# is always "${MODEL_PATH}_node", not the bare $MODEL_PATH passed in below --
+# the R2 backup loop must target that actual path or it backs up nothing
+# (silently retried-and-failed every 120s: "directory not found").
+ACTUAL_MODEL_PATH="${MODEL_PATH}_node"
+
 # ── Direct-to-R2 backup, not a manual afterthought ─────────────────────────
 # Instances can be destroyed at any time -- push checkpoints/logs to R2 as
 # they're written, in the background, for the whole duration of training
 # (not just once at the end). Loud on failure (stderr), matching the
 # convention already fixed into train_sc_anchorflow.py/train_hop_*.py after
 # a checkpoint got lost this same session from relying on a manual step.
-R2_DEST="r2:storage/result/anchorflow/$(basename "$MODEL_PATH")/"
+R2_DEST="r2:storage/result/anchorflow/$(basename "$ACTUAL_MODEL_PATH")/"
 (
   while true; do
     sleep 120
