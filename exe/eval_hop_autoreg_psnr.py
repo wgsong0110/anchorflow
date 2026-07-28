@@ -54,6 +54,10 @@ ap.add_argument("--fixed_view_consecutive_n", type=int, default=0,
                       "tests whether small-dt specifically is undertrained, vs. hop-count alone). "
                       "Overrides --fixed_view_random_n and --fixed_view_stride when set.")
 ap.add_argument("--fixed_view_start", type=int, default=0)
+ap.add_argument("--multiscene_scene", default=None,
+                 help="if --hop_ckpt is a train_hop_multiscene.py checkpoint (has a 'scenes' dict "
+                      "instead of top-level 'anchors'/'init_h'), which scene's anchors/init_h to use "
+                      "alongside the shared model.")
 ap.add_argument("--use_teacher", action="store_true",
                  help="render with SC-GS's OWN trained node_deform network (no HopDynamics "
                       "monkeypatch) -- lets --fixed_view_video show the teacher's own "
@@ -118,15 +122,20 @@ ckpt = torch.load(args.hop_ckpt, map_location=dev)
 hargs = ckpt["args"]
 anchors = AnchorSet.from_trajectory(canonical, latent_dim=hargs["latent_dim"], e_dim=hargs["e_dim"],
                                      K=hargs["anchor_k"]).to(dev)
-anchors.load_state_dict(ckpt["anchors"])
+if args.multiscene_scene:
+    scene_sd = ckpt["scenes"][args.multiscene_scene]
+    anchors.load_state_dict(scene_sd["anchors"])
+    init_h = scene_sd["init_h"].to(dev)
+else:
+    anchors.load_state_dict(ckpt["anchors"])
+    init_h = ckpt["init_h"].to(dev)
 graph_cfg = {"graph": "knn", "k": hargs["k_graph"]}
 edge_index = build_graph(anchors.canonical.detach(), graph_cfg)
 model = HopDynamics(hidden=hargs["hidden"], mp_steps=hargs["mp_steps"], ssm_dim=hargs["ssm_dim"],
                      e_dim=hargs["e_dim"], n_time_freqs=hargs["n_time_freqs"]).to(dev)
 model.load_state_dict(ckpt["model"])
 model.eval()
-init_h = ckpt["init_h"].to(dev)
-print(f"[eval] hop ckpt step={ckpt['step']} commit={ckpt.get('commit')}")
+print(f"[eval] hop ckpt step={ckpt['step']} commit={ckpt.get('commit')} scene={args.multiscene_scene}")
 
 # ---- one rollout covering every fid we'll be asked to render ----
 views = scene.getTrainCameras() if args.split == "train" else scene.getTestCameras()
