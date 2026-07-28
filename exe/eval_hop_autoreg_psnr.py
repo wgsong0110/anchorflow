@@ -37,6 +37,10 @@ ap.add_argument("--fixed_view_video", default=None,
                       "(camera pose held fixed, time varies over every frame in --traj) instead of "
                       "the per-view test/train split, which changes camera every frame")
 ap.add_argument("--fixed_view_idx", type=int, default=0, help="which train-camera pose to hold fixed")
+ap.add_argument("--fixed_view_stride", type=int, default=1,
+                 help="subsample the trajectory by this stride before rendering (fewer, bigger hops -- "
+                      "e.g. stride=5 over T=200 frames gives ~40 hops, matching typical "
+                      "--frames_per_step training chain length, instead of 199 consecutive hops)")
 args = ap.parse_args()
 
 _lib = "/workspace/anchorflow/lib"
@@ -181,17 +185,22 @@ if args.fixed_view_video:
     # different viewpoints AND times). This is the equivalent of SC-GS's own
     # render.py interpolate_time(): fix the camera, sweep only time.
     T = len(times_f)
-    frame_indices = list(range(1, T))
+    render_indices = list(range(0, T, args.fixed_view_stride))
+    if render_indices[-1] != T - 1:
+        render_indices.append(T - 1)
+    frame_indices = [i for i in render_indices if i != 0]
     p_full, rot_full, h_full = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
                                             times=frame_indices, dt_base=dt_base, grad=False, h0=init_h)
     p_full[0], rot_full[0], h_full[0] = anchors.canonical, torch.zeros(M, 4, device=dev), init_h
+    print(f"[eval] fixed_view_video: {len(render_indices)} rendered frames via {len(frame_indices)} hops "
+          f"(stride={args.fixed_view_stride})")
 
     fixed_view = scene.getTrainCameras()[args.fixed_view_idx]
     if dataset.load2gpu_on_the_fly:
         fixed_view.load2device()
 
     frames2 = []
-    for i in range(T):
+    for i in render_indices:
         pos, rot, h = p_full[i], rot_full[i], h_full[i]
         lrot = model.local_rotation(h)
 
@@ -213,5 +222,6 @@ if args.fixed_view_video:
         frames2.append((image.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8"))
 
     os.makedirs(os.path.dirname(args.fixed_view_video) or ".", exist_ok=True)
-    imageio.mimwrite(args.fixed_view_video, frames2, fps=20, quality=8)
-    print(f"[eval] wrote {len(frames2)} frames (fixed camera idx={args.fixed_view_idx}) -> {args.fixed_view_video}")
+    fps = max(2, round(20 / args.fixed_view_stride))
+    imageio.mimwrite(args.fixed_view_video, frames2, fps=fps, quality=8)
+    print(f"[eval] wrote {len(frames2)} frames (fixed camera idx={args.fixed_view_idx}, fps={fps}) -> {args.fixed_view_video}")
