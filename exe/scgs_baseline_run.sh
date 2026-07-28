@@ -46,18 +46,40 @@ cd "$SCGS_ROOT"
 # `pip install dearpygui` first.
 ENTRY="train_gui.py"
 
-# ── Lesson 3: node-bootstrap "reshape 0 elements" crash ────────────────────
-# Traceback: train_gui.py train_node_rendering_step(), "cannot reshape tensor
-# of 0 elements into shape [0, -1]". Root cause: the node-bootstrap Gaussians
-# are uniform-scale (StandardGaussianModel), and SC-GS's world-space
-# big-point prune (get_scaling.max > 0.1*cameras_extent) activates once
-# iteration > opacity_reset_interval. If cameras_extent is small (true for
-# ficus_ds_wind, unlike stock D-NeRF's radius-~4 cameras), the uniform node
-# scale outgrows 0.1*extent before the ~7500-iter node-sampling bootstrap
-# finishes downsampling to node_num control nodes -> every bootstrap
-# Gaussian gets pruned -> N=0 -> the reshape crash. Fix: push the first
-# opacity reset past the bootstrap window.
-OPACITY_RESET=8000
+# ── Lesson 3 (superseded, see Lesson 9) ─────────────────────────────────────
+# Original note: node-bootstrap "reshape 0 elements" crash -- SC-GS's
+# world-space big-point prune (get_scaling.max > 0.1*cameras_extent)
+# activates once iteration > opacity_reset_interval, and on this dataset's
+# small cameras_extent that pruned every bootstrap Gaussian before the node-
+# sampling bootstrap finished -> N=0 -> reshape crash. This was worked
+# around by delaying OPACITY_RESET past the bootstrap window (8000). That
+# delay is what caused the Lesson 9 collapse below, and is no longer needed:
+# the actual crash was in the idx=None handling (patched in scgs_af_setup.sh,
+# "SC-GS idx=None bug patch"), not the pruning timing itself -- fixing that
+# at the source removed the need to delay the reset at all.
+#
+# ── Lesson 9: delayed opacity_reset caused a silent, unrecoverable "whole
+# scene invisible" collapse ─────────────────────────────────────────────────
+# With OPACITY_RESET=8000 (Lesson 3's workaround), reset_opacity() fires once
+# at iteration 8000 -- AFTER ~5000 iterations of real training had already
+# grown a healthy opacity distribution (39% of points opacity>0.5 at iter
+# 5000). Force-resetting ALL points to near-zero opacity simultaneously at
+# that late a stage collapsed the entire scene to invisible (sigmoid(opacity)
+# mean 0.0099, 0%% of points >0.5 by iter 10000) and it never recovered by
+# iter 25000+ -- confirmed by rendering iteration_5000 and iteration_10000
+# checkpoints independently via render.py: pixel-identical (all-white)
+# output despite genuinely different underlying point clouds, and by eval
+# PSNR/SSIM/LPIPS being bit-identical at every 1000-iter checkpoint from
+# 5000 onward (both symptoms of "renders pure background regardless of
+# input" -- not an eval caching bug, an actual dead model). Once every point
+# is simultaneously near-invisible, there's no gradient signal left to grow
+# any of them back (a point that renders as ~0 opacity contributes ~0
+# gradient). Fix: disable the periodic opacity reset entirely for this
+# scene/config -- effectively never (larger than $ITERS, so the modulo never
+# hits 0). Vanilla 3DGS's opacity-reset is a floater-cleanup heuristic, not
+# something this scene structurally needs, and skipping it avoids the
+# collapse.
+OPACITY_RESET=999999
 
 # ── Lesson 4: --local_frame crashes main-phase rendering on this dataset ───
 # Traceback: RuntimeError: Sizes of tensors must match except in dimension 1.
