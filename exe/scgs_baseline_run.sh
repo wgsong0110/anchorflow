@@ -106,13 +106,13 @@ R2_DEST="r2:storage/result/anchorflow/$(basename "$ACTUAL_MODEL_PATH")/"
 (
   while true; do
     sleep 120
-    if ! rclone copy "$MODEL_PATH" "$R2_DEST" --exclude "*.tmp" 2>/tmp/scgs_r2_backup.err; then
+    if ! rclone copy "$ACTUAL_MODEL_PATH" "$R2_DEST" --exclude "*.tmp" 2>/tmp/scgs_r2_backup.err; then
       echo "[scgs_baseline_run] WARNING: R2 backup failed: $(cat /tmp/scgs_r2_backup.err)" >&2
     fi
   done
 ) &
 BACKUP_PID=$!
-trap 'kill $BACKUP_PID 2>/dev/null || true; rclone copy "$MODEL_PATH" "$R2_DEST" 2>&1 || true' EXIT
+trap 'kill $BACKUP_PID 2>/dev/null || true; rclone copy "$ACTUAL_MODEL_PATH" "$R2_DEST" 2>&1 || true' EXIT
 
 python "$ENTRY" \
   --source_path "$WS" \
