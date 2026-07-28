@@ -16,6 +16,35 @@ AF="$WS/anchorflow"
 echo "[setup] SC-GS repo"
 git clone --depth 1 https://github.com/yihua7/SC-GS "$WS/SC-GS" 2>/dev/null || true
 
+echo "[setup] SC-GS idx=None bug patch (samp_hyper node-downsample step)"
+# train_gui.py's samp_hyper strategy (the default deform_downsamp_strategy)
+# calls deform.deform.init(...) at iteration_node_sampling and uses its
+# return value as a fancy index: tensor[dynamic_mask][idx]. But init()
+# returns idx=None whenever it takes its "keep_all" branch (node_num >
+# init_pcl.shape[0], i.e. fewer Gaussians survived pruning by that point
+# than the configured node_num -- hit on ficus_ds_wind, 2026-07-28: only 490
+# points survived vs node_num=512). Indexing with a bare None is NOT a
+# no-op in torch -- it inserts a new axis -- so features_dc/features_rest
+# end up wrong-rank and get_features() crashes with a dim-0 mismatch a few
+# lines later. Patch: treat idx=None as slice(None) (the actual keep-all
+# no-op). Idempotent (skips if already patched, e.g. re-run on same instance).
+python3 - <<'PYEOF'
+path = "/workspace/SC-GS/train_gui.py"
+with open(path) as f:
+    src = f.read()
+needle = "idx = self.deform.deform.init(init_pcl=original_gaussians.get_xyz[dynamic_mask], hyper_pcl=hyper_pcl[dynamic_mask], force_init=True, opt=self.opt, reset_bbox=False, feature=self.gaussians.feature)"
+if "if idx is None:" in src:
+    print("  already patched, skipping")
+elif src.count(needle) == 1:
+    replacement = needle + "\n                    if idx is None:\n                        idx = slice(None)  # keep_all path: None is not a no-op index in torch"
+    src = src.replace(needle, replacement)
+    with open(path, "w") as f:
+        f.write(src)
+    print("  patched OK")
+else:
+    print(f"  WARNING: expected 1 match for the idx=None patch target, found {src.count(needle)} -- SC-GS source may have changed upstream, patch NOT applied")
+PYEOF
+
 echo "[setup] anchorflow repo (self-heal if the instance wasn't pre-cloned)"
 if [ ! -d "$AF/.git" ]; then
     git clone --depth 1 https://github.com/wgsong0110/anchorflow "$AF"
