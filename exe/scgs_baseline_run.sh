@@ -83,6 +83,24 @@ OPACITY_RESET=8000
 
 echo "[scgs_baseline_run] entry=$ENTRY node_num=$NODE_NUM hyper_dim=$HYPER_DIM iters=$ITERS opacity_reset=$OPACITY_RESET"
 
+# ── Direct-to-R2 backup, not a manual afterthought ─────────────────────────
+# Instances can be destroyed at any time -- push checkpoints/logs to R2 as
+# they're written, in the background, for the whole duration of training
+# (not just once at the end). Loud on failure (stderr), matching the
+# convention already fixed into train_sc_anchorflow.py/train_hop_*.py after
+# a checkpoint got lost this same session from relying on a manual step.
+R2_DEST="r2:storage/result/anchorflow/$(basename "$MODEL_PATH")/"
+(
+  while true; do
+    sleep 120
+    if ! rclone copy "$MODEL_PATH" "$R2_DEST" --exclude "*.tmp" 2>/tmp/scgs_r2_backup.err; then
+      echo "[scgs_baseline_run] WARNING: R2 backup failed: $(cat /tmp/scgs_r2_backup.err)" >&2
+    fi
+  done
+) &
+BACKUP_PID=$!
+trap 'kill $BACKUP_PID 2>/dev/null || true; rclone copy "$MODEL_PATH" "$R2_DEST" 2>&1 || true' EXIT
+
 python "$ENTRY" \
   --source_path "$WS" \
   --model_path "$MODEL_PATH" \
