@@ -102,11 +102,19 @@ ACTUAL_MODEL_PATH="${MODEL_PATH}_node"
 # (not just once at the end). Loud on failure (stderr), matching the
 # convention already fixed into train_sc_anchorflow.py/train_hop_*.py after
 # a checkpoint got lost this same session from relying on a manual step.
+# Lesson 8: exclude tfevents from the periodic copy -- rclone refuses to
+# copy a source file mid-transfer if its size changes (a real safety check,
+# not a bug in rclone), and the tensorboard SummaryWriter appends to
+# events.out.tfevents.* continuously while training runs, so every 120s
+# cycle "fails" on it forever (loud WARNING spam, but harmless -- the actual
+# checkpoints/point clouds aren't being written to during the copy window
+# and always succeed). Exclude it from the periodic loop; the final EXIT-trap
+# copy still captures whatever tfevents state exists at shutdown.
 R2_DEST="r2:storage/result/anchorflow/$(basename "$ACTUAL_MODEL_PATH")/"
 (
   while true; do
     sleep 120
-    if ! rclone copy "$ACTUAL_MODEL_PATH" "$R2_DEST" --exclude "*.tmp" 2>/tmp/scgs_r2_backup.err; then
+    if ! rclone copy "$ACTUAL_MODEL_PATH" "$R2_DEST" --exclude "*.tmp" --exclude "events.out.tfevents.*" 2>/tmp/scgs_r2_backup.err; then
       echo "[scgs_baseline_run] WARNING: R2 backup failed: $(cat /tmp/scgs_r2_backup.err)" >&2
     fi
   done

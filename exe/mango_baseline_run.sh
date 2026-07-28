@@ -77,11 +77,18 @@ echo "[mango_baseline_run] node_num=$NODE_NUM hyper_dim=$HYPER_DIM iters=$ITERS 
 # deform_type defaults to 'mango_node', auto-appended to model_path by the
 # repo itself (arguments/__init__video.py ModelParams.extract()).
 ACTUAL_MODEL_PATH="${MODEL_PATH}_mango_node"
+# events.out.tfevents.* is excluded from the periodic copy: rclone refuses
+# to copy a file mid-transfer if its size changes while reading it (a real
+# safety check), and tensorboard appends to this file continuously during
+# training, so it would "fail" every single 120s cycle forever otherwise
+# (harmless noise -- checkpoints/point clouds aren't touched during the copy
+# window and always succeed; hit and diagnosed on the SC-GS baseline run,
+# 2026-07-28). The final EXIT-trap copy still captures its end-of-run state.
 R2_DEST="r2:storage/result/anchorflow/$(basename "$ACTUAL_MODEL_PATH")/"
 (
   while true; do
     sleep 120
-    if ! rclone copy "$ACTUAL_MODEL_PATH" "$R2_DEST" --exclude "*.tmp" 2>/tmp/mango_r2_backup.err; then
+    if ! rclone copy "$ACTUAL_MODEL_PATH" "$R2_DEST" --exclude "*.tmp" --exclude "events.out.tfevents.*" 2>/tmp/mango_r2_backup.err; then
       echo "[mango_baseline_run] WARNING: R2 backup failed: $(cat /tmp/mango_r2_backup.err)" >&2
     fi
   done
