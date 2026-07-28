@@ -58,6 +58,7 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--lr_final_ratio", type=float, default=0.05)
     ap.add_argument("--lambda_rot", type=float, default=0.1)
+    ap.add_argument("--lambda_local_rot", type=float, default=0.1)
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--mp_steps", type=int, default=6)
     ap.add_argument("--ssm_dim", type=int, default=128)
@@ -88,11 +89,14 @@ def main():
     canonical = data["canonical_nodes"].to(dev).float()          # [M,3]
     teacher_pos = data["anchor_pos"].to(dev).float()              # [T,M,3]
     teacher_rot = data["anchor_rot"].to(dev).float()              # [T,M,4]
+    teacher_local_rot = data.get("anchor_local_rot")              # [T,M,4] or None (older .pt files)
+    if teacher_local_rot is not None:
+        teacher_local_rot = teacher_local_rot.to(dev).float()
     times_f = data["times"]                                       # list[float], len T, times_f[0]==0.0
     T, M = teacher_pos.shape[0], teacher_pos.shape[1]
     assert canonical.shape[0] == M, (canonical.shape, teacher_pos.shape)
     dt_base = times_f[1] - times_f[0]
-    print(f"[data] T={T} M={M} dt_base={dt_base:.6f}")
+    print(f"[data] T={T} M={M} dt_base={dt_base:.6f} has_local_rot={teacher_local_rot is not None}")
 
     anchors = AnchorSet.from_trajectory(canonical, latent_dim=args.latent_dim, e_dim=args.e_dim, K=args.anchor_k).to(dev)
     graph_cfg = {"graph": "knn", "k": args.k_graph}
@@ -133,8 +137,8 @@ def main():
         else:
             frame_indices = all_frames
 
-        p_by_t, rot_by_t, _ = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
-                                           times=frame_indices, dt_base=dt_base, grad=True, h0=init_h)
+        p_by_t, rot_by_t, h_by_t = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
+                                                times=frame_indices, dt_base=dt_base, grad=True, h0=init_h)
 
         pred_pos = torch.stack([p_by_t[i] for i in frame_indices], dim=0)   # [len(frame_indices),M,3]
         pred_rot = torch.stack([rot_by_t[i] for i in frame_indices], dim=0)
@@ -146,13 +150,22 @@ def main():
         loss_rot = quat_mse_loss(pred_rot.reshape(-1, 4), tgt_rot.reshape(-1, 4))
         loss = loss_pos + args.lambda_rot * loss_rot
 
+        if teacher_local_rot is not None:
+            pred_local_rot = torch.stack([model.local_rotation(h_by_t[i]) for i in frame_indices], dim=0)
+            tgt_local_rot = teacher_local_rot[idx_t]
+            loss_local_rot = quat_mse_loss(pred_local_rot.reshape(-1, 4), tgt_local_rot.reshape(-1, 4))
+            loss = loss + args.lambda_local_rot * loss_local_rot
+        else:
+            loss_local_rot = torch.zeros((), device=dev)
+
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
 
         if step % 20 == 0:
             pbar.set_postfix({"loss": f"{loss.item():.6f}", "pos": f"{loss_pos.item():.6f}",
-                               "rot": f"{loss_rot.item():.6f}", "lr": f"{lr:.2e}"})
+                               "rot": f"{loss_rot.item():.6f}", "lrot": f"{loss_local_rot.item():.6f}",
+                               "lr": f"{lr:.2e}"})
 
         if step % args.ckpt_every == 0 or step == args.iters - 1:
             ckpt = {"step": step, "model": model.state_dict(), "init_h": init_h.detach().cpu(),
@@ -160,7 +173,8 @@ def main():
                     "args": vars(args), "commit": commit}
             torch.save(ckpt, os.path.join(args.out, "ckpt_last.pt"))
             torch.save(ckpt, os.path.join(args.out, f"ckpt_{step:06d}.pt"))
-            print(f"\n[step {step}] saved (pos={loss_pos.item():.6f} rot={loss_rot.item():.6f})")
+            print(f"\n[step {step}] saved (pos={loss_pos.item():.6f} rot={loss_rot.item():.6f} "
+                  f"local_rot={loss_local_rot.item():.6f})")
 
     print("[train] done.")
 

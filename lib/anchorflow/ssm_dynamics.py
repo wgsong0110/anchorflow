@@ -252,6 +252,26 @@ class HopDynamics(nn.Module):
         self.rot_decoder = mlp([ssm_dim, hidden, 4], layernorm=False)
         last2 = [m for m in self.rot_decoder.modules() if isinstance(m, nn.Linear)][-1]
         nn.init.zeros_(last2.weight); nn.init.zeros_(last2.bias)
+        # local_rotation: SC-GS's --local_frame mechanism (utils/time_utils.py
+        # DeformNetworkNode.forward()) uses a THIRD per-node quaternion head,
+        # distinct from d_rotation, to rigidly rotate each Gaussian's offset
+        # from its nearest anchor before translating it (Ax = local_rot @
+        # (x - node) + node + d_xyz, then LBS-blended over K neighbors) --
+        # this is what actually lets non-anchor-coincident points (i.e. most
+        # Gaussians) inherit a sensible rigid transform, not just d_xyz/d_rot
+        # evaluated at the anchor itself. Purely additive: hop()/hop_batch()/
+        # hop_rollout() are unchanged (other scripts unpack their exact
+        # 3-tuple returns) -- callers that want local_rotation call
+        # .local_rotation(h) themselves using the h_by_t hop_rollout already
+        # returns (see train_hop_autoreg_anchortraj.py).
+        self.local_rot_decoder = mlp([ssm_dim, hidden, 4], layernorm=False)
+        last3 = [m for m in self.local_rot_decoder.modules() if isinstance(m, nn.Linear)][-1]
+        nn.init.zeros_(last3.weight); nn.init.zeros_(last3.bias)
+
+    def local_rotation(self, h):
+        """Per-anchor local-frame quaternion from a hop's resulting hidden
+        state h [*, ssm_dim] -> [*, 4]. Zero-initialized like rot_decoder."""
+        return self.local_rot_decoder(h)
 
     def spatial_embed(self, e, edge_index, canonical):
         node = self.node_enc(e)
