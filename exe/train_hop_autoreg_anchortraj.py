@@ -91,6 +91,16 @@ def main():
                           "supervised via the loss at every visited frame regardless -- this only "
                           "cuts how far a later frame's loss can backprop into earlier hops' "
                           "weights). 0 disables (full BPTT through the whole rollout).")
+    ap.add_argument("--photo_model_path", type=str, default=None,
+                     help="SC-GS checkpoint dir -- if set, adds a photometric L1 rendering loss each "
+                          "step using SC-GS's own (frozen) Gaussians/renderer as a differentiable "
+                          "decoder of our predicted anchor pos/rot/local_rotation, supervised against "
+                          "the REAL GT training images (unlike the anchor-space loss, this needs the "
+                          "script run with CWD = the SC-GS repo root, same as eval_hop_autoreg_psnr.py).")
+    ap.add_argument("--photo_source_path", type=str, default=None, help="dataset dir (required with --photo_model_path)")
+    ap.add_argument("--photo_iteration", type=int, default=-1)
+    ap.add_argument("--lambda_photo", type=float, default=1.0)
+    ap.add_argument("--photo_views_per_step", type=int, default=2)
     args = ap.parse_args()
 
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=os.path.dirname(__file__),
@@ -139,7 +149,51 @@ def main():
     lr_final = args.lr * args.lr_final_ratio
     curriculum_iters = args.curriculum_iters or (args.iters // 2)
     max_len = T - 1  # full trajectory: t=1..T-1
-    import math
+    import math, random
+
+    photo_enabled = args.photo_model_path is not None
+    if photo_enabled:
+        assert args.photo_source_path, "--photo_source_path required with --photo_model_path"
+        sys.path.insert(0, os.getcwd())  # SC-GS repo root -- run this script with CWD there
+        from scene import Scene as SCGSScene, DeformModel as SCGSDeformModel
+        from gaussian_renderer import GaussianModel as SCGSGaussianModel, render as scgs_render
+        from arguments import ModelParams as SCGSModelParams, PipelineParams as SCGSPipelineParams, get_combined_args
+
+        sys.argv = [sys.argv[0], "--model_path", args.photo_model_path, "--source_path", args.photo_source_path,
+                    "--deform_type", "node"]
+        _parser = argparse.ArgumentParser()
+        _model_p = SCGSModelParams(_parser, sentinel=True)
+        _pipeline_p = SCGSPipelineParams(_parser)
+        _parser.add_argument("--iteration", default=-1, type=int)
+        _cargs = get_combined_args(_parser)
+        _cargs.source_path = args.photo_source_path
+        photo_dataset = _model_p.extract(_cargs)
+        photo_pipeline = _pipeline_p.extract(_cargs)
+
+        photo_deform = SCGSDeformModel(K=photo_dataset.K, deform_type=photo_dataset.deform_type, is_blender=photo_dataset.is_blender,
+                                        skinning=photo_dataset.skinning, hyper_dim=photo_dataset.hyper_dim, node_num=photo_dataset.node_num,
+                                        pred_opacity=photo_dataset.pred_opacity, pred_color=photo_dataset.pred_color,
+                                        use_hash=photo_dataset.use_hash, hash_time=photo_dataset.hash_time,
+                                        d_rot_as_res=photo_dataset.d_rot_as_res, local_frame=photo_dataset.local_frame,
+                                        progressive_brand_time=photo_dataset.progressive_brand_time, max_d_scale=photo_dataset.max_d_scale)
+        photo_deform.load_weights(photo_dataset.model_path, iteration=args.photo_iteration)
+        photo_deform.deform.eval()
+        for pp in photo_deform.deform.parameters():
+            pp.requires_grad_(False)
+
+        gs_fea_dim = photo_deform.deform.node_num if photo_dataset.skinning and photo_deform.name == "node" else photo_dataset.hyper_dim
+        photo_gaussians = SCGSGaussianModel(photo_dataset.sh_degree, fea_dim=gs_fea_dim, with_motion_mask=photo_dataset.gs_with_motion_mask)
+        photo_scene = SCGSScene(photo_dataset, photo_gaussians, load_iteration=args.photo_iteration, shuffle=False)
+        for attr in ["_xyz", "_features_dc", "_features_rest", "_scaling", "_rotation", "_opacity", "feature"]:
+            t_ = getattr(photo_gaussians, attr, None)
+            if t_ is not None and hasattr(t_, "requires_grad_"):
+                t_.requires_grad_(False)
+        bg_color = [1, 1, 1] if photo_dataset.white_background else [0, 0, 0]
+        photo_bg = torch.tensor(bg_color, dtype=torch.float32, device=dev)
+        photo_views = photo_scene.getTrainCameras()
+        assert len(photo_views) == T, (len(photo_views), T, "extraction and SC-GS train-camera counts must match 1:1")
+        print(f"[photo] enabled: {len(photo_views)} train views from {args.photo_model_path}, "
+              f"lambda={args.lambda_photo} views_per_step={args.photo_views_per_step}")
 
     pbar = trange(start_step, args.iters, desc="hop_autoreg")
     for step in pbar:
@@ -205,6 +259,39 @@ def main():
         else:
             loss_local_rot = torch.zeros((), device=dev)
 
+        if photo_enabled:
+            n_sample = min(args.photo_views_per_step, len(frame_indices))
+            sample_local_idxs = random.sample(range(len(frame_indices)), n_sample)
+            photo_loss_sum = torch.zeros((), device=dev)
+            for si in sample_local_idxs:
+                fi = frame_indices[si]  # dataset frame index, 1..T-1
+                pos_i, rot_i, lrot_i = pred_pos_list[si], pred_rot_list[si], pred_lrot_list[si]
+                d_xyz_i = pos_i - canonical
+
+                class _PhotoNodeDeform:
+                    def __call__(self, t, **kwargs):
+                        return {"d_xyz": d_xyz_i, "d_rotation": rot_i,
+                                "d_scaling": torch.zeros(M, 3, device=dev), "local_rotation": lrot_i,
+                                "hidden": None, "d_opacity": None, "d_color": None}
+
+                photo_deform.deform.node_deform = _PhotoNodeDeform()
+                view = photo_views[fi]
+                if photo_dataset.load2gpu_on_the_fly:
+                    view.load2device()
+                time_input = photo_deform.deform.expand_time(view.fid)
+                d_values = photo_deform.step(photo_gaussians.get_xyz.detach(), time_input, feature=photo_gaussians.feature,
+                                              motion_mask=photo_gaussians.motion_mask, is_training=False)
+                results = scgs_render(view, photo_gaussians, photo_pipeline, photo_bg, d_values["d_xyz"], d_values["d_rotation"],
+                                       d_values["d_scaling"], d_opacity=d_values["d_opacity"], d_color=d_values["d_color"],
+                                       d_rot_as_res=photo_deform.d_rot_as_res)
+                image = torch.clamp(results["render"], 0.0, 1.0)
+                gt_image = torch.clamp(view.original_image.to(dev), 0.0, 1.0)
+                photo_loss_sum = photo_loss_sum + torch.nn.functional.l1_loss(image, gt_image)
+            photo_loss = photo_loss_sum / n_sample
+            loss = loss + args.lambda_photo * photo_loss
+        else:
+            photo_loss = torch.zeros((), device=dev)
+
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
@@ -212,7 +299,7 @@ def main():
         if step % 20 == 0:
             pbar.set_postfix({"n": len(frame_indices), "loss": f"{loss.item():.6f}", "pos": f"{loss_pos.item():.6f}",
                                "rot": f"{loss_rot.item():.6f}", "lrot": f"{loss_local_rot.item():.6f}",
-                               "lr": f"{lr:.2e}"})
+                               "photo": f"{photo_loss.item():.6f}", "lr": f"{lr:.2e}"}, refresh=False)
 
         if step % args.ckpt_every == 0 or step == args.iters - 1:
             ckpt = {"step": step, "model": model.state_dict(), "init_h": init_h.detach().cpu(),
@@ -221,7 +308,7 @@ def main():
             torch.save(ckpt, os.path.join(args.out, "ckpt_last.pt"))
             torch.save(ckpt, os.path.join(args.out, f"ckpt_{step:06d}.pt"))
             print(f"\n[step {step}] saved (pos={loss_pos.item():.6f} rot={loss_rot.item():.6f} "
-                  f"local_rot={loss_local_rot.item():.6f})")
+                  f"local_rot={loss_local_rot.item():.6f} photo={photo_loss.item():.6f})", flush=True)
 
     print("[train] done.")
 
