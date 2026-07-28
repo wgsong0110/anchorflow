@@ -47,6 +47,13 @@ ap.add_argument("--fixed_view_random_n", type=int, default=0,
                       "frames_per_step))` exactly) instead of the uniform --fixed_view_stride grid. "
                       "Overrides --fixed_view_stride when set.")
 ap.add_argument("--seed", type=int, default=0)
+ap.add_argument("--fixed_view_consecutive_n", type=int, default=0,
+                 help="if >0, hop through N CONSECUTIVE frame indices starting at "
+                      "--fixed_view_start (dt=dt_base every hop, smallest possible dt, same "
+                      "hop count as --fixed_view_random_n but no large-dt hops mixed in -- "
+                      "tests whether small-dt specifically is undertrained, vs. hop-count alone). "
+                      "Overrides --fixed_view_random_n and --fixed_view_stride when set.")
+ap.add_argument("--fixed_view_start", type=int, default=0)
 args = ap.parse_args()
 
 _lib = "/workspace/anchorflow/lib"
@@ -191,7 +198,14 @@ if args.fixed_view_video:
     # different viewpoints AND times). This is the equivalent of SC-GS's own
     # render.py interpolate_time(): fix the camera, sweep only time.
     T = len(times_f)
-    if args.fixed_view_random_n > 0:
+    if args.fixed_view_consecutive_n > 0:
+        start, n = args.fixed_view_start, args.fixed_view_consecutive_n
+        end = min(start + n, T)
+        # hop consecutively from t=0 through `end-1` so the hidden state is built up
+        # correctly if start > 0; render only the requested [start, end) window.
+        frame_indices = list(range(1, end))
+        render_indices = list(range(start, end))
+    elif args.fixed_view_random_n > 0:
         import random
         random.seed(args.seed)
         all_frames = list(range(1, T))
@@ -206,7 +220,8 @@ if args.fixed_view_video:
                                             times=frame_indices, dt_base=dt_base, grad=False, h0=init_h)
     p_full[0], rot_full[0], h_full[0] = anchors.canonical, torch.zeros(M, 4, device=dev), init_h
     print(f"[eval] fixed_view_video: {len(render_indices)} rendered frames via {len(frame_indices)} hops "
-          f"(stride={args.fixed_view_stride}, random_n={args.fixed_view_random_n})")
+          f"(stride={args.fixed_view_stride}, random_n={args.fixed_view_random_n}, "
+          f"consecutive_n={args.fixed_view_consecutive_n}, start={args.fixed_view_start})")
 
     fixed_view = scene.getTrainCameras()[args.fixed_view_idx]
     if dataset.load2gpu_on_the_fly:
