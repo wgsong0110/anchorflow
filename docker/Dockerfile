@@ -36,11 +36,14 @@ RUN git clone https://github.com/yihua7/SC-GS /opt/scgs \
 # Python deps.
 # - lpips: required by train_seqgen_mds.py (perceptual loss).
 # - plyfile: required by SC-GS GaussianModel.load_ply().
+# - pytorch_msssim: required by SC-GS's own train.py (train_gui.py's entry
+#   point imports training_report from it) -- missing here crashed
+#   scgs_baseline_run.sh at import time before this fix.
 # - SVD needs diffusers>=0.24 (DreamPhysics's requirements pin <0.20 for its
 #   ModelScope path — not applicable to the SVD path we use).
 RUN pip install --no-cache-dir \
         "numpy<2" scipy tqdm packaging einops jaxtyping typeguard \
-        omegaconf==2.3.0 plyfile==1.0.3 lpips piq \
+        omegaconf==2.3.0 plyfile==1.0.3 lpips piq pytorch_msssim \
         opencv-python-headless imageio "imageio[ffmpeg]" \
         diffusers==0.29.2 transformers==4.41.2 accelerate==0.30.1 \
         safetensors huggingface_hub tensorboard rembg onnxruntime
