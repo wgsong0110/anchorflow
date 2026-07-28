@@ -32,6 +32,11 @@ ap.add_argument("--traj", required=True, help="*_anchor_traj*.pt used to train t
 ap.add_argument("--hop_ckpt", required=True, help="HopDynamics ckpt_*.pt from train_hop_autoreg_anchortraj.py")
 ap.add_argument("--split", default="test", choices=["train", "test"])
 ap.add_argument("--save_video", default=None, help="if set, path to write a render|gt side-by-side mp4")
+ap.add_argument("--fixed_view_video", default=None,
+                 help="if set, path to write a SINGLE-camera video that sweeps the full trajectory "
+                      "(camera pose held fixed, time varies over every frame in --traj) instead of "
+                      "the per-view test/train split, which changes camera every frame")
+ap.add_argument("--fixed_view_idx", type=int, default=0, help="which train-camera pose to hold fixed")
 args = ap.parse_args()
 
 _lib = "/workspace/anchorflow/lib"
@@ -167,3 +172,46 @@ if args.save_video:
     os.makedirs(os.path.dirname(args.save_video) or ".", exist_ok=True)
     imageio.mimwrite(args.save_video, frames, fps=10, quality=8)
     print(f"[eval] wrote {len(frames)} frames (render|gt) -> {args.save_video}")
+
+if args.fixed_view_video:
+    import imageio
+    # Full trajectory rollout at every original extraction frame index, all
+    # under ONE fixed camera pose -- unlike the per-split loop above (which
+    # renders each view's own camera, so consecutive frames jump between
+    # different viewpoints AND times). This is the equivalent of SC-GS's own
+    # render.py interpolate_time(): fix the camera, sweep only time.
+    T = len(times_f)
+    frame_indices = list(range(1, T))
+    p_full, rot_full, h_full = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
+                                            times=frame_indices, dt_base=dt_base, grad=False, h0=init_h)
+    p_full[0], rot_full[0], h_full[0] = anchors.canonical, torch.zeros(M, 4, device=dev), init_h
+
+    fixed_view = scene.getTrainCameras()[args.fixed_view_idx]
+    if dataset.load2gpu_on_the_fly:
+        fixed_view.load2device()
+
+    frames2 = []
+    for i in range(T):
+        pos, rot, h = p_full[i], rot_full[i], h_full[i]
+        lrot = model.local_rotation(h)
+
+        class _Fixed:
+            def __call__(self, t, **kwargs):
+                return {"d_xyz": pos - canonical, "d_rotation": rot,
+                        "d_scaling": torch.zeros(M, 3, device=dev), "local_rotation": lrot,
+                        "hidden": h, "d_opacity": None, "d_color": None}
+
+        deform.deform.node_deform = _Fixed()
+        fid = torch.tensor([times_f[i]], device=dev)
+        time_input = deform.deform.expand_time(fid)
+        d_values = deform.step(gaussians.get_xyz.detach(), time_input, feature=gaussians.feature,
+                                motion_mask=gaussians.motion_mask, is_training=False)
+        results = render(fixed_view, gaussians, pipeline, background, d_values["d_xyz"], d_values["d_rotation"],
+                          d_values["d_scaling"], d_opacity=d_values["d_opacity"], d_color=d_values["d_color"],
+                          d_rot_as_res=deform.d_rot_as_res)
+        image = torch.clamp(results["render"], 0.0, 1.0)
+        frames2.append((image.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8"))
+
+    os.makedirs(os.path.dirname(args.fixed_view_video) or ".", exist_ok=True)
+    imageio.mimwrite(args.fixed_view_video, frames2, fps=20, quality=8)
+    print(f"[eval] wrote {len(frames2)} frames (fixed camera idx={args.fixed_view_idx}) -> {args.fixed_view_video}")
