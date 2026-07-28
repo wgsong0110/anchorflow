@@ -107,7 +107,27 @@ cd "$MANGO_ROOT"
 # but the risk is structurally identical to the one already hit in SC-GS).
 OPACITY_RESET=15000
 
-echo "[mango_baseline_run] node_num=$NODE_NUM hyper_dim=$HYPER_DIM iters=$ITERS opacity_reset=$OPACITY_RESET"
+# ── Lesson 5: white_background triggers a SEPARATE, un-overridable opacity
+# reset tied to densify_from_iter, not opacity_reset_interval ──────────────
+# trainer.py has an extra OR-condition on both its bootstrap and main-phase
+# reset_opacity() calls: `... or (self.dataset.white_background and
+# self.iteration[_node_rendering] == self.opt.densify_from_iter)`. Since we
+# pass --white_background (required for this dataset), this fires exactly
+# once in bootstrap (at iteration_node_rendering==densify_from_iter) and
+# once in main phase (at iteration==densify_from_iter), REGARDLESS of the
+# OPACITY_RESET override above. Confirmed on a live run (2026-07-28):
+# Mango-GS's default densify_from_iter=3000 let ~3000 real main-phase
+# iterations of growth happen first, then this reset fired and collapsed the
+# entire scene to invisible permanently (test PSNR/SSIM frozen bit-identical
+# from iteration 3000 onward, byte-identical all-white renders -- the exact
+# same failure mode diagnosed on the SC-GS baseline). SC-GS's own default
+# densify_from_iter=500 (much earlier) doesn't have this problem because the
+# equivalent reset fires before there's anything substantial to lose.
+# Fix: match SC-GS's early densify_from_iter=500 so this reset fires at the
+# start (negligible risk) instead of after real training has happened.
+DENSIFY_FROM_ITER=500
+
+echo "[mango_baseline_run] node_num=$NODE_NUM hyper_dim=$HYPER_DIM iters=$ITERS opacity_reset=$OPACITY_RESET densify_from_iter=$DENSIFY_FROM_ITER"
 
 # ── Direct-to-R2 backup, not a manual afterthought ─────────────────────────
 # Same convention as scgs_baseline_run.sh -- push checkpoints/logs to R2 as
@@ -145,5 +165,6 @@ python train.py \
   --hyper_dim "$HYPER_DIM" \
   --node_num "$NODE_NUM" \
   --opacity_reset_interval "$OPACITY_RESET" \
+  --densify_from_iter "$DENSIFY_FROM_ITER" \
   --iterations "$ITERS" \
   --save_iterations 10000 20000 30000 40000 50000 "$ITERS"
