@@ -36,6 +36,44 @@ if [ ! -d "$MANGO_ROOT" ]; then
   pip install --no-cache-dir PyYAML matplotlib scikit-image
   pip install --no-cache-dir -e submodules/diff-gaussian-rasterization
   pip install --no-cache-dir -e submodules/simple-knn
+
+  # Lesson 1b: is_blender noise-tensor rank bug -- crashes on first bootstrap
+  # step with "IndexError: tuple index out of range" at mango/time_utils.py
+  # forward()'s `t.shape[1]`. Root cause: trainer.py's is_blender branch
+  # builds `noise` with one fewer dim than the non-blender branch (e.g.
+  # torch.zeros(1) vs torch.randn(1,1)), so `t = time_input + noise` stays
+  # 1D for Blender/D-NeRF datasets (ficus_ds_wind included) instead of being
+  # broadcast to 2D -- forward() unconditionally assumes t has a dim 1.
+  # Two occurrences (train_node_init_step's `noise = torch.zeros(1,...)` and
+  # train_node_video_step's `noise = torch.zeros(T,...)`); fix both to match
+  # their non-blender sibling's rank. Idempotent (skips if already patched).
+  python3 - <<'PYEOF'
+path = "trainer.py"
+with open(path) as f:
+    src = f.read()
+if "2D to match the non-blender branch" in src:
+    print("  already patched, skipping")
+else:
+    n1 = "            noise = torch.zeros(1, device='cuda')"
+    n1_new = "            noise = torch.zeros(1, 1, device='cuda')  # 2D to match the non-blender branch (torch.randn(1,1,...)) -- forward() unconditionally does t.shape[1]"
+    n2 = "                    noise = torch.zeros(T, device='cuda')"
+    n2_new = "                    noise = torch.zeros(1, T, device='cuda')  # 2D to match the non-blender branch (torch.randn(1,T,...))"
+    ok = True
+    if src.count(n1) == 1:
+        src = src.replace(n1, n1_new)
+    else:
+        print(f"  WARNING: expected 1 match for noise patch #1, found {src.count(n1)} -- not applied")
+        ok = False
+    if src.count(n2) == 1:
+        src = src.replace(n2, n2_new)
+    else:
+        print(f"  WARNING: expected 1 match for noise patch #2, found {src.count(n2)} -- not applied")
+        ok = False
+    if ok:
+        with open(path, "w") as f:
+            f.write(src)
+        print("  patched OK")
+PYEOF
 fi
 cd "$MANGO_ROOT"
 
