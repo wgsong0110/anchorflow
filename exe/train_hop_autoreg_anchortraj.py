@@ -105,6 +105,15 @@ def main():
     ap.add_argument("--photo_iteration", type=int, default=-1)
     ap.add_argument("--lambda_photo", type=float, default=1.0)
     ap.add_argument("--photo_views_per_step", type=int, default=2)
+    ap.add_argument("--spatial_from_current_pos", action="store_true",
+                     help="recompute the GNN spatial embedding every hop from the CURRENT (already "
+                          "deformed) absolute anchor position, instead of computing it once from "
+                          "canonical before the rollout and reusing it unchanged at every hop. With "
+                          "this on, the network directly observes where it actually is at each step "
+                          "(grounded, more Markovian) instead of relying purely on the recurrent "
+                          "hidden state h to implicitly track how far anchors have moved from "
+                          "canonical. Costs one extra spatial_embed (GNN message-passing) call per "
+                          "hop.")
     args = ap.parse_args()
 
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=os.path.dirname(__file__),
@@ -235,10 +244,13 @@ def main():
             else:
                 frame_indices = sorted(set(1 + round(i * (T - 2) / (n - 1)) for i in range(n)))
 
-        spatial = model.spatial_embed(anchors.e, edge_index, anchors.canonical)
+        if not args.spatial_from_current_pos:
+            spatial = model.spatial_embed(anchors.e, edge_index, anchors.canonical)
         p, h, prev_t = anchors.canonical, init_h, 0
         pred_pos_list, pred_rot_list, pred_lrot_list = [], [], []
         for hop_i, cur_t in enumerate(frame_indices, start=1):
+            if args.spatial_from_current_pos:
+                spatial = model.spatial_embed(anchors.e, edge_index, p)
             dt_hop = (cur_t - prev_t) * dt_base
             d_p, d_rot, h = model.hop(spatial, h, anchors.e, dt_hop)
             p = p + d_p
