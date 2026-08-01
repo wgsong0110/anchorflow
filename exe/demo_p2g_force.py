@@ -79,6 +79,14 @@ for a in nonzero_anchors:
 model = HopDynamics(hidden=hargs["hidden"], mp_steps=hargs["mp_steps"],
                      e_dim=hargs["e_dim"], n_time_freqs=hargs["n_time_freqs"],
                      stateless=True, f_ext_dim=3).to(dev)
+# pv_decoder's last layer is zero-initialized (training-stability convention
+# throughout HopDynamics) -- an untrained model with that init outputs
+# v_next=0 unconditionally (weight=0, bias=0), which would make this demo
+# trivially show zero difference regardless of f_ext. Re-randomize it so
+# there's an actual (untrained, meaningless-but-nonzero) function to probe.
+last = [m for m in model.pv_decoder.modules() if isinstance(m, torch.nn.Linear)][-1]
+torch.nn.init.normal_(last.weight, std=1.0)
+torch.nn.init.normal_(last.bias, std=1.0)
 model.eval()
 v0 = torch.zeros(M, 3, device=dev)
 dt = 0.03
