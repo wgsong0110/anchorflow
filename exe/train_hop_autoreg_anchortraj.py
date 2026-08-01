@@ -91,6 +91,11 @@ def main():
                           "Costs a full mp_steps-layer GNN pass every hop (like the "
                           "--spatial_from_current_pos experiment that was ~3.6x slower, but this ALSO "
                           "removes hop_in+ssm's cost, so net slowdown may differ).")
+    ap.add_argument("--gnn_layer", choices=["interaction", "mpnn"], default="interaction",
+                     help="'interaction': InteractionNetwork (GNS-lineage, residual edge state "
+                          "carried/evolved layer to layer). 'mpnn': MPNNLayer (Gilmer et al. "
+                          "textbook message passing -- edge features are the raw input at every "
+                          "layer, no evolving edge state).")
     ap.add_argument("--ckpt_every", type=int, default=1000)
     ap.add_argument("--resume", type=str, default=None)
     ap.add_argument("--curriculum_mode", choices=["window", "density"], default="density",
@@ -204,7 +209,8 @@ def main():
 
     model = HopDynamics(hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
                          e_dim=args.e_dim, n_time_freqs=args.n_time_freqs,
-                         use_ssm=not args.no_ssm, stateless=args.stateless_pv).to(dev)
+                         use_ssm=not args.no_ssm, stateless=args.stateless_pv,
+                         gnn_layer=args.gnn_layer).to(dev)
     # stateless_pv has no recurrent h to initialize -- init_h is created either
     # way to keep the checkpoint format / optimizer param-list code uniform,
     # but it receives no gradient at all in that mode (never referenced).

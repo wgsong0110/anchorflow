@@ -30,7 +30,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .dynamics import mlp, InteractionNetwork
+from .dynamics import mlp, InteractionNetwork, MPNNLayer
 from . import graph as G
 
 
@@ -229,8 +229,15 @@ def _time_encoding_batch(dt, n_freqs=6):
 
 class HopDynamics(nn.Module):
     def __init__(self, hidden=128, mp_steps=6, ssm_dim=128, e_dim=8,
-                 edge_in=4, n_time_freqs=6, use_ssm=True, stateless=False, f_ext_dim=0):
+                 edge_in=4, n_time_freqs=6, use_ssm=True, stateless=False, f_ext_dim=0,
+                 gnn_layer="interaction"):
         super().__init__()
+        # "interaction": InteractionNetwork (GNS-lineage, residual edge state
+        #   carried/evolved layer to layer). "mpnn": MPNNLayer (Gilmer et al.
+        #   textbook message passing, edge features are the raw input at
+        #   every layer, no evolving edge state).
+        assert gnn_layer in ("interaction", "mpnn")
+        gnn_cls = InteractionNetwork if gnn_layer == "interaction" else MPNNLayer
         # f_ext_dim>0 (stateless mode only): P2G channel -- a per-anchor
         # aggregated external force/perturbation (see
         # AnchorSet.scatter_particle_to_anchor), concatenated into the
@@ -265,7 +272,7 @@ class HopDynamics(nn.Module):
             self.pv_node_enc = mlp([3 + e_dim + time_dim + f_ext_dim, hidden, hidden])   # [v, e, te, f_ext?]
             self.pv_edge_enc = mlp([edge_in, hidden, hidden])
             self.pv_processor = nn.ModuleList(
-                InteractionNetwork(hidden) for _ in range(mp_steps))
+                gnn_cls(hidden) for _ in range(mp_steps))
             self.pv_decoder = mlp([hidden, hidden, 3], layernorm=False)      # -> v_next directly
             lastv = [m for m in self.pv_decoder.modules() if isinstance(m, nn.Linear)][-1]
             nn.init.zeros_(lastv.weight); nn.init.zeros_(lastv.bias)
@@ -282,7 +289,7 @@ class HopDynamics(nn.Module):
         self.node_enc = mlp([e_dim, hidden, hidden])
         self.edge_enc = mlp([edge_in, hidden, hidden])
         self.processor = nn.ModuleList(
-            InteractionNetwork(hidden) for _ in range(mp_steps))
+            gnn_cls(hidden) for _ in range(mp_steps))
         self.hop_in = mlp([hidden + e_dim + ssm_dim + time_dim, hidden, ssm_dim])
         self.ssm = DiagonalSSM(ssm_dim)
         self.decoder = mlp([ssm_dim, hidden, 3], layernorm=False)      # -> Δp (delta, not velocity)

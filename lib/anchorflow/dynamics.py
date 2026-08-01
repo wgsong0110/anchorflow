@@ -57,6 +57,32 @@ class InteractionNetwork(nn.Module):
         return h, e
 
 
+class MPNNLayer(nn.Module):
+    """Standard Message Passing Neural Network layer (Gilmer et al., ICML
+    2017): m_v = Σ_{w∈N(v)} M(h_v, h_w, e_vw);  h_v' = U(h_v, m_v).
+
+    Unlike InteractionNetwork, edge features are the RAW input `e` at every
+    layer (no persistent, layer-to-layer evolving edge state) -- this is the
+    textbook/canonical message-passing formulation that
+    torch_geometric.nn.MessagePassing generalizes, as opposed to
+    InteractionNetwork's GNS-lineage residual-edge variant. Same (h,
+    edge_index, e) -> h signature as InteractionNetwork.forward except it
+    only returns h (no evolving edge state to hand back)."""
+
+    def __init__(self, hidden, mlp_layers=2):
+        super().__init__()
+        self.msg_mlp = mlp([3 * hidden] + [hidden] * mlp_layers)    # [h_i,h_j,e] -> message
+        self.update_mlp = mlp([2 * hidden] + [hidden] * mlp_layers)  # [h_i,agg] -> h_i'
+
+    def forward(self, h, edge_index, e):
+        src, dst = edge_index                          # j -> i
+        m = self.msg_mlp(torch.cat([h[dst], h[src], e], dim=-1))
+        agg = torch.zeros_like(h)
+        agg.index_add_(0, dst, m)                       # sum messages at receiver i
+        h_new = self.update_mlp(torch.cat([h, agg], dim=-1))
+        return h_new, e                                 # e passed through unchanged (not evolving)
+
+
 class Normalizer(nn.Module):
     """Running mean/std normaliser (GNS-style), updated only in train mode."""
 
