@@ -30,7 +30,7 @@ from tqdm import trange
 _lib = os.path.join(os.path.dirname(__file__), "..", "lib")
 sys.path.insert(0, _lib)
 from anchorflow.anchors import AnchorSet
-from anchorflow.ssm_dynamics import HopDynamics, build_graph
+from anchorflow.ssm_dynamics import HopDynamics, build_graph, rest_edge_lengths, xpbd_distance_project
 
 
 def quat_mse_loss(pred, target):
@@ -114,6 +114,17 @@ def main():
                           "hidden state h to implicitly track how far anchors have moved from "
                           "canonical. Costs one extra spatial_embed (GNN message-passing) call per "
                           "hop.")
+    ap.add_argument("--xpbd", action="store_true",
+                     help="apply the XPBD distance-constraint projection (structural no-splitting "
+                          "guarantee, see ssm_dynamics.xpbd_distance_project) after every hop's raw "
+                          "d_p update, during TRAINING (not just eval) -- so the model learns "
+                          "against trajectories that already respect the constraint, instead of the "
+                          "constraint only being applied post-hoc at inference.")
+    ap.add_argument("--xpbd_tolerance", type=float, default=0.15,
+                     help="allowed edge stretch/compression vs canonical length, e.g. 0.15 = ±15%%")
+    ap.add_argument("--xpbd_iters", type=int, default=20,
+                     help="Jacobi sweeps per hop -- see demo_xpbd_rollout.py's convergence sweep "
+                          "(4->5.3x, 20->2.3x, 50->1.5x max stretch on this same anchor graph)")
     args = ap.parse_args()
 
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=os.path.dirname(__file__),
@@ -139,6 +150,7 @@ def main():
     anchors = AnchorSet.from_trajectory(canonical, latent_dim=args.latent_dim, e_dim=args.e_dim, K=args.anchor_k).to(dev)
     graph_cfg = {"graph": "knn", "k": args.k_graph}
     edge_index = build_graph(anchors.canonical.detach(), graph_cfg)
+    xpbd_rest_len = rest_edge_lengths(anchors.canonical.detach(), edge_index) if args.xpbd else None
 
     model = HopDynamics(hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
                          e_dim=args.e_dim, n_time_freqs=args.n_time_freqs).to(dev)
@@ -254,6 +266,9 @@ def main():
             dt_hop = (cur_t - prev_t) * dt_base
             d_p, d_rot, h = model.hop(spatial, h, anchors.e, dt_hop)
             p = p + d_p
+            if args.xpbd:
+                p = xpbd_distance_project(p, edge_index, xpbd_rest_len,
+                                           tolerance=args.xpbd_tolerance, iters=args.xpbd_iters)
             pred_pos_list.append(p)
             pred_rot_list.append(d_rot)
             pred_lrot_list.append(model.local_rotation(h))
