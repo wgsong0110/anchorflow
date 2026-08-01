@@ -125,6 +125,17 @@ def main():
     ap.add_argument("--xpbd_iters", type=int, default=20,
                      help="Jacobi sweeps per hop -- see demo_xpbd_rollout.py's convergence sweep "
                           "(4->5.3x, 20->2.3x, 50->1.5x max stretch on this same anchor graph)")
+    ap.add_argument("--lambda_xpbd_reg", type=float, default=0.1,
+                     help="[--xpbd only] weight on ‖xpbd_distance_project(p+d_p) - (p+d_p)‖^2 -- the "
+                          "residual the projection had to correct. XPBD is a fixed-iteration Jacobi "
+                          "solve, not a closed-form one, so it never perfectly satisfies the distance "
+                          "constraint in one hop; this regularizer pushes the network's raw d_p to "
+                          "already be close to constraint-satisfying, so the same iteration budget "
+                          "converges tighter over training instead of relying on brute-forcing more "
+                          "iterations. Keep small relative to lambda_anchor -- the teacher trajectory "
+                          "itself may have edges that legitimately stretch beyond xpbd_tolerance "
+                          "(real non-rigid deformation in the source video), and this loss must not "
+                          "fight that.")
     args = ap.parse_args()
 
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=os.path.dirname(__file__),
@@ -260,15 +271,19 @@ def main():
             spatial = model.spatial_embed(anchors.e, edge_index, anchors.canonical)
         p, h, prev_t = anchors.canonical, init_h, 0
         pred_pos_list, pred_rot_list, pred_lrot_list = [], [], []
+        xpbd_residual_list = []
         for hop_i, cur_t in enumerate(frame_indices, start=1):
             if args.spatial_from_current_pos:
                 spatial = model.spatial_embed(anchors.e, edge_index, p)
             dt_hop = (cur_t - prev_t) * dt_base
             d_p, d_rot, h = model.hop(spatial, h, anchors.e, dt_hop)
-            p = p + d_p
+            p_pre = p + d_p
             if args.xpbd:
-                p = xpbd_distance_project(p, edge_index, xpbd_rest_len,
+                p = xpbd_distance_project(p_pre, edge_index, xpbd_rest_len,
                                            tolerance=args.xpbd_tolerance, iters=args.xpbd_iters)
+                xpbd_residual_list.append(p - p_pre)
+            else:
+                p = p_pre
             pred_pos_list.append(p)
             pred_rot_list.append(d_rot)
             pred_lrot_list.append(model.local_rotation(h))
@@ -296,6 +311,13 @@ def main():
             loss_local_rot = torch.zeros((), device=dev)
 
         loss = args.lambda_anchor * anchor_loss
+
+        if args.xpbd and xpbd_residual_list:
+            xpbd_residual = torch.stack(xpbd_residual_list, dim=0)   # [n_hops,M,3]
+            loss_xpbd_reg = (xpbd_residual ** 2).sum(-1).mean()
+            loss = loss + args.lambda_xpbd_reg * loss_xpbd_reg
+        else:
+            loss_xpbd_reg = torch.zeros((), device=dev)
 
         if photo_enabled:
             n_sample = min(args.photo_views_per_step, len(frame_indices))
@@ -337,7 +359,8 @@ def main():
         if step % 20 == 0:
             pbar.set_postfix({"n": len(frame_indices), "loss": f"{loss.item():.6f}", "pos": f"{loss_pos.item():.6f}",
                                "rot": f"{loss_rot.item():.6f}", "lrot": f"{loss_local_rot.item():.6f}",
-                               "photo": f"{photo_loss.item():.6f}", "lr": f"{lr:.2e}"}, refresh=False)
+                               "photo": f"{photo_loss.item():.6f}", "xpbd_reg": f"{loss_xpbd_reg.item():.6f}",
+                               "lr": f"{lr:.2e}"}, refresh=False)
 
         if step % args.ckpt_every == 0 or step == args.iters - 1:
             ckpt = {"step": step, "model": model.state_dict(), "init_h": init_h.detach().cpu(),
