@@ -335,17 +335,32 @@ def xpbd_distance_project(pos, edge_index, rest_len, tolerance=0.15, iters=4):
     Because it operates on the same fixed edge_index the rollout already
     builds from canonical, this holds for ANY d_p the network ever produces
     (including a randomly-initialized, untrained model) -- the guarantee is
-    architectural, not something training has to learn to respect."""
+    architectural, not something training has to learn to respect.
+
+    Jacobi (simultaneous) correction needs per-node degree normalization to
+    stay stable: without it, a node touched by k edges that all want to pull
+    it the same way gets the FULL sum of k half-corrections in one sweep,
+    overshooting by ~k -- harmless-looking for k=1 but divergent (-> NaN
+    within a few sweeps) for the k=6-8 degree typical of a k-NN anchor
+    graph. Dividing each node's accumulated correction by its own degree
+    keeps every sweep a genuine averaging step (contractive) instead of an
+    amplifying one."""
     src, dst = edge_index
+    N = pos.shape[0]
+    deg = torch.zeros(N, device=pos.device, dtype=pos.dtype)
+    deg = deg.index_add(0, dst, torch.ones_like(dst, dtype=pos.dtype))
+    deg = deg.index_add(0, src, torch.ones_like(src, dtype=pos.dtype)).clamp(min=1)
+    lo = (rest_len * (1 - tolerance)).unsqueeze(-1)
+    hi = (rest_len * (1 + tolerance)).unsqueeze(-1)
     for _ in range(iters):
         diff = pos[dst] - pos[src]                                   # [E,3]
         dist = diff.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-        lo = (rest_len * (1 - tolerance)).unsqueeze(-1)
-        hi = (rest_len * (1 + tolerance)).unsqueeze(-1)
         target = dist.clamp(min=lo, max=hi)
         correction = (target - dist) / dist * diff * 0.5             # split between endpoints
-        pos = pos.index_add(0, dst, correction)
-        pos = pos.index_add(0, src, -correction)
+        delta = torch.zeros_like(pos)
+        delta = delta.index_add(0, dst, correction)
+        delta = delta.index_add(0, src, -correction)
+        pos = pos + delta / deg.unsqueeze(-1)                        # per-node degree normalization
     return pos
 
 
