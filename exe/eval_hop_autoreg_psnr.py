@@ -134,7 +134,8 @@ else:
 graph_cfg = {"graph": "knn", "k": hargs["k_graph"]}
 edge_index = build_graph(anchors.canonical.detach(), graph_cfg)
 model = HopDynamics(hidden=hargs["hidden"], mp_steps=hargs["mp_steps"], ssm_dim=hargs["ssm_dim"],
-                     e_dim=hargs["e_dim"], n_time_freqs=hargs["n_time_freqs"]).to(dev)
+                     e_dim=hargs["e_dim"], n_time_freqs=hargs["n_time_freqs"],
+                     use_ssm=not hargs.get("no_ssm", False)).to(dev)
 model.load_state_dict(ckpt["model"])
 model.eval()
 

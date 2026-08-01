@@ -73,6 +73,12 @@ def main():
     ap.add_argument("--n_time_freqs", type=int, default=6)
     ap.add_argument("--k_graph", type=int, default=8)
     ap.add_argument("--anchor_k", type=int, default=4)
+    ap.add_argument("--no_ssm", action="store_true",
+                     help="ablation: make hop() memoryless -- h_next = u (this hop's raw hop_in "
+                          "output) instead of the SSM's decayed recurrent blend. Drops any momentum/"
+                          "gait-phase signal beyond the immediately previous hop, but also removes "
+                          "the recurrent hidden state as a channel through which error can compound "
+                          "over a long autoregressive rollout.")
     ap.add_argument("--ckpt_every", type=int, default=1000)
     ap.add_argument("--resume", type=str, default=None)
     ap.add_argument("--curriculum_mode", choices=["window", "density"], default="density",
@@ -185,7 +191,8 @@ def main():
     xpbd_src, xpbd_dst = edge_index if args.xpbd else (None, None)
 
     model = HopDynamics(hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
-                         e_dim=args.e_dim, n_time_freqs=args.n_time_freqs).to(dev)
+                         e_dim=args.e_dim, n_time_freqs=args.n_time_freqs,
+                         use_ssm=not args.no_ssm).to(dev)
     init_h = torch.nn.Parameter(0.01 * torch.randn(M, args.ssm_dim, device=dev))
 
     params = list(model.parameters()) + [init_h]

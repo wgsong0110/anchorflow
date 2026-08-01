@@ -229,9 +229,18 @@ def _time_encoding_batch(dt, n_freqs=6):
 
 class HopDynamics(nn.Module):
     def __init__(self, hidden=128, mp_steps=6, ssm_dim=128, e_dim=8,
-                 edge_in=4, n_time_freqs=6):
+                 edge_in=4, n_time_freqs=6, use_ssm=True):
         super().__init__()
         self.n_time_freqs = n_time_freqs
+        # ablation: False -> memoryless hop, h_next = u (this hop's raw
+        # hop_in output) instead of the SSM's decayed recurrent blend. Drops
+        # any "momentum"/"gait phase" signal beyond the immediately previous
+        # hop's own output -- can't represent rhythm/actuation state that
+        # needs more than 1-hop lookback, but also removes the recurrent
+        # state as a channel through which error can compound/blow up over
+        # a long autoregressive rollout (h no longer accumulates across
+        # hops at all, decayed or otherwise).
+        self.use_ssm = use_ssm
         time_dim = 1 + 2 * n_time_freqs
         # one-time spatial embedding over the (fixed) canonical anchor graph --
         # unlike SSMDynamics, this never needs recomputing mid-rollout since
@@ -287,7 +296,7 @@ class HopDynamics(nn.Module):
         te = _time_encoding(dt, self.n_time_freqs).to(h.device)
         te = te.expand(h.shape[0], -1)
         u = self.hop_in(torch.cat([spatial, e, h, te], dim=-1))
-        h_next = self.ssm.step(h, u, float(dt))
+        h_next = self.ssm.step(h, u, float(dt)) if self.use_ssm else u
         d_p = self.decoder(h_next)
         d_rot = self.rot_decoder(h_next)
         return d_p, d_rot, h_next
@@ -305,7 +314,7 @@ class HopDynamics(nn.Module):
         spatial_b = spatial[None, :, :].expand(B, M, -1)
         e_b = e[None, :, :].expand(B, M, -1)
         u = self.hop_in(torch.cat([spatial_b, e_b, h, te], dim=-1))
-        h_next = self.ssm.step_batch(h, u, dt_t)
+        h_next = self.ssm.step_batch(h, u, dt_t) if self.use_ssm else u
         d_p = self.decoder(h_next)
         d_rot = self.rot_decoder(h_next)
         return d_p, d_rot, h_next
