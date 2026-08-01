@@ -311,8 +311,46 @@ class HopDynamics(nn.Module):
         return d_p, d_rot, h_next
 
 
+def rest_edge_lengths(canonical, edge_index):
+    """‖canonical[dst] - canonical[src]‖ per edge -> [E]. Precompute once;
+    the anchor graph topology is fixed for a rollout (built from canonical)."""
+    src, dst = edge_index
+    return (canonical[dst] - canonical[src]).norm(dim=-1)
+
+
+def xpbd_distance_project(pos, edge_index, rest_len, tolerance=0.15, iters=4):
+    """Structural (not learned, not a training-time penalty) no-splitting
+    constraint: project `pos` so every edge's length stays within
+    rest_len * (1 ± tolerance) of its canonical length.
+
+    This is the position-based-dynamics (PBD/XPBD) distance-constraint
+    solve: find the position closest (in a least-squares sense) to the GNN's
+    raw proposal subject to the per-edge distance bound, applied as a fixed
+    -point iteration since there's no closed form for many overlapping
+    constraints. Each sweep is a Jacobi step (all edges corrected
+    simultaneously via scatter_add, not sequentially like classic
+    Gauss-Seidel PBD) -- fully parallel, and differentiable (pure tensor ops,
+    no learnable parameters), so gradients flow through it unchanged.
+
+    Because it operates on the same fixed edge_index the rollout already
+    builds from canonical, this holds for ANY d_p the network ever produces
+    (including a randomly-initialized, untrained model) -- the guarantee is
+    architectural, not something training has to learn to respect."""
+    src, dst = edge_index
+    for _ in range(iters):
+        diff = pos[dst] - pos[src]                                   # [E,3]
+        dist = diff.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        lo = (rest_len * (1 - tolerance)).unsqueeze(-1)
+        hi = (rest_len * (1 + tolerance)).unsqueeze(-1)
+        target = dist.clamp(min=lo, max=hi)
+        correction = (target - dist) / dist * diff * 0.5             # split between endpoints
+        pos = pos.index_add(0, dst, correction)
+        pos = pos.index_add(0, src, -correction)
+    return pos
+
+
 def hop_rollout(model, canonical, e, edge_index, times, dt_base, grad=True,
-                h0=None, spatial=None):
+                h0=None, spatial=None, project_fn=None):
     """Hop through `times` (sorted list of positive frame indices; t=0 is the
     implicit, trivial starting point -- canonical position, identity
     rotation, no network call). Each hop's Δt is the actual gap between
@@ -351,6 +389,8 @@ def hop_rollout(model, canonical, e, edge_index, times, dt_base, grad=True,
             dt_hop = (t - prev_t) * dt_base
             d_p, d_rot, h = model.hop(spatial, h, e, dt_hop)
             p = p + d_p
+            if project_fn is not None:
+                p = project_fn(p)
             p_by_t[t] = p
             rot_by_t[t] = d_rot
             h_by_t[t] = h
