@@ -229,8 +229,14 @@ def _time_encoding_batch(dt, n_freqs=6):
 
 class HopDynamics(nn.Module):
     def __init__(self, hidden=128, mp_steps=6, ssm_dim=128, e_dim=8,
-                 edge_in=4, n_time_freqs=6, use_ssm=True, stateless=False):
+                 edge_in=4, n_time_freqs=6, use_ssm=True, stateless=False, f_ext_dim=0):
         super().__init__()
+        # f_ext_dim>0 (stateless mode only): P2G channel -- a per-anchor
+        # aggregated external force/perturbation (see
+        # AnchorSet.scatter_particle_to_anchor), concatenated into the
+        # per-hop GNN node features alongside v/e/te. 0 = disabled (default,
+        # backward compatible with checkpoints trained before this existed).
+        self.f_ext_dim = f_ext_dim
         self.n_time_freqs = n_time_freqs
         # ablation: False -> memoryless hop, h_next = u (this hop's raw
         # hop_in output) instead of the SSM's decayed recurrent blend. Drops
@@ -256,7 +262,7 @@ class HopDynamics(nn.Module):
         self.stateless = stateless
         time_dim = 1 + 2 * n_time_freqs
         if stateless:
-            self.pv_node_enc = mlp([3 + e_dim + time_dim, hidden, hidden])   # [v, e, te]
+            self.pv_node_enc = mlp([3 + e_dim + time_dim + f_ext_dim, hidden, hidden])   # [v, e, te, f_ext?]
             self.pv_edge_enc = mlp([edge_in, hidden, hidden])
             self.pv_processor = nn.ModuleList(
                 InteractionNetwork(hidden) for _ in range(mp_steps))
@@ -347,7 +353,7 @@ class HopDynamics(nn.Module):
         d_rot = self.rot_decoder(h_next)
         return d_p, d_rot, h_next
 
-    def hop_pv(self, e, edge_index, p, v, dt):
+    def hop_pv(self, e, edge_index, p, v, dt, f_ext=None):
         """Only valid when stateless=True. One hop of a (p,v)-explicit,
         memoryless, GNN-every-hop rollout: message passing is re-run from
         scratch using the CURRENT p (edge features) and v (node features,
@@ -360,10 +366,17 @@ class HopDynamics(nn.Module):
         represent correctly across whatever Δt a sparse curriculum hop
         happens to have.
 
+        f_ext [M, f_ext_dim], required iff self.f_ext_dim > 0: per-anchor
+        aggregated external force (P2G, see
+        AnchorSet.scatter_particle_to_anchor) -- the channel through which a
+        force applied to particles that aren't necessarily coincident with
+        any anchor still reaches this hop's decision.
+
         Returns (d_p [M,3], d_rot [M,4], v_next [M,3], local_rot [M,4])."""
         te = _time_encoding(dt, self.n_time_freqs).to(p.device)
         te = te.expand(p.shape[0], -1)
-        node = self.pv_node_enc(torch.cat([v, e, te], dim=-1))
+        node_in = [v, e, te] if self.f_ext_dim == 0 else [v, e, te, f_ext]
+        node = self.pv_node_enc(torch.cat(node_in, dim=-1))
         edge = self.pv_edge_enc(G.edge_features(p, edge_index))
         x = node
         for layer in self.pv_processor:

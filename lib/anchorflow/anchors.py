@@ -87,6 +87,23 @@ class AnchorSet(nn.Module):
         w = w / w.sum(dim=-1, keepdim=True)
         return w, idx
 
+    def scatter_particle_to_anchor(self, x, particle_value, K=None):
+        """P2G: aggregate a per-particle quantity (e.g. an externally applied
+        force) onto anchors, using the SAME LBS weights cal_nn_weight uses for
+        G2P rendering -- so a signal on particles near an anchor influences
+        that anchor, symmetric with how the anchor's own motion later gets
+        redistributed back to particles at render time.
+
+        x [N,3] particle positions, particle_value [N,D] per-particle
+        quantity -> anchor_value [M,D] (zero for anchors with no nearby
+        particles contributing)."""
+        w, idx = self.cal_nn_weight(x, K)                        # w,idx: [N,K]
+        D = particle_value.shape[-1]
+        weighted = particle_value.unsqueeze(1) * w.unsqueeze(-1)  # [N,K,D]
+        anchor_value = torch.zeros(self.num, D, device=x.device, dtype=particle_value.dtype)
+        anchor_value = anchor_value.index_add(0, idx.reshape(-1), weighted.reshape(-1, D))
+        return anchor_value
+
     @classmethod
     def from_gaussians(cls, gaussian_xyz, node_num=512, latent_dim=8, e_dim=8, K=4, seed=0):
         idx = fps(gaussian_xyz, node_num, seed=seed)
