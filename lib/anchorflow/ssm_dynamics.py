@@ -269,17 +269,30 @@ class HopDynamics(nn.Module):
         self.stateless = stateless
         time_dim = 1 + 2 * n_time_freqs
         if stateless:
-            self.pv_node_enc = mlp([3 + e_dim + time_dim + f_ext_dim, hidden, hidden])   # [v, e, te, f_ext?]
+            # use_ssm here means something different from the h-based hop()'s
+            # use_ssm=False ablation: it controls whether hop_pv ALSO keeps a
+            # recurrent h (SSM memory -- gait phase / self-powered actuation
+            # rhythm) ON TOP OF the every-hop GNN recompute, vs GNN-recompute
+            # with NO memory at all (pure function of current p/v). The two
+            # design axes (GNN once-vs-every-hop, SSM present-vs-absent) are
+            # independent; this is the "keep SSM, also re-run GNN every hop"
+            # cell of that 2x2 that hadn't been tried yet.
+            node_in_dim = 3 + e_dim + time_dim + f_ext_dim + (ssm_dim if use_ssm else 0)  # [v,e,te,f_ext?,h?]
+            self.pv_node_enc = mlp([node_in_dim, hidden, hidden])
             self.pv_edge_enc = mlp([edge_in, hidden, hidden])
             self.pv_processor = nn.ModuleList(
                 gnn_cls(hidden) for _ in range(mp_steps))
-            self.pv_decoder = mlp([hidden, hidden, 3], layernorm=False)      # -> v_next directly
+            if use_ssm:
+                self.pv_to_ssm = mlp([hidden, ssm_dim])
+                self.pv_ssm = DiagonalSSM(ssm_dim)
+            dec_dim = ssm_dim if use_ssm else hidden
+            self.pv_decoder = mlp([dec_dim, hidden, 3], layernorm=False)      # -> v_next directly
             lastv = [m for m in self.pv_decoder.modules() if isinstance(m, nn.Linear)][-1]
             nn.init.zeros_(lastv.weight); nn.init.zeros_(lastv.bias)
-            self.pv_rot_decoder = mlp([hidden, hidden, 4], layernorm=False)
+            self.pv_rot_decoder = mlp([dec_dim, hidden, 4], layernorm=False)
             lastr = [m for m in self.pv_rot_decoder.modules() if isinstance(m, nn.Linear)][-1]
             nn.init.zeros_(lastr.weight); nn.init.zeros_(lastr.bias)
-            self.pv_local_rot_decoder = mlp([hidden, hidden, 4], layernorm=False)
+            self.pv_local_rot_decoder = mlp([dec_dim, hidden, 4], layernorm=False)
             lastl = [m for m in self.pv_local_rot_decoder.modules() if isinstance(m, nn.Linear)][-1]
             nn.init.zeros_(lastl.weight); nn.init.zeros_(lastl.bias)
             return
@@ -360,18 +373,19 @@ class HopDynamics(nn.Module):
         d_rot = self.rot_decoder(h_next)
         return d_p, d_rot, h_next
 
-    def hop_pv(self, e, edge_index, p, v, dt, f_ext=None):
+    def hop_pv(self, e, edge_index, p, v, dt, h=None, f_ext=None):
         """Only valid when stateless=True. One hop of a (p,v)-explicit,
-        memoryless, GNN-every-hop rollout: message passing is re-run from
-        scratch using the CURRENT p (edge features) and v (node features,
-        alongside e and this hop's Δt encoding) -- no recurrent state
-        carried in at all, unlike hop()'s spatial (computed once) + h
-        (recurrent). The network predicts v_next directly (not an
-        acceleration, not a raw displacement); d_p = v_next * dt is the
-        actual position update, so displacement scales with elapsed time by
-        construction rather than something the network has to learn to
-        represent correctly across whatever Δt a sparse curriculum hop
-        happens to have.
+        GNN-every-hop rollout: message passing is re-run from scratch using
+        the CURRENT p (edge features) and v (node features, alongside e and
+        this hop's Δt encoding) -- unlike hop()'s spatial (computed once),
+        anchors coordinate every single hop, not just at t=0.
+
+        h [M, ssm_dim], required iff self.use_ssm: the SSM's recurrent
+        memory (gait phase / self-powered actuation rhythm), carried
+        alongside (p, v) -- lets this mode ALSO represent self-driven motion
+        beyond what the current-instant GNN pass alone could infer, on top
+        of the every-hop coordination. If self.use_ssm is False, h is
+        ignored and this is the original fully memoryless hop_pv.
 
         f_ext [M, f_ext_dim], required iff self.f_ext_dim > 0: per-anchor
         aggregated external force (P2G, see
@@ -379,20 +393,38 @@ class HopDynamics(nn.Module):
         force applied to particles that aren't necessarily coincident with
         any anchor still reaches this hop's decision.
 
-        Returns (d_p [M,3], d_rot [M,4], v_next [M,3], local_rot [M,4])."""
+        The network predicts v_next directly (not an acceleration, not a
+        raw displacement); d_p = v_next * dt is the actual position update,
+        so displacement scales with elapsed time by construction rather
+        than something the network has to learn to represent correctly
+        across whatever Δt a sparse curriculum hop happens to have.
+
+        Returns (d_p [M,3], d_rot [M,4], v_next [M,3], local_rot [M,4],
+        h_next [M,ssm_dim] or None if not self.use_ssm)."""
         te = _time_encoding(dt, self.n_time_freqs).to(p.device)
         te = te.expand(p.shape[0], -1)
-        node_in = [v, e, te] if self.f_ext_dim == 0 else [v, e, te, f_ext]
+        node_in = [v, e, te]
+        if self.f_ext_dim > 0:
+            node_in.append(f_ext)
+        if self.use_ssm:
+            node_in.append(h)
         node = self.pv_node_enc(torch.cat(node_in, dim=-1))
         edge = self.pv_edge_enc(G.edge_features(p, edge_index))
         x = node
         for layer in self.pv_processor:
             x, edge = layer(x, edge_index, edge)
-        v_next = self.pv_decoder(x)
-        d_rot = self.pv_rot_decoder(x)
-        local_rot = self.pv_local_rot_decoder(x)
+        if self.use_ssm:
+            u = self.pv_to_ssm(x)
+            h_next = self.pv_ssm.step(h, u, float(dt))
+            dec_in = h_next
+        else:
+            h_next = None
+            dec_in = x
+        v_next = self.pv_decoder(dec_in)
+        d_rot = self.pv_rot_decoder(dec_in)
+        local_rot = self.pv_local_rot_decoder(dec_in)
         d_p = v_next * float(dt)
-        return d_p, d_rot, v_next, local_rot
+        return d_p, d_rot, v_next, local_rot, h_next
 
 
 def rest_edge_lengths(canonical, edge_index):
@@ -559,20 +591,23 @@ def hop_rollout(model, canonical, e, edge_index, times, dt_base, grad=True,
 
 
 def hop_rollout_pv(model, canonical, e, edge_index, times, dt_base, grad=True,
-                   v0=None, project_fn=None):
+                   v0=None, h0=None, project_fn=None):
     """hop_rollout's counterpart for HopDynamics(stateless=True) models (see
     hop_pv()): explicit (p,v) state, GNN re-run every hop from the CURRENT
-    p/v, no recurrent h at all. v0 defaults to rest (zeros) -- there is no
-    learned/carried initial hidden state to plug in here, unlike hop_rollout's
-    h0.
+    p/v. v0 defaults to rest (zeros). h0 is required iff model.use_ssm (the
+    "keep SSM, also re-run GNN every hop" combination) -- pass the same kind
+    of learned init_h parameter hop_rollout's h0 expects; ignored/unused if
+    model.use_ssm is False (the original fully memoryless hop_pv).
 
-    Returns (p_by_t, rot_by_t, lrot_by_t) -- no h_by_t (nothing to return;
-    there is no persistent state between hops in this mode)."""
+    Returns (p_by_t, rot_by_t, lrot_by_t) -- no h_by_t returned even when
+    model.use_ssm (nothing currently needs to branch a shadow chain from an
+    intermediate h in this mode; add if that changes)."""
     ctx = torch.enable_grad() if grad else torch.no_grad()
     with ctx:
         M = canonical.shape[0]
         p = canonical
         v = v0 if v0 is not None else torch.zeros_like(canonical)
+        h = h0
         p_by_t = {0: canonical}
         rot_by_t = {0: torch.zeros(M, 4, device=canonical.device)
                        .index_fill_(1, torch.tensor([0], device=canonical.device), 1.0)}
@@ -583,7 +618,7 @@ def hop_rollout_pv(model, canonical, e, edge_index, times, dt_base, grad=True,
             if t == 0:
                 continue
             dt_hop = (t - prev_t) * dt_base
-            d_p, d_rot, v, lrot = model.hop_pv(e, edge_index, p, v, dt_hop)
+            d_p, d_rot, v, lrot, h = model.hop_pv(e, edge_index, p, v, dt_hop, h=h)
             p_pre = p + d_p
             p = project_fn(p_pre, d_p) if project_fn is not None else p_pre
             p_by_t[t] = p

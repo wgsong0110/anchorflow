@@ -78,7 +78,7 @@ for a in nonzero_anchors:
 
 model = HopDynamics(hidden=hargs["hidden"], mp_steps=hargs["mp_steps"],
                      e_dim=hargs["e_dim"], n_time_freqs=hargs["n_time_freqs"],
-                     stateless=True, f_ext_dim=3).to(dev)
+                     stateless=True, use_ssm=False, f_ext_dim=3).to(dev)
 # pv_decoder's last layer is zero-initialized (training-stability convention
 # throughout HopDynamics) -- an untrained model with that init outputs
 # v_next=0 unconditionally (weight=0, bias=0), which would make this demo
@@ -92,9 +92,9 @@ v0 = torch.zeros(M, 3, device=dev)
 dt = 0.03
 
 with torch.no_grad():
-    d_p_with, _, _, _ = model.hop_pv(e, edge_index, canonical, v0, dt, f_ext=anchor_force)
-    d_p_without, _, _, _ = model.hop_pv(e, edge_index, canonical, v0, dt,
-                                         f_ext=torch.zeros_like(anchor_force))
+    d_p_with, _, _, _, _ = model.hop_pv(e, edge_index, canonical, v0, dt, f_ext=anchor_force)
+    d_p_without, _, _, _, _ = model.hop_pv(e, edge_index, canonical, v0, dt,
+                                            f_ext=torch.zeros_like(anchor_force))
 
 diff = (d_p_with - d_p_without).norm(dim=-1)   # [M]
 print(f"\n[demo] |d_p(with force) - d_p(without force)| per anchor -- "

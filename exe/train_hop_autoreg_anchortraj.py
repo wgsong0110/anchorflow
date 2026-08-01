@@ -325,7 +325,7 @@ def main():
         for hop_i, cur_t in enumerate(frame_indices, start=1):
             dt_hop = (cur_t - prev_t) * dt_base
             if args.stateless_pv:
-                d_p, d_rot, v, lrot = model.hop_pv(anchors.e, edge_index, p, v, dt_hop)
+                d_p, d_rot, v, lrot, h = model.hop_pv(anchors.e, edge_index, p, v, dt_hop, h=h)
             else:
                 if args.spatial_from_current_pos:
                     spatial = model.spatial_embed(anchors.e, edge_index, p)
@@ -349,6 +349,8 @@ def main():
                 p = p.detach()
                 if args.stateless_pv:
                     v = v.detach()
+                    if h is not None:
+                        h = h.detach()
                 else:
                     h = h.detach()
 

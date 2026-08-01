@@ -175,6 +175,7 @@ label_of_fid = {f: (f / dt_base) for f in fids}
 if stateless_pv:
     p_by_t, rot_by_t, lrot_by_t = hop_rollout_pv(model, anchors.canonical, anchors.e, edge_index,
                                                   times=labels, dt_base=dt_base, grad=False,
+                                                  h0=init_h if model.use_ssm else None,
                                                   project_fn=project_fn)
     h_by_t = None
 else:
@@ -277,6 +278,7 @@ if args.fixed_view_video:
         if stateless_pv:
             p_full, rot_full, h_full = hop_rollout_pv(model, anchors.canonical, anchors.e, edge_index,
                                                         times=frame_indices, dt_base=dt_base, grad=False,
+                                                        h0=init_h if model.use_ssm else None,
                                                         project_fn=project_fn)
             p_full[0], rot_full[0], h_full[0] = (anchors.canonical, torch.zeros(M, 4, device=dev),
                                                   torch.zeros(M, 4, device=dev))
