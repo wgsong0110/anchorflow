@@ -30,7 +30,9 @@ from tqdm import trange
 _lib = os.path.join(os.path.dirname(__file__), "..", "lib")
 sys.path.insert(0, _lib)
 from anchorflow.anchors import AnchorSet
-from anchorflow.ssm_dynamics import HopDynamics, build_graph, rest_edge_lengths, xpbd_distance_project
+from anchorflow.ssm_dynamics import (
+    HopDynamics, build_graph, rest_edge_lengths, xpbd_distance_project, xpbd_directional_project,
+)
 
 
 def quat_mse_loss(pred, target):
@@ -120,6 +122,18 @@ def main():
                           "d_p update, during TRAINING (not just eval) -- so the model learns "
                           "against trajectories that already respect the constraint, instead of the "
                           "constraint only being applied post-hoc at inference.")
+    ap.add_argument("--xpbd_mode", choices=["distance", "directional"], default="distance",
+                     help="'distance': free 3D projection to the closest constraint-satisfying point "
+                          "(xpbd_distance_project) -- with many simultaneous neighbor constraints this "
+                          "can end up moving an anchor in a direction quite different from its "
+                          "predicted d_p, since it only minimizes distance to the (infeasible) "
+                          "proposal, not direction fidelity. 'directional': restrict each anchor's "
+                          "correction to its OWN fixed direction (d_p normalized) via "
+                          "xpbd_directional_project -- guarantees the actual displacement has cosine "
+                          "similarity 1 with d_p (the network's intended direction is never "
+                          "overridden, only its magnitude is adjusted to fit neighbors), at the cost "
+                          "of a weaker constraint-violation bound (fewer degrees of freedom to work "
+                          "with per sweep).")
     ap.add_argument("--xpbd_tolerance", type=float, default=0.15,
                      help="allowed edge stretch/compression vs canonical length, e.g. 0.15 = ±15%%")
     ap.add_argument("--xpbd_iters", type=int, default=20,
@@ -279,8 +293,12 @@ def main():
             d_p, d_rot, h = model.hop(spatial, h, anchors.e, dt_hop)
             p_pre = p + d_p
             if args.xpbd:
-                p = xpbd_distance_project(p_pre, edge_index, xpbd_rest_len,
-                                           tolerance=args.xpbd_tolerance, iters=args.xpbd_iters)
+                if args.xpbd_mode == "directional":
+                    p = xpbd_directional_project(p_pre, edge_index, xpbd_rest_len, direction=d_p,
+                                                  tolerance=args.xpbd_tolerance, iters=args.xpbd_iters)
+                else:
+                    p = xpbd_distance_project(p_pre, edge_index, xpbd_rest_len,
+                                               tolerance=args.xpbd_tolerance, iters=args.xpbd_iters)
                 xpbd_residual_list.append(p - p_pre)
             else:
                 p = p_pre

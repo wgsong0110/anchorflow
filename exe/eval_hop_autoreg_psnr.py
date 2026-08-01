@@ -69,7 +69,9 @@ _lib = "/workspace/anchorflow/lib"
 sys.path.insert(0, _lib)
 sys.path.insert(0, os.getcwd())  # SC-GS repo root (`scene`, `gaussian_renderer`, ...) -- script runs from elsewhere
 from anchorflow.anchors import AnchorSet
-from anchorflow.ssm_dynamics import HopDynamics, build_graph, hop_rollout, rest_edge_lengths, xpbd_distance_project
+from anchorflow.ssm_dynamics import (
+    HopDynamics, build_graph, hop_rollout, rest_edge_lengths, xpbd_distance_project, xpbd_directional_project,
+)
 
 import torch
 from scene import Scene, DeformModel
@@ -138,13 +140,20 @@ model.eval()
 
 # match training's XPBD projection at rollout time -- a model trained WITH
 # the constraint but evaluated/rendered WITHOUT it is a train/eval mismatch
-# (the checkpoint's own saved args say whether training used it).
+# (the checkpoint's own saved args say whether training used it, and which
+# mode -- older checkpoints predate --xpbd_mode and default to "distance").
 if hargs.get("xpbd"):
     xpbd_rest_len = rest_edge_lengths(anchors.canonical.detach(), edge_index)
-    project_fn = lambda p: xpbd_distance_project(
-        p, edge_index, xpbd_rest_len, tolerance=hargs["xpbd_tolerance"], iters=hargs["xpbd_iters"])
-    print(f"[eval] XPBD projection ENABLED (tolerance={hargs['xpbd_tolerance']} iters={hargs['xpbd_iters']}) "
-          f"-- matches training")
+    xpbd_mode = hargs.get("xpbd_mode", "distance")
+    if xpbd_mode == "directional":
+        project_fn = lambda p, d_p: xpbd_directional_project(
+            p, edge_index, xpbd_rest_len, direction=d_p,
+            tolerance=hargs["xpbd_tolerance"], iters=hargs["xpbd_iters"])
+    else:
+        project_fn = lambda p, d_p: xpbd_distance_project(
+            p, edge_index, xpbd_rest_len, tolerance=hargs["xpbd_tolerance"], iters=hargs["xpbd_iters"])
+    print(f"[eval] XPBD projection ENABLED (mode={xpbd_mode} tolerance={hargs['xpbd_tolerance']} "
+          f"iters={hargs['xpbd_iters']}) -- matches training")
 else:
     project_fn = None
 

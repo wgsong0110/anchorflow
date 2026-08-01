@@ -364,6 +364,60 @@ def xpbd_distance_project(pos, edge_index, rest_len, tolerance=0.15, iters=4):
     return pos
 
 
+def xpbd_directional_project(pos, edge_index, rest_len, direction, tolerance=0.15, iters=4,
+                              min_dir_norm=1e-4):
+    """Like xpbd_distance_project, but restricts each anchor's correction to
+    its OWN fixed direction (the network's predicted d_p, normalized) instead
+    of allowing a free 3D correction.
+
+    xpbd_distance_project minimizes ‖p_new - p_pre‖ (p_pre = p + d_p), which
+    is equivalent to minimizing ‖u - d_p‖ where u = p_new - p is the actual
+    displacement -- close to d_p in a least-squares sense, but with many
+    simultaneous neighbor constraints (k=6-8 in a k-NN anchor graph all
+    pulling at once), the L2-closest constraint-satisfying point can end up
+    with u pointing quite differently from d_p: neighbors correcting in
+    different directions can rotate the net result away from what the
+    network actually intended, not just shrink it.
+
+    This variant guarantees cos_similarity(u, d_p) is exactly 1 (or -1, if
+    pulled backward past the start) by construction: every correction is
+    projected onto direction before being applied, so position can only
+    ever move along the anchor's own intended line p + alpha*direction,
+    never off of it. Constraint satisfaction is then a 1D search (scalar
+    alpha per anchor) along that line instead of a free 3D search -- weaker
+    (may not reach as tight a constraint-violation bound as the free
+    version, since it has fewer degrees of freedom to satisfy neighbors
+    with), but never redirects intent.
+
+    Anchors with near-zero d_p (no meaningful intended direction) fall back
+    to the free (xpbd_distance_project-style) correction via `min_dir_norm`,
+    since forcing them onto an arbitrary near-zero-norm direction would be
+    numerically unstable and physically meaningless."""
+    src, dst = edge_index
+    N = pos.shape[0]
+    deg = torch.zeros(N, device=pos.device, dtype=pos.dtype)
+    deg = deg.index_add(0, dst, torch.ones_like(dst, dtype=pos.dtype))
+    deg = deg.index_add(0, src, torch.ones_like(src, dtype=pos.dtype)).clamp(min=1)
+    lo = (rest_len * (1 - tolerance)).unsqueeze(-1)
+    hi = (rest_len * (1 + tolerance)).unsqueeze(-1)
+    dir_norm = direction.norm(dim=-1, keepdim=True)
+    unit_dir = direction / dir_norm.clamp(min=1e-8)
+    has_dir = (dir_norm > min_dir_norm).to(pos.dtype)                # [N,1]
+    for _ in range(iters):
+        diff = pos[dst] - pos[src]
+        dist = diff.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        target = dist.clamp(min=lo, max=hi)
+        correction = (target - dist) / dist * diff * 0.5
+        delta = torch.zeros_like(pos)
+        delta = delta.index_add(0, dst, correction)
+        delta = delta.index_add(0, src, -correction)
+        delta = delta / deg.unsqueeze(-1)
+        delta_along = (delta * unit_dir).sum(-1, keepdim=True) * unit_dir
+        delta = has_dir * delta_along + (1 - has_dir) * delta        # free fallback for ~zero-d_p anchors
+        pos = pos + delta
+    return pos
+
+
 def hop_rollout(model, canonical, e, edge_index, times, dt_base, grad=True,
                 h0=None, spatial=None, project_fn=None):
     """Hop through `times` (sorted list of positive frame indices; t=0 is the
@@ -380,6 +434,13 @@ def hop_rollout(model, canonical, e, edge_index, times, dt_base, grad=True,
     embedding (needed for the coarse/shadow-fine consistency check: the
     shadow chain branches from this chain's own real (p, h) at an
     intermediate time, reusing the same spatial embedding).
+
+    project_fn, if given, is called as project_fn(p_pre, d_p) after every
+    hop's raw update (p_pre = p + d_p) and must return the (possibly
+    corrected) position to actually use -- e.g. xpbd_distance_project or
+    xpbd_directional_project (both take extra args via a closure/lambda;
+    d_p is passed through so a directional projector can derive its own
+    per-anchor direction from it).
 
     Returns:
       p_by_t   dict {t: [M,3]}       (includes t=0 -> canonical)
@@ -405,7 +466,7 @@ def hop_rollout(model, canonical, e, edge_index, times, dt_base, grad=True,
             d_p, d_rot, h = model.hop(spatial, h, e, dt_hop)
             p = p + d_p
             if project_fn is not None:
-                p = project_fn(p)
+                p = project_fn(p, d_p)                    # (proposed pos, this hop's raw d_p)
             p_by_t[t] = p
             rot_by_t[t] = d_rot
             h_by_t[t] = h
