@@ -69,7 +69,7 @@ _lib = "/workspace/anchorflow/lib"
 sys.path.insert(0, _lib)
 sys.path.insert(0, os.getcwd())  # SC-GS repo root (`scene`, `gaussian_renderer`, ...) -- script runs from elsewhere
 from anchorflow.anchors import AnchorSet
-from anchorflow.ssm_dynamics import HopDynamics, build_graph, hop_rollout
+from anchorflow.ssm_dynamics import HopDynamics, build_graph, hop_rollout, rest_edge_lengths, xpbd_distance_project
 
 import torch
 from scene import Scene, DeformModel
@@ -135,6 +135,19 @@ model = HopDynamics(hidden=hargs["hidden"], mp_steps=hargs["mp_steps"], ssm_dim=
                      e_dim=hargs["e_dim"], n_time_freqs=hargs["n_time_freqs"]).to(dev)
 model.load_state_dict(ckpt["model"])
 model.eval()
+
+# match training's XPBD projection at rollout time -- a model trained WITH
+# the constraint but evaluated/rendered WITHOUT it is a train/eval mismatch
+# (the checkpoint's own saved args say whether training used it).
+if hargs.get("xpbd"):
+    xpbd_rest_len = rest_edge_lengths(anchors.canonical.detach(), edge_index)
+    project_fn = lambda p: xpbd_distance_project(
+        p, edge_index, xpbd_rest_len, tolerance=hargs["xpbd_tolerance"], iters=hargs["xpbd_iters"])
+    print(f"[eval] XPBD projection ENABLED (tolerance={hargs['xpbd_tolerance']} iters={hargs['xpbd_iters']}) "
+          f"-- matches training")
+else:
+    project_fn = None
+
 print(f"[eval] hop ckpt step={ckpt['step']} commit={ckpt.get('commit')} scene={args.multiscene_scene}")
 
 # ---- one rollout covering every fid we'll be asked to render ----
@@ -144,7 +157,8 @@ labels = [f / dt_base for f in fids]
 label_of_fid = {f: (f / dt_base) for f in fids}
 
 p_by_t, rot_by_t, h_by_t = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
-                                        times=labels, dt_base=dt_base, grad=False, h0=init_h)
+                                        times=labels, dt_base=dt_base, grad=False, h0=init_h,
+                                        project_fn=project_fn)
 
 
 class HopNodeDeform:
@@ -235,7 +249,8 @@ if args.fixed_view_video:
         frame_indices = [i for i in render_indices if i != 0]
     if not args.use_teacher:
         p_full, rot_full, h_full = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
-                                                times=frame_indices, dt_base=dt_base, grad=False, h0=init_h)
+                                                times=frame_indices, dt_base=dt_base, grad=False, h0=init_h,
+                                                project_fn=project_fn)
         p_full[0], rot_full[0], h_full[0] = anchors.canonical, torch.zeros(M, 4, device=dev), init_h
     print(f"[eval] fixed_view_video: {len(render_indices)} rendered frames via {len(frame_indices)} hops "
           f"(stride={args.fixed_view_stride}, random_n={args.fixed_view_random_n}, "
