@@ -122,7 +122,7 @@ def main():
                           "d_p update, during TRAINING (not just eval) -- so the model learns "
                           "against trajectories that already respect the constraint, instead of the "
                           "constraint only being applied post-hoc at inference.")
-    ap.add_argument("--xpbd_mode", choices=["distance", "directional"], default="distance",
+    ap.add_argument("--xpbd_mode", choices=["distance", "directional", "none"], default="distance",
                      help="'distance': free 3D projection to the closest constraint-satisfying point "
                           "(xpbd_distance_project) -- with many simultaneous neighbor constraints this "
                           "can end up moving an anchor in a direction quite different from its "
@@ -133,7 +133,13 @@ def main():
                           "similarity 1 with d_p (the network's intended direction is never "
                           "overridden, only its magnitude is adjusted to fit neighbors), at the cost "
                           "of a weaker constraint-violation bound (fewer degrees of freedom to work "
-                          "with per sweep).")
+                          "with per sweep). 'none': apply NO projection at all -- positions are used "
+                          "raw (p = p + d_p every hop, no correction, matches eval too). Only a soft "
+                          "hinge-loss penalty (see lambda_xpbd_reg) pushes the network to respect "
+                          "distances on its own via gradient descent. No structural guarantee "
+                          "whatsoever (an untrained/adversarial model can still violate arbitrarily), "
+                          "but avoids running gradients through the iterative projection every hop, "
+                          "which may itself be part of what was destabilizing training.")
     ap.add_argument("--xpbd_tolerance", type=float, default=0.15,
                      help="allowed edge stretch/compression vs canonical length, e.g. 0.15 = ±15%%")
     ap.add_argument("--xpbd_iters", type=int, default=20,
@@ -176,6 +182,7 @@ def main():
     graph_cfg = {"graph": "knn", "k": args.k_graph}
     edge_index = build_graph(anchors.canonical.detach(), graph_cfg)
     xpbd_rest_len = rest_edge_lengths(anchors.canonical.detach(), edge_index) if args.xpbd else None
+    xpbd_src, xpbd_dst = edge_index if args.xpbd else (None, None)
 
     model = HopDynamics(hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
                          e_dim=args.e_dim, n_time_freqs=args.n_time_freqs).to(dev)
@@ -292,16 +299,16 @@ def main():
             dt_hop = (cur_t - prev_t) * dt_base
             d_p, d_rot, h = model.hop(spatial, h, anchors.e, dt_hop)
             p_pre = p + d_p
-            if args.xpbd:
-                if args.xpbd_mode == "directional":
-                    p = xpbd_directional_project(p_pre, edge_index, xpbd_rest_len, direction=d_p,
-                                                  tolerance=args.xpbd_tolerance, iters=args.xpbd_iters)
-                else:
-                    p = xpbd_distance_project(p_pre, edge_index, xpbd_rest_len,
-                                               tolerance=args.xpbd_tolerance, iters=args.xpbd_iters)
+            if args.xpbd and args.xpbd_mode == "directional":
+                p = xpbd_directional_project(p_pre, edge_index, xpbd_rest_len, direction=d_p,
+                                              tolerance=args.xpbd_tolerance, iters=args.xpbd_iters)
+                xpbd_residual_list.append(p - p_pre)
+            elif args.xpbd and args.xpbd_mode == "distance":
+                p = xpbd_distance_project(p_pre, edge_index, xpbd_rest_len,
+                                           tolerance=args.xpbd_tolerance, iters=args.xpbd_iters)
                 xpbd_residual_list.append(p - p_pre)
             else:
-                p = p_pre
+                p = p_pre                          # xpbd_mode == "none", or --xpbd not set at all
             pred_pos_list.append(p)
             pred_rot_list.append(d_rot)
             pred_lrot_list.append(model.local_rotation(h))
@@ -330,7 +337,19 @@ def main():
 
         loss = args.lambda_anchor * anchor_loss
 
-        if args.xpbd and xpbd_residual_list:
+        if args.xpbd and args.xpbd_mode == "none":
+            # no projection happened -- penalize the RAW positions' actual
+            # edge-length violation directly (hinge: zero inside the
+            # tolerance band, quadratic outside it), instead of a residual
+            # from a projection that never ran.
+            pred_pos_stacked = torch.stack(pred_pos_list, dim=0)         # [n_hops,M,3]
+            edge_dist = (pred_pos_stacked[:, xpbd_dst] - pred_pos_stacked[:, xpbd_src]).norm(dim=-1)
+            stretch_ratio = edge_dist / xpbd_rest_len.unsqueeze(0)
+            violation = torch.relu(stretch_ratio - (1 + args.xpbd_tolerance)) \
+                + torch.relu((1 - args.xpbd_tolerance) - stretch_ratio)
+            loss_xpbd_reg = (violation ** 2).mean()
+            loss = loss + args.lambda_xpbd_reg * loss_xpbd_reg
+        elif args.xpbd and xpbd_residual_list:
             xpbd_residual = torch.stack(xpbd_residual_list, dim=0)   # [n_hops,M,3]
             loss_xpbd_reg = (xpbd_residual ** 2).sum(-1).mean()
             loss = loss + args.lambda_xpbd_reg * loss_xpbd_reg

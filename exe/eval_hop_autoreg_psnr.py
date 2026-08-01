@@ -142,9 +142,12 @@ model.eval()
 # the constraint but evaluated/rendered WITHOUT it is a train/eval mismatch
 # (the checkpoint's own saved args say whether training used it, and which
 # mode -- older checkpoints predate --xpbd_mode and default to "distance").
-if hargs.get("xpbd"):
+xpbd_mode = hargs.get("xpbd_mode", "distance") if hargs.get("xpbd") else None
+if xpbd_mode == "none":
+    project_fn = None   # trained raw (no projection at all) -- eval must match, not add one
+    print("[eval] XPBD mode=none: no projection applied (matches training's raw rollout)")
+elif hargs.get("xpbd"):
     xpbd_rest_len = rest_edge_lengths(anchors.canonical.detach(), edge_index)
-    xpbd_mode = hargs.get("xpbd_mode", "distance")
     if xpbd_mode == "directional":
         project_fn = lambda p, d_p: xpbd_directional_project(
             p, edge_index, xpbd_rest_len, direction=d_p,
