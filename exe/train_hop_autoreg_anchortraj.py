@@ -78,7 +78,19 @@ def main():
                           "output) instead of the SSM's decayed recurrent blend. Drops any momentum/"
                           "gait-phase signal beyond the immediately previous hop, but also removes "
                           "the recurrent hidden state as a channel through which error can compound "
-                          "over a long autoregressive rollout.")
+                          "over a long autoregressive rollout. Ignored if --stateless_pv is set "
+                          "(that mode has no h at all, this flag doesn't apply).")
+    ap.add_argument("--stateless_pv", action="store_true",
+                     help="use HopDynamics.hop_pv() instead of hop(): explicit (p,v) state, NO "
+                          "recurrent h whatsoever, GNN message passing RE-RUN every hop grounded in "
+                          "the CURRENT position/velocity (not a one-time canonical spatial embedding "
+                          "+ separately-evolving h) -- lets neighbors coordinate continuously "
+                          "throughout the rollout instead of only once at t=0. The network predicts "
+                          "velocity directly (d_p = v_next * dt) instead of a raw per-hop "
+                          "displacement, so position updates scale with elapsed time by construction. "
+                          "Costs a full mp_steps-layer GNN pass every hop (like the "
+                          "--spatial_from_current_pos experiment that was ~3.6x slower, but this ALSO "
+                          "removes hop_in+ssm's cost, so net slowdown may differ).")
     ap.add_argument("--ckpt_every", type=int, default=1000)
     ap.add_argument("--resume", type=str, default=None)
     ap.add_argument("--curriculum_mode", choices=["window", "density"], default="density",
@@ -192,7 +204,10 @@ def main():
 
     model = HopDynamics(hidden=args.hidden, mp_steps=args.mp_steps, ssm_dim=args.ssm_dim,
                          e_dim=args.e_dim, n_time_freqs=args.n_time_freqs,
-                         use_ssm=not args.no_ssm).to(dev)
+                         use_ssm=not args.no_ssm, stateless=args.stateless_pv).to(dev)
+    # stateless_pv has no recurrent h to initialize -- init_h is created either
+    # way to keep the checkpoint format / optimizer param-list code uniform,
+    # but it receives no gradient at all in that mode (never referenced).
     init_h = torch.nn.Parameter(0.01 * torch.randn(M, args.ssm_dim, device=dev))
 
     params = list(model.parameters()) + [init_h]
@@ -295,16 +310,20 @@ def main():
             else:
                 frame_indices = sorted(set(1 + round(i * (T - 2) / (n - 1)) for i in range(n)))
 
-        if not args.spatial_from_current_pos:
+        if not args.stateless_pv and not args.spatial_from_current_pos:
             spatial = model.spatial_embed(anchors.e, edge_index, anchors.canonical)
         p, h, prev_t = anchors.canonical, init_h, 0
+        v = torch.zeros_like(anchors.canonical)            # stateless_pv only: starts at rest
         pred_pos_list, pred_rot_list, pred_lrot_list = [], [], []
         xpbd_residual_list = []
         for hop_i, cur_t in enumerate(frame_indices, start=1):
-            if args.spatial_from_current_pos:
-                spatial = model.spatial_embed(anchors.e, edge_index, p)
             dt_hop = (cur_t - prev_t) * dt_base
-            d_p, d_rot, h = model.hop(spatial, h, anchors.e, dt_hop)
+            if args.stateless_pv:
+                d_p, d_rot, v, lrot = model.hop_pv(anchors.e, edge_index, p, v, dt_hop)
+            else:
+                if args.spatial_from_current_pos:
+                    spatial = model.spatial_embed(anchors.e, edge_index, p)
+                d_p, d_rot, h = model.hop(spatial, h, anchors.e, dt_hop)
             p_pre = p + d_p
             if args.xpbd and args.xpbd_mode == "directional":
                 p = xpbd_directional_project(p_pre, edge_index, xpbd_rest_len, direction=d_p,
@@ -318,11 +337,14 @@ def main():
                 p = p_pre                          # xpbd_mode == "none", or --xpbd not set at all
             pred_pos_list.append(p)
             pred_rot_list.append(d_rot)
-            pred_lrot_list.append(model.local_rotation(h))
+            pred_lrot_list.append(lrot if args.stateless_pv else model.local_rotation(h))
             prev_t = cur_t
             if args.tbptt_chunk > 0 and hop_i % args.tbptt_chunk == 0:
-                h = h.detach()
                 p = p.detach()
+                if args.stateless_pv:
+                    v = v.detach()
+                else:
+                    h = h.detach()
 
         pred_pos = torch.stack(pred_pos_list, dim=0)   # [len(frame_indices),M,3]
         pred_rot = torch.stack(pred_rot_list, dim=0)

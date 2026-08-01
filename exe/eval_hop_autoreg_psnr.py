@@ -70,7 +70,8 @@ sys.path.insert(0, _lib)
 sys.path.insert(0, os.getcwd())  # SC-GS repo root (`scene`, `gaussian_renderer`, ...) -- script runs from elsewhere
 from anchorflow.anchors import AnchorSet
 from anchorflow.ssm_dynamics import (
-    HopDynamics, build_graph, hop_rollout, rest_edge_lengths, xpbd_distance_project, xpbd_directional_project,
+    HopDynamics, build_graph, hop_rollout, hop_rollout_pv, rest_edge_lengths,
+    xpbd_distance_project, xpbd_directional_project,
 )
 
 import torch
@@ -133,9 +134,10 @@ else:
     init_h = ckpt["init_h"].to(dev)
 graph_cfg = {"graph": "knn", "k": hargs["k_graph"]}
 edge_index = build_graph(anchors.canonical.detach(), graph_cfg)
+stateless_pv = hargs.get("stateless_pv", False)
 model = HopDynamics(hidden=hargs["hidden"], mp_steps=hargs["mp_steps"], ssm_dim=hargs["ssm_dim"],
                      e_dim=hargs["e_dim"], n_time_freqs=hargs["n_time_freqs"],
-                     use_ssm=not hargs.get("no_ssm", False)).to(dev)
+                     use_ssm=not hargs.get("no_ssm", False), stateless=stateless_pv).to(dev)
 model.load_state_dict(ckpt["model"])
 model.eval()
 
@@ -169,9 +171,16 @@ fids = sorted(set(float(v.fid) for v in views) | {0.0})
 labels = [f / dt_base for f in fids]
 label_of_fid = {f: (f / dt_base) for f in fids}
 
-p_by_t, rot_by_t, h_by_t = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
-                                        times=labels, dt_base=dt_base, grad=False, h0=init_h,
-                                        project_fn=project_fn)
+if stateless_pv:
+    p_by_t, rot_by_t, lrot_by_t = hop_rollout_pv(model, anchors.canonical, anchors.e, edge_index,
+                                                  times=labels, dt_base=dt_base, grad=False,
+                                                  project_fn=project_fn)
+    h_by_t = None
+else:
+    p_by_t, rot_by_t, h_by_t = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
+                                            times=labels, dt_base=dt_base, grad=False, h0=init_h,
+                                            project_fn=project_fn)
+    lrot_by_t = None
 
 
 class HopNodeDeform:
@@ -184,13 +193,16 @@ class HopNodeDeform:
         label = label_of_fid[round(fid_val, 6)] if round(fid_val, 6) in label_of_fid else fid_val / dt_base
         pos = p_by_t[label]
         rot = rot_by_t[label]
-        lrot = model.local_rotation(h_by_t[label])
+        # stateless_pv: local_rot already computed per-hop by hop_pv(), returned
+        # directly via lrot_by_t -- there's no persistent h to call
+        # model.local_rotation() on (that method doesn't exist in this mode).
+        lrot = lrot_by_t[label] if stateless_pv else model.local_rotation(h_by_t[label])
         return {
             "d_xyz": pos - canonical,
             "d_rotation": rot,
             "d_scaling": torch.zeros(M, 3, device=dev),
             "local_rotation": lrot,
-            "hidden": h_by_t[label],
+            "hidden": None if stateless_pv else h_by_t[label],
             "d_opacity": None,
             "d_color": None,
         }
@@ -261,10 +273,17 @@ if args.fixed_view_video:
             render_indices.append(T - 1)
         frame_indices = [i for i in render_indices if i != 0]
     if not args.use_teacher:
-        p_full, rot_full, h_full = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
-                                                times=frame_indices, dt_base=dt_base, grad=False, h0=init_h,
-                                                project_fn=project_fn)
-        p_full[0], rot_full[0], h_full[0] = anchors.canonical, torch.zeros(M, 4, device=dev), init_h
+        if stateless_pv:
+            p_full, rot_full, h_full = hop_rollout_pv(model, anchors.canonical, anchors.e, edge_index,
+                                                        times=frame_indices, dt_base=dt_base, grad=False,
+                                                        project_fn=project_fn)
+            p_full[0], rot_full[0], h_full[0] = (anchors.canonical, torch.zeros(M, 4, device=dev),
+                                                  torch.zeros(M, 4, device=dev))
+        else:
+            p_full, rot_full, h_full = hop_rollout(model, anchors.canonical, anchors.e, edge_index,
+                                                    times=frame_indices, dt_base=dt_base, grad=False, h0=init_h,
+                                                    project_fn=project_fn)
+            p_full[0], rot_full[0], h_full[0] = anchors.canonical, torch.zeros(M, 4, device=dev), init_h
     print(f"[eval] fixed_view_video: {len(render_indices)} rendered frames via {len(frame_indices)} hops "
           f"(stride={args.fixed_view_stride}, random_n={args.fixed_view_random_n}, "
           f"consecutive_n={args.fixed_view_consecutive_n}, start={args.fixed_view_start}, "
@@ -278,7 +297,7 @@ if args.fixed_view_video:
     for i in render_indices:
         if not args.use_teacher:
             pos, rot, h = p_full[i], rot_full[i], h_full[i]
-            lrot = model.local_rotation(h)
+            lrot = h if stateless_pv else model.local_rotation(h)   # h_full already holds lrot in this mode
 
             class _Fixed:
                 def __call__(self, t, **kwargs):
