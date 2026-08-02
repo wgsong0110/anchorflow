@@ -212,11 +212,27 @@ class AnchorElasticSim:
         initially, which is why the pot itself was moving.
 
         Returns (anchor_pos', anchor_vel', gaussian_pos', F [N,3,3])."""
-        anchor_pos = anchor_pos.detach().requires_grad_(True)
-        E, F, gaussian_pos = self.elastic_energy(
-            anchor_pos, gaussian_pos_prev, gaussian_volume, mu, lam)
-        (f_elastic,) = torch.autograd.grad(E, anchor_pos, create_graph=False)
-        f_elastic = -f_elastic
+        try:
+            from anchorstep import fused_energy_force, HAVE_CUDA as _HAVE_FUSED
+        except Exception:
+            _HAVE_FUSED = False
+        if _HAVE_FUSED and anchor_pos.is_cuda and torch.is_tensor(mu) is False:
+            # fused CUDA path: whole hot loop (weights, shape-match/eigh, F,
+            # Fixed Corotated energy, ANALYTIC forces) in two kernels -- no
+            # autograd graph. See lib/anchorstep. Falls through to the torch
+            # reference below when unbuilt or on CPU. Per-particle mu/lam
+            # not supported by the kernel yet (scalar only).
+            anchor_pos = anchor_pos.detach()
+            f_elastic, gaussian_pos, F, _psi = fused_energy_force(
+                self.gaussian_canonical, gaussian_pos_prev, anchor_pos,
+                self.anchor_canonical, self.nn_idx, gaussian_volume,
+                self.radius, float(mu), float(lam))
+        else:
+            anchor_pos = anchor_pos.detach().requires_grad_(True)
+            E, F, gaussian_pos = self.elastic_energy(
+                anchor_pos, gaussian_pos_prev, gaussian_volume, mu, lam)
+            (f_elastic,) = torch.autograd.grad(E, anchor_pos, create_graph=False)
+            f_elastic = -f_elastic
 
         f_total = f_elastic
         if f_ext_particle is not None:
