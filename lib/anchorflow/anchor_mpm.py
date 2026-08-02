@@ -39,32 +39,28 @@ from .anchors import knn
 from eigen3x3 import eigh3x3
 
 
-def _polar_decompose(F, iters=8, eps=1e-6):
-    """F = R @ S, R orthogonal (proper rotation, det=+1), S symmetric PSD.
+def _polar_decompose(F, eps=1e-8):
+    """F = R @ S, R orthogonal, S symmetric PSD -- closed form via the
+    (custom CUDA, verified) eigh3x3 kernel instead of the original 8-round
+    Newton-Schulz iteration: the Newton loop cost 8 batched
+    torch.linalg.inv launches PLUS their full autograd graph per energy
+    evaluation, which profiling-by-elimination showed dominated the physics
+    step (the user asked for custom-kernel optimization; eigh3x3 was already
+    swapped into _shape_match, this was the remaining LAPACK hot spot).
 
-    Newton-Schulz / Higham iteration (R_{k+1} = 0.5*(R_k + inv(R_k)^T)) instead
-    of SVD -- torch.linalg.svd's backward is NaN at repeated singular values
-    (near-isotropic F, e.g. at rest / near-rigid motion), which is exactly the
-    common case here (F starts at/near I every rest configuration). The
-    Newton iteration only needs matrix inverse, which has a well-behaved
-    backward away from singular F (elastic F shouldn't be singular before the
-    sim has already blown up). F: [...,3,3] -> R,S: [...,3,3]."""
-    R = F
-    eye = torch.eye(3, device=F.device, dtype=F.dtype).expand_as(F)
-    for _ in range(iters):
-        R_reg = R + eps * eye
-        R = 0.5 * (R + torch.linalg.inv(R_reg).transpose(-1, -2))
-    # proper-rotation fixup: flip the sign of R's worst-conditioned axis
-    # wherever det(R) < 0 (reflection) -- rare for well-behaved elastic F,
-    # but cheap to guard against.
-    det = torch.linalg.det(R)
-    flip = (det < 0).to(F.dtype)
-    fix = eye.clone()
-    fix[..., 2, 2] = 1.0 - 2.0 * flip
-    R = R @ fix
-    S = R.transpose(-2, -1) @ F
-    S = 0.5 * (S + S.transpose(-2, -1))
-    return R, S
+    Closed form: F^T F is symmetric PSD -> eigh3x3 gives V, lambda;
+    S = V diag(sqrt(lambda)) V^T,  S^{-1} = V diag(1/sqrt(lambda)) V^T,
+    R = F @ S^{-1}. Degenerate/tiny eigenvalues are clamped so R falls back
+    smoothly rather than dividing by ~0 (same spirit as eigh3x3's own
+    scale-free guards). F: [...,3,3] -> R,S: [...,3,3]."""
+    FtF = F.transpose(-2, -1) @ F
+    eigval, eigvec = eigh3x3(FtF.reshape(-1, 3, 3))
+    eigval = eigval.clamp(min=eps)
+    sqrt_l = eigval.sqrt()
+    S = eigvec @ torch.diag_embed(sqrt_l) @ eigvec.transpose(-1, -2)
+    S_inv = eigvec @ torch.diag_embed(1.0 / sqrt_l) @ eigvec.transpose(-1, -2)
+    R = F.reshape(-1, 3, 3) @ S_inv
+    return R.reshape(F.shape), S.reshape(F.shape)
 
 
 def fixed_corotated_energy_density(F, mu, lam):
