@@ -2,11 +2,11 @@ import os, sys
 _lib = os.path.join(os.path.dirname(__file__), "..", "lib")
 sys.path.insert(0, _lib)
 import torch
-from anchorflow.anchor_mpm import AnchorElasticSim
+from anchorflow.anchor_mpm import AnchorElasticSim, _polar_decompose
 
 torch.manual_seed(0)
 dev = "cuda" if torch.cuda.is_available() else "cpu"
-M, N, K = 64, 500, 4
+M, N, K = 64, 500, 8
 anchor_canonical = torch.randn(M, 3, device=dev)
 gaussian_canonical = torch.randn(N, 3, device=dev) * 1.2
 sim = AnchorElasticSim(gaussian_canonical, anchor_canonical, K=K)
@@ -22,31 +22,43 @@ gaussian_pos_prev = expected_gaussian.clone()
 
 with torch.no_grad():
     w = sim._weights(gaussian_pos_prev, anchor_rotated)
-    print("weights sample [0]:", w[0])
-    print("weights sum check:", w.sum(-1)[:5])
+    F, gaussian_pos = sim._shape_match(anchor_rotated, w)
 
-    nbr_rest = sim.anchor_nbr
-    nbr_cur = anchor_rotated[sim.nn_idx]
-    w_ = w.unsqueeze(-1)
-    rest_centroid = (w_ * nbr_rest).sum(dim=1)
-    cur_centroid = (w_ * nbr_cur).sum(dim=1)
-    q = nbr_rest - rest_centroid.unsqueeze(1)
-    p = nbr_cur - cur_centroid.unsqueeze(1)
+err = (F - R_true.unsqueeze(0)).abs().amax(dim=(-2, -1))   # [N]
+print("F error percentiles: p50=%.4e p90=%.4e p99=%.4e max=%.4e" % (
+    err.quantile(0.5).item(), err.quantile(0.9).item(), err.quantile(0.99).item(), err.max().item()))
+n_bad = (err > 0.01).sum().item()
+print(f"n_bad (err>0.01) = {n_bad} / {N}")
 
-    print("\nGaussian 0 debug:")
-    print("  nbr_rest[0]:\n", nbr_rest[0])
-    print("  nbr_cur[0]:\n", nbr_cur[0])
-    print("  w[0]:", w[0])
-    print("  q[0] (rest rel):\n", q[0])
-    print("  p[0] (cur rel):\n", p[0])
-    print("  R_true @ q[0].T (expected p[0]):\n", (R_true @ q[0].T).T)
+worst = err.argmax().item()
+print(f"\nworst Gaussian idx={worst}, err={err[worst].item():.4e}")
+print("F[worst]:\n", F[worst])
+print("R_true:\n", R_true)
 
-    B = torch.einsum("nk,nki,nkj->nij", w, q, q)
-    A = torch.einsum("nk,nki,nkj->nij", w, p, q)
-    print("\n  B[0]:\n", B[0])
-    print("  det(B[0]):", torch.linalg.det(B[0]).item())
-    print("  cond(B[0]) via eigvals:", torch.linalg.eigvalsh(B[0]))
-    print("  A[0]:\n", A[0])
-    F0 = A[0] @ torch.linalg.inv(B[0] + 1e-9 * torch.eye(3, device=dev))
-    print("  F[0] = A@Binv:\n", F0)
-    print("  R_true:\n", R_true)
+nbr_rest = sim.anchor_nbr[worst]
+nbr_cur = anchor_rotated[sim.nn_idx[worst]]
+w_worst = w[worst]
+print("\nw[worst]:", w_worst)
+rest_c = (w_worst.unsqueeze(-1) * nbr_rest).sum(0)
+cur_c = (w_worst.unsqueeze(-1) * nbr_cur).sum(0)
+q = nbr_rest - rest_c
+p = nbr_cur - cur_c
+B = torch.einsum("k,ki,kj->ij", w_worst, q, q)
+A = torch.einsum("k,ki,kj->ij", w_worst, p, q)
+print("B[worst]:\n", B)
+print("eigvals(B[worst]):", torch.linalg.eigvalsh(B))
+reg = 1e-2 * (B.diagonal().sum() / 3.0)
+print("reg scalar:", reg.item())
+F_worst_manual = A @ torch.linalg.inv(B + reg * torch.eye(3, device=dev))
+print("F_worst (manual recompute):\n", F_worst_manual)
+
+print("\n--- polar decompose check on a KNOWN-GOOD F (=R_true) ---")
+R_pd, S_pd = _polar_decompose(R_true.unsqueeze(0))
+print("R_pd (should == R_true):\n", R_pd[0])
+print("S_pd (should == I):\n", S_pd[0])
+
+print("\n--- polar decompose check on F[worst] ---")
+R_pd2, S_pd2 = _polar_decompose(F[worst:worst+1])
+print("det(F[worst]):", torch.linalg.det(F[worst]).item())
+print("R_pd2:\n", R_pd2[0])
+print("S_pd2:\n", S_pd2[0])

@@ -67,10 +67,12 @@ with torch.no_grad():
     w = sim._weights(gaussian_pos_prev, anchor_rotated)
     F, gaussian_pos = sim._shape_match(anchor_rotated, w)
 
-F_err = (F - R_true.unsqueeze(0)).abs().max().item()
-pos_err = (gaussian_pos - expected_gaussian).abs().max().item()
-print(f"  max|F - R_true| = {F_err:.3e}  (should be ~0)")
-print(f"  max|gaussian_pos - expected| = {pos_err:.3e}  (should be ~0)")
+F_err_per_g = (F - R_true.unsqueeze(0)).abs().amax(dim=(-2, -1))
+pos_err_per_g = (gaussian_pos - expected_gaussian).abs().amax(dim=-1)
+print(f"  |F - R_true| per-Gaussian: p50={F_err_per_g.quantile(0.5).item():.3e} "
+      f"p99={F_err_per_g.quantile(0.99).item():.3e} max={F_err_per_g.max().item():.3e}  (should be ~0)")
+print(f"  |gaussian_pos - expected| per-Gaussian: p50={pos_err_per_g.quantile(0.5).item():.3e} "
+      f"p99={pos_err_per_g.quantile(0.99).item():.3e} max={pos_err_per_g.max().item():.3e}  (should be ~0)")
 
 from anchorflow.anchor_mpm import fixed_corotated_energy_density
 psi = fixed_corotated_energy_density(F, mu, lam)

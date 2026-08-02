@@ -133,20 +133,24 @@ class AnchorElasticSim:
         # A = sum_k w_k p_k (x) q_k ; B = sum_k w_k q_k (x) q_k ; F = A @ B^-1
         A = torch.einsum("nk,nki,nkj->nij", w, p, q)                 # [N,3,3]
         B = torch.einsum("nk,nki,nkj->nij", w, q, q)                 # [N,3,3]
-        eye = torch.eye(3, device=B.device, dtype=B.dtype)
         # With only K neighbors, B is a scatter/covariance matrix of just K
         # points around their own weighted centroid -- for a Gaussian whose
         # nearest anchors happen to lie close to a plane/line (common with
         # small K on a sparse irregular anchor cloud), B is ill-conditioned
-        # and a near-zero absolute regularizer lets inv(B) blow up (verified:
-        # exact match to R_true for a well-conditioned B, garbage for a
-        # near-singular one -- same formula, different B). Regularize
-        # RELATIVE to B's own scale (Tikhonov damping) so well-conditioned
-        # Gaussians are unaffected and degenerate ones fall back to "assume
-        # no deformation along the unobserved direction" instead of
-        # amplifying noise.
-        reg = 1e-2 * (B.diagonal(dim1=-2, dim2=-1).sum(-1, keepdim=True).unsqueeze(-1) / 3.0)
-        F = A @ torch.linalg.inv(B + reg * eye)
+        # and inv(B) blows up along the flat direction (verified: exact
+        # match to a ground-truth rotation for a well-conditioned B, ~15-20%
+        # spurious stretch injected under PURE RIGID ROTATION for a
+        # poorly-conditioned one -- same formula, different B). A uniform
+        # (trace-based) Tikhonov regularizer was tried first and made things
+        # WORSE for well-conditioned B (biases every direction, not just the
+        # flat one) while still under-fixing the truly degenerate case.
+        # Correct fix: eigenvalue clamping -- only inflate the SPECIFIC
+        # flat direction(s), leave well-conditioned eigenvalues untouched.
+        eigval, eigvec = torch.linalg.eigh(B)                        # ascending, B PSD
+        lambda_max = eigval[..., -1:].clamp(min=1e-12)
+        eigval_clamped = torch.clamp(eigval, min=0.05 * lambda_max)
+        B_reg = eigvec @ torch.diag_embed(eigval_clamped) @ eigvec.transpose(-1, -2)
+        F = A @ torch.linalg.inv(B_reg)
         gaussian_pos = cur_centroid + torch.einsum(
             "nij,nj->ni", F, self.gaussian_canonical - rest_centroid)
         return F, gaussian_pos
