@@ -217,7 +217,8 @@ def draw_dots(image_uint8, xy, color, radius=4):
 frames = []
 nan_hit = False
 with torch.enable_grad():
-    for step_i in range(1, args.steps + 1):
+    from tqdm import tqdm
+    for step_i in tqdm(range(1, args.steps + 1), desc="anchor_mpm", ncols=100):
         anchor_pos, anchor_vel, gaussian_pos_prev, F = sim.step(
             anchor_pos, anchor_vel, anchor_mass, gaussian_pos_prev,
             gaussian_volume, mu, lam, args.dt, gravity=gravity, damping=args.damping,
