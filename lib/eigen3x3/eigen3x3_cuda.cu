@@ -30,9 +30,34 @@ __global__ void eigh3x3_forward_kernel(
   float b = Bn[4], f = Bn[5];
   float c = Bn[8];
 
-  float p1 = d * d + e * e + f * f;
   float* lo = eigval + n * 3;
   float* Vo = eigvec + n * 9;
+
+  // SCALE NORMALIZATION -- every threshold below (the "already diagonal"
+  // p1 check, the eigenvector cross-product norm check) is an ABSOLUTE
+  // tolerance, but the quantities they gate scale as (matrix magnitude)^2.
+  // Without normalizing first, a perfectly well-conditioned matrix whose
+  // entries merely happen to be small silently takes a wrong branch:
+  // measured on real ficus anchor data (B eigenvalues ~2e-5, condition
+  // ratio ~0.6, i.e. NOT degenerate), the cross-product norm^2 landed at
+  // ~1e-20, tripped the eigenvector guard, and returned ZERO eigenvectors
+  // -> F = 0 -> det F = 0 -> nonsense elastic energy (1e13) -> the
+  // simulation exploded within a few steps. Normalizing by the largest
+  // absolute entry makes all thresholds scale-invariant; eigenvalues are
+  // rescaled back at the end (eigenvectors are scale-invariant already).
+  float scale = fmaxf(fmaxf(fabsf(a), fabsf(b)), fmaxf(fabsf(c),
+                fmaxf(fabsf(d), fmaxf(fabsf(e), fabsf(f)))));
+  if (scale < 1e-30f) {   // genuinely all-zero matrix
+    lo[0] = lo[1] = lo[2] = 0.f;
+    for (int i = 0; i < 9; ++i) Vo[i] = 0.f;
+    Vo[0] = Vo[4] = Vo[8] = 1.f;
+    return;
+  }
+  float inv_scale = 1.0f / scale;
+  a *= inv_scale; b *= inv_scale; c *= inv_scale;
+  d *= inv_scale; e *= inv_scale; f *= inv_scale;
+
+  float p1 = d * d + e * e + f * f;
 
   if (p1 < 1e-12f) {
     // already diagonal -- sort a,b,c ascending, eigenvectors = permuted identity
@@ -41,7 +66,7 @@ __global__ void eigh3x3_forward_kernel(
     for (int i = 0; i < 2; ++i)
       for (int j = 0; j < 2 - i; ++j)
         if (vals[order[j]] > vals[order[j + 1]]) { int t = order[j]; order[j] = order[j + 1]; order[j + 1] = t; }
-    for (int i = 0; i < 3; ++i) lo[i] = vals[order[i]];
+    for (int i = 0; i < 3; ++i) lo[i] = vals[order[i]] * scale;   // undo normalization
     for (int i = 0; i < 9; ++i) Vo[i] = 0.f;
     for (int i = 0; i < 3; ++i) Vo[order[i] * 3 + i] = 1.f;  // column i = e_{order[i]}
     return;
@@ -94,11 +119,45 @@ __global__ void eigh3x3_forward_kernel(
       float nrm = cx * cx + cy * cy + cz * cz;
       if (nrm > best_norm) { best_norm = nrm; best[0] = cx; best[1] = cy; best[2] = cz; }
     }
-    float inv_n = best_norm > 1e-20f ? rsqrtf(best_norm) : 0.0f;
+    // threshold is now meaningful because a..f were scale-normalized above
+    float inv_n = best_norm > 1e-12f ? rsqrtf(best_norm) : 0.0f;
     Vo[0 * 3 + k] = best[0] * inv_n;
     Vo[1 * 3 + k] = best[1] * inv_n;
     Vo[2 * 3 + k] = best[2] * inv_n;
   }
+
+  // Repeated-eigenvalue fallback: when an eigenvalue is (nearly) repeated,
+  // (A - lambda I)'s rows are nearly parallel, every row-pair cross product
+  // vanishes, and the loop above leaves that column ZERO -- which silently
+  // produces a rank-deficient "eigenvector matrix" (this is what wrecked F
+  // downstream). Any orthonormal basis of a degenerate eigenspace is
+  // equally valid, so fill zero columns by Gram-Schmidt against the columns
+  // that ARE valid, guaranteeing V stays orthonormal.
+  for (int k = 0; k < 3; ++k) {
+    float vk[3] = {Vo[0 * 3 + k], Vo[1 * 3 + k], Vo[2 * 3 + k]};
+    if (vk[0] * vk[0] + vk[1] * vk[1] + vk[2] * vk[2] > 0.5f) continue;   // already unit
+    float bestv[3] = {0.f, 0.f, 0.f};
+    float best_len = -1.f;
+    for (int axis = 0; axis < 3; ++axis) {                 // try each canonical axis
+      float t[3] = {0.f, 0.f, 0.f};
+      t[axis] = 1.f;
+      for (int j = 0; j < 3; ++j) {                        // orthogonalize vs other columns
+        if (j == k) continue;
+        float vj[3] = {Vo[0 * 3 + j], Vo[1 * 3 + j], Vo[2 * 3 + j]};
+        if (vj[0] * vj[0] + vj[1] * vj[1] + vj[2] * vj[2] < 0.5f) continue;   // that one's empty too
+        float dot = t[0] * vj[0] + t[1] * vj[1] + t[2] * vj[2];
+        t[0] -= dot * vj[0]; t[1] -= dot * vj[1]; t[2] -= dot * vj[2];
+      }
+      float len2 = t[0] * t[0] + t[1] * t[1] + t[2] * t[2];
+      if (len2 > best_len) { best_len = len2; bestv[0] = t[0]; bestv[1] = t[1]; bestv[2] = t[2]; }
+    }
+    float inv_l = best_len > 1e-12f ? rsqrtf(best_len) : 0.0f;
+    Vo[0 * 3 + k] = bestv[0] * inv_l;
+    Vo[1 * 3 + k] = bestv[1] * inv_l;
+    Vo[2 * 3 + k] = bestv[2] * inv_l;
+  }
+
+  for (int i = 0; i < 3; ++i) lo[i] *= scale;   // undo normalization
 }
 
 // ---- backward: standard symmetric-eigendecomposition VJP ----
