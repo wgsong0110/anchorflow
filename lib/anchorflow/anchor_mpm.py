@@ -99,25 +99,37 @@ class AnchorElasticSim:
     with whatever owns the render loop.
     """
 
-    def __init__(self, gaussian_canonical, anchor_canonical, K=8, kernel_eps=1e-4):
-        """gaussian_canonical [N,3], anchor_canonical [M,3]."""
+    def __init__(self, gaussian_canonical, anchor_canonical, K=8, radius=None):
+        """gaussian_canonical [N,3], anchor_canonical [M,3]. radius: RBF
+        falloff for the blend weights; defaults to the mean canonical
+        Gaussian->neighbor-anchor distance (a natural scene-scale estimate)."""
         self.K = min(K, anchor_canonical.shape[0])
-        self.kernel_eps = kernel_eps
         self.gaussian_canonical = gaussian_canonical
         self.anchor_canonical = anchor_canonical
         # connectivity fixed once from canonical k-NN (see module docstring)
-        _, idx = knn(gaussian_canonical, anchor_canonical, self.K)   # [N,K]
+        dist2, idx = knn(gaussian_canonical, anchor_canonical, self.K)   # [N,K]
         self.nn_idx = idx
         self.anchor_nbr = anchor_canonical[idx]                      # [N,K,3] rest
+        # RBF radius: an inverse-distance kernel (1/(d+eps), used originally)
+        # COLLAPSES whenever a Gaussian nearly coincides with one of its
+        # anchors -- measured on real ficus data, such Gaussians got weights
+        # like [0.993, 0.001, ...], which makes the shape-matching scatter
+        # matrix B degenerate (all neighbor offsets measured from a centroid
+        # sitting on top of one anchor) and F ill-posed. A Gaussian RBF with
+        # a scene-scale radius (same form as AnchorSet.cal_nn_weight, the
+        # convention used elsewhere in this codebase) stays smooth and keeps
+        # all K neighbors meaningfully weighted.
+        self.radius = float(dist2.clamp(min=0).sqrt().mean()) if radius is None else float(radius)
+        self.radius = max(self.radius, 1e-8)
 
     def _weights(self, gaussian_pos_prev, anchor_pos):
-        """Distance kernel between each Gaussian's LAST-STEP position and its
+        """RBF kernel between each Gaussian's LAST-STEP position and its
         (fixed) candidate anchors' CURRENT positions -- recomputed every
         step, see module docstring for why this is both correct and cheap.
         gaussian_pos_prev [N,3], anchor_pos [M,3] -> w [N,K] (sums to 1)."""
         nbr_cur = anchor_pos[self.nn_idx]                            # [N,K,3]
-        d = (gaussian_pos_prev.unsqueeze(1) - nbr_cur).norm(dim=-1)  # [N,K]
-        w = 1.0 / (d + self.kernel_eps)
+        d2 = ((gaussian_pos_prev.unsqueeze(1) - nbr_cur) ** 2).sum(-1)  # [N,K]
+        w = torch.exp(-d2 / (2.0 * self.radius ** 2)) + 1e-8
         return w / w.sum(dim=-1, keepdim=True)
 
     def _shape_match(self, anchor_pos, w):
