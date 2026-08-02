@@ -36,6 +36,7 @@ from __future__ import annotations
 import torch
 
 from .anchors import knn
+from eigen3x3 import eigh3x3
 
 
 def _polar_decompose(F, iters=8, eps=1e-6):
@@ -159,7 +160,7 @@ class AnchorElasticSim:
         # Reconstruct F from its per-eigenvector action: F @ V = Fv  =>
         # F = Fv @ V^T (V orthogonal). This is a per-direction fallback, not
         # a blanket regularizer, so well-observed directions are untouched.
-        eigval, eigvec = torch.linalg.eigh(B)                        # ascending, B PSD; V's columns = v_i
+        eigval, eigvec = eigh3x3(B)                                   # ascending, B PSD; V's columns = v_i
         lambda_max = eigval[..., -1:].clamp(min=1e-12)
         well_observed = eigval > 0.2 * lambda_max                    # [N,3] bool, per v_i
         Av = A @ eigvec                                              # [N,3,3], column i = A @ v_i
