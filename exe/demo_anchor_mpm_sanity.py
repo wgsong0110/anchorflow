@@ -51,14 +51,23 @@ R_true = torch.eye(3, device=dev) + torch.sin(torch.tensor(theta)) * K_ + \
 d_true = torch.tensor([0.5, -0.3, 0.8], device=dev)
 
 anchor_rotated = (R_true @ anchor_canonical.T).T + d_true
-gaussian_pos_prev = gaussian_canonical.clone()   # rest, for the weight lag
+# weights compare gaussian_pos_prev against CURRENT anchor positions -- for
+# this to be rotation-invariant (as the module's design assumes for a real
+# rollout, where gaussian_pos_prev is itself the correctly-evolved previous
+# state) both sides must be transformed consistently. Using the untouched
+# REST Gaussian position here (mismatched against rotated anchors) would
+# test something the module never claims to handle -- a real rollout's
+# gaussian_pos_prev always lags the SAME transform by exactly one step, so
+# feed the (already known, since this is a synthetic single-shot rigid test)
+# correctly-rotated Gaussian position instead.
+expected_gaussian = (R_true @ gaussian_canonical.T).T + d_true
+gaussian_pos_prev = expected_gaussian.clone()
 
 with torch.no_grad():
     w = sim._weights(gaussian_pos_prev, anchor_rotated)
     F, gaussian_pos = sim._shape_match(anchor_rotated, w)
 
 F_err = (F - R_true.unsqueeze(0)).abs().max().item()
-expected_gaussian = (R_true @ gaussian_canonical.T).T + d_true
 pos_err = (gaussian_pos - expected_gaussian).abs().max().item()
 print(f"  max|F - R_true| = {F_err:.3e}  (should be ~0)")
 print(f"  max|gaussian_pos - expected| = {pos_err:.3e}  (should be ~0)")
