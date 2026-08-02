@@ -60,9 +60,20 @@ __global__ void eigh3x3_forward_kernel(
   r = fmaxf(-1.0f, fminf(1.0f, r));
   float phi = acosf(r) / 3.0f;
 
-  float eig2 = q + 2.0f * p * cosf(phi);                          // largest
-  float eig0 = q + 2.0f * p * cosf(phi + 2.0944f * 2.0f);          // smallest (phi + 4pi/3)
-  float eig1 = 3.0f * q - eig0 - eig2;                             // middle
+  // Smith's method (see e.g. Eberly, "A Robust Eigensolver for 3x3 Symmetric
+  // Matrices"): the three roots of the depressed characteristic cubic are
+  // 2cos(phi), 2cos(phi+2pi/3), 2cos(phi+4pi/3) for phi=acos(r)/3 in
+  // [0,pi/3]. Numerically (e.g. phi=pi/6): 2cos(phi)=1.73 (largest),
+  // 2cos(phi+2pi/3)=-1.73 (smallest), 2cos(phi+4pi/3)=0 (middle) -- so the
+  // SMALLEST root uses +2pi/3, not +4pi/3 (that phase gives the MIDDLE
+  // root instead). Bug caught via exe/verify_eigen3x3.py: reconstruction
+  // V@diag(L)@V^T was correct (some valid decomposition), but raw
+  // eigenvalues vs. torch.linalg.eigh were wrong for ~90% of a random
+  // batch with no correlation to near-degenerate eigenvalue gaps --
+  // i.e. a systematic formula error, not an ordering/degeneracy edge case.
+  float eig2 = q + 2.0f * p * cosf(phi);                    // largest
+  float eig0 = q + 2.0f * p * cosf(phi + 2.0944f);          // smallest (phi + 2pi/3)
+  float eig1 = 3.0f * q - eig0 - eig2;                      // middle (trace = 3q)
 
   lo[0] = eig0; lo[1] = eig1; lo[2] = eig2;
 
