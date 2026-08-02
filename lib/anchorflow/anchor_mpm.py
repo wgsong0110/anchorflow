@@ -134,23 +134,39 @@ class AnchorElasticSim:
         A = torch.einsum("nk,nki,nkj->nij", w, p, q)                 # [N,3,3]
         B = torch.einsum("nk,nki,nkj->nij", w, q, q)                 # [N,3,3]
         # With only K neighbors, B is a scatter/covariance matrix of just K
-        # points around their own weighted centroid -- for a Gaussian whose
-        # nearest anchors happen to lie close to a plane/line (common with
-        # small K on a sparse irregular anchor cloud), B is ill-conditioned
-        # and inv(B) blows up along the flat direction (verified: exact
-        # match to a ground-truth rotation for a well-conditioned B, ~15-20%
-        # spurious stretch injected under PURE RIGID ROTATION for a
-        # poorly-conditioned one -- same formula, different B). A uniform
-        # (trace-based) Tikhonov regularizer was tried first and made things
-        # WORSE for well-conditioned B (biases every direction, not just the
-        # flat one) while still under-fixing the truly degenerate case.
-        # Correct fix: eigenvalue clamping -- only inflate the SPECIFIC
-        # flat direction(s), leave well-conditioned eigenvalues untouched.
-        eigval, eigvec = torch.linalg.eigh(B)                        # ascending, B PSD
+        # points around their own weighted centroid -- whenever those K
+        # anchors don't spread out well in some direction (near-planar or
+        # near-collinear local neighborhoods -- expected to be COMMON for a
+        # branch-like structure such as ficus, where nearby anchors along a
+        # twig are nearly collinear), B has a near-zero eigenvalue along
+        # that direction: there is essentially NO DATA constraining how the
+        # material stretches there. F = A @ B^-1 naively "solves" for that
+        # direction anyway by dividing by a near-zero number, which
+        # amplifies whatever noise exists in A into a huge, wrong strain --
+        # confirmed experimentally: even mild B ill-conditioning (condition
+        # ratio ~0.02, nowhere near numerically singular) was enough to
+        # visibly break F under a PURE RIGID ROTATION test (no real strain
+        # at all). Flooring/clamping B's small eigenvalues (tried first)
+        # still lets A's noise leak into that direction, just scaled down --
+        # not good enough (still ~30-45% det error at a 5% floor).
+        #
+        # Correct fix: for eigenvalue/eigenvector pairs (lambda_i, v_i) of B
+        # below threshold, DON'T solve for F's action along v_i from data at
+        # all -- explicitly set F @ v_i = v_i (identity: assume NO local
+        # deformation along a direction with no supporting data). Above
+        # threshold, use the normal data-driven F @ v_i = (A @ v_i) / lambda_i
+        # (this is exactly what F = A @ B^-1 computes in B's eigenbasis).
+        # Reconstruct F from its per-eigenvector action: F @ V = Fv  =>
+        # F = Fv @ V^T (V orthogonal). This is a per-direction fallback, not
+        # a blanket regularizer, so well-observed directions are untouched.
+        eigval, eigvec = torch.linalg.eigh(B)                        # ascending, B PSD; V's columns = v_i
         lambda_max = eigval[..., -1:].clamp(min=1e-12)
-        eigval_clamped = torch.clamp(eigval, min=0.05 * lambda_max)
-        B_reg = eigvec @ torch.diag_embed(eigval_clamped) @ eigvec.transpose(-1, -2)
-        F = A @ torch.linalg.inv(B_reg)
+        well_observed = eigval > 0.2 * lambda_max                    # [N,3] bool, per v_i
+        Av = A @ eigvec                                              # [N,3,3], column i = A @ v_i
+        Fv_data = Av / eigval.clamp(min=1e-12).unsqueeze(-2)         # column i = (A@v_i)/lambda_i
+        Fv_identity = eigvec                                        # column i = v_i (no deformation)
+        Fv = torch.where(well_observed.unsqueeze(-2), Fv_data, Fv_identity)
+        F = Fv @ eigvec.transpose(-1, -2)
         gaussian_pos = cur_centroid + torch.einsum(
             "nij,nj->ni", F, self.gaussian_canonical - rest_centroid)
         return F, gaussian_pos
