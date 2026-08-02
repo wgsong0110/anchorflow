@@ -185,7 +185,7 @@ class AnchorElasticSim:
 
     def step(self, anchor_pos, anchor_vel, anchor_mass, gaussian_pos_prev,
               gaussian_volume, mu, lam, dt, f_ext_particle=None, gravity=None,
-              damping=1.0):
+              damping=1.0, fixed_mask=None):
         """One semi-implicit Euler step.
 
         anchor_pos/vel/mass: [M,3]/[M,3]/[M]. gaussian_pos_prev: [N,3] (last
@@ -193,7 +193,15 @@ class AnchorElasticSim:
         [N] (rest volume). mu/lam: scalar or [N] Lame params. f_ext_particle:
         optional [N,3] per-Gaussian external force (e.g. wind drag),
         P2G-scattered onto anchors with the SAME (lagged) weights used for
-        the elastic energy. gravity: optional [3].
+        the elastic energy. gravity: optional [3]. fixed_mask: optional
+        [M] bool -- anchors held at their CURRENT position (zero velocity)
+        every step, e.g. the pot/base region. Without this, gravity pulls
+        every anchor including the base equally and the whole object just
+        free-falls/drifts as a rigid body instead of the base staying put
+        while only the flexible parts (branches) sway -- exactly what
+        PhysGaussian's own boundary_conditions ("cuboid" pin regions in
+        ficus_config.json) are for; this project skipped that piece
+        initially, which is why the pot itself was moving.
 
         Returns (anchor_pos', anchor_vel', gaussian_pos', F [N,3,3])."""
         anchor_pos = anchor_pos.detach().requires_grad_(True)
@@ -215,4 +223,7 @@ class AnchorElasticSim:
 
         anchor_vel_next = damping * anchor_vel + dt * f_total / anchor_mass.unsqueeze(-1)
         anchor_pos_next = anchor_pos.detach() + dt * anchor_vel_next
+        if fixed_mask is not None:
+            anchor_vel_next = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(anchor_vel_next), anchor_vel_next)
+            anchor_pos_next = torch.where(fixed_mask.unsqueeze(-1), anchor_pos.detach(), anchor_pos_next)
         return anchor_pos_next, anchor_vel_next, gaussian_pos.detach(), F.detach()

@@ -55,6 +55,17 @@ ap.add_argument("--impulse", type=float, nargs=3, default=None,
                  help="initial velocity kick applied to all anchors at t=0 (matches "
                       "ficus_config.json's particle_impulse -- gravity alone just sags "
                       "into a new rest shape, a push makes branches visibly swing)")
+ap.add_argument("--pot_height_frac", type=float, default=0.18,
+                 help="anchors within this fraction of the bbox range from the bottom "
+                      "(along up_axis) are treated as the pot/base and held fixed -- "
+                      "matches PhysGaussian's own boundary_conditions cuboid pin region "
+                      "(ficus_config.json), which this script otherwise omits, letting "
+                      "gravity free-fall/drift the WHOLE object (pot included) instead of "
+                      "just the branches swaying relative to a planted base.")
+ap.add_argument("--show_anchors", action="store_true",
+                 help="overlay anchor positions (projected to screen space) as dots on "
+                      "each frame, red=fixed(pot) / cyan=free -- to directly see anchor "
+                      "motion, not just the skinned Gaussian render.")
 args = ap.parse_args()
 
 from scene.gaussian_model import GaussianModel
@@ -123,6 +134,16 @@ gaussian_volume = torch.full((N,), 1.0 / N, device=dev)
 gravity = torch.zeros(3, device=dev)
 gravity[args.up_axis] = args.gravity
 
+# pot/base pin region: bottom pot_height_frac of the bbox along up_axis (see
+# --pot_height_frac help). Without this the pot has nothing holding it in
+# place and free-falls/drifts along with the branches under gravity.
+anchor_up = anchor_canonical[:, args.up_axis]
+up_min, up_max = gaussian_canonical[:, args.up_axis].min(), gaussian_canonical[:, args.up_axis].max()
+pot_threshold = up_min + args.pot_height_frac * (up_max - up_min)
+fixed_mask = anchor_up < pot_threshold
+print(f"[render] {fixed_mask.sum().item()}/{M} anchors pinned as pot/base "
+      f"(up_axis={args.up_axis} < {pot_threshold.item():.4f})")
+
 anchor_pos = anchor_canonical.clone()
 anchor_vel = torch.zeros(M, 3, device=dev)
 if args.impulse is not None:
@@ -135,13 +156,39 @@ d_rotation = torch.zeros(N, 4, device=dev)
 d_rotation[:, 0] = 1.0
 d_scaling = torch.zeros(N, 3, device=dev)
 
+def project_to_screen(pts, view_proj, width, height):
+    """pts [M,3] world -> screen-space pixel coords [M,2] (row-vector
+    convention matching this codebase's full_proj_transform, i.e. clip =
+    [x,y,z,1] @ view_proj)."""
+    ones = torch.ones(pts.shape[0], 1, device=pts.device)
+    pts_h = torch.cat([pts, ones], dim=-1)
+    clip = pts_h @ view_proj
+    ndc = clip[:, :3] / clip[:, 3:4].clamp(min=1e-6)
+    x = (ndc[:, 0] * 0.5 + 0.5) * width
+    y = (ndc[:, 1] * 0.5 + 0.5) * height
+    return torch.stack([x, y], dim=-1)
+
+
+def draw_dots(image_uint8, xy, color, radius=4):
+    h, w = image_uint8.shape[:2]
+    xy_np = xy.detach().cpu().numpy()
+    for x, y in xy_np:
+        xi, yi = int(round(x)), int(round(y))
+        if 0 <= xi < w and 0 <= yi < h:
+            y0, y1 = max(0, yi - radius), min(h, yi + radius + 1)
+            x0, x1 = max(0, xi - radius), min(w, xi + radius + 1)
+            image_uint8[y0:y1, x0:x1] = color
+    return image_uint8
+
+
 frames = []
 nan_hit = False
 with torch.enable_grad():
     for step_i in range(1, args.steps + 1):
         anchor_pos, anchor_vel, gaussian_pos_prev, F = sim.step(
             anchor_pos, anchor_vel, anchor_mass, gaussian_pos_prev,
-            gaussian_volume, mu, lam, args.dt, gravity=gravity, damping=0.999)
+            gaussian_volume, mu, lam, args.dt, gravity=gravity, damping=0.999,
+            fixed_mask=fixed_mask)
         if torch.isnan(anchor_pos).any():
             print(f"[render] NaN at step {step_i}, stopping.")
             nan_hit = True
@@ -151,9 +198,16 @@ with torch.enable_grad():
                 d_xyz = gaussian_pos_prev - gaussian_canonical
                 results = render(cam, gaussians, pipe, background, d_xyz, d_rotation, d_scaling, d_rot_as_res=True)
                 image = torch.clamp(results["render"], 0.0, 1.0)
-                frames.append((image.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8"))
+                frame = (image.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8").copy()
+                if args.show_anchors:
+                    xy = project_to_screen(anchor_pos, full_proj_transform, args.width, args.height)
+                    frame = draw_dots(frame, xy[fixed_mask], color=[255, 0, 0], radius=5)
+                    frame = draw_dots(frame, xy[~fixed_mask], color=[0, 200, 255], radius=3)
+                frames.append(frame)
                 max_disp = d_xyz.norm(dim=-1).max().item()
-                print(f"[render] step {step_i}/{args.steps} max_gaussian_disp={max_disp:.4f}")
+                pot_disp = (anchor_pos[fixed_mask] - anchor_canonical[fixed_mask]).norm(dim=-1).max().item() if fixed_mask.any() else 0.0
+                print(f"[render] step {step_i}/{args.steps} max_gaussian_disp={max_disp:.4f} "
+                      f"max_pot_anchor_disp={pot_disp:.6f}")
 
 import imageio
 os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
