@@ -66,6 +66,21 @@ ap.add_argument("--show_anchors", action="store_true",
                  help="overlay anchor positions (projected to screen space) as dots on "
                       "each frame, red=fixed(pot) / cyan=free -- to directly see anchor "
                       "motion, not just the skinned Gaussian render.")
+ap.add_argument("--density", type=float, default=200.0,
+                 help="material density (ficus_config.json value). With volumes from "
+                      "voxel occupancy this gives PHYSICAL anchor masses -- the earlier "
+                      "uniform mass=1.0 per anchor was ~10x too heavy for the DreamPhysics "
+                      "stiffness scale, so elastic forces couldn't overcome inertia and the "
+                      "motion was monotone creep (no oscillation) instead of a natural "
+                      "swing-and-settle.")
+ap.add_argument("--damping", type=float, default=0.9999,
+                 help="per-substep velocity retention. The earlier 0.999 at dt=5e-5 "
+                      "compounds to ~0.05x over 3000 steps -- overdamped, killing any "
+                      "oscillation that would read as natural elastic motion.")
+ap.add_argument("--voxel_grid", type=int, default=64,
+                 help="voxel grid resolution for particle volume estimation "
+                      "(DreamPhysics get_particle_volume convention: V_i = voxel_vol / "
+                      "count_in_voxel).")
 args = ap.parse_args()
 
 from scene.gaussian_model import GaussianModel
@@ -130,7 +145,26 @@ print(f"[render] {M} anchors (FPS)")
 
 sim = AnchorElasticSim(gaussian_canonical, anchor_canonical, K=args.K)
 mu, lam = lame_from_E_nu(torch.tensor(args.E, device=dev), torch.tensor(args.nu, device=dev))
-gaussian_volume = torch.full((N,), 1.0 / N, device=dev)
+
+# per-particle volume via voxel occupancy (DreamPhysics get_particle_volume
+# convention: V_i = voxel_volume / n_particles_in_that_voxel), then physical
+# masses m_i = density * V_i, P2G-scattered onto anchors -- replaces the
+# arbitrary uniform anchor mass that made the dynamics creep unnaturally.
+G = args.voxel_grid
+span = (bbox_max - bbox_min).max() + 1e-6
+voxel_dx = span / G
+vidx = ((gaussian_canonical - bbox_min) / voxel_dx).long().clamp(0, G - 1)
+flat = (vidx[:, 0] * G + vidx[:, 1]) * G + vidx[:, 2]
+counts = torch.zeros(G * G * G, device=dev).index_add_(0, flat, torch.ones(N, device=dev))
+gaussian_volume = (voxel_dx ** 3) / counts[flat]
+particle_mass = args.density * gaussian_volume
+w0 = sim._weights(gaussian_canonical, anchor_canonical)
+anchor_mass = torch.zeros(M, device=dev).index_add_(
+    0, sim.nn_idx.reshape(-1), (particle_mass.unsqueeze(-1) * w0).reshape(-1))
+anchor_mass = anchor_mass.clamp(min=1e-8)
+print(f"[render] total volume={gaussian_volume.sum().item():.4f} total mass={particle_mass.sum().item():.4f} "
+      f"anchor mass: min={anchor_mass.min().item():.2e} mean={anchor_mass.mean().item():.2e} max={anchor_mass.max().item():.2e}")
+
 gravity = torch.zeros(3, device=dev)
 gravity[args.up_axis] = args.gravity
 
@@ -149,7 +183,6 @@ anchor_vel = torch.zeros(M, 3, device=dev)
 if args.impulse is not None:
     anchor_vel = anchor_vel + torch.tensor(args.impulse, device=dev)
     print(f"[render] initial impulse velocity={args.impulse}")
-anchor_mass = torch.full((M,), 1.0, device=dev)
 gaussian_pos_prev = gaussian_canonical.clone()
 
 d_rotation = torch.zeros(N, 4, device=dev)
@@ -187,7 +220,7 @@ with torch.enable_grad():
     for step_i in range(1, args.steps + 1):
         anchor_pos, anchor_vel, gaussian_pos_prev, F = sim.step(
             anchor_pos, anchor_vel, anchor_mass, gaussian_pos_prev,
-            gaussian_volume, mu, lam, args.dt, gravity=gravity, damping=0.999,
+            gaussian_volume, mu, lam, args.dt, gravity=gravity, damping=args.damping,
             fixed_mask=fixed_mask)
         if torch.isnan(anchor_pos).any():
             print(f"[render] NaN at step {step_i}, stopping.")
