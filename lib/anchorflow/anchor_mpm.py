@@ -98,7 +98,7 @@ class AnchorElasticSim:
     with whatever owns the render loop.
     """
 
-    def __init__(self, gaussian_canonical, anchor_canonical, K=4, kernel_eps=1e-4):
+    def __init__(self, gaussian_canonical, anchor_canonical, K=8, kernel_eps=1e-4):
         """gaussian_canonical [N,3], anchor_canonical [M,3]."""
         self.K = min(K, anchor_canonical.shape[0])
         self.kernel_eps = kernel_eps
@@ -134,7 +134,19 @@ class AnchorElasticSim:
         A = torch.einsum("nk,nki,nkj->nij", w, p, q)                 # [N,3,3]
         B = torch.einsum("nk,nki,nkj->nij", w, q, q)                 # [N,3,3]
         eye = torch.eye(3, device=B.device, dtype=B.dtype)
-        F = A @ torch.linalg.inv(B + 1e-9 * eye)
+        # With only K neighbors, B is a scatter/covariance matrix of just K
+        # points around their own weighted centroid -- for a Gaussian whose
+        # nearest anchors happen to lie close to a plane/line (common with
+        # small K on a sparse irregular anchor cloud), B is ill-conditioned
+        # and a near-zero absolute regularizer lets inv(B) blow up (verified:
+        # exact match to R_true for a well-conditioned B, garbage for a
+        # near-singular one -- same formula, different B). Regularize
+        # RELATIVE to B's own scale (Tikhonov damping) so well-conditioned
+        # Gaussians are unaffected and degenerate ones fall back to "assume
+        # no deformation along the unobserved direction" instead of
+        # amplifying noise.
+        reg = 1e-2 * (B.diagonal(dim1=-2, dim2=-1).sum(-1, keepdim=True).unsqueeze(-1) / 3.0)
+        F = A @ torch.linalg.inv(B + reg * eye)
         gaussian_pos = cur_centroid + torch.einsum(
             "nij,nj->ni", F, self.gaussian_canonical - rest_centroid)
         return F, gaussian_pos
