@@ -193,7 +193,7 @@ class AnchorElasticSim:
 
     def step(self, anchor_pos, anchor_vel, anchor_mass, gaussian_pos_prev,
               gaussian_volume, mu, lam, dt, f_ext_particle=None, gravity=None,
-              damping=1.0, fixed_mask=None):
+              damping=1.0, fixed_mask=None, f_ext_anchor=None):
         """One semi-implicit Euler step.
 
         anchor_pos/vel/mass: [M,3]/[M,3]/[M]. gaussian_pos_prev: [N,3] (last
@@ -241,6 +241,10 @@ class AnchorElasticSim:
             f_ext_anchor = torch.zeros_like(anchor_pos)
             f_ext_anchor = f_ext_anchor.index_add(
                 0, self.nn_idx.reshape(-1), weighted.reshape(-1, 3))
+            f_total = f_total + f_ext_anchor
+        if f_ext_anchor is not None:
+            # already-per-anchor external force (e.g. a distributed wind body
+            # force); f_ext_particle above is the per-Gaussian P2G route.
             f_total = f_total + f_ext_anchor
         if gravity is not None:
             f_total = f_total + anchor_mass.unsqueeze(-1) * gravity

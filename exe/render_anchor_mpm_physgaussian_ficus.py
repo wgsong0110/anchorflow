@@ -81,6 +81,16 @@ ap.add_argument("--voxel_grid", type=int, default=64,
                  help="voxel grid resolution for particle volume estimation "
                       "(DreamPhysics get_particle_volume convention: V_i = voxel_vol / "
                       "count_in_voxel).")
+ap.add_argument("--wind", type=float, default=0.0,
+                 help="distributed wind body-force (as an acceleration) on free anchors, "
+                      "height-weighted like real canopy drag. A UNIFORM initial impulse "
+                      "instead makes the whole plant translate rigidly and tear at the pot "
+                      "boundary (measured: 130-250%% strain confined to the 5%% of Gaussians "
+                      "bridging pinned/free anchors) -- a distributed load bends it like a "
+                      "cantilever, which is what actually reads as elastic sway.")
+ap.add_argument("--wind_hold_frac", type=float, default=0.5,
+                 help="fraction of the run for which wind is applied; released afterwards so "
+                      "the structure swings back (damped free oscillation).")
 args = ap.parse_args()
 
 from scene.gaussian_model import GaussianModel
@@ -168,6 +178,16 @@ print(f"[render] total volume={gaussian_volume.sum().item():.4f} total mass={par
 gravity = torch.zeros(3, device=dev)
 gravity[args.up_axis] = args.gravity
 
+# height weight for the wind body force (canopy catches more wind than the trunk)
+_h = anchor_canonical[:, args.up_axis]
+height_w = (_h - _h.min()) / (_h.max() - _h.min() + 1e-9)
+wind_hold_steps = int(args.steps * args.wind_hold_frac)
+wind_dir = torch.zeros(3, device=dev)
+wind_dir[0] = -1.0   # blow along -x (same axis the earlier impulse tests used)
+if args.wind != 0.0:
+    print(f"[render] wind accel={args.wind} on free anchors (height-weighted), "
+          f"held for {wind_hold_steps}/{args.steps} steps then released")
+
 # pot/base pin region: bottom pot_height_frac of the bbox along up_axis (see
 # --pot_height_frac help). Without this the pot has nothing holding it in
 # place and free-falls/drifts along with the branches under gravity.
@@ -222,7 +242,9 @@ with torch.enable_grad():
         anchor_pos, anchor_vel, gaussian_pos_prev, F = sim.step(
             anchor_pos, anchor_vel, anchor_mass, gaussian_pos_prev,
             gaussian_volume, mu, lam, args.dt, gravity=gravity, damping=args.damping,
-            fixed_mask=fixed_mask)
+            fixed_mask=fixed_mask,
+            f_ext_anchor=(wind_dir * (args.wind * anchor_mass * height_w).unsqueeze(-1)
+                          if (args.wind != 0.0 and step_i <= wind_hold_steps) else None))
         if torch.isnan(anchor_pos).any():
             print(f"[render] NaN at step {step_i}, stopping.")
             nan_hit = True
