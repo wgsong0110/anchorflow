@@ -51,6 +51,10 @@ ap.add_argument("--radius_scale", type=float, default=2.2, help="camera distance
 ap.add_argument("--width", type=int, default=800)
 ap.add_argument("--height", type=int, default=800)
 ap.add_argument("--fov_x", type=float, default=0.6911112070083618)
+ap.add_argument("--impulse", type=float, nargs=3, default=None,
+                 help="initial velocity kick applied to all anchors at t=0 (matches "
+                      "ficus_config.json's particle_impulse -- gravity alone just sags "
+                      "into a new rest shape, a push makes branches visibly swing)")
 args = ap.parse_args()
 
 from scene.gaussian_model import GaussianModel
@@ -121,6 +125,9 @@ gravity[args.up_axis] = args.gravity
 
 anchor_pos = anchor_canonical.clone()
 anchor_vel = torch.zeros(M, 3, device=dev)
+if args.impulse is not None:
+    anchor_vel = anchor_vel + torch.tensor(args.impulse, device=dev)
+    print(f"[render] initial impulse velocity={args.impulse}")
 anchor_mass = torch.full((M,), 1.0, device=dev)
 gaussian_pos_prev = gaussian_canonical.clone()
 
