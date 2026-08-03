@@ -92,6 +92,13 @@ kept_idx = keep.nonzero().flatten()
 xyz_world = xyz_world_all[keep]
 N = xyz_world.shape[0]
 print(f"[prep] opacity>{cfg['opacity_threshold']}: kept {N}/{xyz_world_all.shape[0]} Gaussians")
+# DreamPhysics masks the dropped kernels out of position, covariance, opacity
+# AND SH (ms_simulation.py:142) -- they leave the render, not just the sim. On
+# ficus the dropped 16% are interleaved through the foliage (median distance to
+# a simulated Gaussian: 0.002 in a scene spanning 1.0), so leaving them in the
+# render pins them at their canonical position and smears an afterimage over
+# the moving plant. Drive their opacity logit to zero to match.
+gaussians._opacity.data[~keep] = -20.0
 
 # ---- 2. rotations (ficus: [0.0] deg about axis 0 -> identity, kept for fidelity) ----
 def rot_mat(deg, axis):

@@ -137,6 +137,14 @@ class _P:
 
 pipe = _P()
 bg = torch.tensor([1., 1., 1.], device=dev)
+# The opacity filter drops 16% of ficus's Gaussians from the SIMULATION, and
+# they are not background floaters -- they are interleaved through the foliage
+# (median distance to a simulated Gaussian: 0.002 in a scene spanning 1.0). If
+# they stay in the render they keep their canonical position forever and smear
+# an afterimage over the moving plant. DreamPhysics masks them out of position,
+# covariance, opacity AND SH (ms_simulation.py:142), i.e. removes them from the
+# render entirely; do the same by driving their opacity logit to zero.
+gaussians._opacity.data[~keep] = -20.0
 d_rot = torch.zeros(xyz_all.shape[0], 4, device=dev); d_rot[:, 0] = 1.
 d_sc = torch.zeros(xyz_all.shape[0], 3, device=dev)
 
