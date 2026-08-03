@@ -82,6 +82,12 @@ ap.add_argument("--rollout_len", type=int, default=8,
                       "this over --rollout_ramp_frac of training. 1 reproduces the old "
                       "single-step objective.")
 ap.add_argument("--rollout_ramp_frac", type=float, default=0.5)
+ap.add_argument("--loss_norm", choices=["none", "resid"], default="resid",
+                 help="'resid' divides each step's loss by ||R_explicit|| so samples at "
+                      "different dt and different points along a chain weigh comparably; "
+                      "'none' is the raw incremental potential.")
+ap.add_argument("--grad_probe", type=int, default=0,
+                 help="print the pre-clip gradient norm every N iters")
 ap.add_argument("--state_noise", type=float, default=0.0,
                  help="perturb the sampled state before stepping, as a fraction of the "
                       "scene's own velocity/acceleration scale. Attacks the same failure as "
@@ -263,10 +269,11 @@ for it in pbar:
             _, R0 = incremental_potential(pred0, sim, p, gp, VOL, MU, LAM, MASS,
                                            v, a, dt_it, None, args.beta, fixed_mask)
         n0 = R0.norm().clamp(min=1e-20)
+        w = (n0 * T) if args.loss_norm == "resid" else float(T)
         # normalise so every step of every chain contributes comparably: L grows
         # by orders of magnitude with dt and with how far the chain has drifted,
         # and unnormalised the large-dt late-chain samples own the gradient.
-        (L / (n0 * T)).backward()
+        (L / w).backward()
         rels.append((R.norm() / n0).item())
         # advance on the network's OWN output; detached, so this is on-policy
         # data collection rather than backprop-through-time. BPTT is available
@@ -286,8 +293,12 @@ for it in pbar:
                 break
             _, _, gp, _ = sim.step(p, torch.zeros_like(v), MASS, gp, VOL, MU, LAM, 0.0,
                                     gravity=None, damping=1.0, fixed_mask=fixed_mask)
-    torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+    gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0).item()
     opt.step()
+    if args.grad_probe and (it % args.grad_probe == 0 or it == 1):
+        wsum = sum(float(q.abs().mean()) for q in net.dec.parameters())
+        print(f"  [probe] it={it:6d} T={T} dt/sub={dt_it/sub_dt:6.1f} "
+              f"grad_norm={gn:.3e} R/R={rels[-1]:.4f} |dec_w|={wsum:.3e}", flush=True)
 
     if it % 25 == 0 or it == 1:
         # the number that matters is the residual at the END of the chain: that
