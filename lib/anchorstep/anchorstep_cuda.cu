@@ -160,6 +160,10 @@ __global__ void anchorstep_forward_kernel(
     const float* __restrict__ mu_p,   // [N] per-particle Lame mu
     const float* __restrict__ lam_p,  // [N] per-particle Lame lambda
     float radius, int N, int K, float eig_floor_frac,
+    int stage,   // profiling only: 1=stop after weights+A/B, 2=+shape-match eigh
+                 // (F built), 3=full (polar eigh + energy + G/c). Lets us
+                 // attribute cost to the two eigendecompositions instead of
+                 // guessing which part dominates.
     float* __restrict__ out_w,        // [N,K]  saved for backward
     float* __restrict__ out_Binv,     // [N,9]  effective inverse map (saved)
     float* __restrict__ out_qbar,     // [N,3]  weighted rest centroid offset (saved)
@@ -210,6 +214,10 @@ __global__ void anchorstep_forward_kernel(
         B[i * 3 + j] += w[k] * q[i] * q[j];
       }
   }
+  if (stage == 1) {   // profiling: stop before any eigendecomposition
+    out_psi[n] = A[0] + B[0];   // touch results so nothing is optimized away
+    return;
+  }
   float l[3], V[9];
   sym3x3_eigh(B, l, V);
   float lmax = fmaxf(l[2], 1e-12f);
@@ -241,6 +249,10 @@ __global__ void anchorstep_forward_kernel(
   for (int i = 0; i < 3; ++i)
     out_pos[n * 3 + i] = cc[i] + F[i * 3] * X0[0] + F[i * 3 + 1] * X0[1] + F[i * 3 + 2] * X0[2];
 
+  if (stage == 2) {   // profiling: F built (1 eigh), skip polar eigh + energy
+    out_psi[n] = F[0];
+    return;
+  }
   // Fixed Corotated energy density
   float R[9];
   polar_R(F, R);
@@ -434,7 +446,7 @@ std::vector<torch::Tensor> anchorstep_forward(
     torch::Tensor gaussian_canonical, torch::Tensor gaussian_pos_prev,
     torch::Tensor anchor_pos, torch::Tensor anchor_rest, torch::Tensor nn_idx,
     torch::Tensor volume, torch::Tensor mu_p, torch::Tensor lam_p,
-    double radius, double eig_floor_frac) {
+    double radius, double eig_floor_frac, int64_t stage) {
   CHECK_CUDA(anchor_pos);
   int N = gaussian_canonical.size(0);
   int K = nn_idx.size(1);
@@ -458,7 +470,7 @@ std::vector<torch::Tensor> anchorstep_forward(
       nn_idx.contiguous().data_ptr<long>(),
       volume.contiguous().data_ptr<float>(),
       mu_p.contiguous().data_ptr<float>(), lam_p.contiguous().data_ptr<float>(),
-      (float)radius, N, K, (float)eig_floor_frac,
+      (float)radius, N, K, (float)eig_floor_frac, (int)stage,
       out_w.data_ptr<float>(), out_Binv.data_ptr<float>(), out_qbar.data_ptr<float>(),
       out_F.data_ptr<float>(), out_pos.data_ptr<float>(), out_psi.data_ptr<float>(),
       out_R.data_ptr<float>(), out_G.data_ptr<float>(), out_c.data_ptr<float>());
@@ -489,7 +501,11 @@ torch::Tensor anchorstep_backward(
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("forward", &anchorstep_forward, "Fused anchor elastodynamics forward (CUDA)");
+  m.def("forward", &anchorstep_forward, "Fused anchor elastodynamics forward (CUDA)",
+        pybind11::arg("gaussian_canonical"), pybind11::arg("gaussian_pos_prev"),
+        pybind11::arg("anchor_pos"), pybind11::arg("anchor_rest"), pybind11::arg("nn_idx"),
+        pybind11::arg("volume"), pybind11::arg("mu_p"), pybind11::arg("lam_p"),
+        pybind11::arg("radius"), pybind11::arg("eig_floor_frac"), pybind11::arg("stage") = 3);
   m.def("backward", &anchorstep_backward, "Analytic anchor force backward, atomic scatter (CUDA)");
   m.def("backward_gather", &anchorstep_backward_gather, "Analytic anchor force backward, contention-free CSR gather (CUDA)");
 }
