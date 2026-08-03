@@ -160,34 +160,38 @@ class DuCorrector(nn.Module):
         return self.dec(h)
 
 
-def predict_du(net, p, v, a, dt, edge_index, vel_scale, beta=0.25, fixed_mask=None):
-    """du = predictor + dt * vel_scale * net(...), i.e. the network's job is
-    exactly what it was asked to be: correct the displacement the anchors'
-    own velocity and acceleration predict.
+def predict_du(net, p, v, a, dt, edge_index, accel_scale, beta=0.25, fixed_mask=None):
+    """du = predictor + beta*dt^2 * accel_scale * net(...), i.e. the network
+    corrects the displacement the anchors' own velocity and acceleration
+    predict, with a gain that matches how a real correction scales.
 
-    Two earlier gains were tried and both are worse:
+    The dt^2 is not decorative: whatever du finally is, Newmark's eq. (8) reads
+    it back as an end-of-step acceleration a_{n+1} = (du - predictor)/(beta
+    dt^2), so a correction of physical size a enters the displacement as
+    beta*dt^2*a. Any other power of dt makes the gain wrong by dt^k at every
+    step size but one. Two alternatives were measured and both are worse:
 
-      beta*dt^2 * net -- reads the output as an acceleration and maps it
-        through Newmark's eq. (8). Eq. (8) is needed to turn the FINAL du into
-        (a_{n+1}, v_{n+1}), not to produce du, so this is an indirection; at
-        dt = 4e-3 the gain is 4e-6 against a predictor of ~6e-4, so the network
-        must learn to emit ~1e2 before its output means anything. Measured: it
-        does learn it, but takes ~2x longer to get under a 0.10 residual ratio.
+      dt * vel_scale * net -- one power of dt short. At dt = 1e-4 the gain is
+        6e-5 where the true correction is ~4e-7, so the network's output is
+        multiplied by ~150x too much and its noise swamps the signal: swept
+        over dt, the trained network was 4.9x WORSE than not correcting at all
+        at 1x, 3.0x worse at 2x, and only became useful past 20x.
 
-      |predictor| * net -- dimensionless and dt-transferable, but the gain then
-        grows with the state itself. Measured: the autoregressive rollout went
-        exponential and hit NaN by frame 40, where the constant-gain version
-        merely drifted linearly. A correction that scales with the error it is
-        correcting is a positive feedback loop.
+      |predictor| * net -- dimensionless, but the gain then grows with the
+        state itself. Measured: the autoregressive rollout went exponential and
+        hit NaN by frame 40, where a constant gain merely drifted linearly. A
+        correction that scales with the error it is correcting is a positive
+        feedback loop.
 
-    vel_scale is a CONSTANT characteristic anchor speed measured once from an
-    explicit rollout, so the gain is independent of the current state (no
-    feedback) while still scaling linearly with dt (so one network transfers
-    across step sizes, and the [dt, log dt] node feature has something real to
-    condition on).
+    accel_scale is a CONSTANT characteristic anchor acceleration measured once
+    from an explicit rollout. It leaves the dt^2 scaling intact (so one network
+    transfers across step sizes and the [dt, log dt] node feature has something
+    real to condition on) while putting the output in an O(1) range -- with
+    accel_scale = 1, as an earlier version effectively had, the network has to
+    learn to emit ~1e2 first.
     """
     pred = newmark_predictor(v, a, dt, beta)
-    du = pred + (dt * vel_scale) * net(p, v, a, dt, edge_index)
+    du = pred + (beta * dt * dt * accel_scale) * net(p, v, a, dt, edge_index)
     if fixed_mask is not None:
         du = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(du), du)
         pred = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(pred), pred)
