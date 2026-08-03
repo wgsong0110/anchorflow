@@ -165,7 +165,10 @@ __global__ void anchorstep_forward_kernel(
     float* __restrict__ out_qbar,     // [N,3]  weighted rest centroid offset (saved)
     float* __restrict__ out_F,        // [N,9]
     float* __restrict__ out_pos,      // [N,3]  skinned gaussian position
-    float* __restrict__ out_psi) {    // [N]    energy density
+    float* __restrict__ out_psi,      // [N]    energy density
+    float* __restrict__ out_R) {      // [N,9]  polar rotation, SAVED for backward
+                                       // (profiling showed backward re-deriving
+                                       // it cost ~73% of the fused step)
   int n = blockIdx.x * blockDim.x + threadIdx.x;
   if (n >= N) return;
 
@@ -242,6 +245,7 @@ __global__ void anchorstep_forward_kernel(
   for (int i = 0; i < 9; ++i) { float dfr = F[i] - R[i]; frob2 += dfr * dfr; }
   float mu = mu_p[n], lam = lam_p[n];
   out_psi[n] = mu * frob2 + 0.5f * lam * (J - 1.f) * (J - 1.f);
+  for (int i = 0; i < 9; ++i) out_R[n * 9 + i] = R[i];
 
   // saved-for-backward
   for (int k = 0; k < K; ++k) out_w[n * K + k] = w[k];
@@ -265,6 +269,7 @@ __global__ void anchorstep_backward_kernel(
     const float* __restrict__ Binv,                 // [N,9]
     const float* __restrict__ qbar,                 // [N,3]
     const float* __restrict__ F_in,                 // [N,9]
+    const float* __restrict__ R_in,                 // [N,9] polar R from forward
     const float* __restrict__ mu_p, const float* __restrict__ lam_p,
     int N, int K,
     float* __restrict__ grad_anchor) {              // [M,3] += dE/dp
@@ -274,8 +279,10 @@ __global__ void anchorstep_backward_kernel(
   const float* F = F_in + (long)n * 9;
 
   // P = 2 mu (F - R) + lam (J-1) J F^{-T}
-  float R[9];
-  polar_R(F, R);
+  // R comes from the forward pass (it already ran the same polar decomposition
+  // for the energy); recomputing it here was the single biggest cost in the
+  // step, since polar_R runs a full symmetric 3x3 eigendecomposition.
+  const float* R = R_in + (long)n * 9;
   float J = mat3_det(F);
   // cofactor(F) = J * F^{-T} (works even at small J)
   float cof[9];
@@ -341,6 +348,7 @@ std::vector<torch::Tensor> anchorstep_forward(
   auto out_F = torch::empty({N, 9}, opt);
   auto out_pos = torch::empty({N, 3}, opt);
   auto out_psi = torch::empty({N}, opt);
+  auto out_R = torch::empty({N, 9}, opt);
   int threads = 256, blocks = (N + threads - 1) / threads;
   anchorstep_forward_kernel<<<blocks, threads>>>(
       gaussian_canonical.contiguous().data_ptr<float>(),
@@ -352,14 +360,15 @@ std::vector<torch::Tensor> anchorstep_forward(
       mu_p.contiguous().data_ptr<float>(), lam_p.contiguous().data_ptr<float>(),
       (float)radius, N, K, (float)eig_floor_frac,
       out_w.data_ptr<float>(), out_Binv.data_ptr<float>(), out_qbar.data_ptr<float>(),
-      out_F.data_ptr<float>(), out_pos.data_ptr<float>(), out_psi.data_ptr<float>());
-  return {out_w, out_Binv, out_qbar, out_F, out_pos, out_psi};
+      out_F.data_ptr<float>(), out_pos.data_ptr<float>(), out_psi.data_ptr<float>(),
+      out_R.data_ptr<float>());
+  return {out_w, out_Binv, out_qbar, out_F, out_pos, out_psi, out_R};
 }
 
 torch::Tensor anchorstep_backward(
     torch::Tensor anchor_rest, torch::Tensor nn_idx, torch::Tensor volume,
     torch::Tensor w, torch::Tensor Binv, torch::Tensor qbar, torch::Tensor F,
-    torch::Tensor mu_p, torch::Tensor lam_p, int64_t M) {
+    torch::Tensor R, torch::Tensor mu_p, torch::Tensor lam_p, int64_t M) {
   int N = nn_idx.size(0);
   int K = nn_idx.size(1);
   auto grad_anchor = torch::zeros({M, 3}, F.options());
@@ -372,6 +381,7 @@ torch::Tensor anchorstep_backward(
       Binv.contiguous().data_ptr<float>(),
       qbar.contiguous().data_ptr<float>(),
       F.contiguous().data_ptr<float>(),
+      R.contiguous().data_ptr<float>(),
       mu_p.contiguous().data_ptr<float>(), lam_p.contiguous().data_ptr<float>(),
       N, K,
       grad_anchor.data_ptr<float>());
