@@ -40,8 +40,8 @@ from anchorflow.anchor_mpm import AnchorElasticSim, lame_from_E_nu
 from anchorflow.dynamics import mlp, MPNNLayer
 from anchorflow import graph as G
 from anchorflow.implicit import (incremental_potential, newmark_predictor,
-                                  newmark_velocity, newton_reference, DuCorrector,
-                                  predict_du)
+                                  newmark_accel, newmark_velocity, newton_reference,
+                                  DuCorrector, predict_du)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -73,6 +73,15 @@ ap.add_argument("--dt_min_mult", type=float, default=5.0,
                       "to the implicit answer there.")
 ap.add_argument("--beta", type=float, default=0.25)
 ap.add_argument("--gamma", type=float, default=0.5)
+ap.add_argument("--rollout_len", type=int, default=8,
+                 help="train on chains of this many CONSECUTIVE network steps, feeding the "
+                      "network its own output. Trained on single steps from simulator states "
+                      "the network reduced the residual to 0.03-0.13 there and to nothing at "
+                      "all (ratio 1.0000 at every dt tested) once it had to stand on its own "
+                      "output -- it had never seen a state it produced. Length is ramped 1 -> "
+                      "this over --rollout_ramp_frac of training. 1 reproduces the old "
+                      "single-step objective.")
+ap.add_argument("--rollout_ramp_frac", type=float, default=0.5)
 ap.add_argument("--out", default=None)
 args = ap.parse_args()
 
@@ -171,6 +180,13 @@ ACC_SCALE = float(torch.stack([a for _, _, a, _ in states]).norm(dim=-1).mean())
 print(f"[states] accel_scale = {ACC_SCALE:.4f} (mean anchor acceleration over collected states)")
 
 
+def rollout_len(it):
+    if args.rollout_len <= 1:
+        return 1
+    prog = min(1.0, (it - 1) / max(1.0, args.rollout_ramp_frac * args.iters))
+    return max(1, int(round(1 + prog * (args.rollout_len - 1))))
+
+
 def sample_dt(it):
     """log-uniform in [dt_min, dt_max(it)]; dt_max ramps 2*dt_min -> dt_big."""
     if not args.dt_curriculum:
@@ -183,33 +199,61 @@ def sample_dt(it):
     return math.exp(math.log(dt_lo) + u * (math.log(dt_max) - math.log(dt_lo)))
 
 # ---- train ----
+damping = float(cfg.get("grid_v_damping_scale", 1.0))
 hist = []
 pbar = tqdm(range(1, args.iters + 1), desc="train", ncols=110)
 for it in pbar:
-    p_n, v_n, a_n, gp = states[torch.randint(len(states), (1,)).item()]
+    p, v, a, gp = [t.clone() for t in states[torch.randint(len(states), (1,)).item()]]
     dt_it = sample_dt(it)
-    du, pred0 = predict_du(net, p_n, v_n, a_n, dt_it, edge_index, ACC_SCALE,
-                            args.beta, fixed_mask)
-
-    L, R = incremental_potential(du, sim, p_n, gp, VOL, MU, LAM, MASS,
-                                  v_n, a_n, dt_it, None, args.beta, fixed_mask)
+    T = rollout_len(it)
     opt.zero_grad(set_to_none=True)
-    L.backward()
+    rels, diverged = [], False
+    for t in range(T):
+        du, pred0 = predict_du(net, p, v, a, dt_it, edge_index, ACC_SCALE,
+                                args.beta, fixed_mask)
+        L, R = incremental_potential(du, sim, p, gp, VOL, MU, LAM, MASS,
+                                      v, a, dt_it, None, args.beta, fixed_mask)
+        with torch.no_grad():
+            _, R0 = incremental_potential(pred0, sim, p, gp, VOL, MU, LAM, MASS,
+                                           v, a, dt_it, None, args.beta, fixed_mask)
+        n0 = R0.norm().clamp(min=1e-20)
+        # normalise so every step of every chain contributes comparably: L grows
+        # by orders of magnitude with dt and with how far the chain has drifted,
+        # and unnormalised the large-dt late-chain samples own the gradient.
+        (L / (n0 * T)).backward()
+        rels.append((R.norm() / n0).item())
+        # advance on the network's OWN output; detached, so this is on-policy
+        # data collection rather than backprop-through-time. BPTT is available
+        # here (the elastic energy's backward gives dE/dp analytically) but is
+        # not needed to fix the distribution mismatch, which is what fails.
+        with torch.no_grad():
+            du = du.detach()
+            a_next = newmark_accel(du, v, a, dt_it, args.beta)
+            v = damping * newmark_velocity(a_next, v, a, dt_it, args.gamma)
+            p = p + du
+            a = a_next
+            v = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(v), v)
+            p = torch.where(fixed_mask.unsqueeze(-1), AC, p)
+            a = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(a), a)
+            if not torch.isfinite(p).all():
+                diverged = True
+                break
+            _, _, gp, _ = sim.step(p, torch.zeros_like(v), MASS, gp, VOL, MU, LAM, 0.0,
+                                    gravity=None, damping=1.0, fixed_mask=fixed_mask)
     torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
     opt.step()
 
     if it % 25 == 0 or it == 1:
-        with torch.no_grad():
-            _, R0 = incremental_potential(
-                pred0, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n, dt_it, None,
-                args.beta, fixed_mask)
-            rel = (R.norm() / R0.norm().clamp(min=1e-20)).item()
-        hist.append((it, float(L), R.norm().item(), rel, dt_it))
-        pbar.set_postfix(dtx=f"{dt_it/sub_dt:.0f}", Rrel=f"{rel:.4f}")
+        # the number that matters is the residual at the END of the chain: that
+        # is where the network is standing furthest out on its own output.
+        hist.append((it, T, rels[0], rels[-1], dt_it))
+        pbar.set_postfix(T=T, dtx=f"{dt_it/sub_dt:.0f}",
+                          R0=f"{rels[0]:.3f}", RT=f"{rels[-1]:.3f}",
+                          div="Y" if diverged else "n")
 
-print("\n[result] iter    dt/sub      L            ||R||        ||R||/||R_explicit||")
-for it, L, rn, rel, dti in hist[::max(1, len(hist)//20)]:
-    print(f"  {it:6d}  {dti/sub_dt:7.1f}  {L: .6e}  {rn: .6e}   {rel:.4f}")
+print("\n[result] iter   T   dt/sub   R/R_expl(step 1)   R/R_expl(last step)")
+for it, T, r0, rT, dti in hist[::max(1, len(hist)//20)]:
+    print(f"  {it:6d} {T:3d}  {dti/sub_dt:7.1f}        {r0:10.4f}          {rT:10.4f}")
 
 # ---- one-shot GNN vs iterated solve, ACROSS step sizes ----
 # the number that matters is not the residual at one dt but how far the network
