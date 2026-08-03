@@ -66,6 +66,11 @@ ap.add_argument("--dt_curriculum", action="store_true",
                       "it is what finally makes the network's [dt, log dt] input mean anything "
                       "-- trained at a single dt that feature is a constant bias.")
 ap.add_argument("--dt_ramp_frac", type=float, default=0.6)
+ap.add_argument("--dt_min_mult", type=float, default=5.0,
+                 help="smallest step to train on, in substeps. Below ~5x there is little to "
+                      "learn: an LBFGS solve of the same potential only reaches a 0.23 "
+                      "residual ratio at 1x, because the explicit predictor is already close "
+                      "to the implicit answer there.")
 ap.add_argument("--beta", type=float, default=0.25)
 ap.add_argument("--gamma", type=float, default=0.5)
 ap.add_argument("--out", default=None)
@@ -162,19 +167,20 @@ assert len(states) >= 4, "not enough states"
 # characteristic anchor speed -- the CONSTANT that sets the correction gain
 # (see predict_du). Measured from the states the simulator actually visits, so
 # it carries the scene's scale without ever depending on the current state.
-VEL_SCALE = float(torch.stack([v for _, v, _, _ in states]).norm(dim=-1).mean())
-print(f"[states] vel_scale = {VEL_SCALE:.6f} (mean anchor speed over collected states)")
+ACC_SCALE = float(torch.stack([a for _, _, a, _ in states]).norm(dim=-1).mean())
+print(f"[states] accel_scale = {ACC_SCALE:.4f} (mean anchor acceleration over collected states)")
 
 
 def sample_dt(it):
-    """log-uniform in [sub_dt, dt_max(it)]; dt_max ramps sub_dt*2 -> dt_big."""
+    """log-uniform in [dt_min, dt_max(it)]; dt_max ramps 2*dt_min -> dt_big."""
     if not args.dt_curriculum:
         return args.dt_big
     prog = min(1.0, (it - 1) / max(1.0, args.dt_ramp_frac * args.iters))
-    lo_max = math.log(2.0 * sub_dt)
-    dt_max = math.exp(lo_max + prog * (math.log(args.dt_big) - lo_max))
+    dt_lo = args.dt_min_mult * sub_dt
+    lo_max = math.log(2.0 * dt_lo)
+    dt_max = max(math.exp(lo_max + prog * (math.log(args.dt_big) - lo_max)), dt_lo)
     u = torch.rand(1).item()
-    return math.exp(math.log(sub_dt) + u * (math.log(dt_max) - math.log(sub_dt)))
+    return math.exp(math.log(dt_lo) + u * (math.log(dt_max) - math.log(dt_lo)))
 
 # ---- train ----
 hist = []
@@ -182,7 +188,7 @@ pbar = tqdm(range(1, args.iters + 1), desc="train", ncols=110)
 for it in pbar:
     p_n, v_n, a_n, gp = states[torch.randint(len(states), (1,)).item()]
     dt_it = sample_dt(it)
-    du, pred0 = predict_du(net, p_n, v_n, a_n, dt_it, edge_index, VEL_SCALE,
+    du, pred0 = predict_du(net, p_n, v_n, a_n, dt_it, edge_index, ACC_SCALE,
                             args.beta, fixed_mask)
 
     L, R = incremental_potential(du, sim, p_n, gp, VOL, MU, LAM, MASS,
@@ -217,7 +223,7 @@ for mult in [1, 2, 5, 10, 20, 40, 80, 160]:
     for si in range(0, len(states), max(1, len(states) // 5)):
         p_n, v_n, a_n, gp = states[si]
         with torch.no_grad():
-            du_g, pred0 = predict_du(net, p_n, v_n, a_n, dt_e, edge_index, VEL_SCALE,
+            du_g, pred0 = predict_du(net, p_n, v_n, a_n, dt_e, edge_index, ACC_SCALE,
                                       args.beta, fixed_mask)
             _, R0 = incremental_potential(pred0, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
                                            dt_e, None, args.beta, fixed_mask)
@@ -234,5 +240,5 @@ for mult in [1, 2, 5, 10, 20, 40, 80, 160]:
 
 if args.out:
     torch.save({"model": net.state_dict(), "args": vars(args), "hist": hist,
-                "vel_scale": VEL_SCALE}, args.out)
+                "accel_scale": ACC_SCALE}, args.out)
     print(f"[save] {args.out}")

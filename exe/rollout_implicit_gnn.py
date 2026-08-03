@@ -66,11 +66,11 @@ targs = ck["args"]
 beta = targs["beta"]; gamma = targs["gamma"]
 sub_dt = float(cfg["substep_dt"])
 dt_big = args.dt_mult * sub_dt if args.dt_mult else targs["dt_big"]
-VEL_SCALE = ck.get("vel_scale")
-assert VEL_SCALE is not None, "checkpoint predates the constant-gain parameterisation"
+ACC_SCALE = ck.get("accel_scale")
+assert ACC_SCALE is not None, "checkpoint predates the constant-gain parameterisation"
 steps_per_frame = max(1, int(round(dt_big / sub_dt)))
 print(f"[cfg] dt={dt_big} (= {steps_per_frame} explicit substeps, trained at "
-      f"{targs['dt_big']/sub_dt:.0f}x), beta={beta} gamma={gamma} vel_scale={VEL_SCALE:.6f}")
+      f"{targs['dt_big']/sub_dt:.0f}x), beta={beta} gamma={gamma} accel_scale={ACC_SCALE:.2f}")
 
 gaussians = GaussianModel(3, fea_dim=0)
 gaussians.load_ply(args.ply)
@@ -204,7 +204,7 @@ def rollout_only(dt, n):
     damp = float(cfg.get("grid_v_damping_scale", 1.0))
     peak, rel = 0.0, float("nan")
     for f in range(n):
-        du, pred0 = predict_du(net, p, v, a, dt, edge_index, VEL_SCALE, beta, fixed_mask)
+        du, pred0 = predict_du(net, p, v, a, dt, edge_index, ACC_SCALE, beta, fixed_mask)
         _, R = incremental_potential(du, sim, p, gp, VOL, MU, LAM, MASS, v, a,
                                       dt, None, beta, fixed_mask)
         _, R0 = incremental_potential(pred0, sim, p, gp, VOL, MU, LAM, MASS, v, a,
@@ -251,7 +251,7 @@ a_g = torch.zeros(M, 3, device=dev); gp_g = POS.clone()
 frames_g, stats = [], []
 damping = float(cfg.get("grid_v_damping_scale", 1.0))
 for f in tqdm(range(args.frames), desc="gnn", ncols=90):
-    du, pred0 = predict_du(net, p_g, v_g, a_g, dt_big, edge_index, VEL_SCALE,
+    du, pred0 = predict_du(net, p_g, v_g, a_g, dt_big, edge_index, ACC_SCALE,
                             beta, fixed_mask)
     _, R = incremental_potential(du, sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,
                                   dt_big, None, beta, fixed_mask)
