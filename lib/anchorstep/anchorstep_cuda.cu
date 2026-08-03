@@ -157,7 +157,9 @@ __global__ void anchorstep_forward_kernel(
     const float* __restrict__ anchor_rest,          // [M,3] canonical
     const long* __restrict__ nn_idx,                // [N,K]
     const float* __restrict__ volume,               // [N]
-    float radius, float mu, float lam, int N, int K, float eig_floor_frac,
+    const float* __restrict__ mu_p,   // [N] per-particle Lame mu
+    const float* __restrict__ lam_p,  // [N] per-particle Lame lambda
+    float radius, int N, int K, float eig_floor_frac,
     float* __restrict__ out_w,        // [N,K]  saved for backward
     float* __restrict__ out_Binv,     // [N,9]  effective inverse map (saved)
     float* __restrict__ out_qbar,     // [N,3]  weighted rest centroid offset (saved)
@@ -238,6 +240,7 @@ __global__ void anchorstep_forward_kernel(
   float J = mat3_det(F);
   float frob2 = 0.f;
   for (int i = 0; i < 9; ++i) { float dfr = F[i] - R[i]; frob2 += dfr * dfr; }
+  float mu = mu_p[n], lam = lam_p[n];
   out_psi[n] = mu * frob2 + 0.5f * lam * (J - 1.f) * (J - 1.f);
 
   // saved-for-backward
@@ -262,7 +265,8 @@ __global__ void anchorstep_backward_kernel(
     const float* __restrict__ Binv,                 // [N,9]
     const float* __restrict__ qbar,                 // [N,3]
     const float* __restrict__ F_in,                 // [N,9]
-    float mu, float lam, int N, int K,
+    const float* __restrict__ mu_p, const float* __restrict__ lam_p,
+    int N, int K,
     float* __restrict__ grad_anchor) {              // [M,3] += dE/dp
   int n = blockIdx.x * blockDim.x + threadIdx.x;
   if (n >= N) return;
@@ -286,6 +290,7 @@ __global__ void anchorstep_backward_kernel(
   cof[8] = F[0] * F[4] - F[1] * F[3];
   // NOTE cof above is the transpose-of-cofactor layout: cof[i*3+j] = d(det)/dF[i*3+j]
   float P[9];
+  float mu = mu_p[n], lam = lam_p[n];
   float coef = lam * (J - 1.f);
   for (int i = 0; i < 9; ++i) P[i] = 2.f * mu * (F[i] - R[i]) + coef * cof[i];
 
@@ -323,7 +328,8 @@ __global__ void anchorstep_backward_kernel(
 std::vector<torch::Tensor> anchorstep_forward(
     torch::Tensor gaussian_canonical, torch::Tensor gaussian_pos_prev,
     torch::Tensor anchor_pos, torch::Tensor anchor_rest, torch::Tensor nn_idx,
-    torch::Tensor volume, double radius, double mu, double lam, double eig_floor_frac) {
+    torch::Tensor volume, torch::Tensor mu_p, torch::Tensor lam_p,
+    double radius, double eig_floor_frac) {
   CHECK_CUDA(anchor_pos);
   int N = gaussian_canonical.size(0);
   int K = nn_idx.size(1);
@@ -343,7 +349,8 @@ std::vector<torch::Tensor> anchorstep_forward(
       anchor_rest.contiguous().data_ptr<float>(),
       nn_idx.contiguous().data_ptr<long>(),
       volume.contiguous().data_ptr<float>(),
-      (float)radius, (float)mu, (float)lam, N, K, (float)eig_floor_frac,
+      mu_p.contiguous().data_ptr<float>(), lam_p.contiguous().data_ptr<float>(),
+      (float)radius, N, K, (float)eig_floor_frac,
       out_w.data_ptr<float>(), out_Binv.data_ptr<float>(), out_qbar.data_ptr<float>(),
       out_F.data_ptr<float>(), out_pos.data_ptr<float>(), out_psi.data_ptr<float>());
   return {out_w, out_Binv, out_qbar, out_F, out_pos, out_psi};
@@ -352,7 +359,7 @@ std::vector<torch::Tensor> anchorstep_forward(
 torch::Tensor anchorstep_backward(
     torch::Tensor anchor_rest, torch::Tensor nn_idx, torch::Tensor volume,
     torch::Tensor w, torch::Tensor Binv, torch::Tensor qbar, torch::Tensor F,
-    double mu, double lam, int64_t M) {
+    torch::Tensor mu_p, torch::Tensor lam_p, int64_t M) {
   int N = nn_idx.size(0);
   int K = nn_idx.size(1);
   auto grad_anchor = torch::zeros({M, 3}, F.options());
@@ -365,7 +372,8 @@ torch::Tensor anchorstep_backward(
       Binv.contiguous().data_ptr<float>(),
       qbar.contiguous().data_ptr<float>(),
       F.contiguous().data_ptr<float>(),
-      (float)mu, (float)lam, N, K,
+      mu_p.contiguous().data_ptr<float>(), lam_p.contiguous().data_ptr<float>(),
+      N, K,
       grad_anchor.data_ptr<float>());
   return grad_anchor;
 }

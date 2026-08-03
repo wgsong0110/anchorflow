@@ -216,17 +216,17 @@ class AnchorElasticSim:
             from anchorstep import fused_energy_force, HAVE_CUDA as _HAVE_FUSED
         except Exception:
             _HAVE_FUSED = False
-        if _HAVE_FUSED and anchor_pos.is_cuda and torch.is_tensor(mu) is False:
+        if _HAVE_FUSED and anchor_pos.is_cuda:
             # fused CUDA path: whole hot loop (weights, shape-match/eigh, F,
             # Fixed Corotated energy, ANALYTIC forces) in two kernels -- no
             # autograd graph. See lib/anchorstep. Falls through to the torch
-            # reference below when unbuilt or on CPU. Per-particle mu/lam
-            # not supported by the kernel yet (scalar only).
+            # reference below when unbuilt or on CPU. mu/lam may be scalars or
+            # per-particle [N] tensors (region-varying material).
             anchor_pos = anchor_pos.detach()
             f_elastic, gaussian_pos, F, _psi = fused_energy_force(
                 self.gaussian_canonical, gaussian_pos_prev, anchor_pos,
                 self.anchor_canonical, self.nn_idx, gaussian_volume,
-                self.radius, float(mu), float(lam))
+                self.radius, mu, lam)
         else:
             anchor_pos = anchor_pos.detach().requires_grad_(True)
             E, F, gaussian_pos = self.elastic_energy(

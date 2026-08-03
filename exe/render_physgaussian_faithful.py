@@ -151,12 +151,14 @@ sim = AnchorElasticSim(pos_mpm.contiguous(), anchor_canonical, K=args.K)
 w0 = sim._weights(pos_mpm, anchor_canonical)
 anchor_mass = torch.zeros(M, device=dev).index_add_(
     0, sim.nn_idx.reshape(-1), (mass_p.unsqueeze(-1) * w0).reshape(-1)).clamp(min=1e-12)
-# scalar Lame params from the volume-weighted mean E/nu (the fused kernel is
-# scalar-only; the per-region split is still reflected in mass/volume)
-E_mean = float((E_p * volume).sum() / volume.sum())
-nu_mean = float((nu_p * volume).sum() / volume.sum())
-mu, lam = lame_from_E_nu(torch.tensor(E_mean, device=dev), torch.tensor(nu_mean, device=dev))
-print(f"[prep] {M} anchors; volume-weighted E={E_mean:.4f} nu={nu_mean:.4f} -> mu={float(mu):.3e} lam={float(lam):.3e}")
+# PER-PARTICLE Lame params -- the config's additional_material_params make the
+# leaf canopy 10x softer than the trunk; averaging them into one scalar (as an
+# earlier version did, when the fused kernel was scalar-only) erases exactly
+# the stiffness contrast that gives ficus its characteristic motion.
+mu, lam = lame_from_E_nu(E_p, nu_p)
+print(f"[prep] {M} anchors; per-particle mu in [{mu.min():.3e}, {mu.max():.3e}] "
+      f"lam in [{lam.min():.3e}, {lam.max():.3e}] "
+      f"({int((E_p != cfg['E']).sum())} particles use a region override)")
 
 # ---- 6. boundary conditions from the config, applied to ANCHORS ----
 fixed_mask = torch.zeros(M, dtype=torch.bool, device=dev)
@@ -267,7 +269,7 @@ with torch.enable_grad():
 
         anchor_pos, anchor_vel, gaussian_pos_prev, F = sim.step(
             anchor_pos, anchor_vel, anchor_mass, gaussian_pos_prev, volume,
-            float(mu), float(lam), substep_dt,
+            mu, lam, substep_dt,
             gravity=(gravity if gravity.abs().sum() > 0 else None),
             damping=damping, fixed_mask=fixed_mask)
         if torch.isnan(anchor_pos).any():
