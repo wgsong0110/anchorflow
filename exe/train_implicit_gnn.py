@@ -82,6 +82,21 @@ ap.add_argument("--rollout_len", type=int, default=8,
                       "this over --rollout_ramp_frac of training. 1 reproduces the old "
                       "single-step objective.")
 ap.add_argument("--rollout_ramp_frac", type=float, default=0.5)
+ap.add_argument("--state_noise", type=float, default=0.0,
+                 help="perturb the sampled state before stepping, as a fraction of the "
+                      "scene's own velocity/acceleration scale. Attacks the same failure as "
+                      "--rollout_len from the other side: instead of visiting the states the "
+                      "network's error actually produces, cover a NEIGHBOURHOOD of the "
+                      "simulator's states, which is far cheaper (one physics eval per "
+                      "iteration instead of T) and can be made deliberately wider than the "
+                      "error ever gets. Unlike GNS's noise injection this needs no target "
+                      "correction: the momentum residual is a function of whatever state you "
+                      "are in, so a perturbed state is simply a different valid problem.")
+ap.add_argument("--noise_smooth", type=int, default=4,
+                 help="rounds of neighbour averaging applied to the noise. Accumulated "
+                      "rollout error is a smooth drift of the whole object, not per-anchor "
+                      "hash; i.i.d. noise would teach the network to erase neighbour "
+                      "disagreement instead of to handle low-frequency drift.")
 ap.add_argument("--out", default=None)
 args = ap.parse_args()
 
@@ -176,8 +191,23 @@ assert len(states) >= 4, "not enough states"
 # characteristic anchor speed -- the CONSTANT that sets the correction gain
 # (see predict_du). Measured from the states the simulator actually visits, so
 # it carries the scene's scale without ever depending on the current state.
+VEL_SCALE = float(torch.stack([v for _, v, _, _ in states]).norm(dim=-1).mean())
 ACC_SCALE = float(torch.stack([a for _, _, a, _ in states]).norm(dim=-1).mean())
 print(f"[states] accel_scale = {ACC_SCALE:.4f} (mean anchor acceleration over collected states)")
+
+
+def smooth_noise(shape, rounds):
+    """spatially coherent unit-scale noise on the anchor graph."""
+    x = torch.randn(shape, device=dev)
+    if rounds > 0:
+        src, dst = edge_index[0], edge_index[1]
+        deg = torch.zeros(shape[0], 1, device=dev).index_add_(
+            0, dst, torch.ones(dst.shape[0], 1, device=dev)).clamp(min=1)
+        for _ in range(rounds):
+            nb = torch.zeros_like(x).index_add_(0, dst, x[src])
+            x = 0.5 * x + 0.5 * nb / deg
+    n = x.norm(dim=-1).mean().clamp(min=1e-12)
+    return x / n
 
 
 def rollout_len(it):
@@ -205,6 +235,22 @@ pbar = tqdm(range(1, args.iters + 1), desc="train", ncols=110)
 for it in pbar:
     p, v, a, gp = [t.clone() for t in states[torch.randint(len(states), (1,)).item()]]
     dt_it = sample_dt(it)
+    if args.state_noise > 0:
+        # velocity and acceleration get their own coherent perturbation, and the
+        # position is displaced consistently with the velocity one over a step,
+        # so the triple stays a plausible state rather than three unrelated
+        # errors. Pinned anchors are left exactly where the BC puts them.
+        s_v = args.state_noise * VEL_SCALE
+        nv = smooth_noise(v.shape, args.noise_smooth)
+        v = v + s_v * nv
+        p = p + (s_v * dt_it) * smooth_noise(p.shape, args.noise_smooth)
+        a = a + (args.state_noise * ACC_SCALE) * smooth_noise(a.shape, args.noise_smooth)
+        v = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(v), v)
+        p = torch.where(fixed_mask.unsqueeze(-1), AC, p)
+        a = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(a), a)
+        with torch.no_grad():   # re-skin the Gaussians onto the perturbed anchors
+            _, _, gp, _ = sim.step(p, torch.zeros_like(v), MASS, gp, VOL, MU, LAM, 0.0,
+                                    gravity=None, damping=1.0, fixed_mask=fixed_mask)
     T = rollout_len(it)
     opt.zero_grad(set_to_none=True)
     rels, diverged = [], False
