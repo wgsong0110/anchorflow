@@ -13,15 +13,10 @@ Falls back to None-export if unbuilt; callers must check HAVE_CUDA.
 import torch
 
 try:
-    from ._C import forward as _fwd, backward as _bwd
+    from ._C import forward as _fwd, backward_gather as _bwd_gather
     HAVE_CUDA = True
 except Exception:
     HAVE_CUDA = False
-try:
-    from ._C import backward_gather as _bwd_gather
-    HAVE_GATHER = True
-except Exception:
-    HAVE_GATHER = False
 
 _CSR_CACHE = {}
 
@@ -30,10 +25,10 @@ def build_csr(nn_idx, M):
     """anchor -> (gaussian, slot) CSR for the contention-free backward.
 
     Connectivity is fixed at construction, so this is built once and cached by
-    (tensor identity, M). Needed because the atomic-scatter backward is
+    (tensor identity, M). This replaces an atomic-scatter backward that was
     contention-bound exactly in the sparse-anchor regime this method targets:
-    measured 0.383 ms at M=512 vs 0.160 ms at M=4096 for identical arithmetic
-    (4.1M atomicAdds onto only M*3 addresses)."""
+    0.383 ms at M=512 vs 0.160 ms at M=4096 for identical arithmetic (4.1M
+    atomicAdds onto only M*3 addresses)."""
     key = (nn_idx.data_ptr(), int(M), tuple(nn_idx.shape))
     hit = _CSR_CACHE.get(key)
     if hit is not None:
@@ -73,18 +68,11 @@ def fused_energy_force(gaussian_canonical, gaussian_pos_prev, anchor_pos,
     if not torch.is_tensor(lam):
         lam = torch.full((N,), float(lam), device=gaussian_canonical.device, dtype=torch.float32)
     mu = mu.contiguous().float(); lam = lam.contiguous().float()
-    # R/Binv/qbar are only consumed by the atomic-scatter fallback; skipping
-    # their stores when the gather path is available removes 21 of the 50
-    # floats/Gaussian this kernel writes (measured: stores were 52% of forward).
-    w, Binv, qbar, F, pos, psi, R, G, c = _fwd(
+    w, F, pos, psi, G, c = _fwd(
         gaussian_canonical, gaussian_pos_prev, anchor_pos, anchor_rest,
-        nn_idx, volume, mu, lam, float(radius), float(eig_floor_frac),
-        3, 0 if HAVE_GATHER else 1)
+        nn_idx, volume, mu, lam, float(radius), float(eig_floor_frac))
     M = anchor_rest.shape[0]
-    if HAVE_GATHER:
-        off, gid, slot = build_csr(nn_idx, M)
-        grad = _bwd_gather(anchor_rest, volume, w, G, c, off, gid, slot,
-                            nn_idx.shape[1], M)
-    else:
-        grad = _bwd(anchor_rest, nn_idx, volume, w, Binv, qbar, F, R, mu, lam, M)
+    off, gid, slot = build_csr(nn_idx, M)
+    grad = _bwd_gather(anchor_rest, volume, w, G, c, off, gid, slot,
+                        nn_idx.shape[1], M)
     return -grad, pos, F.view(-1, 3, 3), psi

@@ -160,13 +160,6 @@ __global__ void anchorstep_forward_kernel(
     const float* __restrict__ mu_p,   // [N] per-particle Lame mu
     const float* __restrict__ lam_p,  // [N] per-particle Lame lambda
     float radius, int N, int K, float eig_floor_frac,
-    int store_aux,  // 0 = skip the R/Binv/qbar stores. They are ONLY read by
-                    // the atomic-scatter fallback; the gather backward needs
-                    // just w/G/c. Stage profiling showed the saved-for-backward
-                    // stores are 52% of the forward kernel (memory-bound, not
-                    // compute-bound: 50 floats x N written and re-read per
-                    // step), so dropping 21 of those 50 floats is the single
-                    // biggest available win.
     int stage,   // profiling only. 1=stop after weights+A/B (no eigh);
                  // 2=+shape-match eigh (F built); 25=+polar eigh ONLY (R in
                  // registers, nothing stored); 26=+FCR energy; 27=+PK1/G math
@@ -176,12 +169,9 @@ __global__ void anchorstep_forward_kernel(
                  // a coarser split showed +0.102 ms for all three together and
                  // could not attribute it.
     float* __restrict__ out_w,        // [N,K]  saved for backward
-    float* __restrict__ out_Binv,     // [N,9]  effective inverse map (saved)
-    float* __restrict__ out_qbar,     // [N,3]  weighted rest centroid offset (saved)
     float* __restrict__ out_F,        // [N,9]
     float* __restrict__ out_pos,      // [N,3]  skinned gaussian position
     float* __restrict__ out_psi,      // [N]    energy density
-    float* __restrict__ out_R,        // [N,9]  polar rotation, saved for backward
     float* __restrict__ out_G,        // [N,9]  G = P(F) @ Binv^T, per-Gaussian
     float* __restrict__ out_c) {      // [N,3]  rest centroid + qbar, per-Gaussian
   // out_G/out_c exist so the gather backward is a pure 9-mult dot product per
@@ -275,7 +265,6 @@ __global__ void anchorstep_forward_kernel(
   float psi_n = mu * frob2 + 0.5f * lam * (J - 1.f) * (J - 1.f);
   out_psi[n] = psi_n;
   if (stage == 26) return;                          // + energy, nothing else
-  if (store_aux) for (int i = 0; i < 9; ++i) out_R[n * 9 + i] = R[i];
 
   // per-Gaussian PK1 stress -> G = P @ Binv^T (used by both backward variants)
   float cof[9];
@@ -304,102 +293,20 @@ __global__ void anchorstep_forward_kernel(
     long a = idx[k];
     for (int d = 0; d < 3; ++d) qbar[d] += w[k] * (anchor_rest[a * 3 + d] - rc[d]);
   }
-  if (store_aux) {
-    for (int i = 0; i < 9; ++i) out_Binv[n * 9 + i] = Binv[i];
-    for (int d = 0; d < 3; ++d) out_qbar[n * 3 + d] = qbar[d];
-  }
   // c = rc + qbar: the gather backward needs q_im = anchor_rest[m] - rc - qbar,
   // so fold both per-Gaussian terms into one vector it can subtract directly.
   for (int d = 0; d < 3; ++d) out_c[n * 3 + d] = rc[d] + qbar[d];
 }
 
-// ---------------- backward: analytic anchor force -----------------------
+// ---------------- backward: analytic anchor force (gather) ---------------
 // dE/dp_m = sum_i V_i * w_im * G_i @ (q_im - qbar_i),  G_i = P(F_i) @ Binv_i^T
 //
-// TWO implementations:
-//  (a) scatter (below): one thread per Gaussian, atomicAdd into [M,3].
-//      Measured to be CONTENTION-bound at small M -- 4.1M atomicAdds landing
-//      on M*3 addresses serialize badly: backward took 0.383 ms at M=512 vs
-//      0.160 ms at M=4096 for IDENTICAL arithmetic. Since sparse anchors are
-//      the whole point of this method, that penalty hits exactly the regime
-//      we care about (and is why replacing MPM's grid only bought ~1.8x:
-//      MPM's p2g atomics spread over ~1M grid nodes and barely contend).
-//  (b) gather (anchorstep_backward_gather_kernel): one BLOCK per anchor,
-//      walking a prebuilt anchor->Gaussian CSR (the connectivity is fixed at
-//      construction, so the CSR is built once) and block-reducing. Zero
-//      atomics, so it is contention-free at any M.
-__global__ void anchorstep_backward_kernel(
-    const float* __restrict__ anchor_rest,          // [M,3]
-    const long* __restrict__ nn_idx,                // [N,K]
-    const float* __restrict__ volume,               // [N]
-    const float* __restrict__ w,                    // [N,K]
-    const float* __restrict__ Binv,                 // [N,9]
-    const float* __restrict__ qbar,                 // [N,3]
-    const float* __restrict__ F_in,                 // [N,9]
-    const float* __restrict__ R_in,                 // [N,9] polar R from forward
-    const float* __restrict__ mu_p, const float* __restrict__ lam_p,
-    int N, int K,
-    float* __restrict__ grad_anchor) {              // [M,3] += dE/dp
-  int n = blockIdx.x * blockDim.x + threadIdx.x;
-  if (n >= N) return;
-  const long* idx = nn_idx + (long)n * K;
-  const float* F = F_in + (long)n * 9;
-
-  // P = 2 mu (F - R) + lam (J-1) J F^{-T}
-  // R comes from the forward pass (it already ran the same polar decomposition
-  // for the energy); recomputing it here was the single biggest cost in the
-  // step, since polar_R runs a full symmetric 3x3 eigendecomposition.
-  const float* R = R_in + (long)n * 9;
-  float J = mat3_det(F);
-  // cofactor(F) = J * F^{-T} (works even at small J)
-  float cof[9];
-  cof[0] = F[4] * F[8] - F[5] * F[7];
-  cof[1] = F[5] * F[6] - F[3] * F[8];
-  cof[2] = F[3] * F[7] - F[4] * F[6];
-  cof[3] = F[2] * F[7] - F[1] * F[8];
-  cof[4] = F[0] * F[8] - F[2] * F[6];
-  cof[5] = F[1] * F[6] - F[0] * F[7];
-  cof[6] = F[1] * F[5] - F[2] * F[4];
-  cof[7] = F[2] * F[3] - F[0] * F[5];
-  cof[8] = F[0] * F[4] - F[1] * F[3];
-  // NOTE cof above is the transpose-of-cofactor layout: cof[i*3+j] = d(det)/dF[i*3+j]
-  float P[9];
-  float mu = mu_p[n], lam = lam_p[n];
-  float coef = lam * (J - 1.f);
-  for (int i = 0; i < 9; ++i) P[i] = 2.f * mu * (F[i] - R[i]) + coef * cof[i];
-
-  const float* Bi = Binv + (long)n * 9;
-  float G[9];   // G = P @ Binv^T
-  for (int i = 0; i < 3; ++i)
-    for (int j = 0; j < 3; ++j) {
-      float s = 0.f;
-      for (int k = 0; k < 3; ++k) s += P[i * 3 + k] * Bi[j * 3 + k];
-      G[i * 3 + j] = s;
-    }
-  float Vn = volume[n];
-  // rest centroid rc = (weighted mean of rest anchors); q_im = rest_m - rc.
-  // qbar (saved) = sum w q = (sum w rest) - rc -> and rc = sum w rest, so
-  // qbar == 0 analytically; saved anyway for exactness under fp rounding.
-  float rc[3] = {0.f, 0.f, 0.f};
-  for (int k = 0; k < K; ++k) {
-    long a = idx[k];
-    float wk = w[n * K + k];
-    for (int d = 0; d < 3; ++d) rc[d] += wk * anchor_rest[a * 3 + d];
-  }
-  const float* qb = qbar + (long)n * 3;
-  for (int k = 0; k < K; ++k) {
-    long a = idx[k];
-    float wk = w[n * K + k];
-    float qm[3];
-    for (int d = 0; d < 3; ++d) qm[d] = anchor_rest[a * 3 + d] - rc[d] - qb[d];
-    for (int i = 0; i < 3; ++i) {
-      float g = Vn * wk * (G[i * 3] * qm[0] + G[i * 3 + 1] * qm[1] + G[i * 3 + 2] * qm[2]);
-      atomicAdd(&grad_anchor[a * 3 + i], g);
-    }
-  }
-}
-
-
+// An atomic-scatter variant (one thread per Gaussian, atomicAdd into [M,3])
+// was implemented first and removed: it was contention-bound exactly in the
+// sparse-anchor regime this method exists for -- 4.1M atomicAdds landing on
+// M*3 addresses took 0.383 ms at M=512 vs 0.160 ms at M=4096 for identical
+// arithmetic. The gather below is faster at every M and needs no R/Binv/qbar
+// stores, which were 21 of the 50 floats/Gaussian the forward kernel wrote.
 // Contention-free backward: one block per anchor walking a prebuilt
 // anchor->(gaussian, slot) CSR. All the expensive per-Gaussian work (stress,
 // G = P @ Binv^T, rest centroid) was already done ONCE in the forward kernel
@@ -466,19 +373,16 @@ std::vector<torch::Tensor> anchorstep_forward(
     torch::Tensor gaussian_canonical, torch::Tensor gaussian_pos_prev,
     torch::Tensor anchor_pos, torch::Tensor anchor_rest, torch::Tensor nn_idx,
     torch::Tensor volume, torch::Tensor mu_p, torch::Tensor lam_p,
-    double radius, double eig_floor_frac, int64_t stage, int64_t store_aux) {
+    double radius, double eig_floor_frac, int64_t stage) {
   CHECK_CUDA(anchor_pos);
   int N = gaussian_canonical.size(0);
   int K = nn_idx.size(1);
   TORCH_CHECK(K <= MAX_K, "K must be <= ", MAX_K);
   auto opt = anchor_pos.options();
   auto out_w = torch::empty({N, K}, opt);
-  auto out_Binv = torch::empty({store_aux ? N : 0, 9}, opt);
-  auto out_qbar = torch::empty({store_aux ? N : 0, 3}, opt);
   auto out_F = torch::empty({N, 9}, opt);
   auto out_pos = torch::empty({N, 3}, opt);
   auto out_psi = torch::empty({N}, opt);
-  auto out_R = torch::empty({store_aux ? N : 0, 9}, opt);
   auto out_G = torch::empty({N, 9}, opt);
   auto out_c = torch::empty({N, 3}, opt);
   int threads = 256, blocks = (N + threads - 1) / threads;
@@ -490,34 +394,11 @@ std::vector<torch::Tensor> anchorstep_forward(
       nn_idx.contiguous().data_ptr<long>(),
       volume.contiguous().data_ptr<float>(),
       mu_p.contiguous().data_ptr<float>(), lam_p.contiguous().data_ptr<float>(),
-      (float)radius, N, K, (float)eig_floor_frac, (int)store_aux, (int)stage,
-      out_w.data_ptr<float>(), out_Binv.data_ptr<float>(), out_qbar.data_ptr<float>(),
+      (float)radius, N, K, (float)eig_floor_frac, (int)stage,
+      out_w.data_ptr<float>(),
       out_F.data_ptr<float>(), out_pos.data_ptr<float>(), out_psi.data_ptr<float>(),
-      out_R.data_ptr<float>(), out_G.data_ptr<float>(), out_c.data_ptr<float>());
-  return {out_w, out_Binv, out_qbar, out_F, out_pos, out_psi, out_R, out_G, out_c};
-}
-
-torch::Tensor anchorstep_backward(
-    torch::Tensor anchor_rest, torch::Tensor nn_idx, torch::Tensor volume,
-    torch::Tensor w, torch::Tensor Binv, torch::Tensor qbar, torch::Tensor F,
-    torch::Tensor R, torch::Tensor mu_p, torch::Tensor lam_p, int64_t M) {
-  int N = nn_idx.size(0);
-  int K = nn_idx.size(1);
-  auto grad_anchor = torch::zeros({M, 3}, F.options());
-  int threads = 256, blocks = (N + threads - 1) / threads;
-  anchorstep_backward_kernel<<<blocks, threads>>>(
-      anchor_rest.contiguous().data_ptr<float>(),
-      nn_idx.contiguous().data_ptr<long>(),
-      volume.contiguous().data_ptr<float>(),
-      w.contiguous().data_ptr<float>(),
-      Binv.contiguous().data_ptr<float>(),
-      qbar.contiguous().data_ptr<float>(),
-      F.contiguous().data_ptr<float>(),
-      R.contiguous().data_ptr<float>(),
-      mu_p.contiguous().data_ptr<float>(), lam_p.contiguous().data_ptr<float>(),
-      N, K,
-      grad_anchor.data_ptr<float>());
-  return grad_anchor;
+      out_G.data_ptr<float>(), out_c.data_ptr<float>());
+  return {out_w, out_F, out_pos, out_psi, out_G, out_c};
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -525,8 +406,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("gaussian_canonical"), pybind11::arg("gaussian_pos_prev"),
         pybind11::arg("anchor_pos"), pybind11::arg("anchor_rest"), pybind11::arg("nn_idx"),
         pybind11::arg("volume"), pybind11::arg("mu_p"), pybind11::arg("lam_p"),
-        pybind11::arg("radius"), pybind11::arg("eig_floor_frac"), pybind11::arg("stage") = 3,
-        pybind11::arg("store_aux") = 1);
-  m.def("backward", &anchorstep_backward, "Analytic anchor force backward, atomic scatter (CUDA)");
+        pybind11::arg("radius"), pybind11::arg("eig_floor_frac"), pybind11::arg("stage") = 3);
   m.def("backward_gather", &anchorstep_backward_gather, "Analytic anchor force backward, contention-free CSR gather (CUDA)");
 }
