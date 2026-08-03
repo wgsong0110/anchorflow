@@ -160,10 +160,14 @@ __global__ void anchorstep_forward_kernel(
     const float* __restrict__ mu_p,   // [N] per-particle Lame mu
     const float* __restrict__ lam_p,  // [N] per-particle Lame lambda
     float radius, int N, int K, float eig_floor_frac,
-    int stage,   // profiling only: 1=stop after weights+A/B, 2=+shape-match eigh
-                 // (F built), 3=full (polar eigh + energy + G/c). Lets us
-                 // attribute cost to the two eigendecompositions instead of
-                 // guessing which part dominates.
+    int stage,   // profiling only. 1=stop after weights+A/B (no eigh);
+                 // 2=+shape-match eigh (F built); 25=+polar eigh ONLY (R in
+                 // registers, nothing stored); 26=+FCR energy; 27=+PK1/G math
+                 // (still not stored); 3=full (all saved-for-backward stores).
+                 // Splitting 2->3 this finely is the only way to separate the
+                 // polar eigh from the stress math from the memory traffic --
+                 // a coarser split showed +0.102 ms for all three together and
+                 // could not attribute it.
     float* __restrict__ out_w,        // [N,K]  saved for backward
     float* __restrict__ out_Binv,     // [N,9]  effective inverse map (saved)
     float* __restrict__ out_qbar,     // [N,3]  weighted rest centroid offset (saved)
@@ -256,11 +260,14 @@ __global__ void anchorstep_forward_kernel(
   // Fixed Corotated energy density
   float R[9];
   polar_R(F, R);
+  if (stage == 25) { out_psi[n] = R[0]; return; }   // polar eigh only
   float J = mat3_det(F);
   float frob2 = 0.f;
   for (int i = 0; i < 9; ++i) { float dfr = F[i] - R[i]; frob2 += dfr * dfr; }
   float mu = mu_p[n], lam = lam_p[n];
-  out_psi[n] = mu * frob2 + 0.5f * lam * (J - 1.f) * (J - 1.f);
+  float psi_n = mu * frob2 + 0.5f * lam * (J - 1.f) * (J - 1.f);
+  out_psi[n] = psi_n;
+  if (stage == 26) return;                          // + energy, nothing else
   for (int i = 0; i < 9; ++i) out_R[n * 9 + i] = R[i];
 
   // per-Gaussian PK1 stress -> G = P @ Binv^T (used by both backward variants)
@@ -271,12 +278,15 @@ __global__ void anchorstep_forward_kernel(
   float coefJ = lam * (J - 1.f);
   float Pk[9];
   for (int i = 0; i < 9; ++i) Pk[i] = 2.f * mu * (F[i] - R[i]) + coefJ * cof[i];
+  float Gm[9];
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j) {
       float sg = 0.f;
       for (int k = 0; k < 3; ++k) sg += Pk[i * 3 + k] * Binv[j * 3 + k];
-      out_G[n * 9 + i * 3 + j] = sg;
+      Gm[i * 3 + j] = sg;
     }
+  if (stage == 27) { out_psi[n] = psi_n + Gm[0]; return; }  // stress+G math, no stores
+  for (int i = 0; i < 9; ++i) out_G[n * 9 + i] = Gm[i];
 
   // saved-for-backward
   for (int k = 0; k < K; ++k) out_w[n * K + k] = w[k];
