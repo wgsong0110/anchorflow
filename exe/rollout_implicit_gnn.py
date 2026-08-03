@@ -237,12 +237,18 @@ if args.sweep:
                                           damping=float(cfg.get("grid_v_damping_scale", 1.0)),
                                           fixed_mask=fixed_mask)
             ref_peak = max(ref_peak, (p_e[~fixed_mask] - AC[~fixed_mask]).norm(dim=-1).max().item())
-    print(f"\n[sweep] explicit reference peak anchor displacement = {ref_peak:.5f}")
-    print(f"  {'dt/sub':>7} {'frames':>8} {'peak disp':>12} {'vs ref':>9} {'R/R_expl':>9}")
+    # every dt must cover the SAME physical time as the reference, or a small dt
+    # looks stable merely for having simulated less of the motion
+    total_sub = args.frames * int(round(targs["dt_big"] / sub_dt))
+    print(f"\n[sweep] explicit reference over {total_sub * sub_dt:.3f}s: "
+          f"peak anchor displacement = {ref_peak:.5f}")
+    print(f"  {'dt/sub':>7} {'steps':>7} {'sim time':>9} {'peak disp':>12} {'vs ref':>9} {'R/R_expl':>9}")
     for m in [float(x) for x in args.sweep.split(",")]:
-        n_ok, peak, rel = rollout_only(m * sub_dt, args.frames)
-        flag = "ok" if (n_ok == args.frames and peak < 5 * ref_peak) else "DIVERGED"
-        print(f"  {m:7.0f} {n_ok:8d} {peak:12.5f} {peak/ref_peak:9.2f} {rel:9.4f}  {flag}")
+        n = max(1, int(round(total_sub / m)))
+        n_ok, peak, rel = rollout_only(m * sub_dt, n)
+        flag = "ok" if (n_ok == n and peak < 2 * ref_peak) else "DIVERGED"
+        print(f"  {m:7.0f} {n_ok:4d}/{n:<4d} {n_ok*m*sub_dt:9.3f} {peak:12.5f} "
+              f"{peak/ref_peak:9.2f} {rel:9.4f}  {flag}")
     sys.exit(0)
 
 # ---------------- GNN rollout: ONE network step per frame ----------------
