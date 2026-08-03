@@ -82,6 +82,17 @@ ap.add_argument("--rollout_len", type=int, default=8,
                       "this over --rollout_ramp_frac of training. 1 reproduces the old "
                       "single-step objective.")
 ap.add_argument("--rollout_ramp_frac", type=float, default=0.5)
+ap.add_argument("--rollout_warmup_frac", type=float, default=0.3,
+                 help="fraction of training spent at T=1 before the chain grows. With a "
+                      "zero-init decoder the chain is at first just the explicit predictor "
+                      "rolled out, which diverges within a few steps at these dt; measured, "
+                      "training with the chain from the start left the residual ratio at "
+                      "1.0000 for 12000 iterations, including on the clean simulator state "
+                      "the chain starts from. The network has to be worth chaining first.")
+ap.add_argument("--max_drift", type=float, default=3.0,
+                 help="cut the chain once the anchors have drifted this many times further "
+                      "than they ever do in the explicit reference. States past that are not "
+                      "on any physical trajectory and training on them is noise.")
 ap.add_argument("--loss_norm", choices=["none", "resid"], default="resid",
                  help="'resid' divides each step's loss by ||R_explicit|| so samples at "
                       "different dt and different points along a chain weigh comparably; "
@@ -197,9 +208,11 @@ assert len(states) >= 4, "not enough states"
 # characteristic anchor speed -- the CONSTANT that sets the correction gain
 # (see predict_du). Measured from the states the simulator actually visits, so
 # it carries the scene's scale without ever depending on the current state.
+DRIFT_REF = float(torch.stack([p for p, _, _, _ in states]).sub(AC).norm(dim=-1).max())
 VEL_SCALE = float(torch.stack([v for _, v, _, _ in states]).norm(dim=-1).mean())
 ACC_SCALE = float(torch.stack([a for _, _, a, _ in states]).norm(dim=-1).mean())
 print(f"[states] accel_scale = {ACC_SCALE:.4f} (mean anchor acceleration over collected states)")
+print(f"[states] drift_ref = {DRIFT_REF:.5f} (peak anchor displacement in the reference)")
 
 
 def smooth_noise(shape, rounds):
@@ -219,7 +232,10 @@ def smooth_noise(shape, rounds):
 def rollout_len(it):
     if args.rollout_len <= 1:
         return 1
-    prog = min(1.0, (it - 1) / max(1.0, args.rollout_ramp_frac * args.iters))
+    warm = args.rollout_warmup_frac * args.iters
+    if it <= warm:
+        return 1
+    prog = min(1.0, (it - warm) / max(1.0, args.rollout_ramp_frac * args.iters))
     return max(1, int(round(1 + prog * (args.rollout_len - 1))))
 
 
@@ -288,7 +304,8 @@ for it in pbar:
             v = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(v), v)
             p = torch.where(fixed_mask.unsqueeze(-1), AC, p)
             a = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(a), a)
-            if not torch.isfinite(p).all():
+            drift = (p[~fixed_mask] - AC[~fixed_mask]).norm(dim=-1).max()
+            if not torch.isfinite(p).all() or drift > args.max_drift * DRIFT_REF:
                 diverged = True
                 break
             _, _, gp, _ = sim.step(p, torch.zeros_like(v), MASS, gp, VOL, MU, LAM, 0.0,
