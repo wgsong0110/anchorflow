@@ -5,12 +5,12 @@ lib/anchorflow/implicit.py for why the two are the same thing here).
 
 Setup:
   * anchors carry (position, velocity, acceleration); the GNN sees v, a and the
-    step size and outputs a per-anchor ACCELERATION correction, from which
-    du = predictor + beta*dt^2 * a_corr. Predicting acceleration (not du)
-    keeps the output scale stable across dt, and the decoder is zero-init so
-    training starts exactly at du = predictor, i.e. the pure inertial coast an
-    explicit step would take. The first gradient it sees is therefore the
-    elastic force -- the right inductive bias.
+    step size and outputs a dimensionless per-anchor correction to the
+    displacement those imply: du = predictor + |predictor| * net (see
+    predict_du). The decoder is zero-init so training starts exactly at
+    du = predictor, i.e. the pure inertial coast an explicit step would take,
+    and the first gradient it sees is the elastic force -- the right
+    inductive bias.
   * loss is the incremental potential L(du), whose gradient is exactly the
     negative momentum residual -R(du).
   * the reported metric is ||R|| relative to ||R(du=predictor)||: below 1 means
@@ -40,7 +40,8 @@ from anchorflow.anchor_mpm import AnchorElasticSim, lame_from_E_nu
 from anchorflow.dynamics import mlp, MPNNLayer
 from anchorflow import graph as G
 from anchorflow.implicit import (incremental_potential, newmark_predictor,
-                                  newmark_velocity, newton_reference, DuCorrector)
+                                  newmark_velocity, newton_reference, DuCorrector,
+                                  predict_du)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -153,10 +154,8 @@ hist = []
 pbar = tqdm(range(1, args.iters + 1), desc="train", ncols=110)
 for it in pbar:
     p_n, v_n, a_n, gp = states[torch.randint(len(states), (1,)).item()]
-    pred = newmark_predictor(v_n, a_n, args.dt_big, args.beta)
-    a_corr = net(p_n, v_n, a_n, args.dt_big, edge_index)
-    du = pred + args.beta * (args.dt_big ** 2) * a_corr
-    du = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(du), du)
+    du, pred0 = predict_du(net, p_n, v_n, a_n, args.dt_big, edge_index,
+                            args.beta, fixed_mask)
 
     L, R = incremental_potential(du, sim, p_n, gp, VOL, MU, LAM, MASS,
                                   v_n, a_n, args.dt_big, None, args.beta, fixed_mask)
@@ -168,8 +167,7 @@ for it in pbar:
     if it % 25 == 0 or it == 1:
         with torch.no_grad():
             _, R0 = incremental_potential(
-                torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(pred), pred),
-                sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n, args.dt_big, None,
+                pred0, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n, args.dt_big, None,
                 args.beta, fixed_mask)
             rel = (R.norm() / R0.norm().clamp(min=1e-20)).item()
         hist.append((it, float(L), R.norm().item(), rel))
@@ -184,14 +182,11 @@ print("\n[eval] one-shot GNN vs LBFGS-iterated solve of the same potential")
 print(f"  {'state':>6} {'R_explicit':>12} {'R_gnn':>12} {'R_iter':>12} {'gnn/expl':>9} {'iter/expl':>9}")
 for si in range(0, len(states), max(1, len(states)//5)):
     p_n, v_n, a_n, gp = states[si]
-    pred = newmark_predictor(v_n, a_n, args.dt_big, args.beta)
-    pred0 = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(pred), pred)
     with torch.no_grad():
+        du_g, pred0 = predict_du(net, p_n, v_n, a_n, args.dt_big, edge_index,
+                                  args.beta, fixed_mask)
         _, R0 = incremental_potential(pred0, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
                                        args.dt_big, None, args.beta, fixed_mask)
-        a_corr = net(p_n, v_n, a_n, args.dt_big, edge_index)
-        du_g = pred + args.beta * (args.dt_big ** 2) * a_corr
-        du_g = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(du_g), du_g)
         _, Rg = incremental_potential(du_g, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
                                        args.dt_big, None, args.beta, fixed_mask)
     du_i = newton_reference(sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n, args.dt_big,

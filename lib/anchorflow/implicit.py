@@ -130,8 +130,9 @@ def newton_reference(sim, anchor_pos_n, gaussian_pos_prev, volume, mu, lam,
 
 
 class DuCorrector(nn.Module):
-    """(v, a, dt) per anchor + anchor graph -> per-anchor acceleration
-    correction, on top of the Newmark inertial predictor.
+    """(v, a, dt) per anchor + anchor graph -> a DIMENSIONLESS per-anchor
+    correction to the Newmark inertial predictor. See predict_du for how it
+    becomes a displacement.
 
     The decoder is zero-init, so at the start of training du equals the
     predictor exactly -- i.e. the network begins as a no-op on top of an
@@ -157,3 +158,30 @@ class DuCorrector(nn.Module):
         for layer in self.proc:
             h, e = layer(h, edge_index, e)
         return self.dec(h)
+
+
+def predict_du(net, p, v, a, dt, edge_index, beta=0.25, fixed_mask=None):
+    """du = predictor + |predictor| * net(...), i.e. the network's job is
+    exactly what it was asked to be: correct the displacement the anchors'
+    own velocity and acceleration predict.
+
+    An earlier version read the output as an acceleration and mapped it
+    through Newmark's eq. (8), du = predictor + beta*dt^2 * net(...). That
+    factor is not required by anything -- eq. (8) is needed to turn the FINAL
+    du into (a_{n+1}, v_{n+1}), not to produce du -- and at dt = 4e-3 it is
+    4e-6, while the predictor itself is ~6e-4. The network had to learn to
+    emit ~1e2 before its output meant anything, and its parameter gradients
+    were scaled down by the same 4e-6.
+
+    Scaling by the predictor's own magnitude instead makes the output
+    dimensionless: net ~ O(1) is a correction comparable to the predictor,
+    and when dt changes the gain follows the predictor automatically, so the
+    output range is dt-independent for free.
+    """
+    pred = newmark_predictor(v, a, dt, beta)
+    scale = pred.norm(dim=-1).mean().clamp(min=1e-12)     # one scalar per state
+    du = pred + scale * net(p, v, a, dt, edge_index)
+    if fixed_mask is not None:
+        du = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(du), du)
+        pred = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(pred), pred)
+    return du, pred

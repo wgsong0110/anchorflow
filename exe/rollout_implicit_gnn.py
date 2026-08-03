@@ -28,8 +28,8 @@ from tqdm import tqdm
 
 from anchorflow.anchors import AnchorSet
 from anchorflow.anchor_mpm import AnchorElasticSim, lame_from_E_nu
-from anchorflow.implicit import (incremental_potential, newmark_predictor,
-                                  newmark_accel, newmark_velocity, DuCorrector)
+from anchorflow.implicit import (incremental_potential, newmark_accel,
+                                  newmark_velocity, DuCorrector, predict_du)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -190,13 +190,10 @@ a_g = torch.zeros(M, 3, device=dev); gp_g = POS.clone()
 frames_g, stats = [], []
 damping = float(cfg.get("grid_v_damping_scale", 1.0))
 for f in tqdm(range(args.frames), desc="gnn", ncols=90):
-    pred = newmark_predictor(v_g, a_g, dt_big, beta)
-    du = pred + beta * dt_big ** 2 * net(p_g, v_g, a_g, dt_big, edge_index)
-    du = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(du), du)
+    du, pred0 = predict_du(net, p_g, v_g, a_g, dt_big, edge_index, beta, fixed_mask)
     _, R = incremental_potential(du, sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,
                                   dt_big, None, beta, fixed_mask)
-    _, R0 = incremental_potential(torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(pred), pred),
-                                   sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,
+    _, R0 = incremental_potential(pred0, sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,
                                    dt_big, None, beta, fixed_mask)
     a_next = newmark_accel(du, v_g, a_g, dt_big, beta)
     v_g = damping * newmark_velocity(a_next, v_g, a_g, dt_big, gamma)
