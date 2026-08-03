@@ -63,25 +63,45 @@ print(f"[cfg] dt_big={dt_big} (= {steps_per_frame} explicit substeps), beta={bet
 gaussians = GaussianModel(3, fea_dim=0)
 gaussians.load_ply(args.ply)
 xyz_all = gaussians.get_xyz.detach().clone(); op = gaussians.get_opacity.detach().clone()
+# The opacity threshold selects PHYSICS MATERIAL, nothing else. DreamPhysics
+# additionally deletes the rejected kernels from the render (ms_simulation.py:142
+# masks position, covariance, opacity and SH alike), but on ficus those are 16%
+# of the Gaussians sitting *inside* the foliage (median distance to a kept one:
+# 0.002 in a scene spanning 1.0) -- deleting them throws away real appearance,
+# and leaving them undeformed pins them at their canonical position and smears
+# an afterimage over the moving plant. Both are wrong. Every Gaussian is skinned
+# by the anchors; the rejected ones simply carry zero volume, which makes their
+# elastic energy and their force contribution exactly zero (the fused kernel only
+# ever multiplies by volume, never divides), so the physics is bit-for-bit the
+# filtered simulation while the render stays complete.
 keep = op[:, 0] > cfg["opacity_threshold"]
-kept_idx = keep.nonzero().flatten()
 xyz_w = xyz_all[keep]
-pmin, pmax = xyz_w.min(0).values, xyz_w.max(0).values
+pmin, pmax = xyz_w.min(0).values, xyz_w.max(0).values     # MPM space from the material only
 orig_mean = (pmin + pmax) / 2; scale_origin = 1.0 / (pmax - pmin).max()
-POS = ((xyz_w - orig_mean) * scale_origin + torch.tensor([1., 1., 1.], device=dev)).contiguous()
+to_mpm = lambda p: (p - orig_mean) * scale_origin + torch.tensor([1., 1., 1.], device=dev)
+POS = to_mpm(xyz_all).contiguous()          # ALL Gaussians live in the sim
+POS_MAT = POS[keep]                          # ...but only these are material
 N = POS.shape[0]
+print(f"[prep] opacity>{cfg['opacity_threshold']}: {int(keep.sum())}/{N} carry material, "
+      f"all {N} are skinned")
 
 
 def undo(p):
     return (p - torch.tensor([1., 1., 1.], device=dev)) / scale_origin + orig_mean
 
 
+# voxel-occupancy volumes are a property of the MATERIAL point cloud, so they
+# are computed over the kept subset exactly as before and scattered back; the
+# rejected Gaussians keep volume 0.
 ng, grid_lim = 100, 2.0
 dx = grid_lim / ng
-vi = (POS / dx).long().clamp(0, ng - 1)
+vi = (POS_MAT / dx).long().clamp(0, ng - 1)
 flat = (vi[:, 0] * ng + vi[:, 1]) * ng + vi[:, 2]
-cnt = torch.zeros(ng ** 3, device=dev).index_add_(0, flat, torch.ones(N, device=dev))
-VOL = ((dx ** 3) / cnt[flat]).contiguous()
+cnt = torch.zeros(ng ** 3, device=dev).index_add_(
+    0, flat, torch.ones(POS_MAT.shape[0], device=dev))
+VOL = torch.zeros(N, device=dev)
+VOL[keep] = (dx ** 3) / cnt[flat]
+VOL = VOL.contiguous()
 E_p = torch.full((N,), float(cfg["E"]), device=dev)
 nu_p = torch.full((N,), float(cfg["nu"]), device=dev)
 dens_p = torch.full((N,), float(cfg["density"]), device=dev)
@@ -89,12 +109,16 @@ for reg in cfg.get("additional_material_params", []):
     c = torch.tensor(reg["point"], device=dev); s = torch.tensor(reg["size"], device=dev)
     inside = ((POS - c).abs() <= s).all(-1)
     E_p[inside] = reg["E"]; nu_p[inside] = reg["nu"]; dens_p[inside] = reg["density"]
-mass_p = dens_p * VOL
+mass_p = dens_p * VOL                       # zero wherever VOL is zero
 MU, LAM = lame_from_E_nu(E_p, nu_p)
 
-aset, _ = AnchorSet.from_gaussians(POS, node_num=targs["n_anchors"], latent_dim=0, e_dim=0, K=targs["K"])
+# anchors are seeded from the material cloud, and the RBF radius is taken from
+# it too, so adding the skinned-only Gaussians cannot shift the physics.
+aset, _ = AnchorSet.from_gaussians(POS_MAT, node_num=targs["n_anchors"], latent_dim=0,
+                                    e_dim=0, K=targs["K"])
 AC = aset.canonical.clone().contiguous(); M = AC.shape[0]
-sim = AnchorElasticSim(POS, AC, K=targs["K"])
+radius_mat = AnchorElasticSim(POS_MAT, AC, K=targs["K"]).radius
+sim = AnchorElasticSim(POS, AC, K=targs["K"], radius=radius_mat)
 w0 = sim._weights(POS, AC)
 MASS = torch.zeros(M, device=dev).index_add_(
     0, sim.nn_idx.reshape(-1), (mass_p.unsqueeze(-1) * w0).reshape(-1)).clamp(min=1e-12)
@@ -137,21 +161,12 @@ class _P:
 
 pipe = _P()
 bg = torch.tensor([1., 1., 1.], device=dev)
-# The opacity filter drops 16% of ficus's Gaussians from the SIMULATION, and
-# they are not background floaters -- they are interleaved through the foliage
-# (median distance to a simulated Gaussian: 0.002 in a scene spanning 1.0). If
-# they stay in the render they keep their canonical position forever and smear
-# an afterimage over the moving plant. DreamPhysics masks them out of position,
-# covariance, opacity AND SH (ms_simulation.py:142), i.e. removes them from the
-# render entirely; do the same by driving their opacity logit to zero.
-gaussians._opacity.data[~keep] = -20.0
 d_rot = torch.zeros(xyz_all.shape[0], 4, device=dev); d_rot[:, 0] = 1.
 d_sc = torch.zeros(xyz_all.shape[0], 3, device=dev)
 
 
 def render_state(gauss_mpm):
-    d_xyz = torch.zeros_like(xyz_all)
-    d_xyz[kept_idx] = undo(gauss_mpm) - xyz_w
+    d_xyz = undo(gauss_mpm) - xyz_all
     im = torch.clamp(render(cam, gaussians, pipe, bg, d_xyz, d_rot, d_sc, d_rot_as_res=True)["render"], 0, 1)
     return (im.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
 
@@ -161,7 +176,9 @@ def initial_impulse():
     for bc in cfg.get("boundary_conditions", []):
         if bc["type"] == "particle_impulse":
             force = torch.tensor(bc["force"], device=dev)
-            wsum = torch.zeros(M, device=dev).index_add_(0, sim.nn_idx.reshape(-1), w0.reshape(-1))
+            # material particles only -- the zero-volume Gaussians carry no mass
+            wsum = torch.zeros(M, device=dev).index_add_(
+                0, sim.nn_idx.reshape(-1), (w0 * keep.unsqueeze(-1)).reshape(-1))
             v = v + (wsum.unsqueeze(-1) * force.unsqueeze(0) * sub_dt) / MASS.unsqueeze(-1)
     v[fixed_mask] = 0
     return v

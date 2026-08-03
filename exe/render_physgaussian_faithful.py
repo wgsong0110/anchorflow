@@ -86,19 +86,24 @@ gaussians.load_ply(args.ply)
 xyz_world_all = gaussians.get_xyz.detach().clone()
 opacity_all = gaussians.get_opacity.detach().clone()
 
-# ---- 1. opacity filter (DreamPhysics does this before anything else) ----
+# ---- 1. opacity filter -- MATERIAL SELECTION ONLY ----
+# DreamPhysics also deletes the rejected kernels from the render (position,
+# covariance, opacity and SH are all masked at ms_simulation.py:142). That is a
+# conflation of two different jobs, and on ficus it is visibly wrong: the
+# rejected 16% are not background floaters but Gaussians interleaved through the
+# foliage (median distance to a kept one: 0.002 in a scene spanning 1.0). Delete
+# them and the plant loses real appearance; leave them undeformed and they stay
+# pinned at their canonical position, smearing an afterimage over the moving
+# plant. So the threshold decides only what carries MATERIAL: every Gaussian is
+# skinned by the anchors, the rejected ones just get zero volume, which zeroes
+# their elastic energy and their force contribution exactly (the fused kernel
+# only ever multiplies by volume, never divides). The physics is bit-for-bit the
+# filtered simulation; the render is complete.
 keep = (opacity_all[:, 0] > cfg["opacity_threshold"])
-kept_idx = keep.nonzero().flatten()
-xyz_world = xyz_world_all[keep]
-N = xyz_world.shape[0]
-print(f"[prep] opacity>{cfg['opacity_threshold']}: kept {N}/{xyz_world_all.shape[0]} Gaussians")
-# DreamPhysics masks the dropped kernels out of position, covariance, opacity
-# AND SH (ms_simulation.py:142) -- they leave the render, not just the sim. On
-# ficus the dropped 16% are interleaved through the foliage (median distance to
-# a simulated Gaussian: 0.002 in a scene spanning 1.0), so leaving them in the
-# render pins them at their canonical position and smears an afterimage over
-# the moving plant. Drive their opacity logit to zero to match.
-gaussians._opacity.data[~keep] = -20.0
+xyz_world = xyz_world_all[keep]          # material subset; also defines MPM space
+N_mat = xyz_world.shape[0]
+N = xyz_world_all.shape[0]
+print(f"[prep] opacity>{cfg['opacity_threshold']}: {N_mat}/{N} carry material, all {N} skinned")
 
 # ---- 2. rotations (ficus: [0.0] deg about axis 0 -> identity, kept for fidelity) ----
 def rot_mat(deg, axis):
@@ -112,15 +117,19 @@ def rot_mat(deg, axis):
     return torch.tensor(m, dtype=torch.float32, device=dev)
 
 rot_mats = [rot_mat(d, a) for d, a in zip(cfg["rotation_degree"], cfg["rotation_axis"])]
-pos = xyz_world
+pos_all = xyz_world_all
 for R_ in rot_mats:
-    pos = pos @ R_.T
+    pos_all = pos_all @ R_.T
+pos = pos_all[keep]
 
 # ---- 3. transform2origin + shift2center111 ----
+# the bbox comes from the MATERIAL cloud, so MPM space (and hence every
+# MPM-space number in the config) is unchanged by carrying the extra Gaussians.
 pmin, pmax = pos.min(0).values, pos.max(0).values
 orig_mean = (pmin + pmax) / 2.0
 scale_origin = 1.0 / (pmax - pmin).max()
-pos_mpm = (pos - orig_mean) * scale_origin + torch.tensor([1.0, 1.0, 1.0], device=dev)
+pos_mpm_all = (pos_all - orig_mean) * scale_origin + torch.tensor([1.0, 1.0, 1.0], device=dev)
+pos_mpm = pos_mpm_all[keep]
 print(f"[prep] MPM space: scale={scale_origin.item():.4f} bbox={pos_mpm.min(0).values.tolist()} .. {pos_mpm.max(0).values.tolist()}")
 
 
@@ -133,10 +142,11 @@ def undo_all(p_mpm):
 
 # ---- 4. particle volume (get_particle_volume convention) + per-region material ----
 grid_dx = args.grid_lim / args.n_grid
-vi = (pos_mpm / grid_dx).long().clamp(0, args.n_grid - 1)
+vi = (pos_mpm / grid_dx).long().clamp(0, args.n_grid - 1)   # material cloud only
 flat = (vi[:, 0] * args.n_grid + vi[:, 1]) * args.n_grid + vi[:, 2]
-cnt = torch.zeros(args.n_grid ** 3, device=dev).index_add_(0, flat, torch.ones(N, device=dev))
-volume = (grid_dx ** 3) / cnt[flat]
+cnt = torch.zeros(args.n_grid ** 3, device=dev).index_add_(0, flat, torch.ones(N_mat, device=dev))
+volume = torch.zeros(N, device=dev)
+volume[keep] = (grid_dx ** 3) / cnt[flat]
 
 E_p = torch.full((N,), float(cfg["E"]), device=dev)
 nu_p = torch.full((N,), float(cfg["nu"]), device=dev)
@@ -144,9 +154,9 @@ dens_p = torch.full((N,), float(cfg["density"]), device=dev)
 for reg in cfg.get("additional_material_params", []):
     c = torch.tensor(reg["point"], device=dev)
     s = torch.tensor(reg["size"], device=dev)
-    inside = ((pos_mpm - c).abs() <= s).all(-1)
+    inside = ((pos_mpm_all - c).abs() <= s).all(-1)
     E_p[inside] = reg["E"]; nu_p[inside] = reg["nu"]; dens_p[inside] = reg["density"]
-    print(f"[prep] region {reg['point']}+-{reg['size']}: {inside.sum().item()} particles -> E={reg['E']} density={reg['density']}")
+    print(f"[prep] region {reg['point']}+-{reg['size']}: {int((inside & keep).sum())} material particles -> E={reg['E']} density={reg['density']}")
 mass_p = dens_p * volume
 print(f"[prep] total volume={volume.sum().item():.4f} total mass={mass_p.sum().item():.4f}")
 
@@ -154,8 +164,11 @@ print(f"[prep] total volume={volume.sum().item():.4f} total mass={mass_p.sum().i
 anchor_set, _ = AnchorSet.from_gaussians(pos_mpm, node_num=args.n_anchors, latent_dim=0, e_dim=0, K=args.K)
 anchor_canonical = anchor_set.canonical.clone().contiguous()
 M = anchor_canonical.shape[0]
-sim = AnchorElasticSim(pos_mpm.contiguous(), anchor_canonical, K=args.K)
-w0 = sim._weights(pos_mpm, anchor_canonical)
+# anchors are seeded from the material cloud and the RBF radius is taken from it
+# too, so the zero-volume Gaussians cannot shift the physics through either.
+radius_mat = AnchorElasticSim(pos_mpm.contiguous(), anchor_canonical, K=args.K).radius
+sim = AnchorElasticSim(pos_mpm_all.contiguous(), anchor_canonical, K=args.K, radius=radius_mat)
+w0 = sim._weights(pos_mpm_all, anchor_canonical)
 anchor_mass = torch.zeros(M, device=dev).index_add_(
     0, sim.nn_idx.reshape(-1), (mass_p.unsqueeze(-1) * w0).reshape(-1)).clamp(min=1e-12)
 # PER-PARTICLE Lame params -- the config's additional_material_params make the
@@ -254,7 +267,7 @@ def dots(img, xy, color, r=4):
 # ---- 8. simulate ----
 anchor_pos = anchor_canonical.clone()
 anchor_vel = torch.zeros(M, 3, device=dev)
-gaussian_pos_prev = pos_mpm.clone().contiguous()
+gaussian_pos_prev = pos_mpm_all.clone().contiguous()
 frames = []
 nan_hit = False
 step_global = 0
@@ -268,8 +281,12 @@ with torch.enable_grad():
         # * force * dt of momentum.
         f_ext = None
         if impulse_force is not None and step_global <= impulse_num_dt:
+            # only MATERIAL particles receive the impulse (the zero-volume
+            # Gaussians are skinned passengers, not mass), so their P2G weights
+            # must not enter the momentum handed to each anchor.
+            w_mat = w0 * keep.unsqueeze(-1)
             wsum = torch.zeros(M, device=dev).index_add_(
-                0, sim.nn_idx.reshape(-1), w0.reshape(-1))
+                0, sim.nn_idx.reshape(-1), w_mat.reshape(-1))
             dv = (wsum.unsqueeze(-1) * impulse_force.unsqueeze(0) * substep_dt) / anchor_mass.unsqueeze(-1)
             anchor_vel = anchor_vel + dv
             print(f"\n[impulse] applied at step {step_global}: max|dv|={dv.norm(dim=-1).max().item():.4e}")
@@ -285,9 +302,7 @@ with torch.enable_grad():
             break
         if step_global % steps_per_frame == 0:
             with torch.no_grad():
-                world_now = undo_all(gaussian_pos_prev)
-                d_xyz = torch.zeros_like(xyz_world_all)
-                d_xyz[kept_idx] = world_now - xyz_world
+                d_xyz = undo_all(gaussian_pos_prev) - xyz_world_all
                 res = render(cam, gaussians, pipe, background, d_xyz, d_rotation, d_scaling, d_rot_as_res=True)
                 img = torch.clamp(res["render"], 0, 1)
                 fr = (img.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8").copy()
