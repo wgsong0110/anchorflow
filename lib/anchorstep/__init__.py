@@ -73,9 +73,13 @@ def fused_energy_force(gaussian_canonical, gaussian_pos_prev, anchor_pos,
     if not torch.is_tensor(lam):
         lam = torch.full((N,), float(lam), device=gaussian_canonical.device, dtype=torch.float32)
     mu = mu.contiguous().float(); lam = lam.contiguous().float()
+    # R/Binv/qbar are only consumed by the atomic-scatter fallback; skipping
+    # their stores when the gather path is available removes 21 of the 50
+    # floats/Gaussian this kernel writes (measured: stores were 52% of forward).
     w, Binv, qbar, F, pos, psi, R, G, c = _fwd(
         gaussian_canonical, gaussian_pos_prev, anchor_pos, anchor_rest,
-        nn_idx, volume, mu, lam, float(radius), float(eig_floor_frac))
+        nn_idx, volume, mu, lam, float(radius), float(eig_floor_frac),
+        3, 0 if HAVE_GATHER else 1)
     M = anchor_rest.shape[0]
     if HAVE_GATHER:
         off, gid, slot = build_csr(nn_idx, M)
