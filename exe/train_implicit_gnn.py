@@ -40,7 +40,7 @@ from anchorflow.anchor_mpm import AnchorElasticSim, lame_from_E_nu
 from anchorflow.dynamics import mlp, MPNNLayer
 from anchorflow import graph as G
 from anchorflow.implicit import (incremental_potential, newmark_predictor,
-                                  newmark_velocity, newton_reference)
+                                  newmark_velocity, newton_reference, DuCorrector)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -112,29 +112,6 @@ print(f"[setup] N={N} M={M} pinned={int(fixed_mask.sum())} dt_big={args.dt_big} 
       f"(explicit substep in config = {cfg['substep_dt']})")
 
 edge_index = G.knn_graph(AC, k=args.k_graph)
-
-
-class DuCorrector(nn.Module):
-    """(v, a, dt) per anchor + anchor graph -> per-anchor acceleration
-    correction. Zero-init output => du starts exactly at the inertial
-    predictor, so the network begins as a no-op on top of explicit stepping."""
-
-    def __init__(self, hidden=128, mp_steps=4, edge_in=4):
-        super().__init__()
-        self.node_enc = mlp([3 + 3 + 2, hidden, hidden])     # v, a, [dt, log dt]
-        self.edge_enc = mlp([edge_in, hidden, hidden])
-        self.proc = nn.ModuleList(MPNNLayer(hidden) for _ in range(mp_steps))
-        self.dec = mlp([hidden, hidden, 3], layernorm=False)
-        last = [m for m in self.dec.modules() if isinstance(m, nn.Linear)][-1]
-        nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
-
-    def forward(self, p, v, a, dt, edge_index):
-        t = torch.tensor([[dt, math.log10(dt)]], device=p.device).expand(p.shape[0], -1)
-        h = self.node_enc(torch.cat([v, a, t], -1))
-        e = self.edge_enc(G.edge_features(p, edge_index))
-        for layer in self.proc:
-            h, e = layer(h, edge_index, e)
-        return self.dec(h)
 
 
 net = DuCorrector(args.hidden, args.mp_steps).to(dev)

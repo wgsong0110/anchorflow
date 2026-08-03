@@ -29,7 +29,7 @@ from tqdm import tqdm
 from anchorflow.anchors import AnchorSet
 from anchorflow.anchor_mpm import AnchorElasticSim, lame_from_E_nu
 from anchorflow.implicit import (incremental_potential, newmark_predictor,
-                                  newmark_accel, newmark_velocity)
+                                  newmark_accel, newmark_velocity, DuCorrector)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -106,8 +106,6 @@ for bc in cfg.get("boundary_conditions", []):
 gravity = torch.tensor(cfg["g"], dtype=torch.float32, device=dev)
 edge_index = G.knn_graph(AC, k=targs["k_graph"])
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from train_implicit_gnn import DuCorrector          # noqa: E402  (same definition)
 net = DuCorrector(targs["hidden"], targs["mp_steps"]).to(dev)
 net.load_state_dict(ck["model"]); net.eval()
 

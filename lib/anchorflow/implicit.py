@@ -28,9 +28,14 @@ parameterized by (beta, gamma) but does not print the values it used.
 """
 from __future__ import annotations
 
+import math
+
 import torch
+import torch.nn as nn
 
 from anchorstep import fused_energy_force
+from .dynamics import mlp, MPNNLayer
+from . import graph as G
 
 
 class _ElasticEnergy(torch.autograd.Function):
@@ -122,3 +127,33 @@ def newton_reference(sim, anchor_pos_n, gaussian_pos_prev, volume, mu, lam,
         if fixed_mask is not None:
             du.data = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(du), du)
     return du.detach()
+
+
+class DuCorrector(nn.Module):
+    """(v, a, dt) per anchor + anchor graph -> per-anchor acceleration
+    correction, on top of the Newmark inertial predictor.
+
+    The decoder is zero-init, so at the start of training du equals the
+    predictor exactly -- i.e. the network begins as a no-op on top of an
+    explicit step, and the first gradient it receives is the elastic force
+    (see incremental_potential above). Lives in the library rather than in
+    the training script so the rollout script can import it without running
+    the trainer's argparse.
+    """
+
+    def __init__(self, hidden=128, mp_steps=4, edge_in=4):
+        super().__init__()
+        self.node_enc = mlp([3 + 3 + 2, hidden, hidden])     # v, a, [dt, log10 dt]
+        self.edge_enc = mlp([edge_in, hidden, hidden])
+        self.proc = nn.ModuleList(MPNNLayer(hidden) for _ in range(mp_steps))
+        self.dec = mlp([hidden, hidden, 3], layernorm=False)
+        last = [m for m in self.dec.modules() if isinstance(m, nn.Linear)][-1]
+        nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
+
+    def forward(self, p, v, a, dt, edge_index):
+        t = torch.tensor([[dt, math.log10(dt)]], device=p.device).expand(p.shape[0], -1)
+        h = self.node_enc(torch.cat([v, a, t], -1))
+        e = self.edge_enc(G.edge_features(p, edge_index))
+        for layer in self.proc:
+            h, e = layer(h, edge_index, e)
+        return self.dec(h)
