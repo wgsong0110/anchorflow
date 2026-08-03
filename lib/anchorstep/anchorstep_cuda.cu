@@ -265,7 +265,6 @@ __global__ void anchorstep_forward_kernel(
       for (int k = 0; k < 3; ++k) sg += Pk[i * 3 + k] * Binv[j * 3 + k];
       out_G[n * 9 + i * 3 + j] = sg;
     }
-  for (int d = 0; d < 3; ++d) out_c[n * 3 + d] = rc[d] + qbar[d];
 
   // saved-for-backward
   for (int k = 0; k < K; ++k) out_w[n * K + k] = w[k];
@@ -277,6 +276,9 @@ __global__ void anchorstep_forward_kernel(
     for (int d = 0; d < 3; ++d) qbar[d] += w[k] * (anchor_rest[a * 3 + d] - rc[d]);
   }
   for (int d = 0; d < 3; ++d) out_qbar[n * 3 + d] = qbar[d];
+  // c = rc + qbar: the gather backward needs q_im = anchor_rest[m] - rc - qbar,
+  // so fold both per-Gaussian terms into one vector it can subtract directly.
+  for (int d = 0; d < 3; ++d) out_c[n * 3 + d] = rc[d] + qbar[d];
 }
 
 // ---------------- backward: analytic anchor force -----------------------
