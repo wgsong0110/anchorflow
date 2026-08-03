@@ -55,7 +55,17 @@ ap.add_argument("--iters", type=int, default=2000)
 ap.add_argument("--lr", type=float, default=1e-4)
 ap.add_argument("--n_states", type=int, default=32, help="physics snapshots to train from")
 ap.add_argument("--state_substeps", type=int, default=200, help="substeps between snapshots")
-ap.add_argument("--dt_big", type=float, default=4e-3, help="the step the GNN must take in one shot")
+ap.add_argument("--dt_big", type=float, default=4e-3,
+                 help="largest step the GNN must take in one shot (curriculum target)")
+ap.add_argument("--dt_curriculum", action="store_true",
+                 help="grow the step size during training instead of fixing it at dt_big. "
+                      "dt is drawn log-uniformly from [substep_dt, dt_max(it)], with dt_max "
+                      "ramped geometrically from 2*substep_dt to dt_big over --dt_ramp_frac "
+                      "of training. Sampling (rather than stepping through a schedule) keeps "
+                      "the easy end in the mix so the small-dt behaviour is not forgotten, and "
+                      "it is what finally makes the network's [dt, log dt] input mean anything "
+                      "-- trained at a single dt that feature is a constant bias.")
+ap.add_argument("--dt_ramp_frac", type=float, default=0.6)
 ap.add_argument("--beta", type=float, default=0.25)
 ap.add_argument("--gamma", type=float, default=0.5)
 ap.add_argument("--out", default=None)
@@ -149,16 +159,34 @@ with torch.enable_grad():
 print(f"[states] collected {len(states)}")
 assert len(states) >= 4, "not enough states"
 
+# characteristic anchor speed -- the CONSTANT that sets the correction gain
+# (see predict_du). Measured from the states the simulator actually visits, so
+# it carries the scene's scale without ever depending on the current state.
+VEL_SCALE = float(torch.stack([v for _, v, _, _ in states]).norm(dim=-1).mean())
+print(f"[states] vel_scale = {VEL_SCALE:.6f} (mean anchor speed over collected states)")
+
+
+def sample_dt(it):
+    """log-uniform in [sub_dt, dt_max(it)]; dt_max ramps sub_dt*2 -> dt_big."""
+    if not args.dt_curriculum:
+        return args.dt_big
+    prog = min(1.0, (it - 1) / max(1.0, args.dt_ramp_frac * args.iters))
+    lo_max = math.log(2.0 * sub_dt)
+    dt_max = math.exp(lo_max + prog * (math.log(args.dt_big) - lo_max))
+    u = torch.rand(1).item()
+    return math.exp(math.log(sub_dt) + u * (math.log(dt_max) - math.log(sub_dt)))
+
 # ---- train ----
 hist = []
 pbar = tqdm(range(1, args.iters + 1), desc="train", ncols=110)
 for it in pbar:
     p_n, v_n, a_n, gp = states[torch.randint(len(states), (1,)).item()]
-    du, pred0 = predict_du(net, p_n, v_n, a_n, args.dt_big, edge_index,
+    dt_it = sample_dt(it)
+    du, pred0 = predict_du(net, p_n, v_n, a_n, dt_it, edge_index, VEL_SCALE,
                             args.beta, fixed_mask)
 
     L, R = incremental_potential(du, sim, p_n, gp, VOL, MU, LAM, MASS,
-                                  v_n, a_n, args.dt_big, None, args.beta, fixed_mask)
+                                  v_n, a_n, dt_it, None, args.beta, fixed_mask)
     opt.zero_grad(set_to_none=True)
     L.backward()
     torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -167,36 +195,44 @@ for it in pbar:
     if it % 25 == 0 or it == 1:
         with torch.no_grad():
             _, R0 = incremental_potential(
-                pred0, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n, args.dt_big, None,
+                pred0, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n, dt_it, None,
                 args.beta, fixed_mask)
             rel = (R.norm() / R0.norm().clamp(min=1e-20)).item()
-        hist.append((it, float(L), R.norm().item(), rel))
-        pbar.set_postfix(L=f"{float(L):.4e}", Rrel=f"{rel:.4f}")
+        hist.append((it, float(L), R.norm().item(), rel, dt_it))
+        pbar.set_postfix(dtx=f"{dt_it/sub_dt:.0f}", Rrel=f"{rel:.4f}")
 
-print("\n[result] iter      L            ||R||        ||R||/||R_explicit||")
-for it, L, rn, rel in hist[::max(1, len(hist)//20)]:
-    print(f"  {it:6d}  {L: .6e}  {rn: .6e}   {rel:.4f}")
+print("\n[result] iter    dt/sub      L            ||R||        ||R||/||R_explicit||")
+for it, L, rn, rel, dti in hist[::max(1, len(hist)//20)]:
+    print(f"  {it:6d}  {dti/sub_dt:7.1f}  {L: .6e}  {rn: .6e}   {rel:.4f}")
 
-# ---- compare one-shot GNN vs iterated solve on held-out states ----
-print("\n[eval] one-shot GNN vs LBFGS-iterated solve of the same potential")
-print(f"  {'state':>6} {'R_explicit':>12} {'R_gnn':>12} {'R_iter':>12} {'gnn/expl':>9} {'iter/expl':>9}")
-for si in range(0, len(states), max(1, len(states)//5)):
-    p_n, v_n, a_n, gp = states[si]
-    with torch.no_grad():
-        du_g, pred0 = predict_du(net, p_n, v_n, a_n, args.dt_big, edge_index,
-                                  args.beta, fixed_mask)
-        _, R0 = incremental_potential(pred0, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
-                                       args.dt_big, None, args.beta, fixed_mask)
-        _, Rg = incremental_potential(du_g, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
-                                       args.dt_big, None, args.beta, fixed_mask)
-    du_i = newton_reference(sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n, args.dt_big,
-                             None, args.beta, fixed_mask, iters=25)
-    with torch.no_grad():
-        _, Ri = incremental_potential(du_i, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
-                                       args.dt_big, None, args.beta, fixed_mask)
-    n0, ng_, ni = R0.norm().item(), Rg.norm().item(), Ri.norm().item()
-    print(f"  {si:>6} {n0:12.4e} {ng_:12.4e} {ni:12.4e} {ng_/n0:9.4f} {ni/n0:9.4f}")
+# ---- one-shot GNN vs iterated solve, ACROSS step sizes ----
+# the number that matters is not the residual at one dt but how far the network
+# holds up as the step grows, so sweep it and report the LBFGS solve of the same
+# potential alongside as the achievable floor.
+print("\n[eval] one-shot GNN vs LBFGS-iterated solve, swept over dt")
+print(f"  {'dt/sub':>7} {'dt':>10} {'gnn/expl':>9} {'iter/expl':>9}  (mean over held-out states)")
+for mult in [1, 2, 5, 10, 20, 40, 80, 160]:
+    dt_e = mult * sub_dt
+    gs, is_ = [], []
+    for si in range(0, len(states), max(1, len(states) // 5)):
+        p_n, v_n, a_n, gp = states[si]
+        with torch.no_grad():
+            du_g, pred0 = predict_du(net, p_n, v_n, a_n, dt_e, edge_index, VEL_SCALE,
+                                      args.beta, fixed_mask)
+            _, R0 = incremental_potential(pred0, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
+                                           dt_e, None, args.beta, fixed_mask)
+            _, Rg = incremental_potential(du_g, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
+                                           dt_e, None, args.beta, fixed_mask)
+        du_i = newton_reference(sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n, dt_e,
+                                 None, args.beta, fixed_mask, iters=25)
+        with torch.no_grad():
+            _, Ri = incremental_potential(du_i, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
+                                           dt_e, None, args.beta, fixed_mask)
+        n0 = R0.norm().clamp(min=1e-20).item()
+        gs.append(Rg.norm().item() / n0); is_.append(Ri.norm().item() / n0)
+    print(f"  {mult:7d} {dt_e:10.5f} {sum(gs)/len(gs):9.4f} {sum(is_)/len(is_):9.4f}")
 
 if args.out:
-    torch.save({"model": net.state_dict(), "args": vars(args), "hist": hist}, args.out)
+    torch.save({"model": net.state_dict(), "args": vars(args), "hist": hist,
+                "vel_scale": VEL_SCALE}, args.out)
     print(f"[save] {args.out}")

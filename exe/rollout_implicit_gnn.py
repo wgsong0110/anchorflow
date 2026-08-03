@@ -37,6 +37,14 @@ ap.add_argument("--config", required=True)
 ap.add_argument("--ckpt", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=100)
+ap.add_argument("--dt_mult", type=float, default=None,
+                 help="step size as a multiple of the config's substep_dt; default is the "
+                      "checkpoint's dt_big. The step the network can actually sustain "
+                      "autoregressively is the number this experiment is after, so it must "
+                      "be sweepable independently of what it was trained at.")
+ap.add_argument("--sweep", default=None,
+                 help="comma-separated dt multipliers to test for stability instead of "
+                      "rendering; reports how far each gets before diverging")
 ap.add_argument("--radius_scale", type=float, default=1.5)
 ap.add_argument("--width", type=int, default=600)
 ap.add_argument("--height", type=int, default=600)
@@ -55,10 +63,14 @@ torch.set_grad_enabled(False)
 cfg = json.load(open(args.config))
 ck = torch.load(args.ckpt, map_location=dev, weights_only=False)
 targs = ck["args"]
-dt_big = targs["dt_big"]; beta = targs["beta"]; gamma = targs["gamma"]
+beta = targs["beta"]; gamma = targs["gamma"]
 sub_dt = float(cfg["substep_dt"])
+dt_big = args.dt_mult * sub_dt if args.dt_mult else targs["dt_big"]
+VEL_SCALE = ck.get("vel_scale")
+assert VEL_SCALE is not None, "checkpoint predates the constant-gain parameterisation"
 steps_per_frame = max(1, int(round(dt_big / sub_dt)))
-print(f"[cfg] dt_big={dt_big} (= {steps_per_frame} explicit substeps), beta={beta} gamma={gamma}")
+print(f"[cfg] dt={dt_big} (= {steps_per_frame} explicit substeps, trained at "
+      f"{targs['dt_big']/sub_dt:.0f}x), beta={beta} gamma={gamma} vel_scale={VEL_SCALE:.6f}")
 
 gaussians = GaussianModel(3, fea_dim=0)
 gaussians.load_ply(args.ply)
@@ -184,13 +196,63 @@ def initial_impulse():
     return v
 
 
+def rollout_only(dt, n):
+    """autoregressive chain at this dt, no rendering -- returns (frames survived,
+    peak displacement, residual ratio at the last surviving frame)."""
+    p, v = AC.clone(), initial_impulse()
+    a = torch.zeros(M, 3, device=dev); gp = POS.clone()
+    damp = float(cfg.get("grid_v_damping_scale", 1.0))
+    peak, rel = 0.0, float("nan")
+    for f in range(n):
+        du, pred0 = predict_du(net, p, v, a, dt, edge_index, VEL_SCALE, beta, fixed_mask)
+        _, R = incremental_potential(du, sim, p, gp, VOL, MU, LAM, MASS, v, a,
+                                      dt, None, beta, fixed_mask)
+        _, R0 = incremental_potential(pred0, sim, p, gp, VOL, MU, LAM, MASS, v, a,
+                                       dt, None, beta, fixed_mask)
+        a_next = newmark_accel(du, v, a, dt, beta)
+        v = damp * newmark_velocity(a_next, v, a, dt, gamma)
+        p = p + du; a = a_next
+        v = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(v), v)
+        p = torch.where(fixed_mask.unsqueeze(-1), AC, p)
+        a = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(a), a)
+        if not torch.isfinite(p).all():
+            return f, peak, rel
+        d = (p[~fixed_mask] - AC[~fixed_mask]).norm(dim=-1).max().item()
+        peak = max(peak, d)
+        rel = R.norm().item() / max(R0.norm().item(), 1e-20)
+        _, _, gp, _ = sim.step(p, torch.zeros_like(v), MASS, gp, VOL, MU, LAM, 0.0,
+                                gravity=None, damping=1.0, fixed_mask=fixed_mask)
+    return n, peak, rel
+
+
+if args.sweep:
+    # the explicit reference's own peak displacement is the yardstick: a rollout
+    # that "survives" while drifting 100x further than the physics is not stable.
+    p_e, v_e = AC.clone(), initial_impulse(); gp_e = POS.clone(); ref_peak = 0.0
+    with torch.enable_grad():
+        for _ in tqdm(range(args.frames * int(round(targs["dt_big"] / sub_dt))),
+                       desc="reference", ncols=90):
+            p_e, v_e, gp_e, _ = sim.step(p_e, v_e, MASS, gp_e, VOL, MU, LAM, sub_dt,
+                                          gravity=(gravity if gravity.abs().sum() > 0 else None),
+                                          damping=float(cfg.get("grid_v_damping_scale", 1.0)),
+                                          fixed_mask=fixed_mask)
+            ref_peak = max(ref_peak, (p_e[~fixed_mask] - AC[~fixed_mask]).norm(dim=-1).max().item())
+    print(f"\n[sweep] explicit reference peak anchor displacement = {ref_peak:.5f}")
+    print(f"  {'dt/sub':>7} {'frames':>8} {'peak disp':>12} {'vs ref':>9} {'R/R_expl':>9}")
+    for m in [float(x) for x in args.sweep.split(",")]:
+        n_ok, peak, rel = rollout_only(m * sub_dt, args.frames)
+        flag = "ok" if (n_ok == args.frames and peak < 5 * ref_peak) else "DIVERGED"
+        print(f"  {m:7.0f} {n_ok:8d} {peak:12.5f} {peak/ref_peak:9.2f} {rel:9.4f}  {flag}")
+    sys.exit(0)
+
 # ---------------- GNN rollout: ONE network step per frame ----------------
 p_g, v_g = AC.clone(), initial_impulse()
 a_g = torch.zeros(M, 3, device=dev); gp_g = POS.clone()
 frames_g, stats = [], []
 damping = float(cfg.get("grid_v_damping_scale", 1.0))
 for f in tqdm(range(args.frames), desc="gnn", ncols=90):
-    du, pred0 = predict_du(net, p_g, v_g, a_g, dt_big, edge_index, beta, fixed_mask)
+    du, pred0 = predict_du(net, p_g, v_g, a_g, dt_big, edge_index, VEL_SCALE,
+                            beta, fixed_mask)
     _, R = incremental_potential(du, sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,
                                   dt_big, None, beta, fixed_mask)
     _, R0 = incremental_potential(pred0, sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,
