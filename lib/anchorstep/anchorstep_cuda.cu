@@ -166,9 +166,13 @@ __global__ void anchorstep_forward_kernel(
     float* __restrict__ out_F,        // [N,9]
     float* __restrict__ out_pos,      // [N,3]  skinned gaussian position
     float* __restrict__ out_psi,      // [N]    energy density
-    float* __restrict__ out_R) {      // [N,9]  polar rotation, SAVED for backward
-                                       // (profiling showed backward re-deriving
-                                       // it cost ~73% of the fused step)
+    float* __restrict__ out_R,        // [N,9]  polar rotation, saved for backward
+    float* __restrict__ out_G,        // [N,9]  G = P(F) @ Binv^T, per-Gaussian
+    float* __restrict__ out_c) {      // [N,3]  rest centroid + qbar, per-Gaussian
+  // out_G/out_c exist so the gather backward is a pure 9-mult dot product per
+  // (gaussian, anchor-slot) pair. A first gather attempt recomputed the whole
+  // stress->G chain inside the per-pair loop, doing that work K=8x per Gaussian
+  // instead of once -- it removed the atomics but was 4x SLOWER overall.
   int n = blockIdx.x * blockDim.x + threadIdx.x;
   if (n >= N) return;
 
@@ -246,6 +250,22 @@ __global__ void anchorstep_forward_kernel(
   float mu = mu_p[n], lam = lam_p[n];
   out_psi[n] = mu * frob2 + 0.5f * lam * (J - 1.f) * (J - 1.f);
   for (int i = 0; i < 9; ++i) out_R[n * 9 + i] = R[i];
+
+  // per-Gaussian PK1 stress -> G = P @ Binv^T (used by both backward variants)
+  float cof[9];
+  cof[0]=F[4]*F[8]-F[5]*F[7]; cof[1]=F[5]*F[6]-F[3]*F[8]; cof[2]=F[3]*F[7]-F[4]*F[6];
+  cof[3]=F[2]*F[7]-F[1]*F[8]; cof[4]=F[0]*F[8]-F[2]*F[6]; cof[5]=F[1]*F[6]-F[0]*F[7];
+  cof[6]=F[1]*F[5]-F[2]*F[4]; cof[7]=F[2]*F[3]-F[0]*F[5]; cof[8]=F[0]*F[4]-F[1]*F[3];
+  float coefJ = lam * (J - 1.f);
+  float Pk[9];
+  for (int i = 0; i < 9; ++i) Pk[i] = 2.f * mu * (F[i] - R[i]) + coefJ * cof[i];
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) {
+      float sg = 0.f;
+      for (int k = 0; k < 3; ++k) sg += Pk[i * 3 + k] * Binv[j * 3 + k];
+      out_G[n * 9 + i * 3 + j] = sg;
+    }
+  for (int d = 0; d < 3; ++d) out_c[n * 3 + d] = rc[d] + qbar[d];
 
   // saved-for-backward
   for (int k = 0; k < K; ++k) out_w[n * K + k] = w[k];
@@ -346,71 +366,38 @@ __global__ void anchorstep_backward_kernel(
 }
 
 
-// per-Gaussian contribution to one of its K anchors (shared by both variants)
-__device__ inline void contrib_for(
-    int n, int slot, int K,
-    const float* anchor_rest, const long* nn_idx, const float* volume,
-    const float* w, const float* Binv, const float* qbar,
-    const float* F_in, const float* R_in, const float* mu_p, const float* lam_p,
-    float out[3]) {
-  const long* idx = nn_idx + (long)n * K;
-  const float* F = F_in + (long)n * 9;
-  const float* R = R_in + (long)n * 9;
-  float J = mat3_det(F);
-  float cof[9];
-  cof[0] = F[4]*F[8]-F[5]*F[7];  cof[1] = F[5]*F[6]-F[3]*F[8];  cof[2] = F[3]*F[7]-F[4]*F[6];
-  cof[3] = F[2]*F[7]-F[1]*F[8];  cof[4] = F[0]*F[8]-F[2]*F[6];  cof[5] = F[1]*F[6]-F[0]*F[7];
-  cof[6] = F[1]*F[5]-F[2]*F[4];  cof[7] = F[2]*F[3]-F[0]*F[5];  cof[8] = F[0]*F[4]-F[1]*F[3];
-  float mu = mu_p[n], lam = lam_p[n];
-  float coef = lam * (J - 1.f);
-  float P[9];
-  for (int i = 0; i < 9; ++i) P[i] = 2.f * mu * (F[i] - R[i]) + coef * cof[i];
-  const float* Bi = Binv + (long)n * 9;
-  float G[9];
-  for (int i = 0; i < 3; ++i)
-    for (int j = 0; j < 3; ++j) {
-      float s = 0.f;
-      for (int k = 0; k < 3; ++k) s += P[i*3+k] * Bi[j*3+k];
-      G[i*3+j] = s;
-    }
-  float rc[3] = {0.f,0.f,0.f};
-  for (int k = 0; k < K; ++k) {
-    long a = idx[k]; float wk = w[(long)n*K+k];
-    for (int d = 0; d < 3; ++d) rc[d] += wk * anchor_rest[a*3+d];
-  }
-  const float* qb = qbar + (long)n * 3;
-  long a = idx[slot]; float wk = w[(long)n*K+slot];
-  float qm[3];
-  for (int d = 0; d < 3; ++d) qm[d] = anchor_rest[a*3+d] - rc[d] - qb[d];
-  float Vn = volume[n];
-  for (int i = 0; i < 3; ++i)
-    out[i] = Vn * wk * (G[i*3]*qm[0] + G[i*3+1]*qm[1] + G[i*3+2]*qm[2]);
-}
-
-// one block per anchor; walks the anchor->(gaussian,slot) CSR, block-reduces.
+// Contention-free backward: one block per anchor walking a prebuilt
+// anchor->(gaussian, slot) CSR. All the expensive per-Gaussian work (stress,
+// G = P @ Binv^T, rest centroid) was already done ONCE in the forward kernel
+// and handed over via G/c, so each pair here costs only a 3x3 matvec.
 __global__ void anchorstep_backward_gather_kernel(
-    const float* __restrict__ anchor_rest, const long* __restrict__ nn_idx,
-    const float* __restrict__ volume, const float* __restrict__ w,
-    const float* __restrict__ Binv, const float* __restrict__ qbar,
-    const float* __restrict__ F_in, const float* __restrict__ R_in,
-    const float* __restrict__ mu_p, const float* __restrict__ lam_p,
-    const int* __restrict__ csr_off,   // [M+1]
-    const int* __restrict__ csr_gid,   // [nnz] gaussian index
-    const int* __restrict__ csr_slot,  // [nnz] which of the K slots
+    const float* __restrict__ anchor_rest,   // [M,3]
+    const float* __restrict__ volume,        // [N]
+    const float* __restrict__ w,             // [N,K]
+    const float* __restrict__ G_in,          // [N,9]
+    const float* __restrict__ c_in,          // [N,3]
+    const int* __restrict__ csr_off,         // [M+1]
+    const int* __restrict__ csr_gid,         // [nnz]
+    const int* __restrict__ csr_slot,        // [nnz]
     int K, float* __restrict__ grad_anchor) {
   int m = blockIdx.x;
   int start = csr_off[m], end = csr_off[m + 1];
-  float acc[3] = {0.f, 0.f, 0.f};
+  float ax = anchor_rest[m * 3], ay = anchor_rest[m * 3 + 1], az = anchor_rest[m * 3 + 2];
+  float acc0 = 0.f, acc1 = 0.f, acc2 = 0.f;
   for (int e = start + threadIdx.x; e < end; e += blockDim.x) {
-    float c[3];
-    contrib_for(csr_gid[e], csr_slot[e], K, anchor_rest, nn_idx, volume, w,
-                Binv, qbar, F_in, R_in, mu_p, lam_p, c);
-    acc[0] += c[0]; acc[1] += c[1]; acc[2] += c[2];
+    int n = csr_gid[e];
+    float wk = w[(long)n * K + csr_slot[e]] * volume[n];
+    const float* G = G_in + (long)n * 9;
+    const float* c = c_in + (long)n * 3;
+    float q0 = ax - c[0], q1 = ay - c[1], q2 = az - c[2];
+    acc0 += wk * (G[0] * q0 + G[1] * q1 + G[2] * q2);
+    acc1 += wk * (G[3] * q0 + G[4] * q1 + G[5] * q2);
+    acc2 += wk * (G[6] * q0 + G[7] * q1 + G[8] * q2);
   }
-  // warp + block reduction (no global atomics at all)
   __shared__ float sm[3 * 32];
+  float accs[3] = {acc0, acc1, acc2};
   for (int d = 0; d < 3; ++d) {
-    float v = acc[d];
+    float v = accs[d];
     for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
     if ((threadIdx.x & 31) == 0) sm[d * 32 + (threadIdx.x >> 5)] = v;
   }
@@ -424,28 +411,20 @@ __global__ void anchorstep_backward_gather_kernel(
 }
 
 torch::Tensor anchorstep_backward_gather(
-    torch::Tensor anchor_rest, torch::Tensor nn_idx, torch::Tensor volume,
-    torch::Tensor w, torch::Tensor Binv, torch::Tensor qbar, torch::Tensor F,
-    torch::Tensor R, torch::Tensor mu_p, torch::Tensor lam_p,
-    torch::Tensor csr_off, torch::Tensor csr_gid, torch::Tensor csr_slot, int64_t M) {
-  int K = nn_idx.size(1);
-  auto grad_anchor = torch::zeros({M, 3}, F.options());
-  int threads = 128;
-  anchorstep_backward_gather_kernel<<<M, threads>>>(
+    torch::Tensor anchor_rest, torch::Tensor volume, torch::Tensor w,
+    torch::Tensor G, torch::Tensor c, torch::Tensor csr_off,
+    torch::Tensor csr_gid, torch::Tensor csr_slot, int64_t K, int64_t M) {
+  auto grad_anchor = torch::empty({M, 3}, G.options());
+  anchorstep_backward_gather_kernel<<<M, 128>>>(
       anchor_rest.contiguous().data_ptr<float>(),
-      nn_idx.contiguous().data_ptr<long>(),
       volume.contiguous().data_ptr<float>(),
       w.contiguous().data_ptr<float>(),
-      Binv.contiguous().data_ptr<float>(),
-      qbar.contiguous().data_ptr<float>(),
-      F.contiguous().data_ptr<float>(),
-      R.contiguous().data_ptr<float>(),
-      mu_p.contiguous().data_ptr<float>(),
-      lam_p.contiguous().data_ptr<float>(),
+      G.contiguous().data_ptr<float>(),
+      c.contiguous().data_ptr<float>(),
       csr_off.contiguous().data_ptr<int>(),
       csr_gid.contiguous().data_ptr<int>(),
       csr_slot.contiguous().data_ptr<int>(),
-      K, grad_anchor.data_ptr<float>());
+      (int)K, grad_anchor.data_ptr<float>());
   return grad_anchor;
 }
 
@@ -466,6 +445,8 @@ std::vector<torch::Tensor> anchorstep_forward(
   auto out_pos = torch::empty({N, 3}, opt);
   auto out_psi = torch::empty({N}, opt);
   auto out_R = torch::empty({N, 9}, opt);
+  auto out_G = torch::empty({N, 9}, opt);
+  auto out_c = torch::empty({N, 3}, opt);
   int threads = 256, blocks = (N + threads - 1) / threads;
   anchorstep_forward_kernel<<<blocks, threads>>>(
       gaussian_canonical.contiguous().data_ptr<float>(),
@@ -478,8 +459,8 @@ std::vector<torch::Tensor> anchorstep_forward(
       (float)radius, N, K, (float)eig_floor_frac,
       out_w.data_ptr<float>(), out_Binv.data_ptr<float>(), out_qbar.data_ptr<float>(),
       out_F.data_ptr<float>(), out_pos.data_ptr<float>(), out_psi.data_ptr<float>(),
-      out_R.data_ptr<float>());
-  return {out_w, out_Binv, out_qbar, out_F, out_pos, out_psi, out_R};
+      out_R.data_ptr<float>(), out_G.data_ptr<float>(), out_c.data_ptr<float>());
+  return {out_w, out_Binv, out_qbar, out_F, out_pos, out_psi, out_R, out_G, out_c};
 }
 
 torch::Tensor anchorstep_backward(

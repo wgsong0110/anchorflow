@@ -73,14 +73,14 @@ def fused_energy_force(gaussian_canonical, gaussian_pos_prev, anchor_pos,
     if not torch.is_tensor(lam):
         lam = torch.full((N,), float(lam), device=gaussian_canonical.device, dtype=torch.float32)
     mu = mu.contiguous().float(); lam = lam.contiguous().float()
-    w, Binv, qbar, F, pos, psi, R = _fwd(
+    w, Binv, qbar, F, pos, psi, R, G, c = _fwd(
         gaussian_canonical, gaussian_pos_prev, anchor_pos, anchor_rest,
         nn_idx, volume, mu, lam, float(radius), float(eig_floor_frac))
     M = anchor_rest.shape[0]
     if HAVE_GATHER:
         off, gid, slot = build_csr(nn_idx, M)
-        grad = _bwd_gather(anchor_rest, nn_idx, volume, w, Binv, qbar, F, R,
-                            mu, lam, off, gid, slot, M)
+        grad = _bwd_gather(anchor_rest, volume, w, G, c, off, gid, slot,
+                            nn_idx.shape[1], M)
     else:
         grad = _bwd(anchor_rest, nn_idx, volume, w, Binv, qbar, F, R, mu, lam, M)
     return -grad, pos, F.view(-1, 3, 3), psi
