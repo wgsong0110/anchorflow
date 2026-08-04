@@ -213,7 +213,7 @@ def rollout_only(dt, n):
         fa = anchor_elastic_accel(sim, p, gp, VOL, MU, LAM, MASS, fixed_mask) \
             if net.use_force else None
         du, pred0 = predict_du(net, p, v, a, dt, edge_index, ACC_SCALE, beta, fixed_mask, fa,
-                                targs.get("direct_du", False))
+                                targs.get("direct_du", False), targs.get("velocity_out", False))
         _, R = incremental_potential(du, sim, p, gp, VOL, MU, LAM, MASS, v, a,
                                       dt, None, beta, fixed_mask)
         _, R0 = incremental_potential(pred0, sim, p, gp, VOL, MU, LAM, MASS, v, a,
@@ -270,7 +270,7 @@ for f in tqdm(range(args.frames), desc="gnn", ncols=90):
     fa_g = anchor_elastic_accel(sim, p_g, gp_g, VOL, MU, LAM, MASS, fixed_mask) \
         if net.use_force else None
     du, pred0 = predict_du(net, p_g, v_g, a_g, dt_big, edge_index, ACC_SCALE,
-                            beta, fixed_mask, fa_g, targs.get("direct_du", False))
+                            beta, fixed_mask, fa_g, targs.get("direct_du", False), targs.get("velocity_out", False))
     _, R = incremental_potential(du, sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,
                                   dt_big, None, beta, fixed_mask)
     _, R0 = incremental_potential(pred0, sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,
