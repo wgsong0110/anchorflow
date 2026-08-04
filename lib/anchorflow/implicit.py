@@ -156,6 +156,42 @@ def anchor_elastic_accel(sim, anchor_pos, gaussian_pos_prev, volume, mu, lam,
     return a
 
 
+class DtFiLM(nn.Module):
+    """Fourier-encoded step size -> per-layer (gamma, beta) modulation.
+
+    dt is one scalar shared by every anchor, so carrying it as a node feature
+    wastes three of the encoder's input channels on a constant and lets it be
+    swamped by the per-anchor signal. FiLM is the right shape for a global
+    conditioning variable: it rescales and shifts every channel of the residual
+    stream at every layer, so the step size can change what the processor
+    computes rather than just being another number in the state.
+
+    log10(dt) is what gets encoded, not dt: the step sizes of interest span 1e-4
+    to 1.6e-2, more than two decades, so a linear input would give the small
+    steps no resolution. The sin/cos octaves on top of the raw value give the
+    network sharp features at several scales instead of one smooth ramp.
+
+    The output layer is zero-init so gamma = 1, beta = 0 at the start -- the
+    modulation begins as the identity and cannot disturb early training.
+    """
+
+    def __init__(self, hidden, n_sites, n_freq=6):
+        super().__init__()
+        self.n_freq = n_freq
+        self.hidden = hidden
+        self.n_sites = n_sites
+        self.mlp = mlp([1 + 2 * n_freq, hidden, 2 * hidden * n_sites], layernorm=False)
+        last = [m for m in self.mlp.modules() if isinstance(m, nn.Linear)][-1]
+        nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
+
+    def forward(self, dt, device):
+        x = torch.tensor([math.log10(dt)], device=device)
+        f = 2.0 ** torch.arange(self.n_freq, device=device) * math.pi
+        enc = torch.cat([x, torch.sin(f * x), torch.cos(f * x)])
+        out = self.mlp(enc).view(self.n_sites, 2, self.hidden)
+        return 1.0 + out[:, 0], out[:, 1]        # gamma, beta -- each [n_sites, hidden]
+
+
 class GeoAttentionBias(nn.Module):
     """Relative-geometry bias added to every attention logit.
 
@@ -236,19 +272,22 @@ class DuCorrector(nn.Module):
         self.use_force = use_force and not raw_io
         self.processor = processor
         self.raw_io = raw_io
+        # dt is no longer a node feature anywhere: it is a global scalar and
+        # enters through FiLM instead (see DtFiLM).
         if raw_io:
             # the stripped-down model: (position, velocity, acceleration) in,
-            # next position out. No force feature, no step-size feature, no
-            # predictor in the output path -- so this model is tied to the dt it
-            # was trained at, and the decoder canNOT be zero-init (a zero output
-            # is the origin, i.e. every anchor collapsing to a point), which
-            # gives up the "training starts at an explicit step" property the
-            # other parameterisations have.
+            # next position out. No force feature, no predictor in the output
+            # path -- so the decoder canNOT be zero-init (a zero output is the
+            # origin, i.e. every anchor collapsing to a point), which gives up
+            # the "training starts at an explicit step" property the other
+            # parameterisations have.
             self.node_enc = mlp([3 + 3 + 3, hidden, hidden])
         else:
-            # v, a, [f_int/m], [dt, log10 dt]; a and the force are divided by
-            # the scene's acceleration scale by the caller so all three are O(1)
-            self.node_enc = mlp([3 + 3 + (3 if self.use_force else 0) + 2, hidden, hidden])
+            # v, a, [f_int/m]; a and the force are divided by the scene's
+            # acceleration scale by the caller so both are O(1)
+            self.node_enc = mlp([3 + 3 + (3 if self.use_force else 0), hidden, hidden])
+        # one modulation site before the encoder output and one per layer
+        self.film = DtFiLM(hidden, mp_steps + 1)
         if processor == "attention":
             self.bias = GeoAttentionBias(heads)
             self.proc = nn.ModuleList(GeoAttentionBlock(hidden, heads)
@@ -265,19 +304,20 @@ class DuCorrector(nn.Module):
         if self.raw_io:
             h = self.node_enc(torch.cat([p, v, a], -1))
         else:
-            t = torch.tensor([[dt, math.log10(dt)]], device=p.device).expand(p.shape[0], -1)
-            feats = [v, a, t] if not self.use_force else [v, a, f_accel, t]
+            feats = [v, a] if not self.use_force else [v, a, f_accel]
             h = self.node_enc(torch.cat(feats, -1))
+        gamma, beta = self.film(dt, p.device)
+        h = gamma[0] * h + beta[0]
         if self.processor == "attention":
             # edge_index is unused: attention is over the complete anchor set,
             # which is the point -- no hop budget to run out of.
             bias = self.bias(p)
-            for layer in self.proc:
-                h = layer(h, bias)
+            for i, layer in enumerate(self.proc):
+                h = layer(gamma[i + 1] * h + beta[i + 1], bias)
         else:
             e = self.edge_enc(G.edge_features(p, edge_index))
-            for layer in self.proc:
-                h, e = layer(h, edge_index, e)
+            for i, layer in enumerate(self.proc):
+                h, e = layer(gamma[i + 1] * h + beta[i + 1], edge_index, e)
         return self.dec(h)
 
 
