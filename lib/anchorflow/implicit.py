@@ -192,7 +192,7 @@ class DuCorrector(nn.Module):
 
 
 def predict_du(net, p, v, a, dt, edge_index, accel_scale, beta=0.25, fixed_mask=None,
-                f_accel=None, direct=False):
+                f_accel=None, direct=False, velocity=False):
     """du = predictor + beta*dt^2 * accel_scale * net(...), i.e. the network
     corrects the displacement the anchors' own velocity and acceleration
     predict, with a gain that matches how a real correction scales.
@@ -232,8 +232,22 @@ def predict_du(net, p, v, a, dt, edge_index, accel_scale, beta=0.25, fixed_mask=
     # guarantee that training begins at an explicit step. Measured on real
     # states the true du sits ~13% away from the predictor, so the residual
     # form is asking for the small part; kept as an ablation.
-    du = (beta * dt * dt * accel_scale) * out if direct else \
-        pred + (beta * dt * dt * accel_scale) * out
+    if velocity:
+        # the network emits du/dt -- a VELOCITY, the step's average. From eq. (8),
+        # du/dt = v_n + dt[(1/2-beta) a_n + beta a_{n+1}], so it tends to v_n as
+        # dt -> 0 and stays O(1) at every step size: the arbitrary accel_scale
+        # constant disappears and the output range is dt-independent by
+        # construction rather than by a hand-picked gain. Not to be confused with
+        # the dt*vel_scale gain that failed earlier -- that multiplied a
+        # CORRECTION whose true size is O(dt^2), one power of dt too many; here
+        # the output stands for the whole du, whose departure from v_n is O(dt).
+        # v_n enters as a skip so a zero-init decoder still starts at the
+        # inertial coast instead of freezing the object.
+        du = dt * (v + out)
+    elif direct:
+        du = (beta * dt * dt * accel_scale) * out
+    else:
+        du = pred + (beta * dt * dt * accel_scale) * out
     if fixed_mask is not None:
         du = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(du), du)
         pred = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(pred), pred)
