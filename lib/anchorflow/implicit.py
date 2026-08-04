@@ -156,10 +156,71 @@ def anchor_elastic_accel(sim, anchor_pos, gaussian_pos_prev, volume, mu, lam,
     return a
 
 
+class GeoAttentionBias(nn.Module):
+    """Relative-geometry bias added to every attention logit.
+
+    Plain attention is permutation-invariant and knows nothing about where the
+    anchors are; the message-passing processor got its geometry from the edge
+    features of the k-NN graph. Here the same relative geometry (offset +
+    distance, so translation-invariant) is turned into a per-head scalar bias
+    for EVERY pair, which is what lets attention be geometric without giving it
+    absolute coordinates. Distances are divided by the batch's own mean pair
+    distance so the bias is scale-free as well.
+
+    At M = 512 this is a [512, 512, 4] tensor -- 1M floats, ~4 MB.
+    """
+
+    def __init__(self, heads, hidden=32):
+        super().__init__()
+        self.mlp = mlp([4, hidden, heads], layernorm=False)
+
+    def forward(self, p):
+        rel = p.unsqueeze(1) - p.unsqueeze(0)                  # [M,M,3]
+        d = rel.norm(dim=-1, keepdim=True)                     # [M,M,1]
+        s = d.mean().detach().clamp(min=1e-12)
+        b = self.mlp(torch.cat([rel / s, torch.log1p(d / s)], -1))
+        return b.permute(2, 0, 1)                              # [H,M,M]
+
+
+class GeoAttentionBlock(nn.Module):
+    """Pre-norm transformer block over the anchor set."""
+
+    def __init__(self, hidden, heads=4):
+        super().__init__()
+        assert hidden % heads == 0
+        self.h = heads
+        self.d = hidden // heads
+        self.n1 = nn.LayerNorm(hidden)
+        self.n2 = nn.LayerNorm(hidden)
+        self.qkv = nn.Linear(hidden, 3 * hidden)
+        self.proj = nn.Linear(hidden, hidden)
+        self.ffn = mlp([hidden, 2 * hidden, hidden], layernorm=False)
+
+    def forward(self, x, bias):
+        M = x.shape[0]
+        q, k, v = self.qkv(self.n1(x)).chunk(3, dim=-1)
+        q, k, v = (t.view(M, self.h, self.d).transpose(0, 1) for t in (q, k, v))
+        att = (q @ k.transpose(-1, -2)) / math.sqrt(self.d) + bias
+        out = (att.softmax(-1) @ v).transpose(0, 1).reshape(M, -1)
+        x = x + self.proj(out)
+        return x + self.ffn(self.n2(x))
+
+
 class DuCorrector(nn.Module):
     """(v, a, dt) per anchor + anchor graph -> a DIMENSIONLESS per-anchor
     correction to the Newmark inertial predictor. See predict_du for how it
     becomes a displacement.
+
+    processor="attention" replaces the message-passing stack with full
+    self-attention over the anchors. One Newton step of the implicit solve is
+    (M/(beta dt^2) + K) delta = -R, whose solution operator is a DENSE global
+    inverse -- pinning the pot changes the branch tips in the same step. k-hop
+    message passing is a local operator: with k=8 neighbours and 4 rounds the
+    receptive field cannot reach across the plant, so the function being asked
+    for is not representable, which fits the measured pattern (it fits states
+    along the training trajectory and contributes nothing anywhere else).
+    Attention makes every anchor see every other in a single layer, and at
+    M = 512 the full 512x512 map costs nothing.
 
     The decoder is zero-init, so at the start of training du equals the
     predictor exactly -- i.e. the network begins as a no-op on top of an
@@ -169,14 +230,21 @@ class DuCorrector(nn.Module):
     the trainer's argparse.
     """
 
-    def __init__(self, hidden=128, mp_steps=4, edge_in=4, use_force=True):
+    def __init__(self, hidden=128, mp_steps=4, edge_in=4, use_force=True,
+                  processor="mpnn", heads=4):
         super().__init__()
         self.use_force = use_force
+        self.processor = processor
         # v, a, [f_int/m], [dt, log10 dt]; a and the force are divided by the
         # scene's acceleration scale by the caller so all three are O(1)
         self.node_enc = mlp([3 + 3 + (3 if use_force else 0) + 2, hidden, hidden])
-        self.edge_enc = mlp([edge_in, hidden, hidden])
-        self.proc = nn.ModuleList(MPNNLayer(hidden) for _ in range(mp_steps))
+        if processor == "attention":
+            self.bias = GeoAttentionBias(heads)
+            self.proc = nn.ModuleList(GeoAttentionBlock(hidden, heads)
+                                       for _ in range(mp_steps))
+        else:
+            self.edge_enc = mlp([edge_in, hidden, hidden])
+            self.proc = nn.ModuleList(MPNNLayer(hidden) for _ in range(mp_steps))
         self.dec = mlp([hidden, hidden, 3], layernorm=False)
         last = [m for m in self.dec.modules() if isinstance(m, nn.Linear)][-1]
         nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
@@ -185,9 +253,16 @@ class DuCorrector(nn.Module):
         t = torch.tensor([[dt, math.log10(dt)]], device=p.device).expand(p.shape[0], -1)
         feats = [v, a, t] if not self.use_force else [v, a, f_accel, t]
         h = self.node_enc(torch.cat(feats, -1))
-        e = self.edge_enc(G.edge_features(p, edge_index))
-        for layer in self.proc:
-            h, e = layer(h, edge_index, e)
+        if self.processor == "attention":
+            # edge_index is unused: attention is over the complete anchor set,
+            # which is the point -- no hop budget to run out of.
+            bias = self.bias(p)
+            for layer in self.proc:
+                h = layer(h, bias)
+        else:
+            e = self.edge_enc(G.edge_features(p, edge_index))
+            for layer in self.proc:
+                h, e = layer(h, edge_index, e)
         return self.dec(h)
 
 

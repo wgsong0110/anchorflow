@@ -50,7 +50,13 @@ ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--k_graph", type=int, default=8)
 ap.add_argument("--hidden", type=int, default=128)
-ap.add_argument("--mp_steps", type=int, default=4)
+ap.add_argument("--mp_steps", type=int, default=4, help="processor depth")
+ap.add_argument("--processor", choices=["mpnn", "attention"], default="mpnn",
+                 help="'attention' is full self-attention over the anchors instead of k-hop "
+                      "message passing. The implicit step's solution operator is a dense "
+                      "global inverse, which a 4-hop local operator cannot represent; at "
+                      "M=512 full attention costs nothing.")
+ap.add_argument("--heads", type=int, default=4)
 ap.add_argument("--iters", type=int, default=2000)
 ap.add_argument("--lr", type=float, default=1e-4)
 ap.add_argument("--n_states", type=int, default=32, help="physics snapshots to train from")
@@ -183,7 +189,8 @@ print(f"[setup] N={N} M={M} pinned={int(fixed_mask.sum())} dt_big={args.dt_big} 
 edge_index = G.knn_graph(AC, k=args.k_graph)
 
 
-net = DuCorrector(args.hidden, args.mp_steps, use_force=not args.no_force_feature).to(dev)
+net = DuCorrector(args.hidden, args.mp_steps, use_force=not args.no_force_feature,
+                   processor=args.processor, heads=args.heads).to(dev)
 opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 print(f"[setup] GNN params: {sum(p.numel() for p in net.parameters())/1e3:.1f}k")
 

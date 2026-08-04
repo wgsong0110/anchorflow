@@ -144,7 +144,9 @@ gravity = torch.tensor(cfg["g"], dtype=torch.float32, device=dev)
 edge_index = G.knn_graph(AC, k=targs["k_graph"])
 
 net = DuCorrector(targs["hidden"], targs["mp_steps"],
-                   use_force=not targs.get("no_force_feature", True)).to(dev)
+                   use_force=not targs.get("no_force_feature", True),
+                   processor=targs.get("processor", "mpnn"),
+                   heads=targs.get("heads", 4)).to(dev)
 net.load_state_dict(ck["model"]); net.eval()
 
 # ---------- camera (same construction as the faithful renderer) ----------
