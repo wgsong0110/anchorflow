@@ -231,13 +231,24 @@ class DuCorrector(nn.Module):
     """
 
     def __init__(self, hidden=128, mp_steps=4, edge_in=4, use_force=True,
-                  processor="mpnn", heads=4):
+                  processor="mpnn", heads=4, raw_io=False):
         super().__init__()
-        self.use_force = use_force
+        self.use_force = use_force and not raw_io
         self.processor = processor
-        # v, a, [f_int/m], [dt, log10 dt]; a and the force are divided by the
-        # scene's acceleration scale by the caller so all three are O(1)
-        self.node_enc = mlp([3 + 3 + (3 if use_force else 0) + 2, hidden, hidden])
+        self.raw_io = raw_io
+        if raw_io:
+            # the stripped-down model: (position, velocity, acceleration) in,
+            # next position out. No force feature, no step-size feature, no
+            # predictor in the output path -- so this model is tied to the dt it
+            # was trained at, and the decoder canNOT be zero-init (a zero output
+            # is the origin, i.e. every anchor collapsing to a point), which
+            # gives up the "training starts at an explicit step" property the
+            # other parameterisations have.
+            self.node_enc = mlp([3 + 3 + 3, hidden, hidden])
+        else:
+            # v, a, [f_int/m], [dt, log10 dt]; a and the force are divided by
+            # the scene's acceleration scale by the caller so all three are O(1)
+            self.node_enc = mlp([3 + 3 + (3 if self.use_force else 0) + 2, hidden, hidden])
         if processor == "attention":
             self.bias = GeoAttentionBias(heads)
             self.proc = nn.ModuleList(GeoAttentionBlock(hidden, heads)
@@ -246,13 +257,17 @@ class DuCorrector(nn.Module):
             self.edge_enc = mlp([edge_in, hidden, hidden])
             self.proc = nn.ModuleList(MPNNLayer(hidden) for _ in range(mp_steps))
         self.dec = mlp([hidden, hidden, 3], layernorm=False)
-        last = [m for m in self.dec.modules() if isinstance(m, nn.Linear)][-1]
-        nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
+        if not raw_io:
+            last = [m for m in self.dec.modules() if isinstance(m, nn.Linear)][-1]
+            nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
 
     def forward(self, p, v, a, dt, edge_index, f_accel=None):
-        t = torch.tensor([[dt, math.log10(dt)]], device=p.device).expand(p.shape[0], -1)
-        feats = [v, a, t] if not self.use_force else [v, a, f_accel, t]
-        h = self.node_enc(torch.cat(feats, -1))
+        if self.raw_io:
+            h = self.node_enc(torch.cat([p, v, a], -1))
+        else:
+            t = torch.tensor([[dt, math.log10(dt)]], device=p.device).expand(p.shape[0], -1)
+            feats = [v, a, t] if not self.use_force else [v, a, f_accel, t]
+            h = self.node_enc(torch.cat(feats, -1))
         if self.processor == "attention":
             # edge_index is unused: attention is over the complete anchor set,
             # which is the point -- no hop budget to run out of.
@@ -307,7 +322,11 @@ def predict_du(net, p, v, a, dt, edge_index, accel_scale, beta=0.25, fixed_mask=
     # guarantee that training begins at an explicit step. Measured on real
     # states the true du sits ~13% away from the predictor, so the residual
     # form is asking for the small part; kept as an ablation.
-    if velocity:
+    if getattr(net, "raw_io", False):
+        # the network emitted the next POSITION; everything downstream (eq. 8/9,
+        # the potential, the residual) is written in terms of du, so convert.
+        du = out - p
+    elif velocity:
         # the network emits du/dt -- a VELOCITY, the step's average. From eq. (8),
         # du/dt = v_n + dt[(1/2-beta) a_n + beta a_{n+1}], so it tends to v_n as
         # dt -> 0 and stays O(1) at every step size: the arbitrary accel_scale

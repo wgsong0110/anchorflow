@@ -100,7 +100,8 @@ damping = float(cfg.get("grid_v_damping_scale", 1.0))
 net = DuCorrector(targs["hidden"], targs["mp_steps"],
                    use_force=not targs.get("no_force_feature", True),
                    processor=targs.get("processor", "mpnn"),
-                   heads=targs.get("heads", 4)).to(dev)
+                   heads=targs.get("heads", 4),
+                   raw_io=targs.get("raw_io", False)).to(dev)
 net.load_state_dict(ck["model"]); net.eval()
 
 

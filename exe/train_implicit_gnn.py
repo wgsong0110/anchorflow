@@ -97,6 +97,11 @@ ap.add_argument("--chain_gate", type=float, default=0.2,
                       "with the ratio still at 0.47, and switching the chain on there took "
                       "the single-step ratio straight back from 0.47 to 1.00. Gating on the "
                       "measurement instead of on an iteration count is the fix.")
+ap.add_argument("--raw_io", action="store_true",
+                 help="strip the parameterisation: per-anchor (position, velocity, "
+                      "acceleration) in, next position out. No force feature, no dt feature, "
+                      "no Newmark predictor in the output path -- so the model only works at "
+                      "the dt it was trained at and does not start from an explicit step.")
 ap.add_argument("--velocity_out", action="store_true",
                  help="network emits du/dt (the step's average velocity) instead of a "
                       "correction to the predictor; O(1) at every dt with no gain constant")
@@ -190,7 +195,8 @@ edge_index = G.knn_graph(AC, k=args.k_graph)
 
 
 net = DuCorrector(args.hidden, args.mp_steps, use_force=not args.no_force_feature,
-                   processor=args.processor, heads=args.heads).to(dev)
+                   processor=args.processor, heads=args.heads,
+                   raw_io=args.raw_io).to(dev)
 opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 print(f"[setup] GNN params: {sum(p.numel() for p in net.parameters())/1e3:.1f}k")
 
