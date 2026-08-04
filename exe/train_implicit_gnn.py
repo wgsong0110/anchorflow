@@ -41,7 +41,7 @@ from anchorflow.dynamics import mlp, MPNNLayer
 from anchorflow import graph as G
 from anchorflow.implicit import (incremental_potential, newmark_predictor,
                                   newmark_accel, newmark_velocity, newton_reference,
-                                  DuCorrector, predict_du)
+                                  DuCorrector, predict_du, anchor_elastic_accel)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -91,6 +91,8 @@ ap.add_argument("--chain_gate", type=float, default=0.2,
                       "with the ratio still at 0.47, and switching the chain on there took "
                       "the single-step ratio straight back from 0.47 to 1.00. Gating on the "
                       "measurement instead of on an iteration count is the fix.")
+ap.add_argument("--no_force_feature", action="store_true",
+                 help="withhold f_int/m from the network (the old input set)")
 ap.add_argument("--chain_cooldown", type=int, default=500,
                  help="minimum iterations at each chain length before it can grow again")
 ap.add_argument("--max_drift", type=float, default=3.0,
@@ -175,7 +177,7 @@ print(f"[setup] N={N} M={M} pinned={int(fixed_mask.sum())} dt_big={args.dt_big} 
 edge_index = G.knn_graph(AC, k=args.k_graph)
 
 
-net = DuCorrector(args.hidden, args.mp_steps).to(dev)
+net = DuCorrector(args.hidden, args.mp_steps, use_force=not args.no_force_feature).to(dev)
 opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 print(f"[setup] GNN params: {sum(p.numel() for p in net.parameters())/1e3:.1f}k")
 
@@ -288,8 +290,10 @@ for it in pbar:
     opt.zero_grad(set_to_none=True)
     rels, diverged = [], False
     for t in range(T):
+        fa = None if args.no_force_feature else anchor_elastic_accel(
+            sim, p, gp, VOL, MU, LAM, MASS, fixed_mask)
         du, pred0 = predict_du(net, p, v, a, dt_it, edge_index, ACC_SCALE,
-                                args.beta, fixed_mask)
+                                args.beta, fixed_mask, fa)
         L, R = incremental_potential(du, sim, p, gp, VOL, MU, LAM, MASS,
                                       v, a, dt_it, None, args.beta, fixed_mask)
         with torch.no_grad():
@@ -353,8 +357,10 @@ for mult in [1, 2, 5, 10, 20, 40, 80, 160]:
     for si in range(0, len(states), max(1, len(states) // 5)):
         p_n, v_n, a_n, gp = states[si]
         with torch.no_grad():
+            fa = None if args.no_force_feature else anchor_elastic_accel(
+                sim, p_n, gp, VOL, MU, LAM, MASS, fixed_mask)
             du_g, pred0 = predict_du(net, p_n, v_n, a_n, dt_e, edge_index, ACC_SCALE,
-                                      args.beta, fixed_mask)
+                                      args.beta, fixed_mask, fa)
             _, R0 = incremental_potential(pred0, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
                                            dt_e, None, args.beta, fixed_mask)
             _, Rg = incremental_potential(du_g, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,

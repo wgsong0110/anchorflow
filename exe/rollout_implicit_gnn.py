@@ -29,7 +29,8 @@ from tqdm import tqdm
 from anchorflow.anchors import AnchorSet
 from anchorflow.anchor_mpm import AnchorElasticSim, lame_from_E_nu
 from anchorflow.implicit import (incremental_potential, newmark_accel,
-                                  newmark_velocity, DuCorrector, predict_du)
+                                  newmark_velocity, DuCorrector, predict_du,
+                                  anchor_elastic_accel)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -142,7 +143,8 @@ for bc in cfg.get("boundary_conditions", []):
 gravity = torch.tensor(cfg["g"], dtype=torch.float32, device=dev)
 edge_index = G.knn_graph(AC, k=targs["k_graph"])
 
-net = DuCorrector(targs["hidden"], targs["mp_steps"]).to(dev)
+net = DuCorrector(targs["hidden"], targs["mp_steps"],
+                   use_force=not targs.get("no_force_feature", True)).to(dev)
 net.load_state_dict(ck["model"]); net.eval()
 
 # ---------- camera (same construction as the faithful renderer) ----------
@@ -200,11 +202,17 @@ def rollout_only(dt, n):
     """autoregressive chain at this dt, no rendering -- returns (frames survived,
     peak displacement, residual ratio at the last surviving frame)."""
     p, v = AC.clone(), initial_impulse()
-    a = torch.zeros(M, 3, device=dev); gp = POS.clone()
+    gp = POS.clone()
+    # seed the acceleration with the real f/m rather than zero: a is a physical
+    # acceleration everywhere the trainer looks, and starting it at 0 puts the
+    # very first frame outside anything the network has seen
+    a = anchor_elastic_accel(sim, p, gp, VOL, MU, LAM, MASS, fixed_mask)
     damp = float(cfg.get("grid_v_damping_scale", 1.0))
     peak, rel = 0.0, float("nan")
     for f in range(n):
-        du, pred0 = predict_du(net, p, v, a, dt, edge_index, ACC_SCALE, beta, fixed_mask)
+        fa = anchor_elastic_accel(sim, p, gp, VOL, MU, LAM, MASS, fixed_mask) \
+            if net.use_force else None
+        du, pred0 = predict_du(net, p, v, a, dt, edge_index, ACC_SCALE, beta, fixed_mask, fa)
         _, R = incremental_potential(du, sim, p, gp, VOL, MU, LAM, MASS, v, a,
                                       dt, None, beta, fixed_mask)
         _, R0 = incremental_potential(pred0, sim, p, gp, VOL, MU, LAM, MASS, v, a,
@@ -253,12 +261,15 @@ if args.sweep:
 
 # ---------------- GNN rollout: ONE network step per frame ----------------
 p_g, v_g = AC.clone(), initial_impulse()
-a_g = torch.zeros(M, 3, device=dev); gp_g = POS.clone()
+gp_g = POS.clone()
+a_g = anchor_elastic_accel(sim, p_g, gp_g, VOL, MU, LAM, MASS, fixed_mask)
 frames_g, stats = [], []
 damping = float(cfg.get("grid_v_damping_scale", 1.0))
 for f in tqdm(range(args.frames), desc="gnn", ncols=90):
+    fa_g = anchor_elastic_accel(sim, p_g, gp_g, VOL, MU, LAM, MASS, fixed_mask) \
+        if net.use_force else None
     du, pred0 = predict_du(net, p_g, v_g, a_g, dt_big, edge_index, ACC_SCALE,
-                            beta, fixed_mask)
+                            beta, fixed_mask, fa_g)
     _, R = incremental_potential(du, sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,
                                   dt_big, None, beta, fixed_mask)
     _, R0 = incremental_potential(pred0, sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,

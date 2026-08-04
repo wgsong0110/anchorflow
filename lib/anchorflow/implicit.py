@@ -129,6 +129,33 @@ def newton_reference(sim, anchor_pos_n, gaussian_pos_prev, volume, mu, lam,
     return du.detach()
 
 
+def anchor_elastic_accel(sim, anchor_pos, gaussian_pos_prev, volume, mu, lam,
+                          mass, fixed_mask=None):
+    """f_int(p)/m per anchor -- the physical acceleration the current
+    configuration is producing, one fused-kernel call (~0.1 ms).
+
+    Needed as a network INPUT because the `a` the two settings carry are not the
+    same quantity. In training, states come from the explicit simulator and
+    a = (v_{n+1}-v_n)/dt IS f/m, so the elastic force is handed to the network
+    for free -- and a network can then reach a low residual by the shortcut
+    a_{n+1} ~ a_n, since R = f - m*a_n is then nearly zero without solving
+    anything. In an autoregressive rollout a is instead Newmark's readback of
+    the network's own du, which carries no force information at all and starts
+    at exactly zero. Measured on a trained network: the correction it emits is
+    the same size in both settings (|corr| 4.0e-4 vs 4.4e-4) yet the residual
+    ratio is 0.09-0.58 on simulator states and 0.96-1.04 on its own -- and at
+    frame 0, where a = 0, it under-corrects by 3x. Feeding the force explicitly
+    removes both the shortcut and the mismatch.
+    """
+    f, _, _, _ = fused_energy_force(
+        sim.gaussian_canonical, gaussian_pos_prev, anchor_pos.detach(),
+        sim.anchor_canonical, sim.nn_idx, volume, sim.radius, mu, lam)
+    a = f / mass.unsqueeze(-1)
+    if fixed_mask is not None:
+        a = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(a), a)
+    return a
+
+
 class DuCorrector(nn.Module):
     """(v, a, dt) per anchor + anchor graph -> a DIMENSIONLESS per-anchor
     correction to the Newmark inertial predictor. See predict_du for how it
@@ -142,25 +169,30 @@ class DuCorrector(nn.Module):
     the trainer's argparse.
     """
 
-    def __init__(self, hidden=128, mp_steps=4, edge_in=4):
+    def __init__(self, hidden=128, mp_steps=4, edge_in=4, use_force=True):
         super().__init__()
-        self.node_enc = mlp([3 + 3 + 2, hidden, hidden])     # v, a, [dt, log10 dt]
+        self.use_force = use_force
+        # v, a, [f_int/m], [dt, log10 dt]; a and the force are divided by the
+        # scene's acceleration scale by the caller so all three are O(1)
+        self.node_enc = mlp([3 + 3 + (3 if use_force else 0) + 2, hidden, hidden])
         self.edge_enc = mlp([edge_in, hidden, hidden])
         self.proc = nn.ModuleList(MPNNLayer(hidden) for _ in range(mp_steps))
         self.dec = mlp([hidden, hidden, 3], layernorm=False)
         last = [m for m in self.dec.modules() if isinstance(m, nn.Linear)][-1]
         nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
 
-    def forward(self, p, v, a, dt, edge_index):
+    def forward(self, p, v, a, dt, edge_index, f_accel=None):
         t = torch.tensor([[dt, math.log10(dt)]], device=p.device).expand(p.shape[0], -1)
-        h = self.node_enc(torch.cat([v, a, t], -1))
+        feats = [v, a, t] if not self.use_force else [v, a, f_accel, t]
+        h = self.node_enc(torch.cat(feats, -1))
         e = self.edge_enc(G.edge_features(p, edge_index))
         for layer in self.proc:
             h, e = layer(h, edge_index, e)
         return self.dec(h)
 
 
-def predict_du(net, p, v, a, dt, edge_index, accel_scale, beta=0.25, fixed_mask=None):
+def predict_du(net, p, v, a, dt, edge_index, accel_scale, beta=0.25, fixed_mask=None,
+                f_accel=None):
     """du = predictor + beta*dt^2 * accel_scale * net(...), i.e. the network
     corrects the displacement the anchors' own velocity and acceleration
     predict, with a gain that matches how a real correction scales.
@@ -191,7 +223,9 @@ def predict_du(net, p, v, a, dt, edge_index, accel_scale, beta=0.25, fixed_mask=
     learn to emit ~1e2 first.
     """
     pred = newmark_predictor(v, a, dt, beta)
-    du = pred + (beta * dt * dt * accel_scale) * net(p, v, a, dt, edge_index)
+    fa = None if f_accel is None else f_accel / accel_scale
+    out = net(p, v, a / accel_scale, dt, edge_index, fa)
+    du = pred + (beta * dt * dt * accel_scale) * out
     if fixed_mask is not None:
         du = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(du), du)
         pred = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(pred), pred)
