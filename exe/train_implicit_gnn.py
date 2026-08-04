@@ -82,13 +82,17 @@ ap.add_argument("--rollout_len", type=int, default=8,
                       "this over --rollout_ramp_frac of training. 1 reproduces the old "
                       "single-step objective.")
 ap.add_argument("--rollout_ramp_frac", type=float, default=0.5)
-ap.add_argument("--rollout_warmup_frac", type=float, default=0.3,
-                 help="fraction of training spent at T=1 before the chain grows. With a "
-                      "zero-init decoder the chain is at first just the explicit predictor "
-                      "rolled out, which diverges within a few steps at these dt; measured, "
-                      "training with the chain from the start left the residual ratio at "
-                      "1.0000 for 12000 iterations, including on the clean simulator state "
-                      "the chain starts from. The network has to be worth chaining first.")
+ap.add_argument("--chain_gate", type=float, default=0.2,
+                 help="grow the chain by one step whenever the running mean of the last "
+                      "step's residual ratio drops below this. With a zero-init decoder the "
+                      "chain is at first just the explicit predictor rolled out, which "
+                      "diverges within a few steps at these dt, and training on those states "
+                      "destroys what has been learned -- measured, a fixed 30%% warmup ended "
+                      "with the ratio still at 0.47, and switching the chain on there took "
+                      "the single-step ratio straight back from 0.47 to 1.00. Gating on the "
+                      "measurement instead of on an iteration count is the fix.")
+ap.add_argument("--chain_cooldown", type=int, default=500,
+                 help="minimum iterations at each chain length before it can grow again")
 ap.add_argument("--max_drift", type=float, default=3.0,
                  help="cut the chain once the anchors have drifted this many times further "
                       "than they ever do in the explicit reference. States past that are not "
@@ -229,14 +233,21 @@ def smooth_noise(shape, rounds):
     return x / n
 
 
-def rollout_len(it):
+_chain = {"T": 1, "ema": 1.0, "last_bump": 0}
+
+
+def chain_update(it, rel_last):
+    """grow T only once the network is actually good at the current length."""
     if args.rollout_len <= 1:
         return 1
-    warm = args.rollout_warmup_frac * args.iters
-    if it <= warm:
-        return 1
-    prog = min(1.0, (it - warm) / max(1.0, args.rollout_ramp_frac * args.iters))
-    return max(1, int(round(1 + prog * (args.rollout_len - 1))))
+    _chain["ema"] = 0.99 * _chain["ema"] + 0.01 * min(rel_last, 2.0)
+    if (_chain["T"] < args.rollout_len and _chain["ema"] < args.chain_gate
+            and it - _chain["last_bump"] >= args.chain_cooldown):
+        _chain["T"] += 1
+        _chain["last_bump"] = it
+        _chain["ema"] = 1.0
+        print(f"  [chain] it={it} -> T={_chain['T']}", flush=True)
+    return _chain["T"]
 
 
 def sample_dt(it):
@@ -273,7 +284,7 @@ for it in pbar:
         with torch.no_grad():   # re-skin the Gaussians onto the perturbed anchors
             _, _, gp, _ = sim.step(p, torch.zeros_like(v), MASS, gp, VOL, MU, LAM, 0.0,
                                     gravity=None, damping=1.0, fixed_mask=fixed_mask)
-    T = rollout_len(it)
+    T = _chain["T"] if args.rollout_len > 1 else 1
     opt.zero_grad(set_to_none=True)
     rels, diverged = [], False
     for t in range(T):
@@ -312,6 +323,7 @@ for it in pbar:
                                     gravity=None, damping=1.0, fixed_mask=fixed_mask)
     gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0).item()
     opt.step()
+    chain_update(it, rels[-1])
     if args.grad_probe and (it % args.grad_probe == 0 or it == 1):
         wsum = sum(float(q.abs().mean()) for q in net.dec.parameters())
         print(f"  [probe] it={it:6d} T={T} dt/sub={dt_it/sub_dt:6.1f} "
