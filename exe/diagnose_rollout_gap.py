@@ -31,7 +31,8 @@ from tqdm import tqdm
 from anchorflow.anchors import AnchorSet
 from anchorflow.anchor_mpm import AnchorElasticSim, lame_from_E_nu
 from anchorflow.implicit import (incremental_potential, newmark_predictor, newmark_accel,
-                                  newmark_velocity, DuCorrector, predict_du)
+                                  newmark_velocity, DuCorrector, predict_du,
+                                  anchor_elastic_accel, newton_reference)
 from anchorflow import graph as G
 
 ap = argparse.ArgumentParser()
@@ -96,7 +97,8 @@ gravity = torch.tensor(cfg["g"], dtype=torch.float32, device=dev)
 edge_index = G.knn_graph(AC, k=targs["k_graph"])
 damping = float(cfg.get("grid_v_damping_scale", 1.0))
 
-net = DuCorrector(targs["hidden"], targs["mp_steps"]).to(dev)
+net = DuCorrector(targs["hidden"], targs["mp_steps"],
+                   use_force=not targs.get("no_force_feature", True)).to(dev)
 net.load_state_dict(ck["model"]); net.eval()
 
 
@@ -112,9 +114,28 @@ def impulse():
     return v
 
 
+def true_du_gap(p, v, a, gp):
+    """how far the ACTUAL implicit solution sits from the Newmark predictor.
+
+    This is what decides whether outputting a correction to the predictor is the
+    right parameterisation: if the true du is a few percent away, the predictor
+    is a good baseline and the network only has to supply the small part; if it
+    is several times away, the residual form is asking the network to operate
+    far outside the range it ever learned."""
+    du = newton_reference(sim, p, gp, VOL, MU, LAM, MASS, v, a, dt_big,
+                           None, beta, fixed, iters=40)
+    pred = newmark_predictor(v, a, dt_big, beta)
+    pred = torch.where(fixed.unsqueeze(-1), torch.zeros_like(pred), pred)
+    return (du - pred).norm() / pred.norm().clamp(min=1e-20)
+
+
 def report(tag, p, v, a, gp):
-    du, pred = predict_du(net, p, v, a, dt_big, edge_index, ACC, beta, fixed)
+    fa = anchor_elastic_accel(sim, p, gp, VOL, MU, LAM, MASS, fixed) if net.use_force else None
+    du, pred = predict_du(net, p, v, a, dt_big, edge_index, ACC, beta, fixed, fa,
+                           targs.get("direct_du", False))
     corr = du - pred
+    with torch.enable_grad():
+        gap = true_du_gap(p, v, a, gp)
     _, R = incremental_potential(du, sim, p, gp, VOL, MU, LAM, MASS, v, a, dt_big,
                                   None, beta, fixed)
     _, R0 = incremental_potential(pred, sim, p, gp, VOL, MU, LAM, MASS, v, a, dt_big,
@@ -122,6 +143,7 @@ def report(tag, p, v, a, gp):
     print(f"  {tag:22s} |v|={v.norm(dim=-1).mean():9.4f} |a|={a.norm(dim=-1).mean():10.2f} "
           f"|pred|={pred.norm(dim=-1).mean():9.3e} |corr|={corr.norm(dim=-1).mean():9.3e} "
           f"corr/pred={corr.norm()/pred.norm().clamp(min=1e-20):7.4f} "
+          f"TRUE/pred={gap:7.4f} "
           f"R/R0={R.norm()/R0.norm().clamp(min=1e-20):7.4f}")
 
 
@@ -144,11 +166,14 @@ with torch.enable_grad():
 
 print("\n--- B. states the ROLLOUT produces (a from Newmark eq. 8, seeded a=0) ---")
 p, v = AC.clone(), impulse()
-a = torch.zeros(M, 3, device=dev); gp = POS.clone()
+gp = POS.clone()
+a = anchor_elastic_accel(sim, p, gp, VOL, MU, LAM, MASS, fixed)
 for f in range(args.steps):
     if f % max(1, args.steps // 6) == 0:
         report(f"rollout frame {f}", p, v, a, gp)
-    du, _ = predict_du(net, p, v, a, dt_big, edge_index, ACC, beta, fixed)
+    fa = anchor_elastic_accel(sim, p, gp, VOL, MU, LAM, MASS, fixed) if net.use_force else None
+    du, _ = predict_du(net, p, v, a, dt_big, edge_index, ACC, beta, fixed, fa,
+                        targs.get("direct_du", False))
     a_next = newmark_accel(du, v, a, dt_big, beta)
     v = damping * newmark_velocity(a_next, v, a, dt_big, gamma)
     p = p + du; a = a_next

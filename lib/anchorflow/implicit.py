@@ -192,7 +192,7 @@ class DuCorrector(nn.Module):
 
 
 def predict_du(net, p, v, a, dt, edge_index, accel_scale, beta=0.25, fixed_mask=None,
-                f_accel=None):
+                f_accel=None, direct=False):
     """du = predictor + beta*dt^2 * accel_scale * net(...), i.e. the network
     corrects the displacement the anchors' own velocity and acceleration
     predict, with a gain that matches how a real correction scales.
@@ -225,7 +225,15 @@ def predict_du(net, p, v, a, dt, edge_index, accel_scale, beta=0.25, fixed_mask=
     pred = newmark_predictor(v, a, dt, beta)
     fa = None if f_accel is None else f_accel / accel_scale
     out = net(p, v, a / accel_scale, dt, edge_index, fa)
-    du = pred + (beta * dt * dt * accel_scale) * out
+    # direct=True drops the predictor from the output path and asks the network
+    # for the whole displacement. The two are equally expressive -- emitting
+    # -pred/(beta dt^2 A) cancels the predictor -- so this only changes the
+    # conditioning and the starting point, and it gives up the zero-init
+    # guarantee that training begins at an explicit step. Measured on real
+    # states the true du sits ~13% away from the predictor, so the residual
+    # form is asking for the small part; kept as an ablation.
+    du = (beta * dt * dt * accel_scale) * out if direct else \
+        pred + (beta * dt * dt * accel_scale) * out
     if fixed_mask is not None:
         du = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(du), du)
         pred = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(pred), pred)

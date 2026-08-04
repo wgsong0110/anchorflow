@@ -91,6 +91,9 @@ ap.add_argument("--chain_gate", type=float, default=0.2,
                       "with the ratio still at 0.47, and switching the chain on there took "
                       "the single-step ratio straight back from 0.47 to 1.00. Gating on the "
                       "measurement instead of on an iteration count is the fix.")
+ap.add_argument("--direct_du", action="store_true",
+                 help="output the whole displacement instead of a correction to the "
+                      "Newmark predictor (ablation)")
 ap.add_argument("--no_force_feature", action="store_true",
                  help="withhold f_int/m from the network (the old input set)")
 ap.add_argument("--chain_cooldown", type=int, default=500,
@@ -293,7 +296,7 @@ for it in pbar:
         fa = None if args.no_force_feature else anchor_elastic_accel(
             sim, p, gp, VOL, MU, LAM, MASS, fixed_mask)
         du, pred0 = predict_du(net, p, v, a, dt_it, edge_index, ACC_SCALE,
-                                args.beta, fixed_mask, fa)
+                                args.beta, fixed_mask, fa, args.direct_du)
         L, R = incremental_potential(du, sim, p, gp, VOL, MU, LAM, MASS,
                                       v, a, dt_it, None, args.beta, fixed_mask)
         with torch.no_grad():
@@ -360,7 +363,7 @@ for mult in [1, 2, 5, 10, 20, 40, 80, 160]:
             fa = None if args.no_force_feature else anchor_elastic_accel(
                 sim, p_n, gp, VOL, MU, LAM, MASS, fixed_mask)
             du_g, pred0 = predict_du(net, p_n, v_n, a_n, dt_e, edge_index, ACC_SCALE,
-                                      args.beta, fixed_mask, fa)
+                                      args.beta, fixed_mask, fa, args.direct_du)
             _, R0 = incremental_potential(pred0, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
                                            dt_e, None, args.beta, fixed_mask)
             _, Rg = incremental_potential(du_g, sim, p_n, gp, VOL, MU, LAM, MASS, v_n, a_n,
