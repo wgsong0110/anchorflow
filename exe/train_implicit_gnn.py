@@ -59,7 +59,16 @@ ap.add_argument("--processor", choices=["mpnn", "attention"], default="mpnn",
 ap.add_argument("--heads", type=int, default=4)
 ap.add_argument("--iters", type=int, default=2000)
 ap.add_argument("--lr", type=float, default=1e-4)
-ap.add_argument("--n_states", type=int, default=32, help="physics snapshots to train from")
+ap.add_argument("--n_states", type=int, default=32,
+                 help="physics snapshots per trajectory")
+ap.add_argument("--n_traj", type=int, default=1,
+                 help="how many DIFFERENT trajectories to collect states from. With one "
+                      "trajectory the 24 states are snapshots of a single damped oscillation, "
+                      "so their anchor configurations are near-copies of each other and a "
+                      "network can fit them without learning a function of the state at all "
+                      "-- which is what every run so far has done (0.07 on those states, "
+                      "exactly 1.0000 anywhere else). Extra trajectories randomise the "
+                      "impulse direction and strength; collection is a few seconds each.")
 ap.add_argument("--state_substeps", type=int, default=200, help="substeps between snapshots")
 ap.add_argument("--dt_big", type=float, default=4e-3,
                  help="largest step the GNN must take in one shot (curriculum target)")
@@ -201,33 +210,61 @@ opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 print(f"[setup] GNN params: {sum(p.numel() for p in net.parameters())/1e3:.1f}k")
 
 # ---- collect physics states (p, v, a) the simulator actually visits ----
-print("[states] running explicit physics to collect training states...")
-states = []
-p_c, v_c = AC.clone(), torch.zeros(M, 3, device=dev)
-a_c = torch.zeros(M, 3, device=dev)
-gpp = POS.clone()
 sub_dt = float(cfg["substep_dt"])
-# kick it into motion exactly like the config's particle_impulse does
+base_force = None
 for bc in cfg.get("boundary_conditions", []):
     if bc["type"] == "particle_impulse":
-        force = torch.tensor(bc["force"], device=dev)
-        wsum = torch.zeros(M, device=dev).index_add_(0, sim.nn_idx.reshape(-1), w0.reshape(-1))
-        v_c = v_c + (wsum.unsqueeze(-1) * force.unsqueeze(0) * sub_dt) / MASS.unsqueeze(-1)
+        base_force = torch.tensor(bc["force"], device=dev)
+wsum0 = torch.zeros(M, device=dev).index_add_(0, sim.nn_idx.reshape(-1), w0.reshape(-1))
+
+
+def rand_rotation(gen):
+    """uniform-ish random rotation via QR of a gaussian matrix"""
+    q, r = torch.linalg.qr(torch.randn(3, 3, device=dev, generator=gen))
+    q = q * torch.sign(torch.diagonal(r)).unsqueeze(0)
+    if torch.det(q) < 0:
+        q[:, 0] = -q[:, 0]
+    return q
+
+
+def collect(force, n_snap):
+    """one explicit trajectory; returns its snapshots"""
+    out = []
+    p_c, v_c = AC.clone(), torch.zeros(M, 3, device=dev)
+    a_c = torch.zeros(M, 3, device=dev)
+    gpp = POS.clone()
+    if force is not None:
+        v_c = v_c + (wsum0.unsqueeze(-1) * force.unsqueeze(0) * sub_dt) / MASS.unsqueeze(-1)
         v_c[fixed_mask] = 0
-with torch.enable_grad():
-    for i in tqdm(range(args.n_states * args.state_substeps), desc="collect", ncols=90):
-        p_prev_v = v_c.clone()
-        p_c, v_c, gpp, _F = sim.step(p_c, v_c, MASS, gpp, VOL, MU, LAM, sub_dt,
-                                      gravity=(gravity if gravity.abs().sum() > 0 else None),
-                                      damping=float(cfg.get("grid_v_damping_scale", 1.0)),
-                                      fixed_mask=fixed_mask)
-        a_c = (v_c - p_prev_v) / sub_dt
-        if torch.isnan(p_c).any():
-            print(f"[states] NaN at substep {i}; keeping {len(states)} states")
-            break
-        if (i + 1) % args.state_substeps == 0:
-            states.append((p_c.clone(), v_c.clone(), a_c.clone(), gpp.clone()))
-print(f"[states] collected {len(states)}")
+    with torch.enable_grad():
+        for i in range(n_snap * args.state_substeps):
+            vp = v_c.clone()
+            p_c, v_c, gpp, _F = sim.step(p_c, v_c, MASS, gpp, VOL, MU, LAM, sub_dt,
+                                          gravity=(gravity if gravity.abs().sum() > 0 else None),
+                                          damping=float(cfg.get("grid_v_damping_scale", 1.0)),
+                                          fixed_mask=fixed_mask)
+            a_c = (v_c - vp) / sub_dt
+            if torch.isnan(p_c).any():
+                print(f"  [states] NaN at substep {i}; keeping {len(out)}")
+                break
+            if (i + 1) % args.state_substeps == 0:
+                out.append((p_c.clone(), v_c.clone(), a_c.clone(), gpp.clone()))
+    return out
+
+
+print(f"[states] collecting from {args.n_traj} trajectory(ies)...")
+gen = torch.Generator(device=dev); gen.manual_seed(1234)
+states = []
+for tr in tqdm(range(args.n_traj), desc="trajectories", ncols=90):
+    if tr == 0 or base_force is None:
+        f_tr = base_force                       # trajectory 0 is the config's own
+    else:
+        # random direction, strength within half to double the config's, so the
+        # states span a range of deformations rather than one oscillation
+        scale = 0.5 * (4.0 ** torch.rand(1, device=dev, generator=gen).item())
+        f_tr = (rand_rotation(gen) @ base_force) * scale
+    states += collect(f_tr, args.n_states)
+print(f"[states] collected {len(states)} states")
 assert len(states) >= 4, "not enough states"
 
 # characteristic anchor speed -- the CONSTANT that sets the correction gain
