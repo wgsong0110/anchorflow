@@ -107,11 +107,14 @@ ap.add_argument("--chain_gate", type=float, default=0.2,
                       "with the ratio still at 0.47, and switching the chain on there took "
                       "the single-step ratio straight back from 0.47 to 1.00. Gating on the "
                       "measurement instead of on an iteration count is the fix.")
-ap.add_argument("--raw_io", action="store_true",
-                 help="strip the parameterisation: per-anchor (position, velocity, "
-                      "acceleration) in, next position out. No force feature, no dt feature, "
-                      "no Newmark predictor in the output path -- so the model only works at "
-                      "the dt it was trained at and does not start from an explicit step.")
+ap.add_argument("--no_raw_io", dest="raw_io", action="store_false",
+                 help="use the correction parameterisation instead of the default: per-anchor "
+                      "(position, velocity, acceleration) in, next position out, with dt as a "
+                      "FiLM conditioning signal. The default gives up two things worth "
+                      "remembering -- the decoder cannot be zero-init (a zero output is every "
+                      "anchor at the origin), so training does not start from an explicit "
+                      "step, and there is no force feature.")
+ap.set_defaults(raw_io=True)
 ap.add_argument("--velocity_out", action="store_true",
                  help="network emits du/dt (the step's average velocity) instead of a "
                       "correction to the predictor; O(1) at every dt with no gain constant")

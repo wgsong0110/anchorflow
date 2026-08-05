@@ -267,7 +267,7 @@ class DuCorrector(nn.Module):
     """
 
     def __init__(self, hidden=128, mp_steps=4, edge_in=4, use_force=True,
-                  processor="attention", heads=4, raw_io=False):
+                  processor="attention", heads=4, raw_io=True):
         super().__init__()
         self.use_force = use_force and not raw_io
         self.processor = processor

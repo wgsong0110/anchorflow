@@ -101,7 +101,7 @@ net = DuCorrector(targs["hidden"], targs["mp_steps"],
                    use_force=not targs.get("no_force_feature", True),
                    processor=targs.get("processor", "mpnn"),
                    heads=targs.get("heads", 4),
-                   raw_io=targs.get("raw_io", False)).to(dev)
+                   raw_io=targs.get("raw_io", True)).to(dev)
 net.load_state_dict(ck["model"]); net.eval()
 
 
