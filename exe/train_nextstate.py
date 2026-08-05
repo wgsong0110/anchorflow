@@ -41,6 +41,11 @@ ap.add_argument("--depth", type=int, default=4)
 ap.add_argument("--heads", type=int, default=4)
 ap.add_argument("--iters", type=int, default=30000)
 ap.add_argument("--lr", type=float, default=3e-4)
+ap.add_argument("--batch", type=int, default=8,
+                 help="states per iteration. With one state per step the gradient carried the "
+                      "state-to-state difficulty spread directly -- the relative step error "
+                      "swung 0.21-0.28 around its own mean for 29k iterations without the "
+                      "trend moving.")
 ap.add_argument("--noise", type=float, default=0.0,
                  help="random-walk noise on the input history, as a fraction of the typical "
                       "displacement. GNS's fix for rollout error accumulation: the network "
@@ -159,11 +164,11 @@ def rollout_error(frames):
 hist_log = []
 pbar = tqdm(range(1, args.iters + 1), desc="train", ncols=105)
 for it in pbar:
-    ti, k = pairs[torch.randint(len(pairs), (1,)).item()]
-    tr = trajs[ti]
-    p = tr[k]
-    v = (tr[k] - tr[k - 1]) / dt_coarse
-    a = accs[ti][k]
+    idx = torch.randint(len(pairs), (args.batch,))
+    sel = [pairs[i] for i in idx.tolist()]
+    p = torch.stack([trajs[ti][k] for ti, k in sel])
+    v = torch.stack([(trajs[ti][k] - trajs[ti][k - 1]) / dt_coarse for ti, k in sel])
+    a = torch.stack([accs[ti][k] for ti, k in sel])
     if args.noise > 0:
         # GNS-style: perturb the position and move the velocity consistently, so
         # the pair stays a state the network could have produced. The elastic
@@ -172,12 +177,12 @@ for it in pbar:
         # is second order in the noise and is the price of not keeping 1.8 GB of
         # clouds around.
         nz = torch.randn(p.shape, device=dev, generator=gen) * (args.noise * DISP_SCALE)
-        nz[fixed] = 0
+        nz[:, fixed] = 0
         p = p + nz
         v = v + nz / dt_coarse
-    target = tr[k + 1] - tr[k]
+    target = torch.stack([trajs[ti][k + 1] - trajs[ti][k] for ti, k in sel])
     du = net(p, v, a, dt_coarse)
-    du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
+    du = torch.where(fixed.view(1, -1, 1), torch.zeros_like(du), du)
     loss = ((du - target) ** 2).mean()
     opt.zero_grad(set_to_none=True)
     loss.backward()

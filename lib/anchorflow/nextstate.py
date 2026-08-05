@@ -72,10 +72,12 @@ class GeoAttentionBias(nn.Module):
         self.mlp = mlp([4, hidden, heads], layernorm=False)
 
     def forward(self, p):
-        rel = p.unsqueeze(1) - p.unsqueeze(0)
+        """p [B,M,3] -> bias [B,H,M,M]"""
+        rel = p.unsqueeze(2) - p.unsqueeze(1)                 # [B,M,M,3]
         d = rel.norm(dim=-1, keepdim=True)
-        s = d.mean().detach().clamp(min=1e-12)
-        return self.mlp(torch.cat([rel / s, torch.log1p(d / s)], -1)).permute(2, 0, 1)
+        s = d.mean(dim=(1, 2, 3), keepdim=True).detach().clamp(min=1e-12)
+        b = self.mlp(torch.cat([rel / s, torch.log1p(d / s)], -1))   # [B,M,M,H]
+        return b.permute(0, 3, 1, 2)
 
 
 class GeoAttentionBlock(nn.Module):
@@ -91,11 +93,13 @@ class GeoAttentionBlock(nn.Module):
         self.ffn = mlp([hidden, 2 * hidden, hidden], layernorm=False)
 
     def forward(self, x, bias):
-        M = x.shape[0]
+        """x [B,M,C], bias [B,H,M,M]"""
+        B, M, _ = x.shape
         q, k, v = self.qkv(self.n1(x)).chunk(3, dim=-1)
-        q, k, v = (t.view(M, self.h, self.d).transpose(0, 1) for t in (q, k, v))
+        q, k, v = (t.view(B, M, self.h, self.d).transpose(1, 2) for t in (q, k, v))
         att = (q @ k.transpose(-1, -2)) / math.sqrt(self.d) + bias
-        x = x + self.proj((att.softmax(-1) @ v).transpose(0, 1).reshape(M, -1))
+        o = (att.softmax(-1) @ v).transpose(1, 2).reshape(B, M, -1)
+        x = x + self.proj(o)
         return x + self.ffn(self.n2(x))
 
 
@@ -131,11 +135,19 @@ class NextStep(nn.Module):
         nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
 
     def forward(self, p, v, a, dt):
-        """p, v, a all [M,3]; returns the displacement over dt, [M,3]."""
+        """p, v, a all [M,3] or [B,M,3]; returns the displacement over dt, same shape.
+
+        A batch is several independent anchor sets, so attention and the
+        geometric bias stay within each one -- there is no cross-state mixing.
+        """
+        squeeze = (p.dim() == 2)
+        if squeeze:
+            p, v, a = p.unsqueeze(0), v.unsqueeze(0), a.unsqueeze(0)
         h = self.node_enc(torch.cat([p, v / self.vel_scale, a / self.acc_scale], -1))
         gamma, beta = self.film(dt, p.device)
         h = gamma[0] * h + beta[0]
         bias = self.bias(p)
         for i, blk in enumerate(self.blocks):
             h = blk(gamma[i + 1] * h + beta[i + 1], bias)
-        return self.dec(h) * self.scale
+        out = self.dec(h) * self.scale
+        return out.squeeze(0) if squeeze else out
