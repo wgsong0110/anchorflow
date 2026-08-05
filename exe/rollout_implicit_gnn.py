@@ -28,9 +28,9 @@ from tqdm import tqdm
 
 from anchorflow.anchors import AnchorSet
 from anchorflow.anchor_mpm import AnchorElasticSim, lame_from_E_nu
-from anchorflow.implicit import (incremental_potential, newmark_accel,
+from anchorflow.implicit import (incremental_potential, newmark_predictor, newmark_accel,
                                   newmark_velocity, DuCorrector, predict_du,
-                                  anchor_elastic_accel)
+                                  anchor_elastic_accel, newton_reference)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -43,6 +43,12 @@ ap.add_argument("--dt_mult", type=float, default=None,
                       "checkpoint's dt_big. The step the network can actually sustain "
                       "autoregressively is the number this experiment is after, so it must "
                       "be sweepable independently of what it was trained at.")
+ap.add_argument("--solver", choices=["net", "lbfgs"], default="net",
+                 help="'lbfgs' replaces the network with an actual iterated solve of the "
+                      "same incremental potential -- the trajectory the supervised targets "
+                      "come from, and the control this whole line of work never ran: whether "
+                      "a correctly solved implicit step is even stable at this dt.")
+ap.add_argument("--lbfgs_iters", type=int, default=40)
 ap.add_argument("--sweep", default=None,
                  help="comma-separated dt multipliers to test for stability instead of "
                       "rendering; reports how far each gets before diverging")
@@ -270,10 +276,18 @@ a_g = anchor_elastic_accel(sim, p_g, gp_g, VOL, MU, LAM, MASS, fixed_mask)
 frames_g, stats = [], []
 damping = float(cfg.get("grid_v_damping_scale", 1.0))
 for f in tqdm(range(args.frames), desc="gnn", ncols=90):
-    fa_g = anchor_elastic_accel(sim, p_g, gp_g, VOL, MU, LAM, MASS, fixed_mask) \
-        if net.use_force else None
-    du, pred0 = predict_du(net, p_g, v_g, a_g, dt_big, edge_index, ACC_SCALE,
-                            beta, fixed_mask, fa_g, targs.get("direct_du", False), targs.get("velocity_out", False))
+    if args.solver == "lbfgs":
+        with torch.enable_grad():
+            du = newton_reference(sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g, dt_big,
+                                   None, beta, fixed_mask, iters=args.lbfgs_iters)
+        pred0 = newmark_predictor(v_g, a_g, dt_big, beta)
+        pred0 = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(pred0), pred0)
+    else:
+        fa_g = anchor_elastic_accel(sim, p_g, gp_g, VOL, MU, LAM, MASS, fixed_mask) \
+            if net.use_force else None
+        du, pred0 = predict_du(net, p_g, v_g, a_g, dt_big, edge_index, ACC_SCALE,
+                                beta, fixed_mask, fa_g, targs.get("direct_du", False),
+                                targs.get("velocity_out", False))
     _, R = incremental_potential(du, sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,
                                   dt_big, None, beta, fixed_mask)
     _, R0 = incremental_potential(pred0, sim, p_g, gp_g, VOL, MU, LAM, MASS, v_g, a_g,
