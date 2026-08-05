@@ -11,7 +11,12 @@ constitutive model, force or residual is evaluated at all -- the physics kernel
 is only used afterwards to skin the Gaussians onto whatever anchors the network
 produced.
 
-State is a short history of positions rather than (v, a), and that is a
+Velocity and acceleration are both present -- as the history's first and second
+differences, each with its own normaliser -- but they are DERIVED from positions
+the network produced rather than carried as separate state, which is the point
+below.
+
+State is a short history of positions rather than (v, a) as state variables, and that is a
 deliberate change. When the state carried a velocity and an acceleration, those
 two meant different things in training and in rollout: in training they came
 from the simulator (a was literally f/m, so the elastic force was handed to the
@@ -113,11 +118,18 @@ class NextStep(nn.Module):
     displacement it was supposed to predict.
     """
 
-    def __init__(self, hidden=128, depth=4, heads=4, history=2, scale=1.0):
+    def __init__(self, hidden=128, depth=4, heads=4, history=2, scale=1.0,
+                  acc_scale=None):
         super().__init__()
         self.history = history
         self.scale = scale
-        self.node_enc = mlp([3 + 3 * history, hidden, hidden])
+        # the acceleration proxy d1 - d2 is a linear function of the history, so
+        # a linear layer could form it -- but its magnitude is far below the
+        # displacements', and under one shared normaliser it would arrive as
+        # near-zero input and have to be amplified through the encoder. Its own
+        # scale is the part that is not redundant.
+        self.acc_scale = acc_scale if acc_scale else scale
+        self.node_enc = mlp([3 + 3 * history + (3 if history >= 2 else 0), hidden, hidden])
         self.bias = GeoAttentionBias(heads)
         self.blocks = nn.ModuleList(GeoAttentionBlock(hidden, heads) for _ in range(depth))
         self.film = DtFiLM(hidden, depth + 1)
@@ -127,7 +139,10 @@ class NextStep(nn.Module):
 
     def forward(self, p, hist, dt):
         """p [M,3]; hist [M, history, 3] most-recent-first; returns du [M,3]."""
-        h = self.node_enc(torch.cat([p, (hist / self.scale).reshape(p.shape[0], -1)], -1))
+        feats = [p, (hist / self.scale).reshape(p.shape[0], -1)]
+        if self.history >= 2:
+            feats.append((hist[:, 0] - hist[:, 1]) / self.acc_scale)   # acceleration
+        h = self.node_enc(torch.cat(feats, -1))
         gamma, beta = self.film(dt, p.device)
         h = gamma[0] * h + beta[0]
         bias = self.bias(p)

@@ -100,13 +100,17 @@ REF = trajs[0]                              # the config's own run, for evaluati
 # (trajectory, step) pairs that have a full history behind them and a target ahead
 pairs = [(ti, k) for ti, tr in enumerate(trajs)
          for k in range(args.history, tr.shape[0] - 1)]
-DISP_SCALE = float(torch.cat([ (tr[1:] - tr[:-1]).norm(dim=-1).flatten() for tr in trajs ]).mean())
-print(f"[data] {len(pairs)} training pairs; typical coarse displacement = {DISP_SCALE:.5f}")
+DISP = [tr[1:] - tr[:-1] for tr in trajs]
+DISP_SCALE = float(torch.cat([d.norm(dim=-1).flatten() for d in DISP]).mean())
+ACC_SCALE = float(torch.cat([(d[1:] - d[:-1]).norm(dim=-1).flatten() for d in DISP]).mean())
+print(f"[data] {len(pairs)} training pairs; typical coarse displacement = {DISP_SCALE:.5f}, "
+      f"typical change in it = {ACC_SCALE:.5f}")
 print(f"[data] reference peak anchor displacement = "
       f"{(REF - AC).norm(dim=-1).max().item():.5f}")
 
 dt_coarse = args.dt_mult * sc.sub_dt
-net = NextStep(args.hidden, args.depth, args.heads, args.history, DISP_SCALE).to(dev)
+net = NextStep(args.hidden, args.depth, args.heads, args.history, DISP_SCALE,
+                ACC_SCALE).to(dev)
 opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 print(f"[setup] params: {sum(q.numel() for q in net.parameters())/1e3:.1f}k")
 
@@ -190,5 +194,5 @@ for i in range(0, n, max(1, n // 12)):
 
 if args.out:
     torch.save({"model": net.state_dict(), "args": vars(args), "hist": hist_log,
-                "disp_scale": DISP_SCALE}, args.out)
+                "disp_scale": DISP_SCALE, "acc_scale": ACC_SCALE}, args.out)
     print(f"[save] {args.out}")
