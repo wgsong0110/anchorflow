@@ -126,6 +126,16 @@ ap.add_argument("--max_drift", type=float, default=3.0,
                  help="cut the chain once the anchors have drifted this many times further "
                       "than they ever do in the explicit reference. States past that are not "
                       "on any physical trajectory and training on them is noise.")
+ap.add_argument("--supervised", action="store_true",
+                 help="regress on du* from an LBFGS solve of the same potential instead of "
+                      "minimising the residual directly. The residual loss is a non-convex "
+                      "objective seen through the physics; plain regression is a much easier "
+                      "problem, so this separates two explanations of six failed runs -- the "
+                      "network cannot represent/learn the map at all, versus it learns it "
+                      "fine and only the rollout distribution is the problem. Targets are "
+                      "precomputed once for the collected states, so this implies T=1 and no "
+                      "state noise (a perturbed state has no precomputed target).")
+ap.add_argument("--lbfgs_iters", type=int, default=40)
 ap.add_argument("--loss_norm", choices=["none", "resid"], default="resid",
                  help="'resid' divides each step's loss by ||R_explicit|| so samples at "
                       "different dt and different points along a chain weigh comparably; "
@@ -320,12 +330,38 @@ def sample_dt(it):
     u = torch.rand(1).item()
     return math.exp(math.log(dt_lo) + u * (math.log(dt_max) - math.log(dt_lo)))
 
+# ---- supervised targets, if asked for ----
+DU_STAR = None
+if args.supervised:
+    assert args.rollout_len == 1 and args.state_noise == 0, \
+        "--supervised needs --rollout_len 1 --state_noise 0 (targets are precomputed)"
+    DU_STAR = []
+    for st in tqdm(states, desc="lbfgs targets", ncols=90):
+        p_s, v_s, a_s, gp_s = st
+        DU_STAR.append(newton_reference(sim, p_s, gp_s, VOL, MU, LAM, MASS, v_s, a_s,
+                                         args.dt_big, None, args.beta, fixed_mask,
+                                         iters=args.lbfgs_iters))
+    with torch.no_grad():
+        rr = []
+        for st, du_t in zip(states, DU_STAR):
+            p_s, v_s, a_s, gp_s = st
+            pr = newmark_predictor(v_s, a_s, args.dt_big, args.beta)
+            pr = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(pr), pr)
+            _, R0 = incremental_potential(pr, sim, p_s, gp_s, VOL, MU, LAM, MASS, v_s, a_s,
+                                           args.dt_big, None, args.beta, fixed_mask)
+            _, Rt = incremental_potential(du_t, sim, p_s, gp_s, VOL, MU, LAM, MASS, v_s, a_s,
+                                           args.dt_big, None, args.beta, fixed_mask)
+            rr.append((Rt.norm() / R0.norm().clamp(min=1e-20)).item())
+    print(f"[targets] {len(DU_STAR)} LBFGS solves; their own residual ratio: "
+          f"mean={sum(rr)/len(rr):.4f} max={max(rr):.4f}")
+
 # ---- train ----
 damping = float(cfg.get("grid_v_damping_scale", 1.0))
 hist = []
 pbar = tqdm(range(1, args.iters + 1), desc="train", ncols=110)
 for it in pbar:
-    p, v, a, gp = [t.clone() for t in states[torch.randint(len(states), (1,)).item()]]
+    si = torch.randint(len(states), (1,)).item()
+    p, v, a, gp = [t.clone() for t in states[si]]
     dt_it = sample_dt(it)
     if args.state_noise > 0:
         # velocity and acceleration get their own coherent perturbation, and the
@@ -358,12 +394,24 @@ for it in pbar:
             _, R0 = incremental_potential(pred0, sim, p, gp, VOL, MU, LAM, MASS,
                                            v, a, dt_it, None, args.beta, fixed_mask)
         n0 = R0.norm().clamp(min=1e-20)
-        w = (n0 * T) if args.loss_norm == "resid" else float(T)
-        # normalise so every step of every chain contributes comparably: L grows
-        # by orders of magnitude with dt and with how far the chain has drifted,
-        # and unnormalised the large-dt late-chain samples own the gradient.
-        (L / w).backward()
-        rels.append((R.norm() / n0).item())
+        if DU_STAR is not None:
+            # relative error on the CORRECTION, so 1.0 means "no better than the
+            # explicit predictor" and 0.0 means "the LBFGS answer exactly" --
+            # directly comparable to the residual ratio reported elsewhere
+            c_star = (DU_STAR[si] - pred0).detach()
+            loss = ((du - pred0 - c_star) ** 2).sum() / (c_star ** 2).sum().clamp(min=1e-30)
+            loss.backward()
+            rels.append((R.norm() / n0).item())
+            sup_err = loss.item()
+        else:
+            w = (n0 * T) if args.loss_norm == "resid" else float(T)
+            # normalise so every step of every chain contributes comparably: L
+            # grows by orders of magnitude with dt and with how far the chain has
+            # drifted, and unnormalised the large-dt late-chain samples own the
+            # gradient.
+            (L / w).backward()
+            rels.append((R.norm() / n0).item())
+            sup_err = float("nan")
         # advance on the network's OWN output; detached, so this is on-policy
         # data collection rather than backprop-through-time. BPTT is available
         # here (the elastic energy's backward gives dE/dp analytically) but is
@@ -397,6 +445,7 @@ for it in pbar:
         hist.append((it, T, rels[0], rels[-1], dt_it))
         pbar.set_postfix(T=T, dtx=f"{dt_it/sub_dt:.0f}",
                           R0=f"{rels[0]:.3f}", RT=f"{rels[-1]:.3f}",
+                          sup=f"{sup_err:.3f}" if DU_STAR is not None else "-",
                           div="Y" if diverged else "n")
 
 print("\n[result] iter   T   dt/sub   R/R_expl(step 1)   R/R_expl(last step)")
