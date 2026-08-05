@@ -54,6 +54,14 @@ ap.add_argument("--noise", type=float, default=0.0,
 ap.add_argument("--eval_every", type=int, default=5000)
 ap.add_argument("--eval_frames", type=int, default=60)
 ap.add_argument("--out", default=None)
+ap.add_argument("--ckpt_every", type=int, default=2000,
+                 help="write a resumable checkpoint this often. These instances stop on an "
+                      "idle watchdog and can be reclaimed at any time; a run that can only "
+                      "save at the end loses everything when that happens.")
+ap.add_argument("--resume", default=None,
+                 help="resume from a checkpoint written by --out (model, optimiser, iteration "
+                      "and RNG). The collected trajectories are regenerated, not stored -- "
+                      "they are deterministic given the seed and take seconds.")
 args = ap.parse_args()
 
 dev = "cuda"
@@ -162,7 +170,30 @@ def rollout_error(frames):
 
 
 hist_log = []
-pbar = tqdm(range(1, args.iters + 1), desc="train", ncols=105)
+start_it = 1
+
+
+def save(path, it):
+    torch.save({"model": net.state_dict(), "opt": opt.state_dict(), "iter": it,
+                "args": vars(args), "hist": hist_log, "disp_scale": DISP_SCALE,
+                "vel_scale": VEL_SCALE, "acc_scale": ACC_SCALE,
+                "rng": torch.get_rng_state(), "cuda_rng": torch.cuda.get_rng_state(),
+                "gen": gen.get_state()}, path)
+
+
+if args.resume and os.path.exists(args.resume):
+    ck = torch.load(args.resume, map_location=dev, weights_only=False)
+    net.load_state_dict(ck["model"])
+    opt.load_state_dict(ck["opt"])
+    hist_log = ck.get("hist", [])
+    start_it = ck["iter"] + 1
+    torch.set_rng_state(ck["rng"].cpu())
+    torch.cuda.set_rng_state(ck["cuda_rng"].cpu())
+    gen.set_state(ck["gen"].cpu())
+    print(f"[resume] {args.resume} at iter {ck['iter']}")
+
+pbar = tqdm(range(start_it, args.iters + 1), desc="train", ncols=105, initial=start_it - 1,
+             total=args.iters)
 for it in pbar:
     idx = torch.randint(len(pairs), (args.batch,))
     sel = [pairs[i] for i in idx.tolist()]
@@ -193,6 +224,8 @@ for it in pbar:
         rel = (du - target).norm() / target.norm().clamp(min=1e-20)
         hist_log.append((it, loss.item(), rel.item()))
         pbar.set_postfix(mse=f"{loss.item():.2e}", rel=f"{rel.item():.4f}")
+    if args.out and (it % args.ckpt_every == 0 or it == args.iters):
+        save(args.out, it)
     if it % args.eval_every == 0 or it == args.iters:
         n, err, rel = rollout_error(args.eval_frames)
         print(f"\n  [rollout] it={it} survived {n}/{args.eval_frames+1} frames; "
@@ -211,7 +244,5 @@ for i in range(0, n, max(1, n // 12)):
     print(f"  {i:6d} {err[i]:16.5f} {rel[i]*100:21.2f}%")
 
 if args.out:
-    torch.save({"model": net.state_dict(), "args": vars(args), "hist": hist_log,
-                "disp_scale": DISP_SCALE, "vel_scale": VEL_SCALE,
-                "acc_scale": ACC_SCALE}, args.out)
+    save(args.out, args.iters)
     print(f"[save] {args.out}")
