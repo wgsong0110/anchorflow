@@ -41,6 +41,11 @@ ap.add_argument("--depth", type=int, default=4)
 ap.add_argument("--heads", type=int, default=4)
 ap.add_argument("--iters", type=int, default=30000)
 ap.add_argument("--lr", type=float, default=3e-4)
+ap.add_argument("--no_inertial", dest="inertial", action="store_false",
+                 help="predict the whole displacement instead of only its deviation from "
+                      "v*dt. The inertial part is readable off an input channel, so the "
+                      "default spends the output's precision only on the part that is not.")
+ap.set_defaults(inertial=True)
 ap.add_argument("--batch", type=int, default=8,
                  help="states per iteration. With one state per step the gradient carried the "
                       "state-to-state difficulty spread directly -- the relative step error "
@@ -123,13 +128,27 @@ DISP = [tr[1:] - tr[:-1] for tr in trajs]
 DISP_SCALE = float(torch.cat([d.norm(dim=-1).flatten() for d in DISP]).mean())
 VEL_SCALE = DISP_SCALE / dt_coarse
 ACC_SCALE = float(torch.cat([a.norm(dim=-1).flatten() for a in accs]).mean())
+# the deviation from inertia is what the network is actually asked for, and it is
+# smaller than a displacement -- so it, not the displacement, sets the output units
+DEV = [d[1:] - d[:-1] for d in DISP]
+DEV_SCALE = float(torch.cat([q.norm(dim=-1).flatten() for q in DEV]).mean())
+OUT_SCALE = DEV_SCALE if args.inertial else DISP_SCALE
 print(f"[data] {len(pairs)} training pairs; typical coarse displacement = {DISP_SCALE:.5f}, "
+      f"deviation from inertia = {DEV_SCALE:.5f} ({100*DEV_SCALE/DISP_SCALE:.1f}% of it), "
       f"velocity scale = {VEL_SCALE:.4f}, elastic accel scale = {ACC_SCALE:.2f}")
+
+# baselines, on the same relative-error scale the training loop reports
+with torch.no_grad():
+    num = den = 0.0
+    for d in DISP:                       # "the next displacement equals this one"
+        num += float(((d[1:] - d[:-1]) ** 2).sum()); den += float((d[1:] ** 2).sum())
+    print(f"[baseline] persistence (du_next = du): rel err = {(num / den) ** 0.5:.4f}")
+    print(f"[baseline] zero      (du_next = 0):    rel err = 1.0000")
 print(f"[data] reference peak anchor displacement = "
       f"{(REF - AC).norm(dim=-1).max().item():.5f}")
 
-net = NextStep(args.hidden, args.depth, args.heads, DISP_SCALE, VEL_SCALE,
-                ACC_SCALE).to(dev)
+net = NextStep(args.hidden, args.depth, args.heads, OUT_SCALE, VEL_SCALE,
+                ACC_SCALE, args.inertial).to(dev)
 opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 print(f"[setup] params: {sum(q.numel() for q in net.parameters())/1e3:.1f}k")
 
@@ -215,7 +234,11 @@ for it in pbar:
     target = torch.stack([trajs[ti][k + 1] - trajs[ti][k] for ti, k in sel])
     du = net(p, v, a, dt_coarse)
     du = torch.where(fixed.view(1, -1, 1), torch.zeros_like(du), du)
-    loss = ((du - target) ** 2).mean()
+    # in units of the typical displacement. The raw-unit loss was ~5e-6, which
+    # put the gradient reaching the decoder output at ~1e-9 -- the same order as
+    # Adam's epsilon, so the term that is supposed to make Adam scale-invariant
+    # was throttling it instead.
+    loss = (((du - target) / DISP_SCALE) ** 2).mean()
     opt.zero_grad(set_to_none=True)
     loss.backward()
     torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
