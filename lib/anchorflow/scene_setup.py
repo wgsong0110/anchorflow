@@ -76,6 +76,23 @@ class Scene:
                                              damping=self.damping, fixed_mask=self.fixed_mask)
         return p, v, gp
 
+    def elastic_accel(self, p, gp):
+        """f_int(p)/m per anchor -- one fused-kernel call (~0.1 ms).
+
+        This is the only physics the network sees, and it is computed the SAME
+        way in training and in rollout: from the current anchor configuration.
+        The previous line carried an acceleration in the state instead, which
+        silently meant two different things -- the simulator's f/m while
+        training, the integrator's readback of the network's own output while
+        rolling out.
+        """
+        from anchorstep import fused_energy_force
+        f, _, _, _ = fused_energy_force(
+            self.sim.gaussian_canonical, gp, p.detach(), self.sim.anchor_canonical,
+            self.sim.nn_idx, self.volume, self.sim.radius, self.mu, self.lam)
+        a = f / self.mass.unsqueeze(-1)
+        return torch.where(self.fixed_mask.unsqueeze(-1), torch.zeros_like(a), a)
+
     def skin(self, p, gp):
         """Gaussian positions implied by an anchor configuration (dt=0 step)."""
         with torch.no_grad():

@@ -11,19 +11,17 @@ constitutive model, force or residual is evaluated at all -- the physics kernel
 is only used afterwards to skin the Gaussians onto whatever anchors the network
 produced.
 
-Velocity and acceleration are both present -- as the history's first and second
-differences, each with its own normaliser -- but they are DERIVED from positions
-the network produced rather than carried as separate state, which is the point
-below.
+The state is (position, velocity, elastic acceleration). Velocity is the last
+step's displacement over dt -- a quantity the network itself produced, so it
+means the same thing in training and in rollout. Acceleration is f_int(p)/m,
+evaluated by the physics kernel at the CURRENT configuration, which likewise
+means the same thing in both.
 
-State is a short history of positions rather than (v, a) as state variables, and that is a
-deliberate change. When the state carried a velocity and an acceleration, those
-two meant different things in training and in rollout: in training they came
-from the simulator (a was literally f/m, so the elastic force was handed to the
-network for free), in rollout they were whatever the integrator read back out of
-the network's own output. Position differences have no such ambiguity -- they
-are defined identically in both, because they are just differences of positions
-the network itself produced.
+That consistency is the point. The retired line carried an acceleration in the
+state that was the simulator's f/m while training and the integrator's readback
+of the network's own output while rolling out -- two different quantities under
+one name, and the network had no way to tell. Here the force is recomputed from
+whatever configuration the network has produced, so it is always the real one.
 """
 from __future__ import annotations
 
@@ -102,7 +100,7 @@ class GeoAttentionBlock(nn.Module):
 
 
 class NextStep(nn.Module):
-    """(position, recent displacements) per anchor -> displacement over dt.
+    """(position, velocity, elastic acceleration) per anchor -> displacement over dt.
 
     Message passing was measured and rejected for this anchor set: at k=8
     neighbours and depth 4, perturbing one anchor moved 29 of 512 outputs against
@@ -118,18 +116,13 @@ class NextStep(nn.Module):
     displacement it was supposed to predict.
     """
 
-    def __init__(self, hidden=128, depth=4, heads=4, history=2, scale=1.0,
-                  acc_scale=None):
+    def __init__(self, hidden=128, depth=4, heads=4, scale=1.0, vel_scale=1.0,
+                  acc_scale=1.0):
         super().__init__()
-        self.history = history
-        self.scale = scale
-        # the acceleration proxy d1 - d2 is a linear function of the history, so
-        # a linear layer could form it -- but its magnitude is far below the
-        # displacements', and under one shared normaliser it would arrive as
-        # near-zero input and have to be amplified through the encoder. Its own
-        # scale is the part that is not redundant.
-        self.acc_scale = acc_scale if acc_scale else scale
-        self.node_enc = mlp([3 + 3 * history + (3 if history >= 2 else 0), hidden, hidden])
+        self.scale = scale                     # typical displacement, sets the output units
+        self.vel_scale = vel_scale
+        self.acc_scale = acc_scale
+        self.node_enc = mlp([3 + 3 + 3, hidden, hidden])   # p, v, a
         self.bias = GeoAttentionBias(heads)
         self.blocks = nn.ModuleList(GeoAttentionBlock(hidden, heads) for _ in range(depth))
         self.film = DtFiLM(hidden, depth + 1)
@@ -137,20 +130,12 @@ class NextStep(nn.Module):
         last = [m for m in self.dec.modules() if isinstance(m, nn.Linear)][-1]
         nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
 
-    def forward(self, p, hist, dt):
-        """p [M,3]; hist [M, history, 3] most-recent-first; returns du [M,3]."""
-        feats = [p, (hist / self.scale).reshape(p.shape[0], -1)]
-        if self.history >= 2:
-            feats.append((hist[:, 0] - hist[:, 1]) / self.acc_scale)   # acceleration
-        h = self.node_enc(torch.cat(feats, -1))
+    def forward(self, p, v, a, dt):
+        """p, v, a all [M,3]; returns the displacement over dt, [M,3]."""
+        h = self.node_enc(torch.cat([p, v / self.vel_scale, a / self.acc_scale], -1))
         gamma, beta = self.film(dt, p.device)
         h = gamma[0] * h + beta[0]
         bias = self.bias(p)
         for i, blk in enumerate(self.blocks):
             h = blk(gamma[i + 1] * h + beta[i + 1], bias)
         return self.dec(h) * self.scale
-
-
-def roll_history(hist, du):
-    """push a new displacement onto the front of the history window."""
-    return torch.cat([du.unsqueeze(1), hist[:, :-1]], dim=1)

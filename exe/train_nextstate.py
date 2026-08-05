@@ -1,9 +1,11 @@
 """Train the anchor dynamics directly from explicit-simulator trajectories.
 
-No physics in the loss, the targets or the output path: the target is where the
+No physics in the loss, the targets or the integration: the target is where the
 simulator's anchors actually were one coarse step later, and the loss is L2 on
-the displacement. See lib/anchorflow/nextstate.py for why the state is a history
-of positions rather than (v, a).
+the displacement. The one physical quantity involved is the elastic acceleration
+f_int(p)/m, which the network takes as an INPUT and which is recomputed from
+whatever configuration the network has produced -- so unlike the retired line,
+it means the same thing in training and in rollout.
 
 Evaluation is the only thing that matters here and it is done on the network's
 OWN rollout, not on single steps: position error against the reference
@@ -23,7 +25,7 @@ import torch
 from tqdm import tqdm
 
 from anchorflow import scene_setup
-from anchorflow.nextstate import NextStep, roll_history
+from anchorflow.nextstate import NextStep
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -34,7 +36,6 @@ ap.add_argument("--dt_mult", type=int, default=40,
                  help="coarse step, in explicit substeps. One network call replaces this many.")
 ap.add_argument("--n_traj", type=int, default=12)
 ap.add_argument("--n_steps", type=int, default=60, help="coarse steps per trajectory")
-ap.add_argument("--history", type=int, default=2)
 ap.add_argument("--hidden", type=int, default=128)
 ap.add_argument("--depth", type=int, default=4)
 ap.add_argument("--heads", type=int, default=4)
@@ -74,65 +75,73 @@ def rand_rot():
 
 
 def trajectory(force):
-    """anchor positions sampled every dt_mult substeps -> [n_steps+1, M, 3]"""
+    """coarse-sampled explicit run -> (positions [T,M,3], elastic accel [T,M,3])
+
+    The Gaussian cloud is 2.4 MB a snapshot and is only needed to evaluate the
+    force, so the force is evaluated during collection and the cloud discarded.
+    """
     p, v = AC.clone(), sc.initial_velocity(force)
     gp = sc.pos.clone()
-    out = [p.clone()]
+    ps, accs = [p.clone()], [sc.elastic_accel(p, gp)]
     for _ in range(args.n_steps):
         p, v, gp = sc.explicit_step(p, v, gp, args.dt_mult)
         if not torch.isfinite(p).all():
             break
-        out.append(p.clone())
-    return torch.stack(out)
+        ps.append(p.clone()); accs.append(sc.elastic_accel(p, gp))
+    return torch.stack(ps), torch.stack(accs)
 
 
 print(f"[data] {args.n_traj} trajectories x {args.n_steps} coarse steps...")
-trajs = []
+trajs, accs = [], []
 for t in tqdm(range(args.n_traj), desc="collect", ncols=90):
     if t == 0 or base_force is None:
         f = base_force
     else:
         s = 0.5 * (4.0 ** torch.rand(1, device=dev, generator=gen).item())
         f = (rand_rot() @ base_force) * s
-    trajs.append(trajectory(f))
-REF = trajs[0]                              # the config's own run, for evaluation
+    ps, ac_ = trajectory(f)
+    trajs.append(ps); accs.append(ac_)
+REF, REF_A = trajs[0], accs[0]              # the config's own run, for evaluation
 
-# (trajectory, step) pairs that have a full history behind them and a target ahead
-pairs = [(ti, k) for ti, tr in enumerate(trajs)
-         for k in range(args.history, tr.shape[0] - 1)]
+# steps with a previous position behind them (for velocity) and a target ahead
+pairs = [(ti, k) for ti, tr in enumerate(trajs) for k in range(1, tr.shape[0] - 1)]
+dt_coarse = args.dt_mult * sc.sub_dt
 DISP = [tr[1:] - tr[:-1] for tr in trajs]
 DISP_SCALE = float(torch.cat([d.norm(dim=-1).flatten() for d in DISP]).mean())
-ACC_SCALE = float(torch.cat([(d[1:] - d[:-1]).norm(dim=-1).flatten() for d in DISP]).mean())
+VEL_SCALE = DISP_SCALE / dt_coarse
+ACC_SCALE = float(torch.cat([a.norm(dim=-1).flatten() for a in accs]).mean())
 print(f"[data] {len(pairs)} training pairs; typical coarse displacement = {DISP_SCALE:.5f}, "
-      f"typical change in it = {ACC_SCALE:.5f}")
+      f"velocity scale = {VEL_SCALE:.4f}, elastic accel scale = {ACC_SCALE:.2f}")
 print(f"[data] reference peak anchor displacement = "
       f"{(REF - AC).norm(dim=-1).max().item():.5f}")
 
-dt_coarse = args.dt_mult * sc.sub_dt
-net = NextStep(args.hidden, args.depth, args.heads, args.history, DISP_SCALE,
+net = NextStep(args.hidden, args.depth, args.heads, DISP_SCALE, VEL_SCALE,
                 ACC_SCALE).to(dev)
 opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 print(f"[setup] params: {sum(q.numel() for q in net.parameters())/1e3:.1f}k")
 
 
-def history_of(tr, k):
-    """the `history` most recent displacements ending at step k, newest first"""
-    return torch.stack([tr[k - i] - tr[k - i - 1] for i in range(args.history)], dim=1)
-
-
 @torch.no_grad()
 def rollout(frames):
-    """autoregressive from the reference's initial condition; returns positions"""
-    p = REF[args.history].clone()
-    hist = history_of(REF, args.history).clone()
+    """autoregressive from the reference's initial condition; returns positions.
+
+    The elastic acceleration is re-evaluated every step from the network's own
+    anchors, via the Gaussian cloud it has skinned -- the same call the training
+    data was built with.
+    """
+    p = REF[1].clone()
+    v = (REF[1] - REF[0]) / dt_coarse
+    gp = sc.skin(p, sc.pos.clone())
     out = [p.clone()]
     for _ in range(frames):
-        du = net(p, hist, dt_coarse)
+        a = sc.elastic_accel(p, gp)
+        du = net(p, v, a, dt_coarse)
         du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
         p = p + du
-        hist = roll_history(hist, du)
+        v = du / dt_coarse
         if not torch.isfinite(p).all():
             break
+        gp = sc.skin(p, gp)
         out.append(p.clone())
     return torch.stack(out)
 
@@ -140,8 +149,8 @@ def rollout(frames):
 @torch.no_grad()
 def rollout_error(frames):
     got = rollout(frames)
-    n = min(got.shape[0], REF.shape[0] - args.history)
-    ref = REF[args.history:args.history + n]
+    n = min(got.shape[0], REF.shape[0] - 1)
+    ref = REF[1:1 + n]
     err = (got[:n] - ref).norm(dim=-1).mean(-1)          # mean anchor error per frame
     span = (ref - AC).norm(dim=-1).max().clamp(min=1e-12)
     return n, err, (err / span)
@@ -153,17 +162,21 @@ for it in pbar:
     ti, k = pairs[torch.randint(len(pairs), (1,)).item()]
     tr = trajs[ti]
     p = tr[k]
-    h = history_of(tr, k)
+    v = (tr[k] - tr[k - 1]) / dt_coarse
+    a = accs[ti][k]
     if args.noise > 0:
-        # random walk on the history, the way GNS does it: perturb the past
-        # displacements and move the position consistently, so the (position,
-        # history) pair stays a state the network could actually have produced
-        nz = torch.randn(h.shape, device=dev, generator=gen) * (args.noise * DISP_SCALE)
+        # GNS-style: perturb the position and move the velocity consistently, so
+        # the pair stays a state the network could have produced. The elastic
+        # acceleration is NOT perturbed to match -- it would need the Gaussian
+        # cloud at the perturbed configuration, which is not stored; the mismatch
+        # is second order in the noise and is the price of not keeping 1.8 GB of
+        # clouds around.
+        nz = torch.randn(p.shape, device=dev, generator=gen) * (args.noise * DISP_SCALE)
         nz[fixed] = 0
-        h = h + nz
-        p = p + nz.sum(1)
+        p = p + nz
+        v = v + nz / dt_coarse
     target = tr[k + 1] - tr[k]
-    du = net(p, h, dt_coarse)
+    du = net(p, v, a, dt_coarse)
     du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
     loss = ((du - target) ** 2).mean()
     opt.zero_grad(set_to_none=True)
@@ -194,5 +207,6 @@ for i in range(0, n, max(1, n // 12)):
 
 if args.out:
     torch.save({"model": net.state_dict(), "args": vars(args), "hist": hist_log,
-                "disp_scale": DISP_SCALE, "acc_scale": ACC_SCALE}, args.out)
+                "disp_scale": DISP_SCALE, "vel_scale": VEL_SCALE,
+                "acc_scale": ACC_SCALE}, args.out)
     print(f"[save] {args.out}")
