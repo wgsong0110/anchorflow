@@ -176,6 +176,7 @@ start_it = 1
 def save(path, it):
     torch.save({"model": net.state_dict(), "opt": opt.state_dict(), "iter": it,
                 "args": vars(args), "hist": hist_log, "disp_scale": DISP_SCALE,
+                "dev_scale": DEV_SCALE,
                 "vel_scale": VEL_SCALE, "acc_scale": ACC_SCALE,
                 "rng": torch.get_rng_state(), "cuda_rng": torch.cuda.get_rng_state(),
                 "gen": gen.get_state()}, path)
