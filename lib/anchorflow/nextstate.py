@@ -121,9 +121,16 @@ class NextStep(nn.Module):
     """
 
     def __init__(self, hidden=128, depth=4, heads=4, scale=1.0, vel_scale=1.0,
-                  acc_scale=1.0):
+                  acc_scale=1.0, inertial=True):
         super().__init__()
-        self.scale = scale                     # typical displacement, sets the output units
+        # With inertial=True the network emits only the deviation from v*dt, the
+        # displacement the anchor would have if nothing acted on it. That part is
+        # readable off an input channel, so asking for the whole displacement
+        # spends the output's precision reproducing something already known --
+        # and `scale` is then the size of the DEVIATION, which is several times
+        # smaller than a displacement, so the output stays O(1) either way.
+        self.inertial = inertial
+        self.scale = scale
         self.vel_scale = vel_scale
         self.acc_scale = acc_scale
         self.node_enc = mlp([3 + 3 + 3, hidden, hidden])   # p, v, a
@@ -150,4 +157,6 @@ class NextStep(nn.Module):
         for i, blk in enumerate(self.blocks):
             h = blk(gamma[i + 1] * h + beta[i + 1], bias)
         out = self.dec(h) * self.scale
+        if self.inertial:
+            out = out + v * dt
         return out.squeeze(0) if squeeze else out
