@@ -19,9 +19,8 @@ Setup:
     per anchor and emits the next position, with the step size entering as a
     FiLM conditioning signal on a Fourier encoding of log10(dt) rather than as a
     node feature (it is one scalar shared by every anchor).
-  * loss is the relative L2 error on the CORRECTION to the Newmark predictor, so
-    1.0 means "no better than an explicit step" and 0.0 means "the LBFGS answer
-    exactly".
+  * loss is plain L2 on the absolute next position against p_n + du*, where du*
+    is an LBFGS solve of the incremental potential at that state.
   * the residual ratio ||R|| / ||R(du=predictor)|| is reported alongside but is
     no longer optimised, so the two objectives stay comparable across runs.
 
@@ -266,17 +265,19 @@ def sample_dt(it):
 # Regression on an LBFGS solve of the same potential reaches 0.016 relative
 # error on the correction, so the map is learnable and the residual objective
 # was not the way to learn it.
-DU_STAR = []
+P_STAR = []
 if True:
     for st in tqdm(states, desc="lbfgs targets", ncols=90):
         p_s, v_s, a_s, gp_s = st
-        DU_STAR.append(newton_reference(sim, p_s, gp_s, VOL, MU, LAM, MASS, v_s, a_s,
-                                         args.dt_big, None, args.beta, fixed_mask,
-                                         iters=args.lbfgs_iters))
+        du_t = newton_reference(sim, p_s, gp_s, VOL, MU, LAM, MASS, v_s, a_s,
+                                 args.dt_big, None, args.beta, fixed_mask,
+                                 iters=args.lbfgs_iters)
+        P_STAR.append(p_s + du_t)          # the target IS the next position
     with torch.no_grad():
         rr = []
-        for st, du_t in zip(states, DU_STAR):
+        for st, p_t in zip(states, P_STAR):
             p_s, v_s, a_s, gp_s = st
+            du_t = p_t - p_s
             pr = newmark_predictor(v_s, a_s, args.dt_big, args.beta)
             pr = torch.where(fixed_mask.unsqueeze(-1), torch.zeros_like(pr), pr)
             _, R0 = incremental_potential(pr, sim, p_s, gp_s, VOL, MU, LAM, MASS, v_s, a_s,
@@ -284,7 +285,7 @@ if True:
             _, Rt = incremental_potential(du_t, sim, p_s, gp_s, VOL, MU, LAM, MASS, v_s, a_s,
                                            args.dt_big, None, args.beta, fixed_mask)
             rr.append((Rt.norm() / R0.norm().clamp(min=1e-20)).item())
-    print(f"[targets] {len(DU_STAR)} LBFGS solves; their own residual ratio: "
+    print(f"[targets] {len(P_STAR)} LBFGS solves; their own residual ratio: "
           f"mean={sum(rr)/len(rr):.4f} max={max(rr):.4f}")
 
 # ---- train ----
@@ -302,11 +303,8 @@ for it in pbar:
         du, pred0 = predict_du(net, p, v, a, dt_it, edge_index, ACC_SCALE,
                                 args.beta, fixed_mask, fa, args.direct_du,
                                 args.velocity_out)
-        # relative error on the CORRECTION, so 1.0 means "no better than the
-        # explicit predictor" and 0.0 means "the LBFGS answer exactly" --
-        # directly comparable to the residual ratio reported alongside it
-        c_star = (DU_STAR[si] - pred0).detach()
-        loss = ((du - pred0 - c_star) ** 2).sum() / (c_star ** 2).sum().clamp(min=1e-30)
+        # plain L2 on the absolute next position
+        loss = ((p + du - P_STAR[si].detach()) ** 2).mean()
         loss.backward()
         sup_err = loss.item()
         # the residual is reported, not optimised
@@ -321,15 +319,15 @@ for it in pbar:
     if args.grad_probe and (it % args.grad_probe == 0 or it == 1):
         wsum = sum(float(q.abs().mean()) for q in net.dec.parameters())
         print(f"  [probe] it={it:6d} dt/sub={dt_it/sub_dt:6.1f} grad_norm={gn:.3e} "
-              f"sup={sup_err:.4f} R/R={rel:.4f} |dec_w|={wsum:.3e}", flush=True)
+              f"mse={sup_err:.3e} R/R={rel:.4f} |dec_w|={wsum:.3e}", flush=True)
 
     if it % 25 == 0 or it == 1:
         hist.append((it, sup_err, rel, dt_it))
-        pbar.set_postfix(dtx=f"{dt_it/sub_dt:.0f}", sup=f"{sup_err:.4f}", RR=f"{rel:.4f}")
+        pbar.set_postfix(dtx=f"{dt_it/sub_dt:.0f}", mse=f"{sup_err:.2e}", RR=f"{rel:.4f}")
 
-print("\n[result] iter   dt/sub   rel err vs du*   R/R_explicit")
+print("\n[result] iter   dt/sub    position MSE   R/R_explicit")
 for it, se, rl, dti in hist[::max(1, len(hist)//20)]:
-    print(f"  {it:6d}  {dti/sub_dt:7.1f}     {se:12.4f}   {rl:12.4f}")
+    print(f"  {it:6d}  {dti/sub_dt:7.1f}    {se:12.4e}   {rl:12.4f}")
 
 # ---- one-shot GNN vs iterated solve, ACROSS step sizes ----
 # the number that matters is not the residual at one dt but how far the network
