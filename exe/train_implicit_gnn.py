@@ -51,11 +51,12 @@ ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--k_graph", type=int, default=8)
 ap.add_argument("--hidden", type=int, default=128)
 ap.add_argument("--mp_steps", type=int, default=4, help="processor depth")
-ap.add_argument("--processor", choices=["mpnn", "attention"], default="mpnn",
-                 help="'attention' is full self-attention over the anchors instead of k-hop "
-                      "message passing. The implicit step's solution operator is a dense "
-                      "global inverse, which a 4-hop local operator cannot represent; at "
-                      "M=512 full attention costs nothing.")
+ap.add_argument("--processor", choices=["mpnn", "attention"], default="attention",
+                 help="full self-attention over the anchors. Message passing is kept only so "
+                      "the measurement that retired it stays reproducible: at k=8 and depth 4 "
+                      "one anchor's influence reached 29 of 512 anchors, against a k-NN graph "
+                      "diameter of 73 hops, so it could not represent the implicit step's "
+                      "dense global solution operator at all.")
 ap.add_argument("--heads", type=int, default=4)
 ap.add_argument("--iters", type=int, default=2000)
 ap.add_argument("--lr", type=float, default=1e-4)
