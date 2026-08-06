@@ -53,11 +53,11 @@ ap.add_argument("--noise", type=float, default=0.0,
                       "to do once its own error has moved it off that manifold.")
 ap.add_argument("--eval_every", type=int, default=5000)
 ap.add_argument("--eval_frames", type=int, default=60)
-ap.add_argument("--no_compile", dest="compile", action="store_false",
-                 help="skip torch.compile. The model is tiny (512 anchors) so every iteration "
-                      "is hundreds of microsecond-scale kernels and the launch overhead, not "
-                      "the arithmetic, is what the GPU waits on.")
-ap.set_defaults(compile=True)
+ap.add_argument("--compile", action="store_true",
+                 help="wrap the model in torch.compile. Off by default -- it is the obvious "
+                      "answer to a launch-overhead bottleneck, but it changes what is being "
+                      "compared between runs and the batching fix below already removes ~50 "
+                      "of the per-iteration ops.")
 ap.add_argument("--impulse_range", type=float, default=4.0,
                  help="the random impulse strength spans [0.5, 0.5*this] times the config's. "
                       "Set to 1 to hold every trajectory at the config's own strength: the "
