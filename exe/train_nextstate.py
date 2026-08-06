@@ -53,6 +53,12 @@ ap.add_argument("--noise", type=float, default=0.0,
                       "to do once its own error has moved it off that manifold.")
 ap.add_argument("--eval_every", type=int, default=5000)
 ap.add_argument("--eval_frames", type=int, default=60)
+ap.add_argument("--impulse_range", type=float, default=4.0,
+                 help="the random impulse strength spans [0.5, 0.5*this] times the config's. "
+                      "Set to 1 to hold every trajectory at the config's own strength: the "
+                      "output and loss are normalised by the mean displacement over the whole "
+                      "set, so a wider spread coarsens the units for the modest trajectory the "
+                      "rollout is scored on.")
 ap.add_argument("--traj_cache", default=None,
                  help="file to keep the collected trajectories in. Collection is ~1 s per "
                       "trajectory of explicit substeps, so a data-scaling sweep re-simulates "
@@ -123,7 +129,8 @@ if len(trajs) < args.n_traj:
         if t == 0 or base_force is None:
             f = base_force
         else:
-            s = 0.5 * (4.0 ** torch.rand(1, device=dev, generator=gen).item())
+            s = 0.5 * (args.impulse_range ** torch.rand(1, device=dev, generator=gen).item())
+            s = s if args.impulse_range > 1 else 1.0
             f = (rand_rot() @ base_force) * s
         if t < len(trajs):
             continue
