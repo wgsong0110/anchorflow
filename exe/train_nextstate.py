@@ -41,6 +41,11 @@ ap.add_argument("--depth", type=int, default=4)
 ap.add_argument("--heads", type=int, default=4)
 ap.add_argument("--iters", type=int, default=30000)
 ap.add_argument("--lr", type=float, default=3e-4)
+ap.add_argument("--cosine", action="store_true",
+                 help="decay the learning rate to zero over the run (cosine). Held flat, the "
+                      "rollout measure swung between 4.6%% and 179%% on consecutive "
+                      "evaluations of the same run -- the step size was still large enough to "
+                      "walk out of whatever it had found.")
 ap.add_argument("--batch", type=int, default=8,
                  help="states per iteration. With one state per step the gradient carried the "
                       "state-to-state difficulty spread directly -- the relative step error "
@@ -257,6 +262,10 @@ if args.resume and os.path.exists(args.resume):
     gen.set_state(ck["gen"].cpu())
     print(f"[resume] {args.resume} at iter {ck['iter']}")
 
+sched = None
+if args.cosine:
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt, T_max=args.iters - start_it + 1, eta_min=args.lr * 1e-2)
 pbar = tqdm(range(start_it, args.iters + 1), desc="train", ncols=105, initial=start_it - 1,
              total=args.iters)
 for it in pbar:
@@ -292,6 +301,8 @@ for it in pbar:
     loss.backward()
     torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
     opt.step()
+    if sched is not None:
+        sched.step()
 
     if it % 50 == 0 or it == 1:
         rel = (du - target).norm() / target.norm().clamp(min=1e-20)
