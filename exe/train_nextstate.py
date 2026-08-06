@@ -53,6 +53,11 @@ ap.add_argument("--noise", type=float, default=0.0,
                       "to do once its own error has moved it off that manifold.")
 ap.add_argument("--eval_every", type=int, default=5000)
 ap.add_argument("--eval_frames", type=int, default=60)
+ap.add_argument("--no_compile", dest="compile", action="store_false",
+                 help="skip torch.compile. The model is tiny (512 anchors) so every iteration "
+                      "is hundreds of microsecond-scale kernels and the launch overhead, not "
+                      "the arithmetic, is what the GPU waits on.")
+ap.set_defaults(compile=True)
 ap.add_argument("--impulse_range", type=float, default=4.0,
                  help="the random impulse strength spans [0.5, 0.5*this] times the config's. "
                       "Set to 1 to hold every trajectory at the config's own strength: the "
@@ -149,8 +154,15 @@ trajs, accs = trajs[:args.n_traj], accs[:args.n_traj]
 # fewer trajectories look better for a reason that has nothing to do with
 # generalisation.
 REF, REF_A = trajs[0], accs[0]
-pairs = [(ti, k) for ti, tr in enumerate(trajs) if ti > 0
-         for k in range(1, tr.shape[0] - 1)]
+# one tensor, indexed on the GPU: building a batch out of a python list of
+# slices was ~50 separate microsecond-scale ops per iteration, and at this model
+# size that launch overhead is what the GPU waits on rather than the arithmetic
+n_min = min(t.shape[0] for t in trajs)
+TRAJ = torch.stack([t[:n_min] for t in trajs])          # [n_traj, T, M, 3]
+ACCS = torch.stack([a[:n_min] for a in accs])
+IDX = torch.tensor([(ti, k) for ti in range(1, TRAJ.shape[0])
+                    for k in range(1, n_min - 1)], device=dev)
+pairs = IDX
 dt_coarse = args.dt_mult * sc.sub_dt
 DISP = [tr[1:] - tr[:-1] for tr in trajs]
 DISP_SCALE = float(torch.cat([d.norm(dim=-1).flatten() for d in DISP]).mean())
@@ -174,7 +186,9 @@ print(f"[data] reference peak anchor displacement = "
 
 net = NextStep(args.hidden, args.depth, args.heads, DISP_SCALE, VEL_SCALE,
                 ACC_SCALE).to(dev)
-opt = torch.optim.Adam(net.parameters(), lr=args.lr)
+opt = torch.optim.Adam(net.parameters(), lr=args.lr, fused=True)
+if args.compile:
+    net = torch.compile(net)
 print(f"[setup] params: {sum(q.numel() for q in net.parameters())/1e3:.1f}k")
 
 
@@ -221,7 +235,7 @@ start_it = 1
 
 
 def save(path, it):
-    torch.save({"model": net.state_dict(), "opt": opt.state_dict(), "iter": it,
+    torch.save({"model": getattr(net, "_orig_mod", net).state_dict(), "opt": opt.state_dict(), "iter": it,
                 "args": vars(args), "hist": hist_log, "disp_scale": DISP_SCALE,
                 "dev_scale": DEV_SCALE,
                 "vel_scale": VEL_SCALE, "acc_scale": ACC_SCALE,
@@ -231,7 +245,7 @@ def save(path, it):
 
 if args.resume and os.path.exists(args.resume):
     ck = torch.load(args.resume, map_location=dev, weights_only=False)
-    net.load_state_dict(ck["model"])
+    getattr(net, "_orig_mod", net).load_state_dict(ck["model"])
     opt.load_state_dict(ck["opt"])
     hist_log = ck.get("hist", [])
     start_it = ck["iter"] + 1
@@ -243,11 +257,11 @@ if args.resume and os.path.exists(args.resume):
 pbar = tqdm(range(start_it, args.iters + 1), desc="train", ncols=105, initial=start_it - 1,
              total=args.iters)
 for it in pbar:
-    idx = torch.randint(len(pairs), (args.batch,))
-    sel = [pairs[i] for i in idx.tolist()]
-    p = torch.stack([trajs[ti][k] for ti, k in sel])
-    v = torch.stack([(trajs[ti][k] - trajs[ti][k - 1]) / dt_coarse for ti, k in sel])
-    a = torch.stack([accs[ti][k] for ti, k in sel])
+    sel = IDX[torch.randint(IDX.shape[0], (args.batch,), device=dev)]
+    ti, k = sel[:, 0], sel[:, 1]
+    p = TRAJ[ti, k]
+    v = (p - TRAJ[ti, k - 1]) / dt_coarse
+    a = ACCS[ti, k]
     if args.noise > 0:
         # GNS-style: perturb the position and move the velocity consistently, so
         # the pair stays a state the network could have produced. The elastic
@@ -259,7 +273,7 @@ for it in pbar:
         nz[:, fixed] = 0
         p = p + nz
         v = v + nz / dt_coarse
-    target = torch.stack([trajs[ti][k + 1] - trajs[ti][k] for ti, k in sel])
+    target = TRAJ[ti, k + 1] - p
     du = net(p, v, a, dt_coarse)
     du = torch.where(fixed.view(1, -1, 1), torch.zeros_like(du), du)
     # in units of the typical displacement. The raw-unit loss was ~5e-6, which
