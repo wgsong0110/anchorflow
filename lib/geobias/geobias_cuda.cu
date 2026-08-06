@@ -94,6 +94,12 @@ __global__ void geobias_forward_kernel(
 // day, as the anchorstep scatter that had 4.1M atomics landing on 512 anchors.
 // Per-block reduction takes the atomic count from 270M to (blocks * 292).
 #define THREADS 256
+// Replicas of the shared accumulator. One copy still had all 256 threads of a
+// block hitting the same 292 addresses; shared atomics are cheap but not free
+// under that much conflict, and the backward stayed 58 ms against the eager
+// path's 12 ms. Each thread writes to copy (threadIdx & (NREP-1)), so the
+// conflict drops by NREP at a cost of NREP*292*4 B = 9.3 kB of shared memory.
+#define NREP 8
 
 template <int H>
 __global__ void geobias_backward_kernel(
@@ -105,15 +111,20 @@ __global__ void geobias_backward_kernel(
     float* __restrict__ gb1, float* __restrict__ gw2, float* __restrict__ gb2) {
   // one slot per parameter per thread would be 292*256 floats; instead each
   // thread keeps its own partial sums in registers and the block reduces once
-  __shared__ float s_gw1[HID * IN];
-  __shared__ float s_gb1[HID];
-  __shared__ float s_gw2[H * HID];
-  __shared__ float s_gb2[H];
-  for (int t = threadIdx.x; t < HID * IN; t += blockDim.x) s_gw1[t] = 0.f;
-  for (int t = threadIdx.x; t < HID; t += blockDim.x) s_gb1[t] = 0.f;
-  for (int t = threadIdx.x; t < H * HID; t += blockDim.x) s_gw2[t] = 0.f;
-  for (int t = threadIdx.x; t < H; t += blockDim.x) s_gb2[t] = 0.f;
+  __shared__ float s_gw1[NREP][HID * IN];
+  __shared__ float s_gb1[NREP][HID];
+  __shared__ float s_gw2[NREP][H * HID];
+  __shared__ float s_gb2[NREP][H];
+  for (int t = threadIdx.x; t < NREP * HID * IN; t += blockDim.x)
+    s_gw1[t / (HID * IN)][t % (HID * IN)] = 0.f;
+  for (int t = threadIdx.x; t < NREP * HID; t += blockDim.x)
+    s_gb1[t / HID][t % HID] = 0.f;
+  for (int t = threadIdx.x; t < NREP * H * HID; t += blockDim.x)
+    s_gw2[t / (H * HID)][t % (H * HID)] = 0.f;
+  for (int t = threadIdx.x; t < NREP * H; t += blockDim.x)
+    s_gb2[t / H][t % H] = 0.f;
   __syncthreads();
+  const int rep = threadIdx.x & (NREP - 1);
 
   long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
   long total = (long)B * M * M;
@@ -129,7 +140,7 @@ __global__ void geobias_backward_kernel(
 #pragma unroll
     for (int h = 0; h < H; ++h) {
       go[h] = gout[((long)b * H + h) * M * M + (long)i * M + j];
-      atomicAdd(&s_gb2[h], go[h]);
+      atomicAdd(&s_gb2[rep][h], go[h]);
     }
 
     float gf[IN] = {0.f, 0.f, 0.f, 0.f};
@@ -142,14 +153,14 @@ __global__ void geobias_backward_kernel(
       float ga = 0.f;
 #pragma unroll
       for (int h = 0; h < H; ++h) {
-        atomicAdd(&s_gw2[h * HID + u], go[h] * a);
+        atomicAdd(&s_gw2[rep][h * HID + u], go[h] * a);
         ga += w2[h * HID + u] * go[h];
       }
       float gz = ga * dsilu(z);
-      atomicAdd(&s_gb1[u], gz);
+      atomicAdd(&s_gb1[rep][u], gz);
 #pragma unroll
       for (int c = 0; c < IN; ++c) {
-        atomicAdd(&s_gw1[u * IN + c], gz * f[c]);
+        atomicAdd(&s_gw1[rep][u * IN + c], gz * f[c]);
         gf[c] += w1[u * IN + c] * gz;
       }
     }
@@ -173,14 +184,31 @@ __global__ void geobias_backward_kernel(
   }
 
   __syncthreads();
-  for (int t = threadIdx.x; t < HID * IN; t += blockDim.x)
-    if (s_gw1[t] != 0.f) atomicAdd(&gw1[t], s_gw1[t]);
-  for (int t = threadIdx.x; t < HID; t += blockDim.x)
-    if (s_gb1[t] != 0.f) atomicAdd(&gb1[t], s_gb1[t]);
-  for (int t = threadIdx.x; t < H * HID; t += blockDim.x)
-    if (s_gw2[t] != 0.f) atomicAdd(&gw2[t], s_gw2[t]);
-  for (int t = threadIdx.x; t < H; t += blockDim.x)
-    if (s_gb2[t] != 0.f) atomicAdd(&gb2[t], s_gb2[t]);
+  // sum the replicas, then one global atomic per parameter per block
+  for (int t = threadIdx.x; t < HID * IN; t += blockDim.x) {
+    float v = 0.f;
+#pragma unroll
+    for (int r = 0; r < NREP; ++r) v += s_gw1[r][t];
+    if (v != 0.f) atomicAdd(&gw1[t], v);
+  }
+  for (int t = threadIdx.x; t < HID; t += blockDim.x) {
+    float v = 0.f;
+#pragma unroll
+    for (int r = 0; r < NREP; ++r) v += s_gb1[r][t];
+    if (v != 0.f) atomicAdd(&gb1[t], v);
+  }
+  for (int t = threadIdx.x; t < H * HID; t += blockDim.x) {
+    float v = 0.f;
+#pragma unroll
+    for (int r = 0; r < NREP; ++r) v += s_gw2[r][t];
+    if (v != 0.f) atomicAdd(&gw2[t], v);
+  }
+  for (int t = threadIdx.x; t < H; t += blockDim.x) {
+    float v = 0.f;
+#pragma unroll
+    for (int r = 0; r < NREP; ++r) v += s_gb2[r][t];
+    if (v != 0.f) atomicAdd(&gb2[t], v);
+  }
 }
 
 torch::Tensor forward(torch::Tensor pos, torch::Tensor w1, torch::Tensor b1,
