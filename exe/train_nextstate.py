@@ -232,6 +232,7 @@ def rollout_error(frames):
 
 hist_log = []
 start_it = 1
+BEST = {"score": float("inf"), "iter": 0}
 
 
 def save(path, it):
@@ -239,6 +240,7 @@ def save(path, it):
                 "args": vars(args), "hist": hist_log, "disp_scale": DISP_SCALE,
                 "dev_scale": DEV_SCALE,
                 "vel_scale": VEL_SCALE, "acc_scale": ACC_SCALE,
+                "best": BEST,
                 "rng": torch.get_rng_state(), "cuda_rng": torch.cuda.get_rng_state(),
                 "gen": gen.get_state()}, path)
 
@@ -249,6 +251,7 @@ if args.resume and os.path.exists(args.resume):
     opt.load_state_dict(ck["opt"])
     hist_log = ck.get("hist", [])
     start_it = ck["iter"] + 1
+    BEST.update(ck.get("best", {}) or {})
     torch.set_rng_state(ck["rng"].cpu())
     torch.cuda.set_rng_state(ck["cuda_rng"].cpu())
     gen.set_state(ck["gen"].cpu())
@@ -298,6 +301,15 @@ for it in pbar:
         save(args.out, it)
     if it % args.eval_every == 0 or it == args.iters:
         n, err, rel = rollout_error(args.eval_frames)
+        # keep the best rollout separately. The measure swings hard between
+        # evaluations -- 4.6% at 225k and 179% at 250k on the same run -- so the
+        # last checkpoint is a lottery ticket, and the rollout is the number
+        # anyone would select on.
+        score = float(rel[n - 1])
+        if args.out and score < BEST["score"]:
+            BEST["score"], BEST["iter"] = score, it
+            save(args.out.replace(".pt", "_best.pt"), it)
+            print(f"  [best] rollout {100*score:.1f}% at it={it}", flush=True)
         print(f"\n  [rollout] it={it} survived {n}/{args.eval_frames+1} frames; "
               f"mean anchor error vs reference: "
               f"frame10={err[min(10,n-1)]:.5f} frame{n-1}={err[n-1]:.5f} "
