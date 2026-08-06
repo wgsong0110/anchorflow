@@ -83,9 +83,18 @@ __global__ void geobias_forward_kernel(
     out[((long)b * H + h) * M * M + (long)i * M + j] = acc[h];
 }
 
-// Backward. Recomputes the hidden activations, accumulates parameter gradients
-// with atomics (292 slots, so contention is irrelevant next to the pair count)
-// and scatters the position gradient onto i and j.
+// Backward. Recomputes the hidden activations rather than storing them, and --
+// this is the part that matters -- accumulates the 292 parameter gradients per
+// BLOCK in shared memory before touching global memory once.
+//
+// The first version had every thread atomicAdd straight to the parameter slots.
+// With B*M*M = 2.1M pairs each doing 128 adds into gw1 alone, that is 270M
+// atomics onto 128 addresses: fully serialised, and it made the "optimised"
+// backward 469 ms against the eager path's 35 ms. The same mistake, on the same
+// day, as the anchorstep scatter that had 4.1M atomics landing on 512 anchors.
+// Per-block reduction takes the atomic count from 270M to (blocks * 292).
+#define THREADS 256
+
 template <int H>
 __global__ void geobias_backward_kernel(
     const float* __restrict__ pos, const float* __restrict__ w1,
@@ -94,59 +103,84 @@ __global__ void geobias_backward_kernel(
     float inv_s, int B, int M,
     float* __restrict__ gpos, float* __restrict__ gw1,
     float* __restrict__ gb1, float* __restrict__ gw2, float* __restrict__ gb2) {
+  // one slot per parameter per thread would be 292*256 floats; instead each
+  // thread keeps its own partial sums in registers and the block reduces once
+  __shared__ float s_gw1[HID * IN];
+  __shared__ float s_gb1[HID];
+  __shared__ float s_gw2[H * HID];
+  __shared__ float s_gb2[H];
+  for (int t = threadIdx.x; t < HID * IN; t += blockDim.x) s_gw1[t] = 0.f;
+  for (int t = threadIdx.x; t < HID; t += blockDim.x) s_gb1[t] = 0.f;
+  for (int t = threadIdx.x; t < H * HID; t += blockDim.x) s_gw2[t] = 0.f;
+  for (int t = threadIdx.x; t < H; t += blockDim.x) s_gb2[t] = 0.f;
+  __syncthreads();
+
   long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
   long total = (long)B * M * M;
-  if (idx >= total) return;
-  int j = idx % M;
-  int i = (idx / M) % M;
-  int b = idx / ((long)M * M);
+  if (idx < total) {
+    int j = idx % M;
+    int i = (idx / M) % M;
+    int b = idx / ((long)M * M);
 
-  float f[IN];
-  pair_feature(pos, b, i, j, M, inv_s, f);
+    float f[IN];
+    pair_feature(pos, b, i, j, M, inv_s, f);
 
-  float go[H];
-#pragma unroll
-  for (int h = 0; h < H; ++h) {
-    go[h] = gout[((long)b * H + h) * M * M + (long)i * M + j];
-    atomicAdd(&gb2[h], go[h]);
-  }
-
-  float gf[IN] = {0.f, 0.f, 0.f, 0.f};
-#pragma unroll
-  for (int u = 0; u < HID; ++u) {
-    float z = b1[u];
-#pragma unroll
-    for (int c = 0; c < IN; ++c) z += w1[u * IN + c] * f[c];
-    float a = silu(z);
-    float ga = 0.f;
+    float go[H];
 #pragma unroll
     for (int h = 0; h < H; ++h) {
-      atomicAdd(&gw2[h * HID + u], go[h] * a);
-      ga += w2[h * HID + u] * go[h];
+      go[h] = gout[((long)b * H + h) * M * M + (long)i * M + j];
+      atomicAdd(&s_gb2[h], go[h]);
     }
-    float gz = ga * dsilu(z);
-    atomicAdd(&gb1[u], gz);
+
+    float gf[IN] = {0.f, 0.f, 0.f, 0.f};
 #pragma unroll
-    for (int c = 0; c < IN; ++c) {
-      atomicAdd(&gw1[u * IN + c], gz * f[c]);
-      gf[c] += w1[u * IN + c] * gz;
+    for (int u = 0; u < HID; ++u) {
+      float z = b1[u];
+#pragma unroll
+      for (int c = 0; c < IN; ++c) z += w1[u * IN + c] * f[c];
+      float a = silu(z);
+      float ga = 0.f;
+#pragma unroll
+      for (int h = 0; h < H; ++h) {
+        atomicAdd(&s_gw2[h * HID + u], go[h] * a);
+        ga += w2[h * HID + u] * go[h];
+      }
+      float gz = ga * dsilu(z);
+      atomicAdd(&s_gb1[u], gz);
+#pragma unroll
+      for (int c = 0; c < IN; ++c) {
+        atomicAdd(&s_gw1[u * IN + c], gz * f[c]);
+        gf[c] += w1[u * IN + c] * gz;
+      }
     }
+
+    // d f / d p: the first three entries are (p_i - p_j)/s, the fourth is
+    // log1p(d/s), whose derivative w.r.t. the offset is r / (d * (s + d)).
+    const float* pi = pos + ((long)b * M + i) * 3;
+    const float* pj = pos + ((long)b * M + j) * 3;
+    float rx = pi[0] - pj[0], ry = pi[1] - pj[1], rz = pi[2] - pj[2];
+    float d = sqrtf(rx * rx + ry * ry + rz * rz);
+    float k = (d > 1e-20f) ? (gf[3] * inv_s / (d * (1.f + d * inv_s))) : 0.f;
+    float g0 = gf[0] * inv_s + k * rx;
+    float g1 = gf[1] * inv_s + k * ry;
+    float g2 = gf[2] * inv_s + k * rz;
+    // the position gradient lands on M*B distinct rows, not on 292 slots, so it
+    // stays a direct atomic
+    float* gi = gpos + ((long)b * M + i) * 3;
+    float* gj = gpos + ((long)b * M + j) * 3;
+    atomicAdd(gi + 0, g0); atomicAdd(gi + 1, g1); atomicAdd(gi + 2, g2);
+    atomicAdd(gj + 0, -g0); atomicAdd(gj + 1, -g1); atomicAdd(gj + 2, -g2);
   }
 
-  // d f / d p:  the first three entries are (p_i - p_j)/s, the fourth is
-  // log1p(d/s), whose derivative w.r.t. the offset is r / (d * (s + d)).
-  const float* pi = pos + ((long)b * M + i) * 3;
-  const float* pj = pos + ((long)b * M + j) * 3;
-  float rx = pi[0] - pj[0], ry = pi[1] - pj[1], rz = pi[2] - pj[2];
-  float d = sqrtf(rx * rx + ry * ry + rz * rz);
-  float k = (d > 1e-20f) ? (gf[3] * inv_s / (d * (1.f + d * inv_s))) : 0.f;
-  float g0 = gf[0] * inv_s + k * rx;
-  float g1 = gf[1] * inv_s + k * ry;
-  float g2 = gf[2] * inv_s + k * rz;
-  float* gi = gpos + ((long)b * M + i) * 3;
-  float* gj = gpos + ((long)b * M + j) * 3;
-  atomicAdd(gi + 0, g0); atomicAdd(gi + 1, g1); atomicAdd(gi + 2, g2);
-  atomicAdd(gj + 0, -g0); atomicAdd(gj + 1, -g1); atomicAdd(gj + 2, -g2);
+  __syncthreads();
+  for (int t = threadIdx.x; t < HID * IN; t += blockDim.x)
+    if (s_gw1[t] != 0.f) atomicAdd(&gw1[t], s_gw1[t]);
+  for (int t = threadIdx.x; t < HID; t += blockDim.x)
+    if (s_gb1[t] != 0.f) atomicAdd(&gb1[t], s_gb1[t]);
+  for (int t = threadIdx.x; t < H * HID; t += blockDim.x)
+    if (s_gw2[t] != 0.f) atomicAdd(&gw2[t], s_gw2[t]);
+  for (int t = threadIdx.x; t < H; t += blockDim.x)
+    if (s_gb2[t] != 0.f) atomicAdd(&gb2[t], s_gb2[t]);
 }
 
 torch::Tensor forward(torch::Tensor pos, torch::Tensor w1, torch::Tensor b1,
@@ -173,8 +207,8 @@ std::vector<torch::Tensor> backward(torch::Tensor pos, torch::Tensor w1,
   auto gw1 = torch::zeros_like(w1), gb1 = torch::zeros_like(b1);
   auto gw2 = torch::zeros_like(w2), gb2 = torch::zeros_like(b2);
   long total = (long)B * M * M;
-  int threads = 256, blocks = (total + threads - 1) / threads;
-  geobias_backward_kernel<4><<<blocks, threads>>>(
+  int blocks = (total + THREADS - 1) / THREADS;
+  geobias_backward_kernel<4><<<blocks, THREADS>>>(
       pos.contiguous().data_ptr<float>(), w1.contiguous().data_ptr<float>(),
       b1.contiguous().data_ptr<float>(), w2.contiguous().data_ptr<float>(),
       b2.contiguous().data_ptr<float>(), gout.contiguous().data_ptr<float>(),
