@@ -53,6 +53,11 @@ ap.add_argument("--noise", type=float, default=0.0,
                       "to do once its own error has moved it off that manifold.")
 ap.add_argument("--eval_every", type=int, default=5000)
 ap.add_argument("--eval_frames", type=int, default=60)
+ap.add_argument("--traj_cache", default=None,
+                 help="file to keep the collected trajectories in. Collection is ~1 s per "
+                      "trajectory of explicit substeps, so a data-scaling sweep re-simulates "
+                      "the same runs several times over; the RNG is seeded, so trajectory i is "
+                      "the same in every run and a cache of N serves any n_traj <= N.")
 ap.add_argument("--out", default=None)
 ap.add_argument("--ckpt_every", type=int, default=2000,
                  help="write a resumable checkpoint this often. These instances stop on an "
@@ -104,16 +109,32 @@ def trajectory(force):
     return torch.stack(ps), torch.stack(accs)
 
 
-print(f"[data] {args.n_traj} trajectories x {args.n_steps} coarse steps...")
 trajs, accs = [], []
-for t in tqdm(range(args.n_traj), desc="collect", ncols=90):
-    if t == 0 or base_force is None:
-        f = base_force
-    else:
-        s = 0.5 * (4.0 ** torch.rand(1, device=dev, generator=gen).item())
-        f = (rand_rot() @ base_force) * s
-    ps, ac_ = trajectory(f)
-    trajs.append(ps); accs.append(ac_)
+if args.traj_cache and os.path.exists(args.traj_cache):
+    blob = torch.load(args.traj_cache, map_location=dev, weights_only=False)
+    trajs, accs = blob["trajs"], blob["accs"]
+    print(f"[data] {len(trajs)} trajectories from {args.traj_cache}")
+if len(trajs) < args.n_traj:
+    print(f"[data] collecting {args.n_traj - len(trajs)} more trajectories "
+          f"x {args.n_steps} coarse steps...")
+    # the generator is advanced once per trajectory, so extending a cache
+    # reproduces exactly the trajectories a fresh run of this size would give
+    for t in range(args.n_traj):
+        if t == 0 or base_force is None:
+            f = base_force
+        else:
+            s = 0.5 * (4.0 ** torch.rand(1, device=dev, generator=gen).item())
+            f = (rand_rot() @ base_force) * s
+        if t < len(trajs):
+            continue
+        ps, ac_ = trajectory(f)
+        trajs.append(ps); accs.append(ac_)
+        if (t + 1) % 25 == 0 or t + 1 == args.n_traj:
+            print(f"  {t + 1}/{args.n_traj}", flush=True)
+    if args.traj_cache:
+        torch.save({"trajs": trajs, "accs": accs}, args.traj_cache)
+        print(f"[data] cached to {args.traj_cache}")
+trajs, accs = trajs[:args.n_traj], accs[:args.n_traj]
 # trajectory 0 is the config's own impulse and is HELD OUT: it is the rollout
 # every run is scored on, so leaving it in the training set turns that score into
 # a memorisation test. It also silently biases any comparison across dataset
