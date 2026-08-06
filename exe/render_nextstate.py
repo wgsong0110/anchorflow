@@ -34,6 +34,10 @@ ap.add_argument("--height", type=int, default=600)
 ap.add_argument("--fov_x", type=float, default=0.6911112070083618)
 ap.add_argument("--radius_scale", type=float, default=1.5)
 ap.add_argument("--show_anchors", action="store_true")
+ap.add_argument("--traj", type=int, default=0,
+                 help="which held-out trajectory to render. 0 is the config's own impulse; "
+                      "the others are the randomised ones the training script generates, and "
+                      "reproducing them means walking the same seeded draws in the same order.")
 args = ap.parse_args()
 
 from gaussian_renderer import render
@@ -118,8 +122,34 @@ def dots(img, xy, color, r=3):
     return img
 
 
+def impulse_for(k):
+    """the force training used for trajectory k -- same seed, same draw order"""
+    base = None
+    for bc in sc.cfg.get("boundary_conditions", []):
+        if bc["type"] == "particle_impulse":
+            base = torch.tensor(bc["force"], device=dev)
+    if k == 0 or base is None:
+        return base, 1.0
+    gen = torch.Generator(device=dev); gen.manual_seed(1234)
+    rng = float(targs.get("impulse_range", 4.0))
+    f, sc_ = base, 1.0
+    for t in range(1, k + 1):
+        sc_ = 0.5 * (rng ** torch.rand(1, device=dev, generator=gen).item())
+        sc_ = sc_ if rng > 1 else 1.0
+        q, r = torch.linalg.qr(torch.randn(3, 3, device=dev, generator=gen))
+        q = q * torch.sign(torch.diagonal(r)).unsqueeze(0)
+        if torch.det(q) < 0:
+            q[:, 0] = -q[:, 0]
+        f = (q @ base) * sc_
+    return f, sc_
+
+
+force, strength = impulse_for(args.traj)
+print(f"[traj] {args.traj}: impulse {['%.4f' % x for x in force.tolist()]} "
+      f"(strength {strength:.2f}x the config's)")
+
 # ---- the explicit reference, sampled at the coarse step ----
-p_e, v_e = AC.clone(), sc.initial_velocity()
+p_e, v_e = AC.clone(), sc.initial_velocity(force)
 gp_e = sc.pos.clone()
 ref, frames_e = [p_e.clone()], []
 with torch.enable_grad():
