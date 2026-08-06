@@ -263,16 +263,20 @@ for it in pbar:
     v = (p - TRAJ[ti, k - 1]) / dt_coarse
     a = ACCS[ti, k]
     if args.noise > 0:
-        # GNS-style: perturb the position and move the velocity consistently, so
-        # the pair stays a state the network could have produced. The elastic
-        # acceleration is NOT perturbed to match -- it would need the Gaussian
-        # cloud at the perturbed configuration, which is not stored; the mismatch
-        # is second order in the noise and is the price of not keeping 1.8 GB of
-        # clouds around.
+        # GNS-style: perturb the position, move the velocity consistently, and
+        # take the target to the TRUE next position -- so the network is taught
+        # to come back onto the trajectory rather than to carry the error.
         nz = torch.randn(p.shape, device=dev, generator=gen) * (args.noise * DISP_SCALE)
         nz[:, fixed] = 0
         p = p + nz
         v = v + nz / dt_coarse
+        # and the acceleration is re-evaluated at the perturbed configuration.
+        # Leaving it at the clean one puts a state in front of the network whose
+        # force does not belong to its positions, which is exactly the train/
+        # rollout mismatch that sank the previous line of work: in rollout `a` is
+        # always the force at wherever the network currently is.
+        a = torch.stack([sc.elastic_accel(p[b], sc.skin(p[b], sc.pos.clone()))
+                         for b in range(p.shape[0])])
     target = TRAJ[ti, k + 1] - p
     du = net(p, v, a, dt_coarse)
     du = torch.where(fixed.view(1, -1, 1), torch.zeros_like(du), du)
