@@ -140,7 +140,7 @@ for i in tqdm(range(len(frames_e)), desc="network", ncols=90):
     fr = frame(gp)
     frames_n.append(dots(fr, project(sc.undo(p)), [255, 120, 0]) if args.show_anchors else fr)
     k = min(i + 1, REF.shape[0] - 1)
-    err.append((p - REF[k]).norm(dim=-1).mean().item())
+    err.append((p - REF[k])[~fixed].norm(dim=-1).mean().item())
     a = sc.elastic_accel(p, gp)
     du = net(p, v, a, dt)
     du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)

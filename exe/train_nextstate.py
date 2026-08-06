@@ -114,10 +114,15 @@ for t in tqdm(range(args.n_traj), desc="collect", ncols=90):
         f = (rand_rot() @ base_force) * s
     ps, ac_ = trajectory(f)
     trajs.append(ps); accs.append(ac_)
-REF, REF_A = trajs[0], accs[0]              # the config's own run, for evaluation
-
-# steps with a previous position behind them (for velocity) and a target ahead
-pairs = [(ti, k) for ti, tr in enumerate(trajs) for k in range(1, tr.shape[0] - 1)]
+# trajectory 0 is the config's own impulse and is HELD OUT: it is the rollout
+# every run is scored on, so leaving it in the training set turns that score into
+# a memorisation test. It also silently biases any comparison across dataset
+# sizes -- with 12 trajectories it is 8.3% of the data, with 120 it is 0.8%, so
+# fewer trajectories look better for a reason that has nothing to do with
+# generalisation.
+REF, REF_A = trajs[0], accs[0]
+pairs = [(ti, k) for ti, tr in enumerate(trajs) if ti > 0
+         for k in range(1, tr.shape[0] - 1)]
 dt_coarse = args.dt_mult * sc.sub_dt
 DISP = [tr[1:] - tr[:-1] for tr in trajs]
 DISP_SCALE = float(torch.cat([d.norm(dim=-1).flatten() for d in DISP]).mean())
@@ -125,7 +130,7 @@ VEL_SCALE = DISP_SCALE / dt_coarse
 ACC_SCALE = float(torch.cat([a.norm(dim=-1).flatten() for a in accs]).mean())
 DEV = [d[1:] - d[:-1] for d in DISP]
 DEV_SCALE = float(torch.cat([q.norm(dim=-1).flatten() for q in DEV]).mean())
-print(f"[data] {len(pairs)} training pairs; typical coarse displacement = {DISP_SCALE:.5f}, "
+print(f"[data] {len(pairs)} training pairs (trajectory 0 held out for evaluation); typical coarse displacement = {DISP_SCALE:.5f}, "
       f"deviation from inertia = {DEV_SCALE:.5f} ({100*DEV_SCALE/DISP_SCALE:.1f}% of it), "
       f"velocity scale = {VEL_SCALE:.4f}, elastic accel scale = {ACC_SCALE:.2f}")
 
@@ -175,7 +180,10 @@ def rollout_error(frames):
     got = rollout(frames)
     n = min(got.shape[0], REF.shape[0] - 1)
     ref = REF[1:1 + n]
-    err = (got[:n] - ref).norm(dim=-1).mean(-1)          # mean anchor error per frame
+    # over the anchors that actually move: the 129 pinned ones are identical on
+    # both sides by construction and averaging them in scales the error down by
+    # a quarter for free
+    err = (got[:n] - ref)[:, ~fixed].norm(dim=-1).mean(-1)
     span = (ref - AC).norm(dim=-1).max().clamp(min=1e-12)
     return n, err, (err / span)
 
