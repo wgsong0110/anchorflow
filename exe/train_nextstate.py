@@ -41,6 +41,12 @@ ap.add_argument("--depth", type=int, default=4)
 ap.add_argument("--heads", type=int, default=4)
 ap.add_argument("--iters", type=int, default=30000)
 ap.add_argument("--lr", type=float, default=3e-4)
+ap.add_argument("--n_holdout", type=int, default=5,
+                 help="trajectories kept out of training and used for the rollout score. One "
+                      "is not enough: a 59-step chain amplifies whichever way the per-step "
+                      "error happens to be biased, so the same run scored 4.6%% and 179%% on "
+                      "consecutive evaluations while its single-step error never moved. "
+                      "Selecting a checkpoint on one such number selects noise.")
 ap.add_argument("--cosine", action="store_true",
                  help="decay the learning rate to zero over the run (cosine). Held flat, the "
                       "rollout measure swung between 4.6%% and 179%% on consecutive "
@@ -158,6 +164,10 @@ trajs, accs = trajs[:args.n_traj], accs[:args.n_traj]
 # sizes -- with 12 trajectories it is 8.3% of the data, with 120 it is 0.8%, so
 # fewer trajectories look better for a reason that has nothing to do with
 # generalisation.
+# the first n_holdout trajectories are HELD OUT. Trajectory 0 is the config's own
+# impulse and is the headline rollout; the rest are there because one 59-step
+# chain is a very noisy number (see --n_holdout).
+HOLD = min(args.n_holdout, len(trajs) - 1)
 REF, REF_A = trajs[0], accs[0]
 # one tensor, indexed on the GPU: building a batch out of a python list of
 # slices was ~50 separate microsecond-scale ops per iteration, and at this model
@@ -165,7 +175,7 @@ REF, REF_A = trajs[0], accs[0]
 n_min = min(t.shape[0] for t in trajs)
 TRAJ = torch.stack([t[:n_min] for t in trajs])          # [n_traj, T, M, 3]
 ACCS = torch.stack([a[:n_min] for a in accs])
-IDX = torch.tensor([(ti, k) for ti in range(1, TRAJ.shape[0])
+IDX = torch.tensor([(ti, k) for ti in range(HOLD, TRAJ.shape[0])
                     for k in range(1, n_min - 1)], device=dev)
 pairs = IDX
 dt_coarse = args.dt_mult * sc.sub_dt
@@ -198,15 +208,16 @@ print(f"[setup] params: {sum(q.numel() for q in net.parameters())/1e3:.1f}k")
 
 
 @torch.no_grad()
-def rollout(frames):
+def rollout(frames, ref=None):
     """autoregressive from the reference's initial condition; returns positions.
 
     The elastic acceleration is re-evaluated every step from the network's own
     anchors, via the Gaussian cloud it has skinned -- the same call the training
     data was built with.
     """
-    p = REF[1].clone()
-    v = (REF[1] - REF[0]) / dt_coarse
+    ref = REF if ref is None else ref
+    p = ref[1].clone()
+    v = (ref[1] - ref[0]) / dt_coarse
     gp = sc.skin(p, sc.pos.clone())
     out = [p.clone()]
     for _ in range(frames):
@@ -223,16 +234,27 @@ def rollout(frames):
 
 
 @torch.no_grad()
-def rollout_error(frames):
-    got = rollout(frames)
-    n = min(got.shape[0], REF.shape[0] - 1)
-    ref = REF[1:1 + n]
+def rollout_error(frames, which=0):
+    r = TRAJ[which]
+    got = rollout(frames, r)
+    n = min(got.shape[0], r.shape[0] - 1)
+    ref = r[1:1 + n]
     # over the anchors that actually move: the 129 pinned ones are identical on
     # both sides by construction and averaging them in scales the error down by
     # a quarter for free
     err = (got[:n] - ref)[:, ~fixed].norm(dim=-1).mean(-1)
     span = (ref - AC).norm(dim=-1).max().clamp(min=1e-12)
     return n, err, (err / span)
+
+
+@torch.no_grad()
+def rollout_score(frames):
+    """mean final error over every held-out trajectory"""
+    vals = []
+    for w in range(HOLD):
+        n, _, rel = rollout_error(frames, w)
+        vals.append(float(rel[n - 1]))
+    return sum(vals) / len(vals), vals
 
 
 hist_log = []
@@ -311,27 +333,29 @@ for it in pbar:
     if args.out and (it % args.ckpt_every == 0 or it == args.iters):
         save(args.out, it)
     if it % args.eval_every == 0 or it == args.iters:
+        score, vals = rollout_score(args.eval_frames)
         n, err, rel = rollout_error(args.eval_frames)
         # keep the best rollout separately. The measure swings hard between
         # evaluations -- 4.6% at 225k and 179% at 250k on the same run -- so the
         # last checkpoint is a lottery ticket, and the rollout is the number
         # anyone would select on.
-        score = float(rel[n - 1])
         if args.out and score < BEST["score"]:
             BEST["score"], BEST["iter"] = score, it
             save(args.out.replace(".pt", "_best.pt"), it)
             print(f"  [best] rollout {100*score:.1f}% at it={it}", flush=True)
-        print(f"\n  [rollout] it={it} survived {n}/{args.eval_frames+1} frames; "
-              f"mean anchor error vs reference: "
-              f"frame10={err[min(10,n-1)]:.5f} frame{n-1}={err[n-1]:.5f} "
-              f"({rel[n-1]*100:.1f}% of the reference's own motion)", flush=True)
+        print(f"\n  [rollout] it={it} over {HOLD} held-out trajectories: "
+              f"mean {100*score:.1f}%  (traj0 {100*vals[0]:.1f}%, "
+              f"spread {100*min(vals):.1f}-{100*max(vals):.1f}%)", flush=True)
 
 print("\n[result]   iter        step MSE   rel step err")
 for it, ls, rl in hist_log[::max(1, len(hist_log) // 20)]:
     print(f"  {it:8d}   {ls:.6e}   {rl:10.4f}")
 
+score, vals = rollout_score(args.eval_frames)
 n, err, rel = rollout_error(args.eval_frames)
-print(f"\n[rollout] {n}/{args.eval_frames+1} frames survived")
+print(f"\n[rollout] mean over {HOLD} held-out trajectories: {100*score:.2f}%  "
+      f"(per trajectory: {', '.join(f'{100*v:.1f}%' for v in vals)})")
+print(f"[rollout] trajectory 0, {n}/{args.eval_frames+1} frames survived")
 print(f"  {'frame':>6} {'mean anchor err':>16} {'% of reference motion':>22}")
 for i in range(0, n, max(1, n // 12)):
     print(f"  {i:6d} {err[i]:16.5f} {rel[i]*100:21.2f}%")
