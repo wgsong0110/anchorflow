@@ -153,7 +153,7 @@ class NextStep(nn.Module):
     """
 
     def __init__(self, hidden=128, depth=4, heads=4, scale=1.0, vel_scale=1.0,
-                  acc_scale=1.0):
+                  acc_scale=1.0, zero_init=False):
         super().__init__()
         # The whole displacement, never du = v*dt + correction. Adding the
         # inertial part as a skip makes the rollout's velocity an accumulator,
@@ -171,8 +171,16 @@ class NextStep(nn.Module):
         self.blocks = nn.ModuleList(GeoAttentionBlock(hidden, heads) for _ in range(depth))
         self.film = DtFiLM(hidden, depth + 1)
         self.dec = mlp([hidden, hidden, 3], layernorm=False)
-        last = [m for m in self.dec.modules() if isinstance(m, nn.Linear)][-1]
-        nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
+        if zero_init:
+            # Inherited from the retired implicit model, where the output was a
+            # correction to a Newmark predictor and a zero decoder meant training
+            # started exactly at an explicit step -- a physically sensible place.
+            # Here the output IS the displacement, so a zero decoder means the
+            # object starts frozen, which is a worse baseline than v*dt, and no
+            # earlier layer receives gradient until this one grows: with the last
+            # layer at zero, dL/dh = W_last^T dL/dout is zero too.
+            last = [m for m in self.dec.modules() if isinstance(m, nn.Linear)][-1]
+            nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
 
     def forward(self, p, v, a, dt):
         """p, v, a all [M,3] or [B,M,3]; returns the displacement over dt, same shape.

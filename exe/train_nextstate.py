@@ -41,6 +41,11 @@ ap.add_argument("--depth", type=int, default=4)
 ap.add_argument("--heads", type=int, default=4)
 ap.add_argument("--iters", type=int, default=30000)
 ap.add_argument("--lr", type=float, default=3e-4)
+ap.add_argument("--zero_init", action="store_true",
+                 help="zero the decoder's last layer. Off by default: it came from the "
+                      "retired implicit model, where it meant starting at an explicit step, "
+                      "and here it only means starting frozen with no gradient reaching any "
+                      "earlier layer until the decoder grows.")
 ap.add_argument("--n_holdout", type=int, default=5,
                  help="trajectories kept out of training and used for the rollout score. One "
                       "is not enough: a 59-step chain amplifies whichever way the per-step "
@@ -200,7 +205,7 @@ print(f"[data] reference peak anchor displacement = "
       f"{(REF - AC).norm(dim=-1).max().item():.5f}")
 
 net = NextStep(args.hidden, args.depth, args.heads, DISP_SCALE, VEL_SCALE,
-                ACC_SCALE).to(dev)
+                ACC_SCALE, args.zero_init).to(dev)
 opt = torch.optim.Adam(net.parameters(), lr=args.lr, fused=True)
 if args.compile:
     net = torch.compile(net)
