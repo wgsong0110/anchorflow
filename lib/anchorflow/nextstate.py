@@ -95,7 +95,17 @@ class GeoAttentionBias(nn.Module):
             rel0 = p.unsqueeze(2) - p.unsqueeze(1)
             s = rel0.norm(dim=-1).mean().clamp(min=1e-12)
         inv_s = 1.0 / s
-        if _HAVE_GEOBIAS and p.is_cuda and self.heads == 4:
+        # Only where there is no backward to do. The fused forward is 33x
+        # (22.6 ms -> 0.69 ms at B=8, M=512) because it never materialises the
+        # [B,M,M,32] hidden activation. Its backward is not competitive and was
+        # not made so: collecting 2.1M pairs' contributions into 292 parameter
+        # slots is a reduction, which is what cuBLAS's GEMM in the eager path
+        # already does well -- three attempts (direct atomics 469 ms, block
+        # reduction 58 ms, eight replicas 122 ms) all lost to its 12 ms. So
+        # rollouts and rendering take the kernel and training keeps the eager
+        # path; both compute the same function.
+        if (_HAVE_GEOBIAS and p.is_cuda and self.heads == 4
+                and not torch.is_grad_enabled()):
             lin = [m for m in self.mlp.modules() if isinstance(m, nn.Linear)]
             return fused_geo_bias(p, lin[0].weight, lin[0].bias,
                                    lin[1].weight, lin[1].bias, float(inv_s))
