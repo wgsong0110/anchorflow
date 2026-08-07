@@ -27,6 +27,7 @@ from tqdm import tqdm
 
 from anchorflow import scene_setup
 from anchorflow.nextstate import NextStep
+from anchorflow.streams import stream as _stream
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -188,38 +189,9 @@ def trajectory(force):
 
 
 def stream(n_steps, cap):
-    """one continuous run, impulses arriving along the way.
-
-    Returns (positions, accelerations, contaminated) where contaminated[k] marks
-    a step whose target carries an impulse the inputs cannot see: the kick lands
-    between p_k and p_{k+1}, so no function of (p_k, v_k, a_k) reaches the
-    answer. One sample per impulse, dropped. Every later step is fine -- by then
-    the kick is in the positions, and the velocity is read off them.
-    """
-    p, v = AC.clone(), torch.zeros(M, 3, device=dev)
-    gp = sc.pos.clone()
-    ps, acc, bad = [p.clone()], [sc.elastic_accel(p, gp)], []
-    due = 0
-    for k in range(n_steps):
-        fired = False
-        if k >= due and base_force is not None:
-            amp = (p - AC)[~fixed].norm(dim=-1).max().item()
-            if amp < cap:
-                s = 0.5 * (args.impulse_range ** torch.rand(1, device=dev, generator=gen).item())
-                s = s if args.impulse_range > 1 else 1.0
-                v = v + sc.impulse_dv((rand_rot() @ base_force) * s)
-                fired = True
-            jitter = 0.5 + torch.rand(1, device=dev, generator=gen).item()
-            due = k + max(1, int(round(args.impulse_every * jitter)))
-        bad.append(fired)
-        p, v, gp = sc.explicit_step(p, v, gp, args.dt_mult)
-        if not torch.isfinite(p).all():
-            print(f"  [stream] diverged at step {k}, truncating", flush=True)
-            bad.pop()
-            break
-        ps.append(p.clone()); acc.append(sc.elastic_accel(p, gp))
-    return torch.stack(ps), torch.stack(acc), torch.tensor(bad, device=dev)
-
+    """see anchorflow.streams.stream -- shared so the renderer draws this data"""
+    return _stream(sc, n_steps, args.dt_mult, base_force, gen, cap,
+                    impulse_every=args.impulse_every, impulse_range=args.impulse_range)
 
 trajs, accs = [], []
 if args.traj_cache and os.path.exists(args.traj_cache):
