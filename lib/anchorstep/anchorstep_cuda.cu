@@ -433,6 +433,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("anchor_pos"), pybind11::arg("anchor_rest"), pybind11::arg("nn_idx"),
         pybind11::arg("volume"), pybind11::arg("mu_p"), pybind11::arg("lam_p"),
         pybind11::arg("radius"), pybind11::arg("eig_floor_frac"), pybind11::arg("stage") = 3,
-        pybind11::arg("w_in") = torch::Tensor());
+        // an undefined tensor as the default surfaces in Python as None, and
+        // None does not convert back to torch::Tensor -- omitting w_in then
+        // fails to match the overload at all. An empty tensor round-trips.
+        pybind11::arg("w_in") = torch::zeros({0}));
   m.def("backward_gather", &anchorstep_backward_gather, "Analytic anchor force backward, contention-free CSR gather (CUDA)");
 }

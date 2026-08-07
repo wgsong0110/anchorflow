@@ -66,7 +66,8 @@ print(f"[setup] N={sc.N} M={sc.M}, {args.warm} coarse steps of deformation")
 args_ = (sim.gaussian_canonical, gp, p, AC, sim.nn_idx, sc.volume,
          sc.mu.contiguous().float(), sc.lam.contiguous().float(),
          float(sim.radius), 0.2)
-w_k, F0, pos0, psi0, G0, c0 = anchorstep._fwd(*args_)
+NO_W = torch.zeros(0, device=dev)
+w_k, F0, pos0, psi0, G0, c0 = anchorstep._fwd(*args_, 3, NO_W)
 w_k2, F1, pos1, psi1, G1, c1 = anchorstep._fwd(*args_, 3, w_k)
 print(f"\n[1] w_in fed the kernel's OWN weights -- must be bit-identical")
 for name, a, b in (("weights", w_k2, w_k), ("gaussian pos", pos1, pos0), ("F", F1, F0),
