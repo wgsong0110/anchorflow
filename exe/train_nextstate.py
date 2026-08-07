@@ -249,17 +249,28 @@ def rollout_error(frames, which=0):
     # a quarter for free
     err = (got[:n] - ref)[:, ~fixed].norm(dim=-1).mean(-1)
     span = (ref - AC).norm(dim=-1).max().clamp(min=1e-12)
-    return n, err, (err / span)
+    # how far the rollout moved the anchors at all, against how far the reference
+    # did. Position error alone cannot tell an accurate rollout from a frozen
+    # one: the reference oscillates back through its start, so a model that
+    # predicts almost nothing stays near it and scores well. One lr=1e-2 run did
+    # exactly that -- 10% of the reference's motion, best score in the sweep.
+    moved = (got[:n] - AC)[:, ~fixed].norm(dim=-1).max(-1).values
+    return n, err, (err / span), (moved.max() / span)
 
 
 @torch.no_grad()
 def rollout_score(frames):
     """mean final error over every held-out trajectory"""
-    vals = []
+    vals, mv = [], []
     for w in range(HOLD):
-        n, _, rel = rollout_error(frames, w)
-        vals.append(float(rel[n - 1]))
-    return sum(vals) / len(vals), vals
+        n, _, rel, m = rollout_error(frames, w)
+        vals.append(float(rel[n - 1])); mv.append(float(m))
+    err = sum(vals) / len(vals)
+    amp = sum(mv) / len(mv)
+    # penalise a rollout for the motion it is missing as well as for where it
+    # put things, so standing still cannot win. Overshoot is already punished by
+    # the error term, so only the shortfall counts here.
+    return err + max(0.0, 1.0 - amp), vals, amp
 
 
 hist_log = []
@@ -338,8 +349,8 @@ for it in pbar:
     if args.out and (it % args.ckpt_every == 0 or it == args.iters):
         save(args.out, it)
     if it % args.eval_every == 0 or it == args.iters:
-        score, vals = rollout_score(args.eval_frames)
-        n, err, rel = rollout_error(args.eval_frames)
+        score, vals, amp = rollout_score(args.eval_frames)
+        n, err, rel, _ = rollout_error(args.eval_frames)
         # keep the best rollout separately. The measure swings hard between
         # evaluations -- 4.6% at 225k and 179% at 250k on the same run -- so the
         # last checkpoint is a lottery ticket, and the rollout is the number
@@ -347,19 +358,22 @@ for it in pbar:
         if args.out and score < BEST["score"]:
             BEST["score"], BEST["iter"] = score, it
             save(args.out.replace(".pt", "_best.pt"), it)
-            print(f"  [best] rollout {100*score:.1f}% at it={it}", flush=True)
+            print(f"  [best] score {100*score:.1f} at it={it}", flush=True)
         print(f"\n  [rollout] it={it} over {HOLD} held-out trajectories: "
-              f"mean {100*score:.1f}%  (traj0 {100*vals[0]:.1f}%, "
+              f"err {100*sum(vals)/len(vals):.1f}%  motion {100*amp:.0f}% of reference"
+              f"  -> score {100*score:.1f}  (traj0 {100*vals[0]:.1f}%, "
               f"spread {100*min(vals):.1f}-{100*max(vals):.1f}%)", flush=True)
 
 print("\n[result]   iter        step MSE   rel step err")
 for it, ls, rl in hist_log[::max(1, len(hist_log) // 20)]:
     print(f"  {it:8d}   {ls:.6e}   {rl:10.4f}")
 
-score, vals = rollout_score(args.eval_frames)
-n, err, rel = rollout_error(args.eval_frames)
-print(f"\n[rollout] mean over {HOLD} held-out trajectories: {100*score:.2f}%  "
-      f"(per trajectory: {', '.join(f'{100*v:.1f}%' for v in vals)})")
+score, vals, amp = rollout_score(args.eval_frames)
+n, err, rel, _ = rollout_error(args.eval_frames)
+print(f"\n[rollout] mean over {HOLD} held-out trajectories: "
+      f"err {100*sum(vals)/len(vals):.2f}%, motion {100*amp:.0f}% of reference, "
+      f"score {100*score:.2f}  (per trajectory: "
+      f"{', '.join(f'{100*v:.1f}%' for v in vals)})")
 print(f"[rollout] trajectory 0, {n}/{args.eval_frames+1} frames survived")
 print(f"  {'frame':>6} {'mean anchor err':>16} {'% of reference motion':>22}")
 for i in range(0, n, max(1, n // 12)):
