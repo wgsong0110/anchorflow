@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 
 _lib = os.path.join(os.path.dirname(__file__), "..", "lib")
@@ -90,6 +91,15 @@ ap.add_argument("--ckpt_every", type=int, default=2000,
                  help="write a resumable checkpoint this often. These instances stop on an "
                       "idle watchdog and can be reclaimed at any time; a run that can only "
                       "save at the end loses everything when that happens.")
+ap.add_argument("--snapshot_every", type=int, default=0,
+                 help="also keep a checkpoint named after its iteration, so the run leaves a "
+                      "trail instead of one overwritten file. The rollout measure swings hard "
+                      "between evaluations, and without these the only way back to a good "
+                      "iterate is to train to it again.")
+ap.add_argument("--r2", default=None,
+                 help="rclone destination to copy every checkpoint to as it is written, e.g. "
+                      "r2:storage/result/anchorflow/ckpt/NAME. The instance can be reclaimed "
+                      "at any time, so nothing that matters should live only on its disk.")
 ap.add_argument("--resume", default=None,
                  help="resume from a checkpoint written by --out (model, optimiser, iteration "
                       "and RNG). The collected trajectories are regenerated, not stored -- "
@@ -286,6 +296,9 @@ def save(path, it):
                 "best": BEST,
                 "rng": torch.get_rng_state(), "cuda_rng": torch.cuda.get_rng_state(),
                 "gen": gen.get_state()}, path)
+    if args.r2:
+        subprocess.Popen(["rclone", "copy", path, args.r2],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 if args.resume and os.path.exists(args.resume):
@@ -348,6 +361,8 @@ for it in pbar:
         pbar.set_postfix(mse=f"{loss.item():.2e}", rel=f"{rel.item():.4f}")
     if args.out and (it % args.ckpt_every == 0 or it == args.iters):
         save(args.out, it)
+    if args.out and args.snapshot_every and it % args.snapshot_every == 0:
+        save(args.out.replace(".pt", f"_it{it:06d}.pt"), it)
     if it % args.eval_every == 0 or it == args.iters:
         score, vals, amp = rollout_score(args.eval_frames)
         n, err, rel, _ = rollout_error(args.eval_frames)
