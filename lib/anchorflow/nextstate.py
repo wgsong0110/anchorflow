@@ -200,7 +200,10 @@ class NextStep(nn.Module):
         """
         squeeze = (p.dim() == 2)
         if squeeze:
-            p, v, a = p.unsqueeze(0), v.unsqueeze(0), a.unsqueeze(0)
+            # a is None when the acceleration is not an input at all -- callers
+            # skip computing it, and there is nothing to add a batch axis to
+            p, v = p.unsqueeze(0), v.unsqueeze(0)
+            a = a.unsqueeze(0) if a is not None else None
         feats = [p, v / self.vel_scale]
         if self.use_accel:
             feats.append(a / self.acc_scale)
