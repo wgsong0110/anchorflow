@@ -23,8 +23,31 @@ def rand_rot(gen, device):
     return q
 
 
+def draw_impulse(sc, base_force, gen, impulse_range=4.0, field=False,
+                  sigma_lo=None, sigma_hi=None):
+    """One impulse: how hard, which way, and -- with field -- where.
+
+    Without field this is the config's own impulse rotated and rescaled: one
+    vector on the whole object. With it, a smooth random force whose
+    correlation length is drawn log-uniformly between the anchor spacing and
+    the object's size, so a single dataset spans everything from bending one
+    twig to the uniform shove that used to be the only case.
+    """
+    dev = sc.anchor_canonical.device
+    s = 0.5 * (impulse_range ** torch.rand(1, device=dev, generator=gen).item())
+    s = s if impulse_range > 1 else 1.0
+    if not field:
+        return (rand_rot(gen, dev) @ base_force) * s, None
+    lo = sigma_lo if sigma_lo is not None else sc.sim.radius
+    hi = sigma_hi if sigma_hi is not None else sc.extent
+    u = torch.rand(1, device=dev, generator=gen).item()
+    sigma = lo * ((hi / lo) ** u)
+    return sc.random_force_field(gen, sigma, base_force.norm().item() * s), sigma
+
+
 def stream(sc, n_steps, dt_mult, base_force, gen, cap, impulse_every=20,
-           impulse_range=4.0, keep_accel=True, on_step=None):
+           impulse_range=4.0, keep_accel=True, on_step=None, field=False,
+           sigma_lo=None, sigma_hi=None):
     """One continuous run. Returns (positions, accelerations, contaminated).
 
     contaminated[k] marks a step whose target carries an impulse the inputs
@@ -53,9 +76,9 @@ def stream(sc, n_steps, dt_mult, base_force, gen, cap, impulse_every=20,
         if k >= due and base_force is not None:
             amp = (p - AC)[~fixed].norm(dim=-1).max().item()
             if amp < cap:
-                s = 0.5 * (impulse_range ** torch.rand(1, device=dev, generator=gen).item())
-                s = s if impulse_range > 1 else 1.0
-                v = v + sc.impulse_dv((rand_rot(gen, dev) @ base_force) * s)
+                f, _ = draw_impulse(sc, base_force, gen, impulse_range, field,
+                                     sigma_lo, sigma_hi)
+                v = v + sc.impulse_dv(f)
                 fired = True
             jitter = 0.5 + torch.rand(1, device=dev, generator=gen).item()
             due = k + max(1, int(round(impulse_every * jitter)))

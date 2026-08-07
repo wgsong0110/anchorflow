@@ -27,7 +27,7 @@ from tqdm import tqdm
 
 from anchorflow import scene_setup
 from anchorflow.nextstate import NextStep
-from anchorflow.streams import stream as _stream
+from anchorflow.streams import stream as _stream, draw_impulse
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -105,6 +105,19 @@ ap.add_argument("--n_stream", type=int, default=4,
                       "the same stretch of one history")
 ap.add_argument("--impulse_every", type=int, default=20,
                  help="mean coarse steps between impulses, jittered by half")
+ap.add_argument("--field", action="store_true",
+                 help="impulses become smooth random force FIELDS instead of one vector on "
+                      "the whole object. Every impulse in this project has been the config's "
+                      "particle_impulse -- the same force everywhere -- so the data contains "
+                      "only the lowest spatial frequency there is, and nothing the network "
+                      "has seen tells bending one branch apart from shoving all of it. The "
+                      "correlation length is drawn log-uniformly from the anchor spacing to "
+                      "the object's size, so the uniform push is one end of the range.")
+ap.add_argument("--n_field_holdout", type=int, default=5,
+                 help="held-out trajectories driven by a force field, scored separately. "
+                      "Without these the change is invisible: the existing held-out set is "
+                      "all uniform impulses, so it cannot tell whether the network learned "
+                      "anything about being pushed locally.")
 ap.add_argument("--stream_amp_cap", type=float, default=3.0,
                  help="skip an impulse while the object is already displaced more than this "
                       "many times the config impulse's peak. Impulses land on top of each "
@@ -191,7 +204,8 @@ def trajectory(force):
 def stream(n_steps, cap):
     """see anchorflow.streams.stream -- shared so the renderer draws this data"""
     return _stream(sc, n_steps, args.dt_mult, base_force, gen, cap,
-                    impulse_every=args.impulse_every, impulse_range=args.impulse_range)
+                    impulse_every=args.impulse_every, impulse_range=args.impulse_range,
+                    field=args.field)
 
 trajs, accs = [], []
 if args.traj_cache and os.path.exists(args.traj_cache):
@@ -232,6 +246,20 @@ trajs, accs = trajs[:N_TRAJ], accs[:N_TRAJ]
 # in stream mode the training data is elsewhere, so every from-rest trajectory
 # can be held out; in classic mode at least one has to be left to train on
 HOLD = args.n_holdout if args.stream_len > 0 else min(args.n_holdout, len(trajs) - 1)
+FTRAJ = None
+if args.n_field_holdout > 0 and base_force is not None:
+    fgen = torch.Generator(device=dev); fgen.manual_seed(5678)
+    ft = []
+    print(f"[data] {args.n_field_holdout} field-driven held-out trajectories", flush=True)
+    for _ in range(args.n_field_holdout):
+        f, sig = draw_impulse(sc, base_force, fgen, args.impulse_range, field=True)
+        ps_, _ = trajectory(f)
+        ft.append(ps_)
+        print(f"  sigma {sig:.4f} ({sig / sc.sim.radius:.1f} anchor spacings, "
+              f"{100 * sig / sc.extent:.0f}% of the object), peak "
+              f"{(ps_ - AC).norm(dim=-1).max().item():.5f}", flush=True)
+    fm = min(t.shape[0] for t in ft)
+    FTRAJ = torch.stack([t[:fm] for t in ft])
 REF, REF_A = trajs[0], accs[0]
 # one tensor, indexed on the GPU: building a batch out of a python list of
 # slices was ~50 separate microsecond-scale ops per iteration, and at this model
@@ -329,8 +357,8 @@ def rollout(frames, ref=None):
 
 
 @torch.no_grad()
-def rollout_error(frames, which=0):
-    r = HTRAJ[which]
+def rollout_error(frames, which=0, src=None):
+    r = (HTRAJ if src is None else src)[which]
     got = rollout(frames, r)
     n = min(got.shape[0], r.shape[0] - 1)
     ref = r[1:1 + n]
@@ -349,11 +377,11 @@ def rollout_error(frames, which=0):
 
 
 @torch.no_grad()
-def rollout_score(frames):
+def rollout_score(frames, src=None):
     """mean final error over every held-out trajectory"""
     vals, mv = [], []
-    for w in range(HOLD):
-        n, _, rel, m = rollout_error(frames, w)
+    for w in range((HOLD if src is None else src.shape[0])):
+        n, _, rel, m = rollout_error(frames, w, src)
         vals.append(float(rel[n - 1])); mv.append(float(m))
     err = sum(vals) / len(vals)
     amp = sum(mv) / len(mv)
@@ -456,6 +484,9 @@ for it in pbar:
     if it % args.eval_every == 0 or it == args.iters:
         score, vals, amp = rollout_score(args.eval_frames)
         n, err, rel, _ = rollout_error(args.eval_frames)
+        fs = fv = fa = None
+        if FTRAJ is not None:
+            fs, fv, fa = rollout_score(args.eval_frames, FTRAJ)
         # keep the best rollout separately. The measure swings hard between
         # evaluations -- 4.6% at 225k and 179% at 250k on the same run -- so the
         # last checkpoint is a lottery ticket, and the rollout is the number
@@ -468,6 +499,12 @@ for it in pbar:
               f"err {100*sum(vals)/len(vals):.1f}%  motion {100*amp:.0f}% of reference"
               f"  -> score {100*score:.1f}  (traj0 {100*vals[0]:.1f}%, "
               f"spread {100*min(vals):.1f}-{100*max(vals):.1f}%)", flush=True)
+        if fs is not None:
+            # the uniform-impulse set above cannot see whether the network can
+            # be pushed locally, which is what this project is ultimately for
+            print(f"  [field]   it={it} over {len(fv)} field-driven trajectories: "
+                  f"err {100*sum(fv)/len(fv):.1f}%  motion {100*fa:.0f}%  "
+                  f"spread {100*min(fv):.1f}-{100*max(fv):.1f}%", flush=True)
 
 print("\n[result]   iter        step MSE   rel step err")
 for it, ls, rl in hist_log[::max(1, len(hist_log) // 20)]:
@@ -475,6 +512,11 @@ for it, ls, rl in hist_log[::max(1, len(hist_log) // 20)]:
 
 score, vals, amp = rollout_score(args.eval_frames)
 n, err, rel, _ = rollout_error(args.eval_frames)
+if FTRAJ is not None:
+    fs, fv, fa = rollout_score(args.eval_frames, FTRAJ)
+    print(f"\n[field] mean over {len(fv)} field-driven held-out trajectories: "
+          f"err {100*sum(fv)/len(fv):.2f}%, motion {100*fa:.0f}%  (per trajectory: "
+          f"{', '.join(f'{100*v:.1f}%' for v in fv)})")
 print(f"\n[rollout] mean over {HOLD} held-out trajectories: "
       f"err {100*sum(vals)/len(vals):.2f}%, motion {100*amp:.0f}% of reference, "
       f"score {100*score:.2f}  (per trajectory: "

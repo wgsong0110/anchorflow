@@ -68,12 +68,57 @@ class Scene:
         so the same kick can be delivered part-way through a run: the P2G
         weights are taken at the canonical configuration, so the momentum a
         given force deposits does not depend on where the object currently is,
-        and a mid-run impulse means the same thing as the one at t=0."""
+        and a mid-run impulse means the same thing as the one at t=0.
+
+        force is [3] -- the same vector on every material Gaussian, which is
+        what the config's particle_impulse means -- or [N,3], a force that
+        varies over the object (see random_force_field).
+        """
         w = self.sim._weights(self.pos, self.anchor_canonical) * self.keep.unsqueeze(-1)
-        wsum = torch.zeros(self.M, device=self.pos.device).index_add_(
-            0, self.sim.nn_idx.reshape(-1), w.reshape(-1))
-        dv = (wsum.unsqueeze(-1) * force.unsqueeze(0) * self.sub_dt) / self.mass.unsqueeze(-1)
+        if force.dim() == 1:
+            wf = w.unsqueeze(-1) * force.view(1, 1, 3)
+        else:
+            wf = w.unsqueeze(-1) * (force * self.keep.unsqueeze(-1)).unsqueeze(1)
+        p2g = torch.zeros(self.M, 3, device=self.pos.device).index_add_(
+            0, self.sim.nn_idx.reshape(-1), wf.reshape(-1, 3))
+        dv = p2g * self.sub_dt / self.mass.unsqueeze(-1)
         return torch.where(self.fixed_mask.unsqueeze(-1), torch.zeros_like(dv), dv)
+
+    def random_force_field(self, gen, sigma, magnitude):
+        """A force that varies over the object, smooth on a length scale sigma.
+
+        Every impulse in this project so far has been one vector applied to the
+        whole object, because that is what the config's particle_impulse is. So
+        the training data contains only the lowest spatial frequency there is,
+        and nothing the network has seen distinguishes bending one branch from
+        shoving everything.
+
+        Drawing an independent vector per anchor is not the fix -- neighbouring
+        anchors would be pushed apart, which is not a force anything can apply
+        and which the material absorbs locally without moving. Smoothing the
+        draw over a length sigma sets how far apart two points must be before
+        they are pushed differently: at the anchor spacing this excites one
+        twig, and as sigma approaches the object's size it converges back to the
+        uniform push, so the old behaviour is one end of the range rather than
+        something replaced.
+
+        Normalised so the most strongly forced anchor feels `magnitude`, which
+        keeps a local push comparable in strength to a global one where it acts.
+        """
+        AC = self.anchor_canonical
+        g = torch.randn(self.M, 3, device=AC.device, generator=gen)
+        d2 = torch.cdist(AC, AC) ** 2
+        w = torch.exp(-d2 / (2.0 * float(sigma) ** 2))
+        w = w / w.sum(-1, keepdim=True)
+        f = w @ g
+        f = f / f.norm(dim=-1).max().clamp(min=1e-12) * float(magnitude)
+        wc = self.sim._canonical_weights()                      # [N,K]
+        return (wc.unsqueeze(-1) * f[self.sim.nn_idx]).sum(1)   # [N,3]
+
+    @property
+    def extent(self):
+        a = self.anchor_canonical
+        return float((a.max(0).values - a.min(0).values).norm())
 
     def explicit_step(self, p, v, gp, n=1):
         """n explicit substeps; returns (p, v, gaussian_pos)."""
