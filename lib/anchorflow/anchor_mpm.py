@@ -15,16 +15,24 @@ Design choices (see anchorflow session notes, 2026-08-02):
     would be expensive and is not needed (large deformation is handled by
     the WEIGHTS adapting, not by connectivity changing).
   - Blend WEIGHTS are recomputed every step from actual current anchor
-    positions (not frozen at canonical) -- this is what makes the method
-    correct for large deformation. A distance-based kernel is automatically
-    rotation-invariant (rotation preserves distances), so this doesn't
-    reintroduce spurious strain under pure rotation; it only changes the
-    weights when there's genuine local stretch, which is exactly wanted.
+    positions rather than frozen at canonical. A distance-based kernel is
+    rotation-invariant, so this changes the weights only where there is
+    genuine local stretch. This line used to claim the adaptation is what
+    makes the method correct for large deformation; measured against the
+    same simulation with the weights frozen at canonical, it moves the
+    anchors by 0.24% of peak motion over 60 coarse steps at the config's
+    impulse and 1.4% at three times it (exe/render_weight_convention.py).
+    Real, and larger the more the object deforms, but a small correction --
+    not what the method rests on.
   - Because a Gaussian's OWN current position is circularly what the weight
     kernel would need, weights use the Gaussian's position from the END OF
     THE PREVIOUS STEP (one-step lag) -- standard explicit-integrator
     practice, matches the semi-implicit Euler used everywhere else in this
-    codebase.
+    codebase. The cost is that the simulator is then not a function of its
+    state: the same anchor positions and velocities step differently
+    depending on the history that produced the cloud the weights are read
+    from. Freezing the weights at canonical would remove that, and is the
+    reason to consider it -- not accuracy.
   - No internal elastic force is derived by hand: the constitutive law gives
     a scalar energy density per Gaussian; total elastic energy is summed and
     backpropagated (`torch.autograd.grad`) straight to anchor positions to
