@@ -56,15 +56,29 @@ for _ in range(args.warm):
 
 print(f"[setup] N={sc.N} M={sc.M}, {args.warm} coarse steps of deformation")
 
-# --- 1. w_in reproduces the kernel's own weights exactly ---------------------
-w_lag = sim._weights(gp, p)
-f0, pos0, F0, psi0 = anchorstep.fused_energy_force(
-    sim.gaussian_canonical, gp, p, AC, sim.nn_idx, sc.volume, sim.radius, sc.mu, sc.lam)
-f1, pos1, F1, psi1 = anchorstep.fused_energy_force(
-    sim.gaussian_canonical, gp, p, AC, sim.nn_idx, sc.volume, sim.radius, sc.mu, sc.lam,
-    w_in=w_lag)
-print(f"\n[1] w_in fed the kernel's own weights -- must be a no-op")
-for name, a, b in (("force", f1, f0), ("gaussian pos", pos1, pos0), ("F", F1, F0), ("psi", psi1, psi0)):
+# --- 1. w_in is a no-op when fed the kernel's own weights -------------------
+# fed the weights the kernel itself produced -- bit-identical input, so any
+# difference here is the w_in path computing something else. Feeding
+# torch-computed weights instead only measures how the two implementations
+# round exp() and the normalising divide, which is [1b] below. The forward
+# kernel is deterministic (one thread per Gaussian, no atomics); the force is
+# not, so compare the forward outputs.
+args_ = (sim.gaussian_canonical, gp, p, AC, sim.nn_idx, sc.volume,
+         sc.mu.contiguous().float(), sc.lam.contiguous().float(),
+         float(sim.radius), 0.2)
+w_k, F0, pos0, psi0, G0, c0 = anchorstep._fwd(*args_)
+w_k2, F1, pos1, psi1, G1, c1 = anchorstep._fwd(*args_, 3, w_k)
+print(f"\n[1] w_in fed the kernel's OWN weights -- must be bit-identical")
+for name, a, b in (("weights", w_k2, w_k), ("gaussian pos", pos1, pos0), ("F", F1, F0),
+                   ("psi", psi1, psi0), ("G", G1, G0), ("c", c1, c0)):
+    print(f"    {name:>14} max abs {(a - b).abs().max():.3e}   relative {rel(a, b):.3e}")
+
+w_torch = sim._weights(gp, p)
+_, F2, pos2, psi2, _, _ = anchorstep._fwd(*args_, 3, w_torch.contiguous())
+print(f"\n[1b] torch-computed weights vs the kernel's own (float rounding only)")
+print(f"    {'weights':>14} max abs {(w_torch - w_k).abs().max():.3e}   "
+      f"relative {rel(w_torch, w_k):.3e}")
+for name, a, b in (("-> gaussian pos", pos2, pos0), ("-> F", F2, F0), ("-> psi", psi2, psi0)):
     print(f"    {name:>14} max abs {(a - b).abs().max():.3e}   relative {rel(a, b):.3e}")
 
 # --- 2. frozen kernel vs torch reference, same weights ----------------------
