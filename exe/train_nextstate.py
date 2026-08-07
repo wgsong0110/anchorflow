@@ -91,6 +91,11 @@ ap.add_argument("--ckpt_every", type=int, default=2000,
                  help="write a resumable checkpoint this often. These instances stop on an "
                       "idle watchdog and can be reclaimed at any time; a run that can only "
                       "save at the end loses everything when that happens.")
+ap.add_argument("--reset_best", action="store_true",
+                 help="forget the resumed run's best score. The rollout measure changed when it "
+                      "started penalising a rollout for motion it fails to produce, so a score "
+                      "carried over from before is on a different scale and no later evaluation "
+                      "can beat it.")
 ap.add_argument("--snapshot_every", type=int, default=0,
                  help="also keep a checkpoint named after its iteration, so the run leaves a "
                       "trail instead of one overwritten file. The rollout measure swings hard "
@@ -307,11 +312,20 @@ if args.resume and os.path.exists(args.resume):
     opt.load_state_dict(ck["opt"])
     hist_log = ck.get("hist", [])
     start_it = ck["iter"] + 1
-    BEST.update(ck.get("best", {}) or {})
+    if not args.reset_best:
+        BEST.update(ck.get("best", {}) or {})
     torch.set_rng_state(ck["rng"].cpu())
     torch.cuda.set_rng_state(ck["cuda_rng"].cpu())
     gen.set_state(ck["gen"].cpu())
-    print(f"[resume] {args.resume} at iter {ck['iter']}")
+    # the optimiser state carries the learning rate it was annealed down to, and
+    # the schedule reads its base rate from the same place. Left alone, a resumed
+    # run's rate is decided by the run it continues rather than by the flags it
+    # was given, which is not what --lr on the command line means.
+    for g in opt.param_groups:
+        g["lr"] = args.lr
+        g.pop("initial_lr", None)
+    print(f"[resume] {args.resume} at iter {ck['iter']}, lr set to {args.lr:g}"
+          + ("" if not args.reset_best else " (best score forgotten)"))
 
 sched = None
 if args.cosine:
