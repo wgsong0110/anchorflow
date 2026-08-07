@@ -102,8 +102,14 @@ class Scene:
         uniform push, so the old behaviour is one end of the range rather than
         something replaced.
 
-        Normalised so the most strongly forced anchor feels `magnitude`, which
-        keeps a local push comparable in strength to a global one where it acts.
+        Normalised on the RMS anchor force rather than the peak. Normalising on
+        the peak makes a localised field deposit far less momentum than a global
+        one -- measured, it dropped the streaming data's typical displacement by
+        4.3x, which gives back the amplitude coverage the streaming data exists
+        for. On the RMS, a field that is already uniform is unchanged (peak and
+        RMS coincide), so the long-sigma end still reproduces the config's own
+        impulse exactly, while a concentrated field is scaled up to push its
+        smaller region harder.
         """
         AC = self.anchor_canonical
         g = torch.randn(self.M, 3, device=AC.device, generator=gen)
@@ -111,7 +117,8 @@ class Scene:
         w = torch.exp(-d2 / (2.0 * float(sigma) ** 2))
         w = w / w.sum(-1, keepdim=True)
         f = w @ g
-        f = f / f.norm(dim=-1).max().clamp(min=1e-12) * float(magnitude)
+        rms = f.norm(dim=-1).pow(2).mean().sqrt().clamp(min=1e-12)
+        f = f / rms * float(magnitude)
         wc = self.sim._canonical_weights()                      # [N,K]
         return (wc.unsqueeze(-1) * f[self.sim.nn_idx]).sum(1)   # [N,3]
 

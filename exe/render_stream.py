@@ -39,6 +39,9 @@ ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--impulse_every", type=int, default=20)
 ap.add_argument("--impulse_range", type=float, default=4.0)
 ap.add_argument("--stream_amp_cap", type=float, default=3.0)
+ap.add_argument("--field", action="store_true",
+                 help="impulses become smooth random force fields rather than one vector on "
+                      "the whole object -- see scene_setup.random_force_field")
 ap.add_argument("--skip", type=int, default=0,
                  help="draw the n-th run rather than the first, by advancing the same "
                       "seeded generator the training script advances")
@@ -150,7 +153,7 @@ print(f"[cap] config impulse peaks at {peak:.5f}; impulses skipped above {cap:.5
 for _ in range(args.skip):
     stream(sc, args.frames, args.dt_mult, base, gen, cap,
            impulse_every=args.impulse_every, impulse_range=args.impulse_range,
-           keep_accel=False)
+           keep_accel=False, field=args.field)
 
 frames, hits = [], []
 bar = tqdm(total=args.frames, desc="stream", ncols=90)
@@ -169,7 +172,7 @@ def draw(k, p_, gp_, fired):
 
 ps, _, bad = stream(sc, args.frames, args.dt_mult, base, gen, cap,
                      impulse_every=args.impulse_every, impulse_range=args.impulse_range,
-                     keep_accel=False, on_step=draw)
+                     keep_accel=False, on_step=draw, field=args.field)
 bar.close()
 
 amp = (ps - AC)[:, ~fixed].norm(dim=-1).max(-1).values
