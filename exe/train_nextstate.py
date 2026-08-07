@@ -219,6 +219,12 @@ if args.traj_cache and os.path.exists(args.traj_cache):
     if USE_A and (not accs or accs[0] is None):
         print(f"[data] {args.traj_cache} was written without accelerations; regenerating")
         trajs, accs = [], []
+    elif bool(blob.get("field", False)) != bool(args.field) or \
+            int(blob.get("n_holdout", args.n_holdout)) != args.n_holdout:
+        # different impulses -- these are not the trajectories this run wants
+        print(f"[data] {args.traj_cache} has field={blob.get('field', False)}, "
+              f"n_holdout={blob.get('n_holdout')}; regenerating")
+        trajs, accs = [], []
     else:
         print(f"[data] {len(trajs)} trajectories from {args.traj_cache}")
 if len(trajs) < N_TRAJ:
@@ -229,10 +235,15 @@ if len(trajs) < N_TRAJ:
     for t in range(N_TRAJ):
         if t == 0 or base_force is None:
             f = base_force
-        else:
+        elif t < args.n_holdout or not args.field:
+            # the held-out trajectories keep the uniform impulse they have always
+            # had, down to the draw order, so [rollout] measures the same thing
+            # in this run as in every run before it and the two stay comparable
             s = 0.5 * (args.impulse_range ** torch.rand(1, device=dev, generator=gen).item())
             s = s if args.impulse_range > 1 else 1.0
             f = (rand_rot() @ base_force) * s
+        else:
+            f, _ = draw_impulse(sc, base_force, gen, args.impulse_range, field=True)
         if t < len(trajs):
             continue
         ps, ac_ = trajectory(f)
@@ -240,7 +251,8 @@ if len(trajs) < N_TRAJ:
         if (t + 1) % 25 == 0 or t + 1 == N_TRAJ:
             print(f"  {t + 1}/{N_TRAJ}", flush=True)
     if args.traj_cache:
-        torch.save({"trajs": trajs, "accs": accs}, args.traj_cache)
+        torch.save({"trajs": trajs, "accs": accs, "field": bool(args.field),
+                     "n_holdout": args.n_holdout}, args.traj_cache)
         print(f"[data] cached to {args.traj_cache}")
 trajs, accs = trajs[:N_TRAJ], accs[:N_TRAJ]
 # trajectory 0 is the config's own impulse and is HELD OUT: it is the rollout
