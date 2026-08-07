@@ -189,29 +189,38 @@ def trajectory(force):
 
     The Gaussian cloud is 2.4 MB a snapshot and is only needed to evaluate the
     force, so the force is evaluated during collection and the cloud discarded.
+    Under --no_accel nothing ever reads that force, so it is not computed --
+    it is a fused-kernel call per step and a [T,M,3] tensor per trajectory.
     """
     p, v = AC.clone(), sc.initial_velocity(force)
     gp = sc.pos.clone()
-    ps, accs = [p.clone()], [sc.elastic_accel(p, gp)]
+    ps = [p.clone()]
+    accs = [sc.elastic_accel(p, gp)] if USE_A else None
     for _ in range(args.n_steps):
         p, v, gp = sc.explicit_step(p, v, gp, args.dt_mult)
         if not torch.isfinite(p).all():
             break
-        ps.append(p.clone()); accs.append(sc.elastic_accel(p, gp))
-    return torch.stack(ps), torch.stack(accs)
+        ps.append(p.clone())
+        if USE_A:
+            accs.append(sc.elastic_accel(p, gp))
+    return torch.stack(ps), (torch.stack(accs) if USE_A else None)
 
 
 def stream(n_steps, cap):
     """see anchorflow.streams.stream -- shared so the renderer draws this data"""
     return _stream(sc, n_steps, args.dt_mult, base_force, gen, cap,
                     impulse_every=args.impulse_every, impulse_range=args.impulse_range,
-                    field=args.field)
+                    field=args.field, keep_accel=USE_A)
 
 trajs, accs = [], []
 if args.traj_cache and os.path.exists(args.traj_cache):
     blob = torch.load(args.traj_cache, map_location=dev, weights_only=False)
     trajs, accs = blob["trajs"], blob["accs"]
-    print(f"[data] {len(trajs)} trajectories from {args.traj_cache}")
+    if USE_A and (not accs or accs[0] is None):
+        print(f"[data] {args.traj_cache} was written without accelerations; regenerating")
+        trajs, accs = [], []
+    else:
+        print(f"[data] {len(trajs)} trajectories from {args.traj_cache}")
 if len(trajs) < N_TRAJ:
     print(f"[data] collecting {N_TRAJ - len(trajs)} more trajectories "
           f"x {args.n_steps} coarse steps...")
@@ -260,7 +269,7 @@ if args.n_field_holdout > 0 and base_force is not None:
               f"{(ps_ - AC).norm(dim=-1).max().item():.5f}", flush=True)
     fm = min(t.shape[0] for t in ft)
     FTRAJ = torch.stack([t[:fm] for t in ft])
-REF, REF_A = trajs[0], accs[0]
+REF, REF_A = trajs[0], (accs[0] if USE_A else None)
 # one tensor, indexed on the GPU: building a batch out of a python list of
 # slices was ~50 separate microsecond-scale ops per iteration, and at this model
 # size that launch overhead is what the GPU waits on rather than the arithmetic
@@ -269,7 +278,7 @@ n_min = min(t.shape[0] for t in trajs)
 # impulse each -- so the rollout number remains comparable across every run in
 # this project, whatever the training data was drawn from
 HTRAJ = torch.stack([t[:n_min] for t in trajs[:HOLD]])
-HACCS = torch.stack([a[:n_min] for a in accs[:HOLD]])
+HACCS = torch.stack([a[:n_min] for a in accs[:HOLD]]) if USE_A else None
 
 if args.stream_len > 0:
     cap = args.stream_amp_cap * (trajs[0] - AC).norm(dim=-1).max().item()
@@ -285,24 +294,24 @@ if args.stream_len > 0:
               f"{int(c_.sum())} impulses, peak displacement {peak:.4f}", flush=True)
     s_min = min(t.shape[0] for t in st)
     TRAJ = torch.stack([t[:s_min] for t in st])
-    ACCS = torch.stack([a[:s_min] for a in sa])
+    ACCS = torch.stack([a[:s_min] for a in sa]) if USE_A else None
     BAD = torch.stack([b[:s_min] for b in sb])
     IDX = torch.tensor([(ti, k) for ti in range(TRAJ.shape[0])
                         for k in range(1, s_min - 1) if not bool(BAD[ti, k])], device=dev)
     print(f"[data] {int(BAD.sum())} samples dropped as impulse-contaminated")
 else:
     TRAJ = torch.stack([t[:n_min] for t in trajs])       # [n_traj, T, M, 3]
-    ACCS = torch.stack([a[:n_min] for a in accs])
+    ACCS = torch.stack([a[:n_min] for a in accs]) if USE_A else None
     IDX = torch.tensor([(ti, k) for ti in range(HOLD, TRAJ.shape[0])
                         for k in range(1, n_min - 1)], device=dev)
 pairs = IDX
 dt_coarse = args.dt_mult * sc.sub_dt
 SRC = [TRAJ[i] for i in range(TRAJ.shape[0])] if args.stream_len > 0 else trajs
-SRC_A = [ACCS[i] for i in range(ACCS.shape[0])] if args.stream_len > 0 else accs
+SRC_A = ([ACCS[i] for i in range(ACCS.shape[0])] if args.stream_len > 0 else accs) if USE_A else None
 DISP = [tr[1:] - tr[:-1] for tr in SRC]
 DISP_SCALE = float(torch.cat([d.norm(dim=-1).flatten() for d in DISP]).mean())
 VEL_SCALE = DISP_SCALE / dt_coarse
-ACC_SCALE = float(torch.cat([a.norm(dim=-1).flatten() for a in SRC_A]).mean())
+ACC_SCALE = float(torch.cat([a.norm(dim=-1).flatten() for a in SRC_A]).mean()) if USE_A else 1.0
 DEV = [d[1:] - d[:-1] for d in DISP]
 DEV_SCALE = float(torch.cat([q.norm(dim=-1).flatten() for q in DEV]).mean())
 print(f"[data] {len(pairs)} training pairs (trajectory 0 held out for evaluation); typical coarse displacement = {DISP_SCALE:.5f}, "
@@ -441,7 +450,7 @@ for it in pbar:
     ti, k = sel[:, 0], sel[:, 1]
     p = TRAJ[ti, k]
     v = (p - TRAJ[ti, k - 1]) / dt_coarse
-    a = ACCS[ti, k]
+    a = ACCS[ti, k] if USE_A else None
     if args.noise > 0:
         # GNS-style: perturb the position, move the velocity consistently, and
         # take the target to the TRUE next position -- so the network is taught
