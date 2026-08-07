@@ -165,12 +165,17 @@ REF = torch.stack(ref)
 p = REF[1].clone()
 v = (REF[1] - REF[0]) / dt
 gp = sc.skin(p, sc.pos.clone())
-frames_n, err = [], []
+frames_n, err, moved = [], [], []
 for i in tqdm(range(len(frames_e)), desc="network", ncols=90):
     fr = frame(gp)
     frames_n.append(dots(fr, project(sc.undo(p)), [255, 120, 0]) if args.show_anchors else fr)
     k = min(i + 1, REF.shape[0] - 1)
     err.append((p - REF[k])[~fixed].norm(dim=-1).mean().item())
+    # how far the network has actually moved the anchors from rest. A model that
+    # simply stops predicting motion scores well on the error above -- the
+    # reference oscillates back through its start, so "frozen" is never far from
+    # it -- and that has to be visible rather than inferred.
+    moved.append((p - AC)[~fixed].norm(dim=-1).max().item())
     a = sc.elastic_accel(p, gp)
     du = net(p, v, a, dt)
     du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
@@ -182,11 +187,17 @@ for i in tqdm(range(len(frames_e)), desc="network", ncols=90):
     gp = sc.skin(p, gp)
 
 span = (REF - AC).norm(dim=-1).max().item()
+ref_moved = [(REF[min(i + 1, REF.shape[0] - 1)] - AC)[~fixed].norm(dim=-1).max().item()
+             for i in range(len(err))]
 print(f"\n[rollout] reference peak anchor displacement = {span:.5f}")
-print(f"  {'frame':>6} {'mean anchor err':>16} {'% of reference motion':>22}")
+print(f"  {'frame':>6} {'err':>10} {'% of ref':>10} {'net moved':>11} {'ref moved':>11} {'ratio':>7}")
 n = len(err)
 for i in range(0, n, max(1, n // 12)):
-    print(f"  {i:6d} {err[i]:16.5f} {100 * err[i] / span:21.2f}%")
+    r = moved[i] / max(ref_moved[i], 1e-12)
+    print(f"  {i:6d} {err[i]:10.5f} {100*err[i]/span:9.2f}% {moved[i]:11.5f} "
+          f"{ref_moved[i]:11.5f} {r:7.2f}")
+print(f"[motion] peak displacement: network {max(moved):.5f} vs reference {span:.5f} "
+      f"({100*max(moved)/span:.1f}%)")
 
 import imageio
 os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
