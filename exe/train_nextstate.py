@@ -91,6 +91,24 @@ ap.add_argument("--ckpt_every", type=int, default=2000,
                  help="write a resumable checkpoint this often. These instances stop on an "
                       "idle watchdog and can be reclaimed at any time; a run that can only "
                       "save at the end loses everything when that happens.")
+ap.add_argument("--stream_len", type=int, default=0,
+                 help="if set, training data is this many coarse steps of a CONTINUOUS run "
+                      "with impulses arriving along the way, instead of n_traj separate runs "
+                      "from rest. Every trajectory from rest explores the same narrow set of "
+                      "states -- what one impulse reaches before it decays -- and the later "
+                      "steps of all of them are near rest. A running object that keeps being "
+                      "hit reaches configurations no single impulse produces, which is where "
+                      "every run so far fails.")
+ap.add_argument("--n_stream", type=int, default=4,
+                 help="how many such runs, so consecutive samples in a batch are not all from "
+                      "the same stretch of one history")
+ap.add_argument("--impulse_every", type=int, default=20,
+                 help="mean coarse steps between impulses, jittered by half")
+ap.add_argument("--stream_amp_cap", type=float, default=3.0,
+                 help="skip an impulse while the object is already displaced more than this "
+                      "many times the config impulse's peak. Impulses land on top of each "
+                      "other by design, and the shape-matching fit degrades once the local "
+                      "neighbourhoods are far from their rest arrangement.")
 ap.add_argument("--frozen_weights", action="store_true",
                  help="hold the blend weights at their canonical values. Without this the "
                       "simulator is not a function of its state -- the same anchors and "
@@ -129,6 +147,9 @@ torch.manual_seed(0)
 sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev,
                         frozen_weights=args.frozen_weights)
 USE_A = not args.no_accel
+# in stream mode the from-rest trajectories are only there to be held out, so
+# only the held-out ones are worth generating
+N_TRAJ = args.n_holdout if args.stream_len > 0 else args.n_traj
 AC, M, fixed = sc.anchor_canonical, sc.M, sc.fixed_mask
 print(f"[setup] N={sc.N} M={M} pinned={int(fixed.sum())} "
       f"coarse dt={args.dt_mult * sc.sub_dt} ({args.dt_mult} substeps)")
@@ -166,17 +187,51 @@ def trajectory(force):
     return torch.stack(ps), torch.stack(accs)
 
 
+def stream(n_steps, cap):
+    """one continuous run, impulses arriving along the way.
+
+    Returns (positions, accelerations, contaminated) where contaminated[k] marks
+    a step whose target carries an impulse the inputs cannot see: the kick lands
+    between p_k and p_{k+1}, so no function of (p_k, v_k, a_k) reaches the
+    answer. One sample per impulse, dropped. Every later step is fine -- by then
+    the kick is in the positions, and the velocity is read off them.
+    """
+    p, v = AC.clone(), torch.zeros(M, 3, device=dev)
+    gp = sc.pos.clone()
+    ps, acc, bad = [p.clone()], [sc.elastic_accel(p, gp)], []
+    due = 0
+    for k in range(n_steps):
+        fired = False
+        if k >= due and base_force is not None:
+            amp = (p - AC)[~fixed].norm(dim=-1).max().item()
+            if amp < cap:
+                s = 0.5 * (args.impulse_range ** torch.rand(1, device=dev, generator=gen).item())
+                s = s if args.impulse_range > 1 else 1.0
+                v = v + sc.impulse_dv((rand_rot() @ base_force) * s)
+                fired = True
+            jitter = 0.5 + torch.rand(1, device=dev, generator=gen).item()
+            due = k + max(1, int(round(args.impulse_every * jitter)))
+        bad.append(fired)
+        p, v, gp = sc.explicit_step(p, v, gp, args.dt_mult)
+        if not torch.isfinite(p).all():
+            print(f"  [stream] diverged at step {k}, truncating", flush=True)
+            bad.pop()
+            break
+        ps.append(p.clone()); acc.append(sc.elastic_accel(p, gp))
+    return torch.stack(ps), torch.stack(acc), torch.tensor(bad, device=dev)
+
+
 trajs, accs = [], []
 if args.traj_cache and os.path.exists(args.traj_cache):
     blob = torch.load(args.traj_cache, map_location=dev, weights_only=False)
     trajs, accs = blob["trajs"], blob["accs"]
     print(f"[data] {len(trajs)} trajectories from {args.traj_cache}")
-if len(trajs) < args.n_traj:
-    print(f"[data] collecting {args.n_traj - len(trajs)} more trajectories "
+if len(trajs) < N_TRAJ:
+    print(f"[data] collecting {N_TRAJ - len(trajs)} more trajectories "
           f"x {args.n_steps} coarse steps...")
     # the generator is advanced once per trajectory, so extending a cache
     # reproduces exactly the trajectories a fresh run of this size would give
-    for t in range(args.n_traj):
+    for t in range(N_TRAJ):
         if t == 0 or base_force is None:
             f = base_force
         else:
@@ -187,12 +242,12 @@ if len(trajs) < args.n_traj:
             continue
         ps, ac_ = trajectory(f)
         trajs.append(ps); accs.append(ac_)
-        if (t + 1) % 25 == 0 or t + 1 == args.n_traj:
-            print(f"  {t + 1}/{args.n_traj}", flush=True)
+        if (t + 1) % 25 == 0 or t + 1 == N_TRAJ:
+            print(f"  {t + 1}/{N_TRAJ}", flush=True)
     if args.traj_cache:
         torch.save({"trajs": trajs, "accs": accs}, args.traj_cache)
         print(f"[data] cached to {args.traj_cache}")
-trajs, accs = trajs[:args.n_traj], accs[:args.n_traj]
+trajs, accs = trajs[:N_TRAJ], accs[:N_TRAJ]
 # trajectory 0 is the config's own impulse and is HELD OUT: it is the rollout
 # every run is scored on, so leaving it in the training set turns that score into
 # a memorisation test. It also silently biases any comparison across dataset
@@ -202,22 +257,52 @@ trajs, accs = trajs[:args.n_traj], accs[:args.n_traj]
 # the first n_holdout trajectories are HELD OUT. Trajectory 0 is the config's own
 # impulse and is the headline rollout; the rest are there because one 59-step
 # chain is a very noisy number (see --n_holdout).
-HOLD = min(args.n_holdout, len(trajs) - 1)
+# in stream mode the training data is elsewhere, so every from-rest trajectory
+# can be held out; in classic mode at least one has to be left to train on
+HOLD = args.n_holdout if args.stream_len > 0 else min(args.n_holdout, len(trajs) - 1)
 REF, REF_A = trajs[0], accs[0]
 # one tensor, indexed on the GPU: building a batch out of a python list of
 # slices was ~50 separate microsecond-scale ops per iteration, and at this model
 # size that launch overhead is what the GPU waits on rather than the arithmetic
 n_min = min(t.shape[0] for t in trajs)
-TRAJ = torch.stack([t[:n_min] for t in trajs])          # [n_traj, T, M, 3]
-ACCS = torch.stack([a[:n_min] for a in accs])
-IDX = torch.tensor([(ti, k) for ti in range(HOLD, TRAJ.shape[0])
-                    for k in range(1, n_min - 1)], device=dev)
+# the held-out trajectories stay what they always were -- from rest, one
+# impulse each -- so the rollout number remains comparable across every run in
+# this project, whatever the training data was drawn from
+HTRAJ = torch.stack([t[:n_min] for t in trajs[:HOLD]])
+HACCS = torch.stack([a[:n_min] for a in accs[:HOLD]])
+
+if args.stream_len > 0:
+    cap = args.stream_amp_cap * (trajs[0] - AC).norm(dim=-1).max().item()
+    print(f"[data] {args.n_stream} continuous runs x {args.stream_len} coarse steps, "
+          f"an impulse every ~{args.impulse_every}, skipped above "
+          f"{cap:.4f} of displacement", flush=True)
+    st, sa, sb = [], [], []
+    for i in range(args.n_stream):
+        a_, b_, c_ = stream(args.stream_len, cap)
+        st.append(a_); sa.append(b_); sb.append(c_)
+        peak = (a_ - AC)[:, ~fixed].norm(dim=-1).max().item()
+        print(f"  {i + 1}/{args.n_stream}: {a_.shape[0]} steps, "
+              f"{int(c_.sum())} impulses, peak displacement {peak:.4f}", flush=True)
+    s_min = min(t.shape[0] for t in st)
+    TRAJ = torch.stack([t[:s_min] for t in st])
+    ACCS = torch.stack([a[:s_min] for a in sa])
+    BAD = torch.stack([b[:s_min] for b in sb])
+    IDX = torch.tensor([(ti, k) for ti in range(TRAJ.shape[0])
+                        for k in range(1, s_min - 1) if not bool(BAD[ti, k])], device=dev)
+    print(f"[data] {int(BAD.sum())} samples dropped as impulse-contaminated")
+else:
+    TRAJ = torch.stack([t[:n_min] for t in trajs])       # [n_traj, T, M, 3]
+    ACCS = torch.stack([a[:n_min] for a in accs])
+    IDX = torch.tensor([(ti, k) for ti in range(HOLD, TRAJ.shape[0])
+                        for k in range(1, n_min - 1)], device=dev)
 pairs = IDX
 dt_coarse = args.dt_mult * sc.sub_dt
-DISP = [tr[1:] - tr[:-1] for tr in trajs]
+SRC = [TRAJ[i] for i in range(TRAJ.shape[0])] if args.stream_len > 0 else trajs
+SRC_A = [ACCS[i] for i in range(ACCS.shape[0])] if args.stream_len > 0 else accs
+DISP = [tr[1:] - tr[:-1] for tr in SRC]
 DISP_SCALE = float(torch.cat([d.norm(dim=-1).flatten() for d in DISP]).mean())
 VEL_SCALE = DISP_SCALE / dt_coarse
-ACC_SCALE = float(torch.cat([a.norm(dim=-1).flatten() for a in accs]).mean())
+ACC_SCALE = float(torch.cat([a.norm(dim=-1).flatten() for a in SRC_A]).mean())
 DEV = [d[1:] - d[:-1] for d in DISP]
 DEV_SCALE = float(torch.cat([q.norm(dim=-1).flatten() for q in DEV]).mean())
 print(f"[data] {len(pairs)} training pairs (trajectory 0 held out for evaluation); typical coarse displacement = {DISP_SCALE:.5f}, "
@@ -273,7 +358,7 @@ def rollout(frames, ref=None):
 
 @torch.no_grad()
 def rollout_error(frames, which=0):
-    r = TRAJ[which]
+    r = HTRAJ[which]
     got = rollout(frames, r)
     n = min(got.shape[0], r.shape[0] - 1)
     ref = r[1:1 + n]

@@ -59,12 +59,21 @@ class Scene:
                 if bc["type"] == "particle_impulse":
                     force = torch.tensor(bc["force"], device=dev)
         if force is not None:
-            w = self.sim._weights(self.pos, self.anchor_canonical) * self.keep.unsqueeze(-1)
-            wsum = torch.zeros(self.M, device=dev).index_add_(
-                0, self.sim.nn_idx.reshape(-1), w.reshape(-1))
-            v = v + (wsum.unsqueeze(-1) * force.unsqueeze(0) * self.sub_dt) / self.mass.unsqueeze(-1)
+            v = v + self.impulse_dv(force)
         v[self.fixed_mask] = 0
         return v
+
+    def impulse_dv(self, force):
+        """Velocity an impulse adds, per anchor. Separate from initial_velocity
+        so the same kick can be delivered part-way through a run: the P2G
+        weights are taken at the canonical configuration, so the momentum a
+        given force deposits does not depend on where the object currently is,
+        and a mid-run impulse means the same thing as the one at t=0."""
+        w = self.sim._weights(self.pos, self.anchor_canonical) * self.keep.unsqueeze(-1)
+        wsum = torch.zeros(self.M, device=self.pos.device).index_add_(
+            0, self.sim.nn_idx.reshape(-1), w.reshape(-1))
+        dv = (wsum.unsqueeze(-1) * force.unsqueeze(0) * self.sub_dt) / self.mass.unsqueeze(-1)
+        return torch.where(self.fixed_mask.unsqueeze(-1), torch.zeros_like(dv), dv)
 
     def explicit_step(self, p, v, gp, n=1):
         """n explicit substeps; returns (p, v, gaussian_pos)."""
