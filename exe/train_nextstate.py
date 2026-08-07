@@ -91,6 +91,19 @@ ap.add_argument("--ckpt_every", type=int, default=2000,
                  help="write a resumable checkpoint this often. These instances stop on an "
                       "idle watchdog and can be reclaimed at any time; a run that can only "
                       "save at the end loses everything when that happens.")
+ap.add_argument("--frozen_weights", action="store_true",
+                 help="hold the blend weights at their canonical values. Without this the "
+                      "simulator is not a function of its state -- the same anchors and "
+                      "velocities step differently depending on the cloud the weights were "
+                      "read from -- so part of the target is not determined by the inputs and "
+                      "no network can fit it. Costs 0.24%% of peak motion at ficus's own "
+                      "impulse, 1.4%% at three times it.")
+ap.add_argument("--no_accel", action="store_true",
+                 help="drop the elastic acceleration from the network's input. Under frozen "
+                      "weights it is a function of the positions, so this measures what the "
+                      "physics feature is worth as computation rather than as information -- "
+                      "and removes both the force evaluation and the per-step skinning from "
+                      "the rollout, since the cloud exists only to evaluate the force against.")
 ap.add_argument("--reset_best", action="store_true",
                  help="forget the resumed run's best score. The rollout measure changed when it "
                       "started penalising a rollout for motion it fails to produce, so a score "
@@ -113,7 +126,9 @@ args = ap.parse_args()
 
 dev = "cuda"
 torch.manual_seed(0)
-sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev)
+sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev,
+                        frozen_weights=args.frozen_weights)
+USE_A = not args.no_accel
 AC, M, fixed = sc.anchor_canonical, sc.M, sc.fixed_mask
 print(f"[setup] N={sc.N} M={M} pinned={int(fixed.sum())} "
       f"coarse dt={args.dt_mult * sc.sub_dt} ({args.dt_mult} substeps)")
@@ -220,7 +235,7 @@ print(f"[data] reference peak anchor displacement = "
       f"{(REF - AC).norm(dim=-1).max().item():.5f}")
 
 net = NextStep(args.hidden, args.depth, args.heads, DISP_SCALE, VEL_SCALE,
-                ACC_SCALE, args.zero_init).to(dev)
+                ACC_SCALE, args.zero_init, use_accel=USE_A).to(dev)
 opt = torch.optim.Adam(net.parameters(), lr=args.lr, fused=True)
 if args.compile:
     net = torch.compile(net)
@@ -241,14 +256,17 @@ def rollout(frames, ref=None):
     gp = sc.skin(p, sc.pos.clone())
     out = [p.clone()]
     for _ in range(frames):
-        a = sc.elastic_accel(p, gp)
+        # without the acceleration input there is nothing to evaluate a force
+        # against, so the cloud is never skinned during the rollout either
+        a = sc.elastic_accel(p, gp) if USE_A else None
         du = net(p, v, a, dt_coarse)
         du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
         p = p + du
         v = du / dt_coarse
         if not torch.isfinite(p).all():
             break
-        gp = sc.skin(p, gp)
+        if USE_A:
+            gp = sc.skin(p, gp)
         out.append(p.clone())
     return torch.stack(out)
 
@@ -352,8 +370,9 @@ for it in pbar:
         # force does not belong to its positions, which is exactly the train/
         # rollout mismatch that sank the previous line of work: in rollout `a` is
         # always the force at wherever the network currently is.
-        a = torch.stack([sc.elastic_accel(p[b], sc.skin(p[b], sc.pos.clone()))
-                         for b in range(p.shape[0])])
+        if USE_A:
+            a = torch.stack([sc.elastic_accel(p[b], sc.skin(p[b], sc.pos.clone()))
+                             for b in range(p.shape[0])])
     target = TRAJ[ti, k + 1] - p
     du = net(p, v, a, dt_coarse)
     du = torch.where(fixed.view(1, -1, 1), torch.zeros_like(du), du)

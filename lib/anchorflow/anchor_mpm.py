@@ -125,12 +125,34 @@ class AnchorElasticSim:
         # all K neighbors meaningfully weighted.
         self.radius = float(dist2.clamp(min=0).sqrt().mean()) if radius is None else float(radius)
         self.radius = max(self.radius, 1e-8)
+        self.frozen_w = None          # see freeze_weights()
+
+    def freeze_weights(self, on=True):
+        """Hold the blend weights at their canonical values from now on.
+
+        With the lagged weights the step is not a function of the state -- the
+        same anchor positions and velocities go different places depending on
+        the cloud the weights were read from. Freezing makes the Gaussian
+        positions, and hence the elastic acceleration, functions of the anchor
+        positions alone, which is what a learned stepper needs its target to
+        be. Costs 0.24% of peak motion over 60 coarse steps at ficus's own
+        impulse, 1.4% at three times it."""
+        self.frozen_w = (self._canonical_weights() if on else None)
+        return self
+
+    def _canonical_weights(self):
+        nbr = self.anchor_nbr
+        d2 = ((self.gaussian_canonical.unsqueeze(1) - nbr) ** 2).sum(-1)
+        w = torch.exp(-d2 / (2.0 * self.radius ** 2)) + 1e-8
+        return (w / w.sum(dim=-1, keepdim=True)).contiguous()
 
     def _weights(self, gaussian_pos_prev, anchor_pos):
         """RBF kernel between each Gaussian's LAST-STEP position and its
         (fixed) candidate anchors' CURRENT positions -- recomputed every
         step, see module docstring for why this is both correct and cheap.
         gaussian_pos_prev [N,3], anchor_pos [M,3] -> w [N,K] (sums to 1)."""
+        if self.frozen_w is not None:
+            return self.frozen_w
         nbr_cur = anchor_pos[self.nn_idx]                            # [N,K,3]
         d2 = ((gaussian_pos_prev.unsqueeze(1) - nbr_cur) ** 2).sum(-1)  # [N,K]
         w = torch.exp(-d2 / (2.0 * self.radius ** 2)) + 1e-8
@@ -234,7 +256,7 @@ class AnchorElasticSim:
             f_elastic, gaussian_pos, F, _psi = fused_energy_force(
                 self.gaussian_canonical, gaussian_pos_prev, anchor_pos,
                 self.anchor_canonical, self.nn_idx, gaussian_volume,
-                self.radius, mu, lam)
+                self.radius, mu, lam, w_in=self.frozen_w)
         else:
             anchor_pos = anchor_pos.detach().requires_grad_(True)
             E, F, gaussian_pos = self.elastic_energy(

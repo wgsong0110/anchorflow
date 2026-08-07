@@ -103,7 +103,11 @@ class Scene:
 
 
 def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cuda",
-          sh_degree=3):
+          sh_degree=3, frozen_weights=False):
+    """frozen_weights holds the blend weights at their canonical values, which
+    makes the step a function of the anchor positions and velocities alone --
+    see AnchorElasticSim.freeze_weights. Without it the simulator is
+    path-dependent and no learned stepper can fit it exactly."""
     from scene.gaussian_model import GaussianModel
 
     dev = device
@@ -156,6 +160,8 @@ def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cud
     radius = AnchorElasticSim(pm, ac, K=K).radius
     sim = AnchorElasticSim(pos, ac, K=K, radius=radius)
     w0 = sim._weights(pos, ac)
+    if frozen_weights:
+        sim.freeze_weights()
     mass = torch.zeros(M, device=dev).index_add_(
         0, sim.nn_idx.reshape(-1), ((dens * volume).unsqueeze(-1) * w0).reshape(-1)).clamp(min=1e-12)
 

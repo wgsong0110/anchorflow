@@ -159,6 +159,7 @@ __global__ void anchorstep_forward_kernel(
     const float* __restrict__ volume,               // [N]
     const float* __restrict__ mu_p,   // [N] per-particle Lame mu
     const float* __restrict__ lam_p,  // [N] per-particle Lame lambda
+    const float* __restrict__ w_in,   // [N,K] or nullptr -- see below
     float radius, int N, int K, float eig_floor_frac,
     int stage,   // profiling only. 1=stop after weights+A/B (no eigh);
                  // 2=+shape-match eigh (F built); 25=+polar eigh ONLY (R in
@@ -184,13 +185,29 @@ __global__ void anchorstep_forward_kernel(
   const long* idx = nn_idx + (long)n * K;
   float w[MAX_K];
   float wsum = 0.f;
-  float gx = gaussian_pos_prev[n * 3], gy = gaussian_pos_prev[n * 3 + 1], gz = gaussian_pos_prev[n * 3 + 2];
-  float inv_2r2 = 1.0f / (2.0f * radius * radius);
-  for (int k = 0; k < K; ++k) {
-    long a = idx[k];
-    float dx = gx - anchor_pos[a * 3], dy = gy - anchor_pos[a * 3 + 1], dz = gz - anchor_pos[a * 3 + 2];
-    w[k] = expf(-(dx * dx + dy * dy + dz * dz) * inv_2r2) + 1e-8f;
-    wsum += w[k];
+  if (w_in != nullptr) {
+    // Caller-supplied weights. The RBF above reads each Gaussian's position
+    // from the PREVIOUS step, which makes the whole simulator path-dependent:
+    // the same anchors and velocities step differently depending on how they
+    // got there, so the map a learned stepper is asked to fit is not a
+    // function of its inputs. Passing weights computed once from the canonical
+    // configuration removes that -- the Gaussian positions, and hence the
+    // elastic acceleration, become functions of the anchor positions alone.
+    // It is a different discretisation, worth 0.24% of peak motion over 60
+    // coarse steps at ficus's own impulse and 1.4% at three times it.
+    for (int k = 0; k < K; ++k) {
+      w[k] = w_in[(long)n * K + k];
+      wsum += w[k];
+    }
+  } else {
+    float gx = gaussian_pos_prev[n * 3], gy = gaussian_pos_prev[n * 3 + 1], gz = gaussian_pos_prev[n * 3 + 2];
+    float inv_2r2 = 1.0f / (2.0f * radius * radius);
+    for (int k = 0; k < K; ++k) {
+      long a = idx[k];
+      float dx = gx - anchor_pos[a * 3], dy = gy - anchor_pos[a * 3 + 1], dz = gz - anchor_pos[a * 3 + 2];
+      w[k] = expf(-(dx * dx + dy * dy + dz * dz) * inv_2r2) + 1e-8f;
+      wsum += w[k];
+    }
   }
   float rc[3] = {0.f, 0.f, 0.f}, cc[3] = {0.f, 0.f, 0.f};
   for (int k = 0; k < K; ++k) {
@@ -373,11 +390,19 @@ std::vector<torch::Tensor> anchorstep_forward(
     torch::Tensor gaussian_canonical, torch::Tensor gaussian_pos_prev,
     torch::Tensor anchor_pos, torch::Tensor anchor_rest, torch::Tensor nn_idx,
     torch::Tensor volume, torch::Tensor mu_p, torch::Tensor lam_p,
-    double radius, double eig_floor_frac, int64_t stage) {
+    double radius, double eig_floor_frac, int64_t stage, torch::Tensor w_in) {
   CHECK_CUDA(anchor_pos);
   int N = gaussian_canonical.size(0);
   int K = nn_idx.size(1);
   TORCH_CHECK(K <= MAX_K, "K must be <= ", MAX_K);
+  const float* w_in_ptr = nullptr;
+  torch::Tensor w_in_c;
+  if (w_in.defined() && w_in.numel() > 0) {
+    TORCH_CHECK(w_in.size(0) == N && w_in.size(1) == K,
+                "w_in must be [N,K], got ", w_in.sizes());
+    w_in_c = w_in.contiguous();
+    w_in_ptr = w_in_c.data_ptr<float>();
+  }
   auto opt = anchor_pos.options();
   auto out_w = torch::empty({N, K}, opt);
   auto out_F = torch::empty({N, 9}, opt);
@@ -394,6 +419,7 @@ std::vector<torch::Tensor> anchorstep_forward(
       nn_idx.contiguous().data_ptr<long>(),
       volume.contiguous().data_ptr<float>(),
       mu_p.contiguous().data_ptr<float>(), lam_p.contiguous().data_ptr<float>(),
+      w_in_ptr,
       (float)radius, N, K, (float)eig_floor_frac, (int)stage,
       out_w.data_ptr<float>(),
       out_F.data_ptr<float>(), out_pos.data_ptr<float>(), out_psi.data_ptr<float>(),
@@ -406,6 +432,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("gaussian_canonical"), pybind11::arg("gaussian_pos_prev"),
         pybind11::arg("anchor_pos"), pybind11::arg("anchor_rest"), pybind11::arg("nn_idx"),
         pybind11::arg("volume"), pybind11::arg("mu_p"), pybind11::arg("lam_p"),
-        pybind11::arg("radius"), pybind11::arg("eig_floor_frac"), pybind11::arg("stage") = 3);
+        pybind11::arg("radius"), pybind11::arg("eig_floor_frac"), pybind11::arg("stage") = 3,
+        pybind11::arg("w_in") = torch::Tensor());
   m.def("backward_gather", &anchorstep_backward_gather, "Analytic anchor force backward, contention-free CSR gather (CUDA)");
 }

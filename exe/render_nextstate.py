@@ -49,12 +49,15 @@ dev = "cuda"
 torch.set_grad_enabled(False)
 ck = torch.load(args.ckpt, map_location=dev, weights_only=False)
 targs = ck["args"]
-sc = scene_setup.build(args.ply, args.config, targs["n_anchors"], targs["K"], device=dev)
+sc = scene_setup.build(args.ply, args.config, targs["n_anchors"], targs["K"], device=dev,
+                        frozen_weights=targs.get("frozen_weights", False))
+USE_A = not targs.get("no_accel", False)
 AC, fixed = sc.anchor_canonical, sc.fixed_mask
 dt = targs["dt_mult"] * sc.sub_dt
 
 net = NextStep(targs["hidden"], targs["depth"], targs["heads"],
-                ck["disp_scale"], ck["vel_scale"], ck["acc_scale"]).to(dev)
+                ck["disp_scale"], ck["vel_scale"], ck["acc_scale"],
+                use_accel=USE_A).to(dev)
 net.load_state_dict(ck["model"]); net.eval()
 print(f"[cfg] {targs['dt_mult']} substeps/step, {targs['n_traj']} training trajectories, "
       f"noise {targs.get('noise', 0)}")
@@ -176,7 +179,7 @@ for i in tqdm(range(len(frames_e)), desc="network", ncols=90):
     # reference oscillates back through its start, so "frozen" is never far from
     # it -- and that has to be visible rather than inferred.
     moved.append((p - AC)[~fixed].norm(dim=-1).max().item())
-    a = sc.elastic_accel(p, gp)
+    a = sc.elastic_accel(p, gp) if USE_A else None
     du = net(p, v, a, dt)
     du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
     p = p + du

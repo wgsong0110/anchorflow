@@ -153,7 +153,7 @@ class NextStep(nn.Module):
     """
 
     def __init__(self, hidden=128, depth=4, heads=4, scale=1.0, vel_scale=1.0,
-                  acc_scale=1.0, zero_init=False):
+                  acc_scale=1.0, zero_init=False, use_accel=True):
         super().__init__()
         # The whole displacement, never du = v*dt + correction. Adding the
         # inertial part as a skip makes the rollout's velocity an accumulator,
@@ -166,7 +166,17 @@ class NextStep(nn.Module):
         self.scale = scale
         self.vel_scale = vel_scale
         self.acc_scale = acc_scale
-        self.node_enc = mlp([3 + 3 + 3, hidden, hidden])   # p, v, a
+        # With the blend weights frozen at canonical the elastic acceleration is
+        # a function of the anchor positions alone, so as INFORMATION it is
+        # redundant with p. It is kept because it is expensive information: the
+        # map p -> a runs shape matching, a polar decomposition and a stress
+        # evaluation over 203,930 Gaussians, and asking attention over 512
+        # anchors to rediscover that from data is a different proposition from
+        # asking it to read a channel. use_accel=False measures the difference,
+        # and also removes the per-step skinning from the rollout, since the
+        # cloud exists only to evaluate the acceleration against.
+        self.use_accel = use_accel
+        self.node_enc = mlp([3 + 3 + (3 if use_accel else 0), hidden, hidden])
         self.bias = GeoAttentionBias(heads)
         self.blocks = nn.ModuleList(GeoAttentionBlock(hidden, heads) for _ in range(depth))
         self.film = DtFiLM(hidden, depth + 1)
@@ -191,7 +201,10 @@ class NextStep(nn.Module):
         squeeze = (p.dim() == 2)
         if squeeze:
             p, v, a = p.unsqueeze(0), v.unsqueeze(0), a.unsqueeze(0)
-        h = self.node_enc(torch.cat([p, v / self.vel_scale, a / self.acc_scale], -1))
+        feats = [p, v / self.vel_scale]
+        if self.use_accel:
+            feats.append(a / self.acc_scale)
+        h = self.node_enc(torch.cat(feats, -1))
         gamma, beta = self.film(dt, p.device)
         h = gamma[0] * h + beta[0]
         bias = self.bias(p)

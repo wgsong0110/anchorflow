@@ -49,7 +49,7 @@ def build_csr(nn_idx, M):
 
 def fused_energy_force(gaussian_canonical, gaussian_pos_prev, anchor_pos,
                         anchor_rest, nn_idx, volume, radius, mu, lam,
-                        eig_floor_frac=0.2):
+                        eig_floor_frac=0.2, w_in=None):
     """One fused physics evaluation. All tensors float32 CUDA.
 
     mu/lam may be scalars OR per-particle [N] tensors: PhysGaussian scenes set
@@ -61,7 +61,13 @@ def fused_energy_force(gaussian_canonical, gaussian_pos_prev, anchor_pos,
     psi [N]). Weights are frozen w.r.t. differentiation (the torch reference
     differentiates through them too, but they're built from LAGGED gaussian
     positions and act as a per-step discretization choice -- verify script
-    quantifies the difference)."""
+    quantifies the difference).
+
+    w_in [N,K] replaces the RBF weights the kernel would otherwise build from
+    gaussian_pos_prev. Supplying weights computed once from the canonical
+    configuration makes the whole step a function of anchor_pos alone: the lag
+    is what makes the simulator path-dependent, and a learned stepper cannot
+    fit a target that its inputs do not determine."""
     N = gaussian_canonical.shape[0]
     if not torch.is_tensor(mu):
         mu = torch.full((N,), float(mu), device=gaussian_canonical.device, dtype=torch.float32)
@@ -70,7 +76,8 @@ def fused_energy_force(gaussian_canonical, gaussian_pos_prev, anchor_pos,
     mu = mu.contiguous().float(); lam = lam.contiguous().float()
     w, F, pos, psi, G, c = _fwd(
         gaussian_canonical, gaussian_pos_prev, anchor_pos, anchor_rest,
-        nn_idx, volume, mu, lam, float(radius), float(eig_floor_frac))
+        nn_idx, volume, mu, lam, float(radius), float(eig_floor_frac), 3,
+        w_in if w_in is not None else torch.Tensor())
     M = anchor_rest.shape[0]
     off, gid, slot = build_csr(nn_idx, M)
     grad = _bwd_gather(anchor_rest, volume, w, G, c, off, gid, slot,

@@ -33,10 +33,13 @@ dev = "cuda"
 torch.set_grad_enabled(False)
 ck = torch.load(args.ckpt, map_location=dev, weights_only=False)
 targs = ck["args"]
-sc = scene_setup.build(args.ply, args.config, targs["n_anchors"], targs["K"], device=dev)
+sc = scene_setup.build(args.ply, args.config, targs["n_anchors"], targs["K"], device=dev,
+                        frozen_weights=targs.get("frozen_weights", False))
+USE_A = not targs.get("no_accel", False)
 dt = targs["dt_mult"] * sc.sub_dt
 net = NextStep(targs["hidden"], targs["depth"], targs["heads"],
-                ck["disp_scale"], ck["vel_scale"], ck["acc_scale"]).to(dev)
+                ck["disp_scale"], ck["vel_scale"], ck["acc_scale"],
+                use_accel=USE_A).to(dev)
 net.load_state_dict(ck["model"]); net.eval()
 print(f"[setup] {torch.cuda.get_device_name(0)}  M={sc.M} N={sc.N}  "
       f"coarse step = {targs['dt_mult']} substeps")
@@ -70,7 +73,7 @@ def accel():
 
 
 def forward():
-    net(p, v_c, sc.elastic_accel(p, gp), dt)
+    net(p, v_c, sc.elastic_accel(p, gp) if USE_A else None, dt)
 
 
 def skin():
@@ -78,10 +81,14 @@ def skin():
 
 
 def learned():
-    a = sc.elastic_accel(p, gp)
+    # without the acceleration input neither the force nor the skinning is on
+    # the rollout's critical path: the cloud exists to evaluate the force
+    # against, and is otherwise only needed when a frame is actually drawn
+    a = sc.elastic_accel(p, gp) if USE_A else None
     du = net(p, v_c, a, dt)
     q = p + du
-    sc.skin(q, gp)
+    if USE_A:
+        sc.skin(q, gp)
 
 
 ms_e = timeit(explicit)
