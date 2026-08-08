@@ -208,6 +208,7 @@ for path in paths:
         ev, fi, am = score(net, use_a, REF)
         row[kind] = (stats(ev), stats(fi), stats(am))
         row[kind + "_raw"] = ev          # per trajectory, for the paired test
+        row[kind + "_amp"] = am
     rows.append(row)
     print(f"  scored {row['name']}", flush=True)
 
@@ -245,21 +246,24 @@ if len(rows) > 1:
 
 if args.per_traj:
     for kind in SETS:
-        print(f"\n[per trajectory] {kind}, all-frame error (%)")
+        print(f"\n[per trajectory] {kind}: all-frame error % / amplitude % of the "
+              f"reference's")
         print(f"  {'traj':>5}", end="")
         for r in rows:
-            print(f" {r['name'][:14]:>15}", end="")
+            print(f" | {r['name'][:18]:>18}", end="")
         print()
         n = len(rows[0][kind + "_raw"])
         order = sorted(range(n), key=lambda i: -rows[0][kind + "_raw"][i])
         for i in order:
             print(f"  {i:>5}", end="")
             for r in rows:
-                v = 100 * r[kind + "_raw"][i]
-                print(f" {v:14.2f}{'*' if v > 100 else ' '}", end="")
+                e, a = 100 * r[kind + "_raw"][i], 100 * r[kind + "_amp"][i]
+                # over 150% of the reference's own motion is not an inaccurate
+                # rollout, it is one that ran away
+                print(f" | {e:9.2f} {a:6.0f}{'!' if a > 150 else ' '}", end="")
             print()
-        print(f"  (sorted by {rows[0]['name']}, worst first; * = worse than the "
-              f"reference's own motion)")
+        print(f"  (sorted by {rows[0]['name']}, worst first; ! = moved more than "
+              f"1.5x the reference)")
 
 print(f"\n[note] +- is the spread ACROSS trajectories, which is also roughly the "
       f"uncertainty\n       on a mean of five of them -- the training loop's number.")
