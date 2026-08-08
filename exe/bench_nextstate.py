@@ -92,16 +92,23 @@ def learned():
 
 
 ms_e = timeit(explicit)
-ms_a = timeit(accel)
+ms_a = timeit(accel) if USE_A else 0.0
+# forward() only evaluates the acceleration when the network takes it, so
+# subtracting it unconditionally charged the no-accel path for work it never
+# did and made the parts add up to more than the whole
 ms_f = timeit(forward) - ms_a
-ms_s = timeit(skin)
+ms_s = timeit(skin) if USE_A else 0.0
 ms_l = timeit(learned)
 
 print(f"\n{'':>34} {'ms':>8} {'share':>8}")
 print(f"{'explicit substeps (the baseline)':>34} {ms_e:8.3f}")
 print(f"{'  network forward':>34} {ms_f:8.3f} {100*ms_f/ms_l:7.1f}%")
-print(f"{'  elastic acceleration (input)':>34} {ms_a:8.3f} {100*ms_a/ms_l:7.1f}%")
-print(f"{'  skinning (cloud for next step)':>34} {ms_s:8.3f} {100*ms_s/ms_l:7.1f}%")
+if USE_A:
+    print(f"{'  elastic acceleration (input)':>34} {ms_a:8.3f} {100*ms_a/ms_l:7.1f}%")
+    print(f"{'  skinning (cloud for next step)':>34} {ms_s:8.3f} {100*ms_s/ms_l:7.1f}%")
+else:
+    print(f"{'  (no acceleration input, so no':>34}")
+    print(f"{'   force and no skinning per step)':>34}")
 print(f"{'one learned step (total)':>34} {ms_l:8.3f}")
 print(f"\n[speedup] {ms_e / ms_l:.2f}x over the substeps it replaces")
 print(f"[note] the learned step also needs the skinning the explicit path does "
