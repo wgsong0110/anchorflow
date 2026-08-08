@@ -160,8 +160,11 @@ def score(net, use_a, REF):
 def stats(v):
     t = torch.tensor(v)
     # the spread over trajectories is what the single number was hiding: it is
-    # also roughly the uncertainty on the mean of five of them
-    return t.mean().item(), t.std().item(), t.max().item()
+    # also roughly the uncertainty on the mean of five of them. The median is
+    # here because the field set is heavy-tailed -- one checkpoint scored 790%
+    # with a spread of 2500, which is a few diverging rollouts rather than a
+    # uniformly bad model, and a mean cannot tell those apart.
+    return t.mean().item(), t.std().item(), t.median().item()
 
 
 rows = []
@@ -176,21 +179,41 @@ for path in paths:
     for kind, REF in SETS.items():
         ev, fi, am = score(net, use_a, REF)
         row[kind] = (stats(ev), stats(fi), stats(am))
+        row[kind + "_raw"] = ev          # per trajectory, for the paired test
     rows.append(row)
     print(f"  scored {row['name']}", flush=True)
 
 print(f"\n{'checkpoint':>22} {'iter':>7}", end="")
 for kind in SETS:
-    print(f" | {kind + ' all-frame':>17} {'final':>14} {'amp':>6}", end="")
+    print(f" | {kind + ' mean':>15} {'median':>8} {'final':>8} {'amp':>6}", end="")
 print()
-print("-" * (30 + 42 * len(SETS)))
+print("-" * (31 + 42 * len(SETS)))
 for r in rows:
     print(f"{r['name']:>22} {r['iter']:>7}", end="")
     for kind in SETS:
-        (em, es, _), (fm, fs, _), (am, _, _) = r[kind]
-        print(f" | {100*em:7.2f}% +-{100*es:5.2f} {100*fm:7.2f}% +-{100*fs:5.2f} "
+        (em, es, emd), (fm, _, _), (am, _, _) = r[kind]
+        print(f" | {100*em:6.2f}% +-{100*es:5.2f} {100*emd:7.2f}% {100*fm:7.2f}% "
               f"{100*am:5.0f}%", end="")
     print()
+
+# Every checkpoint saw the same trajectories, so the difference can be taken per
+# trajectory instead of between two independently noisy averages. On a 0.46 point
+# gap with a 2.4 point spread across trajectories, that is the difference between
+# a result and nothing.
+if len(rows) > 1:
+    for kind in SETS:
+        print(f"\n[paired] {kind}, all-frame, each row minus {rows[0]['name']}")
+        print(f"  {'checkpoint':>22} {'mean diff':>11} {'+- s.e.':>9} {'sigma':>7} "
+              f"{'better on':>10}")
+        base = torch.tensor(rows[0][kind + "_raw"])
+        for r in rows[1:]:
+            d = torch.tensor(r[kind + "_raw"]) - base
+            se = (d.std() / (len(d) ** 0.5)).item()
+            m = d.mean().item()
+            wins = int((d < 0).sum())
+            sig = abs(m) / se if se > 1e-12 else float("inf")
+            print(f"  {r['name']:>22} {100*m:10.2f}% {100*se:8.2f} {sig:7.1f} "
+                  f"{wins:>4}/{len(d)}")
 
 print(f"\n[note] +- is the spread ACROSS trajectories, which is also roughly the "
       f"uncertainty\n       on a mean of five of them -- the training loop's number.")
