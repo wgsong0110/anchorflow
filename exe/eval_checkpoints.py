@@ -138,6 +138,8 @@ if args.ref_cache and os.path.exists(args.ref_cache):
             and blob.get("n_field", 0) >= args.n_field):
         SETS = {k: v[:args.n_uniform if k == "uniform" else args.n_field]
                 for k, v in blob["sets"].items()}
+        # asking for none of a set should drop it, not carry an empty one
+        SETS = {k: v for k, v in SETS.items() if v.shape[0] > 0}
         print(f"[ref] {args.ref_cache}: " +
               ", ".join(f"{k} {v.shape[0]}x{v.shape[1]}" for k, v in SETS.items()))
     else:
