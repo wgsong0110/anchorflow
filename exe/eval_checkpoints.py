@@ -52,6 +52,10 @@ ap.add_argument("--dt_mult", type=int, default=40)
 ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--impulse_range", type=float, default=4.0)
+ap.add_argument("--per_traj", action="store_true",
+                 help="list every trajectory rather than only the summary. The field set is "
+                      "heavy-tailed -- the mean is carried by a few rollouts running away -- "
+                      "so which ones those are is the question the summary cannot answer.")
 ap.add_argument("--ref_cache", default=None,
                  help="where to keep the held-out trajectories. They are regenerated per "
                       "invocation otherwise, and the force kernel accumulates with atomicAdd, "
@@ -236,6 +240,24 @@ if len(rows) > 1:
             sig = abs(m) / se if se > 1e-12 else float("inf")
             print(f"  {r['name']:>22} {100*m:10.2f}% {100*se:8.2f} {sig:7.1f} "
                   f"{wins:>4}/{len(d)}")
+
+if args.per_traj:
+    for kind in SETS:
+        print(f"\n[per trajectory] {kind}, all-frame error (%)")
+        print(f"  {'traj':>5}", end="")
+        for r in rows:
+            print(f" {r['name'][:14]:>15}", end="")
+        print()
+        n = len(rows[0][kind + "_raw"])
+        order = sorted(range(n), key=lambda i: -rows[0][kind + "_raw"][i])
+        for i in order:
+            print(f"  {i:>5}", end="")
+            for r in rows:
+                v = 100 * r[kind + "_raw"][i]
+                print(f" {v:14.2f}{'*' if v > 100 else ' '}", end="")
+            print()
+        print(f"  (sorted by {rows[0]['name']}, worst first; * = worse than the "
+              f"reference's own motion)")
 
 print(f"\n[note] +- is the spread ACROSS trajectories, which is also roughly the "
       f"uncertainty\n       on a mean of five of them -- the training loop's number.")
