@@ -34,6 +34,11 @@ ap.add_argument("--height", type=int, default=600)
 ap.add_argument("--fov_x", type=float, default=0.6911112070083618)
 ap.add_argument("--radius_scale", type=float, default=1.5)
 ap.add_argument("--show_anchors", action="store_true")
+ap.add_argument("--field", action="store_true",
+                 help="render one of the force-field held-out trajectories rather than a "
+                      "uniform-impulse one. The uniform set only shows how the network "
+                      "handles being shoved; being poked is a different question and the "
+                      "answer is a different number.")
 ap.add_argument("--traj", type=int, default=0,
                  help="which held-out trajectory to render. 0 is the config's own impulse; "
                       "the others are the randomised ones the training script generates, and "
@@ -131,6 +136,14 @@ def impulse_for(k):
     for bc in sc.cfg.get("boundary_conditions", []):
         if bc["type"] == "particle_impulse":
             base = torch.tensor(bc["force"], device=dev)
+    if args.field and base is not None:
+        from anchorflow.streams import draw_impulse
+        gen = torch.Generator(device=dev); gen.manual_seed(5678)
+        f = sig = None
+        for _ in range(k + 1):
+            f, sig = draw_impulse(sc, base, gen, float(targs.get("impulse_range", 4.0)),
+                                   field=True)
+        return f, sig
     if k == 0 or base is None:
         return base, 1.0
     gen = torch.Generator(device=dev); gen.manual_seed(1234)
@@ -148,8 +161,13 @@ def impulse_for(k):
 
 
 force, strength = impulse_for(args.traj)
-print(f"[traj] {args.traj}: impulse {['%.4f' % x for x in force.tolist()]} "
-      f"(strength {strength:.2f}x the config's)")
+if args.field:
+    print(f"[traj] field {args.traj}: correlation length {strength:.4f} "
+          f"({strength / sc.sim.radius:.1f} anchor spacings, "
+          f"{100 * strength / sc.extent:.0f}% of the object)")
+else:
+    print(f"[traj] {args.traj}: impulse {['%.4f' % x for x in force.tolist()]} "
+          f"(strength {strength:.2f}x the config's)")
 
 # ---- the explicit reference, sampled at the coarse step ----
 p_e, v_e = AC.clone(), sc.initial_velocity(force)

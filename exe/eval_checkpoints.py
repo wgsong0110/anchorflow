@@ -52,6 +52,12 @@ ap.add_argument("--dt_mult", type=int, default=40)
 ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--impulse_range", type=float, default=4.0)
+ap.add_argument("--ref_cache", default=None,
+                 help="where to keep the held-out trajectories. They are regenerated per "
+                      "invocation otherwise, and the force kernel accumulates with atomicAdd, "
+                      "so the same seed gives trajectories that differ by ~0.002%% -- "
+                      "irrelevant until a rollout diverges, where it moved one checkpoint's "
+                      "field score from 28.21%% to 20.09%% between two runs of this script.")
 args = ap.parse_args()
 
 dev = "cuda"
@@ -121,10 +127,26 @@ def build_set(n, field):
 
 
 SETS = {}
-if args.n_uniform > 0:
-    SETS["uniform"] = build_set(args.n_uniform, False)
-if args.n_field > 0 and base_force is not None:
-    SETS["field"] = build_set(args.n_field, True)
+if args.ref_cache and os.path.exists(args.ref_cache):
+    blob = torch.load(args.ref_cache, map_location=dev, weights_only=False)
+    if (blob.get("frozen") == frozen and blob.get("frames") == args.frames
+            and blob.get("n_uniform", 0) >= args.n_uniform
+            and blob.get("n_field", 0) >= args.n_field):
+        SETS = {k: v[:args.n_uniform if k == "uniform" else args.n_field]
+                for k, v in blob["sets"].items()}
+        print(f"[ref] {args.ref_cache}: " +
+              ", ".join(f"{k} {v.shape[0]}x{v.shape[1]}" for k, v in SETS.items()))
+    else:
+        print(f"[ref] {args.ref_cache} does not match this request; rebuilding")
+if not SETS:
+    if args.n_uniform > 0:
+        SETS["uniform"] = build_set(args.n_uniform, False)
+    if args.n_field > 0 and base_force is not None:
+        SETS["field"] = build_set(args.n_field, True)
+    if args.ref_cache:
+        torch.save({"sets": SETS, "frozen": frozen, "frames": args.frames,
+                     "n_uniform": args.n_uniform, "n_field": args.n_field}, args.ref_cache)
+        print(f"[ref] cached to {args.ref_cache}")
 
 
 def score(net, use_a, REF):
