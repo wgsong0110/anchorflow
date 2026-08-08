@@ -136,6 +136,11 @@ ap.add_argument("--no_accel", action="store_true",
                       "physics feature is worth as computation rather than as information -- "
                       "and removes both the force evaluation and the per-step skinning from "
                       "the rollout, since the cloud exists only to evaluate the force against.")
+ap.add_argument("--seed", type=int, default=0,
+                 help="seeds the model's initialisation, the batch order and the injected "
+                      "noise -- but NOT the trajectories, which stay on their own generator "
+                      "so two seeds see identical data. What separates a failure that belongs "
+                      "to the method from one that belongs to the run.")
 ap.add_argument("--reset_best", action="store_true",
                  help="forget the resumed run's best score. The rollout measure changed when it "
                       "started penalising a rollout for motion it fails to produce, so a score "
@@ -157,7 +162,7 @@ ap.add_argument("--resume", default=None,
 args = ap.parse_args()
 
 dev = "cuda"
-torch.manual_seed(0)
+torch.manual_seed(args.seed)
 sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev,
                         frozen_weights=args.frozen_weights)
 USE_A = not args.no_accel
@@ -455,6 +460,9 @@ sched = None
 if args.cosine:
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=args.iters - start_it + 1, eta_min=args.lr * 1e-2)
+# the trajectories are drawn by now, so the generator can move off the seed they
+# were built on without changing them
+gen.manual_seed(1234 + 7919 * args.seed)
 pbar = tqdm(range(start_it, args.iters + 1), desc="train", ncols=105, initial=start_it - 1,
              total=args.iters)
 for it in pbar:
