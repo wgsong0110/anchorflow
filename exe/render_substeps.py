@@ -34,8 +34,8 @@ ap.add_argument("--coarse_dt", type=float, default=4e-3)
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--K", type=int, default=8)
-ap.add_argument("--width", type=int, default=440)
-ap.add_argument("--height", type=int, default=440)
+ap.add_argument("--width", type=int, default=460)
+ap.add_argument("--height", type=int, default=460)
 ap.add_argument("--fov_x", type=float, default=0.6911112070083618)
 ap.add_argument("--radius_scale", type=float, default=1.5)
 ap.add_argument("--show_anchors", action="store_true")
@@ -145,28 +145,32 @@ for n in args.substeps:
     sc.sub_dt = args.coarse_dt / n
     sc.damping = D_REF ** (1.0 / n)
     p, v, gp = AC.clone(), V0.clone(), sc.pos.clone()
-    frames, died = [], None
+    frames, died, died_amp = [], None, None
     last = None
     for k in tqdm(range(args.frames + 1), desc=f"{n} substeps", ncols=90):
+        amp = (p - AC)[~fixed].norm(dim=-1).max().item() if died is None else None
         if died is None:
             fr = frame(gp)
             if args.show_anchors:
                 fr = dots(fr, project(sc.undo(p)), [255, 120, 0])
             last = fr
-            amp = (p - AC)[~fixed].norm(dim=-1).max().item()
             # a panel that has left the scene entirely is as dead as one that
             # produced a NaN, and holding its last sane frame is more legible
             # than watching it fill the viewport
             if amp > 20 * 0.12194:
-                died = k
-        frames.append(label(last.copy(), f"{n} substeps  dt={args.coarse_dt / n:.1e}"
-                            + (f"   DIVERGED at frame {died}" if died is not None else ""),
-                            died is not None))
+                died, died_amp = k, amp
+        # the displacement goes in the label because a panel that died at frame 2
+        # is frozen on a picture of an object that has barely moved, which reads
+        # as "nothing happened" rather than "this blew up a frame later"
+        txt = f"{n} substeps  dt={args.coarse_dt / n:.1e}   "
+        txt += (f"displacement {amp:.3e}" if died is None
+                else f"DIVERGED at frame {died}, displacement {died_amp:.2e}")
+        frames.append(label(last.copy(), txt, died is not None))
         if died is not None:
             continue
         p, v, gp = sc.explicit_step(p, v, gp, n)
         if not torch.isfinite(p).all():
-            died = k + 1
+            died, died_amp = k + 1, float("inf")
     panels[n] = frames
     print(f"  {n} substeps: " + (f"diverged at frame {died}" if died is not None
                                   else "survived"))
