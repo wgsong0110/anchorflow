@@ -77,12 +77,29 @@ print(f"[setup] {args.frames} coarse steps of {args.coarse_dt:g}; the project's 
       f"ground truth is {int(args.coarse_dt / sc.sub_dt)} substeps")
 
 
+# Two things in the simulator are written per substep rather than per unit time,
+# and both would otherwise change with the substep count and swamp what is being
+# measured:
+#   * the impulse is deposited as force * sub_dt, so a finer substep injects less
+#     momentum -- a first attempt at this sweep had the 320-substep reference
+#     moving 10x less than the config's impulse actually produces, and every
+#     "error" in the table was really a different initial condition;
+#   * damping multiplies the velocity once per substep, so the survival over a
+#     coarse step is damping^n_sub.
+# The impulse is therefore taken once at the project's own substep, and the
+# damping is re-exponentiated so the loss per coarse step is the same at every n.
+V0 = sc.initial_velocity(force)
+D_REF = sc.damping ** int(args.coarse_dt / sc.sub_dt)
+print(f"[setup] impulse fixed at the {int(args.coarse_dt / sc.sub_dt)}-substep value "
+      f"(|v0| max {V0.norm(dim=-1).max():.4f}); damping held at {D_REF:.6f} per coarse step")
+
+
 def run(n_sub):
     """n_sub explicit substeps per coarse step, same total time"""
-    sub = args.coarse_dt / n_sub
-    old = sc.sub_dt
-    sc.sub_dt = sub
-    p, v, gp = AC.clone(), sc.initial_velocity(force), sc.pos.clone()
+    old_dt, old_damp = sc.sub_dt, sc.damping
+    sc.sub_dt = args.coarse_dt / n_sub
+    sc.damping = D_REF ** (1.0 / n_sub)
+    p, v, gp = AC.clone(), V0.clone(), sc.pos.clone()
     ps, ok = [p.clone()], True
     for _ in range(args.frames):
         p, v, gp = sc.explicit_step(p, v, gp, n_sub)
@@ -90,15 +107,15 @@ def run(n_sub):
             ok = False
             break
         ps.append(p.clone())
-    sc.sub_dt = old
+    sc.sub_dt, sc.damping = old_dt, old_damp
     return torch.stack(ps), ok
 
 
 def timeit(n_sub):
-    sub = args.coarse_dt / n_sub
-    old = sc.sub_dt
-    sc.sub_dt = sub
-    p, v, gp = AC.clone(), sc.initial_velocity(force), sc.pos.clone()
+    old_dt, old_damp = sc.sub_dt, sc.damping
+    sc.sub_dt = args.coarse_dt / n_sub
+    sc.damping = D_REF ** (1.0 / n_sub)
+    p, v, gp = AC.clone(), V0.clone(), sc.pos.clone()
     for _ in range(2):
         sc.explicit_step(p.clone(), v.clone(), gp.clone(), n_sub)
     torch.cuda.synchronize()
@@ -107,7 +124,7 @@ def timeit(n_sub):
     for _ in range(args.repeat):
         sc.explicit_step(p.clone(), v.clone(), gp.clone(), n_sub)
     e1.record(); torch.cuda.synchronize()
-    sc.sub_dt = old
+    sc.sub_dt, sc.damping = old_dt, old_damp
     return e0.elapsed_time(e1) / args.repeat
 
 
