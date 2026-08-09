@@ -113,6 +113,16 @@ ap.add_argument("--field", action="store_true",
                       "has seen tells bending one branch apart from shoving all of it. The "
                       "correlation length is drawn log-uniformly from the anchor spacing to "
                       "the object's size, so the uniform push is one end of the range.")
+ap.add_argument("--rollout_steps", type=int, default=1,
+                 help="train on this many consecutive predicted steps, with the network fed "
+                      "its own output in between and the gradient carried through all of "
+                      "them. At 1 this is what the project has always done: fit one step from "
+                      "a state on the true trajectory. That loss never sees a rollout, so the "
+                      "failure mode it produces -- error accumulating until the state is "
+                      "somewhere training never went, then a runaway -- is invisible to it. "
+                      "This is the covariate shift behavioural cloning is known for, and "
+                      "unrolling the loss is the cheap half of the standard answer (the other "
+                      "half being to relabel the states the policy actually visits).")
 ap.add_argument("--target_amp", action="store_true",
                  help="draw a target peak displacement for each training trajectory and scale "
                       "the force to reach it, instead of drawing a force strength. Strength "
@@ -369,13 +379,15 @@ if args.stream_len > 0:
     ACCS = torch.stack([a[:s_min] for a in sa]) if USE_A else None
     BAD = torch.stack([b[:s_min] for b in sb])
     IDX = torch.tensor([(ti, k) for ti in range(TRAJ.shape[0])
-                        for k in range(1, s_min - 1) if not bool(BAD[ti, k])], device=dev)
+                        for k in range(1, s_min - args.rollout_steps)
+                        if not any(bool(BAD[ti, k + j]) for j in range(args.rollout_steps))],
+                        device=dev)
     print(f"[data] {int(BAD.sum())} samples dropped as impulse-contaminated")
 else:
     TRAJ = torch.stack([t[:n_min] for t in trajs])       # [n_traj, T, M, 3]
     ACCS = torch.stack([a[:n_min] for a in accs]) if USE_A else None
     IDX = torch.tensor([(ti, k) for ti in range(HOLD, TRAJ.shape[0])
-                        for k in range(1, n_min - 1)], device=dev)
+                        for k in range(1, n_min - args.rollout_steps)], device=dev)
 pairs = IDX
 dt_coarse = args.dt_mult * sc.sub_dt
 SRC = [TRAJ[i] for i in range(TRAJ.shape[0])] if args.stream_len > 0 else trajs
@@ -542,14 +554,32 @@ for it in pbar:
         if USE_A:
             a = torch.stack([sc.elastic_accel(p[b], sc.skin(p[b], sc.pos.clone()))
                              for b in range(p.shape[0])])
-    target = TRAJ[ti, k + 1] - p
-    du = net(p, v, a, dt_coarse)
-    du = torch.where(fixed.view(1, -1, 1), torch.zeros_like(du), du)
-    # in units of the typical displacement. The raw-unit loss was ~5e-6, which
-    # put the gradient reaching the decoder output at ~1e-9 -- the same order as
-    # Adam's epsilon, so the term that is supposed to make Adam scale-invariant
-    # was throttling it instead.
-    loss = (((du - target) / DISP_SCALE) ** 2).mean()
+    # Unrolled: the network is fed its own output and scored against the true
+    # trajectory at every step, with the gradient carried through the chain. At
+    # rollout_steps=1 the two forms are identical -- p + du against TRAJ[k+1] is
+    # the same as du against TRAJ[k+1] - p -- so nothing changes by default.
+    #
+    # The scale matters here as it did before: the raw-unit loss was ~5e-6, which
+    # put the gradient reaching the decoder output at ~1e-9, the same order as
+    # Adam's epsilon, so the term meant to make Adam scale-invariant throttled it.
+    loss = 0.0
+    for j in range(args.rollout_steps):
+        du = net(p, v, a, dt_coarse)
+        du = torch.where(fixed.view(1, -1, 1), torch.zeros_like(du), du)
+        p = p + du
+        v = du / dt_coarse
+        loss = loss + (((p - TRAJ[ti, k + 1 + j]) / DISP_SCALE) ** 2).mean()
+        if USE_A and j + 1 < args.rollout_steps:
+            # the force belongs to wherever the network has got to, and is an
+            # input rather than something to differentiate through -- the same
+            # convention the single-step path uses for the perturbed state
+            with torch.no_grad():
+                a = torch.stack([sc.elastic_accel(p[b].detach(),
+                                                   sc.skin(p[b].detach(), sc.pos.clone()))
+                                 for b in range(p.shape[0])])
+    loss = loss / args.rollout_steps
+    du = p - TRAJ[ti, k]          # what the whole chain moved, for the report
+    target = TRAJ[ti, k + args.rollout_steps] - TRAJ[ti, k]
     opt.zero_grad(set_to_none=True)
     loss.backward()
     torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
