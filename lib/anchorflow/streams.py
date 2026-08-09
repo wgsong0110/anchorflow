@@ -45,6 +45,24 @@ def draw_impulse(sc, base_force, gen, impulse_range=4.0, field=False,
     return sc.random_force_field(gen, sigma, base_force.norm().item() * s), sigma
 
 
+def draw_field_shape(sc, gen, sigma_lo=None, sigma_hi=None):
+    """A unit-RMS force field and the correlation length it was drawn at.
+
+    Separated from the magnitude because the two are not independent in effect:
+    the RMS normalisation makes a localised field move the object much less than
+    a spread one of the same nominal strength, so drawing strength and length
+    independently produces almost nothing that is both localised and large. In
+    120 training trajectories that corner held 2, and the one held-out rollout
+    that runs away sits 10% past the largest localised trajectory trained on.
+    """
+    dev = sc.anchor_canonical.device
+    lo = sigma_lo if sigma_lo is not None else sc.sim.radius
+    hi = sigma_hi if sigma_hi is not None else sc.extent
+    u = torch.rand(1, device=dev, generator=gen).item()
+    sigma = lo * ((hi / lo) ** u)
+    return sc.random_force_field(gen, sigma, 1.0), sigma
+
+
 def stream(sc, n_steps, dt_mult, base_force, gen, cap, impulse_every=20,
            impulse_range=4.0, keep_accel=True, on_step=None, field=False,
            sigma_lo=None, sigma_hi=None):

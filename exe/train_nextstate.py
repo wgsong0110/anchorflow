@@ -27,7 +27,7 @@ from tqdm import tqdm
 
 from anchorflow import scene_setup
 from anchorflow.nextstate import NextStep
-from anchorflow.streams import stream as _stream, draw_impulse
+from anchorflow.streams import stream as _stream, draw_impulse, draw_field_shape
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -113,6 +113,21 @@ ap.add_argument("--field", action="store_true",
                       "has seen tells bending one branch apart from shoving all of it. The "
                       "correlation length is drawn log-uniformly from the anchor spacing to "
                       "the object's size, so the uniform push is one end of the range.")
+ap.add_argument("--target_amp", action="store_true",
+                 help="draw a target peak displacement for each training trajectory and scale "
+                      "the force to reach it, instead of drawing a force strength. Strength "
+                      "and correlation length are otherwise independent, and the RMS "
+                      "normalisation makes a localised field move the object far less, so the "
+                      "corner that is both localised and large held 2 of 120 trajectories -- "
+                      "and the one held-out rollout that runs away sits 10%% past the largest "
+                      "localised trajectory trained on. Held-out trajectories are unaffected.")
+ap.add_argument("--amp_lo", type=float, default=0.25)
+ap.add_argument("--amp_hi", type=float, default=2.0,
+                 help="target peak displacement range, as multiples of the config impulse's "
+                      "own peak, drawn log-uniformly")
+ap.add_argument("--calib_steps", type=int, default=25,
+                 help="coarse steps of a probe run used to measure what a unit field actually "
+                      "moves, before rescaling it to the target")
 ap.add_argument("--n_field_holdout", type=int, default=5,
                  help="held-out trajectories driven by a force field, scored separately. "
                       "Without these the change is invisible: the existing held-out set is "
@@ -217,6 +232,32 @@ def stream(n_steps, cap):
                     impulse_every=args.impulse_every, impulse_range=args.impulse_range,
                     field=args.field, keep_accel=USE_A)
 
+def peak_of(force, steps):
+    """how far a force actually moves the object, over a short probe run"""
+    p, v, gp = AC.clone(), sc.initial_velocity(force), sc.pos.clone()
+    peak = 0.0
+    for _ in range(steps):
+        p, v, gp = sc.explicit_step(p, v, gp, args.dt_mult)
+        if not torch.isfinite(p).all():
+            return float("inf")
+        peak = max(peak, (p - AC)[~fixed].norm(dim=-1).max().item())
+    return peak
+
+
+def amplitude_targeted(target):
+    """a field scaled to reach `target` peak displacement, and what it took.
+
+    The force-to-displacement map is close enough to linear at these strains
+    that one probe and a rescale lands near the target; the scale is clamped so
+    a field that barely moves the object cannot ask for an absurd force.
+    """
+    shape, sig = draw_field_shape(sc, gen)
+    m0 = base_force.norm().item()
+    d0 = peak_of(shape * m0, args.calib_steps)
+    k = min(max(target / max(d0, 1e-9), 0.05), 30.0)
+    return shape * m0 * k, sig, d0, k
+
+
 trajs, accs = [], []
 if args.traj_cache and os.path.exists(args.traj_cache):
     blob = torch.load(args.traj_cache, map_location=dev, weights_only=False)
@@ -225,6 +266,7 @@ if args.traj_cache and os.path.exists(args.traj_cache):
         print(f"[data] {args.traj_cache} was written without accelerations; regenerating")
         trajs, accs = [], []
     elif bool(blob.get("field", False)) != bool(args.field) or \
+            bool(blob.get("target_amp", False)) != bool(args.target_amp) or \
             int(blob.get("n_holdout", args.n_holdout)) != args.n_holdout:
         # different impulses -- these are not the trajectories this run wants
         print(f"[data] {args.traj_cache} has field={blob.get('field', False)}, "
@@ -232,6 +274,11 @@ if args.traj_cache and os.path.exists(args.traj_cache):
         trajs, accs = [], []
     else:
         print(f"[data] {len(trajs)} trajectories from {args.traj_cache}")
+REF_PEAK = None
+if args.target_amp and base_force is not None and len(trajs) < N_TRAJ:
+    REF_PEAK = peak_of(base_force, args.n_steps)
+    print(f"[data] the config impulse peaks at {REF_PEAK:.5f}; targets drawn "
+          f"log-uniformly over {args.amp_lo}x to {args.amp_hi}x that", flush=True)
 if len(trajs) < N_TRAJ:
     print(f"[data] collecting {N_TRAJ - len(trajs)} more trajectories "
           f"x {args.n_steps} coarse steps...")
@@ -247,6 +294,13 @@ if len(trajs) < N_TRAJ:
             s = 0.5 * (args.impulse_range ** torch.rand(1, device=dev, generator=gen).item())
             s = s if args.impulse_range > 1 else 1.0
             f = (rand_rot() @ base_force) * s
+        elif args.target_amp:
+            u = torch.rand(1, device=dev, generator=gen).item()
+            tgt = REF_PEAK * (args.amp_lo * ((args.amp_hi / args.amp_lo) ** u))
+            f, sg, d0, k = amplitude_targeted(tgt)
+            if t < args.n_holdout + 3 or (t + 1) % 25 == 0:
+                print(f"    t={t}: sigma {sg / sc.sim.radius:.1f}x spacing, probe moved "
+                      f"{d0:.4f}, scaled {k:.2f}x for target {tgt:.4f}", flush=True)
         else:
             f, _ = draw_impulse(sc, base_force, gen, args.impulse_range, field=True)
         if t < len(trajs):
@@ -257,7 +311,8 @@ if len(trajs) < N_TRAJ:
             print(f"  {t + 1}/{N_TRAJ}", flush=True)
     if args.traj_cache:
         torch.save({"trajs": trajs, "accs": accs, "field": bool(args.field),
-                     "n_holdout": args.n_holdout}, args.traj_cache)
+                     "n_holdout": args.n_holdout,
+                     "target_amp": bool(args.target_amp)}, args.traj_cache)
         print(f"[data] cached to {args.traj_cache}")
 trajs, accs = trajs[:N_TRAJ], accs[:N_TRAJ]
 # trajectory 0 is the config's own impulse and is HELD OUT: it is the rollout
