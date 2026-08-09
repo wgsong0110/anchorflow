@@ -123,6 +123,28 @@ ap.add_argument("--rollout_steps", type=int, default=1,
                       "This is the covariate shift behavioural cloning is known for, and "
                       "unrolling the loss is the cheap half of the standard answer (the other "
                       "half being to relabel the states the policy actually visits).")
+ap.add_argument("--dagger", action="store_true",
+                 help="periodically roll the current network out, and label the states it "
+                      "actually visits by asking the simulator what happens next from there. "
+                      "Unrolling the loss teaches the network to recover from its own error "
+                      "over a few steps; this changes which states it is taught on at all. "
+                      "The expert is available at any state and costs a few milliseconds, "
+                      "which is what makes DAgger cheap here -- and it is well defined only "
+                      "because freezing the blend weights made the step a function of the "
+                      "state. Under the lagged weights, 'what would the simulator do from "
+                      "here' had no answer.")
+ap.add_argument("--dagger_every", type=int, default=5000)
+ap.add_argument("--dagger_traj", type=int, default=8,
+                 help="rollouts per collection round")
+ap.add_argument("--dagger_stride", type=int, default=3,
+                 help="keep every n-th visited state; consecutive ones are nearly the same "
+                      "state and each costs rollout_steps explicit steps to label")
+ap.add_argument("--dagger_frac", type=float, default=0.3,
+                 help="fraction of each batch drawn from collected states")
+ap.add_argument("--dagger_cap", type=float, default=4.0,
+                 help="stop a collection rollout once it is displaced this many times the "
+                      "reference's peak. Past that the shape-matching fit is not something to "
+                      "trust as a label, so the runaway's own tail is not fed back in as truth.")
 ap.add_argument("--target_amp", action="store_true",
                  help="draw a target peak displacement for each training trajectory and scale "
                       "the force to reach it, instead of drawing a force strength. Strength "
@@ -484,6 +506,56 @@ def rollout_score(frames, src=None):
     return err + max(0.0, 1.0 - amp), vals, amp
 
 
+# DAgger pool: states the network itself reached, and what the simulator says
+# happens next from each. Kept as flat tensors so a batch is one index_select.
+POOL = {"p": None, "v": None, "tgt": None}
+
+
+@torch.no_grad()
+def collect_dagger(n_traj, k_steps):
+    """roll the network out, label where it went"""
+    ps, vs, tg = [], [], []
+    cap = args.dagger_cap * (REF - AC).norm(dim=-1).max().item()
+    order = torch.randperm(TRAJ.shape[0] - (0 if args.stream_len > 0 else HOLD),
+                            device=dev)[:n_traj]
+    for oi in order.tolist():
+        ti = oi if args.stream_len > 0 else HOLD + oi
+        r = TRAJ[ti]
+        p = r[1].clone()
+        v = (r[1] - r[0]) / dt_coarse
+        gp = sc.skin(p, sc.pos.clone()) if USE_A else None
+        for step in range(min(args.eval_frames, r.shape[0] - 1)):
+            if (p - AC)[~fixed].norm(dim=-1).max() > cap:
+                break
+            if step % args.dagger_stride == 0:
+                # what the simulator does from exactly here, k_steps of it
+                q, w = p.clone(), v.clone()
+                g2 = sc.skin(q, sc.pos.clone())
+                fut = []
+                for _ in range(k_steps):
+                    q, w, g2 = sc.explicit_step(q, w, g2, args.dt_mult)
+                    if not torch.isfinite(q).all():
+                        break
+                    fut.append(q.clone())
+                if len(fut) == k_steps:
+                    ps.append(p.clone()); vs.append(v.clone()); tg.append(torch.stack(fut))
+            a_ = sc.elastic_accel(p, gp) if USE_A else None
+            du = net(p, v, a_, dt_coarse)
+            du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
+            p = p + du
+            v = du / dt_coarse
+            if not torch.isfinite(p).all():
+                break
+            if USE_A:
+                gp = sc.skin(p, gp)
+    if not ps:
+        return 0
+    add = {"p": torch.stack(ps), "v": torch.stack(vs), "tgt": torch.stack(tg)}
+    for key in POOL:
+        POOL[key] = add[key] if POOL[key] is None else torch.cat([POOL[key], add[key]])
+    return len(ps)
+
+
 hist_log = []
 start_it = 1
 BEST = {"score": float("inf"), "iter": 0}
@@ -533,11 +605,28 @@ gen.manual_seed(1234 + 7919 * args.seed)
 pbar = tqdm(range(start_it, args.iters + 1), desc="train", ncols=105, initial=start_it - 1,
              total=args.iters)
 for it in pbar:
-    sel = IDX[torch.randint(IDX.shape[0], (args.batch,), device=dev)]
+    if args.dagger and (it == 1 or it % args.dagger_every == 0):
+        n_new = collect_dagger(args.dagger_traj, args.rollout_steps)
+        print(f"\n  [dagger] it={it}: +{n_new} states from the network's own rollouts, "
+              f"pool {0 if POOL['p'] is None else POOL['p'].shape[0]}", flush=True)
+    n_pool = 0
+    if args.dagger and POOL["p"] is not None:
+        n_pool = min(int(round(args.batch * args.dagger_frac)), POOL["p"].shape[0])
+    sel = IDX[torch.randint(IDX.shape[0], (args.batch - n_pool,), device=dev)]
     ti, k = sel[:, 0], sel[:, 1]
     p = TRAJ[ti, k]
     v = (p - TRAJ[ti, k - 1]) / dt_coarse
     a = ACCS[ti, k] if USE_A else None
+    # targets for the on-trajectory part, so both sources are scored the same way
+    TG = torch.stack([TRAJ[ti, k + 1 + j] for j in range(args.rollout_steps)], 1)
+    if n_pool:
+        pi = torch.randint(POOL["p"].shape[0], (n_pool,), device=dev)
+        p = torch.cat([p, POOL["p"][pi]])
+        v = torch.cat([v, POOL["v"][pi]])
+        TG = torch.cat([TG, POOL["tgt"][pi]])
+        if USE_A:
+            a = torch.cat([a, torch.stack(
+                [sc.elastic_accel(q, sc.skin(q, sc.pos.clone())) for q in POOL["p"][pi]])])
     if args.noise > 0:
         # GNS-style: perturb the position, move the velocity consistently, and
         # take the target to the TRUE next position -- so the network is taught
@@ -563,12 +652,13 @@ for it in pbar:
     # put the gradient reaching the decoder output at ~1e-9, the same order as
     # Adam's epsilon, so the term meant to make Adam scale-invariant throttled it.
     loss = 0.0
+    P0 = p
     for j in range(args.rollout_steps):
         du = net(p, v, a, dt_coarse)
         du = torch.where(fixed.view(1, -1, 1), torch.zeros_like(du), du)
         p = p + du
         v = du / dt_coarse
-        loss = loss + (((p - TRAJ[ti, k + 1 + j]) / DISP_SCALE) ** 2).mean()
+        loss = loss + (((p - TG[:, j]) / DISP_SCALE) ** 2).mean()
         if USE_A and j + 1 < args.rollout_steps:
             # the force belongs to wherever the network has got to, and is an
             # input rather than something to differentiate through -- the same
@@ -578,8 +668,10 @@ for it in pbar:
                                                    sc.skin(p[b].detach(), sc.pos.clone()))
                                  for b in range(p.shape[0])])
     loss = loss / args.rollout_steps
-    du = p - TRAJ[ti, k]          # what the whole chain moved, for the report
-    target = TRAJ[ti, k + args.rollout_steps] - TRAJ[ti, k]
+    # the reported relative error is over the whole chain: how far it moved
+    # against how far it should have
+    du = p - P0
+    target = TG[:, -1] - P0
     opt.zero_grad(set_to_none=True)
     loss.backward()
     torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
