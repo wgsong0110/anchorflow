@@ -567,6 +567,11 @@ def save(path, it):
                 "dev_scale": DEV_SCALE,
                 "vel_scale": VEL_SCALE, "acc_scale": ACC_SCALE,
                 "best": BEST,
+                # the collected states go in the checkpoint because they are the
+                # expensive part: each one cost the simulator rollout_steps
+                # explicit steps to label, and a resume that dropped them would
+                # quietly restart the run as plain behavioural cloning
+                "dagger_pool": POOL,
                 "rng": torch.get_rng_state(), "cuda_rng": torch.cuda.get_rng_state(),
                 "gen": gen.get_state()}, path)
     if args.r2:
@@ -582,6 +587,11 @@ if args.resume and os.path.exists(args.resume):
     start_it = ck["iter"] + 1
     if not args.reset_best:
         BEST.update(ck.get("best", {}) or {})
+    old_pool = ck.get("dagger_pool") or {}
+    if args.dagger and old_pool.get("p") is not None:
+        for key in POOL:
+            POOL[key] = old_pool[key].to(dev)
+        print(f"[resume] dagger pool restored: {POOL['p'].shape[0]} states")
     torch.set_rng_state(ck["rng"].cpu())
     torch.cuda.set_rng_state(ck["cuda_rng"].cpu())
     gen.set_state(ck["gen"].cpu())
@@ -605,7 +615,9 @@ gen.manual_seed(1234 + 7919 * args.seed)
 pbar = tqdm(range(start_it, args.iters + 1), desc="train", ncols=105, initial=start_it - 1,
              total=args.iters)
 for it in pbar:
-    if args.dagger and (it == 1 or it % args.dagger_every == 0):
+    # also on the first iteration after a resume, so a run that came back with an
+    # empty pool starts refilling immediately rather than at the next multiple
+    if args.dagger and (it == start_it or it % args.dagger_every == 0):
         n_new = collect_dagger(args.dagger_traj, args.rollout_steps)
         print(f"\n  [dagger] it={it}: +{n_new} states from the network's own rollouts, "
               f"pool {0 if POOL['p'] is None else POOL['p'].shape[0]}", flush=True)
