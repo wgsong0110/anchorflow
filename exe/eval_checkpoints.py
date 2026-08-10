@@ -34,7 +34,7 @@ from tqdm import tqdm
 
 from anchorflow import scene_setup
 from anchorflow.nextstate import NextStep
-from anchorflow.streams import rand_rot, draw_impulse
+from anchorflow.streams import rand_rot, draw_impulse, draw_field_shape
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -47,6 +47,15 @@ ap.add_argument("--n_uniform", type=int, default=20,
                       "out, so those numbers stay comparable; the rest are new.")
 ap.add_argument("--n_field", type=int, default=20,
                  help="held-out trajectories driven by a smooth random force field")
+ap.add_argument("--n_poke", type=int, default=0,
+                 help="held-out trajectories driven by a force on ONE REGION of the object, "
+                      "the rest left alone. The fields cover spatial frequency; nothing here "
+                      "covers spatial support, and a push on one part is what an actual "
+                      "interaction with one of these objects is.")
+ap.add_argument("--poke_amp", type=float, default=0.12194,
+                 help="peak displacement to scale each poke to, defaulting to the config "
+                      "impulse's own, so a poke is compared at the amplitude everything else "
+                      "was measured at rather than at whatever a fixed force happens to give")
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--dt_mult", type=int, default=40)
 ap.add_argument("--n_anchors", type=int, default=512)
@@ -110,6 +119,21 @@ def trajectory(force):
     return torch.stack(ps)
 
 
+def build_poke_set(n):
+    """pokes, each rescaled to the same peak displacement as everything else"""
+    gen = torch.Generator(device=dev); gen.manual_seed(31337)
+    out = []
+    for _ in tqdm(range(n), desc="poke", ncols=90):
+        rad = sc.sim.radius * (2.0 ** (1.0 + 2.0 * torch.rand(1, device=dev, generator=gen).item()))
+        f, _, frac = sc.random_poke(gen, rad, base_force.norm().item())
+        probe = trajectory(f)
+        d0 = (probe - AC)[:, ~fixed].norm(dim=-1).max().item()
+        k = min(max(args.poke_amp / max(d0, 1e-9), 0.05), 50.0)
+        out.append(trajectory(f * k))
+    m = min(t.shape[0] for t in out)
+    return torch.stack([t[:m] for t in out])
+
+
 def build_set(n, field):
     """the uniform set reproduces the training script's draw order exactly, so
     its first five trajectories are the ones every run was held out on"""
@@ -135,9 +159,10 @@ if args.ref_cache and os.path.exists(args.ref_cache):
     blob = torch.load(args.ref_cache, map_location=dev, weights_only=False)
     if (blob.get("frozen") == frozen and blob.get("frames") == args.frames
             and blob.get("n_uniform", 0) >= args.n_uniform
-            and blob.get("n_field", 0) >= args.n_field):
-        SETS = {k: v[:args.n_uniform if k == "uniform" else args.n_field]
-                for k, v in blob["sets"].items()}
+            and blob.get("n_field", 0) >= args.n_field
+            and blob.get("n_poke", 0) >= args.n_poke):
+        want = {"uniform": args.n_uniform, "field": args.n_field, "poke": args.n_poke}
+        SETS = {k: v[:want.get(k, 0)] for k, v in blob["sets"].items()}
         # asking for none of a set should drop it, not carry an empty one
         SETS = {k: v for k, v in SETS.items() if v.shape[0] > 0}
         print(f"[ref] {args.ref_cache}: " +
@@ -149,9 +174,12 @@ if not SETS:
         SETS["uniform"] = build_set(args.n_uniform, False)
     if args.n_field > 0 and base_force is not None:
         SETS["field"] = build_set(args.n_field, True)
+    if args.n_poke > 0 and base_force is not None:
+        SETS["poke"] = build_poke_set(args.n_poke)
     if args.ref_cache:
         torch.save({"sets": SETS, "frozen": frozen, "frames": args.frames,
-                     "n_uniform": args.n_uniform, "n_field": args.n_field}, args.ref_cache)
+                     "n_uniform": args.n_uniform, "n_field": args.n_field,
+                     "n_poke": args.n_poke}, args.ref_cache)
         print(f"[ref] cached to {args.ref_cache}")
 
 

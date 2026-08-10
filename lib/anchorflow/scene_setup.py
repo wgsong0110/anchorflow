@@ -122,6 +122,35 @@ class Scene:
         wc = self.sim._canonical_weights()                      # [N,K]
         return (wc.unsqueeze(-1) * f[self.sim.nn_idx]).sum(1)   # [N,3]
 
+    def random_poke(self, gen, radius, magnitude):
+        """A force on one region of the object and nothing else.
+
+        The smooth random fields cover spatial FREQUENCY -- at a short
+        correlation length the whole object is forced, in patches of that size
+        pointing different ways. They do not cover spatial SUPPORT: nothing in
+        any training or held-out set here is a force applied to one part of the
+        object with the rest left alone, which is what an actual interaction
+        with one of these looks like.
+
+        One random material Gaussian is the centre, the window is a Gaussian
+        bump of the given radius rather than a hard edge (a discontinuous force
+        is not something the discretisation handles meaningfully), and the
+        direction is uniform over the region -- so this is a push on a part,
+        not a texture over the whole.
+        """
+        dev = self.pos.device
+        mat = torch.nonzero(self.keep, as_tuple=False).squeeze(-1)
+        c = self.pos[mat[torch.randint(mat.shape[0], (1,), device=dev, generator=gen)]][0]
+        d2 = ((self.pos - c) ** 2).sum(-1)
+        w = torch.exp(-d2 / (2.0 * float(radius) ** 2)) * self.keep.float()
+        q, r = torch.linalg.qr(torch.randn(3, 3, device=dev, generator=gen))
+        q = q * torch.sign(torch.diagonal(r)).unsqueeze(0)
+        if torch.det(q) < 0:
+            q[:, 0] = -q[:, 0]
+        direction = q[:, 0]
+        f = w.unsqueeze(-1) * direction.view(1, 3) * float(magnitude)
+        return f, c, float(w.sum() / self.keep.sum())
+
     @property
     def extent(self):
         a = self.anchor_canonical
