@@ -123,6 +123,18 @@ ap.add_argument("--rollout_steps", type=int, default=1,
                       "This is the covariate shift behavioural cloning is known for, and "
                       "unrolling the loss is the cheap half of the standard answer (the other "
                       "half being to relabel the states the policy actually visits).")
+ap.add_argument("--dt_strides", type=int, nargs="+", default=[1],
+                 help="train at several coarse steps at once by reading the recorded "
+                      "trajectories at these strides. A stride of 2 is a step of twice the "
+                      "duration, taken from the same data. The network already takes dt as a "
+                      "FiLM input and every run so far has used one dt, so that conditioning "
+                      "has never been exercised -- it is currently a constant the network can "
+                      "and does ignore.")
+ap.add_argument("--poke_frac", type=float, default=0.0,
+                 help="fraction of the training trajectories driven by a force on ONE REGION "
+                      "of the object rather than a field over all of it. The fields cover "
+                      "spatial frequency; this covers spatial support, which held-out pokes "
+                      "showed nothing had been trained on.")
 ap.add_argument("--chunk", type=int, default=1,
                  help="emit this many steps from one observation and execute them open-loop. "
                       "The rollout compounds once per time the network is fed its own output, "
@@ -221,6 +233,7 @@ sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev
                         frozen_weights=args.frozen_weights)
 USE_A = not args.no_accel
 HORIZON = args.chunk * args.rollout_steps
+MAXS = max(args.dt_strides)
 # in stream mode the from-rest trajectories are only there to be held out, so
 # only the held-out ones are worth generating
 N_TRAJ = args.n_holdout if args.stream_len > 0 else args.n_traj
@@ -334,6 +347,14 @@ if len(trajs) < N_TRAJ:
             s = 0.5 * (args.impulse_range ** torch.rand(1, device=dev, generator=gen).item())
             s = s if args.impulse_range > 1 else 1.0
             f = (rand_rot() @ base_force) * s
+        elif args.poke_frac > 0 and torch.rand(1, device=dev, generator=gen).item() < args.poke_frac:
+            rad = sc.sim.radius * (2.0 ** (1.0 + 2.0 * torch.rand(1, device=dev, generator=gen).item()))
+            pf, _, _ = sc.random_poke(gen, rad, base_force.norm().item())
+            probe = trajectory(pf)[0]
+            d0 = (probe - AC)[:, ~fixed].norm(dim=-1).max().item()
+            u = torch.rand(1, device=dev, generator=gen).item()
+            tgt = (REF_PEAK or 0.12194) * (0.25 * (8.0 ** u))
+            f = pf * min(max(tgt / max(d0, 1e-9), 0.05), 50.0)
         elif args.target_amp:
             u = torch.rand(1, device=dev, generator=gen).item()
             tgt = REF_PEAK * (args.amp_lo * ((args.amp_hi / args.amp_lo) ** u))
@@ -409,15 +430,15 @@ if args.stream_len > 0:
     ACCS = torch.stack([a[:s_min] for a in sa]) if USE_A else None
     BAD = torch.stack([b[:s_min] for b in sb])
     IDX = torch.tensor([(ti, k) for ti in range(TRAJ.shape[0])
-                        for k in range(1, s_min - HORIZON)
-                        if not any(bool(BAD[ti, k + j]) for j in range(HORIZON))],
+                        for k in range(MAXS, s_min - HORIZON * MAXS)
+                        if not any(bool(BAD[ti, k + j]) for j in range(HORIZON * MAXS))],
                         device=dev)
     print(f"[data] {int(BAD.sum())} samples dropped as impulse-contaminated")
 else:
     TRAJ = torch.stack([t[:n_min] for t in trajs])       # [n_traj, T, M, 3]
     ACCS = torch.stack([a[:n_min] for a in accs]) if USE_A else None
     IDX = torch.tensor([(ti, k) for ti in range(HOLD, TRAJ.shape[0])
-                        for k in range(1, n_min - HORIZON)], device=dev)
+                        for k in range(MAXS, n_min - HORIZON * MAXS)], device=dev)
 pairs = IDX
 dt_coarse = args.dt_mult * sc.sub_dt
 SRC = [TRAJ[i] for i in range(TRAJ.shape[0])] if args.stream_len > 0 else trajs
@@ -638,13 +659,17 @@ for it in pbar:
     n_pool = 0
     if args.dagger and POOL["p"] is not None:
         n_pool = min(int(round(args.batch * args.dagger_frac)), POOL["p"].shape[0])
+    # one stride for the whole batch: the network sees a single dt per step, and
+    # drawing per sample would only complicate the indexing for no extra coverage
+    S = args.dt_strides[torch.randint(len(args.dt_strides), (1,), device=dev).item()]
+    dt_eff = dt_coarse * S
     sel = IDX[torch.randint(IDX.shape[0], (args.batch - n_pool,), device=dev)]
     ti, k = sel[:, 0], sel[:, 1]
     p = TRAJ[ti, k]
-    v = (p - TRAJ[ti, k - 1]) / dt_coarse
+    v = (p - TRAJ[ti, k - S]) / dt_eff
     a = ACCS[ti, k] if USE_A else None
     # targets for the on-trajectory part, so both sources are scored the same way
-    TG = torch.stack([TRAJ[ti, k + 1 + j] for j in range(HORIZON)], 1)
+    TG = torch.stack([TRAJ[ti, k + S * (j + 1)] for j in range(HORIZON)], 1)
     if n_pool:
         pi = torch.randint(POOL["p"].shape[0], (n_pool,), device=dev)
         p = torch.cat([p, POOL["p"][pi]])
@@ -660,7 +685,7 @@ for it in pbar:
         nz = torch.randn(p.shape, device=dev, generator=gen) * (args.noise * DISP_SCALE)
         nz[:, fixed] = 0
         p = p + nz
-        v = v + nz / dt_coarse
+        v = v + nz / dt_eff
         # and the acceleration is re-evaluated at the perturbed configuration.
         # Leaving it at the clean one puts a state in front of the network whose
         # force does not belong to its positions, which is exactly the train/
@@ -681,10 +706,10 @@ for it in pbar:
     P0 = p
     step = 0
     for j in range(args.rollout_steps):
-        for q, d in apply_step(net, p, v, a, dt_coarse, fixed):
+        for q, d in apply_step(net, p, v, a, dt_eff, fixed):
             loss = loss + (((q - TG[:, step]) / DISP_SCALE) ** 2).mean()
             step += 1
-        p, v = q, d / dt_coarse
+        p, v = q, d / dt_eff
         if USE_A and j + 1 < args.rollout_steps:
             # the force belongs to wherever the network has got to, and is an
             # input rather than something to differentiate through -- the same
