@@ -21,7 +21,7 @@ import torch
 from tqdm import tqdm
 
 from anchorflow import scene_setup
-from anchorflow.nextstate import NextStep
+from anchorflow.nextstate import NextStep, apply_step
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -62,7 +62,7 @@ dt = targs["dt_mult"] * sc.sub_dt
 
 net = NextStep(targs["hidden"], targs["depth"], targs["heads"],
                 ck["disp_scale"], ck["vel_scale"], ck["acc_scale"],
-                use_accel=USE_A).to(dev)
+                use_accel=USE_A, chunk=targs.get("chunk", 1)).to(dev)
 net.load_state_dict(ck["model"]); net.eval()
 print(f"[cfg] {targs['dt_mult']} substeps/step, {targs['n_traj']} training trajectories, "
       f"noise {targs.get('noise', 0)}")
@@ -186,7 +186,7 @@ REF = torch.stack(ref)
 p = REF[1].clone()
 v = (REF[1] - REF[0]) / dt
 gp = sc.skin(p, sc.pos.clone())
-frames_n, err, moved = [], [], []
+frames_n, err, moved, PEND = [], [], [], []
 for i in tqdm(range(len(frames_e)), desc="network", ncols=90):
     fr = frame(gp)
     frames_n.append(dots(fr, project(sc.undo(p)), [255, 120, 0]) if args.show_anchors else fr)
@@ -198,10 +198,11 @@ for i in tqdm(range(len(frames_e)), desc="network", ncols=90):
     # it -- and that has to be visible rather than inferred.
     moved.append((p - AC)[~fixed].norm(dim=-1).max().item())
     a = sc.elastic_accel(p, gp) if USE_A else None
-    du = net(p, v, a, dt)
-    du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
-    p = p + du
-    v = du / dt
+    # one call may cover several frames; the panel needs each of them
+    if not PEND:
+        PEND.extend(apply_step(net, p, v, a, dt, fixed))
+    p, d = PEND.pop(0)
+    v = d / dt
     if not torch.isfinite(p).all():
         print(f"[network] NaN at frame {i}")
         break

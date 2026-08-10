@@ -26,7 +26,7 @@ import torch
 from tqdm import tqdm
 
 from anchorflow import scene_setup
-from anchorflow.nextstate import NextStep
+from anchorflow.nextstate import NextStep, apply_step
 from anchorflow.streams import stream as _stream, draw_impulse, draw_field_shape
 
 ap = argparse.ArgumentParser()
@@ -123,6 +123,13 @@ ap.add_argument("--rollout_steps", type=int, default=1,
                       "This is the covariate shift behavioural cloning is known for, and "
                       "unrolling the loss is the cheap half of the standard answer (the other "
                       "half being to relabel the states the policy actually visits).")
+ap.add_argument("--chunk", type=int, default=1,
+                 help="emit this many steps from one observation and execute them open-loop. "
+                      "The rollout compounds once per time the network is fed its own output, "
+                      "so a chunk of K cuts those events by K -- and costs one forward per K "
+                      "steps, which is where the speedup this project is for actually comes "
+                      "from. What it gives up is feedback inside the chunk. The loss horizon "
+                      "becomes chunk * rollout_steps.")
 ap.add_argument("--dagger", action="store_true",
                  help="periodically roll the current network out, and label the states it "
                       "actually visits by asking the simulator what happens next from there. "
@@ -213,6 +220,7 @@ torch.manual_seed(args.seed)
 sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev,
                         frozen_weights=args.frozen_weights)
 USE_A = not args.no_accel
+HORIZON = args.chunk * args.rollout_steps
 # in stream mode the from-rest trajectories are only there to be held out, so
 # only the held-out ones are worth generating
 N_TRAJ = args.n_holdout if args.stream_len > 0 else args.n_traj
@@ -401,15 +409,15 @@ if args.stream_len > 0:
     ACCS = torch.stack([a[:s_min] for a in sa]) if USE_A else None
     BAD = torch.stack([b[:s_min] for b in sb])
     IDX = torch.tensor([(ti, k) for ti in range(TRAJ.shape[0])
-                        for k in range(1, s_min - args.rollout_steps)
-                        if not any(bool(BAD[ti, k + j]) for j in range(args.rollout_steps))],
+                        for k in range(1, s_min - HORIZON)
+                        if not any(bool(BAD[ti, k + j]) for j in range(HORIZON))],
                         device=dev)
     print(f"[data] {int(BAD.sum())} samples dropped as impulse-contaminated")
 else:
     TRAJ = torch.stack([t[:n_min] for t in trajs])       # [n_traj, T, M, 3]
     ACCS = torch.stack([a[:n_min] for a in accs]) if USE_A else None
     IDX = torch.tensor([(ti, k) for ti in range(HOLD, TRAJ.shape[0])
-                        for k in range(1, n_min - args.rollout_steps)], device=dev)
+                        for k in range(1, n_min - HORIZON)], device=dev)
 pairs = IDX
 dt_coarse = args.dt_mult * sc.sub_dt
 SRC = [TRAJ[i] for i in range(TRAJ.shape[0])] if args.stream_len > 0 else trajs
@@ -435,7 +443,7 @@ print(f"[data] reference peak anchor displacement = "
       f"{(REF - AC).norm(dim=-1).max().item():.5f}")
 
 net = NextStep(args.hidden, args.depth, args.heads, DISP_SCALE, VEL_SCALE,
-                ACC_SCALE, args.zero_init, use_accel=USE_A).to(dev)
+                ACC_SCALE, args.zero_init, use_accel=USE_A, chunk=args.chunk).to(dev)
 opt = torch.optim.Adam(net.parameters(), lr=args.lr, fused=True)
 if args.compile:
     net = torch.compile(net)
@@ -455,19 +463,23 @@ def rollout(frames, ref=None):
     v = (ref[1] - ref[0]) / dt_coarse
     gp = sc.skin(p, sc.pos.clone())
     out = [p.clone()]
-    for _ in range(frames):
+    while len(out) <= frames:
         # without the acceleration input there is nothing to evaluate a force
         # against, so the cloud is never skinned during the rollout either
         a = sc.elastic_accel(p, gp) if USE_A else None
-        du = net(p, v, a, dt_coarse)
-        du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
-        p = p + du
-        v = du / dt_coarse
-        if not torch.isfinite(p).all():
+        bad = False
+        for q, d in apply_step(net, p, v, a, dt_coarse, fixed):
+            p, v = q, d / dt_coarse
+            if not torch.isfinite(p).all():
+                bad = True
+                break
+            out.append(p.clone())
+            if len(out) > frames:
+                break
+        if bad:
             break
         if USE_A:
             gp = sc.skin(p, gp)
-        out.append(p.clone())
     return torch.stack(out)
 
 
@@ -618,7 +630,7 @@ for it in pbar:
     # also on the first iteration after a resume, so a run that came back with an
     # empty pool starts refilling immediately rather than at the next multiple
     if args.dagger and (it == start_it or it % args.dagger_every == 0):
-        n_new = collect_dagger(args.dagger_traj, args.rollout_steps)
+        n_new = collect_dagger(args.dagger_traj, HORIZON)
         print(f"\n  [dagger] it={it}: +{n_new} states from the network's own rollouts, "
               f"pool {0 if POOL['p'] is None else POOL['p'].shape[0]}", flush=True)
     n_pool = 0
@@ -630,7 +642,7 @@ for it in pbar:
     v = (p - TRAJ[ti, k - 1]) / dt_coarse
     a = ACCS[ti, k] if USE_A else None
     # targets for the on-trajectory part, so both sources are scored the same way
-    TG = torch.stack([TRAJ[ti, k + 1 + j] for j in range(args.rollout_steps)], 1)
+    TG = torch.stack([TRAJ[ti, k + 1 + j] for j in range(HORIZON)], 1)
     if n_pool:
         pi = torch.randint(POOL["p"].shape[0], (n_pool,), device=dev)
         p = torch.cat([p, POOL["p"][pi]])
@@ -665,12 +677,12 @@ for it in pbar:
     # Adam's epsilon, so the term meant to make Adam scale-invariant throttled it.
     loss = 0.0
     P0 = p
+    step = 0
     for j in range(args.rollout_steps):
-        du = net(p, v, a, dt_coarse)
-        du = torch.where(fixed.view(1, -1, 1), torch.zeros_like(du), du)
-        p = p + du
-        v = du / dt_coarse
-        loss = loss + (((p - TG[:, j]) / DISP_SCALE) ** 2).mean()
+        for q, d in apply_step(net, p, v, a, dt_coarse, fixed):
+            loss = loss + (((q - TG[:, step]) / DISP_SCALE) ** 2).mean()
+            step += 1
+        p, v = q, d / dt_coarse
         if USE_A and j + 1 < args.rollout_steps:
             # the force belongs to wherever the network has got to, and is an
             # input rather than something to differentiate through -- the same
@@ -679,7 +691,7 @@ for it in pbar:
                 a = torch.stack([sc.elastic_accel(p[b].detach(),
                                                    sc.skin(p[b].detach(), sc.pos.clone()))
                                  for b in range(p.shape[0])])
-    loss = loss / args.rollout_steps
+    loss = loss / HORIZON
     # the reported relative error is over the whole chain: how far it moved
     # against how far it should have
     du = p - P0

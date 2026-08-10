@@ -34,7 +34,7 @@ import torch
 from tqdm import tqdm
 
 from anchorflow import scene_setup
-from anchorflow.nextstate import NextStep
+from anchorflow.nextstate import NextStep, apply_step
 from anchorflow.streams import draw_field_shape
 
 ap = argparse.ArgumentParser()
@@ -130,7 +130,8 @@ for path in args.ckpt:
     ta = ck["args"]
     ua = not ta.get("no_accel", False)
     net = NextStep(ta["hidden"], ta["depth"], ta["heads"], ck["disp_scale"],
-                   ck["vel_scale"], ck["acc_scale"], use_accel=ua).to(dev)
+                   ck["vel_scale"], ck["acc_scale"], use_accel=ua,
+                   chunk=ta.get("chunk", 1)).to(dev)
     net.load_state_dict(ck["model"]); net.eval()
     nets.append((os.path.basename(path).replace(".pt", ""), net, ua))
 
@@ -140,15 +141,22 @@ def rollout(net, use_a, r):
     v = (r[1] - r[0]) / dt
     gp = sc.skin(p, sc.pos.clone()) if use_a else None
     errs, amps = [], []
-    for k in range(r.shape[0] - 1):
-        errs.append((p - r[1 + k])[~fixed].norm(dim=-1).mean().item())
-        amps.append((p - AC)[~fixed].norm(dim=-1).max().item())
+    n = r.shape[0] - 1
+    k = 0
+    while k < n:
         a = sc.elastic_accel(p, gp) if use_a else None
-        du = net(p, v, a, dt)
-        du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
-        p = p + du
-        v = du / dt
-        if not torch.isfinite(p).all():
+        bad = False
+        for q, d in apply_step(net, p, v, a, dt, fixed):
+            errs.append((p - r[1 + k])[~fixed].norm(dim=-1).mean().item())
+            amps.append((p - AC)[~fixed].norm(dim=-1).max().item())
+            p, v = q, d / dt
+            k += 1
+            if not torch.isfinite(p).all():
+                bad = True
+                break
+            if k >= n:
+                break
+        if bad:
             break
         if use_a:
             gp = sc.skin(p, gp)

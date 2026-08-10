@@ -135,6 +135,24 @@ class GeoAttentionBlock(nn.Module):
         return x + self.ffn(self.n2(x))
 
 
+def apply_step(net, p, v, a, dt, fixed):
+    """One call to the network, as the list of (position, displacement) it implies.
+
+    A chunked network answers with several steps at once, so every rollout in
+    this project has to iterate over what one call produced rather than assume
+    it is one step.
+    """
+    du = net(p, v, a, dt)
+    if du.dim() == p.dim():
+        du = du.unsqueeze(-2)
+    out, q = [], p
+    for j in range(du.shape[-2]):
+        d = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du[..., j, :]), du[..., j, :])
+        q = q + d
+        out.append((q, d))
+    return out
+
+
 class NextStep(nn.Module):
     """(position, velocity, elastic acceleration) per anchor -> displacement over dt.
 
@@ -153,7 +171,7 @@ class NextStep(nn.Module):
     """
 
     def __init__(self, hidden=128, depth=4, heads=4, scale=1.0, vel_scale=1.0,
-                  acc_scale=1.0, zero_init=False, use_accel=True):
+                  acc_scale=1.0, zero_init=False, use_accel=True, chunk=1):
         super().__init__()
         # The whole displacement, never du = v*dt + correction. Adding the
         # inertial part as a skip makes the rollout's velocity an accumulator,
@@ -176,11 +194,19 @@ class NextStep(nn.Module):
         # and also removes the per-step skinning from the rollout, since the
         # cloud exists only to evaluate the acceleration against.
         self.use_accel = use_accel
+        # Emitting several steps from one observation instead of one. The
+        # rollout's error compounds once per time the network is fed its own
+        # output, so a chunk of K cuts the number of those events by K -- and
+        # costs one forward pass per K steps rather than per step, which is the
+        # whole reason a learned stepper is worth having. What it gives up is
+        # feedback inside the chunk: steps 2..K are open-loop predictions made
+        # before their own starting state exists.
+        self.chunk = chunk
         self.node_enc = mlp([3 + 3 + (3 if use_accel else 0), hidden, hidden])
         self.bias = GeoAttentionBias(heads)
         self.blocks = nn.ModuleList(GeoAttentionBlock(hidden, heads) for _ in range(depth))
         self.film = DtFiLM(hidden, depth + 1)
-        self.dec = mlp([hidden, hidden, 3], layernorm=False)
+        self.dec = mlp([hidden, hidden, 3 * chunk], layernorm=False)
         if zero_init:
             # Inherited from the retired implicit model, where the output was a
             # correction to a Newmark predictor and a zero decoder meant training
@@ -214,4 +240,6 @@ class NextStep(nn.Module):
         for i, blk in enumerate(self.blocks):
             h = blk(gamma[i + 1] * h + beta[i + 1], bias)
         out = self.dec(h) * self.scale
+        if self.chunk > 1:
+            out = out.view(*out.shape[:-1], self.chunk, 3)
         return out.squeeze(0) if squeeze else out

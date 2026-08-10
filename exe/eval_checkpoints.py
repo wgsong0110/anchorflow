@@ -33,7 +33,7 @@ import torch
 from tqdm import tqdm
 
 from anchorflow import scene_setup
-from anchorflow.nextstate import NextStep
+from anchorflow.nextstate import NextStep, apply_step
 from anchorflow.streams import rand_rot, draw_impulse, draw_field_shape
 
 ap = argparse.ArgumentParser()
@@ -193,15 +193,21 @@ def score(net, use_a, REF):
         gp = sc.skin(p, sc.pos.clone()) if use_a else None
         n = r.shape[0] - 1
         errs, moved = [], []
-        for k in range(n):
-            errs.append((p - r[1 + k])[~fixed].norm(dim=-1).mean())
-            moved.append((p - AC)[~fixed].norm(dim=-1).max())
+        k = 0
+        while k < n:
             a = sc.elastic_accel(p, gp) if use_a else None
-            du = net(p, v, a, dt)
-            du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
-            p = p + du
-            v = du / dt
-            if not torch.isfinite(p).all():
+            bad = False
+            for q, d in apply_step(net, p, v, a, dt, fixed):
+                errs.append((p - r[1 + k])[~fixed].norm(dim=-1).mean())
+                moved.append((p - AC)[~fixed].norm(dim=-1).max())
+                p, v = q, d / dt
+                k += 1
+                if not torch.isfinite(p).all():
+                    bad = True
+                    break
+                if k >= n:
+                    break
+            if bad:
                 break
             if use_a:
                 gp = sc.skin(p, gp)
@@ -229,7 +235,8 @@ for path in paths:
     ta = ck["args"]
     use_a = not ta.get("no_accel", False)
     net = NextStep(ta["hidden"], ta["depth"], ta["heads"], ck["disp_scale"],
-                   ck["vel_scale"], ck["acc_scale"], use_accel=use_a).to(dev)
+                   ck["vel_scale"], ck["acc_scale"], use_accel=use_a,
+                   chunk=ta.get("chunk", 1)).to(dev)
     net.load_state_dict(ck["model"]); net.eval()
     row = {"name": os.path.basename(path).replace(".pt", ""), "iter": ck.get("iter", 0)}
     for kind, REF in SETS.items():
