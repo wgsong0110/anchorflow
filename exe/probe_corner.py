@@ -55,6 +55,12 @@ ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--seed", type=int, default=99991)
 ap.add_argument("--calib_steps", type=int, default=25)
+ap.add_argument("--cache", default=None,
+                 help="where to keep the built trajectories. Regenerating them per invocation "
+                      "leaves the same checkpoint scoring 4/8 in one run and 5/8 in the next: "
+                      "the force kernel accumulates with atomicAdd, and a reference that "
+                      "differs in the seventh digit is enough to flip a rollout that was going "
+                      "to run away either way.")
 args = ap.parse_args()
 
 dev = "cuda"
@@ -96,15 +102,27 @@ def build(gen, lo, hi):
     return traj, sigma, peak
 
 
-gen = torch.Generator(device=dev); gen.manual_seed(args.seed)
 GROUPS = {"localised": (args.loc_lo, args.loc_hi),
           "spread": (args.spread_lo, args.spread_hi)}
-sets = {}
-for name, (lo, hi) in GROUPS.items():
-    out = []
-    for _ in tqdm(range(args.n), desc=name, ncols=90):
-        out.append(build(gen, lo, hi))
-    sets[name] = out
+key = f"{args.seed}_{args.n}_{args.target:.5f}_{args.frames}_{args.loc_lo}_{args.loc_hi}" \
+      f"_{args.spread_lo}_{args.spread_hi}"
+sets = None
+if args.cache and os.path.exists(args.cache):
+    blob = torch.load(args.cache, map_location=dev, weights_only=False)
+    if blob.get("key") == key:
+        sets = blob["sets"]
+        print(f"[cache] {args.cache}")
+if sets is None:
+    gen = torch.Generator(device=dev); gen.manual_seed(args.seed)
+    sets = {}
+    for name, (lo, hi) in GROUPS.items():
+        out = []
+        for _ in tqdm(range(args.n), desc=name, ncols=90):
+            out.append(build(gen, lo, hi))
+        sets[name] = out
+    if args.cache:
+        torch.save({"sets": sets, "key": key}, args.cache)
+        print(f"[cache] written to {args.cache}")
 
 nets = []
 for path in args.ckpt:
