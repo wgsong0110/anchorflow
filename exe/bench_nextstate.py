@@ -19,7 +19,7 @@ import torch
 from tqdm import tqdm
 
 from anchorflow import scene_setup
-from anchorflow.nextstate import NextStep
+from anchorflow.nextstate import NextStep, apply_step
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -37,9 +37,10 @@ sc = scene_setup.build(args.ply, args.config, targs["n_anchors"], targs["K"], de
                         frozen_weights=targs.get("frozen_weights", False))
 USE_A = not targs.get("no_accel", False)
 dt = targs["dt_mult"] * sc.sub_dt
+CHUNK = targs.get("chunk", 1)
 net = NextStep(targs["hidden"], targs["depth"], targs["heads"],
                 ck["disp_scale"], ck["vel_scale"], ck["acc_scale"],
-                use_accel=USE_A).to(dev)
+                use_accel=USE_A, chunk=CHUNK).to(dev)
 net.load_state_dict(ck["model"]); net.eval()
 print(f"[setup] {torch.cuda.get_device_name(0)}  M={sc.M} N={sc.N}  "
       f"coarse step = {targs['dt_mult']} substeps")
@@ -85,10 +86,9 @@ def learned():
     # the rollout's critical path: the cloud exists to evaluate the force
     # against, and is otherwise only needed when a frame is actually drawn
     a = sc.elastic_accel(p, gp) if USE_A else None
-    du = net(p, v_c, a, dt)
-    q = p + du
+    out = apply_step(net, p, v_c, a, dt, sc.fixed_mask)
     if USE_A:
-        sc.skin(q, gp)
+        sc.skin(out[-1][0], gp)
 
 
 ms_e = timeit(explicit)
@@ -98,7 +98,9 @@ ms_a = timeit(accel) if USE_A else 0.0
 # did and made the parts add up to more than the whole
 ms_f = timeit(forward) - ms_a
 ms_s = timeit(skin) if USE_A else 0.0
-ms_l = timeit(learned)
+# one call covers CHUNK coarse steps, so the cost that matters is per step
+ms_call = timeit(learned)
+ms_l = ms_call / CHUNK
 
 print(f"\n{'':>34} {'ms':>8} {'share':>8}")
 print(f"{'explicit substeps (the baseline)':>34} {ms_e:8.3f}")
@@ -109,7 +111,12 @@ if USE_A:
 else:
     print(f"{'  (no acceleration input, so no':>34}")
     print(f"{'   force and no skinning per step)':>34}")
+if CHUNK > 1:
+    print(f"{'one call, covering %d steps' % CHUNK:>34} {ms_call:8.3f}")
 print(f"{'one learned step (total)':>34} {ms_l:8.3f}")
-print(f"\n[speedup] {ms_e / ms_l:.2f}x over the substeps it replaces")
+print(f"\n[speedup] {ms_e / ms_l:.2f}x over the {targs['dt_mult']} substeps it replaces")
+print(f"[speedup] {13.06 / ms_l:.2f}x over the 11 substeps that is as far down as the "
+      f"explicit\n          scheme actually goes -- the fair baseline, see "
+      f"exe/bench_explicit_dt.py")
 print(f"[note] the learned step also needs the skinning the explicit path does "
       f"internally, so the two are counted on equal terms.")
