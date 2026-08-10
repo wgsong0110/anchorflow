@@ -552,11 +552,13 @@ def collect_dagger(n_traj, k_steps):
                 if len(fut) == k_steps:
                     ps.append(p.clone()); vs.append(v.clone()); tg.append(torch.stack(fut))
             a_ = sc.elastic_accel(p, gp) if USE_A else None
-            du = net(p, v, a_, dt_coarse)
-            du = torch.where(fixed.unsqueeze(-1), torch.zeros_like(du), du)
-            p = p + du
-            v = du / dt_coarse
-            if not torch.isfinite(p).all():
+            bad = False
+            for q, d in apply_step(net, p, v, a_, dt_coarse, fixed):
+                p, v = q, d / dt_coarse
+                if not torch.isfinite(p).all():
+                    bad = True
+                    break
+            if bad:
                 break
             if USE_A:
                 gp = sc.skin(p, gp)
