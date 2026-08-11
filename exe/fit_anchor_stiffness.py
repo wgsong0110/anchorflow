@@ -21,6 +21,21 @@ configurations against the acceleration MPM's trajectory implies -- one step at
 a time, no backpropagation through a rollout. This project has repeatedly found
 that fitting one step well does not mean the rollout follows, so the verdict is
 a full rollout on impulses that were not fitted.
+
+The gradient is not taken by autograd. The force is itself a gradient of the
+energy, so differentiating a coefficient it depends on is a second-order pass
+through a polar decomposition -- and near-rigid regions have F^T F close to the
+identity, where the eigenvalue derivative divides by the gap between equal
+eigenvalues. Measured: the first-order force already comes back NaN. The energy
+is linear in the per-anchor coefficient, so the gradient is available in closed
+form instead:
+
+    E(s)   = sum_i c_i(s) e_i(q),      c = W s
+    f      = -sum_i c_i de_i/dq
+    dL/ds_n = -sum_i w_in (u . de_i/dq),   u_m = (2/m_m)(f_m/m_m - a_m)
+
+and the bracket is a directional derivative of the per-Gaussian energy, which is
+two evaluations of it. Three kernel calls an iteration, no autograd anywhere.
 """
 from __future__ import annotations
 
@@ -54,7 +69,10 @@ ap.add_argument("--eig_floor", type=float, default=0.02,
 ap.add_argument("--n_fit", type=int, default=3, help="impulses fitted on")
 ap.add_argument("--n_check", type=int, default=3, help="impulses checked on")
 ap.add_argument("--iters", type=int, default=400)
-ap.add_argument("--lr", type=float, default=0.05)
+ap.add_argument("--lr", type=float, default=0.02)
+ap.add_argument("--rot_fallback", type=int, default=1,
+                 help="rotate the unspanned directions rather than freeze them; this alone "
+                      "takes the gap to MPM from 21% to 5.5%, and the fit starts from there")
 ap.add_argument("--out", default=None)
 args = ap.parse_args()
 
@@ -68,7 +86,8 @@ wp.init()
 
 sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K,
                         n_grid=args.n_grid, grid_lim=args.grid_lim, device=dev,
-                        frozen_weights=True, eig_floor=args.eig_floor)
+                        frozen_weights=True, eig_floor=args.eig_floor,
+                        rot_fallback=bool(args.rot_fallback))
 AC, fixed, keep = sc.anchor_canonical, sc.fixed_mask, sc.keep
 cfg, sim = sc.cfg, sc.sim
 mat = torch.nonzero(keep, as_tuple=False).squeeze(-1)
@@ -127,19 +146,30 @@ def to_anchors(X):
     return torch.where(fixed.view(1, -1, 1), AC.unsqueeze(0), p)
 
 
-def mu_lam_from(s):
-    """the config's material times a per-anchor factor, interpolated as usual"""
-    g = (W0 * s[sim.nn_idx]).sum(-1).clamp(min=1e-4)
-    return MU0 * g, LAM0 * g
+import anchorstep
 
 
-def force_at(p, s):
-    """the anchor simulator's elastic force, differentiable in s"""
-    mu, lam = mu_lam_from(s)
-    q = p.detach().requires_grad_(True)
-    E, _, _ = sim.elastic_energy(q, sc.pos, sc.volume, mu, lam)
-    (g,) = torch.autograd.grad(E, q, create_graph=True)
-    return -g
+def c_of(s):
+    """the per-Gaussian factor a per-anchor one implies"""
+    return (W0 * s[sim.nn_idx]).sum(-1).clamp(min=1e-4)
+
+
+def force_at(p, c):
+    """elastic force at p, with the config material scaled by c"""
+    f, _, _, _ = anchorstep.fused_energy_force(
+        sim.gaussian_canonical, sc.pos, p, AC, sim.nn_idx, sc.volume,
+        sim.radius, MU0 * c, LAM0 * c, eig_floor_frac=sim.eig_floor,
+        w_in=sim.frozen_w, rot_fallback=sim.rot_fallback)
+    return f
+
+
+def energy_per_gaussian(p):
+    """e_i(q) at the config material -- the c-independent factor"""
+    _, _, _, psi = anchorstep.fused_energy_force(
+        sim.gaussian_canonical, sc.pos, p, AC, sim.nn_idx, sc.volume,
+        sim.radius, MU0, LAM0, eig_floor_frac=sim.eig_floor,
+        w_in=sim.frozen_w, rot_fallback=sim.rot_fallback)
+    return sc.volume * psi
 
 
 gen = torch.Generator(device=dev); gen.manual_seed(7777)
@@ -167,33 +197,34 @@ P = torch.cat(P); A = torch.cat(A)
 mv = ~fixed
 print(f"[fit] {P.shape[0]} configurations, |a| mean {A[:, mv].norm(dim=-1).mean():.2f}")
 
-s = torch.ones(sc.M, device=dev, requires_grad=True)
-opt = torch.optim.Adam([s], lr=args.lr)
+S = torch.ones(sc.M, device=dev)
+opt = torch.optim.Adam([S], lr=args.lr)
+S.requires_grad_(False)
 scale = A[:, mv].norm(dim=-1).mean().clamp(min=1e-9)
+nmv = int(mv.sum())
 bar = tqdm(range(args.iters), desc="fit", ncols=90)
 for it in bar:
-    i = torch.randint(P.shape[0], (8,), device=dev)
-    opt.zero_grad(set_to_none=True)
-    # one backward per configuration: each force evaluation builds its own graph
-    # through a second-order autograd (the force is already a gradient), and
-    # holding eight of them alive to back through at once is what a single
-    # combined backward would need
-    total, gs = 0.0, torch.zeros_like(s)
+    i = torch.randint(P.shape[0], (4,), device=dev)
+    c = c_of(S)
+    g_acc, total = torch.zeros_like(S), 0.0
     for j in i.tolist():
-        pred = force_at(P[j], s) / sc.mass.unsqueeze(-1)
-        l = (((pred - A[j])[mv] / scale) ** 2).mean() / i.shape[0]
-        (gj,) = torch.autograd.grad(l, s)
-        gs += gj
-        total += l.item()
-    s.grad = gs
-    loss = torch.tensor(total)
+        p = P[j]
+        r = force_at(p, c) / sc.mass.unsqueeze(-1) - A[j]
+        r = torch.where(mv.unsqueeze(-1), r, torch.zeros_like(r))
+        total += ((r / scale) ** 2).sum().item() / (3 * nmv * i.shape[0])
+        u = (2.0 / (3 * nmv * i.shape[0])) * r / (sc.mass.unsqueeze(-1) * scale ** 2)
+        # directional derivative of each Gaussian's own energy along u
+        eps = 1e-4 * p[mv].norm(dim=-1).mean() / u.norm(dim=-1).max().clamp(min=1e-20)
+        h = (energy_per_gaussian(p + eps * u) - energy_per_gaussian(p - eps * u)) / (2 * eps)
+        g_acc -= torch.zeros(sc.M, device=dev).index_add_(
+            0, sim.nn_idx.reshape(-1), (W0 * h.unsqueeze(-1)).reshape(-1))
+    S.grad = g_acc
     opt.step()
     with torch.no_grad():
-        s.clamp_(0.01, 100.0)
-    if it % 50 == 0:
-        bar.set_postfix(loss=f"{loss.item():.4f}",
-                        s=f"{s.min().item():.2f}-{s.max().item():.2f}")
-S = s.detach()
+        S.clamp_(0.02, 50.0)
+    if it % 25 == 0:
+        bar.set_postfix(loss=f"{total:.4f}", s=f"{S.min().item():.2f}-{S.max().item():.2f}")
+S = S.detach()
 print(f"\n[fitted] per-anchor factor: min {S.min():.3f}, median {S.median():.3f}, "
       f"max {S.max():.3f}")
 if args.out:
@@ -205,7 +236,8 @@ if args.out:
 def rollout_err(force, s_or_none):
     old_mu, old_lam = sc.mu, sc.lam
     if s_or_none is not None:
-        sc.mu, sc.lam = mu_lam_from(s_or_none)
+        c_ = c_of(s_or_none)
+        sc.mu, sc.lam = MU0 * c_, LAM0 * c_
     with torch.no_grad():
         p, v, gp = AC.clone(), sc.initial_velocity(force), sc.pos.clone()
         out = [gp[mat].clone()]
