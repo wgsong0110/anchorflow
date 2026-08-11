@@ -16,10 +16,18 @@
 #   keepalive.sh <instance_id> <ssh_host> <ssh_port> <name> <tmux_session> <cmd...>
 #
 # The command is the original launch line minus --resume; this adds it.
+#
+# PATTERN and DONE_MARK say what to look for; they default to the trainer. Any
+# script with a --resume and a line it prints when it finishes can use this --
+# the fit lost forty minutes to a host reclaiming its GPU, which is the same
+# failure this already handles for training.
 set -u
 ID=$1; HOST=$2; PORT=$3; NAME=$4; SESS=$5; shift 5
 CMD="$*"
+RESUME_ARG=${RESUME_ARG:-"--resume /workspace/$4.pt"}
 INTERVAL=${KEEPALIVE_INTERVAL:-180}
+PATTERN=${PATTERN:-train_nextstate}
+DONE_MARK=${DONE_MARK:-'^\[rollout\] mean over'}
 LOG=/tmp/keepalive_$NAME.log
 
 say() { echo "[$(date +%H:%M:%S)] $*" >> $LOG; }
@@ -53,10 +61,10 @@ for i in json.load(sys.stdin)['instances']:
     continue
   fi
 
-  if rsh "ps aux | grep -q '[t]rain_nextstate.*$NAME'" ; then
+  if rsh "ps aux | grep -q '[${PATTERN:0:1}]${PATTERN:1}.*$NAME'" ; then
     PROG=$(rsh "tr '\r' '\n' < /workspace/$NAME.log | grep -oE '[0-9]+/[0-9]+ \[' | tail -1")
     say "alive, $PROG"
-  elif rsh "grep -q '^\[rollout\] mean over' /workspace/$NAME.log"; then
+  elif rsh "grep -q '$DONE_MARK' /workspace/$NAME.log"; then
     say "finished; backing up and stopping"
     rsh "rclone copy /workspace/$NAME.log r2:storage/result/anchorflow/log/ ;
          rclone copy /workspace/$NAME.pt r2:storage/result/anchorflow/ckpt/$NAME/"
@@ -64,12 +72,15 @@ for i in json.load(sys.stdin)['instances']:
   else
     IT=$(rsh "python3 -c \"
 import torch
-try: print(torch.load('/workspace/$NAME.pt', map_location='cpu', weights_only=False)['iter'])
-except Exception: print(0)\"")
+for f in ('/workspace/$NAME.pt.state', '/workspace/$NAME.pt'):
+    try:
+        print(torch.load(f, map_location='cpu', weights_only=False)['iter']); break
+    except Exception: pass
+else: print(0)\"")
     say "process gone at iteration ${IT:-0}; relaunching with --resume"
     rsh "cd /workspace/anchorflow && git pull -q
          tmux kill-session -t $SESS 2>/dev/null
-         tmux new-session -d -s $SESS \"cd /workspace/SC-GS && export PYTHONPATH=/workspace/anchorflow/lib:/workspace/SC-GS && $CMD --resume /workspace/$NAME.pt >> /workspace/$NAME.log 2>&1\""
+         tmux new-session -d -s $SESS \"cd /workspace/SC-GS && export PYTHONPATH=/workspace/anchorflow/lib:/workspace/SC-GS && $CMD $RESUME_ARG >> /workspace/$NAME.log 2>&1\""
     sleep 60
   fi
 
