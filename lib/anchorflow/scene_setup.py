@@ -177,9 +177,17 @@ class Scene:
         rolling out.
         """
         from anchorstep import fused_energy_force
+        # the same settings the step uses. Left at the kernel's defaults this
+        # computed a different physics than the simulator it is supposed to
+        # describe -- eig floor 0.2 instead of the scene's, weights recomputed
+        # from the cloud instead of the frozen ones, and the unobserved
+        # directions of F frozen rather than rotating. On its own trajectory
+        # that made |f/m| nearly ten times what the simulator had just used
         f, _, _, _ = fused_energy_force(
             self.sim.gaussian_canonical, gp, p.detach(), self.sim.anchor_canonical,
-            self.sim.nn_idx, self.volume, self.sim.radius, self.mu, self.lam)
+            self.sim.nn_idx, self.volume, self.sim.radius, self.mu, self.lam,
+            eig_floor_frac=self.sim.eig_floor, w_in=self.sim.frozen_w,
+            rot_fallback=self.sim.rot_fallback)
         a = f / self.mass.unsqueeze(-1)
         return torch.where(self.fixed_mask.unsqueeze(-1), torch.zeros_like(a), a)
 
