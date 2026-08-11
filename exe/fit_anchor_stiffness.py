@@ -173,10 +173,18 @@ scale = A[:, mv].norm(dim=-1).mean().clamp(min=1e-9)
 bar = tqdm(range(args.iters), desc="fit", ncols=90)
 for it in bar:
     i = torch.randint(P.shape[0], (8,), device=dev)
-    pred = torch.stack([force_at(P[j], s) / sc.mass.unsqueeze(-1) for j in i.tolist()])
-    loss = (((pred - A[i])[:, mv] / scale) ** 2).mean()
     opt.zero_grad(set_to_none=True)
-    loss.backward()
+    # one backward per configuration: each force evaluation builds its own graph
+    # through a second-order autograd (the force is already a gradient), and
+    # holding eight of them alive to back through at once is what a single
+    # combined backward would need
+    total = 0.0
+    for j in i.tolist():
+        pred = force_at(P[j], s) / sc.mass.unsqueeze(-1)
+        l = (((pred - A[j])[mv] / scale) ** 2).mean() / i.shape[0]
+        l.backward()
+        total += l.item()
+    loss = torch.tensor(total)
     opt.step()
     with torch.no_grad():
         s.clamp_(0.01, 100.0)
