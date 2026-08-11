@@ -73,48 +73,64 @@ for bc in sc.cfg.get("boundary_conditions", []):
 print(f"[setup] {sc.M} anchors, {T.n} material particles, eig_floor {args.eig_floor}")
 
 
-def forces():
-    """the three impulse families, drawn the way every evaluation here draws them"""
-    g = torch.Generator(device=dev); g.manual_seed(args.seed)
-    out = {"uniform": [base], "field": [], "poke": []}
-    for _ in range(args.n_uniform - 1):
+def draw(kind, g):
+    if kind == "uniform":
         s = 0.5 * (args.impulse_range ** torch.rand(1, device=dev, generator=g).item())
-        out["uniform"].append((rand_rot(g, dev) @ base) * s)
-    for _ in range(args.n_field):
-        f, _ = draw_impulse(sc, base, g, args.impulse_range, field=True)
-        out["field"].append(f)
-    for _ in range(args.n_poke):
-        rad = sc.sim.radius * (2.0 ** (1.0 + 2.0 * torch.rand(1, device=dev, generator=g).item()))
-        pf, _, _ = sc.random_poke(g, rad, base.norm().item())
-        out["poke"].append(pf)
-    return out
+        return (rand_rot(g, dev) @ base) * s
+    if kind == "field":
+        return draw_impulse(sc, base, g, args.impulse_range, field=True)[0]
+    rad = sc.sim.radius * (2.0 ** (1.0 + 2.0 * torch.rand(1, device=dev, generator=g).item()))
+    return sc.random_poke(g, rad, base.norm().item())[0]
 
 
-FORCE = forces()
-key = f"{args.seed}_{args.n_uniform}_{args.n_field}_{args.n_poke}_{args.frames}_{args.dt_mult}"
-REF = None
+def mpm_ref(force):
+    """MPM from rest under an impulse, as particle positions, or None.
+
+    None means MPM itself left the grid. The impulse distribution these models
+    were trained on reaches amplitudes PhysGaussian's domain does not hold, and
+    an impulse the reference cannot simulate is not one anything can be scored
+    on. Dropped rather than clamped, and counted, since quietly resampling would
+    make the evaluation set easier than the training set without saying so.
+    """
+    dv = sc.impulse_dv(force)
+    v0 = (T.w.unsqueeze(-1) * dv[T.idx]).sum(1).contiguous()
+    T._set(T.pos_m.clone(), v0, T.eye.clone(), torch.zeros_like(T.eye))
+    xs = [T.pos_m.clone()]
+    for _ in range(args.frames):
+        for k in range(args.dt_mult):
+            T.solver.p2g2p(None, sc.sub_dt, device=T.wp_dev)
+            if (k + 1) % 8 == 0 and not T._in_domain():
+                return None
+        xs.append(T.solver.export_particle_x_to_torch().clone())
+    return torch.stack(xs)
+key = f"{args.seed}_{args.n_uniform}_{args.n_field}_{args.n_poke}_{args.frames}_{args.dt_mult}_v2"
+REF = FORCE = None
 if args.cache and os.path.exists(args.cache):
     blob = torch.load(args.cache, map_location=dev, weights_only=False)
     if blob.get("key") == key:
-        REF = blob["ref"]
+        REF, FORCE = blob["ref"], blob["force"]
         print(f"[ref] {args.cache}")
 if REF is None:
-    REF = {}
-    for kind, fs in FORCE.items():
-        runs = []
-        for f in tqdm(fs, desc=f"MPM {kind}", ncols=90):
-            dv = sc.impulse_dv(f)
-            v0 = (T.w.unsqueeze(-1) * dv[T.idx]).sum(1).contiguous()
-            T._set(T.pos_m.clone(), v0, T.eye.clone(), torch.zeros_like(T.eye))
-            xs = [T.pos_m.clone()]
-            for _ in range(args.frames):
-                for _ in range(args.dt_mult):
-                    T.solver.p2g2p(None, sc.sub_dt, device=T.wp_dev)
-                xs.append(T.solver.export_particle_x_to_torch().clone())
-            runs.append(torch.stack(xs))
-        REF[kind] = runs
+    REF, FORCE = {}, {}
+    g = torch.Generator(device=dev); g.manual_seed(args.seed)
+    for kind, n in (("uniform", args.n_uniform), ("field", args.n_field),
+                    ("poke", args.n_poke)):
+        runs, keep, tried = [], [], 0
+        bar = tqdm(total=n, desc=f"MPM {kind}", ncols=90)
+        while len(runs) < n and tried < 6 * n:
+            f = base if (kind == "uniform" and tried == 0) else draw(kind, g)
+            tried += 1
+            x = mpm_ref(f)
+            if x is None:
+                continue
+            runs.append(x); keep.append(f); bar.update(1)
+        bar.close()
+        if tried > len(runs):
+            print(f"  {kind}: {tried - len(runs)} of {tried} impulses drove MPM out of "
+                  f"the grid and were dropped")
+        REF[kind], FORCE[kind] = runs, keep
     if args.cache:
-        torch.save({"ref": REF, "key": key}, args.cache)
+        torch.save({"ref": REF, "force": FORCE, "key": key}, args.cache)
         print(f"[ref] cached to {args.cache}")
 
 
