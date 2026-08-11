@@ -75,8 +75,8 @@ for f in tqdm(range(max(args.at) + 2), desc="MPM", ncols=90):
                      T.solver.export_particle_x_to_torch().clone())
 
 print(f"\n{'frame':>6} {'MPM moved':>11} {'anchor sim':>11} {'error':>9} "
-      f"{'% of step':>10} {'floor':>9}")
-tot = []
+      f"{'% of step':>10} {'cos':>7} {'best scale':>11} {'left':>7} {'floor':>9}")
+tot, cosines = [], []
 for f in args.at:
     if f not in states or (f + 1) not in states:
         continue
@@ -91,13 +91,23 @@ for f in args.at:
     # state, projected and skinned back out, against MPM's own particles
     fl = (sc.skin(p1, sc.pos.clone())[mat] - x1).norm(dim=-1).mean()
     span = (x1 - T.pos_m).norm(dim=-1).max()
-    print(f"{f:6d} {step.mean():11.6f} {(q - p)[~fixed].norm(dim=-1).mean():11.6f} "
+    # direction, and what would be left if the size were free. A step that is
+    # only too big is a signal a fitting loss can follow; one pointing elsewhere
+    # is not, however large it is
+    a_, b_ = (q - p)[~fixed], (p1 - p)[~fixed]
+    cos = ((a_ * b_).sum() / (a_.norm() * b_.norm()).clamp(min=1e-20))
+    k = (a_ * b_).sum() / (a_ * a_).sum().clamp(min=1e-20)          # least squares
+    left = (k * a_ - b_).norm() / b_.norm().clamp(min=1e-20)
+    print(f"{f:6d} {step.mean():11.6f} {a_.norm(dim=-1).mean():11.6f} "
           f"{err.mean():9.6f} {100 * err.mean() / step.mean().clamp(min=1e-12):9.1f}% "
-          f"{100 * fl / span:8.2f}%")
+          f"{cos:7.3f} {k:11.3f} {100 * left:6.0f}% {100 * fl / span:8.2f}%")
     tot.append((err.mean() / step.mean().clamp(min=1e-12)).item())
+    cosines.append(cos.item())
 
-print(f"\n[verdict] the anchor simulator misses MPM's next state by "
-      f"{100 * sum(tot) / len(tot):.0f}% of\n          the step itself. Under about "
-      f"30% there is a signal a fitting loss can follow;\n          near or above "
-      f"100% the step is uncorrelated with the target and fitting the\n          "
-      f"discretisation to it will not converge.")
+print(f"\n[verdict] misses MPM's next state by {100 * sum(tot) / len(tot):.0f}% of the "
+      f"step, direction {sum(cosines) / len(cosines):.3f}")
+print(f"          Size is fittable and direction is not: 'best scale' is the single "
+      f"factor\n          that would fit the step best, and 'left' is what remains "
+      f"after applying it.\n          If 'left' stays near 100% the step points "
+      f"somewhere else and no reweighting\n          of the discretisation reaches "
+      f"MPM from here.")
