@@ -32,7 +32,15 @@ from eigen3x3 import eigh3x3
 
 
 class MPMTeacher:
-    """MPM driven from, and reported in, the anchor state the student uses."""
+    """MPM driven from, and reported in, the anchor state the student uses.
+
+    Everything here is under no_grad. The solver allocates its warp arrays with
+    requires_grad=True, so export_particle_x_to_torch hands back a tensor that
+    wants a graph; inside a trainer, where grad is on, that quietly retained one
+    per frame over 171k particles and ran a 24 GB card out of memory on the
+    first trajectory. Nothing differentiates through the teacher -- it is a data
+    source.
+    """
 
     def __init__(self, sc, n_grid=100, grid_lim=2.0, affine=True):
         from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP
@@ -78,6 +86,7 @@ class MPMTeacher:
         self.eye = torch.eye(3, device=self.dev).reshape(1, 9).repeat(self.n, 1).contiguous()
 
     # ---- MPM particles -> anchors -----------------------------------------
+    @torch.no_grad()
     def project(self, x):
         """[Nm,3] particle positions -> [M,3] anchor positions.
 
@@ -90,6 +99,7 @@ class MPMTeacher:
         p = self.AC + num / self.den.unsqueeze(-1)
         return torch.where(self.fixed.unsqueeze(-1), self.AC, p)
 
+    @torch.no_grad()
     def project_v(self, vp):
         """[Nm,3] particle velocities -> [M,3]. No rest state to subtract here,
         so this is the plain weighted average."""
@@ -99,6 +109,7 @@ class MPMTeacher:
         return torch.where(self.fixed.unsqueeze(-1), torch.zeros_like(v), v)
 
     # ---- anchors -> MPM particles -----------------------------------------
+    @torch.no_grad()
     def lift(self, p, v):
         """anchor state -> (x, v, F, C), the particle state MPM restarts from.
 
@@ -146,6 +157,7 @@ class MPMTeacher:
         self.solver.import_particle_F_from_torch(F)
         self.solver.import_particle_C_from_torch(C)
 
+    @torch.no_grad()
     def _advance(self, frames, dt_mult):
         out = []
         for _ in range(frames):
@@ -154,6 +166,7 @@ class MPMTeacher:
             out.append(self.project(self.solver.export_particle_x_to_torch()))
         return out
 
+    @torch.no_grad()
     def trajectory(self, force, frames, dt_mult):
         """from rest, under an impulse -> anchor positions [frames+1, M, 3].
 
@@ -167,6 +180,7 @@ class MPMTeacher:
         self._set(self.pos_m.clone(), v0, self.eye.clone(), torch.zeros_like(self.eye))
         return torch.stack([self.AC.clone()] + self._advance(frames, dt_mult))
 
+    @torch.no_grad()
     def query(self, p, v, k, dt_mult):
         """what MPM does for k coarse steps starting from an anchor state.
 
