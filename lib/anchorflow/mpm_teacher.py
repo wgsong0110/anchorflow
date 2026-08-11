@@ -164,11 +164,29 @@ class MPMTeacher:
         self.solver.import_particle_C_from_torch(C)
 
     @torch.no_grad()
-    def _advance(self, frames, dt_mult):
+    def _in_domain(self):
+        """cheap, and the only thing standing between a diverging query and a
+        dead process: MPM writes to the cells around each particle and warp does
+        not bounds-check, so a particle that leaves the grid takes the whole run
+        down with CUDA error 700 rather than raising something catchable"""
+        x = self.solver.export_particle_x_to_torch()
+        lo, hi = x.min().item(), x.max().item()
+        return lo == lo and self.margin < lo and hi < self.grid_lim - self.margin
+
+    @torch.no_grad()
+    def _advance(self, frames, dt_mult, check_every=8):
+        """returns None if the run left the domain part-way, rather than dying.
+
+        Checked mid-frame as well: a state that blows up does so within a few
+        substeps, and 40 of them is long enough to go from plausible to out of
+        bounds with nothing observed in between.
+        """
         out = []
         for _ in range(frames):
-            for _ in range(dt_mult):
+            for k in range(dt_mult):
                 self.solver.p2g2p(None, self.sc.sub_dt, device=self.wp_dev)
+                if (k + 1) % check_every == 0 and not self._in_domain():
+                    return None
             out.append(self.project(self.solver.export_particle_x_to_torch()))
         return out
 
@@ -184,7 +202,11 @@ class MPMTeacher:
         dv = self.sc.impulse_dv(force)
         v0 = (self.w.unsqueeze(-1) * dv[self.idx]).sum(1).contiguous()
         self._set(self.pos_m.clone(), v0, self.eye.clone(), torch.zeros_like(self.eye))
-        return torch.stack([self.AC.clone()] + self._advance(frames, dt_mult))
+        out = self._advance(frames, dt_mult)
+        if out is None:
+            raise RuntimeError("MPM left the grid on a from-rest trajectory; the "
+                                "impulse is too large for this domain")
+        return torch.stack([self.AC.clone()] + out)
 
     @torch.no_grad()
     def query(self, p, v, k, dt_mult):
@@ -202,6 +224,14 @@ class MPMTeacher:
             return None
         if x.min() < self.margin or x.max() > self.grid_lim - self.margin:
             return None
+        # a deformation gradient the student's anchors imply but no material
+        # could be in: MPM turns that into an enormous stress and the particles
+        # leave the grid within a few substeps
+        det = torch.linalg.det(F.reshape(-1, 3, 3))
+        if det.min() < 0.05 or det.max() > 20.0:
+            return None
         self._set(x, vp, F, C)
         out = self._advance(k, dt_mult)
-        return None if not all(torch.isfinite(o).all() for o in out) else torch.stack(out)
+        if out is None or not all(torch.isfinite(o).all() for o in out):
+            return None
+        return torch.stack(out)
