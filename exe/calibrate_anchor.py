@@ -1,4 +1,4 @@
-"""Can the anchor simulator be made to match MPM by fitting its parameters?
+"""Can the anchor discretisation be made to match MPM, with the material fixed?
 
 With the material, the impulse and the boundary conditions all matched, the
 anchor simulator still moves 27% as far as MPM and differs by 21% of peak
@@ -46,8 +46,11 @@ ap.add_argument("--n_grid", type=int, default=100)
 ap.add_argument("--grid_lim", type=float, default=2.0)
 ap.add_argument("--n_check", type=int, default=3,
                  help="held-out impulses the fitted parameters are checked on")
-ap.add_argument("--scales", type=float, nargs="+",
-                 default=[1.0, 0.5, 0.25, 0.125, 0.0729, 0.05, 0.03, 0.02])
+ap.add_argument("--eig_floors", type=float, nargs="+",
+                 default=[0.2, 0.1, 0.05, 0.02, 0.01, 0.002, 0.0])
+ap.add_argument("--radius_scales", type=float, nargs="+", default=[1.0, 1.5, 2.0, 3.0])
+ap.add_argument("--anchors", type=int, nargs="+", default=[512])
+ap.add_argument("--Ks", type=int, nargs="+", default=[8])
 args = ap.parse_args()
 
 sys.path.insert(0, args.dreamphysics)
@@ -103,21 +106,32 @@ def mpm_run(force):
     return torch.stack(out)
 
 
-def anchor_run(force, scale, damp=None):
-    old_mu, old_lam, old_d = sc.mu, sc.lam, sc.damping
-    sc.mu, sc.lam = MU0 * scale, LAM0 * scale
-    if damp is not None:
-        sc.damping = damp
-    p, v, gp = AC.clone(), sc.initial_velocity(force), sc.pos.clone()
+_SCENES = {}
+
+
+def scene_for(M, K, rs, ef):
+    """the material never changes here; only how the anchors discretise it"""
+    key = (M, K, rs)
+    if key not in _SCENES:
+        _SCENES[key] = scene_setup.build(args.ply, args.config, M, K,
+                                          n_grid=args.n_grid, grid_lim=args.grid_lim,
+                                          device=dev, frozen_weights=True,
+                                          radius_scale=rs)
+    s_ = _SCENES[key]
+    s_.sim.eig_floor = ef
+    return s_
+
+
+def anchor_run(force, M, K, rs, ef):
+    s_ = scene_for(M, K, rs, ef)
+    p, v, gp = s_.anchor_canonical.clone(), s_.initial_velocity(force), s_.pos.clone()
     out = [gp[mat].clone()]
     for _ in range(args.frames):
-        p, v, gp = sc.explicit_step(p, v, gp, args.dt_mult)
+        p, v, gp = s_.explicit_step(p, v, gp, args.dt_mult)
         if not torch.isfinite(p).all():
-            out = None
-            break
+            return None
         out.append(gp[mat].clone())
-    sc.mu, sc.lam, sc.damping = old_mu, old_lam, old_d
-    return None if out is None else torch.stack(out)
+    return torch.stack(out)
 
 
 def score(A, M):
@@ -127,20 +141,26 @@ def score(A, M):
 
 
 MPM0 = mpm_run(base_force)
-print(f"[reference] MPM peak {(MPM0 - MPM0[0]).norm(dim=-1).max():.5f}\n")
-print(f"  {'stiffness x':>12} {'error':>9} {'motion vs MPM':>15}")
+print(f"[reference] MPM peak {(MPM0 - MPM0[0]).norm(dim=-1).max():.5f}, "
+      f"material held at the config's values throughout\n")
+print(f"  {'anchors':>8} {'K':>3} {'radius x':>9} {'eig floor':>10} {'error':>9} "
+      f"{'motion vs MPM':>15}")
 best, best_e = None, 1e9
-for s in args.scales:
-    A = anchor_run(base_force, s)
-    if A is None:
-        print(f"  {s:12.4f} {'diverged':>9}")
-        continue
-    e, m = score(A, MPM0)
-    print(f"  {s:12.4f} {100*e:8.2f}% {100*m:14.0f}%")
-    if e < best_e:
-        best, best_e = s, e
-print(f"\n[fit] stiffness x{best:.4f} gives {100*best_e:.2f}%, against "
-      f"{100*score(anchor_run(base_force, 1.0), MPM0)[0]:.2f}% at the original")
+for M in args.anchors:
+    for K in args.Ks:
+        for rs in args.radius_scales:
+            for ef in args.eig_floors:
+                A = anchor_run(base_force, M, K, rs, ef)
+                if A is None:
+                    print(f"  {M:8d} {K:3d} {rs:9.2f} {ef:10.4f} {'diverged':>9}")
+                    continue
+                e, m = score(A, MPM0)
+                print(f"  {M:8d} {K:3d} {rs:9.2f} {ef:10.4f} {100*e:8.2f}% "
+                      f"{100*m:14.0f}%")
+                if e < best_e:
+                    best, best_e = (M, K, rs, ef), e
+print(f"\n[fit] anchors {best[0]}, K {best[1]}, radius x{best[2]}, eig floor "
+      f"{best[3]} gives {100*best_e:.2f}%")
 
 # a stiffness change moves amplitude and period together; if only one of them
 # needed changing, the fit will not hold at other impulses
@@ -150,10 +170,10 @@ print(f"  {'impulse':>8} {'original':>10} {'fitted':>10} {'motion vs MPM':>15}")
 for i in range(args.n_check):
     s_ = 0.5 * (4.0 ** torch.rand(1, device=dev, generator=gen).item())
     f = (rand_rot(gen, dev) @ base_force) * s_
-    M = mpm_run(f)
-    e0, _ = score(anchor_run(f, 1.0), M)
-    e1, m1 = score(anchor_run(f, best), M)
+    MM = mpm_run(f)
+    e0, _ = score(anchor_run(f, 512, 8, 1.0, 0.2), MM)
+    e1, m1 = score(anchor_run(f, *best), MM)
     print(f"  {i:8d} {100*e0:9.2f}% {100*e1:9.2f}% {100*m1:14.0f}%")
-print(f"\n[note] a scalar can always be fitted to one trajectory. What decides "
-      f"whether the\n       anchor discretisation approximates MPM at all is "
-      f"whether it holds on the others.")
+print(f"\n[note] the material is the config's throughout. What is fitted is how "
+      f"finely and\n       how forgivingly the anchors discretise it, which is "
+      f"what those parameters are.")
