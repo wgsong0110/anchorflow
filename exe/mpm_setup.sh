@@ -106,19 +106,23 @@ for setup_py in sorted(root.rglob("setup.py")):
         continue
     tarball = staged / f"{d.name}.tar.gz"
     if not tarball.exists():
-        r = subprocess.run(["gh", "release", "download", tag, "--repo", repo,
-                            "--pattern", f"{d.name}.tar.gz", "--dir", "/tmp"],
-                           capture_output=True, text=True)
+        try:
+            r = subprocess.run(["gh", "release", "download", tag, "--repo", repo,
+                                "--pattern", f"{d.name}.tar.gz", "--dir", "/tmp"],
+                               capture_output=True, text=True)
+            ok = r.returncode == 0
+        except FileNotFoundError:
+            ok = False                      # no gh on this image, which is normal
         tarball = pathlib.Path(f"/tmp/{d.name}.tar.gz")
-        if r.returncode or not tarball.exists():
-            print(f"  {d.name}: no staged {d.name}.tar.gz and gh could not fetch {tag}")
+        if not ok or not tarball.exists():
             missing.append(d.name)
             continue
     subprocess.run(["tar", "xzf", str(tarball), "-C", str(root)], check=True)
     print(f"  {d.name}: {tag}")
+# not every kernel in the repo is needed by every run -- the import check below
+# is what decides. Reported so an absence is visible rather than inferred later
 if missing:
-    print(f"  MISSING: {', '.join(missing)} -- stage the tarballs or run wbuild trigger")
-    sys.exit(3)
+    print(f"  not installed (no staged tarball): {', '.join(missing)}")
 PYEOF
 [ $? -ne 0 ] && fail=1
 
