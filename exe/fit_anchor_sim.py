@@ -66,6 +66,16 @@ ap.add_argument("--state", default=None,
                       "mid-run costs minutes rather than the whole fit. Defaults to "
                       "--out with .state appended.")
 ap.add_argument("--resume", action="store_true")
+ap.add_argument("--save_every", type=int, default=10,
+                 help="iterations between state saves. These hosts reclaim their GPUs "
+                      "without warning, so this is the granularity of what a loss costs.")
+ap.add_argument("--traj_cache", default=None,
+                 help="the MPM reference trajectories. Regenerating them on every "
+                      "restart is minutes of GPU each time and they are identical, "
+                      "being drawn from fixed seeds.")
+ap.add_argument("--r2", default=None,
+                 help="rclone destination for the state, so a destroyed instance "
+                      "costs the run and not the fit")
 ap.add_argument("--eval_every", type=int, default=50)
 args = ap.parse_args()
 
@@ -125,12 +135,23 @@ def draw(g, n):
     return out[:n]
 
 
-gen = torch.Generator(device=dev); gen.manual_seed(4242)
-FIT = [s for s in (states(f) for f in tqdm(draw(gen, args.n_fit), desc="MPM fit", ncols=90))
-       if s is not None]
-gen2 = torch.Generator(device=dev); gen2.manual_seed(31337)
-CHK = [s for s in (states(f) for f in tqdm(draw(gen2, args.n_check + 1)[1:],
-                                            desc="MPM check", ncols=90)) if s is not None]
+TRAJ_KEY = f"{args.n_fit}_{args.n_check}_{args.frames}_{args.dt_mult}_{args.n_anchors}_{args.K}"
+FIT = CHK = None
+if args.traj_cache and os.path.exists(args.traj_cache):
+    blob = torch.load(args.traj_cache, map_location=dev, weights_only=False)
+    if blob.get("key") == TRAJ_KEY:
+        FIT, CHK = blob["fit"], blob["chk"]
+        print(f"[data] {args.traj_cache}")
+if FIT is None:
+    gen = torch.Generator(device=dev); gen.manual_seed(4242)
+    FIT = [s for s in (states(f) for f in tqdm(draw(gen, args.n_fit),
+                                                desc="MPM fit", ncols=90)) if s is not None]
+    gen2 = torch.Generator(device=dev); gen2.manual_seed(31337)
+    CHK = [s for s in (states(f) for f in tqdm(draw(gen2, args.n_check + 1)[1:],
+                                                desc="MPM check", ncols=90)) if s is not None]
+    if args.traj_cache:
+        torch.save({"fit": FIT, "chk": CHK, "key": TRAJ_KEY}, args.traj_cache)
+        print(f"[data] cached to {args.traj_cache}")
 print(f"[data] {len(FIT)} fit and {len(CHK)} held-out trajectories x {args.frames} frames")
 
 
@@ -163,18 +184,47 @@ opt = torch.optim.Adam([g for g in groups if g["params"][0].requires_grad])
 sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iters)
 
 STATE = args.state or (args.out + ".state" if args.out else None)
-start_it = 1
-print(f"\n[before]")
-best = report("init")
-if args.resume and STATE and os.path.exists(STATE):
-    blob = torch.load(STATE, map_location=dev, weights_only=False)
-    with torch.no_grad():
-        fit.pos.copy_(blob["pos"]); fit.log_s.copy_(blob["log_s"])
-        fit.quat.copy_(blob["quat"])
-    opt.load_state_dict(blob["opt"]); sched.load_state_dict(blob["sched"])
-    start_it, best = blob["iter"] + 1, blob["best"]
-    print(f"[resume] {STATE} at iteration {blob['iter']}, best {best:.1f}%")
-    report("resumed")
+
+
+def save_state(it, best):
+    """written to a temporary file and renamed, because a process killed
+    mid-write leaves a half-file that resume cannot read -- which is the same
+    as having no resume at all"""
+    if not STATE:
+        return
+    tmp = STATE + ".tmp"
+    torch.save({"pos": fit.pos.detach(), "log_s": fit.log_s.detach(),
+                 "quat": fit.quat.detach(), "opt": opt.state_dict(),
+                 "sched": sched.state_dict(), "iter": it, "best": best,
+                 "rng": torch.get_rng_state(), "rng_cuda": torch.cuda.get_rng_state(),
+                 "args": vars(args)}, tmp)
+    os.replace(tmp, STATE)
+    if args.r2:
+        os.system(f"rclone copy {STATE} {args.r2} 2>/dev/null &")
+
+
+start_it, best = 1, None
+if args.resume and STATE:
+    if not os.path.exists(STATE) and args.r2:
+        os.system(f"rclone copy {args.r2}/{os.path.basename(STATE)} "
+                   f"{os.path.dirname(STATE) or '.'} 2>/dev/null")
+    if os.path.exists(STATE):
+        blob = torch.load(STATE, map_location=dev, weights_only=False)
+        with torch.no_grad():
+            fit.pos.copy_(blob["pos"]); fit.log_s.copy_(blob["log_s"])
+            fit.quat.copy_(blob["quat"])
+        opt.load_state_dict(blob["opt"]); sched.load_state_dict(blob["sched"])
+        torch.set_rng_state(blob["rng"].cpu())
+        torch.cuda.set_rng_state(blob["rng_cuda"].cpu())
+        start_it, best = blob["iter"] + 1, blob["best"]
+        print(f"\n[resume] {STATE} at iteration {blob['iter']}, best {best:.1f}%")
+    else:
+        print(f"\n[resume] nothing at {STATE}; starting from the beginning")
+if best is None:
+    # only when there is nothing to resume from: evaluating the initial
+    # parameters costs a minute and says nothing new on a restart
+    print(f"\n[before]")
+    best = report("init")
 t0 = time.time()
 bar = tqdm(range(start_it, args.iters + 1), desc="fit", ncols=90)
 for it in bar:
@@ -210,10 +260,9 @@ for it in bar:
                          "quat": fit.quat.detach().cpu(), "iter": it,
                          "eig_floor": args.eig_floor, "K": args.K,
                          "n_anchors": args.n_anchors}, args.out)
-        if STATE:
-            torch.save({"pos": fit.pos.detach(), "log_s": fit.log_s.detach(),
-                         "quat": fit.quat.detach(), "opt": opt.state_dict(),
-                         "sched": sched.state_dict(), "iter": it, "best": best}, STATE)
+        save_state(it, best)
+    elif it % args.save_every == 0:
+        save_state(it, best)
 
 print(f"\n[done] {time.time() - t0:.0f}s")
 with torch.no_grad():
