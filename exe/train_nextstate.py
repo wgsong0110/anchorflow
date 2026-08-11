@@ -142,6 +142,24 @@ ap.add_argument("--chunk", type=int, default=1,
                       "steps, which is where the speedup this project is for actually comes "
                       "from. What it gives up is feedback inside the chunk. The loss horizon "
                       "becomes chunk * rollout_steps.")
+ap.add_argument("--n_grid", type=int, default=100)
+ap.add_argument("--grid_lim", type=float, default=2.0,
+                 help="the grid MPM runs on. The anchor simulator has none, but the particle "
+                      "volumes both of them use are voxel counts on this grid.")
+ap.add_argument("--eig_floor", type=float, default=0.2)
+ap.add_argument("--rot_fallback", action="store_true",
+                 help="rotate the deformation gradient's unobserved directions with the body "
+                      "instead of freezing them. Freezing is not rotation equivariant and made "
+                      "the anchor simulator 3.7x too stiff; this is the corrected simulator, "
+                      "and every run before 2026-08-10 was trained without it.")
+ap.add_argument("--teacher", choices=["anchor", "mpm"], default="anchor",
+                 help="what the student imitates. 'anchor' is the shape-matching simulator "
+                      "this project has always used; 'mpm' is PhysGaussian's own solver, "
+                      "which the anchor simulator itself is 5.5%% away from -- so a student "
+                      "that reproduces the anchor simulator perfectly still carries that. "
+                      "MPM costs 5x per frame and needs the anchor state lifted back to "
+                      "particles to be queried, which anchorflow.mpm_teacher does.")
+ap.add_argument("--dreamphysics", default="/workspace/DreamPhysics")
 ap.add_argument("--dagger", action="store_true",
                  help="periodically roll the current network out, and label the states it "
                       "actually visits by asking the simulator what happens next from there. "
@@ -230,7 +248,9 @@ args = ap.parse_args()
 dev = "cuda"
 torch.manual_seed(args.seed)
 sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev,
-                        frozen_weights=args.frozen_weights)
+                        n_grid=args.n_grid, grid_lim=args.grid_lim,
+                        frozen_weights=args.frozen_weights, eig_floor=args.eig_floor,
+                        rot_fallback=args.rot_fallback)
 USE_A = not args.no_accel
 HORIZON = args.chunk * args.rollout_steps
 MAXS = max(args.dt_strides)
@@ -249,6 +269,21 @@ for bc in sc.cfg.get("boundary_conditions", []):
 gen = torch.Generator(device=dev); gen.manual_seed(1234)
 
 
+TEACHER = None
+if args.teacher == "mpm":
+    if USE_A:
+        # a would have to come from the anchor simulator's force, which is the
+        # physics being replaced -- feeding it alongside an MPM target mixes the
+        # two teachers in one signal
+        raise SystemExit("--teacher mpm requires --no_accel")
+    sys.path.insert(0, args.dreamphysics)
+    import warp as wp
+    wp.init()
+    from anchorflow.mpm_teacher import MPMTeacher
+    TEACHER = MPMTeacher(sc, n_grid=args.n_grid, grid_lim=args.grid_lim)
+    print(f"[teacher] PhysGaussian MPM, {TEACHER.n} material particles", flush=True)
+
+
 def rand_rot():
     q, r = torch.linalg.qr(torch.randn(3, 3, device=dev, generator=gen))
     q = q * torch.sign(torch.diagonal(r)).unsqueeze(0)
@@ -265,6 +300,8 @@ def trajectory(force):
     Under --no_accel nothing ever reads that force, so it is not computed --
     it is a fused-kernel call per step and a [T,M,3] tensor per trajectory.
     """
+    if TEACHER is not None:
+        return TEACHER.trajectory(force, args.n_steps, args.dt_mult), None
     p, v = AC.clone(), sc.initial_velocity(force)
     gp = sc.pos.clone()
     ps = [p.clone()]
@@ -318,12 +355,14 @@ if args.traj_cache and os.path.exists(args.traj_cache):
     if USE_A and (not accs or accs[0] is None):
         print(f"[data] {args.traj_cache} was written without accelerations; regenerating")
         trajs, accs = [], []
-    elif bool(blob.get("field", False)) != bool(args.field) or \
+    elif blob.get("teacher", "anchor") != args.teacher or \
+            bool(blob.get("field", False)) != bool(args.field) or \
             bool(blob.get("target_amp", False)) != bool(args.target_amp) or \
             int(blob.get("n_holdout", args.n_holdout)) != args.n_holdout:
         # different impulses -- these are not the trajectories this run wants
         print(f"[data] {args.traj_cache} has field={blob.get('field', False)}, "
-              f"n_holdout={blob.get('n_holdout')}; regenerating")
+              f"n_holdout={blob.get('n_holdout')}, teacher={blob.get('teacher', 'anchor')}; "
+              f"regenerating")
         trajs, accs = [], []
     else:
         print(f"[data] {len(trajs)} trajectories from {args.traj_cache}")
@@ -372,7 +411,7 @@ if len(trajs) < N_TRAJ:
             print(f"  {t + 1}/{N_TRAJ}", flush=True)
     if args.traj_cache:
         torch.save({"trajs": trajs, "accs": accs, "field": bool(args.field),
-                     "n_holdout": args.n_holdout,
+                     "n_holdout": args.n_holdout, "teacher": args.teacher,
                      "target_amp": bool(args.target_amp)}, args.traj_cache)
         print(f"[data] cached to {args.traj_cache}")
 trajs, accs = trajs[:N_TRAJ], accs[:N_TRAJ]
@@ -561,15 +600,22 @@ def collect_dagger(n_traj, k_steps):
             if (p - AC)[~fixed].norm(dim=-1).max() > cap:
                 break
             if step % args.dagger_stride == 0:
-                # what the simulator does from exactly here, k_steps of it
-                q, w = p.clone(), v.clone()
-                g2 = sc.skin(q, sc.pos.clone())
-                fut = []
-                for _ in range(k_steps):
-                    q, w, g2 = sc.explicit_step(q, w, g2, args.dt_mult)
-                    if not torch.isfinite(q).all():
-                        break
-                    fut.append(q.clone())
+                # what the teacher does from exactly here, k_steps of it.
+                # For MPM that means lifting this anchor state back to particles,
+                # which costs the projection floor and almost nothing beyond it
+                if TEACHER is not None:
+                    fut = list(TEACHER.query(p, v, k_steps, args.dt_mult))
+                    if not all(torch.isfinite(f).all() for f in fut):
+                        fut = []
+                else:
+                    q, w = p.clone(), v.clone()
+                    g2 = sc.skin(q, sc.pos.clone())
+                    fut = []
+                    for _ in range(k_steps):
+                        q, w, g2 = sc.explicit_step(q, w, g2, args.dt_mult)
+                        if not torch.isfinite(q).all():
+                            break
+                        fut.append(q.clone())
                 if len(fut) == k_steps:
                     ps.append(p.clone()); vs.append(v.clone()); tg.append(torch.stack(fut))
             a_ = sc.elastic_accel(p, gp) if USE_A else None
