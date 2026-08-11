@@ -17,6 +17,13 @@ derivative has no near-degenerate gap to divide by.
 Connectivity stays fixed. Recomputing which anchors own which Gaussian would
 make the objective discontinuous, so the anchors move while keeping the
 Gaussians they started with.
+
+The reconstruction alone is not enough to optimise. It rewards packing anchors
+into wherever the deformation is complicated, and unopposed it cut the nearest
+anchor distance from 0.041 to 0.004 while halving the error -- at which point
+the explicit step is far past its stability limit and the simulator diverges by
+frame 8. So the anchors are also held apart: a hinge below the spacing they
+started with, which costs nothing until they close in.
 """
 from __future__ import annotations
 
@@ -50,6 +57,12 @@ ap.add_argument("--n_check", type=int, default=3)
 ap.add_argument("--iters", type=int, default=400)
 ap.add_argument("--lr", type=float, default=2e-4)
 ap.add_argument("--eig_floor", type=float, default=0.2)
+ap.add_argument("--min_sep", type=float, default=1.0,
+                 help="separation to hold, as a fraction of the closest pair in the original "
+                      "placement. The explicit step limit scales with anchor spacing, so an "
+                      "unconstrained fit buys reconstruction with divergence.")
+ap.add_argument("--w_sep", type=float, default=1.0)
+ap.add_argument("--sep_K", type=int, default=12, help="anchor neighbours the hinge watches")
 ap.add_argument("--out", default=None)
 args = ap.parse_args()
 
@@ -141,6 +154,22 @@ def reconstruct(A, X):
     return cc + torch.einsum("nij,nj->ni", F, Xc - rc)
 
 
+# who each anchor is held apart from, fixed like the Gaussian connectivity so
+# the penalty is smooth. A wider list than the anchors can plausibly reach, so
+# a pair that closes in is already being watched before it gets close.
+with torch.no_grad():
+    D0 = torch.cdist(AC0, AC0)
+    D0.fill_diagonal_(float("inf"))
+    sep_idx = D0.topk(args.sep_K, dim=1, largest=False).indices
+    SEP = args.min_sep * D0.min().item()
+print(f"[spacing] closest pair {D0.min():.5f}, holding anchors {SEP:.5f} apart")
+
+
+def sep_penalty(A):
+    d = (A.unsqueeze(1) - A[sep_idx]).norm(dim=-1)
+    return (SEP - d).clamp(min=0).pow(2).sum(1).mean()
+
+
 gen = torch.Generator(device=dev); gen.manual_seed(7777)
 
 
@@ -175,19 +204,24 @@ print(f"\n[before] fit {err(A, FITX):.2f}%   held out {err(A, CHKX):.2f}%")
 bar = tqdm(range(args.iters), desc="place", ncols=90)
 for it in bar:
     j = torch.randint(FITX.shape[0], (2,), device=dev)
-    loss = sum(((reconstruct(A, FITX[k]) - FITX[k]) ** 2).sum(-1).mean() for k in j.tolist()) / 2
+    rec = sum(((reconstruct(A, FITX[k]) - FITX[k]) ** 2).sum(-1).mean() for k in j.tolist()) / 2
+    loss = rec + args.w_sep * sep_penalty(A)
     opt.zero_grad(set_to_none=True)
     loss.backward()
     with torch.no_grad():
         A.grad[fixed] = 0            # pinned anchors define the boundary; leave them
     opt.step()
     if it % 40 == 0:
-        bar.set_postfix(loss=f"{loss.item():.3e}",
+        with torch.no_grad():
+            dmin = torch.cdist(A, A).fill_diagonal_(float("inf")).min().item()
+        bar.set_postfix(rec=f"{rec.item():.3e}", closest=f"{dmin:.4f}",
                         moved=f"{(A - AC0).norm(dim=-1).max().item():.4f}")
 A = A.detach()
 print(f"[after ] fit {err(A, FITX):.2f}%   held out {err(A, CHKX):.2f}%")
 print(f"[moved ] max {(A - AC0).norm(dim=-1).max():.4f}, median "
       f"{(A - AC0).norm(dim=-1).median():.4f}  (anchor spacing {sim.radius:.4f})")
+print(f"[spacing] closest pair {torch.cdist(A, A).fill_diagonal_(float('inf')).min():.5f} "
+      f"(was {D0.min():.5f}); the explicit step limit scales with this")
 if args.out:
     torch.save({"anchor_canonical": A.cpu(), "n_anchors": args.n_anchors, "K": args.K},
                 args.out)
