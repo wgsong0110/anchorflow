@@ -26,7 +26,8 @@ from anchorflow.anchor_fit import AnchorFit, polar_R
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
 ap.add_argument("--config", required=True)
-ap.add_argument("--frames", type=int, default=5)
+ap.add_argument("--frames", type=int, default=2)
+ap.add_argument("--polar_iters", type=int, default=8)
 ap.add_argument("--dt_mult", type=int, default=40)
 ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--K", type=int, default=8)
@@ -43,7 +44,7 @@ base = None
 for bc in sc.cfg.get("boundary_conditions", []):
     if bc["type"] == "particle_impulse":
         base = torch.tensor(bc["force"], device=dev)
-fit = AnchorFit(sc, eig_floor=args.eig_floor).to(dev)
+fit = AnchorFit(sc, eig_floor=args.eig_floor, polar_iters=args.polar_iters).to(dev)
 print(f"[setup] {sc.M} anchors, {sc.N} Gaussians, "
       f"{sum(p.numel() for p in fit.parameters())} parameters")
 

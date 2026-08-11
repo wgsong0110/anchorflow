@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from eigen3x3 import eigh3x3
 
@@ -77,8 +78,13 @@ class AnchorFit(nn.Module):
     gradient sees coming. It is refreshed between stages instead.
     """
 
-    def __init__(self, sc, eig_floor=0.02, polar_iters=8):
+    def __init__(self, sc, eig_floor=0.02, polar_iters=8, checkpoint_substeps=True):
         super().__init__()
+        # a substep's graph is around 100 MB over this many Gaussians, mostly the
+        # Newton iterates, and a coarse frame is 40 of them. Recomputing the
+        # forward during the backward costs one extra evaluation and takes the
+        # memory from linear in the rollout length to constant
+        self.checkpoint_substeps = checkpoint_substeps
         sim = sc.sim
         self.eig_floor = eig_floor
         self.polar_iters = polar_iters
@@ -166,15 +172,23 @@ class AnchorFit(nn.Module):
             0, self.idx.reshape(-1), contrib.reshape(-1, 3))
         return f
 
+    def substep(self, p, v, w, rc, q, Binv, blocked, m, keep):
+        a = self.force(p, w, rc, q, Binv, blocked) / m
+        v = (v + self.dt * a) * self.damping * keep
+        return p + self.dt * v, v
+
     def rollout(self, p, v, n, cache=None):
         """n substeps of semi-implicit Euler, differentiable in the parameters"""
         w, (rc, q, Binv, blocked, mass) = cache if cache is not None else self.prepare()
         m = mass.unsqueeze(-1)
         keep = (~self.fixed).unsqueeze(-1).to(p.dtype)
+        use_ckpt = self.checkpoint_substeps and torch.is_grad_enabled()
         for _ in range(n):
-            a = self.force(p, w, rc, q, Binv, blocked) / m
-            v = (v + self.dt * a) * self.damping * keep
-            p = p + self.dt * v
+            if use_ckpt:
+                p, v = checkpoint(self.substep, p, v, w, rc, q, Binv, blocked, m, keep,
+                                   use_reentrant=False)
+            else:
+                p, v = self.substep(p, v, w, rc, q, Binv, blocked, m, keep)
         return p, v
 
     def prepare(self):
