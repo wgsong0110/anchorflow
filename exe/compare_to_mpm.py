@@ -42,6 +42,10 @@ ap.add_argument("--dt_mult", type=int, default=40)
 ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--impulse", type=float, default=1.0)
+# the config carries no grid: scene_setup.build supplies these, and the two
+# simulators have to be given the same ones or they are not comparable
+ap.add_argument("--n_grid", type=int, default=100)
+ap.add_argument("--grid_lim", type=float, default=2.0)
 args = ap.parse_args()
 
 sys.path.insert(0, args.dreamphysics)
@@ -53,7 +57,8 @@ torch.set_grad_enabled(False)
 torch.manual_seed(0)
 wp.init()
 
-sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev,
+sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K,
+                        n_grid=args.n_grid, grid_lim=args.grid_lim, device=dev,
                         frozen_weights=True)
 AC, fixed, keep = sc.anchor_canonical, sc.fixed_mask, sc.keep
 cfg = sc.cfg
@@ -67,7 +72,7 @@ mat = torch.nonzero(keep, as_tuple=False).squeeze(-1)
 pos_m = sc.pos[mat].contiguous()
 vol_m = sc.volume[mat].contiguous()
 print(f"[setup] {sc.N} Gaussians, {mat.shape[0]} material, {sc.M} anchors; "
-      f"grid {cfg['n_grid']}^3 over {cfg['grid_lim']}")
+      f"grid {args.n_grid}^3 over {args.grid_lim}")
 
 # the impulse as DreamPhysics applies it: per particle, v += (f/m) dt
 dens = torch.full((mat.shape[0],), float(cfg["density"]), device=dev)
@@ -81,9 +86,10 @@ v0_particle = force.view(1, 3) * sc.sub_dt / (dens * vol_m).clamp(min=1e-20).uns
 solver = MPM_Simulator_WARP(10)
 solver.load_initial_data_from_torch(
     pos_m, vol_m, torch.zeros((mat.shape[0], 6), device=dev),
-    n_grid=int(cfg["n_grid"]), grid_lim=float(cfg["grid_lim"]))
-mp = {k: cfg[k] for k in ("E", "nu", "density", "material", "n_grid", "grid_lim")
-      if k in cfg}
+    n_grid=args.n_grid, grid_lim=args.grid_lim)
+mp = {k: cfg[k] for k in ("E", "nu", "density", "material") if k in cfg}
+mp["n_grid"] = args.n_grid
+mp["grid_lim"] = args.grid_lim
 mp.setdefault("material", "jelly")
 mp["g"] = cfg.get("g", [0, 0, 0])
 mp["grid_v_damping_scale"] = cfg.get("grid_v_damping_scale", 1.0)
