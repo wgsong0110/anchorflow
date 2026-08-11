@@ -178,12 +178,14 @@ for it in bar:
     # through a second-order autograd (the force is already a gradient), and
     # holding eight of them alive to back through at once is what a single
     # combined backward would need
-    total = 0.0
+    total, gs = 0.0, torch.zeros_like(s)
     for j in i.tolist():
         pred = force_at(P[j], s) / sc.mass.unsqueeze(-1)
         l = (((pred - A[j])[mv] / scale) ** 2).mean() / i.shape[0]
-        l.backward()
+        (gj,) = torch.autograd.grad(l, s)
+        gs += gj
         total += l.item()
+    s.grad = gs
     loss = torch.tensor(total)
     opt.step()
     with torch.no_grad():
