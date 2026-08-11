@@ -61,6 +61,11 @@ ap.add_argument("--warmup", type=int, default=80,
 ap.add_argument("--no_geom_init", action="store_true")
 ap.add_argument("--freeze", nargs="*", default=[], choices=["pos", "log_s", "quat"])
 ap.add_argument("--out", default=None)
+ap.add_argument("--state", default=None,
+                 help="where the full fit state lives, so a host taking its GPU back "
+                      "mid-run costs minutes rather than the whole fit. Defaults to "
+                      "--out with .state appended.")
+ap.add_argument("--resume", action="store_true")
 ap.add_argument("--eval_every", type=int, default=50)
 args = ap.parse_args()
 
@@ -157,10 +162,21 @@ groups = [{"params": [fit.pos], "lr": args.lr_pos},
 opt = torch.optim.Adam([g for g in groups if g["params"][0].requires_grad])
 sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.iters)
 
+STATE = args.state or (args.out + ".state" if args.out else None)
+start_it = 1
 print(f"\n[before]")
 best = report("init")
+if args.resume and STATE and os.path.exists(STATE):
+    blob = torch.load(STATE, map_location=dev, weights_only=False)
+    with torch.no_grad():
+        fit.pos.copy_(blob["pos"]); fit.log_s.copy_(blob["log_s"])
+        fit.quat.copy_(blob["quat"])
+    opt.load_state_dict(blob["opt"]); sched.load_state_dict(blob["sched"])
+    start_it, best = blob["iter"] + 1, blob["best"]
+    print(f"[resume] {STATE} at iteration {blob['iter']}, best {best:.1f}%")
+    report("resumed")
 t0 = time.time()
-bar = tqdm(range(1, args.iters + 1), desc="fit", ncols=90)
+bar = tqdm(range(start_it, args.iters + 1), desc="fit", ncols=90)
 for it in bar:
     # the low-deformation end first: that is where the simulator and MPM still
     # agree on direction, so the gradient there is a correction rather than a
@@ -194,6 +210,10 @@ for it in bar:
                          "quat": fit.quat.detach().cpu(), "iter": it,
                          "eig_floor": args.eig_floor, "K": args.K,
                          "n_anchors": args.n_anchors}, args.out)
+        if STATE:
+            torch.save({"pos": fit.pos.detach(), "log_s": fit.log_s.detach(),
+                         "quat": fit.quat.detach(), "opt": opt.state_dict(),
+                         "sched": sched.state_dict(), "iter": it, "best": best}, STATE)
 
 print(f"\n[done] {time.time() - t0:.0f}s")
 with torch.no_grad():
