@@ -126,6 +126,15 @@ class AnchorElasticSim:
         self.radius = float(dist2.clamp(min=0).sqrt().mean()) if radius is None else float(radius)
         self.radius = max(self.radius, 1e-8)
         self.frozen_w = None          # see freeze_weights()
+        # Directions in which the K-neighbour scatter matrix B has an eigenvalue
+        # below this fraction of its largest get F @ v = v -- no deformation
+        # assumed where there is no data to infer it from. It is a property of
+        # the anchor discretisation, not of the material, and on a branchy
+        # structure whose local neighbourhoods are near-collinear it fires often
+        # enough to be a source of artificial stiffness. Exposed because the
+        # anchor simulator moves 27% as far as MPM on the same material and this
+        # is the first thing to suspect.
+        self.eig_floor = 0.2
 
     def freeze_weights(self, on=True):
         """Hold the blend weights at their canonical values from now on.
@@ -200,7 +209,7 @@ class AnchorElasticSim:
         # a blanket regularizer, so well-observed directions are untouched.
         eigval, eigvec = eigh3x3(B)                                   # ascending, B PSD; V's columns = v_i
         lambda_max = eigval[..., -1:].clamp(min=1e-12)
-        well_observed = eigval > 0.2 * lambda_max                    # [N,3] bool, per v_i
+        well_observed = eigval > self.eig_floor * lambda_max         # [N,3] bool, per v_i
         Av = A @ eigvec                                              # [N,3,3], column i = A @ v_i
         Fv_data = Av / eigval.clamp(min=1e-12).unsqueeze(-2)         # column i = (A@v_i)/lambda_i
         Fv_identity = eigvec                                        # column i = v_i (no deformation)
@@ -256,7 +265,8 @@ class AnchorElasticSim:
             f_elastic, gaussian_pos, F, _psi = fused_energy_force(
                 self.gaussian_canonical, gaussian_pos_prev, anchor_pos,
                 self.anchor_canonical, self.nn_idx, gaussian_volume,
-                self.radius, mu, lam, w_in=self.frozen_w)
+                self.radius, mu, lam, eig_floor_frac=self.eig_floor,
+                w_in=self.frozen_w)
         else:
             anchor_pos = anchor_pos.detach().requires_grad_(True)
             E, F, gaussian_pos = self.elastic_energy(

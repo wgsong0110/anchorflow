@@ -193,7 +193,7 @@ class Scene:
 
 
 def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cuda",
-          sh_degree=3, frozen_weights=False):
+          sh_degree=3, frozen_weights=False, radius_scale=1.0, eig_floor=0.2):
     """frozen_weights holds the blend weights at their canonical values, which
     makes the step a function of the anchor positions and velocities alone --
     see AnchorElasticSim.freeze_weights. Without it the simulator is
@@ -247,8 +247,9 @@ def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cud
     M = ac.shape[0]
     # anchors and the RBF radius come from the material cloud, so the zero-volume
     # Gaussians cannot shift the physics through either
-    radius = AnchorElasticSim(pm, ac, K=K).radius
+    radius = AnchorElasticSim(pm, ac, K=K).radius * radius_scale
     sim = AnchorElasticSim(pos, ac, K=K, radius=radius)
+    sim.eig_floor = eig_floor
     w0 = sim._weights(pos, ac)
     if frozen_weights:
         sim.freeze_weights()
