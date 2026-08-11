@@ -88,20 +88,27 @@ class AnchorFit(nn.Module):
         sim = sc.sim
         self.eig_floor = eig_floor
         self.polar_iters = polar_iters
-        self.register_buffer("Xc", sim.gaussian_canonical)          # [N,3]
-        self.register_buffer("idx", sim.nn_idx)                     # [N,K]
-        self.register_buffer("vol", sc.volume)
-        self.register_buffer("mu", sc.mu)
-        self.register_buffer("lam", sc.lam)
+        # the opacity-rejected Gaussians carry zero volume, so they contribute
+        # nothing to any force and only exist to be skinned. Dropping them here
+        # is exact and removes a sixth of the work from every substep
+        mat = torch.nonzero(sc.keep, as_tuple=False).squeeze(-1)
+        self.register_buffer("mat", mat)
+        self.register_buffer("Xc_all", sim.gaussian_canonical)
+        self.register_buffer("idx_all", sim.nn_idx)
+        self.register_buffer("Xc", sim.gaussian_canonical[mat])     # [Nm,3]
+        self.register_buffer("idx", sim.nn_idx[mat])                # [Nm,K]
+        self.register_buffer("vol", sc.volume[mat])
+        self.register_buffer("mu", sc.mu[mat] if sc.mu.dim() else sc.mu)
+        self.register_buffer("lam", sc.lam[mat] if sc.lam.dim() else sc.lam)
         self.register_buffer("fixed", sc.fixed_mask)
-        self.register_buffer("dens_vol", sc.mass.new_zeros(sc.volume.shape))
+        self.register_buffer("dens_vol", sc.mass.new_zeros(mat.shape))
         self.M = sc.M
         self.dt = sc.sub_dt
         self.damping = sc.damping
         # the per-Gaussian mass that gets spread onto anchors. Taken from the
         # scene rather than recomputed, so a fitted anchor set redistributes the
         # same material instead of quietly creating some
-        self.dens_vol.copy_(sc.volume * _density_of(sc))
+        self.dens_vol.copy_((sc.volume * _density_of(sc))[mat])
 
         self.pos = nn.Parameter(sc.anchor_canonical.clone())
         self.log_s = nn.Parameter(torch.full((sc.M, 3), float(torch.log(
@@ -235,10 +242,28 @@ class AnchorFit(nn.Module):
         return w, self.rest(w)
 
     @torch.no_grad()
-    def skin(self, p, cache=None):
-        w, (rc, q, Binv, blocked, _) = cache if cache is not None else self.prepare()
-        F, cc = self.deformation(p, w, rc, q, Binv, blocked)
-        return cc + torch.einsum("nij,nj->ni", F, self.Xc - rc)
+    def skin(self, p):
+        """every Gaussian, including the zero-volume ones the physics skips"""
+        a = self.pos[self.idx_all]
+        d = self.Xc_all.unsqueeze(1) - a
+        R = quat_to_R(self.quat)[self.idx_all]
+        sg = self.log_s.exp()[self.idx_all]
+        local = torch.einsum("nkji,nkj->nki", R, d) / sg.clamp(min=1e-6)
+        w = torch.exp(-0.5 * (local * local).sum(-1)) + 1e-8
+        w = w / w.sum(-1, keepdim=True)
+        rc = (w.unsqueeze(-1) * a).sum(1)
+        q = a - rc.unsqueeze(1)
+        B = torch.einsum("nk,nki,nkj->nij", w, q, q)
+        ev, evec = eigh3x3(B)
+        well = ev > self.eig_floor * ev[..., -1:].clamp(min=1e-12)
+        inv = torch.where(well, 1.0 / ev.clamp(min=1e-12), torch.zeros_like(ev))
+        Binv = evec @ torch.diag_embed(inv) @ evec.transpose(-1, -2)
+        blocked = evec @ torch.diag_embed((~well).to(ev.dtype)) @ evec.transpose(-1, -2)
+        nbr = p[self.idx_all]
+        cc = (w.unsqueeze(-1) * nbr).sum(1)
+        A = torch.einsum("nk,nki,nkj->nij", w, nbr - cc.unsqueeze(1), q)
+        F = A @ Binv + blocked
+        return cc + torch.einsum("nij,nj->ni", F, self.Xc_all - rc)
 
 
 def _R_to_quat(R):
