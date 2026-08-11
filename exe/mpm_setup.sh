@@ -10,8 +10,10 @@
 #   bash exe/mpm_setup.sh
 #
 # Needs R2 credentials in the environment (R2_ACCESS_KEY / R2_SECRET /
-# R2_ENDPOINT) or an existing rclone config, and gh authenticated for the CUDA
-# release download.
+# R2_ENDPOINT) or an existing rclone config. The CUDA kernels come from
+# tarballs staged in $WS/cuda_assets, or from gh if it happens to be installed
+# and authenticated -- staging is preferred, since it keeps a GitHub token off a
+# rented machine.
 set -uo pipefail
 WS="${WS:-/workspace}"
 AF="$WS/anchorflow"
@@ -70,13 +72,21 @@ else
 fi
 [ -s "$PLY" ] && echo "  $(stat -c%s "$PLY") bytes" || { echo "  MISSING"; fail=1; }
 
-echo "[setup] CUDA step kernel"
-# The release tag carries a hash of the .cu sources, so the binary is matched to
+echo "[setup] CUDA kernels"
+# The release tag carries a hash of the .cu sources, so a binary is matched to
 # the code that is checked out rather than to whatever was built most recently.
 # Mirrors wbuild's hashing so an instance does not need wbuild itself.
-python3 - "$AF" <<'PYEOF'
+#
+# Two ways in, and staging is the preferred one -- it keeps a GitHub token off a
+# rented machine. From the local checkout:
+#   gh release download cuda-build-<lib>-<hash> --pattern '*.tar.gz' --dir D
+#   scp D/*.tar.gz root@host:/workspace/cuda_assets/
+CUDA_ASSETS="${CUDA_ASSETS:-$WS/cuda_assets}"
+mkdir -p "$CUDA_ASSETS"
+python3 - "$AF" "$CUDA_ASSETS" <<'PYEOF'
 import json, os, pathlib, subprocess, sys
-root = pathlib.Path(sys.argv[1])
+root, staged = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+missing = []
 prefix = json.load(open(root / ".wexec.json")).get("cuda_build", {}).get("release_tag", "cuda-build")
 repo = "wgsong0110/anchorflow"
 for setup_py in sorted(root.rglob("setup.py")):
@@ -94,15 +104,21 @@ for setup_py in sorted(root.rglob("setup.py")):
     if so:
         print(f"  {d.name}: {so[0].name} already present")
         continue
-    r = subprocess.run(["gh", "release", "download", tag, "--repo", repo,
-                        "--pattern", f"{d.name}.tar.gz", "--dir", "/tmp"],
-                       capture_output=True, text=True)
-    if r.returncode or not os.path.exists(f"/tmp/{d.name}.tar.gz"):
-        print(f"  {d.name}: release {tag} NOT FOUND -- trigger a build (wbuild trigger)")
-        sys.exit(3)
-    subprocess.run(["tar", "xzf", f"/tmp/{d.name}.tar.gz", "-C", str(root)], check=True)
-    os.unlink(f"/tmp/{d.name}.tar.gz")
+    tarball = staged / f"{d.name}.tar.gz"
+    if not tarball.exists():
+        r = subprocess.run(["gh", "release", "download", tag, "--repo", repo,
+                            "--pattern", f"{d.name}.tar.gz", "--dir", "/tmp"],
+                           capture_output=True, text=True)
+        tarball = pathlib.Path(f"/tmp/{d.name}.tar.gz")
+        if r.returncode or not tarball.exists():
+            print(f"  {d.name}: no staged {d.name}.tar.gz and gh could not fetch {tag}")
+            missing.append(d.name)
+            continue
+    subprocess.run(["tar", "xzf", str(tarball), "-C", str(root)], check=True)
     print(f"  {d.name}: {tag}")
+if missing:
+    print(f"  MISSING: {', '.join(missing)} -- stage the tarballs or run wbuild trigger")
+    sys.exit(3)
 PYEOF
 [ $? -ne 0 ] && fail=1
 
@@ -114,7 +130,11 @@ try:
     import warp; warp.init()
     from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP
     from scene.gaussian_model import GaussianModel
-    from anchorstep import fused_energy_force
+    import anchorstep
+    if not getattr(anchorstep, "HAVE_CUDA", False):
+        # the wrapper imports cleanly without its .so and silently falls back,
+        # which is a 30x slowdown that shows up as a run that never finishes
+        raise RuntimeError("anchorstep imported but its CUDA kernel is not built")
     from anchorflow import scene_setup
     from anchorflow.mpm_teacher import MPMTeacher
     print("  OK -- MPM solver, SC-GS loader, CUDA kernel, anchorflow")
