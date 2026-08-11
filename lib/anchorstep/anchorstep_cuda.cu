@@ -160,6 +160,7 @@ __global__ void anchorstep_forward_kernel(
     const float* __restrict__ mu_p,   // [N] per-particle Lame mu
     const float* __restrict__ lam_p,  // [N] per-particle Lame lambda
     const float* __restrict__ w_in,   // [N,K] or nullptr -- see below
+    int rot_fallback,                 // see where Cfix is built
     float radius, int N, int K, float eig_floor_frac,
     int stage,   // profiling only. 1=stop after weights+A/B (no eigh);
                  // 2=+shape-match eigh (F built); 25=+polar eigh ONLY (R in
@@ -256,6 +257,33 @@ __global__ void anchorstep_forward_kernel(
       Binv[i * 3 + j] = sb;
       Cfix[i * 3 + j] = sc;
     }
+  if (rot_fallback) {
+    // The identity fallback assumes no deformation along directions the K
+    // neighbours do not span. That also forbids those material directions from
+    // ROTATING with the body: under a pure rotation R the answer is F = R, so
+    // F v_j should be R v_j and not v_j. On a branch whose neighbours lie along
+    // it, the unspanned directions are the ones perpendicular to it -- exactly
+    // where bending happens -- so the fallback fights the motion it is most
+    // needed for, and the anchor simulator moves 27% as far as MPM.
+    //
+    // Rotating instead of freezing: estimate the rotation from a clamped solve
+    // (whose noise is mostly stretch, which the polar factor discards) and use
+    // it on the blocked directions. Under clean rigid motion this recovers
+    // F = R exactly, and it never divides by a small eigenvalue.
+    float invc[3], Fc[9], Bc[9], Rhat[9];
+    for (int j = 0; j < 3; ++j) invc[j] = 1.f / fmaxf(l[j], eig_floor_frac * lmax);
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j) {
+        float sb = 0.f;
+        for (int k = 0; k < 3; ++k) sb += V[i * 3 + k] * invc[k] * V[j * 3 + k];
+        Bc[i * 3 + j] = sb;
+      }
+    mat3_mul(A, Bc, Fc);
+    polar_R(Fc, Rhat);
+    float Cr[9];
+    mat3_mul(Rhat, Cfix, Cr);          // Rhat applied to the blocked projector
+    for (int i = 0; i < 9; ++i) Cfix[i] = Cr[i];
+  }
   float F[9];
   mat3_mul(A, Binv, F);
   for (int i = 0; i < 9; ++i) F[i] += Cfix[i];
@@ -390,7 +418,8 @@ std::vector<torch::Tensor> anchorstep_forward(
     torch::Tensor gaussian_canonical, torch::Tensor gaussian_pos_prev,
     torch::Tensor anchor_pos, torch::Tensor anchor_rest, torch::Tensor nn_idx,
     torch::Tensor volume, torch::Tensor mu_p, torch::Tensor lam_p,
-    double radius, double eig_floor_frac, int64_t stage, torch::Tensor w_in) {
+    double radius, double eig_floor_frac, int64_t stage, torch::Tensor w_in,
+    int64_t rot_fallback) {
   CHECK_CUDA(anchor_pos);
   int N = gaussian_canonical.size(0);
   int K = nn_idx.size(1);
@@ -419,7 +448,7 @@ std::vector<torch::Tensor> anchorstep_forward(
       nn_idx.contiguous().data_ptr<long>(),
       volume.contiguous().data_ptr<float>(),
       mu_p.contiguous().data_ptr<float>(), lam_p.contiguous().data_ptr<float>(),
-      w_in_ptr,
+      w_in_ptr, (int)rot_fallback,
       (float)radius, N, K, (float)eig_floor_frac, (int)stage,
       out_w.data_ptr<float>(),
       out_F.data_ptr<float>(), out_pos.data_ptr<float>(), out_psi.data_ptr<float>(),
@@ -436,6 +465,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         // an undefined tensor as the default surfaces in Python as None, and
         // None does not convert back to torch::Tensor -- omitting w_in then
         // fails to match the overload at all. An empty tensor round-trips.
-        pybind11::arg("w_in") = torch::zeros({0}));
+        pybind11::arg("w_in") = torch::zeros({0}),
+        pybind11::arg("rot_fallback") = 0);
   m.def("backward_gather", &anchorstep_backward_gather, "Analytic anchor force backward, contention-free CSR gather (CUDA)");
 }

@@ -49,7 +49,7 @@ def build_csr(nn_idx, M):
 
 def fused_energy_force(gaussian_canonical, gaussian_pos_prev, anchor_pos,
                         anchor_rest, nn_idx, volume, radius, mu, lam,
-                        eig_floor_frac=0.2, w_in=None):
+                        eig_floor_frac=0.2, w_in=None, rot_fallback=False):
     """One fused physics evaluation. All tensors float32 CUDA.
 
     mu/lam may be scalars OR per-particle [N] tensors: PhysGaussian scenes set
@@ -77,7 +77,8 @@ def fused_energy_force(gaussian_canonical, gaussian_pos_prev, anchor_pos,
     w, F, pos, psi, G, c = _fwd(
         gaussian_canonical, gaussian_pos_prev, anchor_pos, anchor_rest,
         nn_idx, volume, mu, lam, float(radius), float(eig_floor_frac), 3,
-        w_in if w_in is not None else torch.Tensor())
+        w_in if w_in is not None else torch.zeros(0, device=anchor_pos.device),
+        int(bool(rot_fallback)))
     M = anchor_rest.shape[0]
     off, gid, slot = build_csr(nn_idx, M)
     grad = _bwd_gather(anchor_rest, volume, w, G, c, off, gid, slot,

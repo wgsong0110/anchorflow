@@ -135,6 +135,9 @@ class AnchorElasticSim:
         # anchor simulator moves 27% as far as MPM on the same material and this
         # is the first thing to suspect.
         self.eig_floor = 0.2
+        # Rotate the blocked directions instead of freezing them -- see the
+        # comment where the fallback is applied in _shape_match.
+        self.rot_fallback = False
 
     def freeze_weights(self, on=True):
         """Hold the blend weights at their canonical values from now on.
@@ -212,8 +215,22 @@ class AnchorElasticSim:
         well_observed = eigval > self.eig_floor * lambda_max         # [N,3] bool, per v_i
         Av = A @ eigvec                                              # [N,3,3], column i = A @ v_i
         Fv_data = Av / eigval.clamp(min=1e-12).unsqueeze(-2)         # column i = (A@v_i)/lambda_i
-        Fv_identity = eigvec                                        # column i = v_i (no deformation)
-        Fv = torch.where(well_observed.unsqueeze(-2), Fv_data, Fv_identity)
+        # The identity fallback assumes no deformation along a direction with no
+        # data. It also forbids that material direction from ROTATING with the
+        # body: under a pure rotation R the answer is F = R, so F v_i should be
+        # R v_i, not v_i. On a branch whose neighbours lie along it the unspanned
+        # directions are the perpendicular ones -- where bending happens -- so
+        # the fallback resists exactly the motion it is most needed for.
+        if self.rot_fallback:
+            # a clamped solve, used only to extract a rotation: its noise is
+            # mostly stretch, which the polar factor discards
+            F_c = (Av / torch.maximum(eigval, self.eig_floor * lambda_max).unsqueeze(-2)
+                   ) @ eigvec.transpose(-1, -2)
+            R_hat, _ = _polar_decompose(F_c)
+            Fv_fallback = R_hat @ eigvec
+        else:
+            Fv_fallback = eigvec                                    # column i = v_i
+        Fv = torch.where(well_observed.unsqueeze(-2), Fv_data, Fv_fallback)
         F = Fv @ eigvec.transpose(-1, -2)
         gaussian_pos = cur_centroid + torch.einsum(
             "nij,nj->ni", F, self.gaussian_canonical - rest_centroid)
@@ -266,7 +283,7 @@ class AnchorElasticSim:
                 self.gaussian_canonical, gaussian_pos_prev, anchor_pos,
                 self.anchor_canonical, self.nn_idx, gaussian_volume,
                 self.radius, mu, lam, eig_floor_frac=self.eig_floor,
-                w_in=self.frozen_w)
+                w_in=self.frozen_w, rot_fallback=self.rot_fallback)
         else:
             anchor_pos = anchor_pos.detach().requires_grad_(True)
             E, F, gaussian_pos = self.elastic_energy(

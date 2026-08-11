@@ -193,7 +193,8 @@ class Scene:
 
 
 def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cuda",
-          sh_degree=3, frozen_weights=False, radius_scale=1.0, eig_floor=0.2):
+          sh_degree=3, frozen_weights=False, radius_scale=1.0, eig_floor=0.2,
+          rot_fallback=False):
     """frozen_weights holds the blend weights at their canonical values, which
     makes the step a function of the anchor positions and velocities alone --
     see AnchorElasticSim.freeze_weights. Without it the simulator is
@@ -250,6 +251,7 @@ def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cud
     radius = AnchorElasticSim(pm, ac, K=K).radius * radius_scale
     sim = AnchorElasticSim(pos, ac, K=K, radius=radius)
     sim.eig_floor = eig_floor
+    sim.rot_fallback = rot_fallback
     w0 = sim._weights(pos, ac)
     if frozen_weights:
         sim.freeze_weights()
