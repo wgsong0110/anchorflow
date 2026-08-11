@@ -40,6 +40,8 @@ class MPMTeacher:
         self.sc = sc
         self.affine = affine
         self.dev = sc.pos.device
+        # warp resolves devices by name and rejects a torch.device object
+        self.wp_dev = str(self.dev)
         cfg = sc.cfg
         self.mat = torch.nonzero(sc.keep, as_tuple=False).squeeze(-1)
         self.pos_m = sc.pos[self.mat].contiguous()
@@ -148,7 +150,7 @@ class MPMTeacher:
         out = []
         for _ in range(frames):
             for _ in range(dt_mult):
-                self.solver.p2g2p(None, self.sc.sub_dt, device=self.dev)
+                self.solver.p2g2p(None, self.sc.sub_dt, device=self.wp_dev)
             out.append(self.project(self.solver.export_particle_x_to_torch()))
         return out
 
