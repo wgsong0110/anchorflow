@@ -51,6 +51,8 @@ ap.add_argument("--eig_floors", type=float, nargs="+",
 ap.add_argument("--radius_scales", type=float, nargs="+", default=[1.0, 1.5, 2.0, 3.0])
 ap.add_argument("--anchors", type=int, nargs="+", default=[512])
 ap.add_argument("--Ks", type=int, nargs="+", default=[8])
+ap.add_argument("--rot_fallbacks", type=int, nargs="+", default=[0],
+                 help="0 freezes the unspanned directions, 1 rotates them with the body")
 args = ap.parse_args()
 
 sys.path.insert(0, args.dreamphysics)
@@ -109,7 +111,7 @@ def mpm_run(force):
 _SCENES = {}
 
 
-def scene_for(M, K, rs, ef):
+def scene_for(M, K, rs, ef, rf=0):
     """the material never changes here; only how the anchors discretise it"""
     key = (M, K, rs)
     if key not in _SCENES:
@@ -119,11 +121,12 @@ def scene_for(M, K, rs, ef):
                                           radius_scale=rs)
     s_ = _SCENES[key]
     s_.sim.eig_floor = ef
+    s_.sim.rot_fallback = bool(rf)
     return s_
 
 
-def anchor_run(force, M, K, rs, ef):
-    s_ = scene_for(M, K, rs, ef)
+def anchor_run(force, M, K, rs, ef, rf=0):
+    s_ = scene_for(M, K, rs, ef, rf)
     p, v, gp = s_.anchor_canonical.clone(), s_.initial_velocity(force), s_.pos.clone()
     out = [gp[mat].clone()]
     for _ in range(args.frames):
@@ -143,24 +146,27 @@ def score(A, M):
 MPM0 = mpm_run(base_force)
 print(f"[reference] MPM peak {(MPM0 - MPM0[0]).norm(dim=-1).max():.5f}, "
       f"material held at the config's values throughout\n")
-print(f"  {'anchors':>8} {'K':>3} {'radius x':>9} {'eig floor':>10} {'error':>9} "
-      f"{'motion vs MPM':>15}")
+print(f"  {'anchors':>8} {'K':>3} {'radius x':>9} {'eig floor':>10} {'blocked':>9} "
+      f"{'error':>9} {'motion vs MPM':>15}")
 best, best_e = None, 1e9
 for M in args.anchors:
     for K in args.Ks:
         for rs in args.radius_scales:
             for ef in args.eig_floors:
-                A = anchor_run(base_force, M, K, rs, ef)
-                if A is None:
-                    print(f"  {M:8d} {K:3d} {rs:9.2f} {ef:10.4f} {'diverged':>9}")
-                    continue
-                e, m = score(A, MPM0)
-                print(f"  {M:8d} {K:3d} {rs:9.2f} {ef:10.4f} {100*e:8.2f}% "
-                      f"{100*m:14.0f}%")
-                if e < best_e:
-                    best, best_e = (M, K, rs, ef), e
+                for rf in args.rot_fallbacks:
+                    A = anchor_run(base_force, M, K, rs, ef, rf)
+                    tag = "rotate" if rf else "freeze"
+                    if A is None:
+                        print(f"  {M:8d} {K:3d} {rs:9.2f} {ef:10.4f} {tag:>9} "
+                              f"{'diverged':>9}")
+                        continue
+                    e, m = score(A, MPM0)
+                    print(f"  {M:8d} {K:3d} {rs:9.2f} {ef:10.4f} {tag:>9} "
+                          f"{100*e:8.2f}% {100*m:14.0f}%")
+                    if e < best_e:
+                        best, best_e = (M, K, rs, ef, rf), e
 print(f"\n[fit] anchors {best[0]}, K {best[1]}, radius x{best[2]}, eig floor "
-      f"{best[3]} gives {100*best_e:.2f}%")
+      f"{best[3]}, {'rotate' if best[4] else 'freeze'} gives {100*best_e:.2f}%")
 
 # a stiffness change moves amplitude and period together; if only one of them
 # needed changing, the fit will not hold at other impulses
@@ -171,7 +177,7 @@ for i in range(args.n_check):
     s_ = 0.5 * (4.0 ** torch.rand(1, device=dev, generator=gen).item())
     f = (rand_rot(gen, dev) @ base_force) * s_
     MM = mpm_run(f)
-    e0, _ = score(anchor_run(f, 512, 8, 1.0, 0.2), MM)
+    e0, _ = score(anchor_run(f, 512, 8, 1.0, 0.2, 0), MM)
     e1, m1 = score(anchor_run(f, *best), MM)
     print(f"  {i:8d} {100*e0:9.2f}% {100*e1:9.2f}% {100*m1:14.0f}%")
 print(f"\n[note] the material is the config's throughout. What is fitted is how "
