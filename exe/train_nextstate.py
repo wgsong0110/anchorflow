@@ -604,9 +604,8 @@ def collect_dagger(n_traj, k_steps):
                 # For MPM that means lifting this anchor state back to particles,
                 # which costs the projection floor and almost nothing beyond it
                 if TEACHER is not None:
-                    fut = list(TEACHER.query(p, v, k_steps, args.dt_mult))
-                    if not all(torch.isfinite(f).all() for f in fut):
-                        fut = []
+                    got = TEACHER.query(p, v, k_steps, args.dt_mult)
+                    fut = [] if got is None else list(got)
                 else:
                     q, w = p.clone(), v.clone()
                     g2 = sc.skin(q, sc.pos.clone())

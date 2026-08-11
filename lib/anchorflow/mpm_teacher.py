@@ -42,11 +42,17 @@ class MPMTeacher:
     source.
     """
 
-    def __init__(self, sc, n_grid=100, grid_lim=2.0, affine=True):
+    def __init__(self, sc, n_grid=100, grid_lim=2.0, affine=True, margin=0.02):
         from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP
 
         self.sc = sc
         self.affine = affine
+        self.grid_lim = grid_lim
+        # how close to the domain wall a lifted particle may sit. MPM writes to
+        # the cells around each particle, so a particle at the very edge indexes
+        # past the grid; warp does not bounds-check and the process dies with an
+        # illegal memory access rather than an exception
+        self.margin = margin * grid_lim
         self.dev = sc.pos.device
         # warp resolves devices by name and rejects a torch.device object
         self.wp_dev = str(self.dev)
@@ -185,7 +191,17 @@ class MPMTeacher:
         """what MPM does for k coarse steps starting from an anchor state.
 
         This is the DAgger label: the student is rolled out, and wherever it
-        gets to, the teacher is asked from exactly there.
+        gets to, the teacher is asked from exactly there. Returns None when the
+        student has left the domain MPM is defined on -- a state it cannot
+        answer for is not a label, and handing it over kills the process
+        outright (warp does not bounds-check its grid writes).
         """
-        self._set(*self.lift(p, v))
-        return torch.stack(self._advance(k, dt_mult))
+        x, vp, F, C = self.lift(p, v)
+        if not (torch.isfinite(x).all() and torch.isfinite(vp).all()
+                and torch.isfinite(F).all() and torch.isfinite(C).all()):
+            return None
+        if x.min() < self.margin or x.max() > self.grid_lim - self.margin:
+            return None
+        self._set(x, vp, F, C)
+        out = self._advance(k, dt_mult)
+        return None if not all(torch.isfinite(o).all() for o in out) else torch.stack(out)
