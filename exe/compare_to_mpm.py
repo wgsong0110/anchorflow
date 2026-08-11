@@ -44,6 +44,14 @@ ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--impulse", type=float, default=1.0)
 # the config carries no grid: scene_setup.build supplies these, and the two
 # simulators have to be given the same ones or they are not comparable
+ap.add_argument("--match_v0", action="store_true",
+                 help="start MPM from the velocity the anchors actually carry, instead of the "
+                      "per-particle one PhysGaussian's impulse produces. The two are the same "
+                      "momentum but not the same motion: the config's impulse is applied as "
+                      "f*dt/(rho*V) per particle, and V varies enough across the cloud that "
+                      "averaging it onto anchors throws away most of the kinetic energy. "
+                      "Without this the comparison confounds a difference in dynamics with a "
+                      "difference in how the impulse is delivered.")
 ap.add_argument("--n_grid", type=int, default=100)
 ap.add_argument("--grid_lim", type=float, default=2.0)
 args = ap.parse_args()
@@ -110,7 +118,19 @@ for bc in cfg.get("boundary_conditions", []):
     if bc["type"] == "cuboid":
         solver.set_velocity_on_cuboid(bc["point"], bc["size"], [0.0, 0.0, 0.0],
                                        start_time=0.0, end_time=999.0, reset=1)
-solver.import_particle_v_from_torch(v0_particle)
+if args.match_v0:
+    # the anchors' own initial velocity, put back on the particles the same way
+    # skinning would: both simulators then start from identical motion
+    dv_anchor = sc.impulse_dv(force)
+    W0 = sc.sim._canonical_weights()
+    v0_particle = (W0[mat].unsqueeze(-1) * dv_anchor[sc.sim.nn_idx[mat]]).sum(1)
+    print(f"[impulse] matched: |v| max {v0_particle.norm(dim=-1).max():.4f}, "
+          f"mean {v0_particle.norm(dim=-1).mean():.4f}")
+else:
+    print(f"[impulse] PhysGaussian's per-particle f*dt/(rho*V): "
+          f"|v| max {v0_particle.norm(dim=-1).max():.4f}, "
+          f"mean {v0_particle.norm(dim=-1).mean():.4f}")
+solver.import_particle_v_from_torch(v0_particle.contiguous())
 
 mpm = [pos_m.clone()]
 for _ in tqdm(range(args.frames), desc="MPM", ncols=90):
