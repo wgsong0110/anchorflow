@@ -101,19 +101,20 @@ mp["grid_lim"] = args.grid_lim
 mp.setdefault("material", "jelly")
 mp["g"] = cfg.get("g", [0, 0, 0])
 mp["grid_v_damping_scale"] = cfg.get("grid_v_damping_scale", 1.0)
+# region-varying material is what gives ficus a soft canopy on a stiff trunk,
+# and set_parameters_dict is where the solver takes it -- set_E_nu_from_torch
+# does not exist in this version, so passing E/nu per particle silently did
+# nothing and MPM ran uniformly stiff while the anchor simulator did not
+if "additional_material_params" in cfg:
+    mp["additional_material_params"] = cfg["additional_material_params"]
 solver.set_parameters_dict(mp)
 # region-varying material is what makes ficus behave the way it does (soft
 # canopy, stiff trunk), and the solver takes it per particle
-E = torch.full((mat.shape[0],), float(cfg["E"]), device=dev)
-NU = torch.full((mat.shape[0],), float(cfg["nu"]), device=dev)
-for reg in cfg.get("additional_material_params", []):
-    c = torch.tensor(reg["point"], device=dev)
-    s_ = torch.tensor(reg["size"], device=dev)
-    ins = ((pos_m - c).abs() <= s_).all(-1)
-    E[ins] = reg["E"]; NU[ins] = reg["nu"]
-if hasattr(solver, "set_E_nu_from_torch"):
-    solver.set_E_nu_from_torch(E, NU, device=dev)
 solver.finalize_mu_lam()
+import warp as _wp
+_mu = _wp.to_torch(solver.mpm_model.mu)
+print(f"[stiffness] MPM     mu {_mu.min():.4g}..{_mu.max():.4g}")
+print(f"[stiffness] anchors mu {sc.mu[mat].min():.4g}..{sc.mu[mat].max():.4g}")
 for bc in cfg.get("boundary_conditions", []):
     if bc["type"] == "cuboid":
         solver.set_velocity_on_cuboid(bc["point"], bc["size"], [0.0, 0.0, 0.0],
