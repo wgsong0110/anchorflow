@@ -76,7 +76,10 @@ with torch.no_grad():
         print(f"  {f:6d} {moved:10.6f} {d:12.3e} {100*d/moved.clamp(min=1e-12):9.3f}%")
 
 # ---- 2. the gradient -------------------------------------------------------
-target = p_ref.detach().clone()
+# a target the simulator does NOT already reach. Differentiating against its own
+# trajectory gives a loss of 1e-11 and gradients of 1e-9, which is numerical
+# noise and cannot tell a correct derivative from a wrong one
+target = (AC + 1.3 * (p_ref - AC)).detach().clone()
 p, v = AC.clone(), sc.initial_velocity(base)
 t0 = time.time()
 w, rest = fit.prepare()
@@ -120,8 +123,25 @@ def loss_at(delta):
 
 
 num = (loss_at(eps) - loss_at(-eps)) / (2 * eps)
-print(f"\n[3. finite difference] anchor {j}, x: analytic {g_ana:.6e}, "
+print()
+print(f"[3. finite difference] anchor {j}, x: analytic {g_ana:.6e}, "
       f"numerical {num:.6e}, ratio {num / g_ana if g_ana else float('nan'):.4f}")
 print(f"    the two agreeing means the force and its scatter are the derivative of "
       f"the\n    energy they are supposed to come from, not merely something "
       f"plausible.")
+
+# ---- 4. does orienting the anchors give the rotation a gradient? -----------
+fit.zero_grad(set_to_none=True)
+thin = fit.init_from_geometry()
+w, rest = fit.prepare()
+p, v = AC.clone(), sc.initial_velocity(base)
+for _ in range(args.frames):
+    p, v = fit.rollout(p, v, args.dt_mult, cache=(w, rest))
+((p - target) ** 2).mean().backward()
+sc_ = fit.log_s.exp()
+ratio = (sc_.max(-1).values / sc_.min(-1).values).median()
+print(f"\n[4. oriented init] {thin} anchors kept the isotropic radius; "
+      f"long-to-short axis ratio, median {ratio:.2f}")
+for n, q in fit.named_parameters():
+    g = q.grad
+    print(f"  {n:8} |grad| mean {g.norm(dim=-1).mean():.3e}, max {g.norm(dim=-1).max():.3e}")

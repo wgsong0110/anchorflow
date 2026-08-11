@@ -110,6 +110,45 @@ class AnchorFit(nn.Module):
         q0[:, 0] = 1.0
         self.quat = nn.Parameter(q0)
 
+    @torch.no_grad()
+    def init_from_geometry(self, spread=1.0):
+        """orient and stretch each anchor along the material it holds.
+
+        Isotropic scales make the kernel rotation-invariant, so the rotation has
+        exactly zero gradient and never leaves its initial value -- the symmetry
+        has to be broken by the initialisation rather than by the fit. The
+        second moment of the Gaussians an anchor is responsible for is the
+        natural thing to break it with: on a branch it comes out long along the
+        branch and thin across it, which is the shape the whole exercise is
+        about.
+
+        The overall size is held at what the isotropic radius was, so this
+        changes the shape of each anchor's reach and not how much it reaches.
+        """
+        w = self.weights()                                           # [N,K]
+        flat = self.idx.reshape(-1)
+        wf = w.reshape(-1)
+        d = self.Xc.unsqueeze(1) - self.pos[self.idx]                # [N,K,3]
+        df = d.reshape(-1, 3)
+        tot = torch.zeros(self.M, device=w.device).index_add_(0, flat, wf).clamp(min=1e-12)
+        C = torch.zeros(self.M, 3, 3, device=w.device).index_add_(
+            0, flat, wf.reshape(-1, 1, 1) * (df.unsqueeze(-1) * df.unsqueeze(-2)))
+        C = C / tot.reshape(-1, 1, 1)
+        ev, evec = eigh3x3(C + 1e-12 * torch.eye(3, device=w.device))
+        s = ev.clamp(min=1e-12).sqrt()
+        # anchors holding almost nothing have a degenerate second moment and
+        # would be initialised as slivers; those keep the isotropic radius
+        thin = (ev[..., 0] < 1e-4 * ev[..., -1]) | (tot < 1e-8)
+        s = s / s.mean(-1, keepdim=True).clamp(min=1e-12)             # shape only
+        s = 1.0 + spread * (s - 1.0)
+        s = s * self.log_s.exp().mean(-1, keepdim=True)
+        s = torch.where(thin.unsqueeze(-1), self.log_s.exp(), s)
+        self.log_s.copy_(s.clamp(min=1e-6).log())
+        R = torch.where(thin.reshape(-1, 1, 1),
+                        torch.eye(3, device=w.device).expand_as(evec), evec)
+        self.quat.copy_(_R_to_quat(R))
+        return int(thin.sum())
+
     # ---- the discretisation ------------------------------------------------
     def weights(self):
         """[N,K], normalised. Mahalanobis in each anchor's own frame, which is
@@ -200,6 +239,32 @@ class AnchorFit(nn.Module):
         w, (rc, q, Binv, blocked, _) = cache if cache is not None else self.prepare()
         F, cc = self.deformation(p, w, rc, q, Binv, blocked)
         return cc + torch.einsum("nij,nj->ni", F, self.Xc - rc)
+
+
+def _R_to_quat(R):
+    """[...,3,3] -> [...,4], by the branch with the largest denominator so no
+    case divides by something near zero"""
+    m = R.reshape(-1, 3, 3)
+    t = m[:, 0, 0] + m[:, 1, 1] + m[:, 2, 2]
+    q = torch.zeros(m.shape[0], 4, device=m.device, dtype=m.dtype)
+    big = t > 0
+    r = (1.0 + t).clamp(min=1e-12).sqrt()
+    q[big] = torch.stack([0.5 * r, (m[:, 2, 1] - m[:, 1, 2]) / (2 * r),
+                          (m[:, 0, 2] - m[:, 2, 0]) / (2 * r),
+                          (m[:, 1, 0] - m[:, 0, 1]) / (2 * r)], -1)[big]
+    for i in range(3):
+        j, k = (i + 1) % 3, (i + 2) % 3
+        sel = (~big) & (m[:, i, i] >= m[:, j, j]) & (m[:, i, i] >= m[:, k, k])
+        if not sel.any():
+            continue
+        r = (1.0 + m[:, i, i] - m[:, j, j] - m[:, k, k]).clamp(min=1e-12).sqrt()
+        col = torch.zeros_like(q)
+        col[:, 0] = (m[:, k, j] - m[:, j, k]) / (2 * r)
+        col[:, 1 + i] = 0.5 * r
+        col[:, 1 + j] = (m[:, j, i] + m[:, i, j]) / (2 * r)
+        col[:, 1 + k] = (m[:, k, i] + m[:, i, k]) / (2 * r)
+        q[sel] = col[sel]
+    return q.reshape(*R.shape[:-2], 4)
 
 
 def _density_of(sc):
