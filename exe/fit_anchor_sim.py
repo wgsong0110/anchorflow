@@ -20,6 +20,18 @@ survives a frame is exactly what the project cares about.
 The step is relative: divided by how far MPM moved over it. Late frames move
 less as the motion damps out, and an absolute loss would spend all its weight on
 the first few frames, which are the ones already correct.
+
+Fitted on MPM's states alone this halves the one-step error and makes the
+ROLLOUT worse -- 12.5% to 14.1% against MPM's particles, with the motion falling
+to 70% of MPM's. The reason is the one this project already met at the level of
+the learned student: the loss is measured where MPM goes and the simulator has
+to run where it goes itself. At MPM's states the anchor simulator always
+overshoots, so a one-step loss there teaches it to move less, and sixty steps of
+that is a simulator that damps.
+
+So the states are also drawn from the simulator's own rollout, with MPM asked
+what happens from there -- which needs an expert that can be started from an
+arbitrary anchor state, and that is what anchorflow.mpm_teacher's lift is for.
 """
 from __future__ import annotations
 
@@ -73,6 +85,18 @@ ap.add_argument("--traj_cache", default=None,
                  help="the MPM reference trajectories. Regenerating them on every "
                       "restart is minutes of GPU each time and they are identical, "
                       "being drawn from fixed seeds.")
+ap.add_argument("--dagger_every", type=int, default=40,
+                 help="iterations between rounds of collecting the simulator's own "
+                      "states and labelling them with MPM. Zero fits on MPM's states "
+                      "alone, which damps the rollout.")
+ap.add_argument("--dagger_traj", type=int, default=2)
+ap.add_argument("--dagger_frames", type=int, default=25)
+ap.add_argument("--dagger_stride", type=int, default=3)
+ap.add_argument("--dagger_frac", type=float, default=0.5,
+                 help="share of each batch drawn from the simulator's own states")
+ap.add_argument("--dagger_cap", type=float, default=3.0,
+                 help="rollouts are abandoned past this multiple of the reference's "
+                      "own motion; past there the state is not one MPM can answer for")
 ap.add_argument("--r2", default=None,
                  help="rclone destination for the state, so a destroyed instance "
                       "costs the run and not the fit")
@@ -177,6 +201,33 @@ def report(tag):
     return b
 
 
+POOL = {"p": [], "v": [], "tgt": []}
+
+
+@torch.no_grad()
+def collect_dagger():
+    """roll the simulator out and ask MPM what happens from where it got to"""
+    added = skipped = 0
+    cache = fit.prepare()
+    cap = args.dagger_cap * max((P - AC)[:, ~fixed].norm(dim=-1).max().item()
+                                 for P, _ in FIT)
+    for i in range(args.dagger_traj):
+        P, V = FIT[i % len(FIT)]
+        p, v = P[0].clone(), V[0].clone()
+        for t in range(args.dagger_frames):
+            if (p - AC)[~fixed].norm(dim=-1).max() > cap or not torch.isfinite(p).all():
+                break
+            if t % args.dagger_stride == 0:
+                got = T.query(p, v, 1, args.dt_mult)
+                if got is None:
+                    skipped += 1
+                else:
+                    POOL["p"].append(p.clone()); POOL["v"].append(v.clone())
+                    POOL["tgt"].append(got[0].clone()); added += 1
+            p, v = fit.rollout(p, v, args.dt_mult, cache=cache)
+    return added, skipped
+
+
 groups = [{"params": [fit.pos], "lr": args.lr_pos},
           {"params": [fit.log_s], "lr": args.lr_scale},
           {"params": [fit.quat], "lr": args.lr_quat}]
@@ -197,7 +248,7 @@ def save_state(it, best):
                  "quat": fit.quat.detach(), "opt": opt.state_dict(),
                  "sched": sched.state_dict(), "iter": it, "best": best,
                  "rng": torch.get_rng_state(), "rng_cuda": torch.cuda.get_rng_state(),
-                 "args": vars(args)}, tmp)
+                 "pool": POOL, "args": vars(args)}, tmp)
     os.replace(tmp, STATE)
     if args.r2:
         os.system(f"rclone copy {STATE} {args.r2} 2>/dev/null &")
@@ -217,7 +268,10 @@ if args.resume and STATE:
         torch.set_rng_state(blob["rng"].cpu())
         torch.cuda.set_rng_state(blob["rng_cuda"].cpu())
         start_it, best = blob["iter"] + 1, blob["best"]
-        print(f"\n[resume] {STATE} at iteration {blob['iter']}, best {best:.1f}%")
+        for k in POOL:
+            POOL[k] = [q.to(dev) for q in blob.get("pool", {}).get(k, [])]
+        print(f"\n[resume] {STATE} at iteration {blob['iter']}, best {best:.1f}%, "
+              f"{len(POOL['p'])} collected states")
     else:
         print(f"\n[resume] nothing at {STATE}; starting from the beginning")
 if best is None:
@@ -233,14 +287,24 @@ for it in bar:
     # push in an arbitrary direction. The window opens as the fit takes hold
     frac = min(1.0, it / max(args.warmup, 1))
     hi = max(2, int(frac * (args.frames - 1)))
+    if args.dagger_every and (it == start_it or it % args.dagger_every == 0):
+        a_, s_ = collect_dagger()
+        print(f"\n  [dagger] it={it}: +{a_} states from the simulator's own rollout "
+              f"({s_} MPM could not answer for), pool {len(POOL['p'])}", flush=True)
     cache = fit.prepare()
     loss = 0.0
-    for _ in range(args.batch):
-        P, V = FIT[torch.randint(len(FIT), (1,)).item()]
-        t = torch.randint(hi, (1,)).item()
-        q, _ = fit.rollout(P[t].clone(), V[t].clone(), args.dt_mult, cache=cache)
-        d = (P[t + 1] - P[t])[~fixed].norm(dim=-1).mean().clamp(min=1e-12)
-        loss = loss + ((q - P[t + 1])[~fixed].norm(dim=-1).mean() / d)
+    for b_ in range(args.batch):
+        own = POOL["p"] and (torch.rand(1).item() < args.dagger_frac)
+        if own:
+            j = torch.randint(len(POOL["p"]), (1,)).item()
+            p0, v0, tgt = POOL["p"][j], POOL["v"][j], POOL["tgt"][j]
+        else:
+            P, V = FIT[torch.randint(len(FIT), (1,)).item()]
+            t = torch.randint(hi, (1,)).item()
+            p0, v0, tgt = P[t], V[t], P[t + 1]
+        q, _ = fit.rollout(p0.clone(), v0.clone(), args.dt_mult, cache=cache)
+        d = (tgt - p0)[~fixed].norm(dim=-1).mean().clamp(min=1e-12)
+        loss = loss + ((q - tgt)[~fixed].norm(dim=-1).mean() / d)
     loss = loss / args.batch
     opt.zero_grad(set_to_none=True)
     loss.backward()
