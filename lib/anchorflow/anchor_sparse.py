@@ -155,11 +155,22 @@ class AnchorSparse(nn.Module):
         q = a - rc[self.pair_g]
         B = torch.zeros(self.N, 3, 3, device=self.dev).index_add_(
             0, self.pair_g, w.reshape(-1, 1, 1) * (q.unsqueeze(-1) * q.unsqueeze(-2)))
-        ev, evec = eigh3x3(B)
-        well = ev > self.eig_floor * ev[..., -1:].clamp(min=1e-12)
-        inv = torch.where(well, 1.0 / ev.clamp(min=1e-12), torch.zeros_like(ev))
-        Binv = evec @ torch.diag_embed(inv) @ evec.transpose(-1, -2)
-        blocked = evec @ torch.diag_embed((~well).to(ev.dtype)) @ evec.transpose(-1, -2)
+        # The eigen route -- solve above a floor, identity below it -- is what the
+        # fixed-neighbour version does, and its derivative divides by the gap
+        # between B's eigenvalues. With a compact support the weights reach exact
+        # zero, so B goes rank deficient and those eigenvalues coincide: the
+        # forward is fine and the backward is NaN within two iterations.
+        #
+        # (B + eps I)^-1 does the same thing without an eigendecomposition. In
+        # well-observed directions it is B^-1; in unobserved ones the leftover
+        # eps (B + eps I)^-1 tends to the identity, which is exactly the fallback
+        # the eigen version applies by hand, and it arrives smoothly rather than
+        # at a threshold.
+        eps = self.eig_floor * (B.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0
+                                 ).clamp(min=1e-20).reshape(-1, 1, 1)
+        eye = torch.eye(3, device=self.dev)
+        Binv = torch.linalg.inv(B + eps * eye)
+        blocked = eps * Binv
         mass = torch.zeros(self.M, device=self.dev).index_add_(
             0, self.pair_a, self.dens_vol[self.pair_g] * w).clamp(min=1e-12)
         return w, rc, q, Binv, blocked, mass
