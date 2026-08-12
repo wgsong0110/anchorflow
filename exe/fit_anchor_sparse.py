@@ -333,9 +333,21 @@ with torch.no_grad():
     print(f"\n[rollout] {args.frames} frames against MPM's particles, "
           f"{args.final_rollout} held-out impulses")
     cache = fit.prepare()
-    print(f"  {'impulse':>8} {'error':>9} {'final':>9} {'motion':>8}")
-    tot = []
+    # the simulator this replaces, on the same impulses: without it the number
+    # above is only comparable to other runs of this script
+    print(f"  {'impulse':>8} {'error':>9} {'final':>9} {'motion':>8} {'8-NN sim':>10}")
+    tot, tot0 = [], []
     for i, (X, V) in enumerate(CHK[:args.final_rollout]):
+        f0 = FORCES["chk"][i]
+        p0, v0, g0 = sc.anchor_canonical.clone(), sc.initial_velocity(f0), sc.pos.clone()
+        base_out = [g0[fit.mat].clone()]
+        for _ in range(args.frames):
+            p0, v0, g0 = sc.explicit_step(p0, v0, g0, args.dt_mult)
+            base_out.append(g0[fit.mat].clone())
+        G0 = torch.stack(base_out)
+        span0 = (X - X[0]).norm(dim=-1).max().clamp(min=1e-12)
+        e0 = ((G0 - X).norm(dim=-1).mean(-1) / span0).mean().item()
+        tot0.append(e0)
         p = fit.project(X[0], cache)
         v = fit.project_v(V[0], cache)
         out = [fit.gaussian_pos(p, cache)]
@@ -347,8 +359,9 @@ with torch.no_grad():
         e = (G - X).norm(dim=-1).mean(-1) / span
         tot.append(e.mean().item())
         print(f"  {i:8d} {100*e.mean():8.2f}% {100*e[-1]:8.2f}% "
-              f"{100*(G - G[0]).norm(dim=-1).max()/span:7.0f}%")
-    print(f"  {'mean':>8} {100*sum(tot)/max(len(tot),1):8.2f}%")
+              f"{100*(G - G[0]).norm(dim=-1).max()/span:7.0f}% {100*e0:9.2f}%")
+    print(f"  {'mean':>8} {100*sum(tot)/max(len(tot),1):8.2f}% {'':>9} {'':>8} "
+          f"{100*sum(tot0)/max(len(tot0),1):9.2f}%")
     s_ = fit.log_s.exp()
     print(f"\n[params] {fit.M} anchors, {fit.pair_g.shape[0]} pairs, axis ratio "
           f"{(s_.max(-1).values / s_.min(-1).values).median():.2f}, "
