@@ -236,7 +236,14 @@ STATE = args.state or (args.out + ".state" if args.out else None)
 
 
 def save_state(it, best):
+    """A state that is not finite is not a state to come back to. The previous
+    run wrote one and then failed to resume from it four times in a row."""
     if not STATE:
+        return
+    if not all(torch.isfinite(q).all() for q in
+               (fit.pos, fit.log_s, fit.quat)):
+        print(f"  [state] iteration {it} is not finite; keeping the last good one",
+              flush=True)
         return
     torch.save({"pos": fit.pos.detach(), "log_s": fit.log_s.detach(),
                  "quat": fit.quat.detach(), "iter": it, "best": best,
@@ -269,6 +276,7 @@ if best is None:
     best = report("init")
 
 t0 = time.time()
+n_skip = 0
 bar = tqdm(range(start_it, args.iters + 1), desc="fit", ncols=90)
 for it in bar:
     if it > start_it and args.refresh_every and it % args.refresh_every == 0:
@@ -305,15 +313,26 @@ for it in bar:
         d = (tgt - x0).norm(dim=-1).mean().clamp(min=1e-12)
         loss = loss + ((got - tgt).norm(dim=-1).mean() / d)
     loss = loss / args.batch
-    opt.zero_grad(set_to_none=True)
-    loss.backward()
-    with torch.no_grad():
-        if fit.pos.grad is not None:
-            grad_accum += fit.pos.grad.norm(dim=-1)
-            fit.pos.grad[fit.fixed] = 0
-    torch.nn.utils.clip_grad_norm_(list(fit.parameters()), 1.0)
-    opt.step()
-    bar.set_postfix(loss=f"{loss.item():.3f}", M=fit.M, win=hi)
+    skipped = 0
+    if not torch.isfinite(loss):
+        # one bad sample -- a rollout that ran away, a configuration the polar
+        # factor cannot handle -- should cost that iteration, not the run
+        skipped = 1
+    else:
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        with torch.no_grad():
+            if fit.pos.grad is not None:
+                grad_accum += torch.nan_to_num(fit.pos.grad).norm(dim=-1)
+                fit.pos.grad[fit.fixed] = 0
+        if all(q.grad is None or torch.isfinite(q.grad).all() for q in fit.parameters()):
+            torch.nn.utils.clip_grad_norm_(list(fit.parameters()), 1.0)
+            opt.step()
+            fit.clamp_()
+        else:
+            skipped = 1
+    n_skip += skipped
+    bar.set_postfix(loss=f"{loss.item():.3f}", M=fit.M, win=hi, skip=n_skip)
     if it % args.eval_every == 0 or it == args.iters:
         with torch.no_grad():
             b = report(f"it {it}")
@@ -326,7 +345,8 @@ for it in bar:
     elif it % args.save_every == 0:
         save_state(it, best)
 
-print(f"\n[done] {time.time() - t0:.0f}s, {fit.M} anchors")
+print(f"\n[done] {time.time() - t0:.0f}s, {fit.M} anchors, {n_skip} iterations skipped "
+      f"as non-finite")
 
 # ---- the number the project actually asks for ------------------------------
 with torch.no_grad():

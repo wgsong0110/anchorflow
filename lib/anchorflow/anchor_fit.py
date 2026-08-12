@@ -50,7 +50,11 @@ def polar_R(F, iters=8):
     eigenvalues of F^T F -- zero under rigid motion, where this simulator spends
     most of its time, so its gradient is NaN exactly where it is needed.
     """
-    R = F
+    # a ridge in the direction of the identity: the polar factor of a singular
+    # matrix is not defined, and inverting one gives infinities that reach the
+    # parameters as NaN a few steps later
+    n = F.reshape(*F.shape[:-2], 9).norm(dim=-1).clamp(min=1e-12)
+    R = F + (1e-6 * n).reshape(*F.shape[:-2], 1, 1) * torch.eye(3, device=F.device)
     for _ in range(iters):
         Rinv_T = torch.linalg.inv(R).transpose(-1, -2)
         g = torch.linalg.det(R).abs().clamp(min=1e-12).pow(-1.0 / 3.0)

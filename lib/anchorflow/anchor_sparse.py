@@ -43,7 +43,7 @@ class AnchorSparse(nn.Module):
     """anchors with elliptical, compactly supported reach and a variable count"""
 
     def __init__(self, sc, c=0.25, eig_floor=0.02, polar_iters=6, margin=1.25,
-                 checkpoint_substeps=True):
+                 checkpoint_substeps=True, s_lo=0.25, s_hi=4.0):
         super().__init__()
         from scipy.spatial import cKDTree
 
@@ -54,6 +54,12 @@ class AnchorSparse(nn.Module):
         self.polar_iters = polar_iters
         self.margin = margin
         self.checkpoint_substeps = checkpoint_substeps
+        # an anchor that shrinks far enough holds almost nothing, its mass goes
+        # with it, and the accelerations it sees go up without bound; one that
+        # grows without limit swallows the object. Both ends were reachable --
+        # the unbounded fit went to NaN around its 250th iteration
+        self.s_lo = s_lo * sim.radius
+        self.s_hi = s_hi * sim.radius
         self.cfg = sc.cfg
         self.dt = sc.sub_dt
         self.damping = sc.damping
@@ -78,6 +84,11 @@ class AnchorSparse(nn.Module):
         self.quat = nn.Parameter(q0)
         self.register_buffer("fixed", sc.fixed_mask.clone())
         self.refresh()
+
+    @torch.no_grad()
+    def clamp_(self):
+        self.log_s.clamp_(min=float(np.log(self.s_lo)), max=float(np.log(self.s_hi)))
+        self.quat.div_(self.quat.norm(dim=-1, keepdim=True).clamp(min=1e-12))
 
     # ---- support ----------------------------------------------------------
     @property
