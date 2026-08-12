@@ -84,7 +84,26 @@ class AnchorSparse(nn.Module):
         q0 = torch.zeros(sc.M, 4, device=dev); q0[:, 0] = 1.0
         self.quat = nn.Parameter(q0)
         self.register_buffer("fixed", sc.fixed_mask.clone())
+        self.register_buffer("B_ref", torch.zeros((), device=dev))
         self.refresh()
+        self.set_B_ref()
+
+    @torch.no_grad()
+    def set_B_ref(self, quantile=0.5):
+        """the neighbourhood size the floor refers to, fixed at the start.
+
+        Taken once rather than per call: a reference that moves with the
+        parameters is one the fit can shrink to escape the floor.
+        """
+        w = self.weights()
+        a = self.pos[self.pair_a]
+        rc = torch.zeros(self.N, 3, device=self.dev).index_add_(
+            0, self.pair_g, w.unsqueeze(-1) * a)
+        q = a - rc[self.pair_g]
+        B = torch.zeros(self.N, 3, 3, device=self.dev).index_add_(
+            0, self.pair_g, w.reshape(-1, 1, 1) * (q.unsqueeze(-1) * q.unsqueeze(-2)))
+        self.B_ref.copy_((B.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0).quantile(quantile))
+        return float(self.B_ref)
 
     @torch.no_grad()
     def clamp_(self):
@@ -178,8 +197,17 @@ class AnchorSparse(nn.Module):
         # eps (B + eps I)^-1 tends to the identity, which is exactly the fallback
         # the eigen version applies by hand, and it arrives smoothly rather than
         # at a threshold.
-        eps = self.eig_floor * (B.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0
-                                 ).clamp(min=1e-20).reshape(-1, 1, 1)
+        # ...with a floor that does not vanish along with B. Relative to B alone
+        # the regulariser disappears exactly where it is needed: a Gaussian at
+        # the edge of the object can end up with two effective anchors almost on
+        # top of each other, and shape matching over a neighbourhood that small
+        # is an enormously stiff spring -- |f/m| reached 7.7e4 against the 175
+        # this simulator runs at, from a trace(B) one fiftieth of the median.
+        # Below the reference size a Gaussian is treated as having the reference
+        # neighbourhood, which is the statement that nothing may be stiffer than
+        # the discretisation itself.
+        tr = (B.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0).clamp(min=1e-20)
+        eps = (self.eig_floor * tr.clamp(min=self.B_ref)).reshape(-1, 1, 1)
         eye = torch.eye(3, device=self.dev)
         Binv = torch.linalg.inv(B + eps * eye)
         blocked = eps * Binv
