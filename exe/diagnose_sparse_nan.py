@@ -53,6 +53,10 @@ ap.add_argument("--lr_scale", type=float, default=1e-2)
 ap.add_argument("--lr_quat", type=float, default=1e-2)
 ap.add_argument("--refresh_every", type=int, default=20)
 ap.add_argument("--densify_every", type=int, default=60)
+ap.add_argument("--no_bref", action="store_true",
+                 help="remove the absolute floor under the scatter regulariser, "
+                      "leaving it proportional to B as it was when the fit failed. "
+                      "The controlled version of 'is that what it was'.")
 ap.add_argument("--guards", action="store_true",
                  help="leave the guards on, to check they actually hold")
 args = ap.parse_args()
@@ -71,9 +75,13 @@ fit = AnchorSparse(sc, c=args.c, eig_floor=args.eig_floor,
 if not args.guards:
     fit.s_lo, fit.s_hi, fit.polar_ridge = 1e-9, 1e9, 0.0
 fit.init_from_geometry()
+if args.no_bref:
+    fit.B_ref.zero_()
+    fit.set_B_ref = lambda *a, **k: 0.0
 blob = torch.load(args.traj_cache, map_location=dev, weights_only=False)
 FIT = blob["fit"]
-print(f"[setup] guards {'on' if args.guards else 'OFF'}, {fit.M} anchors, "
+print(f"[setup] guards {'on' if args.guards else 'OFF'}, B_ref "
+      f"{'OFF' if args.no_bref else f'{float(fit.B_ref):.3e}'}, {fit.M} anchors, "
       f"{fit.pair_g.shape[0]} pairs, scale bounds "
       f"[{fit.s_lo:.2e}, {fit.s_hi:.2e}], polar ridge {fit.polar_ridge}")
 
