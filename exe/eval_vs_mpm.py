@@ -48,11 +48,16 @@ ap.add_argument("--eig_floor", type=float, default=0.02)
 ap.add_argument("--seed", type=int, default=20260811)
 ap.add_argument("--cache", default=None, help="where to keep the MPM references")
 ap.add_argument("--per_traj", action="store_true")
+ap.add_argument("--fit", default=None,
+                 help="a fitted discretisation from fit_anchor_sim.py. Added as its own "
+                      "row: one-step agreement is what was optimised, and whether that "
+                      "survives sixty compounding steps is a different question.")
 args = ap.parse_args()
 
 sys.path.insert(0, args.dreamphysics)
 import warp as wp
 
+from anchorflow.anchor_fit import AnchorFit
 from anchorflow.mpm_teacher import MPMTeacher
 
 dev = "cuda"
@@ -177,7 +182,33 @@ def run_net(net, force):
     return torch.stack(out)
 
 
+FITTED = None
+if args.fit:
+    blob = torch.load(args.fit, map_location=dev, weights_only=False)
+    FITTED = AnchorFit(sc, eig_floor=blob.get("eig_floor", args.eig_floor)).to(dev)
+    with torch.no_grad():
+        FITTED.pos.copy_(blob["pos"]); FITTED.log_s.copy_(blob["log_s"])
+        FITTED.quat.copy_(blob["quat"])
+    FITTED.eval()
+    print(f"[fit] {args.fit} at iteration {blob.get('iter')}")
+
+
+@torch.no_grad()
+def run_fitted(force):
+    cache = FITTED.prepare()
+    p, v = AC.clone(), sc.initial_velocity(force)
+    out = [FITTED.skin(p)[mat].clone()]
+    for _ in range(args.frames):
+        p, v = FITTED.rollout(p, v, args.dt_mult, cache=cache)
+        if not torch.isfinite(p).all():
+            return None
+        out.append(FITTED.skin(p)[mat].clone())
+    return torch.stack(out)
+
+
 rows = [("MPM projected (floor)", None), ("anchor simulator", None)]
+if FITTED is not None:
+    rows.append(("fitted anchor simulator", None))
 for path in args.ckpt:
     ck = torch.load(path, map_location=dev, weights_only=False)
     ta = ck["args"]
@@ -202,6 +233,8 @@ for name, net in rows:
                 pred = run_net(net, FORCE[kind][i])
             elif name.startswith("MPM"):
                 pred = run_floor(truth)
+            elif name.startswith("fitted"):
+                pred = run_fitted(FORCE[kind][i])
             else:
                 pred = run_anchor(FORCE[kind][i])
             if pred is None:
@@ -226,7 +259,9 @@ if args.per_traj:
             line = f"    {i:>3} "
             for name, net in rows:
                 pred = run_net(net, FORCE[kind][i]) if net is not None else (
-                    run_floor(truth) if name.startswith("MPM") else run_anchor(FORCE[kind][i]))
+                    run_floor(truth) if name.startswith("MPM") else
+                    run_fitted(FORCE[kind][i]) if name.startswith("fitted") else
+                    run_anchor(FORCE[kind][i]))
                 line += f"{'diverged':>24}" if pred is None else \
                     f"{100*score(pred, truth)[0]:23.2f}%"
             print(line)
