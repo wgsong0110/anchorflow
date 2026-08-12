@@ -60,6 +60,7 @@ class AnchorSparse(nn.Module):
         # the unbounded fit went to NaN around its 250th iteration
         self.s_lo = s_lo * sim.radius
         self.s_hi = s_hi * sim.radius
+        self.polar_ridge = 1e-6
         self.cfg = sc.cfg
         self.dt = sc.sub_dt
         self.damping = sc.damping
@@ -203,7 +204,7 @@ class AnchorSparse(nn.Module):
 
     def force(self, p, w, rc, q, Binv, blocked):
         F, _ = self.deformation(p, w, rc, q, Binv, blocked)
-        R = polar_R(F, self.polar_iters)
+        R = polar_R(F, self.polar_iters, self.polar_ridge)
         J = torch.linalg.det(F)
         Finv_T = torch.linalg.inv(F).transpose(-1, -2)
         mu = self.mu.unsqueeze(-1).unsqueeze(-1)

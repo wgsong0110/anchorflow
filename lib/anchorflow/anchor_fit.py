@@ -41,7 +41,7 @@ from torch.utils.checkpoint import checkpoint
 from eigen3x3 import eigh3x3
 
 
-def polar_R(F, iters=8):
+def polar_R(F, iters=8, ridge=1e-6):
     """the rotation from F = R S, by scaled Newton iteration.
 
     R <- (gamma R + gamma^-1 R^-T) / 2, gamma = |det R|^(-1/3), which converges
@@ -54,7 +54,7 @@ def polar_R(F, iters=8):
     # matrix is not defined, and inverting one gives infinities that reach the
     # parameters as NaN a few steps later
     n = F.reshape(*F.shape[:-2], 9).norm(dim=-1).clamp(min=1e-12)
-    R = F + (1e-6 * n).reshape(*F.shape[:-2], 1, 1) * torch.eye(3, device=F.device)
+    R = F + (ridge * n).reshape(*F.shape[:-2], 1, 1) * torch.eye(3, device=F.device)
     for _ in range(iters):
         Rinv_T = torch.linalg.inv(R).transpose(-1, -2)
         g = torch.linalg.det(R).abs().clamp(min=1e-12).pow(-1.0 / 3.0)
