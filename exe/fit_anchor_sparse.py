@@ -84,6 +84,16 @@ ap.add_argument("--cfl_frac", type=float, default=0.05,
                       "the anchor spacing. The starting discretisation sits at 1.4%%; "
                       "the configurations the fit blew up on reach 50%%.")
 ap.add_argument("--lambda_cfl", type=float, default=1.0)
+ap.add_argument("--unroll", type=int, default=1,
+                 help="coarse frames per training sample. One frame is what the fit "
+                      "has always optimised and it does not transfer: the one-step "
+                      "error halves while the sixty-frame rollout does not move. "
+                      "Unrolling makes the loss measure what is actually wanted, at "
+                      "the cost of that many times the compute per sample.")
+ap.add_argument("--eval_rollout", type=int, default=0,
+                 help="score the held-out set on a full rollout at each evaluation "
+                      "rather than on one step, so the number being tracked is the "
+                      "number being asked for")
 ap.add_argument("--no_guards", action="store_true",
                  help="run without the scale bounds, the polar ridge, the scatter "
                       "floor or the skip, and stop at the first non-finite quantity "
@@ -186,6 +196,27 @@ def one_step(x0, v0, cache):
     return fit.gaussian_pos(p, cache), cfl
 
 
+def unrolled(X, V, t, n, cache):
+    """n coarse frames from one MPM state, scored against MPM at every frame.
+
+    The simulator runs on its own output after the first frame, which is the
+    regime it will be used in and the one a single step says nothing about.
+    Each frame is divided by how far MPM moved from the start, so a later frame
+    is not weighted down for having drifted further.
+    """
+    p = fit.project(X[t], cache)
+    v = fit.project_v(V[t], cache)
+    loss = pen = 0.0
+    hi = min(n, X.shape[0] - 1 - t)
+    for j in range(hi):
+        p, v, cfl = fit.rollout(p, v, args.dt_mult, cache)
+        got = fit.gaussian_pos(p, cache)
+        d = (X[t + j + 1] - X[t]).norm(dim=-1).mean().clamp(min=1e-12)
+        loss = loss + (got - X[t + j + 1]).norm(dim=-1).mean() / d
+        pen = pen + cfl
+    return loss / max(hi, 1), pen / max(hi, 1)
+
+
 @torch.no_grad()
 def step_error(sets, every=10):
     cache = fit.prepare()
@@ -199,9 +230,29 @@ def step_error(sets, every=10):
 
 
 @torch.no_grad()
+def rollout_error(sets):
+    """the whole trajectory, from rest, as the evaluation actually asks for it"""
+    cache = fit.prepare()
+    tot = []
+    for X, V in sets:
+        p, v = fit.project(X[0], cache), fit.project_v(V[0], cache)
+        out = [fit.gaussian_pos(p, cache)]
+        for _ in range(args.frames):
+            p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
+            out.append(fit.gaussian_pos(p, cache))
+        G = torch.stack(out)
+        span = (X - X[0]).norm(dim=-1).max().clamp(min=1e-12)
+        tot.append(((G - X).norm(dim=-1).mean(-1) / span).mean().item())
+    return 100 * sum(tot) / max(len(tot), 1)
+
+
+@torch.no_grad()
 def report(tag):
     a, b = step_error(FIT), step_error(CHK)
-    print(f"  [{tag}] one-step  fit {a:7.1f}%   held out {b:7.1f}%   "
+    extra = ""
+    if args.eval_rollout:
+        extra = f"   rollout {rollout_error(CHK):6.2f}%"
+    print(f"  [{tag}] one-step  fit {a:7.1f}%   held out {b:7.1f}%{extra}   "
           f"{fit.M} anchors, {fit.pair_g.shape[0]} pairs", flush=True)
     return b
 
@@ -318,16 +369,24 @@ for it in bar:
     cache = fit.prepare()
     loss, pen, bad_sample = 0.0, 0.0, None
     for _ in range(args.batch):
+        src = None
         if POOL["x"] and torch.rand(1).item() < args.dagger_frac:
+            # a DAgger state has one labelled frame after it and nothing more, so
+            # it stays a single step whatever the unroll length is
             j = torch.randint(len(POOL["x"]), (1,)).item()
             x0, v0, tgt = POOL["x"][j], POOL["v"][j], POOL["tgt"][j]
         else:
             X, V = FIT[torch.randint(len(FIT), (1,)).item()]
             t = torch.randint(hi, (1,)).item()
             x0, v0, tgt = X[t], V[t], X[t + 1]
-        got, cfl = one_step(x0, v0, cache)
-        d = (tgt - x0).norm(dim=-1).mean().clamp(min=1e-12)
-        contrib = (got - tgt).norm(dim=-1).mean() / d
+            src = (X, V, t)
+        if src is not None and args.unroll > 1:
+            X_, V_, t_ = src
+            contrib, cfl = unrolled(X_, V_, t_, args.unroll, cache)
+        else:
+            got, cfl = one_step(x0, v0, cache)
+            d = (tgt - x0).norm(dim=-1).mean().clamp(min=1e-12)
+            contrib = (got - tgt).norm(dim=-1).mean() / d
         if args.no_guards and not torch.isfinite(contrib):
             bad_sample = (x0, v0)
         loss = loss + contrib
