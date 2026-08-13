@@ -41,6 +41,39 @@ from torch.utils.checkpoint import checkpoint
 from eigen3x3 import eigh3x3
 
 
+def closest_rotation(F, iters=8, ridge=1e-6):
+    """the nearest ROTATION to F, including where F has flipped over.
+
+    The polar factor of a matrix with negative determinant is a reflection, not
+    a rotation, and Fixed Corotated built on one does not restore an inverted
+    element -- it drives it further in. That is what takes this simulator to
+    NaN: an element inverts at the fourth substep of a frame and the forces run
+    away over the next eight.
+
+    The correction is the standard one: negate the singular direction with the
+    smallest stretch, which is the axis the material folded through. It needs an
+    eigendecomposition of F^T F, whose derivative divides by the gap between
+    eigenvalues, so it is applied only to the elements that actually inverted
+    and its gradient is not taken. Everywhere else -- effectively everything --
+    the Newton factor and its gradient are used unchanged.
+    """
+    R = polar_R(F, iters, ridge)
+    flat = R.reshape(-1, 3, 3)
+    bad = torch.linalg.det(flat) < 0
+    if bad.any():
+        with torch.no_grad():
+            Fb = F.reshape(-1, 3, 3)[bad]
+            ev, evec = eigh3x3(Fb.transpose(-1, -2) @ Fb)
+            u = evec[..., 0]                       # the smallest stretch
+            H = torch.eye(3, device=F.device) - 2 * u.unsqueeze(-1) * u.unsqueeze(-2)
+            fixed = flat[bad].detach() @ H
+        out = flat.clone()
+        out[bad] = fixed
+        # values corrected, gradient left to the well-behaved branch
+        R = (flat + (out - flat).detach()).reshape(F.shape)
+    return R
+
+
 def polar_R(F, iters=8, ridge=1e-6):
     """the rotation from F = R S, by scaled Newton iteration.
 

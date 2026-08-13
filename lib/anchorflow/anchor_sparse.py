@@ -36,7 +36,7 @@ from torch.utils.checkpoint import checkpoint
 
 from eigen3x3 import eigh3x3
 
-from .anchor_fit import _R_to_quat, polar_R, quat_to_R
+from .anchor_fit import _R_to_quat, closest_rotation, quat_to_R
 
 
 class AnchorSparse(nn.Module):
@@ -232,9 +232,14 @@ class AnchorSparse(nn.Module):
 
     def force(self, p, w, rc, q, Binv, blocked):
         F, _ = self.deformation(p, w, rc, q, Binv, blocked)
-        R = polar_R(F, self.polar_iters, self.polar_ridge)
+        R = closest_rotation(F, self.polar_iters, self.polar_ridge)
         J = torch.linalg.det(F)
-        Finv_T = torch.linalg.inv(F).transpose(-1, -2)
+        # the volumetric term carries J F^-T, which is unbounded as an element
+        # approaches zero volume. A ridge keeps it finite through the crossing
+        # rather than handing the integrator an infinity
+        n = F.reshape(-1, 9).norm(dim=-1).clamp(min=1e-12).reshape(-1, 1, 1)
+        Finv_T = torch.linalg.inv(F + 1e-6 * n * torch.eye(3, device=self.dev)
+                                   ).transpose(-1, -2)
         mu = self.mu.unsqueeze(-1).unsqueeze(-1)
         lam = self.lam.unsqueeze(-1).unsqueeze(-1)
         P = 2 * mu * (F - R) + lam * (J - 1).unsqueeze(-1).unsqueeze(-1) * \
