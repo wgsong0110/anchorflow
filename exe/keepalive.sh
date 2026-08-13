@@ -48,9 +48,23 @@ for i in json.load(sys.stdin)['instances']:
     exit 1
   fi
 
+  if [ "$STATE" = "scheduling" ]; then
+    # vast.ai has taken the contract and has no host for it. This does not
+    # resolve on a timetable and the disk is billed while it sits there
+    say "instance is scheduling: no host. Destroying rather than waiting."
+    timeout 60 vastai destroy instance $ID -y >/dev/null 2>&1
+    exit 2
+  fi
+
   if [ "$STATE" != "running" ]; then
     say "instance is '$STATE'; starting it"
-    timeout 60 vastai start instance $ID >/dev/null 2>&1
+    OUT=$(timeout 60 vastai start instance $ID 2>&1)
+    if echo "$OUT" | grep -qi "resources are currently unavailable\|state change queued"; then
+      # the same condition as scheduling, reported by the start command instead
+      say "start says the host has no room. Destroying rather than waiting."
+      timeout 60 vastai destroy instance $ID -y >/dev/null 2>&1
+      exit 2
+    fi
     sleep 90
     continue
   fi
