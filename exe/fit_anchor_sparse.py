@@ -79,6 +79,11 @@ ap.add_argument("--save_every", type=int, default=10)
 ap.add_argument("--traj_cache", default=None)
 ap.add_argument("--r2", default=None)
 ap.add_argument("--eval_every", type=int, default=40)
+ap.add_argument("--no_guards", action="store_true",
+                 help="run without the scale bounds, the polar ridge, the scatter "
+                      "floor or the skip, and stop at the first non-finite quantity "
+                      "with a substep-by-substep replay. For finding out what the "
+                      "failure is rather than surviving it.")
 ap.add_argument("--final_rollout", type=int, default=3,
                  help="impulses to roll out fully against MPM at the end")
 args = ap.parse_args()
@@ -102,9 +107,14 @@ for bc in sc.cfg.get("boundary_conditions", []):
 
 fit = AnchorSparse(sc, c=args.c, eig_floor=args.eig_floor,
                     polar_iters=args.polar_iters).to(dev)
+if args.no_guards:
+    fit.s_lo, fit.s_hi, fit.polar_ridge = 1e-9, 1e9, 0.0
 print(f"[setup] {fit.M} anchors, {fit.N} material Gaussians, support at "
       f"{fit.mahal_radius:.2f} sigma, {fit.pair_g.shape[0]} pairs "
       f"({fit.pair_g.shape[0] / fit.N:.1f} anchors per Gaussian)")
+if args.no_guards:
+    fit.B_ref.zero_()
+    fit.set_B_ref = lambda *a, **k: 0.0
 if not args.no_geom_init:
     thin = fit.init_from_geometry()
     s_ = fit.log_s.exp()
@@ -300,7 +310,7 @@ for it in bar:
     frac = min(1.0, it / max(args.warmup, 1))
     hi = max(2, int(frac * (args.frames - 1)))
     cache = fit.prepare()
-    loss = 0.0
+    loss, bad_sample = 0.0, None
     for _ in range(args.batch):
         if POOL["x"] and torch.rand(1).item() < args.dagger_frac:
             j = torch.randint(len(POOL["x"]), (1,)).item()
@@ -311,7 +321,10 @@ for it in bar:
             x0, v0, tgt = X[t], V[t], X[t + 1]
         got = one_step(x0, v0, cache)
         d = (tgt - x0).norm(dim=-1).mean().clamp(min=1e-12)
-        loss = loss + ((got - tgt).norm(dim=-1).mean() / d)
+        contrib = (got - tgt).norm(dim=-1).mean() / d
+        if args.no_guards and not torch.isfinite(contrib):
+            bad_sample = (x0, v0)
+        loss = loss + contrib
     loss = loss / args.batch
     skipped = 0
     if not torch.isfinite(loss):
@@ -332,6 +345,36 @@ for it in bar:
         else:
             skipped = 1
     n_skip += skipped
+    if skipped and args.no_guards:
+        # what a survivable run hides: which quantity went first, and whether the
+        # step that produced it grew every substep or spiked once
+        print(f"\n[first failure] iteration {it}, loss {loss.item()}", flush=True)
+        if bad_sample is not None:
+            x0, v0 = bad_sample
+        w_, rc_, q_, Binv_, blocked_, mass_ = cache
+        with torch.no_grad():
+            F_, _ = fit.deformation(fit.project(x0, cache), w_, rc_, q_, Binv_, blocked_)
+            det = torch.linalg.det(F_)
+            print(f"  mass: min {mass_.min():.3e}, at the clamp "
+                  f"{int((mass_ <= 1.0000001e-12).sum())} of {fit.M}")
+            print(f"  detF: min {det.min():.4f}, inverted {int((det <= 0).sum())} of "
+                  f"{fit.N}, extents min {fit.log_s.exp().min():.3e}")
+            m_ = mass_.unsqueeze(-1)
+            keep_ = (~fit.fixed).unsqueeze(-1).to(torch.float32)
+            p_, v_ = fit.project(x0, cache), fit.project_v(v0, cache)
+            print(f"  {'substep':>8} {'|a| max':>12} {'|v| max':>12} {'detF min':>10}")
+            for k_ in range(args.dt_mult):
+                a_ = fit.force(p_, w_, rc_, q_, Binv_, blocked_) / m_
+                v_ = (v_ + fit.dt * a_) * fit.damping * keep_
+                p_ = p_ + fit.dt * v_
+                F2, _ = fit.deformation(p_, w_, rc_, q_, Binv_, blocked_)
+                if k_ < 4 or k_ % 4 == 0 or not torch.isfinite(p_).all():
+                    print(f"  {k_:8d} {a_.norm(dim=-1).max():12.3e} "
+                          f"{v_.norm(dim=-1).max():12.3e} "
+                          f"{torch.linalg.det(F2).min():10.4f}")
+                if not torch.isfinite(p_).all():
+                    break
+        break
     bar.set_postfix(loss=f"{loss.item():.3f}", M=fit.M, win=hi, skip=n_skip)
     if it % args.eval_every == 0 or it == args.iters:
         with torch.no_grad():
