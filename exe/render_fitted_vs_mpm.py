@@ -111,12 +111,31 @@ for k in tqdm(range(args.frames + 1), desc="fitted", ncols=90):
         p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
 runs["fitted to MPM"] = torch.stack(out)
 
-# MPM's rows are material only; the renderer wants the whole cloud
+# MPM's rows are material only; the renderer wants the whole cloud.
+#
+# The opacity-rejected Gaussians -- a sixth of the cloud -- carry zero volume and
+# are not simulated by anything, but they are interleaved through the foliage and
+# they do get drawn. Left at their canonical positions they stand still while the
+# tree moves around them, which reads as a ghost of the original and is a
+# property of this script rather than of MPM. They are carried by the material
+# around them: the weighted mean displacement of their nearest material
+# particles, which is what the anchor panels do for them through skinning.
+K_CARRY = 8
+rest = torch.nonzero(~sc.keep, as_tuple=False).squeeze(-1)
+d = torch.cdist(sc.pos[rest], T.pos_m)
+nd, ni = torch.topk(d, K_CARRY, dim=-1, largest=False)
+cw = 1.0 / nd.clamp(min=1e-6)
+cw = cw / cw.sum(-1, keepdim=True)
 mpm_full = []
 for k in range(args.frames + 1):
-    q = sc.pos.clone(); q[mat] = runs["MPM"][k]
+    q = sc.pos.clone()
+    q[mat] = runs["MPM"][k]
+    disp = runs["MPM"][k] - T.pos_m
+    q[rest] = sc.pos[rest] + (cw.unsqueeze(-1) * disp[ni]).sum(1)
     mpm_full.append(q)
 runs["MPM"] = torch.stack(mpm_full)
+print(f"[render] {rest.shape[0]} zero-volume Gaussians carried by their "
+      f"{K_CARRY} nearest material particles")
 
 # ---- camera, as the config specifies it -----------------------------------
 gaussians = GaussianModel(3, fea_dim=0)
