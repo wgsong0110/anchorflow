@@ -79,6 +79,11 @@ ap.add_argument("--save_every", type=int, default=10)
 ap.add_argument("--traj_cache", default=None)
 ap.add_argument("--r2", default=None)
 ap.add_argument("--eval_every", type=int, default=40)
+ap.add_argument("--cfl_frac", type=float, default=0.05,
+                 help="how far an anchor may travel in one substep, as a fraction of "
+                      "the anchor spacing. The starting discretisation sits at 1.4%%; "
+                      "the configurations the fit blew up on reach 50%%.")
+ap.add_argument("--lambda_cfl", type=float, default=1.0)
 ap.add_argument("--no_guards", action="store_true",
                  help="run without the scale bounds, the polar ridge, the scatter "
                       "floor or the skip, and stop at the first non-finite quantity "
@@ -106,7 +111,7 @@ for bc in sc.cfg.get("boundary_conditions", []):
         base = torch.tensor(bc["force"], device=dev)
 
 fit = AnchorSparse(sc, c=args.c, eig_floor=args.eig_floor,
-                    polar_iters=args.polar_iters).to(dev)
+                    polar_iters=args.polar_iters, cfl_frac=args.cfl_frac).to(dev)
 if args.no_guards:
     fit.s_lo, fit.s_hi, fit.polar_ridge = 1e-9, 1e9, 0.0
 print(f"[setup] {fit.M} anchors, {fit.N} material Gaussians, support at "
@@ -173,11 +178,12 @@ print(f"[data] {len(FIT)} fit and {len(CHK)} held-out MPM trajectories")
 
 
 def one_step(x0, v0, cache):
-    """MPM particle state -> one coarse frame of this simulator -> particles"""
+    """MPM particle state -> one coarse frame of this simulator -> particles,
+    and how far the substeps were from being able to carry it"""
     p = fit.project(x0, cache)
     v = fit.project_v(v0, cache)
-    p, _ = fit.rollout(p, v, args.dt_mult, cache)
-    return fit.gaussian_pos(p, cache)
+    p, _, cfl = fit.rollout(p, v, args.dt_mult, cache)
+    return fit.gaussian_pos(p, cache), cfl
 
 
 @torch.no_grad()
@@ -186,7 +192,7 @@ def step_error(sets, every=10):
     tot, n = 0.0, 0
     for X, V in sets:
         for t in range(0, X.shape[0] - 1, every):
-            got = one_step(X[t], V[t], cache)
+            got, _ = one_step(X[t], V[t], cache)
             d = (X[t + 1] - X[t]).norm(dim=-1).mean().clamp(min=1e-12)
             tot += ((got - X[t + 1]).norm(dim=-1).mean() / d).item(); n += 1
     return 100 * tot / max(n, 1)
@@ -230,7 +236,7 @@ def collect_dagger():
                     added += 1
                 else:
                     skipped += 1
-            p, v = fit.rollout(p, v, args.dt_mult, cache)
+            p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
     return added, skipped
 
 
@@ -310,7 +316,7 @@ for it in bar:
     frac = min(1.0, it / max(args.warmup, 1))
     hi = max(2, int(frac * (args.frames - 1)))
     cache = fit.prepare()
-    loss, bad_sample = 0.0, None
+    loss, pen, bad_sample = 0.0, 0.0, None
     for _ in range(args.batch):
         if POOL["x"] and torch.rand(1).item() < args.dagger_frac:
             j = torch.randint(len(POOL["x"]), (1,)).item()
@@ -319,21 +325,23 @@ for it in bar:
             X, V = FIT[torch.randint(len(FIT), (1,)).item()]
             t = torch.randint(hi, (1,)).item()
             x0, v0, tgt = X[t], V[t], X[t + 1]
-        got = one_step(x0, v0, cache)
+        got, cfl = one_step(x0, v0, cache)
         d = (tgt - x0).norm(dim=-1).mean().clamp(min=1e-12)
         contrib = (got - tgt).norm(dim=-1).mean() / d
         if args.no_guards and not torch.isfinite(contrib):
             bad_sample = (x0, v0)
         loss = loss + contrib
-    loss = loss / args.batch
+        pen = pen + cfl
+    loss, pen = loss / args.batch, pen / args.batch
+    total = loss + args.lambda_cfl * pen
     skipped = 0
-    if not torch.isfinite(loss):
+    if not torch.isfinite(total):
         # one bad sample -- a rollout that ran away, a configuration the polar
         # factor cannot handle -- should cost that iteration, not the run
         skipped = 1
     else:
         opt.zero_grad(set_to_none=True)
-        loss.backward()
+        total.backward()
         with torch.no_grad():
             if fit.pos.grad is not None:
                 grad_accum += torch.nan_to_num(fit.pos.grad).norm(dim=-1)
@@ -375,7 +383,8 @@ for it in bar:
                 if not torch.isfinite(p_).all():
                     break
         break
-    bar.set_postfix(loss=f"{loss.item():.3f}", M=fit.M, win=hi, skip=n_skip)
+    bar.set_postfix(loss=f"{loss.item():.3f}", cfl=f"{float(pen):.2e}", M=fit.M,
+                     win=hi, skip=n_skip)
     if it % args.eval_every == 0 or it == args.iters:
         with torch.no_grad():
             b = report(f"it {it}")
@@ -415,7 +424,7 @@ with torch.no_grad():
         v = fit.project_v(V[0], cache)
         out = [fit.gaussian_pos(p, cache)]
         for _ in range(args.frames):
-            p, v = fit.rollout(p, v, args.dt_mult, cache)
+            p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
             out.append(fit.gaussian_pos(p, cache))
         G = torch.stack(out)
         span = (X - X[0]).norm(dim=-1).max().clamp(min=1e-12)

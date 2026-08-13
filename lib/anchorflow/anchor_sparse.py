@@ -43,7 +43,7 @@ class AnchorSparse(nn.Module):
     """anchors with elliptical, compactly supported reach and a variable count"""
 
     def __init__(self, sc, c=0.25, eig_floor=0.02, polar_iters=6, margin=1.25,
-                 checkpoint_substeps=True, s_lo=0.25, s_hi=4.0):
+                 checkpoint_substeps=True, s_lo=0.25, s_hi=4.0, cfl_frac=0.05):
         super().__init__()
         from scipy.spatial import cKDTree
 
@@ -60,6 +60,7 @@ class AnchorSparse(nn.Module):
         # the unbounded fit went to NaN around its 250th iteration
         self.s_lo = s_lo * sim.radius
         self.s_hi = s_hi * sim.radius
+        self.cfl_limit = cfl_frac * sim.radius
         self.polar_ridge = 1e-6
         self.cfg = sc.cfg
         self.dt = sc.sub_dt
@@ -252,20 +253,31 @@ class AnchorSparse(nn.Module):
     def substep(self, p, v, w, rc, q, Binv, blocked, m, keep):
         a = self.force(p, w, rc, q, Binv, blocked) / m
         v = (v + self.dt * a) * self.damping * keep
-        return p + self.dt * v, v
+        dp = self.dt * v
+        # how far an anchor travels in one substep, against the spacing between
+        # anchors. An explicit step is only meaningful while this is small, and
+        # nothing else in the loss knows that: the fit is free to make the
+        # discretisation stiffer than the substep can integrate, and it does --
+        # 1.4% of the spacing at the start, 50% where the rollout blows up
+        over = (dp.norm(dim=-1) / self.cfl_limit - 1.0).clamp(min=0)
+        return p + dp, v, (over * over).mean()
 
     def rollout(self, p, v, n, cache):
+        """returns (p, v, cfl) -- the last being how badly, on average, an anchor
+        outran the substep it was integrated with"""
         w, rc, q, Binv, blocked, mass = cache
         m = mass.unsqueeze(-1)
         keep = (~self.fixed).unsqueeze(-1).to(p.dtype)
         use = self.checkpoint_substeps and torch.is_grad_enabled()
+        pen = p.new_zeros(())
         for _ in range(n):
             if use:
-                p, v = checkpoint(self.substep, p, v, w, rc, q, Binv, blocked, m, keep,
-                                   use_reentrant=False)
+                p, v, c = checkpoint(self.substep, p, v, w, rc, q, Binv, blocked,
+                                      m, keep, use_reentrant=False)
             else:
-                p, v = self.substep(p, v, w, rc, q, Binv, blocked, m, keep)
-        return p, v
+                p, v, c = self.substep(p, v, w, rc, q, Binv, blocked, m, keep)
+            pen = pen + c
+        return p, v, pen / max(n, 1)
 
     # ---- moving between particles and anchors ------------------------------
     @torch.no_grad()
