@@ -122,8 +122,13 @@ runs["fitted to MPM"] = torch.stack(out)
 # particles, which is what the anchor panels do for them through skinning.
 K_CARRY = 8
 rest = torch.nonzero(~sc.keep, as_tuple=False).squeeze(-1)
-d = torch.cdist(sc.pos[rest], T.pos_m)
-nd, ni = torch.topk(d, K_CARRY, dim=-1, largest=False)
+# a tree rather than cdist: 32k by 172k in float32 is 22 GB, which fits on this
+# card only by leaving nothing for anything else
+from scipy.spatial import cKDTree
+_tree = cKDTree(T.pos_m.cpu().numpy())
+nd_np, ni_np = _tree.query(sc.pos[rest].cpu().numpy(), k=K_CARRY)
+nd = torch.from_numpy(nd_np).float().to(dev)
+ni = torch.from_numpy(ni_np).long().to(dev)
 cw = 1.0 / nd.clamp(min=1e-6)
 cw = cw / cw.sum(-1, keepdim=True)
 mpm_full = []
