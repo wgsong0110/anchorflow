@@ -143,6 +143,14 @@ fit = AnchorSparse(sc, c=args.c, eig_floor=args.eig_floor,
                     polar_iters=args.polar_iters, cfl_frac=args.cfl_frac).to(dev)
 if args.no_guards:
     fit.s_lo, fit.s_hi, fit.polar_ridge = 1e-9, 1e9, 0.0
+SHAPE = ("pos", "log_s", "quat")
+STIFF = ("log_k",)
+TRAIN = SHAPE if args.params == "shape" else (
+    STIFF if args.params == "stiff" else SHAPE + STIFF)
+LRS = {"pos": args.lr_pos, "log_s": args.lr_scale, "quat": args.lr_quat,
+       "log_k": args.lr_stiff}
+
+
 print(f"[setup] fitting {args.params}: {', '.join(TRAIN)}")
 print(f"[setup] {fit.M} anchors, {fit.N} material Gaussians, support at "
       f"{fit.mahal_radius:.2f} sigma, {fit.pair_g.shape[0]} pairs "
@@ -345,14 +353,6 @@ def collect_dagger():
                     skipped += 1
             p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
     return added, skipped
-
-
-SHAPE = ("pos", "log_s", "quat")
-STIFF = ("log_k",)
-TRAIN = SHAPE if args.params == "shape" else (
-    STIFF if args.params == "stiff" else SHAPE + STIFF)
-LRS = {"pos": args.lr_pos, "log_s": args.lr_scale, "quat": args.lr_quat,
-       "log_k": args.lr_stiff}
 
 
 def make_opt():
