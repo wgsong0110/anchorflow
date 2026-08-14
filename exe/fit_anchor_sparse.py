@@ -180,7 +180,8 @@ def mpm_states(force):
     v0 = torch.zeros(fit.N, 3, device=dev).index_add_(
         0, fit.pair_g, cache[0].unsqueeze(-1) * dv[fit.pair_a])
     T._set(T.pos_m.clone(), v0.contiguous(), T.eye.clone(), torch.zeros_like(T.eye))
-    xs, vs = [T.pos_m.clone()], [v0.clone()]
+    xs = [T.pos_m.to(torch.float16).cpu()]
+    vs = [v0.to(torch.float16).cpu()]
     for _ in range(args.frames):
         for k in range(args.dt_mult):
             T.solver.p2g2p(None, sc.sub_dt, device=T.wp_dev)
