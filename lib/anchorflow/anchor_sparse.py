@@ -84,6 +84,12 @@ class AnchorSparse(nn.Module):
                                               device=dev))
         q0 = torch.zeros(sc.M, 4, device=dev); q0[:, 0] = 1.0
         self.quat = nn.Parameter(q0)
+        # a stiffness carried by the anchor rather than by the material. The
+        # config's E, nu and density stay exactly as they are and keep their
+        # spatial pattern; what this scales is how stiffly a given piece of the
+        # discretisation responds, which is an anchor property in the same sense
+        # as its reach. Starts at one, so an unfitted set is the same simulator.
+        self.log_k = nn.Parameter(torch.zeros(sc.M, device=dev))
         self.register_buffer("fixed", sc.fixed_mask.clone())
         self.register_buffer("B_ref", torch.zeros((), device=dev))
         self.refresh()
@@ -231,6 +237,12 @@ class AnchorSparse(nn.Module):
         F, cc = self.deformation(p, w, rc, q, Binv, blocked)
         return cc + torch.einsum("nij,nj->ni", F, self.Xc - rc)
 
+    def stiffness(self, w):
+        """[N] -- each Gaussian's multiplier, blended from the anchors holding it"""
+        k = torch.zeros(self.N, device=self.dev).index_add_(
+            0, self.pair_g, w * self.log_k.exp()[self.pair_a])
+        return k.clamp(min=1e-3)
+
     def force(self, p, w, rc, q, Binv, blocked):
         F, _ = self.deformation(p, w, rc, q, Binv, blocked)
         R = closest_rotation(F, self.polar_iters, self.polar_ridge)
@@ -241,8 +253,9 @@ class AnchorSparse(nn.Module):
         n = F.reshape(-1, 9).norm(dim=-1).clamp(min=1e-12).reshape(-1, 1, 1)
         Finv_T = torch.linalg.inv(F + 1e-6 * n * torch.eye(3, device=self.dev)
                                    ).transpose(-1, -2)
-        mu = self.mu.unsqueeze(-1).unsqueeze(-1)
-        lam = self.lam.unsqueeze(-1).unsqueeze(-1)
+        k = self.stiffness(w).unsqueeze(-1).unsqueeze(-1)
+        mu = self.mu.unsqueeze(-1).unsqueeze(-1) * k
+        lam = self.lam.unsqueeze(-1).unsqueeze(-1) * k
         P = 2 * mu * (F - R) + lam * (J - 1).unsqueeze(-1).unsqueeze(-1) * \
             J.unsqueeze(-1).unsqueeze(-1) * Finv_T
         PB = (P @ Binv)[self.pair_g]
@@ -372,10 +385,13 @@ class AnchorSparse(nn.Module):
         return int(thin.sum())
 
     @torch.no_grad()
-    def _rebuild(self, pos, quat, log_s):
+    def _rebuild(self, pos, quat, log_s, log_k=None):
         self.pos = nn.Parameter(pos.contiguous())
         self.quat = nn.Parameter(quat.contiguous())
         self.log_s = nn.Parameter(log_s.contiguous())
+        if log_k is None:
+            log_k = torch.zeros(pos.shape[0], device=self.dev)
+        self.log_k = nn.Parameter(log_k.contiguous())
         f = torch.zeros(pos.shape[0], dtype=torch.bool, device=self.dev)
         for bc in self.cfg.get("boundary_conditions", []):
             if bc["type"] == "cuboid":
@@ -406,6 +422,7 @@ class AnchorSparse(nn.Module):
         dead = ((held < prune_share * held.median()) | (n_pairs < min_pairs)) & ~self.fixed
         alive = ~dead
         pos, quat, log_s = self.pos[alive], self.quat[alive], self.log_s[alive]
+        log_k = self.log_k[alive]
         g = grad_accum[alive]
         fixed = self.fixed[alive]
 
@@ -426,8 +443,9 @@ class AnchorSparse(nn.Module):
             pos = torch.cat([pos, pos[pick] + off]); pos[pick] -= off
             quat = torch.cat([quat, quat[pick]])
             log_s = torch.cat([log_s, new_s]); log_s[pick] = new_s
+            log_k = torch.cat([log_k, log_k[pick]])
             n_split = k
-        self._rebuild(pos, quat, log_s)
+        self._rebuild(pos, quat, log_s, log_k)
         return int(dead.sum()), n_split
 
 

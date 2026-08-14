@@ -83,6 +83,14 @@ ap.add_argument("--dagger_stride", type=int, default=3)
 ap.add_argument("--dagger_frac", type=float, default=0.5)
 ap.add_argument("--dagger_cap", type=float, default=3.0)
 ap.add_argument("--no_geom_init", action="store_true")
+ap.add_argument("--params", default="shape",
+                 choices=["shape", "stiff", "all"],
+                 help="what the fit is allowed to move. 'shape' is where the anchors "
+                      "are, which way they point and how far they reach; 'stiff' is a "
+                      "per-anchor stiffness multiplier and nothing else, which is the "
+                      "parameterisation an earlier attempt failed to fit at all "
+                      "because the loss it used was meaningless; 'all' is both.")
+ap.add_argument("--lr_stiff", type=float, default=3e-2)
 ap.add_argument("--out", default=None)
 ap.add_argument("--state", default=None)
 ap.add_argument("--resume", action="store_true")
@@ -135,6 +143,7 @@ fit = AnchorSparse(sc, c=args.c, eig_floor=args.eig_floor,
                     polar_iters=args.polar_iters, cfl_frac=args.cfl_frac).to(dev)
 if args.no_guards:
     fit.s_lo, fit.s_hi, fit.polar_ridge = 1e-9, 1e9, 0.0
+print(f"[setup] fitting {args.params}: {', '.join(TRAIN)}")
 print(f"[setup] {fit.M} anchors, {fit.N} material Gaussians, support at "
       f"{fit.mahal_radius:.2f} sigma, {fit.pair_g.shape[0]} pairs "
       f"({fit.pair_g.shape[0] / fit.N:.1f} anchors per Gaussian)")
@@ -338,10 +347,19 @@ def collect_dagger():
     return added, skipped
 
 
+SHAPE = ("pos", "log_s", "quat")
+STIFF = ("log_k",)
+TRAIN = SHAPE if args.params == "shape" else (
+    STIFF if args.params == "stiff" else SHAPE + STIFF)
+LRS = {"pos": args.lr_pos, "log_s": args.lr_scale, "quat": args.lr_quat,
+       "log_k": args.lr_stiff}
+
+
 def make_opt():
-    return torch.optim.Adam([{"params": [fit.pos], "lr": args.lr_pos},
-                             {"params": [fit.log_s], "lr": args.lr_scale},
-                             {"params": [fit.quat], "lr": args.lr_quat}])
+    for n, prm in fit.named_parameters():
+        prm.requires_grad_(n in TRAIN)
+    return torch.optim.Adam([{"params": [getattr(fit, n)], "lr": LRS[n]}
+                             for n in TRAIN])
 
 
 opt = make_opt()
@@ -360,7 +378,8 @@ def save_state(it, best):
               flush=True)
         return
     torch.save({"pos": fit.pos.detach(), "log_s": fit.log_s.detach(),
-                 "quat": fit.quat.detach(), "iter": it, "best": best,
+                 "quat": fit.quat.detach(), "log_k": fit.log_k.detach(),
+                 "iter": it, "best": best,
                  "opt": opt.state_dict(), "grad_accum": grad_accum,
                  "rng": torch.get_rng_state(), "rng_cuda": torch.cuda.get_rng_state(),
                  "pool": POOL, "c": args.c, "args": vars(args)}, STATE + ".tmp")
@@ -376,7 +395,7 @@ if args.resume and STATE:
                    f"{os.path.dirname(STATE) or '.'} 2>/dev/null")
     if os.path.exists(STATE):
         blob = torch.load(STATE, map_location=dev, weights_only=False)
-        fit._rebuild(blob["pos"], blob["quat"], blob["log_s"])
+        fit._rebuild(blob["pos"], blob["quat"], blob["log_s"], blob.get("log_k"))
         opt = make_opt(); opt.load_state_dict(blob["opt"])
         grad_accum = blob["grad_accum"].to(dev)
         torch.set_rng_state(blob["rng"].cpu()); torch.cuda.set_rng_state(blob["rng_cuda"].cpu())
@@ -452,8 +471,9 @@ for it in bar:
             if fit.pos.grad is not None:
                 grad_accum += torch.nan_to_num(fit.pos.grad).norm(dim=-1)
                 fit.pos.grad[fit.fixed] = 0
-        if all(q.grad is None or torch.isfinite(q.grad).all() for q in fit.parameters()):
-            torch.nn.utils.clip_grad_norm_(list(fit.parameters()), 1.0)
+        if all(getattr(fit, n).grad is None or
+               torch.isfinite(getattr(fit, n).grad).all() for n in TRAIN):
+            torch.nn.utils.clip_grad_norm_([getattr(fit, n) for n in TRAIN], 1.0)
             opt.step()
             fit.clamp_()
         else:
@@ -497,7 +517,8 @@ for it in bar:
         if args.out and b < best:
             best = b
             torch.save({"pos": fit.pos.detach().cpu(), "log_s": fit.log_s.detach().cpu(),
-                         "quat": fit.quat.detach().cpu(), "c": args.c, "iter": it,
+                         "quat": fit.quat.detach().cpu(),
+                         "log_k": fit.log_k.detach().cpu(), "c": args.c, "iter": it,
                          "eig_floor": args.eig_floor}, args.out)
         save_state(it, best)
     elif it % args.save_every == 0:
@@ -523,8 +544,9 @@ with torch.no_grad():
             p0, v0, g0 = sc.explicit_step(p0, v0, g0, args.dt_mult)
             base_out.append(g0[fit.mat].clone())
         G0 = torch.stack(base_out)
-        span0 = (X - X[0]).norm(dim=-1).max().clamp(min=1e-12)
-        e0 = ((G0 - X).norm(dim=-1).mean(-1) / span0).mean().item()
+        Xb = torch.stack([X[k] for k in range(args.frames + 1)])
+        span0 = (Xb - Xb[0]).norm(dim=-1).max().clamp(min=1e-12)
+        e0 = ((G0 - Xb).norm(dim=-1).mean(-1) / span0).mean().item()
         tot0.append(e0)
         p = fit.project(X[0], cache)
         v = fit.project_v(V[0], cache)
@@ -541,9 +563,10 @@ with torch.no_grad():
               f"{100*(G - G[0]).norm(dim=-1).max()/span:7.0f}% {100*e0:9.2f}%")
     print(f"  {'mean':>8} {100*sum(tot)/max(len(tot),1):8.2f}% {'':>9} {'':>8} "
           f"{100*sum(tot0)/max(len(tot0),1):9.2f}%")
-    s_ = fit.log_s.exp()
+    s_, k_ = fit.log_s.exp(), fit.log_k.exp()
     print(f"\n[params] {fit.M} anchors, {fit.pair_g.shape[0]} pairs, axis ratio "
           f"{(s_.max(-1).values / s_.min(-1).values).median():.2f}, "
-          f"size {s_.mean():.4f}")
+          f"size {s_.mean():.4f}, stiffness {k_.min():.3f}..{k_.max():.3f} "
+          f"(median {k_.median():.3f})")
 if args.out:
     print(f"[saved ] {args.out}")
