@@ -32,14 +32,25 @@ from tqdm import tqdm
 
 from anchorflow import scene_setup
 from anchorflow.anchor_sparse import AnchorSparse
-from anchorflow.streams import rand_rot
+from anchorflow.streams import draw_impulse, rand_rot
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
 ap.add_argument("--config", required=True)
 ap.add_argument("--dreamphysics", default="/workspace/DreamPhysics")
-ap.add_argument("--n_fit", type=int, default=3)
-ap.add_argument("--n_check", type=int, default=2)
+ap.add_argument("--n_fit", type=int, default=115,
+                 help="MPM trajectories to fit on. The student that imitates this "
+                      "simulator was trained on 125 and its divergence was traced to "
+                      "the narrowness of the force distribution, not to model size; "
+                      "the fit was being run on three.")
+ap.add_argument("--n_check", type=int, default=10)
+ap.add_argument("--field", action="store_true", default=True,
+                 help="draw smooth random force fields rather than one uniform push, "
+                      "as the student's data does")
+ap.add_argument("--uniform_check", type=int, default=5,
+                 help="held-out trajectories kept on the config's uniform impulse, so "
+                      "the headline number stays comparable across runs")
+ap.add_argument("--impulse_range", type=float, default=16.0)
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--dt_mult", type=int, default=40)
 ap.add_argument("--n_anchors", type=int, default=512)
@@ -138,6 +149,29 @@ if not args.no_geom_init:
           f"{fit.pair_g.shape[0]} pairs")
 
 
+class Traj:
+    """a trajectory held on the CPU in half precision, handed out a frame at a
+    time in the precision the physics wants.
+
+    At the student's data volume the set is 15.7 GB: it does not belong on a
+    24 GB card, and a single frame is 2 MB, so the transfer is nothing next to
+    the forty substeps it feeds.
+    """
+
+    def __init__(self, t):
+        self.t = t
+
+    def __getitem__(self, i):
+        return self.t[i].to(dev, torch.float32, non_blocking=True)
+
+    def __len__(self):
+        return self.t.shape[0]
+
+    @property
+    def shape(self):
+        return self.t.shape
+
+
 @torch.no_grad()
 def mpm_states(force):
     """MPM's own particles and velocities, frame by frame"""
@@ -152,16 +186,25 @@ def mpm_states(force):
             T.solver.p2g2p(None, sc.sub_dt, device=T.wp_dev)
             if (k + 1) % 8 == 0 and not T._in_domain():
                 return None
-        xs.append(T.solver.export_particle_x_to_torch().clone())
-        vs.append(T.solver.export_particle_v_to_torch().clone())
-    return torch.stack(xs), torch.stack(vs)
+        xs.append(T.solver.export_particle_x_to_torch().to(torch.float16).cpu())
+        vs.append(T.solver.export_particle_v_to_torch().to(torch.float16).cpu())
+    return Traj(torch.stack(xs)), Traj(torch.stack(vs))
 
 
-def draw(g, n):
+def draw(g, n, field=True, n_uniform=0):
+    """the student's impulse distribution: one uniform push, then force fields.
+
+    A field varies over the object rather than pushing all of it the same way,
+    and its spatial frequency is drawn per trajectory. Fitting on uniform pushes
+    alone is what the student's own failure was traced to.
+    """
     out = [base]
     while len(out) < n:
-        k = 0.5 * (4.0 ** torch.rand(1, device=dev, generator=g).item())
-        out.append((rand_rot(g, dev) @ base) * k)
+        if not field or len(out) < n_uniform:
+            k = 0.5 * (args.impulse_range ** torch.rand(1, device=dev, generator=g).item())
+            out.append((rand_rot(g, dev) @ base) * k)
+        else:
+            out.append(draw_impulse(sc, base, g, args.impulse_range, field=True)[0])
     return out[:n]
 
 
@@ -174,11 +217,12 @@ if args.traj_cache and os.path.exists(args.traj_cache):
         print(f"[data] {args.traj_cache}")
 if FIT is None:
     g1 = torch.Generator(device=dev); g1.manual_seed(4242)
-    ff = draw(g1, args.n_fit)
+    ff = draw(g1, args.n_fit, field=args.field)
     FIT = [s for s in (mpm_states(f) for f in tqdm(ff, desc="MPM fit", ncols=90))
            if s is not None]
     g2 = torch.Generator(device=dev); g2.manual_seed(31337)
-    fc = draw(g2, args.n_check + 1)[1:]
+    fc = draw(g2, args.n_check + 1, field=args.field,
+               n_uniform=args.uniform_check + 1)[1:]
     CHK = [s for s in (mpm_states(f) for f in tqdm(fc, desc="MPM check", ncols=90))
            if s is not None]
     FORCES = {"fit": ff[:len(FIT)], "chk": fc[:len(CHK)]}
@@ -241,8 +285,9 @@ def rollout_error(sets):
             p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
             out.append(fit.gaussian_pos(p, cache))
         G = torch.stack(out)
-        span = (X - X[0]).norm(dim=-1).max().clamp(min=1e-12)
-        tot.append(((G - X).norm(dim=-1).mean(-1) / span).mean().item())
+        Xg = torch.stack([X[k] for k in range(args.frames + 1)])
+        span = (Xg - Xg[0]).norm(dim=-1).max().clamp(min=1e-12)
+        tot.append(((G - Xg).norm(dim=-1).mean(-1) / span).mean().item())
     return 100 * sum(tot) / max(len(tot), 1)
 
 
@@ -263,7 +308,8 @@ POOL = {"x": [], "v": [], "tgt": []}
 @torch.no_grad()
 def collect_dagger():
     cache = fit.prepare()
-    cap = args.dagger_cap * max((X - X[0]).norm(dim=-1).max().item() for X, _ in FIT)
+    cap = args.dagger_cap * max((X[args.frames] - X[0]).norm(dim=-1).max().item()
+                                 for X, _ in FIT[:8])
     added = skipped = 0
     for i in range(args.dagger_traj):
         X, V = FIT[i % len(FIT)]
@@ -486,8 +532,9 @@ with torch.no_grad():
             p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
             out.append(fit.gaussian_pos(p, cache))
         G = torch.stack(out)
-        span = (X - X[0]).norm(dim=-1).max().clamp(min=1e-12)
-        e = (G - X).norm(dim=-1).mean(-1) / span
+        Xg = torch.stack([X[k] for k in range(args.frames + 1)])
+        span = (Xg - Xg[0]).norm(dim=-1).max().clamp(min=1e-12)
+        e = (G - Xg).norm(dim=-1).mean(-1) / span
         tot.append(e.mean().item())
         print(f"  {i:8d} {100*e.mean():8.2f}% {100*e[-1]:8.2f}% "
               f"{100*(G - G[0]).norm(dim=-1).max()/span:7.0f}% {100*e0:9.2f}%")
