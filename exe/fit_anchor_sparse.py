@@ -91,6 +91,11 @@ ap.add_argument("--params", default="shape",
                       "parameterisation an earlier attempt failed to fit at all "
                       "because the loss it used was meaningless; 'all' is both.")
 ap.add_argument("--lr_stiff", type=float, default=3e-2)
+ap.add_argument("--reg", type=float, default=0.0,
+                 help="pull the parameters back toward where they started. The knob "
+                      "on how much the discretisation is allowed to become: at zero "
+                      "the fit reaches its best rollout a third of the way through "
+                      "and then doubles it while the loss keeps falling.")
 ap.add_argument("--init_from", default=None,
                  help="start from a saved fit rather than from the sampled anchors. "
                       "With --iters 0 this scores an existing one on the same "
@@ -424,6 +429,9 @@ if best is None:
     print(f"\n[before]")
     best = report("init")
 
+# where the fit started, for the regulariser to refer to. Re-taken after every
+# density change, since the anchors are not the same set any more
+P0, S0, Q0 = fit.pos.detach().clone(), fit.log_s.detach().clone(), fit.quat.detach().clone()
 t0 = time.time()
 n_skip = 0
 bar = tqdm(range(start_it, args.iters + 1), desc="fit", ncols=90)
@@ -439,6 +447,8 @@ for it in bar:
         # anything; kept simple by restarting them rather than reindexing
         opt = make_opt()
         grad_accum = torch.zeros(fit.M, device=dev)
+        P0 = fit.pos.detach().clone(); S0 = fit.log_s.detach().clone()
+        Q0 = fit.quat.detach().clone()
         print(f"\n  [density] it={it}: -{dead} +{split} -> {fit.M} anchors, "
               f"{fit.pair_g.shape[0]} pairs", flush=True)
     if args.dagger_every and (it == start_it or it % args.dagger_every == 0):
@@ -475,6 +485,13 @@ for it in bar:
         pen = pen + cfl
     loss, pen = loss / args.batch, pen / args.batch
     total = loss + args.lambda_cfl * pen
+    if args.reg > 0:
+        # measured against the anchor spacing and against unit scale, so one
+        # number covers parameters that do not share units
+        h = sc.sim.radius
+        r = ((fit.pos - P0) / h).pow(2).mean() + (fit.log_s - S0).pow(2).mean() \
+            + (fit.quat - Q0).pow(2).mean() + fit.log_k.pow(2).mean()
+        total = total + args.reg * r
     skipped = 0
     if not torch.isfinite(total):
         # one bad sample -- a rollout that ran away, a configuration the polar
@@ -530,6 +547,10 @@ for it in bar:
     if it % args.eval_every == 0 or it == args.iters:
         with torch.no_grad():
             b = report(f"it {it}")
+            if args.eval_rollout:
+                # the one-step error keeps falling while the rollout doubles, so
+                # keeping the best by one-step keeps the wrong checkpoint
+                b = rollout_error(CHK)
         if args.out and b < best:
             best = b
             torch.save({"pos": fit.pos.detach().cpu(), "log_s": fit.log_s.detach().cpu(),
