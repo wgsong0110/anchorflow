@@ -309,9 +309,15 @@ def rollout_error(sets):
     return 100 * sum(tot) / max(len(tot), 1)
 
 
+# scoring every fit trajectory costs more than training on them: 106 of them at
+# one sample per ten frames is 636 rollouts of forty substeps, ten minutes an
+# evaluation. A fixed subset says the same thing about whether the fit is moving
+N_REPORT = 10
+
+
 @torch.no_grad()
 def report(tag):
-    a, b = step_error(FIT), step_error(CHK)
+    a, b = step_error(FIT[:N_REPORT]), step_error(CHK)
     extra = ""
     if args.eval_rollout:
         extra = f"   rollout {rollout_error(CHK):6.2f}%"
