@@ -312,9 +312,17 @@ class AnchorSparse(nn.Module):
         the impulse means.
         """
         w = cache[0]
-        s = torch.zeros(self.M, device=self.dev).index_add_(0, self.pair_a, w)
-        m = cache[5]
-        return (s / m).unsqueeze(-1) * force.reshape(1, 3) * self.dt
+        # [3] is the config's uniform push; [N,3] is a force that varies over the
+        # object, which is what a random field is and what the fit is now drawn
+        # from. Only the material Gaussians are pushed either way.
+        if force.dim() == 1:
+            wf = w.unsqueeze(-1) * force.reshape(1, 3)
+        else:
+            f = force[self.mat] if force.shape[0] != self.N else force
+            wf = w.unsqueeze(-1) * f[self.pair_g]
+        p2g = torch.zeros(self.M, 3, device=self.dev).index_add_(0, self.pair_a, wf)
+        dv = p2g * self.dt / cache[5].unsqueeze(-1)
+        return torch.where(self.fixed.unsqueeze(-1), torch.zeros_like(dv), dv)
 
     @torch.no_grad()
     def lift(self, p, v, cache):
