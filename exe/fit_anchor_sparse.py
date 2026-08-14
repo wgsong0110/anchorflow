@@ -91,6 +91,11 @@ ap.add_argument("--params", default="shape",
                       "parameterisation an earlier attempt failed to fit at all "
                       "because the loss it used was meaningless; 'all' is both.")
 ap.add_argument("--lr_stiff", type=float, default=3e-2)
+ap.add_argument("--init_from", default=None,
+                 help="start from a saved fit rather than from the sampled anchors. "
+                      "With --iters 0 this scores an existing one on the same "
+                      "held-out set as everything else, which is the only way three "
+                      "parameterisations fitted at different times become comparable.")
 ap.add_argument("--out", default=None)
 ap.add_argument("--state", default=None)
 ap.add_argument("--resume", action="store_true")
@@ -158,7 +163,12 @@ print(f"[setup] {fit.M} anchors, {fit.N} material Gaussians, support at "
 if args.no_guards:
     fit.B_ref.zero_()
     fit.set_B_ref = lambda *a, **k: 0.0
-if not args.no_geom_init:
+if args.init_from:
+    _b = torch.load(args.init_from, map_location=dev, weights_only=False)
+    fit._rebuild(_b["pos"].to(dev), _b["quat"].to(dev), _b["log_s"].to(dev),
+                  _b["log_k"].to(dev) if "log_k" in _b else None)
+    print(f"[init] {args.init_from} at iteration {_b.get('iter')}, {fit.M} anchors")
+elif not args.no_geom_init:
     thin = fit.init_from_geometry()
     s_ = fit.log_s.exp()
     print(f"[init] oriented; axis ratio median "
