@@ -57,7 +57,10 @@ class Traj:
         self.dev = dev
 
     def __getitem__(self, i):
-        return self.t[i].to(self.dev, torch.float32, non_blocking=True)
+        # getattr, because a cache written before this class moved into the
+        # library unpickles without the attribute it never had
+        return self.t[i].to(getattr(self, "dev", "cuda"), torch.float32,
+                             non_blocking=True)
 
     def __len__(self):
         return self.t.shape[0]
