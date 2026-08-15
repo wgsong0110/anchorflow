@@ -39,6 +39,34 @@ from eigen3x3 import eigh3x3
 from .anchor_fit import _R_to_quat, closest_rotation, quat_to_R
 
 
+class Traj:
+    """a trajectory held on the CPU in half precision, handed out a frame at a
+    time in the precision the physics wants.
+
+    At the data volume the student is trained on, the set is 15.7 GB: it does not
+    belong on a 24 GB card, and a single frame is 2 MB, so the transfer is
+    nothing next to the forty substeps it feeds.
+
+    It lives here rather than in the script that writes the cache because the
+    cache is pickled: defined in a __main__, it can only be read back by the one
+    program that wrote it.
+    """
+
+    def __init__(self, t, dev="cuda"):
+        self.t = t
+        self.dev = dev
+
+    def __getitem__(self, i):
+        return self.t[i].to(self.dev, torch.float32, non_blocking=True)
+
+    def __len__(self):
+        return self.t.shape[0]
+
+    @property
+    def shape(self):
+        return self.t.shape
+
+
 class AnchorSparse(nn.Module):
     """anchors with elliptical, compactly supported reach and a variable count"""
 

@@ -31,7 +31,7 @@ import torch
 from tqdm import tqdm
 
 from anchorflow import scene_setup
-from anchorflow.anchor_sparse import AnchorSparse
+from anchorflow.anchor_sparse import AnchorSparse, Traj
 from anchorflow.streams import draw_impulse, rand_rot
 
 ap = argparse.ArgumentParser()
@@ -179,29 +179,6 @@ elif not args.no_geom_init:
     print(f"[init] oriented; axis ratio median "
           f"{(s_.max(-1).values / s_.min(-1).values).median():.2f}, {thin} left round, "
           f"{fit.pair_g.shape[0]} pairs")
-
-
-class Traj:
-    """a trajectory held on the CPU in half precision, handed out a frame at a
-    time in the precision the physics wants.
-
-    At the student's data volume the set is 15.7 GB: it does not belong on a
-    24 GB card, and a single frame is 2 MB, so the transfer is nothing next to
-    the forty substeps it feeds.
-    """
-
-    def __init__(self, t):
-        self.t = t
-
-    def __getitem__(self, i):
-        return self.t[i].to(dev, torch.float32, non_blocking=True)
-
-    def __len__(self):
-        return self.t.shape[0]
-
-    @property
-    def shape(self):
-        return self.t.shape
 
 
 @torch.no_grad()

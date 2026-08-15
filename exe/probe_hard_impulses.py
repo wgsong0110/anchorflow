@@ -50,8 +50,11 @@ args = ap.parse_args()
 sys.path.insert(0, args.dreamphysics)
 import warp as wp
 
-from anchorflow.anchor_sparse import AnchorSparse
+from anchorflow.anchor_sparse import AnchorSparse, Traj
 from anchorflow.mpm_teacher import MPMTeacher
+
+# caches written before Traj moved into the library name it __main__.Traj
+sys.modules["__main__"].Traj = Traj
 
 dev = "cuda"
 torch.set_grad_enabled(False)
