@@ -243,6 +243,14 @@ def draw(g, n, field=True, n_uniform=0):
 
 KEY = f"{args.n_fit}_{args.n_check}_{args.frames}_{args.dt_mult}_{args.c}"
 FIT = CHK = FORCES = None
+if args.traj_cache and args.r2 and not os.path.exists(args.traj_cache):
+    # the trajectories are twenty minutes of MPM and they were not being
+    # mirrored, so an instance going away cost them every time even though the
+    # fit state itself survived. Pulled back before anything else is decided.
+    print(f"[data] fetching {os.path.basename(args.traj_cache)} from {args.r2}",
+          flush=True)
+    os.system(f"rclone copy {args.r2}/{os.path.basename(args.traj_cache)} "
+               f"{os.path.dirname(args.traj_cache) or '.'} 2>/dev/null")
 if args.traj_cache and os.path.exists(args.traj_cache):
     blob = torch.load(args.traj_cache, map_location=dev, weights_only=False)
     if blob.get("key") == KEY:
@@ -261,6 +269,9 @@ if FIT is None:
     FORCES = {"fit": ff[:len(FIT)], "chk": fc[:len(CHK)]}
     if args.traj_cache:
         torch.save({"fit": FIT, "chk": CHK, "forces": FORCES, "key": KEY}, args.traj_cache)
+        if args.r2:
+            print(f"[data] mirroring the trajectories to {args.r2}", flush=True)
+            os.system(f"rclone copy {args.traj_cache} {args.r2} 2>/dev/null &")
 print(f"[data] {len(FIT)} fit and {len(CHK)} held-out MPM trajectories")
 
 
