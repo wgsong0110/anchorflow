@@ -487,3 +487,91 @@ def _density_of(sc):
         s = torch.tensor(reg["size"], device=sc.pos.device)
         dens[((sc.pos - c).abs() <= s).all(-1)] = reg["density"]
     return dens
+
+
+class FittedScene:
+    """A fitted anchor set, wearing the interface the student's trainer expects.
+
+    The trainer was written against scene_setup.Scene: it asks for canonical
+    anchors, an initial velocity, an explicit step, and a skinning. A fitted set
+    answers all of those, but it is a different simulator underneath -- a
+    different number of anchors in different places, with orientations, extents
+    and stiffnesses that were learned. Wrapping it here means the trainer does
+    not need to know which teacher it is imitating, and the two runs stay
+    comparable down to the seed.
+
+    What it cannot do is the fused CUDA step: that kernel has fixed neighbours,
+    isotropic weights and one material stiffness. This is the torch path, about
+    an order of magnitude slower per substep, which is why the trajectories are
+    generated once and cached rather than drawn as needed.
+    """
+
+    def __init__(self, sc, fit):
+        self.sc = sc
+        self.fit = fit
+        self._cache = fit.prepare()
+        self.cfg = sc.cfg
+        self.sub_dt = sc.sub_dt
+        self.pos = sc.pos
+        self.keep = sc.keep
+        self.N = sc.N
+        self.sim = sc.sim               # for radius, and the canonical Gaussians
+        self.extent = sc.extent
+
+    @property
+    def M(self):
+        return self.fit.M
+
+    @property
+    def anchor_canonical(self):
+        return self.fit.pos.detach()
+
+    @property
+    def fixed_mask(self):
+        return self.fit.fixed
+
+    def refresh(self):
+        self._cache = self.fit.prepare()
+
+    @torch.no_grad()
+    def initial_velocity(self, force=None):
+        if force is None:
+            for bc in self.cfg.get("boundary_conditions", []):
+                if bc["type"] == "particle_impulse":
+                    force = torch.tensor(bc["force"], device=self.fit.dev)
+        return self.fit.impulse_dv(force, self._cache)
+
+    @torch.no_grad()
+    def impulse_dv(self, force):
+        return self.fit.impulse_dv(force, self._cache)
+
+    @torch.no_grad()
+    def explicit_step(self, p, v, gp, n=1):
+        p, v, _ = self.fit.rollout(p, v, n, self._cache)
+        return p, v, gp
+
+    @torch.no_grad()
+    def skin(self, p, gp):
+        """the material Gaussians move; the zero-volume ones are carried along
+        so anything that renders this sees the whole cloud"""
+        out = gp.clone()
+        out[self.fit.mat] = self.fit.gaussian_pos(p, self._cache)
+        return out
+
+    def random_poke(self, gen, radius, magnitude):
+        return self.sc.random_poke(gen, radius, magnitude)
+
+    def elastic_accel(self, p, gp):
+        w, rc, q, Binv, blocked, mass = self._cache
+        f = self.fit.force(p, w, rc, q, Binv, blocked)
+        a = f / mass.unsqueeze(-1)
+        return torch.where(self.fixed_mask.unsqueeze(-1), torch.zeros_like(a), a)
+
+
+def load_fitted(sc, path, device="cuda"):
+    """rebuild a fitted anchor set from a checkpoint and wrap it for the trainer"""
+    b = torch.load(path, map_location=device, weights_only=False)
+    fit = AnchorSparse(sc, c=b.get("c", 0.25), eig_floor=b.get("eig_floor", 0.02)).to(device)
+    fit._rebuild(b["pos"].to(device), b["quat"].to(device), b["log_s"].to(device),
+                  b["log_k"].to(device) if "log_k" in b else None)
+    return FittedScene(sc, fit), b

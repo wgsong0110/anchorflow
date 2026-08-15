@@ -152,6 +152,11 @@ ap.add_argument("--rot_fallback", action="store_true",
                       "instead of freezing them. Freezing is not rotation equivariant and made "
                       "the anchor simulator 3.7x too stiff; this is the corrected simulator, "
                       "and every run before 2026-08-10 was trained without it.")
+ap.add_argument("--fit", default=None,
+                 help="a fitted anchor set from fit_anchor_sparse.py. With "
+                      "--teacher anchor this makes the fitted simulator the teacher "
+                      "instead of the sampled one -- 4.92%% from MPM rather than "
+                      "13.12%%, which is the whole reason it was fitted.")
 ap.add_argument("--teacher", choices=["anchor", "mpm"], default="anchor",
                  help="what the student imitates. 'anchor' is the shape-matching simulator "
                       "this project has always used; 'mpm' is PhysGaussian's own solver, "
@@ -251,6 +256,11 @@ sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev
                         n_grid=args.n_grid, grid_lim=args.grid_lim,
                         frozen_weights=args.frozen_weights, eig_floor=args.eig_floor,
                         rot_fallback=args.rot_fallback)
+if args.fit:
+    from anchorflow.anchor_sparse import load_fitted
+    sc, _fb = load_fitted(sc, args.fit, dev)
+    print(f"[teacher] fitted anchor set from {args.fit} at iteration "
+          f"{_fb.get('iter')}: {sc.M} anchors", flush=True)
 USE_A = not args.no_accel
 HORIZON = args.chunk * args.rollout_steps
 MAXS = max(args.dt_strides)
@@ -348,6 +358,9 @@ def amplitude_targeted(target):
     return shape * m0 * k, sig, d0, k
 
 
+# a fitted teacher is a different simulator, so its trajectories are not the
+# sampled one's however similar the flags look
+TEACHER_TAG = args.teacher + (":fitted" if args.fit else "")
 trajs, accs = [], []
 if args.traj_cache and os.path.exists(args.traj_cache):
     blob = torch.load(args.traj_cache, map_location=dev, weights_only=False)
@@ -355,7 +368,7 @@ if args.traj_cache and os.path.exists(args.traj_cache):
     if USE_A and (not accs or accs[0] is None):
         print(f"[data] {args.traj_cache} was written without accelerations; regenerating")
         trajs, accs = [], []
-    elif blob.get("teacher", "anchor") != args.teacher or \
+    elif blob.get("teacher", "anchor") != TEACHER_TAG or \
             bool(blob.get("field", False)) != bool(args.field) or \
             bool(blob.get("target_amp", False)) != bool(args.target_amp) or \
             int(blob.get("n_holdout", args.n_holdout)) != args.n_holdout:
@@ -411,7 +424,8 @@ if len(trajs) < N_TRAJ:
             print(f"  {t + 1}/{N_TRAJ}", flush=True)
     if args.traj_cache:
         torch.save({"trajs": trajs, "accs": accs, "field": bool(args.field),
-                     "n_holdout": args.n_holdout, "teacher": args.teacher,
+                     "n_holdout": args.n_holdout,
+                     "teacher": TEACHER_TAG,
                      "target_amp": bool(args.target_amp)}, args.traj_cache)
         print(f"[data] cached to {args.traj_cache}")
 trajs, accs = trajs[:N_TRAJ], accs[:N_TRAJ]
