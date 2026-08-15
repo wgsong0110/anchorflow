@@ -558,8 +558,14 @@ class FittedScene:
         out[self.fit.mat] = self.fit.gaussian_pos(p, self._cache)
         return out
 
-    def random_poke(self, gen, radius, magnitude):
-        return self.sc.random_poke(gen, radius, magnitude)
+    def __getattr__(self, name):
+        """anything not overridden here is the underlying scene's.
+
+        The impulse draws reach for random_force_field, random_poke and a few
+        geometry properties, and every one of them is about the Gaussian cloud
+        rather than the anchors -- which the fit did not touch.
+        """
+        return getattr(self.__dict__["sc"], name)
 
     def elastic_accel(self, p, gp):
         w, rc, q, Binv, blocked, mass = self._cache
