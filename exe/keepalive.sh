@@ -27,6 +27,8 @@ CMD="$*"
 RESUME_ARG=${RESUME_ARG:-"--resume /workspace/$4.pt"}
 INTERVAL=${KEEPALIVE_INTERVAL:-180}
 PATTERN=${PATTERN:-train_nextstate}
+QUEUED=0
+QUEUE_LIMIT=${QUEUE_LIMIT:-5}
 DONE_MARK=${DONE_MARK:-'^\[rollout\] mean over'}
 LOG=/tmp/keepalive_$NAME.log
 
@@ -60,10 +62,19 @@ for i in json.load(sys.stdin)['instances']:
     say "instance is '$STATE'; starting it"
     OUT=$(timeout 60 vastai start instance $ID 2>&1)
     if echo "$OUT" | grep -qi "resources are currently unavailable\|state change queued"; then
-      # the same condition as scheduling, reported by the start command instead
-      say "start says the host has no room. Destroying rather than waiting."
-      timeout 60 vastai destroy instance $ID -y >/dev/null 2>&1
-      exit 2
+      # This message has twice resolved on its own within minutes -- the host
+      # simply had no room at that instant. Destroying on the first sighting
+      # threw away a running fit. It counts as evidence only when it keeps
+      # saying so, and when the instance is still not running afterwards
+      QUEUED=$((QUEUED + 1))
+      say "start says the host has no room (${QUEUED}/${QUEUE_LIMIT})"
+      if [ $QUEUED -ge $QUEUE_LIMIT ]; then
+        say "queued $QUEUED times over $((QUEUE_LIMIT * 3)) minutes; destroying"
+        timeout 60 vastai destroy instance $ID -y >/dev/null 2>&1
+        exit 2
+      fi
+    else
+      QUEUED=0
     fi
     sleep 90
     continue
