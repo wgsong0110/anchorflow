@@ -63,7 +63,6 @@ args = ap.parse_args()
 sys.path.insert(0, args.dreamphysics)
 import warp as wp
 
-from anchorflow.anchor_fit import AnchorFit
 from anchorflow.mpm_teacher import MPMTeacher
 
 dev = "cuda"
@@ -202,25 +201,22 @@ def run_net(net, force):
 
 FITTED = None
 if args.fit:
-    blob = torch.load(args.fit, map_location=dev, weights_only=False)
-    FITTED = AnchorFit(sc, eig_floor=blob.get("eig_floor", args.eig_floor)).to(dev)
-    with torch.no_grad():
-        FITTED.pos.copy_(blob["pos"]); FITTED.log_s.copy_(blob["log_s"])
-        FITTED.quat.copy_(blob["quat"])
-    FITTED.eval()
-    print(f"[fit] {args.fit} at iteration {blob.get('iter')}")
+    from anchorflow.anchor_sparse import load_fitted
+    FITTED, _fb = load_fitted(sc, args.fit, dev)
+    print(f"[fit] {args.fit} at iteration {_fb.get('iter')}: {FITTED.M} anchors")
 
 
 @torch.no_grad()
 def run_fitted(force):
-    cache = FITTED.prepare()
-    p, v = AC.clone(), sc.initial_velocity(force)
-    out = [FITTED.skin(p)[mat].clone()]
+    p, v = FITTED.anchor_canonical.clone(), FITTED.initial_velocity(force)
+    gp = FITTED.pos.clone()
+    out = [gp[mat].clone()]
     for _ in range(args.frames):
-        p, v = FITTED.rollout(p, v, args.dt_mult, cache=cache)
+        p, v, gp = FITTED.explicit_step(p, v, gp, args.dt_mult)
         if not torch.isfinite(p).all():
             return None
-        out.append(FITTED.skin(p)[mat].clone())
+        gp = FITTED.skin(p, gp)
+        out.append(gp[mat].clone())
     return torch.stack(out)
 
 
