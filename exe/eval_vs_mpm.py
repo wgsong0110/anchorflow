@@ -48,6 +48,12 @@ ap.add_argument("--eig_floor", type=float, default=0.02)
 ap.add_argument("--seed", type=int, default=20260811)
 ap.add_argument("--cache", default=None, help="where to keep the MPM references")
 ap.add_argument("--per_traj", action="store_true")
+ap.add_argument("--student_fit", default=None,
+                 help="the fitted anchor set a checkpoint was trained against. A "
+                      "student is a stepper for one particular anchor set -- it "
+                      "predicts displacements for those anchors, in that many of "
+                      "them -- so scoring it means rolling it out on the set it "
+                      "learned, and skinning through that one.")
 ap.add_argument("--fit", default=None,
                  help="a fitted discretisation from fit_anchor_sim.py. Added as its own "
                       "row: one-step agreement is what was optimised, and whether that "
@@ -164,17 +170,29 @@ def run_floor(truth):
                         for t in range(truth.shape[0])])
 
 
+SFIT = None
+if args.student_fit:
+    from anchorflow.anchor_sparse import load_fitted
+    SFIT, _sb = load_fitted(sc, args.student_fit, dev)
+    print(f"[student] rolled out on the fitted set from {args.student_fit}: "
+          f"{SFIT.M} anchors")
+
+
 def run_net(net, force):
-    p, v = AC.clone(), sc.initial_velocity(force)
-    gp = sc.pos.clone()
+    """the student, on whichever anchor set it was trained for"""
+    s_ = SFIT if SFIT is not None else sc
+    ac = s_.anchor_canonical
+    fx = s_.fixed_mask
+    p, v = ac.clone(), s_.initial_velocity(force)
+    gp = s_.pos.clone()
     out = [gp[mat].clone()]
     k = 0
     while k < args.frames:
-        for q, d in apply_step(net, p, v, None, dt, fixed):
+        for q, d in apply_step(net, p, v, None, dt, fx):
             p, v = q, d / dt
             if not torch.isfinite(p).all():
                 return None
-            gp = sc.skin(p, gp)
+            gp = s_.skin(p, gp)
             out.append(gp[mat].clone())
             k += 1
             if k >= args.frames:
