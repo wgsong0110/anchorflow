@@ -297,7 +297,8 @@ if args.teacher == "mpm":
     import warp as wp
     wp.init()
     from anchorflow.mpm_teacher import MPMTeacher
-    TEACHER = MPMTeacher(sc, n_grid=args.n_grid, grid_lim=args.grid_lim)
+    TEACHER = MPMTeacher(sc, n_grid=args.n_grid, grid_lim=args.grid_lim,
+                          sparse=(sc.fit if args.fit else None))
     print(f"[teacher] PhysGaussian MPM, {TEACHER.n} material particles", flush=True)
 
 

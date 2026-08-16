@@ -42,7 +42,8 @@ class MPMTeacher:
     source.
     """
 
-    def __init__(self, sc, n_grid=100, grid_lim=2.0, affine=True, margin=0.02):
+    def __init__(self, sc, n_grid=100, grid_lim=2.0, affine=True, margin=0.02,
+                  sparse=None):
         from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP
 
         self.sc = sc
@@ -81,14 +82,26 @@ class MPMTeacher:
                                           start_time=0.0, end_time=999.0, reset=1)
         self.solver = s
 
-        # projection, fixed at the canonical configuration like the blend weights
-        sim = sc.sim
-        self.w = sim._canonical_weights()[self.mat]                 # [Nm,K]
-        self.idx = sim.nn_idx[self.mat]                             # [Nm,K]
-        self.den = torch.zeros(sc.M, device=self.dev).index_add_(
-            0, self.idx.reshape(-1), self.w.reshape(-1)).clamp(min=1e-12)
-        self.AC = sc.anchor_canonical
-        self.fixed = sc.fixed_mask
+        # projection, fixed at the canonical configuration like the blend weights.
+        #
+        # A fitted anchor set is a different set -- more of them, elsewhere, with
+        # their own reach -- so it brings its own projection. Without this the
+        # teacher would hand back states for the 512 sampled anchors while the
+        # student is stepping 588 fitted ones.
+        self.sparse = sparse
+        if sparse is not None:
+            self.AC = sparse.pos.detach()
+            self.fixed = sparse.fixed
+            self._scache = sparse.prepare()
+            self.w = self.idx = self.den = None
+        else:
+            sim = sc.sim
+            self.w = sim._canonical_weights()[self.mat]             # [Nm,K]
+            self.idx = sim.nn_idx[self.mat]                         # [Nm,K]
+            self.den = torch.zeros(sc.M, device=self.dev).index_add_(
+                0, self.idx.reshape(-1), self.w.reshape(-1)).clamp(min=1e-12)
+            self.AC = sc.anchor_canonical
+            self.fixed = sc.fixed_mask
         self.eye = torch.eye(3, device=self.dev).reshape(1, 9).repeat(self.n, 1).contiguous()
 
     # ---- MPM particles -> anchors -----------------------------------------
@@ -99,6 +112,8 @@ class MPMTeacher:
         The displacement is averaged, not the position: at rest this returns the
         canonical anchors exactly, which averaging positions does not.
         """
+        if self.sparse is not None:
+            return self.sparse.project(x, self._scache)
         d = x - self.pos_m
         num = torch.zeros(self.AC.shape[0], 3, device=self.dev).index_add_(
             0, self.idx.reshape(-1), (self.w.unsqueeze(-1) * d.unsqueeze(1)).reshape(-1, 3))
@@ -109,6 +124,8 @@ class MPMTeacher:
     def project_v(self, vp):
         """[Nm,3] particle velocities -> [M,3]. No rest state to subtract here,
         so this is the plain weighted average."""
+        if self.sparse is not None:
+            return self.sparse.project_v(vp, self._scache)
         num = torch.zeros(self.AC.shape[0], 3, device=self.dev).index_add_(
             0, self.idx.reshape(-1), (self.w.unsqueeze(-1) * vp.unsqueeze(1)).reshape(-1, 3))
         v = num / self.den.unsqueeze(-1)
@@ -123,6 +140,8 @@ class MPMTeacher:
         field is that same fit applied to velocities, which gives dF/dt; MPM's C
         is the velocity gradient, dF/dt F^-1.
         """
+        if self.sparse is not None:
+            return self.sparse.lift(p, v, self._scache)
         sim = self.sc.sim
         w = sim._weights(self.sc.pos, self.AC)
         F_all, x_all = sim._shape_match(p, w)
@@ -199,8 +218,15 @@ class MPMTeacher:
         anchor simulator start from identical motion and differ only in the
         physics that follows.
         """
-        dv = self.sc.impulse_dv(force)
-        v0 = (self.w.unsqueeze(-1) * dv[self.idx]).sum(1).contiguous()
+        if self.sparse is not None:
+            dv = self.sparse.impulse_dv(force, self._scache)
+            w_ = self._scache[0]
+            v0 = torch.zeros(self.n, 3, device=self.dev).index_add_(
+                0, self.sparse.pair_g, w_.unsqueeze(-1) * dv[self.sparse.pair_a]
+            ).contiguous()
+        else:
+            dv = self.sc.impulse_dv(force)
+            v0 = (self.w.unsqueeze(-1) * dv[self.idx]).sum(1).contiguous()
         self._set(self.pos_m.clone(), v0, self.eye.clone(), torch.zeros_like(self.eye))
         out = self._advance(frames, dt_mult)
         if out is None:
