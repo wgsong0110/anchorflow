@@ -183,6 +183,13 @@ ap.add_argument("--dagger_stride", type=int, default=3,
                       "state and each costs rollout_steps explicit steps to label")
 ap.add_argument("--dagger_frac", type=float, default=0.3,
                  help="fraction of each batch drawn from collected states")
+ap.add_argument("--dagger_pool_max", type=int, default=0,
+                 help="keep only this many of the most recently collected states. "
+                      "The pool otherwise only grows: against the fitted teacher it "
+                      "reached 1,802 states and the rollout error tripled over the "
+                      "second half of training while the learning rate was already "
+                      "a sixtieth of where it started. What an early, bad model "
+                      "walked into stays in the batch forever.")
 ap.add_argument("--dagger_cap", type=float, default=4.0,
                  help="stop a collection rollout once it is displaced this many times the "
                       "reference's peak. Past that the shape-matching fit is not something to "
@@ -362,6 +369,13 @@ def amplitude_targeted(target):
 # sampled one's however similar the flags look
 TEACHER_TAG = args.teacher + (":fitted" if args.fit else "")
 trajs, accs = [], []
+if args.traj_cache and args.r2 and not os.path.exists(args.traj_cache):
+    # against a fitted teacher these are an hour and a half of GPU on the torch
+    # path, and they lived only on the instance that made them
+    print(f"[data] fetching {os.path.basename(args.traj_cache)} from {args.r2}",
+          flush=True)
+    os.system(f"rclone copy {args.r2}/{os.path.basename(args.traj_cache)} "
+               f"{os.path.dirname(args.traj_cache) or '.'} 2>/dev/null")
 if args.traj_cache and os.path.exists(args.traj_cache):
     blob = torch.load(args.traj_cache, map_location=dev, weights_only=False)
     trajs, accs = blob["trajs"], blob["accs"]
@@ -428,6 +442,8 @@ if len(trajs) < N_TRAJ:
                      "teacher": TEACHER_TAG,
                      "target_amp": bool(args.target_amp)}, args.traj_cache)
         print(f"[data] cached to {args.traj_cache}")
+        if args.r2:
+            os.system(f"rclone copy {args.traj_cache} {args.r2} 2>/dev/null &")
 trajs, accs = trajs[:N_TRAJ], accs[:N_TRAJ]
 # trajectory 0 is the config's own impulse and is HELD OUT: it is the rollout
 # every run is scored on, so leaving it in the training set turns that score into
@@ -647,6 +663,8 @@ def collect_dagger(n_traj, k_steps):
     add = {"p": torch.stack(ps), "v": torch.stack(vs), "tgt": torch.stack(tg)}
     for key in POOL:
         POOL[key] = add[key] if POOL[key] is None else torch.cat([POOL[key], add[key]])
+        if args.dagger_pool_max > 0:
+            POOL[key] = POOL[key][-args.dagger_pool_max:]
     return len(ps)
 
 
