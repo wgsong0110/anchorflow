@@ -593,11 +593,48 @@ class FittedScene:
         return p, v, gp
 
     @torch.no_grad()
+    def _carry(self):
+        """weights taking each zero-volume Gaussian to nearby material ones.
+
+        A sixth of this cloud -- 32,377 of 203,930 for ficus -- was rejected on
+        opacity, carries zero volume and belongs to no anchor's support. It is
+        interleaved through the foliage and it does get drawn, so leaving it at
+        rest makes it stand still while the tree moves around it, which reads as
+        a ghost of the original shape. It has no physics of its own; the best
+        available answer is the motion of the material immediately around it.
+
+        Canonical, so it is built once: which particles are nearby is a property
+        of the rest configuration.
+        """
+        if getattr(self, "_carry_cache", None) is None:
+            from scipy.spatial import cKDTree
+
+            rest = torch.nonzero(~self.sc.keep, as_tuple=False).squeeze(-1)
+            if rest.numel() == 0:
+                self._carry_cache = (rest, None, None)
+                return self._carry_cache
+            mat_pos = self.sc.pos[self.fit.mat]
+            # a tree rather than cdist: 32k by 172k in float32 is 22 GB
+            tree = cKDTree(mat_pos.cpu().numpy())
+            d, i = tree.query(self.sc.pos[rest].cpu().numpy(), k=8)
+            d = torch.from_numpy(d).float().to(self.fit.dev)
+            w = 1.0 / d.clamp(min=1e-6)
+            self._carry_cache = (rest, w / w.sum(-1, keepdim=True),
+                                  torch.from_numpy(i).long().to(self.fit.dev))
+        return self._carry_cache
+
+    @torch.no_grad()
     def skin(self, p, gp):
-        """the material Gaussians move; the zero-volume ones are carried along
-        so anything that renders this sees the whole cloud"""
+        """the material Gaussians move, and the zero-volume ones are carried by
+        the material around them, so anything that renders this sees a whole
+        cloud rather than a moving tree inside a stationary copy of itself"""
         out = gp.clone()
-        out[self.fit.mat] = self.fit.gaussian_pos(p, self._cache)
+        gm = self.fit.gaussian_pos(p, self._cache)
+        out[self.fit.mat] = gm
+        rest, w, idx = self._carry()
+        if rest.numel():
+            disp = gm - self.sc.pos[self.fit.mat]
+            out[rest] = self.sc.pos[rest] + (w.unsqueeze(-1) * disp[idx]).sum(1)
         return out
 
     def __getattr__(self, name):

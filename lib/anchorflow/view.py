@@ -62,10 +62,14 @@ def build_camera(sc, width=640, height=640, fov_x=0.6911, radius_scale=1.6):
 
 
 def make_renderer(sc, ply, cam):
-    """-> f(gaussian positions [N,3]) -> uint8 image.
+    """-> f(gaussian positions in MPM space [N,3]) -> uint8 image.
 
-    Takes world-space positions and passes the displacement from canonical, which
-    is the interface SC-GS's renderer wants.
+    The simulators all work in MPM space and the Gaussians were trained in world
+    space, so the displacement handed to the rasteriser has to cross back:
+    undo(q) - xyz_world, not q - xyz_world. Skipping the undo leaves the cloud
+    offset by the whole space change and scales every displacement by the wrong
+    factor -- which still renders a recognisable tree that moves, so it does not
+    announce itself.
     """
     from scene.gaussian_model import GaussianModel
     from gaussian_renderer import render as _render
@@ -84,12 +88,18 @@ def make_renderer(sc, ply, cam):
     d_rot = torch.zeros(sc.N, 4, device=dev); d_rot[:, 0] = 1.
     d_sc = torch.zeros(sc.N, 3, device=dev)
 
-    def frame(xyz_world):
-        d_xyz = xyz_world - sc.xyz_world
+    def frame(xyz_mpm):
+        d_xyz = sc.undo(xyz_mpm) - sc.xyz_world
         im = torch.clamp(_render(cam, gaussians, pipe, bg, d_xyz, d_rot, d_sc,
                                   d_rot_as_res=True)["render"], 0, 1)
         return (im.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
 
+    # a rest state must render as no displacement at all; if the space change is
+    # wrong this is the cheapest place to find out
+    rest = float((sc.undo(sc.pos) - sc.xyz_world).abs().max())
+    if rest > 1e-3:
+        raise RuntimeError(f"undo(pos) differs from xyz_world by {rest:.3g}; the "
+                            f"renderer would draw a deformed rest state")
     return frame
 
 
