@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 
@@ -376,6 +377,39 @@ grad_accum = torch.zeros(fit.M, device=dev)
 STATE = args.state or (args.out + ".state" if args.out else None)
 
 
+# the mirror is the backup, so a mirror that has quietly stopped working is no
+# backup at all. A vast host started intercepting TLS mid-run and every copy
+# failed with a certificate error for an hour and a half without a word, because
+# the upload was a backgrounded shell command with stderr sent to /dev/null. It
+# stays asynchronous -- training should not wait on an upload -- but the previous
+# copy's exit status is now collected before the next one starts.
+_mirror_proc = None
+_mirror_fails = 0
+
+
+def _mirror(path):
+    global _mirror_proc, _mirror_fails
+    if _mirror_proc is not None:
+        rc = _mirror_proc[0].poll()
+        if rc is None:
+            pass
+        elif rc != 0:
+            _mirror_fails += 1
+            err = _mirror_proc[0].stderr.read().decode(errors="replace").strip()
+            print(f"\n[mirror] FAILED to copy {os.path.basename(_mirror_proc[1])} "
+                  f"to {args.r2} (rclone exit {rc}, {_mirror_fails} in a row)\n"
+                  f"[mirror] {err.splitlines()[-1] if err else 'no output'}\n"
+                  f"[mirror] this run is NOT backed up", flush=True)
+        else:
+            if _mirror_fails:
+                print(f"\n[mirror] recovered after {_mirror_fails} failures", flush=True)
+            _mirror_fails = 0
+        _mirror_proc = None
+    p = subprocess.Popen(["rclone", "copy", path, args.r2],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    _mirror_proc = (p, path)
+
+
 def save_state(it, best):
     """A state that is not finite is not a state to come back to. The previous
     run wrote one and then failed to resume from it four times in a row."""
@@ -394,7 +428,7 @@ def save_state(it, best):
                  "pool": POOL, "c": args.c, "args": vars(args)}, STATE + ".tmp")
     os.replace(STATE + ".tmp", STATE)
     if args.r2:
-        os.system(f"rclone copy {STATE} {args.r2} 2>/dev/null &")
+        _mirror(STATE)
 
 
 start_it, best = 1, None

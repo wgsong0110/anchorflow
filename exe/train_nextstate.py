@@ -255,6 +255,15 @@ ap.add_argument("--resume", default=None,
                  help="resume from a checkpoint written by --out (model, optimiser, iteration "
                       "and RNG). The collected trajectories are regenerated, not stored -- "
                       "they are deterministic given the seed and take seconds.")
+ap.add_argument("--init", default=None,
+                 help="start from another run's weights and nothing else -- fresh optimiser, "
+                      "iteration 1, fresh schedule. For continuing one curriculum stage into "
+                      "the next, where --resume is wrong twice over: it would carry the "
+                      "learning rate the previous teacher annealed to, and its iteration "
+                      "counter is already at --iters so the loop would not run at all. "
+                      "Ignored when --resume finds its own checkpoint, so a fine-tune that "
+                      "loses its instance comes back to its own progress rather than "
+                      "restarting from the stage before it.")
 args = ap.parse_args()
 
 dev = "cuda"
@@ -688,8 +697,45 @@ def save(path, it):
                 "rng": torch.get_rng_state(), "cuda_rng": torch.cuda.get_rng_state(),
                 "gen": gen.get_state()}, path)
     if args.r2:
-        subprocess.Popen(["rclone", "copy", path, args.r2],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _mirror(path)
+
+
+# the mirror is what makes losing an instance cost only the minutes since the
+# last save, so a mirror that has quietly stopped working is the whole backup
+# gone. One vast host began intercepting TLS mid-run -- every rclone copy failed
+# with a certificate error for an hour and a half, and because the upload was
+# launched fire-and-forget with stderr discarded, the log said nothing. Uploading
+# still must not block training on 45 MB, so it stays asynchronous; what changes
+# is that the previous upload's exit status is collected before the next one
+# starts, and a failure is loud.
+_mirror_proc = None
+_mirror_fails = 0
+
+
+def _mirror(path):
+    global _mirror_proc, _mirror_fails
+    if _mirror_proc is not None:
+        # the previous copy has had until now -- one checkpoint interval -- to
+        # finish. Still running is fine on a slow link; failed is not
+        rc = _mirror_proc[0].poll()
+        if rc is None:
+            pass
+        elif rc != 0:
+            _mirror_fails += 1
+            err = _mirror_proc[0].stderr.read().decode(errors="replace").strip()
+            print(f"\n[mirror] FAILED to copy {os.path.basename(_mirror_proc[1])} "
+                  f"to {args.r2} (rclone exit {rc}, {_mirror_fails} in a row)\n"
+                  f"[mirror] {err.splitlines()[-1] if err else 'no output'}\n"
+                  f"[mirror] this run is NOT backed up; losing the instance now "
+                  f"loses everything since the last successful copy", flush=True)
+        else:
+            if _mirror_fails:
+                print(f"\n[mirror] recovered after {_mirror_fails} failures", flush=True)
+            _mirror_fails = 0
+        _mirror_proc = None
+    p = subprocess.Popen(["rclone", "copy", path, args.r2],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    _mirror_proc = (p, path)
 
 
 if args.resume and os.path.exists(args.resume):
@@ -717,6 +763,13 @@ if args.resume and os.path.exists(args.resume):
         g.pop("initial_lr", None)
     print(f"[resume] {args.resume} at iter {ck['iter']}, lr set to {args.lr:g}"
           + ("" if not args.reset_best else " (best score forgotten)"))
+elif args.init:
+    ck = torch.load(args.init, map_location=dev, weights_only=False)
+    getattr(net, "_orig_mod", net).load_state_dict(ck["model"])
+    src = ck.get("args") or {}
+    print(f"[init] weights from {args.init} (trained to iter {ck.get('iter')} against "
+          f"teacher {src.get('teacher')}, dagger {src.get('dagger')}); optimiser, "
+          f"schedule and iteration start fresh", flush=True)
 
 sched = None
 if args.cosine:
