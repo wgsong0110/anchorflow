@@ -51,6 +51,15 @@ ap.add_argument("--fair_substeps", type=int, default=11)
 ap.add_argument("--n_grid", type=int, default=100)
 ap.add_argument("--warm", type=int, default=5)
 ap.add_argument("--repeat", type=int, default=20)
+ap.add_argument("--render", action="store_true",
+                 help="also time the rasteriser, from the camera the config specifies. "
+                      "Physics on its own answers 'did the stepper get cheap'; only "
+                      "this answers 'does a frame arrive in time', which is a different "
+                      "question once the physics stops being the expensive part.")
+ap.add_argument("--width", type=int, default=800)
+ap.add_argument("--height", type=int, default=800)
+ap.add_argument("--fov_x", type=float, default=0.6911)
+ap.add_argument("--radius_scale", type=float, default=2.2)
 args = ap.parse_args()
 
 sys.path.insert(0, args.dreamphysics)
@@ -173,13 +182,83 @@ if args.ckpt:
           f"{'with' if use_a else 'without'} the acceleration input")
 
 
+# ---- the rasteriser --------------------------------------------------------
+#
+# Same camera as exe/render_fitted_vs_mpm.py builds, so the number is for the
+# view this scene is actually looked at from rather than an arbitrary one. It is
+# charged to both sides equally -- MPM and the student draw the same cloud from
+# the same place -- which is the point: it is the term that does not shrink.
+ms_render = float("nan")
+if args.render:
+    import math
+
+    import numpy as np
+    from scene.gaussian_model import GaussianModel
+    from gaussian_renderer import render as _render_scgs
+    from utils.graphics_utils import focal2fov, getProjectionMatrix, getWorld2View2
+
+    class MiniCam:
+        def __init__(self, W, H, fovy, fovx, zn, zf, wvt, fpt):
+            self.image_width, self.image_height = W, H
+            self.FoVy, self.FoVx = fovy, fovx
+            self.znear, self.zfar = zn, zf
+            self.world_view_transform = wvt
+            self.full_proj_transform = fpt
+            self.camera_center = wvt.inverse()[3, :3]
+
+    class _P:
+        debug = False
+        compute_cov3D_python = False
+        convert_SHs_python = False
+
+    gaussians = GaussianModel(3, fea_dim=0)
+    gaussians.load_ply(args.ply)
+    pipe, bg = _P(), torch.tensor([1., 1., 1.], device=dev)
+    d_rot = torch.zeros(sc.N, 4, device=dev); d_rot[:, 0] = 1.
+    d_sc = torch.zeros(sc.N, 3, device=dev)
+    cfg = sc.cfg
+    center = sc.undo(torch.tensor(cfg["mpm_space_viewpoint_center"],
+                                   device=dev).unsqueeze(0))[0].cpu().numpy()
+    up_mpm = (torch.tensor(cfg["mpm_space_vertical_upward_axis"], device=dev)
+              + torch.tensor(cfg["mpm_space_viewpoint_center"], device=dev)).unsqueeze(0)
+    up = sc.undo(up_mpm)[0].cpu().numpy() - center
+    up /= (np.linalg.norm(up) + 1e-9)
+    xw = sc.xyz_world[sc.keep]
+    extent = float((xw.max(0).values - xw.min(0).values).norm())
+    az, el = math.radians(cfg["init_azimuthm"]), math.radians(cfg["init_elevation"])
+    tmp = np.array([1., 0., 0.]) if abs(np.dot(np.array([1., 0., 0.]), up)) < 0.9 \
+        else np.array([0., 1., 0.])
+    h1 = np.cross(up, tmp); h1 /= np.linalg.norm(h1); h2 = np.cross(up, h1)
+    eye = center + args.radius_scale * extent * (
+        math.cos(el) * (math.cos(az) * h1 + math.sin(az) * h2) + math.sin(el) * up)
+    fwd = center - eye; fwd /= np.linalg.norm(fwd)
+    right = np.cross(fwd, up); right /= (np.linalg.norm(right) + 1e-9)
+    tup = np.cross(right, fwd)
+    Rc = np.stack([right, -tup, fwd], axis=1); Tc = -Rc.T @ eye
+    fovx = args.fov_x
+    fovy = focal2fov(args.width / (2 * math.tan(fovx / 2)), args.height)
+    wvt = torch.tensor(getWorld2View2(Rc, Tc)).transpose(0, 1).float().to(dev)
+    pmx = getProjectionMatrix(znear=0.01, zfar=100.0, fovX=fovx,
+                               fovY=fovy).transpose(0, 1).to(dev)
+    cam = MiniCam(args.width, args.height, fovy, fovx, 0.01, 100.0, wvt,
+                   (wvt.unsqueeze(0).bmm(pmx.unsqueeze(0))).squeeze(0))
+    d_xyz = torch.zeros_like(sc.xyz_world)
+
+    def draw():
+        _render_scgs(cam, gaussians, pipe, bg, d_xyz, d_rot, d_sc, d_rot_as_res=True)
+
+    ms_render = timeit(draw)
+    print(f"        rasteriser: {sc.N} Gaussians at {args.width}x{args.height}")
+
+
 # ---- report ----------------------------------------------------------------
 def row(name, ms, note=""):
     sp = f"{ms_mpm / ms:8.1f}x" if ms == ms and ms > 0 else f"{'--':>9}"
-    print(f"  {name:<44} {ms:8.3f} ms {sp}   {note}")
+    fps = f"{1000.0 / ms:9.1f}" if ms == ms and ms > 0 else f"{'--':>9}"
+    print(f"  {name:<44} {ms:8.3f} ms {sp} {fps} fps  {note}")
 
 
-print(f"\n{'':46}{'per frame':>11} {'vs MPM':>9}")
+print(f"\n{'':46}{'per frame':>11} {'vs MPM':>9} {'':>9}")
 row("PhysGaussian MPM", ms_mpm, f"{args.dt_mult} substeps")
 print()
 row("anchor sim, torch", ms_sim_torch, f"{args.dt_mult} substeps")
@@ -193,6 +272,19 @@ if args.ckpt:
     print()
     row("learned step, anchors only", ms_net, f"chunk {chunk}")
     row("learned step + skinning (a drawn frame)", ms_student)
+
+if args.render:
+    print()
+    row("rasteriser alone", ms_render, f"{args.width}x{args.height}")
+    print(f"\n  {'end to end, a frame on screen':<44}")
+    row("  MPM + rasteriser", ms_mpm + ms_render)
+    if args.ckpt:
+        row("  learned step + skinning + rasteriser", ms_student + ms_render)
+        budget = 1000.0 / 60.0
+        print(f"\n[budget] at 60 fps a frame has {budget:.1f} ms. MPM's physics alone "
+              f"is {ms_mpm / budget:.1f}x that;\n         the learned step is "
+              f"{100 * ms_student / budget:.1f}% of it, and the rasteriser "
+              f"{100 * ms_render / budget:.1f}%.")
 
 if sparsestep.HAVE_CUDA and ms_sim_torch == ms_sim_torch:
     print(f"\n[kernel] the fused path is {ms_sim_torch / ms_sim_fused:.2f}x the torch "
