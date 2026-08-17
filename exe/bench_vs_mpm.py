@@ -68,7 +68,7 @@ import warp as wp
 import sparsestep
 from anchorflow.anchor_sparse import load_fitted
 from anchorflow.mpm_teacher import MPMTeacher
-from anchorflow.nextstate import NextStep, apply_step
+from anchorflow.nextstate import apply_step, net_from_ckpt
 
 dev = "cuda"
 torch.set_grad_enabled(False)
@@ -164,11 +164,7 @@ if args.ckpt:
     t = ck["args"]
     chunk = t.get("chunk", 1)
     use_a = not t.get("no_accel", False)
-    net = NextStep(t["hidden"], t["depth"], t["heads"], ck["disp_scale"],
-                    ck["vel_scale"], ck["acc_scale"], use_accel=use_a,
-                    chunk=chunk).to(dev)
-    net.load_state_dict(ck["model"])
-    net.eval()
+    net = net_from_ckpt(ck, dev)
     dt = t["dt_mult"] * sc.sub_dt
     v_c = v_state.clone()
 

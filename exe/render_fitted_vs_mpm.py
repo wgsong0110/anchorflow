@@ -26,7 +26,7 @@ import torch
 from tqdm import tqdm
 
 from anchorflow import scene_setup
-from anchorflow.anchor_sparse import AnchorSparse
+from anchorflow.anchor_sparse import AnchorSparse, FittedScene
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -35,6 +35,14 @@ ap.add_argument("--dreamphysics", default="/workspace/DreamPhysics")
 ap.add_argument("--fit", required=True)
 ap.add_argument("--traj_cache", required=True)
 ap.add_argument("--which", type=int, default=0, help="held-out impulse to show")
+ap.add_argument("--ckpt", default=None,
+                 help="a trained student, added as a fourth panel. It steps the same "
+                      "fitted anchors the panel beside it does, so the two differ only "
+                      "in what advances them -- forty explicit substeps, or one network "
+                      "call. This is the panel the speed claim is about.")
+ap.add_argument("--no_anchor_sim", action="store_true",
+                 help="drop the unfitted anchor simulator, when the comparison of "
+                      "interest is MPM against what actually runs")
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--dt_mult", type=int, default=40)
 ap.add_argument("--width", type=int, default=640)
@@ -84,19 +92,25 @@ force = blob["forces"]["chk"][args.which]
 
 fb = torch.load(args.fit, map_location=dev, weights_only=False)
 fit = AnchorSparse(sc, c=fb.get("c", 0.25), eig_floor=fb.get("eig_floor", 0.02)).to(dev)
-fit._rebuild(fb["pos"].to(dev), fb["quat"].to(dev), fb["log_s"].to(dev))
-print(f"[fit] {args.fit} at iteration {fb.get('iter')}, {fit.M} anchors")
+# log_k came later than this script and was being dropped, which quietly ran the
+# fitted panel at uniform stiffness -- the parameterisation that turned out to
+# matter most, shown without it
+fit._rebuild(fb["pos"].to(dev), fb["quat"].to(dev), fb["log_s"].to(dev),
+              fb["log_k"].to(dev) if "log_k" in fb else None)
+print(f"[fit] {args.fit} at iteration {fb.get('iter')}, {fit.M} anchors, "
+      f"stiffness {'fitted' if 'log_k' in fb else 'uniform'}")
 
 # ---- the three trajectories, as Gaussian clouds ---------------------------
 runs = {}
 runs["MPM"] = X[: args.frames + 1]
 
-p, v, gp = sc.anchor_canonical.clone(), sc.initial_velocity(force), sc.pos.clone()
-out = [gp.clone()]
-for _ in tqdm(range(args.frames), desc="anchor 8-NN", ncols=90):
-    p, v, gp = sc.explicit_step(p, v, gp, args.dt_mult)
-    out.append(gp.clone())
-runs["anchor simulator"] = torch.stack(out)
+if not args.no_anchor_sim:
+    p, v, gp = sc.anchor_canonical.clone(), sc.initial_velocity(force), sc.pos.clone()
+    out = [gp.clone()]
+    for _ in tqdm(range(args.frames), desc="anchor 8-NN", ncols=90):
+        p, v, gp = sc.explicit_step(p, v, gp, args.dt_mult)
+        out.append(gp.clone())
+    runs["anchor simulator"] = torch.stack(out)
 
 cache = fit.prepare()
 p = fit.project(X[0], cache)
@@ -110,6 +124,44 @@ for k in tqdm(range(args.frames + 1), desc="fitted", ncols=90):
     if k < args.frames:
         p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
 runs["fitted to MPM"] = torch.stack(out)
+
+# ---- and the student, on the same anchors, from the same state -------------
+#
+# Started from MPM's own first frame projected onto the anchors, exactly as the
+# fitted panel is, so the two are answering the same question from the same
+# place. What differs is only how a coarse frame is taken.
+if args.ckpt:
+    from anchorflow.nextstate import apply_step, net_from_ckpt
+
+    ck = torch.load(args.ckpt, map_location=dev, weights_only=False)
+    t = ck["args"]
+    chunk = t.get("chunk", 1)
+    use_a = not t.get("no_accel", False)
+    net = net_from_ckpt(ck, dev)
+    dt = t["dt_mult"] * sc.sub_dt
+    fs = FittedScene(sc, fit)
+
+    p = fit.project(X[0], cache)
+    v = fit.project_v(_V[0], cache)
+    # the anchor trajectory first, then skin it: one call emits `chunk` coarse
+    # frames and every one of them is a frame to be drawn, so the loop counts
+    # frames produced rather than calls made
+    anchors = [p]
+    with tqdm(total=args.frames, desc="student", ncols=90) as pbar:
+        while len(anchors) <= args.frames:
+            a = fs.elastic_accel(p, fs.skin(p, sc.pos)) if use_a else None
+            for (p_n, v_n) in apply_step(net, p, v, a, dt, fs.fixed_mask):
+                p, v = p_n, v_n
+                anchors.append(p)
+                pbar.update(1)
+                if len(anchors) > args.frames:
+                    break
+    full = sc.pos.clone()
+    out = []
+    for pk in anchors[: args.frames + 1]:
+        full = full.clone(); full[mat] = fit.gaussian_pos(pk, cache)
+        out.append(full.clone())
+    runs["student"] = torch.stack(out)
 
 # MPM's rows are material only; the renderer wants the whole cloud.
 #
@@ -198,7 +250,9 @@ def label(img, text):
         return img
 
 
-names = ["MPM", "anchor simulator", "fitted to MPM"]
+# whatever was actually built, in the order the chain runs
+names = [n for n in ("MPM", "anchor simulator", "fitted to MPM", "student")
+         if n in runs]
 span = (runs["MPM"] - runs["MPM"][0]).norm(dim=-1).max().clamp(min=1e-12)
 err = {n: ((runs[n][:, mat] - runs["MPM"][:, mat]).norm(dim=-1).mean(-1) / span)
        for n in names}

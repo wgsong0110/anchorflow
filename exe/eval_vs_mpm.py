@@ -28,7 +28,7 @@ import torch
 from tqdm import tqdm
 
 from anchorflow import scene_setup
-from anchorflow.nextstate import NextStep, apply_step
+from anchorflow.nextstate import apply_step, net_from_ckpt
 from anchorflow.streams import draw_impulse, rand_rot
 
 ap = argparse.ArgumentParser()
@@ -229,10 +229,7 @@ for path in args.ckpt:
     if not ta.get("no_accel", False):
         raise SystemExit(f"{path} was trained with the acceleration input; "
                          f"this evaluation does not feed it")
-    net = NextStep(ta["hidden"], ta["depth"], ta["heads"], ck["disp_scale"],
-                   ck["vel_scale"], ck["acc_scale"], use_accel=False,
-                   chunk=ta.get("chunk", 1)).to(dev)
-    net.load_state_dict(ck["model"]); net.eval()
+    net = net_from_ckpt(ck, dev)
     tag = os.path.basename(path).replace(".pt", "")
     rows.append((f"{tag} [{ta.get('teacher', 'anchor')}]", net))
 

@@ -56,7 +56,7 @@ sys.path.insert(0, args.dreamphysics)
 import warp as wp
 
 from anchorflow.anchor_sparse import load_fitted
-from anchorflow.nextstate import NextStep, apply_step
+from anchorflow.nextstate import apply_step, net_from_ckpt
 from anchorflow.streams import draw_impulse, rand_rot
 
 dev = "cuda"
@@ -143,12 +143,7 @@ for path in args.ckpt:
         print(f"  {os.path.basename(path)}: needs --fit, skipped")
         continue
     scene = FITTED if uses_fit else sc
-    net = NextStep(ta["hidden"], ta["depth"], ta["heads"], ck["disp_scale"],
-                    ck["vel_scale"], ck["acc_scale"],
-                    use_accel=not ta.get("no_accel", False),
-                    chunk=ta.get("chunk", 1)).to(dev)
-    net.load_state_dict(ck["model"])
-    net.eval()
+    net = net_from_ckpt(ck, dev)
     name = os.path.basename(path).replace(".pt", "")
     tag = "fitted" if uses_fit else "sampled"
     res = {}

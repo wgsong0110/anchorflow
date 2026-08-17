@@ -255,6 +255,12 @@ ap.add_argument("--resume", default=None,
                  help="resume from a checkpoint written by --out (model, optimiser, iteration "
                       "and RNG). The collected trajectories are regenerated, not stored -- "
                       "they are deterministic given the seed and take seconds.")
+ap.add_argument("--anchor_feats", action="store_true",
+                 help="give the network each anchor's fitted properties -- stiffness "
+                      "multiplier, three extents, orientation -- as inputs alongside "
+                      "position and velocity. Without them the fitted set is only "
+                      "partly observed, since two anchors can share a position and a "
+                      "velocity and still have to move apart. Needs --fit.")
 ap.add_argument("--init", default=None,
                  help="start from another run's weights and nothing else -- fresh optimiser, "
                       "iteration 1, fresh schedule. For continuing one curriculum stage into "
@@ -542,8 +548,28 @@ with torch.no_grad():
 print(f"[data] reference peak anchor displacement = "
       f"{(REF - AC).norm(dim=-1).max().item():.5f}")
 
+# the anchor properties the fit chose, as inputs. Without them the problem is
+# partly observed: the fitted set spreads stiffness over 10x and extent over 11x
+# with a median 2:1 anisotropy, and two anchors at the same place with the same
+# velocity but different stiffness have to move apart on the next step. The
+# sampled set never posed this -- every anchor there is isotropic with stiffness
+# one, so position and velocity determine everything.
+STATIC = None
+if args.anchor_feats:
+    if not args.fit:
+        raise SystemExit("--anchor_feats needs --fit: the sampled anchors are all alike")
+    f_ = sc.fit
+    q_ = f_.quat / f_.quat.norm(dim=-1, keepdim=True)
+    STATIC = torch.cat([f_.log_k.detach().unsqueeze(-1), f_.log_s.detach(),
+                         q_.detach()], -1)                   # [M, 1+3+4]
+    print(f"[setup] anchor features: {STATIC.shape[1]} channels "
+          f"(log stiffness, three log extents, orientation)")
+
 net = NextStep(args.hidden, args.depth, args.heads, DISP_SCALE, VEL_SCALE,
-                ACC_SCALE, args.zero_init, use_accel=USE_A, chunk=args.chunk).to(dev)
+                ACC_SCALE, args.zero_init, use_accel=USE_A, chunk=args.chunk,
+                n_static=0 if STATIC is None else STATIC.shape[1]).to(dev)
+if STATIC is not None:
+    net.set_static(STATIC)
 opt = torch.optim.Adam(net.parameters(), lr=args.lr, fused=True)
 if args.compile:
     net = torch.compile(net)

@@ -135,6 +135,27 @@ class GeoAttentionBlock(nn.Module):
         return x + self.ffn(self.n2(x))
 
 
+def net_from_ckpt(ck, device="cuda"):
+    """Rebuild the network a checkpoint describes, and put it in eval mode.
+
+    Five scripts had grown the same five lines of constructor call, and adding
+    the static anchor features would have meant editing all five -- the width of
+    the node encoder depends on how many of those channels the run used, so a
+    caller that guesses wrong cannot load the weights at all. The count is read
+    back off the saved buffer instead of being passed in.
+    """
+    a = ck["args"]
+    st = ck["model"].get("static")
+    net = NextStep(a["hidden"], a["depth"], a["heads"], ck["disp_scale"],
+                    ck["vel_scale"], ck["acc_scale"],
+                    use_accel=not a.get("no_accel", False),
+                    chunk=a.get("chunk", 1),
+                    n_static=0 if st is None else st.shape[-1]).to(device)
+    net.load_state_dict(ck["model"])
+    net.eval()
+    return net
+
+
 def apply_step(net, p, v, a, dt, fixed):
     """One call to the network, as the list of (position, displacement) it implies.
 
@@ -171,7 +192,8 @@ class NextStep(nn.Module):
     """
 
     def __init__(self, hidden=128, depth=4, heads=4, scale=1.0, vel_scale=1.0,
-                  acc_scale=1.0, zero_init=False, use_accel=True, chunk=1):
+                  acc_scale=1.0, zero_init=False, use_accel=True, chunk=1,
+                  n_static=0):
         super().__init__()
         # The whole displacement, never du = v*dt + correction. Adding the
         # inertial part as a skip makes the rollout's velocity an accumulator,
@@ -202,7 +224,21 @@ class NextStep(nn.Module):
         # feedback inside the chunk: steps 2..K are open-loop predictions made
         # before their own starting state exists.
         self.chunk = chunk
-        self.node_enc = mlp([3 + 3 + (3 if use_accel else 0), hidden, hidden])
+        # Per-anchor properties the fit gave the discretisation: a stiffness
+        # multiplier, three extents, an orientation. They are constant in time,
+        # so they are not state -- but without them the problem is only partly
+        # observed. Two anchors at the same place with the same velocity and
+        # different stiffness must move apart on the next step, and position and
+        # velocity cannot tell them apart. The sampled set never had this: every
+        # anchor there is isotropic with stiffness one.
+        #
+        # A buffer rather than a forward argument, because it does not change
+        # once the anchor set is chosen -- which keeps apply_step's signature and
+        # every caller of it untouched, and puts the features in the checkpoint
+        # so an evaluation cannot forget to supply them.
+        self.n_static = n_static
+        self.register_buffer("static", None)
+        self.node_enc = mlp([3 + 3 + (3 if use_accel else 0) + n_static, hidden, hidden])
         self.bias = GeoAttentionBias(heads)
         self.blocks = nn.ModuleList(GeoAttentionBlock(hidden, heads) for _ in range(depth))
         self.film = DtFiLM(hidden, depth + 1)
@@ -217,6 +253,22 @@ class NextStep(nn.Module):
             # layer at zero, dL/dh = W_last^T dL/dout is zero too.
             last = [m for m in self.dec.modules() if isinstance(m, nn.Linear)][-1]
             nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
+
+    @torch.no_grad()
+    def set_static(self, feats):
+        """[M,F] per-anchor properties, standardised across anchors.
+
+        Standardised here rather than by the caller so the stored buffer is what
+        the network was trained on: log-stiffness and log-extent live on scales
+        the encoder would otherwise have to undo, and a checkpoint that saved raw
+        values would depend on whoever reloaded it normalising them identically.
+        """
+        f = feats.detach().float()
+        if f.shape[-1] != self.n_static:
+            raise ValueError(f"expected {self.n_static} static channels, got {f.shape[-1]}")
+        mu = f.mean(0, keepdim=True)
+        sd = f.std(0, keepdim=True).clamp(min=1e-6)
+        self.static = ((f - mu) / sd).contiguous()
 
     def forward(self, p, v, a, dt):
         """p, v, a all [M,3] or [B,M,3]; returns the displacement over dt, same shape.
@@ -233,6 +285,11 @@ class NextStep(nn.Module):
         feats = [p, v / self.vel_scale]
         if self.use_accel:
             feats.append(a / self.acc_scale)
+        if self.n_static:
+            if self.static is None:
+                raise RuntimeError("built with n_static but set_static was never called")
+            st = self.static
+            feats.append(st.expand(p.shape[0], *st.shape) if st.dim() == 2 else st)
         h = self.node_enc(torch.cat(feats, -1))
         gamma, beta = self.film(dt, p.device)
         h = gamma[0] * h + beta[0]
