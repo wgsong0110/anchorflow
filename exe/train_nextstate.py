@@ -261,6 +261,21 @@ ap.add_argument("--anchor_feats", action="store_true",
                       "position and velocity. Without them the fitted set is only "
                       "partly observed, since two anchors can share a position and a "
                       "velocity and still have to move apart. Needs --fit.")
+ap.add_argument("--anchor_embed", type=int, default=0,
+                 help="a free vector of this width per anchor, learned with the network. "
+                      "The alternative to guessing which fitted property the network is "
+                      "missing -- per-anchor error turned out to correlate 0.04 with "
+                      "stiffness and -0.34 with how many Gaussians an anchor holds, so "
+                      "the guess in --anchor_feats is probably the wrong one. Indexed by "
+                      "anchor, so it belongs to one anchor set.")
+ap.add_argument("--anchor_posenc", type=int, default=0,
+                 help="Fourier features of each anchor's CANONICAL position, this many "
+                      "bands, as inputs. The same addressing as a free embedding but "
+                      "written as a function of geometry: the network can still learn a "
+                      "different response per anchor, and it transfers to an anchor set "
+                      "it has not seen. Raw coordinates alone cannot do this -- they are "
+                      "already an input, and at O(1) with displacements at 4e-3 they are "
+                      "too smooth to separate neighbouring anchors.")
 ap.add_argument("--init", default=None,
                  help="start from another run's weights and nothing else -- fresh optimiser, "
                       "iteration 1, fresh schedule. For continuing one curriculum stage into "
@@ -555,7 +570,21 @@ print(f"[data] reference peak anchor displacement = "
 # sampled set never posed this -- every anchor there is isotropic with stiffness
 # one, so position and velocity determine everything.
 STATIC = None
-if args.anchor_feats:
+if args.anchor_posenc:
+    if not args.fit:
+        raise SystemExit("--anchor_posenc needs --fit")
+    ac = sc.anchor_canonical.detach()
+    # centred and scaled to the object, so a band means the same thing here as
+    # it would on another scene
+    ctr = 0.5 * (ac.max(0).values + ac.min(0).values)
+    half = 0.5 * float((ac.max(0).values - ac.min(0).values).max())
+    x_ = (ac - ctr) / max(half, 1e-9)
+    fr = (2.0 ** torch.arange(args.anchor_posenc, device=dev)) * torch.pi
+    ang = x_.unsqueeze(-1) * fr                                  # [M,3,B]
+    STATIC = torch.cat([x_, ang.sin().flatten(1), ang.cos().flatten(1)], -1)
+    print(f"[setup] canonical positional encoding: {STATIC.shape[1]} channels "
+          f"({args.anchor_posenc} bands)")
+elif args.anchor_feats:
     if not args.fit:
         raise SystemExit("--anchor_feats needs --fit: the sampled anchors are all alike")
     f_ = sc.fit
@@ -565,11 +594,18 @@ if args.anchor_feats:
     print(f"[setup] anchor features: {STATIC.shape[1]} channels "
           f"(log stiffness, three log extents, orientation)")
 
+if args.anchor_embed and not args.fit:
+    raise SystemExit("--anchor_embed needs --fit: it is indexed by anchor")
 net = NextStep(args.hidden, args.depth, args.heads, DISP_SCALE, VEL_SCALE,
                 ACC_SCALE, args.zero_init, use_accel=USE_A, chunk=args.chunk,
-                n_static=0 if STATIC is None else STATIC.shape[1]).to(dev)
+                n_static=0 if STATIC is None else STATIC.shape[1],
+                n_embed=args.anchor_embed,
+                m_anchors=sc.M if args.anchor_embed else 0).to(dev)
 if STATIC is not None:
     net.set_static(STATIC)
+if args.anchor_embed:
+    print(f"[setup] learnable anchor embedding: {sc.M} x {args.anchor_embed}, "
+          f"zero-initialised")
 opt = torch.optim.Adam(net.parameters(), lr=args.lr, fused=True)
 if args.compile:
     net = torch.compile(net)
