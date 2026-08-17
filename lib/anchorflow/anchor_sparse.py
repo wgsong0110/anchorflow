@@ -36,6 +36,11 @@ from torch.utils.checkpoint import checkpoint
 
 from eigen3x3 import eigh3x3
 
+try:
+    import sparsestep
+except Exception:                                   # unbuilt, or not on the path
+    sparsestep = None
+
 from .anchor_fit import _R_to_quat, closest_rotation, quat_to_R
 
 
@@ -265,6 +270,9 @@ class AnchorSparse(nn.Module):
 
     def gaussian_pos(self, p, cache):
         w, rc, q, Binv, blocked, _ = cache
+        if self._fused_ok():
+            csr, _, _ = self._fused(w)
+            return sparsestep.skin(p, csr, w, q, Binv, blocked, self.Xc, rc)[0]
         F, cc = self.deformation(p, w, rc, q, Binv, blocked)
         return cc + torch.einsum("nij,nj->ni", F, self.Xc - rc)
 
@@ -274,7 +282,41 @@ class AnchorSparse(nn.Module):
             0, self.pair_g, w * self.log_k.exp()[self.pair_a])
         return k.clamp(min=1e-3)
 
+    # ---- the fused path ----------------------------------------------------
+    #
+    # Same physics, no autograd graph, and the [P,3,3] outer products stay in
+    # registers instead of being written out and scattered. Only taken with
+    # grad off: the fit differentiates through all of this and keeps the torch
+    # path, which is also the reference the kernel is verified against
+    # (exe/verify_sparsestep.py).
+    def _fused_ok(self):
+        return (sparsestep is not None and sparsestep.HAVE_CUDA
+                and not torch.is_grad_enabled() and self.pos.is_cuda)
+
+    def _fused(self, w):
+        """the CSR layout and the stiffness-carrying moduli, cached per refresh.
+
+        Both are functions of the pair list and the weights, neither of which
+        moves between refreshes, so recomputing them per substep would be the
+        thing the kernel was written to avoid.
+        """
+        key = (self.pair_g.data_ptr(), w.data_ptr(), int(w.shape[0]))
+        hit = getattr(self, "_fused_cache", None)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        csr = sparsestep.build_csr(self.pair_g, self.pair_a, self.N, self.M)
+        k = self.stiffness(w)
+        val = (csr, (self.mu * k).contiguous(), (self.lam * k).contiguous())
+        self._fused_cache = (key, val)
+        return val
+
     def force(self, p, w, rc, q, Binv, blocked):
+        if self._fused_ok():
+            csr, mu_k, lam_k = self._fused(w)
+            return sparsestep.force(p, csr, w, q, Binv, blocked, self.vol,
+                                     mu_k, lam_k, self.M,
+                                     polar_iters=self.polar_iters,
+                                     polar_ridge=self.polar_ridge)
         F, _ = self.deformation(p, w, rc, q, Binv, blocked)
         R = closest_rotation(F, self.polar_iters, self.polar_ridge)
         J = torch.linalg.det(F)

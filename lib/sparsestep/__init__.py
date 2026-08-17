@@ -1,0 +1,100 @@
+"""Fused CUDA path for the sparse anchor discretisation (anchor_sparse.py).
+
+lib/anchorstep serves the original set -- fixed K neighbours, isotropic weights,
+one material stiffness -- and none of those hold once the discretisation is
+fitted: anchors gain an orientation and three extents, membership becomes
+whatever falls inside G(x) > c, and each anchor carries its own stiffness. That
+left the fitted simulator on the torch path, which materialises a [P,3,3]
+tensor of outer products twice per substep and scatters it, at 2.6x the pairs
+the fixed-neighbour version had.
+
+FORWARD ONLY. The fit needs gradients and keeps the torch path; this is for
+running a simulator whose parameters are already fixed, which is every rollout,
+every evaluation and every frame the student ever produces.
+
+Callers must check HAVE_CUDA -- the module exports it False rather than failing
+to import when the extension is not built.
+"""
+
+import torch
+
+try:
+    from ._C import skin as _skin, force as _force, deform as _deform
+    HAVE_CUDA = True
+except Exception:
+    HAVE_CUDA = False
+
+_CSR_CACHE = {}
+
+
+def build_csr(pair_g, pair_a, N, M):
+    """(row_off, pair_a32, pair_g32, acsr_off, acsr_pair) for one pair list.
+
+    Rebuilt only when refresh() changes the pairs, so it is keyed on the tensors
+    themselves. Row offsets are free: refresh() ends with argsort(g * M + a), so
+    the list already arrives grouped by Gaussian and in a stable order within a
+    group. The anchor-major list is a real sort, and it is what lets the force
+    gather run without atomics -- a few hundred anchors receiving millions of
+    contributions is the worst case for an atomic scatter.
+    """
+    key = (pair_g.data_ptr(), pair_a.data_ptr(), int(pair_g.shape[0]), int(N), int(M))
+    hit = _CSR_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    dev = pair_g.device
+    # the kernels index with int, so the pair list has to fit in one; at the
+    # sizes this runs at (millions) it does, and a silent wrap would be a wrong
+    # force rather than a crash
+    P = int(pair_g.shape[0])
+    if P > 2 ** 31 - 1:
+        raise RuntimeError(f"{P} pairs exceeds the int32 indexing the kernel uses")
+
+    row_off = torch.zeros(int(N) + 1, dtype=torch.int32, device=dev)
+    row_off[1:] = torch.bincount(pair_g, minlength=int(N)).cumsum(0).to(torch.int32)
+
+    order = torch.argsort(pair_a)
+    acsr_off = torch.zeros(int(M) + 1, dtype=torch.int32, device=dev)
+    acsr_off[1:] = torch.bincount(pair_a, minlength=int(M)).cumsum(0).to(torch.int32)
+
+    out = (row_off.contiguous(),
+           pair_a.to(torch.int32).contiguous(),
+           pair_g.to(torch.int32).contiguous(),
+           acsr_off.contiguous(),
+           order.to(torch.int32).contiguous())
+    _CSR_CACHE[key] = out
+    return out
+
+
+def _f32(t):
+    return t.detach().contiguous().float()
+
+
+def skin(p, csr, w, q, Binv, blocked, Xc, rc):
+    """anchor positions -> Gaussian positions. Returns (x [N,3], F [N,3,3])."""
+    row_off, pair_a, _pair_g, _ao, _ap = csr
+    return _skin(_f32(p), row_off, pair_a, _f32(w), _f32(q),
+                 _f32(Binv).reshape(-1, 9), _f32(blocked).reshape(-1, 9),
+                 _f32(Xc), _f32(rc))
+
+
+def force(p, csr, w, q, Binv, blocked, vol, mu, lam, M,
+          polar_iters=6, polar_ridge=1e-6):
+    """anchor positions -> elastic anchor forces [M,3].
+
+    mu and lam must already carry the per-anchor stiffness multiplier blended
+    onto Gaussians. That blend is a function of the weights, which are constant
+    between refreshes, so it belongs on the python side and is done once.
+    """
+    row_off, pair_a, pair_g, acsr_off, acsr_pair = csr
+    return _force(_f32(p), row_off, pair_a, pair_g, _f32(w), _f32(q),
+                  _f32(Binv).reshape(-1, 9), _f32(blocked).reshape(-1, 9),
+                  _f32(vol), _f32(mu), _f32(lam), acsr_off, acsr_pair,
+                  int(M), int(polar_iters), float(polar_ridge))
+
+
+def deform(p, csr, w, q, Binv, blocked):
+    """shape-matching F [N,3,3] and the deformed centroid [N,3]."""
+    row_off, pair_a, _pair_g, _ao, _ap = csr
+    return _deform(_f32(p), row_off, pair_a, _f32(w), _f32(q),
+                   _f32(Binv).reshape(-1, 9), _f32(blocked).reshape(-1, 9))
