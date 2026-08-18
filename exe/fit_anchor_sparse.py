@@ -149,6 +149,12 @@ ap.add_argument("--fine_steps", type=int, default=0,
                       "walked together and compared throughout. The horizon then has to "
                       "come from DAgger rather than from rolling forward, which is what "
                       "it is for.")
+ap.add_argument("--fine_end", type=int, default=0,
+                 help="anneal the fine horizon from --fine_steps down to this over the "
+                      "run. A long horizon shows error compounding, which is what a "
+                      "short one cannot see and what the fit exists to remove; a short "
+                      "one is cheap. Starting long and ending short spends the expensive "
+                      "steps where the discretisation is still far off.")
 ap.add_argument("--final_rollout", type=int, default=3,
                  help="impulses to roll out fully against MPM at the end")
 args = ap.parse_args()
@@ -589,6 +595,14 @@ for it in bar:
 
     frac = min(1.0, it / max(args.warmup, 1))
     hi = max(2, int(frac * (args.frames - 1)))
+    # the fine horizon, annealed if asked. Geometric rather than linear: what
+    # matters is the ratio between what a sample sees and what a rollout does,
+    # and that is a scale
+    n_sub_now = args.fine_steps
+    if args.fine_steps and args.fine_end:
+        u = min(1.0, (it - 1) / max(args.iters - 1, 1))
+        n_sub_now = max(1, int(round(args.fine_steps
+                                      * (args.fine_end / args.fine_steps) ** u)))
     cache = fit.prepare()
     loss, pen, bad_sample, n_ok = 0.0, 0.0, None, 0
     for _ in range(args.batch):
@@ -611,7 +625,7 @@ for it in bar:
             if len(ent) == 4:
                 fc0 = (ent[2][t], ent[3][t])
         if args.fine_steps:
-            contrib, cfl = fine_loss(x0, v0, cache, args.fine_steps, fc0)
+            contrib, cfl = fine_loss(x0, v0, cache, n_sub_now, fc0)
             if contrib is None:      # MPM cannot be asked from here
                 continue
         elif src is not None and args.unroll > 1:
