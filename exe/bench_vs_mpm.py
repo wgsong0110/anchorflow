@@ -136,12 +136,18 @@ def sim_steps(n, fused):
 
 
 def skin_only(fused):
+    """the WHOLE cloud, not just the material.
+
+    gaussian_pos returns the simulated particles; a frame also needs the
+    opacity-rejected sixth carried along, and FittedScene.skin is what does
+    both. Timing only the first understated what a drawn frame costs.
+    """
     saved = sparsestep.HAVE_CUDA
 
     def run():
         sparsestep.HAVE_CUDA = saved and fused
         try:
-            fit.gaussian_pos(p_state, cache)
+            fs.skin(p_state, gp)
         finally:
             sparsestep.HAVE_CUDA = saved
     return run
