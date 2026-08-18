@@ -168,6 +168,12 @@ print("\n[gradients]")
 torch.set_grad_enabled(True)
 
 
+# prepare() ran with grad on, so rc/Binv/blocked still reach fit.pos; two
+# backwards through one graph is an error and none of it is what is being
+# checked here, which is the pair reductions alone
+rc_d, Binv_d, blocked_d = rc.detach(), Binv.detach(), blocked.detach()
+
+
 def grads(fused):
     saved = sparsestep.HAVE_CUDA
     sparsestep.HAVE_CUDA = saved and fused
@@ -175,7 +181,7 @@ def grads(fused):
         pp = p_mid.detach().clone().requires_grad_(True)
         ww = w.detach().clone().requires_grad_(True)
         qq = q.detach().clone().requires_grad_(True)
-        F, cc = fit.deformation(pp, ww, rc, qq, Binv, blocked)
+        F, cc = fit.deformation(pp, ww, rc_d, qq, Binv_d, blocked_d)
         # a loss that touches every output, with weights that are not all one
         g = torch.arange(1, 10, device=dev, dtype=F.dtype).reshape(1, 3, 3)
         loss = (F * g).sum() + (cc * cc).sum()
@@ -185,7 +191,7 @@ def grads(fused):
         pp2 = p_mid.detach().clone().requires_grad_(True)
         ww2 = w.detach().clone().requires_grad_(True)
         qq2 = q.detach().clone().requires_grad_(True)
-        f2 = fit.force(pp2, ww2, rc, qq2, Binv, blocked)
+        f2 = fit.force(pp2, ww2, rc_d, qq2, Binv_d, blocked_d)
         (f2 * f2).sum().backward()
         return d + (pp2.grad.clone(), ww2.grad.clone(), qq2.grad.clone())
     finally:
