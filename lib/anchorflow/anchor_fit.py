@@ -41,6 +41,43 @@ from torch.utils.checkpoint import checkpoint
 from eigen3x3 import eigh3x3
 
 
+
+def det3(A):
+    """determinant of a batch of 3x3, by the closed form.
+
+    torch.linalg.det factorises, which for 3x3 is a batched LU launch and a
+    backward that carries the factorisation with it. The polar iteration below
+    calls this six times per evaluation over 171k matrices, so the difference is
+    not incidental: the closed form is a handful of elementwise ops whose
+    derivative autograd already knows.
+    """
+    a, b, c = A[..., 0, 0], A[..., 0, 1], A[..., 0, 2]
+    d, e, f = A[..., 1, 0], A[..., 1, 1], A[..., 1, 2]
+    g, h, i = A[..., 2, 0], A[..., 2, 1], A[..., 2, 2]
+    return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+
+
+def inv3(A, eps=0.0):
+    """inverse of a batch of 3x3, via the adjugate.
+
+    eps guards a singular matrix the way the callers did by hand: the reciprocal
+    is taken of a determinant held off zero, rather than producing infinities the
+    integrator then has to survive.
+    """
+    a, b, c = A[..., 0, 0], A[..., 0, 1], A[..., 0, 2]
+    d, e, f = A[..., 1, 0], A[..., 1, 1], A[..., 1, 2]
+    g, h, i = A[..., 2, 0], A[..., 2, 1], A[..., 2, 2]
+    A00 = e * i - f * h; A01 = c * h - b * i; A02 = b * f - c * e
+    A10 = f * g - d * i; A11 = a * i - c * g; A12 = c * d - a * f
+    A20 = d * h - e * g; A21 = b * g - a * h; A22 = a * e - b * d
+    det = a * A00 + b * A10 + c * A20
+    if eps:
+        det = torch.where(det.abs() < eps, torch.full_like(det, eps), det)
+    inv = 1.0 / det
+    return torch.stack([A00, A01, A02, A10, A11, A12, A20, A21, A22],
+                        dim=-1).reshape(*A.shape) * inv.unsqueeze(-1).unsqueeze(-1)
+
+
 def closest_rotation(F, iters=8, ridge=1e-6):
     """the nearest ROTATION to F, including where F has flipped over.
 
@@ -59,7 +96,7 @@ def closest_rotation(F, iters=8, ridge=1e-6):
     """
     R = polar_R(F, iters, ridge)
     flat = R.reshape(-1, 3, 3)
-    bad = torch.linalg.det(flat) < 0
+    bad = det3(flat) < 0
     if bad.any():
         with torch.no_grad():
             Fb = F.reshape(-1, 3, 3)[bad]
@@ -89,8 +126,8 @@ def polar_R(F, iters=8, ridge=1e-6):
     n = F.reshape(*F.shape[:-2], 9).norm(dim=-1).clamp(min=1e-12)
     R = F + (ridge * n).reshape(*F.shape[:-2], 1, 1) * torch.eye(3, device=F.device)
     for _ in range(iters):
-        Rinv_T = torch.linalg.inv(R).transpose(-1, -2)
-        g = torch.linalg.det(R).abs().clamp(min=1e-12).pow(-1.0 / 3.0)
+        Rinv_T = inv3(R, eps=1e-30).transpose(-1, -2)
+        g = det3(R).abs().clamp(min=1e-12).pow(-1.0 / 3.0)
         g = g.unsqueeze(-1).unsqueeze(-1)
         R = 0.5 * (g * R + Rinv_T / g)
     return R
@@ -242,8 +279,8 @@ class AnchorFit(nn.Module):
         """
         F, _ = self.deformation(p, w, rc, q, Binv, blocked)
         R = polar_R(F, self.polar_iters)
-        J = torch.linalg.det(F)
-        Finv_T = torch.linalg.inv(F).transpose(-1, -2)
+        J = det3(F)
+        Finv_T = inv3(F, eps=1e-30).transpose(-1, -2)
         mu = self.mu.unsqueeze(-1).unsqueeze(-1)
         lam = self.lam.unsqueeze(-1).unsqueeze(-1)
         P = 2 * mu * (F - R) + lam * (J - 1).unsqueeze(-1).unsqueeze(-1) * \

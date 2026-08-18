@@ -41,7 +41,7 @@ try:
 except Exception:                                   # unbuilt, or not on the path
     sparsestep = None
 
-from .anchor_fit import _R_to_quat, closest_rotation, quat_to_R
+from .anchor_fit import _R_to_quat, closest_rotation, det3, inv3, quat_to_R
 
 
 class Traj:
@@ -252,7 +252,7 @@ class AnchorSparse(nn.Module):
         tr = (B.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0).clamp(min=1e-20)
         eps = (self.eig_floor * tr.clamp(min=self.B_ref)).reshape(-1, 1, 1)
         eye = torch.eye(3, device=self.dev)
-        Binv = torch.linalg.inv(B + eps * eye)
+        Binv = inv3(B + eps * eye)
         blocked = eps * Binv
         mass = torch.zeros(self.M, device=self.dev).index_add_(
             0, self.pair_a, self.dens_vol[self.pair_g] * w).clamp(min=1e-12)
@@ -330,13 +330,13 @@ class AnchorSparse(nn.Module):
                                      polar_ridge=self.polar_ridge)
         F, _ = self.deformation(p, w, rc, q, Binv, blocked)
         R = closest_rotation(F, self.polar_iters, self.polar_ridge)
-        J = torch.linalg.det(F)
+        J = det3(F)
         # the volumetric term carries J F^-T, which is unbounded as an element
         # approaches zero volume. A ridge keeps it finite through the crossing
         # rather than handing the integrator an infinity
         n = F.reshape(-1, 9).norm(dim=-1).clamp(min=1e-12).reshape(-1, 1, 1)
-        Finv_T = torch.linalg.inv(F + 1e-6 * n * torch.eye(3, device=self.dev)
-                                   ).transpose(-1, -2)
+        Finv_T = inv3(F + 1e-6 * n * torch.eye(3, device=self.dev),
+                       eps=1e-30).transpose(-1, -2)
         k = self.stiffness(w).unsqueeze(-1).unsqueeze(-1)
         mu = self.mu.unsqueeze(-1).unsqueeze(-1) * k
         lam = self.lam.unsqueeze(-1).unsqueeze(-1) * k
@@ -439,7 +439,7 @@ class AnchorSparse(nn.Module):
             0, self.pair_g, w.reshape(-1, 1, 1) * (dv.unsqueeze(-1) * q.unsqueeze(-2)))
         Fdot = Ad @ Binv
         vx = vc + torch.einsum("nij,nj->ni", Fdot, self.Xc - rc)
-        C = Fdot @ torch.linalg.inv(F + 1e-6 * torch.eye(3, device=self.dev))
+        C = Fdot @ inv3(F + 1e-6 * torch.eye(3, device=self.dev), eps=1e-30)
         return x.contiguous(), vx.contiguous(), F.reshape(-1, 9).contiguous(), \
             C.reshape(-1, 9).contiguous()
 
