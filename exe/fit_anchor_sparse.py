@@ -32,6 +32,7 @@ import torch
 from tqdm import tqdm
 
 from anchorflow import scene_setup
+from anchorflow.anchor_fit import det3
 from anchorflow.anchor_sparse import AnchorSparse, Traj
 from anchorflow.streams import draw_impulse, rand_rot
 
@@ -135,6 +136,11 @@ ap.add_argument("--no_guards", action="store_true",
                       "floor or the skip, and stop at the first non-finite quantity "
                       "with a substep-by-substep replay. For finding out what the "
                       "failure is rather than surviving it.")
+ap.add_argument("--n_fine", type=int, default=40,
+                 help="trajectories for which MPM's own F and C are stored as well, so "
+                      "a fine-step sample can restart MPM from its own state instead of "
+                      "from a lifted one. Eighteen more floats per particle per frame is "
+                      "377 MB a trajectory, so this is not all of them.")
 ap.add_argument("--fine_steps", type=int, default=0,
                  help="score every SUBSTEP over this many, instead of every coarse "
                       "frame over --unroll of them. 480 differentiable substeps to "
@@ -197,8 +203,15 @@ elif not args.no_geom_init:
 
 
 @torch.no_grad()
-def mpm_states(force):
-    """MPM's own particles and velocities, frame by frame"""
+def mpm_states(force, keep_fc=False):
+    """MPM's own particles and velocities, frame by frame.
+
+    With keep_fc, its deformation gradient and affine velocity too. Those are
+    what MPM needs to be restarted, and storing them is the difference between
+    walking alongside MPM from its own state and having to reconstruct one by
+    lifting ours -- which is lossy, and which MPM refuses outright often enough
+    that three samples in four were being thrown away.
+    """
     cache = fit.prepare()
     dv = fit.impulse_dv(force, cache)
     v0 = torch.zeros(fit.N, 3, device=dev).index_add_(
@@ -206,6 +219,8 @@ def mpm_states(force):
     T._set(T.pos_m.clone(), v0.contiguous(), T.eye.clone(), torch.zeros_like(T.eye))
     xs = [T.pos_m.to(torch.float16).cpu()]
     vs = [v0.to(torch.float16).cpu()]
+    fs_ = [T.eye.to(torch.float16).cpu()] if keep_fc else None
+    cs_ = [torch.zeros_like(T.eye).to(torch.float16).cpu()] if keep_fc else None
     for _ in range(args.frames):
         for k in range(args.dt_mult):
             T.solver.p2g2p(None, sc.sub_dt, device=T.wp_dev)
@@ -213,7 +228,15 @@ def mpm_states(force):
                 return None
         xs.append(T.solver.export_particle_x_to_torch().to(torch.float16).cpu())
         vs.append(T.solver.export_particle_v_to_torch().to(torch.float16).cpu())
-    return Traj(torch.stack(xs)), Traj(torch.stack(vs))
+        if keep_fc:
+            fs_.append(T.solver.export_particle_F_to_torch().reshape(-1, 9)
+                       .to(torch.float16).cpu())
+            cs_.append(T.solver.export_particle_C_to_torch().reshape(-1, 9)
+                       .to(torch.float16).cpu())
+    out = [Traj(torch.stack(xs)), Traj(torch.stack(vs))]
+    if keep_fc:
+        out += [Traj(torch.stack(fs_)), Traj(torch.stack(cs_))]
+    return tuple(out)
 
 
 def draw(g, n, field=True, n_uniform=0):
@@ -233,7 +256,7 @@ def draw(g, n, field=True, n_uniform=0):
     return out[:n]
 
 
-KEY = f"{args.n_fit}_{args.n_check}_{args.frames}_{args.dt_mult}_{args.c}"
+KEY = f"{args.n_fit}_{args.n_check}_{args.frames}_{args.dt_mult}_{args.c}_fc{args.n_fine}"
 FIT = CHK = FORCES = None
 if args.traj_cache and args.r2 and not os.path.exists(args.traj_cache):
     # the trajectories are twenty minutes of MPM and they were not being
@@ -251,7 +274,8 @@ if args.traj_cache and os.path.exists(args.traj_cache):
 if FIT is None:
     g1 = torch.Generator(device=dev); g1.manual_seed(4242)
     ff = draw(g1, args.n_fit, field=args.field)
-    FIT = [s for s in (mpm_states(f) for f in tqdm(ff, desc="MPM fit", ncols=90))
+    FIT = [s for s in (mpm_states(f, keep_fc=(i < args.n_fine))
+                       for i, f in enumerate(tqdm(ff, desc="MPM fit", ncols=90)))
            if s is not None]
     g2 = torch.Generator(device=dev); g2.manual_seed(31337)
     fc = draw(g2, args.n_check + 1, field=args.field,
@@ -298,7 +322,7 @@ def unrolled(X, V, t, n, cache):
 
 
 
-def fine_loss(x0, v0, cache, n_sub):
+def fine_loss(x0, v0, cache, n_sub, fc0=None):
     """n SUBSTEPS from one state, scored against MPM at every one of them.
 
     The unrolled loss above walks twelve coarse frames -- 480 differentiable
@@ -323,14 +347,19 @@ def fine_loss(x0, v0, cache, n_sub):
     p = fit.project(x0, cache)
     v = fit.project_v(v0, cache)
     with torch.no_grad():
-        x, vx, F, C = fit.lift(p, v, cache)
-        if not (torch.isfinite(x).all() and x.min() > T.margin
-                and x.max() < T.grid_lim - T.margin):
-            return None, None
-        det = torch.linalg.det(F.reshape(-1, 3, 3))
-        if det.min() < 0.05 or det.max() > 20.0:
-            return None, None
-        T._set(x, vx, F, C)
+        if fc0 is not None:
+            # MPM's own recorded state: exact, and never refused
+            T._set(x0.contiguous(), v0.contiguous(),
+                   fc0[0].contiguous(), fc0[1].contiguous())
+        else:
+            x, vx, F, C = fit.lift(p, v, cache)
+            if not (torch.isfinite(x).all() and x.min() > T.margin
+                    and x.max() < T.grid_lim - T.margin):
+                return None, None
+            det = det3(F.reshape(-1, 3, 3))
+            if det.min() < 0.05 or det.max() > 20.0:
+                return None, None
+            T._set(x, vx, F, C)
 
     loss = pen = 0.0
     for _ in range(n_sub):
@@ -353,7 +382,7 @@ def fine_loss(x0, v0, cache, n_sub):
 def step_error(sets, every=10):
     cache = fit.prepare()
     tot, n = 0.0, 0
-    for X, V in sets:
+    for X, V, *_ in sets:
         for t in range(0, X.shape[0] - 1, every):
             got, _ = one_step(X[t], V[t], cache)
             d = (X[t + 1] - X[t]).norm(dim=-1).mean().clamp(min=1e-12)
@@ -366,7 +395,7 @@ def rollout_error(sets):
     """the whole trajectory, from rest, as the evaluation actually asks for it"""
     cache = fit.prepare()
     tot = []
-    for X, V in sets:
+    for X, V, *_ in sets:
         p, v = fit.project(X[0], cache), fit.project_v(V[0], cache)
         out = [fit.gaussian_pos(p, cache)]
         for _ in range(args.frames):
@@ -403,10 +432,10 @@ POOL = {"x": [], "v": [], "tgt": []}
 def collect_dagger():
     cache = fit.prepare()
     cap = args.dagger_cap * max((X[args.frames] - X[0]).norm(dim=-1).max().item()
-                                 for X, _ in FIT[:8])
+                                 for X, *_ in FIT[:8])
     added = skipped = 0
     for i in range(args.dagger_traj):
-        X, V = FIT[i % len(FIT)]
+        X, V, *_ = FIT[i % len(FIT)]
         p, v = fit.project(X[0], cache), fit.project_v(V[0], cache)
         for t in range(args.dagger_frames):
             gp = fit.gaussian_pos(p, cache)
@@ -563,7 +592,7 @@ for it in bar:
     cache = fit.prepare()
     loss, pen, bad_sample, n_ok = 0.0, 0.0, None, 0
     for _ in range(args.batch):
-        src = None
+        src, fc0 = None, None
         if POOL["x"] and torch.rand(1).item() < args.dagger_frac:
             # a DAgger state has one labelled frame after it and nothing more, so
             # it stays a single step whatever the unroll length is
@@ -572,12 +601,17 @@ for it in bar:
             v0 = POOL["v"][j].to(dev, torch.float32)
             tgt = POOL["tgt"][j].to(dev, torch.float32) if POOL["tgt"] else None
         else:
-            X, V = FIT[torch.randint(len(FIT), (1,)).item()]
+            ent = FIT[torch.randint(len(FIT), (1,)).item()]
+            X, V = ent[0], ent[1]
             t = torch.randint(hi, (1,)).item()
             x0, v0, tgt = X[t], V[t], X[t + 1]
             src = (X, V, t)
+            # MPM's own state at that frame, when it was kept: then the fine loss
+            # walks alongside MPM from where MPM actually was, with no lift
+            if len(ent) == 4:
+                fc0 = (ent[2][t], ent[3][t])
         if args.fine_steps:
-            contrib, cfl = fine_loss(x0, v0, cache, args.fine_steps)
+            contrib, cfl = fine_loss(x0, v0, cache, args.fine_steps, fc0)
             if contrib is None:      # MPM cannot be asked from here
                 continue
         elif src is not None and args.unroll > 1:
