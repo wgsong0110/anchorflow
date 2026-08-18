@@ -129,6 +129,14 @@ ap.add_argument("--no_guards", action="store_true",
                       "floor or the skip, and stop at the first non-finite quantity "
                       "with a substep-by-substep replay. For finding out what the "
                       "failure is rather than surviving it.")
+ap.add_argument("--fine_steps", type=int, default=0,
+                 help="score every SUBSTEP over this many, instead of every coarse "
+                      "frame over --unroll of them. 480 differentiable substeps to "
+                      "produce twelve numbers of supervision is what made an iteration "
+                      "cost two minutes; MPM steps at the same 1e-4, so the two can be "
+                      "walked together and compared throughout. The horizon then has to "
+                      "come from DAgger rather than from rolling forward, which is what "
+                      "it is for.")
 ap.add_argument("--final_rollout", type=int, default=3,
                  help="impulses to roll out fully against MPM at the end")
 args = ap.parse_args()
@@ -281,6 +289,58 @@ def unrolled(X, V, t, n, cache):
         loss = loss + (got - X[t + j + 1]).norm(dim=-1).mean() / d
         pen = pen + cfl
     return loss / max(hi, 1), pen / max(hi, 1)
+
+
+
+def fine_loss(x0, v0, cache, n_sub):
+    """n SUBSTEPS from one state, scored against MPM at every one of them.
+
+    The unrolled loss above walks twelve coarse frames -- 480 differentiable
+    substeps -- and compares at twelve of them. That is 480 forward evaluations
+    producing twelve numbers of supervision, with a gradient that has to travel
+    back through all of them, and it is the reason a fit iteration cost two
+    minutes.
+
+    MPM's own step is the same 1e-4 as this simulator's, so the two can be walked
+    side by side and compared at every substep instead. The same compute then
+    yields forty times the supervision, and a short horizon becomes affordable:
+    what the long unroll was buying is states the simulator reaches on its own,
+    and DAgger supplies those directly rather than by rolling forward from an MPM
+    state every iteration.
+
+    MPM is restarted from the lifted anchor state rather than from its own stored
+    frame, because the cache holds coarse frames only and storing substeps would
+    be 490 GB. The lift reproduces MPM's continuation to 2e-4 of a 0.59 span
+    (exe/verify_mpm_teacher.py), and it is what makes a DAgger state usable at
+    all -- so both sources of start state go through the same door.
+    """
+    p = fit.project(x0, cache)
+    v = fit.project_v(v0, cache)
+    with torch.no_grad():
+        x, vx, F, C = fit.lift(p, v, cache)
+        if not (torch.isfinite(x).all() and x.min() > T.margin
+                and x.max() < T.grid_lim - T.margin):
+            return None, None
+        det = torch.linalg.det(F.reshape(-1, 3, 3))
+        if det.min() < 0.05 or det.max() > 20.0:
+            return None, None
+        T._set(x, vx, F, C)
+
+    loss = pen = 0.0
+    for _ in range(n_sub):
+        p, v, cfl = fit.rollout(p, v, 1, cache)
+        with torch.no_grad():
+            T.solver.p2g2p(None, sc.sub_dt, device=T.wp_dev)
+            if not T._in_domain():
+                return None, None
+            tgt = T.solver.export_particle_x_to_torch()
+        got = fit.gaussian_pos(p, cache)
+        # against how far MPM has moved from the start, so an early substep is
+        # not weighted down for having barely moved
+        d = (tgt - x0).norm(dim=-1).mean().clamp(min=1e-12)
+        loss = loss + (got - tgt).norm(dim=-1).mean() / d
+        pen = pen + cfl
+    return loss / n_sub, pen / n_sub
 
 
 @torch.no_grad()
@@ -494,7 +554,11 @@ for it in bar:
             t = torch.randint(hi, (1,)).item()
             x0, v0, tgt = X[t], V[t], X[t + 1]
             src = (X, V, t)
-        if src is not None and args.unroll > 1:
+        if args.fine_steps:
+            contrib, cfl = fine_loss(x0, v0, cache, args.fine_steps)
+            if contrib is None:      # MPM cannot be asked from here
+                continue
+        elif src is not None and args.unroll > 1:
             X_, V_, t_ = src
             contrib, cfl = unrolled(X_, V_, t_, args.unroll, cache)
         else:
