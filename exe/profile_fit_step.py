@@ -113,6 +113,35 @@ def unrolled(n_frames):
     return run
 
 
+# where the gap between 40 x one-substep and the unroll-1 loss goes. prepare()
+# is called once per sample, but its backward carries the gradient every substep
+# accumulated into w, q, Binv and blocked -- and it still materialises a [P,3,3]
+# for the rest scatter, which the kernel does not cover
+def prepare_only():
+    cache = fit.prepare()
+    s_ = sum(t.pow(2).sum() for t in cache)
+    s_.backward()
+    fit.zero_grad(set_to_none=True)
+
+
+def rollout_detached(n_frames):
+    """the substeps alone: the cache is detached, so nothing flows into prepare"""
+    det = [t.detach().requires_grad_(True) for t in cache_ng]
+
+    def run():
+        p, v = fit.pos, torch.zeros_like(fit.pos)
+        for _ in range(n_frames):
+            p, v, _ = fit.rollout(p, v, args.dt_mult, tuple(det))
+        p.pow(2).sum().backward()
+        fit.zero_grad(set_to_none=True)
+        for t in det:
+            t.grad = None
+    return run
+
+
+print(f"{'prepare()  fwd+bwd alone':44} {t(prepare_only, n=2):10.2f}")
+print(f"{'40 substeps, cache detached, fwd+bwd':44} {t(rollout_detached(1), n=1):10.2f}")
+
 for nf in (1, args.unroll):
     ms = t(unrolled(nf), n=1)
     print(f"{'unroll %d, full loss fwd+bwd (%d substeps)' % (nf, nf * args.dt_mult):44} "
