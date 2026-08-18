@@ -20,6 +20,8 @@ import torch
 
 try:
     from ._C import skin as _skin, force as _force, deform as _deform
+    from ._C import deform_fwd as _deform_fwd, deform_bwd as _deform_bwd
+    from ._C import gather_fwd as _gather_fwd, gather_bwd as _gather_bwd
     HAVE_CUDA = True
 except Exception:
     HAVE_CUDA = False
@@ -98,3 +100,68 @@ def deform(p, csr, w, q, Binv, blocked):
     row_off, pair_a, _pair_g, _ao, _ap = csr
     return _deform(_f32(p), row_off, pair_a, _f32(w), _f32(q),
                    _f32(Binv).reshape(-1, 9), _f32(blocked).reshape(-1, 9))
+
+
+# ---- differentiable, for the fit -------------------------------------------
+#
+# The forward kernels above are no use to the fit, which differentiates through
+# everything: one substep costs 121 ms on the torch path against the kernel's
+# 2.15, and nearly all of that is the [P,3,3] tensor of outer products being
+# built, scattered, and built again in reverse -- 129 MB per direction per
+# substep at 3.6M pairs.
+#
+# Only the PAIR-level reductions are fused here. The per-Gaussian 3x3 work --
+# polar factor, determinant, inverse -- stays in autograd, where it is 171k tiny
+# problems rather than 3.6M and where the delicate derivatives live. The two
+# meet at A and at P@Binv, so the split is clean.
+
+
+class _Deform(torch.autograd.Function):
+    """(p, w, q) -> (weighted centroid, scatter of w (p-cc) q^T)"""
+
+    @staticmethod
+    def forward(ctx, p, w, q, row_off, pair_a, pair_g, acsr_off, acsr_pair, N, M):
+        cc, A, S = _deform_fwd(p.contiguous(), row_off, pair_a,
+                                w.contiguous(), q.contiguous(), int(N))
+        ctx.save_for_backward(p, w, q, cc, S, pair_a, pair_g, acsr_off, acsr_pair)
+        ctx.M = int(M)
+        return cc, A
+
+    @staticmethod
+    def backward(ctx, gcc, gA):
+        p, w, q, cc, S, pair_a, pair_g, acsr_off, acsr_pair = ctx.saved_tensors
+        gp, gw, gq = _deform_bwd(gcc.contiguous(), gA.contiguous(), p, w, q, cc, S,
+                                  pair_a, pair_g, acsr_off, acsr_pair, ctx.M)
+        return gp, gw, gq, None, None, None, None, None, None, None
+
+
+class _Gather(torch.autograd.Function):
+    """(P@Binv, w, q) -> anchor forces"""
+
+    @staticmethod
+    def forward(ctx, PB, w, q, vol, row_off, pair_a, pair_g, acsr_off, acsr_pair, N, M):
+        f = _gather_fwd(PB.contiguous(), q.contiguous(), w.contiguous(),
+                         vol.contiguous(), pair_g, acsr_off, acsr_pair, int(M))
+        ctx.save_for_backward(PB, w, q, vol, row_off, pair_a, pair_g)
+        ctx.N = int(N)
+        return f
+
+    @staticmethod
+    def backward(ctx, gf):
+        PB, w, q, vol, row_off, pair_a, pair_g = ctx.saved_tensors
+        gPB, gw, gq = _gather_bwd(gf.contiguous(), PB, q, w, vol,
+                                   row_off, pair_a, pair_g, ctx.N)
+        return gPB, gw, gq, None, None, None, None, None, None, None, None
+
+
+def deform_diff(p, w, q, csr, N, M):
+    """differentiable (cc, A). Returns None if the extension is not built."""
+    row_off, pair_a, pair_g, acsr_off, acsr_pair = csr
+    return _Deform.apply(p, w, q, row_off, pair_a, pair_g, acsr_off, acsr_pair, N, M)
+
+
+def gather_diff(PB, w, q, vol, csr, N, M):
+    """differentiable anchor forces from P@Binv"""
+    row_off, pair_a, pair_g, acsr_off, acsr_pair = csr
+    return _Gather.apply(PB, w, q, vol, row_off, pair_a, pair_g,
+                          acsr_off, acsr_pair, N, M)

@@ -260,6 +260,12 @@ class AnchorSparse(nn.Module):
 
     # ---- the physics -------------------------------------------------------
     def deformation(self, p, w, rc, q, Binv, blocked):
+        # the fused reduction is differentiable, so this is taken whether or not
+        # grad is on -- it is the fit's hot path as much as the rollout's
+        if self._pairs_ok():
+            csr = sparsestep.build_csr(self.pair_g, self.pair_a, self.N, self.M)
+            cc, A = sparsestep.deform_diff(p, w, q, csr, self.N, self.M)
+            return A @ Binv + blocked, cc
         pa = p[self.pair_a]
         cc = torch.zeros(self.N, 3, device=self.dev).index_add_(
             0, self.pair_g, w.unsqueeze(-1) * pa)
@@ -290,8 +296,13 @@ class AnchorSparse(nn.Module):
     # path, which is also the reference the kernel is verified against
     # (exe/verify_sparsestep.py).
     def _fused_ok(self):
+        """the whole-force kernel: forward only, so grad must be off"""
+        return self._pairs_ok() and not torch.is_grad_enabled()
+
+    def _pairs_ok(self):
+        """the pair reductions, which carry their own backward"""
         return (sparsestep is not None and sparsestep.HAVE_CUDA
-                and not torch.is_grad_enabled() and self.pos.is_cuda)
+                and self.pos.is_cuda)
 
     def _fused(self, w):
         """the CSR layout and the stiffness-carrying moduli, cached per refresh.
@@ -331,7 +342,11 @@ class AnchorSparse(nn.Module):
         lam = self.lam.unsqueeze(-1).unsqueeze(-1) * k
         P = 2 * mu * (F - R) + lam * (J - 1).unsqueeze(-1).unsqueeze(-1) * \
             J.unsqueeze(-1).unsqueeze(-1) * Finv_T
-        PB = (P @ Binv)[self.pair_g]
+        PBn = P @ Binv
+        if self._pairs_ok():
+            csr = sparsestep.build_csr(self.pair_g, self.pair_a, self.N, self.M)
+            return sparsestep.gather_diff(PBn, w, q, self.vol, csr, self.N, self.M)
+        PB = PBn[self.pair_g]
         contrib = -(self.vol[self.pair_g] * w).unsqueeze(-1) * \
             torch.einsum("pij,pj->pi", PB, q)
         return torch.zeros(self.M, 3, device=self.dev).index_add_(0, self.pair_a, contrib)

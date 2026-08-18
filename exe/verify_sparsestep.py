@@ -159,5 +159,45 @@ print(f"\n[rollout] {args.substeps} substeps: positions differ by {drift:.3e}, "
       f"which is {float(drift / moved) * 100:.4f}% of how far the anchors moved")
 ok &= float(drift / moved) < args.tol
 
+# ---- gradients, which the fit depends on and a forward check cannot see -----
+#
+# A wrong backward does not crash and does not show up in any forward number; it
+# just fits the discretisation to something else. So both pair reductions are
+# differentiated both ways from the same inputs and compared.
+print("\n[gradients]")
+torch.set_grad_enabled(True)
+
+
+def grads(fused):
+    saved = sparsestep.HAVE_CUDA
+    sparsestep.HAVE_CUDA = saved and fused
+    try:
+        pp = p_mid.detach().clone().requires_grad_(True)
+        ww = w.detach().clone().requires_grad_(True)
+        qq = q.detach().clone().requires_grad_(True)
+        F, cc = fit.deformation(pp, ww, rc, qq, Binv, blocked)
+        # a loss that touches every output, with weights that are not all one
+        g = torch.arange(1, 10, device=dev, dtype=F.dtype).reshape(1, 3, 3)
+        loss = (F * g).sum() + (cc * cc).sum()
+        loss.backward()
+        d = (pp.grad.clone(), ww.grad.clone(), qq.grad.clone())
+
+        pp2 = p_mid.detach().clone().requires_grad_(True)
+        ww2 = w.detach().clone().requires_grad_(True)
+        qq2 = q.detach().clone().requires_grad_(True)
+        f2 = fit.force(pp2, ww2, rc, qq2, Binv, blocked)
+        (f2 * f2).sum().backward()
+        return d + (pp2.grad.clone(), ww2.grad.clone(), qq2.grad.clone())
+    finally:
+        sparsestep.HAVE_CUDA = saved
+
+
+gk = grads(True)
+gt = grads(False)
+for nm, a_, b_ in zip(("deform dL/dp", "deform dL/dw", "deform dL/dq",
+                        "force  dL/dp", "force  dL/dw", "force  dL/dq"), gk, gt):
+    ok &= check(nm, a_, b_, tol=5e-3)
+torch.set_grad_enabled(False)
+
 print("\nVERIFIED" if ok else "\nMISMATCH -- do not use the kernel")
 sys.exit(0 if ok else 1)

@@ -383,6 +383,206 @@ __global__ void gather_kernel(
   }
 }
 
+
+// ---------------- backward: the pair-level reductions -----------------------
+//
+// The fit differentiates through all of this, and the forward kernels above are
+// no use to it -- so it ran the torch path, where one substep costs 121 ms
+// against the kernel's 2.15. Nearly all of that is the [P,3,3] tensor of outer
+// products being built, scattered, and then built again in reverse: 3.6M pairs
+// times nine floats is 129 MB written and read per direction per substep.
+//
+// What is fused here is only the pair-level part. The per-Gaussian 3x3 work --
+// the polar factor, the determinant, the inverse -- stays in autograd: it is
+// 171k tiny problems rather than 3.6M, and its derivatives are the delicate
+// ones. The split is clean because the two meet at F and at P@Binv.
+//
+// Writing A_n = sum_j w_j (p_j - cc_n) q_j^T with cc_n = sum_j w_j p_j and
+// S_n = sum_j w_j q_j, and letting gcc' = gcc - gA S:
+//
+//   dL/dp_j = w_j (gA (q_j - S) + gcc)
+//   dL/dw_j = (p_j - cc)^T gA q_j + gcc' . p_j
+//   dL/dq_j = w_j gA^T (p_j - cc)
+//
+// S is a per-Gaussian reduction, so the forward returns it rather than making
+// the backward recompute it.
+
+__global__ void deform_fwd_kernel(
+    const float* __restrict__ p, const int* __restrict__ row_off,
+    const int* __restrict__ pair_a, const float* __restrict__ w,
+    const float* __restrict__ q, float* __restrict__ ccout,
+    float* __restrict__ Aout, float* __restrict__ Sout, int N) {
+  int n = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  int lane = threadIdx.x & 31;
+  if (n >= N) return;
+  int lo = row_off[n], hi = row_off[n + 1];
+
+  float cx = 0.f, cy = 0.f, cz = 0.f, sx = 0.f, sy = 0.f, sz = 0.f;
+  for (int j = lo + lane; j < hi; j += 32) {
+    int a = pair_a[j];
+    float wj = w[j];
+    cx += wj * p[a * 3 + 0]; cy += wj * p[a * 3 + 1]; cz += wj * p[a * 3 + 2];
+    sx += wj * q[j * 3 + 0]; sy += wj * q[j * 3 + 1]; sz += wj * q[j * 3 + 2];
+  }
+  cx = warp_allsum(cx); cy = warp_allsum(cy); cz = warp_allsum(cz);
+  sx = warp_allsum(sx); sy = warp_allsum(sy); sz = warp_allsum(sz);
+
+  float A[9];
+  for (int i = 0; i < 9; ++i) A[i] = 0.f;
+  for (int j = lo + lane; j < hi; j += 32) {
+    int a = pair_a[j];
+    float wj = w[j];
+    float d[3] = {p[a * 3 + 0] - cx, p[a * 3 + 1] - cy, p[a * 3 + 2] - cz};
+    float qj[3] = {q[j * 3 + 0], q[j * 3 + 1], q[j * 3 + 2]};
+    for (int i = 0; i < 3; ++i)
+      for (int k = 0; k < 3; ++k) A[i * 3 + k] += wj * d[i] * qj[k];
+  }
+  for (int i = 0; i < 9; ++i) A[i] = warp_allsum(A[i]);
+  if (lane == 0) {
+    for (int i = 0; i < 9; ++i) Aout[n * 9 + i] = A[i];
+    ccout[n * 3 + 0] = cx; ccout[n * 3 + 1] = cy; ccout[n * 3 + 2] = cz;
+    Sout[n * 3 + 0] = sx; Sout[n * 3 + 1] = sy; Sout[n * 3 + 2] = sz;
+  }
+}
+
+// per pair: dL/dw and dL/dq need no reduction at all, and dL/dp is a scatter
+// onto a few hundred anchors -- so it takes the anchor-major list, as the force
+// gather does, rather than atomics
+__global__ void deform_bwd_pair_kernel(
+    const float* __restrict__ p, const float* __restrict__ w,
+    const float* __restrict__ q, const float* __restrict__ cc,
+    const float* __restrict__ S, const float* __restrict__ gcc,
+    const float* __restrict__ gA, const int* __restrict__ pair_a,
+    const int* __restrict__ pair_g, float* __restrict__ gw,
+    float* __restrict__ gq, int P) {
+  int j = blockIdx.x * blockDim.x + threadIdx.x;
+  if (j >= P) return;
+  int g = pair_g[j], a = pair_a[j];
+  float d[3], qj[3], gAn[9], gc[3], Sn[3];
+  for (int i = 0; i < 3; ++i) {
+    d[i] = p[a * 3 + i] - cc[g * 3 + i];
+    qj[i] = q[j * 3 + i];
+    gc[i] = gcc[g * 3 + i];
+    Sn[i] = S[g * 3 + i];
+  }
+  for (int i = 0; i < 9; ++i) gAn[i] = gA[g * 9 + i];
+
+  // gcc' = gcc - gA S
+  float gcp[3];
+  for (int i = 0; i < 3; ++i) {
+    float s = 0.f;
+    for (int k = 0; k < 3; ++k) s += gAn[i * 3 + k] * Sn[k];
+    gcp[i] = gc[i] - s;
+  }
+  // dL/dw_j = d^T gA q + gcc' . p
+  float gAq[3];
+  for (int i = 0; i < 3; ++i) {
+    float s = 0.f;
+    for (int k = 0; k < 3; ++k) s += gAn[i * 3 + k] * qj[k];
+    gAq[i] = s;
+  }
+  float acc = 0.f;
+  for (int i = 0; i < 3; ++i) acc += d[i] * gAq[i] + gcp[i] * p[a * 3 + i];
+  gw[j] = acc;
+  // dL/dq_j = w gA^T d
+  float wj = w[j];
+  for (int k = 0; k < 3; ++k) {
+    float s = 0.f;
+    for (int i = 0; i < 3; ++i) s += gAn[i * 3 + k] * d[i];
+    gq[j * 3 + k] = wj * s;
+  }
+}
+
+// dL/dp_j = w_j (gA (q_j - S) + gcc), gathered per anchor
+__global__ void deform_bwd_p_kernel(
+    const float* __restrict__ w, const float* __restrict__ q,
+    const float* __restrict__ S, const float* __restrict__ gcc,
+    const float* __restrict__ gA, const int* __restrict__ pair_g,
+    const int* __restrict__ acsr_off, const int* __restrict__ acsr_pair,
+    float* __restrict__ gp, int M) {
+  int a = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  int lane = threadIdx.x & 31;
+  if (a >= M) return;
+  int lo = acsr_off[a], hi = acsr_off[a + 1];
+  float ax = 0.f, ay = 0.f, az = 0.f;
+  for (int t = lo + lane; t < hi; t += 32) {
+    int j = acsr_pair[t], g = pair_g[j];
+    float wj = w[j];
+    float u[3];
+    for (int i = 0; i < 3; ++i) u[i] = q[j * 3 + i] - S[g * 3 + i];
+    float r[3];
+    for (int i = 0; i < 3; ++i) {
+      float s = gcc[g * 3 + i];
+      for (int k = 0; k < 3; ++k) s += gA[g * 9 + i * 3 + k] * u[k];
+      r[i] = wj * s;
+    }
+    ax += r[0]; ay += r[1]; az += r[2];
+  }
+  ax = warp_allsum(ax); ay = warp_allsum(ay); az = warp_allsum(az);
+  if (lane == 0) { gp[a * 3 + 0] = ax; gp[a * 3 + 1] = ay; gp[a * 3 + 2] = az; }
+}
+
+// ---- the force gather, and its backward ------------------------------------
+//
+//   f_a = sum_{j: a_j = a} s_j (PB_{g_j} q_j),   s_j = -vol_{g_j} w_j
+//
+//   dL/dPB_g = sum_{j: g_j = g} s_j (gf_{a_j} q_j^T)     (per Gaussian, CSR)
+//   dL/dw_j  = -vol_g (gf_{a_j} . (PB_g q_j))
+//   dL/dq_j  = s_j PB_g^T gf_{a_j}
+
+__global__ void gather_bwd_pb_kernel(
+    const float* __restrict__ gf, const float* __restrict__ q,
+    const float* __restrict__ w, const float* __restrict__ vol,
+    const int* __restrict__ row_off, const int* __restrict__ pair_a,
+    float* __restrict__ gPB, int N) {
+  int n = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  int lane = threadIdx.x & 31;
+  if (n >= N) return;
+  int lo = row_off[n], hi = row_off[n + 1];
+  float acc[9];
+  for (int i = 0; i < 9; ++i) acc[i] = 0.f;
+  float vg = vol[n];
+  for (int j = lo + lane; j < hi; j += 32) {
+    int a = pair_a[j];
+    float s = -(vg * w[j]);
+    for (int i = 0; i < 3; ++i)
+      for (int k = 0; k < 3; ++k)
+        acc[i * 3 + k] += s * gf[a * 3 + i] * q[j * 3 + k];
+  }
+  for (int i = 0; i < 9; ++i) acc[i] = warp_allsum(acc[i]);
+  if (lane == 0)
+    for (int i = 0; i < 9; ++i) gPB[n * 9 + i] = acc[i];
+}
+
+__global__ void gather_bwd_pair_kernel(
+    const float* __restrict__ gf, const float* __restrict__ PB,
+    const float* __restrict__ q, const float* __restrict__ w,
+    const float* __restrict__ vol, const int* __restrict__ pair_a,
+    const int* __restrict__ pair_g, float* __restrict__ gw,
+    float* __restrict__ gq, int P) {
+  int j = blockIdx.x * blockDim.x + threadIdx.x;
+  if (j >= P) return;
+  int g = pair_g[j], a = pair_a[j];
+  float qj[3], gfa[3];
+  for (int i = 0; i < 3; ++i) { qj[i] = q[j * 3 + i]; gfa[i] = gf[a * 3 + i]; }
+  float PBq[3];
+  for (int i = 0; i < 3; ++i) {
+    float s = 0.f;
+    for (int k = 0; k < 3; ++k) s += PB[g * 9 + i * 3 + k] * qj[k];
+    PBq[i] = s;
+  }
+  float dot = 0.f;
+  for (int i = 0; i < 3; ++i) dot += gfa[i] * PBq[i];
+  float vg = vol[g];
+  gw[j] = -vg * dot;
+  float s = -(vg * w[j]);
+  for (int k = 0; k < 3; ++k) {
+    float t = 0.f;
+    for (int i = 0; i < 3; ++i) t += PB[g * 9 + i * 3 + k] * gfa[i];
+    gq[j * 3 + k] = s * t;
+  }
+}
+
 // ---------------- host ------------------------------------------------------
 
 #define CHECK(x) TORCH_CHECK((x).is_cuda() && (x).is_contiguous(), #x " must be contiguous CUDA")
@@ -467,8 +667,95 @@ std::vector<torch::Tensor> sparse_deform(
   return {F, cc};
 }
 
+
+// ---- differentiable pair reductions, for the fit ---------------------------
+
+std::vector<torch::Tensor> deform_fwd(
+    torch::Tensor p, torch::Tensor row_off, torch::Tensor pair_a,
+    torch::Tensor w, torch::Tensor q, int64_t N) {
+  CHECK(p); CHECK(row_off); CHECK(pair_a); CHECK(w); CHECK(q);
+  auto opts = p.options();
+  auto cc = torch::empty({(int64_t)N, 3}, opts);
+  auto A = torch::empty({(int64_t)N, 3, 3}, opts);
+  auto S = torch::empty({(int64_t)N, 3}, opts);
+  const int threads = 128;
+  const int blocks = ((int)N * 32 + threads - 1) / threads;
+  deform_fwd_kernel<<<blocks, threads>>>(
+      p.data_ptr<float>(), row_off.data_ptr<int>(), pair_a.data_ptr<int>(),
+      w.data_ptr<float>(), q.data_ptr<float>(), cc.data_ptr<float>(),
+      A.data_ptr<float>(), S.data_ptr<float>(), (int)N);
+  return {cc, A, S};
+}
+
+std::vector<torch::Tensor> deform_bwd(
+    torch::Tensor gcc, torch::Tensor gA, torch::Tensor p, torch::Tensor w,
+    torch::Tensor q, torch::Tensor cc, torch::Tensor S,
+    torch::Tensor pair_a, torch::Tensor pair_g,
+    torch::Tensor acsr_off, torch::Tensor acsr_pair, int64_t M) {
+  CHECK(gcc); CHECK(gA); CHECK(p); CHECK(w); CHECK(q); CHECK(cc); CHECK(S);
+  const int P = (int)w.size(0);
+  auto opts = p.options();
+  auto gw = torch::empty({P}, opts);
+  auto gq = torch::empty({P, 3}, opts);
+  auto gp = torch::empty({(int64_t)M, 3}, opts);
+  const int t1 = 256;
+  deform_bwd_pair_kernel<<<(P + t1 - 1) / t1, t1>>>(
+      p.data_ptr<float>(), w.data_ptr<float>(), q.data_ptr<float>(),
+      cc.data_ptr<float>(), S.data_ptr<float>(), gcc.data_ptr<float>(),
+      gA.data_ptr<float>(), pair_a.data_ptr<int>(), pair_g.data_ptr<int>(),
+      gw.data_ptr<float>(), gq.data_ptr<float>(), P);
+  const int t2 = 128;
+  deform_bwd_p_kernel<<<((int)M * 32 + t2 - 1) / t2, t2>>>(
+      w.data_ptr<float>(), q.data_ptr<float>(), S.data_ptr<float>(),
+      gcc.data_ptr<float>(), gA.data_ptr<float>(), pair_g.data_ptr<int>(),
+      acsr_off.data_ptr<int>(), acsr_pair.data_ptr<int>(),
+      gp.data_ptr<float>(), (int)M);
+  return {gp, gw, gq};
+}
+
+torch::Tensor gather_fwd(
+    torch::Tensor PB, torch::Tensor q, torch::Tensor w, torch::Tensor vol,
+    torch::Tensor pair_g, torch::Tensor acsr_off, torch::Tensor acsr_pair,
+    int64_t M) {
+  CHECK(PB); CHECK(q); CHECK(w); CHECK(vol);
+  auto f = torch::empty({(int64_t)M, 3}, PB.options());
+  const int threads = 128;
+  gather_kernel<<<((int)M * 32 + threads - 1) / threads, threads>>>(
+      PB.data_ptr<float>(), q.data_ptr<float>(), w.data_ptr<float>(),
+      vol.data_ptr<float>(), pair_g.data_ptr<int>(), acsr_off.data_ptr<int>(),
+      acsr_pair.data_ptr<int>(), f.data_ptr<float>(), (int)M);
+  return f;
+}
+
+std::vector<torch::Tensor> gather_bwd(
+    torch::Tensor gf, torch::Tensor PB, torch::Tensor q, torch::Tensor w,
+    torch::Tensor vol, torch::Tensor row_off, torch::Tensor pair_a,
+    torch::Tensor pair_g, int64_t N) {
+  CHECK(gf); CHECK(PB); CHECK(q); CHECK(w); CHECK(vol);
+  const int P = (int)w.size(0);
+  auto opts = PB.options();
+  auto gPB = torch::empty({(int64_t)N, 3, 3}, opts);
+  auto gw = torch::empty({P}, opts);
+  auto gq = torch::empty({P, 3}, opts);
+  const int t1 = 128;
+  gather_bwd_pb_kernel<<<((int)N * 32 + t1 - 1) / t1, t1>>>(
+      gf.data_ptr<float>(), q.data_ptr<float>(), w.data_ptr<float>(),
+      vol.data_ptr<float>(), row_off.data_ptr<int>(), pair_a.data_ptr<int>(),
+      gPB.data_ptr<float>(), (int)N);
+  const int t2 = 256;
+  gather_bwd_pair_kernel<<<(P + t2 - 1) / t2, t2>>>(
+      gf.data_ptr<float>(), PB.data_ptr<float>(), q.data_ptr<float>(),
+      w.data_ptr<float>(), vol.data_ptr<float>(), pair_a.data_ptr<int>(),
+      pair_g.data_ptr<int>(), gw.data_ptr<float>(), gq.data_ptr<float>(), P);
+  return {gPB, gw, gq};
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("skin", &sparse_skin, "Fused sparse-anchor skinning (CUDA, forward only)");
   m.def("force", &sparse_force, "Fused sparse-anchor elastic force (CUDA, forward only)");
   m.def("deform", &sparse_deform, "Shape-matching F and centroid (CUDA, forward only)");
+  m.def("deform_fwd", &deform_fwd, "Pair reduction to (centroid, A, S) (CUDA)");
+  m.def("deform_bwd", &deform_bwd, "Its backward, to (p, w, q) (CUDA)");
+  m.def("gather_fwd", &gather_fwd, "Scatter P@Binv onto anchor forces (CUDA)");
+  m.def("gather_bwd", &gather_bwd, "Its backward, to (PB, w, q) (CUDA)");
 }
