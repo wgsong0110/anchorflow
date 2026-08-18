@@ -83,6 +83,12 @@ ap.add_argument("--dagger_frames", type=int, default=25)
 ap.add_argument("--dagger_stride", type=int, default=3)
 ap.add_argument("--dagger_frac", type=float, default=0.5)
 ap.add_argument("--dagger_cap", type=float, default=3.0)
+ap.add_argument("--dagger_pool_max", type=int, default=512,
+                 help="states to keep, oldest evicted. Each is a full particle state, "
+                      "so an uncapped pool over a long run is tens of gigabytes. Held "
+                      "on the CPU in half precision and left out of the state file: it "
+                      "refills in a few collections, and writing a gigabyte every save "
+                      "would cost more than regenerating it.")
 ap.add_argument("--no_geom_init", action="store_true")
 ap.add_argument("--params", default="shape",
                  choices=["shape", "stiff", "all"],
@@ -410,17 +416,28 @@ def collect_dagger():
                 x, vx, F, C = fit.lift(p, v, cache)
                 ok = torch.isfinite(x).all() and x.min() > T.margin and \
                     x.max() < T.grid_lim - T.margin
-                if ok:
+                if ok and not args.fine_steps:
+                    # the coarse loss compares against a stored frame; the fine
+                    # one walks MPM alongside and needs no target, which also
+                    # saves forty MPM substeps per state collected
                     T._set(x, vx, F, C)
                     out = T._advance(1, args.dt_mult)
                     if out is None:
                         ok = False
                 if ok:
-                    POOL["x"].append(x.clone()); POOL["v"].append(vx.clone())
-                    POOL["tgt"].append(T.solver.export_particle_x_to_torch().clone())
+                    POOL["x"].append(x.to(torch.float16).cpu())
+                    POOL["v"].append(vx.to(torch.float16).cpu())
+                    if not args.fine_steps:
+                        POOL["tgt"].append(
+                            T.solver.export_particle_x_to_torch().to(torch.float16).cpu())
                     added += 1
                 else:
                     skipped += 1
+    # oldest out first, so the pool tracks where the simulator is now rather than
+    # where it was at the start
+    for k_ in POOL:
+        while len(POOL[k_]) > args.dagger_pool_max:
+            POOL[k_].pop(0)
             p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
     return added, skipped
 
@@ -485,7 +502,10 @@ def save_state(it, best):
                  "iter": it, "best": best,
                  "opt": opt.state_dict(), "grad_accum": grad_accum,
                  "rng": torch.get_rng_state(), "rng_cuda": torch.cuda.get_rng_state(),
-                 "pool": POOL, "c": args.c, "args": vars(args)}, STATE + ".tmp")
+                 # the pool stays out: it is a gigabyte of particle states that
+                 # refills in a few collections, so writing it every save would
+                 # cost more than regenerating it
+                 "c": args.c, "args": vars(args)}, STATE + ".tmp")
     os.replace(STATE + ".tmp", STATE)
     if args.r2:
         _mirror(STATE)
@@ -503,7 +523,7 @@ if args.resume and STATE:
         grad_accum = blob["grad_accum"].to(dev)
         torch.set_rng_state(blob["rng"].cpu()); torch.cuda.set_rng_state(blob["rng_cuda"].cpu())
         for k in POOL:
-            POOL[k] = [q.to(dev) for q in blob.get("pool", {}).get(k, [])]
+            POOL[k] = []          # not persisted; refills in a few collections
         start_it, best = blob["iter"] + 1, blob["best"]
         print(f"\n[resume] {STATE} at iteration {blob['iter']}, {fit.M} anchors, "
               f"best {best:.1f}%, {len(POOL['x'])} collected states")
@@ -548,7 +568,9 @@ for it in bar:
             # a DAgger state has one labelled frame after it and nothing more, so
             # it stays a single step whatever the unroll length is
             j = torch.randint(len(POOL["x"]), (1,)).item()
-            x0, v0, tgt = POOL["x"][j], POOL["v"][j], POOL["tgt"][j]
+            x0 = POOL["x"][j].to(dev, torch.float32)
+            v0 = POOL["v"][j].to(dev, torch.float32)
+            tgt = POOL["tgt"][j].to(dev, torch.float32) if POOL["tgt"] else None
         else:
             X, V = FIT[torch.randint(len(FIT), (1,)).item()]
             t = torch.randint(hi, (1,)).item()
