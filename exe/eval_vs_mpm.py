@@ -34,7 +34,10 @@ from anchorflow.streams import draw_impulse, rand_rot
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
 ap.add_argument("--config", required=True)
-ap.add_argument("--ckpt", nargs="+", required=True)
+ap.add_argument("--ckpt", nargs="+", default=[],
+                 help="students to score. Optional: scoring a fitted discretisation on "
+                      "its own is what says whether the fit worked, and it needs no "
+                      "student at all.")
 ap.add_argument("--dreamphysics", default="/workspace/DreamPhysics")
 ap.add_argument("--n_uniform", type=int, default=8)
 ap.add_argument("--n_field", type=int, default=8)
