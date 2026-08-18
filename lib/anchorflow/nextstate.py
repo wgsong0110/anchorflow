@@ -153,6 +153,12 @@ def net_from_ckpt(ck, device="cuda"):
                     n_static=0 if st is None else st.shape[-1],
                     n_embed=0 if em is None else em.shape[-1],
                     m_anchors=0 if em is None else em.shape[0]).to(device)
+    # a buffer registered as None is invisible to load_state_dict -- it reports
+    # the saved tensor as an unexpected key rather than filling it -- so the
+    # slot has to exist before loading. The values are overwritten immediately;
+    # only the shape matters here
+    if st is not None:
+        net.static = torch.zeros_like(st, device=device)
     net.load_state_dict(ck["model"])
     net.eval()
     return net
