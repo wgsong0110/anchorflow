@@ -561,7 +561,7 @@ for it in bar:
     frac = min(1.0, it / max(args.warmup, 1))
     hi = max(2, int(frac * (args.frames - 1)))
     cache = fit.prepare()
-    loss, pen, bad_sample = 0.0, 0.0, None
+    loss, pen, bad_sample, n_ok = 0.0, 0.0, None, 0
     for _ in range(args.batch):
         src = None
         if POOL["x"] and torch.rand(1).item() < args.dagger_frac:
@@ -591,7 +591,15 @@ for it in bar:
             bad_sample = (x0, v0)
         loss = loss + contrib
         pen = pen + cfl
-    loss, pen = loss / args.batch, pen / args.batch
+        n_ok += 1
+    if n_ok == 0:
+        # every sample in the batch started somewhere MPM will not answer for --
+        # a lifted state outside its grid, or a deformation gradient no material
+        # is in. Nothing to learn from, and dividing by the batch would leave a
+        # float where a tensor is expected
+        n_skip += 1
+        continue
+    loss, pen = loss / n_ok, pen / n_ok
     total = loss + args.lambda_cfl * pen
     if args.reg > 0:
         # measured against the anchor spacing and against unit scale, so one
