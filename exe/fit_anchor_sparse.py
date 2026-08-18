@@ -575,10 +575,14 @@ for it in bar:
                 b = rollout_error(CHK)
         if args.out and b < best:
             best = b
+            # args go in too: the runs that produced the fitted sets in use
+            # saved only parameters, so months later there was no way to tell
+            # what --iters, --reg or DAgger setting had produced them
             torch.save({"pos": fit.pos.detach().cpu(), "log_s": fit.log_s.detach().cpu(),
                          "quat": fit.quat.detach().cpu(),
                          "log_k": fit.log_k.detach().cpu(), "c": args.c, "iter": it,
-                         "eig_floor": args.eig_floor}, args.out)
+                         "eig_floor": args.eig_floor, "score": float(b),
+                         "args": vars(args)}, args.out)
         save_state(it, best)
     elif it % args.save_every == 0:
         save_state(it, best)
