@@ -1,0 +1,180 @@
+"""Does lib/mpmstep reproduce the reference solver, and is its adjoint right?
+
+Two questions, and the second matters more. A forward that drifts from the warp
+solver is visible in any trajectory; a wrong backward fits the discretisation to
+something else and shows up in no forward number at all.
+
+  forward   same initial state into both, N substeps, compare particle positions
+            and the deformation gradient. Exact equality is not on offer -- the
+            reference takes its rotation from an SVD and this takes it from a
+            Newton iteration, and the grid is accumulated in a different order --
+            so the question is whether they agree to float precision.
+
+  backward  against finite differences, parameter by parameter. This is also
+            where the term the kernel deliberately drops gets measured: the
+            adjoint does not carry a step's dependence on where the B-spline
+            weights land, so the position gradient is expected to disagree by
+            whatever that path is worth, while volume and the moduli should
+            match closely. Assuming which is which is exactly the mistake this
+            script exists to prevent.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+_lib = os.path.join(os.path.dirname(__file__), "..", "lib")
+sys.path.insert(0, _lib)
+
+import torch
+
+from anchorflow import scene_setup
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--ply", required=True)
+ap.add_argument("--config", required=True)
+ap.add_argument("--dreamphysics", default="/workspace/DreamPhysics")
+ap.add_argument("--n_particles", type=int, default=512)
+ap.add_argument("--n_grid", type=int, default=100)
+ap.add_argument("--substeps", type=int, default=20)
+ap.add_argument("--n_anchors", type=int, default=512)
+ap.add_argument("--K", type=int, default=8)
+ap.add_argument("--eig_floor", type=float, default=0.02)
+ap.add_argument("--eps", type=float, default=1e-3, help="finite-difference step")
+ap.add_argument("--n_fd", type=int, default=12, help="entries to check per parameter")
+ap.add_argument("--seed", type=int, default=3)
+args = ap.parse_args()
+
+sys.path.insert(0, args.dreamphysics)
+import warp as wp
+from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP
+
+import mpmstep
+from anchorflow.mpm_teacher import MPMTeacher
+
+if not mpmstep.HAVE_CUDA:
+    print("mpmstep has no CUDA extension built -- nothing to verify")
+    sys.exit(1)
+
+dev = "cuda"
+torch.manual_seed(args.seed)
+wp.init()
+sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev,
+                        frozen_weights=True, rot_fallback=True,
+                        eig_floor=args.eig_floor)
+T = MPMTeacher(sc)
+Nm = T.pos_m.shape[0]
+g = torch.Generator(device=dev).manual_seed(args.seed)
+idx = torch.randperm(Nm, device=dev, generator=g)[: args.n_particles].sort().values
+pos0 = T.pos_m[idx].contiguous()
+vol0 = (T.vol_m[idx] * (float(T.vol_m.sum()) / float(T.vol_m[idx].sum()))).contiguous()
+N = pos0.shape[0]
+print(f"[setup] {N} particles on a {args.n_grid}^3 grid, {args.substeps} substeps, "
+      f"dt {sc.sub_dt:g}")
+
+# ---- the reference, configured exactly as MPMTeacher does -------------------
+ref = MPM_Simulator_WARP(10)
+ref.load_initial_data_from_torch(pos0, vol0, torch.zeros((N, 6), device=dev),
+                                  n_grid=args.n_grid, grid_lim=T.grid_lim)
+cfg = sc.cfg
+mp = {k: cfg[k] for k in ("E", "nu", "density", "material") if k in cfg}
+mp.update({"n_grid": args.n_grid, "grid_lim": T.grid_lim, "g": cfg.get("g", [0, 0, 0]),
+           "grid_v_damping_scale": cfg.get("grid_v_damping_scale", 1.0)})
+if "additional_material_params" in cfg:
+    mp["additional_material_params"] = cfg["additional_material_params"]
+ref.set_parameters_dict(mp)
+ref.finalize_mu_lam()
+
+mu = torch.from_numpy(ref.mpm_model.mu.numpy()).to(dev).contiguous()
+lam = torch.from_numpy(ref.mpm_model.lam.numpy()).to(dev).contiguous()
+mass = torch.from_numpy(ref.mpm_state.particle_mass.numpy()).to(dev).contiguous()
+dx = float(T.grid_lim) / args.n_grid
+grav = torch.tensor(cfg.get("g", [0.0, 0.0, 0.0]), device=dev, dtype=torch.float32)
+fixed = torch.zeros(0, dtype=torch.uint8, device=dev)
+print(f"        mu {float(mu.min()):.4g}..{float(mu.max()):.4g}, "
+      f"mass {float(mass.mean()):.4g}, dx {dx:.5f}")
+
+# a state that is moving, so nothing is compared at rest
+v0 = torch.randn(N, 3, device=dev, generator=g) * 0.05
+C0 = torch.zeros(N, 9, device=dev)
+F0 = torch.eye(3, device=dev).reshape(1, 9).repeat(N, 1).contiguous()
+
+# ---- forward ---------------------------------------------------------------
+ref.import_particle_x_from_torch(pos0.clone())
+ref.import_particle_v_from_torch(v0.clone())
+ref.import_particle_F_from_torch(F0.clone())
+ref.import_particle_C_from_torch(C0.clone())
+for _ in range(args.substeps):
+    ref.p2g2p(None, sc.sub_dt, device=str(dev))
+x_ref = ref.export_particle_x_to_torch().clone()
+F_ref = ref.export_particle_F_to_torch().reshape(-1, 9).clone()
+
+with torch.no_grad():
+    x_k, v_k, C_k, F_k = mpmstep.rollout(
+        pos0.clone(), v0.clone(), C0.clone(), F0.clone(), vol0, mass, mu, lam,
+        grav, fixed, args.n_grid, dx, sc.sub_dt, args.substeps, checkpoint=False)
+
+
+def rel(a, b, name):
+    span = (b - pos0).norm(dim=-1).max().clamp(min=1e-12) if a.shape[-1] == 3 else b.abs().max()
+    d = (a - b).abs().max() / span.clamp(min=1e-20)
+    print(f"  {name:26} max {float(d):9.2e}")
+    return float(d)
+
+
+print("\n[forward] against the warp solver")
+d1 = rel(x_k, x_ref, "particle positions")
+d2 = rel(F_k, F_ref, "deformation gradient")
+fwd_ok = d1 < 5e-2 and d2 < 5e-2
+print(f"  {'':26} {'ok' if fwd_ok else 'DRIFTED'}")
+
+# ---- backward against finite differences ------------------------------------
+print("\n[backward] against finite differences, over "
+      f"{args.substeps} substeps")
+
+
+def loss_of(vol_, mu_, lam_, pos_):
+    x, v, C, F = mpmstep.rollout(
+        pos_, v0.clone(), C0.clone(), F0.clone(), vol_, mass, mu_, lam_,
+        grav, fixed, args.n_grid, dx, sc.sub_dt, args.substeps, checkpoint=False)
+    # something that touches positions and F both
+    return (x * x).sum() + 0.1 * (F * F).sum()
+
+
+params = {"volume": vol0, "mu": mu, "lam": lam, "position": pos0}
+tens = {k: t.clone().requires_grad_(True) for k, t in params.items()}
+loss = loss_of(tens["volume"], tens["mu"], tens["lam"], tens["position"])
+loss.backward()
+
+gi = torch.randperm(N, device=dev, generator=g)[: args.n_fd]
+for name in ("volume", "mu", "lam", "position"):
+    ana, num = [], []
+    for j in gi.tolist():
+        for comp in ([0, 1, 2] if name == "position" else [None]):
+            base = {k: t.detach().clone() for k, t in tens.items()}
+            e = args.eps * (float(base[name].abs().mean()) + 1e-12)
+            hi = base[name].clone(); lo = base[name].clone()
+            if comp is None:
+                hi[j] += e; lo[j] -= e
+                a = float(tens[name].grad[j])
+            else:
+                hi[j, comp] += e; lo[j, comp] -= e
+                a = float(tens[name].grad[j, comp])
+            with torch.no_grad():
+                f_hi = float(loss_of(*[hi if k == name else base[k]
+                                        for k in ("volume", "mu", "lam", "position")]))
+                f_lo = float(loss_of(*[lo if k == name else base[k]
+                                        for k in ("volume", "mu", "lam", "position")]))
+            ana.append(a); num.append((f_hi - f_lo) / (2 * e))
+    a_t = torch.tensor(ana); n_t = torch.tensor(num)
+    denom = n_t.abs().max().clamp(min=1e-20)
+    err = float((a_t - n_t).abs().max() / denom)
+    cos = float((a_t * n_t).sum() / (a_t.norm() * n_t.norm()).clamp(min=1e-20))
+    tag = "ok" if err < 0.05 else ("DROPPED TERM" if name == "position" else "WRONG")
+    print(f"  {name:10} rel err {err:8.3f}   cosine {cos:7.4f}   {tag}")
+
+print("\n  The position row is expected to disagree: the adjoint deliberately\n"
+       "  omits a step's dependence on where the B-spline weights land. Its\n"
+       "  cosine says how much of that gradient survives the omission, which is\n"
+       "  what decides whether rest positions can be fitted with this.")
