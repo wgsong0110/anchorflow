@@ -147,32 +147,33 @@ tens = {k: t.clone().requires_grad_(True) for k, t in params.items()}
 loss = loss_of(tens["volume"], tens["mu"], tens["lam"], tens["position"])
 loss.backward()
 
-gi = torch.randperm(N, device=dev, generator=g)[: args.n_fd]
+# A per-entry difference is below what float32 can resolve here: one particle's
+# volume is ~1e-5, so perturbing it moves a loss of order 1e3 by far less than
+# the arithmetic noise. The derivative along the analytical gradient aggregates
+# every entry instead, which makes the signal large enough to measure and tests
+# the whole vector rather than a sample of it.
 for name in ("volume", "mu", "lam", "position"):
-    ana, num = [], []
-    for j in gi.tolist():
-        for comp in ([0, 1, 2] if name == "position" else [None]):
-            base = {k: t.detach().clone() for k, t in tens.items()}
-            e = args.eps * (float(base[name].abs().mean()) + 1e-12)
-            hi = base[name].clone(); lo = base[name].clone()
-            if comp is None:
-                hi[j] += e; lo[j] -= e
-                a = float(tens[name].grad[j])
-            else:
-                hi[j, comp] += e; lo[j, comp] -= e
-                a = float(tens[name].grad[j, comp])
-            with torch.no_grad():
-                f_hi = float(loss_of(*[hi if k == name else base[k]
-                                        for k in ("volume", "mu", "lam", "position")]))
-                f_lo = float(loss_of(*[lo if k == name else base[k]
-                                        for k in ("volume", "mu", "lam", "position")]))
-            ana.append(a); num.append((f_hi - f_lo) / (2 * e))
-    a_t = torch.tensor(ana); n_t = torch.tensor(num)
-    denom = n_t.abs().max().clamp(min=1e-20)
-    err = float((a_t - n_t).abs().max() / denom)
-    cos = float((a_t * n_t).sum() / (a_t.norm() * n_t.norm()).clamp(min=1e-20))
+    gr = tens[name].grad
+    if gr is None or float(gr.norm()) == 0.0:
+        print(f"  {name:10} {'analytical gradient is exactly zero':>44}   WRONG")
+        continue
+    d = gr / gr.norm()
+    base = {k: t.detach().clone() for k, t in tens.items()}
+    # step scaled to the parameter, so it is a real perturbation in every case
+    e = args.eps * float(base[name].abs().mean())
+    hi = base[name] + e * d
+    lo = base[name] - e * d
+    with torch.no_grad():
+        f_hi = float(loss_of(*[hi if k == name else base[k]
+                                for k in ("volume", "mu", "lam", "position")]))
+        f_lo = float(loss_of(*[lo if k == name else base[k]
+                                for k in ("volume", "mu", "lam", "position")]))
+    num = (f_hi - f_lo) / (2 * e)
+    ana = float(gr.norm())          # d . grad = |grad|
+    err = abs(ana - num) / max(abs(num), 1e-20)
     tag = "ok" if err < 0.05 else ("DROPPED TERM" if name == "position" else "WRONG")
-    print(f"  {name:10} rel err {err:8.3f}   cosine {cos:7.4f}   {tag}")
+    print(f"  {name:10} analytic {ana:12.4g}   numeric {num:12.4g}   "
+          f"rel err {err:7.3f}   {tag}")
 
 print("\n  The position row is expected to disagree: the adjoint deliberately\n"
        "  omits a step's dependence on where the B-spline weights land. Its\n"
