@@ -706,7 +706,10 @@ for it in bar:
                 continue
             g_ = g_.detach().reshape(-1)
             c = float("nan")
-            if n in PREV_G:
+            # densify_and_prune changes the anchor count, and a gradient of a
+            # different length is a gradient for a different parameter set --
+            # there is no angle between them to report
+            if n in PREV_G and PREV_G[n].shape == g_.shape:
                 c = float((g_ * PREV_G[n]).sum()
                           / (g_.norm() * PREV_G[n].norm()).clamp(min=1e-30))
             PREV_G[n] = g_.clone()
