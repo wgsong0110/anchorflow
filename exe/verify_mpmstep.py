@@ -96,7 +96,10 @@ lam = torch.from_numpy(ref.mpm_model.lam.numpy()).to(dev).contiguous()
 mass = torch.from_numpy(ref.mpm_state.particle_mass.numpy()).to(dev).contiguous()
 dx = float(T.grid_lim) / args.n_grid
 grav = torch.tensor(cfg.get("g", [0.0, 0.0, 0.0]), device=dev, dtype=torch.float32)
+DAMP = float(cfg.get("grid_v_damping_scale", 1.0))
+DAMP = DAMP if DAMP < 1.0 else 1.0
 fixed = torch.zeros(0, dtype=torch.uint8, device=dev)
+print(f"        grid damping {DAMP}")
 print(f"        mu {float(mu.min()):.4g}..{float(mu.max()):.4g}, "
       f"mass {float(mass.mean()):.4g}, dx {dx:.5f}")
 
@@ -136,7 +139,8 @@ F_ref = ref.export_particle_F_to_torch().reshape(-1, 9).clone()
 with torch.no_grad():
     x_k, v_k, C_k, F_k = mpmstep.rollout(
         pos0.clone(), v0.clone(), C0.clone(), F0.clone(), vol0, mass, mu, lam,
-        grav, fixed, args.n_grid, dx, sc.sub_dt, args.substeps, checkpoint=False)
+        grav, fixed, args.n_grid, dx, sc.sub_dt, args.substeps, damp=DAMP,
+        checkpoint=False)
 
 
 def rel(a, b, name):
@@ -165,7 +169,7 @@ xr1, vr1, Cr1, Fr1 = ref_from((pos0, v0, C0, F0), 1)
 with torch.no_grad():
     xk1, vk1, Ck1, Fk1 = mpmstep.rollout(
         pos0.clone(), v0.clone(), C0.clone(), F0.clone(), vol0, mass, mu, lam,
-        grav, fixed, args.n_grid, dx, sc.sub_dt, 1, checkpoint=False)
+        grav, fixed, args.n_grid, dx, sc.sub_dt, 1, damp=DAMP, checkpoint=False)
 for nm, a_, b_ in (("position", xk1, xr1), ("velocity", vk1, vr1),
                     ("C", Ck1, Cr1), ("F", Fk1, Fr1)):
     d = float((a_ - b_).abs().max() / b_.abs().max().clamp(min=1e-20))
@@ -185,7 +189,8 @@ print("\n[backward] against finite differences, over "
 def loss_of(vol_, mu_, lam_, pos_):
     x, v, C, F = mpmstep.rollout(
         pos_, v0.clone(), C0.clone(), F0.clone(), vol_, mass, mu_, lam_,
-        grav, fixed, args.n_grid, dx, sc.sub_dt, args.substeps, checkpoint=False)
+        grav, fixed, args.n_grid, dx, sc.sub_dt, args.substeps, damp=DAMP,
+        checkpoint=False)
     # something that touches positions and F both
     return (x * x).sum() + 0.1 * (F * F).sum()
 
@@ -215,12 +220,19 @@ for name in ("volume", "mu", "lam", "position"):
     e = min(e, 0.25 * float(base[name].abs().mean()) / max(float(d.abs().mean()), 1e-20))
     hi = base[name] + e * d
     lo = base[name] - e * d
-    with torch.no_grad():
-        f_hi = float(loss_of(*[hi if k == name else base[k]
-                                for k in ("volume", "mu", "lam", "position")]))
-        f_lo = float(loss_of(*[lo if k == name else base[k]
-                                for k in ("volume", "mu", "lam", "position")]))
-    num = (f_hi - f_lo) / (2 * e)
+    num = float("nan")
+    for _ in range(8):
+        hi = base[name] + e * d
+        lo = base[name] - e * d
+        with torch.no_grad():
+            f_hi = float(loss_of(*[hi if k == name else base[k]
+                                    for k in ("volume", "mu", "lam", "position")]))
+            f_lo = float(loss_of(*[lo if k == name else base[k]
+                                    for k in ("volume", "mu", "lam", "position")]))
+        if f_hi == f_hi and f_lo == f_lo:
+            num = (f_hi - f_lo) / (2 * e)
+            break
+        e *= 0.5           # the step drove the simulation out of its domain
     ana = float(gr.norm())          # d . grad = |grad|
     err = abs(ana - num) / max(abs(num), 1e-20)
     tag = "ok" if err < 0.05 else ("DROPPED TERM" if name == "position" else "WRONG")

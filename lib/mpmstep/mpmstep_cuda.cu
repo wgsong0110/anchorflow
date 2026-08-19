@@ -159,15 +159,20 @@ __global__ void p2g_kernel(
       }
 }
 
+// normalise by mass, add gravity, and damp. The damping is a global scale on the
+// grid velocity that the reference applies between this and g2p -- ficus sets it
+// to 0.9999, which is small per step and not small over 2400 of them.
 __global__ void grid_kernel(float* __restrict__ grid_v,
                              const float* __restrict__ grid_m,
-                             const float* __restrict__ grav, long long n, float dt) {
+                             const float* __restrict__ grav, long long n, float dt,
+                             float damp) {
   long long g = (long long)blockIdx.x * blockDim.x + threadIdx.x;
   if (g >= n) return;
   float m = grid_m[g];
   if (m > 1e-15f) {
     float inv = 1.0f / m;
-    for (int a = 0; a < 3; ++a) grid_v[g * 3 + a] = grid_v[g * 3 + a] * inv + dt * grav[a];
+    for (int a = 0; a < 3; ++a)
+      grid_v[g * 3 + a] = (grid_v[g * 3 + a] * inv + dt * grav[a]) * damp;
   } else {
     for (int a = 0; a < 3; ++a) grid_v[g * 3 + a] = 0.f;
   }
@@ -257,7 +262,8 @@ std::vector<torch::Tensor> substep(
     torch::Tensor x, torch::Tensor v, torch::Tensor C, torch::Tensor F,
     torch::Tensor vol, torch::Tensor mass, torch::Tensor mu, torch::Tensor lam,
     torch::Tensor grav, torch::Tensor fixed,
-    int64_t G, double dx, double dt, int64_t polar_iters, double ridge) {
+    int64_t G, double dx, double dt, int64_t polar_iters, double ridge,
+    double damp) {
   CHECK(x); CHECK(v); CHECK(C); CHECK(F); CHECK(vol); CHECK(mass);
   CHECK(mu); CHECK(lam); CHECK(grav);
   const int N = x.size(0);
@@ -280,7 +286,7 @@ std::vector<torch::Tensor> substep(
   const int TG = 256;
   grid_kernel<<<(int)((n + TG - 1) / TG), TG>>>(
       grid_v.data_ptr<float>(), grid_m.data_ptr<float>(),
-      grav.data_ptr<float>(), n, (float)dt);
+      grav.data_ptr<float>(), n, (float)dt, (float)damp);
 
   auto x2 = torch::empty_like(x), v2 = torch::empty_like(v);
   auto C2 = torch::empty_like(C), F2 = torch::empty_like(F);
@@ -506,12 +512,13 @@ __global__ void g2p_bwd_kernel(
 
 __global__ void grid_bwd_kernel(
     const float* __restrict__ grid_v_in, const float* __restrict__ grid_m,
-    const float* __restrict__ g_out, float* __restrict__ g_in, long long n) {
+    const float* __restrict__ g_out, float* __restrict__ g_in, long long n,
+    float damp) {
   long long g = (long long)blockIdx.x * blockDim.x + threadIdx.x;
   if (g >= n) return;
   float m = grid_m[g];
   float inv = (m > 1e-15f) ? 1.0f / m : 0.0f;
-  for (int a = 0; a < 3; ++a) g_in[g * 3 + a] = g_out[g * 3 + a] * inv;
+  for (int a = 0; a < 3; ++a) g_in[g * 3 + a] = g_out[g * 3 + a] * inv * damp;
 }
 
 // p2g forward scatters, so its adjoint gathers -- the cheap direction, and no
@@ -570,7 +577,7 @@ std::vector<torch::Tensor> substep_backward(
     torch::Tensor stress, torch::Tensor grid_v, torch::Tensor grid_m,
     torch::Tensor vol, torch::Tensor mass, torch::Tensor mu, torch::Tensor lam,
     torch::Tensor fixed, int64_t G, double dx, double dt,
-    int64_t polar_iters, double ridge) {
+    int64_t polar_iters, double ridge, double damp) {
   const int N = x.size(0);
   auto o = x.options();
   const long long n = (long long)G * G * G;
@@ -590,7 +597,7 @@ std::vector<torch::Tensor> substep_backward(
   const int TG = 256;
   grid_bwd_kernel<<<(int)((n + TG - 1) / TG), TG>>>(
       grid_v.data_ptr<float>(), grid_m.data_ptr<float>(),
-      g_grid_out.data_ptr<float>(), g_grid_in.data_ptr<float>(), n);
+      g_grid_out.data_ptr<float>(), g_grid_in.data_ptr<float>(), n, (float)damp);
 
   auto gv = torch::zeros_like(v), gC = torch::zeros_like(C);
   auto gstress = torch::zeros_like(stress), gvol = torch::zeros_like(vol);

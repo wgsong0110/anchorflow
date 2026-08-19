@@ -37,38 +37,39 @@ except Exception:
 class _Substep(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, v, C, F, vol, mass, mu, lam, grav, fixed,
-                G, dx, dt, polar_iters, ridge):
+                G, dx, dt, polar_iters, ridge, damp):
         x2, v2, C2, F2, stress, grid_v, grid_m = _substep(
             x.contiguous(), v.contiguous(), C.contiguous(), F.contiguous(),
             vol.contiguous(), mass.contiguous(), mu.contiguous(), lam.contiguous(),
             grav.contiguous(), fixed, int(G), float(dx), float(dt),
-            int(polar_iters), float(ridge))
+            int(polar_iters), float(ridge), float(damp))
         ctx.save_for_backward(x, v, C, F, stress, grid_v, grid_m, vol, mass,
                                mu, lam, fixed)
-        ctx.cfg = (int(G), float(dx), float(dt), int(polar_iters), float(ridge))
+        ctx.cfg = (int(G), float(dx), float(dt), int(polar_iters), float(ridge),
+                    float(damp))
         return x2, v2, C2, F2
 
     @staticmethod
     def backward(ctx, gx2, gv2, gC2, gF2):
         x, v, C, F, stress, grid_v, grid_m, vol, mass, mu, lam, fixed = ctx.saved_tensors
-        G, dx, dt, pi, ridge = ctx.cfg
+        G, dx, dt, pi, ridge, damp = ctx.cfg
         gx, gv, gC, gF, gvol, gmu, glam = _substep_bwd(
             gx2.contiguous(), gv2.contiguous(), gC2.contiguous(), gF2.contiguous(),
             x, v, C, F, stress, grid_v, grid_m, vol, mass, mu, lam, fixed,
-            G, dx, dt, pi, ridge)
+            G, dx, dt, pi, ridge, damp)
         return (gx, gv, gC, gF, gvol, None, gmu, glam,
-                None, None, None, None, None, None, None)
+                None, None, None, None, None, None, None, None)
 
 
 def substep(x, v, C, F, vol, mass, mu, lam, grav, fixed, G, dx, dt,
-            polar_iters=6, ridge=1e-6):
+            polar_iters=6, ridge=1e-6, damp=1.0):
     """one substep: (x, v, C, F) -> (x, v, C, F), differentiable in x, vol, mu, lam"""
     return _Substep.apply(x, v, C, F, vol, mass, mu, lam, grav, fixed,
-                           G, dx, dt, polar_iters, ridge)
+                           G, dx, dt, polar_iters, ridge, damp)
 
 
 def rollout(x, v, C, F, vol, mass, mu, lam, grav, fixed, G, dx, dt, n,
-            polar_iters=6, ridge=1e-6, checkpoint=True):
+            polar_iters=6, ridge=1e-6, damp=1.0, checkpoint=True):
     """n substeps.
 
     Checkpointed by default: the grid alone is G^3 by three floats -- 12 MB at
@@ -80,7 +81,7 @@ def rollout(x, v, C, F, vol, mass, mu, lam, grav, fixed, G, dx, dt, n,
 
     def one(x_, v_, C_, F_):
         return substep(x_, v_, C_, F_, vol, mass, mu, lam, grav, fixed,
-                        G, dx, dt, polar_iters, ridge)
+                        G, dx, dt, polar_iters, ridge, damp)
 
     for _ in range(n):
         if checkpoint and torch.is_grad_enabled():
