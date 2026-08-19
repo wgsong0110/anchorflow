@@ -95,15 +95,12 @@ sc = scene_setup.build(args.ply, args.config, args.n_anchors, 8, device=dev,
                         frozen_weights=True, rot_fallback=True,
                         eig_floor=args.eig_floor)
 if not args.n_grid:
-    # the object fills a fraction of the domain, so size the grid from how many
-    # cells the particles would occupy rather than from the domain
-    _T = MPMTeacher(sc, n_grid=100)
-    _x = _T.pos_m
-    _ext = float((_x.max(0).values - _x.min(0).values).max())
-    _cells = max(1.0, args.n_coarse / max(args.per_cell, 1e-6))
-    _h = _ext / max(_cells ** (1.0 / 3.0), 1.0)
-    args.n_grid = max(8, int(round(2.0 / _h)))
-    del _T
+    # Measured, not derived. A formula that assumed the particles fill a cube
+    # picked 10 for 512 of them, four times too coarse: ficus is branches, and
+    # the cells they occupy are a thin subset of any box around them. The sweep
+    # in exe/probe_coarse_grid.py put the best grid for each count here.
+    args.n_grid = {512: 40, 2048: 64, 8192: 64, 32768: 100}.get(
+        min([512, 2048, 8192, 32768], key=lambda c: abs(c - args.n_coarse)), 40)
 T = MPMTeacher(sc, n_grid=args.n_grid)
 mat = T.mat
 Xfull = T.pos_m                       # canonical material positions
