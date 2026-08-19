@@ -50,6 +50,8 @@ ap.add_argument("--warm", type=int, default=400,
                  help="substeps to run before the check, so the state carries stress. "
                       "At F = I there is nothing for volume or the moduli to move.")
 ap.add_argument("--kick", type=float, default=4.0)
+ap.add_argument("--polar_iters", type=int, default=6)
+ap.add_argument("--ridge", type=float, default=1e-6)
 ap.add_argument("--seed", type=int, default=3)
 args = ap.parse_args()
 
@@ -171,7 +173,8 @@ def mine(state, n, perm=None):
     if perm is None:
         out = mpmstep.rollout(x_.clone(), v_.clone(), C_.clone(), F_.clone(),
                                vol0, mass, mu, lam, grav, fixed, args.n_grid, dx,
-                               sc.sub_dt, n, damp=DAMP, checkpoint=False)
+                               sc.sub_dt, n, damp=DAMP, polar_iters=args.polar_iters,
+                               ridge=args.ridge, checkpoint=False)
         return out
     inv = torch.argsort(perm)
     out = mpmstep.rollout(x_[perm].contiguous(), v_[perm].contiguous(),
@@ -179,7 +182,8 @@ def mine(state, n, perm=None):
                            vol0[perm].contiguous(), mass[perm].contiguous(),
                            mu[perm].contiguous(), lam[perm].contiguous(),
                            grav, fixed, args.n_grid, dx, sc.sub_dt, n,
-                           damp=DAMP, checkpoint=False)
+                           damp=DAMP, polar_iters=args.polar_iters,
+                           ridge=args.ridge, checkpoint=False)
     return tuple(t[inv].contiguous() for t in out)
 
 
