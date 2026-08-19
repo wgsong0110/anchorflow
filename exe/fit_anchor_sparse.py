@@ -155,6 +155,18 @@ ap.add_argument("--fine_end", type=int, default=0,
                       "short one cannot see and what the fit exists to remove; a short "
                       "one is cheap. Starting long and ending short spends the expensive "
                       "steps where the discretisation is still far off.")
+ap.add_argument("--lr_decay_at", type=int, default=0,
+                 help="drop every learning rate by --lr_decay_by at this iteration. "
+                      "Five fits have reached their best rollout between 125 and 250 "
+                      "and never improved after, whatever the regularisation or the "
+                      "length; if a smaller step keeps moving, that plateau is the "
+                      "optimiser's and not the discretisation's.")
+ap.add_argument("--lr_decay_by", type=float, default=0.1)
+ap.add_argument("--grad_log", default=None,
+                 help="write the gradient norm per parameter group, and the cosine "
+                      "between consecutive iterations, to this file. A cosine near "
+                      "zero means the gradient coming back through 480 stiff substeps "
+                      "is noise, which is a different problem from a bad objective.")
 ap.add_argument("--final_rollout", type=int, default=3,
                  help="impulses to roll out fully against MPM at the end")
 args = ap.parse_args()
@@ -571,8 +583,18 @@ if best is None:
 P0, S0, Q0 = fit.pos.detach().clone(), fit.log_s.detach().clone(), fit.quat.detach().clone()
 t0 = time.time()
 n_skip = 0
+GLOG = open(args.grad_log, "a") if args.grad_log else None
+if GLOG:
+    GLOG.write("# iter " + " ".join(f"|g_{n}| cos_{n}" for n in TRAIN) + "\n")
+PREV_G = {}
+
 bar = tqdm(range(start_it, args.iters + 1), desc="fit", ncols=90)
 for it in bar:
+    if args.lr_decay_at and it == args.lr_decay_at:
+        for gp in opt.param_groups:
+            gp["lr"] *= args.lr_decay_by
+        print(f"\n  [lr] it={it}: every rate multiplied by {args.lr_decay_by}",
+              flush=True)
     if it > start_it and args.refresh_every and it % args.refresh_every == 0:
         fit.refresh()
     if args.densify_every and it % args.densify_every == 0 and \
@@ -675,6 +697,22 @@ for it in bar:
             fit.clamp_()
         else:
             skipped = 1
+    if GLOG and not skipped:
+        parts = []
+        for n in TRAIN:
+            g_ = getattr(fit, n).grad
+            if g_ is None:
+                parts += ["nan", "nan"]
+                continue
+            g_ = g_.detach().reshape(-1)
+            c = float("nan")
+            if n in PREV_G:
+                c = float((g_ * PREV_G[n]).sum()
+                          / (g_.norm() * PREV_G[n].norm()).clamp(min=1e-30))
+            PREV_G[n] = g_.clone()
+            parts += [f"{float(g_.norm()):.6g}", f"{c:.4f}"]
+        GLOG.write(f"{it} " + " ".join(parts) + "\n")
+        GLOG.flush()
     n_skip += skipped
     if skipped and args.no_guards:
         # what a survivable run hides: which quantity went first, and whether the
