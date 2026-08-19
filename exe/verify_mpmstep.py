@@ -231,74 +231,81 @@ for target in [int(t) for t in args.warm_at]:
 print(f"\n  vs reference / vs reordering.  {'ok' if ok_fwd else 'FAILED'}")
 
 # ---- backward against finite differences ------------------------------------
-print("\n[backward] against finite differences, over "
-      f"{args.substeps} substeps")
+#
+# The obstacle here was resolution, not the adjoint. A particle's volume is about
+# 1e-5, and a loss of order 1e3 accumulated in float32 carries ~1e-4 of noise, so
+# any perturbation small enough to stay linear moved the loss by less than the
+# arithmetic could see -- and the numerical derivative came back with its sign
+# flipping between runs.
+#
+# Two changes make it measurable. The loss is reduced in float64, which removes
+# the summation noise (the kernel stays float32; only the reduction changes). And
+# the step is chosen from the analytical gradient so the predicted change clears
+# what remains, then checked at half that step: if the two disagree the
+# difference is not in the linear regime and says so, rather than being reported
+# as the kernel being wrong.
+print(f"\n[backward] against finite differences, {args.substeps} substeps from the "
+      f"deformed state")
+
+S0 = state
 
 
 def loss_of(vol_, mu_, lam_, pos_):
     x, v, C, F = mpmstep.rollout(
-        pos_, v0.clone(), C0.clone(), F0.clone(), vol_, mass, mu_, lam_,
+        pos_, S0[1].clone(), S0[2].clone(), S0[3].clone(), vol_, mass, mu_, lam_,
         grav, fixed, args.n_grid, dx, sc.sub_dt, args.substeps, damp=DAMP,
-        checkpoint=False)
-    # something that touches positions and F both
-    return (x * x).sum() + 0.1 * (F * F).sum()
+        polar_iters=args.polar_iters, ridge=args.ridge, checkpoint=False)
+    return (x.double() * x.double()).sum() + 0.1 * (F.double() * F.double()).sum()
 
 
 params = {"volume": vol0, "mu": mu, "lam": lam, "position": S0[0]}
-tens = {k: t.clone().requires_grad_(True) for k, t in params.items()}
+tens = {k: t.detach().clone().requires_grad_(True) for k, t in params.items()}
 loss = loss_of(tens["volume"], tens["mu"], tens["lam"], tens["position"])
 loss.backward()
+L0 = float(loss.detach())
 
-# A per-entry difference is below what float32 can resolve here: one particle's
-# volume is ~1e-5, so perturbing it moves a loss of order 1e3 by far less than
-# the arithmetic noise. The derivative along the analytical gradient aggregates
-# every entry instead, which makes the signal large enough to measure and tests
-# the whole vector rather than a sample of it.
+ok_bwd = True
 for name in ("volume", "mu", "lam", "position"):
     gr = tens[name].grad
     if gr is None or float(gr.norm()) == 0.0:
-        print(f"  {name:10} {'analytical gradient is exactly zero':>44}   WRONG")
+        print(f"  {name:10} the analytical gradient is exactly zero   WRONG")
+        ok_bwd = False
         continue
     d = gr / gr.norm()
     base = {k: t.detach().clone() for k, t in tens.items()}
-    # sized so the predicted change in the loss clears float32 noise. A step
-    # scaled to the PARAMETER does not: one particle's volume is 1e-5, and the
-    # loss it moves is far below the ~1e-4 the arithmetic can resolve
-    L0 = float(loss.detach())
-    e = args.eps * abs(L0) / max(float(gr.norm()), 1e-20)
-    e = min(e, 0.25 * float(base[name].abs().mean()) / max(float(d.abs().mean()), 1e-20))
-    hi = base[name] + e * d
-    lo = base[name] - e * d
-    num = float("nan")
-    for _ in range(8):
-        hi = base[name] + e * d
-        lo = base[name] - e * d
-        with torch.no_grad():
-            f_hi = float(loss_of(*[hi if k == name else base[k]
-                                    for k in ("volume", "mu", "lam", "position")]))
-            f_lo = float(loss_of(*[lo if k == name else base[k]
-                                    for k in ("volume", "mu", "lam", "position")]))
-        if f_hi == f_hi and f_lo == f_lo:
-            num = (f_hi - f_lo) / (2 * e)
-            break
-        e *= 0.5           # the step drove the simulation out of its domain
-    ana = float(gr.norm())          # d . grad = |grad|
-    err = abs(ana - num) / max(abs(num), 1e-20)
-    # and again at half the step: if the two numerical values disagree, the
-    # difference is not in the linear regime and says nothing about the adjoint
-    e2 = e * 0.5
-    with torch.no_grad():
-        h2 = float(loss_of(*[base[name] + e2 * d if k == name else base[k]
-                              for k in ("volume", "mu", "lam", "position")]))
-        l2 = float(loss_of(*[base[name] - e2 * d if k == name else base[k]
-                              for k in ("volume", "mu", "lam", "position")]))
-    num2 = (h2 - l2) / (2 * e2)
-    stable = abs(num - num2) <= 0.25 * max(abs(num), abs(num2), 1e-30)
-    tag = ("ok" if err < 0.08 else "WRONG") if stable else "FD UNRESOLVED"
-    print(f"  {name:10} analytic {ana:12.4g}   numeric {num:12.4g} / {num2:12.4g}   "
-          f"rel err {err:7.3f}   {tag}")
+    ana = float(gr.norm())                     # d . grad = |grad|
 
-print("\n  The position row is expected to disagree: the adjoint deliberately\n"
-       "  omits a step's dependence on where the B-spline weights land. Its\n"
-       "  cosine says how much of that gradient survives the omission, which is\n"
-       "  what decides whether rest positions can be fitted with this.")
+    def diff(e):
+        with torch.no_grad():
+            hi = float(loss_of(*[base[k] + e * d if k == name else base[k]
+                                  for k in ("volume", "mu", "lam", "position")]))
+            lo = float(loss_of(*[base[k] - e * d if k == name else base[k]
+                                  for k in ("volume", "mu", "lam", "position")]))
+        return (hi - lo) / (2 * e) if hi == hi and lo == lo else float("nan")
+
+    # aim for a change of args.eps of the loss, and shrink if that leaves the
+    # domain the simulation is defined on
+    e = args.eps * abs(L0) / max(ana, 1e-30)
+    num = float("nan")
+    for _ in range(10):
+        num = diff(e)
+        if num == num:
+            break
+        e *= 0.5
+    num2 = diff(0.5 * e)
+    err = abs(ana - num) / max(abs(num), 1e-30)
+    linear = (num == num and num2 == num2
+              and abs(num - num2) <= 0.2 * max(abs(num), abs(num2), 1e-30))
+    if not linear:
+        tag, good = "FD UNRESOLVED", False
+    else:
+        good = err < 0.08
+        tag = "ok" if good else "WRONG"
+    ok_bwd &= good
+    print(f"  {name:10} analytic {ana:12.5g}   numeric {num:12.5g} / {num2:12.5g}"
+          f"   rel err {err:7.4f}   {tag}")
+
+print(f"\n  {'ok' if ok_bwd else 'FAILED'} -- the loss is reduced in float64 so the "
+       f"difference is not\n  measuring the noise of its own summation; the kernel is "
+       f"float32 either way.")
+sys.exit(0 if (ok_fwd and ok_bwd) else 1)
