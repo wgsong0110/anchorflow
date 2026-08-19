@@ -43,6 +43,10 @@ ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--eig_floor", type=float, default=0.02)
 ap.add_argument("--eps", type=float, default=1e-3, help="finite-difference step")
 ap.add_argument("--n_fd", type=int, default=12, help="entries to check per parameter")
+ap.add_argument("--warm", type=int, default=400,
+                 help="substeps to run before the check, so the state carries stress. "
+                      "At F = I there is nothing for volume or the moduli to move.")
+ap.add_argument("--kick", type=float, default=4.0)
 ap.add_argument("--seed", type=int, default=3)
 args = ap.parse_args()
 
@@ -95,10 +99,28 @@ fixed = torch.zeros(0, dtype=torch.uint8, device=dev)
 print(f"        mu {float(mu.min()):.4g}..{float(mu.max()):.4g}, "
       f"mass {float(mass.mean()):.4g}, dx {dx:.5f}")
 
-# a state that is moving, so nothing is compared at rest
-v0 = torch.randn(N, 3, device=dev, generator=g) * 0.05
-C0 = torch.zeros(N, 9, device=dev)
-F0 = torch.eye(3, device=dev).reshape(1, 9).repeat(N, 1).contiguous()
+# A deformed state, not merely a moving one. From F = I the stress is zero, so
+# the loss has no dependence on volume or the moduli to measure and both come
+# back as noise -- the first version of this check reported the kernel wrong on
+# exactly that basis. The object is driven with the config's own impulse and run
+# forward first, so the state under test carries real stress.
+base_force = next(torch.tensor(bc["force"], device=dev)
+                  for bc in sc.cfg["boundary_conditions"]
+                  if bc["type"] == "particle_impulse")
+dv_all = sc.impulse_dv(base_force * args.kick)
+v_all = (T.w.unsqueeze(-1) * dv_all[T.idx]).sum(1)
+v_init = v_all[idx].contiguous()
+C_init = torch.zeros(N, 9, device=dev)
+F_init = torch.eye(3, device=dev).reshape(1, 9).repeat(N, 1).contiguous()
+with torch.no_grad():
+    pos0, v0, C0, F0 = mpmstep.rollout(
+        pos0, v_init, C_init, F_init, vol0, mass, mu, lam, grav, fixed,
+        args.n_grid, dx, sc.sub_dt, args.warm, checkpoint=False)
+pos0 = pos0.contiguous(); v0 = v0.contiguous()
+C0 = C0.contiguous(); F0 = F0.contiguous()
+Fdev = (F0.reshape(-1, 3, 3) - torch.eye(3, device=dev)).reshape(-1, 9).norm(dim=-1)
+print(f"        warmed {args.warm} substeps: |F - I| median {float(Fdev.median()):.4f}, "
+      f"max {float(Fdev.max()):.4f}")
 
 # ---- forward ---------------------------------------------------------------
 ref.import_particle_x_from_torch(pos0.clone())
