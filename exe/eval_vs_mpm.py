@@ -172,6 +172,22 @@ def run_floor(truth):
                         for t in range(truth.shape[0])])
 
 
+def run_floor_fit(truth):
+    """the same, through the FITTED anchors.
+
+    The floor above is the sampled set's -- 512 isotropic anchors -- and it was
+    being quoted as the limit for everything, including simulators built on a
+    fitted set with more anchors, each with its own orientation and extent. Those
+    are a different code, and how much of MPM they can carry is a different
+    number. No dynamics here either: every frame is compressed and rebuilt on its
+    own, so this is what the discretisation loses and nothing else.
+    """
+    cache = FITTED._cache
+    return torch.stack([FITTED.skin(FITTED.fit.project(truth[t], cache),
+                                     sc.pos.clone())[mat]
+                        for t in range(truth.shape[0])])
+
+
 SFIT = None
 if args.student_fit:
     from anchorflow.anchor_sparse import load_fitted
@@ -225,6 +241,7 @@ def run_fitted(force):
 
 rows = [("MPM projected (floor)", None), ("anchor simulator", None)]
 if FITTED is not None:
+    rows.insert(1, ("MPM projected, fitted set (floor)", None))
     rows.append(("fitted anchor simulator", None))
 for path in args.ckpt:
     ck = torch.load(path, map_location=dev, weights_only=False)
@@ -245,6 +262,8 @@ for name, net in rows:
         for i, truth in enumerate(truth_runs):
             if net is not None:
                 pred = run_net(net, FORCE[kind][i])
+            elif name.startswith("MPM projected, fitted"):
+                pred = run_floor_fit(truth)
             elif name.startswith("MPM"):
                 pred = run_floor(truth)
             elif name.startswith("fitted"):
@@ -273,6 +292,7 @@ if args.per_traj:
             line = f"    {i:>3} "
             for name, net in rows:
                 pred = run_net(net, FORCE[kind][i]) if net is not None else (
+                    run_floor_fit(truth) if name.startswith("MPM projected, fitted") else
                     run_floor(truth) if name.startswith("MPM") else
                     run_fitted(FORCE[kind][i]) if name.startswith("fitted") else
                     run_anchor(FORCE[kind][i]))
