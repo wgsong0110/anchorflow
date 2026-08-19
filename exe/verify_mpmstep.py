@@ -41,7 +41,8 @@ ap.add_argument("--substeps", type=int, default=20)
 ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--eig_floor", type=float, default=0.02)
-ap.add_argument("--eps", type=float, default=1e-3, help="finite-difference step")
+ap.add_argument("--eps", type=float, default=1e-3,
+                 help="target change in the loss, as a fraction of it")
 ap.add_argument("--n_fd", type=int, default=12, help="entries to check per parameter")
 ap.add_argument("--warm", type=int, default=400,
                  help="substeps to run before the check, so the state carries stress. "
@@ -145,6 +146,31 @@ def rel(a, b, name):
     return float(d)
 
 
+def ref_from(state, n):
+    x_, v_, C_, F_ = state
+    ref.import_particle_x_from_torch(x_.clone())
+    ref.import_particle_v_from_torch(v_.clone())
+    ref.import_particle_F_from_torch(F_.clone())
+    ref.import_particle_C_from_torch(C_.clone())
+    for _ in range(n):
+        ref.p2g2p(None, sc.sub_dt, device=str(dev))
+    return (ref.export_particle_x_to_torch().clone(),
+            ref.export_particle_v_to_torch().clone(),
+            ref.export_particle_C_to_torch().reshape(-1, 9).clone(),
+            ref.export_particle_F_to_torch().reshape(-1, 9).clone())
+
+
+print("\n[forward] one substep, from the same deformed state")
+xr1, vr1, Cr1, Fr1 = ref_from((pos0, v0, C0, F0), 1)
+with torch.no_grad():
+    xk1, vk1, Ck1, Fk1 = mpmstep.rollout(
+        pos0.clone(), v0.clone(), C0.clone(), F0.clone(), vol0, mass, mu, lam,
+        grav, fixed, args.n_grid, dx, sc.sub_dt, 1, checkpoint=False)
+for nm, a_, b_ in (("position", xk1, xr1), ("velocity", vk1, vr1),
+                    ("C", Ck1, Cr1), ("F", Fk1, Fr1)):
+    d = float((a_ - b_).abs().max() / b_.abs().max().clamp(min=1e-20))
+    print(f"  {nm:26} max {d:9.2e}   {'ok' if d < 1e-3 else 'DIFFERS'}")
+
 print("\n[forward] against the warp solver")
 d1 = rel(x_k, x_ref, "particle positions")
 d2 = rel(F_k, F_ref, "deformation gradient")
@@ -181,8 +207,12 @@ for name in ("volume", "mu", "lam", "position"):
         continue
     d = gr / gr.norm()
     base = {k: t.detach().clone() for k, t in tens.items()}
-    # step scaled to the parameter, so it is a real perturbation in every case
-    e = args.eps * float(base[name].abs().mean())
+    # sized so the predicted change in the loss clears float32 noise. A step
+    # scaled to the PARAMETER does not: one particle's volume is 1e-5, and the
+    # loss it moves is far below the ~1e-4 the arithmetic can resolve
+    L0 = float(loss.detach())
+    e = args.eps * abs(L0) / max(float(gr.norm()), 1e-20)
+    e = min(e, 0.25 * float(base[name].abs().mean()) / max(float(d.abs().mean()), 1e-20))
     hi = base[name] + e * d
     lo = base[name] - e * d
     with torch.no_grad():
