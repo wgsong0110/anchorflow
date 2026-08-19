@@ -51,7 +51,13 @@ ap.add_argument("--config", required=True)
 ap.add_argument("--dreamphysics", default="/workspace/DreamPhysics")
 ap.add_argument("--traj_cache", required=True, help="the cache carrying MPM's F and C")
 ap.add_argument("--n_coarse", type=int, default=512)
-ap.add_argument("--n_grid", type=int, default=100)
+ap.add_argument("--n_grid", type=int, default=0,
+                 help="grid resolution. Zero picks one from the particle count: MPM "
+                      "needs several particles per cell, and 512 particles on the "
+                      "reference's 100^3 leaves 0.075 of them per active cell, which "
+                      "diverges inside a rollout before anything is fitted.")
+ap.add_argument("--per_cell", type=float, default=4.0,
+                 help="target particles per occupied cell, when --n_grid is picked")
 ap.add_argument("--K", type=int, default=8, help="coarse particles each Gaussian follows")
 ap.add_argument("--unroll", type=int, default=12)
 ap.add_argument("--dt_mult", type=int, default=40)
@@ -88,6 +94,16 @@ torch.manual_seed(args.seed)
 sc = scene_setup.build(args.ply, args.config, args.n_anchors, 8, device=dev,
                         frozen_weights=True, rot_fallback=True,
                         eig_floor=args.eig_floor)
+if not args.n_grid:
+    # the object fills a fraction of the domain, so size the grid from how many
+    # cells the particles would occupy rather than from the domain
+    _T = MPMTeacher(sc, n_grid=100)
+    _x = _T.pos_m
+    _ext = float((_x.max(0).values - _x.min(0).values).max())
+    _cells = max(1.0, args.n_coarse / max(args.per_cell, 1e-6))
+    _h = _ext / max(_cells ** (1.0 / 3.0), 1.0)
+    args.n_grid = max(8, int(round(2.0 / _h)))
+    del _T
 T = MPMTeacher(sc, n_grid=args.n_grid)
 mat = T.mat
 Xfull = T.pos_m                       # canonical material positions
