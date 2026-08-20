@@ -381,6 +381,75 @@ class AnchorSparse(nn.Module):
         return p, v, pen / max(n, 1)
 
     # ---- moving between particles and anchors ------------------------------
+    # ---- inverting the decoder --------------------------------------------
+    #
+    # skin() is linear in the anchor positions, and its coefficients are scalars:
+    #
+    #   x_g = sum_a c_ga p_a + b_g,   c_ga = w_ga (1 + s_ga - S_g),
+    #   s_ga = q_ga . (Binv_g y_g),   S_g = sum_a w_ga s_ga,   y_g = Xc_g - rc_g
+    #
+    # (derivation: cc and A are both linear in p, F = A Binv + blocked, and
+    # A_g (Binv_g y_g) collapses to a scalar-weighted sum because q_ga enters
+    # only through its inner product with Binv_g y_g. At rest it checks out
+    # exactly: A = B, F = (B + eps I) Binv = I, and x = Xc.)
+    #
+    # So the map is C (x) I_3 with C sparse [N, M], and the projection that
+    # belongs with this decoder is its least-squares inverse rather than a local
+    # average -- which is the ADJOINT, and lands the anchors somewhere the
+    # simulator never goes: measured at 15x the internal stress of any state it
+    # reaches on its own (exe/probe_accel_residual.py).
+    #
+    # C^T C is [M, M], a few hundred on a side, and one factorisation serves both
+    # positions and velocities: the velocity decoder in lift() is the same map
+    # without the blocked term, so it shares C and takes b = 0.
+
+    @torch.no_grad()
+    def ls_factor(self, cache, ridge=1e-6):
+        """(Cholesky of C^T C over the free anchors, C, b) for this rest state"""
+        w, rc, q, Binv, blocked, _ = cache
+        y = self.Xc - rc                                    # [N,3]
+        z = torch.einsum("nij,nj->ni", Binv, y)             # [N,3]
+        s = (q * z[self.pair_g]).sum(-1)                    # [P]
+        S = torch.zeros(self.N, device=self.dev).index_add_(0, self.pair_g, w * s)
+        c = w * (1.0 + s - S[self.pair_g])                  # [P]
+        b = torch.einsum("nij,nj->ni", blocked, y)          # [N,3]
+
+        C = torch.sparse_coo_tensor(
+            torch.stack([self.pair_g, self.pair_a]), c,
+            (self.N, self.M), device=self.dev).coalesce()
+        G = torch.sparse.mm(C.t(), C).to_dense()            # [M,M]
+
+        free = ~self.fixed
+        Gf = G[free][:, free]
+        # a ridge on the diagonal: an anchor whose support fell to nothing leaves
+        # a zero row, and the scale is taken from the matrix so it does not
+        # depend on the units of the scene
+        Gf = Gf + ridge * Gf.diagonal().mean().clamp(min=1e-20) * torch.eye(
+            int(free.sum()), device=self.dev)
+        return torch.linalg.cholesky(Gf), C, b, free
+
+    @torch.no_grad()
+    def project_ls(self, x, cache, fac=None):
+        """MPM particles -> the anchor state whose DECODING is closest to them"""
+        L, C, b, free = self.ls_factor(cache) if fac is None else fac
+        rhs = x - b - torch.sparse.mm(
+            C, torch.where(self.fixed.unsqueeze(-1), self.pos, torch.zeros_like(self.pos)))
+        r = torch.sparse.mm(C.t(), rhs)[free]               # [free,3]
+        pf = torch.cholesky_solve(r, L)
+        p = self.pos.clone()
+        p[free] = pf
+        return p
+
+    @torch.no_grad()
+    def project_v_ls(self, vp, cache, fac=None):
+        """the same inverse for velocities: same C, and no constant term"""
+        L, C, b, free = self.ls_factor(cache) if fac is None else fac
+        r = torch.sparse.mm(C.t(), vp)[free]
+        vf = torch.cholesky_solve(r, L)
+        v = torch.zeros_like(self.pos)
+        v[free] = vf
+        return v
+
     @torch.no_grad()
     def project(self, x, cache):
         """MPM particles -> this anchor set, by weighted average of displacement"""
