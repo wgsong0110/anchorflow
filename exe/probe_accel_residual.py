@@ -233,6 +233,39 @@ def measure(coarse):
             mp / k, mt / k, ma / k, hi / k)
 
 
+@torch.no_grad()
+def self_accel(force):
+    """what this simulator's own force law produces on its OWN trajectory.
+
+    The control the two residuals above are meaningless without: if the force at
+    a projected MPM state is a hundred times what the simulator ever generates
+    for itself, the projection is putting the anchors somewhere they never go,
+    and no comparison made there says anything about the force law.
+    """
+    cache = fit.prepare()
+    w, rc, q, Binv, blocked, mass = cache
+    free = ~fit.fixed
+    p = fit.pos.detach().clone()
+    v = fit.impulse_dv(force, cache)
+    out = []
+    for f in range(args.frames + 1):
+        if f % args.every == 0:
+            a = (fit.force(p, w, rc, q, Binv, blocked) / mass.unsqueeze(-1))[free]
+            out.append(float(a.norm(dim=-1).median()))
+        if f == args.frames:
+            break
+        p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
+    return out
+
+
+print(f"[dt] the simulator integrates at {fit.dt:.2e}, MPM at {sc.sub_dt:.2e}\n")
+print(f"{'checkpoint':30} {'|a| on its own trajectory (median per anchor)':>50}")
+for which in (args.ckpt or ["untrained"]):
+    name = load(which)
+    rows = [self_accel(f_) for f_ in forces]
+    med = [sum(r[k] for r in rows) / len(rows) for k in range(len(rows[0]))]
+    print(f"{name[:30]:30} " + " ".join(f"{m:8.1f}" for m in med))
+
 for coarse in (False, True):
     print(f"\n=== target: {'one coarse frame (40 substeps)' if coarse else 'one substep'} ===")
     print(f"{'checkpoint':30} {'(a)rep':>9} {'(b)dyn':>10} {'cos':>7} {'ratio':>8} "
