@@ -139,14 +139,27 @@ with torch.no_grad():
 
 @torch.no_grad()
 def mpm_accel(state):
-    """MPM's own acceleration at one of its own states, per particle"""
+    """MPM's acceleration at one of its own states, on two time scales.
+
+    One substep is what a force law is compared against, but MPM's particle
+    velocity after one substep comes back off the grid, so the difference
+    carries the transfer's spatial smoothing as well as the force. Over a whole
+    coarse frame that noise averages out and what is left is the acceleration
+    the coarse simulator is actually asked to reproduce. Both are returned,
+    because whether they differ IS the measurement.
+    """
     x, v, F, C = (t.to(dev, torch.float32) for t in state)
     T._set(x.contiguous(), v.contiguous(), F.contiguous(), C.contiguous())
     T.solver.p2g2p(None, sc.sub_dt, device=T.wp_dev)
     if not T._in_domain():
         return None
-    v1 = T.solver.export_particle_v_to_torch()
-    return x, v, (v1 - v) / sc.sub_dt
+    a1 = (T.solver.export_particle_v_to_torch() - v) / sc.sub_dt
+    for _ in range(args.dt_mult - 1):
+        T.solver.p2g2p(None, sc.sub_dt, device=T.wp_dev)
+        if not T._in_domain():
+            return None
+    aN = (T.solver.export_particle_v_to_torch() - v) / (args.dt_mult * sc.sub_dt)
+    return x, v, a1, aN
 
 
 ACC = []
@@ -174,20 +187,30 @@ def decode(u, p, cache):
 
 
 @torch.no_grad()
-def measure():
+def measure(coarse):
+    """rep, dyn, cos, |a_anchor|/|a_mpm|, and the three magnitudes themselves.
+
+    The magnitudes are reported because a ratio of 750 and a cosine of 0.03 have
+    two very different explanations -- a force law that is wrong, or a target
+    that cancelled itself when it was averaged onto the anchors -- and only the
+    magnitudes tell them apart.
+    """
     cache = fit.prepare()
     w, rc, q, Binv, blocked, mass = cache
     free = ~fit.fixed
     rep = dyn = cos = ratio = 0.0
+    mp = mt = ma = 0.0
     n = 0
-    for x_c, v_c, a_c in ACC:
-        x = x_c.to(dev); a = a_c.to(dev)
+    for row in ACC:
+        x = row[0].to(dev)
+        a = row[3 if coarse else 2].to(dev)
         p = fit.project(x, cache)
         ua = fit.project_v(a, cache)                      # MPM's acceleration, on anchors
 
         # (a) can the anchors hold it at all
         back = decode(ua, p, cache)
-        rep += float((back - a).norm(dim=-1).mean() / a.norm(dim=-1).mean().clamp(min=1e-20))
+        amag = a.norm(dim=-1).mean().clamp(min=1e-20)
+        rep += float((back - a).norm(dim=-1).mean() / amag)
 
         # (b) does the force law predict it
         f = fit.force(p, w, rc, q, Binv, blocked)
@@ -196,14 +219,21 @@ def measure():
         dyn += float((aa - tt).norm(dim=-1).mean() / tt.norm(dim=-1).mean().clamp(min=1e-20))
         cos += float((aa * tt).sum() / (aa.norm() * tt.norm()).clamp(min=1e-20))
         ratio += float(aa.norm() / tt.norm().clamp(min=1e-20))
+        mp += float(amag)
+        mt += float(tt.norm(dim=-1).mean())
+        ma += float(aa.norm(dim=-1).mean())
         n += 1
     k = max(n, 1)
-    return 100 * rep / k, 100 * dyn / k, cos / k, ratio / k
+    return (100 * rep / k, 100 * dyn / k, cos / k, ratio / k,
+            mp / k, mt / k, ma / k)
 
 
-print(f"{'checkpoint':36} {'(a) 표현':>10} {'(b) 동역학':>11} "
-      f"{'cos':>7} {'|a|비':>7}")
-for which in (args.ckpt or ["untrained"]):
-    name = load(which)
-    rep, dyn, cos, ratio = measure()
-    print(f"{name[:36]:36} {rep:9.2f}% {dyn:10.2f}% {cos:7.3f} {ratio:7.3f}")
+for coarse in (False, True):
+    print(f"\n=== target: {'one coarse frame (40 substeps)' if coarse else 'one substep'} ===")
+    print(f"{'checkpoint':30} {'(a)rep':>9} {'(b)dyn':>11} {'cos':>7} {'ratio':>9} "
+          f"{'|a_mpm|':>10} {'|a_proj|':>10} {'|a_anc|':>10}")
+    for which in (args.ckpt or ["untrained"]):
+        name = load(which)
+        rep, dyn, cos, ratio, mp, mt, ma = measure(coarse)
+        print(f"{name[:30]:30} {rep:8.2f}% {dyn:10.2f}% {cos:7.3f} {ratio:9.2f} "
+              f"{mp:10.3e} {mt:10.3e} {ma:10.3e}")
