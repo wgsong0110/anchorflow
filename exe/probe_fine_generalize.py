@@ -155,8 +155,10 @@ def truth(state):
         T.solver.p2g2p(None, sc.sub_dt, device=T.wp_dev)
         if not T._in_domain():
             return None
-        out.append(T.solver.export_particle_x_to_torch().clone())
-    return x, torch.stack(out)
+        out.append(T.solver.export_particle_x_to_torch().to(torch.float16).cpu())
+    # kept on the CPU in half: twelve substeps of 171k particles is 25 MB a
+    # state in float32, and this runs beside a fit that owns most of the card
+    return x.to(torch.float16).cpu(), torch.stack(out)
 
 
 TRUTH = []
@@ -174,7 +176,9 @@ def measure():
     cache = fit.prepare()
     acc = torch.zeros(args.n_sub, device=dev)
     n = 0
-    for state, x0, tgt in TRUTH:
+    for state, x0_c, tgt_c in TRUTH:
+        x0 = x0_c.to(dev, torch.float32)
+        tgt = tgt_c.to(dev, torch.float32)
         x = state[0].to(dev, torch.float32)
         v = state[1].to(dev, torch.float32)
         p, vv = fit.project(x, cache), fit.project_v(v, cache)
