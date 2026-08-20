@@ -155,10 +155,12 @@ def truth(state):
         T.solver.p2g2p(None, sc.sub_dt, device=T.wp_dev)
         if not T._in_domain():
             return None
-        out.append(T.solver.export_particle_x_to_torch().to(torch.float16).cpu())
-    # kept on the CPU in half: twelve substeps of 171k particles is 25 MB a
-    # state in float32, and this runs beside a fit that owns most of the card
-    return x.to(torch.float16).cpu(), torch.stack(out)
+        out.append(T.solver.export_particle_x_to_torch().cpu())
+    # float32, and on the CPU because this runs beside a fit that owns most of
+    # the card. NOT half: one substep moves a particle by about 1e-7 of a 0.6
+    # span, and half has no digits left at 0.5 to hold that -- the displacement
+    # rounds to exactly zero and every error divided by it goes to infinity.
+    return x.cpu(), torch.stack(out)
 
 
 TRUTH = []
@@ -171,10 +173,23 @@ print(f"[data] {len(TRUTH)} states MPM would continue from\n")
 
 
 @torch.no_grad()
-def measure():
-    """per-substep error, averaged over states, in percent"""
+def measure(frozen=False):
+    """per-substep error, averaged over states, against two rulers.
+
+    running   -- how far MPM has moved by THAT substep. What the fine loss
+                 trained against, and it grows by three orders of magnitude
+                 across the window, so an early substep is scored on almost
+                 nothing.
+    window    -- how far MPM moves over the whole twelve. Constant across the
+                 window, so the numbers can be read against each other.
+
+    With frozen, the simulator is replaced by doing nothing at all: the anchors
+    never move. Against the window ruler that ends at 100% by construction, and
+    it is the line a simulator has to beat to be worth running.
+    """
     cache = fit.prepare()
     acc = torch.zeros(args.n_sub, device=dev)
+    accw = torch.zeros(args.n_sub, device=dev)
     n = 0
     for state, x0_c, tgt_c in TRUTH:
         x0 = x0_c.to(dev, torch.float32)
@@ -182,31 +197,49 @@ def measure():
         x = state[0].to(dev, torch.float32)
         v = state[1].to(dev, torch.float32)
         p, vv = fit.project(x, cache), fit.project_v(v, cache)
-        row = []
+        span = (tgt[-1] - x0).norm(dim=-1).mean().clamp(min=1e-12)
+        row, roww = [], []
         for k in range(args.n_sub):
-            p, vv, _ = fit.rollout(p, vv, 1, cache)
-            got = fit.gaussian_pos(p, cache)
-            d = (tgt[k] - x0).norm(dim=-1).mean().clamp(min=1e-12)
-            row.append((got - tgt[k]).norm(dim=-1).mean() / d)
-        r = torch.stack(row)
+            if frozen:
+                got = x0
+            else:
+                p, vv, _ = fit.rollout(p, vv, 1, cache)
+                got = fit.gaussian_pos(p, cache)
+            e = (got - tgt[k]).norm(dim=-1).mean()
+            row.append(e / (tgt[k] - x0).norm(dim=-1).mean().clamp(min=1e-12))
+            roww.append(e / span)
+        r, rw = torch.stack(row), torch.stack(roww)
         if torch.isfinite(r).all():
             acc += r
+            accw += rw
             n += 1
-    return 100 * acc / max(n, 1), n
+    return 100 * acc / max(n, 1), 100 * accw / max(n, 1), n
 
 
-print(f"{'checkpoint':38} {'sub 1':>8} {'sub 4':>8} {'sub 8':>8} "
-      f"{'sub 12':>8} {'mean':>8}  states")
 rows = {}
+load("untrained")
+_, w, n = measure(frozen=True)
+rows["frozen (no motion)"] = w
+print(f"[baseline] doing nothing costs {w[0]:.1f}% at substep 1 and "
+      f"{w[-1]:.1f}% at substep 12, against the window\n")
+
+print(f"{'checkpoint':34} {'sub 1':>8} {'sub 4':>8} {'sub 8':>8} "
+      f"{'sub 12':>8} {'mean':>8}   (% of the twelve-substep window)")
+run = {}
 for which in (args.ckpt or ["untrained"]):
     name = load(which)
-    curve, n = measure()
-    rows[which] = curve
-    print(f"{name[:38]:38} {curve[0]:8.2f} {curve[3]:8.2f} {curve[7]:8.2f} "
-          f"{curve[-1]:8.2f} {curve.mean():8.2f}  {n}")
+    r, w, n = measure()
+    rows[os.path.basename(which)] = w
+    run[os.path.basename(which)] = r
+    print(f"{name[:34]:34} {w[0]:8.2f} {w[3]:8.2f} {w[7]:8.2f} "
+          f"{w[-1]:8.2f} {w.mean():8.2f}   {n} states")
 
-if len(rows) > 1:
-    print("\nper substep, in full:")
-    print(f"{'substep':>8} " + " ".join(f"{os.path.basename(k)[:14]:>14}" for k in rows))
-    for k in range(args.n_sub):
-        print(f"{k + 1:>8} " + " ".join(f"{v[k]:14.2f}" for v in rows.values()))
+print("\nper substep, against the window:")
+print(f"{'substep':>8} " + " ".join(f"{k[:18]:>18}" for k in rows))
+for k in range(args.n_sub):
+    print(f"{k + 1:>8} " + " ".join(f"{v[k]:18.2f}" for v in rows.values()))
+
+print("\nper substep, against the running ruler the fine loss used:")
+print(f"{'substep':>8} " + " ".join(f"{k[:18]:>18}" for k in run))
+for k in range(args.n_sub):
+    print(f"{k + 1:>8} " + " ".join(f"{v[k]:18.2f}" for v in run.values()))
