@@ -157,7 +157,13 @@ def measure():
     n = 0
     for x_c in STATES:
         x = x_c.to(dev)
-        moved = (x - fit.Xc).norm(dim=-1).mean().clamp(min=1e-12)
+        # the rest state is in the list and it has not moved: normalising by its
+        # own displacement divides by zero. Skipped, and the ruler is the
+        # largest displacement in the state rather than the mean, so a state
+        # that has barely started is not scored on almost nothing.
+        moved = (x - fit.Xc).norm(dim=-1).max()
+        if float(moved) < 1e-4:
+            continue
         for tag, p in (("avg", fit.project(x, cache)),
                         ("ls", fit.project_ls(x, cache, fac))):
             e = float((fit.gaussian_pos(p, cache) - x).norm(dim=-1).mean() / moved)
@@ -168,6 +174,7 @@ def measure():
             else:
                 r_ls += e; s_ls += a
         n += 1
+    assert n, "every state was at rest"
     k = max(n, 1)
     own = sum(own_stress(f_) for f_ in forces) / len(forces)
     return (100 * r_avg / k, 100 * r_ls / k, s_avg / k, s_ls / k, own,
