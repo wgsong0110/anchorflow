@@ -199,7 +199,7 @@ def measure(coarse):
     w, rc, q, Binv, blocked, mass = cache
     free = ~fit.fixed
     rep = dyn = cos = ratio = 0.0
-    mp = mt = ma = 0.0
+    mp = mt = ma = hi = 0.0
     n = 0
     for row in ACC:
         x = row[0].to(dev)
@@ -216,24 +216,29 @@ def measure(coarse):
         f = fit.force(p, w, rc, q, Binv, blocked)
         aa = (f / mass.unsqueeze(-1))[free]
         tt = ua[free]
-        dyn += float((aa - tt).norm(dim=-1).mean() / tt.norm(dim=-1).mean().clamp(min=1e-20))
-        cos += float((aa * tt).sum() / (aa.norm() * tt.norm()).clamp(min=1e-20))
-        ratio += float(aa.norm() / tt.norm().clamp(min=1e-20))
+        # per anchor, then the median: a handful of anchors sitting on a nearly
+        # degenerate neighbourhood carry forces two orders above the rest, and
+        # any mean or global dot product is a report about those few
+        na, nt = aa.norm(dim=-1), tt.norm(dim=-1)
+        dyn += float(((aa - tt).norm(dim=-1) / nt.clamp(min=1e-20)).median())
+        cos += float(((aa * tt).sum(-1) / (na * nt).clamp(min=1e-20)).median())
+        ratio += float((na / nt.clamp(min=1e-20)).median())
         mp += float(amag)
-        mt += float(tt.norm(dim=-1).mean())
-        ma += float(aa.norm(dim=-1).mean())
+        mt += float(nt.median())
+        ma += float(na.median())
+        hi += float(na.quantile(0.99) / na.median().clamp(min=1e-20))
         n += 1
     k = max(n, 1)
     return (100 * rep / k, 100 * dyn / k, cos / k, ratio / k,
-            mp / k, mt / k, ma / k)
+            mp / k, mt / k, ma / k, hi / k)
 
 
 for coarse in (False, True):
     print(f"\n=== target: {'one coarse frame (40 substeps)' if coarse else 'one substep'} ===")
-    print(f"{'checkpoint':30} {'(a)rep':>9} {'(b)dyn':>11} {'cos':>7} {'ratio':>9} "
-          f"{'|a_mpm|':>10} {'|a_proj|':>10} {'|a_anc|':>10}")
+    print(f"{'checkpoint':30} {'(a)rep':>9} {'(b)dyn':>10} {'cos':>7} {'ratio':>8} "
+          f"{'|a_mpm|':>10} {'|a_proj|':>10} {'|a_anc|':>10} {'p99/med':>8}")
     for which in (args.ckpt or ["untrained"]):
         name = load(which)
-        rep, dyn, cos, ratio, mp, mt, ma = measure(coarse)
-        print(f"{name[:30]:30} {rep:8.2f}% {dyn:10.2f}% {cos:7.3f} {ratio:9.2f} "
-              f"{mp:10.3e} {mt:10.3e} {ma:10.3e}")
+        rep, dyn, cos, ratio, mp, mt, ma, hi = measure(coarse)
+        print(f"{name[:30]:30} {rep:8.2f}% {dyn:9.2f}% {cos:7.3f} {ratio:8.2f} "
+              f"{mp:10.3e} {mt:10.3e} {ma:10.3e} {hi:8.1f}")
