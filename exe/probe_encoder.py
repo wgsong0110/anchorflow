@@ -121,7 +121,19 @@ with torch.no_grad():
         out = collect(f_)
         if out is not None:
             STATES += out
-print(f"[data] {len(STATES)} held-out states, seed {args.seed}\n")
+print(f"[data] {len(STATES)} held-out states, seed {args.seed}")
+_lo, _hi = fit.Xc.min(0).values, fit.Xc.max(0).values
+_ctr = fit.Xc.mean(0)
+print(f"[geom] bbox min  {_lo[0]:.4f} {_lo[1]:.4f} {_lo[2]:.4f}")
+print(f"[geom] bbox max  {_hi[0]:.4f} {_hi[1]:.4f} {_hi[2]:.4f}")
+print(f"[geom] bbox size {(_hi-_lo)[0]:.4f} {(_hi-_lo)[1]:.4f} {(_hi-_lo)[2]:.4f}   "
+      f"diagonal {(_hi-_lo).norm():.4f}")
+print(f"[geom] centroid  {_ctr[0]:.4f} {_ctr[1]:.4f} {_ctr[2]:.4f}")
+_d = (fit.Xc - _ctr).abs()
+print(f"[geom] |x-centroid|  mean {_d.mean(0)[0]:.4f} {_d.mean(0)[1]:.4f} {_d.mean(0)[2]:.4f}"
+      f"   max {_d.max(0).values[0]:.4f} {_d.max(0).values[1]:.4f} {_d.max(0).values[2]:.4f}")
+print(f"[geom] std       {fit.Xc.std(0)[0]:.4f} {fit.Xc.std(0)[1]:.4f} {fit.Xc.std(0)[2]:.4f}")
+print(f"[geom] {fit.N} material Gaussians, anchor spacing {sc.sim.radius:.4f}\n")
 
 
 @torch.no_grad()
@@ -154,6 +166,7 @@ def measure():
     rest_ls = float((fit.project_ls(fit.Xc, cache, fac) - fit.pos).abs().max())
 
     r_avg = r_ls = s_avg = s_ls = 0.0
+    abs_avg = abs_ls = moved_abs = 0.0
     n = 0
     for x_c in STATES:
         x = x_c.to(dev)
@@ -166,25 +179,27 @@ def measure():
             continue
         for tag, p in (("avg", fit.project(x, cache)),
                         ("ls", fit.project_ls(x, cache, fac))):
-            e = float((fit.gaussian_pos(p, cache) - x).norm(dim=-1).mean() / moved)
+            ae = float((fit.gaussian_pos(p, cache) - x).norm(dim=-1).mean())
+            e = ae / float(moved)
             a = float((fit.force(p, w, rc, q, Binv, blocked)
                        / mass.unsqueeze(-1))[free].norm(dim=-1).median())
             if tag == "avg":
-                r_avg += e; s_avg += a
+                r_avg += e; s_avg += a; abs_avg += ae
             else:
-                r_ls += e; s_ls += a
+                r_ls += e; s_ls += a; abs_ls += ae
+        moved_abs += float(moved)
         n += 1
     assert n, "every state was at rest"
     k = max(n, 1)
     own = sum(own_stress(f_) for f_ in forces) / len(forces)
     return (100 * r_avg / k, 100 * r_ls / k, s_avg / k, s_ls / k, own,
-            rest_avg, rest_ls)
+            rest_avg, rest_ls, abs_avg / k, abs_ls / k, moved_abs / k)
 
 
-print(f"{'checkpoint':30} {'recon avg':>10} {'recon LS':>9} | "
-      f"{'stress avg':>11} {'stress LS':>10} {'own':>8} | {'rest avg':>9} {'rest LS':>9}")
+print(f"{'checkpoint':26} {'|err| avg':>10} {'|err| LS':>10} {'MPM moved':>10} | "
+      f"{'rel avg':>8} {'rel LS':>8} | {'stress avg':>10} {'stress LS':>9} {'own':>7}")
 for which in (args.ckpt or ["untrained"]):
     name = load(which)
-    ra, rl, sa, sl, own, qa, ql = measure()
-    print(f"{name[:30]:30} {ra:9.2f}% {rl:8.2f}% | {sa:11.1f} {sl:10.1f} {own:8.1f} | "
-          f"{qa:9.2e} {ql:9.2e}")
+    ra, rl, sa, sl, own, qa, ql, aa, al, mv = measure()
+    print(f"{name[:26]:26} {aa:10.3e} {al:10.3e} {mv:10.3e} | "
+          f"{ra:7.2f}% {rl:7.2f}% | {sa:10.1f} {sl:9.1f} {own:7.1f}")
