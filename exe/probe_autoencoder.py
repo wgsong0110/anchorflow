@@ -53,7 +53,11 @@ ap.add_argument("--dt_mult", type=int, default=40)
 ap.add_argument("--every", type=int, default=5)
 ap.add_argument("--impulse_range", type=float, default=10.0)
 ap.add_argument("--dims", default="3,8,16,32")
-ap.add_argument("--hidden", type=int, default=64)
+ap.add_argument("--hidden", type=int, default=128)
+ap.add_argument("--w_F", type=float, default=1.0,
+                 help="how much the code is asked to spend on F rather than on x. "
+                      "At 1.0 it gives away the position accuracy shape matching "
+                      "already had; the question here is about F.")
 ap.add_argument("--steps", type=int, default=1500)
 ap.add_argument("--lr", type=float, default=3e-3)
 ap.add_argument("--seed", type=int, default=777)
@@ -197,7 +201,8 @@ def run(d):
         s = TRAIN[torch.randint(len(TRAIN), (1,)).item()]
         x, F = s[0].to(dev).float(), s[1].to(dev).float()
         xh, Fh = net.decode(net.encode(x, F))
-        loss = ((xh - x) / XS).norm(dim=-1).mean() + ((Fh - F) / FS).norm(dim=-1).mean()
+        loss = ((xh - x) / XS).norm(dim=-1).mean() \
+            + args.w_F * ((Fh - F) / FS).norm(dim=-1).mean()
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step(); sch.step()
