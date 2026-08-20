@@ -63,6 +63,11 @@ ap.add_argument("--lr", type=float, default=3e-3)
 ap.add_argument("--seed", type=int, default=777)
 ap.add_argument("--cache", default="/workspace/ae_states.pt")
 ap.add_argument("--save", default=None, help="write the trained code here")
+ap.add_argument("--dec", default="pair", choices=("pair", "gauss"),
+                 help="pair: an MLP per (Gaussian, anchor) pair -- 3.3M rows, and "
+                      "the runtime cost of every rendered frame. gauss: gather the "
+                      "anchor codes into moments first, then one MLP per Gaussian "
+                      "-- 171k rows, twenty times fewer.")
 args = ap.parse_args()
 
 sys.path.insert(0, args.dreamphysics)
@@ -169,13 +174,19 @@ QN = (q / sc.sim.radius).detach()
 class AE(nn.Module):
     """encode per-Gaussian state onto anchors, decode it back through the same pairs"""
 
-    def __init__(self, d, h):
+    def __init__(self, d, h, dec="pair"):
         super().__init__()
         self.enc = nn.Sequential(nn.Linear(12 + 3, h), nn.SiLU(),
                                   nn.Linear(h, h), nn.SiLU(), nn.Linear(h, d))
-        self.dec = nn.Sequential(nn.Linear(d + 3, h), nn.SiLU(),
+        # per pair the decoder sees a code and the direction to it together, and
+        # can treat them jointly. Per Gaussian the sum happens before any
+        # nonlinearity, so the direction has to survive it: the moments carry it.
+        # The second moment is the same statistic shape matching builds F from,
+        # sum_a w (p_a - pbar) q^T, so nothing new is being asked of the code.
+        n_in = (d + 3) if dec == "pair" else (d + 3 * d)
+        self.dec = nn.Sequential(nn.Linear(n_in, h), nn.SiLU(),
                                   nn.Linear(h, h), nn.SiLU(), nn.Linear(h, 12))
-        self.d = d
+        self.d, self.mode = d, dec
 
     def encode(self, x, F):
         f = torch.cat([(x - fit.Xc) / XS, (F - EYE9) / FS], -1)      # [N,12]
@@ -187,9 +198,17 @@ class AE(nn.Module):
         return z / den.unsqueeze(-1)
 
     def decode(self, z):
-        o = self.dec(torch.cat([z[fit.pair_a], QN], -1))              # [P,12]
-        y = torch.zeros(N, 12, device=dev).index_add_(
-            0, fit.pair_g, w.unsqueeze(-1) * o)
+        if self.mode == "pair":
+            o = self.dec(torch.cat([z[fit.pair_a], QN], -1))          # [P,12]
+            y = torch.zeros(N, 12, device=dev).index_add_(
+                0, fit.pair_g, w.unsqueeze(-1) * o)
+        else:
+            wz = w.unsqueeze(-1) * z[fit.pair_a]                      # [P,d]
+            m1 = torch.zeros(N, self.d, device=dev).index_add_(0, fit.pair_g, wz)
+            m2 = torch.zeros(N, self.d * 3, device=dev).index_add_(
+                0, fit.pair_g,
+                (wz.unsqueeze(-1) * QN.unsqueeze(-2)).reshape(-1, self.d * 3))
+            y = self.dec(torch.cat([m1, m2], -1))                     # [N,12]
         return fit.Xc + y[:, :3] * XS, EYE9 + y[:, 3:] * FS
 
 
@@ -253,7 +272,7 @@ def physics(net=None):
 
 
 def run(d):
-    net = AE(d, args.hidden).to(dev)
+    net = AE(d, args.hidden, args.dec).to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
     sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.steps)
     t0 = time.time()
@@ -281,8 +300,9 @@ def run(d):
             ef += float((dd / ss).median())
         k = len(CHECK)
     if args.save:
-        torch.save({"d": d, "hidden": args.hidden, "sd": net.state_dict(),
-                    "XS": XS, "FS": FS}, f"{args.save}_d{d}.pt")
+        torch.save({"d": d, "hidden": args.hidden, "dec": args.dec,
+                    "sd": net.state_dict(), "XS": XS, "FS": FS},
+                   f"{args.save}_{args.dec}_d{d}.pt")
     return ex / k, 100 * ef / k, time.time() - t0, net
 
 
@@ -294,6 +314,30 @@ for d in [int(t) for t in args.dims.split(",")]:
     ex, ef, dt, net = run(d)
     NETS[d] = net
     print(f"{'learned code, d=' + str(d):28} {ex:10.3e} {ef:8.2f}%   ({dt:.0f}s)")
+
+# ---- and what one decode costs, since it runs on every rendered frame --------
+@torch.no_grad()
+def timing(net):
+    z = net.encode(*(t.to(dev).float() for t in CHECK[0]))
+    p = fit.project_ls(cache=cache, x=CHECK[0][0].to(dev).float())
+    def clock(fn, n=30):
+        for _ in range(5):
+            fn()
+        torch.cuda.synchronize(); t = time.time()
+        for _ in range(n):
+            fn()
+        torch.cuda.synchronize()
+        return 1000 * (time.time() - t) / n
+    return (clock(lambda: fit.gaussian_pos(p, cache)),
+            clock(lambda: net.decode(z)))
+
+
+print(f"\n=== one decode, which every rendered frame pays ===")
+for d, net in NETS.items():
+    t_skin, t_net = timing(net)
+    print(f"{'closed-form skin':28} {t_skin:8.3f} ms")
+    print(f"{'learned ' + args.dec + ', d=' + str(d):28} {t_net:8.3f} ms   "
+          f"({t_net / max(t_skin, 1e-9):.1f}x)")
 
 print(f"\n=== what that F is worth: anchor acceleration ===")
 print(f"{'F from':28} {'|a| median':>12} {'err vs MPM F':>14}")
