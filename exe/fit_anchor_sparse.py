@@ -127,6 +127,15 @@ ap.add_argument("--unroll", type=int, default=1,
                       "error halves while the sixty-frame rollout does not move. "
                       "Unrolling makes the loss measure what is actually wanted, at "
                       "the cost of that many times the compute per sample.")
+ap.add_argument("--encoder", default="avg", choices=("avg", "ls"),
+                 help="how an MPM state becomes an anchor state. avg is the "
+                      "weighted average of the displacements around each anchor; "
+                      "ls solves for the anchor state whose DECODING is closest "
+                      "to the particles, which is the least-squares inverse of "
+                      "the same skinning the simulator reads back through. "
+                      "Measured (exe/probe_encoder.py): the reconstruction error "
+                      "falls from 7.6e-3 to 1.2e-3, and every training sample "
+                      "that is not a DAgger state starts from one of these.")
 ap.add_argument("--eval_rollout", type=int, default=0,
                  help="score the held-out set on a full rollout at each evaluation "
                       "rather than on one step, so the number being tracked is the "
@@ -218,6 +227,29 @@ elif not args.no_geom_init:
     print(f"[init] oriented; axis ratio median "
           f"{(s_.max(-1).values / s_.min(-1).values).median():.2f}, {thin} left round, "
           f"{fit.pair_g.shape[0]} pairs")
+
+
+_LSF = {"w": None, "fac": None}
+
+
+def ls_fac(cache):
+    """the Cholesky of C^T C for this rest state, reused across one iteration"""
+    key = cache[0].data_ptr(), int(fit.M), int(fit.pair_g.shape[0])
+    if _LSF["w"] != key:
+        _LSF["w"], _LSF["fac"] = key, fit.ls_factor(cache)
+    return _LSF["fac"]
+
+
+def enc(x, cache):
+    if args.encoder == "avg":
+        return fit.project(x, cache)
+    return fit.project_ls(x, cache, ls_fac(cache))
+
+
+def enc_v(v, cache):
+    if args.encoder == "avg":
+        return fit.project_v(v, cache)
+    return fit.project_v_ls(v, cache, ls_fac(cache))
 
 
 @torch.no_grad()
@@ -312,8 +344,8 @@ print(f"[data] {len(FIT)} fit and {len(CHK)} held-out MPM trajectories")
 def one_step(x0, v0, cache):
     """MPM particle state -> one coarse frame of this simulator -> particles,
     and how far the substeps were from being able to carry it"""
-    p = fit.project(x0, cache)
-    v = fit.project_v(v0, cache)
+    p = enc(x0, cache)
+    v = enc_v(v0, cache)
     p, _, cfl = fit.rollout(p, v, args.dt_mult, cache)
     return fit.gaussian_pos(p, cache), cfl
 
@@ -326,8 +358,8 @@ def unrolled(X, V, t, n, cache):
     Each frame is divided by how far MPM moved from the start, so a later frame
     is not weighted down for having drifted further.
     """
-    p = fit.project(X[t], cache)
-    v = fit.project_v(V[t], cache)
+    p = enc(X[t], cache)
+    v = enc_v(V[t], cache)
     loss = pen = 0.0
     hi = min(n, X.shape[0] - 1 - t)
     for j in range(hi):
@@ -362,8 +394,8 @@ def fine_loss(x0, v0, cache, n_sub, fc0=None):
     (exe/verify_mpm_teacher.py), and it is what makes a DAgger state usable at
     all -- so both sources of start state go through the same door.
     """
-    p = fit.project(x0, cache)
-    v = fit.project_v(v0, cache)
+    p = enc(x0, cache)
+    v = enc_v(v0, cache)
     with torch.no_grad():
         if fc0 is not None:
             # MPM's own recorded state: exact, and never refused
@@ -414,7 +446,7 @@ def rollout_error(sets):
     cache = fit.prepare()
     tot = []
     for X, V, *_ in sets:
-        p, v = fit.project(X[0], cache), fit.project_v(V[0], cache)
+        p, v = enc(X[0], cache), enc_v(V[0], cache)
         out = [fit.gaussian_pos(p, cache)]
         for _ in range(args.frames):
             p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
@@ -454,7 +486,7 @@ def collect_dagger():
     added = skipped = 0
     for i in range(args.dagger_traj):
         X, V, *_ = FIT[i % len(FIT)]
-        p, v = fit.project(X[0], cache), fit.project_v(V[0], cache)
+        p, v = enc(X[0], cache), enc_v(V[0], cache)
         for t in range(args.dagger_frames):
             gp = fit.gaussian_pos(p, cache)
             if not torch.isfinite(p).all() or (gp - X[0]).norm(dim=-1).max() > cap:
@@ -725,7 +757,7 @@ for it in bar:
             x0, v0 = bad_sample
         w_, rc_, q_, Binv_, blocked_, mass_ = cache
         with torch.no_grad():
-            F_, _ = fit.deformation(fit.project(x0, cache), w_, rc_, q_, Binv_, blocked_)
+            F_, _ = fit.deformation(enc(x0, cache), w_, rc_, q_, Binv_, blocked_)
             det = torch.linalg.det(F_)
             print(f"  mass: min {mass_.min():.3e}, at the clamp "
                   f"{int((mass_ <= 1.0000001e-12).sum())} of {fit.M}")
@@ -733,7 +765,7 @@ for it in bar:
                   f"{fit.N}, extents min {fit.log_s.exp().min():.3e}")
             m_ = mass_.unsqueeze(-1)
             keep_ = (~fit.fixed).unsqueeze(-1).to(torch.float32)
-            p_, v_ = fit.project(x0, cache), fit.project_v(v0, cache)
+            p_, v_ = enc(x0, cache), enc_v(v0, cache)
             print(f"  {'substep':>8} {'|a| max':>12} {'|v| max':>12} {'detF min':>10}")
             for k_ in range(args.dt_mult):
                 a_ = fit.force(p_, w_, rc_, q_, Binv_, blocked_) / m_
@@ -794,8 +826,8 @@ with torch.no_grad():
         span0 = (Xb - Xb[0]).norm(dim=-1).max().clamp(min=1e-12)
         e0 = ((G0 - Xb).norm(dim=-1).mean(-1) / span0).mean().item()
         tot0.append(e0)
-        p = fit.project(X[0], cache)
-        v = fit.project_v(V[0], cache)
+        p = enc(X[0], cache)
+        v = enc_v(V[0], cache)
         out = [fit.gaussian_pos(p, cache)]
         for _ in range(args.frames):
             p, v, _ = fit.rollout(p, v, args.dt_mult, cache)
