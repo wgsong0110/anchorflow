@@ -19,6 +19,7 @@ MPM's own particles.
 """
 from __future__ import annotations
 
+import math
 import argparse
 import os
 import subprocess
@@ -173,6 +174,17 @@ ap.add_argument("--fine_end", type=int, default=0,
                       "short one cannot see and what the fit exists to remove; a short "
                       "one is cheap. Starting long and ending short spends the expensive "
                       "steps where the discretisation is still far off.")
+ap.add_argument("--lr_cosine", type=int, default=0,
+                 help="anneal every learning rate to zero over --iters on a "
+                      "cosine. Without it the step size never shrinks, and once "
+                      "the gradient is noise the parameters random-walk at full "
+                      "stride: at the defaults that is 14%% of the anchor "
+                      "spacing, 28%% of the anchor size and a factor 2.1 in "
+                      "stiffness over 600 iterations.")
+ap.add_argument("--ema", type=float, default=0.0,
+                 help="evaluate an exponential moving average of the parameters "
+                      "rather than the parameters themselves. Averages the walk "
+                      "out without touching the optimisation; 0 disables.")
 ap.add_argument("--lr_decay_at", type=int, default=0,
                  help="drop every learning rate by --lr_decay_by at this iteration. "
                       "Five fits have reached their best rollout between 125 and 250 "
@@ -481,6 +493,12 @@ N_REPORT = 10
 
 @torch.no_grad()
 def report(tag):
+    with ema_weights():
+        return _report(tag)
+
+
+@torch.no_grad()
+def _report(tag):
     a, b = step_error(FIT[:N_REPORT]), step_error(CHK)
     extra = ""
     if args.eval_rollout:
@@ -546,6 +564,38 @@ def make_opt():
 opt = make_opt()
 grad_accum = torch.zeros(fit.M, device=dev)
 STATE = args.state or (args.out + ".state" if args.out else None)
+LR0 = {n: LRS[n] for n in TRAIN}
+EMA = {}
+
+
+def ema_update():
+    """track an average of the parameters, restarted when their shape changes"""
+    if not args.ema:
+        return
+    for n in TRAIN:
+        p_ = getattr(fit, n).detach()
+        if n not in EMA or EMA[n].shape != p_.shape:
+            EMA[n] = p_.clone()
+        else:
+            EMA[n].mul_(args.ema).add_(p_, alpha=1 - args.ema)
+
+
+class ema_weights:
+    """evaluate with the average, then put the live parameters back"""
+
+    def __enter__(self):
+        self.saved = None
+        if args.ema and EMA:
+            self.saved = {n: getattr(fit, n).detach().clone() for n in TRAIN}
+            with torch.no_grad():
+                for n in TRAIN:
+                    getattr(fit, n).copy_(EMA[n])
+
+    def __exit__(self, *a):
+        if self.saved is not None:
+            with torch.no_grad():
+                for n in TRAIN:
+                    getattr(fit, n).copy_(self.saved[n])
 
 
 # the mirror is the backup, so a mirror that has quietly stopped working is no
@@ -637,6 +687,11 @@ PREV_G = {}
 
 bar = tqdm(range(start_it, args.iters + 1), desc="fit", ncols=90)
 for it in bar:
+    if args.lr_cosine:
+        # cosine from the given rate to zero across the whole run
+        f = 0.5 * (1.0 + math.cos(math.pi * min(it / max(args.iters, 1), 1.0)))
+        for gp, n in zip(opt.param_groups, TRAIN):
+            gp["lr"] = LR0[n] * f
     if args.lr_decay_at and it == args.lr_decay_at:
         for gp in opt.param_groups:
             gp["lr"] *= args.lr_decay_by
@@ -742,6 +797,7 @@ for it in bar:
             torch.nn.utils.clip_grad_norm_([getattr(fit, n) for n in TRAIN], 1.0)
             opt.step()
             fit.clamp_()
+            ema_update()
         else:
             skipped = 1
     if GLOG and not skipped:
