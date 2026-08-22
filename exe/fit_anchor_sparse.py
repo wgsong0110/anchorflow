@@ -371,7 +371,13 @@ def unrolled(X, V, t, n, cache):
     v = enc_v(V[t], cache)
     loss = pen = 0.0
     hi = min(n, X.shape[0] - 1 - t)
+    # a frame earlier than this hands the next one a detached state, so no
+    # gradient travels more than --grad_frames frames back. The loss is
+    # untouched: every frame is still scored.
+    cut = hi - args.grad_frames if args.grad_frames else 0
     for j in range(hi):
+        if cut > 0 and j < cut:
+            p, v = p.detach(), v.detach()
         p, v, cfl = fit.rollout(p, v, args.dt_mult, cache)
         got = fit.gaussian_pos(p, cache)
         d = (X[t + j + 1] - X[t]).norm(dim=-1).mean().clamp(min=1e-12)
