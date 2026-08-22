@@ -65,6 +65,12 @@ ap.add_argument("--eig_floor", type=float, default=0.02)
 ap.add_argument("--polar_iters", type=int, default=6)
 ap.add_argument("--iters", type=int, default=400)
 ap.add_argument("--batch", type=int, default=2)
+ap.add_argument("--accum", type=int, default=1,
+                 help="how many batches to average before stepping. The graph of "
+                      "an unrolled sample is 30 GB on the torch path, so --batch "
+                      "cannot be raised past 2 on a 48 GB card; accumulating N "
+                      "batches costs the same memory and cuts the gradient noise "
+                      "by sqrt(N), which is the actual point of a bigger batch.")
 ap.add_argument("--lr_pos", type=float, default=3e-4)
 ap.add_argument("--lr_scale", type=float, default=1e-2)
 ap.add_argument("--lr_quat", type=float, default=1e-2)
@@ -728,66 +734,77 @@ for it in bar:
         n_sub_now = max(1, int(round(args.fine_steps
                                       * (args.fine_end / args.fine_steps) ** u)))
     cache = fit.prepare()
-    loss, pen, bad_sample, n_ok = 0.0, 0.0, None, 0
-    for _ in range(args.batch):
-        src, fc0 = None, None
-        if POOL["x"] and torch.rand(1).item() < args.dagger_frac:
-            # a DAgger state has one labelled frame after it and nothing more, so
-            # it stays a single step whatever the unroll length is
-            j = torch.randint(len(POOL["x"]), (1,)).item()
-            x0 = POOL["x"][j].to(dev, torch.float32)
-            v0 = POOL["v"][j].to(dev, torch.float32)
-            tgt = POOL["tgt"][j].to(dev, torch.float32) if POOL["tgt"] else None
-        else:
-            ent = FIT[torch.randint(len(FIT), (1,)).item()]
-            X, V = ent[0], ent[1]
-            t = torch.randint(hi, (1,)).item()
-            x0, v0, tgt = X[t], V[t], X[t + 1]
-            src = (X, V, t)
-            # MPM's own state at that frame, when it was kept: then the fine loss
-            # walks alongside MPM from where MPM actually was, with no lift
-            if len(ent) == 4:
-                fc0 = (ent[2][t], ent[3][t])
-        if args.fine_steps:
-            contrib, cfl = fine_loss(x0, v0, cache, n_sub_now, fc0)
-            if contrib is None:      # MPM cannot be asked from here
-                continue
-        elif src is not None and args.unroll > 1:
-            X_, V_, t_ = src
-            contrib, cfl = unrolled(X_, V_, t_, args.unroll, cache)
-        else:
-            got, cfl = one_step(x0, v0, cache)
-            d = (tgt - x0).norm(dim=-1).mean().clamp(min=1e-12)
-            contrib = (got - tgt).norm(dim=-1).mean() / d
-        if args.no_guards and not torch.isfinite(contrib):
-            bad_sample = (x0, v0)
-        loss = loss + contrib
-        pen = pen + cfl
-        n_ok += 1
-    if n_ok == 0:
+    opt.zero_grad(set_to_none=True)
+    acc_loss, acc_pen, acc_n, skipped = 0.0, 0.0, 0, 0
+    for _accum in range(args.accum):
+      loss, pen, bad_sample, n_ok = 0.0, 0.0, None, 0
+      for _ in range(args.batch):
+          src, fc0 = None, None
+          if POOL["x"] and torch.rand(1).item() < args.dagger_frac:
+              # a DAgger state has one labelled frame after it and nothing more, so
+              # it stays a single step whatever the unroll length is
+              j = torch.randint(len(POOL["x"]), (1,)).item()
+              x0 = POOL["x"][j].to(dev, torch.float32)
+              v0 = POOL["v"][j].to(dev, torch.float32)
+              tgt = POOL["tgt"][j].to(dev, torch.float32) if POOL["tgt"] else None
+          else:
+              ent = FIT[torch.randint(len(FIT), (1,)).item()]
+              X, V = ent[0], ent[1]
+              t = torch.randint(hi, (1,)).item()
+              x0, v0, tgt = X[t], V[t], X[t + 1]
+              src = (X, V, t)
+              # MPM's own state at that frame, when it was kept: then the fine loss
+              # walks alongside MPM from where MPM actually was, with no lift
+              if len(ent) == 4:
+                  fc0 = (ent[2][t], ent[3][t])
+          if args.fine_steps:
+              contrib, cfl = fine_loss(x0, v0, cache, n_sub_now, fc0)
+              if contrib is None:      # MPM cannot be asked from here
+                  continue
+          elif src is not None and args.unroll > 1:
+              X_, V_, t_ = src
+              contrib, cfl = unrolled(X_, V_, t_, args.unroll, cache)
+          else:
+              got, cfl = one_step(x0, v0, cache)
+              d = (tgt - x0).norm(dim=-1).mean().clamp(min=1e-12)
+              contrib = (got - tgt).norm(dim=-1).mean() / d
+          if args.no_guards and not torch.isfinite(contrib):
+              bad_sample = (x0, v0)
+          loss = loss + contrib
+          pen = pen + cfl
+          n_ok += 1
+      if n_ok == 0:
         # every sample in the batch started somewhere MPM will not answer for --
         # a lifted state outside its grid, or a deformation gradient no material
         # is in. Nothing to learn from, and dividing by the batch would leave a
         # float where a tensor is expected
-        n_skip += 1
         continue
-    loss, pen = loss / n_ok, pen / n_ok
-    total = loss + args.lambda_cfl * pen
-    if args.reg > 0:
+      loss, pen = loss / n_ok, pen / n_ok
+      total = loss + args.lambda_cfl * pen
+      if args.reg > 0:
         # measured against the anchor spacing and against unit scale, so one
         # number covers parameters that do not share units
         h = sc.sim.radius
         r = ((fit.pos - P0) / h).pow(2).mean() + (fit.log_s - S0).pow(2).mean() \
             + (fit.quat - Q0).pow(2).mean() + fit.log_k.pow(2).mean()
         total = total + args.reg * r
-    skipped = 0
-    if not torch.isfinite(total):
+      if not torch.isfinite(total):
         # one bad sample -- a rollout that ran away, a configuration the polar
         # factor cannot handle -- should cost that iteration, not the run
         skipped = 1
-    else:
-        opt.zero_grad(set_to_none=True)
-        total.backward()
+        break
+      # backward here rather than at the end: the graph of this batch is freed
+      # before the next one is built, which is the whole reason accumulation
+      # buys a bigger effective batch on a card that cannot hold one
+      (total / args.accum).backward()
+      acc_loss += float(loss); acc_pen += float(pen); acc_n += 1
+    if acc_n == 0:
+        n_skip += 1
+        continue
+    loss = torch.tensor(acc_loss / acc_n)
+    pen = acc_pen / acc_n
+    if not skipped:
+      if True:
         with torch.no_grad():
             if fit.pos.grad is not None:
                 grad_accum += torch.nan_to_num(fit.pos.grad).norm(dim=-1)
