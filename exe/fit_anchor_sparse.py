@@ -136,6 +136,15 @@ ap.add_argument("--encoder", default="avg", choices=("avg", "ls"),
                       "Measured (exe/probe_encoder.py): the reconstruction error "
                       "falls from 7.6e-3 to 1.2e-3, and every training sample "
                       "that is not a DAgger state starts from one of these.")
+ap.add_argument("--grad_frames", type=int, default=0,
+                 help="truncate the gradient to the last N coarse frames of the "
+                      "unroll. The LOSS is unchanged -- all --unroll frames are "
+                      "still scored -- but the state is detached before each "
+                      "earlier frame, so no gradient travels more than N frames "
+                      "back. --unroll changes the horizon and the chain length "
+                      "together; this changes only the chain, which is what "
+                      "separates a gradient pathology from a loss whose optimum "
+                      "really does look like this. 0 leaves the full chain.")
 ap.add_argument("--eval_rollout", type=int, default=0,
                  help="score the held-out set on a full rollout at each evaluation "
                       "rather than on one step, so the number being tracked is the "
