@@ -180,6 +180,23 @@ ap.add_argument("--fine_end", type=int, default=0,
                       "short one cannot see and what the fit exists to remove; a short "
                       "one is cheap. Starting long and ending short spends the expensive "
                       "steps where the discretisation is still far off.")
+ap.add_argument("--beta1", type=float, default=0.9,
+                 help="Adam's momentum. The gradient between two samples has a "
+                      "cosine of 0.15 (exe/probe_grad_noise.py), so what reaches "
+                      "the step is mostly which trajectory was drawn; a longer "
+                      "momentum averages more of that away before it is used.")
+ap.add_argument("--beta2", type=float, default=0.999,
+                 help="Adam's second moment. With a loss that ranges over 0.06 "
+                      "to 4.19 between samples, a short window rescales the step "
+                      "by whatever the last few draws happened to be.")
+ap.add_argument("--clip", type=float, default=1.0,
+                 help="gradient norm clip; 0 disables. At 1.0 it binds on every "
+                      "iteration, which means the norm carries no information "
+                      "into the step at all.")
+ap.add_argument("--lr_warmup", type=int, default=0,
+                 help="ramp every learning rate linearly over this many "
+                      "iterations, so the first steps -- taken from the noisiest "
+                      "point, before Adam's moments mean anything -- are small.")
 ap.add_argument("--lr_cosine", type=int, default=0,
                  help="anneal every learning rate to zero over --iters on a "
                       "cosine. Without it the step size never shrinks, and once "
@@ -564,7 +581,8 @@ def make_opt():
     for n, prm in fit.named_parameters():
         prm.requires_grad_(n in TRAIN)
     return torch.optim.Adam([{"params": [getattr(fit, n)], "lr": LRS[n]}
-                             for n in TRAIN])
+                             for n in TRAIN],
+                            betas=(args.beta1, args.beta2))
 
 
 opt = make_opt()
@@ -693,9 +711,13 @@ PREV_G = {}
 
 bar = tqdm(range(start_it, args.iters + 1), desc="fit", ncols=90)
 for it in bar:
-    if args.lr_cosine:
-        # cosine from the given rate to zero across the whole run
-        f = 0.5 * (1.0 + math.cos(math.pi * min(it / max(args.iters, 1), 1.0)))
+    if args.lr_cosine or args.lr_warmup:
+        f = 1.0
+        if args.lr_cosine:
+            # cosine from the given rate to zero across the whole run
+            f = 0.5 * (1.0 + math.cos(math.pi * min(it / max(args.iters, 1), 1.0)))
+        if args.lr_warmup:
+            f *= min(1.0, it / args.lr_warmup)
         for gp, n in zip(opt.param_groups, TRAIN):
             gp["lr"] = LR0[n] * f
     if args.lr_decay_at and it == args.lr_decay_at:
@@ -813,7 +835,9 @@ for it in bar:
                 fit.pos.grad[fit.fixed] = 0
         if all(getattr(fit, n).grad is None or
                torch.isfinite(getattr(fit, n).grad).all() for n in TRAIN):
-            torch.nn.utils.clip_grad_norm_([getattr(fit, n) for n in TRAIN], 1.0)
+            if args.clip > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    [getattr(fit, n) for n in TRAIN], args.clip)
             opt.step()
             fit.clamp_()
             ema_update()
