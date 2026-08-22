@@ -733,10 +733,12 @@ for it in bar:
         u = min(1.0, (it - 1) / max(args.iters - 1, 1))
         n_sub_now = max(1, int(round(args.fine_steps
                                       * (args.fine_end / args.fine_steps) ** u)))
-    cache = fit.prepare()
     opt.zero_grad(set_to_none=True)
     acc_loss, acc_pen, acc_n, skipped = 0.0, 0.0, 0, 0
     for _accum in range(args.accum):
+      # rebuilt per accumulation step: prepare() is differentiable and every
+      # sample's graph hangs off it, so one backward frees what the next needs
+      cache = fit.prepare()
       loss, pen, bad_sample, n_ok = 0.0, 0.0, None, 0
       for _ in range(args.batch):
           src, fc0 = None, None
