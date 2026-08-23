@@ -821,8 +821,11 @@ for it in bar:
               # [n,N,3] once a DAgger state carries more than one frame; kept
               # on the CPU until the frame is needed, as the trajectories are
               tgt = POOL["tgt"][j] if POOL["tgt"] else None
-              if tgt is not None and tgt.dim() == 2:
-                  tgt = tgt.to(dev, torch.float32)
+              if tgt is not None:
+                  if tgt.dim() == 3 and tgt.shape[0] == 1:
+                      tgt = tgt[0]          # one frame stored, one frame used
+                  if tgt.dim() == 2:
+                      tgt = tgt.to(dev, torch.float32)
           else:
               ent = FIT[torch.randint(len(FIT), (1,)).item()]
               X, V = ent[0], ent[1]
