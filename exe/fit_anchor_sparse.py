@@ -828,6 +828,10 @@ for it in bar:
               contrib, cfl = fine_loss(x0, v0, cache, n_sub_now, fc0)
               if contrib is None:      # MPM cannot be asked from here
                   continue
+          elif src is None and tgt is not None and tgt.dim() == 3 and tgt.shape[0] > 1:
+              # a DAgger state with more than one frame behind it: same loss as
+              # a trajectory sample, from a state the simulator itself reached
+              contrib, cfl = unrolled_pool(x0, v0, tgt, cache)
           elif src is not None and args.unroll > 1:
               X_, V_, t_ = src
               contrib, cfl = unrolled(X_, V_, t_, args.unroll, cache)
