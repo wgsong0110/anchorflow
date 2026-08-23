@@ -79,7 +79,8 @@ class AnchorSparse(nn.Module):
     """anchors with elliptical, compactly supported reach and a variable count"""
 
     def __init__(self, sc, c=0.25, eig_floor=0.02, polar_iters=6, margin=1.25,
-                 checkpoint_substeps=True, s_lo=0.25, s_hi=4.0, cfl_frac=0.05):
+                 checkpoint_substeps=True, s_lo=0.25, s_hi=4.0, cfl_frac=0.05,
+                 quad=False):
         super().__init__()
         from scipy.spatial import cKDTree
 
@@ -90,6 +91,11 @@ class AnchorSparse(nn.Module):
         self.polar_iters = polar_iters
         self.margin = margin
         self.checkpoint_substeps = checkpoint_substeps
+        # quadratic shape matching: the deformation a Gaussian is allowed to see
+        # in its neighbourhood becomes affine PLUS quadratic. Nothing is carried
+        # -- the extra freedom is still derived from where the anchors are -- so
+        # the fit gains expressiveness without gaining anything that can drift.
+        self.quad = quad
         # an anchor that shrinks far enough holds almost nothing, its mass goes
         # with it, and the accelerations it sees go up without bound; one that
         # grows without limit swallows the object. Both ends were reachable --
@@ -221,6 +227,24 @@ class AnchorSparse(nn.Module):
         return w / tot[self.pair_g].clamp(min=1e-12)
 
     # ---- the rest configuration -------------------------------------------
+    @staticmethod
+    def _qbasis(u):
+        """[P,3] -> [P,9]: the affine part, then the six quadratic terms"""
+        x, y, z = u[:, 0], u[:, 1], u[:, 2]
+        return torch.stack([x, y, z, x * x, y * y, z * z,
+                            x * y, y * z, z * x], -1)
+
+    @staticmethod
+    def _qjac(u):
+        """[N,3] -> [N,9,3]: d(qbasis)/du, which turns T into a real F"""
+        n = u.shape[0]
+        x, y, z = u[:, 0], u[:, 1], u[:, 2]
+        o, zz = torch.ones_like(x), torch.zeros_like(x)
+        rows = [(o, zz, zz), (zz, o, zz), (zz, zz, o),
+                (2 * x, zz, zz), (zz, 2 * y, zz), (zz, zz, 2 * z),
+                (y, x, zz), (zz, z, y), (z, zz, x)]
+        return torch.stack([torch.stack(r, -1) for r in rows], 1)
+
     def prepare(self):
         w = self.weights()
         a = self.pos[self.pair_a]
@@ -256,10 +280,45 @@ class AnchorSparse(nn.Module):
         blocked = eps * Binv
         mass = torch.zeros(self.M, device=self.dev).index_add_(
             0, self.pair_a, self.dens_vol[self.pair_g] * w).clamp(min=1e-12)
+        if self.quad:
+            # the same construction one basis up. E = [I3 | 0] is what T has to
+            # equal at rest, and the blocked term is built so that it does:
+            # at rest A~ = E B~, so T = (E B~ + eps E)(B~ + eps I)^-1 = E.
+            qt = self._qbasis(q)                                   # [P,9]
+            Bq = torch.zeros(self.N, 9, 9, device=self.dev).index_add_(
+                0, self.pair_g,
+                w.reshape(-1, 1, 1) * (qt.unsqueeze(-1) * qt.unsqueeze(-2)))
+            trq = (Bq.diagonal(dim1=-2, dim2=-1).sum(-1) / 9.0).clamp(min=1e-20)
+            epsq = (self.eig_floor * trq.clamp(min=self.B_ref)).reshape(-1, 1, 1)
+            eye9 = torch.eye(9, device=self.dev)
+            Bqinv = torch.linalg.inv(Bq + epsq * eye9)
+            E = torch.zeros(3, 9, device=self.dev)
+            E[0, 0] = E[1, 1] = E[2, 2] = 1.0
+            blockedq = epsq * (E @ Bqinv)                          # [N,3,9]
+            u = self.Xc - rc
+            # kept on self rather than in the cache tuple: every caller unpacks
+            # six, and the quadratic path is the only thing that wants these
+            self._q = (qt, Bqinv, blockedq, self._qbasis(u), self._qjac(u))
         return w, rc, q, Binv, blocked, mass
 
     # ---- the physics -------------------------------------------------------
+    def _deform_quad(self, p, w):
+        """T = A~ (B~ + eps I)^-1, and the F it implies at each Gaussian"""
+        qt, Bqinv, blockedq, _, Ju = self._q
+        pa = p[self.pair_a]
+        cc = torch.zeros(self.N, 3, device=self.dev).index_add_(
+            0, self.pair_g, w.unsqueeze(-1) * pa)
+        pq = pa - cc[self.pair_g]
+        A = torch.zeros(self.N, 3, 9, device=self.dev).index_add_(
+            0, self.pair_g,
+            w.reshape(-1, 1, 1) * (pq.unsqueeze(-1) * qt.unsqueeze(-2)))
+        Tm = A @ Bqinv + blockedq                                  # [N,3,9]
+        return Tm, cc
+
     def deformation(self, p, w, rc, q, Binv, blocked):
+        if self.quad:
+            Tm, cc = self._deform_quad(p, w)
+            return Tm @ self._q[4], cc            # F = T J
         # the fused reduction is differentiable, so this is taken whether or not
         # grad is on -- it is the fit's hot path as much as the rollout's
         if self._pairs_ok():
@@ -276,6 +335,9 @@ class AnchorSparse(nn.Module):
 
     def gaussian_pos(self, p, cache):
         w, rc, q, Binv, blocked, _ = cache
+        if self.quad:
+            Tm, cc = self._deform_quad(p, w)
+            return cc + torch.einsum("nik,nk->ni", Tm, self._q[3])
         if self._fused_ok():
             csr, _, _ = self._fused(w)
             return sparsestep.skin(p, csr, w, q, Binv, blocked, self.Xc, rc)[0]
@@ -296,10 +358,14 @@ class AnchorSparse(nn.Module):
     # path, which is also the reference the kernel is verified against
     # (exe/verify_sparsestep.py).
     def _fused_ok(self):
+        if self.quad:            # the kernel is written for the linear basis
+            return False
         """the whole-force kernel: forward only, so grad must be off"""
         return self._pairs_ok() and not torch.is_grad_enabled()
 
     def _pairs_ok(self):
+        if self.quad:
+            return False
         """the pair reductions, which carry their own backward"""
         return (sparsestep is not None and sparsestep.HAVE_CUDA
                 and self.pos.is_cuda)
@@ -322,6 +388,26 @@ class AnchorSparse(nn.Module):
         return val
 
     def force(self, p, w, rc, q, Binv, blocked):
+        if self.quad:
+            qt, Bqinv, _, _, Ju = self._q
+            F, _ = self.deformation(p, w, rc, q, Binv, blocked)
+            R = closest_rotation(F, self.polar_iters, self.polar_ridge)
+            J = det3(F)
+            n_ = F.reshape(-1, 9).norm(dim=-1).clamp(min=1e-12).reshape(-1, 1, 1)
+            Finv_T = inv3(F + 1e-6 * n_ * torch.eye(3, device=self.dev),
+                           eps=1e-30).transpose(-1, -2)
+            k = self.stiffness(w).unsqueeze(-1).unsqueeze(-1)
+            mu = self.mu.unsqueeze(-1).unsqueeze(-1) * k
+            lam = self.lam.unsqueeze(-1).unsqueeze(-1) * k
+            P = 2 * mu * (F - R) + lam * (J - 1).unsqueeze(-1).unsqueeze(-1) * \
+                J.unsqueeze(-1).unsqueeze(-1) * Finv_T
+            # dE/dp_a = V w (P J^T B~^-1) q~, the same transpose the linear path
+            # takes, one basis up
+            PB = (P @ Ju.transpose(-1, -2) @ Bqinv)[self.pair_g]   # [P,3,9]
+            contrib = -(self.vol[self.pair_g] * w).unsqueeze(-1) * \
+                torch.einsum("pik,pk->pi", PB, qt)
+            return torch.zeros(self.M, 3, device=self.dev).index_add_(
+                0, self.pair_a, contrib)
         if self._fused_ok():
             csr, mu_k, lam_k = self._fused(w)
             return sparsestep.force(p, csr, w, q, Binv, blocked, self.vol,

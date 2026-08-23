@@ -61,6 +61,14 @@ ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--c", type=float, default=0.25,
                  help="the kernel value that bounds an anchor's support. Smaller "
                       "reaches further and costs more pairs.")
+ap.add_argument("--quad", type=int, default=0,
+                 help="quadratic shape matching: a Gaussian's neighbourhood is "
+                      "allowed an affine PLUS quadratic deformation instead of "
+                      "affine alone. The extra freedom is still DERIVED from the "
+                      "anchor positions, so nothing new can drift -- which is "
+                      "what ruled out carrying F. Costs the fused kernel (the "
+                      "kernel is written for the linear basis) and a 9x9 solve "
+                      "per Gaussian at every refresh.")
 ap.add_argument("--eig_floor", type=float, default=0.02)
 ap.add_argument("--polar_iters", type=int, default=6)
 ap.add_argument("--iters", type=int, default=400)
@@ -251,7 +259,8 @@ for bc in sc.cfg.get("boundary_conditions", []):
         base = torch.tensor(bc["force"], device=dev)
 
 fit = AnchorSparse(sc, c=args.c, eig_floor=args.eig_floor,
-                    polar_iters=args.polar_iters, cfl_frac=args.cfl_frac).to(dev)
+                    polar_iters=args.polar_iters, cfl_frac=args.cfl_frac,
+                    quad=bool(args.quad)).to(dev)
 if args.no_guards:
     fit.s_lo, fit.s_hi, fit.polar_ridge = 1e-9, 1e9, 0.0
 SHAPE = ("pos", "log_s", "quat")
