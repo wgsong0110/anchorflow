@@ -90,6 +90,15 @@ ap.add_argument("--dagger_traj", type=int, default=2)
 ap.add_argument("--dagger_frames", type=int, default=25)
 ap.add_argument("--dagger_stride", type=int, default=3)
 ap.add_argument("--dagger_frac", type=float, default=0.5)
+ap.add_argument("--dagger_unroll", type=int, default=1,
+                 help="how many coarse frames of MPM to store behind each DAgger "
+                      "state. At 1 -- what it has always been -- a DAgger sample "
+                      "is one frame of supervision however long --unroll is, so "
+                      "half of every batch has been the kind of signal that does "
+                      "not reach a sixty-frame rollout. Raising it costs MPM at "
+                      "collection time and a longer sample at training time, and "
+                      "buys a DAgger state that is supervised like a trajectory "
+                      "one. 0 follows --unroll.")
 ap.add_argument("--dagger_cap", type=float, default=3.0)
 ap.add_argument("--dagger_pool_max", type=int, default=512,
                  help="states to keep, oldest evicted. Each is a full particle state, "
@@ -532,6 +541,33 @@ def _report(tag):
 
 
 POOL = {"x": [], "v": [], "tgt": []}
+# how many coarse frames of MPM sit behind a DAgger state
+N_DAG = args.unroll if args.dagger_unroll == 0 else max(1, args.dagger_unroll)
+
+
+def unrolled_pool(x0, v0, tgts, cache):
+    """the unrolled loss, but from a state the simulator reached on its own.
+
+    Same scoring as unrolled(): every frame compared, each divided by how far
+    MPM had moved from the start by then. The difference is only where the
+    first state came from -- here it is one the simulator produced, which is
+    the distribution it will actually be used in.
+    """
+    p = enc(x0, cache)
+    v = enc_v(v0, cache)
+    loss = pen = 0.0
+    n = tgts.shape[0]
+    cut = n - args.grad_frames if args.grad_frames else 0
+    for j in range(n):
+        if cut > 0 and j < cut:
+            p, v = p.detach(), v.detach()
+        p, v, cfl = fit.rollout(p, v, args.dt_mult, cache)
+        got = fit.gaussian_pos(p, cache)
+        tj = tgts[j].to(dev, torch.float32)
+        d = (tj - x0).norm(dim=-1).mean().clamp(min=1e-12)
+        loss = loss + (got - tj).norm(dim=-1).mean() / d
+        pen = pen + cfl
+    return loss / n, pen / n
 
 
 @torch.no_grad()
@@ -551,20 +587,23 @@ def collect_dagger():
                 x, vx, F, C = fit.lift(p, v, cache)
                 ok = torch.isfinite(x).all() and x.min() > T.margin and \
                     x.max() < T.grid_lim - T.margin
+                tg = []
                 if ok and not args.fine_steps:
-                    # the coarse loss compares against a stored frame; the fine
+                    # the coarse loss compares against stored frames; the fine
                     # one walks MPM alongside and needs no target, which also
                     # saves forty MPM substeps per state collected
                     T._set(x, vx, F, C)
-                    out = T._advance(1, args.dt_mult)
-                    if out is None:
-                        ok = False
+                    for _ in range(N_DAG):
+                        if T._advance(1, args.dt_mult) is None:
+                            ok = False
+                            break
+                        tg.append(T.solver.export_particle_x_to_torch()
+                                  .to(torch.float16).cpu())
                 if ok:
                     POOL["x"].append(x.to(torch.float16).cpu())
                     POOL["v"].append(vx.to(torch.float16).cpu())
                     if not args.fine_steps:
-                        POOL["tgt"].append(
-                            T.solver.export_particle_x_to_torch().to(torch.float16).cpu())
+                        POOL["tgt"].append(torch.stack(tg))
                     added += 1
                 else:
                     skipped += 1
@@ -770,7 +809,11 @@ for it in bar:
               j = torch.randint(len(POOL["x"]), (1,)).item()
               x0 = POOL["x"][j].to(dev, torch.float32)
               v0 = POOL["v"][j].to(dev, torch.float32)
-              tgt = POOL["tgt"][j].to(dev, torch.float32) if POOL["tgt"] else None
+              # [n,N,3] once a DAgger state carries more than one frame; kept
+              # on the CPU until the frame is needed, as the trajectories are
+              tgt = POOL["tgt"][j] if POOL["tgt"] else None
+              if tgt is not None and tgt.dim() == 2:
+                  tgt = tgt.to(dev, torch.float32)
           else:
               ent = FIT[torch.randint(len(FIT), (1,)).item()]
               X, V = ent[0], ent[1]
