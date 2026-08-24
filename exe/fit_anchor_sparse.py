@@ -69,6 +69,14 @@ ap.add_argument("--quad", type=int, default=0,
                       "what ruled out carrying F. Costs the fused kernel (the "
                       "kernel is written for the linear basis) and a 9x9 solve "
                       "per Gaussian at every refresh.")
+ap.add_argument("--oriented", type=int, default=0,
+                 help="anchors carry an orientation and an angular velocity, and "
+                      "spin under torque. Their own second moment enters the "
+                      "shape matching, so a Gaussian gets its local frame from "
+                      "the anchors themselves instead of inferring it from where "
+                      "they sit -- the inference that recovers 17%% of MPM's F. "
+                      "Three degrees of freedom in SO(3) with a restoring "
+                      "torque, not the nine unconstrained ones a carried F had.")
 ap.add_argument("--eig_floor", type=float, default=0.02)
 ap.add_argument("--polar_iters", type=int, default=6)
 ap.add_argument("--iters", type=int, default=400)
@@ -260,7 +268,8 @@ for bc in sc.cfg.get("boundary_conditions", []):
 
 fit = AnchorSparse(sc, c=args.c, eig_floor=args.eig_floor,
                     polar_iters=args.polar_iters, cfl_frac=args.cfl_frac,
-                    quad=bool(args.quad)).to(dev)
+                    quad=bool(args.quad),
+                    oriented=bool(args.oriented)).to(dev)
 if args.no_guards:
     fit.s_lo, fit.s_hi, fit.polar_ridge = 1e-9, 1e9, 0.0
 SHAPE = ("pos", "log_s", "quat")

@@ -80,7 +80,7 @@ class AnchorSparse(nn.Module):
 
     def __init__(self, sc, c=0.25, eig_floor=0.02, polar_iters=6, margin=1.25,
                  checkpoint_substeps=True, s_lo=0.25, s_hi=4.0, cfl_frac=0.05,
-                 quad=False):
+                 quad=False, oriented=False):
         super().__init__()
         from scipy.spatial import cKDTree
 
@@ -96,6 +96,15 @@ class AnchorSparse(nn.Module):
         # -- the extra freedom is still derived from where the anchors are -- so
         # the fit gains expressiveness without gaining anything that can drift.
         self.quad = quad
+        # oriented anchors: an anchor stops being a point and becomes an oriented
+        # ellipsoid that carries its own rotation and spins under torque. Its
+        # second moment enters the shape matching directly, so a Gaussian no
+        # longer has to infer the local frame from where its neighbours happen to
+        # be -- which is what recovers only 17% of MPM's F. Three extra degrees
+        # of freedom, held in SO(3) and driven by a restoring torque, rather than
+        # the nine unconstrained ones that made a carried F drift.
+        self.oriented = oriented
+        self._o = self._wv = None
         # an anchor that shrinks far enough holds almost nothing, its mass goes
         # with it, and the accelerations it sees go up without bound; one that
         # grows without limit swallows the object. Both ends were reachable --
@@ -280,6 +289,22 @@ class AnchorSparse(nn.Module):
         blocked = eps * Binv
         mass = torch.zeros(self.M, device=self.dev).index_add_(
             0, self.pair_a, self.dens_vol[self.pair_g] * w).clamp(min=1e-12)
+        if self.oriented:
+            # the anchor's own second moment, in its rest frame: the ellipsoid
+            # the weight kernel already describes, as a covariance
+            R0 = quat_to_R(self.quat)
+            s2 = (self.log_s.exp() ** 2) / 5.0
+            S = torch.einsum("mij,mj,mkj->mik", R0, s2, R0)          # [M,3,3]
+            B = B + torch.zeros_like(B).index_add_(
+                0, self.pair_g, w.reshape(-1, 1, 1) * S[self.pair_a])
+            tr = (B.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0).clamp(min=1e-20)
+            eps = (self.eig_floor * tr.clamp(min=self.B_ref)).reshape(-1, 1, 1)
+            Binv = inv3(B + eps * eye)
+            blocked = eps * Binv
+            self._S = S
+            # isotropic inertia from that moment, times the anchor's mass
+            self._inertia = (mass * S.diagonal(dim1=-2, dim2=-1).sum(-1)
+                             * (2.0 / 3.0)).clamp(min=1e-12).unsqueeze(-1)
         if self.quad:
             # the same construction one basis up. E = [I3 | 0] is what T has to
             # equal at rest, and the blocked term is built so that it does:
@@ -331,6 +356,11 @@ class AnchorSparse(nn.Module):
         pq = pa - cc[self.pair_g]
         A = torch.zeros(self.N, 3, 3, device=self.dev).index_add_(
             0, self.pair_g, w.reshape(-1, 1, 1) * (pq.unsqueeze(-1) * q.unsqueeze(-2)))
+        if self.oriented:
+            Rd = quat_to_R(self._o if self._o is not None else self._ident())
+            A = A + torch.zeros_like(A).index_add_(
+                0, self.pair_g,
+                w.reshape(-1, 1, 1) * (Rd @ self._S)[self.pair_a])
         return A @ Binv + blocked, cc
 
     def gaussian_pos(self, p, cache):
@@ -358,13 +388,13 @@ class AnchorSparse(nn.Module):
     # path, which is also the reference the kernel is verified against
     # (exe/verify_sparsestep.py).
     def _fused_ok(self):
-        if self.quad:            # the kernel is written for the linear basis
+        if self.quad or self.oriented:   # the kernel knows neither extra term
             return False
         """the whole-force kernel: forward only, so grad must be off"""
         return self._pairs_ok() and not torch.is_grad_enabled()
 
     def _pairs_ok(self):
-        if self.quad:
+        if self.quad or self.oriented:
             return False
         """the pair reductions, which carry their own backward"""
         return (sparsestep is not None and sparsestep.HAVE_CUDA
@@ -437,6 +467,59 @@ class AnchorSparse(nn.Module):
             torch.einsum("pij,pj->pi", PB, q)
         return torch.zeros(self.M, 3, device=self.dev).index_add_(0, self.pair_a, contrib)
 
+    def _ident(self):
+        o = torch.zeros(self.M, 4, device=self.dev)
+        o[:, 0] = 1.0
+        return o
+
+    def torque(self, p, w, rc, q, Binv, blocked):
+        """-dE/dR projected onto so(3), per anchor.
+
+        E = sum_g V Psi(F), F = A B^-1, and A carries w R_a S_a, so
+        dE/dR_a = sum_g w (V P B^-1) S_a. A rotation of R by an infinitesimal
+        world-frame omega changes E by omega . vee(Y - Y^T) with Y = R (dE/dR)^T,
+        which is the torque up to sign.
+        """
+        F, _ = self.deformation(p, w, rc, q, Binv, blocked)
+        R = closest_rotation(F, self.polar_iters, self.polar_ridge)
+        J = det3(F)
+        n_ = F.reshape(-1, 9).norm(dim=-1).clamp(min=1e-12).reshape(-1, 1, 1)
+        Finv_T = inv3(F + 1e-6 * n_ * torch.eye(3, device=self.dev),
+                       eps=1e-30).transpose(-1, -2)
+        k = self.stiffness(w).unsqueeze(-1).unsqueeze(-1)
+        mu = self.mu.unsqueeze(-1).unsqueeze(-1) * k
+        lam = self.lam.unsqueeze(-1).unsqueeze(-1) * k
+        P = 2 * mu * (F - R) + lam * (J - 1).unsqueeze(-1).unsqueeze(-1) * \
+            J.unsqueeze(-1).unsqueeze(-1) * Finv_T
+        G = (self.vol.unsqueeze(-1).unsqueeze(-1) * (P @ Binv))[self.pair_g]
+        M = torch.zeros(self.M, 3, 3, device=self.dev).index_add_(
+            0, self.pair_a, w.reshape(-1, 1, 1) * G)
+        M = M @ self._S
+        Y = quat_to_R(self._o) @ M.transpose(-1, -2)
+        return torch.stack([Y[:, 2, 1] - Y[:, 1, 2],
+                            Y[:, 0, 2] - Y[:, 2, 0],
+                            Y[:, 1, 0] - Y[:, 0, 1]], -1)
+
+    def substep_o(self, p, v, o, wv, w, rc, q, Binv, blocked, m, keep):
+        """the oriented substep: linear as before, plus a spin driven by torque"""
+        self._o = o
+        a = self.force(p, w, rc, q, Binv, blocked) / m
+        tau = self.torque(p, w, rc, q, Binv, blocked)
+        v = (v + self.dt * a) * self.damping * keep
+        wv = (wv + self.dt * tau / self._inertia) * self.damping * keep
+        dp = self.dt * v
+        # q <- normalize(q + dt/2 omega (x) q)
+        ox, oy, oz = wv[:, 0], wv[:, 1], wv[:, 2]
+        qw, qx, qy, qz = o[:, 0], o[:, 1], o[:, 2], o[:, 3]
+        do = 0.5 * torch.stack([-ox * qx - oy * qy - oz * qz,
+                                 ox * qw + oy * qz - oz * qy,
+                                 -ox * qz + oy * qw + oz * qx,
+                                 ox * qy - oy * qx + oz * qw], -1)
+        o = o + self.dt * do
+        o = o / o.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+        over = (dp.norm(dim=-1) / self.cfl_limit - 1.0).clamp(min=0)
+        return p + dp, v, o, wv, (over * over).mean()
+
     def substep(self, p, v, w, rc, q, Binv, blocked, m, keep):
         a = self.force(p, w, rc, q, Binv, blocked) / m
         v = (v + self.dt * a) * self.damping * keep
@@ -457,6 +540,23 @@ class AnchorSparse(nn.Module):
         keep = (~self.fixed).unsqueeze(-1).to(p.dtype)
         use = self.checkpoint_substeps and torch.is_grad_enabled()
         pen = p.new_zeros(())
+        if self.oriented:
+            # threaded through the checkpoint rather than kept on self, so the
+            # recompute sees the same orientation the forward did
+            o = self._o if self._o is not None else self._ident()
+            wv = self._wv if self._wv is not None else torch.zeros(self.M, 3,
+                                                                   device=self.dev)
+            for _ in range(n):
+                if use:
+                    p, v, o, wv, c = checkpoint(self.substep_o, p, v, o, wv, w, rc,
+                                                 q, Binv, blocked, m, keep,
+                                                 use_reentrant=False)
+                else:
+                    p, v, o, wv, c = self.substep_o(p, v, o, wv, w, rc, q, Binv,
+                                                     blocked, m, keep)
+                pen = pen + c
+            self._o, self._wv = o, wv
+            return p, v, pen / max(n, 1)
         for _ in range(n):
             if use:
                 p, v, c = checkpoint(self.substep, p, v, w, rc, q, Binv, blocked,
@@ -546,7 +646,12 @@ class AnchorSparse(nn.Module):
         den = torch.zeros(self.M, device=self.dev).index_add_(
             0, self.pair_a, w).clamp(min=1e-12)
         p = self.pos + num / den.unsqueeze(-1)
-        return torch.where(self.fixed.unsqueeze(-1), self.pos, p)
+        p = torch.where(self.fixed.unsqueeze(-1), self.pos, p)
+        if self.oriented:
+            # a projected MPM state says nothing about how the anchors are
+            # turned, so they start unrotated and the torque takes over
+            self._o, self._wv = self._ident(), torch.zeros(self.M, 3, device=self.dev)
+        return p
 
     @torch.no_grad()
     def project_v(self, vp, cache):
