@@ -56,6 +56,11 @@ print(f"[setup] {fit.M} anchors, {fit.N} Gaussians, {fit.pair_g.shape[0]} pairs"
 cache = fit.prepare()
 w, rc, q, Binv, blocked, mass = (t.detach() for t in cache)
 ca = (w, rc, q, Binv, blocked, mass)
+# prepare() built _S inside its own graph; the two gradient runs below would
+# each try to free it, so the anchor's rest moment is taken as a constant here
+fit._S = fit._S.detach()
+fit._inertia = fit._inertia.detach()
+cache = ca
 
 # a deformed state, and orientations well away from the identity so the term
 # the kernel gained is not silently zero
