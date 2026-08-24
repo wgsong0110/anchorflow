@@ -22,6 +22,8 @@ try:
     from ._C import skin as _skin, force as _force, deform as _deform
     from ._C import deform_fwd as _deform_fwd, deform_bwd as _deform_bwd
     from ._C import gather_fwd as _gather_fwd, gather_bwd as _gather_bwd
+    from ._C import deform_bwd_rs as _deform_bwd_rs
+    from ._C import moment_fwd as _moment_fwd, moment_bwd as _moment_bwd
     HAVE_CUDA = True
 except Exception:
     HAVE_CUDA = False
@@ -117,22 +119,33 @@ def deform(p, csr, w, q, Binv, blocked):
 
 
 class _Deform(torch.autograd.Function):
-    """(p, w, q) -> (weighted centroid, scatter of w (p-cc) q^T)"""
+    """(p, w, q, RS) -> (weighted centroid, scatter of w [(p-cc) q^T + RS])
+
+    RS is R_a S_a for oriented anchors and an empty tensor otherwise. Its
+    gradient is one more anchor-major gather, which is why it belongs here
+    rather than in a torch expression over [P,3,3].
+    """
 
     @staticmethod
-    def forward(ctx, p, w, q, row_off, pair_a, pair_g, acsr_off, acsr_pair, N, M):
+    def forward(ctx, p, w, q, RS, row_off, pair_a, pair_g, acsr_off, acsr_pair, N, M):
+        rs = RS.contiguous() if RS is not None and RS.numel() else \
+            torch.empty(0, device=p.device, dtype=p.dtype)
         cc, A, S = _deform_fwd(p.contiguous(), row_off, pair_a,
-                                w.contiguous(), q.contiguous(), int(N))
+                                w.contiguous(), q.contiguous(), rs, int(N))
         ctx.save_for_backward(p, w, q, cc, S, pair_a, pair_g, acsr_off, acsr_pair)
         ctx.M = int(M)
+        ctx.has_rs = rs.numel() > 0
         return cc, A
 
     @staticmethod
     def backward(ctx, gcc, gA):
         p, w, q, cc, S, pair_a, pair_g, acsr_off, acsr_pair = ctx.saved_tensors
-        gp, gw, gq = _deform_bwd(gcc.contiguous(), gA.contiguous(), p, w, q, cc, S,
+        gA = gA.contiguous()
+        gp, gw, gq = _deform_bwd(gcc.contiguous(), gA, p, w, q, cc, S,
                                   pair_a, pair_g, acsr_off, acsr_pair, ctx.M)
-        return gp, gw, gq, None, None, None, None, None, None, None
+        gRS = _deform_bwd_rs(gA, w, pair_g, acsr_off, acsr_pair, ctx.M) \
+            if ctx.has_rs else None
+        return gp, gw, gq, gRS, None, None, None, None, None, None, None
 
 
 class _Gather(torch.autograd.Function):
@@ -154,10 +167,36 @@ class _Gather(torch.autograd.Function):
         return gPB, gw, gq, None, None, None, None, None, None, None, None
 
 
-def deform_diff(p, w, q, csr, N, M):
+class _Moment(torch.autograd.Function):
+    """P@Binv -> the per-anchor stress moment the torque is built from"""
+
+    @staticmethod
+    def forward(ctx, PB, w, vol, row_off, pair_a, pair_g, acsr_off, acsr_pair, N, M):
+        Mo = _moment_fwd(PB.contiguous(), w.contiguous(), vol.contiguous(),
+                          pair_g, acsr_off, acsr_pair, int(M))
+        ctx.save_for_backward(w, vol, row_off, pair_a)
+        ctx.N = int(N)
+        return Mo
+
+    @staticmethod
+    def backward(ctx, gM):
+        w, vol, row_off, pair_a = ctx.saved_tensors
+        gPB = _moment_bwd(gM.contiguous(), w, vol, row_off, pair_a, ctx.N)
+        return gPB, None, None, None, None, None, None, None, None, None
+
+
+def deform_diff(p, w, q, csr, N, M, RS=None):
     """differentiable (cc, A). Returns None if the extension is not built."""
     row_off, pair_a, pair_g, acsr_off, acsr_pair = csr
-    return _Deform.apply(p, w, q, row_off, pair_a, pair_g, acsr_off, acsr_pair, N, M)
+    return _Deform.apply(p, w, q, RS, row_off, pair_a, pair_g, acsr_off,
+                         acsr_pair, N, M)
+
+
+def moment_diff(PB, w, vol, csr, N, M):
+    """differentiable per-anchor stress moment"""
+    row_off, pair_a, pair_g, acsr_off, acsr_pair = csr
+    return _Moment.apply(PB, w, vol, row_off, pair_a, pair_g, acsr_off,
+                          acsr_pair, N, M)
 
 
 def gather_diff(PB, w, q, vol, csr, N, M):

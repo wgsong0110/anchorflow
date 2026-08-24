@@ -407,10 +407,14 @@ __global__ void gather_kernel(
 // S is a per-Gaussian reduction, so the forward returns it rather than making
 // the backward recompute it.
 
+// RS is R_a S_a per anchor, or null. An oriented anchor contributes its own
+// turned second moment to the shape matching, so a Gaussian no longer has to
+// infer the local frame from where its neighbours sit.
 __global__ void deform_fwd_kernel(
     const float* __restrict__ p, const int* __restrict__ row_off,
     const int* __restrict__ pair_a, const float* __restrict__ w,
-    const float* __restrict__ q, float* __restrict__ ccout,
+    const float* __restrict__ q, const float* __restrict__ RS,
+    float* __restrict__ ccout,
     float* __restrict__ Aout, float* __restrict__ Sout, int N) {
   int n = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
   int lane = threadIdx.x & 31;
@@ -436,6 +440,8 @@ __global__ void deform_fwd_kernel(
     float qj[3] = {q[j * 3 + 0], q[j * 3 + 1], q[j * 3 + 2]};
     for (int i = 0; i < 3; ++i)
       for (int k = 0; k < 3; ++k) A[i * 3 + k] += wj * d[i] * qj[k];
+    if (RS != nullptr)
+      for (int i = 0; i < 9; ++i) A[i] += wj * RS[a * 9 + i];
   }
   for (int i = 0; i < 9; ++i) A[i] = warp_allsum(A[i]);
   if (lane == 0) {
@@ -491,6 +497,73 @@ __global__ void deform_bwd_pair_kernel(
     for (int i = 0; i < 3; ++i) s += gAn[i * 3 + k] * d[i];
     gq[j * 3 + k] = wj * s;
   }
+}
+
+// dL/dRS_a = sum_g w_ga gA_g, over the anchor-major list so no atomics are
+// needed -- a few hundred anchors receiving millions of contributions is the
+// worst case for an atomic scatter
+__global__ void deform_bwd_rs_kernel(
+    const float* __restrict__ w, const float* __restrict__ gA,
+    const int* __restrict__ pair_g, const int* __restrict__ acsr_off,
+    const int* __restrict__ acsr_pair, float* __restrict__ gRS, int M) {
+  int a = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  int lane = threadIdx.x & 31;
+  if (a >= M) return;
+  int lo = acsr_off[a], hi = acsr_off[a + 1];
+  float acc[9];
+  for (int i = 0; i < 9; ++i) acc[i] = 0.f;
+  for (int t = lo + lane; t < hi; t += 32) {
+    int j = acsr_pair[t];
+    int g = pair_g[j];
+    float wj = w[j];
+    for (int i = 0; i < 9; ++i) acc[i] += wj * gA[g * 9 + i];
+  }
+  for (int i = 0; i < 9; ++i) acc[i] = warp_allsum(acc[i]);
+  if (lane == 0) for (int i = 0; i < 9; ++i) gRS[a * 9 + i] = acc[i];
+}
+
+// M_a = sum_g w_ga (V_g P_g Binv_g), the moment the torque is built from. Same
+// reduction the force gather does, accumulating the matrix instead of
+// contracting it with q.
+__global__ void moment_kernel(
+    const float* __restrict__ PB, const float* __restrict__ w,
+    const float* __restrict__ vol, const int* __restrict__ pair_g,
+    const int* __restrict__ acsr_off, const int* __restrict__ acsr_pair,
+    float* __restrict__ Mout, int M) {
+  int a = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  int lane = threadIdx.x & 31;
+  if (a >= M) return;
+  int lo = acsr_off[a], hi = acsr_off[a + 1];
+  float acc[9];
+  for (int i = 0; i < 9; ++i) acc[i] = 0.f;
+  for (int t = lo + lane; t < hi; t += 32) {
+    int j = acsr_pair[t];
+    int g = pair_g[j];
+    float c = w[j] * vol[g];
+    for (int i = 0; i < 9; ++i) acc[i] += c * PB[g * 9 + i];
+  }
+  for (int i = 0; i < 9; ++i) acc[i] = warp_allsum(acc[i]);
+  if (lane == 0) for (int i = 0; i < 9; ++i) Mout[a * 9 + i] = acc[i];
+}
+
+// its backward: dL/dPB_g = sum_a w_ga V_g gM_a, per Gaussian
+__global__ void moment_bwd_kernel(
+    const float* __restrict__ gM, const float* __restrict__ w,
+    const float* __restrict__ vol, const int* __restrict__ row_off,
+    const int* __restrict__ pair_a, float* __restrict__ gPB, int N) {
+  int g = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  int lane = threadIdx.x & 31;
+  if (g >= N) return;
+  int lo = row_off[g], hi = row_off[g + 1];
+  float acc[9];
+  for (int i = 0; i < 9; ++i) acc[i] = 0.f;
+  for (int j = lo + lane; j < hi; j += 32) {
+    int a = pair_a[j];
+    float c = w[j] * vol[g];
+    for (int i = 0; i < 9; ++i) acc[i] += c * gM[a * 9 + i];
+  }
+  for (int i = 0; i < 9; ++i) acc[i] = warp_allsum(acc[i]);
+  if (lane == 0) for (int i = 0; i < 9; ++i) gPB[g * 9 + i] = acc[i];
 }
 
 // dL/dp_j = w_j (gA (q_j - S) + gcc), gathered per anchor
@@ -672,19 +745,60 @@ std::vector<torch::Tensor> sparse_deform(
 
 std::vector<torch::Tensor> deform_fwd(
     torch::Tensor p, torch::Tensor row_off, torch::Tensor pair_a,
-    torch::Tensor w, torch::Tensor q, int64_t N) {
+    torch::Tensor w, torch::Tensor q, torch::Tensor RS, int64_t N) {
   CHECK(p); CHECK(row_off); CHECK(pair_a); CHECK(w); CHECK(q);
   auto opts = p.options();
   auto cc = torch::empty({(int64_t)N, 3}, opts);
   auto A = torch::empty({(int64_t)N, 3, 3}, opts);
   auto S = torch::empty({(int64_t)N, 3}, opts);
+  const float* rs = RS.numel() ? (CHECK(RS), RS.data_ptr<float>()) : nullptr;
   const int threads = 128;
   const int blocks = ((int)N * 32 + threads - 1) / threads;
   deform_fwd_kernel<<<blocks, threads>>>(
       p.data_ptr<float>(), row_off.data_ptr<int>(), pair_a.data_ptr<int>(),
-      w.data_ptr<float>(), q.data_ptr<float>(), cc.data_ptr<float>(),
+      w.data_ptr<float>(), q.data_ptr<float>(), rs, cc.data_ptr<float>(),
       A.data_ptr<float>(), S.data_ptr<float>(), (int)N);
   return {cc, A, S};
+}
+
+// dL/dRS, when the anchors are oriented
+torch::Tensor deform_bwd_rs(
+    torch::Tensor gA, torch::Tensor w, torch::Tensor pair_g,
+    torch::Tensor acsr_off, torch::Tensor acsr_pair, int64_t M) {
+  CHECK(gA); CHECK(w);
+  auto gRS = torch::empty({(int64_t)M, 3, 3}, gA.options());
+  const int t = 128;
+  deform_bwd_rs_kernel<<<((int)M * 32 + t - 1) / t, t>>>(
+      w.data_ptr<float>(), gA.data_ptr<float>(), pair_g.data_ptr<int>(),
+      acsr_off.data_ptr<int>(), acsr_pair.data_ptr<int>(),
+      gRS.data_ptr<float>(), (int)M);
+  return gRS;
+}
+
+torch::Tensor moment_fwd(
+    torch::Tensor PB, torch::Tensor w, torch::Tensor vol, torch::Tensor pair_g,
+    torch::Tensor acsr_off, torch::Tensor acsr_pair, int64_t M) {
+  CHECK(PB); CHECK(w); CHECK(vol);
+  auto Mo = torch::empty({(int64_t)M, 3, 3}, PB.options());
+  const int t = 128;
+  moment_kernel<<<((int)M * 32 + t - 1) / t, t>>>(
+      PB.data_ptr<float>(), w.data_ptr<float>(), vol.data_ptr<float>(),
+      pair_g.data_ptr<int>(), acsr_off.data_ptr<int>(),
+      acsr_pair.data_ptr<int>(), Mo.data_ptr<float>(), (int)M);
+  return Mo;
+}
+
+torch::Tensor moment_bwd(
+    torch::Tensor gM, torch::Tensor w, torch::Tensor vol,
+    torch::Tensor row_off, torch::Tensor pair_a, int64_t N) {
+  CHECK(gM); CHECK(w); CHECK(vol);
+  auto gPB = torch::empty({(int64_t)N, 3, 3}, gM.options());
+  const int t = 128;
+  moment_bwd_kernel<<<((int)N * 32 + t - 1) / t, t>>>(
+      gM.data_ptr<float>(), w.data_ptr<float>(), vol.data_ptr<float>(),
+      row_off.data_ptr<int>(), pair_a.data_ptr<int>(),
+      gPB.data_ptr<float>(), (int)N);
+  return gPB;
 }
 
 std::vector<torch::Tensor> deform_bwd(
@@ -756,6 +870,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("deform", &sparse_deform, "Shape-matching F and centroid (CUDA, forward only)");
   m.def("deform_fwd", &deform_fwd, "Pair reduction to (centroid, A, S) (CUDA)");
   m.def("deform_bwd", &deform_bwd, "Its backward, to (p, w, q) (CUDA)");
+  m.def("deform_bwd_rs", &deform_bwd_rs, "dL/d(R S) for oriented anchors (CUDA)");
+  m.def("moment_fwd", &moment_fwd, "Per-anchor stress moment, for the torque (CUDA)");
+  m.def("moment_bwd", &moment_bwd, "Its backward, to PB (CUDA)");
   m.def("gather_fwd", &gather_fwd, "Scatter P@Binv onto anchor forces (CUDA)");
   m.def("gather_bwd", &gather_bwd, "Its backward, to (PB, w, q) (CUDA)");
 }

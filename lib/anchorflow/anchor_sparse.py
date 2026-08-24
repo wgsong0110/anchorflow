@@ -348,7 +348,11 @@ class AnchorSparse(nn.Module):
         # grad is on -- it is the fit's hot path as much as the rollout's
         if self._pairs_ok():
             csr = sparsestep.build_csr(self.pair_g, self.pair_a, self.N, self.M)
-            cc, A = sparsestep.deform_diff(p, w, q, csr, self.N, self.M)
+            RS = None
+            if self.oriented:
+                o = self._o if self._o is not None else self._ident()
+                RS = (quat_to_R(o) @ self._S).contiguous()
+            cc, A = sparsestep.deform_diff(p, w, q, csr, self.N, self.M, RS)
             return A @ Binv + blocked, cc
         pa = p[self.pair_a]
         cc = torch.zeros(self.N, 3, device=self.dev).index_add_(
@@ -394,7 +398,7 @@ class AnchorSparse(nn.Module):
         return self._pairs_ok() and not torch.is_grad_enabled()
 
     def _pairs_ok(self):
-        if self.quad or self.oriented:
+        if self.quad:
             return False
         """the pair reductions, which carry their own backward"""
         return (sparsestep is not None and sparsestep.HAVE_CUDA
@@ -487,13 +491,21 @@ class AnchorSparse(nn.Module):
         """both, from one stress evaluation"""
         P = self._stress(p, w, rc, q, Binv, blocked)
         PB = P @ Binv
-        contrib = -(self.vol[self.pair_g] * w).unsqueeze(-1) * \
-            torch.einsum("pij,pj->pi", PB[self.pair_g], q)
-        f = torch.zeros(self.M, 3, device=self.dev).index_add_(
-            0, self.pair_a, contrib)
-        G = (self.vol.unsqueeze(-1).unsqueeze(-1) * PB)[self.pair_g]
-        M = torch.zeros(self.M, 3, 3, device=self.dev).index_add_(
-            0, self.pair_a, w.reshape(-1, 1, 1) * G) @ self._S
+        if self._pairs_ok():
+            csr = sparsestep.build_csr(self.pair_g, self.pair_a, self.N, self.M)
+            f = sparsestep.gather_diff(PB, w, q, self.vol, csr, self.N, self.M)
+        else:
+            contrib = -(self.vol[self.pair_g] * w).unsqueeze(-1) * \
+                torch.einsum("pij,pj->pi", PB[self.pair_g], q)
+            f = torch.zeros(self.M, 3, device=self.dev).index_add_(
+                0, self.pair_a, contrib)
+        if self._pairs_ok():
+            csr = sparsestep.build_csr(self.pair_g, self.pair_a, self.N, self.M)
+            M = sparsestep.moment_diff(PB, w, self.vol, csr, self.N, self.M) @ self._S
+        else:
+            G = (self.vol.unsqueeze(-1).unsqueeze(-1) * PB)[self.pair_g]
+            M = torch.zeros(self.M, 3, 3, device=self.dev).index_add_(
+                0, self.pair_a, w.reshape(-1, 1, 1) * G) @ self._S
         o = self._o if self._o is not None else self._ident()
         Y = quat_to_R(o) @ M.transpose(-1, -2)
         tau = torch.stack([Y[:, 2, 1] - Y[:, 1, 2],
