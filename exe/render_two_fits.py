@@ -112,13 +112,15 @@ for case in args.cases:
 
     runs = {"MPM": truth}
     for name, fs in FITS:
-        cache = fs.fit.prepare()
-        p = fs.fit.project(truth[0], cache)
-        v = fs.fit.project_v(sc.initial_velocity(force)[mat], cache)
-        out = [fs.skin(p, sc.pos.clone())[mat]]
+        # exactly what eval_vs_mpm.py does: the anchors start canonical, the
+        # impulse becomes an anchor velocity, and skinning is a separate call --
+        # explicit_step hands the cloud back untouched
+        p, v, gp = fs.anchor_canonical.clone(), fs.initial_velocity(force), fs.pos.clone()
+        out = [gp[mat].clone()]
         for _ in tqdm(range(args.frames), desc=f"  {name}", ncols=90):
-            p, v, _ = fs.fit.rollout(p, v, args.dt_mult, cache)
-            out.append(fs.skin(p, sc.pos.clone())[mat])
+            p, v, gp = fs.explicit_step(p, v, gp, args.dt_mult)
+            gp = fs.skin(p, gp)
+            out.append(gp[mat].clone())
         runs[name] = torch.stack(out)
 
     names = ["MPM"] + [n for n, _ in FITS]
