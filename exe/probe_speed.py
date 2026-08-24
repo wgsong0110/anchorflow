@@ -131,4 +131,30 @@ for oriented in (False, True):
 
     print(f"  {'one coarse frame fwd+bwd':32} {clock(one_frame, 3, 1):8.2f} ms"
           f"   -> 12 frames = {clock(one_frame, 3, 1) * 12 / 1000:.1f} s")
+
+    # ---- which stage's backward is the expensive one ------------------------
+    def bw(fn, name, it=None):
+        def go():
+            pp = p.detach().clone().requires_grad_(True)
+            out = fn(pp)
+            out.square().mean().backward()
+        print(f"  {name:32} {clock(go, 5, 2):8.2f} ms")
+
+    print("  -- 단계별 순+역전파 --")
+    bw(lambda pp: fit.deformation(pp, w, rc, q, Binv, blocked)[0], "deformation fwd+bwd")
+
+    def polar_only(pp):
+        F_, _ = fit.deformation(pp, w, rc, q, Binv, blocked)
+        return closest_rotation(F_, fit.polar_iters, fit.polar_ridge)
+    bw(polar_only, f"+ polar ({fit.polar_iters} iters) fwd+bwd")
+
+    def polar3(pp):
+        F_, _ = fit.deformation(pp, w, rc, q, Binv, blocked)
+        return closest_rotation(F_, 3, fit.polar_ridge)
+    bw(polar3, "+ polar (3 iters) fwd+bwd")
+
+    bw(lambda pp: fit.force(pp, w, rc, q, Binv, blocked), "force fwd+bwd")
+    if oriented:
+        bw(lambda pp: fit.force_torque(pp, w, rc, q, Binv, blocked)[0],
+           "force_torque fwd+bwd")
     torch.set_grad_enabled(False)
