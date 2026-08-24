@@ -111,7 +111,73 @@ def closest_rotation(F, iters=8, ridge=1e-6):
     return R
 
 
-def polar_R(F, iters=8, ridge=1e-6):
+class _PolarR(torch.autograd.Function):
+    """the Newton polar factor, with its derivative in closed form.
+
+    Differentiating the iteration itself means differentiating six chained 3x3
+    inverses, and that is the single most expensive thing in a substep: the
+    polar factor costs 4 ms forward and adds 22 ms once its backward is
+    included (exe/probe_speed.py). The derivative does not need the iteration.
+
+    From F = R S with S symmetric, a perturbation gives A = R^T dF = Omega S +
+    dS with Omega = R^T dR skew and dS symmetric. The antisymmetric part is
+    Omega S + S Omega = A - A^T, and for Omega = [w]x that is the 3x3 system
+
+        (tr(S) I - S) w = vee(A - A^T),
+
+    positive definite whenever S is. Pushing the incoming gradient G through it,
+    with C = R^T G and c = vee(C - C^T) and b = (tr(S) I - S)^-1 c,
+
+        dL/dF = R [b]x.
+
+    One symmetric 3x3 solve, whatever the iteration count was.
+    """
+
+    @staticmethod
+    def forward(ctx, F, iters, ridge):
+        with torch.no_grad():
+            R = _polar_newton(F, iters, ridge)
+        ctx.save_for_backward(F, R)
+        ctx.ridge = ridge
+        return R
+
+    @staticmethod
+    def backward(ctx, g):
+        F, R = ctx.saved_tensors
+        sh = F.shape
+        F3 = F.reshape(-1, 3, 3)
+        R3 = R.reshape(-1, 3, 3)
+        g3 = g.reshape(-1, 3, 3)
+        Rt = R3.transpose(-1, -2)
+        S = Rt @ F3
+        S = 0.5 * (S + S.transpose(-1, -2))
+        C = Rt @ g3
+        cc = C - C.transpose(-1, -2)
+        c = torch.stack([cc[:, 2, 1], cc[:, 0, 2], cc[:, 1, 0]], -1)
+        tr = S.diagonal(dim1=-2, dim2=-1).sum(-1)
+        eye = torch.eye(3, device=F.device, dtype=F.dtype)
+        # PD for a proper polar factor; the ridge covers a flipped element, whose
+        # value is corrected without its gradient anyway
+        K = tr.reshape(-1, 1, 1) * eye - S
+        K = K + ctx.ridge * tr.abs().clamp(min=1e-12).reshape(-1, 1, 1) * eye
+        b = torch.einsum("nij,nj->ni", inv3(K), c)
+        z = torch.zeros_like(b[:, 0])
+        bx = torch.stack([
+            torch.stack([z, -b[:, 2], b[:, 1]], -1),
+            torch.stack([b[:, 2], z, -b[:, 0]], -1),
+            torch.stack([-b[:, 1], b[:, 0], z], -1)], -2)
+        return (R3 @ bx).reshape(sh), None, None
+
+
+def polar_R(F, iters=8, ridge=1e-6, analytic=True):
+    """the polar factor. analytic=False differentiates the iteration instead,
+    which is what the closed form above is verified against."""
+    if analytic and torch.is_grad_enabled() and F.requires_grad:
+        return _PolarR.apply(F, iters, ridge)
+    return _polar_newton(F, iters, ridge)
+
+
+def _polar_newton(F, iters=8, ridge=1e-6):
     """the rotation from F = R S, by scaled Newton iteration.
 
     R <- (gamma R + gamma^-1 R^-T) / 2, gamma = |det R|^(-1/3), which converges
