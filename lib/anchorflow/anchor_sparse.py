@@ -495,7 +495,8 @@ class AnchorSparse(nn.Module):
         M = torch.zeros(self.M, 3, 3, device=self.dev).index_add_(
             0, self.pair_a, w.reshape(-1, 1, 1) * G)
         M = M @ self._S
-        Y = quat_to_R(self._o) @ M.transpose(-1, -2)
+        o = self._o if self._o is not None else self._ident()
+        Y = quat_to_R(o) @ M.transpose(-1, -2)
         return torch.stack([Y[:, 2, 1] - Y[:, 1, 2],
                             Y[:, 0, 2] - Y[:, 2, 0],
                             Y[:, 1, 0] - Y[:, 0, 1]], -1)
