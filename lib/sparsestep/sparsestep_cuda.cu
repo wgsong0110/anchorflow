@@ -751,7 +751,8 @@ std::vector<torch::Tensor> deform_fwd(
   auto cc = torch::empty({(int64_t)N, 3}, opts);
   auto A = torch::empty({(int64_t)N, 3, 3}, opts);
   auto S = torch::empty({(int64_t)N, 3}, opts);
-  const float* rs = RS.numel() ? (CHECK(RS), RS.data_ptr<float>()) : nullptr;
+  const float* rs = nullptr;
+  if (RS.numel()) { CHECK(RS); rs = RS.data_ptr<float>(); }
   const int threads = 128;
   const int blocks = ((int)N * 32 + threads - 1) / threads;
   deform_fwd_kernel<<<blocks, threads>>>(
