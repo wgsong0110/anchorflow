@@ -65,7 +65,7 @@ with torch.no_grad():
     o = torch.cat([torch.ones(fit.M, 1, device=dev), ax], -1)
     o = o / o.norm(dim=-1, keepdim=True)
 print(f"[state] anchors moved {float((p_def - fit.pos).norm(dim=-1).max()):.5f}, "
-      f"turned by up to {float(2 * torch.asin(ax.norm(dim=-1).clamp(max=1)) ):.3f} rad")
+      f"turned by up to {float(2 * torch.asin(ax.norm(dim=-1).clamp(max=1).max())):.3f} rad")
 
 
 def rel(a, b):
