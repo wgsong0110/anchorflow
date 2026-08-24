@@ -467,6 +467,40 @@ class AnchorSparse(nn.Module):
             torch.einsum("pij,pj->pi", PB, q)
         return torch.zeros(self.M, 3, device=self.dev).index_add_(0, self.pair_a, contrib)
 
+    def _stress(self, p, w, rc, q, Binv, blocked):
+        """F, and the PK1 that goes with it. Shared by the force and the torque,
+        which otherwise each rebuild the deformation, the polar factor and the
+        material law -- twice per substep for the same numbers."""
+        F, _ = self.deformation(p, w, rc, q, Binv, blocked)
+        R = closest_rotation(F, self.polar_iters, self.polar_ridge)
+        J = det3(F)
+        n_ = F.reshape(-1, 9).norm(dim=-1).clamp(min=1e-12).reshape(-1, 1, 1)
+        Finv_T = inv3(F + 1e-6 * n_ * torch.eye(3, device=self.dev),
+                       eps=1e-30).transpose(-1, -2)
+        k = self.stiffness(w).unsqueeze(-1).unsqueeze(-1)
+        mu = self.mu.unsqueeze(-1).unsqueeze(-1) * k
+        lam = self.lam.unsqueeze(-1).unsqueeze(-1) * k
+        return 2 * mu * (F - R) + lam * (J - 1).unsqueeze(-1).unsqueeze(-1) * \
+            J.unsqueeze(-1).unsqueeze(-1) * Finv_T
+
+    def force_torque(self, p, w, rc, q, Binv, blocked):
+        """both, from one stress evaluation"""
+        P = self._stress(p, w, rc, q, Binv, blocked)
+        PB = P @ Binv
+        contrib = -(self.vol[self.pair_g] * w).unsqueeze(-1) * \
+            torch.einsum("pij,pj->pi", PB[self.pair_g], q)
+        f = torch.zeros(self.M, 3, device=self.dev).index_add_(
+            0, self.pair_a, contrib)
+        G = (self.vol.unsqueeze(-1).unsqueeze(-1) * PB)[self.pair_g]
+        M = torch.zeros(self.M, 3, 3, device=self.dev).index_add_(
+            0, self.pair_a, w.reshape(-1, 1, 1) * G) @ self._S
+        o = self._o if self._o is not None else self._ident()
+        Y = quat_to_R(o) @ M.transpose(-1, -2)
+        tau = torch.stack([Y[:, 2, 1] - Y[:, 1, 2],
+                           Y[:, 0, 2] - Y[:, 2, 0],
+                           Y[:, 1, 0] - Y[:, 0, 1]], -1)
+        return f, tau
+
     def _ident(self):
         o = torch.zeros(self.M, 4, device=self.dev)
         o[:, 0] = 1.0
@@ -504,8 +538,8 @@ class AnchorSparse(nn.Module):
     def substep_o(self, p, v, o, wv, w, rc, q, Binv, blocked, m, keep):
         """the oriented substep: linear as before, plus a spin driven by torque"""
         self._o = o
-        a = self.force(p, w, rc, q, Binv, blocked) / m
-        tau = self.torque(p, w, rc, q, Binv, blocked)
+        f, tau = self.force_torque(p, w, rc, q, Binv, blocked)
+        a = f / m
         v = (v + self.dt * a) * self.damping * keep
         wv = (wv + self.dt * tau / self._inertia) * self.damping * keep
         dp = self.dt * v
