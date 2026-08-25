@@ -44,6 +44,7 @@ class MPMTeacher:
 
     def __init__(self, sc, n_grid=None, grid_lim=2.0, affine=True, margin=0.02,
                   sparse=None):
+        import warp as wp
         from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP
 
         self.sc = sc
@@ -122,6 +123,14 @@ class MPMTeacher:
                 pass
             else:
                 raise ValueError(f"boundary condition {t!r} is not handled")
+        # Some boundary conditions build their kernel when they are registered --
+        # enforce_particle_velocity_rotation defines modify_particle_v_before_p2g
+        # inside the call. warp compiles a module once and then refuses to add to
+        # it, so a driver registered after anything else in that module has run
+        # comes back as "Failed to find forward kernel" at the first step. Loading
+        # the module here, with every driver already in it, is what keeps that from
+        # depending on the order the caller happens to do things in.
+        wp.force_load(device=self.wp_dev)
         self.solver = s
 
         # projection, fixed at the canonical configuration like the blend weights.
