@@ -61,6 +61,10 @@ ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--c", type=float, default=0.25,
                  help="the kernel value that bounds an anchor's support. Smaller "
                       "reaches further and costs more pairs.")
+ap.add_argument("--sh_degree", type=int, default=3,
+                 help="spherical-harmonic degree the PLY was trained with. The "
+                      "ficus scene is 3; DreamPhysics's ball is 0, and the "
+                      "loader asserts rather than adapting.")
 ap.add_argument("--quad", type=int, default=0,
                  help="quadratic shape matching: a Gaussian's neighbourhood is "
                       "allowed an affine PLUS quadratic deformation instead of "
@@ -259,7 +263,8 @@ torch.manual_seed(0)
 wp.init()
 
 sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev,
-                        frozen_weights=True, rot_fallback=True, eig_floor=args.eig_floor)
+                        frozen_weights=True, rot_fallback=True,
+                        eig_floor=args.eig_floor, sh_degree=args.sh_degree)
 T = MPMTeacher(sc)
 base = None
 for bc in sc.cfg.get("boundary_conditions", []):
