@@ -158,51 +158,6 @@ class AnchorSparse(nn.Module):
         for b in self.bcs:
             if "normal" in b:
                 b["normal"] = b["normal"] / b["normal"].norm().clamp(min=1e-12)
-
-    def _boundaries(self, p, v):
-        """the wall and the scripted conditions, in the order MPM applies them"""
-        if self.wall is not None:
-            lo, hi = self.wall
-            v = torch.where((p < lo) & (v < 0), torch.zeros_like(v), v)
-            v = torch.where((p > hi) & (v > 0), torch.zeros_like(v), v)
-            p = p.clamp(min=lo, max=hi)
-        if self.bcs:
-            p, v = self.apply_bcs(p, v, self._t)
-        return p, v
-
-    def apply_bcs(self, p, v, t):
-        """the scripted boundary conditions, on the anchors, at simulated time t"""
-        for b in self.bcs:
-            if not (b["t0"] <= t < b["t1"]):
-                continue
-            if b["kind"] == "translate":
-                inside = ((p - b["point"]).abs() <= b["size"]).all(-1, keepdim=True)
-                v = torch.where(inside, b["vel"].reshape(1, 3).expand_as(v), v)
-            elif b["kind"] == "rotate":
-                n = b["normal"]
-                d = p - b["point"]
-                along = (d * n).sum(-1, keepdim=True)
-                radial = d - along * n
-                inside = ((along.abs() <= b["hr"][0]) &
-                          (radial.norm(dim=-1, keepdim=True) <= b["hr"][1]))
-                # a rigid spin about the axis, plus a slide along it
-                spin = torch.cross(n.reshape(1, 3).expand_as(radial), radial, dim=-1)
-                v = torch.where(inside, b["rot"] * spin + b["tr"] * n.reshape(1, 3), v)
-            elif b["kind"] == "surface":
-                n = b["normal"]
-                dist = ((p - b["point"]) * n).sum(-1, keepdim=True)
-                vn = (v * n).sum(-1, keepdim=True)
-                hit = (dist < 0) & (vn < 0)
-                if b["surface"] == "sticky":
-                    v = torch.where(hit, torch.zeros_like(v), v)
-                else:
-                    vt = v - vn * n
-                    # Coulomb friction against the normal impulse
-                    keep = (1.0 + b["friction"] * vn / vt.norm(dim=-1, keepdim=True)
-                            .clamp(min=1e-12)).clamp(min=0)
-                    v = torch.where(hit, vt * keep, v)
-                p = torch.where(hit, p - dist * n, p)
-        return p, v
         # an anchor that shrinks far enough holds almost nothing, its mass goes
         # with it, and the accelerations it sees go up without bound; one that
         # grows without limit swallows the object. Both ends were reachable --
@@ -351,6 +306,51 @@ class AnchorSparse(nn.Module):
                 (2 * x, zz, zz), (zz, 2 * y, zz), (zz, zz, 2 * z),
                 (y, x, zz), (zz, z, y), (z, zz, x)]
         return torch.stack([torch.stack(r, -1) for r in rows], 1)
+
+    def apply_bcs(self, p, v, t):
+        """the scripted boundary conditions, on the anchors, at simulated time t"""
+        for b in self.bcs:
+            if not (b["t0"] <= t < b["t1"]):
+                continue
+            if b["kind"] == "translate":
+                inside = ((p - b["point"]).abs() <= b["size"]).all(-1, keepdim=True)
+                v = torch.where(inside, b["vel"].reshape(1, 3).expand_as(v), v)
+            elif b["kind"] == "rotate":
+                n = b["normal"]
+                d = p - b["point"]
+                along = (d * n).sum(-1, keepdim=True)
+                radial = d - along * n
+                inside = ((along.abs() <= b["hr"][0]) &
+                          (radial.norm(dim=-1, keepdim=True) <= b["hr"][1]))
+                # a rigid spin about the axis, plus a slide along it
+                spin = torch.cross(n.reshape(1, 3).expand_as(radial), radial, dim=-1)
+                v = torch.where(inside, b["rot"] * spin + b["tr"] * n.reshape(1, 3), v)
+            elif b["kind"] == "surface":
+                n = b["normal"]
+                dist = ((p - b["point"]) * n).sum(-1, keepdim=True)
+                vn = (v * n).sum(-1, keepdim=True)
+                hit = (dist < 0) & (vn < 0)
+                if b["surface"] == "sticky":
+                    v = torch.where(hit, torch.zeros_like(v), v)
+                else:
+                    vt = v - vn * n
+                    # Coulomb friction against the normal impulse
+                    keep = (1.0 + b["friction"] * vn / vt.norm(dim=-1, keepdim=True)
+                            .clamp(min=1e-12)).clamp(min=0)
+                    v = torch.where(hit, vt * keep, v)
+                p = torch.where(hit, p - dist * n, p)
+        return p, v
+
+    def _boundaries(self, p, v):
+        """the wall and the scripted conditions, in the order MPM applies them"""
+        if self.wall is not None:
+            lo, hi = self.wall
+            v = torch.where((p < lo) & (v < 0), torch.zeros_like(v), v)
+            v = torch.where((p > hi) & (v > 0), torch.zeros_like(v), v)
+            p = p.clamp(min=lo, max=hi)
+        if self.bcs:
+            p, v = self.apply_bcs(p, v, self._t)
+        return p, v
 
     def prepare(self):
         w = self.weights()
