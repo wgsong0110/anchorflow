@@ -61,6 +61,11 @@ ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--c", type=float, default=0.25,
                  help="the kernel value that bounds an anchor's support. Smaller "
                       "reaches further and costs more pairs.")
+ap.add_argument("--base_force", type=float, nargs=3, default=None,
+                 help="the impulse the trajectory distribution is drawn around. "
+                      "Defaults to the config's particle_impulse; a scene driven "
+                      "by gravity alone (DreamPhysics's ball) has none, and the "
+                      "fit still needs something to excite it with.")
 ap.add_argument("--sh_degree", type=int, default=3,
                  help="spherical-harmonic degree the PLY was trained with. The "
                       "ficus scene is 3; DreamPhysics's ball is 0, and the "
@@ -270,6 +275,10 @@ base = None
 for bc in sc.cfg.get("boundary_conditions", []):
     if bc["type"] == "particle_impulse":
         base = torch.tensor(bc["force"], device=dev)
+if args.base_force is not None:
+    base = torch.tensor(args.base_force, device=dev)
+if base is None:
+    raise SystemExit("this scene has no particle_impulse; pass --base_force")
 
 fit = AnchorSparse(sc, c=args.c, eig_floor=args.eig_floor,
                     polar_iters=args.polar_iters, cfl_frac=args.cfl_frac,
