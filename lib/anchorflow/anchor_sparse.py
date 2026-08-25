@@ -105,6 +105,10 @@ class AnchorSparse(nn.Module):
         # the nine unconstrained ones that made a carried F drift.
         self.oriented = oriented
         self._o = self._wv = None
+        # a body force, which the ficus config sets to zero and every other
+        # scene does not. Without it the simulator simply does not fall, and a
+        # fit cannot recover a term that is missing from the model.
+        self.register_buffer("gravity", sc.gravity.clone().reshape(1, 3))
         # an anchor that shrinks far enough holds almost nothing, its mass goes
         # with it, and the accelerations it sees go up without bound; one that
         # grows without limit swallows the object. Both ends were reachable --
@@ -551,7 +555,7 @@ class AnchorSparse(nn.Module):
         """the oriented substep: linear as before, plus a spin driven by torque"""
         self._o = o
         f, tau = self.force_torque(p, w, rc, q, Binv, blocked)
-        a = f / m
+        a = f / m + self.gravity
         v = (v + self.dt * a) * self.damping * keep
         wv = (wv + self.dt * tau / self._inertia) * self.damping * keep
         dp = self.dt * v
@@ -568,7 +572,7 @@ class AnchorSparse(nn.Module):
         return p + dp, v, o, wv, (over * over).mean()
 
     def substep(self, p, v, w, rc, q, Binv, blocked, m, keep):
-        a = self.force(p, w, rc, q, Binv, blocked) / m
+        a = self.force(p, w, rc, q, Binv, blocked) / m + self.gravity
         v = (v + self.dt * a) * self.damping * keep
         dp = self.dt * v
         # how far an anchor travels in one substep, against the spacing between
