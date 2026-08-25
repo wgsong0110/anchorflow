@@ -76,10 +76,50 @@ class MPMTeacher:
             mp["additional_material_params"] = cfg["additional_material_params"]
         s.set_parameters_dict(mp)
         s.finalize_mu_lam()
+        # Every boundary condition the scene asks for, dispatched the way
+        # PhysGaussian's utils/decode_param.py dispatches them. Only cuboid was
+        # handled here, which is all the ficus config uses; any other scene had
+        # its material fall out of the grid, and warp reports that as an illegal
+        # memory access rather than as a missing wall.
         for bc in cfg.get("boundary_conditions", []):
-            if bc["type"] == "cuboid":
-                s.set_velocity_on_cuboid(bc["point"], bc["size"], [0.0, 0.0, 0.0],
-                                          start_time=0.0, end_time=999.0, reset=1)
+            t = bc["type"]
+            t0 = float(bc.get("start_time", 0.0))
+            t1 = float(bc.get("end_time", 1e3))
+            if t == "cuboid":
+                s.set_velocity_on_cuboid(bc["point"], bc["size"],
+                                          bc.get("velocity", [0.0, 0.0, 0.0]),
+                                          start_time=t0, end_time=t1,
+                                          reset=int(bc.get("reset", 1)))
+            elif t == "bounding_box":
+                s.add_bounding_box()
+            elif t == "enforce_particle_translation":
+                s.enforce_particle_velocity_translation(
+                    point=bc["point"], size=bc["size"], velocity=bc["velocity"],
+                    start_time=t0, end_time=t1)
+            elif t == "enforce_particle_velocity_rotation":
+                s.enforce_particle_velocity_rotation(
+                    point=bc["point"], normal=bc["normal"],
+                    half_height_and_radius=bc["half_height_and_radius"],
+                    rotation_scale=bc["rotation_scale"],
+                    translation_scale=bc["translation_scale"],
+                    start_time=t0, end_time=t1)
+            elif t == "surface_collider":
+                s.add_surface_collider(
+                    point=bc["point"], normal=bc["normal"],
+                    surface=bc.get("surface", "sticky"),
+                    friction=float(bc.get("friction", 0.0)),
+                    start_time=t0, end_time=t1)
+            elif t == "release_particles_sequentially":
+                s.release_particles_sequentially(
+                    normal=bc["normal"], start_position=bc["start_position"],
+                    end_position=bc["end_position"],
+                    num_layers=bc["num_layers"],
+                    start_time=t0, end_time=t1)
+            elif t == "particle_impulse":
+                # delivered by the caller, as an initial anchor velocity
+                pass
+            else:
+                raise ValueError(f"boundary condition {t!r} is not handled")
         self.solver = s
 
         # projection, fixed at the canonical configuration like the blend weights.
