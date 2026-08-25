@@ -47,6 +47,9 @@ ap.add_argument("--every", type=int, default=10, help="score every N frames")
 ap.add_argument("--n_traj", type=int, default=4)
 ap.add_argument("--impulse_range", type=float, default=10.0)
 ap.add_argument("--seed", type=int, default=31337, help="the held-out stream")
+ap.add_argument("--base_force", type=float, nargs=3, default=None,
+                 help="scenes whose config carries no particle_impulse need the "
+                      "kick named here instead")
 ap.add_argument("--out", default=None)
 args = ap.parse_args()
 
@@ -67,9 +70,12 @@ sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev
                         eig_floor=args.eig_floor)
 T = MPMTeacher(sc)
 mat = T.mat
-base = next(torch.tensor(bc["force"], device=dev)
-            for bc in sc.cfg["boundary_conditions"]
-            if bc["type"] == "particle_impulse")
+if args.base_force is not None:
+    base = torch.tensor(args.base_force, device=dev)
+else:
+    base = next(torch.tensor(bc["force"], device=dev)
+                for bc in sc.cfg["boundary_conditions"]
+                if bc["type"] == "particle_impulse")
 
 FITS = []
 for spec in args.fit:

@@ -57,6 +57,9 @@ ap.add_argument("--student_fit", default=None,
                       "predicts displacements for those anchors, in that many of "
                       "them -- so scoring it means rolling it out on the set it "
                       "learned, and skinning through that one.")
+ap.add_argument("--base_force", type=float, nargs=3, default=None,
+                help="the impulse to build cases from, for scenes whose config "
+                     "has no particle_impulse of its own")
 ap.add_argument("--fit", default=None,
                  help="a fitted discretisation from fit_anchor_sim.py. Added as its own "
                       "row: one-step agreement is what was optimised, and whether that "
@@ -83,6 +86,10 @@ base = None
 for bc in sc.cfg.get("boundary_conditions", []):
     if bc["type"] == "particle_impulse":
         base = torch.tensor(bc["force"], device=dev)
+if args.base_force is not None:
+    base = torch.tensor(args.base_force, device=dev)
+if base is None:
+    raise SystemExit("this scene has no particle_impulse; pass --base_force")
 print(f"[setup] {sc.M} anchors, {T.n} material particles, eig_floor {args.eig_floor}")
 
 
