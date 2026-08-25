@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+import math
+
 import torch
 
 from .anchors import AnchorSet
@@ -32,6 +34,7 @@ class Scene:
     sim: AnchorElasticSim
     # misc
     gravity: torch.Tensor
+    n_grid: int
     sub_dt: float
     damping: float
     to_mpm: object
@@ -221,6 +224,26 @@ def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cud
     # everything else and simply carry zero volume (the fused kernel only ever
     # multiplies by volume), which leaves the physics identical.
     keep = op[:, 0] > cfg["opacity_threshold"]
+
+    # PhysGaussian's own preprocessing, which every scene but ficus needs: the
+    # cloud is turned so the object sits the way the boundary conditions assume,
+    # then scaled. Skipping it puts the material outside the grid, and warp
+    # reports that as an illegal memory access rather than as a bad transform.
+    for deg, ax in zip(cfg.get("rotation_degree", []) or [],
+                        cfg.get("rotation_axis", []) or []):
+        if float(deg) == 0.0:
+            continue
+        th = math.radians(float(deg))
+        c_, s_ = math.cos(th), math.sin(th)
+        R = torch.eye(3, device=dev)
+        i, j = [(1, 2), (0, 2), (0, 1)][int(ax)]
+        R[i, i] = c_; R[i, j] = -s_; R[j, i] = s_; R[j, j] = c_
+        ctr = xyz[keep].mean(0)
+        xyz = (xyz - ctr) @ R.T + ctr
+    if cfg.get("scale") is not None:
+        ctr = xyz[keep].mean(0)
+        xyz = (xyz - ctr) * float(cfg["scale"]) + ctr
+
     xw = xyz[keep]
     pmin, pmax = xw.min(0).values, xw.max(0).values
     mid = (pmin + pmax) / 2
@@ -232,6 +255,8 @@ def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cud
     pm = pos[keep].contiguous()
     N = pos.shape[0]
 
+    # the resolution the scene asks for; the teacher is built with the same one
+    n_grid = int(cfg.get("n_grid", n_grid))
     dx = grid_lim / n_grid
     vi = (pm / dx).long().clamp(0, n_grid - 1)
     flat = (vi[:, 0] * n_grid + vi[:, 1]) * n_grid + vi[:, 2]
@@ -280,6 +305,7 @@ def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cud
     return Scene(cfg=cfg, xyz_world=xyz, pos=pos, keep=keep, volume=volume, mu=mu, lam=lam,
                   anchor_canonical=ac, mass=mass, fixed_mask=fixed, sim=sim,
                   gravity=torch.tensor(cfg["g"], dtype=torch.float32, device=dev),
+                  n_grid=n_grid,
                   sub_dt=float(cfg["substep_dt"]),
                   damping=float(cfg.get("grid_v_damping_scale", 1.0)),
                   to_mpm=to_mpm, undo=undo)

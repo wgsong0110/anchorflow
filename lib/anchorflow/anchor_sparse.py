@@ -125,8 +125,8 @@ class AnchorSparse(nn.Module):
         for bc in sc.cfg.get("boundary_conditions", []):
             t = bc["type"]
             if t == "bounding_box":
-                # MPMTeacher's defaults: 100 cells over [0, 2]
-                cell = 2.0 / 100.0
+                # the same three cells of padding, at the scene's resolution
+                cell = 2.0 / float(getattr(sc, "n_grid", 100) or 100)
                 self.wall = (3 * cell, 2.0 - 3 * cell)
             elif t == "enforce_particle_translation":
                 self.bcs.append({

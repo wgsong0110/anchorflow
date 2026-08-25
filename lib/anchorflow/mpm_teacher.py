@@ -42,7 +42,7 @@ class MPMTeacher:
     source.
     """
 
-    def __init__(self, sc, n_grid=100, grid_lim=2.0, affine=True, margin=0.02,
+    def __init__(self, sc, n_grid=None, grid_lim=2.0, affine=True, margin=0.02,
                   sparse=None):
         from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP
 
@@ -58,6 +58,8 @@ class MPMTeacher:
         # warp resolves devices by name and rejects a torch.device object
         self.wp_dev = str(self.dev)
         cfg = sc.cfg
+        # the scene's own resolution: tear_bread asks for 150, wolf for 200
+        n_grid = int(getattr(sc, "n_grid", None) or n_grid or 100)
         self.mat = torch.nonzero(sc.keep, as_tuple=False).squeeze(-1)
         self.pos_m = sc.pos[self.mat].contiguous()
         self.vol_m = sc.volume[self.mat].contiguous()
