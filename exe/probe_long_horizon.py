@@ -93,9 +93,15 @@ spans = []
 died = {n: 0 for n, _ in FITS}
 
 for ti, force in enumerate(forces):
+    # MPM starts the way the fit's own trajectory generator starts it: the
+    # impulse becomes an anchor velocity, which is then spread onto the
+    # particles by the same P2G weights. sc.initial_velocity is per ANCHOR.
+    ref = FITS[0][1].fit
+    ca0 = ref.prepare()
+    dv = ref.impulse_dv(force, ca0)
     x0 = T.pos_m.clone()
-    v0 = sc.initial_velocity(force)[mat] if sc.initial_velocity(force).shape[0] != mat.numel() \
-        else sc.initial_velocity(force)
+    v0 = torch.zeros(ref.N, 3, device=dev).index_add_(
+        0, ref.pair_g, ca0[0].unsqueeze(-1) * dv[ref.pair_a])
     T._set(x0.clone(), v0.contiguous(), T.eye.clone(), torch.zeros_like(T.eye))
 
     states = {}
