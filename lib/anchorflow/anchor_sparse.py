@@ -109,6 +109,16 @@ class AnchorSparse(nn.Module):
         # scene does not. Without it the simulator simply does not fall, and a
         # fit cannot recover a term that is missing from the model.
         self.register_buffer("gravity", sc.gravity.clone().reshape(1, 3))
+        # the domain MPM's grid boundary enforces: within three cells of the
+        # edge it zeroes the outward velocity component, so material slides
+        # along the wall rather than through it. Without the same condition the
+        # anchors fall out of the world and no fit can follow that.
+        self.wall = None
+        for bc in sc.cfg.get("boundary_conditions", []):
+            if bc["type"] == "bounding_box":
+                # MPMTeacher's defaults: 100 cells over [0, 2]
+                cell = 2.0 / 100.0
+                self.wall = (3 * cell, 2.0 - 3 * cell)
         # an anchor that shrinks far enough holds almost nothing, its mass goes
         # with it, and the accelerations it sees go up without bound; one that
         # grows without limit swallows the object. Both ends were reachable --
@@ -569,7 +579,13 @@ class AnchorSparse(nn.Module):
         o = o + self.dt * do
         o = o / o.norm(dim=-1, keepdim=True).clamp(min=1e-12)
         over = (dp.norm(dim=-1) / self.cfl_limit - 1.0).clamp(min=0)
-        return p + dp, v, o, wv, (over * over).mean()
+        p = p + dp
+        if self.wall is not None:
+            lo, hi = self.wall
+            v = torch.where((p < lo) & (v < 0), torch.zeros_like(v), v)
+            v = torch.where((p > hi) & (v > 0), torch.zeros_like(v), v)
+            p = p.clamp(min=lo, max=hi)
+        return p, v, o, wv, (over * over).mean()
 
     def substep(self, p, v, w, rc, q, Binv, blocked, m, keep):
         a = self.force(p, w, rc, q, Binv, blocked) / m + self.gravity
@@ -581,7 +597,13 @@ class AnchorSparse(nn.Module):
         # discretisation stiffer than the substep can integrate, and it does --
         # 1.4% of the spacing at the start, 50% where the rollout blows up
         over = (dp.norm(dim=-1) / self.cfl_limit - 1.0).clamp(min=0)
-        return p + dp, v, (over * over).mean()
+        p = p + dp
+        if self.wall is not None:
+            lo, hi = self.wall
+            v = torch.where((p < lo) & (v < 0), torch.zeros_like(v), v)
+            v = torch.where((p > hi) & (v > 0), torch.zeros_like(v), v)
+            p = p.clamp(min=lo, max=hi)
+        return p, v, (over * over).mean()
 
     def rollout(self, p, v, n, cache):
         """returns (p, v, cfl) -- the last being how badly, on average, an anchor
