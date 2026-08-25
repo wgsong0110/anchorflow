@@ -225,29 +225,43 @@ def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cud
     # multiplies by volume), which leaves the physics identical.
     keep = op[:, 0] > cfg["opacity_threshold"]
 
-    # PhysGaussian's own preprocessing, which every scene but ficus needs: the
-    # cloud is turned so the object sits the way the boundary conditions assume,
-    # then scaled. Skipping it puts the material outside the grid, and warp
-    # reports that as an illegal memory access rather than as a bad transform.
+    # PhysGaussian's preprocessing, in its order (gs_simulation.py): rotate about
+    # the ORIGIN, crop to sim_area in that rotated frame, then normalise so the
+    # largest extent is `scale` and the centre sits at (1,1,1). The boundary
+    # conditions are authored in the frame this produces, so getting any step
+    # wrong puts the material where no wall or driver reaches it -- which is what
+    # made vasedeck's rotation driver act on empty space.
     for deg, ax in zip(cfg.get("rotation_degree", []) or [],
                         cfg.get("rotation_axis", []) or []):
-        if float(deg) == 0.0:
-            continue
         th = math.radians(float(deg))
         c_, s_ = math.cos(th), math.sin(th)
-        R = torch.eye(3, device=dev)
-        i, j = [(1, 2), (0, 2), (0, 1)][int(ax)]
-        R[i, i] = c_; R[i, j] = -s_; R[j, i] = s_; R[j, j] = c_
-        ctr = xyz[keep].mean(0)
-        xyz = (xyz - ctr) @ R.T + ctr
-    if cfg.get("scale") is not None:
-        ctr = xyz[keep].mean(0)
-        xyz = (xyz - ctr) * float(cfg["scale"]) + ctr
+        if int(ax) == 0:
+            R = [[1, 0, 0], [0, c_, -s_], [0, s_, c_]]
+        elif int(ax) == 1:
+            R = [[c_, 0, s_], [0, 1, 0], [-s_, 0, c_]]
+        else:
+            R = [[c_, -s_, 0], [s_, c_, 0], [0, 0, 1]]
+        xyz = xyz @ torch.tensor(R, device=dev, dtype=xyz.dtype).T
+
+    area = cfg.get("sim_area")
+    if area is not None:
+        inside = torch.ones(xyz.shape[0], dtype=torch.bool, device=dev)
+        for i in range(3):
+            inside &= (xyz[:, i] > area[2 * i]) & (xyz[:, i] < area[2 * i + 1])
+        # outside the simulated area a Gaussian is not material and not drawn by
+        # the physics; dropping it here keeps every downstream index consistent
+        xyz, op, keep = xyz[inside], op[inside], keep[inside]
+        g._xyz = g._xyz[inside]
+        g._features_dc = g._features_dc[inside]
+        g._features_rest = g._features_rest[inside]
+        g._opacity = g._opacity[inside]
+        g._scaling = g._scaling[inside]
+        g._rotation = g._rotation[inside]
 
     xw = xyz[keep]
     pmin, pmax = xw.min(0).values, xw.max(0).values
     mid = (pmin + pmax) / 2
-    sc = 1.0 / (pmax - pmin).max()
+    sc = float(cfg.get("scale") or 1.0) / (pmax - pmin).max()
     one = torch.tensor([1., 1., 1.], device=dev)
     to_mpm = lambda q: (q - mid) * sc + one
     undo = lambda q: (q - one) / sc + mid
