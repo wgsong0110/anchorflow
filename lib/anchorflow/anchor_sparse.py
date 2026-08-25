@@ -105,6 +105,9 @@ class AnchorSparse(nn.Module):
         # the nine unconstrained ones that made a carried F drift.
         self.oriented = oriented
         self._o = self._wv = None
+        # simulated time, which the scripted boundary conditions switch on. Reset
+        # by project(); advanced by every substep.
+        self._t = 0.0
         # a body force, which the ficus config sets to zero and every other
         # scene does not. Without it the simulator simply does not fall, and a
         # fit cannot recover a term that is missing from the model.
@@ -114,11 +117,92 @@ class AnchorSparse(nn.Module):
         # along the wall rather than through it. Without the same condition the
         # anchors fall out of the world and no fit can follow that.
         self.wall = None
+        # boundary conditions that act on the material directly rather than
+        # through the grid. MPM applies them per particle; an anchor stands for
+        # the material around it, so the same test on the anchor's own position
+        # is the faithful translation.
+        self.bcs = []
         for bc in sc.cfg.get("boundary_conditions", []):
-            if bc["type"] == "bounding_box":
+            t = bc["type"]
+            if t == "bounding_box":
                 # MPMTeacher's defaults: 100 cells over [0, 2]
                 cell = 2.0 / 100.0
                 self.wall = (3 * cell, 2.0 - 3 * cell)
+            elif t == "enforce_particle_translation":
+                self.bcs.append({
+                    "kind": "translate",
+                    "point": torch.tensor(bc["point"], device=dev),
+                    "size": torch.tensor(bc["size"], device=dev),
+                    "vel": torch.tensor(bc["velocity"], device=dev),
+                    "t0": float(bc.get("start_time", 0.0)),
+                    "t1": float(bc.get("end_time", 1e3))})
+            elif t == "enforce_particle_velocity_rotation":
+                self.bcs.append({
+                    "kind": "rotate",
+                    "point": torch.tensor(bc["point"], device=dev),
+                    "normal": torch.tensor(bc["normal"], device=dev, dtype=torch.float32),
+                    "hr": torch.tensor(bc["half_height_and_radius"], device=dev),
+                    "rot": float(bc["rotation_scale"]),
+                    "tr": float(bc["translation_scale"]),
+                    "t0": float(bc.get("start_time", 0.0)),
+                    "t1": float(bc.get("end_time", 1e3))})
+            elif t == "surface_collider":
+                self.bcs.append({
+                    "kind": "surface",
+                    "point": torch.tensor(bc["point"], device=dev),
+                    "normal": torch.tensor(bc["normal"], device=dev, dtype=torch.float32),
+                    "surface": bc.get("surface", "sticky"),
+                    "friction": float(bc.get("friction", 0.0)),
+                    "t0": float(bc.get("start_time", 0.0)),
+                    "t1": float(bc.get("end_time", 1e3))})
+        for b in self.bcs:
+            if "normal" in b:
+                b["normal"] = b["normal"] / b["normal"].norm().clamp(min=1e-12)
+
+    def _boundaries(self, p, v):
+        """the wall and the scripted conditions, in the order MPM applies them"""
+        if self.wall is not None:
+            lo, hi = self.wall
+            v = torch.where((p < lo) & (v < 0), torch.zeros_like(v), v)
+            v = torch.where((p > hi) & (v > 0), torch.zeros_like(v), v)
+            p = p.clamp(min=lo, max=hi)
+        if self.bcs:
+            p, v = self.apply_bcs(p, v, self._t)
+        return p, v
+
+    def apply_bcs(self, p, v, t):
+        """the scripted boundary conditions, on the anchors, at simulated time t"""
+        for b in self.bcs:
+            if not (b["t0"] <= t < b["t1"]):
+                continue
+            if b["kind"] == "translate":
+                inside = ((p - b["point"]).abs() <= b["size"]).all(-1, keepdim=True)
+                v = torch.where(inside, b["vel"].reshape(1, 3).expand_as(v), v)
+            elif b["kind"] == "rotate":
+                n = b["normal"]
+                d = p - b["point"]
+                along = (d * n).sum(-1, keepdim=True)
+                radial = d - along * n
+                inside = ((along.abs() <= b["hr"][0]) &
+                          (radial.norm(dim=-1, keepdim=True) <= b["hr"][1]))
+                # a rigid spin about the axis, plus a slide along it
+                spin = torch.cross(n.reshape(1, 3).expand_as(radial), radial, dim=-1)
+                v = torch.where(inside, b["rot"] * spin + b["tr"] * n.reshape(1, 3), v)
+            elif b["kind"] == "surface":
+                n = b["normal"]
+                dist = ((p - b["point"]) * n).sum(-1, keepdim=True)
+                vn = (v * n).sum(-1, keepdim=True)
+                hit = (dist < 0) & (vn < 0)
+                if b["surface"] == "sticky":
+                    v = torch.where(hit, torch.zeros_like(v), v)
+                else:
+                    vt = v - vn * n
+                    # Coulomb friction against the normal impulse
+                    keep = (1.0 + b["friction"] * vn / vt.norm(dim=-1, keepdim=True)
+                            .clamp(min=1e-12)).clamp(min=0)
+                    v = torch.where(hit, vt * keep, v)
+                p = torch.where(hit, p - dist * n, p)
+        return p, v
         # an anchor that shrinks far enough holds almost nothing, its mass goes
         # with it, and the accelerations it sees go up without bound; one that
         # grows without limit swallows the object. Both ends were reachable --
@@ -580,11 +664,7 @@ class AnchorSparse(nn.Module):
         o = o / o.norm(dim=-1, keepdim=True).clamp(min=1e-12)
         over = (dp.norm(dim=-1) / self.cfl_limit - 1.0).clamp(min=0)
         p = p + dp
-        if self.wall is not None:
-            lo, hi = self.wall
-            v = torch.where((p < lo) & (v < 0), torch.zeros_like(v), v)
-            v = torch.where((p > hi) & (v > 0), torch.zeros_like(v), v)
-            p = p.clamp(min=lo, max=hi)
+        p, v = self._boundaries(p, v)
         return p, v, o, wv, (over * over).mean()
 
     def substep(self, p, v, w, rc, q, Binv, blocked, m, keep):
@@ -598,11 +678,7 @@ class AnchorSparse(nn.Module):
         # 1.4% of the spacing at the start, 50% where the rollout blows up
         over = (dp.norm(dim=-1) / self.cfl_limit - 1.0).clamp(min=0)
         p = p + dp
-        if self.wall is not None:
-            lo, hi = self.wall
-            v = torch.where((p < lo) & (v < 0), torch.zeros_like(v), v)
-            v = torch.where((p > hi) & (v > 0), torch.zeros_like(v), v)
-            p = p.clamp(min=lo, max=hi)
+        p, v = self._boundaries(p, v)
         return p, v, (over * over).mean()
 
     def rollout(self, p, v, n, cache):
@@ -627,6 +703,7 @@ class AnchorSparse(nn.Module):
                 else:
                     p, v, o, wv, c = self.substep_o(p, v, o, wv, w, rc, q, Binv,
                                                      blocked, m, keep)
+                self._t += self.dt
                 pen = pen + c
             self._o, self._wv = o, wv
             return p, v, pen / max(n, 1)
@@ -636,6 +713,7 @@ class AnchorSparse(nn.Module):
                                       m, keep, use_reentrant=False)
             else:
                 p, v, c = self.substep(p, v, w, rc, q, Binv, blocked, m, keep)
+            self._t += self.dt
             pen = pen + c
         return p, v, pen / max(n, 1)
 
@@ -720,6 +798,7 @@ class AnchorSparse(nn.Module):
             0, self.pair_a, w).clamp(min=1e-12)
         p = self.pos + num / den.unsqueeze(-1)
         p = torch.where(self.fixed.unsqueeze(-1), self.pos, p)
+        self._t = 0.0
         if self.oriented:
             # a projected MPM state says nothing about how the anchors are
             # turned, so they start unrotated and the torque takes over
