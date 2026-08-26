@@ -61,7 +61,7 @@ def build_camera(sc, width=640, height=640, fov_x=0.6911, radius_scale=1.6):
                     (wvt.unsqueeze(0).bmm(pmx.unsqueeze(0))).squeeze(0))
 
 
-def local_deformation(rest, K=8, ridge=1e-8):
+def local_deformation(rest, K=16, ridge=1e-3):
     """-> f(x) -> F [N,3,3], the deformation gradient at every Gaussian.
 
     The renderer moves Gaussian centres but leaves their covariance at rest, so
@@ -75,6 +75,13 @@ def local_deformation(rest, K=8, ridge=1e-8):
     of a comparison then get the same operator, so a difference on screen is a
     difference in where the Gaussians went and not in how the two sides were
     allowed to describe themselves.
+
+    The ridge is not decoration. A Gaussian on a thin feature has neighbours
+    that are very nearly coplanar, B is nearly singular, and the least squares
+    answer along the thin direction is whatever noise happens to be there --
+    which renders as a splat stretched into a needle several times the size of
+    the object. K=16 and a ridge scaled to B's own magnitude keep that bounded;
+    cov_deltas caps what survives.
     """
     from scipy.spatial import cKDTree
 
@@ -92,6 +99,9 @@ def local_deformation(rest, K=8, ridge=1e-8):
         return A @ Binv
 
     return apply
+
+
+STRETCH_CAP = 3.0
 
 
 def cov_deltas(F, q_raw, scale, chunk=400_000):
@@ -116,6 +126,12 @@ def cov_deltas(F, q_raw, scale, chunk=400_000):
         R = _quat_to_mat(qn)
         M = F[lo:hi] @ R @ torch.diag_embed(scale[lo:hi])
         U, S, _ = torch.linalg.svd(M)
+        # even with the ridge, a Gaussian whose neighbourhood is degenerate can
+        # come back stretched by orders of magnitude. Bound each new scale to a
+        # factor of the one it came from -- the singular values are sorted, so
+        # the original scales have to be sorted to compare against
+        s_ref = torch.sort(scale[lo:hi], dim=-1, descending=True).values
+        S = S.clamp(min=s_ref / STRETCH_CAP, max=s_ref * STRETCH_CAP)
         # a negative determinant would be a reflection, which is not a rotation
         det = torch.linalg.det(U)
         U = torch.cat([U[..., :2], U[..., 2:] * det.view(-1, 1, 1)], dim=-1)
