@@ -210,18 +210,26 @@ def make_renderer(sc, ply, cam):
     d_rot = torch.zeros(sc.N, 4, device=dev); d_rot[:, 0] = 1.
     d_sc = torch.zeros(sc.N, 3, device=dev)
 
-    def frame(xyz_mpm, F=None):
+    def frame(xyz_mpm, F=None, hide=None):
         """F is the per-Gaussian deformation gradient, or None to leave every
         splat at its rest shape -- which is what this did before, and what made
         a stretching cloud look like it was coming apart."""
         d_xyz = sc.undo(xyz_mpm) - sc.xyz_world
+        d_op = None
+        if hide is not None:
+            # the Gaussians MPM never simulated are carried by their neighbours,
+            # which is an interpolation and shows as tearing where the real
+            # displacement is largest. Turning them off says how much of what is
+            # on screen is the simulation and how much is the carry.
+            d_op = torch.zeros_like(gaussians.get_opacity)
+            d_op[hide] = -gaussians.get_opacity[hide]
         if F is None:
             dr, ds = d_rot, d_sc
         else:
             dr, ds = cov_deltas(F, gaussians._rotation.detach(),
                                 gaussians.get_scaling.detach())
         im = torch.clamp(_render(cam, gaussians, pipe, bg, d_xyz, dr, ds,
-                                  d_rot_as_res=True)["render"], 0, 1)
+                                  d_opacity=d_op, d_rot_as_res=True)["render"], 0, 1)
         return (im.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
 
     # a rest state must render as no displacement at all; if the space change is

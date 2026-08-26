@@ -44,6 +44,9 @@ ap.add_argument("--height", type=int, default=560)
 ap.add_argument("--fov_x", type=float, default=0.6911)
 ap.add_argument("--radius_scale", type=float, default=1.6)
 ap.add_argument("--fps", type=int, default=12)
+ap.add_argument("--only_material", action="store_true",
+                 help="hide the Gaussians no simulator moved, so what is left "
+                      "on screen is what the physics actually said")
 ap.add_argument("--out_dir", required=True)
 args = ap.parse_args()
 
@@ -139,7 +142,8 @@ for case in args.cases:
                 e = float((x - truth[k]).norm(dim=-1).mean() / span) * 100
                 err[n] = (err[n] * k + e) / (k + 1)
             xf = full(x)
-            img = frame(xf, defgrad(xf))
+            img = frame(xf, defgrad(xf),
+                        hide=rest if args.only_material else None)
             cap = n if n == "MPM" else f"{n}   err {err[n]:.2f}%"
             row.append(label(img, cap))
         vid.append(np.concatenate(row, axis=1))
