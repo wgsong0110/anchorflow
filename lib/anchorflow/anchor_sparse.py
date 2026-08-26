@@ -75,6 +75,92 @@ class Traj:
         return self.t.shape
 
 
+def parse_bcs(sc, dev):
+    """the scene's scripted conditions, as the anchors need them.
+
+    This used to live inside AnchorSparse, which meant only the fitted simulator
+    ever saw a driver. Scene.explicit_step -- the unfitted discretisation, and
+    the baseline every comparison is read against -- stepped with gravity and
+    nothing else. On plane that showed as an aeroplane frozen in place: its
+    propeller moved 0.2% of what MPM's did, and the frozen panel then scored
+    *better* on mean error than the fitted one, because four fifths of that
+    scene barely moves and standing still gets those particles for free.
+
+    -> (wall, bcs). wall is the bounding box as (lo, hi), or None.
+    """
+    wall, bcs = None, []
+    for bc in sc.cfg.get("boundary_conditions", []):
+        t = bc["type"]
+        if t == "bounding_box":
+            # the same three cells of padding, at the scene's resolution
+            cell = 2.0 / float(getattr(sc, "n_grid", 100) or 100)
+            wall = (3 * cell, 2.0 - 3 * cell)
+        elif t == "enforce_particle_translation":
+            bcs.append({
+                "kind": "translate",
+                "point": torch.tensor(bc["point"], device=dev),
+                "size": torch.tensor(bc["size"], device=dev),
+                "vel": torch.tensor(bc["velocity"], device=dev),
+                "t0": float(bc.get("start_time", 0.0)),
+                "t1": float(bc.get("end_time", 1e3))})
+        elif t == "enforce_particle_velocity_rotation":
+            bcs.append({
+                "kind": "rotate",
+                "point": torch.tensor(bc["point"], device=dev),
+                "normal": torch.tensor(bc["normal"], device=dev, dtype=torch.float32),
+                "hr": torch.tensor(bc["half_height_and_radius"], device=dev),
+                "rot": float(bc["rotation_scale"]),
+                "tr": float(bc["translation_scale"]),
+                "t0": float(bc.get("start_time", 0.0)),
+                "t1": float(bc.get("end_time", 1e3))})
+        elif t == "surface_collider":
+            bcs.append({
+                "kind": "surface",
+                "point": torch.tensor(bc["point"], device=dev),
+                "normal": torch.tensor(bc["normal"], device=dev, dtype=torch.float32),
+                "surface": bc.get("surface", "sticky"),
+                "friction": float(bc.get("friction", 0.0)),
+                "t0": float(bc.get("start_time", 0.0)),
+                "t1": float(bc.get("end_time", 1e3))})
+    for b in bcs:
+        if "normal" in b:
+            b["normal"] = b["normal"] / b["normal"].norm().clamp(min=1e-12)
+    return wall, bcs
+
+
+def apply_bcs_to(bcs, p, v, t):
+    """the scripted conditions, on anchor positions and velocities, at time t"""
+    for b in bcs:
+        if not (b["t0"] <= t < b["t1"]):
+            continue
+        if b["kind"] == "translate":
+            inside = ((p - b["point"]).abs() <= b["size"]).all(-1, keepdim=True)
+            v = torch.where(inside, b["vel"].reshape(1, 3).expand_as(v), v)
+        elif b["kind"] == "rotate":
+            n = b["normal"]
+            d = p - b["point"]
+            along = (d * n).sum(-1, keepdim=True)
+            radial = d - along * n
+            inside = ((along.abs() <= b["hr"][0]) &
+                      (radial.norm(dim=-1, keepdim=True) <= b["hr"][1]))
+            spin = torch.cross(n.reshape(1, 3).expand_as(radial), radial, dim=-1)
+            v = torch.where(inside, b["rot"] * spin + b["tr"] * n.reshape(1, 3), v)
+        elif b["kind"] == "surface":
+            n = b["normal"]
+            dist = ((p - b["point"]) * n).sum(-1, keepdim=True)
+            vn = (v * n).sum(-1, keepdim=True)
+            hit = (dist < 0) & (vn < 0)
+            if b["surface"] == "sticky":
+                v = torch.where(hit, torch.zeros_like(v), v)
+            else:
+                vt = v - vn * n
+                keep = (1.0 + b["friction"] * vn / vt.norm(dim=-1, keepdim=True)
+                        .clamp(min=1e-12)).clamp(min=0)
+                v = torch.where(hit, vt * keep, v)
+            p = torch.where(hit, p - dist * n, p)
+    return p, v
+
+
 class AnchorSparse(nn.Module):
     """anchors with elliptical, compactly supported reach and a variable count"""
 
@@ -121,11 +207,11 @@ class AnchorSparse(nn.Module):
         # through the grid. MPM applies them per particle; an anchor stands for
         # the material around it, so the same test on the anchor's own position
         # is the faithful translation.
-        self.bcs = []
-        for bc in sc.cfg.get("boundary_conditions", []):
+        self.wall, self.bcs = parse_bcs(sc, dev)
+        if False:
+          for bc in sc.cfg.get("boundary_conditions", []):
             t = bc["type"]
             if t == "bounding_box":
-                # the same three cells of padding, at the scene's resolution
                 cell = 2.0 / float(getattr(sc, "n_grid", 100) or 100)
                 self.wall = (3 * cell, 2.0 - 3 * cell)
             elif t == "enforce_particle_translation":
@@ -155,7 +241,7 @@ class AnchorSparse(nn.Module):
                     "friction": float(bc.get("friction", 0.0)),
                     "t0": float(bc.get("start_time", 0.0)),
                     "t1": float(bc.get("end_time", 1e3))})
-        for b in self.bcs:
+          for b in self.bcs:
             if "normal" in b:
                 b["normal"] = b["normal"] / b["normal"].norm().clamp(min=1e-12)
         # an anchor that shrinks far enough holds almost nothing, its mass goes
@@ -309,6 +395,9 @@ class AnchorSparse(nn.Module):
 
     def apply_bcs(self, p, v, t):
         """the scripted boundary conditions, on the anchors, at simulated time t"""
+        return apply_bcs_to(self.bcs, p, v, t)
+
+    def _apply_bcs_unused(self, p, v, t):
         for b in self.bcs:
             if not (b["t0"] <= t < b["t1"]):
                 continue

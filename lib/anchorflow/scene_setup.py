@@ -164,14 +164,41 @@ class Scene:
         return float((a.max(0).values - a.min(0).values).norm())
 
     def explicit_step(self, p, v, gp, n=1):
-        """n explicit substeps; returns (p, v, gaussian_pos)."""
+        """n explicit substeps; returns (p, v, gaussian_pos).
+
+        The scene's own drivers are applied here, the way the fitted simulator
+        applies them. They were missing, and this is the baseline every table is
+        read against: on plane it meant the unfitted discretisation stood
+        perfectly still -- 0.2% of MPM's propeller motion -- and still scored a
+        lower mean error than the fitted one, because most of that scene barely
+        moves and standing still is free on those particles.
+        """
+        from .anchor_sparse import apply_bcs_to, parse_bcs
+
+        if not hasattr(self, "_bc"):
+            self._bc = parse_bcs(self, p.device)
+            self._t = 0.0
+        wall, bcs = self._bc
         g = self.gravity if self.gravity.abs().sum() > 0 else None
         with torch.enable_grad():
             for _ in range(n):
                 p, v, gp, _ = self.sim.step(p, v, self.mass, gp, self.volume, self.mu,
                                              self.lam, self.sub_dt, gravity=g,
                                              damping=self.damping, fixed_mask=self.fixed_mask)
+                if wall is not None:
+                    lo, hi = wall
+                    v = torch.where((p < lo) & (v < 0), torch.zeros_like(v), v)
+                    v = torch.where((p > hi) & (v > 0), torch.zeros_like(v), v)
+                    p = p.clamp(min=lo, max=hi)
+                if bcs:
+                    p, v = apply_bcs_to(bcs, p, v, self._t)
+                self._t += self.sub_dt
         return p, v, gp
+
+    def reset_time(self):
+        """the drivers are scripted against simulated time, so a fresh rollout
+        has to start the clock again"""
+        self._t = 0.0
 
     def elastic_accel(self, p, gp):
         """f_int(p)/m per anchor -- one fused-kernel call (~0.1 ms).
