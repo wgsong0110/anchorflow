@@ -35,6 +35,10 @@ class Scene:
     # misc
     gravity: torch.Tensor
     n_grid: int
+    # which Gaussians of the PLY survived sim_area, or None when the scene asks
+    # for no crop. A renderer loads the PLY itself and has to be told, or it
+    # holds two million splats against a cropped cloud of eighty thousand.
+    crop: object
     sub_dt: float
     damping: float
     to_mpm: object
@@ -244,12 +248,14 @@ def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cud
         xyz = xyz @ torch.tensor(R, device=dev, dtype=xyz.dtype).T
 
     area = cfg.get("sim_area")
+    crop = None
     if area is not None:
         inside = torch.ones(xyz.shape[0], dtype=torch.bool, device=dev)
         for i in range(3):
             inside &= (xyz[:, i] > area[2 * i]) & (xyz[:, i] < area[2 * i + 1])
         # outside the simulated area a Gaussian is not material and not drawn by
         # the physics; dropping it here keeps every downstream index consistent
+        crop = inside
         xyz, op, keep = xyz[inside], op[inside], keep[inside]
         g._xyz = g._xyz[inside]
         g._features_dc = g._features_dc[inside]
@@ -317,6 +323,7 @@ def build(ply, config, n_anchors=512, K=8, n_grid=100, grid_lim=2.0, device="cud
             fixed |= ((ac - c).abs() <= s).all(-1)
 
     return Scene(cfg=cfg, xyz_world=xyz, pos=pos, keep=keep, volume=volume, mu=mu, lam=lam,
+                 crop=crop,
                   anchor_canonical=ac, mass=mass, fixed_mask=fixed, sim=sim,
                   gravity=torch.tensor(cfg["g"], dtype=torch.float32, device=dev),
                   n_grid=n_grid,

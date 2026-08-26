@@ -175,6 +175,14 @@ def make_renderer(sc, ply, cam):
     dev = sc.pos.device
     gaussians = GaussianModel(3, fea_dim=0)
     gaussians.load_ply(ply)
+    # scene_setup drops everything outside sim_area; the PLY on disk still has
+    # all of it, and the rasteriser would be handed two million splats for a
+    # displacement of eighty thousand
+    if getattr(sc, "crop", None) is not None:
+        m = sc.crop
+        for name in ("_xyz", "_features_dc", "_features_rest", "_opacity",
+                     "_scaling", "_rotation"):
+            setattr(gaussians, name, getattr(gaussians, name)[m])
 
     class _P:
         debug = False
