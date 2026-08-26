@@ -101,7 +101,13 @@ def local_deformation(rest, K=16, ridge=1e-3):
     return apply
 
 
-STRETCH_CAP = 3.0
+import os as _os
+
+# how far a splat may stretch relative to its rest shape. Too small and real
+# deformation is clipped into gaps; too large and a degenerate neighbourhood
+# renders as a needle. Overridable so the choice can be checked rather than
+# assumed.
+STRETCH_CAP = float(_os.environ.get("AF_STRETCH_CAP", 3.0))
 
 
 def cov_deltas(F, q_raw, scale, chunk=400_000):
