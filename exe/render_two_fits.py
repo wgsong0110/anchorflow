@@ -52,7 +52,8 @@ import warp as wp
 
 from anchorflow.anchor_sparse import load_fitted
 from anchorflow.mpm_teacher import MPMTeacher
-from anchorflow.view import build_camera, label, make_renderer
+from anchorflow.view import (build_camera, label, local_deformation,
+                              make_renderer)
 
 dev = "cuda"
 torch.set_grad_enabled(False)
@@ -100,6 +101,9 @@ def full(xm):
 
 cam = build_camera(sc, args.width, args.height, args.fov_x, args.radius_scale)
 frame = make_renderer(sc, args.ply, cam)
+# the splats have to stretch with the cloud, or both panels speckle and the one
+# that deformed more -- MPM -- looks like it fell apart
+defgrad = local_deformation(sc.pos)
 os.makedirs(args.out_dir, exist_ok=True)
 
 for case in args.cases:
@@ -134,7 +138,8 @@ for case in args.cases:
             if n != "MPM":
                 e = float((x - truth[k]).norm(dim=-1).mean() / span) * 100
                 err[n] = (err[n] * k + e) / (k + 1)
-            img = frame(full(x))
+            xf = full(x)
+            img = frame(xf, defgrad(xf))
             cap = n if n == "MPM" else f"{n}   err {err[n]:.2f}%"
             row.append(label(img, cap))
         vid.append(np.concatenate(row, axis=1))
