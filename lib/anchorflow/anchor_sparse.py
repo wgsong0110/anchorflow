@@ -393,6 +393,24 @@ class AnchorSparse(nn.Module):
                 (y, x, zz), (zz, z, y), (z, zz, x)]
         return torch.stack([torch.stack(r, -1) for r in rows], 1)
 
+    def _driven_mask(self, p):
+        """anchors a scripted driver acts on, at the configuration given.
+
+        Time is ignored on purpose: a driver that starts at t=0.6 still needs
+        anchors there when it arrives, and the fit runs long before that.
+        """
+        m = torch.zeros(p.shape[0], dtype=torch.bool, device=p.device)
+        for b in self.bcs:
+            if b["kind"] == "translate":
+                m |= ((p - b["point"]).abs() <= b["size"]).all(-1)
+            elif b["kind"] == "rotate":
+                n = b["normal"]
+                d = p - b["point"]
+                along = (d * n).sum(-1)
+                radial = (d - along.unsqueeze(-1) * n).norm(dim=-1)
+                m |= (along.abs() <= b["hr"][0]) & (radial <= b["hr"][1])
+        return m
+
     def apply_bcs(self, p, v, t):
         """the scripted boundary conditions, on the anchors, at simulated time t"""
         return apply_bcs_to(self.bcs, p, v, t)
@@ -1000,7 +1018,13 @@ class AnchorSparse(nn.Module):
         anchor to be in two places, which is what splitting gives it.
 
         Pinned anchors are boundary condition, not representation, and are left
-        alone in both directions.
+        alone in both directions. So are anchors standing inside a driver: the
+        criterion is how much weight an anchor holds, and a propeller blade is
+        thin, so the anchors on it hold little and were being cut. On plane that
+        took the driven region from 75 of 512 anchors down to 28 of 436 -- the
+        fit removed 63% of the representation from exactly the region carrying
+        the motion, while cutting 15% elsewhere. Whatever the driver imposes has
+        to land on an anchor or it does not happen at all.
         """
         w = self.weights()
         held = torch.zeros(self.M, device=self.dev).index_add_(
@@ -1008,7 +1032,8 @@ class AnchorSparse(nn.Module):
         n_pairs = torch.zeros(self.M, device=self.dev).index_add_(
             0, self.pair_a, torch.ones_like(w))
 
-        dead = ((held < prune_share * held.median()) | (n_pairs < min_pairs)) & ~self.fixed
+        dead = ((held < prune_share * held.median()) | (n_pairs < min_pairs)) \
+            & ~self.fixed & ~self._driven_mask(self.pos.detach())
         alive = ~dead
         pos, quat, log_s = self.pos[alive], self.quat[alive], self.log_s[alive]
         log_k = self.log_k[alive]
