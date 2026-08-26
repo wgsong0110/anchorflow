@@ -136,8 +136,18 @@ class MPMTeacher:
         # Unloading first is what makes the rebuild actually happen.
         _mod = wp.context.get_module("mpm_solver_warp.mpm_solver_warp")
         if _mod is not None:
-            _mod.unload()
-        wp.force_load(device=self.wp_dev)
+            # unload alone leaves the module gone, and force_load does not put
+            # back the kernels a driver added after the first build -- that is
+            # how ficus started failing on set_velocity_on_cuboid, which had
+            # worked before this rebuild existed. Load the module back
+            # explicitly, and if that cannot be done leave what was there.
+            try:
+                _mod.unload()
+                _mod.load(self.wp_dev)
+            except Exception:
+                wp.force_load(device=self.wp_dev)
+        else:
+            wp.force_load(device=self.wp_dev)
         self.solver = s
 
         # projection, fixed at the canonical configuration like the blend weights.
