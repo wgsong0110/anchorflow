@@ -44,6 +44,13 @@ ap.add_argument("--height", type=int, default=560)
 ap.add_argument("--fov_x", type=float, default=0.6911)
 ap.add_argument("--radius_scale", type=float, default=1.6)
 ap.add_argument("--fps", type=int, default=12)
+ap.add_argument("--unfitted", action="store_true",
+                 help="add the geometry-initialised simulator as its own panel -- "
+                      "what the discretisation does before anything is fitted")
+ap.add_argument("--metrics", action="store_true",
+                 help="score every panel against MPM's own render: PSNR, SSIM and "
+                      "LPIPS. The position error says how far the particles are; "
+                      "this says what a person would see.")
 ap.add_argument("--only_material", action="store_true",
                  help="hide the Gaussians no simulator moved, so what is left "
                       "on screen is what the physics actually said")
@@ -102,6 +109,24 @@ def full(xm):
     return out
 
 
+# ---- how the two renders compare as pictures, not as point sets -------------
+LPIPS = None
+if args.metrics:
+    from utils.loss_utils import ssim as ssim_fn
+
+    def to_t(img):
+        return torch.from_numpy(img).to(dev).permute(2, 0, 1).float() / 255.0
+
+    def psnr(a, b):
+        m = float((a - b).pow(2).mean())
+        return 100.0 if m <= 0 else float(-10 * torch.log10(torch.tensor(m)))
+
+    try:
+        import lpips as _lp
+        LPIPS = _lp.LPIPS(net="alex").to(dev)
+    except Exception as e:
+        print(f"[metrics] LPIPS unavailable ({type(e).__name__}); PSNR and SSIM only")
+
 cam = build_camera(sc, args.width, args.height, args.fov_x, args.radius_scale)
 frame = make_renderer(sc, args.ply, cam)
 # the splats have to stretch with the cloud, or both panels speckle and the one
@@ -118,6 +143,23 @@ for case in args.cases:
     print(f"\n[case] {kind} #{idx}, MPM moved {float(span):.4f}")
 
     runs = {"MPM": truth}
+    if args.unfitted:
+        # the same interface the fitted simulators expose, on the sampled
+        # anchors scene_setup built, with nothing learned
+        p_, v_, gp_ = (sc.anchor_canonical.clone(), sc.initial_velocity(force),
+                       sc.pos.clone())
+        out = [gp_[mat].clone()]
+        alive = True
+        for _ in tqdm(range(args.frames), desc="  unfitted", ncols=90):
+            p_, v_, gp_ = sc.explicit_step(p_, v_, gp_, args.dt_mult)
+            if alive and not torch.isfinite(p_).all():
+                print("  the unfitted simulator went non-finite; it is held at "
+                      "its last finite state from here so the panel stays legible")
+                alive = False
+            if alive:
+                gp_ = sc.skin(p_, gp_)
+            out.append(gp_[mat].clone())
+        runs["unfitted"] = torch.stack(out)
     for name, fs in FITS:
         # exactly what eval_vs_mpm.py does: the anchors start canonical, the
         # impulse becomes an anchor velocity, and skinning is a separate call --
@@ -130,12 +172,14 @@ for case in args.cases:
             out.append(gp[mat].clone())
         runs[name] = torch.stack(out)
 
-    names = ["MPM"] + [n for n, _ in FITS]
+    names = ["MPM"] + (["unfitted"] if args.unfitted else []) + [n for n, _ in FITS]
     err = {n: 0.0 for n in names}
+    vis = {n: {"psnr": [], "ssim": [], "lpips": []} for n in names[1:]}
     W, H = args.width, args.height
     vid = []
     for k in tqdm(range(args.frames + 1), desc="  render", ncols=90):
         row = []
+        imgs = {}
         for n in names:
             x = runs[n][k]
             if n != "MPM":
@@ -144,11 +188,30 @@ for case in args.cases:
             xf = full(x)
             img = frame(xf, defgrad(xf),
                         hide=rest if args.only_material else None)
+            imgs[n] = img
             cap = n if n == "MPM" else f"{n}   err {err[n]:.2f}%"
             row.append(label(img, cap))
+        if args.metrics:
+            ref = to_t(imgs["MPM"])
+            for n in names[1:]:
+                cur = to_t(imgs[n])
+                vis[n]["psnr"].append(psnr(cur, ref))
+                vis[n]["ssim"].append(float(ssim_fn(cur[None], ref[None])))
+                if LPIPS is not None:
+                    with torch.no_grad():
+                        vis[n]["lpips"].append(float(
+                            LPIPS(cur[None] * 2 - 1, ref[None] * 2 - 1)))
         vid.append(np.concatenate(row, axis=1))
     path = os.path.join(args.out_dir, f"{kind}{idx}_" + "_vs_".join(names[1:]) + ".mp4")
     imageio.mimsave(path, vid, fps=args.fps, quality=8)
     print(f"  -> {path}")
     for n in names[1:]:
         print(f"     {n:24} {err[n]:.2f}%")
+    if args.metrics:
+        print(f"\n     {'panel':24} {'PSNR':>7} {'SSIM':>7} {'LPIPS':>7}"
+              "   (MPM 의 렌더와 비교)")
+        for n in names[1:]:
+            v = vis[n]
+            lp = sum(v["lpips"]) / len(v["lpips"]) if v["lpips"] else float("nan")
+            print(f"     {n:24} {sum(v['psnr']) / len(v['psnr']):7.2f} "
+                  f"{sum(v['ssim']) / len(v['ssim']):7.4f} {lp:7.4f}")
