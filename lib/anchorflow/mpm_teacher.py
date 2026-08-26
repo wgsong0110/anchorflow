@@ -130,6 +130,13 @@ class MPMTeacher:
         # comes back as "Failed to find forward kernel" at the first step. Loading
         # the module here, with every driver already in it, is what keeps that from
         # depending on the order the caller happens to do things in.
+        # force_load alone is not enough: warp builds a module once, and a driver
+        # registered after that build adds a kernel the built module does not
+        # carry -- the launch then fails with "Failed to find forward kernel".
+        # Unloading first is what makes the rebuild actually happen.
+        _mod = wp.context.get_module("mpm_solver_warp.mpm_solver_warp")
+        if _mod is not None:
+            _mod.unload()
         wp.force_load(device=self.wp_dev)
         self.solver = s
 
