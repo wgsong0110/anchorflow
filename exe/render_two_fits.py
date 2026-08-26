@@ -30,7 +30,17 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
 ap.add_argument("--config", required=True)
 ap.add_argument("--dreamphysics", default="/workspace/DreamPhysics")
-ap.add_argument("--cache", required=True, help="the eval_vs_mpm reference cache")
+ap.add_argument("--cache", default=None, help="the eval_vs_mpm reference cache")
+ap.add_argument("--native", action="store_true",
+                 help="run the scene the way its config asks -- its own drivers, its "
+                      "own frame rate, its whole length -- instead of replaying a "
+                      "cached impulse case. A 60 frame render at dt_mult 40 covers "
+                      "0.24 s, so plane's propeller barely turns; the config asks "
+                      "for 400 frames of 10 ms.")
+ap.add_argument("--base_force", type=float, nargs=3, default=None,
+                 help="the impulse for --native, if the scene wants one. ficus is "
+                      "driven by nothing else; plane and tear_bread need no impulse "
+                      "at all and should be left at zero.")
 ap.add_argument("--fit", action="append", required=True,
                  help="NAME=path.pt, repeatable; each becomes a panel")
 ap.add_argument("--cases", nargs="+", default=["field:0"])
@@ -74,7 +84,10 @@ sc = scene_setup.build(args.ply, args.config, args.n_anchors, args.K, device=dev
                         frozen_weights=True, rot_fallback=True,
                         eig_floor=args.eig_floor)
 T = MPMTeacher(sc)
-blob = torch.load(args.cache, map_location=dev, weights_only=False)
+blob = (torch.load(args.cache, map_location=dev, weights_only=False)
+        if args.cache else None)
+if not args.native and blob is None:
+    raise SystemExit("either --cache or --native")
 
 FITS = []
 for spec in args.fit:
@@ -134,11 +147,29 @@ frame = make_renderer(sc, args.ply, cam)
 defgrad = local_deformation(sc.pos)
 os.makedirs(args.out_dir, exist_ok=True)
 
-for case in args.cases:
+CASES = ["native:0"] if args.native else args.cases
+for case in CASES:
     kind, idx = case.split(":")
     idx = int(idx)
-    truth = blob["ref"][kind][idx][: args.frames + 1]
-    force = blob["force"][kind][idx]
+    if args.native:
+        force = torch.tensor(args.base_force or [0.0, 0.0, 0.0], device=dev)
+        p0 = T.pos_m.clone()
+        v0 = torch.zeros(T.n, 3, device=dev)
+        if float(force.norm()) > 0:
+            dv = sc.impulse_dv(force)
+            v0 = (T.w.unsqueeze(-1) * dv[T.idx]).sum(1).contiguous()
+        T._set(p0, v0, T.eye.clone(), torch.zeros_like(T.eye))
+        acc = [p0.clone()]
+        for _ in tqdm(range(args.frames), desc="  MPM", ncols=90):
+            for _ in range(args.dt_mult):
+                T.solver.p2g2p(None, sc.sub_dt, device=T.wp_dev)
+            if not T._in_domain():
+                raise SystemExit("MPM left its grid; nothing to compare against")
+            acc.append(T.solver.export_particle_x_to_torch().clone())
+        truth = torch.stack(acc)
+    else:
+        truth = blob["ref"][kind][idx][: args.frames + 1]
+        force = blob["force"][kind][idx]
     span = (truth - truth[0]).norm(dim=-1).max().clamp(min=1e-12)
     print(f"\n[case] {kind} #{idx}, MPM moved {float(span):.4f}")
 
