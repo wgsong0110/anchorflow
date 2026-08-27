@@ -162,6 +162,11 @@ ap.add_argument("--cfl_frac", type=float, default=0.05,
                       "the anchor spacing. The starting discretisation sits at 1.4%%; "
                       "the configurations the fit blew up on reach 50%%.")
 ap.add_argument("--lambda_cfl", type=float, default=1.0)
+ap.add_argument("--lambda_acc", type=float, default=0.0,
+                 help="weight on matching MPM's frame-to-frame acceleration. The "
+                      "position term alone lets the fit reach the right place by a "
+                      "rougher route: on ficus it halves mwRMSD while impulse "
+                      "irregularity moves away from MPM's. Zero keeps the old loss.")
 ap.add_argument("--unroll", type=int, default=1,
                  help="coarse frames per training sample. One frame is what the fit "
                       "has always optimised and it does not transfer: the one-step "
@@ -451,6 +456,10 @@ def unrolled(X, V, t, n, cache):
     # gradient travels more than --grad_frames frames back. The loss is
     # untouched: every frame is still scored.
     cut = hi - args.grad_frames if args.grad_frames else 0
+    # the last two frames of each, for the acceleration term below
+    prev2 = prev1 = None
+    acc = 0.0
+    n_acc = 0
     for j in range(hi):
         if cut > 0 and j < cut:
             p, v = p.detach(), v.detach()
@@ -459,6 +468,22 @@ def unrolled(X, V, t, n, cache):
         d = (X[t + j + 1] - X[t]).norm(dim=-1).mean().clamp(min=1e-12)
         loss = loss + (got - X[t + j + 1]).norm(dim=-1).mean() / d
         pen = pen + cfl
+        # Matching positions frame by frame says nothing about how the motion
+        # gets there, and the fit exploits that: on ficus it cuts mwRMSD from
+        # 8.4% to 3.3% while the second difference of total momentum -- what
+        # i-PhysGaussian reports as impulse irregularity -- goes the wrong way,
+        # 0.26 to 0.33 against MPM's own 0.071. The stepper is buying position
+        # with jerk. This scores the second difference against MPM's, in the
+        # same per-frame normalisation the position term uses.
+        if args.lambda_acc > 0:
+            if prev2 is not None:
+                a_got = got - 2 * prev1 + prev2
+                a_ref = X[t + j + 1] - 2 * X[t + j] + X[t + j - 1]
+                acc = acc + (a_got - a_ref).norm(dim=-1).mean() / d
+                n_acc += 1
+            prev2, prev1 = prev1, got
+    if args.lambda_acc > 0 and n_acc:
+        loss = loss + args.lambda_acc * acc / n_acc
     return loss / max(hi, 1), pen / max(hi, 1)
 
 
