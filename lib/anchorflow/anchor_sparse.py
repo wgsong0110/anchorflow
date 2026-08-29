@@ -643,8 +643,12 @@ class AnchorSparse(nn.Module):
         vc = torch.zeros(self.N, 3, device=self.dev).index_add_(
             0, self.pair_g, w.unsqueeze(-1) * va)
         vq = va - vc[self.pair_g]
-        A = torch.zeros(self.N, 3, 3, device=self.dev).index_add_(
-            0, self.pair_g, w.reshape(-1, 1, 1) * (vq.unsqueeze(-1) * q.unsqueeze(-2)))
+        # the outer product over three and a half million pairs is 9 floats each
+        # and does not fit; accumulate it one component at a time instead
+        A = torch.zeros(self.N, 3, 3, device=self.dev)
+        for i in range(3):
+            for j in range(3):
+                A[:, i, j].index_add_(0, self.pair_g, w * vq[:, i] * q[:, j])
         return A @ Binv
 
     def blended_F(self, p, v, w, rc, q, Binv, blocked):
