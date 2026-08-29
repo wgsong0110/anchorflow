@@ -162,6 +162,13 @@ ap.add_argument("--cfl_frac", type=float, default=0.05,
                       "the anchor spacing. The starting discretisation sits at 1.4%%; "
                       "the configurations the fit blew up on reach 50%%.")
 ap.add_argument("--lambda_cfl", type=float, default=1.0)
+ap.add_argument("--loss", choices=["window", "mwrmsd"], default="window",
+                 help="how a frame is scored. 'window' divides by how far MPM "
+                      "moved from the start of that window, so a window where "
+                      "little happened is amplified -- the very instability "
+                      "i-PhysGaussian says it avoids by normalising with a fixed "
+                      "grid_lim instead. 'mwrmsd' is their metric as the "
+                      "objective: mass-weighted RMS over grid_lim.")
 ap.add_argument("--acc_blend", type=float, default=0.0,
                  help="how much of the deformation gradient to take from one "
                       "carried forward in time, MPM style, rather than from shape "
@@ -298,6 +305,10 @@ fit = AnchorSparse(sc, c=args.c, eig_floor=args.eig_floor,
                     quad=bool(args.quad),
                     oriented=bool(args.oriented)).to(dev)
 fit.acc_blend = args.acc_blend
+GRID_LIM = 2.0
+# mass per Gaussian, for the mass-weighted objective. sc.volume is zero on the
+# ones no material was assigned to, which is what we want: they ride along.
+MASS_G = sc.volume.clone()
 if args.no_guards:
     fit.s_lo, fit.s_hi, fit.polar_ridge = 1e-9, 1e9, 0.0
 SHAPE = ("pos", "log_s", "quat")
@@ -476,7 +487,15 @@ def unrolled(X, V, t, n, cache):
         p, v, cfl = fit.rollout(p, v, args.dt_mult, cache)
         got = fit.gaussian_pos(p, cache)
         d = (X[t + j + 1] - X[t]).norm(dim=-1).mean().clamp(min=1e-12)
-        loss = loss + (got - X[t + j + 1]).norm(dim=-1).mean() / d
+        if args.loss == "mwrmsd":
+            # the metric itself: mass-weighted RMS against a fixed length scale.
+            # The window normalisation below amplifies whichever window happened
+            # to move least, which is how a fit ends up specialised to one
+            # excitation and worse than no fit at all on another.
+            e2 = (got - X[t + j + 1]).pow(2).sum(-1)
+            loss = loss + ((MASS_G * e2).sum() / MASS_G.sum()).sqrt() / GRID_LIM
+        else:
+            loss = loss + (got - X[t + j + 1]).norm(dim=-1).mean() / d
         pen = pen + cfl
         # Matching positions frame by frame says nothing about how the motion
         # gets there, and the fit exploits that: on ficus it cuts mwRMSD from
