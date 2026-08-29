@@ -844,12 +844,17 @@ class AnchorSparse(nn.Module):
         p, v = self._boundaries(p, v)
         return p, v, o, wv, (over * over).mean()
 
-    def substep(self, p, v, w, rc, q, Binv, blocked, m, keep):
-        # force() reads the current velocity when it blends in the carried F
+    def substep(self, p, v, w, rc, q, Binv, blocked, m, keep, Facc=None):
+        # Facc travels through the call rather than sitting on self, so that
+        # checkpointing covers it. On self it escapes, and every one of the 480
+        # substeps in a frame keeps its own N x 3 x 3 alive -- 35 GB on ficus.
+        self._Facc = Facc
         self._v_now = v
         a = self.force(p, w, rc, q, Binv, blocked) / m + self.gravity
         v = (v + self.dt * a) * self.damping * keep
-        self.advance_Facc(v, w, q, Binv)
+        if Facc is not None:
+            L = self.velocity_gradient(v, w, q, Binv)
+            Facc = (torch.eye(3, device=self.dev) + self.dt * L) @ Facc
         dp = self.dt * v
         # how far an anchor travels in one substep, against the spacing between
         # anchors. An explicit step is only meaningful while this is small, and
@@ -859,6 +864,8 @@ class AnchorSparse(nn.Module):
         over = (dp.norm(dim=-1) / self.cfl_limit - 1.0).clamp(min=0)
         p = p + dp
         p, v = self._boundaries(p, v)
+        if Facc is not None:
+            return p, v, Facc, (over * over).mean()
         return p, v, (over * over).mean()
 
     def rollout(self, p, v, n, cache):
@@ -889,14 +896,24 @@ class AnchorSparse(nn.Module):
                 pen = pen + c
             self._o, self._wv = o, wv
             return p, v, pen / max(n, 1)
+        Fa = self._Facc if self.acc_blend > 0.0 else None
         for _ in range(n):
-            if use:
+            if Fa is not None:
+                if use:
+                    p, v, Fa, c = checkpoint(self.substep, p, v, w, rc, q, Binv,
+                                              blocked, m, keep, Fa,
+                                              use_reentrant=False)
+                else:
+                    p, v, Fa, c = self.substep(p, v, w, rc, q, Binv, blocked,
+                                                m, keep, Fa)
+            elif use:
                 p, v, c = checkpoint(self.substep, p, v, w, rc, q, Binv, blocked,
                                       m, keep, use_reentrant=False)
             else:
                 p, v, c = self.substep(p, v, w, rc, q, Binv, blocked, m, keep)
             self._t += self.dt
             pen = pen + c
+        self._Facc = Fa
         return p, v, pen / max(n, 1)
 
     # ---- moving between particles and anchors ------------------------------
