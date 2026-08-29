@@ -83,7 +83,7 @@ def skin(p, csr, w, q, Binv, blocked, Xc, rc):
 
 
 def force(p, csr, w, q, Binv, blocked, vol, mu, lam, M,
-          polar_iters=6, polar_ridge=1e-6):
+          polar_iters=6, polar_ridge=1e-6, Facc=None, acc_blend=0.0):
     """anchor positions -> elastic anchor forces [M,3].
 
     mu and lam must already carry the per-anchor stiffness multiplier blended
@@ -94,7 +94,9 @@ def force(p, csr, w, q, Binv, blocked, vol, mu, lam, M,
     return _force(_f32(p), row_off, pair_a, pair_g, _f32(w), _f32(q),
                   _f32(Binv).reshape(-1, 9), _f32(blocked).reshape(-1, 9),
                   _f32(vol), _f32(mu), _f32(lam), acsr_off, acsr_pair,
-                  int(M), int(polar_iters), float(polar_ridge))
+                  int(M), int(polar_iters), float(polar_ridge),
+                  None if (Facc is None or acc_blend <= 0.0)
+                  else _f32(Facc).reshape(-1, 9), float(acc_blend))
 
 
 def deform(p, csr, w, q, Binv, blocked):

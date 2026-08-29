@@ -693,6 +693,26 @@ std::vector<torch::Tensor> sparse_skin(
   return {out, F};
 }
 
+
+// F comes from shape matching against rest, which sees nothing finer than the
+// anchor neighbourhood and averages with weights fixed at rest. An MPM particle
+// instead carries F and marches it with the velocity gradient. This mixes the
+// two in place so the stress kernel downstream does not have to know which is
+// which -- and so the whole substep stays inside the fused path, which is the
+// only reason it fits in memory at three and a half million pairs.
+__global__ void blend_F_kernel(float* __restrict__ F,
+                               const float* __restrict__ Facc,
+                               float beta, int N) {
+  int g = blockIdx.x * blockDim.x + threadIdx.x;
+  if (g >= N) return;
+  const float a = 1.0f - beta;
+  #pragma unroll
+  for (int k = 0; k < 9; ++k) {
+    const int i = g * 9 + k;
+    F[i] = a * F[i] + beta * Facc[i];
+  }
+}
+
 // the simulator's per-substep cost: anchors in, anchor forces out
 torch::Tensor sparse_force(
     torch::Tensor p, torch::Tensor row_off, torch::Tensor pair_a,
@@ -700,10 +720,12 @@ torch::Tensor sparse_force(
     torch::Tensor Binv, torch::Tensor blocked, torch::Tensor vol,
     torch::Tensor mu, torch::Tensor lam,
     torch::Tensor acsr_off, torch::Tensor acsr_pair,
-    int64_t M, int64_t polar_iters, double polar_ridge) {
+    int64_t M, int64_t polar_iters, double polar_ridge,
+    c10::optional<torch::Tensor> Facc, double acc_blend) {
   CHECK(p); CHECK(row_off); CHECK(pair_a); CHECK(pair_g); CHECK(w); CHECK(q);
   CHECK(Binv); CHECK(blocked); CHECK(vol); CHECK(mu); CHECK(lam);
   CHECK(acsr_off); CHECK(acsr_pair);
+  if (Facc.has_value()) { CHECK(Facc.value()); }
   const int N = Binv.size(0);
   auto opts = p.options();
   auto F = torch::empty({N, 3, 3}, opts);
@@ -713,6 +735,11 @@ torch::Tensor sparse_force(
 
   launch_deform(p, row_off, pair_a, w, q, Binv, blocked, F, cc, N);
   const int threads = 256;
+  if (Facc.has_value() && acc_blend > 0.0) {
+    blend_F_kernel<<<(N + threads - 1) / threads, threads>>>(
+        F.data_ptr<float>(), Facc.value().data_ptr<float>(),
+        (float)acc_blend, N);
+  }
   stress_kernel<<<(N + threads - 1) / threads, threads>>>(
       F.data_ptr<float>(), Binv.data_ptr<float>(), mu.data_ptr<float>(),
       lam.data_ptr<float>(), PB.data_ptr<float>(), N,

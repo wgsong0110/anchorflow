@@ -639,12 +639,18 @@ class AnchorSparse(nn.Module):
         velocity instead of position. That is the quantity MPM uses to march its
         particle F forward.
         """
+        if self._pairs_ok():
+            # the deform kernel is exactly this sum; it does not care that the
+            # field it gathers is a velocity rather than a position, and it does
+            # not materialise the per-pair outer product, which is what put the
+            # torch version over 40 GB at three and a half million pairs
+            csr = sparsestep.build_csr(self.pair_g, self.pair_a, self.N, self.M)
+            _, A = sparsestep.deform_diff(v, w, q, csr, self.N, self.M, None)
+            return A @ Binv
         va = v[self.pair_a]
         vc = torch.zeros(self.N, 3, device=self.dev).index_add_(
             0, self.pair_g, w.unsqueeze(-1) * va)
         vq = va - vc[self.pair_g]
-        # the outer product over three and a half million pairs is 9 floats each
-        # and does not fit; accumulate it one component at a time instead
         A = torch.zeros(self.N, 3, 3, device=self.dev)
         for i in range(3):
             for j in range(3):
@@ -709,14 +715,13 @@ class AnchorSparse(nn.Module):
                 torch.einsum("pik,pk->pi", PB, qt)
             return torch.zeros(self.M, 3, device=self.dev).index_add_(
                 0, self.pair_a, contrib)
-        if self._fused_ok() and self.acc_blend <= 0.0:
-            # the fused kernel recomputes F from positions and knows nothing of a
-            # carried one, so the blend has to take the torch path
+        if self._fused_ok():
             csr, mu_k, lam_k = self._fused(w)
             return sparsestep.force(p, csr, w, q, Binv, blocked, self.vol,
                                      mu_k, lam_k, self.M,
                                      polar_iters=self.polar_iters,
-                                     polar_ridge=self.polar_ridge)
+                                     polar_ridge=self.polar_ridge,
+                                     Facc=self._Facc, acc_blend=self.acc_blend)
         F, _ = self.blended_F(p, self._v_now, w, rc, q, Binv, blocked) \
             if self.acc_blend > 0.0 else self.deformation(p, w, rc, q, Binv, blocked)
         R = closest_rotation(F, self.polar_iters, self.polar_ridge)
