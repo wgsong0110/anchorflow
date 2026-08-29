@@ -207,6 +207,10 @@ class AnchorSparse(nn.Module):
         # through the grid. MPM applies them per particle; an anchor stands for
         # the material around it, so the same test on the anchor's own position
         # is the faithful translation.
+        # F carried in time, MPM style. None until a rollout starts it.
+        self.acc_blend = 0.0
+        self._Facc = None
+        self._v_now = None
         self.wall, self.bcs = parse_bcs(sc, dev)
         if False:
           for bc in sc.cfg.get("boundary_conditions", []):
@@ -626,6 +630,60 @@ class AnchorSparse(nn.Module):
         self._fused_cache = (key, val)
         return val
 
+    def velocity_gradient(self, v, w, q, Binv):
+        """per-Gaussian velocity gradient, built exactly the way F is.
+
+        L_g = ( sum_a w_ga (v_a - vbar_g) q_ga^T ) B_g^-1
+
+        Same neighbourhood, same weights, same inverse -- only the field is
+        velocity instead of position. That is the quantity MPM uses to march its
+        particle F forward.
+        """
+        va = v[self.pair_a]
+        vc = torch.zeros(self.N, 3, device=self.dev).index_add_(
+            0, self.pair_g, w.unsqueeze(-1) * va)
+        vq = va - vc[self.pair_g]
+        A = torch.zeros(self.N, 3, 3, device=self.dev).index_add_(
+            0, self.pair_g, w.reshape(-1, 1, 1) * (vq.unsqueeze(-1) * q.unsqueeze(-2)))
+        return A @ Binv
+
+    def blended_F(self, p, v, w, rc, q, Binv, blocked):
+        """shape-matched F, optionally mixed with one carried forward in time.
+
+        Shape matching reads the deformation out of where the anchors are right
+        now, against where they started. It sees nothing finer than the
+        neighbourhood it averages over, and the weights it averages with were
+        fixed at rest -- under large deformation they are describing a
+        neighbourhood that no longer exists. Measured on ficus, the F this
+        produces recovers 17% of the deviation MPM's own F has, and the forces
+        that follow are wrong by a factor of 158. Feeding MPM's F through the
+        same stress law gives the right answer, so the constitutive model is not
+        what is failing.
+
+        An MPM particle instead carries F and marches it with the velocity
+        gradient. For a perfectly resolved elastic material the two agree; they
+        part company exactly where ours is weak. This mixes them, so the blend
+        weight says how much of the answer comes from history rather than from
+        the current configuration.
+        """
+        Fs, cc = self.deformation(p, w, rc, q, Binv, blocked)
+        if self.acc_blend <= 0.0 or self._Facc is None:
+            return Fs, cc
+        b = float(self.acc_blend)
+        return (1.0 - b) * Fs + b * self._Facc, cc
+
+    def reset_carried(self):
+        """a fresh trajectory must not inherit the last one's deformation"""
+        self._Facc = None
+
+    def advance_Facc(self, v, w, q, Binv):
+        """F <- (I + dt L) F, the update MPM applies to its particles"""
+        if self.acc_blend <= 0.0 or self._Facc is None:
+            return
+        L = self.velocity_gradient(v, w, q, Binv)
+        eye = torch.eye(3, device=self.dev)
+        self._Facc = (eye + self.dt * L) @ self._Facc
+
     def force(self, p, w, rc, q, Binv, blocked):
         if self.quad:
             qt, Bqinv, _, _, Ju = self._q
@@ -647,13 +705,16 @@ class AnchorSparse(nn.Module):
                 torch.einsum("pik,pk->pi", PB, qt)
             return torch.zeros(self.M, 3, device=self.dev).index_add_(
                 0, self.pair_a, contrib)
-        if self._fused_ok():
+        if self._fused_ok() and self.acc_blend <= 0.0:
+            # the fused kernel recomputes F from positions and knows nothing of a
+            # carried one, so the blend has to take the torch path
             csr, mu_k, lam_k = self._fused(w)
             return sparsestep.force(p, csr, w, q, Binv, blocked, self.vol,
                                      mu_k, lam_k, self.M,
                                      polar_iters=self.polar_iters,
                                      polar_ridge=self.polar_ridge)
-        F, _ = self.deformation(p, w, rc, q, Binv, blocked)
+        F, _ = self.blended_F(p, self._v_now, w, rc, q, Binv, blocked) \
+            if self.acc_blend > 0.0 else self.deformation(p, w, rc, q, Binv, blocked)
         R = closest_rotation(F, self.polar_iters, self.polar_ridge)
         J = det3(F)
         # the volumetric term carries J F^-T, which is unbounded as an element
@@ -775,8 +836,11 @@ class AnchorSparse(nn.Module):
         return p, v, o, wv, (over * over).mean()
 
     def substep(self, p, v, w, rc, q, Binv, blocked, m, keep):
+        # force() reads the current velocity when it blends in the carried F
+        self._v_now = v
         a = self.force(p, w, rc, q, Binv, blocked) / m + self.gravity
         v = (v + self.dt * a) * self.damping * keep
+        self.advance_Facc(v, w, q, Binv)
         dp = self.dt * v
         # how far an anchor travels in one substep, against the spacing between
         # anchors. An explicit step is only meaningful while this is small, and
@@ -794,6 +858,8 @@ class AnchorSparse(nn.Module):
         w, rc, q, Binv, blocked, mass = cache
         m = mass.unsqueeze(-1)
         keep = (~self.fixed).unsqueeze(-1).to(p.dtype)
+        if self.acc_blend > 0.0 and self._Facc is None:
+            self._Facc = torch.eye(3, device=self.dev).expand(self.N, 3, 3).contiguous()
         use = self.checkpoint_substeps and torch.is_grad_enabled()
         pen = p.new_zeros(())
         if self.oriented:

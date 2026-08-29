@@ -162,6 +162,14 @@ ap.add_argument("--cfl_frac", type=float, default=0.05,
                       "the anchor spacing. The starting discretisation sits at 1.4%%; "
                       "the configurations the fit blew up on reach 50%%.")
 ap.add_argument("--lambda_cfl", type=float, default=1.0)
+ap.add_argument("--acc_blend", type=float, default=0.0,
+                 help="how much of the deformation gradient to take from one "
+                      "carried forward in time, MPM style, rather than from shape "
+                      "matching against rest. Shape matching sees nothing finer "
+                      "than the anchor neighbourhood and averages with weights "
+                      "fixed at rest; on ficus the F it produces recovers 17% of "
+                      "MPM's deviation and the forces are off by 158x. Zero keeps "
+                      "the old behaviour.")
 ap.add_argument("--lambda_acc", type=float, default=0.0,
                  help="weight on matching MPM's frame-to-frame acceleration. The "
                       "position term alone lets the fit reach the right place by a "
@@ -289,6 +297,7 @@ fit = AnchorSparse(sc, c=args.c, eig_floor=args.eig_floor,
                     polar_iters=args.polar_iters, cfl_frac=args.cfl_frac,
                     quad=bool(args.quad),
                     oriented=bool(args.oriented)).to(dev)
+fit.acc_blend = args.acc_blend
 if args.no_guards:
     fit.s_lo, fit.s_hi, fit.polar_ridge = 1e-9, 1e9, 0.0
 SHAPE = ("pos", "log_s", "quat")
@@ -448,6 +457,7 @@ def unrolled(X, V, t, n, cache):
     Each frame is divided by how far MPM moved from the start, so a later frame
     is not weighted down for having drifted further.
     """
+    fit.reset_carried()
     p = enc(X[t], cache)
     v = enc_v(V[t], cache)
     loss = pen = 0.0
