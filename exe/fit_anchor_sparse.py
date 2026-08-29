@@ -308,7 +308,10 @@ fit.acc_blend = args.acc_blend
 GRID_LIM = 2.0
 # mass per Gaussian, for the mass-weighted objective. sc.volume is zero on the
 # ones no material was assigned to, which is what we want: they ride along.
-MASS_G = sc.volume.clone()
+# the loss compares the material Gaussians only, so the weights have to be the
+# same subset -- sc.volume covers the whole cloud
+MASS_G = sc.volume[sc.keep].clone() if sc.volume.shape[0] != int(sc.keep.sum()) \
+    else sc.volume.clone()
 if args.no_guards:
     fit.s_lo, fit.s_hi, fit.polar_ridge = 1e-9, 1e9, 0.0
 SHAPE = ("pos", "log_s", "quat")
