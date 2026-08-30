@@ -162,13 +162,16 @@ ap.add_argument("--cfl_frac", type=float, default=0.05,
                       "the anchor spacing. The starting discretisation sits at 1.4%%; "
                       "the configurations the fit blew up on reach 50%%.")
 ap.add_argument("--lambda_cfl", type=float, default=1.0)
-ap.add_argument("--loss", choices=["window", "mwrmsd"], default="window",
+ap.add_argument("--loss", choices=["window", "mwrmsd"], default="mwrmsd",
                  help="how a frame is scored. 'window' divides by how far MPM "
-                      "moved from the start of that window, so a window where "
-                      "little happened is amplified -- the very instability "
-                      "i-PhysGaussian says it avoids by normalising with a fixed "
-                      "grid_lim instead. 'mwrmsd' is their metric as the "
-                      "objective: mass-weighted RMS over grid_lim.")
+                      "moved from the start of that window, so whichever window "
+                      "happened to move least is amplified most -- and the fit "
+                      "specialises to that. Measured against a common reference: "
+                      "no fit 21.4%, window-normalised fit 29.4-33.0% (worse than "
+                      "not fitting), mwrmsd fit 17.4-20.9%. Same data, same model, "
+                      "only the normalisation differs, and it flips the sign of "
+                      "what training is worth. 'window' is kept for reproducing "
+                      "the older numbers.")
 ap.add_argument("--acc_blend", type=float, default=0.0,
                  help="how much of the deformation gradient to take from one "
                       "carried forward in time, MPM style, rather than from shape "
