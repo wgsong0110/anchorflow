@@ -234,13 +234,14 @@ for s in range(a.n_seq):
         for t in range(a.frames):
             im = draw(X[t], CAMS[ci]["cam"])
             imv = draw_mov(X[t], CAMS[ci]["cam"])
+            # _mov 쪽은 png 로 읽는다 (로더의 suffix_replace=['.jpg','.png']).
             imageio.imwrite(os.path.join(vd, "%05d.jpg" % t), im, quality=92)
-            imageio.imwrite(os.path.join(vdm, "%05d.jpg" % t), imv, quality=92)
+            imageio.imwrite(os.path.join(vdm, "%05d.png" % t), imv)
             if t == 0:
                 imageio.imwrite(os.path.join(OUT, "images", name + ".jpg"), im,
                                 quality=92)
-                imageio.imwrite(os.path.join(OUT, "images_mov", name + ".jpg"),
-                                imv, quality=92)
+                imageio.imwrite(os.path.join(OUT, "images_mov", name + ".png"),
+                                imv)
         frames_json.append({"file_path": "images/%s.jpg" % name,
                             "transform_matrix": CAMS[ci]["c2w"].tolist()})
     n_ok += 1
