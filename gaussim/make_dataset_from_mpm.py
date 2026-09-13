@@ -226,11 +226,14 @@ for phase in ("train", "test"):
     json.dump({"camera_angle_x": float(FOVX), "frames": frames_json},
               open(os.path.join(OUT, "transforms_%s.json" % phase), "w"))
 gs.save_ply(os.path.join(OUT, "point_cloud.ply"))
-mov = torch.ones(N, dtype=torch.bool)
+# 마스크는 **저장한 ply 전체 길이**여야 한다. 배경을 살려두었으므로 N_ALL 이고,
+# 움직이는 것은 물질 가우시안 자리뿐이다. 길이가 물질 수(N)면 로더가 전체 ply 를
+# 그 마스크로 인덱싱하다 터진다.
+mov = torch.zeros(N_ALL, dtype=torch.bool)
+mov[MAT.cpu()] = True
 pickle.dump(mov.numpy(), open(os.path.join(OUT, "pc_mask.pkl"), "wb"))
 pickle.dump(mov.numpy(), open(os.path.join(OUT, "cln_pc_mask.pkl"), "wb"))
-fixed = sc.fixed_mask.cpu().numpy()
-pin_g = np.zeros(N, dtype=bool)
+pin_g = np.zeros(N_ALL, dtype=bool)
 json.dump([np.nonzero(pin_g)[0].tolist()], open(os.path.join(OUT, "pin_mask.json"), "w"))
 json.dump({"train": [f["file_path"].split("/")[-1].replace(".jpg", "")
                      for f in frames_json],
