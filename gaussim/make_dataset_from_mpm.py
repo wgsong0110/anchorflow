@@ -235,8 +235,23 @@ mov[MAT.cpu()] = True
 # numpy 로 쓰면 데이터셋 생성 단계에서 TypeError 가 난다.
 pickle.dump(mov, open(os.path.join(OUT, "pc_mask.pkl"), "wb"))
 pickle.dump(mov, open(os.path.join(OUT, "cln_pc_mask.pkl"), "wb"))
-pin_g = np.zeros(N_ALL, dtype=bool)
-json.dump([np.nonzero(pin_g)[0].tolist()], open(os.path.join(OUT, "pin_mask.json"), "w"))
+# pin 은 **움직이는 부분 안에서의 인덱스**다 (GausSim 이 torch.sum(pcmask) 길이의
+# 마스크를 만들고 여기 담긴 번호로 True 를 세운다). 씬 config 가 속도를 0 으로
+# 묶어두는 상자(enforce_particle_translation / cuboid)를 그대로 쓴다 -- 비워두면
+# 계층 클러스터링이 빈 배열을 받아 터진다.
+pin_local = torch.zeros(N, dtype=torch.bool)
+mat_pos = sc.pos[KEEP].to(dev)
+for bc in sc.cfg.get("boundary_conditions", []):
+    if bc.get("type") not in ("cuboid", "enforce_particle_translation"):
+        continue
+    if float(np.linalg.norm(bc.get("velocity", [0, 0, 0]))) > 0:
+        continue                       # 움직이는 구동기는 고정점이 아니다
+    c = torch.tensor(bc["point"], device=dev, dtype=mat_pos.dtype)
+    hs = torch.tensor(bc["size"], device=dev, dtype=mat_pos.dtype)
+    pin_local |= (((mat_pos - c).abs() <= hs).all(-1)).cpu()
+print(f"[pin] 고정 가우시안 {int(pin_local.sum())} / {N}", flush=True)
+json.dump([int(i) for i in torch.nonzero(pin_local).squeeze(-1).tolist()],
+          open(os.path.join(OUT, "pin_mask.json"), "w"))
 json.dump({"train": [f["file_path"].split("/")[-1].replace(".jpg", "")
                      for f in frames_json],
            "test": [], "twin": [], "invalid": [], "force_invalid": [],
