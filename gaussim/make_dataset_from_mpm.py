@@ -181,12 +181,29 @@ ZR_M = torch.zeros(N, 4, device=dev); ZR_M[:, 0] = 1.0
 ZS_M = torch.zeros(N, 3, device=dev)
 
 
-def draw_mov(x, cam):
-    """움직이는 부분만. 배경은 빼고 그린다."""
+BG_K = torch.zeros(3, device=dev)
+BG_W = torch.ones(3, device=dev)
+
+
+def draw_mov(x, cam, rgba=False):
+    """움직이는 부분만. rgba 면 알파(물체 덮개)까지 낸다.
+
+    래스터라이저는 배경 위에 합성한 결과만 준다. 같은 장면을 검정과 흰 배경에
+    두 번 그리면 흰 쪽이 (1-a) 만큼 밝으므로 a = 1 - (흰 - 검정) 이고, 검정 쪽이
+    곧 a*C 라 C = (검정)/a 로 되돌릴 수 있다. GausSim 의 로더가 다시 a 를 곱하므로
+    여기서는 **곱하지 않은** C 와 a 를 내보내야 한다.
+    """
     dx = sc.undo(x) - sc.undo(G0)
-    im = torch.clamp(_render(cam, gs_mov, pipe, BG, dx, ZR_M, ZS_M,
+    ik = torch.clamp(_render(cam, gs_mov, pipe, BG_K, dx, ZR_M, ZS_M,
                              d_rot_as_res=True)["render"], 0, 1)
-    return (im.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
+    if not rgba:
+        return (ik.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
+    iw = torch.clamp(_render(cam, gs_mov, pipe, BG_W, dx, ZR_M, ZS_M,
+                             d_rot_as_res=True)["render"], 0, 1)
+    alpha = (1.0 - (iw - ik).mean(0)).clamp(0, 1)
+    rgb = (ik / alpha.clamp(min=1e-3).unsqueeze(0)).clamp(0, 1)
+    out = torch.cat([rgb, alpha.unsqueeze(0)], 0)
+    return (out.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
 
 
 import imageio
@@ -233,7 +250,7 @@ for s in range(a.n_seq):
         os.makedirs(vdm, exist_ok=True)
         for t in range(a.frames):
             im = draw(X[t], CAMS[ci]["cam"])
-            imv = draw_mov(X[t], CAMS[ci]["cam"])
+            imv = draw_mov(X[t], CAMS[ci]["cam"], rgba=True)
             # _mov 쪽은 png 로 읽는다 (로더의 suffix_replace=['.jpg','.png']).
             imageio.imwrite(os.path.join(vd, "%05d.jpg" % t), im, quality=92)
             imageio.imwrite(os.path.join(vdm, "%05d.png" % t), imv)
@@ -243,7 +260,7 @@ for s in range(a.n_seq):
                 # 대표 프레임(images_mov)은 jpg 그대로다 -- 로더가 확장자를 png 로
                 # 바꾸는 것은 video_mov_images 쪽뿐이다.
                 imageio.imwrite(os.path.join(OUT, "images_mov", name + ".jpg"),
-                                imv, quality=92)
+                                imv[..., :3], quality=92)
         frames_json.append({"file_path": "images/%s.jpg" % name,
                             "transform_matrix": CAMS[ci]["c2w"].tolist()})
     n_ok += 1
