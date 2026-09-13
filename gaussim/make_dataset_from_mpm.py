@@ -42,6 +42,8 @@ ap.add_argument("--n_cam", type=int, default=4)
 ap.add_argument("--frames", type=int, default=14)
 ap.add_argument("--width", type=int, default=400)
 ap.add_argument("--vel_scale", type=float, default=0.3)
+ap.add_argument("--n_pin", type=int, default=32,
+                help="고정 영역에서 뽑을 앵커 수 (GausSim 최상위 계층용)")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
@@ -296,8 +298,26 @@ for bc in sc.cfg.get("boundary_conditions", []):
     c = torch.tensor(bc["point"], device=dev, dtype=mat_pos.dtype)
     hs = torch.tensor(bc["size"], device=dev, dtype=mat_pos.dtype)
     pin_local |= (((mat_pos - c).abs() <= hs).all(-1)).cpu()
-print(f"[pin] 고정 가우시안 {int(pin_local.sum())} / {N}", flush=True)
-json.dump([int(i) for i in torch.nonzero(pin_local).squeeze(-1).tolist()],
+# GausSim 에서 pin 은 "고정된 점 전부"가 아니다. 최상위 계층에서 각 클러스터가
+# **가장 가까운 pin 하나**에 붙고(n_clusters = max(index)+1), 모든 pin 이 적어도
+# 하나의 클러스터에 뽑혀야 노드 수가 맞는다. 고정 영역 전체(수만 개)를 그대로 주면
+# 대부분이 안 쓰여 노드 수 불일치로 터진다. 그래서 고정 영역 안에서 서로 멀리 떨어진
+# 소수만 최원점 샘플링으로 고른다 -- 어디가 잡혀 있는지는 그대로 담긴다.
+pin_idx_all = torch.nonzero(pin_local).squeeze(-1)
+P = pin_idx_all.numel()
+if P > a.n_pin:
+    pts = mat_pos[pin_idx_all.to(dev)]
+    sel = [0]
+    d = (pts - pts[0]).norm(dim=-1)
+    for _ in range(a.n_pin - 1):
+        j = int(d.argmax())
+        sel.append(j)
+        d = torch.minimum(d, (pts - pts[j]).norm(dim=-1))
+    pin_idx = pin_idx_all[torch.tensor(sorted(set(sel)))]
+else:
+    pin_idx = pin_idx_all
+print(f"[pin] 고정 영역 {P} / {N} -> 앵커 {pin_idx.numel()} 개로 추림", flush=True)
+json.dump([int(i) for i in pin_idx.tolist()],
           open(os.path.join(OUT, "pin_mask.json"), "w"))
 json.dump({"train": [f["file_path"].split("/")[-1].replace(".jpg", "")
                      for f in frames_json],
