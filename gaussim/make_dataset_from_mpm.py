@@ -231,8 +231,10 @@ gs.save_ply(os.path.join(OUT, "point_cloud.ply"))
 # 그 마스크로 인덱싱하다 터진다.
 mov = torch.zeros(N_ALL, dtype=torch.bool)
 mov[MAT.cpu()] = True
-pickle.dump(mov.numpy(), open(os.path.join(OUT, "pc_mask.pkl"), "wb"))
-pickle.dump(mov.numpy(), open(os.path.join(OUT, "cln_pc_mask.pkl"), "wb"))
+# GausSim 은 이 pkl 을 torch 텐서로 읽는다 (torch.sum(pcmask) 를 그대로 부른다).
+# numpy 로 쓰면 데이터셋 생성 단계에서 TypeError 가 난다.
+pickle.dump(mov, open(os.path.join(OUT, "pc_mask.pkl"), "wb"))
+pickle.dump(mov, open(os.path.join(OUT, "cln_pc_mask.pkl"), "wb"))
 pin_g = np.zeros(N_ALL, dtype=bool)
 json.dump([np.nonzero(pin_g)[0].tolist()], open(os.path.join(OUT, "pin_mask.json"), "w"))
 json.dump({"train": [f["file_path"].split("/")[-1].replace(".jpg", "")
