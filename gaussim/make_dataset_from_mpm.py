@@ -58,6 +58,8 @@ torch.set_grad_enabled(False)
 OUT = os.path.join(a.out, a.scene)
 os.makedirs(os.path.join(OUT, "images"), exist_ok=True)
 os.makedirs(os.path.join(OUT, "video_images"), exist_ok=True)
+os.makedirs(os.path.join(OUT, "images_mov"), exist_ok=True)
+os.makedirs(os.path.join(OUT, "video_mov_images"), exist_ok=True)
 
 sc = scene_setup.build(a.ply, a.config, 512, 8, device=dev, frozen_weights=True,
                        rot_fallback=True, eig_floor=0.02)
@@ -161,9 +163,28 @@ for i in VIEWS:
 
 
 def draw(x, cam):
+    """전체 씬. 배경 가우시안은 정지한 채 같이 그려진다."""
     dx = torch.zeros(N_ALL, 3, device=dev, dtype=sc.pos.dtype)
     dx[MAT] = sc.undo(x) - sc.undo(G0)
     im = torch.clamp(_render(cam, gs, pipe, BG, dx, ZR, ZS,
+                             d_rot_as_res=True)["render"], 0, 1)
+    return (im.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
+
+
+# GausSim 의 config 는 render_mov_only=True 라 images_mov / video_mov_images 를
+# 읽는다 -- 움직이는 부분만 남긴 렌더다. 전체 씬과 별개로 한 벌 더 만든다.
+gs_mov = GaussianModel(3, fea_dim=0)
+gs_mov.load_ply(a.ply)
+for nm in FIELDS:
+    setattr(gs_mov, nm, getattr(gs_mov, nm)[MAT])
+ZR_M = torch.zeros(N, 4, device=dev); ZR_M[:, 0] = 1.0
+ZS_M = torch.zeros(N, 3, device=dev)
+
+
+def draw_mov(x, cam):
+    """움직이는 부분만. 배경은 빼고 그린다."""
+    dx = sc.undo(x) - sc.undo(G0)
+    im = torch.clamp(_render(cam, gs_mov, pipe, BG, dx, ZR_M, ZS_M,
                              d_rot_as_res=True)["render"], 0, 1)
     return (im.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
 
@@ -207,13 +228,19 @@ for s in range(a.n_seq):
     for ci in range(len(CAMS)):
         name = "seq_%05d_%05d" % (s, ci)
         vd = os.path.join(OUT, "video_images", name)
+        vdm = os.path.join(OUT, "video_mov_images", name)
         os.makedirs(vd, exist_ok=True)
+        os.makedirs(vdm, exist_ok=True)
         for t in range(a.frames):
             im = draw(X[t], CAMS[ci]["cam"])
+            imv = draw_mov(X[t], CAMS[ci]["cam"])
             imageio.imwrite(os.path.join(vd, "%05d.jpg" % t), im, quality=92)
+            imageio.imwrite(os.path.join(vdm, "%05d.jpg" % t), imv, quality=92)
             if t == 0:
                 imageio.imwrite(os.path.join(OUT, "images", name + ".jpg"), im,
                                 quality=92)
+                imageio.imwrite(os.path.join(OUT, "images_mov", name + ".jpg"),
+                                imv, quality=92)
         frames_json.append({"file_path": "images/%s.jpg" % name,
                             "transform_matrix": CAMS[ci]["c2w"].tolist()})
     n_ok += 1
