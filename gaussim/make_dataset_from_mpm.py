@@ -240,8 +240,10 @@ for s in range(a.n_seq):
             if t == 0:
                 imageio.imwrite(os.path.join(OUT, "images", name + ".jpg"), im,
                                 quality=92)
-                imageio.imwrite(os.path.join(OUT, "images_mov", name + ".png"),
-                                imv)
+                # 대표 프레임(images_mov)은 jpg 그대로다 -- 로더가 확장자를 png 로
+                # 바꾸는 것은 video_mov_images 쪽뿐이다.
+                imageio.imwrite(os.path.join(OUT, "images_mov", name + ".jpg"),
+                                imv, quality=92)
         frames_json.append({"file_path": "images/%s.jpg" % name,
                             "transform_matrix": CAMS[ci]["c2w"].tolist()})
     n_ok += 1
