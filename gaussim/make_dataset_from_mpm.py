@@ -91,16 +91,22 @@ gs = GaussianModel(3, fea_dim=0)
 gs.load_ply(a.ply)
 FIELDS = ("_xyz", "_features_dc", "_features_rest", "_opacity", "_scaling",
           "_rotation")
-if getattr(sc, "crop", None) is not None:
-    for nm in FIELDS:
-        setattr(gs, nm, getattr(gs, nm)[sc.crop])
+# ply 전체를 그대로 둔다. crop -> keep 을 렌더러에 그대로 먹이면 배경 가우시안이
+# 사라져 흰 공백 위의 물체만 남는다 -- PhysGaussian 공식 경로도 래스터화 직전에
+# 비선택 가우시안을 다시 합친다. 움직이는 것은 물질 가우시안뿐이므로 전체 길이의
+# 변위를 만들어 그 자리에만 채운다.
 KEEP = sc.keep
-for nm in FIELDS:
-    setattr(gs, nm, getattr(gs, nm)[KEEP])
-N = gs._xyz.shape[0]
-ZR = torch.zeros(N, 4, device=dev); ZR[:, 0] = 1.0
-ZS = torch.zeros(N, 3, device=dev)
+N_ALL = gs._xyz.shape[0]
+idx_all = torch.arange(N_ALL, device=dev)
+if getattr(sc, "crop", None) is not None:
+    idx_all = idx_all[sc.crop]
+MAT = idx_all[KEEP]
+ZR = torch.zeros(N_ALL, 4, device=dev); ZR[:, 0] = 1.0
+ZS = torch.zeros(N_ALL, 3, device=dev)
+N = int(MAT.shape[0])
 G0 = sc.pos[KEEP]
+print(f"[렌더] 가우시안 전체 {N_ALL}, 그중 물질 {N} (나머지는 정지 배경)",
+      flush=True)
 
 cams_all = json.load(open(a.cameras))
 rng = np.random.RandomState(a.seed)
@@ -155,7 +161,8 @@ for i in VIEWS:
 
 
 def draw(x, cam):
-    dx = sc.undo(x) - sc.undo(G0)
+    dx = torch.zeros(N_ALL, 3, device=dev, dtype=sc.pos.dtype)
+    dx[MAT] = sc.undo(x) - sc.undo(G0)
     im = torch.clamp(_render(cam, gs, pipe, BG, dx, ZR, ZS,
                              d_rot_as_res=True)["render"], 0, 1)
     return (im.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
@@ -183,7 +190,7 @@ for s in range(a.n_seq):
         v0 = (a.vel_scale * float(sc.extent) / (a.frames * FRAME_DT)
               * d / d.norm()).expand(T.n, 3).contiguous()
     T._set(T.pos_m.clone(), v0, T.eye.clone(), torch.zeros_like(T.eye))
-    xs_t, bad = [T.pos_m[KEEP].clone()], False
+    xs_t, bad = [T.pos_m.clone()], False
     for _ in range(a.frames - 1):
         for k in range(n_sub):
             T.solver.p2g2p(None, float(sc.sub_dt), device=T.wp_dev)
@@ -192,7 +199,7 @@ for s in range(a.n_seq):
                 break
         if bad:
             break
-        xs_t.append(T.solver.export_particle_x_to_torch()[KEEP].clone())
+        xs_t.append(T.solver.export_particle_x_to_torch().clone())
     if bad or len(xs_t) < a.frames:
         print("  시퀀스 %02d: 격자 이탈 -- 버림" % s, flush=True)
         continue
