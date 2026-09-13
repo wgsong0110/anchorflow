@@ -31,7 +31,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .dynamics import mlp
+
+def mlp(sizes, layernorm=True, act=nn.SiLU):
+    """Plain feed-forward stack. Used to live in the retired dynamics module,
+    which went away with the message-passing stepper; the stepper here is the
+    only thing that still needs it, so it lives here now."""
+    layers = []
+    for i in range(len(sizes) - 1):
+        layers.append(nn.Linear(sizes[i], sizes[i + 1]))
+        if i < len(sizes) - 2:
+            layers.append(act())
+    net = nn.Sequential(*layers)
+    if layernorm:
+        net = nn.Sequential(net, nn.LayerNorm(sizes[-1]))
+    return net
+
 
 try:
     from geobias import fused_geo_bias, HAVE_CUDA as _HAVE_GEOBIAS
