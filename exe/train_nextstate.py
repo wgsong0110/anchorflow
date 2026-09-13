@@ -26,8 +26,9 @@ import torch
 from tqdm import tqdm
 
 from anchorflow import scene_setup
-from anchorflow.nextstate import NextStep, apply_step
-from anchorflow.streams import stream as _stream, draw_impulse, draw_field_shape
+from anchorflow.nextstate import NextStep, apply_step, apply_step_frame
+import contextlib
+from anchorflow.streams import stream as _stream
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -66,16 +67,38 @@ ap.add_argument("--batch", type=int, default=8,
                       "trend moving.")
 ap.add_argument("--noise", type=float, default=0.0,
                  help="random-walk noise on the input history, as a fraction of the typical "
-                      "displacement. GNS's fix for rollout error accumulation: the network "
+                      "displacement. 롤아웃 오차 누적을 막는 표준적인 처방: the network "
                       "only ever sees clean simulator states otherwise, and has no idea what "
                       "to do once its own error has moved it off that manifold.")
 ap.add_argument("--eval_every", type=int, default=5000)
 ap.add_argument("--eval_frames", type=int, default=60)
+ap.add_argument("--sdpa", action="store_true",
+                 help="어텐션을 F.scaled_dot_product_attention 으로 계산한다. 같은 "
+                      "수식이지만 [B,H,M,M] 어텐션 행렬을 만들지 않는다 -- B=16, "
+                      "M=1024 이면 블록당 268MB 를 순전파·역전파 양쪽에서 아낀다. "
+                      "부동소수점 오차만큼 결과가 달라지므로 옛 수치와 직접 견줄 "
+                      "때는 끄고 돌릴 것.")
+ap.add_argument("--amp", choices=("off", "bf16", "fp16"), default="off",
+                 help="혼합 정밀도. 위치는 좌표 O(1) 대 변위 4e-3 이라 bf16 의 "
+                      "가수 8 비트로는 이웃 앵커가 구분되지 않을 수 있다 -- "
+                      "exe/bench_train_opt.py 로 손실이 같은지 확인한 뒤 쓸 것.")
 ap.add_argument("--compile", action="store_true",
                  help="wrap the model in torch.compile. Off by default -- it is the obvious "
                       "answer to a launch-overhead bottleneck, but it changes what is being "
                       "compared between runs and the batching fix below already removes ~50 "
                       "of the per-iteration ops.")
+ap.add_argument("--base_force", type=float, nargs=3, default=None,
+                 help="임펄스 세기의 기준 벡터. config 에 particle_impulse 가 없는 "
+                      "장면(ficus 말고 전부)에서 필요하다 -- 기하 피팅에는 이 "
+                      "인자가 있었는데 학생 쪽에 없어서, 그런 장면은 학생을 아예 "
+                      "돌릴 수 없었다. exe/probe_scene_force.py 가 ficus 와 같은 "
+                      "변위(물체 크기의 35%)를 내는 값을 추천한다.")
+ap.add_argument("--impulse_uniform", action="store_true",
+                 help="세기를 로그균등이 아니라 같은 구간에서 균등하게 뽑는다. "
+                      "로그균등은 자릿수를 고르게 덮는 대신 센 쪽 표본이 그만큼 "
+                      "적다 -- 홀드아웃 오차가 힘 RMS 와 +0.7 로 상관하는 것이 "
+                      "측정돼(exe/probe_traj_breakdown.py), 센 쪽을 더 뽑으면 "
+                      "그 실패가 줄어드는지 보려는 것이다.")
 ap.add_argument("--impulse_range", type=float, default=4.0,
                  help="the random impulse strength spans [0.5, 0.5*this] times the config's. "
                       "Set to 1 to hold every trajectory at the config's own strength: the "
@@ -105,14 +128,6 @@ ap.add_argument("--n_stream", type=int, default=4,
                       "the same stretch of one history")
 ap.add_argument("--impulse_every", type=int, default=20,
                  help="mean coarse steps between impulses, jittered by half")
-ap.add_argument("--field", action="store_true",
-                 help="impulses become smooth random force FIELDS instead of one vector on "
-                      "the whole object. Every impulse in this project has been the config's "
-                      "particle_impulse -- the same force everywhere -- so the data contains "
-                      "only the lowest spatial frequency there is, and nothing the network "
-                      "has seen tells bending one branch apart from shoving all of it. The "
-                      "correlation length is drawn log-uniformly from the anchor spacing to "
-                      "the object's size, so the uniform push is one end of the range.")
 ap.add_argument("--rollout_steps", type=int, default=1,
                  help="train on this many consecutive predicted steps, with the network fed "
                       "its own output in between and the gradient carried through all of "
@@ -130,11 +145,16 @@ ap.add_argument("--dt_strides", type=int, nargs="+", default=[1],
                       "FiLM input and every run so far has used one dt, so that conditioning "
                       "has never been exercised -- it is currently a constant the network can "
                       "and does ignore.")
-ap.add_argument("--poke_frac", type=float, default=0.0,
-                 help="fraction of the training trajectories driven by a force on ONE REGION "
-                      "of the object rather than a field over all of it. The fields cover "
-                      "spatial frequency; this covers spatial support, which held-out pokes "
-                      "showed nothing had been trained on.")
+ap.add_argument("--mp_kmax", type=int, default=32)
+ap.add_argument("--n_mp_holdout", type=int, default=5,
+                 help="같은 (K, r) 계열에서 뽑는 홀드아웃 궤적 수.")
+ap.add_argument("--mp_rmin", type=float, default=1.0,
+                 help="다중 포크 반경의 하한, 앵커 간격의 배수. 기본 1.0 은 앵커 "
+                      "간격 자체이고, 그보다 작은 반경은 학습에 한 번도 나오지 "
+                      "않았다. r<1 격자에서 C1 이 22.1%% 로 무너져 A2(15.4%%) 에 "
+                      "밀린 것이 그 구멍이다 -- 앵커가 담지 못해서가 아니라(그 "
+                      "칸들의 표현 하한은 0.6~2.0%%) 본 적이 없어서다. 0.125 로 "
+                      "두면 그 구석까지 덮는다.")
 ap.add_argument("--chunk", type=int, default=1,
                  help="emit this many steps from one observation and execute them open-loop. "
                       "The rollout compounds once per time the network is fed its own output, "
@@ -157,6 +177,13 @@ ap.add_argument("--fit", default=None,
                       "--teacher anchor this makes the fitted simulator the teacher "
                       "instead of the sampled one -- 4.92%% from MPM rather than "
                       "13.12%%, which is the whole reason it was fitted.")
+ap.add_argument("--encoder", default="ls", choices=("ls",),
+                 help="앵커로 접는 방법. skin 의 최소제곱 역(project_ls) 하나만 쓴다. 예전 "
+                      "기본값이던 가중평균(avg)은 디코더의 전치이지 역이 아니라, "
+                      "표현 가능한 상태를 왕복시켜도 1~2%% 를 잃었다 -- 인용해 온 "
+                      "표현 하한의 2/3 가 그 편향이었다(doc/encoder_project.md). "
+                      "선택지에서 뺐고, AnchorSparse.project 는 옛 수치를 재현할 "
+                      "때를 위해 라이브러리에만 남겨 둔다.")
 ap.add_argument("--teacher", choices=["anchor", "mpm"], default="anchor",
                  help="what the student imitates. 'anchor' is the shape-matching simulator "
                       "this project has always used; 'mpm' is PhysGaussian's own solver, "
@@ -209,11 +236,6 @@ ap.add_argument("--amp_hi", type=float, default=2.0,
 ap.add_argument("--calib_steps", type=int, default=25,
                  help="coarse steps of a probe run used to measure what a unit field actually "
                       "moves, before rescaling it to the target")
-ap.add_argument("--n_field_holdout", type=int, default=5,
-                 help="held-out trajectories driven by a force field, scored separately. "
-                      "Without these the change is invisible: the existing held-out set is "
-                      "all uniform impulses, so it cannot tell whether the network learned "
-                      "anything about being pushed locally.")
 ap.add_argument("--stream_amp_cap", type=float, default=3.0,
                  help="skip an impulse while the object is already displaced more than this "
                       "many times the config impulse's peak. Impulses land on top of each "
@@ -251,6 +273,25 @@ ap.add_argument("--r2", default=None,
                  help="rclone destination to copy every checkpoint to as it is written, e.g. "
                       "r2:storage/result/anchorflow/ckpt/NAME. The instance can be reclaimed "
                       "at any time, so nothing that matters should live only on its disk.")
+ap.add_argument("--frame_state", action="store_true",
+                help="앵커 상태에 회전벡터 u 와 로그신축 s 를 추가한다. 프레임 복호로 "
+                     "맞춰진 기하(fit_anchor_sparse --frame_state) 위에서는 이것이 "
+                     "유일하게 말이 되는 학생이다 -- (p,v) 만 들면 어느 프레임에서도 "
+                     "F 를 만들 수 없어 가우시안 복호도 MPM 재시작도 불가능하다. "
+                     "상태가 앵커당 6 개에서 12 개로 늘고 선생의 라벨도 [M,3] 에서 "
+                     "[M,9] 가 된다. doc/frame_state.md")
+ap.add_argument("--frame_kind", default="F", choices=("F", "us"),
+                help="프레임 상태의 형태. 'F' 는 앵커가 3x3 을 그대로 들고 선형 "
+                     "블렌딩한다 -- 감김도 제약도 없어 스텝 변화 꼬리가 30 배(us 는 "
+                     "162 배)이고 F 잔차도 0.291 대 0.713 으로 낫다. 'us' 는 회전벡터와 "
+                     "로그신축으로 쪼갠 6 자유도로, 부피(det)가 보장되고 렌더용 "
+                     "(회전, 스케일) 이 공짜지만 회전벡터가 2pi 로 감겨 학생이 배우기 "
+                     "어렵다. doc/run-2026-09-frame-state.md")
+ap.add_argument("--fs_gn", type=int, default=6, help="프레임 인코더의 가우스-뉴턴 반복")
+ap.add_argument("--fs_cg", type=int, default=20, help="그 안쪽 켤레기울기 반복")
+ap.add_argument("--w_frame", type=float, default=1.0,
+                help="손실에서 (u, s) 항의 가중. 각 항은 자기 전형 증분으로 이미 "
+                     "정규화돼 있으므로 1 이면 위치와 같은 무게다.")
 ap.add_argument("--resume", default=None,
                  help="resume from a checkpoint written by --out (model, optimiser, iteration "
                       "and RNG). The collected trajectories are regenerated, not stored -- "
@@ -305,16 +346,44 @@ MAXS = max(args.dt_strides)
 # only the held-out ones are worth generating
 N_TRAJ = args.n_holdout if args.stream_len > 0 else args.n_traj
 AC, M, fixed = sc.anchor_canonical, sc.M, sc.fixed_mask
+FRAME = args.frame_state
+# 프레임 상태면 궤적 텐서가 [.., M, 3+E] 다. E 는 추가 상태의 채널 수 --
+# 'F' 면 9(자유 3x3), 'us' 면 6(회전벡터 3 + 로그신축 3).
+N_EXTRA = 9 if args.frame_kind == "F" else 6
+def _p(t):
+    return t[..., :3] if FRAME else t
+def _u(t):
+    """추가 상태. 'F' 면 전체 9 채널, 'us' 면 앞 3 채널(회전벡터)."""
+    return t[..., 3:] if N_EXTRA == 9 else t[..., 3:6]
+def _s(t):
+    """'us' 면 로그신축 3 채널. 'F' 면 추가 상태가 _u 한 덩어리라 폭 0 을 준다 --
+    torch.cat([p, u, s]) 가 어디서든 3+E 채널이 되게 하려는 것이다."""
+    return t[..., 6:9] if N_EXTRA == 6 else t[..., :0]
+# 롤아웃 오차의 고정 분모. 장면의 물체 크기 -- 궤적·임펄스와 무관하다.
+SPAN_FIX = float(sc.extent)
 print(f"[setup] N={sc.N} M={M} pinned={int(fixed.sum())} "
-      f"coarse dt={args.dt_mult * sc.sub_dt} ({args.dt_mult} substeps)")
+      f"coarse dt={args.dt_mult * sc.sub_dt} ({args.dt_mult} substeps), "
+      f"오차 정규화 상수 {SPAN_FIX:.4f}")
 
 # ---------------- data: coarse-sampled explicit trajectories ----------------
 base_force = None
 for bc in sc.cfg.get("boundary_conditions", []):
     if bc["type"] == "particle_impulse":
         base_force = torch.tensor(bc["force"], device=dev)
+if args.base_force is not None:
+    base_force = torch.tensor(args.base_force, device=dev)
+    print(f"[setup] 기준 임펄스 {args.base_force} (config 대신 인자)", flush=True)
 gen = torch.Generator(device=dev); gen.manual_seed(1234)
 
+
+# 궤적 캐시가 어느 분포에서 나왔는지. 분포가 바뀌면 캐시를 재사용하면 안 된다.
+DIST_KEY = (f"mp_k{args.mp_kmax}_r{args.mp_rmin}_amp{int(bool(args.target_amp))}"
+            # 세기 범위가 키에 없어서, --impulse_range 를 바꿔도 옛 라벨이 조용히
+            # 재사용될 수 있었다. 기본값일 때만 빈 문자열로 두어 이미 만들어 둔
+            # 캐시들은 그대로 유효하게 남긴다.
+            + (f"_ir{args.impulse_range:g}" if args.impulse_range != 4.0 else "")
+            + ("_unif" if args.impulse_uniform else "")
+            + (f"_frame{args.frame_kind}" if FRAME else ""))
 
 TEACHER = None
 if args.teacher == "mpm":
@@ -327,9 +396,11 @@ if args.teacher == "mpm":
     import warp as wp
     wp.init()
     from anchorflow.mpm_teacher import MPMTeacher
-    TEACHER = MPMTeacher(sc, n_grid=args.n_grid, grid_lim=args.grid_lim,
-                          sparse=(sc.fit if args.fit else None))
-    print(f"[teacher] PhysGaussian MPM, {TEACHER.n} material particles", flush=True)
+    TEACHER = MPMTeacher(sc, frame=FRAME, n_grid=args.n_grid, grid_lim=args.grid_lim,
+                          sparse=(sc.fit if args.fit else None),
+                          encoder=args.encoder)
+    print(f"[teacher] PhysGaussian MPM, {TEACHER.n} material particles, "
+          f"인코더 {args.encoder}", flush=True)
 
 
 def rand_rot():
@@ -366,9 +437,9 @@ def trajectory(force):
 
 def stream(n_steps, cap):
     """see anchorflow.streams.stream -- shared so the renderer draws this data"""
-    return _stream(sc, n_steps, args.dt_mult, base_force, gen, cap,
-                    impulse_every=args.impulse_every, impulse_range=args.impulse_range,
-                    field=args.field, keep_accel=USE_A)
+    raise SystemExit(
+        "스트림 모드는 힘장 계열 임펄스에 묶여 있어 제거했다. 이 프로젝트의 임펄스는 "
+        "(K, r) 다중 포크 하나뿐이다 -- draw_multipoke 참조.")
 
 def peak_of(force, steps):
     """how far a force actually moves the object, over a short probe run"""
@@ -382,6 +453,31 @@ def peak_of(force, steps):
     return peak
 
 
+def _mag(u):
+    """세기 배수. 구간은 [0.5, 0.5*impulse_range] 로 양쪽이 같고 분포만 다르다."""
+    lo, hi = 0.5, 0.5 * args.impulse_range
+    return (lo + u * (hi - lo)) if args.impulse_uniform else (lo * ((hi / lo) ** u))
+
+
+def draw_multipoke(gen):
+    """임펄스는 (포크 개수 K, 반경 r) 로만 결정된다.
+
+    옛 계열 분할 -- 균일 / 힘장 / 포크를 따로 뽑던 것 -- 은 제거했다. 평가 격자가
+    K x r 두 축이고, 기하 피팅과 학생 학습도 같은 축 위에서 뽑혀야 셋을 견줄 수
+    있다. 이 계열 하나가 그 셋을 모두 포함한다: K=1 에 r 이 물체 크기면 균일,
+    K 가 크고 r 이 작으면 힘장에 해당하는 국소 구조, K=1 에 r 이 작으면 포크.
+
+    K 와 r 은 각각 로그균등이다 -- 둘 다 자릿수를 걸쳐 변하므로 중요한 것은
+    절대값이 아니라 스케일이다. 세기는 RMS 로 정규화된다(random_multi_poke 참조).
+    """
+    uk = torch.rand(1, device=dev, generator=gen).item()
+    kk = max(1, int(round(args.mp_kmax ** uk)))
+    ur = torch.rand(1, device=dev, generator=gen).item()
+    lo, hi = sc.sim.radius * args.mp_rmin, sc.extent
+    rad = lo * ((hi / lo) ** ur)
+    return sc.random_multi_poke(gen, kk, rad, 1.0), kk, rad
+
+
 def amplitude_targeted(target):
     """a field scaled to reach `target` peak displacement, and what it took.
 
@@ -389,16 +485,34 @@ def amplitude_targeted(target):
     that one probe and a rescale lands near the target; the scale is clamped so
     a field that barely moves the object cannot ask for an absurd force.
     """
-    shape, sig = draw_field_shape(sc, gen)
+    shape, kk, rad = draw_multipoke(gen)
     m0 = base_force.norm().item()
     d0 = peak_of(shape * m0, args.calib_steps)
     k = min(max(target / max(d0, 1e-9), 0.05), 30.0)
-    return shape * m0 * k, sig, d0, k
+    return shape * m0 * k, (kk, rad), d0, k
 
 
 # a fitted teacher is a different simulator, so its trajectories are not the
 # sampled one's however similar the flags look
-TEACHER_TAG = args.teacher + (":fitted" if args.fit else "")
+# 궤적은 **그 앵커 집합 위로** 투영해 만든 라벨이다. 기하가 다르면 라벨도 다른데
+# 태그에 기하가 없으면 --fit 만 바꿨을 때 이전 라벨을 조용히 재사용한다. 파일의
+# 크기·수정시각·반복수로 신원을 박아 그 사고를 막는다.
+def _fit_tag(path):
+    if not path:
+        return ""
+    try:
+        b = torch.load(path, map_location="cpu", weights_only=False)
+        it, m = b.get("iter"), b["pos"].shape[0]
+    except Exception:
+        it, m = "?", "?"
+    return f":fit[{os.path.basename(path)}@{it}/M{m}]"
+
+
+TEACHER_TAG = (args.teacher + (":fitted" if args.fit else "")
+               + (":frame" if FRAME else "") + _fit_tag(args.fit))
+if FRAME and (TEACHER is None or not args.fit):
+    raise SystemExit("--frame_state 는 MPM 선생(--teacher mpm)과 피팅된 기하(--fit)가 "
+                      "함께 있어야 한다 -- 프레임 복호는 앵커 집합의 짝 구조 위에서만 정의된다")
 trajs, accs = [], []
 if args.traj_cache and args.r2 and not os.path.exists(args.traj_cache):
     # against a fitted teacher these are an hour and a half of GPU on the torch
@@ -414,11 +528,11 @@ if args.traj_cache and os.path.exists(args.traj_cache):
         print(f"[data] {args.traj_cache} was written without accelerations; regenerating")
         trajs, accs = [], []
     elif blob.get("teacher", "anchor") != TEACHER_TAG or \
-            bool(blob.get("field", False)) != bool(args.field) or \
+            blob.get("dist") != DIST_KEY or \
             bool(blob.get("target_amp", False)) != bool(args.target_amp) or \
             int(blob.get("n_holdout", args.n_holdout)) != args.n_holdout:
         # different impulses -- these are not the trajectories this run wants
-        print(f"[data] {args.traj_cache} has field={blob.get('field', False)}, "
+        print(f"[data] {args.traj_cache} has dist={blob.get('dist')}, "
               f"n_holdout={blob.get('n_holdout')}, teacher={blob.get('teacher', 'anchor')}; "
               f"regenerating")
         trajs, accs = [], []
@@ -435,40 +549,47 @@ if len(trajs) < N_TRAJ:
     # the generator is advanced once per trajectory, so extending a cache
     # reproduces exactly the trajectories a fresh run of this size would give
     for t in range(N_TRAJ):
-        if t == 0 or base_force is None:
+        if base_force is None:
             f = base_force
-        elif t < args.n_holdout or not args.field:
-            # the held-out trajectories keep the uniform impulse they have always
-            # had, down to the draw order, so [rollout] measures the same thing
-            # in this run as in every run before it and the two stay comparable
-            s = 0.5 * (args.impulse_range ** torch.rand(1, device=dev, generator=gen).item())
-            s = s if args.impulse_range > 1 else 1.0
-            f = (rand_rot() @ base_force) * s
-        elif args.poke_frac > 0 and torch.rand(1, device=dev, generator=gen).item() < args.poke_frac:
-            rad = sc.sim.radius * (2.0 ** (1.0 + 2.0 * torch.rand(1, device=dev, generator=gen).item()))
-            pf, _, _ = sc.random_poke(gen, rad, base_force.norm().item())
-            probe = trajectory(pf)[0]
-            d0 = (probe - AC)[:, ~fixed].norm(dim=-1).max().item()
-            u = torch.rand(1, device=dev, generator=gen).item()
-            tgt = (REF_PEAK or 0.12194) * (0.25 * (8.0 ** u))
-            f = pf * min(max(tgt / max(d0, 1e-9), 0.05), 50.0)
         elif args.target_amp:
             u = torch.rand(1, device=dev, generator=gen).item()
             tgt = REF_PEAK * (args.amp_lo * ((args.amp_hi / args.amp_lo) ** u))
-            f, sg, d0, k = amplitude_targeted(tgt)
+            f, (kk, rad), d0, k = amplitude_targeted(tgt)
             if t < args.n_holdout + 3 or (t + 1) % 25 == 0:
-                print(f"    t={t}: sigma {sg / sc.sim.radius:.1f}x spacing, probe moved "
-                      f"{d0:.4f}, scaled {k:.2f}x for target {tgt:.4f}", flush=True)
+                print(f"    t={t}: K={kk}, r={rad / sc.sim.radius:.2f}x spacing, "
+                      f"probe moved {d0:.4f}, scaled {k:.2f}x for target {tgt:.4f}",
+                      flush=True)
         else:
-            f, _ = draw_impulse(sc, base_force, gen, args.impulse_range, field=True)
+            shape, kk, rad = draw_multipoke(gen)
+            us = torch.rand(1, device=dev, generator=gen).item()
+            f = shape * (base_force.norm().item() * _mag(us))
+            if t < args.n_holdout + 3 or (t + 1) % 25 == 0:
+                print(f"    t={t}: K={kk}, r={rad / sc.sim.radius:.2f}x spacing",
+                      flush=True)
         if t < len(trajs):
             continue
+        # 도메인을 벗어나면 그 임펄스는 버리고 다시 뽑는다. 반경이 작을수록 힘이
+        # 몇 입자에 몰려 MPM 이 격자를 벗어나는 일이 정상적으로 생긴다.
         ps, ac_ = trajectory(f)
+        redraw = 0
+        while ps is None and redraw < 30:
+            redraw += 1
+            if base_force is None:
+                break
+            shape, kk, rad = draw_multipoke(gen)
+            us = torch.rand(1, device=dev, generator=gen).item()
+            f = shape * (base_force.norm().item() * _mag(us))
+            ps, ac_ = trajectory(f)
+        if ps is None:
+            raise SystemExit(f"t={t}: 30 번 다시 뽑아도 MPM 이 도메인을 벗어난다 -- "
+                              f"세기 범위(--impulse_range)나 반경 하한(--mp_rmin)을 볼 것")
+        if redraw:
+            print(f"    t={t}: 도메인 이탈로 {redraw}회 다시 뽑음", flush=True)
         trajs.append(ps); accs.append(ac_)
         if (t + 1) % 25 == 0 or t + 1 == N_TRAJ:
             print(f"  {t + 1}/{N_TRAJ}", flush=True)
     if args.traj_cache:
-        torch.save({"trajs": trajs, "accs": accs, "field": bool(args.field),
+        torch.save({"trajs": trajs, "accs": accs, "dist": DIST_KEY,
                      "n_holdout": args.n_holdout,
                      "teacher": TEACHER_TAG,
                      "target_amp": bool(args.target_amp)}, args.traj_cache)
@@ -488,18 +609,26 @@ trajs, accs = trajs[:N_TRAJ], accs[:N_TRAJ]
 # in stream mode the training data is elsewhere, so every from-rest trajectory
 # can be held out; in classic mode at least one has to be left to train on
 HOLD = args.n_holdout if args.stream_len > 0 else min(args.n_holdout, len(trajs) - 1)
+# 홀드아웃도 같은 계열에서 뽑는다. 예전에는 힘장으로 따로 뽑았는데, 그러면 학습과
+# 평가가 다른 분포가 된다.
 FTRAJ = None
-if args.n_field_holdout > 0 and base_force is not None:
+if args.n_mp_holdout > 0 and base_force is not None:
     fgen = torch.Generator(device=dev); fgen.manual_seed(5678)
     ft = []
-    print(f"[data] {args.n_field_holdout} field-driven held-out trajectories", flush=True)
-    for _ in range(args.n_field_holdout):
-        f, sig = draw_impulse(sc, base_force, fgen, args.impulse_range, field=True)
-        ps_, _ = trajectory(f)
+    print(f"[data] {args.n_mp_holdout} held-out (K, r) trajectories", flush=True)
+    for _ in range(args.n_mp_holdout):
+        # 홀드아웃도 이탈하면 다시 뽑는다 -- 수집 루프와 같은 규칙
+        ps_ = None; tries = 0
+        while ps_ is None and tries < 30:
+            tries += 1
+            shape, kk, rad = draw_multipoke(fgen)
+            ps_, _ = trajectory(shape * base_force.norm().item())
+        if ps_ is None:
+            raise SystemExit("홀드아웃: 30 번 다시 뽑아도 MPM 이 도메인을 벗어난다")
         ft.append(ps_)
-        print(f"  sigma {sig:.4f} ({sig / sc.sim.radius:.1f} anchor spacings, "
-              f"{100 * sig / sc.extent:.0f}% of the object), peak "
-              f"{(ps_ - AC).norm(dim=-1).max().item():.5f}", flush=True)
+        print(f"  K={kk}, r={rad / sc.sim.radius:.2f}x spacing "
+              f"({100 * rad / sc.extent:.0f}% of the object), peak "
+              f"{(_p(ps_) - AC).norm(dim=-1).max().item():.5f}", flush=True)
     fm = min(t.shape[0] for t in ft)
     FTRAJ = torch.stack([t[:fm] for t in ft])
 REF, REF_A = trajs[0], (accs[0] if USE_A else None)
@@ -514,7 +643,7 @@ HTRAJ = torch.stack([t[:n_min] for t in trajs[:HOLD]])
 HACCS = torch.stack([a[:n_min] for a in accs[:HOLD]]) if USE_A else None
 
 if args.stream_len > 0:
-    cap = args.stream_amp_cap * (trajs[0] - AC).norm(dim=-1).max().item()
+    cap = args.stream_amp_cap * (_p(trajs[0]) - AC).norm(dim=-1).max().item()
     print(f"[data] {args.n_stream} continuous runs x {args.stream_len} coarse steps, "
           f"an impulse every ~{args.impulse_every}, skipped above "
           f"{cap:.4f} of displacement", flush=True)
@@ -522,7 +651,7 @@ if args.stream_len > 0:
     for i in range(args.n_stream):
         a_, b_, c_ = stream(args.stream_len, cap)
         st.append(a_); sa.append(b_); sb.append(c_)
-        peak = (a_ - AC)[:, ~fixed].norm(dim=-1).max().item()
+        peak = (_p(a_) - AC)[:, ~fixed].norm(dim=-1).max().item()
         print(f"  {i + 1}/{args.n_stream}: {a_.shape[0]} steps, "
               f"{int(c_.sum())} impulses, peak displacement {peak:.4f}", flush=True)
     s_min = min(t.shape[0] for t in st)
@@ -543,8 +672,27 @@ pairs = IDX
 dt_coarse = args.dt_mult * sc.sub_dt
 SRC = [TRAJ[i] for i in range(TRAJ.shape[0])] if args.stream_len > 0 else trajs
 SRC_A = ([ACCS[i] for i in range(ACCS.shape[0])] if args.stream_len > 0 else accs) if USE_A else None
-DISP = [tr[1:] - tr[:-1] for tr in SRC]
+DISP = [_p(tr)[1:] - _p(tr)[:-1] for tr in SRC]
 DISP_SCALE = float(torch.cat([d.norm(dim=-1).flatten() for d in DISP]).mean())
+# 프레임 상태의 네 스케일. u, s 는 상태의 전형 크기(입력 정규화용)이고
+# du, ds 는 한 스텝 증분의 전형 크기(출력 단위)다. 위치가 좌표 O(1) 대 변위
+# 4e-3 으로 갈리는 것과 같은 이유로 둘을 따로 잰다.
+U_SCALE = S_SCALE = DU_SCALE = DS_SCALE = 1.0
+if FRAME:
+    def _m(ts):
+        return max(float(torch.cat([t.norm(dim=-1).flatten() for t in ts]).mean()), 1e-8)
+    # 자유 F 는 항등원 근처에 머무는 상태라 크기 자체보다 항등원에서의 편차가
+    # 의미 있는 스케일이다 -- |F| 는 늘 sqrt(3) 근처여서 정규화 계수로 못 쓴다.
+    if N_EXTRA == 9:
+        _eye = torch.eye(3, device=dev).reshape(1, 1, 1, 9)
+        U_SCALE = _m([_u(tr) - _eye[0] for tr in SRC])
+    else:
+        U_SCALE = _m([_u(tr) for tr in SRC])
+    S_SCALE = _m([_s(tr) for tr in SRC])
+    DU_SCALE = _m([_u(tr)[1:] - _u(tr)[:-1] for tr in SRC])
+    DS_SCALE = _m([_s(tr)[1:] - _s(tr)[:-1] for tr in SRC])
+    print(f"[data] 프레임 스케일: |u| {U_SCALE:.4g}, |s| {S_SCALE:.4g}, "
+          f"|du| {DU_SCALE:.4g}, |ds| {DS_SCALE:.4g}", flush=True)
 VEL_SCALE = DISP_SCALE / dt_coarse
 ACC_SCALE = float(torch.cat([a.norm(dim=-1).flatten() for a in SRC_A]).mean()) if USE_A else 1.0
 DEV = [d[1:] - d[:-1] for d in DISP]
@@ -561,7 +709,7 @@ with torch.no_grad():
     print(f"[baseline] persistence (du_next = du): rel err = {(num / den) ** 0.5:.4f}")
     print(f"[baseline] zero      (du_next = 0):    rel err = 1.0000")
 print(f"[data] reference peak anchor displacement = "
-      f"{(REF - AC).norm(dim=-1).max().item():.5f}")
+      f"{(_p(REF) - AC).norm(dim=-1).max().item():.5f}")
 
 # the anchor properties the fit chose, as inputs. Without them the problem is
 # partly observed: the fitted set spreads stiffness over 10x and extent over 11x
@@ -600,13 +748,33 @@ net = NextStep(args.hidden, args.depth, args.heads, DISP_SCALE, VEL_SCALE,
                 ACC_SCALE, args.zero_init, use_accel=USE_A, chunk=args.chunk,
                 n_static=0 if STATIC is None else STATIC.shape[1],
                 n_embed=args.anchor_embed,
-                m_anchors=sc.M if args.anchor_embed else 0).to(dev)
+                m_anchors=sc.M if args.anchor_embed else 0,
+                frame=FRAME, u_scale=U_SCALE, s_scale=S_SCALE,
+                du_scale=DU_SCALE, ds_scale=DS_SCALE, n_extra=N_EXTRA).to(dev)
 if STATIC is not None:
     net.set_static(STATIC)
 if args.anchor_embed:
     print(f"[setup] learnable anchor embedding: {sc.M} x {args.anchor_embed}, "
           f"zero-initialised")
 opt = torch.optim.Adam(net.parameters(), lr=args.lr, fused=True)
+# 혼합 정밀도 컨텍스트. 순전파와 손실만 감싸고 역전파·옵티마이저는 fp32 로 둔다.
+def AMP():
+    if args.amp == "off":
+        return contextlib.nullcontext()
+    return torch.autocast("cuda", dtype=(torch.bfloat16 if args.amp == "bf16"
+                                          else torch.float16))
+
+
+# fp16 은 그래디언트가 언더플로하므로 스케일러가 필요하다. bf16 은 지수부가
+# fp32 와 같아 필요 없다.
+SCALER = torch.cuda.amp.GradScaler() if args.amp == "fp16" else None
+if args.amp != "off":
+    print(f"[setup] 혼합 정밀도: {args.amp}"
+          + (" (GradScaler)" if SCALER is not None else ""), flush=True)
+if args.sdpa:
+    from anchorflow.nextstate import set_sdpa
+    set_sdpa(True)
+    print('[setup] 어텐션: SDPA', flush=True)
 if args.compile:
     net = torch.compile(net)
 print(f"[setup] params: {sum(q.numel() for q in net.parameters())/1e3:.1f}k")
@@ -621,21 +789,30 @@ def rollout(frames, ref=None):
     data was built with.
     """
     ref = REF if ref is None else ref
-    p = ref[1].clone()
-    v = (ref[1] - ref[0]) / dt_coarse
+    st = ref[1].clone()
+    p = _p(st).clone()
+    u = _u(st).clone() if FRAME else None
+    sfr = _s(st).clone() if FRAME else None
+    v = (_p(ref[1]) - _p(ref[0])) / dt_coarse
     gp = sc.skin(p, sc.pos.clone())
-    out = [p.clone()]
+    out = [st.clone()]
     while len(out) <= frames:
         # without the acceleration input there is nothing to evaluate a force
         # against, so the cloud is never skinned during the rollout either
         a = sc.elastic_accel(p, gp) if USE_A else None
         bad = False
-        for q, d in apply_step(net, p, v, a, dt_coarse, fixed):
+        steps = (apply_step_frame(net, p, v, u, sfr, a, dt_coarse, fixed) if FRAME
+                 else apply_step(net, p, v, a, dt_coarse, fixed))
+        for stp in steps:
+            if FRAME:
+                q, d, u, sfr = stp
+            else:
+                q, d = stp
             p, v = q, d / dt_coarse
             if not torch.isfinite(p).all():
                 bad = True
                 break
-            out.append(p.clone())
+            out.append(torch.cat([p, u, sfr], -1) if FRAME else p.clone())
             if len(out) > frames:
                 break
         if bad:
@@ -654,15 +831,24 @@ def rollout_error(frames, which=0, src=None):
     # over the anchors that actually move: the 129 pinned ones are identical on
     # both sides by construction and averaging them in scales the error down by
     # a quarter for free
-    err = (got[:n] - ref)[:, ~fixed].norm(dim=-1).mean(-1)
-    span = (ref - AC).norm(dim=-1).max().clamp(min=1e-12)
+    err = (_p(got[:n]) - _p(ref))[:, ~fixed].norm(dim=-1).mean(-1)
+    # 고정 상수로 나눈다. 궤적 자신의 변위로 나누면 거의 안 움직이는 궤적에서
+    # 분모가 0 에 가까워져 잔떨림이 100% 넘는 오차로 찍힌다 -- 실측으로 MPM 이
+    # 물체 크기의 0.26% 만 움직인 임펄스에서 학생 오차가 94% 로 나왔다.
+    # fit_anchor_sparse.roundtrip_loss 가 항별 계수를 전부 고정 상수로 두는 것과
+    # 같은 이유다.
+    span = SPAN_FIX
     # how far the rollout moved the anchors at all, against how far the reference
     # did. Position error alone cannot tell an accurate rollout from a frozen
     # one: the reference oscillates back through its start, so a model that
     # predicts almost nothing stays near it and scores well. One lr=1e-2 run did
     # exactly that -- 10% of the reference's motion, best score in the sweep.
-    moved = (got[:n] - AC)[:, ~fixed].norm(dim=-1).max(-1).values
-    return n, err, (err / span), (moved.max() / span)
+    # 운동 진폭만은 비(比)가 뜻을 가지려면 그 궤적의 기준 운동과 견줘야 한다 --
+    # "기준만큼 움직였는가" 라는 질문 자체가 상대적이다. 오차와 달리 분모가 작아도
+    # 폭발하지 않고 1 근처로 수렴한다.
+    ref_span = (_p(ref) - AC).norm(dim=-1).max().clamp(min=1e-12)
+    moved = (_p(got[:n]) - AC)[:, ~fixed].norm(dim=-1).max(-1).values
+    return n, err, (err / span), (moved.max() / ref_span)
 
 
 @torch.no_grad()
@@ -689,14 +875,16 @@ POOL = {"p": None, "v": None, "tgt": None}
 def collect_dagger(n_traj, k_steps):
     """roll the network out, label where it went"""
     ps, vs, tg = [], [], []
-    cap = args.dagger_cap * (REF - AC).norm(dim=-1).max().item()
+    cap = args.dagger_cap * (_p(REF) - AC).norm(dim=-1).max().item()
     order = torch.randperm(TRAJ.shape[0] - (0 if args.stream_len > 0 else HOLD),
                             device=dev)[:n_traj]
     for oi in order.tolist():
         ti = oi if args.stream_len > 0 else HOLD + oi
         r = TRAJ[ti]
-        p = r[1].clone()
-        v = (r[1] - r[0]) / dt_coarse
+        p = _p(r[1]).clone()
+        u = _u(r[1]).clone() if FRAME else None
+        sfr = _s(r[1]).clone() if FRAME else None
+        v = (_p(r[1]) - _p(r[0])) / dt_coarse
         gp = sc.skin(p, sc.pos.clone()) if USE_A else None
         for step in range(min(args.eval_frames, r.shape[0] - 1)):
             if (p - AC)[~fixed].norm(dim=-1).max() > cap:
@@ -706,7 +894,8 @@ def collect_dagger(n_traj, k_steps):
                 # For MPM that means lifting this anchor state back to particles,
                 # which costs the projection floor and almost nothing beyond it
                 if TEACHER is not None:
-                    got = TEACHER.query(p, v, k_steps, args.dt_mult)
+                    got = TEACHER.query(p, v, k_steps, args.dt_mult,
+                                         u=u, sfr=sfr)
                     fut = [] if got is None else list(got)
                 else:
                     q, w = p.clone(), v.clone()
@@ -718,10 +907,17 @@ def collect_dagger(n_traj, k_steps):
                             break
                         fut.append(q.clone())
                 if len(fut) == k_steps:
-                    ps.append(p.clone()); vs.append(v.clone()); tg.append(torch.stack(fut))
+                    ps.append((torch.cat([p, u, sfr], -1) if FRAME else p.clone()))
+                    vs.append(v.clone()); tg.append(torch.stack(fut))
             a_ = sc.elastic_accel(p, gp) if USE_A else None
             bad = False
-            for q, d in apply_step(net, p, v, a_, dt_coarse, fixed):
+            steps = (apply_step_frame(net, p, v, u, sfr, a_, dt_coarse, fixed) if FRAME
+                     else apply_step(net, p, v, a_, dt_coarse, fixed))
+            for stp in steps:
+                if FRAME:
+                    q, d, u, sfr = stp
+                else:
+                    q, d = stp
                 p, v = q, d / dt_coarse
                 if not torch.isfinite(p).all():
                     bad = True
@@ -750,6 +946,8 @@ def save(path, it):
                 "args": vars(args), "hist": hist_log, "disp_scale": DISP_SCALE,
                 "dev_scale": DEV_SCALE,
                 "vel_scale": VEL_SCALE, "acc_scale": ACC_SCALE,
+                "frame": FRAME, "u_scale": U_SCALE, "s_scale": S_SCALE,
+                "du_scale": DU_SCALE, "ds_scale": DS_SCALE,
                 "best": BEST,
                 # the collected states go in the checkpoint because they are the
                 # expensive part: each one cost the simulator rollout_steps
@@ -858,26 +1056,27 @@ for it in pbar:
     dt_eff = dt_coarse * S
     sel = IDX[torch.randint(IDX.shape[0], (args.batch - n_pool,), device=dev)]
     ti, k = sel[:, 0], sel[:, 1]
-    p = TRAJ[ti, k]
-    v = (p - TRAJ[ti, k - S]) / dt_eff
+    st = TRAJ[ti, k]
+    v = (_p(st) - _p(TRAJ[ti, k - S])) / dt_eff
     a = ACCS[ti, k] if USE_A else None
     # targets for the on-trajectory part, so both sources are scored the same way
     TG = torch.stack([TRAJ[ti, k + S * (j + 1)] for j in range(HORIZON)], 1)
     if n_pool:
         pi = torch.randint(POOL["p"].shape[0], (n_pool,), device=dev)
-        p = torch.cat([p, POOL["p"][pi]])
+        st = torch.cat([st, POOL["p"][pi]])
         v = torch.cat([v, POOL["v"][pi]])
         TG = torch.cat([TG, POOL["tgt"][pi]])
         if USE_A:
             a = torch.cat([a, torch.stack(
-                [sc.elastic_accel(q, sc.skin(q, sc.pos.clone())) for q in POOL["p"][pi]])])
+                [sc.elastic_accel(_p(q), sc.skin(_p(q), sc.pos.clone()))
+                 for q in POOL["p"][pi]])])
     if args.noise > 0:
-        # GNS-style: perturb the position, move the velocity consistently, and
+        # 위치를 흔들고 속도를 그에 맞춰 옮긴 뒤,
         # take the target to the TRUE next position -- so the network is taught
         # to come back onto the trajectory rather than to carry the error.
-        nz = torch.randn(p.shape, device=dev, generator=gen) * (args.noise * DISP_SCALE)
+        nz = torch.randn(_p(st).shape, device=dev, generator=gen) * (args.noise * DISP_SCALE)
         nz[:, fixed] = 0
-        p = p + nz
+        st = torch.cat([_p(st) + nz, st[..., 3:]], -1) if FRAME else st + nz
         v = v + nz / dt_eff
         # and the acceleration is re-evaluated at the perturbed configuration.
         # Leaving it at the clean one puts a state in front of the network whose
@@ -885,8 +1084,8 @@ for it in pbar:
         # rollout mismatch that sank the previous line of work: in rollout `a` is
         # always the force at wherever the network currently is.
         if USE_A:
-            a = torch.stack([sc.elastic_accel(p[b], sc.skin(p[b], sc.pos.clone()))
-                             for b in range(p.shape[0])])
+            a = torch.stack([sc.elastic_accel(_p(st)[b], sc.skin(_p(st)[b], sc.pos.clone()))
+                             for b in range(st.shape[0])])
     # Unrolled: the network is fed its own output and scored against the true
     # trajectory at every step, with the gradient carried through the chain. At
     # rollout_steps=1 the two forms are identical -- p + du against TRAJ[k+1] is
@@ -896,11 +1095,32 @@ for it in pbar:
     # put the gradient reaching the decoder output at ~1e-9, the same order as
     # Adam's epsilon, so the term meant to make Adam scale-invariant throttled it.
     loss = 0.0
+    p = _p(st)
+    u = _u(st) if FRAME else None
+    sfr = _s(st) if FRAME else None
     P0 = p
     step = 0
-    for j in range(args.rollout_steps):
-        for q, d in apply_step(net, p, v, a, dt_eff, fixed):
-            loss = loss + (((q - TG[:, step]) / DISP_SCALE) ** 2).mean()
+    with AMP():
+     for j in range(args.rollout_steps):
+        steps = (apply_step_frame(net, p, v, u, sfr, a, dt_eff, fixed) if FRAME
+                 else apply_step(net, p, v, a, dt_eff, fixed))
+        for stp in steps:
+            tgt = TG[:, step]
+            if FRAME:
+                q, d, u, sfr = stp
+                # 세 항은 각자 자기 전형 증분으로 나눈다 -- 위치를 DISP_SCALE 로
+                # 나누는 것과 같은 이유이고, 그래야 w_frame=1 이 "같은 무게" 다
+                loss = loss + (((q - _p(tgt)) / DISP_SCALE) ** 2).mean()
+                if N_EXTRA == 9:
+                    loss = loss + args.w_frame * (
+                        ((u - _u(tgt)) / DU_SCALE) ** 2).mean()
+                else:
+                    loss = loss + args.w_frame * (
+                        (((u - _u(tgt)) / DU_SCALE) ** 2).mean()
+                        + (((sfr - _s(tgt)) / DS_SCALE) ** 2).mean())
+            else:
+                q, d = stp
+                loss = loss + (((q - tgt) / DISP_SCALE) ** 2).mean()
             step += 1
         p, v = q, d / dt_eff
         if USE_A and j + 1 < args.rollout_steps:
@@ -915,11 +1135,18 @@ for it in pbar:
     # the reported relative error is over the whole chain: how far it moved
     # against how far it should have
     du = p - P0
-    target = TG[:, -1] - P0
+    target = _p(TG[:, -1]) - P0
     opt.zero_grad(set_to_none=True)
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
-    opt.step()
+    if SCALER is not None:
+        SCALER.scale(loss).backward()
+        SCALER.unscale_(opt)                     # 클리핑은 스케일 푼 뒤에
+        torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+        SCALER.step(opt)
+        SCALER.update()
+    else:
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+        opt.step()
     if sched is not None:
         sched.step()
 

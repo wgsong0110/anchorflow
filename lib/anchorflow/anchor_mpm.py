@@ -236,6 +236,18 @@ class AnchorElasticSim:
             "nij,nj->ni", F, self.gaussian_canonical - rest_centroid)
         return F, gaussian_pos
 
+    def skin_only(self, anchor_pos, gaussian_pos_prev):
+        """앵커 위치 -> 가우시안 위치 (와 F). **그래프를 유지한다.**
+
+        step() 은 힘을 뽑느라 anchor_pos 를 detach 했다가 마지막에 가우시안까지
+        detach 해서 돌려준다. 영상 손실로 앵커를 학습할 때는 지도 신호가
+        가우시안 -> 화면으로만 오므로 그 경로가 끊기면 안 된다. 여기서는 힘을
+        계산하지 않고 형상 매칭만 통과시킨다.
+        """
+        w = self._weights(gaussian_pos_prev, anchor_pos)
+        F, gaussian_pos = self._shape_match(anchor_pos, w)
+        return gaussian_pos, F
+
     def elastic_energy(self, anchor_pos, gaussian_pos_prev, gaussian_volume, mu, lam):
         """Total Fixed-Corotated elastic energy as a function of anchor
         positions (weights/connectivity are constants w.r.t. this

@@ -6,7 +6,7 @@ Faithful to SC-GS ControlNodeWarp.cal_nn_weight:
     normalized over the K neighbours.
 
 Node state:
-    canonical   [M,3]   rest positions (buffer; the GNN moves a separate state)
+    canonical   [M,3]   rest positions (buffer; the stepper moves a separate state)
     _radius     [M]     learnable log-radius (RBF falloff)   -> radius = exp
     _node_weight[M]     learnable logit                      -> weight = sigmoid
     z           [M,L]   actuation latent (internal-drive signal, SDS-optimised)

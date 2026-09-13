@@ -29,6 +29,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .dynamics import mlp
 
@@ -112,6 +113,16 @@ class GeoAttentionBias(nn.Module):
         return self._eager(p, inv_s)
 
 
+# 어텐션 경로 전역 스위치. 기본은 옛 경로 -- 이미 나온 수치들과 같은 계산을
+# 유지하기 위해서다. 학생 학습이 --sdpa 로 켠다.
+USE_SDPA = False
+
+
+def set_sdpa(on):
+    global USE_SDPA
+    USE_SDPA = bool(on)
+
+
 class GeoAttentionBlock(nn.Module):
     """Pre-norm transformer block over the anchor set."""
 
@@ -125,12 +136,23 @@ class GeoAttentionBlock(nn.Module):
         self.ffn = mlp([hidden, 2 * hidden, hidden], layernorm=False)
 
     def forward(self, x, bias):
-        """x [B,M,C], bias [B,H,M,M]"""
+        """x [B,M,C], bias [B,H,M,M]
+
+        손으로 짠 경로는 [B,H,M,M] 어텐션 행렬을 통째로 만든다 -- B=16, H=4,
+        M=1024 이면 블록당 268MB 이고 depth 만큼, 순전파·역전파 양쪽에 든다.
+        SDPA 는 같은 수식(가산 마스크 + 소프트맥스)을 그 행렬을 만들지 않고
+        계산한다. 수식이 같으므로 결과도 부동소수점 오차 안에서 같아야 하고,
+        exe/bench_attention.py 가 그것을 확인한다.
+        """
         B, M, _ = x.shape
         q, k, v = self.qkv(self.n1(x)).chunk(3, dim=-1)
         q, k, v = (t.view(B, M, self.h, self.d).transpose(1, 2) for t in (q, k, v))
-        att = (q @ k.transpose(-1, -2)) / math.sqrt(self.d) + bias
-        o = (att.softmax(-1) @ v).transpose(1, 2).reshape(B, M, -1)
+        if USE_SDPA:
+            o = F.scaled_dot_product_attention(q, k, v, attn_mask=bias)
+        else:
+            att = (q @ k.transpose(-1, -2)) / math.sqrt(self.d) + bias
+            o = att.softmax(-1) @ v
+        o = o.transpose(1, 2).reshape(B, M, -1)
         x = x + self.proj(o)
         return x + self.ffn(self.n2(x))
 
@@ -182,13 +204,35 @@ def apply_step(net, p, v, a, dt, fixed):
     return out
 
 
+def apply_step_frame(net, p, v, u, s, a, dt, fixed):
+    """프레임 상태 한 스텝. (p, du, u, s) 의 목록을 낸다.
+
+    고정 앵커는 위치만 묶는다 -- 경계 조건이 묶는 것은 위치이고, 인코더
+    (FrameState.encode_joint) 도 p 만 고정하고 (u, s) 는 자유롭게 푼다.
+    """
+    out_all = net(p, v, a, dt, u=u, s=s)
+    ne = getattr(net, "_orig_mod", net).n_extra
+    out, q, uu, ss = [], p, u, s
+    for j in range(out_all.shape[-2]):
+        o = out_all[..., j, :]
+        d = torch.where(fixed.unsqueeze(-1), torch.zeros_like(o[..., :3]), o[..., :3])
+        q = q + d
+        if ne == 6:
+            uu = uu + o[..., 3:6]
+            ss = ss + o[..., 6:]
+        else:
+            uu = uu + o[..., 3:]         # 자유 F 는 한 덩어리, s 는 안 쓴다
+        out.append((q, d, uu, ss))
+    return out
+
+
 class NextStep(nn.Module):
     """(position, velocity, elastic acceleration) per anchor -> displacement over dt.
 
-    Message passing was measured and rejected for this anchor set: at k=8
-    neighbours and depth 4, perturbing one anchor moved 29 of 512 outputs against
-    a k-NN graph diameter of 73 hops. Attention gives every anchor every other in
-    one layer, and at M=512 the full map is ~4 MB.
+    이웃만 훑는 국소 연산자는 이 앵커 집합에서 수용영역이 모자란다: k=8 이웃,
+    depth 4 로 앵커 하나를 흔들면 512 개 출력 중 29 개만 움직였고 k-NN 그래프의
+    지름은 73 홉이었다. 어텐션은 한 층에서 모든 앵커가 서로를 보고, M=512 라
+    전체 맵이 4MB 뿐이다.
 
     Displacements are carried in units of `scale` (a measured typical
     displacement) on both the input and the output side. Predicting a
@@ -201,8 +245,27 @@ class NextStep(nn.Module):
 
     def __init__(self, hidden=128, depth=4, heads=4, scale=1.0, vel_scale=1.0,
                   acc_scale=1.0, zero_init=False, use_accel=True, chunk=1,
-                  n_static=0, n_embed=0, m_anchors=0):
+                  n_static=0, n_embed=0, m_anchors=0, frame=False,
+                  u_scale=1.0, s_scale=1.0, du_scale=1.0, ds_scale=1.0,
+                  n_extra=6):
         super().__init__()
+        # 프레임 상태: 앵커가 (회전벡터 u, 로그신축 s) 도 들고 다닌다. 기하가
+        # 프레임 복호로 맞춰졌으면 F 가 (u,s) 에서 나오므로, (p,v) 만 드는 학생은
+        # 어느 프레임에서도 F 를 만들 수 없다 -- 가우시안 복호도 MPM 재시작도
+        # 불가능하다. 상태가 앵커당 6 개에서 12 개로 늘고, 출력도 변위 3 개에서
+        # (변위, du, ds) 9 개가 된다.
+        #
+        # u 와 s 도 절대값이 아니라 **증분**을 낸다. 변위를 내는 것과 같은 이유다:
+        # 한 스텝의 변화가 상태 자체보다 두세 자릿수 작아서, 절대값을 내면 그
+        # 자릿수만큼을 먼저 맞춘 뒤에야 움직임이 분해된다.
+        # 추가 상태의 채널 수. 6 = (회전벡터 3, 로그신축 3), 9 = 자유 F.
+        # 자유 F 는 감김도 제약도 없어 스텝 변화 꼬리가 162 배에서 30 배로 준다.
+        self.n_extra = n_extra if frame else 0
+        self.frame = frame
+        self.u_scale = u_scale
+        self.s_scale = s_scale
+        self.du_scale = du_scale
+        self.ds_scale = ds_scale
         # The whole displacement, never du = v*dt + correction. Adding the
         # inertial part as a skip makes the rollout's velocity an accumulator,
         # v_{k+1} = v_k + c_k/dt, so an error in the correction is carried
@@ -265,12 +328,13 @@ class NextStep(nn.Module):
             if not m_anchors:
                 raise ValueError("n_embed needs m_anchors")
             self.embed = nn.Parameter(torch.zeros(m_anchors, n_embed))
-        self.node_enc = mlp([3 + 3 + (3 if use_accel else 0) + n_static + n_embed,
-                              hidden, hidden])
+        self.n_out = 3 + self.n_extra
+        self.node_enc = mlp([3 + 3 + (3 if use_accel else 0) + self.n_extra
+                              + n_static + n_embed, hidden, hidden])
         self.bias = GeoAttentionBias(heads)
         self.blocks = nn.ModuleList(GeoAttentionBlock(hidden, heads) for _ in range(depth))
         self.film = DtFiLM(hidden, depth + 1)
-        self.dec = mlp([hidden, hidden, 3 * chunk], layernorm=False)
+        self.dec = mlp([hidden, hidden, self.n_out * chunk], layernorm=False)
         if zero_init:
             # Inherited from the retired implicit model, where the output was a
             # correction to a Newmark predictor and a zero decoder meant training
@@ -298,8 +362,11 @@ class NextStep(nn.Module):
         sd = f.std(0, keepdim=True).clamp(min=1e-6)
         self.static = ((f - mu) / sd).contiguous()
 
-    def forward(self, p, v, a, dt):
+    def forward(self, p, v, a, dt, u=None, s=None):
         """p, v, a all [M,3] or [B,M,3]; returns the displacement over dt, same shape.
+
+        프레임 모드면 u, s 를 함께 받고 [..., chunk, 9] 를 낸다 -- 앞 3 개가 변위,
+        가운데 3 개가 du, 뒤 3 개가 ds 다.
 
         A batch is several independent anchor sets, so attention and the
         geometric bias stay within each one -- there is no cross-state mixing.
@@ -310,9 +377,18 @@ class NextStep(nn.Module):
             # skip computing it, and there is nothing to add a batch axis to
             p, v = p.unsqueeze(0), v.unsqueeze(0)
             a = a.unsqueeze(0) if a is not None else None
+            u = u.unsqueeze(0) if u is not None else None
+            s = s.unsqueeze(0) if s is not None else None
         feats = [p, v / self.vel_scale]
         if self.use_accel:
             feats.append(a / self.acc_scale)
+        if self.frame:
+            if u is None:
+                raise RuntimeError("frame=True 인데 추가 상태가 안 들어왔다")
+            if self.n_extra == 6:
+                feats += [u / self.u_scale, s / self.s_scale]
+            else:
+                feats.append(u / self.u_scale)      # 자유 F 는 한 덩어리
         for extra in (self.static if self.n_static else None,
                        self.embed if self.n_embed else None):
             if extra is None:
@@ -327,7 +403,18 @@ class NextStep(nn.Module):
         bias = self.bias(p)
         for i, blk in enumerate(self.blocks):
             h = blk(gamma[i + 1] * h + beta[i + 1], bias)
-        out = self.dec(h) * self.scale
-        if self.chunk > 1:
-            out = out.view(*out.shape[:-1], self.chunk, 3)
+        out = self.dec(h)
+        out = out.view(*out.shape[:-1], self.chunk, self.n_out)
+        if self.frame:
+            if self.n_extra == 6:
+                out = torch.cat([out[..., :3] * self.scale,
+                                  out[..., 3:6] * self.du_scale,
+                                  out[..., 6:] * self.ds_scale], -1)
+            else:
+                out = torch.cat([out[..., :3] * self.scale,
+                                  out[..., 3:] * self.du_scale], -1)
+        else:
+            out = out * self.scale
+            if self.chunk == 1:
+                out = out.squeeze(-2)
         return out.squeeze(0) if squeeze else out

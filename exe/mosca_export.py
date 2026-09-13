@@ -5,7 +5,7 @@ Runs inside the MoSca image (PYTHONPATH=/opt/MoSca). Loads a reconstructed
 DynSCFGaussian checkpoint and writes:
     node_traj.npy   [T, M, 3]   scaffold-node (anchor) trajectory
     canonical.ply               dynamic Gaussians at their reference frame (INRIA 3DGS .ply)
-so the anchorflow image can then run the GNN⊗SSM supervised/MDS training without
+so the anchorflow image can then run the supervised/MDS training without
 any MoSca deps. Time is integer-frame (MoSca has no physical dt) -> anchorflow uses dt=1.
 
     python exe/mosca_export.py --d_model logs/<run>/photometric_d_model_native_add3.pth \

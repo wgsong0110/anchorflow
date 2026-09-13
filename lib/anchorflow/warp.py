@@ -11,7 +11,7 @@ This is the seam that replaces DreamPhysics's MPM export
     per-Gaussian covariance  S' = Rg S Rg^T                (rotate canonical cov)
 
 Everything is plain differentiable torch, so autograd carries the render loss
-straight back to the anchor positions (hence to the GNN + actuation latents).
+straight back to the anchor positions (hence to the learned stepper).
 """
 
 from __future__ import annotations

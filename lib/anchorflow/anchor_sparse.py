@@ -254,6 +254,7 @@ class AnchorSparse(nn.Module):
         # the unbounded fit went to NaN around its 250th iteration
         self.s_lo = s_lo * sim.radius
         self.s_hi = s_hi * sim.radius
+        self.sim_radius = float(sim.radius)
         self.cfl_limit = cfl_frac * sim.radius
         self.polar_ridge = 1e-6
         self.cfg = sc.cfg
@@ -284,8 +285,46 @@ class AnchorSparse(nn.Module):
         # discretisation responds, which is an anchor property in the same sense
         # as its reach. Starts at one, so an unfitted set is the same simulator.
         self.log_k = nn.Parameter(torch.zeros(sc.M, device=dev))
+        # 스키닝에서 앵커가 자기 지분을 정하는 진폭. 이것이 없으면 한 가우시안을
+        # 여러 앵커가 나눠 가질 때 지분이 오직 거리로만 정해지고, 지분을 늘리려면
+        # log_s 를 키울 수밖에 없어 "얼마나 멀리 닿는가" 와 "얼마나 지배하는가"
+        # 가 한 파라미터에 묶인다.
+        self.log_amp = nn.Parameter(torch.zeros(sc.M, device=dev))
         self.register_buffer("fixed", sc.fixed_mask.clone())
         self.register_buffer("B_ref", torch.zeros((), device=dev))
+        # 앵커끼리 직접 주고받는, 학습되는 중심력. 없으면 지금까지의 시뮬레이터
+        # 그대로다 -- 켜더라도 출력이 0 으로 초기화되어 있어 시작은 동일하다.
+        self.edge = None
+        self.edge_only = False
+        self.astress = None
+        # 프레임 동역학: 앵커가 (회전, 신축) 을 상태로 들고 F 를 거기서 조립한다.
+        # 켜지면 롤아웃 상태가 (p, v, o, s, wv, sv) 로 늘고, gaussian_pos 도
+        # 위치의 미분이 아니라 그 프레임에서 F 를 받는다.
+        self.fdyn = None
+        self._fo = None
+        self._fs = None
+        # 평균은 앵커 몇 개만 한계를 크게 넘는 상황을 묻어버린다 -- 시뮬레이션은
+        # 그 몇 개 때문에 터지는데도. "max" 는 최악의 앵커를 직접 벌한다.
+        self.cfl_agg = "mean"
+        # 앵커 질량의 바닥(중앙값 대비). 0 이면 끈다 -- 정확도를 해치므로 기본은 끔.
+        self.mass_floor = 0.0
+        # 이 비율 아래의 질량을 가진 앵커는 적분에서 제외한다
+        self.mass_freeze = 0.0
+        self._light = None
+        # F^-T 의 릿지 비율. 1e-6 이면 거의 납작해진 요소에서 F^-T 가 1e6 까지
+        # 가고, 부피항이 그걸 그대로 증폭해 응력이 폭주한다. 실측: F^-T=8154 에서
+        # 응력 5e6, 가속도 3e6, 11 서브스텝 뒤 발산.
+        self.finv_ridge = 1e-6
+        # NaN/Inf 추적. 켜면 서브스텝마다 주요 중간값을 검사해 "어느 양이 몇 번째
+        # 서브스텝에서 처음 무한이 됐는가" 를 기록한다. 검사 결과는 GPU 에 두고
+        # 롤아웃이 끝난 뒤 한 번만 읽으므로 스텝마다 동기화하지 않는다.
+        self.nan_trace = False
+        self._trace = {}
+        self._mag = {}
+        self._who = {}
+        # trace_reset 전에도 _chk 가 불릴 수 있으므로(초기 보정) 여기서 만든다
+        self._clean = torch.ones((), device=dev)
+        self._k = 0
         self.refresh()
         self.set_B_ref()
 
@@ -310,6 +349,7 @@ class AnchorSparse(nn.Module):
     def clamp_(self):
         self.log_s.clamp_(min=float(np.log(self.s_lo)), max=float(np.log(self.s_hi)))
         self.quat.div_(self.quat.norm(dim=-1, keepdim=True).clamp(min=1e-12))
+        # log_amp 는 weights() 에서 tanh 로 유계라 잘라낼 것이 없다
 
     # ---- support ----------------------------------------------------------
     @property
@@ -354,6 +394,11 @@ class AnchorSparse(nn.Module):
         order = torch.argsort(g * self.M + a)
         self.register_buffer("pair_g", g[order].contiguous())
         self.register_buffer("pair_a", a[order].contiguous())
+        # 앵커 수는 밀도 제어로 바뀌므로 간선도 여기서 함께 다시 만든다
+        if getattr(self, "edge", None) is not None:
+            self.edge.rebuild(self.pos, self.sim_radius, self.dt)
+        if getattr(self, "astress", None) is not None:
+            self.astress.rebuild(self)
         return self.pair_g.shape[0]
 
     def _mahal2(self, g, a):
@@ -367,6 +412,9 @@ class AnchorSparse(nn.Module):
         """[P], normalised per Gaussian. Zero at the boundary of the region and
         zero outside it, so a Gaussian entering or leaving does so continuously"""
         w = (torch.exp(-0.5 * self._mahal2(self.pair_g, self.pair_a)) - self.c).clamp(min=0)
+        # 진폭도 tanh 로 유계다. 한 앵커가 지분을 독점하면 나머지가 그래디언트를
+        # 잃으므로 e^{-2} ~ e^{2} 안에 두되, 경계에서 죽지 않게 매끄럽게 준다.
+        w = w * (2.0 * torch.tanh(self.log_amp / 2.0)).exp()[self.pair_a]
         tot = torch.zeros(self.N, device=self.dev, dtype=w.dtype).index_add_(
             0, self.pair_g, w)
         # a Gaussian whose only anchors sit exactly on the boundary would divide
@@ -492,12 +540,32 @@ class AnchorSparse(nn.Module):
         # neighbourhood, which is the statement that nothing may be stiffer than
         # the discretisation itself.
         tr = (B.diagonal(dim1=-2, dim2=-1).sum(-1) / 3.0).clamp(min=1e-20)
+        self._chk_min("가우시안_trB", tr)
+        self._chk_min("가우시안_detB", torch.linalg.det(B))
         eps = (self.eig_floor * tr.clamp(min=self.B_ref)).reshape(-1, 1, 1)
         eye = torch.eye(3, device=self.dev)
         Binv = inv3(B + eps * eye)
         blocked = eps * Binv
         mass = torch.zeros(self.M, device=self.dev).index_add_(
-            0, self.pair_a, self.dens_vol[self.pair_g] * w).clamp(min=1e-12)
+            0, self.pair_a, self.dens_vol[self.pair_g] * w)
+        # 가우시안을 거의 안 쥔 앵커는 질량이 1e-11 까지 내려간다. 가우시안 경로는
+        # 그런 앵커가 받는 힘도 같은 w 에 비례해 함께 0 이 되므로 상쇄되지만,
+        # 앵커 그래프의 힘은 이웃의 부피에 비례할 뿐 자기 질량과 무관해서
+        # 상쇄되지 않는다 -- 실측으로 힘 1.9e3 이 가속도 1.2e14 가 됐다.
+        # 중앙값의 일정 비율을 바닥으로 두되, softplus 라 어디서도 미분이
+        # 끊기지 않는다. 1e-12 하드 클램프는 사실상 바닥이 없는 것과 같았다.
+        if self.mass_floor > 0:
+            fl = (self.mass_floor * mass.median()).detach().clamp(min=1e-30)
+            mass = fl * torch.nn.functional.softplus(mass / fl)
+        # 질량이 거의 없는 앵커는 질량을 부풀리는 대신 적분에서 뺀다. 부풀리면
+        # 없는 질량이 생겨 동역학 자체가 틀어지고, 실제로 mwRMSD 가 6.88% 에서
+        # 10.4% 로 나빠졌다. 그 앵커는 가우시안을 거의 안 쥐어 물리에 기여하는
+        # 바가 없으므로, 스키닝에는 그대로 두고 움직이지만 않게 한다.
+        if self.mass_freeze > 0:
+            with torch.no_grad():
+                self._light = mass < self.mass_freeze * mass.median()
+        mass = mass.clamp(min=1e-12)
+        self._chk_min("앵커질량", mass)
         if self.oriented:
             # the anchor's own second moment, in its rest frame: the ellipsoid
             # the weight kernel already describes, as a covariance
@@ -578,6 +646,12 @@ class AnchorSparse(nn.Module):
 
     def gaussian_pos(self, p, cache):
         w, rc, q, Binv, blocked, _ = cache
+        if self.fdyn is not None and self._fo is not None:
+            F, _, _ = self.fdyn.frame.blend(self._fo, self._fs, w, self.pair_g,
+                                             self.pair_a, self.N, "nlerp")
+            cc = torch.zeros(self.N, 3, device=self.dev).index_add_(
+                0, self.pair_g, w.unsqueeze(-1) * p[self.pair_a])
+            return cc + torch.einsum("nij,nj->ni", F, self.Xc - rc)
         if self.quad:
             Tm, cc = self._deform_quad(p, w)
             return cc + torch.einsum("nik,nk->ni", Tm, self._q[3])
@@ -604,6 +678,10 @@ class AnchorSparse(nn.Module):
         if self.quad or self.oriented:   # the kernel knows neither extra term
             return False
         """the whole-force kernel: forward only, so grad must be off"""
+        # 추적 중에는 커널을 쓰지 않는다. 커널 안은 들여다볼 수 없어, 발산이
+        # 가우시안 경로에서 났을 때 F/J/P 중 어느 것이 먼저 터졌는지 알 수 없다.
+        if self.nan_trace:
+            return False
         return self._pairs_ok() and not torch.is_grad_enabled()
 
     def _pairs_ok(self):
@@ -619,8 +697,17 @@ class AnchorSparse(nn.Module):
         Both are functions of the pair list and the weights, neither of which
         moves between refreshes, so recomputing them per substep would be the
         thing the kernel was written to avoid.
+
+        **강성도 키에 들어가야 한다.** mu*k 의 k = stiffness(w) 는 가중치뿐 아니라
+        log_k 에도 의존하는데, 원래 키가 (짝, 가중치) 뿐이라 log_k 를 바꿔도 캐시가
+        적중해 옛 강성이 그대로 쓰였다 -- 실측으로 log_k 를 0 에서 5 로(강성 148 배)
+        올려도 no_grad 롤아웃 궤적이 모든 자릿수까지 동일했다. 이 경로는 grad 가
+        꺼졌을 때만 타므로 피팅은 무사했지만, 평가·렌더링·진단이 전부 옛 강성을
+        보고 있었다. _version 은 in-place 갱신(옵티마이저 스텝, fill_, +=)마다
+        올라가므로 GPU 동기화 없이 값 변화를 잡는다.
         """
-        key = (self.pair_g.data_ptr(), w.data_ptr(), int(w.shape[0]))
+        key = (self.pair_g.data_ptr(), w.data_ptr(), int(w.shape[0]),
+               self.log_k.data_ptr(), self.log_k._version)
         hit = getattr(self, "_fused_cache", None)
         if hit is not None and hit[0] == key:
             return hit[1]
@@ -724,19 +811,25 @@ class AnchorSparse(nn.Module):
                                      Facc=self._Facc, acc_blend=self.acc_blend)
         F, _ = self.blended_F(p, self._v_now, w, rc, q, Binv, blocked) \
             if self.acc_blend > 0.0 else self.deformation(p, w, rc, q, Binv, blocked)
+        self._chk("가우시안_F", F)
         R = closest_rotation(F, self.polar_iters, self.polar_ridge)
         J = det3(F)
+        self._chk("가우시안_R", R)
+        self._chk("가우시안_J", J)
         # the volumetric term carries J F^-T, which is unbounded as an element
         # approaches zero volume. A ridge keeps it finite through the crossing
         # rather than handing the integrator an infinity
         n = F.reshape(-1, 9).norm(dim=-1).clamp(min=1e-12).reshape(-1, 1, 1)
-        Finv_T = inv3(F + 1e-6 * n * torch.eye(3, device=self.dev),
+        Finv_T = inv3(F + self.finv_ridge * n * torch.eye(3, device=self.dev),
                        eps=1e-30).transpose(-1, -2)
         k = self.stiffness(w).unsqueeze(-1).unsqueeze(-1)
         mu = self.mu.unsqueeze(-1).unsqueeze(-1) * k
         lam = self.lam.unsqueeze(-1).unsqueeze(-1) * k
+        self._chk("가우시안_Finv", Finv_T)
+        self._chk("가우시안_강성", k)
         P = 2 * mu * (F - R) + lam * (J - 1).unsqueeze(-1).unsqueeze(-1) * \
             J.unsqueeze(-1).unsqueeze(-1) * Finv_T
+        self._chk("가우시안_P", P)
         PBn = P @ Binv
         if self._pairs_ok():
             csr = sparsestep.build_csr(self.pair_g, self.pair_a, self.N, self.M)
@@ -844,14 +937,139 @@ class AnchorSparse(nn.Module):
         p, v = self._boundaries(p, v)
         return p, v, o, wv, (over * over).mean()
 
+    def reset_state(self):
+        """롤아웃 사이의 상태를 지운다.
+
+        프레임 상태(o, s)는 한 표본의 여러 코스 프레임에 걸쳐 그래프를 물고 가야
+        하지만, 표본이 바뀌면 지워야 한다. 안 그러면 다음 역전파가 이미 해제된
+        그래프를 건드려 "backward through the graph a second time" 로 죽는다.
+        """
+        self._o = self._wv = None
+        self._fo = self._fs = None
+        self._Facc = None
+
+    def substep_f(self, p, v, o, s, wv, sv, w, rc, q, Binv, blocked, m, keep,
+                   wS, qS, BiS):
+        """프레임 동역학의 서브스텝. 앵커 M 개만 다루므로 가우시안 비용이 없다.
+
+        탄성 에너지를 앵커에 둔다: E = sum_a V_a Psi(R_a S_a). 가우시안별 F 를
+        서브스텝마다 조립하면 17 만 x 480 이라 메모리가 터진다(실측). 가우시안
+        블렌딩은 프레임 경계에서 한 번만 한다.
+        """
+        from .anchor_frame import quat_to_R
+        fd, ast = self.fdyn, self.astress
+        # 위치는 검증된 앵커 응력이 굴린다. 프레임의 탄성 에너지는 p 에 의존하지
+        # 않으므로, 그것만으로는 앵커에 복원력이 걸리지 않는다 -- 실측으로 관성
+        # 운동이 되어 rollout 이 29.95% 에 고정됐다.
+        fp = ast(p, self.pos)
+        a = fp / m + self.gravity
+        self._chk("프레임_힘", fp); self._chk("프레임_가속도", a)
+        v = (v + self.dt * a) * self.damping * keep
+        dp = self.dt * v
+        over = (dp.norm(dim=-1) / self.cfl_limit - 1.0).clamp(min=0)
+        pen = (over * over).max() if self.cfl_agg == "max" else (over * over).mean()
+        p = p + dp
+        p, v = self._boundaries(p, v)
+        # (o, s) 는 앵커 그래프의 변형을 1 차 이완으로 따라간다. alpha=1 이면
+        # 형상 매칭과 동일하고, 작을수록 이력을 담는다.
+        d = p[ast.eb] - p[ast.ea]
+        A0 = torch.zeros(self.M, 3, 3, device=self.dev).index_add_(
+            0, ast.ea, wS.reshape(-1, 1, 1) * (d.unsqueeze(-1) * qS.unsqueeze(-2)))
+        F_shape = A0 @ BiS
+        o, s = fd.relax(o, s, F_shape, torch.sigmoid(fd.a_o), torch.sigmoid(fd.a_s))
+        self._chk("프레임_s", s)
+        return p, v, o, s, wv, sv, pen
+
+    def trace_reset(self):
+        self._trace, self._mag, self._who, self._k = {}, {}, {}, 0
+        # 아직 아무것도 무한이 되지 않았는가. 크기 기록을 여기에 걸어두면
+        # 터진 뒤의 값이 최댓값을 덮어써서 원인을 가리는 일이 없어진다.
+        self._clean = torch.ones((), device=self.dev)
+
+    def _chk(self, name, x):
+        """유한성과 함께 크기도 기록한다.
+
+        "유한하다" 는 isfinite 를 통과했다는 뜻일 뿐이라, F 가 1e20 이어도
+        무한 목록에는 안 뜬다. 어느 양이 먼저 터졌는지만으로는 원인을 못 짚어서
+        직전까지의 최대 절대값을 함께 남긴다.
+        """
+        if not self.nan_trace:
+            return
+        bad = ~torch.isfinite(x).all()
+        t = self._trace.get(name)
+        if t is None:
+            t = torch.full((), -1.0, device=self.dev)
+        self._trace[name] = torch.where(bad & (t < 0),
+                                         torch.full_like(t, float(self._k)), t)
+        # 크기는 "전부 유한하던 동안" 만 기록한다
+        xf = torch.nan_to_num(x.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+        m = xf.abs().max() * self._clean
+        prev = self._mag.get(name)
+        self._mag[name] = m if prev is None else torch.maximum(prev, m)
+        # 초기 세 서브스텝은 따로 남긴다. 최댓값 하나로 뭉치면 표본과 서브스텝이
+        # 섞여, F=2e24 인데 J=det(F)=2e11 같은 서로 모순된 값이 한 줄에 실린다.
+        # "서브스텝 1 에서 이미 컸는가" 가 원인을 가르는 질문이라 그것만은 분리한다.
+        if self._k <= 3:
+            key = f"{name}@k{self._k}"
+            pk = self._mag.get(key)
+            self._mag[key] = m if pk is None else torch.maximum(pk, m)
+        self._clean = self._clean * (~bad).to(self._clean.dtype)
+        # 어느 원소가 터졌는지. 첫 기록만 남기므로 체크포인트 재계산이
+        # 덮어쓰지 않는다.
+        row = ~torch.isfinite(x.detach().reshape(x.shape[0], -1)).all(-1)
+        wprev = self._who.get(name)
+        if wprev is None:
+            wprev = torch.full((), -1.0, device=self.dev)
+        first = row.to(torch.float32).argmax().to(torch.float32)
+        self._who[name] = torch.where(row.any() & (wprev < 0), first, wprev)
+
+    def _chk_min(self, name, x):
+        """작아져서 문제가 되는 양(B 의 trace 등)은 최솟값을 남긴다."""
+        if not self.nan_trace:
+            return
+        m = torch.nan_to_num(x.detach(), nan=float("inf")).min()
+        m = torch.where(self._clean > 0, m, torch.full_like(m, float("inf")))
+        prev = self._mag.get(name)
+        self._mag[name] = m if prev is None else torch.minimum(prev, m)
+
+    def nan_report(self):
+        """{양 이름: 처음 무한이 된 서브스텝}. 빈 dict 면 전부 유한했다."""
+        return {n: int(v.item()) for n, v in self._trace.items()
+                if float(v.item()) >= 0}
+
+    def mag_report(self):
+        """{양 이름: 무한이 되기 직전까지의 최대(또는 최소) 크기}."""
+        return {n: float(v.item()) for n, v in self._mag.items()}
+
+    def who_report(self):
+        """{양 이름: 처음 무한이 된 원소 번호}. 앵커 번호로 읽으면 된다."""
+        return {n: int(v.item()) for n, v in self._who.items()
+                if float(v.item()) >= 0}
+
     def substep(self, p, v, w, rc, q, Binv, blocked, m, keep, Facc=None):
         # Facc travels through the call rather than sitting on self, so that
         # checkpointing covers it. On self it escapes, and every one of the 480
         # substeps in a frame keeps its own N x 3 x 3 alive -- 35 GB on ficus.
         self._Facc = Facc
         self._v_now = v
-        a = self.force(p, w, rc, q, Binv, blocked) / m + self.gravity
+        # edge_only 면 가우시안 응력 경로를 아예 타지 않는다 -- 앵커끼리만
+        if self.edge_only:
+            a = self.gravity
+        else:
+            fg = self.force(p, w, rc, q, Binv, blocked)
+            self._chk("가우시안_힘", fg)
+            a = fg / m + self.gravity
+        if self.astress is not None:
+            fa = self.astress(p, self.pos)
+            self._chk("앵커응력_힘", fa)
+            a = a + fa / m
+        if self.edge is not None:
+            fe = self.edge(p, v, m, self.log_s, self.log_k)
+            self._chk("간선력", fe)
+            a = a + fe / m
+        self._chk("가속도", a)
         v = (v + self.dt * a) * self.damping * keep
+        self._chk("속도", v)
         if Facc is not None:
             L = self.velocity_gradient(v, w, q, Binv)
             Facc = (torch.eye(3, device=self.dev) + self.dt * L) @ Facc
@@ -862,22 +1080,47 @@ class AnchorSparse(nn.Module):
         # discretisation stiffer than the substep can integrate, and it does --
         # 1.4% of the spacing at the start, 50% where the rollout blows up
         over = (dp.norm(dim=-1) / self.cfl_limit - 1.0).clamp(min=0)
+        pen = (over * over).max() if self.cfl_agg == "max" else (over * over).mean()
         p = p + dp
         p, v = self._boundaries(p, v)
+        self._chk("위치", p)
         if Facc is not None:
-            return p, v, Facc, (over * over).mean()
-        return p, v, (over * over).mean()
+            return p, v, Facc, pen
+        return p, v, pen
 
     def rollout(self, p, v, n, cache):
         """returns (p, v, cfl) -- the last being how badly, on average, an anchor
         outran the substep it was integrated with"""
         w, rc, q, Binv, blocked, mass = cache
         m = mass.unsqueeze(-1)
-        keep = (~self.fixed).unsqueeze(-1).to(p.dtype)
+        held = self.fixed if self._light is None else (self.fixed | self._light)
+        keep = (~held).unsqueeze(-1).to(p.dtype)
         if self.acc_blend > 0.0 and self._Facc is None:
             self._Facc = torch.eye(3, device=self.dev).expand(self.N, 3, 3).contiguous()
         use = self.checkpoint_substeps and torch.is_grad_enabled()
+        if self.astress is not None:
+            self.astress.prepare_rest(self.pos)
         pen = p.new_zeros(())
+        if self.fdyn is not None:
+            wS, qS, BiS = self.astress.rest(self.pos)
+            o = self._fo if self._fo is not None else self._ident()
+            sst = self._fs if self._fs is not None else torch.zeros(self.M, 3, device=self.dev)
+            wv = torch.zeros(self.M, 3, device=self.dev)
+            sv = torch.zeros(self.M, 3, device=self.dev)
+            for _ in range(n):
+                if use:
+                    p, v, o, sst, wv, sv, c = checkpoint(
+                        self.substep_f, p, v, o, sst, wv, sv, w, rc, q, Binv,
+                        blocked, m, keep, wS, qS, BiS, use_reentrant=False)
+                else:
+                    p, v, o, sst, wv, sv, c = self.substep_f(
+                        p, v, o, sst, wv, sv, w, rc, q, Binv, blocked, m, keep,
+                        wS, qS, BiS)
+                self._t += self.dt
+                self._k += 1
+                pen = torch.maximum(pen, c) if self.cfl_agg == "max" else pen + c
+            self._fo, self._fs = o, sst
+            return p, v, pen if self.cfl_agg == "max" else pen / max(n, 1)
         if self.oriented:
             # threaded through the checkpoint rather than kept on self, so the
             # recompute sees the same orientation the forward did
@@ -893,9 +1136,9 @@ class AnchorSparse(nn.Module):
                     p, v, o, wv, c = self.substep_o(p, v, o, wv, w, rc, q, Binv,
                                                      blocked, m, keep)
                 self._t += self.dt
-                pen = pen + c
+                pen = torch.maximum(pen, c) if self.cfl_agg == "max" else pen + c
             self._o, self._wv = o, wv
-            return p, v, pen / max(n, 1)
+            return p, v, pen if self.cfl_agg == "max" else pen / max(n, 1)
         Fa = self._Facc if self.acc_blend > 0.0 else None
         for _ in range(n):
             if Fa is not None:
@@ -912,9 +1155,10 @@ class AnchorSparse(nn.Module):
             else:
                 p, v, c = self.substep(p, v, w, rc, q, Binv, blocked, m, keep)
             self._t += self.dt
-            pen = pen + c
+            self._k += 1
+            pen = torch.maximum(pen, c) if self.cfl_agg == "max" else pen + c
         self._Facc = Fa
-        return p, v, pen / max(n, 1)
+        return p, v, pen if self.cfl_agg == "max" else pen / max(n, 1)
 
     # ---- moving between particles and anchors ------------------------------
     # ---- inverting the decoder --------------------------------------------
@@ -939,9 +1183,20 @@ class AnchorSparse(nn.Module):
     # positions and velocities: the velocity decoder in lift() is the same map
     # without the blocked term, so it shares C and takes b = 0.
 
-    @torch.no_grad()
     def ls_factor(self, cache, ridge=1e-6):
-        """(Cholesky of C^T C over the free anchors, C, b) for this rest state"""
+        """(Cholesky of C^T C over the free anchors, C, b) for this rest state
+
+        C 를 희소 대신 **조밀**하게 만든다. 희소 텐서의 autograd 지원이 제한적이라,
+        희소 경로에서는 앵커 파라미터로 가는 기울기가 끊긴다. 그 끊김이 기하 피팅이
+        내려가지 않던 원인이었다 -- 유한차분과 대조하면 9 개 좌표 중 3 개가 부호까지
+        반대였고 크기는 최대 14 배 어긋났다(exe/probe_fit_gradient.py).
+
+        앵커를 움직이면 (1) 상태가 이 인코더로 접히는 방식과 (2) 거기서 굴러가고
+        펴지는 방식이 함께 바뀐다. no_grad 로 막아 두면 역전파가 (2) 만 보고,
+        부분 도함수로 내려가려다 제자리를 돈다.
+
+        비용은 [N, M] 한 장 -- ficus 에서 171,553 x 512 x 4B = 351MB 다.
+        """
         w, rc, q, Binv, blocked, _ = cache
         y = self.Xc - rc                                    # [N,3]
         z = torch.einsum("nij,nj->ni", Binv, y)             # [N,3]
@@ -950,10 +1205,12 @@ class AnchorSparse(nn.Module):
         c = w * (1.0 + s - S[self.pair_g])                  # [P]
         b = torch.einsum("nij,nj->ni", blocked, y)          # [N,3]
 
-        C = torch.sparse_coo_tensor(
-            torch.stack([self.pair_g, self.pair_a]), c,
-            (self.N, self.M), device=self.dev).coalesce()
-        G = torch.sparse.mm(C.t(), C).to_dense()            # [M,M]
+        # 같은 (가우시안, 앵커) 짝이 여러 번 나올 수 있으므로 더해서 채운다
+        # (희소 경로의 coalesce 와 같은 동작).
+        flat = self.pair_g * self.M + self.pair_a
+        C = torch.zeros(self.N * self.M, device=self.dev, dtype=c.dtype
+                        ).index_add_(0, flat, c).view(self.N, self.M)
+        G = C.t() @ C                                       # [M,M]
 
         free = ~self.fixed
         Gf = G[free][:, free]
@@ -964,26 +1221,25 @@ class AnchorSparse(nn.Module):
             int(free.sum()), device=self.dev)
         return torch.linalg.cholesky(Gf), C, b, free
 
-    @torch.no_grad()
     def project_ls(self, x, cache, fac=None):
         """MPM particles -> the anchor state whose DECODING is closest to them"""
         L, C, b, free = self.ls_factor(cache) if fac is None else fac
-        rhs = x - b - torch.sparse.mm(
-            C, torch.where(self.fixed.unsqueeze(-1), self.pos, torch.zeros_like(self.pos)))
-        r = torch.sparse.mm(C.t(), rhs)[free]               # [free,3]
+        rhs = x - b - C @ torch.where(
+            self.fixed.unsqueeze(-1), self.pos, torch.zeros_like(self.pos))
+        r = (C.t() @ rhs)[free]                             # [free,3]
         pf = torch.cholesky_solve(r, L)
-        p = self.pos.clone()
-        p[free] = pf
+        p = torch.where(self.fixed.unsqueeze(-1), self.pos,
+                        torch.zeros_like(self.pos)).clone()
+        p = p.index_put((torch.nonzero(free, as_tuple=False).squeeze(-1),), pf)
         return p
 
-    @torch.no_grad()
     def project_v_ls(self, vp, cache, fac=None):
         """the same inverse for velocities: same C, and no constant term"""
         L, C, b, free = self.ls_factor(cache) if fac is None else fac
-        r = torch.sparse.mm(C.t(), vp)[free]
+        r = (C.t() @ vp)[free]
         vf = torch.cholesky_solve(r, L)
         v = torch.zeros_like(self.pos)
-        v[free] = vf
+        v = v.index_put((torch.nonzero(free, as_tuple=False).squeeze(-1),), vf)
         return v
 
     @torch.no_grad()
@@ -1084,13 +1340,16 @@ class AnchorSparse(nn.Module):
         return int(thin.sum())
 
     @torch.no_grad()
-    def _rebuild(self, pos, quat, log_s, log_k=None):
+    def _rebuild(self, pos, quat, log_s, log_k=None, log_amp=None):
         self.pos = nn.Parameter(pos.contiguous())
         self.quat = nn.Parameter(quat.contiguous())
         self.log_s = nn.Parameter(log_s.contiguous())
         if log_k is None:
             log_k = torch.zeros(pos.shape[0], device=self.dev)
         self.log_k = nn.Parameter(log_k.contiguous())
+        if log_amp is None:
+            log_amp = torch.zeros(pos.shape[0], device=self.dev)
+        self.log_amp = nn.Parameter(log_amp.contiguous())
         f = torch.zeros(pos.shape[0], dtype=torch.bool, device=self.dev)
         for bc in self.cfg.get("boundary_conditions", []):
             if bc["type"] == "cuboid":
@@ -1098,6 +1357,8 @@ class AnchorSparse(nn.Module):
                 s = torch.tensor(bc["size"], device=self.dev)
                 f |= ((pos - c).abs() <= s).all(-1)
         self.fixed = f
+        if getattr(self, "fdyn", None) is not None and self.fdyn.log_lam.numel() != pos.shape[0]:
+            self.fdyn.resize(pos.shape[0])
         self.refresh()
 
     @torch.no_grad()
@@ -1291,5 +1552,24 @@ def load_fitted(sc, path, device="cuda"):
     b = torch.load(path, map_location=device, weights_only=False)
     fit = AnchorSparse(sc, c=b.get("c", 0.25), eig_floor=b.get("eig_floor", 0.02)).to(device)
     fit._rebuild(b["pos"].to(device), b["quat"].to(device), b["log_s"].to(device),
-                  b["log_k"].to(device) if "log_k" in b else None)
+                  b["log_k"].to(device) if "log_k" in b else None,
+                  b["log_amp"].to(device) if b.get("log_amp") is not None else None)
+    # 질량 바닥·cfl 집계·J 포화는 시뮬레이터의 일부다. 저장·복원하지 않으면
+    # 학습 때와 다른 시뮬레이터를 평가하게 되고, 실제로 질량 바닥이 빠진 채
+    # 로드되어 평가가 전부 nan 이 났다.
+    rt = b.get("runtime") or {}
+    fit.mass_floor = float(rt.get("mass_floor", 0.0))
+    fit.mass_freeze = float(rt.get("mass_freeze", 0.0))
+    fit.finv_ridge = float(rt.get("finv_ridge", 1e-6))
+    fit.cfl_agg = rt.get("cfl_agg", "mean")
+    if b.get("astress"):
+        # 앵커 응력으로 학습한 체크포인트는 힘 법칙 자체가 다르므로, 그것까지
+        # 되살려야 저장 당시와 같은 시뮬레이터가 된다.
+        from .anchor_stress import AnchorStress
+        fit.astress = AnchorStress(eig_floor=fit.eig_floor, dev=device)
+        fit.astress.eig_floor = float(rt.get("astress_eig", fit.eig_floor))
+        fit.astress.J_max = float(rt.get("astress_jmax", 20.0))
+        fit.astress.rebuild(fit)
+        fit.astress.load_state_dict(b["astress"])
+        fit.edge_only = True
     return FittedScene(sc, fit), b

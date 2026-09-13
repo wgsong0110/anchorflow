@@ -235,5 +235,5 @@ class SeqGen(nn.Module):
         cond_vel: torch.Tensor,
         n_frames: int | None = None,
     ) -> torch.Tensor:
-        """Alias for forward(); n_frames param for interface parity with GNS."""
+        """Alias for forward(); n_frames 는 다른 스테퍼와 인터페이스를 맞추기 위한 것."""
         return self.forward(cond_ids, cond_vel)

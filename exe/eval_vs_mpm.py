@@ -29,7 +29,7 @@ from tqdm import tqdm
 
 from anchorflow import scene_setup
 from anchorflow.nextstate import apply_step, net_from_ckpt
-from anchorflow.streams import draw_impulse, rand_rot
+from anchorflow.streams import rand_rot
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ply", required=True)
@@ -39,17 +39,32 @@ ap.add_argument("--ckpt", nargs="+", default=[],
                       "its own is what says whether the fit worked, and it needs no "
                       "student at all.")
 ap.add_argument("--dreamphysics", default="/workspace/DreamPhysics")
-ap.add_argument("--n_uniform", type=int, default=8)
-ap.add_argument("--n_field", type=int, default=8)
-ap.add_argument("--n_poke", type=int, default=8)
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--dt_mult", type=int, default=40)
 ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--K", type=int, default=8)
 ap.add_argument("--impulse_range", type=float, default=16.0)
+ap.add_argument("--n_imp", type=int, default=24,
+                 help="(K, r) 계열에서 뽑는 홀드아웃 임펄스 수. 옛 세 계열 "
+                      "분할(--n_uniform/--n_field/--n_poke)은 제거했다.")
+ap.add_argument("--mp_kmax", type=int, default=32)
+ap.add_argument("--mp_rmin", type=float, default=0.125)
 ap.add_argument("--eig_floor", type=float, default=0.02)
+ap.add_argument("--encoder", default="ls", choices=("ls",),
+                 help="앵커로 접는 방법. skin 의 최소제곱 역(project_ls) 하나만 쓴다. 예전 "
+                      "기본값이던 가중평균(avg)은 디코더의 전치이지 역이 아니라, "
+                      "표현 가능한 상태를 왕복시켜도 1~2%% 를 잃었다 -- 인용해 온 "
+                      "표현 하한의 2/3 가 그 편향이었다(doc/encoder_project.md). "
+                      "선택지에서 뺐고, AnchorSparse.project 는 옛 수치를 재현할 "
+                      "때를 위해 라이브러리에만 남겨 둔다.")
 ap.add_argument("--seed", type=int, default=20260811)
 ap.add_argument("--cache", default=None, help="where to keep the MPM references")
+ap.add_argument("--norm", choices=("extent", "self"), default="extent",
+                 help="오차를 무엇으로 나눌지. 'extent' 는 물체 크기라는 고정 상수 -- "
+                      "표본마다 달라지는 양으로 나누면 거의 정지한 임펄스에서 분모가 "
+                      "작아져 그 표본만 증폭된다(fit_anchor_sparse.roundtrip_loss 주석 "
+                      "참조: 같은 함정이 이미 두 번 나왔다). 'self' 는 옛 자체 정규화로, "
+                      "이전 수치와 대조할 때만 쓴다.")
 ap.add_argument("--per_traj", action="store_true")
 ap.add_argument("--student_fit", default=None,
                  help="the fitted anchor set a checkpoint was trained against. A "
@@ -90,17 +105,25 @@ if args.base_force is not None:
     base = torch.tensor(args.base_force, device=dev)
 if base is None:
     raise SystemExit("this scene has no particle_impulse; pass --base_force")
-print(f"[setup] {sc.M} anchors, {T.n} material particles, eig_floor {args.eig_floor}")
+EXTENT = float(sc.extent)
+print(f"[setup] {sc.M} anchors, {T.n} material particles, "
+      f"eig_floor {args.eig_floor}, 정규화 {args.norm} (물체 크기 {EXTENT:.4f})")
 
 
-def draw(kind, g):
-    if kind == "uniform":
-        s = 0.5 * (args.impulse_range ** torch.rand(1, device=dev, generator=g).item())
-        return (rand_rot(g, dev) @ base) * s
-    if kind == "field":
-        return draw_impulse(sc, base, g, args.impulse_range, field=True)[0]
-    rad = sc.sim.radius * (2.0 ** (1.0 + 2.0 * torch.rand(1, device=dev, generator=g).item()))
-    return sc.random_poke(g, rad, base.norm().item())[0]
+def draw(g):
+    """임펄스는 (포크 개수 K, 반경 r) 로만 결정된다 -- 학습·기하와 같은 계열.
+
+    옛 세 계열 분할(균일 / 힘장 / 포크)은 제거했다. 평가가 학습과 다른 분포를 쓰면
+    수치를 무엇에 귀속시킬지 알 수 없다.
+    """
+    uk = torch.rand(1, device=dev, generator=g).item()
+    kk = max(1, int(round(args.mp_kmax ** uk)))
+    ur = torch.rand(1, device=dev, generator=g).item()
+    lo, hi = sc.sim.radius * args.mp_rmin, sc.extent
+    rad = lo * ((hi / lo) ** ur)
+    us = torch.rand(1, device=dev, generator=g).item()
+    mag = base.norm().item() * 0.5 * (args.impulse_range ** us)
+    return sc.random_multi_poke(g, kk, rad, mag)
 
 
 def mpm_ref(force):
@@ -123,7 +146,7 @@ def mpm_ref(force):
                 return None
         xs.append(T.solver.export_particle_x_to_torch().clone())
     return torch.stack(xs)
-key = f"{args.seed}_{args.n_uniform}_{args.n_field}_{args.n_poke}_{args.frames}_{args.dt_mult}_v2"
+key = f"{args.seed}_{args.n_imp}_{args.mp_kmax}_{args.mp_rmin}_{args.frames}_{args.dt_mult}_mp1"
 REF = FORCE = None
 if args.cache and os.path.exists(args.cache):
     blob = torch.load(args.cache, map_location=dev, weights_only=False)
@@ -133,12 +156,11 @@ if args.cache and os.path.exists(args.cache):
 if REF is None:
     REF, FORCE = {}, {}
     g = torch.Generator(device=dev); g.manual_seed(args.seed)
-    for kind, n in (("uniform", args.n_uniform), ("field", args.n_field),
-                    ("poke", args.n_poke)):
+    for kind, n in (("(K, r)", args.n_imp),):
         runs, keep, tried = [], [], 0
         bar = tqdm(total=n, desc=f"MPM {kind}", ncols=90)
         while len(runs) < n and tried < 6 * n:
-            f = base if (kind == "uniform" and tried == 0) else draw(kind, g)
+            f = draw(g)
             tried += 1
             x = mpm_ref(f)
             if x is None:
@@ -155,11 +177,21 @@ if REF is None:
 
 
 def score(pred, truth):
-    """mean particle error over every frame, as a fraction of MPM's own motion"""
-    span = (truth - truth[0]).norm(dim=-1).max().clamp(min=1e-12)
+    """mean particle error over every frame, as a fraction of a FIXED length.
+
+    기본은 물체 크기다. 임펄스마다 그 임펄스의 변위로 나누면, 거의 아무 일도
+    일어나지 않는 임펄스에서 분모가 0 에 가까워져 잔떨림이 100% 넘는 오차로
+    보인다 -- (K=1, r=0.125x) 칸에서 MPM 변위가 물체 크기의 0.26% 인데 학생
+    오차가 94% 로 찍혔다. 발산이 아니라 분모였다.
+    """
+    ref_span = (truth - truth[0]).norm(dim=-1).max().clamp(min=1e-12)
+    span = EXTENT if args.norm == "extent" else ref_span
     e = (pred - truth).norm(dim=-1).mean(-1) / span
+    # 진폭만은 **기준 운동**으로 나눈다. "기준만큼 움직였는가" 는 본질적으로
+    # 상대적인 질문이고, 물체 크기로 나누면 그냥 "얼마나 움직였나" 가 되어
+    # 임펄스가 약한 경우까지 전부 작게 나온다.
     return e.mean().item(), e[-1].item(), \
-        ((pred - pred[0]).norm(dim=-1).max() / span).item()
+        ((pred - pred[0]).norm(dim=-1).max() / ref_span).item()
 
 
 def run_anchor(force):
@@ -190,8 +222,9 @@ def run_floor_fit(truth):
     own, so this is what the discretisation loses and nothing else.
     """
     cache = FITTED._cache
-    return torch.stack([FITTED.skin(FITTED.fit.project(truth[t], cache),
-                                     sc.pos.clone())[mat]
+    fac = FITTED.fit.ls_factor(cache)
+    enc = lambda x: FITTED.fit.project_ls(x, cache, fac)
+    return torch.stack([FITTED.skin(enc(truth[t]), sc.pos.clone())[mat]
                         for t in range(truth.shape[0])])
 
 

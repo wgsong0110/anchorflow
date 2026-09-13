@@ -6,6 +6,7 @@ weights are masked to the material subset). One place, one behaviour.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass
 
@@ -92,71 +93,60 @@ class Scene:
         return torch.where(self.fixed_mask.unsqueeze(-1), torch.zeros_like(dv), dv)
 
     def random_force_field(self, gen, sigma, magnitude):
-        """A force that varies over the object, smooth on a length scale sigma.
+        raise NotImplementedError(
+            "임펄스 계열 분할(균일 / 힘장 / 포크)은 제거했다. 이 프로젝트의 임펄스는 "
+        "(포크 개수 K, 반경 r) 로만 결정되는 다중 포크 하나뿐이다 -- "
+        "Scene.random_multi_poke 를 쓸 것. 기하 피팅·학생 학습·평가가 모두 "
+        "같은 계열에서 뽑혀야 서로 견줄 수 있다.")
 
-        Every impulse in this project so far has been one vector applied to the
-        whole object, because that is what the config's particle_impulse is. So
-        the training data contains only the lowest spatial frequency there is,
-        and nothing the network has seen distinguishes bending one branch from
-        shoving everything.
+    def random_multi_poke(self, gen, k, radius, magnitude, peak_cap=10.0):
+        """K 개의 국소 밀기. 균일·힘장·포크를 한 계열로 덮는다.
 
-        Drawing an independent vector per anchor is not the fix -- neighbouring
-        anchors would be pushed apart, which is not a force anything can apply
-        and which the material absorbs locally without moving. Smoothing the
-        draw over a length sigma sets how far apart two points must be before
-        they are pushed differently: at the anchor spacing this excites one
-        twig, and as sigma approaches the object's size it converges back to the
-        uniform push, so the old behaviour is one end of the range rather than
-        something replaced.
+        K=1, r 작음        -> 포크(공간 지지)
+        K 큼,  r ~ sigma    -> 힘장(공간 주파수: 전체가 r 크기 조각으로 밀림)
+        K=1, r ~ 물체 크기  -> 균일
 
-        Normalised on the RMS anchor force rather than the peak. Normalising on
-        the peak makes a localised field deposit far less momentum than a global
-        one -- measured, it dropped the streaming data's typical displacement by
-        4.3x, which gives back the amplitude coverage the streaming data exists
-        for. On the RMS, a field that is already uniform is unchanged (peak and
-        RMS coincide), so the long-sigma end still reproduces the config's own
-        impulse exactly, while a concentrated field is scaled up to push its
-        smaller region harder.
-        """
-        AC = self.anchor_canonical
-        g = torch.randn(self.M, 3, device=AC.device, generator=gen)
-        d2 = torch.cdist(AC, AC) ** 2
-        w = torch.exp(-d2 / (2.0 * float(sigma) ** 2))
-        w = w / w.sum(-1, keepdim=True)
-        f = w @ g
-        rms = f.norm(dim=-1).pow(2).mean().sqrt().clamp(min=1e-12)
-        f = f / rms * float(magnitude)
-        wc = self.sim._canonical_weights()                      # [N,K]
-        return (wc.unsqueeze(-1) * f[self.sim.nn_idx]).sum(1)   # [N,3]
+        지금 세 계열 어디에도 없는 중간 -- 국소적인 힘 두셋이 동시에 걸리는 경우
+        -- 도 여기서 나온다. 실제 상호작용에 가까운 쪽이다.
 
-    def random_poke(self, gen, radius, magnitude):
-        """A force on one region of the object and nothing else.
-
-        The smooth random fields cover spatial FREQUENCY -- at a short
-        correlation length the whole object is forced, in patches of that size
-        pointing different ways. They do not cover spatial SUPPORT: nothing in
-        any training or held-out set here is a force applied to one part of the
-        object with the rest left alone, which is what an actual interaction
-        with one of these looks like.
-
-        One random material Gaussian is the centre, the window is a Gaussian
-        bump of the given radius rather than a hard edge (a discontinuous force
-        is not something the discretisation handles meaningfully), and the
-        direction is uniform over the region -- so this is a push on a part,
-        not a texture over the whole.
+        정규화는 반드시 RMS 다. 최댓값으로 맞추면 국소적인 draw 가 운반하는
+        운동량이 작아져 변위가 4.3 배 줄어든다(random_force_field 참조) -- K 와 r
+        을 독립으로 뽑는 이 계열에서는 그 편향이 그대로 커버리지 구멍이 된다.
         """
         dev = self.pos.device
         mat = torch.nonzero(self.keep, as_tuple=False).squeeze(-1)
-        c = self.pos[mat[torch.randint(mat.shape[0], (1,), device=dev, generator=gen)]][0]
-        d2 = ((self.pos - c) ** 2).sum(-1)
-        w = torch.exp(-d2 / (2.0 * float(radius) ** 2)) * self.keep.float()
-        q, r = torch.linalg.qr(torch.randn(3, 3, device=dev, generator=gen))
-        q = q * torch.sign(torch.diagonal(r)).unsqueeze(0)
-        if torch.det(q) < 0:
-            q[:, 0] = -q[:, 0]
-        direction = q[:, 0]
-        f = w.unsqueeze(-1) * direction.view(1, 3) * float(magnitude)
-        return f, c, float(w.sum() / self.keep.sum())
+        f = torch.zeros(self.pos.shape[0], 3, device=dev)
+        for _ in range(int(k)):
+            c = self.pos[mat[torch.randint(mat.shape[0], (1,), device=dev,
+                                            generator=gen)]][0]
+            d2 = ((self.pos - c) ** 2).sum(-1)
+            w = torch.exp(-d2 / (2.0 * float(radius) ** 2)) * self.keep.float()
+            q, r_ = torch.linalg.qr(torch.randn(3, 3, device=dev, generator=gen))
+            q = q * torch.sign(torch.diagonal(r_)).unsqueeze(0)
+            f = f + w.unsqueeze(-1) * q[:, 0].unsqueeze(0)
+        m = f[self.keep]
+        rms = m.norm(dim=-1).pow(2).mean().sqrt().clamp(min=1e-12)
+        f = f / rms * float(magnitude)
+
+        # 최댓값 상한. 반경이 앵커 간격 아래로 내려가면 힘을 받는 가우시안이 몇 개
+        # 남지 않아, RMS 정규화가 그 몇 개에 극단적인 값을 몰아준다. 그 입자들이 한
+        # 서브스텝에 격자를 벗어나면 warp 커널이 잘못된 메모리에 쓰고 프로세스가
+        # 통째로 죽는다 -- 도메인 검사는 커널 밖에서 도는 것이라 못 막는다
+        # (실측: mp_rmin=0.125 로 궤적 생성 중 CUDA error 700, 103/106 에서).
+        # RMS 는 그대로 두고 꼭대기만 눌러, 균일하거나 반경이 넓은 draw 는 이 한계에
+        # 닿지 않고 지나간다.
+        peak = f.norm(dim=-1).max()
+        cap = float(magnitude) * float(peak_cap)
+        if float(peak) > cap:
+            f = f * (cap / peak)
+        return f
+
+    def random_poke(self, gen, radius, magnitude):
+        raise NotImplementedError(
+            "임펄스 계열 분할(균일 / 힘장 / 포크)은 제거했다. 이 프로젝트의 임펄스는 "
+        "(포크 개수 K, 반경 r) 로만 결정되는 다중 포크 하나뿐이다 -- "
+        "Scene.random_multi_poke 를 쓸 것. 기하 피팅·학생 학습·평가가 모두 "
+        "같은 계열에서 뽑혀야 서로 견줄 수 있다.")
 
     @property
     def extent(self):
@@ -225,8 +215,17 @@ class Scene:
         a = f / self.mass.unsqueeze(-1)
         return torch.where(self.fixed_mask.unsqueeze(-1), torch.zeros_like(a), a)
 
-    def skin(self, p, gp):
-        """Gaussian positions implied by an anchor configuration (dt=0 step)."""
+    def skin(self, p, gp, grad=False):
+        """Gaussian positions implied by an anchor configuration (dt=0 step).
+
+        grad=True 는 그래프를 유지한다. 영상 손실로 앵커를 학습할 때 지도 신호가
+        가우시안 -> 화면으로만 오므로, 여기서 끊기면 손실에 grad_fn 이 없다.
+        """
+        if grad:
+            # step() 은 힘을 뽑느라 앵커를 detach 하고 가우시안도 detach 해서
+            # 돌려준다. 학습 경로에서는 형상 매칭만 통과시키는 skin_only 를 쓴다.
+            gp, _ = self.sim.skin_only(p, gp)
+            return gp
         with torch.no_grad():
             _, _, gp, _ = self.sim.step(p, torch.zeros_like(p), self.mass, gp, self.volume,
                                          self.mu, self.lam, 0.0, gravity=None, damping=1.0,

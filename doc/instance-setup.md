@@ -54,7 +54,7 @@ tmux new -d -s train "python $ANCHORFLOW/exe/train_gen.py \
 ```
 
 Staged smoke tests before the full run (minimise GPU time): (a) load .ply + LBS
-warp with hand-set anchor motion → render 1 frame; (b) GNN rollout → render a clip
+warp with hand-set anchor motion → render 1 frame; (b) 학습된 스테퍼 롤아웃 → render a clip
 (no SVD); (c) attach SVDGuidance, 10 steps; then (d) full run. Stop the instance
 immediately after measuring.
 

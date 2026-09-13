@@ -1,5 +1,5 @@
 """Render a real ficus rollout using the grid-free anchor-elastodynamics
-module (lib/anchorflow/anchor_mpm.py) instead of a learned GNN, reusing
+module (lib/anchorflow/anchor_mpm.py) instead of a learned stepper, reusing
 SC-GS's OWN trained skinning weights for the actual Gaussian-level motion --
 same pattern as exe/eval_hop_autoreg_psnr.py's HopNodeDeform monkeypatch,
 but the "dynamics" driving the anchor nodes is physics (Fixed Corotated
