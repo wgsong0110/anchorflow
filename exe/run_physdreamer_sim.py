@@ -91,7 +91,10 @@ solver.set_E_nu(model, float(cfg.get("E", 1e5)), float(cfg.get("nu", 0.3)),
 solver.prepare_mu_lam(model, state, device=dev)
 print(f"[물성] {mp} | E {cfg.get('E')} nu {cfg.get('nu')}", flush=True)
 
-# --- 초기 조건: 다른 실행과 같은 임펄스 ---
+# --- 구동: config 의 경계조건을 그대로 등록한다 ---
+# plane 은 임펄스가 아니라 회전 구동기(enforce_particle_velocity_rotation)와
+# 고정 상자(enforce_particle_translation)로 움직인다. 다른 방법들과 같은 구동을
+# 넣어야 비교가 성립하므로, 그쪽 솔버의 같은 이름 API 로 옮긴다.
 v0 = torch.zeros(N, 3, device=dev)
 for bc in cfg.get("boundary_conditions", []):
     if bc.get("type") == "particle_impulse":
@@ -101,7 +104,25 @@ for bc in cfg.get("boundary_conditions", []):
         break
 state.continue_from_torch(mat_pos.clone(), v0, None, device=dev,
                           requires_grad=False)
-print(f"[초기] |v0| 최대 {float(v0.norm(dim=-1).max()):.4f}", flush=True)
+
+n_bc = 0
+for bc in cfg.get("boundary_conditions", []):
+    t = bc.get("type")
+    if t == "enforce_particle_velocity_rotation":
+        solver.enforce_particle_velocity_rotation(
+            state, bc["point"], bc["normal"], bc["half_height_and_radius"],
+            float(bc.get("rotation_scale", 1.0)),
+            float(bc.get("translation_scale", 0.0)),
+            float(bc.get("start_time", 0.0)), float(bc.get("end_time", 1e3)),
+            device=dev)
+        n_bc += 1
+    elif t == "enforce_particle_translation":
+        solver.set_velocity_on_cuboid(
+            bc["point"], bc["size"], bc.get("velocity", [0.0, 0.0, 0.0]),
+            float(bc.get("start_time", 0.0)), float(bc.get("end_time", 1e3)))
+        n_bc += 1
+print(f"[구동] 경계조건 {n_bc} 개 등록, |v0| 최대 "
+      f"{float(v0.norm(dim=-1).max()):.4f}", flush=True)
 
 # --- 롤아웃 ---
 traj, bad = [mat_pos.clone()], False
