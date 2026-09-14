@@ -33,6 +33,8 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--cam_seq", default=None, help="PhysGaussian 궤도 카메라 JSON")
 ap.add_argument("--frames", type=int, default=40)
 ap.add_argument("--width", type=int, default=540)
+ap.add_argument("--E", type=float, default=None,
+                help="실효 영률. 안 주면 config 값 그대로")
 ap.add_argument("--n_grid", type=int, default=100)
 ap.add_argument("--fps", type=int, default=10)
 a = ap.parse_args()
@@ -86,8 +88,13 @@ if "friction_angle" in cfg:
     mp["friction_angle"] = float(cfg["friction_angle"])
 solver = MPMWARPDiff(N, n_grid=a.n_grid, grid_lim=2.0, device=dev)
 solver.set_parameters_dict(model, state, mp)
-solver.set_E_nu(model, float(cfg.get("E", 1e5)), float(cfg.get("nu", 0.3)),
-                device=dev)
+# E 는 config 마다 규약이 다르다. PhysGaussian 의 plane_config 는 1e5 인데
+# DreamPhysics 판은 같은 씬을 0.01 로 적어둔다 (그쪽 솔버가 1e7 을 곱한다).
+# PhysDreamer 솔버는 준 값을 그대로 쓰므로, --E 로 실효값을 명시해 맞춘다.
+# 안 맞추면 강성이 사실상 0 이라 재질을 바꿔도 결과가 똑같아진다 (실측).
+E_eff = a.E if a.E is not None else float(cfg.get("E", 1e5))
+solver.set_E_nu(model, E_eff, float(cfg.get("nu", 0.3)), device=dev)
+print(f"[E] config {cfg.get('E')} -> 실효 {E_eff:g}", flush=True)
 solver.prepare_mu_lam(model, state, device=dev)
 print(f"[물성] {mp} | E {cfg.get('E')} nu {cfg.get('nu')}", flush=True)
 
