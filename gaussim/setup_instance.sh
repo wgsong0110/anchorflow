@@ -39,8 +39,10 @@ python -c "import dgl" 2>/dev/null || \
 python - <<'PY'
 # 이 휠은 torch 2.2.1 까지의 graphbolt .so 만 담고 있다. GausSim 은 graphbolt 를
 # 안 쓰므로 로딩만 건너뛴다. 실제로 호출하면 그때 터지게 둔다.
-import dgl, os
-p = os.path.join(os.path.dirname(dgl.__file__), "graphbolt", "__init__.py")
+# dgl 을 import 하면 바로 그 로딩에서 죽으므로, 실행하지 않고 경로만 찾는다.
+import importlib.util as _u, os
+_spec = _u.find_spec("dgl")
+p = os.path.join(os.path.dirname(_spec.origin), "graphbolt", "__init__.py")
 s = open(p).read()
 if "GRAPHBOLT_SKIP" not in s:
     s = s.replace("def load_graphbolt():", """def load_graphbolt():
