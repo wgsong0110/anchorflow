@@ -39,8 +39,14 @@ s = ("# 이 데이터는 blender 형식 transforms_train.json 을 쓴다 (colmap
      "cam_transform_fn = 'transforms_train.json'\n") + s
 
 if a.resolution:
+    # resolution 은 _base_ 쪽 env_cfg 에 있어서 이 파일만 고쳐서는 안 바뀐다.
+    # 데이터셋 dict 마다 명시적으로 넘겨 base 를 덮는다.
     h, w = [int(v) for v in a.resolution.split(",")]
-    s = re.sub(r"resolution=\[[^\]]*\]", "resolution=[%d, %d]" % (h, w), s)
+    s = s.replace("            data_dir=data_dir,",
+                  "            data_dir=data_dir,\n"
+                  "            resolution=resolution,")
+    s = ("# 데이터셋 프레임 크기. base 의 [960, 540] 을 덮는다\n"
+         "resolution = [%d, %d]\n" % (h, w)) + s
     print("resolution -> [%d, %d]" % (h, w))
 
 if a.radius:
