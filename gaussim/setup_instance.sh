@@ -23,7 +23,7 @@ echo "[1/7] 저장소"
 (cd "$AF" && git pull -q 2>/dev/null || true)
 
 echo "[2/7] 파이썬 패키지 (컴파일 없음)"
-pip install -q "warp-lang==0.10.1" h5py PyMCubes pymeshlab plyfile kornia plotly 2>&1 | tail -1
+pip install -q "warp-lang==0.10.1" h5py PyMCubes pymeshlab plyfile kornia plotly point_cloud_utils scikit-learn 2>&1 | tail -1
 MMCV_WITH_OPS=0 pip install -q "mmcv==1.7.2" 2>&1 | tail -1
 python - <<'PY'
 import importlib.util as u
