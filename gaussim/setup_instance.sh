@@ -33,7 +33,7 @@ PY
 echo "[3/7] dgl CUDA 휠"
 # dgl 2.1 은 graphbolt 를 통해 torchdata.datapipes 를 요구한다. torchdata 0.11+ 에서
 # datapipes 가 빠졌으므로 그 API 가 남아 있는 마지막 버전을 고정한다.
-pip install -q "torchdata==0.7.1" 2>&1 | tail -1
+pip install -q "torchdata==0.7.1" pandas pydantic 2>&1 | tail -1
 python -c "import dgl" 2>/dev/null || \
   pip install -q dgl -f https://data.dgl.ai/wheels/cu121/repo.html 2>&1 | tail -1
 python - <<'PY'
