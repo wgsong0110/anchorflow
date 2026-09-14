@@ -88,6 +88,57 @@ if old in s:
 else:
     print("static_img_path 이미 적용")
 PY
+python - "$GS" <<'PY2'
+# 이 이미지의 diff_gaussian_rasterization 은 (color, radii, depth, alpha) 4 개를
+# 돌려준다. 2 개로 언팩하는 곳을 앞 2 개만 받도록 고친다 (PhysGaussian /
+# PhysDreamer 도 같은 형태라 같은 처리가 필요하다).
+import sys, os, glob
+n = 0
+for p in glob.glob(os.path.join(sys.argv[1], "mmgs/models/utils/*.py")):
+    s = open(p).read()
+    if "rendered_image, radii = rasterizer(" not in s:
+        continue
+    lines = s.replace("rendered_image, radii = rasterizer(",
+                      "_ras_out = rasterizer(").split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        out.append(lines[i])
+        if "_ras_out = rasterizer(" in lines[i]:
+            ind = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+            depth = lines[i].count("(") - lines[i].count(")")
+            while depth > 0:
+                i += 1
+                out.append(lines[i])
+                depth += lines[i].count("(") - lines[i].count(")")
+            out.append(ind + "rendered_image, radii = _ras_out[0], _ras_out[1]")
+        i += 1
+    open(p, "w").write("\n".join(out))
+    n += 1
+print("래스터라이저 언팩 패치", n, "파일")
+PY2
+
+# 간선 특성의 0/0 두 곳. 노드가 자기 앵커와 같은 자리면 방향이 정의되지 않는데,
+# 그대로 나누면 NaN 이 나고 합쳐지는 노드의 임베딩이 통째로 오염된다.
+python - "$GS" <<'PY3'
+import sys, os
+p = os.path.join(sys.argv[1], "mmgs/models/backbones/meshgraphnet_hie.py")
+s = open(p).read()
+old = """        normed_recv = recv_vec / torch.linalg.norm(recv_vec, dim=-1, keepdim=True)
+        normed_send = send_vec / torch.linalg.norm(send_vec, dim=-1, keepdim=True)"""
+new = """        _eps = 1e-8
+        _rn = torch.linalg.norm(recv_vec, dim=-1, keepdim=True)
+        _sn = torch.linalg.norm(send_vec, dim=-1, keepdim=True)
+        normed_recv = torch.where(_rn > _eps, recv_vec / _rn.clamp(min=_eps),
+                                  torch.zeros_like(recv_vec))
+        normed_send = torch.where(_sn > _eps, send_vec / _sn.clamp(min=_eps),
+                                  torch.zeros_like(send_vec))"""
+if old in s:
+    open(p, "w").write(s.replace(old, new, 1))
+    print("_edge_theta 0/0 방지")
+else:
+    print("_edge_theta 이미 적용")
+PY3
+
 cp "$AF"/gaussim/*.py "$GS/tools/" 2>/dev/null
 
 echo "[6/7] 임포트 확인"
