@@ -42,6 +42,9 @@ ap.add_argument("--n_cam", type=int, default=4)
 ap.add_argument("--frames", type=int, default=14)
 ap.add_argument("--width", type=int, default=400)
 ap.add_argument("--vel_scale", type=float, default=0.3)
+ap.add_argument("--n_sim", type=int, default=8000,
+                help="시뮬레이션할 물질 가우시안 수 (0 이면 전부). "
+                     "GausSim 군집화가 n^2 메모리를 쓴다")
 ap.add_argument("--n_pin", type=int, default=32,
                 help="고정 영역에서 뽑을 앵커 수 (GausSim 최상위 계층용)")
 ap.add_argument("--seed", type=int, default=0)
@@ -99,7 +102,18 @@ FIELDS = ("_xyz", "_features_dc", "_features_rest", "_opacity", "_scaling",
 # 사라져 흰 공백 위의 물체만 남는다 -- PhysGaussian 공식 경로도 래스터화 직전에
 # 비선택 가우시안을 다시 합친다. 움직이는 것은 물질 가우시안뿐이므로 전체 길이의
 # 변위를 만들어 그 자리에만 채운다.
-KEEP = sc.keep
+KEEP = sc.keep.clone()
+if a.n_sim > 0 and int(KEEP.sum()) > a.n_sim:
+    # GausSim 의 계층 군집화는 complete-linkage 응집 군집이라 첫 단계에서 전체
+    # 거리행렬(n^2)을 잡는다. 물질 가우시안 62k 면 31GB 로, 컨테이너 한도(42.5GB)를
+    # 넘겨 프로세스가 아니라 **컨테이너가 통째로** 죽는다. 시뮬 대상을 고르게 솎는다.
+    _i = torch.nonzero(KEEP).squeeze(-1)
+    _g = torch.Generator(device="cpu").manual_seed(a.seed)
+    _pick = _i[torch.randperm(_i.numel(), generator=_g)[:a.n_sim]]
+    KEEP = torch.zeros_like(KEEP)
+    KEEP[_pick] = True
+    print(f"[시뮬] 물질 {int(sc.keep.sum())} -> {int(KEEP.sum())} 로 솎음 "
+          f"(군집화 메모리 n^2)", flush=True)
 N_ALL = gs._xyz.shape[0]
 idx_all = torch.arange(N_ALL, device=dev)
 if getattr(sc, "crop", None) is not None:
