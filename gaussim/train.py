@@ -109,21 +109,21 @@ def _install_nan_probe(model):
     알아야 그 다음을 볼 수 있다. 입력이 유한한데 출력이 비유한인 첫 모듈에서
     그 모듈의 파라미터까지 같이 찍고 멈춘다.
     """
-    state = {"hit": False}
+    state = {"hits": []}
 
     def finite(x):
         return (not torch.is_tensor(x)) or bool(torch.isfinite(x).all())
 
     def hook(name, mod):
         def fn(_m, inp, out):
-            if state["hit"]:
+            if len(state["hits"]) > 40:
                 return
             outs = out if isinstance(out, (tuple, list)) else (out,)
             ins = inp if isinstance(inp, (tuple, list)) else (inp,)
             if all(finite(t) for t in ins) and not all(finite(t) for t in outs):
-                state["hit"] = True
-                print(f"\n[nan] 처음 터진 모듈: {name} ({type(_m).__name__})",
-                      flush=True)
+                state["hits"].append(name)
+                print(f"[nan] {name} ({type(_m).__name__}) "
+                      f"깊이 {name.count('.')}", flush=True)
                 for i, t in enumerate(ins):
                     if torch.is_tensor(t):
                         print(f"  입력{i} {tuple(t.shape)} "
@@ -143,12 +143,13 @@ def _install_nan_probe(model):
                               f"|max| {float(bv.abs().max()):.4e}", flush=True)
         return fn
 
+    # 말단만 걸면 dgl 연산처럼 모듈 바깥에서 나는 NaN 을 놓친다. 컨테이너까지 전부
+    # 걸어 "자식들은 멀쩡한데 자기 출력은 NaN" 인 가장 깊은 모듈을 찾는다.
     n = 0
     for name, mod in model.named_modules():
-        if len(list(mod.children())) == 0:
-            mod.register_forward_hook(hook(name, mod))
-            n += 1
-    print(f"[nan] 말단 모듈 {n} 개에 훅을 걸었다", flush=True)
+        mod.register_forward_hook(hook(name, mod))
+        n += 1
+    print(f"[nan] 모듈 {n} 개에 훅을 걸었다 (컨테이너 포함)", flush=True)
 
 
 if __name__ == "__main__":
