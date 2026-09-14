@@ -108,7 +108,6 @@ traj, bad = [mat_pos.clone()], False
 for fr in range(a.frames - 1):
     for k in range(n_sub):
         solver.p2g2p(model, state, fr, SUB_DT, device=dev)
-    x = state.particle_x.to(torch.device(dev)) if hasattr(state, "particle_x") else None
     x = wp.to_torch(state.particle_x).clone()
     if not torch.isfinite(x).all():
         print(f"[롤아웃] 프레임 {fr+1} 에서 비유한값 -- 여기까지만 쓴다", flush=True)
