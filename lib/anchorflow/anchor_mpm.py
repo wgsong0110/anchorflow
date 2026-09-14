@@ -297,11 +297,17 @@ class AnchorElasticSim:
                 self.radius, mu, lam, eig_floor_frac=self.eig_floor,
                 w_in=self.frozen_w, rot_fallback=self.rot_fallback)
         else:
-            anchor_pos = anchor_pos.detach().requires_grad_(True)
-            E, F, gaussian_pos = self.elastic_energy(
-                anchor_pos, gaussian_pos_prev, gaussian_volume, mu, lam)
-            (f_elastic,) = torch.autograd.grad(E, anchor_pos, create_graph=False)
-            f_elastic = -f_elastic
+            # 힘은 -dE/dx 라 autograd 를 쓴다. 학습 그래프와는 무관한 내부 계산이므로
+            # 바깥이 no_grad 여도(렌더처럼) 여기서만 켜야 한다 -- 안 켜면 E 에
+            # grad_fn 이 없어 "does not require grad" 로 죽는다.
+            with torch.enable_grad():
+                anchor_pos = anchor_pos.detach().requires_grad_(True)
+                E, F, gaussian_pos = self.elastic_energy(
+                    anchor_pos, gaussian_pos_prev, gaussian_volume, mu, lam)
+                (f_elastic,) = torch.autograd.grad(E, anchor_pos,
+                                                   create_graph=False)
+            f_elastic = -f_elastic.detach()
+            F, gaussian_pos = F.detach(), gaussian_pos.detach()
 
         f_total = f_elastic
         if f_ext_particle is not None:
