@@ -88,7 +88,7 @@ solver = MPMWARPDiff(N, n_grid=a.n_grid, grid_lim=2.0, device=dev)
 solver.set_parameters_dict(model, state, mp)
 solver.set_E_nu(model, float(cfg.get("E", 1e5)), float(cfg.get("nu", 0.3)),
                 device=dev)
-solver.finalize_mu_lam(model, state, device=dev)
+solver.prepare_mu_lam(model, state, device=dev)
 print(f"[물성] {mp} | E {cfg.get('E')} nu {cfg.get('nu')}", flush=True)
 
 # --- 초기 조건: 다른 실행과 같은 임펄스 ---
