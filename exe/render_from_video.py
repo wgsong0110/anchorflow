@@ -33,6 +33,9 @@ ap.add_argument("--frames", type=int, default=40)
 ap.add_argument("--width", type=int, default=480)
 ap.add_argument("--fps", type=int, default=10)
 ap.add_argument("--view", type=int, default=0, help="ckpt 에 저장된 시점 중 몇 번째")
+ap.add_argument("--pick_view", action="store_true",
+                help="ckpt 의 학습 시점 대신 커버리지 기준으로 고른다 -- "
+                     "학습 시점은 근접 촬영이라 물체가 화면을 벗어난다")
 a = ap.parse_args()
 
 dev = "cuda"
@@ -120,7 +123,7 @@ class MiniCam:
 
 
 cams = json.load(open(a.cameras))
-if st is not None:
+if st is not None and not a.pick_view:
     view_idx = st["views"][a.view]
 else:
     # ckpt 가 없으면 train_from_video.py 와 같은 기준으로 고른다:
