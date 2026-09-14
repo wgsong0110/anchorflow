@@ -139,6 +139,27 @@ else:
     print("_edge_theta 이미 적용")
 PY3
 
+# GausSim 은 gaussian.denom / xyz_gradient_accum 을 읽는데, 3DGS 는 그 둘을
+# training_setup() 에서만 만든다. 학습을 안 거친 ply 를 읽어오면 없으므로
+# 없을 때 0 으로 채운다 (densify 통계라 추론에는 쓰이지 않는다).
+python - "$GS" <<'PY4'
+import sys, os
+p = os.path.join(sys.argv[1], "mmgs/utils/physdreamer_utils.py")
+s = open(p).read()
+old = "        new_denom = gaussian.denom[mask]"
+new = """        if not hasattr(gaussian, "denom") or gaussian.denom is None:
+            import torch as _t
+            gaussian.denom = _t.zeros((gaussian.get_xyz.shape[0], 1),
+                                      device=gaussian.get_xyz.device)
+            gaussian.xyz_gradient_accum = _t.zeros_like(gaussian.denom)
+        new_denom = gaussian.denom[mask]"""
+if old in s and "hasattr(gaussian, \"denom\")" not in s:
+    open(p, "w").write(s.replace(old, new, 1))
+    print("denom 기본값 주입")
+else:
+    print("denom 이미 처리됨")
+PY4
+
 cp "$AF"/gaussim/*.py "$GS/tools/" 2>/dev/null
 
 echo "[6/7] 임포트 확인"
