@@ -102,18 +102,19 @@ FIELDS = ("_xyz", "_features_dc", "_features_rest", "_opacity", "_scaling",
 # 사라져 흰 공백 위의 물체만 남는다 -- PhysGaussian 공식 경로도 래스터화 직전에
 # 비선택 가우시안을 다시 합친다. 움직이는 것은 물질 가우시안뿐이므로 전체 길이의
 # 변위를 만들어 그 자리에만 채운다.
-KEEP = sc.keep.clone()
-if a.n_sim > 0 and int(KEEP.sum()) > a.n_sim:
-    # GausSim 의 계층 군집화는 complete-linkage 응집 군집이라 첫 단계에서 전체
-    # 거리행렬(n^2)을 잡는다. 물질 가우시안 62k 면 31GB 로, 컨테이너 한도(42.5GB)를
-    # 넘겨 프로세스가 아니라 **컨테이너가 통째로** 죽는다. 시뮬 대상을 고르게 솎는다.
-    _i = torch.nonzero(KEEP).squeeze(-1)
+# 물리는 물질 가우시안 전부(62k)로 돌린다. 솎는 것은 **내보내기**뿐이다 --
+# GausSim 의 계층 군집화가 complete-linkage 라 첫 단계에서 전체 거리행렬(n^2)을
+# 잡는데, 62k 면 31GB 라 컨테이너 한도를 넘겨 프로세스가 아니라 컨테이너가 죽는다.
+FULL = torch.nonzero(sc.keep).squeeze(-1)          # 물질 가우시안의 ply(크롭 후) 인덱스
+if a.n_sim > 0 and FULL.numel() > a.n_sim:
     _g = torch.Generator(device="cpu").manual_seed(a.seed)
-    _pick = _i[torch.randperm(_i.numel(), generator=_g)[:a.n_sim]]
-    KEEP = torch.zeros_like(KEEP)
-    KEEP[_pick] = True
-    print(f"[시뮬] 물질 {int(sc.keep.sum())} -> {int(KEEP.sum())} 로 솎음 "
-          f"(군집화 메모리 n^2)", flush=True)
+    SUB = torch.randperm(FULL.numel(), generator=_g)[:a.n_sim].sort().values.to(dev)
+    print(f"[내보내기] 물질 {FULL.numel()} -> {SUB.numel()} 로 솎음 "
+          f"(군집화 메모리 n^2). 시뮬은 전부 돈다", flush=True)
+else:
+    SUB = torch.arange(FULL.numel(), device=dev)
+KEEP = torch.zeros_like(sc.keep)
+KEEP[FULL[SUB]] = True
 N_ALL = gs._xyz.shape[0]
 idx_all = torch.arange(N_ALL, device=dev)
 if getattr(sc, "crop", None) is not None:
@@ -265,8 +266,8 @@ for s in range(a.n_seq):
         os.makedirs(vd, exist_ok=True)
         os.makedirs(vdm, exist_ok=True)
         for t in range(a.frames):
-            im = draw(X[t], CAMS[ci]["cam"])
-            imv = draw_mov(X[t], CAMS[ci]["cam"], rgba=True)
+            im = draw(X[t][SUB], CAMS[ci]["cam"])
+            imv = draw_mov(X[t][SUB], CAMS[ci]["cam"], rgba=True)
             # _mov 쪽은 png 로 읽는다 (로더의 suffix_replace=['.jpg','.png']).
             imageio.imwrite(os.path.join(vd, "%05d.jpg" % t), im, quality=92)
             imageio.imwrite(os.path.join(vdm, "%05d.png" % t), imv)
