@@ -42,11 +42,15 @@ ap.add_argument("--n_cam", type=int, default=4)
 ap.add_argument("--frames", type=int, default=14)
 ap.add_argument("--width", type=int, default=400)
 ap.add_argument("--vel_scale", type=float, default=0.3)
-ap.add_argument("--n_sim", type=int, default=8000,
-                help="시뮬레이션할 물질 가우시안 수 (0 이면 전부). "
-                     "GausSim 군집화가 n^2 메모리를 쓴다")
-ap.add_argument("--n_pin", type=int, default=32,
-                help="고정 영역에서 뽑을 앵커 수 (GausSim 최상위 계층용)")
+ap.add_argument("--n_sim", type=int, default=8926,
+                help="내보낼 가우시안 수. 공식 pudding 이 움직이는 점 8,926 개이고 "
+                     "논문의 Mothorchids 가 레벨0 23,422 개다. 줄이는 이유는 "
+                     "군집화가 n^2 메모리를 쓰고, 논문이 A800 4장 batch 4 로 "
+                     "돌린 것을 3090 한 장에서 재현해야 하기 때문이다")
+ap.add_argument("--n_pin", type=int, default=1,
+                help="고정 앵커 수. 공식 pudding 데이터의 pin_mask.json 은 항목이 "
+                     "**1개**다 -- 최상위 계층이 1노드가 되어 n_clusters 와 자연히 "
+                     "맞는다. 여러 개로 늘리면 안 쓰이는 pin 이 생겨 노드 수가 어긋난다")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
