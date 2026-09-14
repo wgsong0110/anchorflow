@@ -33,6 +33,9 @@ ap.add_argument("--frames", type=int, default=40)
 ap.add_argument("--width", type=int, default=480)
 ap.add_argument("--fps", type=int, default=10)
 ap.add_argument("--view", type=int, default=0, help="ckpt 에 저장된 시점 중 몇 번째")
+ap.add_argument("--cam_seq", default=None,
+                help="PhysGaussian 궤도 카메라를 프레임별로 담은 JSON "
+                     "(dump_cams.py 산출). 주면 --cameras/--view 를 무시한다")
 ap.add_argument("--pick_view", action="store_true",
                 help="ckpt 의 학습 시점 대신 커버리지 기준으로 고른다 -- "
                      "학습 시점은 근접 촬영이라 물체가 화면을 벗어난다")
@@ -122,8 +125,29 @@ class MiniCam:
         self.camera_center = wvt.inverse()[3, :3]
 
 
-cams = json.load(open(a.cameras))
-if st is not None and not a.pick_view:
+CAM_SEQ = None
+if a.cam_seq:
+    # PhysGaussian 이 자기 코드로 만든 카메라를 그대로 쓴다. 그 영상과 같은 시점·
+    # 같은 프레임에서 보려면 이 경로여야 한다 (궤도 카메라는 프레임마다 움직인다).
+    _cs = json.load(open(a.cam_seq))
+    w = int(a.width); h = int(round(_cs[0]["height"] * w / _cs[0]["width"]))
+    CAM_SEQ = []
+    for c_ in _cs:
+        R_ = np.array(c_["R"], dtype=np.float64)
+        T_ = np.array(c_["T"], dtype=np.float64)
+        wvt_ = torch.tensor(getWorld2View2(R_, T_)).transpose(0, 1).float().to(dev)
+        pmx_ = getProjectionMatrix(znear=0.01, zfar=100.0, fovX=c_["FoVx"],
+                                   fovY=c_["FoVy"]).transpose(0, 1).to(dev)
+        CAM_SEQ.append(MiniCam(w, h, c_["FoVy"], c_["FoVx"], 0.01, 100.0, wvt_,
+                               (wvt_.unsqueeze(0).bmm(pmx_.unsqueeze(0))).squeeze(0)))
+    cam = CAM_SEQ[0]
+    print(f"[카메라] PhysGaussian 궤도 카메라 {len(CAM_SEQ)} 프레임, {w}x{h}",
+          flush=True)
+
+cams = json.load(open(a.cameras)) if CAM_SEQ is None else None
+if CAM_SEQ is not None:
+    pass
+elif st is not None and not a.pick_view:
     view_idx = st["views"][a.view]
 else:
     # ckpt 가 없으면 train_from_video.py 와 같은 기준으로 고른다:
@@ -152,18 +176,19 @@ else:
     view_idx = _sc[min(a.view, len(_sc) - 1)][1]
     print(f"[카메라] ckpt 없음 -> 커버리지 상위 시점 {view_idx} 선택 "
           f"(점수 {_sc[min(a.view, len(_sc)-1)][0]:.3f})", flush=True)
-c = cams[view_idx]
-w0, h0 = int(c["width"]), int(c["height"])
-w = int(a.width); h = int(round(h0 * w / w0))
-fx, fy = float(c["fx"]) * w / w0, float(c["fy"]) * h / h0
-R = np.array(c["rotation"], dtype=np.float64)
-Tv = -R.T @ np.array(c["position"], dtype=np.float64)
-fovx, fovy = focal2fov(fx, w), focal2fov(fy, h)
-wvt = torch.tensor(getWorld2View2(R, Tv)).transpose(0, 1).float().to(dev)
-pmx = getProjectionMatrix(znear=0.01, zfar=100.0, fovX=fovx,
-                          fovY=fovy).transpose(0, 1).to(dev)
-cam = MiniCam(w, h, fovy, fovx, 0.01, 100.0, wvt,
-              (wvt.unsqueeze(0).bmm(pmx.unsqueeze(0))).squeeze(0))
+if CAM_SEQ is None:
+    c = cams[view_idx]
+    w0, h0 = int(c["width"]), int(c["height"])
+    w = int(a.width); h = int(round(h0 * w / w0))
+    fx, fy = float(c["fx"]) * w / w0, float(c["fy"]) * h / h0
+    R = np.array(c["rotation"], dtype=np.float64)
+    Tv = -R.T @ np.array(c["position"], dtype=np.float64)
+    fovx, fovy = focal2fov(fx, w), focal2fov(fy, h)
+    wvt = torch.tensor(getWorld2View2(R, Tv)).transpose(0, 1).float().to(dev)
+    pmx = getProjectionMatrix(znear=0.01, zfar=100.0, fovX=fovx,
+                              fovY=fovy).transpose(0, 1).to(dev)
+    cam = MiniCam(w, h, fovy, fovx, 0.01, 100.0, wvt,
+                  (wvt.unsqueeze(0).bmm(pmx.unsqueeze(0))).squeeze(0))
 
 
 class _P:
@@ -216,6 +241,8 @@ def label(img, text):
 frames = []
 TRk = TR[:, sc.keep] if TR.shape[1] != N else TR
 for t in range(NF):
+    if CAM_SEQ is not None:
+        cam = CAM_SEQ[min(t, len(CAM_SEQ) - 1)]
     left = label(draw(TRk[t]), f"MPM ({sc.cfg.get('material')}) f{t:02d}")
     if PR is None:
         frames.append(left)
