@@ -15,6 +15,9 @@ ap.add_argument("--dst", default="configs/gssim/iccv/plastic.py")
 ap.add_argument("--scene", default="plastic")
 ap.add_argument("--frame_dt", type=float, default=0.01,
                 help="한 프레임의 물리 시간. plane_dp.json 의 frame_dt 와 맞춘다")
+ap.add_argument("--resolution", default=None,
+                help="렌더 해상도 'H,W'. 데이터셋 프레임 크기와 같아야 손실에서 "
+                     "shape 이 안 맞는다")
 ap.add_argument("--radius", default=None,
                 help="계층별 상호작용 반경, 쉼표로 구분. 주지 않으면 그쪽 값 그대로. "
                      "pudding 기준 값(0.03/0.4/5.0)은 우리 씬 스케일에서 너무 작아 "
@@ -34,6 +37,11 @@ s = s.replace("            data_dir=data_dir,",
               "            cam_transform_fn=cam_transform_fn,")
 s = ("# 이 데이터는 blender 형식 transforms_train.json 을 쓴다 (colmap sparse 없음)\n"
      "cam_transform_fn = 'transforms_train.json'\n") + s
+
+if a.resolution:
+    h, w = [int(v) for v in a.resolution.split(",")]
+    s = re.sub(r"resolution=\[[^\]]*\]", "resolution=[%d, %d]" % (h, w), s)
+    print("resolution -> [%d, %d]" % (h, w))
 
 if a.radius:
     # radius 는 그쪽 config 에서도 씬마다 다르게 주는 값이다. 우리 씬의 레벨별
