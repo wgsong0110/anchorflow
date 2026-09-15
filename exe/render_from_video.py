@@ -36,6 +36,10 @@ ap.add_argument("--view", type=int, default=0, help="ckpt 에 저장된 시점 �
 ap.add_argument("--cam_seq", default=None,
                 help="PhysGaussian 궤도 카메라를 프레임별로 담은 JSON "
                      "(dump_cams.py 산출). 주면 --cameras/--view 를 무시한다")
+ap.add_argument("--use_F", action="store_true",
+                help="MPM 의 변형구배로 가우시안 회전·신축까지 갱신한다. "
+                     "PhysGaussian 공식은 매 프레임 Sigma\' = F Sigma F^T 를 하므로 "
+                     "위치만 옮기면 큰 변형에서 겉모습이 갈린다")
 ap.add_argument("--no_label", action="store_true",
                 help="상단 라벨 바를 그리지 않는다 -- 다른 방법과 픽셀 단위로 "
                      "견줄 때는 라벨이 비교를 흐린다")
@@ -83,6 +87,7 @@ n_sub = max(1, int(round(FRAME_DT / float(sc.sub_dt))))
 T._set(T.pos_m.clone(), torch.zeros(T.n, 3, device=dev), T.eye.clone(),
        torch.zeros_like(T.eye))
 truth = [T.pos_m.clone()]
+Fs = [torch.eye(3, device=dev).expand(T.n, 3, 3).clone()] if a.use_F else None
 for _ in range(a.frames - 1):
     bad = False
     for k in range(n_sub):
@@ -94,6 +99,8 @@ for _ in range(a.frames - 1):
     if bad:
         break
     truth.append(T.solver.export_particle_x_to_torch().clone())
+    if a.use_F:
+        Fs.append(T.solver.export_particle_F_to_torch().clone())
 TR = torch.stack(truth)
 NF = TR.shape[0]
 print(f"[mpm] {NF} 프레임", flush=True)
@@ -226,10 +233,35 @@ print(f"[렌더] 가우시안 전체 {N_ALL}, 그중 물질 {N} (나머지는 �
       flush=True)
 
 
-def draw(x):
+def _quat_from_R(R):
+    """회전행렬 -> 쿼터니언 (w, x, y, z). 렌더러가 그 순서를 쓴다."""
+    w = torch.sqrt((1.0 + R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2]).clamp(min=1e-8)) / 2
+    w4 = (4.0 * w).clamp(min=1e-8)
+    return torch.stack([w,
+                        (R[:, 2, 1] - R[:, 1, 2]) / w4,
+                        (R[:, 0, 2] - R[:, 2, 0]) / w4,
+                        (R[:, 1, 0] - R[:, 0, 1]) / w4], -1)
+
+
+def draw(x, F=None):
     dx = torch.zeros(N_ALL, 3, device=dev, dtype=sc.pos.dtype)
     dx[MAT] = sc.undo(x) - sc.undo(G0)
-    im = torch.clamp(_render(cam, gs, pipe, BG, dx, ZR, ZS,
+    rot, scl = ZR, ZS
+    if F is not None:
+        # 공식은 Sigma' = F Sigma F^T 를 쓴다. 이 렌더러는 회전(쿼터니언)과
+        # 신축(로그 배수)을 따로 받으므로 F 를 극분해해 그 둘로 넘긴다.
+        U, S, Vh = torch.linalg.svd(F)
+        det = torch.linalg.det(U @ Vh)
+        neg = det < 0
+        if neg.any():
+            U = U.clone(); S = S.clone()
+            U[neg, :, -1] = -U[neg, :, -1]
+            S[neg, -1] = -S[neg, -1]
+        R = U @ Vh                                    # 회전 성분
+        rot = ZR.clone(); scl = ZS.clone()
+        rot[MAT] = _quat_from_R(R)
+        scl[MAT] = torch.log(S.abs().clamp(min=1e-6))  # 렌더러가 로그 신축을 받는다
+    im = torch.clamp(_render(cam, gs, pipe, BG, dx, rot, scl,
                              d_rot_as_res=True)["render"], 0, 1)
     return (im.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
 
@@ -249,7 +281,8 @@ TRk = TR[:, sc.keep] if TR.shape[1] != N else TR
 for t in range(NF):
     if CAM_SEQ is not None:
         cam = CAM_SEQ[min(t, len(CAM_SEQ) - 1)]
-    left = label(draw(TRk[t]), f"MPM ({sc.cfg.get('material')}) f{t:02d}")
+    left = label(draw(TRk[t], Fs[t][sc.keep] if Fs is not None else None),
+                 f"MPM ({sc.cfg.get('material')}) f{t:02d}")
     if PR is None:
         frames.append(left)
     else:
