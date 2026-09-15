@@ -281,7 +281,11 @@ TRk = TR[:, sc.keep] if TR.shape[1] != N else TR
 for t in range(NF):
     if CAM_SEQ is not None:
         cam = CAM_SEQ[min(t, len(CAM_SEQ) - 1)]
-    left = label(draw(TRk[t], Fs[t][sc.keep] if Fs is not None else None),
+    # 교사의 F 는 이미 물질 입자만 담고 있다 (위치와 같은 정렬).
+    F_t = None
+    if Fs is not None:
+        F_t = Fs[t][sc.keep] if Fs[t].shape[0] != TRk.shape[1] else Fs[t]
+    left = label(draw(TRk[t], F_t),
                  f"MPM ({sc.cfg.get('material')}) f{t:02d}")
     if PR is None:
         frames.append(left)
