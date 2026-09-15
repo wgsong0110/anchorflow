@@ -74,16 +74,21 @@ sys.path.insert(0, a.springgaus)
 from lib.models.spring_mass.Spring_Mass import Spring_Mass  # noqa: E402
 from yacs.config import CfgNode as CN  # noqa: E402
 
-# 값은 공식 config/mpm_synthetic/default.yaml 그대로. 중력은 씬 config 를 따른다
-# (다른 베이스라인과 같은 조건이어야 한다).
+# 값은 공식 config 그대로 쓴다 (mpm_synthetic/default.yaml + 씬 yaml 의 DATA 블록).
+# 임의로 고르면 베이스라인이 아니게 되므로, 그쪽 기본값을 그대로 옮긴다.
 scfg = CN()
 scfg.K_NEIGHBORS = a.k_neighbors
 scfg.K_BINDING = 16
 scfg.N_STEP = a.n_step
 scfg.INIT_VELOCITY = [0, 0, 0]
-scfg.G = list(cfg.get("g", [0.0, 0.0, 0.0]))
+scfg.G = list(cfg.get("g", [0.0, 0.0, 0.0]))   # 중력은 우리 씬 조건을 따른다
 scfg.PRETRAINED = None
 scfg.DATA = CN()
+scfg.DATA.DT = FRAME_DT                        # 프레임 간격은 우리 씬에 맞춘다
+scfg.DATA.BC = [[[0, 0.3, 0], [0, 1, 0]]]      # 공식 씬 yaml 의 바닥 경계조건
+scfg.DATA.GLOBAL_M = 1
+scfg.DATA.GLOBAL_K = 1000
+scfg.DATA.GLOBAL_DAMP = 0.1
 sim = Spring_Mass(scfg, mat.clone())
 sim.set_dt(dt=FRAME_DT)
 print(f"[Spring-Gaus] 이웃 {a.k_neighbors}, 서브스텝/프레임 {a.n_step}", flush=True)
