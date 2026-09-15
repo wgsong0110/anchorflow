@@ -98,7 +98,12 @@ for _n, _b in list(sim.named_buffers()) + list(sim.named_parameters()):
     if torch.is_tensor(_b) and _b.device.type != "cuda":
         print("  CPU 에 남은 텐서:", _n, tuple(_b.shape), flush=True)
 sim.set_dt(dt=FRAME_DT)
-print(f"[Spring-Gaus] 이웃 {a.k_neighbors}, 서브스텝/프레임 {a.n_step}", flush=True)
+# 시뮬 입자와 렌더 대상 가우시안을 잇는 보간 인덱스를 만든다 (학습 스크립트가 하는 일).
+# 여기서는 둘이 같은 집합이라 자기 자신에 묶인다.
+sim.set_all_particle(mat.clone())
+sim.stage = "dynamic"
+print(f"[Spring-Gaus] 이웃 {a.k_neighbors}, 서브스텝/프레임 {a.n_step}, "
+      f"결속 {sim.k_binding}", flush=True)
 
 x = mat.clone()
 v = torch.zeros_like(x)
