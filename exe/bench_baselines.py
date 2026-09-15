@@ -84,7 +84,9 @@ if a.physgaussian:
     sys.path.insert(0, a.physgaussian)
 try:
     from anchorflow.mpm_teacher import MPMTeacher
-    T = MPMTeacher(sc, horizon=a.frames * FRAME_DT * 4)
+    # horizon 이 길면 회전 구동기 두 개가 한 창에 들어와 warp 커널 이름이 충돌한다.
+    # 속도만 재므로 짧은 창이면 충분하다.
+    T = MPMTeacher(sc, horizon=FRAME_DT * 2)
     T._set(T.pos_m.clone(), torch.zeros(T.n, 3, device=dev), T.eye.clone(),
            torch.zeros_like(T.eye))
 
@@ -101,6 +103,14 @@ except Exception as e:
 # ---------------- 2. PhysDreamer 시뮬레이터 ----------------
 if a.physdreamer:
     try:
+        # PhysGaussian 의 mpm_solver_warp 가 같은 이름의 warp_utils 를 들고 있어
+        # 먼저 임포트되면 PhysDreamer 쪽이 그것을 먹는다. 경로를 앞에 두고
+        # 캐시를 지운 뒤 임포트한다.
+        for _m in [k for k in sys.modules
+                   if k.split(".")[0] in ("warp_utils", "mpm_utils",
+                                          "mpm_data_structure")]:
+            del sys.modules[_m]
+        sys.path.insert(0, os.path.join(a.physdreamer, "physdreamer", "warp_mpm"))
         sys.path.insert(0, a.physdreamer)
         from physdreamer.warp_mpm.mpm_data_structure import (MPMModelStruct,
                                                              MPMStateStruct)
