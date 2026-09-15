@@ -90,6 +90,13 @@ scfg.DATA.GLOBAL_M = 1
 scfg.DATA.GLOBAL_K = 1000
 scfg.DATA.GLOBAL_DAMP = 0.1
 sim = Spring_Mass(scfg, mat.clone())
+# 학습 경로가 아니라 장치가 자동으로 안 잡힌다. 파라미터·버퍼를 GPU 로 올린다.
+sim = sim.to(dev)
+if hasattr(sim, "device"):
+    sim.device = dev
+for _n, _b in list(sim.named_buffers()) + list(sim.named_parameters()):
+    if torch.is_tensor(_b) and _b.device.type != "cuda":
+        print("  CPU 에 남은 텐서:", _n, tuple(_b.shape), flush=True)
 sim.set_dt(dt=FRAME_DT)
 print(f"[Spring-Gaus] 이웃 {a.k_neighbors}, 서브스텝/프레임 {a.n_step}", flush=True)
 
