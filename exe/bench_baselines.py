@@ -38,6 +38,11 @@ ap.add_argument("--frames", type=int, default=30, help="측정 프레임 수")
 ap.add_argument("--warmup", type=int, default=5)
 ap.add_argument("--width", type=int, default=800)
 ap.add_argument("--height", type=int, default=800)
+ap.add_argument("--springgaus", default=None, help="Spring-Gaus 저장소 경로")
+ap.add_argument("--sg_neighbors", type=int, default=256,
+                help="공식 default.yaml 의 K_NEIGHBORS")
+ap.add_argument("--sg_nstep", type=int, default=100,
+                help="공식 default.yaml 의 N_STEP")
 ap.add_argument("--student_ckpt", default=None,
                 help="영상학습 학생 체크포인트")
 ap.add_argument("--n_grid", type=int, default=100)
@@ -207,6 +212,34 @@ if a.student_ckpt:
         res["n_anchors"] = int(AC.shape[0])
     except Exception as e:
         print("  학생 실패:", type(e).__name__, e, flush=True)
+
+# ---------------- 3.7 Spring-Gaus (스프링-질량 3D 가우시안) ----------------
+if a.springgaus:
+    try:
+        sys.path.insert(0, a.springgaus)
+        from lib.models.spring_mass.Spring_Mass import Spring_Mass_System
+        from yacs.config import CfgNode as CN
+        # 공식 기본값 (config/mpm_synthetic/default.yaml): 이웃 256, 프레임당 100 서브스텝.
+        # 가우시안마다 kNN 스프링을 다는 구조라 비용이 점 수 x 이웃 수로 붙는다.
+        cfg = CN()
+        cfg.K_NEIGHBORS = a.sg_neighbors
+        cfg.N_STEP = a.sg_nstep
+        sim = Spring_Mass_System(cfg, mat.clone())
+        sim.set_dt(dt=FRAME_DT)
+        v_sg = torch.zeros_like(mat)
+        x_sg = mat.clone()
+
+        def step_sg():
+            global x_sg, v_sg
+            out = sim(x_sg, x_sg, v_sg, frame_id=1)
+            x_sg, v_sg = out[0].detach(), out[1].detach()
+
+        print(f"[Spring-Gaus] 점 {N}, 이웃 {a.sg_neighbors}, "
+              f"서브스텝/프레임 {a.sg_nstep}", flush=True)
+        res["methods"]["spring_gaus"] = timed(step_sg, max(3, a.frames // 5),
+                                              2, "물리 스텝")
+    except Exception as e:
+        print("  Spring-Gaus 실패:", type(e).__name__, e, flush=True)
 
 # ---------------- 4. 래스터화 (공통) ----------------
 try:
