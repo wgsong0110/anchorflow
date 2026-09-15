@@ -250,6 +250,12 @@ def draw(x, F=None):
     if F is not None:
         # 공식은 Sigma' = F Sigma F^T 를 쓴다. 이 렌더러는 회전(쿼터니언)과
         # 신축(로그 배수)을 따로 받으므로 F 를 극분해해 그 둘로 넘긴다.
+        # 격자를 벗어난 입자의 F 에 비유한값이 섞이면 cusolver 가 통째로 실패한다.
+        # 그 입자만 항등원으로 돌려놓고 나머지를 정상 처리한다.
+        bad = ~torch.isfinite(F).all(-1).all(-1)
+        if bad.any():
+            F = F.clone()
+            F[bad] = torch.eye(3, device=F.device, dtype=F.dtype)
         U, S, Vh = torch.linalg.svd(F)
         det = torch.linalg.det(U @ Vh)
         neg = det < 0
