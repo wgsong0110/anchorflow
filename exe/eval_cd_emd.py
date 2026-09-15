@@ -51,7 +51,17 @@ wp.init()
 from anchorflow import scene_setup  # noqa: E402
 from anchorflow.mpm_teacher import MPMTeacher  # noqa: E402
 
-sc = scene_setup.build(a.ply, a.config, a.n_anchors, a.K, device=dev,
+# 앵커 수는 기하 파일이 정한다. 씬을 다른 수로 세우면 fixed_mask 길이가 어긋난다.
+_n_anch = a.n_anchors
+if a.fit and os.path.exists(a.fit):
+    _f = torch.load(a.fit, map_location="cpu", weights_only=False)
+    for _k in ("pos", "ac", "anchor"):
+        if _k in _f:
+            _n_anch = int(_f[_k].shape[0])
+            break
+    del _f
+    print(f"[앵커] 기하 파일 기준 {_n_anch} 개", flush=True)
+sc = scene_setup.build(a.ply, a.config, _n_anch, a.K, device=dev,
                        frozen_weights=True, rot_fallback=True, eig_floor=0.02)
 FRAME_DT = float(sc.sub_dt) * a.dt_mult
 EXT = float(sc.extent)
