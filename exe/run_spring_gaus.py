@@ -71,13 +71,20 @@ print(f"[씬] 물질 {int(sc.keep.sum())} -> 시뮬 {N}, frame_dt {FRAME_DT}, "
 
 # --- Spring-Gaus 시뮬레이터 ---
 sys.path.insert(0, a.springgaus)
-from lib.models.spring_mass.Spring_Mass import Spring_Mass_System  # noqa: E402
+from lib.models.spring_mass.Spring_Mass import Spring_Mass  # noqa: E402
 from yacs.config import CfgNode as CN  # noqa: E402
 
+# 값은 공식 config/mpm_synthetic/default.yaml 그대로. 중력은 씬 config 를 따른다
+# (다른 베이스라인과 같은 조건이어야 한다).
 scfg = CN()
 scfg.K_NEIGHBORS = a.k_neighbors
+scfg.K_BINDING = 16
 scfg.N_STEP = a.n_step
-sim = Spring_Mass_System(scfg, mat.clone())
+scfg.INIT_VELOCITY = [0, 0, 0]
+scfg.G = list(cfg.get("g", [0.0, 0.0, 0.0]))
+scfg.PRETRAINED = None
+scfg.DATA = CN()
+sim = Spring_Mass(scfg, mat.clone())
 sim.set_dt(dt=FRAME_DT)
 print(f"[Spring-Gaus] 이웃 {a.k_neighbors}, 서브스텝/프레임 {a.n_step}", flush=True)
 
