@@ -38,6 +38,8 @@ ap.add_argument("--frames", type=int, default=30, help="측정 프레임 수")
 ap.add_argument("--warmup", type=int, default=5)
 ap.add_argument("--width", type=int, default=800)
 ap.add_argument("--height", type=int, default=800)
+ap.add_argument("--student_ckpt", default=None,
+                help="영상학습 학생 체크포인트")
 ap.add_argument("--n_grid", type=int, default=100)
 a = ap.parse_args()
 
@@ -174,6 +176,37 @@ if a.meshgs:
         res["meshgs_tets"] = int(Tt.shape[0])
     except Exception as e:
         print("  meshgs 실패:", type(e).__name__, e, flush=True)
+
+# ---------------- 3.5 우리 학생 (영상학습 스테퍼) ----------------
+if a.student_ckpt:
+    try:
+        from anchorflow.nextstate import NextStep, apply_step
+        st_ck = torch.load(a.student_ckpt, map_location=dev, weights_only=False)
+        net = NextStep(hidden=128, depth=4, heads=4, use_accel=False,
+                       scale=float(sc.extent),
+                       vel_scale=float(sc.extent) / max(FRAME_DT, 1e-6),
+                       zero_init=True).to(dev)
+        net.load_state_dict(st_ck["net"])
+        net.eval()
+        AC = st_ck["ac"].to(dev)
+        v_s = st_ck["v0"].to(dev)
+        gp_s = sc.pos.clone()
+        # 학생은 chunk 개 스텝을 한 번에 내므로 프레임당 순전파는 1/chunk 회다.
+        # 여기서는 프레임 하나를 온전히 만드는 비용(순전파 + 스키닝)을 잰다.
+        _p, _v, _g = AC.clone(), v_s.clone(), gp_s.clone()
+
+        def step_student():
+            global _p, _v, _g
+            q, d = apply_step(net, _p, _v, None, FRAME_DT, sc.fixed_mask)[-1]
+            _p, _v = q, d / FRAME_DT
+            _g = sc.skin(_p, _g)
+
+        print(f"[우리 학생] 앵커 {AC.shape[0]}", flush=True)
+        res["methods"]["student"] = timed(step_student, a.frames, a.warmup,
+                                          "순전파 + 스키닝")
+        res["n_anchors"] = int(AC.shape[0])
+    except Exception as e:
+        print("  학생 실패:", type(e).__name__, e, flush=True)
 
 # ---------------- 4. 래스터화 (공통) ----------------
 try:
