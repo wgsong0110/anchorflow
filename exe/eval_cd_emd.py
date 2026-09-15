@@ -102,7 +102,14 @@ if "ac" in st:
     AC0 = st["ac"].to(dev)
 else:
     fit = torch.load(a.fit, map_location=dev, weights_only=False)
-    AC0 = (fit["ac"] if "ac" in fit else fit["anchor"]).to(dev)
+    # 기하 파일은 앵커 위치를 pos 로 들고 있다 (ac / anchor 가 아니다).
+    for _k in ("pos", "ac", "anchor"):
+        if _k in fit:
+            AC0 = fit[_k].to(dev)
+            print(f"[기하] {a.fit} 의 '{_k}' 사용, 앵커 {AC0.shape[0]}", flush=True)
+            break
+    else:
+        raise KeyError(f"앵커 위치를 못 찾았다. 키: {sorted(fit.keys())}")
 print(f"[학생] {key} 로드, 앵커 {AC0.shape[0]}, iter {st.get('iter')}", flush=True)
 
 T = MPMTeacher(sc, horizon=a.frames * FRAME_DT * 1.1)
