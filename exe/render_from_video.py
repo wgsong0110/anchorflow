@@ -36,6 +36,9 @@ ap.add_argument("--view", type=int, default=0, help="ckpt 에 저장된 시점 �
 ap.add_argument("--cam_seq", default=None,
                 help="PhysGaussian 궤도 카메라를 프레임별로 담은 JSON "
                      "(dump_cams.py 산출). 주면 --cameras/--view 를 무시한다")
+ap.add_argument("--no_label", action="store_true",
+                help="상단 라벨 바를 그리지 않는다 -- 다른 방법과 픽셀 단위로 "
+                     "견줄 때는 라벨이 비교를 흐린다")
 ap.add_argument("--pick_view", action="store_true",
                 help="ckpt 의 학습 시점 대신 커버리지 기준으로 고른다 -- "
                      "학습 시점은 근접 촬영이라 물체가 화면을 벗어난다")
@@ -232,6 +235,8 @@ def draw(x):
 
 
 def label(img, text):
+    if a.no_label:
+        return img
     from PIL import Image, ImageDraw
     im = Image.fromarray(img); dr = ImageDraw.Draw(im)
     dr.rectangle([0, 0, im.width, 18], fill=(0, 0, 0))
