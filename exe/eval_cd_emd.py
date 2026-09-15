@@ -80,11 +80,23 @@ def emd(p, q, n):
 st = torch.load(a.ckpt, map_location=dev, weights_only=False)
 from anchorflow.nextstate import NextStep, apply_step  # noqa: E402
 
-net = NextStep(hidden=128, depth=4, heads=4, use_accel=False, scale=EXT,
-               vel_scale=EXT / max(FRAME_DT, 1e-6), zero_init=True).to(dev)
+# 구조는 체크포인트에 저장된 학습 인자를 그대로 따른다. 임의로 고르면
+# state_dict 가 안 맞는다 (stu2 계열은 hidden/depth/heads/chunk 가 다를 수 있다).
+_ta = st.get("args", {}) or {}
+if not isinstance(_ta, dict):
+    _ta = vars(_ta)
+net = NextStep(hidden=int(_ta.get("hidden", 128)),
+               depth=int(_ta.get("depth", 4)),
+               heads=int(_ta.get("heads", 4)),
+               use_accel=not bool(_ta.get("no_accel", True)),
+               scale=EXT, vel_scale=EXT / max(FRAME_DT, 1e-6),
+               chunk=int(_ta.get("chunk", 1)), zero_init=True).to(dev)
 key = "net" if "net" in st else "model"
 net.load_state_dict(st[key])
 net.eval()
+print(f"[구조] hidden {_ta.get('hidden')}, depth {_ta.get('depth')}, "
+      f"heads {_ta.get('heads')}, chunk {_ta.get('chunk')}, "
+      f"no_accel {_ta.get('no_accel')}", flush=True)
 
 if "ac" in st:
     AC0 = st["ac"].to(dev)
