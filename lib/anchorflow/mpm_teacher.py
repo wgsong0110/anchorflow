@@ -96,6 +96,10 @@ class MPMTeacher:
         self.horizon = float(horizon if horizon is not None
                              else 60 * 40 * float(sc.sub_dt))
         _dropped, _rot = [], 0
+        self._rot_extra = []       # 두 번째 이후의 회전 구동기 (파라미터만 보관)
+        self._rot_param = None     # 등록된 커널이 실제로 보는 파라미터 구조체
+        self._rot_base = None      # 처음 등록한 구동기의 원래 값
+        self._rot_active = None    # 지금 끼워져 있는 추가 구동기
         for bc in cfg.get("boundary_conditions", []):
             t = bc["type"]
             if float(bc.get("start_time", 0.0)) >= self.horizon:
@@ -104,10 +108,18 @@ class MPMTeacher:
             if t == "enforce_particle_velocity_rotation":
                 _rot += 1
                 if _rot > 1:
-                    raise ValueError(
-                        f"창 {self.horizon:g}s 안에 회전 구동기가 둘 이상이다. "
-                        f"warp 가 같은 이름의 커널을 하나만 들 수 있어 첫 스텝에서 "
-                        f"죽는다 -- horizon 을 줄이거나 config 를 고칠 것")
+                    # 커널은 한 번만 등록하고(이름 충돌을 피한다), 나머지 구동기는
+                    # 파라미터만 따로 들고 있다가 시간에 맞춰 갈아끼운다.
+                    # plane 은 0~0.5s 정방향, 1~2s 역방향 두 개라 400 프레임(4s)
+                    # 창에서는 둘 다 필요하다.
+                    self._rot_extra.append(dict(
+                        point=bc["point"], normal=bc["normal"],
+                        half_height_and_radius=bc["half_height_and_radius"],
+                        rotation_scale=float(bc["rotation_scale"]),
+                        translation_scale=float(bc.get("translation_scale", 0.0)),
+                        start_time=float(bc.get("start_time", 0.0)),
+                        end_time=float(bc.get("end_time", 1e3))))
+                    continue
             t0 = float(bc.get("start_time", 0.0))
             t1 = float(bc.get("end_time", 1e3))
             if t == "cuboid":
@@ -127,6 +139,12 @@ class MPMTeacher:
                     half_height_and_radius=bc["half_height_and_radius"],
                     rotation_scale=bc["rotation_scale"],
                     translation_scale=bc["translation_scale"],
+                    start_time=t0, end_time=t1)
+                # 이 구동기가 쓰는 파라미터 구조체를 잡아둔다. 뒤에 오는 구동기는
+                # 이 구조체의 값만 바꿔서 같은 커널로 흉내낸다.
+                self._rot_param = s.particle_velocity_modifier_params[-1]
+                self._rot_base = dict(
+                    rotation_scale=float(bc["rotation_scale"]),
                     start_time=t0, end_time=t1)
             elif t == "surface_collider":
                 s.add_surface_collider(
@@ -380,6 +398,43 @@ class MPMTeacher:
             jp.zero_()
 
     @torch.no_grad()
+    def _switch_rotation(self):
+        """시각에 맞는 회전 구동기로 파라미터를 갈아끼운다.
+
+        warp 는 `enforce_particle_velocity_rotation` 이 호출마다 같은 이름의 커널을
+        정의하는 탓에 구동기를 둘 이상 **등록**할 수 없다. 대신 커널 하나가 보는
+        파라미터 구조체의 값만 바꾸면 같은 효과가 난다 -- 커널은 그 구조체에서
+        rotation_scale / start_time / end_time / mask 를 읽기 때문이다.
+
+        plane 은 0~0.5s 정방향, 1~2s 역방향이라 4 초 창에서 둘 다 필요하다.
+        """
+        if self._rot_param is None or not self._rot_extra:
+            return
+        t = float(getattr(self.solver, "time", 0.0))
+        want = None
+        for bc in self._rot_extra:
+            if bc["start_time"] <= t < bc["end_time"]:
+                want = bc
+                break
+        if want is None:
+            # 창 밖이면 처음 등록한 것으로 되돌린다 (그 구동기의 시간대면 동작하고,
+            # 아니면 커널의 시간 조건이 알아서 걸러낸다).
+            if self._rot_active is not None:
+                self._rot_param.rotation_scale = self._rot_base["rotation_scale"]
+                self._rot_param.start_time = self._rot_base["start_time"]
+                self._rot_param.end_time = self._rot_base["end_time"]
+                self._rot_active = None
+            return
+        if self._rot_active is want:
+            return
+        # 같은 원기둥이면 mask 를 다시 계산할 필요가 없다 -- plane 의 두 구동기는
+        # point / normal / half_height_and_radius 가 같고 회전 방향만 반대다.
+        self._rot_param.rotation_scale = want["rotation_scale"]
+        self._rot_param.translation_scale = want["translation_scale"]
+        self._rot_param.start_time = want["start_time"]
+        self._rot_param.end_time = want["end_time"]
+        self._rot_active = want
+
     def _in_domain(self):
         """cheap, and the only thing standing between a diverging query and a
         dead process: MPM writes to the cells around each particle and warp does
@@ -417,6 +472,7 @@ class MPMTeacher:
             return None
         for _ in range(frames):
             for k in range(dt_mult):
+                self._switch_rotation()
                 self.solver.p2g2p(None, self.sc.sub_dt, device=self.wp_dev)
                 if (k + 1) % check_every == 0:
                     if not self._in_domain() or not self._vel_safe(check_every):

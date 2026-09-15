@@ -83,6 +83,7 @@ truth = [T.pos_m.clone()]
 for _ in range(a.frames - 1):
     bad = False
     for k in range(n_sub):
+        T._switch_rotation()     # 시각에 맞는 회전 구동기로 갈아끼운다
         T.solver.p2g2p(None, float(sc.sub_dt), device=T.wp_dev)
         if (k + 1) % 4 == 0 and (not T._in_domain() or not T._vel_safe(4)):
             bad = True
