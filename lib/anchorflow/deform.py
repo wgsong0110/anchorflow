@@ -443,8 +443,12 @@ class DeformNet(nn.Module):
         의존하지 않는다.
         """
         f = feats.detach().float().reshape(-1, feats.shape[-1])
+        sd = f.std(0)
+        # 분산이 사실상 0 인 채널(이 데이터에서 상수인 물성 등)은 나누지 않는다.
+        # 1e-6 으로 클램프해 버리면 그 채널이 조금만 흔들려도 10^6 배로 증폭된다.
         self.in_mu.copy_(f.mean(0))
-        self.in_sd.copy_(f.std(0).clamp(min=1e-6))
+        self.in_sd.copy_(torch.where(sd > 1e-4 * sd.max().clamp(min=1e-12),
+                                     sd, torch.ones_like(sd)))
 
     def forward(self, p, feat, dt, static=None):
         """p [M,3], feat [M,F] -> (dp [M,3], log_r [M], log_tau [M])
