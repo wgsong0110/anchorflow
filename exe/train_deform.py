@@ -41,6 +41,9 @@ ap.add_argument("--hidden", type=int, default=128)
 ap.add_argument("--depth", type=int, default=4)
 ap.add_argument("--heads", type=int, default=4)
 ap.add_argument("--iters", type=int, default=4000)
+ap.add_argument("--batch", type=int, default=1,
+                help="한 스텝에 평균 낼 창의 수. 창마다 손실이 수십 배 다르므로 "
+                     "하나만 쓰면 기울기가 그 차이에 휘둘린다")
 ap.add_argument("--unroll", type=int, default=1, help="한 창에서 펼칠 프레임 수")
 ap.add_argument("--unroll_final", type=int, default=4)
 ap.add_argument("--unroll_at", type=float, default=0.4,
@@ -233,22 +236,30 @@ t_start = time.time()
 pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
 for it in pbar:
     L = a.unroll if it < a.unroll_at * a.iters else a.unroll_final
-    tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
-    T = d["x"].shape[0] - a.hold_last
-    t0 = int(torch.randint(1, max(T - L - 1, 2), (1,), generator=gen, device=dev))
-    gsel = torch.randperm(N_FULL, generator=gen, device=dev)[:a.n_pts].sort().values
-    lx, lJ, still = window(d, t0, L, gsel)
-    loss = lx + a.lambda_J * lJ
     opt.zero_grad(set_to_none=True)
-    loss.backward()
+    lx = lJ = 0.0
+    still = 0.0
+    for _ in range(a.batch):
+        tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
+        T = d["x"].shape[0] - a.hold_last
+        t0 = int(torch.randint(1, max(T - L - 1, 2), (1,), generator=gen,
+                               device=dev))
+        gsel = torch.randperm(N_FULL, generator=gen,
+                              device=dev)[:a.n_pts].sort().values
+        wx, wJ, wst = window(d, t0, L, gsel)
+        # 창마다 바로 역전파해 누적한다 -- 창 여러 개의 그래프를 동시에 들고 있으면
+        # 야코비안까지 붙어 메모리가 배치 수만큼 늘어난다
+        ((wx + a.lambda_J * wJ) / a.batch).backward()
+        lx = lx + float(wx) / a.batch
+        lJ = lJ + float(wJ) / a.batch
+        still = still + wst / a.batch
     gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
     opt.step()
-    hist.append((float(lx), float(lJ), still))
+    hist.append((lx, lJ, still))
     if it % 20 == 0:
-        pbar.set_postfix(x=f"{100*float(lx)**0.5:.3f}%",
-                         정지=f"{100*still**0.5:.3f}%",
-                         비=f"{(float(lx)/max(still,1e-20))**0.5:.2f}",
-                         J=f"{float(lJ):.1e}", L=L, gn=f"{float(gn):.1e}")
+        pbar.set_postfix(x=f"{100*lx**0.5:.3f}%", 정지=f"{100*still**0.5:.3f}%",
+                         비=f"{(lx/max(still,1e-20))**0.5:.2f}",
+                         J=f"{lJ:.1e}", L=L, gn=f"{float(gn):.1e}")
     if (it + 1) % a.save_every == 0 or it == a.iters - 1:
         torch.save({"net": net.state_dict(), "opt": opt.state_dict(),
                     "step": it + 1, "aidx": AIDX.cpu(), "H": H, "EXT": EXT,
