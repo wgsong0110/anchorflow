@@ -87,12 +87,14 @@ def support(softmax_w, geom):
     return out
 
 
-CASES = [("잘린 가우시안 · 학습 전", False, None)]
+# 라벨은 영문으로 둔다 -- 클러스터 matplotlib 에 한글 폰트가 없어 두부가 된다
+CASES = [("truncated Gaussian, before fit", False, None)]
 if a.geom:
-    CASES.append(("잘린 가우시안 · 학습 후", False, a.geom))
-CASES.append(("kNN softmax k=%d · 학습 전" % a.softmax_k, True, None))
+    CASES.append(("truncated Gaussian, after fit", False, a.geom))
+CASES.append(("kNN softmax k=%d, before fit" % a.softmax_k, True, None))
 if a.geom_softmax:
-    CASES.append(("kNN softmax k=%d · 학습 후" % a.softmax_k, True, a.geom_softmax))
+    CASES.append(("kNN softmax k=%d, after fit" % a.softmax_k, True,
+                  a.geom_softmax))
 
 res = {}
 for name, sm, geom in CASES:
@@ -120,15 +122,16 @@ for name in res:
                density=True, label=name)
     ax[1].hist(res[name]["ess"], bins=60, histtype="step", lw=1.8,
                density=True, label=name)
-ax[0].set_xlabel(f"가우시안당 영향 앵커 수 (가중치 > {a.thresh[0]:g})")
-ax[0].set_ylabel("비율")
-ax[0].set_title("유효 지지 크기")
-ax[1].set_xlabel("유효 자유도 1 / Σw²")
-ax[1].set_title("가중치가 실제로 몇 개로 쪼개지나")
+ax[0].set_xlabel(f"anchors per Gaussian with weight > {a.thresh[0]:g}")
+ax[0].set_ylabel("density")
+ax[0].set_title("effective support size")
+ax[1].set_xlabel("effective sample size  1 / sum(w^2)")
+ax[1].set_title("how many anchors actually share a Gaussian")
 for x in ax:
     x.legend(fontsize=8)
     x.grid(alpha=0.3)
-fig.suptitle(f"{cfg.get('material')} · 앵커 {sc.M} · 입자 {X0.shape[0]}")
+fig.suptitle(f"{cfg.get('material')}  |  {sc.M} anchors  |  "
+             f"{X0.shape[0]} particles")
 fig.tight_layout()
 p_png = os.path.join(a.out, "anchor_support.png")
 fig.savefig(p_png, dpi=140)
