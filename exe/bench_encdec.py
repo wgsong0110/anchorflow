@@ -44,6 +44,8 @@ ap.add_argument("--c", type=float, default=0.25)
 ap.add_argument("--eig_floor", type=float, default=0.02)
 ap.add_argument("--warmup", type=int, default=10)
 ap.add_argument("--reps", type=int, default=50)
+ap.add_argument("--substeps", type=int, default=40,
+                help="한 프레임의 서브스텝 수. 프레임 비용은 이것 곱하기 서브스텝 비용")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
@@ -108,6 +110,16 @@ def bench(name, softmax_w, geom):
                                          a.warmup, a.reps)
     # 한 프레임을 왕복하는 실제 비용: 앵커가 움직였으니 prepare 는 다시 해야 하고,
     # 인코더 분해는 그 prepare 당 한 번이다.
+    # 물리 한 서브스텝. 인코딩/디코딩과 달리 매 서브스텝 돌아야 하는 비용이다.
+    v0 = torch.zeros_like(fit.pos)
+    w_, rc_, q_, Binv_, blocked_, mass_ = cache
+    m_ = mass_.unsqueeze(-1)
+    keep_ = (~fit.fixed).unsqueeze(-1).to(fit.pos.dtype)
+    pp = fit.pos.detach().clone()
+    r["substep"], r["substep_sd"] = timeit(
+        lambda: fit.substep(pp, v0, w_, rc_, q_, Binv_, blocked_, m_, keep_),
+        a.warmup, a.reps)
+    r["frame_sim"] = r["substep"] * a.substeps
     r["roundtrip"] = r["prepare"] + r["ls_factor"] + r["encode"] + r["decode"]
     r["roundtrip_cached"] = r["encode"] + r["decode"]
     print(f"[{name}]  짝 {P} ({P/fit.N:.1f}/가우시안)\n"
@@ -115,7 +127,9 @@ def bench(name, softmax_w, geom):
           f"ls_factor {r['ls_factor']:6.2f}\n"
           f"    encode  {r['encode']:7.2f}  decode  {r['decode']:6.2f}  "
           f"-> 왕복 {r['roundtrip']:.2f} ms "
-          f"(prepare 재활용 시 {r['roundtrip_cached']:.2f})", flush=True)
+          f"(prepare 재활용 시 {r['roundtrip_cached']:.2f})\n"
+          f"    substep {r['substep']:6.2f} x{a.substeps} = "
+          f"프레임 물리 {r['frame_sim']:.1f} ms", flush=True)
     del fit
     torch.cuda.empty_cache()
     return r
