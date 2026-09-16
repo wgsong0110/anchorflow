@@ -48,6 +48,10 @@ ap.add_argument("--unroll_at", type=float, default=0.4,
 ap.add_argument("--lr", type=float, default=3e-4)
 ap.add_argument("--lambda_J", type=float, default=0.1)
 ap.add_argument("--n_pts", type=int, default=20000, help="한 스텝에 쓰는 가우시안 수")
+ap.add_argument("--eval_t0", type=int, nargs="+", default=[5, 40, 80],
+                help="롤아웃을 시작할 프레임들. 이 궤적은 충돌 직후와 안정된 뒤의 "
+                     "프레임당 변위가 수십 배 달라서, 한 구간만 보면 오해한다")
+ap.add_argument("--eval_len", type=int, default=15)
 ap.add_argument("--hold_last", type=int, default=20,
                 help="각 궤적의 마지막 몇 프레임을 평가용으로 뗀다")
 ap.add_argument("--hold_traj", default=None,
@@ -277,16 +281,25 @@ gsel = torch.arange(min(a.n_pts, N_FULL), device=dev)
 rows = {}
 for tag, d in TR + held:
     T = d["x"].shape[0]
-    t0 = max(T - a.hold_last - 1, 1)
-    L = min(a.hold_last, T - t0 - 1)
-    e, st = rollout(d, t0, L, gsel)
-    rows[tag] = dict(held=(tag in hold), t0=t0, L=L, err=e, still=st,
-                     err_mean=float(np.mean(e)), err_last=e[-1],
-                     still_mean=float(np.mean(st)))
-    print(f"[롤아웃] {tag}{' (홀드아웃)' if tag in hold else ''}: {L} 프레임, "
-          f"평균 {100*np.mean(e):.3f}% (정지 {100*np.mean(st):.3f}%, "
-          f"비 {np.mean(e)/max(np.mean(st),1e-12):.2f}) 마지막 {100*e[-1]:.3f}%",
-          flush=True)
+    rows[tag] = dict(held=(tag in hold), windows={})
+    for t0 in a.eval_t0:
+        L = min(a.eval_len, T - t0 - 1)
+        if L < 2:
+            continue
+        e, st = rollout(d, t0, L, gsel)
+        rows[tag]["windows"][t0] = dict(L=L, err=e, still=st,
+                                        err_mean=float(np.mean(e)),
+                                        still_mean=float(np.mean(st)))
+        print(f"[롤아웃] {tag}{' (홀드아웃)' if tag in hold else ''} t0={t0:3d}: "
+              f"{L} 프레임, 평균 {100*np.mean(e):.3f}% "
+              f"(정지 {100*np.mean(st):.3f}%, 비 "
+              f"{np.mean(e)/max(np.mean(st),1e-12):.2f})", flush=True)
+r_all = [(w["err_mean"], w["still_mean"]) for r in rows.values()
+         for w in r["windows"].values()]
+print(f"\n[요약] 전체 창 평균 {100*np.mean([x for x,_ in r_all]):.3f}% "
+      f"(정지 {100*np.mean([y for _,y in r_all]):.3f}%, 비 "
+      f"{np.mean([x/max(y,1e-12) for x,y in r_all]):.2f}) "
+      f"-- 비가 1 보다 작아야 도움이 된 것이다", flush=True)
 
 json.dump(dict(tag=a.tag, args=vars(a), extent=EXT, h=H, n_feat=n_feat,
                minutes=(time.time() - t_start) / 60,
