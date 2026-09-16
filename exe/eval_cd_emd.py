@@ -79,9 +79,9 @@ def emd(p, q, n):
     """부분표본 위에서 최적 일대일 대응의 평균 이동량 (헝가리안, 정확해)."""
     from scipy.optimize import linear_sum_assignment
     g = torch.Generator(device="cpu").manual_seed(a.seed)
+    # 두 구름에서 따로 뽑으면 표본 간격이 바닥으로 남아 실제 오차를 덮는다
     ip = torch.randperm(p.shape[0], generator=g)[:n]
-    iq = torch.randperm(q.shape[0], generator=g)[:n]
-    d = torch.cdist(p[ip.to(p.device)], q[iq.to(q.device)]).double().cpu().numpy()
+    d = torch.cdist(p[ip.to(p.device)], q[ip.to(q.device)]).double().cpu().numpy()
     r, c = linear_sum_assignment(d)
     return float(d[r, c].mean())
 

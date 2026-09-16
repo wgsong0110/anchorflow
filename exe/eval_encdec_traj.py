@@ -82,10 +82,11 @@ def chamfer(p, q):
 
 
 def emd(p, q, n, g):
+    # 두 구름에서 따로 뽑으면 같은 모양에서 뽑은 부분표본 사이의 간격이 값에
+    # 남아 재구성 오차를 덮는다. 같은 인덱스를 쓴다.
     from scipy.optimize import linear_sum_assignment
-    ip = torch.randperm(p.shape[0], generator=g)[:n].to(p.device)
-    iq = torch.randperm(q.shape[0], generator=g)[:n].to(q.device)
-    d = torch.cdist(p[ip], q[iq]).double().cpu().numpy()
+    i = torch.randperm(p.shape[0], generator=g)[:n].to(p.device)
+    d = torch.cdist(p[i], q[i]).double().cpu().numpy()
     r, c = linear_sum_assignment(d)
     return float(d[r, c].mean())
 

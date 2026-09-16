@@ -182,11 +182,17 @@ def chamfer(p, q, chunk):
 
 
 def emd(p, q, n, seed):
+    """부분표본 위 최적 일대일 대응의 평균 이동량.
+
+    두 구름에서 **서로 다른** 인덱스를 뽑으면, 같은 모양에서 뽑은 두 부분표본
+    사이에도 남는 표본 간격이 값에 그대로 실린다. 40000 점에서 2048 을 뽑을 때
+    그 바닥이 1.9% 라 재구성 오차(0.5%)를 통째로 덮었다. 같은 인덱스를 쓰면
+    대응 자체는 여전히 헝가리안이 자유롭게 고르되 그 바닥이 사라진다.
+    """
     from scipy.optimize import linear_sum_assignment
     gg = torch.Generator().manual_seed(seed)
-    ip = torch.randperm(p.shape[0], generator=gg)[:n].to(p.device)
-    iq = torch.randperm(q.shape[0], generator=gg)[:n].to(q.device)
-    d = torch.cdist(p[ip], q[iq]).double().cpu().numpy()
+    i = torch.randperm(p.shape[0], generator=gg)[:n].to(p.device)
+    d = torch.cdist(p[i], q[i]).double().cpu().numpy()
     r, c_ = linear_sum_assignment(d)
     return float(d[r, c_].mean())
 
