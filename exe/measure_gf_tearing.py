@@ -31,6 +31,8 @@ ap.add_argument("--tag", default="run")
 ap.add_argument("--n_sample", type=int, default=4000)
 ap.add_argument("--knn", type=int, default=16)
 ap.add_argument("--nbr_thresh", type=float, default=3.0)
+ap.add_argument("--thresh_list", type=float, nargs="+", default=[1.5, 2.0, 3.0],
+                help="여러 문턱에서 같이 본다 -- 3배는 완전히 갈라진 경우만 잡는다")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
@@ -59,10 +61,17 @@ def load_x(p):
 
 
 X0 = torch.from_numpy(load_x(files[0])).float().to(dev)
+XL = torch.from_numpy(load_x(files[-1])).float().to(dev)
 N = X0.shape[0]
 EXT = float((X0.max(0).values - X0.min(0).values).norm())
+# 이 코드의 MPM 은 진행하면서 입자를 비유한값으로 떨군다 (공식 파이프라인에도
+# normal_vector_proc_nan.py 가 있다). 처음과 끝 모두 유한한 입자만 표본으로 쓴다.
+ok = torch.isfinite(X0).all(1) & torch.isfinite(XL).all(1)
+print(f"[비유한] 첫 프레임 {int((~torch.isfinite(X0).all(1)).sum())}, "
+      f"마지막 {int((~torch.isfinite(XL).all(1)).sum())} / {N}", flush=True)
+cand = torch.nonzero(ok).squeeze(-1)
 g = torch.Generator(device="cpu").manual_seed(a.seed)
-sub = torch.randperm(N, generator=g)[:a.n_sample].to(dev)
+sub = cand[torch.randperm(cand.numel(), generator=g)[:a.n_sample].to(dev)]
 S0 = X0[sub]
 d0 = torch.cdist(S0, S0)
 d0.fill_diagonal_(float("inf"))
@@ -73,15 +82,27 @@ print(f"[씬] 입자 {N}, 물체 대각 {EXT:.4f}, 표본 {sub.numel()}, k={a.kn
 rows = []
 for i, p in enumerate(files):
     x = torch.from_numpy(load_x(p)).float().to(dev)
-    s = x[sub]
-    dn = (s.unsqueeze(1) - s[nbr_i0]).norm(dim=-1)          # [S, k]
-    torn = float((dn > a.nbr_thresh * nbr_d0).float().mean())
-    disp = float((x - X0).norm(dim=-1).max()) / EXT
-    rows.append(dict(frame=i, torn=torn, max_disp=disp,
-                     stretch=float((dn / nbr_d0).median())))
+    fin = torch.isfinite(x).all(1)
+    sx = x[sub]
+    dn = (sx.unsqueeze(1) - sx[nbr_i0]).norm(dim=-1)        # [S, k]
+    valid = torch.isfinite(dn)
+    ratio = dn / nbr_d0
+    tt = {f"{t:g}": float((ratio > t)[valid].float().mean())
+          for t in a.thresh_list}
+    torn = tt[f"{a.nbr_thresh:g}"]
+    d = (x - X0).norm(dim=-1)[fin]
+    rows.append(dict(frame=i, torn=torn, torn_at=tt,
+                     n_nonfinite=int((~fin).sum()),
+                     max_disp=float(d.max()) / EXT,
+                     stretch_med=float(ratio[valid].median()),
+                     stretch_p95=float(ratio[valid].quantile(0.95))))
     if i % 10 == 0 or i == len(files) - 1:
-        print(f"  f{i:3d}  이웃 이탈 {100*torn:6.2f}%  최대 변위 {100*disp:6.2f}%  "
-              f"이웃거리 배율(중앙) {rows[-1]['stretch']:.3f}", flush=True)
+        r = rows[-1]
+        print(f"  f{i:3d}  이탈 "
+              + " ".join(f"{t}x {100*v:5.2f}%" for t, v in tt.items())
+              + f" | 최대변위 {100*r['max_disp']:6.2f}% | 이웃배율 중앙 "
+              f"{r['stretch_med']:.3f} p95 {r['stretch_p95']:.3f} | "
+              f"비유한 {r['n_nonfinite']}", flush=True)
 
 torn = [r["torn"] for r in rows]
 t_max, t_last = max(torn), torn[-1]
