@@ -131,9 +131,20 @@ def bwd(fn):
     return go
 
 
+def new_fwd_sdpa():
+    for blk in new_blocks:
+        blk.att.USE_SDPA = True
+    try:
+        return new_fwd()
+    finally:
+        for blk in new_blocks:
+            blk.att.USE_SDPA = False
+
+
 res = {}
 for name, fn in (("옛 경로 (쌍별 MLP 바이어스)", old_fwd),
-                 ("새 경로 (RoPE-3D + 4채널 게이트)", new_fwd)):
+                 ("새 경로 + 명시적 행렬곱", new_fwd),
+                 ("새 경로 + SDPA", new_fwd_sdpa)):
     with torch.no_grad():
         f = timeit(fn, a.warmup, a.reps)
     torch.cuda.reset_peak_memory_stats()
@@ -144,7 +155,8 @@ for name, fn in (("옛 경로 (쌍별 MLP 바이어스)", old_fwd),
           flush=True)
 
 lo = res["옛 경로 (쌍별 MLP 바이어스)"]
-ne = res["새 경로 (RoPE-3D + 4채널 게이트)"]
+ne = min((res["새 경로 + 명시적 행렬곱"], res["새 경로 + SDPA"]),
+         key=lambda r: r["fwd_bwd"])
 print(f"\n[요약] M={M} depth={a.depth}: 순+역 {lo['fwd_bwd']:.2f} -> "
       f"{ne['fwd_bwd']:.2f} ms ({lo['fwd_bwd']/ne['fwd_bwd']:.2f}x), "
       f"메모리 {lo['peak_mb']:.0f} -> {ne['peak_mb']:.0f} MB", flush=True)

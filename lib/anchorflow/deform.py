@@ -191,6 +191,11 @@ class RelAttention(nn.Module):
     """
 
     EXTRA = 4
+    # SDPA 로 부를지, q@k^T 를 그대로 만들지. 바이어스를 없앴으므로 어텐션 행렬은
+    # [B,H,M,M] 하나뿐이고 M=512 에서 4MB 다 -- 피해야 했던 것은 [M,M,32] 쪽이었다.
+    # 그 크기에서는 fp32 SDPA(= flash 불가, mem-efficient 폴백) 보다 평범한 GEMM 이
+    # 빠를 수 있어 둘을 모두 둔다.
+    USE_SDPA = False
 
     def __init__(self, hidden, heads):
         super().__init__()
@@ -210,8 +215,11 @@ class RelAttention(nn.Module):
         q, k, v = (t.view(B, M, self.h, self.d).transpose(1, 2) for t in (q, k, v))
         q = torch.cat([_rope(q[..., :self.dc], c, s), qg], -1)
         k = torch.cat([_rope(k[..., :self.dc], c, s), kg], -1)
-        o = Fn.scaled_dot_product_attention(q, k, v, attn_mask=None,
-                                            scale=self.scale)
+        if self.USE_SDPA:
+            o = Fn.scaled_dot_product_attention(q, k, v, attn_mask=None,
+                                                scale=self.scale)
+        else:
+            o = ((q @ k.transpose(-1, -2)) * self.scale).softmax(-1) @ v
         return self.proj(o.transpose(1, 2).reshape(B, M, -1))
 
 
