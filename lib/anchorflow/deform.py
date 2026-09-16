@@ -404,6 +404,12 @@ class DeformNet(nn.Module):
         # 평행이동 등변성을 잃는다 -- 물체가 1 만큼 옮겨간 같은 파괴를 다른 입력으로
         # 보게 된다. 경계까지의 거리처럼 위치가 필요한 정보는 static 채널이
         # 경계 기준 상대량으로 이미 들고 있다.
+        # 입력 채널별 표준화. 없으면 채널 스케일이 네 자릿수 넘게 벌어진다 --
+        # 실측: 질량은 log 라 -16, 정작 다음 변위를 결정하는 속도는 7e-4. 첫 Linear
+        # 뒤 LayerNorm 이 있어도 그 전에 속도가 묻히고, 그래서 모델이 "가만히 있기"
+        # 조차 못 맞추고 정지 기준선보다 2~4 배 나빴다.
+        self.register_buffer("in_mu", torch.zeros(n_feat + n_static))
+        self.register_buffer("in_sd", torch.ones(n_feat + n_static))
         self.node_enc = mlp([n_feat + n_static, hidden, hidden])
         self.film = DtFiLM(hidden, depth + 1)
         # 파장 범위: 가장 짧은 것은 앵커 간격의 두 배 (그보다 짧으면 이웃 사이에서
