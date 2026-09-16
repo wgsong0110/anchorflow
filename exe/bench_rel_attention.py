@@ -1,15 +1,14 @@
 """상대위치 어텐션이 (1) 주장한 대로 정확한지, (2) 실제로 싼지 확인한다.
 
-두 가지를 각각 따로 검증한다.
-
-  정확성  거리 게이트는 "근사"가 아니라 항등식이라고 주장했다. softmax 가 행 상수를
-          지우므로 -(p_i-p_j)^T M (p_i-p_j) 와 q/k 에 붙인 4 채널의 내적은 **같은
-          어텐션 가중치**를 낳아야 한다. 명시적으로 [M,M] 을 만들어 비교한다.
-  RoPE    q_i^T R(p_j-p_i) k_j 가 되는지는, 점 구름을 통째로 평행이동시켜도 출력이
-          같은지로 본다. 절대 좌표가 새면 여기서 걸린다.
-  비용    옛 경로(쌍마다 MLP -> [M,M,H] 바이어스)와 새 경로를 같은 조건에서 잰다.
-          순전파만이 아니라 역전파까지 재야 한다 -- 35% 를 먹던 것이 중간 텐서를
-          붙잡고 있던 비용이기 때문이다.
+정확성  거리 게이트는 "근사"가 아니라 항등식이라고 주장했다. softmax 가 행 상수를
+        지우므로 -(p_i-p_j)^T M (p_i-p_j) 와 q/k 에 붙인 4 채널의 내적은 **같은
+        어텐션 가중치**를 낳아야 한다. 명시적으로 [M,M] 을 만들어 비교한다.
+불변성  평행이동시켜도 출력이 같아야 하고(절대 좌표가 새면 여기서 걸린다),
+        회전시키면 달라져야 한다(방향을 못 보면 0 이 나온다).
+비용    옛 경로(쌍마다 MLP -> [M,M,H] 바이어스)와 새 경로를 같은 조건에서 잰다.
+        M 을 훑는 것이 중요하다 -- 옛 경로는 [M,M,32] 중간 텐서를 만들므로 M 이
+        커질수록 불리해지고, 작은 M 에서는 그 GEMM 이 오히려 효율적이다.
+        바이어스는 옛 경로에서도 층 전체가 한 번만 만들게 해 조건을 맞춘다.
 """
 from __future__ import annotations
 
@@ -24,68 +23,61 @@ sys.path.insert(0, _lib)
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--M", type=int, default=512)
+ap.add_argument("--M", type=int, nargs="+", default=[512, 1024, 2048])
 ap.add_argument("--hidden", type=int, default=128)
 ap.add_argument("--heads", type=int, default=4)
 ap.add_argument("--depth", type=int, default=4)
-ap.add_argument("--reps", type=int, default=50)
+ap.add_argument("--reps", type=int, default=30)
 ap.add_argument("--warmup", type=int, default=10)
 ap.add_argument("--out", default=None)
 a = ap.parse_args()
 
 dev = "cuda"
 torch.manual_seed(0)
-from anchorflow.deform import RelAttention, RelBlock, RelPos, _rope  # noqa: E402
-from anchorflow.nextstate import (GeoAttentionBias,           # noqa: E402
+from anchorflow.deform import (RelAttention, RelBlock, RelPos,   # noqa: E402
+                               _rope)
+from anchorflow.nextstate import (GeoAttentionBias,              # noqa: E402
                                   GeoAttentionBlock)
 
-M, H, C = a.M, a.heads, a.hidden
+H, C = a.heads, a.hidden
 D = C // H
-pos = torch.randn(1, M, 3, device=dev) * 0.3
-x = torch.randn(1, M, C, device=dev)
 
 # ---------------------------------------------------------------- 정확성
+M0 = a.M[0]
+pos0 = torch.randn(1, M0, 3, device=dev) * 0.3
+x0 = torch.randn(1, M0, C, device=dev)
 att = RelAttention(C, H).to(dev)
 rp = RelPos(H, att.dc, lam_min=0.05, lam_max=2.0, sigma0=0.2).to(dev)
 with torch.no_grad():
-    cs, sn, qg, kg = rp(pos)
-    q, k, v = att.qkv(x).chunk(3, -1)
-    q, k, v = (t.view(1, M, H, D).transpose(1, 2) for t in (q, k, v))
-    q, k = _rope(q[..., :att.dc], cs, sn), _rope(k[..., :att.dc], cs, sn)
+    cs, sn, qg, kg = rp(pos0)
+    q, k, v = att.qkv(x0).chunk(3, -1)
+    q, k, v = (t.view(1, M0, H, D).transpose(1, 2) for t in (q, k, v))
+    qr, kr = _rope(q[..., :att.dc], cs, sn), _rope(k[..., :att.dc], cs, sn)
+    qe, ke = torch.cat([qr, qg], -1), torch.cat([kr, kg], -1)
+    got = (qe @ ke.transpose(-1, -2)) * att.scale
     Mh = rp.A.transpose(-1, -2) @ rp.A
-    qe = torch.cat([q, qg], -1)
-    ke = torch.cat([k, kg], -1)
-    got = (qe @ ke.transpose(-1, -2)) * att.scale                # [1,H,M,M]
-    # 명시적으로 만든 기준: 내용 항 + 정확한 이차형식
-    rel = pos.unsqueeze(2) - pos.unsqueeze(1)                    # [1,M,M,3]
-    quad_full = torch.einsum("bijc,hcd,bijd->bhij", rel, Mh, rel)
-    want = (q @ k.transpose(-1, -2)) * att.scale - att.scale * quad_full
-    # 행 상수만큼 다를 수 있다 -- softmax 뒤에 같아야 한다는 것이 주장이다
+    rel = pos0.unsqueeze(2) - pos0.unsqueeze(1)
+    quad = torch.einsum("bijc,hcd,bijd->bhij", rel, Mh, rel)
+    want = (qr @ kr.transpose(-1, -2)) * att.scale - att.scale * quad
     e_raw = float((got - want).abs().max())
     e_row = float((got - want - (got - want).mean(-1, keepdim=True)).abs().max())
     e_soft = float((got.softmax(-1) - want.softmax(-1)).abs().max())
 print(f"[정확성] 거리 게이트: 원시 차이 {e_raw:.3e} (행 상수), 행 제거 후 "
       f"{e_row:.3e}, **softmax 후 {e_soft:.3e}**", flush=True)
 
-# 평행이동 불변
 with torch.no_grad():
-    o0 = att(x, rp(pos))
-    o1 = att(x, rp(pos + torch.tensor([3.0, -1.0, 2.0], device=dev)))
+    o0 = att(x0, rp(pos0))
+    o1 = att(x0, rp(pos0 + torch.tensor([3.0, -1.0, 2.0], device=dev)))
     shift = float((o0 - o1).abs().max() / o0.abs().max())
-print(f"[평행이동] 좌표를 통째로 옮겼을 때 출력 상대 변화 {shift:.3e}", flush=True)
-
-# 회전시키면 달라져야 정상이다 (회전 등변이 아니라 회전 '인지')
-with torch.no_grad():
     th = 0.7
     R = torch.tensor([[np.cos(th), -np.sin(th), 0], [np.sin(th), np.cos(th), 0],
                       [0, 0, 1]], device=dev, dtype=torch.float32)
-    o2 = att(x, rp(pos @ R.T))
+    o2 = att(x0, rp(pos0 @ R.T))
     rot = float((o0 - o2).abs().max() / o0.abs().max())
-print(f"[회전] 좌표를 돌렸을 때 출력 상대 변화 {rot:.3e} (0 이면 방향을 못 본다)",
-      flush=True)
+print(f"[평행이동] 출력 상대 변화 {shift:.3e}   [회전] {rot:.3e} "
+      f"(0 이면 방향을 못 본다)", flush=True)
 
 
 # ---------------------------------------------------------------- 비용
@@ -104,81 +96,61 @@ def timeit(fn, warmup, reps):
 
 
 old_bias = GeoAttentionBias(H).to(dev)
-old_blocks = torch.nn.ModuleList([GeoAttentionBlock(C, H) for _ in range(a.depth)]).to(dev)
-new_pos = RelPos(H, C // H - RelAttention.EXTRA, 0.05, 2.0, 0.2).to(dev)
+old_blocks = torch.nn.ModuleList([GeoAttentionBlock(C, H)
+                                  for _ in range(a.depth)]).to(dev)
+new_pos = RelPos(H, D - RelAttention.EXTRA, 0.05, 2.0, 0.2).to(dev)
 new_blocks = torch.nn.ModuleList([RelBlock(C, H) for _ in range(a.depth)]).to(dev)
 
+out = {}
+for M in a.M:
+    pos = torch.randn(1, M, 3, device=dev) * 0.3
+    x = torch.randn(1, M, C, device=dev)
 
-def old_fwd():
-    b = old_bias(pos)
-    h = x
-    for blk in old_blocks:
-        h = blk(h, b)
-    return h
+    def old_fwd():
+        b = old_bias(pos)
+        h = x
+        for blk in old_blocks:
+            h = blk(h, b)
+        return h
 
-
-def new_fwd():
-    ctx = new_pos(pos)          # 위치에서 나오는 것은 층 전체가 한 번만 만든다
-    h = x
-    for blk in new_blocks:
-        h = blk(h, ctx)
-    return h
-
-
-def bwd(fn):
-    def go():
-        fn().square().mean().backward()
-    return go
-
-
-def new_fwd_sdpa():
-    for blk in new_blocks:
-        blk.att.USE_SDPA = True
-    try:
-        return new_fwd()
-    finally:
+    def new_fwd(sdpa):
         for blk in new_blocks:
-            blk.att.USE_SDPA = False
+            blk.att.USE_SDPA = sdpa
+        ctx = new_pos(pos)
+        h = x
+        for blk in new_blocks:
+            h = blk(h, ctx)
+        return h
 
-
-res = {}
-for name, fn in (("옛 경로 (쌍별 MLP 바이어스)", old_fwd),
-                 ("새 경로 + 명시적 행렬곱", new_fwd),
-                 ("새 경로 + SDPA", new_fwd_sdpa)):
-    with torch.no_grad():
-        f = timeit(fn, a.warmup, a.reps)
-    torch.cuda.reset_peak_memory_stats()
-    b = timeit(bwd(fn), a.warmup, a.reps)
-    mem = torch.cuda.max_memory_allocated() / 1e6
-    res[name] = dict(fwd=f, fwd_bwd=b, peak_mb=mem)
-    print(f"[{name}] 순전파 {f:.3f} ms, 순+역 {b:.3f} ms, 최대 메모리 {mem:.0f} MB",
-          flush=True)
-
-lo = res["옛 경로 (쌍별 MLP 바이어스)"]
-ne = min((res["새 경로 + 명시적 행렬곱"], res["새 경로 + SDPA"]),
-         key=lambda r: r["fwd_bwd"])
-print(f"\n[요약] M={M} depth={a.depth}: 순+역 {lo['fwd_bwd']:.2f} -> "
-      f"{ne['fwd_bwd']:.2f} ms ({lo['fwd_bwd']/ne['fwd_bwd']:.2f}x), "
-      f"메모리 {lo['peak_mb']:.0f} -> {ne['peak_mb']:.0f} MB", flush=True)
+    row = {}
+    for name, fn in (("옛 (쌍별 MLP 바이어스)", old_fwd),
+                     ("새 (행렬곱)", lambda: new_fwd(False)),
+                     ("새 (SDPA)", lambda: new_fwd(True))):
+        try:
+            with torch.no_grad():
+                f = timeit(fn, a.warmup, a.reps)
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            b = timeit(lambda: fn().square().mean().backward(), a.warmup, a.reps)
+            row[name] = dict(fwd=f, fwd_bwd=b,
+                             peak_mb=torch.cuda.max_memory_allocated() / 1e6)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            row[name] = dict(oom=True)
+    out[M] = row
+    print(f"\n[M={M}]", flush=True)
+    for n, r in row.items():
+        if r.get("oom"):
+            print(f"  {n:<24} 메모리 부족", flush=True)
+        else:
+            print(f"  {n:<24} 순 {r['fwd']:6.2f} ms  순+역 {r['fwd_bwd']:7.2f} ms  "
+                  f"최대 {r['peak_mb']:6.0f} MB", flush=True)
 
 if a.out:
     os.makedirs(a.out, exist_ok=True)
-    json.dump(dict(M=M, heads=H, hidden=C, depth=a.depth,
-                   exact_softmax_err=e_soft, shift_err=shift, rot_change=rot,
-                   timing=res),
+    json.dump(dict(heads=H, hidden=C, depth=a.depth, exact_softmax_err=e_soft,
+                   shift_err=shift, rot_change=rot,
+                   timing={str(k): v for k, v in out.items()}),
               open(os.path.join(a.out, "rel_attention.json"), "w"), indent=1,
               ensure_ascii=False)
-# 어떤 SDPA 백엔드가 실제로 잡히는지 (조용히 fallback 되므로 확인해야 한다)
-from torch.nn.attention import SDPBackend, sdpa_kernel               # noqa: E402
-
-qq = torch.randn(1, H, M, D, device=dev, dtype=torch.float16)
-for be, nm in ((SDPBackend.FLASH_ATTENTION, "flash"),
-               (SDPBackend.EFFICIENT_ATTENTION, "mem-efficient")):
-    try:
-        with sdpa_kernel(be):
-            F.scaled_dot_product_attention(qq, qq, qq)
-        print(f"[백엔드] head_dim={D} 에서 {nm} 사용 가능", flush=True)
-    except Exception as e:
-        print(f"[백엔드] head_dim={D} 에서 {nm} 불가: {type(e).__name__}", flush=True)
-
 print("RELATT_OK")

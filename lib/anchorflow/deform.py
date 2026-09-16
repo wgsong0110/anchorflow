@@ -174,8 +174,15 @@ class RelPos(nn.Module):
 
 
 def _rope(x, c, s):
-    x1, x2 = x[..., 0::2], x[..., 1::2]
-    return torch.stack([x1 * c - x2 * s, x1 * s + x2 * c], -1).flatten(-2)
+    """채널을 앞뒤 절반으로 짝지어 돌린다 (GPT-NeoX 식).
+
+    이웃한 두 채널을 짝짓는 원래 형태와 수학적으로 같다 -- 채널 순열일 뿐이고
+    그 순열은 앞의 학습되는 qkv 선형이 흡수한다. 대신 슬라이스가 연속이라
+    스트라이드 접근과 stack/flatten 이 사라진다. M=512 에서는 연산이 작아
+    커널 실행 횟수가 시간을 정하므로 이것이 그대로 이득이다.
+    """
+    x1, x2 = x.chunk(2, -1)
+    return torch.cat([x1 * c - x2 * s, x1 * s + x2 * c], -1)
 
 
 class RelAttention(nn.Module):
@@ -213,8 +220,10 @@ class RelAttention(nn.Module):
         B, M, _ = x.shape
         q, k, v = self.qkv(x).chunk(3, -1)
         q, k, v = (t.view(B, M, self.h, self.d).transpose(1, 2) for t in (q, k, v))
-        q = torch.cat([_rope(q[..., :self.dc], c, s), qg], -1)
-        k = torch.cat([_rope(k[..., :self.dc], c, s), kg], -1)
+        # q 와 k 를 한 덩어리로 묶어 회전과 이어붙이기를 한 번씩만 한다
+        qk = torch.stack([q[..., :self.dc], k[..., :self.dc]], 0)
+        qk = torch.cat([_rope(qk, c, s), torch.stack([qg, kg], 0)], -1)
+        q, k = qk[0], qk[1]
         if self.USE_SDPA:
             o = Fn.scaled_dot_product_attention(q, k, v, attn_mask=None,
                                                 scale=self.scale)
