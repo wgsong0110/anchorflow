@@ -54,6 +54,7 @@ ap.add_argument("--hold_traj", default=None,
                 help="통째로 홀드아웃할 궤적 태그 (쉼표로 구분)")
 ap.add_argument("--save_every", type=int, default=500)
 ap.add_argument("--resume", default=None)
+ap.add_argument("--r2", default=None, help="체크포인트를 올릴 R2 경로")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
@@ -229,13 +230,16 @@ for it in pbar:
     opt.step()
     hist.append((float(lx), float(lJ)))
     if it % 20 == 0:
-        pbar.set_postfix(x=f"{100*float(lx)**0.5:.3f}%", J=f"{float(lJ):.4f}",
-                         L=L, gn=f"{float(gn):.2f}")
+        pbar.set_postfix(x=f"{100*float(lx)**0.5:.3f}%", J=f"{float(lJ):.2e}",
+                         L=L, gn=f"{float(gn):.2e}")
     if (it + 1) % a.save_every == 0 or it == a.iters - 1:
         torch.save({"net": net.state_dict(), "opt": opt.state_dict(),
                     "step": it + 1, "aidx": AIDX.cpu(), "H": H, "EXT": EXT,
                     "n_feat": n_feat, "args": vars(a)},
                    os.path.join(a.out, f"{a.tag}_last.pt"))
+        if a.r2:
+            os.system(f"rclone copy {a.out} {a.r2} --include '*.pt' "
+                      f"--include '*.json' >/dev/null 2>&1 &")
 
 # ---------------------------------------------------------------- 평가
 @torch.no_grad()
