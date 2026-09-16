@@ -147,10 +147,17 @@ def build(n_feat):
     print(f"[모델] 입력 {n_feat}, 파라미터 {n/1e6:.2f}M", flush=True)
 
 
+def take(t_cpu, idx_gpu):
+    """CPU 에 있는 궤적에서 부분표본을 떼어 GPU 로. 색인을 CPU 에서 하지 않으면
+    torch 가 장치가 섞였다고 거부한다 -- 궤적 전체(궤적 7 개 x 101 x 40000 x 3)를
+    GPU 에 올릴 수는 없으므로 CPU 색인이 맞다."""
+    return t_cpu[idx_gpu.cpu()].to(dev, non_blocking=True)
+
+
 def step_once(d, t, gsel, p, x, v, need_J=True):
     """한 프레임. -> (x_next, p_next, v_next, J, w)"""
     cfg = d["cfg"]
-    X = d["x"][0][gsel].to(dev)
+    X = take(d["x"][0], gsel)
     idx, _ = grid_knn(x, p, a.k)
     feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, p.shape[0], H,
                         pa=p)
@@ -166,19 +173,18 @@ def step_once(d, t, gsel, p, x, v, need_J=True):
 
 def window(d, t0, L, gsel):
     """궤적 d 의 t0 에서 L 프레임. 앵커는 그 프레임의 GT 가우시안으로 초기화."""
-    x = d["x"][t0][gsel].to(dev)
-    xm1 = d["x"][max(t0 - 1, 0)][gsel].to(dev)
-    v = (x - xm1) / FRAME_DT
-    p = d["x"][t0][AIDX].to(dev)
+    x = take(d["x"][t0], gsel)
+    v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
+    p = take(d["x"][t0], AIDX)
     loss_x = loss_J = 0.0
     for i in range(L):
         x2, p, v, J, _ = step_once(d, t0 + i, gsel, p, x, v,
                                    need_J=a.lambda_J > 0)
-        gt = d["x"][t0 + i + 1][gsel].to(dev)
+        gt = take(d["x"][t0 + i + 1], gsel)
         loss_x = loss_x + ((x2 - gt) ** 2).sum(-1).mean() / (EXT ** 2)
         if a.lambda_J > 0:
-            F0 = d["F"][t0 + i][gsel].to(dev)
-            F1 = d["F"][t0 + i + 1][gsel].to(dev)
+            F0 = take(d["F"][t0 + i], gsel)
+            F1 = take(d["F"][t0 + i + 1], gsel)
             Jgt = F1 @ torch.linalg.inv(F0 + 1e-4 * torch.eye(3, device=dev))
             loss_J = loss_J + ((J - Jgt) ** 2).sum((-1, -2)).mean()
         x = x2
@@ -189,8 +195,8 @@ def window(d, t0, L, gsel):
 with torch.no_grad():
     _d = TR[0][1]
     _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
-    _x = _d["x"][0][_g].to(dev)
-    _p = _d["x"][0][AIDX].to(dev)
+    _x = take(_d["x"][0], _g)
+    _p = take(_d["x"][0], AIDX)
     _i, _ = grid_knn(_x, _p, a.k)
     _f, _ = aggregate(_x, torch.zeros_like(_x), _x, MASS[_g], _i, _p.shape[0],
                       H, pa=_p)
@@ -233,15 +239,15 @@ for it in pbar:
 # ---------------------------------------------------------------- 평가
 @torch.no_grad()
 def rollout(d, t0, L, gsel):
-    x = d["x"][t0][gsel].to(dev)
-    v = (x - d["x"][max(t0 - 1, 0)][gsel].to(dev)) / FRAME_DT
-    p = d["x"][t0][AIDX].to(dev)
+    x = take(d["x"][t0], gsel)
+    v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
+    p = take(d["x"][t0], AIDX)
     errs = []
     for i in range(L):
         with torch.enable_grad():
             x2, p, v, _, _ = step_once(d, t0 + i, gsel, p, x, v, need_J=False)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
-        gt = d["x"][t0 + i + 1][gsel].to(dev)
+        gt = take(d["x"][t0 + i + 1], gsel)
         errs.append(float((x2 - gt).norm(dim=-1).mean()) / EXT)
         x = x2
     return errs
