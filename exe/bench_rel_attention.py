@@ -52,7 +52,7 @@ att = RelAttention(C, H, lam_min=0.05, lam_max=2.0, sigma0=0.2).to(dev)
 with torch.no_grad():
     q, k, v = att.qkv(x).chunk(3, -1)
     q, k, v = (t.view(1, M, H, D).transpose(1, 2) for t in (q, k, v))
-    q, k = att.rope(q, pos), att.rope(k, pos)
+    q, k = att.rope(q[..., :att.dc], pos), att.rope(k[..., :att.dc], pos)
     Mh = att.A.transpose(-1, -2) @ att.A
     Mp = torch.einsum("hcd,bmd->bhmc", Mh, pos)
     quad = (pos.unsqueeze(1) * Mp).sum(-1, keepdim=True)
@@ -155,4 +155,17 @@ if a.out:
                    timing=res),
               open(os.path.join(a.out, "rel_attention.json"), "w"), indent=1,
               ensure_ascii=False)
+# 어떤 SDPA 백엔드가 실제로 잡히는지 (조용히 fallback 되므로 확인해야 한다)
+from torch.nn.attention import SDPBackend, sdpa_kernel               # noqa: E402
+
+qq = torch.randn(1, H, M, D, device=dev, dtype=torch.float16)
+for be, nm in ((SDPBackend.FLASH_ATTENTION, "flash"),
+               (SDPBackend.EFFICIENT_ATTENTION, "mem-efficient")):
+    try:
+        with sdpa_kernel(be):
+            F.scaled_dot_product_attention(qq, qq, qq)
+        print(f"[백엔드] head_dim={D} 에서 {nm} 사용 가능", flush=True)
+    except Exception as e:
+        print(f"[백엔드] head_dim={D} 에서 {nm} 불가: {type(e).__name__}", flush=True)
+
 print("RELATT_OK")

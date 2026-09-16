@@ -186,19 +186,25 @@ class RelAttention(nn.Module):
         super().__init__()
         assert hidden % heads == 0
         self.h, self.d = heads, hidden // heads
+        # 기하 채널을 **덧붙이지 않고** head 차원 안에서 뗀다. 붙이면 head 가
+        # 32 -> 36 이 되어 flash 커널의 지원 차원(32/64/128)을 벗어나고, 실측에서
+        # 순+역이 7.6 -> 18.1 ms 로 되레 느려졌다. 내용 채널 네 개를 내주는 대신
+        # 차원이 그대로 32 라 커널이 유지된다.
+        self.dc = self.d - self.EXTRA
+        assert self.dc > 0 and self.dc % 2 == 0, "내용 채널은 짝수여야 한다 (RoPE)"
         self.qkv = nn.Linear(hidden, 3 * hidden)
         self.proj = nn.Linear(hidden, hidden)
-        self.rope = Rope3D(heads, self.d, lam_min, lam_max, seed)
+        self.rope = Rope3D(heads, self.dc, lam_min, lam_max, seed)
         # M_h = A^T A. sigma0 (앵커 간격) 에서 게이트가 O(1) 이 되게 초기화한다
         self.A = nn.Parameter(torch.eye(3).repeat(heads, 1, 1) / sigma0)
-        self.scale = self.d ** -0.5
+        self.scale = self.dc ** -0.5
 
     def forward(self, x, pos):
         """x [B,M,C], pos [B,M,3]"""
         B, M, _ = x.shape
         q, k, v = self.qkv(x).chunk(3, -1)
         q, k, v = (t.view(B, M, self.h, self.d).transpose(1, 2) for t in (q, k, v))
-        q, k = self.rope(q, pos), self.rope(k, pos)
+        q, k = self.rope(q[..., :self.dc], pos), self.rope(k[..., :self.dc], pos)
         Mh = self.A.transpose(-1, -2) @ self.A                  # [H,3,3] 양정치
         Mp = torch.einsum("hcd,bmd->bhmc", Mh, pos)             # [B,H,M,3]
         quad = (pos.unsqueeze(1) * Mp).sum(-1, keepdim=True)    # p^T M p
