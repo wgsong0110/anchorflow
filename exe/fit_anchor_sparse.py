@@ -174,6 +174,11 @@ ap.add_argument("--oriented", type=int, default=0,
                       "Three degrees of freedom in SO(3) with a restoring "
                       "torque, not the nine unconstrained ones a carried F had.")
 ap.add_argument("--eig_floor", type=float, default=0.02)
+ap.add_argument("--softmax_w", action="store_true",
+                help="가중치를 잘린 가우시안(G-c) 대신 가우시안당 최근접 k 개 위 "
+                     "softmax 로. 붙는 앵커 수가 k 로 고정되고, 경계 밖 앵커에도 "
+                     "그래디언트가 간다")
+ap.add_argument("--softmax_k", type=int, default=16)
 ap.add_argument("--polar_iters", type=int, default=6)
 ap.add_argument("--iters", type=int, default=400)
 ap.add_argument("--batch", type=int, default=2)
@@ -447,7 +452,9 @@ if base is None:
 fit = AnchorSparse(sc, c=args.c, eig_floor=args.eig_floor,
                     polar_iters=args.polar_iters, cfl_frac=args.cfl_frac,
                     quad=bool(args.quad),
-                    oriented=bool(args.oriented)).to(dev)
+                    oriented=bool(args.oriented),
+                    softmax_w=bool(args.softmax_w),
+                    softmax_k=args.softmax_k).to(dev)
 fit.acc_blend = args.acc_blend
 GRID_LIM = 2.0
 # mass per Gaussian, for the mass-weighted objective. sc.volume is zero on the
