@@ -38,7 +38,9 @@ import math
 import torch
 import torch.nn as nn
 
-from .nextstate import DtFiLM, GeoAttentionBias, GeoAttentionBlock, mlp
+import torch.nn.functional as Fn
+
+from .nextstate import DtFiLM, mlp
 
 
 # --------------------------------------------------------------- 격자 kNN
@@ -241,7 +243,7 @@ class DeformNet(nn.Module):
     """
 
     def __init__(self, n_feat, hidden=128, depth=4, heads=4, n_static=0,
-                 scale=1.0, h=1.0, zero_init=True):
+                 scale=1.0, h=1.0, ext=1.0, zero_init=True, seed=0):
         super().__init__()
         self.scale = scale                 # 변위 단위 (전형적 한 프레임 변위)
         self.h = h                         # 길이 단위 (앵커 간격)
@@ -253,9 +255,11 @@ class DeformNet(nn.Module):
         # 경계 기준 상대량으로 이미 들고 있다.
         self.node_enc = mlp([n_feat + n_static, hidden, hidden])
         self.film = DtFiLM(hidden, depth + 1)
-        self.bias = GeoAttentionBias(heads)
-        self.blocks = nn.ModuleList([GeoAttentionBlock(hidden, heads)
-                                     for _ in range(depth)])
+        # 파장 범위: 가장 짧은 것은 앵커 간격의 두 배 (그보다 짧으면 이웃 사이에서
+        # 위상이 감긴다), 가장 긴 것은 물체 지름의 두 배.
+        self.blocks = nn.ModuleList([
+            RelBlock(hidden, heads, lam_min=2.0 * h, lam_max=2.0 * ext,
+                     sigma0=h, seed=seed + i) for i in range(depth)])
         self.dec = mlp([hidden, hidden, 5], layernorm=False)
         if zero_init:
             # 출력 0 이면 dp=0, r=h, tau=1 -- 아무것도 움직이지 않는 항등 변형에서
@@ -276,9 +280,12 @@ class DeformNet(nn.Module):
         h = self.node_enc(torch.cat(f, -1)).unsqueeze(0)
         gamma, beta = self.film(dt, p.device)
         h = gamma[0] * h + beta[0]
-        bias = self.bias(p.unsqueeze(0))
+        # 좌표는 앵커 무게중심 기준으로 옮겨 쓴다. 평행이동 불변은 그대로이고
+        # (무게중심이 함께 움직인다), 거리 게이트가 |p|^2 ~ 300 짜리 두 항의
+        # 차이로 |Δ|^2 ~ 1 을 만드는 자리끼리 상쇄를 피한다.
+        pc = (p - p.mean(0, keepdim=True)).unsqueeze(0)
         for i, blk in enumerate(self.blocks):
-            h = blk(gamma[i + 1] * h + beta[i + 1], bias)
+            h = blk(gamma[i + 1] * h + beta[i + 1], pc)
         o = self.dec(h).squeeze(0)
         dp = o[:, :3] * self.scale
         log_r = o[:, 3] + math.log(self.h)

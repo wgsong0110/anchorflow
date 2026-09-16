@@ -141,7 +141,7 @@ step0 = 0
 def build(n_feat):
     global net, opt
     net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth, heads=a.heads,
-                    scale=0.02 * EXT, h=H).to(dev)
+                    scale=0.02 * EXT, h=H, ext=EXT, seed=a.seed).to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=a.lr)
     n = sum(p.numel() for p in net.parameters())
     print(f"[모델] 입력 {n_feat}, 파라미터 {n/1e6:.2f}M", flush=True)
