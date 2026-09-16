@@ -158,32 +158,7 @@ opt = None
 step0 = 0
 
 
-def build(n_feat)
-
-# 입력 표준화 통계는 실제로 뽑는 것과 같은 분포에서 모은다
-with torch.no_grad():
-    samp = []
-    gstat = torch.Generator(device=dev).manual_seed(a.seed + 7)
-    for _ in range(64):
-        _tag, _dd = TR[int(torch.randint(len(TR), (1,), generator=gstat, device=dev))]
-        _t = int(torch.randint(1, _dd["x"].shape[0] - 2, (1,), generator=gstat,
-                               device=dev))
-        _gs = torch.randperm(N_FULL, generator=gstat,
-                             device=dev)[:min(4000, N_FULL)].sort().values
-        _x = take(_dd["x"][_t], _gs)
-        _v = (_x - take(_dd["x"][_t - 1], _gs)) / FRAME_DT
-        _p = take(_dd["x"][_t], AIDX)
-        _i, _ = grid_knn(_x, _p, a.k)
-        _f, _ = aggregate(_x, _v / VEL_SCALE, take(_dd["x"][0], _gs), MASS[_gs],
-                          _i, _p.shape[0], H, pa=_p)
-        _e = torch.cat([mat_feat(_dd["cfg"]).reshape(1, N_MAT).expand(_p.shape[0], N_MAT),
-                        bc_features(_p, _dd["cfg"]) / H], -1)
-        samp.append(torch.cat([_f, _e], -1))
-    samp = torch.cat(samp, 0)
-    net.set_input_stats(samp)
-    print(f"[표준화] 표본 {samp.shape[0]} x {samp.shape[1]}, 채널 표준편차 "
-          f"최소 {float(net.in_sd.min()):.2e} 최대 {float(net.in_sd.max()):.2e}, "
-          f"평균 절대값 최대 {float(net.in_mu.abs().max()):.2e}", flush=True):
+def build(n_feat):
     global net, opt
     net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth, heads=a.heads,
                     scale=0.02 * EXT, h=H, ext=EXT, seed=a.seed).to(dev)
@@ -266,7 +241,9 @@ with torch.no_grad():
     n_feat = _f.shape[-1] + N_MAT + n_bc
 build(n_feat)
 
-# 입력 표준화 통계는 실제로 뽑는 것과 같은 분포에서 모은다
+# 입력 표준화 통계는 실제로 뽑는 것과 같은 분포에서 모은다. 채널 스케일이 네 자릿수
+# 넘게 벌어져 있어서(질량은 log 라 -16, 다음 변위를 결정하는 속도는 7e-4) 그냥 넣으면
+# 정작 중요한 채널이 첫 Linear 에서 묻힌다.
 with torch.no_grad():
     samp = []
     gstat = torch.Generator(device=dev).manual_seed(a.seed + 7)
@@ -278,13 +255,14 @@ with torch.no_grad():
                              device=dev)[:min(4000, N_FULL)].sort().values
         _x = take(_dd["x"][_t], _gs)
         _v = (_x - take(_dd["x"][_t - 1], _gs)) / FRAME_DT
-        _p = take(_dd["x"][_t], AIDX)
-        _i, _ = grid_knn(_x, _p, a.k)
-        _f, _ = aggregate(_x, _v / VEL_SCALE, take(_dd["x"][0], _gs), MASS[_gs],
-                          _i, _p.shape[0], H, pa=_p)
-        _e = torch.cat([mat_feat(_dd["cfg"]).reshape(1, N_MAT).expand(_p.shape[0], N_MAT),
-                        bc_features(_p, _dd["cfg"]) / H], -1)
-        samp.append(torch.cat([_f, _e], -1))
+        _pp = take(_dd["x"][_t], AIDX)
+        _ii, _ = grid_knn(_x, _pp, a.k)
+        _ff, _ = aggregate(_x, _v / VEL_SCALE, take(_dd["x"][0], _gs), MASS[_gs],
+                           _ii, _pp.shape[0], H, pa=_pp)
+        _ee = torch.cat([mat_feat(_dd["cfg"]).reshape(1, N_MAT).expand(_pp.shape[0],
+                                                                      N_MAT),
+                         bc_features(_pp, _dd["cfg"]) / H], -1)
+        samp.append(torch.cat([_ff, _ee], -1))
     samp = torch.cat(samp, 0)
     net.set_input_stats(samp)
     print(f"[표준화] 표본 {samp.shape[0]} x {samp.shape[1]}, 채널 표준편차 "
