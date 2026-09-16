@@ -174,23 +174,34 @@ def step_once(d, t, gsel, p, x, v, need_J=True):
 
 
 def window(d, t0, L, gsel):
-    """궤적 d 의 t0 에서 L 프레임. 앵커는 그 프레임의 GT 가우시안으로 초기화."""
+    """궤적 d 의 t0 에서 L 프레임. 앵커는 그 프레임의 GT 가우시안으로 초기화.
+
+    같은 창에서 **아무것도 안 했을 때**의 오차도 함께 낸다. 이 궤적은 충돌 직후와
+    안정된 뒤의 프레임당 변위가 수십 배 차이라, 손실의 절대값만 보면 어려운 창을
+    뽑았는지 모델이 나빠졌는지 구별할 수 없다. 정지 기준선과의 비를 봐야 한다
+    (기준선은 모델과 무관한 양이므로 자체 변위 정규화가 아니다).
+    """
     x = take(d["x"][t0], gsel)
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
     p = take(d["x"][t0], AIDX)
     loss_x = loss_J = 0.0
+    still = 0.0
+    x_still = x.clone()
     for i in range(L):
         x2, p, v, J, _ = step_once(d, t0 + i, gsel, p, x, v,
                                    need_J=a.lambda_J > 0)
         gt = take(d["x"][t0 + i + 1], gsel)
         loss_x = loss_x + ((x2 - gt) ** 2).sum(-1).mean() / (EXT ** 2)
+        still = still + float(((x_still - gt) ** 2).sum(-1).mean()) / (EXT ** 2)
         if a.lambda_J > 0:
             F0 = take(d["F"][t0 + i], gsel)
             F1 = take(d["F"][t0 + i + 1], gsel)
             Jgt = F1 @ torch.linalg.inv(F0 + 1e-4 * torch.eye(3, device=dev))
             loss_J = loss_J + ((J - Jgt) ** 2).sum((-1, -2)).mean()
         x = x2
-    return loss_x / L, (loss_J / L if a.lambda_J > 0 else torch.zeros((), device=dev))
+    return (loss_x / L,
+            (loss_J / L if a.lambda_J > 0 else torch.zeros((), device=dev)),
+            still / L)
 
 
 # 특징 차원을 한 번 재서 모델을 세운다
@@ -222,16 +233,18 @@ for it in pbar:
     T = d["x"].shape[0] - a.hold_last
     t0 = int(torch.randint(1, max(T - L - 1, 2), (1,), generator=gen, device=dev))
     gsel = torch.randperm(N_FULL, generator=gen, device=dev)[:a.n_pts].sort().values
-    lx, lJ = window(d, t0, L, gsel)
+    lx, lJ, still = window(d, t0, L, gsel)
     loss = lx + a.lambda_J * lJ
     opt.zero_grad(set_to_none=True)
     loss.backward()
     gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
     opt.step()
-    hist.append((float(lx), float(lJ)))
+    hist.append((float(lx), float(lJ), still))
     if it % 20 == 0:
-        pbar.set_postfix(x=f"{100*float(lx)**0.5:.3f}%", J=f"{float(lJ):.2e}",
-                         L=L, gn=f"{float(gn):.2e}")
+        pbar.set_postfix(x=f"{100*float(lx)**0.5:.3f}%",
+                         정지=f"{100*still**0.5:.3f}%",
+                         비=f"{(float(lx)/max(still,1e-20))**0.5:.2f}",
+                         J=f"{float(lJ):.1e}", L=L, gn=f"{float(gn):.1e}")
     if (it + 1) % a.save_every == 0 or it == a.iters - 1:
         torch.save({"net": net.state_dict(), "opt": opt.state_dict(),
                     "step": it + 1, "aidx": AIDX.cpu(), "H": H, "EXT": EXT,
@@ -247,15 +260,17 @@ def rollout(d, t0, L, gsel):
     x = take(d["x"][t0], gsel)
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
     p = take(d["x"][t0], AIDX)
-    errs = []
+    errs, stills = [], []
+    x_still = x.clone()
     for i in range(L):
         with torch.enable_grad():
             x2, p, v, _, _ = step_once(d, t0 + i, gsel, p, x, v, need_J=False)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
         gt = take(d["x"][t0 + i + 1], gsel)
         errs.append(float((x2 - gt).norm(dim=-1).mean()) / EXT)
+        stills.append(float((x_still - gt).norm(dim=-1).mean()) / EXT)
         x = x2
-    return errs
+    return errs, stills
 
 
 gsel = torch.arange(min(a.n_pts, N_FULL), device=dev)
@@ -264,11 +279,14 @@ for tag, d in TR + held:
     T = d["x"].shape[0]
     t0 = max(T - a.hold_last - 1, 1)
     L = min(a.hold_last, T - t0 - 1)
-    e = rollout(d, t0, L, gsel)
-    rows[tag] = dict(held=(tag in hold), t0=t0, L=L, err=e,
-                     err_mean=float(np.mean(e)), err_last=e[-1])
-    print(f"[롤아웃] {tag}{' (홀드아웃)' if tag in hold else ''}: "
-          f"{L} 프레임, 평균 {100*np.mean(e):.3f}% 마지막 {100*e[-1]:.3f}%", flush=True)
+    e, st = rollout(d, t0, L, gsel)
+    rows[tag] = dict(held=(tag in hold), t0=t0, L=L, err=e, still=st,
+                     err_mean=float(np.mean(e)), err_last=e[-1],
+                     still_mean=float(np.mean(st)))
+    print(f"[롤아웃] {tag}{' (홀드아웃)' if tag in hold else ''}: {L} 프레임, "
+          f"평균 {100*np.mean(e):.3f}% (정지 {100*np.mean(st):.3f}%, "
+          f"비 {np.mean(e)/max(np.mean(st),1e-12):.2f}) 마지막 {100*e[-1]:.3f}%",
+          flush=True)
 
 json.dump(dict(tag=a.tag, args=vars(a), extent=EXT, h=H, n_feat=n_feat,
                minutes=(time.time() - t_start) / 60,
