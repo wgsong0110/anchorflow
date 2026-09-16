@@ -356,6 +356,34 @@ def jacobian_of(fn, x):
     return torch.stack(rows, 1)                    # [N,3,3]
 
 
+def bures_w2_sq(mu_p, mu_g, Lp, Lg, eps=1e-8):
+    """두 가우시안 사이의 Bures-Wasserstein 제곱거리. 입자마다 하나씩.
+
+        W2^2 = |mu_p - mu_g|^2 + tr(Sp + Sg - 2 (Sp^1/2 Sg Sp^1/2)^1/2)
+
+    위치 항과 모양 항이 **둘 다 길이^2** 라 하나의 손실로 합쳐진다 -- 지금처럼
+    위치(길이^2)와 J 의 Frobenius(무차원)를 따로 두면 그 사이 가중 lambda_J 가
+    순수한 튜닝 상수가 되고, 실측에서 그 항이 목적함수의 2/3 을 차지하면서 거의
+    내려가지 않았다.
+
+    그리고 표현에 실제로 영향을 주는 것은 J 가 아니라 J Sigma J^T 다. Frobenius-on-J
+    는 등방 가우시안에서 렌더에 전혀 보이지 않는 회전 성분까지 벌준다.
+
+    Sigma = L L^T 인수만 있으면 **행렬 제곱근이 필요 없다**:
+        tr((Sa^1/2 Sb Sa^1/2)^1/2) = || La^T Lb ||_*   (특이값의 합)
+    그 합의 미분은 M 의 극분해 직교인자라 특이값이 겹쳐도 잘 정의된다.
+
+    KL 이 아니라 W2 인 이유: 3DGS 의 공분산은 의도적으로 매우 납작해서
+    (이 씬은 sigma ~ 1.3e-9 까지 간다) Sigma^-1 과 log|Sigma| 가 폭발한다.
+    Bures 는 특이값이 0 으로 가도 유한하다.
+    """
+    d2 = ((mu_p - mu_g) ** 2).sum(-1)
+    trA = (Lp * Lp).sum((-1, -2))
+    trB = (Lg * Lg).sum((-1, -2))
+    sv = torch.linalg.svdvals(Lp.transpose(-1, -2) @ Lg).clamp_min(eps)
+    return d2 + trA + trB - 2.0 * sv.sum(-1)
+
+
 # --------------------------------------------------------------- 모델
 class DeformNet(nn.Module):
     """앵커 상태 -> (변위, 반경, 온도). 구조는 학생 스테퍼와 같은 어텐션이다.

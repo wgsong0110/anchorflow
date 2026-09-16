@@ -50,6 +50,14 @@ ap.add_argument("--unroll_at", type=float, default=0.4,
                 help="이 비율을 지나면 unroll 을 unroll_final 로 늘린다")
 ap.add_argument("--lr", type=float, default=3e-4)
 ap.add_argument("--lambda_J", type=float, default=0.1)
+ap.add_argument("--shape_loss", default="frob", choices=("frob", "bures", "none"),
+                help="모양을 어떻게 채점할지. frob 은 J 와 GT 증분의 Frobenius, "
+                     "bures 는 위치까지 포함한 입자별 Bures-Wasserstein (길이^2 "
+                     "단위라 lambda_J 가 필요 없다), none 은 위치만")
+ap.add_argument("--sigma0", type=float, default=0.5,
+                help="정준 가우시안의 등방 표준편차를 입자 간격의 몇 배로 볼지. "
+                     "이 씬의 ply 는 sigma ~ 1e-9 로 사실상 점이라, 모양 항을 쓰려면 "
+                     "부피에서 온 크기를 줘야 한다")
 ap.add_argument("--n_pts", type=int, default=20000, help="한 스텝에 쓰는 가우시안 수")
 ap.add_argument("--eval_t0", type=int, nargs="+", default=[5, 40, 80],
                 help="롤아웃을 시작할 프레임들. 이 궤적은 충돌 직후와 안정된 뒤의 "
@@ -70,7 +78,7 @@ torch.manual_seed(a.seed)
 
 from anchorflow import deform                                  # noqa: E402
 from anchorflow.deform import (DeformNet, aggregate, bc_features,   # noqa: E402
-                               grid_knn, jacobian_of, skin)
+                               bures_w2_sq, grid_knn, jacobian_of, skin)
 
 # ---------------------------------------------------------------- 데이터
 files = sorted(glob.glob(os.path.join(a.data, "*.pt")))
@@ -137,6 +145,9 @@ def mat_feat(cfg):
 
 
 VEL_SCALE = EXT / FRAME_DT
+# 정준 공분산. ply 의 것을 쓸 수 없어(사실상 0) 입자 간격에서 만든다 -- MPM 이
+# 부피를 쓰는 것과 같은 근거다. 등방이므로 L0 = sigma0 * I.
+SIG0 = a.sigma0 * float(dx)
 N_MAT = 7
 n_bc = bc_features(X0d[:2], cfg0).shape[-1]
 n_feat_probe = None
@@ -200,11 +211,18 @@ def window(d, t0, L, gsel):
         gt = take(d["x"][t0 + i + 1], gsel)
         loss_x = loss_x + ((x2 - gt) ** 2).sum(-1).mean() / (EXT ** 2)
         still = still + float(((x_still - gt) ** 2).sum(-1).mean()) / (EXT ** 2)
-        if a.lambda_J > 0:
+        if a.shape_loss != "none" and a.lambda_J > 0:
             F0 = take(d["F"][t0 + i], gsel)
             F1 = take(d["F"][t0 + i + 1], gsel)
             Jgt = F1 @ torch.linalg.inv(F0 + 1e-4 * torch.eye(3, device=dev))
-            loss_J = loss_J + ((J - Jgt) ** 2).sum((-1, -2)).mean()
+            if a.shape_loss == "frob":
+                loss_J = loss_J + ((J - Jgt) ** 2).sum((-1, -2)).mean()
+            else:
+                # 현재 프레임 가우시안의 인수 L_t = sigma0 * F_t. 예측/정답 공분산은
+                # 각각 (J L_t)(J L_t)^T, (Jgt L_t)(Jgt L_t)^T 이므로 인수만 넘기면 된다.
+                Lt = SIG0 * F0
+                loss_J = loss_J + (bures_w2_sq(x2, gt, J @ Lt, Jgt @ Lt).mean()
+                                   / (EXT ** 2))
         x = x2
     return (loss_x / L,
             (loss_J / L if a.lambda_J > 0 else torch.zeros((), device=dev)),
