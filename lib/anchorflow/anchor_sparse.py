@@ -166,13 +166,17 @@ class AnchorSparse(nn.Module):
 
     def __init__(self, sc, c=0.25, eig_floor=0.02, polar_iters=6, margin=1.25,
                  checkpoint_substeps=True, s_lo=0.25, s_hi=4.0, cfl_frac=0.05,
-                 quad=False, oriented=False):
+                 quad=False, oriented=False, softmax_w=False, softmax_k=16):
         super().__init__()
         from scipy.spatial import cKDTree
 
         sim = sc.sim
         dev = sc.pos.device
         self.c = c
+        # 가중치를 잘린 가우시안(G(x)-c) 대신 **가우시안당 최근접 k 개 위 softmax**
+        # 로 줄지. 잘린 쪽은 붙는 앵커 수가 제각각이고 경계 밖이 정확히 0 이다.
+        self.softmax_w = bool(softmax_w)
+        self.softmax_k = int(softmax_k)
         self.eig_floor = eig_floor
         self.polar_iters = polar_iters
         self.margin = margin
@@ -408,9 +412,52 @@ class AnchorSparse(nn.Module):
         local = torch.einsum("pji,pj->pi", R, d) / s
         return (local * local).sum(-1)
 
+    def _weights_softmax(self):
+        """가우시안마다 최근접 앵커 k 개를 골라 그 위에서 softmax 로 가중치를 준다.
+
+        기본 방식은 G(x) - c 를 clamp 한 **잘린** 가우시안이라, 한 가우시안에
+        붙는 앵커 수가 제각각이고 경계 밖은 정확히 0 이다. 여기서는 잘라내지 않고
+        일반 가우시안을 쓰되 **최근접 k 개로만 제한**하고 그 위에서 정규화한다.
+        지수 안의 값이 -0.5 * mahal^2 이므로 이 정규화가 곧 softmax 다.
+
+        붙는 앵커 수가 k 로 고정되는 것이 잘린 방식과의 핵심 차이다.
+        """
+        m2 = self._mahal2(self.pair_g, self.pair_a)              # [P]
+        logit = -0.5 * m2 + (2.0 * torch.tanh(self.log_amp / 2.0))[self.pair_a]
+        k = self.softmax_k
+
+        # 가우시안별 상위 k 개만 남긴다. 짝 목록은 가우시안별로 이어져 있으므로
+        # 각 짝이 자기 가우시안 안에서 몇 번째인지(slot)를 구해 [N, kmax] 로 펴고
+        # topk 로 문턱을 잡는다.
+        cnt = torch.zeros(self.N, device=self.dev, dtype=torch.long).index_add_(
+            0, self.pair_g, torch.ones_like(self.pair_g))
+        kmax = int(cnt.max()) if cnt.numel() else 0
+        if kmax > k:
+            pos = torch.arange(self.pair_g.numel(), device=self.dev)
+            first = torch.full((self.N,), pos.numel(), device=self.dev,
+                               dtype=torch.long)
+            first.scatter_reduce_(0, self.pair_g, pos, reduce="amin",
+                                  include_self=True)
+            slot = pos - first[self.pair_g]
+            dense = torch.full((self.N, kmax), -1e30, device=self.dev,
+                               dtype=logit.dtype)
+            dense[self.pair_g, slot] = logit
+            thr = dense.topk(k, dim=1).values[:, -1]                 # [N]
+            logit = torch.where(logit >= thr[self.pair_g], logit,
+                                torch.full_like(logit, -1e30))
+        # 가우시안별 softmax
+        mx = torch.full((self.N,), -1e30, device=self.dev, dtype=logit.dtype)
+        mx = mx.index_reduce_(0, self.pair_g, logit, "amax", include_self=True)
+        e = torch.exp(logit - mx[self.pair_g])
+        tot = torch.zeros(self.N, device=self.dev, dtype=e.dtype).index_add_(
+            0, self.pair_g, e)
+        return e / tot[self.pair_g].clamp(min=1e-12)
+
     def weights(self):
         """[P], normalised per Gaussian. Zero at the boundary of the region and
         zero outside it, so a Gaussian entering or leaving does so continuously"""
+        if self.softmax_w:
+            return self._weights_softmax()
         w = (torch.exp(-0.5 * self._mahal2(self.pair_g, self.pair_a)) - self.c).clamp(min=0)
         # 진폭도 tanh 로 유계다. 한 앵커가 지분을 독점하면 나머지가 그래디언트를
         # 잃으므로 e^{-2} ~ e^{2} 안에 두되, 경계에서 죽지 않게 매끄럽게 준다.
