@@ -122,9 +122,10 @@ MASS = ((dx ** 3) / cnt[flat]) * float(cfg0["density"])
 def mat_feat(cfg):
     # 중력은 방향이라 평행이동 등변성을 깨지 않는다. 궤적마다 다르므로 넣는다.
     g = torch.tensor(cfg["g"], device=dev, dtype=torch.float32) / 15.0
+    # np.log 는 float64 를 돌려주고, 목록에 섞이면 텐서가 통째로 double 이 된다
     return torch.cat([torch.tensor(
         [np.log(float(cfg["E"])), float(cfg["nu"]), float(cfg.get("xi", 0.0)),
-         np.log(float(cfg["density"]))], device=dev), g])
+         np.log(float(cfg["density"]))], device=dev, dtype=torch.float32), g])
 
 
 VEL_SCALE = EXT / FRAME_DT
