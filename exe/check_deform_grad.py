@@ -184,7 +184,9 @@ for _ in range(5):
     opt.zero_grad(set_to_none=True)
     loss_fn(net)[0].backward()
     opt.step()
-moved = {n: float((q.detach() - before[n]).norm() / before[n].norm().clamp(min=1e-12))
+# 0 으로 초기화된 파라미터는 초기 노름이 0 이라 상대변화가 무한대로 뜬다.
+# 절대 변화를 그 텐서의 전형적 크기(Adam 이 낼 수 있는 5 x lr)로 재는 편이 맞다.
+moved = {n: float((q.detach() - before[n]).norm()) / (5 * a.lr * q.numel() ** 0.5)
          for n, q in net.named_parameters()}
 still = [n for n, r in moved.items() if r == 0.0]
 print(f"\n[3 갱신] 5 스텝 뒤 움직인 파라미터 {len(moved)-len(still)}/{len(moved)}",
@@ -192,7 +194,7 @@ print(f"\n[3 갱신] 5 스텝 뒤 움직인 파라미터 {len(moved)-len(still)}
 for n in still:
     print(f"    [안 움직임] {n}", flush=True)
 for n, r in sorted(moved.items(), key=lambda t: -t[1])[:5]:
-    print(f"    {n:<40} 상대변화 {r:.3e}", flush=True)
+    print(f"    {n:<40} 변화/기대치 {r:.3f}", flush=True)
 rep["not_moved"] = still
 
 # ---------------------------------------------------------------- 4. 과적합

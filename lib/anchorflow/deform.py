@@ -387,10 +387,18 @@ class DeformNet(nn.Module):
                                      for _ in range(depth)])
         self.dec = mlp([hidden, hidden, 5], layernorm=False)
         if zero_init:
-            # 출력 0 이면 dp=0, r=h, tau=1 -- 아무것도 움직이지 않는 항등 변형에서
-            # 시작한다. 학습이 "가만히 있기" 를 먼저 배울 필요가 없다.
+            # 출력이 거의 0 이면 dp~0, r~h, tau~1 -- 아무것도 움직이지 않는 항등
+            # 변형에서 시작한다. 학습이 "가만히 있기" 를 먼저 배울 필요가 없다.
+            #
+            # 다만 가중치를 **정확히** 0 으로 두면 안 된다. 그 층의 입력 쪽
+            # 기울기가 grad_out @ W = 0 이라, 첫 스텝에 상류 전체(인코더, 어텐션
+            # 블록, RoPE 주파수, 거리 게이트)가 기울기를 하나도 못 받는다. 실측:
+            # 64 개 파라미터 중 62 개가 정확히 0. 편향만 0 으로 두고 가중치는
+            # 기본 초기화의 1/100 로 줄이면 출력은 여전히 항등에 가깝고 경로는
+            # 살아 있다.
             last = [m for m in self.dec.modules() if isinstance(m, nn.Linear)][-1]
-            nn.init.zeros_(last.weight)
+            with torch.no_grad():
+                last.weight.mul_(0.01)
             nn.init.zeros_(last.bias)
 
     def forward(self, p, feat, dt, static=None):
