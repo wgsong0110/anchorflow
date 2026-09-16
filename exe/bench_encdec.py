@@ -46,6 +46,12 @@ ap.add_argument("--warmup", type=int, default=10)
 ap.add_argument("--reps", type=int, default=50)
 ap.add_argument("--substeps", type=int, default=40,
                 help="한 프레임의 서브스텝 수. 프레임 비용은 이것 곱하기 서브스텝 비용")
+ap.add_argument("--student", action="store_true",
+                help="같은 앵커 수에서 학생 스테퍼 한 스텝도 잰다")
+ap.add_argument("--hidden", type=int, default=128)
+ap.add_argument("--depth", type=int, default=4)
+ap.add_argument("--heads", type=int, default=4)
+ap.add_argument("--chunk", type=int, default=1)
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
@@ -143,6 +149,32 @@ if a.geom_softmax:
     CASES.append((f"kNN softmax k={a.softmax_k} · 학습 후", True, a.geom_softmax))
 
 res = {n: bench(n, sm, g) for n, sm, g in CASES}
+
+# ---- 학생 스테퍼 --------------------------------------------------------
+# 학생은 앵커 시뮬의 한 프레임(서브스텝 40 회)을 한 번의 순전파로 대신한다.
+# 그래서 "서브스텝 대 스텝"이 아니라 **프레임 대 프레임**으로 견줘야 한다.
+# 비용은 앵커 수와 구조가 정하고 가우시안 수와 무관하다 (스키닝만 예외).
+if a.student:
+    from anchorflow.nextstate import NextStep, apply_step   # noqa: E402
+    fit = AnchorSparse(sc, c=a.c, eig_floor=a.eig_floor).to(dev)
+    fit.refresh(); fit.set_B_ref()
+    cache = fit.prepare()
+    FRAME_DT = float(sc.sub_dt) * a.substeps
+    net = NextStep(hidden=a.hidden, depth=a.depth, heads=a.heads,
+                   use_accel=False, scale=EXT,
+                   vel_scale=EXT / max(FRAME_DT, 1e-6),
+                   chunk=a.chunk, zero_init=True).to(dev).eval()
+    pS = fit.pos.detach().clone()
+    vS = torch.zeros_like(pS)
+    fwd, fwd_sd = timeit(
+        lambda: apply_step(net, pS, vS, None, FRAME_DT, fit.fixed), a.warmup, a.reps)
+    dec, _ = timeit(lambda: fit.gaussian_pos(pS, cache), a.warmup, a.reps)
+    res["학생 스테퍼"] = {"forward": fwd, "forward_sd": fwd_sd, "decode": dec,
+                      "frame": fwd + dec, "hidden": a.hidden, "depth": a.depth,
+                      "heads": a.heads, "chunk": a.chunk}
+    print(f"[학생 스테퍼]  순전파 {fwd:.2f} ms + 디코딩 {dec:.2f} ms = "
+          f"프레임 {fwd+dec:.2f} ms  (앵커 {int(sc.M)}, hidden {a.hidden}, "
+          f"depth {a.depth}, chunk {a.chunk})", flush=True)
 os.makedirs(a.out, exist_ok=True)
 json.dump(dict(n_pts=int(X0.shape[0]), n_anchors=int(sc.M), reps=a.reps,
                gpu=torch.cuda.get_device_name(0), cases=res),
