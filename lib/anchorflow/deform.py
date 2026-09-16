@@ -124,94 +124,92 @@ def grid_knn(x, p, k, occupancy=2.0, chunk=200_000):
 
 
 # --------------------------------------------------- 상대위치 어텐션
-class Rope3D(nn.Module):
-    """3D 좌표에 대한 회전 위치 부호화. q 와 k 를 각자 돌린다.
+class RelPos(nn.Module):
+    """위치에서 나오는 것들을 **한 번만** 만들어 모든 층이 나눠 쓴다.
 
-    R(p) 가 직교이고 R(a)R(b) = R(a+b) 이면
+    두 가지를 낸다.
 
-        (R(p_i) q_i)^T (R(p_j) k_j) = q_i^T R(p_j - p_i) k_j
+    회전 각도  RoPE-3D. R(p) 가 직교이고 R(a)R(b)=R(a+b) 이면
+               (R(p_i)q_i)^T (R(p_j)k_j) = q_i^T R(p_j-p_i) k_j 가 되어 내적이
+               **상대 위치만의 함수**가 된다. 바이어스 행렬 대신 q,k 를 돌리므로
+               SDPA 에게는 평범한 어텐션이다. 주파수는 축정렬이 아니라 head 마다
+               임의의 3D 벡터로 둔다 (RoPE-Mixed, ECCV 2024 / LieRE, ICML 2025) --
+               축정렬은 d_head 를 3 으로 나눠야 하고 대각 방향을 표현하지 못한다.
+               파장은 앵커 간격의 두 배부터 물체 지름의 두 배까지 log 등간격이다.
+               더 짧으면 이웃 사이에서 위상이 감겨 같은 각도가 다른 거리로 읽힌다.
 
-    이 되어 내적이 **상대 위치만의 함수**가 된다. 바이어스 행렬을 만드는 대신
-    q, k 를 손대므로 SDPA 입장에서는 평범한 어텐션이고 flash 가 그대로 켜진다.
+    게이트 채널  거리 바이어스를 q/k 채널로 분해한 것. softmax 가 행 상수를
+               지우므로
+                   -(p_i-p_j)^T M (p_i-p_j) = [행 상수] + 2 p_i^T M p_j - p_j^T M p_j
+               이고, 오른쪽 두 항은 q 에 [2 M p_i, 1], k 에 [p_j, -p_j^T M p_j] 를
+               붙인 내적과 **정확히** 같다. 근사가 아니다. M = A^T A 라 양정치가
+               보장되고 head 마다 수용 반경과 방향성이 다르다.
 
-    주파수는 축정렬이 아니라 head 마다 임의의 3D 벡터 omega_k 로 둔다
-    (RoPE-Mixed, ECCV 2024 / LieRE, ICML 2025). 축정렬은 d_head 를 3 으로 나눠야
-    하고 대각 방향 관계를 표현하지 못한다. 방향은 구면 등방으로 뽑고 파장은
-    log 등간격으로 둔다 -- 가장 짧은 파장이 앵커 간격의 두 배보다 짧으면 이웃
-    사이에서 위상이 감겨 같은 각도가 다른 거리로 읽힌다.
+    층마다 따로 두면 각도와 게이트를 depth 번 다시 계산한다. 위치는 층 사이에
+    변하지 않는데 M=512 에서는 연산이 작아 **커널 실행 횟수**가 시간을 정하므로,
+    그 중복이 그대로 손해다 (실측: 층별 6.9 -> 17.9 ms).
     """
 
-    def __init__(self, heads, dim, lam_min, lam_max, seed=0):
+    def __init__(self, heads, dc, lam_min, lam_max, sigma0, seed=0):
         super().__init__()
-        assert dim % 2 == 0, "RoPE 는 채널을 쌍으로 쓴다"
-        P = dim // 2
+        assert dc % 2 == 0, "RoPE 는 채널을 쌍으로 쓴다"
+        P = dc // 2
         g = torch.Generator().manual_seed(seed)
         mag = 2.0 * math.pi / torch.logspace(math.log10(lam_min),
                                              math.log10(lam_max), P)
         d = torch.randn(heads, P, 3, generator=g)
         d = d / d.norm(dim=-1, keepdim=True).clamp(min=1e-12)
         self.omega = nn.Parameter(d * mag.reshape(1, P, 1))
+        self.A = nn.Parameter(torch.eye(3).repeat(heads, 1, 1) / sigma0)
 
-    def forward(self, x, pos):
-        """x [B,H,M,D], pos [B,M,3] -> 회전된 x"""
+    def forward(self, pos):
+        """pos [B,M,3] -> (cos, sin, q_geo, k_geo)"""
         ang = torch.einsum("bmc,hpc->bhmp", pos, self.omega)
-        c, s = ang.cos(), ang.sin()
-        x1, x2 = x[..., 0::2], x[..., 1::2]
-        return torch.stack([x1 * c - x2 * s, x1 * s + x2 * c], -1).flatten(-2)
+        Mh = self.A.transpose(-1, -2) @ self.A                  # [H,3,3] 양정치
+        Mp = torch.einsum("hcd,bmd->bhmc", Mh, pos)             # [B,H,M,3]
+        quad = (pos.unsqueeze(1) * Mp).sum(-1, keepdim=True)    # p^T M p
+        qg = torch.cat([2.0 * Mp, torch.ones_like(quad)], -1)
+        kg = torch.cat([pos.unsqueeze(1).expand_as(Mp), -quad], -1)
+        return ang.cos(), ang.sin(), qg, kg
+
+
+def _rope(x, c, s):
+    x1, x2 = x[..., 0::2], x[..., 1::2]
+    return torch.stack([x1 * c - x2 * s, x1 * s + x2 * c], -1).flatten(-2)
 
 
 class RelAttention(nn.Module):
     """상대 위치가 q/k 안에 들어가는 어텐션. [M,M] 바이어스를 만들지 않는다.
 
-    전에 쓰던 경로는 쌍마다 (p_i - p_j, log(1+d)) 를 작은 MLP 에 통과시켜 head 별
-    바이어스를 만들었다. 학습 반복의 35% 를 먹었는데, 파라미터가 292 개인 층이
-    그런 이유는 **[M,M,32] 중간 텐서를 만들고 역전파용으로 붙잡고 있기** 때문이다
+    전에 쓰던 경로는 쌍마다 (p_i-p_j, log(1+d)) 를 작은 MLP 에 통과시켜 head 별
+    바이어스를 만들었다. 파라미터가 292 개인 층이 학습 반복의 35% 를 먹었는데,
+    이유는 **[M,M,32] 중간 텐서를 만들고 역전파용으로 붙잡고 있기** 때문이다
     (Point Transformer V3 도 같은 것을 재고 RPE 를 아예 버렸다).
 
-    핵심은 사영이 선형이면 쌍의 차이를 따로 만들 필요가 없다는 것이다. 거리
-    바이어스도 마찬가지로 분해된다 -- softmax 가 행 상수를 지우므로
-
-        -(p_i-p_j)^T M (p_i-p_j) = [행 상수] + 2 p_i^T M p_j - p_j^T M p_j
-
-    이고, 오른쪽 두 항은 q 에 [2 M p_i, 1], k 에 [p_j, -p_j^T M p_j] 를 붙인
-    내적과 **정확히** 같다. 근사가 아니다. M = A^T A 로 두어 head 마다 다른
-    수용 반경과 방향성을 갖되 양정치가 보장된다.
-
-    그래서 바이어스 인자 없이 SDPA 를 부르고, flash 커널이 그대로 쓰인다.
+    기하 채널은 head 차원 **안에서** 뗀다. 덧붙이면 32 -> 36 이 되어 flash 커널의
+    지원 차원을 벗어난다.
     """
 
     EXTRA = 4
 
-    def __init__(self, hidden, heads, lam_min, lam_max, sigma0, seed=0):
+    def __init__(self, hidden, heads):
         super().__init__()
         assert hidden % heads == 0
         self.h, self.d = heads, hidden // heads
-        # 기하 채널을 **덧붙이지 않고** head 차원 안에서 뗀다. 붙이면 head 가
-        # 32 -> 36 이 되어 flash 커널의 지원 차원(32/64/128)을 벗어나고, 실측에서
-        # 순+역이 7.6 -> 18.1 ms 로 되레 느려졌다. 내용 채널 네 개를 내주는 대신
-        # 차원이 그대로 32 라 커널이 유지된다.
         self.dc = self.d - self.EXTRA
-        assert self.dc > 0 and self.dc % 2 == 0, "내용 채널은 짝수여야 한다 (RoPE)"
         self.qkv = nn.Linear(hidden, 3 * hidden)
         self.proj = nn.Linear(hidden, hidden)
-        self.rope = Rope3D(heads, self.dc, lam_min, lam_max, seed)
-        # M_h = A^T A. sigma0 (앵커 간격) 에서 게이트가 O(1) 이 되게 초기화한다
-        self.A = nn.Parameter(torch.eye(3).repeat(heads, 1, 1) / sigma0)
+        # scale 은 **내용 채널 기준**이다. 기본값 d^-1/2 를 쓰면 내용 항이 잘못
+        # 스케일된다. 기하 항 크기는 학습되는 A 가 흡수한다.
         self.scale = self.dc ** -0.5
 
-    def forward(self, x, pos):
-        """x [B,M,C], pos [B,M,3]"""
+    def forward(self, x, ctx):
+        c, s, qg, kg = ctx
         B, M, _ = x.shape
         q, k, v = self.qkv(x).chunk(3, -1)
         q, k, v = (t.view(B, M, self.h, self.d).transpose(1, 2) for t in (q, k, v))
-        q, k = self.rope(q[..., :self.dc], pos), self.rope(k[..., :self.dc], pos)
-        Mh = self.A.transpose(-1, -2) @ self.A                  # [H,3,3] 양정치
-        Mp = torch.einsum("hcd,bmd->bhmc", Mh, pos)             # [B,H,M,3]
-        quad = (pos.unsqueeze(1) * Mp).sum(-1, keepdim=True)    # p^T M p
-        q = torch.cat([q, 2.0 * Mp, torch.ones_like(quad)], -1)
-        k = torch.cat([k, pos.unsqueeze(1).expand_as(Mp), -quad], -1)
-        # scale 은 **내용 채널 기준**으로 넘긴다. 기본값 (d+EXTRA)^-1/2 를 쓰면
-        # 내용 항이 잘못 스케일된다. 기하 항 크기는 학습되는 A 가 흡수한다.
+        q = torch.cat([_rope(q[..., :self.dc], c, s), qg], -1)
+        k = torch.cat([_rope(k[..., :self.dc], c, s), kg], -1)
         o = Fn.scaled_dot_product_attention(q, k, v, attn_mask=None,
                                             scale=self.scale)
         return self.proj(o.transpose(1, 2).reshape(B, M, -1))
@@ -220,14 +218,14 @@ class RelAttention(nn.Module):
 class RelBlock(nn.Module):
     """pre-norm 블록. 어텐션만 위 것으로 바뀌었다."""
 
-    def __init__(self, hidden, heads, lam_min, lam_max, sigma0, seed=0):
+    def __init__(self, hidden, heads):
         super().__init__()
         self.n1, self.n2 = nn.LayerNorm(hidden), nn.LayerNorm(hidden)
-        self.att = RelAttention(hidden, heads, lam_min, lam_max, sigma0, seed)
+        self.att = RelAttention(hidden, heads)
         self.ffn = mlp([hidden, 2 * hidden, hidden], layernorm=False)
 
-    def forward(self, x, pos):
-        x = x + self.att(self.n1(x), pos)
+    def forward(self, x, ctx):
+        x = x + self.att(self.n1(x), ctx)
         return x + self.ffn(self.n2(x))
 
 
@@ -365,9 +363,11 @@ class DeformNet(nn.Module):
         self.film = DtFiLM(hidden, depth + 1)
         # 파장 범위: 가장 짧은 것은 앵커 간격의 두 배 (그보다 짧으면 이웃 사이에서
         # 위상이 감긴다), 가장 긴 것은 물체 지름의 두 배.
-        self.blocks = nn.ModuleList([
-            RelBlock(hidden, heads, lam_min=2.0 * h, lam_max=2.0 * ext,
-                     sigma0=h, seed=seed + i) for i in range(depth)])
+        self.relpos = RelPos(heads, hidden // heads - RelAttention.EXTRA,
+                             lam_min=2.0 * h, lam_max=2.0 * ext, sigma0=h,
+                             seed=seed)
+        self.blocks = nn.ModuleList([RelBlock(hidden, heads)
+                                     for _ in range(depth)])
         self.dec = mlp([hidden, hidden, 5], layernorm=False)
         if zero_init:
             # 출력 0 이면 dp=0, r=h, tau=1 -- 아무것도 움직이지 않는 항등 변형에서
@@ -392,8 +392,9 @@ class DeformNet(nn.Module):
         # (무게중심이 함께 움직인다), 거리 게이트가 |p|^2 ~ 300 짜리 두 항의
         # 차이로 |Δ|^2 ~ 1 을 만드는 자리끼리 상쇄를 피한다.
         pc = (p - p.mean(0, keepdim=True)).unsqueeze(0)
+        ctx = self.relpos(pc)
         for i, blk in enumerate(self.blocks):
-            h = blk(gamma[i + 1] * h + beta[i + 1], pc)
+            h = blk(gamma[i + 1] * h + beta[i + 1], ctx)
         o = self.dec(h).squeeze(0)
         dp = o[:, :3] * self.scale
         log_r = o[:, 3] + math.log(self.h)

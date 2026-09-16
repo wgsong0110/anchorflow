@@ -38,7 +38,7 @@ a = ap.parse_args()
 
 dev = "cuda"
 torch.manual_seed(0)
-from anchorflow.deform import RelAttention, RelBlock          # noqa: E402
+from anchorflow.deform import RelAttention, RelBlock, RelPos, _rope  # noqa: E402
 from anchorflow.nextstate import (GeoAttentionBias,           # noqa: E402
                                   GeoAttentionBlock)
 
@@ -48,16 +48,16 @@ pos = torch.randn(1, M, 3, device=dev) * 0.3
 x = torch.randn(1, M, C, device=dev)
 
 # ---------------------------------------------------------------- 정확성
-att = RelAttention(C, H, lam_min=0.05, lam_max=2.0, sigma0=0.2).to(dev)
+att = RelAttention(C, H).to(dev)
+rp = RelPos(H, att.dc, lam_min=0.05, lam_max=2.0, sigma0=0.2).to(dev)
 with torch.no_grad():
+    cs, sn, qg, kg = rp(pos)
     q, k, v = att.qkv(x).chunk(3, -1)
     q, k, v = (t.view(1, M, H, D).transpose(1, 2) for t in (q, k, v))
-    q, k = att.rope(q[..., :att.dc], pos), att.rope(k[..., :att.dc], pos)
-    Mh = att.A.transpose(-1, -2) @ att.A
-    Mp = torch.einsum("hcd,bmd->bhmc", Mh, pos)
-    quad = (pos.unsqueeze(1) * Mp).sum(-1, keepdim=True)
-    qe = torch.cat([q, 2.0 * Mp, torch.ones_like(quad)], -1)
-    ke = torch.cat([k, pos.unsqueeze(1).expand_as(Mp), -quad], -1)
+    q, k = _rope(q[..., :att.dc], cs, sn), _rope(k[..., :att.dc], cs, sn)
+    Mh = rp.A.transpose(-1, -2) @ rp.A
+    qe = torch.cat([q, qg], -1)
+    ke = torch.cat([k, kg], -1)
     got = (qe @ ke.transpose(-1, -2)) * att.scale                # [1,H,M,M]
     # 명시적으로 만든 기준: 내용 항 + 정확한 이차형식
     rel = pos.unsqueeze(2) - pos.unsqueeze(1)                    # [1,M,M,3]
@@ -72,8 +72,8 @@ print(f"[정확성] 거리 게이트: 원시 차이 {e_raw:.3e} (행 상수), �
 
 # 평행이동 불변
 with torch.no_grad():
-    o0 = att(x, pos)
-    o1 = att(x, pos + torch.tensor([3.0, -1.0, 2.0], device=dev))
+    o0 = att(x, rp(pos))
+    o1 = att(x, rp(pos + torch.tensor([3.0, -1.0, 2.0], device=dev)))
     shift = float((o0 - o1).abs().max() / o0.abs().max())
 print(f"[평행이동] 좌표를 통째로 옮겼을 때 출력 상대 변화 {shift:.3e}", flush=True)
 
@@ -82,7 +82,7 @@ with torch.no_grad():
     th = 0.7
     R = torch.tensor([[np.cos(th), -np.sin(th), 0], [np.sin(th), np.cos(th), 0],
                       [0, 0, 1]], device=dev, dtype=torch.float32)
-    o2 = att(x, pos @ R.T)
+    o2 = att(x, rp(pos @ R.T))
     rot = float((o0 - o2).abs().max() / o0.abs().max())
 print(f"[회전] 좌표를 돌렸을 때 출력 상대 변화 {rot:.3e} (0 이면 방향을 못 본다)",
       flush=True)
@@ -105,8 +105,8 @@ def timeit(fn, warmup, reps):
 
 old_bias = GeoAttentionBias(H).to(dev)
 old_blocks = torch.nn.ModuleList([GeoAttentionBlock(C, H) for _ in range(a.depth)]).to(dev)
-new_blocks = torch.nn.ModuleList([
-    RelBlock(C, H, 0.05, 2.0, 0.2) for _ in range(a.depth)]).to(dev)
+new_pos = RelPos(H, C // H - RelAttention.EXTRA, 0.05, 2.0, 0.2).to(dev)
+new_blocks = torch.nn.ModuleList([RelBlock(C, H) for _ in range(a.depth)]).to(dev)
 
 
 def old_fwd():
@@ -118,9 +118,10 @@ def old_fwd():
 
 
 def new_fwd():
+    ctx = new_pos(pos)          # 위치에서 나오는 것은 층 전체가 한 번만 만든다
     h = x
     for blk in new_blocks:
-        h = blk(h, pos)
+        h = blk(h, ctx)
     return h
 
 
