@@ -46,6 +46,8 @@ ap.add_argument("--warmup", type=int, default=10)
 ap.add_argument("--reps", type=int, default=50)
 ap.add_argument("--substeps", type=int, default=40,
                 help="한 프레임의 서브스텝 수. 프레임 비용은 이것 곱하기 서브스텝 비용")
+ap.add_argument("--mpm", action="store_true",
+                help="같은 입자 집합 위에서 MPM 한 서브스텝도 잰다")
 ap.add_argument("--student", action="store_true",
                 help="같은 앵커 수에서 학생 스테퍼 한 스텝도 잰다")
 ap.add_argument("--hidden", type=int, default=128)
@@ -180,5 +182,25 @@ json.dump(dict(n_pts=int(X0.shape[0]), n_anchors=int(sc.M), reps=a.reps,
                gpu=torch.cuda.get_device_name(0), cases=res),
           open(os.path.join(a.out, "encdec_speed.json"), "w"), indent=1,
           ensure_ascii=False)
+# ---- MPM ---------------------------------------------------------------
+# 같은 입자 집합·같은 격자 위에서 재야 비교가 된다. 앵커 시뮬은 앵커 512 개를
+# 적분하고 가우시안을 통해 힘을 모으는 반면, MPM 은 입자 전부를 격자에 뿌렸다
+# 되받는다 -- 그 차이가 그대로 비용 차이다.
+if a.mpm:
+    import warp as wp                                   # noqa: E402
+
+    wp.init()
+    from anchorflow.mpm_teacher import MPMTeacher       # noqa: E402
+
+    T = MPMTeacher(sc, horizon=a.substeps * float(sc.sub_dt) * 4)
+    dt_ = float(sc.sub_dt)
+    ms, sd = timeit(lambda: T.solver.p2g2p(None, dt_, device=T.wp_dev),
+                    a.warmup, a.reps)
+    res["MPM"] = {"substep": ms, "substep_sd": sd,
+                  "frame": ms * a.substeps, "n_grid": int(sc.n_grid),
+                  "n_particles": int(sc.keep.sum())}
+    print(f"[MPM]  substep {ms:.2f} ms x{a.substeps} = 프레임 {ms*a.substeps:.1f} ms "
+          f"(입자 {int(sc.keep.sum())}, 격자 {int(sc.n_grid)}^3)", flush=True)
+
 print(f"[저장] {os.path.join(a.out, 'encdec_speed.json')}", flush=True)
 print("SPEED_OK")
