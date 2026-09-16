@@ -67,6 +67,10 @@ ap.add_argument("--eval_t0", type=int, nargs="+", default=[5, 40, 80],
                 help="롤아웃을 시작할 프레임들. 이 궤적은 충돌 직후와 안정된 뒤의 "
                      "프레임당 변위가 수십 배 달라서, 한 구간만 보면 오해한다")
 ap.add_argument("--eval_len", type=int, default=15)
+ap.add_argument("--motion_frac", type=float, default=0.0,
+                help="창을 뽑을 때 GT 변위가 큰 프레임을 이 비율만큼 우선한다. "
+                     "이 궤적은 100 프레임 중 ~30 만 움직이고 나머지는 완전히 "
+                     "정지라, 균등하게 뽑으면 학습의 70%가 '아무 일도 안 일어남'이다")
 ap.add_argument("--hold_last", type=int, default=20,
                 help="각 궤적의 마지막 몇 프레임을 평가용으로 뗀다")
 ap.add_argument("--hold_traj", default=None,
@@ -147,6 +151,17 @@ def mat_feat(cfg):
         [np.log(float(cfg["E"])), float(cfg["nu"]), float(cfg.get("xi", 0.0)),
          np.log(float(cfg["density"]))], device=dev, dtype=torch.float32), g])
 
+
+# 프레임별 평균 GT 변위. 어디가 실제로 움직이는 구간인지 여기서 정해진다.
+for _t, _d in TR + held:
+    _xx = _d["x"]
+    _ss = torch.randperm(_xx.shape[1])[:2000]
+    mv = (_xx[1:, _ss] - _xx[:-1, _ss]).norm(dim=-1).mean(1)      # [T-1]
+    _d["motion"] = mv
+    print(f"  {_t}: 변위 중앙 {float(mv.median())/EXT*100:.4f}% "
+          f"상위10% {float(mv.quantile(0.9))/EXT*100:.4f}% "
+          f"움직이는 프레임(중앙의 3배 초과) {int((mv > 3*mv.median()).sum())}/{len(mv)}",
+          flush=True)
 
 VEL_SCALE = EXT / FRAME_DT
 # 정준 공분산. ply 의 것을 쓸 수 없어(사실상 0) 입자 간격에서 만든다 -- MPM 이
@@ -300,8 +315,13 @@ for it in pbar:
     for _ in range(a.batch):
         tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
         T = d["x"].shape[0] - a.hold_last
-        t0 = int(torch.randint(1, max(T - L - 1, 2), (1,), generator=gen,
-                               device=dev))
+        hi = max(T - L - 1, 2)
+        if a.motion_frac > 0 and float(torch.rand(1, generator=gen,
+                                                  device=dev)) < a.motion_frac:
+            w_ = d["motion"][1:hi].clamp(min=1e-12)
+            t0 = 1 + int(torch.multinomial(w_.to(dev), 1, generator=gen))
+        else:
+            t0 = int(torch.randint(1, hi, (1,), generator=gen, device=dev))
         gsel = torch.randperm(N_FULL, generator=gen,
                               device=dev)[:a.n_pts].sort().values
         wx, wJ, wst, wa, wrel = window(d, t0, L, gsel)
