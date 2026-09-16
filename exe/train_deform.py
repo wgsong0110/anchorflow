@@ -54,6 +54,10 @@ ap.add_argument("--shape_loss", default="frob", choices=("frob", "bures", "none"
                 help="모양을 어떻게 채점할지. frob 은 J 와 GT 증분의 Frobenius, "
                      "bures 는 위치까지 포함한 입자별 Bures-Wasserstein (길이^2 "
                      "단위라 lambda_J 가 필요 없다), none 은 위치만")
+ap.add_argument("--lambda_anchor", type=float, default=0.0,
+                help="앵커 변위를 GT 에 직접 맞추는 보조 손실의 가중. 앵커는 FPS 로 "
+                     "고른 **가우시안**이라 그 정답 변위를 정확히 안다 -- 스키닝을 "
+                     "거치는 간접 경로보다 훨씬 쉬운 문제이고, 진단으로도 쓴다")
 ap.add_argument("--sigma0", type=float, default=0.5,
                 help="정준 가우시안의 등방 표준편차를 입자 간격의 몇 배로 볼지. "
                      "이 씬의 ply 는 sigma ~ 1e-9 로 사실상 점이라, 모양 항을 쓰려면 "
@@ -202,12 +206,20 @@ def window(d, t0, L, gsel):
     x = take(d["x"][t0], gsel)
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
     p = take(d["x"][t0], AIDX)
-    loss_x = loss_J = 0.0
-    still = 0.0
+    loss_x = loss_J = loss_a = 0.0
+    still = a_rel = 0.0
     x_still = x.clone()
     for i in range(L):
+        p_prev = p
         x2, p, v, J, _ = step_once(d, t0 + i, gsel, p, x, v,
                                    need_J=a.lambda_J > 0)
+        # 앵커의 정답 변위: 앵커가 가우시안이므로 그 가우시안의 GT 변위 그대로다
+        dp_gt = (take(d["x"][t0 + i + 1], AIDX) - take(d["x"][t0 + i], AIDX))
+        dp_hat = p - p_prev
+        la = ((dp_hat - dp_gt) ** 2).sum(-1).mean() / (EXT ** 2)
+        loss_a = loss_a + la
+        a_rel = a_rel + float(la) ** 0.5 / max(
+            float((dp_gt ** 2).sum(-1).mean()) ** 0.5 / EXT, 1e-20)
         gt = take(d["x"][t0 + i + 1], gsel)
         loss_x = loss_x + ((x2 - gt) ** 2).sum(-1).mean() / (EXT ** 2)
         still = still + float(((x_still - gt) ** 2).sum(-1).mean()) / (EXT ** 2)
@@ -226,7 +238,7 @@ def window(d, t0, L, gsel):
         x = x2
     return (loss_x / L,
             (loss_J / L if a.lambda_J > 0 else torch.zeros((), device=dev)),
-            still / L)
+            still / L, loss_a / L, a_rel / L)
 
 
 # 특징 차원을 한 번 재서 모델을 세운다
@@ -283,8 +295,8 @@ pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
 for it in pbar:
     L = a.unroll if it < a.unroll_at * a.iters else a.unroll_final
     opt.zero_grad(set_to_none=True)
-    lx = lJ = 0.0
-    still = 0.0
+    lx = lJ = la = 0.0
+    still = arel = 0.0
     for _ in range(a.batch):
         tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
         T = d["x"].shape[0] - a.hold_last
@@ -292,20 +304,23 @@ for it in pbar:
                                device=dev))
         gsel = torch.randperm(N_FULL, generator=gen,
                               device=dev)[:a.n_pts].sort().values
-        wx, wJ, wst = window(d, t0, L, gsel)
+        wx, wJ, wst, wa, wrel = window(d, t0, L, gsel)
         # 창마다 바로 역전파해 누적한다 -- 창 여러 개의 그래프를 동시에 들고 있으면
         # 야코비안까지 붙어 메모리가 배치 수만큼 늘어난다
-        ((wx + a.lambda_J * wJ) / a.batch).backward()
+        ((wx + a.lambda_J * wJ + a.lambda_anchor * wa) / a.batch).backward()
         lx = lx + float(wx) / a.batch
         lJ = lJ + float(wJ) / a.batch
         still = still + wst / a.batch
+        la = la + float(wa) / a.batch
+        arel = arel + wrel / a.batch
     gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
     opt.step()
-    hist.append((lx, lJ, still))
+    hist.append((lx, lJ, still, la, arel))
     if it % 20 == 0:
         pbar.set_postfix(x=f"{100*lx**0.5:.3f}%", 정지=f"{100*still**0.5:.3f}%",
                          비=f"{(lx/max(still,1e-20))**0.5:.2f}",
-                         J=f"{lJ:.1e}", L=L, gn=f"{float(gn):.1e}")
+                         앵커비=f"{arel:.2f}", J=f"{lJ:.1e}", L=L,
+                         gn=f"{float(gn):.1e}")
     if (it + 1) % a.save_every == 0 or it == a.iters - 1:
         torch.save({"net": net.state_dict(), "opt": opt.state_dict(),
                     "step": it + 1, "aidx": AIDX.cpu(), "H": H, "EXT": EXT,
