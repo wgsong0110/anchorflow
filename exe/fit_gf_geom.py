@@ -24,7 +24,6 @@
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import os
 import sys
@@ -32,7 +31,6 @@ import sys
 _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
 sys.path.insert(0, _lib)
 
-import h5py
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -66,100 +64,19 @@ a = ap.parse_args()
 dev = "cuda"
 torch.manual_seed(a.seed)
 
-from anchorflow.anchor_mpm import AnchorElasticSim, lame_from_E_nu  # noqa: E402
-from anchorflow.anchor_sparse import AnchorSparse                  # noqa: E402
-from anchorflow.anchors import AnchorSet                           # noqa: E402
-from anchorflow.scene_setup import Scene                           # noqa: E402
+from anchorflow import gf_scene                       # noqa: E402
+from anchorflow.anchor_sparse import AnchorSparse       # noqa: E402
 
-# ---------------------------------------------------------------- 궤적 읽기
-
-
-def load_x(p):
-    with h5py.File(p, "r") as f:
-        d = np.array(f["x"])
-    return d.T if d.shape[0] == 3 else d
-
-
-files = sorted(glob.glob(os.path.join(a.h5_dir, "*.h5")))[::a.stride]
-if not files:
-    raise SystemExit(f"h5 가 없다: {a.h5_dir}")
-cfg = json.load(open(a.config))
-print(f"[입력] {len(files)} 프레임 (stride {a.stride}), 재질 {cfg.get('material')}",
-      flush=True)
-
-X0f = torch.from_numpy(load_x(files[0])).float()
-XLf = torch.from_numpy(load_x(files[-1])).float()
-# 이 MPM 은 진행하면서 입자를 비유한값으로 떨군다. 처음과 끝 모두 유한한 것만 쓴다.
-ok = torch.isfinite(X0f).all(1) & torch.isfinite(XLf).all(1)
-cand = torch.nonzero(ok).squeeze(-1)
-g = torch.Generator().manual_seed(a.seed)
-sel = cand[torch.randperm(cand.numel(), generator=g)[:a.n_pts]].sort().values
-print(f"[입자] 전체 {X0f.shape[0]}, 두 끝 모두 유한 {cand.numel()}, "
-      f"표본 {sel.numel()}", flush=True)
-
-TR = []
-for p in tqdm(files, desc="궤적", ncols=80):
-    x = torch.from_numpy(load_x(p)).float()[sel]
-    TR.append(x)
-TR = torch.stack(TR).to(dev)
-# 남은 비유한값이 있으면 그 프레임의 해당 점을 직전 값으로 채운다 (전체를 버리지 않는다)
-bad = ~torch.isfinite(TR).all(-1)
-if bad.any():
-    print(f"[보정] 중간 프레임의 비유한값 {int(bad.sum())} 개를 직전 값으로 채움",
-          flush=True)
-    for t in range(1, TR.shape[0]):
-        m = bad[t]
-        if m.any():
-            TR[t][m] = TR[t - 1][m]
+# ---------------------------------------------------------------- 궤적과 씬
+cfg = gf_scene.read_cfg(a.config)
+print(f"[입력] {a.h5_dir} (stride {a.stride}), 재질 {cfg.get('material')}", flush=True)
+TR, EXT = gf_scene.load_traj(a.h5_dir, stride=a.stride, n_pts=a.n_pts,
+                             seed=a.seed, dev=dev)
 X0 = TR[0].contiguous()
-EXT = float((X0.max(0).values - X0.min(0).values).norm())
-print(f"[씬] 프레임 {TR.shape[0]}, 물체 대각 {EXT:.4f}, 최대 변위 "
-      f"{100*float((TR-X0).norm(dim=-1).max())/EXT:.1f}%", flush=True)
-
-# ---------------------------------------------------------------- 씬 구성
-# scene_setup.build 는 PLY 와 PhysGaussian 전처리를 전제한다. 여기 입자는 저쪽
-# 내부 채움까지 끝난 MPM 입자라 그 경로를 다시 태울 것이 없다 -- 같은 원시 요소
-# (AnchorSet, AnchorElasticSim)로 Scene 만 직접 세운다.
 N = X0.shape[0]
-n_grid = int(cfg.get("n_grid", 100))
-dx = float(cfg.get("grid_lim", 2.0)) / n_grid
-vi = (X0 / dx).long().clamp(0, n_grid - 1)
-flat = (vi[:, 0] * n_grid + vi[:, 1]) * n_grid + vi[:, 2]
-cnt = torch.zeros(n_grid ** 3, device=dev).index_add_(
-    0, flat, torch.ones(N, device=dev))
-volume = ((dx ** 3) / cnt[flat]).contiguous()
-E = torch.full((N,), float(cfg["E"]), device=dev)
-nu = torch.full((N,), float(cfg["nu"]), device=dev)
-dens = torch.full((N,), float(cfg["density"]), device=dev)
-mu, lam = lame_from_E_nu(E, nu)
-keep = torch.ones(N, dtype=torch.bool, device=dev)
-
-aset, _ = AnchorSet.from_gaussians(X0, node_num=a.n_anchors, latent_dim=0,
-                                   e_dim=0, K=a.K)
-ac = aset.canonical.clone().contiguous()
-radius = AnchorElasticSim(X0, ac, K=a.K).radius
-sim = AnchorElasticSim(X0, ac, K=a.K, radius=radius)
-sim.eig_floor = a.eig_floor
-sim.rot_fallback = True
-w0 = sim._weights(X0, ac)
-M = ac.shape[0]
-mass = torch.zeros(M, device=dev).index_add_(
-    0, sim.nn_idx.reshape(-1),
-    ((dens * volume).unsqueeze(-1) * w0).reshape(-1)).clamp(min=1e-12)
-fixed = torch.zeros(M, dtype=torch.bool, device=dev)
-for bc in cfg.get("boundary_conditions", []):
-    if bc["type"] == "cuboid":
-        c_ = torch.tensor(bc["point"], device=dev)
-        s_ = torch.tensor(bc["size"], device=dev)
-        fixed |= ((ac - c_).abs() <= s_).all(-1)
-
-sc = Scene(cfg=cfg, xyz_world=X0, pos=X0, keep=keep, volume=volume, mu=mu,
-           lam=lam, crop=None, anchor_canonical=ac, mass=mass, fixed_mask=fixed,
-           sim=sim, gravity=torch.tensor(cfg["g"], dtype=torch.float32, device=dev),
-           n_grid=n_grid, sub_dt=float(cfg.get("substep_dt", 1e-4)),
-           damping=float(cfg.get("grid_v_damping_scale", 1.0)),
-           to_mpm=lambda x: x, undo=lambda x: x)
-print(f"[앵커] {M} 개, 반경 {radius:.5f}, 고정 {int(fixed.sum())}", flush=True)
+sc = gf_scene.build_scene(X0, cfg, n_anchors=a.n_anchors, K=a.K,
+                          eig_floor=a.eig_floor, dev=dev)
+M = sc.M
 
 fit = AnchorSparse(sc, c=a.c, eig_floor=a.eig_floor,
                    softmax_w=a.softmax_w, softmax_k=a.softmax_k).to(dev)
