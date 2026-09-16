@@ -120,13 +120,15 @@ MASS = ((dx ** 3) / cnt[flat]) * float(cfg0["density"])
 
 # 물성은 앵커 특징에 들어간다. 궤적마다 다르므로 궤적별로 만든다.
 def mat_feat(cfg):
-    return torch.tensor([np.log(float(cfg["E"])), float(cfg["nu"]),
-                         float(cfg.get("xi", 0.0)),
-                         np.log(float(cfg["density"]))], device=dev)
+    # 중력은 방향이라 평행이동 등변성을 깨지 않는다. 궤적마다 다르므로 넣는다.
+    g = torch.tensor(cfg["g"], device=dev, dtype=torch.float32) / 15.0
+    return torch.cat([torch.tensor(
+        [np.log(float(cfg["E"])), float(cfg["nu"]), float(cfg.get("xi", 0.0)),
+         np.log(float(cfg["density"]))], device=dev), g])
 
 
 VEL_SCALE = EXT / FRAME_DT
-N_MAT = 4
+N_MAT = 7
 n_bc = bc_features(X0d[:2], cfg0).shape[-1]
 n_feat_probe = None
 

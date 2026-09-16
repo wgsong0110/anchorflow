@@ -246,7 +246,12 @@ class DeformNet(nn.Module):
         self.scale = scale                 # 변위 단위 (전형적 한 프레임 변위)
         self.h = h                         # 길이 단위 (앵커 간격)
         self.n_static = n_static
-        self.node_enc = mlp([3 + n_feat + n_static, hidden, hidden])
+        # 앵커의 **절대** 위치는 넣지 않는다. 어텐션 바이어스가 이미 상대 오프셋과
+        # 거리만 보고, 집계 특징도 전부 상대량이라, 여기에 p 를 넣는 순간 연산자가
+        # 평행이동 등변성을 잃는다 -- 물체가 1 만큼 옮겨간 같은 파괴를 다른 입력으로
+        # 보게 된다. 경계까지의 거리처럼 위치가 필요한 정보는 static 채널이
+        # 경계 기준 상대량으로 이미 들고 있다.
+        self.node_enc = mlp([n_feat + n_static, hidden, hidden])
         self.film = DtFiLM(hidden, depth + 1)
         self.bias = GeoAttentionBias(heads)
         self.blocks = nn.ModuleList([GeoAttentionBlock(hidden, heads)
@@ -260,8 +265,12 @@ class DeformNet(nn.Module):
             nn.init.zeros_(last.bias)
 
     def forward(self, p, feat, dt, static=None):
-        """p [M,3], feat [M,F] -> (dp [M,3], log_r [M], log_tau [M])"""
-        f = [p / self.h, feat]
+        """p [M,3], feat [M,F] -> (dp [M,3], log_r [M], log_tau [M])
+
+        p 는 어텐션 바이어스에만 쓰이고 -- 거기서도 쌍의 상대 오프셋과 거리로만
+        들어간다 -- 노드 특징으로는 들어가지 않는다.
+        """
+        f = [feat]
         if static is not None:
             f.append(static)
         h = self.node_enc(torch.cat(f, -1)).unsqueeze(0)
