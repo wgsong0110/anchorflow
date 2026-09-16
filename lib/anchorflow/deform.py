@@ -429,6 +429,17 @@ class DeformNet(nn.Module):
                 last.weight.mul_(0.01)
             nn.init.zeros_(last.bias)
 
+    @torch.no_grad()
+    def set_input_stats(self, feats):
+        """[S, F] 표본에서 채널별 평균과 표준편차를 잡아 둔다.
+
+        체크포인트에 버퍼로 들어가므로, 다시 불러올 때 누가 어떻게 정규화했는지에
+        의존하지 않는다.
+        """
+        f = feats.detach().float().reshape(-1, feats.shape[-1])
+        self.in_mu.copy_(f.mean(0))
+        self.in_sd.copy_(f.std(0).clamp(min=1e-6))
+
     def forward(self, p, feat, dt, static=None):
         """p [M,3], feat [M,F] -> (dp [M,3], log_r [M], log_tau [M])
 
@@ -438,7 +449,8 @@ class DeformNet(nn.Module):
         f = [feat]
         if static is not None:
             f.append(static)
-        h = self.node_enc(torch.cat(f, -1)).unsqueeze(0)
+        h = self.node_enc(((torch.cat(f, -1) - self.in_mu) / self.in_sd)
+                          ).unsqueeze(0)
         gamma, beta = self.film(dt, p.device)
         h = gamma[0] * h + beta[0]
         # 좌표는 앵커 무게중심 기준으로 옮겨 쓴다. 평행이동 불변은 그대로이고
