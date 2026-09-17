@@ -38,6 +38,11 @@ ap.add_argument("--metric", default="sigma1", choices=("sigma1", "strain"),
                      "둘 다 회전에 불변이고, strain 은 변형이 없으면 정확히 0 이다")
 ap.add_argument("--vmax", type=float, default=0.0,
                 help="색 상한. 0 이면 전체 프레임의 p99 로 한 번 고정한다")
+ap.add_argument("--mask", type=float, default=1.2,
+                help="격자점에서 가장 가까운 입자까지 이 배(복셀 한 변 기준)를 넘으면 "
+                     "재질이 없는 자리로 보고 가린다")
+ap.add_argument("--cell", type=float, default=0.0,
+                help="가림 판정의 길이 단위. 0 이면 입자 간격 중앙값에서 잡는다")
 ap.add_argument("--tile", type=int, default=240)
 ap.add_argument("--fps", type=int, default=10)
 a = ap.parse_args()
@@ -49,6 +54,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from anchorflow import ptrender
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn, bc_features,
                                skin_with_jacobian)
 
@@ -98,8 +104,21 @@ def measure(F):
     return E.reshape(*E.shape[:-2], 9).norm(dim=-1)
 
 
+# 가림 판정의 길이 단위: 입자 간격 중앙값 (없으면 물체의 2%)
+if a.cell > 0:
+    CELL = a.cell
+else:
+    _s = xc0[torch.randperm(xc0.shape[0], device=dev)[:2000]]
+    CELL = float(torch.cdist(_s, _s).topk(2, largest=False).values[:, 1].median())
+print(f"[가림] 길이 단위 {CELL:.5f}, 문턱 {a.mask}배", flush=True)
+
+
 def to_grid(vals, pos_rel, z):
-    """입자 값을 단면 격자로 옮긴다 (두께 안의 입자만, 역거리 가중)."""
+    """입자 값을 단면 격자로 옮긴다. 재질이 없는 자리는 NaN 으로 남겨 가린다.
+
+    가리지 않으면 역거리 가중이 물체 밖까지 값을 퍼뜨려, 수박이 없는 배경이
+    변형된 것처럼 보인다.
+    """
     sel = (pos_rel[:, 2] - z).abs() < a.band * EXT
     if int(sel.sum()) < 8:
         return None
@@ -107,7 +126,10 @@ def to_grid(vals, pos_rel, z):
     dd = torch.cdist(q, pos_rel[sel][:, :2])
     w = 1.0 / (dd + 0.02 * EXT) ** 2
     w = w / w.sum(1, keepdim=True)
-    return (w @ vals[sel].unsqueeze(-1)).squeeze(-1).reshape(a.grid, a.grid).cpu().numpy()
+    g = (w @ vals[sel].unsqueeze(-1)).squeeze(-1)
+    g = torch.where(dd.min(1).values < a.mask * CELL, g,
+                    torch.full_like(g, float("nan")))
+    return g.reshape(a.grid, a.grid).cpu().numpy()
 
 
 # 모델 롤아웃: 야코비안을 누적한다
@@ -151,18 +173,31 @@ if vmax <= 0:
 print(f"[색 범위] {1.0 if a.metric=='sigma1' else 0.0} ~ {vmax:.3f} "
       f"(전체 프레임 p99 로 고정), 지표 {a.metric}", flush=True)
 
+# 롤아웃 패널 준비: 단면과 **같은 프레임**을 왼쪽에 둔다
+RCAM = ptrender.camera(12.0, 35.0, dev)
+_all = torch.stack([g[0] for g in gt])
+RCTR, RHALF, RW, RH = ptrender.frame_box(_all, RCAM, 220)
+RCOL = ptrender.canon_color(xc0)
+
 os.makedirs(a.out, exist_ok=True)
 rows = 1 if model is None else 2
 frames = []
 for i in range(a.frames):
-    fig, ax = plt.subplots(rows, a.slices,
-                           figsize=(a.slices * a.tile / 100, rows * a.tile / 100),
+    fig, ax = plt.subplots(rows, a.slices + 1,
+                           figsize=((a.slices + 1) * a.tile / 100,
+                                    rows * a.tile / 100),
                            squeeze=False)
     for r in range(rows):
         xx, ss = (gt[i] if r == 0 else model[i])
         rel = xx - xx.mean(0)
+        A0 = ax[r][0]; A0.set_xticks([]); A0.set_yticks([])
+        A0.imshow(ptrender.splat(xx, RCOL, RCAM, RCTR, RHALF, RW, RH, 1)
+                  .cpu().numpy())
+        A0.set_ylabel("GT" if r == 0 else "model", fontsize=9)
+        if r == 0:
+            A0.set_title("rollout", fontsize=8)
         for s, z in enumerate(ZS):
-            A = ax[r][s]; A.set_xticks([]); A.set_yticks([])
+            A = ax[r][s + 1]; A.set_xticks([]); A.set_yticks([])
             g = to_grid(ss, rel, z)
             if g is None:
                 A.text(.5, .5, "-", ha="center"); continue
@@ -170,8 +205,7 @@ for i in range(a.frames):
                           vmin=(1.0 if a.metric == "sigma1" else 0.0), vmax=vmax)
             if r == 0:
                 A.set_title(f"rel z={z:+.2f}", fontsize=8)
-            if s == 0:
-                A.set_ylabel("GT" if r == 0 else "model", fontsize=9)
+
     lbl = ("largest singular value of F" if a.metric == "sigma1"
            else "|Green-Lagrange strain|_F")
     fig.suptitle(f"{a.traj}  frame {a.t0+i+1:03d}  {lbl} (since frame {a.t0})",

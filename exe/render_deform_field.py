@@ -35,6 +35,9 @@ ap.add_argument("--grid", type=int, default=24, help="단면당 격자 해상도
 ap.add_argument("--band", type=float, default=0.06,
                 help="단면 두께 (물체 크기 대비). GT 보간에 쓸 입자를 고른다")
 ap.add_argument("--scale", type=float, default=12.0, help="화살표 길이 배율")
+ap.add_argument("--mask", type=float, default=1.2,
+                help="격자점에서 가장 가까운 입자까지 이 배를 넘으면 재질이 없는 "
+                     "자리로 보고 화살표를 그리지 않는다")
 ap.add_argument("--tile", type=int, default=240)
 ap.add_argument("--fps", type=int, default=10)
 a = ap.parse_args()
@@ -46,6 +49,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from anchorflow import ptrender
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn, bc_features,
                                skin_with_jacobian)
 
@@ -86,8 +90,21 @@ xy_hi = rel0[:, :2].max(0).values.cpu().numpy()
 gx = np.linspace(xy_lo[0], xy_hi[0], a.grid)
 gy = np.linspace(xy_lo[1], xy_hi[1], a.grid)
 GX, GY = np.meshgrid(gx, gy, indexing="ij")
+_s = rel0[torch.randperm(rel0.shape[0], device=dev)[:2000]]
+CELL = float(torch.cdist(_s, _s).topk(2, largest=False).values[:, 1].median())
 print(f"[단면] 상대 z {zlo:.3f}~{zhi:.3f} 를 {a.slices} 등분, "
-      f"격자 {a.grid}x{a.grid}, 물체 {EXT:.4f}", flush=True)
+      f"격자 {a.grid}x{a.grid}, 물체 {EXT:.4f}, 가림 단위 {CELL:.5f}", flush=True)
+
+
+def occupancy(rel, z):
+    """그 단면에서 재질이 있는 격자점만 참. 밖까지 화살표를 그리면 수박이 없는
+    배경이 변형된 것처럼 보인다."""
+    sel = (rel[:, 2] - z).abs() < a.band * EXT
+    if int(sel.sum()) < 8:
+        return None
+    q = torch.from_numpy(np.stack([GX, GY], -1).reshape(-1, 2)).float().to(dev)
+    dd = torch.cdist(q, rel[sel][:, :2]).min(1).values
+    return (dd < a.mask * CELL).reshape(a.grid, a.grid).cpu().numpy()
 
 
 def grid_points(z, c):
@@ -146,8 +163,13 @@ if net is not None:
         dp, lr_, lt_ = net(p, torch.cat([feat, ex], -1), FRAME_DT)
         x2, _, _ = skin_with_jacobian(x, p, dp, lr_, lt_, idx, H)
         seq.append((p.clone(), dp.clone(), lr_.clone(), lt_.clone(),
-                    x.mean(0).clone(), x2.mean(0).clone()))
+                    x.mean(0).clone(), x2.mean(0).clone(), x.clone()))
         v, p, x = (x2 - x) / FRAME_DT, p + dp, x2
+
+RCAM = ptrender.camera(12.0, 35.0, dev)
+_allx = torch.stack([take(d["x"][a.t0 + j], GS) for j in range(a.frames + 1)])
+RCTR, RHALF, RW, RH = ptrender.frame_box(_allx, RCAM, 220)
+RCOL = ptrender.canon_color(xc0)
 
 os.makedirs(a.out, exist_ok=True)
 rows = 1 if net is None else 2
@@ -156,26 +178,40 @@ for i in range(a.frames):
     t = a.t0 + i
     c_t = take(d["x"][t], GS).mean(0)
     c_n = take(d["x"][t + 1], GS).mean(0)
-    fig, ax = plt.subplots(rows, a.slices,
-                           figsize=(a.slices * a.tile / 100, rows * a.tile / 100),
+    fig, ax = plt.subplots(rows, a.slices + 1,
+                           figsize=((a.slices + 1) * a.tile / 100,
+                                    rows * a.tile / 100),
                            squeeze=False)
+    xs_gt = take(d["x"][t], GS)
+    xs_md = seq[i][6] if (net is not None and len(seq[i]) > 6) else None
+    for r in range(rows):
+        A0 = ax[r][0]; A0.set_xticks([]); A0.set_yticks([])
+        xx = xs_gt if r == 0 else (xs_md if xs_md is not None else xs_gt)
+        A0.imshow(ptrender.splat(xx, RCOL, RCAM, RCTR, RHALF, RW, RH, 1)
+                  .cpu().numpy())
+        A0.set_ylabel("GT" if r == 0 else "model", fontsize=9)
+        if r == 0:
+            A0.set_title("rollout", fontsize=8)
     for s, z in enumerate(ZS):
         for r in range(rows):
             u = (gt_field(t, c_t, c_n, z) if r == 0 else
                  model_field(*seq[i][:4], H, z, seq[i][4], seq[i][5]))
-            A = ax[r][s]
+            A = ax[r][s + 1]
             A.set_xticks([]); A.set_yticks([])
             if u is None:
                 A.text(.5, .5, "-", ha="center"); continue
             U = u.reshape(a.grid, a.grid, 3)
+            occ = occupancy((xs_gt - c_t) if r == 0 else (xs_md - seq[i][4]
+                            if xs_md is not None else xs_gt - c_t), z)
+            if occ is not None:
+                U = np.where(occ[..., None], U, np.nan)
             mag = np.linalg.norm(U, axis=-1)
             A.quiver(GX, GY, U[..., 0], U[..., 1], mag, cmap="viridis",
                      scale=1.0 / max(a.scale, 1e-6), scale_units="xy",
                      width=0.006)
             if r == 0:
                 A.set_title(f"rel z={z:+.2f}", fontsize=8)
-            if s == 0:
-                A.set_ylabel("GT" if r == 0 else "model", fontsize=9)
+
     fig.suptitle(f"{a.traj}  frame {t:03d}  one-step deformation "
                  f"(centre-removed, xy slices)", fontsize=10)
     fig.tight_layout()
