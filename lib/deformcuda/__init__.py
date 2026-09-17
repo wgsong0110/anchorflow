@@ -33,3 +33,23 @@ def skin_jacobian(x, p, dp, log_r, log_t, idx, h, tau_min=1e-4):
                                   dp.contiguous(), log_r.contiguous(),
                                   log_t.contiguous(), idx.contiguous(),
                                   float(h), float(tau_min)))
+
+
+def aggregate_moments(x, X, v, m, idx, M):
+    """앵커별 질량 가중 모멘트. -> (g1 [M,11], g2 [M,12], g3 [M,18])
+
+    g1 = (질량, 질량x위치, 질량x정준위치, 질량x속도, 개수)
+    g2 = (2차 모멘트 S 9, 각운동량 L 3)
+    g3 = (교차 모멘트 A 9, 정준 2차 모멘트 B 9)
+
+    파이토치 쪽 aggregate 가 index_add_ 로 하는 것과 같은 합이다 -- 이후의
+    나눗셈·역행렬·행렬식은 앵커 수가 작아 파이토치에 그대로 둔다.
+    """
+    return tuple(_C.aggregate_moments(x.contiguous(), X.contiguous(),
+                                      v.contiguous(), m.contiguous(),
+                                      idx.contiguous(), int(M)))
+
+
+def fps(x, M, first=0):
+    """가장 먼 점 표본추출. -> idx [M] long"""
+    return _C.fps(x.contiguous(), int(M), int(first))

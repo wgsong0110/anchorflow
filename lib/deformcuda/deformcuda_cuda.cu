@@ -205,7 +205,185 @@ std::vector<torch::Tensor> skin_jacobian(torch::Tensor x, torch::Tensor p,
     return {out, J};
 }
 
+// ---------------------------------------------------------------- 집계
+// 앵커별로 자기 가우시안들을 질량 가중으로 요약한다. 파이토치 쪽은 [N*k, 41]
+// 짜리 텐서를 만들어 index_add_ 로 흩뿌리는데, 입자 138 만 x k=16 이면 그것만
+// 3.6 GB 다 -- 실측 68 ms 로 연산이 아니라 그 통행량이 전부였다.
+//
+// 여기서는 블록마다 공유 메모리에 [M, D] 누적기를 두고, 블록이 맡은 짝을 전부
+// 더한 뒤 앵커당 한 번만 전역으로 원자합한다. 원자 경합이 (짝 수)에서
+// (블록 수)로 줄고 중간 텐서가 없다.
+//
+// D 가 큰 2 차 모멘트는 공유 메모리 한도 때문에 두 번에 나눠 돈다.
+
+template <int D>
+__global__ void agg_kernel(const float* __restrict__ val,   // [N*k, D] 는 만들지 않는다
+                           const float* __restrict__ x,
+                           const float* __restrict__ X,
+                           const float* __restrict__ v,
+                           const float* __restrict__ m,
+                           const long* __restrict__ idx,
+                           const float* __restrict__ cx,    // 2차에서만 쓴다
+                           const float* __restrict__ cX,
+                           const float* __restrict__ cv,
+                           int N, int K, int M, int phase,
+                           float* __restrict__ out) {
+    extern __shared__ float acc[];                  // [M, D]
+    for (int i = threadIdx.x; i < M * D; i += blockDim.x) acc[i] = 0.f;
+    __syncthreads();
+
+    const long total = (long)N * K;
+    for (long t = blockIdx.x * (long)blockDim.x + threadIdx.x; t < total;
+         t += (long)gridDim.x * blockDim.x) {
+        const int n = (int)(t / K);
+        const int aa = (int)idx[t];
+        const float w = m[n];
+        float* dst = acc + (long)aa * D;
+        if (phase == 0) {
+            atomicAdd(dst + 0, w);
+            atomicAdd(dst + 1, w * x[3 * n]);
+            atomicAdd(dst + 2, w * x[3 * n + 1]);
+            atomicAdd(dst + 3, w * x[3 * n + 2]);
+            atomicAdd(dst + 4, w * X[3 * n]);
+            atomicAdd(dst + 5, w * X[3 * n + 1]);
+            atomicAdd(dst + 6, w * X[3 * n + 2]);
+            atomicAdd(dst + 7, w * v[3 * n]);
+            atomicAdd(dst + 8, w * v[3 * n + 1]);
+            atomicAdd(dst + 9, w * v[3 * n + 2]);
+            atomicAdd(dst + 10, 1.f);
+        } else {
+            const float dx0 = x[3 * n] - cx[3 * aa];
+            const float dx1 = x[3 * n + 1] - cx[3 * aa + 1];
+            const float dx2 = x[3 * n + 2] - cx[3 * aa + 2];
+            const float dX0 = X[3 * n] - cX[3 * aa];
+            const float dX1 = X[3 * n + 1] - cX[3 * aa + 1];
+            const float dX2 = X[3 * n + 2] - cX[3 * aa + 2];
+            const float dv0 = v[3 * n] - cv[3 * aa];
+            const float dv1 = v[3 * n + 1] - cv[3 * aa + 1];
+            const float dv2 = v[3 * n + 2] - cv[3 * aa + 2];
+            if (phase == 1) {                       // S (9) + L (3)
+                atomicAdd(dst + 0, w * dx0 * dx0); atomicAdd(dst + 1, w * dx0 * dx1);
+                atomicAdd(dst + 2, w * dx0 * dx2); atomicAdd(dst + 3, w * dx1 * dx0);
+                atomicAdd(dst + 4, w * dx1 * dx1); atomicAdd(dst + 5, w * dx1 * dx2);
+                atomicAdd(dst + 6, w * dx2 * dx0); atomicAdd(dst + 7, w * dx2 * dx1);
+                atomicAdd(dst + 8, w * dx2 * dx2);
+                atomicAdd(dst + 9,  w * (dx1 * dv2 - dx2 * dv1));
+                atomicAdd(dst + 10, w * (dx2 * dv0 - dx0 * dv2));
+                atomicAdd(dst + 11, w * (dx0 * dv1 - dx1 * dv0));
+            } else {                                // A (9) + B (9)
+                atomicAdd(dst + 0, w * dx0 * dX0); atomicAdd(dst + 1, w * dx0 * dX1);
+                atomicAdd(dst + 2, w * dx0 * dX2); atomicAdd(dst + 3, w * dx1 * dX0);
+                atomicAdd(dst + 4, w * dx1 * dX1); atomicAdd(dst + 5, w * dx1 * dX2);
+                atomicAdd(dst + 6, w * dx2 * dX0); atomicAdd(dst + 7, w * dx2 * dX1);
+                atomicAdd(dst + 8, w * dx2 * dX2);
+                atomicAdd(dst + 9,  w * dX0 * dX0); atomicAdd(dst + 10, w * dX0 * dX1);
+                atomicAdd(dst + 11, w * dX0 * dX2); atomicAdd(dst + 12, w * dX1 * dX0);
+                atomicAdd(dst + 13, w * dX1 * dX1); atomicAdd(dst + 14, w * dX1 * dX2);
+                atomicAdd(dst + 15, w * dX2 * dX0); atomicAdd(dst + 16, w * dX2 * dX1);
+                atomicAdd(dst + 17, w * dX2 * dX2);
+            }
+        }
+    }
+    __syncthreads();
+    for (int i = threadIdx.x; i < M * D; i += blockDim.x)
+        if (acc[i] != 0.f) atomicAdd(out + i, acc[i]);
+}
+
+std::vector<torch::Tensor> aggregate_moments(
+        torch::Tensor x, torch::Tensor X, torch::Tensor v, torch::Tensor m,
+        torch::Tensor idx, int M) {
+    CHECK(x); CHECK(X); CHECK(v); CHECK(m); CHECK(idx);
+    const int N = x.size(0), K = idx.size(1);
+    auto opt = x.options();
+    auto g1 = torch::zeros({M, 11}, opt);
+    const int T = 256;
+    const int B = std::min<long>(2048, ((long)N * K + T - 1) / T);
+    agg_kernel<11><<<B, T, (size_t)M * 11 * sizeof(float)>>>(
+        nullptr, x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
+        m.data_ptr<float>(), idx.data_ptr<long>(), nullptr, nullptr, nullptr,
+        N, K, M, 0, g1.data_ptr<float>());
+
+    auto W = g1.select(1, 0).clamp_min(1e-12).unsqueeze(-1);
+    auto cx = (g1.slice(1, 1, 4) / W).contiguous();
+    auto cX = (g1.slice(1, 4, 7) / W).contiguous();
+    auto cv = (g1.slice(1, 7, 10) / W).contiguous();
+
+    auto g2 = torch::zeros({M, 12}, opt);
+    agg_kernel<12><<<B, T, (size_t)M * 12 * sizeof(float)>>>(
+        nullptr, x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
+        m.data_ptr<float>(), idx.data_ptr<long>(), cx.data_ptr<float>(),
+        cX.data_ptr<float>(), cv.data_ptr<float>(), N, K, M, 1,
+        g2.data_ptr<float>());
+    auto g3 = torch::zeros({M, 18}, opt);
+    agg_kernel<18><<<B, T, (size_t)M * 18 * sizeof(float)>>>(
+        nullptr, x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
+        m.data_ptr<float>(), idx.data_ptr<long>(), cx.data_ptr<float>(),
+        cX.data_ptr<float>(), cv.data_ptr<float>(), N, K, M, 2,
+        g3.data_ptr<float>());
+    return {g1, g2, g3};
+}
+
+// ---------------------------------------------------------------- FPS
+// 반복 M 번, 각 반복이 (전체 최댓값 찾기) + (거리 갱신)이다. 파이토치로는 반복마다
+// argmax 와 minimum 이 따로 실행되어 커널이 M x 2 번 뜬다 (실측 136 ms).
+// 여기서는 두 일을 한 커널에 합치고, 블록별 부분 최댓값만 전역에 남긴다.
+
+__global__ void fps_step(const float* __restrict__ x, float* __restrict__ d,
+                         int N, int last, float* __restrict__ bval,
+                         int* __restrict__ bidx) {
+    extern __shared__ char smem[];
+    float* sv = (float*)smem;
+    int* si = (int*)(sv + blockDim.x);
+    const float lx = x[3 * last], ly = x[3 * last + 1], lz = x[3 * last + 2];
+    float best = -1.f; int bi = 0;
+    for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < N;
+         n += gridDim.x * blockDim.x) {
+        const float dx = x[3 * n] - lx, dy = x[3 * n + 1] - ly,
+                    dz = x[3 * n + 2] - lz;
+        const float nd = sqrtf(dx * dx + dy * dy + dz * dz);
+        const float cur = fminf(d[n], nd);
+        d[n] = cur;
+        if (cur > best) { best = cur; bi = n; }
+    }
+    sv[threadIdx.x] = best; si[threadIdx.x] = bi;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s && sv[threadIdx.x + s] > sv[threadIdx.x]) {
+            sv[threadIdx.x] = sv[threadIdx.x + s];
+            si[threadIdx.x] = si[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) { bval[blockIdx.x] = sv[0]; bidx[blockIdx.x] = si[0]; }
+}
+
+torch::Tensor fps_cuda(torch::Tensor x, int M, int first) {
+    CHECK(x);
+    const int N = x.size(0);
+    auto d = torch::full({N}, 1e30f, x.options());
+    auto idx = torch::empty({M}, x.options().dtype(torch::kLong));
+    auto hidx = torch::empty({M}, torch::dtype(torch::kLong));
+    const int T = 256, B = std::min(1024, (N + T - 1) / T);
+    auto bval = torch::empty({B}, x.options());
+    auto bidx = torch::empty({B}, x.options().dtype(torch::kInt));
+    int last = first;
+    hidx[0] = last;
+    for (int i = 1; i < M; ++i) {
+        fps_step<<<B, T, T * (sizeof(float) + sizeof(int))>>>(
+            x.data_ptr<float>(), d.data_ptr<float>(), N, last,
+            bval.data_ptr<float>(), bidx.data_ptr<int>());
+        // 블록이 1024 개뿐이라 마지막 축약은 호스트로 가져와도 싸다
+        last = bidx[bval.argmax()].item<int>();
+        hidx[i] = last;
+    }
+    idx.copy_(hidx);
+    return idx;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("knn", &knn, "k nearest anchors, selection kept in registers");
     m.def("skin_jacobian", &skin_jacobian, "skinning and its Jacobian, fused");
+    m.def("aggregate_moments", &aggregate_moments,
+          "per-anchor mass-weighted moments, accumulated in shared memory");
+    m.def("fps", &fps_cuda, "farthest point sampling, one kernel per pick");
 }
