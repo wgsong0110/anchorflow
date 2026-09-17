@@ -10,8 +10,15 @@ sigma_1(F_t) 는 그 자리에서 재질이 가장 크게 늘어난 방향의 �
 미분에서 자동으로 사라진다 -- 한 스텝 벡터장 영상(render_deform_field.py)에서
 중심을 빼줘야 했던 것과 달리 여기서는 뺄 것이 없다.
 
-GT 는 MPM 이 입자마다 들고 있는 변형구배 f_tensor 를 그대로 쓰고, 모델은 매 프레임
-야코비안을 곱해 누적한 것을 쓴다. 단면과 격자는 벡터장 영상과 같은 규칙이다.
+GT 의 F 는 **입자 위치에서 다시 잰다**. MPM 이 들고 있는 f_tensor 를 쓰면 안 되는데,
+GaussianFluent 의 CD-MPM 은 소성 되돌림을 거쳐 그것을 항등행렬 근처로 되돌리기
+때문이다 -- 실제로 그대로 그려보면 수박이 쪼개지는 프레임에서도 GT 의 sigma_1 이
+전 구간 1.0 이었다. 대신 t0 배치의 이웃 16 개를 붙들고 최소제곱으로 맞춘다.
+
+    F_i = (sum_j (x_j - x_i)(X_j - X_i)^T) (sum_j (X_j - X_i)(X_j - X_i)^T)^-1
+
+이것이 전체 변형구배이고, 모델이 야코비안을 곱해 누적한 것과 같은 양이다. 단면과
+격자는 벡터장 영상과 같은 규칙이다.
 """
 from __future__ import annotations
 
@@ -29,6 +36,10 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--t0", type=int, default=3)
 ap.add_argument("--frames", type=int, default=30)
 ap.add_argument("--n_pts", type=int, default=20000)
+ap.add_argument("--gt_F", default="mls", choices=("mls", "stored"),
+                help="mls 는 위치에서 다시 재고, stored 는 MPM 의 f_tensor 를 그대로 "
+                     "쓴다 (CD-MPM 에서는 탄성 성분만이라 거의 항등행렬이다)")
+ap.add_argument("--gt_k", type=int, default=16)
 ap.add_argument("--slices", type=int, default=5)
 ap.add_argument("--grid", type=int, default=48)
 ap.add_argument("--band", type=float, default=0.06)
@@ -55,8 +66,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from anchorflow import ptrender
-from anchorflow.deform import (DeformNet, aggregate, anchor_knn, bc_features,
-                               skin_with_jacobian)
+from anchorflow.deform import (DeformNet, _outer_sum, aggregate, anchor_knn,
+                               bc_features, dense_knn, skin_with_jacobian)
 
 d = torch.load(os.path.join(a.data, a.traj + ".pt"), map_location="cpu",
                weights_only=False)
@@ -158,14 +169,27 @@ if a.ckpt:
         v, p, x = (x2 - x) / FRAME_DT, p + dp, x2
         model.append((x.clone(), measure(Jacc).clone()))
 
-# GT: MPM 의 f_tensor 를 t0 기준으로 다시 잡는다 (t0 에서 시작하는 롤아웃과 맞추려고)
-F0 = take(d["F"][a.t0], GS)
-F0i = torch.linalg.inv(F0 + 1e-4 * torch.eye(3, device=dev))
+# GT
 gt = []
-for i in range(a.frames):
-    t = a.t0 + i + 1
-    xg = take(d["x"][t], GS)
-    gt.append((xg, measure(take(d["F"][t], GS) @ F0i)))
+if a.gt_F == "mls":
+    Xr = take(d["x"][a.t0], GS)                 # t0 배치가 기준이다
+    NB, _ = dense_knn(Xr, Xr, a.gt_k + 1)
+    NB = NB[:, 1:]                              # 자기 자신 제외
+    dX = Xr[NB] - Xr[:, None]
+    D = _outer_sum(dX, dX)
+    eps = 1e-6 * torch.diagonal(D, dim1=-2, dim2=-1).sum(-1) / 3.0
+    Di = torch.linalg.inv(D + eps[:, None, None] * torch.eye(3, device=dev))
+    for i in range(a.frames):
+        xg = take(d["x"][a.t0 + i + 1], GS)
+        F = _outer_sum(xg[NB] - xg[:, None], dX) @ Di
+        gt.append((xg, measure(F)))
+else:
+    F0 = take(d["F"][a.t0], GS)
+    F0i = torch.linalg.inv(F0 + 1e-4 * torch.eye(3, device=dev))
+    for i in range(a.frames):
+        t = a.t0 + i + 1
+        xg = take(d["x"][t], GS)
+        gt.append((xg, measure(take(d["F"][t], GS) @ F0i)))
 
 vmax = a.vmax
 if vmax <= 0:
@@ -222,7 +246,7 @@ for i in range(a.frames):
         A0.set_xlim(0, RW - 1); A0.set_ylim(RH - 1, 0)
         A0.set_ylabel("GT" if r == 0 else "model", fontsize=9)
         if r == 0:
-            A0.set_title("rollout (점선 = 아래 단면)", fontsize=7)
+            A0.set_title("rollout (dashed = slices)", fontsize=7)
         for s, z in enumerate(ZS):
             A = ax[r][s + 1]; A.set_xticks([]); A.set_yticks([])
             g, occ = to_grid(ss, rel, z)

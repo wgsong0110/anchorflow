@@ -21,6 +21,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--pg", required=True, help="PhysGaussian 체크아웃")
 ap.add_argument("--config", required=True)
 ap.add_argument("--ply", required=True)
+ap.add_argument("--run", action="store_true",
+                help="채우기 단계를 하나씩 직접 돌려 어디서 멈추는지 시간으로 본다")
 a = ap.parse_args()
 
 sys.path.insert(0, a.pg)
@@ -44,7 +46,7 @@ cov = g.get_covariance().detach()
 op = g.get_opacity.detach()
 
 keep = (op[:, 0] > pp["opacity_threshold"])
-pos, cov = pos[keep], cov[keep]
+pos, cov, op = pos[keep], cov[keep], op[keep]
 R = generate_rotation_matrices(torch.tensor(pp["rotation_degree"]),
                                pp["rotation_axis"])
 pos = apply_rotations(pos, R)
@@ -53,7 +55,7 @@ if sa is not None:
     m = torch.ones(pos.shape[0], dtype=torch.bool, device=pos.device)
     for i in range(3):
         m &= (pos[:, i] > sa[2 * i]) & (pos[:, i] < sa[2 * i + 1])
-    pos, cov = pos[m], cov[m]
+    pos, cov, op = pos[m], cov[m], op[m]
 pos, scale_origin, _ = transform2origin(pos, pp["scale"])
 pos = shift2center111(pos)
 cov = apply_cov_rotations(cov, R)
@@ -67,7 +69,7 @@ mx = 0.0
 for i in range(3):
     m &= (pos[:, i] > b[2 * i]) & (pos[:, i] < b[2 * i + 1])
     mx = max(mx, b[2 * i + 1] - b[2 * i])
-pos, cov = pos[m], cov[m]
+pos, cov, op = pos[m], cov[m], op[m]
 dx = mx / fp["n_grid"]
 print(f"[전처리] scale_origin {scale_origin:.4f}  경계안 {pos.shape[0]}  "
       f"격자 간격 {dx:.5f} (설정값 {mp['grid_lim'] / fp['n_grid']:.5f} 아님)",
@@ -97,4 +99,46 @@ r = torch.ceil(hi.clamp(min=0).sqrt() / dx)
 print(f"[후보 1] 이웃 반경 r 중앙 {r.median():.0f} p99 {r.quantile(0.99):.0f} "
       f"최대 {r.max():.0f},  셀 방문 합 {((2 * r + 1) ** 3).sum():.3e}",
       flush=True)
+if a.run:
+    # 단계마다 동기화하고 시간을 찍는다. 어느 커널이 안 끝나는지 그것만 보면 된다.
+    import time
+
+    import taichi as ti
+    from particle_filling.filling import (densify_grids, fill_dense_grids,
+                                          internal_filling)
+    ti.init(arch=ti.cuda, device_memory_GB=8.0)
+    n = fp["n_grid"]
+    ti_pos = ti.Vector.field(n=3, dtype=float, shape=pos.shape[0])
+    ti_op = ti.field(dtype=float, shape=pos.shape[0])
+    ti_cov = ti.Vector.field(n=6, dtype=float, shape=pos.shape[0])
+    ori = torch.tensor([b[0], b[2], b[4]], device=pos.device)
+    ti_pos.from_torch((pos - ori).reshape(-1, 3))
+    ti_op.from_torch(op.reshape(-1))
+    ti_cov.from_torch(cov.reshape(-1, 6))
+    grid = ti.field(dtype=int, shape=(n, n, n))
+    dens = ti.field(dtype=float, shape=(n, n, n))
+    parts = ti.Vector.field(n=3, dtype=float, shape=fp["max_particles_num"])
+
+    t = time.time(); densify_grids(ti_pos, ti_op, ti_cov, grid, dens, dx)
+    ti.sync(); print(f"[단계] densify_grids {time.time() - t:.2f}s", flush=True)
+    t = time.time()
+    fn = fill_dense_grids(grid, dens, dx, fp["density_threshold"], parts, 0,
+                          fp["max_partciels_per_cell"])
+    print(f"[단계] fill_dense_grids {time.time() - t:.2f}s -> {fn}", flush=True)
+    if fp["smooth"]:
+        import mcubes
+        t = time.time()
+        df = dens.to_numpy()
+        import numpy as np
+        dens.from_numpy(mcubes.smooth(df, method="constrained",
+                                      max_iters=500).astype(np.float32))
+        print(f"[단계] mcubes.smooth {time.time() - t:.2f}s", flush=True)
+    t = time.time()
+    fn = internal_filling(grid, dens, dx, parts, fn,
+                          fp["max_partciels_per_cell"],
+                          exclude_dir=fp["search_exclude_direction"],
+                          ray_cast_dir=fp["ray_cast_direction"],
+                          threshold=fp["search_threshold"])
+    print(f"[단계] internal_filling {time.time() - t:.2f}s -> {fn}", flush=True)
+
 print("PROBE_OK", flush=True)

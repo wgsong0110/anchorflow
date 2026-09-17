@@ -218,7 +218,7 @@ for i in range(a.frames):
         A0.set_xlim(0, RW - 1); A0.set_ylim(RH - 1, 0)
         A0.set_ylabel("GT" if r == 0 else "model", fontsize=9)
         if r == 0:
-            A0.set_title("rollout (점선 = 오른쪽 단면)", fontsize=7)
+            A0.set_title("rollout (dashed = slices)", fontsize=7)
     for s, z in enumerate(ZS):
         for r in range(rows):
             u = (gt_field(t, c_t, c_n, z) if r == 0 else
