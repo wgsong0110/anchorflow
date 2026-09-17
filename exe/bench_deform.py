@@ -191,7 +191,14 @@ for KK in a.k:
      r["kNN(조밀)"] = timeit(lambda: dense_knn(x, p, KK), a.warmup, a.reps)
      r["kNN(조밀,fp16)"] = timeit(lambda: dense_knn(x, p, KK, half=True),
                                  a.warmup, a.reps)
-     r["kNN"] = min(r["kNN(격자)"], r["kNN(조밀)"], r["kNN(조밀,fp16)"])
+     try:
+         import deformcuda as _dc
+         if _dc.HAVE_CUDA and KK in (4, 6, 8, 12, 16, 24, 32):
+             r["kNN(커널)"] = timeit(lambda: _dc.knn(x, p, KK), a.warmup, a.reps)
+     except Exception as e:
+         print(f"  kNN 커널 없음: {type(e).__name__}: {e}", flush=True)
+     r["kNN"] = min([r["kNN(격자)"], r["kNN(조밀)"], r["kNN(조밀,fp16)"]]
+                    + ([r["kNN(커널)"]] if "kNN(커널)" in r else []))
      r["집계"] = timeit(lambda: aggregate(x, v, XC, mass, idx, M, H, pa=p,
                                         sub=SUB), a.warmup, a.reps)
      r["순전파"] = timeit(lambda: net(p, torch.cat([feat, extra], -1), FRAME_DT),
@@ -218,7 +225,8 @@ for KK in a.k:
          r["프레임(+모양+렌더)"] = r["프레임(+모양)"] + r["래스터화"]
      rows[(KK, N)] = r
      print(f"\n[입자 {N}, 앵커 {M}, k={KK}]", flush=True)
-     for k_ in ("kNN(격자)", "kNN(조밀)", "kNN(조밀,fp16)", "집계", "순전파", "스키닝",
+     for k_ in ("kNN(격자)", "kNN(조밀)", "kNN(조밀,fp16)", "kNN(커널)", "집계",
+                "순전파", "스키닝",
                 "야코비안(자동)", "스키닝+야코비안(해석)", "FPS", "래스터화"):
          if k_ in r:
              print(f"  {k_:<10} {r[k_]:7.3f} ms", flush=True)
