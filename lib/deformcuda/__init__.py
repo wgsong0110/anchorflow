@@ -50,6 +50,17 @@ def aggregate_moments(x, X, v, m, idx, M):
                                       idx.contiguous(), int(M)))
 
 
+def voxel_knn(x, p, keys, D1, D2, ox, oy, oz, cell, k, radius=1):
+    """복셀 이웃 안에서만 고른 k 최근접 앵커. 빈 자리는 -1.
+
+    후보가 (2r+1)^3 개뿐이라 전역 탐색이 아니다 -- 앵커 512 개 전부와 거리를
+    재던 것이 27 개로 준다.
+    """
+    return tuple(_C.voxel_knn(x.contiguous(), p.contiguous(), keys.contiguous(),
+                              int(D1), int(D2), float(ox), float(oy), float(oz),
+                              float(cell), int(k), int(radius)))
+
+
 def fps(x, M, first=0):
     """가장 먼 점 표본추출. -> idx [M] long"""
     return _C.fps(x.contiguous(), int(M), int(first))
