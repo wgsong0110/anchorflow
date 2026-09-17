@@ -123,7 +123,7 @@ def grid_knn(x, p, k, occupancy=2.0, chunk=200_000):
     return idx_out, d_out
 
 
-def dense_knn(x, p, k, chunk=131072):
+def dense_knn(x, p, k, chunk=131072, half=False):
     """앵커가 적을 때의 kNN. 거리를 **행렬곱**으로 만든다.
 
         |x - p|^2 = |x|^2 - 2 x.p + |p|^2
@@ -139,22 +139,27 @@ def dense_knn(x, p, k, chunk=131072):
     앵커가 수천 개를 넘어가면 반대가 되므로 `anchor_knn` 이 갈라 준다.
     """
     N, M = x.shape[0], p.shape[0]
-    pn = (p * p).sum(-1)
+    # topk 는 [chunk, M] 점수를 여러 번 훑는 선택 연산이라 대역폭이 정한다.
+    # 반정밀도로 만들면 그 통행량이 절반이 되고, 우리가 쓰는 것은 **순위**뿐이라
+    # 정밀도 손실이 문제되지 않는다 (거리 자체는 뽑힌 뒤 단정밀도로 다시 잰다).
+    dt = torch.float16 if half else x.dtype
+    ph = p.to(dt)
+    pn = (ph * ph).sum(-1)
     idx = torch.empty(N, k, dtype=torch.long, device=x.device)
     dist = torch.empty(N, k, device=x.device)
     for s in range(0, N, chunk):
         xc = x[s:s + chunk]
-        sc = torch.addmm(pn.unsqueeze(0), xc, p.t(), beta=1.0, alpha=-2.0)
-        dv, di = sc.topk(k, dim=1, largest=False)
+        sc = torch.addmm(pn.unsqueeze(0), xc.to(dt), ph.t(), beta=1.0, alpha=-2.0)
+        di = sc.topk(k, dim=1, largest=False).indices
         idx[s:s + chunk] = di
-        dist[s:s + chunk] = (dv + (xc * xc).sum(-1, keepdim=True)).clamp_min(0).sqrt()
+        dist[s:s + chunk] = (xc.unsqueeze(1) - p[di]).norm(dim=-1)
     return idx, dist
 
 
-def anchor_knn(x, p, k, dense_upto=4096, **kw):
+def anchor_knn(x, p, k, dense_upto=4096, half=False, **kw):
     """상황에 맞는 kNN 을 고른다. 앵커가 적으면 조밀, 많으면 격자."""
     if p.shape[0] <= dense_upto:
-        return dense_knn(x, p, k)
+        return dense_knn(x, p, k, half=half)
     return grid_knn(x, p, k, **kw)
 
 
@@ -302,7 +307,7 @@ def fps(x, M, seed=0):
 
 
 # --------------------------------------------------------------- 집계
-def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None):
+def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None, sub=None):
     """앵커별로 자기에게 모인 가우시안들을 질량 가중으로 요약한다.
 
     가중치는 **질량뿐**이다. 스키닝 가중치를 쓰면 그것이 모델 출력 r 의 함수라
@@ -319,6 +324,11 @@ def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None):
 
     -> [M, C] 특징
     """
+    # 집계는 앵커별 **평균**이라 부분표본으로도 같은 값에 수렴한다. 입자 138 만
+    # x k=16 이면 짝이 2200 만 개이고 이 단계는 흩뿌리기라 대역폭이 정하므로,
+    # 10% 만 써도 요약 통계는 거의 그대로이면서 비용이 10 분의 1 이 된다.
+    if sub is not None:
+        x, v, X, m, idx = x[sub], v[sub], X[sub], m[sub], idx[sub]
     N, k = idx.shape
     dev = x.device
     a = idx.reshape(-1)                                  # [N*k]

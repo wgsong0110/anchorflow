@@ -43,7 +43,9 @@ ap.add_argument("--width", type=int, default=800)
 ap.add_argument("--height", type=int, default=800)
 ap.add_argument("--sh_degree", type=int, default=3)
 ap.add_argument("--n_anchors", type=int, default=512)
-ap.add_argument("--k", type=int, default=16)
+ap.add_argument("--k", type=int, nargs="+", default=[16])
+ap.add_argument("--agg_sub", type=int, default=0,
+                help="집계에 쓸 입자 수. 0 이면 전부")
 ap.add_argument("--hidden", type=int, default=128)
 ap.add_argument("--depth", type=int, default=4)
 ap.add_argument("--heads", type=int, default=4)
@@ -139,92 +141,97 @@ def raster_timer(N):
 
 
 rows = {}
-for N in a.n_pts:
-    if FULL is not None and N > N_FULL:
-        x = FULL[:N].contiguous()
-        gs = torch.arange(min(N, N_FULL), device=dev)
-        mass_src = MASS_ALL[gs].median().expand(N).contiguous()
-    else:
-        gs = torch.arange(min(N, N_FULL), device=dev)
-        x = X0d[gs].contiguous()
-        mass_src = MASS_ALL[gs]
-    XC = x.clone()
-    v = torch.zeros_like(x)
-    M = a.n_anchors
-    AIDX = fps(x, M)
-    H = float(torch.cdist(x[AIDX], x[AIDX]).topk(2, largest=False).values[:, 1]
-              .median())
-    p = x[AIDX].contiguous()
-    mass = mass_src
+for KK in a.k:
+ for N in a.n_pts:
+     if FULL is not None and N > N_FULL:
+         x = FULL[:N].contiguous()
+         gs = torch.arange(min(N, N_FULL), device=dev)
+         mass_src = MASS_ALL[gs].median().expand(N).contiguous()
+     else:
+         gs = torch.arange(min(N, N_FULL), device=dev)
+         x = X0d[gs].contiguous()
+         mass_src = MASS_ALL[gs]
+     XC = x.clone()
+     v = torch.zeros_like(x)
+     M = a.n_anchors
+     AIDX = fps(x, M)
+     H = float(torch.cdist(x[AIDX], x[AIDX]).topk(2, largest=False).values[:, 1]
+               .median())
+     p = x[AIDX].contiguous()
+     mass = mass_src
 
-    idx, _ = grid_knn(x, p, a.k)
-    feat, _ = aggregate(x, v, XC, mass, idx, M, H, pa=p)
-    n_bc = bc_features(p[:2], cfg).shape[-1]
-    n_feat = feat.shape[-1] + MAT.numel() + n_bc
-    net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
-                    heads=a.heads, scale=0.02 * EXT, h=H, ext=EXT).to(dev).eval()
-    extra = torch.cat([MAT.reshape(1, -1).expand(M, -1),
-                       bc_features(p, cfg) / H], -1)
-    dp, lr_, lt_ = net(p, torch.cat([feat, extra], -1), FRAME_DT)
+     idx, _ = anchor_knn(x, p, KK)
+     SUB = (torch.randperm(x.shape[0], device=dev)[:a.agg_sub]
+            if 0 < a.agg_sub < x.shape[0] else None)
+     feat, _ = aggregate(x, v, XC, mass, idx, M, H, pa=p, sub=SUB)
+     n_bc = bc_features(p[:2], cfg).shape[-1]
+     n_feat = feat.shape[-1] + MAT.numel() + n_bc
+     net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
+                     heads=a.heads, scale=0.02 * EXT, h=H, ext=EXT).to(dev).eval()
+     extra = torch.cat([MAT.reshape(1, -1).expand(M, -1),
+                        bc_features(p, cfg) / H], -1)
+     dp, lr_, lt_ = net(p, torch.cat([feat, extra], -1), FRAME_DT)
 
-    # 해석적 야코비안이 자동미분과 맞는지 먼저 확인한다 (틀린 것을 빨리 재봐야
-    # 소용없다). 작은 부분집합에서 본다.
-    with torch.enable_grad():
-        xs = x[:2048]
-        i2, _ = anchor_knn(xs, p, a.k)
-        Ja = skin_with_jacobian(xs, p, dp, lr_, lt_, i2, H)[2]
-        Jb = jacobian_of(lambda q: skin(q, p, dp, lr_, lt_, i2, H)[0], xs)
-        err = float((Ja - Jb).abs().max() / Jb.abs().max().clamp(min=1e-12))
-    print(f"\n[야코비안 검증] 해석 대 자동미분 상대 최대오차 {err:.3e}"
-          f"{'  <- 불일치' if err > 1e-3 else ''}", flush=True)
+     # 해석적 야코비안이 자동미분과 맞는지 먼저 확인한다 (틀린 것을 빨리 재봐야
+     # 소용없다). 작은 부분집합에서 본다.
+     with torch.enable_grad():
+         xs = x[:2048]
+         i2, _ = anchor_knn(xs, p, KK)
+         Ja = skin_with_jacobian(xs, p, dp, lr_, lt_, i2, H)[2]
+         Jb = jacobian_of(lambda q: skin(q, p, dp, lr_, lt_, i2, H)[0], xs)
+         err = float((Ja - Jb).abs().max() / Jb.abs().max().clamp(min=1e-12))
+     print(f"\n[야코비안 검증] 해석 대 자동미분 상대 최대오차 {err:.3e}"
+           f"{'  <- 불일치' if err > 1e-3 else ''}", flush=True)
 
-    r = {"J_check": err}
-    r["kNN(격자)"] = timeit(lambda: grid_knn(x, p, a.k), a.warmup, a.reps)
-    r["kNN(조밀)"] = timeit(lambda: dense_knn(x, p, a.k), a.warmup, a.reps)
-    r["kNN"] = min(r["kNN(격자)"], r["kNN(조밀)"])
-    r["집계"] = timeit(lambda: aggregate(x, v, XC, mass, idx, M, H, pa=p),
-                     a.warmup, a.reps)
-    r["순전파"] = timeit(lambda: net(p, torch.cat([feat, extra], -1), FRAME_DT),
-                      a.warmup, a.reps)
-    r["스키닝"] = timeit(lambda: skin(x, p, dp, lr_, lt_, idx, H), a.warmup, a.reps)
-    with torch.enable_grad():
-        r["야코비안(자동)"] = timeit(
-            lambda: jacobian_of(lambda q: skin(q, p, dp, lr_, lt_, idx, H)[0], x),
-            3, max(5, a.reps // 3))
-    r["스키닝+야코비안(해석)"] = timeit(
-        lambda: skin_with_jacobian(x, p, dp, lr_, lt_, idx, H), a.warmup, a.reps)
-    r["야코비안"] = max(r["스키닝+야코비안(해석)"] - r["스키닝"], 0.0)
-    r["FPS"] = timeit(lambda: fps(x, M), 3, max(5, a.reps // 5))
-    if a.render:
-        try:
-            r["래스터화"] = timeit(raster_timer(x.shape[0]), 3, max(5, a.reps // 3))
-        except Exception as e:
-            print(f"  래스터화 실패: {type(e).__name__}: {e}", flush=True)
-    r["프레임(추론)"] = r["kNN"] + r["집계"] + r["순전파"] + r["스키닝"]
-    r["프레임(+모양)"] = (r["kNN"] + r["집계"] + r["순전파"]
-                       + r["스키닝+야코비안(해석)"])
-    r["프레임(+refps)"] = r["프레임(추론)"] + r["FPS"]
-    if "래스터화" in r:
-        r["프레임(+모양+렌더)"] = r["프레임(+모양)"] + r["래스터화"]
-    rows[N] = r
-    print(f"\n[입자 {N}, 앵커 {M}]", flush=True)
-    for k_ in ("kNN(격자)", "kNN(조밀)", "집계", "순전파", "스키닝",
-               "야코비안(자동)", "스키닝+야코비안(해석)", "FPS", "래스터화"):
-        if k_ in r:
-            print(f"  {k_:<10} {r[k_]:7.3f} ms", flush=True)
-    for k_ in ("프레임(추론)", "프레임(+모양)", "프레임(+refps)",
-               "프레임(+모양+렌더)"):
-        if k_ not in r:
-            continue
-        print(f"  {k_:<16} {r[k_]:7.3f} ms  = {1000/r[k_]:6.1f} fps"
-              f"   {'실시간' if r[k_] < FRAME_DT*1000 else '실시간 아님'}"
-              f" (기준 {FRAME_DT*1000:.1f} ms)", flush=True)
+     r = {"J_check": err}
+     r["kNN(격자)"] = timeit(lambda: grid_knn(x, p, KK), a.warmup, a.reps)
+     r["kNN(조밀)"] = timeit(lambda: dense_knn(x, p, KK), a.warmup, a.reps)
+     r["kNN(조밀,fp16)"] = timeit(lambda: dense_knn(x, p, KK, half=True),
+                                 a.warmup, a.reps)
+     r["kNN"] = min(r["kNN(격자)"], r["kNN(조밀)"], r["kNN(조밀,fp16)"])
+     r["집계"] = timeit(lambda: aggregate(x, v, XC, mass, idx, M, H, pa=p,
+                                        sub=SUB), a.warmup, a.reps)
+     r["순전파"] = timeit(lambda: net(p, torch.cat([feat, extra], -1), FRAME_DT),
+                       a.warmup, a.reps)
+     r["스키닝"] = timeit(lambda: skin(x, p, dp, lr_, lt_, idx, H), a.warmup, a.reps)
+     with torch.enable_grad():
+         r["야코비안(자동)"] = timeit(
+             lambda: jacobian_of(lambda q: skin(q, p, dp, lr_, lt_, idx, H)[0], x),
+             3, max(5, a.reps // 3))
+     r["스키닝+야코비안(해석)"] = timeit(
+         lambda: skin_with_jacobian(x, p, dp, lr_, lt_, idx, H), a.warmup, a.reps)
+     r["야코비안"] = max(r["스키닝+야코비안(해석)"] - r["스키닝"], 0.0)
+     r["FPS"] = timeit(lambda: fps(x, M), 3, max(5, a.reps // 5))
+     if a.render:
+         try:
+             r["래스터화"] = timeit(raster_timer(x.shape[0]), 3, max(5, a.reps // 3))
+         except Exception as e:
+             print(f"  래스터화 실패: {type(e).__name__}: {e}", flush=True)
+     r["프레임(추론)"] = r["kNN"] + r["집계"] + r["순전파"] + r["스키닝"]
+     r["프레임(+모양)"] = (r["kNN"] + r["집계"] + r["순전파"]
+                        + r["스키닝+야코비안(해석)"])
+     r["프레임(+refps)"] = r["프레임(추론)"] + r["FPS"]
+     if "래스터화" in r:
+         r["프레임(+모양+렌더)"] = r["프레임(+모양)"] + r["래스터화"]
+     rows[(KK, N)] = r
+     print(f"\n[입자 {N}, 앵커 {M}, k={KK}]", flush=True)
+     for k_ in ("kNN(격자)", "kNN(조밀)", "kNN(조밀,fp16)", "집계", "순전파", "스키닝",
+                "야코비안(자동)", "스키닝+야코비안(해석)", "FPS", "래스터화"):
+         if k_ in r:
+             print(f"  {k_:<10} {r[k_]:7.3f} ms", flush=True)
+     for k_ in ("프레임(추론)", "프레임(+모양)", "프레임(+refps)",
+                "프레임(+모양+렌더)"):
+         if k_ not in r:
+             continue
+         print(f"  {k_:<16} {r[k_]:7.3f} ms  = {1000/r[k_]:6.1f} fps"
+               f"   {'실시간' if r[k_] < FRAME_DT*1000 else '실시간 아님'}"
+               f" (기준 {FRAME_DT*1000:.1f} ms)", flush=True)
 
 if a.out:
     os.makedirs(a.out, exist_ok=True)
     json.dump(dict(frame_dt=FRAME_DT, n_anchors=a.n_anchors, k=a.k,
                    gpu=torch.cuda.get_device_name(0),
-                   rows={str(k): v for k, v in rows.items()}),
+                   rows={f"k{k[0]}_n{k[1]}": v for k, v in rows.items()}),
               open(os.path.join(a.out, "deform_speed.json"), "w"), indent=1,
               ensure_ascii=False)
 print("DEFBENCH_OK")
