@@ -91,4 +91,30 @@ if a.out:
     import json
     json.dump({str(k): v for k, v in rep.items()},
               open(os.path.join(a.out, "deformcuda_verify.json"), "w"), indent=1)
+# 집계와 FPS 도 대조한다 (파이토치 경로를 강제로 태워 비교)
+import anchorflow.deform as D                                    # noqa: E402
+
+N2 = min(a.N, 400000)
+x2 = x[:N2].contiguous()
+X2 = torch.rand_like(x2)
+v2 = torch.randn_like(x2) * 0.01
+m2 = torch.rand(N2, device=dev) + 0.1
+i2, _ = deformcuda.knn(x2, p, 16)
+f_c, _ = D.aggregate(x2, v2, X2, m2, i2, a.M, 0.05, pa=p)
+_hd, D._HAVE_DC = D._HAVE_DC, False
+f_t, _ = D.aggregate(x2, v2, X2, m2, i2, a.M, 0.05, pa=p)
+t_at = timeit(lambda: D.aggregate(x2, v2, X2, m2, i2, a.M, 0.05, pa=p), a.reps)
+fp_t = timeit(lambda: D.fps(x2, a.M), 5)
+D._HAVE_DC = _hd
+t_ac = timeit(lambda: D.aggregate(x2, v2, X2, m2, i2, a.M, 0.05, pa=p), a.reps)
+fp_c = timeit(lambda: D.fps(x2, a.M), 5)
+e_a = float((f_t - f_c).abs().max() / f_t.abs().max())
+print(f"\n[집계] 입자 {N2}: 상대 최대차 {e_a:.2e}  "
+      f"파이토치 {t_at:6.2f} ms -> 커널 {t_ac:6.2f} ms ({t_at/max(t_ac,1e-9):4.1f}배)",
+      flush=True)
+print(f"[FPS]  앵커 {a.M}: 파이토치 {fp_t:7.2f} ms -> 커널 {fp_c:6.2f} ms "
+      f"({fp_t/max(fp_c,1e-9):4.1f}배)", flush=True)
+rep["aggregate"] = dict(err=e_a, torch=t_at, cuda=t_ac)
+rep["fps"] = dict(torch=fp_t, cuda=fp_c)
+
 print("VERIFY_OK")

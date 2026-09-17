@@ -42,6 +42,12 @@ import torch.nn.functional as Fn
 
 from .nextstate import DtFiLM, mlp
 
+try:                                    # 융합 CUDA 커널 (없으면 파이토치 경로)
+    import deformcuda as _dc
+    _HAVE_DC = _dc.HAVE_CUDA
+except Exception:
+    _dc, _HAVE_DC = None, False
+
 
 # --------------------------------------------------------------- 격자 kNN
 def grid_knn(x, p, k, occupancy=2.0, chunk=200_000):
@@ -156,8 +162,14 @@ def dense_knn(x, p, k, chunk=32768, half=False):
     return idx, dist
 
 
+# 커널이 정확히 지원하는 k (컴파일 타임 상수라 목록이 정해져 있다)
+_DC_K = (4, 6, 8, 12, 16, 24, 32)
+
+
 def anchor_knn(x, p, k, dense_upto=4096, half=False, chunk=32768, **kw):
-    """상황에 맞는 kNN 을 고른다. 앵커가 적으면 조밀, 많으면 격자."""
+    """상황에 맞는 kNN 을 고른다. 커널 > 조밀 > 격자 순으로 빠르다."""
+    if _HAVE_DC and x.is_cuda and x.dtype == torch.float32 and k in _DC_K:
+        return _dc.knn(x, p, k)
     if p.shape[0] <= dense_upto:
         return dense_knn(x, p, k, chunk=chunk, half=half)
     return grid_knn(x, p, k, **kw)
@@ -297,8 +309,11 @@ def fps(x, M, seed=0):
     반드시 함께 재야 한다.
     """
     g = torch.Generator(device=x.device).manual_seed(seed)
+    first = int(torch.randint(x.shape[0], (1,), generator=g, device=x.device))
+    if _HAVE_DC and x.is_cuda and x.dtype == torch.float32:
+        return _dc.fps(x, M, first)
     idx = torch.zeros(M, dtype=torch.long, device=x.device)
-    idx[0] = torch.randint(x.shape[0], (1,), generator=g, device=x.device)
+    idx[0] = first
     d = (x - x[idx[0]]).norm(dim=-1)
     for i in range(1, M):
         idx[i] = d.argmax()
@@ -342,6 +357,32 @@ def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None, sub=None):
     # 흩뿌리기를 **두 번**으로 묶는다. 항마다 따로 부르면 22 만 x k 개의 짝을
     # 그 횟수만큼 다시 읽는데, 이 단계는 연산이 아니라 메모리 대역이 정하기
     # 때문이다. 1 차 모멘트가 있어야 2 차를 낼 수 있어 두 번이 하한이다.
+    use_dc = (_HAVE_DC and x.is_cuda and x.dtype == torch.float32
+              and not torch.is_grad_enabled())
+    if use_dc:
+        g1, g2, g3 = _dc.aggregate_moments(x, X, v, m, idx, M)
+        Wa = g1[:, 0].clamp(min=1e-12)
+        Wi = Wa.unsqueeze(-1)
+        cx, cX, cv = g1[:, 1:4] / Wi, g1[:, 4:7] / Wi, g1[:, 7:10] / Wi
+        cnt = g1[:, 10:11]
+        S = g2[:, :9].reshape(M, 3, 3) / Wa.reshape(M, 1, 1)
+        L = g2[:, 9:12]
+        A = g3[:, :9].reshape(M, 3, 3)
+        B = g3[:, 9:18].reshape(M, 3, 3)
+        iu = torch.triu_indices(3, 3, device=dev)
+        S6 = S[:, iu[0], iu[1]] / (h * h)
+        tr = S.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(M, 1, 1)
+        I = (tr * torch.eye(3, device=dev) - S) * Wa.reshape(M, 1, 1)
+        om = torch.linalg.solve(I + 1e-8 * torch.eye(3, device=dev),
+                                L.unsqueeze(-1)).squeeze(-1)
+        Fa = A @ torch.linalg.inv(B + (1e-6 * h * h) * torch.eye(3, device=dev))
+        detF = torch.linalg.det(Fa).reshape(M, 1)
+        return torch.cat([
+            torch.log(Wa).reshape(M, 1), torch.log1p(cnt), (cx - cX) / h,
+            ((cx - pa) / h if pa is not None else torch.zeros_like(cx)),
+            cv, S6, om, Fa.reshape(M, 9),
+            torch.sign(detF) * torch.log(detF.abs().clamp(min=1e-6))], -1), cx
+
     rep = lambda t: t.unsqueeze(1).expand(N, k, t.shape[-1]).reshape(N * k, -1)
     xr, vr, Xr = rep(x), rep(v), rep(X)
     g1 = sca(torch.cat([wu, wu * xr, wu * Xr, wu * vr, torch.ones_like(wu)], -1))
@@ -444,6 +485,10 @@ def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h):
     남는 [N,k,3] x [N,k,3] 외적은 첫 줄 하나뿐이고 나머지는 전부 앵커 축을 먼저
     접은 [N,3] 끼리의 외적이다. 값은 위 식과 정확히 같다.
     """
+    if (_HAVE_DC and x.is_cuda and x.dtype == torch.float32
+            and idx.shape[1] in _DC_K and not torch.is_grad_enabled()):
+        o, J = _dc.skin_jacobian(x, p, dp, log_r, log_t, idx, h)
+        return o, None, J
     pa = p[idx]                                    # [N,k,3]
     dvec = x.unsqueeze(1) - pa                     # [N,k,3]
     d2 = (dvec * dvec).sum(-1)                     # [N,k]
