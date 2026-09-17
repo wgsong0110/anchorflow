@@ -217,7 +217,9 @@ def rollout_sg(t0, L):
     if hasattr(sim, "device"):
         sim.device = dev
     sim.set_dt(dt=FRAME_DT)
-    sim.set_all_particle(x0.clone())
+    # 시뮬 대상은 질량점 2048 개다. 가우시안 결속은 아래에서 직접 한다 --
+    # set_all_particle 에 전체를 넘기면 forward 가 전체를 돌려주어 상태가 섞인다.
+    sim.set_all_particle(x0[pi].clone())
     sim.stage = "dynamic"
     xs = x0[pi].clone()
     vs = ((x0 - take(d["x"][max(t0 - 1, 0)], GS)) / FRAME_DT)[pi].clone()
