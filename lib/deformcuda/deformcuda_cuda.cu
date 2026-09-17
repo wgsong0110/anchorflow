@@ -330,7 +330,13 @@ std::vector<torch::Tensor> voxel_hash(torch::Tensor x, torch::Tensor offs,
                               cnt.data_ptr<int>(), T - 1);
     // 테이블과 번호를 그대로 돌려준다. 조회는 정렬된 배열의 이진 탐색이 아니라
     // 탐침 한두 번이고, 앵커 위치 배열은 번호 순서이므로 따로 정렬할 것이 없다.
-    return {tab, slot, cnt};
+    // keys_by_slot 은 파이토치 예비 경로와 대조할 때만 쓴다 (M 개라 사소하다).
+    const int M = cnt.item<int>();
+    auto used = tab.ne(VOX_EMPTY);
+    auto kb = torch::empty({M}, x.options().dtype(torch::kLong));
+    kb.index_put_({slot.masked_select(used).to(torch::kLong)},
+                  tab.masked_select(used));
+    return {tab, slot, cnt, kb};
 }
 
 

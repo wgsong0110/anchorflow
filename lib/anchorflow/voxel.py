@@ -41,7 +41,7 @@ class VoxelAnchors:
     """
 
     __slots__ = ("keys", "pos", "inv", "moments", "lo", "cell", "D1", "D2", "M",
-                 "offs", "stride", "L", "tab", "slot")
+                 "offs", "stride", "L", "tab", "slot", "perm")
 
 
 def _bspline_w(t):
@@ -99,12 +99,16 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None):
         key = torch.cat(ks) if L > 1 else ks[0]
     tab = slot = keys = None
     if use_hash:
-        tab, slot, M = _dc.voxel_hash(
+        tab, slot, M, kb = _dc.voxel_hash(
             x, offs, D1, D2, stride, float(lo[0]), float(lo[1]), float(lo[2]),
             float(cell), max(1024, 4 * L * x.shape[0] // 8))
+        # 예비(파이토치) 경로는 정렬된 키를 요구한다. 해시가 매긴 번호와 순서가
+        # 다르므로 되돌릴 치환도 같이 둔다 -- 대조할 때만 쓰인다.
+        perm = torch.argsort(kb)
     else:
         keys = torch.unique(key, sorted=True)
         M = keys.numel()
+        perm = None
 
     # 집계: 짝이 아니라 가우시안당 하나라 흩뿌리기가 16 배 적다. 1 차 모멘트를
     # 먼저 내고(앵커 위치가 거기서 나온다), 그 중심 기준으로 2 차를 낸다.
@@ -164,6 +168,9 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None):
     a.lo, a.cell, a.D1, a.D2 = lo, float(cell), D1, D2
     a.offs, a.stride, a.L = offs, stride, L
     a.tab, a.slot = tab, slot
+    a.perm = perm
+    if keys is None:
+        a.keys = kb[perm]      # 정렬된 키 (예비 경로용)
     a.moments = (W, cx, cX, cv, cnt, g2)
     return a
 
@@ -187,7 +194,11 @@ def neighbors(x, va, k, radius=1):
     q = (nb[..., 0] * va.D1 + nb[..., 1]) * va.D2 + nb[..., 2]
     pos_in = torch.searchsorted(va.keys, q.reshape(-1)).clamp(max=va.M - 1)
     hit = va.keys[pos_in].reshape(q.shape) == q
-    aid = torch.where(hit, pos_in.reshape(q.shape), torch.full_like(q, -1))
+    # 해시가 매긴 번호로 되돌린다 (정렬 순서 != 번호 순서)
+    sid = pos_in.reshape(q.shape)
+    if va.perm is not None:
+        sid = va.perm[sid.clamp(min=0)]
+    aid = torch.where(hit, sid, torch.full_like(q, -1))
     d = torch.where(hit, (x.unsqueeze(1) - va.pos[aid.clamp(min=0)]).norm(dim=-1),
                     torch.full(q.shape, float("inf"), device=dev))
     kk = min(k, d.shape[1])

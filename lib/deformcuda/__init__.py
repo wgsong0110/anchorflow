@@ -57,10 +57,11 @@ def voxel_hash(x, offs, D1, D2, stride, ox, oy, oz, cell, table_size):
     (실측 앙상블 비용의 47% 가 키 생성 + 정렬이었다). 열린 주소 해시는 O(N) 이고
     키를 파이토치에서 만들 필요도 없다.
     """
-    tab, slot, cnt = _C.voxel_hash(x.contiguous(), offs.contiguous(), int(D1),
-                                   int(D2), int(stride), float(ox), float(oy),
-                                   float(oz), float(cell), int(table_size))
-    return tab, slot, int(cnt.item())
+    tab, slot, cnt, kb = _C.voxel_hash(x.contiguous(), offs.contiguous(),
+                                       int(D1), int(D2), int(stride),
+                                       float(ox), float(oy), float(oz),
+                                       float(cell), int(table_size))
+    return tab, slot, int(cnt.item()), kb
 
 
 def voxel_moments(x, X, v, m, tab, slot, M, offs, D1, D2, stride, ox, oy, oz,
