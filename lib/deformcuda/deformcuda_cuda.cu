@@ -124,6 +124,11 @@ __global__ void skinj_kernel(const float* __restrict__ x,
     for (int i = 0; i < K; ++i) {
         const int m = (int)idx[(long)n * K + i];
         aid[i] = m;
+        if (m < 0) {   // 복셀 경로에서 빈 이웃 자리. 가중치 0 이 되게 둔다
+            dvx[i] = dvy[i] = dvz[i] = 0.f;
+            gg[i] = -FLT_MAX / 4; uu[i] = -FLT_MAX / 4; tt[i] = 1.f;
+            continue;
+        }
         const float dx = xx - p[3 * m], dy = xy - p[3 * m + 1], dz = xz - p[3 * m + 2];
         dvx[i] = dx; dvy[i] = dy; dvz[i] = dz;
         const float d2 = dx * dx + dy * dy + dz * dz;
@@ -166,6 +171,7 @@ __global__ void skinj_kernel(const float* __restrict__ x,
           M20 = 0, M21 = 0, M22 = 0;
     for (int i = 0; i < K; ++i) {
         const int m = aid[i];
+        if (m < 0) continue;
         const float r2 = fmaxf(expf(2.f * log_r[m]), 1e-12f);
         const float wr = w[i] / r2;
         swgx -= wr * dvx[i]; swgy -= wr * dvy[i]; swgz -= wr * dvz[i];
@@ -220,6 +226,101 @@ std::vector<torch::Tensor> skin_jacobian(torch::Tensor x, torch::Tensor p,
     }
 #undef SKIN_CASE
     return {out, J};
+}
+
+// ------------------------------------------------- 복셀 이웃 탐색
+// 앵커를 복셀 다운샘플링으로 뽑으면, 어느 가우시안이 어느 앵커에 속하는지가
+// **탐색 없이** 정해진다 -- 자기 복셀과 이웃 26 칸이 곧 후보다. 512 개 앵커
+// 전부와 거리를 재던 kNN 이 27 개 후보로 줄고, FPS 도 필요 없다.
+//
+// 키는 정렬된 유일 복셀 키 배열이라 이진 탐색으로 앵커 번호를 얻는다 (M 이 수백
+// 이므로 열 번 남짓). 빈 복셀은 -1 로 두고, 스키닝 커널이 그것을 건너뛴다.
+__device__ __forceinline__ int key_find(const long* __restrict__ keys, int M, long q) {
+    int lo = 0, hi = M - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) >> 1;
+        const long v = keys[mid];
+        if (v == q) return mid;
+        if (v < q) lo = mid + 1; else hi = mid - 1;
+    }
+    return -1;
+}
+
+template <int K>
+__global__ void voxel_knn_kernel(const float* __restrict__ x,
+                                 const float* __restrict__ p,
+                                 const long* __restrict__ keys,
+                                 int N, int M, int D1, int D2,
+                                 float ox, float oy, float oz, float cell,
+                                 int R,
+                                 long* __restrict__ oidx,
+                                 float* __restrict__ odist) {
+    const int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N) return;
+    const float px = x[3 * n], py = x[3 * n + 1], pz = x[3 * n + 2];
+    const int cx = (int)floorf((px - ox) / cell);
+    const int cy = (int)floorf((py - oy) / cell);
+    const int cz = (int)floorf((pz - oz) / cell);
+
+    float bd[K];
+    int   bi[K];
+#pragma unroll
+    for (int i = 0; i < K; ++i) { bd[i] = FLT_MAX; bi[i] = -1; }
+
+    for (int dz = -R; dz <= R; ++dz)
+      for (int dy = -R; dy <= R; ++dy)
+        for (int dx = -R; dx <= R; ++dx) {
+            const long q = ((long)(cx + dx) * D1 + (cy + dy)) * D2 + (cz + dz);
+            const int a = key_find(keys, M, q);
+            if (a < 0) continue;
+            const float ex = px - p[3 * a], ey = py - p[3 * a + 1],
+                        ez = pz - p[3 * a + 2];
+            const float d2 = ex * ex + ey * ey + ez * ez;
+            if (d2 >= bd[K - 1]) continue;
+            int pos = 0;
+#pragma unroll
+            for (int j = 0; j < K; ++j) pos += (bd[j] < d2);
+#pragma unroll
+            for (int j = K - 1; j > 0; --j) {
+                const bool sh = (j > pos);
+                bd[j] = sh ? bd[j - 1] : bd[j];
+                bi[j] = sh ? bi[j - 1] : bi[j];
+            }
+#pragma unroll
+            for (int j = 0; j < K; ++j) {
+                const bool put = (j == pos);
+                bd[j] = put ? d2 : bd[j];
+                bi[j] = put ? a : bi[j];
+            }
+        }
+#pragma unroll
+    for (int i = 0; i < K; ++i) {
+        oidx[(long)n * K + i] = bi[i];
+        odist[(long)n * K + i] = (bi[i] < 0) ? 0.f : sqrtf(fmaxf(bd[i], 0.f));
+    }
+}
+
+std::vector<torch::Tensor> voxel_knn(torch::Tensor x, torch::Tensor p,
+                                     torch::Tensor keys, int D1, int D2,
+                                     double ox, double oy, double oz,
+                                     double cell, int K, int R) {
+    CHECK(x); CHECK(p); CHECK(keys);
+    const int N = x.size(0), M = keys.size(0);
+    auto oidx = torch::empty({N, K}, x.options().dtype(torch::kLong));
+    auto odist = torch::empty({N, K}, x.options());
+    const int T = 128, B = (N + T - 1) / T;
+#define VK_CASE(KK)                                                           \
+    case KK: voxel_knn_kernel<KK><<<B, T>>>(x.data_ptr<float>(),              \
+                 p.data_ptr<float>(), keys.data_ptr<long>(), N, M, D1, D2,    \
+                 (float)ox, (float)oy, (float)oz, (float)cell, R,             \
+                 oidx.data_ptr<long>(), odist.data_ptr<float>()); break;
+    switch (K) {
+        VK_CASE(4) VK_CASE(6) VK_CASE(8) VK_CASE(12) VK_CASE(16)
+        VK_CASE(24) VK_CASE(32)
+        default: TORCH_CHECK(false, "K must be one of 4,6,8,12,16,24,32");
+    }
+#undef VK_CASE
+    return {oidx, odist};
 }
 
 // ---------------------------------------------------------------- 집계
@@ -406,4 +507,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("aggregate_moments", &aggregate_moments,
           "per-anchor mass-weighted moments, accumulated in shared memory");
     m.def("fps", &fps_cuda, "farthest point sampling, one kernel per pick");
+    m.def("voxel_knn", &voxel_knn,
+          "nearest anchors among the 3x3x3 voxel neighbourhood, no search");
 }
