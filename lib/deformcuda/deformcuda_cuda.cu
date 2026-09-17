@@ -414,9 +414,9 @@ std::vector<torch::Tensor> voxel_knn(torch::Tensor x, torch::Tensor p,
     const int T = 128, B = (N + T - 1) / T;
 #define VK_CASE(KK)                                                           \
     case KK: voxel_knn_kernel<KK><<<B, T>>>(x.data_ptr<float>(),              \
-                 p.data_ptr<float>(), nullptr, tab.data_ptr<long>(),          \
-                 slot.data_ptr<int>(), hmask,                                 \
-                 offs.data_ptr<float>(), N, M, D1, D2, L, stride,             \
+                 p.data_ptr<float>(), nullptr, offs.data_ptr<float>(),        \
+                 tab.data_ptr<long>(), slot.data_ptr<int>(), hmask,           \
+                 N, M, D1, D2, L, stride,                                     \
                  (float)ox, (float)oy, (float)oz, (float)cell, R,             \
                  oidx.data_ptr<long>(), odist.data_ptr<float>()); break;
     switch (K) {

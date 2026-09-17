@@ -97,8 +97,14 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None):
             vl = ((x - lo - offs[l] * cell) / cell).floor().long()
             ks.append(l * stride + (vl[:, 0] * D1 + vl[:, 1]) * D2 + vl[:, 2])
         key = torch.cat(ks) if L > 1 else ks[0]
-    keys, inv = torch.unique(key, sorted=True, return_inverse=True)
-    M = keys.numel()
+    tab = slot = keys = None
+    if use_hash:
+        tab, slot, M = _dc.voxel_hash(
+            x, offs, D1, D2, stride, float(lo[0]), float(lo[1]), float(lo[2]),
+            float(cell), max(1024, 4 * L * x.shape[0] // 8))
+    else:
+        keys = torch.unique(key, sorted=True)
+        M = keys.numel()
 
     # 집계: 짝이 아니라 가우시안당 하나라 흩뿌리기가 16 배 적다. 1 차 모멘트를
     # 먼저 내고(앵커 위치가 거기서 나온다), 그 중심 기준으로 2 차를 낸다.
@@ -106,15 +112,6 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None):
     # 이웃 중 점유된 칸에만 가중을 뿌린다 -- 가중이 0 으로 죽는 자리에는 어차피
     # 기여가 없다. 이 규칙 덕분에 unique 를 짝(N x 27)이 아니라 입자(N) 위에서
     # 한 번만 돌면 된다.
-    tab = slot = None
-    if use_hash:
-        tab, slot, M = _dc.voxel_hash(
-            x, offs, D1, D2, stride, float(lo[0]), float(lo[1]), float(lo[2]),
-            float(cell), max(1024, 4 * L * x.shape[0] // 8))
-        keys = None
-    else:
-        keys = torch.unique(key, sorted=True)
-        M = keys.numel()
     if _HAVE_DC and x.is_cuda and x.dtype == torch.float32:
         g1, g2, g3, cx, cX, cv = _dc.voxel_moments(
             x, X, v, m, tab, slot, M, offs, D1, D2, stride,
