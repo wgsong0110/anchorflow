@@ -79,7 +79,9 @@ def timeit(fn, n=a.reps):
     return (time.perf_counter() - t0) / n * 1e3
 
 
-va = voxel.build(x, X, v, m, H)
+# 격자는 공간에 고정한다. 궤적 전체를 담도록 여유를 두고 한 번만 잡는다.
+LO = (d["x"].reshape(-1, 3).min(0).values - 2 * H).to(dev)
+va = voxel.build(x, X, v, m, H, lo=LO)
 print(f"[복셀] 한 변 {H:.5f} -> 앵커 {va.M} 개 (기존 {a.n_anchors})", flush=True)
 
 # --- 정확성: 커널 대 파이토치 ---
@@ -95,7 +97,7 @@ print(f"[정확성] 이웃 색인 일치 {100*same:.2f}%, 거리 최대차 {e_d:
 dp = torch.randn(va.M, 3, device=dev) * 0.01
 log_r = torch.full((va.M,), float(np.log(H)), device=dev)
 log_t = torch.zeros(va.M, device=dev)
-t_build = timeit(lambda: voxel.build(x, X, v, m, H))
+t_build = timeit(lambda: voxel.build(x, X, v, m, H, lo=LO))
 t_nb = timeit(lambda: voxel.neighbors(x, va, a.k))
 t_skin = timeit(lambda: skin_with_jacobian(x, va.pos, dp, log_r, log_t, gi_c, H))
 t_vox = t_build + t_nb + t_skin
@@ -128,7 +130,7 @@ for t in range(1, T):
     vt = (xt - d["x"][t - 1][gs].to(dev)) / FRAME_DT
     Xc = d["x"][0][gs].to(dev)
     mm = torch.rand(xt.shape[0], device=dev) + 0.1
-    vb = voxel.build(xt, Xc, vt, mm, H)
+    vb = voxel.build(xt, Xc, vt, mm, H, lo=LO)
     gi, _ = voxel.neighbors(xt, vb, a.k)
     own = gi[:, 0]
     if prev is not None:
@@ -136,9 +138,14 @@ for t in range(1, T):
         kp = prev[0][prev[1]]
         kn = vb.keys[own.clamp(min=0)]
         flip.append(float((kp != kn).float().mean()))
-    prev = (vb.keys, own.clamp(min=0))
+        jump.append(float((prev[2] - vb.pos[own.clamp(min=0)]).norm(dim=-1)
+                          .mean()) / EXT)
+    prev = (vb.keys, own.clamp(min=0), vb.pos[own.clamp(min=0)])
 print(f"\n[떨림] 연속 프레임 사이 소속 복셀이 바뀐 가우시안 비율: "
       f"평균 {100*np.mean(flip):.2f}%  최대 {100*np.max(flip):.2f}%", flush=True)
+print(f"       그때 자기 앵커 위치가 뛴 거리: 평균 {100*np.mean(jump):.3f}% "
+      f"최대 {100*np.max(jump):.3f}% (물체 대비, 복셀 한 변은 "
+      f"{100*H/EXT:.2f}%)", flush=True)
 
 if a.out:
     os.makedirs(a.out, exist_ok=True)

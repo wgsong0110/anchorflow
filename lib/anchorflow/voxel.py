@@ -51,6 +51,9 @@ def build(x, X, v, m, cell, lo=None):
     """
     dev = x.device
     if lo is None:
+        # 원점은 **공간에 고정**해야 한다. 프레임마다 바운딩박스에서 새로 잡으면
+        # 물체가 떨어지는 것만으로 모든 복셀 키가 바뀌어, 소속이 실제로 변한 것과
+        # 격자가 따라 움직인 것을 구별할 수 없다 (그렇게 재서 70% 가 나왔다).
         lo = x.min(0).values - cell
     vi = ((x - lo) / cell).floor().long()
     D1 = int(vi[:, 1].max()) + 2
