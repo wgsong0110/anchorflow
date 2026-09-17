@@ -116,7 +116,22 @@ def frame_old():
     skin_with_jacobian(x, pp, dd, rr, tt, ii, H)
 
 
-rows["기존 (FPS+kNN, 앵커 512)"] = timeit(frame_old) + t_ras
+rows["매 프레임 FPS + kNN (앵커 512)"] = timeit(frame_old) + t_ras
+
+
+# ---- t=0 에만 FPS, 이후 앵커는 모델 출력으로 갱신, 소속은 매 프레임 kNN ----
+# 앵커 선정만 빠지고 kNN 과 집계는 그대로 든다. 복셀이 셋을 한 번에 접는 것과
+# 견주려면 이 구성이 맞는 비교 대상이다.
+def frame_track():
+    ii, _ = anchor_knn(x, p0, a.k)
+    ff, _ = aggregate(x, v, X, m, ii, a.n_anchors, H, pa=p0)
+    ee = torch.cat([MAT.reshape(1, -1).expand(a.n_anchors, -1),
+                    bc_features(p0, cfg) / H], -1)
+    dd, rr, tt = net0(p0, torch.cat([ff, ee], -1), FRAME_DT)
+    skin_with_jacobian(x, p0, dd, rr, tt, ii, H)
+
+
+rows["t=0 FPS 후 추적 + kNN (앵커 512)"] = timeit(frame_track) + t_ras
 
 # ---- 복셀 ----
 # 앙상블은 격자 수만큼 앵커가 늘어난다. 같은 앵커 예산에서 견주려면 칸을 L^(1/3)
