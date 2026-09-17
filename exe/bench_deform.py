@@ -53,8 +53,9 @@ a = ap.parse_args()
 
 dev = "cuda"
 torch.set_grad_enabled(False)
-from anchorflow.deform import (DeformNet, aggregate, bc_features,   # noqa: E402
-                               fps, grid_knn, jacobian_of, skin)
+from anchorflow.deform import (DeformNet, aggregate, anchor_knn,    # noqa: E402
+                               bc_features, dense_knn, fps, grid_knn,
+                               jacobian_of, skin, skin_with_jacobian)
 
 f = sorted(glob.glob(os.path.join(a.data, "*.pt")))[0]
 d = torch.load(f, map_location="cpu", weights_only=False)
@@ -166,17 +167,33 @@ for N in a.n_pts:
                        bc_features(p, cfg) / H], -1)
     dp, lr_, lt_ = net(p, torch.cat([feat, extra], -1), FRAME_DT)
 
-    r = {}
-    r["kNN"] = timeit(lambda: grid_knn(x, p, a.k), a.warmup, a.reps)
+    # 해석적 야코비안이 자동미분과 맞는지 먼저 확인한다 (틀린 것을 빨리 재봐야
+    # 소용없다). 작은 부분집합에서 본다.
+    with torch.enable_grad():
+        xs = x[:2048]
+        i2, _ = anchor_knn(xs, p, a.k)
+        Ja = skin_with_jacobian(xs, p, dp, lr_, lt_, i2, H)[2]
+        Jb = jacobian_of(lambda q: skin(q, p, dp, lr_, lt_, i2, H)[0], xs)
+        err = float((Ja - Jb).abs().max() / Jb.abs().max().clamp(min=1e-12))
+    print(f"\n[야코비안 검증] 해석 대 자동미분 상대 최대오차 {err:.3e}"
+          f"{'  <- 불일치' if err > 1e-3 else ''}", flush=True)
+
+    r = {"J_check": err}
+    r["kNN(격자)"] = timeit(lambda: grid_knn(x, p, a.k), a.warmup, a.reps)
+    r["kNN(조밀)"] = timeit(lambda: dense_knn(x, p, a.k), a.warmup, a.reps)
+    r["kNN"] = min(r["kNN(격자)"], r["kNN(조밀)"])
     r["집계"] = timeit(lambda: aggregate(x, v, XC, mass, idx, M, H, pa=p),
                      a.warmup, a.reps)
     r["순전파"] = timeit(lambda: net(p, torch.cat([feat, extra], -1), FRAME_DT),
                       a.warmup, a.reps)
     r["스키닝"] = timeit(lambda: skin(x, p, dp, lr_, lt_, idx, H), a.warmup, a.reps)
     with torch.enable_grad():
-        r["야코비안"] = timeit(
+        r["야코비안(자동)"] = timeit(
             lambda: jacobian_of(lambda q: skin(q, p, dp, lr_, lt_, idx, H)[0], x),
             3, max(5, a.reps // 3))
+    r["스키닝+야코비안(해석)"] = timeit(
+        lambda: skin_with_jacobian(x, p, dp, lr_, lt_, idx, H), a.warmup, a.reps)
+    r["야코비안"] = max(r["스키닝+야코비안(해석)"] - r["스키닝"], 0.0)
     r["FPS"] = timeit(lambda: fps(x, M), 3, max(5, a.reps // 5))
     if a.render:
         try:
@@ -184,13 +201,15 @@ for N in a.n_pts:
         except Exception as e:
             print(f"  래스터화 실패: {type(e).__name__}: {e}", flush=True)
     r["프레임(추론)"] = r["kNN"] + r["집계"] + r["순전파"] + r["스키닝"]
-    r["프레임(+모양)"] = r["프레임(추론)"] + r["야코비안"]
+    r["프레임(+모양)"] = (r["kNN"] + r["집계"] + r["순전파"]
+                       + r["스키닝+야코비안(해석)"])
     r["프레임(+refps)"] = r["프레임(추론)"] + r["FPS"]
     if "래스터화" in r:
         r["프레임(+모양+렌더)"] = r["프레임(+모양)"] + r["래스터화"]
     rows[N] = r
     print(f"\n[입자 {N}, 앵커 {M}]", flush=True)
-    for k_ in ("kNN", "집계", "순전파", "스키닝", "야코비안", "FPS", "래스터화"):
+    for k_ in ("kNN(격자)", "kNN(조밀)", "집계", "순전파", "스키닝",
+               "야코비안(자동)", "스키닝+야코비안(해석)", "FPS", "래스터화"):
         if k_ in r:
             print(f"  {k_:<10} {r[k_]:7.3f} ms", flush=True)
     for k_ in ("프레임(추론)", "프레임(+모양)", "프레임(+refps)",

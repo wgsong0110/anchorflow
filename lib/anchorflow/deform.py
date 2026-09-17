@@ -123,6 +123,41 @@ def grid_knn(x, p, k, occupancy=2.0, chunk=200_000):
     return idx_out, d_out
 
 
+def dense_knn(x, p, k, chunk=131072):
+    """앵커가 적을 때의 kNN. 거리를 **행렬곱**으로 만든다.
+
+        |x - p|^2 = |x|^2 - 2 x.p + |p|^2
+
+    이고 행마다 |x|^2 는 상수라 topk 의 순서를 바꾸지 않으므로, 실제로는
+    |p|^2 - 2 x.p 만 만들면 된다 -- [N,3] x [3,M] 행렬곱 하나다.
+
+    격자 경로보다 **연산량은 많지만 메모리 접근이 규칙적이다**. 격자 쪽은
+    [N, 27, cap] 후보를 만들고 p[cand] 로 무작위 접근을 하는데, M=512 에서는
+    후보 수(27 x cap)가 M 과 큰 차이가 없으면서 접근만 흐트러진다. 실측:
+    입자 138 만에서 격자 199 ms, 이쪽 아래 참조.
+
+    앵커가 수천 개를 넘어가면 반대가 되므로 `anchor_knn` 이 갈라 준다.
+    """
+    N, M = x.shape[0], p.shape[0]
+    pn = (p * p).sum(-1)
+    idx = torch.empty(N, k, dtype=torch.long, device=x.device)
+    dist = torch.empty(N, k, device=x.device)
+    for s in range(0, N, chunk):
+        xc = x[s:s + chunk]
+        sc = torch.addmm(pn.unsqueeze(0), xc, p.t(), beta=1.0, alpha=-2.0)
+        dv, di = sc.topk(k, dim=1, largest=False)
+        idx[s:s + chunk] = di
+        dist[s:s + chunk] = (dv + (xc * xc).sum(-1, keepdim=True)).clamp_min(0).sqrt()
+    return idx, dist
+
+
+def anchor_knn(x, p, k, dense_upto=4096, **kw):
+    """상황에 맞는 kNN 을 고른다. 앵커가 적으면 조밀, 많으면 격자."""
+    if p.shape[0] <= dense_upto:
+        return dense_knn(x, p, k)
+    return grid_knn(x, p, k, **kw)
+
+
 # --------------------------------------------------- 상대위치 어텐션
 class RelPos(nn.Module):
     """위치에서 나오는 것들을 **한 번만** 만들어 모든 층이 나눠 쓴다.
@@ -288,44 +323,51 @@ def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None):
     dev = x.device
     a = idx.reshape(-1)                                  # [N*k]
     w = m.unsqueeze(1).expand(N, k).reshape(-1)          # 질량만
+    wu = w.unsqueeze(-1)
 
-    def sca(val):                                        # [N*k, D] -> [M, D]
-        D = val.shape[-1]
-        out = torch.zeros(M, D, device=dev, dtype=val.dtype)
+    def sca(val, M_=None):                               # [N*k, D] -> [M, D]
+        out = torch.zeros(M_ or M, val.shape[-1], device=dev, dtype=val.dtype)
         return out.index_add_(0, a, val)
 
-    Wa = sca(w.unsqueeze(-1)).squeeze(-1).clamp(min=1e-12)      # [M] 질량 합
+    # 흩뿌리기를 **두 번**으로 묶는다. 항마다 따로 부르면 22 만 x k 개의 짝을
+    # 그 횟수만큼 다시 읽는데, 이 단계는 연산이 아니라 메모리 대역이 정하기
+    # 때문이다. 1 차 모멘트가 있어야 2 차를 낼 수 있어 두 번이 하한이다.
     rep = lambda t: t.unsqueeze(1).expand(N, k, t.shape[-1]).reshape(N * k, -1)
     xr, vr, Xr = rep(x), rep(v), rep(X)
-    cx = sca(w.unsqueeze(-1) * xr) / Wa.unsqueeze(-1)           # [M,3] 질량중심
-    cX = sca(w.unsqueeze(-1) * Xr) / Wa.unsqueeze(-1)
-    cv = sca(w.unsqueeze(-1) * vr) / Wa.unsqueeze(-1)           # [M,3] 평균 속도
+    g1 = sca(torch.cat([wu, wu * xr, wu * Xr, wu * vr, torch.ones_like(wu)], -1))
+    Wa = g1[:, 0].clamp(min=1e-12)                              # [M] 질량 합
+    Wi = Wa.unsqueeze(-1)
+    cx, cX, cv = g1[:, 1:4] / Wi, g1[:, 4:7] / Wi, g1[:, 7:10] / Wi
+    cnt = g1[:, 10:11]
 
     dx = xr - cx[a]
     dX = Xr - cX[a]
     dv = vr - cv[a]
+    g2 = sca(torch.cat([
+        (wu.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dx.unsqueeze(-2))).reshape(N * k, 9),
+        wu * torch.cross(dx, dv, dim=-1),
+        (wu.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dX.unsqueeze(-2))).reshape(N * k, 9),
+        (wu.reshape(-1, 1, 1) * (dX.unsqueeze(-1) * dX.unsqueeze(-2))).reshape(N * k, 9),
+    ], -1))
     # 2차 모멘트: 이 앵커 주변이 얼마나, 어느 방향으로 퍼져 있나
-    S = sca((w.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dx.unsqueeze(-2))
-             ).reshape(N * k, 9)).reshape(M, 3, 3) / Wa.reshape(M, 1, 1)
+    S = g2[:, :9].reshape(M, 3, 3) / Wa.reshape(M, 1, 1)
     iu = torch.triu_indices(3, 3, device=dev)
     S6 = S[:, iu[0], iu[1]] / (h * h)
     # 각운동량 -> 각속도. 강체처럼 돌고 있는 성분을 분리해 준다
-    L = sca(w.unsqueeze(-1) * torch.cross(dx, dv, dim=-1))      # [M,3]
+    L = g2[:, 9:12]
     tr = S.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(M, 1, 1)
     I = (tr * torch.eye(3, device=dev) - S) * Wa.reshape(M, 1, 1)
     om = torch.linalg.solve(I + 1e-8 * torch.eye(3, device=dev), L.unsqueeze(-1)
                             ).squeeze(-1)
     # 국소 변형구배: 정준 배치 대비 얼마나 찌그러졌나 (최소제곱)
-    A = sca((w.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dX.unsqueeze(-2))
-             ).reshape(N * k, 9)).reshape(M, 3, 3)
-    B = sca((w.reshape(-1, 1, 1) * (dX.unsqueeze(-1) * dX.unsqueeze(-2))
-             ).reshape(N * k, 9)).reshape(M, 3, 3)
+    A = g2[:, 12:21].reshape(M, 3, 3)
+    B = g2[:, 21:30].reshape(M, 3, 3)
     Fa = A @ torch.linalg.inv(B + (1e-6 * h * h) * torch.eye(3, device=dev))
     detF = torch.linalg.det(Fa).reshape(M, 1)
 
     feats = [
         torch.log(Wa).reshape(M, 1),                    # 질량
-        torch.log1p(sca(torch.ones_like(w).unsqueeze(-1))),   # 개수
+        torch.log1p(cnt),                               # 개수
         (cx - cX) / h,                                  # 정준 대비 이동
         ((cx - pa) / h if pa is not None
          else torch.zeros_like(cx)),                    # 질량가중 위치 (앵커 기준)
@@ -357,6 +399,50 @@ def skin(x, p, dp, log_r, log_t, idx, h):
     tau = (u * log_t[idx].exp()).sum(1, keepdim=True).clamp(min=1e-4)
     w = torch.softmax(logit / tau, dim=1)          # [N,k]
     return x + (w.unsqueeze(-1) * dp[idx]).sum(1), w
+
+
+def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h):
+    """스키닝과 그 **해석적** 야코비안을 함께 낸다.
+
+    phi(x) = x + sum_a w_a(x) dp_a 이고 w 는 x 에 의존하므로
+
+        J = I + sum_a dp_a (x) grad w_a
+
+    이다. 자동미분으로 뽑으면 역전파를 세 번 해야 하고(입자 138 만에서 47 ms),
+    게다가 앵커 출력이 **모든** 입자의 집계에 의존하므로 x 를 떼어낸 잎으로
+    두어야만 "이 점에서의 사상의 야코비안"이 된다. 닫힌 형태로 쓰면 그 두 문제가
+    함께 사라진다.
+
+    grad w 는 softmax 의 미분이다. z_a = g_a / tau(x), g_a = -d_a^2 / (2 r_a^2),
+    tau(x) = sum_a u_a t_a, u = softmax(-d_a^2 / 2h^2) 이므로
+
+        grad g_a = -(x - p_a) / r_a^2
+        grad u_a = u_a (-(x-p_a)/h^2 - sum_b u_b (-(x-p_b)/h^2))
+        grad tau = sum_a t_a grad u_a
+        grad z_a = grad g_a / tau - g_a grad tau / tau^2
+        grad w_a = w_a (grad z_a - sum_b w_b grad z_b)
+    """
+    pa = p[idx]                                    # [N,k,3]
+    dvec = x.unsqueeze(1) - pa                     # [N,k,3]
+    d2 = (dvec * dvec).sum(-1)                     # [N,k]
+    r2 = (2.0 * log_r[idx]).exp().clamp(min=1e-12)
+    g = -0.5 * d2 / r2
+    u = torch.softmax(-0.5 * d2 / (h * h), dim=1)
+    ta = log_t[idx].exp()
+    tau = (u * ta).sum(1, keepdim=True).clamp(min=1e-4)
+    w = torch.softmax(g / tau, dim=1)
+    dpa = dp[idx]                                  # [N,k,3]
+    out = x + (w.unsqueeze(-1) * dpa).sum(1)
+
+    gg = -dvec / r2.unsqueeze(-1)                                  # grad g_a
+    gu_raw = -dvec / (h * h)
+    gu = u.unsqueeze(-1) * (gu_raw - (u.unsqueeze(-1) * gu_raw).sum(1, keepdim=True))
+    gtau = (ta.unsqueeze(-1) * gu).sum(1, keepdim=True)            # [N,1,3]
+    gz = gg / tau.unsqueeze(-1) - g.unsqueeze(-1) * gtau / (tau ** 2).unsqueeze(-1)
+    gw = w.unsqueeze(-1) * (gz - (w.unsqueeze(-1) * gz).sum(1, keepdim=True))
+    J = torch.eye(3, device=x.device).expand(x.shape[0], 3, 3) \
+        + torch.einsum("nki,nkj->nij", dpa, gw)
+    return out, w, J
 
 
 def jacobian_of(fn, x):
