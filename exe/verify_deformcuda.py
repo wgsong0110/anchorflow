@@ -94,6 +94,10 @@ if a.out:
 # 집계와 FPS 도 대조한다 (파이토치 경로를 강제로 태워 비교)
 import anchorflow.deform as D                                    # noqa: E402
 
+# 커널 경로는 grad 가 꺼져 있을 때만 탄다 (역전파가 없는 커널이라). 켜 둔 채로
+# 재면 양쪽 다 파이토치 경로가 돌아 "차이 없음" 이 나온다 -- 실제로 그렇게 한 번
+# 잘못 쟀다.
+torch.set_grad_enabled(False)
 N2 = min(a.N, 400000)
 x2 = x[:N2].contiguous()
 X2 = torch.rand_like(x2)
