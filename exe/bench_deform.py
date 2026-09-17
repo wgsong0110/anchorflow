@@ -33,6 +33,15 @@ ap.add_argument("--data", required=True)
 ap.add_argument("--out", default=None)
 ap.add_argument("--ckpt", default=None, help="있으면 그 구조/앵커를 쓴다")
 ap.add_argument("--n_pts", type=int, nargs="+", default=[20000, 40000])
+ap.add_argument("--ply", default=None,
+                help="전체 가우시안 수로 재려면 원본 ply. 학습용 .pt 는 4 만 개로 "
+                     "부분표본된 것이라 실제 배포 규모가 아니다")
+ap.add_argument("--render", action="store_true",
+                help="래스터화까지 포함해 잰다. 실시간 판정은 물리만이 아니라 "
+                     "'프레임 하나를 화면에 내는 데 걸리는 시간'이어야 한다")
+ap.add_argument("--width", type=int, default=800)
+ap.add_argument("--height", type=int, default=800)
+ap.add_argument("--sh_degree", type=int, default=3)
 ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--k", type=int, default=16)
 ap.add_argument("--hidden", type=int, default=128)
@@ -85,10 +94,59 @@ def timeit(fn, warmup, reps):
     return float(np.mean(ts))
 
 
+FULL = None
+if a.ply:
+    from plyfile import PlyData                                   # noqa: E402
+    v_ = PlyData.read(a.ply)["vertex"]
+    xyz = np.stack([v_["x"], v_["y"], v_["z"]], 1)
+    # 위치의 절대 좌표계는 타이밍에 무관하다. 분포(격자 점유)만 맞으면 되므로
+    # 학습이 쓰는 MPM 프레임과 같은 크기로 맞춰 둔다.
+    t_ = torch.from_numpy(xyz).float()
+    t_ = t_ - t_.mean(0)
+    t_ = t_ / float((t_.max(0).values - t_.min(0).values).norm()) * EXT
+    FULL = (t_ + X0.mean(0)).to(dev)
+    print(f"[전체] ply 가우시안 {FULL.shape[0]}", flush=True)
+
+
+def raster_timer(N):
+    """가우시안 N 개를 한 번 래스터화하는 시간. 값은 타이밍에 무관하므로 형태만 맞춘다."""
+    from diff_gaussian_rasterization import (GaussianRasterizationSettings,
+                                             GaussianRasterizer)
+    W, Hh = a.width, a.height
+    tanfov = float(np.tan(0.5 * np.radians(60.0)))
+    vt = torch.eye(4, device=dev)
+    vt[3, 2] = 4.0
+    pm = torch.eye(4, device=dev)
+    means = FULL[:N] if FULL is not None else X0d[:N]
+    means = means - means.mean(0)
+    cov = torch.zeros(N, 6, device=dev)
+    cov[:, 0] = cov[:, 3] = cov[:, 5] = (0.004 * EXT) ** 2
+    opa = torch.full((N, 1), 0.8, device=dev)
+    col = torch.rand(N, 3, device=dev)
+    scr = torch.zeros_like(means)
+    st = GaussianRasterizationSettings(
+        image_height=Hh, image_width=W, tanfovx=tanfov, tanfovy=tanfov,
+        bg=torch.ones(3, device=dev), scale_modifier=1.0,
+        viewmatrix=vt, projmatrix=vt @ pm, sh_degree=a.sh_degree,
+        campos=torch.zeros(3, device=dev), prefiltered=False, debug=False)
+    rast = GaussianRasterizer(raster_settings=st)
+
+    def go():
+        rast(means3D=means, means2D=scr, shs=None, colors_precomp=col,
+             opacities=opa, scales=None, rotations=None, cov3D_precomp=cov)
+    return go
+
+
 rows = {}
 for N in a.n_pts:
-    gs = torch.arange(min(N, N_FULL), device=dev)
-    x = X0d[gs].contiguous()
+    if FULL is not None and N > N_FULL:
+        x = FULL[:N].contiguous()
+        gs = torch.arange(min(N, N_FULL), device=dev)
+        mass_src = MASS_ALL[gs].median().expand(N).contiguous()
+    else:
+        gs = torch.arange(min(N, N_FULL), device=dev)
+        x = X0d[gs].contiguous()
+        mass_src = MASS_ALL[gs]
     XC = x.clone()
     v = torch.zeros_like(x)
     M = a.n_anchors
@@ -96,7 +154,7 @@ for N in a.n_pts:
     H = float(torch.cdist(x[AIDX], x[AIDX]).topk(2, largest=False).values[:, 1]
               .median())
     p = x[AIDX].contiguous()
-    mass = MASS_ALL[gs]
+    mass = mass_src
 
     idx, _ = grid_knn(x, p, a.k)
     feat, _ = aggregate(x, v, XC, mass, idx, M, H, pa=p)
@@ -120,15 +178,26 @@ for N in a.n_pts:
             lambda: jacobian_of(lambda q: skin(q, p, dp, lr_, lt_, idx, H)[0], x),
             3, max(5, a.reps // 3))
     r["FPS"] = timeit(lambda: fps(x, M), 3, max(5, a.reps // 5))
+    if a.render:
+        try:
+            r["래스터화"] = timeit(raster_timer(x.shape[0]), 3, max(5, a.reps // 3))
+        except Exception as e:
+            print(f"  래스터화 실패: {type(e).__name__}: {e}", flush=True)
     r["프레임(추론)"] = r["kNN"] + r["집계"] + r["순전파"] + r["스키닝"]
     r["프레임(+모양)"] = r["프레임(추론)"] + r["야코비안"]
     r["프레임(+refps)"] = r["프레임(추론)"] + r["FPS"]
+    if "래스터화" in r:
+        r["프레임(+모양+렌더)"] = r["프레임(+모양)"] + r["래스터화"]
     rows[N] = r
     print(f"\n[입자 {N}, 앵커 {M}]", flush=True)
-    for k_ in ("kNN", "집계", "순전파", "스키닝", "야코비안", "FPS"):
-        print(f"  {k_:<10} {r[k_]:7.3f} ms", flush=True)
-    for k_ in ("프레임(추론)", "프레임(+모양)", "프레임(+refps)"):
-        print(f"  {k_:<14} {r[k_]:7.3f} ms  = {1000/r[k_]:6.1f} fps"
+    for k_ in ("kNN", "집계", "순전파", "스키닝", "야코비안", "FPS", "래스터화"):
+        if k_ in r:
+            print(f"  {k_:<10} {r[k_]:7.3f} ms", flush=True)
+    for k_ in ("프레임(추론)", "프레임(+모양)", "프레임(+refps)",
+               "프레임(+모양+렌더)"):
+        if k_ not in r:
+            continue
+        print(f"  {k_:<16} {r[k_]:7.3f} ms  = {1000/r[k_]:6.1f} fps"
               f"   {'실시간' if r[k_] < FRAME_DT*1000 else '실시간 아님'}"
               f" (기준 {FRAME_DT*1000:.1f} ms)", flush=True)
 
