@@ -20,7 +20,7 @@ import torch
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True)
-ap.add_argument("--ckpt", required=True, nargs="+")
+ap.add_argument("--ckpt", nargs="+", default=[])
 ap.add_argument("--ply", default=None, help="외형(색·불투명도·크기)을 가져올 ply")
 ap.add_argument("--traj", default="watermelon_h")
 ap.add_argument("--out", required=True)
@@ -30,6 +30,11 @@ ap.add_argument("--n_pts", type=int, default=20000)
 ap.add_argument("--cd_pts", type=int, default=2048,
                 help="CD/EMD 표본 크기 (EMD 가 O(n^3) 이라 필요하다)")
 ap.add_argument("--width", type=int, default=600)
+ap.add_argument("--spring_gaus", default=None,
+                help="Spring-Gaus 클론 경로. 주면 같은 궤적·같은 지표로 함께 잰다")
+ap.add_argument("--sg_points", type=int, default=2048, help="공식 N_SAMPLE")
+ap.add_argument("--sg_neighbors", type=int, default=256, help="공식 K_NEIGHBORS")
+ap.add_argument("--sg_nstep", type=int, default=100, help="공식 N_STEP")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
@@ -180,7 +185,76 @@ def rollout(ck, t0, L):
     return out
 
 
+
+def rollout_sg(t0, L):
+    """Spring-Gaus 의 스프링-질량 시뮬레이터를 같은 조건에서 굴린다.
+
+    값은 공식 config 그대로다 (mpm_synthetic/default.yaml): 질량점 2048 개,
+    이웃 256, 프레임당 서브스텝 100. 물성은 학습하지 않는다 -- 다른 베이스라인과
+    같은 조건에서 **시뮬레이터만** 재는 것이 목적이다. 이 방법은 탄성 전용이라
+    소성·파괴가 구조적으로 표현되지 않는데, 그것이 이 비교로 보이려는 것이다.
+    """
+    sys.path.insert(0, a.spring_gaus)
+    from lib.models.spring_mass.Spring_Mass import Spring_Mass
+    from yacs.config import CfgNode as CN
+    sc = CN()
+    sc.K_NEIGHBORS = a.sg_neighbors
+    sc.K_BINDING = 16
+    sc.N_STEP = a.sg_nstep
+    sc.INIT_VELOCITY = [0, 0, 0]
+    sc.G = list(cfg.get("g", [0.0, 0.0, 0.0]))
+    sc.PRETRAINED = None
+    sc.DATA = CN()
+    sc.DATA.DT = FRAME_DT
+    sc.DATA.BC = [[[0, 0.3, 0], [0, 1, 0]]]
+    sc.DATA.GLOBAL_M = 1
+    sc.DATA.GLOBAL_K = 1000
+    sc.DATA.GLOBAL_DAMP = 0.1
+    x0 = take(d["x"][t0], GS)
+    g = torch.Generator().manual_seed(a.seed)
+    pi = torch.randperm(x0.shape[0], generator=g)[:a.sg_points].to(dev)
+    sim = Spring_Mass(sc, x0[pi].clone()).to(dev)
+    if hasattr(sim, "device"):
+        sim.device = dev
+    sim.set_dt(dt=FRAME_DT)
+    sim.set_all_particle(x0.clone())
+    sim.stage = "dynamic"
+    xs = x0[pi].clone()
+    vs = ((x0 - take(d["x"][max(t0 - 1, 0)], GS)) / FRAME_DT)[pi].clone()
+    # 질량점 변위를 가우시안으로 옮기는 결속. 공식 K_BINDING 과 같은 16 이웃이다.
+    dd = torch.cdist(x0, x0[pi])
+    wv, ii = dd.topk(16, largest=False)
+    wv = torch.softmax(-wv / wv[:, :1].clamp(min=1e-9), 1)
+    out = [(x0.clone(), None)]
+    for i in range(1, L + 1):
+        o = sim(xs, xs, vs, frame_id=i)
+        xs, vs = o[0].detach(), o[1].detach()
+        out.append((x0 + ((xs - x0[pi])[ii] * wv.unsqueeze(-1)).sum(1), None))
+    return out
+
+
 rows = {}
+if a.spring_gaus:
+    per = []
+    for t0 in a.t0:
+        L = min(a.frames, d["x"].shape[0] - t0 - 1)
+        seq = rollout_sg(t0, L)
+        for i in range(1, len(seq)):
+            xp, _ = seq[i]
+            xg = take(d["x"][t0 + i], GS)
+            m = dict(t0=t0, f=i, cd=chamfer(xp, xg) / (EXT ** 2),
+                     emd=emd(xp, xg, t0 * 1000 + i) / EXT)
+            if RAST is not None:
+                ip, ig = RAST(xp, None), RAST(xg, None)
+                m["psnr"] = psnr(ip, ig); m["ssim"] = ssim(ip, ig)
+            per.append(m)
+    rows["Spring-Gaus"] = per
+    agg = {k: float(np.mean([r[k] for r in per])) for k in per[0]
+           if k not in ("t0", "f")}
+    print(f"[Spring-Gaus] CD {agg['cd']:.3e}  EMD {100*agg['emd']:.3f}%"
+          + (f"  PSNR {agg['psnr']:.2f} dB  SSIM {agg['ssim']:.4f}"
+             if "psnr" in agg else ""), flush=True)
+
 for ck in a.ckpt:
     name = os.path.splitext(os.path.basename(ck))[0]
     per = []
