@@ -44,6 +44,9 @@ ap.add_argument("--height", type=int, default=800)
 ap.add_argument("--sh_degree", type=int, default=3)
 ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--k", type=int, nargs="+", default=[16])
+ap.add_argument("--chunk", type=int, nargs="+", default=[8192, 32768, 131072],
+                help="kNN 청크. [chunk, M] 점수판이 L2 에 들어가는지가 topk 속도를 "
+                     "가른다 -- 값은 바뀌지 않는다")
 ap.add_argument("--agg_sub", type=int, default=0,
                 help="집계에 쓸 입자 수. 0 이면 전부")
 ap.add_argument("--hidden", type=int, default=128)

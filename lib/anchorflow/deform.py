@@ -123,7 +123,7 @@ def grid_knn(x, p, k, occupancy=2.0, chunk=200_000):
     return idx_out, d_out
 
 
-def dense_knn(x, p, k, chunk=131072, half=False):
+def dense_knn(x, p, k, chunk=32768, half=False):
     """앵커가 적을 때의 kNN. 거리를 **행렬곱**으로 만든다.
 
         |x - p|^2 = |x|^2 - 2 x.p + |p|^2
@@ -156,10 +156,10 @@ def dense_knn(x, p, k, chunk=131072, half=False):
     return idx, dist
 
 
-def anchor_knn(x, p, k, dense_upto=4096, half=False, **kw):
+def anchor_knn(x, p, k, dense_upto=4096, half=False, chunk=32768, **kw):
     """상황에 맞는 kNN 을 고른다. 앵커가 적으면 조밀, 많으면 격자."""
     if p.shape[0] <= dense_upto:
-        return dense_knn(x, p, k, half=half)
+        return dense_knn(x, p, k, chunk=chunk, half=half)
     return grid_knn(x, p, k, **kw)
 
 
@@ -412,25 +412,26 @@ def skin(x, p, dp, log_r, log_t, idx, h):
 
 
 def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h):
-    """스키닝과 그 **해석적** 야코비안을 함께 낸다.
+    """스키닝과 그 **해석적** 야코비안. 외적을 한 번만 만든다.
 
-    phi(x) = x + sum_a w_a(x) dp_a 이고 w 는 x 에 의존하므로
+    phi(x) = x + sum_a w_a(x) dp_a 이고 w 가 x 에 의존하므로 J = I + sum_a dp_a (x) grad w_a
+    인데, 이것을 그대로 쓰면 [N,k,3] 짜리 중간 텐서가 대여섯 개 생겨 자동미분보다
+    오히려 느리다 (입자 138 만에서 85 ms 대 42 ms). 식을 펴면 대부분이 앵커에 대한
+    합으로 먼저 접힌다.
 
-        J = I + sum_a dp_a (x) grad w_a
-
-    이다. 자동미분으로 뽑으면 역전파를 세 번 해야 하고(입자 138 만에서 47 ms),
-    게다가 앵커 출력이 **모든** 입자의 집계에 의존하므로 x 를 떼어낸 잎으로
-    두어야만 "이 점에서의 사상의 야코비안"이 된다. 닫힌 형태로 쓰면 그 두 문제가
-    함께 사라진다.
-
-    grad w 는 softmax 의 미분이다. z_a = g_a / tau(x), g_a = -d_a^2 / (2 r_a^2),
-    tau(x) = sum_a u_a t_a, u = softmax(-d_a^2 / 2h^2) 이므로
-
-        grad g_a = -(x - p_a) / r_a^2
-        grad u_a = u_a (-(x-p_a)/h^2 - sum_b u_b (-(x-p_b)/h^2))
-        grad tau = sum_a t_a grad u_a
+        grad w_a = w_a (grad z_a - G),      G = sum_b w_b grad z_b        ... [N,3]
         grad z_a = grad g_a / tau - g_a grad tau / tau^2
-        grad w_a = w_a (grad z_a - sum_b w_b grad z_b)
+        grad g_a = -(x - p_a) / r_a^2
+
+    이므로
+
+        sum_a dp_a (x) grad w_a
+            = (1/tau)  sum_a (w_a / r_a^2) dp_a (x) (-(x-p_a))      <- 외적 한 번
+            - (1/tau^2) (sum_a w_a g_a dp_a) (x) grad tau           <- [N,3] (x) [N,3]
+            - (sum_a w_a dp_a) (x) G                                 <- [N,3] (x) [N,3]
+
+    남는 [N,k,3] x [N,k,3] 외적은 첫 줄 하나뿐이고 나머지는 전부 앵커 축을 먼저
+    접은 [N,3] 끼리의 외적이다. 값은 위 식과 정확히 같다.
     """
     pa = p[idx]                                    # [N,k,3]
     dvec = x.unsqueeze(1) - pa                     # [N,k,3]
@@ -439,19 +440,27 @@ def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h):
     g = -0.5 * d2 / r2
     u = torch.softmax(-0.5 * d2 / (h * h), dim=1)
     ta = log_t[idx].exp()
-    tau = (u * ta).sum(1, keepdim=True).clamp(min=1e-4)
+    tau = (u * ta).sum(1, keepdim=True).clamp(min=1e-4)     # [N,1]
     w = torch.softmax(g / tau, dim=1)
     dpa = dp[idx]                                  # [N,k,3]
-    out = x + (w.unsqueeze(-1) * dpa).sum(1)
+    wdp = (w.unsqueeze(-1) * dpa).sum(1)           # [N,3]
+    out = x + wdp
 
-    gg = -dvec / r2.unsqueeze(-1)                                  # grad g_a
-    gu_raw = -dvec / (h * h)
-    gu = u.unsqueeze(-1) * (gu_raw - (u.unsqueeze(-1) * gu_raw).sum(1, keepdim=True))
-    gtau = (ta.unsqueeze(-1) * gu).sum(1, keepdim=True)            # [N,1,3]
-    gz = gg / tau.unsqueeze(-1) - g.unsqueeze(-1) * gtau / (tau ** 2).unsqueeze(-1)
-    gw = w.unsqueeze(-1) * (gz - (w.unsqueeze(-1) * gz).sum(1, keepdim=True))
+    # grad tau: u 의 softmax 미분을 앵커 축으로 먼저 접는다
+    tu = ta * u                                                    # [N,k]
+    su = (u.unsqueeze(-1) * dvec).sum(1)                           # [N,3]
+    gtau = -((tu.unsqueeze(-1) * dvec).sum(1) - tu.sum(1, keepdim=True) * su) \
+        / (h * h)                                                  # [N,3]
+    wr = w / r2                                                    # [N,k]
+    swg = -(wr.unsqueeze(-1) * dvec).sum(1)                        # [N,3]  sum w_b grad g_b
+    wg = (w * g).sum(1, keepdim=True)                              # [N,1]
+    G = swg / tau - wg * gtau / (tau ** 2)                         # [N,3]
+    wgdp = (( w * g).unsqueeze(-1) * dpa).sum(1)                   # [N,3]
+
     J = torch.eye(3, device=x.device).expand(x.shape[0], 3, 3) \
-        + torch.einsum("nki,nkj->nij", dpa, gw)
+        - torch.einsum("nki,nkj->nij", wr.unsqueeze(-1) * dpa, dvec) / tau.unsqueeze(-1) \
+        - torch.einsum("ni,nj->nij", wgdp, gtau) / (tau ** 2).unsqueeze(-1) \
+        - torch.einsum("ni,nj->nij", wdp, G)
     return out, w, J
 
 
