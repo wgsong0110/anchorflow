@@ -182,7 +182,8 @@ def rollout_box(frames_xyz, R, width):
 
 def slice_marks(c_t, ZS, R, ctr, half, W, H):
     """단면 z 를 롤아웃 그림의 세로 좌표로. 어느 높이를 자른 것인지 표시한다."""
-    z = torch.tensor([[0.0, 0.0, zz] for zz in ZS], device=c_t.device)
+    z = torch.tensor([[0.0, 0.0, float(zz)] for zz in ZS],
+                     dtype=torch.float32, device=c_t.device)
     p = (z + c_t) @ R.T
     return ((0.5 - (p[:, 1] - ctr[1]) / half * 0.5) * (H - 1)).cpu().numpy()
 
