@@ -56,13 +56,17 @@ def _bspline_w(t):
                                    torch.zeros_like(a)))
 
 
-def build(x, X, v, m, cell, lo=None, soft=False, offsets=None):
+def build(x, X, v, m, cell, lo=None, soft=False, offsets=None, dims=None):
     """현재 배치에서 복셀 앵커를 뽑고, 같은 패스에서 통계까지 낸다.
 
     x [N,3] 현재 위치, X [N,3] 정준 위치, v [N,3] 속도, m [N] 질량.
     soft   True 면 자기 칸 하나가 아니라 이웃 3x3x3 에 B-스플라인 가중으로 뿌린다.
            앵커 위치가 가중 질량중심이 되어 입자가 칸을 넘어도 **정확히 연속**이다.
            흩뿌리기가 27 배 늘지만, 불연속을 근본에서 없앤다.
+    dims   (D1, D2, stride) 를 미리 주면 격자 치수를 다시 재지 않는다. 치수를
+           매번 재면 int(tensor.max()) 가 **장치 동기화 세 번**을 일으켜, 입자
+           20000 개에서 그것만 13.6 ms 다 (커널 전체보다 비싸다). 궤적 전체를
+           덮는 값을 한 번 잡아 넘기면 된다.
     offsets [L,3] 격자를 칸의 몇 분의 몇만큼 옮길지. 여러 개를 주면 **한 번에**
            처리한다 -- 키에 격자 번호를 실어 하나의 정렬된 배열에 담으므로,
            입자 좌표를 한 번만 읽고 커널도 한 번만 뜬다. 파이썬으로 L 번 돌면
@@ -81,17 +85,22 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None):
         offs = torch.as_tensor(offsets, device=dev, dtype=x.dtype).reshape(-1, 3)
     L = offs.shape[0]
     # 격자별 칸 번호. 범위는 모든 격자를 덮도록 한 번에 잡는다.
-    vi0 = ((x - lo) / cell).floor().long()
-    D1 = int(vi0[:, 1].max()) + 3
-    D2 = int(vi0[:, 2].max()) + 3
-    stride = (int(vi0[:, 0].max()) + 3) * D1 * D2
-    vi = vi0
+    if dims is not None:
+        D1, D2, stride = dims
+        vi0 = None
+    else:
+        vi0 = ((x - lo) / cell).floor().long()
+        mx = vi0.max(0).values.tolist()          # 동기화 한 번으로 세 값을 받는다
+        D1, D2 = mx[1] + 3, mx[2] + 3
+        stride = (mx[0] + 3) * D1 * D2
     use_hash = _HAVE_DC and x.is_cuda and x.dtype == torch.float32
     if use_hash:
         # 키를 파이토치에서 만들지도, 정렬하지도 않는다 -- 커널이 해시로 O(N) 에
         # 번호를 매긴다. L 이 커질수록 이득이 커진다.
         key = None
     else:
+        if vi0 is None:
+            vi0 = ((x - lo) / cell).floor().long()
         ks = []
         for l in range(L):
             vl = ((x - lo - offs[l] * cell) / cell).floor().long()
@@ -131,7 +140,7 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None):
             off = torch.stack(torch.meshgrid(r, r, r, indexing="ij"),
                               -1).reshape(-1, 3)
             u = (x - lo) / cell - 0.5
-            nb = vi.unsqueeze(1) + off.unsqueeze(0)
+            nb = vi0.unsqueeze(1) + off.unsqueeze(0)
             wt = _bspline_w(u.unsqueeze(1) - nb.to(x.dtype)).prod(-1)
             qk = (nb[..., 0] * D1 + nb[..., 1]) * D2 + nb[..., 2]
             pin = torch.searchsorted(keys, qk.reshape(-1)).clamp(max=M - 1)

@@ -198,6 +198,7 @@ VOX_OFFS = (np.array([np.random.RandomState(i).rand(3)
                      for i in range(a.vox_ens)]) if a.vox_ens else None)
 VOX_CELL = None      # 첫 호출에서 앵커 간격으로 정한다
 VOX_LO = None
+VOX_DIMS = None      # 격자 치수는 궤적 전체로 한 번만 잡는다 (동기화 제거)
 
 
 def vox_feats(d, gsel, x, v):
@@ -206,7 +207,7 @@ def vox_feats(d, gsel, x, v):
     X = take(d["x"][0], gsel)
     cell = VOX_CELL * (max(a.vox_ens, 1) ** (1.0 / 3.0))
     vb = voxel.build(x, X, v / VEL_SCALE, MASS[gsel], cell, lo=VOX_LO,
-                     offsets=VOX_OFFS)
+                     offsets=VOX_OFFS, dims=VOX_DIMS)
     idx, _ = voxel.neighbors(x, vb, a.k)
     W, cx, cX, cv, cnt, g2 = vb.moments
     M = vb.M
@@ -336,6 +337,12 @@ if a.voxel:
     VOX_LO = (torch.stack([dd["x"].reshape(-1, 3).min(0).values
                            for _t, dd in TR + held]).min(0).values
               - 4 * H).to(dev)
+    _hi = torch.stack([dd["x"].reshape(-1, 3).max(0).values
+                       for _t, dd in TR + held]).max(0).values.to(dev)
+    _mx = (((_hi - VOX_LO) / (H * (max(a.vox_ens, 1) ** (1.0 / 3.0))))
+           .floor().long() + 4).tolist()
+    VOX_DIMS = (_mx[1] + 3, _mx[2] + 3,
+                (_mx[0] + 3) * (_mx[1] + 3) * (_mx[2] + 3))
     with torch.no_grad():
         _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
         _x = take(TR[0][1]["x"][0], _g)
