@@ -178,19 +178,7 @@ opt = None
 step0 = 0
 
 
-def if a.voxel:
-    VOX_CELL = H
-    VOX_LO = (min(dd["x"].reshape(-1, 3).min(0).values for _t, dd in TR + held)
-              - 4 * H).to(dev)
-    with torch.no_grad():
-        _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
-        _x = take(TR[0][1]["x"][0], _g)
-        _p, _f, _i = vox_feats(TR[0][1], _g, _x, torch.zeros_like(_x))
-        n_feat = _f.shape[-1] + N_MAT + n_bc
-    print(f"[복셀] 한 변 {VOX_CELL:.5f}, 앵커 {_p.shape[0]} 개, 입력 {n_feat}",
-          flush=True)
-
-build(n_feat):
+def build(n_feat):
     global net, opt
     net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth, heads=a.heads,
                     scale=0.02 * EXT, h=H, ext=EXT, seed=a.seed).to(dev)
