@@ -95,8 +95,10 @@ def take(t, i):
 
 xc0 = take(d["x"][0], GS); c0 = xc0.mean(0); rel0 = xc0 - c0
 zlo, zhi = float(rel0[:, 2].min()), float(rel0[:, 2].max())
-edges = np.linspace(zlo, zhi, a.slices + 1)
-ZS = [(edges[i] + edges[i + 1]) / 2 for i in range(a.slices)]
+# 단면 높이는 등간격이 아니라 **입자 분위수**로 잡는다. 등간격으로 자르면 위아래
+# 끝 단면에 입자가 거의 없어 빈 칸이 된다 (수박은 가운데가 두껍다).
+q = np.linspace(0.5, a.slices - 0.5, a.slices) / a.slices
+ZS = [float(torch.quantile(rel0[:, 2], float(qq))) for qq in q]
 xy_lo = rel0[:, :2].min(0).values.cpu().numpy()
 xy_hi = rel0[:, :2].max(0).values.cpu().numpy()
 gx = np.linspace(xy_lo[0], xy_hi[0], a.grid)
