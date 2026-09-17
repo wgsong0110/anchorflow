@@ -313,8 +313,11 @@ std::vector<torch::Tensor> aggregate_moments(
     const int N = x.size(0), K = idx.size(1);
     auto opt = x.options();
     auto g1 = torch::zeros({M, 11}, opt);
+    // 블록마다 마지막에 [M,D] 전체를 전역 원자합으로 흘린다. 블록이 많으면 그
+    // 흘리기가 비용을 지배한다 -- 2048 블록이면 1150 만 번이다. 블록을 줄이고
+    // 각 블록이 격자 보폭으로 더 많은 짝을 맡게 하면 그 수가 그만큼 준다.
     const int T = 256;
-    const int B = std::min<long>(2048, ((long)N * K + T - 1) / T);
+    const int B = std::min<long>(160, ((long)N * K + T - 1) / T);
     agg_kernel<11><<<B, T, (size_t)M * 11 * sizeof(float)>>>(
         nullptr, x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
         m.data_ptr<float>(), idx.data_ptr<long>(), nullptr, nullptr, nullptr,
