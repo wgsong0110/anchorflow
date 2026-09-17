@@ -411,6 +411,17 @@ def skin(x, p, dp, log_r, log_t, idx, h):
     return x + (w.unsqueeze(-1) * dp[idx]).sum(1), w
 
 
+def _outer_sum(A, B):
+    """sum_k A[n,k,i] B[n,k,j] -> [N,3,3].
+
+    einsum/bmm 으로 쓰면 입자마다 3x16 @ 16x3 짜리 작은 행렬곱이 되어 cuBLAS 가
+    최악의 경우를 맞는다 -- 실측 62 ms 로, 나머지 전부(각 1 ms 남짓)를 합친 것의
+    스무 배였다. 축약 축이 k 하나뿐이므로 성분별 축소 세 번이면 되고, 그러면
+    [N,k,3,3] 을 만들지도 않는다.
+    """
+    return torch.stack([(A[..., i:i + 1] * B).sum(1) for i in range(3)], dim=1)
+
+
 def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h):
     """스키닝과 그 **해석적** 야코비안. 외적을 한 번만 만든다.
 
@@ -458,9 +469,9 @@ def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h):
     wgdp = (( w * g).unsqueeze(-1) * dpa).sum(1)                   # [N,3]
 
     J = torch.eye(3, device=x.device).expand(x.shape[0], 3, 3) \
-        - torch.einsum("nki,nkj->nij", wr.unsqueeze(-1) * dpa, dvec) / tau.unsqueeze(-1) \
-        - torch.einsum("ni,nj->nij", wgdp, gtau) / (tau ** 2).unsqueeze(-1) \
-        - torch.einsum("ni,nj->nij", wdp, G)
+        - _outer_sum(wr.unsqueeze(-1) * dpa, dvec) / tau.unsqueeze(-1) \
+        - (wgdp.unsqueeze(-1) * gtau.unsqueeze(-2)) / (tau ** 2).unsqueeze(-1) \
+        - (wdp.unsqueeze(-1) * G.unsqueeze(-2))
     return out, w, J
 
 
