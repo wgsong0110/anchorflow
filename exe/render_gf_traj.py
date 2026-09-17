@@ -18,6 +18,9 @@ import sys
 import numpy as np
 import torch
 
+_lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
+sys.path.insert(0, _lib)
+
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True, help=".pt 하나 또는 그것들이 든 디렉토리")
 ap.add_argument("--out", required=True)
@@ -34,20 +37,11 @@ torch.set_grad_enabled(False)
 import imageio.v2 as imageio                                    # noqa: E402
 from PIL import Image, ImageDraw                                # noqa: E402
 
+from anchorflow import ptrender                                 # noqa: E402
+
 files = ([a.data] if a.data.endswith(".pt")
          else sorted(glob.glob(os.path.join(a.data, "*.pt"))))
 os.makedirs(a.out, exist_ok=True)
-
-
-def camera(X0, elev, azim):
-    """물체를 담는 정사영 카메라. 궤적 전체를 담도록 여유를 준다."""
-    e, z = np.radians(elev), np.radians(azim)
-    fwd = np.array([np.cos(e) * np.cos(z), np.cos(e) * np.sin(z), np.sin(e)])
-    up = np.array([0.0, 0.0, 1.0])
-    right = np.cross(fwd, up); right /= np.linalg.norm(right)
-    up = np.cross(right, fwd)
-    return torch.tensor(np.stack([right, up, fwd]), dtype=torch.float32,
-                        device=dev)
 
 
 for f in files:
@@ -56,43 +50,15 @@ for f in files:
     T, N, _ = X.shape
     tag = os.path.splitext(os.path.basename(f))[0]
     Xc = X[0].to(dev)
-    R = camera(Xc, a.elev, a.azim)
-    # 화면 범위는 **궤적 전체**로 잡는다. 프레임마다 다시 맞추면 물체가 떨어지는
-    # 것인지 카메라가 따라가는 것인지 구별할 수 없다.
-    allp = X.reshape(-1, 3).to(dev) @ R.T
-    lo = allp[:, :2].min(0).values
-    hi = allp[:, :2].max(0).values
-    ctr = 0.5 * (lo + hi)
-    half = 0.55 * float((hi - lo).max())
-    W = a.width
-    H = int(round(W * float(hi[1] - lo[1] + 1e-6) / float(hi[0] - lo[0] + 1e-6)))
-    H = max(min(H, 2 * W), W // 2)
-
-    # 정준 위치 -> 색
-    c0 = Xc - Xc.min(0).values
-    c0 = c0 / c0.max(0).values.clamp(min=1e-9)
-    col = (0.25 + 0.7 * c0)
+    R = ptrender.camera(a.elev, a.azim, dev)
+    # 화면 범위와 색은 라이브러리 규칙을 그대로 쓴다 (정준색, 궤적 전체 범위)
+    ctr, half, W, H = ptrender.frame_box(X.to(dev), R, a.width)
+    col = ptrender.canon_color(Xc)
 
     frames = []
     for t in range(T):
-        p = X[t].to(dev) @ R.T
-        u = ((p[:, 0] - ctr[0]) / half * 0.5 + 0.5) * (W - 1)
-        v = (0.5 - (p[:, 1] - ctr[1]) / half * 0.5) * (H - 1)
-        ok = torch.isfinite(u) & torch.isfinite(v)
-        ui = u.round().long().clamp(0, W - 1)[ok]
-        vi = v.round().long().clamp(0, H - 1)[ok]
-        depth = p[:, 2][ok]
-        cc = col[ok]
-        # 앞에 있는 점이 이기도록 깊이 순으로 그린다 (뒤에서 앞으로)
-        o = torch.argsort(depth, descending=True)
-        ui, vi, cc = ui[o], vi[o], cc[o]
-        img = torch.ones(H, W, 3, device=dev)
-        idx = vi * W + ui
-        for dy in range(-a.point, a.point + 1):
-            for dx in range(-a.point, a.point + 1):
-                jj = ((vi + dy).clamp(0, H - 1) * W + (ui + dx).clamp(0, W - 1))
-                img.reshape(-1, 3)[jj] = cc
-        arr = (img.clamp(0, 1).cpu().numpy() * 255).astype("uint8")
+        img = ptrender.splat(X[t].to(dev), col, R, ctr, half, W, H, a.point)
+        arr = (img.cpu().numpy() * 255).astype("uint8")
         im = Image.fromarray(arr); dr = ImageDraw.Draw(im)
         dr.rectangle([0, 0, W, 16], fill=(0, 0, 0))
         c = d["cfg"]
