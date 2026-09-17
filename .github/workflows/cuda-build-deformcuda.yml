@@ -1,0 +1,36 @@
+name: cuda-build-deformcuda
+
+# Compile the lib/deformcuda CUDA kernel inside the anchorflow image (matching torch/cuda),
+# publish the .so as a release asset. The instance downloads it (never compiles).
+on:
+  push:
+    branches: [master]
+    paths: ['lib/deformcuda/**', '.github/workflows/cuda-build-deformcuda.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build deformcuda .so in the anchorflow image
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/w" -w /w/lib/deformcuda \
+            -e TORCH_CUDA_ARCH_LIST="8.6;8.9" -e FORCE_CUDA=1 \
+            ghcr.io/wgsong0110/anchorflow:latest \
+            python setup.py build_ext --inplace
+          sudo chown -R $(id -u):$(id -g) lib/deformcuda || true
+          ls -la lib/deformcuda/*.so
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cuda-deformcuda
+          files: lib/deformcuda/*.so
+          fail_on_unmatched_files: true
