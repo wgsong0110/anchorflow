@@ -331,7 +331,10 @@ with torch.no_grad():
     n_feat = _f.shape[-1] + N_MAT + n_bc
 if a.voxel:
     VOX_CELL = H
-    VOX_LO = (min(dd["x"].reshape(-1, 3).min(0).values for _t, dd in TR + held)
+    # 격자는 모든 궤적을 덮도록 공간에 고정한다 (프레임마다 새로 잡으면 물체가
+    # 떨어지는 것만으로 모든 복셀 키가 바뀐다)
+    VOX_LO = (torch.stack([dd["x"].reshape(-1, 3).min(0).values
+                           for _t, dd in TR + held]).min(0).values
               - 4 * H).to(dev)
     with torch.no_grad():
         _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
