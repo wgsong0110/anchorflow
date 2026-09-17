@@ -127,19 +127,19 @@ print(f"  복셀: 생성·집계 {t_build:5.2f} + 이웃 {t_nb:5.2f} + "
 # 재야 한다. 소속은 바뀌어도 새 앵커가 바로 옆이면 변형장은 매끄럽다.
 T = min(40, d["x"].shape[0] - 1)
 gs = torch.arange(min(N, d["x"].shape[1]))
-OFFS = [tuple((np.array([(i >> b) & 1 for b in range(3)]) + 0.5) / max(a.ens, 1) * 0
-              + np.random.RandomState(i).rand(3)) for i in range(a.ens)]
+# 오프셋은 칸 안에 고르게 흩어져야 한다 (앙상블이 상쇄로 이득을 보는 구조라서).
+OFFS = np.array([np.random.RandomState(i).rand(3) for i in range(max(a.ens, 1))])
 
 
 def anchor_of(xt, Xc, vt, mm, mode):
     """각 가우시안이 보는 앵커 위치 [N,3]. mode: hard / soft / ens"""
     if mode == "ens":
-        acc = 0
-        for o in OFFS:
-            vb = voxel.build(xt, Xc, vt, mm, H, lo=LO, offset=o)
-            gi, dvv = voxel.neighbors(xt, vb, a.k)
-            acc = acc + vb.pos[gi[:, 0].clamp(min=0)]
-        return acc / len(OFFS)
+        # 격자 L 개를 **한 번에** 만든다. 각 격자에서 가장 가까운 앵커를 평균낸다.
+        vb = voxel.build(xt, Xc, vt, mm, H, lo=LO, offsets=OFFS)
+        gi, _ = voxel.neighbors(xt, vb, max(a.ens, 4))
+        pp = vb.pos[gi.clamp(min=0)]
+        ok = (gi >= 0).float().unsqueeze(-1)
+        return (pp * ok).sum(1) / ok.sum(1).clamp(min=1)
     vb = voxel.build(xt, Xc, vt, mm, H, lo=LO, soft=(mode == "soft"))
     gi, _ = voxel.neighbors(xt, vb, a.k)
     return vb.pos[gi[:, 0].clamp(min=0)]
@@ -164,10 +164,17 @@ for mode in ("hard", "soft", "ens") if a.ens else ("hard", "soft"):
           f"최대 {100*np.max(jump):.3f}%  (복셀 한 변 {100*H/EXT:.2f}%)", flush=True)
 
 t_soft = timeit(lambda: voxel.build(x, X, v, m, H, lo=LO, soft=True), 5)
+t_ens = timeit(lambda: voxel.build(x, X, v, m, H, lo=LO, offsets=OFFS), 5)
+vb_e = voxel.build(x, X, v, m, H, lo=LO, offsets=OFFS)
+t_ens_nb = timeit(lambda: voxel.neighbors(x, vb_e, max(a.ens, 4)), 5)
 print(f"\n[비용] 부드러운 배정(B-스플라인 3x3x3) 생성·집계 {t_soft:6.2f} ms "
       f"(하드 {t_build:5.2f} ms, {t_soft/max(t_build,1e-9):.1f}배)", flush=True)
 if a.ens:
-    print(f"       오프셋 앙상블 {a.ens} 개 = {a.ens * t_build:6.2f} ms", flush=True)
+    print(f"       오프셋 앙상블 {a.ens} 개 (한 커널) 생성·집계 {t_ens:6.2f} ms + "
+          f"이웃 {t_ens_nb:5.2f} ms = {t_ens + t_ens_nb:6.2f} ms", flush=True)
+    print(f"       (파이썬으로 {a.ens} 번 돌면 "
+          f"{a.ens * (t_build + t_nb):6.2f} ms)", flush=True)
+    print(f"       앵커 {vb_e.M} 개 (격자 하나 {va.M})", flush=True)
 
 if a.out:
     os.makedirs(a.out, exist_ok=True)

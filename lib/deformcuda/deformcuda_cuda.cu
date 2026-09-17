@@ -250,7 +250,8 @@ template <int K>
 __global__ void voxel_knn_kernel(const float* __restrict__ x,
                                  const float* __restrict__ p,
                                  const long* __restrict__ keys,
-                                 int N, int M, int D1, int D2,
+                                 const float* __restrict__ offs,   // [L,3] 칸 단위
+                                 int N, int M, int D1, int D2, int L, long stride,
                                  float ox, float oy, float oz, float cell,
                                  int R,
                                  long* __restrict__ oidx,
@@ -258,19 +259,27 @@ __global__ void voxel_knn_kernel(const float* __restrict__ x,
     const int n = blockIdx.x * blockDim.x + threadIdx.x;
     if (n >= N) return;
     const float px = x[3 * n], py = x[3 * n + 1], pz = x[3 * n + 2];
-    const int cx = (int)floorf((px - ox) / cell);
-    const int cy = (int)floorf((py - oy) / cell);
-    const int cz = (int)floorf((pz - oz) / cell);
 
     float bd[K];
     int   bi[K];
 #pragma unroll
     for (int i = 0; i < K; ++i) { bd[i] = FLT_MAX; bi[i] = -1; }
 
-    for (int dz = -R; dz <= R; ++dz)
-      for (int dy = -R; dy <= R; ++dy)
-        for (int dx = -R; dx <= R; ++dx) {
-            const long q = ((long)(cx + dx) * D1 + (cy + dy)) * D2 + (cz + dz);
+    // 격자 L 개를 한 번에 돈다. 입자 좌표를 한 번만 읽고, 키에 격자 번호를 실어
+    // 하나의 정렬된 배열에서 함께 찾는다 -- 파이썬 루프로 L 번 도는 것과 값은
+    // 같지만 입자 읽기와 커널 실행이 공유된다.
+    for (int l = 0; l < L; ++l) {
+      const float axo = ox + offs[3 * l] * cell;
+      const float ayo = oy + offs[3 * l + 1] * cell;
+      const float azo = oz + offs[3 * l + 2] * cell;
+      const int cx = (int)floorf((px - axo) / cell);
+      const int cy = (int)floorf((py - ayo) / cell);
+      const int cz = (int)floorf((pz - azo) / cell);
+      for (int dz = -R; dz <= R; ++dz)
+        for (int dy = -R; dy <= R; ++dy)
+          for (int dx = -R; dx <= R; ++dx) {
+            const long q = (long)l * stride
+                           + ((long)(cx + dx) * D1 + (cy + dy)) * D2 + (cz + dz);
             const int a = key_find(keys, M, q);
             if (a < 0) continue;
             const float ex = px - p[3 * a], ey = py - p[3 * a + 1],
@@ -292,7 +301,8 @@ __global__ void voxel_knn_kernel(const float* __restrict__ x,
                 bd[j] = put ? d2 : bd[j];
                 bi[j] = put ? a : bi[j];
             }
-        }
+          }
+    }
 #pragma unroll
     for (int i = 0; i < K; ++i) {
         oidx[(long)n * K + i] = bi[i];
@@ -301,17 +311,19 @@ __global__ void voxel_knn_kernel(const float* __restrict__ x,
 }
 
 std::vector<torch::Tensor> voxel_knn(torch::Tensor x, torch::Tensor p,
-                                     torch::Tensor keys, int D1, int D2,
+                                     torch::Tensor keys, torch::Tensor offs,
+                                     int D1, int D2, long stride,
                                      double ox, double oy, double oz,
                                      double cell, int K, int R) {
-    CHECK(x); CHECK(p); CHECK(keys);
-    const int N = x.size(0), M = keys.size(0);
+    CHECK(x); CHECK(p); CHECK(keys); CHECK(offs);
+    const int N = x.size(0), M = keys.size(0), L = offs.size(0);
     auto oidx = torch::empty({N, K}, x.options().dtype(torch::kLong));
     auto odist = torch::empty({N, K}, x.options());
     const int T = 128, B = (N + T - 1) / T;
 #define VK_CASE(KK)                                                           \
     case KK: voxel_knn_kernel<KK><<<B, T>>>(x.data_ptr<float>(),              \
-                 p.data_ptr<float>(), keys.data_ptr<long>(), N, M, D1, D2,    \
+                 p.data_ptr<float>(), keys.data_ptr<long>(),                  \
+                 offs.data_ptr<float>(), N, M, D1, D2, L, stride,             \
                  (float)ox, (float)oy, (float)oz, (float)cell, R,             \
                  oidx.data_ptr<long>(), odist.data_ptr<float>()); break;
     switch (K) {
@@ -350,10 +362,11 @@ __global__ void vox_moment_kernel(const float* __restrict__ x,
                                   const float* __restrict__ v,
                                   const float* __restrict__ m,
                                   const long* __restrict__ keys,
+                                  const float* __restrict__ offs,
                                   const float* __restrict__ cx,
                                   const float* __restrict__ cX,
                                   const float* __restrict__ cv,
-                                  int N, int M, int D1, int D2,
+                                  int N, int M, int D1, int D2, int L, long stride,
                                   float ox, float oy, float oz, float cell,
                                   int soft, int phase, int use_shared,
                                   float* __restrict__ out) {
@@ -369,13 +382,17 @@ __global__ void vox_moment_kernel(const float* __restrict__ x,
     for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < N;
          n += gridDim.x * blockDim.x) {
         const float px = x[3 * n], py = x[3 * n + 1], pz = x[3 * n + 2];
-        const float ux = (px - ox) / cell - 0.5f;
-        const float uy = (py - oy) / cell - 0.5f;
-        const float uz = (pz - oz) / cell - 0.5f;
-        const int cxi = (int)floorf((px - ox) / cell);
-        const int cyi = (int)floorf((py - oy) / cell);
-        const int czi = (int)floorf((pz - oz) / cell);
         const int R = soft ? 1 : 0;
+        for (int l = 0; l < L; ++l) {
+        const float axo = ox + offs[3 * l] * cell;
+        const float ayo = oy + offs[3 * l + 1] * cell;
+        const float azo = oz + offs[3 * l + 2] * cell;
+        const float ux = (px - axo) / cell - 0.5f;
+        const float uy = (py - ayo) / cell - 0.5f;
+        const float uz = (pz - azo) / cell - 0.5f;
+        const int cxi = (int)floorf((px - axo) / cell);
+        const int cyi = (int)floorf((py - ayo) / cell);
+        const int czi = (int)floorf((pz - azo) / cell);
         for (int dz = -R; dz <= R; ++dz)
           for (int dy = -R; dy <= R; ++dy)
             for (int dx = -R; dx <= R; ++dx) {
@@ -386,7 +403,7 @@ __global__ void vox_moment_kernel(const float* __restrict__ x,
                          * bspline_w(uz - gz);
                     if (w <= 1e-9f) continue;
                 }
-                const long q = ((long)gx * D1 + gy) * D2 + gz;
+                const long q = (long)l * stride + ((long)gx * D1 + gy) * D2 + gz;
                 const int aa = key_find(keys, M, q);
                 if (aa < 0) continue;
                 float* dst = (use_shared ? acc : out) + (long)aa * D;
@@ -433,6 +450,7 @@ __global__ void vox_moment_kernel(const float* __restrict__ x,
                     }
                 }
             }
+        }
     }
     if (use_shared) {
         __syncthreads();
@@ -443,10 +461,10 @@ __global__ void vox_moment_kernel(const float* __restrict__ x,
 
 std::vector<torch::Tensor> voxel_moments(
         torch::Tensor x, torch::Tensor X, torch::Tensor v, torch::Tensor m,
-        torch::Tensor keys, int D1, int D2,
+        torch::Tensor keys, torch::Tensor offs, int D1, int D2, long stride,
         double ox, double oy, double oz, double cell, bool soft) {
-    CHECK(x); CHECK(X); CHECK(v); CHECK(m); CHECK(keys);
-    const int N = x.size(0), M = keys.size(0);
+    CHECK(x); CHECK(X); CHECK(v); CHECK(m); CHECK(keys); CHECK(offs);
+    const int N = x.size(0), M = keys.size(0), L = offs.size(0);
     auto opt = x.options();
     const int T = 256, B = std::min<long>(160, (N + T - 1) / T);
     // 48 KB 를 넘으면 공유 누적기를 포기한다
@@ -458,8 +476,9 @@ std::vector<torch::Tensor> voxel_moments(
     auto g1 = torch::zeros({M, 11}, opt);
     vox_moment_kernel<11><<<B, T, shm(M, 11)>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
-        m.data_ptr<float>(), keys.data_ptr<long>(), nullptr, nullptr, nullptr,
-        N, M, D1, D2, (float)ox, (float)oy, (float)oz, (float)cell,
+        m.data_ptr<float>(), keys.data_ptr<long>(), offs.data_ptr<float>(),
+        nullptr, nullptr, nullptr, N, M, D1, D2, L, stride,
+        (float)ox, (float)oy, (float)oz, (float)cell,
         soft ? 1 : 0, 0, usesh(M, 11), g1.data_ptr<float>());
     auto W = g1.select(1, 0).clamp_min(1e-12).unsqueeze(-1);
     auto cx = (g1.slice(1, 1, 4) / W).contiguous();
@@ -468,15 +487,17 @@ std::vector<torch::Tensor> voxel_moments(
     auto g2 = torch::zeros({M, 12}, opt);
     vox_moment_kernel<12><<<B, T, shm(M, 12)>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
-        m.data_ptr<float>(), keys.data_ptr<long>(), cx.data_ptr<float>(),
-        cX.data_ptr<float>(), cv.data_ptr<float>(), N, M, D1, D2,
+        m.data_ptr<float>(), keys.data_ptr<long>(), offs.data_ptr<float>(),
+        cx.data_ptr<float>(), cX.data_ptr<float>(), cv.data_ptr<float>(),
+        N, M, D1, D2, L, stride,
         (float)ox, (float)oy, (float)oz, (float)cell, soft ? 1 : 0, 1,
         usesh(M, 12), g2.data_ptr<float>());
     auto g3 = torch::zeros({M, 18}, opt);
     vox_moment_kernel<18><<<B, T, shm(M, 18)>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
-        m.data_ptr<float>(), keys.data_ptr<long>(), cx.data_ptr<float>(),
-        cX.data_ptr<float>(), cv.data_ptr<float>(), N, M, D1, D2,
+        m.data_ptr<float>(), keys.data_ptr<long>(), offs.data_ptr<float>(),
+        cx.data_ptr<float>(), cX.data_ptr<float>(), cv.data_ptr<float>(),
+        N, M, D1, D2, L, stride,
         (float)ox, (float)oy, (float)oz, (float)cell, soft ? 1 : 0, 2,
         usesh(M, 18), g3.data_ptr<float>());
     return {g1, g2, g3, cx, cX, cv};

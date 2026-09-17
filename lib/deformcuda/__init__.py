@@ -50,7 +50,8 @@ def aggregate_moments(x, X, v, m, idx, M):
                                       idx.contiguous(), int(M)))
 
 
-def voxel_moments(x, X, v, m, keys, D1, D2, ox, oy, oz, cell, soft=False):
+def voxel_moments(x, X, v, m, keys, offs, D1, D2, stride, ox, oy, oz, cell,
+                  soft=False):
     """점유 복셀 위의 앵커 모멘트. -> (g1, g2, g3, cx, cX, cv)
 
     soft=True 면 이웃 3x3x3 에 B-스플라인 가중으로 뿌린다. 앵커 집합은 점유 복셀
@@ -58,19 +59,22 @@ def voxel_moments(x, X, v, m, keys, D1, D2, ox, oy, oz, cell, soft=False):
     """
     return tuple(_C.voxel_moments(x.contiguous(), X.contiguous(),
                                   v.contiguous(), m.contiguous(),
-                                  keys.contiguous(), int(D1), int(D2),
+                                  keys.contiguous(), offs.contiguous(),
+                                  int(D1), int(D2), int(stride),
                                   float(ox), float(oy), float(oz), float(cell),
                                   bool(soft)))
 
 
-def voxel_knn(x, p, keys, D1, D2, ox, oy, oz, cell, k, radius=1):
+def voxel_knn(x, p, keys, offs, D1, D2, stride, ox, oy, oz, cell, k,
+              radius=1):
     """복셀 이웃 안에서만 고른 k 최근접 앵커. 빈 자리는 -1.
 
     후보가 (2r+1)^3 개뿐이라 전역 탐색이 아니다 -- 앵커 512 개 전부와 거리를
     재던 것이 27 개로 준다.
     """
     return tuple(_C.voxel_knn(x.contiguous(), p.contiguous(), keys.contiguous(),
-                              int(D1), int(D2), float(ox), float(oy), float(oz),
+                              offs.contiguous(), int(D1), int(D2), int(stride),
+                              float(ox), float(oy), float(oz),
                               float(cell), int(k), int(radius)))
 
 
