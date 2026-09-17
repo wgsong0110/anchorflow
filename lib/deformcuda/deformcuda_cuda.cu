@@ -355,11 +355,16 @@ __global__ void vox_moment_kernel(const float* __restrict__ x,
                                   const float* __restrict__ cv,
                                   int N, int M, int D1, int D2,
                                   float ox, float oy, float oz, float cell,
-                                  int soft, int phase,
+                                  int soft, int phase, int use_shared,
                                   float* __restrict__ out) {
+    // 공유 메모리에 [M,D] 누적기를 두는 것이 원자 경합을 줄이지만, M 이 크면
+    // 48 KB 한도를 넘어 실행이 아예 안 된다 (앵커 756 x 18 = 54 KB). 그때는
+    // 전역으로 바로 원자합한다 -- 느리지만 돈다.
     extern __shared__ float acc[];
-    for (int i = threadIdx.x; i < M * D; i += blockDim.x) acc[i] = 0.f;
-    __syncthreads();
+    if (use_shared) {
+        for (int i = threadIdx.x; i < M * D; i += blockDim.x) acc[i] = 0.f;
+        __syncthreads();
+    }
 
     for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < N;
          n += gridDim.x * blockDim.x) {
@@ -384,7 +389,7 @@ __global__ void vox_moment_kernel(const float* __restrict__ x,
                 const long q = ((long)gx * D1 + gy) * D2 + gz;
                 const int aa = key_find(keys, M, q);
                 if (aa < 0) continue;
-                float* dst = acc + (long)aa * D;
+                float* dst = (use_shared ? acc : out) + (long)aa * D;
                 if (phase == 0) {
                     atomicAdd(dst + 0, w);
                     atomicAdd(dst + 1, w * px); atomicAdd(dst + 2, w * py);
@@ -429,9 +434,11 @@ __global__ void vox_moment_kernel(const float* __restrict__ x,
                 }
             }
     }
-    __syncthreads();
-    for (int i = threadIdx.x; i < M * D; i += blockDim.x)
-        if (acc[i] != 0.f) atomicAdd(out + i, acc[i]);
+    if (use_shared) {
+        __syncthreads();
+        for (int i = threadIdx.x; i < M * D; i += blockDim.x)
+            if (acc[i] != 0.f) atomicAdd(out + i, acc[i]);
+    }
 }
 
 std::vector<torch::Tensor> voxel_moments(
@@ -442,30 +449,36 @@ std::vector<torch::Tensor> voxel_moments(
     const int N = x.size(0), M = keys.size(0);
     auto opt = x.options();
     const int T = 256, B = std::min<long>(160, (N + T - 1) / T);
+    // 48 KB 를 넘으면 공유 누적기를 포기한다
+    auto shm = [&](int MM, int D) -> size_t {
+        const size_t b = (size_t)MM * D * sizeof(float);
+        return b <= 47000 ? b : 0;
+    };
+    auto usesh = [&](int MM, int D) { return shm(MM, D) > 0 ? 1 : 0; };
     auto g1 = torch::zeros({M, 11}, opt);
-    vox_moment_kernel<11><<<B, T, (size_t)M * 11 * sizeof(float)>>>(
+    vox_moment_kernel<11><<<B, T, shm(M, 11)>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
         m.data_ptr<float>(), keys.data_ptr<long>(), nullptr, nullptr, nullptr,
         N, M, D1, D2, (float)ox, (float)oy, (float)oz, (float)cell,
-        soft ? 1 : 0, 0, g1.data_ptr<float>());
+        soft ? 1 : 0, 0, usesh(M, 11), g1.data_ptr<float>());
     auto W = g1.select(1, 0).clamp_min(1e-12).unsqueeze(-1);
     auto cx = (g1.slice(1, 1, 4) / W).contiguous();
     auto cX = (g1.slice(1, 4, 7) / W).contiguous();
     auto cv = (g1.slice(1, 7, 10) / W).contiguous();
     auto g2 = torch::zeros({M, 12}, opt);
-    vox_moment_kernel<12><<<B, T, (size_t)M * 12 * sizeof(float)>>>(
+    vox_moment_kernel<12><<<B, T, shm(M, 12)>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
         m.data_ptr<float>(), keys.data_ptr<long>(), cx.data_ptr<float>(),
         cX.data_ptr<float>(), cv.data_ptr<float>(), N, M, D1, D2,
         (float)ox, (float)oy, (float)oz, (float)cell, soft ? 1 : 0, 1,
-        g2.data_ptr<float>());
+        usesh(M, 12), g2.data_ptr<float>());
     auto g3 = torch::zeros({M, 18}, opt);
-    vox_moment_kernel<18><<<B, T, (size_t)M * 18 * sizeof(float)>>>(
+    vox_moment_kernel<18><<<B, T, shm(M, 18)>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
         m.data_ptr<float>(), keys.data_ptr<long>(), cx.data_ptr<float>(),
         cX.data_ptr<float>(), cv.data_ptr<float>(), N, M, D1, D2,
         (float)ox, (float)oy, (float)oz, (float)cell, soft ? 1 : 0, 2,
-        g3.data_ptr<float>());
+        usesh(M, 18), g3.data_ptr<float>());
     return {g1, g2, g3, cx, cX, cv};
 }
 
