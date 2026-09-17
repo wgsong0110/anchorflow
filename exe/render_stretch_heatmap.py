@@ -174,10 +174,30 @@ if vmax <= 0:
 print(f"[색 범위] {1.0 if a.metric=='sigma1' else 0.0} ~ {vmax:.3f} "
       f"(전체 프레임 p99 로 고정), 지표 {a.metric}", flush=True)
 
+def rollout_box(frames_xyz, R, width):
+    """튀어나간 파편이 상자를 부풀리지 않게 분위수로 잘라 시야를 잡는다.
+
+    수박 본체가 화면을 채워야 어느 프레임인지 눈에 들어온다. 정사각으로
+    맞추는 것은 splat 이 두 축에 같은 반폭을 쓰기 때문 -- W != H 면 찌그러진다.
+    """
+    q = torch.cat([f.reshape(-1, 3) for f in frames_xyz])
+    q = q[torch.isfinite(q).all(-1)]
+    lo = torch.quantile(q, 0.01, dim=0); hi = torch.quantile(q, 0.99, dim=0)
+    keep = ((q > lo) & (q < hi)).all(-1)
+    c, h, W, _ = ptrender.frame_box(q[keep], R, width)
+    return c, h, W, W
+
+
+def slice_marks(c_t, ZS, R, ctr, half, W, H):
+    """단면 z 를 롤아웃 그림의 세로 좌표로. 어느 높이를 자른 것인지 표시한다."""
+    z = torch.tensor([[0.0, 0.0, zz] for zz in ZS], device=c_t.device)
+    p = (z + c_t) @ R.T
+    return ((0.5 - (p[:, 1] - ctr[1]) / half * 0.5) * (H - 1)).cpu().numpy()
+
+
 # 롤아웃 패널 준비: 단면과 **같은 프레임**을 왼쪽에 둔다
 RCAM = ptrender.camera(12.0, 35.0, dev)
-_all = torch.stack([g[0] for g in gt])
-RCTR, RHALF, RW, RH = ptrender.frame_box(_all, RCAM, 220)
+RCTR, RHALF, RW, RH = rollout_box([g[0] for g in gt], RCAM, 220)
 RCOL = ptrender.canon_color(xc0)
 
 os.makedirs(a.out, exist_ok=True)
@@ -194,9 +214,14 @@ for i in range(a.frames):
         A0 = ax[r][0]; A0.set_xticks([]); A0.set_yticks([])
         A0.imshow(ptrender.splat(xx, RCOL, RCAM, RCTR, RHALF, RW, RH, 1)
                   .cpu().numpy())
+        for vy, zz in zip(slice_marks(xx.mean(0), ZS, RCAM, RCTR, RHALF, RW, RH),
+                          ZS):
+            A0.axhline(vy, color="#00d0ff", lw=0.6, ls="--")
+            A0.text(2, vy - 2, f"{zz:+.2f}", color="#0088aa", fontsize=5)
+        A0.set_xlim(0, RW - 1); A0.set_ylim(RH - 1, 0)
         A0.set_ylabel("GT" if r == 0 else "model", fontsize=9)
         if r == 0:
-            A0.set_title("rollout", fontsize=8)
+            A0.set_title("rollout (점선 = 아래 단면)", fontsize=7)
         for s, z in enumerate(ZS):
             A = ax[r][s + 1]; A.set_xticks([]); A.set_yticks([])
             g, occ = to_grid(ss, rel, z)

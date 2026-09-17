@@ -166,9 +166,30 @@ if net is not None:
                     x.mean(0).clone(), x2.mean(0).clone(), x.clone()))
         v, p, x = (x2 - x) / FRAME_DT, p + dp, x2
 
+def rollout_box(frames_xyz, R, width):
+    """튀어나간 파편이 상자를 부풀리지 않게 분위수로 잘라 시야를 잡는다.
+
+    수박 본체가 화면을 채워야 어느 프레임인지 눈에 들어온다. 정사각으로
+    맞추는 것은 splat 이 두 축에 같은 반폭을 쓰기 때문 -- W != H 면 찌그러진다.
+    """
+    q = torch.cat([f.reshape(-1, 3) for f in frames_xyz])
+    q = q[torch.isfinite(q).all(-1)]
+    lo = torch.quantile(q, 0.01, dim=0); hi = torch.quantile(q, 0.99, dim=0)
+    keep = ((q > lo) & (q < hi)).all(-1)
+    c, h, W, _ = ptrender.frame_box(q[keep], R, width)
+    return c, h, W, W
+
+
+def slice_marks(c_t, ZS, R, ctr, half, W, H):
+    """단면 z 를 롤아웃 그림의 세로 좌표로. 어느 높이를 자른 것인지 표시한다."""
+    z = torch.tensor([[0.0, 0.0, zz] for zz in ZS], device=c_t.device)
+    p = (z + c_t) @ R.T
+    return ((0.5 - (p[:, 1] - ctr[1]) / half * 0.5) * (H - 1)).cpu().numpy()
+
+
 RCAM = ptrender.camera(12.0, 35.0, dev)
-_allx = torch.stack([take(d["x"][a.t0 + j], GS) for j in range(a.frames + 1)])
-RCTR, RHALF, RW, RH = ptrender.frame_box(_allx, RCAM, 220)
+RCTR, RHALF, RW, RH = rollout_box(
+    [take(d["x"][a.t0 + j], GS) for j in range(a.frames + 1)], RCAM, 220)
 RCOL = ptrender.canon_color(xc0)
 
 os.makedirs(a.out, exist_ok=True)
@@ -189,9 +210,14 @@ for i in range(a.frames):
         xx = xs_gt if r == 0 else (xs_md if xs_md is not None else xs_gt)
         A0.imshow(ptrender.splat(xx, RCOL, RCAM, RCTR, RHALF, RW, RH, 1)
                   .cpu().numpy())
+        for vy, zz in zip(slice_marks(xx.mean(0), ZS, RCAM, RCTR, RHALF, RW, RH),
+                          ZS):
+            A0.axhline(vy, color="#d00000", lw=0.6, ls="--")
+            A0.text(2, vy - 2, f"{zz:+.2f}", color="#a00000", fontsize=5)
+        A0.set_xlim(0, RW - 1); A0.set_ylim(RH - 1, 0)
         A0.set_ylabel("GT" if r == 0 else "model", fontsize=9)
         if r == 0:
-            A0.set_title("rollout", fontsize=8)
+            A0.set_title("rollout (점선 = 오른쪽 단면)", fontsize=7)
     for s, z in enumerate(ZS):
         for r in range(rows):
             u = (gt_field(t, c_t, c_n, z) if r == 0 else
