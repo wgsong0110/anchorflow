@@ -22,10 +22,10 @@
 // 앵커 전부를 공유 메모리에 올린다 (512 x 3 float = 6 KB). 입자 하나가 스레드
 // 하나이고, 가장 가까운 K 개를 **삽입 정렬**로 레지스터 배열에 유지한다. K 가
 // 16 이하라 배열이 레지스터에 남고, 전역 메모리에는 결과만 쓴다.
-template <int KMAX>
+template <int K>
 __global__ void knn_kernel(const float* __restrict__ x,
                            const float* __restrict__ p,
-                           int N, int M, int K,
+                           int N, int M,
                            long* __restrict__ oidx,
                            float* __restrict__ odist) {
     extern __shared__ float sp[];                 // [M,3]
@@ -36,10 +36,13 @@ __global__ void knn_kernel(const float* __restrict__ x,
     if (n >= N) return;
     const float px = x[3 * n], py = x[3 * n + 1], pz = x[3 * n + 2];
 
-    float bd[KMAX];
-    int   bi[KMAX];
+    // K 가 **컴파일 타임 상수**여야 한다. 런타임 값으로 두면 배열에 동적 색인이
+    // 남아 레지스터가 아니라 로컬 메모리로 내려가고, k=16 에서 파이토치 경로보다
+    // 세 배 느려졌다 (144 ms 대 40 ms).
+    float bd[K];
+    int   bi[K];
 #pragma unroll
-    for (int i = 0; i < KMAX; ++i) { bd[i] = FLT_MAX; bi[i] = 0; }
+    for (int i = 0; i < K; ++i) { bd[i] = FLT_MAX; bi[i] = 0; }
 
     for (int m = 0; m < M; ++m) {
         const float dx = px - sp[3 * m];
@@ -47,10 +50,25 @@ __global__ void knn_kernel(const float* __restrict__ x,
         const float dz = pz - sp[3 * m + 2];
         const float d2 = dx * dx + dy * dy + dz * dz;
         if (d2 >= bd[K - 1]) continue;            // 최악값보다 크면 볼 것 없다
-        int j = K - 1;
-        while (j > 0 && bd[j - 1] > d2) { bd[j] = bd[j - 1]; bi[j] = bi[j - 1]; --j; }
-        bd[j] = d2; bi[j] = m;
+        // 삽입 정렬을 완전히 펼친다 -- 조건부 이동만 남아 분기도 동적 색인도 없다.
+        // 먼저 들어갈 자리를 "나보다 작은 것의 개수"로 세고, 그 위만 한 칸씩 민다.
+        int pos = 0;
+#pragma unroll
+        for (int j = 0; j < K; ++j) pos += (bd[j] < d2);
+#pragma unroll
+        for (int j = K - 1; j > 0; --j) {
+            const bool sh = (j > pos);
+            bd[j] = sh ? bd[j - 1] : bd[j];
+            bi[j] = sh ? bi[j - 1] : bi[j];
+        }
+#pragma unroll
+        for (int j = 0; j < K; ++j) {
+            const bool put = (j == pos);
+            bd[j] = put ? d2 : bd[j];
+            bi[j] = put ? m : bi[j];
+        }
     }
+#pragma unroll
     for (int i = 0; i < K; ++i) {
         oidx[(long)n * K + i] = bi[i];
         odist[(long)n * K + i] = sqrtf(fmaxf(bd[i], 0.f));
@@ -66,18 +84,16 @@ std::vector<torch::Tensor> knn(torch::Tensor x, torch::Tensor p, int K) {
     const int T = 128;
     const int B = (N + T - 1) / T;
     const size_t shm = (size_t)M * 3 * sizeof(float);
-    if (K <= 8)
-        knn_kernel<8><<<B, T, shm>>>(x.data_ptr<float>(), p.data_ptr<float>(),
-                                     N, M, K, oidx.data_ptr<long>(),
-                                     odist.data_ptr<float>());
-    else if (K <= 16)
-        knn_kernel<16><<<B, T, shm>>>(x.data_ptr<float>(), p.data_ptr<float>(),
-                                      N, M, K, oidx.data_ptr<long>(),
-                                      odist.data_ptr<float>());
-    else
-        knn_kernel<32><<<B, T, shm>>>(x.data_ptr<float>(), p.data_ptr<float>(),
-                                      N, M, K, oidx.data_ptr<long>(),
-                                      odist.data_ptr<float>());
+#define KNN_CASE(KK)                                                          \
+    case KK: knn_kernel<KK><<<B, T, shm>>>(x.data_ptr<float>(),               \
+                 p.data_ptr<float>(), N, M, oidx.data_ptr<long>(),            \
+                 odist.data_ptr<float>()); break;
+    switch (K) {
+        KNN_CASE(4) KNN_CASE(6) KNN_CASE(8) KNN_CASE(12) KNN_CASE(16)
+        KNN_CASE(24) KNN_CASE(32)
+        default: TORCH_CHECK(false, "K must be one of 4,6,8,12,16,24,32");
+    }
+#undef KNN_CASE
     return {oidx, odist};
 }
 
@@ -87,14 +103,14 @@ std::vector<torch::Tensor> knn(torch::Tensor x, torch::Tensor p, int K) {
 // 파이토치 경로와 같은 식을 쓴다 (lib/anchorflow/deform.py 의 skin_with_jacobian).
 // k 를 두 번 돈다: 한 번째는 softmax 의 분모와 tau 를, 두 번째는 가중합과 J 를.
 // 사이의 값은 전부 레지스터에 있으므로 [N,k,*] 텐서가 하나도 생기지 않는다.
-template <int KMAX>
+template <int K>
 __global__ void skinj_kernel(const float* __restrict__ x,
                              const float* __restrict__ p,
                              const float* __restrict__ dp,
                              const float* __restrict__ log_r,
                              const float* __restrict__ log_t,
                              const long* __restrict__ idx,
-                             int N, int K, float h, float tau_min,
+                             int N, float h, float tau_min,
                              float* __restrict__ out,
                              float* __restrict__ J) {
     const int n = blockIdx.x * blockDim.x + threadIdx.x;
@@ -102,8 +118,8 @@ __global__ void skinj_kernel(const float* __restrict__ x,
     const float xx = x[3 * n], xy = x[3 * n + 1], xz = x[3 * n + 2];
     const float inv_h2 = 1.f / (h * h);
 
-    float dvx[KMAX], dvy[KMAX], dvz[KMAX], gg[KMAX], uu[KMAX], tt[KMAX];
-    int   aid[KMAX];
+    float dvx[K], dvy[K], dvz[K], gg[K], uu[K], tt[K];
+    int   aid[K];
     float gmax = -FLT_MAX, umax = -FLT_MAX;
     for (int i = 0; i < K; ++i) {
         const int m = (int)idx[(long)n * K + i];
@@ -126,7 +142,7 @@ __global__ void skinj_kernel(const float* __restrict__ x,
     tau = fmaxf(tau, tau_min);
 
     // w = softmax(g / tau).  g/tau 의 최댓값은 g 의 최댓값에서 온다 (tau > 0).
-    float wsum = 0.f, w[KMAX];
+    float wsum = 0.f, w[K];
     for (int i = 0; i < K; ++i) { w[i] = expf((gg[i] - gmax) / tau); wsum += w[i]; }
     for (int i = 0; i < K; ++i) w[i] /= wsum;
 
@@ -191,17 +207,18 @@ std::vector<torch::Tensor> skin_jacobian(torch::Tensor x, torch::Tensor p,
     auto out = torch::empty_like(x);
     auto J = torch::empty({N, 3, 3}, x.options());
     const int T = 128, B = (N + T - 1) / T;
-    auto go = [&](auto tag) {
-        constexpr int KM = decltype(tag)::value;
-        skinj_kernel<KM><<<B, T>>>(x.data_ptr<float>(), p.data_ptr<float>(),
-                                   dp.data_ptr<float>(), log_r.data_ptr<float>(),
-                                   log_t.data_ptr<float>(), idx.data_ptr<long>(),
-                                   N, K, (float)h, (float)tau_min,
-                                   out.data_ptr<float>(), J.data_ptr<float>());
-    };
-    if (K <= 8) go(std::integral_constant<int, 8>{});
-    else if (K <= 16) go(std::integral_constant<int, 16>{});
-    else go(std::integral_constant<int, 32>{});
+#define SKIN_CASE(KK)                                                         \
+    case KK: skinj_kernel<KK><<<B, T>>>(x.data_ptr<float>(),                  \
+                 p.data_ptr<float>(), dp.data_ptr<float>(),                   \
+                 log_r.data_ptr<float>(), log_t.data_ptr<float>(),            \
+                 idx.data_ptr<long>(), N, (float)h, (float)tau_min,           \
+                 out.data_ptr<float>(), J.data_ptr<float>()); break;
+    switch (K) {
+        SKIN_CASE(4) SKIN_CASE(6) SKIN_CASE(8) SKIN_CASE(12) SKIN_CASE(16)
+        SKIN_CASE(24) SKIN_CASE(32)
+        default: TORCH_CHECK(false, "K must be one of 4,6,8,12,16,24,32");
+    }
+#undef SKIN_CASE
     return {out, J};
 }
 

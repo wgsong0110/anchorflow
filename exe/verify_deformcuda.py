@@ -57,7 +57,9 @@ def timeit(fn, n):
 
 rep = {}
 for k in a.k:
-    i_t, d_t = dense_knn(x, p, k, half=True)
+    # 기준은 **단정밀도** 파이토치 경로다. fp16 경로는 점수 정밀도가 낮아 동률
+    # 근처에서 다른 앵커를 고르므로, 그것과 비교하면 커널이 틀린 것처럼 보인다.
+    i_t, d_t = dense_knn(x, p, k, half=False)
     i_c, d_c = deformcuda.knn(x, p, k)
     # 거리 집합으로 비교한다 (동률이면 색인이 갈릴 수 있다)
     e_d = float((d_t.sort(1).values - d_c.sort(1).values).abs().max())
@@ -67,18 +69,19 @@ for k in a.k:
     e_o = float((o_t - o_c).abs().max() / o_t.abs().max())
     e_J = float((J_t - J_c).abs().max() / J_t.abs().max())
     t_kt = timeit(lambda: dense_knn(x, p, k, half=True), a.reps)
+    t_kt32 = timeit(lambda: dense_knn(x, p, k, half=False), a.reps)
     t_kc = timeit(lambda: deformcuda.knn(x, p, k), a.reps)
     t_st = timeit(lambda: skin_with_jacobian(x, p, dp, log_r, log_t, i_c, h),
                   a.reps)
     t_sc = timeit(lambda: deformcuda.skin_jacobian(x, p, dp, log_r, log_t, i_c,
                                                    h), a.reps)
-    rep[k] = dict(dist_err=e_d, idx_same=same, out_err=e_o, J_err=e_J,
+    rep[k] = dict(knn_torch_fp32=t_kt32, dist_err=e_d, idx_same=same, out_err=e_o, J_err=e_J,
                   knn_torch=t_kt, knn_cuda=t_kc, skinj_torch=t_st,
                   skinj_cuda=t_sc)
     print(f"\n[k={k}]  거리 최대차 {e_d:.2e}  색인 일치 {100*same:.2f}%  "
           f"위치 상대차 {e_o:.2e}  J 상대차 {e_J:.2e}", flush=True)
-    print(f"  kNN         파이토치 {t_kt:7.2f} ms -> 커널 {t_kc:6.2f} ms "
-          f"({t_kt/max(t_kc,1e-9):5.1f}배)", flush=True)
+    print(f"  kNN         파이토치 fp32 {t_kt32:7.2f} / fp16 {t_kt:7.2f} ms "
+          f"-> 커널 {t_kc:6.2f} ms ({t_kt32/max(t_kc,1e-9):5.1f}배)", flush=True)
     print(f"  스키닝+J    파이토치 {t_st:7.2f} ms -> 커널 {t_sc:6.2f} ms "
           f"({t_st/max(t_sc,1e-9):5.1f}배)", flush=True)
     print(f"  두 단계 합   {t_kt+t_st:7.2f} ms -> {t_kc+t_sc:6.2f} ms", flush=True)
