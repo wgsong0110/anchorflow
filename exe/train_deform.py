@@ -67,6 +67,11 @@ ap.add_argument("--eval_t0", type=int, nargs="+", default=[5, 40, 80],
                 help="롤아웃을 시작할 프레임들. 이 궤적은 충돌 직후와 안정된 뒤의 "
                      "프레임당 변위가 수십 배 달라서, 한 구간만 보면 오해한다")
 ap.add_argument("--eval_len", type=int, default=15)
+ap.add_argument("--voxel", action="store_true",
+                help="앵커를 매 프레임 복셀 다운샘플링으로 새로 뽑는다. 앵커 선정과 "
+                     "소속과 집계가 한 패스로 접히고, FPS 가 사라진다")
+ap.add_argument("--vox_ens", type=int, default=0,
+                help="오프셋이 다른 격자 몇 개를 앙상블할지 (0 이면 격자 하나)")
 ap.add_argument("--refps", action="store_true",
                 help="매 프레임 현재 배치에서 앵커를 FPS 로 다시 뽑는다. 기본은 "
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
@@ -89,8 +94,10 @@ dev = "cuda"
 torch.manual_seed(a.seed)
 
 from anchorflow import deform                                  # noqa: E402
-from anchorflow.deform import (DeformNet, aggregate, bc_features,   # noqa: E402
-                               bures_w2_sq, fps, grid_knn, jacobian_of, skin)
+from anchorflow import voxel                                    # noqa: E402
+from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
+                               bc_features, bures_w2_sq, fps, grid_knn,
+                               jacobian_of, skin)
 
 # ---------------------------------------------------------------- 데이터
 files = sorted(glob.glob(os.path.join(a.data, "*.pt")))
@@ -171,7 +178,19 @@ opt = None
 step0 = 0
 
 
-def build(n_feat):
+def if a.voxel:
+    VOX_CELL = H
+    VOX_LO = (min(dd["x"].reshape(-1, 3).min(0).values for _t, dd in TR + held)
+              - 4 * H).to(dev)
+    with torch.no_grad():
+        _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
+        _x = take(TR[0][1]["x"][0], _g)
+        _p, _f, _i = vox_feats(TR[0][1], _g, _x, torch.zeros_like(_x))
+        n_feat = _f.shape[-1] + N_MAT + n_bc
+    print(f"[복셀] 한 변 {VOX_CELL:.5f}, 앵커 {_p.shape[0]} 개, 입력 {n_feat}",
+          flush=True)
+
+build(n_feat):
     global net, opt
     net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth, heads=a.heads,
                     scale=0.02 * EXT, h=H, ext=EXT, seed=a.seed).to(dev)
@@ -187,6 +206,41 @@ def take(t_cpu, idx_gpu):
     return t_cpu[idx_gpu.cpu()].to(dev, non_blocking=True)
 
 
+VOX_OFFS = (np.array([np.random.RandomState(i).rand(3)
+                     for i in range(a.vox_ens)]) if a.vox_ens else None)
+VOX_CELL = None      # 첫 호출에서 앵커 간격으로 정한다
+VOX_LO = None
+
+
+def vox_feats(d, gsel, x, v):
+    """복셀 앵커와 그 특징. -> (p, feat, idx)"""
+    cfg = d["cfg"]
+    X = take(d["x"][0], gsel)
+    cell = VOX_CELL * (max(a.vox_ens, 1) ** (1.0 / 3.0))
+    vb = voxel.build(x, X, v / VEL_SCALE, MASS[gsel], cell, lo=VOX_LO,
+                     offsets=VOX_OFFS)
+    idx, _ = voxel.neighbors(x, vb, a.k)
+    W, cx, cX, cv, cnt, g2 = vb.moments
+    M = vb.M
+    S = g2[:, :9].reshape(M, 3, 3) / W.reshape(M, 1, 1)
+    iu = torch.triu_indices(3, 3, device=dev)
+    S6 = S[:, iu[0], iu[1]] / (cell * cell)
+    tr = S.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(M, 1, 1)
+    I3 = torch.eye(3, device=dev)
+    om = torch.linalg.solve(
+        (tr * I3 - S) * W.reshape(M, 1, 1) + 1e-8 * I3,
+        g2[:, 9:12].unsqueeze(-1)).squeeze(-1)
+    Fa = g2[:, 12:21].reshape(M, 3, 3) @ torch.linalg.inv(
+        g2[:, 21:30].reshape(M, 3, 3) + (1e-6 * cell * cell) * I3)
+    det = torch.linalg.det(Fa).reshape(M, 1)
+    feat = torch.cat([
+        torch.log(W).reshape(M, 1), torch.log1p(cnt), (cx - cX) / cell,
+        torch.zeros_like(cx),            # 앵커 위치 = 질량중심이라 상대값이 0 이다
+        cv, S6, om, Fa.reshape(M, 9),
+        torch.sign(det) * torch.log(det.abs().clamp(min=1e-6))], -1)
+    return vb.pos, feat, idx
+
+
 def step_once(d, t, gsel, p, x, v, need_J=True):
     """한 프레임. -> (x_next, p_next, v_next, J, dp, aidx_next)
 
@@ -195,15 +249,20 @@ def step_once(d, t, gsel, p, x, v, need_J=True):
     비교할 정답도 그때그때 그 가우시안들의 GT 변위로 바뀐다.
     """
     cfg = d["cfg"]
-    X = take(d["x"][0], gsel)
-    idx, _ = grid_knn(x, p, a.k)
-    feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, p.shape[0], H,
-                        pa=p)
+    if a.voxel:
+        p, feat, idx = vox_feats(d, gsel, x, v)
+    else:
+        X = take(d["x"][0], gsel)
+        idx, _ = anchor_knn(x, p, a.k)
+        feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, p.shape[0], H,
+                            pa=p)
     extra = torch.cat([mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0], N_MAT),
                        bc_features(p, cfg) / H], -1)
     dp, log_r, log_t = net(p, torch.cat([feat, extra], -1), FRAME_DT)
     x2, w = skin(x, p, dp, log_r, log_t, idx, H)
-    if a.refps:
+    if a.voxel:
+        ai, p_next = None, p + dp     # 다음 프레임에 어차피 다시 뽑는다
+    elif a.refps:
         ai = fps(x2.detach(), p.shape[0], a.seed)
         p_next = x2[ai]
     else:
@@ -236,16 +295,21 @@ def window(d, t0, L, gsel):
         x2, p, v, J, dp, ai = step_once(d, t0 + i, gsel, p, x, v,
                                         need_J=a.lambda_J > 0)
         # 앵커의 정답 변위: 앵커가 가우시안이므로 그 가우시안의 GT 변위 그대로다
-        if a.refps:
+        if a.voxel:
+            # 복셀 앵커는 특정 가우시안이 아니라 그 칸의 질량중심이라, 정답 변위도
+            # 그 칸 구성원들의 평균 변위로 잡는다.
+            dp_gt = None
+        elif a.refps:
             gt_now = take(d["x"][t0 + i + 1], gsel)
             dp_gt = gt_now[ai_now] - x[ai_now]
         else:
             dp_gt = (take(d["x"][t0 + i + 1], AIDX)
                      - take(d["x"][t0 + i], AIDX))
-        la = ((dp - dp_gt) ** 2).sum(-1).mean() / (EXT ** 2)
+        la = (torch.zeros((), device=dev) if dp_gt is None
+              else ((dp - dp_gt) ** 2).sum(-1).mean() / (EXT ** 2))
         loss_a = loss_a + la
-        a_rel = a_rel + float(la) ** 0.5 / max(
-            float((dp_gt ** 2).sum(-1).mean()) ** 0.5 / EXT, 1e-20)
+        a_rel = a_rel + (0.0 if dp_gt is None else float(la) ** 0.5 / max(
+            float((dp_gt ** 2).sum(-1).mean()) ** 0.5 / EXT, 1e-20))
         gt = take(d["x"][t0 + i + 1], gsel)
         loss_x = loss_x + ((x2 - gt) ** 2).sum(-1).mean() / (EXT ** 2)
         still = still + float(((x_still - gt) ** 2).sum(-1).mean()) / (EXT ** 2)
@@ -277,6 +341,18 @@ with torch.no_grad():
     _f, _ = aggregate(_x, torch.zeros_like(_x), _x, MASS[_g], _i, _p.shape[0],
                       H, pa=_p)
     n_feat = _f.shape[-1] + N_MAT + n_bc
+if a.voxel:
+    VOX_CELL = H
+    VOX_LO = (min(dd["x"].reshape(-1, 3).min(0).values for _t, dd in TR + held)
+              - 4 * H).to(dev)
+    with torch.no_grad():
+        _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
+        _x = take(TR[0][1]["x"][0], _g)
+        _p, _f, _i = vox_feats(TR[0][1], _g, _x, torch.zeros_like(_x))
+        n_feat = _f.shape[-1] + N_MAT + n_bc
+    print(f"[복셀] 한 변 {VOX_CELL:.5f}, 앵커 {_p.shape[0]} 개, 입력 {n_feat}",
+          flush=True)
+
 build(n_feat)
 
 # 입력 표준화 통계는 실제로 뽑는 것과 같은 분포에서 모은다. 채널 스케일이 네 자릿수
