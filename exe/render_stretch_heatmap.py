@@ -179,8 +179,9 @@ for i in range(a.frames):
     fig.tight_layout()
     fig.canvas.draw()
     w_, h_ = fig.canvas.get_width_height()
-    frames.append(np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-                  .reshape(h_, w_, 3).copy())
+    # matplotlib 3.10 에서 tostring_rgb 가 사라졌다. argb 로 받아 채널을 돌린다.
+    frames.append(np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
+                  .reshape(h_, w_, 4)[..., 1:].copy())
     plt.close(fig)
     if i % 10 == 0:
         print(f"  {i}/{a.frames}", flush=True)
