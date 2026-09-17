@@ -83,55 +83,63 @@ def build(x, X, v, m, cell, lo=None, soft=False, offset=None):
 
     # 집계: 짝이 아니라 가우시안당 하나라 흩뿌리기가 16 배 적다. 1 차 모멘트를
     # 먼저 내고(앵커 위치가 거기서 나온다), 그 중심 기준으로 2 차를 낸다.
-    if soft:
-        # 자기 칸을 중심으로 3x3x3 에 B-스플라인 가중으로 뿌린다. 노드는 칸의
-        # 중심이므로 노드 기준 거리는 (x-lo)/cell - (vi + 0.5 + d) 이다.
-        r = torch.arange(-1, 2, device=dev)
-        off = torch.stack(torch.meshgrid(r, r, r, indexing="ij"),
-                          -1).reshape(-1, 3)                      # [27,3]
-        u = (x - lo) / cell - 0.5                                 # 노드 좌표계
-        nb = vi.unsqueeze(1) + off.unsqueeze(0)                   # [N,27,3]
-        wt = _bspline_w(u.unsqueeze(1) - nb.to(x.dtype)).prod(-1)  # [N,27]
-        qk = (nb[..., 0] * D1 + nb[..., 1]) * D2 + nb[..., 2]
-        # 가중이 0 이 아닌 칸만 앵커가 된다
-        live = wt > 1e-6
-        keys, inv27 = torch.unique(qk[live], sorted=True, return_inverse=True)
-        M = keys.numel()
-        gi = torch.nonzero(live, as_tuple=True)[0]                # 각 짝의 입자
-        mw = (m[gi] * wt[live]).unsqueeze(-1)
-        pair_inv = inv27
-        src_x, src_X, src_v = x[gi], X[gi], v[gi]
+    # 앵커 집합은 **점유 복셀**이다. 부드러운 배정에서도 앵커를 새로 만들지 않고
+    # 이웃 중 점유된 칸에만 가중을 뿌린다 -- 가중이 0 으로 죽는 자리에는 어차피
+    # 기여가 없다. 이 규칙 덕분에 unique 를 짝(N x 27)이 아니라 입자(N) 위에서
+    # 한 번만 돌면 된다.
+    keys = torch.unique(key, sorted=True)
+    M = keys.numel()
+    if _HAVE_DC and x.is_cuda and x.dtype == torch.float32:
+        g1, g2, g3, cx, cX, cv = _dc.voxel_moments(
+            x, X, v, m, keys, D1, D2, float(lo[0]), float(lo[1]), float(lo[2]),
+            float(cell), soft)
+        W = g1[:, 0].clamp(min=1e-12)
+        cnt = g1[:, 10:11]
+        g2 = torch.cat([g2, g3], -1)
         inv = None
     else:
-        keys, inv = torch.unique(key, sorted=True, return_inverse=True)
-        M = keys.numel()
-        pair_inv = inv
-        mw = m.unsqueeze(-1)
-        src_x, src_X, src_v = x, X, v
-
-    g1 = torch.zeros(M, 11, device=dev).index_add_(
-        0, pair_inv, torch.cat([mw, mw * src_x, mw * src_X, mw * src_v,
-                                torch.ones_like(mw)], -1))
-    W = g1[:, 0].clamp(min=1e-12)
-    Wi = W.unsqueeze(-1)
-    cx, cX, cv = g1[:, 1:4] / Wi, g1[:, 4:7] / Wi, g1[:, 7:10] / Wi
-    dx, dX, dv = (src_x - cx[pair_inv], src_X - cX[pair_inv],
-                  src_v - cv[pair_inv])
-    g2 = torch.zeros(M, 30, device=dev).index_add_(
-        0, pair_inv, torch.cat([
-            (mw.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dx.unsqueeze(-2))
-             ).reshape(-1, 9),
-            mw * torch.cross(dx, dv, dim=-1),
-            (mw.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dX.unsqueeze(-2))
-             ).reshape(-1, 9),
-            (mw.reshape(-1, 1, 1) * (dX.unsqueeze(-1) * dX.unsqueeze(-2))
-             ).reshape(-1, 9)], -1))
+        inv = torch.searchsorted(keys, key)
+        if soft:
+            r = torch.arange(-1, 2, device=dev)
+            off = torch.stack(torch.meshgrid(r, r, r, indexing="ij"),
+                              -1).reshape(-1, 3)
+            u = (x - lo) / cell - 0.5
+            nb = vi.unsqueeze(1) + off.unsqueeze(0)
+            wt = _bspline_w(u.unsqueeze(1) - nb.to(x.dtype)).prod(-1)
+            qk = (nb[..., 0] * D1 + nb[..., 1]) * D2 + nb[..., 2]
+            pin = torch.searchsorted(keys, qk.reshape(-1)).clamp(max=M - 1)
+            live = (keys[pin].reshape(qk.shape) == qk) & (wt > 1e-9)
+            gi = torch.nonzero(live, as_tuple=True)[0]
+            pair_inv = pin.reshape(qk.shape)[live]
+            mw = (m[gi] * wt[live]).unsqueeze(-1)
+            src_x, src_X, src_v = x[gi], X[gi], v[gi]
+        else:
+            pair_inv, mw = inv, m.unsqueeze(-1)
+            src_x, src_X, src_v = x, X, v
+        g1 = torch.zeros(M, 11, device=dev).index_add_(
+            0, pair_inv, torch.cat([mw, mw * src_x, mw * src_X, mw * src_v,
+                                    torch.ones_like(mw)], -1))
+        W = g1[:, 0].clamp(min=1e-12)
+        Wi = W.unsqueeze(-1)
+        cx, cX, cv = g1[:, 1:4] / Wi, g1[:, 4:7] / Wi, g1[:, 7:10] / Wi
+        cnt = g1[:, 10:11]
+        dx, dX, dv = (src_x - cx[pair_inv], src_X - cX[pair_inv],
+                      src_v - cv[pair_inv])
+        g2 = torch.zeros(M, 30, device=dev).index_add_(
+            0, pair_inv, torch.cat([
+                (mw.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dx.unsqueeze(-2))
+                 ).reshape(-1, 9),
+                mw * torch.cross(dx, dv, dim=-1),
+                (mw.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dX.unsqueeze(-2))
+                 ).reshape(-1, 9),
+                (mw.reshape(-1, 1, 1) * (dX.unsqueeze(-1) * dX.unsqueeze(-2))
+                 ).reshape(-1, 9)], -1))
 
     a = VoxelAnchors()
     a.keys, a.inv, a.M = keys, inv, M
     a.pos = cx.contiguous()
     a.lo, a.cell, a.D1, a.D2 = lo, float(cell), D1, D2
-    a.moments = (W, cx, cX, cv, g1[:, 10:11], g2)
+    a.moments = (W, cx, cX, cv, cnt, g2)
     return a
 
 

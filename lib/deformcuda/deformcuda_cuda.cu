@@ -323,6 +323,152 @@ std::vector<torch::Tensor> voxel_knn(torch::Tensor x, torch::Tensor p,
     return {oidx, odist};
 }
 
+// ------------------------------------------------- 복셀 생성·집계 융합
+// 파이토치 경로는 torch.unique (138 만 개 int64 정렬) 로 앵커 번호를 매기고,
+// index_add_ 로 [N, 41] 을 흩뿌린다. 부드러운 배정에서는 짝이 N x 27 = 3700 만
+// 이 되어 unique 를 그 위에서 또 돌리므로 181 ms 가 나왔다.
+//
+// 여기서는 두 가지를 바꾼다.
+//   앵커 집합은 **점유 복셀**로 고정한다. 부드러운 배정에서도 앵커를 새로 만들지
+//   않고, 이웃 중 점유된 칸에만 B-스플라인 가중으로 뿌린다 -- 가중이 0 으로 죽는
+//   자리에는 어차피 기여가 없다.
+//   번호 부여는 정렬 대신 **정렬된 유일 키 배열 위의 이진 탐색**이다. 그 배열은
+//   하드 배정의 unique 한 번으로 얻고, 부드러운 쪽과 앙상블이 함께 쓴다.
+
+__device__ __forceinline__ float bspline_w(float t) {
+    const float a = fabsf(t);
+    if (a < 0.5f) return 0.75f - a * a;
+    if (a < 1.5f) { const float b = 1.5f - a; return 0.5f * b * b; }
+    return 0.f;
+}
+
+// phase 0: (질량, 질량x위치, 질량x정준, 질량x속도, 개수) = 11
+// phase 1: (S 9, L 3) = 12,   phase 2: (A 9, B 9) = 18
+template <int D>
+__global__ void vox_moment_kernel(const float* __restrict__ x,
+                                  const float* __restrict__ X,
+                                  const float* __restrict__ v,
+                                  const float* __restrict__ m,
+                                  const long* __restrict__ keys,
+                                  const float* __restrict__ cx,
+                                  const float* __restrict__ cX,
+                                  const float* __restrict__ cv,
+                                  int N, int M, int D1, int D2,
+                                  float ox, float oy, float oz, float cell,
+                                  int soft, int phase,
+                                  float* __restrict__ out) {
+    extern __shared__ float acc[];
+    for (int i = threadIdx.x; i < M * D; i += blockDim.x) acc[i] = 0.f;
+    __syncthreads();
+
+    for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < N;
+         n += gridDim.x * blockDim.x) {
+        const float px = x[3 * n], py = x[3 * n + 1], pz = x[3 * n + 2];
+        const float ux = (px - ox) / cell - 0.5f;
+        const float uy = (py - oy) / cell - 0.5f;
+        const float uz = (pz - oz) / cell - 0.5f;
+        const int cxi = (int)floorf((px - ox) / cell);
+        const int cyi = (int)floorf((py - oy) / cell);
+        const int czi = (int)floorf((pz - oz) / cell);
+        const int R = soft ? 1 : 0;
+        for (int dz = -R; dz <= R; ++dz)
+          for (int dy = -R; dy <= R; ++dy)
+            for (int dx = -R; dx <= R; ++dx) {
+                const int gx = cxi + dx, gy = cyi + dy, gz = czi + dz;
+                float w = m[n];
+                if (soft) {
+                    w *= bspline_w(ux - gx) * bspline_w(uy - gy)
+                         * bspline_w(uz - gz);
+                    if (w <= 1e-9f) continue;
+                }
+                const long q = ((long)gx * D1 + gy) * D2 + gz;
+                const int aa = key_find(keys, M, q);
+                if (aa < 0) continue;
+                float* dst = acc + (long)aa * D;
+                if (phase == 0) {
+                    atomicAdd(dst + 0, w);
+                    atomicAdd(dst + 1, w * px); atomicAdd(dst + 2, w * py);
+                    atomicAdd(dst + 3, w * pz);
+                    atomicAdd(dst + 4, w * X[3 * n]);
+                    atomicAdd(dst + 5, w * X[3 * n + 1]);
+                    atomicAdd(dst + 6, w * X[3 * n + 2]);
+                    atomicAdd(dst + 7, w * v[3 * n]);
+                    atomicAdd(dst + 8, w * v[3 * n + 1]);
+                    atomicAdd(dst + 9, w * v[3 * n + 2]);
+                    atomicAdd(dst + 10, 1.f);
+                } else {
+                    const float ax = px - cx[3 * aa], ay = py - cx[3 * aa + 1],
+                                az = pz - cx[3 * aa + 2];
+                    const float bx = X[3 * n] - cX[3 * aa],
+                                by = X[3 * n + 1] - cX[3 * aa + 1],
+                                bz = X[3 * n + 2] - cX[3 * aa + 2];
+                    const float ex = v[3 * n] - cv[3 * aa],
+                                ey = v[3 * n + 1] - cv[3 * aa + 1],
+                                ez = v[3 * n + 2] - cv[3 * aa + 2];
+                    if (phase == 1) {
+                        atomicAdd(dst + 0, w * ax * ax); atomicAdd(dst + 1, w * ax * ay);
+                        atomicAdd(dst + 2, w * ax * az); atomicAdd(dst + 3, w * ay * ax);
+                        atomicAdd(dst + 4, w * ay * ay); atomicAdd(dst + 5, w * ay * az);
+                        atomicAdd(dst + 6, w * az * ax); atomicAdd(dst + 7, w * az * ay);
+                        atomicAdd(dst + 8, w * az * az);
+                        atomicAdd(dst + 9,  w * (ay * ez - az * ey));
+                        atomicAdd(dst + 10, w * (az * ex - ax * ez));
+                        atomicAdd(dst + 11, w * (ax * ey - ay * ex));
+                    } else {
+                        atomicAdd(dst + 0, w * ax * bx); atomicAdd(dst + 1, w * ax * by);
+                        atomicAdd(dst + 2, w * ax * bz); atomicAdd(dst + 3, w * ay * bx);
+                        atomicAdd(dst + 4, w * ay * by); atomicAdd(dst + 5, w * ay * bz);
+                        atomicAdd(dst + 6, w * az * bx); atomicAdd(dst + 7, w * az * by);
+                        atomicAdd(dst + 8, w * az * bz);
+                        atomicAdd(dst + 9,  w * bx * bx); atomicAdd(dst + 10, w * bx * by);
+                        atomicAdd(dst + 11, w * bx * bz); atomicAdd(dst + 12, w * by * bx);
+                        atomicAdd(dst + 13, w * by * by); atomicAdd(dst + 14, w * by * bz);
+                        atomicAdd(dst + 15, w * bz * bx); atomicAdd(dst + 16, w * bz * by);
+                        atomicAdd(dst + 17, w * bz * bz);
+                    }
+                }
+            }
+    }
+    __syncthreads();
+    for (int i = threadIdx.x; i < M * D; i += blockDim.x)
+        if (acc[i] != 0.f) atomicAdd(out + i, acc[i]);
+}
+
+std::vector<torch::Tensor> voxel_moments(
+        torch::Tensor x, torch::Tensor X, torch::Tensor v, torch::Tensor m,
+        torch::Tensor keys, int D1, int D2,
+        double ox, double oy, double oz, double cell, bool soft) {
+    CHECK(x); CHECK(X); CHECK(v); CHECK(m); CHECK(keys);
+    const int N = x.size(0), M = keys.size(0);
+    auto opt = x.options();
+    const int T = 256, B = std::min<long>(160, (N + T - 1) / T);
+    auto g1 = torch::zeros({M, 11}, opt);
+    vox_moment_kernel<11><<<B, T, (size_t)M * 11 * sizeof(float)>>>(
+        x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
+        m.data_ptr<float>(), keys.data_ptr<long>(), nullptr, nullptr, nullptr,
+        N, M, D1, D2, (float)ox, (float)oy, (float)oz, (float)cell,
+        soft ? 1 : 0, 0, g1.data_ptr<float>());
+    auto W = g1.select(1, 0).clamp_min(1e-12).unsqueeze(-1);
+    auto cx = (g1.slice(1, 1, 4) / W).contiguous();
+    auto cX = (g1.slice(1, 4, 7) / W).contiguous();
+    auto cv = (g1.slice(1, 7, 10) / W).contiguous();
+    auto g2 = torch::zeros({M, 12}, opt);
+    vox_moment_kernel<12><<<B, T, (size_t)M * 12 * sizeof(float)>>>(
+        x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
+        m.data_ptr<float>(), keys.data_ptr<long>(), cx.data_ptr<float>(),
+        cX.data_ptr<float>(), cv.data_ptr<float>(), N, M, D1, D2,
+        (float)ox, (float)oy, (float)oz, (float)cell, soft ? 1 : 0, 1,
+        g2.data_ptr<float>());
+    auto g3 = torch::zeros({M, 18}, opt);
+    vox_moment_kernel<18><<<B, T, (size_t)M * 18 * sizeof(float)>>>(
+        x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
+        m.data_ptr<float>(), keys.data_ptr<long>(), cx.data_ptr<float>(),
+        cX.data_ptr<float>(), cv.data_ptr<float>(), N, M, D1, D2,
+        (float)ox, (float)oy, (float)oz, (float)cell, soft ? 1 : 0, 2,
+        g3.data_ptr<float>());
+    return {g1, g2, g3, cx, cX, cv};
+}
+
 // ---------------------------------------------------------------- 집계
 // 앵커별로 자기 가우시안들을 질량 가중으로 요약한다. 파이토치 쪽은 [N*k, 41]
 // 짜리 텐서를 만들어 index_add_ 로 흩뿌리는데, 입자 138 만 x k=16 이면 그것만
@@ -507,6 +653,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("aggregate_moments", &aggregate_moments,
           "per-anchor mass-weighted moments, accumulated in shared memory");
     m.def("fps", &fps_cuda, "farthest point sampling, one kernel per pick");
+    m.def("voxel_moments", &voxel_moments,
+          "voxel anchor moments, hard or B-spline, on the occupied set");
     m.def("voxel_knn", &voxel_knn,
           "nearest anchors among the 3x3x3 voxel neighbourhood, no search");
 }

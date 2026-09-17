@@ -50,6 +50,19 @@ def aggregate_moments(x, X, v, m, idx, M):
                                       idx.contiguous(), int(M)))
 
 
+def voxel_moments(x, X, v, m, keys, D1, D2, ox, oy, oz, cell, soft=False):
+    """점유 복셀 위의 앵커 모멘트. -> (g1, g2, g3, cx, cX, cv)
+
+    soft=True 면 이웃 3x3x3 에 B-스플라인 가중으로 뿌린다. 앵커 집합은 점유 복셀
+    그대로라, 짝 3700 만 개에 대해 unique 를 다시 돌 필요가 없다.
+    """
+    return tuple(_C.voxel_moments(x.contiguous(), X.contiguous(),
+                                  v.contiguous(), m.contiguous(),
+                                  keys.contiguous(), int(D1), int(D2),
+                                  float(ox), float(oy), float(oz), float(cell),
+                                  bool(soft)))
+
+
 def voxel_knn(x, p, keys, D1, D2, ox, oy, oz, cell, k, radius=1):
     """복셀 이웃 안에서만 고른 k 최근접 앵커. 빈 자리는 -1.
 
