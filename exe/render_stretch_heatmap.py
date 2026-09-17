@@ -1,4 +1,8 @@
-"""초기 배치 대비 누적 변형장의 **최대 특이값** 을 단면 히트맵으로 그린다.
+"""초기 배치 대비 누적 변형장을 단면 히트맵으로 그린다 (최대 특이값 또는 변형률 노름).
+
+sigma_1(F_t) 는 그 자리에서 재질이 가장 크게 늘어난 방향의 배율이고, Green-Lagrange
+변형률 E = (F^T F - I)/2 의 노름은 "변형이 전혀 없으면 0" 이라는 기준점을 갖는다 --
+sigma_1 은 변형이 없어도 1 이라 배경과 변형을 눈으로 가르기 어렵다.
 
 sigma_1(F_t) 는 그 자리에서 재질이 가장 크게 늘어난 방향의 배율이다. 1 이면 그
 방향으로 원래 길이 그대로, 2 면 두 배로 늘어난 것이고, 갈라지는 자리에서 치솟는다.
@@ -28,6 +32,10 @@ ap.add_argument("--n_pts", type=int, default=20000)
 ap.add_argument("--slices", type=int, default=5)
 ap.add_argument("--grid", type=int, default=48)
 ap.add_argument("--band", type=float, default=0.06)
+ap.add_argument("--metric", default="sigma1", choices=("sigma1", "strain"),
+                help="sigma1 은 F 의 최대 특이값(가장 크게 늘어난 배율), strain 은 "
+                     "Green-Lagrange 변형률 E=(F^T F - I)/2 의 Frobenius 노름. "
+                     "둘 다 회전에 불변이고, strain 은 변형이 없으면 정확히 0 이다")
 ap.add_argument("--vmax", type=float, default=0.0,
                 help="색 상한. 0 이면 전체 프레임의 p99 로 한 번 고정한다")
 ap.add_argument("--tile", type=int, default=240)
@@ -81,8 +89,13 @@ print(f"[단면] 상대 z {zlo:.3f}~{zhi:.3f} {a.slices} 등분, 격자 {a.grid}
       flush=True)
 
 
-def sigma1(F):
-    return torch.linalg.svdvals(F)[..., 0]
+def measure(F):
+    """F 에서 한 스칼라. 회전에 불변한 것만 쓴다."""
+    if a.metric == "sigma1":
+        return torch.linalg.svdvals(F)[..., 0]
+    I = torch.eye(3, device=F.device)
+    E = 0.5 * (F.transpose(-1, -2) @ F - I)
+    return E.reshape(*E.shape[:-2], 9).norm(dim=-1)
 
 
 def to_grid(vals, pos_rel, z):
@@ -120,7 +133,7 @@ if a.ckpt:
         x2, _, J = skin_with_jacobian(x, p, dp, lr_, lt_, idx, H)
         Jacc = J @ Jacc
         v, p, x = (x2 - x) / FRAME_DT, p + dp, x2
-        model.append((x.clone(), sigma1(Jacc).clone()))
+        model.append((x.clone(), measure(Jacc).clone()))
 
 # GT: MPM 의 f_tensor 를 t0 기준으로 다시 잡는다 (t0 에서 시작하는 롤아웃과 맞추려고)
 F0 = take(d["F"][a.t0], GS)
@@ -129,13 +142,14 @@ gt = []
 for i in range(a.frames):
     t = a.t0 + i + 1
     xg = take(d["x"][t], GS)
-    gt.append((xg, sigma1(take(d["F"][t], GS) @ F0i)))
+    gt.append((xg, measure(take(d["F"][t], GS) @ F0i)))
 
 vmax = a.vmax
 if vmax <= 0:
     allv = torch.cat([s for _x, s in gt] + ([s for _x, s in model] if model else []))
     vmax = float(allv.quantile(0.99))
-print(f"[색 범위] 1.0 ~ {vmax:.3f} (전체 프레임 p99 로 고정)", flush=True)
+print(f"[색 범위] {1.0 if a.metric=='sigma1' else 0.0} ~ {vmax:.3f} "
+      f"(전체 프레임 p99 로 고정), 지표 {a.metric}", flush=True)
 
 os.makedirs(a.out, exist_ok=True)
 rows = 1 if model is None else 2
@@ -152,13 +166,16 @@ for i in range(a.frames):
             g = to_grid(ss, rel, z)
             if g is None:
                 A.text(.5, .5, "-", ha="center"); continue
-            im = A.imshow(g.T, origin="lower", cmap="magma", vmin=1.0, vmax=vmax)
+            im = A.imshow(g.T, origin="lower", cmap="magma",
+                          vmin=(1.0 if a.metric == "sigma1" else 0.0), vmax=vmax)
             if r == 0:
                 A.set_title(f"rel z={z:+.2f}", fontsize=8)
             if s == 0:
                 A.set_ylabel("GT" if r == 0 else "model", fontsize=9)
-    fig.suptitle(f"{a.traj}  frame {a.t0+i+1:03d}  largest singular value of F "
-                 f"(since frame {a.t0})", fontsize=10)
+    lbl = ("largest singular value of F" if a.metric == "sigma1"
+           else "|Green-Lagrange strain|_F")
+    fig.suptitle(f"{a.traj}  frame {a.t0+i+1:03d}  {lbl} (since frame {a.t0})",
+                 fontsize=10)
     fig.tight_layout()
     fig.canvas.draw()
     w_, h_ = fig.canvas.get_width_height()
@@ -168,7 +185,7 @@ for i in range(a.frames):
     if i % 10 == 0:
         print(f"  {i}/{a.frames}", flush=True)
 
-p_out = os.path.join(a.out, f"stretch_{a.traj}_t{a.t0}.mp4")
+p_out = os.path.join(a.out, f"{a.metric}_{a.traj}_t{a.t0}.mp4")
 imageio.mimsave(p_out, frames, fps=a.fps, quality=8)
 print(f"[저장] {p_out}  {len(frames)} 프레임", flush=True)
 print("STRETCH_OK")
