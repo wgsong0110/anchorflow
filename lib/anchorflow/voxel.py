@@ -43,10 +43,27 @@ class VoxelAnchors:
     __slots__ = ("keys", "pos", "inv", "moments", "lo", "cell", "D1", "D2", "M")
 
 
-def build(x, X, v, m, cell, lo=None):
+def _bspline_w(t):
+    """2 차 B-스플라인 가중. t 는 노드 기준 거리(칸 단위), |t| <= 1.5 에서만 0 이 아니다.
+
+    MPM 이 입자를 격자에 뿌릴 때 쓰는 바로 그 가중이다. 하드 배정과 달리 경계에서
+    0 으로 매끄럽게 죽으므로, 입자가 칸을 넘어가도 기여가 **연속**으로 옮겨간다.
+    """
+    a = t.abs()
+    return torch.where(a < 0.5, 0.75 - a * a,
+                       torch.where(a < 1.5, 0.5 * (1.5 - a) ** 2,
+                                   torch.zeros_like(a)))
+
+
+def build(x, X, v, m, cell, lo=None, soft=False, offset=None):
     """현재 배치에서 복셀 앵커를 뽑고, 같은 패스에서 통계까지 낸다.
 
     x [N,3] 현재 위치, X [N,3] 정준 위치, v [N,3] 속도, m [N] 질량.
+    soft   True 면 자기 칸 하나가 아니라 이웃 3x3x3 에 B-스플라인 가중으로 뿌린다.
+           앵커 위치가 가중 질량중심이 되어 입자가 칸을 넘어도 **정확히 연속**이다.
+           흩뿌리기가 27 배 늘지만, 불연속을 근본에서 없앤다.
+    offset 격자를 칸의 몇 분의 몇만큼 옮길지 [3]. 오프셋이 다른 격자 여러 개를
+           앙상블하면 같은 평활화를 근사할 수 있다 (soft 의 몬테카를로 판).
     -> VoxelAnchors
     """
     dev = x.device
@@ -55,6 +72,8 @@ def build(x, X, v, m, cell, lo=None):
         # 물체가 떨어지는 것만으로 모든 복셀 키가 바뀌어, 소속이 실제로 변한 것과
         # 격자가 따라 움직인 것을 구별할 수 없다 (그렇게 재서 70% 가 나왔다).
         lo = x.min(0).values - cell
+    if offset is not None:
+        lo = lo + torch.as_tensor(offset, device=dev, dtype=x.dtype) * cell
     vi = ((x - lo) / cell).floor().long()
     D1 = int(vi[:, 1].max()) + 2
     D2 = int(vi[:, 2].max()) + 2
@@ -64,22 +83,48 @@ def build(x, X, v, m, cell, lo=None):
 
     # 집계: 짝이 아니라 가우시안당 하나라 흩뿌리기가 16 배 적다. 1 차 모멘트를
     # 먼저 내고(앵커 위치가 거기서 나온다), 그 중심 기준으로 2 차를 낸다.
-    mu = m.unsqueeze(-1)
+    if soft:
+        # 자기 칸을 중심으로 3x3x3 에 B-스플라인 가중으로 뿌린다. 노드는 칸의
+        # 중심이므로 노드 기준 거리는 (x-lo)/cell - (vi + 0.5 + d) 이다.
+        r = torch.arange(-1, 2, device=dev)
+        off = torch.stack(torch.meshgrid(r, r, r, indexing="ij"),
+                          -1).reshape(-1, 3)                      # [27,3]
+        u = (x - lo) / cell - 0.5                                 # 노드 좌표계
+        nb = vi.unsqueeze(1) + off.unsqueeze(0)                   # [N,27,3]
+        wt = _bspline_w(u.unsqueeze(1) - nb.to(x.dtype)).prod(-1)  # [N,27]
+        qk = (nb[..., 0] * D1 + nb[..., 1]) * D2 + nb[..., 2]
+        # 가중이 0 이 아닌 칸만 앵커가 된다
+        live = wt > 1e-6
+        keys, inv27 = torch.unique(qk[live], sorted=True, return_inverse=True)
+        M = keys.numel()
+        gi = torch.nonzero(live, as_tuple=True)[0]                # 각 짝의 입자
+        mw = (m[gi] * wt[live]).unsqueeze(-1)
+        pair_inv = inv27
+        src_x, src_X, src_v = x[gi], X[gi], v[gi]
+        inv = None
+    else:
+        keys, inv = torch.unique(key, sorted=True, return_inverse=True)
+        M = keys.numel()
+        pair_inv = inv
+        mw = m.unsqueeze(-1)
+        src_x, src_X, src_v = x, X, v
+
     g1 = torch.zeros(M, 11, device=dev).index_add_(
-        0, inv, torch.cat([mu, mu * x, mu * X, mu * v,
-                           torch.ones_like(mu)], -1))
+        0, pair_inv, torch.cat([mw, mw * src_x, mw * src_X, mw * src_v,
+                                torch.ones_like(mw)], -1))
     W = g1[:, 0].clamp(min=1e-12)
     Wi = W.unsqueeze(-1)
     cx, cX, cv = g1[:, 1:4] / Wi, g1[:, 4:7] / Wi, g1[:, 7:10] / Wi
-    dx, dX, dv = x - cx[inv], X - cX[inv], v - cv[inv]
+    dx, dX, dv = (src_x - cx[pair_inv], src_X - cX[pair_inv],
+                  src_v - cv[pair_inv])
     g2 = torch.zeros(M, 30, device=dev).index_add_(
-        0, inv, torch.cat([
-            (mu.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dx.unsqueeze(-2))
+        0, pair_inv, torch.cat([
+            (mw.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dx.unsqueeze(-2))
              ).reshape(-1, 9),
-            mu * torch.cross(dx, dv, dim=-1),
-            (mu.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dX.unsqueeze(-2))
+            mw * torch.cross(dx, dv, dim=-1),
+            (mw.reshape(-1, 1, 1) * (dx.unsqueeze(-1) * dX.unsqueeze(-2))
              ).reshape(-1, 9),
-            (mu.reshape(-1, 1, 1) * (dX.unsqueeze(-1) * dX.unsqueeze(-2))
+            (mw.reshape(-1, 1, 1) * (dX.unsqueeze(-1) * dX.unsqueeze(-2))
              ).reshape(-1, 9)], -1))
 
     a = VoxelAnchors()

@@ -31,6 +31,8 @@ ap.add_argument("--ply", default=None)
 ap.add_argument("--k", type=int, default=16)
 ap.add_argument("--n_anchors", type=int, default=512, help="기존 경로의 앵커 수")
 ap.add_argument("--reps", type=int, default=20)
+ap.add_argument("--ens", type=int, default=4,
+                help="오프셋 앙상블에 쓸 격자 수 (0 이면 안 함)")
 ap.add_argument("--out", default=None)
 a = ap.parse_args()
 
@@ -120,32 +122,52 @@ print(f"  복셀: 생성·집계 {t_build:5.2f} + 이웃 {t_nb:5.2f} + "
       f"스키닝+J {t_skin:4.2f} = {t_vox:6.2f} ms  ({t_old/max(t_vox,1e-9):.1f}배)",
       flush=True)
 
-# --- 떨림: 실제 궤적에서 연속 프레임 사이의 소속 변화 ---
-flip, jump = [], []
+# --- 떨림: 실제 궤적에서 연속 프레임 사이의 앵커 위치 변화 ---
+# "소속이 바뀌었나" 가 아니라 **그 가우시안이 보는 앵커 위치가 얼마나 튀는가** 를
+# 재야 한다. 소속은 바뀌어도 새 앵커가 바로 옆이면 변형장은 매끄럽다.
 T = min(40, d["x"].shape[0] - 1)
 gs = torch.arange(min(N, d["x"].shape[1]))
-prev = None
-for t in range(1, T):
-    xt = d["x"][t][gs].to(dev)
-    vt = (xt - d["x"][t - 1][gs].to(dev)) / FRAME_DT
-    Xc = d["x"][0][gs].to(dev)
-    mm = torch.rand(xt.shape[0], device=dev) + 0.1
-    vb = voxel.build(xt, Xc, vt, mm, H, lo=LO)
+OFFS = [tuple((np.array([(i >> b) & 1 for b in range(3)]) + 0.5) / max(a.ens, 1) * 0
+              + np.random.RandomState(i).rand(3)) for i in range(a.ens)]
+
+
+def anchor_of(xt, Xc, vt, mm, mode):
+    """각 가우시안이 보는 앵커 위치 [N,3]. mode: hard / soft / ens"""
+    if mode == "ens":
+        acc = 0
+        for o in OFFS:
+            vb = voxel.build(xt, Xc, vt, mm, H, lo=LO, offset=o)
+            gi, dvv = voxel.neighbors(xt, vb, a.k)
+            acc = acc + vb.pos[gi[:, 0].clamp(min=0)]
+        return acc / len(OFFS)
+    vb = voxel.build(xt, Xc, vt, mm, H, lo=LO, soft=(mode == "soft"))
     gi, _ = voxel.neighbors(xt, vb, a.k)
-    own = gi[:, 0]
-    if prev is not None:
-        # 같은 복셀 키를 가리키는지로 비교한다 (앵커 번호는 프레임마다 다시 매겨진다)
-        kp = prev[0][prev[1]]
-        kn = vb.keys[own.clamp(min=0)]
-        flip.append(float((kp != kn).float().mean()))
-        jump.append(float((prev[2] - vb.pos[own.clamp(min=0)]).norm(dim=-1)
-                          .mean()) / EXT)
-    prev = (vb.keys, own.clamp(min=0), vb.pos[own.clamp(min=0)])
-print(f"\n[떨림] 연속 프레임 사이 소속 복셀이 바뀐 가우시안 비율: "
-      f"평균 {100*np.mean(flip):.2f}%  최대 {100*np.max(flip):.2f}%", flush=True)
-print(f"       그때 자기 앵커 위치가 뛴 거리: 평균 {100*np.mean(jump):.3f}% "
-      f"최대 {100*np.max(jump):.3f}% (물체 대비, 복셀 한 변은 "
-      f"{100*H/EXT:.2f}%)", flush=True)
+    return vb.pos[gi[:, 0].clamp(min=0)]
+
+
+res_flick = {}
+for mode in ("hard", "soft", "ens") if a.ens else ("hard", "soft"):
+    prev, jump = None, []
+    for t in range(1, T):
+        xt = d["x"][t][gs].to(dev)
+        vt = (xt - d["x"][t - 1][gs].to(dev)) / FRAME_DT
+        Xc = d["x"][0][gs].to(dev)
+        mm = torch.rand(xt.shape[0], device=dev) + 0.1
+        cur = anchor_of(xt, Xc, vt, mm, mode)
+        if prev is not None:
+            # 가우시안 자신이 움직인 만큼을 빼고, 앵커가 **추가로** 튄 양을 본다
+            mv = (xt - d["x"][t - 1][gs].to(dev))
+            jump.append(float((cur - prev - mv).norm(dim=-1).mean()) / EXT)
+        prev = cur
+    res_flick[mode] = (float(np.mean(jump)), float(np.max(jump)))
+    print(f"[떨림-{mode:>4}] 앵커 위치의 추가 변동: 평균 {100*np.mean(jump):.3f}% "
+          f"최대 {100*np.max(jump):.3f}%  (복셀 한 변 {100*H/EXT:.2f}%)", flush=True)
+
+t_soft = timeit(lambda: voxel.build(x, X, v, m, H, lo=LO, soft=True), 5)
+print(f"\n[비용] 부드러운 배정(B-스플라인 3x3x3) 생성·집계 {t_soft:6.2f} ms "
+      f"(하드 {t_build:5.2f} ms, {t_soft/max(t_build,1e-9):.1f}배)", flush=True)
+if a.ens:
+    print(f"       오프셋 앙상블 {a.ens} 개 = {a.ens * t_build:6.2f} ms", flush=True)
 
 if a.out:
     os.makedirs(a.out, exist_ok=True)
@@ -154,6 +176,7 @@ if a.out:
                    old=dict(fps=t_fps, knn=t_knn, agg=t_agg, skin=t_sk0,
                             total=t_old),
                    vox=dict(build=t_build, nb=t_nb, skin=t_skin, total=t_vox),
-                   flip_mean=float(np.mean(flip)), flip_max=float(np.max(flip))),
+                   flicker={k: v for k, v in res_flick.items()},
+                   soft_build=t_soft),
               open(os.path.join(a.out, "voxel_verify.json"), "w"), indent=1)
 print("VOXEL_OK")
