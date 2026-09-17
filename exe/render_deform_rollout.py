@@ -67,7 +67,8 @@ MAT = torch.cat([torch.tensor(
 
 
 def take(t, i):
-    return t[i].to(dev)
+    """CPU 에 있는 궤적에서 색인해 GPU 로. 색인은 CPU 에서 해야 한다."""
+    return t[i.cpu() if torch.is_tensor(i) else i].to(dev)
 
 
 def rollout(ck):
