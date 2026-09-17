@@ -185,8 +185,20 @@ def _eig_kernel(lo, hi):
     run()
     ti.sync()
     o = fo.to_torch()
-    print(f"[고유분해] {lo}~{hi} 정상, 고유값 범위 {o.min():.3e}~{o.max():.3e}",
-          flush=True)
+    bad = ~torch.isfinite(o).all(-1)
+    print(f"[고유분해] {lo}~{hi} 정상, 고유값 범위 {o.min():.3e}~{o.max():.3e}, "
+          f"유한하지 않은 것 {int(bad.sum())}", flush=True)
+    if int(bad.sum()):
+        j = int(torch.nonzero(bad)[0]) + lo
+        # float32 에서 발산한 이 공분산을 float64 로 다시 풀어 비교한다.
+        C = torch.tensor([[cov[j][0], cov[j][1], cov[j][2]],
+                          [cov[j][1], cov[j][3], cov[j][4]],
+                          [cov[j][2], cov[j][4], cov[j][5]]]).double()
+        print(f"  첫 번째 입자 {j}\n  공분산 {cov[j].tolist()}\n"
+              f"  타이치(f32) {o[j - lo].tolist()}\n"
+              f"  토치(f64)  {torch.linalg.eigvalsh(C).tolist()}\n"
+              f"  -> densify_grids 의 r = ceil(sqrt(max)/dx) 가 정수로 넘쳐 "
+              f"(2r+1)^3 루프가 끝나지 않는다", flush=True)
 
 
 if a.eig_only:
