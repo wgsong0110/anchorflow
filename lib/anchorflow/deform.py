@@ -358,7 +358,8 @@ def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None, sub=None):
     # 그 횟수만큼 다시 읽는데, 이 단계는 연산이 아니라 메모리 대역이 정하기
     # 때문이다. 1 차 모멘트가 있어야 2 차를 낼 수 있어 두 번이 하한이다.
     use_dc = (_HAVE_DC and x.is_cuda and x.dtype == torch.float32
-              and not torch.is_grad_enabled())
+              and not any(t is not None and t.requires_grad
+                          for t in (x, v, X, m, pa)))
     if use_dc:
         g1, g2, g3 = _dc.aggregate_moments(x, X, v, m, idx, M)
         Wa = g1[:, 0].clamp(min=1e-12)
@@ -485,8 +486,13 @@ def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h):
     남는 [N,k,3] x [N,k,3] 외적은 첫 줄 하나뿐이고 나머지는 전부 앵커 축을 먼저
     접은 [N,3] 끼리의 외적이다. 값은 위 식과 정확히 같다.
     """
+    # 커널에는 역전파가 없다. 다만 막아야 하는 것은 "grad 가 켜져 있는가" 가
+    # 아니라 "이 입력들이 실제로 grad 를 요구하는가" 다 -- 교사 강제 스텝에서는
+    # x 도 앵커 출력도 grad 를 요구하지 않으므로 커널을 그대로 쓸 수 있다.
+    _need = any(t is not None and t.requires_grad
+                for t in (x, p, dp, log_r, log_t))
     if (_HAVE_DC and x.is_cuda and x.dtype == torch.float32
-            and idx.shape[1] in _DC_K and not torch.is_grad_enabled()):
+            and idx.shape[1] in _DC_K and not _need):
         o, J = _dc.skin_jacobian(x, p, dp, log_r, log_t, idx, h)
         return o, None, J
     pa = p[idx]                                    # [N,k,3]

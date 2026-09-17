@@ -93,7 +93,11 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None, dims=None):
         mx = vi0.max(0).values.tolist()          # 동기화 한 번으로 세 값을 받는다
         D1, D2 = mx[1] + 3, mx[2] + 3
         stride = (mx[0] + 3) * D1 * D2
-    use_hash = _HAVE_DC and x.is_cuda and x.dtype == torch.float32
+    # 커널은 역전파가 없으므로 입력이 grad 를 요구할 때만 파이토치로 되돌린다
+    # (전역 grad 스위치가 아니라 입력 자체를 본다).
+    _need = any(t is not None and t.requires_grad for t in (x, X, v, m))
+    use_hash = (_HAVE_DC and x.is_cuda and x.dtype == torch.float32
+                and not _need)
     if use_hash:
         # 키를 파이토치에서 만들지도, 정렬하지도 않는다 -- 커널이 해시로 O(N) 에
         # 번호를 매긴다. L 이 커질수록 이득이 커진다.
@@ -125,7 +129,7 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None, dims=None):
     # 이웃 중 점유된 칸에만 가중을 뿌린다 -- 가중이 0 으로 죽는 자리에는 어차피
     # 기여가 없다. 이 규칙 덕분에 unique 를 짝(N x 27)이 아니라 입자(N) 위에서
     # 한 번만 돌면 된다.
-    if _HAVE_DC and x.is_cuda and x.dtype == torch.float32:
+    if use_hash:
         g1, g2, g3, cx, cX, cv = _dc.voxel_moments(
             x, X, v, m, tab, slot, M, offs, D1, D2, stride,
             float(lo[0]), float(lo[1]), float(lo[2]), float(cell), soft)
@@ -190,7 +194,8 @@ def neighbors(x, va, k, radius=1):
     후보가 (2r+1)^3 개뿐이라 전역 탐색이 아니다. 커널이 없으면 파이토치로
     같은 것을 계산한다 -- 값이 같아야 하므로 검증에 쓴다.
     """
-    if _HAVE_DC and x.is_cuda and x.dtype == torch.float32:
+    if (_HAVE_DC and x.is_cuda and x.dtype == torch.float32
+            and va.tab is not None and not x.requires_grad):
         return _dc.voxel_knn(x, va.pos, va.tab, va.slot, va.offs, va.D1, va.D2,
                              va.stride,
                              float(va.lo[0]), float(va.lo[1]), float(va.lo[2]),
