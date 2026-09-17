@@ -28,6 +28,15 @@ ap.add_argument("--debug_ti", action="store_true",
 ap.add_argument("--timeout", type=float, default=300,
                 help="이 초를 넘기면 스스로 죽는다. 도는 CUDA 커널은 밖에서 못 멈추니 "
                      "프로세스를 내려 컨텍스트째 반납한다")
+ap.add_argument("--eig_only", action="store_true",
+                help="ti.sym_eig 만 [lo,hi) 구간 입자에 돌려본다")
+ap.add_argument("--lo", type=int, default=0)
+ap.add_argument("--hi", type=int, default=-1)
+ap.add_argument("--bisect", action="store_true",
+                help="--eig_only 를 자식 프로세스로 돌려가며 안 끝나는 입자를 좁힌다. "
+                     "도는 커널은 GIL 을 안 놓아 스레드 시간초과가 안 먹으므로 "
+                     "프로세스를 밖에서 끊는 이 방법만 확실하다")
+ap.add_argument("--child_timeout", type=float, default=120)
 ap.add_argument("--run", action="store_true",
                 help="채우기 단계를 하나씩 직접 돌려 어디서 멈추는지 시간으로 본다")
 a = ap.parse_args()
@@ -155,5 +164,75 @@ if a.run:
                           ray_cast_dir=fp["ray_cast_direction"],
                           threshold=fp["search_threshold"])
     print(f"[단계] internal_filling {time.time() - t:.2f}s -> {fn}", flush=True)
+
+def _eig_kernel(lo, hi):
+    import taichi as ti
+    ti.init(arch=ti.cuda, device_memory_GB=2.0)
+    n = hi - lo
+    fc = ti.Vector.field(n=6, dtype=float, shape=n)
+    fo = ti.Vector.field(n=3, dtype=float, shape=n)
+    fc.from_torch(cov[lo:hi].reshape(-1, 6))
+
+    @ti.kernel
+    def run():
+        for i in range(n):
+            c = ti.Matrix([[fc[i][0], fc[i][1], fc[i][2]],
+                           [fc[i][1], fc[i][3], fc[i][4]],
+                           [fc[i][2], fc[i][4], fc[i][5]]])
+            sig, _Q = ti.sym_eig(c)
+            fo[i] = sig
+
+    run()
+    ti.sync()
+    o = fo.to_torch()
+    print(f"[고유분해] {lo}~{hi} 정상, 고유값 범위 {o.min():.3e}~{o.max():.3e}",
+          flush=True)
+
+
+if a.eig_only:
+    hi = pos.shape[0] if a.hi < 0 else a.hi
+    _eig_kernel(a.lo, hi)
+    print("PROBE_OK", flush=True)
+    raise SystemExit(0)
+
+if a.bisect:
+    import subprocess
+
+    base = [sys.executable, "-u", os.path.abspath(__file__), "--eig_only",
+            "--pg", a.pg, "--config", a.config, "--ply", a.ply]
+
+    def ok(lo, hi):
+        try:
+            r = subprocess.run(base + ["--lo", str(lo), "--hi", str(hi)],
+                               capture_output=True, text=True,
+                               timeout=a.child_timeout)
+            return "PROBE_OK" in r.stdout, r.stdout[-300:] + r.stderr[-300:]
+        except subprocess.TimeoutExpired:
+            return False, "시간초과 -- 커널이 안 끝난다"
+
+    lo, hi = 0, pos.shape[0]
+    good, msg = ok(lo, hi)
+    print(f"[이분] 전체 {lo}~{hi}: {'정상' if good else '멈춤'} | {msg[-160:]}",
+          flush=True)
+    if good:
+        print("[이분] 전체가 정상이다. 고유분해는 범인이 아니다.", flush=True)
+    else:
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            g1, _ = ok(lo, mid)
+            if not g1:
+                hi = mid
+            else:
+                g2, _ = ok(mid, hi)
+                if not g2:
+                    lo = mid
+                else:
+                    print(f"[이분] {lo}~{mid}, {mid}~{hi} 둘 다 정상인데 "
+                          f"{lo}~{hi} 는 멈춘다 -- 크기 의존이다", flush=True)
+                    break
+            print(f"[이분] 범위 {lo}~{hi}", flush=True)
+        print(f"[이분] 범인 입자 {lo}  공분산 {cov[lo].tolist()}", flush=True)
+    print("PROBE_OK", flush=True)
+    raise SystemExit(0)
 
 print("PROBE_OK", flush=True)
