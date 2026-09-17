@@ -246,6 +246,26 @@ class RelBlock(nn.Module):
         return x + self.ffn(self.n2(x))
 
 
+def fps(x, M, seed=0):
+    """가장 먼 점부터 차례로 M 개를 고른다 (farthest point sampling).
+
+    앵커를 **가우시안 중에서** 고른다는 것이 이 방법의 전제다 -- 그래야 어느
+    프레임에서든 그 프레임의 가우시안 위치가 곧 앵커의 초기 위치가 된다.
+
+    반복이 M 번이라 커널 실행이 M 번 난다. t=0 에 한 번만 하면 무시할 비용이지만
+    매 프레임 다시 뽑으면 그 자체가 시뮬 비용의 일부가 되므로, 실시간을 따질 때는
+    반드시 함께 재야 한다.
+    """
+    g = torch.Generator(device=x.device).manual_seed(seed)
+    idx = torch.zeros(M, dtype=torch.long, device=x.device)
+    idx[0] = torch.randint(x.shape[0], (1,), generator=g, device=x.device)
+    d = (x - x[idx[0]]).norm(dim=-1)
+    for i in range(1, M):
+        idx[i] = d.argmax()
+        d = torch.minimum(d, (x - x[idx[i]]).norm(dim=-1))
+    return idx
+
+
 # --------------------------------------------------------------- 집계
 def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None):
     """앵커별로 자기에게 모인 가우시안들을 질량 가중으로 요약한다.

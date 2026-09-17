@@ -67,6 +67,10 @@ ap.add_argument("--eval_t0", type=int, nargs="+", default=[5, 40, 80],
                 help="롤아웃을 시작할 프레임들. 이 궤적은 충돌 직후와 안정된 뒤의 "
                      "프레임당 변위가 수십 배 달라서, 한 구간만 보면 오해한다")
 ap.add_argument("--eval_len", type=int, default=15)
+ap.add_argument("--refps", action="store_true",
+                help="매 프레임 현재 배치에서 앵커를 FPS 로 다시 뽑는다. 기본은 "
+                     "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
+                     "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
 ap.add_argument("--motion_frac", type=float, default=0.0,
                 help="창을 뽑을 때 GT 변위가 큰 프레임을 이 비율만큼 우선한다. "
                      "이 궤적은 100 프레임 중 ~30 만 움직이고 나머지는 완전히 "
@@ -86,7 +90,7 @@ torch.manual_seed(a.seed)
 
 from anchorflow import deform                                  # noqa: E402
 from anchorflow.deform import (DeformNet, aggregate, bc_features,   # noqa: E402
-                               bures_w2_sq, grid_knn, jacobian_of, skin)
+                               bures_w2_sq, fps, grid_knn, jacobian_of, skin)
 
 # ---------------------------------------------------------------- 데이터
 files = sorted(glob.glob(os.path.join(a.data, "*.pt")))
@@ -115,16 +119,6 @@ N_FULL = X0.shape[0]
 # 앵커는 t=0 배치에서 FPS 로 고른 **가우시안**이다. 인덱스로 들고 있으면 어느
 # 프레임에서든 그 프레임의 가우시안 위치로 앵커를 초기화할 수 있다.
 
-
-def fps(x, M, seed=0):
-    g = torch.Generator(device=x.device).manual_seed(seed)
-    idx = torch.zeros(M, dtype=torch.long, device=x.device)
-    idx[0] = torch.randint(x.shape[0], (1,), generator=g, device=x.device)
-    d = (x - x[idx[0]]).norm(dim=-1)
-    for i in range(1, M):
-        idx[i] = d.argmax()
-        d = torch.minimum(d, (x - x[idx[i]]).norm(dim=-1))
-    return idx
 
 
 X0d = X0.to(dev)
@@ -194,7 +188,12 @@ def take(t_cpu, idx_gpu):
 
 
 def step_once(d, t, gsel, p, x, v, need_J=True):
-    """한 프레임. -> (x_next, p_next, v_next, J, w)"""
+    """한 프레임. -> (x_next, p_next, v_next, J, dp, aidx_next)
+
+    aidx_next 는 --refps 일 때만 뜻이 있다: 다음 프레임의 앵커가 **현재 부분표본의
+    몇 번째 가우시안인지**. 매 스텝 다시 뽑으면 앵커의 정체가 바뀌므로, 앵커 손실이
+    비교할 정답도 그때그때 그 가우시안들의 GT 변위로 바뀐다.
+    """
     cfg = d["cfg"]
     X = take(d["x"][0], gsel)
     idx, _ = grid_knn(x, p, a.k)
@@ -204,10 +203,15 @@ def step_once(d, t, gsel, p, x, v, need_J=True):
                        bc_features(p, cfg) / H], -1)
     dp, log_r, log_t = net(p, torch.cat([feat, extra], -1), FRAME_DT)
     x2, w = skin(x, p, dp, log_r, log_t, idx, H)
+    if a.refps:
+        ai = fps(x2.detach(), p.shape[0], a.seed)
+        p_next = x2[ai]
+    else:
+        ai, p_next = None, p + dp
     J = None
     if need_J:
         J = jacobian_of(lambda q: skin(q, p, dp, log_r, log_t, idx, H)[0], x)
-    return x2, p + dp, (x2 - x) / FRAME_DT, J, w
+    return x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai
 
 
 def window(d, t0, L, gsel):
@@ -220,18 +224,25 @@ def window(d, t0, L, gsel):
     """
     x = take(d["x"][t0], gsel)
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
-    p = take(d["x"][t0], AIDX)
+    # 앵커는 그 프레임의 GT 가우시안이다. --refps 면 현재 부분표본에서 매 스텝
+    # 다시 뽑으므로 시작도 부분표본 안에서 잡는다.
+    ai = fps(x, a.n_anchors, a.seed) if a.refps else None
+    p = x[ai] if a.refps else take(d["x"][t0], AIDX)
     loss_x = loss_J = loss_a = 0.0
     still = a_rel = 0.0
     x_still = x.clone()
     for i in range(L):
-        p_prev = p
-        x2, p, v, J, _ = step_once(d, t0 + i, gsel, p, x, v,
-                                   need_J=a.lambda_J > 0)
+        ai_now = ai
+        x2, p, v, J, dp, ai = step_once(d, t0 + i, gsel, p, x, v,
+                                        need_J=a.lambda_J > 0)
         # 앵커의 정답 변위: 앵커가 가우시안이므로 그 가우시안의 GT 변위 그대로다
-        dp_gt = (take(d["x"][t0 + i + 1], AIDX) - take(d["x"][t0 + i], AIDX))
-        dp_hat = p - p_prev
-        la = ((dp_hat - dp_gt) ** 2).sum(-1).mean() / (EXT ** 2)
+        if a.refps:
+            gt_now = take(d["x"][t0 + i + 1], gsel)
+            dp_gt = gt_now[ai_now] - x[ai_now]
+        else:
+            dp_gt = (take(d["x"][t0 + i + 1], AIDX)
+                     - take(d["x"][t0 + i], AIDX))
+        la = ((dp - dp_gt) ** 2).sum(-1).mean() / (EXT ** 2)
         loss_a = loss_a + la
         a_rel = a_rel + float(la) ** 0.5 / max(
             float((dp_gt ** 2).sum(-1).mean()) ** 0.5 / EXT, 1e-20)
@@ -355,12 +366,12 @@ for it in pbar:
 def rollout(d, t0, L, gsel):
     x = take(d["x"][t0], gsel)
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
-    p = take(d["x"][t0], AIDX)
+    p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
     errs, stills = [], []
     x_still = x.clone()
     for i in range(L):
         with torch.enable_grad():
-            x2, p, v, _, _ = step_once(d, t0 + i, gsel, p, x, v, need_J=False)
+            x2, p, v, _, _, _ = step_once(d, t0 + i, gsel, p, x, v, need_J=False)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
         gt = take(d["x"][t0 + i + 1], gsel)
         errs.append(float((x2 - gt).norm(dim=-1).mean()) / EXT)
