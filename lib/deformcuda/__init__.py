@@ -57,13 +57,14 @@ def voxel_hash(x, offs, D1, D2, stride, ox, oy, oz, cell, table_size):
     (실측 앙상블 비용의 47% 가 키 생성 + 정렬이었다). 열린 주소 해시는 O(N) 이고
     키를 파이토치에서 만들 필요도 없다.
     """
-    return _C.voxel_hash(x.contiguous(), offs.contiguous(), int(D1), int(D2),
-                         int(stride), float(ox), float(oy), float(oz),
-                         float(cell), int(table_size))[0]
+    tab, slot, cnt = _C.voxel_hash(x.contiguous(), offs.contiguous(), int(D1),
+                                   int(D2), int(stride), float(ox), float(oy),
+                                   float(oz), float(cell), int(table_size))
+    return tab, slot, int(cnt.item())
 
 
-def voxel_moments(x, X, v, m, keys, offs, D1, D2, stride, ox, oy, oz, cell,
-                  soft=False):
+def voxel_moments(x, X, v, m, tab, slot, M, offs, D1, D2, stride, ox, oy, oz,
+                  cell, soft=False):
     """점유 복셀 위의 앵커 모멘트. -> (g1, g2, g3, cx, cX, cv)
 
     soft=True 면 이웃 3x3x3 에 B-스플라인 가중으로 뿌린다. 앵커 집합은 점유 복셀
@@ -71,20 +72,22 @@ def voxel_moments(x, X, v, m, keys, offs, D1, D2, stride, ox, oy, oz, cell,
     """
     return tuple(_C.voxel_moments(x.contiguous(), X.contiguous(),
                                   v.contiguous(), m.contiguous(),
-                                  keys.contiguous(), offs.contiguous(),
-                                  int(D1), int(D2), int(stride),
+                                  tab.contiguous(), slot.contiguous(), int(M),
+                                  offs.contiguous(), int(D1), int(D2),
+                                  int(stride),
                                   float(ox), float(oy), float(oz), float(cell),
                                   bool(soft)))
 
 
-def voxel_knn(x, p, keys, offs, D1, D2, stride, ox, oy, oz, cell, k,
+def voxel_knn(x, p, tab, slot, offs, D1, D2, stride, ox, oy, oz, cell, k,
               radius=1):
     """복셀 이웃 안에서만 고른 k 최근접 앵커. 빈 자리는 -1.
 
     후보가 (2r+1)^3 개뿐이라 전역 탐색이 아니다 -- 앵커 512 개 전부와 거리를
     재던 것이 27 개로 준다.
     """
-    return tuple(_C.voxel_knn(x.contiguous(), p.contiguous(), keys.contiguous(),
+    return tuple(_C.voxel_knn(x.contiguous(), p.contiguous(), tab.contiguous(),
+                              slot.contiguous(),
                               offs.contiguous(), int(D1), int(D2), int(stride),
                               float(ox), float(oy), float(oz),
                               float(cell), int(k), int(radius)))

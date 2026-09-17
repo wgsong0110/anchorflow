@@ -41,7 +41,7 @@ class VoxelAnchors:
     """
 
     __slots__ = ("keys", "pos", "inv", "moments", "lo", "cell", "D1", "D2", "M",
-                 "offs", "stride", "L")
+                 "offs", "stride", "L", "tab", "slot")
 
 
 def _bspline_w(t):
@@ -106,16 +106,18 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None):
     # 이웃 중 점유된 칸에만 가중을 뿌린다 -- 가중이 0 으로 죽는 자리에는 어차피
     # 기여가 없다. 이 규칙 덕분에 unique 를 짝(N x 27)이 아니라 입자(N) 위에서
     # 한 번만 돌면 된다.
+    tab = slot = None
     if use_hash:
-        keys = _dc.voxel_hash(x, offs, D1, D2, stride,
-                              float(lo[0]), float(lo[1]), float(lo[2]),
-                              float(cell), max(1024, 4 * L * x.shape[0] // 8))
+        tab, slot, M = _dc.voxel_hash(
+            x, offs, D1, D2, stride, float(lo[0]), float(lo[1]), float(lo[2]),
+            float(cell), max(1024, 4 * L * x.shape[0] // 8))
+        keys = None
     else:
         keys = torch.unique(key, sorted=True)
-    M = keys.numel()
+        M = keys.numel()
     if _HAVE_DC and x.is_cuda and x.dtype == torch.float32:
         g1, g2, g3, cx, cX, cv = _dc.voxel_moments(
-            x, X, v, m, keys, offs, D1, D2, stride,
+            x, X, v, m, tab, slot, M, offs, D1, D2, stride,
             float(lo[0]), float(lo[1]), float(lo[2]), float(cell), soft)
         W = g1[:, 0].clamp(min=1e-12)
         cnt = g1[:, 10:11]
@@ -164,6 +166,7 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None):
     a.pos = cx.contiguous()
     a.lo, a.cell, a.D1, a.D2 = lo, float(cell), D1, D2
     a.offs, a.stride, a.L = offs, stride, L
+    a.tab, a.slot = tab, slot
     a.moments = (W, cx, cX, cv, cnt, g2)
     return a
 
@@ -175,7 +178,7 @@ def neighbors(x, va, k, radius=1):
     같은 것을 계산한다 -- 값이 같아야 하므로 검증에 쓴다.
     """
     if _HAVE_DC and x.is_cuda and x.dtype == torch.float32:
-        return _dc.voxel_knn(x, va.pos, va.keys, va.offs, va.D1, va.D2,
+        return _dc.voxel_knn(x, va.pos, va.tab, va.slot, va.offs, va.D1, va.D2,
                              va.stride,
                              float(va.lo[0]), float(va.lo[1]), float(va.lo[2]),
                              va.cell, int(k), int(radius))

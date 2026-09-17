@@ -246,95 +246,6 @@ __device__ __forceinline__ int key_find(const long* __restrict__ keys, int M, lo
     return -1;
 }
 
-template <int K>
-__global__ void voxel_knn_kernel(const float* __restrict__ x,
-                                 const float* __restrict__ p,
-                                 const long* __restrict__ keys,
-                                 const float* __restrict__ offs,   // [L,3] 칸 단위
-                                 int N, int M, int D1, int D2, int L, long stride,
-                                 float ox, float oy, float oz, float cell,
-                                 int R,
-                                 long* __restrict__ oidx,
-                                 float* __restrict__ odist) {
-    const int n = blockIdx.x * blockDim.x + threadIdx.x;
-    if (n >= N) return;
-    const float px = x[3 * n], py = x[3 * n + 1], pz = x[3 * n + 2];
-
-    float bd[K];
-    int   bi[K];
-#pragma unroll
-    for (int i = 0; i < K; ++i) { bd[i] = FLT_MAX; bi[i] = -1; }
-
-    // 격자 L 개를 한 번에 돈다. 입자 좌표를 한 번만 읽고, 키에 격자 번호를 실어
-    // 하나의 정렬된 배열에서 함께 찾는다 -- 파이썬 루프로 L 번 도는 것과 값은
-    // 같지만 입자 읽기와 커널 실행이 공유된다.
-    for (int l = 0; l < L; ++l) {
-      const float axo = ox + offs[3 * l] * cell;
-      const float ayo = oy + offs[3 * l + 1] * cell;
-      const float azo = oz + offs[3 * l + 2] * cell;
-      const int cx = (int)floorf((px - axo) / cell);
-      const int cy = (int)floorf((py - ayo) / cell);
-      const int cz = (int)floorf((pz - azo) / cell);
-      for (int dz = -R; dz <= R; ++dz)
-        for (int dy = -R; dy <= R; ++dy)
-          for (int dx = -R; dx <= R; ++dx) {
-            const long q = (long)l * stride
-                           + ((long)(cx + dx) * D1 + (cy + dy)) * D2 + (cz + dz);
-            const int a = key_find(keys, M, q);
-            if (a < 0) continue;
-            const float ex = px - p[3 * a], ey = py - p[3 * a + 1],
-                        ez = pz - p[3 * a + 2];
-            const float d2 = ex * ex + ey * ey + ez * ez;
-            if (d2 >= bd[K - 1]) continue;
-            int pos = 0;
-#pragma unroll
-            for (int j = 0; j < K; ++j) pos += (bd[j] < d2);
-#pragma unroll
-            for (int j = K - 1; j > 0; --j) {
-                const bool sh = (j > pos);
-                bd[j] = sh ? bd[j - 1] : bd[j];
-                bi[j] = sh ? bi[j - 1] : bi[j];
-            }
-#pragma unroll
-            for (int j = 0; j < K; ++j) {
-                const bool put = (j == pos);
-                bd[j] = put ? d2 : bd[j];
-                bi[j] = put ? a : bi[j];
-            }
-          }
-    }
-#pragma unroll
-    for (int i = 0; i < K; ++i) {
-        oidx[(long)n * K + i] = bi[i];
-        odist[(long)n * K + i] = (bi[i] < 0) ? 0.f : sqrtf(fmaxf(bd[i], 0.f));
-    }
-}
-
-std::vector<torch::Tensor> voxel_knn(torch::Tensor x, torch::Tensor p,
-                                     torch::Tensor keys, torch::Tensor offs,
-                                     int D1, int D2, long stride,
-                                     double ox, double oy, double oz,
-                                     double cell, int K, int R) {
-    CHECK(x); CHECK(p); CHECK(keys); CHECK(offs);
-    const int N = x.size(0), M = keys.size(0), L = offs.size(0);
-    auto oidx = torch::empty({N, K}, x.options().dtype(torch::kLong));
-    auto odist = torch::empty({N, K}, x.options());
-    const int T = 128, B = (N + T - 1) / T;
-#define VK_CASE(KK)                                                           \
-    case KK: voxel_knn_kernel<KK><<<B, T>>>(x.data_ptr<float>(),              \
-                 p.data_ptr<float>(), keys.data_ptr<long>(),                  \
-                 offs.data_ptr<float>(), N, M, D1, D2, L, stride,             \
-                 (float)ox, (float)oy, (float)oz, (float)cell, R,             \
-                 oidx.data_ptr<long>(), odist.data_ptr<float>()); break;
-    switch (K) {
-        VK_CASE(4) VK_CASE(6) VK_CASE(8) VK_CASE(12) VK_CASE(16)
-        VK_CASE(24) VK_CASE(32)
-        default: TORCH_CHECK(false, "K must be one of 4,6,8,12,16,24,32");
-    }
-#undef VK_CASE
-    return {oidx, odist};
-}
-
 // ------------------------------------------------- 복셀 해시 테이블
 // 앵커 집합을 만드는 데 정렬(torch.unique)을 쓰면 키를 파이토치에서 만들어야 하고
 // L 개 격자면 그것이 L 배로 든다 -- 실측으로 앙상블 비용의 47% 가 거기였다.
@@ -417,12 +328,104 @@ std::vector<torch::Tensor> voxel_hash(torch::Tensor x, torch::Tensor offs,
                               (float)ox, (float)oy, (float)oz, (float)cell,
                               tab.data_ptr<long>(), slot.data_ptr<int>(),
                               cnt.data_ptr<int>(), T - 1);
-    const int M = cnt.item<int>();
-    auto keys = torch::empty({M}, x.options().dtype(torch::kLong));
-    // 테이블에서 찬 칸만 모은다. M 이 수백~수천이라 이 압축과 이후 정렬은 사소하다.
-    auto used = tab.ne(VOX_EMPTY);
-    keys.copy_(tab.masked_select(used));
-    return {std::get<0>(torch::sort(keys))};
+    // 테이블과 번호를 그대로 돌려준다. 조회는 정렬된 배열의 이진 탐색이 아니라
+    // 탐침 한두 번이고, 앵커 위치 배열은 번호 순서이므로 따로 정렬할 것이 없다.
+    return {tab, slot, cnt};
+}
+
+
+template <int K>
+__global__ void voxel_knn_kernel(const float* __restrict__ x,
+                                 const float* __restrict__ p,
+                                 const long* __restrict__ keys,
+                                 const float* __restrict__ offs,   // [L,3] 칸 단위
+                                 const long* __restrict__ htab,
+                                 const int* __restrict__ hslot, unsigned hmask,
+                                 int N, int M, int D1, int D2, int L, long stride,
+                                 float ox, float oy, float oz, float cell,
+                                 int R,
+                                 long* __restrict__ oidx,
+                                 float* __restrict__ odist) {
+    const int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N) return;
+    const float px = x[3 * n], py = x[3 * n + 1], pz = x[3 * n + 2];
+
+    float bd[K];
+    int   bi[K];
+#pragma unroll
+    for (int i = 0; i < K; ++i) { bd[i] = FLT_MAX; bi[i] = -1; }
+
+    // 격자 L 개를 한 번에 돈다. 입자 좌표를 한 번만 읽고, 키에 격자 번호를 실어
+    // 하나의 정렬된 배열에서 함께 찾는다 -- 파이썬 루프로 L 번 도는 것과 값은
+    // 같지만 입자 읽기와 커널 실행이 공유된다.
+    for (int l = 0; l < L; ++l) {
+      const float axo = ox + offs[3 * l] * cell;
+      const float ayo = oy + offs[3 * l + 1] * cell;
+      const float azo = oz + offs[3 * l + 2] * cell;
+      const int cx = (int)floorf((px - axo) / cell);
+      const int cy = (int)floorf((py - ayo) / cell);
+      const int cz = (int)floorf((pz - azo) / cell);
+      for (int dz = -R; dz <= R; ++dz)
+        for (int dy = -R; dy <= R; ++dy)
+          for (int dx = -R; dx <= R; ++dx) {
+            const long q = (long)l * stride
+                           + ((long)(cx + dx) * D1 + (cy + dy)) * D2 + (cz + dz);
+            const int a = vox_find(htab, hslot, hmask, q);
+            if (a < 0) continue;
+            const float ex = px - p[3 * a], ey = py - p[3 * a + 1],
+                        ez = pz - p[3 * a + 2];
+            const float d2 = ex * ex + ey * ey + ez * ez;
+            if (d2 >= bd[K - 1]) continue;
+            int pos = 0;
+#pragma unroll
+            for (int j = 0; j < K; ++j) pos += (bd[j] < d2);
+#pragma unroll
+            for (int j = K - 1; j > 0; --j) {
+                const bool sh = (j > pos);
+                bd[j] = sh ? bd[j - 1] : bd[j];
+                bi[j] = sh ? bi[j - 1] : bi[j];
+            }
+#pragma unroll
+            for (int j = 0; j < K; ++j) {
+                const bool put = (j == pos);
+                bd[j] = put ? d2 : bd[j];
+                bi[j] = put ? a : bi[j];
+            }
+          }
+    }
+#pragma unroll
+    for (int i = 0; i < K; ++i) {
+        oidx[(long)n * K + i] = bi[i];
+        odist[(long)n * K + i] = (bi[i] < 0) ? 0.f : sqrtf(fmaxf(bd[i], 0.f));
+    }
+}
+
+std::vector<torch::Tensor> voxel_knn(torch::Tensor x, torch::Tensor p,
+                                     torch::Tensor tab, torch::Tensor slot,
+                                     torch::Tensor offs,
+                                     int D1, int D2, long stride,
+                                     double ox, double oy, double oz,
+                                     double cell, int K, int R) {
+    CHECK(x); CHECK(p); CHECK(tab); CHECK(slot); CHECK(offs);
+    const int N = x.size(0), M = p.size(0), L = offs.size(0);
+    const unsigned hmask = (unsigned)tab.size(0) - 1;
+    auto oidx = torch::empty({N, K}, x.options().dtype(torch::kLong));
+    auto odist = torch::empty({N, K}, x.options());
+    const int T = 128, B = (N + T - 1) / T;
+#define VK_CASE(KK)                                                           \
+    case KK: voxel_knn_kernel<KK><<<B, T>>>(x.data_ptr<float>(),              \
+                 p.data_ptr<float>(), nullptr, tab.data_ptr<long>(),          \
+                 slot.data_ptr<int>(), hmask,                                 \
+                 offs.data_ptr<float>(), N, M, D1, D2, L, stride,             \
+                 (float)ox, (float)oy, (float)oz, (float)cell, R,             \
+                 oidx.data_ptr<long>(), odist.data_ptr<float>()); break;
+    switch (K) {
+        VK_CASE(4) VK_CASE(6) VK_CASE(8) VK_CASE(12) VK_CASE(16)
+        VK_CASE(24) VK_CASE(32)
+        default: TORCH_CHECK(false, "K must be one of 4,6,8,12,16,24,32");
+    }
+#undef VK_CASE
+    return {oidx, odist};
 }
 
 // ------------------------------------------------- 복셀 생성·집계 융합
@@ -459,6 +462,8 @@ __global__ void vox_moment_kernel(const float* __restrict__ x,
                                   int N, int M, int D1, int D2, int L, long stride,
                                   float ox, float oy, float oz, float cell,
                                   int soft, int phase, int use_shared,
+                                  const long* __restrict__ htab,
+                                  const int* __restrict__ hslot, unsigned hmask,
                                   float* __restrict__ out) {
     // 공유 메모리에 [M,D] 누적기를 두는 것이 원자 경합을 줄이지만, M 이 크면
     // 48 KB 한도를 넘어 실행이 아예 안 된다 (앵커 756 x 18 = 54 KB). 그때는
@@ -494,7 +499,7 @@ __global__ void vox_moment_kernel(const float* __restrict__ x,
                     if (w <= 1e-9f) continue;
                 }
                 const long q = (long)l * stride + ((long)gx * D1 + gy) * D2 + gz;
-                const int aa = key_find(keys, M, q);
+                const int aa = vox_find(htab, hslot, hmask, q);
                 if (aa < 0) continue;
                 float* dst = (use_shared ? acc : out) + (long)aa * D;
                 if (phase == 0) {
@@ -551,10 +556,12 @@ __global__ void vox_moment_kernel(const float* __restrict__ x,
 
 std::vector<torch::Tensor> voxel_moments(
         torch::Tensor x, torch::Tensor X, torch::Tensor v, torch::Tensor m,
-        torch::Tensor keys, torch::Tensor offs, int D1, int D2, long stride,
+        torch::Tensor tab, torch::Tensor slot, int M, torch::Tensor offs,
+        int D1, int D2, long stride,
         double ox, double oy, double oz, double cell, bool soft) {
-    CHECK(x); CHECK(X); CHECK(v); CHECK(m); CHECK(keys); CHECK(offs);
-    const int N = x.size(0), M = keys.size(0), L = offs.size(0);
+    CHECK(x); CHECK(X); CHECK(v); CHECK(m); CHECK(tab); CHECK(slot); CHECK(offs);
+    const int N = x.size(0), L = offs.size(0);
+    const unsigned hmask = (unsigned)tab.size(0) - 1;
     auto opt = x.options();
     const int T = 256, B = std::min<long>(160, (N + T - 1) / T);
     // 48 KB 를 넘으면 공유 누적기를 포기한다
@@ -566,10 +573,11 @@ std::vector<torch::Tensor> voxel_moments(
     auto g1 = torch::zeros({M, 11}, opt);
     vox_moment_kernel<11><<<B, T, shm(M, 11)>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
-        m.data_ptr<float>(), keys.data_ptr<long>(), offs.data_ptr<float>(),
+        m.data_ptr<float>(), nullptr, offs.data_ptr<float>(),
         nullptr, nullptr, nullptr, N, M, D1, D2, L, stride,
         (float)ox, (float)oy, (float)oz, (float)cell,
-        soft ? 1 : 0, 0, usesh(M, 11), g1.data_ptr<float>());
+        soft ? 1 : 0, 0, usesh(M, 11),
+        tab.data_ptr<long>(), slot.data_ptr<int>(), hmask, g1.data_ptr<float>());
     auto W = g1.select(1, 0).clamp_min(1e-12).unsqueeze(-1);
     auto cx = (g1.slice(1, 1, 4) / W).contiguous();
     auto cX = (g1.slice(1, 4, 7) / W).contiguous();
@@ -577,19 +585,21 @@ std::vector<torch::Tensor> voxel_moments(
     auto g2 = torch::zeros({M, 12}, opt);
     vox_moment_kernel<12><<<B, T, shm(M, 12)>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
-        m.data_ptr<float>(), keys.data_ptr<long>(), offs.data_ptr<float>(),
+        m.data_ptr<float>(), nullptr, offs.data_ptr<float>(),
         cx.data_ptr<float>(), cX.data_ptr<float>(), cv.data_ptr<float>(),
         N, M, D1, D2, L, stride,
         (float)ox, (float)oy, (float)oz, (float)cell, soft ? 1 : 0, 1,
-        usesh(M, 12), g2.data_ptr<float>());
+        usesh(M, 12),
+        tab.data_ptr<long>(), slot.data_ptr<int>(), hmask, g2.data_ptr<float>());
     auto g3 = torch::zeros({M, 18}, opt);
     vox_moment_kernel<18><<<B, T, shm(M, 18)>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
-        m.data_ptr<float>(), keys.data_ptr<long>(), offs.data_ptr<float>(),
+        m.data_ptr<float>(), nullptr, offs.data_ptr<float>(),
         cx.data_ptr<float>(), cX.data_ptr<float>(), cv.data_ptr<float>(),
         N, M, D1, D2, L, stride,
         (float)ox, (float)oy, (float)oz, (float)cell, soft ? 1 : 0, 2,
-        usesh(M, 18), g3.data_ptr<float>());
+        usesh(M, 18),
+        tab.data_ptr<long>(), slot.data_ptr<int>(), hmask, g3.data_ptr<float>());
     return {g1, g2, g3, cx, cX, cv};
 }
 

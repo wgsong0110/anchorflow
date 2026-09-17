@@ -91,9 +91,18 @@ gi_c, dv_c = voxel.neighbors(x, va, a.k)
 _hd, voxel._HAVE_DC = voxel._HAVE_DC, False
 gi_t, dv_t = voxel.neighbors(x, va, a.k)
 voxel._HAVE_DC = _hd
-same = float((gi_c.sort(1).values == gi_t.sort(1).values).all(1).float().mean())
+# 해시 경로와 정렬 경로는 앵커 **번호 매기는 순서**가 다르다. 그래서 번호가 아니라
+# 그 번호가 가리키는 **앵커 위치**로 비교한다 -- 같은 앵커를 골랐는지가 관심사다.
+def _pos_set(gi, pos):
+    q = pos[gi.clamp(min=0)]
+    q = torch.where((gi >= 0).unsqueeze(-1), q, torch.full_like(q, 1e9))
+    return q.sort(1).values
+
+
+va_t = voxel.build(x, X, v, m, H, lo=LO)     # 커널 경로로 만든 앵커
 e_d = float((dv_c.sort(1).values - dv_t.sort(1).values).abs().max())
-print(f"[정확성] 이웃 색인 일치 {100*same:.2f}%, 거리 최대차 {e_d:.2e}", flush=True)
+same = float((_pos_set(gi_c, va.pos) - _pos_set(gi_t, va.pos)).abs().max())
+print(f"[정확성] 이웃 앵커 위치 최대차 {same:.2e}, 거리 최대차 {e_d:.2e}", flush=True)
 
 # --- 비용 ---
 dp = torch.randn(va.M, 3, device=dev) * 0.01
