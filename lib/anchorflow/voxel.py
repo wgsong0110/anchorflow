@@ -85,12 +85,18 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None):
     D1 = int(vi0[:, 1].max()) + 3
     D2 = int(vi0[:, 2].max()) + 3
     stride = (int(vi0[:, 0].max()) + 3) * D1 * D2
-    ks = []
-    for l in range(L):
-        vl = ((x - lo - offs[l] * cell) / cell).floor().long()
-        ks.append(l * stride + (vl[:, 0] * D1 + vl[:, 1]) * D2 + vl[:, 2])
-    key = torch.cat(ks) if L > 1 else ks[0]
     vi = vi0
+    use_hash = _HAVE_DC and x.is_cuda and x.dtype == torch.float32
+    if use_hash:
+        # 키를 파이토치에서 만들지도, 정렬하지도 않는다 -- 커널이 해시로 O(N) 에
+        # 번호를 매긴다. L 이 커질수록 이득이 커진다.
+        key = None
+    else:
+        ks = []
+        for l in range(L):
+            vl = ((x - lo - offs[l] * cell) / cell).floor().long()
+            ks.append(l * stride + (vl[:, 0] * D1 + vl[:, 1]) * D2 + vl[:, 2])
+        key = torch.cat(ks) if L > 1 else ks[0]
     keys, inv = torch.unique(key, sorted=True, return_inverse=True)
     M = keys.numel()
 
@@ -100,7 +106,12 @@ def build(x, X, v, m, cell, lo=None, soft=False, offsets=None):
     # 이웃 중 점유된 칸에만 가중을 뿌린다 -- 가중이 0 으로 죽는 자리에는 어차피
     # 기여가 없다. 이 규칙 덕분에 unique 를 짝(N x 27)이 아니라 입자(N) 위에서
     # 한 번만 돌면 된다.
-    keys = torch.unique(key, sorted=True)
+    if use_hash:
+        keys = _dc.voxel_hash(x, offs, D1, D2, stride,
+                              float(lo[0]), float(lo[1]), float(lo[2]),
+                              float(cell), max(1024, 4 * L * x.shape[0] // 8))
+    else:
+        keys = torch.unique(key, sorted=True)
     M = keys.numel()
     if _HAVE_DC and x.is_cuda and x.dtype == torch.float32:
         g1, g2, g3, cx, cX, cv = _dc.voxel_moments(

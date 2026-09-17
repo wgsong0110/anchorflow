@@ -335,6 +335,96 @@ std::vector<torch::Tensor> voxel_knn(torch::Tensor x, torch::Tensor p,
     return {oidx, odist};
 }
 
+// ------------------------------------------------- 복셀 해시 테이블
+// 앵커 집합을 만드는 데 정렬(torch.unique)을 쓰면 키를 파이토치에서 만들어야 하고
+// L 개 격자면 그것이 L 배로 든다 -- 실측으로 앙상블 비용의 47% 가 거기였다.
+// 여기서는 열린 주소 해시로 O(N) 에 번호를 매긴다. 조회도 이진 탐색(열 번 남짓)이
+// 아니라 한두 번의 탐침이 된다.
+//
+// 빈 칸은 EMPTY(=LONG_MIN) 로 두고 atomicCAS 로 자리를 잡는다. 자리를 잡은 스레드만
+// 번호를 하나 발급받는다 (atomicAdd on counter).
+
+#define VOX_EMPTY (-0x7FFFFFFFFFFFFFFFLL)
+
+__device__ __forceinline__ unsigned vox_hash(long k, unsigned mask) {
+    unsigned long long h = (unsigned long long)k * 0x9E3779B97F4A7C15ULL;
+    h ^= h >> 29;
+    return (unsigned)(h) & mask;
+}
+
+__device__ __forceinline__ int vox_insert(long* __restrict__ tab,
+                                          int* __restrict__ slot,
+                                          int* __restrict__ cnt,
+                                          unsigned mask, long k) {
+    unsigned h = vox_hash(k, mask);
+    for (unsigned i = 0; i <= mask; ++i) {
+        const long old = atomicCAS((unsigned long long*)(tab + h),
+                                   (unsigned long long)VOX_EMPTY,
+                                   (unsigned long long)k);
+        if (old == VOX_EMPTY) { slot[h] = atomicAdd(cnt, 1); return h; }
+        if (old == k) return h;
+        h = (h + 1) & mask;
+    }
+    return -1;
+}
+
+__device__ __forceinline__ int vox_find(const long* __restrict__ tab,
+                                        const int* __restrict__ slot,
+                                        unsigned mask, long k) {
+    unsigned h = vox_hash(k, mask);
+    for (unsigned i = 0; i <= mask; ++i) {
+        const long v = tab[h];
+        if (v == k) return slot[h];
+        if (v == VOX_EMPTY) return -1;
+        h = (h + 1) & mask;
+    }
+    return -1;
+}
+
+__global__ void vox_hash_build(const float* __restrict__ x,
+                               const float* __restrict__ offs,
+                               int N, int L, int D1, int D2, long stride,
+                               float ox, float oy, float oz, float cell,
+                               long* __restrict__ tab, int* __restrict__ slot,
+                               int* __restrict__ cnt, unsigned mask) {
+    for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < N;
+         n += gridDim.x * blockDim.x) {
+        const float px = x[3 * n], py = x[3 * n + 1], pz = x[3 * n + 2];
+        for (int l = 0; l < L; ++l) {
+            const int gx = (int)floorf((px - ox - offs[3 * l] * cell) / cell);
+            const int gy = (int)floorf((py - oy - offs[3 * l + 1] * cell) / cell);
+            const int gz = (int)floorf((pz - oz - offs[3 * l + 2] * cell) / cell);
+            vox_insert(tab, slot, cnt, mask,
+                       (long)l * stride + ((long)gx * D1 + gy) * D2 + gz);
+        }
+    }
+}
+
+std::vector<torch::Tensor> voxel_hash(torch::Tensor x, torch::Tensor offs,
+                                      int D1, int D2, long stride,
+                                      double ox, double oy, double oz,
+                                      double cell, long table_size) {
+    CHECK(x); CHECK(offs);
+    const int N = x.size(0), L = offs.size(0);
+    unsigned T = 1;
+    while ((long)T < table_size) T <<= 1;
+    auto tab = torch::full({(long)T}, VOX_EMPTY, x.options().dtype(torch::kLong));
+    auto slot = torch::full({(long)T}, -1, x.options().dtype(torch::kInt));
+    auto cnt = torch::zeros({1}, x.options().dtype(torch::kInt));
+    const int TH = 256, B = std::min<long>(1024, (N + TH - 1) / TH);
+    vox_hash_build<<<B, TH>>>(x.data_ptr<float>(), offs.data_ptr<float>(),
+                              N, L, D1, D2, stride,
+                              (float)ox, (float)oy, (float)oz, (float)cell,
+                              tab.data_ptr<long>(), slot.data_ptr<int>(),
+                              cnt.data_ptr<int>(), T - 1);
+    const int M = cnt.item<int>();
+    auto keys = torch::empty({M}, x.options().dtype(torch::kLong));
+    // 테이블에서 찬 칸만 모은다. M 이 수백~수천이라 이 압축과 이후 정렬은 사소하다.
+    auto used = tab.ne(VOX_EMPTY);
+    keys.copy_(tab.masked_select(used));
+    return {std::get<0>(torch::sort(keys))};
+}
+
 // ------------------------------------------------- 복셀 생성·집계 융합
 // 파이토치 경로는 torch.unique (138 만 개 int64 정렬) 로 앵커 번호를 매기고,
 // index_add_ 로 [N, 41] 을 흩뿌린다. 부드러운 배정에서는 짝이 N x 27 = 3700 만
@@ -687,6 +777,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("aggregate_moments", &aggregate_moments,
           "per-anchor mass-weighted moments, accumulated in shared memory");
     m.def("fps", &fps_cuda, "farthest point sampling, one kernel per pick");
+    m.def("voxel_hash", &voxel_hash,
+          "assign voxel ids with an open-addressing hash, no sort");
     m.def("voxel_moments", &voxel_moments,
           "voxel anchor moments, hard or B-spline, on the occupied set");
     m.def("voxel_knn", &voxel_knn,

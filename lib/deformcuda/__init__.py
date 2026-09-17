@@ -50,6 +50,18 @@ def aggregate_moments(x, X, v, m, idx, M):
                                       idx.contiguous(), int(M)))
 
 
+def voxel_hash(x, offs, D1, D2, stride, ox, oy, oz, cell, table_size):
+    """복셀 키 집합을 정렬 없이 만든다. -> keys [M] (정렬됨)
+
+    torch.unique 는 L x N 개 키를 정렬하는데, 격자 L 개면 그 비용이 L 배로 든다
+    (실측 앙상블 비용의 47% 가 키 생성 + 정렬이었다). 열린 주소 해시는 O(N) 이고
+    키를 파이토치에서 만들 필요도 없다.
+    """
+    return _C.voxel_hash(x.contiguous(), offs.contiguous(), int(D1), int(D2),
+                         int(stride), float(ox), float(oy), float(oz),
+                         float(cell), int(table_size))[0]
+
+
 def voxel_moments(x, X, v, m, keys, offs, D1, D2, stride, ox, oy, oz, cell,
                   soft=False):
     """점유 복셀 위의 앵커 모멘트. -> (g1, g2, g3, cx, cX, cv)
