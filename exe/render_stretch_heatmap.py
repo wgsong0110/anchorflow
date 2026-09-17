@@ -114,22 +114,23 @@ print(f"[가림] 길이 단위 {CELL:.5f}, 문턱 {a.mask}배", flush=True)
 
 
 def to_grid(vals, pos_rel, z):
-    """입자 값을 단면 격자로 옮긴다. 재질이 없는 자리는 NaN 으로 남겨 가린다.
+    """입자 값을 단면 격자로 옮기고, 그 단면에서 수박이 차지한 자리를 함께 낸다.
 
     가리지 않으면 역거리 가중이 물체 밖까지 값을 퍼뜨려, 수박이 없는 배경이
-    변형된 것처럼 보인다.
+    변형된 것처럼 보인다. 두 번째 반환값은 경계선을 긋는 데 쓴다.
     """
     sel = (pos_rel[:, 2] - z).abs() < a.band * EXT
     if int(sel.sum()) < 8:
-        return None
+        return None, None
     q = torch.from_numpy(np.stack([GX, GY], -1).reshape(-1, 2)).float().to(dev)
     dd = torch.cdist(q, pos_rel[sel][:, :2])
     w = 1.0 / (dd + 0.02 * EXT) ** 2
     w = w / w.sum(1, keepdim=True)
     g = (w @ vals[sel].unsqueeze(-1)).squeeze(-1)
-    g = torch.where(dd.min(1).values < a.mask * CELL, g,
-                    torch.full_like(g, float("nan")))
-    return g.reshape(a.grid, a.grid).cpu().numpy()
+    occ = dd.min(1).values < a.mask * CELL
+    g = torch.where(occ, g, torch.full_like(g, float("nan")))
+    return (g.reshape(a.grid, a.grid).cpu().numpy(),
+            occ.reshape(a.grid, a.grid).cpu().numpy())
 
 
 # 모델 롤아웃: 야코비안을 누적한다
@@ -198,11 +199,15 @@ for i in range(a.frames):
             A0.set_title("rollout", fontsize=8)
         for s, z in enumerate(ZS):
             A = ax[r][s + 1]; A.set_xticks([]); A.set_yticks([])
-            g = to_grid(ss, rel, z)
+            g, occ = to_grid(ss, rel, z)
             if g is None:
                 A.text(.5, .5, "-", ha="center"); continue
+            A.set_facecolor("0.92")                    # 수박 밖은 회색 바탕
             im = A.imshow(g.T, origin="lower", cmap="magma",
                           vmin=(1.0 if a.metric == "sigma1" else 0.0), vmax=vmax)
+            # 수박이 어디까지인지 경계선으로 명시
+            A.contour(occ.T.astype(float), levels=[0.5], colors="#00d0ff",
+                      linewidths=1.0)
             if r == 0:
                 A.set_title(f"rel z={z:+.2f}", fontsize=8)
 

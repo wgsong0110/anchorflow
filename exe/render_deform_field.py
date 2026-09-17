@@ -205,6 +205,9 @@ for i in range(a.frames):
                             if xs_md is not None else xs_gt - c_t), z)
             if occ is not None:
                 U = np.where(occ[..., None], U, np.nan)
+                A.set_facecolor("0.96")                # 수박 밖은 회색 바탕
+                A.contour(GX, GY, occ.astype(float), levels=[0.5],
+                          colors="#d00000", linewidths=1.0)
             mag = np.linalg.norm(U, axis=-1)
             A.quiver(GX, GY, U[..., 0], U[..., 1], mag, cmap="viridis",
                      scale=1.0 / max(a.scale, 1e-6), scale_units="xy",
