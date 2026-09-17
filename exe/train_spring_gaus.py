@@ -117,15 +117,18 @@ for it in pbar:
         x = take(d["x"][t0], PI)
         v = (x - take(d["x"][t0 - 1], PI)) / FRAME_DT
         x_still = x.clone()
-        loss = 0.0
+        # Spring-Gaus 의 train.py 를 그대로 따른다: **프레임마다** 역전파하고
+        # 상태를 끊는다 (그쪽은 xyz/v 를 매 프레임 detach().clone() 한다). 창 전체로
+        # 이어 붙이면 그쪽 forward 안의 deepcopy(xyz) 가 비-리프 텐서에서 터진다.
+        # forward 는 (xyz_all, xyz, v, is_nan) 을 준다 -- 속도는 세 번째다.
         for i in range(L):
-            o = sim(x, x, v, frame_id=i + 1)
-            x, v = o[0], o[1]
+            xa, xo, vo, _nan = sim(x, x, v, frame_id=i + 1)
             gt = take(d["x"][t0 + i + 1], PI)
-            loss = loss + ((x - gt) ** 2).sum(-1).mean() / (EXT ** 2)
+            l1 = ((xo - gt) ** 2).sum(-1).mean() / (EXT ** 2)
+            (l1 / L / a.batch).backward()
+            lx += float(l1) / L / a.batch
             still += float(((x_still - gt) ** 2).sum(-1).mean()) / (EXT ** 2) / L
-        (loss / L / a.batch).backward()
-        lx += float(loss) / L / a.batch
+            x, v = xo.detach().clone(), vo.detach().clone()
     still /= a.batch
     gn = torch.nn.utils.clip_grad_norm_(params, 1.0)
     opt.step()
