@@ -131,11 +131,15 @@ gs = torch.arange(min(N, d["x"].shape[1]))
 OFFS = np.array([np.random.RandomState(i).rand(3) for i in range(max(a.ens, 1))])
 
 
+H_ENS = H * (max(a.ens, 1) ** (1.0 / 3.0))
+
+
 def anchor_of(xt, Xc, vt, mm, mode):
-    """각 가우시안이 보는 앵커 위치 [N,3]. mode: hard / soft / ens"""
-    if mode == "ens":
+    """각 가우시안이 보는 앵커 위치 [N,3]. mode: hard / soft / ens / ens_eq"""
+    if mode in ("ens", "ens_eq"):
+        cell = H if mode == "ens" else H_ENS
         # 격자 L 개를 **한 번에** 만든다. 각 격자에서 가장 가까운 앵커를 평균낸다.
-        vb = voxel.build(xt, Xc, vt, mm, H, lo=LO, offsets=OFFS)
+        vb = voxel.build(xt, Xc, vt, mm, cell, lo=LO, offsets=OFFS)
         gi, _ = voxel.neighbors(xt, vb, max(a.ens, 4))
         pp = vb.pos[gi.clamp(min=0)]
         ok = (gi >= 0).float().unsqueeze(-1)
@@ -146,7 +150,8 @@ def anchor_of(xt, Xc, vt, mm, mode):
 
 
 res_flick = {}
-for mode in ("hard", "soft", "ens") if a.ens else ("hard", "soft"):
+for mode in (("hard", "soft", "ens", "ens_eq") if a.ens
+             else ("hard", "soft")):
     prev, jump = None, []
     for t in range(1, T):
         xt = d["x"][t][gs].to(dev)
@@ -160,8 +165,9 @@ for mode in ("hard", "soft", "ens") if a.ens else ("hard", "soft"):
             jump.append(float((cur - prev - mv).norm(dim=-1).mean()) / EXT)
         prev = cur
     res_flick[mode] = (float(np.mean(jump)), float(np.max(jump)))
-    print(f"[떨림-{mode:>4}] 앵커 위치의 추가 변동: 평균 {100*np.mean(jump):.3f}% "
-          f"최대 {100*np.max(jump):.3f}%  (복셀 한 변 {100*H/EXT:.2f}%)", flush=True)
+    cc = H_ENS if mode == "ens_eq" else H
+    print(f"[떨림-{mode:>6}] 앵커 위치의 추가 변동: 평균 {100*np.mean(jump):.3f}% "
+          f"최대 {100*np.max(jump):.3f}%  (복셀 한 변 {100*cc/EXT:.2f}%)", flush=True)
 
 t_soft = timeit(lambda: voxel.build(x, X, v, m, H, lo=LO, soft=True), 5)
 t_ens = timeit(lambda: voxel.build(x, X, v, m, H, lo=LO, offsets=OFFS), 5)

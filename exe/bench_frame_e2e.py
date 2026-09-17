@@ -119,20 +119,25 @@ def frame_old():
 rows["기존 (FPS+kNN, 앵커 512)"] = timeit(frame_old) + t_ras
 
 # ---- 복셀 ----
-for name, offs in ((f"복셀 (격자 1)", None), (f"복셀 앙상블 (격자 {a.ens})", OFFS)):
-    vb = voxel.build(x, X, v, m, H, lo=LO, offsets=offs)
+# 앙상블은 격자 수만큼 앵커가 늘어난다. 같은 앵커 예산에서 견주려면 칸을 L^(1/3)
+# 배 성기게 해야 한다 -- 그래야 "떨림을 줄이려고 해상도를 내준" 값이 드러난다.
+H_ENS = H * (a.ens ** (1.0 / 3.0))
+VARIANTS = [("복셀 (격자 1)", None, H),
+            (f"복셀 앙상블 (격자 {a.ens}, 같은 해상도)", OFFS, H),
+            (f"복셀 앙상블 (격자 {a.ens}, 앵커수 보정)", OFFS, H_ENS)]
+for name, offs, cell in VARIANTS:
+    vb = voxel.build(x, X, v, m, cell, lo=LO, offsets=offs)
     gi, _ = voxel.neighbors(x, vb, a.k)
-    W, cx, cX, cv, cnt, g2 = vb.moments
     nf = f0.shape[-1] + MAT.numel() + bc_features(vb.pos[:2], cfg).shape[-1]
     net = make_net(vb.M, nf)
 
-    def frame_vox(offs=offs, net=net, nf=nf):
-        vb = voxel.build(x, X, v, m, H, lo=LO, offsets=offs)
+    def frame_vox(offs=offs, net=net, nf=nf, cell=cell):
+        vb = voxel.build(x, X, v, m, cell, lo=LO, offsets=offs)
         gi, _ = voxel.neighbors(x, vb, a.k)
         feat = torch.zeros(vb.M, nf - MAT.numel()
                            - bc_features(vb.pos[:2], cfg).shape[-1], device=dev)
         ee = torch.cat([feat, MAT.reshape(1, -1).expand(vb.M, -1),
-                        bc_features(vb.pos, cfg)/H], -1)
+                        bc_features(vb.pos, cfg)/cell], -1)
         dd, rr, tt = net(vb.pos, ee, FRAME_DT)
         skin_with_jacobian(x, vb.pos, dd, rr, tt, gi, H)
 
