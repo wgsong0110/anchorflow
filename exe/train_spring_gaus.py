@@ -27,6 +27,10 @@ ap.add_argument("--hold_traj", default="watermelon_h")
 ap.add_argument("--n_pts", type=int, default=20000)
 ap.add_argument("--sg_points", type=int, default=2048, help="공식 N_SAMPLE")
 ap.add_argument("--sg_neighbors", type=int, default=256, help="공식 K_NEIGHBORS")
+ap.add_argument("--sg_step_add", type=int, default=100,
+                help="Spring-Gaus config 의 STEP_ADD -- NaN 이 나면 이만큼 올린다")
+ap.add_argument("--sg_max_nstep", type=int, default=500,
+                help="Spring-Gaus config 의 MAX_N_STEP")
 ap.add_argument("--sg_nstep", type=int, default=100, help="공식 N_STEP")
 ap.add_argument("--iters", type=int, default=3000)
 ap.add_argument("--batch", type=int, default=4)
@@ -100,6 +104,7 @@ opt = torch.optim.Adam(params, lr=a.lr)
 
 gen = torch.Generator().manual_seed(a.seed)
 hist = []
+nan_skip = 0
 pbar = tqdm(range(a.iters), desc="학습", ncols=90)
 for it in pbar:
     L = a.unroll if it < a.unroll_at * a.iters else a.unroll_final
@@ -122,7 +127,18 @@ for it in pbar:
         # 이어 붙이면 그쪽 forward 안의 deepcopy(xyz) 가 비-리프 텐서에서 터진다.
         # forward 는 (xyz_all, xyz, v, is_nan) 을 준다 -- 속도는 세 번째다.
         for i in range(L):
-            xa, xo, vo, _nan = sim(x, x, v, frame_id=i + 1)
+            # NaN 이 나면 그쪽 train.py 대로 내부 스텝 수를 STEP_ADD 만큼 올리고
+            # 그 프레임을 다시 굴린다 (그쪽은 MAX_N_STEP 에서 assert 로 죽는다).
+            # 이걸 빼먹어서 780 스텝에서 파라미터가 통째로 NaN 이 됐었다.
+            while True:
+                xa, xo, vo, is_nan = sim(x, x, v, frame_id=i + 1)
+                if not bool(is_nan):
+                    break
+                if sim.n_step >= a.sg_max_nstep:
+                    raise SystemExit(f"[실패] n_step {sim.n_step} 에서도 NaN "
+                                     f"-- Spring-Gaus 의 MAX_N_STEP 한계")
+                sim.n_step = min(sim.n_step + a.sg_step_add, a.sg_max_nstep)
+                print(f"\n[NaN] 내부 스텝 {sim.n_step} 으로 올리고 다시", flush=True)
             gt = take(d["x"][t0 + i + 1], PI)
             l1 = ((xo - gt) ** 2).sum(-1).mean() / (EXT ** 2)
             (l1 / L / a.batch).backward()
@@ -131,12 +147,18 @@ for it in pbar:
             x, v = xo.detach().clone(), vo.detach().clone()
     still /= a.batch
     gn = torch.nn.utils.clip_grad_norm_(params, 1.0)
-    opt.step()
+    # 기울기가 유한할 때만 밟는다. NaN 한 번이 파라미터를 통째로 오염시켜 남은
+    # 학습이 전부 무의미해지는 것을 막는 것뿐이고, 밟는 식은 그쪽 그대로다.
+    if torch.isfinite(gn):
+        opt.step()
+    else:
+        nan_skip += 1
+    opt.zero_grad(set_to_none=True)
     hist.append((lx, still))
     if it % 20 == 0:
         pbar.set_postfix(x=f"{100*lx**0.5:.3f}%", 정지=f"{100*still**0.5:.3f}%",
                          비=f"{(lx/max(still,1e-20))**0.5:.2f}", L=L,
-                         gn=f"{float(gn):.1e}")
+                         gn=f"{float(gn):.1e}", NaN=nan_skip)
     if (it + 1) % 500 == 0 or it == a.iters - 1:
         os.makedirs(a.out, exist_ok=True)
         torch.save({"sim": sim.state_dict(), "pi": PI, "cfg": dict(sc),
