@@ -21,6 +21,13 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--pg", required=True, help="PhysGaussian 체크아웃")
 ap.add_argument("--config", required=True)
 ap.add_argument("--ply", required=True)
+ap.add_argument("--debug_ti", action="store_true",
+                help="타이치 assert 를 켠다. dsyevq3 의 'Timeout' 이 뜨면 고유분해가 "
+                     "수렴 못 하는 것이 확정이다 (릴리스 빌드는 이 assert 를 버려서 "
+                     "그냥 영원히 돈다)")
+ap.add_argument("--timeout", type=float, default=300,
+                help="이 초를 넘기면 스스로 죽는다. 도는 CUDA 커널은 밖에서 못 멈추니 "
+                     "프로세스를 내려 컨텍스트째 반납한다")
 ap.add_argument("--run", action="store_true",
                 help="채우기 단계를 하나씩 직접 돌려 어디서 멈추는지 시간으로 본다")
 a = ap.parse_args()
@@ -101,12 +108,20 @@ print(f"[후보 1] 이웃 반경 r 중앙 {r.median():.0f} p99 {r.quantile(0.99)
       flush=True)
 if a.run:
     # 단계마다 동기화하고 시간을 찍는다. 어느 커널이 안 끝나는지 그것만 보면 된다.
+    import threading
     import time
+
+    def _bail():
+        time.sleep(a.timeout)
+        print(f"[시간초과] {a.timeout:.0f}s 안에 안 끝났다", flush=True)
+        os._exit(3)
+
+    threading.Thread(target=_bail, daemon=True).start()
 
     import taichi as ti
     from particle_filling.filling import (densify_grids, fill_dense_grids,
                                           internal_filling)
-    ti.init(arch=ti.cuda, device_memory_GB=8.0)
+    ti.init(arch=ti.cuda, device_memory_GB=8.0, debug=a.debug_ti)
     n = fp["n_grid"]
     ti_pos = ti.Vector.field(n=3, dtype=float, shape=pos.shape[0])
     ti_op = ti.field(dtype=float, shape=pos.shape[0])
