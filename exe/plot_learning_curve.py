@@ -34,7 +34,7 @@ for p in a.json:
     h = np.array(d["loss_hist"], dtype=float)          # [T,5]
     runs.append((d.get("tag", os.path.basename(p)), d, h))
 
-fig, ax = plt.subplots(1, 3, figsize=(13.5, 3.8))
+fig, ax = plt.subplots(1, 4, figsize=(18, 3.8))
 COL = ["#d00000", "#0077b6", "#2a9d8f", "#9d4edd", "#f4a261"]
 for i, (tag, d, h) in enumerate(runs):
     n = h.shape[0]
@@ -49,12 +49,20 @@ for i, (tag, d, h) in enumerate(runs):
     ax[2].plot(step, smooth(h[:, 1], a.smooth), color=c, label=f"{tag} J")
     ax[2].plot(step, smooth(h[:, 3], a.smooth), color=c, ls="--",
                label=f"{tag} anchor")
+    # 실제로 밟는 목적함수: wx + lambda_J * wJ + lambda_anchor * wa
+    ar = d.get("args", {})
+    lJ = float(ar.get("lambda_J", 0.0)); la_ = float(ar.get("lambda_anchor", 0.0))
+    tot = h[:, 0] + lJ * h[:, 1] + la_ * h[:, 3]
+    ax[3].plot(step, smooth(tot, a.smooth), color=c,
+               label=f"{tag}  (lJ={lJ:g}, la={la_:g})")
 
 ax[0].set_ylabel("position RMSE (%)"); ax[0].set_yscale("log")
 ax[0].set_title("position error vs standing-still", fontsize=10)
 ax[1].axhline(1.0, color="0.5", lw=0.8)
 ax[1].set_yscale("log"); ax[1].set_title("error / still  (<1 means it learned)", fontsize=10)
 ax[2].set_yscale("log"); ax[2].set_title("jacobian loss and anchor loss", fontsize=10)
+ax[3].set_yscale("log")
+ax[3].set_title("total objective  x + lJ*J + la*anchor", fontsize=10)
 for A in ax:
     A.set_xlabel("step"); A.grid(alpha=0.3); A.legend(fontsize=6.5)
 fig.tight_layout()
