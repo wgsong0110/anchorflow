@@ -22,7 +22,7 @@ GaussianFluent 의 CD-MPM 은 소성 되돌림을 거쳐 그것을 항등행렬 
 """
 from __future__ import annotations
 
-import argparse, glob, json, os, sys
+import argparse, glob, json, math, os, sys
 _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
 sys.path.insert(0, _lib)
 import numpy as np
@@ -182,7 +182,9 @@ if a.ckpt:
         if a.metric == "radius":
             val, src = (lr_.exp() / H).clone(), (p + dp).clone()
         elif a.metric == "temp":
-            val, src = lt_.exp().clone(), (p + dp).clone()
+            # 온도는 0.8 에서 55 까지 걸쳐 선형으로 칠하면 위쪽만 보인다.
+            # log10 으로 칠한다 (모델이 실제로 내놓는 것도 log 값이다).
+            val, src = (lt_ / math.log(10.0)).clone(), (p + dp).clone()
         else:
             val, src = measure(Jacc).clone(), None
         v, p, x = (x2 - x) / FRAME_DT, p + dp, x2
@@ -301,7 +303,7 @@ for i in range(a.frames):
     lbl = {"sigma1": "largest singular value of F",
            "strain": "|Green-Lagrange strain|_F",
            "radius": "anchor radius r_a / h",
-           "temp": "anchor temperature t_a"}[a.metric]
+           "temp": "log10 anchor temperature t_a"}[a.metric]
     fig.suptitle(f"{a.traj}  frame {a.t0+i+1:03d}  {lbl}"
                  + ("" if ANCHOR_METRIC else f" (since frame {a.t0})"),
                  fontsize=10)
