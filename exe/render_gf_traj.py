@@ -22,7 +22,12 @@ _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
 sys.path.insert(0, _lib)
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--data", required=True, help=".pt 하나 또는 그것들이 든 디렉토리")
+ap.add_argument("--data", default=None, help=".pt 하나 또는 그것들이 든 디렉토리")
+ap.add_argument("--h5_dir", default=None,
+                help="압축 전 sim_*.h5 를 바로 그린다. 시뮬을 막 돌리고 .pt 로 "
+                     "줄이기 전에 눈으로 확인할 때 쓴다")
+ap.add_argument("--h5_pts", type=int, default=60000, help="h5 에서 뽑을 입자 수")
+ap.add_argument("--tag", default="run")
 ap.add_argument("--out", required=True)
 ap.add_argument("--width", type=int, default=640)
 ap.add_argument("--fps", type=int, default=15)
@@ -39,16 +44,53 @@ from PIL import Image, ImageDraw                                # noqa: E402
 
 from anchorflow import ptrender                                 # noqa: E402
 
-files = ([a.data] if a.data.endswith(".pt")
-         else sorted(glob.glob(os.path.join(a.data, "*.pt"))))
 os.makedirs(a.out, exist_ok=True)
 
 
+def load_h5_traj(h5_dir, n_pts, stride):
+    """sim_*.h5 를 .pt 와 같은 모양으로 읽는다."""
+    import h5py
+    fs = sorted(glob.glob(os.path.join(h5_dir, "*.h5")))[::stride]
+    if not fs:
+        raise SystemExit(f"h5 가 없다: {h5_dir}")
+
+    def rd(p):
+        with h5py.File(p, "r") as h:
+            d = np.array(h["x"])
+        return torch.from_numpy(d.T if d.shape[0] == 3 else d).float()
+
+    X0 = rd(fs[0]); XL = rd(fs[-1])
+    ok = torch.isfinite(X0).all(1) & torch.isfinite(XL).all(1)
+    cand = torch.nonzero(ok).squeeze(-1)
+    g = torch.Generator().manual_seed(0)
+    sel = cand[torch.randperm(cand.numel(), generator=g)[:n_pts]].sort().values
+    X = torch.stack([rd(p)[sel] for p in fs])
+    bad = ~torch.isfinite(X).all(-1)
+    for t in range(1, X.shape[0]):
+        if bad[t].any():
+            X[t][bad[t]] = X[t - 1][bad[t]]
+    print(f"[h5] {len(fs)} 프레임 x {sel.numel()} 입자 (전체 {X0.shape[0]})",
+          flush=True)
+    return X
+
+
+if a.h5_dir:
+    files = [None]
+elif a.data:
+    files = ([a.data] if a.data.endswith(".pt")
+             else sorted(glob.glob(os.path.join(a.data, "*.pt"))))
+else:
+    raise SystemExit("--data 나 --h5_dir 중 하나는 있어야 한다")
+
 for f in files:
-    d = torch.load(f, map_location="cpu", weights_only=False)
-    X = d["x"][::a.stride]
+    if f is None:
+        d = {"cfg": {}}
+        X = load_h5_traj(a.h5_dir, a.h5_pts, a.stride)
+    else:
+        d = torch.load(f, map_location="cpu", weights_only=False)
+        X = d["x"][::a.stride]
     T, N, _ = X.shape
-    tag = os.path.splitext(os.path.basename(f))[0]
+    tag = a.tag if f is None else os.path.splitext(os.path.basename(f))[0]
     Xc = X[0].to(dev)
     R = ptrender.camera(a.elev, a.azim, dev)
     # 화면 범위와 색은 라이브러리 규칙을 그대로 쓴다 (정준색, 궤적 전체 범위)
@@ -62,7 +104,8 @@ for f in files:
         im = Image.fromarray(arr); dr = ImageDraw.Draw(im)
         dr.rectangle([0, 0, W, 16], fill=(0, 0, 0))
         c = d["cfg"]
-        dr.text((4, 3), f"{tag}  E={c['E']:g} nu={c['nu']:g} xi={c.get('xi',0):g}"
+        mat = (f"E={c['E']:g} nu={c['nu']:g} xi={c.get('xi',0):g}" if c else "")
+        dr.text((4, 3), f"{tag}  {mat}"
                         f"  f{t*a.stride:03d}/{X.shape[0]*a.stride}",
                 fill=(255, 255, 255))
         frames.append(np.array(im))
