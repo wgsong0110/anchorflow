@@ -26,6 +26,10 @@ ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--ens", type=int, default=4)
 ap.add_argument("--width", type=int, default=800)
 ap.add_argument("--reps", type=int, default=20)
+ap.add_argument("--graph", action="store_true",
+                help="어텐션을 CUDA 그래프로 잡아 재생해 본다. **잡기에 실패하면 그 "
+                     "프로세스의 CUDA 문맥이 망가져 뒤 측정이 전부 죽으므로** "
+                     "기본은 끄고, 따로 확인할 때만 켠다")
 ap.add_argument("--out", default=None)
 a = ap.parse_args()
 
@@ -149,6 +153,8 @@ _gin = torch.cat([_ff, _ee], -1).clone()
 _gp = p0.clone()
 _graph = None
 try:
+    if not a.graph:
+        raise RuntimeError("--graph 로 켜야 시도한다")
     _s = torch.cuda.Stream()
     _s.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(_s):
@@ -160,8 +166,9 @@ try:
     with torch.cuda.graph(_graph):
         _gout = net0(_gp, _gin, FRAME_DT)
 except Exception as _e:                                   # noqa: BLE001
-    print(f"  (CUDA 그래프 못 잡음: {type(_e).__name__} {_e})", flush=True)
-    torch.cuda.synchronize()
+    if a.graph:
+        print(f"  (CUDA 그래프 못 잡음: {type(_e).__name__} {_e})", flush=True)
+    _graph = None
 
 
 def _replay():
