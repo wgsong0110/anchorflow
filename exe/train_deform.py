@@ -77,9 +77,10 @@ ap.add_argument("--refps", action="store_true",
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
                      "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
 ap.add_argument("--damage", action="store_true",
-                help="앵커마다 **손상률**을 하나 더 내게 하고, 결합(가우시안,앵커)별 "
-                     "손상을 쌓아 스키닝 가중치를 (1-d) 로 막는다. d->1 이면 그 "
-                     "앵커를 더는 따라가지 않으므로 조각이 갈라진다")
+                help="앵커마다 **손상률**을 하나 더 내게 하고, 그것을 자기 앵커들로 "
+                     "섞어 **가우시안마다** 손상을 쌓는다. 손상이 온도를 깎아 "
+                     "배정이 딱딱해지므로, 망가진 가우시안은 연속체에서 빠져 "
+                     "가장 가까운 앵커만 따라간다")
 ap.add_argument("--lambda_dmg", type=float, default=1.0,
                 help="손상 지도 가중치. 정답은 그 결합이 GT 에서 실제로 늘어난 배율")
 ap.add_argument("--dmg_thresh", type=float, default=2.0,
@@ -114,7 +115,7 @@ from anchorflow import deform                                  # noqa: E402
 from anchorflow import voxel                                    # noqa: E402
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
                                bc_features, bond_stretch, bures_w2_sq,
-                               carry_damage, fps, grid_knn,
+                               fps, gauss_stretch, grid_knn,
                                jacobian_of, skin)
 
 # ---------------------------------------------------------------- 데이터
@@ -287,13 +288,17 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     dp, log_r, log_t = out[0], out[1], out[2]
     rate = out[3] if a.damage else None
     if a.damage:
-        # kNN 집합이 바뀌면 결합별 손상을 옮겨 붙인다
-        dmg = (torch.zeros_like(idx, dtype=x.dtype) if dmg is None
-               else carry_damage(dmg, idx_prev, idx))
-        # 얼마나 늘어났나는 기하가 준다. 네트워크는 "얼마나 잘 망가지나" 만 정한다
+        # 가우시안마다 스칼라 하나. kNN 집합이 바뀌어도 그대로 따라다닌다.
+        if dmg is None:
+            dmg = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
         ref = (x0.unsqueeze(1) - p0[idx]).norm(dim=-1)
-        s_b = bond_stretch(x, p, idx, ref)
-        dmg = (dmg + FRAME_DT * rate[idx] * s_b).clamp(max=1.0)
+        # 얼마나 늘어났나는 기하가 준다. 네트워크는 "얼마나 잘 망가지나" 만 정한다.
+        with torch.no_grad():
+            w0 = skin(x, p, dp.detach(), log_r.detach(), log_t.detach(), idx, H,
+                      dmg=dmg)[1]
+        s_g = gauss_stretch(x, p, idx, ref, w0)
+        rate_g = (w0 * rate[idx]).sum(1)
+        dmg = (dmg + FRAME_DT * rate_g * s_g).clamp(max=1.0)
     x2, w = skin(x, p, dp, log_r, log_t, idx, H, dmg=dmg)
     if a.voxel:
         ai, p_next = None, p + dp     # 다음 프레임에 어차피 다시 뽑는다
@@ -334,13 +339,13 @@ def window(d, t0, L, gsel):
             d, t0 + i, gsel, p, x, v, need_J=a.lambda_J > 0,
             dmg=dmg, idx_prev=idx_prev, x0=x0w, p0=p0w)
         if a.damage:
-            # 정답: 그 결합이 GT 에서 실제로 늘어난 배율. 앵커도 가우시안이라
-            # 양끝의 GT 위치를 그대로 집을 수 있다 (이웃 탐색이 필요 없다).
+            # 정답: 그 가우시안이 자기 앵커들에 대해 GT 에서 실제로 늘어난 배율.
+            # 앵커도 가우시안이라 양끝의 GT 위치를 그대로 집을 수 있다.
             gx = take(d["x"][t0 + i + 1], gsel)
             gp = (gx[ai_now] if a.refps else take(d["x"][t0 + i + 1], AIDX))
             refw = (x0w.unsqueeze(1) - p0w[idx_prev]).norm(dim=-1)
-            sg = ((gx.unsqueeze(1) - gp[idx_prev]).norm(dim=-1)
-                  / refw.clamp_min(1e-9) - 1.0)
+            sg = (((gx.unsqueeze(1) - gp[idx_prev]).norm(dim=-1)
+                   / refw.clamp_min(1e-9) - 1.0).clamp_min(0.0)).mean(1)
             tgt = (sg / max(a.dmg_thresh - 1.0, 1e-6)).clamp(0.0, 1.0)
             ld = ((dmg - tgt) ** 2).mean()
             loss_d = loss_d + ld

@@ -466,36 +466,33 @@ def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None, sub=None):
 
 
 # --------------------------------------------------------------- 스키닝
-def damage_gate(dmg, eps=1e-6):
-    """손상 [N,k] 를 softmax 로짓에 더할 항으로. d -> 1 이면 그 앵커가 배제된다.
+DMG_FLOOR = 0.02      # 완전히 망가져도 온도를 이 배까지만 줄인다 (0 이면 기울기가 죽는다)
 
-    곱셈 게이트 (1-d) 를 로그로 넣으므로 가중치는 여전히 평범한 softmax 다.
+
+def damage_tau(tau, dmg):
+    """손상 [N] 이 온도를 깎는다. d -> 1 이면 배정이 딱딱해져 한 앵커가 독점한다.
+
+    가우시안별 스칼라는 softmax 로짓에 더해봐야 **행 상수**라 아무 효과가 없다.
+    그래서 되먹임은 온도로 넣는다 -- w = softmax(logit / tau) 에서 tau 가 작아지면
+    분포가 뾰족해져, 망가진 가우시안은 여러 앵커를 함께 따라가는 연속체에서 빠져
+    가장 가까운 앵커 하나만 따라간다. 조각이 따로 움직일 수 있게 되는 지점이다.
     """
-    return torch.log((1.0 - dmg).clamp_min(eps))
+    return tau * (1.0 - (1.0 - DMG_FLOOR) * dmg.reshape(-1, 1))
 
 
 def bond_stretch(x, p, idx, ref_d):
-    """결합 (가우시안 i, 앵커 a) 이 정준 거리 대비 몇 배로 늘어났나 - 1.
-
-    손상을 **기하가 몰고** 네트워크는 "얼마나 잘 망가지는 재질인가" 만 정하게
-    하려는 것이다. 이 분담이 CD-MPM 이 하는 것과 같다.
-    """
+    """결합 (가우시안 i, 앵커 a) 이 기준 거리 대비 몇 배로 늘어났나 - 1. [N,k]"""
     d = (x.unsqueeze(1) - p[idx]).norm(dim=-1)
     return (d / ref_d.clamp_min(1e-9) - 1.0).clamp_min(0.0)
 
 
-def carry_damage(dmg_old, idx_old, idx_new):
-    """kNN 집합이 바뀔 때 결합별 손상을 옮긴다.
+def gauss_stretch(x, p, idx, ref_d, w):
+    """가우시안 하나가 얼마나 늘어났나. 자기 앵커들에 대한 가중 평균. [N]
 
-    새 결합이 옛 목록에 있으면 그 값을, 없으면 **그 가우시안의 최대 손상**을
-    물려준다 -- 0 으로 두면 찢어진 가우시안이 앵커가 다시 가까워질 때 슬쩍
-    재결합해 버린다.
+    손상을 **기하가 몰고** 네트워크는 "얼마나 잘 망가지는 재질인가" 만 정하게
+    하려는 것이다. 이 분담이 CD-MPM 이 하는 것과 같다.
     """
-    same = idx_new.unsqueeze(-1) == idx_old.unsqueeze(-2)          # [N,k,k]
-    hit = same.any(-1)
-    pos = same.float().argmax(-1)
-    got = torch.gather(dmg_old, 1, pos)
-    return torch.where(hit, got, dmg_old.max(1, keepdim=True).values.expand_as(got))
+    return (w * bond_stretch(x, p, idx, ref_d)).sum(1)
 
 
 def skin(x, p, dp, log_r, log_t, idx, h, dmg=None):
@@ -511,10 +508,9 @@ def skin(x, p, dp, log_r, log_t, idx, h, dmg=None):
     # 섞는 커널은 고정 폭 h 다. 학습되는 양에 의존하면 온도가 다시 반경과 얽힌다.
     u = torch.softmax(-0.5 * d2 / (h * h), dim=1)
     tau = (u * log_t[idx].exp()).sum(1, keepdim=True).clamp(min=1e-4)
-    z = logit / tau
     if dmg is not None:
-        z = z + damage_gate(dmg)                   # 손상된 결합은 배제된다
-    w = torch.softmax(z, dim=1)                    # [N,k]
+        tau = damage_tau(tau, dmg)                 # 망가질수록 배정이 딱딱해진다
+    w = torch.softmax(logit / tau, dim=1)          # [N,k]
     return x + (w.unsqueeze(-1) * dp[idx]).sum(1), w
 
 
@@ -569,10 +565,13 @@ def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h, dmg=None):
     u = torch.softmax(-0.5 * d2 / (h * h), dim=1)
     ta = log_t[idx].exp()
     tau = (u * ta).sum(1, keepdim=True).clamp(min=1e-4)     # [N,1]
-    # 손상 게이트는 x 에 의존하지 않는 상태량이므로 softmax 의 미분 구조가
-    # 그대로다 -- 아래 야코비안 유도가 손대지 않고 성립한다.
-    w = torch.softmax(g / tau + (0.0 if dmg is None else damage_gate(dmg)),
-                      dim=1)
+    # 손상은 x 에 의존하지 않는 상태량이라 tau 에 곱해지는 **상수 배율**이다.
+    # 그래서 아래 유도에서 tau 와 grad tau 에 같은 배율만 곱하면 그대로 성립한다.
+    dfac = (None if dmg is None
+            else (1.0 - (1.0 - DMG_FLOOR) * dmg.reshape(-1, 1)))
+    if dfac is not None:
+        tau = tau * dfac
+    w = torch.softmax(g / tau, dim=1)
     dpa = dp[idx]                                  # [N,k,3]
     wdp = (w.unsqueeze(-1) * dpa).sum(1)           # [N,3]
     out = x + wdp
@@ -582,6 +581,8 @@ def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h, dmg=None):
     su = (u.unsqueeze(-1) * dvec).sum(1)                           # [N,3]
     gtau = -((tu.unsqueeze(-1) * dvec).sum(1) - tu.sum(1, keepdim=True) * su) \
         / (h * h)                                                  # [N,3]
+    if dfac is not None:
+        gtau = gtau * dfac
     wr = w / r2                                                    # [N,k]
     swg = -(wr.unsqueeze(-1) * dvec).sum(1)                        # [N,3]  sum w_b grad g_b
     wg = (w * g).sum(1, keepdim=True)                              # [N,1]
