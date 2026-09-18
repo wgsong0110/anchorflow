@@ -30,7 +30,10 @@ ap.add_argument("--base_config", required=True)
 ap.add_argument("--scene", default="wolf")
 ap.add_argument("--out", required=True)
 ap.add_argument("--work", required=True)
-ap.add_argument("--variants", required=True)
+ap.add_argument("--variants", default=None)
+ap.add_argument("--variants_file", default=None,
+                help="JSON 목록을 담은 파일. 셸을 거치며 따옴표가 망가지는 것을 "
+                     "피하려면 이쪽이 낫다")
 ap.add_argument("--n_pts", type=int, default=40000)
 ap.add_argument("--gpu", type=int, default=0)
 ap.add_argument("--seed", type=int, default=0)
@@ -40,7 +43,12 @@ a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
 os.makedirs(a.work, exist_ok=True)
 base = json.load(open(a.base_config))
-variants = json.loads(a.variants)
+if a.variants_file:
+    variants = json.load(open(a.variants_file))
+elif a.variants:
+    variants = json.loads(a.variants)
+else:
+    raise SystemExit("--variants 나 --variants_file 중 하나는 있어야 한다")
 
 
 def load_x(p, key):
