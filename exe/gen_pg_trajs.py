@@ -38,6 +38,8 @@ ap.add_argument("--n_pts", type=int, default=40000)
 ap.add_argument("--gpu", type=int, default=0)
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--keep_h5", action="store_true")
+ap.add_argument("--reuse", action="store_true",
+                help="이미 돌아간 h5 가 있으면 시뮬을 다시 돌리지 않고 압축만 한다")
 a = ap.parse_args()
 
 os.makedirs(a.out, exist_ok=True)
@@ -72,18 +74,26 @@ for var in variants:
     odir = os.path.join(a.work, f"sim_{a.scene}_{tag}")
     print(f"[실행] {tag}: " + ", ".join(f"{k}={v}" for k, v in var.items()),
           flush=True)
+    # h5 는 output_path 밑 simulation_ply/ 에 떨어진다 (바로 밑이 아니다)
+    have = sorted(glob.glob(os.path.join(odir, "**", "*.h5"), recursive=True))
+    if a.reuse and have:
+        print(f"[재사용] {tag}: h5 {len(have)} 개가 이미 있다", flush=True)
+        files = have
+        r = None
+    else:
+        r = 1
     env = dict(os.environ)
     env["CUDA_VISIBLE_DEVICES"] = str(a.gpu)
-    r = subprocess.run(
+    if r is not None:
+      r = subprocess.run(
         [sys.executable, "gs_simulation.py", "--model_path", a.model_path,
          "--output_path", odir, "--config", cpath, "--output_h5", "--white_bg"],
         cwd=a.pg_root, env=env, capture_output=True, text=True)
-    if r.returncode != 0:
+      if r.returncode != 0:
         print(f"[실패] {tag} rc={r.returncode}\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}",
               flush=True)
         continue
-
-    files = sorted(glob.glob(os.path.join(odir, "*.h5")))
+      files = sorted(glob.glob(os.path.join(odir, "**", "*.h5"), recursive=True))
     if not files:
         print(f"[실패] {tag}: h5 가 없다", flush=True)
         continue
