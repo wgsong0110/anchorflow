@@ -32,6 +32,9 @@ ap.add_argument("--cd_pts", type=int, default=2048,
 ap.add_argument("--width", type=int, default=600)
 ap.add_argument("--spring_gaus", default=None,
                 help="Spring-Gaus 클론 경로. 주면 같은 궤적·같은 지표로 함께 잰다")
+ap.add_argument("--sg_ckpt", default=None,
+                help="train_spring_gaus.py 로 같은 궤적에 학습시킨 체크포인트. "
+                     "주면 학습된 물성으로 굴린다")
 ap.add_argument("--sg_points", type=int, default=2048, help="공식 N_SAMPLE")
 ap.add_argument("--sg_neighbors", type=int, default=256, help="공식 K_NEIGHBORS")
 ap.add_argument("--sg_nstep", type=int, default=100, help="공식 N_STEP")
@@ -212,26 +215,41 @@ def rollout_sg(t0, L):
     sc.DATA.GLOBAL_DAMP = 0.1
     x0 = take(d["x"][t0], GS)
     g = torch.Generator().manual_seed(a.seed)
-    pi = torch.randperm(x0.shape[0], generator=g)[:a.sg_points].to(dev)
-    sim = Spring_Mass(sc, x0[pi].clone()).to(dev)
+    if a.sg_ckpt:
+        # 학습 때 쓴 표본을 그대로 쓴다. 그쪽 인덱스는 **전체** 점군 기준이므로
+        # 질량점은 전체에서 뽑고, 점수는 여느 방법과 같이 GS 가우시안으로 잰다.
+        st = torch.load(a.sg_ckpt, map_location=dev, weights_only=False)
+        pi = st["pi"].to(dev)
+        m0 = d["x"][t0].to(dev)[pi]
+        mprev = d["x"][max(t0 - 1, 0)].to(dev)[pi]
+    else:
+        pi = torch.randperm(x0.shape[0], generator=g)[:a.sg_points].to(dev)
+        m0 = x0[pi]
+        mprev = take(d["x"][max(t0 - 1, 0)], GS)[pi]
+    sim = Spring_Mass(sc, m0.clone()).to(dev)
+    if a.sg_ckpt:
+        sim.load_state_dict(st["sim"])
+        print(f"[SG] 학습 체크포인트 {a.sg_ckpt} step {st.get('step')}", flush=True)
     if hasattr(sim, "device"):
         sim.device = dev
     sim.set_dt(dt=FRAME_DT)
     # 시뮬 대상은 질량점 2048 개다. 가우시안 결속은 아래에서 직접 한다 --
     # set_all_particle 에 전체를 넘기면 forward 가 전체를 돌려주어 상태가 섞인다.
-    sim.set_all_particle(x0[pi].clone())
+    sim.set_all_particle(m0.clone())
     sim.stage = "dynamic"
-    xs = x0[pi].clone()
-    vs = ((x0 - take(d["x"][max(t0 - 1, 0)], GS)) / FRAME_DT)[pi].clone()
+    xs = m0.clone()
+    vs = ((m0 - mprev) / FRAME_DT).clone()
     # 질량점 변위를 가우시안으로 옮기는 결속. 공식 K_BINDING 과 같은 16 이웃이다.
-    dd = torch.cdist(x0, x0[pi])
+    dd = torch.cdist(x0, m0)
     wv, ii = dd.topk(16, largest=False)
     wv = torch.softmax(-wv / wv[:, :1].clamp(min=1e-9), 1)
     out = [(x0.clone(), None)]
     for i in range(1, L + 1):
-        o = sim(xs, xs, vs, frame_id=i)
-        xs, vs = o[0].detach(), o[1].detach()
-        out.append((x0 + ((xs - x0[pi])[ii] * wv.unsqueeze(-1)).sum(1), None))
+        # forward 는 (xyz_all, xyz, v, is_nan) 을 준다 -- 속도는 **세 번째**다.
+        # o[1] 을 속도로 쓰면 위치를 속도로 먹여 시뮬이 망가진다.
+        _xa, xo, vo, _nan = sim(xs, xs, vs, frame_id=i)
+        xs, vs = xo.detach(), vo.detach()
+        out.append((x0 + ((xs - m0)[ii] * wv.unsqueeze(-1)).sum(1), None))
     return out
 
 
