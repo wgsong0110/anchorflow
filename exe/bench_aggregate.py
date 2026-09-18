@@ -52,6 +52,7 @@ def timeit(fn, n=None):
 
 o1 = dc.aggregate_moments(x, X, v, m, idx, a.m)
 o2 = dc.aggregate_moments2(x, X, v, m, idx, a.m)
+o3 = dc.aggregate_moments2(x, X, v, m, idx, a.m, merge=1)
 worst = 0.0
 for i, (a1, a2) in enumerate(zip(o1, o2)):
     d = (a1 - a2).abs()
@@ -63,6 +64,7 @@ print(f"[정확성] 최대 상대차 {worst:.3e} "
 
 t1 = timeit(lambda: dc.aggregate_moments(x, X, v, m, idx, a.m))
 t2 = timeit(lambda: dc.aggregate_moments2(x, X, v, m, idx, a.m))
-print(f"[속도] 1 판 {t1:.2f} ms  ->  2 판 {t2:.2f} ms  ({t1 / t2:.2f} 배)",
-      flush=True)
+t3 = timeit(lambda: dc.aggregate_moments2(x, X, v, m, idx, a.m, merge=1))
+print(f"[속도] 짝마다 {t1:.2f} ms | 입자마다 {t2:.2f} ms ({t1 / t2:.2f} 배) | "
+      f"입자마다+합침 {t3:.2f} ms ({t1 / t3:.2f} 배)", flush=True)
 print("AGGBENCH_OK", flush=True)

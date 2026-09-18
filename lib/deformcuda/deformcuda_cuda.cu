@@ -758,6 +758,7 @@ __global__ void agg_np(const float* __restrict__ x, const float* __restrict__ X,
         float X0 = 0.f, X1 = 0.f, X2 = 0.f, v0 = 0.f, v1 = 0.f, v2 = 0.f;
         if (PH != 1) { X0 = X[3 * n]; X1 = X[3 * n + 1]; X2 = X[3 * n + 2]; }
         if (PH != 2) { v0 = v[3 * n]; v1 = v[3 * n + 1]; v2 = v[3 * n + 2]; }
+        if (PH == 0) { X0 = X[3 * n]; X1 = X[3 * n + 1]; X2 = X[3 * n + 2]; }
         const long base = (long)n * K;
         for (int j = 0; j < K; ++j) {
             const int aa = idx[base + j];
@@ -774,7 +775,7 @@ __global__ void agg_np(const float* __restrict__ x, const float* __restrict__ X,
                 atomicAdd(dst + 8, w * v1);
                 atomicAdd(dst + 9, w * v2);
                 atomicAdd(dst + 10, 1.f);
-            } else {                       // PH == 3: S,L,A,B 를 한 번에
+            } else {                       // PH 1: S,L / PH 2: A,B / PH 3: 둘 다
                 const float dx0 = x0 - cx[3 * aa];
                 const float dx1 = x1 - cx[3 * aa + 1];
                 const float dx2 = x2 - cx[3 * aa + 2];
@@ -784,24 +785,29 @@ __global__ void agg_np(const float* __restrict__ x, const float* __restrict__ X,
                 const float dv0 = v0 - cv[3 * aa];
                 const float dv1 = v1 - cv[3 * aa + 1];
                 const float dv2 = v2 - cv[3 * aa + 2];
-                atomicAdd(dst + 0, w * dx0 * dx0); atomicAdd(dst + 1, w * dx0 * dx1);
-                atomicAdd(dst + 2, w * dx0 * dx2); atomicAdd(dst + 3, w * dx1 * dx0);
-                atomicAdd(dst + 4, w * dx1 * dx1); atomicAdd(dst + 5, w * dx1 * dx2);
-                atomicAdd(dst + 6, w * dx2 * dx0); atomicAdd(dst + 7, w * dx2 * dx1);
-                atomicAdd(dst + 8, w * dx2 * dx2);
-                atomicAdd(dst + 9,  w * (dx1 * dv2 - dx2 * dv1));
-                atomicAdd(dst + 10, w * (dx2 * dv0 - dx0 * dv2));
-                atomicAdd(dst + 11, w * (dx0 * dv1 - dx1 * dv0));
-                atomicAdd(dst + 12, w * dx0 * dX0); atomicAdd(dst + 13, w * dx0 * dX1);
-                atomicAdd(dst + 14, w * dx0 * dX2); atomicAdd(dst + 15, w * dx1 * dX0);
-                atomicAdd(dst + 16, w * dx1 * dX1); atomicAdd(dst + 17, w * dx1 * dX2);
-                atomicAdd(dst + 18, w * dx2 * dX0); atomicAdd(dst + 19, w * dx2 * dX1);
-                atomicAdd(dst + 20, w * dx2 * dX2);
-                atomicAdd(dst + 21, w * dX0 * dX0); atomicAdd(dst + 22, w * dX0 * dX1);
-                atomicAdd(dst + 23, w * dX0 * dX2); atomicAdd(dst + 24, w * dX1 * dX0);
-                atomicAdd(dst + 25, w * dX1 * dX1); atomicAdd(dst + 26, w * dX1 * dX2);
-                atomicAdd(dst + 27, w * dX2 * dX0); atomicAdd(dst + 28, w * dX2 * dX1);
-                atomicAdd(dst + 29, w * dX2 * dX2);
+                const int o = (PH == 3) ? 12 : 0;
+                if (PH == 1 || PH == 3) {
+                    atomicAdd(dst + 0, w * dx0 * dx0); atomicAdd(dst + 1, w * dx0 * dx1);
+                    atomicAdd(dst + 2, w * dx0 * dx2); atomicAdd(dst + 3, w * dx1 * dx0);
+                    atomicAdd(dst + 4, w * dx1 * dx1); atomicAdd(dst + 5, w * dx1 * dx2);
+                    atomicAdd(dst + 6, w * dx2 * dx0); atomicAdd(dst + 7, w * dx2 * dx1);
+                    atomicAdd(dst + 8, w * dx2 * dx2);
+                    atomicAdd(dst + 9,  w * (dx1 * dv2 - dx2 * dv1));
+                    atomicAdd(dst + 10, w * (dx2 * dv0 - dx0 * dv2));
+                    atomicAdd(dst + 11, w * (dx0 * dv1 - dx1 * dv0));
+                }
+                if (PH == 2 || PH == 3) {
+                    atomicAdd(dst + o + 0, w * dx0 * dX0); atomicAdd(dst + o + 1, w * dx0 * dX1);
+                    atomicAdd(dst + o + 2, w * dx0 * dX2); atomicAdd(dst + o + 3, w * dx1 * dX0);
+                    atomicAdd(dst + o + 4, w * dx1 * dX1); atomicAdd(dst + o + 5, w * dx1 * dX2);
+                    atomicAdd(dst + o + 6, w * dx2 * dX0); atomicAdd(dst + o + 7, w * dx2 * dX1);
+                    atomicAdd(dst + o + 8, w * dx2 * dX2);
+                    atomicAdd(dst + o + 9,  w * dX0 * dX0); atomicAdd(dst + o + 10, w * dX0 * dX1);
+                    atomicAdd(dst + o + 11, w * dX0 * dX2); atomicAdd(dst + o + 12, w * dX1 * dX0);
+                    atomicAdd(dst + o + 13, w * dX1 * dX1); atomicAdd(dst + o + 14, w * dX1 * dX2);
+                    atomicAdd(dst + o + 15, w * dX2 * dX0); atomicAdd(dst + o + 16, w * dX2 * dX1);
+                    atomicAdd(dst + o + 17, w * dX2 * dX2);
+                }
             }
         }
     }
@@ -826,7 +832,7 @@ static int agg_shared_ok(size_t bytes, const void* fn) {
 
 std::vector<torch::Tensor> aggregate_moments2(
         torch::Tensor x, torch::Tensor X, torch::Tensor v, torch::Tensor m,
-        torch::Tensor idx, int M) {
+        torch::Tensor idx, int M, int merge) {
     CHECK(x); CHECK(X); CHECK(v); CHECK(m); CHECK(idx);
     const int N = x.size(0), K = idx.size(1);
     auto opt = x.options();
@@ -849,15 +855,34 @@ std::vector<torch::Tensor> aggregate_moments2(
     auto cX = (g1.slice(1, 4, 7) / W).contiguous();
     auto cv = (g1.slice(1, 7, 10) / W).contiguous();
 
-    auto g23 = torch::zeros({M, 30}, opt);
-    size_t sh2 = (size_t)M * 30 * sizeof(float);
-    int us2 = agg_shared_ok(sh2, (const void*)agg_np<30, 3>);
-    agg_np<30, 3><<<B, T, us2 ? sh2 : 0>>>(
+    if (merge) {
+        // 한 판으로 합치면 짝 목록을 한 번 덜 읽지만 공유 메모리가 M x 30 x 4 라
+        // SM 당 블록이 하나로 떨어진다. 실측 13.3 ms 대 8.8 ms 로 오히려 느렸다.
+        auto g23 = torch::zeros({M, 30}, opt);
+        size_t sh2 = (size_t)M * 30 * sizeof(float);
+        int us2 = agg_shared_ok(sh2, (const void*)agg_np<30, 3>);
+        agg_np<30, 3><<<B, T, us2 ? sh2 : 0>>>(
+            x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
+            m.data_ptr<float>(), ip, cx.data_ptr<float>(), cX.data_ptr<float>(),
+            cv.data_ptr<float>(), N, K, M, us2, g23.data_ptr<float>());
+        return {g1, g23.slice(1, 0, 12).contiguous(),
+                g23.slice(1, 12, 30).contiguous()};
+    }
+    auto g2 = torch::zeros({M, 12}, opt);
+    size_t sha = (size_t)M * 12 * sizeof(float);
+    int usa = agg_shared_ok(sha, (const void*)agg_np<12, 1>);
+    agg_np<12, 1><<<B, T, usa ? sha : 0>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
         m.data_ptr<float>(), ip, cx.data_ptr<float>(), cX.data_ptr<float>(),
-        cv.data_ptr<float>(), N, K, M, us2, g23.data_ptr<float>());
-    return {g1, g23.slice(1, 0, 12).contiguous(),
-            g23.slice(1, 12, 30).contiguous()};
+        cv.data_ptr<float>(), N, K, M, usa, g2.data_ptr<float>());
+    auto g3 = torch::zeros({M, 18}, opt);
+    size_t shb = (size_t)M * 18 * sizeof(float);
+    int usb = agg_shared_ok(shb, (const void*)agg_np<18, 2>);
+    agg_np<18, 2><<<B, T, usb ? shb : 0>>>(
+        x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
+        m.data_ptr<float>(), ip, cx.data_ptr<float>(), cX.data_ptr<float>(),
+        cv.data_ptr<float>(), N, K, M, usb, g3.data_ptr<float>());
+    return {g1, g2, g3};
 }
 
 // ---------------------------------------------------------------- FPS
@@ -923,8 +948,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("aggregate_moments", &aggregate_moments,
           "per-anchor mass-weighted moments, accumulated in shared memory");
     m.def("aggregate_moments2", &aggregate_moments2,
-          "same moments, one thread per particle and the two second-order "
-          "passes merged");
+          "same moments, one thread per particle; merge=1 folds the two "
+          "second-order passes into one",
+          py::arg("x"), py::arg("X"), py::arg("v"), py::arg("m"),
+          py::arg("idx"), py::arg("M"), py::arg("merge") = 0);
     m.def("fps", &fps_cuda, "farthest point sampling, one kernel per pick");
     m.def("voxel_hash", &voxel_hash,
           "assign voxel ids with an open-addressing hash, no sort");
