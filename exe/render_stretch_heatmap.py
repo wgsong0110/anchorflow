@@ -43,8 +43,11 @@ ap.add_argument("--gt_k", type=int, default=16)
 ap.add_argument("--slices", type=int, default=5)
 ap.add_argument("--grid", type=int, default=48)
 ap.add_argument("--band", type=float, default=0.06)
-ap.add_argument("--metric", default="sigma1", choices=("sigma1", "strain"),
-                help="sigma1 은 F 의 최대 특이값(가장 크게 늘어난 배율), strain 은 "
+ap.add_argument("--metric", default="sigma1",
+                choices=("sigma1", "strain", "radius", "temp"),
+                help="radius/temp 는 모델이 앵커마다 내놓는 반경 r_a (앵커 간격 "
+                     "h 로 나눈 값) 와 온도 t_a 다. 둘 다 GT 가 없어 모델 한 줄만 "
+                     "그린다. sigma1 은 F 의 최대 특이값(가장 크게 늘어난 배율), strain 은 "
                      "Green-Lagrange 변형률 E=(F^T F - I)/2 의 Frobenius 노름. "
                      "둘 다 회전에 불변이고, strain 은 변형이 없으면 정확히 0 이다")
 ap.add_argument("--vmax", type=float, default=0.0,
@@ -126,21 +129,29 @@ else:
 print(f"[가림] 길이 단위 {CELL:.5f}, 문턱 {a.mask}배", flush=True)
 
 
-def to_grid(vals, pos_rel, z):
+ANCHOR_METRIC = a.metric in ("radius", "temp")
+
+
+def to_grid(vals, pos_rel, z, mask_rel=None):
     """입자 값을 단면 격자로 옮기고, 그 단면에서 수박이 차지한 자리를 함께 낸다.
 
     가리지 않으면 역거리 가중이 물체 밖까지 값을 퍼뜨려, 수박이 없는 배경이
     변형된 것처럼 보인다. 두 번째 반환값은 경계선을 긋는 데 쓴다.
     """
+    # 값을 어디서 끌어올지(pos_rel)와 수박 안인지 판정할 기준(mask_rel)을 나눈다 --
+    # 앵커 지표는 값이 앵커에 있고 가림은 입자로 해야 한다.
+    mask_rel = pos_rel if mask_rel is None else mask_rel
     sel = (pos_rel[:, 2] - z).abs() < a.band * EXT
-    if int(sel.sum()) < 8:
+    msel = (mask_rel[:, 2] - z).abs() < a.band * EXT
+    if int(sel.sum()) < 8 or int(msel.sum()) < 8:
         return None, None
     q = torch.from_numpy(np.stack([GX, GY], -1).reshape(-1, 2)).float().to(dev)
     dd = torch.cdist(q, pos_rel[sel][:, :2])
     w = 1.0 / (dd + 0.02 * EXT) ** 2
     w = w / w.sum(1, keepdim=True)
     g = (w @ vals[sel].unsqueeze(-1)).squeeze(-1)
-    occ = dd.min(1).values < a.mask * CELL
+    md = torch.cdist(q, mask_rel[msel][:, :2]).min(1).values
+    occ = md < a.mask * CELL
     g = torch.where(occ, g, torch.full_like(g, float("nan")))
     return (g.reshape(a.grid, a.grid).cpu().numpy(),
             occ.reshape(a.grid, a.grid).cpu().numpy())
@@ -168,12 +179,23 @@ if a.ckpt:
         dp, lr_, lt_ = net(p, torch.cat([feat, ex], -1), FRAME_DT)
         x2, _, J = skin_with_jacobian(x, p, dp, lr_, lt_, idx, H)
         Jacc = J @ Jacc
+        if a.metric == "radius":
+            val, src = (lr_.exp() / H).clone(), (p + dp).clone()
+        elif a.metric == "temp":
+            val, src = lt_.exp().clone(), (p + dp).clone()
+        else:
+            val, src = measure(Jacc).clone(), None
         v, p, x = (x2 - x) / FRAME_DT, p + dp, x2
-        model.append((x.clone(), measure(Jacc).clone()))
+        model.append((x.clone(), val, src))
 
 # GT
 gt = []
-if a.gt_F == "mls":
+if ANCHOR_METRIC:
+    # 반경·온도는 모델만 내놓는 값이라 GT 줄이 없다. 롤아웃 상자와 단면 기하를
+    # 잡는 데는 GT 위치가 필요하므로 위치만 채운다.
+    for i in range(a.frames):
+        gt.append((take(d["x"][a.t0 + i + 1], GS), None))
+elif a.gt_F == "mls":
     Xr = take(d["x"][a.t0], GS)                 # t0 배치가 기준이다
     NB, _ = dense_knn(Xr, Xr, a.gt_k + 1)
     NB = NB[:, 1:]                              # 자기 자신 제외
@@ -193,12 +215,18 @@ else:
         xg = take(d["x"][t], GS)
         gt.append((xg, measure(take(d["F"][t], GS) @ F0i)))
 
-vmax = a.vmax
-if vmax <= 0:
-    allv = torch.cat([s for _x, s in gt] + ([s for _x, s in model] if model else []))
-    vmax = float(allv.quantile(0.99))
-print(f"[색 범위] {1.0 if a.metric=='sigma1' else 0.0} ~ {vmax:.3f} "
-      f"(전체 프레임 p99 로 고정), 지표 {a.metric}", flush=True)
+if ANCHOR_METRIC:
+    allv = torch.cat([mm[1] for mm in model])
+    vmin = float(allv.quantile(0.01)); vmax = float(allv.quantile(0.99))
+else:
+    vmin = 1.0 if a.metric == "sigma1" else 0.0
+    vmax = a.vmax
+    if vmax <= 0:
+        allv = torch.cat([ss for _x, ss in gt]
+                         + ([mm[1] for mm in model] if model else []))
+        vmax = float(allv.quantile(0.99))
+print(f"[색 범위] {vmin:.3f} ~ {vmax:.3f} (전체 프레임 p1~p99 로 고정), "
+      f"지표 {a.metric}", flush=True)
 
 def rollout_box(frames_xyz, R, width):
     """튀어나간 파편이 상자를 부풀리지 않게 분위수로 잘라 시야를 잡는다.
@@ -228,7 +256,7 @@ RCTR, RHALF, RW, RH = rollout_box([g[0] for g in gt], RCAM, 220)
 RCOL = ptrender.canon_color(xc0)
 
 os.makedirs(a.out, exist_ok=True)
-rows = 1 if model is None else 2
+rows = 1 if (model is None or ANCHOR_METRIC) else 2
 frames = []
 for i in range(a.frames):
     fig, ax = plt.subplots(rows, a.slices + 1,
@@ -236,8 +264,13 @@ for i in range(a.frames):
                                     rows * a.tile / 100),
                            squeeze=False)
     for r in range(rows):
-        xx, ss = (gt[i] if r == 0 else model[i])
-        rel = xx - xx.mean(0)
+        if ANCHOR_METRIC:
+            xx, ss, src = model[i]
+            rel = src - xx.mean(0)              # 앵커를 입자 중심 기준으로
+            mrel = xx - xx.mean(0)              # 가림은 입자로
+        else:
+            xx, ss = (gt[i] if r == 0 else model[i])[:2]
+            rel = mrel = xx - xx.mean(0)
         A0 = ax[r][0]; A0.set_xticks([]); A0.set_yticks([])
         A0.imshow(ptrender.splat(xx, RCOL, RCAM, RCTR, RHALF, RW, RH, 1)
                   .cpu().numpy())
@@ -246,26 +279,31 @@ for i in range(a.frames):
             A0.axhline(vy, color="#00d0ff", lw=0.6, ls="--")
             A0.text(2, vy - 2, f"{zz:+.2f}", color="#0088aa", fontsize=5)
         A0.set_xlim(0, RW - 1); A0.set_ylim(RH - 1, 0)
-        A0.set_ylabel("GT" if r == 0 else "model", fontsize=9)
+        A0.set_ylabel("model" if ANCHOR_METRIC else
+                      ("GT" if r == 0 else "model"), fontsize=9)
         if r == 0:
             A0.set_title("rollout (dashed = slices)", fontsize=7)
         for s, z in enumerate(ZS):
             A = ax[r][s + 1]; A.set_xticks([]); A.set_yticks([])
-            g, occ = to_grid(ss, rel, z)
+            g, occ = to_grid(ss, rel, z, mrel)
             if g is None:
                 A.text(.5, .5, "-", ha="center"); continue
             A.set_facecolor("0.92")                    # 수박 밖은 회색 바탕
-            im = A.imshow(g.T, origin="lower", cmap="magma",
-                          vmin=(1.0 if a.metric == "sigma1" else 0.0), vmax=vmax)
+            im = A.imshow(g.T, origin="lower",
+                          cmap=("viridis" if ANCHOR_METRIC else "magma"),
+                          vmin=vmin, vmax=vmax)
             # 수박이 어디까지인지 경계선으로 명시
             A.contour(occ.T.astype(float), levels=[0.5], colors="#00d0ff",
                       linewidths=1.0)
             if r == 0:
                 A.set_title(f"rel z={z:+.2f}", fontsize=8)
 
-    lbl = ("largest singular value of F" if a.metric == "sigma1"
-           else "|Green-Lagrange strain|_F")
-    fig.suptitle(f"{a.traj}  frame {a.t0+i+1:03d}  {lbl} (since frame {a.t0})",
+    lbl = {"sigma1": "largest singular value of F",
+           "strain": "|Green-Lagrange strain|_F",
+           "radius": "anchor radius r_a / h",
+           "temp": "anchor temperature t_a"}[a.metric]
+    fig.suptitle(f"{a.traj}  frame {a.t0+i+1:03d}  {lbl}"
+                 + ("" if ANCHOR_METRIC else f" (since frame {a.t0})"),
                  fontsize=10)
     fig.tight_layout()
     fig.canvas.draw()
