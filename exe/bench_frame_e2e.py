@@ -140,9 +140,11 @@ _ff, _ = aggregate(x, v, X, m, _ii, a.n_anchors, H, pa=p0)
 _ee = torch.cat([MAT.reshape(1, -1).expand(a.n_anchors, -1),
                  bc_features(p0, cfg) / H], -1)
 _dd, _rr, _tt = net0(p0, torch.cat([_ff, _ee], -1), FRAME_DT)
-# 어텐션은 앵커 512 개짜리라 연산이 아니라 **커널 실행 횟수**가 비용이다.
-# 모양이 매 프레임 같으므로 CUDA 그래프로 한 번 잡아두고 재생하면 그 비용이
-# 사라진다. 값은 그대로다.
+_ras = raster(N)
+# 어텐션은 앵커 512 개짜리라 연산이 아니라 **커널 실행 횟수**가 비용이다. 모양이
+# 매 프레임 같으므로 CUDA 그래프로 한 번 잡아두고 재생하면 그 비용이 사라진다.
+# 값은 그대로다. 잡기는 난수를 쓰는 것들(raster 의 색)을 다 만든 **뒤에** 해야
+# 한다 -- 잡는 도중 난수 오프셋이 움직이면 실패한다.
 _gin = torch.cat([_ff, _ee], -1).clone()
 _gp = p0.clone()
 _graph = None
@@ -153,11 +155,13 @@ try:
         for _ in range(3):
             net0(_gp, _gin, FRAME_DT)
     torch.cuda.current_stream().wait_stream(_s)
+    torch.cuda.synchronize()
     _graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(_graph):
         _gout = net0(_gp, _gin, FRAME_DT)
 except Exception as _e:                                   # noqa: BLE001
-    print(f"  (CUDA 그래프 못 잡음: {_e})", flush=True)
+    print(f"  (CUDA 그래프 못 잡음: {type(_e).__name__} {_e})", flush=True)
+    torch.cuda.synchronize()
 
 
 def _replay():
@@ -170,7 +174,7 @@ BD = [("kNN (가우시안 x 앵커)", lambda: anchor_knn(x, p0, a.k)),
       ("어텐션 신경망", lambda: net0(p0, torch.cat([_ff, _ee], -1), FRAME_DT)),
       ("스키닝 + 야코비안",
        lambda: skin_with_jacobian(x, p0, _dd, _rr, _tt, _ii, H)),
-      ("래스터화", raster(N))] + (
+      ("래스터화", _ras)] + (
       [("어텐션 신경망 (CUDA 그래프)", _replay)] if _graph is not None else [])
 print("\n[쪼개보기] t=0 FPS 후 추적 경로", flush=True)
 for nm, fn in BD:
