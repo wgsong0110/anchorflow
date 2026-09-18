@@ -94,13 +94,19 @@ for frac in (0.25, 0.1):
           f"앵커 무게중심 상대차 중앙 {rel.median():.2e} 최대 {rel.max():.2e}",
           flush=True)
 
+# 원자합을 뺀 바닥. 읽기와 색인 순회는 그대로고 누적만 레지스터라, 이 값과
+# 실제 값의 차이가 곧 "원자합에 쓰는 시간" 이다.
+t0 = timeit(lambda: dc.aggregate_moments2(x, X, v, m, idx, a.m, merge=2))
+print(f"[바닥] 원자합 없이 같은 통행량 {t0:.2f} ms "
+      f"-> 원자합에 {t2 - t0:.2f} ms 쓴다", flush=True)
+
 # kNN 도 같은 조건에서 견준다
 i_b, d_b = dc.knn(x, p, a.k)
-i_g, d_g = dc.knn_grid(x, p, a.k)
+i_g, d_g = dc.knn_grid(x, p, a.k, occ=6.0)
 same = (i_b == i_g).float().mean().item()
 dmax = (d_b - d_g).abs().max().item()
 tb = timeit(lambda: dc.knn(x, p, a.k))
-tg = timeit(lambda: dc.knn_grid(x, p, a.k))
+tg = timeit(lambda: dc.knn_grid(x, p, a.k, occ=6.0))
 print(f"[kNN] 전수조사 {tb:.2f} ms -> 격자 {tg:.2f} ms ({tb / tg:.2f} 배), "
       f"색인 일치 {same:.6f}, 거리 최대차 {dmax:.3e}", flush=True)
 

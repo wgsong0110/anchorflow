@@ -166,9 +166,18 @@ def dense_knn(x, p, k, chunk=32768, half=False):
 _DC_K = (4, 6, 8, 12, 16, 24, 32)
 
 
-def anchor_knn(x, p, k, dense_upto=4096, half=False, chunk=32768, **kw):
-    """상황에 맞는 kNN 을 고른다. 커널 > 조밀 > 격자 순으로 빠르다."""
+def anchor_knn(x, p, k, dense_upto=4096, half=False, chunk=32768,
+               grid_upto=4096, **kw):
+    """상황에 맞는 kNN 을 고른다. 커널 > 조밀 > 격자 순으로 빠르다.
+
+    앵커가 많을 때만 격자 커널을 쓴다. 앵커 512 개에서는 전수조사가 이긴다 --
+    3x3x3 이 **정확한** 답을 보장하려면 칸당 앵커가 3k/(4pi) ~ 4 개는 되어야 하고,
+    그러면 후보가 27x4 = 108 개라 512 개를 그냥 훑는 것 대비 아낄 것이 얼마 없는데
+    칸 찾기와 흩어진 읽기가 더 든다. 실측 2.2 ms 대 34.5 ms 로 참패했다.
+    """
     if _HAVE_DC and x.is_cuda and x.dtype == torch.float32 and k in _DC_K:
+        if p.shape[0] > grid_upto and hasattr(_dc, "knn_grid"):
+            return _dc.knn_grid(x, p, k, occ=6.0)
         return _dc.knn(x, p, k)
     if p.shape[0] <= dense_upto:
         return dense_knn(x, p, k, chunk=chunk, half=half)

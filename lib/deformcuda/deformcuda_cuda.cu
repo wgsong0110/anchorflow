@@ -844,6 +844,7 @@ __global__ void agg_np(const float* __restrict__ x, const float* __restrict__ X,
         for (int i = threadIdx.x; i < M * D; i += blockDim.x) acc[i] = 0.f;
         __syncthreads();
     }
+    float fl = 0.f;
     for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < N;
          n += gridDim.x * blockDim.x) {
         const float w = m[n];
@@ -874,6 +875,8 @@ __global__ void agg_np(const float* __restrict__ x, const float* __restrict__ X,
                 atomicAdd(dst + 8, w * v1);
                 atomicAdd(dst + 9, w * v2);
                 atomicAdd(dst + 10, 1.f);
+            } else if (PH == 4) {          // 바닥 재기: 원자합만 뺀다
+                fl += w * (x0 + X0 + v0) + (float)aa;
             } else {                       // PH 1: S,L / PH 2: A,B / PH 3: 둘 다
                 const float dx0 = x0 - cx[3 * aa];
                 const float dx1 = x1 - cx[3 * aa + 1];
@@ -909,6 +912,7 @@ __global__ void agg_np(const float* __restrict__ x, const float* __restrict__ X,
             }
         }
     }
+    if (PH == 4) { atomicAdd(out, fl); return; }
     if (use_shared) {
         __syncthreads();
         for (int i = threadIdx.x; i < M * D; i += blockDim.x)
@@ -953,6 +957,14 @@ std::vector<torch::Tensor> aggregate_moments2(
     auto cX = (g1.slice(1, 4, 7) / W).contiguous();
     auto cv = (g1.slice(1, 7, 10) / W).contiguous();
 
+    if (merge == 2) {                    // 원자합을 뺀 바닥
+        auto z = torch::zeros({M, 1}, opt);
+        agg_np<1, 4><<<B, T, 0>>>(
+            x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
+            m.data_ptr<float>(), ip, nullptr, nullptr, nullptr, N, K, M, 0,
+            z.data_ptr<float>());
+        return {g1, z, z};
+    }
     // 위 삼각 6 개 -> 3x3 9 개로 되펴는 색인
     auto sy = torch::tensor({0, 1, 2, 1, 3, 4, 2, 4, 5},
                             opt.dtype(torch::kLong)).to(x.device());
