@@ -28,6 +28,11 @@ ap.add_argument("--color", type=float, nargs=3, default=[0.62, 0.44, 0.34],
 ap.add_argument("--color_jitter", type=float, default=0.04)
 ap.add_argument("--round", type=float, default=0.35,
                 help="모서리를 둥글리는 정도 (0 이면 직육면체, 1 이면 타원체)")
+ap.add_argument("--pieces", type=int, default=1,
+                help="긴 축으로 몇 덩어리를 만들지. 2 이상이면 사이를 띄운다 -- "
+                     "눌러 붙이는 장면을 만들려면 처음부터 떨어져 있어야 한다")
+ap.add_argument("--gap", type=float, default=0.06,
+                help="덩어리 사이 간격 (월드 단위)")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
@@ -51,6 +56,21 @@ if a.round > 0:
 else:
     g = g[np.abs(2 * g / np.array([sx, sy, sz])).max(1) <= 1.0]
 
+if a.pieces > 1:
+    # 전체 길이는 그대로 두고 덩어리와 틈으로 나눈다
+    piece = (sx - a.gap * (a.pieces - 1)) / a.pieces
+    keep = np.zeros(g.shape[0], dtype=bool)
+    shift = np.zeros(g.shape[0])
+    for i in range(a.pieces):
+        lo = -sx / 2 + i * (sx / a.pieces)
+        hi = lo + sx / a.pieces
+        m = (g[:, 0] >= lo) & (g[:, 0] < hi + (1e-9 if i == a.pieces - 1 else 0))
+        # 그 칸 안의 점을 piece 길이로 눌러 담고, 칸 중앙에 맞춘다
+        c = 0.5 * (lo + hi)
+        g[m, 0] = c + (g[m, 0] - c) * piece / (sx / a.pieces)
+        keep |= m
+    g = g[keep]
+    del shift
 N = g.shape[0]
 C0 = 0.28209479177387814
 col = np.clip(np.array(a.color) + rng.normal(0, a.color_jitter, (N, 3)), 0, 1)
