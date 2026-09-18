@@ -361,7 +361,8 @@ def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None, sub=None):
               and not any(t is not None and t.requires_grad
                           for t in (x, v, X, m, pa)))
     if use_dc:
-        g1, g2, g3 = _dc.aggregate_moments(x, X, v, m, idx, M)
+        g1, g2, g3 = (_dc.aggregate_moments2 if hasattr(_dc, "aggregate_moments2")
+                      else _dc.aggregate_moments)(x, X, v, m, idx, M)
         Wa = g1[:, 0].clamp(min=1e-12)
         Wi = Wa.unsqueeze(-1)
         cx, cX, cv = g1[:, 1:4] / Wi, g1[:, 4:7] / Wi, g1[:, 7:10] / Wi

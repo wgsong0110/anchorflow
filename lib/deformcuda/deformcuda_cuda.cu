@@ -730,6 +730,136 @@ std::vector<torch::Tensor> aggregate_moments(
     return {g1, g2, g3};
 }
 
+// ---- 집계 2 판: 짝이 아니라 **입자**마다 한 스레드 ----------------------------
+// 1 판은 스레드 하나가 (입자, 이웃) 짝 하나를 맡아서, 같은 입자의 x/X/v/m 을
+// K=16 번 다시 읽었다. 입자마다 맡기면 한 번만 읽는다 -- 전역 통행량이 16 분의 1.
+// 덧붙여 2 차 모멘트 두 판(12 + 18)을 하나(30)로 합쳤다. 공유 메모리가 48 KB 를
+// 넘어가므로 sm_80+ 의 옵트인(최대 99 KB)을 켠다. 짝 목록을 한 번 덜 읽는다.
+// 색인은 int32 로 받는다 -- long 이면 2200 만 개가 176 MB 이고, 이 커널은 대역이
+// 정한다.
+template <int D, int PH>
+__global__ void agg_np(const float* __restrict__ x, const float* __restrict__ X,
+                       const float* __restrict__ v, const float* __restrict__ m,
+                       const int* __restrict__ idx,
+                       const float* __restrict__ cx, const float* __restrict__ cX,
+                       const float* __restrict__ cv,
+                       int N, int K, int M, int use_shared,
+                       float* __restrict__ out) {
+    extern __shared__ float acc[];
+    float* dstbase = use_shared ? acc : out;
+    if (use_shared) {
+        for (int i = threadIdx.x; i < M * D; i += blockDim.x) acc[i] = 0.f;
+        __syncthreads();
+    }
+    for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < N;
+         n += gridDim.x * blockDim.x) {
+        const float w = m[n];
+        const float x0 = x[3 * n], x1 = x[3 * n + 1], x2 = x[3 * n + 2];
+        float X0 = 0.f, X1 = 0.f, X2 = 0.f, v0 = 0.f, v1 = 0.f, v2 = 0.f;
+        if (PH != 1) { X0 = X[3 * n]; X1 = X[3 * n + 1]; X2 = X[3 * n + 2]; }
+        if (PH != 2) { v0 = v[3 * n]; v1 = v[3 * n + 1]; v2 = v[3 * n + 2]; }
+        const long base = (long)n * K;
+        for (int j = 0; j < K; ++j) {
+            const int aa = idx[base + j];
+            float* dst = dstbase + (long)aa * D;
+            if (PH == 0) {
+                atomicAdd(dst + 0, w);
+                atomicAdd(dst + 1, w * x0);
+                atomicAdd(dst + 2, w * x1);
+                atomicAdd(dst + 3, w * x2);
+                atomicAdd(dst + 4, w * X0);
+                atomicAdd(dst + 5, w * X1);
+                atomicAdd(dst + 6, w * X2);
+                atomicAdd(dst + 7, w * v0);
+                atomicAdd(dst + 8, w * v1);
+                atomicAdd(dst + 9, w * v2);
+                atomicAdd(dst + 10, 1.f);
+            } else {                       // PH == 3: S,L,A,B 를 한 번에
+                const float dx0 = x0 - cx[3 * aa];
+                const float dx1 = x1 - cx[3 * aa + 1];
+                const float dx2 = x2 - cx[3 * aa + 2];
+                const float dX0 = X0 - cX[3 * aa];
+                const float dX1 = X1 - cX[3 * aa + 1];
+                const float dX2 = X2 - cX[3 * aa + 2];
+                const float dv0 = v0 - cv[3 * aa];
+                const float dv1 = v1 - cv[3 * aa + 1];
+                const float dv2 = v2 - cv[3 * aa + 2];
+                atomicAdd(dst + 0, w * dx0 * dx0); atomicAdd(dst + 1, w * dx0 * dx1);
+                atomicAdd(dst + 2, w * dx0 * dx2); atomicAdd(dst + 3, w * dx1 * dx0);
+                atomicAdd(dst + 4, w * dx1 * dx1); atomicAdd(dst + 5, w * dx1 * dx2);
+                atomicAdd(dst + 6, w * dx2 * dx0); atomicAdd(dst + 7, w * dx2 * dx1);
+                atomicAdd(dst + 8, w * dx2 * dx2);
+                atomicAdd(dst + 9,  w * (dx1 * dv2 - dx2 * dv1));
+                atomicAdd(dst + 10, w * (dx2 * dv0 - dx0 * dv2));
+                atomicAdd(dst + 11, w * (dx0 * dv1 - dx1 * dv0));
+                atomicAdd(dst + 12, w * dx0 * dX0); atomicAdd(dst + 13, w * dx0 * dX1);
+                atomicAdd(dst + 14, w * dx0 * dX2); atomicAdd(dst + 15, w * dx1 * dX0);
+                atomicAdd(dst + 16, w * dx1 * dX1); atomicAdd(dst + 17, w * dx1 * dX2);
+                atomicAdd(dst + 18, w * dx2 * dX0); atomicAdd(dst + 19, w * dx2 * dX1);
+                atomicAdd(dst + 20, w * dx2 * dX2);
+                atomicAdd(dst + 21, w * dX0 * dX0); atomicAdd(dst + 22, w * dX0 * dX1);
+                atomicAdd(dst + 23, w * dX0 * dX2); atomicAdd(dst + 24, w * dX1 * dX0);
+                atomicAdd(dst + 25, w * dX1 * dX1); atomicAdd(dst + 26, w * dX1 * dX2);
+                atomicAdd(dst + 27, w * dX2 * dX0); atomicAdd(dst + 28, w * dX2 * dX1);
+                atomicAdd(dst + 29, w * dX2 * dX2);
+            }
+        }
+    }
+    if (use_shared) {
+        __syncthreads();
+        for (int i = threadIdx.x; i < M * D; i += blockDim.x)
+            if (acc[i] != 0.f) atomicAdd(out + i, acc[i]);
+    }
+}
+
+static int agg_shared_ok(size_t bytes, const void* fn) {
+    // sm_80+ 는 블록당 동적 공유 메모리를 옵트인으로 99 KB 까지 늘릴 수 있다.
+    static int cap = -1;
+    if (cap < 0) {
+        int dev = 0; cudaGetDevice(&dev);
+        cudaDeviceGetAttribute(&cap, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
+    }
+    if ((int)bytes > cap) return 0;
+    cudaFuncSetAttribute(fn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bytes);
+    return 1;
+}
+
+std::vector<torch::Tensor> aggregate_moments2(
+        torch::Tensor x, torch::Tensor X, torch::Tensor v, torch::Tensor m,
+        torch::Tensor idx, int M) {
+    CHECK(x); CHECK(X); CHECK(v); CHECK(m); CHECK(idx);
+    const int N = x.size(0), K = idx.size(1);
+    auto opt = x.options();
+    auto i32 = idx.to(torch::kInt).contiguous();
+    const int* ip = i32.data_ptr<int>();
+
+    const int T = 256;
+    const int B = std::min<long>(320, ((long)N + T - 1) / T);
+
+    auto g1 = torch::zeros({M, 11}, opt);
+    size_t sh1 = (size_t)M * 11 * sizeof(float);
+    int us1 = agg_shared_ok(sh1, (const void*)agg_np<11, 0>);
+    agg_np<11, 0><<<B, T, us1 ? sh1 : 0>>>(
+        x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
+        m.data_ptr<float>(), ip, nullptr, nullptr, nullptr, N, K, M, us1,
+        g1.data_ptr<float>());
+
+    auto W = g1.select(1, 0).clamp_min(1e-12).unsqueeze(-1);
+    auto cx = (g1.slice(1, 1, 4) / W).contiguous();
+    auto cX = (g1.slice(1, 4, 7) / W).contiguous();
+    auto cv = (g1.slice(1, 7, 10) / W).contiguous();
+
+    auto g23 = torch::zeros({M, 30}, opt);
+    size_t sh2 = (size_t)M * 30 * sizeof(float);
+    int us2 = agg_shared_ok(sh2, (const void*)agg_np<30, 3>);
+    agg_np<30, 3><<<B, T, us2 ? sh2 : 0>>>(
+        x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
+        m.data_ptr<float>(), ip, cx.data_ptr<float>(), cX.data_ptr<float>(),
+        cv.data_ptr<float>(), N, K, M, us2, g23.data_ptr<float>());
+    return {g1, g23.slice(1, 0, 12).contiguous(),
+            g23.slice(1, 12, 30).contiguous()};
+}
+
 // ---------------------------------------------------------------- FPS
 // 반복 M 번, 각 반복이 (전체 최댓값 찾기) + (거리 갱신)이다. 파이토치로는 반복마다
 // argmax 와 minimum 이 따로 실행되어 커널이 M x 2 번 뜬다 (실측 136 ms).
@@ -792,6 +922,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("skin_jacobian", &skin_jacobian, "skinning and its Jacobian, fused");
     m.def("aggregate_moments", &aggregate_moments,
           "per-anchor mass-weighted moments, accumulated in shared memory");
+    m.def("aggregate_moments2", &aggregate_moments2,
+          "same moments, one thread per particle and the two second-order "
+          "passes merged");
     m.def("fps", &fps_cuda, "farthest point sampling, one kernel per pick");
     m.def("voxel_hash", &voxel_hash,
           "assign voxel ids with an open-addressing hash, no sort");

@@ -50,6 +50,17 @@ def aggregate_moments(x, X, v, m, idx, M):
                                       idx.contiguous(), int(M)))
 
 
+def aggregate_moments2(x, X, v, m, idx, M):
+    """같은 합인데 스레드 하나가 짝이 아니라 **입자** 하나를 맡고, 2 차 모멘트
+    두 판을 한 판으로 합친 것. 반환 형식은 aggregate_moments 와 같다.
+
+    덧셈 순서가 달라 마지막 자리 몇 개는 다를 수 있다 (부동소수점).
+    """
+    return tuple(_C.aggregate_moments2(x.contiguous(), X.contiguous(),
+                                       v.contiguous(), m.contiguous(),
+                                       idx.contiguous(), int(M)))
+
+
 def voxel_hash(x, offs, D1, D2, stride, ox, oy, oz, cell, table_size):
     """복셀 키 집합을 정렬 없이 만든다. -> keys [M] (정렬됨)
 
