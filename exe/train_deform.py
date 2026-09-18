@@ -76,6 +76,10 @@ ap.add_argument("--refps", action="store_true",
                 help="매 프레임 현재 배치에서 앵커를 FPS 로 다시 뽑는다. 기본은 "
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
                      "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
+ap.add_argument("--shape_pts", type=int, default=0,
+                help="모양 손실을 이 개수의 입자로만 잰다 (0 이면 전부). 손실이 "
+                     "입자 평균이라 부분표본도 불편추정이고, svdvals 가 2 만 개 "
+                     "3x3 에서 13 ms 라 여기가 한 스텝의 3 분의 1 이다")
 ap.add_argument("--gpu_data", type=int, default=1,
                 help="궤적을 GPU 에 상주시킨다. CPU 색인 + 전송이 한 스텝의 "
                      "5 분의 1 이라 그냥 올리는 쪽이 빠르다")

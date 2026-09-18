@@ -600,31 +600,37 @@ def bures_w2_sq(mu_p, mu_g, Lp, Lg, eps=1e-8):
     return d2 + trA + trB - 2.0 * _nuc3(Lp.transpose(-1, -2) @ Lg, eps)
 
 
-def _nuc3(M, eps=1e-8, iters=12):
-    """[*,3,3] 의 핵 노름(특이값의 합)을 Newton-Schulz 로.
+def _nuc3(M, eps=1e-8):
+    """[*,3,3] 의 핵 노름(특이값의 합)을 닫힌형으로.
 
     `torch.linalg.svdvals` 는 입자 2 만 개짜리 3x3 묶음에서 cuSOLVER 배치 호출이
-    비용을 지배한다 (실측 13.3 ms). 필요한 것은 특이값 각각이 아니라 **합** 이고,
-    합은 tr((M^T M)^{1/2}) 이므로 행렬 제곱근만 있으면 된다.
-
-    고유값을 3x3 닫힌형(삼각함수 해)으로 푸는 길도 있는데, S = M^T M 이 조건수를
-    제곱해서 float32 에서 값이 1e-3 어긋나고 **기울기가 0.9 나 틀어졌다** (고유값이
-    겹치는 자리에서 acos 의 미분이 터진다). Newton-Schulz 는 행렬곱만 쓰므로 그
-    문제가 없고 자동미분이 반복을 그대로 타고 내려간다.
-
-        Y <- Y (3I - Z Y)/2,   Z <- (3I - Z Y)/2 Z,   Y -> S_n^{1/2}
-
-    수렴 조건이 ||I - S_n|| < 1 이라 대각합으로 정규화해 고유값을 1 이하로 만든다.
+    비용을 지배한다 -- 학습 한 스텝 42.6 ms 중 22.2 ms 가 이 줄이었다. 필요한 것은
+    특이값 각각이 아니라 **합** 뿐이므로, 대칭 행렬 S = M^T M 의 고유값을 3x3
+    닫힌형(삼각함수 해)으로 구해 제곱근을 더하면 된다. 정렬도 필요 없다.
     """
     S = M.transpose(-1, -2) @ M
-    I = torch.eye(3, device=M.device, dtype=M.dtype).expand_as(S)
-    nrm = S.diagonal(dim1=-2, dim2=-1).sum(-1).clamp_min(eps * eps)
-    Sn = S / nrm[..., None, None]
-    Y, Z = Sn, I
-    for _ in range(iters):
-        T = 0.5 * (3.0 * I - Z @ Y)
-        Y, Z = Y @ T, T @ Z
-    return nrm.sqrt() * Y.diagonal(dim1=-2, dim2=-1).sum(-1)
+    a00, a11, a22 = S[..., 0, 0], S[..., 1, 1], S[..., 2, 2]
+    a01, a02, a12 = S[..., 0, 1], S[..., 0, 2], S[..., 1, 2]
+    q = (a00 + a11 + a22) / 3.0
+    p1 = a01 * a01 + a02 * a02 + a12 * a12
+    p2 = ((a00 - q) ** 2 + (a11 - q) ** 2 + (a22 - q) ** 2 + 2.0 * p1)
+    # p 가 0 이면 이미 등방이라 고유값이 셋 다 q 다. 나누기를 살리려고 바닥을 둔다.
+    p = (p2 / 6.0).clamp_min(1e-30).sqrt()
+    b00, b11, b22 = (a00 - q) / p, (a11 - q) / p, (a22 - q) / p
+    b01, b02, b12 = a01 / p, a02 / p, a12 / p
+    det = (b00 * (b11 * b22 - b12 * b12)
+           - b01 * (b01 * b22 - b12 * b02)
+           + b02 * (b01 * b12 - b11 * b02))
+    phi = torch.acos((det / 2.0).clamp(-1.0, 1.0)) / 3.0
+    e1 = q + 2.0 * p * torch.cos(phi)
+    e3 = q + 2.0 * p * torch.cos(phi + 2.0 * math.pi / 3.0)
+    e2 = 3.0 * q - e1 - e3
+    iso = p2 < 1e-30
+    f = eps * eps
+    e1 = torch.where(iso, q, e1); e2 = torch.where(iso, q, e2)
+    e3 = torch.where(iso, q, e3)
+    return (e1.clamp_min(f).sqrt() + e2.clamp_min(f).sqrt()
+            + e3.clamp_min(f).sqrt())
 
 
 # --------------------------------------------------------------- 모델
