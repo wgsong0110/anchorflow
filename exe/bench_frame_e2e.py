@@ -126,12 +126,19 @@ rows["매 프레임 FPS + kNN (앵커 512)"] = timeit(frame_old) + t_ras
 # ---- t=0 에만 FPS, 이후 앵커는 모델 출력으로 갱신, 소속은 매 프레임 kNN ----
 # 앵커 선정만 빠지고 kNN 과 집계는 그대로 든다. 복셀이 셋을 한 번에 접는 것과
 # 견주려면 이 구성이 맞는 비교 대상이다.
-def frame_track():
+EE0 = torch.cat([MAT.reshape(1, -1).expand(a.n_anchors, -1),
+                 bc_features(p0, cfg) / H], -1)
+
+
+def frame_track(use_graph=False):
     ii, _ = anchor_knn(x, p0, a.k)
     ff, _ = aggregate(x, v, X, m, ii, a.n_anchors, H, pa=p0)
-    ee = torch.cat([MAT.reshape(1, -1).expand(a.n_anchors, -1),
-                    bc_features(p0, cfg) / H], -1)
-    dd, rr, tt = net0(p0, torch.cat([ff, ee], -1), FRAME_DT)
+    if use_graph:
+        _gin.copy_(torch.cat([ff, EE0], -1))
+        _graph.replay()
+        dd, rr, tt = _gout
+    else:
+        dd, rr, tt = net0(p0, torch.cat([ff, EE0], -1), FRAME_DT)
     skin_with_jacobian(x, p0, dd, rr, tt, ii, H)
 
 
@@ -175,6 +182,10 @@ def _replay():
     _gin.copy_(torch.cat([_ff, _ee], -1))
     _graph.replay()
 
+
+if _graph is not None:
+    rows["t=0 FPS 후 추적 + kNN + CUDA 그래프"] = \
+        timeit(lambda: frame_track(True)) + t_ras
 
 BD = [("kNN (가우시안 x 앵커)", lambda: anchor_knn(x, p0, a.k)),
       ("집계 (앵커 특징)", lambda: aggregate(x, v, X, m, _ii, a.n_anchors, H, pa=p0)),
