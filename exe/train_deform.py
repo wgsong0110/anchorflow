@@ -76,6 +76,11 @@ ap.add_argument("--refps", action="store_true",
                 help="매 프레임 현재 배치에서 앵커를 FPS 로 다시 뽑는다. 기본은 "
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
                      "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
+ap.add_argument("--gpu_data", type=int, default=1,
+                help="궤적을 GPU 에 상주시킨다. CPU 색인 + 전송이 한 스텝의 "
+                     "5 분의 1 이라 그냥 올리는 쪽이 빠르다")
+ap.add_argument("--gpu_data_mb", type=float, default=8000.0,
+                help="이 용량을 넘으면 GPU 상주를 건너뛴다")
 ap.add_argument("--motion_frac", type=float, default=0.0,
                 help="창을 뽑을 때 GT 변위가 큰 프레임을 이 비율만큼 우선한다. "
                      "이 궤적은 100 프레임 중 ~30 만 움직이고 나머지는 완전히 "
@@ -111,6 +116,17 @@ for f in files:
     (held if tag in hold else TR).append((tag, d))
 if not TR:
     raise SystemExit("학습할 궤적이 없다")
+_MB = sum(sum(v.numel() * v.element_size() for v in d.values()
+               if torch.is_tensor(v)) for _t, d in TR + held) / 1e6
+if a.gpu_data and _MB < a.gpu_data_mb:
+    for _t, d in TR + held:
+        for k in ("x", "v", "F"):
+            if k in d and torch.is_tensor(d[k]):
+                d[k] = d[k].to(dev)
+    print(f"[데이터] 궤적 {_MB:.0f} MB 를 GPU 에 올렸다", flush=True)
+elif a.gpu_data:
+    print(f"[데이터] 궤적이 {_MB:.0f} MB 라 GPU 상주를 건너뛴다 "
+          f"(--gpu_data_mb {a.gpu_data_mb:.0f})", flush=True)
 print(f"[데이터] 학습 {len(TR)} 궤적, 홀드아웃 {len(held)} 궤적", flush=True)
 for tag, d in TR + held:
     c = d["cfg"]
@@ -187,11 +203,16 @@ def build(n_feat):
     print(f"[모델] 입력 {n_feat}, 파라미터 {n/1e6:.2f}M", flush=True)
 
 
-def take(t_cpu, idx_gpu):
-    """CPU 에 있는 궤적에서 부분표본을 떼어 GPU 로. 색인을 CPU 에서 하지 않으면
-    torch 가 장치가 섞였다고 거부한다 -- 궤적 전체(궤적 7 개 x 101 x 40000 x 3)를
-    GPU 에 올릴 수는 없으므로 CPU 색인이 맞다."""
-    return t_cpu[idx_gpu.cpu()].to(dev, non_blocking=True)
+def take(t, idx_gpu):
+    """궤적에서 부분표본을 떼어 GPU 로.
+
+    궤적이 GPU 에 올라가 있으면 그냥 색인한다 (0.013 ms). CPU 에 있으면 색인을
+    CPU 에서 해야 하고 (장치가 섞이면 torch 가 거부한다) 그것이 위치 1.61 ms,
+    F 4.08 ms 로 한 스텝의 5 분의 1 을 먹는다 -- 궤적 하나가 98 MB 라 다 올려도
+    7 개에 700 MB 다. 못 올릴 이유가 없었다."""
+    if t.is_cuda:
+        return t[idx_gpu]
+    return t[idx_gpu.cpu()].to(dev, non_blocking=True)
 
 
 VOX_OFFS = (np.array([np.random.RandomState(i).rand(3)
