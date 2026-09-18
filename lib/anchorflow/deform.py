@@ -466,7 +466,39 @@ def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None, sub=None):
 
 
 # --------------------------------------------------------------- 스키닝
-def skin(x, p, dp, log_r, log_t, idx, h):
+def damage_gate(dmg, eps=1e-6):
+    """손상 [N,k] 를 softmax 로짓에 더할 항으로. d -> 1 이면 그 앵커가 배제된다.
+
+    곱셈 게이트 (1-d) 를 로그로 넣으므로 가중치는 여전히 평범한 softmax 다.
+    """
+    return torch.log((1.0 - dmg).clamp_min(eps))
+
+
+def bond_stretch(x, p, idx, ref_d):
+    """결합 (가우시안 i, 앵커 a) 이 정준 거리 대비 몇 배로 늘어났나 - 1.
+
+    손상을 **기하가 몰고** 네트워크는 "얼마나 잘 망가지는 재질인가" 만 정하게
+    하려는 것이다. 이 분담이 CD-MPM 이 하는 것과 같다.
+    """
+    d = (x.unsqueeze(1) - p[idx]).norm(dim=-1)
+    return (d / ref_d.clamp_min(1e-9) - 1.0).clamp_min(0.0)
+
+
+def carry_damage(dmg_old, idx_old, idx_new):
+    """kNN 집합이 바뀔 때 결합별 손상을 옮긴다.
+
+    새 결합이 옛 목록에 있으면 그 값을, 없으면 **그 가우시안의 최대 손상**을
+    물려준다 -- 0 으로 두면 찢어진 가우시안이 앵커가 다시 가까워질 때 슬쩍
+    재결합해 버린다.
+    """
+    same = idx_new.unsqueeze(-1) == idx_old.unsqueeze(-2)          # [N,k,k]
+    hit = same.any(-1)
+    pos = same.float().argmax(-1)
+    got = torch.gather(dmg_old, 1, pos)
+    return torch.where(hit, got, dmg_old.max(1, keepdim=True).values.expand_as(got))
+
+
+def skin(x, p, dp, log_r, log_t, idx, h, dmg=None):
     """phi(x) = x + sum_a w_a(x) dp_a. w 는 kNN 위 softmax.
 
     logit_a = -d_a^2 / (2 r_a^2),  온도는 가우시안별로 이웃의 t_a 를 **고정**
@@ -479,7 +511,10 @@ def skin(x, p, dp, log_r, log_t, idx, h):
     # 섞는 커널은 고정 폭 h 다. 학습되는 양에 의존하면 온도가 다시 반경과 얽힌다.
     u = torch.softmax(-0.5 * d2 / (h * h), dim=1)
     tau = (u * log_t[idx].exp()).sum(1, keepdim=True).clamp(min=1e-4)
-    w = torch.softmax(logit / tau, dim=1)          # [N,k]
+    z = logit / tau
+    if dmg is not None:
+        z = z + damage_gate(dmg)                   # 손상된 결합은 배제된다
+    w = torch.softmax(z, dim=1)                    # [N,k]
     return x + (w.unsqueeze(-1) * dp[idx]).sum(1), w
 
 
@@ -494,7 +529,7 @@ def _outer_sum(A, B):
     return torch.stack([(A[..., i:i + 1] * B).sum(1) for i in range(3)], dim=1)
 
 
-def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h):
+def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h, dmg=None):
     """스키닝과 그 **해석적** 야코비안. 외적을 한 번만 만든다.
 
     phi(x) = x + sum_a w_a(x) dp_a 이고 w 가 x 에 의존하므로 J = I + sum_a dp_a (x) grad w_a
@@ -521,8 +556,9 @@ def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h):
     # x 도 앵커 출력도 grad 를 요구하지 않으므로 커널을 그대로 쓸 수 있다.
     _need = any(t is not None and t.requires_grad
                 for t in (x, p, dp, log_r, log_t))
+    # 커널에는 손상 게이트가 없다. 손상을 쓰면 토치 경로로 간다.
     if (_HAVE_DC and x.is_cuda and x.dtype == torch.float32
-            and idx.shape[1] in _DC_K and not _need):
+            and idx.shape[1] in _DC_K and not _need and dmg is None):
         o, J = _dc.skin_jacobian(x, p, dp, log_r, log_t, idx, h)
         return o, None, J
     pa = p[idx]                                    # [N,k,3]
@@ -533,7 +569,10 @@ def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h):
     u = torch.softmax(-0.5 * d2 / (h * h), dim=1)
     ta = log_t[idx].exp()
     tau = (u * ta).sum(1, keepdim=True).clamp(min=1e-4)     # [N,1]
-    w = torch.softmax(g / tau, dim=1)
+    # 손상 게이트는 x 에 의존하지 않는 상태량이므로 softmax 의 미분 구조가
+    # 그대로다 -- 아래 야코비안 유도가 손대지 않고 성립한다.
+    w = torch.softmax(g / tau + (0.0 if dmg is None else damage_gate(dmg)),
+                      dim=1)
     dpa = dp[idx]                                  # [N,k,3]
     wdp = (w.unsqueeze(-1) * dpa).sum(1)           # [N,3]
     out = x + wdp
@@ -611,6 +650,7 @@ class DeformNet(nn.Module):
     """
 
     def __init__(self, n_feat, hidden=128, depth=4, heads=4, n_static=0,
+                 damage=False,
                  scale=1.0, h=1.0, ext=1.0, zero_init=True, seed=0):
         super().__init__()
         self.scale = scale                 # 변위 단위 (전형적 한 프레임 변위)
@@ -636,7 +676,12 @@ class DeformNet(nn.Module):
                              seed=seed)
         self.blocks = nn.ModuleList([RelBlock(hidden, heads)
                                      for _ in range(depth)])
-        self.dec = mlp([hidden, hidden, 5], layernorm=False)
+        # 손상을 쓰면 채널을 하나 더 낸다: 앵커별 **손상률**. softplus 로 통과시켜
+        # 부호를 구조적으로 막아두면 손상이 줄어드는 일이 원천적으로 없어져
+        # 파괴의 비가역성이 공짜로 보장된다.
+        self.damage = bool(damage)
+        self.dec = mlp([hidden, hidden, 6 if self.damage else 5],
+                       layernorm=False)
         if zero_init:
             # 출력이 거의 0 이면 dp~0, r~h, tau~1 -- 아무것도 움직이지 않는 항등
             # 변형에서 시작한다. 학습이 "가만히 있기" 를 먼저 배울 필요가 없다.
@@ -691,8 +736,12 @@ class DeformNet(nn.Module):
         dp = o[:, :3] * self.scale
         log_r = o[:, 3] + math.log(self.h)
         log_t = o[:, 4]
-        return dp, log_r.clamp(math.log(self.h) - 3.0, math.log(self.h) + 3.0), \
-            log_t.clamp(-4.0, 4.0)
+        out = (dp, log_r.clamp(math.log(self.h) - 3.0, math.log(self.h) + 3.0),
+               log_t.clamp(-4.0, 4.0))
+        if self.damage:
+            # 손상률은 0 이상. 초기에 0 근처에서 시작하도록 -3 만큼 내려둔다
+            out = out + (Fn.softplus(o[:, 5] - 3.0),)
+        return out
 
 
 def bc_features(p, cfg):

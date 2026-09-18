@@ -76,6 +76,14 @@ ap.add_argument("--refps", action="store_true",
                 help="매 프레임 현재 배치에서 앵커를 FPS 로 다시 뽑는다. 기본은 "
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
                      "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
+ap.add_argument("--damage", action="store_true",
+                help="앵커마다 **손상률**을 하나 더 내게 하고, 결합(가우시안,앵커)별 "
+                     "손상을 쌓아 스키닝 가중치를 (1-d) 로 막는다. d->1 이면 그 "
+                     "앵커를 더는 따라가지 않으므로 조각이 갈라진다")
+ap.add_argument("--lambda_dmg", type=float, default=1.0,
+                help="손상 지도 가중치. 정답은 그 결합이 GT 에서 실제로 늘어난 배율")
+ap.add_argument("--dmg_thresh", type=float, default=2.0,
+                help="GT 결합 길이가 이 배가 되면 손상 1 로 본다")
 ap.add_argument("--shape_pts", type=int, default=0,
                 help="모양 손실을 이 개수의 입자로만 잰다 (0 이면 전부). 손실이 "
                      "입자 평균이라 부분표본도 불편추정이고, svdvals 가 2 만 개 "
@@ -105,7 +113,8 @@ torch.manual_seed(a.seed)
 from anchorflow import deform                                  # noqa: E402
 from anchorflow import voxel                                    # noqa: E402
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
-                               bc_features, bures_w2_sq, fps, grid_knn,
+                               bc_features, bond_stretch, bures_w2_sq,
+                               carry_damage, fps, grid_knn,
                                jacobian_of, skin)
 
 # ---------------------------------------------------------------- 데이터
@@ -201,7 +210,8 @@ step0 = 0
 def build(n_feat):
     global net, opt
     net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth, heads=a.heads,
-                    scale=0.02 * EXT, h=H, ext=EXT, seed=a.seed).to(dev)
+                    scale=0.02 * EXT, h=H, ext=EXT, seed=a.seed,
+                    damage=a.damage).to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=a.lr)
     n = sum(p.numel() for p in net.parameters())
     print(f"[모델] 입력 {n_feat}, 파라미터 {n/1e6:.2f}M", flush=True)
@@ -255,7 +265,8 @@ def vox_feats(d, gsel, x, v):
     return vb.pos, feat, idx
 
 
-def step_once(d, t, gsel, p, x, v, need_J=True):
+def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
+              x0=None, p0=None):
     """한 프레임. -> (x_next, p_next, v_next, J, dp, aidx_next)
 
     aidx_next 는 --refps 일 때만 뜻이 있다: 다음 프레임의 앵커가 **현재 부분표본의
@@ -272,8 +283,18 @@ def step_once(d, t, gsel, p, x, v, need_J=True):
                             pa=p)
     extra = torch.cat([mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0], N_MAT),
                        bc_features(p, cfg) / H], -1)
-    dp, log_r, log_t = net(p, torch.cat([feat, extra], -1), FRAME_DT)
-    x2, w = skin(x, p, dp, log_r, log_t, idx, H)
+    out = net(p, torch.cat([feat, extra], -1), FRAME_DT)
+    dp, log_r, log_t = out[0], out[1], out[2]
+    rate = out[3] if a.damage else None
+    if a.damage:
+        # kNN 집합이 바뀌면 결합별 손상을 옮겨 붙인다
+        dmg = (torch.zeros_like(idx, dtype=x.dtype) if dmg is None
+               else carry_damage(dmg, idx_prev, idx))
+        # 얼마나 늘어났나는 기하가 준다. 네트워크는 "얼마나 잘 망가지나" 만 정한다
+        ref = (x0.unsqueeze(1) - p0[idx]).norm(dim=-1)
+        s_b = bond_stretch(x, p, idx, ref)
+        dmg = (dmg + FRAME_DT * rate[idx] * s_b).clamp(max=1.0)
+    x2, w = skin(x, p, dp, log_r, log_t, idx, H, dmg=dmg)
     if a.voxel:
         ai, p_next = None, p + dp     # 다음 프레임에 어차피 다시 뽑는다
     elif a.refps:
@@ -283,8 +304,9 @@ def step_once(d, t, gsel, p, x, v, need_J=True):
         ai, p_next = None, p + dp
     J = None
     if need_J:
-        J = jacobian_of(lambda q: skin(q, p, dp, log_r, log_t, idx, H)[0], x)
-    return x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai
+        J = jacobian_of(
+            lambda q: skin(q, p, dp, log_r, log_t, idx, H, dmg=dmg)[0], x)
+    return x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, idx
 
 
 def window(d, t0, L, gsel):
@@ -301,13 +323,28 @@ def window(d, t0, L, gsel):
     # 다시 뽑으므로 시작도 부분표본 안에서 잡는다.
     ai = fps(x, a.n_anchors, a.seed) if a.refps else None
     p = x[ai] if a.refps else take(d["x"][t0], AIDX)
-    loss_x = loss_J = loss_a = 0.0
-    still = a_rel = 0.0
+    loss_x = loss_J = loss_a = loss_d = 0.0
+    still = a_rel = d_rel = 0.0
     x_still = x.clone()
+    x0w, p0w = x.clone(), p.clone()          # 손상의 기준 배치
+    dmg, idx_prev = None, None
     for i in range(L):
         ai_now = ai
-        x2, p, v, J, dp, ai = step_once(d, t0 + i, gsel, p, x, v,
-                                        need_J=a.lambda_J > 0)
+        x2, p, v, J, dp, ai, dmg, idx_prev = step_once(
+            d, t0 + i, gsel, p, x, v, need_J=a.lambda_J > 0,
+            dmg=dmg, idx_prev=idx_prev, x0=x0w, p0=p0w)
+        if a.damage:
+            # 정답: 그 결합이 GT 에서 실제로 늘어난 배율. 앵커도 가우시안이라
+            # 양끝의 GT 위치를 그대로 집을 수 있다 (이웃 탐색이 필요 없다).
+            gx = take(d["x"][t0 + i + 1], gsel)
+            gp = (gx[ai_now] if a.refps else take(d["x"][t0 + i + 1], AIDX))
+            refw = (x0w.unsqueeze(1) - p0w[idx_prev]).norm(dim=-1)
+            sg = ((gx.unsqueeze(1) - gp[idx_prev]).norm(dim=-1)
+                  / refw.clamp_min(1e-9) - 1.0)
+            tgt = (sg / max(a.dmg_thresh - 1.0, 1e-6)).clamp(0.0, 1.0)
+            ld = ((dmg - tgt) ** 2).mean()
+            loss_d = loss_d + ld
+            d_rel = d_rel + float(dmg.mean())
         # 앵커의 정답 변위: 앵커가 가우시안이므로 그 가우시안의 GT 변위 그대로다
         if a.voxel:
             # 복셀 앵커는 특정 가우시안이 아니라 그 칸의 질량중심이라, 정답 변위도
@@ -342,7 +379,9 @@ def window(d, t0, L, gsel):
         x = x2
     return (loss_x / L,
             (loss_J / L if a.lambda_J > 0 else torch.zeros((), device=dev)),
-            still / L, loss_a / L, a_rel / L)
+            still / L, loss_a / L, a_rel / L,
+            (loss_d / L if a.damage else torch.zeros((), device=dev)),
+            d_rel / L)
 
 
 # 특징 차원을 한 번 재서 모델을 세운다
@@ -420,8 +459,8 @@ pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
 for it in pbar:
     L = a.unroll if it < a.unroll_at * a.iters else a.unroll_final
     opt.zero_grad(set_to_none=True)
-    lx = lJ = la = 0.0
-    still = arel = 0.0
+    lx = lJ = la = ldm = 0.0
+    still = arel = dmean = 0.0
     for _ in range(a.batch):
         tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
         T = d["x"].shape[0] - a.hold_last
@@ -434,22 +473,27 @@ for it in pbar:
             t0 = int(torch.randint(1, hi, (1,), generator=gen, device=dev))
         gsel = torch.randperm(N_FULL, generator=gen,
                               device=dev)[:a.n_pts].sort().values
-        wx, wJ, wst, wa, wrel = window(d, t0, L, gsel)
+        wx, wJ, wst, wa, wrel, wd, wdm = window(d, t0, L, gsel)
         # 창마다 바로 역전파해 누적한다 -- 창 여러 개의 그래프를 동시에 들고 있으면
         # 야코비안까지 붙어 메모리가 배치 수만큼 늘어난다
-        ((wx + a.lambda_J * wJ + a.lambda_anchor * wa) / a.batch).backward()
+        ((wx + a.lambda_J * wJ + a.lambda_anchor * wa
+          + a.lambda_dmg * wd) / a.batch).backward()
         lx = lx + float(wx) / a.batch
         lJ = lJ + float(wJ) / a.batch
         still = still + wst / a.batch
         la = la + float(wa) / a.batch
         arel = arel + wrel / a.batch
+        ldm = ldm + float(wd) / a.batch
+        dmean = dmean + wdm / a.batch
     gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
     opt.step()
-    hist.append((lx, lJ, still, la, arel))
+    hist.append((lx, lJ, still, la, arel, ldm, dmean))
     if it % 20 == 0:
         pbar.set_postfix(x=f"{100*lx**0.5:.3f}%", 정지=f"{100*still**0.5:.3f}%",
                          비=f"{(lx/max(still,1e-20))**0.5:.2f}",
                          앵커비=f"{arel:.2f}", J=f"{lJ:.1e}", L=L,
+                         **({"손상": f"{dmean:.3f}", "d손실": f"{ldm:.1e}"}
+                            if a.damage else {}),
                          gn=f"{float(gn):.1e}")
     if (it + 1) % a.save_every == 0 or it == a.iters - 1:
         torch.save({"net": net.state_dict(), "opt": opt.state_dict(),
@@ -468,9 +512,13 @@ def rollout(d, t0, L, gsel):
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
     errs, stills = [], []
     x_still = x.clone()
+    x0e, p0e = x.clone(), p.clone()
+    dmg_e, idx_e = None, None
     for i in range(L):
         with torch.enable_grad():
-            x2, p, v, _, _, _ = step_once(d, t0 + i, gsel, p, x, v, need_J=False)
+            x2, p, v, _, _, _, dmg_e, idx_e = step_once(
+                d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
+                idx_prev=idx_e, x0=x0e, p0=p0e)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
         gt = take(d["x"][t0 + i + 1], gsel)
         errs.append(float((x2 - gt).norm(dim=-1).mean()) / EXT)
