@@ -24,6 +24,10 @@ ap.add_argument("--n", type=int, default=1381100)
 ap.add_argument("--m", type=int, default=512)
 ap.add_argument("--k", type=int, default=16)
 ap.add_argument("--reps", type=int, default=30)
+ap.add_argument("--coherent", action="store_true",
+                help="입자를 공간순으로 정렬한다. 실제 가우시안 파일이 그렇게 "
+                     "담겨 있고, 그러면 이웃 입자들이 같은 앵커를 골라 원자합 "
+                     "경합 양상이 완전히 달라진다 -- 난수 구름으로만 재면 속는다")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
@@ -33,6 +37,11 @@ x = torch.rand(a.n, 3, device=dev)
 X = x + 0.01 * torch.randn_like(x)
 v = 0.1 * torch.randn_like(x)
 m = torch.rand(a.n, device=dev) + 0.5
+if a.coherent:
+    c = (x * 64).long().clamp(0, 63)
+    key = (c[:, 0] * 64 + c[:, 1]) * 64 + c[:, 2]
+    o = key.argsort()
+    x, X, v, m = x[o].contiguous(), X[o].contiguous(), v[o].contiguous(), m[o].contiguous()
 p = x[fps(x, a.m)]
 idx, _ = anchor_knn(x, p, a.k)
 print(f"[설정] 입자 {a.n}, 앵커 {a.m}, 이웃 {a.k}, 짝 {a.n * a.k / 1e6:.1f}M",

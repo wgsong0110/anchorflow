@@ -760,7 +760,13 @@ __global__ void agg_np(const float* __restrict__ x, const float* __restrict__ X,
         if (PH != 2) { v0 = v[3 * n]; v1 = v[3 * n + 1]; v2 = v[3 * n + 2]; }
         if (PH == 0) { X0 = X[3 * n]; X1 = X[3 * n + 1]; X2 = X[3 * n + 2]; }
         const long base = (long)n * K;
-        for (int j = 0; j < K; ++j) {
+        // 이웃 순서를 레인마다 어긋나게 돈다. 가우시안 파일은 공간순으로 담겨
+        // 있어서, 이웃한 입자들은 **같은 앵커 16 개**를 고른다. 순서대로 돌면
+        // 한 워프의 32 레인이 같은 주소에 동시에 원자합을 걸어 하드웨어가 그것을
+        // 줄 세운다. 시작 위치만 어긋내도 같은 시점에 서로 다른 앵커를 친다.
+        const int off = (int)(threadIdx.x % (unsigned)K);   // K 가 2 의 거듭제곱이 아닐 수도 있다
+        for (int jj = 0; jj < K; ++jj) {
+            const int j = (jj + off) < K ? (jj + off) : (jj + off - K);
             const int aa = idx[base + j];
             float* dst = dstbase + (long)aa * D;
             if (PH == 0) {
