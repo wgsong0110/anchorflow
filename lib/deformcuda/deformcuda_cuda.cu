@@ -609,6 +609,99 @@ std::vector<torch::Tensor> voxel_moments(
     return {g1, g2, g3, cx, cX, cv};
 }
 
+// ---------------------------------------------------------------- 격자 kNN
+// 브루트포스 kNN 은 가우시안마다 앵커 512 개를 전부 재고 16 칸짜리 레지스터
+// 삽입정렬을 돌린다 (실측 3.4 ms). 앵커를 성긴 격자에 담아 두면 3x3x3 만 봐도
+// 되어 후보가 500 개에서 50 개로 준다.
+//
+// **근사가 아니다.** 질의점이 자기 칸 안에 있으므로, 체비셰프 거리 R 칸 밖의
+// 어떤 점도 질의점에서 R*cell 보다 가깝지 않다. 그래서 k 번째 거리가 R*cell
+// 이하이면 그 답은 전수조사와 같다. 아니면 R 을 키워 다시 훑는다.
+template <int K>
+__global__ void knn_grid_kernel(const float* __restrict__ x,
+                                const float* __restrict__ ps,   // 칸 순으로 정렬된 앵커
+                                const long* __restrict__ order, // 원래 앵커 번호
+                                const int* __restrict__ start,  // [C+1] 칸 시작
+                                int N, int D0, int D1, int D2,
+                                float ox, float oy, float oz, float cell,
+                                int Rmax,
+                                long* __restrict__ oidx, float* __restrict__ od) {
+    const int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N) return;
+    const float qx = x[3 * n], qy = x[3 * n + 1], qz = x[3 * n + 2];
+    // 질의점이 격자 밖이어도 자를 필요가 없다. 음수/초과 칸 번호를 그대로 두고
+    // 범위 밖 칸만 건너뛰면 위의 R*cell 보장이 그대로 성립한다.
+    const int cx = (int)floorf((qx - ox) / cell);
+    const int cy = (int)floorf((qy - oy) / cell);
+    const int cz = (int)floorf((qz - oz) / cell);
+
+    float bd[K]; int bi[K];
+    for (int R = 1; R <= Rmax; ++R) {
+#pragma unroll
+        for (int i = 0; i < K; ++i) { bd[i] = FLT_MAX; bi[i] = -1; }
+        for (int dz = -R; dz <= R; ++dz) {
+            const int iz = cz + dz;
+            if (iz < 0 || iz >= D2) continue;
+            for (int dy = -R; dy <= R; ++dy) {
+                const int iy = cy + dy;
+                if (iy < 0 || iy >= D1) continue;
+                for (int dx = -R; dx <= R; ++dx) {
+                    const int ix = cx + dx;
+                    if (ix < 0 || ix >= D0) continue;
+                    const int c = (ix * D1 + iy) * D2 + iz;
+                    const int e = start[c + 1];
+                    for (int a = start[c]; a < e; ++a) {
+                        const float ex = qx - ps[3 * a], ey = qy - ps[3 * a + 1],
+                                    ez = qz - ps[3 * a + 2];
+                        const float d2 = ex * ex + ey * ey + ez * ez;
+                        if (d2 >= bd[K - 1]) continue;
+                        int pos = 0;
+#pragma unroll
+                        for (int j = 0; j < K; ++j) pos += (bd[j] < d2);
+#pragma unroll
+                        for (int j = K - 1; j > 0; --j)
+                            if (j > pos) { bd[j] = bd[j - 1]; bi[j] = bi[j - 1]; }
+                        bd[pos] = d2; bi[pos] = a;
+                    }
+                }
+            }
+        }
+        const float guard = (float)R * cell;
+        if (bi[K - 1] >= 0 && bd[K - 1] <= guard * guard) break;
+    }
+#pragma unroll
+    for (int i = 0; i < K; ++i) {
+        oidx[(long)n * K + i] = bi[i] >= 0 ? order[bi[i]] : 0;
+        od[(long)n * K + i] = bi[i] >= 0 ? sqrtf(bd[i]) : FLT_MAX;
+    }
+}
+
+std::vector<torch::Tensor> knn_grid(torch::Tensor x, torch::Tensor ps,
+                                    torch::Tensor order, torch::Tensor start,
+                                    int D0, int D1, int D2,
+                                    double ox, double oy, double oz,
+                                    double cell, int K, int Rmax) {
+    CHECK(x); CHECK(ps); CHECK(order); CHECK(start);
+    const int N = x.size(0);
+    auto oidx = torch::empty({N, K}, x.options().dtype(torch::kLong));
+    auto od = torch::empty({N, K}, x.options());
+    const int T = 128, B = (N + T - 1) / T;
+#define KG_CASE(KK)                                                           \
+    case KK:                                                                  \
+        knn_grid_kernel<KK><<<B, T>>>(                                        \
+            x.data_ptr<float>(), ps.data_ptr<float>(), order.data_ptr<long>(),\
+            start.data_ptr<int>(), N, D0, D1, D2, (float)ox, (float)oy,       \
+            (float)oz, (float)cell, Rmax, oidx.data_ptr<long>(),              \
+            od.data_ptr<float>());                                            \
+        break;
+    switch (K) {
+        KG_CASE(4) KG_CASE(8) KG_CASE(12) KG_CASE(16) KG_CASE(24) KG_CASE(32)
+        default: TORCH_CHECK(false, "knn_grid: K not compiled in");
+    }
+#undef KG_CASE
+    return {oidx, od};
+}
+
 // ---------------------------------------------------------------- 집계
 // 앵커별로 자기 가우시안들을 질량 가중으로 요약한다. 파이토치 쪽은 [N*k, 41]
 // 짜리 텐서를 만들어 index_add_ 로 흩뿌리는데, 입자 138 만 x k=16 이면 그것만
@@ -969,6 +1062,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "second-order passes into one",
           py::arg("x"), py::arg("X"), py::arg("v"), py::arg("m"),
           py::arg("idx"), py::arg("M"), py::arg("merge") = 0);
+    m.def("knn_grid", &knn_grid,
+          "exact kNN over anchors bucketed into a uniform grid");
     m.def("fps", &fps_cuda, "farthest point sampling, one kernel per pick");
     m.def("voxel_hash", &voxel_hash,
           "assign voxel ids with an open-addressing hash, no sort");

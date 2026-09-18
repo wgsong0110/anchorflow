@@ -35,6 +35,34 @@ def skin_jacobian(x, p, dp, log_r, log_t, idx, h, tau_min=1e-4):
                                   float(h), float(tau_min)))
 
 
+def knn_grid(x, p, k, occ=2.0):
+    """앵커를 성긴 격자에 담아 3x3x3 만 보는 kNN. 전수조사와 **같은 답**이다.
+
+    격자 만들기는 앵커 수가 작아 (보통 512~4096) 토치로 해도 수십 마이크로초다.
+    칸 크기는 칸당 앵커가 평균 `occ` 개가 되게 잡는다 -- 너무 성기면 후보가
+    많아지고, 너무 잘면 R 을 키워 다시 훑는 일이 잦아진다.
+    """
+    M = p.shape[0]
+    lo = p.min(0).values - 1e-6
+    hi = p.max(0).values + 1e-6
+    span = (hi - lo).clamp(min=1e-9)
+    cell = float((span.prod() * occ / max(M, 1)) ** (1.0 / 3.0))
+    cell = max(cell, float(span.max()) * 1e-4)
+    dims = (span / cell).ceil().long().clamp(min=1)
+    D0, D1, D2 = (int(d) for d in dims)
+    ci = ((p - lo) / cell).long().clamp_(min=0)
+    ci = torch.minimum(ci, dims - 1)
+    flat = (ci[:, 0] * D1 + ci[:, 1]) * D2 + ci[:, 2]
+    order = flat.argsort()
+    cnt = torch.bincount(flat, minlength=D0 * D1 * D2)
+    start = torch.cat([torch.zeros(1, dtype=torch.long, device=p.device),
+                       cnt.cumsum(0)]).int().contiguous()
+    ps = p[order].contiguous()
+    return tuple(_C.knn_grid(x.contiguous(), ps, order.contiguous(), start,
+                             D0, D1, D2, float(lo[0]), float(lo[1]),
+                             float(lo[2]), cell, int(k), int(max(D0, D1, D2))))
+
+
 def aggregate_moments(x, X, v, m, idx, M):
     """앵커별 질량 가중 모멘트. -> (g1 [M,11], g2 [M,12], g3 [M,18])
 

@@ -94,4 +94,14 @@ for frac in (0.25, 0.1):
           f"앵커 무게중심 상대차 중앙 {rel.median():.2e} 최대 {rel.max():.2e}",
           flush=True)
 
+# kNN 도 같은 조건에서 견준다
+i_b, d_b = dc.knn(x, p, a.k)
+i_g, d_g = dc.knn_grid(x, p, a.k)
+same = (i_b == i_g).float().mean().item()
+dmax = (d_b - d_g).abs().max().item()
+tb = timeit(lambda: dc.knn(x, p, a.k))
+tg = timeit(lambda: dc.knn_grid(x, p, a.k))
+print(f"[kNN] 전수조사 {tb:.2f} ms -> 격자 {tg:.2f} ms ({tb / tg:.2f} 배), "
+      f"색인 일치 {same:.6f}, 거리 최대차 {dmax:.3e}", flush=True)
+
 print("AGGBENCH_OK", flush=True)
