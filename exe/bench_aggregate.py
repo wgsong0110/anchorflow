@@ -53,14 +53,16 @@ def timeit(fn, n=None):
 o1 = dc.aggregate_moments(x, X, v, m, idx, a.m)
 o2 = dc.aggregate_moments2(x, X, v, m, idx, a.m)
 o3 = dc.aggregate_moments2(x, X, v, m, idx, a.m, merge=1)
+# 성분마다 나누면 0 에 가까운 성분에서 상대차가 터진다. 2200 만 항을 float32 로
+# 더한 것이라 덧셈 순서만 달라도 그렇게 되므로, 그 판의 **최대 크기**로 나눈다.
 worst = 0.0
 for i, (a1, a2) in enumerate(zip(o1, o2)):
-    d = (a1 - a2).abs()
-    r = (d / a1.abs().clamp(min=1e-6)).max().item()
+    d = (a1 - a2).abs().max().item()
+    r = d / max(a1.abs().max().item(), 1e-12)
     worst = max(worst, r)
-    print(f"  g{i + 1}  최대 절대차 {d.max():.3e}  상대차 {r:.3e}", flush=True)
-print(f"[정확성] 최대 상대차 {worst:.3e} "
-      f"({'통과' if worst < 2e-3 else '실패 -- 합이 다르다'})", flush=True)
+    print(f"  g{i + 1}  최대 절대차 {d:.3e}  최대치 대비 {r:.3e}", flush=True)
+print(f"[정확성] 최대치 대비 최대 어긋남 {worst:.3e} "
+      f"({'통과' if worst < 1e-5 else '실패 -- 합이 다르다'})", flush=True)
 
 t1 = timeit(lambda: dc.aggregate_moments(x, X, v, m, idx, a.m))
 t2 = timeit(lambda: dc.aggregate_moments2(x, X, v, m, idx, a.m))
