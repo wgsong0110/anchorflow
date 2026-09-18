@@ -322,6 +322,22 @@ def fps(x, M, seed=0):
 
 
 # --------------------------------------------------------------- 집계
+def _inv3(A):
+    """[*,3,3] 3x3 역행렬을 딸림행렬로 직접. torch.linalg.inv/solve 는 작은 배치에서
+    cuSOLVER 호출 자체가 비용이라 앵커 512 개짜리에서는 이쪽이 빠르다."""
+    a, b, c = A[..., 0, 0], A[..., 0, 1], A[..., 0, 2]
+    d, e, f = A[..., 1, 0], A[..., 1, 1], A[..., 1, 2]
+    g, h, i = A[..., 2, 0], A[..., 2, 1], A[..., 2, 2]
+    A0, A1, A2 = e * i - f * h, f * g - d * i, d * h - e * g
+    det = (a * A0 + b * A1 + c * A2)
+    inv = torch.stack([
+        torch.stack([A0, c * h - b * i, b * f - c * e], -1),
+        torch.stack([A1, a * i - c * g, c * d - a * f], -1),
+        torch.stack([A2, b * g - a * h, a * e - b * d], -1)], -2)
+    safe = torch.where(det.abs() < 1e-30, torch.full_like(det, 1e-30), det)
+    return inv / safe.unsqueeze(-1).unsqueeze(-1), det
+
+
 def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None, sub=None):
     """앵커별로 자기에게 모인 가우시안들을 질량 가중으로 요약한다.
 
@@ -375,10 +391,12 @@ def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None, sub=None):
         S6 = S[:, iu[0], iu[1]] / (h * h)
         tr = S.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(M, 1, 1)
         I = (tr * torch.eye(3, device=dev) - S) * Wa.reshape(M, 1, 1)
-        om = torch.linalg.solve(I + 1e-8 * torch.eye(3, device=dev),
-                                L.unsqueeze(-1)).squeeze(-1)
-        Fa = A @ torch.linalg.inv(B + (1e-6 * h * h) * torch.eye(3, device=dev))
-        detF = torch.linalg.det(Fa).reshape(M, 1)
+        Ii, _ = _inv3(I + 1e-8 * torch.eye(3, device=dev))
+        om = (Ii @ L.unsqueeze(-1)).squeeze(-1)
+        Bi, _ = _inv3(B + (1e-6 * h * h) * torch.eye(3, device=dev))
+        Fa = A @ Bi
+        _, dF = _inv3(Fa)
+        detF = dF.reshape(M, 1)
         return torch.cat([
             torch.log(Wa).reshape(M, 1), torch.log1p(cnt), (cx - cX) / h,
             ((cx - pa) / h if pa is not None else torch.zeros_like(cx)),
@@ -410,13 +428,15 @@ def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None, sub=None):
     L = g2[:, 9:12]
     tr = S.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(M, 1, 1)
     I = (tr * torch.eye(3, device=dev) - S) * Wa.reshape(M, 1, 1)
-    om = torch.linalg.solve(I + 1e-8 * torch.eye(3, device=dev), L.unsqueeze(-1)
-                            ).squeeze(-1)
+    Ii, _ = _inv3(I + 1e-8 * torch.eye(3, device=dev))
+    om = (Ii @ L.unsqueeze(-1)).squeeze(-1)
     # 국소 변형구배: 정준 배치 대비 얼마나 찌그러졌나 (최소제곱)
     A = g2[:, 12:21].reshape(M, 3, 3)
     B = g2[:, 21:30].reshape(M, 3, 3)
-    Fa = A @ torch.linalg.inv(B + (1e-6 * h * h) * torch.eye(3, device=dev))
-    detF = torch.linalg.det(Fa).reshape(M, 1)
+    Bi, _ = _inv3(B + (1e-6 * h * h) * torch.eye(3, device=dev))
+    Fa = A @ Bi
+    _, dF = _inv3(Fa)
+    detF = dF.reshape(M, 1)
 
     feats = [
         torch.log(Wa).reshape(M, 1),                    # 질량
