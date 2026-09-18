@@ -67,4 +67,20 @@ t2 = timeit(lambda: dc.aggregate_moments2(x, X, v, m, idx, a.m))
 t3 = timeit(lambda: dc.aggregate_moments2(x, X, v, m, idx, a.m, merge=1))
 print(f"[속도] 짝마다 {t1:.2f} ms | 입자마다 {t2:.2f} ms ({t1 / t2:.2f} 배) | "
       f"입자마다+합침 {t3:.2f} ms ({t1 / t3:.2f} 배)", flush=True)
+# 부분표본: 집계는 앵커별 평균이라 일부만 써도 요약이 거의 같다. 값이 바뀌므로
+# 공짜는 아니고, 얼마나 싸지는지와 얼마나 달라지는지를 같이 본다.
+for frac in (0.25, 0.1):
+    n = int(a.n * frac)
+    g = torch.randperm(a.n, device=dev)[:n]
+    xs, Xs, vs, ms, ids = x[g], X[g], v[g], m[g], idx[g]
+    ts = timeit(lambda: dc.aggregate_moments2(xs, Xs, vs, ms, ids, a.m))
+    os_ = dc.aggregate_moments2(xs, Xs, vs, ms, ids, a.m)
+    # 1 차 모멘트는 질량합이라 표본 비율만큼 작아진다 -- 평균끼리 견준다
+    c_full = o2[0][:, 1:4] / o2[0][:, 0:1].clamp(min=1e-12)
+    c_sub = os_[0][:, 1:4] / os_[0][:, 0:1].clamp(min=1e-12)
+    rel = ((c_full - c_sub).norm(dim=-1) / c_full.norm(dim=-1).clamp(min=1e-9))
+    print(f"[부분표본 {frac:.0%}] {ts:.2f} ms ({t2 / ts:.1f} 배), "
+          f"앵커 무게중심 상대차 중앙 {rel.median():.2e} 최대 {rel.max():.2e}",
+          flush=True)
+
 print("AGGBENCH_OK", flush=True)

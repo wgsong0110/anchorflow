@@ -785,16 +785,17 @@ __global__ void agg_np(const float* __restrict__ x, const float* __restrict__ X,
                 const float dv0 = v0 - cv[3 * aa];
                 const float dv1 = v1 - cv[3 * aa + 1];
                 const float dv2 = v2 - cv[3 * aa + 2];
-                const int o = (PH == 3) ? 12 : 0;
+                // S = dx (x) dx 와 B = dX (x) dX 는 **대칭**이라 위 삼각 6 개만
+                // 더하면 된다. 원자합 수가 41 개에서 35 개로 준다 -- 이 커널은
+                // 공유 메모리 원자합 발행률이 정하므로 그만큼 그대로 빨라진다.
+                const int o = (PH == 3) ? 9 : 0;
                 if (PH == 1 || PH == 3) {
                     atomicAdd(dst + 0, w * dx0 * dx0); atomicAdd(dst + 1, w * dx0 * dx1);
-                    atomicAdd(dst + 2, w * dx0 * dx2); atomicAdd(dst + 3, w * dx1 * dx0);
-                    atomicAdd(dst + 4, w * dx1 * dx1); atomicAdd(dst + 5, w * dx1 * dx2);
-                    atomicAdd(dst + 6, w * dx2 * dx0); atomicAdd(dst + 7, w * dx2 * dx1);
-                    atomicAdd(dst + 8, w * dx2 * dx2);
-                    atomicAdd(dst + 9,  w * (dx1 * dv2 - dx2 * dv1));
-                    atomicAdd(dst + 10, w * (dx2 * dv0 - dx0 * dv2));
-                    atomicAdd(dst + 11, w * (dx0 * dv1 - dx1 * dv0));
+                    atomicAdd(dst + 2, w * dx0 * dx2); atomicAdd(dst + 3, w * dx1 * dx1);
+                    atomicAdd(dst + 4, w * dx1 * dx2); atomicAdd(dst + 5, w * dx2 * dx2);
+                    atomicAdd(dst + 6, w * (dx1 * dv2 - dx2 * dv1));
+                    atomicAdd(dst + 7, w * (dx2 * dv0 - dx0 * dv2));
+                    atomicAdd(dst + 8, w * (dx0 * dv1 - dx1 * dv0));
                 }
                 if (PH == 2 || PH == 3) {
                     atomicAdd(dst + o + 0, w * dx0 * dX0); atomicAdd(dst + o + 1, w * dx0 * dX1);
@@ -803,10 +804,8 @@ __global__ void agg_np(const float* __restrict__ x, const float* __restrict__ X,
                     atomicAdd(dst + o + 6, w * dx2 * dX0); atomicAdd(dst + o + 7, w * dx2 * dX1);
                     atomicAdd(dst + o + 8, w * dx2 * dX2);
                     atomicAdd(dst + o + 9,  w * dX0 * dX0); atomicAdd(dst + o + 10, w * dX0 * dX1);
-                    atomicAdd(dst + o + 11, w * dX0 * dX2); atomicAdd(dst + o + 12, w * dX1 * dX0);
-                    atomicAdd(dst + o + 13, w * dX1 * dX1); atomicAdd(dst + o + 14, w * dX1 * dX2);
-                    atomicAdd(dst + o + 15, w * dX2 * dX0); atomicAdd(dst + o + 16, w * dX2 * dX1);
-                    atomicAdd(dst + o + 17, w * dX2 * dX2);
+                    atomicAdd(dst + o + 11, w * dX0 * dX2); atomicAdd(dst + o + 12, w * dX1 * dX1);
+                    atomicAdd(dst + o + 13, w * dX1 * dX2); atomicAdd(dst + o + 14, w * dX2 * dX2);
                 }
             }
         }
@@ -855,33 +854,45 @@ std::vector<torch::Tensor> aggregate_moments2(
     auto cX = (g1.slice(1, 4, 7) / W).contiguous();
     auto cv = (g1.slice(1, 7, 10) / W).contiguous();
 
+    // 위 삼각 6 개 -> 3x3 9 개로 되펴는 색인
+    auto sy = torch::tensor({0, 1, 2, 1, 3, 4, 2, 4, 5},
+                            opt.dtype(torch::kLong)).to(x.device());
     if (merge) {
-        // 한 판으로 합치면 짝 목록을 한 번 덜 읽지만 공유 메모리가 M x 30 x 4 라
-        // SM 당 블록이 하나로 떨어진다. 실측 13.3 ms 대 8.8 ms 로 오히려 느렸다.
-        auto g23 = torch::zeros({M, 30}, opt);
-        size_t sh2 = (size_t)M * 30 * sizeof(float);
-        int us2 = agg_shared_ok(sh2, (const void*)agg_np<30, 3>);
-        agg_np<30, 3><<<B, T, us2 ? sh2 : 0>>>(
+        // 한 판으로 합치면 짝 목록을 한 번 덜 읽지만 공유 메모리가 커져 SM 당
+        // 블록이 하나로 떨어진다. 실측 13.3 ms 대 8.8 ms 로 오히려 느렸다.
+        auto g23 = torch::zeros({M, 24}, opt);
+        size_t sh2 = (size_t)M * 24 * sizeof(float);
+        int us2 = agg_shared_ok(sh2, (const void*)agg_np<24, 3>);
+        agg_np<24, 3><<<B, T, us2 ? sh2 : 0>>>(
             x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
             m.data_ptr<float>(), ip, cx.data_ptr<float>(), cX.data_ptr<float>(),
             cv.data_ptr<float>(), N, K, M, us2, g23.data_ptr<float>());
-        return {g1, g23.slice(1, 0, 12).contiguous(),
-                g23.slice(1, 12, 30).contiguous()};
+        auto g2 = torch::cat({g23.slice(1, 0, 6).index_select(1, sy),
+                              g23.slice(1, 6, 9)}, 1).contiguous();
+        auto g3 = torch::cat({g23.slice(1, 9, 18),
+                              g23.slice(1, 18, 24).index_select(1, sy)},
+                             1).contiguous();
+        return {g1, g2, g3};
     }
-    auto g2 = torch::zeros({M, 12}, opt);
-    size_t sha = (size_t)M * 12 * sizeof(float);
-    int usa = agg_shared_ok(sha, (const void*)agg_np<12, 1>);
-    agg_np<12, 1><<<B, T, usa ? sha : 0>>>(
+    auto g2s = torch::zeros({M, 9}, opt);
+    size_t sha = (size_t)M * 9 * sizeof(float);
+    int usa = agg_shared_ok(sha, (const void*)agg_np<9, 1>);
+    agg_np<9, 1><<<B, T, usa ? sha : 0>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
         m.data_ptr<float>(), ip, cx.data_ptr<float>(), cX.data_ptr<float>(),
-        cv.data_ptr<float>(), N, K, M, usa, g2.data_ptr<float>());
-    auto g3 = torch::zeros({M, 18}, opt);
-    size_t shb = (size_t)M * 18 * sizeof(float);
-    int usb = agg_shared_ok(shb, (const void*)agg_np<18, 2>);
-    agg_np<18, 2><<<B, T, usb ? shb : 0>>>(
+        cv.data_ptr<float>(), N, K, M, usa, g2s.data_ptr<float>());
+    auto g3s = torch::zeros({M, 15}, opt);
+    size_t shb = (size_t)M * 15 * sizeof(float);
+    int usb = agg_shared_ok(shb, (const void*)agg_np<15, 2>);
+    agg_np<15, 2><<<B, T, usb ? shb : 0>>>(
         x.data_ptr<float>(), X.data_ptr<float>(), v.data_ptr<float>(),
         m.data_ptr<float>(), ip, cx.data_ptr<float>(), cX.data_ptr<float>(),
-        cv.data_ptr<float>(), N, K, M, usb, g3.data_ptr<float>());
+        cv.data_ptr<float>(), N, K, M, usb, g3s.data_ptr<float>());
+    auto g2 = torch::cat({g2s.slice(1, 0, 6).index_select(1, sy),
+                          g2s.slice(1, 6, 9)}, 1).contiguous();
+    auto g3 = torch::cat({g3s.slice(1, 0, 9),
+                          g3s.slice(1, 9, 15).index_select(1, sy)},
+                         1).contiguous();
     return {g1, g2, g3};
 }
 
