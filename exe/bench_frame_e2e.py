@@ -133,6 +133,23 @@ def frame_track():
 
 rows["t=0 FPS 후 추적 + kNN (앵커 512)"] = timeit(frame_track) + t_ras
 
+# 이 경로 안에서 어디에 시간이 가는지 쪼갠다. 더 줄일 여지가 어디인지 보려면
+# 합계만으로는 알 수 없다.
+_ii, _ = anchor_knn(x, p0, a.k)
+_ff, _ = aggregate(x, v, X, m, _ii, a.n_anchors, H, pa=p0)
+_ee = torch.cat([MAT.reshape(1, -1).expand(a.n_anchors, -1),
+                 bc_features(p0, cfg) / H], -1)
+_dd, _rr, _tt = net0(p0, torch.cat([_ff, _ee], -1), FRAME_DT)
+BD = [("kNN (가우시안 x 앵커)", lambda: anchor_knn(x, p0, a.k)),
+      ("집계 (앵커 특징)", lambda: aggregate(x, v, X, m, _ii, a.n_anchors, H, pa=p0)),
+      ("어텐션 신경망", lambda: net0(p0, torch.cat([_ff, _ee], -1), FRAME_DT)),
+      ("스키닝 + 야코비안",
+       lambda: skin_with_jacobian(x, p0, _dd, _rr, _tt, _ii, H)),
+      ("래스터화", raster(N))]
+print("\n[쪼개보기] t=0 FPS 후 추적 경로", flush=True)
+for nm, fn in BD:
+    print(f"  {nm:28s} {timeit(fn):7.2f} ms", flush=True)
+
 # ---- 복셀 ----
 # 앙상블은 격자 수만큼 앵커가 늘어난다. 같은 앵커 예산에서 견주려면 칸을 L^(1/3)
 # 배 성기게 해야 한다 -- 그래야 "떨림을 줄이려고 해상도를 내준" 값이 드러난다.
