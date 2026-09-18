@@ -44,8 +44,12 @@ ap.add_argument("--slices", type=int, default=5)
 ap.add_argument("--grid", type=int, default=48)
 ap.add_argument("--band", type=float, default=0.06)
 ap.add_argument("--metric", default="sigma1",
-                choices=("sigma1", "strain", "radius", "temp"),
-                help="radius/temp 는 모델이 앵커마다 내놓는 반경 r_a (앵커 간격 "
+                choices=("sigma1", "strain", "sep", "radius", "temp"),
+                help="sep 은 t0 에서 이웃이던 입자들과의 거리가 몇 배가 되었나의 "
+                     "중앙값이다 -- 1 이면 안 벌어졌고 2 면 두 배로 벌어졌다. "
+                     "sigma1 이 매끄러운 변형까지 세는 것과 달리 **실제로 끊겼나** 에 "
+                     "가깝다. GT 와 모델 양쪽에 다 있다. "
+                     "radius/temp 는 모델이 앵커마다 내놓는 반경 r_a (앵커 간격 "
                      "h 로 나눈 값) 와 온도 t_a 다. 둘 다 GT 가 없어 모델 한 줄만 "
                      "그린다. sigma1 은 F 의 최대 특이값(가장 크게 늘어난 배율), strain 은 "
                      "Green-Lagrange 변형률 E=(F^T F - I)/2 의 Frobenius 노름. "
@@ -131,6 +135,21 @@ print(f"[가림] 길이 단위 {CELL:.5f}, 문턱 {a.mask}배", flush=True)
 
 ANCHOR_METRIC = a.metric in ("radius", "temp")
 
+# sep 은 위치만 있으면 되는 지표라 GT/모델 양쪽에서 같은 식으로 잰다. 이웃은
+# **t0 배치에서 한 번** 정하고 그대로 붙든다 -- 매 프레임 다시 고르면 벌어진
+# 이웃이 조용히 빠져나가 아무 일도 없던 것처럼 보인다.
+NBS = D0S = None
+if a.metric == "sep":
+    _Xr = take(d["x"][a.t0], GS)
+    NBS, _ = dense_knn(_Xr, _Xr, a.gt_k + 1)
+    NBS = NBS[:, 1:]
+    D0S = (_Xr[NBS] - _Xr[:, None]).norm(dim=-1).clamp(min=1e-9)
+
+
+def sep_of(xx):
+    """[N,3] -> [N] t0 이웃까지의 거리비 중앙값"""
+    return ((xx[NBS] - xx[:, None]).norm(dim=-1) / D0S).median(dim=-1).values
+
 
 def to_grid(vals, pos_rel, z, mask_rel=None):
     """입자 값을 단면 격자로 옮기고, 그 단면에서 수박이 차지한 자리를 함께 낸다.
@@ -179,7 +198,9 @@ if a.ckpt:
         dp, lr_, lt_ = net(p, torch.cat([feat, ex], -1), FRAME_DT)
         x2, _, J = skin_with_jacobian(x, p, dp, lr_, lt_, idx, H)
         Jacc = J @ Jacc
-        if a.metric == "radius":
+        if a.metric == "sep":
+            val, src = sep_of(x2).clone(), None
+        elif a.metric == "radius":
             val, src = (lr_.exp() / H).clone(), (p + dp).clone()
         elif a.metric == "temp":
             # 온도는 0.8 에서 55 까지 걸쳐 선형으로 칠하면 위쪽만 보인다.
@@ -192,7 +213,11 @@ if a.ckpt:
 
 # GT
 gt = []
-if ANCHOR_METRIC:
+if a.metric == "sep":
+    for i in range(a.frames):
+        xg = take(d["x"][a.t0 + i + 1], GS)
+        gt.append((xg, sep_of(xg)))
+elif ANCHOR_METRIC:
     # 반경·온도는 모델만 내놓는 값이라 GT 줄이 없다. 롤아웃 상자와 단면 기하를
     # 잡는 데는 GT 위치가 필요하므로 위치만 채운다.
     for i in range(a.frames):
@@ -221,7 +246,7 @@ if ANCHOR_METRIC:
     allv = torch.cat([mm[1] for mm in model])
     vmin = float(allv.quantile(0.01)); vmax = float(allv.quantile(0.99))
 else:
-    vmin = 1.0 if a.metric == "sigma1" else 0.0
+    vmin = 1.0 if a.metric in ("sigma1", "sep") else 0.0
     vmax = a.vmax
     if vmax <= 0:
         allv = torch.cat([ss for _x, ss in gt]
@@ -302,6 +327,7 @@ for i in range(a.frames):
 
     lbl = {"sigma1": "largest singular value of F",
            "strain": "|Green-Lagrange strain|_F",
+           "sep": "median distance ratio to t0 neighbours (damage)",
            "radius": "anchor radius r_a / h",
            "temp": "log10 anchor temperature t_a"}[a.metric]
     fig.suptitle(f"{a.traj}  frame {a.t0+i+1:03d}  {lbl}"
