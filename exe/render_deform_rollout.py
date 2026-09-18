@@ -101,7 +101,16 @@ def rollout(ck):
     return torch.stack(out), os.path.splitext(os.path.basename(ck))[0]
 
 
-GT = torch.stack([take(d["x"][a.t0 + i], GS) for i in range(a.frames + 1)])
+# 궤적보다 더 길게 굴릴 수 있게 한다. GT 가 떨어지면 마지막 프레임을 그대로
+# 들고 있고(제목에 표시), 그 뒤 구간의 오차는 참고값이다 -- 모델이 결국 무너지는지
+# 아니면 형상을 붙들고 버티는지 보려는 것이다.
+NT = d["x"].shape[0]
+GT = torch.stack([take(d["x"][min(a.t0 + i, NT - 1)], GS)
+                  for i in range(a.frames + 1)])
+GT_END = max(0, NT - 1 - a.t0)
+if a.frames > GT_END:
+    print(f"[주의] GT 는 {GT_END} 프레임까지다. 그 뒤는 마지막 프레임을 고정해 "
+          f"비교한다", flush=True)
 STILL = GT[:1].expand_as(GT)
 preds = [rollout(c) for c in a.ckpt]
 cols = ["GT", "정지"] + [n for _, n in preds]
@@ -130,7 +139,9 @@ for t in range(GT.shape[0]):
     row = np.concatenate(tiles, 1)
     strip = Image.fromarray(row)
     dr = ImageDraw.Draw(strip)
-    dr.text((4, H - 14), f"{a.traj}  t0={a.t0}  frame {t:02d}", fill=(0, 0, 0))
+    note = "" if t <= GT_END else "  (GT 끝, 마지막 프레임 고정)"
+    dr.text((4, H - 14), f"{a.traj}  t0={a.t0}  frame {t:02d}{note}",
+            fill=(0, 0, 0))
     frames.append(np.array(strip))
 p_out = os.path.join(a.out, f"rollout_{a.traj}_t{a.t0}.mp4")
 imageio.mimsave(p_out, frames, fps=a.fps, quality=8)
