@@ -66,14 +66,22 @@ class DtFiLM(nn.Module):
     def __init__(self, hidden, n_sites, n_freq=6):
         super().__init__()
         self.n_freq, self.hidden, self.n_sites = n_freq, hidden, n_sites
+        self._cache = {}
         self.mlp = mlp([1 + 2 * n_freq, hidden, 2 * hidden * n_sites], layernorm=False)
         last = [m for m in self.mlp.modules() if isinstance(m, nn.Linear)][-1]
         nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
 
     def forward(self, dt, device):
-        x = torch.tensor([math.log10(dt)], device=device)
-        f = 2.0 ** torch.arange(self.n_freq, device=device) * math.pi
-        enc = torch.cat([x, torch.sin(f * x), torch.cos(f * x)])
+        # dt 는 매 호출 같은 값이고 파이썬 실수라, 매번 torch.tensor 로 만들면
+        # 호스트->장치 복사가 한 번씩 낀다. 그 복사는 CUDA 그래프 잡기에서 금지라
+        # 어텐션 전체를 그래프로 접지 못하게 막기도 했다. 값별로 한 번만 만든다.
+        key = (float(dt), str(device))
+        enc = self._cache.get(key)
+        if enc is None:
+            x = torch.tensor([math.log10(dt)], device=device)
+            f = 2.0 ** torch.arange(self.n_freq, device=device) * math.pi
+            enc = torch.cat([x, torch.sin(f * x), torch.cos(f * x)])
+            self._cache[key] = enc
         out = self.mlp(enc).view(self.n_sites, 2, self.hidden)
         return 1.0 + out[:, 0], out[:, 1]
 
