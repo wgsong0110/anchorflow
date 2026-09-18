@@ -43,21 +43,20 @@ for i, (tag, d, h) in enumerate(runs):
     pos = 100 * np.sqrt(np.maximum(smooth(h[:, 0], a.smooth), 0))
     still = 100 * np.sqrt(np.maximum(smooth(h[:, 2], a.smooth), 0))
     ax[0].plot(step, pos, color=c, label=f"{tag}")
-    ax[0].plot(step, still, color=c, ls=":", lw=1, label=f"{tag} 정지")
+    ax[0].plot(step, still, color=c, ls=":", lw=1, label=f"{tag} still")
     ax[1].plot(step, smooth(h[:, 0], a.smooth) / np.maximum(
         smooth(h[:, 2], a.smooth), 1e-20) ** 1.0, color=c, label=tag)
     ax[2].plot(step, smooth(h[:, 1], a.smooth), color=c, label=f"{tag} J")
     ax[2].plot(step, smooth(h[:, 3], a.smooth), color=c, ls="--",
-               label=f"{tag} 앵커")
+               label=f"{tag} anchor")
 
-ax[0].set_ylabel("위치 RMSE (%)"); ax[0].set_yscale("log")
-ax[0].set_title("위치 오차와 정지 기준선", fontsize=10)
+ax[0].set_ylabel("position RMSE (%)"); ax[0].set_yscale("log")
+ax[0].set_title("position error vs standing-still", fontsize=10)
 ax[1].axhline(1.0, color="0.5", lw=0.8)
-ax[1].set_yscale("log"); ax[1].set_title("오차 / 정지 (1 보다 작아야 배운 것)",
-                                         fontsize=10)
-ax[2].set_yscale("log"); ax[2].set_title("야코비안 손실과 앵커 손실", fontsize=10)
+ax[1].set_yscale("log"); ax[1].set_title("error / still  (<1 means it learned)", fontsize=10)
+ax[2].set_yscale("log"); ax[2].set_title("jacobian loss and anchor loss", fontsize=10)
 for A in ax:
-    A.set_xlabel("스텝"); A.grid(alpha=0.3); A.legend(fontsize=6.5)
+    A.set_xlabel("step"); A.grid(alpha=0.3); A.legend(fontsize=6.5)
 fig.tight_layout()
 os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
 fig.savefig(a.out, dpi=150)
