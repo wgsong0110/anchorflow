@@ -17,11 +17,22 @@ cd "$R"; git pull -q origin master || true
 echo "[노드] $(hostname)  GPU=${CUDA_VISIBLE_DEVICES:-?}  커밋 $(git rev-parse --short HEAD)"
 nvidia-smi --query-gpu=index,name,memory.used,power.limit --format=csv,noheader
 
+# ------------------------------------------- 0) 성긴 격자가 같은 답인지 확인
+# 같으면 무거운 수박 실행을 성김으로 돌린다. 다르면 빽빽으로 간다.
+SPARSE=dense
+if [ -f "$W/ref_wmh/simulation_ply/sim_0000000000.h5" ]; then
+  python -u exe/check_sparse_equal.py --config "$W/cfg_wmh40.json" \
+    --h5 "$W/ref_wmh/simulation_ply/sim_0000000000.h5" --work "$W/gfeq" --frames 4 \
+    && grep -q SPARSE_EQUAL "$LOG" && SPARSE=sparse
+fi
+echo "[격자] $SPARSE 로 돌린다"
+
 # ---------------------------------------------------------------- 1) 씬 스윕
 python -u exe/make_gf_scenes.py --out "$W/gfscn" --n_grid 100 --frames 12
 python -u exe/verify_gf_port.py --cfg_dir "$W/gfscn" \
   --gf_root "$W/GaussianFluent" --model "$W/pgmodel/bread-trained" \
-  --work "$W/gfver" --out "$W/gfver_summary.json" --rm_h5 --tol 0.05
+  --work "$W/gfver" --out "$W/gfver_summary.json" --rm_h5 --tol 0.05 \
+  --grid "$SPARSE"
 
 # ------------------------------------------------------- 2) 수박 파괴 맞추기
 # ref_wmh 는 GF 의 watermelon_h (n_grid 300, FLIP 0.7, g=[4,0,-15]) 를 전체
@@ -30,7 +41,7 @@ if [ -f "$W/ref_wmh/simulation_ply/sim_0000000000.h5" ]; then
   rm -rf "$W/my_wmh"
   python -u exe/gf_mpm.py --config "$W/cfg_wmh40.json" \
     --h5 "$W/ref_wmh/simulation_ply/sim_0000000000.h5" --out "$W/my_wmh" \
-    --auto_dt --flip on --frames 30
+    --auto_dt --flip on --frames 30 --grid "$SPARSE"
   echo '--- 입자별 비교 ---'
   python -u exe/compare_solvers.py --a "$W/ref_wmh" --b "$W/my_wmh" \
     --tag_a GF --tag_b MINE --every 5 --out "$W/cmp_wmh.json"

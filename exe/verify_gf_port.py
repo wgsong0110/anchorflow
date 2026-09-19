@@ -25,6 +25,7 @@ ap.add_argument("--work", required=True)
 ap.add_argument("--out", default=None, help="요약 json")
 ap.add_argument("--only", default=None, help="쉼표로 고른 태그만")
 ap.add_argument("--flip", default="auto", choices=("auto", "on", "off"))
+ap.add_argument("--grid", default="dense", choices=("dense", "sparse"))
 ap.add_argument("--rm_h5", action="store_true", help="비교가 끝나면 h5 를 지운다")
 ap.add_argument("--tol", type=float, default=0.05,
                 help="차이/이동 이 이 값보다 작으면 일치로 본다")
@@ -72,7 +73,7 @@ for tag in tags:
     shutil.rmtree(mdir, ignore_errors=True)
     rc, log = run([sys.executable, os.path.join(HERE, "exe", "gf_mpm.py"),
                    "--config", cfg, "--h5", fa[0], "--out", mdir,
-                   "--flip", a.flip])
+                   "--flip", a.flip, "--grid", a.grid])
     if rc != 0:
         print(f"[{tag}] 이식본 실패 rc={rc}\n{log[-1500:]}", flush=True)
         rows.append(dict(tag=tag, ok=False, why="이식본 실패")); continue

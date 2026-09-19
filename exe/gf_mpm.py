@@ -27,6 +27,13 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=None, help="없으면 config 의 frame_num")
 ap.add_argument("--stride", type=int, default=1, help="h5 입자 솎기 (검증용)")
 ap.add_argument("--f64", action="store_true")
+ap.add_argument("--grid", default="dense", choices=("dense", "sparse"),
+                help="sparse 는 입자가 닿은 블록만 들고 돈다. 격자 300 이면 빈 칸이"
+                     " 95%% 라 비우기·순회가 그만큼 준다. 값은 같아야 한다 -- "
+                     "빈 칸은 속도 0 이고, g2p 가 읽는 칸은 p2g 가 질량을 넣어 "
+                     "이미 켜져 있다. 기본은 dense 이고, 같다는 것을 한 번 "
+                     "확인한 뒤 sparse 로 돌린다")
+ap.add_argument("--block", type=int, default=8, help="성긴 격자의 블록 한 변")
 ap.add_argument("--flip", default="auto", choices=("auto", "on", "off"),
                 help="auto 는 flip_pic_ratio>0 (gs_simulation.py 의 규칙). 씬 전용 "
                      "러너로 뽑은 궤적과 맞출 때는 on 을 쓴다")
@@ -43,7 +50,7 @@ a = ap.parse_args()
 
 cfg = json.load(open(a.config))
 ti.init(arch=ti.gpu, default_fp=ti.f64 if a.f64 else ti.f32,
-        device_memory_fraction=0.85)
+        device_memory_fraction=0.85, offline_cache=True)
 
 # ------------------------------------------------------------------ 상수
 # material_2_num (mpm_solver_warp.py:255). foam 이 3, snow 가 4, plasticine 이 5 다.
@@ -111,8 +118,10 @@ else:
 cell = np.floor(X0 / dx).astype(np.int64)
 cell = np.clip(cell, 0, n_grid - 1)
 flat = (cell[:, 0] * n_grid + cell[:, 1]) * n_grid + cell[:, 2]
-cnt = np.bincount(flat, minlength=n_grid ** 3)
-VOL = (dx ** 3) / cnt[flat].astype(np.float64)
+# bincount(minlength=n_grid^3) 는 격자 300 에서 27M 칸을 잡는다. 물체가 닿는
+# 셀만 세면 되므로 unique 로 센다 -- 값은 같고 메모리만 입자 수에 비례한다.
+_uq, _inv, _cnt = np.unique(flat, return_inverse=True, return_counts=True)
+VOL = (dx ** 3) / _cnt[_inv].astype(np.float64)
 if cfg["material"] == "sand":              # GF 는 모래만 평균 부피를 쓴다
     VOL = np.full(N, VOL.mean())
 # additional_material_params: 상자 안 입자만 E/nu/density 를 갈아 끼운다
@@ -145,9 +154,18 @@ mu_p = ti.field(rt, N); lam_p = ti.field(rt, N); kap_p = ti.field(rt, N)
 vol = ti.field(rt, N); mass = ti.field(rt, N)
 alive = ti.field(ti.i32, N)
 x0f = ti.Vector.field(3, rt, N)
-gvin = ti.Vector.field(3, rt, (n_grid,) * 3)
-gvout = ti.Vector.field(3, rt, (n_grid,) * 3)
-gm = ti.field(rt, (n_grid,) * 3)
+SPARSE = a.grid == "sparse"
+if SPARSE:
+    gvin = ti.Vector.field(3, rt); gvout = ti.Vector.field(3, rt)
+    gm = ti.field(rt)
+    _BS = a.block
+    _nb = (n_grid + _BS - 1) // _BS
+    _blk = ti.root.pointer(ti.ijk, (_nb,) * 3)
+    _blk.dense(ti.ijk, (_BS,) * 3).place(gvin, gvout, gm)
+else:
+    gvin = ti.Vector.field(3, rt, (n_grid,) * 3)
+    gvout = ti.Vector.field(3, rt, (n_grid,) * 3)
+    gm = ti.field(rt, (n_grid,) * 3)
 
 # ------------------------------------------------------------ 경계·구동 조건
 # utils/decode_param.py:248 이 받는 일곱 가지를 전부 옮긴다. 하나라도 빠지면
@@ -250,6 +268,8 @@ pc_hr.from_numpy(_pack(_pc, "hr", 2))
 pc_rs.from_numpy(_packs(_pc, "rs")); pc_ts.from_numpy(_packs(_pc, "ts"))
 pc_t0.from_numpy(_packs(_pc, "t0")); pc_t1.from_numpy(_packs(_pc, "t1", 999.0))
 NG, NP = len(_gc), len(_pc)
+PC_LO = min([d["t0"] for d in _pc], default=1e30)
+PC_HI = max([d["t1"] for d in _pc], default=-1e30)
 print(f"[경계] 격자 {NG} 개 {[d['k'] for d in _gc]}, 입자 {NP} 개 "
       f"{sorted(set(d['k'] for d in _pc))}", flush=True)
 
@@ -293,10 +313,17 @@ def _wts(xp):
 
 
 @ti.kernel
-def zero_grid():
+def _zero_dense():
     for I in ti.grouped(gm):
         gm[I] = 0.0
         gvin[I] = ti.Vector.zero(rt, 3); gvout[I] = ti.Vector.zero(rt, 3)
+
+
+def zero_grid():
+    if SPARSE:
+        _blk.deactivate_all()   # 블록을 통째로 떼면 값도 0 으로 돌아간다
+    else:
+        _zero_dense()
 
 
 @ti.kernel
@@ -338,13 +365,15 @@ def _gpos(I):
 
 @ti.kernel
 def grid_op(dt: rt, t: rt):
+    # GF 는 정규화 한 번, 경계마다 한 번씩 격자를 훑는다. 둘 다 **칸 안에서만**
+    # 끝나는 계산이라(이웃을 안 본다) 한 번에 합쳐도 답이 같다. 격자 300 이면
+    # 훑기 한 번이 2700 만 칸이라, 횟수를 줄이는 것이 그대로 시간이 된다.
     for I in ti.grouped(gm):
         if gm[I] > 1e-15:
             vo = (gvin[I] + gvout[I]) / gm[I] + dt * GRAV
             if ti.static(GRID_DAMP < 1.0):
                 vo = vo * GRID_DAMP
             gvout[I] = vo
-    for I in ti.grouped(gm):
         for c in range(NG):
             k = gc_k[c]
             inwin = (gc_t0[c] <= t) and (t < gc_t1[c])
@@ -600,8 +629,11 @@ def stress_kernel(dt: rt):
         # ---------------- stress ----------------
         Fc = F[p]
         J = Fc.determinant()
-        U, sg, V = ti.svd(Fc, rt)
         stress = ti.Matrix.zero(rt, 3, 3)
+        # 7(neoHookeanBoarden)과 4(응력 갈래가 없다)는 SVD 가 필요 없다.
+        # GF 는 그래도 돌리지만 결과에 안 쓰인다 -- 값은 같고 한 번을 아낀다.
+        if ti.static(material != 7 and material != 4):
+            U, sg, V = ti.svd(Fc, rt)
         if ti.static(material == 7):
             B = Fc @ Fc.transpose()
             btr = B[0, 0] + B[1, 1] + B[2, 2]
@@ -705,7 +737,7 @@ t0 = time.time()
 for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
     for _ in range(nsub):
         quarantine(-0.5 * grid_lim, 1.5 * grid_lim)
-        if NP:
+        if NP and PC_LO <= t < PC_HI:   # 창이 다 닫혀 있으면 띄울 것도 없다
             particle_bc(substep_dt, t)
         stress_kernel(substep_dt)
         zero_grid()
@@ -727,4 +759,8 @@ for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
                   f"logJp 중앙 {np.median(jp):+.4f} p1 {np.percentile(jp, 1):+.4f}  "
                   f"x[{xn[al == 1].min():.3f},{xn[al == 1].max():.3f}]  "
                   f"{time.time() - t0:.0f}s", flush=True)
-print(f"[저장] {a.out}  {n_frames+1} 프레임  {time.time()-t0:.0f}s", flush=True)
+_el = time.time() - t0
+_nf = max(n_frames - f0, 1)
+print(f"[저장] {a.out}  {n_frames + 1} 프레임  {_el:.0f}s "
+      f"({_el / _nf:.2f}s/프레임, 서브스텝 {_nf * nsub}개, "
+      f"{_nf * nsub * N / max(_el, 1e-9) / 1e6:.1f}M 입자스텝/s)", flush=True)
