@@ -30,6 +30,9 @@ ap.add_argument("--f64", action="store_true")
 ap.add_argument("--flip", default="auto", choices=("auto", "on", "off"),
                 help="auto 는 flip_pic_ratio>0 (gs_simulation.py 의 규칙). 씬 전용 "
                      "러너로 뽑은 궤적과 맞출 때는 on 을 쓴다")
+ap.add_argument("--ckpt_every", type=int, default=10,
+                help="몇 프레임마다 이어 돌릴 상태를 남길지. 0 이면 안 남긴다. "
+                     "한 번에 입자당 38 개 값을 쓰므로 공짜가 아니다")
 ap.add_argument("--resume", action="store_true",
                 help="out 의 state_last.h5 에서 이어 돌린다. 위치뿐 아니라 "
                      "F 와 logJp 까지 들고 있어야 궤적이 이어진다")
@@ -250,7 +253,7 @@ NG, NP = len(_gc), len(_pc)
 print(f"[경계] 격자 {NG} 개 {[d['k'] for d in _gc]}, 입자 {NP} 개 "
       f"{sorted(set(d['k'] for d in _pc))}", flush=True)
 
-GRAV = ti.Vector(list(G))
+GRAV = ti.Vector([float(G[0]), float(G[1]), float(G[2])])
 
 
 @ti.kernel
@@ -306,9 +309,12 @@ def p2g(dt: rt):
         Cp = C[p]
         if ti.static(not USE_FLIP):
             Cp = (1.0 - RPIC) * Cp + RPIC / 2.0 * (Cp - Cp.transpose())
+            if ti.static(RPIC < -0.001):
+                Cp = ti.Matrix.zero(rt, 3, 3)          # 표준 PIC
         for i, j, k in ti.static(ti.ndrange(3, 3, 3)):
             ix, iy, iz = base[0] + i, base[1] + j, base[2] + k
-            if 0 <= ix < n_grid and 0 <= iy < n_grid and 0 <= iz < n_grid:
+            if ((0 <= ix) and (ix < n_grid) and (0 <= iy) and (iy < n_grid)
+                    and (0 <= iz) and (iz < n_grid)):
                 wt = w[i, 0] * w[j, 1] * w[k, 2]
                 dwt = ti.Vector([dw[i, 0] * w[j, 1] * w[k, 2],
                                  w[i, 0] * dw[j, 1] * w[k, 2],
@@ -425,7 +431,8 @@ def g2p(dt: rt, flip: rt):
         nC = ti.Matrix.zero(rt, 3, 3); nF = ti.Matrix.zero(rt, 3, 3)
         for i, j, k in ti.static(ti.ndrange(3, 3, 3)):
             ix, iy, iz = base[0] + i, base[1] + j, base[2] + k
-            if 0 <= ix < n_grid and 0 <= iy < n_grid and 0 <= iz < n_grid:
+            if ((0 <= ix) and (ix < n_grid) and (0 <= iy) and (iy < n_grid)
+                    and (0 <= iz) and (iz < n_grid)):
                 wt = w[i, 0] * w[j, 1] * w[k, 2]
                 gv = gvout[ix, iy, iz]
                 nv += gv * wt
@@ -630,12 +637,13 @@ def quarantine(lo: rt, hi: rt):
         if alive[p] == 1:
             bad = 0
             for d in ti.static(range(3)):
-                if not (lo < x[p][d] < hi):
+                if not ((x[p][d] > lo) and (x[p][d] < hi)):
                     bad = 1
-                if not (ti.abs(v[p][d]) < 1e5):
+                if not ((v[p][d] > -1e5) and (v[p][d] < 1e5)):
                     bad = 1
             if bad == 1:
                 alive[p] = 0
+                v[p] = ti.Vector.zero(rt, 3)   # GF 도 속도를 같이 지운다
 
 
 init(X0, V_init, VOL, MASS, MU, LM, KP)
@@ -672,7 +680,6 @@ def _load(X: ti.types.ndarray(), V: ti.types.ndarray(), FF: ti.types.ndarray(),
     for p in range(N):
         for d in ti.static(range(3)):
             x[p][d] = ti.cast(X[p, d], rt); v[p][d] = ti.cast(V[p, d], rt)
-            x0f[p][d] = ti.cast(X[p, d], rt)
             for e in ti.static(range(3)):
                 F[p][d, e] = ti.cast(FF[p, d, e], rt)
                 Ftr[p][d, e] = ti.cast(FT[p, d, e], rt)
@@ -706,7 +713,9 @@ for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
         grid_op(substep_dt, t)
         g2p(substep_dt, FLIP)
         t += substep_dt
-    dump(f); save_state(f, t)
+    dump(f)
+    if a.ckpt_every and (f % a.ckpt_every == 0 or f == n_frames):
+        save_state(f, t)
     if f % 5 == 0 or f == 1:
         xn = x.to_numpy(); al = alive.to_numpy()
         jp = Jp.to_numpy()[al == 1]

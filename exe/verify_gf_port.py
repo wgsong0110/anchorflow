@@ -1,0 +1,113 @@
+"""GF 원본과 이식본을 씬마다 **같은 초기상태에서** 굴려 입자별로 맞춰 본다.
+
+씬 하나를 맞추는 것은 우연일 수 있다. 재질·전달 방식·경계·구동 조건을 갈라
+놓고 전부 돌려야 "임의의 씬에서 같다" 고 말할 수 있다. 그래서 돌리는 것은
+`exe/make_gf_scenes.py` 가 찍어낸 config 묶음이다.
+
+한 씬의 절차는 셋이다.
+  1. GF 로 돌려 h5 를 남긴다 (입자 순서가 고정된다)
+  2. 그 0 프레임을 그대로 이식본의 초기상태로 준다
+  3. 프레임마다 입자별 거리 차이를 물체 지름으로 나눈다
+
+판정은 `차이 / 그동안 움직인 거리` 로 한다. 물체가 거의 안 움직인 프레임에서
+절대 차이만 보면 아무 값이나 통과하기 때문이다.
+"""
+import argparse, glob, json, os, shutil, subprocess, sys, time
+
+import h5py
+import numpy as np
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--cfg_dir", required=True, help="make_gf_scenes.py 의 출력")
+ap.add_argument("--gf_root", required=True)
+ap.add_argument("--model", required=True, help="GF 3DGS 모델 디렉토리")
+ap.add_argument("--work", required=True)
+ap.add_argument("--out", default=None, help="요약 json")
+ap.add_argument("--only", default=None, help="쉼표로 고른 태그만")
+ap.add_argument("--flip", default="auto", choices=("auto", "on", "off"))
+ap.add_argument("--rm_h5", action="store_true", help="비교가 끝나면 h5 를 지운다")
+ap.add_argument("--tol", type=float, default=0.05,
+                help="차이/이동 이 이 값보다 작으면 일치로 본다")
+a = ap.parse_args()
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(a.work, exist_ok=True)
+tags = sorted(os.path.splitext(os.path.basename(p))[0]
+              for p in glob.glob(os.path.join(a.cfg_dir, "*.json")))
+if a.only:
+    keep = set(a.only.split(","))
+    tags = [t for t in tags if t in keep]
+
+
+def rd(p, key="x"):
+    with h5py.File(p, "r") as h:
+        d = np.array(h[key])
+    return (d.T if d.shape[0] in (3, 9) else d).astype(np.float64)
+
+
+def run(cmd, cwd=None, env=None):
+    r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
+    return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+
+rows = []
+for tag in tags:
+    cfg = os.path.join(a.cfg_dir, f"{tag}.json")
+    gdir = os.path.join(a.work, f"gf_{tag}")
+    mdir = os.path.join(a.work, f"my_{tag}")
+    t0 = time.time()
+    env = dict(os.environ)
+    env["PYTHONPATH"] = (a.gf_root + ":" + os.path.join(a.gf_root, "gaussian-splatting")
+                         + ":" + env.get("PYTHONPATH", ""))
+    if not glob.glob(os.path.join(gdir, "**", "*.h5"), recursive=True):
+        rc, log = run([sys.executable, "gs_simulation.py", "--model_path", a.model,
+                       "--output_path", gdir, "--config", cfg, "--output_h5"],
+                      cwd=a.gf_root, env=env)
+        if rc != 0:
+            print(f"[{tag}] GF 실패 rc={rc}\n{log[-1200:]}", flush=True)
+            rows.append(dict(tag=tag, ok=False, why="GF 실패")); continue
+    fa = sorted(glob.glob(os.path.join(gdir, "**", "*.h5"), recursive=True))
+    if not fa:
+        rows.append(dict(tag=tag, ok=False, why="GF h5 없음")); continue
+    shutil.rmtree(mdir, ignore_errors=True)
+    rc, log = run([sys.executable, os.path.join(HERE, "exe", "gf_mpm.py"),
+                   "--config", cfg, "--h5", fa[0], "--out", mdir,
+                   "--flip", a.flip])
+    if rc != 0:
+        print(f"[{tag}] 이식본 실패 rc={rc}\n{log[-1500:]}", flush=True)
+        rows.append(dict(tag=tag, ok=False, why="이식본 실패")); continue
+    fb = sorted(glob.glob(os.path.join(mdir, "sim_*.h5")))
+    n = min(len(fa), len(fb))
+    x0 = rd(fa[0])
+    EXT = float(np.linalg.norm(x0.max(0) - x0.min(0)))
+    worst, worst_f, mv_at = 0.0, 0, 0.0
+    d0 = float(np.abs(rd(fa[0]) - rd(fb[0])).max())
+    for i in range(n):
+        xa, xb = rd(fa[i]), rd(fb[i])
+        ok = np.isfinite(xa).all(1) & np.isfinite(xb).all(1)
+        rel = float(np.linalg.norm(xa[ok] - xb[ok], axis=1).mean() / EXT)
+        mv = float(np.linalg.norm(xa[ok] - x0[ok], axis=1).mean() / EXT)
+        if rel > worst:
+            worst, worst_f, mv_at = rel, i, mv
+    ratio = worst / max(mv_at, 1e-12)
+    good = ratio < a.tol
+    rows.append(dict(tag=tag, ok=bool(good), n=int(n), pts=int(x0.shape[0]),
+                     init_gap=d0, worst=worst, worst_frame=worst_f,
+                     moved=mv_at, ratio=ratio, sec=round(time.time() - t0, 1)))
+    print(f"[{tag:14s}] {'일치' if good else '갈린다'}  최악 프레임 {worst_f:3d}  "
+          f"차이 {100*worst:7.4f}%  이동 {100*mv_at:7.3f}%  비 {ratio:.4f}  "
+          f"입자 {x0.shape[0]}  {rows[-1]['sec']}s", flush=True)
+    if a.rm_h5:
+        shutil.rmtree(gdir, ignore_errors=True); shutil.rmtree(mdir, ignore_errors=True)
+
+done = [r for r in rows if "ratio" in r]
+bad = [r for r in rows if not r["ok"]]
+print(f"\n[요약] {len(done)}/{len(rows)} 씬 비교 완료, 일치 "
+      f"{len(done)-len([r for r in done if not r['ok']])}/{len(done)}")
+for r in bad:
+    print(f"  갈린 씬: {r['tag']}  " +
+          (f"차이/이동 {r['ratio']:.4f}" if "ratio" in r else r.get("why", "")))
+if a.out:
+    json.dump(rows, open(a.out, "w"), indent=1, ensure_ascii=False)
+    print(f"[저장] {a.out}")
+print("VERIFY_DONE", flush=True)
