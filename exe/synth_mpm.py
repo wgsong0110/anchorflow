@@ -404,7 +404,10 @@ for f in range(a.frames + 1):
     t_sim += time.time() - _t
     if f % 20 == 0:
         fin = np.isfinite(xs).all(1)
-        print(f"  f{f:4d}  손상 중앙 {np.median(dmg.to_numpy()):.3f} "
+        _jp = Jp.to_numpy()
+        print(f"  f{f:4d}  logJp 중앙 {np.median(_jp):+.4f} p99 "
+              f"{np.quantile(_jp, 0.99):+.4f}  손상 중앙 "
+              f"{np.median(dmg.to_numpy()):.3f} "
               f"비유한 {int((~fin).sum())}  x[{xs[fin].min():.3f},"
               f"{xs[fin].max():.3f}]", flush=True)
 print(f"[저장] {a.out}  {a.frames + 1} 프레임", flush=True)
