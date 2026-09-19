@@ -57,6 +57,9 @@ HARDENING = float(cfg.get("hardening", 0.0))
 YIELD0 = float(cfg.get("yield_stress", 0.0))
 SOFTENING = float(cfg.get("softening", 0.1))
 PLASTIC_VISC = float(cfg.get("plastic_viscosity", 0.0))
+# mpm_solver_warp.py:109 -- particle_Jp 의 기본값은 0 이 아니라 -0.04 다.
+# 0 으로 두면 p0 이 거의 0 이라 첫 스텝부터 전부 항복한다.
+ALPHA0 = float(cfg.get("alpha_0", -0.04))
 RPIC = float(cfg.get("rpic_damping", 0.0))
 GRID_DAMP = float(cfg.get("grid_v_damping_scale", 1.0))
 FLIP = float(cfg.get("flip_pic_ratio", 0.0))
@@ -146,12 +149,12 @@ def init(X: ti.types.ndarray(), V: ti.types.ndarray(),
          VO: ti.types.ndarray(), MA: ti.types.ndarray()):
     for p in range(N):
         for d in ti.static(range(3)):
-            x[p][d] = X[p, d]; v[p][d] = V[p, d]
+            x[p][d] = ti.cast(X[p, d], rt); v[p][d] = ti.cast(V[p, d], rt)
         F[p] = ti.Matrix.identity(rt, 3); Ftr[p] = ti.Matrix.identity(rt, 3)
         C[p] = ti.Matrix.zero(rt, 3, 3); St[p] = ti.Matrix.zero(rt, 3, 3)
-        Jp[p] = 0.0; ys[p] = YIELD0
+        Jp[p] = ALPHA0; ys[p] = YIELD0
         mu_p[p] = mu0; lam_p[p] = lam0
-        vol[p] = VO[p]; mass[p] = MA[p]; alive[p] = 1
+        vol[p] = ti.cast(VO[p], rt); mass[p] = ti.cast(MA[p], rt); alive[p] = 1
 
 
 @ti.func
