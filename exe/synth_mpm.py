@@ -237,7 +237,9 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
                 s0c = ti.max(sig[0, 0], 0.0)
                 s1c = ti.max(sig[1, 1], 0.0)
                 s2c = ti.max(sig[2, 2], 0.0)
-                p0 = KAPPA * (1e-5 + ti.sinh(a.xi_cd * ti.max(-logJp, 0.0)))
+                # 타이치에는 sinh 가 없다. sinh(z) = (e^z - e^-z)/2 로 쓴다.
+                zc = a.xi_cd * ti.max(-logJp, 0.0)
+                p0 = KAPPA * (1e-5 + 0.5 * (ti.exp(zc) - ti.exp(-zc)))
                 Jc = s0c * s1c * s2c
                 b0, b1, b2 = s0c * s0c, s1c * s1c, s2c * s2c
                 bm = (b0 + b1 + b2) / 3.0
