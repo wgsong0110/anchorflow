@@ -114,7 +114,7 @@ def init():
 
 
 @ti.kernel
-def substep(t: float, grav: float, pull: float):
+def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
     for I in ti.grouped(gm):
         gm[I] = 0.0
         gv[I] = ti.Vector([0.0, 0.0, 0.0])
