@@ -11,6 +11,8 @@
   0 elastic_damage  탄성으로 버티다 최대 신장이 문턱을 넘으면 손상이 쌓이고
                     응력이 (1-d) 로 줄어 그 자리에서 끊어진다. 손상은 비가역이다
   1 fluid           약압축성. F 를 부피비 J 하나로 줄이고 압력만 낸다
+  4 cdmpm           GaussianFluent 의 CD-MPM 을 그대로 옮긴 것. 비연관 Cam-Clay
+                    되돌림 + neo-Hookean(Boarden) 응력. 수박이 깨지는 그 구성식이다
   2 cohesive        **비대칭 항복**: 압축에서는 무제한으로 흘러(접촉이 아물고)
                     인장에서는 유한한 항복을 버틴다. 찰흙이 실제로 하는 일이고,
                     이래야 눌러 붙인 두 덩어리가 한 몸이 된다
@@ -30,7 +32,7 @@ import taichi as ti
 ap = argparse.ArgumentParser()
 ap.add_argument("--scene", required=True,
                 choices=("fracture", "flow", "merge", "tear", "impact",
-                         "collide", "sand"))
+                         "collide", "sand", "cdmpm"))
 ap.add_argument("--out", required=True)
 ap.add_argument("--n_grid", type=int, default=64)
 ap.add_argument("--frames", type=int, default=240)
@@ -49,7 +51,11 @@ ap.add_argument("--yield_t", type=float, default=0.02,
 ap.add_argument("--yield_s", type=float, default=0.004,
                 help="cohesive 의 **전단** 항복. 낮을수록 모양을 쉽게 잊는다")
 ap.add_argument("--friction", type=float, default=35.0,
-                help="모래의 마찰각(도)")
+                help="모래/CD-MPM 의 마찰각(도)")
+ap.add_argument("--beta", type=float, default=1.0, help="CD-MPM 인장 강도")
+ap.add_argument("--xi_cd", type=float, default=3.0, help="CD-MPM 경화 지수")
+ap.add_argument("--alpha0", type=float, default=-0.04, help="CD-MPM 초기 logJp")
+ap.add_argument("--hardening", type=float, default=1.0)
 ap.add_argument("--pull", type=float, default=0.35, help="구동기 속도")
 ap.add_argument("--tension_only", type=int, default=1,
                 help="인장일 때만 손상을 쌓는다 (압축으로도 쌓으면 죽이 된다)")
@@ -71,6 +77,8 @@ lam0 = a.E * a.nu / ((1 + a.nu) * (1 - 2 * a.nu))
 K_fluid = a.E
 _sf = np.sin(np.radians(a.friction))
 ALPHA = float(np.sqrt(2.0 / 3.0) * 2.0 * _sf / (3.0 - _sf))
+KAPPA = 2.0 * mu0 / 3.0 + lam0                 # CD-MPM 의 체적 강성
+M_CD = float(ALPHA * 3.0 / np.sqrt(2.0 / 3.0))  # GF 와 같은 식
 
 
 # ----------------------------------------------------------- 형상 만들기
@@ -99,6 +107,10 @@ elif a.scene == "tear":
     notch = (np.abs(pts[:, 0] - 0.5) < 1.2 * a.spacing) & (pts[:, 2] < 0.44)
     pts = pts[~notch]
     mat = np.zeros(len(pts), np.int32)
+elif a.scene == "cdmpm":
+    # GF 수박씬과 같은 그림: 공이 초기 속도를 안고 바닥에 부딪혀 깨진다
+    pts = ball([0.5, 0.5, 0.6], 0.25, a.spacing)
+    mat = np.full(len(pts), 4, np.int32)
 elif a.scene == "sand":
     # 모래 기둥이 제 무게로 무너진다 -- 소성 유동
     pts = box([0.34, 0.34, 0.06], [0.58, 0.58, 0.62], a.spacing)
@@ -128,6 +140,7 @@ v = ti.Vector.field(3, float, N)
 C = ti.Matrix.field(3, 3, float, N)
 F = ti.Matrix.field(3, 3, float, N)
 Jf = ti.field(float, N)              # 유체의 부피비
+Jp = ti.field(float, N)              # CD-MPM 의 logJp (소성 상태)
 dmg = ti.field(float, N)
 mt = ti.field(ti.i32, N)
 gv = ti.Vector.field(3, float, (a.n_grid,) * 3)
@@ -138,6 +151,8 @@ mt.from_numpy(mat)
 
 
 V0 = np.zeros((N, 3), np.float32)
+if a.scene == "cdmpm":
+    V0[:, 2] = -a.v0
 if a.scene == "impact":
     V0[:, 2] = -a.v0
 elif a.scene == "collide":
@@ -173,6 +188,7 @@ def init():
         C[p] = ti.Matrix.zero(float, 3, 3)
         F[p] = ti.Matrix.identity(float, 3)
         Jf[p] = 1.0
+        Jp[p] = a.alpha0
         dmg[p] = 0.0
 
 
@@ -215,6 +231,49 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
                 sig[1, 1] = ti.exp(d1 + tr / 3.0)
                 sig[2, 2] = ti.exp(d2 + tr / 3.0)
                 F[p] = U @ sig @ V.transpose()
+            elif mt[p] == 4:
+                # --- GaussianFluent 의 NonAssociativeCamClay_return_mapping ---
+                logJp = Jp[p]
+                s0c = ti.max(sig[0, 0], 0.0)
+                s1c = ti.max(sig[1, 1], 0.0)
+                s2c = ti.max(sig[2, 2], 0.0)
+                p0 = KAPPA * (1e-5 + ti.sinh(a.xi_cd * ti.max(-logJp, 0.0)))
+                Jc = s0c * s1c * s2c
+                b0, b1, b2 = s0c * s0c, s1c * s1c, s2c * s2c
+                bm = (b0 + b1 + b2) / 3.0
+                jp = ti.pow(ti.max(Jc, 1e-8), -2.0 / 3.0)
+                sh0 = mu0 * jp * (b0 - bm)
+                sh1 = mu0 * jp * (b1 - bm)
+                sh2 = mu0 * jp * (b2 - bm)
+                prime = KAPPA / 2.0 * (Jc - 1.0 / ti.max(Jc, 1e-8))
+                p_tr = -prime * Jc
+                ysc = (6.0 - 3.0) / 2.0 * (1.0 + 2.0 * a.beta)
+                yph = M_CD * M_CD * (p_tr + a.beta * p0) * (p_tr - p0)
+                ssq = sh0 * sh0 + sh1 * sh1 + sh2 * sh2
+                yv = ysc * ssq + yph
+                p_min = a.beta * p0
+                f0, f1, f2 = s0c, s1c, s2c
+                lj = logJp
+                if p_tr > p0:
+                    je = ti.sqrt(ti.max(-2.0 * p0 / KAPPA + 1.0, 1e-8))
+                    f0 = ti.pow(je, 1.0 / 3.0); f1 = f0; f2 = f0
+                    if a.hardening > 0.5:
+                        lj = logJp + ti.log(ti.max(Jc / je, 1e-8))
+                elif p_tr < -p_min:
+                    je = ti.sqrt(ti.max(2.0 * p_min / KAPPA + 1.0, 1e-8))
+                    f0 = ti.pow(je, 1.0 / 3.0); f1 = f0; f2 = f0
+                    if a.hardening > 0.5:
+                        lj = logJp + ti.log(ti.max(Jc / je, 1e-8))
+                elif yv >= 1e-4:
+                    sn = ti.max(ti.sqrt(ssq), 1e-10)
+                    sf = ti.sqrt(ti.max(-yph / ysc, 0.0))
+                    sc = ti.pow(ti.max(Jc, 1e-8), 2.0 / 3.0) / mu0 * sf / sn
+                    f0 = ti.sqrt(ti.max(sc * sh0 + bm, 1e-8))
+                    f1 = ti.sqrt(ti.max(sc * sh1 + bm, 1e-8))
+                    f2 = ti.sqrt(ti.max(sc * sh2 + bm, 1e-8))
+                Jp[p] = lj
+                sig[0, 0] = f0; sig[1, 1] = f1; sig[2, 2] = f2
+                F[p] = U @ sig @ V.transpose()
             elif mt[p] == 3:
                 # 모래: Drucker-Prager (Klar et al. 2016). 인장은 못 버티고,
                 # 전단은 마찰각이 정하는 원뿔 위로 되돌린다 -- 소성 유동이다.
@@ -236,8 +295,17 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
                 F[p] = U @ sig @ V.transpose()
             J = sig[0, 0] * sig[1, 1] * sig[2, 2]
             R = U @ V.transpose()
-            stress = (2.0 * mu0 * (F[p] - R) @ F[p].transpose()
-                      + ti.Matrix.identity(float, 3) * lam0 * J * (J - 1.0))
+            if mt[p] == 4:
+                # --- GF 의 kirchoff_stress_neoHookeanBoarden ---
+                Bm = F[p] @ F[p].transpose()
+                btr = Bm[0, 0] + Bm[1, 1] + Bm[2, 2]
+                devB = Bm - ti.Matrix.identity(float, 3) * (btr / 3.0)
+                pr = KAPPA / 2.0 * (J - 1.0 / ti.max(J, 1e-8))
+                stress = (mu0 * ti.pow(ti.max(J, 1e-8), -2.0 / 3.0) * devB
+                          + ti.Matrix.identity(float, 3) * (J * pr))
+            else:
+                stress = (2.0 * mu0 * (F[p] - R) @ F[p].transpose()
+                          + ti.Matrix.identity(float, 3) * lam0 * J * (J - 1.0))
             if mt[p] == 0:
                 # 최대 신장이 문턱을 넘은 만큼 손상이 쌓인다. 줄지 않는다.
                 # **인장일 때만** 쌓는다 -- 압축으로도 쌓으면 충돌면 전체가
@@ -306,7 +374,7 @@ os.makedirs(a.out, exist_ok=True)
 t_sim = t_io = 0.0
 t_all = time.time()
 GRAV = {"fracture": 0.0, "flow": -9.8, "merge": 0.0, "tear": 0.0,
-        "impact": -9.8, "collide": 0.0, "sand": -9.8}[a.scene]
+        "impact": -9.8, "collide": 0.0, "sand": -9.8, "cdmpm": -15.0}[a.scene]
 for f in range(a.frames + 1):
     _t = time.time()
     xs = x.to_numpy(); vs = v.to_numpy(); Fs = F.to_numpy().reshape(-1, 9)
