@@ -163,6 +163,8 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
             ti.atomic_add(gv[base + off], wt * (p_mass * v[p] + affine @ dpos))
             ti.atomic_add(gm[base + off], wt * p_mass)
 
+    # 격자 갱신과 구동기를 **한 루프 안에서** 한다. 타이치는 최상위 for 만
+    # 병렬 루프로 인정해서, if 안에 for 를 넣으면 struct_for 중첩으로 거부한다.
     for I in ti.grouped(gm):
         if gm[I] > 0:
             gv[I] = gv[I] / gm[I]
@@ -172,15 +174,13 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
                     gv[I][d] = 0.0
                 if I[d] > a.n_grid - 3 and gv[I][d] > 0:
                     gv[I][d] = 0.0
-
-    # 구동기: 양끝을 x 방향으로 강제한다 (격자 속도를 덮어쓴다)
-    if pull != 0.0:
-        for I in ti.grouped(gm):
-            px = I[0] * dx
-            if px < 0.32:
-                gv[I] = ti.Vector([-pull, 0.0, 0.0])
-            elif px > 0.68:
-                gv[I] = ti.Vector([pull, 0.0, 0.0])
+            # 구동기: 양끝을 x 방향으로 강제한다
+            if pull != 0.0:
+                px = float(I[0]) * dx
+                if px < 0.32:
+                    gv[I] = ti.Vector([-pull, 0.0, 0.0])
+                elif px > 0.68:
+                    gv[I] = ti.Vector([pull, 0.0, 0.0])
 
     for p in x:
         base = (x[p] * inv_dx - 0.5).cast(int)
