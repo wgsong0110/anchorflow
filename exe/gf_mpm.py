@@ -26,6 +26,9 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=None, help="없으면 config 의 frame_num")
 ap.add_argument("--stride", type=int, default=1, help="h5 입자 솎기 (검증용)")
 ap.add_argument("--f64", action="store_true")
+ap.add_argument("--auto_dt", action="store_true",
+                help="GF 의 씬 러너처럼 substep_dt 를 CFL 로 다시 계산한다 "
+                     "(gs_simulation_watermelon.py:416). config 값은 무시된다")
 a = ap.parse_args()
 
 cfg = json.load(open(a.config))
@@ -62,7 +65,11 @@ density = float(cfg["density"])
 substep_dt = float(cfg["substep_dt"])
 frame_dt = float(cfg["frame_dt"])
 n_frames = a.frames if a.frames is not None else int(cfg.get("frame_num", 100))
-nsub = max(1, int(round(frame_dt / substep_dt)))
+if a.auto_dt:
+    _c = np.sqrt(E * (1 - nu) / ((1 + nu) * (1 - 2 * nu) * density))
+    substep_dt = 0.6 * dx / _c
+# GF 는 int() 로 버린다 -- 한 프레임이 frame_dt 보다 살짝 짧다. 그대로 따른다.
+nsub = max(1, int(frame_dt / substep_dt))
 G = np.array(cfg.get("g", [0.0, 0.0, -9.8]), np.float64)
 # gs_simulation.py:374 가 config 에 없으면 [0,0,-6] 을 그대로 박아 넣는다
 V0 = np.array(cfg.get("init_velocity", [0.0, 0.0, -6.0]), np.float64)
