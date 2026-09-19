@@ -40,6 +40,10 @@ ap.add_argument("--grid_lim", type=float, default=1.0,
 ap.add_argument("--init_pt", default=None,
                 help="궤적 .pt 의 0 프레임을 **초기 입자 위치로 그대로** 쓴다. "
                      "형상 차이를 없애려면 이게 유일한 방법이다")
+ap.add_argument("--init_h5", default=None,
+                help="h5 한 장의 위치를 초기 입자로 쓴다. .pt 는 부분표본이라 "
+                     "격자에 비해 너무 성기다 -- 셀당 입자가 1 개는 돼야 MPM 이 "
+                     "응력을 주고받는다 (실측: 40k 로는 beta 를 바꿔도 결과가 같았다)")
 ap.add_argument("--init_stride", type=int, default=1)
 ap.add_argument("--frames", type=int, default=240)
 ap.add_argument("--substeps", type=int, default=24)
@@ -142,7 +146,16 @@ else:                                        # merge
     p2 = ball([0.62, 0.5, 0.5], 0.10, a.spacing)
     pts = np.concatenate([p1, p2])
     mat = np.full(len(pts), 2, np.int32)
-if a.init_pt:
+if a.init_h5:
+    with h5py.File(a.init_h5, "r") as _h:
+        _x = np.array(_h["x"])
+    pts = (_x.T if _x.shape[0] == 3 else _x).astype(np.float64)[::a.init_stride]
+    pts = pts[np.isfinite(pts).all(1)]
+    mat = np.full(len(pts), {"cdmpm": 4, "sand": 3, "merge": 2,
+                             "flow": 1}.get(a.scene, 0), np.int32)
+    print(f"[초기상태] {a.init_h5} 에서 {len(pts)} 입자, "
+          f"범위 {np.round(pts.min(0), 3)}~{np.round(pts.max(0), 3)}", flush=True)
+elif a.init_pt:
     import torch as _t
     _d = _t.load(a.init_pt, map_location="cpu", weights_only=False)
     pts = _d["x"][0].numpy()[::a.init_stride].astype(np.float64)
