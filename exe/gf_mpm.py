@@ -27,6 +27,9 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=None, help="없으면 config 의 frame_num")
 ap.add_argument("--stride", type=int, default=1, help="h5 입자 솎기 (검증용)")
 ap.add_argument("--f64", action="store_true")
+ap.add_argument("--flip", default="auto", choices=("auto", "on", "off"),
+                help="auto 는 flip_pic_ratio>0 (gs_simulation.py 의 규칙). 씬 전용 "
+                     "러너로 뽑은 궤적과 맞출 때는 on 을 쓴다")
 ap.add_argument("--resume", action="store_true",
                 help="out 의 state_last.h5 에서 이어 돌린다. 위치뿐 아니라 "
                      "F 와 logJp 까지 들고 있어야 궤적이 이어진다")
@@ -69,8 +72,11 @@ ALPHA0 = float(cfg.get("alpha_0", -0.04))
 RPIC = float(cfg.get("rpic_damping", 0.0))
 # 기본값은 1.1 이고, 1 보다 작을 때만 감쇠 커널이 돈다
 GRID_DAMP = float(cfg.get("grid_v_damping_scale", 1.1))
-FLIP = float(cfg.get("flip_pic_ratio", 0.0))
-USE_FLIP = "flip_pic_ratio" in cfg and FLIP > 0.0
+# gs_simulation.py:429 -- 키가 없으면 0.7 로 보고 FLIP 을 켠다. 0 이면 APIC 이다.
+# 다만 씬 전용 러너(gs_simulation_watermelon.py)는 flip_pic 인자를 넘기지 않아
+# **비율과 무관하게 항상 FLIP** 이다. 그래서 --flip 으로 덮어쓸 수 있게 둔다.
+FLIP = float(cfg.get("flip_pic_ratio", 0.7))
+USE_FLIP = {"auto": FLIP > 0.0, "on": True, "off": False}[a.flip]
 density = float(cfg["density"])
 substep_dt = float(cfg["substep_dt"])
 frame_dt = float(cfg["frame_dt"])
@@ -135,30 +141,114 @@ Jp = ti.field(rt, N); ys = ti.field(rt, N)
 mu_p = ti.field(rt, N); lam_p = ti.field(rt, N); kap_p = ti.field(rt, N)
 vol = ti.field(rt, N); mass = ti.field(rt, N)
 alive = ti.field(ti.i32, N)
+x0f = ti.Vector.field(3, rt, N)
 gvin = ti.Vector.field(3, rt, (n_grid,) * 3)
 gvout = ti.Vector.field(3, rt, (n_grid,) * 3)
 gm = ti.field(rt, (n_grid,) * 3)
 
-# 경계: bounding_box 는 무조건, 평면 충돌자는 config 에서 읽는다
-SURF = {"sticky": 0, "slip": 1, "cut": 2}
-planes = [bc for bc in cfg.get("boundary_conditions", [])
-          if bc["type"] == "surface_collider"]
-NPL = max(1, len(planes))
-pl_pt = ti.Vector.field(3, rt, NPL); pl_n = ti.Vector.field(3, rt, NPL)
-pl_ty = ti.field(ti.i32, NPL); pl_fr = ti.field(rt, NPL)
-pl_t0 = ti.field(rt, NPL); pl_t1 = ti.field(rt, NPL)
-HAS_BBOX = any(bc["type"] == "bounding_box" for bc in cfg.get("boundary_conditions", []))
-_pp = np.zeros((NPL, 3)); _pn = np.zeros((NPL, 3)); _pn[:, 2] = 1.0
-_pt = np.zeros(NPL, np.int32); _pf = np.zeros(NPL); _p0 = np.zeros(NPL); _p1 = np.zeros(NPL)
-for i, bc in enumerate(planes):
-    nrm = np.array(bc["normal"], np.float64); nrm = nrm / np.linalg.norm(nrm)
-    _pp[i] = bc["point"]; _pn[i] = nrm
-    _pt[i] = SURF.get(bc.get("surface", "sticky"), 0)
-    _pf[i] = bc.get("friction", 0.0)
-    _p0[i] = bc.get("start_time", 0.0); _p1[i] = bc.get("end_time", 1e9)
-pl_pt.from_numpy(_pp); pl_n.from_numpy(_pn); pl_ty.from_numpy(_pt)
-pl_fr.from_numpy(_pf); pl_t0.from_numpy(_p0); pl_t1.from_numpy(_p1)
-NPLANE = len(planes)
+# ------------------------------------------------------------ 경계·구동 조건
+# utils/decode_param.py:248 이 받는 일곱 가지를 전부 옮긴다. 하나라도 빠지면
+# 그걸 쓰는 씬에서 궤적이 갈린다.
+CFG_DT = float(cfg["substep_dt"])          # 임펄스 길이는 config 값으로 잰다
+_gc, _pc = [], []
+for bc in cfg.get("boundary_conditions", []):
+    ty = bc["type"]
+    t0 = float(bc.get("start_time", 0.0)); t1 = float(bc.get("end_time", 999.0))
+    if ty == "bounding_box":
+        _gc.append(dict(k=0, t0=0.0, t1=999.0))
+    elif ty == "surface_collider":
+        nv = np.array(bc["normal"], np.float64); nv = nv / np.linalg.norm(nv)
+        _gc.append(dict(k=1, pt=bc["point"], n=nv, t0=t0, t1=t1,
+                        sty={"sticky": 0, "slip": 1, "cut": 11}.get(bc["surface"], 2),
+                        fr=float(bc.get("friction", 0.0))))
+    elif ty == "cuboid":
+        _gc.append(dict(k=2, pt=bc["point"], sz=bc["size"], vel=bc["velocity"],
+                        t0=t0, t1=t1, rs=int(bc.get("reset", 0))))
+    elif ty == "particle_impulse":
+        _pc.append(dict(k=0, pt=bc.get("point", [1, 1, 1]),
+                        sz=bc.get("size", [1, 1, 1]), vel=bc["force"],
+                        t0=t0, t1=t0 + CFG_DT * int(bc.get("num_dt", 1))))
+    elif ty == "enforce_particle_translation":
+        _pc.append(dict(k=1, pt=bc["point"], sz=bc["size"], vel=bc["velocity"],
+                        t0=t0, t1=t1))
+    elif ty == "release_particles_sequentially":
+        # mpm_solver_warp.py:1176 -- num_layers 인자를 무시하고 항상 50 개의
+        # "속도 0 고정" 구역으로 펼친다. 그 상수까지 그대로 따른다.
+        nl = 50
+        nv = bc["normal"]
+        pt = [0.0, 0.0, 0.0]; sz = [0.0, 0.0, 0.0]; ax = -1
+        for i in range(3):
+            if nv[i] == 0:
+                pt[i] = 1.0; sz[i] = 1.0
+            else:
+                ax = i; pt[i] = float(bc["end_position"])
+        half = abs(bc["start_position"] - bc["end_position"]) / nl
+        for i in range(nl):
+            sz2 = list(sz); sz2[ax] = half * (nl - i)
+            _pc.append(dict(k=1, pt=list(pt), sz=sz2, vel=[0.0, 0.0, 0.0],
+                            t0=t0, t1=t1 / nl * (i + 1)))
+    elif ty == "enforce_particle_velocity_rotation":
+        nv = np.array(bc["normal"], np.float64); nv = nv / np.linalg.norm(nv)
+        h1 = np.array([1.0, 1.0, 1.0])
+        if abs(float(nv @ h1)) < 0.01:
+            h1 = np.array([0.72, 0.37, -0.67])
+        h1 = h1 - float(h1 @ nv) * nv; h1 = h1 / np.linalg.norm(h1)
+        h2 = np.cross(h1, nv)
+        _pc.append(dict(k=2, pt=bc["point"], n=nv, h1=h1, h2=h2,
+                        hr=bc["half_height_and_radius"],
+                        rs=float(bc["rotation_scale"]),
+                        ts=float(bc["translation_scale"]), t0=t0, t1=t1))
+    else:
+        raise TypeError(f"모르는 경계 종류: {ty}")
+
+NGC, NPC = max(1, len(_gc)), max(1, len(_pc))
+gc_k = ti.field(ti.i32, NGC); gc_sty = ti.field(ti.i32, NGC)
+gc_rs = ti.field(ti.i32, NGC)
+gc_pt = ti.Vector.field(3, rt, NGC); gc_n = ti.Vector.field(3, rt, NGC)
+gc_sz = ti.Vector.field(3, rt, NGC); gc_vel = ti.Vector.field(3, rt, NGC)
+gc_fr = ti.field(rt, NGC); gc_t0 = ti.field(rt, NGC); gc_t1 = ti.field(rt, NGC)
+pc_k = ti.field(ti.i32, NPC)
+pc_pt = ti.Vector.field(3, rt, NPC); pc_sz = ti.Vector.field(3, rt, NPC)
+pc_vel = ti.Vector.field(3, rt, NPC); pc_n = ti.Vector.field(3, rt, NPC)
+pc_h1 = ti.Vector.field(3, rt, NPC); pc_h2 = ti.Vector.field(3, rt, NPC)
+pc_hr = ti.Vector.field(2, rt, NPC)
+pc_rs = ti.field(rt, NPC); pc_ts = ti.field(rt, NPC)
+pc_t0 = ti.field(rt, NPC); pc_t1 = ti.field(rt, NPC)
+
+
+def _pack(items, key, dim, default=0.0):
+    out = np.full((max(1, len(items)), dim), default, np.float64)
+    for i, d in enumerate(items):
+        if key in d:
+            out[i] = np.array(d[key], np.float64).reshape(-1)[:dim]
+    return out
+
+
+def _packs(items, key, default=0.0):
+    out = np.full(max(1, len(items)), default, np.float64)
+    for i, d in enumerate(items):
+        if key in d:
+            out[i] = float(d[key])
+    return out
+
+
+gc_k.from_numpy(_packs(_gc, "k", -1).astype(np.int32))
+gc_sty.from_numpy(_packs(_gc, "sty", 0).astype(np.int32))
+gc_rs.from_numpy(_packs(_gc, "rs", 0).astype(np.int32))
+gc_pt.from_numpy(_pack(_gc, "pt", 3)); gc_n.from_numpy(_pack(_gc, "n", 3))
+gc_sz.from_numpy(_pack(_gc, "sz", 3)); gc_vel.from_numpy(_pack(_gc, "vel", 3))
+gc_fr.from_numpy(_packs(_gc, "fr")); gc_t0.from_numpy(_packs(_gc, "t0"))
+gc_t1.from_numpy(_packs(_gc, "t1", 999.0))
+pc_k.from_numpy(_packs(_pc, "k", -1).astype(np.int32))
+pc_pt.from_numpy(_pack(_pc, "pt", 3)); pc_sz.from_numpy(_pack(_pc, "sz", 3))
+pc_vel.from_numpy(_pack(_pc, "vel", 3)); pc_n.from_numpy(_pack(_pc, "n", 3))
+pc_h1.from_numpy(_pack(_pc, "h1", 3)); pc_h2.from_numpy(_pack(_pc, "h2", 3))
+pc_hr.from_numpy(_pack(_pc, "hr", 2))
+pc_rs.from_numpy(_packs(_pc, "rs")); pc_ts.from_numpy(_packs(_pc, "ts"))
+pc_t0.from_numpy(_packs(_pc, "t0")); pc_t1.from_numpy(_packs(_pc, "t1", 999.0))
+NG, NP = len(_gc), len(_pc)
+print(f"[경계] 격자 {NG} 개 {[d['k'] for d in _gc]}, 입자 {NP} 개 "
+      f"{sorted(set(d['k'] for d in _pc))}", flush=True)
 
 GRAV = ti.Vector(list(G))
 
@@ -171,6 +261,7 @@ def init(X: ti.types.ndarray(), V: ti.types.ndarray(),
     for p in range(N):
         for d in ti.static(range(3)):
             x[p][d] = ti.cast(X[p, d], rt); v[p][d] = ti.cast(V[p, d], rt)
+            x0f[p][d] = ti.cast(X[p, d], rt)
         F[p] = ti.Matrix.identity(rt, 3); Ftr[p] = ti.Matrix.identity(rt, 3)
         C[p] = ti.Matrix.zero(rt, 3, 3); St[p] = ti.Matrix.zero(rt, 3, 3)
         Jp[p] = ALPHA0; ys[p] = YIELD0
@@ -233,6 +324,12 @@ def p2g(dt: rt):
                 gm[ix, iy, iz] += wt * mass[p]
 
 
+@ti.func
+def _gpos(I):
+    return ti.Vector([ti.cast(I[0], rt), ti.cast(I[1], rt),
+                      ti.cast(I[2], rt)]) * dx
+
+
 @ti.kernel
 def grid_op(dt: rt, t: rt):
     for I in ti.grouped(gm):
@@ -242,27 +339,80 @@ def grid_op(dt: rt, t: rt):
                 vo = vo * GRID_DAMP
             gvout[I] = vo
     for I in ti.grouped(gm):
-        # --- add_bounding_box: padding 3 칸, 들어오는 방향만 0 ---
-        if ti.static(HAS_BBOX):
-            vo = gvout[I]
-            for d in ti.static(range(3)):
-                if I[d] < 3 and vo[d] < 0:
-                    vo[d] = 0.0
-                if I[d] >= n_grid - 3 and vo[d] > 0:
-                    vo[d] = 0.0
-            gvout[I] = vo
-        # --- add_surface_collider ---
-        for c in range(NPLANE):
-            if pl_t0[c] <= t < pl_t1[c]:
-                off = ti.cast(I, rt) * dx - pl_pt[c]
-                nrm = pl_n[c]
-                if off.dot(nrm) < 0.0:
-                    if pl_ty[c] == 0:
-                        gvout[I] = ti.Vector.zero(rt, 3)
+        for c in range(NG):
+            k = gc_k[c]
+            inwin = (gc_t0[c] <= t) and (t < gc_t1[c])
+            if k == 0:
+                # add_bounding_box: padding 3 칸, 안으로 들어오는 성분만 0
+                vo = gvout[I]
+                for d in ti.static(range(3)):
+                    if I[d] < 3 and vo[d] < 0:
+                        vo[d] = 0.0
+                    if I[d] >= n_grid - 3 and vo[d] > 0:
+                        vo[d] = 0.0
+                gvout[I] = vo
+            elif k == 1 and inwin:
+                off = _gpos(I) - gc_pt[c]
+                if off.dot(gc_n[c]) < 0.0:
+                    if gc_sty[c] == 11:
+                        # cut: z 창 밖이면 정지, 안이면 y 를 죽이고 0.3 배
+                        zz = ti.cast(I[2], rt) * dx
+                        if zz < 0.4 or zz > 0.53:
+                            gvout[I] = ti.Vector.zero(rt, 3)
+                        else:
+                            vi = gvout[I]
+                            gvout[I] = ti.Vector(
+                                [vi[0], ti.cast(0.0, rt), vi[2]]) * 0.3
                     else:
-                        # GF 의 slip/cut 갈래는 계산을 해놓고 마지막에 0 으로
-                        # 덮어쓴다 (mpm_solver_warp.py:781). 그대로 옮긴다.
+                        # sticky(0) 뿐 아니라 slip(1)·마찰(2) 갈래도 GF 는
+                        # 마지막 줄에서 0 으로 덮어쓴다 (solver:781). 그대로 둔다.
                         gvout[I] = ti.Vector.zero(rt, 3)
+            elif k == 2:
+                # set_velocity_on_cuboid
+                if inwin:
+                    off = _gpos(I) - gc_pt[c]
+                    if (ti.abs(off[0]) < gc_sz[c][0]
+                            and ti.abs(off[1]) < gc_sz[c][1]
+                            and ti.abs(off[2]) < gc_sz[c][2]):
+                        gvout[I] = gc_vel[c]
+                elif gc_rs[c] == 1 and t < gc_t1[c] + 15.0 * dt:
+                    # reset 은 상자 밖에도 걸린다 -- 원본이 그렇다
+                    gvout[I] = ti.Vector.zero(rt, 3)
+
+
+@ti.kernel
+def particle_bc(dt: rt, t: rt):
+    # pre_p2g_operations(임펄스) 와 particle_velocity_modifiers 를 한 번에.
+    # 어느 입자가 대상인지는 **초기 위치**로 한 번 정해지고 바뀌지 않는다.
+    for p in range(N):
+        if alive[p] == 0:
+            continue
+        for c in range(NP):
+            if not ((pc_t0[c] <= t) and (t < pc_t1[c])):
+                continue
+            k = pc_k[c]
+            off0 = x0f[p] - pc_pt[c]
+            if k == 0 or k == 1:
+                if (ti.abs(off0[0]) < pc_sz[c][0]
+                        and ti.abs(off0[1]) < pc_sz[c][1]
+                        and ti.abs(off0[2]) < pc_sz[c][2]):
+                    if k == 0:
+                        v[p] = v[p] + (pc_vel[c] / mass[p]) * dt
+                    else:
+                        v[p] = pc_vel[c]
+            else:
+                nv = pc_n[c]
+                vd = ti.abs(off0.dot(nv))
+                hd0 = (off0 - off0.dot(nv) * nv).norm()
+                if vd < pc_hr[c][0] and hd0 < pc_hr[c][1]:
+                    off = x[p] - pc_pt[c]
+                    hd = (off - off.dot(nv) * nv).norm()
+                    th = ti.acos(off.dot(pc_h1[c]) / hd)
+                    if off.dot(pc_h2[c]) <= 0:
+                        th = -th
+                    v[p] = (-hd * ti.sin(th) * pc_rs[c] * pc_h1[c]
+                            + hd * ti.cos(th) * pc_rs[c] * pc_h2[c]
+                            + pc_ts[c] * nv)
 
 
 @ti.kernel
@@ -522,6 +672,7 @@ def _load(X: ti.types.ndarray(), V: ti.types.ndarray(), FF: ti.types.ndarray(),
     for p in range(N):
         for d in ti.static(range(3)):
             x[p][d] = ti.cast(X[p, d], rt); v[p][d] = ti.cast(V[p, d], rt)
+            x0f[p][d] = ti.cast(X[p, d], rt)
             for e in ti.static(range(3)):
                 F[p][d, e] = ti.cast(FF[p, d, e], rt)
                 Ftr[p][d, e] = ti.cast(FT[p, d, e], rt)
@@ -547,6 +698,8 @@ t0 = time.time()
 for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
     for _ in range(nsub):
         quarantine(-0.5 * grid_lim, 1.5 * grid_lim)
+        if NP:
+            particle_bc(substep_dt, t)
         stress_kernel(substep_dt)
         zero_grid()
         p2g(substep_dt)
