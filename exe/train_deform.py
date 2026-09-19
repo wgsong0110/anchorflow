@@ -76,6 +76,11 @@ ap.add_argument("--refps", action="store_true",
                 help="매 프레임 현재 배치에서 앵커를 FPS 로 다시 뽑는다. 기본은 "
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
                      "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
+ap.add_argument("--vox_knn_feat", action="store_true",
+                help="복셀 앵커의 특징을 칸 하드 할당이 아니라 **스키닝과 같은 kNN "
+                     "이웃**으로 집계한다. 지금은 앵커가 본 가우시안과 옮기는 "
+                     "가우시안이 달라 특징->변위 대응이 어긋난다 -- FPS 경로는 둘이 "
+                     "같은 idx 를 쓴다")
 ap.add_argument("--damage", action="store_true",
                 help="앵커마다 **손상률**을 하나 더 내게 하고, 그것을 자기 앵커들로 "
                      "섞어 **가우시안마다** 손상을 쌓는다. 손상이 온도를 깎아 "
@@ -245,6 +250,12 @@ def vox_feats(d, gsel, x, v):
     vb = voxel.build(x, X, v / VEL_SCALE, MASS[gsel], cell, lo=VOX_LO,
                      offsets=VOX_OFFS, dims=VOX_DIMS)
     idx, _ = voxel.neighbors(x, vb, a.k)
+    if a.vox_knn_feat:
+        # 앵커 위치만 복셀로 정하고, 특징은 FPS 경로와 똑같이 그 앵커가 실제로
+        # 옮길 가우시안들(같은 idx)로 집계한다
+        feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, vb.M, cell,
+                            pa=vb.pos)
+        return vb.pos, feat, idx
     W, cx, cX, cv, cnt, g2 = vb.moments
     M = vb.M
     S = g2[:, :9].reshape(M, 3, 3) / W.reshape(M, 1, 1)
