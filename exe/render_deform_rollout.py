@@ -41,7 +41,7 @@ from PIL import Image, ImageDraw                                 # noqa: E402
 
 from anchorflow import ptrender                                  # noqa: E402
 from anchorflow.deform import (DeformNet, aggregate, bc_features,  # noqa: E402
-                               grid_knn, skin)
+                               gauss_stretch, grid_knn, skin)
 
 d = torch.load(os.path.join(a.data, a.traj + ".pt"), map_location="cpu",
                weights_only=False)
@@ -77,9 +77,11 @@ def rollout(ck):
     ta = st["args"]
     AIDX = st["aidx"].to(dev)
     H = float(st["H"])
+    dmg_on = bool(ta.get("damage", False))
     net = DeformNet(n_feat=int(st["n_feat"]), hidden=int(ta["hidden"]),
                     depth=int(ta["depth"]), heads=int(ta["heads"]),
-                    scale=0.02 * EXT, h=H, ext=EXT, seed=int(ta["seed"])).to(dev)
+                    scale=0.02 * EXT, h=H, ext=EXT, seed=int(ta["seed"]),
+                    damage=dmg_on).to(dev)
     net.load_state_dict(st["net"])
     net.eval()
     k = int(ta["k"])
@@ -88,14 +90,24 @@ def rollout(ck):
     p = take(d["x"][a.t0], AIDX)
     XC = take(d["x"][0], GS)
     out = [x.clone()]
+    x0r, p0r = x.clone(), p.clone()
+    dmg = None
     for _ in range(a.frames):
         idx, _ = grid_knn(x, p, k)
         feat, _ = aggregate(x, v / VEL_SCALE, XC, MASS[GS.to(dev)], idx,
                             p.shape[0], H, pa=p)
         extra = torch.cat([MAT.reshape(1, -1).expand(p.shape[0], -1),
                            bc_features(p, cfg) / H], -1)
-        dp, lr_, lt_ = net(p, torch.cat([feat, extra], -1), FRAME_DT)
-        x2, _ = skin(x, p, dp, lr_, lt_, idx, H)
+        o = net(p, torch.cat([feat, extra], -1), FRAME_DT)
+        dp, lr_, lt_ = o[0], o[1], o[2]
+        if dmg_on:
+            if dmg is None:
+                dmg = torch.zeros(x.shape[0], device=dev)
+            ref = (x0r.unsqueeze(1) - p0r[idx]).norm(dim=-1)
+            w0 = skin(x, p, dp, lr_, lt_, idx, H, dmg=dmg)[1]
+            dmg = (dmg + FRAME_DT * (w0 * o[3][idx]).sum(1)
+                   * gauss_stretch(x, p, idx, ref, w0)).clamp(max=1.0)
+        x2, _ = skin(x, p, dp, lr_, lt_, idx, H, dmg=dmg)
         v, p, x = (x2 - x) / FRAME_DT, p + dp, x2
         out.append(x.clone())
     return torch.stack(out), os.path.splitext(os.path.basename(ck))[0]
