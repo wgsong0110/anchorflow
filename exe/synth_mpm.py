@@ -53,6 +53,12 @@ ap.add_argument("--yield_s", type=float, default=0.004,
 ap.add_argument("--friction", type=float, default=35.0,
                 help="모래/CD-MPM 의 마찰각(도)")
 ap.add_argument("--beta", type=float, default=1.0, help="CD-MPM 인장 강도")
+ap.add_argument("--rind", type=float, default=0.0,
+                help="바깥 이 비율만큼을 **껍질**로 본다 (반지름 기준). GF 수박 러너가 "
+                     "껍질 가우시안의 beta 를 3e9 로 올리는 바로 그 처리다 -- 균질한 "
+                     "공은 CD-MPM 이라도 퍼지기만 하고 깨지지 않는다")
+ap.add_argument("--rind_beta", type=float, default=3e9,
+                help="껍질의 인장 강도 (GF 러너와 같은 값)")
 ap.add_argument("--xi_cd", type=float, default=3.0, help="CD-MPM 경화 지수")
 ap.add_argument("--alpha0", type=float, default=-0.04, help="CD-MPM 초기 logJp")
 ap.add_argument("--hardening", type=float, default=1.0)
@@ -180,6 +186,17 @@ THJ = (1.0 + a.thresh_jitter * (rng.rand(N).astype(np.float32) - 0.5)
 thj = ti.field(float, N)
 thj.from_numpy(THJ)
 
+# CD-MPM 의 beta 는 입자마다 다를 수 있다 (GF 도 배열이다). 껍질을 여기서 만든다.
+BETA = np.full(N, a.beta, np.float32)
+if a.rind > 0:
+    _c = pts.mean(0)
+    _r = np.linalg.norm(pts - _c, axis=1)
+    _shell = _r > (1.0 - a.rind) * _r.max()
+    BETA[_shell] = a.rind_beta
+    print(f"[껍질] {int(_shell.sum())} / {N} 입자, beta {a.rind_beta:g}", flush=True)
+betaf = ti.field(float, N)
+betaf.from_numpy(BETA)
+
 
 @ti.kernel
 def init():
@@ -249,11 +266,12 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
                 sh2 = mu0 * jp * (b2 - bm)
                 prime = KAPPA / 2.0 * (Jc - 1.0 / ti.max(Jc, 1e-8))
                 p_tr = -prime * Jc
-                ysc = (6.0 - 3.0) / 2.0 * (1.0 + 2.0 * a.beta)
-                yph = M_CD * M_CD * (p_tr + a.beta * p0) * (p_tr - p0)
+                bt = betaf[p]
+                ysc = (6.0 - 3.0) / 2.0 * (1.0 + 2.0 * bt)
+                yph = M_CD * M_CD * (p_tr + bt * p0) * (p_tr - p0)
                 ssq = sh0 * sh0 + sh1 * sh1 + sh2 * sh2
                 yv = ysc * ssq + yph
-                p_min = a.beta * p0
+                p_min = bt * p0
                 f0, f1, f2 = s0c, s1c, s2c
                 lj = logJp
                 if p_tr > p0:
