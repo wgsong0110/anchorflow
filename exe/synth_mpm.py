@@ -18,8 +18,8 @@
 형상은 절차적으로 찍는다 (3DGS 자산이 필요 없다). 출력은 프레임마다 h5 로,
 키 이름을 기성 러너와 맞춰 두어 기존 렌더러·측정 도구가 그대로 붙는다.
 """
-from __future__ import annotations
-
+# `from __future__ import annotations` 를 쓰면 안 된다 -- 그러면 모든 주석이
+# 문자열이 되어 타이치가 커널 인자 타입을 못 읽는다 ("Invalid type annotation").
 import argparse
 import os
 
