@@ -51,6 +51,10 @@ ap.add_argument("--yield_s", type=float, default=0.004,
 ap.add_argument("--friction", type=float, default=35.0,
                 help="모래의 마찰각(도)")
 ap.add_argument("--pull", type=float, default=0.35, help="구동기 속도")
+ap.add_argument("--tension_only", type=int, default=1,
+                help="인장일 때만 손상을 쌓는다 (압축으로도 쌓으면 죽이 된다)")
+ap.add_argument("--thresh_jitter", type=float, default=0.3,
+                help="입자별 문턱을 이 비율만큼 흔들어 균열 길을 만든다")
 ap.add_argument("--v0", type=float, default=0.0,
                 help="초기 속도 크기 (impact/collide 에서 쓴다)")
 ap.add_argument("--seed", type=int, default=0)
@@ -141,6 +145,26 @@ elif a.scene == "collide":
 v0f = ti.Vector.field(3, float, N)
 v0f.from_numpy(V0)
 
+# 손잡이를 격자 영역으로 잡으면 누른 뒤 물체가 그 영역에서 빠져나와 당기기가
+# 아예 안 걸린다 (실측: 눌러서 0.53 배가 된 뒤 800 프레임 내내 그대로였다).
+# 그래서 t=0 기준으로 바깥쪽 입자를 **찍어두고** 그 입자들의 속도를 직접 준다.
+HAND = np.zeros(N, np.int32)
+if a.scene in ("fracture", "tear", "merge"):
+    lo_h, hi_h = np.quantile(pts[:, 0], 0.12), np.quantile(pts[:, 0], 0.88)
+    HAND[pts[:, 0] < lo_h] = -1
+    HAND[pts[:, 0] > hi_h] = 1
+hand = ti.field(ti.i32, N)
+hand.from_numpy(HAND)
+print(f"[손잡이] 왼쪽 {int((HAND < 0).sum())} 오른쪽 {int((HAND > 0).sum())}",
+      flush=True)
+
+# 취성 파괴는 문턱이 균일하면 충돌면 전체가 한꺼번에 망가져 죽이 된다.
+# 입자마다 문턱을 흔들어 균열이 갈 길을 만들어 준다.
+THJ = (1.0 + a.thresh_jitter * (rng.rand(N).astype(np.float32) - 0.5)
+       ).astype(np.float32)
+thj = ti.field(float, N)
+thj.from_numpy(THJ)
+
 
 @ti.kernel
 def init():
@@ -216,9 +240,12 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
                       + ti.Matrix.identity(float, 3) * lam0 * J * (J - 1.0))
             if mt[p] == 0:
                 # 최대 신장이 문턱을 넘은 만큼 손상이 쌓인다. 줄지 않는다.
-                if s0 > a.dmg_thresh:
-                    dmg[p] = ti.min(1.0, dmg[p] + a.dmg_rate * a.dt
-                                    * (s0 - a.dmg_thresh))
+                # **인장일 때만** 쌓는다 -- 압축으로도 쌓으면 충돌면 전체가
+                # 뭉개져 소성 유동처럼 보인다. 취성 파괴는 부피가 늘어나는
+                # 자리(반사 인장파, 후프 응력)에서 균열이 난다.
+                th = a.dmg_thresh * thj[p]
+                if s0 > th and (J > 1.0 or a.tension_only == 0):
+                    dmg[p] = ti.min(1.0, dmg[p] + a.dmg_rate * a.dt * (s0 - th))
                 stress = (1.0 - dmg[p]) * stress
 
         stress = (-a.dt * p_vol * 4.0 * inv_dx * inv_dx) * stress
@@ -241,13 +268,6 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
                     gv[I][d] = 0.0
                 if I[d] > a.n_grid - 3 and gv[I][d] > 0:
                     gv[I][d] = 0.0
-            # 구동기: 양끝을 x 방향으로 강제한다
-            if pull != 0.0:
-                px = float(I[0]) * dx
-                if px < 0.32:
-                    gv[I] = ti.Vector([-pull, 0.0, 0.0])
-                elif px > 0.68:
-                    gv[I] = ti.Vector([pull, 0.0, 0.0])
 
     for p in x:
         base = (x[p] * inv_dx - 0.5).cast(int)
@@ -263,7 +283,10 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
             nv += wt * g
             nC += 4.0 * inv_dx * wt * g.outer_product(dpos)
         v[p], C[p] = nv, nC
-        x[p] += a.dt * nv
+        if hand[p] != 0 and pull != 0.0:
+            v[p] = ti.Vector([float(hand[p]) * pull, 0.0, 0.0])
+            C[p] = ti.Matrix.zero(float, 3, 3)
+        x[p] += a.dt * v[p]
         # 유체는 압력만으로 버티므로 한 입자가 영역을 벗어나면 다음 P2G 의 격자
         # 색인이 범위를 넘어 커널이 죽는다. 영역 안으로 집어넣고 속도를 눕힌다.
         for d in ti.static(range(3)):
