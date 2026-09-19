@@ -120,5 +120,23 @@ if "[anchorflow] CD-MPM" not in t:
             self.mpm_model.M = (self.mpm_model.alpha * 3.0
                                 / wp.sqrt(2.0 / 3.0))   # [anchorflow] CD-MPM""", 1)
     open(ps, "w").write(t)
+# decode_param 이 CD-MPM 키를 걸러내면 옮겨봐야 값이 안 들어간다.
+# GF 는 alpha_0 기본 -0.04, beta 기본 2 를 넣는데 PhysGaussian 은 둘 다 없어서
+# 초기 강도 p0 = kappa*(1e-5 + sinh(xi*max(-logJp,0))) 가 사실상 0 이 된다.
+pd = os.path.join(a.pg, "utils", "decode_param.py")
+dsrc = open(pd).read()
+if "alpha_0" not in dsrc:
+    OLD_H = """    if "hardening" in sim_params.keys():
+        material_params["hardening"] = sim_params["hardening"]"""
+    if OLD_H not in dsrc:
+        raise SystemExit("decode_param 에서 hardening 지점을 못 찾았다")
+    dsrc = dsrc.replace(OLD_H, """    # [anchorflow] CD-MPM 키. GF 의 기본값과 같게 둔다
+    material_params["alpha_0"] = sim_params.get("alpha_0", -0.04)
+    material_params["beta"] = sim_params.get("beta", 2.0)
+
+""" + OLD_H, 1)
+    open(pd, "w").write(dsrc)
+    print("decode_param 도 열었다:", pd, flush=True)
+
 print("옮겼다:", pu, pw, ps, flush=True)
 print("PORT_OK", flush=True)
