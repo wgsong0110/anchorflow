@@ -61,7 +61,8 @@ PLASTIC_VISC = float(cfg.get("plastic_viscosity", 0.0))
 # 0 으로 두면 p0 이 거의 0 이라 첫 스텝부터 전부 항복한다.
 ALPHA0 = float(cfg.get("alpha_0", -0.04))
 RPIC = float(cfg.get("rpic_damping", 0.0))
-GRID_DAMP = float(cfg.get("grid_v_damping_scale", 1.0))
+# 기본값은 1.1 이고, 1 보다 작을 때만 감쇠 커널이 돈다
+GRID_DAMP = float(cfg.get("grid_v_damping_scale", 1.1))
 FLIP = float(cfg.get("flip_pic_ratio", 0.0))
 USE_FLIP = "flip_pic_ratio" in cfg and FLIP > 0.0
 density = float(cfg["density"])
@@ -216,7 +217,9 @@ def grid_op(dt: rt, t: rt):
     for I in ti.grouped(gm):
         if gm[I] > 1e-15:
             vo = (gvin[I] + gvout[I]) / gm[I] + dt * GRAV
-            gvout[I] = vo * GRID_DAMP
+            if ti.static(GRID_DAMP < 1.0):
+                vo = vo * GRID_DAMP
+            gvout[I] = vo
     for I in ti.grouped(gm):
         # --- add_bounding_box: padding 3 칸, 들어오는 방향만 0 ---
         if ti.static(HAS_BBOX):
@@ -313,12 +316,37 @@ def stress_kernel(dt: rt):
                 if HARDENING > 0.5:
                     lj = logJp + ti.log(Jd / Je)
             elif y >= 1e-4:
-                sn = ti.sqrt(ssq)
+                sn = ti.max(ti.sqrt(ssq), 1e-10)
                 sf = ti.sqrt(-yph / ysc)
                 sc = ti.pow(Jd, 2.0 / 3.0) / mu_p[p] * sf / sn
-                f0 = ti.sqrt(ti.max(sc * sh0 + bm, 1e-12))
-                f1 = ti.sqrt(ti.max(sc * sh1 + bm, 1e-12))
-                f2 = ti.sqrt(ti.max(sc * sh2 + bm, 1e-12))
+                f0 = ti.sqrt(sc * sh0 + bm)
+                f1 = ti.sqrt(sc * sh1 + bm)
+                f2 = ti.sqrt(sc * sh2 + bm)
+                # 항복면 위의 경화. 이게 logJp 를 키워 p0 를 끌어내리고, 그래서
+                # 재료가 물러진다 -- 수박이 깨지는 것은 이 갈래가 만든다.
+                if (HARDENING > 0.5 and p0 > 1e-4 and p_tr < p0 - 1e-4
+                        and p_tr > 1e-4 - p_min):
+                    pc = (p0 - p_min) * 0.5
+                    qt = ti.sqrt((6.0 - 3.0) / 2.0) * sn
+                    dp = pc - p_tr
+                    dq = -qt
+                    dn = ti.max(ti.sqrt(dp * dp + dq * dq), 1e-10)
+                    dp = dp / dn
+                    Cq = M_CD * M_CD * (pc + BETA * p0) * (pc - p0)
+                    Bq = M_CD * M_CD * dp * (2.0 * pc - p0 + BETA * p0)
+                    Aq = (M_CD * M_CD * dp * dp
+                          + (1.0 + 2.0 * BETA) * dq * dq)
+                    disc = Bq * Bq - 4.0 * Aq * Cq
+                    l1 = (-Bq + ti.sqrt(disc)) / (2.0 * Aq)
+                    l2 = (-Bq - ti.sqrt(disc)) / (2.0 * Aq)
+                    p1 = pc + l1 * dp
+                    p2 = pc + l2 * dp
+                    pf = p2
+                    if (p_tr - pc) * (p1 - pc) > 0.0:
+                        pf = p1
+                    jef = ti.sqrt(ti.abs(-2.0 * pf / kappa0 + 1.0))
+                    if jef > 1e-4:
+                        lj = logJp + ti.log(Jd / jef)
             Jp[p] = lj
             sg[0, 0] = f0; sg[1, 1] = f1; sg[2, 2] = f2
             F[p] = U @ sg @ V.transpose()
