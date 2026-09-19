@@ -29,7 +29,8 @@ import taichi as ti
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--scene", required=True,
-                choices=("fracture", "flow", "merge", "tear"))
+                choices=("fracture", "flow", "merge", "tear", "impact",
+                         "collide"))
 ap.add_argument("--out", required=True)
 ap.add_argument("--n_grid", type=int, default=64)
 ap.add_argument("--frames", type=int, default=240)
@@ -46,6 +47,8 @@ ap.add_argument("--dmg_rate", type=float, default=40.0)
 ap.add_argument("--yield_t", type=float, default=0.02,
                 help="cohesive 의 인장 항복(변형 단위). 압축은 무제한으로 흐른다")
 ap.add_argument("--pull", type=float, default=0.35, help="구동기 속도")
+ap.add_argument("--v0", type=float, default=0.0,
+                help="초기 속도 크기 (impact/collide 에서 쓴다)")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
@@ -86,6 +89,16 @@ elif a.scene == "tear":
     notch = (np.abs(pts[:, 0] - 0.5) < 1.2 * a.spacing) & (pts[:, 2] < 0.44)
     pts = pts[~notch]
     mat = np.zeros(len(pts), np.int32)
+elif a.scene == "impact":
+    # 취성 구가 바닥에 떨어져 깨진다. 당기는 구동기가 없고 충돌이 파괴를 만든다.
+    pts = ball([0.5, 0.5, 0.62], 0.13, a.spacing)
+    mat = np.zeros(len(pts), np.int32)
+elif a.scene == "collide":
+    # 두 취성 구가 정면으로 부딪혀 깨진다.
+    p1 = ball([0.30, 0.5, 0.5], 0.11, a.spacing)
+    p2 = ball([0.70, 0.5, 0.5], 0.11, a.spacing)
+    pts = np.concatenate([p1, p2])
+    mat = np.zeros(len(pts), np.int32)
 else:                                        # merge
     p1 = ball([0.38, 0.5, 0.5], 0.10, a.spacing)
     p2 = ball([0.62, 0.5, 0.5], 0.10, a.spacing)
@@ -110,10 +123,19 @@ x.from_numpy(pts.astype(np.float32))
 mt.from_numpy(mat)
 
 
+V0 = np.zeros((N, 3), np.float32)
+if a.scene == "impact":
+    V0[:, 2] = -a.v0
+elif a.scene == "collide":
+    V0[:, 0] = np.where(pts[:, 0] < 0.5, a.v0, -a.v0)
+v0f = ti.Vector.field(3, float, N)
+v0f.from_numpy(V0)
+
+
 @ti.kernel
 def init():
     for p in x:
-        v[p] = ti.Vector([0.0, 0.0, 0.0])
+        v[p] = v0f[p]
         C[p] = ti.Matrix.zero(float, 3, 3)
         F[p] = ti.Matrix.identity(float, 3)
         Jf[p] = 1.0
@@ -219,7 +241,8 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
 
 init()
 os.makedirs(a.out, exist_ok=True)
-GRAV = {"fracture": 0.0, "flow": -9.8, "merge": 0.0, "tear": 0.0}[a.scene]
+GRAV = {"fracture": 0.0, "flow": -9.8, "merge": 0.0, "tear": 0.0,
+        "impact": -9.8, "collide": 0.0}[a.scene]
 for f in range(a.frames + 1):
     xs = x.to_numpy(); vs = v.to_numpy(); Fs = F.to_numpy().reshape(-1, 9)
     with h5py.File(os.path.join(a.out, "sim_%010d.h5" % f), "w") as h:
