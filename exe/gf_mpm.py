@@ -18,6 +18,7 @@ import argparse, json, os, time
 import numpy as np
 import h5py
 import taichi as ti
+from tqdm import tqdm
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--config", required=True, help="GF 의 씬 config json")
@@ -26,6 +27,9 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=None, help="없으면 config 의 frame_num")
 ap.add_argument("--stride", type=int, default=1, help="h5 입자 솎기 (검증용)")
 ap.add_argument("--f64", action="store_true")
+ap.add_argument("--resume", action="store_true",
+                help="out 의 state_last.h5 에서 이어 돌린다. 위치뿐 아니라 "
+                     "F 와 logJp 까지 들고 있어야 궤적이 이어진다")
 ap.add_argument("--auto_dt", action="store_true",
                 help="GF 의 씬 러너처럼 substep_dt 를 CFL 로 다시 계산한다 "
                      "(gs_simulation_watermelon.py:416). config 값은 무시된다")
@@ -36,8 +40,10 @@ ti.init(arch=ti.gpu, default_fp=ti.f64 if a.f64 else ti.f32,
         device_memory_fraction=0.85)
 
 # ------------------------------------------------------------------ 상수
-MAT = {"jelly": 0, "metal": 1, "sand": 2, "visplas": 3, "foam": 4,
-       "snow": 5, "plasticine": 5, "watermelon": 7}
+# material_2_num (mpm_solver_warp.py:255). foam 이 3, snow 가 4, plasticine 이 5 다.
+# 4 는 되돌림도 응력도 갈래가 없어 GF 에서 응력이 0 으로 남는다 -- 그대로 옮긴다.
+MAT = {"jelly": 0, "metal": 1, "sand": 2, "foam": 3, "snow": 4,
+       "plasticine": 5, "watermelon": 7}
 material = MAT[cfg["material"]]
 n_grid = int(cfg.get("n_grid", 100))
 grid_lim = float(cfg.get("grid_lim", 2.0))
@@ -51,7 +57,7 @@ _phi = float(cfg.get("friction_angle", 45.0))
 _sf = np.sin(_phi / 180.0 * 3.14159265)
 ALPHA = float(np.sqrt(2.0 / 3.0) * 2.0 * _sf / (3.0 - _sf))
 M_CD = float(ALPHA * 3.0 / np.sqrt(2.0 / (6.0 - 3.0)))   # GF: alpha*dim/sqrt(2/(6-dim))
-XI = float(cfg.get("xi", 3.0))
+XI = float(cfg.get("xi", 0.0))
 BETA = float(cfg.get("beta", 1.0))
 HARDENING = float(cfg.get("hardening", 0.0))
 YIELD0 = float(cfg.get("yield_stress", 0.0))
@@ -100,7 +106,19 @@ cnt = np.bincount(flat, minlength=n_grid ** 3)
 VOL = (dx ** 3) / cnt[flat].astype(np.float64)
 if cfg["material"] == "sand":              # GF 는 모래만 평균 부피를 쓴다
     VOL = np.full(N, VOL.mean())
-MASS = density * VOL
+# additional_material_params: 상자 안 입자만 E/nu/density 를 갈아 끼운다
+# (mpm_utils.py:886). GF 는 이 뒤에 질량과 mu/lam 을 다시 계산한다.
+Ep = np.full(N, E); NUp = np.full(N, nu); DENp = np.full(N, density)
+for prm in cfg.get("additional_material_params", []):
+    _pt = np.array(prm["point"], np.float64); _sz = np.array(prm["size"], np.float64)
+    _m = np.all((X0 > _pt - _sz) & (X0 < _pt + _sz), axis=1)
+    Ep[_m] = prm["E"]; NUp[_m] = prm["nu"]; DENp[_m] = prm["density"]
+    print(f"[구역 물성] {int(_m.sum())} 입자에 E={prm['E']} nu={prm['nu']} "
+          f"rho={prm['density']}", flush=True)
+MU = Ep / (2.0 * (1.0 + NUp))
+LM = Ep * NUp / ((1.0 + NUp) * (1.0 - 2.0 * NUp))
+KP = 2.0 * MU / 3.0 + LM
+MASS = DENp * VOL
 print(f"[초기] {N} 입자, 범위 {np.round(X0.min(0),3)}~{np.round(X0.max(0),3)}\n"
       f"       재질 {cfg['material']}({material}) 격자 {n_grid} dx {dx:.5f} "
       f"부피 중앙 {np.median(VOL):.3e} 질량합 {MASS.sum():.4f}\n"
@@ -114,7 +132,7 @@ C = ti.Matrix.field(3, 3, rt, N)
 F = ti.Matrix.field(3, 3, rt, N); Ftr = ti.Matrix.field(3, 3, rt, N)
 St = ti.Matrix.field(3, 3, rt, N)
 Jp = ti.field(rt, N); ys = ti.field(rt, N)
-mu_p = ti.field(rt, N); lam_p = ti.field(rt, N)
+mu_p = ti.field(rt, N); lam_p = ti.field(rt, N); kap_p = ti.field(rt, N)
 vol = ti.field(rt, N); mass = ti.field(rt, N)
 alive = ti.field(ti.i32, N)
 gvin = ti.Vector.field(3, rt, (n_grid,) * 3)
@@ -147,14 +165,17 @@ GRAV = ti.Vector(list(G))
 
 @ti.kernel
 def init(X: ti.types.ndarray(), V: ti.types.ndarray(),
-         VO: ti.types.ndarray(), MA: ti.types.ndarray()):
+         VO: ti.types.ndarray(), MA: ti.types.ndarray(),
+         MU: ti.types.ndarray(), LM: ti.types.ndarray(),
+         KP: ti.types.ndarray()):
     for p in range(N):
         for d in ti.static(range(3)):
             x[p][d] = ti.cast(X[p, d], rt); v[p][d] = ti.cast(V[p, d], rt)
         F[p] = ti.Matrix.identity(rt, 3); Ftr[p] = ti.Matrix.identity(rt, 3)
         C[p] = ti.Matrix.zero(rt, 3, 3); St[p] = ti.Matrix.zero(rt, 3, 3)
         Jp[p] = ALPHA0; ys[p] = YIELD0
-        mu_p[p] = mu0; lam_p[p] = lam0
+        mu_p[p] = ti.cast(MU[p], rt); lam_p[p] = ti.cast(LM[p], rt)
+        kap_p[p] = ti.cast(KP[p], rt)
         vol[p] = ti.cast(VO[p], rt); mass[p] = ti.cast(MA[p], rt); alive[p] = 1
 
 
@@ -289,7 +310,7 @@ def stress_kernel(dt: rt):
             s2 = ti.max(sg[2, 2], 0.0)
             logJp = Jp[p]
             z = XI * ti.max(-logJp, 0.0)
-            p0 = kappa0 * (1e-5 + 0.5 * (ti.exp(z) - ti.exp(-z)))   # sinh
+            p0 = kap_p[p] * (1e-5 + 0.5 * (ti.exp(z) - ti.exp(-z)))   # sinh
             Jd = s0 * s1 * s2
             b0, b1, b2 = s0 * s0, s1 * s1, s2 * s2
             bm = (b0 + b1 + b2) / 3.0
@@ -297,7 +318,7 @@ def stress_kernel(dt: rt):
             sh0 = mu_p[p] * jp * (b0 - bm)
             sh1 = mu_p[p] * jp * (b1 - bm)
             sh2 = mu_p[p] * jp * (b2 - bm)
-            p_tr = -(kappa0 / 2.0 * (Jd - 1.0 / Jd)) * Jd
+            p_tr = -(kap_p[p] / 2.0 * (Jd - 1.0 / Jd)) * Jd
             ysc = (6.0 - 3.0) / 2.0 * (1.0 + 2.0 * BETA)
             yph = M_CD * M_CD * (p_tr + BETA * p0) * (p_tr - p0)
             ssq = sh0 * sh0 + sh1 * sh1 + sh2 * sh2
@@ -306,12 +327,12 @@ def stress_kernel(dt: rt):
             lj = logJp
             p_min = BETA * p0
             if p_tr > p0:
-                Je = ti.sqrt(-2.0 * p0 / kappa0 + 1.0)
+                Je = ti.sqrt(-2.0 * p0 / kap_p[p] + 1.0)
                 f0 = ti.pow(Je, 1.0 / 3.0); f1 = f0; f2 = f0
                 if HARDENING > 0.5:
                     lj = logJp + ti.log(Jd / Je)
             elif p_tr < -p_min:
-                Je = ti.sqrt(2.0 * p_min / kappa0 + 1.0)
+                Je = ti.sqrt(2.0 * p_min / kap_p[p] + 1.0)
                 f0 = ti.pow(Je, 1.0 / 3.0); f1 = f0; f2 = f0
                 if HARDENING > 0.5:
                     lj = logJp + ti.log(Jd / Je)
@@ -344,7 +365,7 @@ def stress_kernel(dt: rt):
                     pf = p2
                     if (p_tr - pc) * (p1 - pc) > 0.0:
                         pf = p1
-                    jef = ti.sqrt(ti.abs(-2.0 * pf / kappa0 + 1.0))
+                    jef = ti.sqrt(ti.abs(-2.0 * pf / kap_p[p] + 1.0))
                     if jef > 1e-4:
                         lj = logJp + ti.log(Jd / jef)
             Jp[p] = lj
@@ -428,7 +449,7 @@ def stress_kernel(dt: rt):
             B = Fc @ Fc.transpose()
             btr = B[0, 0] + B[1, 1] + B[2, 2]
             devB = B - ti.Matrix.identity(rt, 3) * (btr / 3.0)
-            prime = kappa0 / 2.0 * (J - 1.0 / J)
+            prime = kap_p[p] / 2.0 * (J - 1.0 / J)
             stress = (mu_p[p] * ti.pow(J, -2.0 / 3.0) * devB
                       + ti.Matrix.identity(rt, 3) * (J * prime))
         elif ti.static(material == 0 or material == 5):
@@ -467,7 +488,7 @@ def quarantine(lo: rt, hi: rt):
                 alive[p] = 0
 
 
-init(X0, V_init, VOL, MASS)
+init(X0, V_init, VOL, MASS, MU, LM, KP)
 os.makedirs(a.out, exist_ok=True)
 
 
@@ -478,10 +499,52 @@ def dump(f):
         h.create_dataset("time", data=np.array([[f * frame_dt]]))
 
 
-dump(0)
+STATE = os.path.join(a.out, "state_last.h5")
+
+
+def save_state(f, t):
+    tmp = STATE + ".tmp"
+    with h5py.File(tmp, "w") as h:
+        h.create_dataset("frame", data=np.array([f]))
+        h.create_dataset("t", data=np.array([t]))
+        for k, fl in (("x", x), ("v", v), ("F", F), ("Ftr", Ftr), ("C", C),
+                      ("Jp", Jp), ("ys", ys), ("mu", mu_p), ("lam", lam_p),
+                      ("alive", alive)):
+            h.create_dataset(k, data=fl.to_numpy())
+    os.replace(tmp, STATE)
+
+
+@ti.kernel
+def _load(X: ti.types.ndarray(), V: ti.types.ndarray(), FF: ti.types.ndarray(),
+          FT: ti.types.ndarray(), CC: ti.types.ndarray(), J: ti.types.ndarray(),
+          Y: ti.types.ndarray(), M: ti.types.ndarray(), L: ti.types.ndarray(),
+          A: ti.types.ndarray()):
+    for p in range(N):
+        for d in ti.static(range(3)):
+            x[p][d] = ti.cast(X[p, d], rt); v[p][d] = ti.cast(V[p, d], rt)
+            for e in ti.static(range(3)):
+                F[p][d, e] = ti.cast(FF[p, d, e], rt)
+                Ftr[p][d, e] = ti.cast(FT[p, d, e], rt)
+                C[p][d, e] = ti.cast(CC[p, d, e], rt)
+        Jp[p] = ti.cast(J[p], rt); ys[p] = ti.cast(Y[p], rt)
+        mu_p[p] = ti.cast(M[p], rt); lam_p[p] = ti.cast(L[p], rt)
+        alive[p] = A[p]
+
+
+f0 = 0
 t = 0.0
+if a.resume and os.path.exists(STATE):
+    with h5py.File(STATE, "r") as h:
+        f0 = int(np.array(h["frame"])[0]); t = float(np.array(h["t"])[0])
+        _load(np.array(h["x"]), np.array(h["v"]), np.array(h["F"]),
+              np.array(h["Ftr"]), np.array(h["C"]), np.array(h["Jp"]),
+              np.array(h["ys"]), np.array(h["mu"]), np.array(h["lam"]),
+              np.array(h["alive"]))
+    print(f"[이어감] {STATE} 의 프레임 {f0} (t={t:.4f}) 에서", flush=True)
+else:
+    dump(0)
 t0 = time.time()
-for f in range(1, n_frames + 1):
+for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
     for _ in range(nsub):
         quarantine(-0.5 * grid_lim, 1.5 * grid_lim)
         stress_kernel(substep_dt)
@@ -490,7 +553,7 @@ for f in range(1, n_frames + 1):
         grid_op(substep_dt, t)
         g2p(substep_dt, FLIP)
         t += substep_dt
-    dump(f)
+    dump(f); save_state(f, t)
     if f % 5 == 0 or f == 1:
         xn = x.to_numpy(); al = alive.to_numpy()
         jp = Jp.to_numpy()[al == 1]
