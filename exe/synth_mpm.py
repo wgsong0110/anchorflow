@@ -197,6 +197,17 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
             nC += 4.0 * inv_dx * wt * g.outer_product(dpos)
         v[p], C[p] = nv, nC
         x[p] += a.dt * nv
+        # 유체는 압력만으로 버티므로 한 입자가 영역을 벗어나면 다음 P2G 의 격자
+        # 색인이 범위를 넘어 커널이 죽는다. 영역 안으로 집어넣고 속도를 눕힌다.
+        for d in ti.static(range(3)):
+            if x[p][d] < 2.0 * dx:
+                x[p][d] = 2.0 * dx
+                if v[p][d] < 0:
+                    v[p][d] = 0.0
+            if x[p][d] > 1.0 - 2.0 * dx:
+                x[p][d] = 1.0 - 2.0 * dx
+                if v[p][d] > 0:
+                    v[p][d] = 0.0
 
 
 init()
