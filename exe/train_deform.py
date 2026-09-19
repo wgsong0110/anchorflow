@@ -252,8 +252,12 @@ def vox_feats(d, gsel, x, v):
     idx, _ = voxel.neighbors(x, vb, a.k)
     if a.vox_knn_feat:
         # 앵커 위치만 복셀로 정하고, 특징은 FPS 경로와 똑같이 그 앵커가 실제로
-        # 옮길 가우시안들(같은 idx)로 집계한다
-        feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, vb.M, cell,
+        # 옮길 가우시안들(같은 idx)로 집계한다.
+        # voxel.neighbors 는 3x3x3 안에 앵커가 k 개보다 적으면 빈 자리를 -1 로
+        # 채운다. 그대로 집계에 넘기면 커널이 음수 색인으로 메모리를 벗어난다 --
+        # 가장 가까운 앵커로 메운다 (그 가우시안에서 한 번 더 세는 것뿐이다).
+        idxf = torch.where(idx < 0, idx[:, :1].expand_as(idx), idx).clamp(min=0)
+        feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idxf, vb.M, cell,
                             pa=vb.pos)
         return vb.pos, feat, idx
     W, cx, cX, cv, cnt, g2 = vb.moments
