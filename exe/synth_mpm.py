@@ -35,6 +35,12 @@ ap.add_argument("--scene", required=True,
                          "collide", "sand", "cdmpm"))
 ap.add_argument("--out", required=True)
 ap.add_argument("--n_grid", type=int, default=64)
+ap.add_argument("--grid_lim", type=float, default=1.0,
+                help="영역 한 변. GF/PhysGaussian 은 2.0 을 쓴다")
+ap.add_argument("--init_pt", default=None,
+                help="궤적 .pt 의 0 프레임을 **초기 입자 위치로 그대로** 쓴다. "
+                     "형상 차이를 없애려면 이게 유일한 방법이다")
+ap.add_argument("--init_stride", type=int, default=1)
 ap.add_argument("--frames", type=int, default=240)
 ap.add_argument("--substeps", type=int, default=24)
 ap.add_argument("--dt", type=float, default=1e-4)
@@ -74,8 +80,8 @@ a = ap.parse_args()
 
 ti.init(arch=ti.gpu, default_fp=ti.f32, random_seed=a.seed)
 
-dx = 1.0 / a.n_grid
-inv_dx = float(a.n_grid)
+dx = a.grid_lim / a.n_grid
+inv_dx = 1.0 / dx
 p_vol = (a.spacing) ** 3
 p_mass = p_vol * a.rho
 mu0 = a.E / (2 * (1 + a.nu))
@@ -136,7 +142,17 @@ else:                                        # merge
     p2 = ball([0.62, 0.5, 0.5], 0.10, a.spacing)
     pts = np.concatenate([p1, p2])
     mat = np.full(len(pts), 2, np.int32)
-pts = pts + rng.uniform(-a.spacing / 4, a.spacing / 4, pts.shape)
+if a.init_pt:
+    import torch as _t
+    _d = _t.load(a.init_pt, map_location="cpu", weights_only=False)
+    pts = _d["x"][0].numpy()[::a.init_stride].astype(np.float64)
+    pts = pts[np.isfinite(pts).all(1)]
+    mat = np.full(len(pts), {"cdmpm": 4, "sand": 3, "merge": 2,
+                             "flow": 1}.get(a.scene, 0), np.int32)
+    print(f"[초기상태] {a.init_pt} 0 프레임에서 {len(pts)} 입자, "
+          f"범위 {np.round(pts.min(0), 3)}~{np.round(pts.max(0), 3)}", flush=True)
+else:
+    pts = pts + rng.uniform(-a.spacing / 4, a.spacing / 4, pts.shape)
 N = len(pts)
 print(f"[씬] {a.scene}, 입자 {N}, 격자 {a.n_grid}, dx {dx:.4f}, "
       f"입자간격 {a.spacing}", flush=True)
@@ -382,8 +398,8 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
                 x[p][d] = 2.0 * dx
                 if v[p][d] < 0:
                     v[p][d] = 0.0
-            if x[p][d] > 1.0 - 2.0 * dx:
-                x[p][d] = 1.0 - 2.0 * dx
+            if x[p][d] > a.grid_lim - 2.0 * dx:
+                x[p][d] = a.grid_lim - 2.0 * dx
                 if v[p][d] > 0:
                     v[p][d] = 0.0
 
