@@ -30,7 +30,7 @@ import taichi as ti
 ap = argparse.ArgumentParser()
 ap.add_argument("--scene", required=True,
                 choices=("fracture", "flow", "merge", "tear", "impact",
-                         "collide"))
+                         "collide", "sand"))
 ap.add_argument("--out", required=True)
 ap.add_argument("--n_grid", type=int, default=64)
 ap.add_argument("--frames", type=int, default=240)
@@ -45,7 +45,11 @@ ap.add_argument("--dmg_thresh", type=float, default=1.06,
                 help="최대 특이값이 이 값을 넘으면 손상이 쌓인다")
 ap.add_argument("--dmg_rate", type=float, default=40.0)
 ap.add_argument("--yield_t", type=float, default=0.02,
-                help="cohesive 의 인장 항복(변형 단위). 압축은 무제한으로 흐른다")
+                help="cohesive 의 **인장 체적** 항복 (로그 변형 단위)")
+ap.add_argument("--yield_s", type=float, default=0.004,
+                help="cohesive 의 **전단** 항복. 낮을수록 모양을 쉽게 잊는다")
+ap.add_argument("--friction", type=float, default=35.0,
+                help="모래의 마찰각(도)")
 ap.add_argument("--pull", type=float, default=0.35, help="구동기 속도")
 ap.add_argument("--v0", type=float, default=0.0,
                 help="초기 속도 크기 (impact/collide 에서 쓴다)")
@@ -61,6 +65,8 @@ p_mass = p_vol * a.rho
 mu0 = a.E / (2 * (1 + a.nu))
 lam0 = a.E * a.nu / ((1 + a.nu) * (1 - 2 * a.nu))
 K_fluid = a.E
+_sf = np.sin(np.radians(a.friction))
+ALPHA = float(np.sqrt(2.0 / 3.0) * 2.0 * _sf / (3.0 - _sf))
 
 
 # ----------------------------------------------------------- 형상 만들기
@@ -89,6 +95,10 @@ elif a.scene == "tear":
     notch = (np.abs(pts[:, 0] - 0.5) < 1.2 * a.spacing) & (pts[:, 2] < 0.44)
     pts = pts[~notch]
     mat = np.zeros(len(pts), np.int32)
+elif a.scene == "sand":
+    # 모래 기둥이 제 무게로 무너진다 -- 소성 유동
+    pts = box([0.34, 0.34, 0.06], [0.58, 0.58, 0.62], a.spacing)
+    mat = np.full(len(pts), 3, np.int32)
 elif a.scene == "impact":
     # 취성 구가 바닥에 떨어져 깨진다. 당기는 구동기가 없고 충돌이 파괴를 만든다.
     pts = ball([0.5, 0.5, 0.62], 0.13, a.spacing)
@@ -164,13 +174,41 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
             U, sig, V = ti.svd(F[p])
             s0 = ti.max(sig[0, 0], ti.max(sig[1, 1], sig[2, 2]))
             if mt[p] == 2:
-                # 비대칭 항복: 압축(J<1)은 무제한으로 흘려 접촉을 아물게 하고,
-                # 인장은 yield_t 만큼만 버틴다. 흐른 만큼은 기준 배치가 바뀐다.
-                for d in ti.static(range(3)):
-                    s = sig[d, d]
-                    lo = 1.0 / (1.0 + 1e9)               # 압축은 사실상 자유
-                    hi = 1.0 + a.yield_t
-                    sig[d, d] = ti.min(ti.max(s, lo), hi)
+                # 찰흙: **전단만** 자유롭게 흐르고(모양을 잊어 접촉이 아문다)
+                # **체적은 탄성**으로 남겨 압력이 살아 있어야 한다. 앞판은 체적까지
+                # 풀어버려서 압력이 0 이 되는 바람에 두 공이 서로 통과했다.
+                e0 = ti.log(ti.max(sig[0, 0], 1e-4))
+                e1 = ti.log(ti.max(sig[1, 1], 1e-4))
+                e2 = ti.log(ti.max(sig[2, 2], 1e-4))
+                tr = e0 + e1 + e2
+                d0, d1, d2 = e0 - tr / 3.0, e1 - tr / 3.0, e2 - tr / 3.0
+                nrm = ti.sqrt(d0 * d0 + d1 * d1 + d2 * d2) + 1e-12
+                if nrm > a.yield_s:                      # 전단 항복 (아주 낮다)
+                    k = a.yield_s / nrm
+                    d0, d1, d2 = d0 * k, d1 * k, d2 * k
+                tr = ti.min(tr, 3.0 * a.yield_t)         # 인장 체적은 여기까지만
+                sig[0, 0] = ti.exp(d0 + tr / 3.0)
+                sig[1, 1] = ti.exp(d1 + tr / 3.0)
+                sig[2, 2] = ti.exp(d2 + tr / 3.0)
+                F[p] = U @ sig @ V.transpose()
+            elif mt[p] == 3:
+                # 모래: Drucker-Prager (Klar et al. 2016). 인장은 못 버티고,
+                # 전단은 마찰각이 정하는 원뿔 위로 되돌린다 -- 소성 유동이다.
+                e0 = ti.log(ti.max(sig[0, 0], 1e-4))
+                e1 = ti.log(ti.max(sig[1, 1], 1e-4))
+                e2 = ti.log(ti.max(sig[2, 2], 1e-4))
+                tr = e0 + e1 + e2
+                d0, d1, d2 = e0 - tr / 3.0, e1 - tr / 3.0, e2 - tr / 3.0
+                nrm = ti.sqrt(d0 * d0 + d1 * d1 + d2 * d2) + 1e-12
+                if tr > 0.0:                             # 인장이면 응집이 없다
+                    sig[0, 0] = 1.0; sig[1, 1] = 1.0; sig[2, 2] = 1.0
+                else:
+                    dg = nrm + (3.0 * lam0 + 2.0 * mu0) / (2.0 * mu0) * tr * ALPHA
+                    if dg > 0.0:
+                        k = dg / nrm
+                        sig[0, 0] = ti.exp(e0 - k * d0)
+                        sig[1, 1] = ti.exp(e1 - k * d1)
+                        sig[2, 2] = ti.exp(e2 - k * d2)
                 F[p] = U @ sig @ V.transpose()
             J = sig[0, 0] * sig[1, 1] * sig[2, 2]
             R = U @ V.transpose()
@@ -239,11 +277,15 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
                     v[p][d] = 0.0
 
 
+import time
 init()
 os.makedirs(a.out, exist_ok=True)
+t_sim = t_io = 0.0
+t_all = time.time()
 GRAV = {"fracture": 0.0, "flow": -9.8, "merge": 0.0, "tear": 0.0,
-        "impact": -9.8, "collide": 0.0}[a.scene]
+        "impact": -9.8, "collide": 0.0, "sand": -9.8}[a.scene]
 for f in range(a.frames + 1):
+    _t = time.time()
     xs = x.to_numpy(); vs = v.to_numpy(); Fs = F.to_numpy().reshape(-1, 9)
     with h5py.File(os.path.join(a.out, "sim_%010d.h5" % f), "w") as h:
         h.create_dataset("x", data=xs.T)
@@ -251,8 +293,10 @@ for f in range(a.frames + 1):
         h.create_dataset("f_tensor", data=Fs.T)
         h.create_dataset("damage", data=dmg.to_numpy())
         h.create_dataset("time", data=np.array([[f * a.substeps * a.dt]]))
+    t_io += time.time() - _t
     if f == a.frames:
         break
+    _t = time.time()
     # merge 는 먼저 누르고(안쪽), 머물다가, 당긴다(바깥쪽)
     pull = 0.0
     if a.scene in ("fracture", "tear"):
@@ -263,10 +307,15 @@ for f in range(a.frames + 1):
                 (0.0 if fr < 0.45 else a.pull))
     for _ in range(a.substeps):
         substep(f * a.substeps * a.dt, GRAV, pull)
+    ti.sync()
+    t_sim += time.time() - _t
     if f % 20 == 0:
         fin = np.isfinite(xs).all(1)
         print(f"  f{f:4d}  손상 중앙 {np.median(dmg.to_numpy()):.3f} "
               f"비유한 {int((~fin).sum())}  x[{xs[fin].min():.3f},"
               f"{xs[fin].max():.3f}]", flush=True)
 print(f"[저장] {a.out}  {a.frames + 1} 프레임", flush=True)
+print(f"[시간] 전체 {time.time() - t_all:.1f}s = 시뮬 {t_sim:.1f}s "
+      f"({t_sim / max(a.frames, 1) * 1e3:.1f} ms/프레임, 서브스텝 {a.substeps}) "
+      f"+ h5 쓰기 {t_io:.1f}s", flush=True)
 print("SYNTH_OK", flush=True)

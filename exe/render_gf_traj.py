@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 import glob
 import os
 import sys
@@ -49,6 +50,7 @@ from PIL import Image, ImageDraw                                # noqa: E402
 from anchorflow import ptrender                                 # noqa: E402
 
 os.makedirs(a.out, exist_ok=True)
+_T0 = time.time()
 
 
 def load_h5_traj(h5_dir, n_pts, stride):
@@ -116,7 +118,12 @@ for f in files:
                         f"  f{t*a.stride:03d}/{X.shape[0]*a.stride}",
                 fill=(255, 255, 255))
         frames.append(np.array(im))
+    _t_draw = time.time() - _T0
     p_out = os.path.join(a.out, f"{tag}.mp4")
+    _t_enc = time.time()
     imageio.mimsave(p_out, frames, fps=a.fps, quality=8)
+    _t_enc = time.time() - _t_enc
+    print(f"[시간] 읽기+그리기 {_t_draw:.1f}s ({_t_draw / max(T,1)*1e3:.0f} ms/프레임)"
+          f" + 인코딩 {_t_enc:.1f}s", flush=True)
     print(f"[저장] {p_out}  {T} 프레임 x {N} 입자, {W}x{H}", flush=True)
 print("RENDER_OK")
