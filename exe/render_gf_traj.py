@@ -35,6 +35,10 @@ ap.add_argument("--point", type=int, default=1, help="점 반경(픽셀)")
 ap.add_argument("--elev", type=float, default=12.0)
 ap.add_argument("--azim", type=float, default=35.0)
 ap.add_argument("--stride", type=int, default=1)
+ap.add_argument("--up", default="z", choices=("x", "y", "z"),
+                help="그 씬에서 **위**가 어느 축인지. 렌더러의 카메라는 세계 +z 를 "
+                     "위로 잡으므로, 중력이 -y 인 씬(타이치 공식 mpm3d)을 그냥 "
+                     "그리면 옆으로 떨어지는 것처럼 보인다")
 a = ap.parse_args()
 
 dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -82,6 +86,8 @@ elif a.data:
 else:
     raise SystemExit("--data 나 --h5_dir 중 하나는 있어야 한다")
 
+UPPERM = {"z": [0, 1, 2], "y": [2, 0, 1], "x": [1, 2, 0]}[a.up]
+
 for f in files:
     if f is None:
         d = {"cfg": {}}
@@ -89,6 +95,7 @@ for f in files:
     else:
         d = torch.load(f, map_location="cpu", weights_only=False)
         X = d["x"][::a.stride]
+    X = X[..., UPPERM]           # 씬의 위 축을 세계 +z 로 돌린다
     T, N, _ = X.shape
     tag = a.tag if f is None else os.path.splitext(os.path.basename(f))[0]
     Xc = X[0].to(dev)

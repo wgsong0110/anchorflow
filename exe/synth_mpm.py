@@ -29,7 +29,7 @@ import taichi as ti
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--scene", required=True,
-                choices=("fracture", "flow", "merge"))
+                choices=("fracture", "flow", "merge", "tear"))
 ap.add_argument("--out", required=True)
 ap.add_argument("--n_grid", type=int, default=64)
 ap.add_argument("--frames", type=int, default=240)
@@ -79,6 +79,13 @@ if a.scene == "fracture":
 elif a.scene == "flow":
     pts = box([0.10, 0.10, 0.10], [0.34, 0.60, 0.60], a.spacing)
     mat = np.ones(len(pts), np.int32)
+elif a.scene == "tear":
+    # 얇은 판을 x 로 당긴다. 한쪽 가장자리에 홈을 파 두면 응력이 그 끝에 몰려
+    # 균열이 홈에서 출발해 z 방향으로 달린다 -- 이것이 인열이다.
+    pts = box([0.24, 0.47, 0.32], [0.76, 0.53, 0.68], a.spacing)
+    notch = (np.abs(pts[:, 0] - 0.5) < 1.2 * a.spacing) & (pts[:, 2] < 0.44)
+    pts = pts[~notch]
+    mat = np.zeros(len(pts), np.int32)
 else:                                        # merge
     p1 = ball([0.38, 0.5, 0.5], 0.10, a.spacing)
     p2 = ball([0.62, 0.5, 0.5], 0.10, a.spacing)
@@ -212,7 +219,7 @@ def substep(t: ti.f32, grav: ti.f32, pull: ti.f32):
 
 init()
 os.makedirs(a.out, exist_ok=True)
-GRAV = {"fracture": 0.0, "flow": -9.8, "merge": 0.0}[a.scene]
+GRAV = {"fracture": 0.0, "flow": -9.8, "merge": 0.0, "tear": 0.0}[a.scene]
 for f in range(a.frames + 1):
     xs = x.to_numpy(); vs = v.to_numpy(); Fs = F.to_numpy().reshape(-1, 9)
     with h5py.File(os.path.join(a.out, "sim_%010d.h5" % f), "w") as h:
@@ -225,7 +232,7 @@ for f in range(a.frames + 1):
         break
     # merge 는 먼저 누르고(안쪽), 머물다가, 당긴다(바깥쪽)
     pull = 0.0
-    if a.scene == "fracture":
+    if a.scene in ("fracture", "tear"):
         pull = a.pull
     elif a.scene == "merge":
         fr = f / a.frames
