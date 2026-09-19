@@ -25,7 +25,10 @@ import numpy as np
 import torch
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--h5_dir", required=True, help="sim_*.h5 가 든 디렉토리")
+ap.add_argument("--h5_dir", default=None, help="sim_*.h5 가 든 디렉토리")
+ap.add_argument("--pt", default=None,
+                help="압축된 궤적 .pt (d[\"x\"] 가 [T,N,3]). h5 대신 쓸 수 있다 -- "
+                     "기성 궤적과 새 시뮬을 **같은 잣대**로 재려면 필요하다")
 ap.add_argument("--out", required=True)
 ap.add_argument("--tag", default="run")
 ap.add_argument("--n_sample", type=int, default=4000)
@@ -39,14 +42,24 @@ a = ap.parse_args()
 dev = "cuda" if torch.cuda.is_available() else "cpu"
 torch.set_grad_enabled(False)
 
-files = sorted(glob.glob(os.path.join(a.h5_dir, "*.h5")))
-if not files:
-    raise SystemExit(f"h5 가 없다: {a.h5_dir}")
-print(f"[입력] {len(files)} 프레임, {a.h5_dir}", flush=True)
+PTX = None
+if a.pt:
+    _d = torch.load(a.pt, map_location="cpu", weights_only=False)
+    PTX = _d["x"]
+    files = list(range(PTX.shape[0]))
+    print(f"[입력] {len(files)} 프레임, {a.pt}", flush=True)
+else:
+    files = sorted(glob.glob(os.path.join(a.h5_dir, "**", "*.h5"),
+                             recursive=True))
+    if not files:
+        raise SystemExit(f"h5 가 없다: {a.h5_dir}")
+    print(f"[입력] {len(files)} 프레임, {a.h5_dir}", flush=True)
 
 
 def load_x(p):
     """[N,3] 로 보이는 데이터셋을 찾아 읽는다. 키 이름은 버전마다 다르다."""
+    if PTX is not None:
+        return PTX[p].numpy()
     with h5py.File(p, "r") as f:
         keys = list(f.keys())
         for k in ("x", "position", "pos", "particle_x"):
