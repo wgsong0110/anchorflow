@@ -138,5 +138,25 @@ if "alpha_0" not in dsrc:
     open(pd, "w").write(dsrc)
     print("decode_param 도 열었다:", pd, flush=True)
 
+# GF 는 초기 속도를 하드코딩해 두고 그걸로 수박을 깨뜨린다. PhysGaussian 에는
+# 그런 것이 없어서 같은 충돌을 못 만든다 -- config 키로 넣어 준다.
+pg_run = os.path.join(a.pg, "gs_simulation.py")
+r = open(pg_run).read()
+if "[anchorflow] init_velocity" not in r:
+    OLD_R = "    mpm_solver.finalize_mu_lam()"
+    if OLD_R not in r:
+        raise SystemExit("finalize_mu_lam 지점을 못 찾았다")
+    r = r.replace(OLD_R, OLD_R + """
+    # [anchorflow] init_velocity: GF 가 하드코딩해 둔 것을 config 로 받는다
+    import json as _json3
+    _v0 = _json3.load(open(args.config)).get("init_velocity", None)
+    if _v0 is not None:
+        mpm_solver.import_particle_v_from_torch(
+            torch.zeros(mpm_init_pos.shape[0], 3, device="cuda").add_(
+                torch.tensor(_v0, device="cuda", dtype=torch.float32)))
+        print(f"[anchorflow] 초기 속도 {_v0}", flush=True)""", 1)
+    open(pg_run, "w").write(r)
+    print("PhysGaussian 에 init_velocity 를 넣었다", flush=True)
+
 print("옮겼다:", pu, pw, ps, flush=True)
 print("PORT_OK", flush=True)
