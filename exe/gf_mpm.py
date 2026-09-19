@@ -718,9 +718,13 @@ for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
         save_state(f, t)
     if f % 5 == 0 or f == 1:
         xn = x.to_numpy(); al = alive.to_numpy()
-        jp = Jp.to_numpy()[al == 1]
-        print(f"  f{f:4d}  살아있음 {int(al.sum())}/{N}  "
-              f"logJp 중앙 {np.median(jp):+.4f} p1 {np.percentile(jp,1):+.4f}  "
-              f"x[{xn[al==1].min():.3f},{xn[al==1].max():.3f}]  "
-              f"{time.time()-t0:.0f}s", flush=True)
+        nl = int(al.sum())
+        if nl == 0:
+            print(f"  f{f:4d}  살아있는 입자가 없다 -- 전부 발산했다", flush=True)
+        else:
+            jp = Jp.to_numpy()[al == 1]
+            print(f"  f{f:4d}  살아있음 {nl}/{N}  "
+                  f"logJp 중앙 {np.median(jp):+.4f} p1 {np.percentile(jp, 1):+.4f}  "
+                  f"x[{xn[al == 1].min():.3f},{xn[al == 1].max():.3f}]  "
+                  f"{time.time() - t0:.0f}s", flush=True)
 print(f"[저장] {a.out}  {n_frames+1} 프레임  {time.time()-t0:.0f}s", flush=True)

@@ -59,14 +59,14 @@ for tag in tags:
     env = dict(os.environ)
     env["PYTHONPATH"] = (a.gf_root + ":" + os.path.join(a.gf_root, "gaussian-splatting")
                          + ":" + env.get("PYTHONPATH", ""))
-    if not glob.glob(os.path.join(gdir, "**", "*.h5"), recursive=True):
+    if not glob.glob(os.path.join(gdir, "**", "sim_*.h5"), recursive=True):
         rc, log = run([sys.executable, "gs_simulation.py", "--model_path", a.model,
                        "--output_path", gdir, "--config", cfg, "--output_h5"],
                       cwd=a.gf_root, env=env)
         if rc != 0:
             print(f"[{tag}] GF 실패 rc={rc}\n{log[-1200:]}", flush=True)
             rows.append(dict(tag=tag, ok=False, why="GF 실패")); continue
-    fa = sorted(glob.glob(os.path.join(gdir, "**", "*.h5"), recursive=True))
+    fa = sorted(glob.glob(os.path.join(gdir, "**", "sim_*.h5"), recursive=True))
     if not fa:
         rows.append(dict(tag=tag, ok=False, why="GF h5 없음")); continue
     shutil.rmtree(mdir, ignore_errors=True)
@@ -82,7 +82,8 @@ for tag in tags:
     EXT = float(np.linalg.norm(x0.max(0) - x0.min(0)))
     worst, worst_f, mv_at = 0.0, 0, 0.0
     d0 = float(np.abs(rd(fa[0]) - rd(fb[0])).max())
-    for i in range(n):
+    # 0 프레임은 정의상 같아야 한다 -- 그건 init_gap 으로 따로 본다.
+    for i in range(1, n):
         xa, xb = rd(fa[i]), rd(fb[i])
         ok = np.isfinite(xa).all(1) & np.isfinite(xb).all(1)
         rel = float(np.linalg.norm(xa[ok] - xb[ok], axis=1).mean() / EXT)
@@ -90,12 +91,13 @@ for tag in tags:
         if rel > worst:
             worst, worst_f, mv_at = rel, i, mv
     ratio = worst / max(mv_at, 1e-12)
-    good = ratio < a.tol
+    good = bool(ratio < a.tol and d0 < 1e-6)
     rows.append(dict(tag=tag, ok=bool(good), n=int(n), pts=int(x0.shape[0]),
                      init_gap=d0, worst=worst, worst_frame=worst_f,
                      moved=mv_at, ratio=ratio, sec=round(time.time() - t0, 1)))
     print(f"[{tag:14s}] {'일치' if good else '갈린다'}  최악 프레임 {worst_f:3d}  "
           f"차이 {100*worst:7.4f}%  이동 {100*mv_at:7.3f}%  비 {ratio:.4f}  "
+          f"0프레임차 {d0:.1e}  "
           f"입자 {x0.shape[0]}  {rows[-1]['sec']}s", flush=True)
     if a.rm_h5:
         shutil.rmtree(gdir, ignore_errors=True); shutil.rmtree(mdir, ignore_errors=True)

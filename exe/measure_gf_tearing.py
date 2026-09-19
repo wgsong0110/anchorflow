@@ -49,7 +49,7 @@ if a.pt:
     files = list(range(PTX.shape[0]))
     print(f"[입력] {len(files)} 프레임, {a.pt}", flush=True)
 else:
-    files = sorted(glob.glob(os.path.join(a.h5_dir, "**", "*.h5"),
+    files = sorted(glob.glob(os.path.join(a.h5_dir, "**", "sim_*.h5"),
                              recursive=True))
     if not files:
         raise SystemExit(f"h5 가 없다: {a.h5_dir}")

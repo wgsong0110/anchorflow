@@ -35,7 +35,9 @@ a = ap.parse_args()
 
 
 def frames(d):
-    return sorted(glob.glob(os.path.join(d, "**", "*.h5"), recursive=True))
+    # sim_*.h5 만 프레임이다. 이어 돌리기용 state_last.h5 가 섞이면
+    # 마지막 프레임이 하나 더 있는 것처럼 보인다.
+    return sorted(glob.glob(os.path.join(d, "**", "sim_*.h5"), recursive=True))
 
 
 def rd(p):
