@@ -76,6 +76,11 @@ ap.add_argument("--refps", action="store_true",
                 help="매 프레임 현재 배치에서 앵커를 FPS 로 다시 뽑는다. 기본은 "
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
                      "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
+ap.add_argument("--control", action="store_true",
+                help="제어점 궤적을 학생에게도 준다. 앵커 특징에 **제어점으로부터의 "
+                     "상대 위치**와 **이번 스텝 강제 변위**를 더하고, 강제되는 "
+                     "입자의 다음 위치는 네트워크 출력 대신 궤적 값으로 덮어쓴다")
+ap.add_argument("--n_ctrl", type=int, default=4, help="제어점 수 (특징 차원을 정한다)")
 ap.add_argument("--vox_knn_feat", action="store_true",
                 help="복셀 앵커의 특징을 칸 하드 할당이 아니라 **스키닝과 같은 kNN "
                      "이웃**으로 집계한다. 지금은 앵커가 본 가우시안과 옮기는 "
@@ -281,6 +286,52 @@ def vox_feats(d, gsel, x, v):
     return vb.pos, feat, idx
 
 
+def ctrl_feat(d, t, p):
+    """앵커마다 (제어점 상대위치, 이번 스텝 강제 변위) -> [A, 6K].
+
+    상대 위치는 **어디를 누르고 있는지**, 강제 변위는 **어느 쪽으로 미는지**를
+    말해 준다. 둘 다 앵커 간격 H 로 나눠 크기를 맞춘다.
+    """
+    K = a.n_ctrl
+    A = p.shape[0]
+    if "ctrl_pos" not in d:
+        return torch.zeros(A, 6 * K, device=p.device, dtype=p.dtype)
+    P = d["ctrl_pos"].to(p.device, p.dtype)              # [T, k, 3]
+    tt = min(t, P.shape[0] - 1)
+    c = P[tt]
+    dc = P[min(tt + 1, P.shape[0] - 1)] - c
+    k = c.shape[0]
+    if k < K:                                            # 모자라면 0 으로 채운다
+        c = torch.cat([c, torch.zeros(K - k, 3, device=p.device, dtype=p.dtype)])
+        dc = torch.cat([dc, torch.zeros(K - k, 3, device=p.device, dtype=p.dtype)])
+    c, dc = c[:K], dc[:K]
+    rel = (p.unsqueeze(1) - c.unsqueeze(0)) / H          # [A, K, 3]
+    frc = dc.unsqueeze(0).expand(A, K, 3) / H
+    return torch.cat([rel.reshape(A, -1), frc.reshape(A, -1)], -1)
+
+
+def apply_control(d, t, gsel, x2):
+    """강제되는 입자의 다음 위치를 **궤적 값으로 덮어쓴다**.
+
+    교사가 그 입자들을 Dirichlet 으로 박았으므로, 학생이 거기를 예측하게 두면
+    맞출 수 없는 것을 맞추라고 시키는 셈이다.
+    """
+    if "ctrl_mem" not in d or "ctrl_pos" not in d:
+        return x2
+    P = d["ctrl_pos"].to(x2.device, x2.dtype)
+    t1 = min(t + 1, P.shape[0] - 1)
+    x2 = x2.clone()
+    for k, m in enumerate(d["ctrl_mem"]):
+        if k >= P.shape[1]:
+            break
+        mm = m.to(x2.device)
+        # 무리는 제어점과 **같은 offset 으로** 움직인다 (교사가 그렇게 박는다)
+        off = d["x"][0][mm].to(x2.device, x2.dtype) - d["x"][0][d["ctrl"][k]].to(
+            x2.device, x2.dtype)
+        x2[mm] = P[t1, k] + off
+    return x2
+
+
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
               x0=None, p0=None):
     """한 프레임. -> (x_next, p_next, v_next, J, dp, aidx_next)
@@ -299,6 +350,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                             pa=p)
     extra = torch.cat([mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0], N_MAT),
                        bc_features(p, cfg) / H], -1)
+    if a.control:
+        extra = torch.cat([extra, ctrl_feat(d, t, p)], -1)
     out = net(p, torch.cat([feat, extra], -1), FRAME_DT)
     dp, log_r, log_t = out[0], out[1], out[2]
     rate = out[3] if a.damage else None
@@ -315,6 +368,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         rate_g = (w0 * rate[idx]).sum(1)
         dmg = (dmg + FRAME_DT * rate_g * s_g).clamp(max=1.0)
     x2, w = skin(x, p, dp, log_r, log_t, idx, H, dmg=dmg)
+    if a.control:
+        x2 = apply_control(d, t, gsel, x2)
     if a.voxel:
         ai, p_next = None, p + dp     # 다음 프레임에 어차피 다시 뽑는다
     elif a.refps:
@@ -413,7 +468,7 @@ with torch.no_grad():
     _i, _ = grid_knn(_x, _p, a.k)
     _f, _ = aggregate(_x, torch.zeros_like(_x), _x, MASS[_g], _i, _p.shape[0],
                       H, pa=_p)
-    n_feat = _f.shape[-1] + N_MAT + n_bc
+    n_feat = _f.shape[-1] + N_MAT + n_bc + (6 * a.n_ctrl if a.control else 0)
 if a.voxel:
     VOX_CELL = H
     # 격자는 모든 궤적을 덮도록 공간에 고정한다 (프레임마다 새로 잡으면 물체가
@@ -431,7 +486,7 @@ if a.voxel:
         _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
         _x = take(TR[0][1]["x"][0], _g)
         _p, _f, _i = vox_feats(TR[0][1], _g, _x, torch.zeros_like(_x))
-        n_feat = _f.shape[-1] + N_MAT + n_bc
+        n_feat = _f.shape[-1] + N_MAT + n_bc + (6 * a.n_ctrl if a.control else 0)
     print(f"[복셀] 한 변 {VOX_CELL:.5f}, 앵커 {_p.shape[0]} 개, 입력 {n_feat}",
           flush=True)
 
@@ -458,6 +513,8 @@ with torch.no_grad():
         _ee = torch.cat([mat_feat(_dd["cfg"]).reshape(1, N_MAT).expand(_pp.shape[0],
                                                                       N_MAT),
                          bc_features(_pp, _dd["cfg"]) / H], -1)
+        if a.control:
+            _ee = torch.cat([_ee, ctrl_feat(_dd, 0, _pp)], -1)
         samp.append(torch.cat([_ff, _ee], -1))
     samp = torch.cat(samp, 0)
     net.set_input_stats(samp)

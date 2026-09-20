@@ -40,6 +40,10 @@ ap.add_argument("--up", default="z", choices=("x", "y", "z"),
                 help="그 씬에서 **위**가 어느 축인지. 렌더러의 카메라는 세계 +z 를 "
                      "위로 잡으므로, 중력이 -y 인 씬(타이치 공식 mpm3d)을 그냥 "
                      "그리면 옆으로 떨어지는 것처럼 보인다")
+ap.add_argument("--control", default=None,
+                help="run_warp_mpm.py 가 남긴 control.npz. 제어점을 크게 빨갛게 "
+                     "찍고 지나온 길을 같이 그린다 -- 어디를 조작했는지 안 보이면 "
+                     "영상만으로는 알 수가 없다")
 a = ap.parse_args()
 
 dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -51,6 +55,21 @@ from anchorflow import ptrender                                 # noqa: E402
 
 os.makedirs(a.out, exist_ok=True)
 _T0 = time.time()
+
+CTRL_IDX = None
+CTRL_LOCAL = None
+if a.control:
+    _cz = np.load(a.control)
+    CTRL_IDX = _cz["idx"]
+    CTRL_RAD = None
+    if "members" in _cz and "member_ptr" in _cz:
+        _ptr = _cz["member_ptr"]
+        CTRL_MEM = [_cz["members"][_ptr[i]:_ptr[i + 1]] for i in range(len(CTRL_IDX))]
+        print(f"[제어점] {len(CTRL_IDX)} 개, 잡은 입자 "
+              f"{[len(m) for m in CTRL_MEM]}", flush=True)
+    else:
+        CTRL_MEM = [np.array([c]) for c in CTRL_IDX]
+        print(f"[제어점] {len(CTRL_IDX)} 개를 표시한다", flush=True)
 
 
 def load_h5_traj(h5_dir, n_pts, stride):
@@ -73,6 +92,13 @@ def load_h5_traj(h5_dir, n_pts, stride):
     cand = torch.nonzero(ok).squeeze(-1)
     g = torch.Generator().manual_seed(0)
     sel = cand[torch.randperm(cand.numel(), generator=g)[:n_pts]].sort().values
+    if CTRL_IDX is not None:          # 제어점 무리는 부분표본에 **반드시** 넣는다
+        allm = torch.as_tensor(np.concatenate(CTRL_MEM))
+        sel = torch.unique(torch.cat([sel, allm])).sort().values
+        pos_of = {int(v): j for j, v in enumerate(sel.tolist())}
+        globals()["CTRL_LOCAL"] = torch.as_tensor([pos_of[int(c)] for c in CTRL_IDX])
+        globals()["CTRL_MEM_LOCAL"] = torch.as_tensor(
+            [pos_of[int(v)] for v in np.concatenate(CTRL_MEM)])
     X = torch.stack([rd(p)[sel] for p in fs])
     bad = ~torch.isfinite(X).all(-1)
     for t in range(1, X.shape[0]):
@@ -106,14 +132,40 @@ for f in files:
     Xc = X[0].to(dev)
     R = ptrender.camera(a.elev, a.azim, dev)
     # 화면 범위와 색은 라이브러리 규칙을 그대로 쓴다 (정준색, 궤적 전체 범위)
-    ctr, half, W, H = ptrender.frame_box(X.to(dev), R, a.width)
+    # 화면 범위는 **물체로만** 잡는다. 제어점은 물체 밖 1.7 배까지 나가므로
+    # 같이 넣으면 카메라가 멀어져 물체가 점처럼 작아진다 (겪었다).
+    if CTRL_LOCAL is not None:
+        keep = torch.ones(X.shape[1], dtype=torch.bool)
+        keep[CTRL_LOCAL] = False
+        ctr, half, W, H = ptrender.frame_box(X[:, keep].to(dev), R, a.width)
+    else:
+        ctr, half, W, H = ptrender.frame_box(X.to(dev), R, a.width)
     col = ptrender.canon_color(Xc)
+    if CTRL_LOCAL is not None:
+        col = col.clone()
+        mem = globals().get("CTRL_MEM_LOCAL", CTRL_LOCAL)
+        col[mem.to(col.device)] = torch.tensor(          # 잡힌 입자를 전부 빨갛게
+            [0.95, 0.2, 0.15], device=col.device, dtype=col.dtype)
 
     frames = []
     for t in range(T):
         img = ptrender.splat(X[t].to(dev), col, R, ctr, half, W, H, a.point)
         arr = (img.cpu().numpy() * 255).astype("uint8")
         im = Image.fromarray(arr); dr = ImageDraw.Draw(im)
+        if CTRL_LOCAL is not None:
+            # 제어점은 **투영해서 직접 원을 그린다**. splat 을 한 번 더 겹쳐
+            # torch.maximum 으로 합치면 배경이 흰색(bg=1.0)이라 화면이 통째로
+            # 하얘진다 -- 물체가 아예 사라졌다 (겪었다).
+            q = (X[t][CTRL_LOCAL].to(dev) @ R.T).cpu().numpy()
+            for k in range(q.shape[0]):
+                u = ((q[k, 0] - float(ctr[0])) / half * 0.5 + 0.5) * (W - 1)
+                v = (0.5 - (q[k, 1] - float(ctr[1])) / half * 0.5) * (H - 1)
+                if not (np.isfinite(u) and np.isfinite(v)):
+                    continue
+                r = max(4, a.point * 4)
+                dr.ellipse([u - r, v - r, u + r, v + r],
+                           outline=(220, 20, 20), width=2)
+                dr.ellipse([u - 2, v - 2, u + 2, v + 2], fill=(220, 20, 20))
         dr.rectangle([0, 0, W, 16], fill=(0, 0, 0))
         c = d["cfg"]
         mat = (f"E={c['E']:g} nu={c['nu']:g} xi={c.get('xi',0):g}" if c else "")

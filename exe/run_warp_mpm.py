@@ -55,6 +55,18 @@ dx = grid_lim / n_grid
 
 
 def load_cloud(spec):
+    if "box" in spec:
+        # 절차적 기둥/상자. 안식각은 **기둥 붕괴**로 재는 것이 표준이라
+        # (늑대 모양이 무너진 더미는 원뿔이 아니어서 각을 못 읽는다) 필요하다.
+        lo, hi = np.asarray(spec["box"][0], float), np.asarray(spec["box"][1], float)
+        sp = float(spec.get("spacing", 0.01))
+        g = np.stack(np.meshgrid(*[np.arange(lo[i] + sp / 2, hi[i], sp)
+                                   for i in range(3)], indexing="ij"), -1)
+        x = g.reshape(-1, 3)
+        if spec.get("jitter", 0.0):
+            r = np.random.default_rng(int(spec.get("seed", 0)))
+            x = x + r.uniform(-1, 1, x.shape) * float(spec["jitter"]) * sp
+        return x
     with h5py.File(spec["h5"], "r") as h:
         x = np.array(h["x"])
     x = (x.T if x.shape[0] == 3 else x).astype(np.float64)
@@ -127,6 +139,25 @@ if CC:
     seed = int(CC.get("seed", a.seed))
     ctrl_idx, surf = pick_control_points(X.astype(np.float64), CC.get("cell", None),
                                          int(CC.get("n_points", 4)), seed=seed)
+    # 제어점 하나를 입자 한 개로 두면 물체 지름의 0.7% 라 아무 영향이 없다.
+    # 반경 안의 입자를 **통째로** 같이 끌고 간다 (손가락/도구에 해당).
+    _ext = float(np.linalg.norm(X.max(0) - X.min(0)))
+    _rad = float(CC.get("radius", 0.0)) * _ext
+    if _rad > 0:
+        _mem, _off = [], []
+        for c in ctrl_idx:
+            d = np.linalg.norm(X - X[c], axis=1)
+            m = np.flatnonzero(d <= _rad)
+            _mem.append(m)
+            _off.append((X[m] - X[c]).astype(np.float32))
+        print(f"[제어점 반경] {CC.get('radius')} x 지름 = {_rad:.4f}, "
+              f"잡은 입자 {[len(m) for m in _mem]}", flush=True)
+    else:
+        _mem = [np.array([c]) for c in ctrl_idx]
+        _off = [np.zeros((1, 3), np.float32) for _ in ctrl_idx]
+    # 잡은 입자가 격자 밖으로 나가지 않게 궤적을 안쪽으로 묶는다
+    _pad = 4.0 * dx + _rad
+    _bnd = (np.full(3, _pad), np.full(3, grid_lim - _pad))
     traj = ControlTraj(X.astype(np.float64), ctrl_idx,
                        dt=float(cfg["frame_dt"]),
                        steps=int(cfg.get("frame_num", 100)) + 1,
@@ -134,7 +165,7 @@ if CC:
                        p_touch=float(CC.get("p_touch", 0.6)),
                        depth=float(CC.get("depth", 0.08)),
                        v_max=float(CC.get("v_max", 0.5)),
-                       seed=seed)
+                       seed=seed, bounds=_bnd)
     print(f"[제어점] {len(ctrl_idx)} 개 (표면 {int(surf.sum())}/{len(X)}), "
           f"n={CC.get('every_n',20)} p={CC.get('p_touch',0.6)} "
           f"깊이={CC.get('depth',0.08)} v_max={CC.get('v_max',0.5)} 시드={seed}, "
@@ -167,13 +198,20 @@ if ctrl_idx is not None:
     np.savez(os.path.join(out, "control.npz"), idx=ctrl_idx,
              pos=traj.P.astype(np.float32), vel=traj.V.astype(np.float32),
              x0=X[ctrl_idx].astype(np.float32),
+             members=np.concatenate(_mem).astype(np.int64),
+             member_ptr=np.cumsum([0] + [len(m) for m in _mem]).astype(np.int64),
              cfg=json.dumps(CC))
 save_data_at_frame(solver, out, 0, save_to_ply=False, save_to_h5=True)
 t0 = time.time()
 # 정렬은 입자 순서를 바꾸므로 제어점을 쓸 때는 끈다 (색인이 어긋난다)
 if ctrl_idx is not None:
     a.sort_every = 0
-_cx = torch.from_numpy(np.ascontiguousarray(ctrl_idx)).to(dev) if ctrl_idx is not None else None
+if ctrl_idx is not None:
+    _cx = torch.from_numpy(np.ascontiguousarray(ctrl_idx)).to(dev)
+    _mem_t = [torch.from_numpy(np.ascontiguousarray(m)).to(dev) for m in _mem]
+    _off_t = [torch.from_numpy(o).to(dev) for o in _off]
+else:
+    _cx = None
 
 for f in range(frames):
     if a.sort_every and f % a.sort_every == 0 and hasattr(solver, "af_sort_by_cell"):
@@ -186,14 +224,19 @@ for f in range(frames):
     for s in range(nsub):
         if ctrl_idx is not None:
             w = (s + 1.0) / nsub
+            cpos = p_now * (1.0 - w) + p_next * w
             tx = wp.to_torch(solver.mpm_state.particle_x)
             tv = wp.to_torch(solver.mpm_state.particle_v)
-            tx[_cx] = p_now * (1.0 - w) + p_next * w
-            tv[_cx] = v_now
+            for k in range(len(_mem_t)):      # 반경 안 입자를 통째로 옮긴다
+                tx[_mem_t[k]] = cpos[k] + _off_t[k]
+                tv[_mem_t[k]] = v_now[k]
         solver.p2g2p(s, dt, device=dev, flip_pic_ratio=flip, flip_pic=use_flip)
         if ctrl_idx is not None:     # g2p 가 옮겨 놓았으니 다시 박는다
-            wp.to_torch(solver.mpm_state.particle_x)[_cx] = p_now * (1.0 - w) + p_next * w
-            wp.to_torch(solver.mpm_state.particle_v)[_cx] = v_now
+            tx = wp.to_torch(solver.mpm_state.particle_x)
+            tv = wp.to_torch(solver.mpm_state.particle_v)
+            for k in range(len(_mem_t)):
+                tx[_mem_t[k]] = cpos[k] + _off_t[k]
+                tv[_mem_t[k]] = v_now[k]
     save_data_at_frame(solver, out, f + 1, save_to_ply=False, save_to_h5=True)
     if (f + 1) % 10 == 0:
         print(f"  f{f+1:4d}  {time.time()-t0:.0f}s", flush=True)

@@ -40,6 +40,8 @@ ap.add_argument("--p_touch", type=float, nargs=2, default=[0.3, 0.9])
 ap.add_argument("--depth", type=float, nargs=2, default=[0.03, 0.15])
 ap.add_argument("--v_max", type=float, nargs=2, default=[0.2, 1.0])
 ap.add_argument("--n_points", type=int, nargs=2, default=[4, 4])
+ap.add_argument("--radius", type=float, nargs=2, default=[0.08, 0.15],
+                help="제어점이 잡는 반경 (물체 지름 대비)")
 a = ap.parse_args()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -63,6 +65,7 @@ for i in range(a.n):
         p_touch=float(r.uniform(*a.p_touch)),
         depth=float(r.uniform(*a.depth)),
         v_max=float(r.uniform(*a.v_max)),
+        radius=float(r.uniform(*a.radius)),
     )
     cfg = dict(base)
     cfg["frame_num"] = a.frames
@@ -85,10 +88,15 @@ for i in range(a.n):
 
     cz = np.load(os.path.join(odir, "control.npz"))
     cidx = cz["idx"]
+    # 교사는 제어점 **반경 안 입자 전체**를 강제한다. 학생도 같은 자리를 덮어써야
+    # 하므로 그 명단을 같이 남긴다.
+    has_mem = "members" in cz and "member_ptr" in cz
+    mem = [cz["members"][cz["member_ptr"][i]:cz["member_ptr"][i + 1]]
+           for i in range(len(cidx))] if has_mem else [np.array([c]) for c in cidx]
     with h5py.File(fs[0], "r") as h:
         n_all = np.array(h["x"]).shape[-1]
     # 제어점은 **반드시** 남기고 나머지를 채운다
-    keep = set(int(v) for v in cidx)
+    keep = set(int(v) for m in mem for v in m)
     pool = np.setdiff1d(np.arange(n_all), np.array(sorted(keep)))
     extra = np.random.default_rng(seed).choice(
         pool, max(0, min(a.n_pts - len(keep), len(pool))), replace=False)
@@ -102,9 +110,12 @@ for i in range(a.n):
             v = np.array(h["v"]).T[sel] if "v" in h else np.zeros_like(x)
         X.append(x.astype(np.float32)); V.append(v.astype(np.float32))
     dst = os.path.join(a.out, f"{a.split}_{i:03d}.pt")
+    mem_l = [torch.tensor([remap[int(v)] for v in m], dtype=torch.long) for m in mem]
     torch.save(dict(x=torch.from_numpy(np.stack(X)),
                     v=torch.from_numpy(np.stack(V)),
+                    cfg=cfg,                       # 물성·경계 (mat_feat / bc_features 가 쓴다)
                     ctrl=torch.tensor([remap[int(c)] for c in cidx], dtype=torch.long),
+                    ctrl_mem=mem_l,                # 강제되는 입자 전체
                     ctrl_pos=torch.from_numpy(cz["pos"]),
                     ctrl_vel=torch.from_numpy(cz["vel"]),
                     params=ctl, split=a.split, seed=int(seed)), dst)

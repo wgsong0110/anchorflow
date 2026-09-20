@@ -111,7 +111,7 @@ class ControlTraj:
     """
 
     def __init__(self, x0, ctrl, dt, steps, every_n=20, p_touch=0.6,
-                 depth=0.08, v_max=0.5, seed=0, normals=None):
+                 depth=0.08, v_max=0.5, seed=0, normals=None, bounds=None):
         self.x0 = np.asarray(x0, np.float64)
         self.ctrl = np.asarray(ctrl, np.int64)
         self.K = len(self.ctrl)
@@ -127,17 +127,28 @@ class ControlTraj:
         self.radius = 0.5 * self.ext
         self.normals = (estimate_normals(self.x0) if normals is None
                         else np.asarray(normals, np.float64))
+        # 격자 밖으로 나가면 warp 가 범위 밖 주소를 건드려 죽는다. 끌고 가는
+        # 입자까지 생각해 **안쪽으로 묶는다** (실제로 겪었다: 반경 12% 로 5681 개를
+        # 끌고 z>2 로 나가 CUDA illegal memory access).
+        self.bounds = (None if bounds is None
+                       else (np.asarray(bounds[0], np.float64),
+                             np.asarray(bounds[1], np.float64)))
         self._build()
 
     # ---------------------------------------------------------------- 표적
+    def _clip(self, q):
+        if self.bounds is None:
+            return q
+        return np.clip(q, self.bounds[0], self.bounds[1])
+
     def _target(self, cur):
         if self.rng.random() < self.p_touch:
             j = int(self.rng.integers(len(self.x0)))
-            return cur[j] - self.normals[j] * self.depth
+            return self._clip(cur[j] - self.normals[j] * self.depth)
         d = self.rng.normal(size=3)
         d /= np.linalg.norm(d) + 1e-12
         r = self.radius * self.rng.uniform(1.15, 1.7)
-        return self.center + d * r
+        return self._clip(self.center + d * r)
 
     # ------------------------------------------------------------- 궤적 생성
     def _build(self):
@@ -192,7 +203,7 @@ class ControlTraj:
         P = np.concatenate(pos, 0)
         if len(P) < self.steps:                              # 모자라면 마지막을 잡고 있는다
             P = np.concatenate([P, np.repeat(P[-1:], self.steps - len(P), 0)], 0)
-        self.P = P[:self.steps]
+        self.P = self._clip(P[:self.steps])
         V = np.zeros_like(self.P)
         V[1:] = (self.P[1:] - self.P[:-1]) / self.dt
         V[0] = (self.P[0] - self.x0[self.ctrl]) / self.dt
