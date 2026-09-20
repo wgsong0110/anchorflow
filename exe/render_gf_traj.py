@@ -56,7 +56,10 @@ _T0 = time.time()
 def load_h5_traj(h5_dir, n_pts, stride):
     """sim_*.h5 를 .pt 와 같은 모양으로 읽는다."""
     import h5py
-    fs = sorted(glob.glob(os.path.join(h5_dir, "sim_*.h5")))[::stride]
+    # GF 는 <out>/simulation_ply/ 아래에 쓰고 이식본은 <out>/ 바로 아래에
+    # 쓴다. 둘 다 잡으려면 재귀로 찾아야 한다.
+    fs = sorted(glob.glob(os.path.join(h5_dir, "**", "sim_*.h5"),
+                          recursive=True))[::stride]
     if not fs:
         raise SystemExit(f"h5 가 없다: {h5_dir}")
 

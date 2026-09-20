@@ -65,7 +65,9 @@ SCENES = {
     "t_flip03":      dict(material="jelly", flip_pic_ratio=0.3),
     "t_flip09":      dict(material="jelly", flip_pic_ratio=0.9),
     # --- 격자 감쇠 ---
-    "g_damp":        dict(material="jelly", grid_v_damping_scale=0.95),
+    # 감쇠는 **서브스텝마다** 걸린다. 0.95 면 3000 번에 사실상 0 이 되어
+    # 공이 아예 안 움직였다. 0.9999 라야 3000 번에 0.74 로 남는다.
+    "g_damp":        dict(material="jelly", grid_v_damping_scale=0.9999),
     # --- 경계·구동 조건 ---
     "b_floor":       dict(material="jelly", _bc=[{"type": "bounding_box"}, FLOOR]),
     "b_slip":        dict(material="jelly", _bc=[
@@ -95,11 +97,13 @@ SCENES = {
          "normal": [0, 0, 1], "half_height_and_radius": [0.5, 0.5],
          "rotation_scale": 6.0, "translation_scale": 0.0,
          "start_time": 0.0, "end_time": 0.06}]),
+    # 풀린 뒤 떨어져 **닿아야** 한다. 바닥을 물체 바로 아래 0.55 에 둔다.
     "b_release":     dict(material="jelly", _bc=[
         {"type": "bounding_box"},
+        dict(FLOOR, point=[1, 1, 0.55]),
         {"type": "release_particles_sequentially", "normal": [0, 0, 1],
          "start_position": 1.4, "end_position": 0.6, "num_layers": 10,
-         "start_time": 0.0, "end_time": 0.1}]),
+         "start_time": 0.0, "end_time": 0.03}]),
     # --- 구역별 물성 ---
     "p_region":      dict(material="jelly", additional_material_params=[
         {"point": [1, 1, 1.2], "size": [1, 1, 0.3],
