@@ -11,6 +11,12 @@
 
 판정은 `차이 / 그동안 움직인 거리` 로 한다. 물체가 거의 안 움직인 프레임에서
 절대 차이만 보면 아무 값이나 통과하기 때문이다.
+
+**그리고 씬이 실제로 변형했는지 같이 잰다.** 처음 돌렸을 때 공이 바닥에 닿지도
+못해 자유낙하만 했고, 재질이 뭐든 전달 방식이 뭐든 궤적이 똑같이 나왔다. 열 개
+넘는 씬이 "일치" 로 찍혔지만 그것은 통과가 아니라 **아무것도 시험하지 못한 것**
+이다. 그래서 입자 변위에서 **전체 평행이동을 뺀 나머지**의 크기를 같이 보고,
+그게 0 에 가까우면 판정을 보류한다.
 """
 import argparse, glob, json, os, shutil, subprocess, sys, time
 
@@ -84,6 +90,11 @@ for tag in tags:
     EXT = float(np.linalg.norm(x0.max(0) - x0.min(0)))
     worst, worst_f, mv_at = 0.0, 0, 0.0
     d0 = float(np.abs(rd(fa[0]) - rd(fb[0])).max())
+    # 변형량: 마지막 프레임 변위에서 **평행이동을 뺀** 나머지의 RMS
+    _dsp = rd(fa[n - 1]) - x0
+    _ok0 = np.isfinite(_dsp).all(1)
+    _res = _dsp[_ok0] - _dsp[_ok0].mean(0)
+    deform = float(np.sqrt((_res ** 2).sum(1).mean()) / EXT)
     # 0 프레임은 정의상 같아야 한다 -- 그건 init_gap 으로 따로 본다.
     for i in range(1, n):
         xa, xb = rd(fa[i]), rd(fb[i])
@@ -93,13 +104,16 @@ for tag in tags:
         if rel > worst:
             worst, worst_f, mv_at = rel, i, mv
     ratio = worst / max(mv_at, 1e-12)
-    good = bool(ratio < a.tol and d0 < 1e-6)
+    vacuous = deform < 5e-3          # 사실상 자유낙하 -- 시험이 안 됐다
+    good = bool(ratio < a.tol and d0 < 1e-6 and not vacuous)
     rows.append(dict(tag=tag, ok=bool(good), n=int(n), pts=int(x0.shape[0]),
                      init_gap=d0, worst=worst, worst_frame=worst_f,
-                     moved=mv_at, ratio=ratio, sec=round(time.time() - t0, 1)))
-    print(f"[{tag:14s}] {'일치' if good else '갈린다'}  최악 프레임 {worst_f:3d}  "
+                     moved=mv_at, ratio=ratio, deform=deform, vacuous=bool(vacuous),
+                     sec=round(time.time() - t0, 1)))
+    _v = "일치" if good else ("변형없음" if vacuous else "갈린다")
+    print(f"[{tag:14s}] {_v:6s} 최악 프레임 {worst_f:3d}  "
           f"차이 {100*worst:7.4f}%  이동 {100*mv_at:7.3f}%  비 {ratio:.4f}  "
-          f"0프레임차 {d0:.1e}  "
+          f"변형 {100*deform:6.3f}%  0프레임차 {d0:.1e}  "
           f"입자 {x0.shape[0]}  {rows[-1]['sec']}s", flush=True)
     if a.rm_h5:
         shutil.rmtree(gdir, ignore_errors=True); shutil.rmtree(mdir, ignore_errors=True)
@@ -109,8 +123,11 @@ bad = [r for r in rows if not r["ok"]]
 print(f"\n[요약] {len(done)}/{len(rows)} 씬 비교 완료, 일치 "
       f"{len(done)-len([r for r in done if not r['ok']])}/{len(done)}")
 for r in bad:
-    print(f"  갈린 씬: {r['tag']}  " +
-          (f"차이/이동 {r['ratio']:.4f}" if "ratio" in r else r.get("why", "")))
+    why = r.get("why", "")
+    if "ratio" in r:
+        why = ("변형이 없어 시험이 안 됐다" if r.get("vacuous")
+               else f"차이/이동 {r['ratio']:.4f}")
+    print(f"  못 넘긴 씬: {r['tag']}  {why}")
 if a.out:
     json.dump(rows, open(a.out, "w"), indent=1, ensure_ascii=False)
     print(f"[저장] {a.out}")

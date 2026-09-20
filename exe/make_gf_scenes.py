@@ -10,14 +10,17 @@
   5 plasticine   von Mises + 손상(softening)
   7 watermelon   비연관 Cam-Clay + neoHookeanBoarden
 
-프레임 수를 적게 두는 것은 일부러다 -- 갈리는 솔버는 첫 몇 프레임에서 이미 갈린다.
+**공을 반드시 바닥에 부딪히게 한다.** 처음엔 12 프레임에 초속 2 로 뒀는데, 공이
+바닥에 닿지도 못하고 끝나 재질도 전달 방식도 쓰일 일이 없었다. 그래서 열 개 넘는
+씬이 소수점 다섯 자리까지 같은 값을 냈다 -- 통과가 아니라 **아무것도 시험하지
+못한 것**이다. 이제 30 프레임에 초속 4 로 떨어뜨려 눌리고 퍼지게 한다.
 """
 import argparse, json, os
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--out", required=True)
 ap.add_argument("--n_grid", type=int, default=100)
-ap.add_argument("--frames", type=int, default=12)
+ap.add_argument("--frames", type=int, default=30)
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
 
@@ -30,7 +33,7 @@ BASE = {
     "rpic_damping": 0.0, "grid_v_damping_scale": 1.0,
     "flip_pic_ratio": 0.0,
     "g": [0.0, 0.0, -9.8],
-    "init_velocity": [0.0, 0.0, -2.0],
+    "init_velocity": [0.0, 0.0, -4.0],
     "use_config_dt": True,
     "boundary_conditions": [{"type": "bounding_box"}],
     "mpm_space_vertical_upward_axis": [0, 0, 1],
@@ -40,17 +43,17 @@ BASE = {
     "move_camera": False, "delta_a": 0.0, "delta_e": 0.0, "delta_r": 0.0,
 }
 
-FLOOR = {"type": "surface_collider", "point": [1, 1, 0.35],
+FLOOR = {"type": "surface_collider", "point": [1, 1, 0.30],
          "normal": [0.0, 0.0, 1.0], "surface": "sticky", "friction": 0.0,
          "start_time": 0, "end_time": 1000.0}
 
 SCENES = {
     # --- 재질 여섯 갈래 ---
     "m0_jelly":      dict(material="jelly"),
-    "m1_metal":      dict(material="metal", yield_stress=1e3, hardening=1.0, xi=1.0),
+    "m1_metal":      dict(material="metal", yield_stress=2e2, hardening=1.0, xi=1.0),
     "m2_sand":       dict(material="sand", friction_angle=35.0),
-    "m3_foam":       dict(material="foam", yield_stress=3e2, plastic_viscosity=1.0),
-    "m5_plasticine": dict(material="plasticine", yield_stress=5e2, softening=0.1,
+    "m3_foam":       dict(material="foam", yield_stress=1e2, plastic_viscosity=1.0),
+    "m5_plasticine": dict(material="plasticine", yield_stress=1.5e2, softening=0.1,
                           hardening=0.0),
     "m7_watermelon": dict(material="watermelon", E=2e3, nu=0.38, density=1,
                           friction_angle=45.0, beta=1.0, xi=3.0, hardening=1.0,
