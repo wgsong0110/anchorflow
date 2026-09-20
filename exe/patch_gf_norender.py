@@ -34,17 +34,17 @@ old = '''        gaussians2 = load_checkpoint('''
 if old not in s:
     raise SystemExit("배경 불러오는 줄을 못 찾았다")
 j = s.index(old)
-k = s.index("if args.render_img:", j)
+# 뒤에 오는 `if args.render_img:` 는 **줄바꿈과 들여쓰기까지 포함해서** 찾는다.
+# 들여쓰기를 빼고 자르면 그 줄이 컬럼 0 으로 밀려 파일이 깨진다 (한 번 겪었다).
+tail = "\n        if args.render_img:"
+k = s.index(tail, j)
 block = s[j:k]
 wrapped = ("        if not args.no_render:\n"
            + "\n".join(("    " + ln) if ln.strip() else ln
-                       for ln in block.rstrip("\n ").split("\n"))
-           + "\n\n")
-s = s[:j] + wrapped + s[k:]
-
-# 3) 그리기 자체도 끈다
-s = s.replace("        if args.render_img:",
-              "        if args.render_img and not args.no_render:", 1)
+                       for ln in block.rstrip("\n").split("\n")))
+s = (s[:j] + wrapped
+     + "\n        if args.render_img and not args.no_render:"
+     + s[k + len(tail):])
 
 open(p, "w").write(s)
 print(f"고쳤다: {p}")

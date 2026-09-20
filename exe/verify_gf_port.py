@@ -62,7 +62,8 @@ for tag in tags:
                          + ":" + env.get("PYTHONPATH", ""))
     if not glob.glob(os.path.join(gdir, "**", "sim_*.h5"), recursive=True):
         rc, log = run([sys.executable, "gs_simulation.py", "--model_path", a.model,
-                       "--output_path", gdir, "--config", cfg, "--output_h5"],
+                       "--output_path", gdir, "--config", cfg, "--output_h5",
+                       "--no_render"],   # 배경 체크포인트는 그림에만 쓴다
                       cwd=a.gf_root, env=env)
         if rc != 0:
             print(f"[{tag}] GF 실패 rc={rc}\n{log[-1200:]}", flush=True)

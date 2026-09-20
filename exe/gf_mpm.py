@@ -630,10 +630,9 @@ def stress_kernel(dt: rt):
         Fc = F[p]
         J = Fc.determinant()
         stress = ti.Matrix.zero(rt, 3, 3)
-        # 7(neoHookeanBoarden)과 4(응력 갈래가 없다)는 SVD 가 필요 없다.
-        # GF 는 그래도 돌리지만 결과에 안 쓰인다 -- 값은 같고 한 번을 아낀다.
-        if ti.static(material != 7 and material != 4):
-            U, sg, V = ti.svd(Fc, rt)
+        # SVD 는 **쓰는 갈래 안에서** 푼다. 타이치는 블록 단위 스코프라 바깥에서
+        # 풀어 놓아도 다른 갈래에서는 안 보인다. 어차피 ti.static 이라 한 갈래만
+        # 컴파일되므로 중복도 아니다. 7 과 4 는 SVD 자체가 필요 없다.
         if ti.static(material == 7):
             B = Fc @ Fc.transpose()
             btr = B[0, 0] + B[1, 1] + B[2, 2]
@@ -642,10 +641,12 @@ def stress_kernel(dt: rt):
             stress = (mu_p[p] * ti.pow(J, -2.0 / 3.0) * devB
                       + ti.Matrix.identity(rt, 3) * (J * prime))
         elif ti.static(material == 0 or material == 5):
+            U, sg, V = ti.svd(Fc, rt)
             R = U @ V.transpose()
             stress = (2.0 * mu_p[p] * (Fc - R) @ Fc.transpose()
                       + ti.Matrix.identity(rt, 3) * lam_p[p] * J * (J - 1.0))
         elif ti.static(material == 1 or material == 3):
+            U, sg, V = ti.svd(Fc, rt)
             s = ti.Vector([ti.max(sg[0, 0], 0.01), ti.max(sg[1, 1], 0.01),
                            ti.max(sg[2, 2], 0.01)])
             ls = ti.log(s[0]) + ti.log(s[1]) + ti.log(s[2])
@@ -654,6 +655,7 @@ def stress_kernel(dt: rt):
                 tau[d, d] = 2.0 * mu_p[p] * ti.log(s[d]) + lam_p[p] * ls
             stress = U @ tau @ V.transpose() @ Fc.transpose()
         elif ti.static(material == 2):
+            U, sg, V = ti.svd(Fc, rt)
             ls = ti.log(sg[0, 0]) + ti.log(sg[1, 1]) + ti.log(sg[2, 2])
             ctr = ti.Matrix.zero(rt, 3, 3)
             for d in ti.static(range(3)):
