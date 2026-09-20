@@ -310,6 +310,19 @@ def ctrl_feat(d, t, p):
     return torch.cat([rel.reshape(A, -1), frc.reshape(A, -1)], -1)
 
 
+def free_mask(d, n, device):
+    """강제되지 **않은** 입자만 True. 손실은 여기서만 잰다.
+
+    강제된 입자는 궤적 값으로 덮어쓰므로 오차가 정확히 0 이다. 그대로 평균에
+    넣으면 손실이 희석돼 모델이 좋아 보인다 (그리고 기울기도 안 준다).
+    """
+    m = torch.ones(n, dtype=torch.bool, device=device)
+    if "ctrl_mem" in d:
+        for mm in d["ctrl_mem"]:
+            m[mm.to(device)] = False
+    return m
+
+
 def apply_control(d, t, gsel, x2):
     """강제되는 입자의 다음 위치를 **궤적 값으로 덮어쓴다**.
 
@@ -437,19 +450,26 @@ def window(d, t0, L, gsel):
         a_rel = a_rel + (0.0 if dp_gt is None else float(la) ** 0.5 / max(
             float((dp_gt ** 2).sum(-1).mean()) ** 0.5 / EXT, 1e-20))
         gt = take(d["x"][t0 + i + 1], gsel)
-        loss_x = loss_x + ((x2 - gt) ** 2).sum(-1).mean() / (EXT ** 2)
-        still = still + float(((x_still - gt) ** 2).sum(-1).mean()) / (EXT ** 2)
+        fm = free_mask(d, x2.shape[0], x2.device) if a.control else None
+        if fm is not None:      # 강제된 입자는 오차 0 이라 평균을 희석시킨다
+            loss_x = loss_x + ((x2[fm] - gt[fm]) ** 2).sum(-1).mean() / (EXT ** 2)
+            still = still + float(((x_still[fm] - gt[fm]) ** 2).sum(-1).mean()) / (EXT ** 2)
+        else:
+            loss_x = loss_x + ((x2 - gt) ** 2).sum(-1).mean() / (EXT ** 2)
+            still = still + float(((x_still - gt) ** 2).sum(-1).mean()) / (EXT ** 2)
         if a.shape_loss != "none" and a.lambda_J > 0:
             F0 = take(d["F"][t0 + i], gsel)
             F1 = take(d["F"][t0 + i + 1], gsel)
             Jgt = F1 @ torch.linalg.inv(F0 + 1e-4 * torch.eye(3, device=dev))
             if a.shape_loss == "frob":
-                loss_J = loss_J + ((J - Jgt) ** 2).sum((-1, -2)).mean()
+                _d = ((J - Jgt) ** 2).sum((-1, -2))
+                loss_J = loss_J + (_d[fm].mean() if fm is not None else _d.mean())
             else:
                 # 현재 프레임 가우시안의 인수 L_t = sigma0 * F_t. 예측/정답 공분산은
                 # 각각 (J L_t)(J L_t)^T, (Jgt L_t)(Jgt L_t)^T 이므로 인수만 넘기면 된다.
                 Lt = SIG0 * F0
-                loss_J = loss_J + (bures_w2_sq(x2, gt, J @ Lt, Jgt @ Lt).mean()
+                _b = bures_w2_sq(x2, gt, J @ Lt, Jgt @ Lt)
+                loss_J = loss_J + ((_b[fm].mean() if fm is not None else _b.mean())
                                    / (EXT ** 2))
         x = x2
     return (loss_x / L,
@@ -598,8 +618,9 @@ def rollout(d, t0, L, gsel):
                 idx_prev=idx_e, x0=x0e, p0=p0e)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
         gt = take(d["x"][t0 + i + 1], gsel)
-        errs.append(float((x2 - gt).norm(dim=-1).mean()) / EXT)
-        stills.append(float((x_still - gt).norm(dim=-1).mean()) / EXT)
+        fm = free_mask(d, x2.shape[0], x2.device) if a.control else slice(None)
+        errs.append(float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
+        stills.append(float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
         x = x2
     return errs, stills
 
