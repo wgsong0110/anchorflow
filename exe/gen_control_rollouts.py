@@ -103,16 +103,22 @@ for i in range(a.n):
     sel = np.sort(np.concatenate([np.array(sorted(keep)), extra]))
     remap = {int(v): j for j, v in enumerate(sel)}
 
-    X, V = [], []
+    X, V, FF = [], [], []
     for f in fs:
         with h5py.File(f, "r") as h:
             x = np.array(h["x"]).T[sel]
             v = np.array(h["v"]).T[sel] if "v" in h else np.zeros_like(x)
+            # 변형구배도 남긴다 -- 학습기의 모양 손실이 쓴다 (없으면 KeyError)
+            ft = (np.array(h["f_tensor"]).T[sel].reshape(-1, 3, 3)
+                  if "f_tensor" in h else None)
         X.append(x.astype(np.float32)); V.append(v.astype(np.float32))
+        if ft is not None:
+            FF.append(ft.astype(np.float32))
     dst = os.path.join(a.out, f"{a.split}_{i:03d}.pt")
     mem_l = [torch.tensor([remap[int(v)] for v in m], dtype=torch.long) for m in mem]
     torch.save(dict(x=torch.from_numpy(np.stack(X)),
                     v=torch.from_numpy(np.stack(V)),
+                    **({"F": torch.from_numpy(np.stack(FF))} if FF else {}),
                     cfg=cfg,                       # 물성·경계 (mat_feat / bc_features 가 쓴다)
                     ctrl=torch.tensor([remap[int(c)] for c in cidx], dtype=torch.long),
                     ctrl_mem=mem_l,                # 강제되는 입자 전체

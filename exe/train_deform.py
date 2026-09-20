@@ -310,16 +310,40 @@ def ctrl_feat(d, t, p):
     return torch.cat([rel.reshape(A, -1), frc.reshape(A, -1)], -1)
 
 
-def free_mask(d, n, device):
+def ctrl_local(d, gsel):
+    """제어점 명단을 **부분표본 좌표계**로 옮긴다.
+
+    `ctrl_mem` 은 궤적 전체(4 만 입자) 기준인데 학습은 `gsel` 로 솎은 것만 본다.
+    그대로 색인하면 범위를 벗어나 CUDA 가 죽는다 (겪었다). 전체 크기의 불린
+    마스크를 만들어 `gsel` 로 다시 읽으면 좌표계가 맞는다.
+    """
+    key = (int(gsel.numel()), int(gsel[0]), int(gsel[-1]), id(d))
+    if d.get("_cl_key") == key:
+        return d["_cl"]
+    Nf = d["x"].shape[1]
+    out = []
+    for k, mm in enumerate(d.get("ctrl_mem", [])):
+        full = torch.zeros(Nf, dtype=torch.bool)
+        full[mm] = True
+        loc = torch.nonzero(full[gsel.cpu()]).squeeze(-1).to(gsel.device)
+        # 대응하는 offset (제어점 기준 상대 위치) 도 같은 순서로
+        g = gsel[loc].cpu()
+        off = d["x"][0][g] - d["x"][0][d["ctrl"][k]]
+        out.append((loc, off))
+    d["_cl"] = out
+    d["_cl_key"] = key
+    return out
+
+
+def free_mask(d, n, device, gsel):
     """강제되지 **않은** 입자만 True. 손실은 여기서만 잰다.
 
     강제된 입자는 궤적 값으로 덮어쓰므로 오차가 정확히 0 이다. 그대로 평균에
     넣으면 손실이 희석돼 모델이 좋아 보인다 (그리고 기울기도 안 준다).
     """
     m = torch.ones(n, dtype=torch.bool, device=device)
-    if "ctrl_mem" in d:
-        for mm in d["ctrl_mem"]:
-            m[mm.to(device)] = False
+    for loc, _ in ctrl_local(d, gsel):
+        m[loc] = False
     return m
 
 
@@ -334,14 +358,11 @@ def apply_control(d, t, gsel, x2):
     P = d["ctrl_pos"].to(x2.device, x2.dtype)
     t1 = min(t + 1, P.shape[0] - 1)
     x2 = x2.clone()
-    for k, m in enumerate(d["ctrl_mem"]):
-        if k >= P.shape[1]:
-            break
-        mm = m.to(x2.device)
+    for k, (loc, off) in enumerate(ctrl_local(d, gsel)):
+        if k >= P.shape[1] or loc.numel() == 0:
+            continue
         # 무리는 제어점과 **같은 offset 으로** 움직인다 (교사가 그렇게 박는다)
-        off = d["x"][0][mm].to(x2.device, x2.dtype) - d["x"][0][d["ctrl"][k]].to(
-            x2.device, x2.dtype)
-        x2[mm] = P[t1, k] + off
+        x2[loc] = P[t1, k] + off.to(x2.device, x2.dtype)
     return x2
 
 
@@ -450,7 +471,7 @@ def window(d, t0, L, gsel):
         a_rel = a_rel + (0.0 if dp_gt is None else float(la) ** 0.5 / max(
             float((dp_gt ** 2).sum(-1).mean()) ** 0.5 / EXT, 1e-20))
         gt = take(d["x"][t0 + i + 1], gsel)
-        fm = free_mask(d, x2.shape[0], x2.device) if a.control else None
+        fm = free_mask(d, x2.shape[0], x2.device, gsel) if a.control else None
         if fm is not None:      # 강제된 입자는 오차 0 이라 평균을 희석시킨다
             loss_x = loss_x + ((x2[fm] - gt[fm]) ** 2).sum(-1).mean() / (EXT ** 2)
             still = still + float(((x_still[fm] - gt[fm]) ** 2).sum(-1).mean()) / (EXT ** 2)
@@ -618,7 +639,7 @@ def rollout(d, t0, L, gsel):
                 idx_prev=idx_e, x0=x0e, p0=p0e)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
         gt = take(d["x"][t0 + i + 1], gsel)
-        fm = free_mask(d, x2.shape[0], x2.device) if a.control else slice(None)
+        fm = free_mask(d, x2.shape[0], x2.device, gsel) if a.control else slice(None)
         errs.append(float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
         stills.append(float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
         x = x2
