@@ -66,6 +66,41 @@ MAT = torch.cat([torch.tensor(
     torch.tensor(cfg["g"], device=dev, dtype=torch.float32) / 15.0])
 
 
+# --------------------------------------------------- 제어점 (학습과 같은 규칙)
+CTRL = None
+if "ctrl_mem" in d and "ctrl_pos" in d:
+    full = [torch.zeros(N_FULL, dtype=torch.bool) for _ in d["ctrl_mem"]]
+    for k_, mm in enumerate(d["ctrl_mem"]):
+        full[k_][mm] = True
+    CTRL = []
+    for k_, fl in enumerate(full):
+        loc = torch.nonzero(fl[GS]).squeeze(-1).to(dev)
+        g = GS[loc.cpu()]
+        off = (d["x"][0][g] - d["x"][0][d["ctrl"][k_]]).to(dev)
+        CTRL.append((loc, off))
+    CP = d["ctrl_pos"].to(dev)
+    FREE = torch.ones(GS.numel(), dtype=torch.bool, device=dev)
+    for loc, _ in CTRL:
+        FREE[loc] = False
+    print(f"[제어점] {len(CTRL)} 개, 강제 입자 {int((~FREE).sum())}/{GS.numel()} "
+          f"-- 예측에서 덮어쓰고 오차에서 뺀다", flush=True)
+else:
+    CP = None
+    FREE = None
+
+
+def force_ctrl(x2, t):
+    """교사가 박은 입자는 예측 대신 궤적 값으로. 학습 때와 같아야 한다."""
+    if CTRL is None:
+        return x2
+    t1 = min(t, CP.shape[0] - 1)
+    x2 = x2.clone()
+    for k_, (loc, off) in enumerate(CTRL):
+        if k_ < CP.shape[1] and loc.numel():
+            x2[loc] = CP[t1, k_] + off
+    return x2
+
+
 def take(t, i):
     """CPU 에 있는 궤적에서 색인해 GPU 로. 색인은 CPU 에서 해야 한다."""
     return t[i.cpu() if torch.is_tensor(i) else i].to(dev)
@@ -108,6 +143,7 @@ def rollout(ck):
             dmg = (dmg + FRAME_DT * (w0 * o[3][idx]).sum(1)
                    * gauss_stretch(x, p, idx, ref, w0)).clamp(max=1.0)
         x2, _ = skin(x, p, dp, lr_, lt_, idx, H, dmg=dmg)
+        x2 = force_ctrl(x2, a.t0 + len(out))
         v, p, x = (x2 - x) / FRAME_DT, p + dp, x2
         out.append(x.clone())
     return torch.stack(out), os.path.splitext(os.path.basename(ck))[0]
@@ -143,9 +179,9 @@ for t in range(GT.shape[0]):
         dr = ImageDraw.Draw(im)
         dr.rectangle([0, 0, W, 15], fill=(0, 0, 0))
         e = "" if name in ("GT", "정지") else \
-            f"  err {100*float((sq[t]-GT[t]).norm(dim=-1).mean())/EXT:.2f}%"
+            f"  err {100*float((sq[t]-GT[t])[FREE if FREE is not None else slice(None)].norm(dim=-1).mean())/EXT:.2f}%"
         if name == "정지":
-            e = f"  err {100*float((sq[t]-GT[t]).norm(dim=-1).mean())/EXT:.2f}%"
+            e = f"  err {100*float((sq[t]-GT[t])[FREE if FREE is not None else slice(None)].norm(dim=-1).mean())/EXT:.2f}%"
         dr.text((4, 2), name + e, fill=(255, 255, 255))
         tiles.append(np.array(im))
     row = np.concatenate(tiles, 1)
@@ -159,9 +195,10 @@ p_out = os.path.join(a.out, f"rollout_{a.traj}_t{a.t0}.mp4")
 imageio.mimsave(p_out, frames, fps=a.fps, quality=8)
 print(f"[저장] {p_out}  {len(frames)} 프레임, {row.shape[1]}x{row.shape[0]}",
       flush=True)
+_fm = FREE if FREE is not None else slice(None)
 for (sq, name) in preds:
-    e = float((sq - GT).norm(dim=-1).mean()) / EXT
+    e = float((sq - GT)[:, _fm].norm(dim=-1).mean()) / EXT
     print(f"  {name}: 평균 오차 {100*e:.3f}%", flush=True)
-print(f"  정지: 평균 오차 {100*float((STILL-GT).norm(dim=-1).mean())/EXT:.3f}%",
+print(f"  정지: 평균 오차 {100*float((STILL-GT)[:, FREE if FREE is not None else slice(None)].norm(dim=-1).mean())/EXT:.3f}%",
       flush=True)
 print("ROLLVID_OK")
