@@ -26,9 +26,11 @@ NEW = (MARK + """
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--gf", required=True, help="GaussianFluent 체크아웃")
+ap.add_argument("--file", default=None,
+                help="다른 러너를 고칠 때. 씬 전용 러너에도 같은 블록이 있다")
 a = ap.parse_args()
 
-p = os.path.join(a.gf, "gs_simulation.py")
+p = a.file or os.path.join(a.gf, "gs_simulation.py")
 s = open(p).read()
 if MARK in s:
     raise SystemExit("이미 고쳐져 있다: " + p)
