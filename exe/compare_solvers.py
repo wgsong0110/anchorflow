@@ -31,6 +31,9 @@ ap.add_argument("--tag_a", default="A")
 ap.add_argument("--tag_b", default="B")
 ap.add_argument("--out", default=None)
 ap.add_argument("--every", type=int, default=20)
+ap.add_argument("--stride_a", type=int, default=1,
+                help="A 쪽에서 k 개 중 1 개만 본다. B 가 `0::k` 로 솎아낸 실행일 때 "
+                     "같은 자리끼리 견주려고 쓴다")
 a = ap.parse_args()
 
 
@@ -40,28 +43,29 @@ def frames(d):
     return sorted(glob.glob(os.path.join(d, "**", "sim_*.h5"), recursive=True))
 
 
-def rd(p):
+def rd(p, stride=1):
     with h5py.File(p, "r") as h:
         x = np.array(h["x"])
-    return (x.T if x.shape[0] == 3 else x).astype(np.float64)
+    x = (x.T if x.shape[0] == 3 else x).astype(np.float64)
+    return x[::stride] if stride > 1 else x
 
 
 fa, fb = frames(a.a), frames(a.b)
 n = min(len(fa), len(fb))
 if n == 0:
     raise SystemExit("h5 가 없다")
-x0 = rd(fa[0])
+x0 = rd(fa[0], a.stride_a)
 EXT = float(np.linalg.norm(x0.max(0) - x0.min(0)))
 print(f"[비교] {a.tag_a} {len(fa)} 프레임 vs {a.tag_b} {len(fb)} 프레임, "
       f"입자 {x0.shape[0]} vs {rd(fb[0]).shape[0]}, 물체 {EXT:.4f}", flush=True)
 if rd(fb[0]).shape[0] != x0.shape[0]:
     raise SystemExit("입자 수가 다르다 -- 전처리(채우기·불투명도 문턱)가 어긋났다")
-d0 = np.abs(rd(fa[0]) - rd(fb[0])).max()
+d0 = np.abs(rd(fa[0], a.stride_a) - rd(fb[0])).max()
 print(f"[0 프레임] 최대 차 {d0:.3e} (전처리가 같으면 0 이어야 한다)", flush=True)
 
 rows = []
 for i in range(0, n, a.every):
-    xa, xb = rd(fa[i]), rd(fb[i])
+    xa, xb = rd(fa[i], a.stride_a), rd(fb[i])
     ok = np.isfinite(xa).all(1) & np.isfinite(xb).all(1)
     d = np.linalg.norm(xa[ok] - xb[ok], axis=1)
     mv = np.linalg.norm(xa[ok] - x0[ok], axis=1)
