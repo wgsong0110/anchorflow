@@ -32,6 +32,7 @@ ap.add_argument("--gf", required=True)
 ap.add_argument("--config", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=None)
+ap.add_argument("--seed", type=int, default=0, help="제어점과 궤적의 시드")
 ap.add_argument("--sort_every", type=int, default=1,
                 help="몇 프레임마다 입자를 칸 순서로 다시 세울지 (0 이면 안 함)")
 a = ap.parse_args()
@@ -114,6 +115,31 @@ tp = dict(substep_dt=float(cfg["substep_dt"]), frame_dt=float(cfg["frame_dt"]),
           frame_num=int(cfg.get("frame_num", 100)))
 set_boundary_conditions(solver, cfg.get("boundary_conditions", []), tp)
 
+# ------------------------------------------------------- 제어점 (Dirichlet)
+# 표면 입자 몇 개를 골라 매 스텝 위치·속도를 궤적으로 **강제**한다. 나머지는
+# 평소대로 푼다. GF 의 BC 는 구역마다 속도가 하나로 고정이라 제어점마다 다른
+# 궤적을 줄 수 없어서, 솔버 배열을 직접 쓰는 쪽으로 한다.
+CC = cfg.get("control", None)
+ctrl_idx = None
+if CC:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+    from control_traj import ControlTraj, pick_control_points
+    seed = int(CC.get("seed", a.seed))
+    ctrl_idx, surf = pick_control_points(X.astype(np.float64), CC.get("cell", None),
+                                         int(CC.get("n_points", 4)), seed=seed)
+    traj = ControlTraj(X.astype(np.float64), ctrl_idx,
+                       dt=float(cfg["frame_dt"]),
+                       steps=int(cfg.get("frame_num", 100)) + 1,
+                       every_n=int(CC.get("every_n", 20)),
+                       p_touch=float(CC.get("p_touch", 0.6)),
+                       depth=float(CC.get("depth", 0.08)),
+                       v_max=float(CC.get("v_max", 0.5)),
+                       seed=seed)
+    print(f"[제어점] {len(ctrl_idx)} 개 (표면 {int(surf.sum())}/{len(X)}), "
+          f"n={CC.get('every_n',20)} p={CC.get('p_touch',0.6)} "
+          f"깊이={CC.get('depth',0.08)} v_max={CC.get('v_max',0.5)} 시드={seed}, "
+          f"실제 최대속도 {traj.max_speed():.4f}", flush=True)
+
 v0 = np.asarray(cfg.get("init_velocity", [0.0, 0.0, 0.0]), np.float32)
 solver.import_particle_v_from_torch(
     torch.from_numpy(np.tile(v0, (N, 1))).to(dev).contiguous(), device=dev)
@@ -137,13 +163,37 @@ print(f"[설정] 재질 {cfg['material']}, 격자 {n_grid}, dt {dt:.3e} x {nsub}
 out = os.path.abspath(a.out)
 os.makedirs(out, exist_ok=True)
 np.save(os.path.join(out, "group.npy"), GRP)
+if ctrl_idx is not None:
+    np.savez(os.path.join(out, "control.npz"), idx=ctrl_idx,
+             pos=traj.P.astype(np.float32), vel=traj.V.astype(np.float32),
+             x0=X[ctrl_idx].astype(np.float32),
+             cfg=json.dumps(CC))
 save_data_at_frame(solver, out, 0, save_to_ply=False, save_to_h5=True)
 t0 = time.time()
+# 정렬은 입자 순서를 바꾸므로 제어점을 쓸 때는 끈다 (색인이 어긋난다)
+if ctrl_idx is not None:
+    a.sort_every = 0
+_cx = torch.from_numpy(np.ascontiguousarray(ctrl_idx)).to(dev) if ctrl_idx is not None else None
+
 for f in range(frames):
     if a.sort_every and f % a.sort_every == 0 and hasattr(solver, "af_sort_by_cell"):
         solver.af_sort_by_cell()
+    if ctrl_idx is not None:
+        # 프레임 안에서는 목표 위치로 **선형 보간**하며 서브스텝마다 다시 박는다
+        p_now = torch.from_numpy(traj.pos(f).astype(np.float32)).to(dev)
+        p_next = torch.from_numpy(traj.pos(f + 1).astype(np.float32)).to(dev)
+        v_now = torch.from_numpy(traj.vel(f + 1).astype(np.float32)).to(dev)
     for s in range(nsub):
+        if ctrl_idx is not None:
+            w = (s + 1.0) / nsub
+            tx = wp.to_torch(solver.mpm_state.particle_x)
+            tv = wp.to_torch(solver.mpm_state.particle_v)
+            tx[_cx] = p_now * (1.0 - w) + p_next * w
+            tv[_cx] = v_now
         solver.p2g2p(s, dt, device=dev, flip_pic_ratio=flip, flip_pic=use_flip)
+        if ctrl_idx is not None:     # g2p 가 옮겨 놓았으니 다시 박는다
+            wp.to_torch(solver.mpm_state.particle_x)[_cx] = p_now * (1.0 - w) + p_next * w
+            wp.to_torch(solver.mpm_state.particle_v)[_cx] = v_now
     save_data_at_frame(solver, out, f + 1, save_to_ply=False, save_to_h5=True)
     if (f + 1) % 10 == 0:
         print(f"  f{f+1:4d}  {time.time()-t0:.0f}s", flush=True)
