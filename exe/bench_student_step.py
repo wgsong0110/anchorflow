@@ -18,6 +18,8 @@ ap.add_argument("--feat", type=int, default=62)
 ap.add_argument("--nctrl", type=int, default=4)
 ap.add_argument("--ens", type=int, default=1,
                 help="원점을 어긋나게 둔 격자를 몇 개 앙상블할지")
+ap.add_argument("--transfer", default="skin", choices=("skin", "tri"))
+ap.add_argument("--k", type=int, default=16)
 ap.add_argument("--rep", type=int, default=20)
 a = ap.parse_args()
 
@@ -34,6 +36,7 @@ from utils.transformation_utils import (apply_cov_rotations, apply_rotations,
                                         shift2center111, transform2origin)
 from anchorflow import trilinear as TRI, vox_anchor
 from anchorflow.conv_stepper import ConvStepper
+from anchorflow.deform import skin
 
 
 class _P:
@@ -83,7 +86,8 @@ flat_c, w_c = TRI.corners(x, lo, h, n3)
 grid_pts = tuple(int(t) for t in n3)
 
 _arch = a.arch.replace("conv", "plain")
-net = ConvStepper(a.feat, a.hidden, a.depth, arch=_arch).to(dev)
+net = ConvStepper(a.feat, a.hidden, a.depth, h=float(h),
+                  arch=_arch, skin_out=(a.transfer == "skin")).to(dev)
 fin = torch.randn(M_cell, a.feat, device=dev)
 dp_pts = torch.randn(int(n3[0]) * int(n3[1]) * int(n3[2]), 3, device=dev)
 
@@ -132,7 +136,21 @@ t_ctrl = timeit(ctrl_step, a.rep)
 t_p2g = timeit(cell_step, a.rep)
 t_cor = timeit(lambda: TRI.corners(x, lo, h, n3), a.rep)
 t_net = timeit(lambda: net(None, fin, 1/60., grid_pts, cells=tuple(ncell)), a.rep)
-t_g2p = timeit(lambda: TRI.g2p(flat_c, w_c, dp_pts), a.rep)
+if a.transfer == "skin":
+    # 격자점을 앵커로 둔 kNN (탐색 없음) + 학습 반경 소프트맥스
+    import math as _m
+    lo_g = lo - 0.5 * h
+    _lr = torch.full((dp_pts.shape[0],), _m.log(float(h)), device=dev)
+    _lt = torch.zeros_like(_lr)
+    gpos = (torch.stack(torch.meshgrid(
+        *[torch.arange(int(n3[dd]), device=dev, dtype=x.dtype) for dd in range(3)],
+        indexing="ij"), -1).reshape(-1, 3)) * h + lo
+    _si = vox_anchor.knn(x, lo_g, h, n3, a.k)
+    t_knn = timeit(lambda: vox_anchor.knn(x, lo_g, h, n3, a.k), a.rep)
+    t_g2p = timeit(lambda: skin(x, gpos, dp_pts, _lr, _lt, _si, float(h)), a.rep)
+    t_cor = t_knn          # corners 대신 kNN 이 그 자리를 차지한다
+else:
+    t_g2p = timeit(lambda: TRI.g2p(flat_c, w_c, dp_pts), a.rep)
 
 view_c = torch.tensor(cam_p["mpm_space_viewpoint_center"]).reshape(1, 3).cuda()
 up = torch.tensor(cam_p["mpm_space_vertical_upward_axis"]).reshape(1, 3).cuda()
@@ -157,8 +175,11 @@ def render():
 t_rnd = timeit(render, a.rep)
 tot = t_p2g + t_ctrl + t_cor + t_net + t_g2p + t_rnd
 print(f"[격자] 격자점 {grid_pts} 셀 {tuple(ncell)} 셀특징 {F_CELL}채널", flush=True)
-print(f"셀집계 {t_p2g:.2f} | 손잡이 {t_ctrl:.2f} | corners {t_cor:.2f} | "
-      f"신경망 {t_net:.2f} | G2P {t_g2p:.2f} | 렌더 {t_rnd:.2f} ms", flush=True)
+print(f"셀집계 {t_p2g:.2f} | 손잡이 {t_ctrl:.2f} | "
+      f"{'kNN' if a.transfer == 'skin' else 'corners'} {t_cor:.2f} | "
+      f"신경망 {t_net:.2f} | "
+      f"{'스키닝' if a.transfer == 'skin' else 'G2P'} {t_g2p:.2f} | "
+      f"렌더 {t_rnd:.2f} ms", flush=True)
 print(f"[합계] {tot:.2f} ms  ->  {1000/tot:.1f} FPS "
       f"(렌더 제외 {tot-t_rnd:.2f} ms, {1000/(tot-t_rnd):.1f} FPS)", flush=True)
 print("STEPBENCH_OK", flush=True)
