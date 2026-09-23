@@ -275,7 +275,7 @@ step0 = 0
 
 def build(n_feat):
     global net, opt
-    if a.arch in ("conv", "unet"):
+    if a.arch.startswith(("conv", "unet")):
         from anchorflow.conv_stepper import ConvStepper
         net = ConvStepper(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
                           h=H, scale=0.02 * EXT,
