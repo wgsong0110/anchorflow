@@ -127,6 +127,10 @@ ap.add_argument("--save_every", type=int, default=500)
 ap.add_argument("--resume", default=None)
 ap.add_argument("--small_out", action="store_true",
                 help="출력층을 0 이 아니라 기본 초기화의 1/100 로 시작")
+ap.add_argument("--metrics", action="store_true",
+                help="롤아웃에서 CD/EMD 까지 잰다 (Spring-Gaus 정의)")
+ap.add_argument("--cd_pts", type=int, default=2048,
+                help="CD/EMD 표본 크기 (EMD 가 O(n^3) 이라 필요하다)")
 ap.add_argument("--transfer", default="skin", choices=("skin", "tri"),
                 help="격자점 변위를 가우시안으로 옮기는 법. skin 은 kNN 위 "
                      "학습 반경 소프트맥스, tri 는 고정 trilinear")
@@ -862,6 +866,7 @@ def rollout(d, t0, L, gsel):
     x_still = x.clone()
     x0e, p0e = x.clone(), p.clone()
     dmg_e, idx_e = None, None
+    cds, ems, cds_s, ems_s = [], [], [], []
     for i in range(L):
         with torch.enable_grad():
             x2, p, v, _, _, _, dmg_e, idx_e = step_once(
@@ -872,8 +877,34 @@ def rollout(d, t0, L, gsel):
         fm = free_mask(d, x2.shape[0], x2.device, gsel) if a.control else slice(None)
         errs.append(float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
         stills.append(float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
+        if a.metrics:
+            cds.append(chamfer(x2, gt) / (EXT ** 2))
+            ems.append(emd(x2, gt, t0 * 1000 + i) / EXT)
+            cds_s.append(chamfer(x_still, gt) / (EXT ** 2))
+            ems_s.append(emd(x_still, gt, t0 * 1000 + i) / EXT)
         x = x2
-    return errs, stills
+    return errs, stills, cds, ems, cds_s, ems_s
+
+
+def chamfer(p_, q_, chunk=4096):
+    """양방향 평균 최근접 **제곱** 거리의 합 (Spring-Gaus 관례)."""
+    def one(u, w_):
+        s_, n_ = 0.0, u.shape[0]
+        for i_ in range(0, n_, chunk):
+            dd = torch.cdist(u[i_:i_ + chunk], w_)
+            s_ += float((dd.min(1).values ** 2).sum())
+        return s_ / n_
+    return one(p_, q_) + one(q_, p_)
+
+
+def emd(p_, q_, seed):
+    """최적 일대일 대응의 평균 이동량. 두 구름에서 **같은 인덱스**를 뽑는다."""
+    from scipy.optimize import linear_sum_assignment
+    g_ = torch.Generator().manual_seed(int(seed))
+    i_ = torch.randperm(p_.shape[0], generator=g_)[:a.cd_pts].to(p_.device)
+    dd = torch.cdist(p_[i_], q_[i_]).double().cpu().numpy()
+    r_, c_ = linear_sum_assignment(dd)
+    return float(dd[r_, c_].mean())
 
 
 gsel = torch.arange(min(a.n_pts, N_FULL), device=dev)
@@ -885,20 +916,37 @@ for tag, d in TR + held:
         L = min(a.eval_len, T - t0 - 1)
         if L < 2:
             continue
-        e, st = rollout(d, t0, L, gsel)
+        e, st, cd, em, cds_, ems_ = rollout(d, t0, L, gsel)
         rows[tag]["windows"][t0] = dict(L=L, err=e, still=st,
                                         err_mean=float(np.mean(e)),
-                                        still_mean=float(np.mean(st)))
+                                        still_mean=float(np.mean(st)),
+                                        **(dict(cd=float(np.mean(cd)),
+                                                emd=float(np.mean(em)),
+                                                cd_still=float(np.mean(cds_)),
+                                                emd_still=float(np.mean(ems_)))
+                                           if a.metrics else {}))
         print(f"[롤아웃] {tag}{' (홀드아웃)' if tag in hold else ''} t0={t0:3d}: "
               f"{L} 프레임, 평균 {100*np.mean(e):.3f}% "
               f"(정지 {100*np.mean(st):.3f}%, 비 "
-              f"{np.mean(e)/max(np.mean(st),1e-12):.2f})", flush=True)
+              f"{np.mean(e)/max(np.mean(st),1e-12):.2f})"
+              + (f"  CD {np.mean(cd):.3e} (정지 {np.mean(cds_):.3e})"
+                 f"  EMD {100*np.mean(em):.3f}% (정지 {100*np.mean(ems_):.3f}%)"
+                 if a.metrics else ""), flush=True)
 r_all = [(w["err_mean"], w["still_mean"]) for r in rows.values()
          for w in r["windows"].values()]
 print(f"\n[요약] 전체 창 평균 {100*np.mean([x for x,_ in r_all]):.3f}% "
       f"(정지 {100*np.mean([y for _,y in r_all]):.3f}%, 비 "
       f"{np.mean([x/max(y,1e-12) for x,y in r_all]):.2f}) "
       f"-- 비가 1 보다 작아야 도움이 된 것이다", flush=True)
+if a.metrics:
+    _c = [w["cd"] for r in rows.values() for w in r["windows"].values()]
+    _cs = [w["cd_still"] for r in rows.values() for w in r["windows"].values()]
+    _e = [w["emd"] for r in rows.values() for w in r["windows"].values()]
+    _es = [w["emd_still"] for r in rows.values() for w in r["windows"].values()]
+    print(f"[지표] CD {np.mean(_c):.4e} (정지 {np.mean(_cs):.4e}, 비 "
+          f"{np.mean(_c)/max(np.mean(_cs),1e-30):.3f})   "
+          f"EMD {100*np.mean(_e):.4f}% (정지 {100*np.mean(_es):.4f}%, 비 "
+          f"{np.mean(_e)/max(np.mean(_es),1e-30):.3f})", flush=True)
 
 json.dump(dict(tag=a.tag, args=vars(a), extent=EXT, h=H, n_feat=n_feat,
                minutes=(time.time() - t_start) / 60,
