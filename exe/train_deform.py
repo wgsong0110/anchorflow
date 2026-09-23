@@ -78,7 +78,9 @@ ap.add_argument("--refps", action="store_true",
                 help="매 프레임 현재 배치에서 앵커를 FPS 로 다시 뽑는다. 기본은 "
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
                      "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
-ap.add_argument("--arch", default="spconv", choices=("conv", "unet"),
+ap.add_argument("--arch", default="conv",
+                choices=("conv", "unet", "conv_sep", "conv_par",
+                         "unet_sep", "unet_par"),
                 help="격자 위 신경망. 집계는 셀, 출력은 격자점(c2g) 이다")
 ap.add_argument("--vox_res", type=int, default=16,
                 help="conv/unet 일 때 격자 한 변의 칸 수 (앵커 = 칸 전체)")
@@ -127,6 +129,8 @@ ap.add_argument("--save_every", type=int, default=500)
 ap.add_argument("--resume", default=None)
 ap.add_argument("--small_out", action="store_true",
                 help="출력층을 0 이 아니라 기본 초기화의 1/100 로 시작")
+ap.add_argument("--ens", type=int, default=1,
+                help="원점을 어긋나게 둔 격자를 몇 개 앙상블할지 (변위 평균)")
 ap.add_argument("--metrics", action="store_true",
                 help="롤아웃에서 CD/EMD 까지 잰다 (Spring-Gaus 정의)")
 ap.add_argument("--cd_pts", type=int, default=2048,
@@ -274,8 +278,8 @@ def build(n_feat):
     if a.arch in ("conv", "unet"):
         from anchorflow.conv_stepper import ConvStepper
         net = ConvStepper(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
-                          h=H, scale=0.02 * EXT, arch=("unet" if a.arch == "unet"
-                                                       else "plain"),
+                          h=H, scale=0.02 * EXT,
+                          arch=a.arch.replace("conv", "plain"),
                           skin_out=(a.transfer == "skin"),
                           damage=a.damage).to(dev)
     else:
@@ -497,11 +501,15 @@ def apply_control(d, t, gsel, x2):
     return x2
 
 
+_ENS_SHIFT = [(0.0, 0.0, 0.0), (0.5, 0.5, 0.0), (0.5, 0.0, 0.5),
+              (0.0, 0.5, 0.5), (0.25, 0.25, 0.25), (0.75, 0.75, 0.25),
+              (0.75, 0.25, 0.75), (0.25, 0.75, 0.75)]
+
 from anchorflow import trilinear as TRI          # noqa: E402
 from anchorflow import vox_anchor                # noqa: E402
 
 
-def cell_feats(d, t, gsel, x, v):
+def cell_feats(d, t, gsel, x, v, shift=None):
     """학습·통계·추론이 **모두 같은** 입력을 쓰도록 한 군데서 만든다.
 
     -> (_in [셀, F], p 셀중심, grid_shape (격자점, 셀), tri (평탄idx, 가중치),
@@ -510,6 +518,9 @@ def cell_feats(d, t, gsel, x, v):
     cfg = d["cfg"]
     X = take(d["x"][0], gsel)
     lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
+    if shift is not None:          # 앙상블: 격자 원점을 반 칸씩 어긋나게 둔다
+        lo = lo - torch.tensor(shift, device=lo.device, dtype=lo.dtype) * hh
+        nn3 = nn3 + 1              # 어긋난 만큼 한 칸 더 덮는다
     # 집계는 **셀 기준** (가우시안당 한 번), 출력은 격자점 기준 -> c2g 가 옮긴다
     crow, cw, ncell = TRI.cell_index(x, lo, hh, nn3)
     M_cell = ncell[0] * ncell[1] * ncell[2]
@@ -556,41 +567,44 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     몇 번째 가우시안인지**. 매 스텝 다시 뽑으면 앵커의 정체가 바뀌므로, 앵커 손실이
     비교할 정답도 그때그때 그 가우시안들의 GT 변위로 바뀐다.
     """
-    _in, p, grid_shape, tri, (lo, hh, nn3), crow = cell_feats(
-        d, t, gsel, x, v)
-    out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1])
-    dp = out[0]
-    dmg_out = out[1] if (a.damage and len(out) > 1) else None
-    # 얇은 잎 같은 구름에서는 한 번의 큰 출력이 다음 스텝의 kNN 을 망가뜨려
-    # (NaN 거리 -> 엉뚱한 색인) CUDA assert 로 죽는다. 물리적으로 말이 되는
-    # 범위로 잘라 둔다: 한 스텝에 앵커 간격의 절반을 넘게 움직이지 않는다.
-    dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0, neginf=0.0).clamp(-0.5 * H, 0.5 * H)
-    rate = out[3] if a.damage else None
-    if a.damage:
-        # 가우시안마다 스칼라 하나. kNN 집합이 바뀌어도 그대로 따라다닌다.
-        if dmg is None:
-            dmg = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
-        ref = (x0.unsqueeze(1) - p0[idx]).norm(dim=-1)
-        # 얼마나 늘어났나는 기하가 준다. 네트워크는 "얼마나 잘 망가지나" 만 정한다.
-        with torch.no_grad():
-            w0 = tri[1]
-        s_g = gauss_stretch(x, p, idx, ref, w0)
-        rate_g = (w0 * rate[idx]).sum(1)
-        dmg = (dmg + FRAME_DT * rate_g * s_g).clamp(max=1.0)
-    if a.transfer == "skin":
-        # 격자점을 앵커로 두고 kNN + 학습 반경 소프트맥스로 옮긴다. 격자는 규칙적이라
-        # kNN 은 탐색 없이 구한다 (격자점 = 원점을 반 칸 당긴 격자의 칸 중심).
-        lo_g = lo - 0.5 * hh
-        sidx = vox_anchor.knn(x, lo_g, hh, nn3, a.k)
-        gpos = (torch.stack(torch.meshgrid(
-            *[torch.arange(int(nn3[dd]), device=dev, dtype=x.dtype)
-              for dd in range(3)], indexing="ij"), -1).reshape(-1, 3)) * hh + lo
-        log_r = out[1] if len(out) > 2 else torch.full((dp.shape[0],),
-                                                       math.log(hh), device=dev)
-        log_t = out[2] if len(out) > 2 else torch.zeros_like(log_r)
-        x2, _w = skin(x, gpos, dp, log_r, log_t, sidx, float(hh))
-    else:
-        x2 = x + TRI.g2p(tri[0], tri[1], dp)
+    # 앙상블: 원점을 어긋나게 둔 격자 여러 개의 변위를 평균한다. 같은 가중치를
+    # 쓰므로 파라미터는 늘지 않고, 격자 위치 때문에 생기는 편향만 씻긴다.
+    shifts = _ENS_SHIFT[:a.ens] if a.ens > 1 else [None]
+    acc, warps, dp = 0.0, [], None
+    for _sh in shifts:
+        _in, p, grid_shape, tri, (lo, hh, nn3), crow = cell_feats(
+            d, t, gsel, x, v, shift=_sh)
+        out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1])
+        dp = out[0]
+        # 얇은 잎 같은 구름에서는 한 번의 큰 출력이 다음 스텝의 kNN 을 망가뜨려
+        # (NaN 거리 -> 엉뚱한 색인) CUDA assert 로 죽는다. 물리적으로 말이 되는
+        # 범위로 잘라 둔다: 한 스텝에 앵커 간격의 절반을 넘게 움직이지 않는다.
+        dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0,
+                              neginf=0.0).clamp(-0.5 * H, 0.5 * H)
+        if a.transfer == "skin":
+            # 격자점을 앵커로 두고 kNN + 학습 반경 소프트맥스로 옮긴다. 격자가
+            # 규칙적이라 kNN 은 탐색 없이 구한다 (격자점 = 원점을 반 칸 당긴
+            # 격자의 칸 중심).
+            lo_g = lo - 0.5 * hh
+            sidx = vox_anchor.knn(x, lo_g, hh, nn3, a.k)
+            gpos = (torch.stack(torch.meshgrid(
+                *[torch.arange(int(nn3[dd]), device=dev, dtype=x.dtype)
+                  for dd in range(3)], indexing="ij"), -1).reshape(-1, 3)
+                ) * hh + lo
+            log_r = (out[1] if len(out) > 2
+                     else torch.full((dp.shape[0],), math.log(hh), device=dev))
+            log_t = out[2] if len(out) > 2 else torch.zeros_like(log_r)
+            xe = skin(x, gpos, dp, log_r, log_t, sidx, float(hh))[0]
+            warps.append(lambda q, _g=gpos, _d=dp, _lr=log_r, _lt=log_t,
+                         _i=sidx, _h=float(hh): skin(q, _g, _d, _lr, _lt,
+                                                     _i, _h)[0])
+        else:
+            xe = x + TRI.g2p(tri[0], tri[1], dp)
+            warps.append(lambda q, _lo=lo, _h=hh, _n=nn3, _d=dp:
+                         q + TRI.g2p(*TRI.corners(q, _lo, _h, _n), _d))
+        acc = acc + (xe - x)
+    x2 = x + acc / len(shifts)
+    dmg_out = None
     if a.control:
         x2 = apply_control(d, t, gsel, x2)
     # 격자는 다음 프레임에 x2 로부터 다시 잡는다. 앵커를 옮길 필요가 없다.
@@ -598,10 +612,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     J = None
     if need_J:
         def _warp(q):
-            if a.transfer == "skin":
-                return skin(q, gpos, dp, log_r, log_t, sidx, float(hh))[0]
-            _f, _w = TRI.corners(q, lo, hh, nn3)
-            return q + TRI.g2p(_f, _w, dp)
+            return q + sum(w(q) - q for w in warps) / len(warps)
 
         J = jacobian_of(_warp, x)
     return x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, crow
@@ -648,7 +659,7 @@ def window(d, t0, L, gsel):
             # 복셀 앵커는 특정 가우시안이 아니라 그 칸의 질량중심이라, 정답 변위도
             # 그 칸 구성원들의 평균 변위로 잡는다.
             dp_gt = None
-        elif a.arch in ("conv", "unet"):
+        elif a.arch.startswith(("conv", "unet")):
             # 격자점 변위는 특정 가우시안에 대응하지 않는다 -- 앵커 손실 없음
             dp_gt = None
         elif a.refps:
