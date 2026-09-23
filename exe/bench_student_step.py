@@ -20,7 +20,9 @@ ap.add_argument("--ens", type=int, default=1,
                 help="원점을 어긋나게 둔 격자를 몇 개 앙상블할지")
 ap.add_argument("--transfer", default="skin", choices=("skin", "tri"))
 ap.add_argument("--k", type=int, default=16)
-ap.add_argument("--rep", type=int, default=20)
+ap.add_argument("--rep", type=int, default=200)
+ap.add_argument("--corners", action="store_true",
+                help="스키닝 이웃을 8 꼭짓점으로 (kNN 없음)")
 a = ap.parse_args()
 
 dev = "cuda:0"
@@ -68,10 +70,16 @@ lo, h, n3 = vox_anchor.grid_for(x, a.res ** 3)
 grid = tuple(int(t) for t in n3)
 
 
-def timeit(fn, rep):
-    fn(); torch.cuda.synchronize(); t0 = time.perf_counter()
-    for _ in range(rep): fn()
-    torch.cuda.synchronize(); return (time.perf_counter()-t0)/rep*1e3
+def timeit(fn, rep, warm=20):
+    """워밍업을 충분히 준다 -- 첫 호출들은 커널 컴파일·할당으로 서너 배 튄다."""
+    for _ in range(warm):
+        fn()
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(rep):
+        fn()
+    torch.cuda.synchronize()
+    return (time.perf_counter() - t0) / rep * 1e3
 
 def cell_step():
     crow, cw, ncell = TRI.cell_index(x, lo, h, n3)
@@ -130,6 +138,7 @@ if a.ens > 1:
         return acc / a.ens
 
     t_ens = timeit(ens_step, a.rep)
+    ENS_TOT = t_ens
     print(f"[앙상블] {a.ens} x res {a.res}: 전달+신경망 {t_ens:.2f} ms", flush=True)
 
 t_ctrl = timeit(ctrl_step, a.rep)
@@ -145,8 +154,12 @@ if a.transfer == "skin":
     gpos = (torch.stack(torch.meshgrid(
         *[torch.arange(int(n3[dd]), device=dev, dtype=x.dtype) for dd in range(3)],
         indexing="ij"), -1).reshape(-1, 3)) * h + lo
-    _si = vox_anchor.knn(x, lo_g, h, n3, a.k)
-    t_knn = timeit(lambda: vox_anchor.knn(x, lo_g, h, n3, a.k), a.rep)
+    if a.corners:
+        _si = flat_c                      # 이미 만든 꼭짓점 색인 -- 탐색 없음
+        t_knn = 0.0
+    else:
+        _si = vox_anchor.knn(x, lo_g, h, n3, a.k)
+        t_knn = timeit(lambda: vox_anchor.knn(x, lo_g, h, n3, a.k), a.rep)
     t_g2p = timeit(lambda: skin(x, gpos, dp_pts, _lr, _lt, _si, float(h)), a.rep)
     t_cor = t_knn          # corners 대신 kNN 이 그 자리를 차지한다
 else:
@@ -173,7 +186,11 @@ def render():
                 scales=None, rotations=None, cov3D_precomp=cov.contiguous())
 
 t_rnd = timeit(render, a.rep)
-tot = t_p2g + t_ctrl + t_cor + t_net + t_g2p + t_rnd
+if a.ens > 1:
+    # 앙상블은 격자 여러 개를 다 도는 값으로 합계를 낸다
+    tot = ENS_TOT + t_ctrl * a.ens + t_rnd
+else:
+    tot = t_p2g + t_ctrl + t_cor + t_net + t_g2p + t_rnd
 print(f"[격자] 격자점 {grid_pts} 셀 {tuple(ncell)} 셀특징 {F_CELL}채널", flush=True)
 print(f"셀집계 {t_p2g:.2f} | 손잡이 {t_ctrl:.2f} | "
       f"{'kNN' if a.transfer == 'skin' else 'corners'} {t_cor:.2f} | "

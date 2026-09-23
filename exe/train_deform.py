@@ -129,6 +129,8 @@ ap.add_argument("--save_every", type=int, default=500)
 ap.add_argument("--resume", default=None)
 ap.add_argument("--small_out", action="store_true",
                 help="출력층을 0 이 아니라 기본 초기화의 1/100 로 시작")
+ap.add_argument("--skin_corners", action="store_true",
+                help="스키닝 이웃을 kNN 대신 **자기 칸의 8 꼭짓점**으로 -- 탐색이\n                     공짜다. 가중치는 여전히 학습 반경으로 정해진다")
 ap.add_argument("--ens", type=int, default=1,
                 help="원점을 어긋나게 둔 격자를 몇 개 앙상블할지 (변위 평균)")
 ap.add_argument("--metrics", action="store_true",
@@ -585,8 +587,11 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             # 격자점을 앵커로 두고 kNN + 학습 반경 소프트맥스로 옮긴다. 격자가
             # 규칙적이라 kNN 은 탐색 없이 구한다 (격자점 = 원점을 반 칸 당긴
             # 격자의 칸 중심).
-            lo_g = lo - 0.5 * hh
-            sidx = vox_anchor.knn(x, lo_g, hh, nn3, a.k)
+            if a.skin_corners:
+                sidx = tri[0]          # cell_feats 가 이미 만든 꼭짓점 색인
+            else:
+                lo_g = lo - 0.5 * hh
+                sidx = vox_anchor.knn(x, lo_g, hh, nn3, a.k)
             gpos = (torch.stack(torch.meshgrid(
                 *[torch.arange(int(nn3[dd]), device=dev, dtype=x.dtype)
                   for dd in range(3)], indexing="ij"), -1).reshape(-1, 3)
