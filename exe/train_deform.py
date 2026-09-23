@@ -27,6 +27,7 @@ import time
 _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
 sys.path.insert(0, _lib)
 
+import math
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -77,8 +78,8 @@ ap.add_argument("--refps", action="store_true",
                 help="매 프레임 현재 배치에서 앵커를 FPS 로 다시 뽑는다. 기본은 "
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
                      "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
-ap.add_argument("--arch", default="attn", choices=("attn", "conv", "unet", "spconv"),
-                help="앵커 상호작용 블록. conv/unet 은 복셀중심 앵커를 쓴다")
+ap.add_argument("--arch", default="spconv", choices=("conv", "unet"),
+                help="격자 위 신경망. 집계는 셀, 출력은 격자점(c2g) 이다")
 ap.add_argument("--vox_res", type=int, default=16,
                 help="conv/unet 일 때 격자 한 변의 칸 수 (앵커 = 칸 전체)")
 ap.add_argument("--no_mat", action="store_true",
@@ -124,6 +125,15 @@ ap.add_argument("--hold_traj", default=None,
                 help="통째로 홀드아웃할 궤적 태그 (쉼표로 구분)")
 ap.add_argument("--save_every", type=int, default=500)
 ap.add_argument("--resume", default=None)
+ap.add_argument("--small_out", action="store_true",
+                help="출력층을 0 이 아니라 기본 초기화의 1/100 로 시작")
+ap.add_argument("--transfer", default="skin", choices=("skin", "tri"),
+                help="격자점 변위를 가우시안으로 옮기는 법. skin 은 kNN 위 "
+                     "학습 반경 소프트맥스, tri 는 고정 trilinear")
+ap.add_argument("--no_gn", action="store_true",
+                help="conv 블록의 GroupNorm 제거 (크기 정보 보존)")
+ap.add_argument("--stat_occ", action="store_true",
+                help="입력 표준화 통계를 **찬 셀만**으로 잡는다")
 ap.add_argument("--r2", default=None, help="체크포인트를 올릴 R2 경로")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
@@ -257,16 +267,12 @@ step0 = 0
 
 def build(n_feat):
     global net, opt
-    if a.arch == "spconv":
-        from anchorflow.conv_stepper import SparseConvStepper
-        net = SparseConvStepper(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
-                                h=H, scale=0.02 * EXT,
-                                damage=a.damage).to(dev)
-    elif a.arch in ("conv", "unet"):
+    if a.arch in ("conv", "unet"):
         from anchorflow.conv_stepper import ConvStepper
         net = ConvStepper(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
                           h=H, scale=0.02 * EXT, arch=("unet" if a.arch == "unet"
                                                        else "plain"),
+                          skin_out=(a.transfer == "skin"),
                           damage=a.damage).to(dev)
     else:
         net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
@@ -334,6 +340,37 @@ def vox_feats(d, gsel, x, v):
         cv, S6, om, Fa.reshape(M, 9),
         torch.sign(det) * torch.log(det.abs().clamp(min=1e-6))], -1)
     return vb.pos, feat, idx
+
+
+def ctrl_feat_pts(d, t, q, cell):
+    """**가우시안마다** 손잡이 특징 -> [N, 7K].
+
+    셀 중심 하나로 뭉개면 같은 칸 안에서 손잡이에 가까운 입자와 먼 입자가
+    구분되지 않는다. 길이는 셀 크기로 정규화한다.
+    """
+    K = a.n_ctrl
+    N = q.shape[0]
+    if "ctrl_pos" not in d:
+        return torch.zeros(N, 7 * K, device=q.device, dtype=q.dtype)
+    P = d["ctrl_pos"].to(q.device, q.dtype)
+    tt = min(t, P.shape[0] - 1)
+    c = P[tt]
+    dc = P[min(tt + 1, P.shape[0] - 1)] - c
+    k = c.shape[0]
+    if k < K:
+        z = torch.zeros(K - k, 3, device=q.device, dtype=q.dtype)
+        c, dc = torch.cat([c, z]), torch.cat([dc, z])
+    c, dc = c[:K], dc[:K]
+    rel = (q.unsqueeze(1) - c.unsqueeze(0)) / cell
+    frc = dc.unsqueeze(0).expand(N, K, 3) / cell
+    if "ctrl_R" in d:
+        R = d["ctrl_R"].to(q.device, q.dtype)
+        Rt = R[min(t, R.numel() - 1)].clamp(min=1e-6)
+        qq = ((q.unsqueeze(1) - c.unsqueeze(0)).norm(dim=-1) / Rt).clamp(0, 1)
+        w = (1.0 - qq * qq) ** 2
+    else:
+        w = torch.zeros(N, K, device=q.device, dtype=q.dtype)
+    return torch.cat([rel.reshape(N, -1), frc.reshape(N, -1), w], -1)
 
 
 def ctrl_feat(d, t, p):
@@ -456,6 +493,57 @@ def apply_control(d, t, gsel, x2):
     return x2
 
 
+from anchorflow import trilinear as TRI          # noqa: E402
+from anchorflow import vox_anchor                # noqa: E402
+
+
+def cell_feats(d, t, gsel, x, v):
+    """학습·통계·추론이 **모두 같은** 입력을 쓰도록 한 군데서 만든다.
+
+    -> (_in [셀, F], p 셀중심, grid_shape (격자점, 셀), tri (평탄idx, 가중치),
+        (lo, h, n) 격자, crow 셀 색인)
+    """
+    cfg = d["cfg"]
+    X = take(d["x"][0], gsel)
+    lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
+    # 집계는 **셀 기준** (가우시안당 한 번), 출력은 격자점 기준 -> c2g 가 옮긴다
+    crow, cw, ncell = TRI.cell_index(x, lo, hh, nn3)
+    M_cell = ncell[0] * ncell[1] * ncell[2]
+    ccen = (torch.stack(torch.meshgrid(
+        *[torch.arange(ncell[dd], device=dev, dtype=x.dtype) for dd in range(3)],
+        indexing="ij"), -1).reshape(-1, 3) + 0.5) * hh + lo
+    feat = _san(TRI.tri_feats(x, v / VEL_SCALE, X, MASS[gsel], crow, cw,
+                              M_cell, ccen, hh))
+    # 손잡이는 **가우시안마다** 만들어 같은 셀 집계에 싣는다 (질량가중 평균)
+    cond = None
+    if a.control:
+        cf = ctrl_feat_pts(d, t, x, hh)
+        wm = cw * MASS[gsel].unsqueeze(1)
+        num = torch.zeros(M_cell, cf.shape[-1], device=dev, dtype=cf.dtype)
+        num.index_add_(0, crow.reshape(-1),
+                       (wm.unsqueeze(-1) * cf.unsqueeze(1)).reshape(-1, cf.shape[-1]))
+        den = torch.zeros(M_cell, 1, device=dev, dtype=cf.dtype)
+        den.index_add_(0, crow.reshape(-1), wm.reshape(-1, 1))
+        cond = _san(num / den.clamp(min=1e-12))
+    p = ccen                       # 조건·경계 특징은 셀 중심에서 읽는다
+    flat_c, w_c = TRI.corners(x, lo, hh, nn3)      # 출력(격자점) -> 가우시안
+    grid_pts = tuple(int(t) for t in nn3)
+    grid_shape = (grid_pts, tuple(ncell))
+    tri = (flat_c, w_c)
+    extra = torch.cat([mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0], N_MAT),
+                       bc_features(p, cfg) / hh], -1)
+    if cond is not None:
+        extra = torch.cat([extra, cond], -1)
+    if a.grip:
+        extra = torch.cat([extra, grip_feat(d, t, p)], -1)
+    # 국소 변형구배 맞춤이 잎처럼 얇은 구름에서 특이해지면 특징이 1e7 까지 튀어
+    # 첫 스텝에 발산한다 (겪었다). 입력은 O(1) 이 정상이므로 잘라서 넣는다.
+    feat = torch.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0).clamp(-_FCAP, _FCAP)
+    extra = torch.nan_to_num(extra, nan=0.0, posinf=0.0, neginf=0.0).clamp(-_FCAP, _FCAP)
+    _in = torch.cat([feat, extra], -1)
+    return _in, p, grid_shape, tri, (lo, hh, nn3), crow
+
+
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
               x0=None, p0=None):
     """한 프레임. -> (x_next, p_next, v_next, J, dp, aidx_next)
@@ -464,61 +552,15 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     몇 번째 가우시안인지**. 매 스텝 다시 뽑으면 앵커의 정체가 바뀌므로, 앵커 손실이
     비교할 정답도 그때그때 그 가우시안들의 GT 변위로 바뀐다.
     """
-    cfg = d["cfg"]
-    grid_shape = None
-    if a.arch == "spconv":
-        from anchorflow import vox_anchor
-        X = take(d["x"][0], gsel)
-        lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
-        idx, coords, p = vox_anchor.knn_union(x, lo, hh, nn3, a.k)
-        feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, p.shape[0], H,
-                            pa=p)
-        feat = _san(feat)
-        grid_shape = (coords, tuple(int(t) for t in nn3))
-    elif a.arch in ("conv", "unet"):
-        from anchorflow import vox_anchor
-        X = take(d["x"][0], gsel)
-        lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
-        p = vox_anchor.centers(lo, hh, nn3)
-        idx = vox_anchor.knn(x, lo, hh, nn3, a.k)
-        feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, p.shape[0], H,
-                            pa=p)
-        feat = _san(feat)
-        grid_shape = tuple(int(t) for t in nn3)
-    elif a.voxel:
-        p, feat, idx = vox_feats(d, gsel, x, v)
-    else:
-        X = take(d["x"][0], gsel)
-        if os.environ.get("AF_DEBUG_NAN"):
-            print(f"  [디버그] x 유한 {bool(torch.isfinite(x).all())} 범위 "
-                  f"{float(x.min()):.3f}~{float(x.max()):.3f} | p 유한 "
-                  f"{bool(torch.isfinite(p).all())} 범위 {float(p.min()):.3f}~"
-                  f"{float(p.max()):.3f} | v 유한 {bool(torch.isfinite(v).all())} "
-                  f"최대 {float(v.abs().max()):.3f}", flush=True)
-        idx, _ = anchor_knn(x, p, a.k)
-        feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, p.shape[0], H,
-                            pa=p)
-        feat = _san(feat)
-    extra = torch.cat([mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0], N_MAT),
-                       bc_features(p, cfg) / H], -1)
-    if a.control:
-        extra = torch.cat([extra, ctrl_feat(d, t, p)], -1)
-    if a.grip:
-        extra = torch.cat([extra, grip_feat(d, t, p)], -1)
-    # 국소 변형구배 맞춤이 잎처럼 얇은 구름에서 특이해지면 특징이 1e7 까지 튀어
-    # 첫 스텝에 발산한다 (겪었다). 입력은 O(1) 이 정상이므로 잘라서 넣는다.
-    feat = torch.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0).clamp(-_FCAP, _FCAP)
-    extra = torch.nan_to_num(extra, nan=0.0, posinf=0.0, neginf=0.0).clamp(-_FCAP, _FCAP)
-    _in = torch.cat([feat, extra], -1)
-    out = (net(p, _in, FRAME_DT, grid_shape) if grid_shape is not None
-           else net(p, _in, FRAME_DT))
-    dp, log_r, log_t = out[0], out[1], out[2]
+    _in, p, grid_shape, tri, (lo, hh, nn3), crow = cell_feats(
+        d, t, gsel, x, v)
+    out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1])
+    dp = out[0]
+    dmg_out = out[1] if (a.damage and len(out) > 1) else None
     # 얇은 잎 같은 구름에서는 한 번의 큰 출력이 다음 스텝의 kNN 을 망가뜨려
     # (NaN 거리 -> 엉뚱한 색인) CUDA assert 로 죽는다. 물리적으로 말이 되는
     # 범위로 잘라 둔다: 한 스텝에 앵커 간격의 절반을 넘게 움직이지 않는다.
     dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0, neginf=0.0).clamp(-0.5 * H, 0.5 * H)
-    log_r = torch.nan_to_num(log_r, nan=0.0, posinf=0.0, neginf=0.0).clamp(-4.0, 4.0)
-    log_t = torch.nan_to_num(log_t, nan=0.0, posinf=0.0, neginf=0.0).clamp(-4.0, 4.0)
     rate = out[3] if a.damage else None
     if a.damage:
         # 가우시안마다 스칼라 하나. kNN 집합이 바뀌어도 그대로 따라다닌다.
@@ -527,26 +569,38 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         ref = (x0.unsqueeze(1) - p0[idx]).norm(dim=-1)
         # 얼마나 늘어났나는 기하가 준다. 네트워크는 "얼마나 잘 망가지나" 만 정한다.
         with torch.no_grad():
-            w0 = skin(x, p, dp.detach(), log_r.detach(), log_t.detach(), idx, H,
-                      dmg=dmg)[1]
+            w0 = tri[1]
         s_g = gauss_stretch(x, p, idx, ref, w0)
         rate_g = (w0 * rate[idx]).sum(1)
         dmg = (dmg + FRAME_DT * rate_g * s_g).clamp(max=1.0)
-    x2, w = skin(x, p, dp, log_r, log_t, idx, H, dmg=dmg)
+    if a.transfer == "skin":
+        # 격자점을 앵커로 두고 kNN + 학습 반경 소프트맥스로 옮긴다. 격자는 규칙적이라
+        # kNN 은 탐색 없이 구한다 (격자점 = 원점을 반 칸 당긴 격자의 칸 중심).
+        lo_g = lo - 0.5 * hh
+        sidx = vox_anchor.knn(x, lo_g, hh, nn3, a.k)
+        gpos = (torch.stack(torch.meshgrid(
+            *[torch.arange(int(nn3[dd]), device=dev, dtype=x.dtype)
+              for dd in range(3)], indexing="ij"), -1).reshape(-1, 3)) * hh + lo
+        log_r = out[1] if len(out) > 2 else torch.full((dp.shape[0],),
+                                                       math.log(hh), device=dev)
+        log_t = out[2] if len(out) > 2 else torch.zeros_like(log_r)
+        x2, _w = skin(x, gpos, dp, log_r, log_t, sidx, float(hh))
+    else:
+        x2 = x + TRI.g2p(tri[0], tri[1], dp)
     if a.control:
         x2 = apply_control(d, t, gsel, x2)
-    if a.voxel:
-        ai, p_next = None, p + dp     # 다음 프레임에 어차피 다시 뽑는다
-    elif a.refps:
-        ai = fps(x2.detach(), p.shape[0], a.seed)
-        p_next = x2[ai]
-    else:
-        ai, p_next = None, p + dp
+    # 격자는 다음 프레임에 x2 로부터 다시 잡는다. 앵커를 옮길 필요가 없다.
+    ai, p_next = None, p
     J = None
     if need_J:
-        J = jacobian_of(
-            lambda q: skin(q, p, dp, log_r, log_t, idx, H, dmg=dmg)[0], x)
-    return x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, idx
+        def _warp(q):
+            if a.transfer == "skin":
+                return skin(q, gpos, dp, log_r, log_t, sidx, float(hh))[0]
+            _f, _w = TRI.corners(q, lo, hh, nn3)
+            return q + TRI.g2p(_f, _w, dp)
+
+        J = jacobian_of(_warp, x)
+    return x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, crow
 
 
 def window(d, t0, L, gsel):
@@ -590,6 +644,9 @@ def window(d, t0, L, gsel):
             # 복셀 앵커는 특정 가우시안이 아니라 그 칸의 질량중심이라, 정답 변위도
             # 그 칸 구성원들의 평균 변위로 잡는다.
             dp_gt = None
+        elif a.arch in ("conv", "unet"):
+            # 격자점 변위는 특정 가우시안에 대응하지 않는다 -- 앵커 손실 없음
+            dp_gt = None
         elif a.refps:
             gt_now = take(d["x"][t0 + i + 1], gsel)
             dp_gt = gt_now[ai_now] - x[ai_now]
@@ -602,6 +659,15 @@ def window(d, t0, L, gsel):
         a_rel = a_rel + (0.0 if dp_gt is None else float(la) ** 0.5 / max(
             float((dp_gt ** 2).sum(-1).mean()) ** 0.5 / EXT, 1e-20))
         gt = take(d["x"][t0 + i + 1], gsel)
+        if os.environ.get("AF_DIAG2"):
+            _u = gt - x                              # 정답 변위
+            _pd = x2 - x                             # 망이 낸 변위
+            _c = float((_pd * _u).sum() / (_pd.norm() * _u.norm()).clamp(min=1e-20))
+            _cv = float((v * FRAME_DT * _u).sum()
+                        / ((v * FRAME_DT).norm() * _u.norm()).clamp(min=1e-20))
+            print(f"  [출력] |dp|/|u| {float(_pd.norm()/_u.norm().clamp(min=1e-20)):.4f}  "
+                  f"cos(dp,u) {_c:+.4f}  cos(v*dt,u) {_cv:+.4f}  "
+                  f"|u| {float(_u.norm()):.4e}", flush=True)
         fm = free_mask(d, x2.shape[0], x2.device, gsel) if a.control else None
         if fm is not None:      # 강제된 입자는 오차 0 이라 평균을 희석시킨다
             loss_x = loss_x + ((x2[fm] - gt[fm]) ** 2).sum(-1).mean() / (EXT ** 2)
@@ -631,18 +697,22 @@ def window(d, t0, L, gsel):
             d_rel / L)
 
 
-# 특징 차원을 한 번 재서 모델을 세운다
+if a.small_out:
+    from anchorflow import conv_stepper as _CS
+    _CS._ZERO_OUT = False
+    print('[구조] 출력층 가중치 = 기본 초기화 x 0.01', flush=True)
+if a.no_gn:
+    from anchorflow import conv_stepper as _CS
+    _CS._NORM = False
+    print('[구조] conv 블록 GroupNorm 제거', flush=True)
+
+# 특징 차원을 한 번 재서 모델을 세운다 -- 반드시 **학습과 같은 경로**로 잰다
 with torch.no_grad():
     _d = TR[0][1]
     _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
-    _x = take(_d["x"][0], _g)
-    _p = take(_d["x"][0], AIDX)
-    _i, _ = grid_knn(_x, _p, a.k)
-    _f, _ = aggregate(_x, torch.zeros_like(_x), _x, MASS[_g], _i, _p.shape[0],
-                      H, pa=_p)
-    _f = _san(_f)
-    n_feat = (_f.shape[-1] + N_MAT + n_bc + (7 * a.n_ctrl if a.control else 0)
-              + (13 * a.n_arms if a.grip else 0))
+    _x = take(_d["x"][1], _g)
+    _v = (_x - take(_d["x"][0], _g)) / FRAME_DT
+    n_feat = cell_feats(_d, 1, _g, _x, _v)[0].shape[-1]
 if a.voxel:
     VOX_CELL = H
     # 격자는 모든 궤적을 덮도록 공간에 고정한다 (프레임마다 새로 잡으면 물체가
@@ -671,31 +741,33 @@ build(n_feat)
 # 넘게 벌어져 있어서(질량은 log 라 -16, 다음 변위를 결정하는 속도는 7e-4) 그냥 넣으면
 # 정작 중요한 채널이 첫 Linear 에서 묻힌다.
 with torch.no_grad():
+    # 학습이 실제로 넣는 것과 **같은 경로**로 통계를 잡는다. 예전에는 여기만
+    # 어텐션 경로(grid_knn+aggregate+ctrl_feat)로 남아 있어, 폭이 우연히 같은
+    # 탓에 에러 없이 전혀 다른 양의 평균/표준편차가 들어갔다 (학습이 안 된 원인).
     samp = []
     gstat = torch.Generator(device=dev).manual_seed(a.seed + 7)
-    for _ in range(64):
+    for _ in range(32):
         _tag, _dd = TR[int(torch.randint(len(TR), (1,), generator=gstat, device=dev))]
         _t = int(torch.randint(1, _dd["x"].shape[0] - 2, (1,), generator=gstat,
                                device=dev))
         _gs = torch.randperm(N_FULL, generator=gstat,
-                             device=dev)[:min(4000, N_FULL)].sort().values
+                             device=dev)[:min(a.n_pts, N_FULL)].sort().values
         _x = take(_dd["x"][_t], _gs)
         _v = (_x - take(_dd["x"][_t - 1], _gs)) / FRAME_DT
-        _pp = take(_dd["x"][_t], AIDX)
-        _ii, _ = grid_knn(_x, _pp, a.k)
-        _ff, _ = aggregate(_x, _v / VEL_SCALE, take(_dd["x"][0], _gs), MASS[_gs],
-                           _ii, _pp.shape[0], H, pa=_pp)
-        _ff = _san(_ff)
-        _ee = torch.cat([mat_feat(_dd["cfg"]).reshape(1, N_MAT).expand(_pp.shape[0],
-                                                                      N_MAT),
-                         bc_features(_pp, _dd["cfg"]) / H], -1)
-        if a.control:
-            _ee = torch.cat([_ee, ctrl_feat(_dd, 0, _pp)], -1)
-        if a.grip:
-            _ee = torch.cat([_ee, grip_feat(_dd, 0, _pp)], -1)
-        samp.append(torch.cat([_ff, _ee], -1))
+        _s, _, _, _, _, _cr = cell_feats(_dd, _t, _gs, _x, _v)
+        if a.stat_occ:                     # 빈 칸이 96% 라 통계를 장악한다
+            _m = torch.zeros(_s.shape[0], dtype=torch.bool, device=_s.device)
+            _m[_cr.reshape(-1)] = True
+            _s = _s[_m]
+        samp.append(_s)
     samp = torch.cat(samp, 0)
     net.set_input_stats(samp)
+    _sn = (samp - net.in_mu) / net.in_sd
+    print(f"[표준화 확인] 표본 {tuple(samp.shape)}  정규화 후 평균 "
+          f"{float(_sn.mean()):+.4f} 표준편차 {float(_sn.std()):.4f} "
+          f"최대절대값 {float(_sn.abs().max()):.1f}  "
+          f"sd=1 로 남은 채널 {int((net.in_sd - 1).abs().lt(1e-9).sum())}"
+          f"/{samp.shape[1]}", flush=True)
     print(f"[표준화] 표본 {samp.shape[0]} x {samp.shape[1]}, 채널 표준편차 "
           f"최소 {float(net.in_sd.min()):.2e} 최대 {float(net.in_sd.max()):.2e}, "
           f"평균 절대값 최대 {float(net.in_mu.abs().max()):.2e}", flush=True)
@@ -718,6 +790,8 @@ for it in pbar:
     still = arel = dmean = 0.0
     for _ in range(a.batch):
         tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
+        if os.environ.get("AF_FIXWIN"):           # 한 창만 반복 -- 과적합 진단용
+            tag, d = TR[0]
         T = d["x"].shape[0] - a.hold_last
         hi = max(T - L - 1, 2)
         if a.motion_frac > 0 and float(torch.rand(1, generator=gen,
@@ -728,6 +802,10 @@ for it in pbar:
             t0 = int(torch.randint(1, hi, (1,), generator=gen, device=dev))
         gsel = torch.randperm(N_FULL, generator=gen,
                               device=dev)[:a.n_pts].sort().values
+        if os.environ.get("AF_FIXWIN"):
+            t0 = 5
+            gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
+                                device=dev)[:a.n_pts]
         wx, wJ, wst, wa, wrel, wd, wdm = window(d, t0, L, gsel)
         # 창마다 바로 역전파해 누적한다 -- 창 여러 개의 그래프를 동시에 들고 있으면
         # 야코비안까지 붙어 메모리가 배치 수만큼 늘어난다
@@ -741,7 +819,22 @@ for it in pbar:
         ldm = ldm + float(wd) / a.batch
         dmean = dmean + wdm / a.batch
     gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+    if os.environ.get("AF_DIAG") and it < int(os.environ["AF_DIAG"]):
+        _prev = {n: q.detach().clone() for n, q in net.named_parameters()}
+        _g = [(n, float(q.grad.norm())) for n, q in net.named_parameters()
+              if q.grad is not None]
+        _ng = sum(1 for n, q in net.named_parameters() if q.grad is None)
+        print(f"  [진단 {it}] 기울기 있는 파라미터 {len(_g)}, 없는 것 {_ng}, "
+              f"|g| 합 {sum(v for _, v in _g):.3e}", flush=True)
+        for n, v in sorted(_g, key=lambda z: -z[1])[:6]:
+            print(f"    {n:34} |g| {v:.3e}", flush=True)
     opt.step()
+    if os.environ.get("AF_DIAG") and it < int(os.environ["AF_DIAG"]):
+        _d = [(n, float((q.detach() - _prev[n]).norm())) for n, q in
+              net.named_parameters()]
+        print(f"    변화 합 {sum(v for _, v in _d):.3e}  "
+              f"상위 {[(n.split('.')[-2:], round(v, 8)) for n, v in sorted(_d, key=lambda z: -z[1])[:3]]}",
+              flush=True)
     hist.append((lx, lJ, still, la, arel, ldm, dmean))
     if it % 20 == 0:
         pbar.set_postfix(x=f"{100*lx**0.5:.3f}%", 정지=f"{100*still**0.5:.3f}%",

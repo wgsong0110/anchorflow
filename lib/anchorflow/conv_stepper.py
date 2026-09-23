@@ -16,44 +16,127 @@ import torch.nn as nn
 import torch.nn.functional as Fn
 
 
+_ZERO_OUT = True    # False 면 출력층 가중치를 기본 초기화의 1/100 로 둔다
+_NORM = True        # False 면 블록 안 GroupNorm 을 빼서 **크기 정보를 남긴다**
+
+
+def _nrm(c):
+    """부피의 96% 가 빈 칸이라 GroupNorm 은 배경 통계로 크기를 지운다.
+
+    창마다 필요한 변위 크기가 네 배 넘게 다른데 정규화 뒤에는 출력 크기가
+    입력 크기와 무관해져, 망이 진폭을 따라갈 수 없다.
+    """
+    return nn.GroupNorm(8, c) if _NORM else nn.Identity()
+
+
+def _blk_sep(cin, cout):
+    """축별 분해 블록: 3x3x3 한 번 대신 3x1x1, 1x3x1, 1x1x3 세 번.
+
+    커널당 곱셈이 27 -> 9 로 준다. 수용영역은 같다.
+    """
+    def tri(ci, co):
+        return nn.Sequential(
+            nn.Conv3d(ci, co, (3, 1, 1), padding=(1, 0, 0), bias=False),
+            nn.Conv3d(co, co, (1, 3, 1), padding=(0, 1, 0), bias=False),
+            nn.Conv3d(co, co, (1, 1, 3), padding=(0, 0, 1), bias=False),
+            _nrm(co), nn.SiLU())
+
+    return nn.Sequential(tri(cin, cout), tri(cout, cout))
+
+
+class _AxisPar(nn.Module):
+    """세 축 1D 컨볼루션을 **같은 입력에 병렬로** 걸고 합친다.
+
+    순차 분해와 달리 축 방향 십자(7칸)만 덮는다 -- 대각 이웃은 다음 층에서 닿는다.
+    세 가지가 서로 의존하지 않아 GPU 에서 겹쳐 실행될 수 있다.
+    """
+
+    def __init__(self, cin, cout):
+        super().__init__()
+        self.cx = nn.Conv3d(cin, cout, (3, 1, 1), padding=(1, 0, 0), bias=False)
+        self.cy = nn.Conv3d(cin, cout, (1, 3, 1), padding=(0, 1, 0), bias=False)
+        self.cz = nn.Conv3d(cin, cout, (1, 1, 3), padding=(0, 0, 1), bias=False)
+        self.nrm = _nrm(cout)
+        self.act = nn.SiLU()
+
+    def forward(self, v):
+        return self.act(self.nrm(self.cx(v) + self.cy(v) + self.cz(v)))
+
+
+def _blk_par(cin, cout):
+    return nn.Sequential(_AxisPar(cin, cout), _AxisPar(cout, cout))
+
+
 def _blk(cin, cout):
     return nn.Sequential(
-        nn.Conv3d(cin, cout, 3, padding=1), nn.GroupNorm(8, cout), nn.SiLU(),
-        nn.Conv3d(cout, cout, 3, padding=1), nn.GroupNorm(8, cout), nn.SiLU())
+        nn.Conv3d(cin, cout, 3, padding=1), _nrm(cout), nn.SiLU(),
+        nn.Conv3d(cout, cout, 3, padding=1), _nrm(cout), nn.SiLU())
 
 
 class ConvStepper(nn.Module):
-    """forward(p, feat, dt, grid) -> (dp [M,3], log_r [M], log_t [M])
+    """forward(p, feat, dt, grid, cells=...) -> (dp [M,3],) 또는 (dp, dmg)
 
-    feat [M,F] 는 격자 순서 (ix*ny + iy)*nz + iz 로 정렬돼 있어야 한다.
-    grid 는 (nx, ny, nz).
+    feat 은 **셀** 기준 [M_cell, F] 이고 c2g 가 격자점으로 옮긴다.
+    격자 순서는 (ix*ny + iy)*nz + iz 다.
     """
 
     def __init__(self, n_feat, hidden=64, depth=4, h=0.05, scale=1.0,
+                 skin_out=False,
                  arch="plain", damage=False):
         super().__init__()
         self.h, self.scale, self.arch, self.damage = h, scale, arch, damage
+        # skin_out: 변위와 함께 **스키닝 반경**을 낸다 (DeformNet 과 같은 매개화).
+        # 고정 trilinear 가중치로 전달하면 같은 조건에서 비가 0.25 -> 0.58 로
+        # 나빠진다 -- 전달 가중치가 학습돼야 한다.
+        self.skin_out = bool(skin_out)
         self.register_buffer("in_mu", torch.zeros(n_feat))
         self.register_buffer("in_sd", torch.ones(n_feat))
         self.film = nn.Sequential(nn.Linear(1, hidden), nn.SiLU(),
                                   nn.Linear(hidden, 2 * hidden))
+        # 셀 집계 결과를 격자점으로 옮기는 층 (2^3, pad 1 -> 셀 n -> 격자점 n+1)
+        self.c2g = nn.Conv3d(n_feat, n_feat, 2, padding=1)
         self.inp = nn.Conv3d(n_feat, hidden, 1)
-        if arch == "unet":
-            self.d1, self.d2 = _blk(hidden, hidden), _blk(hidden, 2 * hidden)
-            self.mid = _blk(2 * hidden, 2 * hidden)
-            self.u2 = _blk(4 * hidden, hidden)
-            self.u1 = _blk(2 * hidden, hidden)
+        B = (_blk_par if arch.endswith("_par")
+             else _blk_sep if arch.endswith("_sep") else _blk)
+        base = arch.replace("_sep", "").replace("_par", "")
+        self.arch = base
+        if base == "unet":
+            self.d1, self.d2 = B(hidden, hidden), B(hidden, 2 * hidden)
+            self.mid = B(2 * hidden, 2 * hidden)
+            self.u2 = B(4 * hidden, hidden)
+            self.u1 = B(2 * hidden, hidden)
         else:
-            self.body = nn.ModuleList([_blk(hidden, hidden) for _ in range(depth)])
-        self.out = nn.Conv3d(hidden, 6 if damage else 4, 1)
-        nn.init.zeros_(self.out.weight)
+            self.body = nn.ModuleList([B(hidden, hidden) for _ in range(depth)])
+        self.out = nn.Conv3d(hidden, 4 if (damage or skin_out) else 3, 1)
+        # 가중치를 **정확히** 0 으로 두면 상류로 가는 기울기가 grad_out @ W = 0
+        # 이라 첫 스텝에 인코더·블록이 기울기를 하나도 못 받는다. 어텐션 쪽에서
+        # 겪은 함정이다 -- 편향만 0 으로 두고 가중치는 기본 초기화의 1/100 로.
+        if _ZERO_OUT:
+            nn.init.zeros_(self.out.weight)
+        else:
+            with torch.no_grad():
+                self.out.weight.mul_(0.01)
         nn.init.zeros_(self.out.bias)
 
-    def forward(self, p, feat, dt, grid, static=None):
+
+    def set_input_stats(self, feats):
+        """[S, F] 표본에서 채널별 평균/표준편차를 잡아 버퍼에 넣는다."""
+        f = feats.detach().float().reshape(-1, feats.shape[-1])
+        sd = f.std(0)
+        self.in_mu.copy_(f.mean(0))
+        self.in_sd.copy_(torch.where(sd > 1e-4 * sd.max().clamp(min=1e-12),
+                                     sd, torch.ones_like(sd)))
+
+    def forward(self, p, feat, dt, grid, static=None, cells=None):
+        """grid 는 격자점 크기. cells 가 주어지면 feat 은 **셀** 기준이고,
+        c2g 가 격자점으로 옮긴다."""
         nx, ny, nz = grid
         f = feat if static is None else torch.cat([feat, static], -1)
         f = (f - self.in_mu) / self.in_sd
-        v = f.t().reshape(1, -1, nx, ny, nz)
+        if cells is not None:
+            v = self.c2g(f.t().reshape(1, -1, *cells))
+        else:
+            v = f.t().reshape(1, -1, nx, ny, nz)
         v = self.inp(v)
         g, b = self.film(torch.as_tensor([[float(dt)]], device=v.device,
                                          dtype=v.dtype)).chunk(2, -1)
@@ -71,73 +154,11 @@ class ConvStepper(nn.Module):
                 v = v + blk(v)
         o = self.out(v).reshape(-1, nx * ny * nz).t()          # [M, C]
         dp = o[:, :3] * self.scale
-        log_r = o[:, 3] + math.log(self.h)
-        log_t = o[:, 4] if self.damage else torch.zeros_like(log_r)
-        out = (dp, log_r.clamp(math.log(self.h) - 3.0, math.log(self.h) + 3.0),
-               log_t.clamp(-4.0, 4.0))
+        if self.skin_out:
+            lr = (o[:, 3] + math.log(self.h)).clamp(
+                math.log(self.h) - 3.0, math.log(self.h) + 3.0)
+            return dp, lr, torch.zeros_like(lr)
+        # trilinear 전달이라 스키닝 반경·온도가 없다. 변위만 낸다.
         if self.damage:
-            out = out + (Fn.softplus(o[:, 5] - 3.0),)
-        return out
-
-
-# ---------------------------------------------------------------- 희소 판
-class SparseConvStepper(nn.Module):
-    """점유 칸에서만 도는 submanifold 희소 컨볼루션 스테퍼.
-
-    조밀 판은 빈 칸까지 전부 연산한다. 물체가 bbox 의 일부만 채우면 그만큼이
-    낭비다. 여기서는 점유 칸만 좌표로 들고 다닌다.
-
-    forward(p, feat, dt, meta) -- meta = (coords [M,3] long, grid (nx,ny,nz))
-    """
-
-    def __init__(self, n_feat, hidden=64, depth=4, h=0.05, scale=1.0,
-                 arch="plain", damage=False):
-        super().__init__()
-        import spconv.pytorch as spc
-        from spconv.core import ConvAlgo
-        self.spc = spc
-        # 이 환경에서 기본 MaskImplicitGemm 커널이 FPE 로 죽는다. Native 로 고정한다.
-        _algo = ConvAlgo.Native
-        self.h, self.scale, self.arch, self.damage = h, scale, arch, damage
-        self.register_buffer("in_mu", torch.zeros(n_feat))
-        self.register_buffer("in_sd", torch.ones(n_feat))
-        self.film = nn.Sequential(nn.Linear(1, hidden), nn.SiLU(),
-                                  nn.Linear(hidden, 2 * hidden))
-
-        def sblk(cin, cout):
-            return spc.SparseSequential(
-                spc.SubMConv3d(cin, cout, 3, bias=False, algo=_algo),
-                nn.GroupNorm(8, cout), nn.SiLU(),
-                spc.SubMConv3d(cout, cout, 3, bias=False, algo=_algo),
-                nn.GroupNorm(8, cout), nn.SiLU())
-
-        self.inp = spc.SubMConv3d(n_feat, hidden, 1, bias=True, algo=_algo)
-        self.body = nn.ModuleList([sblk(hidden, hidden) for _ in range(depth)])
-        self.out = spc.SubMConv3d(hidden, 6 if damage else 4, 1, bias=True,
-                          algo=_algo)
-        nn.init.zeros_(self.out.weight)
-        nn.init.zeros_(self.out.bias)
-
-    def forward(self, p, feat, dt, meta, static=None):
-        coords, grid = meta
-        f = feat if static is None else torch.cat([feat, static], -1)
-        f = (f - self.in_mu) / self.in_sd
-        b = torch.zeros(coords.shape[0], 1, dtype=torch.int32, device=f.device)
-        ind = torch.cat([b, coords.int()], 1)
-        x = self.spc.SparseConvTensor(f, ind, list(grid), 1)
-        x = self.inp(x)
-        g, bb = self.film(torch.as_tensor([[float(dt)]], device=f.device,
-                                          dtype=f.dtype)).chunk(2, -1)
-        x = x.replace_feature(g * x.features + bb)
-        for blk in self.body:
-            y = blk(x)
-            x = x.replace_feature(x.features + y.features)
-        o = self.out(x).features                                # [M, C]
-        dp = o[:, :3] * self.scale
-        log_r = o[:, 3] + math.log(self.h)
-        log_t = o[:, 4] if self.damage else torch.zeros_like(log_r)
-        out = (dp, log_r.clamp(math.log(self.h) - 3.0, math.log(self.h) + 3.0),
-               log_t.clamp(-4.0, 4.0))
-        if self.damage:
-            out = out + (Fn.softplus(o[:, 5] - 3.0),)
-        return out
+            return dp, Fn.softplus(o[:, 3] - 3.0)
+        return (dp,)
