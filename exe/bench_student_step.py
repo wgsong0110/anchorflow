@@ -21,6 +21,8 @@ ap.add_argument("--ens", type=int, default=1,
 ap.add_argument("--transfer", default="skin", choices=("skin", "tri"))
 ap.add_argument("--k", type=int, default=16)
 ap.add_argument("--rep", type=int, default=200)
+ap.add_argument("--n20", action="store_true",
+                help="산술로 만든 20 이웃 (topk 없음)")
 ap.add_argument("--corners", action="store_true",
                 help="스키닝 이웃을 8 꼭짓점으로 (kNN 없음)")
 a = ap.parse_args()
@@ -157,6 +159,9 @@ if a.transfer == "skin":
     if a.corners:
         _si = flat_c                      # 이미 만든 꼭짓점 색인 -- 탐색 없음
         t_knn = 0.0
+    elif a.n20:
+        _si = vox_anchor.nbr20(x, lo, h, n3)
+        t_knn = timeit(lambda: vox_anchor.nbr20(x, lo, h, n3), a.rep)
     else:
         _si = vox_anchor.knn(x, lo_g, h, n3, a.k)
         t_knn = timeit(lambda: vox_anchor.knn(x, lo_g, h, n3, a.k), a.rep)

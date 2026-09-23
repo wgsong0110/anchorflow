@@ -119,3 +119,31 @@ def knn_union(x, lo, h, n, k, rad=1):
     coords = _t.stack([cx, cy, cz], -1)
     cen = (coords.to(x.dtype) + 0.5) * h + lo
     return idx, coords, cen
+
+def nbr20(x, lo, h, n):
+    """탐색도 정렬도 없이 **가장 가까운 격자점 20개**를 색인 산술로 만든다.
+
+    칸 안 상대위치 f 의 각 축 부호가 바깥쪽 방향을 정한다 (f<0.5 면 -1, 아니면 +2).
+    꼭짓점 8 개에 축마다 한 칸 바깥으로 민 면 이웃 4 개씩 12 개를 더해 20 개다.
+    거리를 재서 topk 하던 방식은 [N,27,3] 을 만드느라 24 만 점에서 7~12 ms 였다.
+    """
+    dev = x.device
+    u = (x - lo) / h
+    i0 = torch.floor(u).long()
+    i0 = torch.stack([i0[:, d].clamp(0, int(n[d]) - 2) for d in range(3)], -1)
+    f = (u - i0.to(u.dtype)).clamp(0, 1)
+    out = torch.where(f < 0.5, torch.full_like(i0, -1), torch.full_like(i0, 2))
+    c8 = torch.stack(torch.meshgrid(*[torch.arange(2, device=dev)] * 3,
+                                    indexing="ij"), -1).reshape(-1, 3)   # [8,3]
+    idx = [i0.unsqueeze(1) + c8.unsqueeze(0)]                            # 꼭짓점
+    for d in range(3):                                                   # 면 이웃
+        m = c8.clone()
+        m = m[m[:, d] == 0]                                              # [4,3]
+        o = i0.unsqueeze(1) + m.unsqueeze(0)
+        o = o.clone()
+        o[:, :, d] = i0[:, d].unsqueeze(1) + out[:, d].unsqueeze(1)
+        idx.append(o)
+    idx = torch.cat(idx, 1)                                              # [N,20,3]
+    for d in range(3):
+        idx[:, :, d] = idx[:, :, d].clamp(0, int(n[d]) - 1)
+    return (idx[:, :, 0] * int(n[1]) + idx[:, :, 1]) * int(n[2]) + idx[:, :, 2]
