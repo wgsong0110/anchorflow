@@ -54,7 +54,13 @@ def estimate_normals(x, k=16):
     nb = _knn(x, min(k, max(len(x) - 1, 1)))
     d = x[nb] - x[:, None, :]
     cov = np.einsum("nki,nkj->nij", d, d) / d.shape[1]
-    w, v = np.linalg.eigh(cov)
+    # 비유한 값이 하나라도 섞이면 eigh 가 통째로 터진다 (겪었다)
+    cov = np.nan_to_num(cov, nan=0.0, posinf=0.0, neginf=0.0)
+    cov += np.eye(3) * 1e-12
+    try:
+        w, v = np.linalg.eigh(cov)
+    except np.linalg.LinAlgError:
+        v = np.tile(np.eye(3), (cov.shape[0], 1, 1))
     nrm = v[:, :, 0]
     out = x - x.mean(0)
     flip = (nrm * out).sum(1) < 0

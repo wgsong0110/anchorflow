@@ -34,6 +34,14 @@ ap.add_argument("--frames", type=int, default=40, help="롤아웃 길이(스텝)
 ap.add_argument("--n_pts", type=int, default=40000, help="저장할 입자 수")
 ap.add_argument("--seed0", type=int, default=None, help="시드 블록 시작")
 ap.add_argument("--keep_h5", action="store_true")
+# 입자셋을 어디서 굴릴지. warp = 입자 h5 를 바로 굴린다,
+# pg = 3DGS 를 GF 의 `gs_simulation.py` 로 굴린다 (같은 warp 솔버, 같은 제어점 강제)
+# warp   = 입자 h5 를 바로 굴린다 (run_warp_mpm)
+# pg     = GaussianFluent 의 gs_simulation (3DGS 를 그대로)
+# pg_orig= PhysGaussian 원본의 gs_simulation (--pg_root 로 경로 지정)
+ap.add_argument("--runner", default="warp", choices=("warp", "pg", "pg_orig"))
+ap.add_argument("--pg_root", default=None, help="PhysGaussian 저장소 경로")
+ap.add_argument("--model_path", default=None, help="--runner pg 일 때 3DGS 모델")
 # --- 파라미터 범위 (학습/평가가 **같은** 범위를 쓴다) ---
 ap.add_argument("--every_n", type=int, nargs=2, default=[10, 30])
 ap.add_argument("--p_touch", type=float, nargs=2, default=[0.3, 0.9])
@@ -76,17 +84,32 @@ for i in range(a.n):
     shutil.rmtree(odir, ignore_errors=True)
     print(f"[{a.split} {i+1}/{a.n}] 시드 {seed} " +
           " ".join(f"{k}={v}" for k, v in ctl.items() if k != "seed"), flush=True)
-    rc = subprocess.run([sys.executable, os.path.join(HERE, "run_warp_mpm.py"),
-                         "--gf", a.gf, "--config", cpath, "--out", odir],
-                        capture_output=True, text=True)
+    if a.runner in ("pg", "pg_orig"):
+        root = a.pg_root if a.runner == "pg_orig" else a.gf
+        env = dict(os.environ)
+        env["PYTHONPATH"] = (f"{root}:{a.gf}/gaussian-splatting:"
+                             + env.get("PYTHONPATH", ""))
+        env["AF_EXE"] = HERE
+        cmd = [sys.executable, os.path.join(root, "gs_simulation.py"),
+               "--model_path", a.model_path, "--output_path", odir,
+               "--config", cpath, "--output_h5"]
+        if a.runner == "pg":
+            cmd.append("--no_render")      # GF 쪽에만 있는 스위치
+        rc = subprocess.run(cmd, capture_output=True, text=True, cwd=root, env=env)
+        h5dir = os.path.join(odir, "simulation_ply")
+    else:
+        rc = subprocess.run([sys.executable, os.path.join(HERE, "run_warp_mpm.py"),
+                             "--gf", a.gf, "--config", cpath, "--out", odir],
+                            capture_output=True, text=True)
+        h5dir = odir
     if rc.returncode != 0:
         print(f"  실패 rc={rc.returncode}\n{(rc.stdout+rc.stderr)[-800:]}", flush=True)
         continue
-    fs = sorted(glob.glob(os.path.join(odir, "sim_*.h5")))
+    fs = sorted(glob.glob(os.path.join(h5dir, "sim_*.h5")))
     if len(fs) < 2:
         print("  h5 가 모자라다", flush=True); continue
 
-    cz = np.load(os.path.join(odir, "control.npz"))
+    cz = np.load(os.path.join(h5dir, "control.npz"))
     cidx = cz["idx"]
     # 교사는 제어점 **반경 안 입자 전체**를 강제한다. 학생도 같은 자리를 덮어써야
     # 하므로 그 명단을 같이 남긴다.
@@ -95,8 +118,21 @@ for i in range(a.n):
            for i in range(len(cidx))] if has_mem else [np.array([c]) for c in cidx]
     with h5py.File(fs[0], "r") as h:
         n_all = np.array(h["x"]).shape[-1]
-    # 제어점은 **반드시** 남기고 나머지를 채운다
+    # 제어점은 **반드시** 남기고 나머지를 채운다. 다만 반경이 크면 잡힌 입자만으로
+    # 부분표본이 다 차 버려서 자유 입자가 하나도 안 남는다 -- 그러면 손실도 평가도
+    # 빈 평균이 되어 nan 이 된다. 그래서 무리는 절반까지만 남기고 솎는다.
     keep = set(int(v) for m in mem for v in m)
+    cen = set(int(c) for c in cidx)
+    cap = max(len(cen), a.n_pts // 2)
+    if len(keep) > cap:
+        r2 = np.random.default_rng(seed + 7)
+        rest = np.array(sorted(keep - cen))
+        sel_rest = r2.choice(rest, cap - len(cen), replace=False)
+        keep = cen | set(int(v) for v in sel_rest)
+        mem = [np.array([v for v in m if int(v) in keep], dtype=np.int64)
+               for m in mem]
+        print(f"  [솎기] 잡힌 입자가 부분표본을 다 채워서 {cap} 개로 줄였다",
+              flush=True)
     pool = np.setdiff1d(np.arange(n_all), np.array(sorted(keep)))
     extra = np.random.default_rng(seed).choice(
         pool, max(0, min(a.n_pts - len(keep), len(pool))), replace=False)
@@ -114,6 +150,16 @@ for i in range(a.n):
         X.append(x.astype(np.float32)); V.append(v.astype(np.float32))
         if ft is not None:
             FF.append(ft.astype(np.float32))
+    # 터진 롤아웃은 저장하지 않는다 -- 하나만 섞여도 학습 요약이 통째로 nan 이 된다
+    Xa = np.stack(X)
+    bad = int((~np.isfinite(Xa)).sum()) + int((~np.isfinite(np.stack(V))).sum())
+    if FF:
+        bad += int((~np.isfinite(np.stack(FF))).sum())
+    if bad:
+        print(f"  [버림] 비유한 값 {bad} 개 -- 교사가 터졌다", flush=True)
+        if not a.keep_h5:
+            shutil.rmtree(odir, ignore_errors=True)
+        continue
     dst = os.path.join(a.out, f"{a.split}_{i:03d}.pt")
     mem_l = [torch.tensor([remap[int(v)] for v in m], dtype=torch.long) for m in mem]
     torch.save(dict(x=torch.from_numpy(np.stack(X)),

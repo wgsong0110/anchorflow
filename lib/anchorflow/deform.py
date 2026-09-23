@@ -442,8 +442,12 @@ def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None, sub=None):
     # 국소 변형구배: 정준 배치 대비 얼마나 찌그러졌나 (최소제곱)
     A = g2[:, 12:21].reshape(M, 3, 3)
     B = g2[:, 21:30].reshape(M, 3, 3)
-    Bi, _ = _inv3(B + (1e-6 * h * h) * torch.eye(3, device=dev))
-    Fa = A @ Bi
+    # 잎처럼 얇은 이웃에서는 B 가 사실상 특이행렬이라, 절대 릿지(1e-6 h^2)로는
+    # 역행렬이 1e9 까지 튀고 그 기울기가 NaN 이 된다 (겪었다).
+    # 릿지를 B 의 크기에 **상대적으로** 걸고, 결과도 상식적인 범위로 자른다.
+    _tb = B.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(M, 1, 1) / 3.0
+    Bi, _ = _inv3(B + (1e-4 * _tb.abs() + 1e-9) * torch.eye(3, device=dev))
+    Fa = (A @ Bi).clamp(-20.0, 20.0)
     _, dF = _inv3(Fa)
     detF = dF.reshape(M, 1)
 
@@ -681,7 +685,8 @@ class DeformNet(nn.Module):
         # 부호를 구조적으로 막아두면 손상이 줄어드는 일이 원천적으로 없어져
         # 파괴의 비가역성이 공짜로 보장된다.
         self.damage = bool(damage)
-        self.dec = mlp([hidden, hidden, 6 if self.damage else 5],
+        # 손상을 안 쓰면 온도(log_t)는 반경과 중복이라 내지 않는다
+        self.dec = mlp([hidden, hidden, 6 if self.damage else 4],
                        layernorm=False)
         if zero_init:
             # 출력이 거의 0 이면 dp~0, r~h, tau~1 -- 아무것도 움직이지 않는 항등
@@ -736,7 +741,8 @@ class DeformNet(nn.Module):
         o = self.dec(h).squeeze(0)
         dp = o[:, :3] * self.scale
         log_r = o[:, 3] + math.log(self.h)
-        log_t = o[:, 4]
+        # 온도는 손상을 쓸 때만 낸다. 손상이 없으면 0 (tau = 1) 으로 고정한다.
+        log_t = o[:, 4] if self.damage else torch.zeros_like(log_r)
         out = (dp, log_r.clamp(math.log(self.h) - 3.0, math.log(self.h) + 3.0),
                log_t.clamp(-4.0, 4.0))
         if self.damage:

@@ -30,6 +30,7 @@ ap.add_argument("--n_pts", type=int, default=20000)
 ap.add_argument("--width", type=int, default=420)
 ap.add_argument("--fps", type=int, default=10)
 ap.add_argument("--point", type=int, default=1)
+ap.add_argument("--no_mat", action="store_true")
 ap.add_argument("--elev", type=float, default=12.0)
 ap.add_argument("--azim", type=float, default=35.0)
 a = ap.parse_args()
@@ -60,15 +61,30 @@ cnt = torch.zeros(ng ** 3, device=dev).index_add_(
     0, flat, torch.ones(N_FULL, device=dev))
 MASS = ((dx ** 3) / cnt[flat]) * float(cfg["density"])
 VEL_SCALE = EXT / FRAME_DT
-MAT = torch.cat([torch.tensor(
+MAT = torch.zeros(0, device=dev) if a.no_mat else torch.cat([torch.tensor(
     [np.log(float(cfg["E"])), float(cfg["nu"]), float(cfg.get("xi", 0.0)),
-     np.log(float(cfg["density"]))], device=dev, dtype=torch.float32),
+     np.log(float(cfg["density"])),
+     np.log1p(float(cfg.get("yield_stress", 0.0))),
+     float(cfg.get("friction_angle", 0.0)) / 45.0]
+    + [1.0 if cfg.get("material", "jelly") == _m else 0.0
+       for _m in ("jelly", "metal", "foam", "sand")],
+    device=dev, dtype=torch.float32),
     torch.tensor(cfg["g"], device=dev, dtype=torch.float32) / 15.0])
 
 
 # --------------------------------------------------- 제어점 (학습과 같은 규칙)
+# 궤적은 half 로 저장돼 있다 -- 학습과 같이 float32 로 올린다
+for _k in ("x", "v", "F"):
+    if _k in d and torch.is_tensor(d[_k]) and d[_k].dtype == torch.float16:
+        d[_k] = d[_k].float()
+
 CTRL = None
-if "ctrl_mem" in d and "ctrl_pos" in d:
+if "ctrl_pos" in d and "ctrl_mem" not in d:
+    # 손잡이 궤적: 소속 목록 없이 위치만 있다 (학습도 ctrl_pos 만 쓴다)
+    CP = d["ctrl_pos"].to(dev)
+    FREE = None
+    print(f"[손잡이] {CP.shape[1]} 개, 위치만 조건으로 쓴다", flush=True)
+elif "ctrl_mem" in d and "ctrl_pos" in d:
     full = [torch.zeros(N_FULL, dtype=torch.bool) for _ in d["ctrl_mem"]]
     for k_, mm in enumerate(d["ctrl_mem"]):
         full[k_][mm] = True
@@ -87,6 +103,33 @@ if "ctrl_mem" in d and "ctrl_pos" in d:
 else:
     CP = None
     FREE = None
+
+
+def ctrl_feat(t, pa, n_ctrl):
+    """앵커마다 (제어점 상대위치, 이번 스텝 강제 변위). 학습과 같은 식이어야 한다."""
+    A = pa.shape[0]
+    if CP is None:
+        return torch.zeros(A, 7 * n_ctrl, device=pa.device, dtype=pa.dtype)
+    tt = min(t, CP.shape[0] - 1)
+    c = CP[tt]
+    dc = CP[min(tt + 1, CP.shape[0] - 1)] - c
+    k = c.shape[0]
+    if k < n_ctrl:
+        z = torch.zeros(n_ctrl - k, 3, device=pa.device, dtype=pa.dtype)
+        c, dc = torch.cat([c, z]), torch.cat([dc, z])
+    c, dc = c[:n_ctrl], dc[:n_ctrl]
+    rel = (pa.unsqueeze(1) - c.unsqueeze(0)) / H_GLOBAL
+    frc = dc.unsqueeze(0).expand(A, n_ctrl, 3) / H_GLOBAL
+    R = d.get("ctrl_R")
+    if R is not None:
+        R = R.to(pa.device, pa.dtype)
+        Rt = R[min(t, R.numel() - 1)].clamp(min=1e-6)
+        q = ((pa.unsqueeze(1) - c.unsqueeze(0)).norm(dim=-1) / Rt).clamp(0, 1)
+        w = (1.0 - q * q) ** 2
+    else:
+        w = torch.zeros(A, n_ctrl, device=pa.device, dtype=pa.dtype)
+    return torch.cat([rel.reshape(A, -1), frc.reshape(A, -1),
+                      w.reshape(A, -1)], -1)
 
 
 def force_ctrl(x2, t):
@@ -112,6 +155,9 @@ def rollout(ck):
     ta = st["args"]
     AIDX = st["aidx"].to(dev)
     H = float(st["H"])
+    globals()["H_GLOBAL"] = H
+    use_ctrl = bool(ta.get("control", False))
+    n_ctrl = int(ta.get("n_ctrl", 4))
     dmg_on = bool(ta.get("damage", False))
     net = DeformNet(n_feat=int(st["n_feat"]), hidden=int(ta["hidden"]),
                     depth=int(ta["depth"]), heads=int(ta["heads"]),
@@ -133,6 +179,8 @@ def rollout(ck):
                             p.shape[0], H, pa=p)
         extra = torch.cat([MAT.reshape(1, -1).expand(p.shape[0], -1),
                            bc_features(p, cfg) / H], -1)
+        if use_ctrl:
+            extra = torch.cat([extra, ctrl_feat(a.t0 + len(out) - 1, p, n_ctrl)], -1)
         o = net(p, torch.cat([feat, extra], -1), FRAME_DT)
         dp, lr_, lt_ = o[0], o[1], o[2]
         if dmg_on:
@@ -143,7 +191,8 @@ def rollout(ck):
             dmg = (dmg + FRAME_DT * (w0 * o[3][idx]).sum(1)
                    * gauss_stretch(x, p, idx, ref, w0)).clamp(max=1.0)
         x2, _ = skin(x, p, dp, lr_, lt_, idx, H, dmg=dmg)
-        x2 = force_ctrl(x2, a.t0 + len(out))
+        if use_ctrl:
+            x2 = force_ctrl(x2, a.t0 + len(out))
         v, p, x = (x2 - x) / FRAME_DT, p + dp, x2
         out.append(x.clone())
     return torch.stack(out), os.path.splitext(os.path.basename(ck))[0]
@@ -160,6 +209,10 @@ if a.frames > GT_END:
     print(f"[주의] GT 는 {GT_END} 프레임까지다. 그 뒤는 마지막 프레임을 고정해 "
           f"비교한다", flush=True)
 STILL = GT[:1].expand_as(GT)
+# 제어점이 잡은 입자를 빨갛게 -- 어디를 조작하는지 안 보이면 영상만으로는 못 읽는다
+CTRL_COL = None
+if FREE is not None:
+    CTRL_COL = ~FREE
 preds = [rollout(c) for c in a.ckpt]
 cols = ["GT", "정지"] + [n for _, n in preds]
 seqs = [GT, STILL] + [p for p, _ in preds]
@@ -167,13 +220,50 @@ seqs = [GT, STILL] + [p for p, _ in preds]
 R = ptrender.camera(a.elev, a.azim, dev)
 ctr, half, W, H = ptrender.frame_box(GT, R, a.width)
 col = ptrender.canon_color(take(d["x"][0], GS))
+if CTRL_COL is not None:
+    col = col.clone()
+    col[CTRL_COL] = torch.tensor([0.95, 0.2, 0.15], device=col.device,
+                                 dtype=col.dtype)
+    print(f"[표시] 제어점이 잡은 입자 {int(CTRL_COL.sum())} 개를 빨갛게",
+          flush=True)
+
+# 손잡이 표시: 중심을 색 구슬로, 반경을 옅은 구면으로 그린다
+HB = None
+if CP is not None:
+    _pal = torch.tensor([[0.90, 0.10, 0.10], [0.10, 0.65, 0.20],
+                         [0.15, 0.35, 0.95], [0.85, 0.55, 0.05]], device=dev)
+    _k = torch.arange(160, device=dev, dtype=torch.float32)
+    _z = 1.0 - 2.0 * (_k + 0.5) / 160
+    _rr = (1.0 - _z * _z).clamp(min=0).sqrt()
+    _ph = _k * 2.399963229728653
+    SPH = torch.stack([_rr * torch.cos(_ph), _rr * torch.sin(_ph), _z], -1)
+    BALL = SPH * 0.012
+    RAD = d.get("ctrl_R")
+    RAD = RAD.to(dev) if RAD is not None else None
+    HB = (_pal, BALL, SPH, RAD)
 
 os.makedirs(a.out, exist_ok=True)
 frames = []
 for t in range(GT.shape[0]):
     tiles = []
     for name, sq in zip(cols, seqs):
-        img = ptrender.splat(sq[t], col, R, ctr, half, W, H, a.point)
+        pts, pcol = sq[t], col
+        if HB is not None:
+            _pal, BALL, SPH, RAD = HB
+            tt = min(a.t0 + t, CP.shape[0] - 1)
+            hp = CP[tt].to(dev)
+            nb = min(hp.shape[0], _pal.shape[0])
+            ex, ec = [], []
+            rr = float(RAD[min(tt, RAD.numel() - 1)]) if RAD is not None else 0.0
+            for kk in range(nb):
+                ex.append(hp[kk] + BALL)
+                ec.append(_pal[kk].expand(BALL.shape[0], 3))
+                if rr > 0:
+                    ex.append(hp[kk] + SPH * rr)
+                    ec.append(_pal[kk].expand(SPH.shape[0], 3) * 0.35 + 0.65)
+            pts = torch.cat([sq[t]] + ex, 0)
+            pcol = torch.cat([col] + ec, 0)
+        img = ptrender.splat(pts, pcol, R, ctr, half, W, H, a.point)
         arr = (img.cpu().numpy() * 255).astype("uint8")
         im = Image.fromarray(arr)
         dr = ImageDraw.Draw(im)

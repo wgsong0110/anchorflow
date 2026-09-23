@@ -45,7 +45,8 @@ ap.add_argument("--batch", type=int, default=1,
                 help="한 스텝에 평균 낼 창의 수. 창마다 손실이 수십 배 다르므로 "
                      "하나만 쓰면 기울기가 그 차이에 휘둘린다")
 ap.add_argument("--unroll", type=int, default=1, help="한 창에서 펼칠 프레임 수")
-ap.add_argument("--unroll_final", type=int, default=4)
+ap.add_argument("--unroll_final", type=int, default=4,
+                help="(미사용) 예전의 중간 증가 일정. 지금은 unroll 고정")
 ap.add_argument("--unroll_at", type=float, default=0.4,
                 help="이 비율을 지나면 unroll 을 unroll_final 로 늘린다")
 ap.add_argument("--lr", type=float, default=3e-4)
@@ -76,11 +77,20 @@ ap.add_argument("--refps", action="store_true",
                 help="매 프레임 현재 배치에서 앵커를 FPS 로 다시 뽑는다. 기본은 "
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
                      "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
+ap.add_argument("--arch", default="attn", choices=("attn", "conv", "unet", "spconv"),
+                help="앵커 상호작용 블록. conv/unet 은 복셀중심 앵커를 쓴다")
+ap.add_argument("--vox_res", type=int, default=16,
+                help="conv/unet 일 때 격자 한 변의 칸 수 (앵커 = 칸 전체)")
+ap.add_argument("--no_mat", action="store_true",
+                help="물성이 한 종류뿐이면 물성 특징은 상수라 뺀다")
 ap.add_argument("--control", action="store_true",
                 help="제어점 궤적을 학생에게도 준다. 앵커 특징에 **제어점으로부터의 "
                      "상대 위치**와 **이번 스텝 강제 변위**를 더하고, 강제되는 "
                      "입자의 다음 위치는 네트워크 출력 대신 궤적 값으로 덮어쓴다")
 ap.add_argument("--n_ctrl", type=int, default=4, help="제어점 수 (특징 차원을 정한다)")
+ap.add_argument("--grip", action="store_true",
+                help="물리 집게 정보를 조건 입력으로 준다 (덮어쓰기는 없다)")
+ap.add_argument("--n_arms", type=int, default=2, help="집게 팔 수")
 ap.add_argument("--vox_knn_feat", action="store_true",
                 help="복셀 앵커의 특징을 칸 하드 할당이 아니라 **스키닝과 같은 kNN "
                      "이웃**으로 집계한다. 지금은 앵커가 본 가우시안과 옮기는 "
@@ -136,6 +146,10 @@ hold = set((a.hold_traj or "").split(",")) - {""}
 TR, held = [], []
 for f in files:
     d = torch.load(f, map_location="cpu", weights_only=False)
+    # 궤적은 half 로 저장해 두었다 (디스크 절약). 학습·통계는 float32 로 올린다.
+    for _k in ("x", "v", "F"):
+        if _k in d and torch.is_tensor(d[_k]) and d[_k].dtype == torch.float16:
+            d[_k] = d[_k].float()
     tag = os.path.splitext(os.path.basename(f))[0]
     (held if tag in hold else TR).append((tag, d))
 if not TR:
@@ -168,10 +182,24 @@ N_FULL = X0.shape[0]
 
 
 
+def _san(t):
+    """특징은 O(1) 이 정상이다. 얇은 구름에서 국소 맞춤이 튀면 여기서 잘라 준다."""
+    return torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0).clamp(-_FCAP, _FCAP)
+
+
+if os.environ.get("AF_ANOMALY"):
+    torch.autograd.set_detect_anomaly(True)             # NaN 이 어느 연산에서 나오는지
+_FCAP = float(os.environ.get("AF_FEAT_CAP", "50"))   # 특징 상한 (발산 방지)
 X0d = X0.to(dev)
 AIDX = fps(X0d, a.n_anchors, a.seed)
 H = float(torch.cdist(X0d[AIDX], X0d[AIDX]).topk(
     2, largest=False).values[:, 1].median())          # 앵커 간격
+# 잎처럼 촘촘한 구름에서는 간격이 물체 크기의 2% 아래로 내려가는데, 그러면 1/H
+# 로 나누는 집계 특징이 1e6 까지 커져 첫 스텝에 발산한다 (겪었다). 하한을 둔다.
+_h_min = float(os.environ.get("AF_H_MIN", "0.05")) * EXT
+if H < _h_min:
+    print(f"[앵커] 간격 {H:.5f} 이 너무 좁아 {_h_min:.5f} 로 올린다", flush=True)
+    H = _h_min
 print(f"[앵커] {a.n_anchors} 개 (FPS), 간격 {H:.5f}, 물체 {EXT:.4f}", flush=True)
 
 # 질량: 격자 점유로 부피를 재고 config 의 밀도를 곱한다 (MPM 이 하는 것과 같다)
@@ -188,9 +216,18 @@ def mat_feat(cfg):
     # 중력은 방향이라 평행이동 등변성을 깨지 않는다. 궤적마다 다르므로 넣는다.
     g = torch.tensor(cfg["g"], device=dev, dtype=torch.float32) / 15.0
     # np.log 는 float64 를 돌려주고, 목록에 섞이면 텐서가 통째로 double 이 된다
+    # 항복응력과 구성모델 종류도 넣는다 -- 형상·손잡이가 같아도 물성이 다르면
+    # 궤적이 다르므로, 이걸 안 주면 학생은 세 물성의 평균만 배운다.
+    if a.no_mat:
+        return torch.zeros(0, device=dev, dtype=torch.float32)
+    _mats = ("jelly", "metal", "foam", "sand")
+    _oh = [1.0 if cfg.get("material", "jelly") == m else 0.0 for m in _mats]
     return torch.cat([torch.tensor(
         [np.log(float(cfg["E"])), float(cfg["nu"]), float(cfg.get("xi", 0.0)),
-         np.log(float(cfg["density"]))], device=dev, dtype=torch.float32), g])
+         np.log(float(cfg["density"])),
+         np.log1p(float(cfg.get("yield_stress", 0.0))),
+         float(cfg.get("friction_angle", 0.0)) / 45.0] + _oh,
+        device=dev, dtype=torch.float32), g])
 
 
 # 프레임별 평균 GT 변위. 어디가 실제로 움직이는 구간인지 여기서 정해진다.
@@ -208,7 +245,7 @@ VEL_SCALE = EXT / FRAME_DT
 # 정준 공분산. ply 의 것을 쓸 수 없어(사실상 0) 입자 간격에서 만든다 -- MPM 이
 # 부피를 쓰는 것과 같은 근거다. 등방이므로 L0 = sigma0 * I.
 SIG0 = a.sigma0 * float(dx)
-N_MAT = 7
+N_MAT = 0 if a.no_mat else 13   # logE, nu, xi, logρ, log1p(항복), φ, 종류4, g3
 n_bc = bc_features(X0d[:2], cfg0).shape[-1]
 n_feat_probe = None
 
@@ -220,9 +257,21 @@ step0 = 0
 
 def build(n_feat):
     global net, opt
-    net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth, heads=a.heads,
-                    scale=0.02 * EXT, h=H, ext=EXT, seed=a.seed,
-                    damage=a.damage).to(dev)
+    if a.arch == "spconv":
+        from anchorflow.conv_stepper import SparseConvStepper
+        net = SparseConvStepper(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
+                                h=H, scale=0.02 * EXT,
+                                damage=a.damage).to(dev)
+    elif a.arch in ("conv", "unet"):
+        from anchorflow.conv_stepper import ConvStepper
+        net = ConvStepper(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
+                          h=H, scale=0.02 * EXT, arch=("unet" if a.arch == "unet"
+                                                       else "plain"),
+                          damage=a.damage).to(dev)
+    else:
+        net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
+                        heads=a.heads, scale=0.02 * EXT, h=H, ext=EXT,
+                        seed=a.seed, damage=a.damage).to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=a.lr)
     n = sum(p.numel() for p in net.parameters())
     print(f"[모델] 입력 {n_feat}, 파라미터 {n/1e6:.2f}M", flush=True)
@@ -264,6 +313,7 @@ def vox_feats(d, gsel, x, v):
         idxf = torch.where(idx < 0, idx[:, :1].expand_as(idx), idx).clamp(min=0)
         feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idxf, vb.M, cell,
                             pa=vb.pos)
+        feat = _san(feat)
         return vb.pos, feat, idx
     W, cx, cX, cv, cnt, g2 = vb.moments
     M = vb.M
@@ -307,7 +357,47 @@ def ctrl_feat(d, t, p):
     c, dc = c[:K], dc[:K]
     rel = (p.unsqueeze(1) - c.unsqueeze(0)) / H          # [A, K, 3]
     frc = dc.unsqueeze(0).expand(A, K, 3) / H
-    return torch.cat([rel.reshape(A, -1), frc.reshape(A, -1)], -1)
+    # 손잡이 **소속 가중치**. 반경 R 안의 입자는 계획 속도로 끌려가므로,
+    # "이 앵커가 얼마나 끌려가는가" 를 알려 주지 않으면 위치만으로는 알 수 없다.
+    if "ctrl_R" in d:
+        R = d["ctrl_R"].to(p.device, p.dtype)
+        Rt = R[min(t, R.numel() - 1)].clamp(min=1e-6)
+        q = ((p.unsqueeze(1) - c.unsqueeze(0)).norm(dim=-1) / Rt).clamp(0, 1)
+        w = (1.0 - q * q) ** 2                            # [A, K]
+    else:
+        w = torch.zeros(A, K, device=p.device, dtype=p.dtype)
+    return torch.cat([rel.reshape(A, -1), frc.reshape(A, -1),
+                      w.reshape(A, -1)], -1)
+
+
+def grip_feat(d, t, p):
+    """앵커마다 집게 정보 -> [A, 13*arms].
+
+    (상대위치 3, 판 법선 3, 이번 스텝 판 이동 3, 판 접선 3, 간격 1) x 팔 수.
+    잡은 자리·무는 방향·움직이는 방향을 다 담아야 학생이 조작을 따라갈 수 있다.
+    길이는 앵커 간격 H 로 나눠 크기를 맞춘다.
+    """
+    A, M = p.shape[0], a.n_arms
+    if "grip" not in d:
+        return torch.zeros(A, 13 * M, device=p.device, dtype=p.dtype)
+    G = d["grip"].to(p.device, p.dtype)                  # [T, arms, 13]
+    tt = min(t, G.shape[0] - 1)
+    g0 = G[tt]
+    g1 = G[min(tt + 1, G.shape[0] - 1)]
+    k = g0.shape[0]
+    if k < M:
+        pad = torch.zeros(M - k, 13, device=p.device, dtype=p.dtype)
+        g0, g1 = torch.cat([g0, pad]), torch.cat([g1, pad])
+    g0, g1 = g0[:M], g1[:M]
+    c = g0[:, :3]                                        # 중심
+    R = g0[:, 3:12].reshape(M, 3, 3)                     # 행이 축 (법선, 접선1, 접선2)
+    gap = g0[:, 12:13]
+    rel = (p.unsqueeze(1) - c.unsqueeze(0)) / H          # [A, M, 3]
+    mov = ((g1[:, :3] - c) / H).unsqueeze(0).expand(A, M, 3)
+    nrm = R[:, 0].unsqueeze(0).expand(A, M, 3)
+    tan = R[:, 1].unsqueeze(0).expand(A, M, 3)
+    gg = gap.reshape(1, M, 1).expand(A, M, 1)
+    return torch.cat([rel, nrm, mov, tan, gg], -1).reshape(A, -1)
 
 
 def ctrl_local(d, gsel):
@@ -375,19 +465,60 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     비교할 정답도 그때그때 그 가우시안들의 GT 변위로 바뀐다.
     """
     cfg = d["cfg"]
-    if a.voxel:
+    grid_shape = None
+    if a.arch == "spconv":
+        from anchorflow import vox_anchor
+        X = take(d["x"][0], gsel)
+        lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
+        idx, coords, p = vox_anchor.knn_union(x, lo, hh, nn3, a.k)
+        feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, p.shape[0], H,
+                            pa=p)
+        feat = _san(feat)
+        grid_shape = (coords, tuple(int(t) for t in nn3))
+    elif a.arch in ("conv", "unet"):
+        from anchorflow import vox_anchor
+        X = take(d["x"][0], gsel)
+        lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
+        p = vox_anchor.centers(lo, hh, nn3)
+        idx = vox_anchor.knn(x, lo, hh, nn3, a.k)
+        feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, p.shape[0], H,
+                            pa=p)
+        feat = _san(feat)
+        grid_shape = tuple(int(t) for t in nn3)
+    elif a.voxel:
         p, feat, idx = vox_feats(d, gsel, x, v)
     else:
         X = take(d["x"][0], gsel)
+        if os.environ.get("AF_DEBUG_NAN"):
+            print(f"  [디버그] x 유한 {bool(torch.isfinite(x).all())} 범위 "
+                  f"{float(x.min()):.3f}~{float(x.max()):.3f} | p 유한 "
+                  f"{bool(torch.isfinite(p).all())} 범위 {float(p.min()):.3f}~"
+                  f"{float(p.max()):.3f} | v 유한 {bool(torch.isfinite(v).all())} "
+                  f"최대 {float(v.abs().max()):.3f}", flush=True)
         idx, _ = anchor_knn(x, p, a.k)
         feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, p.shape[0], H,
                             pa=p)
+        feat = _san(feat)
     extra = torch.cat([mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0], N_MAT),
                        bc_features(p, cfg) / H], -1)
     if a.control:
         extra = torch.cat([extra, ctrl_feat(d, t, p)], -1)
-    out = net(p, torch.cat([feat, extra], -1), FRAME_DT)
+    if a.grip:
+        extra = torch.cat([extra, grip_feat(d, t, p)], -1)
+    # 국소 변형구배 맞춤이 잎처럼 얇은 구름에서 특이해지면 특징이 1e7 까지 튀어
+    # 첫 스텝에 발산한다 (겪었다). 입력은 O(1) 이 정상이므로 잘라서 넣는다.
+    feat = torch.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0).clamp(-_FCAP, _FCAP)
+    extra = torch.nan_to_num(extra, nan=0.0, posinf=0.0, neginf=0.0).clamp(-_FCAP, _FCAP)
+    _in = torch.cat([feat, extra], -1)
+    out = (net(p, _in, FRAME_DT, grid_shape) if grid_shape is not None
+           else net(p, _in, FRAME_DT))
     dp, log_r, log_t = out[0], out[1], out[2]
+    # 얇은 잎 같은 구름에서는 한 번의 큰 출력이 다음 스텝의 kNN 을 망가뜨려
+    # (NaN 거리 -> 엉뚱한 색인) CUDA assert 로 죽는다. 물리적으로 말이 되는
+    # 범위로 잘라 둔다: 한 스텝에 앵커 간격의 절반을 넘게 움직이지 않는다.
+    dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0, neginf=0.0).clamp(-0.5 * H, 0.5 * H)
+    log_r = torch.nan_to_num(log_r, nan=0.0, posinf=0.0, neginf=0.0).clamp(-4.0, 4.0)
+    log_t = torch.nan_to_num(log_t, nan=0.0, posinf=0.0, neginf=0.0).clamp(-4.0, 4.0)
     rate = out[3] if a.damage else None
     if a.damage:
         # 가우시안마다 스칼라 하나. kNN 집합이 바뀌어도 그대로 따라다닌다.
@@ -509,7 +640,9 @@ with torch.no_grad():
     _i, _ = grid_knn(_x, _p, a.k)
     _f, _ = aggregate(_x, torch.zeros_like(_x), _x, MASS[_g], _i, _p.shape[0],
                       H, pa=_p)
-    n_feat = _f.shape[-1] + N_MAT + n_bc + (6 * a.n_ctrl if a.control else 0)
+    _f = _san(_f)
+    n_feat = (_f.shape[-1] + N_MAT + n_bc + (7 * a.n_ctrl if a.control else 0)
+              + (13 * a.n_arms if a.grip else 0))
 if a.voxel:
     VOX_CELL = H
     # 격자는 모든 궤적을 덮도록 공간에 고정한다 (프레임마다 새로 잡으면 물체가
@@ -527,7 +660,8 @@ if a.voxel:
         _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
         _x = take(TR[0][1]["x"][0], _g)
         _p, _f, _i = vox_feats(TR[0][1], _g, _x, torch.zeros_like(_x))
-        n_feat = _f.shape[-1] + N_MAT + n_bc + (6 * a.n_ctrl if a.control else 0)
+        n_feat = (_f.shape[-1] + N_MAT + n_bc + (7 * a.n_ctrl if a.control else 0)
+              + (13 * a.n_arms if a.grip else 0))
     print(f"[복셀] 한 변 {VOX_CELL:.5f}, 앵커 {_p.shape[0]} 개, 입력 {n_feat}",
           flush=True)
 
@@ -551,11 +685,14 @@ with torch.no_grad():
         _ii, _ = grid_knn(_x, _pp, a.k)
         _ff, _ = aggregate(_x, _v / VEL_SCALE, take(_dd["x"][0], _gs), MASS[_gs],
                            _ii, _pp.shape[0], H, pa=_pp)
+        _ff = _san(_ff)
         _ee = torch.cat([mat_feat(_dd["cfg"]).reshape(1, N_MAT).expand(_pp.shape[0],
                                                                       N_MAT),
                          bc_features(_pp, _dd["cfg"]) / H], -1)
         if a.control:
             _ee = torch.cat([_ee, ctrl_feat(_dd, 0, _pp)], -1)
+        if a.grip:
+            _ee = torch.cat([_ee, grip_feat(_dd, 0, _pp)], -1)
         samp.append(torch.cat([_ff, _ee], -1))
     samp = torch.cat(samp, 0)
     net.set_input_stats(samp)
@@ -575,7 +712,7 @@ hist = []
 t_start = time.time()
 pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
 for it in pbar:
-    L = a.unroll if it < a.unroll_at * a.iters else a.unroll_final
+    L = a.unroll            # 학습 중 펼치기 길이는 바꾸지 않는다
     opt.zero_grad(set_to_none=True)
     lx = lJ = la = ldm = 0.0
     still = arel = dmean = 0.0
