@@ -942,7 +942,6 @@ for tag, d in TR + held:
         L = min(a.eval_len, T - t0 - 1)
         if L < 2:
             continue
-        global _ROLLDUMP
         _rd = os.environ.get("AF_ROLL_DUMP")
         _want = (_rd and tag.endswith(os.environ.get("AF_ROLL_TAG", "")) 
                  and t0 == int(os.environ.get("AF_ROLL_T0", "3")))
