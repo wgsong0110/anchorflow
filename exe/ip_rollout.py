@@ -120,16 +120,24 @@ def apply_bc(xq):
     return xq
 
 
-def defgrad(x_new, x_old, F_old):
-    """국소 최소제곱으로 한 스텝 야코비안을 잡고 F 를 밀어 준다."""
-    d0 = x_old[idx] - x_old.unsqueeze(1)
-    d1 = x_new[idx] - x_new.unsqueeze(1)
-    w = 1.0 / (d0.norm(dim=-1, keepdim=True) ** 2 + 1e-12)
+def defgrad(x_new, x_old, F_old, dt):
+    """F <- (I + dt grad v) F. **속도 구배**로 민다.
+
+    위치 차이로 J 를 직접 맞추면 dt 가 작을 때 d1 과 d0 이 거의 같아져 항등에 가까운
+    행렬을 "거의 같은 두 값의 차" 로 구하게 되고, float32 에서 유효숫자가 날아간다.
+    그 오차가 스텝 수만큼 쌓여 **dt 를 줄일수록 나빠지는** 거동이 된다 (실측했다).
+    속도 구배는 O(1) 이라 같은 문제가 없다. 누적은 float64 로 한다.
+    """
+    d0 = (x_old[idx] - x_old.unsqueeze(1)).double()
+    dv = ((x_new[idx] - x_new.unsqueeze(1)).double() - d0) / dt
+    w = 1.0 / (d0.norm(dim=-1, keepdim=True) ** 2 + 1e-14)
     w = w / w.sum(1, keepdim=True)
-    A = torch.einsum("nkc,nki,nkj->nij", w, d1, d0)
+    A = torch.einsum("nkc,nki,nkj->nij", w, dv, d0)
     B = torch.einsum("nkc,nki,nkj->nij", w, d0, d0)
-    B = B + 1e-10 * torch.eye(3, device=dev)
-    return (A @ torch.linalg.inv(B)) @ F_old
+    B = B + 1e-12 * torch.eye(3, device=dev, dtype=torch.float64)
+    gv = A @ torch.linalg.inv(B)                          # grad v [N,3,3]
+    I3 = torch.eye(3, device=dev, dtype=torch.float64)
+    return ((I3 + dt * gv) @ F_old.double()).to(F_old.dtype)
 
 
 x = X[a.t0].clone()
@@ -199,7 +207,7 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
         def closure():
             opt.zero_grad(set_to_none=True)
             xf, J = _state()
-            F_tr = (J @ F_old) if J is not None else defgrad(xf, x_old, F_old)
+            F_tr = (J @ F_old) if J is not None else defgrad(xf, x_old, F_old, hs)
             E, _dl, _pt = phys_resid.ip_energy(
                 xf, xtil, F_tr, mass, vol, cfg, hs, free=free, g=g, norm=NORM)
             E.backward()
@@ -211,7 +219,7 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
         xf, J = _state()
         x_new = xf.detach()
         F_tr = ((J @ F_old) if J is not None
-                else defgrad(x_new, x_old, F_old)).detach()
+                else defgrad(x_new, x_old, F_old, hs)).detach()
         _psi, dlog = phys_resid.psi_of(F_tr, cfg, hs)
         F = phys_resid.plastic_step(F_tr, dlog)
         v = ((x_new - x_old) / hs).detach()
