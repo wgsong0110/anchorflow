@@ -107,8 +107,13 @@ for _tag, sd in JOBS:
         except Exception:
             vs.append(torch.zeros_like(xs[-1]))
         try:
-            fs.append(torch.from_numpy(rd(p, "F")).float().reshape(-1, 3, 3)[sel])
-        except Exception:
+            # PG 는 변형구배를 **f_tensor** 로 저장한다. "F" 로 읽으면 예외가 나고
+            # 항등으로 대체되는데, 그러면 Psi 가 항등적으로 0 이라 물리 손실이
+            # 관성과 중력만 남는다 -- 한동안 그렇게 굴러갔다.
+            fs.append(torch.from_numpy(rd(p, "f_tensor")).float()
+                      .reshape(-1, 3, 3)[sel])
+        except Exception as _e:
+            print(f"  [경고] F 를 읽지 못해 항등으로 둔다: {_e}", flush=True)
             fs.append(torch.eye(3).repeat(sel.numel(), 1, 1))
     X, V, Fm = torch.stack(xs), torch.stack(vs), torch.stack(fs)
     h = np.load(env["AF_H_DUMP"])
