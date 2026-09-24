@@ -58,6 +58,8 @@ ap.add_argument("--proj", default="each", choices=("each", "end"),
                 help="항복면 사영 시점. each=반복마다(허용집합 위 투영경사), "
                      "end=최적화를 끝낸 뒤 한 번")
 ap.add_argument("--mixed_lr", type=float, default=1e-4, help="mixed 의 Adam 학습률 (물체 크기 대비)")
+ap.add_argument("--obj_log", default=None,
+                help="반복마다 목적함수를 기록해 이 경로에 저장한다 (수렴 확인용)")
 ap.add_argument("--drive", default="dirichlet", choices=("dirichlet", "force"),
                 help="구동 방식. dirichlet=손잡이 위치를 덮어쓴다(KIN), "
                      "force=가한 가속도를 **외력 항**으로 넣고 입자는 자유롭게 둔다")
@@ -193,6 +195,7 @@ else:
     F = phys_resid.rebuild_F(X[:a.t0 + 1], cfg, h, k=a.k)[a.t0].float().to(dev)
     print("[ip] 궤적에 쓸 만한 F 가 없어 위치에서 복원한다", flush=True)
 preds, gts = [], []
+OBJ = []                      # [스텝][반복] 목적함수
 t_start = time.time()
 hs = h / a.sub
 # 정규화는 **프레임 간격으로 고정**한다. 서브스텝 dt 로 잡으면 dt 를 줄일수록
@@ -275,6 +278,7 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
             optm = torch.optim.Adam(
                 [{"params": var, "lr": a.mixed_lr * EXT},
                  {"params": [Fv], "lr": 10.0 * a.mixed_lr}])
+            _obj_step = []
             for _it in range(a.iters):
                 optm.zero_grad(set_to_none=True)
                 xf, J = _state()
@@ -291,12 +295,17 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
                         acc = ACC[min(t, ACC.shape[0] - 1), kk]
                         E = E - (mass[mem[kk]] * WFAL[kk]
                                  * (xf[mem[kk]] * acc).sum(-1)).sum() / NORM
-                (E + a.mixed_k * con).backward()
+                _tot = E + a.mixed_k * con
+                if a.obj_log:
+                    _obj_step.append([float(E), float(con), float(_tot)])
+                _tot.backward()
                 optm.step()
                 if a.proj == "each":
                     with torch.no_grad():   # 허용집합 위에서만 해를 찾는다
                         _ps, _dlg = phys_resid.psi_of(Fv, cfg, hs)
                         Fv.copy_(phys_resid.plastic_step(Fv, _dlg))
+            if a.obj_log:
+                OBJ.append(_obj_step)
             with torch.no_grad():
                 if a.proj == "end":         # 자유롭게 풀고 마지막에 한 번 사영
                     _ps, _dlg = phys_resid.psi_of(Fv, cfg, hs)
@@ -353,6 +362,10 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
 
 P_ = torch.stack(preds)
 G_ = torch.stack(gts)
+if a.obj_log and OBJ:
+    import numpy as _np
+    _np.save(a.obj_log, _np.array(OBJ, dtype=_np.float32))
+    print(f"[목적함수] {a.obj_log}  {len(OBJ)} 스텝 x {len(OBJ[0])} 반복", flush=True)
 torch.save({"pred": P_, "gt": G_, "ctrl_pos": D.get("ctrl_pos"),
             "t0": a.t0, "EXT": EXT, "tag": D.get("tag", "ip")}, a.out)
 e = (P_ - G_).norm(dim=-1).mean(-1) / EXT
