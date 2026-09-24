@@ -170,6 +170,11 @@ ap.add_argument("--val_every", type=int, default=0,
                 help="이 간격마다 홀드아웃 롤아웃으로 재고 best 체크포인트를 남긴다")
 ap.add_argument("--val_n", type=int, default=4, help="검증에 쓸 궤적 수")
 ap.add_argument("--val_len", type=int, default=10, help="검증 롤아웃 길이")
+ap.add_argument("--noise", type=float, default=0.0,
+                help="Phase 1 에서 창의 **시작 상태**를 매끄러운 저주파 장으로 흔든다 "
+                     "(물체 크기 대비 최대 비율). 정답은 그대로 두므로 모델이 "
+                     "벗어난 곳에서 돌아오는 보정을 배운다")
+ap.add_argument("--tb", default=None, help="TensorBoard 이벤트를 쓸 디렉토리")
 a = ap.parse_args()
 
 dev = "cuda"
@@ -754,6 +759,16 @@ def window(d, t0, L, gsel):
     """
     x = take(d["x"][t0], gsel)
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
+    if a.noise > 0:
+        # 시작 상태만 흔들고 **정답은 그대로 둔다**. 그러면 모델이 "벗어난 곳에서
+        # 제자리로 돌아오는" 보정을 배운다 -- 롤아웃에서 실제로 필요한 능력이고,
+        # 교사 궤적을 다시 돌릴 필요가 없다. 앵커도 같은 장으로 옮겨야 배치와
+        # 앵커가 어긋나지 않는다.
+        _sg = a.noise * (10.0 ** (-2.0 * (1.0 - float(
+            torch.rand(1, generator=gen, device=dev)))))
+        _u, _gu = phys_resid.smooth_noise(x, _sg * EXT, EXT, gen)
+        x = x + _u
+        v = v + float(torch.rand(1, generator=gen, device=dev)) * _u / FRAME_DT
     # 앵커는 그 프레임의 GT 가우시안이다. --refps 면 현재 부분표본에서 매 스텝
     # 다시 뽑으므로 시작도 부분표본 안에서 잡는다.
     ai = fps(x, a.n_anchors, a.seed) if a.refps else None
@@ -998,6 +1013,12 @@ if a.phys_probe:
               f"중력 {parts[2]:.3e})  잔차 {100*_fr:.4f}%", flush=True)
     raise SystemExit(0)
 
+TBW = None
+if a.tb:
+    from torch.utils.tensorboard import SummaryWriter
+    TBW = SummaryWriter(os.path.join(a.tb, a.tag))
+    print(f"[TB] {os.path.join(a.tb, a.tag)}", flush=True)
+
 pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
 for it in pbar:
     L = a.unroll            # 학습 중 펼치기 길이는 바꾸지 않는다
@@ -1076,6 +1097,16 @@ for it in pbar:
               f"상위 {[(n.split('.')[-2:], round(v, 8)) for n, v in sorted(_d, key=lambda z: -z[1])[:3]]}",
               flush=True)
     hist.append((lx, lJ, still, la, arel, ldm, dmean))
+    if TBW is not None and it % 20 == 0:
+        if a.phase2:
+            TBW.add_scalar("phase2/E", lx, it)
+            TBW.add_scalar("phase2/자유잔차", arel, it)
+            TBW.add_scalar("phase2/구속잔차", still, it)
+        else:
+            TBW.add_scalar("학습/위치오차%", 100 * lx ** 0.5, it)
+            TBW.add_scalar("학습/정지기준%", 100 * still ** 0.5, it)
+            TBW.add_scalar("학습/비", (lx / max(still, 1e-20)) ** 0.5, it)
+        TBW.add_scalar("학습/기울기노름", float(gn), it)
     if it % 20 == 0:
         if a.phase2:
             pbar.set_postfix(E=f"{lx:.3e}", 자유잔차=f"{100*arel:.3f}%",
@@ -1091,6 +1122,8 @@ for it in pbar:
                              gn=f"{float(gn):.1e}")
     if a.val_every and ((it + 1) % a.val_every == 0 or it == a.iters - 1):
         _v = quick_val()
+        if TBW is not None:
+            TBW.add_scalar("검증/비", _v, it)
         if _v < _best:
             _best = _v
             save_ck("best", it + 1)
