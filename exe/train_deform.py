@@ -175,6 +175,11 @@ ap.add_argument("--noise", type=float, default=0.0,
                      "(물체 크기 대비 최대 비율). 정답은 그대로 두므로 모델이 "
                      "벗어난 곳에서 돌아오는 보정을 배운다")
 ap.add_argument("--tb", default=None, help="TensorBoard 이벤트를 쓸 디렉토리")
+ap.add_argument("--fe_state", action="store_true",
+                help="탄성 변형구배 F_e 를 **입자 상태로** 들고 다닌다. 교사의 F 로 "
+                     "시작해 매 스텝 J F_e 로 밀고 항복면에 사영하며, 그 주응력 "
+                     "로그(Hencky)를 셀 입력에 더한다. 총 변형만으로는 같은 모양이라도 "
+                     "소성으로 얼마나 흘렀는지 구분할 수 없다")
 ap.add_argument("--mat_film", action="store_true",
                 help="물성을 셀 특징에 붙이지 않고 **FiLM** 으로 넣는다. 씬 안에서 "
                      "물성이 상수라 붙이면 채널 하나를 상수로 채우는 셈이다")
@@ -189,7 +194,7 @@ from anchorflow import voxel                                    # noqa: E402
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
                                bc_features, bond_stretch, bures_w2_sq,
                                fps, gauss_stretch, grid_knn,
-                               jacobian_of, skin)
+                               jacobian_of, skin, skin_with_jacobian)
 
 # ---------------------------------------------------------------- 데이터
 files = sorted(glob.glob(os.path.join(a.data, "*.pt")))
@@ -545,7 +550,14 @@ from anchorflow import trilinear as TRI          # noqa: E402
 from anchorflow import vox_anchor                # noqa: E402
 
 
-def cell_feats(d, t, gsel, x, v, shift=None):
+def fe_invariants(fe):
+    """F_e 의 주응력 로그 [N,3]. 회전에 불변이라 그대로 특징으로 쓸 수 있다."""
+    C = fe.transpose(-1, -2) @ fe
+    sig = torch.linalg.eigvalsh(C.double()).clamp_min(1e-12).sqrt()
+    return sig.clamp_min(0.01).log().to(fe.dtype)
+
+
+def cell_feats(d, t, gsel, x, v, shift=None, fe=None):
     """학습·통계·추론이 **모두 같은** 입력을 쓰도록 한 군데서 만든다.
 
     -> (_in [셀, F], p 셀중심, grid_shape (격자점, 셀), tri (평탄idx, 가중치),
@@ -581,12 +593,25 @@ def cell_feats(d, t, gsel, x, v, shift=None):
     grid_pts = tuple(int(t) for t in nn3)
     grid_shape = (grid_pts, tuple(ncell))
     tri = (flat_c, w_c)
+    if a.fe_state:
+        # 입자별 불변량을 셀로 질량가중 평균한다 (집계 가중치는 cell_feats 와 같다)
+        _ei = (fe_invariants(fe) if fe is not None
+               else torch.zeros(x.shape[0], 3, device=dev, dtype=x.dtype))
+        _wm = cw * MASS[gsel].unsqueeze(1)
+        _num = torch.zeros(M_cell, 3, device=dev, dtype=x.dtype)
+        _num.index_add_(0, crow.reshape(-1),
+                        (_wm.unsqueeze(-1) * _ei.unsqueeze(1)).reshape(-1, 3))
+        _den = torch.zeros(M_cell, 1, device=dev, dtype=x.dtype)
+        _den.index_add_(0, crow.reshape(-1), _wm.reshape(-1, 1))
+        _fecell = _num / _den.clamp(min=1e-12)
     if a.mat_film:
         extra = bc_features(p, cfg) / hh      # 물성은 FiLM 으로 따로 들어간다
     else:
         extra = torch.cat([mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0],
                                                                   N_MAT),
                            bc_features(p, cfg) / hh], -1)
+    if a.fe_state:
+        extra = torch.cat([extra, _fecell], -1)
     if cond is not None:
         extra = torch.cat([extra, cond], -1)
     if a.grip:
@@ -600,7 +625,7 @@ def cell_feats(d, t, gsel, x, v, shift=None):
 
 
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
-              x0=None, p0=None):
+              x0=None, p0=None, fe=None):
     """한 프레임. -> (x_next, p_next, v_next, J, dp, aidx_next)
 
     aidx_next 는 --refps 일 때만 뜻이 있다: 다음 프레임의 앵커가 **현재 부분표본의
@@ -641,13 +666,13 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             x2 = apply_control(d, t, gsel, x2)
         J = (jacobian_of(lambda q: skin(q, p, dp, log_r, log_t, idx, H)[0], x)
              if need_J else None)
-        return x2, p + dp, (x2 - x) / FRAME_DT, J, dp, None, dmg, idx
+        return x2, p + dp, (x2 - x) / FRAME_DT, J, dp, None, dmg, idx, fe
 
     shifts = _ENS_SHIFT[:a.ens] if a.ens > 1 else [None]
     acc, warps, dp = 0.0, [], None
     for _sh in shifts:
         _in, p, grid_shape, tri, (lo, hh, nn3), crow = cell_feats(
-            d, t, gsel, x, v, shift=_sh)
+            d, t, gsel, x, v, shift=_sh, fe=fe)
         _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
         out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1],
                   mat=_mv)
@@ -675,7 +700,13 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             log_r = (out[1] if len(out) > 2
                      else torch.full((dp.shape[0],), math.log(hh), device=dev))
             log_t = out[2] if len(out) > 2 else torch.zeros_like(log_r)
-            xe = skin(x, gpos, dp, log_r, log_t, sidx, float(hh))[0]
+            if a.fe_state:
+                # 해석적 야코비안을 그대로 쓴다 (자동미분 세 번보다 싸다)
+                xe, _w8, _Jf = skin_with_jacobian(x, gpos, dp, log_r, log_t,
+                                                  sidx, float(hh))
+            else:
+                xe = skin(x, gpos, dp, log_r, log_t, sidx, float(hh))[0]
+                _Jf = None
             warps.append(lambda q, _g=gpos, _d=dp, _lr=log_r, _lt=log_t,
                          _i=sidx, _h=float(hh): skin(q, _g, _d, _lr, _lt,
                                                      _i, _h)[0])
@@ -696,7 +727,14 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             return q + sum(w(q) - q for w in warps) / len(warps)
 
         J = jacobian_of(_warp, x)
-    return x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, crow
+    fe_next = fe
+    if a.fe_state and fe is not None and _Jf is not None:
+        # 교사와 같은 절차: 시험 변형구배를 밀고 항복면으로 사영한다
+        _ftr = _Jf @ fe
+        with torch.no_grad():
+            _ps, _dlg = phys_resid.psi_of(_ftr, d["cfg"], FRAME_DT)
+            fe_next = phys_resid.plastic_step(_ftr, _dlg).detach()
+    return x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, crow, fe_next
 
 
 _F_MSG = []
@@ -770,7 +808,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
     e_tot, r_free, r_ring, parts = 0.0, 0.0, 0.0, None
     for i in range(K):
         xtil = x + h * v
-        x2, p, v, J, _dp, _ai, _dmg, _cr = step_once(
+        x2, p, v, J, _dp, _ai, _dmg, _cr, _fe = step_once(
             d, t0 + i, gsel, p, x, v, need_J=True)
         F_tr = J @ F
         fm = free_mask(d, x2.shape[0], dev, gsel) if a.control else None
@@ -822,11 +860,12 @@ def window(d, t0, L, gsel):
     x_still = x.clone()
     x0w, p0w = x.clone(), p.clone()          # 손상의 기준 배치
     dmg, idx_prev = None, None
+    fe = (take(traj_F(d)[t0], gsel).float() if a.fe_state else None)
     for i in range(L):
         ai_now = ai
-        x2, p, v, J, dp, ai, dmg, idx_prev = step_once(
+        x2, p, v, J, dp, ai, dmg, idx_prev, fe = step_once(
             d, t0 + i, gsel, p, x, v, need_J=a.lambda_J > 0,
-            dmg=dmg, idx_prev=idx_prev, x0=x0w, p0=p0w)
+            dmg=dmg, idx_prev=idx_prev, x0=x0w, p0=p0w, fe=fe)
         if a.damage:
             # 정답: 그 가우시안이 자기 앵커들에 대해 GT 에서 실제로 늘어난 배율.
             # 앵커도 가우시안이라 양끝의 GT 위치를 그대로 집을 수 있다.
@@ -924,7 +963,8 @@ with torch.no_grad():
         n_feat = (_f0.shape[-1] + N_MAT + n_bc
                   + (7 * a.n_ctrl if a.control else 0))
     else:
-        n_feat = cell_feats(_d, 1, _g, _x, _v)[0].shape[-1]
+        _fe0 = (take(traj_F(_d)[1], _g).float() if a.fe_state else None)
+        n_feat = cell_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1]
 if a.voxel:
     VOX_CELL = H
     # 격자는 모든 궤적을 덮도록 공간에 고정한다 (프레임마다 새로 잡으면 물체가
@@ -980,7 +1020,8 @@ with torch.no_grad():
             _s = torch.cat([_san(_ff), _san(_ex)], -1)
             _cr = None
         else:
-            _s, _, _, _, _, _cr = cell_feats(_dd, _t, _gs, _x, _v)
+            _fes = (take(traj_F(_dd)[_t], _gs).float() if a.fe_state else None)
+            _s, _, _, _, _, _cr = cell_feats(_dd, _t, _gs, _x, _v, fe=_fes)
         if a.stat_occ and _cr is not None:  # 빈 칸이 96% 라 통계를 장악한다
             _m = torch.zeros(_s.shape[0], dtype=torch.bool, device=_s.device)
             _m[_cr.reshape(-1)] = True
@@ -1041,7 +1082,7 @@ def quick_val():
         x_still = x.clone()
         for i in range(a.val_len):
             with torch.enable_grad():
-                x2, p, v, _, _, _, _, _ = step_once(
+                x2, p, v, _, _, _, _, _, _ = step_once(
                     d, t0 + i, gsel, p, x, v, need_J=False)
             x2, p, v = x2.detach(), p.detach(), v.detach()
             gt = take(d["x"][t0 + i + 1], gsel)
@@ -1235,12 +1276,13 @@ def rollout(d, t0, L, gsel):
     x_still = x.clone()
     x0e, p0e = x.clone(), p.clone()
     dmg_e, idx_e = None, None
+    fe_r = (take(traj_F(d)[t0], gsel).float() if a.fe_state else None)
     cds, ems, cds_s, ems_s = [], [], [], []
     for i in range(L):
         with torch.enable_grad():
-            x2, p, v, _, _, _, dmg_e, idx_e = step_once(
+            x2, p, v, _, _, _, dmg_e, idx_e, fe_r = step_once(
                 d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
-                idx_prev=idx_e, x0=x0e, p0=p0e)
+                idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
         gt = take(d["x"][t0 + i + 1], gsel)
         fm = free_mask(d, x2.shape[0], x2.device, gsel) if a.control else slice(None)
