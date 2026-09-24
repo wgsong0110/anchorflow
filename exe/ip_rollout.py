@@ -43,6 +43,10 @@ ap.add_argument("--var", default="grid", choices=("grid", "pts"),
                 help="최적화 변수: grid=격자점 변위(모델과 같은 가설 공간), "
                      "pts=입자 위치 직접")
 ap.add_argument("--vox_res", type=int, default=32, help="격자 한 변 칸 수")
+ap.add_argument("--plast", default="frame", choices=("frame", "sub"),
+                help="소성 사영을 상태에 반영하는 주기. F 가 프레임 해상도로 "
+                     "복원된 값이라, 서브스텝마다 반영하면 사영 횟수만큼 소성이 "
+                     "과하게 쌓인다 (실측: dt 를 줄일수록 교사에서 멀어졌다)")
 ap.add_argument("--no_bc", action="store_true", help="경계조건을 끈다 (대조용)")
 ap.add_argument("--dev", default="cuda")
 a = ap.parse_args()
@@ -214,14 +218,15 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
             return E
 
         opt.step(closure)
-        with torch.no_grad():
-            pass
         xf, J = _state()
         x_new = xf.detach()
         F_tr = ((J @ F_old) if J is not None
                 else defgrad(x_new, x_old, F_old, hs)).detach()
-        _psi, dlog = phys_resid.psi_of(F_tr, cfg, hs)
-        F = phys_resid.plastic_step(F_tr, dlog)
+        if a.plast == "sub" or _si == a.sub - 1:
+            _psi, dlog = phys_resid.psi_of(F_tr, cfg, hs)
+            F = phys_resid.plastic_step(F_tr, dlog)
+        else:
+            F = F_tr                      # 응력은 사영된 변형률로 이미 쟀다
         v = ((x_new - x_old) / hs).detach()
         x = x_new
     preds.append(x.detach().cpu())
