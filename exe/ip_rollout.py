@@ -49,6 +49,12 @@ ap.add_argument("--plast", default="frame", choices=("frame", "sub"),
                 help="소성 사영을 상태에 반영하는 주기. F 가 프레임 해상도로 "
                      "복원된 값이라, 서브스텝마다 반영하면 사영 횟수만큼 소성이 "
                      "과하게 쌓인다 (실측: dt 를 줄일수록 교사에서 멀어졌다)")
+ap.add_argument("--mixed", action="store_true",
+                help="F_e 를 **함께 변수로** 두고 (x, F_e) 를 동시에 최적화한다. "
+                     "둘을 잇는 F_e = J(x)F^n 은 벌점으로 부과하고, 매 반복 뒤 "
+                     "항복면으로 사영한다 (return mapping 을 변수 공간에서 건다)")
+ap.add_argument("--mixed_k", type=float, default=1.0, help="제약 벌점 가중")
+ap.add_argument("--mixed_lr", type=float, default=1e-4, help="mixed 의 Adam 학습률 (물체 크기 대비)")
 ap.add_argument("--drive", default="dirichlet", choices=("dirichlet", "force"),
                 help="구동 방식. dirichlet=손잡이 위치를 덮어쓴다(KIN), "
                      "force=가한 가속도를 **외력 항**으로 넣고 입자는 자유롭게 둔다")
@@ -252,6 +258,50 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
             def _state():
                 xs = _fix(q.clone())
                 return xs, None
+
+        if a.mixed:
+            # (x, F_e) 동시 최적화. F_e 는 J(x)F^n 에 벌점으로 묶이고, 매 반복
+            # 끝에 항복면으로 사영된다 -- 사영이 변수에 직접 걸리므로 소성이
+            # 최적화 안에서 다뤄진다 (축약 형태는 x 를 통해서만 보였다).
+            with torch.no_grad():
+                _xf0, _J0 = _state()
+                F0 = ((_J0 @ F_old) if _J0 is not None
+                      else defgrad(_xf0, x_old, F_old, hs))
+            Fv = F0.clone().requires_grad_(True)
+            _mu_e, _ = phys_resid.lame(cfg["E"], cfg["nu"])
+            optm = torch.optim.Adam(
+                [{"params": var, "lr": a.mixed_lr * EXT},
+                 {"params": [Fv], "lr": 10.0 * a.mixed_lr}])
+            for _it in range(a.iters):
+                optm.zero_grad(set_to_none=True)
+                xf, J = _state()
+                F_tr = ((J @ F_old) if J is not None
+                        else defgrad(xf, x_old, F_old, hs))
+                E, _dl, _pt = phys_resid.ip_energy(
+                    xf, xtil, Fv, mass, vol, cfg, hs, free=free, g=g, norm=NORM)
+                con = (vol * _mu_e
+                       * ((Fv - F_tr) ** 2).sum((-1, -2))).sum() / NORM
+                if a.drive == "force":
+                    for kk in range(len(mem)):
+                        if not mem[kk].numel():
+                            continue
+                        acc = ACC[min(t, ACC.shape[0] - 1), kk]
+                        E = E - (mass[mem[kk]] * WFAL[kk]
+                                 * (xf[mem[kk]] * acc).sum(-1)).sum() / NORM
+                (E + a.mixed_k * con).backward()
+                optm.step()
+                with torch.no_grad():       # 항복면 사영을 변수에 직접 건다
+                    _ps, _dlg = phys_resid.psi_of(Fv, cfg, hs)
+                    Fv.copy_(phys_resid.plastic_step(Fv, _dlg))
+            with torch.no_grad():
+                xf, J = _state()
+                x_new = xf.detach()
+                F = Fv.detach()
+                v = ((x_new - x_old) / hs).detach()
+                if a.var == "anchor":
+                    apos = (apos + dpa.detach()).detach()
+                x = x_new
+            continue
 
         opt = torch.optim.LBFGS(var, lr=a.lr, max_iter=a.iters,
                                 history_size=20,
