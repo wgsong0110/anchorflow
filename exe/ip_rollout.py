@@ -146,7 +146,20 @@ def defgrad(x_new, x_old, F_old, dt):
 
 x = X[a.t0].clone()
 v = (x - X[max(a.t0 - 1, 0)]) / h
-F = phys_resid.rebuild_F(X[:a.t0 + 1], cfg, h, k=a.k)[a.t0].float().to(dev)
+# 궤적이 교사의 진짜 F 를 담고 있으면 그것을 쓴다. 예전 궤적은 f_tensor 키를
+# 잘못 읽어 항등만 들어 있고, PG 는 첫 프레임을 채우기 전에 덤프해 0 이 들어간다.
+_Fd = D.get("F")
+_ok = False
+if _Fd is not None and _Fd.shape[0] > a.t0:
+    _f0 = _Fd[a.t0].float().to(dev)
+    _ok = (float(_f0.abs().max()) > 1e-6
+           and float((_f0 - torch.eye(3, device=dev)).abs().max()) > 1e-6)
+if _ok:
+    F = _f0
+    print("[ip] 궤적의 F 를 그대로 쓴다", flush=True)
+else:
+    F = phys_resid.rebuild_F(X[:a.t0 + 1], cfg, h, k=a.k)[a.t0].float().to(dev)
+    print("[ip] 궤적에 쓸 만한 F 가 없어 위치에서 복원한다", flush=True)
 preds, gts = [], []
 t_start = time.time()
 hs = h / a.sub
