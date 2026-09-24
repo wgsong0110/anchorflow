@@ -24,6 +24,9 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "lib"))
 from anchorflow import phys_resid                                # noqa: E402
+from anchorflow import trilinear as TRI                          # noqa: E402
+from anchorflow import vox_anchor                                # noqa: E402
+from anchorflow.deform import skin_with_jacobian                 # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--traj", required=True, help="교사 궤적 (.pt)")
@@ -36,6 +39,10 @@ ap.add_argument("--sub", type=int, default=1,
 ap.add_argument("--k", type=int, default=16, help="변형구배 최소제곱 이웃 수")
 ap.add_argument("--lr", type=float, default=1.0)
 ap.add_argument("--out", required=True, help="덤프 경로 (.pt)")
+ap.add_argument("--var", default="grid", choices=("grid", "pts"),
+                help="최적화 변수: grid=격자점 변위(모델과 같은 가설 공간), "
+                     "pts=입자 위치 직접")
+ap.add_argument("--vox_res", type=int, default=32, help="격자 한 변 칸 수")
 ap.add_argument("--no_bc", action="store_true", help="경계조건을 끈다 (대조용)")
 ap.add_argument("--dev", default="cuda")
 a = ap.parse_args()
@@ -156,16 +163,43 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
                 xq = xq.index_copy(0, mem[kk], tv)
             return apply_bc(xq)
 
-        q = xtil.clone().requires_grad_(True)
-        opt = torch.optim.LBFGS([q], lr=a.lr, max_iter=a.iters,
+        if a.var == "grid":
+            # 학생과 **같은 가설 공간**: 격자를 현재 배치에 맞춰 잡고, 변수는
+            # 격자점 변위 dp 다. 가우시안은 그 dp 를 꼭짓점 8 개 스키닝으로 받고,
+            # F 도 그 사상의 해석적 야코비안으로 민다 -- step_once 와 같은 경로다.
+            lo, hh, nn3 = vox_anchor.grid_for(x_old, a.vox_res ** 3)
+            sidx, _w8 = TRI.corners(x_old, lo, hh, nn3)
+            gpos = (torch.stack(torch.meshgrid(
+                *[torch.arange(int(nn3[d]), device=dev, dtype=x_old.dtype)
+                  for d in range(3)], indexing="ij"), -1).reshape(-1, 3)
+                ) * hh + lo
+            log_r = torch.full((gpos.shape[0],), float(torch.log(
+                torch.tensor(float(hh)))), device=dev)
+            log_t = torch.zeros_like(log_r)
+            dp = torch.zeros(gpos.shape[0], 3, device=dev, requires_grad=True)
+            var = [dp]
+
+            def _state():
+                xs, J, _w = skin_with_jacobian(
+                    x_old, gpos, dp, log_r, log_t, sidx, float(hh))
+                return _fix(xs), J
+        else:
+            q = xtil.clone().requires_grad_(True)
+            var = [q]
+
+            def _state():
+                xs = _fix(q.clone())
+                return xs, None
+
+        opt = torch.optim.LBFGS(var, lr=a.lr, max_iter=a.iters,
                                 history_size=20,
                                 tolerance_grad=1e-14, tolerance_change=1e-16,
                                 line_search_fn="strong_wolfe")
 
         def closure():
             opt.zero_grad(set_to_none=True)
-            xf = _fix(q.clone())
-            F_tr = defgrad(xf, x_old, F_old)
+            xf, J = _state()
+            F_tr = (J @ F_old) if J is not None else defgrad(xf, x_old, F_old)
             E, _dl, _pt = phys_resid.ip_energy(
                 xf, xtil, F_tr, mass, vol, cfg, hs, free=free, g=g, norm=NORM)
             E.backward()
@@ -173,12 +207,15 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
 
         opt.step(closure)
         with torch.no_grad():
-            x_new = _fix(q.detach())
-            F_tr = defgrad(x_new, x_old, F_old)
-            _psi, dlog = phys_resid.psi_of(F_tr, cfg, hs)
-            F = phys_resid.plastic_step(F_tr, dlog)
-            v = (x_new - x_old) / hs
-            x = x_new
+            pass
+        xf, J = _state()
+        x_new = xf.detach()
+        F_tr = ((J @ F_old) if J is not None
+                else defgrad(x_new, x_old, F_old)).detach()
+        _psi, dlog = phys_resid.psi_of(F_tr, cfg, hs)
+        F = phys_resid.plastic_step(F_tr, dlog)
+        v = ((x_new - x_old) / hs).detach()
+        x = x_new
     preds.append(x.detach().cpu())
     gts.append(X[t + 1].detach().cpu())
     err = float((x - X[t + 1]).norm(dim=-1).mean()) / EXT
