@@ -1051,18 +1051,27 @@ os.makedirs(a.out, exist_ok=True)
 gen = torch.Generator(device=dev).manual_seed(a.seed)
 _rng_ck = globals().get("_rng_ck")
 if _rng_ck is not None:
-    if _rng_ck.get("rng_gen") is not None:
-        gen.set_state(_rng_ck["rng_gen"])
-    if _rng_ck.get("rng_cpu") is not None:
-        torch.set_rng_state(_rng_ck["rng_cpu"])
-    if _rng_ck.get("rng_cuda") is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(_rng_ck["rng_cuda"])
-    if _rng_ck.get("rng_np") is not None:
-        np.random.set_state(_rng_ck["rng_np"])
-    if _rng_ck.get("rng_py") is not None:
-        random.setstate(_rng_ck["rng_py"])
-    print("[재개] 난수 상태까지 복원했다 -- 표본 흐름이 그대로 이어진다",
-          flush=True)
+    # 상태 복원은 **실패해도 학습을 막지 않는다**. 장치나 토치 판이 다르면
+    # 형식이 맞지 않는데, 그것 때문에 이어달리기 자체가 죽으면 곤란하다.
+    _ok = []
+    for _nm, _fn, _key in (
+            ("표본", lambda v: gen.set_state(v), "rng_gen"),
+            ("cpu", torch.set_rng_state, "rng_cpu"),
+            ("cuda", (torch.cuda.set_rng_state_all
+                      if torch.cuda.is_available() else None), "rng_cuda"),
+            ("numpy", np.random.set_state, "rng_np"),
+            ("python", random.setstate, "rng_py")):
+        _v = _rng_ck.get(_key)
+        if _v is None or _fn is None:
+            continue
+        try:
+            _fn(_v)
+            _ok.append(_nm)
+        except Exception as _e:
+            print(f"[재개] {_nm} 난수 상태 복원 실패 ({_e}) -- 그대로 간다",
+                  flush=True)
+    if _ok:
+        print(f"[재개] 난수 상태 복원: {', '.join(_ok)}", flush=True)
 hist = []
 t_start = time.time()
 _VAL = (held if held else TR)[:a.val_n]
