@@ -9,7 +9,9 @@ cd $W
 
 echo "[셋업] 시스템 패키지"
 apt-get update -qq >/dev/null 2>&1
-apt-get install -y -qq git curl unzip >/dev/null 2>&1
+# taichi 가 headless 컨테이너에서 libX11 을 찾는다
+apt-get install -y -qq git curl unzip tmux \
+  libx11-6 libxrandr2 libxinerama1 libxcursor1 libxi6 libgl1 libglu1-mesa >/dev/null 2>&1
 
 echo "[셋업] rclone"
 if ! command -v rclone >/dev/null; then
