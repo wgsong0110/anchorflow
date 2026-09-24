@@ -944,9 +944,24 @@ _best = float("inf")
 
 
 def quick_val():
-    """홀드아웃 짧은 롤아웃의 정지기준 대비 비. best 체크포인트의 기준이다."""
+    """홀드아웃 지표 두 가지를 함께 낸다.
+
+    (1) 짧은 롤아웃의 정지기준 대비 비 -- best 체크포인트의 기준
+    (2) **학습과 똑같은 목적함수**를 홀드아웃에서 잰 값 -- 과적합을 읽으려면
+        train/test 가 같은 자여야 한다
+    """
     net.eval()
     tot = ref = 0.0
+    obj = 0.0
+    with torch.enable_grad():
+        for _tag, d in _VAL:
+            gs = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
+                              device=dev)[:a.n_pts]
+            for _t0 in (3, 10, 20):
+                if _t0 + a.unroll + 1 >= d["x"].shape[0]:
+                    continue
+                obj += float(window(d, _t0, a.unroll, gs)[0])
+    obj /= max(len(_VAL) * 3, 1)
     for _tag, d in _VAL:
         gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
                             device=dev)[:a.n_pts]
@@ -967,7 +982,7 @@ def quick_val():
             ref += float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
             x = x2
     net.train()
-    return tot / max(ref, 1e-20)
+    return tot / max(ref, 1e-20), obj
 
 
 def save_ck(name, step):
@@ -1103,6 +1118,7 @@ for it in pbar:
             TBW.add_scalar("phase2/자유잔차", arel, it)
             TBW.add_scalar("phase2/구속잔차", still, it)
         else:
+            TBW.add_scalar("목적함수/학습", lx, it)
             TBW.add_scalar("학습/위치오차%", 100 * lx ** 0.5, it)
             TBW.add_scalar("학습/정지기준%", 100 * still ** 0.5, it)
             TBW.add_scalar("학습/비", (lx / max(still, 1e-20)) ** 0.5, it)
@@ -1121,17 +1137,19 @@ for it in pbar:
                                 if a.damage else {}),
                              gn=f"{float(gn):.1e}")
     if a.val_every and ((it + 1) % a.val_every == 0 or it == a.iters - 1):
-        _v = quick_val()
+        _v, _vo = quick_val()
         if TBW is not None:
             TBW.add_scalar("검증/비", _v, it)
+            TBW.add_scalar("목적함수/검증", _vo, it)
         if _v < _best:
             _best = _v
             save_ck("best", it + 1)
-            print(f"  [검증 {it+1}] 비 {_v:.4f} -- best 갱신"
+            print(f"  [검증 {it+1}] 비 {_v:.4f} 목적 {_vo:.3e} -- best 갱신"
                   + (f"  (관성 {_pt[0]:.3e} 탄성 {_pt[1]:.3e} 중력 {_pt[2]:.3e})"
                      if a.phase2 and _pt else ""), flush=True)
         else:
-            print(f"  [검증 {it+1}] 비 {_v:.4f} (best {_best:.4f})", flush=True)
+            print(f"  [검증 {it+1}] 비 {_v:.4f} 목적 {_vo:.3e} "
+                  f"(best {_best:.4f})", flush=True)
     if (it + 1) % a.save_every == 0 or it == a.iters - 1:
         save_ck("last", it + 1)
 
