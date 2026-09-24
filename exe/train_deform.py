@@ -878,6 +878,9 @@ for it in pbar:
                       f"--include '*.json' >/dev/null 2>&1 &")
 
 # ---------------------------------------------------------------- 평가
+_ROLLDUMP = None
+
+
 @torch.no_grad()
 def rollout(d, t0, L, gsel):
     x = take(d["x"][t0], gsel)
@@ -898,6 +901,8 @@ def rollout(d, t0, L, gsel):
         fm = free_mask(d, x2.shape[0], x2.device, gsel) if a.control else slice(None)
         errs.append(float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
         stills.append(float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
+        if _ROLLDUMP is not None:
+            _ROLLDUMP.append((x2.detach().cpu(), gt.detach().cpu()))
         if a.metrics:
             cds.append(chamfer(x2, gt) / (EXT ** 2))
             ems.append(emd(x2, gt, t0 * 1000 + i) / EXT)
@@ -937,7 +942,20 @@ for tag, d in TR + held:
         L = min(a.eval_len, T - t0 - 1)
         if L < 2:
             continue
+        global _ROLLDUMP
+        _rd = os.environ.get("AF_ROLL_DUMP")
+        _want = (_rd and tag.endswith(os.environ.get("AF_ROLL_TAG", "")) 
+                 and t0 == int(os.environ.get("AF_ROLL_T0", "3")))
+        _ROLLDUMP = [] if _want else None
         e, st, cd, em, cds_, ems_ = rollout(d, t0, L, gsel)
+        if _want and _ROLLDUMP:
+            torch.save({"pred": torch.stack([a_ for a_, _ in _ROLLDUMP]),
+                        "gt": torch.stack([b_ for _, b_ in _ROLLDUMP]),
+                        "x0": take(d["x"][t0], gsel).cpu(),
+                        "ctrl_pos": d.get("ctrl_pos"), "t0": t0, "tag": tag,
+                        "EXT": EXT}, _rd)
+            print(f"[롤아웃 덤프] {_rd}  {tag} t0={t0}", flush=True)
+        _ROLLDUMP = None
         rows[tag]["windows"][t0] = dict(L=L, err=e, still=st,
                                         err_mean=float(np.mean(e)),
                                         still_mean=float(np.mean(st)),
