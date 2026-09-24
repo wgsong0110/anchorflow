@@ -15,12 +15,21 @@ ap.add_argument("--cfg_out", required=True)
 ap.add_argument("--target", type=int, default=20000, help="목표 입자 수")
 ap.add_argument("--ppc", type=float, default=12.0, help="칸당 입자 수 목표")
 ap.add_argument("--grid_lim", type=float, default=2.0)
+ap.add_argument("--n_gauss", type=int, required=True,
+                help="원본 채움 앞부분의 가우시안 개수 -- PhysGaussian 은 "
+                     "mpm_init_pos[:gs_num] 이 가우시안이라고 가정한다")
+ap.add_argument("--ply_out", default=None,
+                help="솎아낸 가우시안 색인을 저장할 npy (렌더·시뮬이 같은 부분집합을 써야 한다)")
 a = ap.parse_args()
 
 P = np.load(a.src).astype(np.float64)
 print(f"[원본] {P.shape[0]} 점  범위 {P.min(0).round(3)} ~ {P.max(0).round(3)}")
+G, F = P[:a.n_gauss], P[a.n_gauss:]
+print(f"[구성] 가우시안 {G.shape[0]} + 채움 {F.shape[0]}")
 
-# 목표 개수에 맞는 복셀 간격을 이분법으로 찾는다 (복셀당 한 점만 남긴다)
+# 목표 개수에 맞는 복셀 간격을 이분법으로 찾는다 (복셀당 한 점만 남긴다).
+# 가우시안과 채움점을 **따로** 솎아 순서를 유지해야 한다 -- PhysGaussian 이
+# 앞쪽 gs_num 개를 가우시안으로 보기 때문이다.
 lo, hi = P.min(0), P.max(0)
 ext = hi - lo
 s_lo, s_hi = 1e-4, float(ext.max())
@@ -33,10 +42,22 @@ for _ in range(60):
     else:
         s_hi = s
 s = s_hi
-k = np.floor((P - lo) / s).astype(np.int64)
-_, idx = np.unique(k, axis=0, return_index=True)
-Q = P[np.sort(idx)]
-print(f"[성긴셋] {Q.shape[0]} 점, 복셀 간격 {s:.5f}")
+
+
+def thin(X):
+    kk = np.floor((X - lo) / s).astype(np.int64)
+    _, ii = np.unique(kk, axis=0, return_index=True)
+    return np.sort(ii)
+
+
+gi = thin(G)
+fi = thin(F)
+Q = np.concatenate([G[gi], F[fi]], 0)
+print(f"[성긴셋] 가우시안 {gi.size} + 채움 {fi.size} = {Q.shape[0]} 점, "
+      f"복셀 간격 {s:.5f}")
+if a.ply_out:
+    np.save(a.ply_out, gi.astype(np.int64))
+    print(f"[저장] 가우시안 색인 {a.ply_out}")
 
 # 실제 입자 간격(최근접 거리 중앙값)으로 ppc 를 맞춘다
 sub = Q[np.random.default_rng(0).permutation(len(Q))[:3000]]
