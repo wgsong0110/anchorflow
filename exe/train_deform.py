@@ -149,12 +149,34 @@ ap.add_argument("--stat_occ", action="store_true",
                 help="입력 표준화 통계를 **찬 셀만**으로 잡는다")
 ap.add_argument("--r2", default=None, help="체크포인트를 올릴 R2 경로")
 ap.add_argument("--seed", type=int, default=0)
+# --- Phase 2: 물리 잔차(backward Euler 증분 포텐셜) 학습 ---------------------
+ap.add_argument("--phase2", action="store_true",
+                help="교사 위치 대신 **증분 포텐셜**을 목적함수로 미세조정한다. "
+                     "교사 프레임이 필요 없으므로 상태를 어디서 뽑아도 된다")
+ap.add_argument("--phys_w", type=float, default=1.0, help="물리 항 가중")
+ap.add_argument("--phys_sup", type=float, default=0.0,
+                help="교사 위치 손실을 함께 쓸 가중 (0 이면 물리 단독)")
+ap.add_argument("--phys_K", type=int, default=1,
+                help="한 표본에서 펼칠 스텝 수. 뒤 스텝의 상태는 자기 출력이라 "
+                     "그대로 on-policy 표본이 된다")
+ap.add_argument("--phys_K_warm", type=int, default=0,
+                help="K 를 1 에서 --phys_K 로 올리는 데 쓰는 스텝 수")
+ap.add_argument("--phys_noise", type=float, default=0.0,
+                help="상태 교란 크기 (물체 크기 대비). 매끄러운 저주파 장을 더하고 "
+                     "F 도 (I+grad u)F 로 함께 흔든다")
+ap.add_argument("--phys_probe", type=int, default=0,
+                help="교사 프레임에서 에너지·잔차만 이만큼 재고 끝낸다 (정상성 검사)")
+ap.add_argument("--val_every", type=int, default=0,
+                help="이 간격마다 홀드아웃 롤아웃으로 재고 best 체크포인트를 남긴다")
+ap.add_argument("--val_n", type=int, default=4, help="검증에 쓸 궤적 수")
+ap.add_argument("--val_len", type=int, default=10, help="검증 롤아웃 길이")
 a = ap.parse_args()
 
 dev = "cuda"
 torch.manual_seed(a.seed)
 
 from anchorflow import deform                                  # noqa: E402
+from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import voxel                                    # noqa: E402
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
                                bc_features, bond_stretch, bures_w2_sq,
@@ -628,6 +650,71 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     return x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, crow
 
 
+def traj_mass(d):
+    """궤적 자기 배치·자기 밀도로 잰 입자 질량 [N_full]. 전조합 학습에서는 씬마다
+    밀도도 형상도 다르므로 cfg0 의 것을 쓰면 안 된다."""
+    if "_mass" in d:
+        return d["_mass"]
+    c = d["cfg"]
+    x0 = d["x"][0].to(dev).float()
+    ng_ = int(c.get("n_grid", 100))
+    dx_ = float(c.get("grid_lim", 2.0)) / ng_
+    vi_ = (x0 / dx_).long().clamp(0, ng_ - 1)
+    fl_ = (vi_[:, 0] * ng_ + vi_[:, 1]) * ng_ + vi_[:, 2]
+    cn_ = torch.zeros(ng_ ** 3, device=dev).index_add_(
+        0, fl_, torch.ones(x0.shape[0], device=dev))
+    d["_mass"] = ((dx_ ** 3) / cn_[fl_]) * float(c["density"])
+    d["_ext"] = float((x0.max(0).values - x0.min(0).values).norm())
+    return d["_mass"]
+
+
+def phys_window(d, t0, K, gsel, sigma, gen):
+    """Phase 2 의 한 표본. 교사 프레임에서 상태를 뽑아 **노이즈를 섞고** K 스텝
+    펼치며 매 스텝의 증분 포텐셜을 더한다.
+
+    교사 다음 프레임이 필요 없다 -- 목적함수가 상태만으로 정의되므로 교란된
+    상태에서도 정답(그 상태에서 출발한 backward Euler 해)이 있다. 지도학습이었다면
+    교란할 때마다 교사를 다시 돌려야 했다.
+    """
+    mass_full = traj_mass(d)
+    mass = mass_full[gsel] * (float(N_FULL) / gsel.numel())   # 부분표본 보정
+    ext = d.get("_ext", EXT)
+    cfg = d["cfg"]
+    vol = mass / float(cfg["density"])
+    g = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
+    h = FRAME_DT
+    norm = float(mass.sum()) * (ext ** 2) / (h * h)
+
+    x = take(d["x"][t0], gsel)
+    v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / h
+    F = take(d["F"][t0], gsel).float()
+    if sigma > 0:
+        u, gu = phys_resid.smooth_noise(x, sigma * ext, ext, gen)
+        x = x + u
+        F = (torch.eye(3, device=dev) + gu) @ F
+        # 변위 교란을 한 스텝에 걸친 것으로 보면 속도도 그만큼 달라져 있다
+        v = v + float(torch.rand(1, generator=gen, device=dev)) * u / h
+    p = take(d["x"][t0], AIDX)
+    e_tot, r_free, r_ring, parts = 0.0, 0.0, 0.0, None
+    for i in range(K):
+        xtil = x + h * v
+        x2, p, v, J, _dp, _ai, _dmg, _cr = step_once(
+            d, t0 + i, gsel, p, x, v, need_J=True)
+        F_tr = J @ F
+        fm = free_mask(d, x2.shape[0], dev, gsel) if a.control else None
+        E, dlog, parts = phys_resid.ip_energy(
+            x2, xtil, F_tr, mass, vol, cfg, h, free=fm, g=g, norm=norm)
+        e_tot = e_tot + E
+        if i == 0:
+            with torch.no_grad():
+                rr = (x2 - xtil).norm(dim=-1) / ext
+                r_free = float(rr[fm].mean()) if fm is not None else float(rr.mean())
+                r_ring = float(rr[~fm].mean()) if fm is not None else 0.0
+        F = phys_resid.plastic_step(F_tr, dlog).detach() if K > 1 else F_tr
+        x = x2
+    return e_tot / K, r_free, r_ring, parts
+
+
 def window(d, t0, L, gsel):
     """궤적 d 의 t0 에서 L 프레임. 앵커는 그 프레임의 GT 가우시안으로 초기화.
 
@@ -807,6 +894,80 @@ os.makedirs(a.out, exist_ok=True)
 gen = torch.Generator(device=dev).manual_seed(a.seed)
 hist = []
 t_start = time.time()
+_VAL = (held if held else TR)[:a.val_n]
+_best = float("inf")
+
+
+def quick_val():
+    """홀드아웃 짧은 롤아웃의 정지기준 대비 비. best 체크포인트의 기준이다."""
+    net.eval()
+    tot = ref = 0.0
+    for _tag, d in _VAL:
+        gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
+                            device=dev)[:a.n_pts]
+        t0 = 3
+        x = take(d["x"][t0], gsel)
+        v = (x - take(d["x"][t0 - 1], gsel)) / FRAME_DT
+        p = take(d["x"][t0], AIDX)
+        x_still = x.clone()
+        for i in range(a.val_len):
+            with torch.enable_grad():
+                x2, p, v, _, _, _, _, _ = step_once(
+                    d, t0 + i, gsel, p, x, v, need_J=False)
+            x2, p, v = x2.detach(), p.detach(), v.detach()
+            gt = take(d["x"][t0 + i + 1], gsel)
+            fm = (free_mask(d, x2.shape[0], dev, gsel) if a.control
+                  else slice(None))
+            tot += float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
+            ref += float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
+            x = x2
+    net.train()
+    return tot / max(ref, 1e-20)
+
+
+def save_ck(name, step):
+    torch.save({"net": net.state_dict(), "opt": opt.state_dict(),
+                "step": step, "aidx": AIDX.cpu(), "H": H, "EXT": EXT,
+                "n_feat": n_feat, "args": vars(a)},
+               os.path.join(a.out, f"{a.tag}_{name}.pt"))
+    if a.r2:
+        os.system(f"rclone copy {a.out} {a.r2} --include '*.pt' "
+                  f"--include '*.json' >/dev/null 2>&1 &")
+
+
+if a.phys_probe:
+    # 정상성 검사: **교사 프레임 자체**의 증분 포텐셜과 잔차. 이것이 도달 가능한
+    # 바닥이고, 여기서 값이 터지면 구성모델이나 질량을 잘못 꽂은 것이다.
+    print("[Phase2 검사] 교사 프레임의 에너지·잔차", flush=True)
+    for _i in range(a.phys_probe):
+        tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
+        T = d["x"].shape[0]
+        t0 = int(torch.randint(1, T - 2, (1,), generator=gen, device=dev))
+        gsel = torch.randperm(N_FULL, generator=gen,
+                              device=dev)[:a.n_pts].sort().values
+        mass = traj_mass(d)[gsel] * (float(N_FULL) / gsel.numel())
+        ext = d.get("_ext", EXT)
+        cfg = d["cfg"]
+        vol = mass / float(cfg["density"])
+        gvec = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
+        h = FRAME_DT
+        norm = float(mass.sum()) * (ext ** 2) / (h * h)
+        x0_ = take(d["x"][t0], gsel)
+        v0_ = (x0_ - take(d["x"][t0 - 1], gsel)) / h
+        x1_ = take(d["x"][t0 + 1], gsel).clone().requires_grad_(True)
+        F0_ = take(d["F"][t0], gsel).float()
+        F1_ = take(d["F"][t0 + 1], gsel).float()
+        fm = free_mask(d, x1_.shape[0], dev, gsel) if a.control else None
+        E, _dl, parts = phys_resid.ip_energy(
+            x1_, x0_ + h * v0_, F1_, mass, vol, cfg, h, free=fm, g=gvec,
+            norm=norm)
+        rr = phys_resid.residual(E * norm, x1_, mass, ext) * h * h
+        _fr = float(rr[fm].mean()) if fm is not None else float(rr.mean())
+        print(f"  {tag} t0={int(t0):3d} [{phys_resid.mat_name(cfg)}] "
+              f"E={float(E):.4e} (관성 {parts[0]:.3e} 탄성 {parts[1]:.3e} "
+              f"중력 {parts[2]:.3e})  잔차 {100*_fr:.4f}%", flush=True)
+    raise SystemExit(0)
+
 pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
 for it in pbar:
     L = a.unroll            # 학습 중 펼치기 길이는 바꾸지 않는다
@@ -831,6 +992,30 @@ for it in pbar:
             t0 = 5
             gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
                                 device=dev)[:a.n_pts]
+        if a.phase2:
+            # K 램프: 1 -> phys_K. 드리프트는 뒤 스텝에서 생기므로 결국 늘린다.
+            Kp = a.phys_K
+            if a.phys_K_warm > 0:
+                Kp = 1 + int((a.phys_K - 1) * min(1.0, it / a.phys_K_warm))
+            # 교란 세기는 배치마다 로그균등 -- 여러 세기를 동시에 본다
+            sg = 0.0
+            if a.phys_noise > 0:
+                _u = float(torch.rand(1, generator=gen, device=dev))
+                sg = a.phys_noise * (10.0 ** (-2.0 * (1.0 - _u)))
+            wE, r_free, r_ring, _pt = phys_window(d, t0, Kp, gsel, sg, gen)
+            loss_b = a.phys_w * wE
+            if a.phys_sup > 0:
+                wx, wJ, wst, wa, wrel, wd, wdm = window(d, t0, L, gsel)
+                loss_b = loss_b + a.phys_sup * wx
+            else:
+                wx = wE.detach(); wJ = torch.zeros((), device=dev)
+                wst = r_ring; wa = torch.zeros((), device=dev)
+                wrel = r_free; wd = torch.zeros((), device=dev); wdm = 0.0
+            (loss_b / a.batch).backward()
+            lx = lx + float(wE) / a.batch
+            still = still + r_ring / a.batch
+            arel = arel + r_free / a.batch
+            continue
         wx, wJ, wst, wa, wrel, wd, wdm = window(d, t0, L, gsel)
         # 창마다 바로 역전파해 누적한다 -- 창 여러 개의 그래프를 동시에 들고 있으면
         # 야코비안까지 붙어 메모리가 배치 수만큼 늘어난다
@@ -862,20 +1047,28 @@ for it in pbar:
               flush=True)
     hist.append((lx, lJ, still, la, arel, ldm, dmean))
     if it % 20 == 0:
-        pbar.set_postfix(x=f"{100*lx**0.5:.3f}%", 정지=f"{100*still**0.5:.3f}%",
-                         비=f"{(lx/max(still,1e-20))**0.5:.2f}",
-                         앵커비=f"{arel:.2f}", J=f"{lJ:.1e}", L=L,
-                         **({"손상": f"{dmean:.3f}", "d손실": f"{ldm:.1e}"}
-                            if a.damage else {}),
-                         gn=f"{float(gn):.1e}")
+        if a.phase2:
+            pbar.set_postfix(E=f"{lx:.3e}", 자유잔차=f"{100*arel:.3f}%",
+                             구속잔차=f"{100*still:.3f}%", K=Kp,
+                             gn=f"{float(gn):.1e}")
+        else:
+            pbar.set_postfix(x=f"{100*lx**0.5:.3f}%",
+                             정지=f"{100*still**0.5:.3f}%",
+                             비=f"{(lx/max(still,1e-20))**0.5:.2f}",
+                             앵커비=f"{arel:.2f}", J=f"{lJ:.1e}", L=L,
+                             **({"손상": f"{dmean:.3f}", "d손실": f"{ldm:.1e}"}
+                                if a.damage else {}),
+                             gn=f"{float(gn):.1e}")
+    if a.val_every and ((it + 1) % a.val_every == 0 or it == a.iters - 1):
+        _v = quick_val()
+        if _v < _best:
+            _best = _v
+            save_ck("best", it + 1)
+            print(f"  [검증 {it+1}] 비 {_v:.4f} -- best 갱신", flush=True)
+        else:
+            print(f"  [검증 {it+1}] 비 {_v:.4f} (best {_best:.4f})", flush=True)
     if (it + 1) % a.save_every == 0 or it == a.iters - 1:
-        torch.save({"net": net.state_dict(), "opt": opt.state_dict(),
-                    "step": it + 1, "aidx": AIDX.cpu(), "H": H, "EXT": EXT,
-                    "n_feat": n_feat, "args": vars(a)},
-                   os.path.join(a.out, f"{a.tag}_last.pt"))
-        if a.r2:
-            os.system(f"rclone copy {a.out} {a.r2} --include '*.pt' "
-                      f"--include '*.json' >/dev/null 2>&1 &")
+        save_ck("last", it + 1)
 
 # ---------------------------------------------------------------- 평가
 _ROLLDUMP = None
