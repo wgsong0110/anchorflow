@@ -82,6 +82,6 @@ if a.dump:
     L = min(a.dump_len, xa.shape[0] - t0 - 1)
     torch.save({"pred": xb[t0 + 1:t0 + 1 + L].cpu(),
                 "gt": xa[t0 + 1:t0 + 1 + L].cpu(),
-                "ctrl_pos": A.get("ctrl_pos"), "t0": t0,
+                "ctrl_pos": A.get("ctrl_pos"), "t0": t0, "EXT": EXT,
                 "tag": A.get("tag", "cmp")}, a.dump)
     print(f"[덤프] {a.dump}  {L} 프레임", flush=True)
