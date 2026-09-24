@@ -811,8 +811,9 @@ def window(d, t0, L, gsel):
             loss_x = loss_x + ((x2 - gt) ** 2).sum(-1).mean() / (EXT ** 2)
             still = still + float(((x_still - gt) ** 2).sum(-1).mean()) / (EXT ** 2)
         if a.shape_loss != "none" and a.lambda_J > 0:
-            F0 = take(d["F"][t0 + i], gsel)
-            F1 = take(d["F"][t0 + i + 1], gsel)
+            # 복원한 F 는 디스크·메모리를 아끼려 half 로 들고 있다
+            F0 = take(traj_F(d)[t0 + i], gsel).float()
+            F1 = take(traj_F(d)[t0 + i + 1], gsel).float()
             Jgt = F1 @ torch.linalg.inv(F0 + 1e-4 * torch.eye(3, device=dev))
             if a.shape_loss == "frob":
                 _d = ((J - Jgt) ** 2).sum((-1, -2))
