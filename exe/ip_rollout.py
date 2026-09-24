@@ -54,6 +54,9 @@ ap.add_argument("--mixed", action="store_true",
                      "둘을 잇는 F_e = J(x)F^n 은 벌점으로 부과하고, 매 반복 뒤 "
                      "항복면으로 사영한다 (return mapping 을 변수 공간에서 건다)")
 ap.add_argument("--mixed_k", type=float, default=1.0, help="제약 벌점 가중")
+ap.add_argument("--proj", default="each", choices=("each", "end"),
+                help="항복면 사영 시점. each=반복마다(허용집합 위 투영경사), "
+                     "end=최적화를 끝낸 뒤 한 번")
 ap.add_argument("--mixed_lr", type=float, default=1e-4, help="mixed 의 Adam 학습률 (물체 크기 대비)")
 ap.add_argument("--drive", default="dirichlet", choices=("dirichlet", "force"),
                 help="구동 방식. dirichlet=손잡이 위치를 덮어쓴다(KIN), "
@@ -290,10 +293,14 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
                                  * (xf[mem[kk]] * acc).sum(-1)).sum() / NORM
                 (E + a.mixed_k * con).backward()
                 optm.step()
-                with torch.no_grad():       # 항복면 사영을 변수에 직접 건다
+                if a.proj == "each":
+                    with torch.no_grad():   # 허용집합 위에서만 해를 찾는다
+                        _ps, _dlg = phys_resid.psi_of(Fv, cfg, hs)
+                        Fv.copy_(phys_resid.plastic_step(Fv, _dlg))
+            with torch.no_grad():
+                if a.proj == "end":         # 자유롭게 풀고 마지막에 한 번 사영
                     _ps, _dlg = phys_resid.psi_of(Fv, cfg, hs)
                     Fv.copy_(phys_resid.plastic_step(Fv, _dlg))
-            with torch.no_grad():
                 xf, J = _state()
                 x_new = xf.detach()
                 F = Fv.detach()
