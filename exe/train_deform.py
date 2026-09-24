@@ -21,6 +21,7 @@ import argparse
 import glob
 import json
 import os
+import random
 import sys
 import time
 
@@ -1043,14 +1044,30 @@ if a.resume and os.path.exists(a.resume):
     ck = torch.load(a.resume, map_location=dev, weights_only=False)
     net.load_state_dict(ck["net"]); opt.load_state_dict(ck["opt"])
     step0 = int(ck["step"])
+    _rng_ck = ck
     print(f"[재개] {a.resume} step {step0}", flush=True)
 
 os.makedirs(a.out, exist_ok=True)
 gen = torch.Generator(device=dev).manual_seed(a.seed)
+_rng_ck = globals().get("_rng_ck")
+if _rng_ck is not None:
+    if _rng_ck.get("rng_gen") is not None:
+        gen.set_state(_rng_ck["rng_gen"])
+    if _rng_ck.get("rng_cpu") is not None:
+        torch.set_rng_state(_rng_ck["rng_cpu"])
+    if _rng_ck.get("rng_cuda") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(_rng_ck["rng_cuda"])
+    if _rng_ck.get("rng_np") is not None:
+        np.random.set_state(_rng_ck["rng_np"])
+    if _rng_ck.get("rng_py") is not None:
+        random.setstate(_rng_ck["rng_py"])
+    print("[재개] 난수 상태까지 복원했다 -- 표본 흐름이 그대로 이어진다",
+          flush=True)
 hist = []
 t_start = time.time()
 _VAL = (held if held else TR)[:a.val_n]
-_best = float("inf")
+_best = float(globals().get("_rng_ck", {}).get("best", float("inf"))
+              if globals().get("_rng_ck") else float("inf"))
 
 
 def quick_val():
@@ -1096,9 +1113,18 @@ def quick_val():
 
 
 def save_ck(name, step):
+    # 난수 상태를 함께 남긴다. 이게 없으면 재개한 뒤 창 표본이 다른 흐름을 타서
+    # 곡선이 이어지지 않는다 (TensorBoard 에서 바로 보인다).
     torch.save({"net": net.state_dict(), "opt": opt.state_dict(),
                 "step": step, "aidx": AIDX.cpu(), "H": H, "EXT": EXT,
-                "n_feat": n_feat, "args": vars(a)},
+                "n_feat": n_feat, "args": vars(a),
+                "best": _best,
+                "rng_gen": gen.get_state(),
+                "rng_cpu": torch.get_rng_state(),
+                "rng_cuda": (torch.cuda.get_rng_state_all()
+                             if torch.cuda.is_available() else None),
+                "rng_np": np.random.get_state(),
+                "rng_py": random.getstate()},
                os.path.join(a.out, f"{a.tag}_{name}.pt"))
     if a.r2:
         os.system(f"rclone copy {a.out} {a.r2} --include '*.pt' "
