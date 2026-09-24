@@ -188,7 +188,7 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
             var = [dp]
 
             def _state():
-                xs, J, _w = skin_with_jacobian(
+                xs, _w, J = skin_with_jacobian(
                     x_old, gpos, dp, log_r, log_t, sidx, float(hh))
                 return _fix(xs), J
         else:
