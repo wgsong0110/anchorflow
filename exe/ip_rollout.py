@@ -47,6 +47,9 @@ ap.add_argument("--plast", default="frame", choices=("frame", "sub"),
                 help="소성 사영을 상태에 반영하는 주기. F 가 프레임 해상도로 "
                      "복원된 값이라, 서브스텝마다 반영하면 사영 횟수만큼 소성이 "
                      "과하게 쌓인다 (실측: dt 를 줄일수록 교사에서 멀어졌다)")
+ap.add_argument("--drive", default="dirichlet", choices=("dirichlet", "force"),
+                help="구동 방식. dirichlet=손잡이 위치를 덮어쓴다(KIN), "
+                     "force=가한 가속도를 **외력 항**으로 넣고 입자는 자유롭게 둔다")
 ap.add_argument("--no_bc", action="store_true", help="경계조건을 끈다 (대조용)")
 ap.add_argument("--dev", default="cuda")
 a = ap.parse_args()
@@ -88,10 +91,19 @@ for kk in range(P.shape[1]):
     mem.append(sel)
     off.append(X[0][sel] - P[0, kk])
 free = torch.ones(N, dtype=torch.bool, device=dev)
-for sel in mem:
-    free[sel] = False
-print(f"[ip] 입자 {N}, 손잡이 {int((~free).sum())}, h {h:.5f}, 물체 {EXT:.4f}",
-      flush=True)
+if a.drive == "dirichlet":
+    for sel in mem:
+        free[sel] = False
+# 힘 모드의 감쇠 가중: 교사와 같은 (1-q^2)^2
+WFAL = []
+for kk in range(P.shape[1]):
+    r = float(R[0] if R.ndim == 1 else R[0, kk])
+    q2 = ((X[0][mem[kk]] - P[0, kk]).norm(dim=-1) / max(r, 1e-9)).clamp(max=1.0) ** 2
+    WFAL.append((1.0 - q2) ** 2)
+ACC = (D.get("ctrl_vel").float().to(dev) if D.get("ctrl_vel") is not None
+       else torch.zeros(1, P.shape[1], 3, device=dev))
+print(f"[ip] 입자 {N}, 손잡이 {int((~free).sum())}, 구동 {a.drive}, "
+      f"h {h:.5f}, 물체 {EXT:.4f}", flush=True)
 
 
 BC = []
@@ -184,8 +196,9 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
 
         def _fix(xq):
             """Dirichlet 대입 + 경계. 에너지는 **이 배치에서** 잰다."""
-            for kk, tv in tgt.items():
-                xq = xq.index_copy(0, mem[kk], tv)
+            if a.drive == "dirichlet":
+                for kk, tv in tgt.items():
+                    xq = xq.index_copy(0, mem[kk], tv)
             return apply_bc(xq)
 
         if a.var == "grid":
@@ -227,6 +240,14 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
             F_tr = (J @ F_old) if J is not None else defgrad(xf, x_old, F_old, hs)
             E, _dl, _pt = phys_resid.ip_energy(
                 xf, xtil, F_tr, mass, vol, cfg, hs, free=free, g=g, norm=NORM)
+            if a.drive == "force":
+                # 외력은 중력과 같은 자리에 들어간다: -sum m_p w_p a . x
+                for kk in range(len(mem)):
+                    if not mem[kk].numel():
+                        continue
+                    acc = ACC[min(t, ACC.shape[0] - 1), kk]
+                    E = E - (mass[mem[kk]] * WFAL[kk]
+                             * (xf[mem[kk]] * acc).sum(-1)).sum() / NORM
             E.backward()
             return E
 
