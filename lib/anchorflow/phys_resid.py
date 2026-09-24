@@ -124,7 +124,9 @@ def ip_energy(x2, xtil, F_trial, mass, vol, cfg, h, free=None, g=None,
     e_in = (0.5 * mass[free] / (h * h) * (d * d).sum(-1)).sum()
     e_g = torch.zeros((), device=x2.device, dtype=x2.dtype)
     if g is not None:
-        e_g = -(mass[free] * (x2[free] * g).sum(-1)).sum()
+        # 중력의 **값**은 기준점에 따른 상수 오프셋이라 보고에 쓸모가 없다.
+        # xtil 기준으로 재면 기울기는 그대로(-m g)이고 값은 해석이 된다.
+        e_g = -(mass[free] * ((x2[free] - xtil[free]) * g).sum(-1)).sum()
     tot = e_in + e_el + e_g
     if norm is not None:
         tot = tot / norm
@@ -139,6 +141,46 @@ def residual(E, x2, mass, ext):
     """
     gx, = torch.autograd.grad(E, x2, retain_graph=True, create_graph=False)
     return (gx.norm(dim=-1) / mass.clamp_min(1e-20) / ext)
+
+
+def rebuild_F(x_all, cfg, dt, k=16, chunk=4096):
+    """교사 위치에서 **탄성** 변형구배를 되살린다. [T,N,3,3]
+
+    궤적에 든 F 는 전부 단위행렬이다 (생성기의 F 읽기가 예외로 빠져 항등으로
+    대체됐다). 그대로 쓰면 Psi 가 항등적으로 0 이라 증분 포텐셜이 관성+중력만
+    남고, 그러면 자유낙하가 정답이 되어 버린다.
+
+    다시 뽑는 대신 위치에서 복원한다: 프레임 사이의 국소 최소제곱으로 한 스텝
+    사상의 야코비안을 구하고, F <- return_map(J F) 를 t=0 의 F=I 에서부터 재생한다.
+    MPM 이 하는 것과 같은 절차를 **프레임 해상도로** 되짚는 것이라, 서브스텝마다
+    사영하는 원본과 완전히 같지는 않지만 소성 이력이 살아 있는 F 를 준다.
+    """
+    dev = x_all.device
+    T, N = x_all.shape[0], x_all.shape[1]
+    X0 = x_all[0]
+    # t=0 배치에서 이웃을 한 번만 잡는다 (재질 이웃은 변하지 않는다)
+    idx = torch.empty(N, k, dtype=torch.long, device=dev)
+    for s in range(0, N, chunk):
+        e = min(s + chunk, N)
+        dd = torch.cdist(X0[s:e], X0)
+        idx[s:e] = dd.topk(k + 1, largest=False).indices[:, 1:]
+    F = torch.eye(3, device=dev).repeat(N, 1, 1)
+    out = torch.empty(T, N, 3, 3, device=dev, dtype=torch.float16)
+    out[0] = F.half()
+    for t in range(T - 1):
+        d0 = x_all[t][idx] - x_all[t].unsqueeze(1)             # [N,k,3]
+        d1 = x_all[t + 1][idx] - x_all[t + 1].unsqueeze(1)
+        w = 1.0 / (d0.norm(dim=-1, keepdim=True) ** 2 + 1e-12)
+        w = w / w.sum(1, keepdim=True)
+        A = torch.einsum("nkc,nki,nkj->nij", w, d1, d0)
+        B = torch.einsum("nkc,nki,nkj->nij", w, d0, d0)
+        B = B + 1e-10 * torch.eye(3, device=dev)
+        J = A @ torch.linalg.inv(B)
+        F_tr = J @ F
+        _, dlog = psi_of(F_tr, cfg, dt)
+        F = plastic_step(F_tr, dlog)
+        out[t + 1] = F.half()
+    return out
 
 
 def smooth_noise(x, sigma, ext, gen, n_wave=6):

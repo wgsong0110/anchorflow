@@ -650,6 +650,29 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     return x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, crow
 
 
+_F_MSG = []
+
+
+def traj_F(d):
+    """탄성 변형구배 [T,N,3,3]. 궤적에 든 것은 전부 항등이라 위치에서 되살린다."""
+    if d.get("_Fok") is None:
+        _Fin = d["F"]
+        _id = float((_Fin[:3].float().to(dev)
+                     - torch.eye(3, device=dev)).abs().max()) < 1e-6
+        if _id:
+            t_ = time.time()
+            d["F"] = phys_resid.rebuild_F(d["x"].to(dev).float(), d["cfg"],
+                                          FRAME_DT).cpu() if not a.gpu_data \
+                else phys_resid.rebuild_F(d["x"].to(dev).float(), d["cfg"],
+                                          FRAME_DT)
+            if not _F_MSG:
+                print(f"[Phase2] 궤적의 F 가 항등이라 위치에서 복원한다 "
+                      f"(궤적당 {time.time()-t_:.1f}초)", flush=True)
+                _F_MSG.append(1)
+        d["_Fok"] = True
+    return d["F"]
+
+
 def traj_mass(d):
     """궤적 자기 배치·자기 밀도로 잰 입자 질량 [N_full]. 전조합 학습에서는 씬마다
     밀도도 형상도 다르므로 cfg0 의 것을 쓰면 안 된다."""
@@ -687,7 +710,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
 
     x = take(d["x"][t0], gsel)
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / h
-    F = take(d["F"][t0], gsel).float()
+    F = take(traj_F(d)[t0], gsel).float()
     if sigma > 0:
         u, gu = phys_resid.smooth_noise(x, sigma * ext, ext, gen)
         x = x + u
@@ -955,8 +978,8 @@ if a.phys_probe:
         x0_ = take(d["x"][t0], gsel)
         v0_ = (x0_ - take(d["x"][t0 - 1], gsel)) / h
         x1_ = take(d["x"][t0 + 1], gsel).clone().requires_grad_(True)
-        F0_ = take(d["F"][t0], gsel).float()
-        F1_ = take(d["F"][t0 + 1], gsel).float()
+        F0_ = take(traj_F(d)[t0], gsel).float()
+        F1_ = take(traj_F(d)[t0 + 1], gsel).float()
         fm = free_mask(d, x1_.shape[0], dev, gsel) if a.control else None
         E, _dl, parts = phys_resid.ip_energy(
             x1_, x0_ + h * v0_, F1_, mass, vol, cfg, h, free=fm, g=gvec,
