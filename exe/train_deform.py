@@ -730,9 +730,15 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         e_tot = e_tot + E
         if i == 0:
             with torch.no_grad():
+                # 잔차 대용: 자유낙하 예측에서 얼마나 벗어났나. 구속 입자는 따로
+                # 본다 -- 거기는 반력이 실어 나르는 곳이라 값이 큰 게 정상이다.
                 rr = (x2 - xtil).norm(dim=-1) / ext
-                r_free = float(rr[fm].mean()) if fm is not None else float(rr.mean())
-                r_ring = float(rr[~fm].mean()) if fm is not None else 0.0
+                if fm is None:
+                    r_free, r_ring = float(rr.mean()), 0.0
+                else:
+                    r_free = float(rr[fm].mean()) if int(fm.sum()) else 0.0
+                    nfm = ~fm
+                    r_ring = float(rr[nfm].mean()) if int(nfm.sum()) else 0.0
         F = phys_resid.plastic_step(F_tr, dlog).detach() if K > 1 else F_tr
         x = x2
     return e_tot / K, r_free, r_ring, parts
@@ -1088,7 +1094,9 @@ for it in pbar:
         if _v < _best:
             _best = _v
             save_ck("best", it + 1)
-            print(f"  [검증 {it+1}] 비 {_v:.4f} -- best 갱신", flush=True)
+            print(f"  [검증 {it+1}] 비 {_v:.4f} -- best 갱신"
+                  + (f"  (관성 {_pt[0]:.3e} 탄성 {_pt[1]:.3e} 중력 {_pt[2]:.3e})"
+                     if a.phase2 and _pt else ""), flush=True)
         else:
             print(f"  [검증 {it+1}] 비 {_v:.4f} (best {_best:.4f})", flush=True)
     if (it + 1) % a.save_every == 0 or it == a.iters - 1:
