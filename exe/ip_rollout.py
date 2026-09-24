@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import trilinear as TRI                          # noqa: E402
 from anchorflow import vox_anchor                                # noqa: E402
-from anchorflow.deform import skin_with_jacobian                 # noqa: E402
+from anchorflow.deform import fps, skin_with_jacobian             # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--traj", required=True, help="교사 궤적 (.pt)")
@@ -39,9 +39,11 @@ ap.add_argument("--sub", type=int, default=1,
 ap.add_argument("--k", type=int, default=16, help="변형구배 최소제곱 이웃 수")
 ap.add_argument("--lr", type=float, default=1.0)
 ap.add_argument("--out", required=True, help="덤프 경로 (.pt)")
-ap.add_argument("--var", default="grid", choices=("grid", "pts"),
-                help="최적화 변수: grid=격자점 변위(모델과 같은 가설 공간), "
-                     "pts=입자 위치 직접")
+ap.add_argument("--var", default="grid", choices=("grid", "pts", "anchor"),
+                help="최적화 변수: grid=격자점 변위, pts=입자 위치 직접, "
+                     "anchor=재료에 붙어 함께 움직이는 앵커의 변위")
+ap.add_argument("--n_anchor", type=int, default=4096, help="앵커 수 (--var anchor)")
+ap.add_argument("--k_skin", type=int, default=16, help="앵커 스키닝 이웃 수")
 ap.add_argument("--vox_res", type=int, default=32, help="격자 한 변 칸 수")
 ap.add_argument("--plast", default="frame", choices=("frame", "sub"),
                 help="소성 사영을 상태에 반영하는 주기. F 가 프레임 해상도로 "
@@ -158,6 +160,15 @@ def defgrad(x_new, x_old, F_old, dt):
 
 x = X[a.t0].clone()
 v = (x - X[max(a.t0 - 1, 0)]) / h
+if a.var == "anchor":
+    # 앵커는 t0 배치에서 FPS 로 고른 입자들이고, **재료와 함께 움직인다**.
+    # 격자와 달리 매 스텝 다시 잡히지 않아 이웃 관계가 일관되고, 물체가 있는
+    # 곳에만 놓여 빈 칸이 없다.
+    aidx = fps(x, a.n_anchor, 0)
+    apos = x[aidx].clone()
+    _hA = float(torch.cdist(apos[:512], apos[:512]).topk(
+        2, largest=False).values[:, 1].median())
+    print(f"[ip] 앵커 {apos.shape[0]} 개, 간격 {_hA:.5f}", flush=True)
 # 궤적이 교사의 진짜 F 를 담고 있으면 그것을 쓴다. 예전 궤적은 f_tensor 키를
 # 잘못 읽어 항등만 들어 있고, PG 는 첫 프레임을 채우기 전에 덤프해 0 이 들어간다.
 _Fd = D.get("F")
@@ -221,6 +232,19 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
                 xs, _w, J = skin_with_jacobian(
                     x_old, gpos, dp, log_r, log_t, sidx, float(hh))
                 return _fix(xs), J
+        elif a.var == "anchor":
+            import math as _m
+            ai_idx = torch.cdist(x_old, apos).topk(
+                a.k_skin, largest=False).indices                 # [N,k]
+            log_r = torch.full((apos.shape[0],), _m.log(_hA), device=dev)
+            log_t = torch.zeros_like(log_r)
+            dpa = torch.zeros(apos.shape[0], 3, device=dev, requires_grad=True)
+            var = [dpa]
+
+            def _state():
+                xs, _w, J = skin_with_jacobian(
+                    x_old, apos, dpa, log_r, log_t, ai_idx, _hA)
+                return _fix(xs), J
         else:
             q = xtil.clone().requires_grad_(True)
             var = [q]
@@ -261,6 +285,8 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
             F = phys_resid.plastic_step(F_tr, dlog)
         else:
             F = F_tr                      # 응력은 사영된 변형률로 이미 쟀다
+        if a.var == "anchor":
+            apos = (apos + dpa.detach()).detach()   # 앵커도 재료와 함께 간다
         v = ((x_new - x_old) / hs).detach()
         x = x_new
     preds.append(x.detach().cpu())
