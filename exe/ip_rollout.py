@@ -30,9 +30,13 @@ ap.add_argument("--traj", required=True, help="교사 궤적 (.pt)")
 ap.add_argument("--t0", type=int, default=3)
 ap.add_argument("--len", type=int, default=40)
 ap.add_argument("--iters", type=int, default=60, help="스텝당 L-BFGS 반복")
+ap.add_argument("--sub", type=int, default=1,
+                help="프레임을 이만큼 쪼개 푼다. dt 를 줄여 PG 로 수렴하는지 보는 "
+                     "것이 구현 오류와 적분기 감쇠를 가르는 시험이다")
 ap.add_argument("--k", type=int, default=16, help="변형구배 최소제곱 이웃 수")
 ap.add_argument("--lr", type=float, default=1.0)
 ap.add_argument("--out", required=True, help="덤프 경로 (.pt)")
+ap.add_argument("--no_bc", action="store_true", help="경계조건을 끈다 (대조용)")
 ap.add_argument("--dev", default="cuda")
 a = ap.parse_args()
 
@@ -79,6 +83,36 @@ print(f"[ip] 입자 {N}, 손잡이 {int((~free).sum())}, h {h:.5f}, 물체 {EXT:
       flush=True)
 
 
+BC = []
+for _b in cfg.get("boundary_conditions", []):
+    if _b.get("type") == "surface_collider":
+        BC.append(("plane",
+                   torch.tensor(_b["point"], device=dev, dtype=torch.float32),
+                   torch.tensor(_b["normal"], device=dev, dtype=torch.float32),
+                   _b.get("surface", "sticky")))
+    elif _b.get("type") == "bounding_box":
+        BC.append(("box", None, None, None))
+_pad = 3.0 * dx
+
+
+def apply_bc(xq):
+    """PG 와 같은 경계: 바닥 평면은 sticky, 격자 가장자리는 상자.
+
+    이것이 빠져 있으면 물체가 바닥을 뚫고 지나가 교사와 갈라진다 -- 목적함수가
+    아니라 **구속이 빠진** 것이다.
+    """
+    if a.no_bc:
+        return xq
+    for kind, pt, nl, surf in BC:
+        if kind == "plane":
+            d = ((xq - pt) * nl).sum(-1, keepdim=True)
+            xq = torch.where(d < 0, xq - d * nl, xq)
+        else:
+            lim = float(cfg.get("grid_lim", 2.0))
+            xq = xq.clamp(_pad, lim - _pad)
+    return xq
+
+
 def defgrad(x_new, x_old, F_old):
     """국소 최소제곱으로 한 스텝 야코비안을 잡고 F 를 밀어 준다."""
     d0 = x_old[idx] - x_old.unsqueeze(1)
@@ -96,44 +130,51 @@ v = (x - X[max(a.t0 - 1, 0)]) / h
 F = phys_resid.rebuild_F(X[:a.t0 + 1], cfg, h, k=a.k)[a.t0].float().to(dev)
 preds, gts = [], []
 t_start = time.time()
+hs = h / a.sub
+NORM = float(mass.sum()) * EXT ** 2 / hs ** 2
 for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
     t = a.t0 + i
     if t + 1 >= X.shape[0]:
         break
-    xtil = (x + h * v).detach()
-    x_old = x.detach()
-    F_old = F.detach()
-    # 손잡이의 이번 스텝 목표 위치 (교사가 실제로 끌고 간 곳)
-    tgt = {}
-    for kk in range(len(mem)):
-        if mem[kk].numel():
-            tgt[kk] = P[min(t + 1, P.shape[0] - 1), kk] + off[kk]
-    q = (xtil.clone()).requires_grad_(True)
-    opt = torch.optim.LBFGS([q], lr=a.lr, max_iter=a.iters,
-                            history_size=20, line_search_fn="strong_wolfe")
+    for _si in range(a.sub):
+        xtil = (x + hs * v).detach()
+        x_old = x.detach()
+        F_old = F.detach()
+        # 손잡이는 프레임 안에서 선형으로 보간해 끌고 간다
+        _al = (_si + 1.0) / a.sub
+        _pc = ((1.0 - _al) * P[min(t, P.shape[0] - 1)]
+               + _al * P[min(t + 1, P.shape[0] - 1)])
+        tgt = {kk: _pc[kk] + off[kk]
+               for kk in range(len(mem)) if mem[kk].numel()}
 
-    def closure():
-        opt.zero_grad(set_to_none=True)
-        xf = q.clone()
-        for kk, tv in tgt.items():                 # Dirichlet 은 대입한다
-            xf = xf.index_copy(0, mem[kk], tv)
-        F_tr = defgrad(xf, x_old, F_old)
-        E, _dl, _pt = phys_resid.ip_energy(
-            xf, xtil, F_tr, mass, vol, cfg, h, free=free, g=g,
-            norm=float(mass.sum()) * EXT ** 2 / h ** 2)
-        E.backward()
-        return E
+        def _fix(xq):
+            """Dirichlet 대입 + 경계. 에너지는 **이 배치에서** 잰다."""
+            for kk, tv in tgt.items():
+                xq = xq.index_copy(0, mem[kk], tv)
+            return apply_bc(xq)
 
-    opt.step(closure)
-    with torch.no_grad():
-        x_new = q.detach()
-        for kk, tv in tgt.items():
-            x_new = x_new.index_copy(0, mem[kk], tv)
-        F_tr = defgrad(x_new, x_old, F_old)
-        _psi, dlog = phys_resid.psi_of(F_tr, cfg, h)
-        F = phys_resid.plastic_step(F_tr, dlog)
-        v = (x_new - x_old) / h
-        x = x_new
+        q = xtil.clone().requires_grad_(True)
+        opt = torch.optim.LBFGS([q], lr=a.lr, max_iter=a.iters,
+                                history_size=20,
+                                line_search_fn="strong_wolfe")
+
+        def closure():
+            opt.zero_grad(set_to_none=True)
+            xf = _fix(q.clone())
+            F_tr = defgrad(xf, x_old, F_old)
+            E, _dl, _pt = phys_resid.ip_energy(
+                xf, xtil, F_tr, mass, vol, cfg, hs, free=free, g=g, norm=NORM)
+            E.backward()
+            return E
+
+        opt.step(closure)
+        with torch.no_grad():
+            x_new = _fix(q.detach())
+            F_tr = defgrad(x_new, x_old, F_old)
+            _psi, dlog = phys_resid.psi_of(F_tr, cfg, hs)
+            F = phys_resid.plastic_step(F_tr, dlog)
+            v = (x_new - x_old) / hs
+            x = x_new
     preds.append(x.detach().cpu())
     gts.append(X[t + 1].detach().cpu())
     err = float((x - X[t + 1]).norm(dim=-1).mean()) / EXT
@@ -144,5 +185,6 @@ G_ = torch.stack(gts)
 torch.save({"pred": P_, "gt": G_, "ctrl_pos": D.get("ctrl_pos"),
             "t0": a.t0, "EXT": EXT, "tag": D.get("tag", "ip")}, a.out)
 e = (P_ - G_).norm(dim=-1).mean(-1) / EXT
-print(f"[ip] {len(preds)} 프레임, 교사 대비 평균 {100*float(e.mean()):.3f}% "
-      f"끝 {100*float(e[-1]):.3f}%  ({time.time()-t_start:.0f}초)", flush=True)
+print(f"[ip] 서브스텝 {a.sub} (dt {hs:.2e}), {len(preds)} 프레임, "
+      f"교사 대비 평균 {100*float(e.mean()):.3f}% 끝 {100*float(e[-1]):.3f}%  "
+      f"({time.time()-t_start:.0f}초)", flush=True)
