@@ -1141,7 +1141,11 @@ if a.phys_probe:
 TBW = None
 if a.tb:
     from torch.utils.tensorboard import SummaryWriter
-    TBW = SummaryWriter(os.path.join(a.tb, a.tag))
+    # 재개하면 같은 폴더에 새 이벤트 파일이 생기는데, 이전 파일에 그 지점 이후
+    # 기록이 남아 있으면 TensorBoard 가 두 곡선을 겹쳐 그려 스텝이 꼬인다.
+    # purge_step 으로 재개 지점 이후를 버리게 한다.
+    TBW = SummaryWriter(os.path.join(a.tb, a.tag),
+                        purge_step=step0 if step0 else None)
     print(f"[TB] {os.path.join(a.tb, a.tag)}", flush=True)
 
 pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
