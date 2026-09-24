@@ -131,7 +131,10 @@ F = phys_resid.rebuild_F(X[:a.t0 + 1], cfg, h, k=a.k)[a.t0].float().to(dev)
 preds, gts = [], []
 t_start = time.time()
 hs = h / a.sub
-NORM = float(mass.sum()) * EXT ** 2 / hs ** 2
+# 정규화는 **프레임 간격으로 고정**한다. 서브스텝 dt 로 잡으면 dt 를 줄일수록
+# 목적함수와 그 기울기가 dt^-2 로 작아져, L-BFGS 가 수렴 허용오차에 먼저 걸려
+# 거의 풀지 않고 끝난다 -- dt 를 줄였더니 오차가 커지던 것이 이것이었다.
+NORM = float(mass.sum()) * EXT ** 2 / h ** 2
 for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
     t = a.t0 + i
     if t + 1 >= X.shape[0]:
@@ -156,6 +159,7 @@ for i in tqdm(range(a.len), desc="암시적 스텝", ncols=80):
         q = xtil.clone().requires_grad_(True)
         opt = torch.optim.LBFGS([q], lr=a.lr, max_iter=a.iters,
                                 history_size=20,
+                                tolerance_grad=1e-14, tolerance_change=1e-16,
                                 line_search_fn="strong_wolfe")
 
         def closure():
