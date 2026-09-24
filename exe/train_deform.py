@@ -79,7 +79,7 @@ ap.add_argument("--refps", action="store_true",
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
                      "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
 ap.add_argument("--arch", default="conv",
-                choices=("conv", "unet", "conv_sep", "conv_par",
+                choices=("attn", "conv", "unet", "conv_sep", "conv_par",
                          "unet_sep", "unet_par"),
                 help="격자 위 신경망. 집계는 셀, 출력은 격자점(c2g) 이다")
 ap.add_argument("--vox_res", type=int, default=16,
@@ -609,6 +609,40 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     """
     # 앙상블: 원점을 어긋나게 둔 격자 여러 개의 변위를 평균한다. 같은 가중치를
     # 쓰므로 파라미터는 늘지 않고, 격자 위치 때문에 생기는 편향만 씻긴다.
+    if a.arch == "attn":
+        # 예전 어텐션 스테퍼 경로를 그대로 되살린 것이다: FPS 앵커에 가우시안을
+        # kNN 으로 모아 특징을 만들고, 한 층에서 모든 앵커가 서로를 본 뒤,
+        # 학습된 반경 스키닝으로 가우시안을 옮긴다. 앵커는 자기 변위만큼 간다.
+        cfg = d["cfg"]
+        X = take(d["x"][0], gsel)
+        idx, _ = anchor_knn(x, p, a.k)
+        feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, p.shape[0], H,
+                            pa=p)
+        feat = _san(feat)
+        extra = torch.cat([
+            mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0], N_MAT),
+            bc_features(p, cfg) / H], -1)
+        if a.control:
+            extra = torch.cat([extra, ctrl_feat(d, t, p)], -1)
+        feat = torch.nan_to_num(feat, nan=0.0, posinf=0.0,
+                                neginf=0.0).clamp(-_FCAP, _FCAP)
+        extra = torch.nan_to_num(extra, nan=0.0, posinf=0.0,
+                                 neginf=0.0).clamp(-_FCAP, _FCAP)
+        out = net(p, torch.cat([feat, extra], -1), FRAME_DT)
+        dp, log_r, log_t = out[0], out[1], out[2]
+        dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0,
+                              neginf=0.0).clamp(-0.5 * H, 0.5 * H)
+        log_r = torch.nan_to_num(log_r, nan=0.0, posinf=0.0,
+                                 neginf=0.0).clamp(-4.0, 4.0)
+        log_t = torch.nan_to_num(log_t, nan=0.0, posinf=0.0,
+                                 neginf=0.0).clamp(-4.0, 4.0)
+        x2 = skin(x, p, dp, log_r, log_t, idx, H)[0]
+        if a.control:
+            x2 = apply_control(d, t, gsel, x2)
+        J = (jacobian_of(lambda q: skin(q, p, dp, log_r, log_t, idx, H)[0], x)
+             if need_J else None)
+        return x2, p + dp, (x2 - x) / FRAME_DT, J, dp, None, dmg, idx
+
     shifts = _ENS_SHIFT[:a.ens] if a.ens > 1 else [None]
     acc, warps, dp = 0.0, [], None
     for _sh in shifts:
@@ -879,7 +913,18 @@ with torch.no_grad():
     _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
     _x = take(_d["x"][1], _g)
     _v = (_x - take(_d["x"][0], _g)) / FRAME_DT
-    n_feat = cell_feats(_d, 1, _g, _x, _v)[0].shape[-1]
+    if a.arch == "attn":
+        # 어텐션 경로는 셀이 아니라 **앵커** 기준이라 폭이 다르다. 학습과 같은
+        # 조립으로 한 번 재서 맞춘다 (예전에 여기만 옛 경로로 남겨 두어 폭이
+        # 우연히 같아 들키지 않은 적이 있다).
+        _p0 = take(_d["x"][1], AIDX)
+        _i0, _ = anchor_knn(_x, _p0, a.k)
+        _f0, _ = aggregate(_x, _v / VEL_SCALE, take(_d["x"][0], _g),
+                           MASS[_g], _i0, _p0.shape[0], H, pa=_p0)
+        n_feat = (_f0.shape[-1] + N_MAT + n_bc
+                  + (7 * a.n_ctrl if a.control else 0))
+    else:
+        n_feat = cell_feats(_d, 1, _g, _x, _v)[0].shape[-1]
 if a.voxel:
     VOX_CELL = H
     # 격자는 모든 궤적을 덮도록 공간에 고정한다 (프레임마다 새로 잡으면 물체가
@@ -921,8 +966,22 @@ with torch.no_grad():
                              device=dev)[:min(a.n_pts, N_FULL)].sort().values
         _x = take(_dd["x"][_t], _gs)
         _v = (_x - take(_dd["x"][_t - 1], _gs)) / FRAME_DT
-        _s, _, _, _, _, _cr = cell_feats(_dd, _t, _gs, _x, _v)
-        if a.stat_occ:                     # 빈 칸이 96% 라 통계를 장악한다
+        if a.arch == "attn":
+            _pp = take(_dd["x"][_t], AIDX)
+            _ii, _ = anchor_knn(_x, _pp, a.k)
+            _ff, _ = aggregate(_x, _v / VEL_SCALE, take(_dd["x"][0], _gs),
+                               MASS[_gs], _ii, _pp.shape[0], H, pa=_pp)
+            _ex = torch.cat([
+                mat_feat(_dd["cfg"]).reshape(1, N_MAT).expand(_pp.shape[0],
+                                                              N_MAT),
+                bc_features(_pp, _dd["cfg"]) / H], -1)
+            if a.control:
+                _ex = torch.cat([_ex, ctrl_feat(_dd, _t, _pp)], -1)
+            _s = torch.cat([_san(_ff), _san(_ex)], -1)
+            _cr = None
+        else:
+            _s, _, _, _, _, _cr = cell_feats(_dd, _t, _gs, _x, _v)
+        if a.stat_occ and _cr is not None:  # 빈 칸이 96% 라 통계를 장악한다
             _m = torch.zeros(_s.shape[0], dtype=torch.bool, device=_s.device)
             _m[_cr.reshape(-1)] = True
             _s = _s[_m]
