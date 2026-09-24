@@ -12,7 +12,7 @@ C=$1; BASE=$2; N=$3; CH=${4:-8}
 W=/workspace
 R2OUT="r2:storage/result/anchorflow/traj_pg2"
 SH=${C%%_*}
-export PYTHONPATH=$W/PG_pgtraj:$W/PG_pgtraj/gaussian-splatting:$W/anchorflow/lib
+export PYTHONPATH=$W/PG_pgtraj:$W/PG_pgtraj/gaussian-splatting:$W/SC-GS:$W/anchorflow/lib
 export PYTHONIOENCODING=utf-8
 export AF_FLOOR_AUTO=1 AF_HANDLE=1 AF_H_D=0.25 AF_H_N=4 AF_H_MODE=randpt \
        AF_H_NONORM=1 AF_H_KIN=1 AF_H_ROUNDS=1 AF_H_RF=60 AF_H_ON=60 \

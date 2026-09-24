@@ -36,13 +36,17 @@ ls /tmp/*.whl 2>/dev/null && pip install -q /tmp/*.whl 2>&1 | tail -2
 echo "[셋업] 자산 내려받기"
 cd $W
 R=r2:storage/result/anchorflow/vastpkg
-for f in pg_code.tar.gz af_code.tar.gz aux.tar.gz pgmodel.tar.gz; do
+for f in pg_code.tar.gz af_code.tar.gz aux.tar.gz pgmodel.tar.gz scgs_min.tar.gz; do
   rclone copy "$R/$f" /tmp/ --transfers 4 || echo "[실패] $f"
 done
 tar xzf /tmp/pg_code.tar.gz -C $W                      # -> $W/PG_pgtraj
 mkdir -p $W/anchorflow && tar xzf /tmp/af_code.tar.gz -C $W/anchorflow   # exe, lib
 tar xzf /tmp/aux.tar.gz -C $W/assets                   # wmats, *fill_*.npy
 mkdir -p $W/pgmodel && tar xzf /tmp/pgmodel.tar.gz -C $W/pgmodel
+# PG 클론은 SC-GS 의 utils/scene/gaussian_renderer 를 심볼릭 링크로 쓴다
+mkdir -p $W/SC-GS && tar xzf /tmp/scgs_min.tar.gz -C $W/SC-GS
+ln -sfn $W/SC-GS/gaussian_renderer $W/PG_pgtraj/gaussian-splatting/gaussian_renderer
+ln -sfn $W/SC-GS/scene/gaussian_model.py $W/PG_pgtraj/gaussian-splatting/scene/gaussian_model.py
 rm -f /tmp/*.tar.gz
 
 echo "[확인] import"
