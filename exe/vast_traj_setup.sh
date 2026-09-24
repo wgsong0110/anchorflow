@@ -24,8 +24,7 @@ mkdir -p ~/.config/rclone
 echo "[셋업] 파이썬 의존성"
 # 클러스터와 **같은 버전**으로 고정한다. 최신 warp 에는 warp.torch 가 없어
 # PhysGaussian 의 mpm_solver_warp 가 import 에서 죽는다.
-pip install -q 'warp-lang==0.10.1' 'taichi==1.6.0' 'h5py==3.14.0' 'plyfile==1.1.5' \
-    tqdm scipy imageio imageio-ffmpeg opencv-python-headless 2>&1 | tail -2
+pip install -q warp-lang==0.10.1 taichi==1.6.0 h5py==3.14.0 plyfile==1.1.5 PyMCubes==0.1.6 trimesh==5.1.0 open3d==0.18.0 scikit-learn==1.9.1 scipy==1.17.1 matplotlib==3.11.2 opencv-python-headless tqdm imageio imageio-ffmpeg 2>&1 | tail -2
 
 echo "[셋업] 3DGS CUDA 휠 (미리 빌드된 것)"
 cd /tmp && rm -f *.whl
