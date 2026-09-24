@@ -13,7 +13,8 @@ W=/workspace
 R2OUT="r2:storage/result/anchorflow/traj_pg2"
 SH=${C%%_*}
 export PYTHONPATH=$W/PG_pgtraj:$W/PG_pgtraj/gaussian-splatting:$W/SC-GS:$W/anchorflow/lib
-export PYTHONIOENCODING=utf-8
+# warp 가 CUDA 소스를 파일로 쓸 때 로케일이 ASCII 면 UnicodeEncodeError 가 난다
+export PYTHONIOENCODING=utf-8 PYTHONUTF8=1 LANG=C.UTF-8 LC_ALL=C.UTF-8
 export AF_FLOOR_AUTO=1 AF_HANDLE=1 AF_H_D=0.25 AF_H_N=4 AF_H_MODE=randpt \
        AF_H_NONORM=1 AF_H_KIN=1 AF_H_ROUNDS=1 AF_H_RF=60 AF_H_ON=60 \
        AF_H_VMAX=0.25 AF_H_AMAX=1.0 AF_H_R=0.15
