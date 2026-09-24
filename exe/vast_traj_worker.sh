@@ -20,6 +20,12 @@ export AF_FLOOR_AUTO=1 AF_HANDLE=1 AF_H_D=0.25 AF_H_N=4 AF_H_MODE=randpt \
        AF_H_VMAX=0.25 AF_H_AMAX=1.0 AF_H_R=0.15
 export AF_PGFILL_NPY=$W/assets/pgfill_${SH}.npy
 
+# 궤적이 나오는 즉시 올리는 상시 업로더를 띄운다 (묶음 단위로만 올리면
+# 그 사이에 인스턴스가 멈출 때 미업로드가 남는다)
+if ! pgrep -f vast_uploader.sh > /dev/null; then
+  nohup bash "$(dirname "$0")/vast_uploader.sh" > /dev/null 2>&1 &
+fi
+
 i=0
 while [ "$i" -lt "$N" ]; do
   P=""; k=0
@@ -33,7 +39,7 @@ while [ "$i" -lt "$N" ]; do
     --config $W/assets/wmats/${C}_t.json \
     --work $W/pgwork --out $W/out --tag ${C}_t \
     --pairs "$P" --n_pts 20000 --fill_cache $W/assets/fill_${SH}.npy
-  # 생성되는 족족 올리고 로컬은 비운다
+  # 묶음이 끝날 때도 한 번 쓸어 담는다 (상시 업로더가 놓친 것 대비)
   if ls $W/out/*.pt >/dev/null 2>&1; then
     rclone copy $W/out "$R2OUT/" --transfers 4 --s3-chunk-size 64M \
       && rm -f $W/out/*.pt \
