@@ -22,7 +22,8 @@ mkdir -p ~/.config/rclone
 [ -f ~/.config/rclone/rclone.conf ] || echo "[경고] rclone.conf 가 없다 -- 별도로 넣어야 한다"
 
 echo "[셋업] 파이썬 의존성"
-pip install -q warp-lang taichi h5py plyfile tqdm scipy imageio imageio-ffmpeg 2>&1 | tail -2
+pip install -q warp-lang taichi h5py plyfile tqdm scipy imageio imageio-ffmpeg \
+    opencv-python-headless 2>&1 | tail -2
 
 echo "[셋업] 3DGS CUDA 휠 (미리 빌드된 것)"
 cd /tmp && rm -f *.whl
