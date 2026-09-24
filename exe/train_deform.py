@@ -175,6 +175,9 @@ ap.add_argument("--noise", type=float, default=0.0,
                      "(물체 크기 대비 최대 비율). 정답은 그대로 두므로 모델이 "
                      "벗어난 곳에서 돌아오는 보정을 배운다")
 ap.add_argument("--tb", default=None, help="TensorBoard 이벤트를 쓸 디렉토리")
+ap.add_argument("--mat_film", action="store_true",
+                help="물성을 셀 특징에 붙이지 않고 **FiLM** 으로 넣는다. 씬 안에서 "
+                     "물성이 상수라 붙이면 채널 하나를 상수로 채우는 셈이다")
 a = ap.parse_args()
 
 dev = "cuda"
@@ -296,6 +299,7 @@ VEL_SCALE = EXT / FRAME_DT
 # 부피를 쓰는 것과 같은 근거다. 등방이므로 L0 = sigma0 * I.
 SIG0 = a.sigma0 * float(dx)
 N_MAT = 0 if a.no_mat else 13   # logE, nu, xi, logρ, log1p(항복), φ, 종류4, g3
+N_FILM = N_MAT if (a.mat_film and not a.no_mat) else 0
 n_bc = bc_features(X0d[:2], cfg0).shape[-1]
 n_feat_probe = None
 
@@ -313,7 +317,7 @@ def build(n_feat):
                           h=H, scale=0.02 * EXT,
                           arch=a.arch.replace("conv", "plain"),
                           skin_out=(a.transfer == "skin"),
-                          damage=a.damage).to(dev)
+                          damage=a.damage, n_mat=N_FILM).to(dev)
     else:
         net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
                         heads=a.heads, scale=0.02 * EXT, h=H, ext=EXT,
@@ -577,8 +581,12 @@ def cell_feats(d, t, gsel, x, v, shift=None):
     grid_pts = tuple(int(t) for t in nn3)
     grid_shape = (grid_pts, tuple(ncell))
     tri = (flat_c, w_c)
-    extra = torch.cat([mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0], N_MAT),
-                       bc_features(p, cfg) / hh], -1)
+    if a.mat_film:
+        extra = bc_features(p, cfg) / hh      # 물성은 FiLM 으로 따로 들어간다
+    else:
+        extra = torch.cat([mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0],
+                                                                  N_MAT),
+                           bc_features(p, cfg) / hh], -1)
     if cond is not None:
         extra = torch.cat([extra, cond], -1)
     if a.grip:
@@ -606,7 +614,9 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     for _sh in shifts:
         _in, p, grid_shape, tri, (lo, hh, nn3), crow = cell_feats(
             d, t, gsel, x, v, shift=_sh)
-        out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1])
+        _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
+        out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1],
+                  mat=_mv)
         dp = out[0]
         # 얇은 잎 같은 구름에서는 한 번의 큰 출력이 다음 스텝의 kNN 을 망가뜨려
         # (NaN 거리 -> 엉뚱한 색인) CUDA assert 로 죽는다. 물리적으로 말이 되는

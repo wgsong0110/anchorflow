@@ -82,7 +82,7 @@ class ConvStepper(nn.Module):
 
     def __init__(self, n_feat, hidden=64, depth=4, h=0.05, scale=1.0,
                  skin_out=False,
-                 arch="plain", damage=False):
+                 arch="plain", damage=False, n_mat=0):
         super().__init__()
         self.h, self.scale, self.arch, self.damage = h, scale, arch, damage
         # skin_out: 변위와 함께 **스키닝 반경**을 낸다 (DeformNet 과 같은 매개화).
@@ -93,6 +93,16 @@ class ConvStepper(nn.Module):
         self.register_buffer("in_sd", torch.ones(n_feat))
         self.film = nn.Sequential(nn.Linear(1, hidden), nn.SiLU(),
                                   nn.Linear(hidden, 2 * hidden))
+        # 물성은 씬 안에서 **상수**라 셀 특징에 붙이면 채널 하나를 상수로 채우는
+        # 셈이다. 대신 블록마다 채널별 스케일·시프트로 넣는다 (FiLM).
+        self.n_mat = int(n_mat)
+        if self.n_mat:
+            self.mfilm = nn.ModuleList([
+                nn.Sequential(nn.Linear(self.n_mat, hidden), nn.SiLU(),
+                              nn.Linear(hidden, 2 * hidden))
+                for _ in range(depth + 1)])
+            for m in self.mfilm:                   # 처음에는 항등 변조
+                nn.init.zeros_(m[-1].weight); nn.init.zeros_(m[-1].bias)
         # 셀 집계 결과를 격자점으로 옮기는 층 (2^3, pad 1 -> 셀 n -> 격자점 n+1)
         self.c2g = nn.Conv3d(n_feat, n_feat, 2, padding=1)
         self.inp = nn.Conv3d(n_feat, hidden, 1)
@@ -127,7 +137,13 @@ class ConvStepper(nn.Module):
         self.in_sd.copy_(torch.where(sd > 1e-4 * sd.max().clamp(min=1e-12),
                                      sd, torch.ones_like(sd)))
 
-    def forward(self, p, feat, dt, grid, static=None, cells=None):
+    def _mod(self, v, mat, i):
+        if not self.n_mat or mat is None:
+            return v
+        g, b = self.mfilm[min(i, len(self.mfilm) - 1)](mat).chunk(2, -1)
+        return (1.0 + g).view(1, -1, 1, 1, 1) * v + b.view(1, -1, 1, 1, 1)
+
+    def forward(self, p, feat, dt, grid, static=None, cells=None, mat=None):
         """grid 는 격자점 크기. cells 가 주어지면 feat 은 **셀** 기준이고,
         c2g 가 격자점으로 옮긴다."""
         nx, ny, nz = grid
@@ -141,6 +157,7 @@ class ConvStepper(nn.Module):
         g, b = self.film(torch.as_tensor([[float(dt)]], device=v.device,
                                          dtype=v.dtype)).chunk(2, -1)
         v = g.view(1, -1, 1, 1, 1) * v + b.view(1, -1, 1, 1, 1)
+        v = self._mod(v, mat, 0)
         if self.arch == "unet":
             s1 = self.d1(v)
             s2 = self.d2(Fn.avg_pool3d(s1, 2, ceil_mode=True))
@@ -150,8 +167,9 @@ class ConvStepper(nn.Module):
             m = Fn.interpolate(m, size=s1.shape[2:], mode="nearest")
             v = self.u1(torch.cat([m, s1], 1))
         else:
-            for blk in self.body:
+            for _i, blk in enumerate(self.body):
                 v = v + blk(v)
+                v = self._mod(v, mat, _i + 1)
         o = self.out(v).reshape(-1, nx * ny * nz).t()          # [M, C]
         dp = o[:, :3] * self.scale
         if self.skin_out:
