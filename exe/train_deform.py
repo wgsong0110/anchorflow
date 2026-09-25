@@ -175,6 +175,12 @@ ap.add_argument("--noise", type=float, default=0.0,
                 help="Phase 1 에서 창의 **시작 상태**를 매끄러운 저주파 장으로 흔든다 "
                      "(물체 크기 대비 최대 비율). 정답은 그대로 두므로 모델이 "
                      "벗어난 곳에서 돌아오는 보정을 배운다")
+ap.add_argument("--wd", type=float, default=0.0,
+                help="가중치 감쇠 (0 보다 크면 Adam 대신 AdamW 를 쓴다). 한 스텝 "
+                     "교사 오차만 내려가고 홀드아웃이 안 따라오는 과적합을 친다")
+ap.add_argument("--drop", type=float, default=0.0,
+                help="conv 블록 사이 채널 드롭아웃 비율 (Dropout3d). 검증·롤아웃 "
+                     "에서는 자동으로 꺼진다")
 ap.add_argument("--tb", default=None, help="TensorBoard 이벤트를 쓸 디렉토리")
 ap.add_argument("--fe_state", action="store_true",
                 help="탄성 변형구배 F_e 를 **입자 상태로** 들고 다닌다. 교사의 F 로 "
@@ -323,12 +329,14 @@ def build(n_feat):
                           h=H, scale=0.02 * EXT,
                           arch=a.arch.replace("conv", "plain"),
                           skin_out=(a.transfer == "skin"),
-                          damage=a.damage, n_mat=N_FILM).to(dev)
+                          damage=a.damage, n_mat=N_FILM,
+                          drop=a.drop).to(dev)
     else:
         net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
                         heads=a.heads, scale=0.02 * EXT, h=H, ext=EXT,
                         seed=a.seed, damage=a.damage).to(dev)
-    opt = torch.optim.Adam(net.parameters(), lr=a.lr)
+    opt = (torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=a.wd)
+           if a.wd > 0 else torch.optim.Adam(net.parameters(), lr=a.lr))
     n = sum(p.numel() for p in net.parameters())
     print(f"[모델] 입력 {n_feat}, 파라미터 {n/1e6:.2f}M", flush=True)
 
@@ -1308,6 +1316,8 @@ _ROLLDUMP = None
 
 @torch.no_grad()
 def rollout(d, t0, L, gsel):
+    # 드롭아웃이 켜져 있으면 롤아웃이 확률적이 된다 -- 평가는 항상 eval 로.
+    net.eval()
     x = take(d["x"][t0], gsel)
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
@@ -1335,6 +1345,7 @@ def rollout(d, t0, L, gsel):
             cds_s.append(chamfer(x_still, gt) / (EXT ** 2))
             ems_s.append(emd(x_still, gt, t0 * 1000 + i) / EXT)
         x = x2
+    net.train()
     return errs, stills, cds, ems, cds_s, ems_s
 
 

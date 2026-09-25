@@ -82,8 +82,11 @@ class ConvStepper(nn.Module):
 
     def __init__(self, n_feat, hidden=64, depth=4, h=0.05, scale=1.0,
                  skin_out=False,
-                 arch="plain", damage=False, n_mat=0):
+                 arch="plain", damage=False, n_mat=0, drop=0.0):
         super().__init__()
+        # 블록 사이의 채널 드롭아웃. 부피가 대부분 비어 있어 **화소별** 드롭은
+        # 빈 칸만 지우기 쉬우므로, 채널 통째로 떨어뜨리는 Dropout3d 를 쓴다.
+        self.drop = nn.Dropout3d(float(drop)) if drop > 0 else nn.Identity()
         self.h, self.scale, self.arch, self.damage = h, scale, arch, damage
         # skin_out: 변위와 함께 **스키닝 반경**을 낸다 (DeformNet 과 같은 매개화).
         # 고정 trilinear 가중치로 전달하면 같은 조건에서 비가 0.25 -> 0.58 로
@@ -163,12 +166,12 @@ class ConvStepper(nn.Module):
             s2 = self.d2(Fn.avg_pool3d(s1, 2, ceil_mode=True))
             m = self.mid(Fn.avg_pool3d(s2, 2, ceil_mode=True))
             m = Fn.interpolate(m, size=s2.shape[2:], mode="nearest")
-            m = self.u2(torch.cat([m, s2], 1))
+            m = self.drop(self.u2(torch.cat([m, s2], 1)))
             m = Fn.interpolate(m, size=s1.shape[2:], mode="nearest")
             v = self.u1(torch.cat([m, s1], 1))
         else:
             for _i, blk in enumerate(self.body):
-                v = v + blk(v)
+                v = v + self.drop(blk(v))
                 v = self._mod(v, mat, _i + 1)
         o = self.out(v).reshape(-1, nx * ny * nz).t()          # [M, C]
         dp = o[:, :3] * self.scale
