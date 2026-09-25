@@ -1502,6 +1502,11 @@ if a.resume and os.path.exists(a.resume):
               flush=True)
     else:
         opt.load_state_dict(ck["opt"])
+        if a.rl and ck.get("critic") is not None and CRITIC is not None:
+            CRITIC.load_state_dict(ck["critic"])
+            if ck.get("opt_c") is not None:
+                OPT_C.load_state_dict(ck["opt_c"])
+            print("[재개] 크리틱도 이어받았다", flush=True)
         step0 = int(ck["step"])
         _rng_ck = ck
         print(f"[재개] {a.resume} step {step0}", flush=True)
@@ -1584,6 +1589,10 @@ def save_ck(name, step):
     # 난수 상태를 함께 남긴다. 이게 없으면 재개한 뒤 창 표본이 다른 흐름을 타서
     # 곡선이 이어지지 않는다 (TensorBoard 에서 바로 보인다).
     torch.save({"net": net.state_dict(), "opt": opt.state_dict(),
+                # 크리틱도 함께 남긴다 -- 없으면 재개할 때 가치함수가 0 에서
+                # 다시 시작해 정책이 한동안 미래를 못 본다
+                "critic": (CRITIC.state_dict() if CRITIC is not None else None),
+                "opt_c": (OPT_C.state_dict() if OPT_C is not None else None),
                 "step": step, "aidx": AIDX.cpu(), "H": H, "EXT": EXT,
                 "n_feat": n_feat, "args": vars(a),
                 "best": _best,
