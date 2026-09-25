@@ -146,16 +146,24 @@ class ConvStepper(nn.Module):
         g, b = self.mfilm[min(i, len(self.mfilm) - 1)](mat).chunk(2, -1)
         return (1.0 + g).view(1, -1, 1, 1, 1) * v + b.view(1, -1, 1, 1, 1)
 
-    def forward(self, p, feat, dt, grid, static=None, cells=None, mat=None):
+    def forward(self, p, feat, dt, grid, static=None, cells=None, mat=None,
+                ens=1):
         """grid 는 격자점 크기. cells 가 주어지면 feat 은 **셀** 기준이고,
-        c2g 가 격자점으로 옮긴다."""
+        c2g 가 격자점으로 옮긴다.
+
+        ens > 1 이면 feat 이 [ens*M, F] 로 쌓여 들어온 것으로 보고 **한 번의**
+        컨볼루션으로 처리한다. 어긋난 격자 여러 개를 따로 돌리면 커널 실행만
+        그만큼 늘어 GPU 가 비는데, 가중치가 같으므로 배치 차원으로 묶으면 된다.
+        """
         nx, ny, nz = grid
         f = feat if static is None else torch.cat([feat, static], -1)
         f = (f - self.in_mu) / self.in_sd
         if cells is not None:
-            v = self.c2g(f.t().reshape(1, -1, *cells))
+            _c = f.reshape(ens, -1, f.shape[-1]).permute(0, 2, 1)
+            v = self.c2g(_c.reshape(ens, -1, *cells))
         else:
-            v = f.t().reshape(1, -1, nx, ny, nz)
+            _c = f.reshape(ens, -1, f.shape[-1]).permute(0, 2, 1)
+            v = _c.reshape(ens, -1, nx, ny, nz)
         v = self.inp(v)
         g, b = self.film(torch.as_tensor([[float(dt)]], device=v.device,
                                          dtype=v.dtype)).chunk(2, -1)
@@ -173,7 +181,9 @@ class ConvStepper(nn.Module):
             for _i, blk in enumerate(self.body):
                 v = v + self.drop(blk(v))
                 v = self._mod(v, mat, _i + 1)
-        o = self.out(v).reshape(-1, nx * ny * nz).t()          # [M, C]
+        o = self.out(v)                                        # [E,C,nx,ny,nz]
+        o = o.reshape(ens, o.shape[1], -1).permute(0, 2, 1).reshape(
+            -1, o.shape[1])                                    # [E*M, C]
         dp = o[:, :3] * self.scale
         if self.skin_out:
             lr = (o[:, 3] + math.log(self.h)).clamp(

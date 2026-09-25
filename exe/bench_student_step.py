@@ -21,6 +21,10 @@ ap.add_argument("--ens", type=int, default=1,
 ap.add_argument("--transfer", default="skin", choices=("skin", "tri"))
 ap.add_argument("--k", type=int, default=16)
 ap.add_argument("--rep", type=int, default=200)
+ap.add_argument("--ens_batch", action="store_true",
+                help="앙상블 격자를 배치 차원으로 묶어 컨볼루션을 한 번만 돈다")
+ap.add_argument("--amp", action="store_true",
+                help="컨볼루션을 bfloat16 으로 돌린다 (cudnn benchmark 도 켠다)")
 ap.add_argument("--n20", action="store_true",
                 help="산술로 만든 20 이웃 (topk 없음)")
 ap.add_argument("--corners", action="store_true",
@@ -28,6 +32,8 @@ ap.add_argument("--corners", action="store_true",
 a = ap.parse_args()
 
 dev = "cuda:0"
+if a.amp:
+    torch.backends.cudnn.benchmark = True
 torch.set_grad_enabled(False)
 from scene.gaussian_model import GaussianModel
 from utils.camera_view_utils import get_camera_view
@@ -128,13 +134,33 @@ if a.ens > 1:
 
     def ens_step():
         acc = torch.zeros_like(x)
+        if a.ens_batch:
+            # 격자마다 특징을 만든 뒤 **한 번의** 컨볼루션으로 묶어 돈다.
+            feats, cors, ncs = [], [], None
+            for o in offs:
+                cr, cwe, nc = TRI.cell_index(x, o, h, n3)
+                Mc = nc[0] * nc[1] * nc[2]
+                cen = torch.zeros(Mc, 3, device=dev)
+                TRI.tri_feats(x, v, X, m, cr, cwe, Mc, cen, float(h))
+                feats.append(torch.randn(Mc, a.feat, device=dev))
+                cors.append(TRI.corners(x, o, h, n3))
+                ncs = nc
+            fi = torch.cat(feats, 0)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.amp):
+                d3 = net(None, fi, 1/60., grid_pts, cells=tuple(ncs),
+                         ens=a.ens)[0].float()
+            per = d3.shape[0] // a.ens
+            for _i, (fl, wq) in enumerate(cors):
+                acc = acc + TRI.g2p(fl, wq, d3[_i * per:(_i + 1) * per])
+            return acc / a.ens
         for o in offs:
             cr, cwe, nc = TRI.cell_index(x, o, h, n3)
             Mc = nc[0] * nc[1] * nc[2]
             cen = torch.zeros(Mc, 3, device=dev)
             f = TRI.tri_feats(x, v, X, m, cr, cwe, Mc, cen, float(h))
             fi = torch.randn(Mc, a.feat, device=dev)
-            d3 = net(None, fi, 1/60., grid_pts, cells=tuple(nc))[0]
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.amp):
+                d3 = net(None, fi, 1/60., grid_pts, cells=tuple(nc))[0].float()
             fl, wq = TRI.corners(x, o, h, n3)
             acc = acc + TRI.g2p(fl, wq, d3)
         return acc / a.ens
