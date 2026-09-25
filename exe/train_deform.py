@@ -186,15 +186,6 @@ ap.add_argument("--det_reg", type=float, default=0.0,
                      "벌한다. relu(margin - det)^2 의 입자 평균에 이 가중치를 곱한다")
 ap.add_argument("--det_margin", type=float, default=0.1,
                 help="det 가 이 값 아래로 내려가면 벌점이 붙는다 (0 이면 뒤집힘만)")
-ap.add_argument("--phys_own", action="store_true",
-                help="i-PG 목적함수를 **학생 자신의 격자·전달** 위에서 잰다. "
-                     "학생 출력 dp 가 그대로 격자 증분이므로 P2G 왕복이 없다. "
-                     "같은 물리를 우리 기저에 투영한 것이라 i-PG 와 이산화는 다르다")
-ap.add_argument("--phys_grid", action="store_true",
-                help="Phase 2 목적함수를 i-PG 처럼 **격자 증분** 기준으로 잰다. "
-                     "학생이 옮긴 가우시안 변위를 MPM 격자로 P2G 해 Δu_I 를 "
-                     "역산하고, 관성·중력은 격자에서 탄성은 격자 속도기울기로 "
-                     "민 F 로 잰다")
 ap.add_argument("--warm", type=int, default=0,
                 help="감독 전에 학생을 이만큼 no_grad 로 굴려 **자기 오차가 쌓인 "
                      "상태**에서 시작한다. 역전파 사슬은 --unroll 만큼만 남으므로 "
@@ -757,7 +748,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                      else torch.full((dp.shape[0],), math.log(hh), device=dev))
             log_t = out[2] if len(out) > 2 else torch.zeros_like(log_r)
             with _tsec("스키닝"):
-                if a.fe_state or a.det_reg > 0 or a.phys_own:
+                if a.fe_state or a.det_reg > 0:
                     # 해석적 야코비안을 그대로 쓴다 (자동미분 세 번보다 싸다)
                     xe, _w8, _Jf = skin_with_jacobian(x, gpos, dp, log_r,
                                                       log_t, sidx, float(hh))
@@ -794,12 +785,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 fe_next = phys_resid.plastic_step(_ftr, _dlg).detach()
     # det 벌점은 **해석적** 야코비안으로 잰다. 자동미분 야코비안은 need_J 일 때만
     # 있고 세 배 비싸다. 둘 다 없으면 벌점을 못 매기므로 None 으로 돌려준다.
-    # phys_own 은 목적함수를 **학생의 격자** 위에서 재므로 격자점 변위·가중치·
-    # 색인이 필요하다. 왕복(P2G) 없이 dp 가 그대로 Δu_I 가 된다.
-    _skin = ((dp, _w8, sidx) if (a.phys_own and a.transfer == "skin"
-                                 and _w8 is not None) else None)
     return (x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, crow, fe_next,
-            (_Jf if _Jf is not None else J), _skin)
+            (_Jf if _Jf is not None else J))
 
 
 _F_MSG = []
@@ -874,26 +861,16 @@ def phys_window(d, t0, K, gsel, sigma, gen):
     for i in range(K):
         xtil = x + h * v
         v_old = v                       # 관성항은 이전 속도로 잰다
-        x2, p, v, J, _dp, _ai, _dmg, _cr, _fe, _Jd, _sk = step_once(
-            d, t0 + i, gsel, p, x, v,
-            need_J=not (a.phys_grid or a.phys_own))
+        x2, p, v, J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
+            d, t0 + i, gsel, p, x, v, need_J=False)
         fm = free_mask(d, x2.shape[0], dev, gsel) if a.control else None
-        if a.phys_own and _sk is not None:
-            _dpI, _w8s, _sidx = _sk
-            E, dlog, F_tr, parts = phys_resid.own_ip_energy(
-                _dpI, _w8s, _sidx, _Jd, v_old, F, mass, vol, cfg, h,
-                g=g, norm=norm)
-        elif a.phys_grid:
-            # i-PG 의 미지수는 격자 증분이다. 학생이 만든 가우시안 변위를 되돌려
-            # Δu_I 를 얻고 그 위에서 잰다.
-            E, dlog, F_tr, parts = phys_resid.grid_ip_energy(
-                x, x2 - x, v_old, F, mass, vol, cfg, h,
-                int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0)),
-                g=g, norm=norm, free=fm)
-        else:
-            F_tr = J @ F
-            E, dlog, parts = phys_resid.ip_energy(
-                x2, xtil, F_tr, mass, vol, cfg, h, free=fm, g=g, norm=norm)
+        # 물리손실은 i-PG 와 같은 자리에서 잰다: 학생이 옮긴 가우시안 변위를
+        # MPM 격자로 P2G 해 격자 증분 Δu_I 를 역산하고, 관성·중력은 격자에서,
+        # 탄성은 격자 속도기울기로 민 F 로 잰다.
+        E, dlog, F_tr, parts = phys_resid.grid_ip_energy(
+            x, x2 - x, v_old, F, mass, vol, cfg, h,
+            int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0)),
+            g=g, norm=norm, free=fm)
         e_tot = e_tot + E
         if i == 0:
             with torch.no_grad():
@@ -947,7 +924,7 @@ def window(d, t0, L, gsel):
         # 교사의 같은 프레임이므로 t0 를 함께 민다. 상태만 나르고 그래프는 버린다.
         with torch.no_grad():
             for _w in range(a.warm):
-                x, p, v, _, _, _ai_w, dmg, idx_prev, fe, _, _ = step_once(
+                x, p, v, _, _, _ai_w, dmg, idx_prev, fe, _ = step_once(
                     d, t0 + _w, gsel, p, x, v, need_J=False, dmg=dmg,
                     idx_prev=idx_prev, x0=x0w, p0=p0w, fe=fe)
                 if _ai_w is not None:
@@ -959,7 +936,7 @@ def window(d, t0, L, gsel):
         x_still = x.clone()
     for i in range(L):
         ai_now = ai
-        x2, p, v, J, dp, ai, dmg, idx_prev, fe, Jdet, _sk = step_once(
+        x2, p, v, J, dp, ai, dmg, idx_prev, fe, Jdet = step_once(
             d, t0 + i, gsel, p, x, v, need_J=a.lambda_J > 0,
             dmg=dmg, idx_prev=idx_prev, x0=x0w, p0=p0w, fe=fe)
         if a.damage:
@@ -1217,7 +1194,7 @@ def quick_val():
         x_still = x.clone()
         for i in range(a.val_len):
             with torch.enable_grad():
-                x2, p, v, _, _, _, _, _, _, _, _ = step_once(
+                x2, p, v, _, _, _, _, _, _, _ = step_once(
                     d, t0 + i, gsel, p, x, v, need_J=False)
             x2, p, v = x2.detach(), p.detach(), v.detach()
             gt = take(d["x"][t0 + i + 1], gsel)
@@ -1440,7 +1417,7 @@ def rollout(d, t0, L, gsel):
     cds, ems, cds_s, ems_s = [], [], [], []
     for i in range(L):
         with torch.enable_grad():
-            x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _, _ = step_once(
+            x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
                 d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                 idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
