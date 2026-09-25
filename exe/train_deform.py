@@ -985,9 +985,28 @@ class Critic(torch.nn.Module):
         torch.nn.init.zeros_(self.head[-1].weight)
         torch.nn.init.zeros_(self.head[-1].bias)
 
-    def forward(self, feat, extra):
-        h = self.f(feat).mean(0, keepdim=True)
-        return self.head(torch.cat([h, extra.reshape(1, -1)], -1)).reshape(())
+    def forward(self, feat, extra, frozen=False):
+        """frozen 이면 **가중치로는 기울기를 보내지 않는다** (입력으로만 보낸다).
+
+        액터 손실에 V(s') 이 들어가는데, 거기서 가중치까지 학습하면 정책이 V 를
+        낮추는 쪽으로 착취한다 -- 실제로 정책 손실이 음수로 달아났다.
+        """
+        if frozen:
+            ps = [q.detach() for q in self.parameters()]
+            h = torch.nn.functional.silu(
+                torch.nn.functional.linear(feat, ps[0], ps[1]))
+            h = torch.nn.functional.silu(
+                torch.nn.functional.linear(h, ps[2], ps[3]))
+            h = h.mean(0, keepdim=True)
+            z = torch.cat([h, extra.reshape(1, -1)], -1)
+            z = torch.nn.functional.silu(
+                torch.nn.functional.linear(z, ps[4], ps[5]))
+            out = torch.nn.functional.linear(z, ps[6], ps[7])
+        else:
+            h = self.f(feat).mean(0, keepdim=True)
+            out = self.head(torch.cat([h, extra.reshape(1, -1)], -1))
+        # 비용이 0 이상이므로 가치도 0 이상이어야 한다
+        return torch.nn.functional.softplus(out).reshape(())
 
 
 def rl_state_feat(d, t, gsel, x, v, fe, p=None):
@@ -1029,6 +1048,7 @@ def rl_episode(d, t0, E, gsel, gen):
          take(d["x"][t0], AIDX))
     fe = None
     la = lc = 0.0
+    cost_sum = 0.0
     n_st = 0
     drift0 = None
     for i in range(E):
@@ -1056,16 +1076,20 @@ def rl_episode(d, t0, E, gsel, gen):
         term = (drift0 is not None and dr_n > a.rl_term * drift0)
         if term:
             v_next = torch.zeros((), device=dev)
+            v_next_c = torch.zeros((), device=dev)
             pen = torch.tensor(a.rl_term_pen, device=dev)
         else:
-            v_next = CRITIC(feat_n, torch.tensor(
-                [float(i + 1) / E, dr_n / max(ext, 1e-9)], device=dev))
+            _ex = torch.tensor([float(i + 1) / E, dr_n / max(ext, 1e-9)],
+                               device=dev)
+            v_next = CRITIC(feat_n, _ex, frozen=True)     # 액터용 (가중치 동결)
+            v_next_c = CRITIC(feat_n.detach(), _ex)       # 크리틱 목표용
             pen = torch.zeros((), device=dev)
         cost = E_ip + pen                       # 비용 = -보상
         la = la + (cost + a.rl_gamma * v_next)
         with torch.no_grad():
-            y = cost.detach() + a.rl_gamma * v_next.detach()
+            y = cost.detach() + a.rl_gamma * v_next_c.detach()
         lc = lc + (v_s - y) ** 2
+        cost_sum = cost_sum + float(cost)
         n_st += 1
         if term:
             break
@@ -1075,7 +1099,7 @@ def rl_episode(d, t0, E, gsel, gen):
         fe = fe2.detach() if torch.is_tensor(fe2) else fe2
         with torch.no_grad():
             F = phys_resid.plastic_step(F_tr, dlog).detach()
-    return la / n_st, lc / n_st, n_st
+    return la / n_st, lc / n_st, n_st, cost_sum / n_st
 
 
 def phys_window(d, t0, K, gsel, sigma, gen):
@@ -1603,11 +1627,12 @@ for it in pbar:
             gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
                                 device=dev)[:a.n_pts]
         if a.rl:
-            wa_, wc_, nst_ = rl_episode(d, t0, a.rl_steps, gsel, gen)
+            wa_, wc_, nst_, wcost_ = rl_episode(d, t0, a.rl_steps, gsel, gen)
             ((wa_ + wc_) / a.batch).backward()
-            lx = lx + float(wa_) / a.batch
+            lx = lx + wcost_ / a.batch          # 즉시 비용 (잔차^2)
             still = still + float(wc_) / a.batch
             arel = arel + nst_ / a.batch
+            la = la + float(wa_) / a.batch
             continue
         if a.phase2:
             # K 램프: 1 -> phys_K. 드리프트는 뒤 스텝에서 생기므로 결국 늘린다.
@@ -1676,7 +1701,8 @@ for it in pbar:
     hist.append((lx, lJ, still, la, arel, ldm, dmean))
     if TBW is not None and it % 20 == 0:
         if a.rl:
-            TBW.add_scalar("rl/정책손실", lx, it)
+            TBW.add_scalar("rl/즉시비용", lx, it)
+            TBW.add_scalar("rl/정책손실", la, it)
             TBW.add_scalar("rl/크리틱손실", still, it)
             TBW.add_scalar("rl/에피소드길이", arel, it)
         elif a.phase2:
@@ -1693,7 +1719,8 @@ for it in pbar:
             TBW.add_scalar("학습/det벌점", ldet, it)
     if it % 20 == 0:
         if a.rl:
-            pbar.set_postfix(정책=f"{lx:.3e}", 크리틱=f"{still:.3e}",
+            pbar.set_postfix(비용=f"{lx:.3e}", 정책=f"{la:.3e}",
+                             크리틱=f"{still:.3e}",
                              스텝=f"{arel:.1f}", gn=f"{float(gn):.1e}")
         elif a.phase2:
             pbar.set_postfix(E=f"{lx:.3e}", 자유잔차=f"{100*arel:.3f}%",
