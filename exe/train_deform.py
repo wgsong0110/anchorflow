@@ -1074,6 +1074,15 @@ def rl_episode(d, t0, E, gsel, gen):
                                   device=dev))
         x2, p2, v2, _J, _dp, _ai, _dmg, _cr, fe2, _Jd = step_once(
             d, t, gsel, p, x, v, need_J=False, fe=fe)
+        # 상태가 무효가 되면(비유한, 또는 격자 밖으로 이탈) 에피소드를 끝내고
+        # 벌점을 준다. 자르지 않는다 -- 자르면 정책이 그 경계를 이용한다.
+        _bad = (not bool(torch.isfinite(x2).all())) or \
+            float(x2.abs().max()) > 4.0 * gl
+        if _bad:
+            la = la + torch.as_tensor(a.rl_term_pen, device=dev)
+            cost_sum += a.rl_term_pen
+            n_st += 1
+            break
         fm = free_mask(d, x2.shape[0], dev, gsel, x, t) if a.control else None
         E_ip, dlog, F_tr, _pt = phys_resid.grid_ip_energy(
             x, x2 - x, v, F, mass, vol, cfg, h, ng, gl, g=g, norm=norm, free=fm)
@@ -1641,7 +1650,9 @@ for it in pbar:
                                 device=dev)[:a.n_pts]
         if a.rl:
             wa_, wc_, nst_, wcost_ = rl_episode(d, t0, a.rl_steps, gsel, gen)
-            ((wa_ + wc_) / a.batch).backward()
+            _tot = (wa_ + wc_) / a.batch
+            if bool(torch.isfinite(_tot)) and _tot.requires_grad:
+                _tot.backward()
             lx = lx + wcost_ / a.batch          # 즉시 비용 (잔차^2)
             still = still + float(wc_) / a.batch
             arel = arel + nst_ / a.batch
