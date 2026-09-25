@@ -34,6 +34,7 @@ ap.add_argument("--var", default="grid", choices=("grid", "pts"),
                 help="최적화 변수. grid 는 격자점 변위(학생의 출력 공간), "
                      "pts 는 가우시안 위치 자체 -- 둘의 차이가 격자로 제한해서 "
                      "잃는 몫이다")
+ap.add_argument("--obj_log", default="", help="창별 목적함수 곡선을 npy 로 남긴다")
 ap.add_argument("--dev", default="cuda")
 a = ap.parse_args()
 dev = a.dev
@@ -41,6 +42,7 @@ FRAME_DT = 1.0 / 60.0
 
 tot_p = tot_s = tot_r = 0.0
 n = 0
+curves = []
 for fn in a.files.split(","):
     f = os.path.join(a.data, fn if fn.endswith(".pt") else fn + ".pt")
     d = torch.load(f, map_location="cpu", weights_only=False)
@@ -116,6 +118,7 @@ for fn in a.files.split(","):
                 return x + _v
         dp = var
         opt = torch.optim.Adam([var], lr=a.lr)
+        cur = []
         for it in range(a.steps):
             opt.zero_grad(set_to_none=True)
             xe = warp(var)
@@ -126,17 +129,24 @@ for fn in a.files.split(","):
                 ng_, float(cfg.get("grid_lim", 2.0)), g=g, norm=norm, free=free)
             E.backward()
             opt.step()
+            cur.append(float(E))
         with torch.no_grad():
             xe = warp(var)
             x2 = x + (1.0 - wm.unsqueeze(-1)) * (xe - x) + \
                 wm.unsqueeze(-1) * d_cmd
             pe = float((x2[free] - gt[free]).norm(dim=-1).mean()) / ext
             st = float((x[free] - gt[free]).norm(dim=-1).mean()) / ext
+        curves.append(cur)
         tot_p += pe
         tot_s += st
         tot_r += pe / max(st, 1e-20)
         n += 1
         print(f"  {fn} t0={t0:3d}  물리최적 {100*pe:.4f}%  정지 {100*st:.4f}%  "
               f"비 {pe/max(st,1e-20):.3f}", flush=True)
+if a.obj_log:
+    import numpy as _np
+    _np.save(a.obj_log, _np.asarray(curves, dtype=_np.float64))
+    print(f"[목적함수 곡선] {a.obj_log}  {len(curves)} 창 x {a.steps} 반복",
+          flush=True)
 print(f"[물리 하한] {n} 창 평균  물리최적 {100*tot_p/n:.4f}%  "
       f"정지 {100*tot_s/n:.4f}%  비 {tot_r/n:.3f}", flush=True)
