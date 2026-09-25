@@ -1084,9 +1084,15 @@ def rl_episode(d, t0, E, gsel, gen):
             _RL_MSG.append(1)
             _fx = bool(torch.isfinite(x).all())
             _fdp = bool(torch.isfinite(_dp).all()) if _dp is not None else True
+            _fv = bool(torch.isfinite(v).all())
+            _ff = bool(torch.isfinite(F).all())
+            _fp = bool(torch.isfinite(p).all()) if torch.is_tensor(p) else True
             print(f"[RL 무효상태] 스텝 {i} 유한 {_fin} 최대 {_mx:.3e} "
-                  f"(입력 유한 {_fx}, dp 유한 {_fdp}, 태그 {d.get('tag')})",
-                  flush=True)
+                  f"(x {_fx}, v {_fv}, F {_ff}, p {_fp}, dp {_fdp}, "
+                  f"태그 {d.get('tag')})", flush=True)
+            print(f"           x 최대 {float(x.abs().max()):.3e}  "
+                  f"v 최대 {float(v.abs().max()):.3e}  "
+                  f"dp 최대 {float(_dp.abs().max()):.3e}", flush=True)
         if _bad:
             la = la + torch.as_tensor(a.rl_term_pen, device=dev)
             cost_sum += a.rl_term_pen
