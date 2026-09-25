@@ -638,6 +638,29 @@ def cell_feats(d, t, gsel, x, v, shift=None, fe=None):
     return _in, p, grid_shape, tri, (lo, hh, nn3), crow
 
 
+# ---------------------------------------------------------------- 구간 시간
+# AF_PROF=1 이면 한 스텝의 구간별 시간을 모은다. CUDA 는 비동기라 구간을 재려면
+# 매번 동기화해야 하므로, 켜면 전체가 느려진다 -- 어디가 비싼지 가릴 때만 쓴다.
+_PROF = {}
+_PROF_ON = bool(os.environ.get("AF_PROF"))
+
+
+class _pt:
+    def __init__(self, name):
+        self.name = name
+
+    def __enter__(self):
+        if _PROF_ON:
+            torch.cuda.synchronize()
+            self.t0 = time.time()
+        return self
+
+    def __exit__(self, *_):
+        if _PROF_ON:
+            torch.cuda.synchronize()
+            _PROF[self.name] = _PROF.get(self.name, 0.0) + (time.time() - self.t0)
+
+
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
               x0=None, p0=None, fe=None):
     """한 프레임. -> (x_next, p_next, v_next, J, dp, aidx_next)
@@ -685,11 +708,13 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     shifts = _ENS_SHIFT[:a.ens] if a.ens > 1 else [None]
     acc, warps, dp = 0.0, [], None
     for _sh in shifts:
-        _in, p, grid_shape, tri, (lo, hh, nn3), crow = cell_feats(
-            d, t, gsel, x, v, shift=_sh, fe=fe)
+        with _pt("셀집계"):
+            _in, p, grid_shape, tri, (lo, hh, nn3), crow = cell_feats(
+                d, t, gsel, x, v, shift=_sh, fe=fe)
         _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
-        out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1],
-                  mat=_mv)
+        with _pt("신경망"):
+            out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1],
+                      mat=_mv)
         dp = out[0]
         # 얇은 잎 같은 구름에서는 한 번의 큰 출력이 다음 스텝의 kNN 을 망가뜨려
         # (NaN 거리 -> 엉뚱한 색인) CUDA assert 로 죽는다. 물리적으로 말이 되는
@@ -714,13 +739,14 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             log_r = (out[1] if len(out) > 2
                      else torch.full((dp.shape[0],), math.log(hh), device=dev))
             log_t = out[2] if len(out) > 2 else torch.zeros_like(log_r)
-            if a.fe_state or a.det_reg > 0:
-                # 해석적 야코비안을 그대로 쓴다 (자동미분 세 번보다 싸다)
-                xe, _w8, _Jf = skin_with_jacobian(x, gpos, dp, log_r, log_t,
-                                                  sidx, float(hh))
-            else:
-                xe = skin(x, gpos, dp, log_r, log_t, sidx, float(hh))[0]
-                _Jf = None
+            with _pt("스키닝"):
+                if a.fe_state or a.det_reg > 0:
+                    # 해석적 야코비안을 그대로 쓴다 (자동미분 세 번보다 싸다)
+                    xe, _w8, _Jf = skin_with_jacobian(x, gpos, dp, log_r,
+                                                      log_t, sidx, float(hh))
+                else:
+                    xe = skin(x, gpos, dp, log_r, log_t, sidx, float(hh))[0]
+                    _Jf = None
             warps.append(lambda q, _g=gpos, _d=dp, _lr=log_r, _lt=log_t,
                          _i=sidx, _h=float(hh): skin(q, _g, _d, _lr, _lt,
                                                      _i, _h)[0])
@@ -744,10 +770,11 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     fe_next = fe
     if a.fe_state and fe is not None and _Jf is not None:
         # 교사와 같은 절차: 시험 변형구배를 밀고 항복면으로 사영한다
-        _ftr = _Jf @ fe
-        with torch.no_grad():
-            _ps, _dlg = phys_resid.psi_of(_ftr, d["cfg"], FRAME_DT)
-            fe_next = phys_resid.plastic_step(_ftr, _dlg).detach()
+        with _pt("F_e갱신"):
+            _ftr = _Jf @ fe
+            with torch.no_grad():
+                _ps, _dlg = phys_resid.psi_of(_ftr, d["cfg"], FRAME_DT)
+                fe_next = phys_resid.plastic_step(_ftr, _dlg).detach()
     # det 벌점은 **해석적** 야코비안으로 잰다. 자동미분 야코비안은 need_J 일 때만
     # 있고 세 배 비싸다. 둘 다 없으면 벌점을 못 매기므로 None 으로 돌려준다.
     return (x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, crow, fe_next,
@@ -1258,8 +1285,9 @@ for it in pbar:
         wx, wJ, wst, wa, wrel, wd, wdm, wdet = window(d, t0, L, gsel)
         # 창마다 바로 역전파해 누적한다 -- 창 여러 개의 그래프를 동시에 들고 있으면
         # 야코비안까지 붙어 메모리가 배치 수만큼 늘어난다
-        ((wx + a.lambda_J * wJ + a.lambda_anchor * wa
-          + a.lambda_dmg * wd + a.det_reg * wdet) / a.batch).backward()
+        with _pt("역전파"):
+            ((wx + a.lambda_J * wJ + a.lambda_anchor * wa
+              + a.lambda_dmg * wd + a.det_reg * wdet) / a.batch).backward()
         lx = lx + float(wx) / a.batch
         lJ = lJ + float(wJ) / a.batch
         ldet = ldet + float(wdet) / a.batch
@@ -1268,6 +1296,11 @@ for it in pbar:
         arel = arel + wrel / a.batch
         ldm = ldm + float(wd) / a.batch
         dmean = dmean + wdm / a.batch
+    if _PROF_ON and it > 0 and it % 10 == 0:
+        _tot = sum(_PROF.values())
+        _msg = "  ".join(f"{k} {v/it*1000:.1f}ms({100*v/max(_tot,1e-9):.0f}%)"
+                         for k, v in sorted(_PROF.items(), key=lambda z: -z[1]))
+        print(f"[구간 {it}] 합 {_tot/it*1000:.0f}ms/it  {_msg}", flush=True)
     gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
     if os.environ.get("AF_DIAG") and it < int(os.environ["AF_DIAG"]):
         _prev = {n: q.detach().clone() for n, q in net.named_parameters()}
