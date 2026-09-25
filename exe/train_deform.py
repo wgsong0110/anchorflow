@@ -1012,12 +1012,21 @@ class Critic(torch.nn.Module):
 def rl_state_feat(d, t, gsel, x, v, fe, p=None):
     """크리틱 입력. 학생과 같은 셀 특징을 쓰고, 앵커 판본이면 이탈 정도를 덧붙인다."""
     if a.arch == "attn" and p is not None:
+        # 학생이 받는 것과 **같은 폭**으로 맞춘다 (집계 + 물성/경계/손잡이)
+        cfg = d["cfg"]
         idx, dist = anchor_knn(x, p, a.k)
         feat, _ = aggregate(x, v / VEL_SCALE, take(d["x"][0], gsel), MASS[gsel],
                             idx, p.shape[0], H, pa=p)
         feat = _san(feat)
+        extra = torch.cat([
+            mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0], N_MAT),
+            bc_features(p, cfg) / H], -1)
+        if a.control:
+            extra = torch.cat([extra, ctrl_feat(d, t, p)], -1)
+        feat = torch.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0)
+        extra = torch.nan_to_num(extra, nan=0.0, posinf=0.0, neginf=0.0)
         drift = float(dist[:, 0].mean())
-        return feat, drift
+        return torch.cat([feat, extra], -1), drift
     _in, _p, _gs, _tri, _lo, _crow = cell_feats(d, t, gsel, x, v, fe=fe)
     return _in, 0.0
 

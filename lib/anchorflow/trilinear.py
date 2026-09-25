@@ -68,9 +68,23 @@ def g2p(rows, w, grid_vals):
 
 
 def _inv3(A):
+    """3x3 역행렬. 정규화를 **행렬 크기에 비례**시킨다.
+
+    빈 칸이나 입자가 한둘뿐인 셀에서는 관성텐서가 특이해지는데, 절대 상수
+    1e-9 로는 질량 스케일(1e-6 수준)에 비해 너무 작아 역행렬이 터진다
+    (전 조합 학습에서 실제로 LinAlgError 로 죽었다). 대각합에 비례한 능선을
+    더하고, 그래도 특이하면 유사역행렬로 물러선다.
+    """
     import torch as _t
+    I3 = _t.eye(3, device=A.device, dtype=A.dtype)
     d = _t.linalg.det(A)
-    return _t.linalg.inv(A + 1e-9 * _t.eye(3, device=A.device)), d
+    scale = A.diagonal(dim1=-2, dim2=-1).abs().sum(-1, keepdim=True
+                                                   ).unsqueeze(-1) / 3.0
+    Ar = A + (1e-6 * scale + 1e-20) * I3
+    try:
+        return _t.linalg.inv(Ar), d
+    except Exception:
+        return _t.linalg.pinv(Ar), d
 
 
 def tri_feats(x, v, X, m, rows, w, M, pa, h):
