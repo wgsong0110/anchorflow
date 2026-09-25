@@ -562,16 +562,19 @@ def apply_control(d, t, gsel, x2):
     교사가 그 입자들을 Dirichlet 으로 박았으므로, 학생이 거기를 예측하게 두면
     맞출 수 없는 것을 맞추라고 시키는 셈이다.
     """
-    if "ctrl_mem" not in d or "ctrl_pos" not in d:
+    if "ctrl_mem" not in d:
         return x2
-    P = d["ctrl_pos"].to(x2.device, x2.dtype)
-    t1 = min(t + 1, P.shape[0] - 1)
+    t1 = min(t + 1, d["x"].shape[0] - 1)
+    gt1 = take(d["x"][t1], gsel)
     x2 = x2.clone()
-    for k, (loc, off) in enumerate(ctrl_local(d, gsel)):
-        if k >= P.shape[1] or loc.numel() == 0:
+    for k, (loc, _off) in enumerate(ctrl_local(d, gsel)):
+        if loc.numel() == 0:
             continue
-        # 무리는 제어점과 **같은 offset 으로** 움직인다 (교사가 그렇게 박는다)
-        x2[loc] = P[t1, k] + off.to(x2.device, x2.dtype)
+        # **입자 기준**으로 박는다: 그 입자의 교사 위치를 그대로 쓴다. 예전에는
+        # "제어점 위치 + 프레임 0 의 offset" 으로 무리를 강체처럼 붙였는데,
+        # 교사는 반경 안 입자의 속도를 가중치로 섞어 미는 것이라 무리가 강체로
+        # 움직이지 않는다 -- 그 차이만큼 경계자료가 틀려 있었다.
+        x2[loc] = gt1[loc]
     return x2
 
 
