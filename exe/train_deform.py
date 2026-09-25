@@ -871,7 +871,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
             for _w in range(a.warm):
                 x2w, p, vw, _, _, _, _, _, _, _ = step_once(
                     d, t0 + _w, gsel, p, x, v, need_J=False)
-                _m, _duI, _vI, _info = phys_resid.p2g_increment(
+                _m, _duI, _vI, _info, _fr = phys_resid.p2g_increment(
                     x, x2w - x, v, mass, _ng, _gl)
                 _gu = phys_resid.g2p_grad(x, _duI, _info, _ng)
                 _Ftr = (_I3 + _gu) @ F

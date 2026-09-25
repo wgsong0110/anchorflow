@@ -238,11 +238,16 @@ def _offsets(device):
     return _OFF3
 
 
-def p2g_increment(x, du, vel, mass, n_grid, grid_lim):
+def p2g_increment(x, du, vel, mass, n_grid, grid_lim, free=None):
     """가우시안 변위 du 를 격자로 되돌린다.
 
-    반환: (m_I [M], du_I [M,3], v_I [M,3], 색인정보) -- 모두 **점유 노드만**.
-    질량가중 평균이라 Δu_I = Σ m_p w du_p / Σ m_p w 이고, 이것이 i-PG 의 미지수다.
+    반환: (m_I [M], du_I [M,3], v_I [M,3], 색인정보, 자유질량비 [M]) -- 모두
+    **점유 노드만**. 질량가중 평균이라 Δu_I = Σ m_p w du_p / Σ m_p w 이고,
+    이것이 i-PG 의 미지수다.
+
+    free 가 주어지면 노드마다 **자유 입자가 실은 질량의 비율**도 함께 낸다.
+    손잡이(Dirichlet) 입자가 지배하는 노드는 그 운동을 교사가 박아 두었으므로
+    관성·중력 잔차를 매기면 안 된다 -- 망이 정하는 양이 아니라서 기울기가 가짜다.
     """
     dev = x.device
     dx = float(grid_lim) / float(n_grid)
@@ -267,7 +272,13 @@ def p2g_increment(x, du, vel, mass, n_grid, grid_lim):
     v_I = torch.zeros(M, 3, device=dev, dtype=x.dtype).index_add_(
         0, inv, (mw.reshape(-1, 1) * vel.repeat_interleave(27, 0)))
     den = m_I.clamp_min(1e-20).unsqueeze(-1)
-    return m_I, du_I / den, v_I / den, (flat, ww, inv, uniq, dx)
+    if free is None:
+        frac = None
+    else:
+        mwf = (ww * (mass * free.to(mass.dtype)).unsqueeze(-1)).reshape(-1)
+        m_free = torch.zeros(M, device=dev, dtype=x.dtype).index_add_(0, inv, mwf)
+        frac = m_free / m_I.clamp_min(1e-20)
+    return m_I, du_I / den, v_I / den, (flat, ww, inv, uniq, dx), frac
 
 
 def g2p_grad(x, du_I, info, n_grid):
@@ -297,12 +308,16 @@ def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
 
     관성·중력은 격자에서, 탄성은 입자에서 잰다 -- MPM 이 힘을 만드는 자리와 같다.
     """
-    m_I, du_I, v_I, info = p2g_increment(x, du, vel, mass, n_grid, grid_lim)
+    m_I, du_I, v_I, info, frac = p2g_increment(
+        x, du, vel, mass, n_grid, grid_lim, free=free)
+    # 손잡이가 절반 넘게 실린 노드는 Dirichlet 으로 보고 관성·중력에서 뺀다.
+    # 그 노드의 규정된 변위는 탄성항의 ∇Δu 를 통해 이웃 잔차에 그대로 들어간다.
+    w_free = torch.ones_like(m_I) if frac is None else (frac > 0.5).to(m_I.dtype)
     d = du_I - h * v_I
-    e_in = (0.5 * m_I / (h * h) * (d * d).sum(-1)).sum()
+    e_in = (0.5 * w_free * m_I / (h * h) * (d * d).sum(-1)).sum()
     e_g = torch.zeros((), device=x.device, dtype=x.dtype)
     if g is not None:
-        e_g = -(m_I * (du_I * g).sum(-1)).sum()
+        e_g = -(w_free * m_I * (du_I * g).sum(-1)).sum()
     gu = g2p_grad(x, du_I, info, n_grid)
     F_tr = (torch.eye(3, device=x.device, dtype=F.dtype) + gu) @ F
     psi, dlog = psi_of(F_tr, cfg, h)
