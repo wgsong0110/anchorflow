@@ -235,6 +235,9 @@ for f in files:
     # 매 스텝 CPU 에서 부분표본을 gather 하느라 계산(0.4 s)보다 접근(5 s)이
     # 비싸졌다. half 로 두면 28 GB 라 GPU 에 상주하고, take 가 쓸 때 캐스팅한다
     # -- 저장이 이미 half 이므로 수치는 한 비트도 달라지지 않는다.
+    # 궤적의 v 는 아무도 읽지 않는다 (속도는 위치 차이로 만든다). 전 조합이면
+    # 이것만으로 7 GB 를 차지하므로 적재에서 아예 뺀다.
+    d.pop("v", None)
     tag = os.path.splitext(os.path.basename(f))[0]
     (held if tag in hold else TR).append((tag, d))
 if not TR:
@@ -243,7 +246,7 @@ _MB = sum(sum(v.numel() * v.element_size() for v in d.values()
                if torch.is_tensor(v)) for _t, d in TR + held) / 1e6
 if a.gpu_data and _MB < a.gpu_data_mb:
     for _t, d in TR + held:
-        for k in ("x", "v", "F"):
+        for k in ("x", "F"):
             if k in d and torch.is_tensor(d[k]):
                 d[k] = d[k].to(dev)
     print(f"[데이터] 궤적 {_MB:.0f} MB 를 GPU 에 올렸다", flush=True)
