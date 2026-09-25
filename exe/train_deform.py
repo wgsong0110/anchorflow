@@ -857,6 +857,13 @@ def phys_window(d, t0, K, gsel, sigma, gen):
     F = take(traj_F(d)[t0], gsel).float()
     if sigma > 0:
         u, gu = phys_resid.smooth_noise(x, sigma * ext, ext, gen)
+        # 손잡이 입자는 흔들지 않는다. 그 위치는 교사가 박아 둔 Dirichlet 자료라,
+        # 흔들어 두면 다음 스텝에 교사 위치로 덮어써지면서 "흔들린 곳 -> 교사 위치"
+        # 라는 인위적인 큰 변위가 경계자료로 들어간다.
+        _fm0 = free_mask(d, x.shape[0], dev, gsel) if a.control else None
+        if _fm0 is not None:
+            u = u * _fm0.unsqueeze(-1).to(u.dtype)
+            gu = gu * _fm0.reshape(-1, 1, 1).to(gu.dtype)
         x = x + u
         F = (torch.eye(3, device=dev) + gu) @ F
         # 변위 교란을 한 스텝에 걸친 것으로 보면 속도도 그만큼 달라져 있다
