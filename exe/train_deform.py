@@ -186,6 +186,10 @@ ap.add_argument("--det_reg", type=float, default=0.0,
                      "벌한다. relu(margin - det)^2 의 입자 평균에 이 가중치를 곱한다")
 ap.add_argument("--det_margin", type=float, default=0.1,
                 help="det 가 이 값 아래로 내려가면 벌점이 붙는다 (0 이면 뒤집힘만)")
+ap.add_argument("--warm", type=int, default=0,
+                help="감독 전에 학생을 이만큼 no_grad 로 굴려 **자기 오차가 쌓인 "
+                     "상태**에서 시작한다. 역전파 사슬은 --unroll 만큼만 남으므로 "
+                     "언롤을 늘리는 것보다 훨씬 싸게 on-policy 상태를 본다")
 ap.add_argument("--loss_last", action="store_true",
                 help="언롤 창에서 **마지막 프레임만** 손실로 쓴다. 중간 프레임의 "
                      "정답 읽기와 손실 계산이 빠지지만, 역전파는 여전히 창 전체를 "
@@ -910,6 +914,21 @@ def window(d, t0, L, gsel):
     x0w, p0w = x.clone(), p.clone()          # 손상의 기준 배치
     dmg, idx_prev = None, None
     fe = (take(traj_F(d)[t0], gsel).float() if a.fe_state else None)
+    if a.warm > 0:
+        # 예열: 기울기 없이 굴려 학생이 스스로 만든 상태로 옮겨 간다. 정답은
+        # 교사의 같은 프레임이므로 t0 를 함께 민다. 상태만 나르고 그래프는 버린다.
+        with torch.no_grad():
+            for _w in range(a.warm):
+                x, p, v, _, _, _ai_w, dmg, idx_prev, fe, _ = step_once(
+                    d, t0 + _w, gsel, p, x, v, need_J=False, dmg=dmg,
+                    idx_prev=idx_prev, x0=x0w, p0=p0w, fe=fe)
+                if _ai_w is not None:
+                    ai = _ai_w
+        x, v = x.detach(), v.detach()
+        if fe is not None:
+            fe = fe.detach()
+        t0 = t0 + a.warm
+        x_still = x.clone()
     for i in range(L):
         ai_now = ai
         x2, p, v, J, dp, ai, dmg, idx_prev, fe, Jdet = step_once(
@@ -1256,7 +1275,7 @@ for it in pbar:
         if os.environ.get("AF_FIXWIN"):           # 한 창만 반복 -- 과적합 진단용
             tag, d = TR[0]
         T = d["x"].shape[0] - a.hold_last
-        hi = max(T - L - 1, 2)
+        hi = max(T - L - a.warm - 1, 2)
         if a.motion_frac > 0 and float(torch.rand(1, generator=gen,
                                                   device=dev)) < a.motion_frac:
             w_ = d["motion"][1:hi].clamp(min=1e-12)
