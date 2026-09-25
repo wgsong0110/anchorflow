@@ -206,3 +206,108 @@ def smooth_noise(x, sigma, ext, gen, n_wave=6):
     c = torch.cos(ang)                                   # [N,W]
     gu = torch.einsum("nw,wi,wj->nij", c, amp, k)        # [N,3,3]
     return u, gu
+
+
+# ------------------------------------------------------------------ 격자 목적함수
+# i-PG 는 미지수를 **격자 증분** Δu_I 로 두고 푼다. 학생은 가우시안을 옮기므로,
+# 그 변위를 MPM 격자로 되돌려(P2G, 질량가중) Δu_I 를 역산한 뒤 같은 식을 잰다.
+# 가중치는 PG 와 같은 이차 B-스플라인(3^3 스텐실)이다.
+
+def _bspline(xr):
+    """격자 단위 좌표 xr 에 대해 (base, w[3], dw[3]). 모두 [N,3,3] 축별."""
+    base = (xr - 0.5).floor()
+    fx = xr - base                                   # [N,3], 0.5~1.5
+    w = torch.stack([0.5 * (1.5 - fx) ** 2,
+                     0.75 - (fx - 1.0) ** 2,
+                     0.5 * (fx - 0.5) ** 2], -1)     # [N,3,3] (축, 노드)
+    dw = torch.stack([fx - 1.5,
+                      -2.0 * (fx - 1.0),
+                      fx - 0.5], -1)
+    return base.long(), w, dw
+
+
+_OFF3 = None
+
+
+def _offsets(device):
+    global _OFF3
+    if _OFF3 is None or _OFF3.device != device:
+        r = torch.arange(3, device=device)
+        _OFF3 = torch.stack(torch.meshgrid(r, r, r, indexing="ij"),
+                            -1).reshape(-1, 3)       # [27,3]
+    return _OFF3
+
+
+def p2g_increment(x, du, vel, mass, n_grid, grid_lim):
+    """가우시안 변위 du 를 격자로 되돌린다.
+
+    반환: (m_I [M], du_I [M,3], v_I [M,3], 색인정보) -- 모두 **점유 노드만**.
+    질량가중 평균이라 Δu_I = Σ m_p w du_p / Σ m_p w 이고, 이것이 i-PG 의 미지수다.
+    """
+    dev = x.device
+    dx = float(grid_lim) / float(n_grid)
+    xr = x / dx
+    base, w, _ = _bspline(xr)
+    off = _offsets(dev)                              # [27,3]
+    idx3 = base.unsqueeze(1) + off.unsqueeze(0)      # [N,27,3]
+    idx3 = idx3.clamp(0, n_grid - 1)
+    flat = ((idx3[..., 0] * n_grid + idx3[..., 1]) * n_grid
+            + idx3[..., 2])                          # [N,27]
+    ww = (w[:, 0, :].unsqueeze(-1).unsqueeze(-1)
+          * w[:, 1, :].unsqueeze(1).unsqueeze(-1)
+          * w[:, 2, :].unsqueeze(1).unsqueeze(1)).reshape(x.shape[0], 27)
+    mw = ww * mass.unsqueeze(-1)                     # [N,27]
+    # 점유 노드만 모은다 (100^3 전부 들고 있으면 낭비다)
+    uniq, inv = torch.unique(flat.reshape(-1), return_inverse=True)
+    M = uniq.numel()
+    m_I = torch.zeros(M, device=dev, dtype=x.dtype).index_add_(
+        0, inv, mw.reshape(-1))
+    du_I = torch.zeros(M, 3, device=dev, dtype=x.dtype).index_add_(
+        0, inv, (mw.reshape(-1, 1) * du.repeat_interleave(27, 0)))
+    v_I = torch.zeros(M, 3, device=dev, dtype=x.dtype).index_add_(
+        0, inv, (mw.reshape(-1, 1) * vel.repeat_interleave(27, 0)))
+    den = m_I.clamp_min(1e-20).unsqueeze(-1)
+    return m_I, du_I / den, v_I / den, (flat, ww, inv, uniq, dx)
+
+
+def g2p_grad(x, du_I, info, n_grid):
+    """격자 증분에서 입자 위치의 변위기울기 ∇Δu [N,3,3] 를 뽑는다 (MPM 과 같은 길)."""
+    flat, ww, inv, uniq, dx = info
+    dev = x.device
+    xr = x / dx
+    base, w, dw = _bspline(xr)
+    off = _offsets(dev)
+    # 축별 가중치/도함수를 27 스텐실로 펼친다
+    i0, i1, i2 = off[:, 0], off[:, 1], off[:, 2]
+    wx, wy, wz = w[:, 0][:, i0], w[:, 1][:, i1], w[:, 2][:, i2]     # [N,27]
+    dxw = dw[:, 0][:, i0] / dx
+    dyw = dw[:, 1][:, i1] / dx
+    dzw = dw[:, 2][:, i2] / dx
+    gw = torch.stack([dxw * wy * wz, wx * dyw * wz, wx * wy * dzw], -1)
+    u_nodes = du_I[inv].reshape(x.shape[0], 27, 3)                  # [N,27,3]
+    return torch.einsum("nkd,nkc->ndc", u_nodes, gw)                # ∇Δu
+
+
+def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
+                   g=None, norm=None, free=None):
+    """i-PG 의 목적함수를 **격자 증분** 기준으로 잰다.
+
+        E = Σ_I m_I/(2h²)‖Δu_I − h v_I‖² + Σ_p V_p Ψ(F_p) − Σ_I m_I g·Δu_I
+        F_p = (I + ∇Δu) F_p^n
+
+    관성·중력은 격자에서, 탄성은 입자에서 잰다 -- MPM 이 힘을 만드는 자리와 같다.
+    """
+    m_I, du_I, v_I, info = p2g_increment(x, du, vel, mass, n_grid, grid_lim)
+    d = du_I - h * v_I
+    e_in = (0.5 * m_I / (h * h) * (d * d).sum(-1)).sum()
+    e_g = torch.zeros((), device=x.device, dtype=x.dtype)
+    if g is not None:
+        e_g = -(m_I * (du_I * g).sum(-1)).sum()
+    gu = g2p_grad(x, du_I, info, n_grid)
+    F_tr = (torch.eye(3, device=x.device, dtype=F.dtype) + gu) @ F
+    psi, dlog = psi_of(F_tr, cfg, h)
+    e_el = (vol * psi).sum()
+    tot = e_in + e_el + e_g
+    if norm is not None:
+        tot = tot / norm
+    return tot, dlog, F_tr, (float(e_in), float(e_el), float(e_g))

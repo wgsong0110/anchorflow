@@ -186,6 +186,11 @@ ap.add_argument("--det_reg", type=float, default=0.0,
                      "벌한다. relu(margin - det)^2 의 입자 평균에 이 가중치를 곱한다")
 ap.add_argument("--det_margin", type=float, default=0.1,
                 help="det 가 이 값 아래로 내려가면 벌점이 붙는다 (0 이면 뒤집힘만)")
+ap.add_argument("--phys_grid", action="store_true",
+                help="Phase 2 목적함수를 i-PG 처럼 **격자 증분** 기준으로 잰다. "
+                     "학생이 옮긴 가우시안 변위를 MPM 격자로 P2G 해 Δu_I 를 "
+                     "역산하고, 관성·중력은 격자에서 탄성은 격자 속도기울기로 "
+                     "민 F 로 잰다")
 ap.add_argument("--warm", type=int, default=0,
                 help="감독 전에 학생을 이만큼 no_grad 로 굴려 **자기 오차가 쌓인 "
                      "상태**에서 시작한다. 역전파 사슬은 --unroll 만큼만 남으므로 "
@@ -861,11 +866,19 @@ def phys_window(d, t0, K, gsel, sigma, gen):
     for i in range(K):
         xtil = x + h * v
         x2, p, v, J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
-            d, t0 + i, gsel, p, x, v, need_J=True)
-        F_tr = J @ F
+            d, t0 + i, gsel, p, x, v, need_J=not a.phys_grid)
         fm = free_mask(d, x2.shape[0], dev, gsel) if a.control else None
-        E, dlog, parts = phys_resid.ip_energy(
-            x2, xtil, F_tr, mass, vol, cfg, h, free=fm, g=g, norm=norm)
+        if a.phys_grid:
+            # i-PG 의 미지수는 격자 증분이다. 학생이 만든 가우시안 변위를 되돌려
+            # Δu_I 를 얻고 그 위에서 잰다.
+            E, dlog, F_tr, parts = phys_resid.grid_ip_energy(
+                x, x2 - x, v, F, mass, vol, cfg, h,
+                int(cfg["n_grid"]), float(cfg["grid_lim"]),
+                g=g, norm=norm, free=fm)
+        else:
+            F_tr = J @ F
+            E, dlog, parts = phys_resid.ip_energy(
+                x2, xtil, F_tr, mass, vol, cfg, h, free=fm, g=g, norm=norm)
         e_tot = e_tot + E
         if i == 0:
             with torch.no_grad():
