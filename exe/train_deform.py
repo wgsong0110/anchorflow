@@ -930,6 +930,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
 
 CRITIC = None
 OPT_C = None
+_RL_MSG = []
 _F_MSG = []
 
 
@@ -1076,8 +1077,16 @@ def rl_episode(d, t0, E, gsel, gen):
             d, t, gsel, p, x, v, need_J=False, fe=fe)
         # 상태가 무효가 되면(비유한, 또는 격자 밖으로 이탈) 에피소드를 끝내고
         # 벌점을 준다. 자르지 않는다 -- 자르면 정책이 그 경계를 이용한다.
-        _bad = (not bool(torch.isfinite(x2).all())) or \
-            float(x2.abs().max()) > 4.0 * gl
+        _fin = bool(torch.isfinite(x2).all())
+        _mx = float(x2.abs().max()) if _fin else float("nan")
+        _bad = (not _fin) or _mx > 4.0 * gl
+        if _bad and not _RL_MSG:
+            _RL_MSG.append(1)
+            _fx = bool(torch.isfinite(x).all())
+            _fdp = bool(torch.isfinite(_dp).all()) if _dp is not None else True
+            print(f"[RL 무효상태] 스텝 {i} 유한 {_fin} 최대 {_mx:.3e} "
+                  f"(입력 유한 {_fx}, dp 유한 {_fdp}, 태그 {d.get('tag')})",
+                  flush=True)
         if _bad:
             la = la + torch.as_tensor(a.rl_term_pen, device=dev)
             cost_sum += a.rl_term_pen
