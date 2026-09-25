@@ -80,11 +80,15 @@ def _inv3(A):
     d = _t.linalg.det(A)
     scale = A.diagonal(dim1=-2, dim2=-1).abs().sum(-1, keepdim=True
                                                    ).unsqueeze(-1) / 3.0
-    Ar = A + (1e-6 * scale + 1e-20) * I3
+    # 능선이 너무 작으면(빈 셀) 역행렬이 1e20 급으로 커져 뒤에서 float32 가
+    # 넘친다 -- 실제로 전 조합 학습이 NaN 으로 죽었다. 하한을 두고, 질량이
+    # 사실상 0 인 셀은 역행렬을 0 으로 둔다 (그 셀은 어차피 기여가 없다).
+    Ar = A + (1e-6 * scale + 1e-12) * I3
     try:
-        return _t.linalg.inv(Ar), d
+        Ii = _t.linalg.inv(Ar)
     except Exception:
-        return _t.linalg.pinv(Ar), d
+        Ii = _t.linalg.pinv(Ar)
+    return _t.where(scale > 1e-12, Ii, _t.zeros_like(Ii)), d
 
 
 def tri_feats(x, v, X, m, rows, w, M, pa, h):

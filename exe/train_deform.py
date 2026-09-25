@@ -879,6 +879,9 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             log_r = (out[1] if len(out) > 2
                      else torch.full((dp.shape[0],), math.log(hh), device=dev))
             log_t = out[2] if len(out) > 2 else torch.zeros_like(log_r)
+            # dp 와 같은 규약으로 NaN 만 씻는다 (자르지는 않는다)
+            log_r = torch.nan_to_num(log_r, nan=0.0, posinf=0.0, neginf=0.0)
+            log_t = torch.nan_to_num(log_t, nan=0.0, posinf=0.0, neginf=0.0)
             with _tsec("스키닝"):
                 if a.fe_state or a.det_reg > 0:
                     # 해석적 야코비안을 그대로 쓴다 (자동미분 세 번보다 싸다)
