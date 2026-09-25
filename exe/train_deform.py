@@ -530,17 +530,17 @@ def ctrl_anchor(d, gsel):
     key = (int(gsel.numel()), int(gsel[0]), int(gsel[-1]))
     if d.get("_ca_key") == key:
         return d["_ca"]
-    cid = d["ctrl_id"]                                   # [T,K] 전체 색인
-    sel = d["sel"]                                       # [Nsub] 전체 색인
+    cid = d["ctrl_id"].cpu()                             # [T,K] 전체 색인
+    sel = d["sel"].cpu()                                 # [Nsub] 전체 색인
     # 전체 색인 -> 부분표본 색인 (없으면 -1)
     inv = torch.full((int(d["n_full"]),), -1, dtype=torch.long)
     inv[sel] = torch.arange(sel.numel())
     loc = inv[cid.reshape(-1).clamp(0, inv.numel() - 1)].reshape(cid.shape)
     miss = loc < 0
     if bool(miss.any()):
-        x0 = d["x"][0].float()                           # [Nsub,3] 부분표본
+        x0 = d["x"][0].float().cpu()                     # [Nsub,3] 부분표본
         # 빠진 제어 입자는 프레임 0 의 교사 손잡이 중심에 가장 가까운 것으로
-        P0 = d["ctrl_pos"].float()
+        P0 = d["ctrl_pos"].float().cpu()
         idx = torch.nonzero(miss)
         for t_, k_ in idx.tolist():
             c = P0[min(t_, P0.shape[0] - 1), k_]
