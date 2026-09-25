@@ -520,31 +520,43 @@ def grip_feat(d, t, p):
 
 
 def ctrl_anchor(d, gsel):
-    """손잡이가 **붙들고 있는 입자**를 부분표본 좌표계로 옮긴다 -> [T,K] 색인.
+    """손잡이가 **붙들고 있는 입자**를 현재 부분표본 좌표계로 옮긴다 -> [T,K].
 
-    궤적에는 손잡이마다 제어 입자의 전체 색인 `ctrl_id` 가 들어 있다. 학습은
-    `sel` 로 솎은 20000 개만 보므로 그 안에서 대응을 찾아야 한다. 정확히 들어
-    있으면 그것을, 없으면 **프레임 0 에서 가장 가까운** 입자를 쓴다 (손잡이는
-    물질점 하나를 잡고 가는 것이라 이웃으로 바꿔도 같은 무리를 끈다).
+    색인이 두 겹이다: 궤적의 `ctrl_id` 는 원본 전체(25 만) 기준이고, 궤적에는
+    `sel` 로 솎은 2 만 개가 들어 있으며, 학습은 거기서 다시 `gsel` 로 솎는다.
+    그래서 전체 -> 2 만 -> 현재 표본 두 번을 거쳐야 하고, 중간에 빠지면
+    **프레임 0 에서 가장 가까운** 입자로 대신한다 (손잡이는 물질점 하나를 잡고
+    가는 것이라 바로 옆 입자로 바꿔도 같은 무리를 끈다).
     """
+    if "_ca20" not in d:
+        cid = d["ctrl_id"].cpu()
+        sel = d["sel"].cpu()
+        inv = torch.full((int(d["n_full"]),), -1, dtype=torch.long)
+        inv[sel] = torch.arange(sel.numel())
+        l20 = inv[cid.reshape(-1).clamp(0, inv.numel() - 1)].reshape(cid.shape)
+        miss = l20 < 0
+        if bool(miss.any()):
+            X = d["x"].float().cpu()
+            P = d["ctrl_pos"].float().cpu()
+            for t_, k_ in torch.nonzero(miss).tolist():
+                tt_ = min(t_, X.shape[0] - 1)
+                l20[t_, k_] = int((X[tt_] - P[min(t_, P.shape[0] - 1), k_]
+                                   ).norm(dim=-1).argmin())
+        d["_ca20"] = l20
     key = (int(gsel.numel()), int(gsel[0]), int(gsel[-1]))
     if d.get("_ca_key") == key:
         return d["_ca"]
-    cid = d["ctrl_id"].cpu()                             # [T,K] 전체 색인
-    sel = d["sel"].cpu()                                 # [Nsub] 전체 색인
-    # 전체 색인 -> 부분표본 색인 (없으면 -1)
-    inv = torch.full((int(d["n_full"]),), -1, dtype=torch.long)
-    inv[sel] = torch.arange(sel.numel())
-    loc = inv[cid.reshape(-1).clamp(0, inv.numel() - 1)].reshape(cid.shape)
+    l20 = d["_ca20"]
+    n20 = d["x"].shape[1]
+    invg = torch.full((n20,), -1, dtype=torch.long)
+    invg[gsel.cpu()] = torch.arange(gsel.numel())
+    loc = invg[l20.reshape(-1)].reshape(l20.shape)
     miss = loc < 0
     if bool(miss.any()):
-        x0 = d["x"][0].float().cpu()                     # [Nsub,3] 부분표본
-        # 빠진 제어 입자는 프레임 0 의 교사 손잡이 중심에 가장 가까운 것으로
-        P0 = d["ctrl_pos"].float().cpu()
-        idx = torch.nonzero(miss)
-        for t_, k_ in idx.tolist():
-            c = P0[min(t_, P0.shape[0] - 1), k_]
-            loc[t_, k_] = int((x0 - c).norm(dim=-1).argmin())
+        x0g = d["x"][0].float().cpu()[gsel.cpu()]          # [n_pts,3]
+        x0all = d["x"][0].float().cpu()
+        for t_, k_ in torch.nonzero(miss).tolist():
+            loc[t_, k_] = int((x0g - x0all[l20[t_, k_]]).norm(dim=-1).argmin())
     loc = loc.to(gsel.device)
     d["_ca"], d["_ca_key"] = loc, key
     return loc
