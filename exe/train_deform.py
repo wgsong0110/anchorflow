@@ -653,7 +653,7 @@ _PROF = {}
 _PROF_ON = bool(os.environ.get("AF_PROF"))
 
 
-class _pt:
+class _tsec:
     def __init__(self, name):
         self.name = name
 
@@ -716,11 +716,11 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     shifts = _ENS_SHIFT[:a.ens] if a.ens > 1 else [None]
     acc, warps, dp = 0.0, [], None
     for _sh in shifts:
-        with _pt("셀집계"):
+        with _tsec("셀집계"):
             _in, p, grid_shape, tri, (lo, hh, nn3), crow = cell_feats(
                 d, t, gsel, x, v, shift=_sh, fe=fe)
         _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
-        with _pt("신경망"):
+        with _tsec("신경망"):
             out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1],
                       mat=_mv)
         dp = out[0]
@@ -747,7 +747,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             log_r = (out[1] if len(out) > 2
                      else torch.full((dp.shape[0],), math.log(hh), device=dev))
             log_t = out[2] if len(out) > 2 else torch.zeros_like(log_r)
-            with _pt("스키닝"):
+            with _tsec("스키닝"):
                 if a.fe_state or a.det_reg > 0:
                     # 해석적 야코비안을 그대로 쓴다 (자동미분 세 번보다 싸다)
                     xe, _w8, _Jf = skin_with_jacobian(x, gpos, dp, log_r,
@@ -778,7 +778,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     fe_next = fe
     if a.fe_state and fe is not None and _Jf is not None:
         # 교사와 같은 절차: 시험 변형구배를 밀고 항복면으로 사영한다
-        with _pt("F_e갱신"):
+        with _tsec("F_e갱신"):
             _ftr = _Jf @ fe
             with torch.no_grad():
                 _ps, _dlg = phys_resid.psi_of(_ftr, d["cfg"], FRAME_DT)
@@ -1315,7 +1315,7 @@ for it in pbar:
         wx, wJ, wst, wa, wrel, wd, wdm, wdet = window(d, t0, L, gsel)
         # 창마다 바로 역전파해 누적한다 -- 창 여러 개의 그래프를 동시에 들고 있으면
         # 야코비안까지 붙어 메모리가 배치 수만큼 늘어난다
-        with _pt("역전파"):
+        with _tsec("역전파"):
             ((wx + a.lambda_J * wJ + a.lambda_anchor * wa
               + a.lambda_dmg * wd + a.det_reg * wdet) / a.batch).backward()
         lx = lx + float(wx) / a.batch
