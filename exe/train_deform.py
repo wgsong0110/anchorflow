@@ -141,9 +141,11 @@ ap.add_argument("--metrics", action="store_true",
                 help="롤아웃에서 CD/EMD 까지 잰다 (Spring-Gaus 정의)")
 ap.add_argument("--cd_pts", type=int, default=2048,
                 help="CD/EMD 표본 크기 (EMD 가 O(n^3) 이라 필요하다)")
-ap.add_argument("--transfer", default="skin", choices=("skin", "tri"),
+ap.add_argument("--transfer", default="skin",
+                choices=("skin", "tri", "bspline"),
                 help="격자점 변위를 가우시안으로 옮기는 법. skin 은 kNN 위 "
-                     "학습 반경 소프트맥스, tri 는 고정 trilinear")
+                     "학습 반경 소프트맥스, tri 는 고정 trilinear, bspline 은 "
+                     "MPM/i-PG 와 같은 이차 B-스플라인 3^3 스텐실")
 ap.add_argument("--no_gn", action="store_true",
                 help="conv 블록의 GroupNorm 제거 (크기 정보 보존)")
 ap.add_argument("--stat_occ", action="store_true",
@@ -674,6 +676,32 @@ class _tsec:
             _PROF[self.name] = _PROF.get(self.name, 0.0) + (time.time() - self.t0)
 
 
+def _bspline_g2p(q, lo, h, nn3, dp):
+    """학생 격자의 격자점 변위 dp 를 이차 B-스플라인으로 가우시안에 옮긴다.
+
+    격자점 I 의 좌표는 lo + I*h 이고, 가중치는 축별 이차 B-스플라인의 곱이라
+    3^3 = 27 개 이웃만 본다. 합이 1 이므로 따로 정규화할 필요가 없다.
+    """
+    dev_ = q.device
+    xr = (q - lo) / h
+    base = (xr - 0.5).floor()
+    fx = xr - base
+    w = torch.stack([0.5 * (1.5 - fx) ** 2,
+                     0.75 - (fx - 1.0) ** 2,
+                     0.5 * (fx - 0.5) ** 2], -1)               # [N,3,3]
+    off = torch.stack(torch.meshgrid(*[torch.arange(3, device=dev_)] * 3,
+                                     indexing="ij"), -1).reshape(-1, 3)
+    n0, n1, n2 = int(nn3[0]), int(nn3[1]), int(nn3[2])
+    idx3 = (base.long().unsqueeze(1) + off.unsqueeze(0))
+    idx3[..., 0] = idx3[..., 0].clamp(0, n0 - 1)
+    idx3[..., 1] = idx3[..., 1].clamp(0, n1 - 1)
+    idx3[..., 2] = idx3[..., 2].clamp(0, n2 - 1)
+    flat = (idx3[..., 0] * n1 + idx3[..., 1]) * n2 + idx3[..., 2]
+    i0, i1, i2 = off[:, 0], off[:, 1], off[:, 2]
+    ww = w[:, 0][:, i0] * w[:, 1][:, i1] * w[:, 2][:, i2]      # [N,27]
+    return (dp[flat] * ww.unsqueeze(-1)).sum(1)
+
+
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
               x0=None, p0=None, fe=None):
     """한 프레임. -> (x_next, p_next, v_next, J, dp, aidx_next)
@@ -763,6 +791,13 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             warps.append(lambda q, _g=gpos, _d=dp, _lr=log_r, _lt=log_t,
                          _i=sidx, _h=float(hh): skin(q, _g, _d, _lr, _lt,
                                                      _i, _h)[0])
+        elif a.transfer == "bspline":
+            # MPM/i-PG 와 같은 전달: 이차 B-스플라인 3^3 스텐실. 가중치가 닫힌
+            # 형식이고 합이 1 이라 학습되는 양이 없다.
+            def _bs(q, _lo=lo, _h=float(hh), _n=nn3, _d=dp):
+                return q + _bspline_g2p(q, _lo, _h, _n, _d)
+            xe = _bs(x)
+            warps.append(_bs)
         else:
             xe = x + TRI.g2p(tri[0], tri[1], dp)
             warps.append(lambda q, _lo=lo, _h=hh, _n=nn3, _d=dp:
