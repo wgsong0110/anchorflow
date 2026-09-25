@@ -167,6 +167,10 @@ ap.add_argument("--phys_K_warm", type=int, default=0,
 ap.add_argument("--phys_noise", type=float, default=0.0,
                 help="상태 교란 크기 (물체 크기 대비). 매끄러운 저주파 장을 더하고 "
                      "F 도 (I+grad u)F 로 함께 흔든다")
+ap.add_argument("--phys_noise_grid", action="store_true",
+                help="교란을 **출력 공간**에서 뽑는다. 격자점 변위를 무작위로 하나 "
+                     "뽑아 그 실행의 전달 방식으로 가우시안에 입혀 입력 상태로 "
+                     "쓴다 -- 학생이 실제로 낼 수 있는 변형만 보게 된다")
 ap.add_argument("--phys_probe", type=int, default=0,
                 help="교사 프레임에서 에너지·잔차만 이만큼 재고 끝낸다 (정상성 검사)")
 ap.add_argument("--val_every", type=int, default=0,
@@ -891,7 +895,38 @@ def phys_window(d, t0, K, gsel, sigma, gen):
     x = take(d["x"][t0], gsel)
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / h
     F = take(traj_F(d)[t0], gsel).float()
-    if sigma > 0:
+    if sigma > 0 and a.phys_noise_grid:
+        # 출력 공간 교란: 격자점 변위를 무작위로 뽑아 전달로 입힌다.
+        _lo, _hh, _n3 = vox_anchor.grid_for(x, a.vox_res ** 3)
+        _gp = (torch.stack(torch.meshgrid(
+            *[torch.arange(int(_n3[i]), device=dev, dtype=x.dtype)
+              for i in range(3)], indexing="ij"), -1).reshape(-1, 3)
+            ) * float(_hh) + _lo
+        _dpn = torch.randn(_gp.shape[0], 3, generator=gen, device=dev,
+                           dtype=x.dtype) * (sigma * ext)
+        if a.transfer == "bspline":
+            def _warp_n(q):
+                return q + _bspline_g2p(q, _lo, float(_hh), _n3, _dpn)
+        elif a.transfer == "tri":
+            def _warp_n(q):
+                return q + TRI.g2p(*TRI.corners(q, _lo, _hh, _n3), _dpn)
+        else:
+            _lrn = torch.full((_gp.shape[0],), math.log(float(_hh)), device=dev)
+            _ltn = torch.zeros_like(_lrn)
+            _sidn = TRI.corners(x, _lo, _hh, _n3)[0]
+
+            def _warp_n(q, _i=_sidn):
+                return skin(q, _gp, _dpn, _lrn, _ltn, _i, float(_hh))[0]
+        u = _warp_n(x) - x
+        gu = jacobian_of(_warp_n, x) - torch.eye(3, device=dev)
+        _fm0 = free_mask(d, x.shape[0], dev, gsel) if a.control else None
+        if _fm0 is not None:
+            u = u * _fm0.unsqueeze(-1).to(u.dtype)
+            gu = gu * _fm0.reshape(-1, 1, 1).to(gu.dtype)
+        x = x + u
+        F = (torch.eye(3, device=dev) + gu) @ F
+        v = v + float(torch.rand(1, generator=gen, device=dev)) * u / h
+    elif sigma > 0:
         u, gu = phys_resid.smooth_noise(x, sigma * ext, ext, gen)
         # 손잡이 입자는 흔들지 않는다. 그 위치는 교사가 박아 둔 Dirichlet 자료라,
         # 흔들어 두면 다음 스텝에 교사 위치로 덮어써지면서 "흔들린 곳 -> 교사 위치"
