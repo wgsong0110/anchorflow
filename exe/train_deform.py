@@ -224,10 +224,11 @@ hold = set((a.hold_traj or "").split(",")) - {""}
 TR, held = [], []
 for f in files:
     d = torch.load(f, map_location="cpu", weights_only=False)
-    # 궤적은 half 로 저장해 두었다 (디스크 절약). 학습·통계는 float32 로 올린다.
-    for _k in ("x", "v", "F"):
-        if _k in d and torch.is_tensor(d[_k]) and d[_k].dtype == torch.float16:
-            d[_k] = d[_k].float()
+    # 궤적은 half 로 저장돼 있다. 예전에는 여기서 float32 로 올렸는데, 그러면
+    # 궤적당 메모리가 두 배가 되어 전 조합(960 개)이 57 GB 라 GPU 에 못 올라가고
+    # 매 스텝 CPU 에서 부분표본을 gather 하느라 계산(0.4 s)보다 접근(5 s)이
+    # 비싸졌다. half 로 두면 28 GB 라 GPU 에 상주하고, take 가 쓸 때 캐스팅한다
+    # -- 저장이 이미 half 이므로 수치는 한 비트도 달라지지 않는다.
     tag = os.path.splitext(os.path.basename(f))[0]
     (held if tag in hold else TR).append((tag, d))
 if not TR:
@@ -362,8 +363,10 @@ def take(t, idx_gpu):
     F 4.08 ms 로 한 스텝의 5 분의 1 을 먹는다 -- 궤적 하나가 98 MB 라 다 올려도
     7 개에 700 MB 다. 못 올릴 이유가 없었다."""
     if t.is_cuda:
-        return t[idx_gpu]
-    return t[idx_gpu.cpu()].to(dev, non_blocking=True)
+        r = t[idx_gpu]
+    else:
+        r = t[idx_gpu.cpu()].to(dev, non_blocking=True)
+    return r.float() if r.dtype == torch.float16 else r
 
 
 VOX_OFFS = (np.array([np.random.RandomState(i).rand(3)
@@ -526,7 +529,7 @@ def ctrl_local(d, gsel):
         loc = torch.nonzero(full[gsel.cpu()]).squeeze(-1).to(gsel.device)
         # 대응하는 offset (제어점 기준 상대 위치) 도 같은 순서로
         g = gsel[loc].cpu()
-        off = d["x"][0][g] - d["x"][0][d["ctrl"][k]]
+        off = (d["x"][0][g] - d["x"][0][d["ctrl"][k]]).float()
         out.append((loc, off))
     d["_cl"] = out
     d["_cl_key"] = key
@@ -1074,10 +1077,10 @@ if a.voxel:
     VOX_CELL = H
     # 격자는 모든 궤적을 덮도록 공간에 고정한다 (프레임마다 새로 잡으면 물체가
     # 떨어지는 것만으로 모든 복셀 키가 바뀐다)
-    VOX_LO = (torch.stack([dd["x"].reshape(-1, 3).min(0).values
+    VOX_LO = (torch.stack([dd["x"].reshape(-1, 3).float().min(0).values
                            for _t, dd in TR + held]).min(0).values
               - 4 * H).to(dev)
-    _hi = torch.stack([dd["x"].reshape(-1, 3).max(0).values
+    _hi = torch.stack([dd["x"].reshape(-1, 3).float().max(0).values
                        for _t, dd in TR + held]).max(0).values.to(dev)
     _mx = (((_hi - VOX_LO) / (H * (max(a.vox_ens, 1) ** (1.0 / 3.0))))
            .floor().long() + 4).tolist()
