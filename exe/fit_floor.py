@@ -29,22 +29,31 @@ ap.add_argument("--n_pts", type=int, default=8000)
 ap.add_argument("--n_win", type=int, default=12, help="표본 창 수")
 ap.add_argument("--steps", type=int, default=400, help="맞춤 반복")
 ap.add_argument("--unroll", type=int, default=1)
+ap.add_argument("--files", default="", help="쉼표로 구분한 궤적 파일명 (없으면 앞 8 개)")
+ap.add_argument("--t0", type=int, nargs="*", default=None,
+                help="창 시작 프레임을 직접 지정 (모델 평가와 같은 창으로 맞출 때)")
 ap.add_argument("--dev", default="cuda")
 a = ap.parse_args()
 dev = a.dev
 
-files = sorted(glob.glob(os.path.join(a.data, "*.pt")))[:8]
+if a.files:
+    files = [os.path.join(a.data, f if f.endswith(".pt") else f + ".pt")
+             for f in a.files.split(",")]
+else:
+    files = sorted(glob.glob(os.path.join(a.data, "*.pt")))[:8]
 if not files:
     raise SystemExit("궤적이 없다")
 gen = torch.Generator(device=dev).manual_seed(0)
 tot_r = tot_m = tot_s = 0.0
 n = 0
-for wi in range(a.n_win):
-    d = torch.load(files[wi % len(files)], map_location="cpu",
-                   weights_only=False)
+wins = ([(f, t) for f in range(len(files)) for t in a.t0] if a.t0
+        else [(wi % len(files), None) for wi in range(a.n_win)])
+for wi, (fi, t0_given) in enumerate(wins):
+    d = torch.load(files[fi], map_location="cpu", weights_only=False)
     X = d["x"].float()
     T = X.shape[0]
-    t0 = 3 + (wi * 7) % max(T - a.unroll - 4, 1)
+    t0 = (t0_given if t0_given is not None
+          else 3 + (wi * 7) % max(T - a.unroll - 4, 1))
     gsel = torch.randperm(X.shape[1], generator=torch.Generator().manual_seed(wi)
                           )[:a.n_pts].sort().values
     x = X[t0][gsel].to(dev)
