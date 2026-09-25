@@ -30,10 +30,11 @@ ap.add_argument("--n_pts", type=int, default=20000)
 ap.add_argument("--steps", type=int, default=600)
 ap.add_argument("--lr", type=float, default=1e-3)
 ap.add_argument("--ctrl_R_scale", type=float, default=1.0)
-ap.add_argument("--var", default="grid", choices=("grid", "pts"),
-                help="최적화 변수. grid 는 격자점 변위(학생의 출력 공간), "
-                     "pts 는 가우시안 위치 자체 -- 둘의 차이가 격자로 제한해서 "
-                     "잃는 몫이다")
+ap.add_argument("--var", default="grid", choices=("grid", "pts", "mpm"),
+                help="최적화 변수. grid 는 우리 32^3 격자점 변위(우리 전달로 "
+                     "가우시안을 옮긴 뒤 P2G 로 되돌려 잰다), mpm 은 i-PG 가 "
+                     "실제로 푸는 변수인 MPM 격자 증분(왕복 없이 바로 잰다), "
+                     "pts 는 가우시안 위치 자체다")
 ap.add_argument("--obj_log", default="", help="창별 목적함수 곡선을 npy 로 남긴다")
 ap.add_argument("--dev", default="cuda")
 a = ap.parse_args()
@@ -96,6 +97,54 @@ for fn in a.files.split(","):
         d_cmd = FRAME_DT * vc[ki]
         free = ~(wm > 0.5)
 
+        if a.var == "mpm":
+            # i-PG 가 실제로 푸는 형태: MPM 격자의 증분 Δu_I 가 변수이고,
+            # 가우시안은 같은 B-스플라인 가중치로 G2P 해서 옮긴다. 우리 격자를
+            # 거치지 않으므로 P2G 왕복에서 생기는 손실이 없다.
+            ngm = int(cfg.get("n_grid", 100))
+            glm = float(cfg.get("grid_lim", 2.0))
+            m_I, _du0, v_I, info, frac = phys_resid.p2g_increment(
+                x, torch.zeros_like(x), v, mass, ngm, glm, free=free)
+            flat, ww, inv, uniq, dxg = info
+            duI = torch.zeros(m_I.shape[0], 3, device=dev, requires_grad=True)
+            w_free = (frac > 0.5).to(m_I.dtype)
+
+            def g2p(_u):
+                return (_u[inv].reshape(x.shape[0], 27, 3)
+                        * ww.unsqueeze(-1)).sum(1)
+
+            opt = torch.optim.Adam([duI], lr=a.lr)
+            cur = []
+            for it in range(a.steps):
+                opt.zero_grad(set_to_none=True)
+                xe = x + g2p(duI)
+                x2 = x + (1.0 - wm.unsqueeze(-1)) * (xe - x) + \
+                    wm.unsqueeze(-1) * d_cmd
+                dd = duI - FRAME_DT * v_I
+                e_in = (0.5 * w_free * m_I / (FRAME_DT ** 2)
+                        * (dd * dd).sum(-1)).sum()
+                e_g = -(w_free * m_I * (duI * g).sum(-1)).sum()
+                gu = phys_resid.g2p_grad(x, duI, info, ngm)
+                F_tr = (torch.eye(3, device=dev) + gu) @ F
+                psi, _dl = phys_resid.psi_of(F_tr, cfg, FRAME_DT)
+                E = (e_in + (vol * psi).sum() + e_g) / norm
+                E.backward()
+                opt.step()
+                cur.append(float(E))
+            with torch.no_grad():
+                xe = x + g2p(duI)
+                x2 = x + (1.0 - wm.unsqueeze(-1)) * (xe - x) + \
+                    wm.unsqueeze(-1) * d_cmd
+                pe = float((x2[free] - gt[free]).norm(dim=-1).mean()) / ext
+                st = float((x[free] - gt[free]).norm(dim=-1).mean()) / ext
+            curves.append(cur)
+            tot_p += pe
+            tot_s += st
+            tot_r += pe / max(st, 1e-20)
+            n += 1
+            print(f"  {fn} t0={t0:3d}  물리최적(MPM격자) {100*pe:.4f}%  "
+                  f"정지 {100*st:.4f}%  비 {pe/max(st,1e-20):.3f}", flush=True)
+            continue
         if a.var == "grid":
             lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
             sidx, _w8 = TRI.corners(x, lo, hh, nn3)
