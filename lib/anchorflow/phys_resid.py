@@ -33,10 +33,22 @@ def mat_name(cfg):
     return str(cfg.get("material", "jelly"))
 
 
+# 겹친 고유값을 깨는 아주 작은 이방성 흔들림. 1 계 미분은 겹쳐도 멀쩡하지만
+# **2 계** 미분은 1/(l_i - l_j) 를 타서 터진다 (잔차 보상이 그 경로를 쓴다).
+_JIT = None
+
+
 def _sig(F):
     """특이값 [N,3] (오름차순). C = F^T F 의 고유값으로 구한다."""
-    C = F.transpose(-1, -2) @ F
-    return torch.linalg.eigvalsh(C.double()).clamp_min(1e-12).sqrt().to(F.dtype)
+    global _JIT
+    C = (F.transpose(-1, -2) @ F).double()
+    if _JIT is None or _JIT.device != C.device:
+        _JIT = torch.diag(torch.tensor([0.0, 1e-9, 2e-9], dtype=torch.float64,
+                                       device=C.device))
+    tr = C.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(
+        *C.shape[:-2], 1, 1).clamp_min(1e-12)
+    return torch.linalg.eigvalsh(C + tr * _JIT).clamp_min(1e-12).sqrt().to(
+        F.dtype)
 
 
 def _psi_fcr(sig, mu, lam):
