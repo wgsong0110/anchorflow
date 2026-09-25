@@ -519,6 +519,46 @@ def grip_feat(d, t, p):
     return torch.cat([rel, nrm, mov, tan, gg], -1).reshape(A, -1)
 
 
+def ctrl_anchor(d, gsel):
+    """손잡이가 **붙들고 있는 입자**를 부분표본 좌표계로 옮긴다 -> [T,K] 색인.
+
+    궤적에는 손잡이마다 제어 입자의 전체 색인 `ctrl_id` 가 들어 있다. 학습은
+    `sel` 로 솎은 20000 개만 보므로 그 안에서 대응을 찾아야 한다. 정확히 들어
+    있으면 그것을, 없으면 **프레임 0 에서 가장 가까운** 입자를 쓴다 (손잡이는
+    물질점 하나를 잡고 가는 것이라 이웃으로 바꿔도 같은 무리를 끈다).
+    """
+    key = (int(gsel.numel()), int(gsel[0]), int(gsel[-1]))
+    if d.get("_ca_key") == key:
+        return d["_ca"]
+    cid = d["ctrl_id"]                                   # [T,K] 전체 색인
+    sel = d["sel"]                                       # [Nsub] 전체 색인
+    # 전체 색인 -> 부분표본 색인 (없으면 -1)
+    inv = torch.full((int(d["n_full"]),), -1, dtype=torch.long)
+    inv[sel] = torch.arange(sel.numel())
+    loc = inv[cid.reshape(-1).clamp(0, inv.numel() - 1)].reshape(cid.shape)
+    miss = loc < 0
+    if bool(miss.any()):
+        x0 = d["x"][0].float()                           # [Nsub,3] 부분표본
+        # 빠진 제어 입자는 프레임 0 의 교사 손잡이 중심에 가장 가까운 것으로
+        P0 = d["ctrl_pos"].float()
+        idx = torch.nonzero(miss)
+        for t_, k_ in idx.tolist():
+            c = P0[min(t_, P0.shape[0] - 1), k_]
+            loc[t_, k_] = int((x0 - c).norm(dim=-1).argmin())
+    loc = loc.to(gsel.device)
+    d["_ca"], d["_ca_key"] = loc, key
+    return loc
+
+
+def ctrl_weights(d, t, x, loc_t):
+    """학생 자신의 상태에서 손잡이 감쇠 가중치 [N,K]. 교사와 같은 (1-q^2)^2."""
+    R = d["ctrl_R"].to(x.device, x.dtype)
+    Rt = R[min(t, R.numel() - 1)].clamp(min=1e-6)
+    c = x[loc_t]                                          # [K,3] 학생 상태
+    q = ((x.unsqueeze(1) - c.unsqueeze(0)).norm(dim=-1) / Rt).clamp(0, 1)
+    return (1.0 - q * q) ** 2, c
+
+
 def ctrl_local(d, gsel):
     """제어점 명단을 **부분표본 좌표계**로 옮긴다.
 
@@ -544,38 +584,49 @@ def ctrl_local(d, gsel):
     return out
 
 
-def free_mask(d, n, device, gsel):
+def free_mask(d, n, device, gsel, x=None, t=0):
     """강제되지 **않은** 입자만 True. 손실은 여기서만 잰다.
 
-    강제된 입자는 궤적 값으로 덮어쓰므로 오차가 정확히 0 이다. 그대로 평균에
-    넣으면 손실이 희석돼 모델이 좋아 보인다 (그리고 기울기도 안 준다).
+    강제된 입자는 명령으로 밀리므로 학생이 정할 양이 아니다. 그대로 평균에
+    넣으면 손실이 희석되고(그리고 기울기도 가짜다) 물리손실에서는 그 입자들의
+    관성·중력 잔차까지 최소화하려 들어 운동을 자유낙하로 오해하게 된다.
+
+    예전에는 `ctrl_mem`(궤적에 없는 키)을 읽어 **항상 전부 True** 였다.
+    지금은 학생 상태에서 손잡이 가중치를 재어 w > 0.5 인 입자를 제외한다.
     """
     m = torch.ones(n, dtype=torch.bool, device=device)
+    if x is not None and "ctrl_id" in d and "ctrl_R" in d:
+        loc = ctrl_anchor(d, gsel)
+        tt = min(t, loc.shape[0] - 1)
+        w, _ = ctrl_weights(d, tt, x, loc[tt])
+        m &= ~(w.max(1).values > 0.5)
+        return m
     for loc, _ in ctrl_local(d, gsel):
         m[loc] = False
     return m
 
 
-def apply_control(d, t, gsel, x2):
+def apply_control(d, t, gsel, x2, x=None):
     """강제되는 입자의 다음 위치를 **궤적 값으로 덮어쓴다**.
 
     교사가 그 입자들을 Dirichlet 으로 박았으므로, 학생이 거기를 예측하게 두면
     맞출 수 없는 것을 맞추라고 시키는 셈이다.
     """
-    if "ctrl_mem" not in d:
+    if "ctrl_id" not in d or "ctrl_vel" not in d or x is None:
         return x2
-    t1 = min(t + 1, d["x"].shape[0] - 1)
-    gt1 = take(d["x"][t1], gsel)
-    x2 = x2.clone()
-    for k, (loc, _off) in enumerate(ctrl_local(d, gsel)):
-        if loc.numel() == 0:
-            continue
-        # **입자 기준**으로 박는다: 그 입자의 교사 위치를 그대로 쓴다. 예전에는
-        # "제어점 위치 + 프레임 0 의 offset" 으로 무리를 강체처럼 붙였는데,
-        # 교사는 반경 안 입자의 속도를 가중치로 섞어 미는 것이라 무리가 강체로
-        # 움직이지 않는다 -- 그 차이만큼 경계자료가 틀려 있었다.
-        x2[loc] = gt1[loc]
-    return x2
+    # 교사(PG)가 하는 것과 같은 규약: 손잡이가 붙든 **입자를 중심으로** 반경 안
+    # 입자의 속도를 감쇠 가중치로 섞는다. 중심은 교사가 측정한 위치가 아니라
+    # **학생 자신의 상태에서** 그 입자가 가 있는 곳이고, 섞는 값은 주어진 명령
+    # 속도다 -- 그래야 롤아웃에 교사의 시뮬 결과가 새지 않는다.
+    loc = ctrl_anchor(d, gsel)
+    tt = min(t, loc.shape[0] - 1)
+    w, _c = ctrl_weights(d, tt, x, loc[tt])               # [N,K]
+    vc = d["ctrl_vel"].to(x.device, x.dtype)[min(tt, d["ctrl_vel"].shape[0] - 1)]
+    # 여러 손잡이가 겹치면 가장 센 것을 따른다
+    wm, ki = w.max(1)
+    d_cmd = FRAME_DT * vc[ki]                             # [N,3] 명령 변위
+    wm = wm.unsqueeze(-1)
+    return x + (1.0 - wm) * (x2 - x) + wm * d_cmd
 
 
 _ENS_SHIFT = [(0.0, 0.0, 0.0), (0.5, 0.5, 0.0), (0.5, 0.0, 0.5),
@@ -748,7 +799,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                                  neginf=0.0).clamp(-4.0, 4.0)
         x2 = skin(x, p, dp, log_r, log_t, idx, H)[0]
         if a.control:
-            x2 = apply_control(d, t, gsel, x2)
+            x2 = apply_control(d, t, gsel, x2, x)
         J = (jacobian_of(lambda q: skin(q, p, dp, log_r, log_t, idx, H)[0], x)
              if need_J else None)
         return x2, p + dp, (x2 - x) / FRAME_DT, J, dp, None, dmg, idx, fe
@@ -814,7 +865,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     x2 = x + acc / len(shifts)
     dmg_out = None
     if a.control:
-        x2 = apply_control(d, t, gsel, x2)
+        x2 = apply_control(d, t, gsel, x2, x)
     # 격자는 다음 프레임에 x2 로부터 다시 잡는다. 앵커를 옮길 필요가 없다.
     ai, p_next = None, p
     J = None
@@ -922,7 +973,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
                 return skin(q, _gp, _dpn, _lrn, _ltn, _i, float(_hh))[0]
         u = _warp_n(x) - x
         gu = jacobian_of(_warp_n, x) - torch.eye(3, device=dev)
-        _fm0 = free_mask(d, x.shape[0], dev, gsel) if a.control else None
+        _fm0 = free_mask(d, x.shape[0], dev, gsel, x, t0) if a.control else None
         if _fm0 is not None:
             u = u * _fm0.unsqueeze(-1).to(u.dtype)
             gu = gu * _fm0.reshape(-1, 1, 1).to(gu.dtype)
@@ -934,7 +985,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         # 손잡이 입자는 흔들지 않는다. 그 위치는 교사가 박아 둔 Dirichlet 자료라,
         # 흔들어 두면 다음 스텝에 교사 위치로 덮어써지면서 "흔들린 곳 -> 교사 위치"
         # 라는 인위적인 큰 변위가 경계자료로 들어간다.
-        _fm0 = free_mask(d, x.shape[0], dev, gsel) if a.control else None
+        _fm0 = free_mask(d, x.shape[0], dev, gsel, x, t0) if a.control else None
         if _fm0 is not None:
             u = u * _fm0.unsqueeze(-1).to(u.dtype)
             gu = gu * _fm0.reshape(-1, 1, 1).to(gu.dtype)
@@ -967,7 +1018,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         v_old = v                       # 관성항은 이전 속도로 잰다
         x2, p, v, J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
             d, t0 + i, gsel, p, x, v, need_J=False)
-        fm = free_mask(d, x2.shape[0], dev, gsel) if a.control else None
+        fm = free_mask(d, x2.shape[0], dev, gsel, x, t0 + i) if a.control else None
         # 물리손실은 i-PG 와 같은 자리에서 잰다: 학생이 옮긴 가우시안 변위를
         # MPM 격자로 P2G 해 격자 증분 Δu_I 를 역산하고, 관성·중력은 격자에서,
         # 탄성은 격자 속도기울기로 민 F 로 잰다.
@@ -1086,7 +1137,7 @@ def window(d, t0, L, gsel):
             print(f"  [출력] |dp|/|u| {float(_pd.norm()/_u.norm().clamp(min=1e-20)):.4f}  "
                   f"cos(dp,u) {_c:+.4f}  cos(v*dt,u) {_cv:+.4f}  "
                   f"|u| {float(_u.norm()):.4e}", flush=True)
-        fm = free_mask(d, x2.shape[0], x2.device, gsel) if a.control else None
+        fm = free_mask(d, x2.shape[0], x2.device, gsel, x, t0 + i) if a.control else None
         _use = (not a.loss_last) or (i == L - 1)
         if _use and fm is not None:  # 강제된 입자는 오차 0 이라 평균을 희석시킨다
             loss_x = loss_x + ((x2[fm] - gt[fm]) ** 2).sum(-1).mean() / (EXT ** 2)
@@ -1302,8 +1353,8 @@ def quick_val():
                     d, t0 + i, gsel, p, x, v, need_J=False)
             x2, p, v = x2.detach(), p.detach(), v.detach()
             gt = take(d["x"][t0 + i + 1], gsel)
-            fm = (free_mask(d, x2.shape[0], dev, gsel) if a.control
-                  else slice(None))
+            fm = (free_mask(d, x2.shape[0], dev, gsel, x2, t0 + i)
+                  if a.control else slice(None))
             tot += float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
             ref += float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
             x = x2
@@ -1352,7 +1403,7 @@ if a.phys_probe:
         x1_ = take(d["x"][t0 + 1], gsel).clone().requires_grad_(True)
         F0_ = take(traj_F(d)[t0], gsel).float()
         F1_ = take(traj_F(d)[t0 + 1], gsel).float()
-        fm = free_mask(d, x1_.shape[0], dev, gsel) if a.control else None
+        fm = free_mask(d, x1_.shape[0], dev, gsel, x0_, int(t0)) if a.control else None
         E, _dl, parts = phys_resid.ip_energy(
             x1_, x0_ + h * v0_, F1_, mass, vol, cfg, h, free=fm, g=gvec,
             norm=norm)
@@ -1526,7 +1577,7 @@ def rollout(d, t0, L, gsel):
                 idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
         gt = take(d["x"][t0 + i + 1], gsel)
-        fm = free_mask(d, x2.shape[0], x2.device, gsel) if a.control else slice(None)
+        fm = free_mask(d, x2.shape[0], x2.device, gsel, x2, t0 + i) if a.control else slice(None)
         errs.append(float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
         stills.append(float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
         if _ROLLDUMP is not None:
