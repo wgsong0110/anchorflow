@@ -748,6 +748,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
 
     shifts = _ENS_SHIFT[:a.ens] if a.ens > 1 else [None]
     acc, warps, dp = 0.0, [], None
+    _Jf = None                   # 스키닝 전달에서만 해석적 야코비안이 나온다
     for _sh in shifts:
         with _tsec("셀집계"):
             _in, p, grid_shape, tri, (lo, hh, nn3), crow = cell_feats(
