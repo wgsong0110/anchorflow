@@ -873,7 +873,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
             # Δu_I 를 얻고 그 위에서 잰다.
             E, dlog, F_tr, parts = phys_resid.grid_ip_energy(
                 x, x2 - x, v, F, mass, vol, cfg, h,
-                int(cfg["n_grid"]), float(cfg["grid_lim"]),
+                int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0)),
                 g=g, norm=norm, free=fm)
         else:
             F_tr = J @ F
