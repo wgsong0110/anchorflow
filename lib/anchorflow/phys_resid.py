@@ -311,3 +311,37 @@ def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
     if norm is not None:
         tot = tot / norm
     return tot, dlog, F_tr, (float(e_in), float(e_el), float(e_g))
+
+
+def own_ip_energy(dp, w, sidx, J, vel, F, mass, vol, cfg, h, g=None,
+                  norm=None):
+    """i-PG 의 목적함수를 **학생 자신의 격자·전달** 위에서 잰다.
+
+        E = Σ_I m_I/(2h²)‖dp_I − h v_I‖² + Σ_p V_p Ψ(J F_p) − Σ_I m_I g·dp_I
+        m_I = Σ_p m_p w_Ip,   v_I = Σ_p m_p w_Ip v_p / m_I
+
+    학생이 내는 격자점 변위 dp 가 그대로 미지수 Δu_I 라, 가우시안을 옮겼다가
+    다시 격자로 되돌리는 왕복이 없다. J 는 스키닝의 해석적 야코비안(= I + ∇Δu)
+    이므로 변형구배도 그대로 이어진다. i-PG 와 같은 물리를 다른 기저에 투영한
+    것이어서 이산화는 다르다 -- 대신 목적함수가 학생이 제어하는 변수의 함수다.
+    """
+    M = dp.shape[0]
+    flat = sidx.reshape(-1)                                  # [N*k]
+    mw = (w * mass.unsqueeze(-1)).reshape(-1)                # [N*k]
+    m_I = torch.zeros(M, device=dp.device, dtype=dp.dtype).index_add_(
+        0, flat, mw)
+    v_I = torch.zeros(M, 3, device=dp.device, dtype=dp.dtype).index_add_(
+        0, flat, mw.unsqueeze(-1) * vel.repeat_interleave(w.shape[1], 0))
+    v_I = v_I / m_I.clamp_min(1e-20).unsqueeze(-1)
+    d = dp - h * v_I
+    e_in = (0.5 * m_I / (h * h) * (d * d).sum(-1)).sum()
+    e_g = torch.zeros((), device=dp.device, dtype=dp.dtype)
+    if g is not None:
+        e_g = -(m_I * (dp * g).sum(-1)).sum()
+    F_tr = J @ F
+    psi, dlog = psi_of(F_tr, cfg, h)
+    e_el = (vol * psi).sum()
+    tot = e_in + e_el + e_g
+    if norm is not None:
+        tot = tot / norm
+    return tot, dlog, F_tr, (float(e_in), float(e_el), float(e_g))
