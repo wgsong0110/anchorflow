@@ -167,6 +167,18 @@ ap.add_argument("--phys_K_warm", type=int, default=0,
 ap.add_argument("--phys_noise", type=float, default=0.0,
                 help="상태 교란 크기 (물체 크기 대비). 매끄러운 저주파 장을 더하고 "
                      "F 도 (I+grad u)F 로 함께 흔든다")
+ap.add_argument("--rl", action="store_true",
+                help="액터-크리틱으로 학습한다. 보상은 -(i-PG 손실), 미래는 가치함수 "
+                     "V 가 대신 보므로 롤아웃을 거슬러 미분하지 않는다 (BPTT 길이 1). "
+                     "상태는 에피소드 안에서 학생 자신의 출력으로 이어진다")
+ap.add_argument("--rl_steps", type=int, default=8, help="에피소드 길이(프레임)")
+ap.add_argument("--rl_gamma", type=float, default=0.95, help="할인율")
+ap.add_argument("--rl_critic_h", type=int, default=128, help="크리틱 폭")
+ap.add_argument("--rl_critic_lr", type=float, default=1e-3)
+ap.add_argument("--rl_term", type=float, default=3.0,
+                help="앵커 판본에서 가우시안-앵커 거리가 처음의 이 배를 넘으면 "
+                     "에피소드를 끝내고 큰 음수 보상을 준다")
+ap.add_argument("--rl_term_pen", type=float, default=10.0, help="종료 벌점")
 ap.add_argument("--phys_noise_grid", action="store_true",
                 help="교란을 **출력 공간**에서 뽑는다. 격자점 변위를 무작위로 하나 "
                      "뽑아 그 실행의 전달 방식으로 가우시안에 입혀 입력 상태로 "
@@ -362,6 +374,13 @@ def build(n_feat):
                         seed=a.seed, damage=a.damage).to(dev)
     opt = (torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=a.wd)
            if a.wd > 0 else torch.optim.Adam(net.parameters(), lr=a.lr))
+    global CRITIC, OPT_C
+    if a.rl:
+        CRITIC = Critic(n_feat, a.rl_critic_h).to(dev)
+        OPT_C = torch.optim.Adam(CRITIC.parameters(), lr=a.rl_critic_lr)
+        print(f"[크리틱] 입력 {n_feat}, 파라미터 "
+              f"{sum(q.numel() for q in CRITIC.parameters())/1e6:.2f}M",
+              flush=True)
     n = sum(p.numel() for p in net.parameters())
     print(f"[모델] 입력 {n_feat}, 파라미터 {n/1e6:.2f}M", flush=True)
 
@@ -896,6 +915,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             (_Jf if _Jf is not None else J))
 
 
+CRITIC = None
+OPT_C = None
 _F_MSG = []
 
 
@@ -935,6 +956,110 @@ def traj_mass(d):
     d["_mass"] = ((dx_ ** 3) / cn_[fl_]) * float(c["density"])
     d["_ext"] = float((x0.max(0).values - x0.min(0).values).norm())
     return d["_mass"]
+
+
+class Critic(torch.nn.Module):
+    """상태의 가치 V(s) -- 이 상태에서 앞으로 쌓일 i-PG 비용의 추정치.
+
+    학생이 보는 것과 **같은 셀 특징**을 받아 MLP 로 누른 뒤 전역 평균을 낸다.
+    구조에 의존하지 않게 하려고 격자·앵커 어느 쪽이든 [M, F] 만 받는다.
+    """
+
+    def __init__(self, n_feat, hidden=128, n_extra=2):
+        super().__init__()
+        self.f = torch.nn.Sequential(
+            torch.nn.Linear(n_feat, hidden), torch.nn.SiLU(),
+            torch.nn.Linear(hidden, hidden), torch.nn.SiLU())
+        self.head = torch.nn.Sequential(
+            torch.nn.Linear(hidden + n_extra, hidden), torch.nn.SiLU(),
+            torch.nn.Linear(hidden, 1))
+        torch.nn.init.zeros_(self.head[-1].weight)
+        torch.nn.init.zeros_(self.head[-1].bias)
+
+    def forward(self, feat, extra):
+        h = self.f(feat).mean(0, keepdim=True)
+        return self.head(torch.cat([h, extra.reshape(1, -1)], -1)).reshape(())
+
+
+def rl_state_feat(d, t, gsel, x, v, fe, p=None):
+    """크리틱 입력. 학생과 같은 셀 특징을 쓰고, 앵커 판본이면 이탈 정도를 덧붙인다."""
+    if a.arch == "attn" and p is not None:
+        idx, dist = anchor_knn(x, p, a.k)
+        feat, _ = aggregate(x, v / VEL_SCALE, take(d["x"][0], gsel), MASS[gsel],
+                            idx, p.shape[0], H, pa=p)
+        feat = _san(feat)
+        drift = float(dist[:, 0].mean())
+        return feat, drift
+    _in, _p, _gs, _tri, _lo, _crow = cell_feats(d, t, gsel, x, v, fe=fe)
+    return _in, 0.0
+
+
+def rl_episode(d, t0, E, gsel, gen):
+    """에피소드 하나. 매 스텝 한 번만 미분하고 미래는 V 가 본다.
+
+        정책 손실 =  E_iPG(s, pi(s))  -  gamma * V(s')
+        크리틱 손실 = ( V(s) - [ E_iPG + gamma * V(s').detach() ] )^2
+
+    상태는 스텝 사이에서 detach 한다 -- 그래서 메모리가 E 에 무관하고, 8 프레임을
+    거슬러 미분하던 비용이 사라진다. 대신 8 프레임 뒤의 영향은 V 가 실어 나른다.
+    """
+    mass_full = traj_mass(d)
+    mass = mass_full[gsel] * (float(N_FULL) / gsel.numel())
+    ext = d.get("_ext", EXT)
+    cfg = d["cfg"]
+    vol = mass / float(cfg["density"])
+    g = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
+    h = FRAME_DT
+    norm = float(mass.sum()) * (ext ** 2) / (h * h)
+    ng, gl = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
+
+    x = take(d["x"][t0], gsel)
+    v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / h
+    F = take(traj_F(d)[t0], gsel).float()
+    p = (x[fps(x, a.n_anchors, a.seed)] if a.arch == "attn" else
+         take(d["x"][t0], AIDX))
+    fe = None
+    la = lc = 0.0
+    n_st = 0
+    drift0 = None
+    for i in range(E):
+        t = t0 + i
+        feat_s, dr = rl_state_feat(d, t, gsel, x, v, fe, p)
+        if drift0 is None and dr > 0:
+            drift0 = dr
+        v_s = CRITIC(feat_s.detach(),
+                     torch.tensor([float(i) / E, dr / max(ext, 1e-9)],
+                                  device=dev))
+        x2, p2, v2, _J, _dp, _ai, _dmg, _cr, fe2, _Jd = step_once(
+            d, t, gsel, p, x, v, need_J=False, fe=fe)
+        fm = free_mask(d, x2.shape[0], dev, gsel, x, t) if a.control else None
+        E_ip, dlog, F_tr, _pt = phys_resid.grid_ip_energy(
+            x, x2 - x, v, F, mass, vol, cfg, h, ng, gl, g=g, norm=norm, free=fm)
+        # 다음 상태의 가치 (정책으로 기울기가 흐른다 -- 미래 영향의 경로)
+        feat_n, dr_n = rl_state_feat(d, t + 1, gsel, x2, v2, fe2, p2)
+        term = (drift0 is not None and dr_n > a.rl_term * drift0)
+        if term:
+            v_next = torch.zeros((), device=dev)
+            pen = torch.tensor(a.rl_term_pen, device=dev)
+        else:
+            v_next = CRITIC(feat_n, torch.tensor(
+                [float(i + 1) / E, dr_n / max(ext, 1e-9)], device=dev))
+            pen = torch.zeros((), device=dev)
+        cost = E_ip + pen                       # 비용 = -보상
+        la = la + (cost + a.rl_gamma * v_next)
+        with torch.no_grad():
+            y = cost.detach() + a.rl_gamma * v_next.detach()
+        lc = lc + (v_s - y) ** 2
+        n_st += 1
+        if term:
+            break
+        x = x2.detach()
+        v = v2.detach()
+        p = p2.detach() if torch.is_tensor(p2) else p2
+        fe = fe2.detach() if torch.is_tensor(fe2) else fe2
+        with torch.no_grad():
+            F = phys_resid.plastic_step(F_tr, dlog).detach()
+    return la / n_st, lc / n_st, n_st
 
 
 def phys_window(d, t0, K, gsel, sigma, gen):
@@ -1456,6 +1581,13 @@ for it in pbar:
             t0 = 5
             gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
                                 device=dev)[:a.n_pts]
+        if a.rl:
+            wa_, wc_, nst_ = rl_episode(d, t0, a.rl_steps, gsel, gen)
+            ((wa_ + wc_) / a.batch).backward()
+            lx = lx + float(wa_) / a.batch
+            still = still + float(wc_) / a.batch
+            arel = arel + nst_ / a.batch
+            continue
         if a.phase2:
             # K 램프: 1 -> phys_K. 드리프트는 뒤 스텝에서 생기므로 결국 늘린다.
             Kp = a.phys_K
@@ -1499,6 +1631,10 @@ for it in pbar:
         _msg = "  ".join(f"{k} {v/it*1000:.1f}ms({100*v/max(_tot,1e-9):.0f}%)"
                          for k, v in sorted(_PROF.items(), key=lambda z: -z[1]))
         print(f"[구간 {it}] 합 {_tot/it*1000:.0f}ms/it  {_msg}", flush=True)
+    if a.rl and OPT_C is not None:
+        torch.nn.utils.clip_grad_norm_(CRITIC.parameters(), 1.0)
+        OPT_C.step()
+        OPT_C.zero_grad(set_to_none=True)
     gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
     if os.environ.get("AF_DIAG") and it < int(os.environ["AF_DIAG"]):
         _prev = {n: q.detach().clone() for n, q in net.named_parameters()}
@@ -1518,7 +1654,11 @@ for it in pbar:
               flush=True)
     hist.append((lx, lJ, still, la, arel, ldm, dmean))
     if TBW is not None and it % 20 == 0:
-        if a.phase2:
+        if a.rl:
+            TBW.add_scalar("rl/정책손실", lx, it)
+            TBW.add_scalar("rl/크리틱손실", still, it)
+            TBW.add_scalar("rl/에피소드길이", arel, it)
+        elif a.phase2:
             TBW.add_scalar("phase2/E", lx, it)
             TBW.add_scalar("phase2/자유잔차", arel, it)
             TBW.add_scalar("phase2/구속잔차", still, it)
@@ -1531,7 +1671,10 @@ for it in pbar:
         if a.det_reg > 0:
             TBW.add_scalar("학습/det벌점", ldet, it)
     if it % 20 == 0:
-        if a.phase2:
+        if a.rl:
+            pbar.set_postfix(정책=f"{lx:.3e}", 크리틱=f"{still:.3e}",
+                             스텝=f"{arel:.1f}", gn=f"{float(gn):.1e}")
+        elif a.phase2:
             pbar.set_postfix(E=f"{lx:.3e}", 자유잔차=f"{100*arel:.3f}%",
                              구속잔차=f"{100*still:.3f}%", K=Kp,
                              gn=f"{float(gn):.1e}")
