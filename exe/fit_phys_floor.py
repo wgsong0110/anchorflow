@@ -30,6 +30,10 @@ ap.add_argument("--n_pts", type=int, default=20000)
 ap.add_argument("--steps", type=int, default=600)
 ap.add_argument("--lr", type=float, default=1e-3)
 ap.add_argument("--ctrl_R_scale", type=float, default=1.0)
+ap.add_argument("--var", default="grid", choices=("grid", "pts"),
+                help="최적화 변수. grid 는 격자점 변위(학생의 출력 공간), "
+                     "pts 는 가우시안 위치 자체 -- 둘의 차이가 격자로 제한해서 "
+                     "잃는 몫이다")
 ap.add_argument("--dev", default="cuda")
 a = ap.parse_args()
 dev = a.dev
@@ -90,19 +94,31 @@ for fn in a.files.split(","):
         d_cmd = FRAME_DT * vc[ki]
         free = ~(wm > 0.5)
 
-        lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
-        sidx, _w8 = TRI.corners(x, lo, hh, nn3)
-        gpos = (torch.stack(torch.meshgrid(
-            *[torch.arange(int(nn3[i]), device=dev, dtype=x.dtype)
-              for i in range(3)], indexing="ij"), -1).reshape(-1, 3)
-            ) * float(hh) + lo
-        log_r = torch.full((gpos.shape[0],), math.log(float(hh)), device=dev)
-        log_t = torch.zeros_like(log_r)
-        dp = torch.zeros(gpos.shape[0], 3, device=dev, requires_grad=True)
-        opt = torch.optim.Adam([dp], lr=a.lr)
+        if a.var == "grid":
+            lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
+            sidx, _w8 = TRI.corners(x, lo, hh, nn3)
+            gpos = (torch.stack(torch.meshgrid(
+                *[torch.arange(int(nn3[i]), device=dev, dtype=x.dtype)
+                  for i in range(3)], indexing="ij"), -1).reshape(-1, 3)
+                ) * float(hh) + lo
+            log_r = torch.full((gpos.shape[0],), math.log(float(hh)),
+                               device=dev)
+            log_t = torch.zeros_like(log_r)
+            var = torch.zeros(gpos.shape[0], 3, device=dev, requires_grad=True)
+
+            def warp(_v):
+                return skin(x, gpos, _v, log_r, log_t, sidx, float(hh))[0]
+        else:
+            # 가우시안 위치 자체가 변수다 (격자 제한 없음)
+            var = torch.zeros(x.shape[0], 3, device=dev, requires_grad=True)
+
+            def warp(_v):
+                return x + _v
+        dp = var
+        opt = torch.optim.Adam([var], lr=a.lr)
         for it in range(a.steps):
             opt.zero_grad(set_to_none=True)
-            xe = skin(x, gpos, dp, log_r, log_t, sidx, float(hh))[0]
+            xe = warp(var)
             x2 = x + (1.0 - wm.unsqueeze(-1)) * (xe - x) + \
                 wm.unsqueeze(-1) * d_cmd
             E, _dl, _F, _pt = phys_resid.grid_ip_energy(
@@ -111,7 +127,7 @@ for fn in a.files.split(","):
             E.backward()
             opt.step()
         with torch.no_grad():
-            xe = skin(x, gpos, dp, log_r, log_t, sidx, float(hh))[0]
+            xe = warp(var)
             x2 = x + (1.0 - wm.unsqueeze(-1)) * (xe - x) + \
                 wm.unsqueeze(-1) * d_cmd
             pe = float((x2[free] - gt[free]).norm(dim=-1).mean()) / ext
