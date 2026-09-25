@@ -175,6 +175,12 @@ ap.add_argument("--rl", action="store_true",
                      "V 가 대신 보므로 롤아웃을 거슬러 미분하지 않는다 (BPTT 길이 1). "
                      "상태는 에피소드 안에서 학생 자신의 출력으로 이어진다")
 ap.add_argument("--rl_steps", type=int, default=8, help="에피소드 길이(프레임)")
+ap.add_argument("--rl_reward", default="residual",
+                choices=("residual", "energy"),
+                help="보상. residual 은 -(정류 잔차)^2 로 **0 에 유계**하고 정답에서 "
+                     "정확히 0 이다. energy 는 증분 포텐셜 자체인데 중력항 때문에 "
+                     "아래로 유계가 아니라 에피소드로 누적하면 자유낙하가 최적이 "
+                     "된다 (실제로 30 스텝 만에 발산했다)")
 ap.add_argument("--rl_gamma", type=float, default=0.95, help="할인율")
 ap.add_argument("--rl_critic_h", type=int, default=128, help="크리틱 폭")
 ap.add_argument("--rl_critic_lr", type=float, default=1e-3)
@@ -1038,6 +1044,13 @@ def rl_episode(d, t0, E, gsel, gen):
         fm = free_mask(d, x2.shape[0], dev, gsel, x, t) if a.control else None
         E_ip, dlog, F_tr, _pt = phys_resid.grid_ip_energy(
             x, x2 - x, v, F, mass, vol, cfg, h, ng, gl, g=g, norm=norm, free=fm)
+        if a.rl_reward == "residual":
+            # 정류 잔차: 정답에서 0 이고 아래로 유계다. 질량으로 나눠 길이 단위로
+            # 만든 뒤 물체 크기로 정규화한다 (에너지처럼 스케일이 재질에 끌려가지
+            # 않게).
+            _gx, = torch.autograd.grad(E_ip * norm, x2, create_graph=True)
+            _rr = _gx * (h * h) / mass.unsqueeze(-1).clamp_min(1e-20) / ext
+            E_ip = ((_rr[fm] if fm is not None else _rr) ** 2).sum(-1).mean()
         # 다음 상태의 가치 (정책으로 기울기가 흐른다 -- 미래 영향의 경로)
         feat_n, dr_n = rl_state_feat(d, t + 1, gsel, x2, v2, fe2, p2)
         term = (drift0 is not None and dr_n > a.rl_term * drift0)
