@@ -181,6 +181,11 @@ ap.add_argument("--wd", type=float, default=0.0,
 ap.add_argument("--drop", type=float, default=0.0,
                 help="conv 블록 사이 채널 드롭아웃 비율 (Dropout3d). 검증·롤아웃 "
                      "에서는 자동으로 꺼진다")
+ap.add_argument("--det_reg", type=float, default=0.0,
+                help="한 스텝 변형장의 야코비안 행렬식이 뒤집히는 것(det<=0)을 "
+                     "벌한다. relu(margin - det)^2 의 입자 평균에 이 가중치를 곱한다")
+ap.add_argument("--det_margin", type=float, default=0.1,
+                help="det 가 이 값 아래로 내려가면 벌점이 붙는다 (0 이면 뒤집힘만)")
 ap.add_argument("--tb", default=None, help="TensorBoard 이벤트를 쓸 디렉토리")
 ap.add_argument("--fe_state", action="store_true",
                 help="탄성 변형구배 F_e 를 **입자 상태로** 들고 다닌다. 교사의 F 로 "
@@ -709,7 +714,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             log_r = (out[1] if len(out) > 2
                      else torch.full((dp.shape[0],), math.log(hh), device=dev))
             log_t = out[2] if len(out) > 2 else torch.zeros_like(log_r)
-            if a.fe_state:
+            if a.fe_state or a.det_reg > 0:
                 # 해석적 야코비안을 그대로 쓴다 (자동미분 세 번보다 싸다)
                 xe, _w8, _Jf = skin_with_jacobian(x, gpos, dp, log_r, log_t,
                                                   sidx, float(hh))
@@ -743,7 +748,10 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         with torch.no_grad():
             _ps, _dlg = phys_resid.psi_of(_ftr, d["cfg"], FRAME_DT)
             fe_next = phys_resid.plastic_step(_ftr, _dlg).detach()
-    return x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, crow, fe_next
+    # det 벌점은 **해석적** 야코비안으로 잰다. 자동미분 야코비안은 need_J 일 때만
+    # 있고 세 배 비싸다. 둘 다 없으면 벌점을 못 매기므로 None 으로 돌려준다.
+    return (x2, p_next, (x2 - x) / FRAME_DT, J, dp, ai, dmg, crow, fe_next,
+            (_Jf if _Jf is not None else J))
 
 
 _F_MSG = []
@@ -817,7 +825,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
     e_tot, r_free, r_ring, parts = 0.0, 0.0, 0.0, None
     for i in range(K):
         xtil = x + h * v
-        x2, p, v, J, _dp, _ai, _dmg, _cr, _fe = step_once(
+        x2, p, v, J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
             d, t0 + i, gsel, p, x, v, need_J=True)
         F_tr = J @ F
         fm = free_mask(d, x2.shape[0], dev, gsel) if a.control else None
@@ -864,7 +872,7 @@ def window(d, t0, L, gsel):
     # 다시 뽑으므로 시작도 부분표본 안에서 잡는다.
     ai = fps(x, a.n_anchors, a.seed) if a.refps else None
     p = x[ai] if a.refps else take(d["x"][t0], AIDX)
-    loss_x = loss_J = loss_a = loss_d = 0.0
+    loss_x = loss_J = loss_a = loss_d = loss_det = 0.0
     still = a_rel = d_rel = 0.0
     x_still = x.clone()
     x0w, p0w = x.clone(), p.clone()          # 손상의 기준 배치
@@ -872,7 +880,7 @@ def window(d, t0, L, gsel):
     fe = (take(traj_F(d)[t0], gsel).float() if a.fe_state else None)
     for i in range(L):
         ai_now = ai
-        x2, p, v, J, dp, ai, dmg, idx_prev, fe = step_once(
+        x2, p, v, J, dp, ai, dmg, idx_prev, fe, Jdet = step_once(
             d, t0 + i, gsel, p, x, v, need_J=a.lambda_J > 0,
             dmg=dmg, idx_prev=idx_prev, x0=x0w, p0=p0w, fe=fe)
         if a.damage:
@@ -923,6 +931,13 @@ def window(d, t0, L, gsel):
         else:
             loss_x = loss_x + ((x2 - gt) ** 2).sum(-1).mean() / (EXT ** 2)
             still = still + float(((x_still - gt) ** 2).sum(-1).mean()) / (EXT ** 2)
+        if a.det_reg > 0 and Jdet is not None:
+            # 뒤집힌 요소(det<=0)는 물리적으로 불가능하고, 롤아웃이 터지는 자리는
+            # 대개 여기다. 여유 margin 을 두어 0 에 닿기 전에 밀어낸다.
+            _det = torch.linalg.det(Jdet.float())
+            _pen = torch.relu(a.det_margin - _det) ** 2
+            loss_det = loss_det + (_pen[fm].mean() if fm is not None
+                                   else _pen.mean())
         if a.shape_loss != "none" and a.lambda_J > 0:
             # 복원한 F 는 디스크·메모리를 아끼려 half 로 들고 있다
             F0 = take(traj_F(d)[t0 + i], gsel).float()
@@ -943,7 +958,8 @@ def window(d, t0, L, gsel):
             (loss_J / L if a.lambda_J > 0 else torch.zeros((), device=dev)),
             still / L, loss_a / L, a_rel / L,
             (loss_d / L if a.damage else torch.zeros((), device=dev)),
-            d_rel / L)
+            d_rel / L,
+            (loss_det / L if a.det_reg > 0 else torch.zeros((), device=dev)))
 
 
 if a.small_out:
@@ -1116,7 +1132,7 @@ def quick_val():
         x_still = x.clone()
         for i in range(a.val_len):
             with torch.enable_grad():
-                x2, p, v, _, _, _, _, _, _ = step_once(
+                x2, p, v, _, _, _, _, _, _, _ = step_once(
                     d, t0 + i, gsel, p, x, v, need_J=False)
             x2, p, v = x2.detach(), p.detach(), v.detach()
             gt = take(d["x"][t0 + i + 1], gsel)
@@ -1195,7 +1211,7 @@ pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
 for it in pbar:
     L = a.unroll            # 학습 중 펼치기 길이는 바꾸지 않는다
     opt.zero_grad(set_to_none=True)
-    lx = lJ = la = ldm = 0.0
+    lx = lJ = la = ldm = ldet = 0.0
     still = arel = dmean = 0.0
     for _ in range(a.batch):
         tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
@@ -1228,8 +1244,8 @@ for it in pbar:
             wE, r_free, r_ring, _pt = phys_window(d, t0, Kp, gsel, sg, gen)
             loss_b = a.phys_w * wE
             if a.phys_sup > 0:
-                wx, wJ, wst, wa, wrel, wd, wdm = window(d, t0, L, gsel)
-                loss_b = loss_b + a.phys_sup * wx
+                wx, wJ, wst, wa, wrel, wd, wdm, wdet = window(d, t0, L, gsel)
+                loss_b = loss_b + a.phys_sup * wx + a.det_reg * wdet
             else:
                 wx = wE.detach(); wJ = torch.zeros((), device=dev)
                 wst = r_ring; wa = torch.zeros((), device=dev)
@@ -1239,13 +1255,14 @@ for it in pbar:
             still = still + r_ring / a.batch
             arel = arel + r_free / a.batch
             continue
-        wx, wJ, wst, wa, wrel, wd, wdm = window(d, t0, L, gsel)
+        wx, wJ, wst, wa, wrel, wd, wdm, wdet = window(d, t0, L, gsel)
         # 창마다 바로 역전파해 누적한다 -- 창 여러 개의 그래프를 동시에 들고 있으면
         # 야코비안까지 붙어 메모리가 배치 수만큼 늘어난다
         ((wx + a.lambda_J * wJ + a.lambda_anchor * wa
-          + a.lambda_dmg * wd) / a.batch).backward()
+          + a.lambda_dmg * wd + a.det_reg * wdet) / a.batch).backward()
         lx = lx + float(wx) / a.batch
         lJ = lJ + float(wJ) / a.batch
+        ldet = ldet + float(wdet) / a.batch
         still = still + wst / a.batch
         la = la + float(wa) / a.batch
         arel = arel + wrel / a.batch
@@ -1280,6 +1297,8 @@ for it in pbar:
             TBW.add_scalar("학습/정지기준%", 100 * still ** 0.5, it)
             TBW.add_scalar("학습/비", (lx / max(still, 1e-20)) ** 0.5, it)
         TBW.add_scalar("학습/기울기노름", float(gn), it)
+        if a.det_reg > 0:
+            TBW.add_scalar("학습/det벌점", ldet, it)
     if it % 20 == 0:
         if a.phase2:
             pbar.set_postfix(E=f"{lx:.3e}", 자유잔차=f"{100*arel:.3f}%",
@@ -1290,6 +1309,7 @@ for it in pbar:
                              정지=f"{100*still**0.5:.3f}%",
                              비=f"{(lx/max(still,1e-20))**0.5:.2f}",
                              앵커비=f"{arel:.2f}", J=f"{lJ:.1e}", L=L,
+                             **({"det": f"{ldet:.1e}"} if a.det_reg > 0 else {}),
                              **({"손상": f"{dmean:.3f}", "d손실": f"{ldm:.1e}"}
                                 if a.damage else {}),
                              gn=f"{float(gn):.1e}")
@@ -1329,7 +1349,7 @@ def rollout(d, t0, L, gsel):
     cds, ems, cds_s, ems_s = [], [], [], []
     for i in range(L):
         with torch.enable_grad():
-            x2, p, v, _, _, _, dmg_e, idx_e, fe_r = step_once(
+            x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
                 d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                 idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
