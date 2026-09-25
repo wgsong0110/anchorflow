@@ -1632,8 +1632,8 @@ for tag, d in TR + held:
     rows[tag] = dict(held=(tag in hold), windows={})
     for t0 in a.eval_t0:
         L = min(a.eval_len, T - t0 - 1)
-        if L < 2:
-            continue
+        if L < 1:                     # 한 스텝(L=1)도 재게 둔다 -- 롤아웃 누적을
+            continue                  # 빼고 순수한 한 스텝 오차를 보려면 필요하다
         _rd = os.environ.get("AF_ROLL_DUMP")
         _want = (_rd and tag.endswith(os.environ.get("AF_ROLL_TAG", "")) 
                  and t0 == int(os.environ.get("AF_ROLL_T0", "3")))
