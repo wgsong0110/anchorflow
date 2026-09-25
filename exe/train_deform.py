@@ -167,6 +167,9 @@ ap.add_argument("--phys_K_warm", type=int, default=0,
 ap.add_argument("--phys_noise", type=float, default=0.0,
                 help="상태 교란 크기 (물체 크기 대비). 매끄러운 저주파 장을 더하고 "
                      "F 도 (I+grad u)F 로 함께 흔든다")
+ap.add_argument("--resume_fresh", action="store_true",
+                help="가중치만 이어받고 스텝·옵티마이저·난수는 새로 시작한다. "
+                     "다른 단계로 넘어갈 때 쓴다 (예: 증류 -> RL)")
 ap.add_argument("--rl", action="store_true",
                 help="액터-크리틱으로 학습한다. 보상은 -(i-PG 손실), 미래는 가치함수 "
                      "V 가 대신 보므로 롤아웃을 거슬러 미분하지 않는다 (BPTT 길이 1). "
@@ -1416,10 +1419,15 @@ with torch.no_grad():
 
 if a.resume and os.path.exists(a.resume):
     ck = torch.load(a.resume, map_location=dev, weights_only=False)
-    net.load_state_dict(ck["net"]); opt.load_state_dict(ck["opt"])
-    step0 = int(ck["step"])
-    _rng_ck = ck
-    print(f"[재개] {a.resume} step {step0}", flush=True)
+    net.load_state_dict(ck["net"])
+    if a.resume_fresh:
+        print(f"[이어받음] {a.resume} 의 가중치만 (스텝 0 에서 새로 시작)",
+              flush=True)
+    else:
+        opt.load_state_dict(ck["opt"])
+        step0 = int(ck["step"])
+        _rng_ck = ck
+        print(f"[재개] {a.resume} step {step0}", flush=True)
 
 os.makedirs(a.out, exist_ok=True)
 gen = torch.Generator(device=dev).manual_seed(a.seed)
