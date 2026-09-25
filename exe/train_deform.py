@@ -313,7 +313,9 @@ def mat_feat(cfg):
 for _t, _d in TR + held:
     _xx = _d["x"]
     _ss = torch.randperm(_xx.shape[1])[:2000]
-    mv = (_xx[1:, _ss] - _xx[:-1, _ss]).norm(dim=-1).mean(1)      # [T-1]
+    # 궤적은 half 로 상주한다 -- 통계는 float 로 올려서 낸다 (quantile 이 half 를
+    # 받지 않고, 차이가 작아 half 로 재면 자릿수도 모자란다)
+    mv = (_xx[1:, _ss].float() - _xx[:-1, _ss].float()).norm(dim=-1).mean(1)
     _d["motion"] = mv
     print(f"  {_t}: 변위 중앙 {float(mv.median())/EXT*100:.4f}% "
           f"상위10% {float(mv.quantile(0.9))/EXT*100:.4f}% "
