@@ -577,14 +577,18 @@ def ctrl_anchor(d, gsel):
         d["_ca20"] = l20.to(gsel.device)
     l20 = d["_ca20"]
     n20 = d["x"].shape[1]
+    # 색인은 반드시 범위 안에 있어야 한다 -- 넘으면 CUDA 가 비동기 assert 로
+    # 죽어서 원인 지점을 못 찾는다 (전 조합 학습에서 겪었다).
+    l20 = l20.clamp(0, n20 - 1)
+    gs = gsel.clamp(0, n20 - 1)
     invg = torch.full((n20,), -1, dtype=torch.long, device=gsel.device)
-    invg[gsel] = torch.arange(gsel.numel(), device=gsel.device)
+    invg[gs] = torch.arange(gs.numel(), device=gsel.device)
     loc = invg[l20.reshape(-1)].reshape(l20.shape)
     miss = loc < 0
     if bool(miss.any()):
         # 표본에 없는 제어 입자는 프레임 0 에서 가장 가까운 표본 입자로 대신한다
         x0all = d["x"][0].float().to(gsel.device)
-        x0g = x0all[gsel]                                  # [n_pts,3]
+        x0g = x0all[gs]                                    # [n_pts,3]
         tgt = x0all[l20.reshape(-1)[miss.reshape(-1)]]     # [m,3]
         loc[miss] = torch.cdist(tgt, x0g).argmin(1)
     return loc
@@ -840,7 +844,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             x2 = apply_control(d, t, gsel, x2, x)
         J = (jacobian_of(lambda q: skin(q, p, dp, log_r, log_t, idx, H)[0], x)
              if need_J else None)
-        return x2, p + dp, (x2 - x) / FRAME_DT, J, dp, None, dmg, idx, fe
+        return x2, p + dp, (x2 - x) / FRAME_DT, J, dp, None, dmg, idx, fe, J
 
     shifts = _ENS_SHIFT[:a.ens] if a.ens > 1 else [None]
     acc, warps, dp = 0.0, [], None
