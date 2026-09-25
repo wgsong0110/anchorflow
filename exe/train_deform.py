@@ -186,6 +186,10 @@ ap.add_argument("--det_reg", type=float, default=0.0,
                      "벌한다. relu(margin - det)^2 의 입자 평균에 이 가중치를 곱한다")
 ap.add_argument("--det_margin", type=float, default=0.1,
                 help="det 가 이 값 아래로 내려가면 벌점이 붙는다 (0 이면 뒤집힘만)")
+ap.add_argument("--loss_last", action="store_true",
+                help="언롤 창에서 **마지막 프레임만** 손실로 쓴다. 중간 프레임의 "
+                     "정답 읽기와 손실 계산이 빠지지만, 역전파는 여전히 창 전체를 "
+                     "거슬러 올라간다 (마지막 상태가 앞 스텝에 의존하므로)")
 ap.add_argument("--tb", default=None, help="TensorBoard 이벤트를 쓸 디렉토리")
 ap.add_argument("--fe_state", action="store_true",
                 help="탄성 변형구배 F_e 를 **입자 상태로** 들고 다닌다. 교사의 F 로 "
@@ -900,6 +904,7 @@ def window(d, t0, L, gsel):
     ai = fps(x, a.n_anchors, a.seed) if a.refps else None
     p = x[ai] if a.refps else take(d["x"][t0], AIDX)
     loss_x = loss_J = loss_a = loss_d = loss_det = 0.0
+    n_used = 0
     still = a_rel = d_rel = 0.0
     x_still = x.clone()
     x0w, p0w = x.clone(), p.clone()          # 손상의 기준 배치
@@ -941,8 +946,10 @@ def window(d, t0, L, gsel):
         loss_a = loss_a + la
         a_rel = a_rel + (0.0 if dp_gt is None else float(la) ** 0.5 / max(
             float((dp_gt ** 2).sum(-1).mean()) ** 0.5 / EXT, 1e-20))
-        gt = take(d["x"][t0 + i + 1], gsel)
-        if os.environ.get("AF_DIAG2"):
+        # --loss_last 면 중간 프레임의 정답은 아예 읽지 않는다
+        gt = (take(d["x"][t0 + i + 1], gsel)
+              if ((not a.loss_last) or i == L - 1) else None)
+        if gt is not None and os.environ.get("AF_DIAG2"):
             _u = gt - x                              # 정답 변위
             _pd = x2 - x                             # 망이 낸 변위
             _c = float((_pd * _u).sum() / (_pd.norm() * _u.norm()).clamp(min=1e-20))
@@ -952,12 +959,15 @@ def window(d, t0, L, gsel):
                   f"cos(dp,u) {_c:+.4f}  cos(v*dt,u) {_cv:+.4f}  "
                   f"|u| {float(_u.norm()):.4e}", flush=True)
         fm = free_mask(d, x2.shape[0], x2.device, gsel) if a.control else None
-        if fm is not None:      # 강제된 입자는 오차 0 이라 평균을 희석시킨다
+        _use = (not a.loss_last) or (i == L - 1)
+        if _use and fm is not None:  # 강제된 입자는 오차 0 이라 평균을 희석시킨다
             loss_x = loss_x + ((x2[fm] - gt[fm]) ** 2).sum(-1).mean() / (EXT ** 2)
             still = still + float(((x_still[fm] - gt[fm]) ** 2).sum(-1).mean()) / (EXT ** 2)
-        else:
+            n_used += 1
+        elif _use:
             loss_x = loss_x + ((x2 - gt) ** 2).sum(-1).mean() / (EXT ** 2)
             still = still + float(((x_still - gt) ** 2).sum(-1).mean()) / (EXT ** 2)
+            n_used += 1
         if a.det_reg > 0 and Jdet is not None:
             # 뒤집힌 요소(det<=0)는 물리적으로 불가능하고, 롤아웃이 터지는 자리는
             # 대개 여기다. 여유 margin 을 두어 0 에 닿기 전에 밀어낸다.
@@ -981,9 +991,10 @@ def window(d, t0, L, gsel):
                 loss_J = loss_J + ((_b[fm].mean() if fm is not None else _b.mean())
                                    / (EXT ** 2))
         x = x2
-    return (loss_x / L,
+    _nu = max(n_used, 1)
+    return (loss_x / _nu,
             (loss_J / L if a.lambda_J > 0 else torch.zeros((), device=dev)),
-            still / L, loss_a / L, a_rel / L,
+            still / _nu, loss_a / L, a_rel / L,
             (loss_d / L if a.damage else torch.zeros((), device=dev)),
             d_rel / L,
             (loss_det / L if a.det_reg > 0 else torch.zeros((), device=dev)))
