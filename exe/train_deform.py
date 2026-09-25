@@ -857,6 +857,24 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         # 변위 교란을 한 스텝에 걸친 것으로 보면 속도도 그만큼 달라져 있다
         v = v + float(torch.rand(1, generator=gen, device=dev)) * u / h
     p = take(d["x"][t0], AIDX)
+    _ng, _gl = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
+    if a.warm > 0:
+        # 예열: 기울기 없이 굴려 학생이 스스로 만든 상태로 옮긴다. F 는 목적함수와
+        # **같은 경로**로 민다 -- 격자 증분에서 ∇Δu 를 뽑아 F <- Pi((I+∇Δu)F).
+        with torch.no_grad():
+            _I3 = torch.eye(3, device=dev)
+            for _w in range(a.warm):
+                x2w, p, vw, _, _, _, _, _, _, _ = step_once(
+                    d, t0 + _w, gsel, p, x, v, need_J=False)
+                _m, _duI, _vI, _info = phys_resid.p2g_increment(
+                    x, x2w - x, v, mass, _ng, _gl)
+                _gu = phys_resid.g2p_grad(x, _duI, _info, _ng)
+                _Ftr = (_I3 + _gu) @ F
+                F = phys_resid.plastic_step(
+                    _Ftr, phys_resid.psi_of(_Ftr, cfg, h)[1])
+                x, v = x2w, vw
+        x, v, F = x.detach(), v.detach(), F.detach()
+        t0 = t0 + a.warm
     e_tot, r_free, r_ring, parts = 0.0, 0.0, 0.0, None
     for i in range(K):
         xtil = x + h * v
