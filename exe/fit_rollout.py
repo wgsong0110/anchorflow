@@ -31,9 +31,9 @@ ap.add_argument("--n_pts", type=int, default=20000)
 ap.add_argument("--steps", type=int, default=400)
 ap.add_argument("--lr", type=float, default=1e-3)
 ap.add_argument("--transfer", default="skin", choices=("skin", "tri"))
-ap.add_argument("--clamp", type=float, default=0.5,
-                help="격자점 변위를 셀 크기의 이 배수로 자른다. 학습 경로가 "
-                     "망 출력에 거는 것과 같은 제한 (기본 0.5). 0 이면 안 자른다")
+ap.add_argument("--clamp", type=float, default=0.0,
+                help="쓰지 않는다 (하드 clamp 금지). 0 이 기본이고, 과거 비교를 "
+                     "재현할 때만 양수를 준다")
 ap.add_argument("--obj", default="pos", choices=("pos", "phys"),
                 help="매 스텝 무엇을 맞출지. pos 는 교사의 다음 프레임(표현 한계), "
                      "phys 는 i-PG 격자 증분 포텐셜(물리손실의 한계)")

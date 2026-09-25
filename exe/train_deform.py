@@ -803,12 +803,10 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                                  neginf=0.0).clamp(-_FCAP, _FCAP)
         out = net(p, torch.cat([feat, extra], -1), FRAME_DT)
         dp, log_r, log_t = out[0], out[1], out[2]
-        dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0,
-                              neginf=0.0).clamp(-0.5 * H, 0.5 * H)
-        log_r = torch.nan_to_num(log_r, nan=0.0, posinf=0.0,
-                                 neginf=0.0).clamp(-4.0, 4.0)
-        log_t = torch.nan_to_num(log_t, nan=0.0, posinf=0.0,
-                                 neginf=0.0).clamp(-4.0, 4.0)
+        # 하드 clamp 는 쓰지 않는다. NaN 만 씻어 내고 크기는 손대지 않는다.
+        dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0, neginf=0.0)
+        log_r = torch.nan_to_num(log_r, nan=0.0, posinf=0.0, neginf=0.0)
+        log_t = torch.nan_to_num(log_t, nan=0.0, posinf=0.0, neginf=0.0)
         x2 = skin(x, p, dp, log_r, log_t, idx, H)[0]
         if a.control:
             x2 = apply_control(d, t, gsel, x2, x)
@@ -828,11 +826,9 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1],
                       mat=_mv)
         dp = out[0]
-        # 얇은 잎 같은 구름에서는 한 번의 큰 출력이 다음 스텝의 kNN 을 망가뜨려
-        # (NaN 거리 -> 엉뚱한 색인) CUDA assert 로 죽는다. 물리적으로 말이 되는
-        # 범위로 잘라 둔다: 한 스텝에 앵커 간격의 절반을 넘게 움직이지 않는다.
-        dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0,
-                              neginf=0.0).clamp(-0.5 * H, 0.5 * H)
+        # 하드 clamp 는 쓰지 않는다 -- 크기를 자르면 목적함수가 보는 해와
+        # 모델이 낼 수 있는 해가 어긋난다. NaN 만 씻어 낸다.
+        dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0, neginf=0.0)
         if a.transfer == "skin":
             # 격자점을 앵커로 두고 kNN + 학습 반경 소프트맥스로 옮긴다. 격자가
             # 규칙적이라 kNN 은 탐색 없이 구한다 (격자점 = 원점을 반 칸 당긴
