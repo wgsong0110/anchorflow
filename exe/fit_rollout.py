@@ -31,6 +31,9 @@ ap.add_argument("--n_pts", type=int, default=20000)
 ap.add_argument("--steps", type=int, default=400)
 ap.add_argument("--lr", type=float, default=1e-3)
 ap.add_argument("--transfer", default="skin", choices=("skin", "tri"))
+ap.add_argument("--clamp", type=float, default=0.5,
+                help="격자점 변위를 셀 크기의 이 배수로 자른다. 학습 경로가 "
+                     "망 출력에 거는 것과 같은 제한 (기본 0.5). 0 이면 안 자른다")
 ap.add_argument("--obj", default="pos", choices=("pos", "phys"),
                 help="매 스텝 무엇을 맞출지. pos 는 교사의 다음 프레임(표현 한계), "
                      "phys 는 i-PG 격자 증분 포텐셜(물리손실의 한계)")
@@ -104,10 +107,12 @@ for i in range(a.frames):
     log_t = torch.zeros_like(log_r)
     dp = torch.zeros(gpos.shape[0], 3, device=dev, requires_grad=True)
     opt = torch.optim.Adam([dp], lr=a.lr)
+    _lim = a.clamp * float(hh)
     for _ in range(a.steps):
         opt.zero_grad(set_to_none=True)
-        xe = (skin(x, gpos, dp, log_r, log_t, sidx, float(hh))[0]
-              if a.transfer == "skin" else x + TRI.g2p(sidx, w8, dp))
+        dpc = dp.clamp(-_lim, _lim) if a.clamp > 0 else dp
+        xe = (skin(x, gpos, dpc, log_r, log_t, sidx, float(hh))[0]
+              if a.transfer == "skin" else x + TRI.g2p(sidx, w8, dpc))
         x2 = x + (1.0 - wm.unsqueeze(-1)) * (xe - x) + wm.unsqueeze(-1) * d_cmd
         if a.obj == "phys":
             E, _dl, _Ft, _pt = phys_resid.grid_ip_energy(
@@ -118,8 +123,9 @@ for i in range(a.frames):
             ((x2[free] - gt[free]) ** 2).sum(-1).mean().backward()
         opt.step()
     with torch.no_grad():
-        xe = (skin(x, gpos, dp, log_r, log_t, sidx, float(hh))[0]
-              if a.transfer == "skin" else x + TRI.g2p(sidx, w8, dp))
+        dpc = dp.clamp(-_lim, _lim) if a.clamp > 0 else dp
+        xe = (skin(x, gpos, dpc, log_r, log_t, sidx, float(hh))[0]
+              if a.transfer == "skin" else x + TRI.g2p(sidx, w8, dpc))
         x2 = x + (1.0 - wm.unsqueeze(-1)) * (xe - x) + wm.unsqueeze(-1) * d_cmd
         e = float((x2[free] - gt[free]).norm(dim=-1).mean()) / ext
         st = float((still0[free] - gt[free]).norm(dim=-1).mean()) / ext
