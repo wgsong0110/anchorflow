@@ -129,7 +129,7 @@ class StatePool:
     """살아 있는 상태들의 집합. 누적 잔차가 문턱을 넘으면 버린다."""
 
     def __init__(self, scenes, size, n_ctrl, radius, dev, gen,
-                 frames=60, thresh_mult=3.0, window=30):
+                 frames=60, thresh_mult=3.0, window=30, min_age=5):
         self.scenes = scenes
         self.size = size
         self.n_ctrl = n_ctrl
@@ -141,6 +141,9 @@ class StatePool:
         # 누적은 **최근 window 프레임**만 본다. 전체 평균으로 두면 초반 잔차를
         # 계속 끌고 다녀, 물리적으로 멀쩡한데도 오래 살았다는 이유로 버려진다.
         self.window = window
+        # 갓 만든 상태는 몇 스텝 살려 둔다 -- 첫 스텝 잔차만 보고 버리면
+        # 풀이 늘 신규로만 차서 on-policy 상태를 못 본다
+        self.min_age = min_age
         self.fresh_res = []                 # 신규 상태 잔차 (중앙값 기준용)
         self.items = [self.fresh() for _ in range(size)]
         self.n_drop = 0
@@ -194,7 +197,7 @@ class StatePool:
             st["elapsed"] = 0
             self.n_replan += 1
         bad = (not bool(torch.isfinite(st["x"]).all())) or \
-            mean_res > self.threshold()
+            (st["age"] > self.min_age and mean_res > self.threshold())
         if bad:
             self.n_drop += 1
             if slot is not None:

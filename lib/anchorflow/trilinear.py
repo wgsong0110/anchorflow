@@ -83,12 +83,15 @@ def _inv3(A):
     # 능선이 너무 작으면(빈 셀) 역행렬이 1e20 급으로 커져 뒤에서 float32 가
     # 넘친다 -- 실제로 전 조합 학습이 NaN 으로 죽었다. 하한을 두고, 질량이
     # 사실상 0 인 셀은 역행렬을 0 으로 둔다 (그 셀은 어차피 기여가 없다).
-    Ar = A + (1e-6 * scale + 1e-12) * I3
+    # 능선을 **절대로 0 에 가깝게 두지 않는다**. 예전에는 빈 셀을 where 로
+    # 가렸는데, 그러면 순전파는 멀쩡해도 역전파에서 NaN 이 그대로 새어 나온다
+    # (0 * NaN = NaN). 전체 평균 크기를 바닥으로 깔아 항상 잘 정의되게 한다.
+    floor = scale.mean().clamp_min(1e-12) * 1e-6
+    Ar = A + (1e-6 * scale + floor) * I3
     try:
-        Ii = _t.linalg.inv(Ar)
+        return _t.linalg.inv(Ar), d
     except Exception:
-        Ii = _t.linalg.pinv(Ar)
-    return _t.where(scale > 1e-12, Ii, _t.zeros_like(Ii)), d
+        return _t.linalg.pinv(Ar), d
 
 
 def tri_feats(x, v, X, m, rows, w, M, pa, h):
