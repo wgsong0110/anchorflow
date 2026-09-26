@@ -17,6 +17,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--traj", required=True)
 ap.add_argument("--cfg", required=True)
 ap.add_argument("--t0", type=int, default=3)
+ap.add_argument("--fall", type=float, default=0.0,
+                help="바닥을 향해 이만큼(물체 크기 비율) 내려가는 변위를 시험한다")
 ap.add_argument("--n_pts", type=int, default=8000)
 a = ap.parse_args()
 
@@ -41,8 +43,18 @@ vol = mass / float(cfg["density"])
 gv = torch.tensor(cfg["g"], device=dev)
 nrm = float(mass.sum()) * ext ** 2 / h ** 2
 
+print(f"[기하] 물체 z {float(x[:,2].min()):.4f} ~ {float(x[:,2].max()):.4f}, "
+      f"dx={gl / n_grid:.4f}, 바닥면 z=0.48 은 노드 {0.48 / (gl / n_grid):.1f}")
+_m, _du, _v, _info, _ = phys_resid.p2g_increment(
+    x, torch.zeros_like(x), v, mass, n_grid, gl)
+os.environ["AF_NO_BC"] = ""
+_bc = phys_resid.bc_node_mask(_info[3], n_grid, _info[4], cfg, x.dtype, dev)
+print(f"[경계] 점유 노드 {_info[3].numel()} 개 중 규정 노드 {int(_bc.sum())} 개")
+
 for off, tag in ((1, "교사 다음 프레임"), (0, "정지(아무것도 안 함)")):
     du0 = (x_all[a.t0 + off] - x) if off else torch.zeros_like(x)
+    if a.fall > 0:
+        du0 = du0 - torch.tensor([0.0, 0.0, a.fall * ext], device=dev)
     for no_bc in (1, 0):
         os.environ["AF_NO_BC"] = "1" if no_bc else ""
         du = du0.clone().requires_grad_(True)
