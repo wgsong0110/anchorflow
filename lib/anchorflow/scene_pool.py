@@ -159,6 +159,8 @@ class StatePool:
         self.domain = domain            # 시뮬 영역 [0, domain]^3
         self.margin = margin            # 목표점은 이만큼 안쪽에서 뽑는다
         self.fresh_res = []                 # 신규 상태 잔차 (중앙값 기준용)
+        # 처음에만 채운다. 이후에는 **버린 자리를 즉시 메우지 않는다** --
+        # 배치에 섞이는 신규 상태가 살아남을 때만 풀이 다시 늘어난다.
         self.items = [self.fresh() for _ in range(size)]
         self.n_drop = 0
         self.n_replan = 0
@@ -183,6 +185,7 @@ class StatePool:
 
     def sample(self, n_pool, n_fresh):
         """배치 구성: 풀에서 n_pool 개, 새 상태 n_fresh 개."""
+        self.items = [q for q in self.items if q is not None]   # 빈자리 정리
         picks = []
         if self.items and n_pool > 0:
             sel = torch.randint(len(self.items), (n_pool,), generator=self.gen,
@@ -215,7 +218,7 @@ class StatePool:
         if bad:
             self.n_drop += 1
             if slot is not None:
-                self.items[slot] = self.fresh()
+                self.items[slot] = None        # 자리를 비워 둔다 (메우지 않는다)
             return False
         if slot is not None:
             self.items[slot] = st
