@@ -14,7 +14,26 @@ import os
 import numpy as np
 import torch
 
-__all__ = ["load_scenes", "HandlePlan", "StatePool"]
+__all__ = ["load_scenes", "HandlePlan", "StatePool", "target_grid"]
+
+
+def target_grid(domain, margin, n_side, cfg=None, dev="cpu"):
+    """목표점 후보 [P,3]. **유한하고 고정**이다.
+
+    매번 연속 분포에서 뽑으면 같은 목표를 두 번 볼 일이 없어, 학생이 같은 과제를
+    반복해서 배울 기회가 없다. 마진 상자 안의 격자로 후보를 고정하고 바닥면
+    안쪽으로 들어가는 점은 버린다 (도달할 수 없는 목표다).
+    """
+    t = torch.linspace(margin, domain - margin, n_side)
+    P = torch.stack(torch.meshgrid(t, t, t, indexing="ij"), -1).reshape(-1, 3)
+    for bc in ((cfg or {}).get("boundary_conditions") or []):
+        if bc.get("type") != "surface_collider":
+            continue
+        pt = torch.as_tensor(bc["point"], dtype=P.dtype)
+        nr = torch.as_tensor(bc["normal"], dtype=P.dtype)
+        nr = nr / nr.norm().clamp_min(1e-12)
+        P = P[((P - pt) * nr).sum(-1) > margin]
+    return P.to(dev)
 
 
 def load_scenes(fill_dir, cfg_dir, combos, n_pts, dev, seed=0):
@@ -63,24 +82,31 @@ def load_scenes(fill_dir, cfg_dir, combos, n_pts, dev, seed=0):
 class HandlePlan:
     """손잡이 계획. 제어 입자와 목표점만 자유 정보이고 나머지는 규칙이다.
 
-    속도 프로파일은 생성기와 같다 -- 전체 1 초(60 프레임)를 가속 0.25 s,
-    등속 0.5 s, 감속 0.25 s 로 나누고 최고속도는 거리/0.75 로 잡는다.
+    속도는 **가속도와 최고속도를 고정**하고 짠다 -- 목표까지 걸리는 시간을
+    고정하면 먼 목표는 빠르게, 가까운 목표는 느리게 끌려가 같은 물성이 전혀
+    다른 속도 영역을 보게 된다. 지령 속도는
+
+        s = min(vmax, a·t, sqrt(2 a d))
+
+    로, 출발에서 a 로 가속해 vmax 로 순항하고 남은 거리 d 가 감속 거리에
+    들어오면 a 로 감속해 목표에서 속도 0 으로 멈춘다.
     """
 
     def __init__(self, n_ctrl, idx, target, radius, frame_dt=1.0 / 60.0,
-                 frames=60):
+                 frames=60, acc=2.4, vmax=0.6, tol=5e-3):
         self.k = n_ctrl
         self.idx = idx                      # [K] 제어 입자 (부분표본 색인)
         self.target = target                # [K,3]
         self.radius = radius
-        self.frames = frames
+        self.frames = frames                # 한 계획의 **상한** (도달하면 더 짧다)
         self.dt = frame_dt
-        self.t_acc = 0.25
-        self.t_tot = frames * frame_dt
+        self.acc = acc
+        self.vmax = vmax
+        self.tol = tol
 
     @staticmethod
-    def sample(x0, n_ctrl, radius, gen, dev, ext, frames=60,
-               dist_lo=0.30, dist_hi=0.70, domain=2.0, margin=0.15):
+    def sample(x0, n_ctrl, radius, gen, dev, cand, frames=60,
+               acc=2.4, vmax=0.6, tol=5e-3):
         """제어 입자와 목표점을 뽑는다. 손잡이끼리 2R 안에 겹치지 않게 한다."""
         n = x0.shape[0]
         idx = []
@@ -93,35 +119,46 @@ class HandlePlan:
         while len(idx) < n_ctrl:            # 좁은 물체면 겹침을 허용한다
             idx.append(int(torch.randint(n, (1,), generator=gen, device=dev)))
         idx = torch.tensor(idx, device=dev, dtype=torch.long)
-        # 목표점은 **시뮬레이션 영역에 마진을 준 상자 안에서** 뽑는다. 방향과
-        # 거리를 뽑아 경계로 눌러 버리면(clamp) 목표점이 벽에 쏠린다.
-        lo_b, hi_b = margin, domain - margin
-        tgt = torch.empty(n_ctrl, 3, device=dev)
-        for k in range(n_ctrl):
-            for _ in range(64):
-                d = torch.randn(3, generator=gen, device=dev)
-                d = d / d.norm().clamp_min(1e-9)
-                dist = (dist_lo + (dist_hi - dist_lo)
-                        * float(torch.rand(1, generator=gen, device=dev))) * ext
-                cand = x0[idx[k]] + d * dist
-                if bool(((cand >= lo_b) & (cand <= hi_b)).all()):
-                    tgt[k] = cand
-                    break
-            else:
-                tgt[k] = (lo_b + (hi_b - lo_b)
-                          * torch.rand(3, generator=gen, device=dev))
-        return HandlePlan(n_ctrl, idx, tgt, radius, frames=frames)
+        pick = torch.randint(cand.shape[0], (n_ctrl,), generator=gen, device=dev)
+        return HandlePlan(n_ctrl, idx, cand[pick].clone(), radius,
+                          frames=frames, acc=acc, vmax=vmax, tol=tol)
+
+    def velocity(self, x_now, elapsed):
+        """[K,3] 이번 프레임의 명령 속도."""
+        vec = self.target - x_now[self.idx]
+        dist = vec.norm(dim=-1)
+        dirv = vec / dist.clamp_min(1e-9).unsqueeze(-1)
+        t = float(elapsed) * self.dt
+        s_ramp = self.acc * max(t, self.dt)                 # 출발에서 가속
+        s_stop = (2.0 * self.acc * dist.clamp_min(0.0)).sqrt()   # 멈출 수 있는 속도
+        s = torch.clamp(s_stop, max=min(self.vmax, s_ramp))
+        s = s * (dist > self.tol).to(s.dtype)               # 도달하면 정지
+        return dirv * s.unsqueeze(-1)
+
+    def arrived(self, x_now):
+        return bool(((self.target - x_now[self.idx]).norm(dim=-1)
+                     <= self.tol).all())
+
+    def weights(self, x_now):
+        """[N,K] 감쇠 가중치 (1-q^2)^2. 교사와 같은 규약."""
+        c = x_now[self.idx]
+        q = ((x_now.unsqueeze(1) - c.unsqueeze(0)).norm(dim=-1)
+             / max(self.radius, 1e-6)).clamp(0, 1)
+        return (1.0 - q * q) ** 2
 
     def pack(self):
         """체크포인트용. 제어 입자와 목표점만 담으면 나머지는 규칙으로 복원된다."""
         return dict(k=self.k, idx=self.idx.cpu(), target=self.target.cpu(),
-                    radius=self.radius, frames=self.frames, dt=self.dt)
+                    radius=self.radius, frames=self.frames, dt=self.dt,
+                    acc=self.acc, vmax=self.vmax, tol=self.tol)
 
     @staticmethod
     def unpack(d, dev):
         return HandlePlan(int(d["k"]), d["idx"].to(dev), d["target"].to(dev),
                           float(d["radius"]), frame_dt=float(d["dt"]),
-                          frames=int(d["frames"]))
+                          frames=int(d["frames"]), acc=float(d.get("acc", 2.4)),
+                          vmax=float(d.get("vmax", 0.6)),
+                          tol=float(d.get("tol", 5e-3)))
 
     def velocity(self, x_now, elapsed):
         """[K,3] 이번 프레임의 명령 속도."""
@@ -153,7 +190,8 @@ class StatePool:
 
     def __init__(self, scenes, size, n_ctrl, radius, dev, gen,
                  frames=60, thresh=0.05, window=30,
-                 domain=2.0, margin=0.15, start_mid=False, keep_prob=0.0):
+                 domain=2.0, margin=0.15, start_mid=False, keep_prob=0.5,
+                 acc=2.4, vmax=0.6, n_side=4):
         self.scenes = scenes
         self.size = size
         self.n_ctrl = n_ctrl
@@ -177,6 +215,13 @@ class StatePool:
         self.n_keep = 0
         self.domain = domain            # 시뮬 영역 [0, domain]^3
         self.margin = margin            # 목표점은 이만큼 안쪽에서 뽑는다
+        # 손잡이 운동은 **가속도와 최고속도**로 정한다 (도달 시간은 거리에 따라 다름)
+        self.acc = acc
+        self.vmax = vmax
+        # 목표점 후보는 유한 고정 집합이다. 씬마다 바닥면이 같으므로 한 번만 짠다.
+        self.cand = target_grid(domain, margin, n_side,
+                                scenes[0][1]["cfg"] if scenes else None,
+                                dev=dev)
         self.fresh_res = []                 # 신규 상태 잔차 (중앙값 기준용)
         # **비운 채로 시작한다.** 배치에 섞이는 신규 상태가 살아남아야 풀이
         # 차오르고, 버린 자리도 즉시 메우지 않는다 -- 풀의 크기 자체가
@@ -235,8 +280,8 @@ class StatePool:
         tag, sc = self.scenes[si]
         x = sc["x0"].clone()
         plan = HandlePlan.sample(x, self.n_ctrl, self.radius, self.gen,
-                                 self.dev, sc["ext"], self.frames,
-                                 domain=self.domain, margin=self.margin)
+                                 self.dev, self.cand, self.frames,
+                                 acc=self.acc, vmax=self.vmax)
         el = 0
         if self.start_mid:
             el = int(torch.randint(self.frames, (1,), generator=self.gen,
@@ -274,13 +319,14 @@ class StatePool:
         if st["age"] == 1:
             self.fresh_res.append(float(res))
         st["elapsed"] += 1
-        if st["elapsed"] >= self.frames:
-            # 계획을 다 썼는데 살아 있으면 새 제어 입자·목표점으로 이어 간다
-            _, sc = self.scenes[st["si"]]
+        # 목표에 닿았거나 상한 프레임을 다 썼으면 새 제어 입자·목표점으로 이어 간다.
+        # 도달 시간은 거리에 따라 다르므로 프레임 수가 아니라 도달로 판정한다.
+        if (st["elapsed"] >= self.frames
+                or st["plan"].arrived(st["x"])):
             st["plan"] = HandlePlan.sample(st["x"], self.n_ctrl, self.radius,
-                                           self.gen, self.dev, sc["ext"],
-                                           self.frames, domain=self.domain,
-                                           margin=self.margin)
+                                           self.gen, self.dev, self.cand,
+                                           self.frames, acc=self.acc,
+                                           vmax=self.vmax)
             st["elapsed"] = 0
             self.n_replan += 1
         bad = (not bool(torch.isfinite(st["x"]).all())) or \

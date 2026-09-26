@@ -184,21 +184,33 @@ ap.add_argument("--pool_grid", default="domain", choices=("domain", "fit"),
                      "fit 이면 예전처럼 매 스텝 물체에 맞춰 새로 잡는다")
 ap.add_argument("--pool_fresh", type=float, default=0.25,
                 help="배치에서 새 초기 상태로 채우는 비율")
-ap.add_argument("--pool_thresh", type=float, default=0.01,
+ap.add_argument("--pool_thresh", type=float, default=0.10,
                 help="폐기 문턱 (고정). 정류 잔차를 길이로 환산해 물체 크기로 "
                      "나눈 무차원 값이라 물성·형상이 달라도 같은 자다. 실측으로 "
-                     "학습 초기 누적잔차 중앙이 0.024~0.033 이라 0.01 이면 "
-                     "처음에는 대부분 폐기되고, 학습이 되어 잔차가 그 아래로 "
-                     "내려가야 풀이 차오른다 -- 풀 크기가 곧 진척도 신호다")
-ap.add_argument("--pool_frames", type=int, default=60, help="계획 한 회의 길이")
-ap.add_argument("--pool_combos", default="",
-                help="쉼표로 구분한 형상_물성 (비우면 mic_clayC 하나)")
+                     "학습 초기 누적잔차 중앙이 0.024~0.033 인데 문턱을 그 "
+                     "근처(0.01~0.02)로 두면 거의 전부 즉시 폐기돼 학생이 같은 "
+                     "상태를 이어 볼 기회가 없다 -- 0.05 이상에서 고른다")
+ap.add_argument("--pool_frames", type=int, default=120,
+                help="계획 한 회의 **상한** 프레임. 목표에 닿으면 그보다 일찍 "
+                     "새 계획으로 넘어간다 (도달 시간은 거리에 따라 다르다)")
+ap.add_argument("--pool_combos", default="all",
+                help="쉼표로 구분한 형상_물성. all 이면 12 조합 전부 (기본)")
+ap.add_argument("--ctrl_acc", type=float, default=2.4,
+                help="손잡이 가속도. 목표까지 걸리는 시간을 고정하는 대신 "
+                     "가속도와 최고속도를 고정한다 -- 시간을 고정하면 먼 목표는 "
+                     "빠르게 가까운 목표는 느리게 끌려 속도 영역이 뒤섞인다")
+ap.add_argument("--ctrl_vmax", type=float, default=0.6,
+                help="손잡이 최고속도")
+ap.add_argument("--pool_targets", type=int, default=4,
+                help="목표점 후보 격자의 한 변. 후보를 **유한 고정** 집합으로 "
+                     "두어 같은 목표를 여러 번 보게 한다 (4 면 최대 64 개)")
 ap.add_argument("--pool_window", type=int, default=30,
                 help="폐기 판정에 쓰는 잔차 평균의 창 길이. 1 로 두면 누적 "
                      "없이 **이번 스텝 잔차만** 보고 판정한다")
-ap.add_argument("--pool_keep", type=float, default=0.0,
+ap.add_argument("--pool_keep", type=float, default=0.5,
                 help="누적 잔차가 문턱을 넘어도 이 확률로는 버리지 않고 "
-                     "전진을 취소해 상태를 그대로 풀에 남긴다")
+                     "전진을 취소해 상태를 그대로 풀에 남긴다 (기본 0.5). "
+                     "매번 버리면 풀이 신규로만 차서 같은 상태를 이어 볼 수 없다")
 ap.add_argument("--pool_whiten", action="store_true",
                 help="손실을 이동 RMS 로 나눠 스케일을 고정한다 (RL 의 보상 "
                      "표준화와 같은 취지). 최소점은 그대로이고 기울기 크기만 "
@@ -1707,7 +1719,9 @@ POOL = None
 SCENE_DS = []
 if a.pool:
     from anchorflow.scene_pool import StatePool, load_scenes
-    _combos = ([c for c in a.pool_combos.split(",") if c] or ["mic_clayC"])
+    _ALL_COMBOS = "hotdog_clayC,hotdog_elD,hotdog_viscoplastic,lego_clayC,lego_elD,lego_viscoplastic,mic_clayC,mic_elD,mic_viscoplastic,wolf_clayC,wolf_elD,wolf_viscoplastic".split(",")
+    _combos = (_ALL_COMBOS if a.pool_combos.strip() in ("", "all")
+               else [c for c in a.pool_combos.split(",") if c])
     _W = os.environ.get("AF_WORK", "/home/dkta/work")
     _sc = load_scenes(_W, os.path.join(_W, "wmats"), _combos,
                       a.n_pts, dev, seed=a.seed)
@@ -1722,7 +1736,9 @@ if a.pool:
                      frames=a.pool_frames, thresh=a.pool_thresh,
                      window=a.pool_window,
                      domain=_gl0, margin=_R + 0.15,
-                     start_mid=a.pool_start_mid, keep_prob=a.pool_keep)
+                     start_mid=a.pool_start_mid, keep_prob=a.pool_keep,
+                     acc=a.ctrl_acc, vmax=a.ctrl_vmax,
+                     n_side=a.pool_targets)
     for _tag, _s in _sc:
         SCENE_DS.append(dict(x=_s["x0"].unsqueeze(0), cfg=_s["cfg"],
                              sel=torch.arange(_s["x0"].shape[0], device=dev),
@@ -1737,7 +1753,9 @@ if a.pool:
         print(f"[풀] 격자 고정: 영역 [0,{_gl}]^3 을 {a.vox_res}^3 으로, "
               f"셀 크기 {_gl / a.vox_res:.4f}", flush=True)
     print(f"[풀] 씬 {len(_sc)} 개, 크기 {a.pool_size}, 신규 비율 "
-          f"{a.pool_fresh:.2f}, 문턱 x{a.pool_thresh}", flush=True)
+          f"{a.pool_fresh:.2f}, 문턱 {a.pool_thresh}, 유예 {a.pool_keep}, "
+          f"창 {a.pool_window}, 목표 후보 {POOL.cand.shape[0]} 개, "
+          f"가속 {a.ctrl_acc} 최고속도 {a.ctrl_vmax}", flush=True)
     _pck = (_rng_ck or {}).get("pool") if not a.resume_fresh else None
     if _pck:
         _nl, _ns = POOL.load_state_dict(_pck)

@@ -22,7 +22,7 @@ import os
 import torch
 
 __all__ = ["lame", "psi_of", "plastic_step", "ip_energy", "residual",
-           "smooth_noise", "mat_name", "bc_node_mask"]
+           "smooth_noise", "mat_name", "bc_node_mask", "bc_energy"]
 
 
 def lame(E, nu):
@@ -354,6 +354,50 @@ def bc_node_mask(uniq, n_grid, dx, cfg, dtype, dev):
     return m
 
 
+def bc_energy(x, du, mass, cfg, h, grid_lim, n_grid, stiff=None):
+    """PG 경계조건을 증분 포텐셜의 **접촉항**으로 옮긴다.
+
+    PG 는 격자 속도를 사영해서 (`surface_collider` sticky 는 면 안쪽 노드의 속도를
+    0 으로, `bounding_box` 는 경계 3 셀 띠를 막는다) 바닥을 만든다. 격자 쪽에서
+    같은 일을 하려 하면 P2G 가 **점유 노드만** 모으기 때문에 입자가 실제로 면
+    아래로 넘어가기 전까지 걸릴 노드가 없어 아무 것도 막지 못한다. 그래서 입자
+    쪽에 벌점을 둔다:
+
+        E_c = Σ_p k m_p/(2h²) [ relu(-sd(x_p+Δu_p))²                 (비관통)
+                              + 1[접촉] ‖Δu_p − (Δu_p·n)n‖² ]        (sticky)
+
+    관성항과 같은 m/(2h²) 스케일이라 k 가 무차원이고, 평형 관통 깊이는 g h²/k 로
+    k=10, h=1/60 에서 2.7e-4 (물체 크기의 0.03%) 다. sticky 항은 면에 닿은 입자의
+    접선 운동까지 묶어 PG 의 "속도를 0 으로" 와 맞춘다.
+    """
+    if os.environ.get("AF_NO_BC"):
+        return torch.zeros((), device=x.device, dtype=x.dtype)
+    k = float(os.environ.get("AF_BC_STIFF", 10.0) if stiff is None else stiff)
+    dx = float(grid_lim) / float(n_grid)
+    x2 = x + du
+    c = 0.5 * k * mass / (h * h)
+    e = torch.zeros((), device=x.device, dtype=x.dtype)
+    for bc in (cfg.get("boundary_conditions") or []):
+        t = bc.get("type")
+        if t == "surface_collider":
+            pt = torch.as_tensor(bc["point"], device=x.device, dtype=x.dtype)
+            nr = torch.as_tensor(bc["normal"], device=x.device, dtype=x.dtype)
+            nr = nr / nr.norm().clamp_min(1e-12)
+            sd = ((x2 - pt) * nr).sum(-1)
+            e = e + (c * sd.clamp_max(0.0) ** 2).sum()
+            if str(bc.get("surface", "sticky")) == "sticky":
+                # 닿아 있는 입자는 접선 방향도 묶인다 (속도를 0 으로 박는 것과 같다)
+                touch = (((x - pt) * nr).sum(-1) < dx).to(x.dtype).detach()
+                du_t = du - (du * nr).sum(-1, keepdim=True) * nr
+                e = e + (c * touch * (du_t * du_t).sum(-1)).sum()
+        elif t == "bounding_box":
+            b = float(cfg.get("bound", 3)) * dx
+            lo, hi = b, float(grid_lim) - b
+            e = e + (c.unsqueeze(-1) * ((x2 - lo).clamp_max(0.0) ** 2
+                                        + (hi - x2).clamp_max(0.0) ** 2)).sum()
+    return e
+
+
 def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
                    g=None, norm=None, free=None):
     """i-PG 의 목적함수를 **격자 증분** 기준으로 잰다.
@@ -368,13 +412,6 @@ def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
     # 손잡이가 절반 넘게 실린 노드는 Dirichlet 으로 보고 관성·중력에서 뺀다.
     # 그 노드의 규정된 변위는 탄성항의 ∇Δu 를 통해 이웃 잔차에 그대로 들어간다.
     w_free = torch.ones_like(m_I) if frac is None else (frac > 0.5).to(m_I.dtype)
-    # 바닥·벽. sticky 면 그 노드의 Δu 가 0 으로 규정되므로 관성·중력에서 빼고
-    # 변위도 0 으로 박는다 -- 그러면 뚫고 내려가려는 입자가 탄성항에서 벌을 받는다.
-    _bc = bc_node_mask(info[3], n_grid, info[4], cfg, x.dtype, x.device)
-    if bool(_bc.any()):
-        _keep = (~_bc).to(x.dtype)
-        du_I = du_I * _keep.unsqueeze(-1)
-        w_free = w_free * _keep
     d = du_I - h * v_I
     e_in = (0.5 * w_free * m_I / (h * h) * (d * d).sum(-1)).sum()
     e_g = torch.zeros((), device=x.device, dtype=x.dtype)
@@ -384,7 +421,8 @@ def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
     F_tr = (torch.eye(3, device=x.device, dtype=F.dtype) + gu) @ F
     psi, dlog = psi_of(F_tr, cfg, h)
     e_el = (vol * psi).sum()
-    tot = e_in + e_el + e_g
+    e_bc = bc_energy(x, du, mass, cfg, h, grid_lim, n_grid)
+    tot = e_in + e_el + e_g + e_bc
     if norm is not None:
         tot = tot / norm
-    return tot, dlog, F_tr, (float(e_in), float(e_el), float(e_g))
+    return tot, dlog, F_tr, (float(e_in), float(e_el), float(e_g), float(e_bc))
