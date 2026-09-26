@@ -6,6 +6,7 @@ C=$1; SEEDS=$2; GPU=$3
 SH_=${C%%_*}
 export CUDA_VISIBLE_DEVICES=$GPU
 export PATH=${AF_CONDA:-/home/dkta/.conda/envs/af/bin}:$PATH
+# 인스턴스에서는 AF_CONDA=/opt/conda/bin, AF_WORK=/root/work 로 준다
 export PYTHONPATH=$W/anchorflow/lib PYTHONIOENCODING=utf-8 PYTHONUTF8=1
 export LANG=C.UTF-8 LC_ALL=C.UTF-8
 export AF_FLOOR_AUTO=1 AF_HANDLE=1 AF_H_KIN=1 AF_H_N=2 AF_H_NONORM=1 \
@@ -19,7 +20,7 @@ for sd in $(seq $lo $hi); do
   T0=$(date +%s.%N)
   AF_PGFILL_NPY=$W/pgfill_${SH_}.npy python -u $W/anchorflow/exe/gen_handle_trajs.py \
     --pg $W/PG_pgtraj --model $W/pgmodel/${SH_}_whitebg-trained \
-    --config $W/bench_cfg/${C}_f240.json --work $W/wbench_${C}_$GPU \
+    --config $W/bench_cfg/${C}.json --work $W/wbench_${C}_$GPU \
     --out $W/bench_pg --tag ${C} --pairs ${C}:${sd} --n_pts 20000 \
     >> $W/bench_pg_${C}.log 2>&1
   T1=$(date +%s.%N)
