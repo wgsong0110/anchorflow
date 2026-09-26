@@ -1806,10 +1806,14 @@ for it in pbar:
             _PL_DROP.pop(0)
         still = ((_PL_DROP[-1] - _PL_DROP[0])
                  / max(len(_PL_DROP) - 1, 1) / a.batch)
-        _ages = np.asarray([q["age"] for q in POOL.items], dtype=np.float64)
-        _elap = np.asarray([q["elapsed"] for q in POOL.items], dtype=np.float64)
+        # 버린 자리는 None 으로 비워 둔다 -- 통계에서 걸러야 한다
+        _alive = [q for q in POOL.items if q is not None]
+        _ages = np.asarray([q["age"] for q in _alive] or [0.0],
+                           dtype=np.float64)
+        _elap = np.asarray([q["elapsed"] for q in _alive] or [0.0],
+                           dtype=np.float64)
         _res = np.asarray([float(np.mean(q["hist"])) if q["hist"] else 0.0
-                           for q in POOL.items], dtype=np.float64)
+                           for q in _alive] or [0.0], dtype=np.float64)
         arel = float(_ages.mean())
         # 기울기가 망가진 배치는 갱신을 건너뛴다 (풀 상태는 이미 전진했다)
         gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -1829,7 +1833,7 @@ for it in pbar:
                 TBW.add_scalar("풀/폐기율", still, it)
                 TBW.add_scalar("풀/재계획누적", POOL.n_replan, it)
                 TBW.add_scalar("풀/NaN배치", getattr(POOL, "n_nan", 0), it)
-                TBW.add_scalar("풀/채움", len(POOL.items) / POOL.size, it)
+                TBW.add_scalar("풀/채움", len(_alive) / POOL.size, it)
                 TBW.add_scalar("풀/문턱", POOL.threshold(), it)
                 # 나이·프레임·누적잔차의 분포
                 TBW.add_scalar("풀/나이_평균", arel, it)
@@ -1844,7 +1848,7 @@ for it in pbar:
                     TBW.add_histogram("풀분포/프레임", _elap, it)
                     TBW.add_histogram("풀분포/누적잔차", _res, it)
                     if len(POOL.scenes) > 1:
-                        _si = np.asarray([q["si"] for q in POOL.items])
+                        _si = np.asarray([q["si"] for q in _alive] or [0])
                         TBW.add_histogram("풀분포/씬", _si, it)
         if a.val_every and (it + 1) % a.val_every == 0:
             _v, _vo = quick_val()
