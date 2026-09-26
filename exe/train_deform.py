@@ -1696,7 +1696,6 @@ for it in pbar:
         # 교사 궤적을 읽지 않는다. 풀에서 일부, 새 초기 상태 일부로 배치를
         # 짜고 한 스텝 전진시킨 뒤 그 물리 잔차로 갱신한다. 상태는 최근 창의
         # 평균 잔차가 문턱을 넘으면 버린다.
-        global MASS, EXT, N_FULL
         n_fresh = max(1, int(round(a.batch * a.pool_fresh)))
         picks = POOL.sample(a.batch - n_fresh, n_fresh)
         for kind, slot in picks:
