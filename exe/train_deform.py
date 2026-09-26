@@ -182,8 +182,10 @@ ap.add_argument("--pool_thresh", type=float, default=3.0,
 ap.add_argument("--pool_frames", type=int, default=60, help="계획 한 회의 길이")
 ap.add_argument("--pool_combos", default="",
                 help="쉼표로 구분한 형상_물성 (비우면 mic_clayC 하나)")
-ap.add_argument("--pool_loss", default="residual",
-                choices=("residual", "energy"))
+ap.add_argument("--pool_loss", default="energy",
+                choices=("energy", "residual"),
+                help="손실을 i-PG 목적함수 값으로 둘지(energy, 기본) 그 기울기인 "
+                     "정류 잔차로 둘지. 잔차는 2 계 미분을 타서 더 비싸다")
 ap.add_argument("--rl", action="store_true",
                 help="액터-크리틱으로 학습한다. 보상은 -(i-PG 손실), 미래는 가치함수 "
                      "V 가 대신 보므로 롤아웃을 거슬러 미분하지 않는다 (BPTT 길이 1). "
