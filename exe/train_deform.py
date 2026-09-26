@@ -1832,7 +1832,6 @@ for it in pbar:
                 TBW.add_scalar("학습/잔차", lres, it)
                 TBW.add_scalar("풀/폐기누적", POOL.n_drop, it)
                 TBW.add_scalar("풀/폐기율", still, it)
-                TBW.add_scalar("풀/재계획누적", POOL.n_replan, it)
                 TBW.add_scalar("풀/NaN배치", getattr(POOL, "n_nan", 0), it)
                 TBW.add_scalar("풀/채움", len(_alive) / POOL.size, it)
                 # 나이·프레임·누적잔차의 분포
