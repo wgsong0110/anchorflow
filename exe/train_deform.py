@@ -964,6 +964,7 @@ CRITIC = None
 OPT_C = None
 _RL_MSG = []
 _PL_MSG = []
+_PL_DROP = []
 FIXED_GRID = None
 _F_MSG = []
 
@@ -1795,7 +1796,13 @@ for it in pbar:
                 st["F"] = phys_resid.plastic_step(F_tr, dlog).detach()
                 st["p"] = p2.detach() if torch.is_tensor(p2) else None
             POOL.put_back(slot if kind == "pool" else None, st, res)
-        still = POOL.n_drop / max(it + 1, 1)
+        # 폐기율은 **최근 100 반복에서 배치 대비 몇 %가 죽었는가** 로 둔다.
+        # 누적 수를 전체 반복으로 나누면 추세가 안 보이고 값도 오해를 부른다.
+        _PL_DROP.append(POOL.n_drop)
+        if len(_PL_DROP) > 101:
+            _PL_DROP.pop(0)
+        still = ((_PL_DROP[-1] - _PL_DROP[0])
+                 / max(len(_PL_DROP) - 1, 1) / a.batch)
         _ages = np.asarray([q["age"] for q in POOL.items], dtype=np.float64)
         _elap = np.asarray([q["elapsed"] for q in POOL.items], dtype=np.float64)
         _res = np.asarray([float(np.mean(q["hist"])) if q["hist"] else 0.0
