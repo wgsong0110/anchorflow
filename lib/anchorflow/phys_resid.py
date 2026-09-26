@@ -367,12 +367,15 @@ def bc_energy(x, du, mass, cfg, h, grid_lim, n_grid, stiff=None):
                               + 1[접촉] ‖Δu_p − (Δu_p·n)n‖² ]        (sticky)
 
     관성항과 같은 m/(2h²) 스케일이라 k 가 무차원이고, 평형 관통 깊이는 g h²/k 로
-    k=10, h=1/60 에서 2.7e-4 (물체 크기의 0.03%) 다. sticky 항은 면에 닿은 입자의
+    k=1000, h=1/60 에서 2.7e-6 이다 (실측 관통 0.97%). sticky 항은 면에 닿은 입자의
     접선 운동까지 묶어 PG 의 "속도를 0 으로" 와 맞춘다.
     """
     if os.environ.get("AF_NO_BC"):
         return torch.zeros((), device=x.device, dtype=x.dtype)
-    k = float(os.environ.get("AF_BC_STIFF", 10.0) if stiff is None else stiff)
+    # 실측: k=10 이면 손잡이가 끌 때 관성항이 접촉항을 이겨 입자-프레임의 5.8%
+    # 가 바닥 밑으로 내려간다. k=1000 이면 0.97% 로 떨어지고 목적함수 값은 거의
+    # 바뀌지 않는다 (비 2.286 -> 2.274). 그래서 기본을 1000 으로 둔다.
+    k = float(os.environ.get("AF_BC_STIFF", 1000.0) if stiff is None else stiff)
     dx = float(grid_lim) / float(n_grid)
     x2 = x + du
     c = 0.5 * k * mass / (h * h)
