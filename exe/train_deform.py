@@ -175,6 +175,10 @@ ap.add_argument("--pool", action="store_true",
                      "출발해 손잡이 계획을 직접 뽑고, 한 스텝씩 굴린 상태를 풀에 "
                      "담아 둔다. 누적 물리잔차가 문턱을 넘은 상태는 버린다")
 ap.add_argument("--pool_size", type=int, default=1024)
+ap.add_argument("--pool_grid", default="domain", choices=("domain", "fit"),
+                help="domain 이면 시뮬 영역 전체를 vox_res^3 으로 고정해 모든 "
+                     "상태가 같은 격자를 쓴다 (영역을 벗어난 상태는 버린다). "
+                     "fit 이면 예전처럼 매 스텝 물체에 맞춰 새로 잡는다")
 ap.add_argument("--pool_fresh", type=float, default=0.25,
                 help="배치에서 새 초기 상태로 채우는 비율")
 ap.add_argument("--pool_thresh", type=float, default=3.0,
@@ -712,7 +716,13 @@ def cell_feats(d, t, gsel, x, v, shift=None, fe=None):
     """
     cfg = d["cfg"]
     X = take(d["x"][0], gsel)
-    lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
+    if FIXED_GRID is not None:
+        # 고정 격자: 모든 상태가 같은 영역을 같은 방법으로 이산화한다. 상태마다
+        # 격자가 달라지면 텐서 모양이 달라 배치로 묶을 수 없고, 매 스텝 격자가
+        # 새로 잡히는 것 자체가 비교를 흐린다.
+        lo, hh, nn3 = FIXED_GRID
+    else:
+        lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
     if shift is not None:          # 앙상블: 격자 원점을 반 칸씩 어긋나게 둔다
         lo = lo - torch.tensor(shift, device=lo.device, dtype=lo.dtype) * hh
         nn3 = nn3 + 1              # 어긋난 만큼 한 칸 더 덮는다
@@ -951,6 +961,7 @@ CRITIC = None
 OPT_C = None
 _RL_MSG = []
 _PL_MSG = []
+FIXED_GRID = None
 _F_MSG = []
 
 
@@ -1675,6 +1686,13 @@ if a.pool:
                              n_full=_s["x0"].shape[0], tag=_tag,
                              _mass=_s["mass"], _ext=_s["ext"],
                              ctrl_R=torch.tensor([0.15], device=dev)))
+    if a.pool_grid == "domain":
+        _gl = float(_sc[0][1]["cfg"].get("grid_lim", 2.0))
+        FIXED_GRID = (torch.zeros(3, device=dev),
+                      _gl / a.vox_res,
+                      torch.tensor([a.vox_res] * 3, device=dev))
+        print(f"[풀] 격자 고정: 영역 [0,{_gl}]^3 을 {a.vox_res}^3 으로, "
+              f"셀 크기 {_gl / a.vox_res:.4f}", flush=True)
     print(f"[풀] 씬 {len(_sc)} 개, 크기 {a.pool_size}, 신규 비율 "
           f"{a.pool_fresh:.2f}, 문턱 x{a.pool_thresh}", flush=True)
 
@@ -1760,6 +1778,11 @@ for it in pbar:
                       f"E 유한 {bool(torch.isfinite(E_ip))})", flush=True)
             res = float(loss_p)
             lx = lx + res / a.batch
+            if FIXED_GRID is not None:
+                _glo, _ghh, _gn3 = FIXED_GRID
+                _ghi = _glo + _ghh * _gn3.to(x2.dtype)
+                if bool(((x2 < _glo) | (x2 > _ghi)).any()):
+                    res = float("inf")        # 영역을 벗어난 상태는 버린다
             with torch.no_grad():
                 st["x"] = x2.detach()
                 st["v"] = v2.detach()

@@ -197,6 +197,7 @@ class StatePool:
             st["elapsed"] = 0
             self.n_replan += 1
         bad = (not bool(torch.isfinite(st["x"]).all())) or \
+            (not np.isfinite(res)) or \
             (st["age"] > self.min_age and mean_res > self.threshold())
         if bad:
             self.n_drop += 1
