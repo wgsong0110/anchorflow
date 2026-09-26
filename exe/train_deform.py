@@ -1678,8 +1678,14 @@ if a.pool:
                       a.n_pts, dev, seed=a.seed)
     if not _sc:
         raise SystemExit("풀에 넣을 씬이 없다")
-    POOL = StatePool(_sc, a.pool_size, a.n_ctrl, 0.15, dev, gen,
-                     frames=a.pool_frames, thresh_mult=a.pool_thresh)
+    _R = 0.15
+    _gl0 = float(_sc[0][1]["cfg"].get("grid_lim", 2.0))
+    # 목표점 마진은 **손잡이 반경보다 커야** 한다. 반경만큼만 두면 손잡이가
+    # 목표에 닿는 순간 무리의 바깥쪽 입자가 경계에 걸리고, 딸려 오는 부분까지
+    # 생각하면 그 자리에서 영역을 벗어난다.
+    POOL = StatePool(_sc, a.pool_size, a.n_ctrl, _R, dev, gen,
+                     frames=a.pool_frames, thresh_mult=a.pool_thresh,
+                     domain=_gl0, margin=_R + 0.15)
     for _tag, _s in _sc:
         SCENE_DS.append(dict(x=_s["x0"].unsqueeze(0), cfg=_s["cfg"],
                              sel=torch.arange(_s["x0"].shape[0], device=dev),
