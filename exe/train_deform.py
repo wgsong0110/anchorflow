@@ -193,6 +193,9 @@ ap.add_argument("--pool_thresh", type=float, default=0.01,
 ap.add_argument("--pool_frames", type=int, default=60, help="계획 한 회의 길이")
 ap.add_argument("--pool_combos", default="",
                 help="쉼표로 구분한 형상_물성 (비우면 mic_clayC 하나)")
+ap.add_argument("--pool_window", type=int, default=30,
+                help="폐기 판정에 쓰는 잔차 평균의 창 길이. 1 로 두면 누적 "
+                     "없이 **이번 스텝 잔차만** 보고 판정한다")
 ap.add_argument("--pool_keep", type=float, default=0.0,
                 help="누적 잔차가 문턱을 넘어도 이 확률로는 버리지 않고 "
                      "전진을 취소해 상태를 그대로 풀에 남긴다")
@@ -1706,6 +1709,7 @@ if a.pool:
     # 생각하면 그 자리에서 영역을 벗어난다.
     POOL = StatePool(_sc, a.pool_size, a.n_ctrl, _R, dev, gen,
                      frames=a.pool_frames, thresh=a.pool_thresh,
+                     window=a.pool_window,
                      domain=_gl0, margin=_R + 0.15,
                      start_mid=a.pool_start_mid, keep_prob=a.pool_keep)
     for _tag, _s in _sc:
