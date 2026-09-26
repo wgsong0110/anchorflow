@@ -42,7 +42,12 @@ def mesh_from_points(x, n_grid=100, grid_lim=2.0, iso=0.5, smooth=1):
                                  float(iso))
     v = torch.from_numpy(np.ascontiguousarray(v)).float().to(x.device) * dx
     f = torch.from_numpy(np.ascontiguousarray(f.astype(np.int64))).to(x.device)
-    return v, f
+    # marching cubes 는 바늘 같은 삼각형을 낸다. 그 국소 틀 [e1,e2,n] 이 거의
+    # 특이해서 무게중심 좌표를 풀면 정밀도가 날아간다 (결합 오차 5e-2 를 봤다).
+    ar = torch.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]],
+                     dim=-1).norm(dim=-1) * 0.5
+    keep = ar > 1e-3 * float(ar.median())
+    return v, f[keep]
 
 
 def _tri_frame(v, f):
@@ -62,13 +67,14 @@ def bind_points(x, v, f, chunk=4096):
     """
     v0, e1, e2, n = _tri_frame(v, f)
     ctr = (v[f[:, 0]] + v[f[:, 1]] + v[f[:, 2]]) / 3.0
-    A = torch.stack([e1, e2, n], -1)                      # [T,3,3]
-    Ai = torch.linalg.pinv(A)
+    A = torch.stack([e1, e2, n], -1).double()             # [T,3,3]
     ti = torch.empty(x.shape[0], dtype=torch.long, device=x.device)
     for s in range(0, x.shape[0], chunk):
         e = min(s + chunk, x.shape[0])
         ti[s:e] = torch.cdist(x[s:e], ctr).argmin(1)
-    loc = torch.einsum("pij,pj->pi", Ai[ti], x - v0[ti])
+    # 배수가 아니라 **풀어서** 얻는다. 기저가 정칙이면 정확히 복원된다.
+    loc = torch.linalg.solve(A[ti], (x - v0[ti]).double().unsqueeze(-1))
+    loc = loc.squeeze(-1).to(x.dtype)
     return ti, loc[:, 0], loc[:, 1], loc[:, 2]
 
 
