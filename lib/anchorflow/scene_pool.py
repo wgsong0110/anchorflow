@@ -159,9 +159,10 @@ class StatePool:
         self.domain = domain            # 시뮬 영역 [0, domain]^3
         self.margin = margin            # 목표점은 이만큼 안쪽에서 뽑는다
         self.fresh_res = []                 # 신규 상태 잔차 (중앙값 기준용)
-        # 처음에만 채운다. 이후에는 **버린 자리를 즉시 메우지 않는다** --
-        # 배치에 섞이는 신규 상태가 살아남을 때만 풀이 다시 늘어난다.
-        self.items = [self.fresh() for _ in range(size)]
+        # **비운 채로 시작한다.** 배치에 섞이는 신규 상태가 살아남아야 풀이
+        # 차오르고, 버린 자리도 즉시 메우지 않는다 -- 풀의 크기 자체가
+        # "지금 정책이 몇 스텝을 버티는가" 를 말해 주는 신호가 된다.
+        self.items = []
         self.n_drop = 0
         self.n_replan = 0
 
