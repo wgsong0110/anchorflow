@@ -201,6 +201,12 @@ ap.add_argument("--ctrl_acc", type=float, default=2.4,
                      "빠르게 가까운 목표는 느리게 끌려 속도 영역이 뒤섞인다")
 ap.add_argument("--ctrl_vmax", type=float, default=0.6,
                 help="손잡이 최고속도")
+ap.add_argument("--oracle_roll", action="store_true",
+                help="망 출력 자리에 자유 변수를 넣고 매 프레임 물리손실을 "
+                     "최소화하는 오라클 롤아웃. 학습·평가 코드를 그대로 쓴다")
+ap.add_argument("--oracle_steps", type=int, default=300)
+ap.add_argument("--oracle_lr", type=float, default=1e-3)
+ap.add_argument("--oracle_out", default="")
 ap.add_argument("--roll_scen", default="",
                 help="벤치 시나리오 npz 로 학생을 굴려 프레임별 상태를 덤프한다. "
                      "--pool 과 --pool_combos <조합 하나> 를 함께 준다")
@@ -927,6 +933,10 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1],
                       mat=_mv)
         dp = out[0]
+        if _DP_HOOK[0] is not None:
+            # 오라클 모드: 망의 출력을 **자유 변수**로 갈아끼운다. 나머지 경로
+            # (격자 구성, 전달, 손잡이 적용, 상태 전진)는 학습과 글자 그대로 같다.
+            dp = _DP_HOOK[0](dp)
         # 하드 clamp 는 쓰지 않는다 -- 크기를 자르면 목적함수가 보는 해와
         # 모델이 낼 수 있는 해가 어긋난다. NaN 만 씻어 낸다.
         dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0, neginf=0.0)
@@ -1003,6 +1013,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
 CRITIC = None
 OPT_C = None
 _RL_MSG = []
+# 오라클 모드에서 망 출력을 바꿔 끼우는 훅 (None 이면 아무 일도 없다)
+_DP_HOOK = [None]
 _PL_MSG = []
 _PL_DROP = []
 _PL_RMS = [0.0]
@@ -1769,6 +1781,98 @@ if a.pool:
             _PL_RMS[0] = float(_rms[0])
         print(f"[재개] 풀 {_nl} 개 상태 이어받음 (씬이 달라 버린 것 {_ns} 개), "
               f"폐기누적 {POOL.n_drop}, 유예누적 {POOL.n_keep}", flush=True)
+
+ap_dummy = None
+if a.oracle_roll:
+    # ---- 오라클 롤아웃: **학습·평가 코드를 그대로 쓰고** 망 출력만 자유 변수로 --
+    # fit_rollout.py 처럼 따로 짜면 손잡이 적용·바닥·질량·상태 전진 중 하나가
+    # 어긋난다 (실측: 무게중심 z 가 0.942 -> 0.525 로 내려앉고 손잡이 추종이
+    # 명령 0.725 대비 0.140 이었다). 여기서는 step_once 를 그대로 호출하고
+    # _DP_HOOK 으로 격자점 변위만 갈아끼운다.
+    import time as _time
+    _tag, _d = TR[0]
+    _t0 = a.eval_t0[0] if a.eval_t0 else 3
+    _L = min(a.eval_len, _d["x"].shape[0] - _t0 - 1)
+    _gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
+                         device=dev)[:a.n_pts]
+    _mass = traj_mass(_d)[_gsel] * (float(N_FULL) / _gsel.numel())
+    _ext = _d.get("_ext", EXT)
+    _cfg = _d["cfg"]
+    _vol = _mass / float(_cfg["density"])
+    _g = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
+    _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
+    _norm = float(_mass.sum()) * (_ext ** 2) / (FRAME_DT ** 2)
+    x = take(_d["x"][_t0], _gsel)
+    v = (x - take(_d["x"][max(_t0 - 1, 0)], _gsel)) / FRAME_DT
+    p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(_d["x"][_t0], AIDX)
+    F = take(traj_F(_d)[_t0], _gsel).float()
+    x_still = x.clone()
+    PRED, GT = [], []
+    errs, stills = [], []
+    net.eval()
+    print(f"[오라클] {_tag} t0={_t0} {_L} 프레임, 입자 {_gsel.numel()}, "
+          f"스텝 {a.oracle_steps}", flush=True)
+    _wall = _time.time()
+    for i in range(_L):
+        _hold = {}
+
+        def _hook(dp_net, _h=_hold):
+            if "z" not in _h:
+                _h["z"] = torch.zeros_like(dp_net).requires_grad_(True)
+            return _h["z"]
+
+        _DP_HOOK[0] = _hook
+        # 변수 모양을 만들기 위한 첫 호출
+        step_once(_d, _t0 + i, _gsel, p, x, v, need_J=False)
+        z = _hold["z"]
+        opt = torch.optim.Adam([z], lr=a.oracle_lr * float(_ext))
+        sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.oracle_steps)
+        _best, _bz = float("inf"), z.detach().clone()
+        for _ in range(a.oracle_steps):
+            opt.zero_grad(set_to_none=True)
+            x2, _p2, _v2, _J, _dp, _ai, _dm, _cr, _fe, _Jd = step_once(
+                _d, _t0 + i, _gsel, p, x, v, need_J=False)
+            fm = (free_mask(_d, x2.shape[0], dev, _gsel, x, _t0 + i)
+                  if a.control else None)
+            E, _dl, _Ft, _pt = phys_resid.grid_ip_energy(
+                x, x2 - x, v, F, _mass, _vol, _cfg, FRAME_DT, _ng, _gl,
+                g=_g, norm=_norm, free=fm)
+            E.backward()
+            opt.step()
+            sch.step()
+            if float(E) < _best:
+                _best, _bz = float(E), z.detach().clone()
+        with torch.no_grad():
+            z.copy_(_bz)
+            x2, p2, v2, _J, _dp, _ai, _dm, _cr, _fe, _Jd = step_once(
+                _d, _t0 + i, _gsel, p, x, v, need_J=False)
+            fm = (free_mask(_d, x2.shape[0], dev, _gsel, x, _t0 + i)
+                  if a.control else slice(None))
+            gt = take(_d["x"][_t0 + i + 1], _gsel)
+            e = float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / _ext
+            st = float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / _ext
+            _E2, dlog, F_tr, _pt = phys_resid.grid_ip_energy(
+                x, x2 - x, v, F, _mass, _vol, _cfg, FRAME_DT, _ng, _gl,
+                g=_g, norm=_norm, free=(fm if a.control else None))
+            F = phys_resid.plastic_step(F_tr, dlog).detach()
+            PRED.append(x2.detach().cpu()); GT.append(gt.detach().cpu())
+            errs.append(e); stills.append(st)
+            x, p, v = x2.detach(), p2.detach(), v2.detach()
+        print(f"  프레임 {i + 1:2d}  오라클 {100 * e:.4f}%  정지 {100 * st:.4f}%"
+              f"  비 {e / max(st, 1e-20):.3f}  E {_best:.4e}", flush=True)
+    _DP_HOOK[0] = None
+    import numpy as _np
+    print(f"[오라클] {_L} 프레임 평균 {100 * _np.mean(errs):.3f}% "
+          f"(정지 {100 * _np.mean(stills):.3f}%, 비 "
+          f"{_np.mean(errs) / max(_np.mean(stills), 1e-12):.3f})  "
+          f"{_time.time() - _wall:.1f}s", flush=True)
+    _dst = a.oracle_out or "oracle_roll.pt"
+    torch.save({"pred": torch.stack(PRED), "gt": torch.stack(GT),
+                "x0": take(_d["x"][_t0], _gsel).cpu(),
+                "ctrl_pos": _d.get("ctrl_pos"), "t0": _t0, "tag": _tag,
+                "EXT": _ext}, _dst)
+    print(f"[오라클] 저장 {_dst}", flush=True)
+    raise SystemExit(0)
 
 if a.roll_scen:
     # ---- 벤치 롤아웃: 시나리오 파일의 지령 속도로만 굴린다 -------------------
