@@ -1813,8 +1813,6 @@ for it in pbar:
         _alive = [q for q in POOL.items if q is not None]
         _ages = np.asarray([q["age"] for q in _alive] or [0.0],
                            dtype=np.float64)
-        _elap = np.asarray([q["elapsed"] for q in _alive] or [0.0],
-                           dtype=np.float64)
         _res = np.asarray([float(np.mean(q["hist"])) if q["hist"] else 0.0
                            for q in _alive] or [0.0], dtype=np.float64)
         arel = float(_ages.mean())
@@ -1828,7 +1826,7 @@ for it in pbar:
         if it % 20 == 0:
             pbar.set_postfix(E=f"{lx:.3e}", 잔차=f"{lres:.3e}",
                              폐기=f"{POOL.n_drop}",
-                             나이=f"{arel:.1f}", gn=f"{float(gn):.1e}")
+                             프레임=f"{arel:.1f}", gn=f"{float(gn):.1e}")
             if TBW is not None:
                 TBW.add_scalar("학습/목적함수", lx, it)
                 TBW.add_scalar("학습/잔차", lres, it)
@@ -1838,16 +1836,16 @@ for it in pbar:
                 TBW.add_scalar("풀/NaN배치", getattr(POOL, "n_nan", 0), it)
                 TBW.add_scalar("풀/채움", len(_alive) / POOL.size, it)
                 # 나이·프레임·누적잔차의 분포
-                TBW.add_scalar("풀/나이_평균", arel, it)
-                TBW.add_scalar("풀/나이_중앙", float(np.median(_ages)), it)
-                TBW.add_scalar("풀/나이_최대", float(_ages.max()), it)
-                TBW.add_scalar("풀/프레임_평균", float(_elap.mean()), it)
+                # 전진 프레임 = 초기 상태에서 지금까지 굴러온 프레임 수.
+                # 계획 안 시점(0~59)은 규칙적으로 돌아 정보가 없어 빼둔다.
+                TBW.add_scalar("풀/전진프레임_평균", arel, it)
+                TBW.add_scalar("풀/전진프레임_중앙", float(np.median(_ages)), it)
+                TBW.add_scalar("풀/전진프레임_최대", float(_ages.max()), it)
                 TBW.add_scalar("풀/누적잔차_중앙", float(np.median(_res)), it)
                 TBW.add_scalar("풀/누적잔차_상위10%",
                                float(np.quantile(_res, 0.9)), it)
                 if it % 200 == 0:
-                    TBW.add_histogram("풀분포/나이", _ages, it)
-                    TBW.add_histogram("풀분포/프레임", _elap, it)
+                    TBW.add_histogram("풀분포/전진프레임", _ages, it)
                     TBW.add_histogram("풀분포/누적잔차", _res, it)
                     if len(POOL.scenes) > 1:
                         _si = np.asarray([q["si"] for q in _alive] or [0])
