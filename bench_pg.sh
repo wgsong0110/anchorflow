@@ -16,14 +16,18 @@ mkdir -p $W/bench_pg
 lo=${SEEDS%%-*}; hi=${SEEDS##*-}
 for sd in $(seq $lo $hi); do
   S=$(printf "%02d" $sd)
+  # 카메라 목록은 세미콜론이 들어 있어 중첩 셸에서 쪼개진다. 파일로 넘긴다.
+  if [ -z "${RCAMS:-}" ] && [ -f "$W/bench_cams.txt" ]; then
+    RCAMS=$(cat $W/bench_cams.txt)
+  fi
   if [ -f $W/bench_pg/${C}_s${S}.pt ] && [ -z "${RCAMS:-}" ]; then echo "[건너뜀] ${C}_s${S}"; continue; fi
   [ -n "${RCAMS:-}" ] && [ -d $W/bench_render/${C}_s${S}/cam_00003 ] && { echo "[렌더 있음] ${C}_s${S}"; continue; }
   [ -n "${RCAMS:-}" ] && rm -f $W/bench_pg/${C}_s${S}.pt
   export AF_H_SCEN=$W/bench/scen_${C}_s${S}.npz
-  # 렌더 패스: 카메라 여러 대의 깨끗한 프레임을 시뮬 중에 저장한다 (GausSim
-  # 학습 데이터 + 시각품질 기준 영상). RCAMS 를 비우면 렌더하지 않는다.
   if [ -n "${RCAMS:-}" ]; then
-    export AF_R_OUT=$W/bench_render/${C}_s${S} AF_R_CAMS="$RCAMS"            AF_R_EVERY=${REVERY:-8}
+    export AF_R_OUT=$W/bench_render/${C}_s${S}
+    export AF_R_CAMS="$RCAMS"
+    export AF_R_EVERY=${REVERY:-8}
     mkdir -p $AF_R_OUT
   else
     unset AF_R_OUT
