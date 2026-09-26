@@ -1761,43 +1761,27 @@ for it in pbar:
             E_ip, dlog, F_tr, _pt = phys_resid.grid_ip_energy(
                 x, x2 - x, v, F, sc["mass"], vol, cfg, FRAME_DT, ng_, gl_,
                 g=gv, norm=nrm, free=fm)
-            if a.pool_loss == "residual":
-                _gx, = torch.autograd.grad(E_ip * nrm, x2, create_graph=True)
-                _rr = _gx * (FRAME_DT ** 2) / sc["mass"].unsqueeze(-1
-                                                                   ).clamp_min(1e-20) / sc["ext"]
+            # 폐기 판정용 길이 단위 잔차. 손실이 E 값이든 잔차든 **같은
+            # 그래프에서 한 번만** dE/dx2 를 뽑아 쓴다 (재평가 없음).
+            _need_g = (a.pool_loss == "residual")
+            _gx, = torch.autograd.grad(E_ip * nrm, x2, retain_graph=True,
+                                       create_graph=_need_g)
+            _rr = _gx * (FRAME_DT ** 2) / sc["mass"].unsqueeze(-1
+                                                               ).clamp_min(1e-20) / sc["ext"]
+            if _need_g:
                 loss_p = ((_rr[fm] if fm is not None else _rr) ** 2
                           ).sum(-1).mean()
             else:
                 loss_p = E_ip
+            _rl = _rr.detach().norm(dim=-1)
+            res = float((_rl[fm] if fm is not None else _rl).mean())
             if bool(torch.isfinite(loss_p)):
                 (loss_p / a.batch).backward()
-                if _PL_MSG == [] and it < 3:
-                    _bad = [n for n, q in net.named_parameters()
-                            if q.grad is not None
-                            and not bool(torch.isfinite(q.grad).all())]
-                    if _bad:
-                        _PL_MSG.append(1)
-                        print(f"[풀 NaN] 씬 {tag} 손실 {float(loss_p):.3e} "
-                              f"유한, 기울기 NaN 파라미터 {len(_bad)} 개: "
-                              f"{_bad[:4]}", flush=True)
             elif _PL_MSG == []:
                 _PL_MSG.append(1)
-                print(f"[풀 NaN] 씬 {tag} 손실이 비유한 "
-                      f"(x2 유한 {bool(torch.isfinite(x2).all())}, "
-                      f"E 유한 {bool(torch.isfinite(E_ip))})", flush=True)
+                print(f"[풀] 씬 {tag} 손실이 비유한 -- 이 배치는 건너뛴다",
+                      flush=True)
             lx = lx + float(loss_p) / a.batch
-            # 폐기 판정은 **길이 단위 잔차**로 한다. 손실(E)은 물성마다 크기가
-            # 달라 고정 문턱을 쓸 수 없지만, 잔차를 질량으로 나눠 길이로 만들고
-            # 물체 크기로 나누면 조합이 달라도 같은 자가 된다.
-            with torch.enable_grad():
-                _x2d = x2.detach().requires_grad_(True)
-                _Ed, _, _, _ = phys_resid.grid_ip_energy(
-                    x, _x2d - x, v, F, sc["mass"], vol, cfg, FRAME_DT,
-                    ng_, gl_, g=gv, norm=1.0, free=fm)
-                _gd, = torch.autograd.grad(_Ed, _x2d)
-            _rl = (_gd.norm(dim=-1) * (FRAME_DT ** 2)
-                   / sc["mass"].clamp_min(1e-20) / sc["ext"])
-            res = float((_rl[fm] if fm is not None else _rl).mean())
             lres = lres + res / a.batch
             if FIXED_GRID is not None:
                 _glo, _ghh, _gn3 = FIXED_GRID
