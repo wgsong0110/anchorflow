@@ -302,6 +302,12 @@ for f in files:
     d.pop("v", None)
     tag = os.path.splitext(os.path.basename(f))[0]
     (held if tag in hold else TR).append((tag, d))
+if not TR and a.pool:
+    # 풀 모드는 학습 궤적을 아예 읽지 않는다 (초기 상태는 씬의 정지 자세에서
+    # 만들고 손잡이 계획도 직접 뽑는다). 궤적이 홀드아웃뿐이면 구조 정보
+    # -- cfg, 초기 자세, 경계 상자 -- 만 그쪽에서 본다.
+    TR = list(held)
+    print("[풀] 학습 궤적 없음 -- 구조 정보만 홀드아웃에서 읽는다", flush=True)
 if not TR:
     raise SystemExit("학습할 궤적이 없다")
 _MB = sum(sum(v.numel() * v.element_size() for v in d.values()
