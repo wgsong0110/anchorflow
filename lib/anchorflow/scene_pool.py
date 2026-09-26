@@ -142,7 +142,7 @@ class StatePool:
 
     def __init__(self, scenes, size, n_ctrl, radius, dev, gen,
                  frames=60, thresh=0.05, window=30,
-                 domain=2.0, margin=0.15):
+                 domain=2.0, margin=0.15, start_mid=False):
         self.scenes = scenes
         self.size = size
         self.n_ctrl = n_ctrl
@@ -156,6 +156,10 @@ class StatePool:
         # 누적은 **최근 window 프레임**만 본다. 전체 평균으로 두면 초반 잔차를
         # 계속 끌고 다녀, 물리적으로 멀쩡한데도 오래 살았다는 이유로 버려진다.
         self.window = window
+        # 새 상태를 계획의 **중간 지점**에서 시작할지. 정지 상태에서만 출발하면
+        # 관성항이 "가만히 있어라" 를 원하고 탄성항이 0 이라 아무것도 안 하는 것이
+        # 거의 최적이 되어 기울기가 사라진다.
+        self.start_mid = start_mid
         self.domain = domain            # 시뮬 영역 [0, domain]^3
         self.margin = margin            # 목표점은 이만큼 안쪽에서 뽑는다
         self.fresh_res = []                 # 신규 상태 잔차 (중앙값 기준용)
@@ -176,10 +180,14 @@ class StatePool:
         plan = HandlePlan.sample(x, self.n_ctrl, self.radius, self.gen,
                                  self.dev, sc["ext"], self.frames,
                                  domain=self.domain, margin=self.margin)
+        el = 0
+        if self.start_mid:
+            el = int(torch.randint(self.frames, (1,), generator=self.gen,
+                                   device=self.dev))
         return dict(si=si, x=x, v=torch.zeros_like(x),
                     F=torch.eye(3, device=self.dev).expand(
                         x.shape[0], 3, 3).contiguous(),
-                    p=None, plan=plan, elapsed=0, hist=[], age=0)
+                    p=None, plan=plan, elapsed=el, hist=[], age=0)
 
     def threshold(self):
         return self.thresh

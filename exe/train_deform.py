@@ -193,6 +193,14 @@ ap.add_argument("--pool_thresh", type=float, default=0.01,
 ap.add_argument("--pool_frames", type=int, default=60, help="계획 한 회의 길이")
 ap.add_argument("--pool_combos", default="",
                 help="쉼표로 구분한 형상_물성 (비우면 mic_clayC 하나)")
+ap.add_argument("--pool_whiten", action="store_true",
+                help="손실을 이동 RMS 로 나눠 스케일을 고정한다 (RL 의 보상 "
+                     "표준화와 같은 취지). 최소점은 그대로이고 기울기 크기만 "
+                     "일정해져, 물성마다 1e-7~1e-5 로 널뛰는 문제를 없앤다")
+ap.add_argument("--pool_start_mid", action="store_true",
+                help="새 상태를 손잡이 계획의 무작위 지점에서 시작한다. 정지 "
+                     "상태에서만 출발하면 '아무것도 안 하기' 가 거의 최적이라 "
+                     "기울기가 사라진다")
 ap.add_argument("--pool_loss", default="energy",
                 choices=("energy", "residual"),
                 help="손실을 i-PG 목적함수 값으로 둘지(energy, 기본) 그 기울기인 "
@@ -969,6 +977,7 @@ OPT_C = None
 _RL_MSG = []
 _PL_MSG = []
 _PL_DROP = []
+_PL_RMS = [0.0]
 FIXED_GRID = None
 _F_MSG = []
 
@@ -1693,7 +1702,8 @@ if a.pool:
     # 생각하면 그 자리에서 영역을 벗어난다.
     POOL = StatePool(_sc, a.pool_size, a.n_ctrl, _R, dev, gen,
                      frames=a.pool_frames, thresh=a.pool_thresh,
-                     domain=_gl0, margin=_R + 0.15)
+                     domain=_gl0, margin=_R + 0.15,
+                     start_mid=a.pool_start_mid)
     for _tag, _s in _sc:
         SCENE_DS.append(dict(x=_s["x0"].unsqueeze(0), cfg=_s["cfg"],
                              sel=torch.arange(_s["x0"].shape[0], device=dev),
@@ -1783,6 +1793,10 @@ for it in pbar:
                 loss_p = E_ip
             _rl = _rr.detach().norm(dim=-1)
             res = float((_rl[fm] if fm is not None else _rl).mean())
+            if a.pool_whiten:
+                _PL_RMS[0] = (0.99 * _PL_RMS[0]
+                              + 0.01 * float(loss_p.detach()) ** 2)
+                loss_p = loss_p / max(_PL_RMS[0] ** 0.5, 1e-12)
             if bool(torch.isfinite(loss_p)):
                 (loss_p / a.batch).backward()
             elif _PL_MSG == []:
