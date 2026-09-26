@@ -184,11 +184,12 @@ ap.add_argument("--pool_grid", default="domain", choices=("domain", "fit"),
                      "fit 이면 예전처럼 매 스텝 물체에 맞춰 새로 잡는다")
 ap.add_argument("--pool_fresh", type=float, default=0.25,
                 help="배치에서 새 초기 상태로 채우는 비율")
-ap.add_argument("--pool_thresh", type=float, default=1.0,
+ap.add_argument("--pool_thresh", type=float, default=0.05,
                 help="폐기 문턱 (고정). 정류 잔차를 길이로 환산해 물체 크기로 "
-                     "나눈 무차원 값이라 물성·형상이 달라도 같은 자다. 실측으로 "
-                     "정상 상태의 잔차 중앙값이 0.1 근처라 그 열 배인 1.0 을 "
-                     "기본으로 둔다 -- 본체는 살리고 꼬리만 자른다")
+                     "나눈 무차원 값이라 물성·형상이 달라도 같은 자다. 학습 초기 "
+                     "잔차 중앙값이 0.07~0.15 이므로 0.05 면 처음에는 대부분이 "
+                     "폐기되고, 학습이 되어 잔차가 그 아래로 내려가야 풀이 "
+                     "차오른다 -- 풀 크기 자체가 진척도 신호가 된다")
 ap.add_argument("--pool_frames", type=int, default=60, help="계획 한 회의 길이")
 ap.add_argument("--pool_combos", default="",
                 help="쉼표로 구분한 형상_물성 (비우면 mic_clayC 하나)")
