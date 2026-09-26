@@ -201,6 +201,10 @@ ap.add_argument("--ctrl_acc", type=float, default=2.4,
                      "빠르게 가까운 목표는 느리게 끌려 속도 영역이 뒤섞인다")
 ap.add_argument("--ctrl_vmax", type=float, default=0.6,
                 help="손잡이 최고속도")
+ap.add_argument("--roll_scen", default="",
+                help="벤치 시나리오 npz 로 학생을 굴려 프레임별 상태를 덤프한다. "
+                     "--pool 과 --pool_combos <조합 하나> 를 함께 준다")
+ap.add_argument("--roll_out", default="", help="--roll_scen 덤프 경로")
 ap.add_argument("--pool_targets", type=int, default=5,
                 help="목표점 후보 격자의 한 변. 후보를 **유한 고정** 집합으로 "
                      "두어 같은 목표를 여러 번 보게 한다 (5 면 최대 125 개)")
@@ -1765,6 +1769,70 @@ if a.pool:
             _PL_RMS[0] = float(_rms[0])
         print(f"[재개] 풀 {_nl} 개 상태 이어받음 (씬이 달라 버린 것 {_ns} 개), "
               f"폐기누적 {POOL.n_drop}, 유예누적 {POOL.n_keep}", flush=True)
+
+if a.roll_scen:
+    # ---- 벤치 롤아웃: 시나리오 파일의 지령 속도로만 굴린다 -------------------
+    # 교사 궤적을 읽지 않는다. 초기 상태는 씬의 정지 자세이고, 손잡이는 PG·i-PG
+    # 와 **같은 파일**에서 읽은 지령 속도를 쓴다.
+    import time as _time
+    _sn = np.load(a.roll_scen)
+    _hid_full = torch.as_tensor(_sn["hid"], dtype=torch.long, device=dev)
+    _vel = torch.as_tensor(_sn["vel"], dtype=torch.float32, device=dev)
+    _tag, _sc = POOL.scenes[0]
+    ds = SCENE_DS[0]
+    x = _sc["x0"].clone()
+    n_p = x.shape[0]
+    gsel = torch.arange(n_p, device=dev)
+    v = torch.zeros_like(x)
+    F = torch.eye(3, device=dev).expand(n_p, 3, 3).contiguous()
+    # 시나리오의 제어 입자는 **전체 채우기** 색인이다. 부분표본에서 그 자리에
+    # 가장 가까운 입자로 옮긴다 (부분표본이 2 만이면 옮김 거리가 셀보다 작다).
+    _xfull = torch.from_numpy(np.load(
+        os.path.join(os.environ.get("AF_WORK", "/root/work"),
+                     f"pgfill_{_tag.split('_')[0]}.npy"))).float().to(dev)
+    _cpos = _xfull[_hid_full]
+    _d2 = torch.cdist(_cpos, x)
+    _loc = _d2.argmin(1)
+    print(f"[롤아웃] {_tag} 제어 입자 {_hid_full.tolist()} -> 부분표본 "
+          f"{_loc.tolist()}, 옮김 거리 {float(_d2.min(1).values.max()):.5f}",
+          flush=True)
+    p_st = (x[fps(x, a.n_anchors, a.seed)] if a.arch == "attn"
+            else x[torch.arange(0, n_p, max(1, n_p // a.n_anchors),
+                                device=dev)[:a.n_anchors]])
+    XS, FS = [x.detach().cpu().half()], [F.detach().cpu().half()]
+    _t0 = _time.time()
+    with torch.no_grad():
+        for _f in range(_vel.shape[0]):
+            _vc = _vel[_f]
+            ds["ctrl_id"] = _loc.reshape(1, -1)
+            ds["ctrl_vel"] = _vc.reshape(1, -1, 3)
+            _cc = x[_loc]
+            ds["ctrl_pos"] = torch.stack([_cc, _cc + FRAME_DT * _vc], 0)
+            ds.pop("_ca20", None); ds.pop("_ca", None); ds.pop("_ca_key", None)
+            x2, p2, v2, _J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
+                ds, 0, gsel, p_st, x, v, need_J=False)
+            _fm = free_mask(ds, n_p, dev, gsel, x, 0) if a.control else None
+            _cfg = _sc["cfg"]
+            _E, _dlog, _Ftr, _ = phys_resid.grid_ip_energy(
+                x, x2 - x, v, F, _sc["mass"], _sc["mass"] / float(_cfg["density"]),
+                _cfg, FRAME_DT, int(_cfg["n_grid"]),
+                float(_cfg.get("grid_lim", 2.0)),
+                g=torch.tensor(_cfg["g"], device=dev), norm=1.0, free=_fm)
+            F = phys_resid.plastic_step(_Ftr, _dlog).detach()
+            x, v = x2.detach(), v2.detach()
+            p_st = p2.detach() if torch.is_tensor(p2) else p_st
+            XS.append(x.cpu().half()); FS.append(F.cpu().half())
+            if not bool(torch.isfinite(x).all()):
+                print(f"[롤아웃] {_f} 프레임에서 비유한 -- 멈춘다", flush=True)
+                break
+    _wall = _time.time() - _t0
+    _dst = a.roll_out or (a.roll_scen.replace(".npz", "_stu.pt"))
+    torch.save(dict(x=torch.stack(XS), F=torch.stack(FS), cfg=_sc["cfg"],
+                    n=n_p, wall_s=_wall, fps=(len(XS) - 1) / max(_wall, 1e-9)),
+               _dst)
+    print(f"[롤아웃] 저장 {_dst} {len(XS)}프레임, {_wall:.2f}s, "
+          f"{(len(XS) - 1) / max(_wall, 1e-9):.2f} FPS", flush=True)
+    raise SystemExit(0)
 
 TBW = None
 if a.tb:
