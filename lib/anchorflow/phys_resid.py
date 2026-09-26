@@ -22,7 +22,8 @@ import os
 import torch
 
 __all__ = ["lame", "psi_of", "plastic_step", "ip_energy", "residual",
-           "smooth_noise", "mat_name", "bc_node_mask", "bc_energy"]
+           "smooth_noise", "mat_name", "bc_node_mask", "bc_energy",
+           "grid_ip_sub"]
 
 
 def lame(E, nu):
@@ -399,6 +400,41 @@ def bc_energy(x, du, mass, cfg, h, grid_lim, n_grid, stiff=None):
             e = e + (c.unsqueeze(-1) * ((x2 - lo).clamp_max(0.0) ** 2
                                         + (hi - x2).clamp_max(0.0) ** 2)).sum()
     return e
+
+
+def grid_ip_sub(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
+                g=None, norm=None, free=None, K=1):
+    """프레임 변위를 **K 개 서브스텝**으로 나눠 증분 포텐셜의 합을 잰다.
+
+    이것이 없으면 프레임 h 로 증분 포텐셜을 쓰게 되는데, 관성 계수가 m/(2h^2)
+    이라 h 를 PG 의 서브스텝(5e-5)에서 프레임(1/60)으로 키우면 관성항이 9e-6 배로
+    줄어 탄성항에 압도된다. 실측으로 그때 최적해는 교사에서 0.317% 벗어나고
+    (정지가 0.466%) h 를 5e-5 로 낮추면 0.001% 로 일치한다 -- 즉 프레임 h 로는
+    목적함수의 최소점이 교사가 아니다.
+
+    변위를 등분해 x_k = x + (k/K) du 를 지나가는 경로로 보고, 각 구간을 h/K 로
+    평가한 포텐셜을 더한다. 속도는 구간마다 갱신하고 F 도 같이 전진시킨다.
+    """
+    hs = h / float(max(K, 1))
+    tot = torch.zeros((), device=x.device, dtype=x.dtype)
+    xk, vk, Fk = x, vel, F
+    dk = du / float(max(K, 1))
+    info_sum = [0.0, 0.0, 0.0, 0.0]
+    dlog_last = None
+    F_last = F
+    for _k in range(max(K, 1)):
+        e, dlog, F_tr, info = grid_ip_energy(
+            xk, dk, vk, Fk, mass, vol, cfg, hs, n_grid, grid_lim,
+            g=g, norm=norm, free=free)
+        tot = tot + e
+        for _i in range(4):
+            info_sum[_i] += info[_i]
+        dlog_last, F_last = dlog, F_tr
+        if _k + 1 < max(K, 1):
+            xk = xk + dk
+            vk = dk / hs
+            Fk = plastic_step(F_tr, dlog)
+    return tot, dlog_last, F_last, tuple(info_sum)
 
 
 def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
