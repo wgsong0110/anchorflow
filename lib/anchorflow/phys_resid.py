@@ -70,10 +70,14 @@ def _vm_project(eps, mu, lam, ys):
     tr = eps.sum(-1, keepdim=True)
     tau = 2.0 * mu * eps + lam * tr
     dev = tau - tau.sum(-1, keepdim=True) / 3.0
-    dn = torch.sqrt((dev ** 2).sum(-1, keepdim=True) + 1e-24)
+    # 엡실론은 **양의 스케일**에 맞춰야 한다. 1e-24 처럼 작게 두면 변형이 없는
+    # 입자에서 sn ~ 1e-12 이 되어 2 계 미분이 1/sn^3 ~ 1e36 으로 float32 를
+    # 넘긴다 (잔차 손실이 그 경로를 쓴다).
+    _es = 1e-4                                  # 변형률 기준 바닥
+    dn = torch.sqrt((dev ** 2).sum(-1, keepdim=True) + (2.0 * mu * _es) ** 2)
     over = (dn > ys).to(eps.dtype)
     ehat = eps - tr / 3.0
-    n = torch.sqrt((ehat ** 2).sum(-1, keepdim=True) + 1e-24)
+    n = torch.sqrt((ehat ** 2).sum(-1, keepdim=True) + _es ** 2)
     dg = (n - ys / (2.0 * mu)).clamp_min(0.0)
     return eps - (over * dg / n) * ehat
 
@@ -84,7 +88,8 @@ def _visco_project(eps, mu, lam, ys, eta, dt):
     ehat = eps - tr / 3.0
     s = 2.0 * mu * ehat
     # 같은 이유로 노름을 무르게 잡고 분기를 곱셈으로 둔다
-    sn = torch.sqrt((s ** 2).sum(-1, keepdim=True) + 1e-24)
+    _es = 1e-4                                  # 변형률 기준 바닥 (위와 같은 이유)
+    sn = torch.sqrt((s ** 2).sum(-1, keepdim=True) + (2.0 * mu * _es) ** 2)
     y = sn - math.sqrt(2.0 / 3.0) * ys
     b = (2.0 * eps).exp()                      # sig^2
     mu_hat = mu * b.sum(-1, keepdim=True) / 3.0
