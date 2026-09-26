@@ -3,7 +3,7 @@
 # 위치 감독은 0 이고 (--phys_sup 0), phase2 경로는 loss = phys_w * wE 만 쓴다.
 # 사용: phys_only.sh <TAG> <GPU> <one|traj>
 #   one  : 한 조합(mic_clayC) 의 여러 궤적
-#   traj : 한 궤적만
+#   traj : 한 궤적만 (TRJ 로 지정, 기본은 손잡이 이동이 가장 큰 s400706)
 W=/home/dkta/work
 TAG=$1; GPU=$2; MODE=${3:-one}
 export CUDA_VISIBLE_DEVICES=$GPU
@@ -12,7 +12,7 @@ export AF_WORK=$W PYTHONPATH=$W/anchorflow/lib PYTHONIOENCODING=utf-8
 mkdir -p $W/abl_$TAG $W/tb
 if [ "$MODE" = traj ]; then
   D=$W/one_traj_h2
-  mkdir -p $D && ln -sf $W/traj_h2/mic_clayC_t_s400700.pt $D/ 2>/dev/null
+  mkdir -p $D && ln -sf $W/traj_h2/${TRJ:-mic_clayC_t_s400706}.pt $D/ 2>/dev/null
   HOLD=""
 else
   D=$W/traj_h2_mic
