@@ -17,9 +17,9 @@ from mmcv import Config
 from mmcv.runner import get_dist_info, init_dist
 
 from mmgs import __version__
-from mmgs.apis import init_random_seed, set_random_seed, train_model
+from mmgs.apis import set_random_seed, train_model
 from mmgs.datasets import build_dataset
-from mmgs.models import build_model
+from mmgs.models import build_simulator
 from mmgs.utils import collect_env, get_root_logger
 
 
@@ -57,11 +57,10 @@ def main():
     meta = dict(env_info="\n".join(f"{k}: {v}" for k, v in collect_env().items()),
                 seed=a.seed, exp_name=osp.basename(a.config),
                 mmgs_version=__version__, config=cfg.pretty_text)
-    seed = init_random_seed(a.seed)
-    set_random_seed(seed, deterministic=a.deterministic)
-    cfg.seed = seed
+    set_random_seed(a.seed, deterministic=a.deterministic)
+    cfg.seed = a.seed
 
-    model = build_model(cfg.model)
+    model = build_simulator(cfg.model)
     datasets = [build_dataset(cfg.data.train)]
     if cfg.get("workflow", [("train", 1)]) and len(cfg.workflow) == 2:
         val = copy.deepcopy(cfg.data.val)
