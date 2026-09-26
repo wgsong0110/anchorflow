@@ -44,6 +44,12 @@ print(f"[덤프] {D['tag']} t0={D['t0']}  {T} 프레임, 입자 {N} "
       f"(그리는 건 {len(sel)})  오차 중앙 {np.median(err):.3f}% 최대 {err.max():.3f}%",
       flush=True)
 
+# 손잡이 위치와 반경 (없으면 그리지 않는다)
+_CP = D.get("ctrl_pos")
+if _CP is not None:
+    _CP = np.asarray(_CP, dtype=np.float32)
+_R_CTRL = float(D.get("ctrl_R", 0.15))
+
 frames = []
 for t in tqdm(range(T), desc="렌더", ncols=80):
     fig, ax = plt.subplots(1, 3, figsize=(14.4, 5.0), dpi=110)
@@ -59,6 +65,18 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     ax[2].scatter(P[t][:, i], P[t][:, j], s=1.1, c="crimson", linewidths=0,
                   alpha=.55, label="예측")
     ax[2].set_title("겹쳐 보기", fontsize=11)
+    # 손잡이를 그린다. 이게 없으면 구동이 들어갔는지 눈으로 확인할 수 없어
+    # "손잡이가 없는 것 같다" 는 오해를 부른다 (덤프에는 늘 들어 있다).
+    if _CP is not None:
+        _ti = min(int(D["t0"]) + t, _CP.shape[0] - 1)
+        for _k in range(_CP.shape[1]):
+            _c = _CP[_ti, _k]
+            for _q in ax:
+                _q.add_patch(plt.Circle((_c[i], _c[j]), _R_CTRL,
+                                        fill=False, ec="deepskyblue", lw=1.6,
+                                        alpha=.9))
+                _q.plot([_c[i]], [_c[j]], marker="x", ms=7, mew=2.0,
+                        color="deepskyblue")
     ax[2].legend(fontsize=9, markerscale=6, loc="upper right")
     for q in ax:
         q.set_xlim(lo[i] - pad, hi[i] + pad); q.set_ylim(lo[j] - pad, hi[j] + pad)
