@@ -1837,7 +1837,6 @@ for it in pbar:
                 TBW.add_scalar("풀/재계획누적", POOL.n_replan, it)
                 TBW.add_scalar("풀/NaN배치", getattr(POOL, "n_nan", 0), it)
                 TBW.add_scalar("풀/채움", len(_alive) / POOL.size, it)
-                TBW.add_scalar("풀/문턱", POOL.threshold(), it)
                 # 나이·프레임·누적잔차의 분포
                 TBW.add_scalar("풀/나이_평균", arel, it)
                 TBW.add_scalar("풀/나이_중앙", float(np.median(_ages)), it)
