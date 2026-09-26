@@ -214,6 +214,31 @@ class GSScene:
             current_frame=frame, delta_a=c["delta_a"], delta_e=c["delta_e"],
             delta_r=c["delta_r"])
 
+    def set_view(self, azim=None, elev=None, radius=None):
+        """카메라를 갈아끼운다. **그쪽 카메라 규약을 그대로** 쓰기 위해 config 의
+        방위·고도·거리만 바꾼다 (자체 c2w 를 만들면 규약이 어긋난다)."""
+        if azim is not None:
+            self.cam["init_azimuthm"] = float(azim)
+        if elev is not None:
+            self.cam["init_elevation"] = float(elev)
+        if radius is not None:
+            self.cam["init_radius"] = float(radius)
+
+    def blender_c2w(self, frame=0):
+        """지금 카메라의 c2w 를 **Blender/NeRF 규약**으로 낸다.
+
+        GausSim 의 `transforms_*.json` 이 그 규약을 읽어 c2w[:,1:3] 을 뒤집고
+        역행렬을 취해 R, T 를 만든다 -- 여기서 그 과정을 정확히 거꾸로 간다.
+        """
+        import numpy as _np
+        c = self._cam(frame)
+        w2c = _np.eye(4)
+        w2c[:3, :3] = _np.asarray(c.R).T
+        w2c[:3, 3] = _np.asarray(c.T)
+        c2w = _np.linalg.inv(w2c)
+        c2w[:3, 1:3] *= -1
+        return c2w, float(c.FoVx)
+
     def render(self, pos_sim, F=None, frame=0, hide_stretch=None, props=None):
         """이 상태의 가우시안을 그린다.
 
