@@ -43,11 +43,16 @@ def load(p):
     d = torch.load(p, map_location="cpu", weights_only=False)
     x = d["x"].float()
     F = d["F"].float() if d.get("F") is not None else None
-    return x, F
+    return x, F, d
 
 
-XR, _ = load(a.ref)
-XT, FT = load(a.tgt)
+XR, _, _dr = load(a.ref)
+XT, FT, _dt = load(a.tgt)
+# 속도는 덤프가 들고 있다 (러너가 재서 넣는다). 인자로 준 값이 있으면 그것을 쓴다.
+if a.fps != a.fps:
+    a.fps = float(_dt.get("fps", float("nan")))
+if a.wall != a.wall:
+    a.wall = float(_dt.get("wall_s", float("nan")))
 T = min(XR.shape[0], XT.shape[0])
 N = min(XR.shape[1], XT.shape[1])
 XR, XT = XR[:T, :N].to(dev), XT[:T, :N].to(dev)
