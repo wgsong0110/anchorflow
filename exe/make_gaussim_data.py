@@ -24,10 +24,20 @@ import json
 import os
 import shutil
 
+import sys
+
 import numpy as np
 import torch
 
-from anchorflow.gsrender import GSScene
+# 렌더는 PG 클론의 utils/scene 을 쓴다. 경로를 여기서 붙여 준다 (러너가
+# PYTHONPATH 를 잡아 주지 않아도 돌게).
+_PG = os.environ.get("AF_PG", os.path.join(
+    os.environ.get("AF_WORK", "/root/work"), "PG_pgtraj"))
+for _p in (_PG, os.path.join(_PG, "gaussian-splatting")):
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from anchorflow.gsrender import GSScene            # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--dumps", required=True, help="PG 덤프 폴더")

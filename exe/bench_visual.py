@@ -13,10 +13,18 @@ import csv
 import json
 import os
 
+import sys
+
 import numpy as np
 import torch
 
-from anchorflow.gsrender import GSScene
+_PG = os.environ.get("AF_PG", os.path.join(
+    os.environ.get("AF_WORK", "/root/work"), "PG_pgtraj"))
+for _p in (_PG, os.path.join(_PG, "gaussian-splatting")):
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from anchorflow.gsrender import GSScene            # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ref", required=True)
