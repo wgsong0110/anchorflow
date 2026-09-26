@@ -190,7 +190,7 @@ ap.add_argument("--pool_thresh", type=float, default=0.10,
                      "학습 초기 누적잔차 중앙이 0.024~0.033 인데 문턱을 그 "
                      "근처(0.01~0.02)로 두면 거의 전부 즉시 폐기돼 학생이 같은 "
                      "상태를 이어 볼 기회가 없다 -- 0.05 이상에서 고른다")
-ap.add_argument("--pool_frames", type=int, default=120,
+ap.add_argument("--pool_frames", type=int, default=240,
                 help="계획 한 회의 **상한** 프레임. 목표에 닿으면 그보다 일찍 "
                      "새 계획으로 넘어간다 (도달 시간은 거리에 따라 다르다)")
 ap.add_argument("--pool_combos", default="all",
@@ -201,9 +201,9 @@ ap.add_argument("--ctrl_acc", type=float, default=2.4,
                      "빠르게 가까운 목표는 느리게 끌려 속도 영역이 뒤섞인다")
 ap.add_argument("--ctrl_vmax", type=float, default=0.6,
                 help="손잡이 최고속도")
-ap.add_argument("--pool_targets", type=int, default=4,
+ap.add_argument("--pool_targets", type=int, default=5,
                 help="목표점 후보 격자의 한 변. 후보를 **유한 고정** 집합으로 "
-                     "두어 같은 목표를 여러 번 보게 한다 (4 면 최대 64 개)")
+                     "두어 같은 목표를 여러 번 보게 한다 (5 면 최대 125 개)")
 ap.add_argument("--pool_window", type=int, default=30,
                 help="폐기 판정에 쓰는 잔차 평균의 창 길이. 1 로 두면 누적 "
                      "없이 **이번 스텝 잔차만** 보고 판정한다")

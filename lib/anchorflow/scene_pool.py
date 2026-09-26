@@ -17,7 +17,7 @@ import torch
 __all__ = ["load_scenes", "HandlePlan", "StatePool", "target_grid"]
 
 
-def target_grid(domain, margin, n_side, cfg=None, dev="cpu"):
+def target_grid(domain, margin, n_side, cfg=None, dev="cpu", clear=0.15):
     """목표점 후보 [P,3]. **유한하고 고정**이다.
 
     매번 연속 분포에서 뽑으면 같은 목표를 두 번 볼 일이 없어, 학생이 같은 과제를
@@ -32,7 +32,9 @@ def target_grid(domain, margin, n_side, cfg=None, dev="cpu"):
         pt = torch.as_tensor(bc["point"], dtype=P.dtype)
         nr = torch.as_tensor(bc["normal"], dtype=P.dtype)
         nr = nr / nr.norm().clamp_min(1e-12)
-        P = P[((P - pt) * nr).sum(-1) > margin]
+        # 면에서 띄우는 여유는 **손잡이 반경**이면 된다. margin(목표 상자 여유)을
+        # 쓰면 바닥 쪽 후보가 통째로 날아가 손잡이가 늘 위로만 끌게 된다.
+        P = P[((P - pt) * nr).sum(-1) > clear]
     return P.to(dev)
 
 
@@ -197,7 +199,7 @@ class StatePool:
         # 목표점 후보는 유한 고정 집합이다. 씬마다 바닥면이 같으므로 한 번만 짠다.
         self.cand = target_grid(domain, margin, n_side,
                                 scenes[0][1]["cfg"] if scenes else None,
-                                dev=dev)
+                                dev=dev, clear=radius)
         self.fresh_res = []                 # 신규 상태 잔차 (중앙값 기준용)
         # **비운 채로 시작한다.** 배치에 섞이는 신규 상태가 살아남아야 풀이
         # 차오르고, 버린 자리도 즉시 메우지 않는다 -- 풀의 크기 자체가
