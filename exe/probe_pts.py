@@ -37,11 +37,19 @@ for t0 in a.t0:
           else torch.eye(3, device=dev).expand(sel.numel(), 3, 3).contiguous())
     ext = float((x0.max(0).values - x0.min(0).values).norm())
     stay = float((x0 - tgt).norm(dim=-1).mean()) / ext * 100
-    nrm = float(mass.sum()) * ext ** 2 / h ** 2
     nb = phys_resid.jac_neighbors(x0, a.k)
     print(f"[t0={t0}] 정지오차 {stay:.3f}%")
     for name, fn in (("격자", phys_resid.grid_ip_energy),
                      ("입자", phys_resid.grid_ip_pts)):
+        # 항의 절대 크기가 경로마다 수십 배 다르다 (교사 상태 탄성 1.1e6 vs 7.5e7).
+        # 정규화를 그 경로의 교사 값으로 맞춰 같은 조건에서 최적화한다.
+        with torch.no_grad():
+            kw0 = dict(g=gv, norm=1.0)
+            if name == "입자":
+                kw0["nb"] = nb
+            E_ref, _, _, _ = fn(x0, tgt - x0, v0, F0, mass, vol, cfg, h, ng, gl,
+                                **kw0)
+        nrm = max(abs(float(E_ref)), 1e-30)
         du = torch.zeros_like(x0).requires_grad_(True)
         opt = torch.optim.Adam([du], lr=a.lr * ext)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.steps)
