@@ -11,7 +11,8 @@ ap.add_argument("--traj", required=True)
 ap.add_argument("--t0", type=int, nargs="+", default=[3, 10, 20])
 ap.add_argument("--n_pts", type=int, default=8000)
 ap.add_argument("--K", type=int, nargs="+", default=[1, 4, 16, 64])
-ap.add_argument("--steps", type=int, default=400)
+ap.add_argument("--steps", type=int, default=600)
+ap.add_argument("--lr", type=float, default=1e-3)
 a = ap.parse_args()
 
 dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -39,14 +40,24 @@ for t0 in a.t0:
     print(f"[t0={t0}] 정지의 교사오차 {e_stay:.3f}%")
     for K in a.K:
         nrm = float(mass.sum()) * ext ** 2 / (h / K) ** 2
+        # K 가 커지면 관성 계수가 K^2 배로 커져 목적함수 스케일이 급변한다.
+        # Adam 은 스케일에 둔감하지만 학습률·스텝 수는 맞춰 줘야 수렴한다.
         du = torch.zeros_like(x).requires_grad_(True)
-        opt = torch.optim.Adam([du], lr=3e-3 * ext)
-        for _ in range(a.steps):
+        opt = torch.optim.Adam([du], lr=a.lr * ext)
+        ns = a.steps * (2 if K >= 16 else 1)
+        sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, ns)
+        best, best_du = float("inf"), du.detach().clone()
+        for _ in range(ns):
             opt.zero_grad()
             E, _, _, _ = phys_resid.grid_ip_sub(
                 x, du, v, F, mass, vol, cfg, h, ng, gl, g=gv, norm=nrm, K=K)
             E.backward()
             opt.step()
+            sch.step()
+            if float(E) < best:
+                best, best_du = float(E), du.detach().clone()
+        with torch.no_grad():
+            du.copy_(best_du)
         err = float((du.detach() - du_t).norm(dim=-1).mean()) / ext * 100
         with torch.no_grad():
             Et, _, _, _ = phys_resid.grid_ip_sub(
