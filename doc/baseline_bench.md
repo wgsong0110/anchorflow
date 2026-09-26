@@ -52,13 +52,37 @@
 
 ## 3. 대상과 실행 가능성
 
+2026-09-26 정정: GausSim 과 GS-Verse 는 **둘 다 코드가 공개돼 있다**. 앞서
+미공개로 적은 것은 잘못이다.
+
 | 대상 | 코드 | 상태 |
 |---|---|---|
 | PG | `/home/dkta/work/PG_pgtraj` | 기준. 그대로 실행 |
-| i-PhysGaussian | `/home/dkta/work/i-physgaussian` | Newton-GMRES 경로 (`AF_IPG_NEWTON=1`). dt×20 에서 발산 이력 있음 → dt×1/×4/×8/×20 모두 재고 표에 dt 를 명시 |
-| GausSim | 학습 코드 미공개 (탄성 전용, T=16 롤아웃) | 공개된 범위에서만. 못 재는 칸은 그대로 비운다 |
-| GS-Verse | 코드 미공개 (XPBD + 사면체 케이지, 소성 없음) | 같음 |
-| 우리 학생 | `exe/train_deform.py --pool` | 현재 학습 중인 것 중 최고 검증비 |
+| i-PhysGaussian | `/home/dkta/work/i-physgaussian` | Newton-GMRES (`AF_IPG_NEWTON=1`). 손잡이 기능이 없어 `exe/patch_ipg_scen.py` 로 같은 채우기·시나리오 구동을 넣었다. dt×8 기본, ×20(논문 세팅)도 잰다 |
+| GausSim | [ftbabi/GausSim_ICCV2025](https://github.com/ftbabi/GausSim_ICCV2025) | 모델·학습·평가 전부 공개 (`mmgs/models/simulators/gs_simulator_hierarchy.py`, `mmgs/apis/train.py`). 빠진 것은 `tools/train.py` 진입점과 READY 데이터셋. 공개 가중치는 pudding 씬이라 **우리 12 조합으로 재학습**한다 |
+| GS-Verse | [Anastasiya999/GS-Verse](https://github.com/Anastasiya999/GS-Verse) | C#/Unity. 배치 실행 경로가 없어 XPBD + GaMeS 메시-가우시안 결합을 **우리 파이프라인으로 포팅**한다 |
+| 우리 학생 | `exe/train_deform.py --pool` | 학습 중인 18 개 중 최고 검증비 |
+
+### GausSim 재학습 (그쪽 정의 그대로)
+
+감독은 **다시점 렌더 손실**이다 (`encode_decode` 의 `gt_label` 이 카메라별
+영상이다). 위치를 직접 감독하도록 고치면 그쪽 방법이 아니게 되므로 손대지
+않는다. 따라서 우리 PG 궤적을 **다시점 영상으로 렌더**해 그쪽 데이터셋 배치로
+넣는다.
+
+1. `mmgs/datasets/multiview_video_dataset.py` 가 기대하는 배치를 확인한다.
+2. 조합마다 PG 궤적을 카메라 4 대 x 프레임으로 렌더한다 (`GSScene.render`).
+3. `tools/train.py` 를 공개된 `mmgs/apis/train_model` 로 20 줄 작성한다.
+4. 조합별 학습 -> 벤치 시나리오 롤아웃 -> 같은 지표.
+   탄성 전용이므로 clay/viscoplastic 은 모델 범위 밖임을 표에 명시한다.
+
+### GS-Verse 포팅
+
+Unity/C# 의 XPBD 와 GaMeS 결합을 `lib/anchorflow/gsverse.py` 로 옮긴다.
+핵심 파일: `Assets/Scripts/BaseGSVerse.cs`, `SplatDeformate.cs`,
+`GSVerseSegmented.cs`, `package/Runtime/GaMeS/GaMeSUtils.cs`.
+메시는 3DGS 에서 뽑는다 (PG 의 `particle_filling` 이 이미 쓰는 marching cubes).
+소성이 없으므로 clay/viscoplastic 은 범위 밖임을 명시한다.
 
 ## 4. 실행 계획 (병렬)
 
