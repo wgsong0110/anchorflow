@@ -17,13 +17,12 @@ for sd in $(seq $lo $hi); do
   S=$(printf "%02d" $sd)
   [ -f $W/bench_pg/${C}_s${S}.pt ] && { echo "[건너뜀] ${C}_s${S}"; continue; }
   export AF_H_SCEN=$W/bench/scen_${C}_s${S}.npz
-  T0=$(date +%s.%N)
+  T0=$SECONDS
   AF_PGFILL_NPY=$W/pgfill_${SH_}.npy python -u $W/anchorflow/exe/gen_handle_trajs.py \
     --pg $W/PG_pgtraj --model $W/pgmodel/${SH_}_whitebg-trained \
     --config $W/bench_cfg/${C}.json --work $W/wbench_${C}_$GPU \
     --out $W/bench_pg --tag ${C} --pairs ${C}:${sd} --n_pts 20000 \
     >> $W/bench_pg_${C}.log 2>&1
-  T1=$(date +%s.%N)
-  echo "${C} s${S} $(echo "$T1 - $T0" | bc) s" >> $W/bench_pg_time.log
+  echo "${C} s${S} $((SECONDS - T0)) s" >> $W/bench_pg_time.log
 done
 echo "BENCH_PG_DONE $C $SEEDS" >> $W/bench_pg_progress.log
