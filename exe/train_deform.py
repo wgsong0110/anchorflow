@@ -174,7 +174,10 @@ ap.add_argument("--pool", action="store_true",
                 help="교사 궤적 없이 **상태 풀**로 학습한다. 씬의 정지 상태에서 "
                      "출발해 손잡이 계획을 직접 뽑고, 한 스텝씩 굴린 상태를 풀에 "
                      "담아 둔다. 누적 물리잔차가 문턱을 넘은 상태는 버린다")
-ap.add_argument("--pool_size", type=int, default=1024)
+ap.add_argument("--pool_size", type=int, default=128,
+                help="풀 크기. 크면 한 상태가 다시 뽑히기까지 오래 걸려 낡은 "
+                     "정책이 만든 상태만 쌓인다 (1024 면 약 85 반복에 한 번). "
+                     "128 이면 약 10 반복마다 전진한다")
 ap.add_argument("--pool_grid", default="domain", choices=("domain", "fit"),
                 help="domain 이면 시뮬 영역 전체를 vox_res^3 으로 고정해 모든 "
                      "상태가 같은 격자를 쓴다 (영역을 벗어난 상태는 버린다). "
