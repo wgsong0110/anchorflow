@@ -17,11 +17,12 @@ eigvalsh 의 역전파는 고유벡터 차이(1/(li-lj))를 타지 않아 겹친
 안전하다 -- 회전 대칭인 배치에서 SVD 역전파가 터지는 것을 피하는 길이다.
 """
 import math
+import os
 
 import torch
 
 __all__ = ["lame", "psi_of", "plastic_step", "ip_energy", "residual",
-           "smooth_noise", "mat_name"]
+           "smooth_noise", "mat_name", "bc_node_mask"]
 
 
 def lame(E, nu):
@@ -324,6 +325,35 @@ def g2p_grad(x, du_I, info, n_grid):
     return torch.einsum("nkd,nkc->ndc", u_nodes, gw)                # ∇Δu
 
 
+def bc_node_mask(uniq, n_grid, dx, cfg, dtype, dev):
+    """PG 경계조건이 **변위를 규정하는** 격자 노드 [M] 불리언.
+
+    PG 의 `surface_collider`(sticky) 는 면 안쪽 노드의 속도를 0 으로 박고,
+    `bounding_box` 는 경계 3 셀 띠를 막는다. 증분 포텐셜에서 이것은 그 노드의
+    Δu 가 0 으로 규정된 Dirichlet 조건이다. 이 항이 빠져 있으면 중력만 아래로
+    끌고 막는 것이 없어 **바닥을 뚫고 내려가는 것이 목적함수상 이득**이 된다.
+    """
+    k = uniq % n_grid
+    j = (uniq // n_grid) % n_grid
+    i = uniq // (n_grid * n_grid)
+    pos = torch.stack([i, j, k], -1).to(dtype) * dx
+    m = torch.zeros(uniq.shape[0], dtype=torch.bool, device=dev)
+    if os.environ.get("AF_NO_BC"):              # 비교용으로만 끈다
+        return m
+    for bc in (cfg.get("boundary_conditions") or []):
+        t = bc.get("type")
+        if t == "surface_collider":
+            pt = torch.as_tensor(bc["point"], device=dev, dtype=dtype)
+            nr = torch.as_tensor(bc["normal"], device=dev, dtype=dtype)
+            nr = nr / nr.norm().clamp_min(1e-12)
+            m |= (((pos - pt) * nr).sum(-1) < 0)
+        elif t == "bounding_box":
+            b = int(cfg.get("bound", 3))
+            m |= ((i < b) | (j < b) | (k < b) | (i >= n_grid - b)
+                  | (j >= n_grid - b) | (k >= n_grid - b))
+    return m
+
+
 def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
                    g=None, norm=None, free=None):
     """i-PG 의 목적함수를 **격자 증분** 기준으로 잰다.
@@ -338,6 +368,13 @@ def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
     # 손잡이가 절반 넘게 실린 노드는 Dirichlet 으로 보고 관성·중력에서 뺀다.
     # 그 노드의 규정된 변위는 탄성항의 ∇Δu 를 통해 이웃 잔차에 그대로 들어간다.
     w_free = torch.ones_like(m_I) if frac is None else (frac > 0.5).to(m_I.dtype)
+    # 바닥·벽. sticky 면 그 노드의 Δu 가 0 으로 규정되므로 관성·중력에서 빼고
+    # 변위도 0 으로 박는다 -- 그러면 뚫고 내려가려는 입자가 탄성항에서 벌을 받는다.
+    _bc = bc_node_mask(info[3], n_grid, info[4], cfg, x.dtype, x.device)
+    if bool(_bc.any()):
+        _keep = (~_bc).to(x.dtype)
+        du_I = du_I * _keep.unsqueeze(-1)
+        w_free = w_free * _keep
     d = du_I - h * v_I
     e_in = (0.5 * w_free * m_I / (h * h) * (d * d).sum(-1)).sum()
     e_g = torch.zeros((), device=x.device, dtype=x.dtype)
