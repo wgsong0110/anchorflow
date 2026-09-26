@@ -80,7 +80,7 @@ class HandlePlan:
 
     @staticmethod
     def sample(x0, n_ctrl, radius, gen, dev, ext, frames=60,
-               dist_lo=0.30, dist_hi=0.70):
+               dist_lo=0.30, dist_hi=0.70, domain=2.0, margin=0.15):
         """제어 입자와 목표점을 뽑는다. 손잡이끼리 2R 안에 겹치지 않게 한다."""
         n = x0.shape[0]
         idx = []
@@ -93,11 +93,23 @@ class HandlePlan:
         while len(idx) < n_ctrl:            # 좁은 물체면 겹침을 허용한다
             idx.append(int(torch.randint(n, (1,), generator=gen, device=dev)))
         idx = torch.tensor(idx, device=dev, dtype=torch.long)
-        d = torch.randn(n_ctrl, 3, generator=gen, device=dev)
-        d = d / d.norm(dim=-1, keepdim=True).clamp_min(1e-9)
-        dist = (dist_lo + (dist_hi - dist_lo) * torch.rand(
-            n_ctrl, 1, generator=gen, device=dev)) * ext
-        tgt = (x0[idx] + d * dist).clamp(0.05, 1.95)
+        # 목표점은 **시뮬레이션 영역에 마진을 준 상자 안에서** 뽑는다. 방향과
+        # 거리를 뽑아 경계로 눌러 버리면(clamp) 목표점이 벽에 쏠린다.
+        lo_b, hi_b = margin, domain - margin
+        tgt = torch.empty(n_ctrl, 3, device=dev)
+        for k in range(n_ctrl):
+            for _ in range(64):
+                d = torch.randn(3, generator=gen, device=dev)
+                d = d / d.norm().clamp_min(1e-9)
+                dist = (dist_lo + (dist_hi - dist_lo)
+                        * float(torch.rand(1, generator=gen, device=dev))) * ext
+                cand = x0[idx[k]] + d * dist
+                if bool(((cand >= lo_b) & (cand <= hi_b)).all()):
+                    tgt[k] = cand
+                    break
+            else:
+                tgt[k] = (lo_b + (hi_b - lo_b)
+                          * torch.rand(3, generator=gen, device=dev))
         return HandlePlan(n_ctrl, idx, tgt, radius, frames=frames)
 
     def velocity(self, x_now, elapsed):
@@ -129,7 +141,8 @@ class StatePool:
     """살아 있는 상태들의 집합. 누적 잔차가 문턱을 넘으면 버린다."""
 
     def __init__(self, scenes, size, n_ctrl, radius, dev, gen,
-                 frames=60, thresh_mult=3.0, window=30, min_age=5):
+                 frames=60, thresh_mult=3.0, window=30, min_age=5,
+                 domain=2.0, margin=0.15):
         self.scenes = scenes
         self.size = size
         self.n_ctrl = n_ctrl
@@ -144,6 +157,8 @@ class StatePool:
         # 갓 만든 상태는 몇 스텝 살려 둔다 -- 첫 스텝 잔차만 보고 버리면
         # 풀이 늘 신규로만 차서 on-policy 상태를 못 본다
         self.min_age = min_age
+        self.domain = domain            # 시뮬 영역 [0, domain]^3
+        self.margin = margin            # 목표점은 이만큼 안쪽에서 뽑는다
         self.fresh_res = []                 # 신규 상태 잔차 (중앙값 기준용)
         self.items = [self.fresh() for _ in range(size)]
         self.n_drop = 0
@@ -157,7 +172,8 @@ class StatePool:
         tag, sc = self.scenes[si]
         x = sc["x0"].clone()
         plan = HandlePlan.sample(x, self.n_ctrl, self.radius, self.gen,
-                                 self.dev, sc["ext"], self.frames)
+                                 self.dev, sc["ext"], self.frames,
+                                 domain=self.domain, margin=self.margin)
         return dict(si=si, x=x, v=torch.zeros_like(x),
                     F=torch.eye(3, device=self.dev).expand(
                         x.shape[0], 3, 3).contiguous(),
@@ -193,7 +209,8 @@ class StatePool:
             _, sc = self.scenes[st["si"]]
             st["plan"] = HandlePlan.sample(st["x"], self.n_ctrl, self.radius,
                                            self.gen, self.dev, sc["ext"],
-                                           self.frames)
+                                           self.frames, domain=self.domain,
+                                           margin=self.margin)
             st["elapsed"] = 0
             self.n_replan += 1
         bad = (not bool(torch.isfinite(st["x"]).all())) or \
