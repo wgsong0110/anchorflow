@@ -1658,7 +1658,12 @@ def save_ck(name, step):
                 "rng_cuda": (torch.cuda.get_rng_state_all()
                              if torch.cuda.is_available() else None),
                 "rng_np": np.random.get_state(),
-                "rng_py": random.getstate()},
+                "rng_py": random.getstate(),
+                # 풀 자체와 누적 집계. 없으면 재개할 때 빈 풀에서 0 부터 다시
+                # 세게 되어 쌓아 둔 상태를 잃고 TB 누적 곡선도 끊긴다.
+                "pool": (POOL.state_dict() if POOL is not None else None),
+                "pool_drop_win": list(_PL_DROP),
+                "pool_rms": list(_PL_RMS)},
                os.path.join(a.out, f"{a.tag}_{name}.pt"))
     if a.r2:
         os.system(f"rclone copy {a.out} {a.r2} --include '*.pt' "
@@ -1733,6 +1738,15 @@ if a.pool:
               f"셀 크기 {_gl / a.vox_res:.4f}", flush=True)
     print(f"[풀] 씬 {len(_sc)} 개, 크기 {a.pool_size}, 신규 비율 "
           f"{a.pool_fresh:.2f}, 문턱 x{a.pool_thresh}", flush=True)
+    _pck = (_rng_ck or {}).get("pool") if not a.resume_fresh else None
+    if _pck:
+        _nl, _ns = POOL.load_state_dict(_pck)
+        _PL_DROP[:] = list((_rng_ck or {}).get("pool_drop_win") or [])
+        _rms = (_rng_ck or {}).get("pool_rms")
+        if _rms:
+            _PL_RMS[0] = float(_rms[0])
+        print(f"[재개] 풀 {_nl} 개 상태 이어받음 (씬이 달라 버린 것 {_ns} 개), "
+              f"폐기누적 {POOL.n_drop}, 유예누적 {POOL.n_keep}", flush=True)
 
 TBW = None
 if a.tb:

@@ -112,6 +112,17 @@ class HandlePlan:
                           * torch.rand(3, generator=gen, device=dev))
         return HandlePlan(n_ctrl, idx, tgt, radius, frames=frames)
 
+    def pack(self):
+        """체크포인트용. 제어 입자와 목표점만 담으면 나머지는 규칙으로 복원된다."""
+        return dict(k=self.k, idx=self.idx.cpu(), target=self.target.cpu(),
+                    radius=self.radius, frames=self.frames, dt=self.dt)
+
+    @staticmethod
+    def unpack(d, dev):
+        return HandlePlan(int(d["k"]), d["idx"].to(dev), d["target"].to(dev),
+                          float(d["radius"]), frame_dt=float(d["dt"]),
+                          frames=int(d["frames"]))
+
     def velocity(self, x_now, elapsed):
         """[K,3] 이번 프레임의 명령 속도."""
         vec = self.target - x_now[self.idx]
@@ -173,6 +184,48 @@ class StatePool:
         self.items = []
         self.n_drop = 0
         self.n_replan = 0
+
+    def state_dict(self):
+        """풀 전체와 누적 집계. 재개할 때 빈 풀에서 0 부터 다시 세면 TB 의
+        누적 곡선이 끊기고, 무엇보다 학생이 쌓아 둔 상태들을 잃는다."""
+        items = []
+        for q in self.items:
+            if q is None:
+                continue
+            items.append(dict(
+                si=int(q["si"]), x=q["x"].detach().cpu(),
+                v=q["v"].detach().cpu(), F=q["F"].detach().cpu(),
+                p=(q["p"].detach().cpu() if torch.is_tensor(q["p"]) else None),
+                plan=q["plan"].pack(), elapsed=int(q["elapsed"]),
+                hist=list(q["hist"]), age=int(q["age"])))
+        return dict(items=items, n_drop=self.n_drop, n_keep=self.n_keep,
+                    n_replan=self.n_replan, fresh_res=list(self.fresh_res),
+                    tags=[t for t, _ in self.scenes])
+
+    def load_state_dict(self, d):
+        """씬 구성이 달라졌으면 그 상태만 버리고 나머지는 그대로 이어받는다."""
+        tags = [t for t, _ in self.scenes]
+        old = list(d.get("tags") or tags)
+        self.items = []
+        n_skip = 0
+        for q in d.get("items", []):
+            si = int(q["si"])
+            tag = old[si] if si < len(old) else None
+            if tag not in tags:
+                n_skip += 1
+                continue
+            self.items.append(dict(
+                si=tags.index(tag), x=q["x"].to(self.dev),
+                v=q["v"].to(self.dev), F=q["F"].to(self.dev),
+                p=(q["p"].to(self.dev) if torch.is_tensor(q["p"]) else None),
+                plan=HandlePlan.unpack(q["plan"], self.dev),
+                elapsed=int(q["elapsed"]), hist=list(q["hist"]),
+                age=int(q["age"])))
+        self.n_drop = int(d.get("n_drop", 0))
+        self.n_keep = int(d.get("n_keep", 0))
+        self.n_replan = int(d.get("n_replan", 0))
+        self.fresh_res = list(d.get("fresh_res") or [])
+        return len(self.items), n_skip
 
     def fresh(self, si=None):
         """새 초기 상태: 정지 자세, v=0, F=I, 새 손잡이 계획."""
