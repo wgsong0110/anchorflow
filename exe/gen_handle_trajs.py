@@ -80,9 +80,15 @@ for _tag, sd in JOBS:
     if a.pairs:
         env["AF_FILL_CACHE"] = os.path.join(
             os.path.dirname(a.fill_cache or "/home/dkta/work/x"), f"fill_{_shape}.npy")
+    # 렌더 프레임을 저장하려면 PG 의 렌더 분기를 켜야 한다 (--render_img).
+    # 그 분기 안에서만 pos/cov3D/colors_precomp 가 만들어지고, 다중 카메라
+    # 저장도 거기에 붙어 있다.
+    _cmd = ["python", "-u", "gs_simulation.py", "--model_path", _mdl,
+            "--config", _cfgp, "--output_path", odir, "--output_h5"]
+    if env.get("AF_R_OUT"):
+        _cmd.append("--render_img")
     r = subprocess.run(
-        ["python", "-u", "gs_simulation.py", "--model_path", _mdl,
-         "--config", _cfgp, "--output_path", odir, "--output_h5"],
+        _cmd,
         cwd=a.pg, env=env, capture_output=True, text=True)
     open(os.path.join(a.work, f"sim_{_tag}_s{sd:02d}.log"), "w").write(
         (r.stdout or "")[-4000:] + "\n" + (r.stderr or "")[-2000:])
