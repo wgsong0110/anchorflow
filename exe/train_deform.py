@@ -948,6 +948,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
 CRITIC = None
 OPT_C = None
 _RL_MSG = []
+_PL_MSG = []
 _F_MSG = []
 
 
@@ -1741,6 +1742,20 @@ for it in pbar:
                 loss_p = E_ip
             if bool(torch.isfinite(loss_p)):
                 (loss_p / a.batch).backward()
+                if _PL_MSG == [] and it < 3:
+                    _bad = [n for n, q in net.named_parameters()
+                            if q.grad is not None
+                            and not bool(torch.isfinite(q.grad).all())]
+                    if _bad:
+                        _PL_MSG.append(1)
+                        print(f"[풀 NaN] 씬 {tag} 손실 {float(loss_p):.3e} "
+                              f"유한, 기울기 NaN 파라미터 {len(_bad)} 개: "
+                              f"{_bad[:4]}", flush=True)
+            elif _PL_MSG == []:
+                _PL_MSG.append(1)
+                print(f"[풀 NaN] 씬 {tag} 손실이 비유한 "
+                      f"(x2 유한 {bool(torch.isfinite(x2).all())}, "
+                      f"E 유한 {bool(torch.isfinite(E_ip))})", flush=True)
             res = float(loss_p)
             lx = lx + res / a.batch
             with torch.no_grad():
