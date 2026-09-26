@@ -86,7 +86,10 @@ def _inv3(A):
     # 능선을 **절대로 0 에 가깝게 두지 않는다**. 예전에는 빈 셀을 where 로
     # 가렸는데, 그러면 순전파는 멀쩡해도 역전파에서 NaN 이 그대로 새어 나온다
     # (0 * NaN = NaN). 전체 평균 크기를 바닥으로 깔아 항상 잘 정의되게 한다.
-    floor = scale.mean().clamp_min(1e-12) * 1e-6
+    # 바닥을 **가장 큰 셀 기준**으로 잡는다. 평균으로 잡으면 얇은 형상(lego 처럼
+    # 판이 얇은 경우)에서 거의 빈 셀의 역행렬이 여전히 1e6 배로 커져 float32 가
+    # 넘친다.
+    floor = scale.max().clamp_min(1e-12) * 1e-6
     Ar = A + (1e-6 * scale + floor) * I3
     try:
         return _t.linalg.inv(Ar), d
