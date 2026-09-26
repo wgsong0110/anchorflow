@@ -1734,6 +1734,8 @@ for it in pbar:
         lres = 0.0
         picks = POOL.sample(a.batch - n_fresh, n_fresh)
         for kind, slot in picks:
+            if kind == "pool" and POOL.items[slot] is None:
+                continue          # 이 배치 안에서 이미 버려진 자리
             st = POOL.items[slot] if kind == "pool" else POOL.fresh()
             tag, sc = POOL.scenes[st["si"]]
             ds = SCENE_DS[st["si"]]
