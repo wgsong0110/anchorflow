@@ -61,15 +61,21 @@ def _psi_hencky(eps, mu, lam):
 
 
 def _vm_project(eps, mu, lam, ys):
-    """PG von_mises_return_mapping 의 주응력 공간 판본."""
+    """PG von_mises_return_mapping 의 주응력 공간 판본.
+
+    노름을 sqrt(|.|^2 + eps^2) 로 무르게 잡고 분기를 **곱셈**으로 둔다.
+    변형이 없는 입자는 ehat 이 정확히 0 이라 그냥 norm 을 쓰면 미분이 정의되지
+    않고, where 로 가려도 선택 안 된 가지의 NaN 이 역전파로 새어 나온다.
+    """
     tr = eps.sum(-1, keepdim=True)
     tau = 2.0 * mu * eps + lam * tr
     dev = tau - tau.sum(-1, keepdim=True) / 3.0
-    over = dev.norm(dim=-1, keepdim=True) > ys
+    dn = torch.sqrt((dev ** 2).sum(-1, keepdim=True) + 1e-24)
+    over = (dn > ys).to(eps.dtype)
     ehat = eps - tr / 3.0
-    n = ehat.norm(dim=-1, keepdim=True) + 1e-6
+    n = torch.sqrt((ehat ** 2).sum(-1, keepdim=True) + 1e-24)
     dg = (n - ys / (2.0 * mu)).clamp_min(0.0)
-    return torch.where(over, eps - (dg / n) * ehat, eps)
+    return eps - (over * dg / n) * ehat
 
 
 def _visco_project(eps, mu, lam, ys, eta, dt):
@@ -77,13 +83,15 @@ def _visco_project(eps, mu, lam, ys, eta, dt):
     tr = eps.sum(-1, keepdim=True)
     ehat = eps - tr / 3.0
     s = 2.0 * mu * ehat
-    sn = s.norm(dim=-1, keepdim=True)
+    # 같은 이유로 노름을 무르게 잡고 분기를 곱셈으로 둔다
+    sn = torch.sqrt((s ** 2).sum(-1, keepdim=True) + 1e-24)
     y = sn - math.sqrt(2.0 / 3.0) * ys
     b = (2.0 * eps).exp()                      # sig^2
     mu_hat = mu * b.sum(-1, keepdim=True) / 3.0
     s_new = sn - y / (1.0 + eta / (2.0 * mu_hat * dt).clamp_min(1e-12))
-    eps_new = (s_new / sn.clamp_min(1e-12)) * s / (2.0 * mu) + tr / 3.0
-    return torch.where(y > 0, eps_new, eps)
+    eps_new = (s_new / sn) * s / (2.0 * mu) + tr / 3.0
+    w = (y > 0).to(eps.dtype)
+    return w * eps_new + (1.0 - w) * eps
 
 
 def psi_of(F_trial, cfg, dt):
