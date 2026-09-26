@@ -23,7 +23,7 @@ import torch
 
 __all__ = ["lame", "psi_of", "plastic_step", "ip_energy", "residual",
            "smooth_noise", "mat_name", "bc_node_mask", "bc_energy",
-           "grid_ip_sub"]
+           "grid_ip_sub", "grid_ip_pts", "jac_neighbors", "grad_from_points"]
 
 
 def lame(E, nu):
@@ -400,6 +400,69 @@ def bc_energy(x, du, mass, cfg, h, grid_lim, n_grid, stiff=None):
             e = e + (c.unsqueeze(-1) * ((x2 - lo).clamp_max(0.0) ** 2
                                         + (hi - x2).clamp_max(0.0) ** 2)).sum()
     return e
+
+
+def jac_neighbors(x0, k=16, chunk=2048):
+    """입자 이웃을 한 번 잡아 둔다 (변형기울기를 격자 왕복 없이 뽑기 위해).
+
+    반환 (이웃색인 [N,k], 가중 [N,k,1], B^{-1} [N,3,3]). B 는 sum w d0 d0^T 로
+    최소제곱의 정규방정식 행렬이라 이웃이 고정이면 한 번만 만들면 된다.
+    """
+    N = x0.shape[0]
+    idx = torch.empty(N, k, dtype=torch.long, device=x0.device)
+    for s in range(0, N, chunk):
+        e = min(s + chunk, N)
+        idx[s:e] = torch.cdist(x0[s:e], x0).topk(
+            k + 1, largest=False).indices[:, 1:]
+    d0 = x0[idx] - x0.unsqueeze(1)
+    w = 1.0 / (d0.norm(dim=-1, keepdim=True) ** 2 + 1e-12)
+    w = w / w.sum(1, keepdim=True)
+    B = torch.einsum("nkc,nki,nkj->nij", w, d0, d0)
+    B = B + 1e-10 * torch.eye(3, device=x0.device)
+    return idx, w, torch.linalg.inv(B)
+
+
+def grad_from_points(x0, du, nb):
+    """입자 이웃의 최소제곱으로 변위기울기 ∇Δu [N,3,3] 를 뽑는다.
+
+    격자 왕복(P2G -> G2P)으로 뽑으면 실측으로 변형의 95~97% 가 날아간다
+    (|(I+G)-J| / |J-I| 중앙 0.95). 질량가중 평균이 국소 기울기를 평탄화하기
+    때문이다. 탄성항은 이 함수로 만든 기울기를 써야 실제 변형을 본다.
+    """
+    idx, w, Bi = nb
+    d0 = x0[idx] - x0.unsqueeze(1)
+    dd = du[idx] - du.unsqueeze(1)
+    A = torch.einsum("nkc,nki,nkj->nij", w, dd, d0)
+    return A @ Bi
+
+
+def grid_ip_pts(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
+                g=None, norm=None, free=None, nb=None):
+    """증분 포텐셜. 관성·중력은 격자에서, **탄성은 입자 이웃 기울기**로 잰다.
+
+    grid_ip_energy 는 탄성도 격자 왕복으로 잰다 -- 그러면 변형기울기가 뭉개져
+    탄성항이 사실상 정보를 잃는다 (F=I 로 바꿔도 최적해가 거의 같았다). 여기서는
+    ∇Δu 를 입자 이웃 최소제곱으로 직접 뽑아 그 경로를 피한다.
+    """
+    m_I, du_I, v_I, info, frac = p2g_increment(
+        x, du, vel, mass, n_grid, grid_lim, free=free)
+    w_free = torch.ones_like(m_I) if frac is None else (frac > 0.5).to(m_I.dtype)
+    d = du_I - h * v_I
+    e_in = (0.5 * w_free * m_I / (h * h) * (d * d).sum(-1)).sum()
+    e_g = torch.zeros((), device=x.device, dtype=x.dtype)
+    if g is not None:
+        e_g = -(w_free * m_I * (du_I * g).sum(-1)).sum()
+    if nb is None:
+        nb = jac_neighbors(x.detach())
+    gu = grad_from_points(x, du, nb)
+    F_tr = (torch.eye(3, device=x.device, dtype=F.dtype) + gu) @ F
+    psi, dlog = psi_of(F_tr, cfg, h)
+    e_el = (vol * psi).sum()
+    e_bc = bc_energy(x, du, mass, cfg, h, grid_lim, n_grid)
+    tot = e_in + e_el + e_g + e_bc
+    if norm is not None:
+        tot = tot / norm
+    return tot, dlog, F_tr, (float(e_in), float(e_el), float(e_g), float(e_bc))
 
 
 def grid_ip_sub(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
