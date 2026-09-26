@@ -319,8 +319,9 @@ class StatePool:
         if st["age"] == 1:
             self.fresh_res.append(float(res))
         st["elapsed"] += 1
-        # 목표에 닿았거나 상한 프레임을 다 썼으면 새 제어 입자·목표점으로 이어 간다.
-        # 도달 시간은 거리에 따라 다르므로 프레임 수가 아니라 도달로 판정한다.
+        # **목표에 닿았을 때** 새 제어 입자·목표점을 뽑는다. 고정 시간이 지나서
+        # 뽑는 것이 아니다 -- 도달 시간은 거리에 따라 다르다. frames 는 끌어도
+        # 도달하지 못하는 경우(물체가 딸려오지 않거나 발산) 빠져나오는 상한이다.
         if (st["elapsed"] >= self.frames
                 or st["plan"].arrived(st["x"])):
             st["plan"] = HandlePlan.sample(st["x"], self.n_ctrl, self.radius,
