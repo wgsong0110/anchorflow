@@ -2,6 +2,7 @@
 # 벤치용 PG 기준 궤적. 시나리오 파일로 구동하고 프레임별 상태를 덤프한다.
 # 사용: bench_pg.sh <조합> <시드범위> <GPU>   (예: bench_pg.sh mic_clayC 0-1 3)
 W=${AF_WORK:-/home/dkta/work}
+BCFG=${BCFG:-bench_cfg}
 C=$1; SEEDS=$2; GPU=$3
 SH_=${C%%_*}
 export CUDA_VISIBLE_DEVICES=$GPU
@@ -30,7 +31,7 @@ for sd in $(seq $lo $hi); do
   T0=$SECONDS
   AF_PGFILL_NPY=$W/pgfill_${SH_}.npy python -u $W/anchorflow/exe/gen_handle_trajs.py \
     --pg $W/PG_pgtraj --model $W/pgmodel/${SH_}_whitebg-trained \
-    --config $W/bench_cfg/${C}.json --work $W/wbench_${C}_$GPU \
+    --config $W/$BCFG/${C}.json --work $W/wbench_${C}_$GPU \
     --out $W/bench_pg --tag ${C} --pairs ${C}:${sd} --n_pts 20000 \
     >> $W/bench_pg_${C}.log 2>&1
   DT=$((SECONDS - T0))
