@@ -170,6 +170,20 @@ ap.add_argument("--phys_noise", type=float, default=0.0,
 ap.add_argument("--resume_fresh", action="store_true",
                 help="가중치만 이어받고 스텝·옵티마이저·난수는 새로 시작한다. "
                      "다른 단계로 넘어갈 때 쓴다 (예: 증류 -> RL)")
+ap.add_argument("--pool", action="store_true",
+                help="교사 궤적 없이 **상태 풀**로 학습한다. 씬의 정지 상태에서 "
+                     "출발해 손잡이 계획을 직접 뽑고, 한 스텝씩 굴린 상태를 풀에 "
+                     "담아 둔다. 누적 물리잔차가 문턱을 넘은 상태는 버린다")
+ap.add_argument("--pool_size", type=int, default=1024)
+ap.add_argument("--pool_fresh", type=float, default=0.25,
+                help="배치에서 새 초기 상태로 채우는 비율")
+ap.add_argument("--pool_thresh", type=float, default=3.0,
+                help="폐기 문턱 = 신규 상태 잔차 중앙값의 이 배수")
+ap.add_argument("--pool_frames", type=int, default=60, help="계획 한 회의 길이")
+ap.add_argument("--pool_combos", default="",
+                help="쉼표로 구분한 형상_물성 (비우면 mic_clayC 하나)")
+ap.add_argument("--pool_loss", default="residual",
+                choices=("residual", "energy"))
 ap.add_argument("--rl", action="store_true",
                 help="액터-크리틱으로 학습한다. 보상은 -(i-PG 손실), 미래는 가치함수 "
                      "V 가 대신 보므로 롤아웃을 거슬러 미분하지 않는다 (BPTT 길이 1). "
@@ -1641,6 +1655,26 @@ if a.phys_probe:
               f"중력 {parts[2]:.3e})  잔차 {100*_fr:.4f}%", flush=True)
     raise SystemExit(0)
 
+POOL = None
+SCENE_DS = []
+if a.pool:
+    from anchorflow.scene_pool import StatePool, load_scenes
+    _combos = ([c for c in a.pool_combos.split(",") if c] or ["mic_clayC"])
+    _sc = load_scenes("/home/dkta/work", "/home/dkta/work/wmats", _combos,
+                      a.n_pts, dev, seed=a.seed)
+    if not _sc:
+        raise SystemExit("풀에 넣을 씬이 없다")
+    POOL = StatePool(_sc, a.pool_size, a.n_ctrl, 0.15, dev, gen,
+                     frames=a.pool_frames, thresh_mult=a.pool_thresh)
+    for _tag, _s in _sc:
+        SCENE_DS.append(dict(x=_s["x0"].unsqueeze(0), cfg=_s["cfg"],
+                             sel=torch.arange(_s["x0"].shape[0], device=dev),
+                             n_full=_s["x0"].shape[0], tag=_tag,
+                             _mass=_s["mass"], _ext=_s["ext"],
+                             ctrl_R=torch.tensor([0.15], device=dev)))
+    print(f"[풀] 씬 {len(_sc)} 개, 크기 {a.pool_size}, 신규 비율 "
+          f"{a.pool_fresh:.2f}, 문턱 x{a.pool_thresh}", flush=True)
+
 TBW = None
 if a.tb:
     from torch.utils.tensorboard import SummaryWriter
@@ -1657,6 +1691,86 @@ for it in pbar:
     opt.zero_grad(set_to_none=True)
     lx = lJ = la = ldm = ldet = 0.0
     still = arel = dmean = 0.0
+    if a.pool:
+        # ---- 상태 풀 한 스텝 ----------------------------------------------
+        # 교사 궤적을 읽지 않는다. 풀에서 일부, 새 초기 상태 일부로 배치를
+        # 짜고 한 스텝 전진시킨 뒤 그 물리 잔차로 갱신한다. 상태는 최근 창의
+        # 평균 잔차가 문턱을 넘으면 버린다.
+        global MASS, EXT, N_FULL
+        n_fresh = max(1, int(round(a.batch * a.pool_fresh)))
+        picks = POOL.sample(a.batch - n_fresh, n_fresh)
+        for kind, slot in picks:
+            st = POOL.items[slot] if kind == "pool" else POOL.fresh()
+            tag, sc = POOL.scenes[st["si"]]
+            ds = SCENE_DS[st["si"]]
+            x, v, F = st["x"], st["v"], st["F"]
+            n_p = x.shape[0]
+            gsel = torch.arange(n_p, device=dev)
+            MASS, EXT, N_FULL = sc["mass"], sc["ext"], n_p
+            plan = st["plan"]
+            ds["ctrl_id"] = plan.idx.reshape(1, -1)
+            ds["ctrl_vel"] = plan.velocity(x, st["elapsed"]).reshape(1, -1, 3)
+            ds.pop("_ca20", None); ds.pop("_ca", None); ds.pop("_ca_key", None)
+            p_st = (st["p"] if st["p"] is not None else
+                    (x[fps(x, a.n_anchors, a.seed)] if a.arch == "attn"
+                     else x[torch.arange(0, n_p,
+                                         max(1, n_p // a.n_anchors),
+                                         device=dev)[:a.n_anchors]]))
+            x2, p2, v2, _J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
+                ds, 0, gsel, p_st, x, v, need_J=False)
+            fm = free_mask(ds, n_p, dev, gsel, x, 0) if a.control else None
+            cfg = sc["cfg"]
+            vol = sc["mass"] / float(cfg["density"])
+            gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
+            ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
+            nrm = float(sc["mass"].sum()) * (sc["ext"] ** 2) / (FRAME_DT ** 2)
+            E_ip, dlog, F_tr, _pt = phys_resid.grid_ip_energy(
+                x, x2 - x, v, F, sc["mass"], vol, cfg, FRAME_DT, ng_, gl_,
+                g=gv, norm=nrm, free=fm)
+            if a.pool_loss == "residual":
+                _gx, = torch.autograd.grad(E_ip * nrm, x2, create_graph=True)
+                _rr = _gx * (FRAME_DT ** 2) / sc["mass"].unsqueeze(-1
+                                                                   ).clamp_min(1e-20) / sc["ext"]
+                loss_p = ((_rr[fm] if fm is not None else _rr) ** 2
+                          ).sum(-1).mean()
+            else:
+                loss_p = E_ip
+            if bool(torch.isfinite(loss_p)):
+                (loss_p / a.batch).backward()
+            res = float(loss_p)
+            lx = lx + res / a.batch
+            with torch.no_grad():
+                st["x"] = x2.detach()
+                st["v"] = v2.detach()
+                st["F"] = phys_resid.plastic_step(F_tr, dlog).detach()
+                st["p"] = p2.detach() if torch.is_tensor(p2) else None
+            POOL.put_back(slot if kind == "pool" else None, st, res)
+        still = POOL.n_drop / max(it + 1, 1)
+        arel = float(np.mean([len(q["hist"]) for q in POOL.items]))
+        gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+        opt.step()
+        if it % 20 == 0:
+            pbar.set_postfix(잔차=f"{lx:.3e}", 폐기=f"{POOL.n_drop}",
+                             평균나이=f"{arel:.1f}", gn=f"{float(gn):.1e}")
+            if TBW is not None:
+                TBW.add_scalar("풀/잔차", lx, it)
+                TBW.add_scalar("풀/폐기누적", POOL.n_drop, it)
+                TBW.add_scalar("풀/평균나이", arel, it)
+                TBW.add_scalar("풀/문턱", POOL.threshold(), it)
+        if a.val_every and (it + 1) % a.val_every == 0:
+            _v, _vo = quick_val()
+            if TBW is not None:
+                TBW.add_scalar("검증/비", _v, it)
+            if _v < _best:
+                _best = _v
+                save_ck("best", it + 1)
+                print(f"  [검증 {it+1}] 비 {_v:.4f} -- best 갱신", flush=True)
+            else:
+                print(f"  [검증 {it+1}] 비 {_v:.4f} (best {_best:.4f})",
+                      flush=True)
+        if (it + 1) % a.save_every == 0 or it == a.iters - 1:
+            save_ck("last", it + 1)
+        continue
     for _ in range(a.batch):
         tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
         if os.environ.get("AF_FIXWIN"):           # 한 창만 반복 -- 과적합 진단용
@@ -1675,6 +1789,8 @@ for it in pbar:
             t0 = 5
             gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
                                 device=dev)[:a.n_pts]
+        if a.pool:
+            continue                       # 풀 모드는 아래에서 따로 처리한다
         if a.rl:
             wa_, wc_, nst_, wcost_ = rl_episode(d, t0, a.rl_steps, gsel, gen)
             _tot = (wa_ + wc_) / a.batch
