@@ -23,6 +23,18 @@ for sd in $(seq $lo $hi); do
     --config $W/bench_cfg/${C}.json --work $W/wbench_${C}_$GPU \
     --out $W/bench_pg --tag ${C} --pairs ${C}:${sd} --n_pts 20000 \
     >> $W/bench_pg_${C}.log 2>&1
-  echo "${C} s${S} $((SECONDS - T0)) s" >> $W/bench_pg_time.log
+  DT=$((SECONDS - T0))
+  echo "${C} s${S} $DT s" >> $W/bench_pg_time.log
+  # 덤프에 벽시계와 FPS 를 박아 넣는다 (지표 스크립트가 여기서 읽는다)
+  PYTHONPATH=$W/anchorflow/lib python - "$W/bench_pg/${C}_s${S}.pt" "$DT" <<'PY' >> $W/bench_pg_${C}.log 2>&1
+import sys, torch
+p, dt = sys.argv[1], float(sys.argv[2])
+d = torch.load(p, map_location="cpu", weights_only=False)
+n = int(d["x"].shape[0]) - 1
+d["wall_s"] = dt
+d["fps"] = n / max(dt, 1e-9)
+torch.save(d, p)
+print(f"[시간] {p} {dt:.1f}s {n / max(dt, 1e-9):.3f} FPS")
+PY
 done
 echo "BENCH_PG_DONE $C $SEEDS" >> $W/bench_pg_progress.log
