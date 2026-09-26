@@ -1707,8 +1707,13 @@ for it in pbar:
             gsel = torch.arange(n_p, device=dev)
             MASS, EXT, N_FULL = sc["mass"], sc["ext"], n_p
             plan = st["plan"]
+            _vcmd = plan.velocity(x, st["elapsed"])            # [K,3]
             ds["ctrl_id"] = plan.idx.reshape(1, -1)
-            ds["ctrl_vel"] = plan.velocity(x, st["elapsed"]).reshape(1, -1, 3)
+            ds["ctrl_vel"] = _vcmd.reshape(1, -1, 3)
+            # 손잡이 중심과 다음 프레임 위치. 이게 없으면 손잡이 특징이 통째로
+            # 0 으로 들어가 학생이 무엇을 잡고 어디로 끄는지 모르게 된다.
+            _cc = x[plan.idx]
+            ds["ctrl_pos"] = torch.stack([_cc, _cc + FRAME_DT * _vcmd], 0)
             ds.pop("_ca20", None); ds.pop("_ca", None); ds.pop("_ca_key", None)
             p_st = (st["p"] if st["p"] is not None else
                     (x[fps(x, a.n_anchors, a.seed)] if a.arch == "attn"
