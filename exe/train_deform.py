@@ -193,6 +193,9 @@ ap.add_argument("--pool_thresh", type=float, default=0.01,
 ap.add_argument("--pool_frames", type=int, default=60, help="계획 한 회의 길이")
 ap.add_argument("--pool_combos", default="",
                 help="쉼표로 구분한 형상_물성 (비우면 mic_clayC 하나)")
+ap.add_argument("--pool_keep", type=float, default=0.0,
+                help="누적 잔차가 문턱을 넘어도 이 확률로는 버리지 않고 "
+                     "전진을 취소해 상태를 그대로 풀에 남긴다")
 ap.add_argument("--pool_whiten", action="store_true",
                 help="손실을 이동 RMS 로 나눠 스케일을 고정한다 (RL 의 보상 "
                      "표준화와 같은 취지). 최소점은 그대로이고 기울기 크기만 "
@@ -1691,7 +1694,8 @@ SCENE_DS = []
 if a.pool:
     from anchorflow.scene_pool import StatePool, load_scenes
     _combos = ([c for c in a.pool_combos.split(",") if c] or ["mic_clayC"])
-    _sc = load_scenes("/home/dkta/work", "/home/dkta/work/wmats", _combos,
+    _W = os.environ.get("AF_WORK", "/home/dkta/work")
+    _sc = load_scenes(_W, os.path.join(_W, "wmats"), _combos,
                       a.n_pts, dev, seed=a.seed)
     if not _sc:
         raise SystemExit("풀에 넣을 씬이 없다")
@@ -1703,7 +1707,7 @@ if a.pool:
     POOL = StatePool(_sc, a.pool_size, a.n_ctrl, _R, dev, gen,
                      frames=a.pool_frames, thresh=a.pool_thresh,
                      domain=_gl0, margin=_R + 0.15,
-                     start_mid=a.pool_start_mid)
+                     start_mid=a.pool_start_mid, keep_prob=a.pool_keep)
     for _tag, _s in _sc:
         SCENE_DS.append(dict(x=_s["x0"].unsqueeze(0), cfg=_s["cfg"],
                              sel=torch.arange(_s["x0"].shape[0], device=dev),
@@ -1810,12 +1814,18 @@ for it in pbar:
                 _ghi = _glo + _ghh * _gn3.to(x2.dtype)
                 if bool(((x2 < _glo) | (x2 > _ghi)).any()):
                     res = float("inf")        # 영역을 벗어난 상태는 버린다
+            # 문턱을 넘었을 때 되돌릴 **전진 전** 사본. 이번 스텝을 없던 일로
+            # 하려면 프레임 색인과 잔차 이력까지 그대로여야 한다.
+            _prev = (dict(si=st["si"], x=x, v=v, F=F, p=st["p"], plan=plan,
+                          elapsed=st["elapsed"], hist=list(st["hist"]),
+                          age=st["age"]) if a.pool_keep > 0 else None)
             with torch.no_grad():
                 st["x"] = x2.detach()
                 st["v"] = v2.detach()
                 st["F"] = phys_resid.plastic_step(F_tr, dlog).detach()
                 st["p"] = p2.detach() if torch.is_tensor(p2) else None
-            POOL.put_back(slot if kind == "pool" else None, st, res)
+            POOL.put_back(slot if kind == "pool" else None, st, res,
+                          prev=_prev)
         # 폐기율은 **최근 100 반복에서 배치 대비 몇 %가 죽었는가** 로 둔다.
         # 누적 수를 전체 반복으로 나누면 추세가 안 보이고 값도 오해를 부른다.
         _PL_DROP.append(POOL.n_drop)
@@ -1846,6 +1856,8 @@ for it in pbar:
                 TBW.add_scalar("학습/잔차", lres, it)
                 TBW.add_scalar("풀/폐기누적", POOL.n_drop, it)
                 TBW.add_scalar("풀/폐기율", still, it)
+                if a.pool_keep > 0:
+                    TBW.add_scalar("풀/유예누적", POOL.n_keep, it)
                 TBW.add_scalar("풀/NaN배치", getattr(POOL, "n_nan", 0), it)
                 TBW.add_scalar("풀/채움", len(_alive) / POOL.size, it)
                 # 나이·프레임·누적잔차의 분포

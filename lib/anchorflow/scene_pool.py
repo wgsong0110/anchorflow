@@ -142,7 +142,7 @@ class StatePool:
 
     def __init__(self, scenes, size, n_ctrl, radius, dev, gen,
                  frames=60, thresh=0.05, window=30,
-                 domain=2.0, margin=0.15, start_mid=False):
+                 domain=2.0, margin=0.15, start_mid=False, keep_prob=0.0):
         self.scenes = scenes
         self.size = size
         self.n_ctrl = n_ctrl
@@ -160,6 +160,10 @@ class StatePool:
         # 관성항이 "가만히 있어라" 를 원하고 탄성항이 0 이라 아무것도 안 하는 것이
         # 거의 최적이 되어 기울기가 사라진다.
         self.start_mid = start_mid
+        # 문턱을 넘어도 이 확률로는 버리지 않고 **그대로 둔다** (전진도 취소).
+        # 매번 버리면 풀이 신규로만 차서 학생이 같은 상태를 이어 볼 기회가 없다.
+        self.keep_prob = keep_prob
+        self.n_keep = 0
         self.domain = domain            # 시뮬 영역 [0, domain]^3
         self.margin = margin            # 목표점은 이만큼 안쪽에서 뽑는다
         self.fresh_res = []                 # 신규 상태 잔차 (중앙값 기준용)
@@ -203,8 +207,12 @@ class StatePool:
         picks += [("fresh", None)] * n_fresh
         return picks
 
-    def put_back(self, slot, st, res):
-        """한 스텝 진행한 상태를 되돌려 놓는다. 문턱을 넘으면 버린다."""
+    def put_back(self, slot, st, res, prev=None):
+        """한 스텝 진행한 상태를 되돌려 놓는다. 문턱을 넘으면 버린다.
+
+        prev 가 있으면 (전진 전 상태) 문턱을 넘었을 때 keep_prob 확률로 그
+        상태로 되돌려 풀에 그대로 남긴다 -- 이번 스텝을 없던 일로 한다.
+        """
         st["hist"].append(float(res))
         if len(st["hist"]) > self.window:
             st["hist"] = st["hist"][-self.window:]
@@ -225,6 +233,17 @@ class StatePool:
         bad = (not bool(torch.isfinite(st["x"]).all())) or \
             (not np.isfinite(res)) or mean_res > self.thresh
         if bad:
+            keep = (prev is not None and self.keep_prob > 0
+                    and float(torch.rand(1, generator=self.gen,
+                                         device=self.dev)) < self.keep_prob
+                    and bool(torch.isfinite(prev["x"]).all()))
+            if keep:
+                self.n_keep += 1
+                if slot is not None:
+                    self.items[slot] = prev    # 전진을 취소하고 그대로 둔다
+                elif len(self.items) < self.size:
+                    self.items.append(prev)    # 신규였으면 그대로 풀에 넣는다
+                return True
             self.n_drop += 1
             if slot is not None:
                 self.items[slot] = None        # 자리를 비워 둔다 (메우지 않는다)
