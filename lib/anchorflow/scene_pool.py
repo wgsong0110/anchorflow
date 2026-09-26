@@ -160,30 +160,6 @@ class HandlePlan:
                           vmax=float(d.get("vmax", 0.6)),
                           tol=float(d.get("tol", 5e-3)))
 
-    def velocity(self, x_now, elapsed):
-        """[K,3] 이번 프레임의 명령 속도."""
-        vec = self.target - x_now[self.idx]
-        dist = vec.norm(dim=-1, keepdim=True).clamp_min(1e-9)
-        dirv = vec / dist
-        t = float(elapsed) * self.dt
-        cruise = self.t_tot - 2.0 * self.t_acc
-        vpeak = dist.squeeze(-1) / max(cruise + self.t_acc, 1e-6)
-        if t < self.t_acc:
-            s = vpeak * (t / self.t_acc)
-        elif t < self.t_acc + cruise:
-            s = vpeak
-        else:
-            r = max(0.0, (self.t_tot - t) / self.t_acc)
-            s = vpeak * min(1.0, r)
-        return dirv * s.unsqueeze(-1)
-
-    def weights(self, x_now):
-        """[N,K] 감쇠 가중치 (1-q^2)^2. 교사와 같은 규약."""
-        c = x_now[self.idx]
-        q = ((x_now.unsqueeze(1) - c.unsqueeze(0)).norm(dim=-1)
-             / max(self.radius, 1e-6)).clamp(0, 1)
-        return (1.0 - q * q) ** 2
-
 
 class StatePool:
     """살아 있는 상태들의 집합. 누적 잔차가 문턱을 넘으면 버린다."""
