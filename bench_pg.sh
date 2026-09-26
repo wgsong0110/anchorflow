@@ -15,8 +15,18 @@ mkdir -p $W/bench_pg
 lo=${SEEDS%%-*}; hi=${SEEDS##*-}
 for sd in $(seq $lo $hi); do
   S=$(printf "%02d" $sd)
-  [ -f $W/bench_pg/${C}_s${S}.pt ] && { echo "[건너뜀] ${C}_s${S}"; continue; }
+  if [ -f $W/bench_pg/${C}_s${S}.pt ] && [ -z "${RCAMS:-}" ]; then echo "[건너뜀] ${C}_s${S}"; continue; fi
+  [ -n "${RCAMS:-}" ] && [ -d $W/bench_render/${C}_s${S}/cam_00003 ] && { echo "[렌더 있음] ${C}_s${S}"; continue; }
+  [ -n "${RCAMS:-}" ] && rm -f $W/bench_pg/${C}_s${S}.pt
   export AF_H_SCEN=$W/bench/scen_${C}_s${S}.npz
+  # 렌더 패스: 카메라 여러 대의 깨끗한 프레임을 시뮬 중에 저장한다 (GausSim
+  # 학습 데이터 + 시각품질 기준 영상). RCAMS 를 비우면 렌더하지 않는다.
+  if [ -n "${RCAMS:-}" ]; then
+    export AF_R_OUT=$W/bench_render/${C}_s${S} AF_R_CAMS="$RCAMS"            AF_R_EVERY=${REVERY:-8}
+    mkdir -p $AF_R_OUT
+  else
+    unset AF_R_OUT
+  fi
   T0=$SECONDS
   AF_PGFILL_NPY=$W/pgfill_${SH_}.npy python -u $W/anchorflow/exe/gen_handle_trajs.py \
     --pg $W/PG_pgtraj --model $W/pgmodel/${SH_}_whitebg-trained \
