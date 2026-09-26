@@ -141,7 +141,7 @@ class StatePool:
     """살아 있는 상태들의 집합. 누적 잔차가 문턱을 넘으면 버린다."""
 
     def __init__(self, scenes, size, n_ctrl, radius, dev, gen,
-                 frames=60, thresh_mult=3.0, window=30, min_age=5,
+                 frames=60, thresh=0.05, window=30,
                  domain=2.0, margin=0.15):
         self.scenes = scenes
         self.size = size
@@ -150,13 +150,12 @@ class StatePool:
         self.dev = dev
         self.gen = gen
         self.frames = frames
-        self.thresh_mult = thresh_mult
+        # 문턱은 **고정**이다. 판정에 쓰는 양이 정류 잔차를 길이로 환산해
+        # 물체 크기로 나눈 무차원 수라, 물성·형상이 달라도 같은 자로 잰다.
+        self.thresh = thresh
         # 누적은 **최근 window 프레임**만 본다. 전체 평균으로 두면 초반 잔차를
         # 계속 끌고 다녀, 물리적으로 멀쩡한데도 오래 살았다는 이유로 버려진다.
         self.window = window
-        # 갓 만든 상태는 몇 스텝 살려 둔다 -- 첫 스텝 잔차만 보고 버리면
-        # 풀이 늘 신규로만 차서 on-policy 상태를 못 본다
-        self.min_age = min_age
         self.domain = domain            # 시뮬 영역 [0, domain]^3
         self.margin = margin            # 목표점은 이만큼 안쪽에서 뽑는다
         self.fresh_res = []                 # 신규 상태 잔차 (중앙값 기준용)
@@ -180,9 +179,7 @@ class StatePool:
                     p=None, plan=plan, elapsed=0, hist=[], age=0)
 
     def threshold(self):
-        if len(self.fresh_res) < 16:
-            return float("inf")
-        return self.thresh_mult * float(np.median(self.fresh_res[-256:]))
+        return self.thresh
 
     def sample(self, n_pool, n_fresh):
         """배치 구성: 풀에서 n_pool 개, 새 상태 n_fresh 개."""
@@ -214,8 +211,7 @@ class StatePool:
             st["elapsed"] = 0
             self.n_replan += 1
         bad = (not bool(torch.isfinite(st["x"]).all())) or \
-            (not np.isfinite(res)) or \
-            (st["age"] > self.min_age and mean_res > self.threshold())
+            (not np.isfinite(res)) or mean_res > self.thresh
         if bad:
             self.n_drop += 1
             if slot is not None:

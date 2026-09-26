@@ -181,8 +181,10 @@ ap.add_argument("--pool_grid", default="domain", choices=("domain", "fit"),
                      "fit 이면 예전처럼 매 스텝 물체에 맞춰 새로 잡는다")
 ap.add_argument("--pool_fresh", type=float, default=0.25,
                 help="배치에서 새 초기 상태로 채우는 비율")
-ap.add_argument("--pool_thresh", type=float, default=3.0,
-                help="폐기 문턱 = 신규 상태 잔차 중앙값의 이 배수")
+ap.add_argument("--pool_thresh", type=float, default=0.05,
+                help="폐기 문턱 (고정). 정류 잔차를 길이로 환산해 물체 크기로 "
+                     "나눈 무차원 값이라 물성·형상이 달라도 같은 자다. 0.05 면 "
+                     "'한 스텝에 물체 크기의 5%% 만큼 물리가 안 맞는 상태'다")
 ap.add_argument("--pool_frames", type=int, default=60, help="계획 한 회의 길이")
 ap.add_argument("--pool_combos", default="",
                 help="쉼표로 구분한 형상_물성 (비우면 mic_clayC 하나)")
@@ -1684,7 +1686,7 @@ if a.pool:
     # 목표에 닿는 순간 무리의 바깥쪽 입자가 경계에 걸리고, 딸려 오는 부분까지
     # 생각하면 그 자리에서 영역을 벗어난다.
     POOL = StatePool(_sc, a.pool_size, a.n_ctrl, _R, dev, gen,
-                     frames=a.pool_frames, thresh_mult=a.pool_thresh,
+                     frames=a.pool_frames, thresh=a.pool_thresh,
                      domain=_gl0, margin=_R + 0.15)
     for _tag, _s in _sc:
         SCENE_DS.append(dict(x=_s["x0"].unsqueeze(0), cfg=_s["cfg"],
@@ -1724,6 +1726,7 @@ for it in pbar:
         # 짜고 한 스텝 전진시킨 뒤 그 물리 잔차로 갱신한다. 상태는 최근 창의
         # 평균 잔차가 문턱을 넘으면 버린다.
         n_fresh = max(1, int(round(a.batch * a.pool_fresh)))
+        lres = 0.0
         picks = POOL.sample(a.batch - n_fresh, n_fresh)
         for kind, slot in picks:
             st = POOL.items[slot] if kind == "pool" else POOL.fresh()
@@ -1782,8 +1785,20 @@ for it in pbar:
                 print(f"[풀 NaN] 씬 {tag} 손실이 비유한 "
                       f"(x2 유한 {bool(torch.isfinite(x2).all())}, "
                       f"E 유한 {bool(torch.isfinite(E_ip))})", flush=True)
-            res = float(loss_p)
-            lx = lx + res / a.batch
+            lx = lx + float(loss_p) / a.batch
+            # 폐기 판정은 **길이 단위 잔차**로 한다. 손실(E)은 물성마다 크기가
+            # 달라 고정 문턱을 쓸 수 없지만, 잔차를 질량으로 나눠 길이로 만들고
+            # 물체 크기로 나누면 조합이 달라도 같은 자가 된다.
+            with torch.enable_grad():
+                _x2d = x2.detach().requires_grad_(True)
+                _Ed, _, _, _ = phys_resid.grid_ip_energy(
+                    x, _x2d - x, v, F, sc["mass"], vol, cfg, FRAME_DT,
+                    ng_, gl_, g=gv, norm=1.0, free=fm)
+                _gd, = torch.autograd.grad(_Ed, _x2d)
+            _rl = (_gd.norm(dim=-1) * (FRAME_DT ** 2)
+                   / sc["mass"].clamp_min(1e-20) / sc["ext"])
+            res = float((_rl[fm] if fm is not None else _rl).mean())
+            lres = lres + res / a.batch
             if FIXED_GRID is not None:
                 _glo, _ghh, _gn3 = FIXED_GRID
                 _ghi = _glo + _ghh * _gn3.to(x2.dtype)
@@ -1809,10 +1824,12 @@ for it in pbar:
             opt.zero_grad(set_to_none=True)
             POOL.n_nan = getattr(POOL, "n_nan", 0) + 1
         if it % 20 == 0:
-            pbar.set_postfix(잔차=f"{lx:.3e}", 폐기=f"{POOL.n_drop}",
+            pbar.set_postfix(E=f"{lx:.3e}", 잔차=f"{lres:.3e}",
+                             폐기=f"{POOL.n_drop}",
                              나이=f"{arel:.1f}", gn=f"{float(gn):.1e}")
             if TBW is not None:
-                TBW.add_scalar("풀/잔차", lx, it)
+                TBW.add_scalar("학습/목적함수", lx, it)
+                TBW.add_scalar("학습/잔차", lres, it)
                 TBW.add_scalar("풀/폐기누적", POOL.n_drop, it)
                 TBW.add_scalar("풀/폐기율", still, it)
                 TBW.add_scalar("풀/재계획누적", POOL.n_replan, it)
