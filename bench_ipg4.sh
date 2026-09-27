@@ -12,6 +12,10 @@ export CUDA_VISIBLE_DEVICES=$GPU
 export PATH=${AF_CONDA:-/home/dkta/.conda/envs/af/bin}:$PATH
 export PYTHONIOENCODING=utf-8 PYTHONUTF8=1 LANG=C.UTF-8 LC_ALL=C.UTF-8
 export AF_IPG_NEWTON=1 AF_H_R=0.15
+# warp 커널 캐시를 세팅마다 분리한다. 같은 캐시를 여러 프로세스가 동시에 쓰면
+# 컴파일 중인 모듈을 서로 읽어 'Failed to find forward kernel' 로 죽는다.
+export WARP_CACHE_PATH=$W/.warpcache_$1
+mkdir -p $WARP_CACHE_PATH
 case $SET in
   orig)   NG=100; DTM=8;   ;;
   dtour)  NG=100; DTM=833; ;;
