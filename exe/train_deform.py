@@ -639,6 +639,26 @@ def grip_feat(d, t, p):
     return torch.cat([rel, nrm, mov, tan, gg], -1).reshape(A, -1)
 
 
+def with_ctrl(gsel, d, n_max=None):
+    """부분표본에 **손잡이가 붙든 입자를 반드시 포함**시킨다.
+
+    안 넣으면 그 입자가 표본에서 빠지고, ctrl_anchor 가 최근접 입자로 대체한다.
+    대체 입자는 손잡이 중심이 아니라 그 옆이라 감쇠 가중치가 1 보다 작고, 결국
+    손잡이가 명령만큼 끌지 못한다 (실측: 명령 0.041 인데 0.0036 만 움직였다).
+    """
+    if "ctrl_id" not in d:
+        return gsel
+    need = torch.unique(ctrl_anchor(d, None).reshape(-1))
+    out = torch.unique(torch.cat([gsel, need.to(gsel.device)]))
+    if n_max is not None and out.numel() > n_max:
+        # 넘치면 손잡이 입자는 남기고 나머지에서 줄인다
+        mask = torch.isin(out, need.to(out.device))
+        keep = out[mask]
+        rest = out[~mask][: max(n_max - int(mask.sum()), 0)]
+        out = torch.unique(torch.cat([keep, rest]))
+    return out
+
+
 def ctrl_anchor(d, gsel):
     """손잡이가 **붙들고 있는 입자**를 현재 부분표본 좌표계로 옮긴다 -> [T,K].
 
@@ -663,8 +683,10 @@ def ctrl_anchor(d, gsel):
             tt = idx[:, 0].clamp(max=P.shape[0] - 1)
             c = P[tt, idx[:, 1]]                          # [m,3]
             l20[miss] = torch.cdist(c, X0).argmin(1)
-        d["_ca20"] = l20.to(gsel.device)
+        d["_ca20"] = l20.to(gsel.device if gsel is not None else dev)
     l20 = d["_ca20"]
+    if gsel is None:
+        return l20                      # 2 만 좌표계 색인 그대로 (표본 구성용)
     n20 = d["x"].shape[1]
     # 색인은 반드시 범위 안에 있어야 한다 -- 넘으면 CUDA 가 비동기 assert 로
     # 죽어서 원인 지점을 못 찾는다 (전 조합 학습에서 겪었다).
@@ -1824,6 +1846,7 @@ if a.oracle_roll:
     _L = min(a.eval_len, _d["x"].shape[0] - _t0 - 1)
     _gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
                          device=dev)[:a.n_pts]
+    _gsel = with_ctrl(_gsel, _d, a.n_pts)      # 손잡이 입자를 반드시 포함
     _mass = traj_mass(_d)[_gsel] * (float(N_FULL) / _gsel.numel())
     _ext = _d.get("_ext", EXT)
     _cfg = _d["cfg"]
@@ -2229,10 +2252,11 @@ for it in pbar:
             t0 = int(torch.randint(1, hi, (1,), generator=gen, device=dev))
         gsel = torch.randperm(N_FULL, generator=gen,
                               device=dev)[:a.n_pts].sort().values
+        gsel = with_ctrl(gsel, d, a.n_pts)     # 손잡이 입자를 반드시 포함
         if a.out_var:
             # 프레임별 변수가 같은 격자를 가리켜야 하므로 부분표본을 고정한다
-            gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
-                                device=dev)[:a.n_pts]
+            gsel = with_ctrl(torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
+                                          device=dev)[:a.n_pts], d, a.n_pts)
         if os.environ.get("AF_FIXWIN"):
             t0 = 5
             gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
@@ -2435,6 +2459,7 @@ def emd(p_, q_, seed):
 
 
 gsel = torch.arange(min(a.n_pts, N_FULL), device=dev)
+gsel = with_ctrl(gsel, TR[0][1], a.n_pts)
 if a.out_var:
     # 프레임별 출력 변수는 학습 때의 격자를 가리킨다. 평가도 **같은 부분표본**을
     # 써야 격자 모양·원점이 같고 변수를 그대로 쓸 수 있다 (안 맞추면 색인 초과).
