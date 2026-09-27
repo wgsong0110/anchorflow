@@ -1939,9 +1939,10 @@ if a.oracle_roll:
                       flush=True)
             x, p, v = x2.detach(), p2.detach(), v2.detach()
         if _last:
-            print(f"  프레임 {i // _K + 1:2d}  오라클 {100 * e:.4f}%  정지 "
-                  f"{100 * st:.4f}%  비 {e / max(st, 1e-20):.3f}  E {_best:.4e}",
-                  flush=True)
+            _e, _st = errs[-1], stills[-1]
+            print(f"  프레임 {i // _K + 1:2d}  오라클 {100 * _e:.4f}%  정지 "
+                  f"{100 * _st:.4f}%  비 {_e / max(_st, 1e-20):.3f}  "
+                  f"E {_best:.4e}", flush=True)
     _DP_HOOK[0] = None
     import numpy as _np
     print(f"[오라클] {_L} 프레임 평균 {100 * _np.mean(errs):.3f}% "
