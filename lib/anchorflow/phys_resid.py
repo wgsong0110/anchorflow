@@ -582,11 +582,17 @@ def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
     # 손잡이가 절반 넘게 실린 노드는 Dirichlet 으로 보고 관성·중력에서 뺀다.
     # 그 노드의 규정된 변위는 탄성항의 ∇Δu 를 통해 이웃 잔차에 그대로 들어간다.
     w_free = torch.ones_like(m_I) if frac is None else (frac > 0.5).to(m_I.dtype)
-    d = du_I - h * v_I
+    # 중력은 **관성항의 목표에 미리 넣는다**: x̃ = x + h v + h² g.
+    # 예전에는 `-m g·Δu` 로 따로 뒀는데, 한 스텝만 풀 때는 기울기가 같아 무해해도
+    # 프레임을 K 서브스텝으로 나누면 각 구간이 자기 변위만 보게 되어 중력 일이
+    # 1/K 로 줄어든다 (실측: K=104 에서 한 프레임 누적이 100 배 작았다).
+    _gh = (h * h) * g if g is not None else 0.0
+    d = du_I - h * v_I - _gh
     e_in = (0.5 * w_free * m_I / (h * h) * (d * d).sum(-1)).sum()
     e_g = torch.zeros((), device=x.device, dtype=x.dtype)
     if g is not None:
-        e_g = -(w_free * m_I * (du_I * g).sum(-1)).sum()
+        # 보고용: 이 스텝에서 중력이 한 일 (기울기에는 이미 관성항으로 들어갔다)
+        e_g = -(w_free * m_I * (du_I * g).sum(-1)).sum().detach()
     gu = g2p_grad(x, du_I, info, n_grid)
     F_tr = (torch.eye(3, device=x.device, dtype=F.dtype) + gu) @ F
     psi, dlog = psi_of(F_tr, cfg, h)
