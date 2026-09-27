@@ -1907,11 +1907,10 @@ if a.oracle_roll:
                 _q.copy_(_b)
         if a.oracle_curve:
             _CURVES.append((i + 1, _curve))
-            _st0 = float((x_still - take(_d["x"][_t0 + i + 1], _gsel)
-                          ).norm(dim=-1).mean()) / _ext
             print(f"  [커브 {i + 1}] " + "  ".join(
                 f"{q[0]}:E{q[1]:.2e}/오차{100 * q[2]:.2f}%"
                 for q in _curve[::max(len(_curve) // 6, 1)]), flush=True)
+        with torch.no_grad():
             x2, p2, v2, _J, _dp, _ai, _dm, _cr, _fe, _Jd = step_once(
                 _d, _t0 + _fi, _gsel, p, x, v, need_J=False)
             fm = (free_mask(_d, x2.shape[0], dev, _gsel, x, _t0 + _fi)
