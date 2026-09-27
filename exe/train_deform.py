@@ -201,6 +201,11 @@ ap.add_argument("--ctrl_acc", type=float, default=2.4,
                      "빠르게 가까운 목표는 느리게 끌려 속도 영역이 뒤섞인다")
 ap.add_argument("--ctrl_vmax", type=float, default=0.6,
                 help="손잡이 최고속도")
+ap.add_argument("--out_var", action="store_true",
+                help="**학습 루프를 그대로 쓰고** 망 대신 프레임별 출력 변수를 "
+                     "최적화한다. 임의 프레임 샘플링·배치·손실 모두 학습과 같고, "
+                     "갱신 대상만 망 파라미터에서 그 프레임의 출력으로 바뀐다")
+ap.add_argument("--out_var_lr", type=float, default=3e-3)
 ap.add_argument("--oracle_roll", action="store_true",
                 help="망 출력 자리에 자유 변수를 넣고 매 프레임 물리손실을 "
                      "최소화하는 오라클 롤아웃. 학습·평가 코드를 그대로 쓴다")
@@ -892,6 +897,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     몇 번째 가우시안인지**. 매 스텝 다시 뽑으면 앵커의 정체가 바뀌므로, 앵커 손실이
     비교할 정답도 그때그때 그 가우시안들의 GT 변위로 바뀐다.
     """
+    _CUR_T[0] = int(t)          # 프레임별 출력 변수를 찾는 데 쓴다
     # 앙상블: 원점을 어긋나게 둔 격자 여러 개의 변위를 평균한다. 같은 가중치를
     # 쓰므로 파라미터는 늘지 않고, 격자 위치 때문에 생기는 편향만 씻긴다.
     if a.arch == "attn":
@@ -1021,6 +1027,9 @@ OPT_C = None
 _RL_MSG = []
 # 오라클 모드에서 망 출력을 바꿔 끼우는 훅 (None 이면 아무 일도 없다)
 _DP_HOOK = [None]
+_CUR_T = [0]              # step_once 가 남기는 현재 프레임
+_OV = {}                  # 프레임 -> [출력 변수들]
+_OV_OPT = {}              # 프레임 -> 그 변수의 옵티마이저
 _PL_MSG = []
 _PL_DROP = []
 _PL_RMS = [0.0]
@@ -1968,6 +1977,21 @@ if a.roll_scen:
           f"{(len(XS) - 1) / max(_wall, 1e-9):.2f} FPS", flush=True)
     raise SystemExit(0)
 
+if a.out_var:
+    # 학습 루프는 손대지 않는다. 훅만 걸어 그 프레임의 변수를 돌려주고,
+    # 첫 접촉에서 **그 시점 망 출력**으로 초기화한다.
+    def _ov_hook(out):
+        t = _CUR_T[0]
+        outs = out if isinstance(out, (tuple, list)) else (out,)
+        if t not in _OV:
+            _OV[t] = [o.detach().clone().requires_grad_(True) for o in outs]
+            _OV_OPT[t] = torch.optim.Adam(_OV[t], lr=a.out_var_lr)
+        return tuple(_OV[t]) if len(_OV[t]) > 1 else _OV[t][0]
+
+    _DP_HOOK[0] = _ov_hook
+    print("[출력변수] 학습 루프 그대로, 갱신 대상만 프레임별 출력으로 바꾼다",
+          flush=True)
+
 TBW = None
 if a.tb:
     from torch.utils.tensorboard import SummaryWriter
@@ -2147,6 +2171,10 @@ for it in pbar:
             t0 = int(torch.randint(1, hi, (1,), generator=gen, device=dev))
         gsel = torch.randperm(N_FULL, generator=gen,
                               device=dev)[:a.n_pts].sort().values
+        if a.out_var:
+            # 프레임별 변수가 같은 격자를 가리켜야 하므로 부분표본을 고정한다
+            gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
+                                device=dev)[:a.n_pts]
         if os.environ.get("AF_FIXWIN"):
             t0 = 5
             gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
@@ -2183,6 +2211,12 @@ for it in pbar:
                 wst = r_ring; wa = torch.zeros((), device=dev)
                 wrel = r_free; wd = torch.zeros((), device=dev); wdm = 0.0
             (loss_b / a.batch).backward()
+            if a.out_var:
+                # 이 표본이 본 프레임의 변수만 갱신한다 (망은 건드리지 않는다)
+                _t = _CUR_T[0]
+                if _t in _OV_OPT:
+                    _OV_OPT[_t].step()
+                    _OV_OPT[_t].zero_grad(set_to_none=True)
             lx = lx + float(wE) / a.batch
             still = still + r_ring / a.batch
             arel = arel + r_free / a.batch
@@ -2220,7 +2254,8 @@ for it in pbar:
               f"|g| 합 {sum(v for _, v in _g):.3e}", flush=True)
         for n, v in sorted(_g, key=lambda z: -z[1])[:6]:
             print(f"    {n:34} |g| {v:.3e}", flush=True)
-    opt.step()
+    if not a.out_var:
+        opt.step()
     if os.environ.get("AF_DIAG") and it < int(os.environ["AF_DIAG"]):
         _d = [(n, float((q.detach() - _prev[n]).norm())) for n, q in
               net.named_parameters()]
