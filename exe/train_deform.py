@@ -206,6 +206,8 @@ ap.add_argument("--oracle_roll", action="store_true",
                      "최소화하는 오라클 롤아웃. 학습·평가 코드를 그대로 쓴다")
 ap.add_argument("--oracle_steps", type=int, default=300)
 ap.add_argument("--oracle_lr", type=float, default=1e-3)
+ap.add_argument("--oracle_lr_shape", type=float, default=1e-2,
+                help="반경·두께(log) 변수의 학습률. 변위와 단위가 달라 따로 둔다")
 ap.add_argument("--oracle_out", default="")
 ap.add_argument("--roll_scen", default="",
                 help="벤치 시나리오 npz 로 학생을 굴려 프레임별 상태를 덤프한다. "
@@ -932,11 +934,12 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         with _tsec("신경망"):
             out = net(p, _in, FRAME_DT, grid_shape[0], cells=grid_shape[1],
                       mat=_mv)
-        dp = out[0]
         if _DP_HOOK[0] is not None:
-            # 오라클 모드: 망의 출력을 **자유 변수**로 갈아끼운다. 나머지 경로
-            # (격자 구성, 전달, 손잡이 적용, 상태 전진)는 학습과 글자 그대로 같다.
-            dp = _DP_HOOK[0](dp)
+            # 오라클 모드: 망의 **출력 전체**(변위·반경·두께)를 자유 변수로 갈아
+            # 끼운다. 나머지 경로(격자 구성, 전달, 손잡이 적용, 상태 전진)는
+            # 학습과 글자 그대로 같다.
+            out = _DP_HOOK[0](out)
+        dp = out[0]
         # 하드 clamp 는 쓰지 않는다 -- 크기를 자르면 목적함수가 보는 해와
         # 모델이 낼 수 있는 해가 어긋난다. NaN 만 씻어 낸다.
         dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0, neginf=0.0)
@@ -1816,16 +1819,25 @@ if a.oracle_roll:
     for i in range(_L):
         _hold = {}
 
-        def _hook(dp_net, _h=_hold):
+        def _hook(out, _h=_hold):
+            # 출력 전체를 변수로 둔다. 초기값은 **그 시점 망의 출력** 이라
+            # (학습 안 된 망이면 그 난수 출력) 학습이 출발하는 자리와 같다.
             if "z" not in _h:
-                _h["z"] = torch.zeros_like(dp_net).requires_grad_(True)
-            return _h["z"]
+                _h["z"] = [o.detach().clone().requires_grad_(True)
+                           for o in (out if isinstance(out, (tuple, list))
+                                     else (out,))]
+                _h["n"] = len(_h["z"])
+            return tuple(_h["z"]) if _h["n"] > 1 else _h["z"][0]
 
         _DP_HOOK[0] = _hook
-        # 변수 모양을 만들기 위한 첫 호출
+        # 변수 모양·초기값을 만들기 위한 첫 호출 (망 출력을 그대로 받는다)
         step_once(_d, _t0 + i, _gsel, p, x, v, need_J=False)
-        z = _hold["z"]
-        opt = torch.optim.Adam([z], lr=a.oracle_lr * float(_ext))
+        zs = _hold["z"]
+        z = zs[0]
+        opt = torch.optim.Adam(
+            [{"params": [zs[0]], "lr": a.oracle_lr * float(_ext)}]
+            + ([{"params": zs[1:], "lr": a.oracle_lr_shape}] if len(zs) > 1
+               else []))
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.oracle_steps)
         _best, _bz = float("inf"), z.detach().clone()
         for _ in range(a.oracle_steps):
@@ -1841,9 +1853,11 @@ if a.oracle_roll:
             opt.step()
             sch.step()
             if float(E) < _best:
-                _best, _bz = float(E), z.detach().clone()
+                _best = float(E)
+                _bz = [q.detach().clone() for q in zs]
         with torch.no_grad():
-            z.copy_(_bz)
+            for _q, _b in zip(zs, _bz):
+                _q.copy_(_b)
             x2, p2, v2, _J, _dp, _ai, _dm, _cr, _fe, _Jd = step_once(
                 _d, _t0 + i, _gsel, p, x, v, need_J=False)
             fm = (free_mask(_d, x2.shape[0], dev, _gsel, x, _t0 + i)
