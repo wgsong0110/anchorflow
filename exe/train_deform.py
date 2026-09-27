@@ -218,6 +218,10 @@ ap.add_argument("--oracle_lr", type=float, default=1e-3)
 ap.add_argument("--oracle_lr_shape", type=float, default=1e-2,
                 help="반경·두께(log) 변수의 학습률. 변위와 단위가 달라 따로 둔다")
 ap.add_argument("--oracle_out", default="")
+ap.add_argument("--oracle_sub", type=int, default=1,
+                help="프레임을 이만큼 서브스텝으로 나눠 **각 서브스텝마다** 출력을 "
+                     "최적화하고 상태를 전진시킨다. 증분 포텐셜은 dt 가 클수록 "
+                     "PG 와 벌어지므로 dt 를 i-PG 수준까지 내려 확인하는 데 쓴다")
 ap.add_argument("--oracle_curve", action="store_true",
                 help="스텝마다 목적함수와 교사오차를 기록해 러닝 커브를 낸다")
 ap.add_argument("--oracle_snap", default="",
@@ -753,7 +757,7 @@ def apply_control(d, t, gsel, x2, x=None):
     vc = d["ctrl_vel"].to(x.device, x.dtype)[min(tt, d["ctrl_vel"].shape[0] - 1)]
     # 여러 손잡이가 겹치면 가장 센 것을 따른다
     wm, ki = w.max(1)
-    d_cmd = FRAME_DT * vc[ki]                             # [N,3] 명령 변위
+    d_cmd = FRAME_DT * _CTRL_SCALE[0] * vc[ki]            # [N,3] 명령 변위
     wm = wm.unsqueeze(-1)
     return x + (1.0 - wm) * (x2 - x) + wm * d_cmd
 
@@ -1034,6 +1038,7 @@ _RL_MSG = []
 # 오라클 모드에서 망 출력을 바꿔 끼우는 훅 (None 이면 아무 일도 없다)
 _DP_HOOK = [None]
 _CUR_T = [0]              # step_once 가 남기는 현재 프레임
+_CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1/K)
 _OV = {}                  # 프레임 -> [출력 변수들]
 _OV_OPT = {}              # 프레임 -> 그 변수의 옵티마이저
 _PL_MSG = []
@@ -1840,7 +1845,14 @@ if a.oracle_roll:
     print(f"[오라클] {_tag} t0={_t0} {_L} 프레임, 입자 {_gsel.numel()}, "
           f"스텝 {a.oracle_steps}", flush=True)
     _wall = _time.time()
-    for i in range(_L):
+    _K = max(int(a.oracle_sub), 1)
+    _hs = FRAME_DT / _K
+    _CTRL_SCALE[0] = 1.0 / _K
+    if _K > 1:
+        print(f"[오라클] 프레임을 {_K} 서브스텝으로 나눈다 (h={_hs:.3e})",
+              flush=True)
+    for i in range(_L * _K):
+        _fi = i // _K                     # 이 서브스텝이 속한 프레임
         _hold = {}
 
         def _hook(out, _h=_hold):
@@ -1868,11 +1880,11 @@ if a.oracle_roll:
         for _s in range(a.oracle_steps):
             opt.zero_grad(set_to_none=True)
             x2, _p2, _v2, _J, _dp, _ai, _dm, _cr, _fe, _Jd = step_once(
-                _d, _t0 + i, _gsel, p, x, v, need_J=False)
-            fm = (free_mask(_d, x2.shape[0], dev, _gsel, x, _t0 + i)
+                _d, _t0 + _fi, _gsel, p, x, v, need_J=False)
+            fm = (free_mask(_d, x2.shape[0], dev, _gsel, x, _t0 + _fi)
                   if a.control else None)
             E, _dl, _Ft, _pt = phys_resid.grid_ip_energy(
-                x, x2 - x, v, F, _mass, _vol, _cfg, FRAME_DT, _ng, _gl,
+                x, x2 - x, v, F, _mass, _vol, _cfg, _hs, _ng, _gl,
                 g=_g, norm=_norm, free=fm)
             E.backward()
             opt.step()
@@ -1900,18 +1912,21 @@ if a.oracle_roll:
                 f"{q[0]}:E{q[1]:.2e}/오차{100 * q[2]:.2f}%"
                 for q in _curve[::max(len(_curve) // 6, 1)]), flush=True)
             x2, p2, v2, _J, _dp, _ai, _dm, _cr, _fe, _Jd = step_once(
-                _d, _t0 + i, _gsel, p, x, v, need_J=False)
-            fm = (free_mask(_d, x2.shape[0], dev, _gsel, x, _t0 + i)
+                _d, _t0 + _fi, _gsel, p, x, v, need_J=False)
+            fm = (free_mask(_d, x2.shape[0], dev, _gsel, x, _t0 + _fi)
                   if a.control else slice(None))
-            gt = take(_d["x"][_t0 + i + 1], _gsel)
+            gt = take(_d["x"][_t0 + _fi + 1], _gsel)
             e = float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / _ext
             st = float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / _ext
             _E2, dlog, F_tr, _pt = phys_resid.grid_ip_energy(
-                x, x2 - x, v, F, _mass, _vol, _cfg, FRAME_DT, _ng, _gl,
+                x, x2 - x, v, F, _mass, _vol, _cfg, _hs, _ng, _gl,
                 g=_g, norm=_norm, free=(fm if a.control else None))
             F = phys_resid.plastic_step(F_tr, dlog).detach()
-            PRED.append(x2.detach().cpu()); GT.append(gt.detach().cpu())
-            if (i + 1) in _SNAP:
+            _last = ((i + 1) % _K == 0)     # 프레임 끝에서만 기록·보고한다
+            if _last:
+                PRED.append(x2.detach().cpu()); GT.append(gt.detach().cpu())
+                errs.append(e); stills.append(st)
+            if _last and ((i + 1) // _K) in _SNAP:
                 # 진행 중 스냅샷: 그 시점까지의 롤아웃을 따로 저장해 렌더한다
                 _sp = (a.oracle_out or "oracle_roll.pt").replace(
                     ".pt", f"_f{i + 1:02d}.pt")
@@ -1922,10 +1937,11 @@ if a.oracle_roll:
                 print(f"  [스냅샷] {i + 1} 프레임 -> {_sp}  누적 비 "
                       f"{float(_np0.mean(errs)) / max(float(_np0.mean(stills)), 1e-12):.3f}",
                       flush=True)
-            errs.append(e); stills.append(st)
             x, p, v = x2.detach(), p2.detach(), v2.detach()
-        print(f"  프레임 {i + 1:2d}  오라클 {100 * e:.4f}%  정지 {100 * st:.4f}%"
-              f"  비 {e / max(st, 1e-20):.3f}  E {_best:.4e}", flush=True)
+        if _last:
+            print(f"  프레임 {i // _K + 1:2d}  오라클 {100 * e:.4f}%  정지 "
+                  f"{100 * st:.4f}%  비 {e / max(st, 1e-20):.3f}  E {_best:.4e}",
+                  flush=True)
     _DP_HOOK[0] = None
     import numpy as _np
     print(f"[오라클] {_L} 프레임 평균 {100 * _np.mean(errs):.3f}% "
