@@ -209,6 +209,9 @@ ap.add_argument("--oracle_lr", type=float, default=1e-3)
 ap.add_argument("--oracle_lr_shape", type=float, default=1e-2,
                 help="반경·두께(log) 변수의 학습률. 변위와 단위가 달라 따로 둔다")
 ap.add_argument("--oracle_out", default="")
+ap.add_argument("--oracle_snap", default="",
+                help="쉼표 목록. 그 프레임 수에 도달하면 그때까지의 롤아웃을 "
+                     "따로 저장한다 (진행 중 비교용)")
 ap.add_argument("--roll_scen", default="",
                 help="벤치 시나리오 npz 로 학생을 굴려 프레임별 상태를 덤프한다. "
                      "--pool 과 --pool_combos <조합 하나> 를 함께 준다")
@@ -1810,6 +1813,8 @@ if a.oracle_roll:
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(_d["x"][_t0], AIDX)
     F = take(traj_F(_d)[_t0], _gsel).float()
     x_still = x.clone()
+    import numpy as _np0
+    _SNAP = set(int(q) for q in (a.oracle_snap or "").split(",") if q)
     PRED, GT = [], []
     errs, stills = [], []
     net.eval()
@@ -1870,6 +1875,17 @@ if a.oracle_roll:
                 g=_g, norm=_norm, free=(fm if a.control else None))
             F = phys_resid.plastic_step(F_tr, dlog).detach()
             PRED.append(x2.detach().cpu()); GT.append(gt.detach().cpu())
+            if (i + 1) in _SNAP:
+                # 진행 중 스냅샷: 그 시점까지의 롤아웃을 따로 저장해 렌더한다
+                _sp = (a.oracle_out or "oracle_roll.pt").replace(
+                    ".pt", f"_f{i + 1:02d}.pt")
+                torch.save({"pred": torch.stack(PRED), "gt": torch.stack(GT),
+                            "x0": take(_d["x"][_t0], _gsel).cpu(),
+                            "ctrl_pos": _d.get("ctrl_pos"), "t0": _t0,
+                            "tag": _tag, "EXT": _ext}, _sp)
+                print(f"  [스냅샷] {i + 1} 프레임 -> {_sp}  누적 비 "
+                      f"{float(_np0.mean(errs)) / max(float(_np0.mean(stills)), 1e-12):.3f}",
+                      flush=True)
             errs.append(e); stills.append(st)
             x, p, v = x2.detach(), p2.detach(), v2.detach()
         print(f"  프레임 {i + 1:2d}  오라클 {100 * e:.4f}%  정지 {100 * st:.4f}%"

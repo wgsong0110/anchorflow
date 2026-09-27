@@ -23,11 +23,15 @@ python -u $W/anchorflow/exe/train_deform.py --data $D --out $W/abl_$TAG --tag $T
   ${CK:+--resume $CK} \
   --oracle_roll --oracle_steps ${OS:-300} --oracle_lr ${OLR:-1e-3} \
   --oracle_lr_shape ${OLRS:-1e-2} \
-  --oracle_out $W/rollh2_${TAG}.pt \
+  --oracle_out $W/rollh2_${TAG}.pt ${SNAP:+--oracle_snap $SNAP} \
   > $W/abl_$TAG.log 2>&1
 grep -a "오라클\]" $W/abl_$TAG.log | tail -2
 # --- 렌더는 vid_h2.sh 와 같은 경로 ---
-python -u $W/anchorflow/exe/render_rollout_cmp.py --dump $W/rollh2_${TAG}.pt \
-  --out $W/rollh2_${TAG}.mp4 >> $W/abl_$TAG.log 2>&1
+for f in $W/rollh2_${TAG}.pt $W/rollh2_${TAG}_f*.pt; do
+  [ -f "$f" ] || continue
+  o=$(basename $f .pt).mp4
+  python -u $W/anchorflow/exe/render_rollout_cmp.py --dump $f \
+    --out $W/$o >> $W/abl_$TAG.log 2>&1
+done
 echo "OUTONLY_DONE $TAG" >> $W/abl_$TAG.log
 ls -la $W/rollh2_${TAG}.mp4
