@@ -24,3 +24,18 @@ python -u $W/anchorflow/exe/train_deform.py --data $D --out $W/abl_$TAG --tag $T
   > $W/abl_$TAG.log 2>&1
 echo TRAIN_DONE >> $W/abl_$TAG.log
 grep -aE "롤아웃\]|요약" $W/abl_$TAG.log | tail -3
+# --- 렌더도 모델 경로(vid_h2.sh -> rollout) 그대로. 훅이 그대로 걸려 있어
+#     프레임별 출력 변수가 쓰인다. 체크포인트는 학습이 남긴 것을 그대로 준다. ---
+export AF_ROLL_DUMP=$W/rollh2_${TAG}.pt AF_ROLL_TAG=${TRJ##*_t_} AF_ROLL_T0=3
+python -u $W/anchorflow/exe/train_deform.py --data $D --out $W/vidh2_out \
+  --tag v$TAG --no_mat --control --n_ctrl 2 --arch conv --transfer skin \
+  --skin_corners --vox_res 32 --k 16 --hidden 128 --depth 4 \
+  --iters 0 --resume $W/abl_$TAG/${TAG}_last.pt --eval_t0 3 --eval_len 40 \
+  --n_pts ${NP:-8000} --gpu_data 0 --save_every 100000 \
+  --out_var \
+  >> $W/abl_$TAG.log 2>&1
+python -u $W/anchorflow/exe/render_rollout_cmp.py --dump $W/rollh2_${TAG}.pt \
+  --out $W/rollh2_${TAG}.mp4 >> $W/abl_$TAG.log 2>&1
+grep -a "요약" $W/abl_$TAG.log | tail -1
+ls -la $W/rollh2_${TAG}.mp4
+echo "OUTVAR_DONE $TAG" >> $W/abl_$TAG.log

@@ -206,6 +206,10 @@ ap.add_argument("--out_var", action="store_true",
                      "최적화한다. 임의 프레임 샘플링·배치·손실 모두 학습과 같고, "
                      "갱신 대상만 망 파라미터에서 그 프레임의 출력으로 바뀐다")
 ap.add_argument("--out_var_lr", type=float, default=3e-3)
+ap.add_argument("--out_var_save", default="",
+                help="학습이 끝나면 프레임별 출력 변수를 여기 저장한다")
+ap.add_argument("--out_var_load", default="",
+                help="프레임별 출력 변수를 여기서 읽어 쓴다 (렌더용)")
 ap.add_argument("--oracle_roll", action="store_true",
                 help="망 출력 자리에 자유 변수를 넣고 매 프레임 물리손실을 "
                      "최소화하는 오라클 롤아웃. 학습·평가 코드를 그대로 쓴다")
@@ -1706,7 +1710,10 @@ def save_ck(name, step):
                 # 세게 되어 쌓아 둔 상태를 잃고 TB 누적 곡선도 끊긴다.
                 "pool": (POOL.state_dict() if POOL is not None else None),
                 "pool_drop_win": list(_PL_DROP),
-                "pool_rms": list(_PL_RMS)},
+                "pool_rms": list(_PL_RMS),
+                # 프레임별 출력 변수 (--out_var). 렌더에서 같은 값을 쓰려면 필요하다
+                "out_var": ({int(k): [q.detach().cpu() for q in v]
+                             for k, v in _OV.items()} if _OV else None)},
                os.path.join(a.out, f"{a.tag}_{name}.pt"))
     if a.r2:
         os.system(f"rclone copy {a.out} {a.r2} --include '*.pt' "
@@ -1989,6 +1996,17 @@ if a.out_var:
         return tuple(_OV[t]) if len(_OV[t]) > 1 else _OV[t][0]
 
     _DP_HOOK[0] = _ov_hook
+    _ovck = (_rng_ck or {}).get("out_var") if not a.out_var_load else None
+    if _ovck:
+        for _t, _vs in _ovck.items():
+            _OV[int(_t)] = [q.to(dev).requires_grad_(True) for q in _vs]
+        print(f"[출력변수] 체크포인트에서 {len(_OV)} 프레임 적재", flush=True)
+    if a.out_var_load and os.path.exists(a.out_var_load):
+        _ld = torch.load(a.out_var_load, map_location=dev, weights_only=False)
+        for _t, _vs in _ld.items():
+            _OV[int(_t)] = [q.to(dev).requires_grad_(True) for q in _vs]
+        print(f"[출력변수] {a.out_var_load} 에서 {len(_OV)} 프레임 적재",
+              flush=True)
     print("[출력변수] 학습 루프 그대로, 갱신 대상만 프레임별 출력으로 바꾼다",
           flush=True)
 
