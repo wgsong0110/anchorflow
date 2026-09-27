@@ -218,6 +218,8 @@ ap.add_argument("--oracle_lr", type=float, default=1e-3)
 ap.add_argument("--oracle_lr_shape", type=float, default=1e-2,
                 help="반경·두께(log) 변수의 학습률. 변위와 단위가 달라 따로 둔다")
 ap.add_argument("--oracle_out", default="")
+ap.add_argument("--oracle_curve", action="store_true",
+                help="스텝마다 목적함수와 교사오차를 기록해 러닝 커브를 낸다")
 ap.add_argument("--oracle_snap", default="",
                 help="쉼표 목록. 그 프레임 수에 도달하면 그때까지의 롤아웃을 "
                      "따로 저장한다 (진행 중 비교용)")
@@ -1829,6 +1831,7 @@ if a.oracle_roll:
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(_d["x"][_t0], AIDX)
     F = take(traj_F(_d)[_t0], _gsel).float()
     x_still = x.clone()
+    _CURVES = []
     import numpy as _np0
     _SNAP = set(int(q) for q in (a.oracle_snap or "").split(",") if q)
     PRED, GT = [], []
@@ -1861,7 +1864,8 @@ if a.oracle_roll:
                else []))
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.oracle_steps)
         _best, _bz = float("inf"), [q.detach().clone() for q in zs]
-        for _ in range(a.oracle_steps):
+        _curve = []
+        for _s in range(a.oracle_steps):
             opt.zero_grad(set_to_none=True)
             x2, _p2, _v2, _J, _dp, _ai, _dm, _cr, _fe, _Jd = step_once(
                 _d, _t0 + i, _gsel, p, x, v, need_J=False)
@@ -1876,9 +1880,25 @@ if a.oracle_roll:
             if float(E) < _best:
                 _best = float(E)
                 _bz = [q.detach().clone() for q in zs]
+            if a.oracle_curve and (_s % max(a.oracle_steps // 20, 1) == 0
+                                   or _s == a.oracle_steps - 1):
+                with torch.no_grad():
+                    _gt = take(_d["x"][_t0 + i + 1], _gsel)
+                    _fmc = (free_mask(_d, x2.shape[0], dev, _gsel, x, _t0 + i)
+                            if a.control else slice(None))
+                    _ec = (float((x2.detach()[_fmc] - _gt[_fmc]).norm(dim=-1)
+                                 .mean()) / _ext)
+                _curve.append((_s, float(E), _ec))
         with torch.no_grad():
             for _q, _b in zip(zs, _bz):
                 _q.copy_(_b)
+        if a.oracle_curve:
+            _CURVES.append((i + 1, _curve))
+            _st0 = float((x_still - take(_d["x"][_t0 + i + 1], _gsel)
+                          ).norm(dim=-1).mean()) / _ext
+            print(f"  [커브 {i + 1}] " + "  ".join(
+                f"{q[0]}:E{q[1]:.2e}/오차{100 * q[2]:.2f}%"
+                for q in _curve[::max(len(_curve) // 6, 1)]), flush=True)
             x2, p2, v2, _J, _dp, _ai, _dm, _cr, _fe, _Jd = step_once(
                 _d, _t0 + i, _gsel, p, x, v, need_J=False)
             fm = (free_mask(_d, x2.shape[0], dev, _gsel, x, _t0 + i)
@@ -1912,6 +1932,10 @@ if a.oracle_roll:
           f"(정지 {100 * _np.mean(stills):.3f}%, 비 "
           f"{_np.mean(errs) / max(_np.mean(stills), 1e-12):.3f})  "
           f"{_time.time() - _wall:.1f}s", flush=True)
+    if a.oracle_curve:
+        _cd = (a.oracle_out or "oracle_roll.pt").replace(".pt", "_curve.pt")
+        torch.save({"curves": _CURVES, "tag": _tag, "t0": _t0}, _cd)
+        print(f"[커브] 저장 {_cd}", flush=True)
     _dst = a.oracle_out or "oracle_roll.pt"
     torch.save({"pred": torch.stack(PRED), "gt": torch.stack(GT),
                 "x0": take(_d["x"][_t0], _gsel).cpu(),
