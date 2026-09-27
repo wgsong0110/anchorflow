@@ -1853,6 +1853,7 @@ if a.oracle_roll:
               flush=True)
     for i in range(_L * _K):
         _fi = i // _K                     # 이 서브스텝이 속한 프레임
+        _last = ((i + 1) % _K == 0)       # 프레임 끝인가 (기록·보고는 여기서만)
         _hold = {}
 
         def _hook(out, _h=_hold):
@@ -1922,7 +1923,6 @@ if a.oracle_roll:
                 x, x2 - x, v, F, _mass, _vol, _cfg, _hs, _ng, _gl,
                 g=_g, norm=_norm, free=(fm if a.control else None))
             F = phys_resid.plastic_step(F_tr, dlog).detach()
-            _last = ((i + 1) % _K == 0)     # 프레임 끝에서만 기록·보고한다
             if _last:
                 PRED.append(x2.detach().cpu()); GT.append(gt.detach().cpu())
                 errs.append(e); stills.append(st)
