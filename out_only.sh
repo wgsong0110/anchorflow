@@ -20,7 +20,9 @@ python -u $W/anchorflow/exe/train_deform.py --data $D --out $W/abl_$TAG --tag $T
   --batch ${BS:-8} --n_pts ${NP:-20000} \
   --phase2 --phys_w 1.0 --phys_sup 0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \
   --iters 0 --eval_t0 3 --eval_len 40 --gpu_data 0 --save_every 100000 \
+  ${CK:+--resume $CK} \
   --oracle_roll --oracle_steps ${OS:-300} --oracle_lr ${OLR:-1e-3} \
+  --oracle_lr_shape ${OLRS:-1e-2} \
   --oracle_out $W/rollh2_${TAG}.pt \
   > $W/abl_$TAG.log 2>&1
 grep -a "오라클\]" $W/abl_$TAG.log | tail -2
