@@ -2395,6 +2395,11 @@ def emd(p_, q_, seed):
 
 
 gsel = torch.arange(min(a.n_pts, N_FULL), device=dev)
+if a.out_var:
+    # 프레임별 출력 변수는 학습 때의 격자를 가리킨다. 평가도 **같은 부분표본**을
+    # 써야 격자 모양·원점이 같고 변수를 그대로 쓸 수 있다 (안 맞추면 색인 초과).
+    gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
+                        device=dev)[:a.n_pts]
 rows = {}
 for tag, d in TR + held:
     T = d["x"].shape[0]
