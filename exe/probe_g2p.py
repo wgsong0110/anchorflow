@@ -36,6 +36,17 @@ def grid_grad(x, du):
     return phys_resid.g2p_grad(x, du_I, info, NG)
 
 
+def grid_grad_ls(x, du):
+    _m, _u, G_I, info, _xI = phys_resid.p2g_ls(x, du, mass, NG, gl)
+    return phys_resid.g2p_from_nodes(x, G_I, info, NG)
+
+
+def grid_grad_ls_dw(x, du):
+    """최소제곱으로 고친 노드 값에 B-spline 도함수를 쓰는 판본."""
+    _m, u_I, _G, info, _xI = phys_resid.p2g_ls(x, du, mass, NG, gl)
+    return phys_resid.g2p_grad(x, u_I, info, NG)
+
+
 print(f"[검산] 균일 변형: du = A x, ∇Δu 는 정확히 A 여야 한다")
 for tag, A in (("등방 수축 0.01", -0.01 * I3),
                ("x 방향 신장 0.02",
@@ -43,11 +54,15 @@ for tag, A in (("등방 수축 0.01", -0.01 * I3),
                ("전단 0.02",
                 torch.tensor([[0, 0.02, 0], [0, 0, 0], [0, 0, 0.0]], device=dev))):
     du = (A @ (x0 - x0.mean(0)).unsqueeze(-1)).squeeze(-1)
-    gu = grid_grad(x0, du)
-    err = (gu - A).reshape(-1, 9).norm(dim=-1) / A.reshape(-1).norm().clamp_min(1e-12)
-    print(f"  {tag:16s} |∇Δu-A|/|A| 중앙 {float(err.median()):.4f} "
-          f"|∇Δu| 중앙 {float(gu.reshape(-1, 9).norm(dim=-1).median()):.5f} "
-          f"|A| {float(A.reshape(-1).norm()):.5f}")
+    for nm, fn in (("평균+도함수", grid_grad),
+                   ("최소제곱 기울기", grid_grad_ls),
+                   ("최소제곱값+도함수", grid_grad_ls_dw)):
+        gu = fn(x0, du)
+        err = ((gu - A).reshape(-1, 9).norm(dim=-1)
+               / A.reshape(-1).norm().clamp_min(1e-12))
+        print(f"  {tag:16s} [{nm:16s}] 오차 중앙 {float(err.median()):.4f} "
+              f"|∇Δu| 중앙 {float(gu.reshape(-1, 9).norm(dim=-1).median()):.5f} "
+              f"|A| {float(A.reshape(-1).norm()):.5f}")
 
 # 실제 프레임 변위
 x1 = X[a.t0 + 1, sel].to(dev)
@@ -67,11 +82,19 @@ Bm = torch.einsum("nkc,nki,nkj->nij", w, d0, d0) + 1e-10 * I3
 J = Am @ torch.linalg.inv(Bm)
 Gt = J - I3
 print(f"[실측] |J-I| 중앙 {float(Gt.reshape(-1, 9).norm(dim=-1).median()):.5f}")
-gf = gu.reshape(-1, 9)
 tf = Gt.reshape(-1, 9)
-for c in range(9):
-    u, vv = gf[:, c], tf[:, c]
-    cc = float(((u - u.mean()) * (vv - vv.mean())).mean()
-               / (u.std().clamp_min(1e-20) * vv.std().clamp_min(1e-20)))
-    print(f"   성분 {c}: 상관 {cc:+.4f}  격자 표준편차 {float(u.std()):.5f} "
-          f"실제 {float(vv.std()):.5f}")
+for nm, fn in (("평균+도함수", grid_grad), ("최소제곱 기울기", grid_grad_ls),
+               ("최소제곱값+도함수", grid_grad_ls_dw)):
+    gf = fn(x0, du).reshape(-1, 9)
+    cs, rs = [], []
+    for c in range(9):
+        u, vv = gf[:, c], tf[:, c]
+        cs.append(float(((u - u.mean()) * (vv - vv.mean())).mean()
+                        / (u.std().clamp_min(1e-20) * vv.std().clamp_min(1e-20))))
+        rs.append(float(u.std() / vv.std().clamp_min(1e-20)))
+    dg = [0, 4, 8]
+    print(f"  [{nm:16s}] 상관 대각 {[round(cs[i],3) for i in dg]} "
+          f"평균 {sum(cs)/9:+.3f} | 크기비 대각 {[round(rs[i],3) for i in dg]}")
+    rel = ((fn(x0, du) - Gt).reshape(-1, 9).norm(dim=-1)
+           / Gt.reshape(-1, 9).norm(dim=-1).clamp_min(1e-12))
+    print(f"                      |격자-실제|/|실제| 중앙 {float(rel.median()):.4f}")
