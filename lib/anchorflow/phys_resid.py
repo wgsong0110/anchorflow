@@ -23,7 +23,8 @@ import torch
 
 __all__ = ["lame", "psi_of", "plastic_step", "ip_energy", "residual",
            "smooth_noise", "mat_name", "bc_node_mask", "bc_energy",
-           "grid_ip_sub", "grid_ip_pts", "jac_neighbors", "grad_from_points"]
+           "grid_ip_sub", "grid_ip_pts", "jac_neighbors", "grad_from_points",
+           "p2g_ls", "g2p_from_nodes"]
 
 
 def lame(E, nu):
@@ -306,6 +307,73 @@ def p2g_increment(x, du, vel, mass, n_grid, grid_lim, free=None):
         m_free = torch.zeros(M, device=dev, dtype=x.dtype).index_add_(0, inv, mwf)
         frac = m_free / m_I.clamp_min(1e-20)
     return m_I, du_I / den, v_I / den, (flat, ww, inv, uniq, dx), frac
+
+
+def p2g_ls(x, du, mass, n_grid, grid_lim, ridge=1e-6):
+    """노드마다 **국소 최소제곱**으로 (값, 기울기) 를 함께 푼다.
+
+    질량가중 평균은 선형장에서 편향된다: du_I = u(x̄_I) 이고 x̄_I 는 주변 입자의
+    무게중심이라 노드 위치 x_I 와 다르다. 그러면 Σ_I x_I ∇w_ip = I 라는 항등식이
+    깨져, 답을 아는 균일 변형조차 45~53% 틀리게 나온다 (실측). 여기서는
+
+        min_{u_I, G_I} Σ_p m_p w_ip | u_I + G_I (x_p - x_I) - u_p |^2
+
+    을 풀어 u_I 를 편향 없이 얻고 G_I 도 직접 얻는다. 4x4 정규방정식이라 노드
+    수만큼의 작은 해를 한 번에 푼다.
+
+    반환 (m_I, u_I [M,3], G_I [M,3,3], 색인정보, 노드좌표 [M,3]).
+    """
+    dev = x.device
+    dx = float(grid_lim) / float(n_grid)
+    xr = x / dx
+    base, w, _dw = _bspline(xr)
+    off = _offsets(dev)
+    idx3 = (base.unsqueeze(1) + off.unsqueeze(0)).clamp(0, n_grid - 1)
+    flat = ((idx3[..., 0] * n_grid + idx3[..., 1]) * n_grid + idx3[..., 2])
+    ww = (w[:, 0, :].unsqueeze(-1).unsqueeze(-1)
+          * w[:, 1, :].unsqueeze(1).unsqueeze(-1)
+          * w[:, 2, :].unsqueeze(1).unsqueeze(1)).reshape(x.shape[0], 27)
+    mw = (ww * mass.unsqueeze(-1)).reshape(-1)                      # [N*27]
+    uniq, inv = torch.unique(flat.reshape(-1), return_inverse=True)
+    M = uniq.numel()
+    # 노드 좌표
+    ki = uniq % n_grid
+    kj = (uniq // n_grid) % n_grid
+    kk = uniq // (n_grid * n_grid)
+    xI = torch.stack([kk, kj, ki], -1).to(x.dtype) * dx             # [M,3]
+    dvec = x.repeat_interleave(27, 0) - xI[inv]                     # [N*27,3]
+    up = du.repeat_interleave(27, 0)                                # [N*27,3]
+    # 4x4 정규방정식: [[S, S d^T], [S d, S d d^T]] [u; G^T] = [S u; S d u^T]
+    S0 = torch.zeros(M, device=dev, dtype=x.dtype).index_add_(0, inv, mw)
+    S1 = torch.zeros(M, 3, device=dev, dtype=x.dtype).index_add_(
+        0, inv, mw.unsqueeze(-1) * dvec)
+    S2 = torch.zeros(M, 3, 3, device=dev, dtype=x.dtype).index_add_(
+        0, inv, mw.reshape(-1, 1, 1) * dvec.unsqueeze(-1) * dvec.unsqueeze(-2))
+    b0 = torch.zeros(M, 3, device=dev, dtype=x.dtype).index_add_(
+        0, inv, mw.unsqueeze(-1) * up)
+    b1 = torch.zeros(M, 3, 3, device=dev, dtype=x.dtype).index_add_(
+        0, inv, mw.reshape(-1, 1, 1) * dvec.unsqueeze(-1) * up.unsqueeze(-2))
+    A = torch.zeros(M, 4, 4, device=dev, dtype=x.dtype)
+    A[:, 0, 0] = S0
+    A[:, 0, 1:] = S1
+    A[:, 1:, 0] = S1
+    A[:, 1:, 1:] = S2
+    B = torch.cat([b0.unsqueeze(1), b1], 1)                         # [M,4,3]
+    # 입자가 적은 노드는 정칙이 아니다 -> 리지로 값만 살리고 기울기는 0 으로 간다
+    tr = A.diagonal(dim1=-2, dim2=-1).sum(-1).clamp_min(1e-30)
+    A = A + (ridge * tr).reshape(M, 1, 1) * torch.eye(4, device=dev,
+                                                      dtype=x.dtype)
+    sol = torch.linalg.solve(A, B)                                  # [M,4,3]
+    u_I = sol[:, 0, :]
+    G_I = sol[:, 1:, :].transpose(1, 2)                             # ∂u_d/∂x_c
+    return S0, u_I, G_I, (flat, ww, inv, uniq, dx), xI
+
+
+def g2p_from_nodes(x, G_I, info, n_grid):
+    """노드 기울기를 입자로 보간한다 (B-spline 가중)."""
+    flat, ww, inv, uniq, dx = info
+    g_nodes = G_I[inv].reshape(x.shape[0], 27, 3, 3)
+    return torch.einsum("nk,nkdc->ndc", ww, g_nodes)
 
 
 def g2p_grad(x, du_I, info, n_grid):
