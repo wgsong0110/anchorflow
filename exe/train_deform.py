@@ -1839,7 +1839,7 @@ if a.oracle_roll:
             + ([{"params": zs[1:], "lr": a.oracle_lr_shape}] if len(zs) > 1
                else []))
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.oracle_steps)
-        _best, _bz = float("inf"), z.detach().clone()
+        _best, _bz = float("inf"), [q.detach().clone() for q in zs]
         for _ in range(a.oracle_steps):
             opt.zero_grad(set_to_none=True)
             x2, _p2, _v2, _J, _dp, _ai, _dm, _cr, _fe, _Jd = step_once(
