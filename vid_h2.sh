@@ -12,11 +12,11 @@ SEED=$(basename $TRJ .pt | sed 's/.*_t_//')
 D=$W/traj_h2_one_$SEED
 mkdir -p $D $W/vidh2_out && ln -sf $TRJ $D/ 2>/dev/null
 : > $W/vidh2_$TAG.log
-export AF_ROLL_DUMP=$W/rollh2_${TAG}.pt AF_ROLL_TAG=$SEED AF_ROLL_T0=3
+export AF_ROLL_DUMP=$W/rollh2_${TAG}.pt AF_ROLL_TAG=$SEED AF_ROLL_T0=${T0:-3}
 python -u $W/anchorflow/exe/train_deform.py --data $D --out $W/vidh2_out \
   --tag vh2$TAG ${MAT:---mat_film} --control --n_ctrl 2 --arch conv --transfer skin \
   --skin_corners --vox_res 32 --k 16 --hidden 128 --depth 4 \
-  --iters 0 --resume $CK --eval_t0 3 --eval_len 40 \
+  --iters 0 --resume $CK --eval_t0 ${T0:-3} --eval_len ${LEN:-40} \
   --n_pts 20000 --gpu_data 0 --save_every 100000 >> $W/vidh2_$TAG.log 2>&1
 python -u $W/anchorflow/exe/render_rollout_cmp.py --dump $W/rollh2_${TAG}.pt \
   --out $W/rollh2_${TAG}.mp4 >> $W/vidh2_$TAG.log 2>&1
