@@ -1014,6 +1014,10 @@ def _bspline_g2p(q, lo, h, nn3, dp):
     return (dp[flat] * ww.unsqueeze(-1)).sum(1)
 
 
+if os.environ.get("AF_ANOMALY"):     # in-place/NaN 범인을 짚을 때
+    torch.autograd.set_detect_anomaly(True)
+    print("[디버그] autograd anomaly detection on", flush=True)
+
 _VDT_MSG = []            # --v_from_dt 를 못 쓸 때의 경고를 한 번만
 _OBJ_PTS = (a.obj == "pts")   # 목적함수를 입자에서 바로 재는가 (격자 미사용)
 _SITREG_BND = [None]     # [4,4,4] 상한 (간격 1 기준) -- 한 번만 계산해 캐시
