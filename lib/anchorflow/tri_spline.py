@@ -89,7 +89,10 @@ def cont_penalty(theta_grid):
     가장 싸다. 법선 성분은 끝점 고정으로 이미 연속이라, 이 벌점은 접선
     성분의 면 불일치를 "되도록" 줄이는 역할이다.
     """
-    p = 0.0
+    p, n = 0.0, 0
     for ax in (-4, -3, -2):
-        p = p + theta_grid.diff(dim=ax).pow(2).mean()
-    return p / 3.0
+        d = theta_grid.diff(dim=ax)
+        if d.numel():                  # 축 방향 셀이 1 개면 이웃이 없다
+            p = p + d.pow(2).mean()
+            n += 1
+    return p / max(n, 1)
