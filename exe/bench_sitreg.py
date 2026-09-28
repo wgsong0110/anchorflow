@@ -74,27 +74,37 @@ def warp_bspline(q, c):
     return q + _bspline(q, lo, float(hh), nn3, c)
 
 
+_OFF64 = None
+
+
+def _offs(device):
+    """4^3 스텐실 오프셋을 한 번만 만든다."""
+    global _OFF64
+    if _OFF64 is None or _OFF64.device != torch.device(device):
+        r = torch.arange(4, device=device) - 1
+        _OFF64 = torch.stack(torch.meshgrid(r, r, r, indexing="ij"),
+                             -1).reshape(-1, 3)
+    return _OFF64
+
+
 def _bspline(q, lo_, h_, n3, dp):
-    """3 차 B-spline 업샘플로 제어점 변위를 점으로 옮긴다."""
+    """3 차 B-spline 업샘플. 64 스텐실을 **벡터로** 모은다 (파이썬 루프 없음)."""
     t = (q - lo_) / h_
-    base = (t - 0.5).floor().long()
-    f = t - base.to(t.dtype)
+    base = (t - 0.5).floor()
+    f = t - base
+    base = base.long()
     w = torch.stack([(1 - f) ** 3 / 6,
                      (3 * f ** 3 - 6 * f ** 2 + 4) / 6,
                      (-3 * f ** 3 + 3 * f ** 2 + 3 * f + 1) / 6,
                      f ** 3 / 6], -1)                     # [N,3,4]
+    off = _offs(q.device)                                  # [64,3]
     n3l = n3.to(torch.long)
-    out = torch.zeros_like(q)
-    for i in range(4):
-        for j in range(4):
-            for k in range(4):
-                idx = torch.stack([(base[:, 0] + i - 1).clamp(0, int(n3l[0]) - 1),
-                                   (base[:, 1] + j - 1).clamp(0, int(n3l[1]) - 1),
-                                   (base[:, 2] + k - 1).clamp(0, int(n3l[2]) - 1)], -1)
-                fl = (idx[:, 0] * int(n3l[1]) + idx[:, 1]) * int(n3l[2]) + idx[:, 2]
-                ww = (w[:, 0, i] * w[:, 1, j] * w[:, 2, k]).unsqueeze(-1)
-                out = out + ww * dp[fl]
-    return out
+    idx = (base.unsqueeze(1) + off.unsqueeze(0))           # [N,64,3]
+    idx = torch.stack([idx[..., k].clamp(0, int(n3l[k]) - 1) for k in range(3)], -1)
+    fl = (idx[..., 0] * int(n3l[1]) + idx[..., 1]) * int(n3l[2]) + idx[..., 2]
+    i0, i1, i2 = off[:, 0] + 1, off[:, 1] + 1, off[:, 2] + 1
+    ww = w[:, 0][:, i0] * w[:, 1][:, i1] * w[:, 2][:, i2]  # [N,64]
+    return torch.einsum("nk,nkd->nd", ww, dp[fl])
 
 
 def step(dp, mode, K, bnd):
