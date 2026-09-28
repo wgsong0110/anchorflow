@@ -164,7 +164,7 @@ class ConvStepper(nn.Module):
     def _dtmod(self, v, dt, i):
         if self.dtfilm is None:
             return v
-        g, b = self.dtfilm(float(dt), v.device)
+        g, b = self.dtfilm(dt, v.device)
         j = min(i, self.dtfilm.n_sites - 1)
         return (g[j].to(v.dtype).view(1, -1, 1, 1, 1) * v
                 + b[j].to(v.dtype).view(1, -1, 1, 1, 1))
@@ -200,9 +200,15 @@ class ConvStepper(nn.Module):
         # 조건화를 켜면 이쪽은 기준 dt 로 못박아 편향 역할만 남기고, dt 의존은
         # DtFiLM 하나로 모은다 -- 그래야 --dt_scale 의 비례가 정확해지고 옛
         # 체크포인트도 기준 dt 에서 값이 그대로 나온다.
-        _dtf = self.dt_ref if self.dtfilm is not None else float(dt)
-        g, b = self.film(torch.as_tensor([[_dtf]], device=v.device,
-                                         dtype=v.dtype)).chunk(2, -1)
+        if self.dtfilm is not None:
+            _dtf = torch.full((1, 1), self.dt_ref, device=v.device,
+                              dtype=v.dtype)
+        elif torch.is_tensor(dt):
+            _dtf = dt.reshape(1, 1).to(device=v.device, dtype=v.dtype)
+        else:
+            _dtf = torch.full((1, 1), float(dt), device=v.device,
+                              dtype=v.dtype)
+        g, b = self.film(_dtf).chunk(2, -1)
         v = g.view(1, -1, 1, 1, 1) * v + b.view(1, -1, 1, 1, 1)
         v = self._mod(v, mat, 0)
         v = self._dtmod(v, dt, 0)
@@ -230,7 +236,8 @@ class ConvStepper(nn.Module):
             -1, o.shape[1])                                    # [E*M, C]
         # 변위는 1 차로 v*dt 라 dt 에 비례한다. --dt_scale 이면 그 비례를
         # 구조로 박아 망이 dt 의존을 처음부터 안 배워도 되게 한다.
-        _sc = (self.scale * (float(dt) / self.dt_ref) if self.dt_scale
+        # float() 로 감싸면 dt 에 대한 미분 경로가 끊긴다 -- 텐서는 그대로 쓴다
+        _sc = (self.scale * (dt / self.dt_ref) if self.dt_scale
                else self.scale)
         dp = o[:, :3] * _sc
         if self.skin_out:

@@ -44,7 +44,10 @@ def rqs(u, theta, bins, min_bin=1e-3, min_d=1e-3):
     cw = Fn.pad(torch.cumsum(w, -1), (1, 0))       # [...,K+1], 0..1
     ch = Fn.pad(torch.cumsum(hg, -1), (1, 0))
     uc = u.clamp(0.0, 1.0)
-    k = (torch.searchsorted(cw.contiguous(), uc.unsqueeze(-1).contiguous())
+    # 빈 색인은 파라미터에 대해 조각별 상수라 미분이 0 이다. detach 해 두면
+    # 값은 그대로이고 순방향 AD(searchsorted 에 탄젠트를 못 붙인다)도 통과한다.
+    k = (torch.searchsorted(cw.detach().contiguous(),
+                            uc.detach().unsqueeze(-1).contiguous())
          - 1).clamp(0, K - 1)
 
     def g(t, i):

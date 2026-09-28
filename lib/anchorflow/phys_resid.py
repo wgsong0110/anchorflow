@@ -569,7 +569,7 @@ def grid_ip_sub(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
 
 
 def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
-                   g=None, norm=None, free=None):
+                   g=None, norm=None, free=None, jac=None):
     """i-PG 의 목적함수를 **격자 증분** 기준으로 잰다.
 
         E = Σ_I m_I/(2h²)‖Δu_I − h v_I‖² + Σ_p V_p Ψ(F_p) − Σ_I m_I g·Δu_I
@@ -593,8 +593,14 @@ def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
     if g is not None:
         # 보고용: 이 스텝에서 중력이 한 일 (기울기에는 이미 관성항으로 들어갔다)
         e_g = -(w_free * m_I * (du_I * g).sum(-1)).sum().detach()
-    gu = g2p_grad(x, du_I, info, n_grid)
-    F_tr = (torch.eye(3, device=x.device, dtype=F.dtype) + gu) @ F
+    if jac is None:
+        gu = g2p_grad(x, du_I, info, n_grid)
+        F_tr = (torch.eye(3, device=x.device, dtype=F.dtype) + gu) @ F
+    else:
+        # 입자를 실제로 옮긴 **변형장 자신의** 야코비안으로 민다. 격자 B-스플라인
+        # 공간미분(g2p_grad)은 셀 내부 재배열이나 스키닝 가중치를 통째로 무시해
+        # 실제 사상과 다른 F 를 만든다.
+        F_tr = jac.to(F.dtype) @ F
     psi, dlog = psi_of(F_tr, cfg, h)
     e_el = (vol * psi).sum()
     e_bc = bc_energy(x, du, mass, cfg, h, grid_lim, n_grid)

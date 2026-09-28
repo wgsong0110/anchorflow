@@ -72,9 +72,18 @@ class DtFiLM(nn.Module):
         nn.init.zeros_(last.weight); nn.init.zeros_(last.bias)
 
     def forward(self, dt, device):
-        # dt 는 매 호출 같은 값이고 파이썬 실수라, 매번 torch.tensor 로 만들면
-        # 호스트->장치 복사가 한 번씩 낀다. 그 복사는 CUDA 그래프 잡기에서 금지라
-        # 어텐션 전체를 그래프로 접지 못하게 막기도 했다. 값별로 한 번만 만든다.
+        # dt 가 **텐서**로 오면 dt 에 대한 미분을 흘려야 하므로 캐시를 쓰지 않는다
+        # (캐시는 값에서 상수 텐서를 굽는 것이라 미분 경로가 끊긴다). 변형장을
+        # t 로 미분해 속도를 얻는 경로가 이쪽이다.
+        if torch.is_tensor(dt):
+            x = torch.log10(dt.reshape(1).to(device).clamp_min(1e-12))
+            f = 2.0 ** torch.arange(self.n_freq, device=device) * math.pi
+            enc = torch.cat([x, torch.sin(f * x), torch.cos(f * x)])
+            out = self.mlp(enc).view(self.n_sites, 2, self.hidden)
+            return 1.0 + out[:, 0], out[:, 1]
+        # dt 가 파이썬 실수면 매번 torch.tensor 로 만드는 호스트->장치 복사가
+        # 낀다. 그 복사는 CUDA 그래프 잡기에서 금지라 어텐션 전체를 그래프로
+        # 접지 못하게 막기도 했다. 값별로 한 번만 만든다.
         key = (float(dt), str(device))
         enc = self._cache.get(key)
         if enc is None:
