@@ -184,21 +184,20 @@ for kind in ("skin", "bspline", "rqs"):
         rr = float((Js - Jfd).norm() / Jfd.norm())
         chk("skin: 해석 야코비안 == 공간 중심차분", rr < 1e-4, f"상대오차 {rr:.2e}")
 
-    # E) g2p_grad 로 민 F 와 변형장 야코비안으로 민 F
+    # E) g2p_grad 로 민 F 와 변형장 야코비안으로 민 F 가 얼마나 다른가.
+    #    야코비안은 자동미분이 필요하므로 no_grad 밖에서 부른다.
+    Jfull = jacobian_of(lambda z: field(net, kind, torch.as_tensor(
+        HDT, device=dev, dtype=torch.float64), z, lo64, nn3, sidx32,
+        feat64), x64).detach()
     with torch.no_grad():
-        F0 = torch.eye(3, device=dev, dtype=torch.float64).expand(
-            x64.shape[0], 3, 3).contiguous()
-        du = x2 - x64
+        I3 = torch.eye(3, device=dev, dtype=torch.float64)
+        F0 = I3.expand(x64.shape[0], 3, 3).contiguous()
         _m, duI, vI, info, _fr = phys_resid.p2g_increment(
-            x64, du, v32.double(), mass32.double(), int(cfg["n_grid"]),
+            x64, x2 - x64, v32.double(), mass32.double(), int(cfg["n_grid"]),
             float(cfg.get("grid_lim", 2.0)))
         gu = phys_resid.g2p_grad(x64, duI, info, int(cfg["n_grid"]))
-        Fg = (torch.eye(3, device=dev, dtype=torch.float64) + gu) @ F0
-        Jfull = jacobian_of(lambda z: field(net, kind, torch.as_tensor(
-            HDT, device=dev, dtype=torch.float64), z, lo64, nn3, sidx32,
-            feat64), x64)
+        Fg = (I3 + gu) @ F0
         Fj = Jfull @ F0
-        I3 = torch.eye(3, device=dev, dtype=torch.float64)
         rr = float((Fg - Fj).norm() / (Fj - I3).norm().clamp_min(1e-30))
         print(f"      g2p_grad F vs 변형장 야코비안 F: 증분 대비 {100*rr:.1f}%"
               f"  (det 중앙 g2p {float(torch.linalg.det(Fg).median()):.4f} / "
