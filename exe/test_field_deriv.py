@@ -104,12 +104,15 @@ def _gpos(lo, dt_):
 
 
 def dphi_dt(net, kind, tau_v, q, lo, nn3_, sidx, feat):
+    """출하 경로와 **같은** 방법으로 잰다: torch.func.jvp.
+
+    수동 dual_level 은 쓰지 않는다 -- 레벨을 벗어난 primal 이 무효가 되어
+    학습 언롤의 역전파가 깨지고(실측), rqs 의 detach 와도 어긋났다.
+    """
     tau0 = torch.as_tensor(tau_v, device=dev, dtype=q.dtype)
-    with fwAD.dual_level():
-        r = field(net, kind, fwAD.make_dual(tau0, torch.ones_like(tau0)),
-                  q, lo, nn3_, sidx, feat)
-        pr, tg = fwAD.unpack_dual(r)
-        return pr.clone(), (None if tg is None else tg.clone())
+    return torch.func.jvp(
+        lambda t: field(net, kind, t, q, lo, nn3_, sidx, feat),
+        (tau0,), (torch.ones_like(tau0),))
 
 
 # ---- A) 정확 검사: 선형 전달 + 항등 FiLM 이면 dPhi/dt == 할선 -----------------
@@ -139,7 +142,11 @@ for kind in ("skin", "bspline", "rqs"):
                                                  dtype=torch.float64),
                       x64, lo64, nn3, sidx32, feat64)) / (2 * eps)
     r = float((vd - fd).norm() / fd.norm().clamp_min(1e-30))
-    chk(f"{kind}: dPhi/dt == t 중심차분", r < 1e-5, f"상대오차 {r:.2e}")
+    _pp = ((vd - fd).norm(dim=-1)
+           / fd.norm(dim=-1).clamp_min(1e-30))
+    chk(f"{kind}: dPhi/dt == t 중심차분", r < 1e-5,
+        f"상대오차 {r:.2e} (중앙 {float(_pp.median()):.2e}, "
+        f"1e-3 초과 {int((_pp > 1e-3).sum())}/{_pp.numel()})")
     sec = (x2 - x64) / HDT
     print(f"      (참고) 할선과의 차이 "
           f"{100*float((vd-sec).norm()/sec.norm()):.1f}% -- 차분이 담지 못한 몫")
