@@ -37,12 +37,13 @@ rng = bool((tv.min() >= -1e-6) and (tv.max() <= 1 + 1e-6))
 chk("단조성", mono)
 chk("치역 [0,1]", rng, f"[{float(tv.min()):.4f},{float(tv.max()):.4f}]")
 
-# 3) 준불연속: 기울기 파라미터를 키우면 슬로프가 커진다
+# 3) 준불연속: 폭이 좁은 빈에 큰 높이를 몰아주면 슬로프가 치솟는다
 th_st = torch.zeros(1, 3, 3 * K + 1, device=dev)
-th_st[..., 2 * K + 4] = 12.0                     # 가운데 매듭 기울기만 크게
+th_st[..., 4] = -8.0                             # 4번 빈 폭 -> 최소로
+th_st[..., K + 4] = 8.0                          # 4번 빈 높이 -> 거의 전부
 tv2 = TS.rqs(us, th_st.expand(4096, -1, -1), K)
 slope = float((tv2.diff(dim=0).max() / (1.0 / 4095)))
-chk("가파른 슬로프", slope > 50, f"max slope={slope:.0f}x")
+chk("가파른 슬로프", slope > 100, f"max slope={slope:.0f}x")
 
 # 4) remap: 점이 자기 셀을 못 벗어난다 + 기울기가 θ 와 x 로 흐른다
 n3 = torch.tensor([9, 9, 9])
@@ -75,17 +76,17 @@ def full(q):
     return w.apply(qr, dp, lambda z, c: z + cubic_bspline_g2p(z, lo, h, n3, c))
 
 
-# 셀 면에서 떨어진 내부점만 뽑는다 -- 면을 가로지르는 유한차분은 (허용된)
-# 접선 불연속을 밟아 미분이 아니게 된다
+# 셀 내부점에서 **정확한** autograd 야코비안으로 잰다 -- 유한차분은 무작위
+# 파라미터의 최소 슬로프(~1e-3)가 만드는 미세한 det 를 분해하지 못한다
 _ci = torch.randint(0, 8, (200, 3), device=dev).float()
-xs = (_ci + 0.05 + 0.9 * torch.rand(200, 3, device=dev)) * h
-eps = 1e-4
-J = torch.stack([(full(xs + eps * torch.eye(3, device=dev)[k])
-                  - full(xs - eps * torch.eye(3, device=dev)[k]))
-                 / (2 * eps) for k in range(3)], -1)
-det = torch.linalg.det(J)
+xs = ((_ci + 0.05 + 0.9 * torch.rand(200, 3, device=dev)) * h
+      ).requires_grad_(True)
+ys = full(xs)
+J = torch.stack([torch.autograd.grad(ys[:, k].sum(), xs, retain_graph=True)[0]
+                 for k in range(3)], 1)
+det = torch.linalg.det(J.double())
 chk("합성 det J > 0", bool((det > 0).all()),
-    f"min det={float(det.min()):.4f}")
+    f"min det={float(det.min()):.2e}")
 
 # 7) ConvStepper rqs 헤드: 모양과 초기 근사 항등
 net = ConvStepper(n_feat=16, hidden=32, depth=2, rqs_dim=P).to(dev)
