@@ -219,7 +219,7 @@ class StatePool:
                 si=int(q["si"]), x=q["x"].detach().cpu(),
                 v=q["v"].detach().cpu(), F=q["F"].detach().cpu(),
                 p=(q["p"].detach().cpu() if torch.is_tensor(q["p"]) else None),
-                plan=q["plan"].pack(), elapsed=int(q["elapsed"]),
+                plan=q["plan"].pack(), elapsed=float(q["elapsed"]),
                 hist=list(q["hist"]), age=int(q["age"])))
         return dict(items=items, n_drop=self.n_drop, n_keep=self.n_keep,
                     n_replan=self.n_replan, fresh_res=list(self.fresh_res),
@@ -242,7 +242,7 @@ class StatePool:
                 v=q["v"].to(self.dev), F=q["F"].to(self.dev),
                 p=(q["p"].to(self.dev) if torch.is_tensor(q["p"]) else None),
                 plan=HandlePlan.unpack(q["plan"], self.dev),
-                elapsed=int(q["elapsed"]), hist=list(q["hist"]),
+                elapsed=float(q["elapsed"]), hist=list(q["hist"]),
                 age=int(q["age"])))
         self.n_drop = int(d.get("n_drop", 0))
         self.n_keep = int(d.get("n_keep", 0))
@@ -283,11 +283,15 @@ class StatePool:
         picks += [("fresh", None)] * n_fresh
         return picks
 
-    def put_back(self, slot, st, res, prev=None):
+    def put_back(self, slot, st, res, prev=None, dt_frac=1.0):
         """한 스텝 진행한 상태를 되돌려 놓는다. 문턱을 넘으면 버린다.
 
-        prev 가 있으면 (전진 전 상태) 문턱을 넘었을 때 keep_prob 확률로 그
+        prev 가 있으면 (전진 전 상태) 문턱을 넘았을 때 keep_prob 확률로 그
         상태로 되돌려 풀에 그대로 남긴다 -- 이번 스텝을 없던 일로 한다.
+
+        dt_frac 은 이번 스텝이 **몇 프레임만큼** 흘렀는지다. 손잡이 계획은
+        프레임 단위(가속·최대속도·재계획 예산)로 정의돼 있어, dt 를 줄여
+        밟으면 한 스텝이 1/sub 프레임에 해당한다.
         """
         st["hist"].append(float(res))
         if len(st["hist"]) > self.window:
@@ -296,7 +300,7 @@ class StatePool:
         mean_res = float(np.mean(st["hist"]))
         if st["age"] == 1:
             self.fresh_res.append(float(res))
-        st["elapsed"] += 1
+        st["elapsed"] += float(dt_frac)
         # **목표에 닿았을 때** 새 제어 입자·목표점을 뽑는다. 고정 시간이 지나서
         # 뽑는 것이 아니다 -- 도달 시간은 거리에 따라 다르다. frames 는 끌어도
         # 도달하지 못하는 경우(물체가 딸려오지 않거나 발산) 빠져나오는 상한이다.

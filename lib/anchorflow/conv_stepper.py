@@ -15,6 +15,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as Fn
 
+from .nextstate import DtFiLM
+
 
 _ZERO_OUT = True    # False 면 출력층 가중치를 기본 초기화의 1/100 로 둔다
 _NORM = True        # False 면 블록 안 GroupNorm 을 빼서 **크기 정보를 남긴다**
@@ -82,7 +84,8 @@ class ConvStepper(nn.Module):
 
     def __init__(self, n_feat, hidden=64, depth=4, h=0.05, scale=1.0,
                  skin_out=False,
-                 arch="plain", damage=False, n_mat=0, drop=0.0, rqs_dim=0):
+                 arch="plain", damage=False, n_mat=0, drop=0.0, rqs_dim=0,
+                 dt_cond=False, dt_ref=1.0, dt_scale=False):
         super().__init__()
         # 블록 사이의 채널 드롭아웃. 부피가 대부분 비어 있어 **화소별** 드롭은
         # 빈 칸만 지우기 쉬우므로, 채널 통째로 떨어뜨리는 Dropout3d 를 쓴다.
@@ -139,6 +142,15 @@ class ConvStepper(nn.Module):
             with torch.no_grad():
                 self.out_rqs.weight.mul_(0.01)
             nn.init.zeros_(self.out_rqs.bias)
+        # --- 스텝 크기 dt 를 **조건 변수**로 받는다 -----------------------------
+        # 기본 self.film 은 dt 원시값을 Linear(1,.) 에 넣는다. dt 를 고정해 쓰면
+        # 상수라 사실상 편향이지만, dt 를 흔들면 0.042 ~ 0.0004 처럼 두 자리
+        # 넘게 걸쳐 조건이 나빠진다. 어텐션 경로가 쓰던 DtFiLM 을 그대로 쓴다 --
+        # log10(dt) 를 푸리에로 펴서 층마다 (gamma, beta) 로 넣고, 0 초기화라
+        # 켜는 순간에는 항등이다 (그래서 옛 체크포인트에 얹어도 값이 안 변한다).
+        self.dt_ref = float(dt_ref) if dt_ref else 1.0
+        self.dt_scale = bool(dt_scale)
+        self.dtfilm = DtFiLM(hidden, depth + 1) if dt_cond else None
 
 
     def set_input_stats(self, feats):
@@ -148,6 +160,14 @@ class ConvStepper(nn.Module):
         self.in_mu.copy_(f.mean(0))
         self.in_sd.copy_(torch.where(sd > 1e-4 * sd.max().clamp(min=1e-12),
                                      sd, torch.ones_like(sd)))
+
+    def _dtmod(self, v, dt, i):
+        if self.dtfilm is None:
+            return v
+        g, b = self.dtfilm(float(dt), v.device)
+        j = min(i, self.dtfilm.n_sites - 1)
+        return (g[j].to(v.dtype).view(1, -1, 1, 1, 1) * v
+                + b[j].to(v.dtype).view(1, -1, 1, 1, 1))
 
     def _mod(self, v, mat, i):
         if not self.n_mat or mat is None:
@@ -178,6 +198,7 @@ class ConvStepper(nn.Module):
                                          dtype=v.dtype)).chunk(2, -1)
         v = g.view(1, -1, 1, 1, 1) * v + b.view(1, -1, 1, 1, 1)
         v = self._mod(v, mat, 0)
+        v = self._dtmod(v, dt, 0)
         if self.arch == "unet":
             s1 = self.d1(v)
             s2 = self.d2(Fn.avg_pool3d(s1, 2, ceil_mode=True))
@@ -190,6 +211,7 @@ class ConvStepper(nn.Module):
             for _i, blk in enumerate(self.body):
                 v = v + self.drop(blk(v))
                 v = self._mod(v, mat, _i + 1)
+                v = self._dtmod(v, dt, _i + 1)
         o = self.out(v)                                        # [E,C,nx,ny,nz]
         rq = None
         if self.rqs_dim:
@@ -199,7 +221,11 @@ class ConvStepper(nn.Module):
                 -1, r.shape[1])                                # [E*Mc, P]
         o = o.reshape(ens, o.shape[1], -1).permute(0, 2, 1).reshape(
             -1, o.shape[1])                                    # [E*M, C]
-        dp = o[:, :3] * self.scale
+        # 변위는 1 차로 v*dt 라 dt 에 비례한다. --dt_scale 이면 그 비례를
+        # 구조로 박아 망이 dt 의존을 처음부터 안 배워도 되게 한다.
+        _sc = (self.scale * (float(dt) / self.dt_ref) if self.dt_scale
+               else self.scale)
+        dp = o[:, :3] * _sc
         if self.skin_out:
             lr = (o[:, 3] + math.log(self.h)).clamp(
                 math.log(self.h) - 3.0, math.log(self.h) + 3.0)

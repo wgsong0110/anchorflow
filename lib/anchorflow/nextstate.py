@@ -81,6 +81,8 @@ class DtFiLM(nn.Module):
             x = torch.tensor([math.log10(dt)], device=device)
             f = 2.0 ** torch.arange(self.n_freq, device=device) * math.pi
             enc = torch.cat([x, torch.sin(f * x), torch.cos(f * x)])
+            if len(self._cache) > 512:      # dt 를 연속으로 뽑으면 끝없이 는다
+                self._cache.clear()
             self._cache[key] = enc
         out = self.mlp(enc).view(self.n_sites, 2, self.hidden)
         return 1.0 + out[:, 0], out[:, 1]
