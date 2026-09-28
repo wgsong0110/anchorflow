@@ -194,7 +194,14 @@ class ConvStepper(nn.Module):
             _c = f.reshape(ens, -1, f.shape[-1]).permute(0, 2, 1)
             v = _c.reshape(ens, -1, nx, ny, nz)
         v = self.inp(v)
-        g, b = self.film(torch.as_tensor([[float(dt)]], device=v.device,
+        # 이 film 은 dt 원시값을 받는 **무작위 초기화** Linear 라, dt 를 고정해
+        # 쓰던 동안에는 학습된 편향이나 마찬가지였다. dt 를 두 자리에 걸쳐
+        # 흔들면 여기도 같이 흔들려 (조건이 나쁜) 두 번째 dt 경로가 된다.
+        # 조건화를 켜면 이쪽은 기준 dt 로 못박아 편향 역할만 남기고, dt 의존은
+        # DtFiLM 하나로 모은다 -- 그래야 --dt_scale 의 비례가 정확해지고 옛
+        # 체크포인트도 기준 dt 에서 값이 그대로 나온다.
+        _dtf = self.dt_ref if self.dtfilm is not None else float(dt)
+        g, b = self.film(torch.as_tensor([[_dtf]], device=v.device,
                                          dtype=v.dtype)).chunk(2, -1)
         v = g.view(1, -1, 1, 1, 1) * v + b.view(1, -1, 1, 1, 1)
         v = self._mod(v, mat, 0)
