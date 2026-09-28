@@ -141,12 +141,25 @@ for kind in ("skin", "bspline", "rqs"):
               - field(net, kind, torch.as_tensor(HDT - eps, device=dev,
                                                  dtype=torch.float64),
                       x64, lo64, nn3, sidx32, feat64)) / (2 * eps)
-    r = float((vd - fd).norm() / fd.norm().clamp_min(1e-30))
-    _pp = ((vd - fd).norm(dim=-1)
-           / fd.norm(dim=-1).clamp_min(1e-30))
-    chk(f"{kind}: dPhi/dt == t 중심차분", r < 1e-5,
-        f"상대오차 {r:.2e} (중앙 {float(_pp.median()):.2e}, "
-        f"1e-3 초과 {int((_pp > 1e-3).sum())}/{_pp.numel()})")
+    _pp = ((vd - fd).norm(dim=-1) / fd.norm(dim=-1).clamp_min(1e-30))
+    _nb = int((_pp > 1e-3).sum())
+    # 판정은 **입자별** 상대오차로 한다. 전역 노름비를 쓰면 매듭/셀면을 ±eps
+    # 안에서 넘는 소수의 입자가 전체를 지배한다 -- 거기서는 t 미분에 꺾임이
+    # 있어 중심차분 쪽이 틀린 값이고(AD 가 a.e. 의 옳은 값), rqs 는 셀면 접선
+    # 불연속을 **설계상** 허용하므로 그런 입자가 생기는 것이 정상이다.
+    chk(f"{kind}: dPhi/dt == t 중심차분",
+        float(_pp.median()) < 1e-5 and _nb <= max(2, _pp.numel() // 1000),
+        f"중앙 {float(_pp.median()):.2e}, 1e-3 초과 {_nb}/{_pp.numel()}, "
+        f"전역 노름비 {float((vd - fd).norm() / fd.norm()):.2e}")
+    if _nb:
+        # 어긋난 입자가 정말 매듭/셀면 근처인지 확인한다 (추측하지 않는다)
+        _ti = (xs_all_ur := ((x64 - lo64) / hh))
+        _fr = _ti - _ti.floor()
+        _bad = _pp > 1e-3
+        _e = torch.minimum(_fr, 1.0 - _fr).min(-1).values
+        print(f"      어긋난 입자의 셀면 거리(칸 단위): "
+              f"{[round(float(q), 5) for q in _e[_bad][:5]]} "
+              f"vs 전체 중앙 {float(_e.median()):.4f}")
     sec = (x2 - x64) / HDT
     print(f"      (참고) 할선과의 차이 "
           f"{100*float((vd-sec).norm()/sec.norm()):.1f}% -- 차분이 담지 못한 몫")
