@@ -1043,6 +1043,25 @@ def _rqs_warp(q, lo, h, nn3, th, dp, bound, n_comp):
         qr, dp, lambda z, c: z + cubic_bspline_g2p(z, lo, h, nn3, c))
 
 
+def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
+          free=None, jac=None):
+    """증분 포텐셜. --obj 에 따라 입자에서 바로(기본) 또는 격자에서 잰다.
+
+    반환 규약은 둘이 같다: (E, dlog, F_trial, parts).
+    """
+    if _OBJ_PTS:
+        if jac is None:
+            raise RuntimeError(
+                "--obj pts 는 변형장 야코비안이 필요하다 (step_once 가 "
+                "None 을 돌려줬다 -- 전달·앙상블 설정을 확인할 것)")
+        return phys_resid.pts_ip_energy(
+            x, du, vel, F, jac, mass, vol, cfg, h, ng, gl,
+            g=g, norm=norm, free=free)
+    return phys_resid.grid_ip_energy(
+        x, du, vel, F, mass, vol, cfg, h, ng, gl,
+        g=g, norm=norm, free=free, jac=(jac if a.f_from_jac else None))
+
+
 def _rqs_pen_take():
     """쌓인 연속성 벌점을 가중치를 곱해 꺼내고 비운다 (없으면 0)."""
     q = _RQS_PEN[0]
