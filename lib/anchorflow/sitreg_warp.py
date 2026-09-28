@@ -21,7 +21,11 @@ https://github.com/honkamj/SITReg
 """
 import torch
 
-__all__ = ["max_control_point_value", "squash_to_bound", "SITRegWarp"]
+__all__ = ["max_control_point_value", "squash_to_bound", "SITRegWarp",
+           "cubic_bspline_g2p"]
+
+# AF_SITREG 저장소가 없는 환경에서 쓰는 [4,4,4] 상한의 근사값 (실측 0.398*간격)
+FALLBACK_BOUND_444 = 0.398
 
 # 3 차원, 업샘플 배수별 상한 (그쪽 compute_max_control_point_value 로 구한 값을
 # 캐시한다. 값은 제어점 간격 1 기준이므로 실제로는 간격을 곱해 쓴다).
@@ -78,3 +82,41 @@ class SITRegWarp:
         for d in dps:
             q = warp_fn(q, squash_to_bound(d, self.bound))
         return q
+
+
+_OFF64 = {}
+
+
+def _offs(device):
+    """4^3 스텐실 오프셋을 장치별로 한 번만 만든다."""
+    key = str(device)
+    if key not in _OFF64:
+        r = torch.arange(4, device=device) - 1
+        _OFF64[key] = torch.stack(
+            torch.meshgrid(r, r, r, indexing="ij"), -1).reshape(-1, 3)
+    return _OFF64[key]
+
+
+def cubic_bspline_g2p(q, lo, h, n3, dp):
+    """3 차 B-spline 으로 격자점 변위 dp 를 점 q 로 옮긴다 (64 스텐실, 벡터화).
+
+    SITReg 의 제어점 상한은 이 전달(3차)에 대해 성립한다 -- 2차 전달에 상한을
+    걸면 보장이 없다. 격자는 (lo, h, n3=격자점 수), dp 는 격자점 변위 [N노드,3]
+    평탄 순서 (ix*ny + iy)*nz + iz.
+    """
+    t = (q - lo) / h
+    base = (t - 0.5).floor()
+    f = t - base
+    base = base.long()
+    w = torch.stack([(1 - f) ** 3 / 6,
+                     (3 * f ** 3 - 6 * f ** 2 + 4) / 6,
+                     (-3 * f ** 3 + 3 * f ** 2 + 3 * f + 1) / 6,
+                     f ** 3 / 6], -1)                      # [N,3,4]
+    off = _offs(q.device)                                  # [64,3]
+    n3l = [int(n3[k]) for k in range(3)]
+    idx = base.unsqueeze(1) + off.unsqueeze(0)             # [N,64,3]
+    idx = torch.stack([idx[..., k].clamp(0, n3l[k] - 1) for k in range(3)], -1)
+    fl = (idx[..., 0] * n3l[1] + idx[..., 1]) * n3l[2] + idx[..., 2]
+    i0, i1, i2 = off[:, 0] + 1, off[:, 1] + 1, off[:, 2] + 1
+    ww = w[:, 0][:, i0] * w[:, 1][:, i1] * w[:, 2][:, i2]  # [N,64]
+    return torch.einsum("nk,nkd->nd", ww, dp[fl])

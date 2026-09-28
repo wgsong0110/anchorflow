@@ -142,10 +142,20 @@ ap.add_argument("--metrics", action="store_true",
 ap.add_argument("--cd_pts", type=int, default=2048,
                 help="CD/EMD 표본 크기 (EMD 가 O(n^3) 이라 필요하다)")
 ap.add_argument("--transfer", default="skin",
-                choices=("skin", "tri", "bspline"),
+                choices=("skin", "tri", "bspline", "rqs"),
                 help="격자점 변위를 가우시안으로 옮기는 법. skin 은 kNN 위 "
                      "학습 반경 소프트맥스, tri 는 고정 trilinear, bspline 은 "
-                     "MPM/i-PG 와 같은 이차 B-스플라인 3^3 스텐실")
+                     "MPM/i-PG 와 같은 이차 B-스플라인 3^3 스텐실, rqs 는 "
+                     "격자점을 SITReg(상한+합성, 3차 B-스플라인)로 옮기고 셀 "
+                     "내부 상대좌표를 단조 RQS 로 재배열하는 접힘 방지 전달")
+ap.add_argument("--rqs_bins", type=int, default=8,
+                help="--transfer rqs 의 축당 스플라인 빈 수 K")
+ap.add_argument("--rqs_cont", type=float, default=1e-2,
+                help="이웃 셀 RQS 파라미터 차 벌점 가중치 (0 이면 끔). 법선 "
+                     "성분은 구조적으로 연속이고, 이 벌점은 접선 불일치를 "
+                     "'되도록' 줄인다")
+ap.add_argument("--sitreg_k", type=int, default=2,
+                help="--transfer rqs 의 SITReg 합성 횟수 (벤치 최적 2)")
 ap.add_argument("--no_gn", action="store_true",
                 help="conv 블록의 GroupNorm 제거 (크기 정보 보존)")
 ap.add_argument("--stat_occ", action="store_true",
@@ -320,7 +330,11 @@ torch.manual_seed(a.seed)
 
 from anchorflow import deform                                  # noqa: E402
 from anchorflow import phys_resid                                # noqa: E402
+from anchorflow import tri_spline                               # noqa: E402
 from anchorflow import voxel                                    # noqa: E402
+from anchorflow.sitreg_warp import (SITRegWarp, FALLBACK_BOUND_444,  # noqa: E402
+                                    cubic_bspline_g2p,
+                                    max_control_point_value)
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
                                bc_features, bond_stretch, bures_w2_sq,
                                fps, gauss_stretch, grid_knn,
@@ -465,8 +479,12 @@ def build(n_feat):
                           arch=a.arch.replace("conv", "plain"),
                           skin_out=(a.transfer == "skin"),
                           damage=a.damage, n_mat=N_FILM,
-                          drop=a.drop).to(dev)
+                          drop=a.drop,
+                          rqs_dim=(tri_spline.n_params(a.rqs_bins)
+                                   if a.transfer == "rqs" else 0)).to(dev)
     else:
+        if a.transfer == "rqs":
+            raise SystemExit("--transfer rqs 는 conv/unet 아키텍처에서만 된다")
         net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
                         heads=a.heads, scale=0.02 * EXT, h=H, ext=EXT,
                         seed=a.seed, damage=a.damage).to(dev)
@@ -921,6 +939,29 @@ def _bspline_g2p(q, lo, h, nn3, dp):
     return (dp[flat] * ww.unsqueeze(-1)).sum(1)
 
 
+_SITREG_BND = [None]     # [4,4,4] 상한 (간격 1 기준) -- 한 번만 계산해 캐시
+_RQS_PEN = [None]        # step_once 가 쌓는 RQS 연속성 벌점, 손실 지점이 소비
+
+
+def _sitreg_bound(hh):
+    """제어점 상한 |c| < bound. SITReg 저장소가 없으면 실측 근사를 쓴다."""
+    if _SITREG_BND[0] is None:
+        try:
+            _SITREG_BND[0] = max_control_point_value([4, 4, 4])
+        except Exception as e:
+            print(f"[SITReg] 상한 계산 실패({e}) -- 근사 "
+                  f"{FALLBACK_BOUND_444}*간격 사용", flush=True)
+            _SITREG_BND[0] = FALLBACK_BOUND_444
+    return _SITREG_BND[0] * float(hh)
+
+
+def _rqs_pen_take():
+    """쌓인 연속성 벌점을 가중치를 곱해 꺼내고 비운다 (없으면 0)."""
+    q = _RQS_PEN[0]
+    _RQS_PEN[0] = None
+    return 0.0 if q is None else a.rqs_cont * q
+
+
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
               x0=None, p0=None, fe=None):
     """한 프레임. -> (x_next, p_next, v_next, J, dp, aidx_next)
@@ -1023,6 +1064,27 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 return q + _bspline_g2p(q, _lo, _h, _n, _d)
             xe = _bs(x)
             warps.append(_bs)
+        elif a.transfer == "rqs":
+            # 접힘 방지 전달: 셀 내부 상대좌표를 단조 RQS 로 재배열한 뒤 그
+            # 위치에서 SITReg(제어점 상한 + K 합성, 3차 B-스플라인) 워프를
+            # 평가한다. RQS 가 점을 자기 셀 안에 가두고 워프가 미분동형이라
+            # 합성 전체가 단사다 -- 셀 안 준불연속은 스플라인 기울기가 담는다.
+            th = torch.nan_to_num(out[-1], nan=0.0, posinf=0.0, neginf=0.0)
+            _w = SITRegWarp(_sitreg_bound(hh), a.sitreg_k)
+
+            def _rq(q, _lo=lo, _h=float(hh), _n=nn3, _th=th, _d=dp, _wp=_w):
+                qr = tri_spline.remap(q, _lo, _h, _n, _th, a.rqs_bins)
+                return _wp.apply(qr, _d, lambda z, c, __lo=_lo, __h=_h,
+                                 __n=_n: z + cubic_bspline_g2p(
+                                     z, __lo, __h, __n, c))
+            xe = _rq(x)
+            warps.append(_rq)
+            if a.rqs_cont > 0 and torch.is_grad_enabled():
+                _pen = tri_spline.cont_penalty(
+                    th.reshape(-1, *[int(c) for c in grid_shape[1]],
+                               th.shape[-1]))
+                _RQS_PEN[0] = (_pen if _RQS_PEN[0] is None
+                               else _RQS_PEN[0] + _pen)
         else:
             xe = x + TRI.g2p(tri[0], tri[1], dp)
             warps.append(lambda q, _lo=lo, _h=hh, _n=nn3, _d=dp:
@@ -1307,6 +1369,15 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         if a.transfer == "bspline":
             def _warp_n(q):
                 return q + _bspline_g2p(q, _lo, float(_hh), _n3, _dpn)
+        elif a.transfer == "rqs":
+            # 모델이 낼 수 있는 상태만 교란으로 만든다: 같은 상한·합성의
+            # SITReg 워프 (셀 내부 재배열 교란은 생략 -- 항등이 기본값이다)
+            _wn = SITRegWarp(_sitreg_bound(float(_hh)), a.sitreg_k)
+
+            def _warp_n(q):
+                return _wn.apply(q, _dpn,
+                                 lambda z, c: z + cubic_bspline_g2p(
+                                     z, _lo, float(_hh), _n3, c))
         elif a.transfer == "tri":
             def _warp_n(q):
                 return q + TRI.g2p(*TRI.corners(q, _lo, _hh, _n3), _dpn)
@@ -1386,6 +1457,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
                     r_ring = float(rr[nfm].mean()) if int(nfm.sum()) else 0.0
         F = phys_resid.plastic_step(F_tr, dlog).detach() if K > 1 else F_tr
         x = x2
+    e_tot = e_tot + _rqs_pen_take()      # rqs 전달의 셀 경계 연속성 벌점
     return e_tot / K, r_free, r_ring, parts
 
 
@@ -1910,6 +1982,7 @@ if a.oracle_roll:
             E, _dl, _Ft, _pt = phys_resid.grid_ip_energy(
                 x, x2 - x, v, F, _mass, _vol, _cfg, _hs, _ng, _gl,
                 g=_g, norm=_norm, free=fm)
+            E = E + _rqs_pen_take()
             E.backward()
             opt.step()
             sch.step()
@@ -2087,6 +2160,7 @@ pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
 for it in pbar:
     L = a.unroll            # 학습 중 펼치기 길이는 바꾸지 않는다
     opt.zero_grad(set_to_none=True)
+    _RQS_PEN[0] = None      # 소비 안 된 벌점이 배치를 넘어 그래프를 잡지 않게
     lx = lJ = la = ldm = ldet = 0.0
     still = arel = dmean = 0.0
     if a.pool:
@@ -2146,6 +2220,7 @@ for it in pbar:
                 loss_p = E_ip
             _rl = _rr.detach().norm(dim=-1)
             res = float((_rl[fm] if fm is not None else _rl).mean())
+            loss_p = loss_p + _rqs_pen_take()
             if a.pool_whiten:
                 _PL_RMS[0] = (0.99 * _PL_RMS[0]
                               + 0.01 * float(loss_p.detach()) ** 2)
@@ -2287,7 +2362,8 @@ for it in pbar:
             loss_b = a.phys_w * wE
             if a.phys_sup > 0:
                 wx, wJ, wst, wa, wrel, wd, wdm, wdet = window(d, t0, L, gsel)
-                loss_b = loss_b + a.phys_sup * wx + a.det_reg * wdet
+                loss_b = (loss_b + a.phys_sup * wx + a.det_reg * wdet
+                          + _rqs_pen_take())
             else:
                 wx = wE.detach(); wJ = torch.zeros((), device=dev)
                 wst = r_ring; wa = torch.zeros((), device=dev)
@@ -2308,7 +2384,8 @@ for it in pbar:
         # 야코비안까지 붙어 메모리가 배치 수만큼 늘어난다
         with _tsec("역전파"):
             ((wx + a.lambda_J * wJ + a.lambda_anchor * wa
-              + a.lambda_dmg * wd + a.det_reg * wdet) / a.batch).backward()
+              + a.lambda_dmg * wd + a.det_reg * wdet
+              + _rqs_pen_take()) / a.batch).backward()
         lx = lx + float(wx) / a.batch
         lJ = lJ + float(wJ) / a.batch
         ldet = ldet + float(wdet) / a.batch

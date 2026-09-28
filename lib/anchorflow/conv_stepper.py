@@ -82,7 +82,7 @@ class ConvStepper(nn.Module):
 
     def __init__(self, n_feat, hidden=64, depth=4, h=0.05, scale=1.0,
                  skin_out=False,
-                 arch="plain", damage=False, n_mat=0, drop=0.0):
+                 arch="plain", damage=False, n_mat=0, drop=0.0, rqs_dim=0):
         super().__init__()
         # 블록 사이의 채널 드롭아웃. 부피가 대부분 비어 있어 **화소별** 드롭은
         # 빈 칸만 지우기 쉬우므로, 채널 통째로 떨어뜨리는 Dropout3d 를 쓴다.
@@ -130,6 +130,15 @@ class ConvStepper(nn.Module):
             with torch.no_grad():
                 self.out.weight.mul_(0.01)
         nn.init.zeros_(self.out.bias)
+        # 셀 내부 RQS 재배열 파라미터 헤드. 격자점에서 내고 8 꼭짓점 평균으로
+        # 셀 값으로 바꾼다 -- 이웃 셀이 꼭짓점을 나눠 가져 파라미터장이 저절로
+        # 상관되고, 원시값 0 이 항등이라 초기화도 변위 헤드와 같은 규약이다.
+        self.rqs_dim = int(rqs_dim)
+        if self.rqs_dim:
+            self.out_rqs = nn.Conv3d(hidden, self.rqs_dim, 1)
+            with torch.no_grad():
+                self.out_rqs.weight.mul_(0.01)
+            nn.init.zeros_(self.out_rqs.bias)
 
 
     def set_input_stats(self, feats):
@@ -182,14 +191,22 @@ class ConvStepper(nn.Module):
                 v = v + self.drop(blk(v))
                 v = self._mod(v, mat, _i + 1)
         o = self.out(v)                                        # [E,C,nx,ny,nz]
+        rq = None
+        if self.rqs_dim:
+            # 격자점 -> 셀: 2^3 평균 (격자점 수 n -> 셀 수 n-1)
+            r = Fn.avg_pool3d(self.out_rqs(v), 2, stride=1)
+            rq = r.reshape(ens, r.shape[1], -1).permute(0, 2, 1).reshape(
+                -1, r.shape[1])                                # [E*Mc, P]
         o = o.reshape(ens, o.shape[1], -1).permute(0, 2, 1).reshape(
             -1, o.shape[1])                                    # [E*M, C]
         dp = o[:, :3] * self.scale
         if self.skin_out:
             lr = (o[:, 3] + math.log(self.h)).clamp(
                 math.log(self.h) - 3.0, math.log(self.h) + 3.0)
-            return dp, lr, torch.zeros_like(lr)
-        # trilinear 전달이라 스키닝 반경·온도가 없다. 변위만 낸다.
-        if self.damage:
-            return dp, Fn.softplus(o[:, 3] - 3.0)
-        return (dp,)
+            out = (dp, lr, torch.zeros_like(lr))
+        elif self.damage:
+            # trilinear 전달이라 스키닝 반경·온도가 없다. 변위만 낸다.
+            out = (dp, Fn.softplus(o[:, 3] - 3.0))
+        else:
+            out = (dp,)
+        return out + (rq,) if rq is not None else out

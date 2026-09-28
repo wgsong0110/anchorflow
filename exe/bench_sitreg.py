@@ -2,6 +2,7 @@
 
 한 학습 스텝의 **순전파 + 역전파** 시간을 잰다 (물리손실까지 포함). 비교 축:
   전달      skin (지금 기본) / bspline (SITReg 상한이 성립하는 전달)
+            / rqs (bspline+상한 위에 셀 내부 단조 RQS 재배열)
   상한      없음 / 있음
   합성      K = 1, 2, 4
   최적화    bf16 autocast, channels_last, torch.compile
@@ -15,9 +16,10 @@ import time
 
 import torch
 
-from anchorflow import phys_resid, trilinear as TRI, vox_anchor
+from anchorflow import phys_resid, tri_spline, trilinear as TRI, vox_anchor
 from anchorflow.deform import skin
-from anchorflow.sitreg_warp import SITRegWarp, max_control_point_value
+from anchorflow.sitreg_warp import (SITRegWarp, cubic_bspline_g2p,
+                                    max_control_point_value)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--traj", required=True)
@@ -71,51 +73,24 @@ def warp_skin(q, c):
 
 
 def warp_bspline(q, c):
-    return q + _bspline(q, lo, float(hh), nn3, c)
+    return q + cubic_bspline_g2p(q, lo, float(hh), nn3, c)
 
 
-_OFF64 = None
+N_CELL = int((nn3[0] - 1) * (nn3[1] - 1) * (nn3[2] - 1))
+P_RQS = tri_spline.n_params(8)
 
 
-def _offs(device):
-    """4^3 스텐실 오프셋을 한 번만 만든다."""
-    global _OFF64
-    if _OFF64 is None or _OFF64.device != torch.device(device):
-        r = torch.arange(4, device=device) - 1
-        _OFF64 = torch.stack(torch.meshgrid(r, r, r, indexing="ij"),
-                             -1).reshape(-1, 3)
-    return _OFF64
-
-
-def _bspline(q, lo_, h_, n3, dp):
-    """3 차 B-spline 업샘플. 64 스텐실을 **벡터로** 모은다 (파이썬 루프 없음)."""
-    t = (q - lo_) / h_
-    base = (t - 0.5).floor()
-    f = t - base
-    base = base.long()
-    w = torch.stack([(1 - f) ** 3 / 6,
-                     (3 * f ** 3 - 6 * f ** 2 + 4) / 6,
-                     (-3 * f ** 3 + 3 * f ** 2 + 3 * f + 1) / 6,
-                     f ** 3 / 6], -1)                     # [N,3,4]
-    off = _offs(q.device)                                  # [64,3]
-    n3l = n3.to(torch.long)
-    idx = (base.unsqueeze(1) + off.unsqueeze(0))           # [N,64,3]
-    idx = torch.stack([idx[..., k].clamp(0, int(n3l[k]) - 1) for k in range(3)], -1)
-    fl = (idx[..., 0] * int(n3l[1]) + idx[..., 1]) * int(n3l[2]) + idx[..., 2]
-    i0, i1, i2 = off[:, 0] + 1, off[:, 1] + 1, off[:, 2] + 1
-    ww = w[:, 0][:, i0] * w[:, 1][:, i1] * w[:, 2][:, i2]  # [N,64]
-    return torch.einsum("nk,nkd->nd", ww, dp[fl])
-
-
-def step(dp, mode, K, bnd):
+def step(dp, mode, K, bnd, th=None):
     if mode == "skin":
         wf = warp_skin
     else:
         wf = warp_bspline
+    xin = (tri_spline.remap(x, lo, float(hh), nn3, th, 8)
+           if mode == "rqs" else x)
     if bnd is None:
-        x2 = wf(x, dp)
+        x2 = wf(xin, dp)
     else:
-        x2 = SITRegWarp(bnd, K).apply(x, dp, wf)
+        x2 = SITRegWarp(bnd, K).apply(xin, dp, wf)
     E, _dl, _Ft, _pt = phys_resid.grid_ip_energy(
         x, x2 - x, v, F0, mass, vol, cfg, h, ng, gl, g=gv, norm=nrm)
     return E
@@ -123,6 +98,8 @@ def step(dp, mode, K, bnd):
 
 def timeit(tag, mode, K, bnd, amp=False, comp=False):
     dp = torch.zeros(gpos.shape[0], 3, device=dev, requires_grad=True)
+    th = (torch.zeros(N_CELL, P_RQS, device=dev, requires_grad=True)
+          if mode == "rqs" else None)
     fn = step
     if comp:
         try:
@@ -134,8 +111,10 @@ def timeit(tag, mode, K, bnd, amp=False, comp=False):
             torch.cuda.synchronize(); t0 = time.time()
         if dp.grad is not None:
             dp.grad = None
+        if th is not None and th.grad is not None:
+            th.grad = None
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
-            E = fn(dp, mode, K, bnd)
+            E = fn(dp, mode, K, bnd, th)
         E.backward()
     torch.cuda.synchronize()
     ms = (time.time() - t0) / a.iters * 1000
@@ -155,5 +134,11 @@ timeit("bspline + 상한 K=2, bf16", "bspline", 2, BND, amp=True)
 if a.compile:
     timeit("bspline + 상한 K=2, compile", "bspline", 2, BND, comp=True)
     timeit("bspline + 상한 K=2, bf16 + compile", "bspline", 2, BND,
+           amp=True, comp=True)
+print(f"== 셀 내부 RQS 재배열 추가 (셀 {N_CELL}, 셀당 파라미터 {P_RQS})")
+timeit("rqs + 상한 K=2", "rqs", 2, BND)
+if a.compile:
+    timeit("rqs + 상한 K=2, compile", "rqs", 2, BND, comp=True)
+    timeit("rqs + 상한 K=2, bf16 + compile", "rqs", 2, BND,
            amp=True, comp=True)
 print(f"\n기준선: skin {b_skin:.2f} ms, bspline {b_bsp:.2f} ms")
