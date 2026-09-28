@@ -161,6 +161,41 @@ def ip_energy(x2, xtil, F_trial, mass, vol, cfg, h, free=None, g=None,
     return tot, dlog, (float(e_in), float(e_el), float(e_g))
 
 
+def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
+                  g=None, norm=None, free=None):
+    """증분 포텐셜을 **입자에서 바로** 잰다 -- MPM 격자를 전혀 거치지 않는다.
+
+        E = Σ_p m_p/(2h²)‖Δu_p − h v_p − h² g‖² + Σ_p V_p Ψ(F_p) + E_c
+        F_p = J_p F_p^n           (J = 변형장 grad_x Phi 의 야코비안)
+
+    격자판(grid_ip_energy)은 Δu 를 P2G 로 노드에 모으고 ∇Δu 를 G2P 미분으로
+    되받아 왔다. 그 왕복은 (i) 노드 평균이 선형장조차 편향되게 만들고,
+    (ii) 셀 내부 재배열·스키닝 가중치를 통째로 잃어 실제로 입자를 옮긴 사상과
+    다른 F 를 만든다. 변형장의 야코비안이 손에 있으면 왕복이 필요 없다.
+
+    n_grid, grid_lim 은 접촉항의 길이 단위(dx)에만 쓰인다 -- 전달이 아니다.
+    """
+    F_tr = (jac.to(F.dtype) @ F) if jac is not None else F
+    psi, dlog = psi_of(F_tr, cfg, h)
+    e_el = (vol * psi).sum()
+    # 중력은 관성항의 목표에 미리 넣는다: x̃ = x + h v + h² g. 따로 −m g·Δu 로
+    # 두면 서브스텝으로 나눌 때 각 구간이 자기 변위만 보게 되어 중력 일이
+    # 1/K 로 줄어든다 (격자판에서 겪은 것과 같은 함정이다).
+    _gh = (h * h) * g if g is not None else 0.0
+    d = du - h * vel - _gh
+    w = (torch.ones_like(mass) if free is None else free.to(mass.dtype))
+    e_in = (0.5 * w * mass / (h * h) * (d * d).sum(-1)).sum()
+    e_g = torch.zeros((), device=x.device, dtype=x.dtype)
+    if g is not None:
+        # 보고용: 이 스텝에서 중력이 한 일 (기울기에는 이미 관성항으로 들어갔다)
+        e_g = -(w * mass * (du * g).sum(-1)).sum().detach()
+    e_bc = bc_energy(x, du, mass, cfg, h, grid_lim, n_grid)
+    tot = e_in + e_el + e_bc
+    if norm is not None:
+        tot = tot / norm
+    return tot, dlog, F_tr, (float(e_in), float(e_el), float(e_g), float(e_bc))
+
+
 def residual(E, x2, mass, ext):
     """|r| 을 질량으로 정규화해 길이 단위로 돌려준다 (물체 크기 대비 %).
 

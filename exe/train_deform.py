@@ -177,6 +177,11 @@ ap.add_argument("--v_from_dt", action="store_true",
                 help="입자 속도를 (x2-x)/h 차분이 아니라 **변형장을 t 로 미분**해 "
                      "얻는다: v = dPhi_t(x)/dt |_{t=h}. t 는 스칼라라 순방향 "
                      "AD 한 번으로 [N,3] 이 통째로 나온다. --dt_cond 필요")
+ap.add_argument("--obj", default="pts", choices=("pts", "grid"),
+                help="증분 포텐셜을 어디서 재는가. pts(기본) 는 **입자에서 바로** "
+                     "잰다 -- MPM 격자를 전혀 거치지 않고, 탄성항의 F 를 변형장 "
+                     "야코비안으로 민다. grid 는 예전 경로(P2G 로 노드 증분을 "
+                     "모으고 G2P 미분으로 ∇Δu 를 되받는다) 로 비교용으로만 남긴다")
 ap.add_argument("--f_from_jac", action="store_true",
                 help="변형구배를 격자 B-스플라인 공간미분(g2p_grad)이 아니라 "
                      "**변형장 자신의 야코비안**으로 민다: F <- grad_x Phi * F. "
@@ -1010,6 +1015,7 @@ def _bspline_g2p(q, lo, h, nn3, dp):
 
 
 _VDT_MSG = []            # --v_from_dt 를 못 쓸 때의 경고를 한 번만
+_OBJ_PTS = (a.obj == "pts")   # 목적함수를 입자에서 바로 재는가 (격자 미사용)
 _SITREG_BND = [None]     # [4,4,4] 상한 (간격 1 기준) -- 한 번만 계산해 캐시
 _RQS_PEN = [None]        # step_once 가 쌓는 RQS 연속성 벌점, 손실 지점이 소비
 
@@ -1052,6 +1058,25 @@ def _warp_from(st):
                                          a.sitreg_k)
     return lambda q, s=st: q + TRI.g2p(
         *TRI.corners(q, s["lo"], s["hh"], s["nn3"]), s["dp"])
+
+
+def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
+          free=None, jac=None):
+    """증분 포텐셜. --obj 에 따라 입자에서 바로(기본) 또는 격자에서 잰다.
+
+    반환 규약은 둘이 같다: (E, dlog, F_trial, parts).
+    """
+    if _OBJ_PTS:
+        if jac is None:
+            raise RuntimeError(
+                "--obj pts 는 변형장 야코비안이 필요하다 (step_once 가 "
+                "None 을 돌려줬다 -- 전달·앙상블 설정을 확인할 것)")
+        return phys_resid.pts_ip_energy(
+            x, du, vel, F, jac, mass, vol, cfg, h, ng, gl,
+            g=g, norm=norm, free=free)
+    return phys_resid.grid_ip_energy(
+        x, du, vel, F, mass, vol, cfg, h, ng, gl,
+        g=g, norm=norm, free=free, jac=(jac if a.f_from_jac else None))
 
 
 def _rqs_pen_take():
@@ -1216,7 +1241,9 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         return q + sum(w(q) - q for w in warps) / len(warps)
 
     _Jf = None
-    _want_J = need_J or a.f_from_jac or a.fe_state or a.det_reg > 0
+    # 입자 목적함수는 탄성항의 ∇Δu 를 격자에서 못 받으므로 야코비안이 필수다
+    _want_J = (need_J or a.f_from_jac or _OBJ_PTS or a.fe_state
+               or a.det_reg > 0)
     if _want_J and a.transfer == "skin" and a.ens == 1:
         # 스키닝은 해석적 야코비안이 있다 (자동미분 세 번보다 싸다)
         st = _stash[0]
@@ -1367,6 +1394,8 @@ def rl_episode(d, t0, E, gsel, gen):
     상태는 스텝 사이에서 detach 한다 -- 그래서 메모리가 E 에 무관하고, 8 프레임을
     거슬러 미분하던 비용이 사라진다. 대신 8 프레임 뒤의 영향은 V 가 실어 나른다.
     """
+    if _OBJ_PTS:
+        raise SystemExit("--rl 경로는 격자 목적함수만 지원한다 (--obj grid)")
     mass_full = traj_mass(d)
     mass = mass_full[gsel] * (float(N_FULL) / gsel.numel())
     ext = d.get("_ext", EXT)
@@ -1549,7 +1578,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
             for _w in range(a.warm):
                 x2w, p, vw, _, _, _, _, _, _, _Jw = step_once(
                     d, t0 + int(_w // sub), gsel, p, x, v, need_J=False)
-                if a.f_from_jac and _Jw is not None:
+                if (_OBJ_PTS or a.f_from_jac) and _Jw is not None:
                     _Ftr = _Jw.to(F.dtype) @ F
                 else:
                     _m, _duI, _vI, _info, _fr = phys_resid.p2g_increment(
@@ -1574,10 +1603,10 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         # 물리손실은 i-PG 와 같은 자리에서 잰다: 학생이 옮긴 가우시안 변위를
         # MPM 격자로 P2G 해 격자 증분 Δu_I 를 역산하고, 관성·중력은 격자에서,
         # 탄성은 격자 속도기울기로 민 F 로 잰다.
-        E, dlog, F_tr, parts = phys_resid.grid_ip_energy(
+        E, dlog, F_tr, parts = ip_of(
             x, x2 - x, v_old, F, mass, vol, cfg, h,
             int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0)),
-            g=g, norm=norm, free=fm, jac=(_Jd if a.f_from_jac else None))
+            g=g, norm=norm, free=fm, jac=_Jd)
         e_tot = e_tot + E
         if i == 0:
             with torch.no_grad():
@@ -2147,10 +2176,9 @@ if a.oracle_roll:
                 _d, _t0 + _fi, _gsel, p, x, v, need_J=False)
             fm = (free_mask(_d, x2.shape[0], dev, _gsel, x, _t0 + _fi)
                   if a.control else None)
-            E, _dl, _Ft, _pt = phys_resid.grid_ip_energy(
+            E, _dl, _Ft, _pt = ip_of(
                 x, x2 - x, v, F, _mass, _vol, _cfg, _hs, _ng, _gl,
-                g=_g, norm=_norm, free=fm,
-                jac=(_Jd if a.f_from_jac else None))
+                g=_g, norm=_norm, free=fm, jac=_Jd)
             E = E + _rqs_pen_take()
             E.backward()
             opt.step()
@@ -2183,9 +2211,9 @@ if a.oracle_roll:
             gt = take(_d["x"][_t0 + _fi + 1], _gsel)
             e = float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / _ext
             st = float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / _ext
-            _E2, dlog, F_tr, _pt = phys_resid.grid_ip_energy(
+            _E2, dlog, F_tr, _pt = ip_of(
                 x, x2 - x, v, F, _mass, _vol, _cfg, _hs, _ng, _gl,
-                g=_g, norm=_norm, free=(fm if a.control else None))
+                g=_g, norm=_norm, free=(fm if a.control else None), jac=_Jd)
             F = phys_resid.plastic_step(F_tr, dlog).detach()
             if _last:
                 PRED.append(x2.detach().cpu()); GT.append(gt.detach().cpu())
@@ -2273,13 +2301,13 @@ if a.roll_scen:
                 _fm = (free_mask(ds, n_p, dev, gsel, x, 0) if a.control
                        else None)
                 _cfg = _sc["cfg"]
-                _E, _dlog, _Ftr, _ = phys_resid.grid_ip_energy(
+                _E, _dlog, _Ftr, _ = ip_of(
                     x, x2 - x, v, F, _sc["mass"],
                     _sc["mass"] / float(_cfg["density"]),
                     _cfg, _hr, int(_cfg["n_grid"]),
                     float(_cfg.get("grid_lim", 2.0)),
                     g=torch.tensor(_cfg["g"], device=dev), norm=1.0, free=_fm,
-                    jac=(_Jd if a.f_from_jac else None))
+                    jac=_Jd)
                 F = phys_resid.plastic_step(_Ftr, _dlog).detach()
                 x, v = x2.detach(), v2.detach()
                 p_st = p2.detach() if torch.is_tensor(p2) else p_st
@@ -2385,22 +2413,35 @@ for it in pbar:
             gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
             ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
             nrm = float(sc["mass"].sum()) * (sc["ext"] ** 2) / (_hp ** 2)
-            E_ip, dlog, F_tr, _pt = phys_resid.grid_ip_energy(
+            E_ip, dlog, F_tr, _pt = ip_of(
                 x, x2 - x, v, F, sc["mass"], vol, cfg, _hp, ng_, gl_,
-                g=gv, norm=nrm, free=fm,
-                jac=(_Jd if a.f_from_jac else None))
-            # 폐기 판정용 길이 단위 잔차. 손실이 E 값이든 잔차든 **같은
-            # 그래프에서 한 번만** dE/dx2 를 뽑아 쓴다 (재평가 없음).
-            _need_g = (a.pool_loss == "residual")
-            _gx, = torch.autograd.grad(E_ip * nrm, x2, retain_graph=True,
-                                       create_graph=_need_g)
-            _rr = _gx * (_hp ** 2) / sc["mass"].unsqueeze(-1
-                                                          ).clamp_min(1e-20) / sc["ext"]
-            if _need_g:
-                loss_p = ((_rr[fm] if fm is not None else _rr) ** 2
-                          ).sum(-1).mean()
-            else:
+                g=gv, norm=nrm, free=fm, jac=_Jd)
+            # 폐기 판정용 길이 단위 잔차.
+            if _OBJ_PTS:
+                # 입자 목적함수에서는 dE/dx2 가 **탄성항을 담지 못한다** --
+                # 탄성은 F=∇Φ·F 를 거치고 ∇Φ 는 x2 의 함수가 아니라 망 출력의
+                # 함수다 (자유변수가 x2 가 아니라 망 출력이라 학습 기울기는
+                # 온전하다). 그래서 폐기 판정은 닫힌 형식의 관성 잔차로 잰다:
+                #   r = (Δu − h v − h² g) / ext   = (h²/m)·∂E_관성/∂x2 / ext
+                _rr = (x2 - x - _hp * v - (_hp ** 2) * gv) / sc["ext"]
+                if a.pool_loss == "residual":
+                    raise SystemExit(
+                        "--obj pts 에서는 --pool_loss residual 을 쓸 수 없다 "
+                        "(잔차가 탄성항을 담지 못한다). --pool_loss energy 로.")
                 loss_p = E_ip
+            else:
+                # 손실이 E 값이든 잔차든 **같은 그래프에서 한 번만** dE/dx2 를
+                # 뽑아 쓴다 (재평가 없음).
+                _need_g = (a.pool_loss == "residual")
+                _gx, = torch.autograd.grad(E_ip * nrm, x2, retain_graph=True,
+                                           create_graph=_need_g)
+                _rr = _gx * (_hp ** 2) / sc["mass"].unsqueeze(
+                    -1).clamp_min(1e-20) / sc["ext"]
+                if _need_g:
+                    loss_p = ((_rr[fm] if fm is not None else _rr) ** 2
+                              ).sum(-1).mean()
+                else:
+                    loss_p = E_ip
             _rl = _rr.detach().norm(dim=-1)
             res = float((_rl[fm] if fm is not None else _rl).mean())
             loss_p = loss_p + _rqs_pen_take()

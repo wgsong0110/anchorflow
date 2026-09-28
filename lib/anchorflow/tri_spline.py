@@ -78,10 +78,15 @@ def remap(x, lo, h, n3, theta_cells, bins, min_bin=1e-3, min_d=1e-3):
     t = (x - lo) / h
     ci = t.floor().long()
     ci = torch.stack([ci[:, k].clamp(0, nc[k] - 1) for k in range(3)], -1)
-    u = (t - ci).clamp(0.0, 1.0)
+    ur = t - ci                                    # 격자 안이면 [0,1)
     flat = (ci[:, 0] * nc[1] + ci[:, 1]) * nc[2] + ci[:, 2]
     th = theta_cells[flat].reshape(x.shape[0], 3, -1)
-    ut = rqs(u, th, bins, min_bin=min_bin, min_d=min_d)
+    ut = rqs(ur.clamp(0.0, 1.0), th, bins, min_bin=min_bin, min_d=min_d)
+    # 격자 **밖**(셀 색인을 clamp 한 점)은 항등으로 둔다. 예전처럼 u 를 clamp 만
+    # 하면 그 성분의 기울기가 0 이 되어 야코비안에 0 행이 생기고, F 가 특이해져
+    # Psi 의 log det 가 터진다 (실측: det grad Phi 최소값이 정확히 0 이었다).
+    inside = (ur >= 0.0) & (ur <= 1.0)
+    ut = torch.where(inside, ut, ur)
     return lo + (ci.to(x.dtype) + ut) * h
 
 
