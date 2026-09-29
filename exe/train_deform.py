@@ -889,9 +889,17 @@ def det_take():
     """직전 스텝 det 로 (탄성 마스크, 복구 손실) 을 만들고 비운다.
 
     d = det(grad Phi) 가 eps 아래인 사면체는 유효한 셀이 아니라고 보고 탄성
-    에서 빼고, d >= eps 로 되돌리는 손실을 크게 준다. 손실은 음수에서도
-    정의되고 **큰 음수에서 더 세게** 밀어야 하므로 softplus 에 2 차항을 더한다:
-        softplus(-(d-eps)/tau)*tau + beta*relu(-d)^2
+    에서 빼고, d >= eps 로 되돌리는 손실을 크게 준다.
+
+    손실은 **유효한 사면체에서 정확히 0** 이어야 한다. 예전 softplus 판은
+    d=1 에서도 1.2e-5 를 남겼고, det_w=100 을 곱하면 물리 목적함수(1.8e-5)
+    의 67 배가 되어 학습이 물리 대신 "det 를 키우는 일" 을 했다 (실측: det
+    중앙 1.06 으로 체적이 계속 부풀고, 구조를 뭘 바꿔도 E 가 9e-4 로 동일).
+    그래서 경첩(hinge) 으로 바꾼다 -- d >= eps 면 값도 기울기도 0 이다:
+
+        pen = relu(eps-d)^2/eps^2 + beta2*relu(-d)^2 + beta3*relu(-d)^3
+
+    음수에서도 정의되고 큰 음수일수록 3 차항이 더 세게 민다.
     """
     dt_ = _DET_LAST[0]
     _DET_LAST[0] = None
@@ -899,9 +907,9 @@ def det_take():
         return None, 0.0
     eps = float(a.det_eps)
     bad = dt_ < eps
-    tau = max(eps, 1e-6)
-    pen = torch.nn.functional.softplus(-(dt_ - eps) / tau) * tau \
-        + 10.0 * torch.relu(-dt_) ** 2
+    neg = torch.relu(-dt_)
+    pen = (torch.relu(eps - dt_) / max(eps, 1e-6)) ** 2 \
+        + 10.0 * neg ** 2 + 10.0 * neg ** 3
     _DET_BAD.append(float(bad.to(torch.float32).mean()))
     _DET_MIN.append(float(dt_.min()))
     _DET_MED.append(float(dt_.median()))
