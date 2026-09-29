@@ -156,6 +156,9 @@ ap.add_argument("--det_eps", type=float, default=0.1,
                 help="사면체 det(grad Phi) 의 하한. 이보다 작은 사면체는 제대로 "
                      "된 셀이 아니라고 보고 **탄성항에서 빼고**, det 를 이 위로 "
                      "되돌리는 복구 손실을 준다")
+ap.add_argument("--det_every", type=int, default=50,
+                help="det 통계(무효 비율·최소·중앙) 를 몇 스텝마다 로그에 "
+                     "남길지. 0 이면 끔")
 ap.add_argument("--det_w", type=float, default=100.0,
                 help="det 복구 손실의 가중치. 물리를 맞추는 것보다 셀이 유효한 "
                      "것이 우선이라 크게 둔다")
@@ -886,9 +889,21 @@ def det_take():
     pen = torch.nn.functional.softplus(-(dt_ - eps) / tau) * tau \
         + 10.0 * torch.relu(-dt_) ** 2
     _DET_BAD.append(float(bad.to(torch.float32).mean()))
-    if len(_DET_BAD) > 200:
-        _DET_BAD.pop(0)
+    _DET_MIN.append(float(dt_.min()))
+    _DET_MED.append(float(dt_.median()))
+    for _q in (_DET_BAD, _DET_MIN, _DET_MED):
+        if len(_q) > 200:
+            _q.pop(0)
     return (~bad), a.det_w * pen.mean()
+
+
+def det_report():
+    """무효 사면체 비율·det 통계 한 줄. 진행바는 폭에 잘려 못 믿는다."""
+    if not _DET_BAD:
+        return ""
+    n = len(_DET_BAD)
+    return (f"무효 {100*sum(_DET_BAD)/n:.3f}%  "
+            f"det 최소 {min(_DET_MIN):.4f} 중앙 {sum(_DET_MED)/n:.4f}")
 
 
 def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
@@ -926,6 +941,8 @@ _PL_RMS = [0.0]
 _RL_MSG = []
 _DET_LAST = [None]       # 직전 스텝의 사면체 det -- 마스킹·복구에 쓴다
 _DET_BAD = []            # 최근 스텝의 무효 사면체 비율 (보고용)
+_DET_MIN = []            # 최근 스텝의 det 최소값
+_DET_MED = []            # 최근 스텝의 det 중앙값
 
 
 class _tsec:
@@ -2424,6 +2441,13 @@ for it in pbar:
                              **({"손상": f"{dmean:.3f}", "d손실": f"{ldm:.1e}"}
                                 if a.damage else {}),
                              gn=f"{float(gn):.1e}")
+    if a.det_every and (it + 1) % a.det_every == 0 and _DET_BAD:
+        # 진행바는 폭에 잘려 못 믿는다 -- det 통계를 로그로 남긴다
+        print(f"  [det {it+1}] {det_report()}", flush=True)
+        if TBW is not None:
+            TBW.add_scalar("det/무효비율", sum(_DET_BAD) / len(_DET_BAD), it)
+            TBW.add_scalar("det/최소", min(_DET_MIN), it)
+            TBW.add_scalar("det/중앙", sum(_DET_MED) / len(_DET_MED), it)
     if a.val_every and ((it + 1) % a.val_every == 0 or it == a.iters - 1):
         _v, _vo = quick_val()
         if TBW is not None:
