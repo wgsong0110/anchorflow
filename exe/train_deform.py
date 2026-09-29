@@ -1065,7 +1065,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         _feats = [cell_feats(d, t, gsel, x, v, shift=_sh, fe=fe)
                   for _sh in shifts]
     p = _feats[-1][1]
-    crow = _feats[-1][5]
+    crow = _feats[-1][4]      # (_in, p, grid_shape, (lo,hh,nn3), crow)
     _meta = []
     for (_in, p_, grid_shape, (lo, hh, nn3), _cr) in _feats:
         m = dict(lo=lo, hh=float(hh), nn3=nn3, cells=grid_shape[1],
