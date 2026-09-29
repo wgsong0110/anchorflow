@@ -153,7 +153,11 @@ def bary_g2p_jac(q, lo, h, n3, dp):
     idx, w, (s, rank, tv) = _sym_locate(q, lo, h, n3)
     dpc = dp[idx]                                      # [N,8,3]
     u = (w.unsqueeze(-1) * dpc).sum(1)
-    sgn = torch.where(s, -2.0 / h, 2.0 / h)            # [N,3] dm/df /h
+    # torch.where(bool, 파이썬실수, 파이썬실수) 는 **기본 dtype(float32)** 로
+    # 떨어진다 -- 2/h 가 float32 에서 안 떨어지는 h 면 상수 배율 오차(실측
+    # 6.0e-9)가 야코비안 전체에 실린다. dtype 을 박아 만든다.
+    _c2 = torch.as_tensor(2.0 / h, device=q.device, dtype=u.dtype)
+    sgn = torch.where(s, -_c2, _c2)                    # [N,3] dm/df /h
     r_ax = rank + 1                                    # [N,3] 축의 t 색인 1..3
     half = (2.0 ** (-r_ax.to(u.dtype)))                # 1/2^r
     sl = s.long()
