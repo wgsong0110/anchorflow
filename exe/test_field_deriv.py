@@ -93,21 +93,35 @@ def field(net, kind, tau, q, lo, nn3_, sidx, feat):
     return q + bary_g2p(q, lo, hh, nn3_, dp)
 
 
-def field_jac(net, kind, tau, q, lo, nn3_, feat):
-    """train_deform 의 --jac analytic 과 같은 닫힌 형식 야코비안."""
+def warp_from_out(out, kind, q, lo, nn3_):
+    """고정된 net 출력으로 공간 사상만 되짓는다 (autograd 야코비안용)."""
     cw, nw = kind
-    out = net(None, feat, tau, GRID, cells=CELLS)
     dp = out[0]
-    kj = bary_g2p_jac
+    if cw == "rqs":
+        q = tri_spline.remap(q, lo, hh, nn3_, out[-1], a.bins)
+    if nw == "bound":
+        return BoundedWarp(BND, 5).apply(
+            q, dp, lambda z, c: z + bary_g2p(z, lo, hh, nn3_, c))
+    return q + bary_g2p(q, lo, hh, nn3_, dp)
+
+
+def jac_from_out(out, kind, q, lo, nn3_):
+    """같은 net 출력에서 닫힌 형식 야코비안 (train_deform --jac analytic 동일).
+
+    net 을 다시 부르면 GPU 리덕션 지터로 dp 가 ~1e-9 상대만큼 달라져 비교가
+    흐려진다 -- 반드시 **같은 out** 으로 양쪽을 재야 한다.
+    """
+    cw, nw = kind
+    dp = out[0]
     sl = None
     if cw == "rqs":
         q, sl = tri_spline.remap(q, lo, hh, nn3_, out[-1], a.bins,
                                  return_jac=True)
     if nw == "bound":
         _, J = BoundedWarp(BND, 5).apply_jac(
-            q, dp, lambda z, c: kj(z, lo, hh, nn3_, c))
+            q, dp, lambda z, c: bary_g2p_jac(z, lo, hh, nn3_, c))
     else:
-        _u, G = kj(q, lo, hh, nn3_, dp)
+        _u, G = bary_g2p_jac(q, lo, hh, nn3_, dp)
         J = torch.eye(3, device=dev, dtype=q.dtype) + G
     if sl is not None:
         J = J * sl.unsqueeze(1)
@@ -190,20 +204,18 @@ for kind in (("none", "plain"), ("none", "bound"),
         xs = x64[keep]
     else:
         xs = x64
-    Ja = jacobian_of(lambda z: field(net, kind, torch.as_tensor(
-        HDT, device=dev, dtype=torch.float64), z, lo64, nn3, None, feat64),
-        xs)
+    with torch.no_grad():
+        out_fix = net(None, feat64, torch.as_tensor(
+            HDT, device=dev, dtype=torch.float64), GRID, cells=CELLS)
+    out_fix = tuple(o.detach() for o in out_fix)
+    Ja = jacobian_of(lambda z: warp_from_out(out_fix, kind, z, lo64, nn3), xs)
     with torch.no_grad():
         I3 = torch.eye(3, device=dev, dtype=torch.float64)
         sp = 1e-6
         cols = []
         for k in range(3):
-            fp = field(net, kind, torch.as_tensor(HDT, device=dev,
-                                                  dtype=torch.float64),
-                       xs + sp * I3[k], lo64, nn3, None, feat64)
-            fm = field(net, kind, torch.as_tensor(HDT, device=dev,
-                                                  dtype=torch.float64),
-                       xs - sp * I3[k], lo64, nn3, None, feat64)
+            fp = warp_from_out(out_fix, kind, xs + sp * I3[k], lo64, nn3)
+            fm = warp_from_out(out_fix, kind, xs - sp * I3[k], lo64, nn3)
             cols.append((fp - fm) / (2 * sp))
         Jfd = torch.stack(cols, -1)
     # 판정은 입자별로 한다. PL 전달은 C0 이라 사면체 면에서 기울기가 꺾이고,
@@ -213,9 +225,7 @@ for kind in (("none", "plain"), ("none", "bound"),
     _pj = ((Ja - Jfd).reshape(xs.shape[0], -1).norm(dim=-1)
            / Jfd.reshape(xs.shape[0], -1).norm(dim=-1).clamp_min(1e-30))
     _njb = int((_pj > 1e-3).sum())
-    Jan = field_jac(net, kind, torch.as_tensor(HDT, device=dev,
-                                               dtype=torch.float64),
-                    xs, lo64, nn3, feat64).detach()
+    Jan = jac_from_out(out_fix, kind, xs, lo64, nn3).detach()
     # 입자별로 본다. 전역 노름비는 셀 면/동률(argsort·floor 비평활)을 밟은
     # 소수 점이 지배한다 -- 거기서는 autograd 도 analytic 도 한쪽 값을 주지만
     # 어느 쪽 셀을 잡느냐가 갈릴 수 있다 (측도 0 집합, a.e. 에서 둘은 같다).
