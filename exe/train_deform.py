@@ -902,8 +902,11 @@ def det_report():
     if not _DET_BAD:
         return ""
     n = len(_DET_BAD)
-    return (f"무효 {100*sum(_DET_BAD)/n:.3f}%  "
-            f"det 최소 {min(_DET_MIN):.4f} 중앙 {sum(_DET_MED)/n:.4f}")
+    # 창 최소(최근 200 표본) 와 **현재 스텝** 을 함께 보인다 -- 창만 보면
+    # 오래된 위반이 남아 회복을 못 읽는다
+    return (f"무효 {100*sum(_DET_BAD)/n:.3f}% (지금 {100*_DET_BAD[-1]:.3f}%)  "
+            f"det 최소 {min(_DET_MIN):.4f} (지금 {_DET_MIN[-1]:.4f}) "
+            f"중앙 {sum(_DET_MED)/n:.4f}")
 
 
 def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
