@@ -17,7 +17,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "lib"))
 from anchorflow import phys_resid                              # noqa: E402
-from anchorflow import trilinear as TRI                        # noqa: E402
+from anchorflow.sitreg_warp import bary_g2p
 from anchorflow import vox_anchor                              # noqa: E402
 
 ap = argparse.ArgumentParser()
@@ -146,7 +146,6 @@ for fn in a.files.split(","):
             continue
         if a.var == "grid":
             lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
-            sidx, _w8 = TRI.corners(x, lo, hh, nn3)
             gpos = (torch.stack(torch.meshgrid(
                 *[torch.arange(int(nn3[i]), device=dev, dtype=x.dtype)
                   for i in range(3)], indexing="ij"), -1).reshape(-1, 3)
@@ -154,7 +153,7 @@ for fn in a.files.split(","):
             var = torch.zeros(gpos.shape[0], 3, device=dev, requires_grad=True)
 
             def warp(_v):
-                return x + TRI.g2p(sidx, _w8, _v)
+                return x + bary_g2p(x, lo, float(hh), nn3, _v)
         else:
             # 가우시안 위치 자체가 변수다 (격자 제한 없음)
             var = torch.zeros(x.shape[0], 3, device=dev, requires_grad=True)

@@ -1,9 +1,9 @@
-"""가우시안 <-> 격자 전달을 trilinear 로만 한다 (MPM 의 P2G/G2P 와 같은 구조).
+"""입자 -> **셀 특징** 집계 (망 입력 쪽 전용).
 
-가우시안은 자기가 들어 있는 육면체의 **꼭짓점 8개**에만 기여하고, 이동량도 같은
-8개의 변위를 보간해 받는다. 이웃 탐색이 없고, 집계와 스키닝이 **같은 가중치**를 쓴다.
-
-학습되는 반경·온도가 없으므로 변형 사상의 세밀함은 격자 해상도가 정한다.
+격자-입자 **전달**(격자점 변위를 가우시안에 입히는 것)은 이 파일에 없다 --
+trilinear 전달은 셀이 뒤집혀 겹칠 수 있어 제거됐고, 전달은 Kuhn 사면체
+barycentric(sitreg_warp.bary_g2p) 하나뿐이다. 여기 남은 것은 입자 물리량을
+셀로 모으는 가중 평균이라 기하를 변형하지 않으며 접힘과 무관하다.
 """
 from __future__ import annotations
 
@@ -12,59 +12,6 @@ import torch
 # 육면체 꼭짓점 오프셋 (순서 고정)
 _C = torch.tensor([[0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1],
                    [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1]])
-
-
-def corners(x, lo, h, n):
-    """가우시안마다 (꼭짓점 평탄인덱스 [N,8], trilinear 가중치 [N,8])."""
-    dev = x.device
-    c8 = _C.to(dev)
-    u = (x - lo) / h
-    i0 = torch.floor(u).long()
-    i0 = torch.stack([i0[:, d].clamp(0, int(n[d]) - 2) for d in range(3)], -1)
-    f = (u - i0.to(u.dtype)).clamp(0, 1)                      # [N,3]
-    idx = i0.unsqueeze(1) + c8.unsqueeze(0)                   # [N,8,3]
-    w = torch.ones(x.shape[0], 8, device=dev, dtype=x.dtype)
-    for d in range(3):
-        fd = f[:, d].unsqueeze(1)
-        cd = c8[:, d].to(x.dtype).unsqueeze(0)
-        w = w * (cd * fd + (1.0 - cd) * (1.0 - fd))
-    flat = (idx[:, :, 0] * int(n[1]) + idx[:, :, 1]) * int(n[2]) + idx[:, :, 2]
-    return flat, w
-
-
-def active(flat):
-    """쓰이는 격자점만 남긴다 -> (행번호 [N,8], 평탄인덱스 [M])."""
-    uniq, inv = torch.unique(flat.reshape(-1), return_inverse=True)
-    return inv.reshape(flat.shape), uniq
-
-
-def rows_for(flat, uniq):
-    """고정된 활성 집합 uniq 에 대해 평탄인덱스를 행 번호로 옮긴다."""
-    import torch as _t
-    r = _t.searchsorted(uniq, flat.reshape(-1)).clamp(max=uniq.numel() - 1)
-    return r.reshape(flat.shape)
-
-
-def unflatten(uniq, n, lo, h, dtype):
-    nz, ny = int(n[2]), int(n[1])
-    cz = uniq % nz
-    cy = (uniq // nz) % ny
-    cx = uniq // (ny * nz)
-    co = torch.stack([cx, cy, cz], -1)
-    return co, (co.to(dtype) + 0.5 * 0.0) * h + lo      # 격자점은 칸 모서리다
-
-
-def p2g(rows, w, vals, M):
-    """가우시안 값 [N,F] 를 trilinear 가중으로 격자점에 누적 -> [M,F]."""
-    N, K = rows.shape
-    out = torch.zeros(M, vals.shape[-1], device=vals.device, dtype=vals.dtype)
-    src = (w.unsqueeze(-1) * vals.unsqueeze(1)).reshape(N * K, -1)
-    return out.index_add_(0, rows.reshape(-1), src)
-
-
-def g2p(rows, w, grid_vals):
-    """격자점 값 [M,F] 를 가우시안으로 보간 -> [N,F]."""
-    return (w.unsqueeze(-1) * grid_vals[rows]).sum(1)
 
 
 def _inv3(A):

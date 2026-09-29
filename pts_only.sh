@@ -1,6 +1,6 @@
 #!/bin/bash
 # 증분 포텐셜을 **입자에서 바로** 재는 물리손실만으로 학습한다 (MPM 격자 미사용).
-#   - 전달    :  trilinear 고정 가중치. 로컬(CW=none|rqs)과 글로벌(NW=tri|bound)
+#   - 전달    :  Kuhn 사면체 barycentric. 로컬(CW=none|rqs)과 글로벌(NW=plain|bound)
 #                 은 독립이라 따로 고른다 (기본 rqs+bound)
 #   - 목적함수:  E = Σ m/(2h²)‖Δu − h v − h² g‖² + Σ V Ψ(∇Φ·F) + 접촉항
 #   - 속도    :  v = dΦ_t(x)/dt   (차분 아님, 순방향 AD)

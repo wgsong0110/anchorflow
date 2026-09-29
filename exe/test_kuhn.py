@@ -4,8 +4,7 @@
 """
 import torch
 
-from anchorflow import trilinear as TRI
-from anchorflow.sitreg_warp import (BoundedWarp, TRILINEAR_BOUND,
+from anchorflow.sitreg_warp import (BoundedWarp, WARP_BOUND,
                                     _kuhn_locate, bary_g2p, bary_g2p_jac)
 
 torch.manual_seed(0)
@@ -69,8 +68,8 @@ Ga = torch.stack([torch.autograd.grad(
 r = float((G - Ga).norm() / Ga.norm().clamp_min(1e-30))
 chk("해석 ∇u == autograd", r < 1e-10, f"상대오차 {r:.1e}")
 
-# 5) 상한 + K 합성: det > 0 (trilinear 와 같은 h/6 상한이 PL 에도 성립)
-w = BoundedWarp(TRILINEAR_BOUND * h, 5)
+# 5) 상한 + K 합성: det > 0 (h/6 성분 상한이면 Lipschitz<1)
+w = BoundedWarp(WARP_BOUND * h, 5)
 big = torch.randn(M, 3, device=dev, dtype=DT) * 10.0
 _, J = w.apply_jac(xs.detach(), big,
                    lambda z, c: bary_g2p_jac(z, lo, h, n3, c))

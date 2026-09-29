@@ -1,7 +1,7 @@
 """로컬(셀 내부 RQS) x 글로벌(상한 워프) 조합별 한 학습 스텝 실행시간.
 
-한 스텝의 **순전파 + 역전파** 시간을 잰다 (물리손실 포함). 격자-입자 가중치는
-어느 조합이든 trilinear 고정이고, 두 단계는 독립이라 비용도 따로 얹힌다.
+한 스텝의 **순전파 + 역전파** 시간을 잰다 (물리손실 포함). 격자-입자 전달은
+Kuhn 사면체 barycentric 하나이고, 두 단계는 독립이라 비용도 따로 얹힌다.
 
   python exe/bench_sitreg.py --traj traj_h2/mic_clayC_t_s400706.pt
 """
@@ -10,8 +10,8 @@ import time
 
 import torch
 
-from anchorflow import phys_resid, tri_spline, trilinear as TRI, vox_anchor
-from anchorflow.sitreg_warp import BoundedWarp, TRILINEAR_BOUND
+from anchorflow import phys_resid, tri_spline, vox_anchor
+from anchorflow.sitreg_warp import BoundedWarp, WARP_BOUND, bary_g2p
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--traj", required=True)
@@ -46,12 +46,12 @@ hh = float(hh)
 M = int(nn3[0] * nn3[1] * nn3[2])
 NC = int((nn3[0] - 1) * (nn3[1] - 1) * (nn3[2] - 1))
 P = tri_spline.n_params(a.rqs_bins)
-BND = TRILINEAR_BOUND * hh
+BND = WARP_BOUND * hh
 print(f"[상한] 격자점 변위 성분 |c| < {BND:.5f} (간격 {hh:.5f} 기준)")
 
 
-def warp_tri(q, c):
-    return q + TRI.g2p(*TRI.corners(q, lo, hh, nn3), c)
+def warp_bary(q, c):
+    return q + bary_g2p(q, lo, hh, nn3, c)
 
 
 def step(dp, mode, K, th=None):
@@ -60,9 +60,9 @@ def step(dp, mode, K, th=None):
     if cw == "rqs":
         q = tri_spline.remap(q, lo, hh, nn3, th, a.rqs_bins)
     if nw == "bound":
-        x2 = BoundedWarp(BND, K).apply(q, dp, warp_tri)
+        x2 = BoundedWarp(BND, K).apply(q, dp, warp_bary)
     else:
-        x2 = warp_tri(q, dp)
+        x2 = warp_bary(q, dp)
     E, _dl, _Ft, _pt = phys_resid.grid_ip_energy(
         x, x2 - x, v, F0, mass, vol, cfg, h, ng, gl, g=gv, norm=nrm)
     return E
@@ -95,8 +95,8 @@ def timeit(tag, mode, K, amp=False, comp=False):
 
 
 print(f"[설정] 입자 {sel.numel()}, 격자점 {M}, 셀 {NC}, 반복 {a.iters}")
-b0 = timeit("none + tri (맨 trilinear)", ("none", "tri"), 1)
-timeit("rqs  + tri (재배열만)", ("rqs", "tri"), 1)
+b0 = timeit("none + plain (맨 barycentric)", ("none", "plain"), 1)
+timeit("rqs  + plain (재배열만)", ("rqs", "plain"), 1)
 timeit("none + bound K=5 (상한만)", ("none", "bound"), 5)
 for K in (1, 2, 5, 8):
     timeit(f"rqs  + bound K={K}", ("rqs", "bound"), K)
@@ -104,4 +104,4 @@ if a.compile:
     timeit("rqs + bound K=5, compile", ("rqs", "bound"), 5, comp=True)
     timeit("rqs + bound K=5, bf16 + compile", ("rqs", "bound"), 5,
            amp=True, comp=True)
-print(f"\n기준선: none+tri {b0:.2f} ms")
+print(f"\n기준선: none+plain {b0:.2f} ms")

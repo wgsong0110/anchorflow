@@ -17,7 +17,8 @@ ap.add_argument("--n_win", type=int, default=6)
 a = ap.parse_args()
 
 dev = "cuda:0"
-from anchorflow import trilinear as TRI, vox_anchor
+from anchorflow.sitreg_warp import bary_g2p
+from anchorflow import vox_anchor
 
 files = sorted(glob.glob(os.path.join(a.data, "*.pt")))[:a.n_traj]
 acc = {k: 0.0 for k in ("정지", "관성", "관성격자", "관성최적", "평행이동", "자유")}
@@ -40,7 +41,6 @@ for f in files:
             return float(((p - u) ** 2).sum(-1).mean()) / EXT ** 2
 
         lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
-        flat, w = TRI.corners(x, lo, hh, nn3)
         M = int(nn3[0] * nn3[1] * nn3[2])
         # 셀평균 속도를 격자로 흩뿌렸다가 다시 모은다 (학생이 쓰는 경로)
         num = torch.zeros(M, 3, device=dev)
@@ -48,18 +48,18 @@ for f in files:
         num.index_add_(0, flat.reshape(-1), (w.unsqueeze(-1) * v.unsqueeze(1)).reshape(-1, 3))
         den.index_add_(0, flat.reshape(-1), w.reshape(-1, 1))
         vg = num / den.clamp(min=1e-12)
-        v_smooth = TRI.g2p(flat, w, vg)
+        v_smooth = bary_g2p(x, lo, float(hh), nn3, vg)
         s = float((u * v).sum() / (v * v).sum().clamp(min=1e-20))
         dp = torch.zeros(M, 3, device=dev, requires_grad=True)
         opt = torch.optim.Adam([dp], lr=3e-2)
         for _ in range(300):
             opt.zero_grad()
-            (((x + TRI.g2p(flat, w, dp)) - gt) ** 2).sum(-1).mean().div(EXT ** 2).backward()
+            (((x + bary_g2p(x, lo, float(hh), nn3, dp)) - gt) ** 2).sum(-1).mean().div(EXT ** 2).backward()
             opt.step()
         acc["정지"] += e(torch.zeros_like(u)); acc["관성"] += e(v)
         acc["관성격자"] += e(v_smooth); acc["관성최적"] += e(s * v)
         acc["평행이동"] += e(u.mean(0, keepdim=True).expand_as(u))
-        acc["자유"] += e(TRI.g2p(flat, w, dp.detach()))
+        acc["자유"] += e(bary_g2p(x, lo, float(hh), nn3, dp.detach()))
         cnt += 1
     print(f"  {os.path.basename(f)} 완료", flush=True)
 

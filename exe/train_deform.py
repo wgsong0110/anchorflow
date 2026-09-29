@@ -138,7 +138,8 @@ ap.add_argument("--metrics", action="store_true",
 ap.add_argument("--cd_pts", type=int, default=2048,
                 help="CD/EMD 표본 크기 (EMD 가 O(n^3) 이라 필요하다)")
 # 변형은 로컬·글로벌 두 단계가 **순차·독립**이라 따로 고른다. 격자-입자
-# 가중치는 어느 조합이든 trilinear 고정이다.
+# 전달은 어느 조합이든 Kuhn 사면체 barycentric 하나다 (trilinear 는 셀이
+# 뒤집혀 겹칠 수 있어 제거됐다).
 ap.add_argument("--cell_warp", default="rqs", choices=("none", "rqs"),
                 help="로컬: 셀 내부 상대좌표 재배열. rqs 는 단조 유리이차 "
                      "스플라인 (자체로 단사 -- 셀 안 준불연속을 담는다), "
@@ -147,11 +148,6 @@ ap.add_argument("--node_warp", default="bound", choices=("plain", "bound"),
                 help="글로벌: 격자점 변위 워프. plain 은 상한 없음 (접힘 "
                      "가능), bound 는 Lipschitz 상한(간격/6)을 지키는 미소 "
                      "워프를 K 번 합성해 단사를 보장")
-ap.add_argument("--node_kernel", default="tri", choices=("tri", "bary"),
-                help="글로벌 워프의 보간 커널. tri 는 trilinear (칸 8꼭짓점), "
-                     "bary 는 Kuhn 사면체 분할 위 barycentric (사면체 4꼭짓점, "
-                     "PL 이라 사면체별 야코비안이 상수). 상한 상수는 둘 다 "
-                     "간격/6 으로 같다")
 ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
                 help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
                      "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
@@ -376,8 +372,8 @@ from anchorflow import deform                                  # noqa: E402
 from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import tri_spline                               # noqa: E402
 from anchorflow import voxel                                    # noqa: E402
-from anchorflow.sitreg_warp import (BoundedWarp, TRILINEAR_BOUND,  # noqa: E402
-                                    bary_g2p, bary_g2p_jac, tri_g2p_jac)
+from anchorflow.sitreg_warp import (BoundedWarp, WARP_BOUND,      # noqa: E402
+                                    bary_g2p, bary_g2p_jac)
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
                                bc_features, bond_stretch, bures_w2_sq,
                                fps, gauss_stretch, grid_knn,
@@ -901,7 +897,7 @@ def fe_invariants(fe):
 def cell_feats(d, t, gsel, x, v, shift=None, fe=None):
     """학습·통계·추론이 **모두 같은** 입력을 쓰도록 한 군데서 만든다.
 
-    -> (_in [셀, F], p 셀중심, grid_shape (격자점, 셀), tri (평탄idx, 가중치),
+    -> (_in [셀, F], p 셀중심, grid_shape (격자점, 셀),
         (lo, h, n) 격자, crow 셀 색인)
     """
     cfg = d["cfg"]
@@ -936,10 +932,8 @@ def cell_feats(d, t, gsel, x, v, shift=None, fe=None):
         den.index_add_(0, crow.reshape(-1), wm.reshape(-1, 1))
         cond = _san(num / den.clamp(min=1e-12))
     p = ccen                       # 조건·경계 특징은 셀 중심에서 읽는다
-    flat_c, w_c = TRI.corners(x, lo, hh, nn3)      # 출력(격자점) -> 가우시안
     grid_pts = tuple(int(t) for t in nn3)
     grid_shape = (grid_pts, tuple(ncell))
-    tri = (flat_c, w_c)
     if a.fe_state:
         # 입자별 불변량을 셀로 질량가중 평균한다 (집계 가중치는 cell_feats 와 같다)
         _ei = (fe_invariants(fe) if fe is not None
@@ -968,7 +962,7 @@ def cell_feats(d, t, gsel, x, v, shift=None, fe=None):
     feat = torch.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0).clamp(-_FCAP, _FCAP)
     extra = torch.nan_to_num(extra, nan=0.0, posinf=0.0, neginf=0.0).clamp(-_FCAP, _FCAP)
     _in = torch.cat([feat, extra], -1)
-    return _in, p, grid_shape, tri, (lo, hh, nn3), crow
+    return _in, p, grid_shape, (lo, hh, nn3), crow
 
 
 # ---------------------------------------------------------------- 구간 시간
@@ -1004,34 +998,20 @@ _RQS_PEN = [None]        # step_once 가 쌓는 RQS 연속성 벌점, 손실 지
 
 
 def _warp_bound(hh):
-    """격자점 변위 성분 상한. trilinear 의 Lipschitz<1 조건에서 나온다."""
-    return TRILINEAR_BOUND * float(hh)
-
-
-def _kernel_val(q, lo, h, nn3, c):
-    """보간 커널의 값: trilinear(8꼭짓점) 또는 Kuhn barycentric(4꼭짓점)."""
-    if a.node_kernel == "bary":
-        return bary_g2p(q, lo, h, nn3, c)
-    return TRI.g2p(*TRI.corners(q, lo, h, nn3), c)
-
-
-def _kernel_jac(q, lo, h, nn3, c):
-    """보간 커널의 (값, ∇u) -- 둘 다 닫힌 형식이다."""
-    if a.node_kernel == "bary":
-        return bary_g2p_jac(q, lo, h, nn3, c)
-    return tri_g2p_jac(q, lo, h, nn3, c)
+    """격자점 변위 성분 상한. barycentric 의 Lipschitz<1 조건에서 나온다."""
+    return WARP_BOUND * float(hh)
 
 
 def _node_warp_fn(q, lo, h, nn3, dp, bound):
-    """글로벌 단계: 격자점 변위 dp 를 고정 기하 가중치로 입힌다.
+    """글로벌 단계: 격자점 변위 dp 를 barycentric 으로 입힌다.
 
     bound 가 있으면 상한 지키는 미소 워프의 K 합성 (단사 보장), 없으면 맨
     커널이다. 로컬 단계(셀 내부 재배열)와 완전히 독립이다.
     """
     if bound is None:
-        return q + _kernel_val(q, lo, h, nn3, dp)
+        return q + bary_g2p(q, lo, h, nn3, dp)
     return BoundedWarp(bound, a.node_k).apply(
-        q, dp, lambda z, c: z + _kernel_val(z, lo, h, nn3, c))
+        q, dp, lambda z, c: z + bary_g2p(z, lo, h, nn3, c))
 
 
 def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
@@ -1087,8 +1067,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     p = _feats[-1][1]
     crow = _feats[-1][5]
     _meta = []
-    for (_in, p_, grid_shape, tri, (lo, hh, nn3), _cr) in _feats:
-        m = dict(lo=lo, hh=float(hh), nn3=nn3, cells=grid_shape[1], tri=tri,
+    for (_in, p_, grid_shape, (lo, hh, nn3), _cr) in _feats:
+        m = dict(lo=lo, hh=float(hh), nn3=nn3, cells=grid_shape[1],
                  bound=(_warp_bound(hh) if a.node_warp == "bound" else None))
         _meta.append(m)
 
@@ -1122,7 +1102,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     def _field(tau):
         """Phi_tau(x) 와, 사상을 되짓는 데 필요한 출력 텐서들."""
         acc, outs = 0.0, []
-        for (_in, p_, grid_shape, tri, _g3, _cr), m in zip(_feats, _meta):
+        for (_in, p_, grid_shape, _g3, _cr), m in zip(_feats, _meta):
             with _tsec("신경망"):
                 out = net(p_, _in, tau, grid_shape[0], cells=grid_shape[1],
                           mat=_mv)
@@ -1187,11 +1167,11 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 q0, sl = tri_spline.remap(x, m["lo"], m["hh"], m["nn3"],
                                           o[1], a.rqs_bins, return_jac=True)
             if m["bound"] is None:
-                _u, _G = _kernel_jac(q0, m["lo"], m["hh"], m["nn3"], o[0])
+                _u, _G = bary_g2p_jac(q0, m["lo"], m["hh"], m["nn3"], o[0])
                 Jk = torch.eye(3, device=dev, dtype=x.dtype) + _G
             else:
                 _, Jk = BoundedWarp(m["bound"], a.node_k).apply_jac(
-                    q0, o[0], lambda z, c, _m=m: _kernel_jac(
+                    q0, o[0], lambda z, c, _m=m: bary_g2p_jac(
                         z, _m["lo"], _m["hh"], _m["nn3"], c))
             if sl is not None:
                 Jk = Jk * sl.unsqueeze(1)      # J @ diag(RQS 기울기)
@@ -1330,7 +1310,7 @@ def rl_state_feat(d, t, gsel, x, v, fe, p=None):
         extra = torch.nan_to_num(extra, nan=0.0, posinf=0.0, neginf=0.0)
         drift = float(dist[:, 0].mean())
         return torch.cat([feat, extra], -1), drift
-    _in, _p, _gs, _tri, _lo, _crow = cell_feats(d, t, gsel, x, v, fe=fe)
+    _in, _p, _gs, _lo, _crow = cell_feats(d, t, gsel, x, v, fe=fe)
     return _in, 0.0
 
 
@@ -1480,11 +1460,11 @@ def phys_window(d, t0, K, gsel, sigma, gen):
 
             def _warp_n(q):
                 return _wn.apply(q, _dpn,
-                                 lambda z, c: z + _kernel_val(
+                                 lambda z, c: z + bary_g2p(
                                      z, _lo, float(_hh), _n3, c))
         else:
             def _warp_n(q):
-                return q + _kernel_val(q, _lo, float(_hh), _n3, _dpn)
+                return q + bary_g2p(q, _lo, float(_hh), _n3, _dpn)
         u = _warp_n(x) - x
         gu = jacobian_of(_warp_n, x) - torch.eye(3, device=dev)
         _fm0 = free_mask(d, x.shape[0], dev, gsel, x, t0) if a.control else None
@@ -1794,7 +1774,7 @@ with torch.no_grad():
             _cr = None
         else:
             _fes = (take(traj_F(_dd)[_t], _gs).float() if a.fe_state else None)
-            _s, _, _, _, _, _cr = cell_feats(_dd, _t, _gs, _x, _v, fe=_fes)
+            _s, _, _, _, _cr = cell_feats(_dd, _t, _gs, _x, _v, fe=_fes)
         if a.stat_occ and _cr is not None:  # 빈 칸이 96% 라 통계를 장악한다
             _m = torch.zeros(_s.shape[0], dtype=torch.bool, device=_s.device)
             _m[_cr.reshape(-1)] = True

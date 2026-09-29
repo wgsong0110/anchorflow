@@ -19,11 +19,10 @@ import torch
 import torch.autograd.forward_ad as fwAD
 
 from anchorflow import phys_resid, tri_spline, vox_anchor
-from anchorflow import trilinear as TRI
 from anchorflow.conv_stepper import ConvStepper
 from anchorflow.deform import jacobian_of
-from anchorflow.sitreg_warp import (BoundedWarp, TRILINEAR_BOUND,
-                                    bary_g2p, bary_g2p_jac, tri_g2p_jac)
+from anchorflow.sitreg_warp import (BoundedWarp, WARP_BOUND,
+                                    bary_g2p, bary_g2p_jac)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--traj", required=True)
@@ -51,7 +50,7 @@ NC = int((nn3[0] - 1) * (nn3[1] - 1) * (nn3[2] - 1))
 P = tri_spline.n_params(a.bins)
 CELLS = tuple(int(nn3[k]) - 1 for k in range(3))
 GRID = tuple(int(c) for c in nn3)
-BND = TRILINEAR_BOUND * hh
+BND = WARP_BOUND * hh
 feat32 = torch.randn(NC, 8, device=dev)
 ok = True
 
@@ -81,31 +80,25 @@ def mknet(cw, wake=True, dtype=torch.float32):
     return n
 
 
-def _kval(kr, z, lo, nn3_, c):
-    if kr == "bary":
-        return bary_g2p(z, lo, hh, nn3_, c)
-    return TRI.g2p(*TRI.corners(z, lo, hh, nn3_), c)
-
-
 def field(net, kind, tau, q, lo, nn3_, sidx, feat):
-    """kind = (로컬 cell_warp, 글로벌 node_warp, 커널). 전부 직교다."""
-    cw, nw, kr = kind
+    """kind = (로컬 cell_warp, 글로벌 node_warp). 두 축은 직교다."""
+    cw, nw = kind
     out = net(None, feat, tau, GRID, cells=CELLS)
     dp = out[0]
     if cw == "rqs":
         q = tri_spline.remap(q, lo, hh, nn3_, out[-1], a.bins)
     if nw == "bound":
         return BoundedWarp(BND, 5).apply(
-            q, dp, lambda z, c: z + _kval(kr, z, lo, nn3_, c))
-    return q + _kval(kr, q, lo, nn3_, dp)
+            q, dp, lambda z, c: z + bary_g2p(z, lo, hh, nn3_, c))
+    return q + bary_g2p(q, lo, hh, nn3_, dp)
 
 
 def field_jac(net, kind, tau, q, lo, nn3_, feat):
     """train_deform 의 --jac analytic 과 같은 닫힌 형식 야코비안."""
-    cw, nw, kr = kind
+    cw, nw = kind
     out = net(None, feat, tau, GRID, cells=CELLS)
     dp = out[0]
-    kj = bary_g2p_jac if kr == "bary" else tri_g2p_jac
+    kj = bary_g2p_jac
     sl = None
     if cw == "rqs":
         q, sl = tri_spline.remap(q, lo, hh, nn3_, out[-1], a.bins,
@@ -135,10 +128,9 @@ def dphi_dt(net, kind, tau_v, q, lo, nn3_, sidx, feat):
 
 
 # ---- A) 정확 검사: 선형 전달 + 항등 FiLM 이면 dPhi/dt == 할선 -----------------
-print("== A) 배선 정확 검사 (none+plain+tri, 항등 dtfilm)")
+print("== A) 배선 정확 검사 (none+plain, 항등 dtfilm)")
 netA = mknet("none", wake=False)
-x2A, vA = dphi_dt(netA, ("none", "plain", "tri"), HDT, x32, lo32, nn3, None,
-                  feat32)
+x2A, vA = dphi_dt(netA, ("none", "plain"), HDT, x32, lo32, nn3, None, feat32)
 secA = (x2A - x32) / HDT
 relA = float((vA - secA).norm() / secA.norm().clamp_min(1e-30))
 chk("dPhi/dt == (x2-x)/t (dp ∝ t 이므로 정확히 같아야)", relA < 1e-5,
@@ -148,12 +140,10 @@ chk("dPhi/dt == (x2-x)/t (dp ∝ t 이므로 정확히 같아야)", relA < 1e-5,
 x64 = x32.double()
 lo64 = lo32.double()
 feat64 = feat32.double()
-# 로컬 x 글로벌 x 커널 -- 세 축이 직교인지 대표 조합으로 확인
-for kind in (("none", "plain", "tri"), ("none", "bound", "tri"),
-             ("rqs", "plain", "tri"), ("rqs", "bound", "tri"),
-             ("none", "plain", "bary"), ("none", "bound", "bary"),
-             ("rqs", "bound", "bary")):
-    print(f"== {kind[0]} + {kind[1]} + {kind[2]}")
+# 로컬 x 글로벌 네 조합 -- 두 축이 직교인지 확인
+for kind in (("none", "plain"), ("none", "bound"),
+             ("rqs", "plain"), ("rqs", "bound")):
+    print(f"== {kind[0]} + {kind[1]}")
     net = mknet(kind[0], wake=True, dtype=torch.float64)
     # B) t 미분
     x2, vd = dphi_dt(net, kind, HDT, x64, lo64, nn3, None, feat64)
@@ -216,7 +206,7 @@ for kind in (("none", "plain", "tri"), ("none", "bound", "tri"),
                        xs - sp * I3[k], lo64, nn3, None, feat64)
             cols.append((fp - fm) / (2 * sp))
         Jfd = torch.stack(cols, -1)
-    # 판정은 입자별로 한다. trilinear 는 C0 이라 셀 면에서 기울기가 꺾이고,
+    # 판정은 입자별로 한다. PL 전달은 C0 이라 사면체 면에서 기울기가 꺾이고,
     # bound 는 K 번 합성하며 중간 위치들이 또 면을 밟을 수 있어 꺾임 집합이
     # K 배 촘촘하다 -- 그 위를 ±sp 로 걸치는 소수 입자의 중심차분은 미분이
     # 아니다 (t 미분 때와 같은 부류, AD 가 a.e. 의 옳은 값).

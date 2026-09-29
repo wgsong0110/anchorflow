@@ -1,4 +1,4 @@
-"""tri_spline(단조 RQS 셀 재배열) + 상한 trilinear 워프 합성의 정합성 검사.
+"""tri_spline(단조 RQS 셀 재배열) + 상한 barycentric 워프 합성의 정합성 검사.
 
   python exe/test_tri_spline.py            # CPU 로도 돈다
 """
@@ -6,8 +6,7 @@ import torch
 
 from anchorflow import tri_spline as TS
 from anchorflow.conv_stepper import ConvStepper
-from anchorflow import trilinear as TRI
-from anchorflow.sitreg_warp import BoundedWarp, TRILINEAR_BOUND
+from anchorflow.sitreg_warp import BoundedWarp, WARP_BOUND, bary_g2p
 
 torch.manual_seed(0)
 dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -65,16 +64,15 @@ tg = torch.zeros(8, 8, 8, P, device=dev)
 chk("벌점 상수장=0", float(TS.cont_penalty(tg)) == 0.0)
 chk("벌점 요동장>0", float(TS.cont_penalty(torch.randn_like(tg))) > 0)
 
-# 6) RQS + 상한 trilinear 워프 합성이 접히지 않는다: 표본점의 det J > 0
-bnd = TRILINEAR_BOUND * h
+# 6) RQS + 상한 barycentric 워프 합성이 접히지 않는다: 표본점의 det J > 0
+bnd = WARP_BOUND * h
 dp = (torch.randn(9 ** 3, 3, device=dev) * 10.0)     # squash 가 상한을 지킨다
 w = BoundedWarp(bnd, 5)
 
 
 def full(q):
     qr = TS.remap(q, lo, h, n3, thc.detach(), K)
-    return w.apply(qr, dp, lambda z, c: z + TRI.g2p(*TRI.corners(
-        z, lo, h, n3), c))
+    return w.apply(qr, dp, lambda z, c: z + bary_g2p(z, lo, h, n3, c))
 
 
 # 셀 내부점에서 **정확한** autograd 야코비안으로 잰다 -- 유한차분은 무작위

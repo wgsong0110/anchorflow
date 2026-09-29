@@ -1,12 +1,13 @@
-"""접힘 없는 격자점 워프: 상한 지키는 미소 변형의 합성 (trilinear 전달).
+"""접힘 없는 격자점 워프: 상한 지키는 미소 변형의 합성.
 
-격자-입자 전달 가중치는 **trilinear 하나만** 쓴다 (2026-09-29 결정 -- 학습
-반경 skin 과 B-스플라인 전달은 제거됐다). 접힘 방지는 다음 논증으로 성립한다:
+격자-입자 전달은 **Kuhn 사면체 barycentric 하나만** 쓴다 (2026-09-29 결정 --
+학습 반경 skin, B-스플라인, trilinear 는 전부 제거됐다: trilinear 는 셀이
+뒤집혀 겹칠 수 있다). 접힘 방지는 다음 논증으로 성립한다:
 
     변위장 u 가 Lipschitz 상수 L < 1 이면 x + u(x) 는 단사다.
     ‖(x+u(x)) − (y+u(y))‖ ≥ (1−L)‖x−y‖ > 0     (매끄러움이 필요 없다)
 
-trilinear 보간 u(x) = Σ_a w_a(x) dp_a 는 ‖∂u/∂x_i‖ ≤ 2·max‖dp‖/h 이므로
+PL barycentric 보간은 ∇u 의 열이 사슬 꼭짓점 변위의 차분/h 라
 ‖∇u‖₂ ≤ 2√3·max‖dp‖/h 이고, 따라서
 
     max‖dp_a‖ < h / (2√3) ≈ 0.2887 h   이면 L < 1.
@@ -24,12 +25,12 @@ import math
 
 import torch
 
-__all__ = ["TRILINEAR_BOUND", "squash_to_bound", "BoundedWarp",
-           "tri_g2p_jac", "bary_g2p", "bary_g2p_jac"]
+__all__ = ["WARP_BOUND", "squash_to_bound", "BoundedWarp",
+           "bary_g2p", "bary_g2p_jac"]
 
 # 성분별 상한이라 ‖dp‖ ≤ √3·m 까지 갈 수 있어, 성분 상한은 h/(2·3) 로 잡아야
 # ‖dp‖ < h/(2√3) 이 보장된다. 약간의 여유를 두고 1/6 보다 조금 작게 둔다.
-TRILINEAR_BOUND = 1.0 / (2.0 * 3.0) * 0.98          # ≈ 0.163 (간격 1 기준)
+WARP_BOUND = 1.0 / (2.0 * 3.0) * 0.98               # ≈ 0.163 (간격 1 기준)
 
 
 def squash_to_bound(dp, bound):
@@ -41,7 +42,7 @@ class BoundedWarp:
     """제어점 변위를 접힘 없는 변형으로 바꾼다.
 
     사용: w = BoundedWarp(bound, K); x2 = w.apply(x, dp, warp_fn)
-    warp_fn(q, c) 는 제어점 변위 c 로 점 q 를 옮기는 함수 (trilinear 전달).
+    warp_fn(q, c) 는 제어점 변위 c 로 점 q 를 옮기는 함수 (barycentric 전달).
     """
 
     def __init__(self, bound, n_compose=1):
@@ -67,8 +68,7 @@ class BoundedWarp:
         """K 합성의 값과 **해석적** 야코비안을 함께. jac_fn(q, c) -> (u, ∇u).
 
         연쇄법칙 그대로다: J = Π_k (I + ∇u(q_k)). 자동미분(역전파 3회)보다
-        싸고, no_grad 아래(롤아웃)에서도 돈다. 커널(trilinear/barycentric)은
-        jac_fn 으로 갈아끼운다.
+        싸고, no_grad 아래(롤아웃)에서도 돈다.
         """
         c = squash_to_bound(dp / self.K, self.bound)
         q, J = x, None
@@ -81,37 +81,8 @@ class BoundedWarp:
         return q, J
 
 
-def tri_g2p_jac(q, lo, h, n3, dp):
-    """trilinear 전달의 값 u(q) 와 공간 미분 ∇u [N,3,3] (닫힌 형식).
-
-    u(q) = Σ_c w_c(q) dp_c 이고 w_c = Π_d A_cd, A_cd = f_d 또는 1-f_d 이므로
-    ∂u/∂q_j = (1/h) Σ_c s_cj (Π_{d≠j} A_cd) dp_c,  s_cj = ±1.
-    규약은 jacobian_of 와 같다: (∇u)[n, i, j] = ∂u_i/∂x_j.
-    """
-    n3l = [int(n3[k]) for k in range(3)]
-    t = (q - lo) / h
-    base = t.floor().long()
-    base = torch.stack([base[:, k].clamp(0, n3l[k] - 2) for k in range(3)], -1)
-    f = t - base                                       # [N,3]
-    outs_u = 0.0
-    outs_g = 0.0
-    for cid in range(8):
-        b = ((cid >> 2) & 1, (cid >> 1) & 1, cid & 1)
-        A = [f[:, d] if b[d] else 1.0 - f[:, d] for d in range(3)]
-        sgn = [1.0 if b[d] else -1.0 for d in range(3)]
-        idx = ((base[:, 0] + b[0]) * n3l[1] + base[:, 1] + b[1]) * n3l[2]             + base[:, 2] + b[2]
-        dpc = dp[idx]                                  # [N,3]
-        w = A[0] * A[1] * A[2]
-        outs_u = outs_u + w.unsqueeze(-1) * dpc
-        gw = torch.stack([sgn[0] * A[1] * A[2],
-                          sgn[1] * A[0] * A[2],
-                          sgn[2] * A[0] * A[1]], -1) / h   # [N,3] = ∂w/∂q_j
-        outs_g = outs_g + dpc.unsqueeze(-1) * gw.unsqueeze(1)   # [N,3(i),3(j)]
-    return outs_u, outs_g
-
-
 # ---------------------------------------------------------------------------
-# Kuhn 사면체 분할 위의 barycentric 전달 (trilinear 의 simplex 판)
+# Kuhn 사면체 분할 위의 barycentric 전달 -- 유일한 격자-입자 전달
 #
 # 각 큐브를 주대각선을 공유하는 사면체 6개로 자른다 (축 순열 하나당 하나,
 # f_{π1} ≥ f_{π2} ≥ f_{π3} 영역). 꼭짓점은 큐브 꼭짓점 그대로이고 이웃 큐브와
@@ -121,8 +92,8 @@ def tri_g2p_jac(q, lo, h, n3, dp):
 #
 # PL 이라 ∇u 가 사면체별 **상수**이고 열이 사슬 꼭짓점 변위의 차분이다:
 #     ∇u 의 π_r 축 열 = (dp_{r+1} - dp_r) / h
-# 그래서 성분 상한 h/6 이면 trilinear 와 똑같이 Lipschitz < 1 이 성립한다 --
-# TRILINEAR_BOUND 를 그대로 쓴다.
+# 그래서 성분 상한 h/6 이면 Lipschitz < 1 이 성립한다 --
+# WARP_BOUND 를 쓴다.
 # ---------------------------------------------------------------------------
 
 def _kuhn_locate(q, lo, h, n3):

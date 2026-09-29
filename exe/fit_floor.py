@@ -18,7 +18,7 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "lib"))
-from anchorflow import trilinear as TRI                          # noqa: E402
+from anchorflow.sitreg_warp import bary_g2p
 from anchorflow import vox_anchor                                # noqa: E402
 
 ap = argparse.ArgumentParser()
@@ -68,7 +68,6 @@ for wi, (fi, t0_given) in enumerate(wins):
     ext = float((X[0].max(0).values - X[0].min(0).values).norm())
 
     lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
-    sidx, _w8 = TRI.corners(x, lo, hh, nn3)
     gpos = (torch.stack(torch.meshgrid(
         *[torch.arange(int(nn3[i]), device=dev, dtype=x.dtype)
           for i in range(3)], indexing="ij"), -1).reshape(-1, 3)) * hh + lo
@@ -76,12 +75,12 @@ for wi, (fi, t0_given) in enumerate(wins):
     opt = torch.optim.Adam([dp], lr=1e-3)
     for it in range(a.steps):
         opt.zero_grad(set_to_none=True)
-        xs = x + TRI.g2p(sidx, _w8, dp)
+        xs = x + bary_g2p(x, lo, float(hh), nn3, dp)
         loss = ((xs[free] - gt[free]) ** 2).sum(-1).mean()
         loss.backward()
         opt.step()
     with torch.no_grad():
-        xs = x + TRI.g2p(sidx, _w8, dp)
+        xs = x + bary_g2p(x, lo, float(hh), nn3, dp)
         fit = float((xs[free] - gt[free]).norm(dim=-1).mean()) / ext
         still = float((x[free] - gt[free]).norm(dim=-1).mean()) / ext
     tot_m += fit

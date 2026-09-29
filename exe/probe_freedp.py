@@ -1,7 +1,7 @@
 """표현력 진단: 신경망을 빼고 격자 변위 dp 를 **직접** 최적화한다.
 
 한 창에서 dp 를 자유 변수로 두고 Adam 으로 내린다. 여기서 오차가 0 근처까지
-안 내려가면 trilinear g2p 표현 자체가 목표 변위를 담지 못하는 것이고,
+안 내려가면 barycentric g2p 표현 자체가 목표 변위를 담지 못하는 것이고,
 잘 내려가면 문제는 신경망/최적화 쪽이다. 같은 설정에서 Adam eps 도 바꿔 본다.
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ ap.add_argument("--lr", type=float, default=3e-4)
 a = ap.parse_args()
 
 dev = "cuda:0"
-from anchorflow import trilinear as TRI, vox_anchor
+from anchorflow.sitreg_warp import bary_g2p
 
 f = sorted(glob.glob(os.path.join(a.data, "*.pt")))[0]
 d = torch.load(f, map_location=dev, weights_only=False)
@@ -33,7 +33,6 @@ still = float(((x - gt) ** 2).sum(-1).mean()) / EXT ** 2
 print(f"[기준] EXT {EXT:.4f}  정지 오차 {100*still**0.5:.4f}%", flush=True)
 
 lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
-flat, w = TRI.corners(x, lo, hh, nn3)
 M = int(nn3[0] * nn3[1] * nn3[2])
 print(f"[격자] 격자점 {tuple(int(t) for t in nn3)} = {M}, 셀크기 {hh:.5f}", flush=True)
 
@@ -45,7 +44,7 @@ for tag, lr, eps in (("lr=3e-4 eps=1e-8", 3e-4, 1e-8),
     opt = torch.optim.Adam([dp], lr=lr, eps=eps)
     for i in range(a.iters):
         opt.zero_grad()
-        x2 = x + TRI.g2p(flat, w, dp)
+        x2 = x + bary_g2p(x, lo, float(hh), nn3, dp)
         loss = ((x2 - gt) ** 2).sum(-1).mean() / EXT ** 2
         loss.backward()
         if i == 0:

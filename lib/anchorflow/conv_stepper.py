@@ -90,7 +90,7 @@ class ConvStepper(nn.Module):
         # 빈 칸만 지우기 쉬우므로, 채널 통째로 떨어뜨리는 Dropout3d 를 쓴다.
         self.drop = nn.Dropout3d(float(drop)) if drop > 0 else nn.Identity()
         self.h, self.scale, self.arch, self.damage = h, scale, arch, damage
-        # 격자-입자 전달 가중치는 trilinear 고정이다. 예전의 학습 반경(skin)
+        # 격자-입자 전달은 Kuhn 사면체 barycentric 고정이다. 예전 학습 반경(skin)
         # 헤드는 "셀 내부 변화가 고정"이던 시절의 땜질이라 제거했다 -- 그
         # 자유도는 셀 내부 RQS 재배열(rqs_dim 헤드)이 든다.
         self.register_buffer("in_mu", torch.zeros(n_feat))
