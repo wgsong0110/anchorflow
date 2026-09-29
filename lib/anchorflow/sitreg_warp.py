@@ -82,53 +82,88 @@ class BoundedWarp:
 
 
 # ---------------------------------------------------------------------------
-# Kuhn 사면체 분할 위의 barycentric 전달 -- 유일한 격자-입자 전달
+# 방향 비의존 사면체 분할 위의 barycentric 전달 -- 유일한 격자-입자 전달
 #
-# 각 큐브를 주대각선을 공유하는 사면체 6개로 자른다 (축 순열 하나당 하나,
-# f_{π1} ≥ f_{π2} ≥ f_{π3} 영역). 꼭짓점은 큐브 꼭짓점 그대로이고 이웃 큐브와
-# 면이 정합이라 전체가 simplicial complex 다. 점의 사면체 배정과 barycentric
-# 가중치는 탐색 없이 나온다: 상대좌표를 내림차순 정렬하면 순열이 곧 사면체,
-# 정렬값의 차분 (1-s1, s1-s2, s2-s3, s3) 이 곧 꼭짓점 4개의 가중치다.
+# 셀을 8개의 소큐브로 자르고, 각 소큐브를 **부모 코너 -> 몸중심** 을 주대각선
+# 으로 하는 Kuhn 6-사면체로 자른다 (셀당 48 사면체). 8개의 대각선이 전부
+# 몸중심으로 수렴하므로 이 배치는 큐브 대칭군 48개 전체에 불변이다 -- 단일
+# Kuhn 분할의 특권 대각 방향이 사라진다. 이웃 셀과의 공유 소면에서도 양쪽 다
+# "셀 꼭짓점 <-> 면중심" 대각선이 유도되어 면 정합이 성립한다 (C0).
 #
-# PL 이라 ∇u 가 사면체별 **상수**이고 열이 사슬 꼭짓점 변위의 차분이다:
-#     ∇u 의 π_r 축 열 = (dp_{r+1} - dp_r) / h
-# 그래서 성분 상한 h/6 이면 Lipschitz < 1 이 성립한다 --
-# WARP_BOUND 를 쓴다.
+# 가상 꼭짓점(변중점·면중심·몸중심)의 값은 저장하지 않고 **주변 셀 꼭짓점의
+# 평균으로 유도**한다: 사슬 꼭짓점 값 A_r 은 코너 집합 S_0={s} ⊂ S_1 ⊂ S_2
+# ⊂ S_3=전체 8개 의 평균이라, 입자 하나가 모으는 격자점은 여전히 자기 칸의
+# 8꼭짓점뿐이고 가중치만 다르다:
+#     w_b = σ_{R(b)},  σ_R = Σ_{k≥R} λ_k / 2^k,
+#     R(b) = (b 가 s 와 다른 축들 중 순열 순위의 최댓값)+? -- 코드 참조.
+# 배정·가중치는 여전히 탐색 없이 나온다 (옥탄트 판정 + 미러 + argsort).
+#
+# ∇u 의 각 열은 이웃 코너 차분들의 **평균**/h 이라 상한 상수는 단일 Kuhn 과
+# 동일하게 성분 h/6 (WARP_BOUND) 이고, 아핀 장 정확 재현도 유지된다.
 # ---------------------------------------------------------------------------
 
-def _kuhn_locate(q, lo, h, n3):
-    """점 -> (꼭짓점 평탄색인 [N,4], barycentric [N,4], 축 순열 [N,3])."""
+# 8 코너 비트 (i,j,k) -- 평탄색인 규약 (ix*ny+iy)*nz+iz 과 같은 순서
+_B8 = [(b >> 2 & 1, b >> 1 & 1, b & 1) for b in range(8)]
+
+
+def _sym_locate(q, lo, h, n3):
+    """점 -> (셀 8꼭짓점 평탄색인 [N,8], 대칭 가중치 [N,8], 미분 재료).
+
+    미분 재료 = (s [N,3] 옥탄트 비트, rank [N,3] 축->순위, tv [N,3] 정렬좌표).
+    """
     n3l = [int(n3[k]) for k in range(3)]
     t = (q - lo) / h
     base = t.floor().long()
     base = torch.stack([base[:, k].clamp(0, n3l[k] - 2) for k in range(3)], -1)
     f = (t - base).clamp(0.0, 1.0)
-    perm = torch.argsort(f.detach(), dim=1, descending=True)   # [N,3] 축 순열
-    sv = f.gather(1, perm)                                     # s1 >= s2 >= s3
-    lam = torch.stack([1.0 - sv[:, 0], sv[:, 0] - sv[:, 1],
-                       sv[:, 1] - sv[:, 2], sv[:, 2]], -1)     # [N,4]
-    # 사슬 꼭짓점: v0 = base, v_{r+1} = v_r + e_{perm_r}
-    eye = torch.eye(3, device=q.device, dtype=torch.long)
-    steps = eye[perm]                                          # [N,3,3]
-    verts = torch.cat([torch.zeros_like(steps[:, :1]),
-                       steps.cumsum(1)], 1) + base.unsqueeze(1)  # [N,4,3]
-    idx = ((verts[..., 0] * n3l[1] + verts[..., 1]) * n3l[2]
-           + verts[..., 2])                                    # [N,4]
-    return idx, lam, perm
+    s = (f >= 0.5)                                     # [N,3] 소큐브 옥탄트
+    m = torch.where(s, 2.0 * (1.0 - f), 2.0 * f)       # 0=자기 코너, 1=몸중심
+    perm = torch.argsort(m.detach(), dim=1, descending=True)
+    rank = torch.argsort(perm, dim=1)                  # 축 -> 순위 (0,1,2)
+    tv = m.gather(1, perm)                             # t1 >= t2 >= t3
+    # 접미합 가중 σ_R = Σ_{k≥R} λ_k/2^k  (λ = (1-t1, t1-t2, t2-t3, t3))
+    s3 = tv[:, 2] / 8.0
+    s2 = tv[:, 1] / 4.0 - s3
+    s1 = tv[:, 0] / 2.0 - tv[:, 1] / 4.0 - s3
+    s0 = 1.0 - tv[:, 0] / 2.0 - tv[:, 1] / 4.0 - s3
+    sig = torch.stack([s0, s1, s2, s3], -1)            # [N,4]
+    sl = s.long()
+    idxs, ws = [], []
+    for b in _B8:
+        diff = torch.stack([(sl[:, d] != b[d]).long() for d in range(3)], -1)
+        R = (diff * (rank + 1)).amax(-1)               # [N] 0..3
+        ws.append(sig.gather(1, R.unsqueeze(1)).squeeze(1))
+        idxs.append(((base[:, 0] + b[0]) * n3l[1] + base[:, 1] + b[1])
+                    * n3l[2] + base[:, 2] + b[2])
+    return torch.stack(idxs, -1), torch.stack(ws, -1), (s, rank, tv)
 
 
 def bary_g2p(q, lo, h, n3, dp):
-    """barycentric 전달의 값: u(q) = Σ_i λ_i dp_{v_i}."""
-    idx, lam, _ = _kuhn_locate(q, lo, h, n3)
-    return (lam.unsqueeze(-1) * dp[idx]).sum(1)
+    """대칭 barycentric 전달의 값: u(q) = Σ_b w_b(q) dp_b (자기 칸 8꼭짓점)."""
+    idx, w, _ = _sym_locate(q, lo, h, n3)
+    return (w.unsqueeze(-1) * dp[idx]).sum(1)
 
 
 def bary_g2p_jac(q, lo, h, n3, dp):
-    """barycentric 전달의 값과 ∇u [N,3,3] (사면체별 상수, 닫힌 형식)."""
-    idx, lam, perm = _kuhn_locate(q, lo, h, n3)
-    dpc = dp[idx]                                              # [N,4,3]
-    u = (lam.unsqueeze(-1) * dpc).sum(1)
-    diffs = (dpc[:, 1:] - dpc[:, :-1]).transpose(1, 2) / h     # [N,3(i),3(r)]
-    inv = torch.argsort(perm, dim=1)                           # 축 -> 순위
-    G = diffs.gather(2, inv.unsqueeze(1).expand(-1, 3, -1))    # [N,3(i),3(j)]
+    """대칭 barycentric 전달의 값과 ∇u [N,3,3] (소사면체별 상수, 닫힌 형식).
+
+    ∂σ_R/∂t_r = (r==R ? +1 : r>R ? -1 : 0)/2^r 이고 ∂t_r/∂q_ax 는 순위가
+    r-1 인 축에서만 ±2/h (미러 부호) 이므로 전부 표로 조립된다.
+    """
+    idx, w, (s, rank, tv) = _sym_locate(q, lo, h, n3)
+    dpc = dp[idx]                                      # [N,8,3]
+    u = (w.unsqueeze(-1) * dpc).sum(1)
+    sgn = torch.where(s, -2.0 / h, 2.0 / h)            # [N,3] dm/df /h
+    r_ax = rank + 1                                    # [N,3] 축의 t 색인 1..3
+    half = (2.0 ** (-r_ax.to(u.dtype)))                # 1/2^r
+    sl = s.long()
+    G = None
+    for bi, b in enumerate(_B8):
+        diff = torch.stack([(sl[:, d] != b[d]).long() for d in range(3)], -1)
+        R = (diff * (rank + 1)).amax(-1, keepdim=True)  # [N,1]
+        coef = torch.where(r_ax < R, torch.zeros_like(half),
+                           torch.where(r_ax == R, half, -half))
+        gw = sgn * coef                                # [N,3] = ∇w_b
+        g = dpc[:, bi].unsqueeze(-1) * gw.unsqueeze(1)  # [N,3(i),3(j)]
+        G = g if G is None else G + g
     return u, G
