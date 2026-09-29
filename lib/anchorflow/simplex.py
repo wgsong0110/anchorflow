@@ -30,8 +30,13 @@ def grid_for_nodes(x, n_nodes, margin=0.05):
     색인이 짝수면 코너, 홀수 성분이 있으면 변중점/면중심/몸중심이다.
     사면체가 발판 셀 안에서 닫히려면 축별 노드 수가 **홀수**여야 한다.
     """
-    lo_ = x.min(0).values
-    hi_ = x.max(0).values
+    # 격자는 **이산화 선택**이지 물리량이 아니다. x 가 그래프에 있을 때
+    # (K>1 언롤의 둘째 서브스텝부터) 바운딩박스를 그대로 쓰면 격자 원점이
+    # 미분가능해져, 극단 입자 하나가 격자 전체의 기울기를 받는다. 간격 hn 은
+    # float 로 끊겨 있어 짝도 맞지 않는다 -- 원점도 함께 끊는다.
+    xd = x.detach()
+    lo_ = xd.min(0).values
+    hi_ = xd.max(0).values
     ext = (hi_ - lo_).max().clamp_min(1e-12)
     pad = margin * ext
     lo_ = lo_ - pad
