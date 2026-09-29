@@ -94,8 +94,14 @@ def node_moments(x, v, X, m, rows, lam, n_node, npos, hn):
                       S6, om * hn, Fa - I3.reshape(1, 9)], -1)
 
 
+# 진단 스위치 -- 격자 conv 에서 GroupNorm 이 크기 정보를 지운 전례가 있어
+# (_NORM=False 옵션), 같은 함정을 가릴 수 있게 둔다.
+_MP_NORM = True      # False 면 갱신의 LayerNorm 제거
+_MP_MEAN = True      # False 면 메시지 집계를 평균 대신 합으로
+
+
 class _MPLayer(nn.Module):
-    """한 층: 간선 종류별 선형 변환 + 합 + 노드 갱신 (잔차)."""
+    """한 층: 간선 종류별 선형 변환 + 집계 + 노드 갱신 (잔차)."""
 
     def __init__(self, hidden):
         super().__init__()
@@ -107,16 +113,19 @@ class _MPLayer(nn.Module):
                                  nn.Linear(hidden, hidden))
         self.upd = nn.Sequential(nn.Linear(2 * hidden, hidden), nn.SiLU(),
                                  nn.Linear(hidden, hidden))
-        self.nrm = nn.LayerNorm(hidden)
+        self.nrm = nn.LayerNorm(hidden) if _MP_NORM else nn.Identity()
 
     def forward(self, h, src, dst, cls):
         e = self.emb(cls)                                   # [E,H]
         m = self.msg(torch.cat([h[src] * e, h[dst]], -1))   # [E,H]
         agg = torch.zeros_like(h)
         agg.index_add_(0, dst, m)
-        cnt = torch.zeros(h.shape[0], 1, device=h.device, dtype=h.dtype)
-        cnt.index_add_(0, dst, torch.ones_like(m[:, :1]))
-        agg = agg / cnt.clamp_min(1.0)
+        if _MP_MEAN:
+            # 평균은 이웃 수가 제각각인 경계 노드에서 신호를 희석한다 --
+            # 합이 나은지 실측으로 가린다
+            cnt = torch.zeros(h.shape[0], 1, device=h.device, dtype=h.dtype)
+            cnt.index_add_(0, dst, torch.ones_like(m[:, :1]))
+            agg = agg / cnt.clamp_min(1.0)
         return h + self.nrm(self.upd(torch.cat([h, agg], -1)))
 
 

@@ -149,6 +149,11 @@ ap.add_argument("--n_nodes", type=int, default=32,
                 help="--arch sgnn 의 **노드 간격**을 정한다 (물체를 몇 노드로 "
                      "덮을지). 사면체 변 길이 = 물체/n_nodes 이고, 발판 격자는 "
                      "그 2 배 간격으로 내부에서 잡힌다")
+ap.add_argument("--gnn_no_norm", action="store_true",
+                help="메시지 패싱 갱신의 LayerNorm 제거 (격자 conv 에서 "
+                     "GroupNorm 이 크기 정보를 지운 전례가 있다)")
+ap.add_argument("--gnn_sum", action="store_true",
+                help="메시지 집계를 평균 대신 합으로 (경계 노드 희석 방지)")
 ap.add_argument("--gnn_layers", type=int, default=8,
                 help="--arch sgnn 의 메시지 패싱 층 수. 수용영역이 층 수로만 "
                      "늘어난다 (체대각 간선이 있어 한 홉이 소큐브를 가로지른다)")
@@ -369,6 +374,7 @@ import torch.autograd.forward_ad as _fwAD                       # noqa: E402
 from anchorflow import deform                                  # noqa: E402
 from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import simplex as SX                            # noqa: E402
+from anchorflow import simplex_gnn as _SGM                      # noqa: E402
 from anchorflow.simplex_gnn import (SimplexGNN, node_moments,    # noqa: E402
                                     scatter_to_nodes)
 from anchorflow import voxel                                    # noqa: E402
@@ -541,6 +547,14 @@ n_feat_probe = None
 net = None
 opt = None
 step0 = 0
+
+
+if a.gnn_no_norm:
+    _SGM._MP_NORM = False
+    print("[구조] 메시지 패싱 LayerNorm 제거", flush=True)
+if a.gnn_sum:
+    _SGM._MP_MEAN = False
+    print("[구조] 메시지 집계를 합으로", flush=True)
 
 
 def build(n_feat):
