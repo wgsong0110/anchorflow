@@ -14,7 +14,7 @@ D=$W/one_traj_h2
 mkdir -p $D && ln -sf $W/traj_h2/${TRJ:-mic_clayC_t_s400706}.pt $D/ 2>/dev/null
 echo "[$TAG] 출력변수 학습, 궤적: $(ls $D)"
 python -u $W/anchorflow/exe/train_deform.py --data $D --out $W/abl_$TAG --tag $TAG \
-  --no_mat --control --n_ctrl 2 --arch conv --transfer skin --skin_corners \
+  --no_mat --control --n_ctrl 2 --arch conv --transfer rqs \
   --vox_res 32 --k 16 --hidden 128 --depth 4 --lr ${LR:-3e-4} \
   --batch ${BS:-8} --n_pts ${NP:-8000} \
   --phase2 --phys_w 1.0 --phys_sup 0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \
@@ -28,8 +28,8 @@ grep -aE "롤아웃\]|요약" $W/abl_$TAG.log | tail -3
 #     프레임별 출력 변수가 쓰인다. 체크포인트는 학습이 남긴 것을 그대로 준다. ---
 export AF_ROLL_DUMP=$W/rollh2_${TAG}.pt AF_ROLL_TAG=${TRJ##*_t_} AF_ROLL_T0=3
 python -u $W/anchorflow/exe/train_deform.py --data $D --out $W/vidh2_out \
-  --tag v$TAG --no_mat --control --n_ctrl 2 --arch conv --transfer skin \
-  --skin_corners --vox_res 32 --k 16 --hidden 128 --depth 4 \
+  --tag v$TAG --no_mat --control --n_ctrl 2 --arch conv --transfer rqs \
+  --vox_res 32 --k 16 --hidden 128 --depth 4 \
   --iters 0 --resume $W/abl_$TAG/${TAG}_last.pt --eval_t0 3 --eval_len 40 \
   --n_pts ${NP:-8000} --gpu_data 0 --save_every 100000 \
   --out_var \

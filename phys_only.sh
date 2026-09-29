@@ -23,7 +23,7 @@ else
 fi
 echo "[$TAG] 모드 $MODE, 궤적 $(ls $D | wc -l) 개, 홀드아웃 [$HOLD]"
 python -u $W/anchorflow/exe/train_deform.py --data $D --out $W/abl_$TAG --tag $TAG \
-  --no_mat --control --n_ctrl 2 --arch conv --transfer skin --skin_corners \
+  --no_mat --control --n_ctrl 2 --arch conv --transfer rqs \
   --vox_res 32 --k 16 --hidden 128 --depth 4 --lr ${LR:-3e-4} \
   --batch ${BS:-8} --n_pts ${NP:-8000} \
   --phase2 --phys_w 1.0 --phys_sup 0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \

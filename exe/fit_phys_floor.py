@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from anchorflow import phys_resid                              # noqa: E402
 from anchorflow import trilinear as TRI                        # noqa: E402
 from anchorflow import vox_anchor                              # noqa: E402
-from anchorflow.deform import skin                             # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True)
@@ -152,13 +151,10 @@ for fn in a.files.split(","):
                 *[torch.arange(int(nn3[i]), device=dev, dtype=x.dtype)
                   for i in range(3)], indexing="ij"), -1).reshape(-1, 3)
                 ) * float(hh) + lo
-            log_r = torch.full((gpos.shape[0],), math.log(float(hh)),
-                               device=dev)
-            log_t = torch.zeros_like(log_r)
             var = torch.zeros(gpos.shape[0], 3, device=dev, requires_grad=True)
 
             def warp(_v):
-                return skin(x, gpos, _v, log_r, log_t, sidx, float(hh))[0]
+                return x + TRI.g2p(sidx, _w8, _v)
         else:
             # 가우시안 위치 자체가 변수다 (격자 제한 없음)
             var = torch.zeros(x.shape[0], 3, device=dev, requires_grad=True)

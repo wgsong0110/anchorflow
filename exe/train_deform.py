@@ -131,32 +131,29 @@ ap.add_argument("--save_every", type=int, default=500)
 ap.add_argument("--resume", default=None)
 ap.add_argument("--small_out", action="store_true",
                 help="출력층을 0 이 아니라 기본 초기화의 1/100 로 시작")
-ap.add_argument("--skin_nbr", default="knn",
-                choices=("knn", "corners", "n20"),
-                help="스키닝 이웃: kNN16(거리 topk) / 꼭짓점 8 / 산술 20")
-ap.add_argument("--skin_corners", action="store_true",
-                help="스키닝 이웃을 kNN 대신 **자기 칸의 8 꼭짓점**으로 -- 탐색이\n                     공짜다. 가중치는 여전히 학습 반경으로 정해진다")
 ap.add_argument("--ens", type=int, default=1,
                 help="원점을 어긋나게 둔 격자를 몇 개 앙상블할지 (변위 평균)")
 ap.add_argument("--metrics", action="store_true",
                 help="롤아웃에서 CD/EMD 까지 잰다 (Spring-Gaus 정의)")
 ap.add_argument("--cd_pts", type=int, default=2048,
                 help="CD/EMD 표본 크기 (EMD 가 O(n^3) 이라 필요하다)")
-ap.add_argument("--transfer", default="skin",
-                choices=("skin", "tri", "bspline", "rqs"),
-                help="격자점 변위를 가우시안으로 옮기는 법. skin 은 kNN 위 "
-                     "학습 반경 소프트맥스, tri 는 고정 trilinear, bspline 은 "
-                     "MPM/i-PG 와 같은 이차 B-스플라인 3^3 스텐실, rqs 는 "
-                     "격자점을 SITReg(상한+합성, 3차 B-스플라인)로 옮기고 셀 "
-                     "내부 상대좌표를 단조 RQS 로 재배열하는 접힘 방지 전달")
+ap.add_argument("--transfer", default="rqs",
+                choices=("tri", "rqs"),
+                help="격자점 변위를 가우시안으로 옮기는 법. 가중치는 **둘 다 "
+                     "trilinear 고정**이다 (학습 반경 skin 과 B-스플라인은 "
+                     "제거됐다). tri 는 상한 없는 맨 trilinear, rqs 는 셀 "
+                     "내부 상대좌표를 단조 RQS 로 재배열한 뒤 Lipschitz "
+                     "상한(간격/6)+K 합성으로 접힘까지 막는 전달")
 ap.add_argument("--rqs_bins", type=int, default=8,
                 help="--transfer rqs 의 축당 스플라인 빈 수 K")
 ap.add_argument("--rqs_cont", type=float, default=1e-2,
                 help="이웃 셀 RQS 파라미터 차 벌점 가중치 (0 이면 끔). 법선 "
                      "성분은 구조적으로 연속이고, 이 벌점은 접선 불일치를 "
                      "'되도록' 줄인다")
-ap.add_argument("--sitreg_k", type=int, default=2,
-                help="--transfer rqs 의 SITReg 합성 횟수 (벤치 최적 2)")
+ap.add_argument("--sitreg_k", type=int, default=5,
+                help="--transfer rqs 의 상한 워프 합성 횟수. trilinear 상한이 "
+                     "간격/6 이라 K*간격/6 이 한 스텝의 변위 한도다 (K=5 면 "
+                     "예전 3차 B-스플라인 K=2 와 같은 0.8*간격)")
 # --- 스텝 크기 dt ------------------------------------------------------------
 # 지금까지 dt 는 궤적의 frame_dt 에 고정이었다. 망은 dt 를 이미 인자로 받지만
 # 값이 늘 같아 사실상 상수였다. 아래 스위치로 dt 를 **조건 변수**로 돌린다.
@@ -368,13 +365,11 @@ from anchorflow import deform                                  # noqa: E402
 from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import tri_spline                               # noqa: E402
 from anchorflow import voxel                                    # noqa: E402
-from anchorflow.sitreg_warp import (SITRegWarp, FALLBACK_BOUND_444,  # noqa: E402
-                                    cubic_bspline_g2p,
-                                    max_control_point_value)
+from anchorflow.sitreg_warp import BoundedWarp, TRILINEAR_BOUND  # noqa: E402
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
                                bc_features, bond_stretch, bures_w2_sq,
                                fps, gauss_stretch, grid_knn,
-                               jacobian_of, skin, skin_with_jacobian)
+                               jacobian_of)
 
 # ---------------------------------------------------------------- 데이터
 files = sorted(glob.glob(os.path.join(a.data, "*.pt")))
@@ -549,7 +544,6 @@ def build(n_feat):
         net = ConvStepper(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
                           h=H, scale=0.02 * EXT,
                           arch=a.arch.replace("conv", "plain"),
-                          skin_out=(a.transfer == "skin"),
                           damage=a.damage, n_mat=N_FILM,
                           drop=a.drop,
                           rqs_dim=(tri_spline.n_params(a.rqs_bins)
@@ -988,59 +982,16 @@ class _tsec:
             _PROF[self.name] = _PROF.get(self.name, 0.0) + (time.time() - self.t0)
 
 
-def _bspline_g2p(q, lo, h, nn3, dp):
-    """학생 격자의 격자점 변위 dp 를 이차 B-스플라인으로 가우시안에 옮긴다.
-
-    격자점 I 의 좌표는 lo + I*h 이고, 가중치는 축별 이차 B-스플라인의 곱이라
-    3^3 = 27 개 이웃만 본다. 합이 1 이므로 따로 정규화할 필요가 없다.
-    """
-    dev_ = q.device
-    xr = (q - lo) / h
-    base = (xr - 0.5).floor()
-    fx = xr - base
-    w = torch.stack([0.5 * (1.5 - fx) ** 2,
-                     0.75 - (fx - 1.0) ** 2,
-                     0.5 * (fx - 0.5) ** 2], -1)               # [N,3,3]
-    off = torch.stack(torch.meshgrid(*[torch.arange(3, device=dev_)] * 3,
-                                     indexing="ij"), -1).reshape(-1, 3)
-    n0, n1, n2 = int(nn3[0]), int(nn3[1]), int(nn3[2])
-    idx3 = (base.long().unsqueeze(1) + off.unsqueeze(0))
-    idx3[..., 0] = idx3[..., 0].clamp(0, n0 - 1)
-    idx3[..., 1] = idx3[..., 1].clamp(0, n1 - 1)
-    idx3[..., 2] = idx3[..., 2].clamp(0, n2 - 1)
-    flat = (idx3[..., 0] * n1 + idx3[..., 1]) * n2 + idx3[..., 2]
-    i0, i1, i2 = off[:, 0], off[:, 1], off[:, 2]
-    ww = w[:, 0][:, i0] * w[:, 1][:, i1] * w[:, 2][:, i2]      # [N,27]
-    return (dp[flat] * ww.unsqueeze(-1)).sum(1)
-
-
-if os.environ.get("AF_ANOMALY"):     # in-place/NaN 범인을 짚을 때
-    torch.autograd.set_detect_anomaly(True)
-    print("[디버그] autograd anomaly detection on", flush=True)
-
-_VDT_MSG = []            # --v_from_dt 를 못 쓸 때의 경고를 한 번만
-_OBJ_PTS = (a.obj == "pts")   # 목적함수를 입자에서 바로 재는가 (격자 미사용)
-_SITREG_BND = [None]     # [4,4,4] 상한 (간격 1 기준) -- 한 번만 계산해 캐시
-_RQS_PEN = [None]        # step_once 가 쌓는 RQS 연속성 벌점, 손실 지점이 소비
-
-
-def _sitreg_bound(hh):
-    """제어점 상한 |c| < bound. SITReg 저장소가 없으면 실측 근사를 쓴다."""
-    if _SITREG_BND[0] is None:
-        try:
-            _SITREG_BND[0] = max_control_point_value([4, 4, 4])
-        except Exception as e:
-            print(f"[SITReg] 상한 계산 실패({e}) -- 근사 "
-                  f"{FALLBACK_BOUND_444}*간격 사용", flush=True)
-            _SITREG_BND[0] = FALLBACK_BOUND_444
-    return _SITREG_BND[0] * float(hh)
+def _warp_bound(hh):
+    """격자점 변위 성분 상한. trilinear 의 Lipschitz<1 조건에서 나온다."""
+    return TRILINEAR_BOUND * float(hh)
 
 
 def _rqs_warp(q, lo, h, nn3, th, dp, bound, n_comp):
-    """셀 내부 RQS 재배열 -> SITReg 상한 워프. 변형장의 공간 부분 전체다."""
+    """셀 내부 RQS 재배열 -> 상한 걸린 trilinear 워프. 변형장의 공간 전체다."""
     qr = tri_spline.remap(q, lo, h, nn3, th, a.rqs_bins)
-    return SITRegWarp(bound, n_comp).apply(
-        qr, dp, lambda z, c: z + cubic_bspline_g2p(z, lo, h, nn3, c))
+    return BoundedWarp(bound, n_comp).apply(
+        qr, dp, lambda z, c: z + TRI.g2p(*TRI.corners(z, lo, h, nn3), c))
 
 
 def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
@@ -1081,36 +1032,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     # 앙상블: 원점을 어긋나게 둔 격자 여러 개의 변위를 평균한다. 같은 가중치를
     # 쓰므로 파라미터는 늘지 않고, 격자 위치 때문에 생기는 편향만 씻긴다.
     if a.arch == "attn":
-        # 예전 어텐션 스테퍼 경로를 그대로 되살린 것이다: FPS 앵커에 가우시안을
-        # kNN 으로 모아 특징을 만들고, 한 층에서 모든 앵커가 서로를 본 뒤,
-        # 학습된 반경 스키닝으로 가우시안을 옮긴다. 앵커는 자기 변위만큼 간다.
-        cfg = d["cfg"]
-        X = take(d["x"][0], gsel)
-        idx, _ = anchor_knn(x, p, a.k)
-        feat, _ = aggregate(x, v / VEL_SCALE, X, MASS[gsel], idx, p.shape[0], H,
-                            pa=p)
-        feat = _san(feat)
-        extra = torch.cat([
-            mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0], N_MAT),
-            bc_features(p, cfg) / H], -1)
-        if a.control:
-            extra = torch.cat([extra, ctrl_feat(d, t, p)], -1)
-        feat = torch.nan_to_num(feat, nan=0.0, posinf=0.0,
-                                neginf=0.0).clamp(-_FCAP, _FCAP)
-        extra = torch.nan_to_num(extra, nan=0.0, posinf=0.0,
-                                 neginf=0.0).clamp(-_FCAP, _FCAP)
-        out = net(p, torch.cat([feat, extra], -1), _DT[0])
-        dp, log_r, log_t = out[0], out[1], out[2]
-        # 하드 clamp 는 쓰지 않는다. NaN 만 씻어 내고 크기는 손대지 않는다.
-        dp = torch.nan_to_num(dp, nan=0.0, posinf=0.0, neginf=0.0)
-        log_r = torch.nan_to_num(log_r, nan=0.0, posinf=0.0, neginf=0.0)
-        log_t = torch.nan_to_num(log_t, nan=0.0, posinf=0.0, neginf=0.0)
-        x2 = skin(x, p, dp, log_r, log_t, idx, H)[0]
-        if a.control:
-            x2 = apply_control(d, t, gsel, x2, x)
-        J = (jacobian_of(lambda q: skin(q, p, dp, log_r, log_t, idx, H)[0], x)
-             if need_J else None)
-        return x2, p + dp, (x2 - x) / _DT[0], J, dp, None, dmg, idx, fe, J
+        raise SystemExit("attn 경로는 제거된 skin 전달에 의존한다 -- "
+                         "conv/unet 아키텍처를 쓸 것")
 
     shifts = _ENS_SHIFT[:a.ens] if a.ens > 1 else [None]
     # --- 변형장 Phi_tau 를 tau 의 함수로 떼어 둔다 -------------------------------
@@ -1127,21 +1050,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     for (_in, p_, grid_shape, tri, (lo, hh, nn3), _cr) in _feats:
         m = dict(lo=lo, hh=float(hh), nn3=nn3, cells=grid_shape[1], tri=tri,
                  kind=a.transfer)
-        if a.transfer == "skin":
-            # 격자점을 앵커로 두고 kNN + 학습 반경 소프트맥스로 옮긴다. 격자가
-            # 규칙적이라 kNN 은 탐색 없이 구한다.
-            if a.skin_corners or a.skin_nbr == "corners":
-                m["sidx"] = tri[0]     # cell_feats 가 이미 만든 꼭짓점 색인
-            elif a.skin_nbr == "n20":
-                m["sidx"] = vox_anchor.nbr20(x, lo, hh, nn3)
-            else:
-                m["sidx"] = vox_anchor.knn(x, lo - 0.5 * hh, hh, nn3, a.k)
-            m["gpos"] = (torch.stack(torch.meshgrid(
-                *[torch.arange(int(nn3[dd]), device=dev, dtype=x.dtype)
-                  for dd in range(3)], indexing="ij"), -1).reshape(-1, 3)
-                ) * hh + lo
-        elif a.transfer == "rqs":
-            m["bound"] = _sitreg_bound(hh)
+        if a.transfer == "rqs":
+            m["bound"] = _warp_bound(hh)
         _meta.append(m)
 
     def _outs_of(out, m):
@@ -1151,13 +1061,6 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         않는다 (탄젠트가 정의되지 않는다).
         """
         dp = torch.nan_to_num(out[0], nan=0.0, posinf=0.0, neginf=0.0)
-        if m["kind"] == "skin":
-            lr = (out[1] if len(out) > 2 else
-                  torch.full((dp.shape[0],), math.log(m["hh"]), device=dev))
-            lt = out[2] if len(out) > 2 else torch.zeros_like(lr)
-            return (dp,
-                    torch.nan_to_num(lr, nan=0.0, posinf=0.0, neginf=0.0),
-                    torch.nan_to_num(lt, nan=0.0, posinf=0.0, neginf=0.0))
         if m["kind"] == "rqs":
             return (dp, torch.nan_to_num(out[-1], nan=0.0, posinf=0.0,
                                          neginf=0.0))
@@ -1165,19 +1068,11 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
 
     def _warp_of(o, m):
         """(출력 튜플, 메타) -> 변형장의 **공간** 사상."""
-        if m["kind"] == "skin":
-            return lambda q: skin(q, m["gpos"], o[0], o[1], o[2],
-                                  m["sidx"], m["hh"])[0]
-        if m["kind"] == "bspline":
-            # MPM/i-PG 와 같은 전달: 이차 B-스플라인 3^3 스텐실. 가중치가 닫힌
-            # 형식이고 합이 1 이라 학습되는 양이 없다.
-            return lambda q: q + _bspline_g2p(q, m["lo"], m["hh"], m["nn3"],
-                                              o[0])
         if m["kind"] == "rqs":
             # 접힘 방지 전달: 셀 내부 상대좌표를 단조 RQS 로 재배열한 뒤 그
-            # 위치에서 SITReg(제어점 상한 + K 합성, 3차 B-스플라인) 워프를
-            # 평가한다. RQS 가 점을 자기 셀 안에 가두고 워프가 미분동형이라
-            # 합성 전체가 단사다 -- 셀 안 준불연속은 스플라인 기울기가 담는다.
+            # 위치에서 Lipschitz 상한 + K 합성 trilinear 워프를 평가한다.
+            # RQS 가 점을 자기 셀 안에 가두고 워프가 단사라 합성 전체가
+            # 단사다 -- 셀 안 준불연속은 스플라인 기울기가 담는다.
             return lambda q: _rqs_warp(q, m["lo"], m["hh"], m["nn3"], o[1],
                                        o[0], m["bound"], a.sitreg_k)
         return lambda q: q + TRI.g2p(*TRI.corners(q, m["lo"], m["hh"],
@@ -1237,17 +1132,11 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     def _warp(q):
         return q + sum(w(q) - q for w in warps) / len(warps)
 
-    _Jf = None
     # 입자 목적함수는 탄성항의 ∇Δu 를 격자에서 못 받으므로 야코비안이 필수다
     _want_J = (need_J or a.f_from_jac or _OBJ_PTS or a.fe_state
                or a.det_reg > 0)
-    if _want_J and a.transfer == "skin" and len(_outs) == 1:
-        # 스키닝은 해석적 야코비안이 있다 (자동미분 세 번보다 싸다)
-        o, m = _outs[0], _meta[0]
-        _Jf = skin_with_jacobian(x, m["gpos"], o[0], o[1], o[2],
-                                 m["sidx"], m["hh"])[2]
-    J = jacobian_of(_warp, x) if (_want_J and _Jf is None) else None
-    Jfield = _Jf if _Jf is not None else J
+    J = jacobian_of(_warp, x) if _want_J else None
+    Jfield = J
     dmg_out = None
     # 격자는 다음 프레임에 x2 로부터 다시 잡는다. 앵커를 옮길 필요가 없다.
     ai, p_next = None, p
@@ -1521,28 +1410,18 @@ def phys_window(d, t0, K, gsel, sigma, gen):
             ) * float(_hh) + _lo
         _dpn = torch.randn(_gp.shape[0], 3, generator=gen, device=dev,
                            dtype=x.dtype) * (sigma * ext)
-        if a.transfer == "bspline":
-            def _warp_n(q):
-                return q + _bspline_g2p(q, _lo, float(_hh), _n3, _dpn)
-        elif a.transfer == "rqs":
+        if a.transfer == "rqs":
             # 모델이 낼 수 있는 상태만 교란으로 만든다: 같은 상한·합성의
-            # SITReg 워프 (셀 내부 재배열 교란은 생략 -- 항등이 기본값이다)
-            _wn = SITRegWarp(_sitreg_bound(float(_hh)), a.sitreg_k)
+            # trilinear 워프 (셀 내부 재배열 교란은 생략 -- 항등이 기본값이다)
+            _wn = BoundedWarp(_warp_bound(float(_hh)), a.sitreg_k)
 
             def _warp_n(q):
                 return _wn.apply(q, _dpn,
-                                 lambda z, c: z + cubic_bspline_g2p(
-                                     z, _lo, float(_hh), _n3, c))
-        elif a.transfer == "tri":
+                                 lambda z, c: z + TRI.g2p(*TRI.corners(
+                                     z, _lo, float(_hh), _n3), c))
+        else:
             def _warp_n(q):
                 return q + TRI.g2p(*TRI.corners(q, _lo, _hh, _n3), _dpn)
-        else:
-            _lrn = torch.full((_gp.shape[0],), math.log(float(_hh)), device=dev)
-            _ltn = torch.zeros_like(_lrn)
-            _sidn = TRI.corners(x, _lo, _hh, _n3)[0]
-
-            def _warp_n(q, _i=_sidn):
-                return skin(q, _gp, _dpn, _lrn, _ltn, _i, float(_hh))[0]
         u = _warp_n(x) - x
         gu = jacobian_of(_warp_n, x) - torch.eye(3, device=dev)
         _fm0 = free_mask(d, x.shape[0], dev, gsel, x, t0) if a.control else None

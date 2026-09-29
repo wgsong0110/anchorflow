@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from anchorflow import phys_resid                             # noqa: E402
 from anchorflow import trilinear as TRI                        # noqa: E402
 from anchorflow import vox_anchor                              # noqa: E402
-from anchorflow.deform import skin                             # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--traj", required=True)
@@ -30,7 +29,8 @@ ap.add_argument("--vox_res", type=int, default=32)
 ap.add_argument("--n_pts", type=int, default=20000)
 ap.add_argument("--steps", type=int, default=400)
 ap.add_argument("--lr", type=float, default=1e-3)
-ap.add_argument("--transfer", default="skin", choices=("skin", "tri"))
+ap.add_argument("--transfer", default="tri", choices=("tri",),
+                help="격자-입자 가중치는 trilinear 하나만 남았다")
 ap.add_argument("--clamp", type=float, default=0.0,
                 help="쓰지 않는다 (하드 clamp 금지). 0 이 기본이고, 과거 비교를 "
                      "재현할 때만 양수를 준다")
@@ -103,16 +103,13 @@ for i in range(a.frames):
     gpos = (torch.stack(torch.meshgrid(
         *[torch.arange(int(nn3[k]), device=dev, dtype=x.dtype)
           for k in range(3)], indexing="ij"), -1).reshape(-1, 3)) * float(hh) + lo
-    log_r = torch.full((gpos.shape[0],), math.log(float(hh)), device=dev)
-    log_t = torch.zeros_like(log_r)
     dp = torch.zeros(gpos.shape[0], 3, device=dev, requires_grad=True)
     opt = torch.optim.Adam([dp], lr=a.lr)
     _lim = a.clamp * float(hh)
     for _ in range(a.steps):
         opt.zero_grad(set_to_none=True)
         dpc = dp.clamp(-_lim, _lim) if a.clamp > 0 else dp
-        xe = (skin(x, gpos, dpc, log_r, log_t, sidx, float(hh))[0]
-              if a.transfer == "skin" else x + TRI.g2p(sidx, w8, dpc))
+        xe = x + TRI.g2p(sidx, w8, dpc)
         x2 = x + (1.0 - wm.unsqueeze(-1)) * (xe - x) + wm.unsqueeze(-1) * d_cmd
         if a.obj == "phys":
             E, _dl, _Ft, _pt = phys_resid.grid_ip_energy(
@@ -124,8 +121,7 @@ for i in range(a.frames):
         opt.step()
     with torch.no_grad():
         dpc = dp.clamp(-_lim, _lim) if a.clamp > 0 else dp
-        xe = (skin(x, gpos, dpc, log_r, log_t, sidx, float(hh))[0]
-              if a.transfer == "skin" else x + TRI.g2p(sidx, w8, dpc))
+        xe = x + TRI.g2p(sidx, w8, dpc)
         x2 = x + (1.0 - wm.unsqueeze(-1)) * (xe - x) + wm.unsqueeze(-1) * d_cmd
         e = float((x2[free] - gt[free]).norm(dim=-1).mean()) / ext
         st = float((still0[free] - gt[free]).norm(dim=-1).mean()) / ext

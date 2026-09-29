@@ -20,7 +20,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "lib"))
 from anchorflow import trilinear as TRI                          # noqa: E402
 from anchorflow import vox_anchor                                # noqa: E402
-from anchorflow.deform import skin                               # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True)
@@ -73,19 +72,16 @@ for wi, (fi, t0_given) in enumerate(wins):
     gpos = (torch.stack(torch.meshgrid(
         *[torch.arange(int(nn3[i]), device=dev, dtype=x.dtype)
           for i in range(3)], indexing="ij"), -1).reshape(-1, 3)) * hh + lo
-    import math
-    log_r = torch.full((gpos.shape[0],), math.log(float(hh)), device=dev)
-    log_t = torch.zeros_like(log_r)
     dp = torch.zeros(gpos.shape[0], 3, device=dev, requires_grad=True)
     opt = torch.optim.Adam([dp], lr=1e-3)
     for it in range(a.steps):
         opt.zero_grad(set_to_none=True)
-        xs = skin(x, gpos, dp, log_r, log_t, sidx, float(hh))[0]
+        xs = x + TRI.g2p(sidx, _w8, dp)
         loss = ((xs[free] - gt[free]) ** 2).sum(-1).mean()
         loss.backward()
         opt.step()
     with torch.no_grad():
-        xs = skin(x, gpos, dp, log_r, log_t, sidx, float(hh))[0]
+        xs = x + TRI.g2p(sidx, _w8, dp)
         fit = float((xs[free] - gt[free]).norm(dim=-1).mean()) / ext
         still = float((x[free] - gt[free]).norm(dim=-1).mean()) / ext
     tot_m += fit

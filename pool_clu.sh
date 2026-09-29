@@ -13,7 +13,7 @@ else
   HOLD="mic_clayC_t_s200076,mic_clayC_t_s200077,mic_clayC_t_s200078,mic_clayC_t_s200079"
 fi
 python -u $W/anchorflow/exe/train_deform.py --data $DATA --out $W/abl_$TAG --tag $TAG \
-  $MAT --control --n_ctrl 2 --arch conv --transfer skin --skin_corners \
+  $MAT --control --n_ctrl 2 --arch conv --transfer rqs \
   --vox_res 32 --k 16 --hidden 128 --depth 4 --lr 3e-4 \
   --batch ${BS:-16} --n_pts ${NP:-8000} --pool --pool_combos "${COMBOS:-all}" \
   --pool_size ${PS:-128} --pool_fresh 0.25 --pool_thresh ${TH:-0.10} \

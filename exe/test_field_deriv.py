@@ -1,6 +1,6 @@
 """변형장의 t 미분(속도)과 공간 야코비안(F 밀기)의 정합성 검사.
 
-  A) 정확 검사 -- dtfilm 을 0 으로, --dt_scale 을 켜고 **선형** 전달(bspline)을
+  A) 정확 검사 -- dtfilm 을 0 으로, --dt_scale 을 켜고 **선형** 전달(tri)을
      쓰면 dp(t) = c·t 이므로 Phi_t(x) = x + W c t 다. 그러면 dPhi/dt 가 할선
      (x2-x)/t 와 **기계 정밀도로 같아야** 한다. 순방향 AD 배선이 맞는지 여기서
      갈린다 (값이 뭐든 맞아떨어질 여지가 없다).
@@ -19,10 +19,10 @@ import torch
 import torch.autograd.forward_ad as fwAD
 
 from anchorflow import phys_resid, tri_spline, vox_anchor
+from anchorflow import trilinear as TRI
 from anchorflow.conv_stepper import ConvStepper
-from anchorflow.deform import skin, skin_with_jacobian, jacobian_of
-from anchorflow.sitreg_warp import (SITRegWarp, FALLBACK_BOUND_444,
-                                    cubic_bspline_g2p, max_control_point_value)
+from anchorflow.deform import jacobian_of
+from anchorflow.sitreg_warp import BoundedWarp, TRILINEAR_BOUND
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--traj", required=True)
@@ -50,11 +50,7 @@ NC = int((nn3[0] - 1) * (nn3[1] - 1) * (nn3[2] - 1))
 P = tri_spline.n_params(a.bins)
 CELLS = tuple(int(nn3[k]) - 1 for k in range(3))
 GRID = tuple(int(c) for c in nn3)
-try:
-    BND = max_control_point_value([4, 4, 4]) * hh
-except Exception:
-    BND = FALLBACK_BOUND_444 * hh
-sidx32 = vox_anchor.knn(x32, lo32 - 0.5 * hh, hh, nn3, 16)
+BND = TRILINEAR_BOUND * hh
 feat32 = torch.randn(NC, 8, device=dev)
 ok = True
 
@@ -68,8 +64,7 @@ def chk(name, cond, detail=""):
 def mknet(kind, wake=True, dtype=torch.float32):
     torch.manual_seed(1)
     n = ConvStepper(n_feat=8, hidden=32, depth=2, h=hh, scale=0.02,
-                    skin_out=(kind == "skin"), dt_cond=True, dt_ref=HDT,
-                    dt_scale=True,
+                    dt_cond=True, dt_ref=HDT, dt_scale=True,
                     rqs_dim=(P if kind == "rqs" else 0)).to(dev).to(dtype)
     with torch.no_grad():
         n.out.weight.normal_(0, 0.05)
@@ -90,17 +85,10 @@ def field(net, kind, tau, q, lo, nn3_, sidx, feat):
     dp = out[0]
     if kind == "rqs":
         qr = tri_spline.remap(q, lo, hh, nn3_, out[-1], a.bins)
-        return SITRegWarp(BND, 2).apply(
-            qr, dp, lambda z, c: z + cubic_bspline_g2p(z, lo, hh, nn3_, c))
-    if kind == "bspline":
-        return q + cubic_bspline_g2p(q, lo, hh, nn3_, dp)
-    return skin(q, _gpos(lo, q.dtype), dp, out[1], out[2], sidx, hh)[0]
+        return BoundedWarp(BND, 5).apply(
+            qr, dp, lambda z, c: z + TRI.g2p(*TRI.corners(z, lo, hh, nn3_), c))
+    return q + TRI.g2p(*TRI.corners(q, lo, hh, nn3_), dp)
 
-
-def _gpos(lo, dt_):
-    return (torch.stack(torch.meshgrid(
-        *[torch.arange(int(nn3[k]), device=dev, dtype=dt_) for k in range(3)],
-        indexing="ij"), -1).reshape(-1, 3)) * hh + lo
 
 
 def dphi_dt(net, kind, tau_v, q, lo, nn3_, sidx, feat):
@@ -116,9 +104,9 @@ def dphi_dt(net, kind, tau_v, q, lo, nn3_, sidx, feat):
 
 
 # ---- A) 정확 검사: 선형 전달 + 항등 FiLM 이면 dPhi/dt == 할선 -----------------
-print("== A) 배선 정확 검사 (bspline 전달, 항등 dtfilm)")
-netA = mknet("bspline", wake=False)
-x2A, vA = dphi_dt(netA, "bspline", HDT, x32, lo32, nn3, sidx32, feat32)
+print("== A) 배선 정확 검사 (tri 전달, 항등 dtfilm)")
+netA = mknet("tri", wake=False)
+x2A, vA = dphi_dt(netA, "tri", HDT, x32, lo32, nn3, None, feat32)
 secA = (x2A - x32) / HDT
 relA = float((vA - secA).norm() / secA.norm().clamp_min(1e-30))
 chk("dPhi/dt == (x2-x)/t (dp ∝ t 이므로 정확히 같아야)", relA < 1e-5,
@@ -128,19 +116,19 @@ chk("dPhi/dt == (x2-x)/t (dp ∝ t 이므로 정확히 같아야)", relA < 1e-5,
 x64 = x32.double()
 lo64 = lo32.double()
 feat64 = feat32.double()
-for kind in ("skin", "bspline", "rqs"):
+for kind in ("tri", "rqs"):
     print(f"== 전달 {kind}")
     net = mknet(kind, wake=True, dtype=torch.float64)
     # B) t 미분
-    x2, vd = dphi_dt(net, kind, HDT, x64, lo64, nn3, sidx32, feat64)
+    x2, vd = dphi_dt(net, kind, HDT, x64, lo64, nn3, None, feat64)
     eps = HDT * 1e-4
     with torch.no_grad():
         fd = (field(net, kind, torch.as_tensor(HDT + eps, device=dev,
                                                dtype=torch.float64),
-                    x64, lo64, nn3, sidx32, feat64)
+                    x64, lo64, nn3, None, feat64)
               - field(net, kind, torch.as_tensor(HDT - eps, device=dev,
                                                  dtype=torch.float64),
-                      x64, lo64, nn3, sidx32, feat64)) / (2 * eps)
+                      x64, lo64, nn3, None, feat64)) / (2 * eps)
     _pp = ((vd - fd).norm(dim=-1) / fd.norm(dim=-1).clamp_min(1e-30))
     _nb = int((_pp > 1e-3).sum())
     # 판정은 **입자별** 상대오차로 한다. 전역 노름비는 소수의 이상점이 지배한다.
@@ -157,10 +145,10 @@ for kind in ("skin", "bspline", "rqs"):
             with torch.no_grad():
                 _f2 = (field(net, kind, torch.as_tensor(
                             HDT + _e, device=dev, dtype=torch.float64),
-                        x64, lo64, nn3, sidx32, feat64)
+                        x64, lo64, nn3, None, feat64)
                        - field(net, kind, torch.as_tensor(
                             HDT - _e, device=dev, dtype=torch.float64),
-                        x64, lo64, nn3, sidx32, feat64)) / (2 * _e)
+                        x64, lo64, nn3, None, feat64)) / (2 * _e)
             _q = ((vd - _f2).norm(dim=-1)
                   / _f2.norm(dim=-1).clamp_min(1e-30))
             line.append(f"eps={_ee:.0e}:{int((_q > 1e-3).sum())}")
@@ -179,7 +167,7 @@ for kind in ("skin", "bspline", "rqs"):
     else:
         xs = x64
     Ja = jacobian_of(lambda z: field(net, kind, torch.as_tensor(
-        HDT, device=dev, dtype=torch.float64), z, lo64, nn3, sidx32, feat64),
+        HDT, device=dev, dtype=torch.float64), z, lo64, nn3, None, feat64),
         xs)
     with torch.no_grad():
         I3 = torch.eye(3, device=dev, dtype=torch.float64)
@@ -188,10 +176,10 @@ for kind in ("skin", "bspline", "rqs"):
         for k in range(3):
             fp = field(net, kind, torch.as_tensor(HDT, device=dev,
                                                   dtype=torch.float64),
-                       xs + sp * I3[k], lo64, nn3, sidx32, feat64)
+                       xs + sp * I3[k], lo64, nn3, None, feat64)
             fm = field(net, kind, torch.as_tensor(HDT, device=dev,
                                                   dtype=torch.float64),
-                       xs - sp * I3[k], lo64, nn3, sidx32, feat64)
+                       xs - sp * I3[k], lo64, nn3, None, feat64)
             cols.append((fp - fm) / (2 * sp))
         Jfd = torch.stack(cols, -1)
     r = float((Ja - Jfd).norm() / Jfd.norm())
@@ -200,20 +188,10 @@ for kind in ("skin", "bspline", "rqs"):
         f"상대오차 {r:.2e} (점 {xs.shape[0]})")
     chk(f"{kind}: det grad_x Phi > 0", bool((det > 0).all()),
         f"최소 {float(det.min()):.4f} 중앙 {float(det.median()):.4f}")
-    if kind == "skin":
-        with torch.no_grad():
-            o = net(None, feat64, torch.as_tensor(HDT, device=dev,
-                                                  dtype=torch.float64),
-                    GRID, cells=CELLS)
-            Js = skin_with_jacobian(xs, _gpos(lo64, torch.float64), o[0],
-                                    o[1], o[2], sidx32, hh)[2]
-        rr = float((Js - Jfd).norm() / Jfd.norm())
-        chk("skin: 해석 야코비안 == 공간 중심차분", rr < 1e-4, f"상대오차 {rr:.2e}")
-
     # E) g2p_grad 로 민 F 와 변형장 야코비안으로 민 F 가 얼마나 다른가.
     #    야코비안은 자동미분이 필요하므로 no_grad 밖에서 부른다.
     Jfull = jacobian_of(lambda z: field(net, kind, torch.as_tensor(
-        HDT, device=dev, dtype=torch.float64), z, lo64, nn3, sidx32,
+        HDT, device=dev, dtype=torch.float64), z, lo64, nn3, None,
         feat64), x64).detach()
     with torch.no_grad():
         I3 = torch.eye(3, device=dev, dtype=torch.float64)

@@ -15,7 +15,7 @@ mkdir -p $D $W/abl_$TAG $W/tb && rm -f $D/*.pt
 python -u $W/anchorflow/exe/trunc_traj.py --src $W/traj_h2/$TRJ.pt \
   --dst $D/$TRJ.pt --frames $((N + 1))
 python -u $W/anchorflow/exe/train_deform.py --data $D --out $W/abl_$TAG --tag $TAG \
-  --no_mat --control --n_ctrl 2 --arch conv --transfer skin --skin_corners \
+  --no_mat --control --n_ctrl 2 --arch conv --transfer rqs \
   --vox_res 32 --k 16 --hidden 128 --depth 4 --lr ${LR:-3e-4} \
   --batch ${BS:-8} --n_pts ${NP:-8000} --hold_last 0 \
   --phase2 --phys_w 1.0 --phys_sup 0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \

@@ -14,8 +14,8 @@ for sd in $(seq $lo $hi); do
   [ -f $OUT ] && { echo "[건너뜀] ${C}_s${S}"; continue; }
   T0=$SECONDS
   python -u $W/anchorflow/exe/train_deform.py --data $W/evaltraj --out $W/bench_stu \
-    --tag bs${C}${S} --mat_film --control --n_ctrl 2 --arch conv --transfer skin \
-    --skin_corners --vox_res 32 --k 16 --hidden 128 --depth 4 --iters 0 \
+    --tag bs${C}${S} --mat_film --control --n_ctrl 2 --arch conv --transfer rqs \
+    --vox_res 32 --k 16 --hidden 128 --depth 4 --iters 0 \
     --pool --pool_combos $C --n_pts ${NP:-20000} --save_every 100000 \
     --hold_traj "$(cat $W/hold12.txt)" \
     --resume ${CK:?체크포인트를 지정하라} --roll_scen $W/bench/scen_${C}_s${S}.npz \

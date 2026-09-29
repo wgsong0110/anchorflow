@@ -1,25 +1,18 @@
-"""SITReg 위상 보존 변형을 넣기 전후의 실행시간. 최적화 조합을 함께 잰다.
+"""남은 두 전달(tri / rqs)의 한 학습 스텝 실행시간.
 
-한 학습 스텝의 **순전파 + 역전파** 시간을 잰다 (물리손실까지 포함). 비교 축:
-  전달      skin (지금 기본) / bspline (SITReg 상한이 성립하는 전달)
-            / rqs (bspline+상한 위에 셀 내부 단조 RQS 재배열)
-  상한      없음 / 있음
-  합성      K = 1, 2, 4
-  최적화    bf16 autocast, channels_last, torch.compile
+한 스텝의 **순전파 + 역전파** 시간을 잰다 (물리손실 포함). 격자-입자 가중치는
+trilinear 하나뿐이고, rqs 는 그 위에 셀 내부 RQS 재배열과 Lipschitz 상한
+K 합성이 얹힌다. 합성 횟수 K 와 compile/bf16 의 효과를 함께 잰다.
 
   python exe/bench_sitreg.py --traj traj_h2/mic_clayC_t_s400706.pt
 """
 import argparse
-import math
-import os
 import time
 
 import torch
 
 from anchorflow import phys_resid, tri_spline, trilinear as TRI, vox_anchor
-from anchorflow.deform import skin
-from anchorflow.sitreg_warp import (SITRegWarp, cubic_bspline_g2p,
-                                    max_control_point_value)
+from anchorflow.sitreg_warp import BoundedWarp, TRILINEAR_BOUND
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--traj", required=True)
@@ -28,6 +21,7 @@ ap.add_argument("--n_pts", type=int, default=8000)
 ap.add_argument("--vox_res", type=int, default=32)
 ap.add_argument("--iters", type=int, default=30)
 ap.add_argument("--warmup", type=int, default=5)
+ap.add_argument("--rqs_bins", type=int, default=8)
 ap.add_argument("--compile", type=int, default=1)
 a = ap.parse_args()
 
@@ -42,63 +36,39 @@ g0 = torch.Generator().manual_seed(0)
 sel = torch.randperm(X.shape[1], generator=g0)[:a.n_pts].sort().values
 x = X[a.t0, sel].to(dev)
 v = ((X[a.t0, sel] - X[a.t0 - 1, sel]) / h).to(dev)
-F0 = (d["F"][a.t0, sel].float().to(dev) if d.get("F") is not None
-      else torch.eye(3, device=dev).expand(sel.numel(), 3, 3).contiguous())
+F0 = torch.eye(3, device=dev).expand(sel.numel(), 3, 3).contiguous()
 mass = torch.full((sel.numel(),), float(cfg["density"]), device=dev)
 vol = mass / float(cfg["density"])
 ext = float((x.max(0).values - x.min(0).values).norm())
 nrm = float(mass.sum()) * ext ** 2 / h ** 2
 
 lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
-gpos = (torch.stack(torch.meshgrid(
-    *[torch.arange(int(nn3[k]), device=dev, dtype=x.dtype) for k in range(3)],
-    indexing="ij"), -1).reshape(-1, 3)) * float(hh) + lo
-sidx, w8 = TRI.corners(x, lo, hh, nn3)
-log_r = torch.full((gpos.shape[0],), math.log(float(hh)), device=dev)
-log_t = torch.zeros_like(log_r)
-
-# 제어점 상한: 업샘플 배수는 (MPM 격자 / 제어점 격자) 가 아니라 **점 표본 밀도**로
-# 본다. 여기서는 물체가 32 칸에 걸치고 입자 간격이 그보다 촘촘하므로 4 를 쓴다.
-try:
-    BND = max_control_point_value([4, 4, 4]) * float(hh)
-    print(f"[상한] 제어점 |c| < {BND:.5f} (간격 {float(hh):.5f} 기준)", flush=True)
-except Exception as e:
-    BND = 0.4 * float(hh)
-    print(f"[상한] SITReg 계산 실패 ({e}) -- 이론 근사 0.4*간격 = {BND:.5f}",
-          flush=True)
+hh = float(hh)
+M = int(nn3[0] * nn3[1] * nn3[2])
+NC = int((nn3[0] - 1) * (nn3[1] - 1) * (nn3[2] - 1))
+P = tri_spline.n_params(a.rqs_bins)
+BND = TRILINEAR_BOUND * hh
+print(f"[상한] 격자점 변위 성분 |c| < {BND:.5f} (간격 {hh:.5f} 기준)")
 
 
-def warp_skin(q, c):
-    return skin(q, gpos, c, log_r, log_t, sidx, float(hh))[0]
+def warp_tri(q, c):
+    return q + TRI.g2p(*TRI.corners(q, lo, hh, nn3), c)
 
 
-def warp_bspline(q, c):
-    return q + cubic_bspline_g2p(q, lo, float(hh), nn3, c)
-
-
-N_CELL = int((nn3[0] - 1) * (nn3[1] - 1) * (nn3[2] - 1))
-P_RQS = tri_spline.n_params(8)
-
-
-def step(dp, mode, K, bnd, th=None):
-    if mode == "skin":
-        wf = warp_skin
+def step(dp, mode, K, th=None):
+    if mode == "rqs":
+        xr = tri_spline.remap(x, lo, hh, nn3, th, a.rqs_bins)
+        x2 = BoundedWarp(BND, K).apply(xr, dp, warp_tri)
     else:
-        wf = warp_bspline
-    xin = (tri_spline.remap(x, lo, float(hh), nn3, th, 8)
-           if mode == "rqs" else x)
-    if bnd is None:
-        x2 = wf(xin, dp)
-    else:
-        x2 = SITRegWarp(bnd, K).apply(xin, dp, wf)
+        x2 = warp_tri(x, dp)
     E, _dl, _Ft, _pt = phys_resid.grid_ip_energy(
         x, x2 - x, v, F0, mass, vol, cfg, h, ng, gl, g=gv, norm=nrm)
     return E
 
 
-def timeit(tag, mode, K, bnd, amp=False, comp=False):
-    dp = torch.zeros(gpos.shape[0], 3, device=dev, requires_grad=True)
-    th = (torch.zeros(N_CELL, P_RQS, device=dev, requires_grad=True)
+def timeit(tag, mode, K, amp=False, comp=False):
+    dp = torch.zeros(M, 3, device=dev, requires_grad=True)
+    th = (torch.zeros(NC, P, device=dev, requires_grad=True)
           if mode == "rqs" else None)
     fn = step
     if comp:
@@ -114,31 +84,19 @@ def timeit(tag, mode, K, bnd, amp=False, comp=False):
         if th is not None and th.grad is not None:
             th.grad = None
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
-            E = fn(dp, mode, K, bnd, th)
+            E = fn(dp, mode, K, th)
         E.backward()
     torch.cuda.synchronize()
     ms = (time.time() - t0) / a.iters * 1000
-    print(f"  {tag:46s} {ms:8.2f} ms", flush=True)
+    print(f"  {tag:40s} {ms:8.2f} ms", flush=True)
     return ms
 
 
-print(f"[설정] 입자 {sel.numel()}, 제어점 {gpos.shape[0]}, 반복 {a.iters}")
-print("== 적용 전 (상한·합성 없음)")
-b_skin = timeit("skin 전달", "skin", 1, None)
-b_bsp = timeit("bspline 전달", "bspline", 1, None)
-print("== SITReg 적용 (제어점 상한 + 합성)")
-for K in (1, 2, 4):
-    timeit(f"bspline + 상한, 합성 K={K}", "bspline", K, BND)
-print("== 최적화")
-timeit("bspline + 상한 K=2, bf16", "bspline", 2, BND, amp=True)
+print(f"[설정] 입자 {sel.numel()}, 격자점 {M}, 셀 {NC}, 반복 {a.iters}")
+b0 = timeit("tri (맨 trilinear)", "tri", 1)
+for K in (1, 2, 5, 8):
+    timeit(f"rqs: RQS + 상한 trilinear K={K}", "rqs", K)
 if a.compile:
-    timeit("bspline + 상한 K=2, compile", "bspline", 2, BND, comp=True)
-    timeit("bspline + 상한 K=2, bf16 + compile", "bspline", 2, BND,
-           amp=True, comp=True)
-print(f"== 셀 내부 RQS 재배열 추가 (셀 {N_CELL}, 셀당 파라미터 {P_RQS})")
-timeit("rqs + 상한 K=2", "rqs", 2, BND)
-if a.compile:
-    timeit("rqs + 상한 K=2, compile", "rqs", 2, BND, comp=True)
-    timeit("rqs + 상한 K=2, bf16 + compile", "rqs", 2, BND,
-           amp=True, comp=True)
-print(f"\n기준선: skin {b_skin:.2f} ms, bspline {b_bsp:.2f} ms")
+    timeit("rqs K=5, compile", "rqs", 5, comp=True)
+    timeit("rqs K=5, bf16 + compile", "rqs", 5, amp=True, comp=True)
+print(f"\n기준선: tri {b0:.2f} ms")

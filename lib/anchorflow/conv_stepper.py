@@ -83,7 +83,6 @@ class ConvStepper(nn.Module):
     """
 
     def __init__(self, n_feat, hidden=64, depth=4, h=0.05, scale=1.0,
-                 skin_out=False,
                  arch="plain", damage=False, n_mat=0, drop=0.0, rqs_dim=0,
                  dt_cond=False, dt_ref=1.0, dt_scale=False):
         super().__init__()
@@ -91,10 +90,9 @@ class ConvStepper(nn.Module):
         # 빈 칸만 지우기 쉬우므로, 채널 통째로 떨어뜨리는 Dropout3d 를 쓴다.
         self.drop = nn.Dropout3d(float(drop)) if drop > 0 else nn.Identity()
         self.h, self.scale, self.arch, self.damage = h, scale, arch, damage
-        # skin_out: 변위와 함께 **스키닝 반경**을 낸다 (DeformNet 과 같은 매개화).
-        # 고정 trilinear 가중치로 전달하면 같은 조건에서 비가 0.25 -> 0.58 로
-        # 나빠진다 -- 전달 가중치가 학습돼야 한다.
-        self.skin_out = bool(skin_out)
+        # 격자-입자 전달 가중치는 trilinear 고정이다. 예전의 학습 반경(skin)
+        # 헤드는 "셀 내부 변화가 고정"이던 시절의 땜질이라 제거했다 -- 그
+        # 자유도는 셀 내부 RQS 재배열(rqs_dim 헤드)이 든다.
         self.register_buffer("in_mu", torch.zeros(n_feat))
         self.register_buffer("in_sd", torch.ones(n_feat))
         self.film = nn.Sequential(nn.Linear(1, hidden), nn.SiLU(),
@@ -123,7 +121,7 @@ class ConvStepper(nn.Module):
             self.u1 = B(2 * hidden, hidden)
         else:
             self.body = nn.ModuleList([B(hidden, hidden) for _ in range(depth)])
-        self.out = nn.Conv3d(hidden, 4 if (damage or skin_out) else 3, 1)
+        self.out = nn.Conv3d(hidden, 4 if damage else 3, 1)
         # 가중치를 **정확히** 0 으로 두면 상류로 가는 기울기가 grad_out @ W = 0
         # 이라 첫 스텝에 인코더·블록이 기울기를 하나도 못 받는다. 어텐션 쪽에서
         # 겪은 함정이다 -- 편향만 0 으로 두고 가중치는 기본 초기화의 1/100 로.
@@ -240,12 +238,7 @@ class ConvStepper(nn.Module):
         _sc = (self.scale * (dt / self.dt_ref) if self.dt_scale
                else self.scale)
         dp = o[:, :3] * _sc
-        if self.skin_out:
-            lr = (o[:, 3] + math.log(self.h)).clamp(
-                math.log(self.h) - 3.0, math.log(self.h) + 3.0)
-            out = (dp, lr, torch.zeros_like(lr))
-        elif self.damage:
-            # trilinear 전달이라 스키닝 반경·온도가 없다. 변위만 낸다.
+        if self.damage:
             out = (dp, Fn.softplus(o[:, 3] - 3.0))
         else:
             out = (dp,)

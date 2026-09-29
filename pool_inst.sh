@@ -9,7 +9,7 @@ export PYTHONPATH=$W/anchorflow/lib PYTHONIOENCODING=utf-8
 mkdir -p $W/abl_$TAG $W/tb
 HOLD=$(cat $W/hold12.txt)
 python -u $W/anchorflow/exe/train_deform.py --data $W/evaltraj --out $W/abl_$TAG --tag $TAG \
-  ${MAT:---mat_film} --control --n_ctrl 2 --arch conv --transfer skin --skin_corners \
+  ${MAT:---mat_film} --control --n_ctrl 2 --arch conv --transfer rqs \
   --vox_res 32 --k 16 --hidden 128 --depth 4 --lr 3e-4 \
   --batch ${BS:-16} --n_pts ${NP:-8000} --pool --pool_combos "${COMBOS:-all}" \
   --pool_size ${PS:-128} --pool_fresh 0.25 --pool_thresh ${TH:-0.10} \

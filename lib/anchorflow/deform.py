@@ -473,17 +473,6 @@ def aggregate(x, v, X, m, idx, M, h, pa=None, Fg=None, sub=None):
 DMG_FLOOR = 0.02      # 완전히 망가져도 온도를 이 배까지만 줄인다 (0 이면 기울기가 죽는다)
 
 
-def damage_tau(tau, dmg):
-    """손상 [N] 이 온도를 깎는다. d -> 1 이면 배정이 딱딱해져 한 앵커가 독점한다.
-
-    가우시안별 스칼라는 softmax 로짓에 더해봐야 **행 상수**라 아무 효과가 없다.
-    그래서 되먹임은 온도로 넣는다 -- w = softmax(logit / tau) 에서 tau 가 작아지면
-    분포가 뾰족해져, 망가진 가우시안은 여러 앵커를 함께 따라가는 연속체에서 빠져
-    가장 가까운 앵커 하나만 따라간다. 조각이 따로 움직일 수 있게 되는 지점이다.
-    """
-    return tau * (1.0 - (1.0 - DMG_FLOOR) * dmg.reshape(-1, 1))
-
-
 def bond_stretch(x, p, idx, ref_d):
     """결합 (가우시안 i, 앵커 a) 이 기준 거리 대비 몇 배로 늘어났나 - 1. [N,k]"""
     d = (x.unsqueeze(1) - p[idx]).norm(dim=-1)
@@ -499,25 +488,6 @@ def gauss_stretch(x, p, idx, ref_d, w):
     return (w * bond_stretch(x, p, idx, ref_d)).sum(1)
 
 
-def skin(x, p, dp, log_r, log_t, idx, h, dmg=None):
-    """phi(x) = x + sum_a w_a(x) dp_a. w 는 kNN 위 softmax.
-
-    logit_a = -d_a^2 / (2 r_a^2),  온도는 가우시안별로 이웃의 t_a 를 **고정**
-    커널로 섞어 만든다 -- 앵커별 온도를 그대로 쓰면 반경과 중복이기 때문이다.
-    """
-    pa = p[idx]                                    # [N,k,3]
-    d2 = ((x.unsqueeze(1) - pa) ** 2).sum(-1)      # [N,k]
-    r2 = (2.0 * log_r[idx]).exp().clamp(min=1e-12)
-    logit = -0.5 * d2 / r2
-    # 섞는 커널은 고정 폭 h 다. 학습되는 양에 의존하면 온도가 다시 반경과 얽힌다.
-    u = torch.softmax(-0.5 * d2 / (h * h), dim=1)
-    tau = (u * log_t[idx].exp()).sum(1, keepdim=True).clamp(min=1e-4)
-    if dmg is not None:
-        tau = damage_tau(tau, dmg)                 # 망가질수록 배정이 딱딱해진다
-    w = torch.softmax(logit / tau, dim=1)          # [N,k]
-    return x + (w.unsqueeze(-1) * dp[idx]).sum(1), w
-
-
 def _outer_sum(A, B):
     """sum_k A[n,k,i] B[n,k,j] -> [N,3,3].
 
@@ -529,75 +499,9 @@ def _outer_sum(A, B):
     return torch.stack([(A[..., i:i + 1] * B).sum(1) for i in range(3)], dim=1)
 
 
-def skin_with_jacobian(x, p, dp, log_r, log_t, idx, h, dmg=None):
-    """스키닝과 그 **해석적** 야코비안. 외적을 한 번만 만든다.
-
-    phi(x) = x + sum_a w_a(x) dp_a 이고 w 가 x 에 의존하므로 J = I + sum_a dp_a (x) grad w_a
-    인데, 이것을 그대로 쓰면 [N,k,3] 짜리 중간 텐서가 대여섯 개 생겨 자동미분보다
-    오히려 느리다 (입자 138 만에서 85 ms 대 42 ms). 식을 펴면 대부분이 앵커에 대한
-    합으로 먼저 접힌다.
-
-        grad w_a = w_a (grad z_a - G),      G = sum_b w_b grad z_b        ... [N,3]
-        grad z_a = grad g_a / tau - g_a grad tau / tau^2
-        grad g_a = -(x - p_a) / r_a^2
-
-    이므로
-
-        sum_a dp_a (x) grad w_a
-            = (1/tau)  sum_a (w_a / r_a^2) dp_a (x) (-(x-p_a))      <- 외적 한 번
-            - (1/tau^2) (sum_a w_a g_a dp_a) (x) grad tau           <- [N,3] (x) [N,3]
-            - (sum_a w_a dp_a) (x) G                                 <- [N,3] (x) [N,3]
-
-    남는 [N,k,3] x [N,k,3] 외적은 첫 줄 하나뿐이고 나머지는 전부 앵커 축을 먼저
-    접은 [N,3] 끼리의 외적이다. 값은 위 식과 정확히 같다.
-    """
-    # 커널에는 역전파가 없다. 다만 막아야 하는 것은 "grad 가 켜져 있는가" 가
-    # 아니라 "이 입력들이 실제로 grad 를 요구하는가" 다 -- 교사 강제 스텝에서는
-    # x 도 앵커 출력도 grad 를 요구하지 않으므로 커널을 그대로 쓸 수 있다.
-    _need = any(t is not None and t.requires_grad
-                for t in (x, p, dp, log_r, log_t))
-    # 커널에는 손상 게이트가 없다. 손상을 쓰면 토치 경로로 간다.
-    if (_HAVE_DC and x.is_cuda and x.dtype == torch.float32
-            and idx.shape[1] in _DC_K and not _need and dmg is None):
-        o, J = _dc.skin_jacobian(x, p, dp, log_r, log_t, idx, h)
-        return o, None, J
-    pa = p[idx]                                    # [N,k,3]
-    dvec = x.unsqueeze(1) - pa                     # [N,k,3]
-    d2 = (dvec * dvec).sum(-1)                     # [N,k]
-    r2 = (2.0 * log_r[idx]).exp().clamp(min=1e-12)
-    g = -0.5 * d2 / r2
-    u = torch.softmax(-0.5 * d2 / (h * h), dim=1)
-    ta = log_t[idx].exp()
-    tau = (u * ta).sum(1, keepdim=True).clamp(min=1e-4)     # [N,1]
-    # 손상은 x 에 의존하지 않는 상태량이라 tau 에 곱해지는 **상수 배율**이다.
-    # 그래서 아래 유도에서 tau 와 grad tau 에 같은 배율만 곱하면 그대로 성립한다.
-    dfac = (None if dmg is None
-            else (1.0 - (1.0 - DMG_FLOOR) * dmg.reshape(-1, 1)))
-    if dfac is not None:
-        tau = tau * dfac
-    w = torch.softmax(g / tau, dim=1)
-    dpa = dp[idx]                                  # [N,k,3]
-    wdp = (w.unsqueeze(-1) * dpa).sum(1)           # [N,3]
-    out = x + wdp
-
-    # grad tau: u 의 softmax 미분을 앵커 축으로 먼저 접는다
-    tu = ta * u                                                    # [N,k]
-    su = (u.unsqueeze(-1) * dvec).sum(1)                           # [N,3]
-    gtau = -((tu.unsqueeze(-1) * dvec).sum(1) - tu.sum(1, keepdim=True) * su) \
-        / (h * h)                                                  # [N,3]
-    if dfac is not None:
-        gtau = gtau * dfac
-    wr = w / r2                                                    # [N,k]
-    swg = -(wr.unsqueeze(-1) * dvec).sum(1)                        # [N,3]  sum w_b grad g_b
-    wg = (w * g).sum(1, keepdim=True)                              # [N,1]
-    G = swg / tau - wg * gtau / (tau ** 2)                         # [N,3]
-    wgdp = (( w * g).unsqueeze(-1) * dpa).sum(1)                   # [N,3]
-
-    J = torch.eye(3, device=x.device).expand(x.shape[0], 3, 3) \
-        - _outer_sum(wr.unsqueeze(-1) * dpa, dvec) / tau.unsqueeze(-1) \
-        - (wgdp.unsqueeze(-1) * gtau.unsqueeze(-2)) / (tau ** 2).unsqueeze(-1) \
-        - (wdp.unsqueeze(-1) * G.unsqueeze(-2))
-    return out, w, J
+# 격자-입자 전달의 학습 가중치(skin: log_r 반경 소프트맥스)와 그 해석
+# 야코비안은 제거됐다 -- 전달 가중치는 trilinear 하나만 쓴다. 셀 내부의 학습
+# 자유도는 tri_spline 의 RQS 재배열이 든다 (2026-09-29 결정).
 
 
 def jacobian_of(fn, x):
