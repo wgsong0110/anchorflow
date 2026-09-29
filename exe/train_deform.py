@@ -910,6 +910,51 @@ def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
         g=g, norm=norm, free=free, jac=(jac if a.f_from_jac else None))
 
 
+
+# --- 삭제 과정에서 함께 날아간 전역들 (복구) -----------------------
+_PROF_ON = bool(os.environ.get("AF_PROF"))
+_PROF = {}
+_CUR_T = [0]              # step_once 가 남기는 현재 프레임
+_CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1/K)
+_DP_HOOK = [None]
+_F_MSG = []
+_OV = {}                  # 프레임 -> [출력 변수들]
+_OV_OPT = {}              # 프레임 -> 그 변수의 옵티마이저
+_PL_DROP = []
+_PL_MSG = []
+_PL_RMS = [0.0]
+_RL_MSG = []
+_VDT_MSG = []            # --v_from_dt 를 못 쓸 때의 경고를 한 번만
+_OBJ_PTS = (a.obj == "pts")   # 목적함수를 입자에서 바로 재는가
+_DET_LAST = [None]       # 직전 스텝의 사면체 det -- 마스킹·복구에 쓴다
+_DET_BAD = []            # 최근 스텝의 무효 사면체 비율 (보고용)
+
+
+class _tsec:
+    def __init__(self, name):
+        self.name = name
+
+    def __enter__(self):
+        if _PROF_ON:
+            torch.cuda.synchronize()
+            self.t0 = time.time()
+        return self
+
+    def __exit__(self, *_):
+        if _PROF_ON:
+            torch.cuda.synchronize()
+            _PROF[self.name] = _PROF.get(self.name, 0.0) + (time.time() - self.t0)
+
+
+if os.environ.get("AF_ANOMALY"):     # in-place/NaN 범인을 짚을 때
+    torch.autograd.set_detect_anomaly(True)
+    print("[디버그] autograd anomaly detection on", flush=True)
+
+_VDT_MSG = []            # --v_from_dt 를 못 쓸 때의 경고를 한 번만
+_OBJ_PTS = (a.obj == "pts")   # 목적함수를 입자에서 바로 재는가 (격자 미사용)
+_RQS_PEN = [None]        # step_once 가 쌓는 RQS 연속성 벌점, 손실 지점이 소비
+
+
 def node_feats(d, t, gsel, x, v, fe=None):
     """사면체 복합체의 **노드** 특징. 입자 물리량을 자기 사면체의 barycentric
     가중으로 4 꼭짓점에 뿌려 모은다 (P2G 와 같은 구조, 전달 가중치 재사용).
