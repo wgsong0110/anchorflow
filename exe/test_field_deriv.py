@@ -187,10 +187,18 @@ for kind in (("none", "tri"), ("none", "bound"),
                        xs - sp * I3[k], lo64, nn3, None, feat64)
             cols.append((fp - fm) / (2 * sp))
         Jfd = torch.stack(cols, -1)
-    r = float((Ja - Jfd).norm() / Jfd.norm())
+    # 판정은 입자별로 한다. trilinear 는 C0 이라 셀 면에서 기울기가 꺾이고,
+    # bound 는 K 번 합성하며 중간 위치들이 또 면을 밟을 수 있어 꺾임 집합이
+    # K 배 촘촘하다 -- 그 위를 ±sp 로 걸치는 소수 입자의 중심차분은 미분이
+    # 아니다 (t 미분 때와 같은 부류, AD 가 a.e. 의 옳은 값).
+    _pj = ((Ja - Jfd).reshape(xs.shape[0], -1).norm(dim=-1)
+           / Jfd.reshape(xs.shape[0], -1).norm(dim=-1).clamp_min(1e-30))
+    _njb = int((_pj > 1e-3).sum())
     det = torch.linalg.det(Ja)
-    chk(f"{kind}: grad_x Phi == 공간 중심차분", r < 1e-4,
-        f"상대오차 {r:.2e} (점 {xs.shape[0]})")
+    chk(f"{kind}: grad_x Phi == 공간 중심차분",
+        float(_pj.median()) < 1e-6 and _njb <= max(3, xs.shape[0] // 500),
+        f"중앙 {float(_pj.median()):.2e}, 1e-3 초과 {_njb}/{xs.shape[0]}, "
+        f"전역 노름비 {float((Ja - Jfd).norm() / Jfd.norm()):.2e}")
     if kind[1] == "bound":
         # 단사 보장은 글로벌이 bound 일 때다 (로컬 RQS 는 자체 단사라 합성 유지)
         chk(f"{kind}: det grad_x Phi > 0", bool((det > 0).all()),
