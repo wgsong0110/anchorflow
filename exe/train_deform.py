@@ -1079,6 +1079,10 @@ def traj_mass(d):
     return d["_mass"]
 
 
+CRITIC = None
+OPT_C = None
+
+
 class Critic(torch.nn.Module):
     """상태의 가치 V(s) -- 이 상태에서 앞으로 쌓일 i-PG 비용의 추정치.
 
