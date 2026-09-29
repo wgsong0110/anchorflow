@@ -1442,8 +1442,9 @@ def window(d, t0, L, gsel):
             # 복셀 앵커는 특정 가우시안이 아니라 그 칸의 질량중심이라, 정답 변위도
             # 그 칸 구성원들의 평균 변위로 잡는다.
             dp_gt = None
-        elif a.arch.startswith(("conv", "unet")):
-            # 격자점 변위는 특정 가우시안에 대응하지 않는다 -- 앵커 손실 없음
+        elif a.arch == "sgnn" or a.arch.startswith(("conv", "unet")):
+            # 복합체 노드(또는 격자점) 변위는 특정 가우시안에 대응하지 않는다
+            # -- 앵커 손실 없음
             dp_gt = None
         elif a.refps:
             gt_now = take(d["x"][t0 + i + 1], gsel)
