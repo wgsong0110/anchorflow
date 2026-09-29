@@ -140,26 +140,11 @@ ap.add_argument("--metrics", action="store_true",
 ap.add_argument("--cd_pts", type=int, default=2048,
                 help="CD/EMD 표본 크기 (EMD 가 O(n^3) 이라 필요하다)")
 # 변형은 로컬·글로벌 두 단계가 **순차·독립**이라 따로 고른다. 격자-입자
-# 전달은 어느 조합이든 Kuhn 사면체 barycentric 하나다 (trilinear 는 셀이
-# 뒤집혀 겹칠 수 있어 제거됐다).
-ap.add_argument("--cell_warp", default="rqs", choices=("none", "rqs"),
-                help="로컬: 셀 내부 상대좌표 재배열. rqs 는 단조 유리이차 "
-                     "스플라인 (자체로 단사 -- 셀 안 준불연속을 담는다), "
-                     "none 이면 항등")
-ap.add_argument("--node_warp", default="bound", choices=("plain", "bound"),
-                help="글로벌: 격자점 변위 워프. plain 은 상한 없음 (접힘 "
-                     "가능), bound 는 Lipschitz 상한(간격/6)을 지키는 미소 "
-                     "워프를 K 번 합성해 단사를 보장")
+# 전달은 사면체 복합체의 barycentric 하나다.
 ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
                 help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
                      "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
                      "(jacobian_of) 보다 싸고 no_grad 롤아웃에서도 돈다")
-ap.add_argument("--rqs_bins", type=int, default=8,
-                help="--transfer rqs 의 축당 스플라인 빈 수 K")
-ap.add_argument("--rqs_cont", type=float, default=1e-2,
-                help="이웃 셀 RQS 파라미터 차 벌점 가중치 (0 이면 끔). 법선 "
-                     "성분은 구조적으로 연속이고, 이 벌점은 접선 불일치를 "
-                     "'되도록' 줄인다")
 ap.add_argument("--n_nodes", type=int, default=32,
                 help="--arch sgnn 의 **노드 간격**을 정한다 (물체를 몇 노드로 "
                      "덮을지). 사면체 변 길이 = 물체/n_nodes 이고, 발판 격자는 "
@@ -174,12 +159,6 @@ ap.add_argument("--det_eps", type=float, default=0.1,
 ap.add_argument("--det_w", type=float, default=100.0,
                 help="det 복구 손실의 가중치. 물리를 맞추는 것보다 셀이 유효한 "
                      "것이 우선이라 크게 둔다")
-ap.add_argument("--node_k", type=int, default=5,
-                help="--node_warp bound 의 합성 횟수. 상한이 간격/6 이라 "
-                     "K*간격/6 이 한 스텝의 변위 한도다 (K=5 = 0.83*간격)")
-# --- 스텝 크기 dt ------------------------------------------------------------
-# 지금까지 dt 는 궤적의 frame_dt 에 고정이었다. 망은 dt 를 이미 인자로 받지만
-# 값이 늘 같아 사실상 상수였다. 아래 스위치로 dt 를 **조건 변수**로 돌린다.
 ap.add_argument("--dt_cond", action="store_true",
                 help="dt 를 log10 푸리에로 인코딩해 층마다 FiLM 으로 넣는다 "
                      "(어텐션 경로의 DtFiLM 과 같은 것). 0 초기화라 켜는 "
@@ -389,10 +368,7 @@ from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import simplex as SX                            # noqa: E402
 from anchorflow.simplex_gnn import (SimplexGNN,                  # noqa: E402
                                     scatter_to_nodes)
-from anchorflow import tri_spline                               # noqa: E402
 from anchorflow import voxel                                    # noqa: E402
-from anchorflow.sitreg_warp import (BoundedWarp, WARP_BOUND,      # noqa: E402
-                                    bary_g2p, bary_g2p_jac)
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
                                bc_features, bond_stretch, bures_w2_sq,
                                fps, gauss_stretch, grid_knn,
@@ -566,34 +542,14 @@ step0 = 0
 
 def build(n_feat):
     global net, opt
-    if a.arch.startswith(("conv", "unet")):
-        from anchorflow.conv_stepper import ConvStepper
-        net = ConvStepper(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
-                          h=H, scale=0.02 * EXT,
-                          arch=a.arch.replace("conv", "plain"),
-                          damage=a.damage, n_mat=N_FILM,
-                          drop=a.drop,
-                          rqs_dim=(tri_spline.n_params(a.rqs_bins)
-                                   if a.cell_warp == "rqs" else 0),
-                          dt_cond=a.dt_cond, dt_ref=FRAME_DT,
-                          dt_scale=a.dt_scale).to(dev)
-    else:
-        if a.cell_warp == "rqs":
-            raise SystemExit("--cell_warp rqs 는 conv/unet 아키텍처에서만 된다")
-        net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
-                        heads=a.heads, scale=0.02 * EXT, h=H, ext=EXT,
-                        seed=a.seed, damage=a.damage).to(dev)
+    if a.arch != "sgnn":
+        raise SystemExit("사면체 복합체 경로만 남았다 -- --arch sgnn 을 쓸 것 "
+                         "(격자 conv/unet 은 태그 grid-rqs-final 에 있다)")
+    net = SimplexGNN(n_feat=n_feat, hidden=a.hidden, layers=a.gnn_layers,
+                     scale=0.02 * EXT, dt_cond=a.dt_cond, dt_ref=FRAME_DT,
+                     dt_scale=a.dt_scale, n_mat=N_FILM).to(dev)
     opt = (torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=a.wd)
            if a.wd > 0 else torch.optim.Adam(net.parameters(), lr=a.lr))
-    global CRITIC, OPT_C
-    if a.rl:
-        CRITIC = Critic(n_feat, a.rl_critic_h).to(dev)
-        OPT_C = torch.optim.Adam(CRITIC.parameters(), lr=a.rl_critic_lr)
-        print(f"[크리틱] 입력 {n_feat}, 파라미터 "
-              f"{sum(q.numel() for q in CRITIC.parameters())/1e6:.2f}M",
-              flush=True)
-    n = sum(p.numel() for p in net.parameters())
-    print(f"[모델] 입력 {n_feat}, 파라미터 {n/1e6:.2f}M", flush=True)
 
 
 def take(t, idx_gpu):
@@ -902,7 +858,6 @@ _ENS_SHIFT = [(0.0, 0.0, 0.0), (0.5, 0.5, 0.0), (0.5, 0.0, 0.5),
               (0.0, 0.5, 0.5), (0.25, 0.25, 0.25), (0.75, 0.75, 0.25),
               (0.75, 0.25, 0.75), (0.25, 0.75, 0.75)]
 
-from anchorflow import trilinear as TRI          # noqa: E402
 from anchorflow import vox_anchor                # noqa: E402
 
 
@@ -911,128 +866,6 @@ def fe_invariants(fe):
     C = fe.transpose(-1, -2) @ fe
     sig = torch.linalg.eigvalsh(C.double()).clamp_min(1e-12).sqrt()
     return sig.clamp_min(0.01).log().to(fe.dtype)
-
-
-def cell_feats(d, t, gsel, x, v, shift=None, fe=None):
-    """학습·통계·추론이 **모두 같은** 입력을 쓰도록 한 군데서 만든다.
-
-    -> (_in [셀, F], p 셀중심, grid_shape (격자점, 셀),
-        (lo, h, n) 격자, crow 셀 색인)
-    """
-    cfg = d["cfg"]
-    X = take(d["x"][0], gsel)
-    if FIXED_GRID is not None:
-        # 고정 격자: 모든 상태가 같은 영역을 같은 방법으로 이산화한다. 상태마다
-        # 격자가 달라지면 텐서 모양이 달라 배치로 묶을 수 없고, 매 스텝 격자가
-        # 새로 잡히는 것 자체가 비교를 흐린다.
-        lo, hh, nn3 = FIXED_GRID
-    else:
-        lo, hh, nn3 = vox_anchor.grid_for(x, a.vox_res ** 3)
-    if shift is not None:          # 앙상블: 격자 원점을 반 칸씩 어긋나게 둔다
-        lo = lo - torch.tensor(shift, device=lo.device, dtype=lo.dtype) * hh
-        nn3 = nn3 + 1              # 어긋난 만큼 한 칸 더 덮는다
-    # 집계는 **셀 기준** (가우시안당 한 번), 출력은 격자점 기준 -> c2g 가 옮긴다
-    crow, cw, ncell = TRI.cell_index(x, lo, hh, nn3)
-    M_cell = ncell[0] * ncell[1] * ncell[2]
-    ccen = (torch.stack(torch.meshgrid(
-        *[torch.arange(ncell[dd], device=dev, dtype=x.dtype) for dd in range(3)],
-        indexing="ij"), -1).reshape(-1, 3) + 0.5) * hh + lo
-    feat = _san(TRI.tri_feats(x, v / VEL_SCALE, X, MASS[gsel], crow, cw,
-                              M_cell, ccen, hh))
-    # 손잡이는 **가우시안마다** 만들어 같은 셀 집계에 싣는다 (질량가중 평균)
-    cond = None
-    if a.control:
-        cf = ctrl_feat_pts(d, t, x, hh)
-        wm = cw * MASS[gsel].unsqueeze(1)
-        num = torch.zeros(M_cell, cf.shape[-1], device=dev, dtype=cf.dtype)
-        num.index_add_(0, crow.reshape(-1),
-                       (wm.unsqueeze(-1) * cf.unsqueeze(1)).reshape(-1, cf.shape[-1]))
-        den = torch.zeros(M_cell, 1, device=dev, dtype=cf.dtype)
-        den.index_add_(0, crow.reshape(-1), wm.reshape(-1, 1))
-        cond = _san(num / den.clamp(min=1e-12))
-    p = ccen                       # 조건·경계 특징은 셀 중심에서 읽는다
-    grid_pts = tuple(int(t) for t in nn3)
-    grid_shape = (grid_pts, tuple(ncell))
-    if a.fe_state:
-        # 입자별 불변량을 셀로 질량가중 평균한다 (집계 가중치는 cell_feats 와 같다)
-        _ei = (fe_invariants(fe) if fe is not None
-               else torch.zeros(x.shape[0], 3, device=dev, dtype=x.dtype))
-        _wm = cw * MASS[gsel].unsqueeze(1)
-        _num = torch.zeros(M_cell, 3, device=dev, dtype=x.dtype)
-        _num.index_add_(0, crow.reshape(-1),
-                        (_wm.unsqueeze(-1) * _ei.unsqueeze(1)).reshape(-1, 3))
-        _den = torch.zeros(M_cell, 1, device=dev, dtype=x.dtype)
-        _den.index_add_(0, crow.reshape(-1), _wm.reshape(-1, 1))
-        _fecell = _num / _den.clamp(min=1e-12)
-    if a.mat_film:
-        extra = bc_features(p, cfg) / hh      # 물성은 FiLM 으로 따로 들어간다
-    else:
-        extra = torch.cat([mat_feat(cfg).reshape(1, N_MAT).expand(p.shape[0],
-                                                                  N_MAT),
-                           bc_features(p, cfg) / hh], -1)
-    if a.fe_state:
-        extra = torch.cat([extra, _fecell], -1)
-    if cond is not None:
-        extra = torch.cat([extra, cond], -1)
-    if a.grip:
-        extra = torch.cat([extra, grip_feat(d, t, p)], -1)
-    # 국소 변형구배 맞춤이 잎처럼 얇은 구름에서 특이해지면 특징이 1e7 까지 튀어
-    # 첫 스텝에 발산한다 (겪었다). 입력은 O(1) 이 정상이므로 잘라서 넣는다.
-    feat = torch.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0).clamp(-_FCAP, _FCAP)
-    extra = torch.nan_to_num(extra, nan=0.0, posinf=0.0, neginf=0.0).clamp(-_FCAP, _FCAP)
-    _in = torch.cat([feat, extra], -1)
-    return _in, p, grid_shape, (lo, hh, nn3), crow
-
-
-# ---------------------------------------------------------------- 구간 시간
-# AF_PROF=1 이면 한 스텝의 구간별 시간을 모은다. CUDA 는 비동기라 구간을 재려면
-# 매번 동기화해야 하므로, 켜면 전체가 느려진다 -- 어디가 비싼지 가릴 때만 쓴다.
-_PROF = {}
-_PROF_ON = bool(os.environ.get("AF_PROF"))
-
-
-class _tsec:
-    def __init__(self, name):
-        self.name = name
-
-    def __enter__(self):
-        if _PROF_ON:
-            torch.cuda.synchronize()
-            self.t0 = time.time()
-        return self
-
-    def __exit__(self, *_):
-        if _PROF_ON:
-            torch.cuda.synchronize()
-            _PROF[self.name] = _PROF.get(self.name, 0.0) + (time.time() - self.t0)
-
-
-if os.environ.get("AF_ANOMALY"):     # in-place/NaN 범인을 짚을 때
-    torch.autograd.set_detect_anomaly(True)
-    print("[디버그] autograd anomaly detection on", flush=True)
-
-_VDT_MSG = []            # --v_from_dt 를 못 쓸 때의 경고를 한 번만
-_OBJ_PTS = (a.obj == "pts")   # 목적함수를 입자에서 바로 재는가 (격자 미사용)
-_RQS_PEN = [None]        # step_once 가 쌓는 RQS 연속성 벌점, 손실 지점이 소비
-_DET_LAST = [None]       # 직전 스텝의 입자별 det(grad Phi) -- 마스킹·복구에 쓴다
-_DET_BAD = []            # 최근 스텝의 무효 사면체 비율 (보고용)
-
-
-def _warp_bound(hh):
-    """격자점 변위 성분 상한. barycentric 의 Lipschitz<1 조건에서 나온다."""
-    return WARP_BOUND * float(hh)
-
-
-def _node_warp_fn(q, lo, h, nn3, dp, bound):
-    """글로벌 단계: 격자점 변위 dp 를 barycentric 으로 입힌다.
-
-    bound 가 있으면 상한 지키는 미소 워프의 K 합성 (단사 보장), 없으면 맨
-    커널이다. 로컬 단계(셀 내부 재배열)와 완전히 독립이다.
-    """
-    if bound is None:
-        return q + bary_g2p(q, lo, h, nn3, dp)
-    return BoundedWarp(bound, a.node_k).apply(
-        q, dp, lambda z, c: z + bary_g2p(z, lo, h, nn3, c))
 
 
 def det_take():
@@ -1075,13 +908,6 @@ def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
     return phys_resid.grid_ip_energy(
         x, du, vel, F, mass, vol, cfg, h, ng, gl,
         g=g, norm=norm, free=free, jac=(jac if a.f_from_jac else None))
-
-
-def _rqs_pen_take():
-    """쌓인 연속성 벌점을 가중치를 곱해 꺼내고 비운다 (없으면 0)."""
-    q = _RQS_PEN[0]
-    _RQS_PEN[0] = None
-    return 0.0 if q is None else a.rqs_cont * q
 
 
 def node_feats(d, t, gsel, x, v, fe=None):
@@ -1135,10 +961,6 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     _CUR_T[0] = int(t)          # 프레임별 출력 변수를 찾는 데 쓴다
     # 앙상블: 원점을 어긋나게 둔 격자 여러 개의 변위를 평균한다. 같은 가중치를
     # 쓰므로 파라미터는 늘지 않고, 격자 위치 때문에 생기는 편향만 씻긴다.
-    if a.arch == "attn":
-        raise SystemExit("attn 경로는 제거된 skin 전달에 의존한다 -- "
-                         "conv/unet 아키텍처를 쓸 것")
-
     if a.arch == "sgnn":
         # --- 사면체 복합체 경로 -------------------------------------------
         # 변형장은 "GNN + barycentric + 손잡이 혼합" 뿐이다. 노드 특징·간선은
@@ -1176,164 +998,6 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
         _DET_LAST[0] = torch.linalg.det(Jf)
         return (x2, p, v_next, None, dpf, None, dmg, None, fe, Jf)
-
-    shifts = _ENS_SHIFT[:a.ens] if a.ens > 1 else [None]
-    # --- 변형장 Phi_tau 를 tau 의 함수로 떼어 둔다 -------------------------------
-    # tau 에 무관한 것(셀 특징, 이웃 색인, 격자점 좌표)은 밖에서 한 번만 만든다.
-    # 그러면 Phi 는 "망 + 전달 + 손잡이 혼합" 뿐이고, tau 에 탄젠트를 얹어 한 번
-    # 통과시키면 dPhi/dt (= 각 지점의 속도) 가 나온다.
-    _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
-    with _tsec("셀집계"):
-        _feats = [cell_feats(d, t, gsel, x, v, shift=_sh, fe=fe)
-                  for _sh in shifts]
-    p = _feats[-1][1]
-    crow = _feats[-1][4]      # (_in, p, grid_shape, (lo,hh,nn3), crow)
-    _meta = []
-    for (_in, p_, grid_shape, (lo, hh, nn3), _cr) in _feats:
-        m = dict(lo=lo, hh=float(hh), nn3=nn3, cells=grid_shape[1],
-                 bound=(_warp_bound(hh) if a.node_warp == "bound" else None))
-        _meta.append(m)
-
-    def _outs_of(out, m):
-        """망 출력에서 이 전달이 쓰는 **실수** 텐서만 골라 고정 순서로 돌려준다.
-
-        torch.func.jvp 의 출력 pytree 로 쓰므로 정수 텐서나 파이썬 값은 넣지
-        않는다 (탄젠트가 정의되지 않는다).
-        """
-        dp = torch.nan_to_num(out[0], nan=0.0, posinf=0.0, neginf=0.0)
-        if a.cell_warp == "rqs":
-            return (dp, torch.nan_to_num(out[-1], nan=0.0, posinf=0.0,
-                                         neginf=0.0))
-        return (dp,)
-
-    def _warp_of(o, m):
-        """(출력 튜플, 메타) -> 변형장의 공간 사상 = 로컬 후 글로벌.
-
-        두 단계는 순차·독립이라 어느 조합이든 된다. 둘 다 단사인 조합
-        (cell_warp 무엇이든 + node_warp bound) 이면 합성도 단사다 --
-        RQS 는 점을 자기 셀 안에 가두므로 재배열끼리 겹칠 일도 없다.
-        """
-        def f(q):
-            if a.cell_warp == "rqs":
-                q = tri_spline.remap(q, m["lo"], m["hh"], m["nn3"], o[1],
-                                     a.rqs_bins)
-            return _node_warp_fn(q, m["lo"], m["hh"], m["nn3"], o[0],
-                                 m["bound"])
-        return f
-
-    def _field(tau):
-        """Phi_tau(x) 와, 사상을 되짓는 데 필요한 출력 텐서들."""
-        acc, outs = 0.0, []
-        for (_in, p_, grid_shape, _g3, _cr), m in zip(_feats, _meta):
-            with _tsec("신경망"):
-                out = net(p_, _in, tau, grid_shape[0], cells=grid_shape[1],
-                          mat=_mv)
-            if _DP_HOOK[0] is not None:
-                # 오라클 모드: 망의 **출력 전체**(변위·반경·두께)를 자유 변수로
-                # 갈아끼운다. 나머지 경로(격자 구성, 전달, 손잡이 적용, 상태
-                # 전진)는 학습과 글자 그대로 같다.
-                out = _DP_HOOK[0](out)
-            # 하드 clamp 는 쓰지 않는다 -- 크기를 자르면 목적함수가 보는 해와
-            # 모델이 낼 수 있는 해가 어긋난다. NaN 만 씻어 낸다.
-            o = _outs_of(out, m)
-            outs.append(o)
-            with _tsec("스키닝"):
-                acc = acc + (_warp_of(o, m)(x) - x)
-        q = x + acc / len(_feats)
-        if a.control:
-            q = apply_control(d, t, gsel, q, x, dt=tau)
-        return q, tuple(outs)
-
-    # --- tau 로 미분해 속도를 얻는다 -------------------------------------------
-    # dual_level 을 직접 쓰면 레벨을 벗어난 primal 이 무효가 되어(두 번째 레벨에서
-    # 버전이 올라간다) K>1 언롤의 역전파가 깨진다. torch.func.jvp 는 출력을 제대로
-    # 풀어 주고 파라미터 역전파와도 합성된다 (실측: 2 스텝 언롤 통과).
-    _use_dt = a.v_from_dt and _DP_HOOK[0] is None and a.dt_cond
-    if a.v_from_dt and not _use_dt and not _VDT_MSG:
-        _VDT_MSG.append(1)
-        print("[속도] --v_from_dt 를 쓸 수 없다 (" +
-              ("출력 훅이 걸려 있어 tau 의존이 없다" if _DP_HOOK[0] is not None
-               else "--dt_cond 가 꺼져 있어 dPhi/dt = 0 이다") +
-              ") -- 차분으로 되돌린다", flush=True)
-    _tau0 = torch.as_tensor(float(_DT[0]), device=dev, dtype=x.dtype)
-    if _use_dt:
-        (x2, _outs), (v_next, _) = torch.func.jvp(
-            _field, (_tau0,), (torch.ones_like(_tau0),))
-    else:
-        x2, _outs = _field(_tau0)
-        v_next = (x2 - x) / _DT[0]
-    dp = _outs[-1][0]
-    # RQS 셀 경계 연속성 벌점
-    if a.cell_warp == "rqs" and a.rqs_cont > 0 and torch.is_grad_enabled():
-        for o, m in zip(_outs, _meta):
-            _pen = tri_spline.cont_penalty(o[1].reshape(
-                -1, *[int(c) for c in m["cells"]], o[1].shape[-1]))
-            _RQS_PEN[0] = (_pen if _RQS_PEN[0] is None else _RQS_PEN[0] + _pen)
-    # --- 변형장의 야코비안 (F 를 미는 데 쓴다) ---------------------------------
-    warps = [_warp_of(o, m) for o, m in zip(_outs, _meta)]
-
-    def _warp(q):
-        return q + sum(w(q) - q for w in warps) / len(warps)
-
-    # 입자 목적함수는 탄성항의 ∇Δu 를 격자에서 못 받으므로 야코비안이 필수다
-    _want_J = (need_J or a.f_from_jac or _OBJ_PTS or a.fe_state
-               or a.det_reg > 0)
-    J = None
-    if _want_J and a.jac == "analytic":
-        # 닫힌 형식: (상한 워프의 연쇄 ∇) x (RQS 기울기 대각). 역전파가 없어
-        # 학습에서 3회 역전파를 줄이고, no_grad 롤아웃에서도 돈다.
-        _Js = []
-        for o, m in zip(_outs, _meta):
-            q0, sl = x, None
-            if a.cell_warp == "rqs":
-                q0, sl = tri_spline.remap(x, m["lo"], m["hh"], m["nn3"],
-                                          o[1], a.rqs_bins, return_jac=True)
-            if m["bound"] is None:
-                _u, _G = bary_g2p_jac(q0, m["lo"], m["hh"], m["nn3"], o[0])
-                Jk = torch.eye(3, device=dev, dtype=x.dtype) + _G
-            else:
-                _, Jk = BoundedWarp(m["bound"], a.node_k).apply_jac(
-                    q0, o[0], lambda z, c, _m=m: bary_g2p_jac(
-                        z, _m["lo"], _m["hh"], _m["nn3"], c))
-            if sl is not None:
-                Jk = Jk * sl.unsqueeze(1)      # J @ diag(RQS 기울기)
-            _Js.append(Jk)
-        J = _Js[0] if len(_Js) == 1 else torch.stack(_Js).mean(0)
-    elif _want_J:
-        J = jacobian_of(_warp, x)
-    Jfield = J
-    dmg_out = None
-    # 격자는 다음 프레임에 x2 로부터 다시 잡는다. 앵커를 옮길 필요가 없다.
-    ai, p_next = None, p
-    fe_next = fe
-    if a.fe_state and fe is not None and Jfield is not None:
-        # 교사와 같은 절차: 시험 변형구배를 밀고 항복면으로 사영한다
-        with _tsec("F_e갱신"):
-            _ftr = Jfield @ fe
-            with torch.no_grad():
-                _ps, _dlg = phys_resid.psi_of(_ftr, d["cfg"], _DT[0])
-                fe_next = phys_resid.plastic_step(_ftr, _dlg).detach()
-    # det 벌점·F 밀기는 **해석적** 야코비안을 먼저 쓴다. 둘 다 없으면 벌점을
-    # 못 매기므로 None 으로 돌려준다.
-    return (x2, p_next, v_next, J, dp, ai, dmg, crow, fe_next, Jfield)
-
-
-CRITIC = None
-OPT_C = None
-_RL_MSG = []
-# 오라클 모드에서 망 출력을 바꿔 끼우는 훅 (None 이면 아무 일도 없다)
-_DP_HOOK = [None]
-_CUR_T = [0]              # step_once 가 남기는 현재 프레임
-_CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1/K)
-_OV = {}                  # 프레임 -> [출력 변수들]
-_OV_OPT = {}              # 프레임 -> 그 변수의 옵티마이저
-_PL_MSG = []
-_PL_DROP = []
-_PL_RMS = [0.0]
-FIXED_GRID = None
-_F_MSG = []
-
-
 def traj_F(d):
     """탄성 변형구배 [T,N,3,3]. 궤적에 든 것은 전부 항등이라 위치에서 되살린다."""
     if d.get("_Fok") is None:
@@ -1432,7 +1096,7 @@ def rl_state_feat(d, t, gsel, x, v, fe, p=None):
         extra = torch.nan_to_num(extra, nan=0.0, posinf=0.0, neginf=0.0)
         drift = float(dist[:, 0].mean())
         return torch.cat([feat, extra], -1), drift
-    _in, _p, _gs, _lo, _crow = cell_feats(d, t, gsel, x, v, fe=fe)
+    _in = node_feats(d, t, gsel, x, v, fe=fe)[0]
     return _in, 0.0
 
 
@@ -1584,36 +1248,6 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         x = x + u
         F = (torch.eye(3, device=dev) + gu) @ F
         v = v + float(torch.rand(1, generator=gen, device=dev)) * u / FRAME_DT
-    elif sigma > 0 and a.phys_noise_grid:
-        # 출력 공간 교란: 격자점 변위를 무작위로 뽑아 전달로 입힌다.
-        _lo, _hh, _n3 = vox_anchor.grid_for(x, a.vox_res ** 3)
-        _gp = (torch.stack(torch.meshgrid(
-            *[torch.arange(int(_n3[i]), device=dev, dtype=x.dtype)
-              for i in range(3)], indexing="ij"), -1).reshape(-1, 3)
-            ) * float(_hh) + _lo
-        _dpn = torch.randn(_gp.shape[0], 3, generator=gen, device=dev,
-                           dtype=x.dtype) * (sigma * ext)
-        if a.node_warp == "bound":
-            # 모델이 낼 수 있는 상태만 교란으로 만든다: 같은 상한·합성·커널의
-            # 워프 (셀 내부 재배열 교란은 생략 -- 항등이 기본값이다)
-            _wn = BoundedWarp(_warp_bound(float(_hh)), a.node_k)
-
-            def _warp_n(q):
-                return _wn.apply(q, _dpn,
-                                 lambda z, c: z + bary_g2p(
-                                     z, _lo, float(_hh), _n3, c))
-        else:
-            def _warp_n(q):
-                return q + bary_g2p(q, _lo, float(_hh), _n3, _dpn)
-        u = _warp_n(x) - x
-        gu = jacobian_of(_warp_n, x) - torch.eye(3, device=dev)
-        _fm0 = free_mask(d, x.shape[0], dev, gsel, x, t0) if a.control else None
-        if _fm0 is not None:
-            u = u * _fm0.unsqueeze(-1).to(u.dtype)
-            gu = gu * _fm0.reshape(-1, 1, 1).to(gu.dtype)
-        x = x + u
-        F = (torch.eye(3, device=dev) + gu) @ F
-        v = v + float(torch.rand(1, generator=gen, device=dev)) * u / FRAME_DT
     elif sigma > 0:
         u, gu = phys_resid.smooth_noise(x, sigma * ext, ext, gen)
         # 손잡이 입자는 흔들지 않는다. 그 위치는 교사가 박아 둔 Dirichlet 자료라,
@@ -1682,7 +1316,6 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         F = phys_resid.plastic_step(F_tr, dlog).detach() if K > 1 else F_tr
         x = x2
     _dt_tok.__exit__(None, None, None)
-    e_tot = e_tot + _rqs_pen_take()      # rqs 전달의 셀 경계 연속성 벌점
     return e_tot / K, r_free, r_ring, parts
 
 
@@ -1858,9 +1491,7 @@ with torch.no_grad():
                   + (7 * a.n_ctrl if a.control else 0))
     else:
         _fe0 = (take(traj_F(_d)[1], _g).float() if a.fe_state else None)
-        n_feat = (node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1]
-                  if a.arch == "sgnn"
-                  else cell_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1])
+        n_feat = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1]
 if a.voxel:
     VOX_CELL = H
     # 격자는 모든 궤적을 덮도록 공간에 고정한다 (프레임마다 새로 잡으면 물체가
@@ -1917,10 +1548,7 @@ with torch.no_grad():
             _cr = None
         else:
             _fes = (take(traj_F(_dd)[_t], _gs).float() if a.fe_state else None)
-            if a.arch == "sgnn":
-                _s, _cr = node_feats(_dd, _t, _gs, _x, _v, fe=_fes)[0], None
-            else:
-                _s, _, _, _, _cr = cell_feats(_dd, _t, _gs, _x, _v, fe=_fes)
+            _s, _cr = node_feats(_dd, _t, _gs, _x, _v, fe=_fes)[0], None
         if a.stat_occ and _cr is not None:  # 빈 칸이 96% 라 통계를 장악한다
             _m = torch.zeros(_s.shape[0], dtype=torch.bool, device=_s.device)
             _m[_cr.reshape(-1)] = True
@@ -2244,7 +1872,6 @@ if a.oracle_roll:
             E, _dl, _Ft, _pt = ip_of(
                 x, x2 - x, v, F, _mass, _vol, _cfg, _hs, _ng, _gl,
                 g=_g, norm=_norm, free=fm, jac=_Jd)
-            E = E + _rqs_pen_take()
             E.backward()
             opt.step()
             sch.step()
@@ -2433,7 +2060,6 @@ pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
 for it in pbar:
     L = a.unroll            # 학습 중 펼치기 길이는 바꾸지 않는다
     opt.zero_grad(set_to_none=True)
-    _RQS_PEN[0] = None      # 소비 안 된 벌점이 배치를 넘어 그래프를 잡지 않게
     lx = lJ = la = ldm = ldet = 0.0
     still = arel = dmean = 0.0
     if a.pool:
@@ -2513,7 +2139,6 @@ for it in pbar:
                     loss_p = E_ip
             _rl = _rr.detach().norm(dim=-1)
             res = float((_rl[fm] if fm is not None else _rl).mean())
-            loss_p = loss_p + _rqs_pen_take()
             if a.pool_whiten:
                 _PL_RMS[0] = (0.99 * _PL_RMS[0]
                               + 0.01 * float(loss_p.detach()) ** 2)
@@ -2655,8 +2280,7 @@ for it in pbar:
             loss_b = a.phys_w * wE
             if a.phys_sup > 0:
                 wx, wJ, wst, wa, wrel, wd, wdm, wdet = window(d, t0, L, gsel)
-                loss_b = (loss_b + a.phys_sup * wx + a.det_reg * wdet
-                          + _rqs_pen_take())
+                loss_b = (loss_b + a.phys_sup * wx + a.det_reg * wdet)
             else:
                 wx = wE.detach(); wJ = torch.zeros((), device=dev)
                 wst = r_ring; wa = torch.zeros((), device=dev)
@@ -2677,8 +2301,7 @@ for it in pbar:
         # 야코비안까지 붙어 메모리가 배치 수만큼 늘어난다
         with _tsec("역전파"):
             ((wx + a.lambda_J * wJ + a.lambda_anchor * wa
-              + a.lambda_dmg * wd + a.det_reg * wdet
-              + _rqs_pen_take()) / a.batch).backward()
+              + a.lambda_dmg * wd + a.det_reg * wdet) / a.batch).backward()
         lx = lx + float(wx) / a.batch
         lJ = lJ + float(wJ) / a.batch
         ldet = ldet + float(wdet) / a.batch

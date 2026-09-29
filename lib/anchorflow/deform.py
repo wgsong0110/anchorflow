@@ -499,9 +499,8 @@ def _outer_sum(A, B):
     return torch.stack([(A[..., i:i + 1] * B).sum(1) for i in range(3)], dim=1)
 
 
-# 격자-입자 전달의 학습 가중치(skin: log_r 반경 소프트맥스)와 그 해석
-# 야코비안은 제거됐다 -- 전달 가중치는 trilinear 하나만 쓴다. 셀 내부의 학습
-# 자유도는 tri_spline 의 RQS 재배열이 든다 (2026-09-29 결정).
+# 격자-입자 전달의 학습 가중치(skin)와 그 해석 야코비안은 제거됐다 --
+# 전달은 사면체 복합체의 barycentric(simplex.g2p) 하나다 (2026-09-29 결정).
 
 
 def jacobian_of(fn, x):

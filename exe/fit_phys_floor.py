@@ -17,7 +17,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "lib"))
 from anchorflow import phys_resid                              # noqa: E402
-from anchorflow.sitreg_warp import bary_g2p
+from anchorflow.simplex import g2p as bary_g2p
 from anchorflow import vox_anchor                              # noqa: E402
 
 ap = argparse.ArgumentParser()

@@ -18,7 +18,7 @@ ap.add_argument("--lr", type=float, default=3e-4)
 a = ap.parse_args()
 
 dev = "cuda:0"
-from anchorflow.sitreg_warp import bary_g2p
+from anchorflow.simplex import g2p as bary_g2p
 
 f = sorted(glob.glob(os.path.join(a.data, "*.pt")))[0]
 d = torch.load(f, map_location=dev, weights_only=False)

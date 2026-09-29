@@ -17,7 +17,7 @@ ap.add_argument("--n_win", type=int, default=6)
 a = ap.parse_args()
 
 dev = "cuda:0"
-from anchorflow.sitreg_warp import bary_g2p
+from anchorflow.simplex import g2p as bary_g2p
 from anchorflow import vox_anchor
 
 files = sorted(glob.glob(os.path.join(a.data, "*.pt")))[:a.n_traj]
