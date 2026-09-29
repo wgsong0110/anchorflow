@@ -2188,7 +2188,9 @@ if a.roll_scen:
                 ds["ctrl_pos"] = torch.stack([_cc, _cc + _hr * _vc], 0)
                 ds.pop("_ca20", None); ds.pop("_ca", None)
                 ds.pop("_ca_key", None)
-                with dt_scope(_hr):
+                # 입자 목적함수는 F 갱신에 변형장 야코비안이 필요하고, 그건
+                # autograd 라 no_grad 안에서는 못 만든다 -- 여기만 켠다
+                with dt_scope(_hr), torch.enable_grad():
                     (x2, p2, v2, _J, _dp, _ai, _dmg, _cr, _fe,
                      _Jd) = step_once(ds, 0, gsel, p_st, x, v, need_J=False)
                 _fm = (free_mask(ds, n_p, dev, gsel, x, 0) if a.control
