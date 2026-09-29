@@ -457,6 +457,28 @@ def dt_scope(dt):
         _DT[0] = _o
 
 
+# K 언롤 동안 노드 격자를 고정하는 자리. None 이면 스텝마다 새로 잡는다.
+_GRID = [None]
+
+
+@contextlib.contextmanager
+def grid_pin(x):
+    """K 서브스텝이 **같은 이산화**를 보게 노드 격자를 한 번만 잡는다.
+
+    conv 경로는 격자가 cfg(n_grid, grid_lim) 로 고정이라 서브스텝마다 같은
+    격자를 본다. sgnn 은 격자를 x 의 바운딩박스에서 잡으므로 그대로 두면 K
+    스텝이 서로 다른 격자 위에서 합성된다 -- 물체가 부풀면 간격 hn 까지 커지고,
+    망 출력은 간격 단위라 그만큼 함께 커져 되먹임이 된다. K=1 에서는 격자를
+    한 번만 잡으므로 이 고정이 아무것도 바꾸지 않는다.
+    """
+    _o = _GRID[0]
+    _GRID[0] = SX.grid_for_nodes(x, a.n_nodes)
+    try:
+        yield
+    finally:
+        _GRID[0] = _o
+
+
 _DT_SUBS = [float(q) for q in a.dt_sub_set.split(",") if q.strip()]
 EVAL_SUB = int(a.eval_dt_sub or a.dt_sub)
 
@@ -1019,7 +1041,8 @@ def node_feats(d, t, gsel, x, v, fe=None):
     """
     cfg = d["cfg"]
     X = take(d["x"][0], gsel)
-    lo, hn, nn = SX.grid_for_nodes(x, a.n_nodes)
+    lo, hn, nn = (_GRID[0] if _GRID[0] is not None
+                  else SX.grid_for_nodes(x, a.n_nodes))
     idx, lam, _aux = SX.locate(x, lo, hn, nn)
     rows, uniq = SX.active_nodes(idx)          # **점유 사면체의 꼭짓점만**
     Mn = int(uniq.numel())
@@ -1410,6 +1433,11 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         t0 = t0 + int(a.warm // sub)
     e_tot, r_free, r_ring, parts = 0.0, 0.0, 0.0, None
     _dt_tok = dt_scope(h); _dt_tok.__enter__()
+    # K>1 에서만 격자를 고정한다 -- K=1 은 어차피 한 번만 잡으므로 무영향이고,
+    # 이렇게 두면 기존 K=1 결과가 비트 단위로 그대로 재현된다.
+    _g_tok = grid_pin(x) if (K > 1 and a.arch == "sgnn") else None
+    if _g_tok is not None:
+        _g_tok.__enter__()
     for i in range(K):
         # 서브스텝을 밟을 때도 손잡이 명령은 **프레임** 단위라 색인을 나눠 센다
         _tf = t0 + int(i // sub)
@@ -1441,6 +1469,8 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         F = phys_resid.plastic_step(F_tr, dlog).detach() if K > 1 else F_tr
         x = x2
     _dt_tok.__exit__(None, None, None)
+    if _g_tok is not None:
+        _g_tok.__exit__(None, None, None)
     return e_tot / K, r_free, r_ring, parts
 
 
