@@ -137,23 +137,25 @@ ap.add_argument("--metrics", action="store_true",
                 help="롤아웃에서 CD/EMD 까지 잰다 (Spring-Gaus 정의)")
 ap.add_argument("--cd_pts", type=int, default=2048,
                 help="CD/EMD 표본 크기 (EMD 가 O(n^3) 이라 필요하다)")
-ap.add_argument("--transfer", default="rqs",
-                choices=("tri", "rqs"),
-                help="격자점 변위를 가우시안으로 옮기는 법. 가중치는 **둘 다 "
-                     "trilinear 고정**이다 (학습 반경 skin 과 B-스플라인은 "
-                     "제거됐다). tri 는 상한 없는 맨 trilinear, rqs 는 셀 "
-                     "내부 상대좌표를 단조 RQS 로 재배열한 뒤 Lipschitz "
-                     "상한(간격/6)+K 합성으로 접힘까지 막는 전달")
+# 변형은 로컬·글로벌 두 단계가 **순차·독립**이라 따로 고른다. 격자-입자
+# 가중치는 어느 조합이든 trilinear 고정이다.
+ap.add_argument("--cell_warp", default="rqs", choices=("none", "rqs"),
+                help="로컬: 셀 내부 상대좌표 재배열. rqs 는 단조 유리이차 "
+                     "스플라인 (자체로 단사 -- 셀 안 준불연속을 담는다), "
+                     "none 이면 항등")
+ap.add_argument("--node_warp", default="bound", choices=("tri", "bound"),
+                help="글로벌: 격자점 변위 워프. tri 는 맨 trilinear (상한 "
+                     "없음, 접힘 가능), bound 는 Lipschitz 상한(간격/6)을 "
+                     "지키는 미소 워프를 K 번 합성해 단사를 보장")
 ap.add_argument("--rqs_bins", type=int, default=8,
                 help="--transfer rqs 의 축당 스플라인 빈 수 K")
 ap.add_argument("--rqs_cont", type=float, default=1e-2,
                 help="이웃 셀 RQS 파라미터 차 벌점 가중치 (0 이면 끔). 법선 "
                      "성분은 구조적으로 연속이고, 이 벌점은 접선 불일치를 "
                      "'되도록' 줄인다")
-ap.add_argument("--sitreg_k", type=int, default=5,
-                help="--transfer rqs 의 상한 워프 합성 횟수. trilinear 상한이 "
-                     "간격/6 이라 K*간격/6 이 한 스텝의 변위 한도다 (K=5 면 "
-                     "예전 3차 B-스플라인 K=2 와 같은 0.8*간격)")
+ap.add_argument("--node_k", type=int, default=5,
+                help="--node_warp bound 의 합성 횟수. 상한이 간격/6 이라 "
+                     "K*간격/6 이 한 스텝의 변위 한도다 (K=5 = 0.83*간격)")
 # --- 스텝 크기 dt ------------------------------------------------------------
 # 지금까지 dt 는 궤적의 frame_dt 에 고정이었다. 망은 dt 를 이미 인자로 받지만
 # 값이 늘 같아 사실상 상수였다. 아래 스위치로 dt 를 **조건 변수**로 돌린다.
@@ -547,12 +549,12 @@ def build(n_feat):
                           damage=a.damage, n_mat=N_FILM,
                           drop=a.drop,
                           rqs_dim=(tri_spline.n_params(a.rqs_bins)
-                                   if a.transfer == "rqs" else 0),
+                                   if a.cell_warp == "rqs" else 0),
                           dt_cond=a.dt_cond, dt_ref=FRAME_DT,
                           dt_scale=a.dt_scale).to(dev)
     else:
-        if a.transfer == "rqs":
-            raise SystemExit("--transfer rqs 는 conv/unet 아키텍처에서만 된다")
+        if a.cell_warp == "rqs":
+            raise SystemExit("--cell_warp rqs 는 conv/unet 아키텍처에서만 된다")
         net = DeformNet(n_feat=n_feat, hidden=a.hidden, depth=a.depth,
                         heads=a.heads, scale=0.02 * EXT, h=H, ext=EXT,
                         seed=a.seed, damage=a.damage).to(dev)
@@ -996,11 +998,16 @@ def _warp_bound(hh):
     return TRILINEAR_BOUND * float(hh)
 
 
-def _rqs_warp(q, lo, h, nn3, th, dp, bound, n_comp):
-    """셀 내부 RQS 재배열 -> 상한 걸린 trilinear 워프. 변형장의 공간 전체다."""
-    qr = tri_spline.remap(q, lo, h, nn3, th, a.rqs_bins)
-    return BoundedWarp(bound, n_comp).apply(
-        qr, dp, lambda z, c: z + TRI.g2p(*TRI.corners(z, lo, h, nn3), c))
+def _node_warp_fn(q, lo, h, nn3, dp, bound):
+    """글로벌 단계: 격자점 변위 dp 를 trilinear 로 입힌다.
+
+    bound 가 있으면 상한 지키는 미소 워프의 K 합성 (단사 보장), 없으면 맨
+    trilinear 다. 로컬 단계(셀 내부 재배열)와 완전히 독립이다.
+    """
+    if bound is None:
+        return q + TRI.g2p(*TRI.corners(q, lo, h, nn3), dp)
+    return BoundedWarp(bound, a.node_k).apply(
+        q, dp, lambda z, c: z + TRI.g2p(*TRI.corners(z, lo, h, nn3), c))
 
 
 def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
@@ -1058,9 +1065,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     _meta = []
     for (_in, p_, grid_shape, tri, (lo, hh, nn3), _cr) in _feats:
         m = dict(lo=lo, hh=float(hh), nn3=nn3, cells=grid_shape[1], tri=tri,
-                 kind=a.transfer)
-        if a.transfer == "rqs":
-            m["bound"] = _warp_bound(hh)
+                 bound=(_warp_bound(hh) if a.node_warp == "bound" else None))
         _meta.append(m)
 
     def _outs_of(out, m):
@@ -1070,22 +1075,25 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         않는다 (탄젠트가 정의되지 않는다).
         """
         dp = torch.nan_to_num(out[0], nan=0.0, posinf=0.0, neginf=0.0)
-        if m["kind"] == "rqs":
+        if a.cell_warp == "rqs":
             return (dp, torch.nan_to_num(out[-1], nan=0.0, posinf=0.0,
                                          neginf=0.0))
         return (dp,)
 
     def _warp_of(o, m):
-        """(출력 튜플, 메타) -> 변형장의 **공간** 사상."""
-        if m["kind"] == "rqs":
-            # 접힘 방지 전달: 셀 내부 상대좌표를 단조 RQS 로 재배열한 뒤 그
-            # 위치에서 Lipschitz 상한 + K 합성 trilinear 워프를 평가한다.
-            # RQS 가 점을 자기 셀 안에 가두고 워프가 단사라 합성 전체가
-            # 단사다 -- 셀 안 준불연속은 스플라인 기울기가 담는다.
-            return lambda q: _rqs_warp(q, m["lo"], m["hh"], m["nn3"], o[1],
-                                       o[0], m["bound"], a.sitreg_k)
-        return lambda q: q + TRI.g2p(*TRI.corners(q, m["lo"], m["hh"],
-                                                  m["nn3"]), o[0])
+        """(출력 튜플, 메타) -> 변형장의 공간 사상 = 로컬 후 글로벌.
+
+        두 단계는 순차·독립이라 어느 조합이든 된다. 둘 다 단사인 조합
+        (cell_warp 무엇이든 + node_warp bound) 이면 합성도 단사다 --
+        RQS 는 점을 자기 셀 안에 가두므로 재배열끼리 겹칠 일도 없다.
+        """
+        def f(q):
+            if a.cell_warp == "rqs":
+                q = tri_spline.remap(q, m["lo"], m["hh"], m["nn3"], o[1],
+                                     a.rqs_bins)
+            return _node_warp_fn(q, m["lo"], m["hh"], m["nn3"], o[0],
+                                 m["bound"])
+        return f
 
     def _field(tau):
         """Phi_tau(x) 와, 사상을 되짓는 데 필요한 출력 텐서들."""
@@ -1130,7 +1138,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         v_next = (x2 - x) / _DT[0]
     dp = _outs[-1][0]
     # RQS 셀 경계 연속성 벌점
-    if a.transfer == "rqs" and a.rqs_cont > 0 and torch.is_grad_enabled():
+    if a.cell_warp == "rqs" and a.rqs_cont > 0 and torch.is_grad_enabled():
         for o, m in zip(_outs, _meta):
             _pen = tri_spline.cont_penalty(o[1].reshape(
                 -1, *[int(c) for c in m["cells"]], o[1].shape[-1]))
@@ -1419,10 +1427,10 @@ def phys_window(d, t0, K, gsel, sigma, gen):
             ) * float(_hh) + _lo
         _dpn = torch.randn(_gp.shape[0], 3, generator=gen, device=dev,
                            dtype=x.dtype) * (sigma * ext)
-        if a.transfer == "rqs":
+        if a.node_warp == "bound":
             # 모델이 낼 수 있는 상태만 교란으로 만든다: 같은 상한·합성의
             # trilinear 워프 (셀 내부 재배열 교란은 생략 -- 항등이 기본값이다)
-            _wn = BoundedWarp(_warp_bound(float(_hh)), a.sitreg_k)
+            _wn = BoundedWarp(_warp_bound(float(_hh)), a.node_k)
 
             def _warp_n(q):
                 return _wn.apply(q, _dpn,

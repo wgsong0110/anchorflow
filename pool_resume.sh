@@ -15,7 +15,7 @@ else
   COMBOS=hotdog_clayC,hotdog_elD,hotdog_viscoplastic,lego_clayC,lego_elD,lego_viscoplastic,mic_clayC,mic_elD,mic_viscoplastic,wolf_clayC,wolf_elD,wolf_viscoplastic
   MAT="--mat_film"; HOLD="$(cat $W/holdF.txt)"; DATA=$W/traj_hold12
 fi
-AR="--arch conv --transfer rqs --vox_res 32 --k 16"
+AR="--arch conv --vox_res 32 --k 16"
 python -u $W/anchorflow/exe/train_deform.py --data $DATA --out $W/abl_$TAG --tag $TAG \
   $MAT --control --n_ctrl 2 $AR --hidden 128 --depth 4 --lr 3e-4 \
   --batch ${BS:-16} --n_pts ${NP:-8000} --pool --pool_combos "$COMBOS" \

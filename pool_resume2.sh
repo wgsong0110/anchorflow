@@ -30,7 +30,7 @@ fi
 [ -f $W/hold12.txt ] || (cd $W/hold1 && ls *.pt | sed 's/\.pt$//' | paste -sd, > $W/hold12.txt)
 echo "[검증] $(ls $W/hold1 | wc -l) 궤적: $(cat $W/hold12.txt)"
 python -u $W/anchorflow/exe/train_deform.py --data $W/hold1 --out $W/abl_$TAG --tag $TAG \
-  --mat_film --control --n_ctrl 2 --arch conv --transfer rqs \
+  --mat_film --control --n_ctrl 2 --arch conv \
   --vox_res 32 --k 16 --hidden 128 --depth 4 --lr 3e-4 \
   --batch ${BS:-16} --n_pts ${NP:-8000} --pool --pool_combos "$COMBOS" \
   --pool_size ${PS:-128} --pool_fresh 0.25 --pool_thresh ${TH:-0.50} \

@@ -1,8 +1,7 @@
-"""남은 두 전달(tri / rqs)의 한 학습 스텝 실행시간.
+"""로컬(셀 내부 RQS) x 글로벌(상한 워프) 조합별 한 학습 스텝 실행시간.
 
 한 스텝의 **순전파 + 역전파** 시간을 잰다 (물리손실 포함). 격자-입자 가중치는
-trilinear 하나뿐이고, rqs 는 그 위에 셀 내부 RQS 재배열과 Lipschitz 상한
-K 합성이 얹힌다. 합성 횟수 K 와 compile/bf16 의 효과를 함께 잰다.
+어느 조합이든 trilinear 고정이고, 두 단계는 독립이라 비용도 따로 얹힌다.
 
   python exe/bench_sitreg.py --traj traj_h2/mic_clayC_t_s400706.pt
 """
@@ -56,11 +55,14 @@ def warp_tri(q, c):
 
 
 def step(dp, mode, K, th=None):
-    if mode == "rqs":
-        xr = tri_spline.remap(x, lo, hh, nn3, th, a.rqs_bins)
-        x2 = BoundedWarp(BND, K).apply(xr, dp, warp_tri)
+    cw, nw = mode
+    q = x
+    if cw == "rqs":
+        q = tri_spline.remap(q, lo, hh, nn3, th, a.rqs_bins)
+    if nw == "bound":
+        x2 = BoundedWarp(BND, K).apply(q, dp, warp_tri)
     else:
-        x2 = warp_tri(x, dp)
+        x2 = warp_tri(q, dp)
     E, _dl, _Ft, _pt = phys_resid.grid_ip_energy(
         x, x2 - x, v, F0, mass, vol, cfg, h, ng, gl, g=gv, norm=nrm)
     return E
@@ -69,7 +71,7 @@ def step(dp, mode, K, th=None):
 def timeit(tag, mode, K, amp=False, comp=False):
     dp = torch.zeros(M, 3, device=dev, requires_grad=True)
     th = (torch.zeros(NC, P, device=dev, requires_grad=True)
-          if mode == "rqs" else None)
+          if mode[0] == "rqs" else None)
     fn = step
     if comp:
         try:
@@ -93,10 +95,13 @@ def timeit(tag, mode, K, amp=False, comp=False):
 
 
 print(f"[설정] 입자 {sel.numel()}, 격자점 {M}, 셀 {NC}, 반복 {a.iters}")
-b0 = timeit("tri (맨 trilinear)", "tri", 1)
+b0 = timeit("none + tri (맨 trilinear)", ("none", "tri"), 1)
+timeit("rqs  + tri (재배열만)", ("rqs", "tri"), 1)
+timeit("none + bound K=5 (상한만)", ("none", "bound"), 5)
 for K in (1, 2, 5, 8):
-    timeit(f"rqs: RQS + 상한 trilinear K={K}", "rqs", K)
+    timeit(f"rqs  + bound K={K}", ("rqs", "bound"), K)
 if a.compile:
-    timeit("rqs K=5, compile", "rqs", 5, comp=True)
-    timeit("rqs K=5, bf16 + compile", "rqs", 5, amp=True, comp=True)
-print(f"\n기준선: tri {b0:.2f} ms")
+    timeit("rqs + bound K=5, compile", ("rqs", "bound"), 5, comp=True)
+    timeit("rqs + bound K=5, bf16 + compile", ("rqs", "bound"), 5,
+           amp=True, comp=True)
+print(f"\n기준선: none+tri {b0:.2f} ms")

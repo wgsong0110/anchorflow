@@ -61,14 +61,14 @@ def chk(name, cond, detail=""):
     print(f"  [{'OK' if cond else 'FAIL'}] {name} {detail}", flush=True)
 
 
-def mknet(kind, wake=True, dtype=torch.float32):
+def mknet(cw, wake=True, dtype=torch.float32):
     torch.manual_seed(1)
     n = ConvStepper(n_feat=8, hidden=32, depth=2, h=hh, scale=0.02,
                     dt_cond=True, dt_ref=HDT, dt_scale=True,
-                    rqs_dim=(P if kind == "rqs" else 0)).to(dev).to(dtype)
+                    rqs_dim=(P if cw == "rqs" else 0)).to(dev).to(dtype)
     with torch.no_grad():
         n.out.weight.normal_(0, 0.05)
-        if kind == "rqs":
+        if cw == "rqs":
             n.out_rqs.weight.normal_(0, 0.05)
         last = [m for m in n.dtfilm.mlp.modules()
                 if isinstance(m, torch.nn.Linear)][-1]
@@ -81,12 +81,15 @@ def mknet(kind, wake=True, dtype=torch.float32):
 
 
 def field(net, kind, tau, q, lo, nn3_, sidx, feat):
+    """kind = (로컬 cell_warp, 글로벌 node_warp). 두 단계는 순차·독립이다."""
+    cw, nw = kind
     out = net(None, feat, tau, GRID, cells=CELLS)
     dp = out[0]
-    if kind == "rqs":
-        qr = tri_spline.remap(q, lo, hh, nn3_, out[-1], a.bins)
+    if cw == "rqs":
+        q = tri_spline.remap(q, lo, hh, nn3_, out[-1], a.bins)
+    if nw == "bound":
         return BoundedWarp(BND, 5).apply(
-            qr, dp, lambda z, c: z + TRI.g2p(*TRI.corners(z, lo, hh, nn3_), c))
+            q, dp, lambda z, c: z + TRI.g2p(*TRI.corners(z, lo, hh, nn3_), c))
     return q + TRI.g2p(*TRI.corners(q, lo, hh, nn3_), dp)
 
 
@@ -104,9 +107,9 @@ def dphi_dt(net, kind, tau_v, q, lo, nn3_, sidx, feat):
 
 
 # ---- A) 정확 검사: 선형 전달 + 항등 FiLM 이면 dPhi/dt == 할선 -----------------
-print("== A) 배선 정확 검사 (tri 전달, 항등 dtfilm)")
-netA = mknet("tri", wake=False)
-x2A, vA = dphi_dt(netA, "tri", HDT, x32, lo32, nn3, None, feat32)
+print("== A) 배선 정확 검사 (none+tri, 항등 dtfilm)")
+netA = mknet("none", wake=False)
+x2A, vA = dphi_dt(netA, ("none", "tri"), HDT, x32, lo32, nn3, None, feat32)
 secA = (x2A - x32) / HDT
 relA = float((vA - secA).norm() / secA.norm().clamp_min(1e-30))
 chk("dPhi/dt == (x2-x)/t (dp ∝ t 이므로 정확히 같아야)", relA < 1e-5,
@@ -116,9 +119,11 @@ chk("dPhi/dt == (x2-x)/t (dp ∝ t 이므로 정확히 같아야)", relA < 1e-5,
 x64 = x32.double()
 lo64 = lo32.double()
 feat64 = feat32.double()
-for kind in ("tri", "rqs"):
-    print(f"== 전달 {kind}")
-    net = mknet(kind, wake=True, dtype=torch.float64)
+# 로컬(none/rqs) x 글로벌(tri/bound) 네 조합 전부 -- 독립성 확인
+for kind in (("none", "tri"), ("none", "bound"),
+             ("rqs", "tri"), ("rqs", "bound")):
+    print(f"== 로컬 {kind[0]} + 글로벌 {kind[1]}")
+    net = mknet(kind[0], wake=True, dtype=torch.float64)
     # B) t 미분
     x2, vd = dphi_dt(net, kind, HDT, x64, lo64, nn3, None, feat64)
     eps = HDT * 1e-4
@@ -159,7 +164,7 @@ for kind in ("tri", "rqs"):
           f"{100*float((vd-sec).norm()/sec.norm()):.1f}% -- 차분이 담지 못한 몫")
 
     # C/D) 공간 야코비안. rqs 는 셀 면 접선 불연속이 허용되므로 내부점만.
-    if kind == "rqs":
+    if kind[0] == "rqs":
         ti = (x64 - lo64) / hh
         frac = ti - ti.floor()
         keep = ((frac > 0.15) & (frac < 0.85)).all(-1)
@@ -186,8 +191,13 @@ for kind in ("tri", "rqs"):
     det = torch.linalg.det(Ja)
     chk(f"{kind}: grad_x Phi == 공간 중심차분", r < 1e-4,
         f"상대오차 {r:.2e} (점 {xs.shape[0]})")
-    chk(f"{kind}: det grad_x Phi > 0", bool((det > 0).all()),
-        f"최소 {float(det.min()):.4f} 중앙 {float(det.median()):.4f}")
+    if kind[1] == "bound":
+        # 단사 보장은 글로벌이 bound 일 때다 (로컬 RQS 는 자체 단사라 합성 유지)
+        chk(f"{kind}: det grad_x Phi > 0", bool((det > 0).all()),
+            f"최소 {float(det.min()):.4f} 중앙 {float(det.median()):.4f}")
+    else:
+        print(f"      (참고) det 최소 {float(det.min()):.4f} -- 상한이 없어 "
+              f"보장 없음")
     # E) g2p_grad 로 민 F 와 변형장 야코비안으로 민 F 가 얼마나 다른가.
     #    야코비안은 자동미분이 필요하므로 no_grad 밖에서 부른다.
     Jfull = jacobian_of(lambda z: field(net, kind, torch.as_tensor(

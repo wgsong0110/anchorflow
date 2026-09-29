@@ -13,11 +13,11 @@ D=$W/traj_h2_one_$SEED
 mkdir -p $D $W/vidh2_out && ln -sf $TRJ $D/ 2>/dev/null
 : > $W/vidh2_$TAG.log
 export AF_ROLL_DUMP=$W/rollh2_${TAG}.pt AF_ROLL_TAG=$SEED AF_ROLL_T0=${T0:-3}
-# TR 로 전달을, EXTRA 로 추가 플래그(--obj pts --dt_cond 등)를 학습과 맞춘다.
+# CW/NW 로 로컬·글로벌 워프를, EXTRA 로 추가 플래그를 학습과 맞춘다.
 # 틀리면 망 구조가 달라져 state_dict 가 안 맞는다.
 python -u $W/anchorflow/exe/train_deform.py --data $D --out $W/vidh2_out \
   --tag vh2$TAG ${MAT:---mat_film} --control --n_ctrl 2 --arch conv \
-  --transfer ${TR:-rqs} --vox_res 32 --k 16 --hidden 128 \
+  --cell_warp ${CW:-rqs} --node_warp ${NW:-bound} --vox_res 32 --k 16 --hidden 128 \
   --depth 4 ${EXTRA:-} \
   --iters 0 --resume $CK --eval_t0 ${T0:-3} --eval_len ${LEN:-40} \
   --n_pts 20000 --gpu_data 0 --save_every 100000 >> $W/vidh2_$TAG.log 2>&1

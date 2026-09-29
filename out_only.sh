@@ -15,7 +15,7 @@ mkdir -p $D && ln -sf $W/traj_h2/${TRJ:-mic_clayC_t_s400706}.pt $D/ 2>/dev/null
 echo "[$TAG] 출력만 최적화, 궤적 $(ls $D | wc -l) 개: $(ls $D)"
 # --- 여기만 다르다: --iters 0 + --oracle_roll (망 출력 자리에 자유 변수) ---
 python -u $W/anchorflow/exe/train_deform.py --data $D --out $W/abl_$TAG --tag $TAG \
-  --no_mat --control --n_ctrl 2 --arch conv --transfer rqs \
+  --no_mat --control --n_ctrl 2 --arch conv \
   --vox_res 32 --k 16 --hidden 128 --depth 4 --lr ${LR:-3e-4} \
   --batch ${BS:-8} --n_pts ${NP:-20000} \
   --phase2 --phys_w 1.0 --phys_sup 0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \
