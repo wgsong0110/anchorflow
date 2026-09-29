@@ -162,7 +162,7 @@ def ip_energy(x2, xtil, F_trial, mass, vol, cfg, h, free=None, g=None,
 
 
 def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
-                  g=None, norm=None, free=None):
+                  g=None, norm=None, free=None, elastic_mask=None):
     """증분 포텐셜을 **입자에서 바로** 잰다 -- MPM 격자를 전혀 거치지 않는다.
 
         E = Σ_p m_p/(2h²)‖Δu_p − h v_p − h² g‖² + Σ_p V_p Ψ(F_p) + E_c
@@ -177,6 +177,11 @@ def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
     """
     F_tr = (jac.to(F.dtype) @ F) if jac is not None else F
     psi, dlog = psi_of(F_tr, cfg, h)
+    if elastic_mask is not None:
+        # det 가 문턱 아래인 사면체는 제대로 된 셀이 아니다 -- 거기서 나온
+        # Psi 는 발산하거나 뜻이 없으므로 **탄성항에서만** 뺀다 (관성·중력·
+        # 접촉은 그대로 받는다). 되돌리는 일은 복구 손실이 맡는다.
+        psi = psi * elastic_mask.to(psi.dtype)
     e_el = (vol * psi).sum()
     # 중력은 관성항의 목표에 미리 넣는다: x̃ = x + h v + h² g. 따로 −m g·Δu 로
     # 두면 서브스텝으로 나눌 때 각 구간이 자기 변위만 보게 되어 중력 일이

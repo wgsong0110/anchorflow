@@ -80,10 +80,12 @@ ap.add_argument("--refps", action="store_true",
                 help="매 프레임 현재 배치에서 앵커를 FPS 로 다시 뽑는다. 기본은 "
                      "t=0 에 한 번 뽑고 모델이 낸 변위로만 옮기는 것인데, 그러면 "
                      "앵커가 재질에서 떨어져 나가도 되돌아올 길이 없다")
-ap.add_argument("--arch", default="conv",
-                choices=("attn", "conv", "unet", "conv_sep", "conv_par",
-                         "unet_sep", "unet_par"),
-                help="격자 위 신경망. 집계는 셀, 출력은 격자점(c2g) 이다")
+ap.add_argument("--arch", default="sgnn",
+                choices=("sgnn", "attn", "conv", "unet", "conv_sep",
+                         "conv_par", "unet_sep", "unet_par"),
+                help="sgnn(기본): **사면체 복합체** 위 메시지 패싱. 점유 사면체의 "
+                     "꼭짓점만 노드이고 간선은 그 사면체의 변(방향까지 구분한 "
+                     "26 종). conv/unet 은 격자 위 컨볼루션 (옛 경로)")
 ap.add_argument("--vox_res", type=int, default=16,
                 help="conv/unet 일 때 격자 한 변의 칸 수 (앵커 = 칸 전체)")
 ap.add_argument("--no_mat", action="store_true",
@@ -158,6 +160,20 @@ ap.add_argument("--rqs_cont", type=float, default=1e-2,
                 help="이웃 셀 RQS 파라미터 차 벌점 가중치 (0 이면 끔). 법선 "
                      "성분은 구조적으로 연속이고, 이 벌점은 접선 불일치를 "
                      "'되도록' 줄인다")
+ap.add_argument("--n_nodes", type=int, default=32,
+                help="--arch sgnn 의 **노드 간격**을 정한다 (물체를 몇 노드로 "
+                     "덮을지). 사면체 변 길이 = 물체/n_nodes 이고, 발판 격자는 "
+                     "그 2 배 간격으로 내부에서 잡힌다")
+ap.add_argument("--gnn_layers", type=int, default=8,
+                help="--arch sgnn 의 메시지 패싱 층 수. 수용영역이 층 수로만 "
+                     "늘어난다 (체대각 간선이 있어 한 홉이 소큐브를 가로지른다)")
+ap.add_argument("--det_eps", type=float, default=0.1,
+                help="사면체 det(grad Phi) 의 하한. 이보다 작은 사면체는 제대로 "
+                     "된 셀이 아니라고 보고 **탄성항에서 빼고**, det 를 이 위로 "
+                     "되돌리는 복구 손실을 준다")
+ap.add_argument("--det_w", type=float, default=100.0,
+                help="det 복구 손실의 가중치. 물리를 맞추는 것보다 셀이 유효한 "
+                     "것이 우선이라 크게 둔다")
 ap.add_argument("--node_k", type=int, default=5,
                 help="--node_warp bound 의 합성 횟수. 상한이 간격/6 이라 "
                      "K*간격/6 이 한 스텝의 변위 한도다 (K=5 = 0.83*간격)")
@@ -370,6 +386,9 @@ torch.manual_seed(a.seed)
 import torch.autograd.forward_ad as _fwAD                       # noqa: E402
 from anchorflow import deform                                  # noqa: E402
 from anchorflow import phys_resid                                # noqa: E402
+from anchorflow import simplex as SX                            # noqa: E402
+from anchorflow.simplex_gnn import (SimplexGNN,                  # noqa: E402
+                                    scatter_to_nodes)
 from anchorflow import tri_spline                               # noqa: E402
 from anchorflow import voxel                                    # noqa: E402
 from anchorflow.sitreg_warp import (BoundedWarp, WARP_BOUND,      # noqa: E402
@@ -995,6 +1014,8 @@ if os.environ.get("AF_ANOMALY"):     # in-place/NaN 범인을 짚을 때
 _VDT_MSG = []            # --v_from_dt 를 못 쓸 때의 경고를 한 번만
 _OBJ_PTS = (a.obj == "pts")   # 목적함수를 입자에서 바로 재는가 (격자 미사용)
 _RQS_PEN = [None]        # step_once 가 쌓는 RQS 연속성 벌점, 손실 지점이 소비
+_DET_LAST = [None]       # 직전 스텝의 입자별 det(grad Phi) -- 마스킹·복구에 쓴다
+_DET_BAD = []            # 최근 스텝의 무효 사면체 비율 (보고용)
 
 
 def _warp_bound(hh):
@@ -1014,8 +1035,31 @@ def _node_warp_fn(q, lo, h, nn3, dp, bound):
         q, dp, lambda z, c: z + bary_g2p(z, lo, h, nn3, c))
 
 
+def det_take():
+    """직전 스텝 det 로 (탄성 마스크, 복구 손실) 을 만들고 비운다.
+
+    d = det(grad Phi) 가 eps 아래인 사면체는 유효한 셀이 아니라고 보고 탄성
+    에서 빼고, d >= eps 로 되돌리는 손실을 크게 준다. 손실은 음수에서도
+    정의되고 **큰 음수에서 더 세게** 밀어야 하므로 softplus 에 2 차항을 더한다:
+        softplus(-(d-eps)/tau)*tau + beta*relu(-d)^2
+    """
+    dt_ = _DET_LAST[0]
+    _DET_LAST[0] = None
+    if dt_ is None:
+        return None, 0.0
+    eps = float(a.det_eps)
+    bad = dt_ < eps
+    tau = max(eps, 1e-6)
+    pen = torch.nn.functional.softplus(-(dt_ - eps) / tau) * tau \
+        + 10.0 * torch.relu(-dt_) ** 2
+    _DET_BAD.append(float(bad.to(torch.float32).mean()))
+    if len(_DET_BAD) > 200:
+        _DET_BAD.pop(0)
+    return (~bad), a.det_w * pen.mean()
+
+
 def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
-          free=None, jac=None):
+          free=None, jac=None, elastic_mask=None):
     """증분 포텐셜. --obj 에 따라 입자에서 바로(기본) 또는 격자에서 잰다.
 
     반환 규약은 둘이 같다: (E, dlog, F_trial, parts).
@@ -1027,7 +1071,7 @@ def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
                 "None 을 돌려줬다 -- 전달·앙상블 설정을 확인할 것)")
         return phys_resid.pts_ip_energy(
             x, du, vel, F, jac, mass, vol, cfg, h, ng, gl,
-            g=g, norm=norm, free=free)
+            g=g, norm=norm, free=free, elastic_mask=elastic_mask)
     return phys_resid.grid_ip_energy(
         x, du, vel, F, mass, vol, cfg, h, ng, gl,
         g=g, norm=norm, free=free, jac=(jac if a.f_from_jac else None))
@@ -1038,6 +1082,46 @@ def _rqs_pen_take():
     q = _RQS_PEN[0]
     _RQS_PEN[0] = None
     return 0.0 if q is None else a.rqs_cont * q
+
+
+def node_feats(d, t, gsel, x, v, fe=None):
+    """사면체 복합체의 **노드** 특징. 입자 물리량을 자기 사면체의 barycentric
+    가중으로 4 꼭짓점에 뿌려 모은다 (P2G 와 같은 구조, 전달 가중치 재사용).
+
+    -> (_in [M,F], npos [M,3], (lo,hn,nn), rows [N,4], lam [N,4], uniq [M],
+        간선 (src,dst,cls))
+    """
+    cfg = d["cfg"]
+    X = take(d["x"][0], gsel)
+    lo, hn, nn = SX.grid_for_nodes(x, a.n_nodes)
+    idx, lam, _aux = SX.locate(x, lo, hn, nn)
+    rows, uniq = SX.active_nodes(idx)          # **점유 사면체의 꼭짓점만**
+    Mn = int(uniq.numel())
+    nnl = [int(nn[k]) for k in range(3)]
+    _z = uniq % nnl[2]
+    _y = (uniq // nnl[2]) % nnl[1]
+    _x = uniq // (nnl[1] * nnl[2])
+    npos = torch.stack([_x, _y, _z], -1).to(x.dtype) * hn + lo
+    mw = MASS[gsel]
+    # 입자별 원료는 셀 경로와 같은 것들을 쓴다
+    parts = [v / VEL_SCALE, x - X, mw.unsqueeze(-1) * 1e3]
+    if a.fe_state:
+        parts.append(fe_invariants(fe) if fe is not None
+                     else torch.zeros(x.shape[0], 3, device=dev, dtype=x.dtype))
+    if a.control:
+        parts.append(ctrl_feat_pts(d, t, x, hn))
+    pv = _san(torch.cat(parts, -1))
+    feat = scatter_to_nodes(pv, rows, lam, Mn, mass=mw)
+    occ = torch.zeros(Mn, 1, device=dev, dtype=x.dtype)
+    occ.index_add_(0, rows.reshape(-1), lam.reshape(-1, 1))
+    extra = [torch.log1p(occ), bc_features(npos, cfg) / hn]
+    if N_MAT and not N_FILM:
+        extra.insert(0, mat_feat(cfg).reshape(1, N_MAT).expand(Mn, N_MAT))
+    _in = torch.cat([_san(feat), _san(torch.cat(extra, -1))], -1)
+    _in = torch.nan_to_num(_in, nan=0.0, posinf=0.0,
+                           neginf=0.0).clamp(-_FCAP, _FCAP)
+    src, dst, cls = SX.edges_of(rows, uniq, nn)
+    return _in, npos, (lo, hn, nn), rows, lam, uniq, (src, dst, cls)
 
 
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
@@ -1054,6 +1138,44 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     if a.arch == "attn":
         raise SystemExit("attn 경로는 제거된 skin 전달에 의존한다 -- "
                          "conv/unet 아키텍처를 쓸 것")
+
+    if a.arch == "sgnn":
+        # --- 사면체 복합체 경로 -------------------------------------------
+        # 변형장은 "GNN + barycentric + 손잡이 혼합" 뿐이다. 노드 특징·간선은
+        # tau 에 무관하므로 밖에서 만들고, tau 에 탄젠트를 얹어 한 번 통과
+        # 시키면 dPhi/dt (각 지점의 속도) 가 나온다.
+        with _tsec("셀집계"):
+            _in, npos, (lo, hn, nn), rows, lam, uniq, (esrc, edst, ecls) = \
+                node_feats(d, t, gsel, x, v, fe=fe)
+        _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
+
+        def _fieldS(tau):
+            with _tsec("신경망"):
+                out = net(_in, esrc, edst, ecls, tau, mat=_mv)
+            if _DP_HOOK[0] is not None:
+                out = _DP_HOOK[0](out)
+            dpn = torch.nan_to_num(out[0], nan=0.0, posinf=0.0, neginf=0.0)
+            dpf = torch.zeros(int(nn[0] * nn[1] * nn[2]), 3, device=dev,
+                              dtype=x.dtype)
+            dpf = dpf.index_copy(0, uniq, dpn)     # 활성 노드만 채운다
+            q = x + SX.g2p(x, lo, hn, nn, dpf)
+            if a.control:
+                q = apply_control(d, t, gsel, q, x, dt=tau)
+            return q, (dpf,)
+
+        _use_dtS = a.v_from_dt and _DP_HOOK[0] is None and a.dt_cond
+        _tau0 = torch.as_tensor(float(_DT[0]), device=dev, dtype=x.dtype)
+        if _use_dtS:
+            (x2, (dpf,)), (v_next, _) = torch.func.jvp(
+                _fieldS, (_tau0,), (torch.ones_like(_tau0),))
+        else:
+            x2, (dpf,) = _fieldS(_tau0)
+            v_next = (x2 - x) / _DT[0]
+        # 사면체별 야코비안·det -- 아핀이라 닫힌 형식 하나다
+        _u, Jf = SX.g2p_jac(x, lo, hn, nn, dpf)
+        Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
+        _DET_LAST[0] = torch.linalg.det(Jf)
+        return (x2, p, v_next, None, dpf, None, dmg, None, fe, Jf)
 
     shifts = _ENS_SHIFT[:a.ens] if a.ens > 1 else [None]
     # --- 변형장 Phi_tau 를 tau 의 함수로 떼어 둔다 -------------------------------
@@ -1444,7 +1566,25 @@ def phys_window(d, t0, K, gsel, sigma, gen):
     # 줄일 때마다 물체가 그만큼 빨라져 버린다.
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
     F = take(traj_F(d)[t0], gsel).float()
-    if sigma > 0 and a.phys_noise_grid:
+    if sigma > 0 and a.phys_noise_grid and a.arch == "sgnn":
+        # 출력 공간 교란(복합체): 노드 변위를 무작위로 뽑아 barycentric 으로
+        _lo, _hn, _nn = SX.grid_for_nodes(x, a.n_nodes)
+        _Mn = int(_nn[0] * _nn[1] * _nn[2])
+        _dpn = torch.randn(_Mn, 3, generator=gen, device=dev,
+                           dtype=x.dtype) * (sigma * ext)
+
+        def _warp_n(q):
+            return q + SX.g2p(q, _lo, _hn, _nn, _dpn)
+        u = _warp_n(x) - x
+        gu = SX.g2p_jac(x, _lo, _hn, _nn, _dpn)[1]
+        _fm0 = free_mask(d, x.shape[0], dev, gsel, x, t0) if a.control else None
+        if _fm0 is not None:
+            u = u * _fm0.unsqueeze(-1).to(u.dtype)
+            gu = gu * _fm0.reshape(-1, 1, 1).to(gu.dtype)
+        x = x + u
+        F = (torch.eye(3, device=dev) + gu) @ F
+        v = v + float(torch.rand(1, generator=gen, device=dev)) * u / FRAME_DT
+    elif sigma > 0 and a.phys_noise_grid:
         # 출력 공간 교란: 격자점 변위를 무작위로 뽑아 전달로 입힌다.
         _lo, _hh, _n3 = vox_anchor.grid_for(x, a.vox_res ** 3)
         _gp = (torch.stack(torch.meshgrid(
@@ -1522,11 +1662,12 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         # 물리손실은 i-PG 와 같은 자리에서 잰다: 학생이 옮긴 가우시안 변위를
         # MPM 격자로 P2G 해 격자 증분 Δu_I 를 역산하고, 관성·중력은 격자에서,
         # 탄성은 격자 속도기울기로 민 F 로 잰다.
+        _emask, _dpen = det_take()
         E, dlog, F_tr, parts = ip_of(
             x, x2 - x, v_old, F, mass, vol, cfg, h,
             int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0)),
-            g=g, norm=norm, free=fm, jac=_Jd)
-        e_tot = e_tot + E
+            g=g, norm=norm, free=fm, jac=_Jd, elastic_mask=_emask)
+        e_tot = e_tot + E + _dpen
         if i == 0:
             with torch.no_grad():
                 # 잔차 대용: 자유낙하 예측에서 얼마나 벗어났나. 구속 입자는 따로
@@ -1717,7 +1858,9 @@ with torch.no_grad():
                   + (7 * a.n_ctrl if a.control else 0))
     else:
         _fe0 = (take(traj_F(_d)[1], _g).float() if a.fe_state else None)
-        n_feat = cell_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1]
+        n_feat = (node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1]
+                  if a.arch == "sgnn"
+                  else cell_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1])
 if a.voxel:
     VOX_CELL = H
     # 격자는 모든 궤적을 덮도록 공간에 고정한다 (프레임마다 새로 잡으면 물체가
@@ -1774,7 +1917,10 @@ with torch.no_grad():
             _cr = None
         else:
             _fes = (take(traj_F(_dd)[_t], _gs).float() if a.fe_state else None)
-            _s, _, _, _, _cr = cell_feats(_dd, _t, _gs, _x, _v, fe=_fes)
+            if a.arch == "sgnn":
+                _s, _cr = node_feats(_dd, _t, _gs, _x, _v, fe=_fes)[0], None
+            else:
+                _s, _, _, _, _cr = cell_feats(_dd, _t, _gs, _x, _v, fe=_fes)
         if a.stat_occ and _cr is not None:  # 빈 칸이 96% 라 통계를 장악한다
             _m = torch.zeros(_s.shape[0], dtype=torch.bool, device=_s.device)
             _m[_cr.reshape(-1)] = True
@@ -2595,6 +2741,8 @@ for it in pbar:
         elif a.phase2:
             pbar.set_postfix(E=f"{lx:.3e}", 자유잔차=f"{100*arel:.3f}%",
                              구속잔차=f"{100*still:.3f}%", K=Kp,
+                             무효=(f"{100*sum(_DET_BAD)/len(_DET_BAD):.2f}%"
+                                 if _DET_BAD else "-"),
                              gn=f"{float(gn):.1e}")
         else:
             pbar.set_postfix(x=f"{100*lx**0.5:.3f}%",
