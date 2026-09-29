@@ -167,6 +167,10 @@ ap.add_argument("--det_eps", type=float, default=0.1,
                 help="사면체 det(grad Phi) 의 하한. 이보다 작은 사면체는 제대로 "
                      "된 셀이 아니라고 보고 **탄성항에서 빼고**, det 를 이 위로 "
                      "되돌리는 복구 손실을 준다")
+ap.add_argument("--lr_cos", action="store_true",
+                help="학습률을 코사인으로 0 까지 감쇠한다. PT/KB/SH/SL/SW 전 "
+                     "실행이 초반(250~1750 스텝) 최고 뒤 악화했고, 후반 큰 "
+                     "보폭이 그 원인 후보다")
 ap.add_argument("--det_every", type=int, default=50,
                 help="det 통계(무효 비율·최소·중앙) 를 몇 스텝마다 로그에 "
                      "남길지. 0 이면 끔")
@@ -575,6 +579,9 @@ def build(n_feat):
                               if a.cell_warp == "tet" else 0)).to(dev)
     opt = (torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=a.wd)
            if a.wd > 0 else torch.optim.Adam(net.parameters(), lr=a.lr))
+    global SCHED
+    SCHED = (torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.iters)
+             if a.lr_cos and a.iters > 0 else None)
 
 
 def take(t, idx_gpu):
@@ -1151,6 +1158,7 @@ def traj_mass(d):
 
 CRITIC = None
 OPT_C = None
+SCHED = None
 
 
 class Critic(torch.nn.Module):
@@ -2449,6 +2457,8 @@ for it in pbar:
             print(f"    {n:34} |g| {v:.3e}", flush=True)
     if not a.out_var:
         opt.step()
+        if SCHED is not None:
+            SCHED.step()
     if os.environ.get("AF_DIAG") and it < int(os.environ["AF_DIAG"]):
         _d = [(n, float((q.detach() - _prev[n]).norm())) for n, q in
               net.named_parameters()]
