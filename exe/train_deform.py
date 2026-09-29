@@ -145,6 +145,12 @@ ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
                 help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
                      "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
                      "(jacobian_of) 보다 싸고 no_grad 롤아웃에서도 돈다")
+ap.add_argument("--cell_warp", default="none", choices=("none", "tet"),
+                help="사면체 **내부** 재배열. tet 은 정렬좌표를 stick-breaking "
+                     "으로 펴고 단조 RQS 를 건다 (점이 자기 사면체를 못 벗어나고 "
+                     "단사 유지). none 이면 항등")
+ap.add_argument("--rqs_bins", type=int, default=8,
+                help="--cell_warp tet 의 축당 빈 수")
 ap.add_argument("--n_nodes", type=int, default=32,
                 help="--arch sgnn 의 **노드 간격**을 정한다 (물체를 몇 노드로 "
                      "덮을지). 사면체 변 길이 = 물체/n_nodes 이고, 발판 격자는 "
@@ -564,7 +570,9 @@ def build(n_feat):
                          "(격자 conv/unet 은 태그 grid-rqs-final 에 있다)")
     net = SimplexGNN(n_feat=n_feat, hidden=a.hidden, layers=a.gnn_layers,
                      scale=0.02 * EXT, dt_cond=a.dt_cond, dt_ref=FRAME_DT,
-                     dt_scale=a.dt_scale, n_mat=N_FILM).to(dev)
+                     dt_scale=a.dt_scale, n_mat=N_FILM,
+                     rqs_dim=(SX.tet_n_params(a.rqs_bins)
+                              if a.cell_warp == "tet" else 0)).to(dev)
     opt = (torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=a.wd)
            if a.wd > 0 else torch.optim.Adam(net.parameters(), lr=a.lr))
 
@@ -1063,25 +1071,44 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             if _DP_HOOK[0] is not None:
                 out = _DP_HOOK[0](out)
             dpn = torch.nan_to_num(out[0], nan=0.0, posinf=0.0, neginf=0.0)
-            dpf = torch.zeros(int(nn[0] * nn[1] * nn[2]), 3, device=dev,
-                              dtype=x.dtype)
+            Mtot = int(nn[0] * nn[1] * nn[2])
+            dpf = torch.zeros(Mtot, 3, device=dev, dtype=x.dtype)
             dpf = dpf.index_copy(0, uniq, dpn)     # 활성 노드만 채운다
-            q = x + SX.g2p(x, lo, hn, nn, dpf)
+            thf = None
+            q0 = x
+            if a.cell_warp == "tet":
+                thn = torch.nan_to_num(out[-1], nan=0.0, posinf=0.0,
+                                       neginf=0.0)
+                thf = torch.zeros(Mtot, thn.shape[-1], device=dev,
+                                  dtype=x.dtype).index_copy(0, uniq, thn)
+                q0 = SX.tet_remap(x, lo, hn, nn, thf, a.rqs_bins)[0]
+            q = q0 + SX.g2p(q0, lo, hn, nn, dpf)
             if a.control:
                 q = apply_control(d, t, gsel, q, x, dt=tau)
-            return q, (dpf,)
+            return q, ((dpf,) if thf is None else (dpf, thf))
 
         _use_dtS = a.v_from_dt and _DP_HOOK[0] is None and a.dt_cond
         _tau0 = torch.as_tensor(float(_DT[0]), device=dev, dtype=x.dtype)
         if _use_dtS:
-            (x2, (dpf,)), (v_next, _) = torch.func.jvp(
+            (x2, _outs), (v_next, _) = torch.func.jvp(
                 _fieldS, (_tau0,), (torch.ones_like(_tau0),))
         else:
-            x2, (dpf,) = _fieldS(_tau0)
+            x2, _outs = _fieldS(_tau0)
             v_next = (x2 - x) / _DT[0]
-        # 사면체별 야코비안·det -- 아핀이라 닫힌 형식 하나다
-        _u, Jf = SX.g2p_jac(x, lo, hn, nn, dpf)
-        Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
+        dpf = _outs[0]
+        # 사면체별 야코비안·det. 재배열이 없으면 아핀이라 닫힌 형식 하나이고,
+        # 있으면 합성이라 자동미분으로 잰다 (3 회 역전파).
+        if a.cell_warp == "tet":
+            _thf = _outs[1]
+
+            def _warpS(z, _dp=dpf, _th=_thf):
+                z0 = SX.tet_remap(z, lo, hn, nn, _th, a.rqs_bins)[0]
+                return z0 + SX.g2p(z0, lo, hn, nn, _dp)
+
+            Jf = jacobian_of(_warpS, x)
+        else:
+            _u, Jf = SX.g2p_jac(x, lo, hn, nn, dpf)
+            Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
         _DET_LAST[0] = torch.linalg.det(Jf)
         return (x2, p, v_next, None, dpf, None, dmg, None, fe, Jf)
 def traj_F(d):
