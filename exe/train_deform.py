@@ -924,8 +924,6 @@ _PL_DROP = []
 _PL_MSG = []
 _PL_RMS = [0.0]
 _RL_MSG = []
-_VDT_MSG = []            # --v_from_dt 를 못 쓸 때의 경고를 한 번만
-_OBJ_PTS = (a.obj == "pts")   # 목적함수를 입자에서 바로 재는가
 _DET_LAST = [None]       # 직전 스텝의 사면체 det -- 마스킹·복구에 쓴다
 _DET_BAD = []            # 최근 스텝의 무효 사면체 비율 (보고용)
 
