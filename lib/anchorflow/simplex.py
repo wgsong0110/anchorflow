@@ -66,7 +66,9 @@ def locate(q, lo, hn, nn):
     lam = torch.stack([1.0 - sv[:, 0], sv[:, 0] - sv[:, 1],
                        sv[:, 1] - sv[:, 2], sv[:, 2]], -1)
     # 사슬 꼭짓점 (2배 격자 색인): v0 = 자기 코너, 한 걸음마다 몸중심 쪽으로 +-1
-    base2 = 2 * ci + oc.long()                          # 자기 코너의 노드 색인
+    # 발판 셀은 2 배 격자에서 [2ci, 2ci+2] 를 차지한다 -- 옥탄트 1 쪽 "자기
+    # 코너" 는 2ci+2 이지 2ci+1(몸중심) 이 아니다.
+    base2 = 2 * ci + 2 * oc.long()                      # 자기 코너의 노드 색인
     step = torch.where(oc, -1, 1)                       # 몸중심 방향
     eye = torch.eye(3, device=q.device, dtype=torch.long)
     dirs = eye[perm] * step.gather(1, perm).unsqueeze(-1)

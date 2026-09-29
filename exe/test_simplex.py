@@ -114,13 +114,13 @@ chk("jac 판 값 일치",
 tid = SX.tet_id(lo, hn, nn, aux)
 det_all = SX.tet_det(SX.g2p_jac(pts, lo, hn, nn, dp)[1])
 _, inv, cnt = torch.unique(tid, return_inverse=True, return_counts=True)
-spread = torch.zeros(int(cnt.numel()), device=dev, dtype=DT)
-spread.index_add_(0, inv, det_all ** 2)
-mean = torch.zeros_like(spread); mean.index_add_(0, inv, det_all)
+# E[x^2]-E[x]^2 은 상쇄로 정밀도를 잃는다 -- 평균 대비 최대 편차로 본다
+mean = torch.zeros(int(cnt.numel()), device=dev, dtype=DT)
+mean.index_add_(0, inv, det_all)
 mean = mean / cnt.to(DT)
-var = (spread / cnt.to(DT) - mean ** 2).clamp_min(0)
-chk("같은 사면체 안 det 일정", float(var.max()) < 1e-18,
-    f"최대 분산 {float(var.max()):.1e}, 사면체 {int(cnt.numel())}")
+dev_max = (det_all - mean[inv]).abs().max()
+chk("같은 사면체 안 det 일정", float(dev_max) < 1e-12,
+    f"최대 편차 {float(dev_max):.1e}, 사면체 {int(cnt.numel())}")
 
 # 8) **점유 사면체만** 쓰는가 -- 활성 노드·간선이 점유분에서만 나오는지
 rows, uniq = SX.active_nodes(idx)
