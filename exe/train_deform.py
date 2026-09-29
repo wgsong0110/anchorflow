@@ -982,6 +982,15 @@ class _tsec:
             _PROF[self.name] = _PROF.get(self.name, 0.0) + (time.time() - self.t0)
 
 
+if os.environ.get("AF_ANOMALY"):     # in-place/NaN 범인을 짚을 때
+    torch.autograd.set_detect_anomaly(True)
+    print("[디버그] autograd anomaly detection on", flush=True)
+
+_VDT_MSG = []            # --v_from_dt 를 못 쓸 때의 경고를 한 번만
+_OBJ_PTS = (a.obj == "pts")   # 목적함수를 입자에서 바로 재는가 (격자 미사용)
+_RQS_PEN = [None]        # step_once 가 쌓는 RQS 연속성 벌점, 손실 지점이 소비
+
+
 def _warp_bound(hh):
     """격자점 변위 성분 상한. trilinear 의 Lipschitz<1 조건에서 나온다."""
     return TRILINEAR_BOUND * float(hh)
