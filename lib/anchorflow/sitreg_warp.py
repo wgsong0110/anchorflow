@@ -24,7 +24,8 @@ import math
 
 import torch
 
-__all__ = ["TRILINEAR_BOUND", "squash_to_bound", "BoundedWarp"]
+__all__ = ["TRILINEAR_BOUND", "squash_to_bound", "BoundedWarp",
+           "tri_g2p_jac", "bary_g2p", "bary_g2p_jac"]
 
 # 성분별 상한이라 ‖dp‖ ≤ √3·m 까지 갈 수 있어, 성분 상한은 h/(2·3) 로 잡아야
 # ‖dp‖ < h/(2√3) 이 보장된다. 약간의 여유를 두고 1/6 보다 조금 작게 둔다.
@@ -61,3 +62,102 @@ class BoundedWarp:
         for d in dps:
             q = warp_fn(q, squash_to_bound(d, self.bound))
         return q
+
+    def apply_jac(self, x, dp, jac_fn):
+        """K 합성의 값과 **해석적** 야코비안을 함께. jac_fn(q, c) -> (u, ∇u).
+
+        연쇄법칙 그대로다: J = Π_k (I + ∇u(q_k)). 자동미분(역전파 3회)보다
+        싸고, no_grad 아래(롤아웃)에서도 돈다. 커널(trilinear/barycentric)은
+        jac_fn 으로 갈아끼운다.
+        """
+        c = squash_to_bound(dp / self.K, self.bound)
+        q, J = x, None
+        I3 = torch.eye(3, device=x.device, dtype=x.dtype)
+        for _ in range(self.K):
+            u, G = jac_fn(q, c)
+            q = q + u
+            S = I3 + G
+            J = S if J is None else S @ J
+        return q, J
+
+
+def tri_g2p_jac(q, lo, h, n3, dp):
+    """trilinear 전달의 값 u(q) 와 공간 미분 ∇u [N,3,3] (닫힌 형식).
+
+    u(q) = Σ_c w_c(q) dp_c 이고 w_c = Π_d A_cd, A_cd = f_d 또는 1-f_d 이므로
+    ∂u/∂q_j = (1/h) Σ_c s_cj (Π_{d≠j} A_cd) dp_c,  s_cj = ±1.
+    규약은 jacobian_of 와 같다: (∇u)[n, i, j] = ∂u_i/∂x_j.
+    """
+    n3l = [int(n3[k]) for k in range(3)]
+    t = (q - lo) / h
+    base = t.floor().long()
+    base = torch.stack([base[:, k].clamp(0, n3l[k] - 2) for k in range(3)], -1)
+    f = t - base                                       # [N,3]
+    outs_u = 0.0
+    outs_g = 0.0
+    for cid in range(8):
+        b = ((cid >> 2) & 1, (cid >> 1) & 1, cid & 1)
+        A = [f[:, d] if b[d] else 1.0 - f[:, d] for d in range(3)]
+        sgn = [1.0 if b[d] else -1.0 for d in range(3)]
+        idx = ((base[:, 0] + b[0]) * n3l[1] + base[:, 1] + b[1]) * n3l[2]             + base[:, 2] + b[2]
+        dpc = dp[idx]                                  # [N,3]
+        w = A[0] * A[1] * A[2]
+        outs_u = outs_u + w.unsqueeze(-1) * dpc
+        gw = torch.stack([sgn[0] * A[1] * A[2],
+                          sgn[1] * A[0] * A[2],
+                          sgn[2] * A[0] * A[1]], -1) / h   # [N,3] = ∂w/∂q_j
+        outs_g = outs_g + dpc.unsqueeze(-1) * gw.unsqueeze(1)   # [N,3(i),3(j)]
+    return outs_u, outs_g
+
+
+# ---------------------------------------------------------------------------
+# Kuhn 사면체 분할 위의 barycentric 전달 (trilinear 의 simplex 판)
+#
+# 각 큐브를 주대각선을 공유하는 사면체 6개로 자른다 (축 순열 하나당 하나,
+# f_{π1} ≥ f_{π2} ≥ f_{π3} 영역). 꼭짓점은 큐브 꼭짓점 그대로이고 이웃 큐브와
+# 면이 정합이라 전체가 simplicial complex 다. 점의 사면체 배정과 barycentric
+# 가중치는 탐색 없이 나온다: 상대좌표를 내림차순 정렬하면 순열이 곧 사면체,
+# 정렬값의 차분 (1-s1, s1-s2, s2-s3, s3) 이 곧 꼭짓점 4개의 가중치다.
+#
+# PL 이라 ∇u 가 사면체별 **상수**이고 열이 사슬 꼭짓점 변위의 차분이다:
+#     ∇u 의 π_r 축 열 = (dp_{r+1} - dp_r) / h
+# 그래서 성분 상한 h/6 이면 trilinear 와 똑같이 Lipschitz < 1 이 성립한다 --
+# TRILINEAR_BOUND 를 그대로 쓴다.
+# ---------------------------------------------------------------------------
+
+def _kuhn_locate(q, lo, h, n3):
+    """점 -> (꼭짓점 평탄색인 [N,4], barycentric [N,4], 축 순열 [N,3])."""
+    n3l = [int(n3[k]) for k in range(3)]
+    t = (q - lo) / h
+    base = t.floor().long()
+    base = torch.stack([base[:, k].clamp(0, n3l[k] - 2) for k in range(3)], -1)
+    f = (t - base).clamp(0.0, 1.0)
+    perm = torch.argsort(f.detach(), dim=1, descending=True)   # [N,3] 축 순열
+    sv = f.gather(1, perm)                                     # s1 >= s2 >= s3
+    lam = torch.stack([1.0 - sv[:, 0], sv[:, 0] - sv[:, 1],
+                       sv[:, 1] - sv[:, 2], sv[:, 2]], -1)     # [N,4]
+    # 사슬 꼭짓점: v0 = base, v_{r+1} = v_r + e_{perm_r}
+    eye = torch.eye(3, device=q.device, dtype=torch.long)
+    steps = eye[perm]                                          # [N,3,3]
+    verts = torch.cat([torch.zeros_like(steps[:, :1]),
+                       steps.cumsum(1)], 1) + base.unsqueeze(1)  # [N,4,3]
+    idx = ((verts[..., 0] * n3l[1] + verts[..., 1]) * n3l[2]
+           + verts[..., 2])                                    # [N,4]
+    return idx, lam, perm
+
+
+def bary_g2p(q, lo, h, n3, dp):
+    """barycentric 전달의 값: u(q) = Σ_i λ_i dp_{v_i}."""
+    idx, lam, _ = _kuhn_locate(q, lo, h, n3)
+    return (lam.unsqueeze(-1) * dp[idx]).sum(1)
+
+
+def bary_g2p_jac(q, lo, h, n3, dp):
+    """barycentric 전달의 값과 ∇u [N,3,3] (사면체별 상수, 닫힌 형식)."""
+    idx, lam, perm = _kuhn_locate(q, lo, h, n3)
+    dpc = dp[idx]                                              # [N,4,3]
+    u = (lam.unsqueeze(-1) * dpc).sum(1)
+    diffs = (dpc[:, 1:] - dpc[:, :-1]).transpose(1, 2) / h     # [N,3(i),3(r)]
+    inv = torch.argsort(perm, dim=1)                           # 축 -> 순위
+    G = diffs.gather(2, inv.unsqueeze(1).expand(-1, 3, -1))    # [N,3(i),3(j)]
+    return u, G

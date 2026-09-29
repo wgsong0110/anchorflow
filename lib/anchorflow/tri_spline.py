@@ -31,11 +31,13 @@ def n_params(bins):
     return 3 * (3 * int(bins) + 1)
 
 
-def rqs(u, theta, bins, min_bin=1e-3, min_d=1e-3):
+def rqs(u, theta, bins, min_bin=1e-3, min_d=1e-3, return_deriv=False):
     """단조 유리이차 스플라인. u [..., A] in [0,1], theta [..., A, 3K+1].
 
     축이 서로 독립이라 마지막 차원 규약만 지키면 임의 배치 모양에서 돈다.
     반환은 u 와 같은 모양, 각 성분이 [0,1] 안의 단조 상이다.
+    return_deriv 면 (T(u), dT/du) 를 준다 -- 도함수도 닫힌 형식이다 (NSF Eq.5):
+        T' = s² (d₁ξ² + 2sξ(1−ξ) + d₀(1−ξ)²) / den²
     """
     K = int(bins)
     w = Fn.softmax(theta[..., :K], -1) * (1 - K * min_bin) + min_bin
@@ -63,10 +65,15 @@ def rqs(u, theta, bins, min_bin=1e-3, min_d=1e-3):
     om = xi * (1 - xi)
     num = hb * (s * xi * xi + d0 * om)
     den = (s + (d0 + d1 - 2 * s) * om).clamp_min(1e-12)
-    return y0 + num / den
+    out = y0 + num / den
+    if not return_deriv:
+        return out
+    dv = s * s * (d1 * xi * xi + 2 * s * om + d0 * (1 - xi) ** 2) / (den * den)
+    return out, dv
 
 
-def remap(x, lo, h, n3, theta_cells, bins, min_bin=1e-3, min_d=1e-3):
+def remap(x, lo, h, n3, theta_cells, bins, min_bin=1e-3, min_d=1e-3,
+          return_jac=False):
     """점들을 자기 셀 안에서 재배열한 기준 위치로 옮긴다.
 
     x [N,3], 격자 (lo, h, n3=격자점 수), theta_cells [Ncell, P] 는 셀 평탄
@@ -81,13 +88,19 @@ def remap(x, lo, h, n3, theta_cells, bins, min_bin=1e-3, min_d=1e-3):
     ur = t - ci                                    # 격자 안이면 [0,1)
     flat = (ci[:, 0] * nc[1] + ci[:, 1]) * nc[2] + ci[:, 2]
     th = theta_cells[flat].reshape(x.shape[0], 3, -1)
-    ut = rqs(ur.clamp(0.0, 1.0), th, bins, min_bin=min_bin, min_d=min_d)
+    ut, dv = rqs(ur.clamp(0.0, 1.0), th, bins, min_bin=min_bin, min_d=min_d,
+                 return_deriv=True)
     # 격자 **밖**(셀 색인을 clamp 한 점)은 항등으로 둔다. 예전처럼 u 를 clamp 만
     # 하면 그 성분의 기울기가 0 이 되어 야코비안에 0 행이 생기고, F 가 특이해져
     # Psi 의 log det 가 터진다 (실측: det grad Phi 최소값이 정확히 0 이었다).
     inside = (ur >= 0.0) & (ur <= 1.0)
     ut = torch.where(inside, ut, ur)
-    return lo + (ci.to(x.dtype) + ut) * h
+    out = lo + (ci.to(x.dtype) + ut) * h
+    if not return_jac:
+        return out
+    # 축분리라 야코비안이 대각이고, h·(1/h) 가 상쇄돼 성분이 곧 스플라인
+    # 기울기다. 격자 밖 항등 구간은 기울기 1.
+    return out, torch.where(inside, dv, torch.ones_like(dv))
 
 
 def cont_penalty(theta_grid):

@@ -143,10 +143,19 @@ ap.add_argument("--cell_warp", default="rqs", choices=("none", "rqs"),
                 help="로컬: 셀 내부 상대좌표 재배열. rqs 는 단조 유리이차 "
                      "스플라인 (자체로 단사 -- 셀 안 준불연속을 담는다), "
                      "none 이면 항등")
-ap.add_argument("--node_warp", default="bound", choices=("tri", "bound"),
-                help="글로벌: 격자점 변위 워프. tri 는 맨 trilinear (상한 "
-                     "없음, 접힘 가능), bound 는 Lipschitz 상한(간격/6)을 "
-                     "지키는 미소 워프를 K 번 합성해 단사를 보장")
+ap.add_argument("--node_warp", default="bound", choices=("plain", "bound"),
+                help="글로벌: 격자점 변위 워프. plain 은 상한 없음 (접힘 "
+                     "가능), bound 는 Lipschitz 상한(간격/6)을 지키는 미소 "
+                     "워프를 K 번 합성해 단사를 보장")
+ap.add_argument("--node_kernel", default="tri", choices=("tri", "bary"),
+                help="글로벌 워프의 보간 커널. tri 는 trilinear (칸 8꼭짓점), "
+                     "bary 는 Kuhn 사면체 분할 위 barycentric (사면체 4꼭짓점, "
+                     "PL 이라 사면체별 야코비안이 상수). 상한 상수는 둘 다 "
+                     "간격/6 으로 같다")
+ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
+                help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
+                     "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
+                     "(jacobian_of) 보다 싸고 no_grad 롤아웃에서도 돈다")
 ap.add_argument("--rqs_bins", type=int, default=8,
                 help="--transfer rqs 의 축당 스플라인 빈 수 K")
 ap.add_argument("--rqs_cont", type=float, default=1e-2,
@@ -367,7 +376,8 @@ from anchorflow import deform                                  # noqa: E402
 from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import tri_spline                               # noqa: E402
 from anchorflow import voxel                                    # noqa: E402
-from anchorflow.sitreg_warp import BoundedWarp, TRILINEAR_BOUND  # noqa: E402
+from anchorflow.sitreg_warp import (BoundedWarp, TRILINEAR_BOUND,  # noqa: E402
+                                    bary_g2p, bary_g2p_jac, tri_g2p_jac)
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
                                bc_features, bond_stretch, bures_w2_sq,
                                fps, gauss_stretch, grid_knn,
@@ -998,16 +1008,30 @@ def _warp_bound(hh):
     return TRILINEAR_BOUND * float(hh)
 
 
+def _kernel_val(q, lo, h, nn3, c):
+    """보간 커널의 값: trilinear(8꼭짓점) 또는 Kuhn barycentric(4꼭짓점)."""
+    if a.node_kernel == "bary":
+        return bary_g2p(q, lo, h, nn3, c)
+    return TRI.g2p(*TRI.corners(q, lo, h, nn3), c)
+
+
+def _kernel_jac(q, lo, h, nn3, c):
+    """보간 커널의 (값, ∇u) -- 둘 다 닫힌 형식이다."""
+    if a.node_kernel == "bary":
+        return bary_g2p_jac(q, lo, h, nn3, c)
+    return tri_g2p_jac(q, lo, h, nn3, c)
+
+
 def _node_warp_fn(q, lo, h, nn3, dp, bound):
-    """글로벌 단계: 격자점 변위 dp 를 trilinear 로 입힌다.
+    """글로벌 단계: 격자점 변위 dp 를 고정 기하 가중치로 입힌다.
 
     bound 가 있으면 상한 지키는 미소 워프의 K 합성 (단사 보장), 없으면 맨
-    trilinear 다. 로컬 단계(셀 내부 재배열)와 완전히 독립이다.
+    커널이다. 로컬 단계(셀 내부 재배열)와 완전히 독립이다.
     """
     if bound is None:
-        return q + TRI.g2p(*TRI.corners(q, lo, h, nn3), dp)
+        return q + _kernel_val(q, lo, h, nn3, dp)
     return BoundedWarp(bound, a.node_k).apply(
-        q, dp, lambda z, c: z + TRI.g2p(*TRI.corners(z, lo, h, nn3), c))
+        q, dp, lambda z, c: z + _kernel_val(z, lo, h, nn3, c))
 
 
 def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
@@ -1152,7 +1176,29 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
     # 입자 목적함수는 탄성항의 ∇Δu 를 격자에서 못 받으므로 야코비안이 필수다
     _want_J = (need_J or a.f_from_jac or _OBJ_PTS or a.fe_state
                or a.det_reg > 0)
-    J = jacobian_of(_warp, x) if _want_J else None
+    J = None
+    if _want_J and a.jac == "analytic":
+        # 닫힌 형식: (상한 워프의 연쇄 ∇) x (RQS 기울기 대각). 역전파가 없어
+        # 학습에서 3회 역전파를 줄이고, no_grad 롤아웃에서도 돈다.
+        _Js = []
+        for o, m in zip(_outs, _meta):
+            q0, sl = x, None
+            if a.cell_warp == "rqs":
+                q0, sl = tri_spline.remap(x, m["lo"], m["hh"], m["nn3"],
+                                          o[1], a.rqs_bins, return_jac=True)
+            if m["bound"] is None:
+                _u, _G = _kernel_jac(q0, m["lo"], m["hh"], m["nn3"], o[0])
+                Jk = torch.eye(3, device=dev, dtype=x.dtype) + _G
+            else:
+                _, Jk = BoundedWarp(m["bound"], a.node_k).apply_jac(
+                    q0, o[0], lambda z, c, _m=m: _kernel_jac(
+                        z, _m["lo"], _m["hh"], _m["nn3"], c))
+            if sl is not None:
+                Jk = Jk * sl.unsqueeze(1)      # J @ diag(RQS 기울기)
+            _Js.append(Jk)
+        J = _Js[0] if len(_Js) == 1 else torch.stack(_Js).mean(0)
+    elif _want_J:
+        J = jacobian_of(_warp, x)
     Jfield = J
     dmg_out = None
     # 격자는 다음 프레임에 x2 로부터 다시 잡는다. 앵커를 옮길 필요가 없다.
@@ -1428,17 +1474,17 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         _dpn = torch.randn(_gp.shape[0], 3, generator=gen, device=dev,
                            dtype=x.dtype) * (sigma * ext)
         if a.node_warp == "bound":
-            # 모델이 낼 수 있는 상태만 교란으로 만든다: 같은 상한·합성의
-            # trilinear 워프 (셀 내부 재배열 교란은 생략 -- 항등이 기본값이다)
+            # 모델이 낼 수 있는 상태만 교란으로 만든다: 같은 상한·합성·커널의
+            # 워프 (셀 내부 재배열 교란은 생략 -- 항등이 기본값이다)
             _wn = BoundedWarp(_warp_bound(float(_hh)), a.node_k)
 
             def _warp_n(q):
                 return _wn.apply(q, _dpn,
-                                 lambda z, c: z + TRI.g2p(*TRI.corners(
-                                     z, _lo, float(_hh), _n3), c))
+                                 lambda z, c: z + _kernel_val(
+                                     z, _lo, float(_hh), _n3, c))
         else:
             def _warp_n(q):
-                return q + TRI.g2p(*TRI.corners(q, _lo, _hh, _n3), _dpn)
+                return q + _kernel_val(q, _lo, float(_hh), _n3, _dpn)
         u = _warp_n(x) - x
         gu = jacobian_of(_warp_n, x) - torch.eye(3, device=dev)
         _fm0 = free_mask(d, x.shape[0], dev, gsel, x, t0) if a.control else None
@@ -2188,9 +2234,11 @@ if a.roll_scen:
                 ds["ctrl_pos"] = torch.stack([_cc, _cc + _hr * _vc], 0)
                 ds.pop("_ca20", None); ds.pop("_ca", None)
                 ds.pop("_ca_key", None)
-                # 입자 목적함수는 F 갱신에 변형장 야코비안이 필요하고, 그건
-                # autograd 라 no_grad 안에서는 못 만든다 -- 여기만 켠다
-                with dt_scope(_hr), torch.enable_grad():
+                # jac=auto 일 때만 autograd 야코비안 때문에 grad 를 켠다
+                # (analytic 은 닫힌 형식이라 no_grad 로 충분하고 메모리도 준다)
+                with dt_scope(_hr), (torch.enable_grad()
+                                     if a.jac == "auto"
+                                     else contextlib.nullcontext()):
                     (x2, p2, v2, _J, _dp, _ai, _dmg, _cr, _fe,
                      _Jd) = step_once(ds, 0, gsel, p_st, x, v, need_J=False)
                 _fm = (free_mask(ds, n_p, dev, gsel, x, 0) if a.control

@@ -22,7 +22,8 @@ from anchorflow import phys_resid, tri_spline, vox_anchor
 from anchorflow import trilinear as TRI
 from anchorflow.conv_stepper import ConvStepper
 from anchorflow.deform import jacobian_of
-from anchorflow.sitreg_warp import BoundedWarp, TRILINEAR_BOUND
+from anchorflow.sitreg_warp import (BoundedWarp, TRILINEAR_BOUND,
+                                    bary_g2p, bary_g2p_jac, tri_g2p_jac)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--traj", required=True)
@@ -80,17 +81,44 @@ def mknet(cw, wake=True, dtype=torch.float32):
     return n
 
 
+def _kval(kr, z, lo, nn3_, c):
+    if kr == "bary":
+        return bary_g2p(z, lo, hh, nn3_, c)
+    return TRI.g2p(*TRI.corners(z, lo, hh, nn3_), c)
+
+
 def field(net, kind, tau, q, lo, nn3_, sidx, feat):
-    """kind = (로컬 cell_warp, 글로벌 node_warp). 두 단계는 순차·독립이다."""
-    cw, nw = kind
+    """kind = (로컬 cell_warp, 글로벌 node_warp, 커널). 전부 직교다."""
+    cw, nw, kr = kind
     out = net(None, feat, tau, GRID, cells=CELLS)
     dp = out[0]
     if cw == "rqs":
         q = tri_spline.remap(q, lo, hh, nn3_, out[-1], a.bins)
     if nw == "bound":
         return BoundedWarp(BND, 5).apply(
-            q, dp, lambda z, c: z + TRI.g2p(*TRI.corners(z, lo, hh, nn3_), c))
-    return q + TRI.g2p(*TRI.corners(q, lo, hh, nn3_), dp)
+            q, dp, lambda z, c: z + _kval(kr, z, lo, nn3_, c))
+    return q + _kval(kr, q, lo, nn3_, dp)
+
+
+def field_jac(net, kind, tau, q, lo, nn3_, feat):
+    """train_deform 의 --jac analytic 과 같은 닫힌 형식 야코비안."""
+    cw, nw, kr = kind
+    out = net(None, feat, tau, GRID, cells=CELLS)
+    dp = out[0]
+    kj = bary_g2p_jac if kr == "bary" else tri_g2p_jac
+    sl = None
+    if cw == "rqs":
+        q, sl = tri_spline.remap(q, lo, hh, nn3_, out[-1], a.bins,
+                                 return_jac=True)
+    if nw == "bound":
+        _, J = BoundedWarp(BND, 5).apply_jac(
+            q, dp, lambda z, c: kj(z, lo, hh, nn3_, c))
+    else:
+        _u, G = kj(q, lo, hh, nn3_, dp)
+        J = torch.eye(3, device=dev, dtype=q.dtype) + G
+    if sl is not None:
+        J = J * sl.unsqueeze(1)
+    return J
 
 
 
@@ -107,9 +135,10 @@ def dphi_dt(net, kind, tau_v, q, lo, nn3_, sidx, feat):
 
 
 # ---- A) 정확 검사: 선형 전달 + 항등 FiLM 이면 dPhi/dt == 할선 -----------------
-print("== A) 배선 정확 검사 (none+tri, 항등 dtfilm)")
+print("== A) 배선 정확 검사 (none+plain+tri, 항등 dtfilm)")
 netA = mknet("none", wake=False)
-x2A, vA = dphi_dt(netA, ("none", "tri"), HDT, x32, lo32, nn3, None, feat32)
+x2A, vA = dphi_dt(netA, ("none", "plain", "tri"), HDT, x32, lo32, nn3, None,
+                  feat32)
 secA = (x2A - x32) / HDT
 relA = float((vA - secA).norm() / secA.norm().clamp_min(1e-30))
 chk("dPhi/dt == (x2-x)/t (dp ∝ t 이므로 정확히 같아야)", relA < 1e-5,
@@ -119,10 +148,12 @@ chk("dPhi/dt == (x2-x)/t (dp ∝ t 이므로 정확히 같아야)", relA < 1e-5,
 x64 = x32.double()
 lo64 = lo32.double()
 feat64 = feat32.double()
-# 로컬(none/rqs) x 글로벌(tri/bound) 네 조합 전부 -- 독립성 확인
-for kind in (("none", "tri"), ("none", "bound"),
-             ("rqs", "tri"), ("rqs", "bound")):
-    print(f"== 로컬 {kind[0]} + 글로벌 {kind[1]}")
+# 로컬 x 글로벌 x 커널 -- 세 축이 직교인지 대표 조합으로 확인
+for kind in (("none", "plain", "tri"), ("none", "bound", "tri"),
+             ("rqs", "plain", "tri"), ("rqs", "bound", "tri"),
+             ("none", "plain", "bary"), ("none", "bound", "bary"),
+             ("rqs", "bound", "bary")):
+    print(f"== {kind[0]} + {kind[1]} + {kind[2]}")
     net = mknet(kind[0], wake=True, dtype=torch.float64)
     # B) t 미분
     x2, vd = dphi_dt(net, kind, HDT, x64, lo64, nn3, None, feat64)
@@ -194,6 +225,11 @@ for kind in (("none", "tri"), ("none", "bound"),
     _pj = ((Ja - Jfd).reshape(xs.shape[0], -1).norm(dim=-1)
            / Jfd.reshape(xs.shape[0], -1).norm(dim=-1).clamp_min(1e-30))
     _njb = int((_pj > 1e-3).sum())
+    Jan = field_jac(net, kind, torch.as_tensor(HDT, device=dev,
+                                               dtype=torch.float64),
+                    xs, lo64, nn3, feat64).detach()
+    ra = float((Jan - Ja).norm() / Ja.norm().clamp_min(1e-30))
+    chk(f"{kind}: 해석 야코비안 == autograd", ra < 1e-10, f"상대오차 {ra:.1e}")
     det = torch.linalg.det(Ja)
     chk(f"{kind}: grad_x Phi == 공간 중심차분",
         float(_pj.median()) < 1e-6 and _njb <= max(3, xs.shape[0] // 500),
