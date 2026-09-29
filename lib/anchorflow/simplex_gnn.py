@@ -16,10 +16,11 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from .deform import _inv3
 from .nextstate import DtFiLM
 from .simplex import N_EDGE_CLASS
 
-__all__ = ["scatter_to_nodes", "SimplexGNN"]
+__all__ = ["scatter_to_nodes", "node_moments", "SimplexGNN"]
 
 
 def scatter_to_nodes(vals, rows, lam, n_node, mass=None):
@@ -37,6 +38,60 @@ def scatter_to_nodes(vals, rows, lam, n_node, mass=None):
         -1, vals.shape[-1]))
     den.index_add_(0, r, w.reshape(-1, 1))
     return num / den.clamp_min(1e-12)
+
+
+def node_moments(x, v, X, m, rows, lam, n_node, npos, hn):
+    """노드마다 **국소 통계**를 barycentric 질량가중으로 쌓는다.
+
+    격자 시절 tri_feats 가 주던 것과 같은 항목이다 (가중치만 trilinear ->
+    barycentric). 변위·속도 평균만으로는 탄성항이 보는 것을 담지 못한다 --
+    2 차 모멘트(국소 형상), 각속도, **국소 변형구배 추정 F = A B^-1** 이
+    있어야 한다.
+
+    -> [M, 1+3+3+3+1+6+3+9 = 29]
+    """
+    dev = x.device
+    wm = lam * m.unsqueeze(1)                              # [N,4]
+    K = rows.shape[1]
+    r = rows.reshape(-1)
+
+    def acc(vals):
+        F = vals.shape[-1]
+        out = torch.zeros(n_node, F, device=dev, dtype=vals.dtype)
+        return out.index_add_(0, r, vals.reshape(-1, F))
+
+    wmf = wm.unsqueeze(-1)
+    ones = torch.ones_like(wmf)
+    g1 = acc(torch.cat([wmf, wmf * x.unsqueeze(1), wmf * X.unsqueeze(1),
+                        wmf * v.unsqueeze(1), ones], -1))
+    Wa = g1[:, 0].clamp(min=1e-12)
+    Wi = Wa.unsqueeze(-1)
+    cx, cX, cv = g1[:, 1:4] / Wi, g1[:, 4:7] / Wi, g1[:, 7:10] / Wi
+    cnt = g1[:, 10:11]
+    dx = x.unsqueeze(1) - cx[rows]
+    dX = X.unsqueeze(1) - cX[rows]
+    dv = v.unsqueeze(1) - cv[rows]
+    ww = wm.reshape(-1, K, 1, 1)
+    g2 = acc(torch.cat([
+        (ww * (dx.unsqueeze(-1) * dx.unsqueeze(-2))).reshape(-1, K, 9),
+        wmf * torch.cross(dx, dv, dim=-1),
+        (ww * (dx.unsqueeze(-1) * dX.unsqueeze(-2))).reshape(-1, K, 9),
+        (ww * (dX.unsqueeze(-1) * dX.unsqueeze(-2))).reshape(-1, K, 9)], -1))
+    S = g2[:, :9].reshape(n_node, 3, 3) / Wa.reshape(-1, 1, 1)
+    iu = torch.triu_indices(3, 3, device=dev)
+    S6 = S[:, iu[0], iu[1]] / (hn * hn)
+    L = g2[:, 9:12]
+    tr = S.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(-1, 1, 1)
+    I3 = torch.eye(3, device=dev, dtype=x.dtype)
+    Ii, _ = _inv3((tr * I3 - S) * Wa.reshape(-1, 1, 1) + 1e-8 * I3)
+    om = (Ii @ L.unsqueeze(-1)).squeeze(-1)
+    A = g2[:, 12:21].reshape(n_node, 3, 3)
+    B = g2[:, 21:30].reshape(n_node, 3, 3)
+    Bi, _ = _inv3(B + (1e-6 * hn * hn) * I3)
+    Fa = (A @ Bi).clamp(-20.0, 20.0).reshape(n_node, 9)
+    return torch.cat([torch.log1p(Wa.unsqueeze(-1) * 1e3), (cx - npos) / hn,
+                      (cX - npos) / hn, cv, torch.log1p(cnt),
+                      S6, om * hn, Fa - I3.reshape(1, 9)], -1)
 
 
 class _MPLayer(nn.Module):

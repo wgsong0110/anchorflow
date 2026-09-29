@@ -369,7 +369,7 @@ import torch.autograd.forward_ad as _fwAD                       # noqa: E402
 from anchorflow import deform                                  # noqa: E402
 from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import simplex as SX                            # noqa: E402
-from anchorflow.simplex_gnn import (SimplexGNN,                  # noqa: E402
+from anchorflow.simplex_gnn import (SimplexGNN, node_moments,    # noqa: E402
                                     scatter_to_nodes)
 from anchorflow import voxel                                    # noqa: E402
 from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
@@ -992,18 +992,19 @@ def node_feats(d, t, gsel, x, v, fe=None):
     _x = uniq // (nnl[1] * nnl[2])
     npos = torch.stack([_x, _y, _z], -1).to(x.dtype) * hn + lo
     mw = MASS[gsel]
-    # 입자별 원료는 셀 경로와 같은 것들을 쓴다
-    parts = [v / VEL_SCALE, x - X, mw.unsqueeze(-1) * 1e3]
+    # 국소 통계(2 차 모멘트·각속도·국소 F) -- 탄성항이 보는 것을 담으려면
+    # 변위·속도 평균만으로는 모자란다 (격자 시절 tri_feats 와 같은 항목)
+    feat = _san(node_moments(x, v / VEL_SCALE, X, mw, rows, lam, Mn, npos, hn))
+    parts = []
     if a.fe_state:
         parts.append(fe_invariants(fe) if fe is not None
                      else torch.zeros(x.shape[0], 3, device=dev, dtype=x.dtype))
     if a.control:
         parts.append(ctrl_feat_pts(d, t, x, hn))
-    pv = _san(torch.cat(parts, -1))
-    feat = scatter_to_nodes(pv, rows, lam, Mn, mass=mw)
-    occ = torch.zeros(Mn, 1, device=dev, dtype=x.dtype)
-    occ.index_add_(0, rows.reshape(-1), lam.reshape(-1, 1))
-    extra = [torch.log1p(occ), bc_features(npos, cfg) / hn]
+    if parts:
+        feat = torch.cat([feat, _san(scatter_to_nodes(
+            _san(torch.cat(parts, -1)), rows, lam, Mn, mass=mw))], -1)
+    extra = [bc_features(npos, cfg) / hn]
     if N_MAT and not N_FILM:
         extra.insert(0, mat_feat(cfg).reshape(1, N_MAT).expand(Mn, N_MAT))
     _in = torch.cat([_san(feat), _san(torch.cat(extra, -1))], -1)
