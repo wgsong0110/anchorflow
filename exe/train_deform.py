@@ -2338,10 +2338,6 @@ def emd(p_, q_, seed):
     return float(dd[r_, c_].mean())
 
 
-# 평가는 **그 궤적의** 입자 수로 색인한다. 풀 루프가 전역 N_FULL 을 씬의 입자
-# 수(251001) 로 덮어쓰기 때문에 전역을 쓰면 교사 궤적(20000)을 범위 밖으로
-# 읽어 device-side assert 가 난다.
-gsel = torch.arange(TR[0][1]["x"].shape[1], device=dev)
 rows = {}
 for tag, d in TR + held:
     T = d["x"].shape[0]
@@ -2354,13 +2350,17 @@ for tag, d in TR + held:
         _want = (_rd and tag.endswith(os.environ.get("AF_ROLL_TAG", "")) 
                  and t0 == int(os.environ.get("AF_ROLL_T0", "3")))
         _ROLLDUMP = [] if _want else None
-        e, st, cd, em, cds_, ems_ = rollout(d, t0, L, gsel)
+        # gsel 은 **그 궤적의** 입자 수로 만든다 (궤적마다 다를 수 있고, 풀
+        # 루프가 전역 N_FULL 을 씬 값으로 덮어써 전역을 믿을 수 없다).
+        e, st, cd, em, cds_, ems_ = rollout(d, t0, L)
         if _want and _ROLLDUMP:
             torch.save({"pred": torch.stack([a_ for a_, _ in _ROLLDUMP]),
                         "gt": torch.stack([b_ for _, b_ in _ROLLDUMP]),
-                        "x0": take(d["x"][t0], gsel).cpu(),
+                        "x0": d["x"][t0].to(dev).float().cpu(),
                         "ctrl_pos": d.get("ctrl_pos"), "t0": t0, "tag": tag,
-                        "EXT": EXT}, _rd)
+                        # 풀 루프가 전역 EXT 를 씬 값으로 덮어쓰므로 **그 궤적의**
+                        # 것을 쓴다 (덤프를 렌더할 때 길이 단위가 된다)
+                        "EXT": float(d.get("_ext", EXT))}, _rd)
             print(f"[롤아웃 덤프] {_rd}  {tag} t0={t0}", flush=True)
         _ROLLDUMP = None
         rows[tag]["windows"][t0] = dict(L=L, err=e, still=st,
