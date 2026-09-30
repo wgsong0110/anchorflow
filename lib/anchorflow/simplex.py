@@ -188,9 +188,13 @@ def edges_of(idx_rows, uniq, nn):
     y = (uniq // nnl[2]) % nnl[1]
     xx = uniq // (nnl[1] * nnl[2])
     pos = torch.stack([xx, y, z], -1)                   # [M,3] 정수 격자좌표
+    # **사면체를 먼저 중복 제거한다.** idx_rows 는 입자마다 한 행이라 251001 개
+    # 입자면 변 쌍이 300 만인데, 서로 다른 사면체는 수만 개뿐이다. 먼저 줄이지
+    # 않으면 매 스텝 300 만 쌍을 정렬한다 (실측 셀집계의 대부분이 이것이었다).
+    tets = torch.unique(idx_rows, dim=0)                # [T,4]
     pair = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
-    a = torch.cat([idx_rows[:, i] for i, _ in pair])
-    b = torch.cat([idx_rows[:, j] for _, j in pair])
+    a = torch.cat([tets[:, i] for i, _ in pair])
+    b = torch.cat([tets[:, j] for _, j in pair])
     src = torch.cat([a, b])
     dst = torch.cat([b, a])
     e = torch.unique(torch.stack([src, dst], -1), dim=0)
