@@ -41,27 +41,12 @@ ap.add_argument("--tag", default="deform")
 ap.add_argument("--n_anchors", type=int, default=512)
 ap.add_argument("--k", type=int, default=16)
 ap.add_argument("--hidden", type=int, default=128)
-ap.add_argument("--depth", type=int, default=4)
-ap.add_argument("--heads", type=int, default=4)
 ap.add_argument("--iters", type=int, default=4000)
 ap.add_argument("--batch", type=int, default=1,
                 help="한 스텝에 평균 낼 창의 수. 창마다 손실이 수십 배 다르므로 "
                      "하나만 쓰면 기울기가 그 차이에 휘둘린다")
 ap.add_argument("--unroll", type=int, default=1, help="한 창에서 펼칠 프레임 수")
-ap.add_argument("--unroll_final", type=int, default=4,
-                help="(미사용) 예전의 중간 증가 일정. 지금은 unroll 고정")
-ap.add_argument("--unroll_at", type=float, default=0.4,
-                help="이 비율을 지나면 unroll 을 unroll_final 로 늘린다")
 ap.add_argument("--lr", type=float, default=3e-4)
-ap.add_argument("--lambda_J", type=float, default=0.1)
-ap.add_argument("--shape_loss", default="frob", choices=("frob", "bures", "none"),
-                help="모양을 어떻게 채점할지. frob 은 J 와 GT 증분의 Frobenius, "
-                     "bures 는 위치까지 포함한 입자별 Bures-Wasserstein (길이^2 "
-                     "단위라 lambda_J 가 필요 없다), none 은 위치만")
-ap.add_argument("--lambda_anchor", type=float, default=0.0,
-                help="앵커 변위를 GT 에 직접 맞추는 보조 손실의 가중. 앵커는 FPS 로 "
-                     "고른 **가우시안**이라 그 정답 변위를 정확히 안다 -- 스키닝을 "
-                     "거치는 간접 경로보다 훨씬 쉬운 문제이고, 진단으로도 쓴다")
 ap.add_argument("--sigma0", type=float, default=0.5,
                 help="정준 가우시안의 등방 표준편차를 입자 간격의 몇 배로 볼지. "
                      "이 씬의 ply 는 sigma ~ 1e-9 로 사실상 점이라, 모양 항을 쓰려면 "
@@ -107,33 +92,17 @@ ap.add_argument("--damage", action="store_true",
                      "섞어 **가우시안마다** 손상을 쌓는다. 손상이 온도를 깎아 "
                      "배정이 딱딱해지므로, 망가진 가우시안은 연속체에서 빠져 "
                      "가장 가까운 앵커만 따라간다")
-ap.add_argument("--lambda_dmg", type=float, default=1.0,
-                help="손상 지도 가중치. 정답은 그 결합이 GT 에서 실제로 늘어난 배율")
-ap.add_argument("--dmg_thresh", type=float, default=2.0,
-                help="GT 결합 길이가 이 배가 되면 손상 1 로 본다")
-ap.add_argument("--shape_pts", type=int, default=0,
-                help="모양 손실을 이 개수의 입자로만 잰다 (0 이면 전부). 손실이 "
-                     "입자 평균이라 부분표본도 불편추정이고, svdvals 가 2 만 개 "
-                     "3x3 에서 13 ms 라 여기가 한 스텝의 3 분의 1 이다")
 ap.add_argument("--gpu_data", type=int, default=1,
                 help="궤적을 GPU 에 상주시킨다. CPU 색인 + 전송이 한 스텝의 "
                      "5 분의 1 이라 그냥 올리는 쪽이 빠르다")
 ap.add_argument("--gpu_data_mb", type=float, default=8000.0,
                 help="이 용량을 넘으면 GPU 상주를 건너뛴다")
-ap.add_argument("--motion_frac", type=float, default=0.0,
-                help="창을 뽑을 때 GT 변위가 큰 프레임을 이 비율만큼 우선한다. "
-                     "이 궤적은 100 프레임 중 ~30 만 움직이고 나머지는 완전히 "
-                     "정지라, 균등하게 뽑으면 학습의 70%가 '아무 일도 안 일어남'이다")
-ap.add_argument("--hold_last", type=int, default=20,
-                help="각 궤적의 마지막 몇 프레임을 평가용으로 뗀다")
 ap.add_argument("--hold_traj", default=None,
                 help="통째로 홀드아웃할 궤적 태그 (쉼표로 구분)")
 ap.add_argument("--save_every", type=int, default=500)
 ap.add_argument("--resume", default=None)
 ap.add_argument("--small_out", action="store_true",
                 help="출력층을 0 이 아니라 기본 초기화의 1/100 로 시작")
-ap.add_argument("--ens", type=int, default=1,
-                help="원점을 어긋나게 둔 격자를 몇 개 앙상블할지 (변위 평균)")
 ap.add_argument("--metrics", action="store_true",
                 help="롤아웃에서 CD/EMD 까지 잰다 (Spring-Gaus 정의)")
 ap.add_argument("--cd_pts", type=int, default=2048,
@@ -212,16 +181,9 @@ ap.add_argument("--phase2", action="store_true",
                 help="교사 위치 대신 **증분 포텐셜**을 목적함수로 미세조정한다. "
                      "교사 프레임이 필요 없으므로 상태를 어디서 뽑아도 된다")
 ap.add_argument("--phys_w", type=float, default=1.0, help="물리 항 가중")
-ap.add_argument("--phys_sup", type=float, default=0.0,
-                help="교사 위치 손실을 함께 쓸 가중 (0 이면 물리 단독)")
 ap.add_argument("--phys_K", type=int, default=1,
                 help="한 표본에서 펼칠 스텝 수. 뒤 스텝의 상태는 자기 출력이라 "
                      "그대로 on-policy 표본이 된다")
-ap.add_argument("--phys_K_warm", type=int, default=0,
-                help="K 를 1 에서 --phys_K 로 올리는 데 쓰는 스텝 수")
-ap.add_argument("--phys_noise", type=float, default=0.0,
-                help="상태 교란 크기 (물체 크기 대비). 매끄러운 저주파 장을 더하고 "
-                     "F 도 (I+grad u)F 로 함께 흔든다")
 ap.add_argument("--resume_fresh", action="store_true",
                 help="가중치만 이어받고 스텝·옵티마이저·난수는 새로 시작한다. "
                      "다른 단계로 넘어갈 때 쓴다 (예: 증류 -> RL)")
@@ -327,7 +289,6 @@ ap.add_argument("--rl", action="store_true",
                 help="액터-크리틱으로 학습한다. 보상은 -(i-PG 손실), 미래는 가치함수 "
                      "V 가 대신 보므로 롤아웃을 거슬러 미분하지 않는다 (BPTT 길이 1). "
                      "상태는 에피소드 안에서 학생 자신의 출력으로 이어진다")
-ap.add_argument("--rl_steps", type=int, default=8, help="에피소드 길이(프레임)")
 ap.add_argument("--rl_reward", default="residual",
                 choices=("residual", "energy"),
                 help="보상. residual 은 -(정류 잔차)^2 로 **0 에 유계**하고 정답에서 "
@@ -335,45 +296,22 @@ ap.add_argument("--rl_reward", default="residual",
                      "아래로 유계가 아니라 에피소드로 누적하면 자유낙하가 최적이 "
                      "된다 (실제로 30 스텝 만에 발산했다)")
 ap.add_argument("--rl_gamma", type=float, default=0.95, help="할인율")
-ap.add_argument("--rl_critic_h", type=int, default=128, help="크리틱 폭")
-ap.add_argument("--rl_critic_lr", type=float, default=1e-3)
 ap.add_argument("--rl_term", type=float, default=3.0,
                 help="앵커 판본에서 가우시안-앵커 거리가 처음의 이 배를 넘으면 "
                      "에피소드를 끝내고 큰 음수 보상을 준다")
 ap.add_argument("--rl_term_pen", type=float, default=10.0, help="종료 벌점")
-ap.add_argument("--phys_noise_grid", action="store_true",
-                help="교란을 **출력 공간**에서 뽑는다. 격자점 변위를 무작위로 하나 "
-                     "뽑아 그 실행의 전달 방식으로 가우시안에 입혀 입력 상태로 "
-                     "쓴다 -- 학생이 실제로 낼 수 있는 변형만 보게 된다")
 ap.add_argument("--phys_probe", type=int, default=0,
                 help="교사 프레임에서 에너지·잔차만 이만큼 재고 끝낸다 (정상성 검사)")
 ap.add_argument("--val_every", type=int, default=0,
                 help="이 간격마다 홀드아웃 롤아웃으로 재고 best 체크포인트를 남긴다")
 ap.add_argument("--val_n", type=int, default=4, help="검증에 쓸 궤적 수")
 ap.add_argument("--val_len", type=int, default=10, help="검증 롤아웃 길이")
-ap.add_argument("--noise", type=float, default=0.0,
-                help="Phase 1 에서 창의 **시작 상태**를 매끄러운 저주파 장으로 흔든다 "
-                     "(물체 크기 대비 최대 비율). 정답은 그대로 두므로 모델이 "
-                     "벗어난 곳에서 돌아오는 보정을 배운다")
 ap.add_argument("--wd", type=float, default=0.0,
                 help="가중치 감쇠 (0 보다 크면 Adam 대신 AdamW 를 쓴다). 한 스텝 "
                      "교사 오차만 내려가고 홀드아웃이 안 따라오는 과적합을 친다")
-ap.add_argument("--drop", type=float, default=0.0,
-                help="conv 블록 사이 채널 드롭아웃 비율 (Dropout3d). 검증·롤아웃 "
-                     "에서는 자동으로 꺼진다")
 ap.add_argument("--det_reg", type=float, default=0.0,
                 help="한 스텝 변형장의 야코비안 행렬식이 뒤집히는 것(det<=0)을 "
                      "벌한다. relu(margin - det)^2 의 입자 평균에 이 가중치를 곱한다")
-ap.add_argument("--det_margin", type=float, default=0.1,
-                help="det 가 이 값 아래로 내려가면 벌점이 붙는다 (0 이면 뒤집힘만)")
-ap.add_argument("--warm", type=int, default=0,
-                help="감독 전에 학생을 이만큼 no_grad 로 굴려 **자기 오차가 쌓인 "
-                     "상태**에서 시작한다. 역전파 사슬은 --unroll 만큼만 남으므로 "
-                     "언롤을 늘리는 것보다 훨씬 싸게 on-policy 상태를 본다")
-ap.add_argument("--loss_last", action="store_true",
-                help="언롤 창에서 **마지막 프레임만** 손실로 쓴다. 중간 프레임의 "
-                     "정답 읽기와 손실 계산이 빠지지만, 역전파는 여전히 창 전체를 "
-                     "거슬러 올라간다 (마지막 상태가 앞 스텝에 의존하므로)")
 ap.add_argument("--tb", default=None, help="TensorBoard 이벤트를 쓸 디렉토리")
 ap.add_argument("--fe_state", action="store_true",
                 help="탄성 변형구배 F_e 를 **입자 상태로** 들고 다닌다. 교사의 F 로 "
@@ -2024,6 +1962,35 @@ for it in pbar:
             with _tsec("free_mask"):
                 fm = (free_mask(ds, n_p, dev, gsel, x, 0)
                       if a.control else None)
+            # 구속 일치 항: 망 출력이 하드 사영값과 어긋난 만큼. 자유 입자는 0.
+            # 하드로 박힌 입자는 증분 포텐셜에서 뺀다 (그 잔차는 반력이 실어
+            # 나르는 것이라 학생이 정할 양이 아니다).
+            _bc = torch.zeros((), device=dev)
+            if _BC_LAST[0] is not None:
+                _corr, _actf = _BC_LAST[0]
+                _bc = (_corr * _corr).sum(-1).mean() / (sc["ext"] ** 2)
+                _am = _actf.reshape(-1) > 0.5
+                fm = (~_am) if fm is None else (fm & ~_am)
+                with torch.no_grad():
+                    _pen0 = 0.0
+                    for _b in (sc["cfg"].get("boundary_conditions") or []):
+                        if _b.get("type") != "surface_collider":
+                            continue
+                        _pt0 = torch.as_tensor(_b["point"], device=dev,
+                                               dtype=x2.dtype)
+                        _nr0 = torch.as_tensor(_b["normal"], device=dev,
+                                               dtype=x2.dtype)
+                        _nr0 = _nr0 / _nr0.norm().clamp_min(1e-12)
+                        _sd0 = ((x2 - _pt0) * _nr0).sum(-1)
+                        _pen0 = max(_pen0, float((-_sd0).clamp_min(0).max())
+                                    / sc["ext"])
+                    _BC_DIAG.append((
+                        float(_actf.reshape(-1).gt(0.5).float().mean()),
+                        float(_corr.norm(dim=-1).max()) / sc["ext"], _pen0))
+                    if len(_BC_DIAG) > 200:
+                        del _BC_DIAG[:-200]
+            # det 가 문턱 아래인 사면체는 탄성에서 빼고 복구 손실을 크게 준다
+            _emask, _dpen = det_take()
             cfg = sc["cfg"]
             vol = sc["mass"] / float(cfg["density"])
             gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
@@ -2034,7 +2001,8 @@ for it in pbar:
             with _tsec("에너지"):
                 E_ip, dlog, F_tr, _pt = ip_of(
                     x, x2 - x, v, F, sc["mass"], vol, cfg, _hp, ng_, gl_,
-                    g=gv, norm=nrm, free=fm, jac=_Jd)
+                    g=gv, norm=nrm, free=fm, jac=_Jd,
+                    elastic_mask=_emask)
             # 폐기 판정용 길이 단위 잔차.
             if _OBJ_PTS:
                 # 입자 목적함수에서는 dE/dx2 가 **탄성항을 담지 못한다** --
@@ -2047,7 +2015,7 @@ for it in pbar:
                     raise SystemExit(
                         "--obj pts 에서는 --pool_loss residual 을 쓸 수 없다 "
                         "(잔차가 탄성항을 담지 못한다). --pool_loss energy 로.")
-                loss_p = E_ip
+                loss_p = a.phys_w * E_ip + _dpen + a.lambda_bc * _bc
             else:
                 # 손실이 E 값이든 잔차든 **같은 그래프에서 한 번만** dE/dx2 를
                 # 뽑아 쓴다 (재평가 없음).
@@ -2057,10 +2025,10 @@ for it in pbar:
                 _rr = _gx * (_hp ** 2) / sc["mass"].unsqueeze(
                     -1).clamp_min(1e-20) / sc["ext"]
                 if _need_g:
-                    loss_p = ((_rr[fm] if fm is not None else _rr) ** 2
-                              ).sum(-1).mean()
+                    loss_p = (((_rr[fm] if fm is not None else _rr) ** 2
+                               ).sum(-1).mean() + _dpen + a.lambda_bc * _bc)
                 else:
-                    loss_p = E_ip
+                    loss_p = a.phys_w * E_ip + _dpen + a.lambda_bc * _bc
             # 스칼라들을 **한 번에** 내린다. float()/bool() 하나가 파이프라인을
             # 세우므로 배치 원소마다 3~4 회면 스텝당 30 회 가까이 멈춘다.
             _rl = _rr.detach().norm(dim=-1)
