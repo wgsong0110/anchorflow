@@ -30,7 +30,7 @@ def chk(name, cond, info=""):
 src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "train_deform.py")).read()
 i = src.index("def chamfer(")
-j = src.index("\ndef ", src.index("def emd(") + 5)
+j = src.index("\nrows = {}", i)          # emd 뒤가 모듈 본문이라 그 앞까지
 body = src[i:j]
 mod = types.ModuleType("m")
 mod.__dict__.update(torch=torch, dev=dev, a=argparse.Namespace(cd_pts=2048))
