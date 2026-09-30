@@ -17,7 +17,10 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--n_grids", default="100,58")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
-d = torch.load(a.traj, map_location="cpu", weights_only=False)
+try:                      # 클러스터 torch 는 weights_only 를 모를 수 있다
+    d = torch.load(a.traj, map_location="cpu", weights_only=False)
+except TypeError:
+    d = torch.load(a.traj, map_location="cpu")
 
 ci = d["ctrl_id"]
 hid = (ci[0] if ci.dim() == 2 else ci).reshape(-1).numpy().astype(np.int64)
