@@ -1554,7 +1554,7 @@ def quick_val():
     # 보조 지표였던 지도 손실은 지웠다 -- 학습이 교사를 안 쓰므로 그 창도 없다.
     obj = 0.0
     for _tag, d in _VAL:
-        gsel = torch.arange(N_FULL, device=dev)
+        gsel = torch.arange(d["x"].shape[1], device=dev)
         t0 = 3
         x = take(d["x"][t0], gsel)
         v = (x - take(d["x"][t0 - 1], gsel)) / FRAME_DT
@@ -1618,7 +1618,7 @@ if a.phys_probe:
         tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
         T = d["x"].shape[0]
         t0 = int(torch.randint(1, T - 2, (1,), generator=gen, device=dev))
-        gsel = torch.arange(N_FULL, device=dev)
+        gsel = torch.arange(d["x"].shape[1], device=dev)
         mass = traj_mass(d)[gsel]
         ext = d.get("_ext", EXT)
         cfg = d["cfg"]
@@ -1707,7 +1707,7 @@ if a.oracle_roll:
     _tag, _d = TR[0]
     _t0 = a.eval_t0[0] if a.eval_t0 else 3
     _L = min(a.eval_len, _d["x"].shape[0] - _t0 - 1)
-    _gsel = torch.arange(N_FULL, device=dev)
+    _gsel = torch.arange(_d["x"].shape[1], device=dev)
     _mass = traj_mass(_d)[_gsel]
     _ext = _d.get("_ext", EXT)
     _cfg = _d["cfg"]
@@ -2252,9 +2252,11 @@ _ROLLDUMP = None
 
 
 @torch.no_grad()
-def rollout(d, t0, L, gsel):
+def rollout(d, t0, L, gsel=None):
     # 드롭아웃이 켜져 있으면 롤아웃이 확률적이 된다 -- 평가는 항상 eval 로.
     net.eval()
+    if gsel is None:
+        gsel = torch.arange(d["x"].shape[1], device=dev)
     x = take(d["x"][t0], gsel)
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
@@ -2312,7 +2314,10 @@ def emd(p_, q_, seed):
     return float(dd[r_, c_].mean())
 
 
-gsel = torch.arange(N_FULL, device=dev)     # 항상 전체 (부분표본 없음)
+# 평가는 **그 궤적의** 입자 수로 색인한다. 풀 루프가 전역 N_FULL 을 씬의 입자
+# 수(251001) 로 덮어쓰기 때문에 전역을 쓰면 교사 궤적(20000)을 범위 밖으로
+# 읽어 device-side assert 가 난다.
+gsel = torch.arange(TR[0][1]["x"].shape[1], device=dev)
 rows = {}
 for tag, d in TR + held:
     T = d["x"].shape[0]
