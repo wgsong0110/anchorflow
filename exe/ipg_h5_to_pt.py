@@ -76,6 +76,14 @@ for p in files:
         print(f"  [경고] F 를 못 읽어 항등으로 둔다: {e}")
         fs.append(torch.eye(3).repeat(sel.numel(), 1, 1))
 X, V, Fm = torch.stack(xs), torch.stack(vs), torch.stack(fs)
+# PG/i-PG 는 **프레임 0 의 f_tensor 를 채우지 않는다** (전부 0 -> det=0).
+# 정지 자세의 변형구배는 항등이므로 바로잡는다. 그대로 두면 t=0 에서 출발하는
+# 창의 탄성 에너지가 뜻 없는 값이 된다 (Psi 가 sigma=0 에서 정의되지 않는다).
+_d0 = torch.linalg.det(Fm[0].double())
+if float(_d0.abs().max()) < 1e-6:
+    Fm[0] = torch.eye(3).expand_as(Fm[0]).clone()
+    print(f"[보정] 프레임 0 의 F 가 전부 0 이라 항등으로 채웠다 "
+          f"({Fm.shape[1]} 입자)")
 cfg = json.load(open(a.cfg))
 os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
 torch.save({"x": X.half(), "v": V.half(), "F": Fm.half(), "sel": sel,
