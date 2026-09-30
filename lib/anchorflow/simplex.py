@@ -30,7 +30,8 @@ from collections import namedtuple
 import torch
 
 __all__ = ["Lat", "lattice", "grid_for_nodes", "node_pos", "locate", "g2p",
-           "g2p_jac", "tet_det", "tet_id", "active_nodes", "edges_of",
+           "g2p_jac", "g2p_pre", "g2p_jac_pre", "tet_det", "tet_id",
+           "active_nodes", "edges_of",
            "EDGE_OFFSETS", "N_EDGE_CLASS", "HZ_CUBE"]
 
 # 정육면체가 되는 층간격 비 (hz = HZ_CUBE * h)
@@ -141,6 +142,26 @@ def g2p_jac(q, lo, lat, nn, dp):
     Dy = d.gather(2, rank.unsqueeze(1).expand(-1, 3, -1))    # 격자축 순서로
     G = Dy @ lat.Ai.to(Dy.dtype)                        # [N,3,3] grad_x u
     return u, G
+
+
+def g2p_pre(rows, lam, dp_act):
+    """`locate` 를 이미 한 경우의 전달. u = sum_i lam_i dp_{rows_i}.
+
+    rows 는 **압축 노드** 색인(active_nodes 의 출력)이고 dp_act 는 그 노드들의
+    변위다. locate 는 tau 에 무관하므로 jvp 안에서 다시 돌 이유가 없고, Mtot
+    크기 zeros + index_copy 도 필요 없다.
+    """
+    return (lam.unsqueeze(-1) * dp_act[rows]).sum(1)
+
+
+def g2p_jac_pre(rows, lam, aux, lat, dp_act):
+    """`locate` 를 이미 한 경우의 값·grad_x u. g2p_jac 과 같은 식이다."""
+    _ci, rank, _perm = aux
+    dpc = dp_act[rows]                                  # [N,4,3]
+    u = (lam.unsqueeze(-1) * dpc).sum(1)
+    d = (dpc[:, 1:] - dpc[:, :-1]).transpose(1, 2)      # [N,3(i),3(r)]
+    Dy = d.gather(2, rank.unsqueeze(1).expand(-1, 3, -1))
+    return u, Dy @ lat.Ai.to(Dy.dtype)
 
 
 def tet_det(G):

@@ -1062,7 +1062,7 @@ def node_feats(d, t, gsel, x, v, fe=None):
     X = take(d["x"][0], gsel)
     lo, lat, nn = (_GRID[0] if _GRID[0] is not None
                    else SX.grid_for_nodes(x, a.n_nodes))
-    idx, lam, _aux = SX.locate(x, lo, lat, nn)
+    idx, lam, _aux = SX.locate(x, lo, lat, nn)   # tau 에 무관 -- 한 번만
     rows, uniq = SX.active_nodes(idx)          # **점유 사면체의 꼭짓점만**
     Mn = int(uniq.numel())
     npos = SX.node_pos(lo, lat, nn, uniq)
@@ -1087,7 +1087,7 @@ def node_feats(d, t, gsel, x, v, fe=None):
     _in = torch.nan_to_num(_in, nan=0.0, posinf=0.0,
                            neginf=0.0).clamp(-_FCAP, _FCAP)
     src, dst, cls = SX.edges_of(rows, uniq, nn)
-    return _in, npos, (lo, lat, nn), rows, lam, uniq, (src, dst, cls)
+    return (_in, npos, (lo, lat, nn), rows, lam, uniq, (src, dst, cls), _aux)
 
 
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
@@ -1107,8 +1107,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         # tau 에 무관하므로 밖에서 만들고, tau 에 탄젠트를 얹어 한 번 통과
         # 시키면 dPhi/dt (각 지점의 속도) 가 나온다.
         with _tsec("셀집계"):
-            _in, npos, (lo, lat, nn), rows, lam, uniq, (esrc, edst, ecls) = \
-                node_feats(d, t, gsel, x, v, fe=fe)
+            (_in, npos, (lo, lat, nn), rows, lam, uniq,
+             (esrc, edst, ecls), _lax) = node_feats(d, t, gsel, x, v, fe=fe)
         _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
 
         def _fieldS(tau):
@@ -1117,11 +1117,10 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             if _DP_HOOK[0] is not None:
                 out = _DP_HOOK[0](out)
             dpn = torch.nan_to_num(out[0], nan=0.0, posinf=0.0, neginf=0.0)
-            Mtot = int(nn[0] * nn[1] * nn[2])
-            dpf = torch.zeros(Mtot, 3, device=dev, dtype=x.dtype)
-            dpf = dpf.index_copy(0, uniq, dpn)     # 활성 노드만 채운다
             # 셀(사면체) 내부는 **항등**이다. 로컬 변환은 쓰지 않는다.
-            q = x + SX.g2p(x, lo, lat, nn, dpf)
+            # locate 결과(rows, lam)를 재사용한다 -- tau 에 무관하므로 jvp 안에서
+            # 다시 돌 이유가 없고, Mtot 크기 zeros+index_copy 도 필요 없다.
+            q = x + SX.g2p_pre(rows, lam, dpn)
             _qraw = q                       # 덮어쓰기 **전** 의 원 출력
             _act = torch.zeros_like(q[:, :1])
             if a.control:
@@ -1140,7 +1139,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             # corr 은 구속이 원 출력을 얼마나 고쳤나다. 이걸 줄이면 망이 경계조건을
             # **스스로** 내게 된다 (자유 입자는 정확히 0 이라 기여가 없다).
             _corr = q - _qraw
-            _ex = (dpf, _corr, _act)
+            _ex = (dpn, _corr, _act)
             return q, _ex
 
         _use_dtS = a.v_from_dt and _DP_HOOK[0] is None and a.dt_cond
@@ -1153,16 +1152,16 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         else:
             x2, _outs = _fieldS(_tau0)
             v_next = (x2 - x) / _DT[0]
-        dpf = _outs[0]
+        dpn = _outs[0]
         # 셀 내부가 항등이라 변형장은 사면체별 아핀이다 -> 야코비안은 닫힌 형식
         # 하나로 나온다 (재배열이 있던 시절에는 합성이라 역전파 3 회가 필요했다).
         with _tsec("야코비안"):
-            _u, Jf = SX.g2p_jac(x, lo, lat, nn, dpf)
+            _u, Jf = SX.g2p_jac_pre(rows, lam, _lax, lat, dpn)
             Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
         _DET_LAST[0] = torch.linalg.det(Jf)
         # 구속 보정량·활성집합을 창 쪽으로 넘긴다 (L_bc 와 free 마스크에 쓴다)
         _BC_LAST[0] = (_outs[-2], _outs[-1])
-        return (x2, p, v_next, None, dpf, None, dmg, None, fe, Jf)
+        return (x2, p, v_next, None, dpn, None, dmg, None, fe, Jf)
 def traj_F(d):
     """탄성 변형구배 [T,N,3,3]. 궤적에 든 것은 전부 항등이라 위치에서 되살린다."""
     if d.get("_Fok") is None:
