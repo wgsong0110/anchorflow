@@ -69,7 +69,7 @@ smoke)
       --out $W/smoke --tag SMK --no_mat --control --n_ctrl 2 \
       --arch sgnn --n_nodes 32 --gnn_layers 1 --hidden 128 \
       --obj pts --dt_cond --dt_scale --v_from_dt --det_eps 0.1 --det_w 100 \
-      --lambda_bc 1.0 --lr 3e-4 --batch 4 --n_pts 8000 \
+      --lambda_bc 1.0 --lr 3e-4 --batch 4 \
       --phase2 --phys_w 1.0 --phys_sup 0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \
       --iters 200 --eval_t0 3 --eval_len 40 --save_every 100000 \
       --val_every 100 --val_n 1 --val_len 10"

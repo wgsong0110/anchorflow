@@ -29,7 +29,10 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--tag", required=True, help="형상_물성")
 ap.add_argument("--seeds", default="0-15")
 ap.add_argument("--pairs", default="", help="tag:seed 쉼표 목록 (여러 조합을 한 작업에서)")
-ap.add_argument("--n_pts", type=int, default=20000)
+ap.add_argument("--n_pts", type=int, default=0,
+                help="저장할 입자 수. 0(기본) 이면 **전체**를 저장한다. 예전에 "
+                     "20000(8%) 만 저장해서 학습이 나머지 92% 를 영원히 못 봤다 -- "
+                     "학생이 교사와 같은 입자 집합으로 배우려면 전체가 필요하다")
 ap.add_argument("--fill_cache", default="")
 ap.add_argument("--rounds_cycle", default="",
                 help="쉼표 목록. 시드마다 회차 수를 돌려가며 써서 "
@@ -104,7 +107,8 @@ for _tag, sd in JOBS:
 
     X0 = torch.from_numpy(rd(files[0], "x")).float()
     g = torch.Generator().manual_seed(1234 + sd)
-    sel = torch.randperm(X0.shape[0], generator=g)[:min(a.n_pts, X0.shape[0])]
+    sel = (torch.arange(X0.shape[0]) if a.n_pts <= 0 else
+           torch.randperm(X0.shape[0], generator=g)[:min(a.n_pts, X0.shape[0])])
     xs, vs, fs = [], [], []
     for p in files:
         xs.append(torch.from_numpy(rd(p, "x")).float()[sel])

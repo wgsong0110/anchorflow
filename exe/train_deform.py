@@ -66,7 +66,6 @@ ap.add_argument("--sigma0", type=float, default=0.5,
                 help="정준 가우시안의 등방 표준편차를 입자 간격의 몇 배로 볼지. "
                      "이 씬의 ply 는 sigma ~ 1e-9 로 사실상 점이라, 모양 항을 쓰려면 "
                      "부피에서 온 크기를 줘야 한다")
-ap.add_argument("--n_pts", type=int, default=20000, help="한 스텝에 쓰는 가우시안 수")
 ap.add_argument("--eval_t0", type=int, nargs="+", default=[5, 40, 80],
                 help="롤아웃을 시작할 프레임들. 이 궤적은 충돌 직후와 안정된 뒤의 "
                      "프레임당 변위가 수십 배 달라서, 한 구간만 보면 오해한다")
@@ -771,26 +770,6 @@ def grip_feat(d, t, p):
     return torch.cat([rel, nrm, mov, tan, gg], -1).reshape(A, -1)
 
 
-def with_ctrl(gsel, d, n_max=None):
-    """부분표본에 **손잡이가 붙든 입자를 반드시 포함**시킨다.
-
-    안 넣으면 그 입자가 표본에서 빠지고, ctrl_anchor 가 최근접 입자로 대체한다.
-    대체 입자는 손잡이 중심이 아니라 그 옆이라 감쇠 가중치가 1 보다 작고, 결국
-    손잡이가 명령만큼 끌지 못한다 (실측: 명령 0.041 인데 0.0036 만 움직였다).
-    """
-    if "ctrl_id" not in d:
-        return gsel
-    need = torch.unique(ctrl_anchor(d, None).reshape(-1))
-    out = torch.unique(torch.cat([gsel, need.to(gsel.device)]))
-    if n_max is not None and out.numel() > n_max:
-        # 넘치면 손잡이 입자는 남기고 나머지에서 줄인다
-        mask = torch.isin(out, need.to(out.device))
-        keep = out[mask]
-        rest = out[~mask][: max(n_max - int(mask.sum()), 0)]
-        out = torch.unique(torch.cat([keep, rest]))
-    return out
-
-
 def ctrl_anchor(d, gsel):
     """손잡이가 **붙들고 있는 입자**를 현재 부분표본 좌표계로 옮긴다 -> [T,K].
 
@@ -831,7 +810,7 @@ def ctrl_anchor(d, gsel):
     if bool(miss.any()):
         # 표본에 없는 제어 입자는 프레임 0 에서 가장 가까운 표본 입자로 대신한다
         x0all = d["x"][0].float().to(gsel.device)
-        x0g = x0all[gs]                                    # [n_pts,3]
+        x0g = x0all[gs]                                    # [N,3]
         tgt = x0all[l20.reshape(-1)[miss.reshape(-1)]]     # [m,3]
         loc[miss] = torch.cdist(tgt, x0g).argmin(1)
     return loc
@@ -1298,7 +1277,7 @@ def rl_episode(d, t0, E, gsel, gen):
     if _OBJ_PTS:
         raise SystemExit("--rl 경로는 격자 목적함수만 지원한다 (--obj grid)")
     mass_full = traj_mass(d)
-    mass = mass_full[gsel] * (float(N_FULL) / gsel.numel())
+    mass = mass_full[gsel]
     ext = d.get("_ext", EXT)
     cfg = d["cfg"]
     vol = mass / float(cfg["density"])
@@ -1400,7 +1379,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
     교란할 때마다 교사를 다시 돌려야 했다.
     """
     mass_full = traj_mass(d)
-    mass = mass_full[gsel] * (float(N_FULL) / gsel.numel())   # 부분표본 보정
+    mass = mass_full[gsel]
     ext = d.get("_ext", EXT)
     cfg = d["cfg"]
     vol = mass / float(cfg["density"])
@@ -1697,7 +1676,7 @@ if a.no_gn:
 # 특징 차원을 한 번 재서 모델을 세운다 -- 반드시 **학습과 같은 경로**로 잰다
 with torch.no_grad():
     _d = TR[0][1]
-    _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
+    _g = torch.arange(N_FULL, device=dev)
     _x = take(_d["x"][1], _g)
     _v = (_x - take(_d["x"][0], _g)) / FRAME_DT
     if a.arch == "attn":
@@ -1727,7 +1706,7 @@ if a.voxel:
     VOX_DIMS = (_mx[1] + 3, _mx[2] + 3,
                 (_mx[0] + 3) * (_mx[1] + 3) * (_mx[2] + 3))
     with torch.no_grad():
-        _g = torch.arange(min(a.n_pts, N_FULL), device=dev)
+        _g = torch.arange(N_FULL, device=dev)
         _x = take(TR[0][1]["x"][0], _g)
         _p, _f, _i = vox_feats(TR[0][1], _g, _x, torch.zeros_like(_x))
         n_feat = (_f.shape[-1] + N_MAT + n_bc + (7 * a.n_ctrl if a.control else 0)
@@ -1751,7 +1730,7 @@ with torch.no_grad():
         _t = int(torch.randint(1, _dd["x"].shape[0] - 2, (1,), generator=gstat,
                                device=dev))
         _gs = torch.randperm(N_FULL, generator=gstat,
-                             device=dev)[:min(a.n_pts, N_FULL)].sort().values
+                             device=dev).sort().values
         _x = take(_dd["x"][_t], _gs)
         _v = (_x - take(_dd["x"][_t - 1], _gs)) / FRAME_DT
         if a.arch == "attn":
@@ -1864,16 +1843,14 @@ def quick_val():
     obj = 0.0
     with torch.enable_grad():
         for _tag, d in _VAL:
-            gs = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
-                              device=dev)[:a.n_pts]
+            gs = torch.arange(N_FULL, device=dev)
             for _t0 in (3, 10, 20):
                 if _t0 + a.unroll + 1 >= d["x"].shape[0]:
                     continue
                 obj += float(window(d, _t0, a.unroll, gs)[0])
     obj /= max(len(_VAL) * 3, 1)
     for _tag, d in _VAL:
-        gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
-                            device=dev)[:a.n_pts]
+        gsel = torch.arange(N_FULL, device=dev)
         t0 = 3
         x = take(d["x"][t0], gsel)
         v = (x - take(d["x"][t0 - 1], gsel)) / FRAME_DT
@@ -1937,9 +1914,8 @@ if a.phys_probe:
         tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
         T = d["x"].shape[0]
         t0 = int(torch.randint(1, T - 2, (1,), generator=gen, device=dev))
-        gsel = torch.randperm(N_FULL, generator=gen,
-                              device=dev)[:a.n_pts].sort().values
-        mass = traj_mass(d)[gsel] * (float(N_FULL) / gsel.numel())
+        gsel = torch.arange(N_FULL, device=dev)
+        mass = traj_mass(d)[gsel]
         ext = d.get("_ext", EXT)
         cfg = d["cfg"]
         vol = mass / float(cfg["density"])
@@ -1971,7 +1947,7 @@ if a.pool:
                else [c for c in a.pool_combos.split(",") if c])
     _W = os.environ.get("AF_WORK", "/home/dkta/work")
     _sc = load_scenes(_W, os.path.join(_W, "wmats"), _combos,
-                      a.n_pts, dev, seed=a.seed)
+                      0, dev, seed=a.seed)
     if not _sc:
         raise SystemExit("풀에 넣을 씬이 없다")
     _R = 0.15
@@ -2024,10 +2000,8 @@ if a.oracle_roll:
     _tag, _d = TR[0]
     _t0 = a.eval_t0[0] if a.eval_t0 else 3
     _L = min(a.eval_len, _d["x"].shape[0] - _t0 - 1)
-    _gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
-                         device=dev)[:a.n_pts]
-    _gsel = with_ctrl(_gsel, _d, a.n_pts)      # 손잡이 입자를 반드시 포함
-    _mass = traj_mass(_d)[_gsel] * (float(N_FULL) / _gsel.numel())
+    _gsel = torch.arange(N_FULL, device=dev)
+    _mass = traj_mass(_d)[_gsel]
     _ext = _d.get("_ext", EXT)
     _cfg = _d["cfg"]
     _vol = _mass / float(_cfg["density"])
@@ -2464,17 +2438,10 @@ for it in pbar:
             t0 = 1 + int(torch.multinomial(w_.to(dev), 1, generator=gen))
         else:
             t0 = int(torch.randint(1, hi, (1,), generator=gen, device=dev))
-        gsel = torch.randperm(N_FULL, generator=gen,
-                              device=dev)[:a.n_pts].sort().values
-        gsel = with_ctrl(gsel, d, a.n_pts)     # 손잡이 입자를 반드시 포함
-        if a.out_var:
-            # 프레임별 변수가 같은 격자를 가리켜야 하므로 부분표본을 고정한다
-            gsel = with_ctrl(torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
-                                          device=dev)[:a.n_pts], d, a.n_pts)
+        # 부분표본을 쓰지 않는다 -- 교사와 **완전히 같은 입자 집합**으로 배운다.
+        gsel = torch.arange(N_FULL, device=dev)
         if os.environ.get("AF_FIXWIN"):
             t0 = 5
-            gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
-                                device=dev)[:a.n_pts]
         if a.pool:
             continue                       # 풀 모드는 아래에서 따로 처리한다
         if a.rl:
@@ -2691,13 +2658,7 @@ def emd(p_, q_, seed):
     return float(dd[r_, c_].mean())
 
 
-gsel = torch.arange(min(a.n_pts, N_FULL), device=dev)
-gsel = with_ctrl(gsel, TR[0][1], a.n_pts)
-if a.out_var:
-    # 프레임별 출력 변수는 학습 때의 격자를 가리킨다. 평가도 **같은 부분표본**을
-    # 써야 격자 모양·원점이 같고 변수를 그대로 쓸 수 있다 (안 맞추면 색인 초과).
-    gsel = torch.arange(0, N_FULL, max(1, N_FULL // a.n_pts),
-                        device=dev)[:a.n_pts]
+gsel = torch.arange(N_FULL, device=dev)     # 항상 전체 (부분표본 없음)
 rows = {}
 for tag, d in TR + held:
     T = d["x"].shape[0]
