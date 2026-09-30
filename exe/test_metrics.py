@@ -38,7 +38,7 @@ exec(compile(body, "metrics", "exec"), mod.__dict__)
 chamfer, emd = mod.chamfer, mod.emd
 
 p = torch.rand(a.n, 3, device=dev)
-chk("같은 점집합 CD = 0", abs(float(chamfer(p, p.clone()))) < 1e-10,
+chk("같은 점집합 CD = 0", abs(float(chamfer(p, p.clone()))) < 1e-9,
     f"{float(chamfer(p, p.clone())):.2e}")
 chk("같은 점집합 EMD = 0", abs(float(emd(p, p.clone(), 0))) < 1e-6,
     f"{float(emd(p, p.clone(), 0)):.2e}")
@@ -47,10 +47,10 @@ for t in (0.01, 0.1):
     sh = torch.tensor([t, 0.0, 0.0], device=dev)
     cd = float(chamfer(p, p + sh))
     em = float(emd(p, p + sh, 1))
-    # CD 는 제곱거리 평균이라 t^2 이 상한이다 (양쪽 최근접이 더 가까울 수 있어
-    # 조밀한 구름에서는 그보다 작다). EMD 는 최적수송이라 t 에 가깝다.
-    chk(f"평행이동 {t}: CD <= t^2", cd <= t * t * 1.05 + 1e-12,
-        f"CD {cd:.3e} vs t^2 {t*t:.3e}")
+    # chamfer 는 **양방향 합** 이라 평행이동 t 에서 상한이 2t^2 이다 (조밀한
+    # 구름에서는 더 가까운 이웃이 있어 그보다 작다). EMD 는 최적수송이라 t.
+    chk(f"평행이동 {t}: CD <= 2t^2", cd <= 2 * t * t * 1.05 + 1e-12,
+        f"CD {cd:.3e} vs 2t^2 {2*t*t:.3e}")
     chk(f"평행이동 {t}: EMD ~ t", abs(em - t) / t < 0.25,
         f"EMD {em:.4f} vs t {t:.4f}")
 

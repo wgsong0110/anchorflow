@@ -2340,7 +2340,10 @@ def chamfer(p_, q_, chunk=4096):
     def one(u, w_):
         s_, n_ = 0.0, u.shape[0]
         for i_ in range(0, n_, chunk):
-            dd = torch.cdist(u[i_:i_ + chunk], w_)
+            # 기본 cdist 는 |a|^2-2ab+|b|^2 행렬곱 꼴이라 가까운 점에서 자릿수가
+            # 날아간다 (같은 점집합에서도 5e-05 가 남는다). 정확한 경로를 쓴다.
+            dd = torch.cdist(u[i_:i_ + chunk], w_,
+                             compute_mode="donot_use_mm_for_euclid_dist")
             s_ += float((dd.min(1).values ** 2).sum())
         return s_ / n_
     return one(p_, q_) + one(q_, p_)
@@ -2351,7 +2354,9 @@ def emd(p_, q_, seed):
     from scipy.optimize import linear_sum_assignment
     g_ = torch.Generator().manual_seed(int(seed))
     i_ = torch.randperm(p_.shape[0], generator=g_)[:a.cd_pts].to(p_.device)
-    dd = torch.cdist(p_[i_], q_[i_]).double().cpu().numpy()
+    dd = torch.cdist(p_[i_], q_[i_],
+                     compute_mode="donot_use_mm_for_euclid_dist"
+                     ).double().cpu().numpy()
     r_, c_ = linear_sum_assignment(dd)
     return float(dd[r_, c_].mean())
 
