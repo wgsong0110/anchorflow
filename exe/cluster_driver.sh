@@ -42,11 +42,15 @@ teacher)
   echo "== 단계: i-PG 교사 생성 (하드 Dirichlet)"
   # 패치는 멱등이다. 표식으로 한 번만 돌린다.
   if ! have patch; then
-    python $R/exe/patch_ipg_handle.py --ipg $W/i-physgaussian < /dev/null \
+    # fix_pg_filling 은 필수다. 안 넣으면 densify_grids 의 ti.sym_eig 가 f32 에서
+    # inf 를 뱉어 r 이 정수로 넘치고 채우기가 끝나지 않는다 (GPU 100%, 로그 무음).
+    python $R/exe/fix_pg_filling.py --pg $W/i-physgaussian < /dev/null \
       > $LOG/patch.log 2>&1 \
+      && python $R/exe/patch_ipg_handle.py --ipg $W/i-physgaussian < /dev/null \
+      >> $LOG/patch.log 2>&1 \
       && python $R/exe/patch_ipg_fillcache.py --ipg $W/i-physgaussian < /dev/null \
       >> $LOG/patch.log 2>&1 \
-      && touch $DONE/patch.ok || { echo "  [실패] 패치"; tail -5 $LOG/patch.log; exit 1; }
+      && touch $DONE/patch.ok || { echo "  [실패] 패치"; tail -8 $LOG/patch.log; exit 1; }
     echo "  [완료] 패치"; grep -a "패치" $LOG/patch.log | tail -3
   else
     echo "  [건너뜀] 패치 (완료)"
