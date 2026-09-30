@@ -1019,6 +1019,23 @@ _CUR_T = [0]              # step_once 가 남기는 현재 프레임
 _CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1/K)
 _DP_HOOK = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
+_BC_DIAG = []              # (활성비, 보정 최대/ext, 바닥 아래 깊이 최대/ext)
+
+
+def bc_report():
+    """하드 구속이 실제로 걸렸나 한 줄. 진행바는 폭에 잘려 못 믿는다.
+
+    보정 최대가 0 에 가까워야 망이 경계조건을 스스로 내고 있다는 뜻이고,
+    바닥 아래 깊이가 0 이어야 사영이 실제로 막고 있다는 뜻이다.
+    """
+    if not _BC_DIAG:
+        return ""
+    n = len(_BC_DIAG)
+    ar = sum(q[0] for q in _BC_DIAG) / n
+    cm = max(q[1] for q in _BC_DIAG)
+    pd = max(q[2] for q in _BC_DIAG)
+    return (f"구속 활성 {100 * ar:.2f}%  보정최대 {cm:.2e}  "
+            f"바닥아래 {pd:.2e} (지금 {_BC_DIAG[-1][2]:.2e})")
 _F_MSG = []
 _OV = {}                  # 프레임 -> [출력 변수들]
 _OV_OPT = {}              # 프레임 -> 그 변수의 옵티마이저
@@ -1495,6 +1512,24 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         if _BC_LAST[0] is not None:
             _corr, _actf = _BC_LAST[0]
             _bc = (_corr * _corr).sum(-1).mean() / (ext * ext)
+            if i == 0:
+                with torch.no_grad():
+                    _pen = 0.0
+                    for _b in (cfg.get("boundary_conditions") or []):
+                        if _b.get("type") != "surface_collider":
+                            continue
+                        _pt = torch.as_tensor(_b["point"], device=dev,
+                                              dtype=x2.dtype)
+                        _nr = torch.as_tensor(_b["normal"], device=dev,
+                                              dtype=x2.dtype)
+                        _nr = _nr / _nr.norm().clamp_min(1e-12)
+                        _sd = ((x2 - _pt) * _nr).sum(-1)
+                        _pen = max(_pen, float((-_sd).clamp_min(0).max()) / ext)
+                    _BC_DIAG.append((
+                        float(_actf.reshape(-1).gt(0.5).float().mean()),
+                        float(_corr.norm(dim=-1).max()) / ext, _pen))
+                    if len(_BC_DIAG) > 200:
+                        del _BC_DIAG[:-200]
             # 하드로 박힌 입자는 증분 포텐셜에서 뺀다 -- 거기 잔차는 반력이
             # 실어 나르는 것이라 학생이 정할 양이 아니다 (손잡이와 같은 이유).
             _am = _actf.reshape(-1) > 0.5
@@ -2590,6 +2625,9 @@ for it in pbar:
     if a.det_every and (it + 1) % a.det_every == 0 and _DET_BAD:
         # 진행바는 폭에 잘려 못 믿는다 -- det 통계를 로그로 남긴다
         print(f"  [det {it+1}] {det_report()}", flush=True)
+        _br = bc_report()
+        if _br:
+            print(f"  [구속 {it+1}] {_br}", flush=True)
         if TBW is not None:
             TBW.add_scalar("det/무효비율", sum(_DET_BAD) / len(_DET_BAD), it)
             TBW.add_scalar("det/최소", min(_DET_MIN), it)
