@@ -510,6 +510,52 @@ def bc_energy(x, du, mass, cfg, h, grid_lim, n_grid, stiff=None):
     return e
 
 
+def bc_project(x, du, cfg, h, grid_lim, n_grid):
+    """바닥·경계를 **하드로 사영**한다 -> (du_사영, 활성마스크).
+
+    PG/i-PG 는 격자 속도를 사영해 막는다(하드). 벌점(`bc_energy`)은 관성항과
+    겨루므로 새고(실측 관통 0.97%), 강성을 올려도 완전히 막히지는 않는다. 그래서
+    손잡이와 같은 틀로 하드 구속으로 바꾼다.
+
+    바닥은 손잡이와 달리 **한쪽 부등식** 구속이라 활성 집합이 상태에 따라 매 스텝
+    달라진다 -- 관통하는 입자만 사영하고, sticky 접선 고정은 닿은 입자만 건다.
+    그래서 반환하는 마스크는 그 스텝에서만 유효하다.
+
+      비관통:  sd(x+du) < 0 인 입자를 면 위로 올린다 (법선 성분만 제거)
+      sticky:  닿은 입자는 접선 변위까지 0 (속도를 0 으로 박는 것과 같다)
+    """
+    x2 = x + du
+    dx = float(grid_lim) / float(n_grid)
+    act = torch.zeros(x.shape[0], dtype=torch.bool, device=x.device)
+    du_p = du
+    for bc in (cfg.get("boundary_conditions") or []):
+        t = bc.get("type")
+        if t == "surface_collider":
+            pt = torch.as_tensor(bc["point"], device=x.device, dtype=x.dtype)
+            nr = torch.as_tensor(bc["normal"], device=x.device, dtype=x.dtype)
+            nr = nr / nr.norm().clamp_min(1e-12)
+            sd = ((x + du_p - pt) * nr).sum(-1)            # 부호거리
+            pen = sd < 0.0
+            # 법선 성분만 걷어내 면 위로 올린다
+            du_p = du_p - torch.where(pen.unsqueeze(-1),
+                                      sd.unsqueeze(-1) * nr,
+                                      torch.zeros_like(du_p))
+            act = act | pen
+            if str(bc.get("surface", "sticky")) == "sticky":
+                touch = ((x - pt) * nr).sum(-1) < dx
+                dn = (du_p * nr).sum(-1, keepdim=True) * nr
+                du_p = torch.where(touch.unsqueeze(-1), dn, du_p)
+                act = act | touch
+        elif t == "bounding_box":
+            b = float(cfg.get("bound", 3)) * dx
+            lo, hi = b, float(grid_lim) - b
+            tgt = (x + du_p).clamp(min=lo, max=hi)
+            out = ((x + du_p) < lo) | ((x + du_p) > hi)
+            du_p = torch.where(out, tgt - x, du_p)
+            act = act | out.any(-1)
+    return du_p, act
+
+
 def jac_neighbors(x0, k=16, chunk=2048):
     """입자 이웃을 한 번 잡아 둔다 (변형기울기를 격자 왕복 없이 뽑기 위해).
 

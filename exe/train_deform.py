@@ -263,6 +263,18 @@ ap.add_argument("--ctrl_acc", type=float, default=2.4,
                      "빠르게 가까운 목표는 느리게 끌려 속도 영역이 뒤섞인다")
 ap.add_argument("--ctrl_vmax", type=float, default=0.6,
                 help="손잡이 최고속도")
+ap.add_argument("--bc_soft", action="store_true",
+                help="바닥·경계를 옛 벌점(bc_energy) 으로 되돌린다. 기본은 하드 "
+                     "사영이다 -- 벌점은 관성항과 겨루어 새고(실측 관통 0.97%) "
+                     "PG/i-PG 가 격자 속도를 박는 것과 조건이 다르다")
+ap.add_argument("--ctrl_soft", action="store_true",
+                help="손잡이를 옛 감쇠 가중 (1-q^2)^2 로 되돌린다. 기본은 하드 "
+                     "Dirichlet(반경 안 1, 밖 0) 이고 i-PG 교사와 같은 조건이다")
+ap.add_argument("--lambda_bc", type=float, default=1.0,
+                help="구속 일치 항 가중치. 구속 입자(손잡이 + 바닥·경계 활성)에서 "
+                     "**망 출력 변위**가 하드 사영값과 같아지게 한다. 이게 없으면 "
+                     "망은 그 자리에서 무엇을 내든 덮어쓰기가 대신 처리해 주므로 "
+                     "변형장이 경계조건과 어긋난 채 남고 그 불일치가 주변으로 샌다")
 ap.add_argument("--out_var", action="store_true",
                 help="**학습 루프를 그대로 쓰고** 망 대신 프레임별 출력 변수를 "
                      "최적화한다. 임의 프레임 샘플링·배치·손실 모두 학습과 같고, "
@@ -478,6 +490,10 @@ def grid_pin(x):
     finally:
         _GRID[0] = _o
 
+
+if not a.bc_soft:
+    # 하드 사영을 쓰면 같은 경계를 벌점으로 또 세지 않는다.
+    os.environ["AF_NO_BC"] = "1"
 
 _DT_SUBS = [float(q) for q in a.dt_sub_set.split(",") if q.strip()]
 EVAL_SUB = int(a.eval_dt_sub or a.dt_sub)
@@ -829,12 +845,20 @@ def ctrl_anchor(d, gsel):
 
 
 def ctrl_weights(d, t, x, loc_t):
-    """학생 자신의 상태에서 손잡이 감쇠 가중치 [N,K]. 교사와 같은 (1-q^2)^2."""
+    """학생 상태에서 손잡이 가중치 [N,K].
+
+    기본은 **하드 Dirichlet** 이다: 반경 안이면 1, 밖이면 0. i-PG 가 격자
+    속도를 명령값으로 박는 것과 같은 조건이고, 교사도 그렇게 다시 만들었다.
+    `--ctrl_soft` 를 켜면 옛 감쇠 가중 (1-q^2)^2 로 돌아간다 (옛 교사 궤적으로
+    돌린 결과를 재현할 때만 쓴다).
+    """
     R = d["ctrl_R"].to(x.device, x.dtype)
     Rt = R[min(t, R.numel() - 1)].clamp(min=1e-6)
     c = x[loc_t]                                          # [K,3] 학생 상태
     q = ((x.unsqueeze(1) - c.unsqueeze(0)).norm(dim=-1) / Rt).clamp(0, 1)
-    return (1.0 - q * q) ** 2, c
+    if a.ctrl_soft:
+        return (1.0 - q * q) ** 2, c
+    return (q < 1.0).to(x.dtype), c
 
 
 def ctrl_local(d, gsel):
@@ -994,6 +1018,7 @@ _PROF = {}
 _CUR_T = [0]              # step_once 가 남기는 현재 프레임
 _CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1/K)
 _DP_HOOK = [None]
+_BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
 _F_MSG = []
 _OV = {}                  # 프레임 -> [출력 변수들]
 _OV_OPT = {}              # 프레임 -> 그 변수의 옵티마이저
@@ -1113,9 +1138,26 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                                   dtype=x.dtype).index_copy(0, uniq, thn)
                 q0 = SX.tet_remap(x, lo, hn, nn, thf, a.rqs_bins)[0]
             q = q0 + SX.g2p(q0, lo, hn, nn, dpf)
+            _qraw = q                       # 덮어쓰기 **전** 의 원 출력
+            _act = torch.zeros_like(q[:, :1])
             if a.control:
                 q = apply_control(d, t, gsel, q, x, dt=tau)
-            return q, ((dpf,) if thf is None else (dpf, thf))
+                _w, _ = ctrl_weights(d, min(t, d["ctrl_id"].shape[0] - 1), x,
+                                     ctrl_anchor(d, gsel)[
+                                         min(t, d["ctrl_id"].shape[0] - 1)])
+                _act = _act + (_w.max(1).values > 0.5).to(q.dtype).unsqueeze(-1)
+            if not a.bc_soft:
+                _duP, _fa = phys_resid.bc_project(
+                    x, q - x, d["cfg"], tau,
+                    float(d["cfg"].get("grid_lim", 2.0)),
+                    int(d["cfg"]["n_grid"]))
+                q = x + _duP
+                _act = _act + _fa.to(q.dtype).unsqueeze(-1)
+            # corr 은 구속이 원 출력을 얼마나 고쳤나다. 이걸 줄이면 망이 경계조건을
+            # **스스로** 내게 된다 (자유 입자는 정확히 0 이라 기여가 없다).
+            _corr = q - _qraw
+            _ex = ((dpf,) if thf is None else (dpf, thf)) + (_corr, _act)
+            return q, _ex
 
         _use_dtS = a.v_from_dt and _DP_HOOK[0] is None and a.dt_cond
         _tau0 = torch.as_tensor(float(_DT[0]), device=dev, dtype=x.dtype)
@@ -1140,6 +1182,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             _u, Jf = SX.g2p_jac(x, lo, hn, nn, dpf)
             Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
         _DET_LAST[0] = torch.linalg.det(Jf)
+        # 구속 보정량·활성집합을 창 쪽으로 넘긴다 (L_bc 와 free 마스크에 쓴다)
+        _BC_LAST[0] = (_outs[-2], _outs[-1])
         return (x2, p, v_next, None, dpf, None, dmg, None, fe, Jf)
 def traj_F(d):
     """탄성 변형구배 [T,N,3,3]. 궤적에 든 것은 전부 항등이라 위치에서 되살린다."""
@@ -1446,6 +1490,15 @@ def phys_window(d, t0, K, gsel, sigma, gen):
         x2, p, v, J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
             d, _tf, gsel, p, x, v, need_J=False)
         fm = free_mask(d, x2.shape[0], dev, gsel, x, _tf) if a.control else None
+        # 구속 일치 항: 망 출력이 하드 사영값과 어긋난 만큼. 자유 입자는 0 이다.
+        _bc = torch.zeros((), device=dev)
+        if _BC_LAST[0] is not None:
+            _corr, _actf = _BC_LAST[0]
+            _bc = (_corr * _corr).sum(-1).mean() / (ext * ext)
+            # 하드로 박힌 입자는 증분 포텐셜에서 뺀다 -- 거기 잔차는 반력이
+            # 실어 나르는 것이라 학생이 정할 양이 아니다 (손잡이와 같은 이유).
+            _am = _actf.reshape(-1) > 0.5
+            fm = (~_am) if fm is None else (fm & ~_am)
         # 물리손실은 i-PG 와 같은 자리에서 잰다: 학생이 옮긴 가우시안 변위를
         # MPM 격자로 P2G 해 격자 증분 Δu_I 를 역산하고, 관성·중력은 격자에서,
         # 탄성은 격자 속도기울기로 민 F 로 잰다.
@@ -1454,7 +1507,7 @@ def phys_window(d, t0, K, gsel, sigma, gen):
             x, x2 - x, v_old, F, mass, vol, cfg, h,
             int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0)),
             g=g, norm=norm, free=fm, jac=_Jd, elastic_mask=_emask)
-        e_tot = e_tot + E + _dpen
+        e_tot = e_tot + E + _dpen + a.lambda_bc * _bc
         if i == 0:
             with torch.no_grad():
                 # 잔차 대용: 자유낙하 예측에서 얼마나 벗어났나. 구속 입자는 따로
