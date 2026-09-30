@@ -225,10 +225,12 @@ ap.add_argument("--phys_noise", type=float, default=0.0,
 ap.add_argument("--resume_fresh", action="store_true",
                 help="가중치만 이어받고 스텝·옵티마이저·난수는 새로 시작한다. "
                      "다른 단계로 넘어갈 때 쓴다 (예: 증류 -> RL)")
-ap.add_argument("--pool", action="store_true",
-                help="교사 궤적 없이 **상태 풀**로 학습한다. 씬의 정지 상태에서 "
-                     "출발해 손잡이 계획을 직접 뽑고, 한 스텝씩 굴린 상태를 풀에 "
-                     "담아 둔다. 누적 물리잔차가 문턱을 넘은 상태는 버린다")
+ap.add_argument("--no_pool", dest="pool", action="store_false",
+                help="**상태 풀이 기본이고 유일한 학습 경로다.** 정지 상태에서 "
+                     "출발해 손잡이 계획을 직접 뽑고, 모델이 상태를 한 스텝씩 "
+                     "갱신하며 그 상태를 풀에 담는다. 교사 궤적은 학습에 전혀 "
+                     "쓰지 않는다 (평가·검증에서만 기준으로 쓴다). 이 플래그를 "
+                     "주면 학습 경로가 없어 즉시 종료한다")
 ap.add_argument("--pool_size", type=int, default=128,
                 help="풀 크기. 크면 한 상태가 다시 뽑히기까지 오래 걸려 낡은 "
                      "정책이 만든 상태만 쌓인다 (1024 면 약 85 반복에 한 번). "
@@ -1367,300 +1369,6 @@ def rl_episode(d, t0, E, gsel, gen):
     return la / n_st, lc / n_st, n_st, cost_sum / n_st
 
 
-def phys_window(d, t0, K, gsel, sigma, gen):
-    """Phase 2 의 한 표본. 교사 프레임에서 상태를 뽑아 **노이즈를 섞고** K 스텝
-    펼치며 매 스텝의 증분 포텐셜을 더한다.
-
-    교사 다음 프레임이 필요 없다 -- 목적함수가 상태만으로 정의되므로 교란된
-    상태에서도 정답(그 상태에서 출발한 backward Euler 해)이 있다. 지도학습이었다면
-    교란할 때마다 교사를 다시 돌려야 했다.
-    """
-    mass_full = traj_mass(d)
-    mass = mass_full[gsel]
-    ext = d.get("_ext", EXT)
-    cfg = d["cfg"]
-    vol = mass / float(cfg["density"])
-    g = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
-    # 이번 창의 스텝 크기. --dt_sub_set 이 있으면 창마다 달라진다 -- 그래야
-    # 망이 dt 를 **조건**으로 읽게 된다 (늘 같은 값이면 상수와 구별이 안 된다).
-    sub = sample_sub(gen)
-    h = FRAME_DT / sub
-    norm = float(mass.sum()) * (ext ** 2) / (h * h)
-
-    x = take(d["x"][t0], gsel)
-    # 초기 속도는 **물리량**이라 프레임 간격으로 잰다. 여기서 h 를 쓰면 dt 를
-    # 줄일 때마다 물체가 그만큼 빨라져 버린다.
-    v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
-    F = take(traj_F(d)[t0], gsel).float()
-    if sigma > 0 and a.phys_noise_grid and a.arch == "sgnn":
-        # 출력 공간 교란(복합체): 노드 변위를 무작위로 뽑아 barycentric 으로
-        _lo, _lat, _nn = SX.grid_for_nodes(x, a.n_nodes)
-        _Mn = int(_nn[0] * _nn[1] * _nn[2])
-        _dpn = torch.randn(_Mn, 3, generator=gen, device=dev,
-                           dtype=x.dtype) * (sigma * ext)
-
-        def _warp_n(q):
-            return q + SX.g2p(q, _lo, _lat, _nn, _dpn)
-        u = _warp_n(x) - x
-        gu = SX.g2p_jac(x, _lo, _lat, _nn, _dpn)[1]
-        _fm0 = free_mask(d, x.shape[0], dev, gsel, x, t0) if a.control else None
-        if _fm0 is not None:
-            u = u * _fm0.unsqueeze(-1).to(u.dtype)
-            gu = gu * _fm0.reshape(-1, 1, 1).to(gu.dtype)
-        x = x + u
-        F = (torch.eye(3, device=dev) + gu) @ F
-        v = v + float(torch.rand(1, generator=gen, device=dev)) * u / FRAME_DT
-    elif sigma > 0:
-        u, gu = phys_resid.smooth_noise(x, sigma * ext, ext, gen)
-        # 손잡이 입자는 흔들지 않는다. 그 위치는 교사가 박아 둔 Dirichlet 자료라,
-        # 흔들어 두면 다음 스텝에 교사 위치로 덮어써지면서 "흔들린 곳 -> 교사 위치"
-        # 라는 인위적인 큰 변위가 경계자료로 들어간다.
-        _fm0 = free_mask(d, x.shape[0], dev, gsel, x, t0) if a.control else None
-        if _fm0 is not None:
-            u = u * _fm0.unsqueeze(-1).to(u.dtype)
-            gu = gu * _fm0.reshape(-1, 1, 1).to(gu.dtype)
-        x = x + u
-        F = (torch.eye(3, device=dev) + gu) @ F
-        # 변위 교란을 한 프레임에 걸친 것으로 보면 속도도 그만큼 달라져 있다
-        v = v + float(torch.rand(1, generator=gen, device=dev)) * u / FRAME_DT
-    p = take(d["x"][t0], AIDX)
-    _ng, _gl = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
-    if a.warm > 0:
-        # 예열: 기울기 없이 굴려 학생이 스스로 만든 상태로 옮긴다. F 는 목적함수와
-        # **같은 경로**로 민다 -- 격자 증분에서 ∇Δu 를 뽑아 F <- Pi((I+∇Δu)F).
-        with torch.no_grad(), dt_scope(h):
-            _I3 = torch.eye(3, device=dev)
-            for _w in range(a.warm):
-                x2w, p, vw, _, _, _, _, _, _, _Jw = step_once(
-                    d, t0 + int(_w // sub), gsel, p, x, v, need_J=False)
-                if (_OBJ_PTS or a.f_from_jac) and _Jw is not None:
-                    _Ftr = _Jw.to(F.dtype) @ F
-                else:
-                    _m, _duI, _vI, _info, _fr = phys_resid.p2g_increment(
-                        x, x2w - x, v, mass, _ng, _gl)
-                    _gu = phys_resid.g2p_grad(x, _duI, _info, _ng)
-                    _Ftr = (_I3 + _gu) @ F
-                F = phys_resid.plastic_step(
-                    _Ftr, phys_resid.psi_of(_Ftr, cfg, h)[1])
-                x, v = x2w, vw
-        x, v, F = x.detach(), v.detach(), F.detach()
-        t0 = t0 + int(a.warm // sub)
-    e_tot, r_free, r_ring, parts = 0.0, 0.0, 0.0, None
-    _dt_tok = dt_scope(h); _dt_tok.__enter__()
-    # K>1 에서만 격자를 고정한다 -- K=1 은 어차피 한 번만 잡으므로 무영향이고,
-    # 이렇게 두면 기존 K=1 결과가 비트 단위로 그대로 재현된다.
-    _g_tok = grid_pin(x) if (K > 1 and a.arch == "sgnn") else None
-    if _g_tok is not None:
-        _g_tok.__enter__()
-    for i in range(K):
-        # 서브스텝을 밟을 때도 손잡이 명령은 **프레임** 단위라 색인을 나눠 센다
-        _tf = t0 + int(i // sub)
-        xtil = x + h * v
-        v_old = v                       # 관성항은 이전 속도로 잰다
-        x2, p, v, J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
-            d, _tf, gsel, p, x, v, need_J=False)
-        fm = free_mask(d, x2.shape[0], dev, gsel, x, _tf) if a.control else None
-        # 구속 일치 항: 망 출력이 하드 사영값과 어긋난 만큼. 자유 입자는 0 이다.
-        _bc = torch.zeros((), device=dev)
-        if _BC_LAST[0] is not None:
-            _corr, _actf = _BC_LAST[0]
-            _bc = (_corr * _corr).sum(-1).mean() / (ext * ext)
-            if i == 0:
-                with torch.no_grad():
-                    _pen = 0.0
-                    for _b in (cfg.get("boundary_conditions") or []):
-                        if _b.get("type") != "surface_collider":
-                            continue
-                        _pt = torch.as_tensor(_b["point"], device=dev,
-                                              dtype=x2.dtype)
-                        _nr = torch.as_tensor(_b["normal"], device=dev,
-                                              dtype=x2.dtype)
-                        _nr = _nr / _nr.norm().clamp_min(1e-12)
-                        _sd = ((x2 - _pt) * _nr).sum(-1)
-                        _pen = max(_pen, float((-_sd).clamp_min(0).max()) / ext)
-                    _BC_DIAG.append((
-                        float(_actf.reshape(-1).gt(0.5).float().mean()),
-                        float(_corr.norm(dim=-1).max()) / ext, _pen))
-                    if len(_BC_DIAG) > 200:
-                        del _BC_DIAG[:-200]
-            # 하드로 박힌 입자는 증분 포텐셜에서 뺀다 -- 거기 잔차는 반력이
-            # 실어 나르는 것이라 학생이 정할 양이 아니다 (손잡이와 같은 이유).
-            _am = _actf.reshape(-1) > 0.5
-            fm = (~_am) if fm is None else (fm & ~_am)
-        # 물리손실은 i-PG 와 같은 자리에서 잰다: 학생이 옮긴 가우시안 변위를
-        # MPM 격자로 P2G 해 격자 증분 Δu_I 를 역산하고, 관성·중력은 격자에서,
-        # 탄성은 격자 속도기울기로 민 F 로 잰다.
-        _emask, _dpen = det_take()
-        E, dlog, F_tr, parts = ip_of(
-            x, x2 - x, v_old, F, mass, vol, cfg, h,
-            int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0)),
-            g=g, norm=norm, free=fm, jac=_Jd, elastic_mask=_emask)
-        e_tot = e_tot + E + _dpen + a.lambda_bc * _bc
-        if i == 0:
-            with torch.no_grad():
-                # 잔차 대용: 자유낙하 예측에서 얼마나 벗어났나. 구속 입자는 따로
-                # 본다 -- 거기는 반력이 실어 나르는 곳이라 값이 큰 게 정상이다.
-                rr = (x2 - xtil).norm(dim=-1) / ext
-                if fm is None:
-                    r_free, r_ring = float(rr.mean()), 0.0
-                else:
-                    r_free = float(rr[fm].mean()) if int(fm.sum()) else 0.0
-                    nfm = ~fm
-                    r_ring = float(rr[nfm].mean()) if int(nfm.sum()) else 0.0
-        F = phys_resid.plastic_step(F_tr, dlog).detach() if K > 1 else F_tr
-        x = x2
-    _dt_tok.__exit__(None, None, None)
-    if _g_tok is not None:
-        _g_tok.__exit__(None, None, None)
-    return e_tot / K, r_free, r_ring, parts
-
-
-def window(d, t0, L, gsel):
-    """궤적 d 의 t0 에서 L 프레임. 앵커는 그 프레임의 GT 가우시안으로 초기화.
-
-    같은 창에서 **아무것도 안 했을 때**의 오차도 함께 낸다. 이 궤적은 충돌 직후와
-    안정된 뒤의 프레임당 변위가 수십 배 차이라, 손실의 절대값만 보면 어려운 창을
-    뽑았는지 모델이 나빠졌는지 구별할 수 없다. 정지 기준선과의 비를 봐야 한다
-    (기준선은 모델과 무관한 양이므로 자체 변위 정규화가 아니다).
-    """
-    x = take(d["x"][t0], gsel)
-    v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
-    if a.noise > 0:
-        # 시작 상태만 흔들고 **정답은 그대로 둔다**. 그러면 모델이 "벗어난 곳에서
-        # 제자리로 돌아오는" 보정을 배운다 -- 롤아웃에서 실제로 필요한 능력이고,
-        # 교사 궤적을 다시 돌릴 필요가 없다. 앵커도 같은 장으로 옮겨야 배치와
-        # 앵커가 어긋나지 않는다.
-        _sg = a.noise * (10.0 ** (-2.0 * (1.0 - float(
-            torch.rand(1, generator=gen, device=dev)))))
-        _u, _gu = phys_resid.smooth_noise(x, _sg * EXT, EXT, gen)
-        x = x + _u
-        v = v + float(torch.rand(1, generator=gen, device=dev)) * _u / FRAME_DT
-    # 앵커는 그 프레임의 GT 가우시안이다. --refps 면 현재 부분표본에서 매 스텝
-    # 다시 뽑으므로 시작도 부분표본 안에서 잡는다.
-    ai = fps(x, a.n_anchors, a.seed) if a.refps else None
-    p = x[ai] if a.refps else take(d["x"][t0], AIDX)
-    loss_x = loss_J = loss_a = loss_d = loss_det = 0.0
-    n_used = 0
-    still = a_rel = d_rel = 0.0
-    x_still = x.clone()
-    x0w, p0w = x.clone(), p.clone()          # 손상의 기준 배치
-    dmg, idx_prev = None, None
-    fe = (take(traj_F(d)[t0], gsel).float() if a.fe_state else None)
-    # 증류는 **교사 프레임에 맞춰** 비교하므로 배수는 정수여야 한다. 한 프레임을
-    # _SB 번에 나눠 밟고 마지막 서브스텝의 상태를 그 프레임의 예측으로 쓴다.
-    _SB = max(int(round(sample_sub(gen))), 1)
-    _dtw = dt_scope(FRAME_DT / _SB); _dtw.__enter__()
-    if a.warm > 0:
-        # 예열: 기울기 없이 굴려 학생이 스스로 만든 상태로 옮겨 간다. 정답은
-        # 교사의 같은 프레임이므로 t0 를 함께 민다. 상태만 나르고 그래프는 버린다.
-        with torch.no_grad():
-            for _w in range(a.warm * _SB):
-                x, p, v, _, _, _ai_w, dmg, idx_prev, fe, _ = step_once(
-                    d, t0 + int(_w // _SB), gsel, p, x, v, need_J=False,
-                    dmg=dmg, idx_prev=idx_prev, x0=x0w, p0=p0w, fe=fe)
-                if _ai_w is not None:
-                    ai = _ai_w
-        x, v = x.detach(), v.detach()
-        if fe is not None:
-            fe = fe.detach()
-        t0 = t0 + a.warm
-        x_still = x.clone()
-    for i in range(L):
-        ai_now = ai
-        for _sb in range(_SB - 1):        # 프레임 안쪽 서브스텝 (정답 없음)
-            x, p, v, _, _, ai, dmg, idx_prev, fe, _ = step_once(
-                d, t0 + i, gsel, p, x, v, need_J=False,
-                dmg=dmg, idx_prev=idx_prev, x0=x0w, p0=p0w, fe=fe)
-        x2, p, v, J, dp, ai, dmg, idx_prev, fe, Jdet = step_once(
-            d, t0 + i, gsel, p, x, v, need_J=a.lambda_J > 0,
-            dmg=dmg, idx_prev=idx_prev, x0=x0w, p0=p0w, fe=fe)
-        if a.damage:
-            # 정답: 그 가우시안이 자기 앵커들에 대해 GT 에서 실제로 늘어난 배율.
-            # 앵커도 가우시안이라 양끝의 GT 위치를 그대로 집을 수 있다.
-            gx = take(d["x"][t0 + i + 1], gsel)
-            gp = (gx[ai_now] if a.refps else take(d["x"][t0 + i + 1], AIDX))
-            refw = (x0w.unsqueeze(1) - p0w[idx_prev]).norm(dim=-1)
-            sg = (((gx.unsqueeze(1) - gp[idx_prev]).norm(dim=-1)
-                   / refw.clamp_min(1e-9) - 1.0).clamp_min(0.0)).mean(1)
-            tgt = (sg / max(a.dmg_thresh - 1.0, 1e-6)).clamp(0.0, 1.0)
-            ld = ((dmg - tgt) ** 2).mean()
-            loss_d = loss_d + ld
-            d_rel = d_rel + float(dmg.mean())
-        # 앵커의 정답 변위: 앵커가 가우시안이므로 그 가우시안의 GT 변위 그대로다
-        if a.voxel:
-            # 복셀 앵커는 특정 가우시안이 아니라 그 칸의 질량중심이라, 정답 변위도
-            # 그 칸 구성원들의 평균 변위로 잡는다.
-            dp_gt = None
-        elif a.arch == "sgnn" or a.arch.startswith(("conv", "unet")):
-            # 복합체 노드(또는 격자점) 변위는 특정 가우시안에 대응하지 않는다
-            # -- 앵커 손실 없음
-            dp_gt = None
-        elif a.refps:
-            gt_now = take(d["x"][t0 + i + 1], gsel)
-            dp_gt = gt_now[ai_now] - x[ai_now]
-        else:
-            dp_gt = (take(d["x"][t0 + i + 1], AIDX)
-                     - take(d["x"][t0 + i], AIDX))
-        la = (torch.zeros((), device=dev) if dp_gt is None
-              else ((dp - dp_gt) ** 2).sum(-1).mean() / (EXT ** 2))
-        loss_a = loss_a + la
-        a_rel = a_rel + (0.0 if dp_gt is None else float(la) ** 0.5 / max(
-            float((dp_gt ** 2).sum(-1).mean()) ** 0.5 / EXT, 1e-20))
-        # --loss_last 면 중간 프레임의 정답은 아예 읽지 않는다
-        gt = (take(d["x"][t0 + i + 1], gsel)
-              if ((not a.loss_last) or i == L - 1) else None)
-        if gt is not None and os.environ.get("AF_DIAG2"):
-            _u = gt - x                              # 정답 변위
-            _pd = x2 - x                             # 망이 낸 변위
-            _c = float((_pd * _u).sum() / (_pd.norm() * _u.norm()).clamp(min=1e-20))
-            _cv = float((v * FRAME_DT * _u).sum()
-                        / ((v * FRAME_DT).norm() * _u.norm()).clamp(min=1e-20))
-            print(f"  [출력] |dp|/|u| {float(_pd.norm()/_u.norm().clamp(min=1e-20)):.4f}  "
-                  f"cos(dp,u) {_c:+.4f}  cos(v*dt,u) {_cv:+.4f}  "
-                  f"|u| {float(_u.norm()):.4e}", flush=True)
-        fm = free_mask(d, x2.shape[0], x2.device, gsel, x, t0 + i) if a.control else None
-        _use = (not a.loss_last) or (i == L - 1)
-        if _use and fm is not None:  # 강제된 입자는 오차 0 이라 평균을 희석시킨다
-            loss_x = loss_x + ((x2[fm] - gt[fm]) ** 2).sum(-1).mean() / (EXT ** 2)
-            still = still + float(((x_still[fm] - gt[fm]) ** 2).sum(-1).mean()) / (EXT ** 2)
-            n_used += 1
-        elif _use:
-            loss_x = loss_x + ((x2 - gt) ** 2).sum(-1).mean() / (EXT ** 2)
-            still = still + float(((x_still - gt) ** 2).sum(-1).mean()) / (EXT ** 2)
-            n_used += 1
-        if a.det_reg > 0 and Jdet is not None:
-            # 뒤집힌 요소(det<=0)는 물리적으로 불가능하고, 롤아웃이 터지는 자리는
-            # 대개 여기다. 여유 margin 을 두어 0 에 닿기 전에 밀어낸다.
-            _det = torch.linalg.det(Jdet.float())
-            _pen = torch.relu(a.det_margin - _det) ** 2
-            loss_det = loss_det + (_pen[fm].mean() if fm is not None
-                                   else _pen.mean())
-        if a.shape_loss != "none" and a.lambda_J > 0:
-            # 복원한 F 는 디스크·메모리를 아끼려 half 로 들고 있다
-            F0 = take(traj_F(d)[t0 + i], gsel).float()
-            F1 = take(traj_F(d)[t0 + i + 1], gsel).float()
-            Jgt = F1 @ torch.linalg.inv(F0 + 1e-4 * torch.eye(3, device=dev))
-            if a.shape_loss == "frob":
-                _d = ((J - Jgt) ** 2).sum((-1, -2))
-                loss_J = loss_J + (_d[fm].mean() if fm is not None else _d.mean())
-            else:
-                # 현재 프레임 가우시안의 인수 L_t = sigma0 * F_t. 예측/정답 공분산은
-                # 각각 (J L_t)(J L_t)^T, (Jgt L_t)(Jgt L_t)^T 이므로 인수만 넘기면 된다.
-                Lt = SIG0 * F0
-                _b = bures_w2_sq(x2, gt, J @ Lt, Jgt @ Lt)
-                loss_J = loss_J + ((_b[fm].mean() if fm is not None else _b.mean())
-                                   / (EXT ** 2))
-        x = x2
-    _dtw.__exit__(None, None, None)
-    _nu = max(n_used, 1)
-    return (loss_x / _nu,
-            (loss_J / L if a.lambda_J > 0 else torch.zeros((), device=dev)),
-            still / _nu, loss_a / L, a_rel / L,
-            (loss_d / L if a.damage else torch.zeros((), device=dev)),
-            d_rel / L,
-            (loss_det / L if a.det_reg > 0 else torch.zeros((), device=dev)))
-
-
 if a.small_out:
     from anchorflow import conv_stepper as _CS
     _CS._ZERO_OUT = False
@@ -1837,15 +1545,8 @@ def quick_val():
     """
     net.eval()
     tot = ref = 0.0
+    # 보조 지표였던 지도 손실은 지웠다 -- 학습이 교사를 안 쓰므로 그 창도 없다.
     obj = 0.0
-    with torch.enable_grad():
-        for _tag, d in _VAL:
-            gs = torch.arange(N_FULL, device=dev)
-            for _t0 in (3, 10, 20):
-                if _t0 + a.unroll + 1 >= d["x"].shape[0]:
-                    continue
-                obj += float(window(d, _t0, a.unroll, gs)[0])
-    obj /= max(len(_VAL) * 3, 1)
     for _tag, d in _VAL:
         gsel = torch.arange(N_FULL, device=dev)
         t0 = 3
@@ -2248,6 +1949,11 @@ if a.tb:
                         purge_step=step0 if step0 else None)
     print(f"[TB] {os.path.join(a.tb, a.tag)}", flush=True)
 
+if not a.pool and a.iters > 0:
+    raise SystemExit("--no_pool 은 학습 경로가 없다. 교사 궤적 학습 경로는 "
+                     "삭제됐다 (학습은 정지 상태에서 출발해 모델이 상태를 "
+                     "갱신하는 상태 풀만 쓴다)")
+
 pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
 for it in pbar:
     L = a.unroll            # 학습 중 펼치기 길이는 바꾸지 않는다
@@ -2423,78 +2129,6 @@ for it in pbar:
         if (it + 1) % a.save_every == 0 or it == a.iters - 1:
             save_ck("last", it + 1)
         continue
-    for _ in range(a.batch):
-        tag, d = TR[int(torch.randint(len(TR), (1,), generator=gen, device=dev))]
-        if os.environ.get("AF_FIXWIN"):           # 한 창만 반복 -- 과적합 진단용
-            tag, d = TR[0]
-        T = d["x"].shape[0] - a.hold_last
-        hi = max(T - L - a.warm - 1, 2)
-        if a.motion_frac > 0 and float(torch.rand(1, generator=gen,
-                                                  device=dev)) < a.motion_frac:
-            w_ = d["motion"][1:hi].clamp(min=1e-12)
-            t0 = 1 + int(torch.multinomial(w_.to(dev), 1, generator=gen))
-        else:
-            t0 = int(torch.randint(1, hi, (1,), generator=gen, device=dev))
-        # 부분표본을 쓰지 않는다 -- 교사와 **완전히 같은 입자 집합**으로 배운다.
-        gsel = torch.arange(N_FULL, device=dev)
-        if os.environ.get("AF_FIXWIN"):
-            t0 = 5
-        if a.pool:
-            continue                       # 풀 모드는 아래에서 따로 처리한다
-        if a.rl:
-            wa_, wc_, nst_, wcost_ = rl_episode(d, t0, a.rl_steps, gsel, gen)
-            _tot = (wa_ + wc_) / a.batch
-            if bool(torch.isfinite(_tot)) and _tot.requires_grad:
-                _tot.backward()
-            lx = lx + wcost_ / a.batch          # 즉시 비용 (잔차^2)
-            still = still + float(wc_) / a.batch
-            arel = arel + nst_ / a.batch
-            la = la + float(wa_) / a.batch
-            continue
-        if a.phase2:
-            # K 램프: 1 -> phys_K. 드리프트는 뒤 스텝에서 생기므로 결국 늘린다.
-            Kp = a.phys_K
-            if a.phys_K_warm > 0:
-                Kp = 1 + int((a.phys_K - 1) * min(1.0, it / a.phys_K_warm))
-            # 교란 세기는 배치마다 로그균등 -- 여러 세기를 동시에 본다
-            sg = 0.0
-            if a.phys_noise > 0:
-                _u = float(torch.rand(1, generator=gen, device=dev))
-                sg = a.phys_noise * (10.0 ** (-2.0 * (1.0 - _u)))
-            wE, r_free, r_ring, _pt = phys_window(d, t0, Kp, gsel, sg, gen)
-            loss_b = a.phys_w * wE
-            if a.phys_sup > 0:
-                wx, wJ, wst, wa, wrel, wd, wdm, wdet = window(d, t0, L, gsel)
-                loss_b = (loss_b + a.phys_sup * wx + a.det_reg * wdet)
-            else:
-                wx = wE.detach(); wJ = torch.zeros((), device=dev)
-                wst = r_ring; wa = torch.zeros((), device=dev)
-                wrel = r_free; wd = torch.zeros((), device=dev); wdm = 0.0
-            (loss_b / a.batch).backward()
-            if a.out_var:
-                # 이 표본이 본 프레임의 변수만 갱신한다 (망은 건드리지 않는다)
-                _t = _CUR_T[0]
-                if _t in _OV_OPT:
-                    _OV_OPT[_t].step()
-                    _OV_OPT[_t].zero_grad(set_to_none=True)
-            lx = lx + float(wE) / a.batch
-            still = still + r_ring / a.batch
-            arel = arel + r_free / a.batch
-            continue
-        wx, wJ, wst, wa, wrel, wd, wdm, wdet = window(d, t0, L, gsel)
-        # 창마다 바로 역전파해 누적한다 -- 창 여러 개의 그래프를 동시에 들고 있으면
-        # 야코비안까지 붙어 메모리가 배치 수만큼 늘어난다
-        with _tsec("역전파"):
-            ((wx + a.lambda_J * wJ + a.lambda_anchor * wa
-              + a.lambda_dmg * wd + a.det_reg * wdet) / a.batch).backward()
-        lx = lx + float(wx) / a.batch
-        lJ = lJ + float(wJ) / a.batch
-        ldet = ldet + float(wdet) / a.batch
-        still = still + wst / a.batch
-        la = la + float(wa) / a.batch
-        arel = arel + wrel / a.batch
-        ldm = ldm + float(wd) / a.batch
-        dmean = dmean + wdm / a.batch
     if _PROF_ON and it > 0 and it % 10 == 0:
         _tot = sum(_PROF.values())
         _msg = "  ".join(f"{k} {v/it*1000:.1f}ms({100*v/max(_tot,1e-9):.0f}%)"
@@ -2550,7 +2184,7 @@ for it in pbar:
                              스텝=f"{arel:.1f}", gn=f"{float(gn):.1e}")
         elif a.phase2:
             pbar.set_postfix(E=f"{lx:.3e}", 자유잔차=f"{100*arel:.3f}%",
-                             구속잔차=f"{100*still:.3f}%", K=Kp,
+                             구속잔차=f"{100*still:.3f}%", K=a.phys_K,
                              무효=(f"{100*sum(_DET_BAD)/len(_DET_BAD):.2f}%"
                                  if _DET_BAD else "-"),
                              gn=f"{float(gn):.1e}")
