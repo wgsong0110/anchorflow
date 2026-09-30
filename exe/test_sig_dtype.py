@@ -63,9 +63,29 @@ for name, scale in (("정지 근처(항등+1e-3)", 1e-3), ("보통(0.1)", 0.1),
     dl = ((p32 - e32) - (p64 - e64)).abs().max()
     ps64 = PR._psi_hencky(p64, mu, lam)
     ps32 = PR._psi_hencky(p32, mu, lam)
-    rps = ((ps32 - ps64).abs() / ps64.abs().clamp_min(1e-12)).max()
+    # 실제로 쓰이는 양: 탄성 에너지 **합** 과 그 F 기울기. 개별 Psi 의 상대오차는
+    # Psi->0 인 정지 근처에서 뜻이 없다.
+    vol = torch.full((a.n,), 1.0 / a.n, device=dev, dtype=torch.float64)
+    E64, E32 = (vol * ps64).sum(), (vol * ps32).sum()
+    rE = float((E32 - E64).abs() / E64.abs().clamp_min(1e-30))
+
+    def e_of(dt):
+        Fv = F.clone().requires_grad_(True)
+        sg, _ = sig_vec(Fv, dt)
+        ep = sg.clamp_min(0.01).log().double()
+        pp = PR._vm_project(ep, mu, lam, cfg["yield_stress"])
+        E = (vol * PR._psi_hencky(pp, mu, lam)).sum()
+        gr, = torch.autograd.grad(E, Fv)
+        return E, gr
+
+    _, g64 = e_of(torch.float64)
+    _, g32 = e_of(torch.float32)
+    rg = float((g32 - g64).norm() / g64.norm().clamp_min(1e-30))
+    # sig 상대오차가 큰 것은 sigma~0 인 입자다 -- 절대차와 함께 본다
+    absd = float((s32.double() - s64).abs().max())
     t64 = timed(lambda: sig_vec(F, torch.float64))
     t32 = timed(lambda: sig_vec(F, torch.float32))
-    print(f"{name}: f32 비유한 {bad32}, sig 상대오차 {float(rel):.2e}, "
-          f"dlog 절대차 {float(dl):.2e}, Psi 상대오차 {float(rps):.2e}")
+    print(f"{name}: f32 비유한 {bad32}  sig 상대 {float(rel):.1e} 절대 {absd:.1e}  "
+          f"dlog 절대 {float(dl):.1e}")
+    print(f"    **탄성에너지 합 상대오차 {rE:.2e}   기울기 상대오차 {rg:.2e}**")
     print(f"    시간  f64 {t64:.1f}ms   f32 {t32:.1f}ms   ({t64/max(t32,1e-9):.1f}배)")
