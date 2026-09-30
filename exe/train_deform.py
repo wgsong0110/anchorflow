@@ -276,10 +276,10 @@ ap.add_argument("--lambda_bc", type=float, default=1.0,
 ap.add_argument("--out_var", action="store_true",
                 help="**학습 루프를 그대로 쓰고** 망 대신 프레임별 출력 변수를 "
                      "최적화한다. 임의 프레임 샘플링·배치·손실 모두 학습과 같고, "
-                     "갱신 대상만 망 파라미터에서 그 프레임의 출력으로 바뀐다")
+                     "갱신 대상만 망 파라미터에서 **그 상태의 노드 출력**으로 "
+                     "바뀐다. 상태는 전진하지 않으므로 각 상태의 E 가 이 "
+                     "매개화의 한 스텝 하한까지 내려간다")
 ap.add_argument("--out_var_lr", type=float, default=3e-3)
-ap.add_argument("--out_var_load", default="",
-                help="프레임별 출력 변수를 여기서 읽어 쓴다 (렌더용)")
 ap.add_argument("--oracle_roll", action="store_true",
                 help="망 출력 자리에 자유 변수를 넣고 매 프레임 물리손실을 "
                      "최소화하는 오라클 롤아웃. 학습·평가 코드를 그대로 쓴다")
