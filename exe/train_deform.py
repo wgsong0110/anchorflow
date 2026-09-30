@@ -1948,7 +1948,11 @@ if a.out_var:
         if st.get("ov") is None:
             st["ov"] = [o.detach().clone().requires_grad_(True) for o in outs]
             st["ov_opt"] = torch.optim.Adam(st["ov"], lr=a.out_var_lr)
-        return tuple(st["ov"]) if len(st["ov"]) > 1 else st["ov"][0]
+        # **입력과 같은 모양으로** 돌려준다. 출력이 하나일 때 맨 텐서를 주면
+        # 호출부의 out[0] 이 첫 노드 행을 집어 색인이 범위를 벗어난다 (옛 conv
+        # 경로는 출력이 3 개라 드러나지 않았다).
+        return (tuple(st["ov"]) if isinstance(out, (tuple, list))
+                else st["ov"][0])
 
     _DP_HOOK[0] = _ov_hook
     print(f"[출력변수] 상태마다 노드 출력을 직접 최적화한다 (lr {a.out_var_lr}). "
