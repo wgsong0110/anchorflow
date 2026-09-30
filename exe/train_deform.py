@@ -181,9 +181,6 @@ ap.add_argument("--phase2", action="store_true",
                 help="교사 위치 대신 **증분 포텐셜**을 목적함수로 미세조정한다. "
                      "교사 프레임이 필요 없으므로 상태를 어디서 뽑아도 된다")
 ap.add_argument("--phys_w", type=float, default=1.0, help="물리 항 가중")
-ap.add_argument("--phys_K", type=int, default=1,
-                help="한 표본에서 펼칠 스텝 수. 뒤 스텝의 상태는 자기 출력이라 "
-                     "그대로 on-policy 표본이 된다")
 ap.add_argument("--resume_fresh", action="store_true",
                 help="가중치만 이어받고 스텝·옵티마이저·난수는 새로 시작한다. "
                      "다른 단계로 넘어갈 때 쓴다 (예: 증류 -> RL)")
@@ -2193,7 +2190,7 @@ for it in pbar:
                              스텝=f"{arel:.1f}", gn=f"{float(gn):.1e}")
         elif a.phase2:
             pbar.set_postfix(E=f"{lx:.3e}", 자유잔차=f"{100*arel:.3f}%",
-                             구속잔차=f"{100*still:.3f}%", K=a.phys_K,
+                             구속잔차=f"{100*still:.3f}%",
                              무효=(f"{100*sum(_DET_BAD)/len(_DET_BAD):.2f}%"
                                  if _DET_BAD else "-"),
                              gn=f"{float(gn):.1e}")

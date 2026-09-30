@@ -77,7 +77,7 @@ smoke)
       --arch sgnn --n_nodes 32 --gnn_layers 1 --hidden 128 \
       --obj pts --dt_cond --dt_scale --v_from_dt --det_eps 0.1 --det_w 100 \
       --lambda_bc 1.0 --lr 3e-4 --batch 4 \
-      --phase2 --phys_w 1.0 --phys_sup 0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \
+      --phase2 --phys_w 1.0 \
       --iters 200 --eval_t0 3 --eval_len 40 --save_every 100000 \
       --val_every 100 --val_n 1 --val_len 10"
   ;;
@@ -103,7 +103,7 @@ pool)
       --obj pts --dt_cond --dt_scale --v_from_dt --det_eps 0.1 --det_w 100 \
       --lambda_bc 1.0 --lr 3e-4 --batch 8 --det_every 200 \
       --pool_fill $W/poolfill --pool_combos mic_clayC \
-      --phase2 --phys_w 1.0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \
+      --phase2 --phys_w 1.0 \
       --iters 3000 --eval_t0 3 --eval_len 40 --save_every 250 \
       --val_every 250 --val_n 1 --val_len 40 --tb $W/tb"
   ;;
@@ -120,7 +120,7 @@ ovar)
       --lambda_bc 1.0 --lr 3e-4 --batch 8 --det_every 200 \
       --out_var --out_var_lr 3e-3 \
       --pool_fill $W/poolfill --pool_combos mic_clayC --pool_fresh 0.05 \
-      --phase2 --phys_w 1.0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \
+      --phase2 --phys_w 1.0 \
       --iters 3000 --eval_t0 3 --eval_len 40 --save_every 100000 \
       --val_every 100000 --tb $W/tb"
   ;;
