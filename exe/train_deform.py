@@ -2016,7 +2016,9 @@ for it in pbar:
             vol = sc["mass"] / float(cfg["density"])
             gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
             ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
-            nrm = float(sc["mass"].sum()) * (sc["ext"] ** 2) / (_hp ** 2)
+            if "_msum" not in sc:                 # 씬 상수 -- 한 번만 내린다
+                sc["_msum"] = float(sc["mass"].sum())
+            nrm = sc["_msum"] * (sc["ext"] ** 2) / (_hp ** 2)
             with _tsec("에너지"):
                 E_ip, dlog, F_tr, _pt = ip_of(
                     x, x2 - x, v, F, sc["mass"], vol, cfg, _hp, ng_, gl_,
@@ -2047,26 +2049,32 @@ for it in pbar:
                               ).sum(-1).mean()
                 else:
                     loss_p = E_ip
+            # 스칼라들을 **한 번에** 내린다. float()/bool() 하나가 파이프라인을
+            # 세우므로 배치 원소마다 3~4 회면 스텝당 30 회 가까이 멈춘다.
             _rl = _rr.detach().norm(dim=-1)
-            res = float((_rl[fm] if fm is not None else _rl).mean())
+            _res_t = (_rl[fm] if fm is not None else _rl).mean()
+            if FIXED_GRID is not None:
+                _glo, _ghh, _gn3 = FIXED_GRID
+                _ghi = _glo + _ghh * _gn3.to(x2.dtype)
+                _oob_t = ((x2 < _glo) | (x2 > _ghi)).any().to(_res_t.dtype)
+            else:
+                _oob_t = torch.zeros_like(_res_t)
+            res, _oob, _lv = torch.stack(
+                [_res_t, _oob_t, loss_p.detach().to(_res_t.dtype)]).tolist()
             if a.pool_whiten:
-                _PL_RMS[0] = (0.99 * _PL_RMS[0]
-                              + 0.01 * float(loss_p.detach()) ** 2)
+                _PL_RMS[0] = 0.99 * _PL_RMS[0] + 0.01 * _lv ** 2
                 loss_p = loss_p / max(_PL_RMS[0] ** 0.5, 1e-12)
-            if bool(torch.isfinite(loss_p)):
+            if math.isfinite(_lv):
                 with _tsec("역전파"):
                     (loss_p / a.batch).backward()
             elif _PL_MSG == []:
                 _PL_MSG.append(1)
                 print(f"[풀] 씬 {tag} 손실이 비유한 -- 이 배치는 건너뛴다",
                       flush=True)
-            lx = lx + float(loss_p) / a.batch
+            lx = lx + _lv / a.batch
             lres = lres + res / a.batch
-            if FIXED_GRID is not None:
-                _glo, _ghh, _gn3 = FIXED_GRID
-                _ghi = _glo + _ghh * _gn3.to(x2.dtype)
-                if bool(((x2 < _glo) | (x2 > _ghi)).any()):
-                    res = float("inf")        # 영역을 벗어난 상태는 버린다
+            if _oob > 0.5:
+                res = float("inf")            # 영역을 벗어난 상태는 버린다
             # 문턱을 넘었을 때 되돌릴 **전진 전** 사본. 이번 스텝을 없던 일로
             # 하려면 프레임 색인과 잔차 이력까지 그대로여야 한다.
             _prev = (dict(si=st["si"], x=x, v=v, F=F, p=st["p"], plan=plan,
@@ -2230,8 +2238,9 @@ for it in pbar:
             _best = _v
             save_ck("best", it + 1)
             print(f"  [검증 {it+1}] 비 {_v:.4f} 목적 {_vo:.3e} -- best 갱신"
-                  + (f"  (관성 {_pt[0]:.3e} 탄성 {_pt[1]:.3e} 중력 {_pt[2]:.3e})"
-                     if a.phase2 and _pt else ""), flush=True)
+                  + (f"  (관성 {float(_pt[0]):.3e} 탄성 {float(_pt[1]):.3e} "
+                     f"중력 {float(_pt[2]):.3e})"
+                     if a.phase2 and _pt is not None else ""), flush=True)
         else:
             print(f"  [검증 {it+1}] 비 {_v:.4f} 목적 {_vo:.3e} "
                   f"(best {_best:.4f})", flush=True)

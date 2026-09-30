@@ -200,7 +200,7 @@ def ip_energy(x2, xtil, F_trial, mass, vol, cfg, h, free=None, g=None,
     tot = e_in + e_el + e_g
     if norm is not None:
         tot = tot / norm
-    return tot, dlog, (float(e_in), float(e_el), float(e_g))
+    return tot, dlog, (e_in.detach(), e_el.detach(), e_g.detach())
 
 
 def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
@@ -240,7 +240,10 @@ def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
     tot = e_in + e_el + e_bc
     if norm is not None:
         tot = tot / norm
-    return tot, dlog, F_tr, (float(e_in), float(e_el), float(e_g), float(e_bc))
+    # 보고용 항은 **텐서로** 돌려준다. float() 는 GPU 동기화라 스텝마다
+    # 배치x4 회 파이프라인을 세운다 -- 출력하는 자리에서만 변환한다.
+    return tot, dlog, F_tr, (e_in.detach(), e_el.detach(),
+                             e_g.detach(), e_bc.detach())
 
 
 def residual(E, x2, mass, ext):
@@ -658,7 +661,10 @@ def grid_ip_pts(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
     tot = e_in + e_el + e_g + e_bc
     if norm is not None:
         tot = tot / norm
-    return tot, dlog, F_tr, (float(e_in), float(e_el), float(e_g), float(e_bc))
+    # 보고용 항은 **텐서로** 돌려준다. float() 는 GPU 동기화라 스텝마다
+    # 배치x4 회 파이프라인을 세운다 -- 출력하는 자리에서만 변환한다.
+    return tot, dlog, F_tr, (e_in.detach(), e_el.detach(),
+                             e_g.detach(), e_bc.detach())
 
 
 def grid_ip_sub(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
@@ -735,4 +741,7 @@ def grid_ip_energy(x, du, vel, F, mass, vol, cfg, h, n_grid, grid_lim,
     tot = e_in + e_el + e_g + e_bc
     if norm is not None:
         tot = tot / norm
-    return tot, dlog, F_tr, (float(e_in), float(e_el), float(e_g), float(e_bc))
+    # 보고용 항은 **텐서로** 돌려준다. float() 는 GPU 동기화라 스텝마다
+    # 배치x4 회 파이프라인을 세운다 -- 출력하는 자리에서만 변환한다.
+    return tot, dlog, F_tr, (e_in.detach(), e_el.detach(),
+                             e_g.detach(), e_bc.detach())
