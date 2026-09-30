@@ -1124,6 +1124,27 @@ def traj_F(d):
     return d["F"]
 
 
+@contextlib.contextmanager
+def traj_scope(d):
+    """평가·검증 동안 전역 MASS/EXT/N_FULL 을 **그 궤적의** 값으로 맞춘다.
+
+    풀 루프가 `MASS, EXT, N_FULL = sc["mass"], sc["ext"], n_p` 로 전역을 씬 값
+    으로 덮어쓴다. 그 뒤 교사 궤적으로 평가하면 node_feats 의 `MASS[gsel]` 이
+    **풀 씬의 앞쪽 질량**을 집어 (입자 집합이 다르다) 질량 가중 노드 특징이
+    통째로 어긋난다. EXT 도 달라 절대 오차 퍼센트가 틀린다 (비는 분자·분모가
+    같은 EXT 라 상쇄되지만 절대값은 틀린다).
+    """
+    global MASS, EXT, N_FULL
+    _sv = (MASS, EXT, N_FULL)
+    MASS = traj_mass(d)
+    EXT = float(d.get("_ext", EXT))
+    N_FULL = d["x"].shape[1]
+    try:
+        yield
+    finally:
+        MASS, EXT, N_FULL = _sv
+
+
 def traj_mass(d):
     """궤적 자기 배치·자기 밀도로 잰 입자 질량 [N_full]. 전조합 학습에서는 씬마다
     밀도도 형상도 다르므로 cfg0 의 것을 쓰면 안 된다."""
@@ -1495,6 +1516,8 @@ def quick_val():
     # 보조 지표였던 지도 손실은 지웠다 -- 학습이 교사를 안 쓰므로 그 창도 없다.
     obj = 0.0
     for _tag, d in _VAL:
+        # 전역 MASS/EXT/N_FULL 을 이 궤적 값으로 (풀 루프가 씬 값으로 덮어쓴다)
+        _ts = traj_scope(d); _ts.__enter__()
         gsel = torch.arange(d["x"].shape[1], device=dev)
         t0 = 3
         x = take(d["x"][t0], gsel)
@@ -1516,6 +1539,7 @@ def quick_val():
             tot += float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
             ref += float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
             x = x2
+        _ts.__exit__(None, None, None)
     net.train()
     return tot / max(ref, 1e-20), obj
 
@@ -2248,6 +2272,11 @@ _ROLLDUMP = None
 
 @torch.no_grad()
 def rollout(d, t0, L, gsel=None):
+    with traj_scope(d):
+        return _rollout(d, t0, L, gsel)
+
+
+def _rollout(d, t0, L, gsel=None):
     # 드롭아웃이 켜져 있으면 롤아웃이 확률적이 된다 -- 평가는 항상 eval 로.
     net.eval()
     if gsel is None:
