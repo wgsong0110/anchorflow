@@ -92,11 +92,16 @@ for i in range(3):
 pj = (G - Ja).abs().amax(dim=(1, 2))
 chk("grad_x Phi == autograd", float(pj.median()) < 1e-10,
     f"중앙 {float(pj.median()):.1e}, 최대 {float(pj.max()):.1e}")
-# g2p_jac 와 g2p_jac_pre 가 같은 값을 줘야 한다 (최적화가 정의를 안 바꿨나)
-u2, G2 = SX.g2p_jac_pre(rw2, l2, aux2, lat, dp[uq2] if False else dp)
+# g2p_jac 와 g2p_jac_pre 가 같은 값을 줘야 한다 (최적화가 정의를 안 바꿨나).
+# _pre 는 **압축 노드** 기준이므로 그 부분집합(uq2)에 맞춰 넘겨야 한다.
+u2, G2 = SX.g2p_jac_pre(rw2, l2, aux2, lat, dpf[uq2])
 chk("g2p_jac_pre == g2p_jac",
     float((G2 - G).abs().max()) < 1e-12 and float((u2 - u).abs().max()) < 1e-12,
     f"G 차 {float((G2 - G).abs().max()):.1e}, u 차 {float((u2 - u).abs().max()):.1e}")
+# g2p_pre 도 g2p 와 같아야 한다
+chk("g2p_pre == g2p",
+    float((SX.g2p_pre(rw2, l2, dpf[uq2]) - SX.g2p(xs.detach(), lo, lat, nn, dpf)
+           ).abs().max()) < 1e-12, "")
 # 아핀 사상이면 야코비안이 사면체별 상수 -- 같은 사면체 안 두 점이 같아야 한다
 tid = SX.tet_id(lo, lat, nn, aux2)
 o = torch.argsort(tid)
@@ -107,7 +112,17 @@ if int(same.sum()):
         f"최대 {float(d.max()):.1e} ({int(same.sum())} 쌍)")
 else:
     chk("야코비안이 사면체별 상수", False, "같은 사면체 쌍이 없다")
-# det = det(I + grad u) 가 1 근처 (작은 변위)
-det = SX.tet_det(G)
-chk("det > 0", float(det.min()) > 0, f"최소 {float(det.min()):.4f}")
+# tet_det 의 정의 확인: det(I + grad u)
+I3 = torch.eye(3, device=dev, dtype=DT)
+chk("tet_det == det(I + grad u)",
+    float((SX.tet_det(G) - torch.linalg.det(I3 + G)).abs().max()) < 1e-10,
+    f"차 {float((SX.tet_det(G) - torch.linalg.det(I3 + G)).abs().max()):.1e}")
+# **작은** 변위면 det 가 1 근처이고 양수여야 한다 (위 dp 는 일부러 크게 줘서
+# 사면체가 뒤집힌다 -- 구속이 없으면 당연하고, 그것이 det 제약을 두는 이유다)
+_dps = dpf * (0.02 * lat.s / dpf.norm(dim=-1).max().clamp_min(1e-12))
+_, Gs = SX.g2p_jac(xs.detach(), lo, lat, nn, _dps)
+ds = SX.tet_det(Gs)
+chk("작은 변위에서 det > 0 이고 1 근처",
+    float(ds.min()) > 0.5 and float((ds - 1).abs().max()) < 0.5,
+    f"최소 {float(ds.min()):.4f} 최대 {float(ds.max()):.4f}")
 print(f"\n{OK[0]}/{OK[1]}  " + ("ALL-OK" if OK[0] == OK[1] else "SOME-FAIL"))
