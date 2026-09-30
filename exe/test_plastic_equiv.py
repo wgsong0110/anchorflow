@@ -33,11 +33,17 @@ def chk(name, cond, info=""):
 
 
 def old_plastic(F, dlog):
-    """최적화 전 경로: 항상 재분해하고 전체에 곱한다."""
-    C = (F.transpose(-1, -2) @ F).double()
+    """최적화 전 경로: 항상 재분해하고 전체에 곱한다.
+
+    정밀도는 `_SIG_DT` 로 맞춘다 -- 여기서 재려는 것은 **기저 공유와 건너뛰기**가
+    결과를 바꾸는지이고, f32/f64 선택의 오차는 exe/test_sig_dtype.py 가 따로
+    잰다 (탄성에너지 합 1e-07, 기울기 2.4e-04). 섞으면 둘을 구별할 수 없다.
+    """
+    dt = PR._SIG_DT
+    C = (F.transpose(-1, -2) @ F).to(dt)
     _, V = torch.linalg.eigh(C)
-    P = V @ torch.diag_embed(dlog.double().exp()) @ V.transpose(-1, -2)
-    return (F.double() @ P).to(F.dtype)
+    P = V @ torch.diag_embed(dlog.to(dt).exp()) @ V.transpose(-1, -2)
+    return (F.to(dt) @ P).to(F.dtype)
 
 
 cfg = {"E": 2e6, "nu": 0.3, "material": "metal", "yield_stress": 4e4,
@@ -75,4 +81,5 @@ chk("항복 입자는 기저 공유로도 같은 값",
 # 에너지도 그대로인지 (psi 는 값만 쓰므로 eigh/eigvalsh 차이만 본다)
 psi2, _ = PR.psi_of(F, {**cfg, "material": "jelly"}, 1 / 60)
 chk("탄성 전용 물성은 기저 없이 None", _ is None, "")
-print(f"\n{OK[0]}/{OK[1]}  " + ("ALL-OK" if OK[0] == OK[1] else "SOME-FAIL"))
+print(f"\n정밀도 _SIG_DT={PR._SIG_DT}")
+print(f"{OK[0]}/{OK[1]}  " + ("ALL-OK" if OK[0] == OK[1] else "SOME-FAIL"))
