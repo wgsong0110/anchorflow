@@ -145,12 +145,6 @@ ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
                 help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
                      "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
                      "(jacobian_of) 보다 싸고 no_grad 롤아웃에서도 돈다")
-ap.add_argument("--cell_warp", default="none", choices=("none", "tet"),
-                help="사면체 **내부** 재배열. tet 은 정렬좌표를 stick-breaking "
-                     "으로 펴고 단조 RQS 를 건다 (점이 자기 사면체를 못 벗어나고 "
-                     "단사 유지). none 이면 항등")
-ap.add_argument("--rqs_bins", type=int, default=8,
-                help="--cell_warp tet 의 축당 빈 수")
 ap.add_argument("--n_nodes", type=int, default=32,
                 help="--arch sgnn 의 **노드 간격**을 정한다 (물체를 몇 노드로 "
                      "덮을지). 사면체 변 길이 = 물체/n_nodes 이고, 발판 격자는 "
@@ -613,8 +607,7 @@ def build(n_feat):
     net = SimplexGNN(n_feat=n_feat, hidden=a.hidden, layers=a.gnn_layers,
                      scale=0.02 * EXT, dt_cond=a.dt_cond, dt_ref=FRAME_DT,
                      dt_scale=a.dt_scale, n_mat=N_FILM,
-                     rqs_dim=(SX.tet_n_params(a.rqs_bins)
-                              if a.cell_warp == "tet" else 0)).to(dev)
+                     ).to(dev)
     opt = (torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=a.wd)
            if a.wd > 0 else torch.optim.Adam(net.parameters(), lr=a.lr))
     global SCHED
@@ -1146,15 +1139,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             Mtot = int(nn[0] * nn[1] * nn[2])
             dpf = torch.zeros(Mtot, 3, device=dev, dtype=x.dtype)
             dpf = dpf.index_copy(0, uniq, dpn)     # 활성 노드만 채운다
-            thf = None
-            q0 = x
-            if a.cell_warp == "tet":
-                thn = torch.nan_to_num(out[-1], nan=0.0, posinf=0.0,
-                                       neginf=0.0)
-                thf = torch.zeros(Mtot, thn.shape[-1], device=dev,
-                                  dtype=x.dtype).index_copy(0, uniq, thn)
-                q0 = SX.tet_remap(x, lo, hn, nn, thf, a.rqs_bins)[0]
-            q = q0 + SX.g2p(q0, lo, hn, nn, dpf)
+            # 셀(사면체) 내부는 **항등**이다. 로컬 변환은 쓰지 않는다.
+            q = x + SX.g2p(x, lo, hn, nn, dpf)
             _qraw = q                       # 덮어쓰기 **전** 의 원 출력
             _act = torch.zeros_like(q[:, :1])
             if a.control:
@@ -1173,7 +1159,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             # corr 은 구속이 원 출력을 얼마나 고쳤나다. 이걸 줄이면 망이 경계조건을
             # **스스로** 내게 된다 (자유 입자는 정확히 0 이라 기여가 없다).
             _corr = q - _qraw
-            _ex = ((dpf,) if thf is None else (dpf, thf)) + (_corr, _act)
+            _ex = (dpf, _corr, _act)
             return q, _ex
 
         _use_dtS = a.v_from_dt and _DP_HOOK[0] is None and a.dt_cond
@@ -1185,19 +1171,10 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             x2, _outs = _fieldS(_tau0)
             v_next = (x2 - x) / _DT[0]
         dpf = _outs[0]
-        # 사면체별 야코비안·det. 재배열이 없으면 아핀이라 닫힌 형식 하나이고,
-        # 있으면 합성이라 자동미분으로 잰다 (3 회 역전파).
-        if a.cell_warp == "tet":
-            _thf = _outs[1]
-
-            def _warpS(z, _dp=dpf, _th=_thf):
-                z0 = SX.tet_remap(z, lo, hn, nn, _th, a.rqs_bins)[0]
-                return z0 + SX.g2p(z0, lo, hn, nn, _dp)
-
-            Jf = jacobian_of(_warpS, x)
-        else:
-            _u, Jf = SX.g2p_jac(x, lo, hn, nn, dpf)
-            Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
+        # 셀 내부가 항등이라 변형장은 사면체별 아핀이다 -> 야코비안은 닫힌 형식
+        # 하나로 나온다 (재배열이 있던 시절에는 합성이라 역전파 3 회가 필요했다).
+        _u, Jf = SX.g2p_jac(x, lo, hn, nn, dpf)
+        Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
         _DET_LAST[0] = torch.linalg.det(Jf)
         # 구속 보정량·활성집합을 창 쪽으로 넘긴다 (L_bc 와 free 마스크에 쓴다)
         _BC_LAST[0] = (_outs[-2], _outs[-1])

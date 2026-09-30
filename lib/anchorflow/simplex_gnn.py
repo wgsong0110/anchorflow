@@ -136,8 +136,7 @@ class SimplexGNN(nn.Module):
     """
 
     def __init__(self, n_feat, hidden=128, layers=8, scale=1.0,
-                 dt_cond=True, dt_ref=1.0, dt_scale=False, n_mat=0,
-                 rqs_dim=0):
+                 dt_cond=True, dt_ref=1.0, dt_scale=False, n_mat=0):
         super().__init__()
         self.scale = scale
         self.register_buffer("in_mu", torch.zeros(n_feat))
@@ -147,12 +146,6 @@ class SimplexGNN(nn.Module):
         self.out = nn.Linear(hidden, 3)
         nn.init.zeros_(self.out.weight)     # 시작은 항등 (변위 0)
         nn.init.zeros_(self.out.bias)
-        # 사면체 내부 재배열 파라미터 (노드별, 사면체는 4 꼭짓점 평균)
-        self.rqs_dim = int(rqs_dim)
-        if self.rqs_dim:
-            self.out_rqs = nn.Linear(hidden, self.rqs_dim)
-            nn.init.zeros_(self.out_rqs.weight)   # 0 이면 정확히 항등
-            nn.init.zeros_(self.out_rqs.bias)
         # 물성은 씬 안에서 상수라 특징에 붙이면 채널을 상수로 채우는 셈이다.
         self.n_mat = int(n_mat)
         if self.n_mat:
@@ -189,6 +182,4 @@ class SimplexGNN(nn.Module):
             h = self._dtmod(h, dt, i + 1)
         # 변위는 1 차로 v*dt 라 dt 에 비례한다 (--dt_scale)
         sc = (self.scale * (dt / self.dt_ref) if self.dt_scale else self.scale)
-        if self.rqs_dim:
-            return (self.out(h) * sc, self.out_rqs(h))
         return (self.out(h) * sc,)

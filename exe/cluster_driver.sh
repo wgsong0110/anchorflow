@@ -67,7 +67,7 @@ smoke)
   echo "== 단계: 학생 하드 구속 스모크 (옛 교사로 코드 경로만 확인)"
   job smoke 2 "python -u $R/exe/train_deform.py --data $W/one_traj_h2 \
       --out $W/smoke --tag SMK --no_mat --control --n_ctrl 2 \
-      --arch sgnn --n_nodes 32 --gnn_layers 1 --hidden 128 --cell_warp tet \
+      --arch sgnn --n_nodes 32 --gnn_layers 1 --hidden 128 \
       --obj pts --dt_cond --dt_scale --v_from_dt --det_eps 0.1 --det_w 100 \
       --lambda_bc 1.0 --lr 3e-4 --batch 4 --n_pts 8000 \
       --phase2 --phys_w 1.0 --phys_sup 0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \

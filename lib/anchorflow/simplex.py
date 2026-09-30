@@ -19,8 +19,7 @@
 import torch
 
 __all__ = ["grid_for_nodes", "locate", "g2p", "g2p_jac", "tet_det",
-           "active_nodes", "edges_of", "EDGE_OFFSETS", "N_EDGE_CLASS",
-           "tet_n_params", "tet_remap"]
+           "active_nodes", "edges_of", "EDGE_OFFSETS", "N_EDGE_CLASS"]
 
 
 def grid_for_nodes(x, n_nodes, margin=0.05):
@@ -180,66 +179,3 @@ def edges_of(idx_rows, uniq, nn):
 # 파라미터는 사면체마다 3*(3K+1) 개다 (격자 셀 판과 같은 수). 망은 노드마다
 # 내고 그 사면체의 4 꼭짓점 평균으로 쓴다.
 # ---------------------------------------------------------------------------
-
-def tet_n_params(bins):
-    """사면체당 파라미터 수 (축 3 개 x (폭 K + 높이 K + 매듭 기울기 K+1))."""
-    return 3 * (3 * int(bins) + 1)
-
-
-def _mono_rqs(u, theta, bins, min_bin=1e-3, min_d=1e-3):
-    """단조 유리이차 스플라인 [0,1]->[0,1]. u [...,A], theta [...,A,3K+1]."""
-    import torch.nn.functional as Fn
-    import math
-    K = int(bins)
-    sp1 = math.log(math.e - 1.0)
-    w = Fn.softmax(theta[..., :K], -1) * (1 - K * min_bin) + min_bin
-    hg = Fn.softmax(theta[..., K:2 * K], -1) * (1 - K * min_bin) + min_bin
-    dv = Fn.softplus(theta[..., 2 * K:] + sp1) + min_d
-    cw = Fn.pad(torch.cumsum(w, -1), (1, 0))
-    ch = Fn.pad(torch.cumsum(hg, -1), (1, 0))
-    uc = u.clamp(0.0, 1.0)
-    k = (torch.searchsorted(cw.detach().contiguous(),
-                            uc.detach().unsqueeze(-1).contiguous())
-         - 1).clamp(0, K - 1)
-
-    def g(t, i):
-        return t.gather(-1, i).squeeze(-1)
-
-    x0, x1 = g(cw, k), g(cw, k + 1)
-    y0, y1 = g(ch, k), g(ch, k + 1)
-    d0, d1 = g(dv, k), g(dv, k + 1)
-    wb = (x1 - x0).clamp_min(1e-12)
-    hb = y1 - y0
-    sl = hb / wb
-    xi = ((uc - x0) / wb).clamp(0.0, 1.0)
-    om = xi * (1 - xi)
-    den = (sl + (d0 + d1 - 2 * sl) * om).clamp_min(1e-12)
-    return y0 + hb * (sl * xi * xi + d0 * om) / den
-
-
-def tet_remap(q, lo, hn, nn, theta_node, bins):
-    """점을 자기 사면체 안에서 재배열한다 -> (새 위치, 새 barycentric, 색인).
-
-    theta_node [M, P] 는 노드별 파라미터이고, 사면체 파라미터는 그 4 꼭짓점의
-    평균으로 쓴다 (이웃 사면체가 꼭짓점을 나눠 가져 파라미터장이 상관된다).
-    """
-    nnl = [int(nn[k]) for k in range(3)]
-    idx, lam, (base2, oc, rank, perm, step) = locate(q, lo, hn, nn)
-    th = theta_node[idx].mean(1).reshape(q.shape[0], 3, -1)      # [N,3,3K+1]
-    # lam = (1-t1, t1-t2, t2-t3, t3) -> t 를 되찾는다
-    t1 = 1.0 - lam[:, 0]
-    t2 = t1 - lam[:, 1]
-    t3 = lam[:, 3]
-    e = 1e-9
-    w = torch.stack([t1, t2 / t1.clamp_min(e), t3 / t2.clamp_min(e)], -1)
-    wt = _mono_rqs(w.clamp(0.0, 1.0), th, bins)
-    n1 = wt[:, 0]
-    n2 = n1 * wt[:, 1]
-    n3 = n2 * wt[:, 2]
-    lam2 = torch.stack([1.0 - n1, n1 - n2, n2 - n3, n3], -1)
-    # 새 위치 = 사면체 꼭짓점의 새 barycentric 조합
-    vz = idx % nnl[2]
-    vy = (idx // nnl[2]) % nnl[1]
-    vx = idx // (nnl[1] * nnl[2])
-    vpos = torch.stack([vx, vy, vz], -1).to(q.dtype) * hn + lo   # [N,4,3]
-    return (lam2.unsqueeze(-1) * vpos).sum(1), lam2, idx

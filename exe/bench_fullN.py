@@ -25,7 +25,6 @@ ap.add_argument("--n", default="8000,20000,64000,251001")
 ap.add_argument("--n_nodes", type=int, default=32)
 ap.add_argument("--layers", type=int, default=1)
 ap.add_argument("--hidden", type=int, default=128)
-ap.add_argument("--bins", type=int, default=8)
 ap.add_argument("--rep", type=int, default=20)
 ap.add_argument("--warm", type=int, default=5)
 a = ap.parse_args()
@@ -78,7 +77,7 @@ def timed(fn, rep, warm):
     return statistics.median(ts)
 
 
-print(f"\n{'N':>8} {'집계':>9} {'GNN':>8} {'재배열':>9} {'전달':>8} "
+print(f"\n{'N':>8} {'집계':>9} {'GNN':>8} {'전달':>8} "
       f"{'합':>9} {'FPS':>7} {'노드':>7} {'간선':>9}")
 for n in [int(q) for q in a.n.split(",")]:
     x, v = cloud(n)
@@ -98,8 +97,8 @@ for n in [int(q) for q in a.n.split(",")]:
         feat = node_moments(x, v, X, mw, rows, lam, Mn, npos, hn)
         nf = feat.shape[-1]
         net = SimplexGNN(nf, hidden=a.hidden, layers=a.layers, scale=1.0,
-                         dt_cond=True, dt_ref=1 / 60, dt_scale=True,
-                         rqs_dim=SX.tet_n_params(a.bins)).to(dev).eval()
+                         dt_cond=True, dt_ref=1 / 60,
+                         dt_scale=True).to(dev).eval()
         tau = torch.tensor(1 / 60, device=dev)
 
         def f_agg():
@@ -114,22 +113,14 @@ for n in [int(q) for q in a.n.split(",")]:
         out = net(feat, src, dst, cls, tau)
         Mtot = int(nn_[0] * nn_[1] * nn_[2])
         dpf = torch.zeros(Mtot, 3, device=dev).index_copy(0, uniq, out[0])
-        thf = torch.zeros(Mtot, out[-1].shape[-1], device=dev).index_copy(
-            0, uniq, out[-1])
-
-        def f_remap():
-            return SX.tet_remap(x, lo, hn, nn_, thf, a.bins)[0]
-
-        q0 = SX.tet_remap(x, lo, hn, nn_, thf, a.bins)[0]
 
         def f_g2p():
-            return q0 + SX.g2p(q0, lo, hn, nn_, dpf)
+            return x + SX.g2p(x, lo, hn, nn_, dpf)
 
         t_a = timed(f_agg, a.rep, a.warm)
         t_g = timed(f_gnn, a.rep, a.warm)
-        t_r = timed(f_remap, a.rep, a.warm)
         t_p = timed(f_g2p, a.rep, a.warm)
-    tot = t_a + t_g + t_r + t_p
-    print(f"{n:>8} {t_a:>8.2f}ms {t_g:>7.2f}ms {t_r:>8.2f}ms {t_p:>7.2f}ms "
+    tot = t_a + t_g + t_p
+    print(f"{n:>8} {t_a:>8.2f}ms {t_g:>7.2f}ms {t_p:>7.2f}ms "
           f"{tot:>8.2f}ms {1000/tot:>6.1f} {Mn:>7} {int(src.numel()):>9}")
 print("\n60FPS 예산 16.67ms / 30FPS 33.3ms")

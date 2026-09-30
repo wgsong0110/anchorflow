@@ -83,7 +83,7 @@ class ConvStepper(nn.Module):
     """
 
     def __init__(self, n_feat, hidden=64, depth=4, h=0.05, scale=1.0,
-                 arch="plain", damage=False, n_mat=0, drop=0.0, rqs_dim=0,
+                 arch="plain", damage=False, n_mat=0, drop=0.0,
                  dt_cond=False, dt_ref=1.0, dt_scale=False):
         super().__init__()
         # 블록 사이의 채널 드롭아웃. 부피가 대부분 비어 있어 **화소별** 드롭은
@@ -92,7 +92,6 @@ class ConvStepper(nn.Module):
         self.h, self.scale, self.arch, self.damage = h, scale, arch, damage
         # 격자-입자 전달은 Kuhn 사면체 barycentric 고정이다. 예전 학습 반경(skin)
         # 헤드는 "셀 내부 변화가 고정"이던 시절의 땜질이라 제거했다 -- 그
-        # 자유도는 셀 내부 RQS 재배열(rqs_dim 헤드)이 든다.
         self.register_buffer("in_mu", torch.zeros(n_feat))
         self.register_buffer("in_sd", torch.ones(n_feat))
         self.film = nn.Sequential(nn.Linear(1, hidden), nn.SiLU(),
@@ -134,12 +133,6 @@ class ConvStepper(nn.Module):
         # 셀 내부 RQS 재배열 파라미터 헤드. 격자점에서 내고 8 꼭짓점 평균으로
         # 셀 값으로 바꾼다 -- 이웃 셀이 꼭짓점을 나눠 가져 파라미터장이 저절로
         # 상관되고, 원시값 0 이 항등이라 초기화도 변위 헤드와 같은 규약이다.
-        self.rqs_dim = int(rqs_dim)
-        if self.rqs_dim:
-            self.out_rqs = nn.Conv3d(hidden, self.rqs_dim, 1)
-            with torch.no_grad():
-                self.out_rqs.weight.mul_(0.01)
-            nn.init.zeros_(self.out_rqs.bias)
         # --- 스텝 크기 dt 를 **조건 변수**로 받는다 -----------------------------
         # 기본 self.film 은 dt 원시값을 Linear(1,.) 에 넣는다. dt 를 고정해 쓰면
         # 상수라 사실상 편향이지만, dt 를 흔들면 0.042 ~ 0.0004 처럼 두 자리
@@ -225,11 +218,6 @@ class ConvStepper(nn.Module):
                 v = self._dtmod(v, dt, _i + 1)
         o = self.out(v)                                        # [E,C,nx,ny,nz]
         rq = None
-        if self.rqs_dim:
-            # 격자점 -> 셀: 2^3 평균 (격자점 수 n -> 셀 수 n-1)
-            r = Fn.avg_pool3d(self.out_rqs(v), 2, stride=1)
-            rq = r.reshape(ens, r.shape[1], -1).permute(0, 2, 1).reshape(
-                -1, r.shape[1])                                # [E*Mc, P]
         o = o.reshape(ens, o.shape[1], -1).permute(0, 2, 1).reshape(
             -1, o.shape[1])                                    # [E*M, C]
         # 변위는 1 차로 v*dt 라 dt 에 비례한다. --dt_scale 이면 그 비례를
