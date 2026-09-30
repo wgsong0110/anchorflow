@@ -43,12 +43,21 @@ def mat_name(cfg):
 _JIT = None
 
 
+# 고유분해 정밀도. 실측(exe/test_sig_dtype.py, 251001 입자, A6000):
+#   f32 는 f64 대비 3.2 배 빠르고(43ms -> 14ms) 비유한 값이 없다.
+#   탄성에너지 합 상대오차 ~1e-07, 기울기 상대오차 최대 2.4e-04 -- fp32 학습의
+#   자연 잡음 수준이다. sigma 상대오차가 큰 입자는 sigma~0 이고 절대차 3e-04 로
+#   psi_of 의 clamp_min(0.01) 아래라 쓰이지 않는다.
+# AF_SIG_F64=1 로 되돌린다.
+_SIG_DT = torch.float64 if os.environ.get("AF_SIG_F64") else torch.float32
+
+
 def _sig(F):
     """특이값 [N,3] (오름차순). C = F^T F 의 고유값으로 구한다."""
     global _JIT
-    C = (F.transpose(-1, -2) @ F).double()
-    if _JIT is None or _JIT.device != C.device:
-        _JIT = torch.diag(torch.tensor([0.0, 1e-9, 2e-9], dtype=torch.float64,
+    C = (F.transpose(-1, -2) @ F).to(_SIG_DT)
+    if _JIT is None or _JIT.device != C.device or _JIT.dtype != _SIG_DT:
+        _JIT = torch.diag(torch.tensor([0.0, 1e-9, 2e-9], dtype=_SIG_DT,
                                        device=C.device))
     tr = C.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(
         *C.shape[:-2], 1, 1).clamp_min(1e-12)
@@ -64,9 +73,9 @@ def _sig_vec(F):
     두 번 했다 -- 한 번에 받아 넘긴다.
     """
     global _JIT
-    C = (F.transpose(-1, -2) @ F).double()
-    if _JIT is None or _JIT.device != C.device:
-        _JIT = torch.diag(torch.tensor([0.0, 1e-9, 2e-9], dtype=torch.float64,
+    C = (F.transpose(-1, -2) @ F).to(_SIG_DT)
+    if _JIT is None or _JIT.device != C.device or _JIT.dtype != _SIG_DT:
+        _JIT = torch.diag(torch.tensor([0.0, 1e-9, 2e-9], dtype=_SIG_DT,
                                        device=C.device))
     tr = C.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(
         *C.shape[:-2], 1, 1).clamp_min(1e-12)
@@ -172,9 +181,10 @@ def plastic_step(F_trial, pl):
     if V is None:                              # 옛 호출 형태 (기저를 안 받은 경우)
         _, V = _sig_vec(F_trial)
     out = F_trial.clone()
-    Fi = F_trial[nz].double()
-    Vi = V[nz]
-    P = Vi @ torch.diag_embed(dlog[nz].double().exp()) @ Vi.transpose(-1, -2)
+    Fi = F_trial[nz].to(_SIG_DT)
+    Vi = V[nz].to(_SIG_DT)
+    P = (Vi @ torch.diag_embed(dlog[nz].to(_SIG_DT).exp())
+         @ Vi.transpose(-1, -2))
     out[nz] = (Fi @ P).to(F_trial.dtype)
     return out
 
