@@ -2141,12 +2141,13 @@ for it in pbar:
                       flush=True)
         if (it + 1) % a.save_every == 0 or it == a.iters - 1:
             save_ck("last", it + 1)
+        if _PROF_ON and it > 0 and it % 10 == 0:
+            _tot = sum(_PROF.values())
+            _msg = "  ".join(
+                f"{k} {v/it*1000:.1f}ms({100*v/max(_tot,1e-9):.0f}%)"
+                for k, v in sorted(_PROF.items(), key=lambda z: -z[1]))
+            print(f"[구간 {it}] 합 {_tot/it*1000:.0f}ms/it  {_msg}", flush=True)
         continue
-    if _PROF_ON and it > 0 and it % 10 == 0:
-        _tot = sum(_PROF.values())
-        _msg = "  ".join(f"{k} {v/it*1000:.1f}ms({100*v/max(_tot,1e-9):.0f}%)"
-                         for k, v in sorted(_PROF.items(), key=lambda z: -z[1]))
-        print(f"[구간 {it}] 합 {_tot/it*1000:.0f}ms/it  {_msg}", flush=True)
     if a.rl and OPT_C is not None:
         torch.nn.utils.clip_grad_norm_(CRITIC.parameters(), 1.0)
         OPT_C.step()
