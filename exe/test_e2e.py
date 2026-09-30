@@ -60,6 +60,11 @@ chk("지표(CD/EMD)가 나온다", "[지표]" in o1, "")
 _pen = re.findall(r"바닥아래 ([0-9.e+-]+)", o1)
 chk("바닥 관통이 0 이다", bool(_pen) and max(float(q) for q in _pen) == 0.0,
     f"최대 {max(_pen, key=float) if _pen else '?'}")
+# 하드 손잡이면 w=1 인 입자의 변위가 명령과 정확히 같아야 한다
+_ce = re.findall(r"손잡이오차 ([0-9.e+-]+)", o1)
+chk("손잡이 변위가 명령과 일치한다",
+    bool(_ce) and max(float(q) for q in _ce) < 1e-6,
+    f"최대 {max(_ce, key=float) if _ce else '?'}")
 
 # 2) 재개
 ck = f"{W}/e2e/E2E_last.pt"

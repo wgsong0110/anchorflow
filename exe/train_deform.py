@@ -929,7 +929,8 @@ _CUR_T = [0]              # step_once 가 남기는 현재 프레임
 _CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1/K)
 _DP_HOOK = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
-_BC_DIAG = []              # (활성비, 보정 최대/ext, 바닥 아래 깊이 최대/ext)
+_BC_DIAG = []              # (활성비, 보정최대/ext, 바닥아래/ext, 손잡이오차/ext)
+_CTRL_ERR = [0.0]          # 손잡이 입자가 명령 변위에서 벗어난 최대량 / ext
 
 
 def bc_report():
@@ -944,8 +945,10 @@ def bc_report():
     ar = sum(q[0] for q in _BC_DIAG) / n
     cm = max(q[1] for q in _BC_DIAG)
     pd = max(q[2] for q in _BC_DIAG)
+    ce = max(q[3] for q in _BC_DIAG)
     return (f"구속 활성 {100 * ar:.2f}%  보정최대 {cm:.2e}  "
-            f"바닥아래 {pd:.2e} (지금 {_BC_DIAG[-1][2]:.2e})")
+            f"바닥아래 {pd:.2e} (지금 {_BC_DIAG[-1][2]:.2e})  "
+            f"손잡이오차 {ce:.2e}")
 _F_MSG = []
 _PL_DROP = []
 _PL_MSG = []
@@ -1070,6 +1073,14 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 _dcmd = tau * _CTRL_SCALE[0] * _cvc[_cki]
                 q = x + (1.0 - _cw) * (q - x) + _cw * _dcmd
                 _act = _act + (_cw > 0.5).to(q.dtype)
+                # 하드 구속이면 w=1 인 입자는 변위가 **정확히** 명령이어야 한다.
+                # 바닥 사영 전에 잰다 (사영은 그 뒤 정당하게 덮어쓸 수 있다).
+                with torch.no_grad():
+                    _hm = (_cw.reshape(-1) > 0.5)
+                    if bool(_hm.any()):
+                        _e = ((q - x - _dcmd)[_hm].norm(dim=-1).max()
+                              / max(EXT, 1e-12))
+                        _CTRL_ERR[0] = float(_e)
             if not a.bc_soft:
                 _duP, _fa = phys_resid.bc_project(
                     x, q - x, d["cfg"], tau,
@@ -2013,7 +2024,8 @@ for it in pbar:
                                     / sc["ext"])
                     _BC_DIAG.append((
                         float(_actf.reshape(-1).gt(0.5).float().mean()),
-                        float(_corr.norm(dim=-1).max()) / sc["ext"], _pen0))
+                        float(_corr.norm(dim=-1).max()) / sc["ext"], _pen0,
+                        _CTRL_ERR[0]))
                     if len(_BC_DIAG) > 200:
                         del _BC_DIAG[:-200]
             # det 가 문턱 아래인 사면체는 탄성에서 빼고 복구 손실을 크게 준다
