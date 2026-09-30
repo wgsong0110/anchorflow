@@ -7,7 +7,8 @@
 #   - 작업마다 완료 표식(`$DONE/<작업>.ok`). 있으면 건너뛴다
 #   - 이미 그 작업의 세션이 살아 있으면 건너뛴다 (중복 실행 금지)
 #
-# 사용: bash exe/cluster_driver.sh [phase]      phase: teacher | student | bench
+# 사용: bash exe/cluster_driver.sh [phase]
+#   phase: teacher | smoke | convert | student | bench
 set -u
 W=${AF_WORK:-/home/dkta/work}
 R=$W/anchorflow
@@ -62,6 +63,27 @@ teacher)
          --output_h5 --implicit --solver newton_gmres"
   done
   ;;
+smoke)
+  echo "== 단계: 학생 하드 구속 스모크 (옛 교사로 코드 경로만 확인)"
+  job smoke 2 "python -u $R/exe/train_deform.py --data $W/one_traj_h2 \
+      --out $W/smoke --tag SMK --no_mat --control --n_ctrl 2 \
+      --arch sgnn --n_nodes 32 --gnn_layers 1 --hidden 128 --cell_warp tet \
+      --obj pts --dt_cond --dt_scale --v_from_dt --det_eps 0.1 --det_w 100 \
+      --lambda_bc 1.0 --lr 3e-4 --batch 4 --n_pts 8000 \
+      --phase2 --phys_w 1.0 --phys_sup 0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \
+      --iters 200 --eval_t0 3 --eval_len 40 --save_every 100000 \
+      --val_every 100 --val_n 1 --val_len 10"
+  ;;
+convert)
+  echo "== 단계: i-PG h5 -> .pt 변환"
+  for NG in 100 58; do
+    if [ ! -f $DONE/ipg_$NG.ok ]; then echo "  [대기] ipg_$NG 아직 미완료"; continue; fi
+    python $R/exe/ipg_h5_to_pt.py --h5dir $W/ipg/out_$NG \
+      --ref $W/traj_h2/mic_clayC_t_s400706.pt --cfg $W/ipg/cfg_ng$NG.json \
+      --out $W/traj_ipg/mic_clayC_ipg${NG}_s400706.pt < /dev/null \
+      && touch $DONE/conv_$NG.ok || echo "  [실패] conv_$NG"
+  done
+  ;;
 bench)
   echo "== 단계: 속도 측정 (단독 실행 -- 다른 작업이 없을 때만)"
   if tmux ls 2>/dev/null | grep -qvE "^(bench|k18)" ; then
@@ -72,7 +94,7 @@ bench)
   job bench 0 "bash $R/exe/bench_arch_speed.sh"
   ;;
 *)
-  echo "알 수 없는 단계: $PHASE (teacher | student | bench)"; exit 1;;
+  echo "알 수 없는 단계: $PHASE (teacher | smoke | convert | student | bench)"; exit 1;;
 esac
 echo "== 상태"
 for f in $DONE/*.ok; do [ -e "$f" ] && echo "  완료: $(basename ${f%.ok})"; done
