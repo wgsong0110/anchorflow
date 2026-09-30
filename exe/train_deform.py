@@ -1110,6 +1110,16 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             (_in, npos, (lo, lat, nn), rows, lam, uniq,
              (esrc, edst, ecls), _lax) = node_feats(d, t, gsel, x, v, fe=fe)
         _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
+        # 손잡이 가중치·소속은 x 와 t 만의 함수라 **tau 에 무관**하다. jvp 안에서
+        # 돌면 정방향 미분까지 두 번 탄다 (게다가 전에는 같은 것을 두 번 쟀다).
+        _cw = _cki = _cvc = None
+        if a.control and "ctrl_id" in d and "ctrl_vel" in d:
+            _tt = min(t, ctrl_anchor(d, gsel).shape[0] - 1)
+            _cw_all, _ = ctrl_weights(d, _tt, x, ctrl_anchor(d, gsel)[_tt])
+            _cw, _cki = _cw_all.max(1)                     # [N], [N]
+            _cw = _cw.unsqueeze(-1)
+            _cvc = d["ctrl_vel"].to(x.device, x.dtype)[
+                min(_tt, d["ctrl_vel"].shape[0] - 1)]
 
         def _fieldS(tau):
             with _tsec("신경망"):
@@ -1123,12 +1133,12 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             q = x + SX.g2p_pre(rows, lam, dpn)
             _qraw = q                       # 덮어쓰기 **전** 의 원 출력
             _act = torch.zeros_like(q[:, :1])
-            if a.control:
-                q = apply_control(d, t, gsel, q, x, dt=tau)
-                _w, _ = ctrl_weights(d, min(t, d["ctrl_id"].shape[0] - 1), x,
-                                     ctrl_anchor(d, gsel)[
-                                         min(t, d["ctrl_id"].shape[0] - 1)])
-                _act = _act + (_w.max(1).values > 0.5).to(q.dtype).unsqueeze(-1)
+            if _cw is not None:
+                # 교사와 같은 규약의 하드 Dirichlet. tau 에 의존하는 것은 명령
+                # 변위뿐이므로 그것만 여기서 만든다.
+                _dcmd = tau * _CTRL_SCALE[0] * _cvc[_cki]
+                q = x + (1.0 - _cw) * (q - x) + _cw * _dcmd
+                _act = _act + (_cw > 0.5).to(q.dtype)
             if not a.bc_soft:
                 _duP, _fa = phys_resid.bc_project(
                     x, q - x, d["cfg"], tau,
