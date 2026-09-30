@@ -929,7 +929,6 @@ _CUR_T = [0]              # step_once 가 남기는 현재 프레임
 _CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1/K)
 _DP_HOOK = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
-_OV_CUR = [None]           # --out_var 에서 지금 최적화 중인 상태 사전
 _BC_DIAG = []              # (활성비, 보정 최대/ext, 바닥 아래 깊이 최대/ext)
 
 
@@ -1124,6 +1123,8 @@ def traj_F(d):
     return d["F"]
 
 
+_OV_CUR = [None]           # --out_var 에서 지금 최적화 중인 상태 사전
+
 @contextlib.contextmanager
 def traj_scope(d):
     """평가·검증 동안 전역 MASS/EXT/N_FULL 을 **그 궤적의** 값으로 맞춘다.
@@ -1136,6 +1137,10 @@ def traj_scope(d):
     """
     global MASS, EXT, N_FULL
     _sv = (MASS, EXT, N_FULL)
+    # out_var 의 훅도 함께 끊는다. 안 끊으면 평가 중 step_once 가 **풀에서 마지막
+    # 으로 다루던 상태**의 출력 변수를 돌려주고, 노드 수가 달라 색인이 터진다.
+    _ov = _OV_CUR[0]
+    _OV_CUR[0] = None
     MASS = traj_mass(d)
     EXT = float(d.get("_ext", EXT))
     N_FULL = d["x"].shape[1]
@@ -1143,6 +1148,7 @@ def traj_scope(d):
         yield
     finally:
         MASS, EXT, N_FULL = _sv
+        _OV_CUR[0] = _ov
 
 
 def traj_mass(d):
