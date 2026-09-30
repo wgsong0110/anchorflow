@@ -1,108 +1,145 @@
-"""사면체 복합체: 이제 **사면체가 셀**이다.
+"""사면체 복합체: **몸대각선을 z 로 세운 고정 Kuhn 분할**.
 
-육면체 격자는 복합체를 만드는 발판으로만 쓴다. 발판 셀 하나를 소큐브 8개로
-자르고, 각 소큐브를 "부모 코너 -> 몸중심" 을 주대각선으로 하는 Kuhn 6-사면체
-로 자른다 (셀당 48 사면체). 8 개의 대각선이 전부 몸중심으로 수렴하므로 배치가
-큐브 대칭군 48 개 전체에 불변이다 -- 단일 Kuhn 의 특권 대각 방향이 없다.
+발판 격자는 정육면체(일반적으로는 능면체)이고, 모든 셀이 **같은 몸대각선
+(1,1,1)** 을 공유 대각선으로 쓰는 Kuhn 6-사면체 분할을 한다. 예전에는 셀을
+소큐브 8 개로 자르고 대각선을 옥탄트마다 몸중심 쪽으로 꼬아 큐브 대칭 48 개에
+불변으로 만들었는데, 지금은 **일부러 방향 의존적으로** 대각선 하나를 z 에
+세운다.
 
-**노드는 27 종 좌표 전부**(코너 8 + 변중점 12 + 면중심 6 + 몸중심 1)이고 각각
-독립 자유도다. 예전처럼 코너 평균으로 유도하지 않는다. 좌표를 **2 배 격자**
-(간격 h/2) 의 정수점으로 보면 27 종이 전부 유일하게 색인되고, 이웃 셀과 공유
-되는 노드도 저절로 하나로 합쳐진다.
+그 대각선 방향에서 내려다보면 격자는 xy 에 평행한 **정삼각형 층**이 되고
+**ABCABC** 로 쌓인다. 1 층과 4 층의 같은 사영 위치를 잇는 것이 바로 그
+몸대각선이다 (세 층 간격). 면내 간격 h 와 층 간격 hz 를 따로 주므로, 같은
+조합 구조가 단순입방(정육면체를 [111] 로 본 것)부터 조밀 쌓기까지 덮는다 --
+쌓기끼리의 차이는 이 두 간격에만 들어간다.
 
-  발판 셀 간격 h,  노드 간격 h/2.
-  사용자는 노드 간격만 정한다 (--n_nodes) -- 발판 격자는 내부 구현이다.
+격자 기저 (열이 a_i):
+
+    a_i = (r*u_i, hz),   r = h/sqrt(3),   u_i 는 120 도 간격 단위벡터
+    -> |a_i - a_j| = h (면내 최근접),  sum_i a_i = (0, 0, 3*hz) (몸대각선)
+    hz = h/sqrt(6) 이면 정육면체다.
+
+노드는 격자 정수점 **한 종류**다 (예전의 2 배 격자 27 종은 소큐브 분할 때문에
+필요했던 것이라 함께 사라졌다).
 
 입자는 자기가 든 사면체의 4 꼭짓점 barycentric 으로 움직인다. 사면체 안이
 아핀이라 grad_Phi 가 사면체별 **상수**이고 닫힌 형식이며, det 도 스칼라 하나다.
 """
+import math
+from collections import namedtuple
+
 import torch
 
-__all__ = ["grid_for_nodes", "locate", "g2p", "g2p_jac", "tet_det",
-           "active_nodes", "edges_of", "EDGE_OFFSETS", "N_EDGE_CLASS"]
+__all__ = ["Lat", "lattice", "grid_for_nodes", "node_pos", "locate", "g2p",
+           "g2p_jac", "tet_det", "tet_id", "active_nodes", "edges_of",
+           "EDGE_OFFSETS", "N_EDGE_CLASS", "HZ_CUBE"]
+
+# 정육면체가 되는 층간격 비 (hz = HZ_CUBE * h)
+HZ_CUBE = 1.0 / math.sqrt(6.0)
+
+# A: 열이 격자 기저, Ai: 역행렬, s: 대표 길이(면내 간격 h)
+Lat = namedtuple("Lat", "A Ai s hz")
 
 
-def grid_for_nodes(x, n_nodes, margin=0.05):
-    """점들을 덮는 **2 배 격자**를 잡는다 -> (lo, hn, nn) .
+def lattice(h, hz, device=None, dtype=torch.float32):
+    """면내 간격 h, 층 간격 hz 의 능면체 격자."""
+    r = float(h) / math.sqrt(3.0)
+    c, s3 = 0.5, math.sqrt(3.0) / 2.0
+    u = ((1.0, 0.0), (-c, s3), (-c, -s3))
+    A = torch.tensor([[r * u[i][0] for i in range(3)],
+                      [r * u[i][1] for i in range(3)],
+                      [float(hz)] * 3], device=device, dtype=dtype)
+    return Lat(A, torch.linalg.inv(A), float(h), float(hz))
 
-    hn 은 노드 간격, nn 은 축별 노드 개수. 발판 셀 간격은 2*hn 이고 노드
-    색인이 짝수면 코너, 홀수 성분이 있으면 변중점/면중심/몸중심이다.
-    사면체가 발판 셀 안에서 닫히려면 축별 노드 수가 **홀수**여야 한다.
+
+def grid_for_nodes(x, n_nodes, margin=0.05, hz_ratio=HZ_CUBE):
+    """점들을 덮는 격자를 잡는다 -> (lo, lat, nn).
+
+    lo 는 격자 정수 원점의 **월드 위치**, nn 은 축별 정수 좌표 개수다.
+
+    격자는 **이산화 선택**이지 물리량이 아니다. x 가 그래프에 있을 때 (K>1
+    언롤의 둘째 서브스텝부터) 바운딩박스를 그대로 쓰면 격자 원점이 미분가능해져
+    극단 입자 하나가 격자 전체의 기울기를 받는다 -- 그래서 끊는다.
     """
-    # 격자는 **이산화 선택**이지 물리량이 아니다. x 가 그래프에 있을 때
-    # (K>1 언롤의 둘째 서브스텝부터) 바운딩박스를 그대로 쓰면 격자 원점이
-    # 미분가능해져, 극단 입자 하나가 격자 전체의 기울기를 받는다. 간격 hn 은
-    # float 로 끊겨 있어 짝도 맞지 않는다 -- 원점도 함께 끊는다.
     xd = x.detach()
     lo_ = xd.min(0).values
     hi_ = xd.max(0).values
     ext = (hi_ - lo_).max().clamp_min(1e-12)
     pad = margin * ext
-    lo_ = lo_ - pad
-    hn = float((ext + 2 * pad) / max(int(n_nodes), 2))
-    nn = []
-    for k in range(3):
-        c = int(torch.ceil((hi_[k] + pad - lo_[k]) / hn).item()) + 1
-        c = max(c, 3)
-        if c % 2 == 0:            # 발판 셀(2칸) 로 딱 떨어지게 홀수로
-            c += 1
-        nn.append(c)
-    return lo_, hn, torch.tensor(nn, device=x.device)
+    h = float((ext + 2 * pad) / max(int(n_nodes), 2))
+    lat = lattice(h, hz_ratio * h, device=x.device, dtype=x.dtype)
+    # 패딩된 상자의 8 꼭짓점을 격자 좌표로 보내 정수 범위를 잡는다
+    b0, b1 = lo_ - pad, hi_ + pad
+    cor = torch.stack([torch.stack([b0[0] if (m & 1) else b1[0],
+                                    b0[1] if (m & 2) else b1[1],
+                                    b0[2] if (m & 4) else b1[2]])
+                       for m in range(8)], 0)                    # [8,3]
+    y = cor @ lat.Ai.T
+    imin = torch.floor(y.min(0).values).long() - 1
+    imax = torch.ceil(y.max(0).values).long() + 1
+    nn = (imax - imin + 1).clamp_min(2)
+    lo = (lat.A @ imin.to(lat.A.dtype))
+    return lo, lat, nn
 
 
-def locate(q, lo, hn, nn):
+def node_pos(lo, lat, nn, uniq):
+    """압축 노드 색인 -> 월드 위치 [M,3]."""
+    nnl = [int(nn[k]) for k in range(3)]
+    k2 = uniq % nnl[2]
+    k1 = (uniq // nnl[2]) % nnl[1]
+    k0 = uniq // (nnl[1] * nnl[2])
+    ijk = torch.stack([k0, k1, k2], -1).to(lat.A.dtype)          # [M,3]
+    return ijk @ lat.A.T + lo
+
+
+def locate(q, lo, lat, nn):
     """점 -> (사면체 4 꼭짓점 평탄색인 [N,4], barycentric [N,4], 보조).
 
-    보조 = (base [N,3] 발판 셀 원점(2배격자 색인), oct [N,3] 소큐브 비트,
-            rank [N,3] 축->순위) -- 야코비안·사면체 ID 에 쓴다.
+    셀 안 좌표 f 를 내림차순 정렬하면 어느 사면체인지가 정해지고(축 순열),
+    정렬값의 차가 그대로 barycentric 이다. 대각선이 항상 +(1,1,1) 이라
+    예전의 옥탄트 미러링·걸음 부호가 없다.
+
+    보조 = (ci [N,3] 셀 정수좌표, rank [N,3] 축->순위, perm [N,3] 순위->축)
     """
     nnl = [int(nn[k]) for k in range(3)]
-    ncell = [(c - 1) // 2 for c in nnl]                 # 발판 셀 수
-    t = (q - lo) / (2.0 * hn)                           # 발판 셀 좌표
-    ci = t.floor().long()
-    ci = torch.stack([ci[:, k].clamp(0, ncell[k] - 1) for k in range(3)], -1)
-    f = (t - ci).clamp(0.0, 1.0)                        # 셀 안 [0,1]^3
-    oc = (f >= 0.5)                                     # 소큐브 옥탄트
-    # 소큐브 안 좌표를 "자기 코너에서 몸중심 쪽" 으로 미러링해 [0,1]^3 로
-    m = torch.where(oc, 2.0 * (1.0 - f), 2.0 * f)
-    perm = torch.argsort(m.detach(), dim=1, descending=True)
+    y = (q - lo) @ lat.Ai.T                             # 격자 좌표
+    ci = y.floor().long()
+    ci = torch.stack([ci[:, k].clamp(0, nnl[k] - 2) for k in range(3)], -1)
+    f = (y - ci).clamp(0.0, 1.0)
+    perm = torch.argsort(f.detach(), dim=1, descending=True)
     rank = torch.argsort(perm, dim=1)
-    sv = m.gather(1, perm)                              # s1 >= s2 >= s3
+    sv = f.gather(1, perm)                              # s0 >= s1 >= s2
     lam = torch.stack([1.0 - sv[:, 0], sv[:, 0] - sv[:, 1],
                        sv[:, 1] - sv[:, 2], sv[:, 2]], -1)
-    # 사슬 꼭짓점 (2배 격자 색인): v0 = 자기 코너, 한 걸음마다 몸중심 쪽으로 +-1
-    # 발판 셀은 2 배 격자에서 [2ci, 2ci+2] 를 차지한다 -- 옥탄트 1 쪽 "자기
-    # 코너" 는 2ci+2 이지 2ci+1(몸중심) 이 아니다.
-    base2 = 2 * ci + 2 * oc.long()                      # 자기 코너의 노드 색인
-    step = torch.where(oc, -1, 1)                       # 몸중심 방향
+    # 사슬 꼭짓점: v0 = ci, 한 걸음마다 +e_{perm[r]}, v3 = ci + (1,1,1)
     eye = torch.eye(3, device=q.device, dtype=torch.long)
-    dirs = eye[perm] * step.gather(1, perm).unsqueeze(-1)
+    dirs = eye[perm]                                    # [N,3,3]
     verts = torch.cat([torch.zeros_like(dirs[:, :1]),
-                       dirs.cumsum(1)], 1) + base2.unsqueeze(1)   # [N,4,3]
+                       dirs.cumsum(1)], 1) + ci.unsqueeze(1)     # [N,4,3]
     idx = ((verts[..., 0] * nnl[1] + verts[..., 1]) * nnl[2]
            + verts[..., 2])
-    return idx, lam, (base2, oc, rank, perm, step)
+    return idx, lam, (ci, rank, perm)
 
 
-def g2p(q, lo, hn, nn, dp):
+def g2p(q, lo, lat, nn, dp):
     """노드 변위를 입자로: u(q) = sum_i lam_i dp_{v_i} (사면체 4 꼭짓점)."""
-    idx, lam, _ = locate(q, lo, hn, nn)
+    idx, lam, _ = locate(q, lo, lat, nn)
     return (lam.unsqueeze(-1) * dp[idx]).sum(1)
 
 
-def g2p_jac(q, lo, hn, nn, dp):
-    """값과 grad u [N,3,3] -- 사면체별 상수, 닫힌 형식.
+def g2p_jac(q, lo, lat, nn, dp):
+    """값과 grad_x u [N,3,3] -- 사면체별 상수, 닫힌 형식.
 
-    사슬을 따라 u 는 아핀이고, r 번째 걸음의 방향이 축 perm[r] 이므로
-        du/d(축 perm[r]) = (dp_{r+1} - dp_r) * step_r / hn.
+    사슬을 따라 u 는 아핀이고 r 번째 걸음이 격자축 perm[r] 이므로
+        du/dy_{perm[r]} = dp_{r+1} - dp_r,
+    그리고 y = Ai (x - lo) 이므로 du/dx = (du/dy) Ai.
     """
-    idx, lam, (base2, oc, rank, perm, step) = locate(q, lo, hn, nn)
+    idx, lam, (ci, rank, perm) = locate(q, lo, lat, nn)
     dpc = dp[idx]                                       # [N,4,3]
     u = (lam.unsqueeze(-1) * dpc).sum(1)
-    sp = step.gather(1, perm).to(u.dtype)               # [N,3] 걸음 방향
-    d = (dpc[:, 1:] - dpc[:, :-1]) * sp.unsqueeze(-1) / hn   # [N,3(r),3(i)]
+    d = (dpc[:, 1:] - dpc[:, :-1])                      # [N,3(r),3(i)]
     d = d.transpose(1, 2)                               # [N,3(i),3(r)]
-    G = d.gather(2, rank.unsqueeze(1).expand(-1, 3, -1))     # 축 순서로
+    Dy = d.gather(2, rank.unsqueeze(1).expand(-1, 3, -1))    # 격자축 순서로
+    G = Dy @ lat.Ai.to(Dy.dtype)                        # [N,3,3] grad_x u
     return u, G
 
 
@@ -112,15 +149,13 @@ def tet_det(G):
     return torch.linalg.det(I3 + G)
 
 
-def tet_id(lo, hn, nn, aux):
-    """사면체 유일 ID [N] = (발판셀, 옥탄트 8, 축순열 6). 중복 제거용."""
-    base2, oc, rank, perm, step = aux
+def tet_id(lo, lat, nn, aux):
+    """사면체 유일 ID [N] = (셀, 축순열 6). 중복 제거용."""
+    ci, rank, perm = aux
     nnl = [int(nn[k]) for k in range(3)]
-    cell = ((base2[:, 0] // 2 * nnl[1] + base2[:, 1] // 2) * nnl[2]
-            + base2[:, 2] // 2)
-    o = (oc[:, 0].long() * 2 + oc[:, 1].long()) * 2 + oc[:, 2].long()
-    p = (perm[:, 0] * 3 + perm[:, 1])            # 앞 둘이면 순열이 정해진다
-    return (cell * 8 + o) * 9 + p
+    cell = (ci[:, 0] * nnl[1] + ci[:, 1]) * nnl[2] + ci[:, 2]
+    p = perm[:, 0] * 3 + perm[:, 1]        # 앞 둘이면 순열이 정해진다
+    return cell * 9 + p
 
 
 def active_nodes(idx):
@@ -129,13 +164,18 @@ def active_nodes(idx):
     return inv.reshape(idx.shape), uniq
 
 
-# 2 배 격자에서 사면체 변이 가질 수 있는 상대 오프셋: {-1,0,1}^3 의 0 아닌 것
-# 전부 (축 6 + 면대각 12 + 체대각 8 = 26). **방향까지 구분**해 종류를 나눈다 --
-# +x 와 -x 는 다른 간선이다.
-EDGE_OFFSETS = [(i, j, k)
-                for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)
-                if (i, j, k) != (0, 0, 0)]
-N_EDGE_CLASS = len(EDGE_OFFSETS)                        # 26
+# 고정 대각선 Kuhn 분할이 쓰는 변은 세 종류뿐이다 (방향까지 구분해 14 가지):
+#   격자축   e1, e2, e3                  -> 한 층 넘는다
+#   면대각   e1+e2, e1+e3, e2+e3         -> 두 층
+#   몸대각   e1+e2+e3                    -> 세 층 (z 에 평행, 공유 대각선)
+# (1,-1,0) 같은 나머지 면대각은 이 분할에 나타나지 않는다 -- 그래서 **같은 층
+# 안에는 변이 없고** 모든 변이 z 로 층을 넘는다.
+_POS_OFFSETS = [(1, 0, 0), (0, 1, 0), (0, 0, 1),
+                (1, 1, 0), (1, 0, 1), (0, 1, 1),
+                (1, 1, 1)]
+EDGE_OFFSETS = _POS_OFFSETS + [(-i, -j, -k) for (i, j, k) in _POS_OFFSETS]
+N_EDGE_CLASS = len(EDGE_OFFSETS)                        # 14
+_OFF2CLS = {o: c for c, o in enumerate(EDGE_OFFSETS)}
 
 
 def edges_of(idx_rows, uniq, nn):
@@ -144,38 +184,22 @@ def edges_of(idx_rows, uniq, nn):
     양방향 모두 담는다 (오프셋이 반대인 서로 다른 클래스로 들어간다).
     """
     nnl = [int(nn[k]) for k in range(3)]
-    # 압축 노드의 3D 좌표 (2 배 격자 색인)
     z = uniq % nnl[2]
     y = (uniq // nnl[2]) % nnl[1]
     xx = uniq // (nnl[1] * nnl[2])
-    pos = torch.stack([xx, y, z], -1)                   # [M,3]
+    pos = torch.stack([xx, y, z], -1)                   # [M,3] 정수 격자좌표
     pair = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
     a = torch.cat([idx_rows[:, i] for i, _ in pair])
     b = torch.cat([idx_rows[:, j] for _, j in pair])
     src = torch.cat([a, b])
     dst = torch.cat([b, a])
-    e = torch.stack([src, dst], -1)
-    e = torch.unique(e, dim=0)
+    e = torch.unique(torch.stack([src, dst], -1), dim=0)
     src, dst = e[:, 0], e[:, 1]
-    off = pos[dst] - pos[src]                           # [E,3] in {-1,0,1}
-    cls = ((off[:, 0] + 1) * 3 + (off[:, 1] + 1)) * 3 + (off[:, 2] + 1)
-    cls = torch.where(cls > 13, cls - 1, cls)           # (0,0,0)=13 을 뺀다
+    off = pos[dst] - pos[src]                           # [E,3]
+    # 오프셋 -> 클래스. 표에 없는 값은 나오지 않아야 한다.
+    key = (off[:, 0] + 1) * 9 + (off[:, 1] + 1) * 3 + (off[:, 2] + 1)
+    tbl = torch.full((27,), -1, device=off.device, dtype=torch.long)
+    for o, c in _OFF2CLS.items():
+        tbl[(o[0] + 1) * 9 + (o[1] + 1) * 3 + (o[2] + 1)] = c
+    cls = tbl[key]
     return src, dst, cls
-
-
-# ---------------------------------------------------------------------------
-# 사면체 **내부** 재배열 -- 격자 시절 셀 내부 RQS 의 사면체판
-#
-# 사면체 안의 위치는 정렬좌표 1 >= t1 >= t2 >= t3 >= 0 으로 매개화된다. 이걸
-# stick-breaking 으로 [0,1]^3 에 펴고
-#     w1 = t1,  w2 = t2/t1,  w3 = t3/t2
-# 각 w 에 단조 RQS 를 건 뒤 되돌린다
-#     t1' = T1(w1),  t2' = t1'*T2(w2),  t3' = t2'*T3(w3).
-# T 가 [0,1] -> [0,1] 단조라 1 >= t1' >= t2' >= t3' >= 0 이 그대로 성립하므로
-# **점이 자기 사면체를 벗어나지 못하고** 각 방향으로 단조라 단사다. 사면체의
-# 네 면(t1=1, t1=t2, t2=t3, t3=0) 은 각각 w1=1, w2=1, w3=1, w3=0 에 대응하고
-# 끝점이 고정되므로 면이 면으로 간다.
-#
-# 파라미터는 사면체마다 3*(3K+1) 개다 (격자 셀 판과 같은 수). 망은 노드마다
-# 내고 그 사면체의 4 꼭짓점 평균으로 쓴다.
-# ---------------------------------------------------------------------------
