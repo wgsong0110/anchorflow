@@ -2139,6 +2139,17 @@ for it in pbar:
                 f"{k} {v/it*1000:.1f}ms({100*v/max(_tot,1e-9):.0f}%)"
                 for k, v in sorted(_PROF.items(), key=lambda z: -z[1]))
             print(f"[구간 {it}] 합 {_tot/it*1000:.0f}ms/it  {_msg}", flush=True)
+        # det·구속 진단도 여기서 낸다. 아래 공통 자리에 두면 이 continue 뒤라
+        # 풀 경로에서 영원히 도달하지 않는다 (프로파일 출력도 같은 함정이었다).
+        if a.det_every and (it + 1) % a.det_every == 0:
+            if _DET_BAD:
+                print(f"  [det {it+1}] {det_report()}", flush=True)
+            _br = bc_report()
+            if _br:
+                print(f"  [구속 {it+1}] {_br}", flush=True)
+            if TBW is not None and _DET_BAD:
+                TBW.add_scalar("det/무효비율",
+                               sum(_DET_BAD) / len(_DET_BAD), it)
         continue
     if a.rl and OPT_C is not None:
         torch.nn.utils.clip_grad_norm_(CRITIC.parameters(), 1.0)
