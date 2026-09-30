@@ -19,9 +19,11 @@ eigvalsh 의 역전파는 고유벡터 차이(1/(li-lj))를 타지 않아 겹친
 import math
 import os
 
+from typing import NamedTuple
+
 import torch
 
-__all__ = ["lame", "psi_of", "plastic_step", "ip_energy", "residual",
+__all__ = ["lame", "psi_of", "plastic_step", "Plast", "ip_energy", "residual",
            "smooth_noise", "mat_name", "bc_node_mask", "bc_energy",
            "grid_ip_sub", "grid_ip_pts", "jac_neighbors", "grad_from_points",
            "p2g_ls", "g2p_from_nodes"]
@@ -52,6 +54,30 @@ def _sig(F):
         *C.shape[:-2], 1, 1).clamp_min(1e-12)
     return torch.linalg.eigvalsh(C + tr * _JIT).clamp_min(1e-12).sqrt().to(
         F.dtype)
+
+
+def _sig_vec(F):
+    """(특이값 [N,3] 오름차순, C=F^T F 의 고유기저 V [N,3,3]).
+
+    소성 사영은 주응력 공간에서만 대각이라 V 가 필요하고, 에너지는 값만 쓴다.
+    예전에는 에너지에서 eigvalsh, 소성에서 eigh 를 **따로** 돌아 같은 분해를
+    두 번 했다 -- 한 번에 받아 넘긴다.
+    """
+    global _JIT
+    C = (F.transpose(-1, -2) @ F).double()
+    if _JIT is None or _JIT.device != C.device:
+        _JIT = torch.diag(torch.tensor([0.0, 1e-9, 2e-9], dtype=torch.float64,
+                                       device=C.device))
+    tr = C.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(
+        *C.shape[:-2], 1, 1).clamp_min(1e-12)
+    w, V = torch.linalg.eigh(C + tr * _JIT)
+    return w.clamp_min(1e-12).sqrt().to(F.dtype), V
+
+
+class Plast(NamedTuple):
+    """소성 사영에 필요한 것: 주응력 공간 보정과 그 기저."""
+    dlog: torch.Tensor
+    V: torch.Tensor
 
 
 def _psi_fcr(sig, mu, lam):
@@ -106,9 +132,11 @@ def psi_of(F_trial, cfg, dt):
     """(에너지밀도 [N], 주응력 공간의 소성 보정 dlog [N,3] 또는 None)."""
     mu, lam = lame(cfg["E"], cfg["nu"])
     m = mat_name(cfg)
-    sig = _sig(F_trial).clamp_min(0.01)        # PG 도 0.01 로 자른다
     if m in ("jelly", "elastic_damage", "watermelon"):
-        return _psi_fcr(sig, mu, lam), None
+        # 탄성 전용이면 고유벡터가 필요 없다 (값만 쓰는 쪽이 싸다)
+        return _psi_fcr(_sig(F_trial).clamp_min(0.01), mu, lam), None
+    sig, V = _sig_vec(F_trial)
+    sig = sig.clamp_min(0.01)                  # PG 도 0.01 로 자른다
     eps = sig.log()
     ys = float(cfg.get("yield_stress", 0.0))
     if m in ("metal", "plasticine"):
@@ -118,23 +146,37 @@ def psi_of(F_trial, cfg, dt):
                               float(cfg.get("plastic_viscosity", 0.0)), dt)
     else:
         raise ValueError(f"아직 옮기지 않은 재질: {m}")
-    return _psi_hencky(eps2, mu, lam), (eps2 - eps)
+    return _psi_hencky(eps2, mu, lam), Plast(eps2 - eps, V)
 
 
 @torch.no_grad()
-def plastic_step(F_trial, dlog):
+def plastic_step(F_trial, pl):
     """소성 사영을 배치에 반영한다. F_e = F_trial V diag(exp(dlog)) V^T.
 
     보정은 C 의 고유기저에서 대각이라 F_trial 오른쪽에 곱하면 된다. 사영 자체는
     비매끄러워 기울기를 타면 튀므로 **여기서만** 떼어낸다 (다중 스텝에서 상태를
     이어 나르는 용도). 에너지의 기울기는 psi_of 를 통해 그대로 흐른다.
+
+    기저 V 는 psi_of 가 이미 구한 것을 그대로 받는다 (재분해 없음). 그리고
+    **항복한 입자만** 곱한다 -- dlog 가 정확히 0 인 입자는 P = V V^T = I 라
+    수학적으로 항등이고, 건너뛰면 float64 직교성 오차(~1e-16)조차 안 생긴다.
+    `_vm_project` 가 항복 안 한 입자에서 `over` 또는 `dg` 를 정확히 0 으로 두므로
+    `eps2 - eps` 가 비트 단위로 0 이다.
     """
-    if dlog is None:
+    if pl is None:
         return F_trial
-    C = (F_trial.transpose(-1, -2) @ F_trial).double()
-    _, V = torch.linalg.eigh(C)
-    P = V @ torch.diag_embed(dlog.double().exp()) @ V.transpose(-1, -2)
-    return (F_trial.double() @ P).to(F_trial.dtype)
+    dlog, V = (pl.dlog, pl.V) if isinstance(pl, Plast) else (pl, None)
+    nz = dlog.abs().sum(-1) > 0
+    if not bool(nz.any()):
+        return F_trial
+    if V is None:                              # 옛 호출 형태 (기저를 안 받은 경우)
+        _, V = _sig_vec(F_trial)
+    out = F_trial.clone()
+    Fi = F_trial[nz].double()
+    Vi = V[nz]
+    P = Vi @ torch.diag_embed(dlog[nz].double().exp()) @ Vi.transpose(-1, -2)
+    out[nz] = (Fi @ P).to(F_trial.dtype)
+    return out
 
 
 def ip_energy(x2, xtil, F_trial, mass, vol, cfg, h, free=None, g=None,
