@@ -472,7 +472,7 @@ def grid_pin(x):
 
     conv 경로는 격자가 cfg(n_grid, grid_lim) 로 고정이라 서브스텝마다 같은
     격자를 본다. sgnn 은 격자를 x 의 바운딩박스에서 잡으므로 그대로 두면 K
-    스텝이 서로 다른 격자 위에서 합성된다 -- 물체가 부풀면 간격 hn 까지 커지고,
+    스텝이 서로 다른 격자 위에서 합성된다 -- 물체가 부풀면 간격 h 까지 커지고,
     망 출력은 간격 단위라 그만큼 함께 커져 되먹임이 된다. K=1 에서는 격자를
     한 번만 잡으므로 이 고정이 아무것도 바꾸지 않는다.
     """
@@ -1050,21 +1050,18 @@ def node_feats(d, t, gsel, x, v, fe=None):
     """사면체 복합체의 **노드** 특징. 입자 물리량을 자기 사면체의 barycentric
     가중으로 4 꼭짓점에 뿌려 모은다 (P2G 와 같은 구조, 전달 가중치 재사용).
 
-    -> (_in [M,F], npos [M,3], (lo,hn,nn), rows [N,4], lam [N,4], uniq [M],
+    -> (_in [M,F], npos [M,3], (lo,lat,nn), rows [N,4], lam [N,4], uniq [M],
         간선 (src,dst,cls))
     """
     cfg = d["cfg"]
     X = take(d["x"][0], gsel)
-    lo, hn, nn = (_GRID[0] if _GRID[0] is not None
-                  else SX.grid_for_nodes(x, a.n_nodes))
-    idx, lam, _aux = SX.locate(x, lo, hn, nn)
+    lo, lat, nn = (_GRID[0] if _GRID[0] is not None
+                   else SX.grid_for_nodes(x, a.n_nodes))
+    idx, lam, _aux = SX.locate(x, lo, lat, nn)
     rows, uniq = SX.active_nodes(idx)          # **점유 사면체의 꼭짓점만**
     Mn = int(uniq.numel())
-    nnl = [int(nn[k]) for k in range(3)]
-    _z = uniq % nnl[2]
-    _y = (uniq // nnl[2]) % nnl[1]
-    _x = uniq // (nnl[1] * nnl[2])
-    npos = torch.stack([_x, _y, _z], -1).to(x.dtype) * hn + lo
+    npos = SX.node_pos(lo, lat, nn, uniq)
+    hn = lat.s                                 # 길이 단위 = 면내 간격 h
     mw = MASS[gsel]
     # 국소 통계(2 차 모멘트·각속도·국소 F) -- 탄성항이 보는 것을 담으려면
     # 변위·속도 평균만으로는 모자란다 (격자 시절 tri_feats 와 같은 항목)
@@ -1085,7 +1082,7 @@ def node_feats(d, t, gsel, x, v, fe=None):
     _in = torch.nan_to_num(_in, nan=0.0, posinf=0.0,
                            neginf=0.0).clamp(-_FCAP, _FCAP)
     src, dst, cls = SX.edges_of(rows, uniq, nn)
-    return _in, npos, (lo, hn, nn), rows, lam, uniq, (src, dst, cls)
+    return _in, npos, (lo, lat, nn), rows, lam, uniq, (src, dst, cls)
 
 
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
@@ -1105,7 +1102,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         # tau 에 무관하므로 밖에서 만들고, tau 에 탄젠트를 얹어 한 번 통과
         # 시키면 dPhi/dt (각 지점의 속도) 가 나온다.
         with _tsec("셀집계"):
-            _in, npos, (lo, hn, nn), rows, lam, uniq, (esrc, edst, ecls) = \
+            _in, npos, (lo, lat, nn), rows, lam, uniq, (esrc, edst, ecls) = \
                 node_feats(d, t, gsel, x, v, fe=fe)
         _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
 
@@ -1119,7 +1116,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             dpf = torch.zeros(Mtot, 3, device=dev, dtype=x.dtype)
             dpf = dpf.index_copy(0, uniq, dpn)     # 활성 노드만 채운다
             # 셀(사면체) 내부는 **항등**이다. 로컬 변환은 쓰지 않는다.
-            q = x + SX.g2p(x, lo, hn, nn, dpf)
+            q = x + SX.g2p(x, lo, lat, nn, dpf)
             _qraw = q                       # 덮어쓰기 **전** 의 원 출력
             _act = torch.zeros_like(q[:, :1])
             if a.control:
@@ -1152,7 +1149,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         dpf = _outs[0]
         # 셀 내부가 항등이라 변형장은 사면체별 아핀이다 -> 야코비안은 닫힌 형식
         # 하나로 나온다 (재배열이 있던 시절에는 합성이라 역전파 3 회가 필요했다).
-        _u, Jf = SX.g2p_jac(x, lo, hn, nn, dpf)
+        _u, Jf = SX.g2p_jac(x, lo, lat, nn, dpf)
         Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
         _DET_LAST[0] = torch.linalg.det(Jf)
         # 구속 보정량·활성집합을 창 쪽으로 넘긴다 (L_bc 와 free 마스크에 쓴다)
@@ -1397,15 +1394,15 @@ def phys_window(d, t0, K, gsel, sigma, gen):
     F = take(traj_F(d)[t0], gsel).float()
     if sigma > 0 and a.phys_noise_grid and a.arch == "sgnn":
         # 출력 공간 교란(복합체): 노드 변위를 무작위로 뽑아 barycentric 으로
-        _lo, _hn, _nn = SX.grid_for_nodes(x, a.n_nodes)
+        _lo, _lat, _nn = SX.grid_for_nodes(x, a.n_nodes)
         _Mn = int(_nn[0] * _nn[1] * _nn[2])
         _dpn = torch.randn(_Mn, 3, generator=gen, device=dev,
                            dtype=x.dtype) * (sigma * ext)
 
         def _warp_n(q):
-            return q + SX.g2p(q, _lo, _hn, _nn, _dpn)
+            return q + SX.g2p(q, _lo, _lat, _nn, _dpn)
         u = _warp_n(x) - x
-        gu = SX.g2p_jac(x, _lo, _hn, _nn, _dpn)[1]
+        gu = SX.g2p_jac(x, _lo, _lat, _nn, _dpn)[1]
         _fm0 = free_mask(d, x.shape[0], dev, gsel, x, t0) if a.control else None
         if _fm0 is not None:
             u = u * _fm0.unsqueeze(-1).to(u.dtype)

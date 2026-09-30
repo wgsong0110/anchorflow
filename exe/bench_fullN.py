@@ -83,16 +83,13 @@ for n in [int(q) for q in a.n.split(",")]:
     x, v = cloud(n)
     X = x.clone()
     mw = torch.full((n,), 1.0 / n, device=dev)
-    lo, hn, nn_ = SX.grid_for_nodes(x, a.n_nodes)
+    lo, lat, nn_ = SX.grid_for_nodes(x, a.n_nodes)
     with torch.no_grad():
-        idx, lam, aux = SX.locate(x, lo, hn, nn_)
+        idx, lam, aux = SX.locate(x, lo, lat, nn_)
         rows, uniq = SX.active_nodes(idx)
         Mn = int(uniq.numel())
-        nnl = [int(nn_[k]) for k in range(3)]
-        _z = uniq % nnl[2]
-        _y = (uniq // nnl[2]) % nnl[1]
-        _x = uniq // (nnl[1] * nnl[2])
-        npos = torch.stack([_x, _y, _z], -1).to(x.dtype) * hn + lo
+        npos = SX.node_pos(lo, lat, nn_, uniq)
+        hn = lat.s
         src, dst, cls = SX.edges_of(rows, uniq, nn_)
         feat = node_moments(x, v, X, mw, rows, lam, Mn, npos, hn)
         nf = feat.shape[-1]
@@ -102,7 +99,7 @@ for n in [int(q) for q in a.n.split(",")]:
         tau = torch.tensor(1 / 60, device=dev)
 
         def f_agg():
-            i2, l2, _ = SX.locate(x, lo, hn, nn_)
+            i2, l2, _ = SX.locate(x, lo, lat, nn_)
             r2, u2 = SX.active_nodes(i2)
             return node_moments(x, v, X, mw, r2, l2, int(u2.numel()),
                                 npos[:int(u2.numel())], hn)
@@ -115,7 +112,7 @@ for n in [int(q) for q in a.n.split(",")]:
         dpf = torch.zeros(Mtot, 3, device=dev).index_copy(0, uniq, out[0])
 
         def f_g2p():
-            return x + SX.g2p(x, lo, hn, nn_, dpf)
+            return x + SX.g2p(x, lo, lat, nn_, dpf)
 
         t_a = timed(f_agg, a.rep, a.warm)
         t_g = timed(f_gnn, a.rep, a.warm)
