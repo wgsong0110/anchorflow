@@ -59,11 +59,13 @@ teacher)
     NAME=ipg_$NG
     # 채움 캐시는 두 해상도가 **공유**한다 (particle_filling.n_grid 를 고정했으므로
     # 입자 집합이 같다). 하나가 만들면 다른 쪽은 즉시 읽는다.
-    NG=$NG job $NAME $([ $NG = 100 ] && echo 0 || echo 1) \
+    # $NG 를 **드라이버에서** 박아 넣는다. 전에 이스케이프해 보냈더니 tmux 가
+    # 띄운 셸에 NG 가 없어 두 해상도가 같은 출력 경로를 써서 충돌했다.
+    job $NAME $([ "$NG" = 100 ] && echo 0 || echo 1) \
       "cd $W/i-physgaussian && AF_PGFILL_NPY=$W/ipg/fill_mic_t.npy \
        AF_H_SCEN=$W/ipg/scen_s400706.npz AF_H_R=0.15 \
        python -u gs_simulation.py --model_path $W/pgmodel/mic_whitebg-trained \
-         --config $W/ipg/cfg_ng\$NG.json --output_path $W/ipg/out_\$NG \
+         --config $W/ipg/cfg_ng$NG.json --output_path $W/ipg/out_$NG \
          --output_h5 --implicit --solver newton_gmres \
          --dt_multiplier ${IPG_DTM:-8}"
   done
