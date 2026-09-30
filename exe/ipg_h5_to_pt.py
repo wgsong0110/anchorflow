@@ -17,6 +17,14 @@ ap.add_argument("--h5dir", required=True)
 ap.add_argument("--ref", required=True, help="기준 궤적 (sel·손잡이·tag 를 물려받는다)")
 ap.add_argument("--cfg", required=True, help="i-PG 가 돌린 config json")
 ap.add_argument("--out", required=True)
+ap.add_argument("--keep", type=int, default=0,
+                help="저장할 입자 수. 0(기본) 이면 **전체**를 저장한다. 옛 교사는 "
+                     "용량 때문에 20000 개(8%) 만 저장했는데, 학습의 매 스텝 "
+                     "재추출이 그 8% 안에서만 일어나 나머지 92% 를 영원히 못 봤다. "
+                     "전체를 저장하면 그 제약이 사라진다 (한 궤적 약 460MB)")
+ap.add_argument("--ref_sel", action="store_true",
+                help="기준 궤적의 sel 을 그대로 써서 옛 교사와 행을 맞춘다 "
+                     "(수치를 직접 나란히 놓고 싶을 때만)")
 a = ap.parse_args()
 
 if os.path.exists(a.out):
@@ -39,13 +47,20 @@ def rd(p, k):
 
 
 ref = _load(a.ref)
-sel = ref["sel"]
 files = sorted(glob.glob(os.path.join(a.h5dir, "**", "*.h5"), recursive=True))
 assert files, f"h5 가 없다: {a.h5dir}"
 X0 = rd(files[0], "x")
 assert X0.shape[0] == int(ref["n_full"]), (
     f"입자 집합이 기준과 다르다: {X0.shape[0]} vs {int(ref['n_full'])} -- "
     "채움 설정(particle_filling)이 같은지 확인할 것")
+if a.ref_sel:
+    sel = ref["sel"]
+elif a.keep > 0 and a.keep < X0.shape[0]:
+    g = torch.Generator().manual_seed(1234 + int(ref.get("seed", 0)))
+    sel = torch.randperm(X0.shape[0], generator=g)[:a.keep].sort().values
+else:
+    sel = torch.arange(X0.shape[0])          # 전체
+print(f"저장 입자 {sel.numel()} / 전체 {X0.shape[0]}")
 
 xs, vs, fs = [], [], []
 for p in files:
