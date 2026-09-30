@@ -57,7 +57,10 @@ def load_scenes(fill_dir, cfg_dir, combos, n_pts, dev, seed=0):
             f = alt[0]
         xf = torch.from_numpy(np.load(f)).float()
         n_full = xf.shape[0]
-        sel = torch.randperm(n_full, generator=g)[:n_pts].sort().values
+        # n_pts <= 0 이면 **전체**를 쓴다 (부분표본을 쓰지 않는다 -- 교사와 같은
+        # 입자 집합으로 배워야 한다).
+        sel = (torch.arange(n_full) if int(n_pts) <= 0 else
+               torch.randperm(n_full, generator=g)[:n_pts].sort().values)
         x0 = xf[sel].to(dev)
         cj = os.path.join(cfg_dir, f"{shape}_{mat}_t.json")
         if not os.path.exists(cj):
@@ -70,9 +73,9 @@ def load_scenes(fill_dir, cfg_dir, combos, n_pts, dev, seed=0):
         fl = (vi[:, 0] * ng + vi[:, 1]) * ng + vi[:, 2]
         cnt = torch.zeros(ng ** 3, device=dev).index_add_(
             0, fl, torch.ones(x0.shape[0], device=dev))
-        # 부분표본이므로 셀당 개수를 원본 비율로 되돌린다
+        # 부분표본을 쓰면 셀당 개수를 원본 비율로 되돌린다 (전체면 1 이다)
         mass = ((dx ** 3) / cnt[fl].clamp(min=1.0)) * float(cfg["density"]) \
-            * (float(n_full) / x0.shape[0])
+            * (float(n_full) / max(x0.shape[0], 1))
         ext = float((x0.max(0).values - x0.min(0).values).norm())
         out.append((tag, dict(x0=x0, mass=mass, cfg=cfg, ext=ext,
                               n_full=n_full, sel=sel.to(dev), tag=tag)))
