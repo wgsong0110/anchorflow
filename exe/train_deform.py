@@ -250,6 +250,9 @@ ap.add_argument("--pool_thresh", type=float, default=0.10,
 ap.add_argument("--pool_frames", type=int, default=240,
                 help="계획 한 회의 **상한** 프레임. 목표에 닿으면 그보다 일찍 "
                      "새 계획으로 넘어간다 (도달 시간은 거리에 따라 다르다)")
+ap.add_argument("--pool_fill", default="",
+                help="풀이 읽을 채움 디렉토리(pgfill_<형상>.npy). 비우면 AF_WORK. "
+                     "교사와 같은 입자 집합을 쓰려면 그쪽 캐시를 가리킬 것")
 ap.add_argument("--pool_combos", default="all",
                 help="쉼표로 구분한 형상_물성. all 이면 12 조합 전부 (기본)")
 ap.add_argument("--ctrl_acc", type=float, default=2.4,
@@ -1644,7 +1647,10 @@ if a.pool:
     _combos = (_ALL_COMBOS if a.pool_combos.strip() in ("", "all")
                else [c for c in a.pool_combos.split(",") if c])
     _W = os.environ.get("AF_WORK", "/home/dkta/work")
-    _sc = load_scenes(_W, os.path.join(_W, "wmats"), _combos,
+    # 채움 디렉토리는 따로 줄 수 있다 -- 교사(i-PG)가 쓴 입자 집합과 **같은
+    # 것**을 쓰려면 그쪽 캐시를 가리켜야 한다.
+    _FD = a.pool_fill or _W
+    _sc = load_scenes(_FD, os.path.join(_W, "wmats"), _combos,
                       0, dev, seed=a.seed)
     if not _sc:
         raise SystemExit("풀에 넣을 씬이 없다")

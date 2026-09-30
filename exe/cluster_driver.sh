@@ -8,7 +8,7 @@
 #   - 이미 그 작업의 세션이 살아 있으면 건너뛴다 (중복 실행 금지)
 #
 # 사용: bash exe/cluster_driver.sh [phase]
-#   phase: teacher | smoke | convert | student | bench
+#   phase: teacher | smoke | convert | pool | bench
 set -u
 W=${AF_WORK:-/home/dkta/work}
 R=$W/anchorflow
@@ -59,12 +59,13 @@ teacher)
     NAME=ipg_$NG
     # 채움 캐시는 두 해상도가 **공유**한다 (particle_filling.n_grid 를 고정했으므로
     # 입자 집합이 같다). 하나가 만들면 다른 쪽은 즉시 읽는다.
-    job $NAME $([ $NG = 100 ] && echo 0 || echo 1) \
+    NG=$NG job $NAME $([ $NG = 100 ] && echo 0 || echo 1) \
       "cd $W/i-physgaussian && AF_PGFILL_NPY=$W/ipg/fill_mic_t.npy \
        AF_H_SCEN=$W/ipg/scen_s400706.npz AF_H_R=0.15 \
        python -u gs_simulation.py --model_path $W/pgmodel/mic_whitebg-trained \
-         --config $W/ipg/cfg_ng$NG.json --output_path $W/ipg/out_$NG \
-         --output_h5 --implicit --solver newton_gmres"
+         --config $W/ipg/cfg_ng\$NG.json --output_path $W/ipg/out_\$NG \
+         --output_h5 --implicit --solver newton_gmres \
+         --dt_multiplier ${IPG_DTM:-8}"
   done
   ;;
 smoke)
@@ -88,6 +89,22 @@ convert)
       && touch $DONE/conv_$NG.ok || echo "  [실패] conv_$NG"
   done
   ;;
+pool)
+  echo "== 단계: 상태 풀 학습 (교사 궤적 미사용)"
+  # 풀은 pgfill_<형상>.npy 를 읽는다. i-PG 가 캐시한 251001 개 집합을 쓰게
+  # 심링크를 걸어 교사와 입자 집합을 일치시킨다.
+  mkdir -p $W/poolfill
+  ln -sf $W/ipg/fill_mic_t.npy $W/poolfill/pgfill_mic.npy
+  job pool 2 "python -u $R/exe/train_deform.py --data $W/one_traj_h2 \
+      --out $W/abl_POOL --tag POOL --no_mat --control --n_ctrl 2 \
+      --arch sgnn --n_nodes 32 --gnn_layers 1 --hidden 128 \
+      --obj pts --dt_cond --dt_scale --v_from_dt --det_eps 0.1 --det_w 100 \
+      --lambda_bc 1.0 --lr 3e-4 --batch 8 --det_every 200 \
+      --pool_fill $W/poolfill --pool_combos mic_clayC \
+      --phase2 --phys_w 1.0 --phys_K 1 --lambda_J 0 --lambda_dmg 0 \
+      --iters 3000 --eval_t0 3 --eval_len 40 --save_every 250 \
+      --val_every 250 --val_n 1 --val_len 40 --tb $W/tb"
+  ;;
 bench)
   echo "== 단계: 속도 측정 (단독 실행 -- 다른 작업이 없을 때만)"
   if tmux ls 2>/dev/null | grep -qvE "^(bench|k18)" ; then
@@ -98,7 +115,7 @@ bench)
   job bench 0 "bash $R/exe/bench_arch_speed.sh"
   ;;
 *)
-  echo "알 수 없는 단계: $PHASE (teacher | smoke | convert | student | bench)"; exit 1;;
+  echo "알 수 없는 단계: $PHASE (teacher | smoke | convert | pool | bench)"; exit 1;;
 esac
 echo "== 상태"
 for f in $DONE/*.ok; do [ -e "$f" ] && echo "  완료: $(basename ${f%.ok})"; done
