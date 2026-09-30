@@ -1144,18 +1144,21 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             return q, _ex
 
         _use_dtS = a.v_from_dt and _DP_HOOK[0] is None and a.dt_cond
+        # (아래 jvp/야코비안 구간도 계측한다)
         _tau0 = torch.as_tensor(float(_DT[0]), device=dev, dtype=x.dtype)
         if _use_dtS:
-            (x2, _outs), (v_next, _) = torch.func.jvp(
-                _fieldS, (_tau0,), (torch.ones_like(_tau0),))
+            with _tsec("jvp(속도)"):
+                (x2, _outs), (v_next, _) = torch.func.jvp(
+                    _fieldS, (_tau0,), (torch.ones_like(_tau0),))
         else:
             x2, _outs = _fieldS(_tau0)
             v_next = (x2 - x) / _DT[0]
         dpf = _outs[0]
         # 셀 내부가 항등이라 변형장은 사면체별 아핀이다 -> 야코비안은 닫힌 형식
         # 하나로 나온다 (재배열이 있던 시절에는 합성이라 역전파 3 회가 필요했다).
-        _u, Jf = SX.g2p_jac(x, lo, lat, nn, dpf)
-        Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
+        with _tsec("야코비안"):
+            _u, Jf = SX.g2p_jac(x, lo, lat, nn, dpf)
+            Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
         _DET_LAST[0] = torch.linalg.det(Jf)
         # 구속 보정량·활성집합을 창 쪽으로 넘긴다 (L_bc 와 free 마스크에 쓴다)
         _BC_LAST[0] = (_outs[-2], _outs[-1])
@@ -2003,18 +2006,21 @@ for it in pbar:
                      else x[torch.arange(0, n_p,
                                          max(1, n_p // a.n_anchors),
                                          device=dev)[:a.n_anchors]]))
-            with dt_scope(_hp):
+            with dt_scope(_hp), _tsec("step_once"):
                 x2, p2, v2, _J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
                     ds, 0, gsel, p_st, x, v, need_J=False)
-            fm = free_mask(ds, n_p, dev, gsel, x, 0) if a.control else None
+            with _tsec("free_mask"):
+                fm = (free_mask(ds, n_p, dev, gsel, x, 0)
+                      if a.control else None)
             cfg = sc["cfg"]
             vol = sc["mass"] / float(cfg["density"])
             gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
             ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
             nrm = float(sc["mass"].sum()) * (sc["ext"] ** 2) / (_hp ** 2)
-            E_ip, dlog, F_tr, _pt = ip_of(
-                x, x2 - x, v, F, sc["mass"], vol, cfg, _hp, ng_, gl_,
-                g=gv, norm=nrm, free=fm, jac=_Jd)
+            with _tsec("에너지"):
+                E_ip, dlog, F_tr, _pt = ip_of(
+                    x, x2 - x, v, F, sc["mass"], vol, cfg, _hp, ng_, gl_,
+                    g=gv, norm=nrm, free=fm, jac=_Jd)
             # 폐기 판정용 길이 단위 잔차.
             if _OBJ_PTS:
                 # 입자 목적함수에서는 dE/dx2 가 **탄성항을 담지 못한다** --
@@ -2048,7 +2054,8 @@ for it in pbar:
                               + 0.01 * float(loss_p.detach()) ** 2)
                 loss_p = loss_p / max(_PL_RMS[0] ** 0.5, 1e-12)
             if bool(torch.isfinite(loss_p)):
-                (loss_p / a.batch).backward()
+                with _tsec("역전파"):
+                    (loss_p / a.batch).backward()
             elif _PL_MSG == []:
                 _PL_MSG.append(1)
                 print(f"[풀] 씬 {tag} 손실이 비유한 -- 이 배치는 건너뛴다",
@@ -2065,7 +2072,7 @@ for it in pbar:
             _prev = (dict(si=st["si"], x=x, v=v, F=F, p=st["p"], plan=plan,
                           elapsed=st["elapsed"], hist=list(st["hist"]),
                           age=st["age"]) if a.pool_keep > 0 else None)
-            with torch.no_grad():
+            with torch.no_grad(), _tsec("소성·풀"):
                 st["x"] = x2.detach()
                 st["v"] = v2.detach()
                 st["F"] = phys_resid.plastic_step(F_tr, dlog).detach()
