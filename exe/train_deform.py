@@ -278,8 +278,6 @@ ap.add_argument("--out_var", action="store_true",
                      "최적화한다. 임의 프레임 샘플링·배치·손실 모두 학습과 같고, "
                      "갱신 대상만 망 파라미터에서 그 프레임의 출력으로 바뀐다")
 ap.add_argument("--out_var_lr", type=float, default=3e-3)
-ap.add_argument("--out_var_save", default="",
-                help="학습이 끝나면 프레임별 출력 변수를 여기 저장한다")
 ap.add_argument("--out_var_load", default="",
                 help="프레임별 출력 변수를 여기서 읽어 쓴다 (렌더용)")
 ap.add_argument("--oracle_roll", action="store_true",
@@ -996,6 +994,7 @@ _CUR_T = [0]              # step_once 가 남기는 현재 프레임
 _CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1/K)
 _DP_HOOK = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
+_OV_CUR = [None]           # --out_var 에서 지금 최적화 중인 상태 사전
 _BC_DIAG = []              # (활성비, 보정 최대/ext, 바닥 아래 깊이 최대/ext)
 
 
@@ -1014,8 +1013,6 @@ def bc_report():
     return (f"구속 활성 {100 * ar:.2f}%  보정최대 {cm:.2e}  "
             f"바닥아래 {pd:.2e} (지금 {_BC_DIAG[-1][2]:.2e})")
 _F_MSG = []
-_OV = {}                  # 프레임 -> [출력 변수들]
-_OV_OPT = {}              # 프레임 -> 그 변수의 옵티마이저
 _PL_DROP = []
 _PL_MSG = []
 _PL_RMS = [0.0]
@@ -1611,8 +1608,9 @@ def save_ck(name, step):
                 "pool_drop_win": list(_PL_DROP),
                 "pool_rms": list(_PL_RMS),
                 # 프레임별 출력 변수 (--out_var). 렌더에서 같은 값을 쓰려면 필요하다
-                "out_var": ({int(k): [q.detach().cpu() for q in v]
-                             for k, v in _OV.items()} if _OV else None)},
+                # out_var 변수는 **상태에 붙어** 있고 상태는 저장하지 않으므로
+                # 체크포인트에 넣지 않는다 (프레임 키 시절의 유물이었다).
+                "out_var": None},
                os.path.join(a.out, f"{a.tag}_{name}.pt"))
     if a.r2:
         os.system(f"rclone copy {a.out} {a.r2} --include '*.pt' "
@@ -1932,30 +1930,30 @@ if a.roll_scen:
     raise SystemExit(0)
 
 if a.out_var:
-    # 학습 루프는 손대지 않는다. 훅만 걸어 그 프레임의 변수를 돌려주고,
-    # 첫 접촉에서 **그 시점 망 출력**으로 초기화한다.
+    # **상태마다** 노드 출력을 직접 최적화한다. 망은 초기화에만 쓰인다.
+    #
+    # 예전에는 교사 프레임 번호로 변수를 키로 잡았다. 풀 경로에서는 t 가 항상
+    # 0 이라 그 키가 무의미하고(모든 상태가 하나로 뭉갠다) 노드 집합이 상태의
+    # 바운딩박스로 정해져 크기도 어긋난다. 그래서 변수를 **상태 사전에** 붙이고
+    # (풀의 sample 이 슬롯을 재정렬하므로 슬롯 키는 불안정하다), out_var 일 때는
+    # 상태를 전진시키지 않아 같은 상태를 계속 최적화하게 둔다.
+    #
+    # 재는 것: 이 매개화(노드 변위 + barycentric, 셀 내부 항등)가 한 스텝의
+    # 증분 포텐셜을 얼마나 낮출 수 있는가 -- 즉 망이 아무리 좋아도 못 넘는 하한.
     def _ov_hook(out):
-        t = _CUR_T[0]
+        st = _OV_CUR[0]
         outs = out if isinstance(out, (tuple, list)) else (out,)
-        if t not in _OV:
-            _OV[t] = [o.detach().clone().requires_grad_(True) for o in outs]
-            _OV_OPT[t] = torch.optim.Adam(_OV[t], lr=a.out_var_lr)
-        return tuple(_OV[t]) if len(_OV[t]) > 1 else _OV[t][0]
+        if st is None:                      # 풀 밖(초기화·검증) 에서는 그대로
+            return out
+        if st.get("ov") is None:
+            st["ov"] = [o.detach().clone().requires_grad_(True) for o in outs]
+            st["ov_opt"] = torch.optim.Adam(st["ov"], lr=a.out_var_lr)
+        return tuple(st["ov"]) if len(st["ov"]) > 1 else st["ov"][0]
 
     _DP_HOOK[0] = _ov_hook
-    _ovck = (_rng_ck or {}).get("out_var") if not a.out_var_load else None
-    if _ovck:
-        for _t, _vs in _ovck.items():
-            _OV[int(_t)] = [q.to(dev).requires_grad_(True) for q in _vs]
-        print(f"[출력변수] 체크포인트에서 {len(_OV)} 프레임 적재", flush=True)
-    if a.out_var_load and os.path.exists(a.out_var_load):
-        _ld = torch.load(a.out_var_load, map_location=dev, weights_only=False)
-        for _t, _vs in _ld.items():
-            _OV[int(_t)] = [q.to(dev).requires_grad_(True) for q in _vs]
-        print(f"[출력변수] {a.out_var_load} 에서 {len(_OV)} 프레임 적재",
-              flush=True)
-    print("[출력변수] 학습 루프 그대로, 갱신 대상만 프레임별 출력으로 바꾼다",
-          flush=True)
+    print(f"[출력변수] 상태마다 노드 출력을 직접 최적화한다 (lr {a.out_var_lr}). "
+          "망은 초기화에만 쓰이고 상태는 전진하지 않는다 -- 이 매개화의 "
+          "한 스텝 증분 포텐셜 하한을 잰다", flush=True)
 
 TBW = None
 if a.tb:
@@ -2015,6 +2013,7 @@ for it in pbar:
                      else x[torch.arange(0, n_p,
                                          max(1, n_p // a.n_anchors),
                                          device=dev)[:a.n_anchors]]))
+            _OV_CUR[0] = st if a.out_var else None
             with dt_scope(_hp), _tsec("step_once"):
                 x2, p2, v2, _J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
                     ds, 0, gsel, p_st, x, v, need_J=False)
@@ -2076,6 +2075,10 @@ for it in pbar:
             if math.isfinite(_lv):
                 with _tsec("역전파"):
                     (loss_p / a.batch).backward()
+                if a.out_var and st.get("ov_opt") is not None:
+                    # 망 파라미터가 아니라 **이 상태의 출력 변수**를 갱신한다
+                    st["ov_opt"].step()
+                    st["ov_opt"].zero_grad(set_to_none=True)
             elif _PL_MSG == []:
                 _PL_MSG.append(1)
                 print(f"[풀] 씬 {tag} 손실이 비유한 -- 이 배치는 건너뛴다",
@@ -2090,10 +2093,13 @@ for it in pbar:
                           elapsed=st["elapsed"], hist=list(st["hist"]),
                           age=st["age"]) if a.pool_keep > 0 else None)
             with torch.no_grad(), _tsec("소성·풀"):
-                st["x"] = x2.detach()
-                st["v"] = v2.detach()
-                st["F"] = phys_resid.plastic_step(F_tr, dlog).detach()
-                st["p"] = p2.detach() if torch.is_tensor(p2) else None
+                if not a.out_var:
+                    st["x"] = x2.detach()
+                    st["v"] = v2.detach()
+                    st["F"] = phys_resid.plastic_step(F_tr, dlog).detach()
+                    st["p"] = p2.detach() if torch.is_tensor(p2) else None
+                # out_var 는 상태를 **전진시키지 않는다** -- 같은 상태의 노드
+                # 출력을 계속 최적화해 하한까지 내린다 (노드 집합도 고정된다)
             POOL.put_back(slot if kind == "pool" else None, st, res,
                           prev=_prev, dt_frac=1.0 / _sub)
         # 폐기율은 **최근 100 반복에서 배치 대비 몇 %가 죽었는가** 로 둔다.
