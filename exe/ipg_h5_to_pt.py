@@ -86,10 +86,15 @@ if float(_d0.abs().max()) < 1e-6:
           f"({Fm.shape[1]} 입자)")
 cfg = json.load(open(a.cfg))
 os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+# 손잡이 위치는 **이 궤적 자신의** 것을 쓴다. 기준 궤적 것을 그대로 넣으면
+# 렌더의 손잡이 원이 남의 경로를 그려 비교가 어긋난다 (실제로 그랬다).
+_hid = ref["ctrl_id"][0] if ref["ctrl_id"].dim() == 2 else ref["ctrl_id"]
+_hid = _hid.reshape(-1).long()
+_cp = torch.stack([torch.from_numpy(rd(p_, "x")).float()[_hid] for p_ in files])
 torch.save({"x": X.half(), "v": V.half(), "F": Fm.half(), "sel": sel,
             "cfg": cfg, "seed": int(ref.get("seed", 0)),
             "tag": os.path.basename(a.out)[:-3],
-            "ctrl_pos": ref["ctrl_pos"], "ctrl_vel": ref["ctrl_vel"],
+            "ctrl_pos": _cp, "ctrl_vel": ref["ctrl_vel"],
             "ctrl_id": ref["ctrl_id"], "ctrl_R": ref["ctrl_R"],
             "n_full": int(X0.shape[0])}, a.out)
 print(f"[저장] {a.out}  {X.shape[0]}프레임 x {sel.numel()}입자  "
