@@ -26,12 +26,23 @@ ap.add_argument("--handle_r", type=float, default=0.03)
 ap.add_argument("--material", default="jelly")
 ap.add_argument("--E", type=float, default=2e5)
 ap.add_argument("--nu", type=float, default=0.3)
+ap.add_argument("--floor", type=float, default=0.95,
+                help="바닥 높이 z. 음수면 바닥을 두지 않는다. PG 와 같은 "
+                     "surface_collider(sticky) 형식으로 넣는다")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
 cfg = dict(E=a.E, nu=a.nu, g=[0.0, 0.0, -9.8], frame_dt=1.0 / 60.0,
            density=1000.0, n_grid=200, grid_lim=2.0, material=a.material,
            boundary_conditions=[])
+if a.floor >= 0:
+    cfg["boundary_conditions"] = [
+        {"type": "surface_collider",
+         "point": [1.0, 1.0, float(a.floor)],
+         "normal": [0.0, 0.0, 1.0],
+         "surface": "sticky", "friction": 0.0,
+         "start_time": 0, "end_time": 1000.0},
+    ]
 if a.ref:
     try:
         rc = torch.load(a.ref, map_location="cpu", weights_only=False)["cfg"]
@@ -41,7 +52,8 @@ if a.ref:
         if k in rc:
             cfg[k] = rc[k]
 print(f"[cfg] E {cfg['E']:g} nu {cfg['nu']} dt {cfg['frame_dt']:.5f} "
-      f"n_grid {cfg['n_grid']} 재질 {cfg['material']}")
+      f"n_grid {cfg['n_grid']} 재질 {cfg['material']} 바닥 "
+      f"{'없음' if a.floor < 0 else f'z={a.floor}'}")
 
 g_ = torch.Generator().manual_seed(a.seed)
 u = torch.rand(a.n, generator=g_).sqrt() * a.r         # 반지름 (면적 균일)
