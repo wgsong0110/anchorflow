@@ -33,6 +33,9 @@ ap.add_argument("--handle_mark", choices=["frame", "init"], default="frame",
                      "init=**첫 프레임에 반경 안이던 것**(정체를 고정해 어디로 "
                      "갔는지 따라갈 수 있다)")
 ap.add_argument("--handle_s", type=float, default=1.6, help="빨간 점 크기")
+ap.add_argument("--cell_s", type=float, nargs=2, default=(18.0, 10.0),
+                help="--color cell0 에서 섞인 셀·손잡이 안 점의 크기. 섞인 셀은 "
+                     "수가 적어(실측 25 개) 키우지 않으면 화면에서 사라진다")
 ap.add_argument("--ctrl_R", type=float, default=0.0,
                 help="손잡이 반경을 직접 준다 (0 이면 덤프의 값)")
 ap.add_argument("--quiver", type=int, default=0,
@@ -187,6 +190,16 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
                 _q.plot([_c[i]], [_c[j]], marker="x", ms=7, mew=2.0,
                         color="deepskyblue")
 
+    if a.color == "cell0":
+        # 수가 적은 범주(섞인 셀 25 개, 손잡이 안 24 개)는 기본 크기로는 보이지
+        # 않는다. 같은 색으로 **위에 덧그린다**.
+        for q, X in ((ax[0], G[t]), (ax[1], P[t])):
+            for _k, _c, _sz in ((2, "red", a.cell_s[1]),
+                                (1, "tab:orange", a.cell_s[0])):
+                _m = CVAL == _k
+                if _m.any():
+                    q.scatter(X[_m, i], X[_m, j], s=_sz, c=_c, linewidths=0,
+                              zorder=3 + (_k == 1))
     for q in ax:
         q.set_xlim(lo[i] - pad, hi[i] + pad); q.set_ylim(lo[j] - pad, hi[j] + pad)
         q.set_aspect("equal"); q.set_xticks([]); q.set_yticks([])
