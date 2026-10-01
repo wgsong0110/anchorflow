@@ -2617,8 +2617,17 @@ def _rollout(d, t0, L, gsel=None):
             _ROLLDUMP.append((x2.detach().cpu(), gt.detach().cpu()))
             if _NODE_LAST[0] is not None:
                 _NODEDUMP.append(_NODE_LAST[0])
-            if F_ov is not None:        # 입자별 det(F) -- 색칠에 쓴다
-                _DETDUMP.append(torch.linalg.det(F_ov).detach().cpu())
+            if F_ov is not None:
+                # 입자별 변형 스칼라. C = FᵀF (우 코시-그린), E = (C−I)/2
+                # (그린-라그랑주). 정지 상태면 det 1, trC 3, ‖E‖ 0 이다.
+                _C = F_ov.transpose(-1, -2) @ F_ov
+                _E = 0.5 * (_C - torch.eye(3, device=_C.device,
+                                           dtype=_C.dtype))
+                _DETDUMP.append(torch.stack([
+                    torch.linalg.det(F_ov),
+                    _C.diagonal(dim1=-2, dim2=-1).sum(-1),
+                    _E.reshape(_E.shape[0], -1).norm(dim=-1),
+                ], -1).detach().cpu())
         if a.metrics:
             cds.append(chamfer(x2, gt) / (EXT ** 2))
             ems.append(emd(x2, gt, t0 * 1000 + i) / EXT)
@@ -2710,7 +2719,8 @@ for tag, d in TR + held:
                         "ctrl_R": d.get("ctrl_R"),
                         "t0": t0, "tag": tag,
                         "nodes": _NODEDUMP or None,
-                        "detF": (torch.stack(_DETDUMP) if _DETDUMP else None),
+                        # [T,N,3] = (det F, tr C, ‖E‖_F)
+                        "fscal": (torch.stack(_DETDUMP) if _DETDUMP else None),
                         # 풀 루프가 전역 EXT 를 씬 값으로 덮어쓰므로 **그 궤적의**
                         # 것을 쓴다 (덤프를 렌더할 때 길이 단위가 된다)
                         "EXT": float(d.get("_ext", EXT))}, _rd)

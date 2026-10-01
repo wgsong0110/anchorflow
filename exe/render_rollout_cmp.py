@@ -44,12 +44,15 @@ ap.add_argument("--quiver", type=int, default=0,
 ap.add_argument("--quiver_scale", type=float, default=0.0,
                 help="0 이면 화살표 중앙 길이가 화면 폭의 4%% 가 되게 자동")
 ap.add_argument("--color", choices=["none", "err", "z0", "r0", "cell0",
-                                    "detF"], default="none",
+                                    "detF", "trC", "normE"], default="none",
                 help="입자 색. none=검정, err=정답과의 거리(오른쪽 칸만), "
                      "z0=초기 높이, r0=초기 중심에서의 거리, cell0=**첫 프레임 "
                      "셀 구분** (손잡이 밖 / 섞인 셀 / 손잡이 안). z0/r0/cell0 "
                      "은 두 칸에 같은 색을 입혀 어디로 갔는지 맞대 볼 수 있다. "
-                     "detF=**프레임마다** 변형구배의 행렬식 (1 이 부피 보존)")
+                     "detF=행렬식(1 이 부피 보존), trC=우 코시-그린의 대각합"
+                     "(3 이 변형 없음), normE=그린-라그랑주 변형률의 "
+                     "프로베니우스 노름(0 이 변형 없음). 셋 다 프레임마다 다시 "
+                     "칠한다")
 a = ap.parse_args()
 
 D = torch.load(a.dump, map_location="cpu", weights_only=False)
@@ -130,20 +133,28 @@ if _CP is not None:
     print(f"[손잡이] 반경 {_R_CTRL:.4f}, 첫 프레임 반경 안 "
           f"{int(M_INIT.sum())} 개 (그리는 표본 기준)", flush=True)
 
-DETF = None
-if a.color == "detF":
-    DETF = D.get("detF")
-    if DETF is None:
-        raise SystemExit("덤프에 detF 가 없다 -- --ov_roll 로 다시 덤프할 것")
-    DETF = np.asarray(DETF)[:, sel]
-    _w = float(np.percentile(np.abs(DETF - 1.0), 99)) or 1e-3
-    CMAP, CLAB = "coolwarm", f"det(F)  (1 ± {_w:.3f})"
+DETF, _w = None, 1.0
+_FK = {"detF": (0, 1.0, "det(F)"), "trC": (1, 3.0, "tr(C)  C = FᵀF"),
+       "normE": (2, 0.0, "‖E‖_F  E = (C−I)/2")}
+if a.color in _FK:
+    _k, _mid, _nm = _FK[a.color]
+    _fs = D.get("fscal")
+    if _fs is None:
+        raise SystemExit("덤프에 변형 스칼라가 없다 -- --ov_roll 로 다시 덤프")
+    DETF = np.asarray(_fs)[:, sel, _k]
+    if a.color == "normE":
+        _w = float(np.percentile(DETF, 99)) or 1e-6
+        CMAP, CLAB = "inferno", f"{_nm}  (0 ~ {_w:.4f})"
+    else:
+        _w = float(np.percentile(np.abs(DETF - _mid), 99)) or 1e-6
+        CMAP, CLAB = "coolwarm", f"{_nm}  ({_mid:g} ± {_w:.4f})"
     CVAL = DETF[0]
-    print(f"[detF] 범위 {DETF.min():.4f} ~ {DETF.max():.4f}, "
-          f"색 범위 1 ± {_w:.4f}", flush=True)
+    print(f"[{a.color}] 범위 {DETF.min():.5f} ~ {DETF.max():.5f}, "
+          f"색 범위 {CLAB}", flush=True)
 
 VLO, VHI = (0.0, 2.0) if a.color == "cell0" else (
-    (1.0 - _w, 1.0 + _w) if a.color == "detF" else (
+    ((0.0, _w) if a.color == "normE" else
+     (_FK[a.color][1] - _w, _FK[a.color][1] + _w)) if a.color in _FK else (
     (float(CVAL.min()), float(CVAL.max())) if CVAL is not None else (0.0, 1.0)))
 
 frames = []
