@@ -85,9 +85,14 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
         s.set_title(f"{lab}  t={t}", fontsize=11)
     fig.tight_layout()
     fig.canvas.draw()
-    frames.append(np.asarray(fig.canvas.buffer_rgba())[..., :3].copy())
+    w_, h_ = fig.canvas.get_width_height()
+    buf = np.frombuffer(fig.canvas.buffer_rgba(), np.uint8).reshape(h_, w_, 4)
+    buf = buf[..., :3]
+    if buf.shape[0] % 2 or buf.shape[1] % 2:     # yuv420p 는 짝수 크기만 받는다
+        buf = buf[:buf.shape[0] // 2 * 2, :buf.shape[1] // 2 * 2]
+    frames.append(buf.copy())
     plt.close(fig)
 import imageio
 os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
-imageio.mimsave(a.out, frames, fps=a.fps, macro_block_size=1)
+imageio.mimsave(a.out, frames, fps=a.fps, quality=8, macro_block_size=1)
 print(f"[저장] {a.out}  {len(frames)} 프레임", flush=True)
