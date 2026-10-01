@@ -25,6 +25,9 @@ ap.add_argument("--dump", required=True)
 ap.add_argument("--traj", required=True)
 ap.add_argument("--floor", type=float, required=True)
 ap.add_argument("--frac", type=float, default=0.1)
+ap.add_argument("--phase", type=int, nargs="+", default=[],
+                help="손잡이 명령 구간 경계 프레임 (예: 10 28 = 10 부터 하강, "
+                     "28 부터 상승)")
 ap.add_argument("--out", required=True)
 a = ap.parse_args()
 
@@ -80,10 +83,16 @@ ax[1].axhline(1.0, color="0.5", lw=1)
 ax[1].set_xlabel("프레임")
 ax[1].set_ylabel("세로 신축 sqrt(C_zz)  (<1 이면 눌림)")
 ax[1].set_title("맨 아래 셀의 세로 찌그러짐", fontsize=11)
+_lab = ["하강 시작", "상승 시작", "구간"]
 for q in ax:
+    _y = q.get_ylim()[1]
+    for _i, _p in enumerate(a.phase):
+        q.axvline(_p, color="tab:green", ls="-.", lw=1.3, alpha=.8)
+        q.text(_p, _y, " " + (_lab[_i] if _i < 2 else _lab[2]), va="top",
+               fontsize=9, color="tab:green")
     if hit >= 0:
-        q.axvline(hit, color="k", ls=":", lw=1.4)
-        q.text(hit, q.get_ylim()[1], " 접촉", va="top", fontsize=9)
+        q.axvline(hit, color="k", ls=":", lw=1.6)
+        q.text(hit, _y, " 접촉", va="top", fontsize=9)
     q.grid(alpha=.3); q.legend(fontsize=9)
 fig.tight_layout(); fig.savefig(a.out)
 print(f"[저장] {a.out}", flush=True)
