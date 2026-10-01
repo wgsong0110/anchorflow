@@ -245,6 +245,10 @@ ap.add_argument("--out_var", action="store_true",
                      "바뀐다. 상태는 전진하지 않으므로 각 상태의 E 가 이 "
                      "매개화의 한 스텝 하한까지 내려간다")
 ap.add_argument("--out_var_lr", type=float, default=3e-3)
+ap.add_argument("--ov_init", choices=["zero", "randn", "net"], default="zero",
+                help="--ov_roll 자유변수의 초기값. zero=항등 변형장(기본), "
+                     "randn=--ov_init_std 규모의 난수, net=망 출력")
+ap.add_argument("--ov_init_std", type=float, default=1e-3)
 ap.add_argument("--ov_roll", type=int, default=0,
                 help="롤아웃에서 **프레임마다** 노드 출력을 직접 최적화한다 "
                      "(반복 수). 망은 초기화에만 쓰이고 상태는 정상 전진한다 "
@@ -1125,7 +1129,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         def _fieldS(tau):
             # 출력을 자유변수로 갈아끼우는 경로(--ov_roll)에서는 변수가 생긴
             # 뒤의 순전파가 통째로 버려진다. 프레임당 수백 번이므로 건너뛴다.
-            out = _DP_FAST[0]() if _DP_FAST[0] is not None else None
+            out = (_DP_FAST[0](npos.shape[0], x.dtype, x.device)
+                   if _DP_FAST[0] is not None else None)
             if out is None:
                 with _tsec("신경망"):
                     out = net(_in, esrc, edst, ecls, tau, mat=_mv)
@@ -1978,7 +1983,7 @@ if a.roll_scen:
           f"{(len(XS) - 1) / max(_wall, 1e-9):.2f} FPS", flush=True)
     raise SystemExit(0)
 
-if a.out_var:
+if a.out_var or a.ov_roll > 0:
     # **상태마다** 노드 출력을 직접 최적화한다. 망은 초기화에만 쓰인다.
     #
     # 예전에는 교사 프레임 번호로 변수를 키로 잡았다. 풀 경로에서는 t 가 항상
@@ -2004,18 +2009,37 @@ if a.out_var:
         return (tuple(st["ov"]) if isinstance(out, (tuple, list))
                 else st["ov"][0])
 
-    def _ov_fast():
-        """변수가 이미 있으면 망을 건너뛰고 그대로 돌려준다."""
+    def _ov_fast(M=None, dtype=None, device=None):
+        """망을 건너뛰고 자유변수를 바로 돌려준다 (없으면 만든다).
+
+        --ov_init net 일 때만 망을 한 번 통과시켜 초기값으로 쓴다. zero/randn
+        이면 망은 **한 번도 쓰이지 않는다** -- 재는 것은 이 매개화의 한계이지
+        망의 학습 상태가 아니므로 그쪽이 기본이다.
+        """
         st = _OV_CUR[0]
-        if st is None or st.get("ov") is None:
+        if st is None:
             return None
+        if st.get("ov") is None:
+            if a.ov_init == "net" or M is None:
+                return None                      # 망 출력으로 초기화한다
+            z = torch.zeros(M, 3, dtype=dtype, device=device)
+            if a.ov_init == "randn":
+                z = a.ov_init_std * torch.randn(M, 3, dtype=dtype,
+                                                device=device)
+            st["ov"] = [z.requires_grad_(True)]
+            st["ov_opt"] = torch.optim.Adam(st["ov"], lr=a.out_var_lr)
+            # 호출부는 out[0] 만 읽는다 -- 늘 묶음으로 돌려주면 안전하다
+            st["ov_tuple"] = True
         return tuple(st["ov"]) if st["ov_tuple"] else st["ov"][0]
 
     _DP_HOOK[0] = _ov_hook
     _DP_FAST[0] = _ov_fast
-    print(f"[출력변수] 상태마다 노드 출력을 직접 최적화한다 (lr {a.out_var_lr}). "
-          "망은 초기화에만 쓰이고 상태는 전진하지 않는다 -- 이 매개화의 "
-          "한 스텝 증분 포텐셜 하한을 잰다", flush=True)
+    print(f"[출력변수] 노드 출력을 직접 최적화한다 (lr {a.out_var_lr}, 초기값 "
+          f"{a.ov_init}"
+          + (f" std {a.ov_init_std:g}" if a.ov_init == "randn" else "")
+          + ("). --ov_roll 이라 프레임마다 변수를 새로 만들고 상태는 정상 "
+             f"전진한다 (프레임당 {a.ov_roll} 반복)" if a.ov_roll > 0 else
+             "). 상태는 전진하지 않는다 -- 한 스텝 하한만 잰다"), flush=True)
 
 TBW = None
 if a.tb:
