@@ -2419,9 +2419,9 @@ def _ov_frame(d, t, gsel, p, x, v, F):
         if _BC_LAST[0] is not None:
             _am = _BC_LAST[0][1].reshape(-1) > 0.5
             fm = (~_am) if fm is None else (fm & ~_am)
-        E, dlog, F_tr, _ = ip_of(x, x2 - x, v, F, m, vol, cfg, FRAME_DT,
-                                 ng_, gl_, g=gv, norm=nrm, free=fm, jac=_Jd)
-        return x2, v2, E, dlog, F_tr
+        E, dlog, F_tr, _pt = ip_of(x, x2 - x, v, F, m, vol, cfg, FRAME_DT,
+                                   ng_, gl_, g=gv, norm=nrm, free=fm, jac=_Jd)
+        return x2, v2, E, dlog, F_tr, _pt, _Jd
 
     _ov = _OV_CUR[0]
     _OV_CUR[0] = st
@@ -2429,7 +2429,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     try:
       with torch.enable_grad():
         for _k in range(a.ov_roll):
-            _, _, E, _, _ = _fwd()
+            _, _, E, _, _, _pt, _ = _fwd()
             if st.get("ov_opt") is None:
                 raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다 "
                                  "(--out_var 로 훅을 걸어야 한다)")
@@ -2438,8 +2438,17 @@ def _ov_frame(d, t, gsel, p, x, v, F):
             st["ov_opt"].zero_grad(set_to_none=True)
             E.backward()
             st["ov_opt"].step()
-        x2, v2, E, dlog, F_tr = _fwd()
+        x2, v2, E, dlog, F_tr, _pt, _Jd = _fwd()
         E1 = float(E)
+        if os.environ.get("AF_OV_DIAG"):
+            _tg = (FRAME_DT * v + (FRAME_DT ** 2) * gv)
+            _du = x2 - x
+            print(f"    [항] t={t} 관성 {float(_pt[0]):.4e} 탄성 "
+                  f"{float(_pt[1]):.4e} 접촉 {float(_pt[3]):.4e} | "
+                  f"dz 평균 {float(_du[:, 2].mean()):+.3e} 목표 "
+                  f"{float(_tg[:, 2].mean() if _tg.dim() > 1 else _tg[2]):+.3e}"
+                  f" | detJ {float(torch.linalg.det(_Jd).mean()):.4f} "
+                  f"F {float(F.reshape(-1, 9).abs().max()):.3f}", flush=True)
     finally:
         _OV_CUR[0] = _ov
         _NF_HOLD[0] = None
