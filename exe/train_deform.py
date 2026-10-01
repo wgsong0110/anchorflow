@@ -2644,10 +2644,16 @@ def _rollout(d, t0, L, gsel=None):
                 _C = F_ov.transpose(-1, -2) @ F_ov
                 _E = 0.5 * (_C - torch.eye(3, device=_C.device,
                                            dtype=_C.dtype))
+                # C_zz 는 처음에 z 를 향하던 섬유의 **신축 제곱**이다
+                # (sqrt(C_zz) < 1 이면 세로로 찌그러진 것이다). psi 는 그
+                # 입자의 탄성 에너지 밀도다.
+                _psi, _ = phys_resid.psi_of(F_ov, d["cfg"], FRAME_DT)
                 _DETDUMP.append(torch.stack([
                     torch.linalg.det(F_ov),
                     _C.diagonal(dim1=-2, dim2=-1).sum(-1),
                     _E.reshape(_E.shape[0], -1).norm(dim=-1),
+                    _C[:, 2, 2],
+                    _psi,
                 ], -1).detach().cpu())
         if a.metrics:
             cds.append(chamfer(x2, gt) / (EXT ** 2))
@@ -2740,7 +2746,7 @@ for tag, d in TR + held:
                         "ctrl_R": d.get("ctrl_R"),
                         "t0": t0, "tag": tag,
                         "nodes": _NODEDUMP or None,
-                        # [T,N,3] = (det F, tr C, ‖E‖_F)
+                        # [T,N,5] = (det F, tr C, ‖E‖_F, C_zz, psi)
                         "fscal": (torch.stack(_DETDUMP) if _DETDUMP else None),
                         # 풀 루프가 전역 EXT 를 씬 값으로 덮어쓰므로 **그 궤적의**
                         # 것을 쓴다 (덤프를 렌더할 때 길이 단위가 된다)
