@@ -283,13 +283,16 @@ def bc_project_nodes(npos, dp, cfg, h, grid_lim, n_grid):
             # 접촉면보다 두꺼운 띠가 얼어붙는다 -- 로프에서 두께의 2/3 가
             # 묶여 비 0.23 -> 0.61 로 나빠졌다.
             under = ((npos - pt) * nr).sum(-1) < 0.0
+            # 면 아래 노드는 **더 내려가지는 못하되 올라올 수는 있다** --
+            # 법선 성분을 0 이상으로만 자른다 (한쪽 부등식). 세 성분을 다 0 으로
+            # 박으면 한 번 아래로 간 노드가 영영 못 올라와 바닥이 흡착판이 된다.
+            dn = (dp_p * nr).sum(-1, keepdim=True)
+            dn_up = dn.clamp_min(0.0)
             if str(bc.get("surface", "sticky")) == "sticky":
-                # 속도(=변위) 세 성분 모두 0
-                dp_p = torch.where(under.unsqueeze(-1),
-                                   torch.zeros_like(dp_p), dp_p)
+                dp_new = dn_up * nr                     # 접선은 0 (붙는다)
             else:
-                dn = (dp_p * nr).sum(-1, keepdim=True)
-                dp_p = torch.where(under.unsqueeze(-1), dp_p - dn * nr, dp_p)
+                dp_new = dp_p - dn * nr + dn_up * nr    # 법선만 제한
+            dp_p = torch.where(under.unsqueeze(-1), dp_new, dp_p)
             act = act | under
         elif t == "bounding_box":
             b = float(cfg.get("bound", 3)) * dx
