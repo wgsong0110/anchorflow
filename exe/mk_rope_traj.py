@@ -23,6 +23,8 @@ ap.add_argument("--down", type=int, default=12)
 ap.add_argument("--up", type=int, default=12)
 ap.add_argument("--vz", type=float, default=1.5, help="내리고 올리는 속력")
 ap.add_argument("--handle_r", type=float, default=0.03)
+ap.add_argument("--no_handle", action="store_true",
+                help="손잡이 없이 (중력과 바닥만으로 떨어뜨린다)")
 ap.add_argument("--material", default="jelly")
 ap.add_argument("--n_grid", type=int, default=200,
                 help="MPM 격자. 로프 반지름을 몇 칸으로 분해할지가 정해진다")
@@ -72,15 +74,19 @@ vel = torch.zeros(T, 1, 3)
 vel[a.hold:a.hold + a.down, 0, 2] = -a.vz
 vel[a.hold + a.down:, 0, 2] = a.vz
 d = dict(x=xs, F=torch.eye(3).expand(T, a.n, 3, 3).clone(), cfg=cfg,
-         sel=torch.arange(a.n), n_full=a.n,
-         ctrl_id=torch.tensor([cid], dtype=torch.long),
-         ctrl_vel=vel, ctrl_R=torch.tensor([a.handle_r]),
-         ctrl_pos=xs[:, cid].reshape(T, 1, 3).clone())
+         sel=torch.arange(a.n), n_full=a.n)
+if not a.no_handle:
+    d.update(ctrl_id=torch.tensor([cid], dtype=torch.long),
+             ctrl_vel=vel, ctrl_R=torch.tensor([a.handle_r]),
+             ctrl_pos=xs[:, cid].reshape(T, 1, 3).clone())
 torch.save(d, a.out)
 _in = int(((x0 - x0[cid]).norm(dim=-1) < a.handle_r).sum())
 vol = math.pi * a.r ** 2 * a.len
 print(f"[저장] {a.out}  {T} 프레임 x {a.n} 입자, 로프 반지름 {a.r} 길이 "
       f"{a.len} (부피 {vol:.3e})")
-print(f"[손잡이] 입자 {cid} (z={float(x0[cid,2]):.4f}), 반경 {a.handle_r}, "
-      f"반경 안 {_in} 개 | 명령: {a.hold} 프레임 들고 -> {a.down} 프레임 "
-      f"-{a.vz} -> {a.up} 프레임 +{a.vz}")
+if a.no_handle:
+    print("[손잡이] 없음 -- 중력과 바닥만")
+else:
+        print(f"[손잡이] 입자 {cid}"
+          f" (z={float(x0[cid,2]):.4f}), 반경 {a.handle_r}, 반경 안 {_in} 개"
+          f" | 명령: {a.hold} 들고 -> {a.down} x -{a.vz} -> {a.up} x +{a.vz}")
