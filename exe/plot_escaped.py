@@ -55,7 +55,6 @@ for k, path in enumerate(a.dump):
     r0 = float(np.linalg.norm(X0[:, :2] - c0[:2], axis=-1).max())
     q.add_patch(plt.Circle((c0[0], c0[1]), r0, fill=False, ec="0.4", lw=1.6,
                            ls="--"))
-    q.scatter(X0[~esc, 0], X0[~esc, 1], s=1.0, c="0.85", linewidths=0)
     if esc.any():
         sc = q.scatter(X0[esc, 0], X0[esc, 1], s=7.0, c=P[-1][esc, 2],
                        cmap="viridis", linewidths=0)
