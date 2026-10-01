@@ -936,7 +936,8 @@ _CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1
 _DP_HOOK = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
 _BC_DIAG = []              # (활성비, 보정최대/ext, 바닥아래/ext, 손잡이오차/ext)
-_CTRL_ERR = [0.0]          # 손잡이 입자가 명령 변위에서 벗어난 최대량 / ext
+# [오차/ext, 구속 입자 수, 명령 변위 평균] -- 학습·평가 공통으로 갱신된다
+_CTRL_ERR = [0.0, 0, 0.0]
 
 
 def bc_report():
@@ -1087,6 +1088,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                         _e = ((q - x - _dcmd)[_hm].norm(dim=-1).max()
                               / max(EXT, 1e-12))
                         _CTRL_ERR[0] = float(_e)
+                        _CTRL_ERR[1] = int(_hm.sum())
+                        _CTRL_ERR[2] = float(_dcmd[_hm].norm(dim=-1).mean())
             if not a.bc_soft:
                 _duP, _fa = phys_resid.bc_project(
                     x, q - x, d["cfg"], tau,
@@ -2315,6 +2318,7 @@ def _rollout(d, t0, L, gsel=None):
     dmg_e, idx_e = None, None
     fe_r = (take(traj_F(d)[t0], gsel).float() if a.fe_state else None)
     cds, ems, cds_s, ems_s = [], [], [], []
+    _RO_CTRL = []
     for i in range(L):
         with torch.enable_grad(), dt_scope(FRAME_DT / EVAL_SUB):
             for _sb in range(EVAL_SUB - 1):
@@ -2327,6 +2331,10 @@ def _rollout(d, t0, L, gsel=None):
                 idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
         gt = take(d["x"][t0 + i + 1], gsel)
+        # 평가에서도 손잡이가 명령대로 끌리는지 본다. 학습 경로만 보고 "손잡이는
+        # 정확하다" 고 판단했다가, 평가에서는 ctrl_id 가 저장 표본에 없어 대체
+        # 입자가 중심이 되는 것을 놓쳤다.
+        _RO_CTRL.append((_CTRL_ERR[0], _CTRL_ERR[1], _CTRL_ERR[2]))
         fm = free_mask(d, x2.shape[0], x2.device, gsel, x2, t0 + i) if a.control else slice(None)
         errs.append(float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
         stills.append(float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
@@ -2339,6 +2347,12 @@ def _rollout(d, t0, L, gsel=None):
             ems_s.append(emd(x_still, gt, t0 * 1000 + i) / EXT)
         x = x2
     net.train()
+    if _RO_CTRL and a.control:
+        _er = max(q[0] for q in _RO_CTRL)
+        _nn = [q[1] for q in _RO_CTRL]
+        _cm = sum(q[2] for q in _RO_CTRL) / len(_RO_CTRL)
+        print(f"  [롤아웃 손잡이] 오차최대 {_er:.2e}  구속입자 "
+              f"{min(_nn)}~{max(_nn)}  명령변위평균 {_cm:.4f}", flush=True)
     return errs, stills, cds, ems, cds_s, ems_s
 
 
