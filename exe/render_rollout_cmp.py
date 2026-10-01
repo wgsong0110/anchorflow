@@ -74,14 +74,20 @@ if a.color in ("z0", "r0"):
 # 유효 격자점과 그 변위 (덤프에 있을 때만)
 NODES = D.get("nodes")
 QS = a.quiver_scale
+QCLIP = None
 if a.quiver and NODES:
-    _md = float(np.median([
-        np.linalg.norm(np.asarray(dp)[np.asarray(sp)], axis=-1).mean()
-        for _np_, dp, sp in NODES]))
+    # 배율을 **중앙값**으로 잡으면 이상치 몇 개가 화면을 덮는다 (실측). 90 분위
+    # 를 화면 폭의 6% 에 맞추고, 그보다 긴 화살표는 2 배에서 자른다.
+    _ln = np.concatenate([
+        np.linalg.norm(np.asarray(dp)[np.asarray(sp)], axis=-1)
+        for _np_, dp, sp in NODES])
+    _p90, _mx = float(np.percentile(_ln, 90)), float(_ln.max())
     if QS <= 0:
-        QS = 0.04 * float(hi[0] - lo[0] + 2 * pad) / max(_md, 1e-12)
-    print(f"[화살표] 유효 격자점 변위 중앙 {_md:.3e}, 배율 {QS:.1f} 배, "
-          f"{a.quiver} 개", flush=True)
+        QS = 0.06 * float(hi[0] - lo[0] + 2 * pad) / max(_p90, 1e-12)
+    QCLIP = 2.0 * _p90
+    print(f"[화살표] 유효 격자점 변위 90 분위 {_p90:.3e} 최대 {_mx:.3e}, "
+          f"배율 {QS:.1f} 배, {a.quiver} 개 (길이는 {QCLIP:.3e} 에서 자른다)",
+          flush=True)
 elif a.quiver:
     print("[화살표] 덤프에 격자점이 없다 -- 그리지 않는다", flush=True)
 
@@ -148,8 +154,11 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
         _idx = np.nonzero(np.asarray(_spz))[0]
         if len(_idx) > a.quiver:
             _idx = _idx[np.linspace(0, len(_idx) - 1, a.quiver).astype(int)]
+        _vq = _dpz[_idx][:, [i, j]]
+        _lq = np.linalg.norm(_dpz[_idx], axis=-1, keepdims=True)
+        _vq = _vq * np.minimum(1.0, QCLIP / np.maximum(_lq, 1e-30))
         ax[1].quiver(_npz[_idx, i], _npz[_idx, j],
-                     _dpz[_idx, i] * QS, _dpz[_idx, j] * QS,
+                     _vq[:, 0] * QS, _vq[:, 1] * QS,
                      angles="xy", scale_units="xy", scale=1.0,
                      width=.0025, color="deepskyblue", alpha=.85)
     if CLAB:
