@@ -66,7 +66,9 @@ def grid_for_nodes(x, n_nodes, margin=0.05, hz_ratio=HZ_CUBE):
     hi_ = xd.max(0).values
     ext = (hi_ - lo_).max().clamp_min(1e-12)
     pad = margin * ext
-    h = float((ext + 2 * pad) / max(int(n_nodes), 2))
+    # n_nodes 는 정수일 필요가 없다 -- 셀 부피를 고정한 채 층 간격만 바꾸려면
+    # h 를 연속으로 잡아야 한다 (h ∝ (V/hz_ratio)^(1/3)).
+    h = float((ext + 2 * pad) / max(float(n_nodes), 2.0))
     lat = lattice(h, hz_ratio * h, device=x.device, dtype=x.dtype)
     # 패딩된 상자의 8 꼭짓점을 격자 좌표로 보내 정수 범위를 잡는다
     b0, b1 = lo_ - pad, hi_ + pad

@@ -113,7 +113,11 @@ ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
                 help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
                      "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
                      "(jacobian_of) 보다 싸고 no_grad 롤아웃에서도 돈다")
-ap.add_argument("--n_nodes", type=int, default=32,
+ap.add_argument("--hz_ratio", type=float, default=1.0 / 6 ** 0.5,
+                help="층 간격 / 면내 간격. 기본 1/sqrt6 이면 셀이 정육면체다. "
+                     "셀 부피는 (sqrt3/2)·h²·hz 라, 부피를 고정한 채 이 값만 "
+                     "바꾸려면 h 를 (2V/(sqrt3·hz_ratio))^(1/3) 로 함께 잡는다")
+ap.add_argument("--n_nodes", type=float, default=32,
                 help="--arch sgnn 의 **노드 간격**을 정한다 (물체를 몇 노드로 "
                      "덮을지). 사면체 변 길이 = 물체/n_nodes 이고, 발판 격자는 "
                      "그 2 배 간격으로 내부에서 잡힌다")
@@ -441,7 +445,7 @@ def grid_pin(x):
     한 번만 잡으므로 이 고정이 아무것도 바꾸지 않는다.
     """
     _o = _GRID[0]
-    _GRID[0] = SX.grid_for_nodes(x, a.n_nodes)
+    _GRID[0] = SX.grid_for_nodes(x, a.n_nodes, hz_ratio=a.hz_ratio)
     try:
         yield
     finally:
@@ -1067,7 +1071,8 @@ def node_feats(d, t, gsel, x, v, fe=None):
     cfg = d["cfg"]
     X = take(d["x"][0], gsel)
     lo, lat, nn = (_GRID[0] if _GRID[0] is not None
-                   else SX.grid_for_nodes(x, a.n_nodes))
+                   else SX.grid_for_nodes(x, a.n_nodes,
+                                          hz_ratio=a.hz_ratio))
     idx, lam, _aux = SX.locate(x, lo, lat, nn)   # tau 에 무관 -- 한 번만
     rows, uniq = SX.active_nodes(idx)          # **점유 사면체의 꼭짓점만**
     Mn = int(uniq.numel())
