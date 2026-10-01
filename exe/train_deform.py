@@ -972,6 +972,10 @@ _PROF = {}
 _CUR_T = [0]              # step_once 가 남기는 현재 프레임
 _CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1/K)
 _DP_HOOK = [None]
+# 망을 아예 부르지 않고 바로 출력을 내는 경로. None 을 돌려주면 망을 쓴다.
+_DP_FAST = [None]
+# "want" 를 넣으면 다음 셀집계 결과를 붙잡아 이후 호출에서 재사용한다
+_NF_HOLD = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
 _BC_DIAG = []              # (활성비, 보정최대/ext, 바닥아래/ext, 손잡이오차/ext)
 # [오차/ext, 구속 입자 수, 명령 변위 평균] -- 학습·평가 공통으로 갱신된다
@@ -1087,8 +1091,17 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         # tau 에 무관하므로 밖에서 만들고, tau 에 탄젠트를 얹어 한 번 통과
         # 시키면 dPhi/dt (각 지점의 속도) 가 나온다.
         with _tsec("셀집계"):
+            # 한 프레임 안에서 x·v 가 고정이면 격자·locate·간선·노드특징이 전부
+            # 그대로다 (tau 에도 무관하다). --ov_roll 은 같은 프레임을 수백 번
+            # 돌므로 한 번만 만들어 재사용한다.
+            if _NF_HOLD[0] is not None and _NF_HOLD[0] != "want":
+                _nf = _NF_HOLD[0]
+            else:
+                _nf = node_feats(d, t, gsel, x, v, fe=fe)
+                if _NF_HOLD[0] == "want":
+                    _NF_HOLD[0] = _nf
             (_in, npos, (lo, lat, nn), rows, lam, uniq,
-             (esrc, edst, ecls), _lax) = node_feats(d, t, gsel, x, v, fe=fe)
+             (esrc, edst, ecls), _lax) = _nf
         _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
         # 손잡이는 **노드 변위를 명령값으로 덮는다** (i-PG 가 격자 속도를 박는
         # 것과 같다). 예전에는 입자 단계에서 덮었는데, 그러면 (a) 변형장 자체는
@@ -1110,10 +1123,14 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             _nod_v = _cvc[_kmin]                                   # [M,3]
 
         def _fieldS(tau):
-            with _tsec("신경망"):
-                out = net(_in, esrc, edst, ecls, tau, mat=_mv)
-            if _DP_HOOK[0] is not None:
-                out = _DP_HOOK[0](out)
+            # 출력을 자유변수로 갈아끼우는 경로(--ov_roll)에서는 변수가 생긴
+            # 뒤의 순전파가 통째로 버려진다. 프레임당 수백 번이므로 건너뛴다.
+            out = _DP_FAST[0]() if _DP_FAST[0] is not None else None
+            if out is None:
+                with _tsec("신경망"):
+                    out = net(_in, esrc, edst, ecls, tau, mat=_mv)
+                if _DP_HOOK[0] is not None:
+                    out = _DP_HOOK[0](out)
             dpn = torch.nan_to_num(out[0], nan=0.0, posinf=0.0, neginf=0.0)
             # 셀(사면체) 내부는 **항등**이다. 로컬 변환은 쓰지 않는다.
             # locate 결과(rows, lam)를 재사용한다 -- tau 에 무관하므로 jvp 안에서
@@ -1980,13 +1997,22 @@ if a.out_var:
         if st.get("ov") is None:
             st["ov"] = [o.detach().clone().requires_grad_(True) for o in outs]
             st["ov_opt"] = torch.optim.Adam(st["ov"], lr=a.out_var_lr)
+            st["ov_tuple"] = isinstance(out, (tuple, list))
         # **입력과 같은 모양으로** 돌려준다. 출력이 하나일 때 맨 텐서를 주면
         # 호출부의 out[0] 이 첫 노드 행을 집어 색인이 범위를 벗어난다 (옛 conv
         # 경로는 출력이 3 개라 드러나지 않았다).
         return (tuple(st["ov"]) if isinstance(out, (tuple, list))
                 else st["ov"][0])
 
+    def _ov_fast():
+        """변수가 이미 있으면 망을 건너뛰고 그대로 돌려준다."""
+        st = _OV_CUR[0]
+        if st is None or st.get("ov") is None:
+            return None
+        return tuple(st["ov"]) if st["ov_tuple"] else st["ov"][0]
+
     _DP_HOOK[0] = _ov_hook
+    _DP_FAST[0] = _ov_fast
     print(f"[출력변수] 상태마다 노드 출력을 직접 최적화한다 (lr {a.out_var_lr}). "
           "망은 초기화에만 쓰이고 상태는 전진하지 않는다 -- 이 매개화의 "
           "한 스텝 증분 포텐셜 하한을 잰다", flush=True)
@@ -2375,6 +2401,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
 
     _ov = _OV_CUR[0]
     _OV_CUR[0] = st
+    _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
     try:
       with torch.enable_grad():
         for _k in range(a.ov_roll):
@@ -2391,6 +2418,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
         E1 = float(E)
     finally:
         _OV_CUR[0] = _ov
+        _NF_HOLD[0] = None
     _OV_LOG.append((E0 if E0 is not None else E1, E1))
     with torch.no_grad():
         F_next = phys_resid.plastic_step(F_tr, dlog).detach()
