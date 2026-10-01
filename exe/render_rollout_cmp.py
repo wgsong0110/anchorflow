@@ -39,7 +39,6 @@ err = np.linalg.norm(P - G, axis=-1) / EXT * 100
 lo = np.minimum(P.reshape(-1, 3).min(0), G.reshape(-1, 3).min(0))
 hi = np.maximum(P.reshape(-1, 3).max(0), G.reshape(-1, 3).max(0))
 pad = 0.06 * float(np.linalg.norm(hi - lo))
-vmax = float(np.percentile(err, 99)) or 1.0
 print(f"[덤프] {D['tag']} t0={D['t0']}  {T} 프레임, 입자 {N} "
       f"(그리는 건 {len(sel)})  오차 중앙 {np.median(err):.3f}% 최대 {err.max():.3f}%",
       flush=True)
@@ -72,11 +71,12 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     ax[0].set_title(f"교사 MPM (정답)   손잡이 안 {0 if mG is None else int(mG.sum())}",
                     fontsize=11)
     _oP = slice(None) if mP is None else ~mP
-    s = ax[1].scatter(P[t][_oP, i], P[t][_oP, j], s=1.1, c=err[t][_oP],
-                      cmap="inferno", vmin=0, vmax=vmax, linewidths=0)
+    # 손잡이 밖은 교사 칸과 같은 검은색이다. 구속이 들어간 자리만 빨강으로
+    # 떠야 하니 오차 색칠을 걷어냈다 (요청).
+    ax[1].scatter(P[t][_oP, i], P[t][_oP, j], s=1.1, c="0.25", linewidths=0)
     if mP is not None and mP.any():
         ax[1].scatter(P[t][mP, i], P[t][mP, j], s=1.6, c="red", linewidths=0)
-    ax[1].set_title(f"학생 예측 (색 = 정답과의 거리, 평균 {err[t].mean():.3f}% EXT)"
+    ax[1].set_title(f"학생 예측 (평균 오차 {err[t].mean():.3f}% EXT)"
                     f"   손잡이 안 {0 if mP is None else int(mP.sum())}",
                     fontsize=11)
     # 손잡이를 그린다. 이게 없으면 구동이 들어갔는지 눈으로 확인할 수 없어
