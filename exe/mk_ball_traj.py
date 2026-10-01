@@ -21,6 +21,12 @@ ap.add_argument("--r", type=float, default=0.1)
 ap.add_argument("--center", type=float, nargs=3, default=(1.0, 1.0, 1.4))
 ap.add_argument("--frames", type=int, default=13)
 ap.add_argument("--material", default="jelly")
+ap.add_argument("--scheme", choices=["implicit", "analytic"],
+                default="implicit",
+                help="기준 궤적의 적분. implicit=증분 포텐셜과 **같은 이산해** "
+                     "x_n = x0 + h²g n(n+1)/2 (기본), analytic=연속해 ½gt². "
+                     "연속해를 쓰면 적분 차이 h²gN/2 가 그대로 오차로 잡힌다 "
+                     "(실측 12 프레임에서 4.77% -- 모델 탓이 아니다)")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
@@ -52,11 +58,17 @@ dt = float(cfg["frame_dt"])
 gv = torch.tensor(cfg["g"], dtype=torch.float32)
 T = int(a.frames)
 # 정답: 정지에서 출발한 자유낙하. t0=0 에서 v=0 이 되도록 프레임 0 을 정지점으로.
-xs = torch.stack([x0 + 0.5 * gv * (i * dt) ** 2 for i in range(T)], 0)
+# 증분 포텐셜의 한 스텝은 Delta u = h v + h²g, 즉 v_{n+1} = v_n + h g 이고
+# x_{n+1} = x_n + h v_{n+1} 이다 -> x_n = x0 + h²g n(n+1)/2.
+if a.scheme == "implicit":
+    xs = torch.stack([x0 + (dt * dt) * gv * (i * (i + 1) / 2)
+                      for i in range(T)], 0)
+else:
+    xs = torch.stack([x0 + 0.5 * gv * (i * dt) ** 2 for i in range(T)], 0)
 d = dict(x=xs, F=torch.eye(3).expand(T, a.n, 3, 3).clone(), cfg=cfg,
          sel=torch.arange(a.n), n_full=a.n)
 torch.save(d, a.out)
-drop = float(0.5 * 9.8 * ((T - 1) * dt) ** 2)
+drop = float(abs(float(xs[-1, 0, 2] - xs[0, 0, 2])))
 print(f"[저장] {a.out}  {T} 프레임 x {a.n} 입자, 반지름 {a.r}, "
-      f"중심 {tuple(a.center)}, {T-1} 프레임 낙하량 {drop:.3f} "
+      f"중심 {tuple(a.center)}, 적분 {a.scheme}, {T-1} 프레임 낙하량 {drop:.3f} "
       f"(공 지름의 {drop/(2*a.r):.1f} 배)")
