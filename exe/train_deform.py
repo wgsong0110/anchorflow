@@ -113,6 +113,10 @@ ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
                 help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
                      "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
                      "(jacobian_of) 보다 싸고 no_grad 롤아웃에서도 돈다")
+ap.add_argument("--bc_level", choices=["node", "particle"], default="node",
+                help="바닥·경계를 어디에 거는지. node=**격자점 변위**에 사영"
+                     "(기본, 손잡이와 같은 자리다), particle=입자 위치에 사영"
+                     "(옛 방식 -- 변형장 자체는 바닥을 모른다)")
 ap.add_argument("--hz_ratio", type=float, default=1.0 / 6 ** 0.5,
                 help="층 간격 / 면내 간격. 기본 1/sqrt6 이면 셀이 정육면체다. "
                      "셀 부피는 (sqrt3/2)·h²·hz 라, 부피를 고정한 채 이 값만 "
@@ -1193,14 +1197,26 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                     _CTRL_ERR[2] = float(
                         (tau * _nod_v)[_nod_m].norm(dim=-1).mean()
                         if bool(_nod_m.any()) else 0.0)
+            if not a.bc_soft and a.bc_level == "node":
+                # 바닥을 **격자점에** 건다. 손잡이 덮어쓰기 뒤에 와야 손잡이가
+                # 바닥 아래로 명령받았을 때 바닥이 이긴다 (물리적으로 맞다).
+                dpn, _nfa = phys_resid.bc_project_nodes(
+                    npos, dpn, d["cfg"], tau,
+                    float(d["cfg"].get("grid_lim", 2.0)),
+                    int(d["cfg"]["n_grid"]))
+            else:
+                _nfa = None
             q = x + SX.g2p_pre(rows, lam, dpn)
             _qraw = q
             _act = torch.zeros_like(q[:, :1])
+            if _nfa is not None:
+                # 네 꼭짓점이 모두 바닥에 걸린 입자는 증분 포텐셜에서 뺀다
+                _act = _act + _nfa[rows].all(1).to(q.dtype).unsqueeze(-1)
             if _nod_m is not None:
                 # 구속 노드 넷에 모두 둘러싸인 입자는 명령만큼 간다 -- 그 입자를
                 # 증분 포텐셜에서 뺀다 (반력이 실어 나르는 자리다).
                 _act = _act + _nod_m[rows].all(1).to(q.dtype).unsqueeze(-1)
-            if not a.bc_soft:
+            if not a.bc_soft and a.bc_level == "particle":
                 _duP, _fa = phys_resid.bc_project(
                     x, q - x, d["cfg"], tau,
                     float(d["cfg"].get("grid_lim", 2.0)),

@@ -256,6 +256,48 @@ def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
                              e_g.detach(), e_bc.detach())
 
 
+def bc_project_nodes(npos, dp, cfg, h, grid_lim, n_grid):
+    """바닥·경계를 **격자점 변위**에 하드로 사영한다 -> (dp_사영, 활성마스크).
+
+    입자 단계에서 사영하면 변형장 자체는 바닥을 모른 채 아무 값이나 내고 그
+    뒤에 결과만 고쳐진다 (손잡이에서 겪은 것과 같은 구조다). 노드에 걸면 바닥이
+    변형장의 일부가 되어, 그 노드를 꼭짓점으로 갖는 모든 셀이 바닥을 본다.
+
+    바닥은 **한쪽 부등식**이라 활성 집합이 매 스텝 달라진다 -- 사영은 미분
+    가능한 자리에서 기울기를 그대로 흘려 보낸다 (손잡이처럼 끊지 않는다).
+    """
+    dx = float(grid_lim) / float(n_grid)
+    act = torch.zeros(npos.shape[0], dtype=torch.bool, device=npos.device)
+    dp_p = dp
+    for bc in (cfg.get("boundary_conditions") or []):
+        t = bc.get("type")
+        if t == "surface_collider":
+            pt = torch.as_tensor(bc["point"], device=npos.device,
+                                 dtype=npos.dtype)
+            nr = torch.as_tensor(bc["normal"], device=npos.device,
+                                 dtype=npos.dtype)
+            nr = nr / nr.norm().clamp_min(1e-12)
+            sd = ((npos + dp_p - pt) * nr).sum(-1)
+            pen = sd < 0.0
+            dp_p = dp_p - torch.where(pen.unsqueeze(-1),
+                                      sd.unsqueeze(-1) * nr,
+                                      torch.zeros_like(dp_p))
+            act = act | pen
+            if str(bc.get("surface", "sticky")) == "sticky":
+                touch = ((npos - pt) * nr).sum(-1) < dx
+                dn = (dp_p * nr).sum(-1, keepdim=True) * nr
+                dp_p = torch.where(touch.unsqueeze(-1), dn, dp_p)
+                act = act | touch
+        elif t == "bounding_box":
+            b = float(cfg.get("bound", 3)) * dx
+            lo, hi = b, float(grid_lim) - b
+            tgt = (npos + dp_p).clamp(min=lo, max=hi)
+            out = ((npos + dp_p) < lo) | ((npos + dp_p) > hi)
+            dp_p = torch.where(out, tgt - npos, dp_p)
+            act = act | out.any(-1)
+    return dp_p, act
+
+
 def residual(E, x2, mass, ext):
     """|r| 을 질량으로 정규화해 길이 단위로 돌려준다 (물체 크기 대비 %).
 
