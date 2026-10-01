@@ -5,7 +5,9 @@
 멀리 떨어진 입자를 벗어난 것으로 본다. 그중 **중심보다 높이 있는 것만** 그린다
 (아래로 처진 것은 매달린 공에서 당연한 변형이라 구분이 안 된다).
 
-색은 마지막 프레임의 z, 점선은 원래 공의 테두리다.
+좌표는 **마지막 프레임의 xy**, 색은 **초기 위치 (x,y,z) 를 RGB 로** 준다 --
+어디서 온 입자가 어디로 갔는지가 한 장에 보인다. 점선은 마지막 프레임 공의
+테두리(중심 입자 기준 반지름)다.
 """
 from __future__ import annotations
 import argparse
@@ -64,16 +66,19 @@ for k, path in enumerate(a.dump):
     if a.above:
         esc = esc & (P[-1][:, 2] > cen[2])
     q = ax[0][k]
-    # 원래 공의 테두리 (초기 xy 평면에서의 최대 반지름)
-    r0 = float(np.linalg.norm(X0[:, :2] - c0[:2], axis=-1).max())
-    q.add_patch(plt.Circle((c0[0], c0[1]), r0, fill=False, ec="0.4", lw=1.6,
-                           ls="--"))
+    # 마지막 프레임 공의 테두리 (중심 입자 기준)
+    q.add_patch(plt.Circle((cen[0], cen[1]), rad, fill=False, ec="0.4",
+                           lw=1.6, ls="--"))
     if esc.any():
-        sc = q.scatter(X0[esc, 0], X0[esc, 1], s=7.0, c=P[-1][esc, 2],
-                       cmap="viridis", linewidths=0)
-        cb = fig.colorbar(sc, ax=q); cb.set_label("마지막 프레임의 z")
+        _lo0, _hi0 = X0.min(0), X0.max(0)
+        rgb = (X0[esc] - _lo0) / np.maximum(_hi0 - _lo0, 1e-12)
+        q.scatter(P[-1][esc, 0], P[-1][esc, 1], s=10.0, c=rgb, linewidths=0)
+        print(f"   색 = 초기 위치 RGB: x->빨강 {_lo0[0]:.3f}~{_hi0[0]:.3f}, "
+              f"y->초록 {_lo0[1]:.3f}~{_hi0[1]:.3f}, "
+              f"z->파랑 {_lo0[2]:.3f}~{_hi0[2]:.3f}", flush=True)
+    q.plot([cen[0]], [cen[1]], marker="x", ms=9, mew=2.0, color="k")
     q.set_aspect("equal")
-    q.set_xlabel("초기 x"); q.set_ylabel("초기 y")
+    q.set_xlabel("마지막 프레임 x"); q.set_ylabel("마지막 프레임 y")
     q.set_title(f"{name}\n중심보다 위에서 벗어난 입자 {int(esc.sum())} / "
                 f"{len(esc)} ({100*esc.mean():.2f}%)\n중심 입자 {cid}, "
                 f"반지름 {rad:.4f}, 마지막 중심 z {cen[2]:.4f}", fontsize=9)
