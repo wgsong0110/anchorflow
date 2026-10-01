@@ -114,8 +114,8 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
                   vmax=None if CVAL is None else CVAL.max(), linewidths=0)
     if mG is not None and mG.any():
         ax[0].scatter(G[t][mG, i], G[t][mG, j], s=1.6, c="red", linewidths=0)
-    ax[0].set_title(f"{a.label_left}   손잡이 안 {0 if mG is None else int(mG.sum())}",
-                    fontsize=11)
+    ax[0].set_title(f"{a.label_left}   손잡이 안 "
+                    f"{0 if mG is None else int(mG.sum())}", fontsize=9)
     _oP = slice(None) if mP is None else ~mP
     # 손잡이 밖은 기준 칸과 같은 검은색이다. 구속이 들어간 자리만 빨강으로
     # 떠야 하니 오차 색칠을 걷어냈다 (요청).
@@ -132,7 +132,7 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
         ax[1].scatter(P[t][mP, i], P[t][mP, j], s=1.6, c="red", linewidths=0)
     ax[1].set_title(f"{a.label} (평균 오차 {err[t].mean():.3f}% EXT)"
                     f"   손잡이 안 {0 if mP is None else int(mP.sum())}",
-                    fontsize=11)
+                    fontsize=9)
     # 손잡이를 그린다. 이게 없으면 구동이 들어갔는지 눈으로 확인할 수 없어
     # "손잡이가 없는 것 같다" 는 오해를 부른다 (덤프에는 늘 들어 있다).
     if _CP is not None:

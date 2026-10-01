@@ -995,6 +995,7 @@ _OV_TGT = [None]           # --ov_init target 이 쓸 자유낙하 평행이동 
 # AF_OV_CURVE=경로 를 주면 프레임별 (반복, E) 곡선을 그 경로에 남긴다
 _CURVE = [] if os.environ.get("AF_OV_CURVE") else None
 # 롤아웃 덤프에 격자점을 함께 담을지. (노드 위치, 노드 변위, 유효 여부)
+_NOD_M = [None]            # 손잡이로 덮는 노드 (최적화에서 뺀다)
 _NODE_CAP = [False]
 _NODE_LAST = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
@@ -1142,6 +1143,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             _dmin, _kmin = _dn.min(1)
             _nod_m = _dmin < _Rc
             _nod_v = _cvc[_kmin]                                   # [M,3]
+
+        _NOD_M[0] = _nod_m
 
         if _OV_TGT[0] == "want":
             # **노드별 관성 예측자** h·v_n + h²g. v_n 은 barycentric 가중 질량
@@ -2072,6 +2075,11 @@ if a.out_var or a.ov_roll > 0:
         if st.get("ov") is None:
             if a.ov_init == "net" or M is None:
                 return None                      # 망 출력으로 초기화한다
+            # **손잡이 노드는 자유변수에서 아예 뺀다.** 값이 명령으로 덮이므로
+            # 변수로 남겨두면 기울기가 0 인 채 L-BFGS 의 곡률쌍만 더럽힌다.
+            _hm = _NOD_M[0]
+            st["ov_idx"] = (None if _hm is None else
+                            (~_hm).nonzero(as_tuple=True)[0])
             z = torch.zeros(M, 3, dtype=dtype, device=device)
             if a.ov_init in ("target", "predict"):
                 if not torch.is_tensor(_OV_TGT[0]):
@@ -2081,10 +2089,17 @@ if a.out_var or a.ov_roll > 0:
             if a.ov_init == "randn":
                 z = a.ov_init_std * torch.randn(M, 3, dtype=dtype,
                                                 device=device)
+            st["ov_M"] = M
+            if st["ov_idx"] is not None:
+                z = z[st["ov_idx"]]
             st["ov"] = [z.requires_grad_(True)]
             st["ov_opt"] = _mk_ov_opt(st["ov"])
             # 호출부는 out[0] 만 읽는다 -- 늘 묶음으로 돌려주면 안전하다
             st["ov_tuple"] = True
+        if st.get("ov_idx") is not None:
+            _z = torch.zeros(st["ov_M"], 3, dtype=st["ov"][0].dtype,
+                             device=st["ov"][0].device)
+            return (_z.index_copy(0, st["ov_idx"], st["ov"][0]),)
         return tuple(st["ov"]) if st["ov_tuple"] else st["ov"][0]
 
     _DP_HOOK[0] = _ov_hook
