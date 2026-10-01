@@ -21,12 +21,19 @@ ap.add_argument("--r", type=float, default=0.1)
 ap.add_argument("--center", type=float, nargs=3, default=(1.0, 1.0, 1.4))
 ap.add_argument("--frames", type=int, default=13)
 ap.add_argument("--material", default="jelly")
-ap.add_argument("--scheme", choices=["implicit", "analytic"],
+ap.add_argument("--scheme", choices=["implicit", "analytic", "hold"],
                 default="implicit",
                 help="기준 궤적의 적분. implicit=증분 포텐셜과 **같은 이산해** "
                      "x_n = x0 + h²g n(n+1)/2 (기본), analytic=연속해 ½gt². "
                      "연속해를 쓰면 적분 차이 h²gN/2 가 그대로 오차로 잡힌다 "
-                     "(실측 12 프레임에서 4.77% -- 모델 탓이 아니다)")
+                     "(실측 12 프레임에서 4.77% -- 출력만 최적화 탓이 "
+                     "아니다), hold=정지 자세 그대로 (손잡이 씬처럼 닫힌 해가 "
+                     "없을 때 쓴다 -- **해가 아니라 기준점일 뿐이다**)")
+ap.add_argument("--handle", choices=["none", "top"], default="none",
+                help="top=공 최상단 입자를 손잡이로 잡는다")
+ap.add_argument("--handle_r", type=float, default=0.04)
+ap.add_argument("--handle_vel", type=float, nargs=3, default=(0.0, 0.0, 0.0),
+                help="손잡이 명령 속도. 0 이면 **붙잡고 있는다**")
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
@@ -60,13 +67,29 @@ T = int(a.frames)
 # 정답: 정지에서 출발한 자유낙하. t0=0 에서 v=0 이 되도록 프레임 0 을 정지점으로.
 # 증분 포텐셜의 한 스텝은 Delta u = h v + h²g, 즉 v_{n+1} = v_n + h g 이고
 # x_{n+1} = x_n + h v_{n+1} 이다 -> x_n = x0 + h²g n(n+1)/2.
-if a.scheme == "implicit":
+if a.scheme == "hold":
+    xs = x0.unsqueeze(0).expand(T, a.n, 3).clone()
+elif a.scheme == "implicit":
     xs = torch.stack([x0 + (dt * dt) * gv * (i * (i + 1) / 2)
                       for i in range(T)], 0)
 else:
     xs = torch.stack([x0 + 0.5 * gv * (i * dt) ** 2 for i in range(T)], 0)
 d = dict(x=xs, F=torch.eye(3).expand(T, a.n, 3, 3).clone(), cfg=cfg,
          sel=torch.arange(a.n), n_full=a.n)
+if a.handle == "top":
+    # 최상단 입자를 손잡이로. 중심은 **그 입자의 현재 위치**를 따른다 (i-PG 가
+    # collider 의 point 를 매 프레임 그렇게 갱신한다). 기준 궤적에서는 그 입자가
+    # 기준대로 움직이므로 ctrl_pos 도 그 궤적을 그대로 쓴다.
+    cid = int(x0[:, 2].argmax())
+    hv = torch.tensor(a.handle_vel, dtype=torch.float32)
+    d["ctrl_id"] = torch.tensor([cid], dtype=torch.long)
+    d["ctrl_vel"] = hv.reshape(1, 1, 3).expand(T, 1, 3).clone()
+    d["ctrl_R"] = torch.tensor([a.handle_r], dtype=torch.float32)
+    d["ctrl_pos"] = xs[:, cid].reshape(T, 1, 3).clone()
+    _in = int(((x0 - x0[cid]).norm(dim=-1) < a.handle_r).sum())
+    print(f"[손잡이] 입자 {cid} (z={float(x0[cid,2]):.4f}), 반경 "
+          f"{a.handle_r}, 명령 속도 {tuple(a.handle_vel)}, "
+          f"초기 반경 안 입자 {_in} 개")
 torch.save(d, a.out)
 drop = float(abs(float(xs[-1, 0, 2] - xs[0, 0, 2])))
 print(f"[저장] {a.out}  {T} 프레임 x {a.n} 입자, 반지름 {a.r}, "

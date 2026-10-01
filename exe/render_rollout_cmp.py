@@ -27,6 +27,7 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--sub", type=int, default=6000)
 ap.add_argument("--fps", type=int, default=8)
 ap.add_argument("--label", default="출력만 최적화", help="오른쪽 칸 이름")
+ap.add_argument("--label_left", default="PG MPM (기준)", help="왼쪽 칸 이름")
 ap.add_argument("--quiver", type=int, default=0,
                 help="유효 격자점(입자가 든 사면체의 꼭짓점)의 이동 방향을 "
                      "오른쪽 칸에 화살표로 그린다. 그릴 개수")
@@ -113,7 +114,7 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
                   vmax=None if CVAL is None else CVAL.max(), linewidths=0)
     if mG is not None and mG.any():
         ax[0].scatter(G[t][mG, i], G[t][mG, j], s=1.6, c="red", linewidths=0)
-    ax[0].set_title(f"PG MPM (기준)   손잡이 안 {0 if mG is None else int(mG.sum())}",
+    ax[0].set_title(f"{a.label_left}   손잡이 안 {0 if mG is None else int(mG.sum())}",
                     fontsize=11)
     _oP = slice(None) if mP is None else ~mP
     # 손잡이 밖은 기준 칸과 같은 검은색이다. 구속이 들어간 자리만 빨강으로
