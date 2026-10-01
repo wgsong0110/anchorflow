@@ -88,14 +88,20 @@ cfg = json.load(open(a.cfg))
 os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
 # 손잡이 위치는 **이 궤적 자신의** 것을 쓴다. 기준 궤적 것을 그대로 넣으면
 # 렌더의 손잡이 원이 남의 경로를 그려 비교가 어긋난다 (실제로 그랬다).
-_hid = ref["ctrl_id"][0] if ref["ctrl_id"].dim() == 2 else ref["ctrl_id"]
-_hid = _hid.reshape(-1).long()
-_cp = torch.stack([torch.from_numpy(rd(p_, "x")).float()[_hid] for p_ in files])
-torch.save({"x": X.half(), "v": V.half(), "F": Fm.half(), "sel": sel,
-            "cfg": cfg, "seed": int(ref.get("seed", 0)),
-            "tag": os.path.basename(a.out)[:-3],
-            "ctrl_pos": _cp, "ctrl_vel": ref["ctrl_vel"],
-            "ctrl_id": ref["ctrl_id"], "ctrl_R": ref["ctrl_R"],
-            "n_full": int(X0.shape[0])}, a.out)
+_out = {"x": X.half(), "v": V.half(), "F": Fm.half(), "sel": sel,
+        "cfg": cfg, "seed": int(ref.get("seed", 0)),
+        "tag": os.path.basename(a.out)[:-3],
+        "n_full": int(X0.shape[0])}
+if "ctrl_id" in ref:                     # 손잡이 없는 장면도 받는다
+    _hid = ref["ctrl_id"][0] if ref["ctrl_id"].dim() == 2 else ref["ctrl_id"]
+    _hid = _hid.reshape(-1).long()
+    _out["ctrl_pos"] = torch.stack(
+        [torch.from_numpy(rd(p_, "x")).float()[_hid] for p_ in files])
+    _out["ctrl_vel"] = ref["ctrl_vel"]
+    _out["ctrl_id"] = ref["ctrl_id"]
+    _out["ctrl_R"] = ref["ctrl_R"]
+else:
+    print("[손잡이] 기준 궤적에 없다 -- 손잡이 없이 저장한다")
+torch.save(_out, a.out)
 print(f"[저장] {a.out}  {X.shape[0]}프레임 x {sel.numel()}입자  "
       f"n_grid {cfg['n_grid']}  {os.path.getsize(a.out) / 1e6:.0f}MB")
