@@ -294,6 +294,13 @@ def bc_project_nodes(npos, dp, cfg, h, grid_lim, n_grid):
                 dp_new = dp_p - dn * nr + dn_up * nr    # 법선만 제한
             dp_p = torch.where(under.unsqueeze(-1), dp_new, dp_p)
             act = act | under
+            if os.environ.get("AF_BC_DIAG"):
+                with torch.no_grad():
+                    _nu = int(under.sum())
+                    _up = int((under & (dn.reshape(-1) > 0)).sum())
+                    print(f"      [바닥] 면 아래 노드 {_nu}  그중 올라가려던 "
+                          f"것 {_up}  (바뀐 노드는 이 {_up} 개뿐이다)",
+                          flush=True)
         elif t == "bounding_box":
             b = float(cfg.get("bound", 3)) * dx
             lo, hi = b, float(grid_lim) - b
