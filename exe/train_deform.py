@@ -760,6 +760,39 @@ def ctrl_anchor(d, gsel):
     return loc
 
 
+def ctrl_center(d, gsel, t, x):
+    """손잡이 중심 [K,3]. **지목된 손잡이 입자의 현재 위치**다 (i-PG 와 같다).
+
+    두 가지를 고쳐 둔다.
+
+    1) 대체 입자를 **프레임 0 기준으로 한 번만** 고른다. 예전에는 `ctrl_anchor`
+       가 프레임마다 "그 프레임 교사 중심에 가장 가까운 저장 입자" 를 골랐다.
+       그러면 중심 입자의 정체가 매 프레임 바뀌고, 그 입자는 그 전까지 공 안에
+       없어 구동을 안 받았으니 뒤처져 있다 -- 중심이 밀리고 오차가 누적된다
+       (실측: 프레임 43 에 교사 중심과 0.308 = 반경의 2 배).
+    2) 손잡이 입자가 저장 표본에 **있으면** 그것을 그대로 쓴다. 전체를 저장하는
+       궤적(새 i-PG 교사)에서는 대체가 아예 일어나지 않는다.
+    """
+    if "_cc_fix" not in d:
+        cid = d["ctrl_id"]
+        cid = (cid[0] if cid.dim() == 2 else cid).reshape(-1).cpu()
+        sel = d["sel"].cpu()
+        inv = torch.full((int(d["n_full"]),), -1, dtype=torch.long)
+        inv[sel] = torch.arange(sel.numel())
+        loc = inv[cid.clamp(0, inv.numel() - 1)]
+        miss = loc < 0
+        if bool(miss.any()):
+            # 프레임 0 의 손잡이 중심에 가장 가까운 저장 입자로 한 번만 정한다
+            X0 = d["x"][0].float().cpu()
+            P = d["ctrl_pos"].float().cpu()[0]
+            loc[miss] = torch.cdist(P[miss], X0).argmin(1)
+        d["_cc_fix"] = loc.to(dev)
+    loc = d["_cc_fix"]
+    if gsel is not None and gsel.numel() != d["x"].shape[1]:
+        raise SystemExit("ctrl_center 는 전체 표본(gsel=arange)만 받는다")
+    return x[loc]
+
+
 def ctrl_weights(d, t, x, loc_t):
     """학생 상태에서 손잡이 가중치 [N,K].
 
@@ -1051,16 +1084,24 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             (_in, npos, (lo, lat, nn), rows, lam, uniq,
              (esrc, edst, ecls), _lax) = node_feats(d, t, gsel, x, v, fe=fe)
         _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
-        # 손잡이 가중치·소속은 x 와 t 만의 함수라 **tau 에 무관**하다. jvp 안에서
-        # 돌면 정방향 미분까지 두 번 탄다 (게다가 전에는 같은 것을 두 번 쟀다).
-        _cw = _cki = _cvc = None
+        # 손잡이는 **노드 변위를 명령값으로 덮는다** (i-PG 가 격자 속도를 박는
+        # 것과 같다). 예전에는 입자 단계에서 덮었는데, 그러면 (a) 변형장 자체는
+        # 경계조건을 모르고 (b) 중심을 입자에서 재-유도하느라 뒤처짐이 누적됐다
+        # (실측: 프레임 43 에 교사 중심과 0.308 = 반경의 2 배, 원 안 입자가
+        # 3115 -> 577 개). 노드에 박으면 둘 다 사라지고 L_bc 도 필요 없다.
+        _nod_m = None            # 명령으로 덮을 노드 (불리언 [M])
+        _nod_v = None            # 그 노드의 명령 속도 [M,3]
         if a.control and "ctrl_id" in d and "ctrl_vel" in d:
-            _tt = min(t, ctrl_anchor(d, gsel).shape[0] - 1)
-            _cw_all, _ = ctrl_weights(d, _tt, x, ctrl_anchor(d, gsel)[_tt])
-            _cw, _cki = _cw_all.max(1)                     # [N], [N]
-            _cw = _cw.unsqueeze(-1)
-            _cvc = d["ctrl_vel"].to(x.device, x.dtype)[
-                min(_tt, d["ctrl_vel"].shape[0] - 1)]
+            _tt = min(t, d["ctrl_vel"].shape[0] - 1)
+            _cvc = d["ctrl_vel"].to(x.device, x.dtype)[_tt]        # [K,3]
+            _cen = ctrl_center(d, gsel, _tt, x)                    # [K,3]
+            _Rc = d["ctrl_R"].to(x.device, x.dtype)
+            _Rc = _Rc[min(_tt, _Rc.numel() - 1)].clamp_min(1e-6)
+            # 노드-손잡이 거리로 **지시함수** (하드). 가장 가까운 손잡이를 따른다
+            _dn = (npos.unsqueeze(1) - _cen.unsqueeze(0)).norm(dim=-1)   # [M,K]
+            _dmin, _kmin = _dn.min(1)
+            _nod_m = _dmin < _Rc
+            _nod_v = _cvc[_kmin]                                   # [M,3]
 
         def _fieldS(tau):
             with _tsec("신경망"):
@@ -1071,25 +1112,24 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             # 셀(사면체) 내부는 **항등**이다. 로컬 변환은 쓰지 않는다.
             # locate 결과(rows, lam)를 재사용한다 -- tau 에 무관하므로 jvp 안에서
             # 다시 돌 이유가 없고, Mtot 크기 zeros+index_copy 도 필요 없다.
-            q = x + SX.g2p_pre(rows, lam, dpn)
-            _qraw = q                       # 덮어쓰기 **전** 의 원 출력
-            _act = torch.zeros_like(q[:, :1])
-            if _cw is not None:
-                # 교사와 같은 규약의 하드 Dirichlet. tau 에 의존하는 것은 명령
-                # 변위뿐이므로 그것만 여기서 만든다.
-                _dcmd = tau * _CTRL_SCALE[0] * _cvc[_cki]
-                q = x + (1.0 - _cw) * (q - x) + _cw * _dcmd
-                _act = _act + (_cw > 0.5).to(q.dtype)
-                # 하드 구속이면 w=1 인 입자는 변위가 **정확히** 명령이어야 한다.
-                # 바닥 사영 전에 잰다 (사영은 그 뒤 정당하게 덮어쓸 수 있다).
+            if _nod_m is not None:
+                # **노드 변위를 명령으로 덮는다.** detach 로 기울기를 끊어 그
+                # 노드는 최적화 대상에서 빠진다 (상수 경계조건이다).
+                dpn = torch.where(_nod_m.unsqueeze(-1),
+                                  (tau * _CTRL_SCALE[0] * _nod_v).detach(),
+                                  dpn)
                 with torch.no_grad():
-                    _hm = (_cw.reshape(-1) > 0.5)
-                    if bool(_hm.any()):
-                        _e = ((q - x - _dcmd)[_hm].norm(dim=-1).max()
-                              / max(EXT, 1e-12))
-                        _CTRL_ERR[0] = float(_e)
-                        _CTRL_ERR[1] = int(_hm.sum())
-                        _CTRL_ERR[2] = float(_dcmd[_hm].norm(dim=-1).mean())
+                    _CTRL_ERR[1] = int(_nod_m.sum())
+                    _CTRL_ERR[2] = float(
+                        (tau * _nod_v)[_nod_m].norm(dim=-1).mean()
+                        if bool(_nod_m.any()) else 0.0)
+            q = x + SX.g2p_pre(rows, lam, dpn)
+            _qraw = q
+            _act = torch.zeros_like(q[:, :1])
+            if _nod_m is not None:
+                # 구속 노드 넷에 모두 둘러싸인 입자는 명령만큼 간다 -- 그 입자를
+                # 증분 포텐셜에서 뺀다 (반력이 실어 나르는 자리다).
+                _act = _act + _nod_m[rows].all(1).to(q.dtype).unsqueeze(-1)
             if not a.bc_soft:
                 _duP, _fa = phys_resid.bc_project(
                     x, q - x, d["cfg"], tau,
