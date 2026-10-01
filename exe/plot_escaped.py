@@ -34,6 +34,9 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--r", type=float, default=0.0,
                 help="공 반지름. 0 이면 초기 위치에서 중심 입자까지의 최대 "
                      "거리로 잡는다")
+ap.add_argument("--json", default="",
+                help="3D 로 그릴 점들을 json 으로도 남긴다 (대화형 그림용)")
+ap.add_argument("--bg", type=int, default=3000, help="바탕으로 깔 공 입자 수")
 ap.add_argument("--mode3d", action="store_true",
                 help="초기 위치 (x,y,z) 를 3D 로 흩뿌리고 색은 **마지막 "
                      "프레임의 z** (--out 과 짝이 반대인 그림이다)")
@@ -79,10 +82,21 @@ for k, path in enumerate(a.dump):
         # 공 전체를 아주 연하게 깔아 둔다 (벗어난 입자의 자리를 가늠하려면
         # 바탕이 있어야 한다)
         _bg = np.arange(len(esc))[~esc]
-        if len(_bg) > 6000:
-            _bg = _bg[np.linspace(0, len(_bg) - 1, 6000).astype(int)]
-        q.scatter(X0[_bg, 0], X0[_bg, 1], X0[_bg, 2], s=1.2, c="0.6",
-                  alpha=.06, linewidths=0, depthshade=False)
+        if len(_bg) > a.bg:
+            _bg = _bg[np.linspace(0, len(_bg) - 1, a.bg).astype(int)]
+        q.scatter(X0[_bg, 0], X0[_bg, 1], X0[_bg, 2], s=2.0, c="0.55",
+                  alpha=.15, linewidths=0, depthshade=False)
+        if a.json:
+            import json as _js
+            _js.dump(dict(
+                name=name,
+                bg=np.round(X0[_bg], 5).tolist(),
+                esc=np.round(X0[esc], 5).tolist(),
+                zlast=np.round(P[-1][esc, 2], 5).tolist(),
+                n_esc=int(esc.sum()), n_all=int(len(esc)),
+            ), open(a.json, "w"))
+            print(f"[json] {a.json}  바탕 {len(_bg)} + 벗어남 "
+                  f"{int(esc.sum())}", flush=True)
         if esc.any():
             sc = q.scatter(X0[esc, 0], X0[esc, 1], X0[esc, 2], s=9.0,
                            c=P[-1][esc, 2], cmap="viridis", linewidths=0)
