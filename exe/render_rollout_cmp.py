@@ -1,6 +1,6 @@
 """롤아웃 덤프를 **정답 대비 나란히** 보여주는 영상으로 만든다.
 
-왼쪽 PG MPM(기준), 오른쪽 모델 예측. (겹쳐 보기 칸은 요청으로 제거했다.)
+왼쪽 PG MPM(기준), 오른쪽은 --label 로 받는다. (겹쳐 보기 칸은 요청으로 제거했다.)
 색은 두 번째 칸에서 **정답과의 거리**라, 어디서 틀리는지가 바로 보인다.
 """
 from __future__ import annotations
@@ -26,6 +26,7 @@ ap.add_argument("--dump", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--sub", type=int, default=6000)
 ap.add_argument("--fps", type=int, default=8)
+ap.add_argument("--label", default="출력만 최적화", help="오른쪽 칸 이름")
 a = ap.parse_args()
 
 D = torch.load(a.dump, map_location="cpu", weights_only=False)
@@ -54,7 +55,7 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     fig, ax = plt.subplots(1, 2, figsize=(10.2, 5.0), dpi=110)
     i, j = 0, 2                                          # xz 평면
     # 손잡이 반경 안에 든 입자를 **빨갛게** 칠한다. 기준 칸은 PG 위치로,
-    # 모델 칸은 예측 위치로 각각 판정한다 (같은 중심·같은 반경).
+    # 오른쪽 칸은 그 칸의 위치로 각각 판정한다 (같은 중심·같은 반경).
     mG = mP = None
     if _CP is not None:
         _ti0 = min(int(D["t0"]) + t, _CP.shape[0] - 1)
@@ -76,7 +77,7 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     ax[1].scatter(P[t][_oP, i], P[t][_oP, j], s=1.1, c="0.25", linewidths=0)
     if mP is not None and mP.any():
         ax[1].scatter(P[t][mP, i], P[t][mP, j], s=1.6, c="red", linewidths=0)
-    ax[1].set_title(f"모델 예측 (평균 오차 {err[t].mean():.3f}% EXT)"
+    ax[1].set_title(f"{a.label} (평균 오차 {err[t].mean():.3f}% EXT)"
                     f"   손잡이 안 {0 if mP is None else int(mP.sum())}",
                     fontsize=11)
     # 손잡이를 그린다. 이게 없으면 구동이 들어갔는지 눈으로 확인할 수 없어

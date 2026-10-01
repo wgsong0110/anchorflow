@@ -992,6 +992,8 @@ _DP_FAST = [None]
 # "want" 를 넣으면 다음 셀집계 결과를 붙잡아 이후 호출에서 재사용한다
 _NF_HOLD = [None]
 _OV_TGT = [None]           # --ov_init target 이 쓸 자유낙하 평행이동 [3]
+# AF_OV_CURVE=경로 를 주면 프레임별 (반복, E) 곡선을 그 경로에 남긴다
+_CURVE = [] if os.environ.get("AF_OV_CURVE") else None
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
 _BC_DIAG = []              # (활성비, 보정최대/ext, 바닥아래/ext, 손잡이오차/ext)
 # [오차/ext, 구속 입자 수, 명령 변위 평균] -- 학습·평가 공통으로 갱신된다
@@ -2452,7 +2454,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
     nrm = float(m.sum()) * (EXT ** 2) / (FRAME_DT ** 2)
     st, E0, E1 = {}, None, None
-    _E0 = [None]
+    _E0, _tr = [None], []
 
     def _fwd():
         with torch.enable_grad(), dt_scope(FRAME_DT):
@@ -2483,6 +2485,8 @@ def _ov_frame(d, t, gsel, p, x, v, F):
                 if _n[0] == 0:
                     _E0[0] = float(E)
                 _n[0] += 1
+                if _CURVE is not None:
+                    _tr.append(float(E))
                 E.backward()
                 return E
             _fwd()                    # 변수를 만든다 (훅이 첫 호출에서 만든다)
@@ -2497,6 +2501,8 @@ def _ov_frame(d, t, gsel, p, x, v, F):
                     raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다")
                 if E0 is None:
                     E0 = float(E)
+                if _CURVE is not None:
+                    _tr.append(float(E))
                 st["ov_opt"].zero_grad(set_to_none=True)
                 E.backward()
                 st["ov_opt"].step()
@@ -2516,6 +2522,8 @@ def _ov_frame(d, t, gsel, p, x, v, F):
         _NF_HOLD[0] = None
         _OV_TGT[0] = None
     _OV_LOG.append((E0 if E0 is not None else E1, E1))
+    if _CURVE is not None:
+        _CURVE.append((int(t), _tr))
     with torch.no_grad():
         F_next = phys_resid.plastic_step(F_tr, dlog).detach()
     return x2.detach(), v2.detach(), F_next
@@ -2578,6 +2586,14 @@ def _rollout(d, t0, L, gsel=None):
     if not errs:
         raise SystemExit("롤아웃이 한 프레임도 재지 못했다 -- 분기 구조를 "
                          "확인할 것 (nan 을 평균해 비를 내지 않는다)")
+    if _CURVE:
+        _cp = os.environ["AF_OV_CURVE"]
+        with open(_cp, "w") as _f:
+            json.dump({"tag": d.get("tag", ""), "t0": t0,
+                       "frames": [{"t": _t, "E": _e} for _t, _e in _CURVE]},
+                      _f)
+        print(f"  [곡선] {_cp}  프레임 {len(_CURVE)}", flush=True)
+        del _CURVE[:]
     if _OV_LOG:
         _b = sum(q[0] for q in _OV_LOG) / len(_OV_LOG)
         _af = sum(q[1] for q in _OV_LOG) / len(_OV_LOG)
