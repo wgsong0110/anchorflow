@@ -245,9 +245,12 @@ ap.add_argument("--out_var", action="store_true",
                      "바뀐다. 상태는 전진하지 않으므로 각 상태의 E 가 이 "
                      "매개화의 한 스텝 하한까지 내려간다")
 ap.add_argument("--out_var_lr", type=float, default=3e-3)
-ap.add_argument("--ov_init", choices=["zero", "randn", "net"], default="zero",
+ap.add_argument("--ov_init", choices=["zero", "randn", "net", "target"],
+                default="zero",
                 help="--ov_roll 자유변수의 초기값. zero=항등 변형장(기본), "
-                     "randn=--ov_init_std 규모의 난수, net=망 출력")
+                     "randn=--ov_init_std 규모의 난수, net=망 출력, "
+                     "target=모든 노드를 h·v̄ + h²g 로 (자유낙하 평행이동 -- "
+                     "이 매개화가 평행이동을 담는지 보는 진단이다)")
 ap.add_argument("--ov_init_std", type=float, default=1e-3)
 ap.add_argument("--ov_roll", type=int, default=0,
                 help="롤아웃에서 **프레임마다** 노드 출력을 직접 최적화한다 "
@@ -980,6 +983,7 @@ _DP_HOOK = [None]
 _DP_FAST = [None]
 # "want" 를 넣으면 다음 셀집계 결과를 붙잡아 이후 호출에서 재사용한다
 _NF_HOLD = [None]
+_OV_TGT = [None]           # --ov_init target 이 쓸 자유낙하 평행이동 [3]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
 _BC_DIAG = []              # (활성비, 보정최대/ext, 바닥아래/ext, 손잡이오차/ext)
 # [오차/ext, 구속 입자 수, 명령 변위 평균] -- 학습·평가 공통으로 갱신된다
@@ -2023,6 +2027,10 @@ if a.out_var or a.ov_roll > 0:
             if a.ov_init == "net" or M is None:
                 return None                      # 망 출력으로 초기화한다
             z = torch.zeros(M, 3, dtype=dtype, device=device)
+            if a.ov_init == "target":
+                if _OV_TGT[0] is None:
+                    raise SystemExit("--ov_init target 은 --ov_roll 에서만")
+                z = z + _OV_TGT[0].to(dtype).reshape(1, 3)
             if a.ov_init == "randn":
                 z = a.ov_init_std * torch.randn(M, 3, dtype=dtype,
                                                 device=device)
@@ -2425,6 +2433,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
 
     _ov = _OV_CUR[0]
     _OV_CUR[0] = st
+    _OV_TGT[0] = (FRAME_DT * v.mean(0) + (FRAME_DT ** 2) * gv).detach()
     _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
     try:
       with torch.enable_grad():
@@ -2452,6 +2461,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     finally:
         _OV_CUR[0] = _ov
         _NF_HOLD[0] = None
+        _OV_TGT[0] = None
     _OV_LOG.append((E0 if E0 is not None else E1, E1))
     with torch.no_grad():
         F_next = phys_resid.plastic_step(F_tr, dlog).detach()
