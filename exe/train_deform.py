@@ -255,6 +255,12 @@ ap.add_argument("--ov_init",
                      "솔버가 뉴턴을 시작하는 그 지점이다 -- 0 에서 출발하면 "
                      "탄성 강성에 묻혀 자유낙하조차 못 찾는다")
 ap.add_argument("--ov_init_std", type=float, default=1e-3)
+ap.add_argument("--fbar", choices=["none", "nodal"], default="none",
+                help="변형구배를 어떻게 잴지. none=셀 하나로(기본), "
+                     "nodal=**노드 평균 변형구배** (Bonet 의 averaged nodal "
+                     "deformation gradient): 셀별 F 를 꼭짓점에 모아 평균하고 "
+                     "입자가 그 노드값을 barycentric 으로 받는다. 입자의 F 가 "
+                     "1-ring 의 모든 셀에 의존하게 되어 이웃 셀끼리 직접 묶인다")
 ap.add_argument("--ov_opt", choices=["adam", "lbfgs"], default="lbfgs",
                 help="--ov_roll 의 최적화기. 탄성 강성(E=2e6)이 관성항보다 "
                      "원시 값으로 700 배 커서 문제가 심하게 비등방이다 -- "
@@ -1224,6 +1230,28 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         with _tsec("야코비안"):
             _u, Jf = SX.g2p_jac_pre(rows, lam, _lax, lat, dpn)
             Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
+            if a.fbar == "nodal":
+                # **노드 평균 변형구배.** 셀 하나로 재면 그 셀의 일그러짐이
+                # 이웃에게 아무 비용도 물리지 않아, 손잡이 구속이 셀을 한 겹씩
+                # 건너며만 전해진다 (실측: 공이 손잡이에서 떨어져 나갔다).
+                # 이 격자는 모든 사면체의 부피가 같으므로 부피 가중은 평균과
+                # 같다. 평균에 드는 것은 **입자가 있는 셀**뿐이다.
+                _tid = SX.tet_id(lo, lat, nn, _lax)
+                _tu, _tinv = torch.unique(_tid, return_inverse=True)
+                _T = int(_tu.numel())
+                _Jt = torch.zeros(_T, 3, 3, device=dev, dtype=Jf.dtype)
+                _Jt = _Jt.index_copy(0, _tinv, Jf)          # 셀별 F
+                _rt = torch.zeros(_T, 4, device=dev, dtype=rows.dtype)
+                _rt = _rt.index_copy(0, _tinv, rows)
+                _Fn = torch.zeros(npos.shape[0], 3, 3, device=dev,
+                                  dtype=Jf.dtype)
+                _cn = torch.zeros(npos.shape[0], device=dev, dtype=Jf.dtype)
+                _one = torch.ones(_T, device=dev, dtype=Jf.dtype)
+                for _j in range(4):
+                    _Fn = _Fn.index_add(0, _rt[:, _j], _Jt)
+                    _cn = _cn.index_add(0, _rt[:, _j], _one)
+                _Fn = _Fn / _cn.clamp_min(1.0).reshape(-1, 1, 1)
+                Jf = (lam.reshape(-1, 4, 1, 1) * _Fn[rows]).sum(1)
         if _NODE_CAP[0]:
             # **유효 격자점** = 입자가 든 사면체의 꼭짓점. 나머지는 변위가 어떤
             # 값이든 입자를 하나도 옮기지 않으므로 뜻이 없다.
