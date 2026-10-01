@@ -28,6 +28,11 @@ ap.add_argument("--sub", type=int, default=6000)
 ap.add_argument("--fps", type=int, default=8)
 ap.add_argument("--label", default="출력만 최적화", help="오른쪽 칸 이름")
 ap.add_argument("--label_left", default="PG MPM (기준)", help="왼쪽 칸 이름")
+ap.add_argument("--handle_mark", choices=["frame", "init"], default="frame",
+                help="빨간 입자를 고르는 법. frame=그 프레임에 반경 안인 것, "
+                     "init=**첫 프레임에 반경 안이던 것**(정체를 고정해 어디로 "
+                     "갔는지 따라갈 수 있다)")
+ap.add_argument("--handle_s", type=float, default=1.6, help="빨간 점 크기")
 ap.add_argument("--ctrl_R", type=float, default=0.0,
                 help="손잡이 반경을 직접 준다 (0 이면 덤프의 값)")
 ap.add_argument("--quiver", type=int, default=0,
@@ -100,6 +105,16 @@ if a.quiver and NODES:
 elif a.quiver:
     print("[화살표] 덤프에 격자점이 없다 -- 그리지 않는다", flush=True)
 
+# 첫 프레임에 손잡이 반경 안이던 입자 (정체 고정)
+M_INIT = None
+if _CP is not None:
+    X0i = np.asarray(D["x0"], dtype=np.float32)[sel]
+    M_INIT = np.zeros(len(sel), bool)
+    for _k in range(_CP.shape[1]):
+        M_INIT |= np.linalg.norm(X0i - _CP[int(D["t0"]), _k], axis=-1) < _R_CTRL
+    print(f"[손잡이] 반경 {_R_CTRL:.4f}, 첫 프레임 반경 안 "
+          f"{int(M_INIT.sum())} 개 (그리는 표본 기준)", flush=True)
+
 frames = []
 for t in tqdm(range(T), desc="렌더", ncols=80):
     fig, ax = plt.subplots(1, 2, figsize=(10.2, 5.0), dpi=110)
@@ -107,7 +122,9 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     # 손잡이 반경 안에 든 입자를 **빨갛게** 칠한다. 기준 칸은 PG 위치로,
     # 오른쪽 칸은 그 칸의 위치로 각각 판정한다 (같은 중심·같은 반경).
     mG = mP = None
-    if _CP is not None:
+    if _CP is not None and a.handle_mark == "init":
+        mG = mP = M_INIT
+    elif _CP is not None:
         _ti0 = min(int(D["t0"]) + t, _CP.shape[0] - 1)
         mG = np.zeros(len(sel), bool); mP = np.zeros(len(sel), bool)
         for _k in range(_CP.shape[1]):
@@ -121,7 +138,8 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
                   vmin=None if CVAL is None else CVAL.min(),
                   vmax=None if CVAL is None else CVAL.max(), linewidths=0)
     if mG is not None and mG.any():
-        ax[0].scatter(G[t][mG, i], G[t][mG, j], s=1.6, c="red", linewidths=0)
+        ax[0].scatter(G[t][mG, i], G[t][mG, j], s=a.handle_s, c="red",
+                      linewidths=0)
     ax[0].set_title(f"{a.label_left}   손잡이 안 "
                     f"{0 if mG is None else int(mG.sum())}", fontsize=9)
     _oP = slice(None) if mP is None else ~mP
@@ -137,7 +155,8 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
                       vmin=None if CVAL is None else CVAL.min(),
                       vmax=None if CVAL is None else CVAL.max(), linewidths=0)
     if mP is not None and mP.any():
-        ax[1].scatter(P[t][mP, i], P[t][mP, j], s=1.6, c="red", linewidths=0)
+        ax[1].scatter(P[t][mP, i], P[t][mP, j], s=a.handle_s, c="red",
+                      linewidths=0)
     ax[1].set_title(f"{a.label} (평균 오차 {err[t].mean():.3f}% EXT)"
                     f"   손잡이 안 {0 if mP is None else int(mP.sum())}",
                     fontsize=9)
