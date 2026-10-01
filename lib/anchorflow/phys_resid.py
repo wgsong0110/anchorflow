@@ -282,18 +282,22 @@ def bc_project_nodes(npos, dp, cfg, h, grid_lim, n_grid):
             # 변위 뒤 위치로 재거나 "면에서 dx 안" 까지 접선을 묶으면 실제
             # 접촉면보다 두꺼운 띠가 얼어붙는다 -- 로프에서 두께의 2/3 가
             # 묶여 비 0.23 -> 0.61 로 나빠졌다.
-            under = ((npos - pt) * nr).sum(-1) < 0.0
-            # 면 아래 노드는 **더 내려가지는 못하되 올라올 수는 있다** --
-            # 법선 성분을 0 이상으로만 자른다 (한쪽 부등식). 세 성분을 다 0 으로
-            # 박으면 한 번 아래로 간 노드가 영영 못 올라와 바닥이 흡착판이 된다.
-            dn = (dp_p * nr).sum(-1, keepdim=True)
-            dn_up = dn.clamp_min(0.0)
+            # **위치를 면 위로 사영한다.** 변위를 clamp_min 으로 자르면 잘린
+            # 쪽에서 기울기가 정확히 0 이라, 관성 예측자가 음수로 시작시킨 노드는
+            # 에너지가 아무리 위로 밀어도 신호를 못 받고 영영 갇힌다 (실측:
+            # 4821 번 전부 '올라가려던 노드 0 개'). 사영은 미분 가능해 기울기가
+            # 그대로 흐르고, 면 아래 노드를 면 위로 끌어올린다.
+            sd = ((npos + dp_p - pt) * nr).sum(-1)
+            pen = sd < 0.0
+            dp_p = dp_p - torch.where(pen.unsqueeze(-1),
+                                      sd.unsqueeze(-1) * nr,
+                                      torch.zeros_like(dp_p))
             if str(bc.get("surface", "sticky")) == "sticky":
-                dp_new = dn_up * nr                     # 접선은 0 (붙는다)
-            else:
-                dp_new = dp_p - dn * nr + dn_up * nr    # 법선만 제한
-            dp_p = torch.where(under.unsqueeze(-1), dp_new, dp_p)
-            act = act | under
+                # 붙는다: 면에 닿은 노드는 접선 변위도 0
+                dn = (dp_p * nr).sum(-1, keepdim=True)
+                dp_p = torch.where(pen.unsqueeze(-1), dn * nr, dp_p)
+            act = act | pen
+            under = pen
             if os.environ.get("AF_BC_DIAG"):
                 with torch.no_grad():
                     _nu = int(under.sum())
