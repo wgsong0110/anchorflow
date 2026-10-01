@@ -2420,20 +2420,20 @@ def _rollout(d, t0, L, gsel=None):
     _RO_CTRL = []
     F_ov = take(traj_F(d)[t0], gsel).float() if a.ov_roll > 0 else None
     for i in range(L):
-      if a.ov_roll > 0:
-        # 출력만 최적화 경로: 서브스텝·jvp 없이 프레임마다 변수를 내린다
-        x2, v, F_ov = _ov_frame(d, t0 + i, gsel, p, x, v, F_ov)
-      else:
-        with torch.enable_grad(), dt_scope(FRAME_DT / EVAL_SUB):
-              for _sb in range(EVAL_SUB - 1):
-                  x, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
-                      d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
-                      idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
-                  x, p, v = x.detach(), p.detach(), v.detach()
-              x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
-                  d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
-                  idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
-        x2 = x2.detach(); p = p.detach(); v = v.detach()
+        if a.ov_roll > 0:
+            # 출력만 최적화: 서브스텝·jvp 없이 프레임마다 변수를 내린다
+            x2, v, F_ov = _ov_frame(d, t0 + i, gsel, p, x, v, F_ov)
+        else:
+            with torch.enable_grad(), dt_scope(FRAME_DT / EVAL_SUB):
+                for _sb in range(EVAL_SUB - 1):
+                    x, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
+                        d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
+                        idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
+                    x, p, v = x.detach(), p.detach(), v.detach()
+                x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
+                    d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
+                    idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
+            x2 = x2.detach(); p = p.detach(); v = v.detach()
         gt = take(d["x"][t0 + i + 1], gsel)
         # 평가에서도 손잡이가 명령대로 끌리는지 본다. 학습 경로만 보고 "손잡이는
         # 정확하다" 고 판단했다가, 평가에서는 ctrl_id 가 저장 표본에 없어 대체
@@ -2451,6 +2451,9 @@ def _rollout(d, t0, L, gsel=None):
             ems_s.append(emd(x_still, gt, t0 * 1000 + i) / EXT)
         x = x2
     net.train()
+    if not errs:
+        raise SystemExit("롤아웃이 한 프레임도 재지 못했다 -- 분기 구조를 "
+                         "확인할 것 (nan 을 평균해 비를 내지 않는다)")
     if _OV_LOG:
         _b = sum(q[0] for q in _OV_LOG) / len(_OV_LOG)
         _af = sum(q[1] for q in _OV_LOG) / len(_OV_LOG)
