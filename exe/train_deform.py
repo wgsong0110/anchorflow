@@ -245,12 +245,15 @@ ap.add_argument("--out_var", action="store_true",
                      "바뀐다. 상태는 전진하지 않으므로 각 상태의 E 가 이 "
                      "매개화의 한 스텝 하한까지 내려간다")
 ap.add_argument("--out_var_lr", type=float, default=3e-3)
-ap.add_argument("--ov_init", choices=["zero", "randn", "net", "target"],
-                default="zero",
+ap.add_argument("--ov_init",
+                choices=["zero", "randn", "net", "target", "predict"],
+                default="predict",
                 help="--ov_roll 자유변수의 초기값. zero=항등 변형장(기본), "
                      "randn=--ov_init_std 규모의 난수, net=망 출력, "
-                     "target=모든 노드를 h·v̄ + h²g 로 (자유낙하 평행이동 -- "
-                     "이 매개화가 평행이동을 담는지 보는 진단이다)")
+                     "target=모든 노드를 h·v̄ + h²g 로 (평행이동 진단), "
+                     "predict=노드별 관성 예측자 h·v_n + h²g (기본). 암시적 "
+                     "솔버가 뉴턴을 시작하는 그 지점이다 -- 0 에서 출발하면 "
+                     "탄성 강성에 묻혀 자유낙하조차 못 찾는다")
 ap.add_argument("--ov_init_std", type=float, default=1e-3)
 ap.add_argument("--ov_opt", choices=["adam", "lbfgs"], default="lbfgs",
                 help="--ov_roll 의 최적화기. 탄성 강성(E=2e6)이 관성항보다 "
@@ -1134,6 +1137,23 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             _dmin, _kmin = _dn.min(1)
             _nod_m = _dmin < _Rc
             _nod_v = _cvc[_kmin]                                   # [M,3]
+
+        if _OV_TGT[0] == "want":
+            # **노드별 관성 예측자** h·v_n + h²g. v_n 은 barycentric 가중 질량
+            # 평균이라 P2G 와 같은 사상이다. 자유변수의 출발점으로 쓴다.
+            _Mn = npos.shape[0]
+            _mw = (MASS[gsel] if MASS.numel() != x.shape[0] else MASS
+                   ).unsqueeze(-1).to(x.dtype)
+            _ws = torch.zeros(_Mn, 1, device=dev, dtype=x.dtype)
+            _vs = torch.zeros(_Mn, 3, device=dev, dtype=x.dtype)
+            for _j in range(4):
+                _w = lam[:, _j:_j + 1] * _mw
+                _ws.index_add_(0, rows[:, _j], _w)
+                _vs.index_add_(0, rows[:, _j], _w * v)
+            _vn = _vs / _ws.clamp_min(1e-30)
+            _gq = torch.as_tensor(d["cfg"]["g"], device=dev, dtype=x.dtype)
+            _hq = float(_DT[0])
+            _OV_TGT[0] = _hq * _vn + (_hq ** 2) * _gq
 
         def _fieldS(tau):
             # 출력을 자유변수로 갈아끼우는 경로(--ov_roll)에서는 변수가 생긴
@@ -2041,10 +2061,11 @@ if a.out_var or a.ov_roll > 0:
             if a.ov_init == "net" or M is None:
                 return None                      # 망 출력으로 초기화한다
             z = torch.zeros(M, 3, dtype=dtype, device=device)
-            if a.ov_init == "target":
-                if _OV_TGT[0] is None:
-                    raise SystemExit("--ov_init target 은 --ov_roll 에서만")
-                z = z + _OV_TGT[0].to(dtype).reshape(1, 3)
+            if a.ov_init in ("target", "predict"):
+                if not torch.is_tensor(_OV_TGT[0]):
+                    raise SystemExit(f"--ov_init {a.ov_init} 은 --ov_roll "
+                                     "에서만 쓴다")
+                z = z + _OV_TGT[0].to(dtype).reshape(-1, 3)
             if a.ov_init == "randn":
                 z = a.ov_init_std * torch.randn(M, 3, dtype=dtype,
                                                 device=device)
@@ -2448,7 +2469,8 @@ def _ov_frame(d, t, gsel, p, x, v, F):
 
     _ov = _OV_CUR[0]
     _OV_CUR[0] = st
-    _OV_TGT[0] = (FRAME_DT * v.mean(0) + (FRAME_DT ** 2) * gv).detach()
+    _OV_TGT[0] = ("want" if a.ov_init == "predict" else
+                  (FRAME_DT * v.mean(0) + (FRAME_DT ** 2) * gv).detach())
     _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
     try:
       with torch.enable_grad():
