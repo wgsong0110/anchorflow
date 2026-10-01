@@ -2465,6 +2465,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     nrm = float(m.sum()) * (EXT ** 2) / (FRAME_DT ** 2)
     st, E0, E1 = {}, None, None
     _E0, _tr = [None], []
+    _trp = []                  # 항별 곡선 [(관성, 탄성, 접촉), ...]
 
     def _fwd():
         with torch.enable_grad(), dt_scope(FRAME_DT):
@@ -2491,12 +2492,14 @@ def _ov_frame(d, t, gsel, p, x, v, F):
 
             def _closure():
                 st["ov_opt"].zero_grad(set_to_none=True)
-                _, _, E, _, _, _, _ = _fwd()
+                _, _, E, _, _, _pq, _ = _fwd()
                 if _n[0] == 0:
                     _E0[0] = float(E)
                 _n[0] += 1
                 if _CURVE is not None:
                     _tr.append(float(E))
+                    _trp.append((float(_pq[0]), float(_pq[1]),
+                                 float(_pq[3])))
                 E.backward()
                 return E
             _fwd()                    # 변수를 만든다 (훅이 첫 호출에서 만든다)
@@ -2513,6 +2516,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
                     E0 = float(E)
                 if _CURVE is not None:
                     _tr.append(float(E))
+                    _trp.append((float(_pt[0]), float(_pt[1]), float(_pt[3])))
                 st["ov_opt"].zero_grad(set_to_none=True)
                 E.backward()
                 st["ov_opt"].step()
@@ -2533,7 +2537,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
         _OV_TGT[0] = None
     _OV_LOG.append((E0 if E0 is not None else E1, E1))
     if _CURVE is not None:
-        _CURVE.append((int(t), _tr))
+        _CURVE.append((int(t), _tr, _trp))
     with torch.no_grad():
         F_next = phys_resid.plastic_step(F_tr, dlog).detach()
     return x2.detach(), v2.detach(), F_next
@@ -2604,7 +2608,11 @@ def _rollout(d, t0, L, gsel=None):
         _cp = os.environ["AF_OV_CURVE"]
         with open(_cp, "w") as _f:
             json.dump({"tag": d.get("tag", ""), "t0": t0,
-                       "frames": [{"t": _t, "E": _e} for _t, _e in _CURVE]},
+                       "frames": [{"t": _t, "E": _e,
+                                   "in": [q[0] for q in _p],
+                                   "el": [q[1] for q in _p],
+                                   "bc": [q[2] for q in _p]}
+                                  for _t, _e, _p in _CURVE]},
                       _f)
         print(f"  [곡선] {_cp}  프레임 {len(_CURVE)}", flush=True)
         del _CURVE[:]

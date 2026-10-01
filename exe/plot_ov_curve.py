@@ -19,7 +19,37 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--curve", nargs="+", required=True,
                 help="json 경로. 'name=경로' 로 이름을 붙일 수 있다")
 ap.add_argument("--out", required=True)
+ap.add_argument("--terms", action="store_true",
+                help="첫 곡선 파일을 **항별로** 나눠 그린다 (전체·관성·탄성·접촉)")
 a = ap.parse_args()
+
+if a.terms:
+    name, _, path = a.curve[0].partition("=")
+    if not path:
+        name, path = _os.path.basename(a.curve[0]).replace(".json", ""), a.curve[0]
+    D = json.load(open(path))
+    fr = D["frames"]
+    KS = [("E", "전체 E (정규화)"), ("in", "관성 (원시)"),
+          ("el", "탄성 (원시)"), ("bc", "접촉 (원시)")]
+    fig, ax = plt.subplots(1, 4, figsize=(19.0, 4.3), dpi=120)
+    cm = plt.get_cmap("viridis")
+    for k, (key, lab) in enumerate(KS):
+        q = ax[k]
+        for i, f in enumerate(fr):
+            y = np.asarray(f.get(key, []), dtype=float)
+            if y.size == 0:
+                continue
+            q.plot(np.arange(1, len(y) + 1), np.abs(y), lw=1.0,
+                   color=cm(i / max(len(fr) - 1, 1)))
+        q.set_xscale("log")
+        if np.nanmax([np.max(np.abs(f.get(key, [0]))) for f in fr]) > 0:
+            q.set_yscale("log")
+        q.set_xlabel("반복 (함수 호출 수)"); q.set_title(lab, fontsize=11)
+        q.grid(alpha=.3, which="both")
+    ax[0].set_ylabel(f"{name}   (색: 어두운 쪽이 앞 프레임)")
+    fig.tight_layout(); fig.savefig(a.out)
+    print(f"[저장] {a.out}", flush=True)
+    raise SystemExit(0)
 
 fig, ax = plt.subplots(1, len(a.curve), figsize=(5.4 * len(a.curve), 4.4),
                        dpi=120, squeeze=False)
