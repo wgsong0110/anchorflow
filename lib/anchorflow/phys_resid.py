@@ -277,17 +277,20 @@ def bc_project_nodes(npos, dp, cfg, h, grid_lim, n_grid):
             nr = torch.as_tensor(bc["normal"], device=npos.device,
                                  dtype=npos.dtype)
             nr = nr / nr.norm().clamp_min(1e-12)
-            sd = ((npos + dp_p - pt) * nr).sum(-1)
-            pen = sd < 0.0
-            dp_p = dp_p - torch.where(pen.unsqueeze(-1),
-                                      sd.unsqueeze(-1) * nr,
-                                      torch.zeros_like(dp_p))
-            act = act | pen
+            # **i-PG 와 같은 판정**: 격자점 자체가 면 아래인 노드만 건다
+            # (collide 커널은 grid_x*dx 로 노드 위치를 재서 dot < 0 을 본다).
+            # 변위 뒤 위치로 재거나 "면에서 dx 안" 까지 접선을 묶으면 실제
+            # 접촉면보다 두꺼운 띠가 얼어붙는다 -- 로프에서 두께의 2/3 가
+            # 묶여 비 0.23 -> 0.61 로 나빠졌다.
+            under = ((npos - pt) * nr).sum(-1) < 0.0
             if str(bc.get("surface", "sticky")) == "sticky":
-                touch = ((npos - pt) * nr).sum(-1) < dx
-                dn = (dp_p * nr).sum(-1, keepdim=True) * nr
-                dp_p = torch.where(touch.unsqueeze(-1), dn, dp_p)
-                act = act | touch
+                # 속도(=변위) 세 성분 모두 0
+                dp_p = torch.where(under.unsqueeze(-1),
+                                   torch.zeros_like(dp_p), dp_p)
+            else:
+                dn = (dp_p * nr).sum(-1, keepdim=True)
+                dp_p = torch.where(under.unsqueeze(-1), dp_p - dn * nr, dp_p)
+            act = act | under
         elif t == "bounding_box":
             b = float(cfg.get("bound", 3)) * dx
             lo, hi = b, float(grid_lim) - b
