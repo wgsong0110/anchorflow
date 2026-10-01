@@ -21,6 +21,10 @@ ap.add_argument("--r", type=float, default=0.1)
 ap.add_argument("--center", type=float, nargs=3, default=(1.0, 1.0, 1.4))
 ap.add_argument("--frames", type=int, default=13)
 ap.add_argument("--material", default="jelly")
+ap.add_argument("--E", type=float, default=0.0,
+                help="영률. 0 이면 --ref 의 값을 쓴다. 키우면 응력 전달이 "
+                     "세진다 (정적 처짐이 1/E 로 준다)")
+ap.add_argument("--nu", type=float, default=-1.0)
 ap.add_argument("--scheme", choices=["implicit", "analytic", "hold"],
                 default="implicit",
                 help="기준 궤적의 적분. implicit=증분 포텐셜과 **같은 이산해** "
@@ -48,9 +52,13 @@ if a.ref:
     for k in ("E", "nu", "frame_dt", "density", "n_grid", "grid_lim"):
         if k in rc:
             cfg[k] = rc[k]
-    print(f"[cfg] {a.ref} 에서 베낀 것: "
-          + ", ".join(f"{k}={cfg[k]}" for k in
-                      ("E", "nu", "frame_dt", "density", "n_grid")))
+if a.E > 0:
+    cfg["E"] = float(a.E)
+if a.nu >= 0:
+    cfg["nu"] = float(a.nu)
+print(f"[cfg] 최종: "
+      + ", ".join(f"{k}={cfg[k]}" for k in
+                  ("E", "nu", "frame_dt", "density", "n_grid")))
 # 공 안에 고르게 (거절 표집이 아니라 반지름^(1/3) 로 -- 치우치지 않는다)
 g_ = torch.Generator().manual_seed(a.seed)
 u = torch.rand(a.n, generator=g_)
