@@ -17,6 +17,9 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--out", required=True)
 ap.add_argument("--ref", default="", help="cfg 를 베껴올 궤적 (물성·dt)")
 ap.add_argument("--n", type=int, default=8000)
+ap.add_argument("--n_add", type=int, default=0,
+                help="**기존 입자는 그대로 두고** 그 위에 더 뽑는다 (시드를 "
+                     "따로 쓴다). 앞 --n 개는 --n_add 0 일 때와 비트까지 같다")
 ap.add_argument("--r", type=float, default=0.1)
 ap.add_argument("--center", type=float, nargs=3, default=(1.0, 1.0, 1.4))
 ap.add_argument("--frames", type=int, default=13)
@@ -60,13 +63,24 @@ print(f"[cfg] 최종: "
       + ", ".join(f"{k}={cfg[k]}" for k in
                   ("E", "nu", "frame_dt", "density", "n_grid")))
 # 공 안에 고르게 (거절 표집이 아니라 반지름^(1/3) 로 -- 치우치지 않는다)
-g_ = torch.Generator().manual_seed(a.seed)
-u = torch.rand(a.n, generator=g_)
-th = torch.rand(a.n, generator=g_) * 2 * math.pi
-cz = torch.rand(a.n, generator=g_) * 2 - 1
-rr = a.r * u.pow(1.0 / 3.0)
-sz = (1 - cz * cz).clamp_min(0).sqrt()
-x0 = torch.stack([rr * sz * th.cos(), rr * sz * th.sin(), rr * cz], -1)
+def _ball(n, seed):
+    g_ = torch.Generator().manual_seed(seed)
+    u = torch.rand(n, generator=g_)
+    th = torch.rand(n, generator=g_) * 2 * math.pi
+    cz = torch.rand(n, generator=g_) * 2 - 1
+    rr = a.r * u.pow(1.0 / 3.0)
+    sz = (1 - cz * cz).clamp_min(0).sqrt()
+    return torch.stack([rr * sz * th.cos(), rr * sz * th.sin(), rr * cz], -1)
+
+x0 = _ball(a.n, a.seed)
+n_base = a.n
+if a.n_add > 0:
+    # 기존 입자를 건드리지 않고 **덧붙인다** -- 같은 시드로 개수만 늘리면
+    # 호출마다 난수 흐름이 밀려 앞쪽 입자까지 전부 달라진다.
+    x0 = torch.cat([x0, _ball(a.n_add, a.seed + 1000003)], 0)
+    print(f"[입자] 기존 {n_base} + 추가 {a.n_add} = {x0.shape[0]} 개 "
+          f"(앞 {n_base} 개는 그대로다)")
+a.n = x0.shape[0]
 x0 = x0 + torch.tensor(a.center, dtype=torch.float32)
 
 dt = float(cfg["frame_dt"])
@@ -88,7 +102,9 @@ if a.handle == "top":
     # 최상단 입자를 손잡이로. 중심은 **그 입자의 현재 위치**를 따른다 (i-PG 가
     # collider 의 point 를 매 프레임 그렇게 갱신한다). 기준 궤적에서는 그 입자가
     # 기준대로 움직이므로 ctrl_pos 도 그 궤적을 그대로 쓴다.
-    cid = int(x0[:, 2].argmax())
+    # 손잡이 입자는 **기존 집합 안에서** 고른다 -- 추가 입자 때문에 손잡이가
+    # 다른 입자로 바뀌면 같은 장면이 아니게 된다.
+    cid = int(x0[:n_base, 2].argmax())
     hv = torch.tensor(a.handle_vel, dtype=torch.float32)
     d["ctrl_id"] = torch.tensor([cid], dtype=torch.long)
     d["ctrl_vel"] = hv.reshape(1, 1, 3).expand(T, 1, 3).clone()
