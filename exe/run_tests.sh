@@ -31,6 +31,7 @@ one () {
 one 격자·복합체        $R/exe/test_simplex.py
 one 변형장미분·야코비안  $R/exe/test_field_deriv.py
 one 하드구속·물성      $R/exe/test_hard_bc.py
+one "중력 자유낙하"   $R/exe/test_gravity.py
 one 소성최적화동치     $R/exe/test_plastic_equiv.py
 one "지표 CD/EMD"     $R/exe/test_metrics.py
 one 손실항반응        $R/exe/test_loss_terms.py --gpu $G
