@@ -33,6 +33,10 @@ ap.add_argument("--handle_mark", choices=["frame", "init"], default="frame",
                      "init=**첫 프레임에 반경 안이던 것**(정체를 고정해 어디로 "
                      "갔는지 따라갈 수 있다)")
 ap.add_argument("--handle_s", type=float, default=1.6, help="빨간 점 크기")
+ap.add_argument("--esc_r", type=float, default=0.0,
+                help="--color esc 의 공 반지름. 0 이면 초기 위치에서 중심 "
+                     "입자까지의 최대 거리")
+ap.add_argument("--esc_s", type=float, default=6.0, help="빨간 점 크기")
 ap.add_argument("--cell_s", type=float, nargs=2, default=(18.0, 10.0),
                 help="--color cell0 에서 섞인 셀·손잡이 안 점의 크기. 섞인 셀은 "
                      "수가 적어(실측 25 개) 키우지 않으면 화면에서 사라진다")
@@ -44,14 +48,18 @@ ap.add_argument("--quiver", type=int, default=0,
 ap.add_argument("--quiver_scale", type=float, default=0.0,
                 help="0 이면 화살표 중앙 길이가 화면 폭의 4%% 가 되게 자동")
 ap.add_argument("--color", choices=["none", "err", "z0", "r0", "pos0", "cell0",
-                                    "detF", "trC", "normE"], default="none",
+                                    "detF", "trC", "normE", "esc"],
+                default="none",
                 help="입자 색. none=검정, err=정답과의 거리(오른쪽 칸만), "
                      "z0=초기 높이, r0=초기 중심에서의 거리, pos0=**초기 위치 "
                      "(x,y,z)를 RGB 로** (물질점이 어디서 와서 어디로 갔는지 "
                      "한눈에 보인다), cell0=**첫 프레임 "
                      "셀 구분** (손잡이 밖 / 섞인 셀 / 손잡이 안). z0/r0/cell0 "
                      "은 두 칸에 같은 색을 입혀 어디로 갔는지 맞대 볼 수 있다. "
-                     "detF=행렬식(1 이 부피 보존), trC=우 코시-그린의 대각합"
+                     "esc=**마지막 프레임에 공을 벗어난 입자**를 빨갛게 "
+                     "(중심 입자에서 반지름 밖 + 중심보다 위). 정체를 고정해 "
+                     "처음부터 끝까지 같은 입자를 칠한다. detF=행렬식"
+                     "(1 이 부피 보존), trC=우 코시-그린의 대각합"
                      "(3 이 변형 없음), normE=그린-라그랑주 변형률의 "
                      "프로베니우스 노름(0 이 변형 없음). 셋 다 프레임마다 다시 "
                      "칠한다")
@@ -83,6 +91,21 @@ if _rr is None:
         print("[경고] 덤프에 ctrl_R 이 없다 -- 0.15 로 그린다 (실제와 다를 수 "
               "있다). --ctrl_R 로 넘겨라", flush=True)
 _R_CTRL = float(np.asarray(_rr).reshape(-1)[0])
+
+M_ESC = None
+if a.color == "esc":
+    _X0e = np.asarray(D["x0"], dtype=np.float32)
+    _c0e = _X0e.mean(0)
+    _cid = int(np.linalg.norm(_X0e - _c0e, axis=-1).argmin())
+    _re = (a.esc_r if a.esc_r > 0
+           else float(np.linalg.norm(_X0e - _X0e[_cid], axis=-1).max()))
+    _PF = D["pred"].float().numpy()[-1]
+    _cen = _PF[_cid]
+    _esc_full = (np.linalg.norm(_PF - _cen, axis=-1) > _re) & (_PF[:, 2] > _cen[2])
+    M_ESC = _esc_full[sel]
+    print(f"[벗어남] 중심 입자 {_cid}, 반지름 {_re:.4f}, 마지막 중심 z "
+          f"{_cen[2]:.4f} -> 벗어난 입자 {int(_esc_full.sum())}/"
+          f"{_esc_full.size} (그리는 표본에서 {int(M_ESC.sum())})", flush=True)
 
 CRGB = None
 if a.color == "pos0":
@@ -228,6 +251,10 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
                 _q.plot([_c[i]], [_c[j]], marker="x", ms=7, mew=2.0,
                         color="deepskyblue")
 
+    if M_ESC is not None and M_ESC.any():
+        for q, X in ((ax[0], G[t]), (ax[1], P[t])):
+            q.scatter(X[M_ESC, i], X[M_ESC, j], s=a.esc_s, c="red",
+                      linewidths=0, zorder=4)
     if a.color == "cell0":
         # 수가 적은 범주(섞인 셀 25 개, 손잡이 안 24 개)는 기본 크기로는 보이지
         # 않는다. 같은 색으로 **위에 덧그린다**.
