@@ -36,8 +36,9 @@ ap.add_argument("--scheme", choices=["implicit", "analytic", "hold"],
                      "(실측 12 프레임에서 4.77% -- 출력만 최적화 탓이 "
                      "아니다), hold=정지 자세 그대로 (손잡이 씬처럼 닫힌 해가 "
                      "없을 때 쓴다 -- **해가 아니라 기준점일 뿐이다**)")
-ap.add_argument("--handle", choices=["none", "top"], default="none",
-                help="top=공 최상단 입자를 손잡이로 잡는다")
+ap.add_argument("--handle", choices=["none", "top", "topbot"], default="none",
+                help="top=최상단 입자 하나, topbot=**최상단·최하단 둘**을 잡고 "
+                     "서로 반대 방향으로 끈다 (양쪽으로 늘리기)")
 ap.add_argument("--handle_r", type=float, default=0.04)
 ap.add_argument("--handle_vel", type=float, nargs=3, default=(0.0, 0.0, 0.0),
                 help="손잡이 명령 속도. 0 이면 **붙잡고 있는다**")
@@ -98,7 +99,22 @@ else:
     xs = torch.stack([x0 + 0.5 * gv * (i * dt) ** 2 for i in range(T)], 0)
 d = dict(x=xs, F=torch.eye(3).expand(T, a.n, 3, 3).clone(), cfg=cfg,
          sel=torch.arange(a.n), n_full=a.n)
-if a.handle == "top":
+if a.handle == "topbot":
+    # 양쪽으로 늘린다: 위는 +v, 아래는 -v. 중심은 각 입자의 현재 위치를 따른다.
+    cid_t = int(x0[:n_base, 2].argmax())
+    cid_b = int(x0[:n_base, 2].argmin())
+    hv = torch.tensor(a.handle_vel, dtype=torch.float32)
+    d["ctrl_id"] = torch.tensor([cid_t, cid_b], dtype=torch.long)
+    d["ctrl_vel"] = torch.stack([hv, -hv], 0).reshape(1, 2, 3).expand(
+        T, 2, 3).clone()
+    d["ctrl_R"] = torch.tensor([a.handle_r], dtype=torch.float32)
+    d["ctrl_pos"] = torch.stack([xs[:, cid_t], xs[:, cid_b]], 1).clone()
+    _nt = int(((x0 - x0[cid_t]).norm(dim=-1) < a.handle_r).sum())
+    _nb = int(((x0 - x0[cid_b]).norm(dim=-1) < a.handle_r).sum())
+    print(f"[손잡이] 위 {cid_t} (z={float(x0[cid_t,2]):.4f}) +v, "
+          f"아래 {cid_b} (z={float(x0[cid_b,2]):.4f}) -v, 반경 {a.handle_r}, "
+          f"명령 {tuple(a.handle_vel)}, 반경 안 입자 {_nt} / {_nb}")
+elif a.handle == "top":
     # 최상단 입자를 손잡이로. 중심은 **그 입자의 현재 위치**를 따른다 (i-PG 가
     # collider 의 point 를 매 프레임 그렇게 갱신한다). 기준 궤적에서는 그 입자가
     # 기준대로 움직이므로 ctrl_pos 도 그 궤적을 그대로 쓴다.
