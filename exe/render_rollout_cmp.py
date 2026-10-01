@@ -1,6 +1,6 @@
 """롤아웃 덤프를 **정답 대비 나란히** 보여주는 영상으로 만든다.
 
-왼쪽 교사 MPM, 가운데 학생 예측, 오른쪽은 둘을 겹쳐 놓은 것이다.
+왼쪽 교사 MPM, 오른쪽 학생 예측. (겹쳐 보기 칸은 요청으로 제거했다.)
 색은 두 번째 칸에서 **정답과의 거리**라, 어디서 틀리는지가 바로 보인다.
 """
 from __future__ import annotations
@@ -52,7 +52,7 @@ _R_CTRL = float(D.get("ctrl_R", 0.15))
 
 frames = []
 for t in tqdm(range(T), desc="렌더", ncols=80):
-    fig, ax = plt.subplots(1, 3, figsize=(14.4, 5.0), dpi=110)
+    fig, ax = plt.subplots(1, 2, figsize=(10.2, 5.0), dpi=110)
     i, j = 0, 2                                          # xz 평면
     ax[0].scatter(G[t][:, i], G[t][:, j], s=1.1, c="0.25", linewidths=0)
     ax[0].set_title("교사 MPM (정답)", fontsize=11)
@@ -60,11 +60,6 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
                       vmin=0, vmax=vmax, linewidths=0)
     ax[1].set_title(f"학생 예측 (색 = 정답과의 거리, 평균 {err[t].mean():.3f}% EXT)",
                     fontsize=11)
-    ax[2].scatter(G[t][:, i], G[t][:, j], s=1.1, c="0.55", linewidths=0,
-                  label="정답")
-    ax[2].scatter(P[t][:, i], P[t][:, j], s=1.1, c="crimson", linewidths=0,
-                  alpha=.55, label="예측")
-    ax[2].set_title("겹쳐 보기", fontsize=11)
     # 손잡이를 그린다. 이게 없으면 구동이 들어갔는지 눈으로 확인할 수 없어
     # "손잡이가 없는 것 같다" 는 오해를 부른다 (덤프에는 늘 들어 있다).
     if _CP is not None:
@@ -77,7 +72,7 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
                                         alpha=.9))
                 _q.plot([_c[i]], [_c[j]], marker="x", ms=7, mew=2.0,
                         color="deepskyblue")
-    ax[2].legend(fontsize=9, markerscale=6, loc="upper right")
+
     for q in ax:
         q.set_xlim(lo[i] - pad, hi[i] + pad); q.set_ylim(lo[j] - pad, hi[j] + pad)
         q.set_aspect("equal"); q.set_xticks([]); q.set_yticks([])
