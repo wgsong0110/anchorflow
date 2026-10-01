@@ -27,6 +27,11 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--sub", type=int, default=6000)
 ap.add_argument("--fps", type=int, default=8)
 ap.add_argument("--label", default="출력만 최적화", help="오른쪽 칸 이름")
+ap.add_argument("--quiver", type=int, default=0,
+                help="유효 격자점(입자가 든 사면체의 꼭짓점)의 이동 방향을 "
+                     "오른쪽 칸에 화살표로 그린다. 그릴 개수")
+ap.add_argument("--quiver_scale", type=float, default=0.0,
+                help="0 이면 화살표 중앙 길이가 화면 폭의 4%% 가 되게 자동")
 ap.add_argument("--color", choices=["none", "err", "z0", "r0"], default="none",
                 help="입자 색. none=검정, err=정답과의 거리(오른쪽 칸만), "
                      "z0=초기 높이, r0=초기 중심에서의 거리. z0/r0 은 **두 칸에 "
@@ -65,6 +70,20 @@ if a.color in ("z0", "r0"):
         CVAL = np.linalg.norm(X0 - cen, axis=-1)
         CLAB, CMAP = "초기 중심에서의 거리", "plasma"
     print(f"[색] {CLAB}  {CVAL.min():.4f} ~ {CVAL.max():.4f}", flush=True)
+
+# 유효 격자점과 그 변위 (덤프에 있을 때만)
+NODES = D.get("nodes")
+QS = a.quiver_scale
+if a.quiver and NODES:
+    _md = float(np.median([
+        np.linalg.norm(np.asarray(dp)[np.asarray(sp)], axis=-1).mean()
+        for _np_, dp, sp in NODES]))
+    if QS <= 0:
+        QS = 0.04 * float(hi[0] - lo[0] + 2 * pad) / max(_md, 1e-12)
+    print(f"[화살표] 유효 격자점 변위 중앙 {_md:.3e}, 배율 {QS:.1f} 배, "
+          f"{a.quiver} 개", flush=True)
+elif a.quiver:
+    print("[화살표] 덤프에 격자점이 없다 -- 그리지 않는다", flush=True)
 
 frames = []
 for t in tqdm(range(T), desc="렌더", ncols=80):
@@ -123,6 +142,16 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     for q in ax:
         q.set_xlim(lo[i] - pad, hi[i] + pad); q.set_ylim(lo[j] - pad, hi[j] + pad)
         q.set_aspect("equal"); q.set_xticks([]); q.set_yticks([])
+    if a.quiver and NODES:
+        _npz, _dpz, _spz = NODES[min(t, len(NODES) - 1)]
+        _npz = np.asarray(_npz); _dpz = np.asarray(_dpz)
+        _idx = np.nonzero(np.asarray(_spz))[0]
+        if len(_idx) > a.quiver:
+            _idx = _idx[np.linspace(0, len(_idx) - 1, a.quiver).astype(int)]
+        ax[1].quiver(_npz[_idx, i], _npz[_idx, j],
+                     _dpz[_idx, i] * QS, _dpz[_idx, j] * QS,
+                     angles="xy", scale_units="xy", scale=1.0,
+                     width=.0025, color="deepskyblue", alpha=.85)
     if CLAB:
         ax[0].set_title(ax[0].get_title() + f"   색 = {CLAB}", fontsize=10)
     fig.suptitle(f"{D['tag']}  (학습에 쓰지 않은 시드)   "

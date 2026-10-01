@@ -994,6 +994,9 @@ _NF_HOLD = [None]
 _OV_TGT = [None]           # --ov_init target 이 쓸 자유낙하 평행이동 [3]
 # AF_OV_CURVE=경로 를 주면 프레임별 (반복, E) 곡선을 그 경로에 남긴다
 _CURVE = [] if os.environ.get("AF_OV_CURVE") else None
+# 롤아웃 덤프에 격자점을 함께 담을지. (노드 위치, 노드 변위, 유효 여부)
+_NODE_CAP = [False]
+_NODE_LAST = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
 _BC_DIAG = []              # (활성비, 보정최대/ext, 바닥아래/ext, 손잡이오차/ext)
 # [오차/ext, 구속 입자 수, 명령 변위 평균] -- 학습·평가 공통으로 갱신된다
@@ -1218,6 +1221,13 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         with _tsec("야코비안"):
             _u, Jf = SX.g2p_jac_pre(rows, lam, _lax, lat, dpn)
             Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
+        if _NODE_CAP[0]:
+            # **유효 격자점** = 입자가 든 사면체의 꼭짓점. 나머지는 변위가 어떤
+            # 값이든 입자를 하나도 옮기지 않으므로 뜻이 없다.
+            _sup = torch.zeros(npos.shape[0], dtype=torch.bool, device=dev)
+            _sup[rows.reshape(-1)] = True
+            _NODE_LAST[0] = (npos.detach().cpu(), dpn.detach().cpu(),
+                             _sup.cpu())
         _DET_LAST[0] = torch.linalg.det(Jf)
         # 구속 보정량·활성집합을 창 쪽으로 넘긴다 (L_bc 와 free 마스크에 쓴다)
         _BC_LAST[0] = (_outs[-2], _outs[-1])
@@ -2550,6 +2560,7 @@ def _rollout(d, t0, L, gsel=None):
     fe_r = (take(traj_F(d)[t0], gsel).float() if a.fe_state else None)
     cds, ems, cds_s, ems_s = [], [], [], []
     _RO_CTRL = []
+    _NODE_CAP[0] = _ROLLDUMP is not None
     F_ov = take(traj_F(d)[t0], gsel).float() if a.ov_roll > 0 else None
     for i in range(L):
         if a.ov_roll > 0:
@@ -2576,6 +2587,8 @@ def _rollout(d, t0, L, gsel=None):
         stills.append(float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
         if _ROLLDUMP is not None:
             _ROLLDUMP.append((x2.detach().cpu(), gt.detach().cpu()))
+            if _NODE_LAST[0] is not None:
+                _NODEDUMP.append(_NODE_LAST[0])
         if a.metrics:
             cds.append(chamfer(x2, gt) / (EXT ** 2))
             ems.append(emd(x2, gt, t0 * 1000 + i) / EXT)
@@ -2583,6 +2596,7 @@ def _rollout(d, t0, L, gsel=None):
             ems_s.append(emd(x_still, gt, t0 * 1000 + i) / EXT)
         x = x2
     net.train()
+    _NODE_CAP[0] = False
     if not errs:
         raise SystemExit("롤아웃이 한 프레임도 재지 못했다 -- 분기 구조를 "
                          "확인할 것 (nan 을 평균해 비를 내지 않는다)")
@@ -2648,6 +2662,7 @@ for tag, d in TR + held:
         _want = (_rd and tag.endswith(os.environ.get("AF_ROLL_TAG", "")) 
                  and t0 == int(os.environ.get("AF_ROLL_T0", "3")))
         _ROLLDUMP = [] if _want else None
+        _NODEDUMP = []
         # gsel 은 **그 궤적의** 입자 수로 만든다 (궤적마다 다를 수 있고, 풀
         # 루프가 전역 N_FULL 을 씬 값으로 덮어써 전역을 믿을 수 없다).
         e, st, cd, em, cds_, ems_ = rollout(d, t0, L)
@@ -2656,6 +2671,7 @@ for tag, d in TR + held:
                         "gt": torch.stack([b_ for _, b_ in _ROLLDUMP]),
                         "x0": d["x"][t0].to(dev).float().cpu(),
                         "ctrl_pos": d.get("ctrl_pos"), "t0": t0, "tag": tag,
+                        "nodes": _NODEDUMP or None,
                         # 풀 루프가 전역 EXT 를 씬 값으로 덮어쓰므로 **그 궤적의**
                         # 것을 쓴다 (덤프를 렌더할 때 길이 단위가 된다)
                         "EXT": float(d.get("_ext", EXT))}, _rd)
