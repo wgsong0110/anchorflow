@@ -76,6 +76,13 @@ for k, path in enumerate(a.dump):
         esc = esc & (P[-1][:, 2] > cen[2])
     q = ax[0][k]
     if a.mode3d:
+        # 공 전체를 아주 연하게 깔아 둔다 (벗어난 입자의 자리를 가늠하려면
+        # 바탕이 있어야 한다)
+        _bg = np.arange(len(esc))[~esc]
+        if len(_bg) > 6000:
+            _bg = _bg[np.linspace(0, len(_bg) - 1, 6000).astype(int)]
+        q.scatter(X0[_bg, 0], X0[_bg, 1], X0[_bg, 2], s=1.2, c="0.6",
+                  alpha=.06, linewidths=0, depthshade=False)
         if esc.any():
             sc = q.scatter(X0[esc, 0], X0[esc, 1], X0[esc, 2], s=9.0,
                            c=P[-1][esc, 2], cmap="viridis", linewidths=0)
