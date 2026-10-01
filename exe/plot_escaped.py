@@ -22,7 +22,10 @@ plt.rcParams["font.family"] = "Noto Sans CJK KR"
 plt.rcParams["axes.unicode_minus"] = False
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--dump", nargs="+", required=True, help="'이름=경로' 꼴도 된다")
+ap.add_argument("--dump", nargs="+", required=True)
+ap.add_argument("--names", nargs="+", default=None,
+                help="칸 제목. --dump 와 같은 개수 (이름에 '=' 가 들어가면 "
+                     "'이름=경로' 꼴 파싱이 깨지므로 따로 받는다)")
 ap.add_argument("--out", required=True)
 ap.add_argument("--margin", type=float, default=1.0,
                 help="PG 공 반지름의 몇 배 밖을 벗어난 것으로 볼지")
@@ -36,10 +39,9 @@ def L(p):
 
 fig, ax = plt.subplots(1, len(a.dump), figsize=(5.6 * len(a.dump), 5.2),
                        dpi=120, squeeze=False)
-for k, spec in enumerate(a.dump):
-    name, _, path = spec.partition("=")
-    if not path:
-        name, path = _os.path.basename(spec), spec
+for k, path in enumerate(a.dump):
+    name = (a.names[k] if a.names and k < len(a.names)
+            else _os.path.basename(path))
     D = L(path)
     P = D["pred"].float().numpy(); G = D["gt"].float().numpy()
     X0 = np.asarray(D["x0"], dtype=np.float32)
