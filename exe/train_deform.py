@@ -245,6 +245,11 @@ ap.add_argument("--out_var", action="store_true",
                      "바뀐다. 상태는 전진하지 않으므로 각 상태의 E 가 이 "
                      "매개화의 한 스텝 하한까지 내려간다")
 ap.add_argument("--out_var_lr", type=float, default=3e-3)
+ap.add_argument("--ov_roll", type=int, default=0,
+                help="롤아웃에서 **프레임마다** 노드 출력을 직접 최적화한다 "
+                     "(반복 수). 망은 초기화에만 쓰이고 상태는 정상 전진한다 "
+                     "-- 이 매개화의 롤아웃 하한을 잰다. --out_var 의 한 스텝 "
+                     "측정과 달리 평가 창 전체에서 성립하는 수치다")
 ap.add_argument("--oracle_roll", action="store_true",
                 help="망 출력 자리에 자유 변수를 넣고 매 프레임 물리손실을 "
                      "최소화하는 오라클 롤아웃. 학습·평가 코드를 그대로 쓴다")
@@ -971,6 +976,7 @@ _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최
 _BC_DIAG = []              # (활성비, 보정최대/ext, 바닥아래/ext, 손잡이오차/ext)
 # [오차/ext, 구속 입자 수, 명령 변위 평균] -- 학습·평가 공통으로 갱신된다
 _CTRL_ERR = [0.0, 0, 0.0]
+_OV_LOG = []               # --ov_roll: 프레임별 (최적화 전 E, 후 E)
 
 
 def bc_report():
@@ -2339,6 +2345,58 @@ _ROLLDUMP = None
 
 
 @torch.no_grad()
+def _ov_frame(d, t, gsel, p, x, v, F):
+    """프레임 하나를 **노드 출력 직접 최적화**로 전진시킨다 -> (x2, F_next).
+
+    --out_var 는 상태를 전진시키지 않아 한 스텝 하한만 잰다. 그 값으로 롤아웃을
+    말할 수 없다 (평가 중에는 훅이 끊겨 **초기 망**이 굴러간다). 여기서는 매
+    프레임 변수를 새로 만들어 망 출력에서 시작해 증분 포텐셜을 내리고, 내려간
+    출력으로 상태를 전진시킨다 -- 이것이 롤아웃에서 성립하는 하한이다.
+    """
+    cfg = d["cfg"]
+    m = MASS[gsel]
+    vol = m / float(cfg["density"])
+    gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
+    ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
+    nrm = float(m.sum()) * (EXT ** 2) / (FRAME_DT ** 2)
+    st, E0, E1 = {}, None, None
+
+    def _fwd():
+        with torch.enable_grad(), dt_scope(FRAME_DT):
+            x2, _, v2, _, _, _, _, _, _, _Jd = step_once(
+                d, t, gsel, p, x, v, need_J=False)
+        fm = (free_mask(d, x2.shape[0], x2.device, gsel, x, t)
+              if a.control else None)
+        if _BC_LAST[0] is not None:
+            _am = _BC_LAST[0][1].reshape(-1) > 0.5
+            fm = (~_am) if fm is None else (fm & ~_am)
+        E, dlog, F_tr, _ = ip_of(x, x2 - x, v, F, m, vol, cfg, FRAME_DT,
+                                 ng_, gl_, g=gv, norm=nrm, free=fm, jac=_Jd)
+        return x2, v2, E, dlog, F_tr
+
+    _ov = _OV_CUR[0]
+    _OV_CUR[0] = st
+    try:
+        for _k in range(a.ov_roll):
+            _, _, E, _, _ = _fwd()
+            if st.get("ov_opt") is None:
+                raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다 "
+                                 "(--out_var 로 훅을 걸어야 한다)")
+            if E0 is None:
+                E0 = float(E)
+            st["ov_opt"].zero_grad(set_to_none=True)
+            E.backward()
+            st["ov_opt"].step()
+        x2, v2, E, dlog, F_tr = _fwd()
+        E1 = float(E)
+    finally:
+        _OV_CUR[0] = _ov
+    _OV_LOG.append((E0 if E0 is not None else E1, E1))
+    with torch.no_grad():
+        F_next = phys_resid.plastic_step(F_tr, dlog).detach()
+    return x2.detach(), v2.detach(), F_next
+
+
 def rollout(d, t0, L, gsel=None):
     with traj_scope(d):
         return _rollout(d, t0, L, gsel)
@@ -2359,16 +2417,21 @@ def _rollout(d, t0, L, gsel=None):
     fe_r = (take(traj_F(d)[t0], gsel).float() if a.fe_state else None)
     cds, ems, cds_s, ems_s = [], [], [], []
     _RO_CTRL = []
+    F_ov = take(traj_F(d)[t0], gsel).float() if a.ov_roll > 0 else None
     for i in range(L):
+      if a.ov_roll > 0:
+        # 출력만 최적화 경로: 서브스텝·jvp 없이 프레임마다 변수를 내린다
+        x2, v, F_ov = _ov_frame(d, t0 + i, gsel, p, x, v, F_ov)
+      else:
         with torch.enable_grad(), dt_scope(FRAME_DT / EVAL_SUB):
-            for _sb in range(EVAL_SUB - 1):
-                x, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
-                    d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
-                    idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
-                x, p, v = x.detach(), p.detach(), v.detach()
-            x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
-                d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
-                idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
+              for _sb in range(EVAL_SUB - 1):
+                  x, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
+                      d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
+                      idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
+                  x, p, v = x.detach(), p.detach(), v.detach()
+              x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
+                  d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
+                  idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
         x2 = x2.detach(); p = p.detach(); v = v.detach()
         gt = take(d["x"][t0 + i + 1], gsel)
         # 평가에서도 손잡이가 명령대로 끌리는지 본다. 학습 경로만 보고 "손잡이는
@@ -2387,6 +2450,13 @@ def _rollout(d, t0, L, gsel=None):
             ems_s.append(emd(x_still, gt, t0 * 1000 + i) / EXT)
         x = x2
     net.train()
+    if _OV_LOG:
+        _b = sum(q[0] for q in _OV_LOG) / len(_OV_LOG)
+        _af = sum(q[1] for q in _OV_LOG) / len(_OV_LOG)
+        print(f"  [출력만최적화] 프레임 {len(_OV_LOG)}, 증분포텐셜 평균 "
+              f"{_b:.4e} -> {_af:.4e} ({100*(1-_af/max(_b,1e-30)):.1f}% 감소, "
+              f"프레임당 {a.ov_roll} 반복)", flush=True)
+        del _OV_LOG[:]
     if _RO_CTRL and a.control:
         _er = max(q[0] for q in _RO_CTRL)
         _nn = [q[1] for q in _RO_CTRL]
