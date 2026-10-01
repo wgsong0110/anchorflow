@@ -111,7 +111,7 @@ class HandlePlan:
 
     @staticmethod
     def sample(x0, n_ctrl, radius, gen, dev, cand, frames=60,
-               acc=2.4, vmax=0.6, tol=5e-3):
+               acc=2.4, vmax=0.6, tol=5e-3, zbias=0.0):
         """제어 입자와 목표점을 뽑는다. 손잡이끼리 2R 안에 겹치지 않게 한다."""
         n = x0.shape[0]
         idx = []
@@ -125,7 +125,14 @@ class HandlePlan:
             idx.append(int(torch.randint(n, (1,), generator=gen, device=dev)))
         idx = torch.tensor(idx, device=dev, dtype=torch.long)
         pick = torch.randint(cand.shape[0], (n_ctrl,), generator=gen, device=dev)
-        return HandlePlan(n_ctrl, idx, cand[pick].clone(), radius,
+        tgt = cand[pick].clone()
+        if zbias:
+            # 목표를 위로 올린다. 교사 시나리오는 물체를 **들어올리는** 구동이라
+            # (명령 z성분 평균 +0.379) 목표 격자가 z 로 대칭이면 그 구동을 재현
+            # 할 수 없다. 길이 단위는 물체 크기다.
+            _ext = float((x0.max(0).values - x0.min(0).values).max())
+            tgt[:, 2] = tgt[:, 2] + zbias * _ext
+        return HandlePlan(n_ctrl, idx, tgt, radius,
                           frames=frames, acc=acc, vmax=vmax, tol=tol)
 
     def velocity(self, x_now, elapsed):
@@ -143,13 +150,6 @@ class HandlePlan:
     def arrived(self, x_now):
         return bool(((self.target - x_now[self.idx]).norm(dim=-1)
                      <= self.tol).all())
-
-    def weights(self, x_now):
-        """[N,K] 감쇠 가중치 (1-q^2)^2. 교사와 같은 규약."""
-        c = x_now[self.idx]
-        q = ((x_now.unsqueeze(1) - c.unsqueeze(0)).norm(dim=-1)
-             / max(self.radius, 1e-6)).clamp(0, 1)
-        return (1.0 - q * q) ** 2
 
     def pack(self):
         """체크포인트용. 제어 입자와 목표점만 담으면 나머지는 규칙으로 복원된다."""
@@ -172,7 +172,7 @@ class StatePool:
     def __init__(self, scenes, size, n_ctrl, radius, dev, gen,
                  frames=60, thresh=0.05, window=30,
                  domain=2.0, margin=0.15, start_mid=False, keep_prob=0.5,
-                 acc=2.4, vmax=0.6, n_side=4):
+                 acc=2.4, vmax=0.6, n_side=4, zbias=0.0):
         self.scenes = scenes
         self.size = size
         self.n_ctrl = n_ctrl
@@ -199,6 +199,8 @@ class StatePool:
         # 손잡이 운동은 **가속도와 최고속도**로 정한다 (도달 시간은 거리에 따라 다름)
         self.acc = acc
         self.vmax = vmax
+        # 목표를 위로 올리는 편향. 교사 시나리오가 들어올리는 구동이라 필요하다.
+        self.zbias = zbias
         # 목표점 후보는 유한 고정 집합이다. 씬마다 바닥면이 같으므로 한 번만 짠다.
         self.cand = target_grid(domain, margin, n_side,
                                 scenes[0][1]["cfg"] if scenes else None,
@@ -262,7 +264,8 @@ class StatePool:
         x = sc["x0"].clone()
         plan = HandlePlan.sample(x, self.n_ctrl, self.radius, self.gen,
                                  self.dev, self.cand, self.frames,
-                                 acc=self.acc, vmax=self.vmax)
+                                 acc=self.acc, vmax=self.vmax,
+                                 zbias=self.zbias)
         el = 0
         if self.start_mid:
             el = int(torch.randint(self.frames, (1,), generator=self.gen,
@@ -312,7 +315,7 @@ class StatePool:
             st["plan"] = HandlePlan.sample(st["x"], self.n_ctrl, self.radius,
                                            self.gen, self.dev, self.cand,
                                            self.frames, acc=self.acc,
-                                           vmax=self.vmax)
+                                           vmax=self.vmax, zbias=self.zbias)
             st["elapsed"] = 0
             self.n_replan += 1
         bad = (not bool(torch.isfinite(st["x"]).all())) or \

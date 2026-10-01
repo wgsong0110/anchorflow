@@ -214,6 +214,12 @@ ap.add_argument("--pool_fill", default="",
                      "교사와 같은 입자 집합을 쓰려면 그쪽 캐시를 가리킬 것")
 ap.add_argument("--pool_combos", default="all",
                 help="쉼표로 구분한 형상_물성. all 이면 12 조합 전부 (기본)")
+ap.add_argument("--ctrl_zbias", type=float, default=0.0,
+                help="손잡이 목표를 물체 크기의 이 배수만큼 **위로** 올린다. "
+                     "교사 시나리오(s400706)는 들어올리는 구동이라 명령 z성분 "
+                     "평균이 +0.379 인데, 목표 격자가 z 로 대칭이면 그 구동을 "
+                     "재현할 수 없다 -- 그러면 학생이 평가에서 만나는 입력을 "
+                     "학습 중에 본 적이 없게 된다")
 ap.add_argument("--ctrl_acc", type=float, default=2.4,
                 help="손잡이 가속도. 목표까지 걸리는 시간을 고정하는 대신 "
                      "가속도와 최고속도를 고정한다 -- 시간을 고정하면 먼 목표는 "
@@ -1650,7 +1656,7 @@ if a.pool:
                      window=a.pool_window,
                      domain=_gl0, margin=_R + 0.15,
                      start_mid=a.pool_start_mid, keep_prob=a.pool_keep,
-                     acc=a.ctrl_acc, vmax=a.ctrl_vmax,
+                     acc=a.ctrl_acc, vmax=a.ctrl_vmax, zbias=a.ctrl_zbias,
                      n_side=a.pool_targets)
     for _tag, _s in _sc:
         SCENE_DS.append(dict(x=_s["x0"].unsqueeze(0), cfg=_s["cfg"],
@@ -1668,7 +1674,8 @@ if a.pool:
     print(f"[풀] 씬 {len(_sc)} 개, 크기 {a.pool_size}, 신규 비율 "
           f"{a.pool_fresh:.2f}, 문턱 {a.pool_thresh}, 유예 {a.pool_keep}, "
           f"창 {a.pool_window}, 목표 후보 {POOL.cand.shape[0]} 개, "
-          f"가속 {a.ctrl_acc} 최고속도 {a.ctrl_vmax}", flush=True)
+          f"가속 {a.ctrl_acc} 최고속도 {a.ctrl_vmax} z편향 {a.ctrl_zbias}",
+          flush=True)
     _pck = (_rng_ck or {}).get("pool") if not a.resume_fresh else None
     if _pck:
         _nl, _ns = POOL.load_state_dict(_pck)
