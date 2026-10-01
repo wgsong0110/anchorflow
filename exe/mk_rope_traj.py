@@ -87,6 +87,6 @@ print(f"[저장] {a.out}  {T} 프레임 x {a.n} 입자, 로프 반지름 {a.r} �
 if a.no_handle:
     print("[손잡이] 없음 -- 중력과 바닥만")
 else:
-        print(f"[손잡이] 입자 {cid}"
-          f" (z={float(x0[cid,2]):.4f}), 반경 {a.handle_r}, 반경 안 {_in} 개"
-          f" | 명령: {a.hold} 들고 -> {a.down} x -{a.vz} -> {a.up} x +{a.vz}")
+    print(f"[손잡이] 입자 {cid} (z={float(x0[cid,2]):.4f}), 반경 "
+          f"{a.handle_r}, 반경 안 {_in} 개 | 명령: {a.hold} 들고 -> "
+          f"{a.down} x -{a.vz} -> {a.up} x +{a.vz}")
