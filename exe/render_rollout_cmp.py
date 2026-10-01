@@ -27,6 +27,10 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--sub", type=int, default=6000)
 ap.add_argument("--fps", type=int, default=8)
 ap.add_argument("--label", default="출력만 최적화", help="오른쪽 칸 이름")
+ap.add_argument("--color", choices=["none", "err", "z0", "r0"], default="none",
+                help="입자 색. none=검정, err=정답과의 거리(오른쪽 칸만), "
+                     "z0=초기 높이, r0=초기 중심에서의 거리. z0/r0 은 **두 칸에 "
+                     "같은 색**을 입혀 어느 부분이 어디로 갔는지 맞대 볼 수 있다")
 a = ap.parse_args()
 
 D = torch.load(a.dump, map_location="cpu", weights_only=False)
@@ -50,6 +54,18 @@ if _CP is not None:
     _CP = np.asarray(_CP, dtype=np.float32)
 _R_CTRL = float(D.get("ctrl_R", 0.15))
 
+# 입자별 고정 색 (z0/r0). 두 칸이 같은 값을 쓰므로 대응이 보인다.
+CVAL, CLAB, CMAP = None, "", "viridis"
+if a.color in ("z0", "r0"):
+    X0 = np.asarray(D["x0"], dtype=np.float32)[sel]
+    if a.color == "z0":
+        CVAL, CLAB, CMAP = X0[:, 2], "초기 높이 z", "viridis"
+    else:
+        cen = X0.mean(0)
+        CVAL = np.linalg.norm(X0 - cen, axis=-1)
+        CLAB, CMAP = "초기 중심에서의 거리", "plasma"
+    print(f"[색] {CLAB}  {CVAL.min():.4f} ~ {CVAL.max():.4f}", flush=True)
+
 frames = []
 for t in tqdm(range(T), desc="렌더", ncols=80):
     fig, ax = plt.subplots(1, 2, figsize=(10.2, 5.0), dpi=110)
@@ -66,7 +82,10 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
             mP |= np.linalg.norm(P[t] - _c, axis=-1) < _R_CTRL
 
     _oG = slice(None) if mG is None else ~mG
-    ax[0].scatter(G[t][_oG, i], G[t][_oG, j], s=1.1, c="0.25", linewidths=0)
+    _cG = "0.25" if CVAL is None else CVAL[_oG]
+    ax[0].scatter(G[t][_oG, i], G[t][_oG, j], s=1.1, c=_cG, cmap=CMAP,
+                  vmin=None if CVAL is None else CVAL.min(),
+                  vmax=None if CVAL is None else CVAL.max(), linewidths=0)
     if mG is not None and mG.any():
         ax[0].scatter(G[t][mG, i], G[t][mG, j], s=1.6, c="red", linewidths=0)
     ax[0].set_title(f"PG MPM (기준)   손잡이 안 {0 if mG is None else int(mG.sum())}",
@@ -74,7 +93,15 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     _oP = slice(None) if mP is None else ~mP
     # 손잡이 밖은 기준 칸과 같은 검은색이다. 구속이 들어간 자리만 빨강으로
     # 떠야 하니 오차 색칠을 걷어냈다 (요청).
-    ax[1].scatter(P[t][_oP, i], P[t][_oP, j], s=1.1, c="0.25", linewidths=0)
+    if a.color == "err":
+        ax[1].scatter(P[t][_oP, i], P[t][_oP, j], s=1.1, c=err[t][_oP],
+                      cmap="inferno", vmin=0,
+                      vmax=float(np.percentile(err, 99)) or 1.0, linewidths=0)
+    else:
+        ax[1].scatter(P[t][_oP, i], P[t][_oP, j], s=1.1,
+                      c="0.25" if CVAL is None else CVAL[_oP], cmap=CMAP,
+                      vmin=None if CVAL is None else CVAL.min(),
+                      vmax=None if CVAL is None else CVAL.max(), linewidths=0)
     if mP is not None and mP.any():
         ax[1].scatter(P[t][mP, i], P[t][mP, j], s=1.6, c="red", linewidths=0)
     ax[1].set_title(f"{a.label} (평균 오차 {err[t].mean():.3f}% EXT)"
@@ -96,6 +123,8 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     for q in ax:
         q.set_xlim(lo[i] - pad, hi[i] + pad); q.set_ylim(lo[j] - pad, hi[j] + pad)
         q.set_aspect("equal"); q.set_xticks([]); q.set_yticks([])
+    if CLAB:
+        ax[0].set_title(ax[0].get_title() + f"   색 = {CLAB}", fontsize=10)
     fig.suptitle(f"{D['tag']}  (학습에 쓰지 않은 시드)   "
                  f"자기회귀 {t + 1}/{T} 프레임", fontsize=12)
     fig.tight_layout()
