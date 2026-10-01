@@ -2344,7 +2344,6 @@ for it in pbar:
 _ROLLDUMP = None
 
 
-@torch.no_grad()
 def _ov_frame(d, t, gsel, p, x, v, F):
     """프레임 하나를 **노드 출력 직접 최적화**로 전진시킨다 -> (x2, F_next).
 
@@ -2377,6 +2376,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     _ov = _OV_CUR[0]
     _OV_CUR[0] = st
     try:
+      with torch.enable_grad():
         for _k in range(a.ov_roll):
             _, _, E, _, _ = _fwd()
             if st.get("ov_opt") is None:
@@ -2397,7 +2397,8 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     return x2.detach(), v2.detach(), F_next
 
 
-def rollout(d, t0, L, gsel=None):
+@torch.no_grad()        # <- _ov_frame 을 위에 끼우면서 이 데코레이터를 빼앗았다.
+def rollout(d, t0, L, gsel=None):   #    평가가 그래프를 쌓아 메모리가 터진다.
     with traj_scope(d):
         return _rollout(d, t0, L, gsel)
 
