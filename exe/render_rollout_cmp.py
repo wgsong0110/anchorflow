@@ -28,6 +28,8 @@ ap.add_argument("--sub", type=int, default=6000)
 ap.add_argument("--fps", type=int, default=8)
 ap.add_argument("--label", default="출력만 최적화", help="오른쪽 칸 이름")
 ap.add_argument("--label_left", default="PG MPM (기준)", help="왼쪽 칸 이름")
+ap.add_argument("--ctrl_R", type=float, default=0.0,
+                help="손잡이 반경을 직접 준다 (0 이면 덤프의 값)")
 ap.add_argument("--quiver", type=int, default=0,
                 help="유효 격자점(입자가 든 사면체의 꼭짓점)의 이동 방향을 "
                      "오른쪽 칸에 화살표로 그린다. 그릴 개수")
@@ -58,7 +60,13 @@ print(f"[덤프] {D['tag']} t0={D['t0']}  {T} 프레임, 입자 {N} "
 _CP = D.get("ctrl_pos")
 if _CP is not None:
     _CP = np.asarray(_CP, dtype=np.float32)
-_R_CTRL = float(D.get("ctrl_R", 0.15))
+_rr = a.ctrl_R if a.ctrl_R > 0 else D.get("ctrl_R")
+if _rr is None:
+    _rr = 0.15
+    if _CP is not None:
+        print("[경고] 덤프에 ctrl_R 이 없다 -- 0.15 로 그린다 (실제와 다를 수 "
+              "있다). --ctrl_R 로 넘겨라", flush=True)
+_R_CTRL = float(np.asarray(_rr).reshape(-1)[0])
 
 # 입자별 고정 색 (z0/r0). 두 칸이 같은 값을 쓰므로 대응이 보인다.
 CVAL, CLAB, CMAP = None, "", "viridis"

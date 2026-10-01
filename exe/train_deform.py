@@ -2693,7 +2693,11 @@ for tag, d in TR + held:
             torch.save({"pred": torch.stack([a_ for a_, _ in _ROLLDUMP]),
                         "gt": torch.stack([b_ for _, b_ in _ROLLDUMP]),
                         "x0": d["x"][t0].to(dev).float().cpu(),
-                        "ctrl_pos": d.get("ctrl_pos"), "t0": t0, "tag": tag,
+                        "ctrl_pos": d.get("ctrl_pos"),
+                        # 반경을 안 담으면 렌더가 기본값 0.15 로 원을 그려
+                        # **실제 손잡이와 다른 크기**가 영상에 나온다
+                        "ctrl_R": d.get("ctrl_R"),
+                        "t0": t0, "tag": tag,
                         "nodes": _NODEDUMP or None,
                         # 풀 루프가 전역 EXT 를 씬 값으로 덮어쓰므로 **그 궤적의**
                         # 것을 쓴다 (덤프를 렌더할 때 길이 단위가 된다)
