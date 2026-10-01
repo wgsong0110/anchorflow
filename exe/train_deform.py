@@ -1229,8 +1229,17 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             # 값이든 입자를 하나도 옮기지 않으므로 뜻이 없다.
             _sup = torch.zeros(npos.shape[0], dtype=torch.bool, device=dev)
             _sup[rows.reshape(-1)] = True
+            # 입자별 셀 구분: 0 = 꼭짓점 넷 다 손잡이 밖, 1 = **섞인 셀**
+            # (일부만 손잡이 안), 2 = 넷 다 손잡이 안. 1 이 손잡이가 몸통으로
+            # 힘을 넘기는 유일한 통로다.
+            if _nod_m is None:
+                _pc = torch.zeros(x.shape[0], dtype=torch.uint8)
+            else:
+                _hit = _nod_m[rows]
+                _pc = (_hit.any(1).to(torch.uint8)
+                       + _hit.all(1).to(torch.uint8)).cpu()
             _NODE_LAST[0] = (npos.detach().cpu(), dpn.detach().cpu(),
-                             _sup.cpu())
+                             _sup.cpu(), _pc)
         _DET_LAST[0] = torch.linalg.det(Jf)
         # 구속 보정량·활성집합을 창 쪽으로 넘긴다 (L_bc 와 free 마스크에 쓴다)
         _BC_LAST[0] = (_outs[-2], _outs[-1])

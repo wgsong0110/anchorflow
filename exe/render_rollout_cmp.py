@@ -40,10 +40,12 @@ ap.add_argument("--quiver", type=int, default=0,
                      "오른쪽 칸에 화살표로 그린다. 그릴 개수")
 ap.add_argument("--quiver_scale", type=float, default=0.0,
                 help="0 이면 화살표 중앙 길이가 화면 폭의 4%% 가 되게 자동")
-ap.add_argument("--color", choices=["none", "err", "z0", "r0"], default="none",
+ap.add_argument("--color", choices=["none", "err", "z0", "r0", "cell0"],
+                default="none",
                 help="입자 색. none=검정, err=정답과의 거리(오른쪽 칸만), "
-                     "z0=초기 높이, r0=초기 중심에서의 거리. z0/r0 은 **두 칸에 "
-                     "같은 색**을 입혀 어느 부분이 어디로 갔는지 맞대 볼 수 있다")
+                     "z0=초기 높이, r0=초기 중심에서의 거리, cell0=**첫 프레임 "
+                     "셀 구분** (손잡이 밖 / 섞인 셀 / 손잡이 안). z0/r0/cell0 "
+                     "은 두 칸에 같은 색을 입혀 어디로 갔는지 맞대 볼 수 있다")
 a = ap.parse_args()
 
 D = torch.load(a.dump, map_location="cpu", weights_only=False)
@@ -75,6 +77,15 @@ _R_CTRL = float(np.asarray(_rr).reshape(-1)[0])
 
 # 입자별 고정 색 (z0/r0). 두 칸이 같은 값을 쓰므로 대응이 보인다.
 CVAL, CLAB, CMAP = None, "", "viridis"
+if a.color == "cell0":
+    _nd = D.get("nodes")
+    if not _nd or len(_nd[0]) < 4:
+        raise SystemExit("덤프에 입자별 셀 구분이 없다 -- 다시 덤프할 것")
+    CVAL = np.asarray(_nd[0][3])[sel].astype(np.float32)
+    CMAP = matplotlib.colors.ListedColormap(["0.75", "tab:orange", "red"])
+    CLAB = ("셀 구분 (회색 손잡이 밖 / 주황 **섞인 셀** / 빨강 손잡이 안): "
+            + " / ".join(f"{int((CVAL == k).sum())}" for k in (0, 1, 2)))
+    print(f"[셀] {CLAB}", flush=True)
 if a.color in ("z0", "r0"):
     X0 = np.asarray(D["x0"], dtype=np.float32)[sel]
     if a.color == "z0":
@@ -94,7 +105,7 @@ if a.quiver and NODES:
     # 를 화면 폭의 6% 에 맞추고, 그보다 긴 화살표는 2 배에서 자른다.
     _ln = np.concatenate([
         np.linalg.norm(np.asarray(dp)[np.asarray(sp)], axis=-1)
-        for _np_, dp, sp in NODES])
+        for _np_, dp, sp, *_ in NODES])
     _p90, _mx = float(np.percentile(_ln, 90)), float(_ln.max())
     if QS <= 0:
         QS = 0.06 * float(hi[0] - lo[0] + 2 * pad) / max(_p90, 1e-12)
@@ -114,6 +125,9 @@ if _CP is not None:
         M_INIT |= np.linalg.norm(X0i - _CP[int(D["t0"]), _k], axis=-1) < _R_CTRL
     print(f"[손잡이] 반경 {_R_CTRL:.4f}, 첫 프레임 반경 안 "
           f"{int(M_INIT.sum())} 개 (그리는 표본 기준)", flush=True)
+
+VLO, VHI = (0.0, 2.0) if a.color == "cell0" else (
+    (float(CVAL.min()), float(CVAL.max())) if CVAL is not None else (0.0, 1.0))
 
 frames = []
 for t in tqdm(range(T), desc="렌더", ncols=80):
@@ -135,8 +149,8 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     _oG = slice(None) if mG is None else ~mG
     _cG = "0.25" if CVAL is None else CVAL[_oG]
     ax[0].scatter(G[t][_oG, i], G[t][_oG, j], s=1.1, c=_cG, cmap=CMAP,
-                  vmin=None if CVAL is None else CVAL.min(),
-                  vmax=None if CVAL is None else CVAL.max(), linewidths=0)
+                  vmin=None if CVAL is None else VLO,
+                  vmax=None if CVAL is None else VHI, linewidths=0)
     if mG is not None and mG.any():
         ax[0].scatter(G[t][mG, i], G[t][mG, j], s=a.handle_s, c="red",
                       linewidths=0)
@@ -152,8 +166,8 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     else:
         ax[1].scatter(P[t][_oP, i], P[t][_oP, j], s=1.1,
                       c="0.25" if CVAL is None else CVAL[_oP], cmap=CMAP,
-                      vmin=None if CVAL is None else CVAL.min(),
-                      vmax=None if CVAL is None else CVAL.max(), linewidths=0)
+                      vmin=None if CVAL is None else VLO,
+                      vmax=None if CVAL is None else VHI, linewidths=0)
     if mP is not None and mP.any():
         ax[1].scatter(P[t][mP, i], P[t][mP, j], s=a.handle_s, c="red",
                       linewidths=0)
@@ -177,7 +191,7 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
         q.set_xlim(lo[i] - pad, hi[i] + pad); q.set_ylim(lo[j] - pad, hi[j] + pad)
         q.set_aspect("equal"); q.set_xticks([]); q.set_yticks([])
     if a.quiver and NODES:
-        _npz, _dpz, _spz = NODES[min(t, len(NODES) - 1)]
+        _npz, _dpz, _spz, *_r = NODES[min(t, len(NODES) - 1)]
         _npz = np.asarray(_npz); _dpz = np.asarray(_dpz)
         _idx = np.nonzero(np.asarray(_spz))[0]
         if len(_idx) > a.quiver:
