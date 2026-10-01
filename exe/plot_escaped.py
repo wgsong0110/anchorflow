@@ -34,6 +34,9 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--r", type=float, default=0.0,
                 help="공 반지름. 0 이면 초기 위치에서 중심 입자까지의 최대 "
                      "거리로 잡는다")
+ap.add_argument("--mode3d", action="store_true",
+                help="초기 위치 (x,y,z) 를 3D 로 흩뿌리고 색은 **마지막 "
+                     "프레임의 z** (--out 과 짝이 반대인 그림이다)")
 ap.add_argument("--margin", type=float, default=1.0,
                 help="반지름의 몇 배 밖을 벗어난 것으로 볼지")
 ap.add_argument("--above", action="store_true", default=True,
@@ -47,8 +50,14 @@ def L(p):
     except TypeError: return torch.load(p, map_location="cpu")
 
 
-fig, ax = plt.subplots(1, len(a.dump), figsize=(5.6 * len(a.dump), 5.2),
-                       dpi=120, squeeze=False)
+if a.mode3d:
+    from mpl_toolkits.mplot3d import Axes3D            # noqa: F401
+    fig = plt.figure(figsize=(6.2 * len(a.dump), 5.6), dpi=120)
+    ax = [[fig.add_subplot(1, len(a.dump), k + 1, projection="3d")
+           for k in range(len(a.dump))]]
+else:
+    fig, ax = plt.subplots(1, len(a.dump), figsize=(5.6 * len(a.dump), 5.2),
+                           dpi=120, squeeze=False)
 for k, path in enumerate(a.dump):
     name = (a.names[k] if a.names and k < len(a.names)
             else _os.path.basename(path))
@@ -66,6 +75,23 @@ for k, path in enumerate(a.dump):
     if a.above:
         esc = esc & (P[-1][:, 2] > cen[2])
     q = ax[0][k]
+    if a.mode3d:
+        if esc.any():
+            sc = q.scatter(X0[esc, 0], X0[esc, 1], X0[esc, 2], s=9.0,
+                           c=P[-1][esc, 2], cmap="viridis", linewidths=0)
+            cb = fig.colorbar(sc, ax=q, shrink=.7)
+            cb.set_label("마지막 프레임의 z")
+        q.set_xlabel("초기 x"); q.set_ylabel("초기 y"); q.set_zlabel("초기 z")
+        q.set_title(f"{name}\n벗어난 입자 {int(esc.sum())} / {len(esc)} "
+                    f"({100*esc.mean():.2f}%)", fontsize=10)
+        try:
+            q.set_box_aspect((1, 1, 1))
+        except Exception:
+            pass
+        print(f"[{name}] 벗어남 {int(esc.sum())}/{len(esc)}, 초기 z 범위 "
+              f"{X0[esc, 2].min():.3f}~{X0[esc, 2].max():.3f}, 마지막 z 범위 "
+              f"{P[-1][esc, 2].min():.3f}~{P[-1][esc, 2].max():.3f}", flush=True)
+        continue
     # 마지막 프레임 공의 테두리 (중심 입자 기준)
     q.add_patch(plt.Circle((cen[0], cen[1]), rad, fill=False, ec="0.4",
                            lw=1.6, ls="--"))
