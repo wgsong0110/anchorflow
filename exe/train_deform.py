@@ -252,6 +252,11 @@ ap.add_argument("--ov_init", choices=["zero", "randn", "net", "target"],
                      "target=모든 노드를 h·v̄ + h²g 로 (자유낙하 평행이동 -- "
                      "이 매개화가 평행이동을 담는지 보는 진단이다)")
 ap.add_argument("--ov_init_std", type=float, default=1e-3)
+ap.add_argument("--ov_opt", choices=["adam", "lbfgs"], default="lbfgs",
+                help="--ov_roll 의 최적화기. 탄성 강성(E=2e6)이 관성항보다 "
+                     "원시 값으로 700 배 커서 문제가 심하게 비등방이다 -- "
+                     "Adam 은 0 에서 출발하면 자유낙하조차 못 찾는다(실측: "
+                     "필요 변위의 6%%). 선탐색이 있는 L-BFGS 가 기본이다")
 ap.add_argument("--ov_roll", type=int, default=0,
                 help="롤아웃에서 **프레임마다** 노드 출력을 직접 최적화한다 "
                      "(반복 수). 망은 초기화에만 쓰이고 상태는 정상 전진한다 "
@@ -1987,6 +1992,15 @@ if a.roll_scen:
           f"{(len(XS) - 1) / max(_wall, 1e-9):.2f} FPS", flush=True)
     raise SystemExit(0)
 
+def _mk_ov_opt(vs):
+    if a.ov_opt == "lbfgs":
+        return torch.optim.LBFGS(vs, lr=1.0, max_iter=max(a.ov_roll, 1),
+                                 history_size=50, tolerance_grad=0.0,
+                                 tolerance_change=0.0,
+                                 line_search_fn="strong_wolfe")
+    return torch.optim.Adam(vs, lr=a.out_var_lr)
+
+
 if a.out_var or a.ov_roll > 0:
     # **상태마다** 노드 출력을 직접 최적화한다. 망은 초기화에만 쓰인다.
     #
@@ -2005,7 +2019,7 @@ if a.out_var or a.ov_roll > 0:
             return out
         if st.get("ov") is None:
             st["ov"] = [o.detach().clone().requires_grad_(True) for o in outs]
-            st["ov_opt"] = torch.optim.Adam(st["ov"], lr=a.out_var_lr)
+            st["ov_opt"] = _mk_ov_opt(st["ov"])
             st["ov_tuple"] = isinstance(out, (tuple, list))
         # **입력과 같은 모양으로** 돌려준다. 출력이 하나일 때 맨 텐서를 주면
         # 호출부의 out[0] 이 첫 노드 행을 집어 색인이 범위를 벗어난다 (옛 conv
@@ -2035,7 +2049,7 @@ if a.out_var or a.ov_roll > 0:
                 z = a.ov_init_std * torch.randn(M, 3, dtype=dtype,
                                                 device=device)
             st["ov"] = [z.requires_grad_(True)]
-            st["ov_opt"] = torch.optim.Adam(st["ov"], lr=a.out_var_lr)
+            st["ov_opt"] = _mk_ov_opt(st["ov"])
             # 호출부는 out[0] 만 읽는다 -- 늘 묶음으로 돌려주면 안전하다
             st["ov_tuple"] = True
         return tuple(st["ov"]) if st["ov_tuple"] else st["ov"][0]
@@ -2417,6 +2431,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
     nrm = float(m.sum()) * (EXT ** 2) / (FRAME_DT ** 2)
     st, E0, E1 = {}, None, None
+    _E0 = [None]
 
     def _fwd():
         with torch.enable_grad(), dt_scope(FRAME_DT):
@@ -2437,16 +2452,32 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
     try:
       with torch.enable_grad():
-        for _k in range(a.ov_roll):
-            _, _, E, _, _, _pt, _ = _fwd()
+        if a.ov_opt == "lbfgs":
+            _n = [0]
+
+            def _closure():
+                st["ov_opt"].zero_grad(set_to_none=True)
+                _, _, E, _, _, _, _ = _fwd()
+                if _n[0] == 0:
+                    _E0[0] = float(E)
+                _n[0] += 1
+                E.backward()
+                return E
+            _fwd()                    # 변수를 만든다 (훅이 첫 호출에서 만든다)
             if st.get("ov_opt") is None:
-                raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다 "
-                                 "(--out_var 로 훅을 걸어야 한다)")
-            if E0 is None:
-                E0 = float(E)
-            st["ov_opt"].zero_grad(set_to_none=True)
-            E.backward()
-            st["ov_opt"].step()
+                raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다")
+            st["ov_opt"].step(_closure)
+            E0 = _E0[0]
+        else:
+            for _k in range(a.ov_roll):
+                _, _, E, _, _, _pt, _ = _fwd()
+                if st.get("ov_opt") is None:
+                    raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다")
+                if E0 is None:
+                    E0 = float(E)
+                st["ov_opt"].zero_grad(set_to_none=True)
+                E.backward()
+                st["ov_opt"].step()
         x2, v2, E, dlog, F_tr, _pt, _Jd = _fwd()
         E1 = float(E)
         if os.environ.get("AF_OV_DIAG"):
