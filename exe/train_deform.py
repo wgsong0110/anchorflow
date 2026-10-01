@@ -2617,6 +2617,8 @@ def _rollout(d, t0, L, gsel=None):
             _ROLLDUMP.append((x2.detach().cpu(), gt.detach().cpu()))
             if _NODE_LAST[0] is not None:
                 _NODEDUMP.append(_NODE_LAST[0])
+            if F_ov is not None:        # 입자별 det(F) -- 색칠에 쓴다
+                _DETDUMP.append(torch.linalg.det(F_ov).detach().cpu())
         if a.metrics:
             cds.append(chamfer(x2, gt) / (EXT ** 2))
             ems.append(emd(x2, gt, t0 * 1000 + i) / EXT)
@@ -2694,7 +2696,7 @@ for tag, d in TR + held:
         _want = (_rd and tag.endswith(os.environ.get("AF_ROLL_TAG", "")) 
                  and t0 == int(os.environ.get("AF_ROLL_T0", "3")))
         _ROLLDUMP = [] if _want else None
-        _NODEDUMP = []
+        _NODEDUMP, _DETDUMP = [], []
         # gsel 은 **그 궤적의** 입자 수로 만든다 (궤적마다 다를 수 있고, 풀
         # 루프가 전역 N_FULL 을 씬 값으로 덮어써 전역을 믿을 수 없다).
         e, st, cd, em, cds_, ems_ = rollout(d, t0, L)
@@ -2708,6 +2710,7 @@ for tag, d in TR + held:
                         "ctrl_R": d.get("ctrl_R"),
                         "t0": t0, "tag": tag,
                         "nodes": _NODEDUMP or None,
+                        "detF": (torch.stack(_DETDUMP) if _DETDUMP else None),
                         # 풀 루프가 전역 EXT 를 씬 값으로 덮어쓰므로 **그 궤적의**
                         # 것을 쓴다 (덤프를 렌더할 때 길이 단위가 된다)
                         "EXT": float(d.get("_ext", EXT))}, _rd)

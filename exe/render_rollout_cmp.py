@@ -43,12 +43,13 @@ ap.add_argument("--quiver", type=int, default=0,
                      "오른쪽 칸에 화살표로 그린다. 그릴 개수")
 ap.add_argument("--quiver_scale", type=float, default=0.0,
                 help="0 이면 화살표 중앙 길이가 화면 폭의 4%% 가 되게 자동")
-ap.add_argument("--color", choices=["none", "err", "z0", "r0", "cell0"],
-                default="none",
+ap.add_argument("--color", choices=["none", "err", "z0", "r0", "cell0",
+                                    "detF"], default="none",
                 help="입자 색. none=검정, err=정답과의 거리(오른쪽 칸만), "
                      "z0=초기 높이, r0=초기 중심에서의 거리, cell0=**첫 프레임 "
                      "셀 구분** (손잡이 밖 / 섞인 셀 / 손잡이 안). z0/r0/cell0 "
-                     "은 두 칸에 같은 색을 입혀 어디로 갔는지 맞대 볼 수 있다")
+                     "은 두 칸에 같은 색을 입혀 어디로 갔는지 맞대 볼 수 있다. "
+                     "detF=**프레임마다** 변형구배의 행렬식 (1 이 부피 보존)")
 a = ap.parse_args()
 
 D = torch.load(a.dump, map_location="cpu", weights_only=False)
@@ -129,8 +130,21 @@ if _CP is not None:
     print(f"[손잡이] 반경 {_R_CTRL:.4f}, 첫 프레임 반경 안 "
           f"{int(M_INIT.sum())} 개 (그리는 표본 기준)", flush=True)
 
+DETF = None
+if a.color == "detF":
+    DETF = D.get("detF")
+    if DETF is None:
+        raise SystemExit("덤프에 detF 가 없다 -- --ov_roll 로 다시 덤프할 것")
+    DETF = np.asarray(DETF)[:, sel]
+    _w = float(np.percentile(np.abs(DETF - 1.0), 99)) or 1e-3
+    CMAP, CLAB = "coolwarm", f"det(F)  (1 ± {_w:.3f})"
+    CVAL = DETF[0]
+    print(f"[detF] 범위 {DETF.min():.4f} ~ {DETF.max():.4f}, "
+          f"색 범위 1 ± {_w:.4f}", flush=True)
+
 VLO, VHI = (0.0, 2.0) if a.color == "cell0" else (
-    (float(CVAL.min()), float(CVAL.max())) if CVAL is not None else (0.0, 1.0))
+    (1.0 - _w, 1.0 + _w) if a.color == "detF" else (
+    (float(CVAL.min()), float(CVAL.max())) if CVAL is not None else (0.0, 1.0)))
 
 frames = []
 for t in tqdm(range(T), desc="렌더", ncols=80):
