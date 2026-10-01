@@ -54,11 +54,30 @@ frames = []
 for t in tqdm(range(T), desc="렌더", ncols=80):
     fig, ax = plt.subplots(1, 2, figsize=(10.2, 5.0), dpi=110)
     i, j = 0, 2                                          # xz 평면
-    ax[0].scatter(G[t][:, i], G[t][:, j], s=1.1, c="0.25", linewidths=0)
-    ax[0].set_title("교사 MPM (정답)", fontsize=11)
-    s = ax[1].scatter(P[t][:, i], P[t][:, j], s=1.1, c=err[t], cmap="inferno",
-                      vmin=0, vmax=vmax, linewidths=0)
-    ax[1].set_title(f"학생 예측 (색 = 정답과의 거리, 평균 {err[t].mean():.3f}% EXT)",
+    # 손잡이 반경 안에 든 입자를 **빨갛게** 칠한다. 교사 칸은 정답 위치로,
+    # 학생 칸은 예측 위치로 각각 판정한다 (같은 중심·같은 반경).
+    mG = mP = None
+    if _CP is not None:
+        _ti0 = min(int(D["t0"]) + t, _CP.shape[0] - 1)
+        mG = np.zeros(len(sel), bool); mP = np.zeros(len(sel), bool)
+        for _k in range(_CP.shape[1]):
+            _c = _CP[_ti0, _k]
+            mG |= np.linalg.norm(G[t] - _c, axis=-1) < _R_CTRL
+            mP |= np.linalg.norm(P[t] - _c, axis=-1) < _R_CTRL
+
+    _oG = slice(None) if mG is None else ~mG
+    ax[0].scatter(G[t][_oG, i], G[t][_oG, j], s=1.1, c="0.25", linewidths=0)
+    if mG is not None and mG.any():
+        ax[0].scatter(G[t][mG, i], G[t][mG, j], s=1.6, c="red", linewidths=0)
+    ax[0].set_title(f"교사 MPM (정답)   손잡이 안 {0 if mG is None else int(mG.sum())}",
+                    fontsize=11)
+    _oP = slice(None) if mP is None else ~mP
+    s = ax[1].scatter(P[t][_oP, i], P[t][_oP, j], s=1.1, c=err[t][_oP],
+                      cmap="inferno", vmin=0, vmax=vmax, linewidths=0)
+    if mP is not None and mP.any():
+        ax[1].scatter(P[t][mP, i], P[t][mP, j], s=1.6, c="red", linewidths=0)
+    ax[1].set_title(f"학생 예측 (색 = 정답과의 거리, 평균 {err[t].mean():.3f}% EXT)"
+                    f"   손잡이 안 {0 if mP is None else int(mP.sum())}",
                     fontsize=11)
     # 손잡이를 그린다. 이게 없으면 구동이 들어갔는지 눈으로 확인할 수 없어
     # "손잡이가 없는 것 같다" 는 오해를 부른다 (덤프에는 늘 들어 있다).
