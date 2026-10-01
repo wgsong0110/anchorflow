@@ -287,17 +287,26 @@ def bc_project_nodes(npos, dp, cfg, h, grid_lim, n_grid):
             # 에너지가 아무리 위로 밀어도 신호를 못 받고 영영 갇힌다 (실측:
             # 4821 번 전부 '올라가려던 노드 0 개'). 사영은 미분 가능해 기울기가
             # 그대로 흐르고, 면 아래 노드를 면 위로 끌어올린다.
+            # 비관통: 이번 변위로 면을 뚫는 노드를 면 위로 올린다
             sd = ((npos + dp_p - pt) * nr).sum(-1)
             pen = sd < 0.0
             dp_p = dp_p - torch.where(pen.unsqueeze(-1),
                                       sd.unsqueeze(-1) * nr,
                                       torch.zeros_like(dp_p))
             if str(bc.get("surface", "sticky")) == "sticky":
-                # 붙는다: 면에 닿은 노드는 접선 변위도 0
-                dn = (dp_p * nr).sum(-1, keepdim=True)
-                dp_p = torch.where(pen.unsqueeze(-1), dn * nr, dp_p)
+                # **접촉 판정은 노드 위치로** 한다 (변위와 무관한 고정 집합).
+                # `pen` 으로 걸면 이미 면 아래 있는 노드가 **위로 움직이는
+                # 순간** pen=False 가 되어 접선이 되살아난다 -- 붙어 있어야 할
+                # 노드가 미끄러진다 (실측으로 확인).
+                touch = ((npos - pt) * nr).sum(-1) < dx
+                # 접선을 **빼는 사영**으로 둔다. `where(..., dn*nr, dp)` 처럼
+                # 통째로 덮으면 그 노드의 야코비안이 전부 0 이 되어 (법선뿐
+                # 아니라 접선까지) 최적화 신호가 끊긴다.
+                dt_ = dp_p - (dp_p * nr).sum(-1, keepdim=True) * nr
+                dp_p = dp_p - torch.where(touch.unsqueeze(-1), dt_,
+                                          torch.zeros_like(dp_p))
+                act = act | touch
             act = act | pen
-            under = pen
             if os.environ.get("AF_BC_DIAG"):
                 with torch.no_grad():
                     _nu = int(under.sum())
