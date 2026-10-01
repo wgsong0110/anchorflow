@@ -24,6 +24,8 @@ ap.add_argument("--up", type=int, default=12)
 ap.add_argument("--vz", type=float, default=1.5, help="내리고 올리는 속력")
 ap.add_argument("--handle_r", type=float, default=0.03)
 ap.add_argument("--material", default="jelly")
+ap.add_argument("--n_grid", type=int, default=200,
+                help="MPM 격자. 로프 반지름을 몇 칸으로 분해할지가 정해진다")
 ap.add_argument("--E", type=float, default=2e5)
 ap.add_argument("--nu", type=float, default=0.3)
 ap.add_argument("--floor", type=float, default=0.95,
@@ -33,7 +35,8 @@ ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
 
 cfg = dict(E=a.E, nu=a.nu, g=[0.0, 0.0, -9.8], frame_dt=1.0 / 60.0,
-           density=1000.0, n_grid=200, grid_lim=2.0, material=a.material,
+           density=1000.0, n_grid=a.n_grid, grid_lim=2.0,
+           material=a.material,
            boundary_conditions=[])
 if a.floor >= 0:
     cfg["boundary_conditions"] = [
