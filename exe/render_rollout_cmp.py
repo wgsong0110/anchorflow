@@ -43,10 +43,12 @@ ap.add_argument("--quiver", type=int, default=0,
                      "오른쪽 칸에 화살표로 그린다. 그릴 개수")
 ap.add_argument("--quiver_scale", type=float, default=0.0,
                 help="0 이면 화살표 중앙 길이가 화면 폭의 4%% 가 되게 자동")
-ap.add_argument("--color", choices=["none", "err", "z0", "r0", "cell0",
+ap.add_argument("--color", choices=["none", "err", "z0", "r0", "pos0", "cell0",
                                     "detF", "trC", "normE"], default="none",
                 help="입자 색. none=검정, err=정답과의 거리(오른쪽 칸만), "
-                     "z0=초기 높이, r0=초기 중심에서의 거리, cell0=**첫 프레임 "
+                     "z0=초기 높이, r0=초기 중심에서의 거리, pos0=**초기 위치 "
+                     "(x,y,z)를 RGB 로** (물질점이 어디서 와서 어디로 갔는지 "
+                     "한눈에 보인다), cell0=**첫 프레임 "
                      "셀 구분** (손잡이 밖 / 섞인 셀 / 손잡이 안). z0/r0/cell0 "
                      "은 두 칸에 같은 색을 입혀 어디로 갔는지 맞대 볼 수 있다. "
                      "detF=행렬식(1 이 부피 보존), trC=우 코시-그린의 대각합"
@@ -81,6 +83,15 @@ if _rr is None:
         print("[경고] 덤프에 ctrl_R 이 없다 -- 0.15 로 그린다 (실제와 다를 수 "
               "있다). --ctrl_R 로 넘겨라", flush=True)
 _R_CTRL = float(np.asarray(_rr).reshape(-1)[0])
+
+CRGB = None
+if a.color == "pos0":
+    _X0 = np.asarray(D["x0"], dtype=np.float32)[sel]
+    _lo0, _hi0 = _X0.min(0), _X0.max(0)
+    CRGB = (_X0 - _lo0) / np.maximum(_hi0 - _lo0, 1e-12)
+    print(f"[pos0] 초기 위치를 RGB 로: x->빨강 {_lo0[0]:.3f}~{_hi0[0]:.3f}, "
+          f"y->초록 {_lo0[1]:.3f}~{_hi0[1]:.3f}, "
+          f"z->파랑 {_lo0[2]:.3f}~{_hi0[2]:.3f}", flush=True)
 
 # 입자별 고정 색 (z0/r0). 두 칸이 같은 값을 쓰므로 대응이 보인다.
 CVAL, CLAB, CMAP = None, "", "viridis"
@@ -175,7 +186,8 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
             mP |= np.linalg.norm(P[t] - _c, axis=-1) < _R_CTRL
 
     _oG = slice(None) if mG is None else ~mG
-    _cG = "0.25" if CVAL is None else CVAL[_oG]
+    _cG = (CRGB[_oG] if CRGB is not None else
+           ("0.25" if CVAL is None else CVAL[_oG]))
     ax[0].scatter(G[t][_oG, i], G[t][_oG, j], s=1.1, c=_cG, cmap=CMAP,
                   vmin=None if CVAL is None else VLO,
                   vmax=None if CVAL is None else VHI, linewidths=0)
@@ -193,7 +205,8 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
                       vmax=float(np.percentile(err, 99)) or 1.0, linewidths=0)
     else:
         ax[1].scatter(P[t][_oP, i], P[t][_oP, j], s=1.1,
-                      c="0.25" if CVAL is None else CVAL[_oP], cmap=CMAP,
+                      c=(CRGB[_oP] if CRGB is not None else
+                         ("0.25" if CVAL is None else CVAL[_oP])), cmap=CMAP,
                       vmin=None if CVAL is None else VLO,
                       vmax=None if CVAL is None else VHI, linewidths=0)
     if mP is not None and mP.any():
