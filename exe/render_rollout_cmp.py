@@ -33,6 +33,9 @@ ap.add_argument("--handle_mark", choices=["frame", "init"], default="frame",
                      "init=**첫 프레임에 반경 안이던 것**(정체를 고정해 어디로 "
                      "갔는지 따라갈 수 있다)")
 ap.add_argument("--handle_s", type=float, default=1.6, help="빨간 점 크기")
+ap.add_argument("--mark", nargs="+", default=[],
+                help="'프레임:이름' 꼴. 그 프레임부터 제목에 표시하고 그 "
+                     "프레임에서는 테두리를 굵게 한다 (예: 27:바닥닿음 50:상승)")
 ap.add_argument("--esc_r", type=float, default=0.0,
                 help="--color esc 의 공 반지름. 0 이면 초기 위치에서 중심 "
                      "입자까지의 최대 거리")
@@ -50,7 +53,7 @@ ap.add_argument("--quiver", type=int, default=0,
 ap.add_argument("--quiver_scale", type=float, default=0.0,
                 help="0 이면 화살표 중앙 길이가 화면 폭의 4%% 가 되게 자동")
 ap.add_argument("--color", choices=["none", "err", "z0", "r0", "pos0", "cell0",
-                                    "detF", "trC", "normE", "esc"],
+                                    "detF", "trC", "normE", "esc", "znow"],
                 default="none",
                 help="입자 색. none=검정, err=정답과의 거리(오른쪽 칸만), "
                      "z0=초기 높이, r0=초기 중심에서의 거리, pos0=**초기 위치 "
@@ -58,6 +61,7 @@ ap.add_argument("--color", choices=["none", "err", "z0", "r0", "pos0", "cell0",
                      "한눈에 보인다), cell0=**첫 프레임 "
                      "셀 구분** (손잡이 밖 / 섞인 셀 / 손잡이 안). z0/r0/cell0 "
                      "은 두 칸에 같은 색을 입혀 어디로 갔는지 맞대 볼 수 있다. "
+                     "znow=**그 프레임의 z** (두 칸이 같은 색 범위), "
                      "esc=**마지막 프레임에 공을 벗어난 입자**를 빨갛게 "
                      "(중심 입자에서 반지름 밖 + 중심보다 위). 정체를 고정해 "
                      "처음부터 끝까지 같은 입자를 칠한다. detF=행렬식"
@@ -188,7 +192,17 @@ if a.color in _FK:
     print(f"[{a.color}] 범위 {DETF.min():.5f} ~ {DETF.max():.5f}, "
           f"색 범위 {CLAB}", flush=True)
 
-VLO, VHI = (0.0, 2.0) if a.color == "cell0" else (
+if a.color == "znow":
+    _allz = np.concatenate([P[:, :, 2].ravel(), G[:, :, 2].ravel()])
+    CMAP = "viridis"
+    CVAL = G[0][:, 2]            # 프레임마다 아래에서 갈아끼운다
+    CLAB = f"그 프레임의 z ({np.percentile(_allz,1):.2f} ~ "
+    CLAB += f"{np.percentile(_allz,99):.2f})"
+    print(f"[znow] 색 범위 {np.percentile(_allz,1):.4f} ~ "
+          f"{np.percentile(_allz,99):.4f}", flush=True)
+    _ZLO = float(np.percentile(_allz, 1)); _ZHI = float(np.percentile(_allz, 99))
+
+VLO, VHI = (_ZLO, _ZHI) if a.color == "znow" else (0.0, 2.0) if a.color == "cell0" else (
     ((0.0, _w) if a.color == "normE" else
      (_FK[a.color][1] - _w, _FK[a.color][1] + _w)) if a.color in _FK else (
     (float(CVAL.min()), float(CVAL.max())) if CVAL is not None else (0.0, 1.0)))
@@ -210,6 +224,8 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
             mG |= np.linalg.norm(G[t] - _c, axis=-1) < _R_CTRL
             mP |= np.linalg.norm(P[t] - _c, axis=-1) < _R_CTRL
 
+    if a.color == "znow":
+        CVAL = G[t][:, 2]
     _oG = slice(None) if mG is None else ~mG
     _cG = (CRGB[_oG] if CRGB is not None else
            ("0.25" if CVAL is None else CVAL[_oG]))
@@ -285,7 +301,16 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
                      width=.0025, color="deepskyblue", alpha=.85)
     if CLAB:
         ax[0].set_title(ax[0].get_title() + f"   색 = {CLAB}", fontsize=10)
-    fig.suptitle(f"{D['tag']}  (학습에 쓰지 않은 시드)   "
+    _mk = ""
+    for _m in a.mark:
+        _f, _, _nm = _m.partition(":")
+        if t >= int(_f):
+            _mk += f"   [{_nm} {int(_f)}~]"
+        if t == int(_f):
+            for _q in ax:
+                for _sp in _q.spines.values():
+                    _sp.set_linewidth(3.0); _sp.set_color("tab:red")
+    fig.suptitle(f"{D['tag']}{_mk}  (학습에 쓰지 않은 시드)   "
                  f"자기회귀 {t + 1}/{T} 프레임", fontsize=12)
     fig.tight_layout()
     fig.canvas.draw()
