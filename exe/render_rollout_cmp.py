@@ -225,6 +225,13 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     mG = mP = None
     if _CP is not None and a.handle_mark == "init":
         mG = mP = M_INIT
+    elif _CID is not None:
+        # 빨간 표시도 **칸마다 자기 손잡이 중심**으로 고른다. _CP(= PG 경로) 를
+        # 두 칸에 같이 쓰면 우리 칸에서 엉뚱한 자리의 입자가 빨갛게 찍힌다.
+        mG = np.zeros(len(sel), bool); mP = np.zeros(len(sel), bool)
+        for _k in range(len(_CID)):
+            mG |= np.linalg.norm(G[t] - _XG[t][_CID[_k]], axis=-1) < _R_CTRL
+            mP |= np.linalg.norm(P[t] - _XF[t][_CID[_k]], axis=-1) < _R_CTRL
     elif _CP is not None:
         _ti0 = min(int(D["t0"]) + t, _CP.shape[0] - 1)
         mG = np.zeros(len(sel), bool); mP = np.zeros(len(sel), bool)

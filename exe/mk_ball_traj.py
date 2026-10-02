@@ -16,6 +16,9 @@ import torch
 ap = argparse.ArgumentParser()
 ap.add_argument("--out", required=True)
 ap.add_argument("--ref", default="", help="cfg 를 베껴올 궤적 (물성·dt)")
+ap.add_argument("--shape", choices=["ball", "cyl"], default="ball",
+                help="cyl = **원기둥** (축은 --handle_axis 와 같은 축)")
+ap.add_argument("--cyl_len", type=float, default=0.40, help="원기둥 길이")
 ap.add_argument("--n", type=int, default=8000)
 ap.add_argument("--n_add", type=int, default=0,
                 help="**기존 입자는 그대로 두고** 그 위에 더 뽑는다 (시드를 "
@@ -80,12 +83,28 @@ def _ball(n, seed):
     sz = (1 - cz * cz).clamp_min(0).sqrt()
     return torch.stack([rr * sz * th.cos(), rr * sz * th.sin(), rr * cz], -1)
 
-x0 = _ball(a.n, a.seed)
+def _cyl(n, seed):
+    """축(--handle_axis)을 따라 길이 cyl_len, 반지름 r 인 원기둥."""
+    g_ = torch.Generator().manual_seed(seed)
+    u = torch.rand(n, generator=g_).sqrt() * a.r
+    th = torch.rand(n, generator=g_) * 2 * math.pi
+    zz = (torch.rand(n, generator=g_) - 0.5) * a.cyl_len
+    _ax = int(a.handle_axis)
+    _o1, _o2 = [k for k in range(3) if k != _ax]
+    p = torch.zeros(n, 3)
+    p[:, _ax] = zz
+    p[:, _o1] = u * th.cos()
+    p[:, _o2] = u * th.sin()
+    return p
+
+
+x0 = _cyl(a.n, a.seed) if a.shape == "cyl" else _ball(a.n, a.seed)
 n_base = a.n
 if a.n_add > 0:
     # 기존 입자를 건드리지 않고 **덧붙인다** -- 같은 시드로 개수만 늘리면
     # 호출마다 난수 흐름이 밀려 앞쪽 입자까지 전부 달라진다.
-    x0 = torch.cat([x0, _ball(a.n_add, a.seed + 1000003)], 0)
+    x0 = torch.cat([x0, (_cyl if a.shape == "cyl" else _ball)(
+        a.n_add, a.seed + 1000003)], 0)
     print(f"[입자] 기존 {n_base} + 추가 {a.n_add} = {x0.shape[0]} 개 "
           f"(앞 {n_base} 개는 그대로다)")
 a.n = x0.shape[0]
