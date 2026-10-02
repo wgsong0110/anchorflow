@@ -659,7 +659,15 @@ def bc_energy(x, du, mass, cfg, h, grid_lim, n_grid, stiff=None):
             sd = ((x2 - pt) * nr).sum(-1)
             if _BARRIER[0] is not None:
                 _kap, _dh = _BARRIER[0]
-                e = e + (_kap * mass / (h * h) * _barrier_b(sd, _dh)).sum()
+                _bv = _barrier_b(sd, _dh)
+                _term = (_kap * mass / (h * h) * _bv).sum()
+                if os.environ.get("AF_BC_DIAG2"):
+                    with torch.no_grad():
+                        print(f"        [분기] sd 최소 {float(sd.min()):+.4f} "
+                              f"dhat {_dh:g}  b 최대 {float(_bv.max()):.4e} "
+                              f"mass 평균 {float(mass.mean()):.3e} h {h:.5f} "
+                              f"-> 항 {float(_term):.4e}", flush=True)
+                e = e + _term
             else:
                 e = e + (c * sd.clamp_max(0.0) ** 2).sum()
             if str(bc.get("surface", "sticky")) == "sticky":
