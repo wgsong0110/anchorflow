@@ -120,7 +120,12 @@ ap.add_argument("--coarse_s", type=int, default=0,
                      "않아 응력이 셀을 한 겹씩 건너며만 전해진다 -- 큰 사면체는 "
                      "멀리 떨어진 노드를 **직접** 묶는다")
 ap.add_argument("--coarse_w", type=float, default=1.0,
-                help="거친 사면체 탄성항의 가중치")
+                help="거친 사면체 탄성항의 가중치 (에너지를 따로 더하는 방식)")
+ap.add_argument("--coarse_mix", type=float, default=0.0,
+                help="0 보다 크면 **야코비안을 섞는다**: J = (1-w)·J_미세 + "
+                     "w·J_거친. 에너지를 두 번 세지 않고 변형구배 하나만 만들어 "
+                     "Psi 를 한 번 적용한다 -- 강성이 더해지지 않고 변형 측정만 "
+                     "넓은 스텐실로 매끄러워진다. 상태 전진의 F 도 이 J 를 쓴다")
 ap.add_argument("--bc_mode", choices=["project", "barrier"], default="project",
                 help="바닥을 어떻게 세우는지. project=하드 사영(기본), "
                      "barrier=**IPC 꼴 장벽 에너지** b(d)=-(d-d̂)²ln(d/d̂) 를 "
@@ -1291,8 +1296,15 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 _ok = uniq[_pos] == _fine          # 그 노드가 실제로 있는가
                 _vc = _ok.all(1)
                 _u2, _Jc = SX.g2p_jac_pre(_pos, _lamc, _auxc, _latc, dpn)
-                _JC_LAST[0] = (torch.eye(3, device=dev, dtype=x.dtype) + _Jc,
-                               _vc)
+                _Jc = torch.eye(3, device=dev, dtype=x.dtype) + _Jc
+                if a.coarse_mix > 0:
+                    # **야코비안을 섞는다.** 에너지를 두 번 세지 않으므로 강성이
+                    # 더해지지 않고, 변형 측정만 넓은 스텐실로 매끄러워진다.
+                    _wm = float(a.coarse_mix) * _vc.to(Jf.dtype).reshape(-1, 1, 1)
+                    Jf = (1.0 - _wm) * Jf + _wm * _Jc
+                    _JC_LAST[0] = None
+                else:
+                    _JC_LAST[0] = (_Jc, _vc)
             else:
                 _JC_LAST[0] = None
         if _NODE_CAP[0]:
