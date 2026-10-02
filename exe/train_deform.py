@@ -168,6 +168,9 @@ ap.add_argument("--bc_level", choices=["node", "particle"], default="node",
                 help="바닥·경계를 어디에 거는지. node=**격자점 변위**에 사영"
                      "(기본, 손잡이와 같은 자리다), particle=입자 위치에 사영"
                      "(옛 방식 -- 변형장 자체는 바닥을 모른다)")
+ap.add_argument("--node_h", type=float, default=0.0,
+                help="노드 간격을 **절대값으로 고정**한다 (0 이면 "
+                     "바운딩박스/n_nodes). 셀 부피가 실행 중에 변하지 않는다")
 ap.add_argument("--hz_ratio", type=float, default=1.0 / 6 ** 0.5,
                 help="층 간격 / 면내 간격. 기본 1/sqrt6 이면 셀이 정육면체다. "
                      "셀 부피는 (sqrt3/2)·h²·hz 라, 부피를 고정한 채 이 값만 "
@@ -501,7 +504,8 @@ def grid_pin(x):
     """
     _o = _GRID[0]
     _GRID[0] = SX.grid_for_nodes(x, a.n_nodes, hz_ratio=a.hz_ratio,
-                                 off=_GRID_OFF[0])
+                                 off=_GRID_OFF[0],
+                                 h_fix=(a.node_h or None))
     try:
         yield
     finally:
@@ -1138,7 +1142,8 @@ def node_feats(d, t, gsel, x, v, fe=None):
     lo, lat, nn = (_GRID[0] if _GRID[0] is not None
                    else SX.grid_for_nodes(x, a.n_nodes,
                                           hz_ratio=a.hz_ratio,
-                                          off=_GRID_OFF[0]))
+                                          off=_GRID_OFF[0],
+                                          h_fix=(a.node_h or None)))
     idx, lam, _aux = SX.locate(x, lo, lat, nn)   # tau 에 무관 -- 한 번만
     rows, uniq = SX.active_nodes(idx)          # **점유 사면체의 꼭짓점만**
     Mn = int(uniq.numel())

@@ -52,7 +52,8 @@ def lattice(h, hz, device=None, dtype=torch.float32):
     return Lat(A, torch.linalg.inv(A), float(h), float(hz))
 
 
-def grid_for_nodes(x, n_nodes, margin=0.05, hz_ratio=HZ_CUBE, off=None):
+def grid_for_nodes(x, n_nodes, margin=0.05, hz_ratio=HZ_CUBE, off=None,
+                   h_fix=None):
     """점들을 덮는 격자를 잡는다 -> (lo, lat, nn).
 
     lo 는 격자 정수 원점의 **월드 위치**, nn 은 축별 정수 좌표 개수다.
@@ -68,7 +69,11 @@ def grid_for_nodes(x, n_nodes, margin=0.05, hz_ratio=HZ_CUBE, off=None):
     pad = margin * ext
     # n_nodes 는 정수일 필요가 없다 -- 셀 부피를 고정한 채 층 간격만 바꾸려면
     # h 를 연속으로 잡아야 한다 (h ∝ (V/hz_ratio)^(1/3)).
-    h = float((ext + 2 * pad) / max(float(n_nodes), 2.0))
+    # h_fix 가 있으면 **셀 크기를 고정**한다. 그러지 않으면 h 가 바운딩박스에
+    # 비례해, 물체가 움직이는 동안 셀 부피가 실행 중에 바뀐다 (실측: 로프가
+    # 내려가며 3.3e-07 -> 1.8e-06).
+    h = (float(h_fix) if h_fix
+         else float((ext + 2 * pad) / max(float(n_nodes), 2.0)))
     lat = lattice(h, hz_ratio * h, device=x.device, dtype=x.dtype)
     # 패딩된 상자의 8 꼭짓점을 격자 좌표로 보내 정수 범위를 잡는다
     b0, b1 = lo_ - pad, hi_ + pad
