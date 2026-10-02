@@ -40,6 +40,8 @@ ap.add_argument("--esc_s", type=float, default=6.0, help="빨간 점 크기")
 ap.add_argument("--cell_s", type=float, nargs=2, default=(18.0, 10.0),
                 help="--color cell0 에서 섞인 셀·손잡이 안 점의 크기. 섞인 셀은 "
                      "수가 적어(실측 25 개) 키우지 않으면 화면에서 사라진다")
+ap.add_argument("--plane", choices=["xz", "xy", "yz"], default="xz",
+                help="어느 평면으로 볼지. xy 가 위에서 내려다본 것이다")
 ap.add_argument("--ctrl_R", type=float, default=0.0,
                 help="손잡이 반경을 직접 준다 (0 이면 덤프의 값)")
 ap.add_argument("--quiver", type=int, default=0,
@@ -194,7 +196,7 @@ VLO, VHI = (0.0, 2.0) if a.color == "cell0" else (
 frames = []
 for t in tqdm(range(T), desc="렌더", ncols=80):
     fig, ax = plt.subplots(1, 2, figsize=(10.2, 5.0), dpi=110)
-    i, j = 0, 2                                          # xz 평면
+    i, j = {"xz": (0, 2), "xy": (0, 1), "yz": (1, 2)}[a.plane]
     # 손잡이 반경 안에 든 입자를 **빨갛게** 칠한다. 기준 칸은 PG 위치로,
     # 오른쪽 칸은 그 칸의 위치로 각각 판정한다 (같은 중심·같은 반경).
     mG = mP = None
