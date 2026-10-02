@@ -597,11 +597,12 @@ def bc_node_mask(uniq, n_grid, dx, cfg, dtype, dev):
 _BARRIER = [None]
 
 
-def set_barrier(kappa=None, dhat=None):
-    _BARRIER[0] = None if kappa is None else (float(kappa), float(dhat))
+def set_barrier(kappa=None, dhat=None, ext="quad"):
+    _BARRIER[0] = (None if kappa is None
+                   else (float(kappa), float(dhat), str(ext)))
 
 
-def _barrier_b(d, dhat, eps_r=1e-3):
+def _barrier_b(d, dhat, eps_r=1e-3, ext_kind="quad"):
     """b(d) = -(d - dhat)^2 ln(d/dhat),  0 < d < dhat. d <= eps 는 **선형 연장**.
 
     clamp 로 잘라 두면 잘린 쪽의 기울기가 정확히 0 이라, 한 번 면을 뚫은 입자는
@@ -619,7 +620,9 @@ def _barrier_b(d, dhat, eps_r=1e-3):
     be = -(_k ** 2) * _l
     bp = -2.0 * _k * _l - (_k ** 2) / eps
     bpp = -2.0 * _l - 4.0 * _k / eps + (_k ** 2) / (eps ** 2)
-    ext = be + bp * (d - eps) + 0.5 * bpp * (d - eps) ** 2
+    ext = be + bp * (d - eps)
+    if ext_kind == "quad":
+        ext = ext + 0.5 * bpp * (d - eps) ** 2
     b = torch.where(d < eps, ext, b)
     return torch.where(d < dhat, b, torch.zeros_like(b))
 
@@ -658,8 +661,8 @@ def bc_energy(x, du, mass, cfg, h, grid_lim, n_grid, stiff=None):
             nr = nr / nr.norm().clamp_min(1e-12)
             sd = ((x2 - pt) * nr).sum(-1)
             if _BARRIER[0] is not None:
-                _kap, _dh = _BARRIER[0]
-                _bv = _barrier_b(sd, _dh)
+                _kap, _dh, _ek = _BARRIER[0]
+                _bv = _barrier_b(sd, _dh, ext_kind=_ek)
                 _term = (_kap * mass / (h * h) * _bv).sum()
                 if os.environ.get("AF_BC_DIAG2"):
                     with torch.no_grad():

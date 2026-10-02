@@ -119,6 +119,10 @@ ap.add_argument("--bc_mode", choices=["project", "barrier"], default="project",
                      "증분 포텐셜에 더한다 (사영을 끈다 -- 관통이 원천적으로 "
                      "불가능하고 죽은 기울기가 없다)")
 ap.add_argument("--bc_kappa", type=float, default=1.0)
+ap.add_argument("--bc_ext", choices=["quad", "linear"], default="quad",
+                help="장벽의 d<=eps 연장. quad=값·기울기·곡률을 잇는다(기본, "
+                     "깊이에 비례해 복원력이 커진다), linear=접선만 잇는다"
+                     "(복원력이 깊이와 무관한 상수다)")
 ap.add_argument("--bc_dhat", type=float, default=0.0,
                 help="장벽이 켜지는 거리. 0 이면 격자 dx 의 절반")
 ap.add_argument("--bc_level", choices=["node", "particle"], default="node",
@@ -2082,9 +2086,9 @@ def _mk_ov_opt(vs):
 if a.bc_mode == "barrier":
     _dh = a.bc_dhat if a.bc_dhat > 0 else \
         0.5 * float(cfg0.get("grid_lim", 2.0)) / int(cfg0["n_grid"])
-    phys_resid.set_barrier(a.bc_kappa, _dh)
+    phys_resid.set_barrier(a.bc_kappa, _dh, a.bc_ext)
     print(f"[바닥] 장벽 에너지 b(d)=-(d-d̂)²ln(d/d̂), kappa {a.bc_kappa:g}, "
-          f"d̂ {_dh:.5f} -- 하드 사영은 끈다", flush=True)
+          f"d̂ {_dh:.5f}, 연장 {a.bc_ext} -- 하드 사영은 끈다", flush=True)
 
 
 if a.out_var or a.ov_roll > 0:
