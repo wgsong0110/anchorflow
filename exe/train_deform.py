@@ -464,8 +464,11 @@ def grid_pin(x):
         _GRID[0] = _o
 
 
-if not a.bc_soft:
+if not a.bc_soft and a.bc_mode == "project":
     # 하드 사영을 쓰면 같은 경계를 벌점으로 또 세지 않는다.
+    # **--bc_mode barrier 는 사영을 끄고 장벽 항으로만 막으므로 여기서 끄면
+    # 안 된다.** 이 조건을 빠뜨려 장벽이 통째로 무효가 됐었다 (로프가 바닥을
+    # 그냥 통과했다).
     os.environ["AF_NO_BC"] = "1"
 
 _DT_SUBS = [float(q) for q in a.dt_sub_set.split(",") if q.strip()]
