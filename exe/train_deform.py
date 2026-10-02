@@ -113,6 +113,12 @@ ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
                 help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
                      "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
                      "(jacobian_of) 보다 싸고 no_grad 롤아웃에서도 돈다")
+ap.add_argument("--smooth_nb", type=int, default=0, choices=[0, 6, 12, 14],
+                help="변형구배를 만들 때 쓸 **노드 변위 스무딩**의 이웃 수. "
+                     "6=격자축만, 12=축+면대각, 14=몸대각까지. 위치는 스무딩하지 "
+                     "않은 변위로 정하고, J 만 스무딩한 변위로 만든다")
+ap.add_argument("--smooth_a", type=float, default=0.5,
+                help="스무딩 세기. d~ = (1-a)·d + a·(이웃 평균)")
 ap.add_argument("--coarse_s", type=int, default=0,
                 help="**거친 사면체** 항. s 칸마다 하나씩 뽑은 격자점으로 큰 "
                      "사면체를 만들어 그 변형구배로도 탄성 에너지를 센다. "
@@ -1045,6 +1051,7 @@ _CURVE = [] if os.environ.get("AF_OV_CURVE") else None
 _NOD_M = [None]            # 손잡이로 덮는 노드 (최적화에서 뺀다)
 _JC_LAST = [None]          # (거친 사면체 야코비안 [N,3,3], 유효 마스크 [N])
 _CO_HOLD = [None]          # 프레임 안에서 거친 격자 구조를 재사용한다
+_SM_HOLD = [None]          # 노드 이웃 색인 (스무딩용)
 _GRID_OFF = [None]         # 격자 원점을 셀의 분수만큼 민다 (앙상블)
 _ENS_K = [0]               # 지금 다루는 앙상블 격자 번호
 _ENS_N = [1]               # 앙상블 격자 수
@@ -1257,6 +1264,11 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                                 if bool(_NM[0].any()) else 0.0)
                 _dus.append(SX.g2p_pre(_rwk, _lmk, dpn_k))
                 _u1, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, dpn_k)
+                if _k == 0 and a.smooth_nb > 0:
+                    # **노드 변위를 이웃과 섞어** 야코비안을 만든다. 위치는
+                    # 스무딩하지 않은 변위로 정한다 -- 변형 측정만 넓힌다.
+                    _ds = _smooth_nodes(dpn_k, _uqk, _nnk)
+                    _u3, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, _ds)
                 if _k == 0 and a.coarse_s > 1:
                     # **거친 사면체**: 같은 노드 변위를 s 칸 간격 큰 사면체로
                     # 다시 읽어 야코비안을 만든다 (오프셋 s³ 가지를 평균).
@@ -2592,6 +2604,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     _OV_CUR[0] = st
     _GRID_OFF[0] = off
     _CO_HOLD[0] = "want"
+    _SM_HOLD[0] = "want"
     _OV_TGT[0] = ("want" if a.ov_init == "predict" else
                   (FRAME_DT * v.mean(0) + (FRAME_DT ** 2) * gv).detach())
     _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
@@ -2651,6 +2664,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         _OV_CUR[0] = _ov
         _NF_HOLD[0] = None
         _CO_HOLD[0] = None
+        _SM_HOLD[0] = None
         _OV_TGT[0] = None
         _GRID_OFF[0] = None
     _OV_LOG.append((E0 if E0 is not None else E1, E1))
@@ -2660,6 +2674,48 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
 
 
 # 앙상블 오프셋 (셀의 분수). 첫 번째는 원점이고 나머지는 고르게 흩어 놓는다.
+def _smooth_nodes(dpn, uniq, nn):
+    """노드 변위를 격자 이웃과 섞는다 -> [M,3].
+
+    d~_n = (1-a)·d_n + a·(이웃 평균). 이웃은 격자축 6, +면대각 12, +몸대각 14 다.
+    실제로 존재하는 이웃만 평균에 넣는다. 색인은 프레임 안에서 한 번만 만든다.
+    """
+    if isinstance(_SM_HOLD[0], tuple):
+        _idx, _msk = _SM_HOLD[0]
+    else:
+        _n0, _n1, _n2 = int(nn[0]), int(nn[1]), int(nn[2])
+        _k2 = uniq % _n2
+        _k1 = (uniq // _n2) % _n1
+        _k0 = uniq // (_n1 * _n2)
+        _po = SX.EDGE_OFFSETS[:7]
+        _sel = ({0, 1, 2} if a.smooth_nb == 6 else
+                {0, 1, 2, 3, 4, 5} if a.smooth_nb == 12 else set(range(7)))
+        _offs = []
+        for _i in sorted(_sel):
+            _o = _po[_i]
+            _offs.append(_o)
+            _offs.append((-_o[0], -_o[1], -_o[2]))
+        _I, _M = [], []
+        for _o in _offs:
+            _j0, _j1, _j2 = _k0 + _o[0], _k1 + _o[1], _k2 + _o[2]
+            _ok = ((_j0 >= 0) & (_j1 >= 0) & (_j2 >= 0) & (_j0 < _n0)
+                   & (_j1 < _n1) & (_j2 < _n2))
+            _fl = (_j0 * _n1 + _j1) * _n2 + _j2
+            _p = torch.searchsorted(uniq, _fl.clamp_min(0)
+                                    ).clamp(max=uniq.numel() - 1)
+            _ok = _ok & (uniq[_p] == _fl)
+            _I.append(_p); _M.append(_ok)
+        _idx = torch.stack(_I, 1)                     # [M,K]
+        _msk = torch.stack(_M, 1).to(dpn.dtype)
+        if _SM_HOLD[0] is not None:
+            _SM_HOLD[0] = (_idx, _msk)
+    _nb = (dpn[_idx] * _msk.unsqueeze(-1)).sum(1)
+    _cnt = _msk.sum(1, keepdim=True).clamp_min(1.0)
+    _avg = _nb / _cnt
+    _a = float(a.smooth_a)
+    return (1.0 - _a) * dpn + _a * _avg
+
+
 def _coarse_jac(x, dpn, lo, lat, nn, uniq, Jf0=None):
     """같은 노드 변위를 **s 칸 간격 큰 사면체**로 읽어 야코비안을 만든다.
 
