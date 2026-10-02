@@ -121,6 +121,11 @@ ap.add_argument("--coarse_s", type=int, default=0,
                      "멀리 떨어진 노드를 **직접** 묶는다")
 ap.add_argument("--coarse_w", type=float, default=1.0,
                 help="거친 사면체 탄성항의 가중치 (에너지를 따로 더하는 방식)")
+ap.add_argument("--coarse_off", choices=["all", "origin"], default="all",
+                help="거친 격자의 오프셋. 한 변이 s 배인 격자는 오프셋에 따라 "
+                     "s³ 가지가 있다 -- all 이면 전부 만들어 야코비안을 평균한다 "
+                     "(origin 은 원점에 맞춘 하나만, 입자가 어느 오프셋에 걸리느냐로 "
+                     "결과가 갈린다)")
 ap.add_argument("--coarse_mix", type=float, default=0.0,
                 help="0 보다 크면 **야코비안을 섞는다**: J = (1-w)·J_미세 + "
                      "w·J_거친. 에너지를 두 번 세지 않고 변형구배 하나만 만들어 "
@@ -1033,6 +1038,7 @@ _CURVE = [] if os.environ.get("AF_OV_CURVE") else None
 # 롤아웃 덤프에 격자점을 함께 담을지. (노드 위치, 노드 변위, 유효 여부)
 _NOD_M = [None]            # 손잡이로 덮는 노드 (최적화에서 뺀다)
 _JC_LAST = [None]          # (거친 사면체 야코비안 [N,3,3], 유효 마스크 [N])
+_CO_HOLD = [None]          # 프레임 안에서 거친 격자 구조를 재사용한다
 _NODE_CAP = [False]
 _NODE_LAST = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
@@ -1278,33 +1284,63 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
             if a.coarse_s > 1:
                 # **거친 사면체**: s 칸마다 뽑은 격자점이 이루는 큰 사면체.
-                # 그 꼭짓점 변위로 야코비안을 따로 만들어 탄성을 한 번 더 센다.
+                # 한 변이 s 배인 격자는 오프셋에 따라 s³ 가지가 있으므로 전부
+                # 만들어 야코비안을 평균한다 (하나만 쓰면 입자가 어느 오프셋에
+                # 걸리느냐로 결과가 갈린다).
                 _s = int(a.coarse_s)
-                _latc = SX.lattice(lat.s * _s, lat.hz * _s, device=dev,
-                                   dtype=x.dtype)
-                _nnc = ((nn - 1) // _s) + 1
-                _ic, _lamc, _auxc = SX.locate(x, lo, _latc, _nnc)
-                _n1, _n2 = int(nn[1]), int(nn[2])
-                _c1, _c2 = int(_nnc[1]), int(_nnc[2])
-                _k2 = _ic % _c2
-                _k1 = (_ic // _c2) % _c1
-                _k0 = _ic // (_c1 * _c2)
-                _fine = ((_k0 * _s) * _n1 + (_k1 * _s)) * _n2 + (_k2 * _s)
-                _pos = torch.searchsorted(uniq, _fine.reshape(-1)
-                                          ).reshape(_fine.shape)
-                _pos = _pos.clamp(max=uniq.numel() - 1)
-                _ok = uniq[_pos] == _fine          # 그 노드가 실제로 있는가
-                _vc = _ok.all(1)
-                _u2, _Jc = SX.g2p_jac_pre(_pos, _lamc, _auxc, _latc, dpn)
-                _Jc = torch.eye(3, device=dev, dtype=x.dtype) + _Jc
+                if isinstance(_CO_HOLD[0], list):
+                    _CO = _CO_HOLD[0]
+                else:
+                    _latc = SX.lattice(lat.s * _s, lat.hz * _s, device=dev,
+                                       dtype=x.dtype)
+                    _nnc = ((nn - 1) // _s) + 2
+                    _n1, _n2 = int(nn[1]), int(nn[2])
+                    _c1, _c2 = int(_nnc[1]), int(_nnc[2])
+                    _offs = ([(i_, j_, k_) for i_ in range(_s)
+                              for j_ in range(_s) for k_ in range(_s)]
+                             if a.coarse_off == "all" else [(0, 0, 0)])
+                    _CO = []
+                    for _o in _offs:
+                        _ov = torch.tensor(_o, device=dev, dtype=lat.A.dtype)
+                        _loc = lo + lat.A @ _ov
+                        _ic, _lamc, _auxc = SX.locate(x, _loc, _latc, _nnc)
+                        _k2 = _ic % _c2
+                        _k1 = (_ic // _c2) % _c1
+                        _k0 = _ic // (_c1 * _c2)
+                        _i0 = _k0 * _s + _o[0]
+                        _i1 = _k1 * _s + _o[1]
+                        _i2 = _k2 * _s + _o[2]
+                        _in = ((_i0 < int(nn[0])) & (_i1 < _n1)
+                               & (_i2 < _n2))
+                        _fine = (_i0 * _n1 + _i1) * _n2 + _i2
+                        _pos = torch.searchsorted(
+                            uniq, _fine.reshape(-1).clamp_min(0)
+                        ).reshape(_fine.shape).clamp(max=uniq.numel() - 1)
+                        _vc = (uniq[_pos] == _fine).all(1) & _in.all(1)
+                        _CO.append((_pos, _lamc, _auxc, _vc, _latc))
+                    if _NF_HOLD[0] is not None:
+                        _CO_HOLD[0] = _CO
+                _Jsum = torch.zeros_like(Jf)
+                _Wsum = torch.zeros(Jf.shape[0], 1, 1, device=dev,
+                                    dtype=Jf.dtype)
+                for _pos, _lamc, _auxc, _vc, _latc in _CO:
+                    _u2, _Jo = SX.g2p_jac_pre(_pos, _lamc, _auxc, _latc, dpn)
+                    _w1 = _vc.to(Jf.dtype).reshape(-1, 1, 1)
+                    _Jsum = _Jsum + _w1 * (
+                        torch.eye(3, device=dev, dtype=x.dtype) + _Jo)
+                    _Wsum = _Wsum + _w1
+                _has = (_Wsum > 0).reshape(-1)
+                _Jc = torch.where(_has.reshape(-1, 1, 1),
+                                  _Jsum / _Wsum.clamp_min(1.0), Jf)
                 if a.coarse_mix > 0:
                     # **야코비안을 섞는다.** 에너지를 두 번 세지 않으므로 강성이
                     # 더해지지 않고, 변형 측정만 넓은 스텐실로 매끄러워진다.
-                    _wm = float(a.coarse_mix) * _vc.to(Jf.dtype).reshape(-1, 1, 1)
+                    _wm = float(a.coarse_mix) * _has.to(Jf.dtype
+                                                        ).reshape(-1, 1, 1)
                     Jf = (1.0 - _wm) * Jf + _wm * _Jc
                     _JC_LAST[0] = None
                 else:
-                    _JC_LAST[0] = (_Jc, _vc)
+                    _JC_LAST[0] = (_Jc, _has)
             else:
                 _JC_LAST[0] = None
         if _NODE_CAP[0]:
@@ -2601,6 +2637,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
 
     _ov = _OV_CUR[0]
     _OV_CUR[0] = st
+    _CO_HOLD[0] = "want"
     _OV_TGT[0] = ("want" if a.ov_init == "predict" else
                   (FRAME_DT * v.mean(0) + (FRAME_DT ** 2) * gv).detach())
     _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
@@ -2653,6 +2690,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     finally:
         _OV_CUR[0] = _ov
         _NF_HOLD[0] = None
+        _CO_HOLD[0] = None
         _OV_TGT[0] = None
     _OV_LOG.append((E0 if E0 is not None else E1, E1))
     if _CURVE is not None:
