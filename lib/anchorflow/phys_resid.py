@@ -586,6 +586,22 @@ def bc_node_mask(uniq, n_grid, dx, cfg, dtype, dev):
     return m
 
 
+# --bc_mode barrier 가 켜지면 (kappa, dhat) 가 들어온다. 그러면 bc_energy 가
+# 이차 벌점 대신 **IPC 꼴 장벽**을 쓴다 (관통이 원천적으로 불가능해진다).
+_BARRIER = [None]
+
+
+def set_barrier(kappa=None, dhat=None):
+    _BARRIER[0] = None if kappa is None else (float(kappa), float(dhat))
+
+
+def _barrier_b(d, dhat):
+    """b(d) = -(d - dhat)^2 ln(d/dhat),  0 < d < dhat. d <= 0 은 잘라서 유한하게."""
+    dc = d.clamp_min(1e-9 * dhat)
+    b = -((dc - dhat) ** 2) * torch.log(dc / dhat)
+    return torch.where(d < dhat, b, torch.zeros_like(b))
+
+
 def bc_energy(x, du, mass, cfg, h, grid_lim, n_grid, stiff=None):
     """PG 경계조건을 증분 포텐셜의 **접촉항**으로 옮긴다.
 
@@ -619,7 +635,11 @@ def bc_energy(x, du, mass, cfg, h, grid_lim, n_grid, stiff=None):
             nr = torch.as_tensor(bc["normal"], device=x.device, dtype=x.dtype)
             nr = nr / nr.norm().clamp_min(1e-12)
             sd = ((x2 - pt) * nr).sum(-1)
-            e = e + (c * sd.clamp_max(0.0) ** 2).sum()
+            if _BARRIER[0] is not None:
+                _kap, _dh = _BARRIER[0]
+                e = e + (_kap * mass / (h * h) * _barrier_b(sd, _dh)).sum()
+            else:
+                e = e + (c * sd.clamp_max(0.0) ** 2).sum()
             if str(bc.get("surface", "sticky")) == "sticky":
                 # 닿아 있는 입자는 접선 방향도 묶인다 (속도를 0 으로 박는 것과 같다)
                 touch = (((x - pt) * nr).sum(-1) < dx).to(x.dtype).detach()

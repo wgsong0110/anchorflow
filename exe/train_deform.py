@@ -113,6 +113,14 @@ ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
                 help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
                      "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
                      "(jacobian_of) 보다 싸고 no_grad 롤아웃에서도 돈다")
+ap.add_argument("--bc_mode", choices=["project", "barrier"], default="project",
+                help="바닥을 어떻게 세우는지. project=하드 사영(기본), "
+                     "barrier=**IPC 꼴 장벽 에너지** b(d)=-(d-d̂)²ln(d/d̂) 를 "
+                     "증분 포텐셜에 더한다 (사영을 끈다 -- 관통이 원천적으로 "
+                     "불가능하고 죽은 기울기가 없다)")
+ap.add_argument("--bc_kappa", type=float, default=1.0)
+ap.add_argument("--bc_dhat", type=float, default=0.0,
+                help="장벽이 켜지는 거리. 0 이면 격자 dx 의 절반")
 ap.add_argument("--bc_level", choices=["node", "particle"], default="node",
                 help="바닥·경계를 어디에 거는지. node=**격자점 변위**에 사영"
                      "(기본, 손잡이와 같은 자리다), particle=입자 위치에 사영"
@@ -1197,7 +1205,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                     _CTRL_ERR[2] = float(
                         (tau * _nod_v)[_nod_m].norm(dim=-1).mean()
                         if bool(_nod_m.any()) else 0.0)
-            if not a.bc_soft and a.bc_level == "node":
+            if not a.bc_soft and a.bc_mode == "project" \
+                    and a.bc_level == "node":
                 # 바닥을 **격자점에** 건다. 손잡이 덮어쓰기 뒤에 와야 손잡이가
                 # 바닥 아래로 명령받았을 때 바닥이 이긴다 (물리적으로 맞다).
                 dpn, _nfa = phys_resid.bc_project_nodes(
@@ -1216,7 +1225,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 # 구속 노드 넷에 모두 둘러싸인 입자는 명령만큼 간다 -- 그 입자를
                 # 증분 포텐셜에서 뺀다 (반력이 실어 나르는 자리다).
                 _act = _act + _nod_m[rows].all(1).to(q.dtype).unsqueeze(-1)
-            if not a.bc_soft and a.bc_level == "particle":
+            if not a.bc_soft and a.bc_mode == "project" \
+                    and a.bc_level == "particle":
                 _duP, _fa = phys_resid.bc_project(
                     x, q - x, d["cfg"], tau,
                     float(d["cfg"].get("grid_lim", 2.0)),
@@ -2064,6 +2074,14 @@ def _mk_ov_opt(vs):
                                  tolerance_change=0.0,
                                  line_search_fn="strong_wolfe")
     return torch.optim.Adam(vs, lr=a.out_var_lr)
+
+
+if a.bc_mode == "barrier":
+    _dh = a.bc_dhat if a.bc_dhat > 0 else \
+        0.5 * float(cfg0.get("grid_lim", 2.0)) / int(cfg0["n_grid"])
+    phys_resid.set_barrier(a.bc_kappa, _dh)
+    print(f"[바닥] 장벽 에너지 b(d)=-(d-d̂)²ln(d/d̂), kappa {a.bc_kappa:g}, "
+          f"d̂ {_dh:.5f} -- 하드 사영은 끈다", flush=True)
 
 
 if a.out_var or a.ov_roll > 0:
