@@ -1260,8 +1260,10 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 _Jsum = _Jk if _Jsum is None else _Jsum + _Jk
                 if _k == 0:
                     _dpn0 = dpn_k
-            _du = (_dus[0] if len(_dus) == 1
-                   else torch.stack(_dus).mean(0))
+            # **입자 변위는 기준 격자(오프셋 0) 하나로만** 정한다. 오프셋
+            # 평균은 변형구배에만 쓴다 -- 위치까지 평균하면 입자가 어느 격자에도
+            # 속하지 않는 자리로 가고, 변위 자체가 오프셋에 의존하게 된다.
+            _du = _dus[0]
             _Jm = _Jsum / float(len(_ENS))
             q = x + _du
             _qraw = q
