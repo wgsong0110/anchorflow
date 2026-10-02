@@ -40,6 +40,9 @@ ap.add_argument("--handle", choices=["none", "top", "topbot"], default="none",
                 help="top=최상단 입자 하나, topbot=**최상단·최하단 둘**을 잡고 "
                      "서로 반대 방향으로 끈다 (양쪽으로 늘리기)")
 ap.add_argument("--handle_r", type=float, default=0.04)
+ap.add_argument("--n_grid", type=int, default=0,
+                help="MPM 격자. 0 이면 --ref 값(보통 100). 손잡이 반경보다 "
+                     "dx 가 크면 구 안에 격자점이 안 들어가 손잡이가 먹지 않는다")
 ap.add_argument("--handle_axis", type=int, default=2, choices=[0, 1, 2],
                 help="topbot 에서 두 손잡이를 고를 축 (0=x, 1=y, 2=z)")
 ap.add_argument("--handle_vel", type=float, nargs=3, default=(0.0, 0.0, 0.0),
@@ -55,9 +58,11 @@ if a.ref:
         rc = torch.load(a.ref, map_location="cpu", weights_only=False)["cfg"]
     except TypeError:
         rc = torch.load(a.ref, map_location="cpu")["cfg"]
-    for k in ("E", "nu", "frame_dt", "density", "n_grid", "grid_lim"):
+    for k in ("E", "nu", "frame_dt", "density", "n_grid", "grid_lim"):  # ref
         if k in rc:
             cfg[k] = rc[k]
+if a.n_grid > 0:
+    cfg["n_grid"] = int(a.n_grid)
 if a.E > 0:
     cfg["E"] = float(a.E)
 if a.nu >= 0:
