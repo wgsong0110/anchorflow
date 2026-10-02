@@ -595,10 +595,21 @@ def set_barrier(kappa=None, dhat=None):
     _BARRIER[0] = None if kappa is None else (float(kappa), float(dhat))
 
 
-def _barrier_b(d, dhat):
-    """b(d) = -(d - dhat)^2 ln(d/dhat),  0 < d < dhat. d <= 0 은 잘라서 유한하게."""
-    dc = d.clamp_min(1e-9 * dhat)
+def _barrier_b(d, dhat, eps_r=1e-3):
+    """b(d) = -(d - dhat)^2 ln(d/dhat),  0 < d < dhat. d <= eps 는 **선형 연장**.
+
+    clamp 로 잘라 두면 잘린 쪽의 기울기가 정확히 0 이라, 한 번 면을 뚫은 입자는
+    큰 에너지만 지고 **밀어내는 힘을 전혀 못 받는다** (바닥 clamp 에서 겪은 그
+    함정이다). eps 지점의 값과 기울기로 선형으로 이어 붙여 기울기를 살린다.
+    """
+    eps = eps_r * dhat
+    dc = d.clamp_min(eps)
     b = -((dc - dhat) ** 2) * torch.log(dc / dhat)
+    # b'(d) = -2(d-dhat)ln(d/dhat) - (d-dhat)^2 / d
+    be = -((eps - dhat) ** 2) * math.log(eps / dhat)
+    bp = -2.0 * (eps - dhat) * math.log(eps / dhat) - ((eps - dhat) ** 2) / eps
+    lin = be + bp * (d - eps)
+    b = torch.where(d < eps, lin, b)
     return torch.where(d < dhat, b, torch.zeros_like(b))
 
 
