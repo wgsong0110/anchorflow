@@ -52,7 +52,7 @@ def lattice(h, hz, device=None, dtype=torch.float32):
     return Lat(A, torch.linalg.inv(A), float(h), float(hz))
 
 
-def grid_for_nodes(x, n_nodes, margin=0.05, hz_ratio=HZ_CUBE):
+def grid_for_nodes(x, n_nodes, margin=0.05, hz_ratio=HZ_CUBE, off=None):
     """점들을 덮는 격자를 잡는다 -> (lo, lat, nn).
 
     lo 는 격자 정수 원점의 **월드 위치**, nn 은 축별 정수 좌표 개수다.
@@ -81,6 +81,13 @@ def grid_for_nodes(x, n_nodes, margin=0.05, hz_ratio=HZ_CUBE):
     imax = torch.ceil(y.max(0).values).long() + 1
     nn = (imax - imin + 1).clamp_min(2)
     lo = (lat.A @ imin.to(lat.A.dtype))
+    if off is not None:
+        # 격자 원점을 셀의 **분수만큼** 민다. 같은 문제를 다른 이산화로 푸는
+        # 것이라 빈 셀·고아 셀 패턴이 달라진다 (앙상블용). 민 만큼 덮는 범위가
+        # 줄지 않게 정수 칸을 하나 늘린다.
+        _o = torch.as_tensor(off, device=lo.device, dtype=lat.A.dtype)
+        lo = lo - lat.A @ _o
+        nn = nn + 1
     return lo, lat, nn
 
 

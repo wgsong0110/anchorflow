@@ -121,6 +121,11 @@ ap.add_argument("--coarse_s", type=int, default=0,
                      "멀리 떨어진 노드를 **직접** 묶는다")
 ap.add_argument("--coarse_w", type=float, default=1.0,
                 help="거친 사면체 탄성항의 가중치 (에너지를 따로 더하는 방식)")
+ap.add_argument("--ens_off", type=int, default=0,
+                help="**오프셋이 다른 격자로 각각 따로 최적화**해 입자 변위를 "
+                     "평균한다 (0/1 이면 끈다). 오프셋마다 빈 셀·고아 셀 패턴이 "
+                     "달라 그 격자 의존적 결함이 평균에서 상쇄된다. 비용은 "
+                     "오프셋 수만큼 곱절이다")
 ap.add_argument("--coarse_off", choices=["all", "origin"], default="all",
                 help="거친 격자의 오프셋. 한 변이 s 배인 격자는 오프셋에 따라 "
                      "s³ 가지가 있다 -- all 이면 전부 만들어 야코비안을 평균한다 "
@@ -479,7 +484,8 @@ def grid_pin(x):
     한 번만 잡으므로 이 고정이 아무것도 바꾸지 않는다.
     """
     _o = _GRID[0]
-    _GRID[0] = SX.grid_for_nodes(x, a.n_nodes, hz_ratio=a.hz_ratio)
+    _GRID[0] = SX.grid_for_nodes(x, a.n_nodes, hz_ratio=a.hz_ratio,
+                                 off=_GRID_OFF[0])
     try:
         yield
     finally:
@@ -1039,6 +1045,7 @@ _CURVE = [] if os.environ.get("AF_OV_CURVE") else None
 _NOD_M = [None]            # 손잡이로 덮는 노드 (최적화에서 뺀다)
 _JC_LAST = [None]          # (거친 사면체 야코비안 [N,3,3], 유효 마스크 [N])
 _CO_HOLD = [None]          # 프레임 안에서 거친 격자 구조를 재사용한다
+_GRID_OFF = [None]         # 격자 원점을 셀의 분수만큼 민다 (앙상블)
 _NODE_CAP = [False]
 _NODE_LAST = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
@@ -1111,7 +1118,8 @@ def node_feats(d, t, gsel, x, v, fe=None):
     X = take(d["x"][0], gsel)
     lo, lat, nn = (_GRID[0] if _GRID[0] is not None
                    else SX.grid_for_nodes(x, a.n_nodes,
-                                          hz_ratio=a.hz_ratio))
+                                          hz_ratio=a.hz_ratio,
+                                          off=_GRID_OFF[0]))
     idx, lam, _aux = SX.locate(x, lo, lat, nn)   # tau 에 무관 -- 한 번만
     rows, uniq = SX.active_nodes(idx)          # **점유 사면체의 꼭짓점만**
     Mn = int(uniq.numel())
@@ -2600,8 +2608,8 @@ for it in pbar:
 _ROLLDUMP = None
 
 
-def _ov_frame(d, t, gsel, p, x, v, F):
-    """프레임 하나를 **노드 출력 직접 최적화**로 전진시킨다 -> (x2, F_next).
+def _ov_once(d, t, gsel, p, x, v, F, off=None):
+    """한 프레임을 **한 격자(오프셋 off)** 에서 최적화한다 -> (x2, v2, J).
 
     --out_var 는 상태를 전진시키지 않아 한 스텝 하한만 잰다. 그 값으로 롤아웃을
     말할 수 없다 (평가 중에는 훅이 끊겨 **초기 망**이 굴러간다). 여기서는 매
@@ -2637,6 +2645,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
 
     _ov = _OV_CUR[0]
     _OV_CUR[0] = st
+    _GRID_OFF[0] = off
     _CO_HOLD[0] = "want"
     _OV_TGT[0] = ("want" if a.ov_init == "predict" else
                   (FRAME_DT * v.mean(0) + (FRAME_DT ** 2) * gv).detach())
@@ -2692,10 +2701,45 @@ def _ov_frame(d, t, gsel, p, x, v, F):
         _NF_HOLD[0] = None
         _CO_HOLD[0] = None
         _OV_TGT[0] = None
+        _GRID_OFF[0] = None
     _OV_LOG.append((E0 if E0 is not None else E1, E1))
     if _CURVE is not None:
         _CURVE.append((int(t), _tr, _trp))
+    return x2.detach(), v2.detach(), _Jd.detach()
+
+
+# 앙상블 오프셋 (셀의 분수). 첫 번째는 원점이고 나머지는 고르게 흩어 놓는다.
+def _ens_offsets(n):
+    if n <= 1:
+        return [None]
+    return [tuple(((k * q) % 1.0) for q in (0.5, 0.25, 0.125))
+            for k in range(n)]
+
+
+def _ov_frame(d, t, gsel, p, x, v, F):
+    """프레임 하나를 전진시킨다 -> (x2, v2, F_next).
+
+    --ens_off N 이면 **오프셋이 다른 격자 N 개에서 각각 따로 최적화**하고
+    입자 변위와 야코비안을 평균한다. 평균한 변위장의 기울기는 기울기의 평균과
+    같으므로(평균이 선형이다) 야코비안을 평균하는 것이 곧 "평균낸 격자변위로
+    변형구배를 만드는" 것이다. 오프셋마다 빈 셀·고아 셀 패턴이 달라 그 격자
+    의존적 결함이 평균에서 상쇄된다.
+    """
+    cfg = d["cfg"]
+    offs = _ens_offsets(max(int(a.ens_off), 1))
+    xs, vs, Js = [], [], []
+    for _o in offs:
+        _x2, _v2, _J = _ov_once(d, t, gsel, p, x, v, F, off=_o)
+        xs.append(_x2); vs.append(_v2); Js.append(_J)
+    if len(offs) == 1:
+        x2, v2, Jd = xs[0], vs[0], Js[0]
+    else:
+        x2 = torch.stack(xs).mean(0)
+        v2 = torch.stack(vs).mean(0)
+        Jd = torch.stack(Js).mean(0)
     with torch.no_grad():
+        F_tr = Jd.to(F.dtype) @ F
+        _, dlog = phys_resid.psi_of(F_tr, cfg, FRAME_DT)
         F_next = phys_resid.plastic_step(F_tr, dlog).detach()
     return x2.detach(), v2.detach(), F_next
 
