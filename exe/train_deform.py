@@ -113,6 +113,9 @@ ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
                 help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
                      "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
                      "(jacobian_of) 보다 싸고 no_grad 롤아웃에서도 돈다")
+ap.add_argument("--bc_slip", action="store_true",
+                help="바닥의 **접선 고정(no-slip) 항을 끈다**. 비관통만 남고 "
+                     "닿은 입자가 면을 따라 미끄러진다")
 ap.add_argument("--smooth_nb", type=int, default=0, choices=[0, 6, 12, 14],
                 help="변형구배를 만들 때 쓸 **노드 변위 스무딩**의 이웃 수. "
                      "6=격자축만, 12=축+면대각, 14=몸대각까지. 위치는 스무딩하지 "
@@ -2128,6 +2131,10 @@ def _mk_ov_opt(vs):
                                  line_search_fn="strong_wolfe")
     return torch.optim.Adam(vs, lr=a.out_var_lr)
 
+
+if a.bc_slip:
+    os.environ["AF_BC_SLIP"] = "1"
+    print("[바닥] 접선 고정(no-slip) 을 끈다 -- 비관통만 남는다", flush=True)
 
 if a.bc_mode == "barrier":
     _dh = a.bc_dhat if a.bc_dhat > 0 else \
