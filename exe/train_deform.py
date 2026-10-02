@@ -1257,6 +1257,14 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                                 if bool(_NM[0].any()) else 0.0)
                 _dus.append(SX.g2p_pre(_rwk, _lmk, dpn_k))
                 _u1, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, dpn_k)
+                if _k == 0 and a.coarse_s > 1:
+                    # **거친 사면체**: 같은 노드 변위를 s 칸 간격 큰 사면체로
+                    # 다시 읽어 야코비안을 만든다 (오프셋 s³ 가지를 평균).
+                    # 변수는 미세 격자 한 벌뿐이고 읽는 방식만 다르다.
+                    _Jc = _coarse_jac(x, dpn_k, _lok, _latk, _nnk, _uqk, Jf0=_Jk)
+                    _wm = float(a.coarse_mix)
+                    if _wm > 0:
+                        _Jk = (1.0 - _wm) * _Jk + _wm * _Jc
                 _Jsum = _Jk if _Jsum is None else _Jsum + _Jk
                 if _k == 0:
                     _dpn0 = dpn_k
@@ -2652,6 +2660,56 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
 
 
 # 앙상블 오프셋 (셀의 분수). 첫 번째는 원점이고 나머지는 고르게 흩어 놓는다.
+def _coarse_jac(x, dpn, lo, lat, nn, uniq, Jf0=None):
+    """같은 노드 변위를 **s 칸 간격 큰 사면체**로 읽어 야코비안을 만든다.
+
+    한 변이 s 배인 격자는 오프셋에 따라 s³ 가지가 있으므로 전부 만들어 평균한다.
+    큰 사면체의 네 꼭짓점이 하나라도 실제 노드로 없는 입자는 미세 값을 그대로 쓴다.
+    구조(locate·색인)는 프레임 안에서 한 번만 만든다.
+    """
+    _s = int(a.coarse_s)
+    if isinstance(_CO_HOLD[0], list):
+        _CO = _CO_HOLD[0]
+    else:
+        _latc = SX.lattice(lat.s * _s, lat.hz * _s, device=x.device,
+                           dtype=x.dtype)
+        _nnc = ((nn - 1) // _s) + 2
+        _n0, _n1, _n2 = int(nn[0]), int(nn[1]), int(nn[2])
+        _c1, _c2 = int(_nnc[1]), int(_nnc[2])
+        _offs = ([(i_, j_, k_) for i_ in range(_s) for j_ in range(_s)
+                  for k_ in range(_s)] if a.coarse_off == "all"
+                 else [(0, 0, 0)])
+        _CO = []
+        for _o in _offs:
+            _ov = torch.tensor(_o, device=x.device, dtype=lat.A.dtype)
+            _ic, _lamc, _auxc = SX.locate(x, lo + lat.A @ _ov, _latc, _nnc)
+            _k2 = _ic % _c2
+            _k1 = (_ic // _c2) % _c1
+            _k0 = _ic // (_c1 * _c2)
+            _i0, _i1, _i2 = _k0 * _s + _o[0], _k1 * _s + _o[1], _k2 * _s + _o[2]
+            _inb = (_i0 < _n0) & (_i1 < _n1) & (_i2 < _n2)
+            _fine = (_i0 * _n1 + _i1) * _n2 + _i2
+            _pos = torch.searchsorted(
+                uniq, _fine.reshape(-1).clamp_min(0)
+            ).reshape(_fine.shape).clamp(max=uniq.numel() - 1)
+            _vc = (uniq[_pos] == _fine).all(1) & _inb.all(1)
+            _CO.append((_pos, _lamc, _auxc, _vc, _latc))
+        if _CO_HOLD[0] is not None:
+            _CO_HOLD[0] = _CO
+    _I3 = torch.eye(3, device=x.device, dtype=x.dtype)
+    _Js, _Ws = None, None
+    for _pos, _lamc, _auxc, _vc, _latc in _CO:
+        _u2, _Jo = SX.g2p_jac_pre(_pos, _lamc, _auxc, _latc, dpn)
+        _w1 = _vc.to(_Jo.dtype).reshape(-1, 1, 1)
+        _Js = _w1 * _Jo if _Js is None else _Js + _w1 * _Jo
+        _Ws = _w1 if _Ws is None else _Ws + _w1
+    _has = (_Ws > 0).reshape(-1)
+    _Jc = _Js / _Ws.clamp_min(1.0)
+    # 거친 사면체가 없는 입자는 미세 값을 그대로
+    return torch.where(_has.reshape(-1, 1, 1), _Jc,
+                       Jf0 if Jf0 is not None else torch.zeros_like(_Jc))
+
+
 def _ens_offsets(n):
     if n <= 1:
         return [None]
