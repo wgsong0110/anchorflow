@@ -605,11 +605,16 @@ def _barrier_b(d, dhat, eps_r=1e-3):
     eps = eps_r * dhat
     dc = d.clamp_min(eps)
     b = -((dc - dhat) ** 2) * torch.log(dc / dhat)
-    # b'(d) = -2(d-dhat)ln(d/dhat) - (d-dhat)^2 / d
-    be = -((eps - dhat) ** 2) * math.log(eps / dhat)
-    bp = -2.0 * (eps - dhat) * math.log(eps / dhat) - ((eps - dhat) ** 2) / eps
-    lin = be + bp * (d - eps)
-    b = torch.where(d < eps, lin, b)
+    # eps 에서 값·기울기·곡률을 이어 붙인다 (C²). 선형으로 이으면 복원력이
+    # 깊이와 무관한 상수가 되어, 깊이 들어갈수록 세져야 한다는 장벽의 성질을
+    # 잃는다 (실측: 관통 1 mm 든 50 mm 든 1.29 N 로 같았다).
+    _l = math.log(eps / dhat)
+    _k = eps - dhat
+    be = -(_k ** 2) * _l
+    bp = -2.0 * _k * _l - (_k ** 2) / eps
+    bpp = -2.0 * _l - 4.0 * _k / eps + (_k ** 2) / (eps ** 2)
+    ext = be + bp * (d - eps) + 0.5 * bpp * (d - eps) ** 2
+    b = torch.where(d < eps, ext, b)
     return torch.where(d < dhat, b, torch.zeros_like(b))
 
 
