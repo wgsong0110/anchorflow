@@ -247,6 +247,12 @@ def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
         # 보고용: 이 스텝에서 중력이 한 일 (기울기에는 이미 관성항으로 들어갔다)
         e_g = -(w * mass * (du * g).sum(-1)).sum().detach()
     e_bc = bc_energy(x, du, mass, cfg, h, grid_lim, n_grid)
+    if os.environ.get("AF_BC_DIAG2"):
+        with torch.no_grad():
+            _bl = cfg.get("boundary_conditions") or []
+            print(f"      [bc진단] 경계 {len(_bl)} 개, 장벽 {_BARRIER[0]}, "
+                  f"x2 z최소 {float((x + du)[:, 2].min()):+.4f}, "
+                  f"e_bc {float(e_bc):.4e}, id(cfg) {id(cfg)}", flush=True)
     tot = e_in + e_el + e_bc
     if norm is not None:
         tot = tot / norm
