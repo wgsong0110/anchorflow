@@ -113,6 +113,14 @@ ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
                 help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
                      "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
                      "(jacobian_of) 보다 싸고 no_grad 롤아웃에서도 돈다")
+ap.add_argument("--coarse_s", type=int, default=0,
+                help="**거친 사면체** 항. s 칸마다 하나씩 뽑은 격자점으로 큰 "
+                     "사면체를 만들어 그 변형구배로도 탄성 에너지를 센다. "
+                     "0 이면 끈다. 셀 하나짜리 탄성은 이웃에 아무 비용도 물리지 "
+                     "않아 응력이 셀을 한 겹씩 건너며만 전해진다 -- 큰 사면체는 "
+                     "멀리 떨어진 노드를 **직접** 묶는다")
+ap.add_argument("--coarse_w", type=float, default=1.0,
+                help="거친 사면체 탄성항의 가중치")
 ap.add_argument("--bc_mode", choices=["project", "barrier"], default="project",
                 help="바닥을 어떻게 세우는지. project=하드 사영(기본), "
                      "barrier=**IPC 꼴 장벽 에너지** b(d)=-(d-d̂)²ln(d/d̂) 를 "
@@ -1019,6 +1027,7 @@ _OV_TGT = [None]           # --ov_init target 이 쓸 자유낙하 평행이동 
 _CURVE = [] if os.environ.get("AF_OV_CURVE") else None
 # 롤아웃 덤프에 격자점을 함께 담을지. (노드 위치, 노드 변위, 유효 여부)
 _NOD_M = [None]            # 손잡이로 덮는 노드 (최적화에서 뺀다)
+_JC_LAST = [None]          # (거친 사면체 야코비안 [N,3,3], 유효 마스크 [N])
 _NODE_CAP = [False]
 _NODE_LAST = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
@@ -1262,6 +1271,30 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         with _tsec("야코비안"):
             _u, Jf = SX.g2p_jac_pre(rows, lam, _lax, lat, dpn)
             Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
+            if a.coarse_s > 1:
+                # **거친 사면체**: s 칸마다 뽑은 격자점이 이루는 큰 사면체.
+                # 그 꼭짓점 변위로 야코비안을 따로 만들어 탄성을 한 번 더 센다.
+                _s = int(a.coarse_s)
+                _latc = SX.lattice(lat.s * _s, lat.hz * _s, device=dev,
+                                   dtype=x.dtype)
+                _nnc = ((nn - 1) // _s) + 1
+                _ic, _lamc, _auxc = SX.locate(x, lo, _latc, _nnc)
+                _n1, _n2 = int(nn[1]), int(nn[2])
+                _c1, _c2 = int(_nnc[1]), int(_nnc[2])
+                _k2 = _ic % _c2
+                _k1 = (_ic // _c2) % _c1
+                _k0 = _ic // (_c1 * _c2)
+                _fine = ((_k0 * _s) * _n1 + (_k1 * _s)) * _n2 + (_k2 * _s)
+                _pos = torch.searchsorted(uniq, _fine.reshape(-1)
+                                          ).reshape(_fine.shape)
+                _pos = _pos.clamp(max=uniq.numel() - 1)
+                _ok = uniq[_pos] == _fine          # 그 노드가 실제로 있는가
+                _vc = _ok.all(1)
+                _u2, _Jc = SX.g2p_jac_pre(_pos, _lamc, _auxc, _latc, dpn)
+                _JC_LAST[0] = (torch.eye(3, device=dev, dtype=x.dtype) + _Jc,
+                               _vc)
+            else:
+                _JC_LAST[0] = None
         if _NODE_CAP[0]:
             # **유효 격자점** = 입자가 든 사면체의 꼭짓점. 나머지는 변위가 어떤
             # 값이든 입자를 하나도 옮기지 않으므로 뜻이 없다.
@@ -2548,6 +2581,10 @@ def _ov_frame(d, t, gsel, p, x, v, F):
             fm = (~_am) if fm is None else (fm & ~_am)
         E, dlog, F_tr, _pt = ip_of(x, x2 - x, v, F, m, vol, cfg, FRAME_DT,
                                    ng_, gl_, g=gv, norm=nrm, free=fm, jac=_Jd)
+        if _JC_LAST[0] is not None:
+            _Jc, _vc = _JC_LAST[0]
+            _psc, _ = phys_resid.psi_of(_Jc.to(F.dtype) @ F, cfg, FRAME_DT)
+            E = E + a.coarse_w * (vol * _psc * _vc.to(_psc.dtype)).sum() / nrm
         return x2, v2, E, dlog, F_tr, _pt, _Jd
 
     _ov = _OV_CUR[0]
