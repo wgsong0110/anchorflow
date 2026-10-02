@@ -40,6 +40,8 @@ ap.add_argument("--handle", choices=["none", "top", "topbot"], default="none",
                 help="top=최상단 입자 하나, topbot=**최상단·최하단 둘**을 잡고 "
                      "서로 반대 방향으로 끈다 (양쪽으로 늘리기)")
 ap.add_argument("--handle_r", type=float, default=0.04)
+ap.add_argument("--handle_axis", type=int, default=2, choices=[0, 1, 2],
+                help="topbot 에서 두 손잡이를 고를 축 (0=x, 1=y, 2=z)")
 ap.add_argument("--handle_vel", type=float, nargs=3, default=(0.0, 0.0, 0.0),
                 help="손잡이 명령 속도. 0 이면 **붙잡고 있는다**")
 ap.add_argument("--seed", type=int, default=0)
@@ -101,8 +103,9 @@ d = dict(x=xs, F=torch.eye(3).expand(T, a.n, 3, 3).clone(), cfg=cfg,
          sel=torch.arange(a.n), n_full=a.n)
 if a.handle == "topbot":
     # 양쪽으로 늘린다: 위는 +v, 아래는 -v. 중심은 각 입자의 현재 위치를 따른다.
-    cid_t = int(x0[:n_base, 2].argmax())
-    cid_b = int(x0[:n_base, 2].argmin())
+    _ax = int(a.handle_axis)
+    cid_t = int(x0[:n_base, _ax].argmax())
+    cid_b = int(x0[:n_base, _ax].argmin())
     hv = torch.tensor(a.handle_vel, dtype=torch.float32)
     d["ctrl_id"] = torch.tensor([cid_t, cid_b], dtype=torch.long)
     d["ctrl_vel"] = torch.stack([hv, -hv], 0).reshape(1, 2, 3).expand(
@@ -111,8 +114,9 @@ if a.handle == "topbot":
     d["ctrl_pos"] = torch.stack([xs[:, cid_t], xs[:, cid_b]], 1).clone()
     _nt = int(((x0 - x0[cid_t]).norm(dim=-1) < a.handle_r).sum())
     _nb = int(((x0 - x0[cid_b]).norm(dim=-1) < a.handle_r).sum())
-    print(f"[손잡이] 위 {cid_t} (z={float(x0[cid_t,2]):.4f}) +v, "
-          f"아래 {cid_b} (z={float(x0[cid_b,2]):.4f}) -v, 반경 {a.handle_r}, "
+    print(f"[손잡이] 축 {'xyz'[_ax]}: 한쪽 {cid_t} "
+          f"({'xyz'[_ax]}={float(x0[cid_t,_ax]):.4f}) +v, 반대쪽 {cid_b} "
+          f"({float(x0[cid_b,_ax]):.4f}) -v, 반경 {a.handle_r}, "
           f"명령 {tuple(a.handle_vel)}, 반경 안 입자 {_nt} / {_nb}")
 elif a.handle == "top":
     # 최상단 입자를 손잡이로. 중심은 **그 입자의 현재 위치**를 따른다 (i-PG 가
