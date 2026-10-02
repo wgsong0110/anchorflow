@@ -207,6 +207,15 @@ VLO, VHI = (_ZLO, _ZHI) if a.color == "znow" else (0.0, 2.0) if a.color == "cell
      (_FK[a.color][1] - _w, _FK[a.color][1] + _w)) if a.color in _FK else (
     (float(CVAL.min()), float(CVAL.max())) if CVAL is not None else (0.0, 1.0)))
 
+_CID = D.get("ctrl_id")
+_XF = _XG = None
+if _CID is not None:
+    _CID = np.asarray(_CID).reshape(-1).astype(int)
+    _XF = D["pred"].float().numpy()      # 부분표본 전 전체 (색인이 전체 기준)
+    _XG = D["gt"].float().numpy()
+    print(f"[손잡이] 입자 {_CID.tolist()} -- 칸마다 자기 위치로 원을 그린다",
+          flush=True)
+
 frames = []
 for t in tqdm(range(T), desc="렌더", ncols=80):
     fig, ax = plt.subplots(1, 2, figsize=(10.2, 5.0), dpi=110)
@@ -258,7 +267,16 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
                     fontsize=9)
     # 손잡이를 그린다. 이게 없으면 구동이 들어갔는지 눈으로 확인할 수 없어
     # "손잡이가 없는 것 같다" 는 오해를 부른다 (덤프에는 늘 들어 있다).
-    if _CP is not None:
+    if _CID is not None:
+        # 칸마다 **자기 입자**의 현재 위치를 중심으로 쓴다
+        for _q, _X in ((ax[0], G[t]), (ax[1], P[t])):
+            for _k in range(len(_CID)):
+                _c = _XF[t][_CID[_k]] if _q is ax[1] else _XG[t][_CID[_k]]
+                _q.add_patch(plt.Circle((_c[i], _c[j]), _R_CTRL, fill=False,
+                                        ec="deepskyblue", lw=1.6, alpha=.9))
+                _q.plot([_c[i]], [_c[j]], marker="x", ms=7, mew=2.0,
+                        color="deepskyblue")
+    elif _CP is not None:
         _ti = min(int(D["t0"]) + t, _CP.shape[0] - 1)
         for _k in range(_CP.shape[1]):
             _c = _CP[_ti, _k]

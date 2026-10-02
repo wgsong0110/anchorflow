@@ -3030,6 +3030,11 @@ for tag, d in TR + held:
                         # 반경을 안 담으면 렌더가 기본값 0.15 로 원을 그려
                         # **실제 손잡이와 다른 크기**가 영상에 나온다
                         "ctrl_R": d.get("ctrl_R"),
+                        # 손잡이 입자 색인. 렌더가 **칸마다 자기 입자로** 중심을
+                        # 잡게 한다 -- ctrl_pos 하나만 넘기면 두 칸 모두 PG 의
+                        # 손잡이 경로를 그려, 우리 손잡이가 PG 처럼 진동하는
+                        # 것처럼 보인다 (실측: 우리 손잡이 속도 표준편차 0).
+                        "ctrl_id": d.get("ctrl_id"),
                         "t0": t0, "tag": tag,
                         "nodes": _NODEDUMP or None,
                         # [T,N,5] = (det F, tr C, ‖E‖_F, C_zz, psi)
