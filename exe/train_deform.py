@@ -1046,6 +1046,8 @@ _NOD_M = [None]            # 손잡이로 덮는 노드 (최적화에서 뺀다)
 _JC_LAST = [None]          # (거친 사면체 야코비안 [N,3,3], 유효 마스크 [N])
 _CO_HOLD = [None]          # 프레임 안에서 거친 격자 구조를 재사용한다
 _GRID_OFF = [None]         # 격자 원점을 셀의 분수만큼 민다 (앙상블)
+_ENS_K = [0]               # 지금 다루는 앙상블 격자 번호
+_ENS_N = [1]               # 앙상블 격자 수
 _NODE_CAP = [False]
 _NODE_LAST = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
@@ -1168,98 +1170,105 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             # 한 프레임 안에서 x·v 가 고정이면 격자·locate·간선·노드특징이 전부
             # 그대로다 (tau 에도 무관하다). --ov_roll 은 같은 프레임을 수백 번
             # 돌므로 한 번만 만들어 재사용한다.
+            #
+            # --ens_off N 이면 **오프셋이 다른 격자 N 개**를 만든다. 변위장은
+            # 그 N 개의 평균이고 목적함수는 그 평균 하나로 세므로, N 벌의 노드
+            # 변수가 **함께** 최적화된다 (따로 풀고 나중에 평균하면 아무도
+            # 최적화하지 않은 장이 된다).
             if _NF_HOLD[0] is not None and _NF_HOLD[0] != "want":
-                _nf = _NF_HOLD[0]
+                _ENS = _NF_HOLD[0]
             else:
-                _nf = node_feats(d, t, gsel, x, v, fe=fe)
+                _ENS = []
+                for _ok in _ens_offsets(max(int(a.ens_off), 1)):
+                    _GRID_OFF[0] = _ok
+                    _ENS.append(node_feats(d, t, gsel, x, v, fe=fe))
+                _GRID_OFF[0] = None
                 if _NF_HOLD[0] == "want":
-                    _NF_HOLD[0] = _nf
-            (_in, npos, (lo, lat, nn), rows, lam, uniq,
-             (esrc, edst, ecls), _lax) = _nf
+                    _NF_HOLD[0] = _ENS
+        _ENS_N[0] = len(_ENS)
+        (_in, npos, (lo, lat, nn), rows, lam, uniq,
+         (esrc, edst, ecls), _lax) = _ENS[0]
         _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
         # 손잡이는 **노드 변위를 명령값으로 덮는다** (i-PG 가 격자 속도를 박는
-        # 것과 같다). 예전에는 입자 단계에서 덮었는데, 그러면 (a) 변형장 자체는
-        # 경계조건을 모르고 (b) 중심을 입자에서 재-유도하느라 뒤처짐이 누적됐다
-        # (실측: 프레임 43 에 교사 중심과 0.308 = 반경의 2 배, 원 안 입자가
-        # 3115 -> 577 개). 노드에 박으면 둘 다 사라지고 L_bc 도 필요 없다.
-        _nod_m = None            # 명령으로 덮을 노드 (불리언 [M])
-        _nod_v = None            # 그 노드의 명령 속도 [M,3]
-        if a.control and "ctrl_id" in d and "ctrl_vel" in d:
-            _tt = min(t, d["ctrl_vel"].shape[0] - 1)
-            _cvc = d["ctrl_vel"].to(x.device, x.dtype)[_tt]        # [K,3]
-            _cen = ctrl_center(d, gsel, _tt, x)                    # [K,3]
-            _Rc = d["ctrl_R"].to(x.device, x.dtype)
-            _Rc = _Rc[min(_tt, _Rc.numel() - 1)].clamp_min(1e-6)
-            # 노드-손잡이 거리로 **지시함수** (하드). 가장 가까운 손잡이를 따른다
-            _dn = (npos.unsqueeze(1) - _cen.unsqueeze(0)).norm(dim=-1)   # [M,K]
-            _dmin, _kmin = _dn.min(1)
-            _nod_m = _dmin < _Rc
-            _nod_v = _cvc[_kmin]                                   # [M,3]
-
+        # 것과 같다). 격자마다 노드가 다르므로 오프셋별로 따로 만든다.
+        _NM, _NV, _TG = [], [], []
+        for _nfk in _ENS:
+            _npk, _rwk, _lmk = _nfk[1], _nfk[3], _nfk[4]
+            _nmk = _nvk = None
+            if a.control and "ctrl_id" in d and "ctrl_vel" in d:
+                _tt = min(t, d["ctrl_vel"].shape[0] - 1)
+                _cvc = d["ctrl_vel"].to(x.device, x.dtype)[_tt]
+                _cen = ctrl_center(d, gsel, _tt, x)
+                _Rc = d["ctrl_R"].to(x.device, x.dtype)
+                _Rc = _Rc[min(_tt, _Rc.numel() - 1)].clamp_min(1e-6)
+                _dn = (_npk.unsqueeze(1) - _cen.unsqueeze(0)).norm(dim=-1)
+                _dmin, _kmin = _dn.min(1)
+                _nmk = _dmin < _Rc
+                _nvk = _cvc[_kmin]
+            _NM.append(_nmk); _NV.append(_nvk)
+            if a.ov_init == "predict":
+                # **노드별 관성 예측자** h·v_n + h²g (barycentric 가중 질량평균)
+                _Mn = _npk.shape[0]
+                _mw = (MASS[gsel] if MASS.numel() != x.shape[0] else MASS
+                       ).unsqueeze(-1).to(x.dtype)
+                _ws = torch.zeros(_Mn, 1, device=dev, dtype=x.dtype)
+                _vs = torch.zeros(_Mn, 3, device=dev, dtype=x.dtype)
+                for _j in range(4):
+                    _w = _lmk[:, _j:_j + 1] * _mw
+                    _ws.index_add_(0, _rwk[:, _j], _w)
+                    _vs.index_add_(0, _rwk[:, _j], _w * v)
+                _vn = _vs / _ws.clamp_min(1e-30)
+                _gq = torch.as_tensor(d["cfg"]["g"], device=dev, dtype=x.dtype)
+                _hq = float(_DT[0])
+                _TG.append(_hq * _vn + (_hq ** 2) * _gq)
+            else:
+                _TG.append(None)
+        _nod_m, _nod_v = _NM[0], _NV[0]
         _NOD_M[0] = _nod_m
 
-        if _OV_TGT[0] == "want":
-            # **노드별 관성 예측자** h·v_n + h²g. v_n 은 barycentric 가중 질량
-            # 평균이라 P2G 와 같은 사상이다. 자유변수의 출발점으로 쓴다.
-            _Mn = npos.shape[0]
-            _mw = (MASS[gsel] if MASS.numel() != x.shape[0] else MASS
-                   ).unsqueeze(-1).to(x.dtype)
-            _ws = torch.zeros(_Mn, 1, device=dev, dtype=x.dtype)
-            _vs = torch.zeros(_Mn, 3, device=dev, dtype=x.dtype)
-            for _j in range(4):
-                _w = lam[:, _j:_j + 1] * _mw
-                _ws.index_add_(0, rows[:, _j], _w)
-                _vs.index_add_(0, rows[:, _j], _w * v)
-            _vn = _vs / _ws.clamp_min(1e-30)
-            _gq = torch.as_tensor(d["cfg"]["g"], device=dev, dtype=x.dtype)
-            _hq = float(_DT[0])
-            _OV_TGT[0] = _hq * _vn + (_hq ** 2) * _gq
-
         def _fieldS(tau):
-            # 출력을 자유변수로 갈아끼우는 경로(--ov_roll)에서는 변수가 생긴
-            # 뒤의 순전파가 통째로 버려진다. 프레임당 수백 번이므로 건너뛴다.
-            out = (_DP_FAST[0](npos.shape[0], x.dtype, x.device)
-                   if _DP_FAST[0] is not None else None)
-            if out is None:
-                with _tsec("신경망"):
-                    out = net(_in, esrc, edst, ecls, tau, mat=_mv)
-                if _DP_HOOK[0] is not None:
-                    out = _DP_HOOK[0](out)
-            dpn = torch.nan_to_num(out[0], nan=0.0, posinf=0.0, neginf=0.0)
-            # 셀(사면체) 내부는 **항등**이다. 로컬 변환은 쓰지 않는다.
-            # locate 결과(rows, lam)를 재사용한다 -- tau 에 무관하므로 jvp 안에서
-            # 다시 돌 이유가 없고, Mtot 크기 zeros+index_copy 도 필요 없다.
-            if _nod_m is not None:
-                # **노드 변위를 명령으로 덮는다.** detach 로 기울기를 끊어 그
-                # 노드는 최적화 대상에서 빠진다 (상수 경계조건이다).
-                dpn = torch.where(_nod_m.unsqueeze(-1),
-                                  (tau * _CTRL_SCALE[0] * _nod_v).detach(),
-                                  dpn)
-                with torch.no_grad():
-                    _CTRL_ERR[1] = int(_nod_m.sum())
-                    _CTRL_ERR[2] = float(
-                        (tau * _nod_v)[_nod_m].norm(dim=-1).mean()
-                        if bool(_nod_m.any()) else 0.0)
-            if not a.bc_soft and a.bc_mode == "project" \
-                    and a.bc_level == "node":
-                # 바닥을 **격자점에** 건다. 손잡이 덮어쓰기 뒤에 와야 손잡이가
-                # 바닥 아래로 명령받았을 때 바닥이 이긴다 (물리적으로 맞다).
-                dpn, _nfa = phys_resid.bc_project_nodes(
-                    npos, dpn, d["cfg"], tau,
-                    float(d["cfg"].get("grid_lim", 2.0)),
-                    int(d["cfg"]["n_grid"]))
-            else:
-                _nfa = None
-            q = x + SX.g2p_pre(rows, lam, dpn)
+            _dus, _Jsum = [], None
+            for _k in range(len(_ENS)):
+                (_ink, _npk, (_lok, _latk, _nnk), _rwk, _lmk, _uqk,
+                 (_srk, _dsk, _clk), _lxk) = _ENS[_k]
+                _ENS_K[0] = _k
+                _NOD_M[0] = _NM[_k]
+                _OV_TGT[0] = _TG[_k]
+                out = (_DP_FAST[0](_npk.shape[0], x.dtype, dev)
+                       if _DP_FAST[0] is not None else None)
+                if out is None:
+                    with _tsec("신경망"):
+                        out = net(_ink, _srk, _dsk, _clk, tau, mat=_mv)
+                    if _DP_HOOK[0] is not None:
+                        out = _DP_HOOK[0](out)
+                dpn_k = torch.nan_to_num(out[0], nan=0.0, posinf=0.0,
+                                         neginf=0.0)
+                if _NM[_k] is not None:
+                    # **노드 변위를 명령으로 덮는다.** detach 로 기울기를 끊어
+                    # 그 노드는 최적화 대상에서 빠진다 (상수 경계조건이다).
+                    dpn_k = torch.where(
+                        _NM[_k].unsqueeze(-1),
+                        (tau * _CTRL_SCALE[0] * _NV[_k]).detach(), dpn_k)
+                    if _k == 0:
+                        with torch.no_grad():
+                            _CTRL_ERR[1] = int(_NM[0].sum())
+                            _CTRL_ERR[2] = float(
+                                (tau * _NV[0])[_NM[0]].norm(dim=-1).mean()
+                                if bool(_NM[0].any()) else 0.0)
+                _dus.append(SX.g2p_pre(_rwk, _lmk, dpn_k))
+                _u1, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, dpn_k)
+                _Jsum = _Jk if _Jsum is None else _Jsum + _Jk
+                if _k == 0:
+                    _dpn0 = dpn_k
+            _du = (_dus[0] if len(_dus) == 1
+                   else torch.stack(_dus).mean(0))
+            _Jm = _Jsum / float(len(_ENS))
+            q = x + _du
             _qraw = q
             _act = torch.zeros_like(q[:, :1])
-            if _nfa is not None:
-                # 네 꼭짓점이 모두 바닥에 걸린 입자는 증분 포텐셜에서 뺀다
-                _act = _act + _nfa[rows].all(1).to(q.dtype).unsqueeze(-1)
-            if _nod_m is not None:
-                # 구속 노드 넷에 모두 둘러싸인 입자는 명령만큼 간다 -- 그 입자를
-                # 증분 포텐셜에서 뺀다 (반력이 실어 나르는 자리다).
-                _act = _act + _nod_m[rows].all(1).to(q.dtype).unsqueeze(-1)
+            if _NM[0] is not None:
+                # 네 꼭짓점이 모두 구속된 입자는 명령만큼 간다
+                _act = _act + _NM[0][rows].all(1).to(q.dtype).unsqueeze(-1)
             if not a.bc_soft and a.bc_mode == "project" \
                     and a.bc_level == "particle":
                 _duP, _fa = phys_resid.bc_project(
@@ -1268,14 +1277,10 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                     int(d["cfg"]["n_grid"]))
                 q = x + _duP
                 _act = _act + _fa.to(q.dtype).unsqueeze(-1)
-            # corr 은 구속이 원 출력을 얼마나 고쳤나다. 이걸 줄이면 망이 경계조건을
-            # **스스로** 내게 된다 (자유 입자는 정확히 0 이라 기여가 없다).
             _corr = q - _qraw
-            _ex = (dpn, _corr, _act)
-            return q, _ex
+            return q, (_dpn0, _Jm, _corr, _act)
 
         _use_dtS = a.v_from_dt and _DP_HOOK[0] is None and a.dt_cond
-        # (아래 jvp/야코비안 구간도 계측한다)
         _tau0 = torch.as_tensor(float(_DT[0]), device=dev, dtype=x.dtype)
         if _use_dtS:
             with _tsec("jvp(속도)"):
@@ -1285,80 +1290,11 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             x2, _outs = _fieldS(_tau0)
             v_next = (x2 - x) / _DT[0]
         dpn = _outs[0]
-        # 셀 내부가 항등이라 변형장은 사면체별 아핀이다 -> 야코비안은 닫힌 형식
-        # 하나로 나온다 (재배열이 있던 시절에는 합성이라 역전파 3 회가 필요했다).
-        with _tsec("야코비안"):
-            _u, Jf = SX.g2p_jac_pre(rows, lam, _lax, lat, dpn)
-            Jf = torch.eye(3, device=dev, dtype=x.dtype) + Jf
-            if a.coarse_s > 1:
-                # **거친 사면체**: s 칸마다 뽑은 격자점이 이루는 큰 사면체.
-                # 한 변이 s 배인 격자는 오프셋에 따라 s³ 가지가 있으므로 전부
-                # 만들어 야코비안을 평균한다 (하나만 쓰면 입자가 어느 오프셋에
-                # 걸리느냐로 결과가 갈린다).
-                _s = int(a.coarse_s)
-                if isinstance(_CO_HOLD[0], list):
-                    _CO = _CO_HOLD[0]
-                else:
-                    _latc = SX.lattice(lat.s * _s, lat.hz * _s, device=dev,
-                                       dtype=x.dtype)
-                    _nnc = ((nn - 1) // _s) + 2
-                    _n1, _n2 = int(nn[1]), int(nn[2])
-                    _c1, _c2 = int(_nnc[1]), int(_nnc[2])
-                    _offs = ([(i_, j_, k_) for i_ in range(_s)
-                              for j_ in range(_s) for k_ in range(_s)]
-                             if a.coarse_off == "all" else [(0, 0, 0)])
-                    _CO = []
-                    for _o in _offs:
-                        _ov = torch.tensor(_o, device=dev, dtype=lat.A.dtype)
-                        _loc = lo + lat.A @ _ov
-                        _ic, _lamc, _auxc = SX.locate(x, _loc, _latc, _nnc)
-                        _k2 = _ic % _c2
-                        _k1 = (_ic // _c2) % _c1
-                        _k0 = _ic // (_c1 * _c2)
-                        _i0 = _k0 * _s + _o[0]
-                        _i1 = _k1 * _s + _o[1]
-                        _i2 = _k2 * _s + _o[2]
-                        _in = ((_i0 < int(nn[0])) & (_i1 < _n1)
-                               & (_i2 < _n2))
-                        _fine = (_i0 * _n1 + _i1) * _n2 + _i2
-                        _pos = torch.searchsorted(
-                            uniq, _fine.reshape(-1).clamp_min(0)
-                        ).reshape(_fine.shape).clamp(max=uniq.numel() - 1)
-                        _vc = (uniq[_pos] == _fine).all(1) & _in.all(1)
-                        _CO.append((_pos, _lamc, _auxc, _vc, _latc))
-                    if _NF_HOLD[0] is not None:
-                        _CO_HOLD[0] = _CO
-                _Jsum = torch.zeros_like(Jf)
-                _Wsum = torch.zeros(Jf.shape[0], 1, 1, device=dev,
-                                    dtype=Jf.dtype)
-                for _pos, _lamc, _auxc, _vc, _latc in _CO:
-                    _u2, _Jo = SX.g2p_jac_pre(_pos, _lamc, _auxc, _latc, dpn)
-                    _w1 = _vc.to(Jf.dtype).reshape(-1, 1, 1)
-                    _Jsum = _Jsum + _w1 * (
-                        torch.eye(3, device=dev, dtype=x.dtype) + _Jo)
-                    _Wsum = _Wsum + _w1
-                _has = (_Wsum > 0).reshape(-1)
-                _Jc = torch.where(_has.reshape(-1, 1, 1),
-                                  _Jsum / _Wsum.clamp_min(1.0), Jf)
-                if a.coarse_mix > 0:
-                    # **야코비안을 섞는다.** 에너지를 두 번 세지 않으므로 강성이
-                    # 더해지지 않고, 변형 측정만 넓은 스텐실로 매끄러워진다.
-                    _wm = float(a.coarse_mix) * _has.to(Jf.dtype
-                                                        ).reshape(-1, 1, 1)
-                    Jf = (1.0 - _wm) * Jf + _wm * _Jc
-                    _JC_LAST[0] = None
-                else:
-                    _JC_LAST[0] = (_Jc, _has)
-            else:
-                _JC_LAST[0] = None
+        Jf = torch.eye(3, device=dev, dtype=x.dtype) + _outs[1]
+        _JC_LAST[0] = None
         if _NODE_CAP[0]:
-            # **유효 격자점** = 입자가 든 사면체의 꼭짓점. 나머지는 변위가 어떤
-            # 값이든 입자를 하나도 옮기지 않으므로 뜻이 없다.
             _sup = torch.zeros(npos.shape[0], dtype=torch.bool, device=dev)
             _sup[rows.reshape(-1)] = True
-            # 입자별 셀 구분: 0 = 꼭짓점 넷 다 손잡이 밖, 1 = **섞인 셀**
-            # (일부만 손잡이 안), 2 = 넷 다 손잡이 안. 1 이 손잡이가 몸통으로
-            # 힘을 넘기는 유일한 통로다.
             if _nod_m is None:
                 _pc = torch.zeros(x.shape[0], dtype=torch.uint8)
             else:
@@ -1368,7 +1304,6 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             _NODE_LAST[0] = (npos.detach().cpu(), dpn.detach().cpu(),
                              _sup.cpu(), _pc)
         _DET_LAST[0] = torch.linalg.det(Jf)
-        # 구속 보정량·활성집합을 창 쪽으로 넘긴다 (L_bc 와 free 마스크에 쓴다)
         _BC_LAST[0] = (_outs[-2], _outs[-1])
         return (x2, p, v_next, None, dpn, None, dmg, None, fe, Jf)
 def traj_F(d):
@@ -2209,42 +2144,42 @@ if a.out_var or a.ov_roll > 0:
     def _ov_fast(M=None, dtype=None, device=None):
         """망을 건너뛰고 자유변수를 바로 돌려준다 (없으면 만든다).
 
-        --ov_init net 일 때만 망을 한 번 통과시켜 초기값으로 쓴다. zero/randn
-        이면 망은 **한 번도 쓰이지 않는다** -- 재는 것은 이 매개화의 한계이지
-        망의 학습 상태가 아니므로 그쪽이 기본이다.
+        앙상블이면 격자마다 변수 한 벌씩 들고 있는다 (`_ENS_K` 로 고른다).
+        최적화기는 **모든 격자의 변수가 만들어진 뒤** _ov_once 가 만든다.
         """
         st = _OV_CUR[0]
         if st is None:
             return None
+        _k = _ENS_K[0]
         if st.get("ov") is None:
+            st["ov"] = [None] * _ENS_N[0]
+            st["ov_idx"] = [None] * _ENS_N[0]
+            st["ov_M"] = [0] * _ENS_N[0]
+        if st["ov"][_k] is None:
             if a.ov_init == "net" or M is None:
                 return None                      # 망 출력으로 초기화한다
-            # **손잡이 노드는 자유변수에서 아예 뺀다.** 값이 명령으로 덮이므로
-            # 변수로 남겨두면 기울기가 0 인 채 L-BFGS 의 곡률쌍만 더럽힌다.
+            # **손잡이 노드는 자유변수에서 아예 뺀다.**
             _hm = _NOD_M[0]
-            st["ov_idx"] = (None if _hm is None else
-                            (~_hm).nonzero(as_tuple=True)[0])
+            st["ov_idx"][_k] = (None if _hm is None else
+                                (~_hm).nonzero(as_tuple=True)[0])
             z = torch.zeros(M, 3, dtype=dtype, device=device)
             if a.ov_init in ("target", "predict"):
                 if not torch.is_tensor(_OV_TGT[0]):
-                    raise SystemExit(f"--ov_init {a.ov_init} 은 --ov_roll "
-                                     "에서만 쓴다")
+                    raise SystemExit(f"--ov_init {a.ov_init} 은 --ov_roll 에서만")
                 z = z + _OV_TGT[0].to(dtype).reshape(-1, 3)
             if a.ov_init == "randn":
                 z = a.ov_init_std * torch.randn(M, 3, dtype=dtype,
                                                 device=device)
-            st["ov_M"] = M
-            if st["ov_idx"] is not None:
-                z = z[st["ov_idx"]]
-            st["ov"] = [z.requires_grad_(True)]
-            st["ov_opt"] = _mk_ov_opt(st["ov"])
-            # 호출부는 out[0] 만 읽는다 -- 늘 묶음으로 돌려주면 안전하다
-            st["ov_tuple"] = True
-        if st.get("ov_idx") is not None:
-            _z = torch.zeros(st["ov_M"], 3, dtype=st["ov"][0].dtype,
-                             device=st["ov"][0].device)
-            return (_z.index_copy(0, st["ov_idx"], st["ov"][0]),)
-        return tuple(st["ov"]) if st["ov_tuple"] else st["ov"][0]
+            st["ov_M"][_k] = M
+            if st["ov_idx"][_k] is not None:
+                z = z[st["ov_idx"][_k]]
+            st["ov"][_k] = z.requires_grad_(True)
+        _v = st["ov"][_k]
+        if st["ov_idx"][_k] is not None:
+            _z = torch.zeros(st["ov_M"][_k], 3, dtype=_v.dtype,
+                             device=_v.device)
+            return (_z.index_copy(0, st["ov_idx"][_k], _v),)
+        return (_v,)
 
     _DP_HOOK[0] = _ov_hook
     _DP_FAST[0] = _ov_fast
@@ -2669,14 +2604,20 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 return E
             _fwd()                    # 변수를 만든다 (훅이 첫 호출에서 만든다)
             if st.get("ov_opt") is None:
-                raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다")
+                _vs = [q for q in (st.get("ov") or []) if q is not None]
+                if not _vs:
+                    raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다")
+                st["ov_opt"] = _mk_ov_opt(_vs)
             st["ov_opt"].step(_closure)
             E0 = _E0[0]
         else:
             for _k in range(a.ov_roll):
                 _, _, E, _, _, _pt, _ = _fwd()
                 if st.get("ov_opt") is None:
-                    raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다")
+                    _vs = [q for q in (st.get("ov") or []) if q is not None]
+                    if not _vs:
+                        raise SystemExit("--ov_roll: 변수를 못 만들었다")
+                    st["ov_opt"] = _mk_ov_opt(_vs)
                 if E0 is None:
                     E0 = float(E)
                 if _CURVE is not None:
@@ -2719,24 +2660,12 @@ def _ens_offsets(n):
 def _ov_frame(d, t, gsel, p, x, v, F):
     """프레임 하나를 전진시킨다 -> (x2, v2, F_next).
 
-    --ens_off N 이면 **오프셋이 다른 격자 N 개에서 각각 따로 최적화**하고
-    입자 변위와 야코비안을 평균한다. 평균한 변위장의 기울기는 기울기의 평균과
-    같으므로(평균이 선형이다) 야코비안을 평균하는 것이 곧 "평균낸 격자변위로
-    변형구배를 만드는" 것이다. 오프셋마다 빈 셀·고아 셀 패턴이 달라 그 격자
-    의존적 결함이 평균에서 상쇄된다.
+    --ens_off N 이면 오프셋이 다른 격자 N 벌의 노드 변수를 **함께** 최적화한다
+    (변위장은 그 평균이고 목적함수는 그 평균 하나로 센다). 평균이 선형이라
+    평균한 변위장의 기울기 = 기울기의 평균이므로, 야코비안도 평균이 된다.
     """
     cfg = d["cfg"]
-    offs = _ens_offsets(max(int(a.ens_off), 1))
-    xs, vs, Js = [], [], []
-    for _o in offs:
-        _x2, _v2, _J = _ov_once(d, t, gsel, p, x, v, F, off=_o)
-        xs.append(_x2); vs.append(_v2); Js.append(_J)
-    if len(offs) == 1:
-        x2, v2, Jd = xs[0], vs[0], Js[0]
-    else:
-        x2 = torch.stack(xs).mean(0)
-        v2 = torch.stack(vs).mean(0)
-        Jd = torch.stack(Js).mean(0)
+    x2, v2, Jd = _ov_once(d, t, gsel, p, x, v, F)
     with torch.no_grad():
         F_tr = Jd.to(F.dtype) @ F
         _, dlog = phys_resid.psi_of(F_tr, cfg, FRAME_DT)
