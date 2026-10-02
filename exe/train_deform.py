@@ -113,6 +113,13 @@ ap.add_argument("--jac", default="analytic", choices=("analytic", "auto"),
                 help="변형장 야코비안 계산법. analytic 은 닫힌 형식 (RQS "
                      "기울기 대각 x 커널 ∇u 연쇄) -- 역전파 3회짜리 auto "
                      "(jacobian_of) 보다 싸고 no_grad 롤아웃에서도 돈다")
+ap.add_argument("--elast", choices=["full", "lin"], default="full",
+                help="탄성항. full=고정 공회전 Psi 그대로(비선형), "
+                     "lin=**현재 상태 둘레 2차 근사** "
+                     "<tau, dJ> + mu|sym dJ|² + (lam/2)tr(dJ)² -- 이때 전체 "
+                     "목적함수가 노드 변위의 2차형식이라 최적해가 선형계 한 번")
+ap.add_argument("--cg_iters", type=int, default=200,
+                help="--ov_opt cg 의 공액기울기 반복 수")
 ap.add_argument("--bc_slip", action="store_true",
                 help="바닥의 **접선 고정(no-slip) 항을 끈다**. 비관통만 남고 "
                      "닿은 입자가 면을 따라 미끄러진다")
@@ -307,7 +314,7 @@ ap.add_argument("--ov_init",
                      "솔버가 뉴턴을 시작하는 그 지점이다 -- 0 에서 출발하면 "
                      "탄성 강성에 묻혀 자유낙하조차 못 찾는다")
 ap.add_argument("--ov_init_std", type=float, default=1e-3)
-ap.add_argument("--ov_opt", choices=["adam", "lbfgs"], default="lbfgs",
+ap.add_argument("--ov_opt", choices=["adam", "lbfgs", "cg"], default="lbfgs",
                 help="--ov_roll 의 최적화기. 탄성 강성(E=2e6)이 관성항보다 "
                      "원시 값으로 700 배 커서 문제가 심하게 비등방이다 -- "
                      "Adam 은 0 에서 출발하면 자유낙하조차 못 찾는다(실측: "
@@ -2599,14 +2606,43 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         if _BC_LAST[0] is not None:
             _am = _BC_LAST[0][1].reshape(-1) > 0.5
             fm = (~_am) if fm is None else (fm & ~_am)
-        E, dlog, F_tr, _pt = ip_of(x, x2 - x, v, F, m, vol, cfg, FRAME_DT,
-                                   ng_, gl_, g=gv, norm=nrm, free=fm, jac=_Jd)
+        if _TAU is not None:
+            # **2차 근사 탄성**: <tau, dJ> + V[mu|sym dJ|² + (lam/2) tr(dJ)²]
+            _dJ = _Jd - torch.eye(3, device=dev, dtype=_Jd.dtype)
+            _sy = 0.5 * (_dJ + _dJ.transpose(-1, -2))
+            _tr = _dJ.diagonal(dim1=-2, dim2=-1).sum(-1)
+            _eel = ((_TAU * _dJ).sum((-1, -2))
+                    + vol * (_mu * (_sy * _sy).sum((-1, -2))
+                             + 0.5 * _lm * _tr * _tr)).sum()
+            _du = x2 - x
+            _w = (torch.ones_like(m) if fm is None else fm.to(m.dtype))
+            _ein = (0.5 * _w * m / (FRAME_DT ** 2)
+                    * ((_du - FRAME_DT * v - (FRAME_DT ** 2) * gv) ** 2
+                       ).sum(-1)).sum()
+            _ebc = phys_resid.bc_energy(x, _du, m, cfg, FRAME_DT, gl_, ng_)
+            E = (_ein + _eel + _ebc) / nrm
+            dlog, F_tr = None, _Jd.to(F.dtype) @ F
+            _pt = (_ein.detach(), _eel.detach(), torch.zeros(()),
+                   _ebc.detach() if torch.is_tensor(_ebc)
+                   else torch.zeros(()))
+        else:
+            E, dlog, F_tr, _pt = ip_of(x, x2 - x, v, F, m, vol, cfg, FRAME_DT,
+                                       ng_, gl_, g=gv, norm=nrm, free=fm,
+                                       jac=_Jd)
         if _JC_LAST[0] is not None:
             _Jc, _vc = _JC_LAST[0]
             _psc, _ = phys_resid.psi_of(_Jc.to(F.dtype) @ F, cfg, FRAME_DT)
             E = E + a.coarse_w * (vol * _psc * _vc.to(_psc.dtype)).sum() / nrm
         return x2, v2, E, dlog, F_tr, _pt, _Jd
 
+    _TAU = None
+    if a.elast == "lin":
+        with torch.enable_grad():
+            _J0 = torch.eye(3, device=dev, dtype=F.dtype).expand(
+                F.shape[0], 3, 3).clone().requires_grad_(True)
+            _ps0, _ = phys_resid.psi_of(_J0 @ F, cfg, FRAME_DT)
+            _TAU = torch.autograd.grad((vol * _ps0).sum(), _J0)[0].detach()
+        _mu, _lm = phys_resid.lame(cfg["E"], cfg["nu"])
     _ov = _OV_CUR[0]
     _OV_CUR[0] = st
     _GRID_OFF[0] = off
@@ -2617,7 +2653,44 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
     try:
       with torch.enable_grad():
-        if a.ov_opt == "lbfgs":
+        if a.ov_opt == "cg":
+            # 목적함수가 2차형식이므로 **공액기울기로 바로 최소점**에 간다.
+            # 헤시안-벡터 곱은 이중 역전파로 행렬 없이 만든다.
+            _fwd()
+            _vs = [q for q in (st.get("ov") or []) if q is not None]
+            if not _vs:
+                raise SystemExit("--ov_opt cg: 변수를 못 만들었다")
+
+            def _grad(create=False):
+                _, _, E, _, _, _, _ = _fwd()
+                return torch.autograd.grad(E, _vs, create_graph=create), E
+            (_g0,), _E = _grad()
+            E0 = float(_E)
+            _r = [-q.detach() for q in (_g0,)] if False else None
+            _gs, _ = _grad()
+            _r = [-q.detach() for q in _gs]
+            _pv = [q.clone() for q in _r]
+            _rs = sum(float((q * q).sum()) for q in _r)
+            for _it in range(a.cg_iters):
+                if _rs < 1e-30:
+                    break
+                _gs2, _ = _grad(create=True)
+                _hv = torch.autograd.grad(
+                    sum((g_ * p_).sum() for g_, p_ in zip(_gs2, _pv)), _vs)
+                _pHp = sum(float((p_ * h_).sum())
+                           for p_, h_ in zip(_pv, _hv))
+                if _pHp <= 0:
+                    break
+                _al = _rs / _pHp
+                with torch.no_grad():
+                    for _v2, _p2 in zip(_vs, _pv):
+                        _v2 += _al * _p2
+                _r = [q - _al * h_ for q, h_ in zip(_r, _hv)]
+                _rs2 = sum(float((q * q).sum()) for q in _r)
+                _be = _rs2 / max(_rs, 1e-30)
+                _pv = [q + _be * p_ for q, p_ in zip(_r, _pv)]
+                _rs = _rs2
+        elif a.ov_opt == "lbfgs":
             _n = [0]
 
             def _closure():
