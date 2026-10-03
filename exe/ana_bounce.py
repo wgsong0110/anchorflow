@@ -40,10 +40,16 @@ X0 = np.asarray(D["x0"], dtype=np.float64)
 R = float(np.asarray(D["ctrl_R"]).reshape(-1)[0])
 CP = np.asarray(D["ctrl_pos"], dtype=np.float64)[:, 0, :]
 cid = int(np.asarray(D["ctrl_id"]).reshape(-1)[0]) if "ctrl_id" in D else None
+if cid is None:
+    # 생성기와 같은 규칙: 손잡이가 붙드는 기준 입자는 로프 윗끝
+    cid = int(X0[:, 2].argmax())
+    print(f"(덤프에 ctrl_id 가 없어 윗끝 입자 {cid} 를 손잡이 기준으로 쓴다)",
+          flush=True)
 T, N = P.shape[0], P.shape[1]
 t, t1 = a.t, a.t + 1
-print(f"{a.tag}: 입자 {N}, 프레임 {T}, R {R:.4f}, 중심 = "
-      f"{'ctrl_id 입자' if cid is not None else 'ctrl_pos 명령'}", flush=True)
+print(f"{a.tag}: 입자 {N}, 프레임 {T}, R {R:.4f}", flush=True)
+print(f"  참고: ctrl_pos (= PG 손잡이 입자 궤적) z {CP[t,2]:.4f} -> {CP[t1,2]:.4f}",
+      flush=True)
 
 
 def cen(A, tt):
