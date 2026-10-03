@@ -1300,10 +1300,19 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                        ).unsqueeze(-1).to(x.dtype)
                 _ws = torch.zeros(_Mn, 1, device=dev, dtype=x.dtype)
                 _vs = torch.zeros(_Mn, 3, device=dev, dtype=x.dtype)
-                for _j in range(4):
-                    _w = _lmk[:, _j:_j + 1] * _mw
-                    _ws.index_add_(0, _rwk[:, _j], _w)
-                    _vs.index_add_(0, _rwk[:, _j], _w * v)
+                # 육면체면 **여덟 꼭짓점 삼선형 가중**으로 뿌린다. 사면체 네
+                # 개로만 뿌리면 나머지 네 노드가 0 으로 남아 첫 프레임부터
+                # 셀이 접힌다 (실측: 프레임 0 에 det<0 14.7%).
+                if a.hex_jac:
+                    _p8, _, _N8, _ = _hex_struct(x, _nfk[2][0], _nfk[2][1],
+                                                 _nfk[2][2], _nfk[5])
+                    _rr, _ll, _nc = _p8, _N8, 8
+                else:
+                    _rr, _ll, _nc = _rwk, _lmk, 4
+                for _j in range(_nc):
+                    _w = _ll[:, _j:_j + 1] * _mw
+                    _ws.index_add_(0, _rr[:, _j], _w)
+                    _vs.index_add_(0, _rr[:, _j], _w * v)
                 _vn = _vs / _ws.clamp_min(1e-30)
                 _gq = torch.as_tensor(d["cfg"]["g"], device=dev, dtype=x.dtype)
                 _hq = float(_DT[0])
@@ -2838,7 +2847,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     _SM_HOLD[0] = "want"
     _OV_TGT[0] = ("want" if a.ov_init == "predict" else
                   (FRAME_DT * v.mean(0) + (FRAME_DT ** 2) * gv).detach())
-    _HX_HOLD[0] = "want"          # 육면체 색인도 프레임당 한 번만
+    _HX_HOLD[0] = {}              # 육면체 색인도 프레임당 한 번만
     _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
     try:
       with torch.enable_grad():
@@ -3047,54 +3056,53 @@ def _coarse_jac(x, dpn, lo, lat, nn, uniq, Jf0=None):
 _HX_HOLD = [None]
 
 
-def _hex_field(x, dpn, lo, lat, nn, uniq):
-    """육면체 셀의 **삼선형(trilinear)** 사상: (u [N,3], J [N,3,3], 쓸 수 있나 [N]).
+def _hex_struct(x, lo, lat, nn, uniq):
+    """육면체 삼선형의 (꼭짓점 색인 [N,8], 쓸 수 있나 [N], N [N,8], dN [N,8,3]).
 
-    셀 안 좌표 xi 에 대해 모양함수가
-
-        N_m(xi) = prod_k (xi_k if o_mk else 1 - xi_k),   o_m in {0,1}^3
-
-    이고, 입자 변위와 변형구배가 **같은 사상에서** 나온다:
-
-        u(xi)      = sum_m N_m(xi) u_m
-        grad_x u   = sum_m u_m (dN_m/dxi)^T Ai        (xi = Ai (x - lo) - ci)
-
-    사면체(중심좌표) 쪽은 셀을 6 조각으로 쪼개 조각마다 J 가 상수였다. 여기서는
-    셀 하나가 한 원소이고 J 가 입자 위치에 따라 매끄럽게 변한다. 여덟 꼭짓점이
-    모두 살아있지 않은 입자는 쓸 수 없다고 표시한다 (부르는 쪽이 사면체 값을 쓴다).
-    구조(색인·모양함수)는 프레임 안에서 x 가 고정이라 한 번만 만든다.
+    한 프레임 안에서 x 가 고정이라 격자마다 한 번만 만든다.
     """
+    _key = int(uniq.data_ptr())
+    _h = _HX_HOLD[0]
+    if isinstance(_h, dict) and _key in _h:
+        return _h[_key]
     nnl = [int(nn[k]) for k in range(3)]
-    if isinstance(_HX_HOLD[0], tuple):
-        _pos, _ok, _N, _dN = _HX_HOLD[0]
-    else:
-        y = (x - lo) @ lat.Ai.T
-        ci = y.floor().long()
-        ci = torch.stack([ci[:, k].clamp(0, nnl[k] - 2) for k in range(3)], -1)
-        xi = (y - ci).clamp(0.0, 1.0)                  # [N,3]
-        _o = torch.tensor([[i_, j_, k_] for i_ in (0, 1) for j_ in (0, 1)
-                           for k_ in (0, 1)], device=x.device,
-                          dtype=torch.long)            # [8,3]
-        v = ci.unsqueeze(1) + _o.unsqueeze(0)          # [N,8,3]
-        _inb = ((v[..., 0] < nnl[0]) & (v[..., 1] < nnl[1])
-                & (v[..., 2] < nnl[2]))
-        flat = (v[..., 0] * nnl[1] + v[..., 1]) * nnl[2] + v[..., 2]
-        _pos = torch.searchsorted(uniq, flat.reshape(-1).clamp_min(0)
-                                  ).reshape(flat.shape).clamp(
-                                      max=uniq.numel() - 1)
-        _ok = ((uniq[_pos] == flat) & _inb).all(1)     # [N]
-        of = _o.to(xi.dtype)                           # [8,3]
-        # w[n,m,k] = xi_k if o_mk else 1-xi_k,  d/dxi_k = +1 / -1
-        w = of.unsqueeze(0) * xi.unsqueeze(1) + \
-            (1.0 - of).unsqueeze(0) * (1.0 - xi).unsqueeze(1)   # [N,8,3]
-        dw = (2.0 * of - 1.0).unsqueeze(0).expand_as(w)         # [N,8,3]
-        _N = w.prod(-1)                                          # [N,8]
-        # dN/dxi_k = dw_k * prod_{j!=k} w_j
-        _dN = torch.stack([dw[..., 0] * w[..., 1] * w[..., 2],
-                           w[..., 0] * dw[..., 1] * w[..., 2],
-                           w[..., 0] * w[..., 1] * dw[..., 2]], -1)  # [N,8,3]
-        if _HX_HOLD[0] is not None:
-            _HX_HOLD[0] = (_pos, _ok, _N, _dN)
+    y = (x - lo) @ lat.Ai.T
+    ci = y.floor().long()
+    ci = torch.stack([ci[:, k].clamp(0, nnl[k] - 2) for k in range(3)], -1)
+    xi = (y - ci).clamp(0.0, 1.0)                      # [N,3]
+    _o = torch.tensor([[i_, j_, k_] for i_ in (0, 1) for j_ in (0, 1)
+                       for k_ in (0, 1)], device=x.device, dtype=torch.long)
+    v8 = ci.unsqueeze(1) + _o.unsqueeze(0)             # [N,8,3]
+    _inb = ((v8[..., 0] < nnl[0]) & (v8[..., 1] < nnl[1])
+            & (v8[..., 2] < nnl[2]))
+    flat = (v8[..., 0] * nnl[1] + v8[..., 1]) * nnl[2] + v8[..., 2]
+    _pos = torch.searchsorted(uniq, flat.reshape(-1).clamp_min(0)
+                              ).reshape(flat.shape).clamp(max=uniq.numel() - 1)
+    _ok = ((uniq[_pos] == flat) & _inb).all(1)
+    of = _o.to(xi.dtype)
+    w = of.unsqueeze(0) * xi.unsqueeze(1) + \
+        (1.0 - of).unsqueeze(0) * (1.0 - xi).unsqueeze(1)      # [N,8,3]
+    dw = (2.0 * of - 1.0).unsqueeze(0).expand_as(w)
+    _N = w.prod(-1)
+    _dN = torch.stack([dw[..., 0] * w[..., 1] * w[..., 2],
+                       w[..., 0] * dw[..., 1] * w[..., 2],
+                       w[..., 0] * w[..., 1] * dw[..., 2]], -1)
+    out = (_pos, _ok, _N, _dN)
+    if isinstance(_h, dict):
+        _h[_key] = out
+    return out
+
+
+def _hex_field(x, dpn, lo, lat, nn, uniq):
+    """육면체 셀의 **삼선형** 사상: (u [N,3], J [N,3,3], 쓸 수 있나 [N]).
+
+        u(xi)    = sum_m N_m(xi) u_m
+        grad_x u = sum_m u_m (dN_m/dxi)^T Ai,     xi = Ai (x - lo) - ci
+
+    입자 변위와 변형구배가 **같은 사상**에서 나온다. 사면체(중심좌표) 쪽은 셀을
+    6 조각으로 쪼개 조각마다 J 가 상수였다.
+    """
+    _pos, _ok, _N, _dN = _hex_struct(x, lo, lat, nn, uniq)
     U = dpn[_pos]                                      # [N,8,3]
     u = (U * _N.to(U.dtype).unsqueeze(-1)).sum(1)
     G = torch.einsum("nmi,nmj->nij", U, _dN.to(U.dtype)) @ lat.Ai.to(U.dtype)
