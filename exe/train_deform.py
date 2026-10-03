@@ -180,6 +180,10 @@ ap.add_argument("--cell_barrier", type=float, default=0.0,
                 help="이번 스텝 셀 사상 det(grad Phi) 의 뒤집힘 장벽 세기")
 ap.add_argument("--cell_jhat", type=float, default=0.3)
 ap.add_argument("--cell_ext", choices=["quad", "linear"], default="linear")
+ap.add_argument("--ov_clip", type=float, default=0.0,
+                help="출력만 최적화에서 변수 기울기의 전체 노름을 이 값으로 "
+                     "자른다 (0 이면 안 자른다). 장벽이 터질 때 한 스텝이 "
+                     "통째로 날아가는 것을 막는다")
 ap.add_argument("--bc_ext", choices=["quad", "linear"], default="quad",
                 help="장벽의 d<=eps 연장. quad=값·기울기·곡률을 잇는다(기본, "
                      "깊이에 비례해 복원력이 커진다), linear=접선만 잇는다"
@@ -2173,6 +2177,19 @@ if a.roll_scen:
           f"{(len(XS) - 1) / max(_wall, 1e-9):.2f} FPS", flush=True)
     raise SystemExit(0)
 
+def _ov_clip_grads(st):
+    """변수 기울기의 전체 노름을 --ov_clip 으로 자른다.
+
+    장벽이 깊이 들어간 셀에서 기울기가 수십 배로 튀면 line search 가 그 방향에
+    끌려가 한 스텝을 통째로 버린다. 방향은 그대로 두고 크기만 자른다.
+    """
+    if a.ov_clip <= 0:
+        return
+    _vs = [q for q in (st.get("ov") or []) if q is not None]
+    if _vs:
+        torch.nn.utils.clip_grad_norm_(_vs, a.ov_clip)
+
+
 def _mk_ov_opt(vs):
     if a.ov_opt == "lbfgs":
         return torch.optim.LBFGS(vs, lr=1.0, max_iter=max(a.ov_roll, 1),
@@ -2778,6 +2795,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     _trp.append((float(_pq[0]), float(_pq[1]),
                                  float(_pq[3])))
                 E.backward()
+                _ov_clip_grads(st)
                 return E
             _fwd()                    # 변수를 만든다 (훅이 첫 호출에서 만든다)
             if st.get("ov_opt") is None:
@@ -2802,6 +2820,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     _trp.append((float(_pt[0]), float(_pt[1]), float(_pt[3])))
                 st["ov_opt"].zero_grad(set_to_none=True)
                 E.backward()
+                _ov_clip_grads(st)
                 st["ov_opt"].step()
         x2, v2, E, dlog, F_tr, _pt, _Jd = _fwd()
         E1 = float(E)
