@@ -24,7 +24,7 @@ from typing import NamedTuple
 import torch
 
 __all__ = ["lame", "psi_of", "plastic_step", "Plast", "ip_energy", "residual",
-           "set_inv_barrier",
+           "set_inv_barrier", "set_cell_barrier",
            "smooth_noise", "mat_name", "bc_node_mask", "bc_energy",
            "grid_ip_sub", "grid_ip_pts", "jac_neighbors", "grad_from_points",
            "p2g_ls", "g2p_from_nodes"]
@@ -236,6 +236,9 @@ def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
     _ip = _inv_pen(F_tr, cfg)
     if _ip is not None:
         psi = psi + _ip
+    _cp = _cell_pen(jac, cfg)
+    if _cp is not None:
+        psi = psi + _cp
     if elastic_mask is not None:
         # det 가 문턱 아래인 사면체는 제대로 된 셀이 아니다 -- 거기서 나온
         # Psi 는 발산하거나 뜻이 없으므로 **탄성항에서만** 뺀다 (관성·중력·
@@ -610,7 +613,8 @@ def bc_node_mask(uniq, n_grid, dx, cfg, dtype, dev):
 # --bc_mode barrier 가 켜지면 (kappa, dhat) 가 들어온다. 그러면 bc_energy 가
 # 이차 벌점 대신 **IPC 꼴 장벽**을 쓴다 (관통이 원천적으로 불가능해진다).
 _BARRIER = [None]
-_INVB = [None]        # 뒤집힘 장벽 (kappa, Ĵ, 연장)
+_INVB = [None]        # 누적 F 의 뒤집힘 장벽 (kappa, Ĵ, 연장)
+_CELLB = [None]       # **이번 스텝 셀** (jac) 의 뒤집힘 장벽
 
 
 def set_inv_barrier(kappa=None, jhat=0.3, ext="linear"):
@@ -622,6 +626,27 @@ def set_inv_barrier(kappa=None, jhat=0.3, ext="linear"):
     """
     _INVB[0] = (None if kappa is None
                 else (float(kappa), float(jhat), str(ext)))
+
+
+def set_cell_barrier(kappa=None, jhat=0.3, ext="linear"):
+    """이번 스텝의 셀 사상 det(grad Phi) 에 로그 장벽을 건다.
+
+    `set_inv_barrier` 가 막는 것은 **누적** F 의 뒤집힘이다. 한 스텝 안에서
+    셀 자체가 뒤집히는 것(det(jac) <= 0)은 따로 막아야, 이미 뒤집힌 상태에서
+    출발한 셀이 더 접히는 것까지 벌할 수 있다.
+    """
+    _CELLB[0] = (None if kappa is None
+                 else (float(kappa), float(jhat), str(ext)))
+
+
+def _cell_pen(jac, cfg):
+    """셀 사상 뒤집힘 장벽의 에너지밀도 [N]. 꺼져 있거나 jac 이 없으면 None."""
+    if _CELLB[0] is None or jac is None:
+        return None
+    kap, jh, ek = _CELLB[0]
+    J = torch.linalg.det(jac.to(torch.float64)).to(jac.dtype)
+    mu, _ = lame(cfg["E"], cfg["nu"])
+    return kap * mu * _barrier_b(J, jh, ext_kind=ek)
 
 
 def _inv_pen(F, cfg):

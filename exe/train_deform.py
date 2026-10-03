@@ -176,6 +176,10 @@ ap.add_argument("--inv_jhat", type=float, default=0.3,
                 help="그 장벽이 작동하기 시작하는 det F")
 ap.add_argument("--inv_ext", choices=["quad", "linear"], default="linear",
                 help="det <= 0 쪽 연장 방식")
+ap.add_argument("--cell_barrier", type=float, default=0.0,
+                help="이번 스텝 셀 사상 det(grad Phi) 의 뒤집힘 장벽 세기")
+ap.add_argument("--cell_jhat", type=float, default=0.3)
+ap.add_argument("--cell_ext", choices=["quad", "linear"], default="linear")
 ap.add_argument("--bc_ext", choices=["quad", "linear"], default="quad",
                 help="장벽의 d<=eps 연장. quad=값·기울기·곡률을 잇는다(기본, "
                      "깊이에 비례해 복원력이 커진다), linear=접선만 잇는다"
@@ -1081,6 +1085,12 @@ def _setup_inv_barrier(a):
               f"Ĵ {a.inv_jhat:g}, det<=0 연장 {a.inv_ext}", flush=True)
     else:
         phys_resid.set_inv_barrier(None)
+    if getattr(a, "cell_barrier", 0.0) > 0:
+        phys_resid.set_cell_barrier(a.cell_barrier, a.cell_jhat, a.cell_ext)
+        print(f"[뒤집힘] 셀 사상 det(grad Phi) 장벽 kappa {a.cell_barrier:g}, "
+              f"Ĵ {a.cell_jhat:g}, 연장 {a.cell_ext}", flush=True)
+    else:
+        phys_resid.set_cell_barrier(None)
 _DP_HOOK = [None]
 # 망을 아예 부르지 않고 바로 출력을 내는 경로. None 을 돌려주면 망을 쓴다.
 _DP_FAST = [None]
