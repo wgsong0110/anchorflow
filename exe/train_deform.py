@@ -3243,6 +3243,9 @@ def _rollout(d, t0, L, gsel=None):
     _RO_CTRL = []
     _NODE_CAP[0] = _ROLLDUMP is not None
     F_ov = take(traj_F(d)[t0], gsel).float() if a.ov_roll > 0 else None
+    if phys_resid.mat_name(d["cfg"]) == "watermelon":
+        # CD-MPM 경화 상태(logJp)는 롤아웃마다 초기값 -0.04 에서 다시 시작한다
+        phys_resid.cdmpm_reset(x.shape[0], x.device, x.dtype)
     for i in range(L):
         if a.ov_roll > 0:
             # 출력만 최적화: 서브스텝·jvp 없이 프레임마다 변수를 내린다
