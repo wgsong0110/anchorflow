@@ -1328,18 +1328,23 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                             _CTRL_ERR[2] = float(
                                 (tau * _NV[0])[_NM[0]].norm(dim=-1).mean()
                                 if bool(_NM[0].any()) else 0.0)
-                _dus.append(SX.g2p_pre(_rwk, _lmk, dpn_k))
+                _duk = SX.g2p_pre(_rwk, _lmk, dpn_k)
                 _u1, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, dpn_k)
+                if a.hex_jac:
+                    # **육면체 삼선형**: 입자 변위와 야코비안을 같은 사상에서
+                    # 뽑는다 (사면체 중심좌표 대신). 여덟 꼭짓점이 다 살아있지
+                    # 않은 입자만 사면체 값을 그대로 쓴다.
+                    _uh, _Jh, _hok = _hex_field(x, dpn_k, _lok, _latk, _nnk,
+                                                _uqk)
+                    _m1 = _hok.reshape(-1, 1)
+                    _duk = torch.where(_m1, _uh, _duk)
+                    _Jk = torch.where(_m1.unsqueeze(-1), _Jh, _Jk)
+                _dus.append(_duk)
                 if _k == 0 and a.smooth_nb > 0:
                     # **노드 변위를 이웃과 섞어** 야코비안을 만든다. 위치는
                     # 스무딩하지 않은 변위로 정한다 -- 변형 측정만 넓힌다.
                     _ds = _smooth_nodes(dpn_k, _uqk, _nnk)
                     _u3, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, _ds)
-                if _k == 0 and a.hex_jac:
-                    # **육면체 셀**에서 만든 야코비안으로 바꾼다 (섞기 가능)
-                    _Jh = _hex_jac(x, dpn_k, _lok, _latk, _nnk, _uqk, Jf0=_Jk)
-                    _wh = float(a.hex_mix)
-                    _Jk = _Jh if _wh >= 1.0 else (1.0 - _wh) * _Jk + _wh * _Jh
                 if _k == 0 and a.coarse_s > 1:
                     # **거친 사면체**: 같은 노드 변위를 s 칸 간격 큰 사면체로
                     # 다시 읽어 야코비안을 만든다 (오프셋 s³ 가지를 평균).
