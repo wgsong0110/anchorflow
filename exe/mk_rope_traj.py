@@ -22,6 +22,10 @@ ap.add_argument("--hold", type=int, default=12)
 ap.add_argument("--down", type=int, default=12)
 ap.add_argument("--up", type=int, default=12)
 ap.add_argument("--vz", type=float, default=1.5, help="내리고 올리는 속력")
+ap.add_argument("--ramp", type=int, default=0,
+                help="가감속 구간 프레임 수. 사다리꼴 속도 곡선을 쓰되 **이동 "
+                     "거리는 그대로** 유지하도록 최고 속도를 올린다 (명령이 "
+                     "한 프레임에 뒤집히면 손잡이 영역만 급격히 튄다)")
 ap.add_argument("--handle_r", type=float, default=0.03)
 ap.add_argument("--no_handle", action="store_true",
                 help="손잡이 없이 (중력과 바닥만으로 떨어뜨린다)")
@@ -71,8 +75,26 @@ T = a.hold + a.down + a.up + 1
 xs = x0.unsqueeze(0).expand(T, a.n, 3).clone()         # 기준은 정지 자세
 cid = int(x0[:, 2].argmax())                            # 윗끝 입자
 vel = torch.zeros(T, 1, 3)
-vel[a.hold:a.hold + a.down, 0, 2] = -a.vz
-vel[a.hold + a.down:, 0, 2] = a.vz
+if a.ramp > 0:
+    # 사다리꼴: r 프레임 가속 - 일정 - r 프레임 감속. 구간 합(=이동 거리)이
+    # 사각형과 같아지도록 최고 속도를 1/(1 - r/N) 배로 올린다.
+    def _trap(n, r):
+        r = min(int(r), n // 2)
+        w = torch.ones(n)
+        if r > 0:
+            ru = (torch.arange(r, dtype=torch.float32) + 0.5) / r
+            w[:r] = ru
+            w[n - r:] = ru.flip(0)
+        return w * (n / w.sum())
+    _wd = _trap(a.down, a.ramp)
+    _wu = _trap(a.up, a.ramp)
+    vel[a.hold:a.hold + a.down, 0, 2] = -a.vz * _wd
+    vel[a.hold + a.down:a.hold + a.down + a.up, 0, 2] = a.vz * _wu
+    print(f"[명령] 사다리꼴 가감속 {a.ramp} 프레임, 최고 속도 "
+          f"{a.vz * float(_wd.max()):.3f} (평균 {a.vz:.3f}), 이동 거리 보존")
+else:
+    vel[a.hold:a.hold + a.down, 0, 2] = -a.vz
+    vel[a.hold + a.down:, 0, 2] = a.vz
 d = dict(x=xs, F=torch.eye(3).expand(T, a.n, 3, 3).clone(), cfg=cfg,
          sel=torch.arange(a.n), n_full=a.n)
 if not a.no_handle:
