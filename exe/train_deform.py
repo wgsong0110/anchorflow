@@ -1196,7 +1196,21 @@ def node_feats(d, t, gsel, x, v, fe=None):
                                           off=_GRID_OFF[0],
                                           h_fix=(a.node_h or None)))
     idx, lam, _aux = SX.locate(x, lo, lat, nn)   # tau 에 무관 -- 한 번만
-    rows, uniq = SX.active_nodes(idx)          # **점유 사면체의 꼭짓점만**
+    if a.hex_jac:
+        # 육면체 삼선형을 쓰면 원소가 **셀**이다 -- 활성 노드도 셀의 여덟
+        # 꼭짓점 전부여야 한다 (사면체 네 개만 살리면 나머지 넷이 없어서
+        # 일부 입자가 사면체로 떨어진다). ci 는 nn-2 로 잘려 있어 ci+1 은 항상
+        # 격자 안이다.
+        _nnl = [int(nn[k]) for k in range(3)]
+        _o8 = torch.tensor([[i_, j_, k_] for i_ in (0, 1) for j_ in (0, 1)
+                            for k_ in (0, 1)], device=x.device,
+                           dtype=torch.long)
+        _v8 = _aux[0].unsqueeze(1) + _o8.unsqueeze(0)        # [N,8,3]
+        _f8 = ((_v8[..., 0] * _nnl[1] + _v8[..., 1]) * _nnl[2] + _v8[..., 2])
+        _rall, uniq = SX.active_nodes(torch.cat([idx, _f8], 1))
+        rows = _rall[:, :4]
+    else:
+        rows, uniq = SX.active_nodes(idx)      # **점유 사면체의 꼭짓점만**
     Mn = int(uniq.numel())
     npos = SX.node_pos(lo, lat, nn, uniq)
     hn = lat.s                                 # 길이 단위 = 면내 간격 h
@@ -1336,9 +1350,12 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                     # 않은 입자만 사면체 값을 그대로 쓴다.
                     _uh, _Jh, _hok = _hex_field(x, dpn_k, _lok, _latk, _nnk,
                                                 _uqk)
-                    _m1 = _hok.reshape(-1, 1)
-                    _duk = torch.where(_m1, _uh, _duk)
-                    _Jk = torch.where(_m1.unsqueeze(-1), _Jh, _Jk)
+                    if not bool(_hok.all()):
+                        raise SystemExit(
+                            f"--hex_jac: 여덟 꼭짓점이 없는 입자 "
+                            f"{int((~_hok).sum())} 개 -- 활성 노드 구성이 "
+                            f"셀 기준이 아니다")
+                    _duk, _Jk = _uh, _Jh
                 _dus.append(_duk)
                 if _k == 0 and a.smooth_nb > 0:
                     # **노드 변위를 이웃과 섞어** 야코비안을 만든다. 위치는
