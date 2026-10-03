@@ -25,6 +25,7 @@ ap.add_argument("--frame", type=int, default=27)
 ap.add_argument("--rmul", type=float, default=3.0, help="손잡이 반경의 몇 배 안")
 ap.add_argument("--out_det", required=True)
 ap.add_argument("--out_q", required=True)
+ap.add_argument("--out_frac", default="")
 a = ap.parse_args()
 
 
@@ -80,6 +81,44 @@ for q in ax:
     q.axvline(a.frame, color="gray", ls=":", lw=1)
 fig.tight_layout(); fig.savefig(a.out_det)
 print(f"[저장] {a.out_det}", flush=True)
+
+# ---- 뒤집힌 입자 비율: 전체 / R 안 / 3R 안 ----
+if a.out_frac:
+    G = np.asarray(D["gt"], dtype=np.float64)
+    def frac(M, A):
+        out = np.zeros((T, 3)); cnt = np.zeros((T, 2))
+        for t in range(T):
+            neg = M[t] < 0
+            d = np.linalg.norm(A[t] - A[t, cid], axis=1)
+            i1, i3 = d <= R, d <= a.rmul * R
+            out[t, 0] = neg.mean()
+            out[t, 1] = neg[i1].mean() if i1.any() else np.nan
+            out[t, 2] = neg[i3].mean() if i3.any() else np.nan
+            cnt[t] = (i1.sum(), i3.sum())
+        return out * 100.0, cnt
+    Fo, Co_ = frac(fs, P)
+    Fg, Cg_ = frac(gs, G)
+    print(f"[뒤집힌 입자 비율 %] 우리 전체 최대 {np.nanmax(Fo[:,0]):.2f} "
+          f"R 안 최대 {np.nanmax(Fo[:,1]):.2f} {a.rmul:g}R 안 최대 "
+          f"{np.nanmax(Fo[:,2]):.2f} | PG 전체 최대 {np.nanmax(Fg[:,0]):.2f}",
+          flush=True)
+    print(f"  손잡이 R 안 입자 수 {int(Co_[:,0].min())}~{int(Co_[:,0].max())}, "
+          f"{a.rmul:g}R 안 {int(Co_[:,1].min())}~{int(Co_[:,1].max())}", flush=True)
+    for t in range(0, T, max(1, T // 10)):
+        print(f"   프레임 {t:3d}: 전체 {Fo[t,0]:5.2f}%  R 안 {Fo[t,1]:5.2f}% "
+              f"({int(Co_[t,0])}개)  {a.rmul:g}R 안 {Fo[t,2]:5.2f}% "
+              f"({int(Co_[t,1])}개)", flush=True)
+    f3, x3 = plt.subplots(figsize=(8.2, 4.6), dpi=120)
+    for j, (lab, col, ls) in enumerate((("전체", "k", "-"),
+                                        ("손잡이 R 안", "crimson", "-"),
+                                        (f"손잡이 {a.rmul:g}R 안", "darkorange", "-"))):
+        x3.plot(np.arange(T), Fo[:, j], color=col, ls=ls, lw=2, label=f"우리 {lab}")
+    x3.plot(np.arange(T), Fg[:, 0], color="royalblue", lw=1.6, ls="--",
+            label="PG 전체")
+    x3.set_xlabel("프레임"); x3.set_ylabel("det<0 입자 비율 (%)")
+    x3.set_title("뒤집힌 셀 안의 입자 비율"); x3.grid(alpha=0.25); x3.legend()
+    f3.tight_layout(); f3.savefig(a.out_frac)
+    print(f"[저장] {a.out_frac}", flush=True)
 
 # ---- 손잡이 주변 격자 변위 ----
 t = a.frame
