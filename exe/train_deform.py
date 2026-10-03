@@ -180,6 +180,10 @@ ap.add_argument("--cell_barrier", type=float, default=0.0,
                 help="이번 스텝 셀 사상 det(grad Phi) 의 뒤집힘 장벽 세기")
 ap.add_argument("--cell_jhat", type=float, default=0.3)
 ap.add_argument("--cell_ext", choices=["quad", "linear"], default="linear")
+ap.add_argument("--hex_hg", type=float, default=0.0,
+                help="육면체 모래시계 안정화 세기 (0 이면 끔). 셀마다 "
+                     "영에너지 모드 네 개의 진폭에 0.5*k*mu*V*(q/h)^2 을 "
+                     "더한다")
 ap.add_argument("--hex_jac", action="store_true",
                 help="육면체 셀의 **삼선형** 사상으로 입자 변위와 야코비안을 "
                      "함께 만든다 (사면체 중심좌표 대신)")
@@ -1304,8 +1308,9 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 # 개로만 뿌리면 나머지 네 노드가 0 으로 남아 첫 프레임부터
                 # 셀이 접힌다 (실측: 프레임 0 에 det<0 14.7%).
                 if a.hex_jac:
-                    _p8, _, _N8, _ = _hex_struct(x, _nfk[2][0], _nfk[2][1],
-                                                 _nfk[2][2], _nfk[5])
+                    _p8, _, _N8, _, _ = _hex_struct(x, _nfk[2][0],
+                                                    _nfk[2][1], _nfk[2][2],
+                                                    _nfk[5])
                     _rr, _ll, _nc = _p8, _N8, 8
                 else:
                     _rr, _ll, _nc = _rwk, _lmk, 4
@@ -1359,6 +1364,9 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                     # 않은 입자만 사면체 값을 그대로 쓴다.
                     _uh, _Jh, _hok = _hex_field(x, dpn_k, _lok, _latk, _nnk,
                                                 _uqk)
+                    if _k == 0 and a.hex_hg > 0:
+                        _HG_LAST[0] = (dpn_k, _hex_struct(
+                            x, _lok, _latk, _nnk, _uqk)[4], _latk)
                     if not bool(_hok.all()):
                         raise SystemExit(
                             f"--hex_jac: 여덟 꼭짓점이 없는 입자 "
@@ -2826,6 +2834,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                        jac=_Jd)
         if _ecb is not None:
             E = E + _ecb / nrm
+        if a.hex_hg > 0 and _HG_LAST[0] is not None:
+            _dh, _c8, _lt = _HG_LAST[0]
+            E = E + _hex_hg_energy(_dh, _c8, _lt, cfg, a.hex_hg) / nrm
         if _JC_LAST[0] is not None:
             _Jc, _vc = _JC_LAST[0]
             _psc, _ = phys_resid.psi_of(_Jc.to(F.dtype) @ F, cfg, FRAME_DT)
@@ -3054,6 +3065,7 @@ def _coarse_jac(x, dpn, lo, lat, nn, uniq, Jf0=None):
 
 
 _HX_HOLD = [None]
+_HG_LAST = [None]   # (노드 변위, 점유 셀 꼭짓점, 격자) -- 모래시계 항용
 
 
 def _hex_struct(x, lo, lat, nn, uniq):
@@ -3087,7 +3099,13 @@ def _hex_struct(x, lo, lat, nn, uniq):
     _dN = torch.stack([dw[..., 0] * w[..., 1] * w[..., 2],
                        w[..., 0] * dw[..., 1] * w[..., 2],
                        w[..., 0] * w[..., 1] * dw[..., 2]], -1)
-    out = (_pos, _ok, _N, _dN)
+    # 모래시계 안정화는 **셀마다** 한 번 걸어야 하므로 점유 셀을 추린다
+    _cflat = (ci[:, 0] * nnl[1] + ci[:, 1]) * nnl[2] + ci[:, 2]
+    _uc, _first = torch.unique(_cflat, return_inverse=True)
+    _sel = torch.zeros(_uc.numel(), dtype=torch.long, device=x.device)
+    _sel.scatter_(0, _first, torch.arange(_cflat.numel(), device=x.device))
+    _cell8 = _pos[_sel]                                # [C,8]
+    out = (_pos, _ok, _N, _dN, _cell8)
     if isinstance(_h, dict):
         _h[_key] = out
     return out
@@ -3102,12 +3120,44 @@ def _hex_field(x, dpn, lo, lat, nn, uniq):
     입자 변위와 변형구배가 **같은 사상**에서 나온다. 사면체(중심좌표) 쪽은 셀을
     6 조각으로 쪼개 조각마다 J 가 상수였다.
     """
-    _pos, _ok, _N, _dN = _hex_struct(x, lo, lat, nn, uniq)
+    _pos, _ok, _N, _dN, _ = _hex_struct(x, lo, lat, nn, uniq)
     U = dpn[_pos]                                      # [N,8,3]
     u = (U * _N.to(U.dtype).unsqueeze(-1)).sum(1)
     G = torch.einsum("nmi,nmj->nij", U, _dN.to(U.dtype)) @ lat.Ai.to(U.dtype)
     J = torch.eye(3, device=U.device, dtype=U.dtype) + G
     return u, J, _ok
+
+
+_HG_GAMMA = [None]
+
+
+def _hex_hg_energy(dpn, cell8, lat, cfg, kappa):
+    """삼선형 육면체의 **모래시계(영에너지) 모드** 안정화 에너지.
+
+    꼭짓점 부호 s = 2o - 1 로 만든 네 벡터
+
+        G1 = sx sy,  G2 = sy sz,  G3 = sx sz,  G4 = sx sy sz
+
+    는 강체·선형 변위장과 직교한다 (sum_m G_m = 0, sum_m G_m x_m = 0). 그래서
+    이 성분은 변형을 하나도 내지 않으면서 셀을 일그러뜨릴 수 있고, 변형을
+    입자 위치에서만 재는 우리 설정에서 최적화가 공짜로 키운다. 진폭
+    q_a = sum_m G_a,m u_m 에 벌점을 건다:
+
+        E = 0.5 k mu V sum_a |q_a / h|^2 / 8
+    """
+    if _HG_GAMMA[0] is None:
+        _o = torch.tensor([[i_, j_, k_] for i_ in (0, 1) for j_ in (0, 1)
+                           for k_ in (0, 1)], dtype=dpn.dtype,
+                          device=dpn.device)
+        sx, sy, sz = (2.0 * _o - 1.0).unbind(-1)
+        _HG_GAMMA[0] = torch.stack([sx * sy, sy * sz, sx * sz, sx * sy * sz])
+    G = _HG_GAMMA[0].to(dpn.dtype)                      # [4,8]
+    U = dpn[cell8]                                      # [C,8,3]
+    q = torch.einsum("am,cmi->cai", G, U)               # [C,4,3]
+    mu, _ = phys_resid.lame(cfg["E"], cfg["nu"])
+    V = float(abs(torch.linalg.det(lat.A.double())))
+    h = float(lat.s)
+    return 0.5 * kappa * mu * V * (q / h).pow(2).sum() / 8.0
 
 
 def _ens_offsets(n):
