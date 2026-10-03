@@ -24,6 +24,7 @@ from typing import NamedTuple
 import torch
 
 __all__ = ["lame", "psi_of", "plastic_step", "Plast", "ip_energy", "residual",
+           "set_inv_barrier",
            "smooth_noise", "mat_name", "bc_node_mask", "bc_energy",
            "grid_ip_sub", "grid_ip_pts", "jac_neighbors", "grad_from_points",
            "p2g_ls", "g2p_from_nodes"]
@@ -197,6 +198,9 @@ def ip_energy(x2, xtil, F_trial, mass, vol, cfg, h, free=None, g=None,
     일으키는 경로가 바로 그것이라, 여기서 빼면 안 된다.
     """
     psi, dlog = psi_of(F_trial, cfg, h)
+    _ip = _inv_pen(F_trial, cfg)
+    if _ip is not None:
+        psi = psi + _ip
     e_el = (vol * psi).sum()
     if free is None:
         free = slice(None)
@@ -229,6 +233,9 @@ def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
     """
     F_tr = (jac.to(F.dtype) @ F) if jac is not None else F
     psi, dlog = psi_of(F_tr, cfg, h)
+    _ip = _inv_pen(F_tr, cfg)
+    if _ip is not None:
+        psi = psi + _ip
     if elastic_mask is not None:
         # det 가 문턱 아래인 사면체는 제대로 된 셀이 아니다 -- 거기서 나온
         # Psi 는 발산하거나 뜻이 없으므로 **탄성항에서만** 뺀다 (관성·중력·
@@ -603,6 +610,28 @@ def bc_node_mask(uniq, n_grid, dx, cfg, dtype, dev):
 # --bc_mode barrier 가 켜지면 (kappa, dhat) 가 들어온다. 그러면 bc_energy 가
 # 이차 벌점 대신 **IPC 꼴 장벽**을 쓴다 (관통이 원천적으로 불가능해진다).
 _BARRIER = [None]
+_INVB = [None]        # 뒤집힘 장벽 (kappa, Ĵ, 연장)
+
+
+def set_inv_barrier(kappa=None, jhat=0.3, ext="linear"):
+    """det F 에 로그 장벽을 건다. 끌 때는 kappa=None.
+
+    탄성은 sigma 를 C=FᵀF 에서 얻어 **부호를 못 본다** -- det<0 인 셀이 그 반사
+    상과 같은 에너지를 갖고 되돌릴 힘이 없다. J = det F 에 b(J) 를 더해 J -> 0
+    을 발산시키고, J <= 0 쪽은 선형 연장으로 **일정한 복원 기울기**를 남긴다.
+    """
+    _INVB[0] = (None if kappa is None
+                else (float(kappa), float(jhat), str(ext)))
+
+
+def _inv_pen(F, cfg):
+    """뒤집힘 장벽의 에너지밀도 [N]. 꺼져 있으면 None."""
+    if _INVB[0] is None:
+        return None
+    kap, jh, ek = _INVB[0]
+    J = torch.linalg.det(F.to(torch.float64)).to(F.dtype)
+    mu, _ = lame(cfg["E"], cfg["nu"])
+    return kap * mu * _barrier_b(J, jh, ext_kind=ek)
 
 
 def set_barrier(kappa=None, dhat=None, ext="quad"):

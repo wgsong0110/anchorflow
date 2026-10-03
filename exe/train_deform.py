@@ -169,6 +169,13 @@ ap.add_argument("--bc_mode", choices=["project", "barrier"], default="project",
                      "증분 포텐셜에 더한다 (사영을 끈다 -- 관통이 원천적으로 "
                      "불가능하고 죽은 기울기가 없다)")
 ap.add_argument("--bc_kappa", type=float, default=1.0)
+ap.add_argument("--inv_barrier", type=float, default=0.0,
+                help="det F 뒤집힘 장벽의 세기 (0 이면 끔). 에너지밀도에 "
+                     "kappa*mu*b(det F) 를 더한다")
+ap.add_argument("--inv_jhat", type=float, default=0.3,
+                help="그 장벽이 작동하기 시작하는 det F")
+ap.add_argument("--inv_ext", choices=["quad", "linear"], default="linear",
+                help="det <= 0 쪽 연장 방식")
 ap.add_argument("--bc_ext", choices=["quad", "linear"], default="quad",
                 help="장벽의 d<=eps 연장. quad=값·기울기·곡률을 잇는다(기본, "
                      "깊이에 비례해 복원력이 커진다), linear=접선만 잇는다"
@@ -1064,6 +1071,16 @@ _PROF_ON = bool(os.environ.get("AF_PROF"))
 _PROF = {}
 _CUR_T = [0]              # step_once 가 남기는 현재 프레임
 _CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1/K)
+
+
+def _setup_inv_barrier(a):
+    """뒤집힘 장벽을 켠다 (켤 때만 알린다)."""
+    if getattr(a, "inv_barrier", 0.0) > 0:
+        phys_resid.set_inv_barrier(a.inv_barrier, a.inv_jhat, a.inv_ext)
+        print(f"[뒤집힘] det F 로그 장벽 kappa {a.inv_barrier:g}, "
+              f"Ĵ {a.inv_jhat:g}, det<=0 연장 {a.inv_ext}", flush=True)
+    else:
+        phys_resid.set_inv_barrier(None)
 _DP_HOOK = [None]
 # 망을 아예 부르지 않고 바로 출력을 내는 경로. None 을 돌려주면 망을 쓴다.
 _DP_FAST = [None]
@@ -2170,6 +2187,8 @@ if a.bc_mode == "barrier":
     phys_resid.set_barrier(a.bc_kappa, _dh, a.bc_ext)
     print(f"[바닥] 장벽 에너지 b(d)=-(d-d̂)²ln(d/d̂), kappa {a.bc_kappa:g}, "
           f"d̂ {_dh:.5f}, 연장 {a.bc_ext} -- 하드 사영은 끈다", flush=True)
+
+_setup_inv_barrier(a)
 
 
 if a.out_var or a.ov_roll > 0:
