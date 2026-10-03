@@ -180,6 +180,11 @@ ap.add_argument("--cell_barrier", type=float, default=0.0,
                 help="이번 스텝 셀 사상 det(grad Phi) 의 뒤집힘 장벽 세기")
 ap.add_argument("--cell_jhat", type=float, default=0.3)
 ap.add_argument("--cell_ext", choices=["quad", "linear"], default="linear")
+ap.add_argument("--hex_jac", action="store_true",
+                help="야코비안을 사면체가 아니라 **육면체 셀**(8 꼭짓점)에서 "
+                     "최소제곱으로 만든다")
+ap.add_argument("--hex_mix", type=float, default=1.0,
+                help="육면체 야코비안의 섞는 비율 (1 이면 육면체만)")
 ap.add_argument("--snap_inv", type=int, default=0,
                 help="최적화 뒤 det<0 인 사면체를 det>=snap_eps 로 되돌리는 "
                      "**최소 이동** 사영을 이 횟수만큼 돌린다")
@@ -1332,6 +1337,11 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                     # 스무딩하지 않은 변위로 정한다 -- 변형 측정만 넓힌다.
                     _ds = _smooth_nodes(dpn_k, _uqk, _nnk)
                     _u3, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, _ds)
+                if _k == 0 and a.hex_jac:
+                    # **육면체 셀**에서 만든 야코비안으로 바꾼다 (섞기 가능)
+                    _Jh = _hex_jac(x, dpn_k, _lok, _latk, _nnk, _uqk, Jf0=_Jk)
+                    _wh = float(a.hex_mix)
+                    _Jk = _Jh if _wh >= 1.0 else (1.0 - _wh) * _Jk + _wh * _Jh
                 if _k == 0 and a.coarse_s > 1:
                     # **거친 사면체**: 같은 노드 변위를 s 칸 간격 큰 사면체로
                     # 다시 읽어 야코비안을 만든다 (오프셋 s³ 가지를 평균).
@@ -2808,6 +2818,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     _SM_HOLD[0] = "want"
     _OV_TGT[0] = ("want" if a.ov_init == "predict" else
                   (FRAME_DT * v.mean(0) + (FRAME_DT ** 2) * gv).detach())
+    _HX_HOLD[0] = "want"          # 육면체 색인도 프레임당 한 번만
     _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
     try:
       with torch.enable_grad():
@@ -2909,6 +2920,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     finally:
         _OV_CUR[0] = _ov
         _NF_HOLD[0] = None
+        _HX_HOLD[0] = None
         _CO_HOLD[0] = None
         _SM_HOLD[0] = None
         _OV_TGT[0] = None
@@ -3010,6 +3022,50 @@ def _coarse_jac(x, dpn, lo, lat, nn, uniq, Jf0=None):
     # 거친 사면체가 없는 입자는 미세 값을 그대로
     return torch.where(_has.reshape(-1, 1, 1), _Jc,
                        Jf0 if Jf0 is not None else torch.zeros_like(_Jc))
+
+
+_HX_HOLD = [None]
+
+
+def _hex_jac(x, dpn, lo, lat, nn, uniq, Jf0=None):
+    """야코비안을 **육면체 셀**에서 만든다 (8 꼭짓점 최소제곱).
+
+    사면체 쪽은 셀 하나를 6 조각으로 쪼개 조각마다 상수 J 를 주므로, 한 셀
+    안에서도 J 가 여섯 가지로 갈린다. 육면체는 셀 하나에 J 하나다:
+    꼭짓점 변위에 선형장을 최소제곱으로 맞추면
+
+        grad u = (1/2) (sum_m u_m c_m^T) A^{-1},   c_m = o_m - (1/2,1/2,1/2)
+
+    가 된다 (o_m 은 {0,1}^3, sum_m c_m c_m^T = 2 I 라 역행렬이 상수로 빠진다).
+    여덟 꼭짓점이 모두 살아있지 않은 입자는 사면체 값을 그대로 쓴다.
+    """
+    nnl = [int(nn[k]) for k in range(3)]
+    if isinstance(_HX_HOLD[0], tuple):
+        _pos, _ok, _cc = _HX_HOLD[0]
+    else:
+        _, _, _aux = SX.locate(x, lo, lat, nn)
+        ci = _aux[0]                                   # [N,3] 셀 정수좌표
+        _o = torch.tensor([[i_, j_, k_] for i_ in (0, 1) for j_ in (0, 1)
+                           for k_ in (0, 1)], device=x.device,
+                          dtype=torch.long)            # [8,3]
+        v = ci.unsqueeze(1) + _o.unsqueeze(0)          # [N,8,3]
+        _inb = ((v[..., 0] < nnl[0]) & (v[..., 1] < nnl[1])
+                & (v[..., 2] < nnl[2]))
+        flat = (v[..., 0] * nnl[1] + v[..., 1]) * nnl[2] + v[..., 2]
+        _pos = torch.searchsorted(uniq, flat.reshape(-1).clamp_min(0)
+                                  ).reshape(flat.shape).clamp(
+                                      max=uniq.numel() - 1)
+        _ok = ((uniq[_pos] == flat) & _inb).all(1)     # [N]
+        _cc = (_o.to(x.dtype) - 0.5)                   # [8,3]
+        if _HX_HOLD[0] is not None:
+            _HX_HOLD[0] = (_pos, _ok, _cc)
+    U = dpn[_pos]                                      # [N,8,3]
+    S = torch.einsum("nmi,mj->nij", U, _cc.to(U.dtype))
+    G = 0.5 * (S @ lat.Ai.to(U.dtype))
+    J = torch.eye(3, device=U.device, dtype=U.dtype) + G
+    if Jf0 is None:
+        return J
+    return torch.where(_ok.reshape(-1, 1, 1), J, Jf0)
 
 
 def _ens_offsets(n):
