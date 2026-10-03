@@ -181,10 +181,8 @@ ap.add_argument("--cell_barrier", type=float, default=0.0,
 ap.add_argument("--cell_jhat", type=float, default=0.3)
 ap.add_argument("--cell_ext", choices=["quad", "linear"], default="linear")
 ap.add_argument("--hex_jac", action="store_true",
-                help="야코비안을 사면체가 아니라 **육면체 셀**(8 꼭짓점)에서 "
-                     "최소제곱으로 만든다")
-ap.add_argument("--hex_mix", type=float, default=1.0,
-                help="육면체 야코비안의 섞는 비율 (1 이면 육면체만)")
+                help="육면체 셀의 **삼선형** 사상으로 입자 변위와 야코비안을 "
+                     "함께 만든다 (사면체 중심좌표 대신)")
 ap.add_argument("--snap_inv", type=int, default=0,
                 help="최적화 뒤 det<0 인 사면체를 det>=snap_eps 로 되돌리는 "
                      "**최소 이동** 사영을 이 횟수만큼 돌린다")
@@ -3027,24 +3025,31 @@ def _coarse_jac(x, dpn, lo, lat, nn, uniq, Jf0=None):
 _HX_HOLD = [None]
 
 
-def _hex_jac(x, dpn, lo, lat, nn, uniq, Jf0=None):
-    """야코비안을 **육면체 셀**에서 만든다 (8 꼭짓점 최소제곱).
+def _hex_field(x, dpn, lo, lat, nn, uniq):
+    """육면체 셀의 **삼선형(trilinear)** 사상: (u [N,3], J [N,3,3], 쓸 수 있나 [N]).
 
-    사면체 쪽은 셀 하나를 6 조각으로 쪼개 조각마다 상수 J 를 주므로, 한 셀
-    안에서도 J 가 여섯 가지로 갈린다. 육면체는 셀 하나에 J 하나다:
-    꼭짓점 변위에 선형장을 최소제곱으로 맞추면
+    셀 안 좌표 xi 에 대해 모양함수가
 
-        grad u = (1/2) (sum_m u_m c_m^T) A^{-1},   c_m = o_m - (1/2,1/2,1/2)
+        N_m(xi) = prod_k (xi_k if o_mk else 1 - xi_k),   o_m in {0,1}^3
 
-    가 된다 (o_m 은 {0,1}^3, sum_m c_m c_m^T = 2 I 라 역행렬이 상수로 빠진다).
-    여덟 꼭짓점이 모두 살아있지 않은 입자는 사면체 값을 그대로 쓴다.
+    이고, 입자 변위와 변형구배가 **같은 사상에서** 나온다:
+
+        u(xi)      = sum_m N_m(xi) u_m
+        grad_x u   = sum_m u_m (dN_m/dxi)^T Ai        (xi = Ai (x - lo) - ci)
+
+    사면체(중심좌표) 쪽은 셀을 6 조각으로 쪼개 조각마다 J 가 상수였다. 여기서는
+    셀 하나가 한 원소이고 J 가 입자 위치에 따라 매끄럽게 변한다. 여덟 꼭짓점이
+    모두 살아있지 않은 입자는 쓸 수 없다고 표시한다 (부르는 쪽이 사면체 값을 쓴다).
+    구조(색인·모양함수)는 프레임 안에서 x 가 고정이라 한 번만 만든다.
     """
     nnl = [int(nn[k]) for k in range(3)]
     if isinstance(_HX_HOLD[0], tuple):
-        _pos, _ok, _cc = _HX_HOLD[0]
+        _pos, _ok, _N, _dN = _HX_HOLD[0]
     else:
-        _, _, _aux = SX.locate(x, lo, lat, nn)
-        ci = _aux[0]                                   # [N,3] 셀 정수좌표
+        y = (x - lo) @ lat.Ai.T
+        ci = y.floor().long()
+        ci = torch.stack([ci[:, k].clamp(0, nnl[k] - 2) for k in range(3)], -1)
+        xi = (y - ci).clamp(0.0, 1.0)                  # [N,3]
         _o = torch.tensor([[i_, j_, k_] for i_ in (0, 1) for j_ in (0, 1)
                            for k_ in (0, 1)], device=x.device,
                           dtype=torch.long)            # [8,3]
@@ -3056,16 +3061,23 @@ def _hex_jac(x, dpn, lo, lat, nn, uniq, Jf0=None):
                                   ).reshape(flat.shape).clamp(
                                       max=uniq.numel() - 1)
         _ok = ((uniq[_pos] == flat) & _inb).all(1)     # [N]
-        _cc = (_o.to(x.dtype) - 0.5)                   # [8,3]
+        of = _o.to(xi.dtype)                           # [8,3]
+        # w[n,m,k] = xi_k if o_mk else 1-xi_k,  d/dxi_k = +1 / -1
+        w = of.unsqueeze(0) * xi.unsqueeze(1) + \
+            (1.0 - of).unsqueeze(0) * (1.0 - xi).unsqueeze(1)   # [N,8,3]
+        dw = (2.0 * of - 1.0).unsqueeze(0).expand_as(w)         # [N,8,3]
+        _N = w.prod(-1)                                          # [N,8]
+        # dN/dxi_k = dw_k * prod_{j!=k} w_j
+        _dN = torch.stack([dw[..., 0] * w[..., 1] * w[..., 2],
+                           w[..., 0] * dw[..., 1] * w[..., 2],
+                           w[..., 0] * w[..., 1] * dw[..., 2]], -1)  # [N,8,3]
         if _HX_HOLD[0] is not None:
-            _HX_HOLD[0] = (_pos, _ok, _cc)
+            _HX_HOLD[0] = (_pos, _ok, _N, _dN)
     U = dpn[_pos]                                      # [N,8,3]
-    S = torch.einsum("nmi,mj->nij", U, _cc.to(U.dtype))
-    G = 0.5 * (S @ lat.Ai.to(U.dtype))
+    u = (U * _N.to(U.dtype).unsqueeze(-1)).sum(1)
+    G = torch.einsum("nmi,nmj->nij", U, _dN.to(U.dtype)) @ lat.Ai.to(U.dtype)
     J = torch.eye(3, device=U.device, dtype=U.dtype) + G
-    if Jf0 is None:
-        return J
-    return torch.where(_ok.reshape(-1, 1, 1), J, Jf0)
+    return u, J, _ok
 
 
 def _ens_offsets(n):
