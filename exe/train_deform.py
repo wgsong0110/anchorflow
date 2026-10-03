@@ -120,6 +120,12 @@ ap.add_argument("--elast", choices=["full", "lin"], default="full",
                      "목적함수가 노드 변위의 2차형식이라 최적해가 선형계 한 번")
 ap.add_argument("--cg_iters", type=int, default=200,
                 help="--ov_opt cg 의 공액기울기 반복 수")
+ap.add_argument("--ctrl_barrier", type=float, default=0.0,
+                help="손잡이 구에 **비침투 장벽**을 건다 (0 이면 끔). 초기에 "
+                     "구 안이던 입자는 제외하고, 밖이던 입자가 구 안으로 못 "
+                     "들어오게 막는다. 값은 kappa (바닥 장벽과 같은 척도)")
+ap.add_argument("--ctrl_barrier_dhat", type=float, default=0.0,
+                help="손잡이 장벽이 켜지는 거리. 0 이면 반경의 1/4")
 ap.add_argument("--bc_mpm", action="store_true",
                 help="**접선 처리를 MPM 과 맞춘다**: sticky 접선 구속을 면에서 "
                      "dx 안 띠가 아니라 **면 아래** 입자에만 건다 (MPM 은 면 "
@@ -2621,6 +2627,28 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         if _BC_LAST[0] is not None:
             _am = _BC_LAST[0][1].reshape(-1) > 0.5
             fm = (~_am) if fm is None else (fm & ~_am)
+        if a.ctrl_barrier > 0 and "ctrl_id" in d:
+            # **손잡이 비침투**: 초기에 구 밖이던 입자가 구 안으로 못 들어온다.
+            # PG 에는 없는 항이다 (우리 쪽에만 더하는 구속이다).
+            if "_cb_out" not in d:
+                _c0 = ctrl_center(d, gsel, 0, take(d["x"][0], gsel))
+                _R0 = float(d["ctrl_R"].reshape(-1)[0])
+                _dm = (take(d["x"][0], gsel).unsqueeze(1)
+                       - _c0.unsqueeze(0)).norm(dim=-1).min(1).values
+                d["_cb_out"] = (_dm >= _R0).detach()
+            _tt2 = min(t, d["ctrl_vel"].shape[0] - 1)
+            _cc2 = ctrl_center(d, gsel, _tt2, x)
+            _R2 = float(d["ctrl_R"].reshape(-1)[0])
+            _dh2 = (a.ctrl_barrier_dhat if a.ctrl_barrier_dhat > 0
+                    else 0.25 * _R2)
+            _dd = (x2.unsqueeze(1) - _cc2.unsqueeze(0)).norm(dim=-1).min(1
+                                                                        ).values
+            _sd2 = _dd - _R2                       # 구 밖이면 양수
+            _bb = phys_resid._barrier_b(_sd2, _dh2, ext_kind="linear")
+            _ecb = (a.ctrl_barrier * m / (FRAME_DT ** 2) * _bb
+                    * d["_cb_out"].to(_bb.dtype)).sum()
+        else:
+            _ecb = None
         if _TAU is not None:
             # **2차 근사 탄성**: <tau, dJ> + V[mu|sym dJ|² + (lam/2) tr(dJ)²]
             _dJ = _Jd - torch.eye(3, device=dev, dtype=_Jd.dtype)
@@ -2644,6 +2672,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             E, dlog, F_tr, _pt = ip_of(x, x2 - x, v, F, m, vol, cfg, FRAME_DT,
                                        ng_, gl_, g=gv, norm=nrm, free=fm,
                                        jac=_Jd)
+        if _ecb is not None:
+            E = E + _ecb / nrm
         if _JC_LAST[0] is not None:
             _Jc, _vc = _JC_LAST[0]
             _psc, _ = phys_resid.psi_of(_Jc.to(F.dtype) @ F, cfg, FRAME_DT)
