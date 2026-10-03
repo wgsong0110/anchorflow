@@ -180,6 +180,11 @@ ap.add_argument("--cell_barrier", type=float, default=0.0,
                 help="이번 스텝 셀 사상 det(grad Phi) 의 뒤집힘 장벽 세기")
 ap.add_argument("--cell_jhat", type=float, default=0.3)
 ap.add_argument("--cell_ext", choices=["quad", "linear"], default="linear")
+ap.add_argument("--snap_inv", type=int, default=0,
+                help="최적화 뒤 det<0 인 사면체를 det>=snap_eps 로 되돌리는 "
+                     "**최소 이동** 사영을 이 횟수만큼 돌린다")
+ap.add_argument("--snap_eps", type=float, default=0.05,
+                help="사영이 목표로 하는 det 하한")
 ap.add_argument("--ov_clip", type=float, default=0.0,
                 help="출력만 최적화에서 변수 기울기의 전체 노름을 이 값으로 "
                      "자른다 (0 이면 안 자른다). 장벽이 터질 때 한 스텝이 "
@@ -1100,6 +1105,7 @@ _DP_HOOK = [None]
 _DP_FAST = [None]
 # "want" 를 넣으면 다음 셀집계 결과를 붙잡아 이후 호출에서 재사용한다
 _NF_HOLD = [None]
+_SNAP_N = [0]       # 사영이 손본 사면체 최대 개수 (보고용)
 _OV_TGT = [None]           # --ov_init target 이 쓸 자유낙하 평행이동 [3]
 # AF_OV_CURVE=경로 를 주면 프레임별 (반복, E) 곡선을 그 경로에 남긴다
 _CURVE = [] if os.environ.get("AF_OV_CURVE") else None
@@ -2177,6 +2183,56 @@ if a.roll_scen:
           f"{(len(XS) - 1) / max(_wall, 1e-9):.2f} FPS", flush=True)
     raise SystemExit(0)
 
+def _snap_inverted(st, iters, eps):
+    """det<0 인 사면체를 det>=eps 로 되돌리는 **최소 이동** 사영.
+
+    사면체마다 det 은 그 네 노드의 변위만으로 정해지므로, 제약
+    g = eps - det >= 0 을 1차로 푸는 최소 노름 보정은
+
+        d(dp_i) = g / ||grad g||^2 * grad_i g
+
+    이다 (PBD 사영과 같은 식). 노드를 공유하는 사면체들은 평균한다. 손잡이
+    노드는 뒤에서 명령으로 다시 덮이므로 따로 빼지 않는다.
+    """
+    ens = _NF_HOLD[0]
+    if iters <= 0 or not ens or ens == "want":
+        return 0
+    n_fix = 0
+    for _k in range(len(ens)):
+        var = (st.get("ov") or [])[_k] if st.get("ov") else None
+        if var is None:
+            continue
+        (_ink, _npk, (_lok, _latk, _nnk), _rwk, _lmk, _uqk, _e, _lxk) = ens[_k]
+        _ci, rank, _perm = _lxk
+        Ai = _latk.Ai
+        I3 = torch.eye(3, device=var.device, dtype=var.dtype)
+        rows = _rwk.reshape(-1)
+        for _ in range(int(iters)):
+            with torch.enable_grad():
+                dpc = var.detach()[_rwk].requires_grad_(True)
+                dd = (dpc[:, 1:] - dpc[:, :-1]).transpose(1, 2)
+                Dy = dd.gather(2, rank.unsqueeze(1).expand(-1, 3, -1))
+                det = torch.linalg.det(I3 + Dy @ Ai.to(dpc.dtype))
+                need = (eps - det).clamp_min(0.0)
+                bad = int((det < eps).sum())
+                if bad == 0:
+                    break
+                g = torch.autograd.grad(det.sum(), dpc)[0]      # [N,4,3]
+            with torch.no_grad():
+                gn2 = (g * g).sum((1, 2)).clamp_min(1e-12)
+                corr = (need / gn2).view(-1, 1, 1) * g
+                num = torch.zeros_like(var)
+                cnt = torch.zeros(var.shape[0], 1, device=var.device,
+                                  dtype=var.dtype)
+                num.index_add_(0, rows, corr.reshape(-1, 3).to(var.dtype))
+                cnt.index_add_(0, rows,
+                               (need > 0).view(-1, 1).repeat(1, 4).reshape(-1, 1)
+                               .to(var.dtype))
+                var.data.add_(num / cnt.clamp_min(1.0))
+            n_fix = max(n_fix, bad)
+    return n_fix
+
+
 def _ov_clip_grads(st):
     """변수 기울기의 전체 노름을 --ov_clip 으로 자른다.
 
@@ -2804,6 +2860,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다")
                 st["ov_opt"] = _mk_ov_opt(_vs)
             st["ov_opt"].step(_closure)
+            if a.snap_inv > 0:
+                _nb = _snap_inverted(st, a.snap_inv, a.snap_eps)
+                _SNAP_N[0] = max(_SNAP_N[0], _nb)
             E0 = _E0[0]
         else:
             for _k in range(a.ov_roll):
@@ -2822,6 +2881,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 E.backward()
                 _ov_clip_grads(st)
                 st["ov_opt"].step()
+            if a.snap_inv > 0:
+                _SNAP_N[0] = max(_SNAP_N[0],
+                                 _snap_inverted(st, a.snap_inv, a.snap_eps))
         x2, v2, E, dlog, F_tr, _pt, _Jd = _fwd()
         E1 = float(E)
         if os.environ.get("AF_OV_DIAG"):
