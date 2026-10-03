@@ -33,6 +33,12 @@ ap.add_argument("--handle_mark", choices=["frame", "init"], default="frame",
                      "init=**첫 프레임에 반경 안이던 것**(정체를 고정해 어디로 "
                      "갔는지 따라갈 수 있다)")
 ap.add_argument("--handle_s", type=float, default=1.6, help="빨간 점 크기")
+ap.add_argument("--znow_gamma", type=float, default=1.0,
+                help="--color znow 의 색 분포. 1 보다 작으면 **낮은 z 쪽 색 "
+                     "차이가 커진다** (바닥 근처를 자세히 보려면 0.3~0.5)")
+ap.add_argument("--znow_lo", type=float, default=0.0,
+                help="znow 색 범위 하한 (0 이면 1 백분위)")
+ap.add_argument("--znow_hi", type=float, default=0.0)
 ap.add_argument("--mark", nargs="+", default=[],
                 help="'프레임:이름' 꼴. 그 프레임부터 제목에 표시하고 그 "
                      "프레임에서는 테두리를 굵게 한다 (예: 27:바닥닿음 50:상승)")
@@ -200,7 +206,18 @@ if a.color == "znow":
     CLAB += f"{np.percentile(_allz,99):.2f})"
     print(f"[znow] 색 범위 {np.percentile(_allz,1):.4f} ~ "
           f"{np.percentile(_allz,99):.4f}", flush=True)
-    _ZLO = float(np.percentile(_allz, 1)); _ZHI = float(np.percentile(_allz, 99))
+    _ZLO = (a.znow_lo if a.znow_lo != 0 else float(np.percentile(_allz, 1)))
+    _ZHI = (a.znow_hi if a.znow_hi != 0 else float(np.percentile(_allz, 99)))
+    if a.znow_gamma != 1.0:
+        print(f"[znow] 감마 {a.znow_gamma} -- 낮은 z 쪽 색 차이를 키운다",
+              flush=True)
+
+def _zmap(z):
+    if a.znow_gamma == 1.0:
+        return z
+    u = np.clip((z - _ZLO) / max(_ZHI - _ZLO, 1e-12), 0.0, 1.0)
+    return _ZLO + (_ZHI - _ZLO) * (u ** a.znow_gamma)
+
 
 VLO, VHI = (_ZLO, _ZHI) if a.color == "znow" else (0.0, 2.0) if a.color == "cell0" else (
     ((0.0, _w) if a.color == "normE" else
@@ -241,7 +258,7 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
             mP |= np.linalg.norm(P[t] - _c, axis=-1) < _R_CTRL
 
     if a.color == "znow":
-        CVAL = G[t][:, 2]
+        CVAL = _zmap(G[t][:, 2])
     _oG = slice(None) if mG is None else ~mG
     _cG = (CRGB[_oG] if CRGB is not None else
            ("0.25" if CVAL is None else CVAL[_oG]))
