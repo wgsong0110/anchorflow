@@ -24,6 +24,7 @@ from typing import NamedTuple
 import torch
 
 __all__ = ["lame", "psi_of", "plastic_step", "Plast", "ip_energy", "residual",
+           "cdmpm_reset", "cdmpm_state",
            "set_inv_barrier", "set_cell_barrier",
            "smooth_noise", "mat_name", "bc_node_mask", "bc_energy",
            "grid_ip_sub", "grid_ip_pts", "jac_neighbors", "grad_from_points",
@@ -85,9 +86,122 @@ def _sig_vec(F):
 
 
 class Plast(NamedTuple):
-    """소성 사영에 필요한 것: 주응력 공간 보정과 그 기저."""
+    """소성 사영에 필요한 것: 주응력 공간 보정과 그 기저.
+
+    jp 는 CD-MPM 의 경화 상태(logJp) 새 값이다. 한 프레임에 여러 번 부르는
+    에너지 평가에서는 **읽기만** 하고, plastic_step 에서 한 번만 commit 한다.
+    """
     dlog: torch.Tensor
     V: torch.Tensor
+    jp: "torch.Tensor | None" = None
+
+
+# --- CD-MPM (GaussianFluent 의 watermelon 재질) ----------------------
+#   비연관 Cam-Clay 되돌림 + neo-Hookean Borden 에너지. 식은 GF 원본 그대로다
+#   (mpm_utils.NonAssociativeCamClay_return_mapping / kirchoff_stress_
+#   neoHookeanBoarden). 경화 상태 logJp 는 입자마다 하나이고 초기값 -0.04.
+_JP = [None]
+
+
+def cdmpm_reset(n, device=None, dtype=torch.float32, alpha0=-0.04):
+    """경화 상태를 초기화한다 (롤아웃 시작에서 부른다)."""
+    _JP[0] = torch.full((n,), float(alpha0), device=device, dtype=dtype)
+
+
+def cdmpm_state():
+    return _JP[0]
+
+
+def _cdmpm_params(cfg):
+    mu, lam = lame(cfg["E"], cfg["nu"])
+    kappa = 2.0 * mu / 3.0 + lam
+    phi = float(cfg.get("friction_angle", 45.0))
+    sin_phi = math.sin(phi / 180.0 * math.pi)
+    alpha = math.sqrt(2.0 / 3.0) * 2.0 * sin_phi / (3.0 - sin_phi)
+    M = alpha * 3.0 / math.sqrt(2.0 / 3.0)          # dim = 3
+    return (mu, kappa, M, float(cfg.get("beta", 1.0)),
+            float(cfg.get("xi", 3.0)), float(cfg.get("hardening", 1.0)))
+
+
+def _psi_borden(sig, mu, kappa):
+    """neo-Hookean Borden: mu/2 (J^{-2/3} tr B - 3) + kappa/2 ((J²-1)/2 - ln J).
+
+    이 에너지의 Kirchhoff 응력이 GF 의 kirchoff_stress_neoHookeanBoarden 과
+    같다 (편차 mu J^{-2/3} dev B, 체적 J kappa/2 (J - 1/J)).
+    """
+    J = sig.prod(-1).clamp_min(1e-9)
+    I1b = (sig ** 2).sum(-1) * J.pow(-2.0 / 3.0)
+    return 0.5 * mu * (I1b - 3.0) + 0.5 * kappa * (
+        0.5 * (J * J - 1.0) - J.log())
+
+
+def _camclay_project(sig, logJp, mu, kappa, M, beta, xi, hardening):
+    """GF 의 NonAssociativeCamClay 되돌림을 그대로 벡터화. -> (sig', logJp')."""
+    sg = sig.clamp_min(0.0).double()
+    lj = logJp.double()
+    p0 = kappa * (1e-5 + torch.sinh(xi * (-lj).clamp_min(0.0)))
+    J = sg.prod(-1)
+    B = sg ** 2
+    Bm = B.mean(-1, keepdim=True)
+    Jp = J.pow(-2.0 / 3.0).unsqueeze(-1)
+    s_hat = mu * Jp * (B - Bm)
+    p_tr = -(kappa / 2.0 * (J - 1.0 / J.clamp_min(1e-9))) * J
+    dim = 3.0
+    ys_c = (6.0 - dim) / 2.0 * (1.0 + 2.0 * beta)
+    yp_h = M * M * (p_tr + beta * p0) * (p_tr - p0)
+    s_sq = (s_hat ** 2).sum(-1)
+    y = ys_c * s_sq + yp_h
+    p_min = beta * p0
+
+    # (1) 꼭짓점으로 사영: p_trial > p0
+    Je_hi = (-2.0 * p0 / kappa + 1.0).clamp_min(1e-12).sqrt()
+    sig_hi = Je_hi.pow(1.0 / 3.0).unsqueeze(-1).expand_as(sg)
+    # (2) 꼭짓점으로 사영: p_trial < -p_min
+    Je_lo = (2.0 * p_min / kappa + 1.0).clamp_min(1e-12).sqrt()
+    sig_lo = Je_lo.pow(1.0 / 3.0).unsqueeze(-1).expand_as(sg)
+    # (3) 항복면 위로
+    s_norm = s_sq.clamp_min(1e-20).sqrt().clamp_min(1e-10)
+    scale = (J.pow(2.0 / 3.0) / mu
+             * (-yp_h / ys_c).clamp_min(0.0).sqrt() / s_norm)
+    B_new = scale.unsqueeze(-1) * s_hat + Bm
+    sig_y = B_new.clamp_min(1e-12).sqrt()
+
+    hi = p_tr > p0
+    lo = (~hi) & (p_tr < -p_min)
+    on = (~hi) & (~lo) & (y >= 1e-4)
+    sig_new = torch.where(hi.unsqueeze(-1), sig_hi,
+                          torch.where(lo.unsqueeze(-1), sig_lo,
+                                      torch.where(on.unsqueeze(-1), sig_y, sg)))
+
+    # 경화: 꼭짓점 사영은 Je 로, 항복면 사영은 가짜 p 로 logJp 를 민다
+    lj_new = lj
+    if hardening > 0.5:
+        lj_hi = lj + torch.log((J / Je_hi.clamp_min(1e-9)).clamp_min(1e-12))
+        lj_lo = lj + torch.log((J / Je_lo.clamp_min(1e-9)).clamp_min(1e-12))
+        p_c = (p0 - p_min) * 0.5
+        q_tr = math.sqrt((6.0 - dim) / 2.0) * s_norm
+        d_p = p_c - p_tr
+        d_q = -q_tr
+        d_n = (d_p * d_p + d_q * d_q).clamp_min(1e-20).sqrt()
+        d_p = d_p / d_n
+        C = M * M * (p_c + beta * p0) * (p_c - p0)
+        Bq = M * M * d_p * (2.0 * p_c - p0 + beta * p0)
+        Aq = M * M * d_p * d_p + (1.0 + 2.0 * beta) * (d_q / d_n) ** 2
+        disc = (Bq * Bq - 4.0 * Aq * C).clamp_min(0.0)
+        l1 = (-Bq + disc.sqrt()) / (2.0 * Aq).clamp_min(1e-20)
+        l2 = (-Bq - disc.sqrt()) / (2.0 * Aq).clamp_min(1e-20)
+        p1 = p_c + l1 * d_p
+        p2 = p_c + l2 * d_p
+        pick = ((p_tr - p_c) * (p1 - p_c)) > 0
+        p_fake = torch.where(pick, p1, p2)
+        Je_f = (-2.0 * p_fake / kappa + 1.0).abs().clamp_min(1e-12).sqrt()
+        lj_on = torch.where(Je_f > 1e-4,
+                            lj + torch.log((J / Je_f).clamp_min(1e-12)), lj)
+        ok_on = on & (p0 > 1e-4) & (p_tr < p0 - 1e-4) & (p_tr > 1e-4 - p_min)
+        lj_new = torch.where(hi, lj_hi,
+                             torch.where(lo, lj_lo,
+                                         torch.where(ok_on, lj_on, lj)))
+    return sig_new.to(sig.dtype), lj_new.to(logJp.dtype)
 
 
 def _psi_fcr(sig, mu, lam):
@@ -142,7 +256,20 @@ def psi_of(F_trial, cfg, dt):
     """(에너지밀도 [N], 주응력 공간의 소성 보정 dlog [N,3] 또는 None)."""
     mu, lam = lame(cfg["E"], cfg["nu"])
     m = mat_name(cfg)
-    if m in ("jelly", "elastic_damage", "watermelon"):
+    if m == "watermelon":
+        # CD-MPM: Cam-Clay 되돌림 뒤의 주응력으로 Borden 에너지를 잰다.
+        sig, V = _sig_vec(F_trial)
+        sig = sig.clamp_min(0.01)
+        mu, kappa, M, beta, xi, hard = _cdmpm_params(cfg)
+        if _JP[0] is None or _JP[0].numel() != sig.shape[0]:
+            cdmpm_reset(sig.shape[0], sig.device, sig.dtype)
+        jp = _JP[0].to(sig.device)
+        sig2, jp2 = _camclay_project(sig, jp.detach(), mu, kappa, M, beta,
+                                     xi, hard)
+        psi = _psi_borden(sig2.clamp_min(0.01), mu, kappa)
+        return psi, Plast(sig2.clamp_min(0.01).log() - sig.log(), V,
+                          jp2.detach())
+    if m in ("jelly", "elastic_damage"):
         # 탄성 전용이면 고유벡터가 필요 없다 (값만 쓰는 쪽이 싸다)
         return _psi_fcr(_sig(F_trial).clamp_min(0.01), mu, lam), None
     sig, V = _sig_vec(F_trial)
@@ -176,6 +303,8 @@ def plastic_step(F_trial, pl):
     if pl is None:
         return F_trial
     dlog, V = (pl.dlog, pl.V) if isinstance(pl, Plast) else (pl, None)
+    if isinstance(pl, Plast) and pl.jp is not None:
+        _JP[0] = pl.jp          # 경화 상태는 **여기서 한 번만** 갱신한다
     nz = dlog.abs().sum(-1) > 0
     if not bool(nz.any()):
         return F_trial
