@@ -293,6 +293,14 @@ def bc_project_nodes(npos, dp, cfg, h, grid_lim, n_grid):
             # 에너지가 아무리 위로 밀어도 신호를 못 받고 영영 갇힌다 (실측:
             # 4821 번 전부 '올라가려던 노드 0 개'). 사영은 미분 가능해 기울기가
             # 그대로 흐르고, 면 아래 노드를 면 위로 끌어올린다.
+            if os.environ.get("AF_BC_NODE_MPM"):
+                # **MPM 과 똑같이**: 격자점 자체가 면 아래면 그 노드의 속도를
+                # 세 성분 모두 0 으로 박는다 (i-PG collide 커널, surface_type 0).
+                _und = ((npos - pt) * nr).sum(-1) < 0.0
+                dp_p = torch.where(_und.unsqueeze(-1),
+                                   torch.zeros_like(dp_p), dp_p)
+                act = act | _und
+                continue
             # 비관통: 이번 변위로 면을 뚫는 노드를 면 위로 올린다
             sd = ((npos + dp_p - pt) * nr).sum(-1)
             pen = sd < 0.0

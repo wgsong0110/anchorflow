@@ -120,6 +120,10 @@ ap.add_argument("--elast", choices=["full", "lin"], default="full",
                      "목적함수가 노드 변위의 2차형식이라 최적해가 선형계 한 번")
 ap.add_argument("--cg_iters", type=int, default=200,
                 help="--ov_opt cg 의 공액기울기 반복 수")
+ap.add_argument("--bc_mpm", action="store_true",
+                help="바닥을 **MPM 과 똑같이**: 격자점이 면 아래면 그 노드 "
+                     "속도를 세 성분 모두 0 으로 (i-PG collide 커널과 동일). "
+                     "--bc_level node 와 함께 쓴다")
 ap.add_argument("--bc_slip", action="store_true",
                 help="바닥의 **접선 고정(no-slip) 항을 끈다**. 비관통만 남고 "
                      "닿은 입자가 면을 따라 미끄러진다")
@@ -2143,6 +2147,11 @@ def _mk_ov_opt(vs):
                                  line_search_fn="strong_wolfe")
     return torch.optim.Adam(vs, lr=a.out_var_lr)
 
+
+if a.bc_mpm:
+    os.environ["AF_BC_NODE_MPM"] = "1"
+    print("[바닥] MPM 규칙: 면 아래 격자점 속도를 세 성분 모두 0 으로",
+          flush=True)
 
 if a.bc_slip:
     os.environ["AF_BC_SLIP"] = "1"
