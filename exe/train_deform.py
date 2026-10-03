@@ -2898,6 +2898,23 @@ def _ens_offsets(n):
             for k in range(n)]
 
 
+def _gt_fscal(d, t0, L):
+    """교사 궤적의 F 로 (det, trC, ‖E‖, C_zz, psi) 를 만든다 -> [L,N,5]."""
+    if "F" not in d:
+        return None
+    _F = traj_F(d)
+    out = []
+    for _i in range(L):
+        Fi = _F[min(t0 + _i + 1, _F.shape[0] - 1)].to(dev).float()
+        C = Fi.transpose(-1, -2) @ Fi
+        E = 0.5 * (C - torch.eye(3, device=dev))
+        psi, _ = phys_resid.psi_of(Fi, d["cfg"], FRAME_DT)
+        out.append(torch.stack([
+            torch.linalg.det(Fi), C.diagonal(dim1=-2, dim2=-1).sum(-1),
+            E.reshape(E.shape[0], -1).norm(dim=-1), C[:, 2, 2], psi], -1).cpu())
+    return torch.stack(out)
+
+
 def _ov_frame(d, t, gsel, p, x, v, F):
     """프레임 하나를 전진시킨다 -> (x2, v2, F_next).
 
@@ -3079,6 +3096,9 @@ for tag, d in TR + held:
                         "nodes": _NODEDUMP or None,
                         # [T,N,5] = (det F, tr C, ‖E‖_F, C_zz, psi)
                         "fscal": (torch.stack(_DETDUMP) if _DETDUMP else None),
+                        # 같은 양을 **교사 궤적의 F** 로도 계산해 둔다. 없으면
+                        # 렌더가 두 칸을 우리 값으로 칠해 비교가 성립하지 않는다.
+                        "gt_fscal": (_gt_fscal(d, t0, L) if _DETDUMP else None),
                         # 풀 루프가 전역 EXT 를 씬 값으로 덮어쓰므로 **그 궤적의**
                         # 것을 쓴다 (덤프를 렌더할 때 길이 단위가 된다)
                         "EXT": float(d.get("_ext", EXT))}, _rd)

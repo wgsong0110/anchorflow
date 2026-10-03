@@ -190,12 +190,28 @@ if a.color in _FK:
     if _fs is None:
         raise SystemExit("덤프에 변형 스칼라가 없다 -- --ov_roll 로 다시 덤프")
     DETF = np.asarray(_fs)[:, sel, _k]
-    if a.color in ("normE", "psi"):
-        _w = float(np.percentile(DETF, 99)) or 1e-6
-        CMAP, CLAB = "inferno", f"{_nm}  (0 ~ {_w:.4f})"
+    _gfs = D.get("gt_fscal")
+    DETG = np.asarray(_gfs)[:, sel, _k] if _gfs is not None else None
+    if DETG is None:
+        print("[경고] 덤프에 교사 쪽 값이 없다 -- 왼쪽 칸도 우리 값으로 칠한다",
+              flush=True)
+    _both = DETF if DETG is None else np.concatenate([DETF, DETG])
+    if a.color == "psi":
+        # 꼬리가 길어 선형 범위로는 거의 다 포화된다 -> 로그로 본다.
+        DETF = np.log10(np.maximum(DETF, 1e-12))
+        if DETG is not None:
+            DETG = np.log10(np.maximum(DETG, 1e-12))
+        _lo = float(np.percentile(np.log10(np.maximum(_both, 1e-12)), 5))
+        _hi = float(np.percentile(np.log10(np.maximum(_both, 1e-12)), 99.5))
+        CMAP, CLAB = "inferno", f"log10(psi)  ({_lo:.2f} ~ {_hi:.2f}, 양 칸 공통)"
+        _w = None
+        _PLO, _PHI = _lo, _hi
+    elif a.color == "normE":
+        _w = float(np.percentile(_both, 99)) or 1e-6
+        CMAP, CLAB = "inferno", f"{_nm}  (0 ~ {_w:.4f}, 양 칸 공통)"
     else:
-        _w = float(np.percentile(np.abs(DETF - _mid), 99)) or 1e-6
-        CMAP, CLAB = "coolwarm", f"{_nm}  ({_mid:g} ± {_w:.4f})"
+        _w = float(np.percentile(np.abs(_both - _mid), 99)) or 1e-6
+        CMAP, CLAB = "coolwarm", f"{_nm}  ({_mid:g} ± {_w:.4f}, 양 칸 공통)"
     CVAL = DETF[0]
     print(f"[{a.color}] 범위 {DETF.min():.5f} ~ {DETF.max():.5f}, "
           f"색 범위 {CLAB}", flush=True)
@@ -221,7 +237,8 @@ def _zmap(z):
     return _ZLO + (_ZHI - _ZLO) * (u ** a.znow_gamma)
 
 
-VLO, VHI = (_ZLO, _ZHI) if a.color == "znow" else (0.0, 2.0) if a.color == "cell0" else (
+VLO, VHI = ((_PLO, _PHI) if a.color == "psi" else
+            (_ZLO, _ZHI)) if a.color in ("znow", "psi") else (0.0, 2.0) if a.color == "cell0" else (
     ((0.0, _w) if a.color == "normE" else
      (_FK[a.color][1] - _w, _FK[a.color][1] + _w)) if a.color in _FK else (
     (float(CVAL.min()), float(CVAL.max())) if CVAL is not None else (0.0, 1.0)))
@@ -263,7 +280,8 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
         CVAL = _zmap(G[t][:, 2])
     _oG = slice(None) if mG is None else ~mG
     _cG = (CRGB[_oG] if CRGB is not None else
-           ("0.25" if CVAL is None else CVAL[_oG]))
+           ("0.25" if CVAL is None else
+            (_CG_OWN[_oG] if DETF is not None else CVAL[_oG])))
     ax[0].scatter(G[t][_oG, i], G[t][_oG, j], s=1.1, c=_cG, cmap=CMAP,
                   vmin=None if CVAL is None else VLO,
                   vmax=None if CVAL is None else VHI, linewidths=0)
