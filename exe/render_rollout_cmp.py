@@ -354,7 +354,7 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
             for _q in ax:
                 for _sp in _q.spines.values():
                     _sp.set_linewidth(3.0); _sp.set_color("tab:red")
-    fig.suptitle(f"{D['tag']}{_mk}  (학습에 쓰지 않은 시드)   "
+    fig.suptitle(f"[프레임 {t}]  {D['tag']}{_mk}  (학습에 쓰지 않은 시드)   "
                  f"자기회귀 {t + 1}/{T} 프레임", fontsize=12)
     fig.tight_layout()
     fig.canvas.draw()
