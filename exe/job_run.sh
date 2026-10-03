@@ -32,10 +32,22 @@ fi
 [ -z "${J:-}" ] && { echo "돌고 있는 잡이 없다"; exit 1; }
 echo "[잡] $J @ $N  ->  $S  (로그 $L)"
 # stdin 을 끊는다. 예외 없다 -- 이것이 판을 망가뜨린 원인이었다.
+#
+# AF_DETACH=1 이면 **원격에서 떼어내** 띄우고 바로 돌아온다. 긴 잡을 ssh 로
+# 붙들고 있으면 이쪽 타임아웃에 ssh 가 끊길 때 원격까지 SIGHUP 으로 같이
+# 죽는다 (실측: 89 프레임 실행 두 건이 580 초에서 함께 사라졌다).
+# 떼어낸 뒤에는 **로그 파일로** 진행을 확인한다.
+if [ -n "${AF_DETACH:-}" ]; then
+  ssh -o ConnectTimeout=15 "$N" \
+    "setsid nohup /opt/pbs/bin/pbs_attach -j $J /bin/bash $S < /dev/null \
+       > $L 2>&1 & echo 떼어냄 pid=\$!" < /dev/null
+  rc=$?
+else
 ssh -o ConnectTimeout=15 "$N" \
   "/opt/pbs/bin/pbs_attach -j $J /bin/bash $S < /dev/null > $L 2>&1" \
   < /dev/null
 rc=$?
+fi
 echo "[완료] rc=$rc"
 # 실행 여부를 **출력 파일로 확인**한다 (보냈다고 돌았다고 믿지 않는다)
 ssh -o ConnectTimeout=15 "$N" "ls -la $L" < /dev/null 2>&1 | tail -1
