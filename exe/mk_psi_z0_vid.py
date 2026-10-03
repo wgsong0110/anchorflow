@@ -24,6 +24,7 @@ from tqdm import tqdm
 ap = argparse.ArgumentParser()
 ap.add_argument("--dump", required=True)
 ap.add_argument("--bands", type=int, default=24)
+ap.add_argument("--t0", type=int, default=0, help="이 프레임부터만 그린다 (축 범위도 이 구간으로)")
 ap.add_argument("--w", type=int, default=700)
 ap.add_argument("--h", type=int, default=1100)
 ap.add_argument("--fps", type=int, default=12)
@@ -60,23 +61,25 @@ def curves(P):
 Co = curves(fs)
 Cg = curves(gs) if gs is not None else None
 _all = Co if Cg is None else np.concatenate([Co, Cg])
-xlo, xhi = np.nanmin(_all), np.nanmax(_all)
+# 축 범위는 실제로 그리는 구간(t0 이후)만 보고 잡는다
+_rng = _all[a.t0:] if Cg is None else np.concatenate([Co[a.t0:], Cg[a.t0:]])
+xlo, xhi = np.nanmin(_rng), np.nanmax(_rng)
 pad = 0.05 * (xhi - xlo)
 xlo, xhi = xlo - pad, xhi + pad
 print(f"초기 z {edges[0]:.3f}~{edges[-1]:.3f}, {a.bands} 띠 (띠당 입자 "
-      f"{cnt.min()}~{cnt.max()}), log10(psi) 축 {xlo:.2f}~{xhi:.2f}, {T} 프레임",
-      flush=True)
+      f"{cnt.min()}~{cnt.max()}), log10(psi) 축 {xlo:.2f}~{xhi:.2f}, "
+      f"프레임 {a.t0}~{T - 1} ({T - a.t0}장)", flush=True)
 
 dpi = 100
 fig, ax = plt.subplots(figsize=(a.w / dpi, a.h / dpi), dpi=dpi)
 wr = imageio.get_writer(a.out, fps=a.fps, codec="libx264", quality=8,
                         macro_block_size=1)
-for t in tqdm(range(T), ncols=70):
+for t in tqdm(range(a.t0, T), ncols=70):
     ax.clear()
     # 전 프레임 자취를 옅게 깔아 현재 프레임이 어디쯤인지 보이게 한다
-    ax.plot(Co[:t + 1].T, cen, color="crimson", lw=0.4, alpha=0.12)
+    ax.plot(Co[a.t0:t + 1].T, cen, color="crimson", lw=0.4, alpha=0.12)
     if Cg is not None:
-        ax.plot(Cg[:t + 1].T, cen, color="royalblue", lw=0.4, alpha=0.12)
+        ax.plot(Cg[a.t0:t + 1].T, cen, color="royalblue", lw=0.4, alpha=0.12)
     ax.plot(Co[t], cen, "-o", color="crimson", lw=2.2, ms=4,
             label="출력만 최적화")
     if Cg is not None:
@@ -91,4 +94,4 @@ for t in tqdm(range(T), ncols=70):
     im = np.asarray(fig.canvas.buffer_rgba())[..., :3]
     wr.append_data(np.ascontiguousarray(im))
 wr.close()
-print(f"[저장] {a.out}  {T} 프레임", flush=True)
+print(f"[저장] {a.out}  {T - a.t0} 프레임 (프레임 {a.t0}~{T - 1})", flush=True)
