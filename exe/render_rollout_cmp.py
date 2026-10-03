@@ -43,8 +43,9 @@ ap.add_argument("--mark", nargs="+", default=[],
                 help="'프레임:이름' 꼴. 그 프레임부터 제목에 표시하고 그 "
                      "프레임에서는 테두리를 굵게 한다 (예: 27:바닥닿음 50:상승)")
 ap.add_argument("--neg", action="store_true",
-                help="det(F)<0 인 셀의 입자를 따로(연두) 표시한다")
+                help="det(F)<0 인 셀의 입자를 따로 표시한다")
 ap.add_argument("--neg_s", type=float, default=3.0, help="그 점의 크기")
+ap.add_argument("--neg_c", default="magenta", help="그 점의 색")
 ap.add_argument("--esc_r", type=float, default=0.0,
                 help="--color esc 의 공 반지름. 0 이면 초기 위치에서 중심 "
                      "입자까지의 최대 거리")
@@ -317,7 +318,7 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     if NEGG is not None:
         _ng = NEGG[min(t, NEGG.shape[0] - 1)]
         if _ng.any():
-            ax[0].scatter(G[t][_ng, i], G[t][_ng, j], s=a.neg_s, c="lime",
+            ax[0].scatter(G[t][_ng, i], G[t][_ng, j], s=a.neg_s, c=a.neg_c,
                           linewidths=0)
         _ttlG += f"   det<0 {int(_ng.sum())}"
     elif a.neg:
@@ -344,7 +345,7 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     if NEGP is not None:
         _np_ = NEGP[min(t, NEGP.shape[0] - 1)]
         if _np_.any():
-            ax[1].scatter(P[t][_np_, i], P[t][_np_, j], s=a.neg_s, c="lime",
+            ax[1].scatter(P[t][_np_, i], P[t][_np_, j], s=a.neg_s, c=a.neg_c,
                           linewidths=0)
         _ttlP += f"   det<0 {int(_np_.sum())}"
     ax[1].set_title(_ttlP, fontsize=9)
