@@ -50,14 +50,18 @@ if a.pg:
 
 fig, ax = plt.subplots(1, 2, figsize=(14, 4.8), dpi=120)
 bins = np.linspace(a.lo, a.hi, 160)
-for nm, d in series:
+# 한 실행의 히스토그램·중앙값·띠·최솟값은 **같은 색**이어야 읽힌다
+# (기본 색 순환에 맡기면 fill_between 과 최솟값 선이 다른 색을 집어간다)
+COLS = ["black", "crimson", "royalblue", "darkorange", "seagreen", "purple"]
+for k, (nm, d) in enumerate(series):
+    col = COLS[k % len(COLS)]
     v = d.ravel()
     ax[0].hist(np.clip(v, a.lo, a.hi), bins=bins, histtype="step", lw=1.8,
-               density=True, label=nm)
+               density=True, label=nm, color=col)
     q = np.percentile(d, [0, 1, 50, 99], axis=1)
-    ax[1].plot(np.arange(d.shape[0]), q[2], lw=2, label=f"{nm} 중앙값")
-    ax[1].fill_between(np.arange(d.shape[0]), q[1], q[3], alpha=0.15)
-    ax[1].plot(np.arange(d.shape[0]), q[0], lw=1, ls=":", alpha=0.8)
+    ax[1].plot(np.arange(d.shape[0]), q[2], lw=2, label=f"{nm} 중앙값", color=col)
+    ax[1].fill_between(np.arange(d.shape[0]), q[1], q[3], alpha=0.15, color=col)
+    ax[1].plot(np.arange(d.shape[0]), q[0], lw=1, ls=":", alpha=0.9, color=col)
     print(f"[{nm}] det 백분위 0/1/5/50/95/100 = "
           f"{np.round(np.percentile(d, [0, 1, 5, 50, 95, 100]), 4).tolist()}, "
           f"det<0 비율 {100.0 * (d < 0).mean():.3f}%, "
