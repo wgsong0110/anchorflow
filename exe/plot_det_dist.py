@@ -22,6 +22,10 @@ ap.add_argument("--pg", default="", help="PG 궤적 .pt (F 를 가진 것) 또�
 ap.add_argument("--title", default="")
 ap.add_argument("--lo", type=float, default=-1.0)
 ap.add_argument("--hi", type=float, default=2.0)
+ap.add_argument("--drop_handle", default="", help="이 덤프의 손잡이(ctrl) 안 "
+                "입자를 모든 계열에서 뺀다. 'init' 이면 초기 위치 기준, "
+                "'ever' 면 한 번이라도 들어간 적 있는 입자까지 뺀다")
+ap.add_argument("--handle_mode", choices=["init", "ever"], default="init")
 ap.add_argument("--out", required=True)
 a = ap.parse_args()
 
@@ -31,11 +35,37 @@ def L(p):
     except TypeError: return torch.load(p, map_location="cpu")
 
 
+keep = None
+if a.drop_handle:
+    Dh = L(a.drop_handle)
+    X0 = np.asarray(Dh["x0"], dtype=np.float64)
+    R = float(np.asarray(Dh["ctrl_R"]).reshape(-1)[0])
+    if "ctrl_id" in Dh:
+        cid = int(np.asarray(Dh["ctrl_id"]).reshape(-1)[0])
+        c0 = X0[cid]
+    else:
+        c0 = np.asarray(Dh["ctrl_pos"], dtype=np.float64)[0, 0]
+    if a.handle_mode == "init":
+        keep = np.linalg.norm(X0 - c0, axis=1) > R
+    else:
+        P = np.asarray(Dh["pred"], dtype=np.float64)
+        CP = np.asarray(Dh["ctrl_pos"], dtype=np.float64)[:, 0, :]
+        T = P.shape[0]
+        inside = np.zeros(P.shape[1], bool)
+        for t in range(T):
+            c = (P[t, cid] if "ctrl_id" in Dh else CP[min(t, len(CP) - 1)])
+            inside |= np.linalg.norm(P[t] - c, axis=1) <= R
+        keep = ~inside
+    print(f"[손잡이 제외] {a.handle_mode}: {int((~keep).sum())} 개 뺀다 "
+          f"(남는 입자 {int(keep.sum())})", flush=True)
+
 series = []
 T0 = None
 for s in a.dumps:
     nm, path = s.split("=", 1)
     d = np.asarray(L(path)["fscal"])[..., 0].astype(np.float64)
+    if keep is not None:
+        d = d[:, keep]
     series.append((nm, d))
     T0 = d.shape[0] if T0 is None else T0
 if a.pg:
@@ -46,6 +76,8 @@ if a.pg:
         F = D["F"]
         g = torch.linalg.det(F.double()).numpy()
     g = g[:T0]
+    if keep is not None:
+        g = g[:, keep]
     series.insert(0, ("PG MPM", g))
 
 fig, ax = plt.subplots(1, 2, figsize=(14, 4.8), dpi=120)
