@@ -42,6 +42,9 @@ ap.add_argument("--znow_hi", type=float, default=0.0)
 ap.add_argument("--mark", nargs="+", default=[],
                 help="'프레임:이름' 꼴. 그 프레임부터 제목에 표시하고 그 "
                      "프레임에서는 테두리를 굵게 한다 (예: 27:바닥닿음 50:상승)")
+ap.add_argument("--neg", action="store_true",
+                help="det(F)<0 인 셀의 입자를 따로(연두) 표시한다")
+ap.add_argument("--neg_s", type=float, default=3.0, help="그 점의 크기")
 ap.add_argument("--esc_r", type=float, default=0.0,
                 help="--color esc 의 공 반지름. 0 이면 초기 위치에서 중심 "
                      "입자까지의 최대 거리")
@@ -216,6 +219,20 @@ if a.color in _FK:
     print(f"[{a.color}] 범위 {DETF.min():.5f} ~ {DETF.max():.5f}, "
           f"색 범위 {CLAB}", flush=True)
 
+# det(F)<0 표시는 색 모드와 무관하게 따로 얹는다
+NEGP = NEGG = None
+if a.neg:
+    _fsn = D.get("fscal")
+    if _fsn is None:
+        raise SystemExit("덤프에 변형 스칼라가 없다 -- det<0 을 표시할 수 없다")
+    NEGP = np.asarray(_fsn)[:, sel, 0] < 0
+    _gfn = D.get("gt_fscal")
+    NEGG = np.asarray(_gfn)[:, sel, 0] < 0 if _gfn is not None else None
+    print(f"[det<0] 우리 최대 {int(NEGP.sum(1).max())} 입자 "
+          f"({100*NEGP.sum(1).max()/NEGP.shape[1]:.2f}%)" +
+          (f", PG 최대 {int(NEGG.sum(1).max())}" if NEGG is not None
+           else ", PG 값은 덤프에 없다 (왼쪽 칸은 표시하지 않는다)"), flush=True)
+
 if a.color == "znow":
     _allz = np.concatenate([P[:, :, 2].ravel(), G[:, :, 2].ravel()])
     CMAP = "viridis"
@@ -295,8 +312,17 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     if mG is not None and mG.any():
         ax[0].scatter(G[t][mG, i], G[t][mG, j], s=a.handle_s, c="red",
                       linewidths=0)
-    ax[0].set_title(f"{a.label_left}   손잡이 안 "
-                    f"{0 if mG is None else int(mG.sum())}", fontsize=9)
+    _ttlG = (f"{a.label_left}   손잡이 안 "
+             f"{0 if mG is None else int(mG.sum())}")
+    if NEGG is not None:
+        _ng = NEGG[min(t, NEGG.shape[0] - 1)]
+        if _ng.any():
+            ax[0].scatter(G[t][_ng, i], G[t][_ng, j], s=a.neg_s, c="lime",
+                          linewidths=0)
+        _ttlG += f"   det<0 {int(_ng.sum())}"
+    elif a.neg:
+        _ttlG += "   det<0 0"
+    ax[0].set_title(_ttlG, fontsize=9)
     _oP = slice(None) if mP is None else ~mP
     # 손잡이 밖은 기준 칸과 같은 검은색이다. 구속이 들어간 자리만 빨강으로
     # 떠야 하니 오차 색칠을 걷어냈다 (요청).
@@ -313,9 +339,15 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     if mP is not None and mP.any():
         ax[1].scatter(P[t][mP, i], P[t][mP, j], s=a.handle_s, c="red",
                       linewidths=0)
-    ax[1].set_title(f"{a.label} (평균 오차 {err[t].mean():.3f}% EXT)"
-                    f"   손잡이 안 {0 if mP is None else int(mP.sum())}",
-                    fontsize=9)
+    _ttlP = (f"{a.label} (평균 오차 {err[t].mean():.3f}% EXT)"
+             f"   손잡이 안 {0 if mP is None else int(mP.sum())}")
+    if NEGP is not None:
+        _np_ = NEGP[min(t, NEGP.shape[0] - 1)]
+        if _np_.any():
+            ax[1].scatter(P[t][_np_, i], P[t][_np_, j], s=a.neg_s, c="lime",
+                          linewidths=0)
+        _ttlP += f"   det<0 {int(_np_.sum())}"
+    ax[1].set_title(_ttlP, fontsize=9)
     # 손잡이를 그린다. 이게 없으면 구동이 들어갔는지 눈으로 확인할 수 없어
     # "손잡이가 없는 것 같다" 는 오해를 부른다 (덤프에는 늘 들어 있다).
     if _CID is not None:
