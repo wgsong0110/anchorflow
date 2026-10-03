@@ -121,9 +121,10 @@ ap.add_argument("--elast", choices=["full", "lin"], default="full",
 ap.add_argument("--cg_iters", type=int, default=200,
                 help="--ov_opt cg 의 공액기울기 반복 수")
 ap.add_argument("--bc_mpm", action="store_true",
-                help="바닥을 **MPM 과 똑같이**: 격자점이 면 아래면 그 노드 "
-                     "속도를 세 성분 모두 0 으로 (i-PG collide 커널과 동일). "
-                     "--bc_level node 와 함께 쓴다")
+                help="**접선 처리를 MPM 과 맞춘다**: sticky 접선 구속을 면에서 "
+                     "dx 안 띠가 아니라 **면 아래** 입자에만 건다 (MPM 은 면 "
+                     "아래 격자점만 묶는다). 비관통은 그대로 둔다. "
+                     "--bc_level node 면 노드 속도를 세 성분 0 으로도 바꾼다")
 ap.add_argument("--bc_slip", action="store_true",
                 help="바닥의 **접선 고정(no-slip) 항을 끈다**. 비관통만 남고 "
                      "닿은 입자가 면을 따라 미끄러진다")
@@ -2150,7 +2151,7 @@ def _mk_ov_opt(vs):
 
 if a.bc_mpm:
     os.environ["AF_BC_NODE_MPM"] = "1"
-    print("[바닥] MPM 규칙: 면 아래 격자점 속도를 세 성분 모두 0 으로",
+    print("[바닥] 접선 구속을 MPM 과 맞춘다 (면 아래만, dx 띠 아님)",
           flush=True)
 
 if a.bc_slip:

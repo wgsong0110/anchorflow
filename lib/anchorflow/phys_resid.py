@@ -685,7 +685,10 @@ def bc_energy(x, du, mass, cfg, h, grid_lim, n_grid, stiff=None):
                     and not os.environ.get("AF_BC_SLIP"):
                 # 닿아 있는 입자는 접선 방향도 묶인다 (속도를 0 으로 박는 것과 같다)
                 # AF_BC_SLIP=1 이면 이 항을 빼고 **미끄러지게** 둔다
-                touch = (((x - pt) * nr).sum(-1) < dx).to(x.dtype).detach()
+                # MPM 은 **면 아래 격자점**만 묶는다. 우리가 쓰던 "면에서 dx
+                # 안" 띠는 그보다 훨씬 넓어 7.8 배 덜 미끄러졌다 (실측).
+                _thr = 0.0 if os.environ.get("AF_BC_NODE_MPM") else dx
+                touch = (((x - pt) * nr).sum(-1) < _thr).to(x.dtype).detach()
                 du_t = du - (du * nr).sum(-1, keepdim=True) * nr
                 e = e + (c * touch * (du_t * du_t).sum(-1)).sum()
         elif t == "bounding_box":
