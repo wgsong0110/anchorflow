@@ -2207,9 +2207,20 @@ def _snap_inverted(st, iters, eps):
         Ai = _latk.Ai
         I3 = torch.eye(3, device=var.device, dtype=var.dtype)
         rows = _rwk.reshape(-1)
+        # 변수는 **손잡이를 뺀 자유 노드만** 담고 있다. 사면체는 전체 노드를
+        # 가리키므로 전체 장으로 펴서 보정하고, 자유 노드 자리만 되돌려 쓴다.
+        _idx = (st.get("ov_idx") or [None] * len(ens))[_k]
+        _M = (st.get("ov_M") or [0] * len(ens))[_k] or var.shape[0]
+
+        def _full(v):
+            if _idx is None:
+                return v
+            _z = torch.zeros(_M, 3, dtype=v.dtype, device=v.device)
+            return _z.index_copy(0, _idx, v)
+
         for _ in range(int(iters)):
             with torch.enable_grad():
-                dpc = var.detach()[_rwk].requires_grad_(True)
+                dpc = _full(var.detach())[_rwk].requires_grad_(True)
                 dd = (dpc[:, 1:] - dpc[:, :-1]).transpose(1, 2)
                 Dy = dd.gather(2, rank.unsqueeze(1).expand(-1, 3, -1))
                 det = torch.linalg.det(I3 + Dy @ Ai.to(dpc.dtype))
@@ -2221,14 +2232,14 @@ def _snap_inverted(st, iters, eps):
             with torch.no_grad():
                 gn2 = (g * g).sum((1, 2)).clamp_min(1e-12)
                 corr = (need / gn2).view(-1, 1, 1) * g
-                num = torch.zeros_like(var)
-                cnt = torch.zeros(var.shape[0], 1, device=var.device,
-                                  dtype=var.dtype)
+                num = torch.zeros(_M, 3, device=var.device, dtype=var.dtype)
+                cnt = torch.zeros(_M, 1, device=var.device, dtype=var.dtype)
                 num.index_add_(0, rows, corr.reshape(-1, 3).to(var.dtype))
                 cnt.index_add_(0, rows,
                                (need > 0).view(-1, 1).repeat(1, 4).reshape(-1, 1)
                                .to(var.dtype))
-                var.data.add_(num / cnt.clamp_min(1.0))
+                upd = num / cnt.clamp_min(1.0)
+                var.data.add_(upd if _idx is None else upd[_idx])
             n_fix = max(n_fix, bad)
     return n_fix
 
