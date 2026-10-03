@@ -59,7 +59,8 @@ ap.add_argument("--quiver", type=int, default=0,
 ap.add_argument("--quiver_scale", type=float, default=0.0,
                 help="0 이면 화살표 중앙 길이가 화면 폭의 4%% 가 되게 자동")
 ap.add_argument("--color", choices=["none", "err", "z0", "r0", "pos0", "cell0",
-                                    "detF", "trC", "normE", "esc", "znow"],
+                                    "detF", "trC", "normE", "esc", "znow",
+                                    "psi"],
                 default="none",
                 help="입자 색. none=검정, err=정답과의 거리(오른쪽 칸만), "
                      "z0=초기 높이, r0=초기 중심에서의 거리, pos0=**초기 위치 "
@@ -181,14 +182,15 @@ if _CP is not None:
 
 DETF, _w = None, 1.0
 _FK = {"detF": (0, 1.0, "det(F)"), "trC": (1, 3.0, "tr(C)  C = FᵀF"),
-       "normE": (2, 0.0, "‖E‖_F  E = (C−I)/2")}
+       "normE": (2, 0.0, "‖E‖_F  E = (C−I)/2"),
+       "psi": (4, 0.0, "탄성 에너지 밀도 psi")}
 if a.color in _FK:
     _k, _mid, _nm = _FK[a.color]
     _fs = D.get("fscal")
     if _fs is None:
         raise SystemExit("덤프에 변형 스칼라가 없다 -- --ov_roll 로 다시 덤프")
     DETF = np.asarray(_fs)[:, sel, _k]
-    if a.color == "normE":
+    if a.color in ("normE", "psi"):
         _w = float(np.percentile(DETF, 99)) or 1e-6
         CMAP, CLAB = "inferno", f"{_nm}  (0 ~ {_w:.4f})"
     else:
