@@ -258,6 +258,13 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     i, j = {"xz": (0, 2), "xy": (0, 1), "yz": (1, 2)}[a.plane]
     # 손잡이 반경 안에 든 입자를 **빨갛게** 칠한다. 기준 칸은 PG 위치로,
     # 오른쪽 칸은 그 칸의 위치로 각각 판정한다 (같은 중심·같은 반경).
+    # 프레임마다 값을 갈아끼운다. 이 두 줄이 예전 편집에서 지워져, detF/trC/
+    # normE 영상이 전 프레임 **프레임 0 값**으로 칠해졌었다.
+    _CG_OWN = None
+    if DETF is not None:
+        CVAL = DETF[min(t, DETF.shape[0] - 1)]
+        _CG_OWN = (DETG[min(t, DETG.shape[0] - 1)] if DETG is not None
+                   else CVAL)
     mG = mP = None
     if _CP is not None and a.handle_mark == "init":
         mG = mP = M_INIT
@@ -281,7 +288,7 @@ for t in tqdm(range(T), desc="렌더", ncols=80):
     _oG = slice(None) if mG is None else ~mG
     _cG = (CRGB[_oG] if CRGB is not None else
            ("0.25" if CVAL is None else
-            (_CG_OWN[_oG] if DETF is not None else CVAL[_oG])))
+            (_CG_OWN[_oG] if _CG_OWN is not None else CVAL[_oG])))
     ax[0].scatter(G[t][_oG, i], G[t][_oG, j], s=1.1, c=_cG, cmap=CMAP,
                   vmin=None if CVAL is None else VLO,
                   vmax=None if CVAL is None else VHI, linewidths=0)
