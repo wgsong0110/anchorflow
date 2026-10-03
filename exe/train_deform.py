@@ -1364,6 +1364,21 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                     # 않은 입자만 사면체 값을 그대로 쓴다.
                     _uh, _Jh, _hok = _hex_field(x, dpn_k, _lok, _latk, _nnk,
                                                 _uqk)
+                    if os.environ.get("AF_HEX_DIAG") and _HXD[0] < 3:
+                        _HXD[0] += 1
+                        with torch.no_grad():
+                            _dt = torch.linalg.det(_Jk)
+                            _dh2 = torch.linalg.det(_Jh)
+                            print(f"      [육면체진단] 노드 {dpn_k.shape[0]} "
+                                  f"변위 std {float(dpn_k.std()):.3e} "
+                                  f"max {float(dpn_k.abs().max()):.3e} | "
+                                  f"detJ 사면체 {float(_dt.mean()):.4f}"
+                                  f"(min {float(_dt.min()):.3f}) 육면체 "
+                                  f"{float(_dh2.mean()):.4f}"
+                                  f"(min {float(_dh2.min()):.3f}) | "
+                                  f"|u차| {float((_uh - _duk).abs().max()):.3e} "
+                                  f"쓸수있음 {int(_hok.sum())}/{_hok.numel()}",
+                                  flush=True)
                     if _k == 0 and a.hex_hg > 0:
                         _HG_LAST[0] = (dpn_k, _hex_struct(
                             x, _lok, _latk, _nnk, _uqk)[4], _latk)
@@ -3065,7 +3080,8 @@ def _coarse_jac(x, dpn, lo, lat, nn, uniq, Jf0=None):
 
 
 _HX_HOLD = [None]
-_HG_LAST = [None]   # (노드 변위, 점유 셀 꼭짓점, 격자) -- 모래시계 항용
+_HG_LAST = [None]
+_HXD = [0]   # (노드 변위, 점유 셀 꼭짓점, 격자) -- 모래시계 항용
 
 
 def _hex_struct(x, lo, lat, nn, uniq):
