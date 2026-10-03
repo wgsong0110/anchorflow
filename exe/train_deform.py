@@ -1367,8 +1367,10 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                     if os.environ.get("AF_HEX_DIAG") and _HXD[0] < 3:
                         _HXD[0] += 1
                         with torch.no_grad():
-                            _dt = torch.linalg.det(_Jk)
-                            _dh2 = torch.linalg.det(_Jh)
+                            _I3d = torch.eye(3, device=_Jk.device,
+                                             dtype=_Jk.dtype)
+                            _dt = torch.linalg.det(_I3d + _Jk)
+                            _dh2 = torch.linalg.det(_I3d + _Jh)
                             print(f"      [육면체진단] 노드 {dpn_k.shape[0]} "
                                   f"변위 std {float(dpn_k.std()):.3e} "
                                   f"max {float(dpn_k.abs().max()):.3e} | "
@@ -3128,7 +3130,7 @@ def _hex_struct(x, lo, lat, nn, uniq):
 
 
 def _hex_field(x, dpn, lo, lat, nn, uniq):
-    """육면체 셀의 **삼선형** 사상: (u [N,3], J [N,3,3], 쓸 수 있나 [N]).
+    """육면체 셀의 **삼선형** 사상: (u [N,3], grad u [N,3,3], 쓸 수 있나 [N]).
 
         u(xi)    = sum_m N_m(xi) u_m
         grad_x u = sum_m u_m (dN_m/dxi)^T Ai,     xi = Ai (x - lo) - ci
@@ -3139,9 +3141,11 @@ def _hex_field(x, dpn, lo, lat, nn, uniq):
     _pos, _ok, _N, _dN, _ = _hex_struct(x, lo, lat, nn, uniq)
     U = dpn[_pos]                                      # [N,8,3]
     u = (U * _N.to(U.dtype).unsqueeze(-1)).sum(1)
+    # **grad u 를 그대로 돌려준다** (I 는 부르는 쪽에서 더한다 -- 사면체
+    # g2p_jac_pre 와 같은 규약이다. 여기서 I 를 더해 돌려주면 I 가 두 번
+    # 들어가 정지 상태에서 det ~ 8 이 된다).
     G = torch.einsum("nmi,nmj->nij", U, _dN.to(U.dtype)) @ lat.Ai.to(U.dtype)
-    J = torch.eye(3, device=U.device, dtype=U.dtype) + G
-    return u, J, _ok
+    return u, G, _ok
 
 
 _HG_GAMMA = [None]
