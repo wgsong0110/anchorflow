@@ -38,6 +38,9 @@ if "ctrl_id" in d:
 
 c = {k: v for k, v in dict(d["cfg"]).items() if v is not None}
 c.pop("particle_filling", None)              # 입자를 직접 준다
+# PG 는 config 의 frame_num 만큼만 돈다 (없으면 100). 장면 길이에 맞춰 넣는다 --
+# 안 넣으면 171 프레임 장면인데 100 프레임만 나와 변환이 실패한다.
+c["frame_num"] = int(d["x"].shape[0])
 c["grid_lim"] = float(c.get("grid_lim", 2.0))
 if a.substep:
     c["substep_dt"] = float(c["frame_dt"]) / a.substep
