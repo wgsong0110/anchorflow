@@ -3394,6 +3394,20 @@ def _ov_frame(d, t, gsel, p, x, v, F):
 @torch.no_grad()        # <- _ov_frame 을 위에 끼우면서 이 데코레이터를 빼앗았다.
 def rollout(d, t0, L, gsel=None):   #    평가가 그래프를 쌓아 메모리가 터진다.
     with traj_scope(d):
+        if os.environ.get("AF_TORCH_PROF"):
+            from torch.profiler import profile, ProfilerActivity
+            with profile(activities=[ProfilerActivity.CPU,
+                                     ProfilerActivity.CUDA]) as _pf:
+                _r = _rollout(d, t0, L, gsel)
+            _ka = _pf.key_averages()
+            print(_ka.table(sort_by="cuda_time_total", row_limit=16),
+                  flush=True)
+            _n = sum(int(e.count) for e in _ka)
+            _cu = sum(float(e.self_device_time_total) for e in _ka) / 1e3
+            _cp = sum(float(e.self_cpu_time_total) for e in _ka) / 1e3
+            print(f"[프로파일] 연산 호출 {_n} 회, GPU 자체시간 {_cu:.1f} ms, "
+                  f"CPU 자체시간 {_cp:.1f} ms", flush=True)
+            return _r
         return _rollout(d, t0, L, gsel)
 
 
