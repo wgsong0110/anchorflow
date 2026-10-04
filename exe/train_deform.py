@@ -140,29 +140,11 @@ ap.add_argument("--smooth_nb", type=int, default=0, choices=[0, 6, 12, 14],
                      "않은 변위로 정하고, J 만 스무딩한 변위로 만든다")
 ap.add_argument("--smooth_a", type=float, default=0.5,
                 help="스무딩 세기. d~ = (1-a)·d + a·(이웃 평균)")
-ap.add_argument("--coarse_s", type=int, default=0,
-                help="**거친 사면체** 항. s 칸마다 하나씩 뽑은 격자점으로 큰 "
-                     "사면체를 만들어 그 변형구배로도 탄성 에너지를 센다. "
-                     "0 이면 끈다. 셀 하나짜리 탄성은 이웃에 아무 비용도 물리지 "
-                     "않아 응력이 셀을 한 겹씩 건너며만 전해진다 -- 큰 사면체는 "
-                     "멀리 떨어진 노드를 **직접** 묶는다")
-ap.add_argument("--coarse_w", type=float, default=1.0,
-                help="거친 사면체 탄성항의 가중치 (에너지를 따로 더하는 방식)")
 ap.add_argument("--ens_off", type=int, default=0,
                 help="**오프셋이 다른 격자로 각각 따로 최적화**해 입자 변위를 "
                      "평균한다 (0/1 이면 끈다). 오프셋마다 빈 셀·고아 셀 패턴이 "
                      "달라 그 격자 의존적 결함이 평균에서 상쇄된다. 비용은 "
                      "오프셋 수만큼 곱절이다")
-ap.add_argument("--coarse_off", choices=["all", "origin"], default="all",
-                help="거친 격자의 오프셋. 한 변이 s 배인 격자는 오프셋에 따라 "
-                     "s³ 가지가 있다 -- all 이면 전부 만들어 야코비안을 평균한다 "
-                     "(origin 은 원점에 맞춘 하나만, 입자가 어느 오프셋에 걸리느냐로 "
-                     "결과가 갈린다)")
-ap.add_argument("--coarse_mix", type=float, default=0.0,
-                help="0 보다 크면 **야코비안을 섞는다**: J = (1-w)·J_미세 + "
-                     "w·J_거친. 에너지를 두 번 세지 않고 변형구배 하나만 만들어 "
-                     "Psi 를 한 번 적용한다 -- 강성이 더해지지 않고 변형 측정만 "
-                     "넓은 스텐실로 매끄러워진다. 상태 전진의 F 도 이 J 를 쓴다")
 ap.add_argument("--bc_mode", choices=["project", "barrier"], default="project",
                 help="바닥을 어떻게 세우는지. project=하드 사영(기본), "
                      "barrier=**IPC 꼴 장벽 에너지** b(d)=-(d-d̂)²ln(d/d̂) 를 "
@@ -1126,8 +1108,6 @@ _OV_TGT = [None]           # --ov_init target 이 쓸 자유낙하 평행이동 
 _CURVE = [] if os.environ.get("AF_OV_CURVE") else None
 # 롤아웃 덤프에 격자점을 함께 담을지. (노드 위치, 노드 변위, 유효 여부)
 _NOD_M = [None]            # 손잡이로 덮는 노드 (최적화에서 뺀다)
-_JC_LAST = [None]          # (거친 사면체 야코비안 [N,3,3], 유효 마스크 [N])
-_CO_HOLD = [None]          # 프레임 안에서 거친 격자 구조를 재사용한다
 _SM_HOLD = [None]          # 노드 이웃 색인 (스무딩용)
 _GRID_OFF = [None]         # 격자 원점을 셀의 분수만큼 민다 (앙상블)
 _ENS_K = [0]               # 지금 다루는 앙상블 격자 번호
@@ -1404,14 +1384,6 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                     # 스무딩하지 않은 변위로 정한다 -- 변형 측정만 넓힌다.
                     _ds = _smooth_nodes(dpn_k, _uqk, _nnk)
                     _u3, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, _ds)
-                if _k == 0 and a.coarse_s > 1:
-                    # **거친 사면체**: 같은 노드 변위를 s 칸 간격 큰 사면체로
-                    # 다시 읽어 야코비안을 만든다 (오프셋 s³ 가지를 평균).
-                    # 변수는 미세 격자 한 벌뿐이고 읽는 방식만 다르다.
-                    _Jc = _coarse_jac(x, dpn_k, _lok, _latk, _nnk, _uqk, Jf0=_Jk)
-                    _wm = float(a.coarse_mix)
-                    if _wm > 0:
-                        _Jk = (1.0 - _wm) * _Jk + _wm * _Jc
                 _Jsum = _Jk if _Jsum is None else _Jsum + _Jk
                 if _k == 0:
                     _dpn0 = dpn_k
@@ -1448,7 +1420,6 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             v_next = (x2 - x) / _DT[0]
         dpn = _outs[0]
         Jf = torch.eye(3, device=dev, dtype=x.dtype) + _outs[1]
-        _JC_LAST[0] = None
         if _NODE_CAP[0]:
             _sup = torch.zeros(npos.shape[0], dtype=torch.bool, device=dev)
             _sup[rows.reshape(-1)] = True
@@ -2860,10 +2831,6 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         if a.hex_hg > 0 and _HG_LAST[0] is not None:
             _dh, _c8, _lt = _HG_LAST[0]
             E = E + _hex_hg_energy(_dh, _c8, _lt, cfg, a.hex_hg) / nrm
-        if _JC_LAST[0] is not None:
-            _Jc, _vc = _JC_LAST[0]
-            _psc, _ = phys_resid.psi_of(_Jc.to(F.dtype) @ F, cfg, FRAME_DT)
-            E = E + a.coarse_w * (vol * _psc * _vc.to(_psc.dtype)).sum() / nrm
         return x2, v2, E, dlog, F_tr, _pt, _Jd
 
     _TAU = _HES = None
@@ -2908,7 +2875,6 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     _ov = _OV_CUR[0]
     _OV_CUR[0] = st
     _GRID_OFF[0] = off
-    _CO_HOLD[0] = "want"
     _SM_HOLD[0] = "want"
     _OV_TGT[0] = ("want" if a.ov_init == "predict" else
                   (FRAME_DT * v.mean(0) + (FRAME_DT ** 2) * gv).detach())
@@ -3015,7 +2981,6 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         _OV_CUR[0] = _ov
         _NF_HOLD[0] = None
         _HX_HOLD[0] = None
-        _CO_HOLD[0] = None
         _SM_HOLD[0] = None
         _OV_TGT[0] = None
         _GRID_OFF[0] = None
@@ -3066,61 +3031,6 @@ def _smooth_nodes(dpn, uniq, nn):
     _avg = _nb / _cnt
     _a = float(a.smooth_a)
     return (1.0 - _a) * dpn + _a * _avg
-
-
-def _coarse_jac(x, dpn, lo, lat, nn, uniq, Jf0=None):
-    """같은 노드 변위를 **s 칸 간격 큰 사면체**로 읽어 야코비안을 만든다.
-
-    한 변이 s 배인 격자는 오프셋에 따라 s³ 가지가 있으므로 전부 만들어 평균한다.
-    큰 사면체의 네 꼭짓점이 하나라도 실제 노드로 없는 입자는 미세 값을 그대로 쓴다.
-    구조(locate·색인)는 프레임 안에서 한 번만 만든다.
-    """
-    _s = int(a.coarse_s)
-    if isinstance(_CO_HOLD[0], list):
-        _CO = _CO_HOLD[0]
-    else:
-        _latc = SX.lattice(lat.s * _s, lat.hz * _s, device=x.device,
-                           dtype=x.dtype)
-        _nnc = ((nn - 1) // _s) + 2
-        _n0, _n1, _n2 = int(nn[0]), int(nn[1]), int(nn[2])
-        _c1, _c2 = int(_nnc[1]), int(_nnc[2])
-        _offs = ([(i_, j_, k_) for i_ in range(_s) for j_ in range(_s)
-                  for k_ in range(_s)] if a.coarse_off == "all"
-                 else [(0, 0, 0)])
-        _CO = []
-        for _o in _offs:
-            _ov = torch.tensor(_o, device=x.device, dtype=lat.A.dtype)
-            _ic, _lamc, _auxc = SX.locate(x, lo + lat.A @ _ov, _latc, _nnc)
-            _k2 = _ic % _c2
-            _k1 = (_ic // _c2) % _c1
-            _k0 = _ic // (_c1 * _c2)
-            _i0, _i1, _i2 = _k0 * _s + _o[0], _k1 * _s + _o[1], _k2 * _s + _o[2]
-            _inb = (_i0 < _n0) & (_i1 < _n1) & (_i2 < _n2)
-            _fine = (_i0 * _n1 + _i1) * _n2 + _i2
-            _pos = torch.searchsorted(
-                uniq, _fine.reshape(-1).clamp_min(0)
-            ).reshape(_fine.shape).clamp(max=uniq.numel() - 1)
-            _vc = (uniq[_pos] == _fine).all(1) & _inb.all(1)
-            _CO.append((_pos, _lamc, _auxc, _vc, _latc))
-        if _CO_HOLD[0] is not None:
-            _CO_HOLD[0] = _CO
-    _I3 = torch.eye(3, device=x.device, dtype=x.dtype)
-    _Js, _Ws = None, None
-    for _pos, _lamc, _auxc, _vc, _latc in _CO:
-        _u2, _Jo = SX.g2p_jac_pre(_pos, _lamc, _auxc, _latc, dpn)
-        _w1 = _vc.to(_Jo.dtype).reshape(-1, 1, 1)
-        _Js = _w1 * _Jo if _Js is None else _Js + _w1 * _Jo
-        _Ws = _w1 if _Ws is None else _Ws + _w1
-    _has = (_Ws > 0).reshape(-1)
-    _Jc = _Js / _Ws.clamp_min(1.0)
-    # 거친 사면체가 없는 입자는 미세 값을 그대로
-    return torch.where(_has.reshape(-1, 1, 1), _Jc,
-                       Jf0 if Jf0 is not None else torch.zeros_like(_Jc))
-
-
-_HX_HOLD = [None]
-_HG_LAST = [None]
-_HXD = [0]   # (노드 변위, 점유 셀 꼭짓점, 격자) -- 모래시계 항용
 
 
 def _hex_struct(x, lo, lat, nn, uniq):
