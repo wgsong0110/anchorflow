@@ -140,8 +140,8 @@ def run(s, frames=None):
                 pass
     fs = sorted(glob.glob(f"{od}/simulation_ply/*.h5"))
     if len(fs) < nrun:
-        print(f"  [실패] s={s} h5 {len(fs)} 개 (필요 {nrun})  "
-              f"{r.stderr[-300:]}", flush=True)
+        print(f"  [실패] s={s} h5 {len(fs)} 개 (필요 {nrun})\n"
+              f"{r.stderr[-1500:]}", flush=True)
         return None, dt
     X = []
     for f in fs[a.skip:a.skip + frames + 1]:
