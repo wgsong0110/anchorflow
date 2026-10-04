@@ -37,8 +37,15 @@ D = L(a.dump)
 P = np.asarray(D["pred"], dtype=np.float32)
 NEG = np.asarray(D["fscal"])[..., 0] < 0
 T, N = P.shape[0], P.shape[1]
-R = float(np.asarray(D["ctrl_R"]).reshape(-1)[0]) if "ctrl_R" in D else 0.0
-cid = int(np.asarray(D["ctrl_id"]).reshape(-1)[0]) if "ctrl_id" in D else None
+_cr = D.get("ctrl_R")
+R = float(np.asarray(_cr).reshape(-1)[0]) if _cr is not None else 0.0
+_ci = D.get("ctrl_id")
+cid = int(np.asarray(_ci).reshape(-1)[0]) if _ci is not None else None
+if cid is not None and cid >= N:
+    # 손잡이 색인이 **부분표본 전** 기준이면 그릴 수 없다 (원만 생략한다)
+    print(f"(손잡이 색인 {cid} 가 입자 수 {N} 밖이라 원은 그리지 않는다)",
+          flush=True)
+    cid = None
 print(f"입자 {N}, 프레임 {T}, det<0 최대 {int(NEG.sum(1).max())} "
       f"({100*NEG.sum(1).max()/N:.2f}%), 처음 생기는 프레임 "
       f"{int(np.nonzero(NEG.any(1))[0][0]) if NEG.any() else -1}", flush=True)
