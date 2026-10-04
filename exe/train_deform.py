@@ -2993,7 +2993,10 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _b0[_ar0, _r + 1] += _Ai0[_j]
                 _b0[_ar0, _r] -= _Ai0[_j]
             _tg0 = FRAME_DT * v + (FRAME_DT ** 2) * gv
-            _w0 = (torch.ones_like(m) if fm is None else fm.to(m.dtype))
+            _fm0 = (free_mask(d, x.shape[0], dev, gsel, x, t)
+                    if a.control else None)
+            _w0 = (torch.ones_like(m) if _fm0 is None
+                   else _fm0.to(m.dtype))
             _mh0 = _w0 * m / (FRAME_DT ** 2)
             _bc0 = None
             for _bcd in (cfg.get("boundary_conditions") or []):
