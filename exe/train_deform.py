@@ -1391,6 +1391,39 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                     # 스무딩하지 않은 변위로 정한다 -- 변형 측정만 넓힌다.
                     _ds = _smooth_nodes(dpn_k, _uqk, _nnk)
                     _u3, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, _ds)
+                if _k == 0 and a.cell_poly and _TAU_H[0] is not None:
+                    # **셀 다항식**: 입자 기여를 12 자유도 다항식으로 바꿔
+                    # 셀마다 계수를 합산해 두고, 평가는 셀 수만큼만 돈다.
+                    if _CPOLY[0] is None:
+                        _tp, _hp2 = _TAU_H[0]
+                        _uqt, _invt = torch.unique(_rwk, dim=0,
+                                                   return_inverse=True)
+                        _Tn = int(_uqt.shape[0])
+                        _rept = torch.zeros(_Tn, dtype=torch.long, device=dev)
+                        _rept.scatter_(0, _invt,
+                                       torch.arange(_invt.numel(), device=dev))
+                        _tc2 = torch.zeros(_Tn, 3, 3, device=dev,
+                                           dtype=_tp.dtype
+                                           ).index_add_(0, _invt, _tp)
+                        _hc2 = torch.zeros(_Tn, 3, 3, 3, 3, device=dev,
+                                           dtype=_hp2.dtype
+                                           ).index_add_(0, _invt, _hp2)
+                        _gq2 = torch.as_tensor(d["cfg"]["g"], device=dev,
+                                               dtype=x.dtype)
+                        _tgt2 = FRAME_DT * v + (FRAME_DT ** 2) * _gq2
+                        _wf2 = torch.ones(x.shape[0], device=dev,
+                                          dtype=x.dtype)
+                        if _NM[0] is not None:
+                            _wf2 = 1.0 - _NM[0][_rwk].all(1).to(x.dtype)
+                        _mw2 = (MASS[gsel] if MASS.numel() != x.shape[0]
+                                else MASS).to(x.dtype) / (FRAME_DT ** 2)
+                        _CPOLY[0] = _cell_poly_build(
+                            _rwk, _lmk, _lxk, _latk, _tc2, _hc2, _invt, _rept,
+                            _mw2, _tgt2, _wf2)
+                        _CP_INV[0] = _invt
+                    _ein2, _eel2, _gu2 = _cell_poly_energy(dpn_k, _CPOLY[0])
+                    _CP_E[0] = (_ein2, _eel2)
+                    _Jk = _gu2[_CP_INV[0]]
                 _Jsum = _Jk if _Jsum is None else _Jsum + _Jk
                 if _k == 0:
                     _dpn0 = dpn_k
@@ -2844,6 +2877,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         return x2, v2, E, dlog, F_tr, _pt, _Jd
 
     _TAU = _HES = _CELL = None
+    _TAU_H[0] = None
     if a.elast == "lin":
         # **입자별 2차 테일러**: 1차와 2차 계수를 같은 방식으로 (각 입자의
         # 실제 F^n 에서 미분해) 구하고 더한다. 예전에는 2차항만 F=I 의 등방
@@ -2890,6 +2924,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         _HES_C = torch.zeros(_nT, 3, 3, 3, 3, device=dev, dtype=_HES.dtype
                              ).index_add_(0, _inv_c, _HES)
         _CELL = (_rep_c, _TAU_C, _HES_C)
+        _TAU_H[0] = (_TAU, _HES)
+        _CPOLY[0] = None
+        _CP_E[0] = None
         if os.environ.get("AF_OV_DIAG"):
             print(f"    [셀집계] 입자 {x.shape[0]} -> 사면체 {_nT} "
                   f"(평가 비용 {x.shape[0] / max(_nT, 1):.1f} 배 감소)",
@@ -3070,7 +3107,9 @@ def _smooth_nodes(dpn, uniq, nn):
     return (1.0 - _a) * dpn + _a * _avg
 
 
+_TAU_H = [None]     # (_TAU, _HES) -- _ov_once 가 _fieldS 로 넘긴다
 _CPOLY = [None]     # 셀 다항식 계수 (프레임마다 한 번 만든다)
+_CP_INV = [None]    # 입자 -> 사면체 색인
 _CP_E = [None]      # 이번 평가의 셀 다항식 에너지
 
 
