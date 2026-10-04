@@ -2872,7 +2872,17 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 F.shape[0], 3, 3).clone().requires_grad_(True)
             _ps0, _ = phys_resid.psi_of(_J0 @ F, cfg, FRAME_DT)
             _TAU = torch.autograd.grad((vol * _ps0).sum(), _J0)[0].detach()
+            # **대칭화**: 등방 초탄성이면 tau = P F^T 가 대칭이라 비대칭 성분은
+            # 수치 잔차다. 2차항은 sym(dJ) 만 벌주므로, 비대칭 잔차를 남기면
+            # 왜곡 성분에 곡률 없는 1차항이 생겨 에너지가 **아래로 발산**한다
+            # (실측: 초기 증분포텐셜 -1.4e19, 비 27).
+            _TAU = 0.5 * (_TAU + _TAU.transpose(-1, -2))
+            if os.environ.get("AF_OV_DIAG"):
+                print(f"    [선형] |tau| 최대 {float(_TAU.abs().max()):.3e} "
+                      f"평균 {float(_TAU.abs().mean()):.3e}, mu {_mu0:.3e}",
+                      flush=True)
         _mu, _lm = phys_resid.lame(cfg["E"], cfg["nu"])
+        _mu0 = float(_mu)
     _ov = _OV_CUR[0]
     _OV_CUR[0] = st
     _GRID_OFF[0] = off
