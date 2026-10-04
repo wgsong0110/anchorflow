@@ -3041,6 +3041,24 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 return FUSED.energy(_z, _rw0, _lm0, _b0, F, _mh0, vol, _tg0,
                                     _mu0f, _lm0f, x, _bc0, _cb0) / nrm
 
+            if os.environ.get("AF_FUSE_CHECK") and t == int(
+                    os.environ["AF_FUSE_CHECK"]):
+                with torch.no_grad():
+                    _zc = torch.zeros(_M0, 3, device=dev, dtype=x.dtype)
+                    _zc = (_zc.index_copy(0, _idx0, _vs0[0])
+                           if _idx0 is not None else _vs0[0])
+                    if _pm0 is not None:
+                        _zc = torch.where(_pm0.unsqueeze(-1), _pv0, _zc)
+                    _ef = float(FUSED.energy(_zc, _rw0, _lm0, _b0, F, _mh0,
+                                             vol, _tg0, _mu0f, _lm0f, x,
+                                             _bc0, _cb0) / nrm)
+                _x2c, _v2c, _Ec, _, _, _ptc, _ = _fwd()
+                print(f"    [융합대조] t={t} 기준 {float(_Ec):.6e} 융합 "
+                      f"{_ef:.6e} 상대차 "
+                      f"{abs(float(_Ec) - _ef) / max(abs(float(_Ec)), 1e-30):.2e}"
+                      f" | 기준 항 관성 {float(_ptc[0]):.3e} 탄성 "
+                      f"{float(_ptc[1]):.3e} 접촉 {float(_ptc[3]):.3e}",
+                      flush=True)
             _opt0 = torch.optim.LBFGS(_vs0, lr=1.0,
                                       max_iter=max(a.ov_roll, 1),
                                       history_size=50, tolerance_grad=0.0,
