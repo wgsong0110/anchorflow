@@ -101,7 +101,19 @@ if HAVE_TRITON:
                    - d01 * (d01 * d22 - d12 * d02)
                    + d02 * (d01 * d12 - d11 * d02)) * 0.5
             det = tl.minimum(tl.maximum(det, -1.0), 1.0)
-            phi = tl.math.acos(det) / 3.0
+            # acos 가 이 Triton 에 없다 -- 근사식 + 뉴턴 2 회로 만든다
+            ax = tl.abs(det)
+            ac = tl.sqrt(tl.maximum(1.0 - ax, 0.0)) * (
+                1.5707288 + ax * (-0.2121144 + ax * (0.0742610
+                                                     + ax * (-0.0187293))))
+            yy = tl.where(det >= 0.0, ac, 3.141592653589793 - ac)
+            sy = tl.math.sin(yy)
+            yy = yy + (tl.math.cos(yy) - det) / tl.where(
+                tl.abs(sy) > 1e-8, sy, 1e-8)
+            sy = tl.math.sin(yy)
+            yy = yy + (tl.math.cos(yy) - det) / tl.where(
+                tl.abs(sy) > 1e-8, sy, 1e-8)
+            phi = yy / 3.0
             e1 = q + 2.0 * pp * tl.math.cos(phi)
             e3 = q + 2.0 * pp * tl.math.cos(phi + 2.0943951023931953)
             e2 = 3.0 * q - e1 - e3
