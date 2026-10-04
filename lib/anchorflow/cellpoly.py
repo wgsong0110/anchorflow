@@ -69,6 +69,84 @@ if HAVE_TRITON:
                     tl.atomic_add(DGRAD + ri * 3 + a, go * d)
 
 
+if HAVE_TRITON:
+
+    @triton.jit
+    def _matvec_kernel(U, ROWS, M, K, OUT, NT, BLOCK: tl.constexpr):
+        """A u 를 셀 조립으로 (행렬을 만들지 않는다). 커널 한 번."""
+        t = tl.program_id(0)
+        if t < NT:
+            for i in range(4):
+                ri = tl.load(ROWS + t * 4 + i)
+                for a in range(3):
+                    d = 0.0
+                    for j in range(4):
+                        rj = tl.load(ROWS + t * 4 + j)
+                        d += tl.load(M + (t * 4 + i) * 4 + j) * tl.load(
+                            U + rj * 3 + a)
+                        for b in range(3):
+                            kk = tl.load(K + (((t * 4 + i) * 3 + a) * 4 + j)
+                                         * 3 + b)
+                            d += kk * tl.load(U + rj * 3 + b)
+                    tl.atomic_add(OUT + ri * 3 + a, d)
+
+    @triton.jit
+    def _scatter_kernel(V, ROWS, OUT, NT, BLOCK: tl.constexpr):
+        t = tl.program_id(0)
+        if t < NT:
+            for i in range(4):
+                ri = tl.load(ROWS + t * 4 + i)
+                for a in range(3):
+                    tl.atomic_add(OUT + ri * 3 + a,
+                                  tl.load(V + (t * 4 + i) * 3 + a))
+
+
+def matvec(u, rows, M, K):
+    """A u (관성+탄성 2차형식의 행렬-벡터 곱). 커널 한 번."""
+    out = torch.zeros_like(u)
+    _matvec_kernel[(rows.shape[0],)](u, rows, M, K, out, rows.shape[0],
+                                     BLOCK=1)
+    return out
+
+
+def scatter(v, rows, M_nodes):
+    """셀별 [T,4,3] 값을 노드로 더한다. 커널 한 번."""
+    out = torch.zeros(M_nodes, 3, device=v.device, dtype=v.dtype)
+    _scatter_kernel[(rows.shape[0],)](v.contiguous(), rows, out,
+                                      rows.shape[0], BLOCK=1)
+    return out
+
+
+def solve_cg(rows, M, K, FG, n_nodes, free, u0=None, iters=200, tol=1e-12):
+    """1/2 u^T A u + FG . u 를 최소화한다 (고정 노드는 그대로 둔다).
+
+    A u 는 커널 한 번, 나머지는 벡터 연산 몇 개뿐이라 반복당 발사 수가
+    파이토치 자동미분 경로(수천)에서 몇 개로 떨어진다.
+    """
+    rows32 = rows.to(torch.int32).contiguous()
+    b = -scatter(FG, rows32, n_nodes)
+    u = torch.zeros(n_nodes, 3, device=M.device, dtype=M.dtype) \
+        if u0 is None else u0.clone()
+    fm = free.reshape(-1, 1).to(u.dtype)
+    r = (b - matvec(u, rows32, M, K)) * fm
+    p = r.clone()
+    rs = float((r * r).sum())
+    for _ in range(int(iters)):
+        if rs < tol:
+            break
+        Ap = matvec(p, rows32, M, K) * fm
+        pAp = float((p * Ap).sum())
+        if pAp <= 0:
+            break
+        al = rs / pAp
+        u = u + al * p
+        r = r - al * Ap
+        rs2 = float((r * r).sum())
+        p = r + (rs2 / max(rs, 1e-30)) * p
+        rs = rs2
+    return u
+
+
 class CellPolyEnergy(torch.autograd.Function):
     """E = sum_t E_t. dpn [M,3] 에 대해 미분 가능."""
 
