@@ -41,6 +41,8 @@ ap.add_argument("--n_grid", type=int, default=100)
 ap.add_argument("--E", type=float, default=2e6)
 ap.add_argument("--nu", type=float, default=0.3)
 ap.add_argument("--out", default="")
+ap.add_argument("--t_short", type=int, default=20)
+ap.add_argument("--t_long", type=int, default=60)
 a = ap.parse_args()
 
 MODEL = {"wolf": "wolf_whitebg-trained", "mic": "mic_whitebg-trained",
@@ -53,12 +55,13 @@ print(f"[설정] {a.method} {a.shape} {a.material}  입자 {X0.shape[0]}  "
       f"지름 L {L:.4f}  프레임 {a.frames}", flush=True)
 
 
-def run(s):
-    """프레임당 서브스텝 s 로 돌리고 (궤적 [T,N,3], 시뮬 시간) 을 돌려준다."""
-    od = f"{W}/bench/{a.method}_{a.shape}_{a.material}_{s}"
+def run(s, frames=None):
+    """프레임당 서브스텝 s 로 돌리고 (궤적 [T,N,3], 벽시계) 를 돌려준다."""
+    frames = a.frames if frames is None else frames
+    od = f"{W}/bench/{a.method}_{a.shape}_{a.material}_{s}_{frames}"
     cfg = dict(opacity_threshold=0.0, rotation_degree=[0.0], rotation_axis=[0],
                substep_dt=(1.0 / 60.0) / s, frame_dt=1.0 / 60.0,
-               frame_num=a.frames, n_grid=a.n_grid, grid_lim=2.0,
+               frame_num=frames, n_grid=a.n_grid, grid_lim=2.0,
                E=a.E, nu=a.nu, density=1000.0, g=[0.0, 0.0, -9.8],
                boundary_conditions=[{"type": "bounding_box"}],
                mpm_space_vertical_upward_axis=[0, 0, 1],
@@ -68,7 +71,7 @@ def run(s):
                delta_a=0.0, delta_e=0.0, delta_r=0.0)
     cfg.update(MAT[a.material])
     os.makedirs(f"{W}/bench", exist_ok=True)
-    cp = f"{W}/bench/cfg_{a.method}_{a.shape}_{a.material}_{s}.json"
+    cp = f"{W}/bench/cfg_{a.method}_{a.shape}_{a.material}_{s}_{frames}.json"
     json.dump(cfg, open(cp, "w"), indent=1)
     env = dict(os.environ, AF_PARTICLES_NPY=PNPY)
     cmd = ["python", "-u", "gs_simulation.py", "--model_path",
@@ -78,11 +81,11 @@ def run(s):
     r = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True)
     dt = time.time() - t0
     fs = sorted(glob.glob(f"{od}/simulation_ply/*.h5"))
-    if len(fs) < a.frames:
+    if len(fs) < frames:
         print(f"  [실패] s={s} h5 {len(fs)} 개  {r.stderr[-300:]}", flush=True)
         return None, dt
     X = []
-    for f in fs[:a.frames + 1]:
+    for f in fs[:frames + 1]:
         with h5py.File(f, "r") as hf:
             x = np.array(hf["x"])
             X.append(x.T if x.shape[0] == 3 else x)
@@ -95,7 +98,15 @@ best = search(run, Xc, L, a.tol, a.s0 // 4 if a.s0 >= 4 else 1, sc)
 if best is None:
     print("[결과] 합격 설정 없음 (미달)", flush=True)
 else:
-    s, t, e1, eT = best
+    s, _t, e1, eT = best
+    # **시작 비용 제거**: 길이가 다른 두 실행의 차분으로 순수 시뮬 시간을 뽑는다
+    _, tS = run(s, a.t_short)
+    _, tL = run(s, a.t_long)
+    t_per = (tL - tS) / float(a.t_long - a.t_short)
+    t = t_per * a.frames
+    print(f"[시간] 짧은 {a.t_short}프레임 {tS:.1f}초, 긴 {a.t_long}프레임 "
+          f"{tL:.1f}초 -> 프레임당 {1000 * t_per:.1f} ms (시작비용 제외)",
+          flush=True)
     print(f"[결과] {a.method} {a.shape} {a.material}: s={s}, "
           f"{a.frames / t:.2f} FPS ({t / a.frames * 1000:.1f} ms/프레임), "
           f"한프레임 {100 * e1:.4f}% 누적 {100 * eT:.4f}%", flush=True)
