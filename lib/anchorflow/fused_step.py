@@ -30,8 +30,10 @@ except Exception:                                    # pragma: no cover
 if HAVE_TRITON:
 
     @triton.jit
-    def _step_kernel(DPN, ROWS, LAM, B, FN, MASS, VOL, TGT,
-                     MU, LAM_E, EOUT, GRAD, NP, BLOCK: tl.constexpr):
+    def _step_kernel(DPN, ROWS, LAM, B, FN, MASS, VOL, TGT, XP,
+                     MU, LAM_E, NX, NY, NZ, PX, PY, PZ,
+                     KAP, DHAT, EPSB, BE, BP, STK, HASBC,
+                     EOUT, GRAD, NP, BLOCK: tl.constexpr):
         p = tl.program_id(0)
         if p < NP:
             # --- 노드 변위 모으기 ---------------------------------------
@@ -195,7 +197,37 @@ if HAVE_TRITON:
             t2v = tl.load(TGT + p * 3 + 2)
             d0 = up0 - t0; d1 = up1 - t1; d2 = up2 - t2v
             e_in = 0.5 * mh * (d0 * d0 + d1 * d1 + d2 * d2)
-            tl.store(EOUT + p, vol * psi + e_in)
+            # --- 바닥: 비관통 로그 장벽 + sticky 접선 ---------------------
+            e_bc = 0.0
+            bg0 = 0.0; bg1 = 0.0; bg2 = 0.0
+            if HASBC > 0:
+                x0 = tl.load(XP + p * 3 + 0); x1 = tl.load(XP + p * 3 + 1)
+                x2p = tl.load(XP + p * 3 + 2)
+                sd0 = (x0 - PX) * NX + (x1 - PY) * NY + (x2p - PZ) * NZ
+                sd = sd0 + up0 * NX + up1 * NY + up2 * NZ
+                # b(d) = -(d-dhat)^2 ln(d/dhat), d<eps 는 선형 연장
+                dc = tl.maximum(sd, EPSB)
+                lg = tl.math.log(dc / DHAT)
+                bb = -((dc - DHAT) * (dc - DHAT)) * lg
+                dbb = -2.0 * (dc - DHAT) * lg - ((dc - DHAT) * (dc - DHAT)) / dc
+                bb = tl.where(sd < EPSB, BE + BP * (sd - EPSB), bb)
+                dbb = tl.where(sd < EPSB, BP, dbb)
+                inb = sd < DHAT
+                bb = tl.where(inb, bb, 0.0)
+                dbb = tl.where(inb, dbb, 0.0)
+                e_bc += KAP * mh * bb
+                gb = KAP * mh * dbb
+                bg0 += gb * NX; bg1 += gb * NY; bg2 += gb * NZ
+                # sticky: 면 아래 입자의 접선 변위
+                tc = tl.where(sd0 < 0.0, 1.0, 0.0)
+                un = up0 * NX + up1 * NY + up2 * NZ
+                t0b = up0 - un * NX; t1b = up1 - un * NY; t2b = up2 - un * NZ
+                e_bc += 0.5 * STK * mh * tc * (t0b * t0b + t1b * t1b
+                                               + t2b * t2b)
+                bg0 += STK * mh * tc * t0b
+                bg1 += STK * mh * tc * t1b
+                bg2 += STK * mh * tc * t2b
+            tl.store(EOUT + p, vol * psi + e_in + e_bc)
             # --- 노드로 기울기 흩뿌리기 ------------------------------------
             for i in range(4):
                 bi0 = tl.load(B + p * 12 + i * 3 + 0)
@@ -206,9 +238,12 @@ if HAVE_TRITON:
                 w1 = n01 * bi0 + n11 * bi1 + n21 * bi2
                 w2 = n02 * bi0 + n12 * bi1 + n22 * bi2
                 li = tl.load(LAM + p * 4 + i)
-                gx = vol * (p00 * w0 + p01 * w1 + p02 * w2) + mh * li * d0
-                gy = vol * (p10 * w0 + p11 * w1 + p12 * w2) + mh * li * d1
-                gz = vol * (p20 * w0 + p21 * w1 + p22 * w2) + mh * li * d2
+                gx = (vol * (p00 * w0 + p01 * w1 + p02 * w2)
+                      + mh * li * d0 + li * bg0)
+                gy = (vol * (p10 * w0 + p11 * w1 + p12 * w2)
+                      + mh * li * d1 + li * bg1)
+                gz = (vol * (p20 * w0 + p21 * w1 + p22 * w2)
+                      + mh * li * d2 + li * bg2)
                 ri = tl.load(ROWS + p * 4 + i)
                 tl.atomic_add(GRAD + ri * 3 + 0, gx)
                 tl.atomic_add(GRAD + ri * 3 + 1, gy)
@@ -219,23 +254,45 @@ class FusedStep(torch.autograd.Function):
     """E(dpn) = 탄성 + 관성. 순전파에서 기울기까지 만들어 둔다 (커널 1 회)."""
 
     @staticmethod
-    def forward(ctx, dpn, rows, lam, b, Fn, mass, vol, tgt, mu, lam_e):
+    def forward(ctx, dpn, rows, lam, b, Fn, mass, vol, tgt, mu, lam_e,
+                xp=None, bc=None):
         n = rows.shape[0]
         e = torch.empty(n, device=dpn.device, dtype=dpn.dtype)
         gr = torch.zeros_like(dpn)
-        _step_kernel[(n,)](dpn, rows, lam, b, Fn, mass, vol, tgt,
-                           float(mu), float(lam_e), e, gr, n, BLOCK=1)
+        if bc is None:
+            nx = ny = nz = px = py = pz = 0.0
+            kap = dh = eps = be = bp = stk = 0.0
+            has = 0
+            xp = dpn[:1]
+        else:
+            (nx, ny, nz), (px, py, pz), kap, dh, stk = bc
+            eps = 1e-3 * dh
+            _l = math.log(eps / dh); _k = eps - dh
+            be = -(_k ** 2) * _l
+            bp = -2.0 * _k * _l - (_k ** 2) / eps
+            has = 1
+        _step_kernel[(n,)](dpn, rows, lam, b, Fn, mass, vol, tgt, xp,
+                           float(mu), float(lam_e),
+                           float(nx), float(ny), float(nz),
+                           float(px), float(py), float(pz),
+                           float(kap), float(dh), float(eps), float(be),
+                           float(bp), float(stk), int(has), e, gr, n,
+                           BLOCK=1)
         ctx.save_for_backward(gr)
         return e.sum()
 
     @staticmethod
     def backward(ctx, go):
         (gr,) = ctx.saved_tensors
-        return (go * gr, None, None, None, None, None, None, None, None, None)
+        return (go * gr, None, None, None, None, None, None, None, None,
+                None, None, None)
 
 
-def energy(dpn, rows, lam, b, Fn, mass, vol, tgt, mu, lam_e):
+def energy(dpn, rows, lam, b, Fn, mass, vol, tgt, mu, lam_e, xp=None,
+           bc=None):
+    """bc = ((nx,ny,nz), (px,py,pz), kappa, dhat, sticky_k) 또는 None."""
     return FusedStep.apply(dpn, rows.to(torch.int32).contiguous(),
                            lam.contiguous(), b.contiguous(), Fn.contiguous(),
                            mass.contiguous(), vol.contiguous(),
-                           tgt.contiguous(), mu, lam_e)
+                           tgt.contiguous(), mu, lam_e,
+                           None if xp is None else xp.contiguous(), bc)
