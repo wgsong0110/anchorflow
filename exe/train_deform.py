@@ -164,6 +164,9 @@ ap.add_argument("--ov_tol", type=float, default=0.0,
 ap.add_argument("--fuse", action="store_true",
                 help="셀 다항식 평가를 torch.compile 로 묶어 커널 발사 수를 "
                      "줄인다 (작은 씬에서 지배적인 비용이다)")
+ap.add_argument("--lin_outer", type=int, default=1,
+                help="2차 근사를 **현재 상태에서 다시 전개**하는 바깥 반복 수. "
+                     "1 이면 J=I 둘레 한 번만 (한 프레임 변위가 크면 깨진다)")
 ap.add_argument("--cell_poly", action="store_true",
                 help="입자 기여를 그 사면체 네 꼭짓점 변위(12 자유도)의 "
                      "다항식으로 바꿔 **셀마다 계수를 합산**해 둔다. 평가가 "
@@ -2897,7 +2900,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
 
         _I3L = torch.eye(3, device=dev, dtype=F.dtype).expand(
             F.shape[0], 3, 3).contiguous()
-        _TAU = _tau_at(_I3L)
+        _JREF = (_JR_HOLD[0] if _JR_HOLD[0] is not None else _I3L)
+        _TAU = _tau_at(_JREF)
         # 헤시안은 **tau 의 중심차분**으로 만든다. 이중 역전파로 뽑으면
         # psi 가 eigvalsh 를 거치는 탓에 F ~ I 처럼 고유값이 겹칠 때
         # 1/(l_i - l_j) 가 터져 전부 NaN 이 된다 (실측: 비 0.92 = 제자리).
@@ -2907,7 +2911,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             for _b in range(3):
                 _E = torch.zeros(3, 3, device=dev, dtype=F.dtype)
                 _E[_a, _b] = _eps
-                _cols.append((_tau_at(_I3L + _E) - _tau_at(_I3L - _E))
+                _cols.append((_tau_at(_JREF + _E) - _tau_at(_JREF - _E))
                              / (2.0 * _eps))
         _HES = torch.stack(_cols, 1).reshape(-1, 3, 3, 3, 3)
         # 헤시안은 대칭이어야 한다 (H_abcd = H_cdab) -- 차분 잔차를 없앤다
@@ -2935,6 +2939,12 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             print(f"    [셀집계] 입자 {x.shape[0]} -> 사면체 {_nT} "
                   f"(평가 비용 {x.shape[0] / max(_nT, 1):.1f} 배 감소)",
                   flush=True)
+        # 전개 중심이 I 가 아니면 1 차항을 옮긴다:
+        #   dJ = (I + grad u) - Jref = grad u - D,  D = Jref - I
+        #   <tau, dJ> + 1/2 dJ:H:dJ = <tau - H:D, grad u> + 1/2 grad u:H:grad u
+        if _JR_HOLD[0] is not None:
+            _Dref = (_JREF - _I3L)
+            _TAU = _TAU - torch.einsum("nabcd,ncd->nab", _HES, _Dref)
         _mu, _lm = phys_resid.lame(cfg["E"], cfg["nu"])
         if a.lin_psd:
             _H9 = _HES.reshape(-1, 9, 9)
@@ -3112,6 +3122,7 @@ def _smooth_nodes(dpn, uniq, nn):
 
 
 _TAU_H = [None]     # (_TAU, _HES) -- _ov_once 가 _fieldS 로 넘긴다
+_JR_HOLD = [None]   # 2차 근사를 전개하는 중심 J (바깥 반복용)
 _CPOLY = [None]     # 셀 다항식 계수 (프레임마다 한 번 만든다)
 _CP_INV = [None]    # 입자 -> 사면체 색인
 _CP_E = [None]      # 이번 평가의 셀 다항식 에너지
@@ -3335,7 +3346,15 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     평균한 변위장의 기울기 = 기울기의 평균이므로, 야코비안도 평균이 된다.
     """
     cfg = d["cfg"]
-    x2, v2, Jd = _ov_once(d, t, gsel, p, x, v, F)
+    # **바깥 반복**: 2차 근사를 현재 상태에서 다시 전개한다. 한 프레임 변위가
+    # 크면 J=I 둘레 한 번으로는 모자라다 (실측: 89 프레임에서 비 0.88).
+    _JR_HOLD[0] = None
+    _no = max(int(a.lin_outer), 1) if a.elast == "lin" else 1
+    for _oi in range(_no):
+        x2, v2, Jd = _ov_once(d, t, gsel, p, x, v, F)
+        if _no > 1 and _oi + 1 < _no:
+            _JR_HOLD[0] = Jd.detach()
+    _JR_HOLD[0] = None
     with torch.no_grad():
         F_tr = Jd.to(F.dtype) @ F
         _, dlog = phys_resid.psi_of(F_tr, cfg, FRAME_DT)
