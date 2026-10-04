@@ -9,9 +9,13 @@ SHAPES="wolf mic lego bread"
 MATS="elastic elastoplastic viscoplastic fracture"
 mkdir -p $W/bench/vid $W/wpcache
 cd $W/anchorflow
-source /tools/anaconda3/etc/profile.d/conda.sh 2>/dev/null
-conda activate af 2>/dev/null || true
+# conda 초기화는 set -u 와 함께 쓰면 셸이 그 자리에서 죽는다 (미정의 변수 참조)
+set +u
+source /tools/anaconda3/etc/profile.d/conda.sh
+conda activate af
+set -u
 export PYTHONPATH=$W/anchorflow/lib
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 if [ "$PH" = "search" ]; then
   g=0
