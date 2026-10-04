@@ -991,6 +991,45 @@ def free_mask(d, n, device, gsel, x=None, t=0):
     return m
 
 
+def release_held(d, x, t, dt=None):
+    """PG 의 `release_particles_sequentially` 를 그대로 옮긴다 -> 아직 **묶여
+    있는** 입자 마스크 [N] (True = 아직 못 움직인다).
+
+    PG 는 50 겹의 "상자 안 속도를 0 으로" 구속을 **끝시각만 엇갈리게** 걸어 둔다
+    (mpm_solver_warp.release_particles_sequentially). 상자 i 는 축 좌표
+    end_position 을 중심으로 반폭 |start-end|/50*(50-i), 끝시각은
+    end_time*(i+1)/50 이다. 그 입자를 담는 가장 큰 i 가 마지막까지 붙들므로
+
+        t_rel(q) = end_time * (50 - floor(|q - end| / (|start-end|/50))) / 50
+
+    이고, 벽 자리(end_position)에 가까울수록 늦게 풀린다. 모래성 씬(wolf)이
+    이 구속으로 "벽을 치우면 무너진다" 를 만든다 -- 빼먹으면 첫 프레임부터
+    전부 무너져 GT 와 아예 다른 장면이 된다.
+    """
+    cfg = d["cfg"]
+    held = None
+    for bc in (cfg.get("boundary_conditions") or []):
+        if bc.get("type") != "release_particles_sequentially":
+            continue
+        nrm = bc.get("normal", [1, 0, 0])
+        ax = max(range(3), key=lambda i: abs(float(nrm[i])))
+        sp, ep = float(bc["start_position"]), float(bc["end_position"])
+        nl = int(bc.get("num_layers", 50)) or 50
+        nl = 50                      # PG 가 인자를 무시하고 50 으로 덮어쓴다
+        t0 = float(bc.get("start_time", 0.0))
+        t1 = float(bc.get("end_time", 0.0))
+        w = abs(sp - ep) / nl
+        now = float(t) * (float(dt) if dt is not None else float(_DT[0]))
+        if now < t0:
+            m = torch.ones(x.shape[0], dtype=torch.bool, device=x.device)
+        else:
+            lay = ((x[:, ax] - ep).abs() / max(w, 1e-12)).floor()
+            t_rel = t1 * (nl - lay).clamp_min(0.0) / nl
+            m = now < t_rel
+        held = m if held is None else (held | m)
+    return held
+
+
 def apply_control(d, t, gsel, x2, x=None, dt=None):
     """강제되는 입자의 다음 위치를 **궤적 값으로 덮어쓴다**.
 
@@ -2835,8 +2874,15 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         with torch.enable_grad(), dt_scope(FRAME_DT):
             x2, _, v2, _, _, _, _, _, _, _Jd = step_once(
                 d, t, gsel, p, x, v, need_J=False)
+        _hd = release_held(d, x, t, FRAME_DT)
+        if _hd is not None:
+            # 아직 안 풀린 입자는 **제자리에 박는다** (PG 는 속도를 0 으로 둔다)
+            x2 = torch.where(_hd.unsqueeze(-1), x, x2)
+            v2 = torch.where(_hd.unsqueeze(-1), torch.zeros_like(v2), v2)
         fm = (free_mask(d, x2.shape[0], x2.device, gsel, x, t)
               if a.control else None)
+        if _hd is not None:
+            fm = (~_hd) if fm is None else (fm & ~_hd)
         if _BC_LAST[0] is not None:
             _am = _BC_LAST[0][1].reshape(-1) > 0.5
             fm = (~_am) if fm is None else (fm & ~_am)
@@ -2993,6 +3039,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _b0[_ar0, _r + 1] += _Ai0[_j]
                 _b0[_ar0, _r] -= _Ai0[_j]
             _tg0 = FRAME_DT * v + (FRAME_DT ** 2) * gv
+            if release_held(d, x, t, FRAME_DT) is not None:
+                raise SystemExit("--fused 는 release 구속(모래성 씬)을 아직 "
+                                 "지원하지 않는다. 그 씬은 --fused 없이 돌릴 것")
             _fm0 = (free_mask(d, x.shape[0], dev, gsel, x, t)
                     if a.control else None)
             _w0 = (torch.ones_like(m) if _fm0 is None
