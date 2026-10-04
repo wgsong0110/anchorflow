@@ -1,87 +1,107 @@
-"""지표 CSV 들을 모아 표로 낸다 (조합별 + 솔버별 요약)."""
+"""벤치 결과(회차 디렉토리)를 한 표로 모은다.
+
+  python exe/bench_table.py --run run3 [--md out.md] [--html out.html]
+
+칸마다 모으는 것:
+  s(통과 서브스텝) · s_conv(수렴) · ms/프레임 · ms/서브스텝 · FPS ·
+  한프레임 오차 e1 · 누적 eT · 입자수 ·
+  (있으면) 물리 잔차 중앙값 · 증분 포텐셜 평균 · FID · FVD · KVD
+"""
+from __future__ import annotations
+
 import argparse
-import csv
-import glob
+import json
 import os
-from collections import defaultdict
+
+W = "/home/dkta/work"
+SHAPES = ["wolf", "mic", "lego", "bread"]
+MATS = ["elastic", "elastoplastic", "viscoplastic", "fracture"]
+MET = ["pg", "ipg"]
+NAME = {"pg": "PG", "ipg": "i-PG"}
+MN = {"elastic": "탄성", "elastoplastic": "탄소성",
+      "viscoplastic": "점소성", "fracture": "파괴"}
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--glob", default="bench_met/metrics_*.csv")
-ap.add_argument("--visual", default="bench_met/visual_*.csv")
-ap.add_argument("--out", default="bench/table.md")
-ap.add_argument("--csv", default="bench/table.csv")
+ap.add_argument("--run", default="run3")
+ap.add_argument("--md", default="")
+ap.add_argument("--html", default="")
 a = ap.parse_args()
+O = f"{W}/bench/{a.run}"
+
+
+def rd(p):
+    try:
+        return json.load(open(p))
+    except Exception:
+        return None
+
 
 rows = []
-for f in sorted(glob.glob(a.glob)):
-    with open(f) as fh:
-        rows += list(csv.DictReader(fh))
-vis = defaultdict(dict)
-for f in sorted(glob.glob(a.visual)):
-    with open(f) as fh:
-        for r in csv.DictReader(fh):
-            vis[(r["solver"], r["combo"], r["seed"])] = r
-if not rows:
-    raise SystemExit("지표 CSV 가 없다")
-
-NUM = ["CD", "EMD", "residual", "vol_ratio", "det_neg_mean", "det_neg_max",
-       "mom_span", "ene_span", "penetration", "penetration_max", "fps", "wall_s"]
-VNUM = ["PSNR", "SSIM", "LPIPS", "flicker"]
-
-
-def agg(rs, keys):
-    out = {}
-    for k in keys:
-        v = [float(r[k]) for r in rs
-             if r.get(k) not in (None, "", "nan") and r[k] == r[k]]
-        v = [x for x in v if x == x]
-        out[k] = sum(v) / len(v) if v else float("nan")
-    return out
+for m in MET:
+    for sh in SHAPES:
+        for mt in MATS:
+            d = rd(f"{O}/{m}_{sh}_{mt}.json")
+            if d is None:
+                rows.append(dict(method=m, shape=sh, material=mt,
+                                 note="실행 없음"))
+                continue
+            r = rd(f"{O}/resid/{m}_{sh}_{mt}.json") or {}
+            v = rd(f"{O}/vq/{m}_{sh}_{mt}_vq.json") or {}
+            rows.append(dict(
+                method=m, shape=sh, material=mt,
+                n=d.get("n_particles"), s=d.get("s"), s_conv=d.get("s_conv"),
+                ms=d.get("ms_per_frame"), mss=d.get("ms_per_substep"),
+                fps=d.get("fps"), e1=d.get("e1"), eT=d.get("eT"),
+                r_med=r.get("r_med_mean"), ip=r.get("E_mean"),
+                fid=v.get("fid"), fvd=v.get("fvd"), kvd=v.get("kvd"),
+                note="" if d.get("s") else "기준 미달"))
 
 
-bysolver = defaultdict(list)
-bycombo = defaultdict(list)
-for r in rows:
-    bysolver[r["solver"]].append(r)
-    bycombo[(r["solver"], r["combo"])].append(r)
+def f(x, k="{:.2f}"):
+    return "-" if x is None else k.format(x)
 
-L = ["# 베이스라인 벤치 (기준 PG)", "",
-     "**주의** 학생(stu) 행은 학습이 끝난 뒤의 최종 세팅으로 다시 재야 한다. "
-     "중간 체크포인트로 잰 값은 비교 대상이 아니다.", "",
-     "FPS 는 GPU 단독 점유에서만 유효하다 -- 다른 작업과 공유한 값은 비운다.", "",
-     "지표는 시드 평균이다. CD/EMD 는 PG 대비, 잔차는 바닥 접촉항을 포함한 i-PG "
-     "정류 잔차를 길이로 환산해 물체 크기로 나눈 무차원 값이다.", "",
-     "## 솔버별 요약", "",
-     "| 솔버 | n | CD | EMD | 잔차 | 부피비 | detF<0 평균 | 관통 | 관통 최대 | "
-     "운동량 변동 | 에너지 변동 | FPS | PSNR | SSIM | LPIPS |",
-     "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
-for s, rs in sorted(bysolver.items()):
-    m = agg(rs, NUM)
-    vv = [vis[(s, r["combo"], r["seed"])] for r in rs
-          if (s, r["combo"], r["seed"]) in vis]
-    v = agg(vv, VNUM) if vv else {k: float("nan") for k in VNUM}
-    L.append(f"| {s} | {len(rs)} | {m['CD']:.3e} | {m['EMD']*100:.3f}% | "
-             f"{m['residual']:.3e} | {m['vol_ratio']:.3f} | "
-             f"{m['det_neg_mean']*100:.3f}% | {m['penetration']*100:.3f}% | "
-             f"{m['penetration_max']*100:.3f}% | {m['mom_span']:.3e} | "
-             f"{m['ene_span']:.3e} | {m['fps']:.2f} | {v['PSNR']:.2f} | "
-             f"{v['SSIM']:.4f} | {v['LPIPS']:.4f} |")
 
-L += ["", "## 조합별", "",
-      "| 솔버 | 조합 | n | CD | EMD | 잔차 | 부피비 | detF<0 | 관통 | FPS |",
-      "|---|---|---|---|---|---|---|---|---|---|"]
-for (s, c), rs in sorted(bycombo.items()):
-    m = agg(rs, NUM)
-    L.append(f"| {s} | {c} | {len(rs)} | {m['CD']:.3e} | {m['EMD']*100:.3f}% | "
-             f"{m['residual']:.3e} | {m['vol_ratio']:.3f} | "
-             f"{m['det_neg_mean']*100:.3f}% | {m['penetration']*100:.3f}% | "
-             f"{m['fps']:.2f} |")
-
-os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
-open(a.out, "w").write("\n".join(L) + "\n")
-with open(a.csv, "w", newline="") as f:
-    w = csv.DictWriter(f, fieldnames=list(rows[0]))
-    w.writeheader()
-    w.writerows(rows)
-print("\n".join(L[:40]))
-print(f"\n[저장] {a.out} / {a.csv} ({len(rows)} 행)")
+hdr = ("| 방법 | 형상 | 물성 | 입자 | s | s_conv | ms/프레임 | ms/서브스텝 | "
+       "FPS | e1 % | eT % | 잔차 중앙값 % | 증분 포텐셜 | FID | FVD | KVD |")
+sep = "|" + "---|" * 16
+lines = [hdr, sep]
+for q in rows:
+    lines.append(
+        f"| {NAME[q['method']]} | {q['shape']} | {MN[q['material']]} | "
+        f"{f(q.get('n'), '{:d}') if q.get('n') else '-'} | "
+        f"{f(q.get('s'), '{:d}') if q.get('s') else '-'} | "
+        f"{f(q.get('s_conv'), '{:d}') if q.get('s_conv') else '-'} | "
+        f"{f(q.get('ms'))} | {f(q.get('mss'), '{:.3f}')} | {f(q.get('fps'))} | "
+        f"{f(None if q.get('e1') is None else 100 * q['e1'], '{:.4f}')} | "
+        f"{f(None if q.get('eT') is None else 100 * q['eT'], '{:.3f}')} | "
+        f"{f(None if q.get('r_med') is None else 100 * q['r_med'], '{:.4f}')} | "
+        f"{f(q.get('ip'), '{:.3e}')} | {f(q.get('fid'), '{:.2f}')} | "
+        f"{f(q.get('fvd'), '{:.1f}')} | {f(q.get('kvd'), '{:.5f}')} |"
+        + (f"  <!-- {q['note']} -->" if q.get("note") else ""))
+md = "\n".join(lines)
+print(md)
+if a.md:
+    open(a.md, "w").write(md + "\n")
+    print(f"[저장] {a.md}")
+if a.html:
+    th = "".join(f"<th>{c.strip()}</th>" for c in hdr.strip("|").split("|"))
+    tr = ""
+    for q in rows:
+        cells = [NAME[q["method"]], q["shape"], MN[q["material"]],
+                 f(q.get("n"), "{:d}") if q.get("n") else "-",
+                 f(q.get("s"), "{:d}") if q.get("s") else "-",
+                 f(q.get("s_conv"), "{:d}") if q.get("s_conv") else "-",
+                 f(q.get("ms")), f(q.get("mss"), "{:.3f}"), f(q.get("fps")),
+                 f(None if q.get("e1") is None else 100 * q["e1"], "{:.4f}"),
+                 f(None if q.get("eT") is None else 100 * q["eT"], "{:.3f}"),
+                 f(None if q.get("r_med") is None else 100 * q["r_med"],
+                   "{:.4f}"),
+                 f(q.get("ip"), "{:.3e}"), f(q.get("fid"), "{:.2f}"),
+                 f(q.get("fvd"), "{:.1f}"), f(q.get("kvd"), "{:.5f}")]
+        tr += "<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>"
+    open(a.html, "w").write(
+        "<div style='font-family:sans-serif;font-size:12px'>"
+        "<table border=1 cellpadding=5 style='border-collapse:collapse'>"
+        f"<tr>{th}</tr>{tr}</table></div>")
+    print(f"[저장] {a.html}")
+json.dump(rows, open(f"{O}/table.json", "w"), indent=1)
