@@ -164,6 +164,9 @@ ap.add_argument("--ov_tol", type=float, default=0.0,
 ap.add_argument("--fuse", action="store_true",
                 help="셀 다항식 평가를 torch.compile 로 묶어 커널 발사 수를 "
                      "줄인다 (작은 씬에서 지배적인 비용이다)")
+ap.add_argument("--cmp_lin", action="store_true",
+                help="매 프레임 **같은 상태에서** 원본(근사 없음)과 2차 근사를 "
+                     "각각 풀어 차이를 잰다. 전진은 원본 해로 한다")
 ap.add_argument("--lin_outer", type=int, default=1,
                 help="2차 근사를 **현재 상태에서 다시 전개**하는 바깥 반복 수. "
                      "1 이면 J=I 둘레 한 번만 (한 프레임 변위가 크면 깨진다)")
@@ -3349,11 +3352,37 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     # **바깥 반복**: 2차 근사를 현재 상태에서 다시 전개한다. 한 프레임 변위가
     # 크면 J=I 둘레 한 번으로는 모자라다 (실측: 89 프레임에서 비 0.88).
     _JR_HOLD[0] = None
-    _no = max(int(a.lin_outer), 1) if a.elast == "lin" else 1
-    for _oi in range(_no):
+    if a.cmp_lin:
+        # **같은 상태에서 두 번 푼다**: 원본 탄성 / 2차 근사. 전진은 원본으로.
+        _keep = a.elast
+        a.elast = "full"
         x2, v2, Jd = _ov_once(d, t, gsel, p, x, v, F)
-        if _no > 1 and _oi + 1 < _no:
-            _JR_HOLD[0] = Jd.detach()
+        _s2 = _OV_CUR[0]
+        if _s2 is not None:
+            _s2["ov"] = None
+            _s2["ov_opt"] = None
+        a.elast = "lin"
+        _x2l, _v2l, _Jl = _ov_once(d, t, gsel, p, x, v, F)
+        a.elast = _keep
+        with torch.no_grad():
+            _df = (x2 - x)
+            _dl = (_x2l - x)
+            _mv = float(_df.norm(dim=-1).mean())
+            _er = float((_df - _dl).norm(dim=-1).mean())
+            _hh = float(_GRID[0][1].s) if _GRID[0] is not None else float("nan")
+            print(f"    [근사비교] t={t} 원본 평균이동 {_mv:.5e}  차이 "
+                  f"{_er:.5e}  이동 대비 {100 * _er / max(_mv, 1e-30):.2f}%  "
+                  f"셀간격 대비 {100 * _er / _hh:.2f}% (h={_hh:.5f})",
+                  flush=True)
+        if _s2 is not None:
+            _s2["ov"] = None
+            _s2["ov_opt"] = None
+    else:
+        _no = max(int(a.lin_outer), 1) if a.elast == "lin" else 1
+        for _oi in range(_no):
+            x2, v2, Jd = _ov_once(d, t, gsel, p, x, v, F)
+            if _no > 1 and _oi + 1 < _no:
+                _JR_HOLD[0] = Jd.detach()
     _JR_HOLD[0] = None
     with torch.no_grad():
         F_tr = Jd.to(F.dtype) @ F
