@@ -15,7 +15,7 @@ source /tools/anaconda3/etc/profile.d/conda.sh
 conda activate af
 set -u
 export PYTHONPATH=$W/anchorflow/lib
-export LANG=C.UTF-8 LC_ALL=C.UTF-8
+export PYTHONUTF8=1
 
 if [ "$PH" = "search" ]; then
   g=0

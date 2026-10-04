@@ -83,7 +83,7 @@ def run(s, frames=None):
     # 로케일을 UTF-8 로 못 박는다. 떼어낸 잡은 LANG 이 없어 ascii 가 되고,
     # warp 가 생성한 .cu 를 쓸 때 UnicodeEncodeError 로 죽는다 (PG 16 셀 전멸 원인)
     env = dict(os.environ, AF_PARTICLES_NPY=PNPY, WARP_CACHE_PATH=wc,
-               LANG="C.UTF-8", LC_ALL="C.UTF-8", PYTHONIOENCODING="utf-8")
+               PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     cmd = ["python", "-u", "gs_simulation.py", "--model_path",
            f"{W}/pgmodel/{MODEL[a.shape]}", "--config", cp,
            "--output_path", od, "--output_h5"]
