@@ -116,15 +116,20 @@ def render(s, tag):
     return od, n
 
 
+def mk_mp4(src, mp4):
+    """노드에 ffmpeg 가 없다 -- 파이썬 작성기로 묶는다."""
+    subprocess.run(["python", "-u", f"{W}/anchorflow/exe/pngs2mp4.py",
+                    "--dir", src, "--out", mp4, "--fps", "30"],
+                   cwd=f"{W}/anchorflow")
+
+
 print(f"[칸] {a.method} {a.shape} {a.material}  대상 s={s_test} / "
       f"참조 s_conv={s_ref}  프레임 {a.frames}", flush=True)
 os.makedirs(f"{O}/vq", exist_ok=True)
 if a.only_test:
     dt, nt = render(s_test, "test")
     mp4 = f"{O}/vq/{a.method}_{a.shape}_{a.material}_test.mp4"
-    subprocess.run(["ffmpeg", "-y", "-framerate", "30", "-pattern_type",
-                    "glob", "-i", f"{dt}/*.png", "-c:v", "libx264",
-                    "-pix_fmt", "yuv420p", mp4], capture_output=True, text=True)
+    mk_mp4(dt, mp4)
     print(f"[영상] {mp4}\nVQ_CELL_DONE", flush=True)
     raise SystemExit(0)
 dr, nr = render(s_ref, "ref")
@@ -142,9 +147,6 @@ subprocess.run(["python", "-u", f"{W}/anchorflow/exe/vq_metrics.py",
                         PYTHONUTF8="1"))
 for src, tag in ((dt, "test"), (dr, "ref")):
     mp4 = f"{O}/vq/{a.method}_{a.shape}_{a.material}_{tag}.mp4"
-    subprocess.run(["ffmpeg", "-y", "-framerate", "30", "-pattern_type",
-                    "glob", "-i", f"{src}/*.png", "-c:v", "libx264",
-                    "-pix_fmt", "yuv420p", mp4],
-                   capture_output=True, text=True)
+    mk_mp4(src, mp4)
     print(f"[영상] {mp4}", flush=True)
 print("VQ_CELL_DONE", flush=True)
