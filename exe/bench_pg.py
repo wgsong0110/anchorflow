@@ -44,6 +44,8 @@ ap.add_argument("--out", default="")
 ap.add_argument("--t_short", type=int, default=20)
 ap.add_argument("--t_long", type=int, default=60)
 ap.add_argument("--vid", default="", help="합격 설정의 궤적을 영상으로 남긴다")
+# 탐색(서브스텝 찾기)은 병렬로 돌려도 되지만 **시간 측정은 단독 실행**이어야 한다.
+ap.add_argument("--phase", choices=["search", "time", "both"], default="both")
 a = ap.parse_args()
 
 MODEL = {"wolf": "wolf_whitebg-trained", "mic": "mic_whitebg-trained",
@@ -74,7 +76,11 @@ def run(s, frames=None):
     os.makedirs(f"{W}/bench", exist_ok=True)
     cp = f"{W}/bench/cfg_{a.method}_{a.shape}_{a.material}_{s}_{frames}.json"
     json.dump(cfg, open(cp, "w"), indent=1)
-    env = dict(os.environ, AF_PARTICLES_NPY=PNPY)
+    # warp 커널 캐시를 셀마다 분리한다 (같이 쓰면 동시 컴파일이 캐시를 깨뜨려
+    # 모듈 적재 실패/불법 주소 접근으로 터진다)
+    wc = f"{W}/wpcache/{a.method}_{a.shape}_{a.material}"
+    os.makedirs(wc, exist_ok=True)
+    env = dict(os.environ, AF_PARTICLES_NPY=PNPY, WARP_CACHE_PATH=wc)
     cmd = ["python", "-u", "gs_simulation.py", "--model_path",
            f"{W}/pgmodel/{MODEL[a.shape]}", "--config", cp,
            "--output_path", od, "--output_h5"]
@@ -93,28 +99,55 @@ def run(s, frames=None):
     return np.stack(X), dt
 
 
-Xc, sc, hist = ladder(run, a.s0, a.tau, L)
-print(f"[수렴] s={sc} 에서 수렴해 확보", flush=True)
-best = search(run, Xc, L, a.tol, a.s0 // 4 if a.s0 >= 4 else 1, sc)
-if best is None:
-    print("[결과] 합격 설정 없음 (미달)", flush=True)
-else:
-    s, _t, e1, eT = best
+SJ = a.out or f"{W}/bench/{a.method}_{a.shape}_{a.material}.json"
+
+
+def load():
+    return json.load(open(SJ)) if os.path.exists(SJ) else {}
+
+
+if a.phase in ("search", "both"):
+    Xc, sc, hist = ladder(run, a.s0, a.tau, L)
+    print(f"[수렴] s={sc} 에서 수렴해 확보", flush=True)
+    best = search(run, Xc, L, a.tol, a.s0 // 4 if a.s0 >= 4 else 1, sc)
+    d = load()
+    d.update(method=a.method, shape=a.shape, material=a.material,
+             n_particles=int(X0.shape[0]), L=L, s_conv=int(sc),
+             n_grid=a.n_grid, E=a.E, nu=a.nu, frames=a.frames,
+             tol=a.tol, tau=a.tau,
+             ladder=[(int(q), float(w)) for q, w in hist])
+    if best is None:
+        print("[결과] 합격 설정 없음 (미달)", flush=True)
+        d["s"] = None
+    else:
+        s, _t, e1, eT = best
+        d.update(s=int(s), e1=float(e1), eT=float(eT))
+        print(f"[탐색] s={s} (수렴 s={sc}), 한프레임 {100 * e1:.4f}% "
+              f"누적 {100 * eT:.4f}%", flush=True)
+    json.dump(d, open(SJ, "w"), indent=1)
+
+if a.phase in ("time", "both"):
+    d = load()
+    if not d.get("s"):
+        print("[시간] 합격 설정이 없어 건너뜀", flush=True)
+        raise SystemExit(0)
+    s = int(d["s"])
     # **시작 비용 제거**: 길이가 다른 두 실행의 차분으로 순수 시뮬 시간을 뽑는다
     _, tS = run(s, a.t_short)
     _, tL = run(s, a.t_long)
     t_per = (tL - tS) / float(a.t_long - a.t_short)
-    t = t_per * a.frames
     print(f"[시간] 짧은 {a.t_short}프레임 {tS:.1f}초, 긴 {a.t_long}프레임 "
           f"{tL:.1f}초 -> 프레임당 {1000 * t_per:.1f} ms (시작비용 제외)",
           flush=True)
+    d.update(ms_per_frame=1000 * t_per, ms_per_substep=1000 * t_per / float(s),
+             fps=1.0 / t_per, t_short=tS, t_long=tL)
+    json.dump(d, open(SJ, "w"), indent=1)
     print(f"[결과] {a.method} {a.shape} {a.material}: s={s} "
-          f"(수렴 s={sc}), {1.0 / t_per:.2f} FPS "
+          f"(수렴 s={d['s_conv']}), {1.0 / t_per:.2f} FPS "
           f"({1000 * t_per:.1f} ms/프레임, 서브스텝당 "
-          f"{1000 * t_per / s:.3f} ms), "
-          f"한프레임 {100 * e1:.4f}% 누적 {100 * eT:.4f}%", flush=True)
+          f"{1000 * t_per / s:.3f} ms), 한프레임 {100 * d['e1']:.4f}% "
+          f"누적 {100 * d['eT']:.4f}%", flush=True)
     if a.vid:
-        # 합격 설정으로 만든 궤적을 그대로 영상으로 (옆/위 두 칸)
         Xb, _ = run(s, max(a.frames, 40))
         import torch
         tp = a.vid.replace(".mp4", ".pt")
@@ -127,14 +160,3 @@ else:
                cwd=f"{W}/anchorflow",
                env=dict(os.environ, PYTHONPATH=f"{W}/anchorflow/lib"))
         print(f"[영상] {a.vid}", flush=True)
-    if a.out:
-        json.dump(dict(method=a.method, shape=a.shape, material=a.material,
-                       n_particles=int(X0.shape[0]), L=L,
-                       s=int(s), s_conv=int(sc),
-                       ms_per_frame=1000 * t_per,
-                       ms_per_substep=1000 * t_per / float(s),
-                       fps=1.0 / t_per, e1=e1, eT=eT,
-                       n_grid=a.n_grid, E=a.E, nu=a.nu,
-                       frames=a.frames, tol=a.tol, tau=a.tau,
-                       ladder=[(int(q), float(w)) for q, w in hist]),
-                  open(a.out, "w"), indent=1)
