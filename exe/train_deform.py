@@ -3061,6 +3061,18 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     _ef = float(FUSED.energy(_zc, _rw0, _lm0, _b0, F, _mh0,
                                              vol, _tg0, _mu0f, _lm0f, x,
                                              _bc0, _cb0, _box0, _mb0) / nrm)
+                _vs0[0].grad = None
+                _Ef2 = _Efused(); _Ef2.backward()
+                _gf = _vs0[0].grad.detach().clone()
+                _vs0[0].grad = None
+                _x2c, _v2c, _Ec, _, _, _ptc, _ = _fwd()
+                _Ec.backward()
+                _gr2 = _vs0[0].grad.detach().clone()
+                _vs0[0].grad = None
+                print(f"    [기울기대조] t={t} 상대오차 "
+                      f"{float((_gf - _gr2).norm() / _gr2.norm().clamp_min(1e-30)):.3e}"
+                      f"  크기 융합 {float(_gf.norm()):.3e} 기준 "
+                      f"{float(_gr2.norm()):.3e}", flush=True)
                 _x2c, _v2c, _Ec, _, _, _ptc, _ = _fwd()
                 print(f"    [융합대조] t={t} 기준 {float(_Ec):.6e} 융합 "
                       f"{_ef:.6e} 상대차 "
