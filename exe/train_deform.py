@@ -3026,6 +3026,13 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                         float(a.ctrl_barrier),
                         float(a.ctrl_barrier_dhat if a.ctrl_barrier_dhat > 0
                               else 0.25 * _R0c))
+            _box0 = None
+            for _bcd in (cfg.get("boundary_conditions") or []):
+                if _bcd.get("type") == "bounding_box":
+                    _bnd = float(cfg.get("bound", 3)) * (gl_ / float(ng_))
+                    _box0 = (_bnd, gl_ - _bnd,
+                             float(os.environ.get("AF_BC_STIFF", 1000.0)))
+                    break
             _vs0 = [q for q in (st.get("ov") or []) if q is not None]
             _idx0 = (st.get("ov_idx") or [None])[0]
             _M0 = (st.get("ov_M") or [0])[0] or _vs0[0].shape[0]
@@ -3039,7 +3046,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 if _pm0 is not None:
                     _z = torch.where(_pm0.unsqueeze(-1), _pv0, _z)
                 return FUSED.energy(_z, _rw0, _lm0, _b0, F, _mh0, vol, _tg0,
-                                    _mu0f, _lm0f, x, _bc0, _cb0) / nrm
+                                    _mu0f, _lm0f, x, _bc0, _cb0,
+                                    _box0) / nrm
 
             if os.environ.get("AF_FUSE_CHECK") and t == int(
                     os.environ["AF_FUSE_CHECK"]):
@@ -3051,7 +3059,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                         _zc = torch.where(_pm0.unsqueeze(-1), _pv0, _zc)
                     _ef = float(FUSED.energy(_zc, _rw0, _lm0, _b0, F, _mh0,
                                              vol, _tg0, _mu0f, _lm0f, x,
-                                             _bc0, _cb0) / nrm)
+                                             _bc0, _cb0, _box0) / nrm)
                 _x2c, _v2c, _Ec, _, _, _ptc, _ = _fwd()
                 print(f"    [융합대조] t={t} 기준 {float(_Ec):.6e} 융합 "
                       f"{_ef:.6e} 상대차 "
