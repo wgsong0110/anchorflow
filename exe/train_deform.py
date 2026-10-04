@@ -3050,8 +3050,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                     _mu0f, _lm0f, x, _bc0, _cb0,
                                     _box0, _mb0) / nrm
 
-            if os.environ.get("AF_FUSE_CHECK") and t == int(
-                    os.environ["AF_FUSE_CHECK"]):
+            _cmp_on = bool(os.environ.get("AF_FUSE_CMP"))
+            if _cmp_on or (os.environ.get("AF_FUSE_CHECK") and t == int(
+                    os.environ["AF_FUSE_CHECK"])):
                 with torch.no_grad():
                     _zc = torch.zeros(_M0, 3, device=dev, dtype=x.dtype)
                     _zc = (_zc.index_copy(0, _idx0, _vs0[0])
@@ -3080,22 +3081,38 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                       f" | 기준 항 관성 {float(_ptc[0]):.3e} 탄성 "
                       f"{float(_ptc[1]):.3e} 접촉 {float(_ptc[3]):.3e}",
                       flush=True)
-            _opt0 = torch.optim.LBFGS(_vs0, lr=1.0,
-                                      max_iter=max(a.ov_roll, 1),
-                                      history_size=50, tolerance_grad=0.0,
-                                      tolerance_change=0.0,
-                                      line_search_fn="strong_wolfe")
-            _E0f = [None]
+            if _cmp_on:
+                # 비교 모드: 전진은 **기준 경로**로 해서 상태를 같게 유지한다
+                _optR = torch.optim.LBFGS(_vs0, lr=1.0,
+                                          max_iter=max(a.ov_roll, 1),
+                                          history_size=50,
+                                          tolerance_grad=0.0,
+                                          tolerance_change=0.0,
+                                          line_search_fn="strong_wolfe")
 
-            def _cl0():
-                _opt0.zero_grad(set_to_none=True)
-                _E = _Efused()
-                if _E0f[0] is None:
-                    _E0f[0] = float(_E)
-                _E.backward()
-                return _E
-            _opt0.step(_cl0)
-            E0 = _E0f[0]
+                def _clR():
+                    _optR.zero_grad(set_to_none=True)
+                    _, _, _E, _, _, _, _ = _fwd()
+                    _E.backward()
+                    return _E
+                _optR.step(_clR)
+                E0 = None
+            else:
+                _opt0 = torch.optim.LBFGS(
+                    _vs0, lr=1.0, max_iter=max(a.ov_roll, 1),
+                    history_size=50, tolerance_grad=0.0,
+                    tolerance_change=0.0, line_search_fn="strong_wolfe")
+                _E0f = [None]
+
+                def _cl0():
+                    _opt0.zero_grad(set_to_none=True)
+                    _E = _Efused()
+                    if _E0f[0] is None:
+                        _E0f[0] = float(_E)
+                    _E.backward()
+                    return _E
+                _opt0.step(_cl0)
+                E0 = _E0f[0]
         elif a.ov_opt == "cg":
             # 목적함수가 2차형식이므로 **공액기울기로 바로 최소점**에 간다.
             # 헤시안-벡터 곱은 이중 역전파로 행렬 없이 만든다.
@@ -3245,6 +3262,10 @@ def _smooth_nodes(dpn, uniq, nn):
     _avg = _nb / _cnt
     _a = float(a.smooth_a)
     return (1.0 - _a) * dpn + _a * _avg
+
+
+class _FuseCmpDone(Exception):
+    pass
 
 
 _PIN = [None]       # (손잡이 노드 마스크, 명령 변위)
