@@ -487,7 +487,7 @@ def residual(E, x2, mass, ext):
     return (gx.norm(dim=-1) / mass.clamp_min(1e-20) / ext)
 
 
-def rebuild_F(x_all, cfg, dt, k=16, chunk=4096):
+def rebuild_F(x_all, cfg, dt, k=16, chunk=0):
     """교사 위치에서 **탄성** 변형구배를 되살린다. [T,N,3,3]
 
     궤적에 든 F 는 전부 단위행렬이다 (생성기의 F 읽기가 예외로 빠져 항등으로
@@ -502,6 +502,10 @@ def rebuild_F(x_all, cfg, dt, k=16, chunk=4096):
     dev = x_all.device
     T, N = x_all.shape[0], x_all.shape[1]
     X0 = x_all[0]
+    if chunk <= 0:
+        # cdist 는 chunk x N 거리를 한 번에 만든다. 입자가 100 만을 넘으면
+        # 고정 4096 은 20 GB 를 넘어 터진다 -- 2e8 원소(=0.8 GB)로 맞춘다.
+        chunk = max(128, min(4096, int(2e8 // max(N, 1))))
     # t=0 배치에서 이웃을 한 번만 잡는다 (재질 이웃은 변하지 않는다)
     idx = torch.empty(N, k, dtype=torch.long, device=dev)
     for s in range(0, N, chunk):
