@@ -481,7 +481,8 @@ for f in files:
     # -- 저장이 이미 half 이므로 수치는 한 비트도 달라지지 않는다.
     # 궤적의 v 는 아무도 읽지 않는다 (속도는 위치 차이로 만든다). 전 조합이면
     # 이것만으로 7 GB 를 차지하므로 적재에서 아예 뺀다.
-    d.pop("v", None)
+    if not a.v0_traj:
+        d.pop("v", None)      # --v0_traj 면 초기 속도로 쓰므로 남긴다
     tag = os.path.splitext(os.path.basename(f))[0]
     (held if tag in hold else TR).append((tag, d))
 if not TR and a.pool:
