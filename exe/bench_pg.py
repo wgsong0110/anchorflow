@@ -113,7 +113,10 @@ def run(s, frames=None):
     json.dump(cfg, open(cp, "w"), indent=1)
     # warp 커널 캐시를 셀마다 분리한다 (같이 쓰면 동시 컴파일이 캐시를 깨뜨려
     # 모듈 적재 실패/불법 주소 접근으로 터진다)
-    wc = f"{W}/wpcache/{a.method}_{a.shape}_{a.material}"
+    # 캐시는 **프로세스마다** 따로 쓴다. 같은 디렉토리를 둘이 쓰면 한쪽이
+    # 쓰는 중에 다른 쪽이 읽어 "Failed to lookup kernel function" 으로 죽는다
+    # (closure 로 만들어지는 collide 커널에서 실제로 터졌다).
+    wc = f"{W}/wpcache/{a.method}_{a.shape}_{a.material}_{os.getpid()}"
     os.makedirs(wc, exist_ok=True)
     # 로케일을 UTF-8 로 못 박는다. 떼어낸 잡은 LANG 이 없어 ascii 가 되고,
     # warp 가 생성한 .cu 를 쓸 때 UnicodeEncodeError 로 죽는다 (PG 16 셀 전멸 원인)

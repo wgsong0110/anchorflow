@@ -107,7 +107,10 @@ def render(s, tag):
     os.makedirs(od, exist_ok=True)
     cp = f"{O}/vq/cfg_{a.method}_{a.shape}_{a.material}_{tag}_{s}.json"
     json.dump(build(s), open(cp, "w"), indent=1)
-    wc = f"{W}/wpcache/{a.method}_{a.shape}_{a.material}"
+    # 캐시는 **프로세스마다** 따로 쓴다. 같은 디렉토리를 둘이 쓰면 한쪽이
+    # 쓰는 중에 다른 쪽이 읽어 "Failed to lookup kernel function" 으로 죽는다
+    # (closure 로 만들어지는 collide 커널에서 실제로 터졌다).
+    wc = f"{W}/wpcache/{a.method}_{a.shape}_{a.material}_{os.getpid()}"
     os.makedirs(wc, exist_ok=True)
     env = dict(os.environ, WARP_CACHE_PATH=wc, PYTHONUTF8="1",
                PYTHONIOENCODING="utf-8")
