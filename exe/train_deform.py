@@ -1011,6 +1011,7 @@ _ENS_SHIFT = [(0.0, 0.0, 0.0), (0.5, 0.5, 0.0), (0.5, 0.0, 0.5),
               (0.75, 0.25, 0.75), (0.25, 0.75, 0.75)]
 
 from anchorflow import vox_anchor                # noqa: E402
+from anchorflow import cellpoly as CPOLY_K      # noqa: E402
 
 
 def fe_invariants(fe):
@@ -3177,10 +3178,14 @@ def _cell_poly_energy(dpn, cp):
     --fuse 면 torch.compile 로 묶는다. 작은 씬에서는 연산량이 아니라 **커널
     발사 수**가 비용이라, 작은 einsum 여러 개를 하나로 묶는 것이 효과가 크다.
     """
+    rows_t, b, M, f, g, K = cp
     if a.fuse:
-        if _CP_FN[0] is None:
-            _CP_FN[0] = torch.compile(_cp_eval, dynamic=True)
-        return _CP_FN[0](dpn, *cp)
+        # **커널 한 번**: 1 차항을 g - f 로 미리 합쳐 Triton 에 넘긴다.
+        # grad u 는 에너지와 무관하게 필요하므로 따로 구한다 (가벼운 einsum).
+        E = CPOLY_K.energy(dpn, rows_t.to(torch.int32), M, g - f, K)
+        with torch.no_grad():
+            gu = torch.einsum("tia,tib->tab", dpn.detach()[rows_t], b)
+        return E, torch.zeros((), device=dpn.device, dtype=dpn.dtype), gu
     return _cp_eval(dpn, *cp)
 
 
