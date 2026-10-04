@@ -3198,8 +3198,8 @@ def _cell_poly_energy(dpn, cp):
         # **커널 한 번**: 1 차항을 g - f 로 미리 합쳐 Triton 에 넘긴다.
         # grad u 는 에너지와 무관하게 필요하므로 따로 구한다 (가벼운 einsum).
         E = CPOLY_K.energy(dpn, rows_t.to(torch.int32), M, g - f, K)
-        with torch.no_grad():
-            gu = torch.einsum("tia,tib->tab", dpn.detach()[rows_t], b)
+        # grad u 는 그래프를 끊지 않는다 (야코비안이 다른 항·상태 전진에 쓰인다)
+        gu = torch.einsum("tia,tib->tab", dpn[rows_t], b)
         return E, torch.zeros((), device=dpn.device, dtype=dpn.dtype), gu
     return _cp_eval(dpn, *cp)
 
