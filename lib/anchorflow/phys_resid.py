@@ -204,6 +204,39 @@ def _camclay_project(sig, logJp, mu, kappa, M, beta, xi, hardening):
     return sig_new.to(sig.dtype), lj_new.to(logJp.dtype)
 
 
+class _FcrPsi(torch.autograd.Function):
+    """고정 코로테이션 Psi 와 **해석적** 기울기.
+
+    기존 경로는 C = F^T F 의 eigvalsh 를 거쳐 자동미분으로 기울기를 받았다.
+    고유분해의 역전파는 고유값이 겹칠 때 비싸고 불안정하다. 여기서는
+    순전파에서 SVD 한 번만 하고(역전파는 타지 않는다) 기울기를 닫힌 식으로
+    돌려준다:
+
+        dPsi/dF = U diag( 2 mu (s_i - 1) + lam (J - 1) J / s_i ) V^T
+
+    값은 기존과 같다 (특이값이 같고 clamp 도 같다).
+    """
+
+    @staticmethod
+    def forward(ctx, F, mu, lam, clamp):
+        U, S, Vh = torch.linalg.svd(F)
+        S = S.clamp_min(clamp)
+        J = S.prod(-1)
+        psi = mu * ((S - 1.0) ** 2).sum(-1) + 0.5 * lam * (J - 1.0) ** 2
+        ctx.save_for_backward(U, S, Vh)
+        ctx.mu, ctx.lam = float(mu), float(lam)
+        return psi
+
+    @staticmethod
+    def backward(ctx, go):
+        U, S, Vh = ctx.saved_tensors
+        J = S.prod(-1, keepdim=True)
+        dS = (2.0 * ctx.mu * (S - 1.0)
+              + ctx.lam * (J - 1.0) * J / S.clamp_min(1e-9))
+        G = U @ torch.diag_embed(dS) @ Vh
+        return go.reshape(*go.shape, 1, 1) * G, None, None, None
+
+
 def _psi_fcr(sig, mu, lam):
     J = sig.prod(-1)
     return mu * ((sig - 1.0) ** 2).sum(-1) + 0.5 * lam * (J - 1.0) ** 2
@@ -270,6 +303,9 @@ def psi_of(F_trial, cfg, dt):
         return psi, Plast(sig2.clamp_min(0.01).log() - sig.log(), V,
                           jp2.detach())
     if m in ("jelly", "elastic_damage"):
+        if not os.environ.get("AF_NO_FAST_FCR"):
+            # 해석 기울기 경로 (SVD 한 번, 고유분해 역전파 없음)
+            return _FcrPsi.apply(F_trial, mu, lam, 0.01), None
         # 탄성 전용이면 고유벡터가 필요 없다 (값만 쓰는 쪽이 싸다)
         return _psi_fcr(_sig(F_trial).clamp_min(0.01), mu, lam), None
     sig, V = _sig_vec(F_trial)
