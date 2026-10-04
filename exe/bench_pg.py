@@ -55,6 +55,13 @@ ap.add_argument("--phase", choices=["search", "time", "both"], default="both")
 # 서브스텝을 아무리 줄여도 수렴해 보여 기준이 무의미해진다.
 ap.add_argument("--skip", type=int, default=24, help="앞 몇 프레임을 버리는가")
 ap.add_argument("--floor", type=float, default=0.1, help="바닥 z (0=바닥 없음)")
+# i-PG 의 본체는 **암시적 적분**이다. 설명서의 실행 예가
+#   --implicit --solver newton_gmres --dt_multiplier k --impulse_scale 1/k
+# 라서, 명시적으로 돌리면 PG 와 수치가 똑같이 나온다 (실제로 s 가 같았다).
+ap.add_argument("--solver", default="newton_gmres",
+                choices=["picard", "picard_vanilla", "newton_gmres"])
+ap.add_argument("--explicit", action="store_true", help="i-PG 를 명시적으로")
+ap.add_argument("--max_mul", type=int, default=8, help="사다리 상한 배수")
 a = ap.parse_args()
 
 MODEL = {"wolf": "wolf_whitebg-trained", "mic": "mic_whitebg-trained",
@@ -115,9 +122,19 @@ def run(s, frames=None):
     cmd = ["python", "-u", "gs_simulation.py", "--model_path",
            f"{W}/pgmodel/{MODEL[a.shape]}", "--config", cp,
            "--output_path", od, "--output_h5"]
+    if a.method == "ipg" and not a.explicit:
+        cmd += ["--implicit", "--solver", a.solver]
     t0 = time.time()
     r = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True)
     dt = time.time() - t0
+    # **시뮬 구간만** 재서 쓴다 (PG 는 --render_img 없이도 프레임마다 카메라와
+    # 래스터라이저를 다시 만든다 -- 벽시계로 재면 그게 섞여 FPS 가 뒤집힌다)
+    for ln in r.stdout.splitlines():
+        if ln.startswith("[AF시간]"):
+            try:
+                dt = float(ln.split("시뮬")[1].split("초")[0])
+            except Exception:
+                pass
     fs = sorted(glob.glob(f"{od}/simulation_ply/*.h5"))
     if len(fs) < nrun:
         print(f"  [실패] s={s} h5 {len(fs)} 개 (필요 {nrun})  "
@@ -139,7 +156,7 @@ def load():
 
 
 if a.phase in ("search", "both"):
-    Xc, sc, hist = ladder(run, a.s0, a.tau, L)
+    Xc, sc, hist = ladder(run, a.s0, a.tau, L, max_mul=a.max_mul)
     print(f"[수렴] s={sc} 에서 수렴해 확보", flush=True)
     best = search(run, Xc, L, a.tol, a.s0 // 4 if a.s0 >= 4 else 1, sc)
     d = load()
@@ -164,13 +181,14 @@ if a.phase in ("time", "both"):
         print("[시간] 합격 설정이 없어 건너뜀", flush=True)
         raise SystemExit(0)
     s = int(d["s"])
-    # **시작 비용 제거**: 길이가 다른 두 실행의 차분으로 순수 시뮬 시간을 뽑는다
-    _, tS = run(s, a.t_short)
-    _, tL = run(s, a.t_long)
-    t_per = (tL - tS) / float(a.t_long - a.t_short)
-    print(f"[시간] 짧은 {a.t_short}프레임 {tS:.1f}초, 긴 {a.t_long}프레임 "
-          f"{tL:.1f}초 -> 프레임당 {1000 * t_per:.1f} ms (시작비용 제외)",
-          flush=True)
+    # 계측된 시뮬 시간을 그대로 쓴다 (레포 안에서 p2g2p 루프만 잰다).
+    # 길이차분은 시작비용은 지웠지만 **프레임마다 들어가는 렌더 준비**는 못
+    # 지워서 i-PG wolf 가 61 FPS, mic 이 2.3 FPS 로 나오는 식이었다.
+    nf = a.t_long
+    _, tL = run(s, nf)
+    t_per = tL / float(nf + a.skip)
+    print(f"[시간] {nf + a.skip}프레임 시뮬 {tL:.2f}초 -> 프레임당 "
+          f"{1000 * t_per:.2f} ms (p2g2p 루프만)", flush=True)
     d.update(ms_per_frame=1000 * t_per, ms_per_substep=1000 * t_per / float(s),
              fps=1.0 / t_per, t_short=tS, t_long=tL)
     json.dump(d, open(SJ, "w"), indent=1)
