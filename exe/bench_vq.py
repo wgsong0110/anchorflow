@@ -34,6 +34,8 @@ ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--floor", type=float, default=0.1)
 ap.add_argument("--s", type=int, default=0, help="탐색 결과 대신 쓸 서브스텝")
 ap.add_argument("--s_ref", type=int, default=0, help="참조(수렴) 서브스텝")
+ap.add_argument("--only_test", action="store_true",
+                help="대상만 렌더하고 지표는 건너뛴다 (영상만 볼 때)")
 ap.add_argument("--win", type=int, default=16)
 ap.add_argument("--E", type=float, default=2e6)
 ap.add_argument("--nu", type=float, default=0.3)
@@ -117,6 +119,14 @@ def render(s, tag):
 print(f"[칸] {a.method} {a.shape} {a.material}  대상 s={s_test} / "
       f"참조 s_conv={s_ref}  프레임 {a.frames}", flush=True)
 os.makedirs(f"{O}/vq", exist_ok=True)
+if a.only_test:
+    dt, nt = render(s_test, "test")
+    mp4 = f"{O}/vq/{a.method}_{a.shape}_{a.material}_test.mp4"
+    subprocess.run(["ffmpeg", "-y", "-framerate", "30", "-pattern_type",
+                    "glob", "-i", f"{dt}/*.png", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", mp4], capture_output=True, text=True)
+    print(f"[영상] {mp4}\nVQ_CELL_DONE", flush=True)
+    raise SystemExit(0)
 dr, nr = render(s_ref, "ref")
 dt, nt = render(s_test, "test")
 if min(nr, nt) < a.win:
