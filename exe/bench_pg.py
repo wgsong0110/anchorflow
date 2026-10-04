@@ -43,6 +43,7 @@ ap.add_argument("--nu", type=float, default=0.3)
 ap.add_argument("--out", default="")
 ap.add_argument("--t_short", type=int, default=20)
 ap.add_argument("--t_long", type=int, default=60)
+ap.add_argument("--vid", default="", help="합격 설정의 궤적을 영상으로 남긴다")
 a = ap.parse_args()
 
 MODEL = {"wolf": "wolf_whitebg-trained", "mic": "mic_whitebg-trained",
@@ -110,6 +111,20 @@ else:
     print(f"[결과] {a.method} {a.shape} {a.material}: s={s}, "
           f"{a.frames / t:.2f} FPS ({t / a.frames * 1000:.1f} ms/프레임), "
           f"한프레임 {100 * e1:.4f}% 누적 {100 * eT:.4f}%", flush=True)
+    if a.vid:
+        # 합격 설정으로 만든 궤적을 그대로 영상으로 (옆/위 두 칸)
+        Xb, _ = run(s, max(a.frames, 40))
+        import torch
+        tp = a.vid.replace(".mp4", ".pt")
+        torch.save({"x": torch.as_tensor(Xb)}, tp)
+        import subprocess as sp
+        sp.run(["python", "-u", f"{W}/anchorflow/exe/vid_traj.py",
+                "--traj", tp, "--out", a.vid, "--sub", "120000", "--s", "0.6",
+                "--label", f"{a.method} {a.shape} {a.material} (s={s}, "
+                           f"{1000 * t_per:.0f} ms/프레임)"],
+               cwd=f"{W}/anchorflow",
+               env=dict(os.environ, PYTHONPATH=f"{W}/anchorflow/lib"))
+        print(f"[영상] {a.vid}", flush=True)
     if a.out:
         json.dump(dict(method=a.method, shape=a.shape, material=a.material,
                        s=s, fps=a.frames / t, ms=t / a.frames * 1000,
