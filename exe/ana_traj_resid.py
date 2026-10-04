@@ -94,7 +94,11 @@ for i in tqdm(range(1, len(fs)), desc="프레임"):
     du = (xn1 - xn).detach().requires_grad_(True)
     E, pl, _F, parts = pr.pts_ip_energy(
         xn, du, vn, Fn1t, None, mass, vol, cfg, h, n_grid, grid_lim, g=g)
-    r = pr.residual(E, du, mass, ext)
+    # r_p = |dE/dx_p| * h^2 / m_p  (길이 단위) -> 고정 상수(지름)로 나눈다.
+    # phys_resid.residual 은 **정규화된** E 를 받도록 쓰여 있어 그대로 쓰면
+    # h^2 만큼(=3600 배) 부풀어 나온다.
+    gx, = torch.autograd.grad(E, du)
+    r = gx.norm(dim=-1) * (h * h) / mass.clamp_min(1e-20) / ext
     with torch.no_grad():
         rq = torch.quantile(r.float(), torch.tensor([0.5, 0.95, 1.0],
                                                     device=dev))
@@ -131,16 +135,16 @@ if a.png:
     import matplotlib.pyplot as plt
     f = np.array([q["frame"] for q in rows])
     fig, ax = plt.subplots(1, 2, figsize=(11, 3.6))
-    ax[0].plot(f, [q["E"] for q in rows], "-o", ms=3, label="전체")
-    ax[0].plot(f, [q["e_in"] for q in rows], "--", label="관성")
-    ax[0].plot(f, [q["e_el"] for q in rows], "--", label="탄성")
-    ax[0].plot(f, [q["e_bc"] for q in rows], ":", label="경계")
-    ax[0].set_yscale("log"); ax[0].set_xlabel("프레임")
-    ax[0].set_ylabel("증분 포텐셜"); ax[0].legend(fontsize=7)
-    ax[1].plot(f, [100 * q["r_med"] for q in rows], "-o", ms=3, label="중앙값")
+    ax[0].plot(f, [q["E"] for q in rows], "-o", ms=3, label="total")
+    ax[0].plot(f, [q["e_in"] for q in rows], "--", label="inertia")
+    ax[0].plot(f, [q["e_el"] for q in rows], "--", label="elastic")
+    ax[0].plot(f, [q["e_bc"] for q in rows], ":", label="contact")
+    ax[0].set_yscale("log"); ax[0].set_xlabel("frame")
+    ax[0].set_ylabel("incremental potential"); ax[0].legend(fontsize=7)
+    ax[1].plot(f, [100 * q["r_med"] for q in rows], "-o", ms=3, label="median")
     ax[1].plot(f, [100 * q["r_p95"] for q in rows], "--", label="p95")
-    ax[1].set_yscale("log"); ax[1].set_xlabel("프레임")
-    ax[1].set_ylabel("물리 잔차 (지름 %)"); ax[1].legend(fontsize=7)
+    ax[1].set_yscale("log"); ax[1].set_xlabel("frame")
+    ax[1].set_ylabel("physics residual (% of diameter)"); ax[1].legend(fontsize=7)
     fig.suptitle(a.label or d, fontsize=9)
     fig.tight_layout(); fig.savefig(a.png, dpi=130)
     print(f"[저장] {a.png}", flush=True)
