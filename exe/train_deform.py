@@ -2840,26 +2840,34 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         # 선형탄성 상수(mu, lambda)로 고정했는데, F 가 I 에서 멀어지면 그
         # 곡률이 실제보다 작아 1차항이 이겨 에너지가 음수로 발산했다
         # (실측: 탄성항이 t=7 에 -5.7e-3, t=14 에 -0.198, 끝내 -1e19).
-        with torch.enable_grad():
-            _J0 = torch.eye(3, device=dev, dtype=F.dtype).expand(
-                F.shape[0], 3, 3).clone().requires_grad_(True)
-            _ps0, _ = phys_resid.psi_of(_J0 @ F, cfg, FRAME_DT)
-            _g1 = torch.autograd.grad((vol * _ps0).sum(), _J0,
-                                      create_graph=True)[0]
-            _TAU = _g1.detach()
-            _rows = []
-            for _a in range(3):
-                for _b in range(3):
-                    _rows.append(torch.autograd.grad(
-                        _g1[:, _a, _b].sum(), _J0, retain_graph=True
-                    )[0].detach())
-            # [N,3,3,3,3]: 입자마다 d²(V psi)/dJ dJ. 입자별 항이 독립이라
-            # sum 에 대한 미분이 그대로 그 입자의 헤시안이 된다.
-            _HES = torch.stack(_rows, 1).reshape(-1, 3, 3, 3, 3)
+        def _tau_at(Jv):
+            """V psi 의 J 에 대한 1차 미분 [N,3,3] (자동미분 1 회)."""
+            with torch.enable_grad():
+                _Jx = Jv.detach().clone().requires_grad_(True)
+                _ps, _ = phys_resid.psi_of(_Jx @ F, cfg, FRAME_DT)
+                return torch.autograd.grad((vol * _ps).sum(), _Jx)[0].detach()
+
+        _I3L = torch.eye(3, device=dev, dtype=F.dtype).expand(
+            F.shape[0], 3, 3).contiguous()
+        _TAU = _tau_at(_I3L)
+        # 헤시안은 **tau 의 중심차분**으로 만든다. 이중 역전파로 뽑으면
+        # psi 가 eigvalsh 를 거치는 탓에 F ~ I 처럼 고유값이 겹칠 때
+        # 1/(l_i - l_j) 가 터져 전부 NaN 이 된다 (실측: 비 0.92 = 제자리).
+        _eps = 1e-3
+        _cols = []
+        for _a in range(3):
+            for _b in range(3):
+                _E = torch.zeros(3, 3, device=dev, dtype=F.dtype)
+                _E[_a, _b] = _eps
+                _cols.append((_tau_at(_I3L + _E) - _tau_at(_I3L - _E))
+                             / (2.0 * _eps))
+        _HES = torch.stack(_cols, 1).reshape(-1, 3, 3, 3, 3)
+        # 헤시안은 대칭이어야 한다 (H_abcd = H_cdab) -- 차분 잔차를 없앤다
+        _H9 = _HES.reshape(-1, 9, 9)
+        _HES = (0.5 * (_H9 + _H9.transpose(-1, -2))).reshape(-1, 3, 3, 3, 3)
         _mu, _lm = phys_resid.lame(cfg["E"], cfg["nu"])
         if a.lin_psd:
             _H9 = _HES.reshape(-1, 9, 9)
-            _H9 = 0.5 * (_H9 + _H9.transpose(-1, -2))
             _w9, _V9 = torch.linalg.eigh(_H9.double())
             _HES = (_V9 @ torch.diag_embed(_w9.clamp_min(0.0))
                     @ _V9.transpose(-1, -2)).to(_HES.dtype).reshape(
