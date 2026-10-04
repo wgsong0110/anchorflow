@@ -285,6 +285,26 @@ def _vm_project(eps, mu, lam, ys):
     return eps - (over * dg / n) * ehat
 
 
+def _dp_project(eps, mu, lam, alpha):
+    """PG sand_return_mapping (Drucker-Prager) 의 주응력 공간 판본.
+
+    세 갈래 그대로다.
+      dg <= 0            : 탄성 (그대로)
+      dg > 0, tr > 0     : 꼭짓점으로 (F_e = U V^T, 즉 log sigma = 0)
+      dg > 0, tr <= 0    : 원뿔면으로 (H = eps - ehat * dg/|ehat|)
+    분기는 **곱셈**으로 둔다 (where 로 가리면 안 고른 가지의 NaN 이 샌다).
+    """
+    tr = eps.sum(-1, keepdim=True)
+    ehat = eps - tr / 3.0
+    _es = 1e-4                                  # 변형률 기준 바닥
+    n = torch.sqrt((ehat ** 2).sum(-1, keepdim=True) + _es ** 2)
+    dg = n + (3.0 * lam + 2.0 * mu) / (2.0 * mu) * tr * alpha
+    w_pl = (dg > 0).to(eps.dtype)
+    w_tr = (tr > 0).to(eps.dtype)
+    cone = eps - (dg / n) * ehat
+    return (1.0 - w_pl) * eps + w_pl * (1.0 - w_tr) * cone
+
+
 def _visco_project(eps, mu, lam, ys, eta, dt):
     """PG viscoplasticity_return_mapping_with_StVK 의 주응력 공간 판본."""
     tr = eps.sum(-1, keepdim=True)
@@ -329,7 +349,12 @@ def psi_of(F_trial, cfg, dt):
     sig = sig.clamp_min(0.01)                  # PG 도 0.01 로 자른다
     eps = sig.log()
     ys = float(cfg.get("yield_stress", 0.0))
-    if m in ("metal", "plasticine"):
+    if m == "sand":
+        phi = float(cfg.get("friction_angle", 25.0))
+        sin_phi = math.sin(phi / 180.0 * math.pi)
+        alpha = math.sqrt(2.0 / 3.0) * 2.0 * sin_phi / (3.0 - sin_phi)
+        eps2 = _dp_project(eps, mu, lam, alpha)
+    elif m in ("metal", "plasticine"):
         eps2 = _vm_project(eps, mu, lam, ys)
     elif m == "foam":
         eps2 = _visco_project(eps, mu, lam, ys,
