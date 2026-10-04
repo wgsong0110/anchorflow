@@ -32,8 +32,17 @@ def ladder(run, s0, tau_conv, L, max_mul=16, log=print):
     while s * 2 <= s0 * max_mul:
         s2 = s * 2
         X2, t2 = run(s2)
-        d = rms_rel(X2[:len(X_prev)], X_prev, L)
         hist.append((s2, t2))
+        if X2 is None:
+            # 그 서브스텝에서 실행이 터졌다. 더 올려 본다 (수렴해 없음으로
+            # 끝날 수 있다 -- None 을 그대로 들고 나가면 호출 쪽이 터진다).
+            log(f"  [사다리] s {s2}: 실행 실패")
+            s = s2
+            continue
+        if X_prev is None:
+            X_prev, s, ok = X2, s2, 0
+            continue
+        d = rms_rel(X2[:len(X_prev)], X_prev, L)
         log(f"  [사다리] s {s} -> {s2}: 변화 {100 * d:.4f}% "
             f"(기준 {100 * tau_conv:.3f}%), {t2:.1f}초")
         ok = ok + 1 if d < tau_conv else 0
@@ -46,9 +55,16 @@ def ladder(run, s0, tau_conv, L, max_mul=16, log=print):
 def search(run, X_ref, L, tol, s_lo, s_hi, log=print):
     """수렴해 대비 tol 을 만족하는 가장 작은 s 를 이분 탐색."""
     best = None
+    if X_ref is None:
+        log("  [탐색] 수렴해가 없어 건너뛴다")
+        return None
     while s_lo < s_hi:
         mid = (s_lo + s_hi) // 2
         X, t = run(mid)
+        if X is None:
+            log(f"  [탐색] s {mid}: 실행 실패 -> 미달")
+            s_lo = mid + 1
+            continue
         e1 = rms_rel(X[1], X_ref[1], L)                 # 한 프레임 오차
         eT = rms_rel(X[-1], X_ref[-1], L)               # 누적 오차
         okay = (e1 <= tol) and np.isfinite(eT) and eT < 10 * tol * len(X)
