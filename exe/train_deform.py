@@ -252,6 +252,10 @@ ap.add_argument("--dt_sub_set", default="",
                 help="쉼표 목록 (예 1,2,4,8). 물리·풀 학습에서 창마다 여기서 "
                      "하나 뽑아 dt 를 바꾼다 -- dt 를 조건 변수로 학습시키는 "
                      "핵심 스위치다. 비우면 --dt_sub 고정")
+ap.add_argument("--v0_traj", action="store_true",
+                help="롤아웃 **초기 속도**를 궤적에 저장된 v 로 쓴다. 기본은 "
+                     "(x[t0]-x[t0-1])/h 차분이라 t0=0 에서 0 이 되는데, 초기 "
+                     "속도가 0 이 아닌 씬(GF 수박은 -6)에서는 그게 틀렸다")
 ap.add_argument("--v_from_dt", action="store_true",
                 help="입자 속도를 (x2-x)/h 차분이 아니라 **변형장을 t 로 미분**해 "
                      "얻는다: v = dPhi_t(x)/dt |_{t=h}. t 는 스칼라라 순방향 "
@@ -3233,6 +3237,10 @@ def _rollout(d, t0, L, gsel=None):
         gsel = torch.arange(d["x"].shape[1], device=dev)
     x = take(d["x"][t0], gsel)
     v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
+    if a.v0_traj and "v" in d:
+        v = take(d["v"][min(t0, d["v"].shape[0] - 1)], gsel).to(x.dtype)
+        print(f"    [초기속도] 궤적의 v 를 쓴다 (크기 평균 "
+              f"{float(v.norm(dim=-1).mean()):.4f})", flush=True)
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
     errs, stills = [], []
     x_still = x.clone()
