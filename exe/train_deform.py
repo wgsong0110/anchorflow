@@ -161,6 +161,10 @@ ap.add_argument("--inv_ext", choices=["quad", "linear"], default="linear",
 ap.add_argument("--ov_tol", type=float, default=0.0,
                 help="L-BFGS 수렴 허용오차 (기울기·변화량). 0 이면 항상 "
                      "--ov_roll 회를 다 돈다 (예전 기본값)")
+ap.add_argument("--cell_poly", action="store_true",
+                help="입자 기여를 그 사면체 네 꼭짓점 변위(12 자유도)의 "
+                     "다항식으로 바꿔 **셀마다 계수를 합산**해 둔다. 평가가 "
+                     "입자 수가 아니라 셀 수에 비례한다 (--elast lin 필요)")
 ap.add_argument("--lin_psd", action="store_true",
                 help="선형(2차) 근사의 입자별 헤시안을 고유값 0 으로 잘라 "
                      "양반정부호로 만든다 (CG 가 음곡률에서 멈추지 않게)")
@@ -3064,6 +3068,63 @@ def _smooth_nodes(dpn, uniq, nn):
     _avg = _nb / _cnt
     _a = float(a.smooth_a)
     return (1.0 - _a) * dpn + _a * _avg
+
+
+_CPOLY = [None]     # 셀 다항식 계수 (프레임마다 한 번 만든다)
+_CP_E = [None]      # 이번 평가의 셀 다항식 에너지
+
+
+def _cell_poly_build(rows, lam, aux, lat, tau_c, hes_c, inv, rep, mass, tgt,
+                     wfree):
+    """입자 기여를 사면체 12 자유도 다항식으로 바꿔 셀마다 합산한다.
+
+      dx_p = sum_i lam_i u_i,      dJ = sum_i u_i (x) b_i
+      관성  m_p/(2h²)|dx_p - t_p|²      -> M_ij = m_p lam_i lam_j / h², f_i
+      탄성  <tau,dJ> + ½ dJ:H:dJ        -> g_i = tau b_i, K_ij = H : b_i b_j
+
+    돌려주는 것: (rows_t [T,4], b [T,4,3], M [T,4,4], f [T,4,3],
+                  g [T,4,3], K [T,4,3,4,3])
+    """
+    dev_ = rows.device
+    rows_t = rows[rep]                                  # [T,4]
+    rank_t = aux[1][rep]                                # [T,3]
+    T = rows_t.shape[0]
+    Ai = lat.Ai.to(tau_c.dtype)
+    b = torch.zeros(T, 4, 3, device=dev_, dtype=tau_c.dtype)
+    ar = torch.arange(T, device=dev_)
+    for j in range(3):
+        r = rank_t[:, j]
+        b[ar, r + 1] += Ai[j]
+        b[ar, r] -= Ai[j]
+    # 관성 (손잡이에 구속된 입자는 가중치 0)
+    mw = (wfree * mass).reshape(-1, 1)                  # [N,1]
+    M = torch.zeros(T, 4, 4, device=dev_, dtype=tau_c.dtype)
+    f = torch.zeros(T, 4, 3, device=dev_, dtype=tau_c.dtype)
+    for i in range(4):
+        _fi = torch.zeros(T, 3, device=dev_, dtype=tau_c.dtype)
+        _fi.index_add_(0, inv, (mw * lam[:, i:i + 1] * tgt).to(tau_c.dtype))
+        f[:, i] = _fi
+        for j in range(4):
+            _mij = torch.zeros(T, device=dev_, dtype=tau_c.dtype)
+            _mij.index_add_(0, inv,
+                            (mw[:, 0] * lam[:, i] * lam[:, j]).to(tau_c.dtype))
+            M[:, i, j] = _mij
+    # 탄성
+    g = torch.einsum("tab,tib->tia", tau_c, b)
+    K = torch.einsum("tacbd,tic,tjd->tiajb", hes_c, b, b)
+    return rows_t, b, M, f, g, K
+
+
+def _cell_poly_energy(dpn, cp):
+    """셀 다항식 에너지와 사면체별 grad u 를 돌려준다."""
+    rows_t, b, M, f, g, K = cp
+    U = dpn[rows_t]                                     # [T,4,3]
+    e_in = (0.5 * torch.einsum("tij,tia,tja->t", M, U, U)
+            - torch.einsum("tia,tia->t", f, U))
+    e_el = (torch.einsum("tia,tia->t", g, U)
+            + 0.5 * torch.einsum("tiajb,tia,tjb->t", K, U, U))
+    gu = torch.einsum("tia,tib->tab", U, b)             # grad u per tet
+    return e_in.sum(), e_el.sum(), gu
 
 
 _HX_HOLD = [None]   # 프레임 안에서 육면체 색인을 재사용한다
