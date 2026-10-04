@@ -24,6 +24,7 @@ from typing import NamedTuple
 import torch
 
 __all__ = ["lame", "psi_of", "plastic_step", "Plast", "ip_energy", "residual",
+           "det3",
            "cdmpm_reset", "cdmpm_state",
            "set_inv_barrier", "set_cell_barrier",
            "smooth_noise", "mat_name", "bc_node_mask", "bc_energy",
@@ -101,6 +102,14 @@ class Plast(NamedTuple):
 #   (mpm_utils.NonAssociativeCamClay_return_mapping / kirchoff_stress_
 #   neoHookeanBoarden). 경화 상태 logJp 는 입자마다 하나이고 초기값 -0.04.
 _JP = [None]
+
+
+def det3(M):
+    """3x3 행렬식 [N] -- 닫힌 식. linalg.det(double) 보다 훨씬 싸다."""
+    a, b, c = M[..., 0, 0], M[..., 0, 1], M[..., 0, 2]
+    d, e, f = M[..., 1, 0], M[..., 1, 1], M[..., 1, 2]
+    g, h, i = M[..., 2, 0], M[..., 2, 1], M[..., 2, 2]
+    return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
 
 
 def cdmpm_reset(n, device=None, dtype=torch.float32, alpha0=-0.04):
@@ -821,7 +830,7 @@ def _cell_pen(jac, cfg):
     if _CELLB[0] is None or jac is None:
         return None
     kap, jh, ek = _CELLB[0]
-    J = torch.linalg.det(jac.to(torch.float64)).to(jac.dtype)
+    J = det3(jac)
     mu, _ = lame(cfg["E"], cfg["nu"])
     return kap * mu * _barrier_b(J, jh, ext_kind=ek)
 
@@ -831,7 +840,7 @@ def _inv_pen(F, cfg):
     if _INVB[0] is None:
         return None
     kap, jh, ek = _INVB[0]
-    J = torch.linalg.det(F.to(torch.float64)).to(F.dtype)
+    J = det3(F)
     mu, _ = lame(cfg["E"], cfg["nu"])
     return kap * mu * _barrier_b(J, jh, ext_kind=ek)
 

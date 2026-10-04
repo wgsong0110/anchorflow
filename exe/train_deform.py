@@ -158,6 +158,9 @@ ap.add_argument("--inv_jhat", type=float, default=0.3,
                 help="그 장벽이 작동하기 시작하는 det F")
 ap.add_argument("--inv_ext", choices=["quad", "linear"], default="linear",
                 help="det <= 0 쪽 연장 방식")
+ap.add_argument("--ov_tol", type=float, default=0.0,
+                help="L-BFGS 수렴 허용오차 (기울기·변화량). 0 이면 항상 "
+                     "--ov_roll 회를 다 돈다 (예전 기본값)")
 ap.add_argument("--lin_psd", action="store_true",
                 help="선형(2차) 근사의 입자별 헤시안을 고유값 0 으로 잘라 "
                      "양반정부호로 만든다 (CG 가 음곡률에서 멈추지 않게)")
@@ -2303,8 +2306,9 @@ def _ov_clip_grads(st):
 def _mk_ov_opt(vs):
     if a.ov_opt == "lbfgs":
         return torch.optim.LBFGS(vs, lr=1.0, max_iter=max(a.ov_roll, 1),
-                                 history_size=50, tolerance_grad=0.0,
-                                 tolerance_change=0.0,
+                                 history_size=50,
+                                 tolerance_grad=float(a.ov_tol),
+                                 tolerance_change=float(a.ov_tol),
                                  line_search_fn="strong_wolfe")
     return torch.optim.Adam(vs, lr=a.out_var_lr)
 
