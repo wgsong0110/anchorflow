@@ -17,6 +17,10 @@ METHODS=${AF_BENCH_METHODS:-"pg ipg"}
 # 그 아래는 불안정한 궤적끼리 비교하게 되어 수렴 판정이 뜻을 잃는다.
 S0_PG=${AF_S0_PG:-400}
 S0_IPG=${AF_S0_IPG:-25}
+# i-PG 를 명시적으로 재려면 AF_IPG_EXPLICIT=1 (암시적 newton_gmres 는
+# 서브스텝당 5~6 초라 같은 규약으로는 측정이 불가능하다)
+EXPL=""
+[ -n "${AF_IPG_EXPLICIT:-}" ] && EXPL="--explicit"
 MAXMUL=${AF_MAXMUL:-8}
 mkdir -p $O/vid $W/wpcache
 cd $W/anchorflow
@@ -34,9 +38,10 @@ if [ "$PH" = "search" ]; then
     S0=$S0_PG; [ "$m" = "ipg" ] && S0=$S0_IPG
     (
       for mt in $MATS; do
+        EX=""; [ "$m" = "ipg" ] && EX=$EXPL
         CUDA_VISIBLE_DEVICES=$g python -u exe/bench_pg.py --phase search \
           --method $m --shape $sh --material $mt --frames 10 --s0 $S0 \
-          --max_mul $MAXMUL --out $O/${m}_${sh}_${mt}.json
+          --max_mul $MAXMUL $EX --out $O/${m}_${sh}_${mt}.json
       done
     ) > $O/bs_${m}_${sh}.out 2>&1 &
     g=$(( (g + 1) % 7 ))
@@ -46,8 +51,9 @@ if [ "$PH" = "search" ]; then
 else
   for m in $METHODS; do for sh in $SHAPES; do for mt in $MATS; do
     S0=$S0_PG; [ "$m" = "ipg" ] && S0=$S0_IPG
+    EX=""; [ "$m" = "ipg" ] && EX=$EXPL
     CUDA_VISIBLE_DEVICES=0 python -u exe/bench_pg.py --phase time \
-      --method $m --shape $sh --material $mt --frames 10 --s0 $S0 \
+      --method $m --shape $sh --material $mt --frames 10 --s0 $S0 $EX \
       --out $O/${m}_${sh}_${mt}.json \
       --vid $O/vid/${m}_${sh}_${mt}.mp4
   done; done; done
