@@ -164,6 +164,9 @@ ap.add_argument("--ov_tol", type=float, default=0.0,
 ap.add_argument("--fuse", action="store_true",
                 help="셀 다항식 평가를 torch.compile 로 묶어 커널 발사 수를 "
                      "줄인다 (작은 씬에서 지배적인 비용이다)")
+ap.add_argument("--fused", action="store_true",
+                help="증분 포텐셜 평가(에너지+기울기)를 **커널 한 번**으로 한다 "
+                     "(근사 없음). 탄성·관성·바닥 장벽을 한 커널에서 푼다")
 ap.add_argument("--cmp_lin", action="store_true",
                 help="매 프레임 **같은 상태에서** 원본(근사 없음)과 2차 근사를 "
                      "각각 풀어 차이를 잰다. 전진은 원본 해로 한다")
@@ -1018,6 +1021,7 @@ _ENS_SHIFT = [(0.0, 0.0, 0.0), (0.5, 0.5, 0.0), (0.5, 0.0, 0.5),
 
 from anchorflow import vox_anchor                # noqa: E402
 from anchorflow import cellpoly as CPOLY_K      # noqa: E402
+from anchorflow import fused_step as FUSED      # noqa: E402
 
 
 def fe_invariants(fe):
@@ -1356,6 +1360,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                         _NM[_k].unsqueeze(-1),
                         (tau * _CTRL_SCALE[0] * _NV[_k]).detach(), dpn_k)
                     if _k == 0:
+                        _PIN[0] = (_NM[0],
+                                   (tau * _CTRL_SCALE[0] * _NV[0]).detach())
                         with torch.no_grad():
                             _CTRL_ERR[1] = int(_NM[0].sum())
                             _CTRL_ERR[2] = float(
@@ -2973,7 +2979,66 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
     try:
       with torch.enable_grad():
-        if a.ov_opt == "cg":
+        if a.fused:
+            # **커널 한 번 경로**: 구조를 한 번 만든 뒤 반복마다 커널만 돈다.
+            _fwd()                      # 격자·변수·손잡이 마스크를 만든다
+            _ens0 = _NF_HOLD[0][0]
+            (_, _np0, (_lo0, _lat0, _nn0), _rw0, _lm0, _uq0, _e0, _lx0) = _ens0
+            _N0 = x.shape[0]
+            _Ai0 = _lat0.Ai.to(x.dtype)
+            _b0 = torch.zeros(_N0, 4, 3, device=dev, dtype=x.dtype)
+            _ar0 = torch.arange(_N0, device=dev)
+            for _j in range(3):
+                _r = _lx0[1][:, _j]
+                _b0[_ar0, _r + 1] += _Ai0[_j]
+                _b0[_ar0, _r] -= _Ai0[_j]
+            _tg0 = FRAME_DT * v + (FRAME_DT ** 2) * gv
+            _w0 = (torch.ones_like(m) if fm is None else fm.to(m.dtype))
+            _mh0 = _w0 * m / (FRAME_DT ** 2)
+            _bc0 = None
+            for _bcd in (cfg.get("boundary_conditions") or []):
+                if _bcd.get("type") == "surface_collider":
+                    _nn_ = torch.as_tensor(_bcd["normal"], dtype=torch.float64)
+                    _nn_ = _nn_ / _nn_.norm().clamp_min(1e-12)
+                    _dh0 = (a.bc_dhat if a.bc_dhat > 0 else
+                            0.5 * gl_ / float(ng_))
+                    _bc0 = (tuple(_nn_.tolist()),
+                            tuple(float(q_) for q_ in _bcd["point"]),
+                            float(a.bc_kappa), float(_dh0),
+                            float(os.environ.get("AF_BC_STIFF", 1000.0)))
+                    break
+            _vs0 = [q for q in (st.get("ov") or []) if q is not None]
+            _idx0 = (st.get("ov_idx") or [None])[0]
+            _M0 = (st.get("ov_M") or [0])[0] or _vs0[0].shape[0]
+            _pm0, _pv0 = (_PIN[0] if _PIN[0] is not None else (None, None))
+            _mu0f, _lm0f = phys_resid.lame(cfg["E"], cfg["nu"])
+
+            def _Efused():
+                _z = torch.zeros(_M0, 3, device=dev, dtype=x.dtype)
+                _z = (_z.index_copy(0, _idx0, _vs0[0]) if _idx0 is not None
+                      else _vs0[0])
+                if _pm0 is not None:
+                    _z = torch.where(_pm0.unsqueeze(-1), _pv0, _z)
+                return FUSED.energy(_z, _rw0, _lm0, _b0, F, _mh0, vol, _tg0,
+                                    _mu0f, _lm0f, x, _bc0) / nrm
+
+            _opt0 = torch.optim.LBFGS(_vs0, lr=1.0,
+                                      max_iter=max(a.ov_roll, 1),
+                                      history_size=50, tolerance_grad=0.0,
+                                      tolerance_change=0.0,
+                                      line_search_fn="strong_wolfe")
+            _E0f = [None]
+
+            def _cl0():
+                _opt0.zero_grad(set_to_none=True)
+                _E = _Efused()
+                if _E0f[0] is None:
+                    _E0f[0] = float(_E)
+                _E.backward()
+                return _E
+            _opt0.step(_cl0)
+            E0 = _E0f[0]
+        elif a.ov_opt == "cg":
             # 목적함수가 2차형식이므로 **공액기울기로 바로 최소점**에 간다.
             # 헤시안-벡터 곱은 이중 역전파로 행렬 없이 만든다.
             _fwd()
@@ -3124,6 +3189,7 @@ def _smooth_nodes(dpn, uniq, nn):
     return (1.0 - _a) * dpn + _a * _avg
 
 
+_PIN = [None]       # (손잡이 노드 마스크, 명령 변위)
 _TAU_H = [None]     # (_TAU, _HES) -- _ov_once 가 _fieldS 로 넘긴다
 _JR_HOLD = [None]   # 2차 근사를 전개하는 중심 J (바깥 반복용)
 _CPOLY = [None]     # 셀 다항식 계수 (프레임마다 한 번 만든다)
