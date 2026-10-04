@@ -3179,6 +3179,21 @@ def _cell_poly_energy(dpn, cp):
     발사 수**가 비용이라, 작은 einsum 여러 개를 하나로 묶는 것이 효과가 크다.
     """
     rows_t, b, M, f, g, K = cp
+    if a.fuse and os.environ.get("AF_CP_CHECK") and _CP_FN[0] is None:
+        _CP_FN[0] = 1
+        with torch.enable_grad():
+            _d1 = dpn.detach().clone().requires_grad_(True)
+            _e1 = (_cp_eval(_d1, rows_t, b, M, f, g, K)[0]
+                   + _cp_eval(_d1, rows_t, b, M, f, g, K)[1])
+            _g1, = torch.autograd.grad(_e1, _d1)
+            _d2 = dpn.detach().clone().requires_grad_(True)
+            _e2 = CPOLY_K.energy(_d2, rows_t.to(torch.int32), M, g - f, K)
+            _g2, = torch.autograd.grad(_e2, _d2)
+            print(f"    [커널대조] 에너지 {float(_e1):.6e} 대 {float(_e2):.6e} "
+                  f"(상대차 {abs(float(_e1-_e2))/max(abs(float(_e1)),1e-30):.2e}), "
+                  f"기울기 상대오차 "
+                  f"{float((_g1-_g2).norm()/_g1.norm().clamp_min(1e-30)):.2e}",
+                  flush=True)
     if a.fuse:
         # **커널 한 번**: 1 차항을 g - f 로 미리 합쳐 Triton 에 넘긴다.
         # grad u 는 에너지와 무관하게 필요하므로 따로 구한다 (가벼운 einsum).
