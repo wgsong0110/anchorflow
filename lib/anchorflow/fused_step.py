@@ -177,7 +177,14 @@ if HAVE_TRITON:
             cf20 = f01 * f12 - f02 * f11
             cf21 = f02 * f10 - f00 * f12
             cf22 = f00 * f11 - f01 * f10
-            cl = lamv * (jf - 1.0)
+            # sigma 는 양수라 Pi sigma = |det F| 다. 그 미분은
+            # sign(det F) cof(F) 이므로 **부호를 붙여야** 기준(자동미분)과 같다
+            # (det<0 인 셀에서만 달라져, 뒤집힘이 생기는 프레임부터 어긋났다).
+            dtf = (f00 * (f11 * f22 - f12 * f21)
+                   - f01 * (f10 * f22 - f12 * f20)
+                   + f02 * (f10 * f21 - f11 * f20))
+            sgn = tl.where(dtf < 0.0, -1.0, 1.0)
+            cl = lamv * (jf - 1.0) * sgn
             # dJ/dF = cof(F) 를 **그대로** 쓴다 (전치하면 안 된다)
             p00 = 2.0 * mu * (f00 - r00) + cl * cf00
             p01 = 2.0 * mu * (f01 - r01) + cl * cf01
