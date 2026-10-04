@@ -6,11 +6,12 @@ set -u
 W=/home/dkta/work
 PH=${1:?search 또는 time}
 # 결과는 회차 디렉토리에 쌓는다 (앞 회차의 잘못된 수치와 섞이지 않게)
-RUN=${AF_BENCH_RUN:-run3}
+RUN=${AF_BENCH_RUN:-run4}
 export AF_BENCH_RUN=$RUN
 O=$W/bench/$RUN
 SHAPES="wolf mic lego bread"
-MATS="elastic elastoplastic viscoplastic fracture"
+# FPS 측정은 **탄성 하나**로만 한다 (2026-10-04 지시).
+MATS=${AF_BENCH_MATS:-elastic}
 mkdir -p $O/vid $W/wpcache
 cd $W/anchorflow
 # conda 초기화는 set -u 와 함께 쓰면 셸이 그 자리에서 죽는다 (미정의 변수 참조)

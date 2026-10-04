@@ -22,12 +22,16 @@ sys.path.insert(0, os.path.dirname(__file__))
 from bench_qfps import ladder, search, rms_rel        # noqa: E402
 
 W = "/home/dkta/work"
+# 물성별 설정. 파괴(CD-MPM)는 GaussianFluent 의 watermelon 설정을 **그쪽 값
+# 그대로** 쓴다 (E 2e3 / nu 0.38 / 밀도 1 / g -15). E=2e6 로는 항복면에 닿지
+# 않아 아예 깨지지 않는다.
 MAT = {"elastic": dict(material="jelly"),
        "elastoplastic": dict(material="plasticine", yield_stress=1e4),
        "viscoplastic": dict(material="foam", yield_stress=5e3,
                             plastic_viscosity=10.0),
        "fracture": dict(material="watermelon", friction_angle=45.0, beta=1.0,
-                        xi=3.0, hardening=1.0)}
+                        xi=3.0, hardening=1.0, alpha_0=-0.04,
+                        E=2e3, nu=0.38, density=1.0, g=[0.0, 0.0, -15.0])}
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--method", choices=["pg", "ipg"], required=True)
@@ -46,6 +50,11 @@ ap.add_argument("--t_long", type=int, default=60)
 ap.add_argument("--vid", default="", help="합격 설정의 궤적을 영상으로 남긴다")
 # 탐색(서브스텝 찾기)은 병렬로 돌려도 되지만 **시간 측정은 단독 실행**이어야 한다.
 ap.add_argument("--phase", choices=["search", "time", "both"], default="both")
+# **떨어뜨려서 부딪히는 창**에서 기준을 잰다. 바닥이 z=--floor 에 있고 물체는
+# (1,1,1) 중심이라 20~26 프레임쯤에 닿는다 -- 처음 10 프레임만 보면 자유낙하라
+# 서브스텝을 아무리 줄여도 수렴해 보여 기준이 무의미해진다.
+ap.add_argument("--skip", type=int, default=24, help="앞 몇 프레임을 버리는가")
+ap.add_argument("--floor", type=float, default=0.1, help="바닥 z (0=바닥 없음)")
 a = ap.parse_args()
 
 MODEL = {"wolf": "wolf_whitebg-trained", "mic": "mic_whitebg-trained",
@@ -64,7 +73,9 @@ RUN = os.environ.get("AF_BENCH_RUN", "run2")
 def run(s, frames=None):
     """프레임당 서브스텝 s 로 돌리고 (궤적 [T,N,3], 벽시계) 를 돌려준다."""
     frames = a.frames if frames is None else frames
-    od = f"{W}/bench/{RUN}/sim/{a.method}_{a.shape}_{a.material}_{s}_{frames}"
+    nrun = frames + a.skip                 # 실제로 돌리는 프레임 수
+    od = (f"{W}/bench/{RUN}/sim/{a.method}_{a.shape}_{a.material}"
+          f"_{s}_{frames}")
     # **직전 회차의 h5 를 절대 재사용하지 않는다.** 실행이 터져도 옛 h5 가 남아
     # 있으면 개수 검사를 통과해 다른 입자 집합의 궤적을 읽는다 (입자 수가
     # 37855 와 311361 로 엇갈려 터진 원인이다).
@@ -72,9 +83,16 @@ def run(s, frames=None):
     shutil.rmtree(od, ignore_errors=True)
     cfg = dict(opacity_threshold=0.0, rotation_degree=[0.0], rotation_axis=[0],
                substep_dt=(1.0 / 60.0) / s, frame_dt=1.0 / 60.0,
-               frame_num=frames, n_grid=a.n_grid, grid_lim=2.0,
+               frame_num=nrun, n_grid=a.n_grid, grid_lim=2.0,
                E=a.E, nu=a.nu, density=1000.0, g=[0.0, 0.0, -9.8],
-               boundary_conditions=[{"type": "bounding_box"}],
+               boundary_conditions=(
+                   [{"type": "bounding_box"}]
+                   + ([] if a.floor <= 0 else
+                      [{"type": "surface_collider",
+                        "point": [1.0, 1.0, a.floor],
+                        "normal": [0.0, 0.0, 1.0], "surface": "sticky",
+                        "friction": 0.0, "start_time": 0,
+                        "end_time": 1000.0}])),
                mpm_space_vertical_upward_axis=[0, 0, 1],
                mpm_space_viewpoint_center=[1, 1, 1], show_hint=False,
                default_camera_index=-1, move_camera=False,
@@ -101,11 +119,12 @@ def run(s, frames=None):
     r = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True)
     dt = time.time() - t0
     fs = sorted(glob.glob(f"{od}/simulation_ply/*.h5"))
-    if len(fs) < frames:
-        print(f"  [실패] s={s} h5 {len(fs)} 개  {r.stderr[-300:]}", flush=True)
+    if len(fs) < nrun:
+        print(f"  [실패] s={s} h5 {len(fs)} 개 (필요 {nrun})  "
+              f"{r.stderr[-300:]}", flush=True)
         return None, dt
     X = []
-    for f in fs[:frames + 1]:
+    for f in fs[a.skip:a.skip + frames + 1]:
         with h5py.File(f, "r") as hf:
             x = np.array(hf["x"])
             X.append(x.T if x.shape[0] == 3 else x)
