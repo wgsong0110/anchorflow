@@ -33,6 +33,7 @@ if HAVE_TRITON:
     def _step_kernel(DPN, ROWS, LAM, B, FN, MASS, VOL, TGT, XP,
                      MU, LAM_E, NX, NY, NZ, PX, PY, PZ,
                      KAP, DHAT, EPSB, BE, BP, STK, HASBC,
+                     CMASK, CX, CY, CZ, CR, CKAP, CDH, CEPS, CBE, CBP, HASCB,
                      EOUT, GRAD, NP, BLOCK: tl.constexpr):
         p = tl.program_id(0)
         if p < NP:
@@ -227,6 +228,27 @@ if HAVE_TRITON:
                 bg0 += STK * mh * tc * t0b
                 bg1 += STK * mh * tc * t1b
                 bg2 += STK * mh * tc * t2b
+            # --- 손잡이 비침투 장벽 (구 밖이던 입자만) --------------------
+            if HASCB > 0:
+                cm = tl.load(CMASK + p)
+                xx0 = tl.load(XP + p * 3 + 0) + up0 - CX
+                xx1 = tl.load(XP + p * 3 + 1) + up1 - CY
+                xx2 = tl.load(XP + p * 3 + 2) + up2 - CZ
+                rr = tl.sqrt(xx0 * xx0 + xx1 * xx1 + xx2 * xx2 + 1e-30)
+                sdc = rr - CR
+                dcc = tl.maximum(sdc, CEPS)
+                lgc = tl.math.log(dcc / CDH)
+                bc_ = -((dcc - CDH) * (dcc - CDH)) * lgc
+                dbc = (-2.0 * (dcc - CDH) * lgc
+                       - ((dcc - CDH) * (dcc - CDH)) / dcc)
+                bc_ = tl.where(sdc < CEPS, CBE + CBP * (sdc - CEPS), bc_)
+                dbc = tl.where(sdc < CEPS, CBP, dbc)
+                inc = sdc < CDH
+                bc_ = tl.where(inc, bc_, 0.0)
+                dbc = tl.where(inc, dbc, 0.0)
+                e_bc += CKAP * mh * cm * bc_
+                gc = CKAP * mh * cm * dbc / rr
+                bg0 += gc * xx0; bg1 += gc * xx1; bg2 += gc * xx2
             tl.store(EOUT + p, vol * psi + e_in + e_bc)
             # --- 노드로 기울기 흩뿌리기 ------------------------------------
             for i in range(4):
@@ -255,7 +277,7 @@ class FusedStep(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, dpn, rows, lam, b, Fn, mass, vol, tgt, mu, lam_e,
-                xp=None, bc=None):
+                xp=None, bc=None, cb=None):
         n = rows.shape[0]
         e = torch.empty(n, device=dpn.device, dtype=dpn.dtype)
         gr = torch.zeros_like(dpn)
@@ -271,13 +293,26 @@ class FusedStep(torch.autograd.Function):
             be = -(_k ** 2) * _l
             bp = -2.0 * _k * _l - (_k ** 2) / eps
             has = 1
+        if cb is None:
+            cmask = dpn[:1, 0]
+            cx = cy = cz = cr = ckap = cdh = ceps = cbe = cbp = 0.0
+            hascb = 0
+        else:
+            cmask, (cx, cy, cz), cr, ckap, cdh = cb
+            ceps = 1e-3 * cdh
+            _l2 = math.log(ceps / cdh); _k2 = ceps - cdh
+            cbe = -(_k2 ** 2) * _l2
+            cbp = -2.0 * _k2 * _l2 - (_k2 ** 2) / ceps
+            hascb = 1
         _step_kernel[(n,)](dpn, rows, lam, b, Fn, mass, vol, tgt, xp,
                            float(mu), float(lam_e),
                            float(nx), float(ny), float(nz),
                            float(px), float(py), float(pz),
                            float(kap), float(dh), float(eps), float(be),
-                           float(bp), float(stk), int(has), e, gr, n,
-                           BLOCK=1)
+                           float(bp), float(stk), int(has),
+                           cmask, float(cx), float(cy), float(cz), float(cr),
+                           float(ckap), float(cdh), float(ceps), float(cbe),
+                           float(cbp), int(hascb), e, gr, n, BLOCK=1)
         ctx.save_for_backward(gr)
         return e.sum()
 
@@ -285,14 +320,14 @@ class FusedStep(torch.autograd.Function):
     def backward(ctx, go):
         (gr,) = ctx.saved_tensors
         return (go * gr, None, None, None, None, None, None, None, None,
-                None, None, None)
+                None, None, None, None)
 
 
 def energy(dpn, rows, lam, b, Fn, mass, vol, tgt, mu, lam_e, xp=None,
-           bc=None):
-    """bc = ((nx,ny,nz), (px,py,pz), kappa, dhat, sticky_k) 또는 None."""
+           bc=None, cb=None):
+    """bc = ((n), (p), kappa, dhat, sticky_k); cb = (마스크, 중심, R, k, dhat)."""
     return FusedStep.apply(dpn, rows.to(torch.int32).contiguous(),
                            lam.contiguous(), b.contiguous(), Fn.contiguous(),
                            mass.contiguous(), vol.contiguous(),
                            tgt.contiguous(), mu, lam_e,
-                           None if xp is None else xp.contiguous(), bc)
+                           None if xp is None else xp.contiguous(), bc, cb)

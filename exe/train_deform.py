@@ -3010,6 +3010,22 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                             float(a.bc_kappa), float(_dh0),
                             float(os.environ.get("AF_BC_STIFF", 1000.0)))
                     break
+            _cb0 = None
+            if a.ctrl_barrier > 0 and "ctrl_id" in d:
+                if "_cb_out" not in d:
+                    _c00 = ctrl_center(d, gsel, 0, take(d["x"][0], gsel))
+                    _R00 = float(d["ctrl_R"].reshape(-1)[0])
+                    _dm0 = (take(d["x"][0], gsel).unsqueeze(1)
+                            - _c00.unsqueeze(0)).norm(dim=-1).min(1).values
+                    d["_cb_out"] = (_dm0 >= _R00).detach()
+                _tt0 = min(t, d["ctrl_vel"].shape[0] - 1)
+                _cc0 = ctrl_center(d, gsel, _tt0, x)[0]
+                _R0c = float(d["ctrl_R"].reshape(-1)[0])
+                _cb0 = (d["_cb_out"].to(x.dtype).contiguous(),
+                        tuple(float(q_) for q_ in _cc0.tolist()), _R0c,
+                        float(a.ctrl_barrier),
+                        float(a.ctrl_barrier_dhat if a.ctrl_barrier_dhat > 0
+                              else 0.25 * _R0c))
             _vs0 = [q for q in (st.get("ov") or []) if q is not None]
             _idx0 = (st.get("ov_idx") or [None])[0]
             _M0 = (st.get("ov_M") or [0])[0] or _vs0[0].shape[0]
@@ -3023,7 +3039,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 if _pm0 is not None:
                     _z = torch.where(_pm0.unsqueeze(-1), _pv0, _z)
                 return FUSED.energy(_z, _rw0, _lm0, _b0, F, _mh0, vol, _tg0,
-                                    _mu0f, _lm0f, x, _bc0) / nrm
+                                    _mu0f, _lm0f, x, _bc0, _cb0) / nrm
 
             _opt0 = torch.optim.LBFGS(_vs0, lr=1.0,
                                       max_iter=max(a.ov_roll, 1),
