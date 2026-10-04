@@ -3045,6 +3045,11 @@ def _smooth_nodes(dpn, uniq, nn):
     return (1.0 - _a) * dpn + _a * _avg
 
 
+_HX_HOLD = [None]   # 프레임 안에서 육면체 색인을 재사용한다
+_HG_LAST = [None]   # (노드 변위, 점유 셀 꼭짓점, 격자) -- 모래시계 항용
+_HXD = [0]          # 육면체 진단 출력 횟수
+
+
 def _hex_struct(x, lo, lat, nn, uniq):
     """육면체 삼선형의 (꼭짓점 색인 [N,8], 쓸 수 있나 [N], N [N,8], dN [N,8,3]).
 
