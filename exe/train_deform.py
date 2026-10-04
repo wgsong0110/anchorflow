@@ -176,6 +176,9 @@ ap.add_argument("--inv_jhat", type=float, default=0.3,
                 help="그 장벽이 작동하기 시작하는 det F")
 ap.add_argument("--inv_ext", choices=["quad", "linear"], default="linear",
                 help="det <= 0 쪽 연장 방식")
+ap.add_argument("--lin_psd", action="store_true",
+                help="선형(2차) 근사의 입자별 헤시안을 고유값 0 으로 잘라 "
+                     "양반정부호로 만든다 (CG 가 음곡률에서 멈추지 않게)")
 ap.add_argument("--cell_barrier", type=float, default=0.0,
                 help="이번 스텝 셀 사상 det(grad Phi) 의 뒤집힘 장벽 세기")
 ap.add_argument("--cell_jhat", type=float, default=0.3)
@@ -2834,11 +2837,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         if _TAU is not None:
             # **2차 근사 탄성**: <tau, dJ> + V[mu|sym dJ|² + (lam/2) tr(dJ)²]
             _dJ = _Jd - torch.eye(3, device=dev, dtype=_Jd.dtype)
-            _sy = 0.5 * (_dJ + _dJ.transpose(-1, -2))
-            _tr = _dJ.diagonal(dim1=-2, dim2=-1).sum(-1)
             _eel = ((_TAU * _dJ).sum((-1, -2))
-                    + vol * (_mu * (_sy * _sy).sum((-1, -2))
-                             + 0.5 * _lm * _tr * _tr)).sum()
+                    + 0.5 * torch.einsum("nabcd,nab,ncd->n", _HES, _dJ, _dJ)
+                    ).sum()
             _du = x2 - x
             _w = (torch.ones_like(m) if fm is None else fm.to(m.dtype))
             _ein = (0.5 * _w * m / (FRAME_DT ** 2)
@@ -2865,23 +2866,45 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             E = E + a.coarse_w * (vol * _psc * _vc.to(_psc.dtype)).sum() / nrm
         return x2, v2, E, dlog, F_tr, _pt, _Jd
 
-    _TAU = None
+    _TAU = _HES = None
     if a.elast == "lin":
+        # **입자별 2차 테일러**: 1차와 2차 계수를 같은 방식으로 (각 입자의
+        # 실제 F^n 에서 미분해) 구하고 더한다. 예전에는 2차항만 F=I 의 등방
+        # 선형탄성 상수(mu, lambda)로 고정했는데, F 가 I 에서 멀어지면 그
+        # 곡률이 실제보다 작아 1차항이 이겨 에너지가 음수로 발산했다
+        # (실측: 탄성항이 t=7 에 -5.7e-3, t=14 에 -0.198, 끝내 -1e19).
         with torch.enable_grad():
             _J0 = torch.eye(3, device=dev, dtype=F.dtype).expand(
                 F.shape[0], 3, 3).clone().requires_grad_(True)
             _ps0, _ = phys_resid.psi_of(_J0 @ F, cfg, FRAME_DT)
-            _TAU = torch.autograd.grad((vol * _ps0).sum(), _J0)[0].detach()
-            # **대칭화**: 등방 초탄성이면 tau = P F^T 가 대칭이라 비대칭 성분은
-            # 수치 잔차다. 2차항은 sym(dJ) 만 벌주므로, 비대칭 잔차를 남기면
-            # 왜곡 성분에 곡률 없는 1차항이 생겨 에너지가 **아래로 발산**한다
-            # (실측: 초기 증분포텐셜 -1.4e19, 비 27).
-            _TAU = 0.5 * (_TAU + _TAU.transpose(-1, -2))
+            _g1 = torch.autograd.grad((vol * _ps0).sum(), _J0,
+                                      create_graph=True)[0]
+            _TAU = _g1.detach()
+            _rows = []
+            for _a in range(3):
+                for _b in range(3):
+                    _rows.append(torch.autograd.grad(
+                        _g1[:, _a, _b].sum(), _J0, retain_graph=True
+                    )[0].detach())
+            # [N,3,3,3,3]: 입자마다 d²(V psi)/dJ dJ. 입자별 항이 독립이라
+            # sum 에 대한 미분이 그대로 그 입자의 헤시안이 된다.
+            _HES = torch.stack(_rows, 1).reshape(-1, 3, 3, 3, 3)
         _mu, _lm = phys_resid.lame(cfg["E"], cfg["nu"])
+        if a.lin_psd:
+            _H9 = _HES.reshape(-1, 9, 9)
+            _H9 = 0.5 * (_H9 + _H9.transpose(-1, -2))
+            _w9, _V9 = torch.linalg.eigh(_H9.double())
+            _HES = (_V9 @ torch.diag_embed(_w9.clamp_min(0.0))
+                    @ _V9.transpose(-1, -2)).to(_HES.dtype).reshape(
+                        -1, 3, 3, 3, 3)
         if os.environ.get("AF_OV_DIAG"):
-            print(f"    [선형] |tau| 최대 {float(_TAU.abs().max()):.3e} "
-                  f"평균 {float(_TAU.abs().mean()):.3e}, mu {float(_mu):.3e}",
-                  flush=True)
+            _ev = torch.linalg.eigvalsh(
+                0.5 * (_HES.reshape(-1, 9, 9)
+                       + _HES.reshape(-1, 9, 9).transpose(-1, -2)))
+            print(f"    [2차근사] |tau| 최대 {float(_TAU.abs().max()):.3e}, "
+                  f"헤시안 고유값 최소 {float(_ev.min()):.3e} 최대 "
+                  f"{float(_ev.max()):.3e}, 음수 비율 "
+                  f"{100 * float((_ev < 0).float().mean()):.1f}%", flush=True)
     _ov = _OV_CUR[0]
     _OV_CUR[0] = st
     _GRID_OFF[0] = off
