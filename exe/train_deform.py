@@ -2997,7 +2997,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     if a.control else None)
             _w0 = (torch.ones_like(m) if _fm0 is None
                    else _fm0.to(m.dtype))
-            _mh0 = _w0 * m / (FRAME_DT ** 2)
+            _mh0 = _w0 * m / (FRAME_DT ** 2)      # 관성 (구속 입자 제외)
+            _mb0 = m / (FRAME_DT ** 2)            # 접촉·장벽 (전체 질량)
             _bc0 = None
             for _bcd in (cfg.get("boundary_conditions") or []):
                 if _bcd.get("type") == "surface_collider":
@@ -3047,7 +3048,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     _z = torch.where(_pm0.unsqueeze(-1), _pv0, _z)
                 return FUSED.energy(_z, _rw0, _lm0, _b0, F, _mh0, vol, _tg0,
                                     _mu0f, _lm0f, x, _bc0, _cb0,
-                                    _box0) / nrm
+                                    _box0, _mb0) / nrm
 
             if os.environ.get("AF_FUSE_CHECK") and t == int(
                     os.environ["AF_FUSE_CHECK"]):
@@ -3059,7 +3060,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                         _zc = torch.where(_pm0.unsqueeze(-1), _pv0, _zc)
                     _ef = float(FUSED.energy(_zc, _rw0, _lm0, _b0, F, _mh0,
                                              vol, _tg0, _mu0f, _lm0f, x,
-                                             _bc0, _cb0, _box0) / nrm)
+                                             _bc0, _cb0, _box0, _mb0) / nrm)
                 _x2c, _v2c, _Ec, _, _, _ptc, _ = _fwd()
                 print(f"    [융합대조] t={t} 기준 {float(_Ec):.6e} 융합 "
                       f"{_ef:.6e} 상대차 "
