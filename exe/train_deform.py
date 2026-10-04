@@ -2811,9 +2811,11 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             _ecb = None
         if _TAU is not None:
             # **2차 근사 탄성**: <tau, dJ> + V[mu|sym dJ|² + (lam/2) tr(dJ)²]
-            _dJ = _Jd - torch.eye(3, device=dev, dtype=_Jd.dtype)
-            _eel = ((_TAU * _dJ).sum((-1, -2))
-                    + 0.5 * torch.einsum("nabcd,nab,ncd->n", _HES, _dJ, _dJ)
+            # 사면체마다 대표 입자 하나의 dJ 면 충분하다 (셀 안에서 상수)
+            _rp, _tc, _hc = _CELL
+            _dJ = _Jd[_rp] - torch.eye(3, device=dev, dtype=_Jd.dtype)
+            _eel = ((_tc * _dJ).sum((-1, -2))
+                    + 0.5 * torch.einsum("tabcd,tab,tcd->t", _hc, _dJ, _dJ)
                     ).sum()
             _du = x2 - x
             _w = (torch.ones_like(m) if fm is None else fm.to(m.dtype))
@@ -2837,7 +2839,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             E = E + _hex_hg_energy(_dh, _c8, _lt, cfg, a.hex_hg) / nrm
         return x2, v2, E, dlog, F_tr, _pt, _Jd
 
-    _TAU = _HES = None
+    _TAU = _HES = _CELL = None
     if a.elast == "lin":
         # **입자별 2차 테일러**: 1차와 2차 계수를 같은 방식으로 (각 입자의
         # 실제 F^n 에서 미분해) 구하고 더한다. 예전에는 2차항만 F=I 의 등방
@@ -2869,6 +2871,25 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         # 헤시안은 대칭이어야 한다 (H_abcd = H_cdab) -- 차분 잔차를 없앤다
         _H9 = _HES.reshape(-1, 9, 9)
         _HES = (0.5 * (_H9 + _H9.transpose(-1, -2))).reshape(-1, 3, 3, 3, 3)
+        # **셀별 합산**: 한 사면체 안 입자들은 같은 dJ 를 받으므로 계수를 미리
+        # 더해 두면 평가가 입자 수가 아니라 셀 수에 비례한다.
+        _lo_c, _lat_c, _nn_c = SX.grid_for_nodes(
+            x, a.n_nodes, hz_ratio=a.hz_ratio, off=None,
+            h_fix=(a.node_h or None))
+        _idx_c, _, _ = SX.locate(x, _lo_c, _lat_c, _nn_c)
+        _uq_c, _inv_c = torch.unique(_idx_c, dim=0, return_inverse=True)
+        _nT = int(_uq_c.shape[0])
+        _rep_c = torch.zeros(_nT, dtype=torch.long, device=dev)
+        _rep_c.scatter_(0, _inv_c, torch.arange(_inv_c.numel(), device=dev))
+        _TAU_C = torch.zeros(_nT, 3, 3, device=dev, dtype=_TAU.dtype
+                             ).index_add_(0, _inv_c, _TAU)
+        _HES_C = torch.zeros(_nT, 3, 3, 3, 3, device=dev, dtype=_HES.dtype
+                             ).index_add_(0, _inv_c, _HES)
+        _CELL = (_rep_c, _TAU_C, _HES_C)
+        if os.environ.get("AF_OV_DIAG"):
+            print(f"    [셀집계] 입자 {x.shape[0]} -> 사면체 {_nT} "
+                  f"(평가 비용 {x.shape[0] / max(_nT, 1):.1f} 배 감소)",
+                  flush=True)
         _mu, _lm = phys_resid.lame(cfg["E"], cfg["nu"])
         if a.lin_psd:
             _H9 = _HES.reshape(-1, 9, 9)
