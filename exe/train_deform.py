@@ -161,6 +161,9 @@ ap.add_argument("--inv_ext", choices=["quad", "linear"], default="linear",
 ap.add_argument("--ov_tol", type=float, default=0.0,
                 help="L-BFGS 수렴 허용오차 (기울기·변화량). 0 이면 항상 "
                      "--ov_roll 회를 다 돈다 (예전 기본값)")
+ap.add_argument("--fuse", action="store_true",
+                help="셀 다항식 평가를 torch.compile 로 묶어 커널 발사 수를 "
+                     "줄인다 (작은 씬에서 지배적인 비용이다)")
 ap.add_argument("--cell_poly", action="store_true",
                 help="입자 기여를 그 사면체 네 꼭짓점 변위(12 자유도)의 "
                      "다항식으로 바꿔 **셀마다 계수를 합산**해 둔다. 평가가 "
@@ -3154,16 +3157,31 @@ def _cell_poly_build(rows, lam, aux, lat, tau_c, hes_c, inv, rep, mass, tgt,
     return rows_t, b, M, f, g, K
 
 
-def _cell_poly_energy(dpn, cp):
-    """셀 다항식 에너지와 사면체별 grad u 를 돌려준다."""
-    rows_t, b, M, f, g, K = cp
+def _cp_eval(dpn, rows_t, b, M, f, g, K):
+    """셀 다항식 에너지 (관성, 탄성) 와 사면체별 grad u."""
     U = dpn[rows_t]                                     # [T,4,3]
     e_in = (0.5 * torch.einsum("tij,tia,tja->t", M, U, U)
-            - torch.einsum("tia,tia->t", f, U))
+            - torch.einsum("tia,tia->t", f, U)).sum()
     e_el = (torch.einsum("tia,tia->t", g, U)
-            + 0.5 * torch.einsum("tiajb,tia,tjb->t", K, U, U))
-    gu = torch.einsum("tia,tib->tab", U, b)             # grad u per tet
-    return e_in.sum(), e_el.sum(), gu
+            + 0.5 * torch.einsum("tiajb,tia,tjb->t", K, U, U)).sum()
+    gu = torch.einsum("tia,tib->tab", U, b)
+    return e_in, e_el, gu
+
+
+_CP_FN = [None]
+
+
+def _cell_poly_energy(dpn, cp):
+    """셀 다항식 에너지와 사면체별 grad u 를 돌려준다.
+
+    --fuse 면 torch.compile 로 묶는다. 작은 씬에서는 연산량이 아니라 **커널
+    발사 수**가 비용이라, 작은 einsum 여러 개를 하나로 묶는 것이 효과가 크다.
+    """
+    if a.fuse:
+        if _CP_FN[0] is None:
+            _CP_FN[0] = torch.compile(_cp_eval, dynamic=True)
+        return _CP_FN[0](dpn, *cp)
+    return _cp_eval(dpn, *cp)
 
 
 _HX_HOLD = [None]   # 프레임 안에서 육면체 색인을 재사용한다
