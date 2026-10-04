@@ -285,7 +285,8 @@ class FusedStep(torch.autograd.Function):
             nx = ny = nz = px = py = pz = 0.0
             kap = dh = eps = be = bp = stk = 0.0
             has = 0
-            xp = dpn[:1]
+            if xp is None:          # 입자 위치가 없을 때만 더미를 넘긴다
+                xp = dpn[:1]
         else:
             (nx, ny, nz), (px, py, pz), kap, dh, stk = bc
             eps = 1e-3 * dh
