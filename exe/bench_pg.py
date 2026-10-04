@@ -108,8 +108,10 @@ else:
     print(f"[시간] 짧은 {a.t_short}프레임 {tS:.1f}초, 긴 {a.t_long}프레임 "
           f"{tL:.1f}초 -> 프레임당 {1000 * t_per:.1f} ms (시작비용 제외)",
           flush=True)
-    print(f"[결과] {a.method} {a.shape} {a.material}: s={s}, "
-          f"{a.frames / t:.2f} FPS ({t / a.frames * 1000:.1f} ms/프레임), "
+    print(f"[결과] {a.method} {a.shape} {a.material}: s={s} "
+          f"(수렴 s={sc}), {1.0 / t_per:.2f} FPS "
+          f"({1000 * t_per:.1f} ms/프레임, 서브스텝당 "
+          f"{1000 * t_per / s:.3f} ms), "
           f"한프레임 {100 * e1:.4f}% 누적 {100 * eT:.4f}%", flush=True)
     if a.vid:
         # 합격 설정으로 만든 궤적을 그대로 영상으로 (옆/위 두 칸)
@@ -127,6 +129,12 @@ else:
         print(f"[영상] {a.vid}", flush=True)
     if a.out:
         json.dump(dict(method=a.method, shape=a.shape, material=a.material,
-                       s=s, fps=a.frames / t, ms=t / a.frames * 1000,
-                       e1=e1, eT=eT, s_conv=sc),
+                       n_particles=int(X0.shape[0]), L=L,
+                       s=int(s), s_conv=int(sc),
+                       ms_per_frame=1000 * t_per,
+                       ms_per_substep=1000 * t_per / float(s),
+                       fps=1.0 / t_per, e1=e1, eT=eT,
+                       n_grid=a.n_grid, E=a.E, nu=a.nu,
+                       frames=a.frames, tol=a.tol, tau=a.tau,
+                       ladder=[(int(q), float(w)) for q, w in hist]),
                   open(a.out, "w"), indent=1)
