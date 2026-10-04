@@ -58,10 +58,18 @@ print(f"[설정] {a.method} {a.shape} {a.material}  입자 {X0.shape[0]}  "
       f"지름 L {L:.4f}  프레임 {a.frames}", flush=True)
 
 
+RUN = os.environ.get("AF_BENCH_RUN", "run2")
+
+
 def run(s, frames=None):
     """프레임당 서브스텝 s 로 돌리고 (궤적 [T,N,3], 벽시계) 를 돌려준다."""
     frames = a.frames if frames is None else frames
-    od = f"{W}/bench/{a.method}_{a.shape}_{a.material}_{s}_{frames}"
+    od = f"{W}/bench/{RUN}/sim/{a.method}_{a.shape}_{a.material}_{s}_{frames}"
+    # **직전 회차의 h5 를 절대 재사용하지 않는다.** 실행이 터져도 옛 h5 가 남아
+    # 있으면 개수 검사를 통과해 다른 입자 집합의 궤적을 읽는다 (입자 수가
+    # 37855 와 311361 로 엇갈려 터진 원인이다).
+    import shutil
+    shutil.rmtree(od, ignore_errors=True)
     cfg = dict(opacity_threshold=0.0, rotation_degree=[0.0], rotation_axis=[0],
                substep_dt=(1.0 / 60.0) / s, frame_dt=1.0 / 60.0,
                frame_num=frames, n_grid=a.n_grid, grid_lim=2.0,
@@ -74,7 +82,9 @@ def run(s, frames=None):
                delta_a=0.0, delta_e=0.0, delta_r=0.0)
     cfg.update(MAT[a.material])
     os.makedirs(f"{W}/bench", exist_ok=True)
-    cp = f"{W}/bench/cfg_{a.method}_{a.shape}_{a.material}_{s}_{frames}.json"
+    os.makedirs(f"{W}/bench/{RUN}", exist_ok=True)
+    cp = (f"{W}/bench/{RUN}/cfg_{a.method}_{a.shape}_{a.material}"
+          f"_{s}_{frames}.json")
     json.dump(cfg, open(cp, "w"), indent=1)
     # warp 커널 캐시를 셀마다 분리한다 (같이 쓰면 동시 컴파일이 캐시를 깨뜨려
     # 모듈 적재 실패/불법 주소 접근으로 터진다)

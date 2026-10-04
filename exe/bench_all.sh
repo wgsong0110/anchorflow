@@ -6,7 +6,8 @@ set -u
 W=/home/dkta/work
 PH=${1:?search 또는 time}
 # 결과는 회차 디렉토리에 쌓는다 (앞 회차의 잘못된 수치와 섞이지 않게)
-RUN=${AF_BENCH_RUN:-run2}
+RUN=${AF_BENCH_RUN:-run3}
+export AF_BENCH_RUN=$RUN
 O=$W/bench/$RUN
 SHAPES="wolf mic lego bread"
 MATS="elastic elastoplastic viscoplastic fracture"
