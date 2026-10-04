@@ -193,7 +193,7 @@ if a.phase in ("time", "both"):
     print(f"[시간] {nf + a.skip}프레임 시뮬 {tL:.2f}초 -> 프레임당 "
           f"{1000 * t_per:.2f} ms (p2g2p 루프만)", flush=True)
     d.update(ms_per_frame=1000 * t_per, ms_per_substep=1000 * t_per / float(s),
-             fps=1.0 / t_per, t_short=tS, t_long=tL)
+             fps=1.0 / t_per, sim_seconds=tL, timed_frames=nf + a.skip)
     json.dump(d, open(SJ, "w"), indent=1)
     print(f"[결과] {a.method} {a.shape} {a.material}: s={s} "
           f"(수렴 s={d['s_conv']}), {1.0 / t_per:.2f} FPS "

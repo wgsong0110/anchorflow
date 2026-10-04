@@ -15,14 +15,14 @@ import os
 
 W = "/home/dkta/work"
 SHAPES = ["wolf", "mic", "lego", "bread"]
-MATS = ["elastic", "elastoplastic", "viscoplastic", "fracture"]
+MATS = (os.environ.get("AF_BENCH_MATS") or "elastic").split()
 MET = ["pg", "ipg"]
 NAME = {"pg": "PG", "ipg": "i-PG"}
 MN = {"elastic": "탄성", "elastoplastic": "탄소성",
       "viscoplastic": "점소성", "fracture": "파괴"}
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--run", default="run3")
+ap.add_argument("--run", default="run5")
 ap.add_argument("--md", default="")
 ap.add_argument("--html", default="")
 a = ap.parse_args()
