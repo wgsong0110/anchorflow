@@ -49,6 +49,29 @@ SETUP = '''
                 data_device="cuda")))
         print(f"[AF다중시점] 카메라 {len(_af_mv_cams)} 대  {_af_mv_path}",
               flush=True)
+        # Spring-Gaus 는 바닥면과 중력축을 **월드 좌표**로 받는다. 시뮬 공간의
+        # 바닥(z=floor)과 위 방향을 그대로 역변환해 적어 둔다.
+        _af_pls = torch.tensor([[1.0, 1.0, 0.1], [1.0, 1.0, 1.1]],
+                               device="cuda", dtype=torch.float32)
+        _af_plw = apply_inverse_rotations(
+            undotransform2origin(undoshift2center111(_af_pls), scale_origin,
+                                 original_mean_pos), rotation_matrices)
+        _af_p0 = _af_plw[0].tolist()
+        _af_up = (_af_plw[1] - _af_plw[0])
+        _af_up = (_af_up / _af_up.norm()).tolist()
+        _af_bb = apply_inverse_rotations(
+            undotransform2origin(undoshift2center111(transformed_pos),
+                                 scale_origin, original_mean_pos),
+            rotation_matrices)
+        _afj2 = __import__("json")
+        _afj2.dump(dict(floor_point=_af_p0, up=_af_up,
+                        xyz_min=_af_bb.min(0).values.tolist(),
+                        xyz_max=_af_bb.max(0).values.tolist(),
+                        frame_dt=float(time_params["frame_dt"]),
+                        n_frames=int(frame_num)),
+                   open(os.path.join(args.output_path, "sgmeta.json"), "w"),
+                   indent=1)
+        print(f"[AF다중시점] 바닥점 {_af_p0}, 위 {_af_up}", flush=True)
 
 '''
 mark = "    for frame in tqdm(range(frame_num)):"
