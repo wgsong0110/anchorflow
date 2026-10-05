@@ -15,7 +15,10 @@ W = "/home/dkta/work"
 ap = argparse.ArgumentParser()
 ap.add_argument("--shape", required=True)
 ap.add_argument("--out", required=True)
-ap.add_argument("--n_frame", type=int, default=20, help="피팅에 쓰는 프레임 수")
+# N_FRAME 은 **HIT_FRAME 보다 커야 한다**: 속도 맞추기 단계가 충돌 프레임까지
+# 카메라를 꺼내 쓰므로 20 으로 두면 frame_id 24 에서 IndexError 가 난다.
+ap.add_argument("--n_frame", type=int, default=0,
+                help="피팅에 쓰는 프레임 수 (0=전부)")
 ap.add_argument("--hit_frame", type=int, default=24, help="바닥에 닿는 프레임")
 a = ap.parse_args()
 
@@ -36,7 +39,7 @@ DATA:
   DATA_ROOT: {W}/sgdata
   OBJ_NAME: {a.shape}
   N_CAM: {len(json.load(open(f"{W}/sgdata/{a.shape}/camera.json")))}
-  N_FRAME: {a.n_frame}
+  N_FRAME: {a.n_frame or meta["n_frames"]}
   FRAME_ALL: {meta["n_frames"]}
   HIT_FRAME: {a.hit_frame}
   H: {cam["height"]}
