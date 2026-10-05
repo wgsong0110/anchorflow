@@ -28,7 +28,7 @@ __all__ = ["lame", "psi_of", "plastic_step", "Plast", "ip_energy", "residual",
            "cdmpm_reset", "cdmpm_state",
            "set_inv_barrier", "set_cell_barrier",
            "smooth_noise", "mat_name", "bc_node_mask", "bc_energy",
-           "grid_ip_sub", "grid_ip_pts", "jac_neighbors", "grad_from_points",
+           "set_hardening", "grid_ip_sub", "grid_ip_pts", "jac_neighbors", "grad_from_points",
            "p2g_ls", "g2p_from_nodes"]
 
 
@@ -102,6 +102,12 @@ class Plast(NamedTuple):
 #   (mpm_utils.NonAssociativeCamClay_return_mapping / kirchoff_stress_
 #   neoHookeanBoarden). 경화 상태 logJp 는 입자마다 하나이고 초기값 -0.04.
 _JP = [None]
+_HARD = [None]          # GASP snow 의 경화 계수 h (입자마다). set_hardening 으로 넣는다
+
+
+def set_hardening(h):
+    """taichi_elements snow 의 h = exp(10(1-Jp)) 를 프레임마다 넣는다."""
+    _HARD[0] = h
 
 
 def det3(M):
@@ -339,6 +345,19 @@ def psi_of(F_trial, cfg, dt):
         psi = _psi_borden(sig2.clamp_min(0.01), mu, kappa)
         return psi, Plast(sig2.clamp_min(0.01).log() - sig.log(), V,
                           jp2.detach())
+    if m in ("ti_snow", "ti_sand"):
+        # GASP(taichi_elements) 의 구성식 그대로. 그쪽은 F 를 **되돌림을 끝낸
+        # 뒤** 저장하므로 (mpm_solver 의 p2g 끝에서 self.F[p] = ...) 여기서
+        # 다시 사영하지 않는다.
+        sig, _V = _sig_vec(F_trial)
+        sig = sig.clamp_min(0.01)
+        if m == "ti_sand":                 # 로그변형 StVK (sand_projection)
+            return _psi_hencky(sig.log(), mu, lam), None
+        h = _HARD[0]                       # snow: mu,la 에 h=exp(10(1-Jp))
+        if h is not None:
+            h = h.to(sig.device, sig.dtype)
+            return _psi_fcr(sig, mu * h, lam * h), None
+        return _psi_fcr(sig, mu, lam), None
     if m in ("jelly", "elastic_damage"):
         if not os.environ.get("AF_NO_FAST_FCR"):
             # 해석 기울기 경로 (SVD 한 번, 고유분해 역전파 없음)

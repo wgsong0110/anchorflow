@@ -52,14 +52,16 @@ if len(fs) < 2:
 def rd(p):
     with h5py.File(p, "r") as f:
         x = np.array(f["x"]); v = np.array(f["v"]); F = np.array(f["f_tensor"])
+        jp = np.array(f["jp"]) if "jp" in f else None      # GASP snow 의 경화
     x = x.T if x.shape[0] == 3 else x
     v = v.T if v.shape[0] == 3 else v
     F = (F.T if F.shape[0] == 9 else F).reshape(-1, 3, 3)
-    return x.astype(np.float32), v.astype(np.float32), F.astype(np.float32)
+    return (x.astype(np.float32), v.astype(np.float32), F.astype(np.float32),
+            None if jp is None else jp.astype(np.float32).reshape(-1))
 
 
 dev = torch.device(a.dev if torch.cuda.is_available() else "cpu")
-X0, _, _ = rd(fs[0])
+X0, _, _, _ = rd(fs[0])
 N = X0.shape[0]
 L = float(np.linalg.norm(X0.max(0) - X0.min(0)))
 ext = a.ext if a.ext > 0 else L
@@ -67,10 +69,17 @@ ext = a.ext if a.ext > 0 else L
 # --- 부피/질량: get_particle_volume 정의 그대로 -----------------------
 n_grid = int(cfg["n_grid"]); grid_lim = float(cfg["grid_lim"])
 dx = grid_lim / n_grid
-cell = np.clip(np.floor(X0 / dx).astype(np.int64), 0, n_grid - 1)
-flat = (cell[:, 0] * n_grid + cell[:, 1]) * n_grid + cell[:, 2]
-_uq, _inv, _cnt = np.unique(flat, return_inverse=True, return_counts=True)
-vol = torch.as_tensor((dx ** 3) / _cnt[_inv], dtype=torch.float32, device=dev)
+if str(cfg.get("vol_mode", "")) == "uniform":
+    # GASP(taichi_elements): p_vol = dx^3, p_mass = p_vol*rho -- 셀 개수로
+    # 나누지 않는다. 베이스라인 정의를 그대로 쓴다.
+    vol = torch.full((N,), dx ** 3, dtype=torch.float32, device=dev)
+else:
+    cell = np.clip(np.floor(X0 / dx).astype(np.int64), 0, n_grid - 1)
+    flat = (cell[:, 0] * n_grid + cell[:, 1]) * n_grid + cell[:, 2]
+    _uq, _inv, _cnt = np.unique(flat, return_inverse=True,
+                                return_counts=True)
+    vol = torch.as_tensor((dx ** 3) / _cnt[_inv], dtype=torch.float32,
+                          device=dev)
 mass = vol * float(cfg["density"])
 g = torch.as_tensor(cfg.get("g", [0.0, 0.0, -9.8]), dtype=torch.float32,
                     device=dev)
@@ -84,13 +93,16 @@ if pr.mat_name(cfg) == "watermelon":
     pr.cdmpm_reset(N, dev)
 
 rows = []
-xn, vn, Fn = rd(fs[0])
+xn, vn, Fn, _jp = rd(fs[0])
 xn = torch.as_tensor(xn, device=dev)
 vn = torch.as_tensor(vn, device=dev)
 for i in tqdm(range(1, len(fs)), desc="프레임"):
-    xn1, vn1, Fn1 = rd(fs[i])
+    xn1, vn1, Fn1, jp1 = rd(fs[i])
     xn1 = torch.as_tensor(xn1, device=dev)
     Fn1t = torch.as_tensor(Fn1, device=dev)
+    if jp1 is not None and pr.mat_name(cfg) == "ti_snow":
+        pr.set_hardening(torch.as_tensor(np.exp(10.0 * (1.0 - jp1)),
+                                         device=dev))
     du = (xn1 - xn).detach().requires_grad_(True)
     E, pl, _F, parts = pr.pts_ip_energy(
         xn, du, vn, Fn1t, None, mass, vol, cfg, h, n_grid, grid_lim, g=g)
