@@ -38,7 +38,7 @@ from scene.cameras import Camera                                # noqa: E402
 from gaussian_renderer import render, GaussianModel             # noqa: E402
 from utils.graphics_utils import focal2fov                      # noqa: E402
 from argparse import Namespace                                  # noqa: E402
-import torchvision                                              # noqa: E402
+from PIL import Image                                           # noqa: E402
 
 cams = json.load(open(os.path.join(a.model, "cameras.json")))
 print(f"[카메라] {len(cams)} 뷰, {cams[0]['width']}x{cams[0]['height']}", flush=True)
@@ -76,7 +76,13 @@ for i, c in enumerate(cams):
                      0.0)["render"].clamp(0.0, 1.0)
     sp = "test" if (i % a.test_every == 0) else "train"
     rel = f"./{sp}/r_{i:04d}"
-    torchvision.utils.save_image(out, os.path.join(a.out, f"{rel}.png"))
+    # NeRF-synthetic 리더는 **RGBA** 를 가정한다 (알파로 배경을 합성한다).
+    # 우리 렌더는 흰 배경이 이미 구워져 있으므로 알파는 1 로 둔다 -- 흰 배경
+    # 합성이 항등이 되어 그림이 그대로 남는다.
+    rgb = (out.permute(1, 2, 0).cpu().numpy() * 255.0).round().astype(np.uint8)
+    rgba = np.concatenate([rgb, np.full(rgb.shape[:2] + (1,), 255,
+                                        dtype=np.uint8)], axis=-1)
+    Image.fromarray(rgba, mode="RGBA").save(os.path.join(a.out, f"{rel}.png"))
     # blender 규약: c2w 의 y·z 축 부호 반전
     M = np.eye(4)
     M[:3, :3] = R_c2w
