@@ -39,9 +39,12 @@ if [ "$PH" = "search" ]; then
     (
       for mt in $MATS; do
         EX=""; [ "$m" = "ipg" ] && EX=$EXPL
+        # 파괴는 실제로 깨지는 설정으로 (격자 2 배 + 초기 하강속도)
+        MX=""; [ "$mt" = "fracture" ] && MX="--n_grid 200 --v0 -6"
+        S0M=$S0; [ "$mt" = "fracture" ] && S0M=800
         CUDA_VISIBLE_DEVICES=$g python -u exe/bench_pg.py --phase search \
-          --method $m --shape $sh --material $mt --frames 10 --s0 $S0 \
-          --max_mul $MAXMUL $EX --out $O/${m}_${sh}_${mt}.json
+          --method $m --shape $sh --material $mt --frames 10 --s0 $S0M \
+          --max_mul $MAXMUL $EX $MX --out $O/${m}_${sh}_${mt}.json
       done
     ) > $O/bs_${m}_${sh}.out 2>&1 &
     g=$(( (g + 1) % 7 ))
@@ -52,8 +55,10 @@ else
   for m in $METHODS; do for sh in $SHAPES; do for mt in $MATS; do
     S0=$S0_PG; [ "$m" = "ipg" ] && S0=$S0_IPG
     EX=""; [ "$m" = "ipg" ] && EX=$EXPL
+    MX=""; [ "$mt" = "fracture" ] && MX="--n_grid 200 --v0 -6"
+    S0M=$S0; [ "$mt" = "fracture" ] && S0M=800
     CUDA_VISIBLE_DEVICES=0 python -u exe/bench_pg.py --phase time \
-      --method $m --shape $sh --material $mt --frames 10 --s0 $S0 $EX \
+      --method $m --shape $sh --material $mt --frames 10 --s0 $S0M $EX $MX \
       --out $O/${m}_${sh}_${mt}.json \
       --vid $O/vid/${m}_${sh}_${mt}.mp4
   done; done; done

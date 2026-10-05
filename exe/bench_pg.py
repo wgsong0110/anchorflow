@@ -62,6 +62,10 @@ ap.add_argument("--solver", default="newton_gmres",
                 choices=["picard", "picard_vanilla", "newton_gmres"])
 ap.add_argument("--explicit", action="store_true", help="i-PG 를 명시적으로")
 ap.add_argument("--max_mul", type=int, default=8, help="사다리 상한 배수")
+# 파괴 칸은 **실제로 깨져야** 뜻이 있다. dx 0.02 에서는 주저앉기만 하므로 격자를
+# 두 배로 올리고(dx 0.01) 초기 하강속도를 줘서 충돌 세기를 키운다 (실측: 그래야
+# 마이크 몸체가 받침에서 떨어져 나가고 파편이 튄다).
+ap.add_argument("--v0", type=float, default=0.0, help="초기 z 속도")
 a = ap.parse_args()
 
 MODEL = {"wolf": "wolf_whitebg-trained", "mic": "mic_whitebg-trained",
@@ -106,6 +110,8 @@ def run(s, frames=None):
                init_azimuthm=55, init_elevation=13, init_radius=4.0,
                delta_a=0.0, delta_e=0.0, delta_r=0.0)
     cfg.update(MAT[a.material])
+    if a.v0:
+        cfg["init_velocity"] = [0.0, 0.0, a.v0]
     os.makedirs(f"{W}/bench", exist_ok=True)
     os.makedirs(f"{W}/bench/{RUN}", exist_ok=True)
     cp = (f"{W}/bench/{RUN}/cfg_{a.method}_{a.shape}_{a.material}"

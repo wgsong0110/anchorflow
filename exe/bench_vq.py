@@ -36,13 +36,14 @@ ap.add_argument("--s", type=int, default=0, help="탐색 결과 대신 쓸 서�
 ap.add_argument("--s_ref", type=int, default=0, help="참조(수렴) 서브스텝")
 ap.add_argument("--cam_z", type=float, default=-1, help="카메라가 보는 중심 z")
 ap.add_argument("--radius", type=float, default=0, help="카메라 거리")
-ap.add_argument("--v0", type=float, default=0.0, help="초기 z 속도")
+ap.add_argument("--v0", type=float, default=-999, help="초기 z 속도 (기본: 파괴 -6)")
 ap.add_argument("--only_test", action="store_true",
                 help="대상만 렌더하고 지표는 건너뛴다 (영상만 볼 때)")
 ap.add_argument("--win", type=int, default=16)
 ap.add_argument("--E", type=float, default=2e6)
 ap.add_argument("--nu", type=float, default=0.3)
-ap.add_argument("--n_grid", type=int, default=100)
+ap.add_argument("--n_grid", type=int, default=0,
+                help="0 이면 파괴는 200, 나머지는 100")
 a = ap.parse_args()
 
 MAT = {"elastic": dict(material="jelly"),
@@ -79,7 +80,9 @@ if a.radius > 0:
 def build(s):
     cfg = dict(opacity_threshold=0.0, rotation_degree=[0.0], rotation_axis=[0],
                substep_dt=(1.0 / 60.0) / s, frame_dt=1.0 / 60.0,
-               frame_num=a.frames, n_grid=a.n_grid, grid_lim=2.0,
+               frame_num=a.frames,
+               n_grid=(a.n_grid or (200 if a.material == "fracture" else 100)),
+               grid_lim=2.0,
                E=a.E, nu=a.nu, density=1000.0, g=[0.0, 0.0, -9.8],
                boundary_conditions=(
                    [{"type": "bounding_box"}]
@@ -96,8 +99,9 @@ def build(s):
                show_hint=False, scale=fill.get("scale", 1.0),
                particle_filling=fill["particle_filling"])
     cfg.update(MAT[a.material]); cfg.update(cam)
-    if a.v0:
-        cfg["init_velocity"] = [0.0, 0.0, a.v0]
+    _v0 = a.v0 if a.v0 != -999 else (-6.0 if a.material == "fracture" else 0.0)
+    if _v0:
+        cfg["init_velocity"] = [0.0, 0.0, _v0]
     return cfg
 
 
