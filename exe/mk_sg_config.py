@@ -63,6 +63,16 @@ DATA:
 
 MODEL:
   G: [0, 0, -9.8]
+
+# 학습 중 open3d 로 점군을 떨구는 구간을 끈다. 이 노드에서 **첫 o3d 호출이
+# 그대로 segfault** 로 죽는다 (lego 피팅이 속도 단계 100 반복째에 날아갔다).
+# 시각화용 ply 일 뿐이라 꺼도 결과에 영향이 없다. 체크포인트를 쓰는
+# SAVE_INTERVAL 은 그대로 둔다 -- 측정이 그 파일을 읽는다.
+VELOCITY:
+  VIZ_INTERVAL: 999999
+
+DYNAMIC:
+  VIZ_INTERVAL: 999999
 """
 open(a.out, "w").write(y)
 print(f"[저장] {a.out}\n{y}")
