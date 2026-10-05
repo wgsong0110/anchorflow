@@ -50,9 +50,12 @@ n_grid 200(dx 0.01) + 초기 하강속도 −6, 사다리 시작 s0=800. dx 0.02
 
 ### D. GASP 준비
 - ☑ 학습된 3DGS 에서 400/300 뷰 렌더 → NeRF-synthetic 데이터셋 4 개
-- ◐ GaMeS `--gs_type gs_flat` 학습 (wolf·bread 먼저, lego·mic 대기)
-- ☐ `scripts/create_pseudomesh.py` → `vertices.pt`
-- ☐ GASP taichi 시뮬로 같은 규약 측정
+- ☑ GaMeS `--gs_type gs_flat` 학습 4 형상 30k (걸림돌 다섯: smplx, PIL np.byte,
+  simple_knn 스텁→토치 대체, antialiasing 인자, 래스터라이저 반환값 개수)
+- ☑ `create_pseudomesh.py` → `vertices.pt` 4 개 (GASP 의 games_submodule 을 GaMeS 로 연결)
+- ◐ GASP 측정: taichi_elements MPM 을 우리 낙하 씬·0.5% 기준으로 (`exe/bench_gasp.py`).
+  탄성 4 형상 탐색 진행 중. 꼭짓점이 가우시안의 3 배라 한 칸이 GPU 하나를 쓴다.
+  물성 대응: 탄성→elastic, 탄소성→snow, 점소성→sand, **파괴는 미지원**
 
 ### E. Spring-Gaus 준비
 - ☐ MPM 기준 궤적(s=3200)을 다중시점으로 렌더해 피팅용 영상 생성
