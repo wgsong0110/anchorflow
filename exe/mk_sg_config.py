@@ -23,6 +23,10 @@ ap.add_argument("--hit_frame", type=int, default=24, help="바닥에 닿는 프�
 a = ap.parse_args()
 
 meta = json.load(open(f"{W}/sgdata/{a.shape}/sgmeta.json"))
+# 프레임 수는 **실제 저장된 png 를 센다**. sgmeta 는 메타만 뽑으려고 1 프레임으로
+# 돌릴 때 덮어써지므로 믿으면 안 된다 (N_FRAME=1 로 새어 나갔다).
+import glob as _glob
+meta["n_frames"] = len(_glob.glob(f"{W}/sgdata/{a.shape}/cam_0/*.png"))
 cam = json.load(open(f"{W}/sgdata/{a.shape}/camera.json"))[0]
 lo, hi = meta["xyz_min"], meta["xyz_max"]
 pad = 0.1 * max(hi[i] - lo[i] for i in range(3))
