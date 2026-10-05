@@ -77,7 +77,10 @@ print(f"[설정] gasp {a.shape} {a.material}  꼭짓점 {P0.shape[0]}  지름 L 
 import taichi as ti                                   # noqa: E402
 from engine.mpm_solver import MPMSolver               # noqa: E402
 
-ti.init(arch=ti.gpu, device_memory_fraction=0.7, log_level=ti.ERROR)
+# 카드를 통째로 요구하면 같은 GPU 의 다른 잡과 부딪혀 초기화가 죽는다.
+# (실측: 0.7 로 두니 "materialize_runtime" 에서 CUDA 오류)
+ti.init(arch=ti.gpu, log_level=ti.ERROR,
+        device_memory_fraction=float(os.environ.get("AF_TI_FRAC", 0.35)))
 MATID = {"elastic": MPMSolver.material_elastic,
          "snow": MPMSolver.material_snow,
          "sand": MPMSolver.material_sand}
