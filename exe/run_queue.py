@@ -5,7 +5,10 @@ GASP 칸은 꼭짓점이 가우시안의 3 배라 한 칸이 GPU 를 거의 다 
 칸을 밀어 넣는다.
 
 목록 파일은 한 줄에 한 명령. 빈 줄과 `#` 주석은 건너뛴다.
-각 명령은 `CUDA_VISIBLE_DEVICES=<배정>` 와 함께 `cwd` 에서 돈다.
+각 명령은 `CUDA_VISIBLE_DEVICES=<배정>` 와 함께 `cwd` 에서 돈다. 명령 안의
+`{gpu}` 는 배정된 **물리 카드 번호**로 바뀐다 -- 스스로 CUDA_VISIBLE_DEVICES 를
+덮어쓰는 스크립트(Spring-Gaus 의 train.py 가 `-g` 값을 그대로 넣는다)는 가림이
+통하지 않으므로 번호를 직접 받아야 한다.
 
   python exe/run_queue.py --jobs /home/dkta/work/q.txt --gpus 0,1,2,3,4,5,6 \
       --logdir /home/dkta/work/qlog
@@ -59,7 +62,7 @@ while nxt < len(jobs) or run:
     for g in gpus:
         if g in run or nxt >= len(jobs) or g in bad:
             continue
-        cmd = jobs[nxt]
+        cmd = jobs[nxt].replace("{gpu}", g)
         tag = f"{nxt:02d}"
         lp = os.path.join(a.logdir, f"q{tag}.log")
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=g, PYTHONUTF8="1",
