@@ -57,20 +57,22 @@ os.makedirs(O, exist_ok=True)
 
 # --- 그쪽 학습 결과 찾기 ----------------------------------------------
 exp = a.exp
-if not exp:
-    cs = sorted(glob.glob(f"{SG}/exp/af2_{a.shape}_*/checkpoint/dy_n_step.json"))
-    if not cs:
-        cs = sorted(glob.glob(f"{SG}/exp/af_{a.shape}_*/checkpoint/"
-                              f"dy_n_step.json"))
-    if not cs:
-        raise SystemExit(f"[건너뜀] {a.shape} 의 피팅 결과가 없다 ({SG}/exp)")
-    exp = os.path.dirname(os.path.dirname(cs[-1]))
-DY = f"{exp}/checkpoints_dynamic/checkpoint.pth.tar"
+cs = sorted(glob.glob(f"{SG}/exp/af2_{a.shape}_*/checkpoints_dynamic/"
+                      f"checkpoint/dy_n_step.json"))
+if not cs:
+    cs = sorted(glob.glob(f"{SG}/exp/af_{a.shape}_*/checkpoints_dynamic/"
+                          f"checkpoint/dy_n_step.json"))
+if exp:                                   # 디렉토리를 직접 준 경우
+    cs = sorted(glob.glob(f"{exp}/checkpoints_dynamic/checkpoint/"
+                          f"dy_n_step.json")) or cs
+if not cs:
+    raise SystemExit(f"[건너뜀] {a.shape} 의 피팅 결과가 없다 ({SG}/exp)")
+# 그쪽 규약: dy_reload 의 두 단계 위에 'checkpoint/' 가 붙는다
+#   <exp>/checkpoints_dynamic/checkpoint/Spring_Mass.pth.tar
+DY = os.path.join(os.path.dirname(cs[-1]), "Spring_Mass.pth.tar")
+exp = os.path.dirname(os.path.dirname(os.path.dirname(cs[-1])))
 if not os.path.exists(DY):
-    cand = sorted(glob.glob(f"{exp}/checkpoints*/*.pth.tar"))
-    if not cand:
-        raise SystemExit(f"[건너뜀] 체크포인트가 없다: {exp}")
-    DY = cand[-1]
+    raise SystemExit(f"[건너뜀] 가중치가 없다: {DY}")
 print(f"[피팅] {exp}\n       가중치 {DY}", flush=True)
 
 os.chdir(SG)
