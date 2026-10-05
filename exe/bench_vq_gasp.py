@@ -135,9 +135,11 @@ def go(s, tag, h5dir=""):
     jfld = ti.field(dtype=ti.f32, shape=N) if h5dir else None
 
     if h5dir:
+        # 인자를 받지 않는다: `from __future__ import annotations` 가 주석을
+        # 문자열로 바꿔 taichi 가 타입을 못 읽는다 (N 은 닫힘으로 넘긴다).
         @ti.kernel
-        def grab(n: ti.i32):
-            for p in range(n):
+        def grab():
+            for p in range(N):
                 for i in ti.static(range(3)):
                     for j in ti.static(range(3)):
                         fld[p][3 * i + j] = mpm.F[p][i, j]
@@ -152,7 +154,7 @@ def go(s, tag, h5dir=""):
             img = gs_render(Vm[faces], view, gaussians, PIPE, BG)["render"]
             torchvision.utils.save_image(img, f"{od}/{f:04d}.png")
         if h5dir and f < a.resid_frames:
-            grab(N)
+            grab()
             with h5py.File(f"{h5dir}/{f:04d}.h5", "w") as hf:
                 hf["x"] = P.astype(np.float32)
                 hf["v"] = pi["velocity"][:N].astype(np.float32)

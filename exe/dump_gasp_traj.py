@@ -79,8 +79,8 @@ _Jp = ti.field(dtype=ti.f32, shape=N)
 
 
 @ti.kernel
-def grab(n: ti.i32):
-    for p in range(n):
+def grab():                 # 인자 없음: future annotations 가 주석을 문자열로 만든다
+    for p in range(N):
         for i in ti.static(range(3)):
             for j in ti.static(range(3)):
                 _F[p][3 * i + j] = mpm.F[p][i, j]
@@ -93,7 +93,7 @@ nrun = a.frames + a.skip
 for f in tqdm(range(nrun + 1), desc="프레임"):
     if f >= a.skip:
         pi = mpm.particle_info()
-        grab(N)
+        grab()
         with h5py.File(f"{OD}/{f - a.skip:04d}.h5", "w") as hf:
             hf["x"] = pi["position"][:N].astype(np.float32)
             hf["v"] = pi["velocity"][:N].astype(np.float32)
