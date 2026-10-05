@@ -23,6 +23,8 @@ ap.add_argument("--gpus", default="0,1,2,3,4,5,6")
 ap.add_argument("--logdir", default="/home/dkta/work/qlog")
 ap.add_argument("--cwd", default="/home/dkta/work/anchorflow")
 ap.add_argument("--env", default="", help="k=v,k=v 로 추가 환경변수")
+ap.add_argument("--free_mib", type=int, default=2000,
+                help="이만큼 아래로 비어 있는 GPU 에만 띄운다 (0 이면 검사 안 함)")
 a = ap.parse_args()
 
 jobs = [q.strip() for q in open(a.jobs)
@@ -32,10 +34,30 @@ os.makedirs(a.logdir, exist_ok=True)
 extra = dict(q.split("=", 1) for q in a.env.split(",") if "=" in q)
 print(f"[큐] 명령 {len(jobs)} 개, GPU {gpus}", flush=True)
 
+def busy():
+    """다른 잡이 쓰고 있는 GPU 번호 (내가 띄운 것은 뺀다)."""
+    if a.free_mib <= 0:
+        return set()
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,memory.used",
+             "--format=csv,noheader,nounits"], capture_output=True, text=True,
+            timeout=60).stdout
+    except Exception:
+        return set()
+    bad = set()
+    for ln in out.strip().splitlines():
+        q = [w.strip() for w in ln.split(",")]
+        if len(q) == 2 and int(q[1]) > a.free_mib:
+            bad.add(q[0])
+    return bad
+
+
 run, nxt, done = {}, 0, 0
 while nxt < len(jobs) or run:
+    bad = busy()
     for g in gpus:
-        if g in run or nxt >= len(jobs):
+        if g in run or nxt >= len(jobs) or g in bad:
             continue
         cmd = jobs[nxt]
         tag = f"{nxt:02d}"
@@ -48,7 +70,8 @@ while nxt < len(jobs) or run:
         run[g] = (p, tag, cmd, time.time())
         print(f"[띄움] gpu{g} <- {tag}: {cmd}  (로그 {lp})", flush=True)
         nxt += 1
-    time.sleep(20)
+        break               # 한 바퀴에 하나씩 (방금 띄운 것이 메모리를 잡을 때까지)
+    time.sleep(60)
     for g in list(run):
         p, tag, cmd, t0 = run[g]
         if p.poll() is None:
