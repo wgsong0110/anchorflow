@@ -70,7 +70,10 @@ for i, c in enumerate(cams):
                  gt_alpha_mask=None, image_name=f"r_{i:04d}", uid=i,
                  data_device="cuda")
     with torch.no_grad():
-        out = render(cam, gaussians, pipe, bg)["render"].clamp(0.0, 1.0)
+        # PG 가 품은 gaussian-splatting 은 변형 인자(d_xyz, d_rotation,
+        # d_scaling)를 요구하는 갈래다 -- 정적 렌더이므로 0 을 준다
+        out = render(cam, gaussians, pipe, bg, 0.0, 0.0,
+                     0.0)["render"].clamp(0.0, 1.0)
     sp = "test" if (i % a.test_every == 0) else "train"
     rel = f"./{sp}/r_{i:04d}"
     torchvision.utils.save_image(out, os.path.join(a.out, f"{rel}.png"))
