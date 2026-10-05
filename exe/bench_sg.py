@@ -85,6 +85,9 @@ from lib.models.gaus import Scene, render                      # noqa: E402
 
 arg = config_parser()
 cfg = get_config_merge_default(config_file=arg.cfg, arg=arg)
+# Scene 이 cameras.json 을 exp_path 에 쓴다. 보통은 Recorder 가 만들어 주는데
+# 여기서는 Recorder 를 안 쓰므로 직접 만든다.
+os.makedirs(f"{SG}/exp/bench_{a.shape}", exist_ok=True)
 scene = Scene(cfg, f"bench_{a.shape}", shuffle=False, load_static=False)
 with open(f"{cfg.CHECKPOINTS_ROOT}/init_velocity_"
           f"{cfg.VELOCITY.ITERATIONS}.json") as f:
