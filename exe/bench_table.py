@@ -15,9 +15,15 @@ import os
 
 W = "/home/dkta/work"
 SHAPES = ["wolf", "mic", "lego", "bread"]
-MATS = (os.environ.get("AF_BENCH_MATS") or "elastic").split()
-MET = ["pg", "ipg"]
-NAME = {"pg": "PG", "ipg": "i-PG"}
+MATS = (os.environ.get("AF_BENCH_MATS")
+        or "elastic elastoplastic viscoplastic fracture").split()
+MET = ["pg", "ipg", "gasp", "sg"]
+NAME = {"pg": "PG", "ipg": "i-PG", "gasp": "GASP", "sg": "Spring-Gaus"}
+# 구조적으로 그 구성식이 없는 조합. 공란이 아니라 "미지원" 으로 적는다.
+NOSUP = {"gasp": {"fracture": "taichi_elements MPM 에 파괴 구성식 없음"},
+         "sg": {"elastoplastic": "스프링-질량이라 소성 없음",
+                "viscoplastic": "스프링-질량이라 점소성 없음",
+                "fracture": "스프링-질량이라 파괴 없음"}}
 MN = {"elastic": "탄성", "elastoplastic": "탄소성",
       "viscoplastic": "점소성", "fracture": "파괴"}
 
@@ -40,7 +46,13 @@ rows = []
 for m in MET:
     for sh in SHAPES:
         for mt in MATS:
-            d = rd(f"{O}/{m}_{sh}_{mt}.json")
+            if mt in NOSUP.get(m, {}):
+                rows.append(dict(method=m, shape=sh, material=mt,
+                                 note="미지원: " + NOSUP[m][mt]))
+                continue
+            # Spring-Gaus 는 탄성 한 칸이라 파일 이름에 물성이 없다
+            d = rd(f"{O}/sg_{sh}.json" if m == "sg" else
+                   f"{O}/{m}_{sh}_{mt}.json")
             if d is None:
                 rows.append(dict(method=m, shape=sh, material=mt,
                                  note="실행 없음"))
@@ -66,6 +78,11 @@ hdr = ("| 방법 | 형상 | 물성 | 입자 | s | s_conv | ms/프레임 | ms/서
 sep = "|" + "---|" * 16
 lines = [hdr, sep]
 for q in rows:
+    if str(q.get("note", "")).startswith("미지원"):
+        lines.append(f"| {NAME[q['method']]} | {q['shape']} | "
+                     f"{MN[q['material']]} | " + "미지원 | " * 13
+                     + f" <!-- {q['note']} -->")
+        continue
     lines.append(
         f"| {NAME[q['method']]} | {q['shape']} | {MN[q['material']]} | "
         f"{f(q.get('n'), '{:d}') if q.get('n') else '-'} | "
@@ -87,6 +104,12 @@ if a.html:
     th = "".join(f"<th>{c.strip()}</th>" for c in hdr.strip("|").split("|"))
     tr = ""
     for q in rows:
+        if str(q.get("note", "")).startswith("미지원"):
+            cells = [NAME[q["method"]], q["shape"], MN[q["material"]]] + \
+                ["미지원"] * 13
+            tr += ("<tr style='color:#888'>"
+                   + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
+            continue
         cells = [NAME[q["method"]], q["shape"], MN[q["material"]],
                  f(q.get("n"), "{:d}") if q.get("n") else "-",
                  f(q.get("s"), "{:d}") if q.get("s") else "-",
