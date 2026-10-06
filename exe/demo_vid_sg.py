@@ -42,10 +42,13 @@ ap.add_argument("--exp", default="", help="피팅 결과 (기본: 최신 af*_<�
 ap.add_argument("--out", default=f"{W}/demo")
 ap.add_argument("--frames", type=int, default=0)
 ap.add_argument("--n_step", type=int, default=0, help="프레임당 서브스텝")
-ap.add_argument("--pull", type=float, default=0.25, help="손잡이 속도 (단위/초)")
+ap.add_argument("--acc", type=float, default=0.0,
+                help="양쪽에 주는 가속도 (0 이면 소성 80, 점성 20 -- i-PG 와 같은 값)")
+ap.add_argument("--force_frames", type=int, default=0,
+                help="힘을 주는 프레임 수 (0 이면 소성 20, 점성 40)")
+ap.add_argument("--rupture", type=float, default=0.5,
+                help="소성: 처음 길이 대비 이만큼 늘어난 스프링은 끊긴다 (연성 파단)")
 ap.add_argument("--hold", type=int, default=40, help="점성: 붙기를 기다릴 프레임")
-ap.add_argument("--radius", type=float, default=0.0,
-                help="손잡이 반경 (0 이면 물체 길이의 0.3 배)")
 ap.add_argument("--gap", type=float, default=0.15, help="점성: 두 물체 간격")
 ap.add_argument("--contact", type=float, default=0.0,
                 help="접촉 스프링이 생기는 거리 (0 이면 앵커 간격의 1.2 배)")
@@ -122,6 +125,17 @@ gaussians.const_scale = float(cfg.STATIC.CONST_SCALE)
 print(f"[중력] 피팅 값 g={sim.g.tolist()} g_f={sim.g_f.tolist()} -> 유효 "
       f"{(sim.g * sim.g_f).tolist()}", flush=True)
 sim.g = torch.tensor([0.0, 0.0, -9.8], dtype=torch.float32)
+
+# 렌더는 **정적 단계 가우시안**으로 한다. 동역학 체크포인트의 가우시안은 그쪽
+# 동역학 단계가 색·불투명도까지 고쳐 반점이 많다(실측 비교: GT 대비 정적이 확연히
+# 깨끗하다). 보간 계수는 그쪽 함수(set_all_particle)로 다시 잡는다.
+from lib.models.gaus import GaussianModel_isotropic               # noqa: E402
+_gs = GaussianModel_isotropic(const_scale=float(cfg.STATIC.CONST_SCALE))
+scene.set_gaussians(_gs, f"{cfg.CHECKPOINTS_ROOT}/static_gaussians/point_cloud.ply")
+with torch.no_grad():
+    sim.set_all_particle(_gs.get_xyz.detach())
+gaussians = _gs
+print(f"[렌더] 정적 가우시안 {gaussians.get_xyz.shape[0]} 개", flush=True)
 
 BG = torch.ones(3, dtype=torch.float32, device="cuda")       # 흰 배경
 from lib.models.gaus.utils.graphics_utils import getWorld2View2   # noqa: E402
@@ -210,12 +224,12 @@ if a.n_step:
     sim.n_step = int(a.n_step)
 NS = int(sim.n_step)
 
-# ------------------------------------------------- 3) 손잡이 (운동학 구동)
+# ---------------------------------------------- 3) 힘 (절반/덩이 전체에 반대 방향)
+# 속도를 박지 않고 **가속도**를 준다 (i-PG 의 particle_impulse 와 같은 규약).
+# 소성: 수평 주축 기준 왼쪽 절반 전체에 -A, 오른쪽 절반 전체에 +A.
+# 점성: 아래 덩이 전체에 -A, 위 덩이 전체에 +A (붙기를 기다린 뒤).
 HD = None
 if a.scene in ("plastic", "viscous"):
-    # 중력축 성분을 뺀 **수평 주축**으로 당긴다. 그냥 주축을 쓰면 lego 처럼
-    # 세로로 긴 물체에서 수직이 잡히고, 점성 씬은 쌓아 둔 두 덩이를 위아래로
-    # 떼어 놓아 애초에 붙지 않는다 (실측).
     g_ax = int(sim.ground_axis)
     Xc = (X0 - X0.mean(0)).cpu().numpy()
     Xc[:, g_ax] = 0.0
@@ -223,25 +237,27 @@ if a.scene in ("plastic", "viscous"):
     ax = V[:, int(np.argmax(w))]
     ax[g_ax] = 0.0
     ax = ax / (np.linalg.norm(ax) + 1e-12)
-    ax = ax * np.sign(ax[int(np.argmax(np.abs(ax)))])
-    axt = torch.as_tensor(ax, dtype=torch.float32, device=X0.device)
-    t = X0 @ axt
-    R = a.radius or 0.3 * float(t.max() - t.min())
+    k = int(np.argmax(np.abs(ax)))
+    e = np.zeros(3); e[k] = 1.0                 # i-PG 와 같은 좌표축 방향
+    et = torch.as_tensor(e, dtype=torch.float32, device=X0.device)
+    t = X0[:, k]
     if a.scene == "plastic":
-        # 반으로 나눠 양쪽 절반을 반대로 당긴다
-        mA = t <= t.min() + R
-        mB = t >= t.max() - R
+        cut = t.median()
+        mA, mB = t < cut, t >= cut
+        hold = 0
     else:
-        # 아래 덩이와 위 덩이를 각각 잡는다 (주축 반대 끝에서)
-        lo = torch.zeros_like(t, dtype=torch.bool); lo[:NB] = True
-        mA = lo & (t <= t[lo].min() + R)
-        mB = (~lo) & (t >= t[~lo].max() - R)
-    vA, vB = -axt * a.pull, axt * a.pull
-    HD = dict(mA=mA, mB=mB, vA=vA, vB=vB, hold=(a.hold if a.scene == "viscous"
-                                                else 0))
-    print(f"[손잡이] 주축 {ax.round(3)}  반경 {R:.4f}  앵커 A {int(mA.sum())} "
-          f"B {int(mB.sum())}  속도 {a.pull}"
-          + (f"  (앞 {a.hold} 프레임 대기)" if HD["hold"] else ""), flush=True)
+        mA = torch.zeros_like(t, dtype=torch.bool); mA[:NB] = True
+        mB = ~mA
+        hold = a.hold
+    ACC = a.acc or (80.0 if a.scene == "plastic" else 20.0)
+    NF = a.force_frames or (20 if a.scene == "plastic" else 40)
+    # 그쪽 장면 단위가 i-PG 시뮬 공간보다 크다 (lego 지름 SG 6.2 / i-PG 1.34).
+    # 같은 **상대** 운동이 되도록 가속도를 길이 비로 맞춘다.
+    SCL = L / 1.3418
+    HD = dict(mA=mA, mB=mB, aA=-et * ACC * SCL, aB=et * ACC * SCL,
+              f0=hold, f1=hold + NF)
+    print(f"[힘] 축 {'xyz'[k]}  A {int(mA.sum())} / B {int(mB.sum())} 앵커  가속도 "
+          f"{ACC} x 길이비 {SCL:.2f}  {hold}~{hold + NF} 프레임", flush=True)
 
 # --------------------------------------------- 4) 접촉 스프링 (두 덩이 붙이기)
 CT = None
@@ -308,11 +324,16 @@ def step(self, xyz, v, K, m, rebound_k, fric_k, damp, dt):
             over = (st.abs() - cfg["eps_y"]).clamp_min(0.0) * torch.sign(st)
             rate = 1.0 if cfg["kind"] == "plastic" else dt / (dt + cfg["tau"])
             self.origin_len += rate * over * self.origin_len
-        # (c) 운동학 손잡이 -- 명령 속도를 그대로 박는다
-        if HD is not None and state["frame"] >= HD["hold"]:
-            for mk, vc in ((HD["mA"], HD["vA"]), (HD["mB"], HD["vB"])):
-                xyz[mk] = xyz[mk] + vc * dt
-                v[mk] = vc
+        # (c) 연성 파단 -- 처음 길이 대비 rupture 넘게 늘어난 스프링은 끊는다.
+        #     소성은 쉬는 길이가 따라가 변형률이 항복값에 머무르므로, 끊김은
+        #     **누적 신장**(처음 길이 기준)으로 판정해야 한다.
+        if cfg["kind"] == "plastic" and a.rupture > 0:
+            tot = cur / (self._l0_ref + self.eps) - 1.0
+            self._k_mask *= (tot <= a.rupture).to(tot.dtype)
+        # (d) 힘 -- 정해진 프레임 동안 두 무리에 반대 방향 가속도
+        if HD is not None and HD["f0"] <= state["frame"] < HD["f1"]:
+            v[HD["mA"]] = v[HD["mA"]] + HD["aA"] * dt
+            v[HD["mB"]] = v[HD["mB"]] + HD["aB"] * dt
     state["sub"] += 1
     return xyz, v
 
