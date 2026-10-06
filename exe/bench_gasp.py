@@ -138,14 +138,18 @@ if a.phase == "smoke":
     # 수치가 터지고 taichi 의 svd 가 끝나지 않는 일이 있었다 -- 대량 실행
     # 전에 한 칸을 이렇게 먼저 본다.
     X, tl = run(a.s0, a.frames)
-    c0 = X[0].mean(0)
     d0 = float(np.linalg.norm(X[0].max(0) - X[0].min(0)))
+    # 흩어짐은 **그 프레임의 중심** 기준으로 잰다 -- 처음 중심을 쓰면 낙하
+    # 자체가 섞여 들어가 깨진 것처럼 보인다 (처음 판에서 그렇게 틀렸다)
+    r0 = float(np.sqrt(((X[0] - X[0].mean(0)) ** 2).sum(-1).mean()))
     for f in range(X.shape[0]):
         bb = float(np.linalg.norm(X[f].max(0) - X[f].min(0)))
-        far = float((np.linalg.norm(X[f] - c0, axis=1) > 0.75 * d0).mean())
-        print(f"  [연기] 프레임 {f:2d} 지름 {bb / d0:.3f}배  멀어진 입자 "
-              f"{100 * far:.2f}%  유한 {bool(np.isfinite(X[f]).all())}",
-              flush=True)
+        c = X[f].mean(0)
+        rr = float(np.sqrt(((X[f] - c) ** 2).sum(-1).mean()))
+        far = float((np.linalg.norm(X[f] - c, axis=1) > 2.0 * r0).mean())
+        print(f"  [연기] 프레임 {f:2d} 지름 {bb / d0:.3f}배  흩어짐 "
+              f"{rr / r0:.3f}배  멀리 튄 입자 {100 * far:.2f}%  유한 "
+              f"{bool(np.isfinite(X[f]).all())}", flush=True)
     print(f"[연기] s={a.s0} {X.shape[0]} 프레임 {tl:.1f}초 "
           f"(프레임당 {tl / X.shape[0]:.2f}초)", flush=True)
     raise SystemExit(0)
