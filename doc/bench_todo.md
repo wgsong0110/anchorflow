@@ -19,9 +19,10 @@
 **모든 방법론 × 모든 조합 × 모든 지표**. 즉 4 방법(PG · i-PG · GASP · Spring-Gaus)
 × 4 형상(wolf·mic·lego·bread) × 4 물성(탄성·탄소성·점소성·파괴) = **64 칸**에 대해
 물리 잔차 · 증분 포텐셜 · FID · FVD · KVD · 영상을 채운다. FPS 는 탄성만.
-방법이 **구조적으로 지원하지 않는 조합**(예: Spring-Gaus 는 스프링-질량이라 소성·
-파괴 모델이 없다, GASP 의 taichi 예제는 탄성 계열)은 공란이 아니라 **"미지원"** 으로
-적고 왜 그런지 한 줄 남긴다 -- 측정 안 한 것과 구분한다.
+원 논문이 지원하지 않는 조합(Spring-Gaus 의 소성·점소성·파괴, GASP 의 파괴)은
+**"미지원" 으로 비우지 않는다 — 우리가 직접 붙여서 잰다** (2026-10-06 지시).
+붙인 방식은 표에 "우리 확장" 으로 표시한다: GASP 는 taichi_elements 에 CD-MPM
+파괴 재질을, Spring-Gaus 는 스프링 쉬는길이 소성과 강성 0 파괴를 넣었다.
 
 ## 상태
 
@@ -41,14 +42,15 @@ n_grid 200(dx 0.01) + 초기 하강속도 −6, 사다리 시작 s0=800. dx 0.02
 - ☑ PG·i-PG 32 칸 물리 잔차·증분 포텐셜
 - ☑ PG·i-PG 32 칸 FID/FVD/KVD (파괴 두 칸은 기준 미달이라 사다리에서 한프레임
   오차가 가장 작았던 s 로 렌더: pg mic s=6394, i-PG lego s=6376)
-- ☑ GASP 12 칸 중 11 칸 탐색 완료 (mic 점소성만 남음 — 모래 되돌림이 무거워
-  사다리 한 칸에 69 분)
-- ◐ GASP 12 칸 잔차·FID/FVD/KVD (`exe/bench_vq_gasp.py` — 참조 패스에서 h5 까지
-  같이 떨구어 궤적을 두 번 굴리지 않는다). 9 칸 진행/완료
-- ◐ Spring-Gaus 4 칸(탄성만, 나머지 12 칸 미지원): mic 한 칸이 네 단계
-  (탐색·시간·잔차·시각품질) 전부 통과 — n_step=37, 15.50 FPS, 잔차 0.0333%,
-  FID 45.50 / FVD 51.03 / KVD 4.154. **단 피팅 중간 체크포인트(100 반복)로 잰
-  값이라 최종 체크포인트로 다시 잰다**
+- ☑ GASP 탄성·탄소성·점소성 11 칸 완료 (잔차 + FID/FVD/KVD + 영상).
+  mic 점소성만 남음 — 탐색이 중간에 죽어 재제출 (`gqlog5/q00`)
+- ◐ GASP 파괴 4 칸: **taichi 에 파괴 재질(CD-MPM)을 직접 붙였다**
+  (`exe/patch_ti_fracture.py`, material_fracture=5). n_grid 200 + v0 -6 + s0 800
+  으로 네 형상 탐색·측정 큐 진행 중 (`gqlog5/q01~q04`)
+- ◐ Spring-Gaus 16 칸: 소성·점소성·파괴를 **스프링 수준 확장으로 직접 붙였다**
+  (`exe/sg_materials.py` — 항복 변형률 초과분만큼 쉬는 길이를 늘리고, 파괴는
+  변형률 10% 넘은 스프링의 강성을 0 으로). mic·lego 피팅 완주(300 반복),
+  두 형상 × 네 물성 큐 진행 중 (`sgqlog4`). bread 99/300, wolf 진행 중
 
 ### C. 영상
 - ☑ 벤치 8 칸 (탄성) 궤적 영상 + 3DGS 렌더 영상
@@ -62,29 +64,36 @@ n_grid 200(dx 0.01) + 초기 하강속도 −6, 사다리 시작 s0=800. dx 0.02
 - ☑ GaMeS `--gs_type gs_flat` 학습 4 형상 30k (걸림돌 다섯: smplx, PIL np.byte,
   simple_knn 스텁→토치 대체, antialiasing 인자, 래스터라이저 반환값 개수)
 - ☑ `create_pseudomesh.py` → `vertices.pt` 4 개 (GASP 의 games_submodule 을 GaMeS 로 연결)
-- ◐ GASP 측정: taichi_elements MPM 을 우리 낙하 씬·0.5% 기준으로 (`exe/bench_gasp.py`).
-  탄성 4 형상 탐색 진행 중. 꼭짓점이 가우시안의 3 배라 한 칸이 GPU 하나를 쓴다.
-  물성 대응: 탄성→elastic, 탄소성→snow, 점소성→sand, **파괴는 미지원**
+- ☑ GASP 측정: taichi_elements MPM 을 우리 낙하 씬·0.5% 기준으로 (`exe/bench_gasp.py`).
+  꼭짓점이 가우시안의 3 배라 한 칸이 GPU 하나를 쓴다.
+  물성 대응: 탄성→elastic, 탄소성→snow, 점소성→sand, **파괴→우리가 붙인
+  material_fracture(=5, GF watermelon 의 CD-MPM 그대로)**
 
 ### E. Spring-Gaus 준비
 - ☑ MPM 기준 궤적을 10 시점 34 프레임으로 렌더 → `sgdata/<형상>/cam_*/###.png`
   + `camera.json` (피팅용)
-- ◐ 형상별 스프링 피팅 (옛 설정 N_FRAME=1 로 뜬 실행들이 빠지는 대로 `sgwait.sh`
-  가 고친 설정(N_FRAME=34)으로 네 형상을 다시 띄운다)
-- ☐ 같은 규약으로 측정 (서브스텝 손잡이는 `simulator.n_step`, 잔차는 스프링
-  에너지 + 접촉 벌점으로 따로 짠다)
+- ◐ 형상별 스프링 피팅: mic·lego 완주(동역학 300 반복), bread·wolf 진행 중.
+  학습 뒤 평가 단계의 segfault 는 open3d 호출이라 체크포인트에 영향 없다
+- ◐ 같은 규약으로 측정 (서브스텝 손잡이는 `simulator.n_step`, 잔차는 스프링
+  에너지 + 접촉 벌점). 파괴 칸은 피팅된 초기속도가 너무 부드러워 스프링이
+  하나도 끊기지 않았다 → 다른 방법과 같은 **v0 = -6** 을 넣는다
 
 ### F. 걸림돌 기록
+- **taichi 파괴 재질이 CUDA illegal address 로 죽던 진짜 원인**: 경화계수 줄
+  `h = 0.3` 이 `g2p2g` 와 `p2g` **양쪽에** 있고 주석 대소문자만 다르다
+  (Jelly/jelly). 한쪽만 고치면 실제로 쓰이는 p2g 에서 파괴 입자의
+  `h = exp(10(1-Jp))` 가 Jp=0 때문에 e^10 ≈ 2.2e4 가 되어 응력이 2 만 배로
+  터진다. Cam-Clay 수식도 커널 자체도 무죄였다 (단계 0 이분탐색으로 확인)
 - taichi 커널에 타입 주석 인자를 둘 수 없다 — `from __future__ import annotations`
   가 주석을 문자열로 만들어 `ti.i32` 를 못 읽는다. 인자 없이 닫힘으로 넘긴다
 - GASP 잔차는 **그쪽 정의 그대로**: p_vol=dx^3 균일(셀 개수로 안 나눔), E=2e6,
   nu=0.2, rho=1000, sand 는 로그변형 StVK, snow 는 h=exp(10(1-Jp)) 경화
 
-## 남은 순서 (2026-10-06 기준)
-1. GASP 시각품질 나머지 칸 + mic 점소성 탐색
-2. Spring-Gaus 피팅 4 개 완주 (동역학 단계가 300 반복 × 38 초 = 3.2 시간)
-3. 피팅이 끝난 형상부터 `exe/bench_sg.py --phase all` 재측정
-4. **단독 실행 창**에서 FPS 재측정: GASP 탄성 4 칸 + Spring-Gaus 4 칸
+## 남은 순서 (2026-10-06 11:30 기준, 64 칸 중 45 칸 완료)
+1. GASP mic 점소성 + 파괴 4 칸 (`gqlog5`, GPU 0·5·6)
+2. Spring-Gaus mic·lego 의 네 물성 7 칸 (`sgqlog4`, GPU 1~4)
+3. bread·wolf 피팅이 끝나면 그 두 형상 8 칸
+4. **단독 실행 창**에서 FPS 재측정: GASP 탄성 4 칸 + Spring-Gaus 탄성 4 칸
    (지금 수치는 다른 칸과 같이 돌며 잰 것이라 표에 넣지 않는다)
 5. `exe/bench_table.py` 로 64 칸 표 + 영상 모음
 
