@@ -52,6 +52,14 @@ ap.add_argument("--contact", type=float, default=0.0,
 ap.add_argument("--eps_break", type=float, default=0.10)
 ap.add_argument("--v0", type=float, default=-6.0, help="파괴: 초기 하강속도")
 ap.add_argument("--cam", type=int, default=0)
+# 두 덩이를 쌓으면 장면이 두 배로 높아지는데 그쪽 카메라는 물체에 바싹 붙어
+# 있어 위 덩이가 화면 밖(심지어 카메라 뒤)으로 나가고, 그러면 아래 덩이까지
+# 포함해 **전체가 백지로** 렌더된다 (실측: 간격 2.0 부터 흐려지고 3.68 에서 백지).
+# 그래서 카메라를 뒤로 빼고 위로 올린다.
+ap.add_argument("--cam_scale", type=float, default=0.0,
+                help="카메라를 원점에서 몇 배 멀리 (0 이면 점성 2.2, 나머지 1.0)")
+ap.add_argument("--cam_up", type=float, default=-999,
+                help="카메라를 수직으로 얼마나 올리는가 (기본: 쌓은 높이의 절반)")
 ap.add_argument("--fps", type=int, default=30)
 a = ap.parse_args()
 
@@ -96,6 +104,22 @@ sim, gaussians = get_simulator(arg, cfg, scene, cfg_stage=cfg.DYNAMIC,
                                init_velocity=load_velocity, load_g=None)
 sim.eval()
 BG = torch.ones(3, dtype=torch.float32, device="cuda")       # 흰 배경
+from lib.models.gaus.utils.graphics_utils import getWorld2View2   # noqa: E402
+import copy as _copy                                              # noqa: E402
+
+
+def pull_back(cam, scale, up):
+    """카메라를 원점에서 `scale` 배 멀리, 수직으로 `up` 만큼 올린 사본."""
+    if scale == 1.0 and up == 0.0:
+        return cam
+    c = _copy.copy(cam)
+    tr = np.array([0.0, 0.0, 0.0]); tr[2] = up
+    c.world_view_transform = torch.tensor(
+        getWorld2View2(cam.R, cam.T, tr, scale)).transpose(0, 1).cuda()
+    c.full_proj_transform = (c.world_view_transform.unsqueeze(0).bmm(
+        cam.projection_matrix.unsqueeze(0))).squeeze(0)
+    c.camera_center = c.world_view_transform.inverse()[3, :3]
+    return c
 print(f"[적재] {exp}\n       앵커 {sim.init_xyz.shape[0]}  가우시안 "
       f"{sim.init_xyz_all.shape[0]}  학습 n_step {int(sim.n_step)}", flush=True)
 
@@ -151,6 +175,11 @@ def duplicate(sim, gaussians, gap):
 
 
 NB = duplicate(sim, gaussians, a.gap) if a.scene == "viscous" else 0
+CAM_S = a.cam_scale or (2.2 if a.scene == "viscous" else 1.0)
+CAM_U = (a.cam_up if a.cam_up != -999 else
+         (float(sim.init_xyz[:, 2].max() - sim.init_xyz[:, 2].min()) * 0.25
+          if a.scene == "viscous" else 0.0))
+print(f"[카메라] 거리 {CAM_S} 배, 수직 이동 {CAM_U:.3f}", flush=True)
 
 # ------------------------------------------------------------- 2) 물성 확장
 sg_materials.attach(sim, MATOF[a.scene], eps_break=a.eps_break)
@@ -294,7 +323,7 @@ with torch.no_grad():
     gaussians._xyz = xyz_all
     for f in tqdm(range(FRAMES), desc="프레임"):
         state["frame"] = f
-        cam = scene.getEvalCameras(0, a.cam)
+        cam = pull_back(scene.getEvalCameras(0, a.cam), CAM_S, CAM_U)
         img = render(cam, gaussians, BG, override_color=gaussians.get_color,
                      debug=False, compute_cov3D_python=False,
                      convert_SHs_python=False)["render"]
