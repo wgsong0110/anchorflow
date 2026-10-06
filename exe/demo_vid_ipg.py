@@ -67,8 +67,9 @@ ap.add_argument("--fps", type=int, default=30)
 ap.add_argument("--only_fill", action="store_true", help="채우기만 하고 끝")
 ap.add_argument("--tag", default="", help="출력 이름에 붙일 꼬리말")
 ap.add_argument("--azim", type=float, default=-999,
-                help="카메라 방위각 (기본: 당기는 씬은 채우기 설정 +90 도 -- "
-                     "그래야 당기는 축이 화면 가로로 보인다)")
+                help="카메라 방위각 (기본 45 -- 옆모습, 당기는 축이 화면 가로)")
+ap.add_argument("--elev", type=float, default=15.0)
+ap.add_argument("--cam_r", type=float, default=7.0)
 # i-PG 의 본체는 **암시적 적분기**다. 명시로 돌리면 전진 오일러라 PG 와 같아져
 # i-PG 라고 부를 수 없다. 그래서 기본이 암시이고, 그쪽 설명서의 레시피대로
 # **큰 스텝**을 쓴다: dt_multiplier k 로 스텝을 k 배 키우고(프레임당 서브스텝은
@@ -132,10 +133,14 @@ cam = {k: fill[k] for k in ("default_camera_index", "init_azimuthm",
                             "init_elevation", "init_radius", "move_camera",
                             "delta_a", "delta_e", "delta_r") if k in fill}
 cam["move_camera"] = False
-if a.azim != -999:
-    cam["init_azimuthm"] = a.azim
-elif a.scene in ("plastic", "viscous"):
-    cam["init_azimuthm"] = float(cam.get("init_azimuthm", 0.0)) + 90.0
+# 궤도 카메라를 쓴다. 채우기 설정의 default_camera_index=0 이 남아 있으면 러너가
+# 학습 카메라 0 번을 그대로 써서 방위각이 먹지 않는다 (실측: 260 을 줘도 정면).
+# 방위 45 도는 +x 쪽에서 보는 옆모습이라 lego 의 긴 축(y)이 화면 가로가 된다.
+cam["default_camera_index"] = -1
+cam["init_azimuthm"] = a.azim if a.azim != -999 else 45.0
+cam["init_elevation"] = a.elev
+cam["init_radius"] = a.cam_r
+cam["delta_a"] = cam["delta_e"] = cam["delta_r"] = 0.0
 FLOOR = [q["point"][2] for q in fill["boundary_conditions"]
          if q["type"] == "surface_collider"]
 FLOOR = FLOOR[0] if FLOOR else 0.48
