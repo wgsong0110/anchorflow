@@ -184,13 +184,21 @@ def main():
     src = src.replace(old, old + "                self.camclay_pass()\n", 1)
 
     # 6) 파괴 재질은 더 무른 탄성계수를 쓴다 (GF watermelon 의 E=2e3).
-    old_h = ("            if self.material[\n"
-             "                    p] == self.material_elastic:  # Jelly, make it softer\n"
-             "                h = 0.3\n")
-    assert old_h in src, "h 설정 줄을 못 찾았다"
-    src = src.replace(old_h, old_h +
-                      "            if self.material[p] == self.material_fracture:\n"
-                      "                h = self.frac_h\n", 1)
+    #    ⚠ 이 줄은 g2p2g 와 p2g **양쪽에** 있고 주석 대소문자만 다르다
+    #    (Jelly / jelly). 한쪽만 고치면 실제로 쓰이는 p2g 에서
+    #    h = exp(10*(1-Jp)) = e^10 ≈ 2.2e4 가 되어 응력이 2 만 배로 터지고
+    #    입자가 격자를 벗어나 CUDA illegal address 로 죽는다 (실측).
+    n_h = 0
+    for word in ("Jelly", "jelly"):
+        old_h = ("            if self.material[\n"
+                 f"                    p] == self.material_elastic:  # {word}, make it softer\n"
+                 "                h = 0.3\n")
+        if old_h in src:
+            src = src.replace(old_h, old_h +
+                              "            if self.material[p] == self.material_fracture:\n"
+                              "                h = self.frac_h\n")
+            n_h += src.count("h = self.frac_h") - n_h
+    assert src.count("h = self.frac_h") >= 2, f"h 설정 줄을 {src.count('h = self.frac_h')} 곳만 고쳤다"
 
     open(SRC, "w").write(src)
     print(f"[적용] {SRC}  (원본은 {os.path.basename(SRC)}.orig)")
