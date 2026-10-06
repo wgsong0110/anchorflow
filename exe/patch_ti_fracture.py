@@ -56,14 +56,14 @@ FUNC = '''
         sig_new = sig
         if p_tr > p0:                       # 압축 꼭짓점
             Je = ti.sqrt(ti.max(-2.0 * p0 / kappa + 1.0, 1e-12))
-            s = Je ** (1.0 / 3.0)
+            s = ti.min(ti.max(Je ** (1.0 / 3.0), 0.05), 20.0)
             sig_new = ti.Matrix.identity(ti.f32, 3) * s
             self.Jp[p] = ti.min(ti.max(self.Jp[p]
                                        + ti.log(ti.max(J / Je, 1e-12)),
                                        -5.0), 5.0)
         elif p_tr < -p_min:                 # 인장 꼭짓점 -- 여기서 갈라진다
             Je = ti.sqrt(ti.max(2.0 * p_min / kappa + 1.0, 1e-12))
-            s = Je ** (1.0 / 3.0)
+            s = ti.min(ti.max(Je ** (1.0 / 3.0), 0.05), 20.0)
             sig_new = ti.Matrix.identity(ti.f32, 3) * s
             self.Jp[p] = ti.min(ti.max(self.Jp[p]
                                        + ti.log(ti.max(J / Je, 1e-12)),
@@ -74,7 +74,9 @@ FUNC = '''
                      * ti.sqrt(ti.max(-yp_h / ys_c, 0.0)) / s_norm)
             for i in ti.static(range(3)):
                 b = scale * s_hat[i] + Bm
-                sig_new[i, i] = ti.sqrt(ti.max(b, 1e-12))
+                # 특이값을 묶는다. 작아지면 1/J 가 폭주해 응력이 터진다.
+                sig_new[i, i] = ti.min(ti.max(ti.sqrt(ti.max(b, 1e-12)),
+                                              0.05), 20.0)
             # 항복면 경화. 수박을 깨뜨리는 것이 이 항이다.
             p_c = (p0 - p_min) * 0.5
             q_tr = ti.sqrt(1.5) * s_norm
@@ -107,12 +109,13 @@ FUNC = '''
             Jn *= sig_new[i, i]
             Bm2 += sig_new[i, i] * sig_new[i, i]
         Bm2 /= 3.0
-        Jn = ti.max(Jn, 1e-12)
+        Jn = ti.min(ti.max(Jn, 1e-3), 1e3)
         Jn23b = Jn ** (-2.0 / 3.0)
         tau = ti.Matrix.zero(ti.f32, 3, 3)
         for i in ti.static(range(3)):
-            tau[i, i] = (mu * Jn23b * (sig_new[i, i] * sig_new[i, i] - Bm2)
-                         + kappa / 2.0 * (Jn - 1.0 / Jn) * Jn)
+            _t = (mu * Jn23b * (sig_new[i, i] * sig_new[i, i] - Bm2)
+                  + kappa / 2.0 * (Jn - 1.0 / Jn) * Jn)
+            tau[i, i] = ti.min(ti.max(_t, -1e6), 1e6)   # 마지막 안전막
         return U @ tau @ U.transpose()
 
 '''
