@@ -42,7 +42,8 @@ ap.add_argument("--tol", type=float, default=5e-3)
 ap.add_argument("--tau", type=float, default=1e-3)
 ap.add_argument("--s0", type=int, default=400, help="사다리 시작 서브스텝")
 ap.add_argument("--max_mul", type=int, default=8)
-ap.add_argument("--phase", choices=["search", "time", "both"], default="both")
+ap.add_argument("--phase", choices=["search", "time", "both", "smoke"],
+                default="both")
 ap.add_argument("--out", default="")
 a = ap.parse_args()
 
@@ -53,11 +54,16 @@ a = ap.parse_args()
 # CD-MPM(Cam-Clay+Borden)을 taichi 솔버에 한 갈래 붙인다).
 MAT = {"elastic": "elastic", "elastoplastic": "snow",
        "viscoplastic": "sand", "fracture": "fracture"}
-if a.material == "fracture":                 # PG 파괴 칸과 같은 장면 설정
-    if a.n_grid == 100:
-        a.n_grid = 200
+if a.material == "fracture":                 # PG 파괴 칸과 같은 충돌 세기
     if a.v0 == 0.0:
         a.v0 = -6.0
+# ⚠ 파괴 칸의 **격자는 올리지 않는다** (PG 는 200 으로 올렸다). GASP 의 입자는
+# 가짜 메시 꼭짓점으로 **개수가 고정**이라, 격자를 2 배로 올리면
+#   (1) p_vol = dx^3 이라 입자 질량이 8 배 작아져 수치가 터지고, 터진 F 를
+#       taichi 의 svd 가 받으면 반복이 끝나지 않는다 (서브스텝 하나에서 영구 정지)
+#   (2) 서브스텝당 2.0 초 (격자 100 의 0.1 초) 라 궤적 하나에 15 시간이다
+# 둘 다 실측했다 (2026-10-06, 네 형상 전부 50 분 돌려 한 서브스텝도 못 나갔다).
+# 그래서 GASP 파괴는 **그쪽 격자(100)** 에 초기속도 -6 만 넣어 잰다.
 
 VP = f"{W}/gamesout/{a.shape}/pseudomesh_info/ours_30000/vertices.pt"
 if not os.path.exists(VP):
@@ -125,6 +131,24 @@ d = json.load(open(SJ)) if os.path.exists(SJ) else {}
 import joblock                                           # noqa: E402
 joblock.take(f"gasp_{a.shape}_{a.material}",
              out_exists=("s" in d and a.phase == "search"))
+
+if a.phase == "smoke":
+    # 한 궤적만 굴려 **터지지 않는지**와 **실제로 깨지는지**를 본다.
+    # 격자를 200 으로 올렸을 때 (p_vol = dx^3 이라 질량이 8 배 작아진다)
+    # 수치가 터지고 taichi 의 svd 가 끝나지 않는 일이 있었다 -- 대량 실행
+    # 전에 한 칸을 이렇게 먼저 본다.
+    X, tl = run(a.s0, a.frames)
+    c0 = X[0].mean(0)
+    d0 = float(np.linalg.norm(X[0].max(0) - X[0].min(0)))
+    for f in range(X.shape[0]):
+        bb = float(np.linalg.norm(X[f].max(0) - X[f].min(0)))
+        far = float((np.linalg.norm(X[f] - c0, axis=1) > 0.75 * d0).mean())
+        print(f"  [연기] 프레임 {f:2d} 지름 {bb / d0:.3f}배  멀어진 입자 "
+              f"{100 * far:.2f}%  유한 {bool(np.isfinite(X[f]).all())}",
+              flush=True)
+    print(f"[연기] s={a.s0} {X.shape[0]} 프레임 {tl:.1f}초 "
+          f"(프레임당 {tl / X.shape[0]:.2f}초)", flush=True)
+    raise SystemExit(0)
 
 if a.phase in ("search", "both"):
     Xc, sc_, hist = ladder(run, a.s0, a.tau, L, max_mul=a.max_mul)

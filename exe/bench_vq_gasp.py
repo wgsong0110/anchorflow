@@ -45,11 +45,16 @@ ap.add_argument("--cam", type=int, default=4, help="학습 카메라 번호 (공
 ap.add_argument("--win", type=int, default=16)
 ap.add_argument("--only_test", action="store_true")
 a = ap.parse_args()
-if a.material == "fracture":            # PG 파괴 칸과 같은 장면 설정
-    if a.n_grid == 100:
-        a.n_grid = 200
+if a.material == "fracture":                 # PG 파괴 칸과 같은 충돌 세기
     if a.v0 == 0.0:
         a.v0 = -6.0
+# ⚠ 파괴 칸의 **격자는 올리지 않는다** (PG 는 200 으로 올렸다). GASP 의 입자는
+# 가짜 메시 꼭짓점으로 **개수가 고정**이라, 격자를 2 배로 올리면
+#   (1) p_vol = dx^3 이라 입자 질량이 8 배 작아져 수치가 터지고, 터진 F 를
+#       taichi 의 svd 가 받으면 반복이 끝나지 않는다 (서브스텝 하나에서 영구 정지)
+#   (2) 서브스텝당 2.0 초 (격자 100 의 0.1 초) 라 궤적 하나에 15 시간이다
+# 둘 다 실측했다 (2026-10-06, 네 형상 전부 50 분 돌려 한 서브스텝도 못 나갔다).
+# 그래서 GASP 파괴는 **그쪽 격자(100)** 에 초기속도 -6 만 넣어 잰다.
 
 O = f"{W}/bench/{a.run}"
 SJ = f"{O}/gasp_{a.shape}_{a.material}.json"
