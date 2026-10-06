@@ -69,6 +69,7 @@ ap.add_argument("--tag", default="", help="출력 이름에 붙일 꼬리말")
 ap.add_argument("--azim", type=float, default=-999,
                 help="카메라 방위각 (기본 45 -- 옆모습, 당기는 축이 화면 가로)")
 ap.add_argument("--elev", type=float, default=15.0)
+ap.add_argument("--n_grid", type=int, default=0, help="0 이면 파괴 200, 나머지 100")
 ap.add_argument("--cam_r", type=float, default=7.0)
 # i-PG 의 본체는 **암시적 적분기**다. 명시로 돌리면 전진 오일러라 PG 와 같아져
 # i-PG 라고 부를 수 없다. 그래서 기본이 암시이고, 그쪽 설명서의 레시피대로
@@ -151,7 +152,8 @@ def build(frames, sub, with_floor, gravity, extra_bc=()):
                rotation_degree=[0.0], rotation_axis=[0],
                substep_dt=(1.0 / 60.0) / sub, frame_dt=1.0 / 60.0,
                frame_num=frames,
-               n_grid=(200 if a.scene == "fracture" else 100), grid_lim=2.0,
+               n_grid=(a.n_grid or (200 if a.scene == "fracture" else 100)),
+               grid_lim=2.0,
                E=2e6, nu=0.3, density=1000.0,
                g=[0.0, 0.0, -9.8 if gravity else 0.0],
                boundary_conditions=(
