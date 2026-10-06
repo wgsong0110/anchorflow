@@ -103,6 +103,13 @@ with open(f"{cfg.CHECKPOINTS_ROOT}/init_velocity_"
 sim, gaussians = get_simulator(arg, cfg, scene, cfg_stage=cfg.DYNAMIC,
                                init_velocity=load_velocity, load_g=None)
 sim.eval()
+
+# 그쪽 정적 단계는 가우시안을 **고정 크기 CONST_SCALE(0.003)** 로 학습한다
+# (train.py: GaussianModel_isotropic(const_scale=cfg.STATIC.CONST_SCALE)). 그런데
+# get_simulator 는 인자 없이 만들어 학습 안 된 _scaling(중앙값 0.035, 12 배)으로
+# 그린다 -- 그래서 모든 렌더가 녹은 덩어리처럼 나왔다 (실측). 학습 때와 같게 맞춘다.
+gaussians.const_scale = float(cfg.STATIC.CONST_SCALE)
+
 BG = torch.ones(3, dtype=torch.float32, device="cuda")       # 흰 배경
 from lib.models.gaus.utils.graphics_utils import getWorld2View2   # noqa: E402
 import copy as _copy                                              # noqa: E402
