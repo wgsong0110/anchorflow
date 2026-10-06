@@ -24,6 +24,14 @@
 붙인 방식은 표에 "우리 확장" 으로 표시한다: GASP 는 taichi_elements 에 CD-MPM
 파괴 재질을, Spring-Gaus 는 스프링 쉬는길이 소성과 강성 0 파괴를 넣었다.
 
+## ⚠ 2026-10-06 14:50 사용자 지시로 전부 중지 · 결과 아카이브
+돌던 것(GASP mic 점소성 1 칸 + 파괴 4 칸) 전부 정지, GPU 7 장 반납 없이 비움.
+아카이브: `r2:storage/result/anchorflow/bench-2026-10-06/` (540 MB — 칸별 json,
+표, 잔차, 영상 118 개, 로그 전부). 기록: `~/workspace/result/anchorflow/outputs.md`.
+**64 칸 중 59 칸 완료** (PG 16 · i-PG 16 · Spring-Gaus 16 · GASP 11).
+재개하려면: `g_q10.txt`(파괴 4 칸) · `g_q8.txt` 첫 줄(mic 점소성) 을 run_queue 로
+다시 띄우면 된다 -- 칸 잠금이 있어 중복 걱정은 없다.
+
 ## 상태
 
 ### A. FPS 표 (탄성)
