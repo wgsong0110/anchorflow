@@ -41,6 +41,9 @@ ap.add_argument("--material", default="elastic",
                          "fracture"])
 ap.add_argument("--eps_break", type=float, default=0.10,
                 help="파괴: 스프링이 끊기는 변형률 (유일한 자유 손잡이)")
+ap.add_argument("--v0", type=float, default=0.0,
+                help="초기 하강속도로 피팅된 초기속도를 덮어쓴다 "
+                     "(파괴 칸은 다른 방법과 같이 -6)")
 ap.add_argument("--run", default="run5")
 ap.add_argument("--exp", default="", help="피팅 결과 exp 디렉토리 (기본: 최신 af2_*)")
 ap.add_argument("--frames", type=int, default=10, help="비교할 충돌 프레임 수")
@@ -109,6 +112,15 @@ S_TRAIN = int(simulator.n_step)
 print(f"[시뮬] 앵커 {simulator.init_xyz.shape[0]}  가우시안 "
       f"{simulator.init_xyz_all.shape[0]}  학습 n_step {S_TRAIN}  "
       f"dt {simulator.dt}", flush=True)
+
+# 파괴 칸은 다른 방법(PG·i-PG·GASP)과 같은 충돌 세기를 써야 비교가 된다:
+# 피팅으로 얻은 초기속도는 너무 부드러워 어떤 스프링도 끊기지 않았다 (실측 --
+# 파괴 결과가 탄성과 한 자리까지 같게 나왔다). 같은 단위계(sgdata 가 MPM
+# 궤적을 렌더해 만든 것이라 좌표가 같다)이므로 -6 을 그대로 넣는다.
+if a.v0:
+    simulator.init_v = simulator.init_v.detach().clone()
+    simulator.init_v[:, 2] = a.v0
+    print(f"[초기속도] z 성분을 {a.v0} 로 덮어썼다", flush=True)
 
 X0 = simulator.init_xyz.detach().clone()
 L = float(torch.norm(X0.max(0).values - X0.min(0).values))
@@ -199,7 +211,9 @@ if a.phase in ("search", "all"):
              n_particles=int(X0.shape[0]),
              n_gaussians=int(simulator.init_xyz_all.shape[0]), L=L,
              s_conv=int(s_conv), s_train=S_TRAIN, frames=a.frames,
-             tol=a.tol, tau=a.tau, ladder=hist)
+             tol=a.tol, tau=a.tau, v0=a.v0,
+             eps_break=(a.eps_break if a.material == "fracture" else None),
+             ladder=hist)
     if best is None:
         print("[결과] 합격 설정 없음 (미달)", flush=True)
         d["s"] = None
