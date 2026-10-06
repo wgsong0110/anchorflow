@@ -19,6 +19,17 @@ SRC = "/home/dkta/work/taichi_elements/engine/mpm_solver.py"
 MARK = "material_fracture = 5"
 
 FUNC = '''
+    @ti.kernel
+    def camclay_pass(self):
+        """파괴 재질에만 Cam-Clay 되돌림을 적용하는 **별도 커널**.
+
+        p2g 안에 인라인하면 CUDA 스택이 넘쳐 illegal address 가 난다.
+        """
+        for p in range(self.n_particles[None]):
+            if self.material[p] == self.material_fracture:
+                U, sig, V = ti.svd(self.F[p])
+                self.F[p] = U @ self.camclay_sig(p, sig) @ V.transpose()
+
     @ti.func
     def camclay_sig(self, p, sig):
         """CD-MPM(GF watermelon) 의 비연계 Cam-Clay 되돌림 + 경화.
@@ -155,12 +166,9 @@ def main():
 
     # 5) SVD 직후에 Cam-Clay 되돌림만 하고, 응력은 **그쪽 식을 그대로** 쓴다.
     #    (응력까지 갈아끼우면 메모리 접근 패턴이 달라져 깨진다 -- 실측)
-    old = "            U, sig, V = ti.svd(self.F[p])\n"
-    assert old in src, "svd 줄을 못 찾았다"
-    src = src.replace(old, old +
-                      "            if self.material[p] == self.material_fracture:\n"
-                      "                sig = self.camclay_sig(p, sig)\n"
-                      "                self.F[p] = U @ sig @ V.transpose()\n", 1)
+    old = "                self.g2p(dt)\n"
+    assert old in src, "g2p 호출 줄을 못 찾았다"
+    src = src.replace(old, old + "                self.camclay_pass()\n", 1)
 
     # 6) 파괴 재질은 더 무른 탄성계수를 쓴다 (GF watermelon 의 E=2e3).
     old_h = ("            if self.material[\n"
