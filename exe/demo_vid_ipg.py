@@ -56,7 +56,7 @@ ap.add_argument("--out", default=f"{W}/demo")
 ap.add_argument("--frames", type=int, default=0, help="0 이면 씬 기본값")
 ap.add_argument("--s", type=int, default=0, help="0 이면 씬 기본값")
 ap.add_argument("--acc", type=float, default=0.0,
-                help="양쪽에 주는 가속도 (0 이면 소성 80, 점성 20)")
+                help="양쪽에 주는 가속도 (0 이면 소성 10, 점성 5)")
 ap.add_argument("--force_frames", type=int, default=0,
                 help="힘을 주는 프레임 수 (0 이면 소성 20, 점성 40)")
 ap.add_argument("--hold", type=int, default=30,
@@ -70,9 +70,10 @@ ap.add_argument("--azim", type=float, default=-999,
                 help="카메라 방위각 (기본 45 -- 옆모습, 당기는 축이 화면 가로)")
 ap.add_argument("--elev", type=float, default=15.0)
 ap.add_argument("--scale", type=float, default=0.0,
-                help="물체 크기 (0 이면 소성 0.6 -- 찢어진 조각이 벽까지 갈 공간, "
-                     "나머지 1.0). 채우기 캐시는 크기마다 따로 둔다")
+                help="물체 크기 (0 이면 1.0). 채우기 캐시는 크기마다 따로 둔다")
 ap.add_argument("--n_grid", type=int, default=0, help="0 이면 파괴 200, 나머지 100")
+ap.add_argument("--force_cam", default=f"{W}/demo/cam_gt.json",
+                help="화면 가로축을 읽을 카메라 (exe/dump_demo_cam.py 출력)")
 ap.add_argument("--cam_r", type=float, default=7.0)
 # i-PG 의 본체는 **암시적 적분기**다. 명시로 돌리면 전진 오일러라 PG 와 같아져
 # i-PG 라고 부를 수 없다. 그래서 기본이 암시이고, 그쪽 설명서의 레시피대로
@@ -124,7 +125,7 @@ def dup_model(src, dst, gap):
     return dst
 
 
-SCALE = a.scale or (0.6 if a.scene == "plastic" else 1.0)
+SCALE = a.scale or 1.0
 MP = f"{W}/pgmodel/{MODEL[a.shape]}"
 FILL = (f"{W}/pgfill_{a.shape}.npy" if SCALE == 1.0
         else f"{W}/pgfill_{a.shape}_s{SCALE:g}.npy")
@@ -143,11 +144,15 @@ cam["move_camera"] = False
 # 궤도 카메라를 쓴다. 채우기 설정의 default_camera_index=0 이 남아 있으면 러너가
 # 학습 카메라 0 번을 그대로 써서 방위각이 먹지 않는다 (실측: 260 을 줘도 정면).
 # 방위 45 도는 +x 쪽에서 보는 옆모습이라 lego 의 긴 축(y)이 화면 가로가 된다.
-cam["default_camera_index"] = -1
-cam["init_azimuthm"] = a.azim if a.azim != -999 else 45.0
-cam["init_elevation"] = a.elev
-cam["init_radius"] = a.cam_r
-cam["delta_a"] = cam["delta_e"] = cam["delta_r"] = 0.0
+# 카메라는 **원래 채우기 설정 그대로** 둔다 (학습 카메라 0 번 = 피팅 GT 와 같은 시점).
+# 좌우는 카메라를 돌려 맞추지 않고, 힘을 주는 영역과 방향을 이 카메라의 화면
+# 가로축에 맞춘다 (아래 --force_cam). --azim 을 줄 때만 궤도 카메라로 바꾼다.
+if a.azim != -999:
+    cam["default_camera_index"] = -1
+    cam["init_azimuthm"] = a.azim
+    cam["init_elevation"] = a.elev
+    cam["init_radius"] = a.cam_r
+    cam["delta_a"] = cam["delta_e"] = cam["delta_r"] = 0.0
 FLOOR = [q["point"][2] for q in fill["boundary_conditions"]
          if q["type"] == "surface_collider"]
 FLOOR = FLOOR[0] if FLOOR else 0.48
@@ -245,10 +250,15 @@ def principal(X):
 
 EXTRA = []
 if a.scene in ("plastic", "viscous"):
-    ax = principal(X0)
-    k = int(np.argmax(np.abs(ax)))              # lego 는 y (수평 긴 축)
-    e = np.zeros(3); e[k] = 1.0
-    ACC = a.acc or (80.0 if a.scene == "plastic" else 20.0)
+    # 화면 오른쪽 방향(월드) = 카메라 회전의 첫 열. 시뮬 공간은 모델 공간을
+    # 평행이동·양의 배율로만 옮기므로(회전 항등) 방향이 그대로다.
+    _c = json.load(open(a.force_cam))
+    r = np.array(_c["R"])[:, 0]
+    r[2] = 0.0
+    r = r / np.linalg.norm(r)
+    k = int(np.argmax(np.abs(r)))               # 상자는 축 정렬 -> 지배 축으로 고른다
+    e = r                                       # 오른쪽 절반이 받는 방향 (화면 오른쪽)
+    ACC = a.acc or (10.0 if a.scene == "plastic" else 5.0)
     NF = a.force_frames or (20 if a.scene == "plastic" else 40)
     # 입자 하나 질량. 채우기 한 칸(8e-6)×밀도로 잡았더니 실제 가속도가 45 배로
     # 나왔다 (미리보기 궤적에서 한 프레임에 절반이 0.49 이동 -> a≈3560, 의도 80).
@@ -261,11 +271,12 @@ if a.scene in ("plastic", "viscous"):
     if a.scene == "plastic":
         cut = float(np.median(X0[:, k]))        # 정확히 반으로
         t0 = 0.0
-        groups = [("왼쪽 절반", X0[:, k] < cut, -1.0),
-                  ("오른쪽 절반", X0[:, k] >= cut, +1.0)]
+        sr = float(np.sign(r[k]))                # 화면 오른쪽이 축 k 의 어느 쪽인가
+        groups = [("화면 왼쪽 절반", (X0[:, k] - cut) * sr < 0, -1.0),
+                  ("화면 오른쪽 절반", (X0[:, k] - cut) * sr >= 0, +1.0)]
         boxes = []
-        for sgn in (-1.0, +1.0):
-            pt = c.copy(); pt[k] = cut + sgn * BIG / 2
+        for sgn in (-1.0, +1.0):                 # sgn: 화면 기준 왼(-)/오른(+)
+            pt = c.copy(); pt[k] = cut + sgn * sr * BIG / 2
             sz = np.full(3, BIG); sz[k] = BIG / 2
             boxes.append((pt, sz, sgn))
     else:
@@ -285,8 +296,9 @@ if a.scene in ("plastic", "viscous"):
                       "start_time": t0,
                       "num_dt": int(round(NF / 60.0 / sub_dt))})
     for nm, mk, sgn in groups:
-        print(f"[힘] {nm}: 입자 {int(mk.sum())} 개, 방향 {('+' if sgn > 0 else '-')}"
-              f"{'xyz'[k]}, 가속도 {ACC} (F={F:.3e}, m={m_p:.1e}), "
+        print(f"[힘] {nm}: 입자 {int(mk.sum())} 개, 방향 화면 "
+              f"{'오른쪽' if sgn > 0 else '왼쪽'} {np.round(sgn * e, 3).tolist()}, "
+              f"가속도 {ACC} (F={F:.3e}, m={m_p:.1e}), "
               f"{t0 * 60:.0f}~{t0 * 60 + NF:.0f} 프레임", flush=True)
 
 

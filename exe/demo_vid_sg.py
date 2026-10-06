@@ -43,7 +43,7 @@ ap.add_argument("--out", default=f"{W}/demo")
 ap.add_argument("--frames", type=int, default=0)
 ap.add_argument("--n_step", type=int, default=0, help="프레임당 서브스텝")
 ap.add_argument("--acc", type=float, default=0.0,
-                help="양쪽에 주는 가속도 (0 이면 소성 80, 점성 20 -- i-PG 와 같은 값)")
+                help="양쪽에 주는 가속도 (0 이면 소성 10, 점성 5 -- i-PG 와 같은 값)")
 ap.add_argument("--force_frames", type=int, default=0,
                 help="힘을 주는 프레임 수 (0 이면 소성 20, 점성 40)")
 ap.add_argument("--rupture", type=float, default=0.5,
@@ -57,7 +57,7 @@ ap.add_argument("--v0", type=float, default=-6.0, help="파괴: 초기 하강속
 ap.add_argument("--cam", type=int, default=-1,
                 help="평가 카메라 번호 (기본: 당기는 씬은 4 -- 옆에서 봐서 당기는 "
                      "축이 화면 가로로 보인다, 파괴는 0)")
-ap.add_argument("--pg_cam", default="",
+ap.add_argument("--pg_cam", default=f"{W}/demo/cam_gt.json",
                 help="i-PG 시연과 같은 카메라 (exe/dump_demo_cam.py 출력). "
                      "주면 원본 3DGS 렌더를 이 카메라로 한다")
 ap.add_argument("--knn", type=int, default=8, help="가우시안 하나가 따르는 앵커 수")
@@ -324,33 +324,34 @@ NS = int(sim.n_step)
 # 점성: 아래 덩이 전체에 -A, 위 덩이 전체에 +A (붙기를 기다린 뒤).
 HD = None
 if a.scene in ("plastic", "viscous"):
+    # i-PG 시연과 **같은 카메라 파일**에서 화면 오른쪽 방향을 읽는다 (SG 장면
+    # 좌표 = 원본 모델 좌표라 같은 벡터를 그대로 쓴다). A = 화면 왼쪽 무리.
     g_ax = int(sim.ground_axis)
-    Xc = (X0 - X0.mean(0)).cpu().numpy()
-    Xc[:, g_ax] = 0.0
-    w, V = np.linalg.eigh(Xc.T @ Xc / len(Xc))
-    ax = V[:, int(np.argmax(w))]
-    ax[g_ax] = 0.0
-    ax = ax / (np.linalg.norm(ax) + 1e-12)
-    k = int(np.argmax(np.abs(ax)))
-    e = np.zeros(3); e[k] = 1.0                 # i-PG 와 같은 좌표축 방향
-    et = torch.as_tensor(e, dtype=torch.float32, device=X0.device)
+    r = np.array(json.load(open(a.pg_cam))["R"])[:, 0]
+    r[g_ax] = 0.0
+    r = r / np.linalg.norm(r)
+    k = int(np.argmax(np.abs(r)))
+    sr = float(np.sign(r[k]))
+    et = torch.as_tensor(r, dtype=torch.float32, device=X0.device)
     t = X0[:, k]
     if a.scene == "plastic":
         cut = t.median()
-        mA, mB = t < cut, t >= cut
+        mA = (t - cut) * sr < 0                  # 화면 왼쪽 절반
+        mB = ~mA
         hold = 0
     else:
         mA = torch.zeros_like(t, dtype=torch.bool); mA[:NB] = True
         mB = ~mA
         hold = a.hold
-    ACC = a.acc or (80.0 if a.scene == "plastic" else 20.0)
+    ACC = a.acc or (10.0 if a.scene == "plastic" else 5.0)
     NF = a.force_frames or (20 if a.scene == "plastic" else 40)
     # 그쪽 장면 단위가 i-PG 시뮬 공간보다 크다 (lego 지름 SG 6.2 / i-PG 1.34).
     # 같은 **상대** 운동이 되도록 가속도를 길이 비로 맞춘다.
     SCL = L / 1.3418
     HD = dict(mA=mA, mB=mB, aA=-et * ACC * SCL, aB=et * ACC * SCL,
               f0=hold, f1=hold + NF)
-    print(f"[힘] 축 {'xyz'[k]}  A {int(mA.sum())} / B {int(mB.sum())} 앵커  가속도 "
+    print(f"[힘] 화면 오른쪽 {np.round(r, 3).tolist()}  왼쪽 무리 {int(mA.sum())} / "
+          f"오른쪽 무리 {int(mB.sum())} 앵커  가속도 "
           f"{ACC} x 길이비 {SCL:.2f}  {hold}~{hold + NF} 프레임", flush=True)
 
 # --------------------------------------------- 4) 접촉 스프링 (두 덩이 붙이기)
