@@ -23,11 +23,49 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--ipg", required=True)
 a = ap.parse_args()
 
+# 0) 가속도 커널은 **모듈 최상위**에 둔다. 메서드 안에서 정의한 클로저 커널은
+#    모듈이 이미 적재된 뒤라 warp 가 "Failed to find forward kernel" 로 못 찾는
+#    일이 있었다 (PG 에서는 매번, i-PG 에서는 가끔).
+KERNEL = """
+@wp.kernel
+def af_apply_acc(
+    time: float, dt: float, state: MPMStateStruct, param: Impulse_modifier
+):
+    p = wp.tid()
+    if time >= param.start_time and time < param.end_time:
+        if param.mask[p] == 1:
+            state.particle_v[p] = state.particle_v[p] + param.force * dt
+
+
+"""
+
 # 1) 솔버 메서드
 sp = os.path.join(a.ipg, "mpm_solver_warp", "mpm_solver_warp.py")
 s = open(sp).read()
+# 예전 판(클로저 커널)을 걷어낸다
+old_closure = """
+        @wp.kernel
+        def apply_acc(
+            time: float, dt: float, state: MPMStateStruct, param: Impulse_modifier
+        ):
+            p = wp.tid()
+            if time >= param.start_time and time < param.end_time:
+                if param.mask[p] == 1:
+                    state.particle_v[p] = state.particle_v[p] + param.force * dt
+
+        self.pre_p2g_operations.append(apply_acc)
+"""
+if old_closure in s:
+    s = s.replace(old_closure, "\n        self.pre_p2g_operations.append(af_apply_acc)\n", 1)
+    print("[패치] 클로저 커널을 걷어냈다")
+if "def af_apply_acc" not in s:
+    cls = "class MPM_Simulator_WARP"
+    assert cls in s, "클래스 위치를 못 찾았다"
+    s = s.replace(cls, KERNEL + cls, 1)
+    print("[패치] 최상위 커널을 넣었다")
+open(sp, "w").write(s)
 if "def add_acceleration_on_particles" in s:
-    print("[패치] 솔버에 이미 있다")
+    print("[패치] 솔버 메서드는 이미 있다")
 else:
     anchor = "    def enforce_particle_velocity_translation("
     assert anchor in s, "삽입 위치를 못 찾았다"
@@ -55,17 +93,7 @@ else:
             device=device,
         )
         self.impulse_params.append(param)
-
-        @wp.kernel
-        def apply_acc(
-            time: float, dt: float, state: MPMStateStruct, param: Impulse_modifier
-        ):
-            p = wp.tid()
-            if time >= param.start_time and time < param.end_time:
-                if param.mask[p] == 1:
-                    state.particle_v[p] = state.particle_v[p] + param.force * dt
-
-        self.pre_p2g_operations.append(apply_acc)
+        self.pre_p2g_operations.append(af_apply_acc)
 
 '''
     s = s.replace(anchor, meth + anchor, 1)
