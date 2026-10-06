@@ -237,8 +237,10 @@ if a.scene in ("plastic", "viscous"):
     e = np.zeros(3); e[k] = 1.0
     ACC = a.acc or (80.0 if a.scene == "plastic" else 20.0)
     NF = a.force_frames or (20 if a.scene == "plastic" else 40)
-    dx = 2.0 / fill["particle_filling"]["n_grid"]
-    m_p = 1000.0 * dx ** 3                      # 입자 하나 질량 (채우기 한 칸)
+    # 입자 하나 질량. 채우기 한 칸(8e-6)×밀도로 잡았더니 실제 가속도가 45 배로
+    # 나왔다 (미리보기 궤적에서 한 프레임에 절반이 0.49 이동 -> a≈3560, 의도 80).
+    # 러너가 가우시안·채움 입자에 나눠 준 부피가 더 작다. 그 실측비로 맞춘다.
+    m_p = 1000.0 * (2.0 / fill["particle_filling"]["n_grid"]) ** 3 / 44.5
     F = ACC * m_p
     sub_dt = (1.0 / 60.0) / SUB
     c = X0.mean(0)
