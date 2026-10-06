@@ -75,6 +75,8 @@ ap.add_argument("--elev", type=float, default=15.0)
 ap.add_argument("--scale", type=float, default=0.0,
                 help="물체 크기 (0 이면 1.0). 채우기 캐시는 크기마다 따로 둔다")
 ap.add_argument("--n_grid", type=int, default=0, help="0 이면 파괴 200, 나머지 100")
+ap.add_argument("--v0", type=float, default=-12.0,
+                help="파괴: 초기 하강속도 (실제로 깨지게 벤치의 -6 보다 크게)")
 ap.add_argument("--force_cam", default=f"{W}/demo/cam_gt.json",
                 help="화면 가로축을 읽을 카메라 (exe/dump_demo_cam.py 출력)")
 ap.add_argument("--cam_r", type=float, default=7.0)
@@ -189,7 +191,8 @@ def build(frames, sub, with_floor, gravity, extra_bc=()):
                particle_filling=fill["particle_filling"])
     cfg.update(MAT[a.scene]); cfg.update(cam)
     if a.scene == "fracture":
-        cfg["init_velocity"] = [0.0, 0.0, -6.0]
+        # i-PG 러너는 exe/patch_ipg_initv.py 를 적용해야 이 값을 읽는다
+        cfg["init_velocity"] = [0.0, 0.0, a.v0]
     return cfg
 
 
