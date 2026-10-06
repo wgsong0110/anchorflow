@@ -94,6 +94,16 @@ n_grid 200(dx 0.01) + 초기 하강속도 −6, 사다리 시작 s0=800. dx 0.02
   (Jelly/jelly). 한쪽만 고치면 실제로 쓰이는 p2g 에서 파괴 입자의
   `h = exp(10(1-Jp))` 가 Jp=0 때문에 e^10 ≈ 2.2e4 가 되어 응력이 2 만 배로
   터진다. Cam-Clay 수식도 커널 자체도 무죄였다 (단계 0 이분탐색으로 확인)
+- **2026-10-06 12:21 에 PBS 잡이 교체되며 돌던 것 전부가 죽었다** (GASP 탐색 5 개,
+  SG 피팅 2 개). 새 잡은 같은 노드·7 장으로 바로 받았다. 교훈:
+  - GASP 탐색은 중간 산출물이 없어 **처음부터** 다시 돌려야 한다 (칸당 수 시간)
+  - Spring-Gaus 동역학 단계는 **이어서 돌릴 수 있다**:
+    `train.py --cfg <shape>_rs.yaml --dy_reload <exp>/checkpoints_dynamic/checkpoint/Spring_Mass.pth.tar`
+    + 그 설정에 `DYNAMIC.ITERATIONS: 100` (남은 반복 수). 정적·속도 단계는
+    `CHECKPOINTS_ROOT` 에 산출물이 있으면 train.py 가 알아서 건너뛴다
+    (train.py 804~835 줄). 체크포인트는 SAVE_INTERVAL=100 이라 100 단위로 남는다
+  - 잠금 파일(`bench/.locks/`)은 프로세스가 죽으면 남는다 -- `joblock` 이 죽은
+    pid 를 보고 빼앗지만, 큐를 다시 띄울 때 한 번 치워 주는 게 깔끔하다
 - taichi 커널에 타입 주석 인자를 둘 수 없다 — `from __future__ import annotations`
   가 주석을 문자열로 만들어 `ti.i32` 를 못 읽는다. 인자 없이 닫힘으로 넘긴다
 - GASP 잔차는 **그쪽 정의 그대로**: p_vol=dx^3 균일(셀 개수로 안 나눔), E=2e6,
