@@ -8,10 +8,13 @@
         반대 방향 힘을 준다 (점성 실이 늘어난다).
   파괴  위에서 바닥으로 던진다 (초기 하강속도 -6, 격자 200).
 
-구동은 i-PG 에 이미 들어 있는 **하드 Dirichlet 손잡이**(`AF_H_SCEN`)로 한다 --
-반경 R 안의 격자 속도를 명령값으로 박으므로 암시적 솔버의 Newton 반복이
-구속을 풀어 버리지 않는다. 손잡이 입자 번호는 **공식 채우기 캐시**에서 고르므로
-(같은 캐시를 읽어 돌리니 번호가 일치한다) 렌더가 가능한 실행 그대로다.
+구동은 **힘**이다 (속도를 박지 않는다). 그쪽 러너의 `particle_impulse` 경계조건을
+그대로 쓴다 -- 상자 안 입자를 **처음 위치로 한 번 골라** 그 입자들에 정해진 시간
+동안 같은 힘을 준다(`v += F/m·dt`). 소성은 주축 기준 왼쪽 절반 전체에 왼쪽
+힘, 오른쪽 절반 전체에 오른쪽 힘을 준다. 점성은 아래 덩이 전체와 위 덩이 전체에
+반대 방향 힘을 준다. 힘은 가속도 A 로 정하고 F = A·m 으로 넣는다(m 은 채우기
+격자 한 칸 부피 × 밀도). 암시 적분에서도 힘이 시간에 대해 그대로 적분되도록
+impulse_scale 은 1 이다 (러너가 매 스텝 실제 dt 로 곱한다).
 
 점성 씬은 물체가 둘이라 가우시안도 둘이어야 한다. 그래서 3DGS ply 를 수직으로
 옮겨 복제한 모델을 만들고(`--dup`), 거기에 공식 채우기를 다시 돌린다.
@@ -36,8 +39,11 @@ MODEL = {"wolf": "wolf_whitebg-trained", "mic": "mic_whitebg-trained",
          "lego": "lego_whitebg-trained", "bread": "bread-trained"}
 # 물성은 벤치와 **같은 값**을 쓴다 (exe/bench_vq.py 의 MAT)
 MAT = {"plastic": dict(material="plasticine", yield_stress=1e4),
-       "viscous": dict(material="foam", yield_stress=5e3,
-                       plastic_viscosity=10.0),
+       # 점성은 **흘러내려야** 한다. 벤치 값(항복 5e3)은 제 무게(ρgh≈5e3)를
+       # 겨우 버텨 강체처럼 보였다. 항복을 무게 응력의 1/20 로 낮추고 점성을
+       # 키워 꿀처럼 천천히 처지게 한다.
+       "viscous": dict(material="foam", E=2e5, yield_stress=250.0,
+                       plastic_viscosity=50.0),
        "fracture": dict(material="watermelon", friction_angle=45.0, beta=1.0,
                         xi=3.0, hardening=1.0, alpha_0=-0.04,
                         E=2e3, nu=0.38, density=1.0, g=[0.0, 0.0, -15.0])}
@@ -49,11 +55,12 @@ ap.add_argument("--method", default="ipg", choices=["ipg", "pg"])
 ap.add_argument("--out", default=f"{W}/demo")
 ap.add_argument("--frames", type=int, default=0, help="0 이면 씬 기본값")
 ap.add_argument("--s", type=int, default=0, help="0 이면 씬 기본값")
-ap.add_argument("--pull", type=float, default=0.25, help="손잡이 속도 (단위/초)")
+ap.add_argument("--acc", type=float, default=0.0,
+                help="양쪽에 주는 가속도 (0 이면 소성 80, 점성 20)")
+ap.add_argument("--force_frames", type=int, default=0,
+                help="힘을 주는 프레임 수 (0 이면 소성 20, 점성 40)")
 ap.add_argument("--hold", type=int, default=30,
                 help="점성: 붙기를 기다리는 프레임 수")
-ap.add_argument("--radius", type=float, default=0.0,
-                help="손잡이 반경 (0 이면 물체 길이의 0.3 배)")
 ap.add_argument("--gap", type=float, default=0.15,
                 help="점성: 두 물체 사이 간격 (물체 높이 대비)")
 ap.add_argument("--fps", type=int, default=30)
@@ -134,7 +141,7 @@ FLOOR = [q["point"][2] for q in fill["boundary_conditions"]
 FLOOR = FLOOR[0] if FLOOR else 0.48
 
 
-def build(frames, sub, with_floor, gravity):
+def build(frames, sub, with_floor, gravity, extra_bc=()):
     cfg = dict(opacity_threshold=fill.get("opacity_threshold", 0.02),
                rotation_degree=[0.0], rotation_axis=[0],
                substep_dt=(1.0 / 60.0) / sub, frame_dt=1.0 / 60.0,
@@ -148,7 +155,8 @@ def build(frames, sub, with_floor, gravity):
                         "point": [1.0, 1.0, FLOOR],
                         "normal": [0.0, 0.0, 1.0], "surface": "sticky",
                         "friction": 0.0, "start_time": 0,
-                        "end_time": 1000.0}] if with_floor else [])),
+                        "end_time": 1000.0}] if with_floor else [])
+                   + list(extra_bc)),
                mpm_space_vertical_upward_axis=[0, 0, 1],
                mpm_space_viewpoint_center=fill.get(
                    "mpm_space_viewpoint_center", [1, 1, 1]),
@@ -164,7 +172,7 @@ GRAV = a.scene != "plastic"          # 소성은 순수 인장 (중력·바닥 �
 FLOOR_ON = a.scene != "plastic"
 
 
-def run(cfg, od, scen=None, radius=0.0, render=True):
+def run(cfg, od, render=True):
     shutil.rmtree(od, ignore_errors=True)
     os.makedirs(od, exist_ok=True)
     cp = f"{od}.json"
@@ -174,11 +182,7 @@ def run(cfg, od, scen=None, radius=0.0, render=True):
     env = dict(os.environ, WARP_CACHE_PATH=wc, PYTHONUTF8="1",
                PYTHONIOENCODING="utf-8", AF_PGFILL_NPY=FILL)
     env.pop("AF_PARTICLES_NPY", None)            # 공식 채우기를 쓴다
-    if scen:
-        env["AF_H_SCEN"] = scen
-        env["AF_H_R"] = str(radius)
-    else:
-        env.pop("AF_H_SCEN", None)
+    env.pop("AF_H_SCEN", None)                   # 속도 손잡이는 쓰지 않는다
     cmd = ["python", "-u", "gs_simulation.py", "--model_path", MP,
            "--config", cp, "--output_path", od, "--output_h5"]
     if render:
@@ -186,7 +190,7 @@ def run(cfg, od, scen=None, radius=0.0, render=True):
     if a.method == "ipg" and not a.explicit:
         cmd += ["--implicit", "--solver", a.solver,
                 "--dt_multiplier", str(a.dt_mult),
-                "--impulse_scale", str(1.0 / a.dt_mult)]
+                "--impulse_scale", "1.0"]
     r = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True)
     n = len(glob.glob(f"{od}/*.png"))
     print(f"[실행] {os.path.basename(od)} png {n} 장", flush=True)
@@ -226,38 +230,53 @@ def principal(X):
     return ax / (np.linalg.norm(ax) + 1e-12)
 
 
-SCEN = None
-R = a.radius
+EXTRA = []
 if a.scene in ("plastic", "viscous"):
     ax = principal(X0)
-    ax = ax * np.sign(ax[int(np.argmax(np.abs(ax)))])      # 부호 고정
-    t = X0 @ ax
+    k = int(np.argmax(np.abs(ax)))              # lego 는 y (수평 긴 축)
+    e = np.zeros(3); e[k] = 1.0
+    ACC = a.acc or (80.0 if a.scene == "plastic" else 20.0)
+    NF = a.force_frames or (20 if a.scene == "plastic" else 40)
+    dx = 2.0 / fill["particle_filling"]["n_grid"]
+    m_p = 1000.0 * dx ** 3                      # 입자 하나 질량 (채우기 한 칸)
+    F = ACC * m_p
+    sub_dt = (1.0 / 60.0) / SUB
+    c = X0.mean(0)
+    BIG = 4.0                                   # 다른 축은 전부 덮는다
     if a.scene == "plastic":
-        # 한 물체를 반으로: 주축 양 끝 입자를 손잡이로 잡고 반대로 당긴다
-        hid = np.array([int(np.argmin(t)), int(np.argmax(t))])
-        v = np.stack([-ax, ax]) * a.pull                   # [2,3]
-        vel = np.repeat(v[None], FRAMES, 0)                # [T,2,3]
-        R = R or 0.3 * float(t.max() - t.min())
+        cut = float(np.median(X0[:, k]))        # 정확히 반으로
+        t0 = 0.0
+        groups = [("왼쪽 절반", X0[:, k] < cut, -1.0),
+                  ("오른쪽 절반", X0[:, k] >= cut, +1.0)]
+        boxes = []
+        for sgn in (-1.0, +1.0):
+            pt = c.copy(); pt[k] = cut + sgn * BIG / 2
+            sz = np.full(3, BIG); sz[k] = BIG / 2
+            boxes.append((pt, sz, sgn))
     else:
-        # 두 덩이: 아래쪽에서 하나, 위쪽에서 하나 잡고 **붙은 뒤** 반대로 당긴다
         zmid = 0.5 * (X0[:, 2].min() + X0[:, 2].max())
-        lo = np.where(X0[:, 2] < zmid)[0]
-        hi = np.where(X0[:, 2] >= zmid)[0]
-        hid = np.array([int(lo[np.argmin(t[lo])]), int(hi[np.argmax(t[hi])])])
-        v = np.stack([-ax, ax]) * a.pull
-        vel = np.zeros((FRAMES, 2, 3), np.float32)
-        vel[a.hold:] = v                                   # 기다린 뒤 당긴다
-        R = R or 0.22 * float(t.max() - t.min())
-    SCEN = f"{OD}_scen.npz"
-    np.savez(SCEN, hid=hid.astype(np.int64), vel=vel.astype(np.float32))
-    print(f"[손잡이] 입자 {hid.tolist()}  위치 {X0[hid].round(3).tolist()}  "
-          f"반경 {R:.3f}  주축 {ax.round(3)}  속도 {a.pull}"
-          + (f"  (앞 {a.hold} 프레임은 대기)" if a.scene == "viscous" else ""),
-          flush=True)
+        t0 = a.hold / 60.0
+        groups = [("아래 덩이", X0[:, 2] < zmid, -1.0),
+                  ("위 덩이", X0[:, 2] >= zmid, +1.0)]
+        boxes = []
+        for sgn in (-1.0, +1.0):
+            pt = c.copy(); pt[2] = zmid + sgn * BIG / 2
+            sz = np.full(3, BIG); sz[2] = BIG / 2
+            boxes.append((pt, sz, sgn))
+    for pt, sz, sgn in boxes:
+        EXTRA.append({"type": "particle_impulse",
+                      "force": (sgn * F * e).tolist(),
+                      "point": pt.tolist(), "size": sz.tolist(),
+                      "start_time": t0,
+                      "num_dt": int(round(NF / 60.0 / sub_dt))})
+    for nm, mk, sgn in groups:
+        print(f"[힘] {nm}: 입자 {int(mk.sum())} 개, 방향 {('+' if sgn > 0 else '-')}"
+              f"{'xyz'[k]}, 가속도 {ACC} (F={F:.3e}, m={m_p:.1e}), "
+              f"{t0 * 60:.0f}~{t0 * 60 + NF:.0f} 프레임", flush=True)
 
 
 # ------------------------------------------------------------------- 5) 실행
-n = run(build(FRAMES, SUB, FLOOR_ON, GRAV), OD, scen=SCEN, radius=R)
+n = run(build(FRAMES, SUB, FLOOR_ON, GRAV, EXTRA), OD)
 if n:
     mp4 = OD + ".mp4"
     subprocess.run(["python", "-u", f"{W}/anchorflow/exe/pngs2mp4.py",
