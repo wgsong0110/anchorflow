@@ -69,6 +69,9 @@ ap.add_argument("--tag", default="", help="출력 이름에 붙일 꼬리말")
 ap.add_argument("--azim", type=float, default=-999,
                 help="카메라 방위각 (기본 45 -- 옆모습, 당기는 축이 화면 가로)")
 ap.add_argument("--elev", type=float, default=15.0)
+ap.add_argument("--scale", type=float, default=0.0,
+                help="물체 크기 (0 이면 소성 0.6 -- 찢어진 조각이 벽까지 갈 공간, "
+                     "나머지 1.0). 채우기 캐시는 크기마다 따로 둔다")
 ap.add_argument("--n_grid", type=int, default=0, help="0 이면 파괴 200, 나머지 100")
 ap.add_argument("--cam_r", type=float, default=7.0)
 # i-PG 의 본체는 **암시적 적분기**다. 명시로 돌리면 전진 오일러라 PG 와 같아져
@@ -121,11 +124,14 @@ def dup_model(src, dst, gap):
     return dst
 
 
+SCALE = a.scale or (0.6 if a.scene == "plastic" else 1.0)
 MP = f"{W}/pgmodel/{MODEL[a.shape]}"
-FILL = f"{W}/pgfill_{a.shape}.npy"
+FILL = (f"{W}/pgfill_{a.shape}.npy" if SCALE == 1.0
+        else f"{W}/pgfill_{a.shape}_s{SCALE:g}.npy")
 if a.scene == "viscous":
     MP = dup_model(MP, f"{W}/pgmodel/{MODEL[a.shape]}-x2", a.gap)
-    FILL = f"{W}/pgfill_{a.shape}_x2.npy"
+    FILL = (f"{W}/pgfill_{a.shape}_x2.npy" if SCALE == 1.0
+            else f"{W}/pgfill_{a.shape}_x2_s{SCALE:g}.npy")
 
 
 # ------------------------------------------------------------------ 2) 설정
@@ -167,7 +173,7 @@ def build(frames, sub, with_floor, gravity, extra_bc=()):
                mpm_space_vertical_upward_axis=[0, 0, 1],
                mpm_space_viewpoint_center=fill.get(
                    "mpm_space_viewpoint_center", [1, 1, 1]),
-               show_hint=False, scale=fill.get("scale", 1.0),
+               show_hint=False, scale=SCALE,
                particle_filling=fill["particle_filling"])
     cfg.update(MAT[a.scene]); cfg.update(cam)
     if a.scene == "fracture":
