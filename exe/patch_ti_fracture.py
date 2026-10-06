@@ -25,7 +25,9 @@ FUNC = '''
 
         p2g 안에 인라인하면 CUDA 스택이 넘쳐 illegal address 가 난다.
         """
-        for p in range(self.n_particles[None]):
+        # 입자 필드는 동적 SNode 라 range() 로 색인하면 주소가 어긋난다.
+        # 그쪽 copy_dynamic 처럼 구조 for 로 돌아야 한다.
+        for p in self.x:
             if self.material[p] == self.material_fracture:
                 U, sig, V = ti.svd(self.F[p])
                 self.F[p] = U @ self.camclay_sig(p, sig) @ V.transpose()
