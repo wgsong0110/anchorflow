@@ -29,8 +29,7 @@ FUNC = '''
         # 그쪽 copy_dynamic 처럼 구조 for 로 돌아야 한다.
         for p in self.x:
             if self.material[p] == self.material_fracture:
-                U, sig, V = ti.svd(self.F[p])
-                self.F[p] = U @ self.camclay_sig(p, sig) @ V.transpose()
+                __BODY__
 
     @ti.func
     def camclay_sig(self, p, sig):
@@ -118,6 +117,16 @@ FUNC = '''
 '''
 
 
+# 어디서 깨지는지 가르기 위한 단계 (AF_FRAC_STAGE)
+STAGE = {
+    "0": "self.Jp[p] = self.Jp[p]        # 아무것도 안 한다",
+    "1": ("U, sig, V = ti.svd(self.F[p])\n"
+          "                self.F[p] = U @ sig @ V.transpose()   # 그대로 되쓰기"),
+    "2": ("U, sig, V = ti.svd(self.F[p])\n"
+          "                self.F[p] = U @ self.camclay_sig(p, sig) @ V.transpose()"),
+}
+
+
 def main():
     if os.environ.get("AF_REPATCH") and os.path.exists(SRC + ".orig"):
         shutil.copy(SRC + ".orig", SRC)        # 원본으로 되돌리고 다시 붙인다
@@ -155,9 +164,11 @@ def main():
         self.frac_h = _E / self.E     # 파괴 재질은 더 무르게 (GF E=2e3)
 ''', 1)
 
-    # 3) 되돌림 + 응력 함수
+    # 3) 되돌림 함수 (단계별로 본문을 갈아끼운다)
+    body = STAGE[os.environ.get("AF_FRAC_STAGE", "2")]
     src = src.replace("    @ti.func\n    def sand_projection(",
-                      FUNC + "    @ti.func\n    def sand_projection(", 1)
+                      FUNC.replace("__BODY__", body)
+                      + "    @ti.func\n    def sand_projection(", 1)
 
     # 4) 씨뿌리기: logJp 는 0 에서 시작한다
     src = src.replace("            if material == self.material_sand:\n"
