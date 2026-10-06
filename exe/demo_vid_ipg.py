@@ -59,6 +59,9 @@ ap.add_argument("--gap", type=float, default=0.15,
 ap.add_argument("--fps", type=int, default=30)
 ap.add_argument("--only_fill", action="store_true", help="채우기만 하고 끝")
 ap.add_argument("--tag", default="", help="출력 이름에 붙일 꼬리말")
+ap.add_argument("--azim", type=float, default=-999,
+                help="카메라 방위각 (기본: 당기는 씬은 채우기 설정 +90 도 -- "
+                     "그래야 당기는 축이 화면 가로로 보인다)")
 # i-PG 의 본체는 **암시적 적분기**다. 명시로 돌리면 전진 오일러라 PG 와 같아져
 # i-PG 라고 부를 수 없다. 그래서 기본이 암시이고, 그쪽 설명서의 레시피대로
 # **큰 스텝**을 쓴다: dt_multiplier k 로 스텝을 k 배 키우고(프레임당 서브스텝은
@@ -122,6 +125,10 @@ cam = {k: fill[k] for k in ("default_camera_index", "init_azimuthm",
                             "init_elevation", "init_radius", "move_camera",
                             "delta_a", "delta_e", "delta_r") if k in fill}
 cam["move_camera"] = False
+if a.azim != -999:
+    cam["init_azimuthm"] = a.azim
+elif a.scene in ("plastic", "viscous"):
+    cam["init_azimuthm"] = float(cam.get("init_azimuthm", 0.0)) + 90.0
 FLOOR = [q["point"][2] for q in fill["boundary_conditions"]
          if q["type"] == "surface_collider"]
 FLOOR = FLOOR[0] if FLOOR else 0.48
@@ -206,9 +213,17 @@ if a.only_fill:
 
 # -------------------------------------------------------------- 4) 손잡이 명령
 def principal(X):
+    """**수평** 주축 (수직 성분은 뺀다).
+
+    그냥 주축을 쓰면 쌓아 둔 두 덩이(점성 씬)에서 세로축이 잡혀 손잡이가 둘을
+    위아래로 떼어 놓는다 -- 붙기를 기다리는 씬이 성립하지 않는다.
+    """
     C = X - X.mean(0)
+    C[:, 2] = 0.0
     w, V = np.linalg.eigh(C.T @ C / len(X))
-    return V[:, int(np.argmax(w))]
+    ax = V[:, int(np.argmax(w))]
+    ax[2] = 0.0
+    return ax / (np.linalg.norm(ax) + 1e-12)
 
 
 SCEN = None
