@@ -58,6 +58,11 @@ ap.add_argument("--gap", type=float, default=0.15,
                 help="점성: 두 물체 사이 간격 (물체 높이 대비)")
 ap.add_argument("--fps", type=int, default=30)
 ap.add_argument("--only_fill", action="store_true", help="채우기만 하고 끝")
+# i-PG 를 **암시**로 돌리면 프레임당 10 분(s=1393) 이라 시연에 못 쓴다 -- 벤치의
+# i-PG 16 칸도 같은 이유로 명시 모드다 (암시 newton_gmres 는 s=100 에서 프레임당
+# 597 초, 한프레임 오차 13%). 그래서 기본은 명시다.
+ap.add_argument("--implicit", action="store_true",
+                help="i-PG 암시 적분기 (매우 느리다)")
 a = ap.parse_args()
 
 REPO = {"pg": f"{W}/PhysGaussian", "ipg": f"{W}/i-physgaussian"}[a.method]
@@ -164,7 +169,7 @@ def run(cfg, od, scen=None, radius=0.0, render=True):
            "--config", cp, "--output_path", od, "--output_h5"]
     if render:
         cmd += ["--render_img", "--white_bg"]
-    if a.method == "ipg":
+    if a.method == "ipg" and a.implicit:
         cmd += ["--implicit", "--solver", "newton_gmres"]
     r = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True)
     n = len(glob.glob(f"{od}/*.png"))
