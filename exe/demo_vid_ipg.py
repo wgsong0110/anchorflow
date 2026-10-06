@@ -58,6 +58,7 @@ ap.add_argument("--gap", type=float, default=0.15,
                 help="점성: 두 물체 사이 간격 (물체 높이 대비)")
 ap.add_argument("--fps", type=int, default=30)
 ap.add_argument("--only_fill", action="store_true", help="채우기만 하고 끝")
+ap.add_argument("--tag", default="", help="출력 이름에 붙일 꼬리말")
 # i-PG 의 본체는 **암시적 적분기**다. 명시로 돌리면 전진 오일러라 PG 와 같아져
 # i-PG 라고 부를 수 없다. 그래서 기본이 암시이고, 그쪽 설명서의 레시피대로
 # **큰 스텝**을 쓴다: dt_multiplier k 로 스텝을 k 배 키우고(프레임당 서브스텝은
@@ -75,7 +76,8 @@ FRAMES = a.frames or {"plastic": 90, "viscous": 120, "fracture": 60}[a.scene]
 # 벤치에서 그 물성이 통과한 서브스텝을 그대로 쓴다 (lego: 소성 1393, 점성 1854,
 # 파괴는 기준 미달이라 수렴 실행값 6400)
 SUB = a.s or {"plastic": 1393, "viscous": 1854, "fracture": 6400}[a.scene]
-OD = f"{a.out}/{a.method}_{a.shape}_{a.scene}"
+OD = (f"{a.out}/{a.method}_{a.shape}_{a.scene}"
+      + (f"_{a.tag}" if a.tag else ""))
 os.makedirs(a.out, exist_ok=True)
 
 
@@ -242,7 +244,7 @@ if a.scene in ("plastic", "viscous"):
 # ------------------------------------------------------------------- 5) 실행
 n = run(build(FRAMES, SUB, FLOOR_ON, GRAV), OD, scen=SCEN, radius=R)
 if n:
-    mp4 = f"{a.out}/{a.method}_{a.shape}_{a.scene}.mp4"
+    mp4 = OD + ".mp4"
     subprocess.run(["python", "-u", f"{W}/anchorflow/exe/pngs2mp4.py",
                     "--dir", OD, "--out", mp4, "--fps", str(a.fps)],
                    cwd=f"{W}/anchorflow")
