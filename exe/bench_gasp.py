@@ -37,6 +37,7 @@ ap.add_argument("--frames", type=int, default=10)
 ap.add_argument("--skip", type=int, default=24)
 ap.add_argument("--floor", type=float, default=0.1)
 ap.add_argument("--n_grid", type=int, default=100)
+ap.add_argument("--v0", type=float, default=0.0, help="초기 z 속도")
 ap.add_argument("--tol", type=float, default=5e-3)
 ap.add_argument("--tau", type=float, default=1e-3)
 ap.add_argument("--s0", type=int, default=400, help="사다리 시작 서브스텝")
@@ -48,16 +49,15 @@ a = ap.parse_args()
 # taichi_elements 의 MPM 이 가진 재질: elastic / sand / snow / water.
 # 우리 축(탄성·탄소성·점소성·파괴)과 맞는 것만 잰다 -- 나머지는 **미지원**이다
 # (그쪽에 그 구성식이 없다. 임의로 다른 재질을 갖다 붙이면 비교가 아니다).
-MAT = {"elastic": "elastic", "elastoplastic": "snow", "viscoplastic": "sand"}
-if a.material not in MAT:
-    print(f"[미지원] GASP(taichi_elements)에는 {a.material} 구성식이 없다",
-          flush=True)
-    if a.out:
-        json.dump(dict(method="gasp", shape=a.shape, material=a.material,
-                       unsupported=True,
-                       reason="taichi_elements MPM 에 해당 구성식 없음"),
-                  open(a.out, "w"), indent=1)
-    raise SystemExit(0)
+# 파괴는 그쪽에 없어서 **우리가 더한 재질**이다 (exe/patch_ti_fracture.py 가
+# CD-MPM(Cam-Clay+Borden)을 taichi 솔버에 한 갈래 붙인다).
+MAT = {"elastic": "elastic", "elastoplastic": "snow",
+       "viscoplastic": "sand", "fracture": "fracture"}
+if a.material == "fracture":                 # PG 파괴 칸과 같은 장면 설정
+    if a.n_grid == 100:
+        a.n_grid = 200
+    if a.v0 == 0.0:
+        a.v0 = -6.0
 
 VP = f"{W}/gamesout/{a.shape}/pseudomesh_info/ours_30000/vertices.pt"
 if not os.path.exists(VP):
@@ -83,7 +83,11 @@ ti.init(arch=ti.gpu, log_level=ti.ERROR,
         device_memory_fraction=float(os.environ.get("AF_TI_FRAC", 0.35)))
 MATID = {"elastic": MPMSolver.material_elastic,
          "snow": MPMSolver.material_snow,
-         "sand": MPMSolver.material_sand}
+         "sand": MPMSolver.material_sand,
+         "fracture": getattr(MPMSolver, "material_fracture", -1)}
+if MATID[MAT[a.material]] < 0:
+    raise SystemExit("[실패] taichi 솔버에 파괴 재질이 없다. "
+                     "exe/patch_ti_fracture.py 를 먼저 돌릴 것")
 
 
 def run(s, frames=None):
@@ -99,7 +103,8 @@ def run(s, frames=None):
     mpm.add_surface_collider(point=(0.0, 0.0, a.floor), normal=(0.0, 0.0, 1.0),
                              surface=MPMSolver.surface_sticky)
     mpm.add_particles(particles=P0.astype(np.float32),
-                      material=MATID[MAT[a.material]])
+                      material=MATID[MAT[a.material]],
+                      velocity=([0.0, 0.0, a.v0] if a.v0 else None))
     X, t_sim = [], 0.0
     for f in range(nrun + 1):
         if f >= a.skip:

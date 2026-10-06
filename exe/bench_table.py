@@ -19,11 +19,13 @@ MATS = (os.environ.get("AF_BENCH_MATS")
         or "elastic elastoplastic viscoplastic fracture").split()
 MET = ["pg", "ipg", "gasp", "sg"]
 NAME = {"pg": "PG", "ipg": "i-PG", "gasp": "GASP", "sg": "Spring-Gaus"}
-# 구조적으로 그 구성식이 없는 조합. 공란이 아니라 "미지원" 으로 적는다.
-NOSUP = {"gasp": {"fracture": "taichi_elements MPM 에 파괴 구성식 없음"},
-         "sg": {"elastoplastic": "스프링-질량이라 소성 없음",
-                "viscoplastic": "스프링-질량이라 점소성 없음",
-                "fracture": "스프링-질량이라 파괴 없음"}}
+# 원 논문에 없는 구성식은 **우리가 덧붙여서** 잰다 (exe/sg_materials.py,
+# exe/ti_fracture.py). 표에서 그 칸은 "+확장" 으로 표시한다.
+EXT = {"gasp": {"fracture": "우리 확장: CD-MPM(Cam-Clay+Borden) 재질 추가"},
+       "sg": {"elastoplastic": "우리 확장: 쉬는 길이 소성 갱신",
+              "viscoplastic": "우리 확장: 쉬는 길이 점소성 완화",
+              "fracture": "우리 확장: 임계 변형률에서 스프링 끊김"}}
+NOSUP = {}
 MN = {"elastic": "탄성", "elastoplastic": "탄소성",
       "viscoplastic": "점소성", "fracture": "파괴"}
 
@@ -50,9 +52,7 @@ for m in MET:
                 rows.append(dict(method=m, shape=sh, material=mt,
                                  note="미지원: " + NOSUP[m][mt]))
                 continue
-            # Spring-Gaus 는 탄성 한 칸이라 파일 이름에 물성이 없다
-            d = rd(f"{O}/sg_{sh}.json" if m == "sg" else
-                   f"{O}/{m}_{sh}_{mt}.json")
+            d = rd(f"{O}/{m}_{sh}_{mt}.json")
             if d is None:
                 rows.append(dict(method=m, shape=sh, material=mt,
                                  note="실행 없음"))

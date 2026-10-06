@@ -36,6 +36,11 @@ SG = f"{W}/Spring-Gaus"
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--shape", required=True)
+ap.add_argument("--material", default="elastic",
+                choices=["elastic", "elastoplastic", "viscoplastic",
+                         "fracture"])
+ap.add_argument("--eps_break", type=float, default=0.10,
+                help="파괴: 스프링이 끊기는 변형률 (유일한 자유 손잡이)")
 ap.add_argument("--run", default="run5")
 ap.add_argument("--exp", default="", help="피팅 결과 exp 디렉토리 (기본: 최신 af2_*)")
 ap.add_argument("--frames", type=int, default=10, help="비교할 충돌 프레임 수")
@@ -52,7 +57,7 @@ ap.add_argument("--phase", default="all",
 a = ap.parse_args()
 
 O = f"{W}/bench/{a.run}"
-SJ = f"{O}/sg_{a.shape}.json"
+SJ = f"{O}/sg_{a.shape}_{a.material}.json"
 os.makedirs(O, exist_ok=True)
 
 # --- 그쪽 학습 결과 찾기 ----------------------------------------------
@@ -82,6 +87,8 @@ sys.argv = ["test.py", "--cfg", f"config/anchorflow/{a.shape}.yaml",
 from train import config_parser, get_simulator                 # noqa: E402
 from lib.utils.config import get_config_merge_default          # noqa: E402
 from lib.models.gaus import Scene, render                      # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+import sg_materials                                            # noqa: E402
 
 arg = config_parser()
 cfg = get_config_merge_default(config_file=arg.cfg, arg=arg)
@@ -95,6 +102,8 @@ with open(f"{cfg.CHECKPOINTS_ROOT}/init_velocity_"
 simulator, gaussians = get_simulator(arg, cfg, scene, cfg_stage=cfg.DYNAMIC,
                                      init_velocity=load_velocity, load_g=None)
 simulator.eval()
+# 그쪽에 없는 물성(소성·점소성·파괴)은 스프링 수준 확장으로 붙인다.
+sg_materials.attach(simulator, a.material, eps_break=a.eps_break)
 BG = torch.tensor(scene.dataset.bg, dtype=torch.float32, device="cuda")
 S_TRAIN = int(simulator.n_step)
 print(f"[시뮬] 앵커 {simulator.init_xyz.shape[0]}  가우시안 "
@@ -107,9 +116,11 @@ NF = a.skip + a.frames
 
 
 @torch.no_grad()
-def rollout(s, frames=NF, render_dir="", timeit=False):
+def rollout(s, frames=NF, render_dir="", timeit=False, keep_state=False):
     """n_step=s 로 frames 장 전진한다 -> (앵커 궤적 [T,N,3], 시뮬 시간)."""
     simulator.n_step = int(s)
+    sg_materials.reset(simulator)        # 소성 상태는 롤아웃마다 초기화
+    L0, MK = [], []
     xyz = simulator.init_xyz.detach().clone()
     v = simulator.init_v.detach().clone()
     xyz_all = torch.sum(xyz[simulator.intrp_index]
@@ -123,6 +134,10 @@ def rollout(s, frames=NF, render_dir="", timeit=False):
     for f in range(frames):
         X.append(xyz.detach().cpu().numpy().copy())
         V.append(v.detach().cpu().numpy().copy())
+        if keep_state:
+            L0.append(simulator.origin_len.detach().clone())
+            MK.append(getattr(simulator, "_k_mask",
+                              torch.ones_like(simulator.origin_len)).clone())
         if render_dir:
             cam = scene.getEvalCameras(0, a.cam)
             img = render(cam, gaussians, BG, override_color=gaussians.get_color,
@@ -139,6 +154,8 @@ def rollout(s, frames=NF, render_dir="", timeit=False):
             torch.cuda.synchronize()
             t_sim += time.time() - t0
         gaussians._xyz = xyz_all
+    if keep_state:
+        return np.stack(X), np.stack(V), t_sim, L0, MK
     return np.stack(X), np.stack(V), t_sim
 
 
@@ -178,7 +195,7 @@ if a.phase in ("search", "all"):
             best, hi = (mid, e1, eT), mid
         else:
             lo = mid + 1
-    d.update(method="sg", shape=a.shape, material="elastic",
+    d.update(method="sg", shape=a.shape, material=a.material,
              n_particles=int(X0.shape[0]),
              n_gaussians=int(simulator.init_xyz_all.shape[0]), L=L,
              s_conv=int(s_conv), s_train=S_TRAIN, frames=a.frames,
@@ -207,7 +224,7 @@ if a.phase in ("time", "all") and d.get("s"):
 if a.phase in ("resid", "all"):
     s_ref = int(d.get("s_conv") or S_TRAIN)
     simulator.n_step = s_ref
-    X, V, _ = rollout(s_ref, frames=NF + 1)
+    X, V, _, L0H, MKH = rollout(s_ref, frames=NF + 1, keep_state=True)
     h = float(simulator.dt)
     g = torch.as_tensor(cfg.MODEL.G, dtype=torch.float32, device="cuda")
     knn = simulator.knn_index
@@ -237,9 +254,11 @@ if a.phase in ("resid", "all"):
         x2 = xn + du
         xtil = xn + h * vn + (h ** 2) * g
         e_in = (m * ((x2 - xtil) ** 2).sum(-1)).sum() / (2 * h * h)
-        dl = torch.norm(x2[knn] - x2.unsqueeze(1), dim=2) - l0
+        l0f = L0H[i]                      # 그 프레임의 쉬는 길이(소성 반영)
+        mk = MKH[i]                       # 끊긴 스프링은 힘을 안 낸다
+        dl = torch.norm(x2[knn] - x2.unsqueeze(1), dim=2) - l0f
         dl = torch.where(dl.abs() < edge, torch.zeros_like(dl), dl)
-        e_sp = 0.5 * (K * dl ** 2).sum()
+        e_sp = 0.5 * (K * mk * dl ** 2).sum()
         pen = (ground - x2[:, gax]).clamp_min(0.0)
         e_bc = (k_bc / (2.0 + pw)) * (pen ** (2.0 + pw)).sum() if k_bc else \
             torch.zeros((), device="cuda")
@@ -251,11 +270,11 @@ if a.phase in ("resid", "all"):
         rows.append(dict(frame=i, E=float(E), e_in=float(e_in),
                          e_el=float(e_sp), e_bc=float(e_bc),
                          r_med=float(rq[0]), r_p95=float(rq[1])))
-    rj = f"{O}/resid/sg_{a.shape}_elastic.json"
+    rj = f"{O}/resid/sg_{a.shape}_{a.material}.json"
     os.makedirs(f"{O}/resid", exist_ok=True)
-    out = dict(label=f"Spring-Gaus {a.shape} elastic reference "
+    out = dict(label=f"Spring-Gaus {a.shape} {a.material} reference "
                      f"(n_step={s_ref})", n_particles=int(X.shape[1]), L=L,
-               ext=L, h=h, material="spring_mass",
+               ext=L, h=h, material=f"spring_mass/{a.material}",
                E_mean=float(np.mean([q["E"] for q in rows])),
                r_med_mean=float(np.mean([q["r_med"] for q in rows])),
                r_p95_mean=float(np.mean([q["r_p95"] for q in rows])),
@@ -269,15 +288,15 @@ if a.phase in ("vq", "all"):
     s_ref = int(d.get("s_conv") or S_TRAIN)
     s_test = int(d.get("s") or S_TRAIN)
     os.makedirs(f"{O}/vq", exist_ok=True)
-    dr = f"{O}/vq/sg_{a.shape}_elastic_ref_{s_ref}"
-    dt = f"{O}/vq/sg_{a.shape}_elastic_test_{s_test}"
+    dr = f"{O}/vq/sg_{a.shape}_{a.material}_ref_{s_ref}"
+    dt = f"{O}/vq/sg_{a.shape}_{a.material}_test_{s_test}"
     rollout(s_ref, frames=a.vq_frames, render_dir=dr)
     rollout(s_test, frames=a.vq_frames, render_dir=dt)
-    mj = f"{O}/vq/sg_{a.shape}_elastic_vq.json"
+    mj = f"{O}/vq/sg_{a.shape}_{a.material}_vq.json"
     subprocess.run(["python", "-u", f"{W}/anchorflow/exe/vq_metrics.py",
                     "--ref", dr, "--test", dt, "--out", mj,
                     "--win", str(a.win),
-                    "--label", f"sg {a.shape} elastic n_step={s_test} "
+                    "--label", f"sg {a.shape} {a.material} n_step={s_test} "
                                f"vs {s_ref}"],
                    cwd=f"{W}/anchorflow",
                    env=dict(os.environ, PYTHONPATH=f"{W}/anchorflow/lib",
@@ -285,6 +304,6 @@ if a.phase in ("vq", "all"):
     for src, tag in ((dt, "test"), (dr, "ref")):
         subprocess.run(["python", "-u", f"{W}/anchorflow/exe/pngs2mp4.py",
                         "--dir", src, "--out",
-                        f"{O}/vq/sg_{a.shape}_elastic_{tag}.mp4",
+                        f"{O}/vq/sg_{a.shape}_{a.material}_{tag}.mp4",
                         "--fps", "20"], cwd=f"{W}/anchorflow")
 print("SG_CELL_DONE", flush=True)

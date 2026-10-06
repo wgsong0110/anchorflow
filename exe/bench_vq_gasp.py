@@ -31,7 +31,9 @@ GASP = f"{W}/GASP"
 ap = argparse.ArgumentParser()
 ap.add_argument("--shape", required=True)
 ap.add_argument("--material", default="elastic",
-                choices=["elastic", "elastoplastic", "viscoplastic"])
+                choices=["elastic", "elastoplastic", "viscoplastic",
+                         "fracture"])
+ap.add_argument("--v0", type=float, default=0.0, help="초기 z 속도")
 ap.add_argument("--run", default="run5")
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--resid_frames", type=int, default=35, help="h5 로 떨굴 앞부분")
@@ -43,6 +45,11 @@ ap.add_argument("--cam", type=int, default=4, help="학습 카메라 번호 (공
 ap.add_argument("--win", type=int, default=16)
 ap.add_argument("--only_test", action="store_true")
 a = ap.parse_args()
+if a.material == "fracture":            # PG 파괴 칸과 같은 장면 설정
+    if a.n_grid == 100:
+        a.n_grid = 200
+    if a.v0 == 0.0:
+        a.v0 = -6.0
 
 O = f"{W}/bench/{a.run}"
 SJ = f"{O}/gasp_{a.shape}_{a.material}.json"
@@ -109,9 +116,10 @@ ti.init(arch=ti.gpu, log_level=ti.ERROR,
         device_memory_fraction=float(os.environ.get("AF_TI_FRAC", 0.5)))
 MATID = {"elastic": MPMSolver.material_elastic,
          "elastoplastic": MPMSolver.material_snow,
-         "viscoplastic": MPMSolver.material_sand}
+         "viscoplastic": MPMSolver.material_sand,
+         "fracture": getattr(MPMSolver, "material_fracture", -1)}
 MATNAME = {"elastic": "jelly", "elastoplastic": "ti_snow",
-           "viscoplastic": "ti_sand"}
+           "viscoplastic": "ti_sand", "fracture": "watermelon"}
 
 
 def go(s, tag, h5dir=""):
@@ -129,7 +137,8 @@ def go(s, tag, h5dir=""):
     mpm.set_gravity((0.0, 0.0, -9.8))
     mpm.add_surface_collider(point=(0.0, 0.0, a.floor), normal=(0.0, 0.0, 1.0),
                              surface=MPMSolver.surface_sticky)
-    mpm.add_particles(particles=P0, material=MATID[a.material])
+    mpm.add_particles(particles=P0, material=MATID[a.material],
+                      velocity=([0.0, 0.0, a.v0] if a.v0 else None))
     N = int(mpm.n_particles[None])
     fld = ti.Vector.field(9, dtype=ti.f32, shape=N) if h5dir else None
     jfld = ti.field(dtype=ti.f32, shape=N) if h5dir else None
@@ -183,7 +192,9 @@ if a.only_test:
 
 H5 = f"{W}/gaspsim/{a.shape}_{a.material}_s{s_ref}"
 dr = go(s_ref, "ref", h5dir=f"{H5}/simulation_ply")
-cfg = dict(material=MATNAME[a.material], E=2e6, nu=0.2, density=1000.0,
+cfg = dict(material=MATNAME[a.material],
+           E=(2e3 if a.material == "fracture" else 2e6),
+           nu=(0.38 if a.material == "fracture" else 0.2), density=1000.0,
            n_grid=a.n_grid, grid_lim=2.0, frame_dt=1.0 / 60.0,
            g=[0.0, 0.0, -9.8], vol_mode="uniform",
            boundary_conditions=[dict(type="surface_collider",
