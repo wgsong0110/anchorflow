@@ -57,6 +57,10 @@ ap.add_argument("--v0", type=float, default=-6.0, help="파괴: 초기 하강속
 ap.add_argument("--cam", type=int, default=-1,
                 help="평가 카메라 번호 (기본: 당기는 씬은 4 -- 옆에서 봐서 당기는 "
                      "축이 화면 가로로 보인다, 파괴는 0)")
+ap.add_argument("--pg_cam", default="",
+                help="i-PG 시연과 같은 카메라 (exe/dump_demo_cam.py 출력). "
+                     "주면 원본 3DGS 렌더를 이 카메라로 한다")
+ap.add_argument("--knn", type=int, default=8, help="가우시안 하나가 따르는 앵커 수")
 ap.add_argument("--cfg_name", default="",
                 help="그쪽 설정 이름 (기본: <형상>_g -- 중력을 z 로 고쳐 다시 피팅한 것)")
 # 두 덩이를 쌓으면 장면이 두 배로 높아지는데 그쪽 카메라는 물체에 바싹 붙어
@@ -158,12 +162,21 @@ print(f"[적재] {exp}\n       앵커 {sim.init_xyz.shape[0]}  가우시안 "
       f"{sim.init_xyz_all.shape[0]}  학습 n_step {int(sim.n_step)}", flush=True)
 
 
+MODELN = {"wolf": "wolf_whitebg-trained", "mic": "mic_whitebg-trained",
+          "lego": "lego_whitebg-trained", "bread": "bread-trained"}
+OGPLY = (f"{W}/pgmodel/{MODELN[a.shape]}/point_cloud/iteration_30000/"
+         f"point_cloud.ply")
+
+
 # --------------------------------------------------------- 1) 두 덩이로 복제
 def duplicate(sim, gaussians, gap):
     """앵커·가우시안을 수직으로 옮겨 한 벌 더 얹는다 (위에서 떨어뜨릴 물체)."""
     N = int(sim.init_xyz.shape[0])
     ax = sim.ground_axis
-    ext = float(sim.init_xyz[:, ax].max() - sim.init_xyz[:, ax].min())
+    # i-PG 시연(demo_vid_ipg.dup_model)과 **같은 간격** -- 원본 ply 의 z 폭 기준
+    from plyfile import PlyData
+    _v = PlyData.read(OGPLY)["vertex"].data
+    ext = float(_v["z"].max() - _v["z"].min())
     off = torch.zeros(3, device=sim.init_xyz.device)
     off[ax] = ext * (1.0 + gap)
 
@@ -214,6 +227,87 @@ CAM_U = (a.cam_up if a.cam_up != -999 else
          (float(sim.init_xyz[:, 2].max() - sim.init_xyz[:, 2].min()) * 0.25
           if a.scene == "viscous" else 0.0))
 print(f"[카메라] 거리 {CAM_S} 배, 수직 이동 {CAM_U:.3f}", flush=True)
+
+# ------------------------------------------- 1b) 원본 3DGS 로 렌더 (첫 프레임 일치)
+# 그쪽 자체 재구성(10 시점, 고정 크기 등방 가우시안)은 원본과 달라 부서져 보인다.
+# 그래서 i-PG 가 그리는 **원본 lego 3DGS** 를 같은 카메라로 그리고, SG 시뮬레이션의
+# 앵커 운동을 따라 움직인다. 가우시안마다 가까운 앵커 K 개를 처음에 정해 두고
+#   위치  x = x0 + Σ w_k (a_k - a_k0)
+#   변형  F = (Σ w_k dy_k dx_kᵀ)(Σ w_k dx_k dx_kᵀ)⁻¹,  dx_k = a_k0 - x0, dy_k = a_k - x
+#   공분산 Σ' = F Σ Fᵀ   (PhysGaussian 이 입자 F 로 하는 것과 같은 규약)
+# 첫 프레임은 F = I, x = x0 이라 원본 렌더와 똑같다.
+OGR = None
+if a.pg_cam:
+    from lib.models.gaus.gaussian_model import GaussianModel        # noqa: E402
+    from lib.models.gaus.utils.general_utils import (                # noqa: E402
+        build_scaling_rotation, strip_symmetric)
+    from lib.models.gaus.utils.camera_utils import Camera as _Cam  # noqa: E402
+    from diff_gaussian_rasterization import (                         # noqa: E402
+        GaussianRasterizationSettings, GaussianRasterizer)
+    pc = json.load(open(a.pg_cam))
+    og = GaussianModel(3)
+    og.load_ply(OGPLY)
+    with torch.no_grad():
+        keep = og.get_opacity[:, 0] > pc["opacity_threshold"]   # i-PG 와 같은 거르기
+        gx = og.get_xyz[keep].detach()
+        Lm = build_scaling_rotation(og.get_scaling[keep], og._rotation[keep])
+        gcov = Lm @ Lm.transpose(1, 2)
+        gsh = og.get_features[keep].detach()
+        gop = og.get_opacity[keep].detach()
+        if NB:                                    # 점성: 원본도 두 벌 (같은 간격)
+            offv = sim.init_xyz[NB:].mean(0) - sim.init_xyz[:NB].mean(0)
+            offv = torch.zeros(3, device=gx.device).index_fill_(
+                0, torch.tensor([int(sim.ground_axis)], device=gx.device),
+                float(offv[int(sim.ground_axis)]))
+            gx = torch.cat([gx, gx + offv]); gcov = torch.cat([gcov, gcov])
+            gsh = torch.cat([gsh, gsh]); gop = torch.cat([gop, gop])
+        A0 = sim.init_xyz.detach()
+        idx_l, w_l = [], []
+        for c0 in range(0, gx.shape[0], 40000):
+            d = torch.cdist(gx[c0:c0 + 40000], A0)
+            dk, ik = d.topk(a.knn, dim=1, largest=False)
+            wk = 1.0 / (dk + 1e-6)
+            idx_l.append(ik); w_l.append(wk / wk.sum(1, keepdim=True))
+        gidx = torch.cat(idx_l); gw = torch.cat(w_l)
+        dX = A0[gidx] - gx[:, None]                                  # [N,K,3]
+        Bm = torch.einsum("nk,nki,nkj->nij", gw, dX, dX)
+        Bm = Bm + 1e-6 * Bm.diagonal(dim1=1, dim2=2).sum(-1)[:, None, None] \
+            * torch.eye(3, device=gx.device)
+        Binv = torch.linalg.inv(Bm)
+    import math as _m
+    pcam = _Cam(colmap_id=0, R=np.array(pc["R"]), T=np.array(pc["T"]),
+                FoVx=pc["FoVx"], FoVy=pc["FoVy"],
+                image=torch.ones(3, pc["height"], pc["width"]),
+                gt_alpha_mask=None, image_name="pgcam", uid=0)
+    OGR = dict(gx=gx, gcov=gcov, gsh=gsh, gop=gop, gidx=gidx, gw=gw, dX=dX,
+               Binv=Binv, A0=A0, cam=pcam)
+    print(f"[원본 3DGS] 가우시안 {gx.shape[0]} 개 (불투명도 > "
+          f"{pc['opacity_threshold']}), 앵커 {a.knn} 개씩 따른다, 카메라 "
+          f"{pc['width']}x{pc['height']} (i-PG 와 같음)", flush=True)
+
+
+def render_og(anc):
+    """앵커 위치 anc 로 원본 3DGS 를 변형해 i-PG 카메라로 그린다."""
+    R_ = OGR
+    with torch.no_grad():
+        disp = anc[R_["gidx"]] - R_["A0"][R_["gidx"]]                # [N,K,3]
+        x = R_["gx"] + (R_["gw"][..., None] * disp).sum(1)
+        dY = anc[R_["gidx"]] - x[:, None]
+        Am = torch.einsum("nk,nki,nkj->nij", R_["gw"], dY, R_["dX"])
+        F = Am @ R_["Binv"]
+        cov = F @ R_["gcov"] @ F.transpose(1, 2)
+        cam = R_["cam"]
+        st = GaussianRasterizationSettings(
+            image_height=int(cam.image_height), image_width=int(cam.image_width),
+            tanfovx=_m.tan(cam.FoVx * 0.5), tanfovy=_m.tan(cam.FoVy * 0.5),
+            bg=BG, scale_modifier=1.0, viewmatrix=cam.world_view_transform,
+            projmatrix=cam.full_proj_transform, sh_degree=3,
+            campos=cam.camera_center, prefiltered=False, debug=False)
+        out = GaussianRasterizer(raster_settings=st)(
+            means3D=x, means2D=torch.zeros_like(x), shs=R_["gsh"],
+            colors_precomp=None, opacities=R_["gop"], scales=None,
+            rotations=None, cov3D_precomp=strip_symmetric(cov))
+    return out[0]
 
 # ------------------------------------------------------------- 2) 물성 확장
 sg_materials.attach(sim, MATOF[a.scene], eps_break=a.eps_break)
@@ -364,10 +458,13 @@ with torch.no_grad():
     gaussians._xyz = xyz_all
     for f in tqdm(range(FRAMES), desc="프레임"):
         state["frame"] = f
-        cam = pull_back(scene.getEvalCameras(0, CAMI), CAM_S, CAM_U)
-        img = render(cam, gaussians, BG, override_color=gaussians.get_color,
-                     debug=False, compute_cov3D_python=False,
-                     convert_SHs_python=False)["render"]
+        if OGR is not None:
+            img = render_og(xyz)
+        else:
+            cam = pull_back(scene.getEvalCameras(0, CAMI), CAM_S, CAM_U)
+            img = render(cam, gaussians, BG, override_color=gaussians.get_color,
+                         debug=False, compute_cov3D_python=False,
+                         convert_SHs_python=False)["render"]
         imageio.imwrite(f"{OD}/{f:04d}.png",
                         (img.clamp(0, 1).permute(1, 2, 0).cpu().numpy()
                          * 255).astype(np.uint8))
