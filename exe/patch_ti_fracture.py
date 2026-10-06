@@ -31,7 +31,9 @@ FUNC = '''
         M = self.frac_M
         beta = self.frac_beta
         xi = self.frac_xi
-        _hx = xi * ti.max(-self.Jp[p], 0.0)
+        # 경화 상태는 반드시 막아야 한다. sinh 는 f32 에서 x>88 이면 넘치고,
+        # 한 번 넘치면 p0=inf -> 전부 NaN -> 입자가 격자 밖으로 날아간다.
+        _hx = ti.min(xi * ti.max(-self.Jp[p], 0.0), 15.0)
         # taichi 에는 sinh 가 없다 -> (e^x - e^-x)/2
         p0 = kappa * (1e-5 + 0.5 * (ti.exp(_hx) - ti.exp(-_hx)))
         J = 1.0
@@ -56,12 +58,16 @@ FUNC = '''
             Je = ti.sqrt(ti.max(-2.0 * p0 / kappa + 1.0, 1e-12))
             s = Je ** (1.0 / 3.0)
             sig_new = ti.Matrix.identity(ti.f32, 3) * s
-            self.Jp[p] += ti.log(ti.max(J / Je, 1e-12))
+            self.Jp[p] = ti.min(ti.max(self.Jp[p]
+                                       + ti.log(ti.max(J / Je, 1e-12)),
+                                       -5.0), 5.0)
         elif p_tr < -p_min:                 # 인장 꼭짓점 -- 여기서 갈라진다
             Je = ti.sqrt(ti.max(2.0 * p_min / kappa + 1.0, 1e-12))
             s = Je ** (1.0 / 3.0)
             sig_new = ti.Matrix.identity(ti.f32, 3) * s
-            self.Jp[p] += ti.log(ti.max(J / Je, 1e-12))
+            self.Jp[p] = ti.min(ti.max(self.Jp[p]
+                                       + ti.log(ti.max(J / Je, 1e-12)),
+                                       -5.0), 5.0)
         elif y >= 1e-4:                     # 항복면 위로
             s_norm = ti.max(ti.sqrt(ti.max(s_sq, 1e-20)), 1e-10)
             scale = (ti.max(J, 1e-12) ** (2.0 / 3.0) / mu
@@ -91,7 +97,9 @@ FUNC = '''
             Je_f = ti.sqrt(ti.max(ti.abs(-2.0 * p_fake / kappa + 1.0), 1e-12))
             if (Je_f > 1e-4 and p0 > 1e-4 and p_tr < p0 - 1e-4
                     and p_tr > 1e-4 - p_min):
-                self.Jp[p] += ti.log(ti.max(J / Je_f, 1e-12))
+                self.Jp[p] = ti.min(ti.max(
+                    self.Jp[p] + ti.log(ti.max(J / Je_f, 1e-12)),
+                    -5.0), 5.0)
         self.F[p] = U @ sig_new @ V.transpose()
         Jn = 1.0
         Bm2 = 0.0
