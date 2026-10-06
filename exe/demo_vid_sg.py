@@ -339,12 +339,15 @@ with torch.no_grad():
                          * 255).astype(np.uint8))
         xyz_all, xyz, v, _ = sim(xyz_all, xyz, v, f + 1)
         gaussians._xyz = xyz_all
-        if (f + 1) % 20 == 0:
+        if (f + 1) % 10 == 0:
             brk = float(1.0 - sim._k_mask.mean())
             dl0 = float((sim.origin_len / sim._l0_ref - 1).abs().max())
             npr = 0 if CT is None or CT["pairs"] is None else len(CT["pairs"])
+            zc = [float(xyz[:NB, 2].mean()), float(xyz[NB:, 2].mean())] if NB \
+                else [float(xyz[:, 2].mean())]
             print(f"  [{f + 1}] 끊긴 {100 * brk:.2f}%  쉬는길이 변화 "
-                  f"{100 * dl0:.2f}%  접촉 스프링 {npr}", flush=True)
+                  f"{100 * dl0:.2f}%  접촉 스프링 {npr}  덩이 높이 "
+                  f"{[round(q, 3) for q in zc]}", flush=True)
 
 n = len(glob.glob(f"{OD}/*.png"))
 mp4 = f"{a.out}/sg_{a.shape}_{a.scene}.mp4"
