@@ -117,7 +117,10 @@ def duplicate(sim, gaussians, gap):
             b = b + add_idx
         return torch.cat([t, b], 0)
 
+    M = int(sim.init_xyz_all.shape[0])
     with torch.no_grad():
+        # 앵커 크기(N) 와 가우시안 크기(M) 를 **따로** 본다. 한 가지 크기로만
+        # 거르면 가우시안·보간 텐서가 조용히 안 늘어나 한 덩이만 렌더된다
         for nm, is_x, idx in (("init_xyz", True, 0), ("init_v", False, 0),
                               ("init_xyz_all", True, 0),
                               ("knn_index", False, N), ("origin_len", False, 0),
@@ -126,7 +129,7 @@ def duplicate(sim, gaussians, gap):
                               ("global_k", False, 0), ("global_m", False, 0),
                               ("damp", False, 0), ("g_f", False, 0)):
             t = getattr(sim, nm, None)
-            if not torch.is_tensor(t) or t.shape[0] not in (N,):
+            if not torch.is_tensor(t) or t.shape[0] not in (N, M):
                 continue
             new = cat2(t.detach(), add_off=is_x, add_idx=idx)
             if isinstance(t, torch.nn.Parameter):
@@ -161,9 +164,16 @@ NS = int(sim.n_step)
 # ------------------------------------------------- 3) 손잡이 (운동학 구동)
 HD = None
 if a.scene in ("plastic", "viscous"):
+    # 중력축 성분을 뺀 **수평 주축**으로 당긴다. 그냥 주축을 쓰면 lego 처럼
+    # 세로로 긴 물체에서 수직이 잡히고, 점성 씬은 쌓아 둔 두 덩이를 위아래로
+    # 떼어 놓아 애초에 붙지 않는다 (실측).
+    g_ax = int(sim.ground_axis)
     Xc = (X0 - X0.mean(0)).cpu().numpy()
+    Xc[:, g_ax] = 0.0
     w, V = np.linalg.eigh(Xc.T @ Xc / len(Xc))
     ax = V[:, int(np.argmax(w))]
+    ax[g_ax] = 0.0
+    ax = ax / (np.linalg.norm(ax) + 1e-12)
     ax = ax * np.sign(ax[int(np.argmax(np.abs(ax)))])
     axt = torch.as_tensor(ax, dtype=torch.float32, device=X0.device)
     t = X0 @ axt
