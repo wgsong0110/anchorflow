@@ -51,7 +51,11 @@ ap.add_argument("--contact", type=float, default=0.0,
                 help="접촉 스프링이 생기는 거리 (0 이면 앵커 간격의 1.2 배)")
 ap.add_argument("--eps_break", type=float, default=0.10)
 ap.add_argument("--v0", type=float, default=-6.0, help="파괴: 초기 하강속도")
-ap.add_argument("--cam", type=int, default=0)
+ap.add_argument("--cam", type=int, default=-1,
+                help="평가 카메라 번호 (기본: 당기는 씬은 4 -- 옆에서 봐서 당기는 "
+                     "축이 화면 가로로 보인다, 파괴는 0)")
+ap.add_argument("--cfg_name", default="",
+                help="그쪽 설정 이름 (기본: <형상>_g -- 중력을 z 로 고쳐 다시 피팅한 것)")
 # 두 덩이를 쌓으면 장면이 두 배로 높아지는데 그쪽 카메라는 물체에 바싹 붙어
 # 있어 위 덩이가 화면 밖(심지어 카메라 뒤)으로 나가고, 그러면 아래 덩이까지
 # 포함해 **전체가 백지로** 렌더된다 (실측: 간격 2.0 부터 흐려지고 3.68 에서 백지).
@@ -65,6 +69,7 @@ a = ap.parse_args()
 
 MATOF = {"plastic": "elastoplastic", "viscous": "viscoplastic",
          "fracture": "fracture"}
+CAMI = a.cam if a.cam >= 0 else (0 if a.scene == "fracture" else 4)
 FRAMES = a.frames or {"plastic": 90, "viscous": 140, "fracture": 60}[a.scene]
 OD = f"{a.out}/sg_{a.shape}_{a.scene}"
 os.makedirs(a.out, exist_ok=True)
@@ -72,7 +77,8 @@ os.makedirs(a.out, exist_ok=True)
 # ------------------------------------------------------------- 그쪽 코드 적재
 # 임포트 경로는 bench_sg.py 와 **똑같이** 잡는다 (그쪽 train.py 가
 # config_parser 와 get_simulator 를 함께 내보낸다)
-cs = sorted(glob.glob(f"{SG}/exp/af*_{a.shape}_*/checkpoints_dynamic/"
+# 중력을 고친 재피팅(af4_*) 을 쓴다
+cs = sorted(glob.glob(f"{SG}/exp/af4_{a.shape}_*/checkpoints_dynamic/"
                       f"checkpoint/dy_n_step.json"))
 if a.exp:
     cs = sorted(glob.glob(f"{a.exp}/checkpoints_dynamic/checkpoint/"
@@ -85,7 +91,8 @@ if not os.path.exists(ck):
     raise SystemExit(f"[중단] 가중치가 없다: {ck}")
 os.chdir(SG)
 sys.path.insert(0, SG)
-sys.argv = ["demo.py", "--cfg", f"config/anchorflow/{a.shape}.yaml",
+CFGN = a.cfg_name or f"{a.shape}_g"
+sys.argv = ["demo.py", "--cfg", f"config/anchorflow/{CFGN}.yaml",
             "--exp_id", f"demo_{a.shape}", "--dy_reload", ck, "-g", "0"]
 from train import config_parser, get_simulator                   # noqa: E402
 from lib.utils.config import get_config_merge_default            # noqa: E402
@@ -336,7 +343,7 @@ with torch.no_grad():
     gaussians._xyz = xyz_all
     for f in tqdm(range(FRAMES), desc="프레임"):
         state["frame"] = f
-        cam = pull_back(scene.getEvalCameras(0, a.cam), CAM_S, CAM_U)
+        cam = pull_back(scene.getEvalCameras(0, CAMI), CAM_S, CAM_U)
         img = render(cam, gaussians, BG, override_color=gaussians.get_color,
                      debug=False, compute_cov3D_python=False,
                      convert_SHs_python=False)["render"]
