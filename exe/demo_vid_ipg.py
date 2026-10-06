@@ -44,6 +44,9 @@ MAT = {"plastic": dict(material="plasticine", yield_stress=1e4),
        # 키워 꿀처럼 천천히 처지게 한다.
        "viscous": dict(material="foam", E=2e5, yield_stress=250.0,
                        plastic_viscosity=50.0),
+       # 입상: PhysGaussian 공식 wolf 설정(config/wolf_config.json)의 모래 그대로
+       "granular": dict(material="sand", E=5e7, nu=0.3, density=2000.0,
+                        friction_angle=30.0),
        "fracture": dict(material="watermelon", friction_angle=45.0, beta=1.0,
                         xi=3.0, hardening=1.0, alpha_0=-0.04,
                         E=2e3, nu=0.38, density=1.0, g=[0.0, 0.0, -15.0])}
@@ -88,10 +91,12 @@ ap.add_argument("--solver", default="newton_gmres",
 a = ap.parse_args()
 
 REPO = {"pg": f"{W}/PhysGaussian", "ipg": f"{W}/i-physgaussian"}[a.method]
-FRAMES = a.frames or {"plastic": 90, "viscous": 120, "fracture": 60}[a.scene]
+FRAMES = a.frames or {"plastic": 90, "viscous": 120, "granular": 120,
+                       "fracture": 60}[a.scene]
 # 벤치에서 그 물성이 통과한 서브스텝을 그대로 쓴다 (lego: 소성 1393, 점성 1854,
 # 파괴는 기준 미달이라 수렴 실행값 6400)
-SUB = a.s or {"plastic": 1393, "viscous": 1854, "fracture": 6400}[a.scene]
+SUB = a.s or {"plastic": 1393, "viscous": 1854, "granular": 833,
+              "fracture": 6400}[a.scene]   # 입상은 wolf 설정의 2e-5 초
 OD = (f"{a.out}/{a.method}_{a.shape}_{a.scene}"
       + (f"_{a.tag}" if a.tag else ""))
 os.makedirs(a.out, exist_ok=True)
@@ -129,7 +134,8 @@ SCALE = a.scale or 1.0
 MP = f"{W}/pgmodel/{MODEL[a.shape]}"
 FILL = (f"{W}/pgfill_{a.shape}.npy" if SCALE == 1.0
         else f"{W}/pgfill_{a.shape}_s{SCALE:g}.npy")
-if a.scene == "viscous":
+TWO = a.scene in ("viscous", "granular")      # 두 덩이 씬
+if TWO:
     MP = dup_model(MP, f"{W}/pgmodel/{MODEL[a.shape]}-x2", a.gap)
     FILL = (f"{W}/pgfill_{a.shape}_x2.npy" if SCALE == 1.0
             else f"{W}/pgfill_{a.shape}_x2_s{SCALE:g}.npy")
@@ -163,7 +169,8 @@ def build(frames, sub, with_floor, gravity, extra_bc=()):
                rotation_degree=[0.0], rotation_axis=[0],
                substep_dt=(1.0 / 60.0) / sub, frame_dt=1.0 / 60.0,
                frame_num=frames,
-               n_grid=(a.n_grid or (200 if a.scene == "fracture" else 100)),
+               n_grid=(a.n_grid or (200 if a.scene in ("fracture", "granular")
+                                    else 100)),
                grid_lim=2.0,
                E=2e6, nu=0.3, density=1000.0,
                g=[0.0, 0.0, -9.8 if gravity else 0.0],
@@ -249,7 +256,7 @@ def principal(X):
 
 
 EXTRA = []
-if a.scene in ("plastic", "viscous"):
+if a.scene in ("plastic", "viscous", "granular"):
     # 화면 오른쪽 방향(월드) = 카메라 회전의 첫 열. 시뮬 공간은 모델 공간을
     # 평행이동·양의 배율로만 옮기므로(회전 항등) 방향이 그대로다.
     _c = json.load(open(a.force_cam))
@@ -259,11 +266,12 @@ if a.scene in ("plastic", "viscous"):
     k = int(np.argmax(np.abs(r)))               # 상자는 축 정렬 -> 지배 축으로 고른다
     e = r                                       # 오른쪽 절반이 받는 방향 (화면 오른쪽)
     ACC = a.acc or (10.0 if a.scene == "plastic" else 5.0)
+    RHO = float(MAT[a.scene].get("density", 1000.0))
     NF = a.force_frames or (20 if a.scene == "plastic" else 40)
     # 입자 하나 질량. 채우기 한 칸(8e-6)×밀도로 잡았더니 실제 가속도가 45 배로
     # 나왔다 (미리보기 궤적에서 한 프레임에 절반이 0.49 이동 -> a≈3560, 의도 80).
     # 러너가 가우시안·채움 입자에 나눠 준 부피가 더 작다. 그 실측비로 맞춘다.
-    m_p = 1000.0 * (2.0 / fill["particle_filling"]["n_grid"]) ** 3 / 44.5
+    m_p = RHO * (2.0 / fill["particle_filling"]["n_grid"]) ** 3 / 44.5
     F = ACC * m_p
     sub_dt = (1.0 / 60.0) / SUB
     c = X0.mean(0)
