@@ -53,7 +53,8 @@ ap.add_argument("--gap", type=float, default=0.15, help="점성: 두 물체 간�
 ap.add_argument("--contact", type=float, default=0.0,
                 help="접촉 스프링이 생기는 거리 (0 이면 앵커 간격의 1.2 배)")
 ap.add_argument("--eps_break", type=float, default=0.10)
-ap.add_argument("--v0", type=float, default=-6.0, help="파괴: 초기 하강속도")
+ap.add_argument("--v0", type=float, default=-12.0,
+                help="파괴: 초기 하강속도 (PG·GF 시연과 같은 -12)")
 ap.add_argument("--cam", type=int, default=-1,
                 help="평가 카메라 번호 (기본: 당기는 씬은 4 -- 옆에서 봐서 당기는 "
                      "축이 화면 가로로 보인다, 파괴는 0)")
@@ -295,6 +296,10 @@ def render_og(anc):
         dY = anc[R_["gidx"]] - x[:, None]
         Am = torch.einsum("nk,nki,nkj->nij", R_["gw"], dY, R_["dX"])
         F = Am @ R_["Binv"]
+        # 찢어진 틈을 가로지르는 앵커로 구한 F 는 엄청나게 늘어나 가우시안이 줄무늬로
+        # 번진다 (실측). 렌더용 F 의 특잇값을 [1/3, 3] 으로 묶는다 -- 위치는 그대로.
+        U, S, Vh = torch.linalg.svd(F)
+        F = U @ torch.diag_embed(S.clamp(1.0 / 3.0, 3.0)) @ Vh
         cov = F @ R_["gcov"] @ F.transpose(1, 2)
         cam = R_["cam"]
         st = GaussianRasterizationSettings(
@@ -343,8 +348,8 @@ if a.scene in ("plastic", "viscous"):
         mA = torch.zeros_like(t, dtype=torch.bool); mA[:NB] = True
         mB = ~mA
         hold = a.hold
-    ACC = a.acc or (10.0 if a.scene == "plastic" else 5.0)
-    NF = a.force_frames or (20 if a.scene == "plastic" else 40)
+    ACC = a.acc or (70.0 if a.scene == "plastic" else 30.0)   # PG 시연과 같은 값
+    NF = a.force_frames or (10 if a.scene == "plastic" else 40)
     # 그쪽 장면 단위가 i-PG 시뮬 공간보다 크다 (lego 지름 SG 6.2 / i-PG 1.34).
     # 같은 **상대** 운동이 되도록 가속도를 길이 비로 맞춘다.
     SCL = L / 1.3418
