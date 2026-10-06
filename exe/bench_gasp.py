@@ -122,6 +122,10 @@ def run(s, frames=None):
 SJ = a.out or f"{W}/bench/{a.run}/gasp_{a.shape}_{a.material}.json"
 d = json.load(open(SJ)) if os.path.exists(SJ) else {}
 
+import joblock                                           # noqa: E402
+joblock.take(f"gasp_{a.shape}_{a.material}",
+             out_exists=("s" in d and a.phase == "search"))
+
 if a.phase in ("search", "both"):
     Xc, sc_, hist = ladder(run, a.s0, a.tau, L, max_mul=a.max_mul)
     print(f"[기준] s={sc_} 최고정밀 궤적 확보", flush=True)

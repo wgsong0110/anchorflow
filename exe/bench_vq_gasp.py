@@ -60,6 +60,11 @@ if not s_test or not s_ref:
     raise SystemExit(f"[건너뜀] 서브스텝을 모른다 ({SJ}). --s/--s_ref 로 줄 것")
 s_test, s_ref = int(s_test), int(s_ref)
 
+import joblock                                           # noqa: E402
+joblock.take(f"vq_gasp_{a.shape}_{a.material}",
+             out_exists=os.path.exists(
+                 f"{O}/vq/gasp_{a.shape}_{a.material}_vq.json"))
+
 # --- 꼭짓점과 좌표 변환 (bench_gasp.py 와 **똑같이**) ------------------
 VP = f"{W}/gamesout/{a.shape}/pseudomesh_info/ours_30000/vertices.pt"
 V = torch.load(VP, map_location="cpu").cpu().numpy().reshape(-1, 3)
