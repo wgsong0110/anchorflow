@@ -9,11 +9,17 @@
            한 서브스텝에 옮기는 비율 = dt/(dt+tau)  (맥스웰 요소)
   파괴   : 변형률이 임계값을 넘은 스프링을 **영구히 끊는다** (K=0).
 
-항복 변형률과 완화시간은 MPM 쪽에서 쓴 물성 상수에서 그대로 끌어온다.
-E=2e6, nu=0.3 -> mu=E/(2(1+nu))=7.69e5.
-  탄소성: plasticine yield_stress 1e4  -> eps_y = ys/E = 5.0e-3
-  점소성: foam yield_stress 5e3        -> eps_y = 2.5e-3
-          plastic_viscosity 10          -> tau = eta/(2 mu) = 6.5e-6 초
+항복응력과 점성은 MPM 쪽 물성 상수를 그대로 쓰고(plasticine ys 1e4,
+foam ys 5e3 · eta 10), 변형률로 바꾸는 분모만은 **그 스프링망의 유효 영률**
+로 잰다 -- MPM 의 E 를 그대로 쓰면 파라미터화가 다른 두 모델을 섞는 셈이다.
+등방 스프링망의 변형에너지가 U = (1/10) eps^2 sum k l0^2 이므로
+  E_eff = sum k l0^2 / (10 V),   eps_y = ys / E_eff
+실측: lego E_eff 1.98e6, mic 1.53e6 (MPM 의 2e6 과 거의 같다).
+
+⚠ 변형률이 항복에 닿지 않는 장면이 있다 (lego 는 최대 0.17% 로 항복
+0.5% 에 못 미친다 -- `--phase diag` 로 실측). 그 칸은 탄성과 같은 궤적이
+나오는 게 맞고, 조용히 지나가지 않도록 attach 가 유효 영률과 항복
+변형률을, 롤아웃이 끊긴 스프링 비율을 찍는다.
 파괴의 임계 변형률만은 대응되는 MPM 상수가 없다(그쪽은 Cam-Clay 항복면 +
 Borden 손상이라 1 차원 스프링으로 옮길 값이 없다). 그래서 **유일한 자유
 손잡이**로 두고 표에 값을 명시한다 (기본 0.10 = 10% 늘어나면 끊김).
@@ -28,11 +34,24 @@ E_MPM, NU_MPM = 2e6, 0.3
 MU_MPM = E_MPM / (2.0 * (1.0 + NU_MPM))
 
 MAT = {
-    "elastoplastic": dict(kind="plastic", eps_y=1e4 / E_MPM),
-    "viscoplastic": dict(kind="visco", eps_y=5e3 / E_MPM,
-                         tau=10.0 / (2.0 * MU_MPM)),
+    "elastoplastic": dict(kind="plastic", ys=1e4),
+    "viscoplastic": dict(kind="visco", ys=5e3, eta=10.0),
     "fracture": dict(kind="break", eps_break=0.10),
 }
+
+
+def eff_modulus(sim):
+    """피팅된 스프링망의 유효 영률 (등방 가정, 방향 쌍 중복을 1/2 로)."""
+    with torch.no_grad():
+        l0 = sim.origin_len
+        gk = sim.global_k
+        kv = 10.0 ** (gk.reshape(-1, 1) if gk.dim() == 1 else gk)
+        if kv.shape != l0.shape:
+            kv = kv.expand_as(l0)
+        k_s = kv / (l0 + sim.eps)              # forward 의 K (힘 = dl * K)
+        bb = sim.init_xyz.max(0).values - sim.init_xyz.min(0).values
+        vol = float(bb[0] * bb[1] * bb[2])
+        return float(0.5 * (k_s * l0 ** 2).sum() / (5.0 * vol)), vol
 
 
 def attach(sim, material, eps_break=0.10):
@@ -45,9 +64,20 @@ def attach(sim, material, eps_break=0.10):
     if material == "elastic":
         return sim
     cfg = dict(MAT[material])
+    E_eff, vol = eff_modulus(sim)
+    cfg["E_eff"], cfg["volume"] = E_eff, vol
     if material == "fracture":
         cfg["eps_break"] = eps_break
+    else:
+        cfg["eps_y"] = cfg["ys"] / E_eff
+        if material == "viscoplastic":
+            cfg["tau"] = cfg["eta"] / (2.0 * E_eff / (2.0 * (1.0 + NU_MPM)))
     kind = cfg["kind"]
+    print(f"[확장] {material}  E_eff {E_eff:.4e} (MPM {E_MPM:.1e})  "
+          + (f"eps_break {cfg['eps_break']:.4f}" if kind == "break"
+             else f"eps_y {cfg['eps_y']:.5f}"
+                  + (f"  tau {cfg['tau']:.3e}s" if "tau" in cfg else "")),
+          flush=True)
     sim._l0_ref = sim.origin_len.detach().clone()
     sim._k_mask = torch.ones_like(sim.origin_len)
     orig_step = sim.step

@@ -266,6 +266,7 @@ if a.phase in ("search", "all"):
              n_gaussians=int(simulator.init_xyz_all.shape[0]), L=L,
              s_conv=int(s_conv), s_train=S_TRAIN, frames=a.frames,
              tol=a.tol, tau=a.tau, v0=a.v0,
+             af_ext=getattr(simulator, "_af_cfg", None),
              eps_break=(a.eps_break if a.material == "fracture" else None),
              ladder=hist)
     if best is None:
