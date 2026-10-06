@@ -56,7 +56,7 @@ ap.add_argument("--max_mul", type=int, default=8)
 ap.add_argument("--cam", type=int, default=0)
 ap.add_argument("--win", type=int, default=16)
 ap.add_argument("--phase", default="all",
-                choices=["search", "time", "resid", "vq", "all"])
+                choices=["search", "time", "resid", "vq", "all", "diag"])
 a = ap.parse_args()
 
 O = f"{W}/bench/{a.run}"
@@ -176,6 +176,51 @@ def rms_rel(A, B):
 
 
 d = json.load(open(SJ)) if os.path.exists(SJ) else {}
+
+
+# --- 0) 진단: 이 장면에서 스프링이 얼마나 늘어나는가 ------------------
+# 소성 칸이 탄성과 **17 자리까지 같은 값**으로 나왔다. 항복 변형률을
+# MPM 의 E=2e6 으로 잡았는데(= 0.5%), 피팅된 스프링망이 훨씬 딱딱해서
+# 그 변형률에 아예 닿지 않았던 것이다. 그래서 스프링망의 **유효 영률**을
+# 직접 재고 거기에 같은 항복응력을 걸어야 한다.
+if a.phase == "diag":
+    with torch.no_grad():
+        l0 = simulator.origin_len
+        gk = simulator.global_k
+        kv = (10.0 ** (gk.reshape(-1, 1) if gk.dim() == 1 else gk))
+        if kv.shape != l0.shape:
+            kv = kv.expand_as(l0)
+        k_s = kv / (l0 + simulator.eps)       # forward 의 K (힘 = dl * K)
+        # 등방 스프링망의 유효 영률: U = (1/10) eps^2 sum k l0^2
+        #   -> E_eff = (1/5V) sum k l0^2.  방향 쌍이 두 번 세어지니 1/2.
+        bb = (X0.max(0).values - X0.min(0).values)
+        V = float(bb[0] * bb[1] * bb[2])
+        E_eff = float(0.5 * (k_s * l0 ** 2).sum() / (5.0 * V))
+        print(f"[유효영률] 스프링 {l0.numel()}  부피 {V:.5f}  "
+              f"E_eff {E_eff:.4e}  (MPM 은 2.0e+06)", flush=True)
+        for ys, nm in ((1e4, "탄소성 plasticine"), (5e3, "점소성 foam")):
+            print(f"           {nm}: ys {ys:.0e} -> eps_y {ys / E_eff:.5f} "
+                  f"(MPM E 기준이었던 값 {ys / 2e6:.5f})", flush=True)
+    for v0 in (0.0, -6.0):
+        if v0:
+            simulator.init_v = simulator.init_v.detach().clone()
+            simulator.init_v[:, 2] = v0
+        X, _, _ = rollout(S_TRAIN, frames=NF)
+        with torch.no_grad():
+            mx, p99 = [], []
+            for f in range(X.shape[0]):
+                xx = torch.as_tensor(X[f], device="cuda")
+                cur = torch.norm(xx[simulator.knn_index] - xx.unsqueeze(1),
+                                 dim=2)
+                st = ((cur - simulator._l0_ref if hasattr(simulator, "_l0_ref")
+                       else cur - simulator.origin_len)
+                      / (simulator.origin_len + simulator.eps)).abs()
+                mx.append(float(st.max()))
+                p99.append(float(torch.quantile(st.flatten().float(), 0.99)))
+        print(f"[변형률] v0={v0}  최대 {max(mx):.5f}  99분위 최대 "
+              f"{max(p99):.5f}  (프레임별 최대: "
+              f"{' '.join(f'{q:.4f}' for q in mx[::6])})", flush=True)
+    raise SystemExit(0)
 
 # --- 1) 사다리 + 이분 탐색 --------------------------------------------
 if a.phase in ("search", "all"):
