@@ -54,7 +54,7 @@ MAT = {"plastic": dict(material="plasticine", yield_stress=1e4),
 ap = argparse.ArgumentParser()
 ap.add_argument("--scene", choices=list(MAT), required=True)
 ap.add_argument("--shape", default="lego")
-ap.add_argument("--method", default="ipg", choices=["ipg", "pg"])
+ap.add_argument("--method", default="ipg", choices=["ipg", "pg", "gf"])
 ap.add_argument("--out", default=f"{W}/demo")
 ap.add_argument("--frames", type=int, default=0, help="0 이면 씬 기본값")
 ap.add_argument("--s", type=int, default=0, help="0 이면 씬 기본값")
@@ -92,7 +92,11 @@ ap.add_argument("--solver", default="newton_gmres",
                 choices=["newton_gmres", "picard", "picard_vanilla"])
 a = ap.parse_args()
 
-REPO = {"pg": f"{W}/PhysGaussian", "ipg": f"{W}/i-physgaussian"}[a.method]
+REPO = {"pg": f"{W}/PhysGaussian", "ipg": f"{W}/i-physgaussian",
+        "gf": f"{W}/GaussianFluent"}[a.method]
+# GaussianFluent 로 돌릴 때 그쪽 공식 수박 설정(config/watermelon_config.json)의
+# 솔버 값: FLIP/PIC 0.7, 격자 300. 재질 상수는 MAT 의 watermelon 과 같다.
+GF_FRACTURE = dict(flip_pic_ratio=0.7)
 FRAMES = a.frames or {"plastic": 90, "viscous": 120, "granular": 120,
                        "fracture": 60}[a.scene]
 # 벤치에서 그 물성이 통과한 서브스텝을 그대로 쓴다 (lego: 소성 1393, 점성 1854,
@@ -190,6 +194,10 @@ def build(frames, sub, with_floor, gravity, extra_bc=()):
                show_hint=False, scale=SCALE,
                particle_filling=fill["particle_filling"])
     cfg.update(MAT[a.scene]); cfg.update(cam)
+    if a.method == "gf" and a.scene == "fracture":
+        cfg.update(GF_FRACTURE)
+        if not a.n_grid:
+            cfg["n_grid"] = 300
     if a.scene == "fracture":
         # i-PG 러너는 exe/patch_ipg_initv.py 를 적용해야 이 값을 읽는다
         cfg["init_velocity"] = [0.0, 0.0, a.v0]
