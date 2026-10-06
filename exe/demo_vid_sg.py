@@ -62,23 +62,29 @@ OD = f"{a.out}/sg_{a.shape}_{a.scene}"
 os.makedirs(a.out, exist_ok=True)
 
 # ------------------------------------------------------------- 그쪽 코드 적재
-sys.path.insert(0, SG)
-sys.path.insert(0, f"{SG}/lib")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 임포트 경로는 bench_sg.py 와 **똑같이** 잡는다 (그쪽 train.py 가
+# config_parser 와 get_simulator 를 함께 내보낸다)
+cs = sorted(glob.glob(f"{SG}/exp/af*_{a.shape}_*/checkpoints_dynamic/"
+                      f"checkpoint/dy_n_step.json"))
+if a.exp:
+    cs = sorted(glob.glob(f"{a.exp}/checkpoints_dynamic/checkpoint/"
+                          f"dy_n_step.json")) or cs
+if not cs:
+    raise SystemExit(f"[중단] {a.shape} 피팅 결과가 없다 ({SG}/exp)")
+ck = os.path.join(os.path.dirname(cs[-1]), "Spring_Mass.pth.tar")
+exp = os.path.dirname(os.path.dirname(os.path.dirname(cs[-1])))
+if not os.path.exists(ck):
+    raise SystemExit(f"[중단] 가중치가 없다: {ck}")
 os.chdir(SG)
+sys.path.insert(0, SG)
+sys.argv = ["demo.py", "--cfg", f"config/anchorflow/{a.shape}.yaml",
+            "--exp_id", f"demo_{a.shape}", "--dy_reload", ck, "-g", "0"]
+from train import config_parser, get_simulator                   # noqa: E402
 from lib.utils.config import get_config_merge_default            # noqa: E402
-from lib.utils.parser import config_parser                       # noqa: E402
-from lib.datasets.scene import Scene                             # noqa: E402
-from lib.models.gaus.gaussian_renderer import render             # noqa: E402
-from train import get_simulator                                  # noqa: E402
+from lib.models.gaus import Scene, render                       # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sg_materials                                              # noqa: E402
 
-exp = a.exp or sorted(glob.glob(f"{SG}/exp/af*_{a.shape}_*"))[-1]
-ck = f"{exp}/checkpoints_dynamic/checkpoint/Spring_Mass.pth.tar"
-if not os.path.exists(ck):
-    raise SystemExit(f"[중단] 체크포인트가 없다: {ck}")
-cfgp = f"{SG}/config/anchorflow/{a.shape}.yaml"
-sys.argv = ["demo", "--cfg", cfgp, "--dy_reload", ck, "-g", "0"]
 arg = config_parser()
 cfg = get_config_merge_default(config_file=arg.cfg, arg=arg)
 os.makedirs(f"{SG}/exp/demo_{a.shape}", exist_ok=True)
