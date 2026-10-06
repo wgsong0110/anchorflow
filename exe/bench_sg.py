@@ -166,6 +166,15 @@ def rollout(s, frames=NF, render_dir="", timeit=False, keep_state=False):
             torch.cuda.synchronize()
             t_sim += time.time() - t0
         gaussians._xyz = xyz_all
+    if a.material != "elastic":
+        # 확장이 실제로 작동했는지 매 롤아웃마다 남긴다 (소성 칸이 탄성과
+        # 똑같이 나온 적이 있다 -- 변형률이 항복에 닿지 않으면 조용히 무효다)
+        with torch.no_grad():
+            brk = float(1.0 - simulator._k_mask.mean())
+            dl0 = float((simulator.origin_len / simulator._l0_ref - 1).abs()
+                        .max())
+        print(f"  [확장] n_step {int(s)}: 끊긴 스프링 {100 * brk:.3f}%  "
+              f"쉬는길이 최대 변화 {100 * dl0:.3f}%", flush=True)
     if keep_state:
         return np.stack(X), np.stack(V), t_sim, L0, MK
     return np.stack(X), np.stack(V), t_sim
