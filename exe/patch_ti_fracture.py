@@ -31,14 +31,16 @@ FUNC = '''
         M = self.frac_M
         beta = self.frac_beta
         xi = self.frac_xi
-        p0 = kappa * (1e-5 + ti.sinh(xi * ti.max(-self.Jp[p], 0.0)))
+        _hx = xi * ti.max(-self.Jp[p], 0.0)
+        # taichi 에는 sinh 가 없다 -> (e^x - e^-x)/2
+        p0 = kappa * (1e-5 + 0.5 * (ti.exp(_hx) - ti.exp(-_hx)))
         J = 1.0
         Bm = 0.0
         for i in ti.static(range(3)):
             J *= sig[i, i]
             Bm += sig[i, i] * sig[i, i]
         Bm /= 3.0
-        Jn23 = ti.pow(ti.max(J, 1e-12), -2.0 / 3.0)
+        Jn23 = ti.max(J, 1e-12) ** (-2.0 / 3.0)
         s_hat = ti.Vector([0.0, 0.0, 0.0])
         s_sq = 0.0
         for i in ti.static(range(3)):
@@ -52,17 +54,17 @@ FUNC = '''
         sig_new = sig
         if p_tr > p0:                       # 압축 꼭짓점
             Je = ti.sqrt(ti.max(-2.0 * p0 / kappa + 1.0, 1e-12))
-            s = ti.pow(Je, 1.0 / 3.0)
+            s = Je ** (1.0 / 3.0)
             sig_new = ti.Matrix.identity(ti.f32, 3) * s
             self.Jp[p] += ti.log(ti.max(J / Je, 1e-12))
         elif p_tr < -p_min:                 # 인장 꼭짓점 -- 여기서 갈라진다
             Je = ti.sqrt(ti.max(2.0 * p_min / kappa + 1.0, 1e-12))
-            s = ti.pow(Je, 1.0 / 3.0)
+            s = Je ** (1.0 / 3.0)
             sig_new = ti.Matrix.identity(ti.f32, 3) * s
             self.Jp[p] += ti.log(ti.max(J / Je, 1e-12))
         elif y >= 1e-4:                     # 항복면 위로
             s_norm = ti.max(ti.sqrt(ti.max(s_sq, 1e-20)), 1e-10)
-            scale = (ti.pow(ti.max(J, 1e-12), 2.0 / 3.0) / mu
+            scale = (ti.max(J, 1e-12) ** (2.0 / 3.0) / mu
                      * ti.sqrt(ti.max(-yp_h / ys_c, 0.0)) / s_norm)
             for i in ti.static(range(3)):
                 b = scale * s_hat[i] + Bm
@@ -98,7 +100,7 @@ FUNC = '''
             Bm2 += sig_new[i, i] * sig_new[i, i]
         Bm2 /= 3.0
         Jn = ti.max(Jn, 1e-12)
-        Jn23b = ti.pow(Jn, -2.0 / 3.0)
+        Jn23b = Jn ** (-2.0 / 3.0)
         tau = ti.Matrix.zero(ti.f32, 3, 3)
         for i in ti.static(range(3)):
             tau[i, i] = (mu * Jn23b * (sig_new[i, i] * sig_new[i, i] - Bm2)
@@ -109,11 +111,14 @@ FUNC = '''
 
 
 def main():
+    if os.environ.get("AF_REPATCH") and os.path.exists(SRC + ".orig"):
+        shutil.copy(SRC + ".orig", SRC)        # 원본으로 되돌리고 다시 붙인다
     src = open(SRC).read()
     if MARK in src:
-        print("[건너뜀] 이미 적용돼 있다")
+        print("[건너뜀] 이미 적용돼 있다 (AF_REPATCH=1 로 다시 붙인다)")
         return
-    shutil.copy(SRC, SRC + ".orig")
+    if not os.path.exists(SRC + ".orig"):
+        shutil.copy(SRC, SRC + ".orig")
 
     # 1) 재질 번호
     src = src.replace("    material_stationary = 4\n",
