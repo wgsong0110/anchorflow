@@ -20,21 +20,19 @@ MARK = "material_fracture = 5"
 
 FUNC = '''
     @ti.func
-    def camclay_borden(self, p, U, sig, V):
-        """CD-MPM(GF watermelon): Cam-Clay 되돌림 + Borden 응력.
+    def camclay_sig(self, p, sig):
+        """CD-MPM(GF watermelon) 의 비연계 Cam-Clay 되돌림 + 경화.
 
         self.Jp[p] 를 **logJp** 로 쓴다 (sand 와 같은 자리, 다른 뜻).
-        되돌린 F 를 self.F[p] 에 쓰고 Kirchhoff 응력을 돌려준다.
+        되돌린 특이값을 돌려주고, 응력은 그쪽 고정 코로테이션 식을 그대로 쓴다.
         """
         mu = self.frac_mu
         kappa = self.frac_kappa
         M = self.frac_M
         beta = self.frac_beta
         xi = self.frac_xi
-        # 경화 상태는 반드시 막아야 한다. sinh 는 f32 에서 x>88 이면 넘치고,
-        # 한 번 넘치면 p0=inf -> 전부 NaN -> 입자가 격자 밖으로 날아간다.
+        # 경화는 묶어야 한다. f32 에서 sinh 는 x>88 이면 넘친다.
         _hx = ti.min(xi * ti.max(-self.Jp[p], 0.0), 15.0)
-        # taichi 에는 sinh 가 없다 -> (e^x - e^-x)/2
         p0 = kappa * (1e-5 + 0.5 * (ti.exp(_hx) - ti.exp(-_hx)))
         J = 1.0
         Bm = 0.0
@@ -42,13 +40,14 @@ FUNC = '''
             J *= sig[i, i]
             Bm += sig[i, i] * sig[i, i]
         Bm /= 3.0
-        Jn23 = ti.max(J, 1e-12) ** (-2.0 / 3.0)
+        J = ti.min(ti.max(J, 1e-3), 1e3)
+        Jn23 = J ** (-2.0 / 3.0)
         s_hat = ti.Vector([0.0, 0.0, 0.0])
         s_sq = 0.0
         for i in ti.static(range(3)):
             s_hat[i] = mu * Jn23 * (sig[i, i] * sig[i, i] - Bm)
             s_sq += s_hat[i] * s_hat[i]
-        p_tr = -(kappa / 2.0 * (J - 1.0 / ti.max(J, 1e-12))) * J
+        p_tr = -(kappa / 2.0 * (J - 1.0 / J)) * J
         ys_c = 1.5 * (1.0 + 2.0 * beta)
         yp_h = M * M * (p_tr + beta * p0) * (p_tr - p0)
         y = ys_c * s_sq + yp_h
@@ -70,11 +69,10 @@ FUNC = '''
                                        -5.0), 5.0)
         elif y >= 1e-4:                     # 항복면 위로
             s_norm = ti.max(ti.sqrt(ti.max(s_sq, 1e-20)), 1e-10)
-            scale = (ti.max(J, 1e-12) ** (2.0 / 3.0) / mu
+            scale = (J ** (2.0 / 3.0) / mu
                      * ti.sqrt(ti.max(-yp_h / ys_c, 0.0)) / s_norm)
             for i in ti.static(range(3)):
                 b = scale * s_hat[i] + Bm
-                # 특이값을 묶는다. 작아지면 1/J 가 폭주해 응력이 터진다.
                 sig_new[i, i] = ti.min(ti.max(ti.sqrt(ti.max(b, 1e-12)),
                                               0.05), 20.0)
             # 항복면 경화. 수박을 깨뜨리는 것이 이 항이다.
@@ -102,21 +100,7 @@ FUNC = '''
                 self.Jp[p] = ti.min(ti.max(
                     self.Jp[p] + ti.log(ti.max(J / Je_f, 1e-12)),
                     -5.0), 5.0)
-        self.F[p] = U @ sig_new @ V.transpose()
-        Jn = 1.0
-        Bm2 = 0.0
-        for i in ti.static(range(3)):
-            Jn *= sig_new[i, i]
-            Bm2 += sig_new[i, i] * sig_new[i, i]
-        Bm2 /= 3.0
-        Jn = ti.min(ti.max(Jn, 1e-3), 1e3)
-        Jn23b = Jn ** (-2.0 / 3.0)
-        tau = ti.Matrix.zero(ti.f32, 3, 3)
-        for i in ti.static(range(3)):
-            _t = (mu * Jn23b * (sig_new[i, i] * sig_new[i, i] - Bm2)
-                  + kappa / 2.0 * (Jn - 1.0 / Jn) * Jn)
-            tau[i, i] = ti.min(ti.max(_t, -1e6), 1e6)   # 마지막 안전막
-        return U @ tau @ U.transpose()
+        return sig_new
 
 '''
 
@@ -155,6 +139,7 @@ def main():
         self.frac_M = _alpha * 3.0 / _math.sqrt(2.0 / 3.0)
         self.frac_beta = 1.0
         self.frac_xi = 3.0
+        self.frac_h = _E / self.E     # 파괴 재질은 더 무르게 (GF E=2e3)
 ''', 1)
 
     # 3) 되돌림 + 응력 함수
@@ -168,14 +153,23 @@ def main():
                       "material == self.material_fracture:\n"
                       "                self.Jp[i] = 0\n", 1)
 
-    # 5) p2g 의 응력을 파괴 재질에서만 덮어쓴다 (다른 재질 경로는 그대로)
-    old = ("                stress = 2 * mu * (\n"
-           "                    self.F[p] - U @ V.transpose()) @ self.F[p].transpose(\n"
-           "                    ) + ti.Matrix.identity(ti.f32, self.dim) * la * J * (J - 1)\n")
-    assert old in src, "p2g 응력 줄을 못 찾았다"
+    # 5) SVD 직후에 Cam-Clay 되돌림만 하고, 응력은 **그쪽 식을 그대로** 쓴다.
+    #    (응력까지 갈아끼우면 메모리 접근 패턴이 달라져 깨진다 -- 실측)
+    old = "            U, sig, V = ti.svd(self.F[p])\n"
+    assert old in src, "svd 줄을 못 찾았다"
     src = src.replace(old, old +
-                      "                if self.material[p] == self.material_fracture:\n"
-                      "                    stress = self.camclay_borden(p, U, sig, V)\n", 1)
+                      "            if self.material[p] == self.material_fracture:\n"
+                      "                sig = self.camclay_sig(p, sig)\n"
+                      "                self.F[p] = U @ sig @ V.transpose()\n", 1)
+
+    # 6) 파괴 재질은 더 무른 탄성계수를 쓴다 (GF watermelon 의 E=2e3).
+    old_h = ("            if self.material[\n"
+             "                    p] == self.material_elastic:  # Jelly, make it softer\n"
+             "                h = 0.3\n")
+    assert old_h in src, "h 설정 줄을 못 찾았다"
+    src = src.replace(old_h, old_h +
+                      "            if self.material[p] == self.material_fracture:\n"
+                      "                h = self.frac_h\n", 1)
 
     open(SRC, "w").write(src)
     print(f"[적용] {SRC}  (원본은 {os.path.basename(SRC)}.orig)")
