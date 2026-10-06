@@ -8,13 +8,13 @@
         반대 방향 힘을 준다 (점성 실이 늘어난다).
   파괴  위에서 바닥으로 던진다 (초기 하강속도 -6, 격자 200).
 
-구동은 **힘**이다 (속도를 박지 않는다). 그쪽 러너의 `particle_impulse` 경계조건을
-그대로 쓴다 -- 상자 안 입자를 **처음 위치로 한 번 골라** 그 입자들에 정해진 시간
-동안 같은 힘을 준다(`v += F/m·dt`). 소성은 주축 기준 왼쪽 절반 전체에 왼쪽
+구동은 **힘**이다 (속도를 박지 않는다). 질량에 비례하는 힘, 즉 영역 전체에 같은
+가속도를 준다 (`exe/patch_ipg_bodyacc.py` 가 붙이는 `body_acceleration` 경계조건 --
+상자 안 입자를 **처음 위치로 한 번 골라** 정해진 시간 동안 `v += a·dt`). 소성은 주축 기준 왼쪽 절반 전체에 왼쪽
 힘, 오른쪽 절반 전체에 오른쪽 힘을 준다. 점성은 아래 덩이 전체와 위 덩이 전체에
-반대 방향 힘을 준다. 힘은 가속도 A 로 정하고 F = A·m 으로 넣는다(m 은 채우기
-격자 한 칸 부피 × 밀도). 암시 적분에서도 힘이 시간에 대해 그대로 적분되도록
-impulse_scale 은 1 이다 (러너가 매 스텝 실제 dt 로 곱한다).
+반대 방향 힘을 준다. 가속도는 매 스텝 실제 dt 로 적분되므로 암시 적분의 큰
+스텝에서도 시간에 대해 그대로다. 좌우는 카메라를 돌리지 않고 **원래 카메라의 화면
+가로축**(--force_cam)으로 정한다.
 
 점성 씬은 물체가 둘이라 가우시안도 둘이어야 한다. 그래서 3DGS ply 를 수직으로
 옮겨 복제한 모델을 만들고(`--dup`), 거기에 공식 채우기를 다시 돌린다.
@@ -40,10 +40,10 @@ MODEL = {"wolf": "wolf_whitebg-trained", "mic": "mic_whitebg-trained",
 # 물성은 벤치와 **같은 값**을 쓴다 (exe/bench_vq.py 의 MAT)
 MAT = {"plastic": dict(material="plasticine", yield_stress=1e4),
        # 점성은 **흘러내려야** 한다. 벤치 값(항복 5e3)은 제 무게(ρgh≈5e3)를
-       # 겨우 버텨 강체처럼 보였다. 항복을 무게 응력의 1/20 로 낮추고 점성을
+       # 겨우 버텨 강체처럼 보였다. 항복을 무게 응력의 1/3 로 낮추고 점성을
        # 키워 꿀처럼 천천히 처지게 한다.
-       "viscous": dict(material="foam", E=2e5, yield_stress=250.0,
-                       plastic_viscosity=50.0),
+       "viscous": dict(material="foam", E=2e5, yield_stress=1500.0,
+                       plastic_viscosity=100.0),
        # 입상: PhysGaussian 공식 wolf 설정(config/wolf_config.json)의 모래 그대로
        "granular": dict(material="sand", E=5e7, nu=0.3, density=2000.0,
                         friction_angle=30.0),
@@ -265,15 +265,8 @@ if a.scene in ("plastic", "viscous", "granular"):
     r = r / np.linalg.norm(r)
     k = int(np.argmax(np.abs(r)))               # 상자는 축 정렬 -> 지배 축으로 고른다
     e = r                                       # 오른쪽 절반이 받는 방향 (화면 오른쪽)
-    ACC = a.acc or (10.0 if a.scene == "plastic" else 5.0)
-    RHO = float(MAT[a.scene].get("density", 1000.0))
+    ACC = a.acc or (100.0 if a.scene == "plastic" else 5.0)
     NF = a.force_frames or (20 if a.scene == "plastic" else 40)
-    # 입자 하나 질량. 채우기 한 칸(8e-6)×밀도로 잡았더니 실제 가속도가 45 배로
-    # 나왔다 (미리보기 궤적에서 한 프레임에 절반이 0.49 이동 -> a≈3560, 의도 80).
-    # 러너가 가우시안·채움 입자에 나눠 준 부피가 더 작다. 그 실측비로 맞춘다.
-    m_p = RHO * (2.0 / fill["particle_filling"]["n_grid"]) ** 3 / 44.5
-    F = ACC * m_p
-    sub_dt = (1.0 / 60.0) / SUB
     c = X0.mean(0)
     BIG = 4.0                                   # 다른 축은 전부 덮는다
     if a.scene == "plastic":
@@ -298,15 +291,16 @@ if a.scene in ("plastic", "viscous", "granular"):
             sz = np.full(3, BIG); sz[2] = BIG / 2
             boxes.append((pt, sz, sgn))
     for pt, sz, sgn in boxes:
-        EXTRA.append({"type": "particle_impulse",
-                      "force": (sgn * F * e).tolist(),
+        # 질량에 비례하는 힘 = 같은 가속도 (exe/patch_ipg_bodyacc.py). 입자마다
+        # 같은 힘을 주는 particle_impulse 는 가벼운 표면 입자만 튀게 한다.
+        EXTRA.append({"type": "body_acceleration",
+                      "acc": (sgn * ACC * e).tolist(),
                       "point": pt.tolist(), "size": sz.tolist(),
-                      "start_time": t0,
-                      "num_dt": int(round(NF / 60.0 / sub_dt))})
+                      "start_time": t0, "end_time": t0 + NF / 60.0})
     for nm, mk, sgn in groups:
         print(f"[힘] {nm}: 입자 {int(mk.sum())} 개, 방향 화면 "
               f"{'오른쪽' if sgn > 0 else '왼쪽'} {np.round(sgn * e, 3).tolist()}, "
-              f"가속도 {ACC} (F={F:.3e}, m={m_p:.1e}), "
+              f"가속도 {ACC}, "
               f"{t0 * 60:.0f}~{t0 * 60 + NF:.0f} 프레임", flush=True)
 
 
