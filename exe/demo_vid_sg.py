@@ -109,6 +109,12 @@ sim.eval()
 # get_simulator 는 인자 없이 만들어 학습 안 된 _scaling(중앙값 0.035, 12 배)으로
 # 그린다 -- 그래서 모든 렌더가 녹은 덩어리처럼 나왔다 (실측). 학습 때와 같게 맞춘다.
 gaussians.const_scale = float(cfg.STATIC.CONST_SCALE)
+# 중력: 그쪽 시뮬레이터는 cfg.DYNAMIC.G 를 읽는데 기본값이 [0,-9.8,0] (y 가 위)
+# 이고, 우리 장면은 z 가 위라 g_f=[0,0,1] 과 곱해져 **유효 중력이 0** 이었다
+# (우리 설정은 MODEL.G 에 넣어 먹히지 않았다). 시연에서는 z 중력을 직접 넣는다.
+print(f"[중력] 피팅 값 g={sim.g.tolist()} g_f={sim.g_f.tolist()} -> 유효 "
+      f"{(sim.g * sim.g_f).tolist()}", flush=True)
+sim.g = torch.tensor([0.0, 0.0, -9.8], dtype=torch.float32)
 
 BG = torch.ones(3, dtype=torch.float32, device="cuda")       # 흰 배경
 from lib.models.gaus.utils.graphics_utils import getWorld2View2   # noqa: E402
