@@ -156,7 +156,10 @@ def run_flow(x0, field, frames, period, frame_dt, safety=0.5, keep_F=False):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fill", required=True, help="PG 공식 채우기 입자 (npy)")
+    ap.add_argument("--fill", required=True, help="PG 공식 채우기 입자 (npy) -- 정규화 기준")
+    ap.add_argument("--pts", default="",
+                    help="흘릴 점을 따로 준다 (rep_aux 가 만든 정규화된 가우시안 중심 npy). "
+                         "주면 채우기 입자 대신 이 점들이 목표 입자다")
     ap.add_argument("--out", required=True)
     ap.add_argument("--n", type=int, default=30000, help="부분표본 입자 수")
     ap.add_argument("--frames", type=int, default=120)
@@ -180,6 +183,8 @@ if __name__ == "__main__":
     Xn = (X - lo) / s                                   # [0,1]³ 안 (긴 축이 1)
     # 짧은 축은 가운데로 (형상마다 같은 위치에 오도록)
     Xn = Xn + (1.0 - Xn.max(0)) / 2.0
+    if a.pts:                                       # 가우시안 중심 (내부 채움 없음)
+        Xn = np.load(a.pts).astype(np.float64)
     r = np.random.default_rng(a.sub_seed)
     idx = np.sort(r.choice(len(Xn), min(a.n, len(Xn)), replace=False))
     dev = "cuda" if torch.cuda.is_available() else "cpu"
