@@ -68,9 +68,16 @@ ap.add_argument("--lr", type=float, default=1e-3, help="adam_bt: Adam 학습률"
 ap.add_argument("--lam_inv", type=float, default=100.0, help="adam_bt: 장벽 계수")
 ap.add_argument("--tau", type=float, default=0.1, help="adam_bt: det 장벽 문턱")
 ap.add_argument("--knn_F", type=int, default=8, help="adam_bt: det 를 잴 이웃 수")
+ap.add_argument("--riem_eps", type=float, default=1e-2,
+                help="riem: 계량 G = JᵀJ + ε·λmax·I 의 상대 ε (λmax 는 프레임마다 거듭제곱법)")
+ap.add_argument("--riem_lr", type=float, default=1.0, help="riem: 고정 보폭 η")
+ap.add_argument("--riem_cg", type=int, default=50, help="riem: CG 최대 반복")
+ap.add_argument("--pt_realtime", action="store_true",
+                help="phystwin: 공식 실시간 데모 방식 -- 이웃 질량점 인덱스는 첫 프레임에 한 번, "
+                     "매 프레임 그 이웃까지 거리로 가중치만 다시")
 ap.add_argument("--tb", default="auto",
                 help="TensorBoard 디렉토리 (auto: /home/dkta/work/tbrf/<폴더>_<파일>, none: 끔)")
-ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt", "adam"],
+ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt", "adam", "riem"],
                 help="lbfgs (원래 설정) / gd: 고정 학습률 경사하강")
 ap.add_argument("--gd_lr", type=float, default=1.0)
 ap.add_argument("--frames", type=int, default=0, help="앞 몇 프레임만 (0 이면 전부)")
@@ -249,14 +256,19 @@ class PhysTwin(torch.nn.Module):
             0, inv, P, "mean", include_self=False)
         self.B, self.K = B, K
         self.rel = torch.cdist(B, B).topk(K + 1, largest=False).indices[:, 1:]
+        self.B0 = B.clone()                                  # 스프링 정지 길이 기준 (처음 위치)
+        self.L0 = (B[self.rel] - B[:, None]).norm(dim=-1)
         self.m = None
         self.dof = 3 * B.shape[0]
 
     def rebind(self, Pall):
         if self.m is not None:
             self.B = (self.B + self.m.detach()).clone()
-        ii = torch.cat([torch.cdist(Pall[i:i + 20000], self.B).topk(self.K, largest=False).indices
-                        for i in range(0, Pall.shape[0], 20000)])
+        if a.pt_realtime and getattr(self, "wi", None) is not None:
+            ii = self.wi                                     # 실시간 데모: 이웃 인덱스 고정
+        else:
+            ii = torch.cat([torch.cdist(Pall[i:i + 20000], self.B).topk(self.K, largest=False).indices
+                            for i in range(0, Pall.shape[0], 20000)])
         self.wi = ii
         # 프레임 안에서 X 와 B 는 고정 -> 역거리 가중치와 그 기울기는 상수
         d = Pall[:, None] - self.B[ii]
@@ -271,6 +283,11 @@ class PhysTwin(torch.nn.Module):
 
     def params(self):
         return [self.m]
+
+    def elastic_residual(self, m):
+        """스프링 에너지 E = ½ Σ (|x_i - x_j| - L0_ij)² 의 잔차 (처음 이웃 16 개, 단위 강성)."""
+        Bn = self.B + m
+        return ((Bn[self.rel] - Bn[:, None]).norm(dim=-1) - self.L0).reshape(-1)
 
     def bone_R(self):
         B, m, rel = self.B, self.m, self.rel
@@ -420,6 +437,18 @@ class VRGS(torch.nn.Module):
         self.v = torch.nn.Parameter(self.vr.clone())
         self.A0i = torch.linalg.inv(torch.stack(gv._tri_frame(self.vr, self.f)[1:], -1))
         self.dof = 3 * self.vr.shape[0]
+        # StVK 막 에너지용 정지 삼각형: 국소 2D 틀에서 D0 = [e1 e2] 와 넓이
+        v0, v1, v2 = self.vr[self.f[:, 0]], self.vr[self.f[:, 1]], self.vr[self.f[:, 2]]
+        e1, e2 = v1 - v0, v2 - v0
+        t1 = e1 / e1.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+        nrm = torch.cross(e1, e2, dim=-1)
+        self.A0 = 0.5 * nrm.norm(dim=-1)
+        t2 = torch.cross(nrm / nrm.norm(dim=-1, keepdim=True).clamp_min(1e-12), t1, dim=-1)
+        D0 = torch.stack([torch.stack([(e1 * t1).sum(-1), (e1 * t2).sum(-1)], -1),
+                          torch.stack([(e2 * t1).sum(-1), (e2 * t2).sum(-1)], -1)], -1)   # [T,2,2]
+        self.D0i = torch.linalg.inv(D0)
+        nu = 0.3                                              # 라메 상수 비 (μ=1)
+        self.mu, self.lam = 1.0, 2 * nu / (1 - 2 * nu)
         print(f"[vrgs] 꼭짓점 {self.vr.shape[0]} 삼각형 {self.f.shape[0]}", flush=True)
 
     def params(self):
@@ -437,6 +466,17 @@ class VRGS(torch.nn.Module):
 
     def yJ(self, X, sel):
         return self(X, sel) - X, self.F(sel)
+
+    def elastic_residual(self, v):
+        """삼각형 StVK 막 에너지 Σ A0 (μ|E|² + λ/2 tr(E)²) 의 잔차 (E = ½(FᵀF - I), F 는 3x2)."""
+        v0, v1, v2 = v[self.f[:, 0]], v[self.f[:, 1]], v[self.f[:, 2]]
+        F = torch.stack([v1 - v0, v2 - v0], -1) @ self.D0i                 # [T,3,2]
+        C = F.transpose(1, 2) @ F
+        E11, E22, E12 = 0.5 * (C[:, 0, 0] - 1), 0.5 * (C[:, 1, 1] - 1), 0.5 * C[:, 0, 1]
+        w = self.A0.sqrt()
+        return torch.cat([w * math.sqrt(self.mu) * E11, w * math.sqrt(self.mu) * E22,
+                          w * math.sqrt(2 * self.mu) * E12,
+                          w * math.sqrt(self.lam / 2) * (E11 + E22)])
 
 
 if a.method in ("ours", "tet"):
@@ -653,7 +693,45 @@ for t in range(1, T + 1):
         CURVE.append((t, it[0], float(l2), float(bar)))
         it[0] += 1
         return loss
-    if a.opt == "adam":
+    if a.opt == "riem":
+        # 탄성 에너지의 가우스-뉴턴 헤시안을 계량으로: Δ = (JᵀJ + ε·λmax·I)⁻¹ ∇L, θ -= ηΔ.
+        # 계량은 매 스텝 현재 상태에서 다시 선형화한다. 장벽·되돌림·선탐색 없음
+        from torch.func import jvp, vjp
+        theta = rep.params()[0]
+        X_ = Pref[FI]
+
+        def GN(th):
+            _, vjp_fn = vjp(rep.elastic_residual, th)
+            return lambda u: vjp_fn(jvp(rep.elastic_residual, (th,), (u,))[1])[0]
+        with torch.no_grad():                                 # 프레임마다 λmax (거듭제곱법 20 번)
+            Hv = GN(theta.detach())
+            u = torch.randn_like(theta)
+            for _ in range(20):
+                u = Hv(u); lmax = float(u.norm()); u = u / max(lmax, 1e-30)
+        eps = a.riem_eps * max(lmax, 1e-12)
+        for it_ in range(a.iters0 if t == 1 else a.iters):
+            if theta.grad is not None:
+                theta.grad = None
+            dy, _ = YJ(X_, FI)
+            l2 = ((RES0 + dy) ** 2).sum(1).mean()
+            l2.backward()
+            gk = theta.grad.detach()
+            with torch.no_grad():
+                Hv = GN(theta.detach())
+                Gv = lambda u: Hv(u) + eps * u
+                x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
+                for _ in range(a.riem_cg):                    # CG: G x = g
+                    Gp = Gv(pdir); al = rr / (pdir * Gp).sum().clamp_min(1e-30)
+                    x += al * pdir; r -= al * Gp
+                    rr_new = (r * r).sum()
+                    if rr_new.sqrt() < 1e-4 * gk.norm():
+                        break
+                    pdir = r + (rr_new / rr) * pdir; rr = rr_new
+                theta -= a.riem_lr * x
+            CURVE.append((t, it_, float(l2), 0.0, 0))
+        it[0] = it_ + 1
+        STOP.append((t, it_ + 1, it_ + 1, float("nan"), eps, "riem"))
+    elif a.opt == "adam":
         # 뒤집힘 고려 없음: 입자 L2 만 Adam 으로 (장벽·되돌림 없음). det 는 야코비안으로 기록만
         if REB or OPT is None:
             OPT = torch.optim.Adam(rep.params(), lr=a.lr)
