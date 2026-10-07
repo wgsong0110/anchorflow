@@ -62,7 +62,13 @@ ap.add_argument("--jhat", type=float, default=0.3)
 ap.add_argument("--emd_every", type=int, default=10)
 ap.add_argument("--pg", default="/home/dkta/work/i-physgaussian")
 ap.add_argument("--fp64", action="store_true", help="모든 계산을 float64 로")
-ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd"],
+ap.add_argument("--iters0", type=int, default=400, help="adam_bt: 첫 프레임 반복")
+ap.add_argument("--iters", type=int, default=200, help="adam_bt: 이후 프레임 반복")
+ap.add_argument("--lr", type=float, default=1e-3, help="adam_bt: Adam 학습률")
+ap.add_argument("--lam_inv", type=float, default=100.0, help="adam_bt: 장벽 계수")
+ap.add_argument("--tau", type=float, default=0.1, help="adam_bt: det 장벽 문턱")
+ap.add_argument("--knn_F", type=int, default=8, help="adam_bt: det 를 잴 이웃 수")
+ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt"],
                 help="lbfgs (원래 설정) / gd: 고정 학습률 경사하강")
 ap.add_argument("--gd_lr", type=float, default=1.0)
 ap.add_argument("--frames", type=int, default=0, help="앞 몇 프레임만 (0 이면 전부)")
@@ -557,6 +563,22 @@ def eval_all(Pref, Fprev):
 
 # ============================================================== 추적
 ALL = torch.arange(NG, device=dev)
+if a.opt == "adam_bt":
+    # 예전 설정(rep_track.py)의 최적화: det F 는 정지 이웃 k 개 최소제곱으로 재고,
+    # 격자 재설정 방법은 직전 위치 기준(증분), 나머지는 정지 위치 기준
+    NBR = torch.cat([torch.cdist(G0[i:i + 8192], G0).topk(a.knn_F + 1, largest=False).indices[:, 1:]
+                     for i in range(0, NG, 8192)])
+
+    def knn_ref(P):
+        dX = P[NBR] - P[:, None]
+        return dX, torch.linalg.inv(dX.transpose(1, 2) @ dX + 1e-12 * torch.eye(3, device=dev))
+
+    def knn_det(Y, ref):
+        dX, Binv = ref
+        dY = Y[NBR] - Y[:, None]
+        return det3((dY.transpose(1, 2) @ dX) @ Binv)
+    REF0 = knn_ref(G0)
+    OPT = None
 Pref = G0.clone()
 Fcum = torch.eye(3, device=dev).expand(NG, 3, 3).clone()
 Rcum = torch.eye(3, device=dev).expand(NG, 3, 3).clone()
@@ -619,7 +641,41 @@ for t in range(1, T + 1):
         CURVE.append((t, it[0], float(l2), float(bar)))
         it[0] += 1
         return loss
-    if a.opt == "lbfgs":
+    if a.opt == "adam_bt":
+        if REB or OPT is None:                       # 매개변수가 새로 생기면 Adam 도 새로
+            OPT = torch.optim.Adam(rep.params(), lr=a.lr)
+        ref = knn_ref(Pref) if REB else REF0
+        X_ = Pref[FI]
+        nbt_tot = 0
+        for it_ in range(a.iters0 if t == 1 else a.iters):
+            OPT.zero_grad(set_to_none=True)
+            dy, _ = YJ(X_, FI)
+            Y = X_ + dy
+            l2 = ((RES0 + dy) ** 2).sum(1).mean()
+            bar = torch.relu(a.tau - knn_det(Y, ref)).pow(2).mean()
+            (l2 + a.lam_inv * bar).backward()
+            prev = [q.detach().clone() for q in rep.params()]
+            OPT.step()
+            nbt = 0                                    # det>0 을 지키는 되돌림 (반씩, 최대 10 번)
+            with torch.no_grad():
+                for _bt in range(10):
+                    dy2, _ = YJ(X_, FI)
+                    if float(knn_det(X_ + dy2, ref).min()) > 0:
+                        break
+                    nbt += 1
+                    for q, q0 in zip(rep.params(), prev):
+                        q.copy_(q0 + 0.5 * (q - q0))
+                else:
+                    for q, q0 in zip(rep.params(), prev):
+                        q.copy_(q0)
+            nbt_tot += nbt
+            CURVE.append((t, it_, float(l2), float(bar), nbt))
+        it[0] = it_ + 1
+        with torch.no_grad():
+            dy2, _ = YJ(X_, FI)
+            KD = knn_det(X_ + dy2, ref)
+        STOP.append((t, it_ + 1, it_ + 1, float(KD.min()), float(nbt_tot), "adam_bt"))
+    elif a.opt == "lbfgs":
         opt = torch.optim.LBFGS(rep.params(), lr=1.0, max_iter=a.max_iter, history_size=50,
                                 tolerance_grad=0.0, tolerance_change=0.0,
                                 line_search_fn="strong_wolfe")
@@ -662,8 +718,11 @@ for t in range(1, T + 1):
         print(f"  [t={t:3d}] RMSE {100*rmse:.3f}%  CD {100*cd:.3f}%  "
               + (f"EMD {100*e:.3f}%  " if e == e else "")
               + f"det 최소 {rows[-1][4]:.3f} (≤0 {100*rows[-1][5]:.2f}%)  자유도 {rep.dof}  "
-              f"평가 {it[0]}  종료 {STOP[-1][5]} (반복 {STOP[-1][1]}, |g|max {STOP[-1][3]:.1e}, "
-              f"|step|max {STOP[-1][4]:.1e})  {time.time()-t0:.0f}s", flush=True)
+              + (f"이웃 det 최소 {STOP[-1][3]:.3f}  되돌림 {int(STOP[-1][4])}  "
+                 if a.opt == "adam_bt" else
+                 f"평가 {it[0]}  종료 {STOP[-1][5]} (반복 {STOP[-1][1]}, |g|max {STOP[-1][3]:.1e}, "
+                 f"|step|max {STOP[-1][4]:.1e})  ")
+              + f"{time.time()-t0:.0f}s", flush=True)
 if RENDER:
     WR.close()
 R = np.array(rows)
