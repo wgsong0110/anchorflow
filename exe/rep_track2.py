@@ -414,7 +414,7 @@ if a.video:
     pj = getProjectionMatrix(znear=0.01, zfar=100.0, fovX=fx_, fovY=fy_).transpose(0, 1).to(dev).float()
     st = GaussianRasterizationSettings(
         image_height=int(cam["height"]), image_width=int(cam["width"]),
-        tanfovx=math.tan(fx_ * 0.5), tanfovy=math.tan(fy_ * 0.5), bg=torch.ones(3, device=dev),
+        tanfovx=math.tan(fx_ * 0.5), tanfovy=math.tan(fy_ * 0.5), bg=torch.ones(3, device=dev, dtype=torch.float32),
         scale_modifier=1.0, viewmatrix=wv, projmatrix=(wv[None] @ pj[None])[0],
         sh_degree=3, campos=wv.inverse()[3, :3], prefiltered=False, debug=False)
     RAST = GaussianRasterizer(raster_settings=st)
