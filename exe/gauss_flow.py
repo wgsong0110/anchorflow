@@ -40,6 +40,7 @@ KINDS = ["smooth", "split", "point_src", "line_src", "twist_tear", "sink"]
 #   sink        v = -A n̂ g · cut(r/ε)              한 점으로 빨려 들어가 합쳐진다
 # g = exp(-|x-c|²/σ²) (line_src 는 축까지 거리 g⊥). 끊기는 곳은 측도 0 인 집합이다.
 SINK_EPS = 0.02
+STEP_DET_MIN = float("inf")      # 지금까지 모든 스텝 사상의 det 최솟값
 
 
 def field_seq(seed, n_win, c_lo=0.2, c_hi=0.8, sig=(0.15, 0.35),
@@ -114,7 +115,10 @@ def advance(x, F, f, T, safety=0.5):
     dt_max = dt_limit(f, safety)                          # Δt < σ²/A
     n = max(1, math.ceil(T / dt_max))
     dt = T / n
+    global STEP_DET_MIN
     for _ in range(n):
+        # 한 스텝 사상의 야코비안 (RK4 를 F=I 로 한 번 돌린 것) 의 det 을 잰다
+        Fi = torch.eye(3, dtype=x.dtype, device=x.device).expand(x.shape[0], 3, 3)
         def rhs(xx, FF):
             v, J = vel_and_grad(xx, f)
             return v, J @ FF
@@ -122,6 +126,12 @@ def advance(x, F, f, T, safety=0.5):
         k2x, k2F = rhs(x + 0.5 * dt * k1x, F + 0.5 * dt * k1F)
         k3x, k3F = rhs(x + 0.5 * dt * k2x, F + 0.5 * dt * k2F)
         k4x, k4F = rhs(x + dt * k3x, F + dt * k3F)
+        _, s1 = rhs(x, Fi)
+        _, s2 = rhs(x + 0.5 * dt * k1x, Fi + 0.5 * dt * s1)
+        _, s3 = rhs(x + 0.5 * dt * k2x, Fi + 0.5 * dt * s2)
+        _, s4 = rhs(x + dt * k3x, Fi + dt * s3)
+        Fstep = Fi + dt / 6.0 * (s1 + 2 * s2 + 2 * s3 + s4)
+        STEP_DET_MIN = min(STEP_DET_MIN, float(torch.linalg.det(Fstep).min()))
         x = x + dt / 6.0 * (k1x + 2 * k2x + 2 * k3x + k4x)
         F = F + dt / 6.0 * (k1F + 2 * k2F + 2 * k3F + k4F)
     return x, F, n, dt
@@ -185,7 +195,9 @@ if __name__ == "__main__":
     print(f"[흐름] 입자 {len(idx)}  프레임 {a.frames}  주기 {a.period}  창 "
           f"{len(field)}  서브스텝 {min(nsub)}~{max(nsub)}  det F 최소 {dmin:.4f}  "
           f"평균 변위 {disp:.4f} (정규화 단위)", flush=True)
-    assert dmin > 0, "det F <= 0 -- 흐름이 접혔다"
+    print(f"[스텝] 한 스텝 사상 det 최소 {STEP_DET_MIN:.4f} (모든 입자·모든 스텝)",
+          flush=True)
+    assert dmin > 0 and STEP_DET_MIN > 0, "det <= 0 -- 흐름이 접혔다"
     np.savez_compressed(
         a.out, X0=Xn[idx].astype(np.float32),
         traj=traj.cpu().numpy().astype(np.float32),
