@@ -70,6 +70,8 @@ ap.add_argument("--tau", type=float, default=0.1, help="adam_bt: det 장벽 문�
 ap.add_argument("--knn_F", type=int, default=8, help="adam_bt: det 를 잴 이웃 수")
 ap.add_argument("--riem_eps", type=float, default=1e-2,
                 help="riem: 계량 G = JᵀJ + ε·λmax·I 의 상대 ε (λmax 는 프레임마다 거듭제곱법)")
+ap.add_argument("--profile", type=int, default=0,
+                help="riem: 첫 프레임 이 반복 수만 돌며 구간별 시간 + torch 프로파일러 표를 내고 끝낸다")
 ap.add_argument("--riem_k", type=float, default=1.0,
                 help="riem: 탄성 강성 배수 k (G = k·JᵀJ + ε·λmax(k=1)·I -- ε 는 k=1 기준으로 고정)")
 ap.add_argument("--riem_lr", type=float, default=1.0, help="riem: 고정 보폭 η")
@@ -749,8 +751,28 @@ for t in range(1, T + 1):
             u = torch.randn_like(theta)
             for _ in range(20):
                 u = Hv(u); lmax = float(u.norm()); u = u / max(lmax, 1e-30)
+        if a.profile:
+            import collections
+            TM = collections.defaultdict(float)
+            NCG = [0]
+
+            def tic():
+                torch.cuda.synchronize(); return time.time()
+            prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
+                                                      torch.profiler.ProfilerActivity.CUDA])
+            prof.__enter__()
         eps = a.riem_eps * max(lmax, 1e-12)                   # k=1 기준 -> k 를 키우면 계량이 더 딱딱해진다
         for it_ in range(a.iters0 if t == 1 else a.iters):
+            if a.profile and it_ == a.profile:
+                prof.__exit__(None, None, None)
+                tot = sum(TM.values())
+                print(f"[프로파일] {a.method}  반복 {it_}  CG 평균 {NCG[0] / it_:.1f} 회/반복", flush=True)
+                for k_, v_ in sorted(TM.items(), key=lambda z: -z[1]):
+                    print(f"  {k_:28s} {1000 * v_ / it_:9.2f} ms/반복  ({100 * v_ / tot:5.1f}%)", flush=True)
+                print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20), flush=True)
+                sys.exit(0)
+            if a.profile:
+                t_ = tic()
             for q in PL:
                 q.grad = None
             dy, _ = YJ(X_, FI)
@@ -758,17 +780,25 @@ for t in range(1, T + 1):
             l2.backward()
             gk = flat([q.grad if q.grad is not None else torch.zeros_like(q) for q in PL]).detach()
             theta = flat([q.detach() for q in PL])
+            if a.profile:
+                t2_ = tic(); TM["손실 앞·뒤 (L2 기울기)"] += t2_ - t_; t_ = t2_
             with torch.no_grad():
                 Hv = GN(theta)
+                if a.profile:
+                    t2_ = tic(); TM["계량 선형화 (make_res+vjp)"] += t2_ - t_; t_ = t2_
                 Gv = lambda u: a.riem_k * Hv(u) + eps * u
                 x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
                 for _ in range(a.riem_cg):                    # CG: G x = g
                     Gp = Gv(pdir); al = rr / (pdir * Gp).sum().clamp_min(1e-30)
                     x += al * pdir; r -= al * Gp
                     rr_new = (r * r).sum()
+                    if a.profile:
+                        NCG[0] += 1
                     if rr_new.sqrt() < 1e-4 * gk.norm():
                         break
                     pdir = r + (rr_new / rr) * pdir; rr = rr_new
+                if a.profile:
+                    t2_ = tic(); TM["CG (jvp+vjp 곱)"] += t2_ - t_; t_ = t2_
                 for q, dq in zip(PL, unflat(x)):
                     q -= a.riem_lr * dq
             CURVE.append((t, it_, float(l2), 0.0, 0))
