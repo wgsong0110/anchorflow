@@ -48,6 +48,7 @@ ap.add_argument("--riem_lr", type=float, default=1.0)
 ap.add_argument("--riem_cg", type=int, default=50)
 ap.add_argument("--ls_max", type=int, default=30, help="Armijo 되돌림 최대 횟수")
 ap.add_argument("--riem_lr_max", type=float, default=1e8, help="적응 보폭 상한")
+ap.add_argument("--dbg", action="store_true")
 ap.add_argument("--lr", type=float, default=1e-3, help="gaussim Adam")
 ap.add_argument("--k_floor", type=float, default=1e3, help="바닥 관통 벌점 (관성항 대비 배수)")
 ap.add_argument("--k_contact", type=float, default=1e3, help="물체 간 접촉 벌점 (관성항 대비 배수)")
@@ -336,6 +337,9 @@ for t in range(1, a.frames + 1):
             else:
                 setp(theta); stp = STP[0] * 0.25
             STP[0] = stp
+            if a.dbg and (it_ < 10 or it_ % 50 == 0):
+                print(f"    it {it_:3d} f0 {f0:.6e} ft {ft:.6e} 보폭 {stp:.3e} |g| {float(gk.norm()):.3e} "
+                      f"|x| {float(x.norm()):.3e} g·x {sl:.3e} eps {eps:.3e} lmax {lmax:.3e}", flush=True)
     # ---- 프레임 마무리: 상태 갱신 (소성 사영), 측정
     with torch.no_grad():
         dy, J = REP.yJ(X_)
