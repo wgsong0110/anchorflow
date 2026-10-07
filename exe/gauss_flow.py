@@ -104,6 +104,10 @@ if __name__ == "__main__":
     ap.add_argument("--sub_seed", type=int, default=0, help="부분표본 시드")
     ap.add_argument("--safety", type=float, default=0.5, help="Δt = safety·σ²/A")
     ap.add_argument("--save_F", action="store_true")
+    ap.add_argument("--amp", type=float, nargs=2, default=[2.0, 5.0],
+                    help="세기 A 범위 (정규화 단위/초)")
+    ap.add_argument("--sig", type=float, nargs=2, default=[0.1, 0.3],
+                    help="폭 σ 범위")
     a = ap.parse_args()
 
     X = np.load(a.fill).astype(np.float64)
@@ -116,7 +120,8 @@ if __name__ == "__main__":
     idx = np.sort(r.choice(len(Xn), min(a.n, len(Xn)), replace=False))
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     x0 = torch.as_tensor(Xn[idx], dtype=torch.float64, device=dev)
-    field = field_seq(a.seed, (a.frames + a.period - 1) // a.period)
+    field = field_seq(a.seed, (a.frames + a.period - 1) // a.period,
+                      sig=tuple(a.sig), amp=tuple(a.amp))
     traj, Fs, log = run_flow(x0, field, a.frames, a.period, 1.0 / a.fps,
                              a.safety, keep_F=a.save_F)
     dmin = min(q[3] for q in log)
