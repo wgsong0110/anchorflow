@@ -279,7 +279,7 @@ class Simplicits(torch.nn.Module):
         for q in self.fcn.parameters():
             q.requires_grad_(False)
         with torch.no_grad():
-            K = self.fcn(G0[:2]).shape[1]
+            K = self.fcn(G0[:2].float()).shape[1]
         self.Tm = torch.nn.Parameter(torch.zeros(K, 3, 4, device=dev))
         self.dof = 12 * K
 
@@ -287,7 +287,7 @@ class Simplicits(torch.nn.Module):
         return [self.Tm]
 
     def forward(self, X, sel):
-        W = self.fcn(X)
+        W = self.fcn(X.float()).to(X.dtype)                # kaolin 신경망은 float32
         Xh = torch.cat([X, torch.ones_like(X[:, :1])], 1)
         return X + (W[..., None] * torch.einsum("kij,nj->nki", self.Tm, Xh)).sum(1)
 
