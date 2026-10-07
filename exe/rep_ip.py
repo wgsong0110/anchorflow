@@ -260,7 +260,7 @@ if a.tb != "none":
     from torch.utils.tensorboard import SummaryWriter
     _tb = os.path.join(f"{W}/tbrf", "ip_" + os.path.splitext(os.path.basename(a.out))[0])
     TB = SummaryWriter(_tb)
-rows, PHYS, TRAJ, IPV = [], [], [], []
+rows, PHYS, TRAJ, IPV, NBAD = [], [], [], [], []
 EMDP = []
 t0 = time.time()
 if RENDER:
@@ -345,9 +345,11 @@ for t in range(1, a.frames + 1):
         xn = x1
         ref = torch.as_tensor(rd(files[t], "x"), dtype=torch.float32, device=dev)
         yg, rg = xn[GI], ref[GI]
-        rmse = float(((yg - rg) ** 2).sum(1).mean().sqrt()) / L
+        ok = torch.isfinite(rg).all(1)                      # 기준 시뮬이 격리(발산)한 입자는 뺀다
+        rmse = float(((yg[ok] - rg[ok]) ** 2).sum(1).mean().sqrt()) / L
+        NBAD.append(int((~ok).sum()))
         cdv = 0.0
-        for P_, Q_ in ((yg, rg), (rg, yg)):
+        for P_, Q_ in ((yg[ok], rg[ok]), (rg[ok], yg[ok])):
             cdv += float(sum(torch.cdist(P_[s:s + 4096], Q_).min(1).values.sum()
                              for s in range(0, P_.shape[0], 4096)) / P_.shape[0]) * 0.5
         Jd = rm.det3(Fcum)
@@ -359,7 +361,7 @@ for t in range(1, a.frames + 1):
         IPV.append((t, float(E), *parts.values()))
         TRAJ.append(yg.half().cpu().numpy())
         if t % 10 == 0 or t == a.frames:
-            EMDP.append((t, yg.float().cpu().numpy(), rg.float().cpu().numpy()))
+            EMDP.append((t, yg[ok].float().cpu().numpy(), rg[ok].float().cpu().numpy()))
         if RENDER:
             render(yg, Fcum[GI])
         if TB is not None:
@@ -379,5 +381,5 @@ print(f"[요약] {a.method}  RMSE {100 * R[:, 1].mean():.3f}%  CD {100 * R[:, 2]
 np.savez_compressed(a.out, metrics=R, L=L, phys=np.array(PHYS), ip=np.array(IPV),
                     traj=np.stack(TRAJ), emd_t=np.array([q[0] for q in EMDP]),
                     emd_y=np.stack([q[1] for q in EMDP]), emd_tgt=np.stack([q[2] for q in EMDP]),
-                    dof=REP.dof)
+                    dof=REP.dof, ref_bad=np.array(NBAD))
 print(f"[저장] {a.out}", flush=True)
