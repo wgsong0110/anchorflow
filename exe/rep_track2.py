@@ -7,14 +7,14 @@
   ours       사면체 격자 (node_h = PG dx·(2√2)^(1/3)), 매 프레임 직전 위치에 격자를 다시
              깔아 대응 재설정, 증분 변위 + 꺾임 반경, Gregory 볼록 결합 w=λ²/Σλ²
   tet        위에서 Gregory·방사형을 뺀 무게중심 선형 보간 (같은 격자)
-  phystwin   스프링 질점 = 표면 1024 + 내부 1 만 점을 복셀 0.005 로 줄인 것
+  phystwin   스프링 질점 = 가우시안 중심 11024 점을 복셀 0.005 로 줄인 것
              (data_process_sample.py 기본값; 길이는 그쪽 물체 25 cm 대비 비율로 옮김),
              이웃 16 (처음 위치), 입자 가중치 16 (매 프레임 직전 위치, 역거리),
              뼈 회전 = 이웃 Procrustes (interpolate_motions)
   gaussim    3 단 계층 (기본 설정 downsample 0.01, 0.01, 거리 기반 표본),
              F = U·diag(exp s 정규화)·Vᵀ (|s|≤5, 부피 보존), 점 x = p + F(X - P)
   simplicits kaolin 기본 학습 가중치 (핸들 10) + 핸들별 3x4 변환
-  vrgs       GS-Verse: 표면 메시(PG 채우기 marching cubes, n_grid 100) 꼭짓점,
+  vrgs       GS-Verse: 표면 메시(가우시안 중심 marching cubes, n_grid 100) 꼭짓점,
              가우시안은 가까운 삼각형의 국소 틀 좌표로 결합 (gsverse.bind_points)
 
 최적화는 우리 원래 설정을 모두에 같게 쓴다: 프레임마다 L-BFGS (lr 1, 반복 500,
@@ -50,7 +50,7 @@ from anchorflow.phys_resid import _barrier_b                        # noqa: E402
 ap = argparse.ArgumentParser()
 ap.add_argument("--flow", required=True)
 ap.add_argument("--aux", required=True)
-ap.add_argument("--fill", required=True)
+ap.add_argument("--fill", default="", help="(쓰지 않는다 -- 내부 채움 없는 3DGS 만)")
 ap.add_argument("--method", required=True,
                 choices=["ours", "tet", "phystwin", "gaussim", "simplicits", "vrgs"])
 ap.add_argument("--out", required=True)
@@ -76,8 +76,7 @@ assert torch.allclose(G0[FI], TRAJ[0], atol=1e-5), "흐름과 가우시안 집�
 L = float((G0.max(0).values - G0.min(0).values).norm())              # 고정 정규화
 S_NORM = float(AX["s"])                                              # 정규화 1 = 시뮬 S_NORM
 LO, OFF = AX["lo"], AX["off"]
-FILL = torch.as_tensor((np.load(a.fill) - LO) / S_NORM + OFF, dtype=torch.float32,
-                       device=dev)
+# 내부 채움 입자는 어디에도 쓰지 않는다 (공식대로 원본 3DGS 가우시안만)
 
 
 def barrier(J):
@@ -163,11 +162,10 @@ class PhysTwin(torch.nn.Module):
 
     def __init__(self, K=16):
         super().__init__()
-        # data_process_sample.py: 표면 1024 + 내부 1 만, 복셀 0.005 (그쪽 물체 ~0.25 m)
+        # data_process_sample.py: 표면 1024 + 1 만 점, 복셀 0.005 (그쪽 물체 ~0.25 m).
+        # 내부 채움 없이 가우시안 중심에서 뽑는다.
         g = torch.Generator(device="cpu").manual_seed(0)
-        surf = G0[torch.randperm(NG, generator=g)[:1024].to(dev)]
-        inte = FILL[torch.randperm(FILL.shape[0], generator=g)[:10000].to(dev)]
-        P = torch.cat([surf, inte])
+        P = G0[torch.randperm(NG, generator=g)[:11024].to(dev)]
         vox = 0.005 / 0.25
         key = torch.floor((P - P.min(0).values) / vox).long()
         _, inv = torch.unique(key, dim=0, return_inverse=True)
@@ -289,9 +287,9 @@ class VRGS(torch.nn.Module):
 
     def __init__(self):
         super().__init__()
-        fill_sim = (FILL - torch.as_tensor(OFF, device=dev, dtype=torch.float32)) * S_NORM \
+        g_sim = (G0 - torch.as_tensor(OFF, device=dev, dtype=torch.float32)) * S_NORM \
             + torch.as_tensor(LO, device=dev, dtype=torch.float32)
-        v, f = gv.mesh_from_points(fill_sim, n_grid=100, grid_lim=2.0)
+        v, f = gv.mesh_from_points(g_sim, n_grid=100, grid_lim=2.0)   # 가우시안 중심으로
         v = (v - torch.as_tensor(LO, device=dev, dtype=torch.float32)) / S_NORM \
             + torch.as_tensor(OFF, device=dev, dtype=torch.float32)
         used = torch.unique(f)
