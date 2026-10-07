@@ -37,7 +37,7 @@ import numpy as np
 W = "/home/dkta/work"
 MODEL = {"wolf": "wolf_whitebg-trained", "mic": "mic_whitebg-trained",
          "lego": "lego_whitebg-trained", "bread": "bread-trained",
-         "ship": "ship_whitebg-trained"}
+         "ship": "ship_whitebg-trained", "ficus": "ficus_whitebg-trained"}
 # 물성은 벤치와 **같은 값**을 쓴다 (exe/bench_vq.py 의 MAT)
 MAT = {"plastic": dict(material="plasticine", yield_stress=1e4),
        # 점성은 **흘러내려야** 한다. 벤치 값(항복 5e3)은 제 무게(ρgh≈5e3)를
@@ -48,6 +48,10 @@ MAT = {"plastic": dict(material="plasticine", yield_stress=1e4),
        # 입상: PhysGaussian 공식 wolf 설정(config/wolf_config.json)의 모래 그대로
        "granular": dict(material="sand", E=5e7, nu=0.3, density=2000.0,
                         friction_angle=30.0),
+       # i-PG 점소성 낙하 (repflow B): 프로젝트 벤치 점소성 설정 그대로
+       # (wmats/<형상>_viscoplastic.json: foam, E 1e6, ν 0.3, 밀도 1000, 항복 2000, 점성 100)
+       "visco_drop": dict(material="foam", E=1e6, nu=0.3, density=1000.0,
+                          yield_stress=2000.0, plastic_viscosity=100.0),
        "fracture": dict(material="watermelon", friction_angle=45.0, beta=1.0,
                         xi=3.0, hardening=1.0, alpha_0=-0.04,
                         E=2e3, nu=0.38, density=1.0, g=[0.0, 0.0, -15.0])}
@@ -99,11 +103,11 @@ REPO = {"pg": f"{W}/PhysGaussian", "ipg": f"{W}/i-physgaussian",
 # 솔버 값: FLIP/PIC 0.7, 격자 300. 재질 상수는 MAT 의 watermelon 과 같다.
 GF_FRACTURE = dict(flip_pic_ratio=0.7)
 FRAMES = a.frames or {"plastic": 90, "viscous": 120, "granular": 120,
-                       "fracture": 60}[a.scene]
+                       "fracture": 60, "visco_drop": 60}[a.scene]
 # 벤치에서 그 물성이 통과한 서브스텝을 그대로 쓴다 (lego: 소성 1393, 점성 1854,
 # 파괴는 기준 미달이라 수렴 실행값 6400)
 SUB = a.s or {"plastic": 1393, "viscous": 1854, "granular": 833,
-              "fracture": 6400}[a.scene]   # 입상은 wolf 설정의 2e-5 초
+              "fracture": 6400, "visco_drop": 833}[a.scene]   # 점소성 낙하: 벤치 2e-5 초   # 입상은 wolf 설정의 2e-5 초
 OD = (f"{a.out}/{a.method}_{a.shape}_{a.scene}"
       + (f"_{a.tag}" if a.tag else ""))
 os.makedirs(a.out, exist_ok=True)
@@ -149,7 +153,10 @@ if TWO:
 
 
 # ------------------------------------------------------------------ 2) 설정
-fill = json.load(open(f"{W}/wmats/{a.shape}_fillonly.json"))
+_fj = f"{W}/wmats/{a.shape}_fillonly.json"
+if not os.path.exists(_fj):                       # ficus 는 채우기 전용 설정이 없다 -> 같은 형상의 벤치 설정
+    _fj = f"{W}/wmats/{a.shape}_viscoplastic.json"
+fill = json.load(open(_fj))
 cam = {k: fill[k] for k in ("default_camera_index", "init_azimuthm",
                             "init_elevation", "init_radius", "move_camera",
                             "delta_a", "delta_e", "delta_r") if k in fill}
