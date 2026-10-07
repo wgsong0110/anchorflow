@@ -146,6 +146,16 @@ def det3(F):
             + F[:, 0, 2] * (F[:, 1, 0] * F[:, 2, 1] - F[:, 1, 1] * F[:, 2, 0]))
 
 
+def outer_sum(A, B):
+    """Σ_k A[:,k,:] ⊗ B[:,k,:] -> [n,3,3]. einsum 이 작은 배치 행렬곱(sgemm)으로 가 느려 원소별로."""
+    return (A[..., :, None] * B[..., None, :]).sum(1)
+
+
+def mm3(A, B):
+    """[n,3,3] @ [n,3,3] 을 원소별로 (같은 이유)."""
+    return (A[..., :, :, None] * B[..., None, :, :]).sum(-2)
+
+
 def eye_plus(M):
     return M + torch.eye(3, device=M.device, dtype=M.dtype)
 
@@ -210,7 +220,7 @@ class Lattice(torch.nn.Module):
         U = u[rows]                                                 # [n,4,3]
         if not self.greg:
             dy = (self.lam[sel][..., None] * U).sum(1)
-            return dy, eye_plus(torch.einsum("nki,nkj->nij", U, self.dlam[sel]))
+            return dy, eye_plus(outer_sum(U, self.dlam[sel]))
         r, dr, w, dw = self.r[sel], self.dr[sel], self.w[sel], self.dw[sel]
         rho = self.h * (0.05 + 0.95 * torch.sigmoid(rho_raw)[rows])
         ins = r < rho
@@ -227,7 +237,7 @@ class Lattice(torch.nn.Module):
         W = g / G
         dW = dg / G[..., None] - W[..., None] * dg.sum(1, keepdim=True) / G[..., None]
         dy = (W[..., None] * U).sum(1)
-        return dy, eye_plus(torch.einsum("nki,nkj->nij", U, dW))
+        return dy, eye_plus(outer_sum(U, dW))
 
     def forward(self, X, sel):
         rows = self.rows[sel]
@@ -313,7 +323,7 @@ class PhysTwin(torch.nn.Module):
         Rd = (Rk @ dsel[..., None]).squeeze(-1)
         moved = Rd + self.B[k] + self.m[k]
         dy = (w[..., None] * (Rd - dsel + self.m[k])).sum(1)
-        J = (w[..., None, None] * Rk).sum(1) + torch.einsum("nki,nkj->nij", moved, dw)
+        J = (w[..., None, None] * Rk).sum(1) + outer_sum(moved, dw)
         return dy, J
 
     def forward(self, X, sel):
@@ -416,7 +426,7 @@ class Simplicits(torch.nn.Module):
         Xh = torch.cat([X, torch.ones_like(X[:, :1])], 1)
         TX = torch.einsum("kij,nj->nki", self.Tm, Xh)                 # [n,K,3]
         dy = (W[..., None] * TX).sum(1)
-        J = torch.einsum("nk,kij->nij", W, self.Tm[:, :, :3]) + torch.einsum("nki,nkj->nij", TX, dW)
+        J = (W[..., None, None] * self.Tm[None, :, :, :3]).sum(1) + outer_sum(TX, dW)
         return dy, eye_plus(J)
 
     def forward(self, X, sel):
@@ -477,9 +487,12 @@ class VRGS(torch.nn.Module):
     def elastic_residual(self, v):
         """삼각형 StVK 막 에너지 Σ A0 (μ|E|² + λ/2 tr(E)²) 의 잔차 (E = ½(FᵀF - I), F 는 3x2)."""
         v0, v1, v2 = v[self.f[:, 0]], v[self.f[:, 1]], v[self.f[:, 2]]
-        F = torch.stack([v1 - v0, v2 - v0], -1) @ self.D0i                 # [T,3,2]
-        C = F.transpose(1, 2) @ F
-        E11, E22, E12 = 0.5 * (C[:, 0, 0] - 1), 0.5 * (C[:, 1, 1] - 1), 0.5 * C[:, 0, 1]
+        e1, e2, Di = v1 - v0, v2 - v0, self.D0i
+        # F = [e1 e2] D0⁻¹ (3x2) 을 원소별로 (작은 배치 행렬곱이 sgemm 으로 가서 느렸다)
+        f1 = e1 * Di[:, 0, 0, None] + e2 * Di[:, 1, 0, None]
+        f2 = e1 * Di[:, 0, 1, None] + e2 * Di[:, 1, 1, None]
+        E11, E22 = 0.5 * ((f1 * f1).sum(-1) - 1), 0.5 * ((f2 * f2).sum(-1) - 1)
+        E12 = 0.5 * (f1 * f2).sum(-1)
         w = self.A0.sqrt()
         return torch.cat([w * math.sqrt(self.mu) * E11, w * math.sqrt(self.mu) * E22,
                           w * math.sqrt(2 * self.mu) * E12,
@@ -515,7 +528,7 @@ def map_and_F(Pref, sel, Fprev=None, need_graph=True):
         else:
             with torch.no_grad():
                 dy, J = YJ(X, sel)
-        F = J @ Fprev[sel] if (REB and Fprev is not None) else J
+        F = mm3(J, Fprev[sel]) if (REB and Fprev is not None) else J
         MAP_DY[0] = dy
         return X + dy, F
     if a.method == "vrgs":
@@ -734,7 +747,7 @@ for t in range(1, T + 1):
 
                 def res(x):
                     _, Jx = rep.yJ_p(X_, FI, *(unflat(x) if rep.greg else unflat(x) + [None]))
-                    F_ = Jx @ Fp_
+                    F_ = mm3(Jx, Fp_)
                     return torch.cat([(wv_ * math.sqrt(mu_) * (F_ - R_)).reshape(-1),
                                       wv_ * math.sqrt(la_ / 2) * (det3(F_) - 1.0)])
                 return res
@@ -758,18 +771,23 @@ for t in range(1, T + 1):
 
             def tic():
                 torch.cuda.synchronize(); return time.time()
+            WARM = 3                                          # 컴파일·첫 호출은 빼고 잰다
             prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
                                                       torch.profiler.ProfilerActivity.CUDA])
-            prof.__enter__()
         eps = a.riem_eps * max(lmax, 1e-12)                   # k=1 기준 -> k 를 키우면 계량이 더 딱딱해진다
         for it_ in range(a.iters0 if t == 1 else a.iters):
-            if a.profile and it_ == a.profile:
+            if a.profile and it_ == WARM:
+                TM.clear(); NCG[0] = 0
+                prof.__enter__()
+            if a.profile and it_ == WARM + a.profile:
                 prof.__exit__(None, None, None)
-                tot = sum(TM.values())
-                print(f"[프로파일] {a.method}  반복 {it_}  CG 평균 {NCG[0] / it_:.1f} 회/반복", flush=True)
+                tot = sum(TM.values()); nit = a.profile
+                print(f"[프로파일] {a.method}  반복 {nit} (앞 {WARM} 번 제외)  CG 평균 {NCG[0] / nit:.1f} 회/반복  "
+                      f"합계 {1000 * tot / nit:.1f} ms/반복", flush=True)
                 for k_, v_ in sorted(TM.items(), key=lambda z: -z[1]):
-                    print(f"  {k_:28s} {1000 * v_ / it_:9.2f} ms/반복  ({100 * v_ / tot:5.1f}%)", flush=True)
-                print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20), flush=True)
+                    print(f"  {k_:28s} {1000 * v_ / nit:9.2f} ms/반복  ({100 * v_ / tot:5.1f}%)", flush=True)
+                print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=12), flush=True)
+                print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=12), flush=True)
                 sys.exit(0)
             if a.profile:
                 t_ = tic()
