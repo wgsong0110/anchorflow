@@ -3,7 +3,7 @@
   python exe/rep_metrics.py --res repflow/r9/wolf_ours.npz --flow repflow/gflow_wolf.npz \
       --video repflow/r9/wolf_ours.mp4 --target_video repflow/r9/wolf_target.mp4 --out ....json
 
-- EMD: rep_track2 가 10 프레임마다 저장한 위치로, kNN 후보 희소 최소 가중 완전 매칭 (emd_sparse).
+- EMD: rep_track2 가 10 프레임마다 저장한 위치에서 같은 번호 8192 점 정확해 (헝가리안).
 - 물리 지표: 같은 질량 1/N 입자의 운동에너지 KE, 선운동량 P, 각운동량 Lang (프레임 차분 속도),
   부피비 mean det F. 목표 흐름에서 같은 식으로 잰 값과의 차이를 고정 상수로 나눈다
   (목표 값의 프레임 평균 크기 -- 자기 자신으로 나누지 않는다).
@@ -135,27 +135,25 @@ if a.video and a.target_video and os.path.exists(a.video) and os.path.exists(a.t
     from torchmetrics.image import (PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure)
     from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
     from torchmetrics.image.fid import FrechetInceptionDistance
-    A = np.stack(list(imageio.get_reader(a.video)))
-    B = np.stack(list(imageio.get_reader(a.target_video)))
-    m = min(len(A), len(B))
-    A = torch.as_tensor(A[:m]).permute(0, 3, 1, 2).float().div(255).to(dev)
-    B = torch.as_tensor(B[:m]).permute(0, 3, 1, 2).float().div(255).to(dev)
+    # 영상을 통째로 올리면 여러 개를 동시에 돌릴 때 메모리가 모자란다 -> 프레임 단위로 흘려 읽는다
     psnr = PeakSignalNoiseRatio(data_range=1.0).to(dev)
     ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(dev)
     vis = {"PSNR": [], "SSIM": [], "LPIPS": []}
     try:
         lp = LearnedPerceptualImagePatchSimilarity(net_type="alex", normalize=True).to(dev)
-    except Exception as ex:                                             # 가중치 내려받기 실패 등
+    except Exception as ex:
         lp = None
         print("  LPIPS 불가:", ex, flush=True)
-    for i in range(m):
-        vis["PSNR"].append(float(psnr(A[i:i + 1], B[i:i + 1])))
-        vis["SSIM"].append(float(ssim(A[i:i + 1], B[i:i + 1])))
-        if lp is not None:
-            vis["LPIPS"].append(float(lp(A[i:i + 1].clamp(0, 1), B[i:i + 1].clamp(0, 1))))
     fid = FrechetInceptionDistance(feature=2048, normalize=True).to(dev)
-    fid.update(B, real=True)
-    fid.update(A, real=False)
+    for fa, fb in zip(imageio.get_reader(a.video), imageio.get_reader(a.target_video)):
+        A1 = torch.as_tensor(np.asarray(fa)).permute(2, 0, 1)[None].float().div(255).to(dev)
+        B1 = torch.as_tensor(np.asarray(fb)).permute(2, 0, 1)[None].float().div(255).to(dev)
+        vis["PSNR"].append(float(psnr(A1, B1)))
+        vis["SSIM"].append(float(ssim(A1, B1)))
+        if lp is not None:
+            vis["LPIPS"].append(float(lp(A1.clamp(0, 1), B1.clamp(0, 1))))
+        fid.update(B1, real=True)
+        fid.update(A1, real=False)
     out["visual"] = {k: float(np.mean(v)) for k, v in vis.items() if v}
     out["visual"]["FID"] = float(fid.compute())
     print("  시각", out["visual"], flush=True)
