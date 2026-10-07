@@ -68,6 +68,8 @@ ap.add_argument("--lr", type=float, default=1e-3, help="adam_bt: Adam 학습률"
 ap.add_argument("--lam_inv", type=float, default=100.0, help="adam_bt: 장벽 계수")
 ap.add_argument("--tau", type=float, default=0.1, help="adam_bt: det 장벽 문턱")
 ap.add_argument("--knn_F", type=int, default=8, help="adam_bt: det 를 잴 이웃 수")
+ap.add_argument("--tb", default="auto",
+                help="TensorBoard 디렉토리 (auto: /home/dkta/work/tbrf/<폴더>_<파일>, none: 끔)")
 ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt"],
                 help="lbfgs (원래 설정) / gd: 고정 학습률 경사하강")
 ap.add_argument("--gd_lr", type=float, default=1.0)
@@ -563,6 +565,15 @@ def eval_all(Pref, Fprev):
 
 # ============================================================== 추적
 ALL = torch.arange(NG, device=dev)
+TBW = None
+if a.tb != "none":
+    from torch.utils.tensorboard import SummaryWriter
+    _tb = a.tb if a.tb != "auto" else os.path.join(
+        "/home/dkta/work/tbrf", os.path.basename(os.path.dirname(os.path.abspath(a.out)))
+        + "_" + os.path.splitext(os.path.basename(a.out))[0])
+    TBW = SummaryWriter(_tb)
+    print(f"[TB] {_tb}", flush=True)
+NCUR = [0]
 if a.opt == "adam_bt":
     # 예전 설정(rep_track.py)의 최적화: det F 는 정지 이웃 k 개 최소제곱으로 재고,
     # 격자 재설정 방법은 직전 위치 기준(증분), 나머지는 정지 위치 기준
@@ -705,6 +716,21 @@ for t in range(1, T + 1):
         if t % a.emd_every == 0 or t == T:
             EMDP.append((t, y.float().cpu().numpy(), tgt.float().cpu().numpy()))
         rows.append((t, rmse, cd, e, float(J.min()), float((J <= 0).float().mean())))
+        if TBW is not None:
+            for k_, v_ in (("RMSE_pct", 100 * rmse), ("CD_pct", 100 * cd),
+                           ("detJ_min", rows[-1][4]), ("inverted_pct", 100 * rows[-1][5]),
+                           ("dof", rep.dof), ("time_s", time.time() - t0)):
+                TBW.add_scalar("frame/" + k_, v_, t)
+            if a.opt == "adam_bt":
+                TBW.add_scalar("frame/knn_det_min", STOP[-1][3], t)
+                TBW.add_scalar("frame/backtracks", STOP[-1][4], t)
+            else:
+                TBW.add_scalar("frame/evals", STOP[-1][2], t)
+                TBW.add_scalar("frame/early_stop", float(STOP[-1][5] == "step=0"), t)
+            for c_ in CURVE[NCUR[0]:]:                 # 반복별 러닝 커브 (전체 반복 번호)
+                TBW.add_scalar("iter/l2", c_[2], NCUR[0]); TBW.add_scalar("iter/barrier", c_[3], NCUR[0])
+                NCUR[0] += 1
+            TBW.flush()
         if REB:
             Fcum = Fall.clone()
             if Rall is not None:

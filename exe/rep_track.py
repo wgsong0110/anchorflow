@@ -55,6 +55,8 @@ ap.add_argument("--emd_n", type=int, default=4096)
 ap.add_argument("--emd_every", type=int, default=10)
 ap.add_argument("--aux", default="", help="함께 옮길 정지 점 (영상용 가우시안 중심, npy)")
 ap.add_argument("--simp_w", default="", help="simplicits: 학습된 가중치 npz")
+ap.add_argument("--tb", default="auto",
+                help="TensorBoard 디렉토리 (auto: /home/dkta/work/tbrf/<폴더>_<파일>, none: 끔)")
 a = ap.parse_args()
 dev = "cuda"
 torch.manual_seed(0)
@@ -338,6 +340,15 @@ with torch.no_grad():
           f"지름 L {L:.4f}  입자 {N}  보조 {AUX.shape[0]}", flush=True)
 
 REB = getattr(rep, "rebind_each_frame", False)
+TBW = None
+if a.tb != "none":
+    import os
+    from torch.utils.tensorboard import SummaryWriter
+    _tb = a.tb if a.tb != "auto" else os.path.join(
+        "/home/dkta/work/tbrf", os.path.basename(os.path.dirname(os.path.abspath(a.out)))
+        + "_" + os.path.splitext(os.path.basename(a.out))[0])
+    TBW = SummaryWriter(_tb)
+    print(f"[TB] {_tb}", flush=True)
 opt = torch.optim.Adam(rep.parameters(), lr=a.lr)
 rows, Yh, Ah = [], [y0.cpu().numpy().astype(np.float16)], []
 CURVE = []          # 프레임별 러닝 커브: [(t, it, L2, 장벽, 되돌림 횟수)]
@@ -395,6 +406,14 @@ for t in range(1, T + 1):
         if AUX.shape[0]:
             Ah.append(Yall[N:].cpu().numpy().astype(np.float16))
         Pref = Yall.detach().clone()
+    if TBW is not None:
+        for k_, v_ in (("RMSE_pct", 100 * rmse), ("CD_pct", 100 * cd), ("knn_det_min", rows[-1][4]),
+                       ("inverted_pct", 100 * rows[-1][5]), ("dof", rep.dof),
+                       ("time_s", time.time() - t0)):
+            TBW.add_scalar("frame/" + k_, v_, t)
+        for c_ in [c for c in CURVE if c[0] == t]:
+            TBW.add_scalar("iter/l2", c_[2], len(CURVE) - sum(1 for c in CURVE if c[0] == t) + c_[1])
+        TBW.flush()
     if t % 10 == 0 or t == 1:
         print(f"  [t={t:3d}] RMSE {100*rmse:.3f}%  CD {100*cd:.3f}%  "
               + (f"EMD {100*e:.3f}%  " if e == e else "")
