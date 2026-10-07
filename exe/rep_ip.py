@@ -47,6 +47,7 @@ ap.add_argument("--riem_eps", type=float, default=1e-2)
 ap.add_argument("--riem_lr", type=float, default=1.0)
 ap.add_argument("--riem_cg", type=int, default=50)
 ap.add_argument("--ls_max", type=int, default=30, help="Armijo 되돌림 최대 횟수")
+ap.add_argument("--riem_lr_max", type=float, default=1e8, help="적응 보폭 상한")
 ap.add_argument("--lr", type=float, default=1e-3, help="gaussim Adam")
 ap.add_argument("--k_floor", type=float, default=1e3, help="바닥 관통 벌점 (관성항 대비 배수)")
 ap.add_argument("--k_contact", type=float, default=1e3, help="물체 간 접촉 벌점 (관성항 대비 배수)")
@@ -294,6 +295,7 @@ for t in range(1, a.frames + 1):
                 u = Hv(th0, u); lmax = float(u.norm()); u = u / max(lmax, 1e-30)
         eps = a.riem_eps * max(lmax, 1e-12)
     nit = a.iters0 if t == 1 else a.iters
+    STP = [a.riem_lr / 2.0]
     for it_ in range(nit):
         for q in PL:
             q.grad = None
@@ -320,7 +322,10 @@ for t in range(1, a.frames + 1):
                 s0 = 0
                 for q, n_ in zip(PL, sizes):
                     q.copy_(vec[s0:s0 + n_].reshape(q.shape)); s0 += n_
-            f0 = float(E) * NORM; sl = float((gk * x).sum()); stp = a.riem_lr
+            # 적응 보폭: 직전 반복의 보폭을 두 배로 시도 (계량의 크기와 목적의 크기가 장면마다
+            # 달라 고정 시작 보폭은 강체 이동조차 못 따라갔다 -- i-PG lego 의 ours·GS-Verse)
+            f0 = float(E) * NORM; sl = float((gk * x).sum())
+            stp = min(STP[0] * 2.0, a.riem_lr_max)
             for _bt in range(a.ls_max):
                 setp(theta - stp * x)
                 dyt, Jt = REP.yJ(X_)
@@ -329,7 +334,8 @@ for t in range(1, a.frames + 1):
                     break
                 stp *= 0.5
             else:
-                setp(theta)
+                setp(theta); stp = STP[0] * 0.25
+            STP[0] = stp
     # ---- 프레임 마무리: 상태 갱신 (소성 사영), 측정
     with torch.no_grad():
         dy, J = REP.yJ(X_)
