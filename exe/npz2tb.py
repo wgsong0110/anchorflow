@@ -5,6 +5,7 @@ curve [t, 반복, L2, 장벽, ...] 를 --tb auto 와 같은 이름(/home/dkta/wo
 
   python exe/npz2tb.py repflow/old/wolf_ours.npz repflow/r7/wolf_gaussim.npz
 """
+import glob
 import os
 import sys
 
@@ -15,6 +16,8 @@ for p in sys.argv[1:]:
     Z = np.load(p, allow_pickle=True)
     d = os.path.join("/home/dkta/work/tbrf", os.path.basename(os.path.dirname(os.path.abspath(p)))
                      + "_" + os.path.splitext(os.path.basename(p))[0])
+    for f in glob.glob(os.path.join(d, "events.out.tfevents.*")):   # txt2tb 의 중간본을 덮어쓴다
+        os.remove(f)
     w = SummaryWriter(d)
     for t, rmse, cd, emd, dmin, inv in Z["metrics"]:
         t = int(t)
