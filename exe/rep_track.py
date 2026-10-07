@@ -58,6 +58,10 @@ ap.add_argument("--simp_w", default="", help="simplicits: 학습된 가중치 np
 ap.add_argument("--gaussim_official", action="store_true",
                 help="gaussim 표현을 공식대로: 3 단 계층(downsample 0.01, 0.01), "
                      "F = U·diag(exp s 부피 정규화)·Vᵀ (|s|≤5)")
+ap.add_argument("--pt_noflip", action="store_true",
+                help="phystwin: 질량점마다 처음 이웃 16 개로 잰 국소 F 의 det>0 을 지킨다 (뒤집힘 금지)")
+ap.add_argument("--pt_spring", type=float, default=0.0,
+                help="phystwin: 처음 이웃 간 거리를 묶는 스프링 항 계수 (상대 변형률² 평균)")
 ap.add_argument("--tb", default="auto",
                 help="TensorBoard 디렉토리 (auto: /home/dkta/work/tbrf/<폴더>_<파일>, none: 끔)")
 a = ap.parse_args()
@@ -209,6 +213,11 @@ class PhysTwin(torch.nn.Module):
         self.B = X0[fps(X0, nb)].clone()                    # 뼈 위치 (매 프레임 갱신)
         d = torch.cdist(self.B, self.B)
         self.rel = d.topk(K + 1, largest=False).indices[:, 1:]   # 처음 위치로 한 번
+        # 질량점 토폴로지: 처음 위치 기준 이웃 차이 / 거리 (뒤집힘·찢어짐 판정용)
+        self.B0 = self.B.clone()
+        A0 = self.B0[self.rel] - self.B0[:, None]
+        self.A0inv = torch.linalg.inv(A0.transpose(1, 2) @ A0)
+        self.L0 = A0.norm(dim=-1)
         self.dof = 3 * nb
         self.rebind(X)
 
@@ -223,6 +232,20 @@ class PhysTwin(torch.nn.Module):
         w = 1.0 / (dd + 1e-6)
         self.wi, self.ww = ii, w / w.sum(1, keepdim=True)
         self.m = torch.nn.Parameter(torch.zeros_like(self.B))
+
+    def node_det(self):
+        """질량점마다 처음 이웃 대비 국소 F 의 det (최소제곱)."""
+        Bn = self.B + self.m
+        A1 = Bn[self.rel] - Bn[:, None]
+        A0 = self.B0[self.rel] - self.B0[:, None]
+        F = (A1.transpose(1, 2) @ A0) @ self.A0inv
+        return torch.linalg.det(F)
+
+    def spring(self):
+        """처음 이웃 간 거리 보존 (상대 변형률² 평균)."""
+        Bn = self.B + self.m
+        L = (Bn[self.rel] - Bn[:, None]).norm(dim=-1)
+        return ((L / self.L0 - 1.0) ** 2).mean()
 
     def forward(self, X):
         B, m, rel = self.B, self.m, self.rel
@@ -422,7 +445,12 @@ for t in range(1, T + 1):
         l2 = ((Y - tgt) ** 2).sum(1).mean()
         dt_ = detF(Y, ref)
         bar = torch.relu(a.tau - dt_).pow(2).mean()
-        (l2 + a.lam_inv * bar).backward()
+        extra = 0.0
+        if a.method == "phystwin" and a.pt_noflip:
+            bar = bar + torch.relu(a.tau - rep.node_det()).pow(2).mean()
+        if a.method == "phystwin" and a.pt_spring > 0:
+            extra = a.pt_spring * rep.spring()
+        (l2 + a.lam_inv * bar + extra).backward()
         prev = [q.detach().clone() for q in rep.parameters()]
         opt.step()
         # det F > 0 을 **항상** 지킨다: 스텝 뒤 뒤집힌 입자가 생기면 스텝을 반씩
@@ -430,7 +458,10 @@ for t in range(1, T + 1):
         nbt = 0
         with torch.no_grad():
             for _bt in range(10):
-                if float(detF(rep(inp)[:N], ref).min()) > 0:
+                ok = float(detF(rep(inp)[:N], ref).min()) > 0
+                if ok and a.method == "phystwin" and a.pt_noflip:
+                    ok = float(rep.node_det().min()) > 0
+                if ok:
                     break
                 nbt += 1
                 for q, q0 in zip(rep.parameters(), prev):
@@ -464,7 +495,10 @@ for t in range(1, T + 1):
         print(f"  [t={t:3d}] RMSE {100*rmse:.3f}%  CD {100*cd:.3f}%  "
               + (f"EMD {100*e:.3f}%  " if e == e else "")
               + f"det 최소 {rows[-1][4]:.3f} (≤0 {100*rows[-1][5]:.2f}%)  "
-              f"자유도 {rep.dof}  {time.time()-t0:.0f}s", flush=True)
+              f"자유도 {rep.dof}  "
+              + (f"질량점 det 최소 {float(rep.node_det().min()):.3f}  변형률 RMS "
+                 f"{float(rep.spring().sqrt()):.3f}  " if a.method == "phystwin" else "")
+              + f"{time.time()-t0:.0f}s", flush=True)
 
 R = np.array(rows)
 emd_v = R[:, 3][~np.isnan(R[:, 3])] if (~np.isnan(R[:, 3])).any() else np.array([np.nan])
