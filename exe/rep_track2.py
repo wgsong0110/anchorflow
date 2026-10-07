@@ -80,6 +80,8 @@ ap.add_argument("--tet_quality", type=float, default=0.05,
                 help="phystwin logbarrier: 4-클릭 사면체 중 정지 품질 6√2·V/l_rms³ 이 이보다 작은(납작한) 것은 버린다")
 ap.add_argument("--ipm_mu0", type=float, default=1e-4, help="ipm: 첫 장벽 계수 μ")
 ap.add_argument("--ipm_stages", type=int, default=4, help="ipm: μ 를 10 배씩 줄이는 단계 수 (프레임마다)")
+ap.add_argument("--save_traj", action="store_true",
+                help="모든 프레임의 가우시안 위치(float16)를 저장 (물리 지표·EMD 재측정용)")
 ap.add_argument("--riem_k", type=float, default=1.0,
                 help="riem: 탄성 강성 배수 k (G = k·JᵀJ + ε·λmax(k=1)·I -- ε 는 k=1 기준으로 고정)")
 ap.add_argument("--riem_lr", type=float, default=1.0, help="riem: 고정 보폭 η")
@@ -781,6 +783,7 @@ if a.check_jac:
 if RENDER:
     render(G0, Fall=Fcum)
 rows, CURVE, DOFS, STOP, EMDP = [], [], [], [], []
+PHYS, TRAJS, YPREV = [], [], [G0[FI].clone()]
 t0 = time.time()
 for t in range(1, T + 1):
     tgt = TRAJ[t]
@@ -1089,6 +1092,14 @@ for t in range(1, T + 1):
         if t % a.emd_every == 0 or t == T:
             EMDP.append((t, y.float().cpu().numpy(), tgt.float().cpu().numpy()))
         rows.append((t, rmse, cd, e, float(J.min()), float((J <= 0).float().mean())))
+        # 물리 지표 (같은 질량 1/N 입자): 운동에너지·선운동량·각운동량 (프레임 차분 속도), 부피비 Σ det F / N
+        vel = (y - YPREV[0]) * 30.0
+        com = y.mean(0)
+        PHYS.append((t, float(0.5 * (vel * vel).sum(1).mean()), *vel.mean(0).tolist(),
+                     *torch.cross(y - com, vel, dim=-1).mean(0).tolist(), float(J.mean())))
+        YPREV[0] = y.clone()
+        if a.save_traj:
+            TRAJS.append(yall.half().cpu().numpy())
         if TBW is not None:
             for k_, v_ in (("RMSE_pct", 100 * rmse), ("CD_pct", 100 * cd),
                            ("detJ_min", rows[-1][4]), ("inverted_pct", 100 * rows[-1][5]),
@@ -1133,5 +1144,7 @@ np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
                     stop=np.array([q[:5] for q in STOP], dtype=np.float64),
                     stop_reason=np.array([q[5] for q in STOP]),
                     emd_t=np.array([q[0] for q in EMDP]), emd_y=np.stack([q[1] for q in EMDP]),
-                    emd_tgt=np.stack([q[2] for q in EMDP]))
+                    emd_tgt=np.stack([q[2] for q in EMDP]),
+                    phys=np.array(PHYS, dtype=np.float64),     # t, KE, P(3), Lang(3), mean detF
+                    **({"traj": np.stack(TRAJS)} if TRAJS else {}))
 print(f"[저장] {a.out}" + (f"  영상 {a.video}" if a.video else ""), flush=True)
