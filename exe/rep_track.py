@@ -307,6 +307,7 @@ with torch.no_grad():
 
 opt = torch.optim.Adam(rep.parameters(), lr=a.lr)
 rows, Yh, Ah = [], [y0.cpu().numpy().astype(np.float16)], []
+CURVE = []          # 프레임별 러닝 커브: [(t, it, L2, 장벽, 되돌림 횟수)]
 if AUX.shape[0]:
     with torch.no_grad():
         Ah.append(rep(XALL)[N:].cpu().numpy().astype(np.float16))
@@ -324,15 +325,18 @@ for t in range(1, T + 1):
         opt.step()
         # det F > 0 을 **항상** 지킨다: 스텝 뒤 뒤집힌 입자가 생기면 스텝을 반씩
         # 줄여 되돌린다 (시작은 det=1 이라 늘 실현가능한 쪽에 머문다)
+        nbt = 0
         with torch.no_grad():
             for _bt in range(10):
                 if float(detF(rep(XALL)[:N]).min()) > 0:
                     break
+                nbt += 1
                 for q, q0 in zip(rep.parameters(), prev):
                     q.copy_(q0 + 0.5 * (q - q0))
             else:
                 for q, q0 in zip(rep.parameters(), prev):
                     q.copy_(q0)
+        CURVE.append((t, it, float(l2), float(bar), nbt))
     with torch.no_grad():
         Yall = rep(XALL)
         Y = Yall[:N]
@@ -356,5 +360,6 @@ print(f"[요약] {a.method}  자유도 {rep.dof}  RMSE {100*R[:,1].mean():.3f}% 
       f"CD {100*R[:,2].mean():.3f}%  EMD {100*emd_v.mean():.3f}%  "
       f"det 최소 {R[:,4].min():.3f}  뒤집힘 최대 {100*R[:,5].max():.2f}%", flush=True)
 np.savez_compressed(a.out, metrics=R, dof=rep.dof, L=L, Y=np.stack(Yh),
+                    curve=np.array(CURVE, dtype=np.float64),
                     **({"AUXY": np.stack(Ah)} if AUX.shape[0] else {}))
 print(f"[저장] {a.out}", flush=True)
