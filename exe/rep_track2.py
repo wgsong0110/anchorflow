@@ -70,6 +70,8 @@ ap.add_argument("--tau", type=float, default=0.1, help="adam_bt: det 장벽 문�
 ap.add_argument("--knn_F", type=int, default=8, help="adam_bt: det 를 잴 이웃 수")
 ap.add_argument("--riem_eps", type=float, default=1e-2,
                 help="riem: 계량 G = JᵀJ + ε·λmax·I 의 상대 ε (λmax 는 프레임마다 거듭제곱법)")
+ap.add_argument("--riem_k", type=float, default=1.0,
+                help="riem: 탄성 강성 배수 k (G = k·JᵀJ + ε·λmax(k=1)·I -- ε 는 k=1 기준으로 고정)")
 ap.add_argument("--riem_lr", type=float, default=1.0, help="riem: 고정 보폭 η")
 ap.add_argument("--riem_cg", type=int, default=50, help="riem: CG 최대 반복")
 ap.add_argument("--pt_realtime", action="store_true",
@@ -747,7 +749,7 @@ for t in range(1, T + 1):
             u = torch.randn_like(theta)
             for _ in range(20):
                 u = Hv(u); lmax = float(u.norm()); u = u / max(lmax, 1e-30)
-        eps = a.riem_eps * max(lmax, 1e-12)
+        eps = a.riem_eps * max(lmax, 1e-12)                   # k=1 기준 -> k 를 키우면 계량이 더 딱딱해진다
         for it_ in range(a.iters0 if t == 1 else a.iters):
             for q in PL:
                 q.grad = None
@@ -758,7 +760,7 @@ for t in range(1, T + 1):
             theta = flat([q.detach() for q in PL])
             with torch.no_grad():
                 Hv = GN(theta)
-                Gv = lambda u: Hv(u) + eps * u
+                Gv = lambda u: a.riem_k * Hv(u) + eps * u
                 x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
                 for _ in range(a.riem_cg):                    # CG: G x = g
                     Gp = Gv(pdir); al = rr / (pdir * Gp).sum().clamp_min(1e-30)
