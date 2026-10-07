@@ -55,6 +55,9 @@ ap.add_argument("--emd_n", type=int, default=4096)
 ap.add_argument("--emd_every", type=int, default=10)
 ap.add_argument("--aux", default="", help="함께 옮길 정지 점 (영상용 가우시안 중심, npy)")
 ap.add_argument("--simp_w", default="", help="simplicits: 학습된 가중치 npz")
+ap.add_argument("--gaussim_official", action="store_true",
+                help="gaussim 표현을 공식대로: 3 단 계층(downsample 0.01, 0.01), "
+                     "F = U·diag(exp s 부피 정규화)·Vᵀ (|s|≤5)")
 ap.add_argument("--tb", default="auto",
                 help="TensorBoard 디렉토리 (auto: /home/dkta/work/tbrf/<폴더>_<파일>, none: 끔)")
 a = ap.parse_args()
@@ -258,6 +261,49 @@ class GausSim(torch.nn.Module):
         return self.C[k] + self.t[k] + (M @ (X - self.C[k])[..., None]).squeeze(-1)
 
 
+def quat_mat(q):
+    q = q / q.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    w, x, y, z = q.unbind(-1)
+    return torch.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y),
+                        2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
+                        2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+                       -1).reshape(*q.shape[:-1], 3, 3)
+
+
+class GausSimOfficial(torch.nn.Module):
+    """GausSim 공식 표현 (rep_track2.GausSim 과 같다): 3 단 계층 -- 점 -> 군집(1%) ->
+    위 군집(그 1%), 군집 변환 F = U·diag(exp s / (Π exp s)^(1/3))·Vᵀ (|s|≤5, 부피 보존),
+    점 y = P + p + F (X - P)  (P = 위 군집 중심, p = 위 군집 이동). 자유도는 공식 값."""
+
+    def __init__(self, X):
+        super().__init__()
+        NG = X0.shape[0]
+        k1 = max(int(round(0.01 * NG)), 2)
+        k2 = max(int(round(0.01 * k1)), 1)
+        torch.manual_seed(0)
+        self.C1 = X0[fps(X0, k1)]
+        torch.manual_seed(1)
+        self.C2 = self.C1[fps(self.C1, k2)]
+        self.par = torch.cdist(self.C1, self.C2).argmin(1)
+        self.lab = torch.cat([torch.cdist(X[i:i + 20000], self.C1).argmin(1)
+                              for i in range(0, X.shape[0], 20000)])
+        self.p2 = torch.nn.Parameter(torch.zeros(k2, 3, device=X.device))
+        z = torch.zeros(k1, 11, device=X.device)
+        z[:, 0] = 1.0; z[:, 7] = 1.0
+        self.dg = torch.nn.Parameter(z)
+        self.dof = 3 * k2 + 11 * k1
+        print(f"[gaussim 공식] 군집 {k1} / 위 군집 {k2}  자유도 {self.dof}", flush=True)
+
+    def forward(self, X):
+        U = quat_mat(self.dg[:, 0:4])
+        s = torch.exp(self.dg[:, 4:7].clamp(-5, 5))
+        s = s / torch.prod(s, -1, keepdim=True).pow(1 / 3)
+        V = quat_mat(self.dg[:, 7:11])
+        F = (U @ torch.diag_embed(s) @ V.transpose(1, 2))[self.lab]
+        P = self.C2[self.par[self.lab]]
+        return P + self.p2[self.par[self.lab]] + (F @ (X - P)[..., None]).squeeze(-1)
+
+
 class Simplicits(torch.nn.Module):
     def __init__(self, X, dof, wpath):
         super().__init__()
@@ -286,7 +332,7 @@ elif a.method == "vrgs":
 elif a.method == "phystwin":
     rep = PhysTwin(XALL, a.dof)
 elif a.method == "gaussim":
-    rep = GausSim(XALL, a.dof)
+    rep = GausSimOfficial(XALL) if a.gaussim_official else GausSim(XALL, a.dof)
 else:
     rep = Simplicits(XALL, a.dof, a.simp_w)
 rep = rep.to(dev)
