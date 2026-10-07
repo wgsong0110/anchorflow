@@ -32,7 +32,7 @@ def f(v, d=2, pct=False):
     if pct:
         return f"{v:.{d}f}"
     if abs(v) >= 1e4 or (abs(v) < 1e-2 and v != 0):
-        return f"{v:.1e}".replace("e+0", "e").replace("e-0", "e-")
+        return f"{v:.1e}".replace("e+0", "e").replace("e-0", "e-").replace("e+", "e")
     return f"{v:.{d}f}"
 
 
