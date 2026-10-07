@@ -290,8 +290,8 @@ else:
 rep = rep.to(dev)
 
 # det F: 정지 이웃 k 개 최소제곱 (모든 방법 공통)
-nbr = torch.cdist(X0, X0).topk(a.knn_F + 1, largest=False).indices[:, 1:] \
-    if N <= 40000 else None
+nbr = torch.cat([torch.cdist(X0[i:i + 8192], X0).topk(a.knn_F + 1, largest=False).indices[:, 1:]
+                 for i in range(0, N, 8192)])                 # 큰 N 은 나눠서
 def _ref(Pref):
     dX = Pref[nbr] - Pref[:, None]                          # [N,k,3]
     return dX, torch.linalg.inv(dX.transpose(1, 2) @ dX
@@ -388,7 +388,8 @@ for t in range(1, T + 1):
         dt_ = detF(Y, ref)                                  # 이 프레임 사상의 det
         rmse = float(((Y - tgt) ** 2).sum(1).mean().sqrt()) / L
         cd = chamfer(Y, tgt) / L
-        e = emd(Y, tgt) / L if (t % a.emd_every == 0 or t == T) else float("nan")
+        e = (emd(Y, tgt) / L if a.emd_n > 0 and (t % a.emd_every == 0 or t == T)
+             else float("nan"))                             # --emd_n 0: 저장한 Y 로 따로 잰다
         rows.append((t, rmse, cd, e, float(dt_.min()), float((dt_ <= 0).float().mean())))
         Yh.append(Y.cpu().numpy().astype(np.float16))
         if AUX.shape[0]:
@@ -401,11 +402,11 @@ for t in range(1, T + 1):
               f"자유도 {rep.dof}  {time.time()-t0:.0f}s", flush=True)
 
 R = np.array(rows)
-emd_v = R[:, 3][~np.isnan(R[:, 3])]
+emd_v = R[:, 3][~np.isnan(R[:, 3])] if (~np.isnan(R[:, 3])).any() else np.array([np.nan])
 print(f"[요약] {a.method}  자유도 {np.mean(DOFS):.0f} (프레임 평균)  RMSE {100*R[:,1].mean():.3f}%  "
       f"CD {100*R[:,2].mean():.3f}%  EMD {100*emd_v.mean():.3f}%  "
       f"det 최소 {R[:,4].min():.3f}  뒤집힘 최대 {100*R[:,5].max():.2f}%", flush=True)
 np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L, Y=np.stack(Yh),
                     curve=np.array(CURVE, dtype=np.float64),
-                    **({"AUXY": np.stack(Ah)} if AUX.shape[0] else {}))
+                    AUXY=(np.stack(Ah) if AUX.shape[0] else np.stack(Yh)))  # 보조 없으면 입자 자체
 print(f"[저장] {a.out}", flush=True)
