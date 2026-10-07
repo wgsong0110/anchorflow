@@ -304,6 +304,7 @@ class VRGS(torch.nn.Module):
         g_sim = (G0 - torch.as_tensor(OFF, device=dev, dtype=torch.float32)) * S_NORM \
             + torch.as_tensor(LO, device=dev, dtype=torch.float32)
         v, f = gv.mesh_from_points(g_sim, n_grid=100, grid_lim=2.0)   # 가우시안 중심으로
+        v = v.to(DT)
         v = (v - torch.as_tensor(LO, device=dev, dtype=torch.float32)) / S_NORM \
             + torch.as_tensor(OFF, device=dev, dtype=torch.float32)
         used = torch.unique(f)
@@ -391,6 +392,7 @@ if a.video:
     import imageio.v2 as imageio                                     # noqa: E402
     os.chdir(_cwd)
     model = str(AX["model"])
+    torch.set_default_dtype(torch.float32)          # 3DGS 모델은 float32 로 적재
     gs = GaussianModel(3)
     gs.load_ply(f"{model}/point_cloud/iteration_30000/point_cloud.ply")
     gi = torch.as_tensor(AX["gidx"][GIDX_SUB], device=dev)   # 같은 부분표본 가우시안만
@@ -400,6 +402,7 @@ if a.video:
     C0[:, 1, 1], C0[:, 1, 2], C0[:, 2, 2] = c6[:, 3], c6[:, 4], c6[:, 5]
     C0[:, 1, 0], C0[:, 2, 0], C0[:, 2, 1] = c6[:, 1], c6[:, 2], c6[:, 4]
     SHS, OPA = gs.get_features[gi].detach(), gs.get_opacity[gi].detach()
+    torch.set_default_dtype(DT)
     so, mean = float(AX["scale_origin"]), torch.as_tensor(AX["mean"], device=dev).float()
     lo_t = torch.as_tensor(LO, device=dev).float(); off_t = torch.as_tensor(OFF, device=dev).float()
     cam = json.load(open(f"{model}/cameras.json"))[0]
