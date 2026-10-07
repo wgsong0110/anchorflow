@@ -46,6 +46,7 @@ ap.add_argument("--iters", type=int, default=200)
 ap.add_argument("--riem_eps", type=float, default=1e-2)
 ap.add_argument("--riem_lr", type=float, default=1.0)
 ap.add_argument("--riem_cg", type=int, default=50)
+ap.add_argument("--ls_max", type=int, default=30, help="Armijo 되돌림 최대 횟수")
 ap.add_argument("--lr", type=float, default=1e-3, help="gaussim Adam")
 ap.add_argument("--k_floor", type=float, default=1e3, help="바닥 관통 벌점 (관성항 대비 배수)")
 ap.add_argument("--k_contact", type=float, default=1e3, help="물체 간 접촉 벌점 (관성항 대비 배수)")
@@ -314,9 +315,21 @@ for t in range(1, a.frames + 1):
                 if rr_new.sqrt() < 1e-4 * gk.norm():
                     break
                 pdir = r + (rr_new / rr) * pdir; rr = rr_new
-            s0 = 0
-            for q, n_ in zip(PL, sizes):
-                q -= a.riem_lr * x[s0:s0 + n_].reshape(q.shape); s0 += n_
+            # Armijo 되돌림 선탐색 (A 와 같다): 보폭 η 에서 시작해 목적이 충분히 줄 때까지 반으로
+            def setp(vec):
+                s0 = 0
+                for q, n_ in zip(PL, sizes):
+                    q.copy_(vec[s0:s0 + n_].reshape(q.shape)); s0 += n_
+            f0 = float(E) * NORM; sl = float((gk * x).sum()); stp = a.riem_lr
+            for _bt in range(a.ls_max):
+                setp(theta - stp * x)
+                dyt, Jt = REP.yJ(X_)
+                ft = float(energy(dyt, Jt, X_, xtil, pairs)[0]) * NORM
+                if ft == ft and ft <= f0 - 1e-4 * stp * sl:
+                    break
+                stp *= 0.5
+            else:
+                setp(theta)
     # ---- 프레임 마무리: 상태 갱신 (소성 사영), 측정
     with torch.no_grad():
         dy, J = REP.yJ(X_)

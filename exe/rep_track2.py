@@ -82,6 +82,7 @@ ap.add_argument("--ipm_mu0", type=float, default=1e-4, help="ipm: 첫 장벽 계
 ap.add_argument("--ipm_stages", type=int, default=4, help="ipm: μ 를 10 배씩 줄이는 단계 수 (프레임마다)")
 ap.add_argument("--save_traj", action="store_true",
                 help="모든 프레임의 가우시안 위치(float16)를 저장 (물리 지표·EMD 재측정용)")
+ap.add_argument("--ls_max", type=int, default=30, help="riem: Armijo 되돌림 최대 횟수 (0 이면 고정 보폭)")
 ap.add_argument("--riem_k", type=float, default=1.0,
                 help="riem: 탄성 강성 배수 k (G = k·JᵀJ + ε·λmax(k=1)·I -- ε 는 k=1 기준으로 고정)")
 ap.add_argument("--riem_lr", type=float, default=1.0, help="riem: 고정 보폭 η")
@@ -1064,9 +1065,25 @@ for t in range(1, T + 1):
                     pdir = r + (rr_new / rr) * pdir; rr = rr_new
                 if a.profile:
                     t2_ = tic(); TM["CG (jvp+vjp 곱)"] += t2_ - t_; t_ = t2_
-                for q, dq in zip(PL, unflat(x)):
-                    q -= a.riem_lr * dq
-            CURVE.append((t, it_, float(l2), 0.0, 0))
+                # Armijo 되돌림 선탐색: 보폭 η 에서 시작해 손실이 충분히 줄 때까지 반으로
+                # (고정 보폭은 형상·구간이 바뀌면 발산했다 -- r9 의 bread ours, ship vrgs)
+                f0 = float(l2); sl = float((gk * x).sum()); stp = a.riem_lr; nbt = 0
+                if a.ls_max == 0:
+                    for q, dq in zip(PL, unflat(x)):
+                        q -= stp * dq
+                for _bt in range(a.ls_max):
+                    for q, q0, dq in zip(PL, unflat(theta), unflat(x)):
+                        q.copy_(q0 - stp * dq)
+                    dyt, _ = YJ(X_, FI)
+                    ft = float(((RES0 + dyt) ** 2).sum(1).mean())
+                    if ft == ft and ft <= f0 - 1e-4 * stp * sl:
+                        break
+                    stp *= 0.5; nbt += 1
+                else:
+                    if a.ls_max:
+                        for q, q0 in zip(PL, unflat(theta)):
+                            q.copy_(q0)
+            CURVE.append((t, it_, float(l2), stp, nbt))
         if a.opt == "riem":
             it[0] = it_ + 1
             STOP.append((t, it_ + 1, it_ + 1, float("nan"), eps, "riem"))
