@@ -178,6 +178,46 @@ def jac(fn, X):
     return y, torch.stack(rows, 1)
 
 
+# ============================================================== 계량용 순수 잔차 (컴파일용)
+def res_lattice_lb(x, Xn, cells, cD0i):
+    u = x[:Xn.numel()].reshape(-1, 3)
+    X = (Xn + u)[cells]
+    D = (X[:, 1:] - X[:, :1]).transpose(1, 2)
+    J = det3(mm3(D, cD0i))
+    return torch.log(J.clamp_min(1e-6)) * (cells.shape[0] ** -0.5)
+
+
+def res_spring(x, B, rel, L0):
+    Bn = B + x.reshape(-1, 3)
+    return ((Bn[rel] - Bn[:, None]).norm(dim=-1) - L0).reshape(-1)
+
+
+def res_tri_lb(x, f, n0, A0):
+    v = x.reshape(-1, 3)
+    v0, v1, v2 = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+    c = torch.cross(v1 - v0, v2 - v0, dim=-1)
+    J = (c * n0).sum(-1) / (2 * A0)
+    return A0.sqrt() * torch.log(J.clamp_min(1e-6))
+
+
+def res_simp_lb(x, W, dW, Xh):
+    Tm = x.reshape(-1, 3, 4)
+    TX = (Tm[None] * Xh[:, None, None, :]).sum(-1)                    # [n,K,3]
+    F = eye_plus((W[..., None, None] * Tm[None, :, :, :3]).sum(1) + outer_sum(TX, dW))
+    return torch.log(det3(F).clamp_min(1e-6)) * (W.shape[0] ** -0.5)
+
+
+def _gn_prod(fn, th, u, *args):
+    """가우스-뉴턴 곱 Jᵀ J u (J = ∂fn/∂θ)."""
+    from torch.func import jvp, vjp
+    _, Ju = jvp(lambda z: fn(z, *args), (th,), (u,))
+    _, vf = vjp(lambda z: fn(z, *args), th)
+    return vf(Ju)[0]
+
+
+GN_PROD = None
+
+
 # ============================================================== 표현들
 class Lattice(torch.nn.Module):
     """ours / tet: 매 프레임 직전 위치에 격자를 새로 깔고 증분 변위로 스키닝."""
@@ -887,7 +927,24 @@ for t in range(1, T + 1):
         else:
             Jfun = None
 
+        PURE = None                                         # (순수 잔차, 인자) -- 컴파일 경로
+        if a.riem_energy == "logbarrier" and a.method in ("ours", "tet"):
+            PURE = (res_lattice_lb, (rep.Xn, rep.cells, rep.cD0i))
+        elif a.riem_energy == "logbarrier" and a.method == "vrgs":
+            PURE = (res_tri_lb, (rep.f, rep.n0, rep.A0))
+        elif a.riem_energy == "logbarrier" and a.method == "simplicits":
+            PURE = (res_simp_lb, (rep.W[FI], rep.dW[FI], torch.cat([X_, torch.ones_like(X_[:, :1])], 1)))
+        elif a.riem_energy == "elastic" and a.method == "phystwin":
+            PURE = (res_spring, (rep.B, rep.rel, rep.L0))
+        global GN_PROD
+        if PURE is not None and GN_PROD is None and not a.no_compile:
+            GN_PROD = torch.compile(_gn_prod, dynamic=True)
+
         def GN(th):
+            if PURE is not None:
+                fn_, args_ = PURE
+                pr = GN_PROD if GN_PROD is not None else _gn_prod
+                return lambda u: pr(fn_, th, u, *args_)
             rf = make_res(th)
             _, vjp_fn = vjp(rf, th)
             return lambda u: vjp_fn(jvp(rf, (th,), (u,))[1])[0]
