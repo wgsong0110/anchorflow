@@ -18,7 +18,6 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import emd_sparse                                                  # noqa: E402
 import gauss_flow as gf                                            # noqa: E402
 
 ap = argparse.ArgumentParser()
@@ -28,18 +27,28 @@ ap.add_argument("--video", default="")
 ap.add_argument("--target_video", default="")
 ap.add_argument("--out", required=True)
 ap.add_argument("--fps", type=float, default=30.0)
+ap.add_argument("--emd_n", type=int, default=8192, help="EMD 를 잴 같은 번호 점 수")
 a = ap.parse_args()
 dev = "cuda"
 Z = np.load(a.res, allow_pickle=True)
 L = float(Z["L"])
 out = {"res": a.res}
 
-# ---------------- EMD (정확)
+# ---------------- EMD: 같은 번호 8192 점에서 정확해 (헝가리안)
+# 13.9 만 점 전체의 정확해는 계산이 감당되지 않고, 시험한 근사(자체 Sinkhorn, geomloss 다중 해상도,
+# kNN 희소 매칭, 경매)는 오차가 크거나(−3~−15%) 끝나지 않았다 (doc/repflow_todo.md). 그래서 프로젝트
+# 규약대로 모든 방법·프레임에 **같은 번호** 부분집합을 쓴다 (따로 뽑으면 표본 바닥이 오차를 덮는다).
+from scipy.optimize import linear_sum_assignment                   # noqa: E402
 ev = []
 for t, y, g in zip(Z["emd_t"], Z["emd_y"], Z["emd_tgt"]):
-    v, k = emd_sparse.emd(torch.as_tensor(y, device=dev), torch.as_tensor(g, device=dev))
-    ev.append((int(t), v / L, k))
-    print(f"  EMD t={int(t):3d} {100 * v / L:.3f}%  (k {k})", flush=True)
+    n_ = y.shape[0]
+    EI = np.sort(np.random.default_rng(0).choice(n_, min(a.emd_n, n_), replace=False))
+    C = torch.cdist(torch.as_tensor(y[EI], device=dev).double(),
+                    torch.as_tensor(g[EI], device=dev).double()).cpu().numpy()
+    r_, c_ = linear_sum_assignment(C)
+    v = float(C[r_, c_].mean())
+    ev.append((int(t), v / L, int(len(EI))))
+    print(f"  EMD t={int(t):3d} {100 * v / L:.3f}%  ({len(EI)} 점)", flush=True)
 out["emd_frames"] = ev
 out["EMD_pct"] = 100 * float(np.mean([e[1] for e in ev]))
 
