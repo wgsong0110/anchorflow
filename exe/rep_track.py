@@ -9,14 +9,16 @@
 통일한다). 자유도 예산은 --dof 로 맞춘다 (실제 개수를 결과에 남긴다).
 
 표현 (모두 정지 위치 X 의 함수 y = f_θ(X)):
-  ours       사면체 격자 꼭짓점 변위 u_i + 꼭짓점별 꺾임 반경 ρ_i (4/꼭짓점)
-             y = X + Σ_i w_i ψ_i(r_i) u_i / Σ_j w_j ψ_j(r_j)
+  ours       **매 프레임 직전 위치에 사면체 격자를 새로 깔아** 입자-격자 대응을
+             다시 잡고, 그 프레임의 격자점 증분 변위 u_i + 꺾임 반경 ρ_i (4/꼭짓점)
+             y = P + Σ_i w_i ψ_i(r_i) u_i / Σ_j w_j ψ_j(r_j)   (P = 직전 위치)
              w_i = λ_i² / Σ λ_j²  (Gregory 볼록 결합: 맞은편 면에서 값·기울기 0)
              ψ_i(r) = 1 - a (r/ρ_i)²            (r < ρ_i, 중심 기울기 0)
                     = (1-a) / (1 + (r-ρ_i)/ℓ)    (r ≥ ρ_i, 기울기가 꺾인다)
   vrgs       GS-Verse(VR-GS): 표면 삼각형 메시 꼭짓점 (3/꼭짓점)
              y = v0 + a1 e1 + a2 e2 + b n (lib/anchorflow/gsverse.py 결합 그대로)
-  phystwin   PhysTwin: 제어점 변위 (3/제어점). 제어점마다 이웃 16 개로 회전을
+  phystwin   PhysTwin: 제어점 변위 (3/제어점). 입자 가중치는 공식처럼 매 프레임
+             직전 위치로 다시 계산한다. 제어점마다 이웃 16 개로 회전을
              맞추고(Procrustes), 입자는 가까운 16 개 제어점 변환을 역거리 가중으로
              섞는다 (PhysTwin gaussian_splatting/dynamic_utils.interpolate_motions)
   gaussim    GausSim: k-means 군집(CMS)마다 위치+변형기울기 (12/군집)
@@ -69,29 +71,44 @@ XALL = torch.cat([X0, AUX], 0)                             # 결합은 둘 다�
 
 
 # ============================================================== 표현들
+def bind_lattice(P, per_node, dof, n0=6.0):
+    """현재 위치 P 에 사면체 격자를 새로 깔고 대응을 잡는다 (꼭짓점 수를 dof/per_node 에)."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+    from anchorflow import simplex as sx
+    n_nodes = n0
+    for _ in range(80):
+        lo, lat, nn = sx.grid_for_nodes(P[:N], n_nodes)
+        idx, lam, _ = sx.locate(P, lo, lat, nn)
+        rows, uniq = sx.active_nodes(idx)
+        if per_node * uniq.numel() >= dof:
+            break
+        n_nodes *= 1.03
+    return rows, lam.detach(), sx.node_pos(lo, lat, nn, uniq), lat.s, n_nodes
+
+
 class Ours(torch.nn.Module):
+    """매 프레임 **직전 위치**에 사면체 격자를 새로 깔고(입자-격자 대응 재설정),
+    그 프레임의 격자점 증분 변위로 스키닝한다:
+        y = P + Σ_i W_i(P) u_i,  W_i = w_i ψ_i / Σ_j w_j ψ_j,  w_i = λ_i²/Σλ_j²
+    자유도는 꼭짓점당 4 (u 3 + 꺾임 반경 ρ 1)."""
+    rebind_each_frame = True
+
     def __init__(self, X, dof):
         super().__init__()
-        import sys, os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-        from anchorflow import simplex as sx
-        n_nodes = 6.0
-        for _ in range(40):                                 # 꼭짓점 수를 dof/4 에 맞춘다
-            lo, lat, nn = sx.grid_for_nodes(X0, n_nodes)
-            idx, lam, _ = sx.locate(X, lo, lat, nn)
-            rows, uniq = sx.active_nodes(idx)
-            if 4 * uniq.numel() >= dof:
-                break
-            n_nodes *= 1.06
-        self.rows, self.lam = rows, lam
-        self.Xn = sx.node_pos(lo, lat, nn, uniq)            # [M,3]
-        M = uniq.numel()
-        self.h = lat.s
-        self.u = torch.nn.Parameter(torch.zeros(M, 3, device=X.device))
-        self.rho_raw = torch.nn.Parameter(torch.zeros(M, device=X.device))
-        self.a, self.ell = 0.5, 0.5 * self.h
+        self.dof_budget, self.n0 = dof, 6.0
+        self.a = 0.5
+        self.rebind(X)
+
+    def rebind(self, P):
+        dev_ = P.device
+        self.rows, self.lam, self.Xn, self.h, self.n0 = bind_lattice(
+            P.detach(), 4, self.dof_budget, max(self.n0 / 1.2, 3.0))
+        M = self.Xn.shape[0]
+        self.ell = 0.5 * self.h
+        self.u = torch.nn.Parameter(torch.zeros(M, 3, device=dev_))
+        self.rho_raw = torch.nn.Parameter(torch.zeros(M, device=dev_))
         self.dof = 4 * M
-        print(f"[ours] 꼭짓점 {M}  간격 h {self.h:.4f}  자유도 {self.dof}", flush=True)
 
     def forward(self, X):
         rows, lam = self.rows, self.lam                     # [N,4]
@@ -111,26 +128,20 @@ class Ours(torch.nn.Module):
 
 class TetOnly(torch.nn.Module):
     """우리 표현에서 Gregory·방사형 함수를 뺀 것: 사면체 무게중심(선형) 보간만.
-    y = X + Σ_i λ_i u_i  (꼭짓점당 자유도 3)."""
+    격자 재설정은 우리와 같다. y = P + Σ_i λ_i u_i  (꼭짓점당 자유도 3)."""
+    rebind_each_frame = True
 
     def __init__(self, X, dof):
         super().__init__()
-        import sys, os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-        from anchorflow import simplex as sx
-        n_nodes = 6.0
-        for _ in range(60):
-            lo, lat, nn = sx.grid_for_nodes(X0, n_nodes)
-            idx, lam, _ = sx.locate(X, lo, lat, nn)
-            rows, uniq = sx.active_nodes(idx)
-            if 3 * uniq.numel() >= dof:
-                break
-            n_nodes *= 1.04
-        self.rows, self.lam = rows, lam
-        M = uniq.numel()
-        self.u = torch.nn.Parameter(torch.zeros(M, 3, device=X.device))
+        self.dof_budget, self.n0 = dof, 6.0
+        self.rebind(X)
+
+    def rebind(self, P):
+        self.rows, self.lam, self.Xn, self.h, self.n0 = bind_lattice(
+            P.detach(), 3, self.dof_budget, max(self.n0 / 1.2, 3.0))
+        M = self.Xn.shape[0]
+        self.u = torch.nn.Parameter(torch.zeros(M, 3, device=P.device))
         self.dof = 3 * M
-        print(f"[tet] 꼭짓점 {M}  간격 h {lat.s:.4f}  자유도 {self.dof}", flush=True)
 
     def forward(self, X):
         return X + (self.lam[..., None] * self.u[self.rows]).sum(1)
@@ -181,18 +192,32 @@ def fps(X, k):
 
 
 class PhysTwin(torch.nn.Module):
+    """제어점(뼈) 변위로 입자를 옮긴다. 공식 gs_render_dynamics.py 처럼 이웃 관계는
+    처음 위치로 한 번(relations, K=16), 입자 가중치는 **매 프레임 직전 위치**로
+    다시 계산한다(knn_weights, K=16). 그 프레임의 뼈 이동 m 이 자유도다."""
+    rebind_each_frame = True
+
     def __init__(self, X, dof, K=16):
         super().__init__()
         nb = dof // 3
-        self.B = X0[fps(X0, nb)]                            # 제어점 정지 위치
+        self.K = K
+        self.B = X0[fps(X0, nb)].clone()                    # 뼈 위치 (매 프레임 갱신)
         d = torch.cdist(self.B, self.B)
-        self.rel = d.topk(K + 1, largest=False).indices[:, 1:]   # 이웃 16 (자기 제외)
-        dd, ii = torch.cdist(X, self.B).topk(K, largest=False)
-        w = 1.0 / (dd + 1e-6)
-        self.wi, self.ww = ii, w / w.sum(1, keepdim=True)   # knn_weights 그대로
-        self.m = torch.nn.Parameter(torch.zeros(nb, 3, device=X.device))
+        self.rel = d.topk(K + 1, largest=False).indices[:, 1:]   # 처음 위치로 한 번
         self.dof = 3 * nb
-        print(f"[phystwin] 제어점 {nb}  이웃 {K}  자유도 {self.dof}", flush=True)
+        self.rebind(X)
+
+    def rebind(self, P):
+        if hasattr(self, "m"):                              # 직전 프레임의 뼈 이동 반영
+            self.B = (self.B + self.m.detach()).clone()
+        dd, ii = [], []
+        for i in range(0, P.shape[0], 20000):
+            d_, i_ = torch.cdist(P[i:i + 20000].detach(), self.B).topk(self.K, largest=False)
+            dd.append(d_); ii.append(i_)
+        dd, ii = torch.cat(dd), torch.cat(ii)
+        w = 1.0 / (dd + 1e-6)
+        self.wi, self.ww = ii, w / w.sum(1, keepdim=True)
+        self.m = torch.nn.Parameter(torch.zeros_like(self.B))
 
     def forward(self, X):
         B, m, rel = self.B, self.m, self.rel
@@ -267,12 +292,19 @@ rep = rep.to(dev)
 # det F: 정지 이웃 k 개 최소제곱 (모든 방법 공통)
 nbr = torch.cdist(X0, X0).topk(a.knn_F + 1, largest=False).indices[:, 1:] \
     if N <= 40000 else None
-dX = X0[nbr] - X0[:, None]                                  # [N,k,3]
-Binv = torch.linalg.inv(dX.transpose(1, 2) @ dX
-                        + 1e-9 * torch.eye(3, device=dev))
+def _ref(Pref):
+    dX = Pref[nbr] - Pref[:, None]                          # [N,k,3]
+    return dX, torch.linalg.inv(dX.transpose(1, 2) @ dX
+                                + 1e-12 * torch.eye(3, device=dev))
 
 
-def detF(Y):
+REF0 = _ref(X0)
+
+
+def detF(Y, ref=None):
+    """기준(ref) 대비 Y 의 이웃 최소제곱 F 의 det. 격자를 매 프레임 새로 까는
+    방법은 기준이 **직전 프레임 위치**(증분 사상), 나머지는 정지 위치다."""
+    dX, Binv = ref if ref is not None else REF0
     dY = Y[nbr] - Y[:, None]
     F = (dY.transpose(1, 2) @ dX) @ Binv
     return torch.linalg.det(F)
@@ -305,30 +337,43 @@ with torch.no_grad():
     print(f"[결합] t=0 재현 오차 최대 {float((y0 - X0).norm(dim=1).max()):.2e}  "
           f"지름 L {L:.4f}  입자 {N}  보조 {AUX.shape[0]}", flush=True)
 
+REB = getattr(rep, "rebind_each_frame", False)
 opt = torch.optim.Adam(rep.parameters(), lr=a.lr)
 rows, Yh, Ah = [], [y0.cpu().numpy().astype(np.float16)], []
 CURVE = []          # 프레임별 러닝 커브: [(t, it, L2, 장벽, 되돌림 횟수)]
+DOFS = []
 if AUX.shape[0]:
     with torch.no_grad():
         Ah.append(rep(XALL)[N:].cpu().numpy().astype(np.float16))
+Pref = XALL.clone()          # 격자 재설정 방법의 기준 위치 (직전 프레임)
 t0 = time.time()
 for t in range(1, T + 1):
     tgt = TRAJ[t]
+    if REB:
+        if t > 1:
+            rep.rebind(Pref)                                # 입자-격자 대응을 새로
+            rep.to(dev)
+            opt = torch.optim.Adam(rep.parameters(), lr=a.lr)
+        ref = _ref(Pref[:N])
+        inp = Pref
+    else:
+        ref, inp = None, XALL
+    DOFS.append(rep.dof)
     for it in range(a.iters0 if t == 1 else a.iters):
         opt.zero_grad(set_to_none=True)
-        Y = rep(XALL)[:N]
+        Y = rep(inp)[:N]
         l2 = ((Y - tgt) ** 2).sum(1).mean()
-        dt_ = detF(Y)
+        dt_ = detF(Y, ref)
         bar = torch.relu(a.tau - dt_).pow(2).mean()
         (l2 + a.lam_inv * bar).backward()
         prev = [q.detach().clone() for q in rep.parameters()]
         opt.step()
         # det F > 0 을 **항상** 지킨다: 스텝 뒤 뒤집힌 입자가 생기면 스텝을 반씩
-        # 줄여 되돌린다 (시작은 det=1 이라 늘 실현가능한 쪽에 머문다)
+        # 줄여 되돌린다 (재설정 방법은 증분 사상 기준, 시작은 det=1)
         nbt = 0
         with torch.no_grad():
             for _bt in range(10):
-                if float(detF(rep(XALL)[:N]).min()) > 0:
+                if float(detF(rep(inp)[:N], ref).min()) > 0:
                     break
                 nbt += 1
                 for q, q0 in zip(rep.parameters(), prev):
@@ -338,9 +383,9 @@ for t in range(1, T + 1):
                     q.copy_(q0)
         CURVE.append((t, it, float(l2), float(bar), nbt))
     with torch.no_grad():
-        Yall = rep(XALL)
+        Yall = rep(inp)
         Y = Yall[:N]
-        dt_ = detF(Y)
+        dt_ = detF(Y, ref)                                  # 이 프레임 사상의 det
         rmse = float(((Y - tgt) ** 2).sum(1).mean().sqrt()) / L
         cd = chamfer(Y, tgt) / L
         e = emd(Y, tgt) / L if (t % a.emd_every == 0 or t == T) else float("nan")
@@ -348,18 +393,19 @@ for t in range(1, T + 1):
         Yh.append(Y.cpu().numpy().astype(np.float16))
         if AUX.shape[0]:
             Ah.append(Yall[N:].cpu().numpy().astype(np.float16))
+        Pref = Yall.detach().clone()
     if t % 10 == 0 or t == 1:
         print(f"  [t={t:3d}] RMSE {100*rmse:.3f}%  CD {100*cd:.3f}%  "
               + (f"EMD {100*e:.3f}%  " if e == e else "")
               + f"det 최소 {rows[-1][4]:.3f} (≤0 {100*rows[-1][5]:.2f}%)  "
-              f"{time.time()-t0:.0f}s", flush=True)
+              f"자유도 {rep.dof}  {time.time()-t0:.0f}s", flush=True)
 
 R = np.array(rows)
 emd_v = R[:, 3][~np.isnan(R[:, 3])]
-print(f"[요약] {a.method}  자유도 {rep.dof}  RMSE {100*R[:,1].mean():.3f}%  "
+print(f"[요약] {a.method}  자유도 {np.mean(DOFS):.0f} (프레임 평균)  RMSE {100*R[:,1].mean():.3f}%  "
       f"CD {100*R[:,2].mean():.3f}%  EMD {100*emd_v.mean():.3f}%  "
       f"det 최소 {R[:,4].min():.3f}  뒤집힘 최대 {100*R[:,5].max():.2f}%", flush=True)
-np.savez_compressed(a.out, metrics=R, dof=rep.dof, L=L, Y=np.stack(Yh),
+np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L, Y=np.stack(Yh),
                     curve=np.array(CURVE, dtype=np.float64),
                     **({"AUXY": np.stack(Ah)} if AUX.shape[0] else {}))
 print(f"[저장] {a.out}", flush=True)
