@@ -198,14 +198,17 @@ class Lattice(torch.nn.Module):
         return [self.u] + ([self.rho_raw] if self.greg else [])
 
     def yJ(self, X, sel):
-        """해석적 변위 y - X 와 ∂y/∂X (forward 와 같은 식을 손으로 미분)."""
+        return self.yJ_p(X, sel, self.u, self.rho_raw)
+
+    def yJ_p(self, X, sel, u, rho_raw):
+        """해석적 변위 y - X 와 ∂y/∂X (forward 와 같은 식을 손으로 미분). 매개변수를 인자로."""
         rows = self.rows[sel]
-        U = self.u[rows]                                            # [n,4,3]
+        U = u[rows]                                                 # [n,4,3]
         if not self.greg:
             dy = (self.lam[sel][..., None] * U).sum(1)
             return dy, eye_plus(torch.einsum("nki,nkj->nij", U, self.dlam[sel]))
         r, dr, w, dw = self.r[sel], self.dr[sel], self.w[sel], self.dw[sel]
-        rho = self.h * (0.05 + 0.95 * torch.sigmoid(self.rho_raw)[rows])
+        rho = self.h * (0.05 + 0.95 * torch.sigmoid(rho_raw)[rows])
         ins = r < rho
         inner = 1.0 - self.a * (torch.minimum(r, rho) / rho) ** 2
         q = 1.0 + (r - rho).clamp_min(0.0) / (0.5 * self.h)
@@ -697,12 +700,48 @@ for t in range(1, T + 1):
         # 탄성 에너지의 가우스-뉴턴 헤시안을 계량으로: Δ = (JᵀJ + ε·λmax·I)⁻¹ ∇L, θ -= ηΔ.
         # 계량은 매 스텝 현재 상태에서 다시 선형화한다. 장벽·되돌림·선탐색 없음
         from torch.func import jvp, vjp
-        theta = rep.params()[0]
+        PL = rep.params()
+        shapes = [q.shape for q in PL]
+        sizes = [q.numel() for q in PL]
+
+        def unflat(x):
+            return [c.reshape(sh) for c, sh in zip(torch.split(x, sizes), shapes)]
+
+        def flat(ts):
+            return torch.cat([q.reshape(-1) for q in ts])
+        theta = flat([q.detach() for q in PL])
         X_ = Pref[FI]
+        if a.method in ("ours", "tet"):
+            # 입자 변형 구배로 잰 탄성 에너지 (고정 공회전, PhysGaussian 기본 탄성):
+            # ψ(F) = μ|F - R|² + λ/2 (J - 1)²,  F = J_inc(θ) · F_prev (정지 대비 누적).
+            # 가우스-뉴턴에서 R 은 선형화 점의 극분해로 고정한다
+            nu_ = 0.3
+            mu_, la_ = 1.0, 2 * nu_ / (1 - 2 * nu_)
+            Fp_ = Fcum[FI]
+            wv_ = 1.0 / math.sqrt(FI.numel())
+
+            def make_res(th):
+                with torch.no_grad():
+                    _, J0 = rep.yJ_p(X_, FI, *(unflat(th) if rep.greg else unflat(th) + [None]))
+                    U_, _, Vh_ = torch.linalg.svd(J0 @ Fp_)
+                    Dg = torch.ones(U_.shape[0], 3, device=dev, dtype=U_.dtype)
+                    Dg[:, 2] = torch.sign(torch.linalg.det(U_ @ Vh_))
+                    R_ = U_ @ torch.diag_embed(Dg) @ Vh_
+
+                def res(x):
+                    _, Jx = rep.yJ_p(X_, FI, *(unflat(x) if rep.greg else unflat(x) + [None]))
+                    F_ = Jx @ Fp_
+                    return torch.cat([(wv_ * math.sqrt(mu_) * (F_ - R_)).reshape(-1),
+                                      wv_ * math.sqrt(la_ / 2) * (det3(F_) - 1.0)])
+                return res
+        else:
+            def make_res(th):
+                return lambda x: rep.elastic_residual(*unflat(x))
 
         def GN(th):
-            _, vjp_fn = vjp(rep.elastic_residual, th)
-            return lambda u: vjp_fn(jvp(rep.elastic_residual, (th,), (u,))[1])[0]
+            rf = make_res(th)
+            _, vjp_fn = vjp(rf, th)
+            return lambda u: vjp_fn(jvp(rf, (th,), (u,))[1])[0]
         with torch.no_grad():                                 # 프레임마다 λmax (거듭제곱법 20 번)
             Hv = GN(theta.detach())
             u = torch.randn_like(theta)
@@ -710,14 +749,15 @@ for t in range(1, T + 1):
                 u = Hv(u); lmax = float(u.norm()); u = u / max(lmax, 1e-30)
         eps = a.riem_eps * max(lmax, 1e-12)
         for it_ in range(a.iters0 if t == 1 else a.iters):
-            if theta.grad is not None:
-                theta.grad = None
+            for q in PL:
+                q.grad = None
             dy, _ = YJ(X_, FI)
             l2 = ((RES0 + dy) ** 2).sum(1).mean()
             l2.backward()
-            gk = theta.grad.detach()
+            gk = flat([q.grad if q.grad is not None else torch.zeros_like(q) for q in PL]).detach()
+            theta = flat([q.detach() for q in PL])
             with torch.no_grad():
-                Hv = GN(theta.detach())
+                Hv = GN(theta)
                 Gv = lambda u: Hv(u) + eps * u
                 x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
                 for _ in range(a.riem_cg):                    # CG: G x = g
@@ -727,7 +767,8 @@ for t in range(1, T + 1):
                     if rr_new.sqrt() < 1e-4 * gk.norm():
                         break
                     pdir = r + (rr_new / rr) * pdir; rr = rr_new
-                theta -= a.riem_lr * x
+                for q, dq in zip(PL, unflat(x)):
+                    q -= a.riem_lr * dq
             CURVE.append((t, it_, float(l2), 0.0, 0))
         it[0] = it_ + 1
         STOP.append((t, it_ + 1, it_ + 1, float("nan"), eps, "riem"))
