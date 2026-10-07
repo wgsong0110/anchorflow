@@ -429,10 +429,12 @@ def render(P, Fall=None, Rall=None):
     cov = M @ C0 @ M.transpose(1, 2)
     c6 = torch.stack([cov[:, 0, 0], cov[:, 0, 1], cov[:, 0, 2], cov[:, 1, 1], cov[:, 1, 2],
                       cov[:, 2, 2]], 1)
+    torch.set_default_dtype(torch.float32)          # 래스터라이저가 빈 텐서를 기본형으로 만든다
     with torch.no_grad():
         img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=SHS, colors_precomp=None,
                    opacities=OPA, scales=None, rotations=None, cov3D_precomp=c6)[0]
     WR.append_data((img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
+    torch.set_default_dtype(DT)
 
 
 ALL = torch.arange(NG, device=dev)
