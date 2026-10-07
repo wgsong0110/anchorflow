@@ -38,8 +38,13 @@
       ours ε1e-1 η100 (0.175%, 단 입자 야코비안 뒤집힘 1.4%), PhysTwin ε1e-3 η10 (0.334%),
       GS-Verse ε1e-3 η1 (1.20%), Simplicits ε1e-1 η0.1 (1.71%; η≥0.5 는 발산).
 - [x] bread · ship 준비: 흐름(bread 53,606 점, ship 200,000 점), Simplicits 기본 가중치
-- [ ] 본 실행 r9 (wolf·bread·ship × ours, PhysTwin k1/10/100/1000, GS-Verse, Simplicits, GausSim + 목표 영상)
-- [ ] EMD 전체 재측정: GPU 경매 알고리즘(emd_auction, ε-최적, 후보 제한 없음) — 3000 점에서 정확해와 일치 확인
+- [x] r9 (고정 보폭) → 중지·폐기: bread ours 발산(격자 특이), ship GS-Verse 1 프레임부터 NaN,
+      wolf ours 50 프레임 뒤집힘 10%·det 폭주. wolf 3 프레임에서 고른 고정 보폭이 형상·긴 구간에 안 옮겨감.
+- [ ] r10 = r9 + **Armijo 되돌림 선탐색** (η 는 시작 보폭, 손실이 1e-4·η·g·Δ 만큼 줄 때까지 반으로, 최대 30).
+      커밋 고정 작업 트리(/home/dkta/work/wt/r10_<hash>)에서 돈다.
+- [ ] EMD: 조사한 근사는 모두 탈락 — 자체 Sinkhorn −3~−5%, geomloss(KeOps) 다중 해상도 −5~−15%,
+      kNN 후보 희소 매칭은 큰 변위에서 위쪽 한계 오차, 전체 그래프 야코비 경매는 정확하지만 13.9 만 점에서 라운드 폭증.
+      → emd_exact: 희소 경매 + **전체 쌍 ε-상보성 검사**로 위반 짝을 후보에 넣어 반복 (전체 그래프 ε-최적). 검증 중.
 - [ ] 물리 지표 · 시각 품질 측정
 - [ ] (시간 남으면) 내부점법
 
@@ -87,10 +92,13 @@
   물성은 논문 표 Teapot (E 5e5, ν 0.46, 밀도 5, NACC 0.98/0.5/1/2.36). 속도는 정한 값(문서에 기록).
 
 - [x] Fracture-GS 공식 레포 찾기 → 없음, 직접 구현
-- [ ] 세 시뮬레이터의 공식 파라미터 확정 (문서화)
-- [ ] 형상별 채움 (ficus 없음 → 공식 채우기로 생성)
-- [ ] 기준 궤적 생성 (9 = 3 형상 × 3 시뮬레이터)
-- [ ] 증분 포텐셜 최소화 추적기 (rep_track2 에 --obj ip)
+- [x] 세 시뮬레이터 파라미터 (위)
+- [x] ficus 채움: PG 공식 채우기 (wmats/ficus_viscoplastic.json 의 채우기 설정) -> pgfill_ficus.npy
+- [ ] 기준 궤적 9 개: 충돌 3 완료, i-PG 점소성 낙하 3 진행 중 (암시 newton_gmres 20 배 스텝, 느림), GF 던지기 3 대기
+- [x] 증분 포텐셜 추적기 exe/rep_ip.py + lib/anchorflow/repmaps.py (물체마다 따로 표현, 바닥·물체 접촉 벌점 1e3·관성,
+      목적은 Σm/h² 로 정규화, Armijo 선탐색). 충돌 lego 2 프레임 시험 통과 (PhysTwin·GausSim·ours)
+- [ ] Simplicits 가중치 (시뮬 입자, 물체 중심 기준) 학습 중
+- [ ] B ε·η 고르기 → 본 실행
 - [ ] 본 실행 · 측정
 
 ## C. 결과 문서
