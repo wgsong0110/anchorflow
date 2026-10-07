@@ -25,8 +25,10 @@ for p in sys.argv[1:]:
         w.add_scalar("frame/CD_pct", 100 * cd, t)
         if emd == emd:
             w.add_scalar("frame/EMD_pct", 100 * emd, t)
-        w.add_scalar("frame/det_min", dmin, t)
-        w.add_scalar("frame/inverted_pct", 100 * inv, t)
+        # rep_track.py(예전 설정판) 의 det 는 이웃 8 개 최소제곱, rep_track2 는 야코비안
+        w.add_scalar("frame/knn_det_min" if "stop_reason" not in Z else "frame/det_min", dmin, t)
+        w.add_scalar("frame/knn_inverted_pct" if "stop_reason" not in Z else "frame/inverted_pct",
+                     100 * inv, t)
     if "dof" in Z:
         for t, v in enumerate(Z["dof"], 1):
             w.add_scalar("frame/dof", v, t)

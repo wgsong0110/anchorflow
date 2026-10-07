@@ -23,13 +23,17 @@ for p in sys.argv[1:]:
         os.remove(f)
     w = SummaryWriter(d)
     n = 0
-    for line in open(p, errors="ignore").read().replace("\r", "\n").splitlines():
+    txt = open(p, errors="ignore").read()
+    knn = "[결합]" in txt                     # rep_track.py(예전 설정판): det 는 이웃 8 개 최소제곱
+    for line in txt.replace("\r", "\n").splitlines():
         m = PAT.search(line)
         if not m:
             continue
         t = int(m.group(1))
         for k, g in zip(KEYS, m.groups()[1:]):
             if g is not None:
+                if knn and k in ("det_min", "inverted_pct"):
+                    k = "knn_" + k
                 w.add_scalar("frame/" + k, float(g), t)
         n += 1
     w.close()
