@@ -97,9 +97,10 @@ class Ours(torch.nn.Module):
         rows, lam = self.rows, self.lam                     # [N,4]
         Xv = self.Xn[rows]                                  # [N,4,3]
         r = (X[:, None] - Xv).norm(dim=-1)                  # [N,4]
-        rho = self.h * torch.sigmoid(self.rho_raw)[rows]    # 학습되는 꺾임 위치
-        inner = 1.0 - self.a * (r / rho) ** 2
-        outer = (1.0 - self.a) / (1.0 + (r - rho) / self.ell)
+        rho = self.h * (0.05 + 0.95 * torch.sigmoid(self.rho_raw)[rows])  # 꺾임 위치
+        # where 의 안 쓰는 갈래도 유한해야 한다 (무한대면 기울기가 NaN 이 된다)
+        inner = 1.0 - self.a * (torch.minimum(r, rho) / rho) ** 2
+        outer = (1.0 - self.a) / (1.0 + (r - rho).clamp_min(0.0) / self.ell)
         psi = torch.where(r < rho, inner, outer).clamp_min(1e-6)
         w = lam * lam
         w = w / w.sum(1, keepdim=True).clamp_min(1e-12)     # Gregory 볼록 결합
