@@ -45,9 +45,9 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--dof", type=int, default=3000)
 ap.add_argument("--iters", type=int, default=200, help="프레임당 반복")
 ap.add_argument("--iters0", type=int, default=400, help="첫 프레임 반복")
-ap.add_argument("--lr", type=float, default=3e-3)
-ap.add_argument("--lam_inv", type=float, default=10.0)
-ap.add_argument("--tau", type=float, default=0.05, help="det F 장벽 문턱")
+ap.add_argument("--lr", type=float, default=1e-3, help="학습률 탐색에서 네 방법 모두 1e-3 이 최선")
+ap.add_argument("--lam_inv", type=float, default=100.0)
+ap.add_argument("--tau", type=float, default=0.1, help="det F 장벽 문턱")
 ap.add_argument("--knn_F", type=int, default=8)
 ap.add_argument("--emd_n", type=int, default=4096)
 ap.add_argument("--emd_every", type=int, default=10)
@@ -291,7 +291,19 @@ for t in range(1, T + 1):
         dt_ = detF(Y)
         bar = torch.relu(a.tau - dt_).pow(2).mean()
         (l2 + a.lam_inv * bar).backward()
+        prev = [q.detach().clone() for q in rep.parameters()]
         opt.step()
+        # det F > 0 을 **항상** 지킨다: 스텝 뒤 뒤집힌 입자가 생기면 스텝을 반씩
+        # 줄여 되돌린다 (시작은 det=1 이라 늘 실현가능한 쪽에 머문다)
+        with torch.no_grad():
+            for _bt in range(10):
+                if float(detF(rep(XALL)[:N]).min()) > 0:
+                    break
+                for q, q0 in zip(rep.parameters(), prev):
+                    q.copy_(q0 + 0.5 * (q - q0))
+            else:
+                for q, q0 in zip(rep.parameters(), prev):
+                    q.copy_(q0)
     with torch.no_grad():
         Yall = rep(XALL)
         Y = Yall[:N]
