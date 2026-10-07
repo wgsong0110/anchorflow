@@ -46,7 +46,11 @@ out["summary"] = dict(rmse=100 * float(np.nanmean(_M[:, 1])), cd=100 * float(np.
 # 규약대로 모든 방법·프레임에 **같은 번호** 부분집합을 쓴다 (따로 뽑으면 표본 바닥이 오차를 덮는다).
 from scipy.optimize import linear_sum_assignment                   # noqa: E402
 ev = []
+_ec = a.out + ".emd.json"                                          # 다시 돌릴 때 EMD 를 다시 풀지 않게
+_cache = json.load(open(_ec)) if os.path.exists(_ec) else {}
 for t, y, g in zip(Z["emd_t"], Z["emd_y"], Z["emd_tgt"]):
+    if str(int(t)) in _cache:
+        ev.append(tuple(_cache[str(int(t))])); continue
     n_ = y.shape[0]
     EI = np.sort(np.random.default_rng(0).choice(n_, min(a.emd_n, n_), replace=False))
     C = torch.cdist(torch.as_tensor(y[EI], device=dev).double(),
@@ -54,6 +58,7 @@ for t, y, g in zip(Z["emd_t"], Z["emd_y"], Z["emd_tgt"]):
     r_, c_ = linear_sum_assignment(C)
     v = float(C[r_, c_].mean())
     ev.append((int(t), v / L, int(len(EI))))
+    _cache[str(int(t))] = ev[-1]; json.dump(_cache, open(_ec, "w"))
     print(f"  EMD t={int(t):3d} {100 * v / L:.3f}%  ({len(EI)} 점)", flush=True)
 out["emd_frames"] = ev
 out["EMD_pct"] = 100 * float(np.mean([e[1] for e in ev]))
@@ -144,7 +149,11 @@ if a.video and a.target_video and os.path.exists(a.video) and os.path.exists(a.t
     except Exception as ex:
         lp = None
         print("  LPIPS 불가:", ex, flush=True)
-    fid = FrechetInceptionDistance(feature=2048, normalize=True).to(dev)
+    try:
+        fid = FrechetInceptionDistance(feature=2048, normalize=True).to(dev)
+    except Exception as ex:
+        fid = None
+        print("  FID 불가:", ex, flush=True)
     for fa, fb in zip(imageio.get_reader(a.video), imageio.get_reader(a.target_video)):
         A1 = torch.as_tensor(np.asarray(fa)).permute(2, 0, 1)[None].float().div(255).to(dev)
         B1 = torch.as_tensor(np.asarray(fb)).permute(2, 0, 1)[None].float().div(255).to(dev)
@@ -152,10 +161,12 @@ if a.video and a.target_video and os.path.exists(a.video) and os.path.exists(a.t
         vis["SSIM"].append(float(ssim(A1, B1)))
         if lp is not None:
             vis["LPIPS"].append(float(lp(A1.clamp(0, 1), B1.clamp(0, 1))))
-        fid.update(B1, real=True)
-        fid.update(A1, real=False)
+        if fid is not None:
+            fid.update(B1, real=True)
+            fid.update(A1, real=False)
     out["visual"] = {k: float(np.mean(v)) for k, v in vis.items() if v}
-    out["visual"]["FID"] = float(fid.compute())
+    if fid is not None:
+        out["visual"]["FID"] = float(fid.compute())
     print("  시각", out["visual"], flush=True)
 
 json.dump(out, open(a.out, "w"), indent=1)
