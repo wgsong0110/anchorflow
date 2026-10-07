@@ -47,7 +47,7 @@ a = ap.parse_args()
 
 cfg = json.load(open(a.config))
 ti.init(arch=ti.gpu, default_fp=ti.f64 if a.f64 else ti.f32,
-        device_memory_fraction=0.85, offline_cache=True)
+        device_memory_fraction=float(os.environ.get("AF_TI_MEM", "0.3")), offline_cache=True)
 
 # ------------------------------------------------------------------ 상수
 # material_2_num (mpm_solver_warp.py:255). foam 이 3, snow 가 4, plasticine 이 5 다.
