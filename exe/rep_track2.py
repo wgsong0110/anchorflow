@@ -183,12 +183,12 @@ class Lattice(torch.nn.Module):
         return [self.u] + ([self.rho_raw] if self.greg else [])
 
     def yJ(self, X, sel):
-        """해석적 y 와 ∂y/∂X (forward 와 같은 식을 손으로 미분)."""
+        """해석적 변위 y - X 와 ∂y/∂X (forward 와 같은 식을 손으로 미분)."""
         rows = self.rows[sel]
         U = self.u[rows]                                            # [n,4,3]
         if not self.greg:
-            y = X + (self.lam[sel][..., None] * U).sum(1)
-            return y, eye_plus(torch.einsum("nki,nkj->nij", U, self.dlam[sel]))
+            dy = (self.lam[sel][..., None] * U).sum(1)
+            return dy, eye_plus(torch.einsum("nki,nkj->nij", U, self.dlam[sel]))
         r, dr, w, dw = self.r[sel], self.dr[sel], self.w[sel], self.dw[sel]
         rho = self.h * (0.05 + 0.95 * torch.sigmoid(self.rho_raw)[rows])
         ins = r < rho
@@ -204,8 +204,8 @@ class Lattice(torch.nn.Module):
         G = g.sum(1, keepdim=True).clamp_min(1e-12)
         W = g / G
         dW = dg / G[..., None] - W[..., None] * dg.sum(1, keepdim=True) / G[..., None]
-        y = X + (W[..., None] * U).sum(1)
-        return y, eye_plus(torch.einsum("nki,nkj->nij", U, dW))
+        dy = (W[..., None] * U).sum(1)
+        return dy, eye_plus(torch.einsum("nki,nkj->nij", U, dW))
 
     def forward(self, X, sel):
         rows = self.rows[sel]
@@ -277,10 +277,12 @@ class PhysTwin(torch.nn.Module):
         k = self.wi[sel]
         w, dw = self.w[sel], self.dw[sel]
         Rk = self.bone_R()[k]                                         # [n,K,3,3]
-        moved = (Rk @ self.d[sel][..., None]).squeeze(-1) + self.B[k] + self.m[k]
-        y = (w[..., None] * moved).sum(1)
+        dsel = self.d[sel]
+        Rd = (Rk @ dsel[..., None]).squeeze(-1)
+        moved = Rd + self.B[k] + self.m[k]
+        dy = (w[..., None] * (Rd - dsel + self.m[k])).sum(1)
         J = (w[..., None, None] * Rk).sum(1) + torch.einsum("nki,nkj->nij", moved, dw)
-        return y, J
+        return dy, J
 
     def forward(self, X, sel):
         k = self.wi[sel]
@@ -343,7 +345,8 @@ class GausSim(torch.nn.Module):
         k = self.lab[sel]
         F = self.F1()[k]
         P = self.C2[self.par[k]]
-        return P + self.p2[self.par[k]] + (F @ (X - P)[..., None]).squeeze(-1), F
+        FmI = F - torch.eye(3, device=F.device, dtype=F.dtype)
+        return self.p2[self.par[k]] + (FmI @ (X - P)[..., None]).squeeze(-1), F
 
     def forward(self, X, sel):
         k = self.lab[sel]
@@ -380,9 +383,9 @@ class Simplicits(torch.nn.Module):
         W, dW = self.W[sel], self.dW[sel]
         Xh = torch.cat([X, torch.ones_like(X[:, :1])], 1)
         TX = torch.einsum("kij,nj->nki", self.Tm, Xh)                 # [n,K,3]
-        y = X + (W[..., None] * TX).sum(1)
+        dy = (W[..., None] * TX).sum(1)
         J = torch.einsum("nk,kij->nij", W, self.Tm[:, :, :3]) + torch.einsum("nki,nkj->nij", TX, dW)
-        return y, eye_plus(J)
+        return dy, eye_plus(J)
 
     def forward(self, X, sel):
         W = self.fcn(X.float()).to(X.dtype)                # kaolin 신경망은 float32
@@ -425,7 +428,7 @@ class VRGS(torch.nn.Module):
         return (A @ self.A0i)[self.ti[sel]]
 
     def yJ(self, X, sel):
-        return self(X, sel), self.F(sel)
+        return self(X, sel) - X, self.F(sel)
 
 
 if a.method in ("ours", "tet"):
@@ -443,17 +446,23 @@ REB = rep.rebind_each_frame
 YJ = rep.yJ if a.no_compile else torch.compile(rep.yJ, dynamic=True)
 
 
+MAP_DY = [None]
+
+
 def map_and_F(Pref, sel, Fprev=None, need_graph=True):
     """선택 점의 위치와 누적 F (정지 대비)."""
     X = Pref[sel]
     if not a.autograd_jac:
+        # yJ 는 변위 dy = y - X 를 직접 낸다: fp32 에서 y(≈0.5) 를 만든 뒤 목표를 빼면
+        # 작은 변화가 반올림에 묻혀 직선 탐색이 보폭 0 으로 멈춘다 (같은 식, 계산 순서만)
         if need_graph:
-            y, J = YJ(X, sel)
+            dy, J = YJ(X, sel)
         else:
             with torch.no_grad():
-                y, J = YJ(X, sel)
+                dy, J = YJ(X, sel)
         F = J @ Fprev[sel] if (REB and Fprev is not None) else J
-        return y, F
+        MAP_DY[0] = dy
+        return X + dy, F
     if a.method == "vrgs":
         y = rep(X, sel)
         F = rep.F(sel)
@@ -566,7 +575,7 @@ if a.check_jac:
         y0, J0 = rep(X, sel), rep.F(sel)
     else:
         y0, J0 = jac(lambda Z: rep(Z, sel), X)
-    y1, J1 = rep.yJ(X, sel)
+    y1, J1 = rep.yJ(X, sel); y1 = X + y1
     y2, J2 = YJ(X, sel)
     l0 = (y0.square().sum() + det3(J0).sum()); g0 = torch.autograd.grad(l0, rep.params())
     l1 = (y1.square().sum() + det3(J1).sum()); g1 = torch.autograd.grad(l1, rep.params())
@@ -581,7 +590,7 @@ if a.check_jac:
                 yy, JJ = ((rep(Pref, ALL), rep.F(ALL)) if a.method == "vrgs"
                           else jac(lambda Z: rep(Z, ALL), Pref))
             else:
-                yy, JJ = fn(Pref, ALL)
+                yy, JJ = fn(Pref, ALL); yy = Pref + yy
             (yy.square().mean() + det3(JJ).mean()).backward()
             torch.cuda.synchronize()
         print(f"[시간] {name}: 전체 {NG} 점 한 번 평가+역전파 {1000*(_t.time()-t1):.1f} ms", flush=True)
@@ -592,6 +601,7 @@ rows, CURVE, DOFS, STOP, EMDP = [], [], [], [], []
 t0 = time.time()
 for t in range(1, T + 1):
     tgt = TRAJ[t]
+    RES0 = Pref[FI] - tgt                               # 직전 위치 - 목표 (가까운 두 수의 차)
     if REB and t > 1:
         rep.rebind(Pref); rep.to(dev)
     DOFS.append(rep.dof)
@@ -601,7 +611,8 @@ for t in range(1, T + 1):
         opt.zero_grad(set_to_none=True)
         y, F = map_and_F(Pref, FI, Fcum)
         J = det3(F)
-        l2 = ((y - tgt) ** 2).sum(1).mean()
+        res = (RES0 + MAP_DY[0]) if not a.autograd_jac else (y - tgt)
+        l2 = (res ** 2).sum(1).mean()
         bar = barrier(J).mean()
         loss = l2 + a.kappa * bar
         loss.backward()
