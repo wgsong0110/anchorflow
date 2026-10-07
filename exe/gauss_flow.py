@@ -161,7 +161,7 @@ if __name__ == "__main__":
                     help="흘릴 점을 따로 준다 (rep_aux 가 만든 정규화된 가우시안 중심 npy). "
                          "주면 채우기 입자 대신 이 점들이 목표 입자다")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--n", type=int, default=30000, help="부분표본 입자 수")
+    ap.add_argument("--n", type=int, default=30000, help="부분표본 입자 수 (0 이면 전부)")
     ap.add_argument("--frames", type=int, default=120)
     ap.add_argument("--period", type=int, default=10, help="가우시안 교체 주기(프레임)")
     ap.add_argument("--fps", type=float, default=30.0)
@@ -186,7 +186,8 @@ if __name__ == "__main__":
     if a.pts:                                       # 가우시안 중심 (내부 채움 없음)
         Xn = np.load(a.pts).astype(np.float64)
     r = np.random.default_rng(a.sub_seed)
-    idx = np.sort(r.choice(len(Xn), min(a.n, len(Xn)), replace=False))
+    idx = (np.arange(len(Xn)) if a.n <= 0 else
+           np.sort(r.choice(len(Xn), min(a.n, len(Xn)), replace=False)))   # 0 이면 전부
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     x0 = torch.as_tensor(Xn[idx], dtype=torch.float64, device=dev)
     field = field_seq(a.seed, (a.frames + a.period - 1) // a.period,
