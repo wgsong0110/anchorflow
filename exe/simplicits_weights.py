@@ -19,7 +19,7 @@ import torch
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--pts", required=True, help="정규화된 가우시안 중심 (rep_aux 의 *_pts.npy)")
-ap.add_argument("--aux", required=True, help="정규화 상수 (rep_aux.py 출력)")
+ap.add_argument("--aux", default="", help="(쓰지 않는다)")
 ap.add_argument("--out", required=True)
 ap.add_argument("--ym", type=float, default=1e5)
 ap.add_argument("--pr", type=float, default=0.45)
@@ -29,7 +29,6 @@ a = ap.parse_args()
 from kaolin.physics.simplicits import SimplicitsObject          # noqa: E402
 
 dev = "cuda"
-A = np.load(a.aux, allow_pickle=True)
 X = np.load(a.pts).astype(np.float64)                 # 내부 채움 없는 3DGS 가우시안
 P = torch.as_tensor(X, dtype=torch.float32, device=dev)
 ext = P.max(0).values - P.min(0).values
