@@ -66,6 +66,11 @@ ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd"],
                 help="lbfgs (원래 설정) / gd: 고정 학습률 경사하강")
 ap.add_argument("--gd_lr", type=float, default=1.0)
 ap.add_argument("--frames", type=int, default=0, help="앞 몇 프레임만 (0 이면 전부)")
+ap.add_argument("--autograd_jac", action="store_true",
+                help="야코비안을 예전처럼 자동미분 2 차로 (검증·비교용, 느리다)")
+ap.add_argument("--no_compile", action="store_true", help="torch.compile 끄기")
+ap.add_argument("--check_jac", action="store_true",
+                help="해석적 야코비안을 자동미분과 비교하고 끝낸다")
 a = ap.parse_args()
 dev = "cuda"
 torch.manual_seed(0)
@@ -115,6 +120,17 @@ def quat_mat(q):
                        -1).reshape(*q.shape[:-1], 3, 3)
 
 
+def det3(F):
+    """3x3 행렬식 (torch.linalg.det 과 같은 값; 컴파일 그래프가 끊기지 않게 전개)."""
+    return (F[:, 0, 0] * (F[:, 1, 1] * F[:, 2, 2] - F[:, 1, 2] * F[:, 2, 1])
+            - F[:, 0, 1] * (F[:, 1, 0] * F[:, 2, 2] - F[:, 1, 2] * F[:, 2, 0])
+            + F[:, 0, 2] * (F[:, 1, 0] * F[:, 2, 1] - F[:, 1, 1] * F[:, 2, 0]))
+
+
+def eye_plus(M):
+    return M + torch.eye(3, device=M.device, dtype=M.dtype)
+
+
 def jac(fn, X):
     """y = fn(X) 와 J = ∂y/∂X (점별, create_graph)."""
     X = X.detach().requires_grad_(True)
@@ -145,12 +161,51 @@ class Lattice(torch.nn.Module):
         self.v0 = Xv[:, 0]
         self.Minv = torch.linalg.inv((Xv[:, 1:] - Xv[:, :1]).transpose(1, 2))
         M = uniq.numel()
+        # 프레임 안에서 X(=직전 위치)와 격자는 고정 -> λ, ∇λ, r, ∇r, w, ∇w 는 상수
+        X = Pall
+        l3 = (self.Minv @ (X - self.v0)[..., None]).squeeze(-1)
+        self.lam = torch.cat([1.0 - l3.sum(1, keepdim=True), l3], 1)        # [N,4]
+        self.dlam = torch.cat([-self.Minv.sum(1, keepdim=True), self.Minv], 1)  # [N,4,3]
+        if self.greg:
+            d = X[:, None] - self.Xn[rows]
+            self.r = d.norm(dim=-1)
+            self.dr = d / self.r[..., None].clamp_min(1e-30)
+            S = (self.lam * self.lam).sum(1, keepdim=True)
+            self.w = self.lam * self.lam / S.clamp_min(1e-12)
+            dS = (2 * self.lam[..., None] * self.dlam).sum(1, keepdim=True)
+            self.dw = 2 * self.lam[..., None] * self.dlam / S[..., None] \
+                - (self.lam * self.lam)[..., None] * dS / (S * S)[..., None]
         self.u = torch.nn.Parameter(torch.zeros(M, 3, device=dev))
         self.rho_raw = torch.nn.Parameter(torch.zeros(M, device=dev)) if self.greg else None
         self.dof = (4 if self.greg else 3) * M
 
     def params(self):
         return [self.u] + ([self.rho_raw] if self.greg else [])
+
+    def yJ(self, X, sel):
+        """해석적 y 와 ∂y/∂X (forward 와 같은 식을 손으로 미분)."""
+        rows = self.rows[sel]
+        U = self.u[rows]                                            # [n,4,3]
+        if not self.greg:
+            y = X + (self.lam[sel][..., None] * U).sum(1)
+            return y, eye_plus(torch.einsum("nki,nkj->nij", U, self.dlam[sel]))
+        r, dr, w, dw = self.r[sel], self.dr[sel], self.w[sel], self.dw[sel]
+        rho = self.h * (0.05 + 0.95 * torch.sigmoid(self.rho_raw)[rows])
+        ins = r < rho
+        inner = 1.0 - self.a * (torch.minimum(r, rho) / rho) ** 2
+        q = 1.0 + (r - rho).clamp_min(0.0) / (0.5 * self.h)
+        outer = (1.0 - self.a) / q
+        psi_raw = torch.where(ins, inner, outer)
+        psi = psi_raw.clamp_min(1e-6)
+        dpsi = torch.where(ins, -2.0 * self.a * r / (rho * rho),
+                           -(1.0 - self.a) / (0.5 * self.h) / (q * q)) * (psi_raw > 1e-6)
+        g = w * psi
+        dg = dw * psi[..., None] + (w * dpsi)[..., None] * dr
+        G = g.sum(1, keepdim=True).clamp_min(1e-12)
+        W = g / G
+        dW = dg / G[..., None] - W[..., None] * dg.sum(1, keepdim=True) / G[..., None]
+        y = X + (W[..., None] * U).sum(1)
+        return y, eye_plus(torch.einsum("nki,nkj->nij", U, dW))
 
     def forward(self, X, sel):
         rows = self.rows[sel]
@@ -195,6 +250,15 @@ class PhysTwin(torch.nn.Module):
         ii = torch.cat([torch.cdist(Pall[i:i + 20000], self.B).topk(self.K, largest=False).indices
                         for i in range(0, Pall.shape[0], 20000)])
         self.wi = ii
+        # 프레임 안에서 X 와 B 는 고정 -> 역거리 가중치와 그 기울기는 상수
+        d = Pall[:, None] - self.B[ii]
+        dn = d.norm(dim=-1)
+        qd = 1.0 / (dn + 1e-6)
+        Q = qd.sum(1, keepdim=True)
+        dq = -(qd * qd)[..., None] * d / dn[..., None].clamp_min(1e-30)
+        self.w = qd / Q
+        self.dw = dq / Q[..., None] - qd[..., None] * dq.sum(1, keepdim=True) / (Q * Q)[..., None]
+        self.d = d
         self.m = torch.nn.Parameter(torch.zeros_like(self.B))
 
     def params(self):
@@ -208,6 +272,15 @@ class PhysTwin(torch.nn.Module):
         dfix = torch.ones_like(S)
         dfix[:, -1] = torch.sign(torch.linalg.det(U @ Vh))
         return U @ torch.diag_embed(dfix) @ Vh
+
+    def yJ(self, X, sel):
+        k = self.wi[sel]
+        w, dw = self.w[sel], self.dw[sel]
+        Rk = self.bone_R()[k]                                         # [n,K,3,3]
+        moved = (Rk @ self.d[sel][..., None]).squeeze(-1) + self.B[k] + self.m[k]
+        y = (w[..., None] * moved).sum(1)
+        J = (w[..., None, None] * Rk).sum(1) + torch.einsum("nki,nkj->nij", moved, dw)
+        return y, J
 
     def forward(self, X, sel):
         k = self.wi[sel]
@@ -266,6 +339,12 @@ class GausSim(torch.nn.Module):
         V = quat_mat(self.dg[:, 7:11])
         return U @ torch.diag_embed(s) @ V.transpose(1, 2)
 
+    def yJ(self, X, sel):
+        k = self.lab[sel]
+        F = self.F1()[k]
+        P = self.C2[self.par[k]]
+        return P + self.p2[self.par[k]] + (F @ (X - P)[..., None]).squeeze(-1), F
+
     def forward(self, X, sel):
         k = self.lab[sel]
         F = self.F1()[k]
@@ -285,9 +364,25 @@ class Simplicits(torch.nn.Module):
             K = self.fcn(G0[:2].float()).shape[1]
         self.Tm = torch.nn.Parameter(torch.zeros(K, 3, 4, device=dev))
         self.dof = 12 * K
+        # 결합은 정지 위치 G0 에 고정 -> 가중치와 그 기울기는 한 번만 구한다
+        Ws, dWs = [], []
+        for i in range(0, NG, 20000):
+            Xc = G0[i:i + 20000].detach().requires_grad_(True)
+            Wc = self.fcn(Xc.float()).to(Xc.dtype)
+            g = [torch.autograd.grad(Wc[:, j].sum(), Xc, retain_graph=True)[0] for j in range(K)]
+            Ws.append(Wc.detach()); dWs.append(torch.stack(g, 1).detach())
+        self.W, self.dW = torch.cat(Ws), torch.cat(dWs)                     # [N,K], [N,K,3]
 
     def params(self):
         return [self.Tm]
+
+    def yJ(self, X, sel):
+        W, dW = self.W[sel], self.dW[sel]
+        Xh = torch.cat([X, torch.ones_like(X[:, :1])], 1)
+        TX = torch.einsum("kij,nj->nki", self.Tm, Xh)                 # [n,K,3]
+        y = X + (W[..., None] * TX).sum(1)
+        J = torch.einsum("nk,kij->nij", W, self.Tm[:, :, :3]) + torch.einsum("nki,nkj->nij", TX, dW)
+        return y, eye_plus(J)
 
     def forward(self, X, sel):
         W = self.fcn(X.float()).to(X.dtype)                # kaolin 신경망은 float32
@@ -329,6 +424,9 @@ class VRGS(torch.nn.Module):
         A = torch.stack(gv._tri_frame(self.v, self.f)[1:], -1)
         return (A @ self.A0i)[self.ti[sel]]
 
+    def yJ(self, X, sel):
+        return self(X, sel), self.F(sel)
+
 
 if a.method in ("ours", "tet"):
     rep = Lattice(gregory=(a.method == "ours"))
@@ -341,11 +439,21 @@ elif a.method == "simplicits":
 else:
     rep = VRGS()
 REB = rep.rebind_each_frame
+# 해석적 야코비안 (+ torch.compile). 크기가 프레임마다 바뀌는 격자 방법이 있어 dynamic
+YJ = rep.yJ if a.no_compile else torch.compile(rep.yJ, dynamic=True)
 
 
 def map_and_F(Pref, sel, Fprev=None, need_graph=True):
     """선택 점의 위치와 누적 F (정지 대비)."""
     X = Pref[sel]
+    if not a.autograd_jac:
+        if need_graph:
+            y, J = YJ(X, sel)
+        else:
+            with torch.no_grad():
+                y, J = YJ(X, sel)
+        F = J @ Fprev[sel] if (REB and Fprev is not None) else J
+        return y, F
     if a.method == "vrgs":
         y = rep(X, sel)
         F = rep.F(sel)
@@ -366,36 +474,6 @@ def chamfer(A, B, ch=4096):
         return sum(torch.cdist(P[i:i + ch], Q).min(1).values.sum()
                    for i in range(0, P.shape[0], ch)) / P.shape[0]
     return float(0.5 * (one(A, B) + one(B, A)))
-
-
-def emd(A, B, eps_end=1e-4, shrink=0.7, extra=20, ch=2048):
-    """EMD 근사: 전체 점에 대한 로그 영역 Sinkhorn (ε 담금질, 비용 = 유클리드 거리).
-    13.9 만 점의 정확해는 비용 행렬만 155GB 라 풀 수 없다 -- 부분표본 없이 전부 쓰고
-    정확해 대신 엔트로피 정칙 수송으로 근사한다. 반환: 수송 계획 아래 평균 이동 거리."""
-    A, B = A.float().contiguous(), B.float().contiguous()
-    n, m = A.shape[0], B.shape[0]
-    la, lb = -math.log(n), -math.log(m)
-    f = torch.zeros(n, device=A.device); g = torch.zeros(m, device=A.device)
-
-    def softmin(P, Q, h, lw, e):                      # -e·logsumexp_j(lw + (h_j - |p-q_j|)/e)
-        out = torch.empty(P.shape[0], device=P.device)
-        for i in range(0, P.shape[0], ch):
-            out[i:i + ch] = -e * torch.logsumexp(lw + (h[None] - torch.cdist(P[i:i + ch], Q)) / e, 1)
-        return out
-    e = float(torch.cdist(A[:1], B).max()) * 2
-    sched = []
-    while e > eps_end:
-        sched.append(e); e *= shrink
-    sched += [eps_end] * extra
-    for e in sched:
-        f = softmin(A, B, g, lb, e)
-        g = softmin(B, A, f, la, e)
-    e = sched[-1]
-    cost = torch.zeros((), dtype=torch.float64, device=A.device)
-    for i in range(0, n, ch):
-        C = torch.cdist(A[i:i + ch], B)
-        cost += (torch.exp(la + lb + (f[i:i + ch, None] + g[None] - C) / e) * C).double().sum()
-    return float(cost)
 
 
 RENDER = None
@@ -455,9 +533,6 @@ def render(P, Fall=None, Rall=None):
     torch.set_default_dtype(DT)
 
 
-ALL = torch.arange(NG, device=dev)
-
-
 def eval_all(Pref, Fprev):
     """전체 가우시안의 위치·누적 F (그리고 phystwin 은 공식 회전)."""
     ys, Fs, Rs = [], [], []
@@ -472,6 +547,7 @@ def eval_all(Pref, Fprev):
 
 
 # ============================================================== 추적
+ALL = torch.arange(NG, device=dev)
 Pref = G0.clone()
 Fcum = torch.eye(3, device=dev).expand(NG, 3, 3).clone()
 Rcum = torch.eye(3, device=dev).expand(NG, 3, 3).clone()
@@ -479,9 +555,40 @@ if REB:
     rep.rebind(Pref)
 rep.to(dev)
 print(f"[{a.method}] 가우시안 {NG} (맞추기 {N})  자유도 {rep.dof}  지름 L {L:.4f}", flush=True)
+if a.check_jac:
+    gch = torch.Generator(device="cpu").manual_seed(1)
+    with torch.no_grad():
+        for q in rep.params():
+            q.add_(0.02 * torch.randn(q.shape, generator=gch).to(q))
+    sel = torch.randperm(NG, generator=gch)[:5000].to(dev)
+    X = Pref[sel]
+    if a.method == "vrgs":                          # vrgs 는 원래 해석적 F (자동미분 비교 없음)
+        y0, J0 = rep(X, sel), rep.F(sel)
+    else:
+        y0, J0 = jac(lambda Z: rep(Z, sel), X)
+    y1, J1 = rep.yJ(X, sel)
+    y2, J2 = YJ(X, sel)
+    l0 = (y0.square().sum() + det3(J0).sum()); g0 = torch.autograd.grad(l0, rep.params())
+    l1 = (y1.square().sum() + det3(J1).sum()); g1 = torch.autograd.grad(l1, rep.params())
+    rel = lambda A, B: float((A - B).abs().max() / B.abs().max().clamp_min(1e-30))
+    print(f"[검사] y {rel(y1, y0):.2e}  J {rel(J1, J0):.2e}  컴파일 J {rel(J2, J0):.2e}  "
+          f"기울기 " + " ".join(f"{rel(p, q):.2e}" for p, q in zip(g1, g0)), flush=True)
+    import time as _t
+    for name, fn in (("자동미분", None), ("해석", rep.yJ), ("해석+컴파일", YJ)):
+        for rep_i in range(4):
+            torch.cuda.synchronize(); t1 = _t.time()
+            if fn is None:
+                yy, JJ = ((rep(Pref, ALL), rep.F(ALL)) if a.method == "vrgs"
+                          else jac(lambda Z: rep(Z, ALL), Pref))
+            else:
+                yy, JJ = fn(Pref, ALL)
+            (yy.square().mean() + det3(JJ).mean()).backward()
+            torch.cuda.synchronize()
+        print(f"[시간] {name}: 전체 {NG} 점 한 번 평가+역전파 {1000*(_t.time()-t1):.1f} ms", flush=True)
+    sys.exit(0)
 if RENDER:
     render(G0, Fall=Fcum)
-rows, CURVE, DOFS, STOP = [], [], [], []
+rows, CURVE, DOFS, STOP, EMDP = [], [], [], [], []
 t0 = time.time()
 for t in range(1, T + 1):
     tgt = TRAJ[t]
@@ -493,7 +600,7 @@ for t in range(1, T + 1):
     def closure():
         opt.zero_grad(set_to_none=True)
         y, F = map_and_F(Pref, FI, Fcum)
-        J = torch.linalg.det(F)
+        J = det3(F)
         l2 = ((y - tgt) ** 2).sum(1).mean()
         bar = barrier(J).mean()
         loss = l2 + a.kappa * bar
@@ -527,7 +634,9 @@ for t in range(1, T + 1):
         J = torch.linalg.det(Fall[FI])
         rmse = float(((y - tgt) ** 2).sum(1).mean().sqrt()) / L
         cd = chamfer(y, tgt) / L
-        e = emd(y, tgt) / L if (t % a.emd_every == 0 or t == T) else float("nan")
+        e = float("nan")                            # EMD 는 저장한 위치로 rep_emd.py 가 따로 잰다
+        if t % a.emd_every == 0 or t == T:
+            EMDP.append((t, y.float().cpu().numpy(), tgt.float().cpu().numpy()))
         rows.append((t, rmse, cd, e, float(J.min()), float((J <= 0).float().mean())))
         if REB:
             Fcum = Fall.clone()
@@ -547,12 +656,13 @@ for t in range(1, T + 1):
 if RENDER:
     WR.close()
 R = np.array(rows)
-ev = R[:, 3][~np.isnan(R[:, 3])]
 print(f"[요약] {a.method}  자유도 {np.mean(DOFS):.0f}  RMSE {100*R[:,1].mean():.3f}%  "
-      f"CD {100*R[:,2].mean():.3f}%  EMD {100*ev.mean():.3f}%  det 최소 {R[:,4].min():.4f}  "
+      f"CD {100*R[:,2].mean():.3f}%  det 최소 {R[:,4].min():.4f}  "
       f"뒤집힘 최대 {100*R[:,5].max():.2f}%", flush=True)
 np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
                     curve=np.array(CURVE, dtype=np.float64),
                     stop=np.array([q[:5] for q in STOP], dtype=np.float64),
-                    stop_reason=np.array([q[5] for q in STOP]))
+                    stop_reason=np.array([q[5] for q in STOP]),
+                    emd_t=np.array([q[0] for q in EMDP]), emd_y=np.stack([q[1] for q in EMDP]),
+                    emd_tgt=np.stack([q[2] for q in EMDP]))
 print(f"[저장] {a.out}" + (f"  영상 {a.video}" if a.video else ""), flush=True)
