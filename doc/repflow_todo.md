@@ -51,6 +51,24 @@
 | Fracture-GS | 두 물체 빠른 충돌 | 공식 레포/논문 값. 공개 코드가 없다는 게 확실하면 직접 구현 |
 
 - 내부 채움 필수 (PG/GF 공식 채우기만, 직접 만든 채우기 금지).
+
+### 공식 자료 조사 (2026-10-07)
+
+- **Fracture-GS** (Wang·Wu·Song·Xu, ICLR 2026, openreview zcAwK50ft0): 공개 코드 **없음** 확인 —
+  GitHub 검색(Fracture-GS/FractureGS/Collision-MPM), 1 저자 GitHub(wangxiaogang866) 저장소 목록,
+  ICLR 포스터 페이지, mlanthology, 논문 노트("Code: To be confirmed") 어디에도 없다 → 직접 구현.
+  구성: Collision-MPM (물체별 독립 P2G, 정규화 질량 분포로 만든 운동량 보존 경계력) + NACC 구성식.
+  논문 표의 물성 (E[MPa], ν, 밀도, NACC α β ξ M):
+  Bowl 5e4/0.46/2/(0.98,0.5,1,2.36), Ficus leaf 8e4/0.39/0.6/(0.94,2,3,2.36),
+  Ficus branch 1e6/0.39/5/(0.94,2,3,2.36), Ficus pot 2e4/0.39/2/(0.98,0.5,2,2.36),
+  Teapot 5e5/0.46/5/(0.98,0.5,1,2.36), Table top 1.5e4/0.39/1/(0.99,0.5,1,2.36),
+  Table leg 1e8/0.39/1000/(0.94,2,3,2.36). 충돌 속도·격자·dt 는 본문 표에 없음 → 정한 값을 적는다.
+- **i-PhysGaussian** (arXiv 2602.17117): 공식 코드 미공개 (클러스터 i-physgaussian 은 비공식 재현,
+  RobotiX101). 점소성 = `plasticine` (rate-dependent J2, Table 6). 장면별 수치는 "릴리스 설정 파일"
+  참조라고만 하고 미공개 → 점소성 수치는 비공식 재현 코드의 구성식 + 정한 값을 적는다.
+- **GaussianFluent**: 공식 설정 watermelon(CD-MPM, E 2e3, ν 0.38, 밀도 1, 마찰 45, β 1, ξ 3,
+  경화 1, flip_pic 0.7, n_grid 300, g -15, 바닥) + 숨은 기본값 (초기속도 -6 등, patch_gf_match.py).
+  lego·ficus·mic 전용 설정은 없음 → watermelon 설정으로 바닥 던지기.
 - 측정: A 와 같음 + 프레임별 증분 포텐셜 값.
 
 - [ ] Fracture-GS 공식 레포 찾기 / 받기
