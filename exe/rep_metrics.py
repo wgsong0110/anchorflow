@@ -35,6 +35,10 @@ dev = "cuda"
 Z = np.load(a.res, allow_pickle=True)
 L = float(Z["L"])
 out = {"res": a.res}
+_M = Z["metrics"]                                                   # t, RMSE, CD, EMD, det 최소, 뒤집힘 비율
+out["summary"] = dict(rmse=100 * float(np.nanmean(_M[:, 1])), cd=100 * float(np.nanmean(_M[:, 2])),
+                      det_min=float(np.nanmin(_M[:, 4])), inv_max=100 * float(np.nanmax(_M[:, 5])),
+                      dof=float(np.mean(Z["dof"])) if "dof" in Z else None, frames=int(_M.shape[0]))
 
 # ---------------- EMD: 같은 번호 8192 점에서 정확해 (헝가리안)
 # 13.9 만 점 전체의 정확해는 계산이 감당되지 않고, 시험한 근사(자체 Sinkhorn, geomloss 다중 해상도,
