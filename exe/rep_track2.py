@@ -836,6 +836,19 @@ for t in range(1, T + 1):
                         wv = 1.0 / math.sqrt(FI.numel())
                         return lambda x: wv * torch.log(
                             det3(GausSim.F_of(rep, *unflat(x))[rep.lab[FI]]).clamp_min(1e-6))
+                    if a.method == "simplicits":
+                        # 입자 det 로그 장벽: log det F_p, F_p = I + Σ W T[:, :3] + Σ (T[X;1]) ⊗ ∇W
+                        wv = 1.0 / math.sqrt(FI.numel())
+                        W_, dW_ = rep.W[FI], rep.dW[FI]
+                        Xh_ = torch.cat([X_, torch.ones_like(X_[:, :1])], 1)
+
+                        def res_s(x):
+                            Tm = unflat(x)[0]
+                            TX = torch.einsum("kij,nj->nki", Tm, Xh_)
+                            F_ = eye_plus((W_[..., None, None] * Tm[None, :, :, :3]).sum(1)
+                                          + outer_sum(TX, dW_))
+                            return wv * torch.log(det3(F_).clamp_min(1e-6))
+                        return res_s
                     return lambda x: rep.logbarrier_residual(*unflat(x))     # vrgs: 삼각형 셀 det
                 return lambda x: rep.elastic_residual(*unflat(x))
 
