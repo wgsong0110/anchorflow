@@ -36,7 +36,8 @@ import numpy as np
 
 W = "/home/dkta/work"
 MODEL = {"wolf": "wolf_whitebg-trained", "mic": "mic_whitebg-trained",
-         "lego": "lego_whitebg-trained", "bread": "bread-trained"}
+         "lego": "lego_whitebg-trained", "bread": "bread-trained",
+         "ship": "ship_whitebg-trained"}
 # 물성은 벤치와 **같은 값**을 쓴다 (exe/bench_vq.py 의 MAT)
 MAT = {"plastic": dict(material="plasticine", yield_stress=1e4),
        # 점성은 **흘러내려야** 한다. 벤치 값(항복 5e3)은 제 무게(ρgh≈5e3)를
