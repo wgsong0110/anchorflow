@@ -70,7 +70,7 @@ ap.add_argument("--tau", type=float, default=0.1, help="adam_bt: det 장벽 문�
 ap.add_argument("--knn_F", type=int, default=8, help="adam_bt: det 를 잴 이웃 수")
 ap.add_argument("--tb", default="auto",
                 help="TensorBoard 디렉토리 (auto: /home/dkta/work/tbrf/<폴더>_<파일>, none: 끔)")
-ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt"],
+ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt", "adam"],
                 help="lbfgs (원래 설정) / gd: 고정 학습률 경사하강")
 ap.add_argument("--gd_lr", type=float, default=1.0)
 ap.add_argument("--frames", type=int, default=0, help="앞 몇 프레임만 (0 이면 전부)")
@@ -574,6 +574,7 @@ if a.tb != "none":
     TBW = SummaryWriter(_tb)
     print(f"[TB] {_tb}", flush=True)
 NCUR = [0]
+OPT = None
 if a.opt == "adam_bt":
     # 예전 설정(rep_track.py)의 최적화: det F 는 정지 이웃 k 개 최소제곱으로 재고,
     # 격자 재설정 방법은 직전 위치 기준(증분), 나머지는 정지 위치 기준
@@ -652,7 +653,21 @@ for t in range(1, T + 1):
         CURVE.append((t, it[0], float(l2), float(bar)))
         it[0] += 1
         return loss
-    if a.opt == "adam_bt":
+    if a.opt == "adam":
+        # 뒤집힘 고려 없음: 입자 L2 만 Adam 으로 (장벽·되돌림 없음). det 는 야코비안으로 기록만
+        if REB or OPT is None:
+            OPT = torch.optim.Adam(rep.params(), lr=a.lr)
+        X_ = Pref[FI]
+        for it_ in range(a.iters0 if t == 1 else a.iters):
+            OPT.zero_grad(set_to_none=True)
+            dy, _ = YJ(X_, FI)
+            l2 = ((RES0 + dy) ** 2).sum(1).mean()
+            l2.backward()
+            OPT.step()
+            CURVE.append((t, it_, float(l2), 0.0, 0))
+        it[0] = it_ + 1
+        STOP.append((t, it_ + 1, it_ + 1, float("nan"), 0.0, "adam"))
+    elif a.opt == "adam_bt":
         if REB or OPT is None:                       # 매개변수가 새로 생기면 Adam 도 새로
             OPT = torch.optim.Adam(rep.params(), lr=a.lr)
         ref = knn_ref(Pref) if REB else REF0
