@@ -62,16 +62,26 @@ ap.add_argument("--jhat", type=float, default=0.3)
 ap.add_argument("--emd_n", type=int, default=4096)
 ap.add_argument("--emd_every", type=int, default=10)
 ap.add_argument("--pg", default="/home/dkta/work/i-physgaussian")
+ap.add_argument("--fp64", action="store_true", help="모든 계산을 float64 로")
+ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd"],
+                help="lbfgs (원래 설정) / gd: 고정 학습률 경사하강")
+ap.add_argument("--gd_lr", type=float, default=1.0)
+ap.add_argument("--frames", type=int, default=0, help="앞 몇 프레임만 (0 이면 전부)")
 a = ap.parse_args()
 dev = "cuda"
 torch.manual_seed(0)
+if a.fp64:
+    torch.set_default_dtype(torch.float64)
+DT = torch.float64 if a.fp64 else torch.float32
 
 D = np.load(a.flow)
 AX = np.load(a.aux, allow_pickle=True)
-G0 = torch.as_tensor(AX["G"], dtype=torch.float32, device=dev)     # 전체 가우시안
+G0 = torch.as_tensor(AX["G"], dtype=DT, device=dev)                # 전체 가우시안
 FI = torch.as_tensor(D["idx"], device=dev)                           # 맞추는 부분표본
-TRAJ = torch.as_tensor(D["traj"], device=dev)                        # [T+1,N,3]
+TRAJ = torch.as_tensor(D["traj"], dtype=DT, device=dev)              # [T+1,N,3]
 T, N, NG = TRAJ.shape[0] - 1, FI.numel(), G0.shape[0]
+if a.frames:
+    T = min(T, a.frames)
 assert torch.allclose(G0[FI], TRAJ[0], atol=1e-5), "흐름과 가우시안 집합이 다르다"
 L = float((G0.max(0).values - G0.min(0).values).norm())              # 고정 정규화
 S_NORM = float(AX["s"])                                              # 정규화 1 = 시뮬 S_NORM
@@ -406,8 +416,9 @@ if a.video:
 
 
 def render(P, Fall=None, Rall=None):
+    P = P.float()
     Pm = ((P - off_t) * S_NORM + lo_t - 1.0) / so + mean
-    M = Rall if Rall is not None else Fall
+    M = (Rall if Rall is not None else Fall).float()
     cov = M @ C0 @ M.transpose(1, 2)
     c6 = torch.stack([cov[:, 0, 0], cov[:, 0, 1], cov[:, 0, 2], cov[:, 1, 1], cov[:, 1, 2],
                       cov[:, 2, 2]], 1)
@@ -443,16 +454,13 @@ rep.to(dev)
 print(f"[{a.method}] 가우시안 {NG} (맞추기 {N})  자유도 {rep.dof}  지름 L {L:.4f}", flush=True)
 if RENDER:
     render(G0, Fall=Fcum)
-rows, CURVE, DOFS = [], [], []
+rows, CURVE, DOFS, STOP = [], [], [], []
 t0 = time.time()
 for t in range(1, T + 1):
     tgt = TRAJ[t]
     if REB and t > 1:
         rep.rebind(Pref); rep.to(dev)
     DOFS.append(rep.dof)
-    opt = torch.optim.LBFGS(rep.params(), lr=1.0, max_iter=a.max_iter, history_size=50,
-                            tolerance_grad=0.0, tolerance_change=0.0,
-                            line_search_fn="strong_wolfe")
     it = [0]
 
     def closure():
@@ -466,7 +474,26 @@ for t in range(1, T + 1):
         CURVE.append((t, it[0], float(l2), float(bar)))
         it[0] += 1
         return loss
-    opt.step(closure)
+    if a.opt == "lbfgs":
+        opt = torch.optim.LBFGS(rep.params(), lr=1.0, max_iter=a.max_iter, history_size=50,
+                                tolerance_grad=0.0, tolerance_change=0.0,
+                                line_search_fn="strong_wolfe")
+        opt.step(closure)
+        # 종료 사유: torch LBFGS 의 내부 상태로 판정한다
+        stt = opt.state[opt._params[0]]
+        gmax = float(torch.cat([q.grad.reshape(-1) for q in rep.params()]).abs().max())
+        dstep = float((stt["d"] * stt["t"]).abs().max()) if "d" in stt else float("nan")
+        reason = ("max_iter" if stt["n_iter"] >= a.max_iter else
+                  "max_eval" if stt["func_evals"] >= int(a.max_iter * 1.25) else
+                  "grad=0" if gmax <= 0 else
+                  "step=0" if dstep <= 0 else
+                  "loss 변화 0 / 하강방향 아님")
+        STOP.append((t, stt["n_iter"], stt["func_evals"], gmax, dstep, reason))
+    else:
+        opt = torch.optim.SGD(rep.params(), lr=a.gd_lr)
+        for _ in range(a.max_iter):
+            opt.step(closure)
+        STOP.append((t, a.max_iter, a.max_iter, float("nan"), float("nan"), "gd"))
     yall, Fall, Rall = eval_all(Pref, Fcum)
     with torch.no_grad():
         y = yall[FI]
@@ -488,7 +515,8 @@ for t in range(1, T + 1):
         print(f"  [t={t:3d}] RMSE {100*rmse:.3f}%  CD {100*cd:.3f}%  "
               + (f"EMD {100*e:.3f}%  " if e == e else "")
               + f"det 최소 {rows[-1][4]:.3f} (≤0 {100*rows[-1][5]:.2f}%)  자유도 {rep.dof}  "
-              f"평가 {it[0]}  {time.time()-t0:.0f}s", flush=True)
+              f"평가 {it[0]}  종료 {STOP[-1][5]} (반복 {STOP[-1][1]}, |g|max {STOP[-1][3]:.1e}, "
+              f"|step|max {STOP[-1][4]:.1e})  {time.time()-t0:.0f}s", flush=True)
 if RENDER:
     WR.close()
 R = np.array(rows)
@@ -497,5 +525,7 @@ print(f"[요약] {a.method}  자유도 {np.mean(DOFS):.0f}  RMSE {100*R[:,1].mea
       f"CD {100*R[:,2].mean():.3f}%  EMD {100*ev.mean():.3f}%  det 최소 {R[:,4].min():.4f}  "
       f"뒤집힘 최대 {100*R[:,5].max():.2f}%", flush=True)
 np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
-                    curve=np.array(CURVE, dtype=np.float64))
+                    curve=np.array(CURVE, dtype=np.float64),
+                    stop=np.array([q[:5] for q in STOP], dtype=np.float64),
+                    stop_reason=np.array([q[5] for q in STOP]))
 print(f"[저장] {a.out}" + (f"  영상 {a.video}" if a.video else ""), flush=True)
