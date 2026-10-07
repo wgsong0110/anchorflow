@@ -78,6 +78,8 @@ ap.add_argument("--riem_energy", default="elastic", choices=["elastic", "logbarr
                      "vrgs 삼각형 셀, gaussim 입자)")
 ap.add_argument("--tet_quality", type=float, default=0.05,
                 help="phystwin logbarrier: 4-클릭 사면체 중 정지 품질 6√2·V/l_rms³ 이 이보다 작은(납작한) 것은 버린다")
+ap.add_argument("--ipm_mu0", type=float, default=1e-4, help="ipm: 첫 장벽 계수 μ")
+ap.add_argument("--ipm_stages", type=int, default=4, help="ipm: μ 를 10 배씩 줄이는 단계 수 (프레임마다)")
 ap.add_argument("--riem_k", type=float, default=1.0,
                 help="riem: 탄성 강성 배수 k (G = k·JᵀJ + ε·λmax(k=1)·I -- ε 는 k=1 기준으로 고정)")
 ap.add_argument("--riem_lr", type=float, default=1.0, help="riem: 고정 보폭 η")
@@ -87,7 +89,7 @@ ap.add_argument("--pt_realtime", action="store_true",
                      "매 프레임 그 이웃까지 거리로 가중치만 다시")
 ap.add_argument("--tb", default="auto",
                 help="TensorBoard 디렉토리 (auto: /home/dkta/work/tbrf/<폴더>_<파일>, none: 끔)")
-ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt", "adam", "riem"],
+ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt", "adam", "riem", "ipm"],
                 help="lbfgs (원래 설정) / gd: 고정 학습률 경사하강")
 ap.add_argument("--gd_lr", type=float, default=1.0)
 ap.add_argument("--frames", type=int, default=0, help="앞 몇 프레임만 (0 이면 전부)")
@@ -223,6 +225,13 @@ class Lattice(torch.nn.Module):
 
     def yJ(self, X, sel):
         return self.yJ_p(X, sel, self.u, self.rho_raw)
+
+    def cellJ(self, u, rho_raw=None):
+        """셀 det 와 가중치 w² (Kuhn 사면체는 부피가 같아 1/셀 수)."""
+        X = (self.Xn + u)[self.cells]
+        D = (X[:, 1:] - X[:, :1]).transpose(1, 2)
+        J = det3(mm3(D, self.cD0i))
+        return J, torch.full_like(J, 1.0 / self.cells.shape[0])
 
     def logbarrier_residual(self, u, rho_raw=None):
         """셀(사면체) det 로그 장벽: log J_c, J_c = det(D(Xn+u) D0⁻¹) -- 이 프레임 격자 대비 증분.
@@ -551,6 +560,12 @@ class VRGS(torch.nn.Module):
     def yJ(self, X, sel):
         return self(X, sel) - X, self.F(sel)
 
+    def cellJ(self, v):
+        """삼각형 셀 부호 넓이비와 가중치 w² = A0."""
+        v0, v1, v2 = v[self.f[:, 0]], v[self.f[:, 1]], v[self.f[:, 2]]
+        c = torch.cross(v1 - v0, v2 - v0, dim=-1)
+        return (c * self.n0).sum(-1) / (2 * self.A0), self.A0
+
     def logbarrier_residual(self, v):
         """삼각형 셀 det 로그 장벽: √A₀ · log J,  J = (e1×e2)·n̂₀ / |e1⁰×e2⁰| (정지 법선 기준 부호 있는 넓이비)."""
         v0, v1, v2 = v[self.f[:, 0]], v[self.f[:, 1]], v[self.f[:, 2]]
@@ -787,7 +802,7 @@ for t in range(1, T + 1):
         CURVE.append((t, it[0], float(l2), float(bar)))
         it[0] += 1
         return loss
-    if a.opt == "riem":
+    if a.opt in ("riem", "ipm"):
         # 탄성 에너지의 가우스-뉴턴 헤시안을 계량으로: Δ = (JᵀJ + ε·λmax·I)⁻¹ ∇L, θ -= ηΔ.
         # 계량은 매 스텝 현재 상태에서 다시 선형화한다. 장벽·되돌림·선탐색 없음
         from torch.func import jvp, vjp
@@ -852,6 +867,23 @@ for t in range(1, T + 1):
                     return lambda x: rep.logbarrier_residual(*unflat(x))     # vrgs: 삼각형 셀 det
                 return lambda x: rep.elastic_residual(*unflat(x))
 
+        # 셀/입자 det 함수 (ipm 의 장벽·가능성 판정용)
+        if a.method == "simplicits":
+            W_i, dW_i = rep.W[FI], rep.dW[FI]
+            Xh_i = torch.cat([X_, torch.ones_like(X_[:, :1])], 1)
+
+            def Jfun(x):
+                Tm = unflat(x)[0]
+                TX = torch.einsum("kij,nj->nki", Tm, Xh_i)
+                F_ = eye_plus((W_i[..., None, None] * Tm[None, :, :, :3]).sum(1) + outer_sum(TX, dW_i))
+                J_ = det3(F_)
+                return J_, torch.full_like(J_, 1.0 / J_.numel())
+        elif hasattr(rep, "cellJ"):
+            def Jfun(x):
+                return rep.cellJ(*unflat(x))
+        else:
+            Jfun = None
+
         def GN(th):
             rf = make_res(th)
             _, vjp_fn = vjp(rf, th)
@@ -872,7 +904,66 @@ for t in range(1, T + 1):
             prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
                                                       torch.profiler.ProfilerActivity.CUDA])
         eps = a.riem_eps * max(lmax, 1e-12)                   # k=1 기준 -> k 를 키우면 계량이 더 딱딱해진다
-        for it_ in range(a.iters0 if t == 1 else a.iters):
+        if a.opt == "ipm":
+            # 내부점법 (장벽법): 매 단계 min L2 + μ·B, B = -Σ w² log J (J>0 영역 안에서만),
+            # μ 는 단계마다 1/10. 방향은 같은 계량의 Δ = -G⁻¹∇f, 보폭은 가능성(J>0) + Armijo 되돌림
+            assert Jfun is not None, "ipm 은 로그 장벽(셀/입자 det)이 있는 방법만"
+            ntot = a.iters0 if t == 1 else a.iters
+            nst = max(ntot // a.ipm_stages, 1)
+            step = 1.0
+
+            def fval(x):
+                with torch.no_grad():
+                    ps = unflat(x)
+                    saved = [q.detach().clone() for q in PL]
+                    for q, pp in zip(PL, ps):
+                        q.copy_(pp)
+                    dy_, _ = YJ(X_, FI)
+                    l2_ = float(((RES0 + dy_) ** 2).sum(1).mean())
+                    for q, pp in zip(PL, saved):
+                        q.copy_(pp)
+                    J_, w2_ = Jfun(x)
+                    if float(J_.min()) <= 0:
+                        return float("inf"), l2_
+                    return l2_ + mu * float(-(w2_ * torch.log(J_)).sum()), l2_
+            for it_ in range(ntot):
+                mu = a.ipm_mu0 * (0.1 ** min(it_ // nst, a.ipm_stages - 1))
+                for q in PL:
+                    q.grad = None
+                dy, _ = YJ(X_, FI)
+                l2 = ((RES0 + dy) ** 2).sum(1).mean()
+                th_ = flat(list(PL))
+                Jc, w2c = Jfun(th_)
+                f = l2 + mu * (-(w2c * torch.log(Jc.clamp_min(1e-30))).sum())
+                f.backward()
+                gk = flat([q.grad if q.grad is not None else torch.zeros_like(q) for q in PL]).detach()
+                theta = flat([q.detach() for q in PL])
+                with torch.no_grad():
+                    Hv = GN(theta)
+                    Gv = lambda u: Hv(u) + eps * u
+                    x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
+                    for _ in range(a.riem_cg):
+                        Gp = Gv(pdir); al = rr / (pdir * Gp).sum().clamp_min(1e-30)
+                        x += al * pdir; r -= al * Gp
+                        rr_new = (r * r).sum()
+                        if rr_new.sqrt() < 1e-4 * gk.norm():
+                            break
+                        pdir = r + (rr_new / rr) * pdir; rr = rr_new
+                    f0 = float(f); slope = -float((gk * x).sum())
+                    step = min(step * 2.0, 1e6)
+                    ok = False
+                    for _bt in range(40):
+                        f1, _ = fval(theta - step * x)
+                        if f1 <= f0 + 1e-4 * step * slope:
+                            ok = True; break
+                        step *= 0.5
+                    if ok:
+                        for q, dq in zip(PL, unflat(theta - step * x)):
+                            q.copy_(dq)
+                CURVE.append((t, it_, float(l2), mu, step if ok else 0.0))
+            it[0] = ntot
+            STOP.append((t, ntot, ntot, float(Jfun(flat([q.detach() for q in PL]))[0].min()), eps, "ipm"))
+        for it_ in range(0 if a.opt == "ipm" else (a.iters0 if t == 1 else a.iters)):
             if a.profile and it_ == WARM:
                 TM.clear(); NCG[0] = 0
                 prof.__enter__()
@@ -917,8 +1008,9 @@ for t in range(1, T + 1):
                 for q, dq in zip(PL, unflat(x)):
                     q -= a.riem_lr * dq
             CURVE.append((t, it_, float(l2), 0.0, 0))
-        it[0] = it_ + 1
-        STOP.append((t, it_ + 1, it_ + 1, float("nan"), eps, "riem"))
+        if a.opt == "riem":
+            it[0] = it_ + 1
+            STOP.append((t, it_ + 1, it_ + 1, float("nan"), eps, "riem"))
     elif a.opt == "adam":
         # 뒤집힘 고려 없음: 입자 L2 만 Adam 으로 (장벽·되돌림 없음). det 는 야코비안으로 기록만
         if REB or OPT is None:
