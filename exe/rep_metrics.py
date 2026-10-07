@@ -22,7 +22,9 @@ import gauss_flow as gf                                            # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--res", required=True)
-ap.add_argument("--flow", required=True)
+ap.add_argument("--flow", default="", help="A: 목표 흐름 (gauss_flow npz)")
+ap.add_argument("--sim", default="", help="B: 기준 시뮬 h5 프레임 폴더")
+ap.add_argument("--cfg", default="", help="B: 기준 시뮬 설정 json")
 ap.add_argument("--video", default="")
 ap.add_argument("--target_video", default="")
 ap.add_argument("--out", required=True)
@@ -52,23 +54,61 @@ for t, y, g in zip(Z["emd_t"], Z["emd_y"], Z["emd_tgt"]):
 out["emd_frames"] = ev
 out["EMD_pct"] = 100 * float(np.mean([e[1] for e in ev]))
 
-# ---------------- 물리 지표: 목표 흐름에서 같은 식
-D = np.load(a.flow)
-field = D["field"]
+# ---------------- 물리 지표: 기준(A 목표 흐름 / B 기준 시뮬)에서 같은 식
 T = int(Z["metrics"].shape[0])
-period = 10
-x = torch.as_tensor(D["traj"][0], dtype=torch.float64, device=dev)
-F = torch.eye(3, dtype=torch.float64, device=dev).expand(x.shape[0], 3, 3).clone()
 tp = []
-xp = x.clone()
-for t in range(T):
-    f = torch.as_tensor(field[t // period], dtype=torch.float64, device=dev)
-    x, F, _, _ = gf.advance(x, F, f, 1.0 / a.fps, 0.5)
-    vel = (x - xp) * a.fps
-    com = x.mean(0)
-    tp.append((t + 1, float(0.5 * (vel * vel).sum(1).mean()), *vel.mean(0).tolist(),
-               *torch.cross(x - com, vel, dim=-1).mean(0).tolist(), float(torch.linalg.det(F).mean())))
+if a.flow:
+    D = np.load(a.flow)
+    field = D["field"]
+    period = 10
+    x = torch.as_tensor(D["traj"][0], dtype=torch.float64, device=dev)
+    F = torch.eye(3, dtype=torch.float64, device=dev).expand(x.shape[0], 3, 3).clone()
     xp = x.clone()
+    for t in range(T):
+        f = torch.as_tensor(field[t // period], dtype=torch.float64, device=dev)
+        x, F, _, _ = gf.advance(x, F, f, 1.0 / a.fps, 0.5)
+        vel = (x - xp) * a.fps
+        com = x.mean(0)
+        tp.append((t + 1, float(0.5 * (vel * vel).sum(1).mean()), *vel.mean(0).tolist(),
+                   *torch.cross(x - com, vel, dim=-1).mean(0).tolist(), float(torch.linalg.det(F).mean())))
+        xp = x.clone()
+else:
+    # B: rep_ip 와 같은 정의 -- 질량가중 합 (질량은 셀마다 세는 시뮬레이터 정의), 부피비는 Σ V det F / Σ V
+    import glob as _g, h5py, json as _j
+    cfg = _j.load(open(a.cfg))
+    fs = sorted(_g.glob(os.path.join(a.sim, "sim_*.h5")))
+
+    def _rd(p_, k):
+        with h5py.File(p_, "r") as f_:
+            if k not in f_:
+                return None
+            v_ = np.array(f_[k])
+        return v_.T if (v_.ndim == 2 and v_.shape[0] in (3, 9) and v_.shape[0] != v_.shape[-1]) else v_
+    X0 = torch.as_tensor(_rd(fs[0], "x"), dtype=torch.float64, device=dev)
+    ng, gl = int(cfg.get("n_grid", 100)), float(cfg.get("grid_lim", 2.0))
+    dx = gl / ng
+    cell = torch.floor(X0 / dx).long()
+    key = (cell[:, 0] * (ng + 8) + cell[:, 1]) * (ng + 8) + cell[:, 2]
+    _, inv, cnt = torch.unique(key, return_inverse=True, return_counts=True)
+    VOL = dx ** 3 / cnt[inv].double(); MASS = float(cfg["density"]) * VOL; MS = float(MASS.sum())
+    h_ = float(cfg["frame_dt"])
+    xp = X0.clone()
+    for t in range(1, T + 1):
+        x = torch.as_tensor(_rd(fs[t], "x"), dtype=torch.float64, device=dev)
+        ok = torch.isfinite(x).all(1)
+        vel = torch.where(ok[:, None], (x - xp) / h_, torch.zeros_like(x))
+        xs = torch.where(ok[:, None], x, xp)
+        com = (MASS[:, None] * xs).sum(0) / MS
+        Fh = _rd(fs[t], "F")
+        Jd = torch.ones_like(VOL) if Fh is None else torch.linalg.det(
+            torch.as_tensor(Fh.reshape(-1, 3, 3), dtype=torch.float64, device=dev))
+        Jd = torch.where(torch.isfinite(Jd), Jd, torch.ones_like(Jd))
+        tp.append((t, float(0.5 * (MASS * (vel * vel).sum(1)).sum()), *(MASS[:, None] * vel).sum(0).tolist(),
+                   *(MASS[:, None] * torch.cross(xs - com, vel, dim=-1)).sum(0).tolist(),
+                   float((VOL * Jd).sum() / VOL.sum())))
+        xp = xs
+    if "ip" in Z:
+        out["IP_mean"] = float(np.mean(Z["ip"][:, 1]))
 tp = np.array(tp)
 mp = Z["phys"]
 n = min(len(tp), len(mp))
