@@ -32,15 +32,22 @@ import torch
 
 
 def field_seq(seed, n_win, c_lo=0.2, c_hi=0.8, sig=(0.15, 0.35),
-              amp=(0.3, 0.8)):
-    """창별 가우시안 (c, d, σ, A). 시드가 같으면 형상과 무관하게 같다."""
+              amp=(0.3, 0.8), split_every=0):
+    """창별 가우시안 (c, d, σ, A, 가르기). 시드가 같으면 형상과 무관하게 같다.
+
+    split_every=k 면 k 번째 창마다 **가르는 가우시안**이다:
+        v = A · d · sign((x-c)·d) · exp(-|x-c|²/σ²)
+    중심을 지나고 d 에 수직인 평면 양쪽이 반대로 벌어져 물체가 실제로 갈라진다
+    (부드러운 흐름은 미분동형이라 위상이 바뀔 수 없다).
+    """
     r = np.random.default_rng(seed)
     out = []
-    for _ in range(n_win):
+    for w in range(n_win):
         c = r.uniform(c_lo, c_hi, 3)
         d = r.normal(size=3)
         d /= np.linalg.norm(d)
-        out.append(np.concatenate([c, d, [r.uniform(*sig), r.uniform(*amp)]]))
+        sp = 1.0 if (split_every and (w % split_every) == split_every - 1) else 0.0
+        out.append(np.concatenate([c, d, [r.uniform(*sig), r.uniform(*amp), sp]]))
     return np.array(out, dtype=np.float64)
 
 
@@ -49,6 +56,8 @@ def vel_and_grad(x, f):
     c, d, sg, A = f[:3], f[3:6], f[6], f[7]
     dx = x - c
     g = torch.exp(-(dx * dx).sum(1) / (sg * sg))          # [N]
+    if f.shape[0] > 8 and float(f[8]) > 0.5:              # 가르기: 평면 양쪽 반대
+        g = g * torch.sign(dx @ d)                        # 평면 위 한 점은 0
     v = A * g[:, None] * d[None]                         # [N,3]
     # ∂v_i/∂x_j = A d_i g (-2 dx_j / σ²)
     J = (A * (-2.0 / (sg * sg))) * g[:, None, None] * d[None, :, None] \
@@ -108,6 +117,8 @@ if __name__ == "__main__":
                     help="세기 A 범위 (정규화 단위/초)")
     ap.add_argument("--sig", type=float, nargs=2, default=[0.1, 0.3],
                     help="폭 σ 범위")
+    ap.add_argument("--split_every", type=int, default=2,
+                    help="몇 번째 창마다 가르는 가우시안을 넣는가 (0 이면 안 넣음)")
     a = ap.parse_args()
 
     X = np.load(a.fill).astype(np.float64)
@@ -121,7 +132,8 @@ if __name__ == "__main__":
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     x0 = torch.as_tensor(Xn[idx], dtype=torch.float64, device=dev)
     field = field_seq(a.seed, (a.frames + a.period - 1) // a.period,
-                      sig=tuple(a.sig), amp=tuple(a.amp))
+                      sig=tuple(a.sig), amp=tuple(a.amp),
+                      split_every=a.split_every)
     traj, Fs, log = run_flow(x0, field, a.frames, a.period, 1.0 / a.fps,
                              a.safety, keep_F=a.save_F)
     dmin = min(q[3] for q in log)
