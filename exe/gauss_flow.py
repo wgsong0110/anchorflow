@@ -1,0 +1,134 @@
+"""단일 가우시안 속도장으로 목표 변형을 만든다 (표현력 비교 실험의 정답 궤적).
+
+속도장은 **한 번에 하나**의 가우시안이다:
+
+    v(x) = A · d · exp(-|x - c|² / σ²)
+
+일정 주기(--period 프레임)마다 (c, d, σ, A) 를 새로 뽑는다. 적분 스텝은 그 창의
+값으로 **Δt < σ²/A** 를 지킨다 (Δt = safety·σ²/A). 이 조건 아래에서는 한 스텝의
+변위 기울기 |∇v|·Δt 가 작아 흐름 사상이 접히지 않는다 -- 생성 중 det F 를 직접
+재서 확인한다.
+
+모든 형상은 bbox 를 **[0,1]³ 정규화한 좌표**에서 같은 시드의 같은 속도장 열을
+받는다. 그래서 형상만 다르고 걸리는 변형은 같다.
+
+출력 (npz):
+  X0      [N,3]  정규화된 정지 위치 (부분표본)
+  traj    [T+1,N,3] 프레임별 목표 위치
+  F       [T+1,N,3,3] 목표 변형 기울기 (det F 확인용, 저장은 --save_F 일 때만)
+  idx     [N]    채우기 입자 집합에서 뽑은 인덱스 (모든 방법이 같은 인덱스를 쓴다)
+  lo, s   정규화 상수 (x_sim = lo + s * x_norm)
+  field   [W,8]  창별 (c3, d3, σ, A)
+
+  python exe/gauss_flow.py --fill pgfill_wolf.npy --out flow_wolf.npz
+"""
+from __future__ import annotations
+
+import argparse
+import math
+
+import numpy as np
+import torch
+
+
+def field_seq(seed, n_win, c_lo=0.2, c_hi=0.8, sig=(0.15, 0.35),
+              amp=(0.3, 0.8)):
+    """창별 가우시안 (c, d, σ, A). 시드가 같으면 형상과 무관하게 같다."""
+    r = np.random.default_rng(seed)
+    out = []
+    for _ in range(n_win):
+        c = r.uniform(c_lo, c_hi, 3)
+        d = r.normal(size=3)
+        d /= np.linalg.norm(d)
+        out.append(np.concatenate([c, d, [r.uniform(*sig), r.uniform(*amp)]]))
+    return np.array(out, dtype=np.float64)
+
+
+def vel_and_grad(x, f):
+    """v(x) 와 ∇v(x) (x: [N,3] 텐서, f: 창 하나 [8])."""
+    c, d, sg, A = f[:3], f[3:6], f[6], f[7]
+    dx = x - c
+    g = torch.exp(-(dx * dx).sum(1) / (sg * sg))          # [N]
+    v = A * g[:, None] * d[None]                         # [N,3]
+    # ∂v_i/∂x_j = A d_i g (-2 dx_j / σ²)
+    J = (A * (-2.0 / (sg * sg))) * g[:, None, None] * d[None, :, None] \
+        * dx[:, None, :]                                 # [N,3,3]
+    return v, J
+
+
+def advance(x, F, f, T, safety=0.5):
+    """창 f 로 시간 T 만큼 RK4 적분 (Δt = safety·σ²/A 이하). F 도 함께."""
+    sg, A = float(f[6]), float(f[7])
+    dt_max = safety * sg * sg / A                         # Δt < σ²/A
+    n = max(1, math.ceil(T / dt_max))
+    dt = T / n
+    for _ in range(n):
+        def rhs(xx, FF):
+            v, J = vel_and_grad(xx, f)
+            return v, J @ FF
+        k1x, k1F = rhs(x, F)
+        k2x, k2F = rhs(x + 0.5 * dt * k1x, F + 0.5 * dt * k1F)
+        k3x, k3F = rhs(x + 0.5 * dt * k2x, F + 0.5 * dt * k2F)
+        k4x, k4F = rhs(x + dt * k3x, F + dt * k3F)
+        x = x + dt / 6.0 * (k1x + 2 * k2x + 2 * k3x + k4x)
+        F = F + dt / 6.0 * (k1F + 2 * k2F + 2 * k3F + k4F)
+    return x, F, n, dt
+
+
+def run_flow(x0, field, frames, period, frame_dt, safety=0.5, keep_F=False):
+    """x0 [N,3] 텐서를 frames 프레임 흘린다 -> traj [T+1,N,3], F, 기록."""
+    x = x0.clone()
+    F = torch.eye(3, dtype=x.dtype, device=x.device).expand(x.shape[0], 3, 3) \
+        .clone()
+    traj, Fs, log = [x.clone()], ([F.clone()] if keep_F else None), []
+    for t in range(frames):
+        f = torch.as_tensor(field[t // period], dtype=x.dtype, device=x.device)
+        x, F, n, dt = advance(x, F, f, frame_dt, safety)
+        traj.append(x.clone())
+        if keep_F:
+            Fs.append(F.clone())
+        det = torch.linalg.det(F)
+        log.append((t, n, dt, float(det.min()), float(det.max())))
+    return torch.stack(traj), (torch.stack(Fs) if keep_F else None), log
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--fill", required=True, help="PG 공식 채우기 입자 (npy)")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--n", type=int, default=30000, help="부분표본 입자 수")
+    ap.add_argument("--frames", type=int, default=120)
+    ap.add_argument("--period", type=int, default=10, help="가우시안 교체 주기(프레임)")
+    ap.add_argument("--fps", type=float, default=30.0)
+    ap.add_argument("--seed", type=int, default=0, help="속도장 시드 (형상 공통)")
+    ap.add_argument("--sub_seed", type=int, default=0, help="부분표본 시드")
+    ap.add_argument("--safety", type=float, default=0.5, help="Δt = safety·σ²/A")
+    ap.add_argument("--save_F", action="store_true")
+    a = ap.parse_args()
+
+    X = np.load(a.fill).astype(np.float64)
+    lo = X.min(0)
+    s = float((X.max(0) - lo).max())
+    Xn = (X - lo) / s                                   # [0,1]³ 안 (긴 축이 1)
+    # 짧은 축은 가운데로 (형상마다 같은 위치에 오도록)
+    Xn = Xn + (1.0 - Xn.max(0)) / 2.0
+    r = np.random.default_rng(a.sub_seed)
+    idx = np.sort(r.choice(len(Xn), min(a.n, len(Xn)), replace=False))
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    x0 = torch.as_tensor(Xn[idx], dtype=torch.float64, device=dev)
+    field = field_seq(a.seed, (a.frames + a.period - 1) // a.period)
+    traj, Fs, log = run_flow(x0, field, a.frames, a.period, 1.0 / a.fps,
+                             a.safety, keep_F=a.save_F)
+    dmin = min(q[3] for q in log)
+    nsub = [q[1] for q in log]
+    disp = float((traj[-1] - traj[0]).norm(dim=1).mean())
+    print(f"[흐름] 입자 {len(idx)}  프레임 {a.frames}  주기 {a.period}  창 "
+          f"{len(field)}  서브스텝 {min(nsub)}~{max(nsub)}  det F 최소 {dmin:.4f}  "
+          f"평균 변위 {disp:.4f} (정규화 단위)", flush=True)
+    assert dmin > 0, "det F <= 0 -- 흐름이 접혔다"
+    np.savez_compressed(
+        a.out, X0=Xn[idx].astype(np.float32),
+        traj=traj.cpu().numpy().astype(np.float32),
+        idx=idx, lo=lo, s=s, field=field,
+        **({"F": Fs.cpu().numpy().astype(np.float32)} if a.save_F else {}))
+    print(f"[저장] {a.out}", flush=True)
