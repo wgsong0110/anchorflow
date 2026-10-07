@@ -74,7 +74,8 @@ ap.add_argument("--profile", type=int, default=0,
                 help="riem: 첫 프레임 이 반복 수만 돌며 구간별 시간 + torch 프로파일러 표를 내고 끝낸다")
 ap.add_argument("--riem_energy", default="elastic", choices=["elastic", "logbarrier"],
                 help="riem 계량의 에너지: elastic (스프링/StVK 막/고정공회전) | logbarrier "
-                     "(ours/tet 전용: 격자 셀 det 의 로그 장벽, 잔차 log J, 계량 Σ ∇logJ ∇logJᵀ)")
+                     "(det 의 로그 장벽, 잔차 log J, 계량 Σ ∇logJ ∇logJᵀ: ours/tet 격자 셀, "
+                     "vrgs 삼각형 셀, gaussim 입자)")
 ap.add_argument("--tet_quality", type=float, default=0.05,
                 help="phystwin logbarrier: 4-클릭 사면체 중 정지 품질 6√2·V/l_rms³ 이 이보다 작은(납작한) 것은 버린다")
 ap.add_argument("--riem_k", type=float, default=1.0,
@@ -432,6 +433,14 @@ class GausSim(torch.nn.Module):
 
     def params(self):
         return [self.p2, self.dg]
+
+    def F_of(self, p2, dg):
+        """군집 F (매개변수를 인자로; p2 는 쓰지 않는다)."""
+        U = quat_mat(dg[:, 0:4])
+        s = torch.exp(dg[:, 4:7].clamp(-5, 5))
+        s = s / torch.prod(s, -1, keepdim=True).pow(1 / 3)
+        V = quat_mat(dg[:, 7:11])
+        return U @ torch.diag_embed(s) @ V.transpose(1, 2)
 
     def F1(self):
         U = quat_mat(self.dg[:, 0:4])
@@ -821,6 +830,13 @@ for t in range(1, T + 1):
                 return res
         else:
             def make_res(th):
+                if a.riem_energy == "logbarrier":
+                    if a.method == "gaussim":
+                        # 입자 det 로그 장벽: log det F_p (13.9 만 입자, 가중 1/√N)
+                        wv = 1.0 / math.sqrt(FI.numel())
+                        return lambda x: wv * torch.log(
+                            det3(GausSim.F_of(rep, *unflat(x))[rep.lab[FI]]).clamp_min(1e-6))
+                    return lambda x: rep.logbarrier_residual(*unflat(x))     # vrgs: 삼각형 셀 det
                 return lambda x: rep.elastic_residual(*unflat(x))
 
         def GN(th):
