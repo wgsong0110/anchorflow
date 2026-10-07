@@ -22,28 +22,35 @@ def knn(A, B, k, ch=4096):
     return torch.cat(d).numpy(), torch.cat(i).numpy()
 
 
-def emd(A, B, k=32, kmax=512):
-    """A, B: [N,3] cuda 텐서. 반환 (평균 거리, 쓴 k)."""
-    A, B = A.float().contiguous(), B.float().contiguous()
+def _match(A, B, k):
     n = A.shape[0]
-    while True:
-        dab, iab = knn(A, B, k)
-        dba, iba = knn(B, A, k)
-        rows = np.concatenate([np.repeat(np.arange(n), k), iba.reshape(-1)])
-        cols = np.concatenate([iab.reshape(-1), np.repeat(np.arange(n), k)])
-        w = np.concatenate([dab.reshape(-1), dba.reshape(-1)]) + 1e-12   # 0 가중은 희소에서 빠진다
-        G = csr_matrix((w, (rows, cols)), shape=(n, n))                  # 중복 (i,j) 는 값이 더해진다
-        r, c = G.nonzero()                                                # -> 후보 짝만 쓰고 거리는 다시 잰다
-        G = csr_matrix(((A[torch.as_tensor(r, device=A.device)] - B[torch.as_tensor(c, device=A.device)])
-                        .norm(dim=1).double().cpu().numpy() + 1e-12, (r, c)), shape=(n, n))
-        try:
-            ri, ci = min_weight_full_bipartite_matching(G)
-            return float((A[torch.as_tensor(ri, device=A.device)] - B[torch.as_tensor(ci, device=A.device)])
-                         .norm(dim=1).double().mean()), k
-        except ValueError:
-            if k >= kmax:
-                raise
-            k *= 2
+    _, iab = knn(A, B, k)
+    _, iba = knn(B, A, k)
+    # 후보: 서로의 k 최근접 + 같은 번호 짝(i, i) -- 같은 입자끼리의 짝이 늘 있어 완전 매칭이 존재한다
+    rows = np.concatenate([np.repeat(np.arange(n), k), iba.reshape(-1), np.arange(n)])
+    cols = np.concatenate([iab.reshape(-1), np.repeat(np.arange(n), k), np.arange(n)])
+    G = csr_matrix((np.ones(rows.shape[0]), (rows, cols)), shape=(n, n))
+    r, c = G.nonzero()
+    w = (A[torch.as_tensor(r, device=A.device)] - B[torch.as_tensor(c, device=A.device)]) \
+        .norm(dim=1).double().cpu().numpy() + 1e-12
+    G = csr_matrix((w, (r, c)), shape=(n, n))
+    ri, ci = min_weight_full_bipartite_matching(G)
+    return float((A[torch.as_tensor(ri, device=A.device)] - B[torch.as_tensor(ci, device=A.device)])
+                 .norm(dim=1).double().mean())
+
+
+def emd(A, B, k=32, kmax=256, tol=1e-4):
+    """A, B: [N,3] (같은 입자 순서). k 를 두 배씩 늘려 값의 상대 변화가 tol 아래면 멈춘다.
+    후보 제한 매칭은 정확해의 위쪽 한계이고 k 가 커지면 정확해로 내려간다. 반환 (평균 거리, 쓴 k)."""
+    A, B = A.float().contiguous(), B.float().contiguous()
+    prev = _match(A, B, k)
+    while k < kmax:
+        k *= 2
+        cur = _match(A, B, k)
+        if abs(prev - cur) <= tol * cur:
+            return cur, k
+        prev = cur
+    return prev, k
 
 
 if __name__ == "__main__":
@@ -60,21 +67,12 @@ if __name__ == "__main__":
             B = B[torch.randperm(n, device=dev)]
             C = torch.cdist(A.double(), B.double()).cpu().numpy(); r, c = linear_sum_assignment(C)
             ex = C[r, c].mean()
-            out = []
-            for k in (16, 32, 64, 128):
-                try:
-                    v, ku = emd(A, B, k, kmax=k)
-                    out.append(f"k{k} {100 * (v - ex) / ex:+.4f}%")
-                except ValueError:
-                    out.append(f"k{k} 매칭없음")
-            print(f"n {n} 이동 {sh}: 정확 {ex:.6f}  " + "  ".join(out), flush=True)
+            v, ku = emd(A, B)
+            print(f"n {n} 이동 {sh}: 정확 {ex:.6f}  희소 {v:.6f} ({100 * (v - ex) / ex:+.4f}%, k {ku})",
+                  flush=True)
     for sh in (0.005, 0.02, 0.08):
         B = X + sh * torch.randn_like(X) + torch.tensor([sh, 0, 0], device=dev)
-        for k in (32, 64):
-            t = time.time()
-            try:
-                v, ku = emd(X, B, k, kmax=k)
-                print(f"전체 {X.shape[0]} 이동 {sh} k{k}: {v:.6f}  {time.time() - t:.0f}s", flush=True)
-            except ValueError:
-                print(f"전체 이동 {sh} k{k}: 매칭없음 {time.time() - t:.0f}s", flush=True)
+        t = time.time()
+        v, ku = emd(X, B)
+        print(f"전체 {X.shape[0]} 이동 {sh}: {v:.6f} (k {ku})  {time.time() - t:.0f}s", flush=True)
     print("EMDSP_DONE")
