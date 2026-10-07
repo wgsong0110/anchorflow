@@ -32,11 +32,14 @@
 물리 지표(에너지·질량·운동량 보존, 물리 잔차) · 영상(3DGS 공식 래스터라이저) 시각 품질(목표 렌더 대비 PSNR/SSIM/LPIPS 등).
 
 - [x] 해석 야코비안 + torch.compile, 작은 배치 행렬곱 원소별화 (검증 1e-7)
-- [ ] 프로파일링 (prof3) → 느린 구간 최적화
-- [ ] ε·η 고르기 (wolf 3 프레임): PhysTwin elastic ✓(ε1e-3, η10 최선), ours logbarrier, GS-Verse logbarrier, Simplicits logbarrier
-- [ ] wolf 본 실행 (TB·영상)
-- [ ] bread · ship: 흐름(gauss_flow --n 0), Simplicits 가중치 학습, 본 실행
-- [ ] EMD 전체 재측정 (rep_emd)
+- [x] 프로파일링 → 병목은 CG 안 jvp·vjp 의 커널 실행 호출(반복당 11~24 만 회). 순수 잔차 함수 +
+      torch.compile 로 반복당 644 → 33 ms (ours), PhysTwin 213 → 39, GS-Verse 32, Simplicits 24 ms.
+- [x] ε·η 고르기 (wolf 3 프레임 평균 RMSE 최소, NaN 제외; CG 최대 50):
+      ours ε1e-1 η100 (0.175%, 단 입자 야코비안 뒤집힘 1.4%), PhysTwin ε1e-3 η10 (0.334%),
+      GS-Verse ε1e-3 η1 (1.20%), Simplicits ε1e-1 η0.1 (1.71%; η≥0.5 는 발산).
+- [x] bread · ship 준비: 흐름(bread 53,606 점, ship 200,000 점), Simplicits 기본 가중치
+- [ ] 본 실행 r9 (wolf·bread·ship × ours, PhysTwin k1/10/100/1000, GS-Verse, Simplicits, GausSim + 목표 영상)
+- [ ] EMD 전체 재측정: GPU 경매 알고리즘(emd_auction, ε-최적, 후보 제한 없음) — 3000 점에서 정확해와 일치 확인
 - [ ] 물리 지표 · 시각 품질 측정
 - [ ] (시간 남으면) 내부점법
 
