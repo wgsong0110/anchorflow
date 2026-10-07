@@ -62,6 +62,8 @@ ap.add_argument("--pt_noflip", action="store_true",
                 help="phystwin: 질량점마다 처음 이웃 16 개로 잰 국소 F 의 det>0 을 지킨다 (뒤집힘 금지)")
 ap.add_argument("--pt_spring", type=float, default=0.0,
                 help="phystwin: 처음 이웃 간 거리를 묶는 스프링 항 계수 (상대 변형률² 평균)")
+ap.add_argument("--fixed_bind", action="store_true",
+                help="ours/tet: 격자·입자-격자 대응을 처음(정지 위치)에 한 번 잡고 고정 (매 프레임 재설정 안 함)")
 ap.add_argument("--tb", default="auto",
                 help="TensorBoard 디렉토리 (auto: /home/dkta/work/tbrf/<폴더>_<파일>, none: 끔)")
 a = ap.parse_args()
@@ -408,6 +410,8 @@ with torch.no_grad():
     print(f"[결합] t=0 재현 오차 최대 {float((y0 - X0).norm(dim=1).max()):.2e}  "
           f"지름 L {L:.4f}  입자 {N}  보조 {AUX.shape[0]}", flush=True)
 
+if a.fixed_bind:
+    rep.rebind_each_frame = False                           # 처음 대응 고정: u 는 정지 대비 누적 변위
 REB = getattr(rep, "rebind_each_frame", False)
 TBW = None
 if a.tb != "none":
