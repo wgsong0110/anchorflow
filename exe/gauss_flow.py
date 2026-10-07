@@ -1,8 +1,8 @@
 """단일 가우시안 속도장으로 목표 변형을 만든다 (표현력 비교 실험의 정답 궤적).
 
-속도장은 **한 번에 하나**의 가우시안이다:
-
-    v(x) = A · d · exp(-|x - c|² / σ²)
+속도장은 **한 번에 하나**다. 기본은 가우시안 v(x) = A·d·exp(-|x-c|²/σ²) 이고,
+위상 변화를 내려면 끊기는 장(가르기·근원·비틀어 찢기·흡입, KINDS 참고)을 창마다
+돌아가며 섞는다.
 
 일정 주기(--period 프레임)마다 (c, d, σ, A) 를 새로 뽑는다. 적분 스텝은 그 창의
 값으로 **Δt < σ²/A** 를 지킨다 (Δt = safety·σ²/A). 이 조건 아래에서는 한 스텝의
@@ -18,7 +18,7 @@
   F       [T+1,N,3,3] 목표 변형 기울기 (det F 확인용, 저장은 --save_F 일 때만)
   idx     [N]    채우기 입자 집합에서 뽑은 인덱스 (모든 방법이 같은 인덱스를 쓴다)
   lo, s   정규화 상수 (x_sim = lo + s * x_norm)
-  field   [W,8]  창별 (c3, d3, σ, A)
+  field   [W,9]  창별 (c3, d3, σ, A, 종류)
 
   python exe/gauss_flow.py --fill pgfill_wolf.npy --out flow_wolf.npz
 """
@@ -31,14 +31,22 @@ import numpy as np
 import torch
 
 
-def field_seq(seed, n_win, c_lo=0.2, c_hi=0.8, sig=(0.15, 0.35),
-              amp=(0.3, 0.8), split_every=0):
-    """창별 가우시안 (c, d, σ, A, 가르기). 시드가 같으면 형상과 무관하게 같다.
+KINDS = ["smooth", "split", "point_src", "line_src", "twist_tear", "sink"]
+#   smooth      v = A d g                         부드러운 밀기 (위상 보존)
+#   split       v = A d sign((x-c)·d) g           평면 양쪽이 벌어진다 (갈라짐)
+#   point_src   v = A n̂ g,  n̂=(x-c)/|x-c|         중심에서 찢어져 빈 공간이 열린다
+#   line_src    v = A p̂ g⊥, p̂=x⊥/|x⊥|             축 d 를 따라 관통 구멍이 뚫린다
+#   twist_tear  v = A sign((x-c)·d) (d×(x-c))/σ g  평면 양쪽이 반대로 비틀려 찢어진다
+#   sink        v = -A n̂ g · cut(r/ε)              한 점으로 빨려 들어가 합쳐진다
+# g = exp(-|x-c|²/σ²) (line_src 는 축까지 거리 g⊥). 끊기는 곳은 측도 0 인 집합이다.
+SINK_EPS = 0.02
 
-    split_every=k 면 k 번째 창마다 **가르는 가우시안**이다:
-        v = A · d · sign((x-c)·d) · exp(-|x-c|²/σ²)
-    중심을 지나고 d 에 수직인 평면 양쪽이 반대로 벌어져 물체가 실제로 갈라진다
-    (부드러운 흐름은 미분동형이라 위상이 바뀔 수 없다).
+
+def field_seq(seed, n_win, c_lo=0.2, c_hi=0.8, sig=(0.15, 0.35),
+              amp=(0.3, 0.8), kinds=None):
+    """창별 (c3, d3, σ, A, 종류). 시드가 같으면 형상과 무관하게 같다.
+
+    kinds 를 주면 창마다 그 종류를 차례로 돈다 (기본: 부드러운 가우시안만).
     """
     r = np.random.default_rng(seed)
     out = []
@@ -46,29 +54,64 @@ def field_seq(seed, n_win, c_lo=0.2, c_hi=0.8, sig=(0.15, 0.35),
         c = r.uniform(c_lo, c_hi, 3)
         d = r.normal(size=3)
         d /= np.linalg.norm(d)
-        sp = 1.0 if (split_every and (w % split_every) == split_every - 1) else 0.0
-        out.append(np.concatenate([c, d, [r.uniform(*sig), r.uniform(*amp), sp]]))
+        k = KINDS.index(kinds[w % len(kinds)]) if kinds else 0
+        out.append(np.concatenate([c, d, [r.uniform(*sig), r.uniform(*amp), k]]))
     return np.array(out, dtype=np.float64)
 
 
-def vel_and_grad(x, f):
-    """v(x) 와 ∇v(x) (x: [N,3] 텐서, f: 창 하나 [8])."""
+def velocity(x, f):
+    """창 f 의 속도 v(x) (x: [N,3])."""
     c, d, sg, A = f[:3], f[3:6], f[6], f[7]
+    kind = KINDS[int(round(float(f[8])))] if f.shape[0] > 8 else "smooth"
     dx = x - c
-    g = torch.exp(-(dx * dx).sum(1) / (sg * sg))          # [N]
-    if f.shape[0] > 8 and float(f[8]) > 0.5:              # 가르기: 평면 양쪽 반대
-        g = g * torch.sign(dx @ d)                        # 평면 위 한 점은 0
-    v = A * g[:, None] * d[None]                         # [N,3]
-    # ∂v_i/∂x_j = A d_i g (-2 dx_j / σ²)
-    J = (A * (-2.0 / (sg * sg))) * g[:, None, None] * d[None, :, None] \
-        * dx[:, None, :]                                 # [N,3,3]
-    return v, J
+    r2 = (dx * dx).sum(1)
+    g = torch.exp(-r2 / (sg * sg))
+    if kind == "smooth":
+        return A * g[:, None] * d[None]
+    if kind == "split":
+        return A * (g * torch.sign(dx @ d))[:, None] * d[None]
+    if kind == "point_src":
+        n = dx / r2.sqrt().clamp_min(1e-9)[:, None]
+        return A * g[:, None] * n
+    if kind == "line_src":
+        xp = dx - (dx @ d)[:, None] * d[None]
+        rp2 = (xp * xp).sum(1)
+        n = xp / rp2.sqrt().clamp_min(1e-9)[:, None]
+        return A * torch.exp(-rp2 / (sg * sg))[:, None] * n
+    if kind == "twist_tear":
+        rot = torch.cross(d.expand_as(dx), dx, dim=1) / sg
+        return A * (g * torch.sign(dx @ d))[:, None] * rot
+    if kind == "sink":
+        r = r2.sqrt()
+        n = dx / r.clamp_min(1e-9)[:, None]
+        cut = (r / SINK_EPS).clamp(0.0, 1.0)              # 중심에 닿으면 멈춘다
+        return -A * (g * cut)[:, None] * n
+    raise ValueError(kind)
+
+
+def vel_and_grad(x, f):
+    """v(x) 와 ∇v(x) -- 자동미분 (끊기는 곳 밖에서 정확)."""
+    with torch.enable_grad():
+        xx = x.detach().requires_grad_(True)
+        v = velocity(xx, f)
+        J = torch.stack([torch.autograd.grad(v[:, i].sum(), xx,
+                                             retain_graph=(i < 2))[0]
+                         for i in range(3)], 1)          # [N,3,3] J[i,j]=∂v_i/∂x_j
+    return v.detach(), J.detach()
+
+
+def dt_limit(f, safety):
+    """Δt < σ²/A (흡입은 중심을 넘어가지 않게 Δt < ε/A 도)."""
+    sg, A = float(f[6]), float(f[7])
+    dt = safety * sg * sg / A
+    if f.shape[0] > 8 and KINDS[int(round(float(f[8])))] == "sink":
+        dt = min(dt, safety * SINK_EPS / A)
+    return dt
 
 
 def advance(x, F, f, T, safety=0.5):
     """창 f 로 시간 T 만큼 RK4 적분 (Δt = safety·σ²/A 이하). F 도 함께."""
-    sg, A = float(f[6]), float(f[7])
-    dt_max = safety * sg * sg / A                         # Δt < σ²/A
+    dt_max = dt_limit(f, safety)                          # Δt < σ²/A
     n = max(1, math.ceil(T / dt_max))
     dt = T / n
     for _ in range(n):
@@ -117,8 +160,8 @@ if __name__ == "__main__":
                     help="세기 A 범위 (정규화 단위/초)")
     ap.add_argument("--sig", type=float, nargs=2, default=[0.1, 0.3],
                     help="폭 σ 범위")
-    ap.add_argument("--split_every", type=int, default=2,
-                    help="몇 번째 창마다 가르는 가우시안을 넣는가 (0 이면 안 넣음)")
+    ap.add_argument("--kinds", default=",".join(KINDS),
+                    help="창마다 돌아가며 쓸 장의 종류 (쉼표). 'smooth' 만이면 위상 보존")
     a = ap.parse_args()
 
     X = np.load(a.fill).astype(np.float64)
@@ -133,7 +176,7 @@ if __name__ == "__main__":
     x0 = torch.as_tensor(Xn[idx], dtype=torch.float64, device=dev)
     field = field_seq(a.seed, (a.frames + a.period - 1) // a.period,
                       sig=tuple(a.sig), amp=tuple(a.amp),
-                      split_every=a.split_every)
+                      kinds=a.kinds.split(","))
     traj, Fs, log = run_flow(x0, field, a.frames, a.period, 1.0 / a.fps,
                              a.safety, keep_F=a.save_F)
     dmin = min(q[3] for q in log)
