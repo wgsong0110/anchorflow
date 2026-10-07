@@ -97,8 +97,16 @@
 - [ ] 기준 궤적 9 개: 충돌 3 완료, i-PG 점소성 낙하 3 진행 중 (암시 newton_gmres 20 배 스텝, 느림), GF 던지기 3 대기
 - [x] 증분 포텐셜 추적기 exe/rep_ip.py + lib/anchorflow/repmaps.py (물체마다 따로 표현, 바닥·물체 접촉 벌점 1e3·관성,
       목적은 Σm/h² 로 정규화, Armijo 선탐색). 충돌 lego 2 프레임 시험 통과 (PhysTwin·GausSim·ours)
-- [ ] Simplicits 가중치 (시뮬 입자, 물체 중심 기준) 학습 중
-- [ ] B ε·η 고르기 → 본 실행
+- [x] Simplicits 가중치 (시뮬 입자 = PG 채우기, 물체 중심 기준) lego·mic·ficus
+- [x] 충돌 기준 궤적 fp32 판은 NACC 경화에서 NaN (마지막 프레임 36~47% 입자) → fp64 로 다시 (NaN 0)
+- [x] B ε·η 고르기 (lego 앞 3 프레임 증분 포텐셜 평균 최소; GF 는 같은 NACC 인 충돌 값):
+      충돌 ours ε1e-2 η1 · PhysTwin ε1e-3 η1 · GS-Verse ε1e-3 η1 · Simplicits ε1e-3 η100,
+      i-PG ours ε1e-3 η1 · PhysTwin ε1e-3 η10 · GS-Verse ε1e-2 η1 · Simplicits ε1e-3 η1. GausSim Adam 1e-3.
+      적응 보폭(직전 보폭 ×2 에서 Armijo) 추가.
+- 관찰: ours·GS-Verse 는 증분 포텐셜을 거의 못 줄인다 (i-PG lego 1 프레임: ours 정규화 목적 −1.9e-7,
+  Simplicits −7.4e-6). 보폭이 아니라 방향 문제 -- 셀/삼각형 det 로그 장벽 계량이 탄성 강성(전단 포함)을 담지
+  못해 강성 E 1e6 의 증분 포텐셜이 그 기하에서 나쁘게 조건화된다. 지시대로 계량은 바꾸지 않았다.
+- [ ] B 본 실행 bmain (기준 궤적이 61 프레임 모이면 자동 시작; 기준 영상도 같은 렌더러로)
 - [ ] 본 실행 · 측정
 
 ## C. 결과 문서
