@@ -40,7 +40,7 @@ import torch
 ap = argparse.ArgumentParser()
 ap.add_argument("--flow", required=True)
 ap.add_argument("--method", required=True,
-                choices=["ours", "vrgs", "phystwin", "gaussim", "simplicits"])
+                choices=["ours", "tet", "vrgs", "phystwin", "gaussim", "simplicits"])
 ap.add_argument("--out", required=True)
 ap.add_argument("--dof", type=int, default=3000)
 ap.add_argument("--iters", type=int, default=200, help="프레임당 반복")
@@ -107,6 +107,33 @@ class Ours(torch.nn.Module):
         g = w * psi
         W = g / g.sum(1, keepdim=True).clamp_min(1e-12)
         return X + (W[..., None] * self.u[rows]).sum(1)
+
+
+class TetOnly(torch.nn.Module):
+    """우리 표현에서 Gregory·방사형 함수를 뺀 것: 사면체 무게중심(선형) 보간만.
+    y = X + Σ_i λ_i u_i  (꼭짓점당 자유도 3)."""
+
+    def __init__(self, X, dof):
+        super().__init__()
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+        from anchorflow import simplex as sx
+        n_nodes = 6.0
+        for _ in range(60):
+            lo, lat, nn = sx.grid_for_nodes(X0, n_nodes)
+            idx, lam, _ = sx.locate(X, lo, lat, nn)
+            rows, uniq = sx.active_nodes(idx)
+            if 3 * uniq.numel() >= dof:
+                break
+            n_nodes *= 1.04
+        self.rows, self.lam = rows, lam
+        M = uniq.numel()
+        self.u = torch.nn.Parameter(torch.zeros(M, 3, device=X.device))
+        self.dof = 3 * M
+        print(f"[tet] 꼭짓점 {M}  간격 h {lat.s:.4f}  자유도 {self.dof}", flush=True)
+
+    def forward(self, X):
+        return X + (self.lam[..., None] * self.u[self.rows]).sum(1)
 
 
 class VRGS(torch.nn.Module):
@@ -225,6 +252,8 @@ class Simplicits(torch.nn.Module):
 # ============================================================== 공통
 if a.method == "ours":
     rep = Ours(XALL, a.dof)
+elif a.method == "tet":
+    rep = TetOnly(XALL, a.dof)
 elif a.method == "vrgs":
     rep = VRGS(XALL, a.dof)
 elif a.method == "phystwin":
