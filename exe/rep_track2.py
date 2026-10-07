@@ -936,7 +936,6 @@ for t in range(1, T + 1):
             PURE = (res_simp_lb, (rep.W[FI], rep.dW[FI], torch.cat([X_, torch.ones_like(X_[:, :1])], 1)))
         elif a.riem_energy == "elastic" and a.method == "phystwin":
             PURE = (res_spring, (rep.B, rep.rel, rep.L0))
-        global GN_PROD
         if PURE is not None and GN_PROD is None and not a.no_compile:
             GN_PROD = torch.compile(_gn_prod, dynamic=True)
 
