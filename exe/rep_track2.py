@@ -1,7 +1,7 @@
 """표현력 비교 (공식 설정판): 가우시안 중심을 목표 흐름대로 따라가게 한다.
 
 입자 = 원본 3DGS 가우시안 중심 (내부 채움 없음). 목표 = 같은 속도장으로 그 점들을
-흘린 것 (exe/gauss_flow.py --pts). 맞추는 점은 부분표본 N 개, 영상은 전체 가우시안.
+흘린 것 (exe/gauss_flow.py --pts). 최적화·평가·유효 격자·영상 모두 같은 부분표본 N 개.
 
 각 방법은 **논문·공식 코드의 설정 그대로** 쓴다 (자유도도 공식 값, 결과에 기록):
   ours       사면체 격자 (node_h = PG dx·(2√2)^(1/3)), 매 프레임 직전 위치에 격자를 다시
@@ -79,6 +79,10 @@ AX = np.load(a.aux, allow_pickle=True)
 G0 = torch.as_tensor(AX["G"], dtype=DT, device=dev)                # 전체 가우시안
 FI = torch.as_tensor(D["idx"], device=dev)                           # 맞추는 부분표본
 TRAJ = torch.as_tensor(D["traj"], dtype=DT, device=dev)              # [T+1,N,3]
+# 최적화·평가·유효 격자·영상을 **같은 점 집합**(흐름의 부분표본)으로 통일한다
+GIDX_SUB = FI.cpu().numpy()
+G0 = G0[FI].contiguous()
+FI = torch.arange(FI.numel(), device=dev)
 T, N, NG = TRAJ.shape[0] - 1, FI.numel(), G0.shape[0]
 if a.frames:
     T = min(T, a.frames)
@@ -389,7 +393,7 @@ if a.video:
     model = str(AX["model"])
     gs = GaussianModel(3)
     gs.load_ply(f"{model}/point_cloud/iteration_30000/point_cloud.ply")
-    gi = torch.as_tensor(AX["gidx"], device=dev)
+    gi = torch.as_tensor(AX["gidx"][GIDX_SUB], device=dev)   # 같은 부분표본 가우시안만
     c6 = gs.get_covariance()[gi].detach()
     C0 = torch.zeros(NG, 3, 3, device=dev)
     C0[:, 0, 0], C0[:, 0, 1], C0[:, 0, 2] = c6[:, 0], c6[:, 1], c6[:, 2]
