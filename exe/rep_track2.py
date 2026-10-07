@@ -72,6 +72,11 @@ ap.add_argument("--riem_eps", type=float, default=1e-2,
                 help="riem: 계량 G = JᵀJ + ε·λmax·I 의 상대 ε (λmax 는 프레임마다 거듭제곱법)")
 ap.add_argument("--profile", type=int, default=0,
                 help="riem: 첫 프레임 이 반복 수만 돌며 구간별 시간 + torch 프로파일러 표를 내고 끝낸다")
+ap.add_argument("--riem_energy", default="elastic", choices=["elastic", "logbarrier"],
+                help="riem 계량의 에너지: elastic (스프링/StVK 막/고정공회전) | logbarrier "
+                     "(셀 det 의 로그 장벽: 잔차 √V₀·log J, 계량 Σ ∇logJ ∇logJᵀ)")
+ap.add_argument("--tet_quality", type=float, default=0.05,
+                help="phystwin logbarrier: 4-클릭 사면체 중 정지 품질 6√2·V/l_rms³ 이 이보다 작은(납작한) 것은 버린다")
 ap.add_argument("--riem_k", type=float, default=1.0,
                 help="riem: 탄성 강성 배수 k (G = k·JᵀJ + ε·λmax(k=1)·I -- ε 는 k=1 기준으로 고정)")
 ap.add_argument("--riem_lr", type=float, default=1.0, help="riem: 고정 보폭 η")
@@ -301,6 +306,46 @@ class PhysTwin(torch.nn.Module):
     def params(self):
         return [self.m]
 
+    def build_tets(self, qmin):
+        """질량점 스프링 그래프(처음 이웃 16, 대칭화)의 4-클릭을 사면체 셀로. 납작한 것은 버린다."""
+        n = self.B0.shape[0]
+        A = torch.zeros(n, n, dtype=torch.bool, device=dev)
+        A[torch.arange(n, device=dev)[:, None], self.rel] = True
+        A = A | A.T
+        iu = torch.nonzero(torch.triu(A, 1))                         # 변 (i<j)
+        tris = []
+        for c in range(0, iu.shape[0], 4096):                         # 삼각형 (i<j<k)
+            e = iu[c:c + 4096]
+            cm = A[e[:, 0]] & A[e[:, 1]]
+            cm &= torch.arange(n, device=dev)[None] > e[:, 1:2]
+            r, k = torch.nonzero(cm, as_tuple=True)
+            tris.append(torch.cat([e[r], k[:, None]], 1))
+        tris = torch.cat(tris)
+        tets = []
+        for c in range(0, tris.shape[0], 4096):                       # 4-클릭 (i<j<k<l)
+            tr = tris[c:c + 4096]
+            cm = A[tr[:, 0]] & A[tr[:, 1]] & A[tr[:, 2]]
+            cm &= torch.arange(n, device=dev)[None] > tr[:, 2:3]
+            r, l = torch.nonzero(cm, as_tuple=True)
+            tets.append(torch.cat([tr[r], l[:, None]], 1))
+        tets = torch.cat(tets)
+        X = self.B0[tets]
+        D0 = (X[:, 1:] - X[:, :1]).transpose(1, 2)                    # [C,3,3] 열 = 변
+        vol = torch.linalg.det(D0) / 6
+        lr = ((X[:, :, None] - X[:, None]).norm(dim=-1) ** 2).sum((1, 2)).div(12).sqrt()
+        q = 6 * math.sqrt(2) * vol.abs() / lr ** 3                     # 정사면체 1
+        keep = q > qmin
+        self.tets, self.D0i, self.V0 = tets[keep], torch.linalg.inv(D0[keep]), vol[keep].abs()
+        print(f"[phystwin 셀] 변 {iu.shape[0]}  삼각형 {tris.shape[0]}  4-클릭 {tets.shape[0]}  "
+              f"품질>{qmin} {int(keep.sum())}", flush=True)
+
+    def logbarrier_residual(self, m):
+        """셀 det 로그 장벽: √V₀ · log J,  J = det(D(x) D0⁻¹) (정지 1)."""
+        X = (self.B + m)[self.tets]
+        D = (X[:, 1:] - X[:, :1]).transpose(1, 2)
+        J = det3(mm3(D, self.D0i))
+        return self.V0.sqrt() * torch.log(J.clamp_min(1e-6))
+
     def elastic_residual(self, m):
         """스프링 에너지 E = ½ Σ (|x_i - x_j| - L0_ij)² 의 잔차 (처음 이웃 16 개, 단위 강성)."""
         Bn = self.B + m
@@ -460,6 +505,7 @@ class VRGS(torch.nn.Module):
         t1 = e1 / e1.norm(dim=-1, keepdim=True).clamp_min(1e-12)
         nrm = torch.cross(e1, e2, dim=-1)
         self.A0 = 0.5 * nrm.norm(dim=-1)
+        self.n0 = nrm / nrm.norm(dim=-1, keepdim=True).clamp_min(1e-12)
         t2 = torch.cross(nrm / nrm.norm(dim=-1, keepdim=True).clamp_min(1e-12), t1, dim=-1)
         D0 = torch.stack([torch.stack([(e1 * t1).sum(-1), (e1 * t2).sum(-1)], -1),
                           torch.stack([(e2 * t1).sum(-1), (e2 * t2).sum(-1)], -1)], -1)   # [T,2,2]
@@ -483,6 +529,13 @@ class VRGS(torch.nn.Module):
 
     def yJ(self, X, sel):
         return self(X, sel) - X, self.F(sel)
+
+    def logbarrier_residual(self, v):
+        """삼각형 셀 det 로그 장벽: √A₀ · log J,  J = (e1×e2)·n̂₀ / |e1⁰×e2⁰| (정지 법선 기준 부호 있는 넓이비)."""
+        v0, v1, v2 = v[self.f[:, 0]], v[self.f[:, 1]], v[self.f[:, 2]]
+        c = torch.cross(v1 - v0, v2 - v0, dim=-1)
+        J = (c * self.n0).sum(-1) / (2 * self.A0)
+        return self.A0.sqrt() * torch.log(J.clamp_min(1e-6))
 
     def elastic_residual(self, v):
         """삼각형 StVK 막 에너지 Σ A0 (μ|E|² + λ/2 tr(E)²) 의 잔차 (E = ½(FᵀF - I), F 는 3x2)."""
@@ -510,6 +563,8 @@ elif a.method == "simplicits":
 else:
     rep = VRGS()
 REB = rep.rebind_each_frame
+if a.method == "phystwin" and a.opt == "riem" and a.riem_energy == "logbarrier":
+    rep.build_tets(a.tet_quality)
 # 해석적 야코비안 (+ torch.compile). 크기가 프레임마다 바뀌는 격자 방법이 있어 dynamic
 YJ = rep.yJ if a.no_compile else torch.compile(rep.yJ, dynamic=True)
 
@@ -752,8 +807,10 @@ for t in range(1, T + 1):
                                       wv_ * math.sqrt(la_ / 2) * (det3(F_) - 1.0)])
                 return res
         else:
+            _rf = rep.logbarrier_residual if a.riem_energy == "logbarrier" else rep.elastic_residual
+
             def make_res(th):
-                return lambda x: rep.elastic_residual(*unflat(x))
+                return lambda x: _rf(*unflat(x))
 
         def GN(th):
             rf = make_res(th)
