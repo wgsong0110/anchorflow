@@ -62,6 +62,9 @@ ap.add_argument("--pt_noflip", action="store_true",
                 help="phystwin: 질량점마다 처음 이웃 16 개로 잰 국소 F 의 det>0 을 지킨다 (뒤집힘 금지)")
 ap.add_argument("--pt_spring", type=float, default=0.0,
                 help="phystwin: 처음 이웃 간 거리를 묶는 스프링 항 계수 (상대 변형률² 평균)")
+ap.add_argument("--pt_realtime", action="store_true",
+                help="phystwin: 공식 실시간 데모(interactive_playground) 방식 -- 가우시안의 이웃 질량점 "
+                     "16 개 인덱스는 첫 프레임에 한 번만 구하고, 매 프레임 그 이웃까지 거리로 가중치만 다시")
 ap.add_argument("--fixed_bind", action="store_true",
                 help="ours/tet: 격자·입자-격자 대응을 처음(정지 위치)에 한 번 잡고 고정 (매 프레임 재설정 안 함)")
 ap.add_argument("--tb", default="auto",
@@ -226,11 +229,16 @@ class PhysTwin(torch.nn.Module):
     def rebind(self, P):
         if hasattr(self, "m"):                              # 직전 프레임의 뼈 이동 반영
             self.B = (self.B + self.m.detach()).clone()
-        dd, ii = [], []
-        for i in range(0, P.shape[0], 20000):
-            d_, i_ = torch.cdist(P[i:i + 20000].detach(), self.B).topk(self.K, largest=False)
-            dd.append(d_); ii.append(i_)
-        dd, ii = torch.cat(dd), torch.cat(ii)
+        if a.pt_realtime and hasattr(self, "wi"):
+            # calc_weights_vals_from_indices: 이웃 인덱스 고정, 거리로 가중치만
+            ii = self.wi
+            dd = (P.detach()[:, None] - self.B[ii]).norm(dim=-1)
+        else:
+            dd, ii = [], []
+            for i in range(0, P.shape[0], 20000):
+                d_, i_ = torch.cdist(P[i:i + 20000].detach(), self.B).topk(self.K, largest=False)
+                dd.append(d_); ii.append(i_)
+            dd, ii = torch.cat(dd), torch.cat(ii)
         w = 1.0 / (dd + 1e-6)
         self.wi, self.ww = ii, w / w.sum(1, keepdim=True)
         self.m = torch.nn.Parameter(torch.zeros_like(self.B))
