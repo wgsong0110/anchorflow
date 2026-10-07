@@ -59,7 +59,6 @@ ap.add_argument("--simp", default="", help="simplicits: 학습된 가중치 함�
 ap.add_argument("--max_iter", type=int, default=500)
 ap.add_argument("--kappa", type=float, default=1.0)
 ap.add_argument("--jhat", type=float, default=0.3)
-ap.add_argument("--emd_n", type=int, default=4096)
 ap.add_argument("--emd_every", type=int, default=10)
 ap.add_argument("--pg", default="/home/dkta/work/i-physgaussian")
 ap.add_argument("--fp64", action="store_true", help="모든 계산을 float64 로")
@@ -369,15 +368,34 @@ def chamfer(A, B, ch=4096):
     return float(0.5 * (one(A, B) + one(B, A)))
 
 
-EI = torch.as_tensor(np.random.default_rng(0).choice(N, min(a.emd_n, N), replace=False),
-                     device=dev)
+def emd(A, B, eps_end=1e-4, shrink=0.7, extra=20, ch=2048):
+    """EMD 근사: 전체 점에 대한 로그 영역 Sinkhorn (ε 담금질, 비용 = 유클리드 거리).
+    13.9 만 점의 정확해는 비용 행렬만 155GB 라 풀 수 없다 -- 부분표본 없이 전부 쓰고
+    정확해 대신 엔트로피 정칙 수송으로 근사한다. 반환: 수송 계획 아래 평균 이동 거리."""
+    A, B = A.float().contiguous(), B.float().contiguous()
+    n, m = A.shape[0], B.shape[0]
+    la, lb = -math.log(n), -math.log(m)
+    f = torch.zeros(n, device=A.device); g = torch.zeros(m, device=A.device)
 
-
-def emd(A, B):
-    from scipy.optimize import linear_sum_assignment
-    C = torch.cdist(A[EI].double(), B[EI].double()).cpu().numpy()
-    r, c = linear_sum_assignment(C)
-    return float(C[r, c].mean())
+    def softmin(P, Q, h, lw, e):                      # -e·logsumexp_j(lw + (h_j - |p-q_j|)/e)
+        out = torch.empty(P.shape[0], device=P.device)
+        for i in range(0, P.shape[0], ch):
+            out[i:i + ch] = -e * torch.logsumexp(lw + (h[None] - torch.cdist(P[i:i + ch], Q)) / e, 1)
+        return out
+    e = float(torch.cdist(A[:1], B).max()) * 2
+    sched = []
+    while e > eps_end:
+        sched.append(e); e *= shrink
+    sched += [eps_end] * extra
+    for e in sched:
+        f = softmin(A, B, g, lb, e)
+        g = softmin(B, A, f, la, e)
+    e = sched[-1]
+    cost = torch.zeros((), dtype=torch.float64, device=A.device)
+    for i in range(0, n, ch):
+        C = torch.cdist(A[i:i + ch], B)
+        cost += (torch.exp(la + lb + (f[i:i + ch, None] + g[None] - C) / e) * C).double().sum()
+    return float(cost)
 
 
 RENDER = None
