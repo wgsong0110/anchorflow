@@ -49,6 +49,8 @@ ap.add_argument("--riem_cg", type=int, default=50)
 ap.add_argument("--ls_max", type=int, default=30, help="Armijo 되돌림 최대 횟수")
 ap.add_argument("--riem_lr_max", type=float, default=1e8, help="적응 보폭 상한")
 ap.add_argument("--dbg", action="store_true")
+ap.add_argument("--ckpt_every", type=int, default=5, help="이어 돌리기 체크포인트 간격 (프레임). <out>.ckpt.pt")
+ap.add_argument("--no_resume", action="store_true", help="체크포인트가 있어도 처음부터")
 ap.add_argument("--own", action="store_true",
                 help="탄성 항과 계량을 각 방법 고유 탄성 모델로: ours·GausSim·Simplicits 입자 고정공회전(det<0 정의), "
                      "GS-Verse StVK 막(두께 = 부피/겉넓이), PhysTwin 스프링(Y = E V/ΣL0). 소성 없음. E·ν 는 시뮬 설정")
@@ -165,6 +167,7 @@ print(f"[장면] {a.shape} 입자 {N} (물체 {NOBJ}, 가우시안 {GI.numel()})
 
 # ---------------------------------------------------------------- 렌더러 (rep_track2 와 같은 규약)
 RENDER = bool(a.video)
+FRAME_DIR, FRAME_IX = [None], [0]
 if RENDER:
     import imageio.v2 as imageio
     from utils.graphics_utils import getWorld2View2, getProjectionMatrix
@@ -190,7 +193,7 @@ if RENDER:
         bg=torch.ones(3, device=dev, dtype=torch.float32), scale_modifier=1.0, viewmatrix=wv,
         projmatrix=(wv[None] @ pj[None])[0], sh_degree=3, campos=wv.inverse()[3, :3],
         prefiltered=False, debug=False))
-    WR = imageio.get_writer(a.video, fps=30, codec="libx264", quality=8)
+    WR = imageio.get_writer(a.video, fps=30, codec="libx264", quality=8) if (a.render_ref or a.render_npz) else None
 
     _SMED = float(gs.get_scaling[KIDX].detach().median())
 
@@ -209,7 +212,11 @@ if RENDER:
         with torch.no_grad():
             img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=sh, colors_precomp=None,
                        opacities=op, scales=None, rotations=None, cov3D_precomp=c6_)[0]
-        WR.append_data((img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
+        im = (img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+        if FRAME_DIR[0] is not None:                          # 본 실행: 프레임을 PNG 로 (이어 돌리기에도 영상이 이어진다)
+            imageio.imwrite(f"{FRAME_DIR[0]}/{FRAME_IX[0]:04d}.png", im); FRAME_IX[0] += 1
+        else:
+            WR.append_data(im)
 
 if a.render_ref:                                               # 기준 궤적만 영상으로
     for t in range(a.frames + 1):
@@ -297,6 +304,30 @@ if pr.mat_name(cfg) == "watermelon":
 if a.method == "gaussim":
     OPT = torch.optim.Adam(REP.params(), lr=a.lr)
 
+# ---------------------------------------------------------------- 이어 돌리기
+CKPT = a.out + ".ckpt.pt"
+rows, PHYS, TRAJ, IPV, NBAD = [], [], [], [], []
+EMDP = []
+T_START = 1
+if os.path.exists(CKPT) and not a.no_resume:
+    ck = torch.load(CKPT, map_location=dev, weights_only=False)
+    xn, vn, Fe, Fcum, Jprev = ck["xn"], ck["vn"], ck["Fe"], ck["Fcum"], ck["Jprev"]
+    reps = ck["reps"]; REP = rm.Multi(reps, idx)
+    if ck["JP"] is not None:
+        pr._JP[0] = ck["JP"]
+    if a.method == "gaussim":
+        OPT = torch.optim.Adam(REP.params(), lr=a.lr); OPT.load_state_dict(ck["opt"])
+    rows, PHYS, TRAJ, IPV, NBAD, EMDP = ck["rows"], ck["PHYS"], ck["TRAJ"], ck["IPV"], ck["NBAD"], ck["EMDP"]
+    T_START = ck["t"] + 1
+    print(f"[이어 돌리기] {CKPT} 프레임 {ck['t']} 부터", flush=True)
+
+
+def save_ckpt(t):
+    torch.save(dict(t=t, xn=xn, vn=vn, Fe=Fe, Fcum=Fcum, Jprev=Jprev, reps=reps,
+                    JP=pr._JP[0], opt=OPT.state_dict() if a.method == "gaussim" else None,
+                    rows=rows, PHYS=PHYS, TRAJ=TRAJ, IPV=IPV, NBAD=NBAD, EMDP=EMDP), CKPT + ".tmp")
+    os.replace(CKPT + ".tmp", CKPT)                           # 쓰다 죽어도 이전 체크포인트는 남는다
+
 
 def contact_pairs(x):
     """물체 사이 가까운 짝 (프레임 시작에 한 번): 반지름 2dx 안의 다른 물체 최근접 1 개."""
@@ -370,13 +401,15 @@ TB = None
 if a.tb != "none":
     from torch.utils.tensorboard import SummaryWriter
     _tb = a.tb if a.tb != "auto" else os.path.join(f"{W}/tbrf", "ip_" + os.path.splitext(os.path.basename(a.out))[0])
-    TB = SummaryWriter(_tb)
-rows, PHYS, TRAJ, IPV, NBAD = [], [], [], [], []
-EMDP = []
+    TB = SummaryWriter(_tb, purge_step=T_START)
 t0 = time.time()
 if RENDER:
-    render(gpos(X0, Fcum), Fcum[GI])
-for t in range(1, a.frames + 1):
+    FRAME_DIR[0] = a.video + ".frames"; os.makedirs(FRAME_DIR[0], exist_ok=True)
+    FRAME_IX[0] = T_START                                     # 프레임 0 = 정지, t 번째 = t
+    if T_START == 1:
+        FRAME_IX[0] = 0
+        render(gpos(X0, Fcum), Fcum[GI])
+for t in range(T_START, a.frames + 1):
     if REB:
         REP.rebind(xn)
         X_ = xn
@@ -530,7 +563,14 @@ for t in range(1, a.frames + 1):
         print(f"  [t={t:3d}] RMSE {100 * rmse:.3f}%  CD {100 * cdv / L:.3f}%  IP {float(E):.4e} "
               f"({', '.join(f'{k} {v:.2e}' for k, v in parts.items())})  det 최소 {rows[-1][4]:.3f} "
               f"(≤0 {100 * rows[-1][5]:.2f}%)  자유도 {REP.dof}  {time.time() - t0:.0f}s", flush=True)
+    if a.ckpt_every > 0 and t % a.ckpt_every == 0 and t < a.frames:
+        save_ckpt(t)
 if RENDER:
+    import glob as _glob
+    import shutil as _shutil
+    WR = imageio.get_writer(a.video, fps=30, codec="libx264", quality=8)
+    for fp_ in sorted(_glob.glob(f"{FRAME_DIR[0]}/*.png"))[:a.frames + 1]:
+        WR.append_data(imageio.imread(fp_))
     WR.close()
 R = np.array(rows)
 print(f"[요약] {a.method}  RMSE {100 * R[:, 1].mean():.3f}%  CD {100 * R[:, 2].mean():.3f}%  "
@@ -540,3 +580,7 @@ np.savez_compressed(a.out, metrics=R, L=L, phys=np.array(PHYS), ip=np.array(IPV)
                     emd_y=np.stack([q[1] for q in EMDP]), emd_tgt=np.stack([q[2] for q in EMDP]),
                     dof=REP.dof, ref_bad=np.array(NBAD))
 print(f"[저장] {a.out}", flush=True)
+if os.path.exists(CKPT):
+    os.remove(CKPT)
+if RENDER:
+    _shutil.rmtree(FRAME_DIR[0], ignore_errors=True)
