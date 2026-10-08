@@ -132,10 +132,10 @@ if NOBJ > 1:
 _X0o = X0[:NEACH] - SHIFT[0]
 _mi, _md = [], []
 for _s in range(0, _TP.shape[0], 8192):
-    _d, _j = torch.cdist(_TP[_s:_s + 8192].to(dev), _X0o).min(1)
+    _d, _j = torch.cdist(_TP[_s:_s + 8192].to(dev), _X0o, compute_mode="donot_use_mm_for_euclid_dist").min(1)
     _md.append(_d); _mi.append(_j)
 _md, _mi = torch.cat(_md), torch.cat(_mi)
-_ok = _md < 1e-4
+_ok = _md < 1e-5                        # 같은 점이면 정확히 0 (행렬곱 cdist 는 ~5e-4 오차라 쓰지 않는다)
 KIDX = KIDX[_ok]
 NG1 = KIDX.numel()
 GI = torch.cat([_mi[_ok] + o * NEACH for o in range(NOBJ)])     # 전체 중 가우시안 번호
@@ -224,9 +224,9 @@ if a.render_npz:                                               # 저장된 결�
         P0 = X0[GIo] - SHIFT[OBJ[GIo]]
         dd, jj = [], []
         for _s in range(0, P0.shape[0], 8192):
-            _d, _j = torch.cdist(P0[_s:_s + 8192], _TP.to(dev)).min(1); dd.append(_d); jj.append(_j)
+            _d, _j = torch.cdist(P0[_s:_s + 8192], _TP.to(dev), compute_mode="donot_use_mm_for_euclid_dist").min(1); dd.append(_d); jj.append(_j)
         dd, jj = torch.cat(dd), torch.cat(jj)
-        keep = dd < 1e-4
+        keep = dd < 1e-5
         sel, gidx, ob = torch.nonzero(keep).squeeze(1), jj[keep], OBJ[GIo][keep]
         # jj 는 _TP(=KIDX 전체 순서) 안 위치. KIDX 는 일치 집합으로 줄었으니 원래 순서 배열로 다시 만든다
         _full = torch.nonzero(_op > float(cfg.get("opacity_threshold", 0.02))).squeeze(1)
