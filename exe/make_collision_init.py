@@ -26,6 +26,10 @@ ap.add_argument("--gap", type=float, default=1.0,
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--frame_dt", type=float, default=0.0,
                 help="0 이면 gap / (2 v · 15) -- 속도와 상관없이 15 프레임쯤에 부딪힌다")
+ap.add_argument("--mat", default="teapot", choices=("teapot", "gfwm"),
+                help="teapot: Fracture-GS 표의 Teapot NACC (빠르게 부딪혀도 안 깨졌다). "
+                     "gfwm: GaussianFluent 공식 watermelon 물성 (낙하 -6 으로 실제로 깨지는 물성)")
+ap.add_argument("--n_grid", type=int, default=200)
 ap.add_argument("--g", type=float, default=-9.8, help="중력 (z). PhysGaussian·GF 씬 설정의 기본값")
 a = ap.parse_args()
 if a.frame_dt <= 0:
@@ -49,14 +53,18 @@ with h5py.File(f"{a.out}/init.h5", "w") as h:
     h.create_dataset("obj", data=OBJ)
 M = 2.36
 sphi = 3 * M / (6 + M)                             # M = 6 s / (3 - s)  ->  s = 3M / (6 + M)
-cfg = dict(material="watermelon", E=5e5, nu=0.46, density=5.0,
-           alpha_0=math.log(0.98), beta=0.5, xi=1.0, hardening=1.0,
-           friction_angle=math.degrees(math.asin(sphi)),
-           n_grid=200, grid_lim=4.0, flip_pic_ratio=0.7,
+if a.mat == "teapot":
+    MAT = dict(E=5e5, nu=0.46, density=5.0, alpha_0=math.log(0.98), beta=0.5, xi=1.0, hardening=1.0,
+               friction_angle=math.degrees(math.asin(sphi)))
+else:                                               # GF watermelon config 그대로
+    MAT = dict(E=2000.0, nu=0.38, density=1.0, alpha_0=-0.04, beta=1.0, xi=3.0, hardening=1.0,
+               friction_angle=45.0)
+cfg = dict(material="watermelon", **MAT,
+           n_grid=a.n_grid, grid_lim=4.0, flip_pic_ratio=0.7,
            substep_dt=1e-5, frame_dt=a.frame_dt, frame_num=a.frames,
            g=[0.0, 0.0, a.g], init_velocity=[0.0, 0.0, 0.0],
            boundary_conditions=[{"type": "bounding_box"}],
-           repflow_note=dict(shape=a.shape, v=a.v, gap=a.gap, n_each=int(len(X)),
+           repflow_note=dict(shape=a.shape, v=a.v, gap=a.gap, mat=a.mat, n_each=int(len(X)),
                              center_shift=(-c).tolist()))
 json.dump(cfg, open(f"{a.out}/config.json", "w"), indent=1)
 print(f"[충돌 초기] {a.shape}: 물체당 {len(X)} 입자, 폭 {ext[0]:.3f}, 중심 x {cx - d:.3f} / {cx + d:.3f}, "
