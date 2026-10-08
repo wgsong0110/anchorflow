@@ -11,7 +11,7 @@ GF 솔버 이식본(exe/gf_mpm.py)에 **물체별 독립 격자**와 **운동량
 
   python exe/collision_mpm.py --config cfg.json --h5 init.h5 --out DIR
 """
-import argparse, json, os, time
+import argparse, json, math, os, time
 import numpy as np
 import h5py
 import taichi as ti
@@ -43,6 +43,8 @@ ap.add_argument("--resume", action="store_true",
 ap.add_argument("--auto_dt", action="store_true",
                 help="GF 의 씬 러너처럼 substep_dt 를 CFL 로 다시 계산한다 "
                      "(gs_simulation_watermelon.py:416). config 값은 무시된다")
+ap.add_argument("--no_fast", action="store_true",
+                help="프레임마다 칸 순서 정렬 + 입자가 닿는 상자만 격자 훑기를 끈다 (원래대로)")
 ap.add_argument("--profile", type=int, default=0, help="서브스텝 N 번만 돌려 커널별 GPU 시간을 찍고 끝낸다")
 a = ap.parse_args()
 
@@ -176,6 +178,10 @@ else:
     gvout = ti.Vector.field(3, rt, (2,) + (n_grid,) * 3)
     gm = ti.field(rt, (2,) + (n_grid,) * 3)
     gnm = ti.Vector.field(3, rt, (2,) + (n_grid,) * 3)                 # 질량 기울기
+
+# 격자 훑기 상자 [lo, hi) -- 프레임마다 입자 범위 + 여유로 정한다 (기본은 전체)
+BOX = ti.field(ti.i32, 6)
+BOX.from_numpy(np.array([0, 0, 0, n_grid, n_grid, n_grid], np.int32))
 
 # ------------------------------------------------------------ 경계·구동 조건
 # utils/decode_param.py:248 이 받는 일곱 가지를 전부 옮긴다. 하나라도 빠지면
@@ -324,7 +330,8 @@ def _wts(xp):
 
 @ti.kernel
 def _zero_dense():
-    for I in ti.grouped(gm):
+    for o, i, j, k in ti.ndrange(2, (BOX[0], BOX[3]), (BOX[1], BOX[4]), (BOX[2], BOX[5])):
+        I = ti.Vector([o, i, j, k])
         gm[I] = 0.0
         gvin[I] = ti.Vector.zero(rt, 3); gvout[I] = ti.Vector.zero(rt, 3)
         gnm[I] = ti.Vector.zero(rt, 3)
@@ -381,8 +388,9 @@ def grid_op(dt: rt, t: rt):
     # GF 는 정규화 한 번, 경계마다 한 번씩 격자를 훑는다. 둘 다 **칸 안에서만**
     # 끝나는 계산이라(이웃을 안 본다) 한 번에 합쳐도 답이 같다. 격자 300 이면
     # 훑기 한 번이 2700 만 칸이라, 횟수를 줄이는 것이 그대로 시간이 된다.
-    for I4 in ti.grouped(gm):
-        I = ti.Vector([I4[1], I4[2], I4[3]])
+    for o, i, j, k in ti.ndrange(2, (BOX[0], BOX[3]), (BOX[1], BOX[4]), (BOX[2], BOX[5])):
+        I4 = ti.Vector([o, i, j, k])
+        I = ti.Vector([i, j, k])
         if gm[I4] > 1e-15:
             vo = (gvin[I4] + gvout[I4]) / gm[I4] + dt * GRAV
             if ti.static(GRID_DAMP < 1.0):
@@ -432,7 +440,7 @@ def grid_op(dt: rt, t: rt):
 @ti.kernel
 def contact():
     """두 물체 격자점의 운동량 보존 경계력 (다가가는 법선 성분만 질량중심 속도로)."""
-    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+    for i, j, k in ti.ndrange((BOX[0], BOX[3]), (BOX[1], BOX[4]), (BOX[2], BOX[5])):
         m0 = gm[0, i, j, k]; m1 = gm[1, i, j, k]
         if m0 > 1e-15 and m1 > 1e-15:
             nn = gnm[0, i, j, k] - gnm[1, i, j, k]
@@ -720,13 +728,44 @@ obj.from_numpy(OBJ)
 os.makedirs(a.out, exist_ok=True)
 
 
+# ---------------------------------------------- 칸 순서 정렬 + 격자 상자 (프레임마다 한 번)
+# p2g 는 격자 메모리 지역성에 묶여 있다 (GF 솔버에서 정렬만으로 1.6 배 -- gf-solver-is-grid-locality-bound).
+# 비우기·격자 연산·접촉은 입자가 닿는 상자 안만 훑는다. 상자 여유는 한 프레임 동안 움직일 거리 + 4 칸.
+import torch as _tc
+PFIELDS = [x, v, C, F, Ftr, St, Jp, ys, mu_p, lam_p, kap_p, vol, mass, alive, obj, x0f]
+PERM = _tc.arange(N, device="cuda")                      # 지금 자리 -> 원래 번호
+
+
+def reorder_and_box():
+    global PERM
+    xt = x.to_torch(device="cuda")
+    cell = (xt * inv_dx).floor().long().clamp(0, n_grid - 1)
+    key = (cell[:, 0] * n_grid + cell[:, 1]) * n_grid + cell[:, 2]
+    order = _tc.argsort(key)
+    for fl in PFIELDS:
+        fl.from_torch(fl.to_torch(device="cuda")[order].contiguous())
+    PERM = PERM[order]
+    al = alive.to_torch(device="cuda") == 1
+    xa = x.to_torch(device="cuda")[al]
+    vmax = float(v.to_torch(device="cuda")[al].norm(dim=1).max()) if xa.shape[0] else 0.0
+    mg = 4 + int(math.ceil(2.0 * (vmax + 1.0) * frame_dt * inv_dx))
+    lo = ((xa.min(0).values * inv_dx).floor().long() - mg).clamp(0, n_grid).cpu().numpy()
+    hi = ((xa.max(0).values * inv_dx).floor().long() + 3 + mg).clamp(0, n_grid).cpu().numpy()
+    BOX.from_numpy(np.concatenate([lo, hi]).astype(np.int32))
+
+
+def unperm(arr):
+    out = np.empty_like(arr); out[PERM.cpu().numpy()] = arr
+    return out
+
+
 def dump(f):
     with h5py.File(os.path.join(a.out, f"sim_{f:010d}.h5"), "w") as h:
-        h.create_dataset("x", data=x.to_numpy().T.astype(np.float32))
-        h.create_dataset("v", data=v.to_numpy().T.astype(np.float32))
+        h.create_dataset("x", data=unperm(x.to_numpy()).T.astype(np.float32))
+        h.create_dataset("v", data=unperm(v.to_numpy()).T.astype(np.float32))
         h.create_dataset("time", data=np.array([[f * frame_dt]]))
         h.create_dataset("obj", data=OBJ)
-        h.create_dataset("F", data=F.to_numpy().reshape(-1, 9).astype(np.float32))   # 영상 공분산용
+        h.create_dataset("F", data=unperm(F.to_numpy()).reshape(-1, 9).astype(np.float32))   # 영상 공분산용
 
 
 STATE = os.path.join(a.out, "state_last.h5")
@@ -740,7 +779,7 @@ def save_state(f, t):
         for k, fl in (("x", x), ("v", v), ("F", F), ("Ftr", Ftr), ("C", C),
                       ("Jp", Jp), ("ys", ys), ("mu", mu_p), ("lam", lam_p),
                       ("alive", alive)):
-            h.create_dataset(k, data=fl.to_numpy())
+            h.create_dataset(k, data=unperm(fl.to_numpy()))   # 이어 돌리기 파일은 원래 순서
     os.replace(tmp, STATE)
 
 
@@ -773,6 +812,8 @@ if a.resume and os.path.exists(STATE):
     print(f"[이어감] {STATE} 의 프레임 {f0} (t={t:.4f}) 에서", flush=True)
 else:
     dump(0)
+if not a.no_fast:
+    reorder_and_box()
 if a.profile:
     for _ in range(20):                                   # 예열 (컴파일)
         stress_kernel(substep_dt); zero_grid(); p2g(substep_dt); grid_op(substep_dt, t); contact(); g2p(substep_dt, FLIP)
@@ -787,6 +828,8 @@ if a.profile:
     raise SystemExit(0)
 t0 = time.time()
 for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
+    if not a.no_fast:
+        reorder_and_box()
     for _ in range(nsub):
         quarantine(-0.5 * grid_lim, 1.5 * grid_lim)
         if NP and PC_LO <= t < PC_HI:   # 창이 다 닫혀 있으면 띄울 것도 없다
