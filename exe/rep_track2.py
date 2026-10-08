@@ -72,7 +72,7 @@ ap.add_argument("--riem_eps", type=float, default=1e-2,
                 help="riem: 계량 G = JᵀJ + ε·λmax·I 의 상대 ε (λmax 는 프레임마다 거듭제곱법)")
 ap.add_argument("--profile", type=int, default=0,
                 help="riem: 첫 프레임 이 반복 수만 돌며 구간별 시간 + torch 프로파일러 표를 내고 끝낸다")
-ap.add_argument("--riem_energy", default="elastic", choices=["elastic", "logbarrier"],
+ap.add_argument("--riem_energy", default="elastic", choices=["elastic", "logbarrier", "own"],
                 help="riem 계량의 에너지: elastic (스프링/StVK 막/고정공회전) | logbarrier "
                      "(det 의 로그 장벽, 잔차 log J, 계량 Σ ∇logJ ∇logJᵀ: ours/tet 격자 셀, "
                      "vrgs 삼각형 셀, gaussim 입자)")
@@ -199,6 +199,70 @@ def res_tri_lb(x, f, n0, A0):
     c = torch.cross(v1 - v0, v2 - v0, dim=-1)
     J = (c * n0).sum(-1) / (2 * A0)
     return A0.sqrt() * torch.log(J.clamp_min(1e-6))
+
+
+def _fcr_res(F, R, wv, smu, sla):
+    """고정 공회전 ψ = μ|F−R|² + λ/2 (J−1)² 의 잔차 (R 은 선형화 점의 극분해로 고정)."""
+    return torch.cat([(wv * smu * (F - R)).reshape(-1), wv * sla * (det3(F) - 1.0)])
+
+
+def res_lattice_fcr(x, M3, rows, lam, dlam, r, dr, w, dw, h, aa, Fp, R, wv, smu, sla):
+    """ours 의 입자 F (Gregory·방사형 사상의 야코비안 · 직전 누적 F) 로 잰 고정 공회전 잔차."""
+    u = x[:M3].reshape(-1, 3); rho_raw = x[M3:]
+    U = u[rows]
+    rho = h * (0.05 + 0.95 * torch.sigmoid(rho_raw)[rows])
+    ins = r < rho
+    inner = 1.0 - aa * (torch.minimum(r, rho) / rho) ** 2
+    q = 1.0 + (r - rho).clamp_min(0.0) / (0.5 * h)
+    psi_raw = torch.where(ins, inner, (1.0 - aa) / q)
+    psi = psi_raw.clamp_min(1e-6)
+    dpsi = torch.where(ins, -2.0 * aa * r / (rho * rho), -(1.0 - aa) / (0.5 * h) / (q * q)) * (psi_raw > 1e-6)
+    g = w * psi
+    dg = dw * psi[..., None] + (w * dpsi)[..., None] * dr
+    G = g.sum(1, keepdim=True).clamp_min(1e-12)
+    W = g / G
+    dW = dg / G[..., None] - W[..., None] * dg.sum(1, keepdim=True) / G[..., None]
+    J = eye_plus(outer_sum(U, dW))
+    return _fcr_res(mm3(J, Fp), R, wv, smu, sla)
+
+
+def res_gaussim_fcr(x, k2, lab, R, wv, smu, sla):
+    """GausSim 군집 F (부피 보존 SVD 형) 를 입자에 깔아 잰 고정 공회전 잔차."""
+    dg = x[3 * k2:].reshape(-1, 11)
+    U = quat_mat(dg[:, 0:4]); V = quat_mat(dg[:, 7:11])
+    sv = torch.exp(dg[:, 4:7].clamp(-5, 5)); sv = sv / torch.prod(sv, -1, keepdim=True).pow(1 / 3)
+    F = (U @ torch.diag_embed(sv) @ V.transpose(1, 2))[lab]
+    return _fcr_res(F, R, wv, smu, sla)
+
+
+def res_tri_stvk(x, f, D0i, A0, smu, sla):
+    """삼각형 StVK 막 에너지 Σ A0 (μ|E|² + λ/2 tr(E)²) 의 잔차."""
+    v = x.reshape(-1, 3)
+    v0, v1, v2 = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+    e1, e2 = v1 - v0, v2 - v0
+    f1 = e1 * D0i[:, 0, 0, None] + e2 * D0i[:, 1, 0, None]
+    f2 = e1 * D0i[:, 0, 1, None] + e2 * D0i[:, 1, 1, None]
+    E11, E22 = 0.5 * ((f1 * f1).sum(-1) - 1), 0.5 * ((f2 * f2).sum(-1) - 1)
+    E12 = 0.5 * (f1 * f2).sum(-1)
+    w = A0.sqrt()
+    return torch.cat([w * smu * E11, w * smu * E22, w * smu * math.sqrt(2.0) * E12, w * sla * (E11 + E22)])
+
+
+def res_simp_fcr(x, W, dW, Xh, R, wv, smu, sla):
+    """Simplicits 입자 F 로 잰 고정 공회전 잔차."""
+    Tm = x.reshape(-1, 3, 4)
+    TX = (Tm[None] * Xh[:, None, None, :]).sum(-1)
+    F = eye_plus((W[..., None, None] * Tm[None, :, :, :3]).sum(1) + outer_sum(TX, dW))
+    return _fcr_res(F, R, wv, smu, sla)
+
+
+def simp_nh_energy(x, W, dW, Xh, wv2, mu, lam):
+    """Simplicits (kaolin) Neo-Hookean: ψ = μ/2 (|F|² − 3) − μ log J + λ/2 (log J)²."""
+    Tm = x.reshape(-1, 3, 4)
+    TX = (Tm[None] * Xh[:, None, None, :]).sum(-1)
+    F = eye_plus((W[..., None, None] * Tm[None, :, :, :3]).sum(1) + outer_sum(TX, dW))
+    lJ = torch.log(det3(F).clamp_min(1e-6))
+    return (wv2 * (0.5 * mu * ((F * F).sum((1, 2)) - 3.0) - mu * lJ + 0.5 * lam * lJ * lJ)).sum()
 
 
 def res_simp_lb(x, W, dW, Xh):
@@ -943,14 +1007,45 @@ for t in range(1, T + 1):
             PURE = (res_tri_lb, (rep.f, rep.n0, rep.A0))
         elif a.riem_energy == "logbarrier" and a.method == "simplicits":
             PURE = (res_simp_lb, (rep.W[FI], rep.dW[FI], torch.cat([X_, torch.ones_like(X_[:, :1])], 1)))
-        elif a.riem_energy == "elastic" and a.method == "phystwin":
+        elif a.riem_energy in ("elastic", "own") and a.method == "phystwin":
             PURE = (res_spring, (rep.B, rep.rel, rep.L0))
+        elif a.riem_energy == "own" and a.method == "vrgs":
+            PURE = (res_tri_stvk, (rep.f, rep.D0i, rep.A0, 1.0, math.sqrt(rep.lam / 2)))
+        elif a.riem_energy == "own" and a.method in ("ours", "gaussim", "simplicits"):
+            # 구조 고유 탄성 모델이 없는 방법(ours·GausSim·Simplicits)은 입자 탄성 모델 -- 고정 공회전
+            # ψ = μ|F−R|² + λ/2 (J−1)², R 은 부호 고정 극분해(det R = +1)라 det F < 0 에서도 정의되고 벌점이 커진다.
+            # ν 0.3, μ 1. 선형화 점마다 R 을 다시 구한다
+            _wv = 1.0 / math.sqrt(FI.numel()); _sla = math.sqrt(0.5 * 2 * 0.3 / (1 - 2 * 0.3))
+            _Xh = torch.cat([X_, torch.ones_like(X_[:, :1])], 1)
+
+            def PURE(th):
+                with torch.no_grad():
+                    if a.method == "ours":
+                        _, J0 = rep.yJ_p(X_, FI, *unflat(th))
+                        F0 = mm3(J0, Fcum[FI])
+                    elif a.method == "simplicits":
+                        _Tm = unflat(th)[0]
+                        _TX = (_Tm[None] * _Xh[:, None, None, :]).sum(-1)
+                        F0 = eye_plus((rep.W[FI][..., None, None] * _Tm[None, :, :, :3]).sum(1)
+                                      + outer_sum(_TX, rep.dW[FI]))
+                    else:
+                        F0 = GausSim.F_of(rep, *unflat(th))[rep.lab[FI]]
+                    U_, _, Vh_ = torch.linalg.svd(F0)
+                    Dg = torch.ones(U_.shape[0], 3, device=dev, dtype=U_.dtype)
+                    Dg[:, 2] = torch.sign(torch.linalg.det(U_ @ Vh_))
+                    R_ = U_ @ torch.diag_embed(Dg) @ Vh_
+                if a.method == "ours":
+                    return res_lattice_fcr, (rep.u.numel(), rep.rows, rep.lam, rep.dlam, rep.r, rep.dr, rep.w,
+                                             rep.dw, rep.h, rep.a, Fcum[FI], R_, _wv, 1.0, _sla)
+                if a.method == "simplicits":
+                    return res_simp_fcr, (rep.W[FI], rep.dW[FI], _Xh, R_, _wv, 1.0, _sla)
+                return res_gaussim_fcr, (rep.p2.shape[0], rep.lab[FI], R_, _wv, 1.0, _sla)
         if PURE is not None and GN_PROD is None and not a.no_compile:
             GN_PROD = torch.compile(_gn_prod, dynamic=True)
 
         def GN(th):
             if PURE is not None:
-                fn_, args_ = PURE
+                fn_, args_ = PURE(th) if callable(PURE) else PURE
                 pr = GN_PROD if GN_PROD is not None else _gn_prod
                 return lambda u: pr(fn_, th, u, *args_)
             rf = make_res(th)
