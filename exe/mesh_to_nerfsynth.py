@@ -53,7 +53,13 @@ for ti, (name, m) in enumerate(parts):
     v = (m.vertices @ Ylup.T - c) * s
     V.append(v); Fc.append(m.faces + off); off += len(v)
     UV.append(np.asarray(m.visual.uv, np.float32)[m.faces])                  # [F,3,2]
-    TEX.append(np.asarray(m.visual.material.baseColorTexture.convert("RGB"), np.float32) / 255.0)
+    bt = getattr(m.visual.material, "baseColorTexture", None)
+    if bt is None:                                       # trimesh 가 텍스처를 못 읽으면 같은 폴더의 확산 맵을 직접
+        import glob
+        tp = glob.glob(os.path.join(os.path.dirname(a.gltf), "textures", "*_diff_*.jpg"))[0]
+        TEX.append(imageio.imread(tp)[..., :3].astype(np.float32) / 255.0)
+    else:
+        TEX.append(np.asarray(bt.convert("RGB"), np.float32) / 255.0)
     FT.append(np.full(len(m.faces), ti))
 V = torch.tensor(np.concatenate(V), dtype=torch.float32, device=dev)
 Fc = torch.tensor(np.concatenate(Fc), dtype=torch.int64, device=dev)
