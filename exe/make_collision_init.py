@@ -4,7 +4,7 @@
 서로를 향해 ±v 로 보낸다. 시뮬 상자는 두 물체가 들어가게 grid_lim 4 (dx 0.02 = PG 의 2/100).
 물성은 Fracture-GS 논문 표의 Teapot: E 5e5, ν 0.46, 밀도 5, NACC (α, β, ξ, M) = (0.98, 0.5, 1, 2.36).
   α 는 초기 Jp 로 읽어 alpha_0 = ln α, M 은 GF 의 M = 6 sinφ/(3 − sinφ) 로 마찰각을 거꾸로 푼다.
-충돌 속도·간격·프레임 간격·중력은 논문에 수치가 없어 정한 값 (문서에 적는다).
+충돌 속도·간격·프레임 간격은 논문에서 확인하지 못해 정한 값 (문서에 적는다). 중력은 PhysGaussian·GF 기본값 -9.8.
 
   python exe/make_collision_init.py --shape lego --out /home/dkta/work/repip/col_lego
 """
@@ -24,8 +24,12 @@ ap.add_argument("--v", type=float, default=10.0, help="각 물체의 접근 속�
 ap.add_argument("--gap", type=float, default=1.0,
                 help="두 물체 표면 사이 처음 간격 -- 멀리서 달려와 부딪히게 (상대 속도 2v 로 약 15 프레임 뒤 충돌)")
 ap.add_argument("--frames", type=int, default=60)
-ap.add_argument("--frame_dt", type=float, default=1.0 / 300.0)
+ap.add_argument("--frame_dt", type=float, default=0.0,
+                help="0 이면 gap / (2 v · 15) -- 속도와 상관없이 15 프레임쯤에 부딪힌다")
+ap.add_argument("--g", type=float, default=-9.8, help="중력 (z). PhysGaussian·GF 씬 설정의 기본값")
 a = ap.parse_args()
+if a.frame_dt <= 0:
+    a.frame_dt = a.gap / (2 * a.v * 15)
 
 X = np.load(f"{W}/pgfill_{a.shape}.npy").astype(np.float64)
 c = X.mean(0)
@@ -50,7 +54,7 @@ cfg = dict(material="watermelon", E=5e5, nu=0.46, density=5.0,
            friction_angle=math.degrees(math.asin(sphi)),
            n_grid=200, grid_lim=4.0, flip_pic_ratio=0.7,
            substep_dt=1e-5, frame_dt=a.frame_dt, frame_num=a.frames,
-           g=[0.0, 0.0, 0.0], init_velocity=[0.0, 0.0, 0.0],
+           g=[0.0, 0.0, a.g], init_velocity=[0.0, 0.0, 0.0],
            boundary_conditions=[{"type": "bounding_box"}],
            repflow_note=dict(shape=a.shape, v=a.v, gap=a.gap, n_each=int(len(X)),
                              center_shift=(-c).tolist()))
