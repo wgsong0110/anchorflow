@@ -427,10 +427,14 @@ for t in range(1, a.frames + 1):
         ok = torch.isfinite(rg).all(1)                      # 기준 시뮬이 격리(발산)한 입자는 뺀다
         rmse = float(((yg[ok] - rg[ok]) ** 2).sum(1).mean().sqrt()) / L
         NBAD.append(int((~ok).sum()))
-        cdv = 0.0
-        for P_, Q_ in ((yg[ok], rg[ok]), (rg[ok], yg[ok])):
-            cdv += float(sum(torch.cdist(P_[s:s + 4096], Q_).min(1).values.sum()
-                             for s in range(0, P_.shape[0], 4096)) / P_.shape[0]) * 0.5
+        def _nn(P_, Q_, ch=4096, k=8):                          # 정확한 최근접 거리 (행렬곱 후보 + 직접 거리)
+            out = []
+            for s_ in range(0, P_.shape[0], ch):
+                Pi = P_[s_:s_ + ch]
+                j_ = torch.cdist(Pi, Q_).topk(min(k, Q_.shape[0]), largest=False).indices
+                out.append((Pi[:, None] - Q_[j_]).norm(dim=-1).min(1).values)
+            return torch.cat(out)
+        cdv = 0.5 * float(_nn(yg[ok], rg[ok]).mean() + _nn(rg[ok], yg[ok]).mean())
         Jd = rm.det3(Fcum)
         rows.append((t, rmse, cdv / L, float("nan"), float(Jd.min()), float((Jd <= 0).float().mean())))
         com = (MASS[:, None] * xn).sum(0) / MSUM
@@ -438,7 +442,7 @@ for t in range(1, a.frames + 1):
                      *(MASS[:, None] * torch.cross(xn - com, vn, dim=-1)).sum(0).tolist(),
                      float((VOL * Jd).sum() / VOL.sum())))
         IPV.append((t, float(E), *parts.values()))
-        TRAJ.append(yg.half().cpu().numpy())
+        TRAJ.append(yg.float().cpu().numpy())
         if t % 10 == 0 or t == a.frames:
             EMDP.append((t, yg[ok].float().cpu().numpy(), rg[ok].float().cpu().numpy()))
         if RENDER:

@@ -678,11 +678,19 @@ def map_and_F(Pref, sel, Fprev=None, need_graph=True):
 
 
 # ============================================================== 측정·렌더 준비
+def nn_dist(P, Q, ch=4096, k=8):
+    """P 각 점의 Q 최근접 거리 (정확): 행렬곱 cdist 로 후보 k 개를 고르고 거리는 직접 다시 잰다.
+    행렬곱 cdist 는 |a|²+|b|²-2ab 라 float32 에서 거리² 오차 ~3e-7 -- 최근접 거리 1e-3 근처에서 10% 가 넘는다."""
+    out = []
+    for i in range(0, P.shape[0], ch):
+        Pi = P[i:i + ch]
+        j = torch.cdist(Pi, Q).topk(min(k, Q.shape[0]), largest=False).indices
+        out.append((Pi[:, None] - Q[j]).norm(dim=-1).min(1).values)
+    return torch.cat(out)
+
+
 def chamfer(A, B, ch=4096):
-    def one(P, Q):
-        return sum(torch.cdist(P[i:i + ch], Q).min(1).values.sum()
-                   for i in range(0, P.shape[0], ch)) / P.shape[0]
-    return float(0.5 * (one(A, B) + one(B, A)))
+    return float(0.5 * (nn_dist(A, B, ch).mean() + nn_dist(B, A, ch).mean()))
 
 
 RENDER = None
@@ -1172,7 +1180,7 @@ for t in range(1, T + 1):
                      *torch.cross(y - com, vel, dim=-1).mean(0).tolist(), float(J.mean())))
         YPREV[0] = y.clone()
         if a.save_traj:
-            TRAJS.append(yall.half().cpu().numpy())
+            TRAJS.append(yall.float().cpu().numpy())         # float32 (사후 CD/EMD 재계산용)
         if TBW is not None:
             for k_, v_ in (("RMSE_pct", 100 * rmse), ("CD_pct", 100 * cd),
                            ("detJ_min", rows[-1][4]), ("inverted_pct", 100 * rows[-1][5]),
