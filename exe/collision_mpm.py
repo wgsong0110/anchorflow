@@ -88,11 +88,6 @@ density = float(cfg["density"])
 substep_dt = float(cfg["substep_dt"])
 frame_dt = float(cfg["frame_dt"])
 n_frames = a.frames if a.frames is not None else int(cfg.get("frame_num", 100))
-if a.auto_dt:
-    _c = np.sqrt(E * (1 - nu) / ((1 + nu) * (1 - 2 * nu) * density))
-    substep_dt = 0.6 * dx / _c
-# GF 는 int() 로 버린다 -- 한 프레임이 frame_dt 보다 살짝 짧다. 그대로 따른다.
-nsub = max(1, int(frame_dt / substep_dt))
 G = np.array(cfg.get("g", [0.0, 0.0, -9.8]), np.float64)
 # gs_simulation.py:374 가 config 에 없으면 [0,0,-6] 을 그대로 박아 넣는다
 V0 = np.array(cfg.get("init_velocity", [0.0, 0.0, -6.0]), np.float64)
@@ -102,10 +97,13 @@ with h5py.File(a.h5, "r") as h:
     X0 = np.array(h["x"]);  X0 = (X0.T if X0.shape[0] == 3 else X0).astype(np.float64)
     V_h5 = np.array(h["v"]) if "v" in h else None
     OBJ = np.array(h["obj"]).reshape(-1).astype(np.int32)
+    # 입자별 물성 (있으면): Fracture-GS 처럼 물체·부위마다 E, nu, 밀도, 초기 logJp 가 다른 장면
+    PP = {k: np.array(h[k]).reshape(-1).astype(np.float64) for k in ("E", "nu", "density", "alpha0") if k in h}
 X0 = X0[::a.stride]
 ok = np.isfinite(X0).all(1)
 X0 = X0[ok]
 OBJ = OBJ[::a.stride][ok]
+PP = {k: v[::a.stride][ok] for k, v in PP.items()}
 N = len(X0)
 if V_h5 is not None:
     V_h5 = (V_h5.T if V_h5.shape[0] == 3 else V_h5).astype(np.float64)[::a.stride][ok]
@@ -132,6 +130,15 @@ for prm in cfg.get("additional_material_params", []):
     Ep[_m] = prm["E"]; NUp[_m] = prm["nu"]; DENp[_m] = prm["density"]
     print(f"[구역 물성] {int(_m.sum())} 입자에 E={prm['E']} nu={prm['nu']} "
           f"rho={prm['density']}", flush=True)
+if PP:
+    Ep = PP.get("E", Ep); NUp = PP.get("nu", NUp); DENp = PP.get("density", DENp)
+    print(f"[입자별 물성] {sorted(PP)}  E {np.unique(Ep)}  nu {np.unique(NUp)}  밀도 {np.unique(DENp)}", flush=True)
+AL0p = PP.get("alpha0", np.full(N, ALPHA0))
+if a.auto_dt:                                             # 가장 빠른 음속 기준 (입자별 물성이면 그 최댓값)
+    _c = float(np.max(np.sqrt(Ep * (1 - NUp) / ((1 + NUp) * (1 - 2 * NUp) * DENp))))
+    substep_dt = 0.6 * dx / _c
+# GF 는 int() 로 버린다 -- 한 프레임이 frame_dt 보다 살짝 짧다. 그대로 따른다.
+nsub = max(1, int(frame_dt / substep_dt))
 MU = Ep / (2.0 * (1.0 + NUp))
 LM = Ep * NUp / ((1.0 + NUp) * (1.0 - 2.0 * NUp))
 KP = 2.0 * MU / 3.0 + LM
@@ -281,14 +288,14 @@ GRAV = ti.Vector([float(G[0]), float(G[1]), float(G[2])])
 def init(X: ti.types.ndarray(), V: ti.types.ndarray(),
          VO: ti.types.ndarray(), MA: ti.types.ndarray(),
          MU: ti.types.ndarray(), LM: ti.types.ndarray(),
-         KP: ti.types.ndarray()):
+         KP: ti.types.ndarray(), A0: ti.types.ndarray()):
     for p in range(N):
         for d in ti.static(range(3)):
             x[p][d] = ti.cast(X[p, d], rt); v[p][d] = ti.cast(V[p, d], rt)
             x0f[p][d] = ti.cast(X[p, d], rt)
         F[p] = ti.Matrix.identity(rt, 3); Ftr[p] = ti.Matrix.identity(rt, 3)
         C[p] = ti.Matrix.zero(rt, 3, 3); St[p] = ti.Matrix.zero(rt, 3, 3)
-        Jp[p] = ALPHA0; ys[p] = YIELD0
+        Jp[p] = ti.cast(A0[p], rt); ys[p] = YIELD0
         mu_p[p] = ti.cast(MU[p], rt); lam_p[p] = ti.cast(LM[p], rt)
         kap_p[p] = ti.cast(KP[p], rt)
         vol[p] = ti.cast(VO[p], rt); mass[p] = ti.cast(MA[p], rt); alive[p] = 1
@@ -706,7 +713,7 @@ def quarantine(lo: rt, hi: rt):
                 v[p] = ti.Vector.zero(rt, 3)   # GF 도 속도를 같이 지운다
 
 
-init(X0, V_init, VOL, MASS, MU, LM, KP)
+init(X0, V_init, VOL, MASS, MU, LM, KP, AL0p)
 obj.from_numpy(OBJ)
 os.makedirs(a.out, exist_ok=True)
 
