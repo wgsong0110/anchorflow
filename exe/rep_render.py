@@ -26,6 +26,8 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--cam", type=int, default=0)
 ap.add_argument("--fps", type=int, default=30)
 ap.add_argument("--label", default="")
+ap.add_argument("--iso", type=float, default=0.0,
+                help="공분산을 등방형 (iso × 가우시안 축 길이 중앙값)² I 로 (0 이면 원래 FΣFᵀ)")
 ap.add_argument("--sub", action="store_true",
                 help="목표 영상을 흐름의 부분표본 가우시안만으로 (추적과 같은 점 집합)")
 a = ap.parse_args()
@@ -77,6 +79,9 @@ def mat_to_sym6(m):
 
 
 C0 = sym6_to_mat(cov0)
+if a.iso > 0:
+    _sm = float(gs.get_scaling[gi].detach().median())
+    print(f"[등방] 축 길이 중앙값 {_sm:.5f} (모델 좌표) x {a.iso} -> 표준편차 {a.iso * _sm:.5f}", flush=True)
 
 # 궤적 (정규화 좌표) 과 F
 if a.target:
@@ -143,8 +148,12 @@ wr = imageio.get_writer(a.out, fps=a.fps, codec="libx264", quality=8)
 with torch.no_grad():
     for t in range(T1):
         P = to_model(getP(t))
-        F = getF(t)
-        cov = mat_to_sym6(F @ C0 @ F.transpose(1, 2))
+        if a.iso > 0:
+            cov = torch.zeros(P.shape[0], 6, device=dev)
+            cov[:, 0] = cov[:, 3] = cov[:, 5] = (a.iso * _sm) ** 2
+        else:
+            F = getF(t)
+            cov = mat_to_sym6(F @ C0 @ F.transpose(1, 2))
         img = rast(means3D=P, means2D=torch.zeros_like(P), shs=shs,
                    colors_precomp=None, opacities=op, scales=None,
                    rotations=None, cov3D_precomp=cov)[0]
