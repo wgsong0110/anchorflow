@@ -137,6 +137,10 @@ NG1 = KIDX.numel()
 GI = torch.cat([_mi[_ok] + o * NEACH for o in range(NOBJ)])     # 전체 중 가우시안 번호
 print(f"[가우시안 대응] 불투명도 통과 {_TP.shape[0]} 중 시뮬 입자와 일치 {NG1} (최대 거리 {float(_md[_ok].max()):.2e})",
       flush=True)
+if a.dbg:
+    _q = torch.quantile(_md[~_ok][:100000].float(), torch.tensor([0.0, 0.1, 0.5, 0.9, 1.0], device=dev)) if (~_ok).any() else None
+    print(f"  안 맞는 가우시안 거리 분위수 (0/10/50/90/100%): {None if _q is None else [f'{v:.2e}' for v in _q.tolist()]}  "
+          f"dx {dx:.4f}", flush=True)
 
 
 def to_model(P, ob):
