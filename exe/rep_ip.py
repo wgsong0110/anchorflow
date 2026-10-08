@@ -329,7 +329,7 @@ def flat(ts):
 TB = None
 if a.tb != "none":
     from torch.utils.tensorboard import SummaryWriter
-    _tb = os.path.join(f"{W}/tbrf", "ip_" + os.path.splitext(os.path.basename(a.out))[0])
+    _tb = a.tb if a.tb != "auto" else os.path.join(f"{W}/tbrf", "ip_" + os.path.splitext(os.path.basename(a.out))[0])
     TB = SummaryWriter(_tb)
 rows, PHYS, TRAJ, IPV, NBAD = [], [], [], [], []
 EMDP = []
