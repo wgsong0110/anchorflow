@@ -43,11 +43,13 @@ ap.add_argument("--resume", action="store_true",
 ap.add_argument("--auto_dt", action="store_true",
                 help="GF 의 씬 러너처럼 substep_dt 를 CFL 로 다시 계산한다 "
                      "(gs_simulation_watermelon.py:416). config 값은 무시된다")
+ap.add_argument("--profile", type=int, default=0, help="서브스텝 N 번만 돌려 커널별 GPU 시간을 찍고 끝낸다")
 a = ap.parse_args()
 
 cfg = json.load(open(a.config))
 ti.init(arch=ti.gpu, default_fp=ti.f64 if a.f64 else ti.f32,
-        device_memory_fraction=float(os.environ.get("AF_TI_MEM", "0.3")), offline_cache=True)
+        device_memory_fraction=float(os.environ.get("AF_TI_MEM", "0.3")), offline_cache=True,
+        kernel_profiler=a.profile > 0)
 
 # ------------------------------------------------------------------ 상수
 # material_2_num (mpm_solver_warp.py:255). foam 이 3, snow 가 4, plasticine 이 5 다.
@@ -771,6 +773,18 @@ if a.resume and os.path.exists(STATE):
     print(f"[이어감] {STATE} 의 프레임 {f0} (t={t:.4f}) 에서", flush=True)
 else:
     dump(0)
+if a.profile:
+    for _ in range(20):                                   # 예열 (컴파일)
+        stress_kernel(substep_dt); zero_grid(); p2g(substep_dt); grid_op(substep_dt, t); contact(); g2p(substep_dt, FLIP)
+    ti.sync(); ti.profiler.clear_kernel_profiler_info(); _t = time.time()
+    for _ in range(a.profile):
+        quarantine(-0.5 * grid_lim, 1.5 * grid_lim)
+        stress_kernel(substep_dt); zero_grid(); p2g(substep_dt); grid_op(substep_dt, t); contact(); g2p(substep_dt, FLIP)
+    ti.sync(); _w = time.time() - _t
+    ti.profiler.print_kernel_profiler_info()
+    print(f"[프로파일] 서브스텝 {a.profile} 번 {_w:.2f}s -> {1e3 * _w / a.profile:.3f} ms/서브스텝, "
+          f"프레임당 {nsub} 서브스텝이면 {_w / a.profile * nsub:.1f} s/프레임", flush=True)
+    raise SystemExit(0)
 t0 = time.time()
 for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
     for _ in range(nsub):
