@@ -103,7 +103,10 @@ if a.target:
     T1 = T + 1
 else:
     R = np.load(a.res)
-    AY = R["AUXY"]                                                # [T+1,G,3] float16
+    if "AUXY" in R:
+        AY = R["AUXY"]                                            # [T+1,G,3] float16
+    else:                                                         # rep_track2 --save_traj: 1..T 프레임
+        AY = np.concatenate([G0.cpu().numpy()[None].astype(np.float16), R["traj"]], 0)
     T1 = AY.shape[0]
     nb = None
     for c in range(0, 1):
