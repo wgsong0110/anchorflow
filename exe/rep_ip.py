@@ -49,6 +49,9 @@ ap.add_argument("--riem_cg", type=int, default=50)
 ap.add_argument("--ls_max", type=int, default=30, help="Armijo 되돌림 최대 횟수")
 ap.add_argument("--riem_lr_max", type=float, default=1e8, help="적응 보폭 상한")
 ap.add_argument("--dbg", action="store_true")
+ap.add_argument("--own", action="store_true",
+                help="탄성 항과 계량을 각 방법 고유 탄성 모델로: ours·GausSim·Simplicits 입자 고정공회전(det<0 정의), "
+                     "GS-Verse StVK 막(두께 = 부피/겉넓이), PhysTwin 스프링(Y = E V/ΣL0). 소성 없음. E·ν 는 시뮬 설정")
 ap.add_argument("--iso", type=float, default=0.0, help="렌더 공분산을 등방형 (iso × 축 길이 중앙값)² I 로")
 ap.add_argument("--render_npz", default="", help="저장된 결과(npz traj)를 영상으로만 (최적화 없음)")
 ap.add_argument("--old_order", action="store_true",
@@ -275,6 +278,13 @@ for o in range(NOBJ):
         r = rm.VRGS(Xo, surf)
     reps.append(r); idx.append(ii)
 REP = rm.Multi(reps, idx)
+if a.own:
+    for r, ii in zip(reps, idx):
+        Vo = float(VOL[ii].sum())
+        if a.method == "phystwin":
+            r.Ystf = float(cfg["E"]) * Vo / float(r.L0.sum())          # 에너지 밀도가 E 와 맞게
+        elif a.method == "vrgs":
+            r.thick = Vo / float(r.A0.sum())                            # 막 두께 = 부피 / 겉넓이
 REB = REP.rebind_each_frame
 
 # ---------------------------------------------------------------- 물리 상태
@@ -305,8 +315,12 @@ def energy(dy, J, X_, xtil, pairs, parts=False):
     x = X_ + dy
     Finc = J if REB else rm.mm3(J, JPI[0])
     Ftr = rm.mm3(Finc, Fe)
-    psi, pl = pr.psi_of(Ftr, cfg, h)
-    e_el = (VOL * psi).sum()
+    if a.own:
+        pl = None
+        e_el = own_elastic(Ftr)
+    else:
+        psi, pl = pr.psi_of(Ftr, cfg, h)
+        e_el = (VOL * psi).sum()
     d = x - xtil
     e_in = 0.5 / (h * h) * (MASS * (d * d).sum(1)).sum()
     e_g = -(MASS * (d * g).sum(1)).sum()
@@ -322,6 +336,25 @@ def energy(dy, J, X_, xtil, pairs, parts=False):
         return tot, pl, Ftr, dict(inertia=float(e_in), elastic=float(e_el), gravity=float(e_g),
                                   floor=float(e_f), contact=float(e_c))
     return tot, pl, Ftr
+
+
+MU_E, LA_E = pr.lame(cfg["E"], cfg["nu"])
+_sla_m = math.sqrt(float(cfg["nu"]) / (1 - 2 * float(cfg["nu"])))   # μ 를 1 로 둔 계량의 √(λ/2)
+
+
+def own_elastic(Ftr):
+    """각 방법 고유 탄성 에너지 (소성 없음)."""
+    if a.method in ("ours", "gaussim", "simplicits"):
+        return (VOL * rm.fcr_psi(Ftr, MU_E, LA_E)).sum()
+    e = torch.zeros((), device=dev)
+    for r, ii in zip(reps, idx):
+        if a.method == "phystwin":
+            Bn = r.B + r.m
+            Ln = (Bn[r.rel] - Bn[:, None]).norm(dim=-1)
+            e = e + 0.5 * r.Ystf * (r.L0 * (Ln / r.L0 - 1.0) ** 2).sum()
+        else:                                                         # vrgs
+            e = e + r.thick * rm.stvk_membrane(r.v, r.f, r.D0i, r.A0, MU_E, LA_E)
+    return e
 
 
 # ---------------------------------------------------------------- 계량 곱
@@ -355,14 +388,43 @@ for t in range(1, a.frames + 1):
     PL = REP.params()
     shapes, sizes = [q.shape for q in PL], [q.numel() for q in PL]
     METS = REP.metrics() if a.method != "gaussim" else None
+    if a.own:
+        if a.method == "phystwin":
+            METS = [(rm.res_spring, (r.B, r.rel, r.L0)) for r in reps]
+        elif a.method == "vrgs":
+            METS = [(rm.res_tri_stvk, (r.f, r.D0i, r.A0, 1.0, _sla_m)) for r in reps]
+        else:
+            METS = "particle"                                         # 매 반복 극분해 R 을 다시 구한다
+
+    def particle_mets():
+        """입자 고정공회전 계량 (물체마다): 현재 매개(선형화 점)의 F 로 R 을 구해 순수 잔차 인자로."""
+        with torch.no_grad():
+            out = []
+            for r, ii in zip(reps, idx):
+                Xo = X_[ii]
+                dyo, Jo = r.yJ(Xo, torch.arange(ii.numel(), device=dev))
+                Fp = Fe[ii] if REB else rm.mm3(JPI[0][ii], Fe[ii])
+                F0 = rm.mm3(Jo, Fp)
+                R0 = rm.polar_R(F0)
+                wv = (VOL[ii] / VOL[ii].sum()).sqrt()
+                if a.method == "ours":
+                    out.append((rm.res_lattice_fcr, (r.u.numel(), r.rows, r.lam, r.dlam, r.r, r.dr, r.w, r.dw,
+                                                     r.h, r.a, Fp, R0, wv, 1.0, _sla_m)))
+                elif a.method == "gaussim":
+                    out.append((rm.res_gaussim_fcr, (r.p2.shape[0], r.lab, Fp, R0, wv, 1.0, _sla_m)))
+                else:
+                    out.append((rm.res_simp_fcr, (r.W, r.dW, r.Xh, Fp, R0, wv, 1.0, _sla_m)))
+        return out
     psizes = [sum(q.numel() for q in r.params()) for r in reps]
-    if a.method == "gaussim" and REB:
+    if a.method == "gaussim" and REB and not a.own:
         OPT = torch.optim.Adam(PL, lr=a.lr)
     if METS is not None:
         # λmax (거듭제곱법) 로 ε 척도 -- 블록 대각 (물체마다)
+        MC = [particle_mets() if METS == "particle" else METS]
+
         def Hv(th, u):
             outs, s0 = [], 0
-            for (fn, args), n_ in zip(METS, psizes):
+            for (fn, args), n_ in zip(MC[0], psizes):
                 outs.append(GNP(fn, th[s0:s0 + n_], u[s0:s0 + n_], *args)); s0 += n_
             return torch.cat(outs)
         with torch.no_grad():
@@ -384,6 +446,8 @@ for t in range(1, a.frames + 1):
             continue
         gk = flat([q.grad if q.grad is not None else torch.zeros_like(q) for q in PL]).detach()
         theta = flat([q.detach() for q in PL])
+        if METS == "particle":
+            MC[0] = particle_mets()                                   # 반복마다 R 을 다시
         with torch.no_grad():
             x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
             for _ in range(a.riem_cg):
@@ -421,7 +485,7 @@ for t in range(1, a.frames + 1):
         dy, J = REP.yJ(X_)
         E, pl, Ftr, parts = energy(dy, J, X_, xtil, pairs, parts=True)
         x1 = X_ + dy
-        Fe = pr.plastic_step(Ftr, pl)
+        Fe = Ftr if a.own else pr.plastic_step(Ftr, pl)
         if REB:
             Fcum = rm.mm3(J, Fcum)
         else:

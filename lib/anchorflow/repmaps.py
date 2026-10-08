@@ -97,6 +97,77 @@ def res_simp_lb(x, W, dW, Xh):
     return torch.log(det3(F).clamp_min(1e-6)) * (W.shape[0] ** -0.5)
 
 
+def polar_R(F):
+    """부호 고정 극분해의 회전 (det R = +1) -- det F < 0 에서도 정의된다."""
+    U, _, Vh = torch.linalg.svd(F)
+    D = torch.ones(U.shape[0], 3, device=F.device, dtype=F.dtype)
+    D[:, 2] = torch.sign(torch.linalg.det(U @ Vh))
+    return U @ torch.diag_embed(D) @ Vh
+
+
+def fcr_psi(F, mu, lam, R=None):
+    """입자 고정 공회전 ψ = μ|F−R|² + λ/2 (J−1)² (det F < 0 에서도 정의, 뒤집히면 벌점이 커진다)."""
+    if R is None:
+        R = polar_R(F)
+    return mu * ((F - R) ** 2).sum((1, 2)) + 0.5 * lam * (det3(F) - 1.0) ** 2
+
+
+def _fcr_res(F, R, wv, smu, sla):
+    return torch.cat([(wv[:, None, None] * smu * (F - R)).reshape(-1), wv * sla * (det3(F) - 1.0)])
+
+
+def res_lattice_fcr(x, M3, rows, lam, dlam, r, dr, w, dw, h, aa, Fp, R, wv, smu, sla):
+    u = x[:M3].reshape(-1, 3); rho_raw = x[M3:]
+    U = u[rows]
+    rho = h * (0.05 + 0.95 * torch.sigmoid(rho_raw)[rows])
+    ins = r < rho
+    inner = 1.0 - aa * (torch.minimum(r, rho) / rho) ** 2
+    q = 1.0 + (r - rho).clamp_min(0.0) / (0.5 * h)
+    psi_raw = torch.where(ins, inner, (1.0 - aa) / q)
+    psi = psi_raw.clamp_min(1e-6)
+    dpsi = torch.where(ins, -2.0 * aa * r / (rho * rho), -(1.0 - aa) / (0.5 * h) / (q * q)) * (psi_raw > 1e-6)
+    g = w * psi
+    dg = dw * psi[..., None] + (w * dpsi)[..., None] * dr
+    G = g.sum(1, keepdim=True).clamp_min(1e-12)
+    W = g / G
+    dW = dg / G[..., None] - W[..., None] * dg.sum(1, keepdim=True) / G[..., None]
+    J = eye_plus(outer_sum(U, dW))
+    return _fcr_res(mm3(J, Fp), R, wv, smu, sla)
+
+
+def res_gaussim_fcr(x, k2, lab, Fp, R, wv, smu, sla):
+    dg = x[3 * k2:].reshape(-1, 11)
+    U = quat_mat(dg[:, 0:4]); V = quat_mat(dg[:, 7:11])
+    sv = torch.exp(dg[:, 4:7].clamp(-5, 5)); sv = sv / torch.prod(sv, -1, keepdim=True).pow(1 / 3)
+    F = (U @ torch.diag_embed(sv) @ V.transpose(1, 2))[lab]
+    return _fcr_res(mm3(F, Fp), R, wv, smu, sla)
+
+
+def res_simp_fcr(x, W, dW, Xh, Fp, R, wv, smu, sla):
+    Tm = x.reshape(-1, 3, 4)
+    TX = (Tm[None] * Xh[:, None, None, :]).sum(-1)
+    F = eye_plus((W[..., None, None] * Tm[None, :, :, :3]).sum(1) + outer_sum(TX, dW))
+    return _fcr_res(mm3(F, Fp), R, wv, smu, sla)
+
+
+def res_tri_stvk(x, f, D0i, A0, smu, sla):
+    v = x.reshape(-1, 3)
+    v0, v1, v2 = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+    e1, e2 = v1 - v0, v2 - v0
+    f1 = e1 * D0i[:, 0, 0, None] + e2 * D0i[:, 1, 0, None]
+    f2 = e1 * D0i[:, 0, 1, None] + e2 * D0i[:, 1, 1, None]
+    E11, E22 = 0.5 * ((f1 * f1).sum(-1) - 1), 0.5 * ((f2 * f2).sum(-1) - 1)
+    E12 = 0.5 * (f1 * f2).sum(-1)
+    w = A0.sqrt()
+    return torch.cat([w * smu * E11, w * smu * E22, w * smu * math.sqrt(2.0) * E12, w * sla * (E11 + E22)])
+
+
+def stvk_membrane(v, f, D0i, A0, mu, lam):
+    """삼각형 StVK 막 에너지 Σ A0 (μ|E|² + λ/2 tr(E)²) (넓이당)."""
+    r = res_tri_stvk(v.reshape(-1), f, D0i, A0, math.sqrt(mu), math.sqrt(0.5 * lam))
+    return (r * r).sum()
+
+
 def gn_prod(fn, th, u, *args):
     """가우스-뉴턴 곱 Jᵀ J u."""
     from torch.func import jvp, vjp
@@ -336,9 +407,15 @@ class VRGS(torch.nn.Module):
         self.A0i = torch.linalg.inv(torch.stack(gv._tri_frame(self.vr, self.f)[1:], -1))
         self.dof = 3 * self.vr.shape[0]
         v0, v1, v2 = self.vr[self.f[:, 0]], self.vr[self.f[:, 1]], self.vr[self.f[:, 2]]
-        nrm = torch.cross(v1 - v0, v2 - v0, dim=-1)
+        e1, e2 = v1 - v0, v2 - v0
+        nrm = torch.cross(e1, e2, dim=-1)
         self.A0 = 0.5 * nrm.norm(dim=-1)
         self.n0 = nrm / nrm.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+        t1 = e1 / e1.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+        t2 = torch.cross(self.n0, t1, dim=-1)
+        D0 = torch.stack([torch.stack([(e1 * t1).sum(-1), (e1 * t2).sum(-1)], -1),
+                          torch.stack([(e2 * t1).sum(-1), (e2 * t2).sum(-1)], -1)], -1)
+        self.D0i = torch.linalg.inv(D0)
 
     def params(self):
         return [self.v]
