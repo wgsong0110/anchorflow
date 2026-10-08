@@ -28,6 +28,10 @@ ap.add_argument("--n_grid", type=int, default=200)
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--frame_dt", type=float, default=1.0 / 60.0)
 ap.add_argument("--opacity", type=float, default=0.02)
+ap.add_argument("--fill_grid", type=int, default=100)
+ap.add_argument("--fill_dens", type=float, default=100.0)
+ap.add_argument("--fill_search", type=float, default=1.0)
+ap.add_argument("--fill_only", action="store_true", help="채우기 개수만 보고 끝낸다")
 a = ap.parse_args()
 sys.path.append(a.pg)
 sys.path.append(os.path.join(a.pg, "gaussian-splatting"))
@@ -63,7 +67,8 @@ pc = 0.5 * (P["x"].min(0).values + P["x"].max(0).values)
 P["x"] = P["x"] - pc + torch.tensor([1.0, 1.0, ztop + a.drop_h + float(pc[2] - P["x"][:, 2].min())], device=dev)
 assert float(P["x"][:, 2].max()) < GL - 0.05, "상자 위로 넘친다"
 
-FP = dict(grid_n=100, max_samples=2000000, grid_dx=GL / 100, density_thres=100.0, search_thres=1.0,
+FP = dict(grid_n=a.fill_grid, max_samples=2000000, grid_dx=GL / a.fill_grid, density_thres=a.fill_dens,
+          search_thres=a.fill_search,
           max_particles_per_cell=1, search_exclude_dir=2, ray_cast_dir=4, boundary=None, smooth=True)
 XS, OB, NG = [], [], []
 for o, Q in enumerate((P, T)):
@@ -72,18 +77,24 @@ for o, Q in enumerate((P, T)):
     xf = xf.to(dev).float()
     print(f"[채우기] 물체 {o}: 가우시안 {Q['x'].shape[0]} + 채움 {xf.shape[0] - Q['x'].shape[0]}", flush=True)
     XS.append(xf); OB.append(torch.full((xf.shape[0],), o, dtype=torch.int32)); NG.append(Q["x"].shape[0])
+if a.fill_only:
+    raise SystemExit(0)
 X = torch.cat(XS).cpu().numpy().astype(np.float64); OBJ = torch.cat(OB).numpy()
 N = X.shape[0]
-# 탁자 상판 / 다리: z 단면의 xy 상자 넓이가 최대의 절반 아래로 떨어지는 곳이 상판 밑면
-xt = XS[1].cpu().numpy(); zs = np.linspace(xt[:, 2].min(), xt[:, 2].max(), 200)
-area = []
+# 탁자 상판 / 다리: z 단면마다 점이 있는 xy 칸(2 cm) 수를 센다. 다리 단면은 작고 상판 단면은 크다
+# (상자 넓이로 재면 네 귀퉁이 다리가 이미 전체 넓이라 못 가른다). 위에서 내려오며 최대의 30% 아래로 처음 떨어지는 곳
+xt = XS[1].cpu().numpy(); zs = np.linspace(xt[:, 2].min(), xt[:, 2].max(), 201)
+occ = []
 for z0, z1 in zip(zs[:-1], zs[1:]):
-    s = xt[(xt[:, 2] >= z0) & (xt[:, 2] < z1)]
-    area.append(np.prod(s[:, :2].max(0) - s[:, :2].min(0)) if len(s) > 10 else 0.0)
-area = np.array(area); amax = area.max()
-ztb = zs[:-1][np.nonzero(area > 0.5 * amax)[0].min()]           # 상판 밑면 (아래에서부터 처음 넓어지는 곳)
-# 다리 기둥만 넓은 경우를 막는다: 상판 밑면은 상판 윗면에서 아래로 15 cm 안
-ztb = max(ztb, ztop - 0.15)
+    s_ = xt[(xt[:, 2] >= z0) & (xt[:, 2] < z1)]
+    occ.append(len(np.unique(np.floor(s_[:, :2] / 0.02).astype(np.int64), axis=0)) if len(s_) else 0)
+occ = np.array(occ); omax = occ.max()
+i = len(occ) - 1
+while i > 0 and occ[i] < 0.3 * omax:                              # 맨 위의 빈 조각 건너뛰기
+    i -= 1
+while i > 0 and occ[i] >= 0.3 * omax:
+    i -= 1
+ztb = float(zs[i + 1])                                             # 상판 밑면
 TOP = (OBJ == 1) & (X[:, 2] >= ztb); LEG = (OBJ == 1) & (X[:, 2] < ztb); POT = OBJ == 0
 print(f"[물성 구역] 찻주전자 {POT.sum()}  상판 {TOP.sum()} (z >= {ztb:.3f}, 윗면 {ztop:.3f})  다리 {LEG.sum()}", flush=True)
 E = np.where(POT, 5e5, np.where(TOP, 1.5e4, 1e8))
