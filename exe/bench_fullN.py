@@ -20,7 +20,9 @@ from anchorflow import simplex as SX
 from anchorflow.simplex_gnn import SimplexGNN, node_moments
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--traj", required=True)
+ap.add_argument("--traj", default="")
+ap.add_argument("--pts", default="", help="궤적 대신 점 집합 npy (속도 0) -- repflow FPS 용")
+ap.add_argument("--ckpt", default="", help="학습된 가중치 (속도는 가중치 값과 무관; 기록용으로 싣는다)")
 ap.add_argument("--n", default="8000,20000,64000,251001")
 ap.add_argument("--n_nodes", type=int, default=32)
 ap.add_argument("--layers", type=int, default=1)
@@ -39,10 +41,16 @@ def _load(p):
         return torch.load(p, map_location="cpu")
 
 
-d = _load(a.traj)
-x0 = d["x"][3].float()
-v0 = (d["x"][3].float() - d["x"][2].float()) / (1.0 / 60)
-print(f"[궤적] 저장 입자 {x0.shape[0]}, n_full {int(d.get('n_full', 0))}")
+if a.pts:
+    import numpy as _np
+    x0 = torch.as_tensor(_np.load(a.pts)).float()
+    v0 = torch.zeros_like(x0)
+    print(f"[점] {x0.shape[0]} ({a.pts})")
+else:
+    d = _load(a.traj)
+    x0 = d["x"][3].float()
+    v0 = (d["x"][3].float() - d["x"][2].float()) / (1.0 / 60)
+    print(f"[궤적] 저장 입자 {x0.shape[0]}, n_full {int(d.get('n_full', 0))}")
 
 
 def cloud(n):
@@ -96,6 +104,14 @@ for n in [int(q) for q in a.n.split(",")]:
         net = SimplexGNN(nf, hidden=a.hidden, layers=a.layers, scale=1.0,
                          dt_cond=True, dt_ref=1 / 60,
                          dt_scale=True).to(dev).eval()
+        if a.ckpt:
+            _sd = _load(a.ckpt)
+            for _k in ("model", "net", "state_dict"):
+                if isinstance(_sd, dict) and _k in _sd and isinstance(_sd[_k], dict):
+                    _sd = _sd[_k]; break
+            _mis = net.load_state_dict({k.split("net.", 1)[-1]: v for k, v in _sd.items()
+                                        if hasattr(v, "shape")}, strict=False)
+            print(f"[가중치] {a.ckpt}  빠진 {len(_mis.missing_keys)}  남는 {len(_mis.unexpected_keys)}")
         tau = torch.tensor(1 / 60, device=dev)
 
         def f_agg():
