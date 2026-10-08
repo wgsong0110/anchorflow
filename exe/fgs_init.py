@@ -99,6 +99,15 @@ if a.fill_only:
         print(f"[진단] {name}: 메쉬 실체 {len(solid)} 칸, 가우시안만 {len(og & solid)} ({100 * len(og & solid) / len(solid):.0f}%), "
               f"+채움 {len(oa & solid)} ({100 * len(oa & solid) / len(solid):.0f}%), 실체 밖 {len(oa - solid)} 칸, 수밀 {mm.is_watertight}",
               flush=True)
+    import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(2, 2, figsize=(12, 10))
+    for o, (Q, xf) in enumerate(((P, XS[0]), (T, XS[1]))):
+        g = Q["x"].cpu().numpy(); f_ = xf[Q["x"].shape[0]:].cpu().numpy()
+        for j, (u, v_) in enumerate(((0, 2), (0, 1))):
+            ax[o, j].scatter(g[::20, u], g[::20, v_], s=0.2, c="0.6", label="가우시안")
+            ax[o, j].scatter(f_[::5, u], f_[::5, v_], s=0.2, c="r", label="채움")
+            ax[o, j].set_aspect("equal"); ax[o, j].set_title(f"{'teapot' if o == 0 else 'table'} {'xz' if j == 0 else 'xy'}")
+    plt.savefig(f"{a.out}_fillviz.png", dpi=80)
     raise SystemExit(0)
 X = torch.cat(XS).cpu().numpy().astype(np.float64); OBJ = torch.cat(OB).numpy()
 N = X.shape[0]
