@@ -26,7 +26,7 @@ ap.add_argument("--gap", type=float, default=1.0,
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--frame_dt", type=float, default=0.0,
                 help="0 이면 gap / (2 v · 15) -- 속도와 상관없이 15 프레임쯤에 부딪힌다")
-ap.add_argument("--mat", default="teapot", choices=("teapot", "gfwm"),
+ap.add_argument("--mat", default="teapot", choices=("teapot", "tabletop", "gfwm"),
                 help="teapot: Fracture-GS 표의 Teapot NACC (빠르게 부딪혀도 안 깨졌다). "
                      "gfwm: GaussianFluent 공식 watermelon 물성 (낙하 -6 으로 실제로 깨지는 물성)")
 ap.add_argument("--n_grid", type=int, default=200)
@@ -55,6 +55,9 @@ M = 2.36
 sphi = 3 * M / (6 + M)                             # M = 6 s / (3 - s)  ->  s = 3M / (6 + M)
 if a.mat == "teapot":
     MAT = dict(E=5e5, nu=0.46, density=5.0, alpha_0=math.log(0.98), beta=0.5, xi=1.0, hardening=1.0,
+               friction_angle=math.degrees(math.asin(sphi)))
+elif a.mat == "tabletop":                           # Fracture-GS 표 6 의 Table top (Teapot & Table 장면에서 깨지는 쪽)
+    MAT = dict(E=1.5e4, nu=0.39, density=1.0, alpha_0=math.log(0.99), beta=0.5, xi=1.0, hardening=1.0,
                friction_angle=math.degrees(math.asin(sphi)))
 else:                                               # GF watermelon config 그대로
     MAT = dict(E=2000.0, nu=0.38, density=1.0, alpha_0=-0.04, beta=1.0, xi=3.0, hardening=1.0,
