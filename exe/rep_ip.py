@@ -109,10 +109,9 @@ gs = GaussianModel(3)
 gs.load_ply(f"{mp}/point_cloud/iteration_30000/point_cloud.ply")
 _op = gs.get_opacity.detach()[:, 0]
 KIDX = torch.nonzero(_op > float(cfg.get("opacity_threshold", 0.02))).squeeze(1)
-NG1 = KIDX.numel()                                            # 물체 하나의 가우시안 수 (채움보다 먼저)
-_, SO, MEAN = transform2origin(gs.get_xyz.detach()[KIDX], float(cfg.get("scale", 1.0)))
+_TP, SO, MEAN = transform2origin(gs.get_xyz.detach()[KIDX], float(cfg.get("scale", 1.0)))
+_TP = shift2center111(_TP)                                        # 가우시안의 시뮬 좌표 (회전 항등)
 NEACH = N // NOBJ
-GI = torch.cat([torch.arange(NG1, device=dev) + o * NEACH for o in range(NOBJ)])   # 전체 중 가우시안 번호
 # 물체마다 시뮬 좌표 -> 모델 좌표 (충돌 씬은 두 벌을 옮겨 놓았다)
 SHIFT = torch.zeros(NOBJ, 3, device=dev)
 if NOBJ > 1:
@@ -122,6 +121,22 @@ if NOBJ > 1:
         SHIFT[o] = X0[OBJ == o].mean(0) - torch.as_tensor(np.load(f"{W}/pgfill_{a.shape}.npy"),
                                                            device=dev).mean(0)
     del c
+
+
+# 시뮬 입자 중 가우시안 찾기: PG 채우기는 경계 상자 밖 가우시안을 버리고 순서를 바꿀 수 있어
+# (ficus 렌더가 망가졌다) 번호를 가정하지 않고 좌표로 짝을 맞춘다 (같은 점이면 거리 ~0)
+_X0o = X0[:NEACH] - SHIFT[0]
+_mi, _md = [], []
+for _s in range(0, _TP.shape[0], 8192):
+    _d, _j = torch.cdist(_TP[_s:_s + 8192].to(dev), _X0o).min(1)
+    _md.append(_d); _mi.append(_j)
+_md, _mi = torch.cat(_md), torch.cat(_mi)
+_ok = _md < 1e-4
+KIDX = KIDX[_ok]
+NG1 = KIDX.numel()
+GI = torch.cat([_mi[_ok] + o * NEACH for o in range(NOBJ)])     # 전체 중 가우시안 번호
+print(f"[가우시안 대응] 불투명도 통과 {_TP.shape[0]} 중 시뮬 입자와 일치 {NG1} (최대 거리 {float(_md[_ok].max()):.2e})",
+      flush=True)
 
 
 def to_model(P, ob):
@@ -186,7 +201,7 @@ reps, idx = [], []
 for o in range(NOBJ):
     ii = torch.nonzero(OBJ == o).squeeze(1)
     Xo = X0[ii]
-    surf = X0[ii[:NG1]]
+    surf = X0[_mi[_ok] + o * NEACH]                 # 이 물체의 표면 가우시안 (좌표 대응)
     if a.method == "ours":
         r = rm.Lattice(Xo, h=(2.0 / 100.0) * (2.0 * math.sqrt(2.0)) ** (1.0 / 3.0))
     elif a.method == "phystwin":
