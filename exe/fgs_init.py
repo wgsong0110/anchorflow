@@ -31,6 +31,8 @@ ap.add_argument("--opacity", type=float, default=0.02)
 ap.add_argument("--fill_grid", type=int, default=100)
 ap.add_argument("--fill_dens", type=float, default=100.0)
 ap.add_argument("--fill_search", type=float, default=1.0)
+ap.add_argument("--pot_ray", type=int, default=4, help="찻주전자 채우기 광선 방향 (PG ray_cast_direction)")
+ap.add_argument("--pot_excl", type=int, default=2, help="찻주전자 채우기 제외 방향 (PG search_exclude_direction)")
 ap.add_argument("--fill_only", action="store_true", help="채우기 개수만 보고 끝낸다")
 a = ap.parse_args()
 sys.path.append(a.pg)
@@ -72,8 +74,9 @@ FP = dict(grid_n=a.fill_grid, max_samples=2000000, grid_dx=GL / a.fill_grid, den
           max_particles_per_cell=1, search_exclude_dir=2, ray_cast_dir=4, boundary=None, smooth=True)
 XS, OB, NG = [], [], []
 for o, Q in enumerate((P, T)):
+    fp_ = dict(FP, ray_cast_dir=a.pot_ray, search_exclude_dir=a.pot_excl) if o == 0 else FP
     xf = fill_particles(pos=Q["x"].float().contiguous(), opacity=Q["op"].float().contiguous(),
-                        cov=Q["c6"].float().contiguous(), **FP)
+                        cov=Q["c6"].float().contiguous(), **fp_)
     xf = xf.to(dev).float()
     print(f"[채우기] 물체 {o}: 가우시안 {Q['x'].shape[0]} + 채움 {xf.shape[0] - Q['x'].shape[0]}", flush=True)
     XS.append(xf); OB.append(torch.full((xf.shape[0],), o, dtype=torch.int32)); NG.append(Q["x"].shape[0])
