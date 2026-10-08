@@ -49,6 +49,10 @@ ap.add_argument("--riem_cg", type=int, default=50)
 ap.add_argument("--ls_max", type=int, default=30, help="Armijo 되돌림 최대 횟수")
 ap.add_argument("--riem_lr_max", type=float, default=1e8, help="적응 보폭 상한")
 ap.add_argument("--dbg", action="store_true")
+ap.add_argument("--iso", type=float, default=0.0, help="렌더 공분산을 등방형 (iso × 축 길이 중앙값)² I 로")
+ap.add_argument("--render_npz", default="", help="저장된 결과(npz traj)를 영상으로만 (최적화 없음)")
+ap.add_argument("--old_order", action="store_true",
+                help="render_npz 가 예전 순서(시뮬 입자 앞 N 개 = 가우시안 가정)로 저장된 경우")
 ap.add_argument("--lr", type=float, default=1e-3, help="gaussim Adam")
 ap.add_argument("--k_floor", type=float, default=1e3, help="바닥 관통 벌점 (관성항 대비 배수)")
 ap.add_argument("--k_contact", type=float, default=1e3, help="물체 간 접촉 벌점 (관성항 대비 배수)")
@@ -162,9 +166,10 @@ if RENDER:
     C0[:, 0, 0], C0[:, 0, 1], C0[:, 0, 2] = c6[:, 0], c6[:, 1], c6[:, 2]
     C0[:, 1, 1], C0[:, 1, 2], C0[:, 2, 2] = c6[:, 3], c6[:, 4], c6[:, 5]
     C0[:, 1, 0], C0[:, 2, 0], C0[:, 2, 1] = c6[:, 1], c6[:, 2], c6[:, 4]
+    C0_ALL, SHS_ALL, OPA_ALL = C0, gs.get_features[KIDX].detach(), gs.get_opacity[KIDX].detach()
     C0 = C0.repeat(NOBJ, 1, 1)
-    SHS = gs.get_features[KIDX].detach().repeat(NOBJ, 1, 1)
-    OPA = gs.get_opacity[KIDX].detach().repeat(NOBJ, 1)
+    SHS = SHS_ALL.repeat(NOBJ, 1, 1)
+    OPA = OPA_ALL.repeat(NOBJ, 1)
     cam = json.load(open(f"{mp}/cameras.json"))[0]
     Rw, pos = np.array(cam["rotation"]), np.array(cam["position"])
     W2C = np.linalg.inv(np.block([[Rw, pos[:, None]], [np.zeros((1, 3)), np.ones((1, 1))]]))
@@ -179,14 +184,23 @@ if RENDER:
         prefiltered=False, debug=False))
     WR = imageio.get_writer(a.video, fps=30, codec="libx264", quality=8)
 
-    def render(Pg, Fg):
-        Pm = to_model(Pg, OBJ[GI])
-        cov = Fg @ C0 @ Fg.transpose(1, 2)
+    _SMED = float(gs.get_scaling[KIDX].detach().median())
+
+    def render(Pg, Fg, gidx=None, obj=None):
+        """gidx: 그릴 가우시안의 모델 번호 순서 (KIDX 안 위치), obj: 각 점의 물체 번호."""
+        sh = SHS if gidx is None else SHS_ALL[gidx]
+        op = OPA if gidx is None else OPA_ALL[gidx]
+        c0 = C0 if gidx is None else C0_ALL[gidx]
+        Pm = to_model(Pg, OBJ[GI] if obj is None else obj)
+        if a.iso > 0:
+            cov = torch.eye(3, device=dev).expand(Pg.shape[0], 3, 3) * (a.iso * _SMED) ** 2
+        else:
+            cov = Fg @ c0 @ Fg.transpose(1, 2)
         c6_ = torch.stack([cov[:, 0, 0], cov[:, 0, 1], cov[:, 0, 2], cov[:, 1, 1], cov[:, 1, 2],
                            cov[:, 2, 2]], 1)
         with torch.no_grad():
-            img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=SHS, colors_precomp=None,
-                       opacities=OPA, scales=None, rotations=None, cov3D_precomp=c6_)[0]
+            img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=sh, colors_precomp=None,
+                       opacities=op, scales=None, rotations=None, cov3D_precomp=c6_)[0]
         WR.append_data((img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
 
 if a.render_ref:                                               # 기준 궤적만 영상으로
@@ -198,6 +212,42 @@ if a.render_ref:                                               # 기준 궤적�
         render(x[GI], Fr[GI])
     WR.close()
     print(f"[기준 영상] {a.video}", flush=True)
+    raise SystemExit(0)
+
+if a.render_npz:                                               # 저장된 결과를 영상으로만
+    Zr = np.load(a.render_npz)
+    TR = torch.as_tensor(Zr["traj"].astype(np.float32), device=dev)         # [T, n, 3]
+    if a.old_order:
+        # 예전 판은 물체마다 시뮬 입자 앞 n0 개를 가우시안으로 가정해 저장했다 -> 그 입자들을 좌표로 모델에 짝짓는다
+        n0 = TR.shape[1] // NOBJ
+        GIo = torch.cat([torch.arange(n0, device=dev) + o * NEACH for o in range(NOBJ)])
+        P0 = X0[GIo] - SHIFT[OBJ[GIo]]
+        dd, jj = [], []
+        for _s in range(0, P0.shape[0], 8192):
+            _d, _j = torch.cdist(P0[_s:_s + 8192], _TP.to(dev)).min(1); dd.append(_d); jj.append(_j)
+        dd, jj = torch.cat(dd), torch.cat(jj)
+        keep = dd < 1e-4
+        sel, gidx, ob = torch.nonzero(keep).squeeze(1), jj[keep], OBJ[GIo][keep]
+        # jj 는 _TP(=KIDX 전체 순서) 안 위치. KIDX 는 일치 집합으로 줄었으니 원래 순서 배열로 다시 만든다
+        _full = torch.nonzero(_op > float(cfg.get("opacity_threshold", 0.02))).squeeze(1)
+        SHS_ALL, OPA_ALL = gs.get_features[_full].detach(), gs.get_opacity[_full].detach()
+        _c6 = gs.get_covariance()[_full].detach()
+        C0_ALL = torch.zeros(_full.numel(), 3, 3, device=dev)
+        C0_ALL[:, 0, 0], C0_ALL[:, 0, 1], C0_ALL[:, 0, 2] = _c6[:, 0], _c6[:, 1], _c6[:, 2]
+        C0_ALL[:, 1, 1], C0_ALL[:, 1, 2], C0_ALL[:, 2, 2] = _c6[:, 3], _c6[:, 4], _c6[:, 5]
+        C0_ALL[:, 1, 0], C0_ALL[:, 2, 0], C0_ALL[:, 2, 1] = _c6[:, 1], _c6[:, 2], _c6[:, 4]
+        print(f"[예전 순서] 저장 점 {GIo.numel()} 중 모델 가우시안과 일치 {int(keep.sum())}", flush=True)
+        I3 = torch.eye(3, device=dev).expand(int(keep.sum()), 3, 3)
+        render(X0[GIo][keep], I3, gidx, ob)
+        for t in range(TR.shape[0]):
+            render(TR[t][keep], I3, gidx, ob)
+    else:
+        I3 = torch.eye(3, device=dev).expand(TR.shape[1], 3, 3)
+        render(X0[GI], I3)
+        for t in range(TR.shape[0]):
+            render(TR[t], I3)
+    WR.close()
+    print(f"[결과 영상] {a.video}", flush=True)
     raise SystemExit(0)
 
 # ---------------------------------------------------------------- 표현 (물체마다)
