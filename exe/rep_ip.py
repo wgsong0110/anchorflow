@@ -127,31 +127,33 @@ if NOBJ > 1:
     del c
 
 
-# 시뮬 입자 중 가우시안 찾기: PG 채우기는 경계 상자 밖 가우시안을 버리고 순서를 바꿀 수 있어
-# (ficus 렌더가 망가졌다) 번호를 가정하지 않고 좌표로 짝을 맞춘다 (같은 점이면 거리 ~0)
+# 가우시안 ↔ 시뮬 입자: 가우시안마다 가장 가까운 시뮬 입자(정확한 거리)에 붙이고 상대 위치를 그 입자의 F 로 옮긴다
+#   x_g = x_p + F_p (X_g - X_p).  lego·mic 는 채움 캐시 앞부분이 가우시안 그대로라 상대 위치 0 (같은 번호),
+#   ficus 는 캐시가 가우시안을 반 칸 안에서 옮겨 두어 (중앙값 6e-4) 번호 대응이 깨졌었다.
 _X0o = X0[:NEACH] - SHIFT[0]
 _mi, _md = [], []
 for _s in range(0, _TP.shape[0], 8192):
     _d, _j = torch.cdist(_TP[_s:_s + 8192].to(dev), _X0o, compute_mode="donot_use_mm_for_euclid_dist").min(1)
     _md.append(_d); _mi.append(_j)
 _md, _mi = torch.cat(_md), torch.cat(_mi)
-_ok = _md < 1e-5                        # 같은 점이면 정확히 0 (행렬곱 cdist 는 ~5e-4 오차라 쓰지 않는다)
-KIDX = KIDX[_ok]
 NG1 = KIDX.numel()
-GI = torch.cat([_mi[_ok] + o * NEACH for o in range(NOBJ)])     # 전체 중 가우시안 번호
-print(f"[가우시안 대응] 불투명도 통과 {_TP.shape[0]} 중 시뮬 입자와 일치 {NG1} (최대 거리 {float(_md[_ok].max()):.2e})",
+GI = torch.cat([_mi + o * NEACH for o in range(NOBJ)])          # 각 가우시안이 붙은 입자 번호 (전체 배열)
+OFFG = (_TP.to(dev) - _X0o[_mi]).repeat(NOBJ, 1)                # 정지 상대 위치
+print(f"[가우시안 대응] {NG1} 개, 붙은 입자까지 거리 중앙 {float(_md.median()):.2e} 최대 {float(_md.max()):.2e}",
       flush=True)
-if a.dbg:
-    _q = torch.quantile(_md[~_ok][:100000].float(), torch.tensor([0.0, 0.1, 0.5, 0.9, 1.0], device=dev)) if (~_ok).any() else None
-    print(f"  안 맞는 가우시안 거리 분위수 (0/10/50/90/100%): {None if _q is None else [f'{v:.2e}' for v in _q.tolist()]}  "
-          f"dx {dx:.4f}", flush=True)
+
+
+def gpos(xall, Fall):
+    """가우시안 위치 = 붙은 입자 위치 + 그 입자 F · 정지 상대 위치."""
+    return xall[GI] + (Fall[GI] @ OFFG[..., None]).squeeze(-1)
 
 
 def to_model(P, ob):
     return (P - SHIFT[ob] - 1.0) / SO + MEAN
 
 
-L = float((X0[GI].max(0).values - X0[GI].min(0).values).norm())   # 고정 정규화 상수
+_G0 = X0[GI] + OFFG
+L = float((_G0.max(0).values - _G0.min(0).values).norm())   # 고정 정규화 상수
 print(f"[장면] {a.shape} 입자 {N} (물체 {NOBJ}, 가우시안 {GI.numel()})  h {h:.5f}  재질 "
       f"{cfg['material']}  질량합 {MSUM:.4f}  바닥 {ZF}  지름 L {L:.4f}", flush=True)
 
@@ -209,7 +211,7 @@ if a.render_ref:                                               # 기준 궤적�
         Fr = rd(files[t], "F")
         Fr = torch.eye(3, device=dev).expand(N, 3, 3) if Fr is None else \
             torch.as_tensor(Fr.reshape(-1, 3, 3), dtype=torch.float32, device=dev)
-        render(x[GI], Fr[GI])
+        render(gpos(x, Fr), Fr[GI])
     WR.close()
     print(f"[기준 영상] {a.video}", flush=True)
     raise SystemExit(0)
@@ -243,7 +245,7 @@ if a.render_npz:                                               # 저장된 결�
             render(TR[t][keep], I3, gidx, ob)
     else:
         I3 = torch.eye(3, device=dev).expand(TR.shape[1], 3, 3)
-        render(X0[GI], I3)
+        render(_G0, I3)
         for t in range(TR.shape[0]):
             render(TR[t], I3)
     WR.close()
@@ -255,7 +257,7 @@ reps, idx = [], []
 for o in range(NOBJ):
     ii = torch.nonzero(OBJ == o).squeeze(1)
     Xo = X0[ii]
-    surf = X0[_mi[_ok] + o * NEACH]                 # 이 물체의 표면 가우시안 (좌표 대응)
+    surf = _TP.to(dev) + SHIFT[o]                   # 이 물체의 표면 가우시안 (정지 위치)
     if a.method == "ours":
         r = rm.Lattice(Xo, h=(2.0 / 100.0) * (2.0 * math.sqrt(2.0)) ** (1.0 / 3.0))
     elif a.method == "phystwin":
@@ -335,7 +337,7 @@ rows, PHYS, TRAJ, IPV, NBAD = [], [], [], [], []
 EMDP = []
 t0 = time.time()
 if RENDER:
-    render(X0[GI], Fcum[GI])
+    render(gpos(X0, Fcum), Fcum[GI])
 for t in range(1, a.frames + 1):
     if REB:
         REP.rebind(xn)
@@ -423,7 +425,10 @@ for t in range(1, a.frames + 1):
         vn = (x1 - xn) / h
         xn = x1
         ref = torch.as_tensor(rd(files[t], "x"), dtype=torch.float32, device=dev)
-        yg, rg = xn[GI], ref[GI]
+        Fr_ = rd(files[t], "F")
+        Fr_ = torch.eye(3, device=dev).expand(N, 3, 3) if Fr_ is None else \
+            torch.as_tensor(Fr_.reshape(-1, 3, 3), dtype=torch.float32, device=dev)
+        yg, rg = gpos(xn, Fcum), gpos(ref, Fr_)
         ok = torch.isfinite(rg).all(1)                      # 기준 시뮬이 격리(발산)한 입자는 뺀다
         rmse = float(((yg[ok] - rg[ok]) ** 2).sum(1).mean().sqrt()) / L
         NBAD.append(int((~ok).sum()))
