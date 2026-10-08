@@ -133,7 +133,10 @@ if NOBJ > 1:
 _X0o = X0[:NEACH] - SHIFT[0]
 _mi, _md = [], []
 for _s in range(0, _TP.shape[0], 8192):
-    _d, _j = torch.cdist(_TP[_s:_s + 8192].to(dev), _X0o, compute_mode="donot_use_mm_for_euclid_dist").min(1)
+    _P = _TP[_s:_s + 8192].to(dev)                                 # 행렬곱 cdist 로 후보 8 개 -> 직접 거리
+    _c = torch.cdist(_P, _X0o).topk(8, largest=False).indices
+    _dd = (_P[:, None] - _X0o[_c]).norm(dim=-1)
+    _d, _k = _dd.min(1); _j = _c.gather(1, _k[:, None]).squeeze(1)
     _md.append(_d); _mi.append(_j)
 _md, _mi = torch.cat(_md), torch.cat(_mi)
 NG1 = KIDX.numel()
@@ -226,7 +229,9 @@ if a.render_npz:                                               # 저장된 결�
         P0 = X0[GIo] - SHIFT[OBJ[GIo]]
         dd, jj = [], []
         for _s in range(0, P0.shape[0], 8192):
-            _d, _j = torch.cdist(P0[_s:_s + 8192], _TP.to(dev), compute_mode="donot_use_mm_for_euclid_dist").min(1); dd.append(_d); jj.append(_j)
+            _P = P0[_s:_s + 8192]; _c = torch.cdist(_P, _TP.to(dev)).topk(8, largest=False).indices
+            _dd = (_P[:, None] - _TP.to(dev)[_c]).norm(dim=-1); _d, _k = _dd.min(1)
+            dd.append(_d); jj.append(_c.gather(1, _k[:, None]).squeeze(1))
         dd, jj = torch.cat(dd), torch.cat(jj)
         keep = dd < 1e-5
         sel, gidx, ob = torch.nonzero(keep).squeeze(1), jj[keep], OBJ[GIo][keep]
