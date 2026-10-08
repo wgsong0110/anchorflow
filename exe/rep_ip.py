@@ -156,8 +156,13 @@ def gpos(xall, Fall):
     return xall[GI] + (Fall[GI] @ OFFG[..., None]).squeeze(-1)
 
 
+# 렌더용: 모든 물체에 **같은** 이동을 빼서 시뮬 배치(서로 떨어진 두 물체)를 그대로 둔다.
+#   예전에는 물체마다 SHIFT[o] 를 빼서 두 물체가 처음부터 모델 원점에 겹쳐 그려졌다 (시뮬은 1.0 떨어져 있었다).
+SHIFT_R = SHIFT.mean(0)
+
+
 def to_model(P, ob):
-    return (P - SHIFT[ob] - 1.0) / SO + MEAN
+    return (P - SHIFT_R - 1.0) / SO + MEAN
 
 
 _G0 = X0[GI] + OFFG
@@ -183,6 +188,14 @@ if RENDER:
     OPA = OPA_ALL.repeat(NOBJ, 1)
     cam = json.load(open(f"{mp}/cameras.json"))[0]
     Rw, pos = np.array(cam["rotation"]), np.array(cam["position"])
+    if NOBJ > 1:
+        # 두 물체가 다 들어오게 카메라를 모델 중심에서 바라보는 방향 그대로 뒤로 뺀다 (배율 = 전체 폭 / 한 물체 폭)
+        _span1 = float((X0[OBJ == 0].max(0).values - X0[OBJ == 0].min(0).values).max())
+        _spanA = float((X0.max(0).values - X0.min(0).values).max())
+        _k = 1.1 * _spanA / _span1
+        _ctr = MEAN.detach().cpu().numpy().astype(np.float64)
+        pos = _ctr + _k * (pos - _ctr)
+        print(f"[카메라] 두 물체가 들어오게 {_k:.2f} 배 뒤로", flush=True)
     W2C = np.linalg.inv(np.block([[Rw, pos[:, None]], [np.zeros((1, 3)), np.ones((1, 1))]]))
     fx_ = 2 * math.atan(cam["width"] / (2 * cam["fx"])); fy_ = 2 * math.atan(cam["height"] / (2 * cam["fy"]))
     wv = torch.tensor(getWorld2View2(W2C[:3, :3].T, W2C[:3, 3])).transpose(0, 1).to(dev).float()
