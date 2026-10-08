@@ -78,6 +78,27 @@ for o, Q in enumerate((P, T)):
     print(f"[채우기] 물체 {o}: 가우시안 {Q['x'].shape[0]} + 채움 {xf.shape[0] - Q['x'].shape[0]}", flush=True)
     XS.append(xf); OB.append(torch.full((xf.shape[0],), o, dtype=torch.int32)); NG.append(Q["x"].shape[0])
 if a.fill_only:
+    # 진단만: 원본 메쉬(같은 배치)를 1 cm 복셀로 채운 부피와 비교 (채우기에 쓰지 않는다)
+    import trimesh
+    Ylup = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], np.float64)
+    for o, (name, Q, xf) in enumerate((("teapot", P, XS[0]), ("table", T, XS[1]))):
+        meta = json.load(open(f"{a.assets}/{name}_ns/meta.json"))
+        sc = trimesh.load(meta["gltf"]); vs = []
+        for nd in sc.graph.nodes_geometry:
+            if nd not in meta["nodes"]:
+                continue
+            Tm, gk = sc.graph[nd]; m = sc.geometry[gk].copy(); m.apply_transform(Tm); vs.append(m)
+        mm = trimesh.util.concatenate(vs)
+        mm.vertices = (mm.vertices @ Ylup.T - np.array(meta["center_yup_to_zup"])) * (a.teapot_scale if o == 0 else 1.0)
+        # 가우시안과 같은 이동: 두 점구름의 최소 모서리를 맞춘다 (가우시안은 학습 결과라 경계가 조금 다를 수 있다)
+        g0 = Q["x"].cpu().numpy(); mm.vertices += np.median(g0, 0) - np.median(mm.sample(200000), 0)
+        vox = mm.voxelized(0.01).fill(); solid = set(map(tuple, np.floor(vox.points / 0.01).astype(np.int64)))
+        def occ(pts):
+            return set(map(tuple, np.floor(pts / 0.01).astype(np.int64)))
+        og, oa = occ(g0), occ(xf.cpu().numpy())
+        print(f"[진단] {name}: 메쉬 실체 {len(solid)} 칸, 가우시안만 {len(og & solid)} ({100 * len(og & solid) / len(solid):.0f}%), "
+              f"+채움 {len(oa & solid)} ({100 * len(oa & solid) / len(solid):.0f}%), 실체 밖 {len(oa - solid)} 칸, 수밀 {mm.is_watertight}",
+              flush=True)
     raise SystemExit(0)
 X = torch.cat(XS).cpu().numpy().astype(np.float64); OBJ = torch.cat(OB).numpy()
 N = X.shape[0]
