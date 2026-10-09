@@ -37,7 +37,7 @@ frame_dt = float(cfg["frame_dt"]); nsub = int(frame_dt / sub)
 NF = a.frames or int(cfg["frame_num"])
 G = [float(g) for g in cfg["g"]]
 with h5py.File(a.h5) as h:
-    x = np.array(h["x"]); x = (x.T if x.shape[0] == 3 else x).astype(np.float32)
+    x = np.array(h["x"]); x = np.ascontiguousarray((x.T if x.shape[0] == 3 else x).astype(np.float32))
 N = x.shape[0]
 X = torch.as_tensor(x).cuda()
 cell = (X / dx).floor().long(); key = (cell[:, 0] * n_grid + cell[:, 1]) * n_grid + cell[:, 2]
