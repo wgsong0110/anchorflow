@@ -689,6 +689,7 @@ def dump(f):
         h.create_dataset("x", data=x.to_numpy().T.astype(np.float32))
         h.create_dataset("v", data=v.to_numpy().T.astype(np.float32))
         h.create_dataset("time", data=np.array([[f * frame_dt]]))
+        h.create_dataset("F", data=F.to_numpy().reshape(-1, 9).astype(np.float32))   # 영상 공분산용
 
 
 STATE = os.path.join(a.out, "state_last.h5")

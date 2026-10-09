@@ -22,6 +22,8 @@ ap.add_argument("--sim", required=True, help="h5 프레임 폴더 (GF: x + f_ten
 ap.add_argument("--out", required=True)
 ap.add_argument("--fps", type=int, default=32)
 ap.add_argument("--frames", type=int, default=0)
+ap.add_argument("--meta", default="", help="여러 벌 장면 (wm_pair_init.py 의 meta.json): 벌마다 시뮬 이동량")
+ap.add_argument("--radius_scale", type=float, default=1.0, help="카메라 반경 배수 (여러 벌이 다 들어오게)")
 a = ap.parse_args()
 sys.path.insert(0, a.gf); sys.path.insert(1, os.path.join(a.gf, "gaussian-splatting"))
 os.chdir(a.gf)
@@ -73,15 +75,23 @@ if a.frames:
     fs = fs[:a.frames + 1]
 with h5py.File(fs[0], "r") as h:
     x0 = np.array(h["x"]); x0 = x0.T if x0.shape[0] == 3 else x0
-d0 = float(np.abs(x0[:gs_num] - tp.cpu().numpy()).max())
-print(f"[대응] 가우시안 {gs_num}, 입자 {x0.shape[0]}, 0 프레임 앞 {gs_num} 입자와 가우시안 위치 차이 최대 {d0:.2e}", flush=True)
+import json as _js
+SHIFTS = np.array(_js.load(open(a.meta))["shifts"]) if a.meta else np.zeros((1, 3))
+K = len(SHIFTS); NP1 = x0.shape[0] // K
+SC = SHIFTS.mean(0)                                                # 모든 벌에 같은 이동을 빼서 상대 배치를 그대로 둔다
+GIDX = np.concatenate([np.arange(gs_num) + k * NP1 for k in range(K)])
+for k in range(K):
+    d0 = float(np.abs(x0[k * NP1:k * NP1 + gs_num] - SHIFTS[k] - tp.cpu().numpy()).max())
+    print(f"[대응] 벌 {k}: 가우시안 {gs_num}, 입자 {NP1}, 0 프레임 가우시안 위치 차이 최대 {d0:.2e}", flush=True)
+init_shs = init_shs.repeat(K, 1, 1) if init_shs.dim() == 3 else init_shs.repeat(K, 1)
+init_opacity = init_opacity.repeat(K, 1); C0 = C0.repeat(K, 1, 1)
 WR = imageio.get_writer(a.out, fps=a.fps, codec="libx264", quality=8)
 fr_dir = os.path.splitext(a.out)[0] + "_frames"; os.makedirs(fr_dir, exist_ok=True)
 for t, fp in enumerate(fs):
     with h5py.File(fp, "r") as h:
         x = np.array(h["x"]); x = x.T if x.shape[0] == 3 else x
         F = np.array(h["f_tensor"] if "f_tensor" in h else h["F"]).reshape(-1, 3, 3)
-    X = torch.as_tensor(x[:gs_num], device=dev).float(); Fg = torch.as_tensor(F[:gs_num], device=dev).float()
+    X = torch.as_tensor(x[GIDX] - SC, device=dev).float(); Fg = torch.as_tensor(F[GIDX], device=dev).float()
     ok = torch.isfinite(X).all(1) & torch.isfinite(Fg).all(2).all(1)
     cov = Fg @ C0 @ Fg.transpose(1, 2)
     c6 = torch.stack([cov[:, 0, 0], cov[:, 0, 1], cov[:, 0, 2], cov[:, 1, 1], cov[:, 1, 2], cov[:, 2, 2]], 1)
@@ -92,7 +102,7 @@ for t, fp in enumerate(fs):
     cam = get_camera_view(a.model_path, default_camera_index=camera_params["default_camera_index"],          # noqa: F405
                           center_view_world_space=vc, observant_coordinates=oc, show_hint=camera_params["show_hint"],
                           init_azimuthm=camera_params["init_azimuthm"], init_elevation=camera_params["init_elevation"],
-                          init_radius=camera_params["init_radius"], move_camera=camera_params["move_camera"],
+                          init_radius=camera_params["init_radius"] * a.radius_scale, move_camera=camera_params["move_camera"],
                           current_frame=t, delta_a=camera_params["delta_a"], delta_e=camera_params["delta_e"],
                           delta_r=camera_params["delta_r"], width=600, height=600)
     rast = initialize_resterize(cam, gaussians, pipeline, background)          # noqa: F405
