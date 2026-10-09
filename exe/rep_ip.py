@@ -74,7 +74,7 @@ torch.manual_seed(0)
 
 cfg = json.load(open(a.cfg))
 files = sorted(glob.glob(os.path.join(a.sim, "sim_*.h5")))
-assert len(files) > a.frames, f"기준 프레임 부족: {len(files)}"
+assert a.no_ref or len(files) > a.frames, f"기준 프레임 부족: {len(files)}"
 
 
 def rd(p, k):
