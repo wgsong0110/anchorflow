@@ -37,10 +37,29 @@ from utils.transformation_utils import *                         # noqa: E402,F4
 from utils.camera_view_utils import *                            # noqa: E402,F403
 from utils.render_utils import *                                 # noqa: E402,F403
 
+from scene.gaussian_model import GaussianModel                   # noqa: E402
+from utils.system_utils import searchForMaxIteration             # noqa: E402
+
+
+class PipelineParamsNoparse:                                     # GF gs_simulation.py 와 같다
+    def __init__(self):
+        self.convert_SHs_python = False
+        self.compute_cov3D_python = False
+        self.debug = False
+
+
+def load_checkpoint(model_path, sh_degree=3, iteration=-1):      # GF gs_simulation.py 와 같다
+    d = os.path.join(model_path, "point_cloud")
+    if iteration == -1:
+        iteration = searchForMaxIteration(d)
+    g = GaussianModel(sh_degree); g.load_ply(os.path.join(d, f"iteration_{iteration}", "point_cloud.ply"))
+    return g
+
+
 dev = "cuda"
 material_params, bc_params, time_params, pp, camera_params = decode_param_json(a.config)
-gaussians = load_checkpoint(a.model_path)                        # noqa: F405
-pipeline = PipelineParamsNoparse(); pipeline.compute_cov3D_python = True   # noqa: F405
+gaussians = load_checkpoint(a.model_path)
+pipeline = PipelineParamsNoparse(); pipeline.compute_cov3D_python = True
 background = torch.tensor([1, 1, 1], dtype=torch.float32, device=dev)
 params = load_params_from_gs(gaussians, pipeline)                # noqa: F405
 init_pos, init_cov, init_opacity, init_shs = params["pos"], params["cov3D_precomp"], params["opacity"], params["shs"]

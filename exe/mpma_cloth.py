@@ -51,6 +51,7 @@ parser.add_argument("--angle", type=float, default=60.0)
 parser.add_argument("--frames", type=int, default=50, help="25 fps")
 parser.add_argument("--out_dir", required=True)
 parser.add_argument("--skip_render", action="store_true")
+parser.add_argument("--render_only", action="store_true", help="저장된 sim_verts.pt 로 렌더만")
 parser.add_argument("--dump_only", action="store_true", help="초기 상태(입자·고정점·축)만 저장하고 끝 (PG 비교용)")
 args = parser.parse_args(sys.argv[1:])
 A = lp.extract(args); PIPE = pp.extract(args)
@@ -227,7 +228,10 @@ def full_verts(cloth_w):
 
 
 all_verts = [full_verts(init_w).detach()]
-for i in tqdm(range(args.frames), desc="시뮬"):
+_frames = 0 if args.render_only else args.frames
+if args.render_only:
+    all_verts = list(torch.load(f"{OUT}/sim_verts.pt")["verts"].cuda())
+for i in tqdm(range(_frames), desc="시뮬"):
     for s in range(A.substep):
         solver.p2g2p(mpm_model, mpm_state, sub, mesh_x=body_x_t, mesh_v=body_v_t, joint_traditional_v=None,
                      joint_verts_v=jv0, joint_faces_v=jf0, device=dev)
@@ -245,7 +249,7 @@ if args.skip_render:
     raise SystemExit(0)
 
 # ------------------------------------------------------------------ 렌더 (demo 그대로: Blender AO -> shadow_net, 카메라는 고정)
-rc = os.system(f"{os.environ.get('BLENDER', 'blender')} -b -P blender/bake.py -- --output_path {OUT} > {OUT}/bake.log 2>&1")
+rc = os.system(f"LD_LIBRARY_PATH={os.environ.get('BLENDER_LIB', '')} {os.environ.get('BLENDER', 'blender')} -b -P blender/bake.py -- --output_path {OUT} > {OUT}/bake.log 2>&1")
 print(f"[AO 굽기] rc={rc}", flush=True)
 ao = [np.array(Image.open(p).convert("L")).astype(np.float32) / 255. for p in sorted(glob(os.path.join(OUT, "aomap/*.png")))]
 ao = torch.from_numpy(np.array(ao)).unsqueeze(1).contiguous().float().cuda()

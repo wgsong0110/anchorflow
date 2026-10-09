@@ -163,8 +163,16 @@ else:
     with torch.no_grad():
         for i in range(T["x"].shape[0]):
             X = (T["x"][i].cuda() - shf) / sc; C = T["cov"][i].cuda() / (sc * sc)
+            Cm = torch.zeros(C.shape[0], 3, 3, device="cuda")
+            Cm[:, 0, 0], Cm[:, 0, 1], Cm[:, 0, 2], Cm[:, 1, 1], Cm[:, 1, 2], Cm[:, 2, 2] = C.T
+            Cm[:, 1, 0], Cm[:, 2, 0], Cm[:, 2, 1] = C[:, 1], C[:, 2], C[:, 4]
+            ev, Q = torch.linalg.eigh(Cm)
+            Q = Q * torch.sign(torch.linalg.det(Q))[:, None, None]          # 회전 (det +1)
+            from roma import rotmat_to_unitquat, quat_xyzw_to_wxyz
+            rq = quat_xyzw_to_wxyz(rotmat_to_unitquat(Q))
+            sc_ = ev.clamp_min(1e-12).sqrt()
             out = rast(means3D=X, means2D=torch.zeros_like(X), shs=None, colors_precomp=col, opacities=op,
-                       scales=None, rotations=None, cov3Ds_precomp=C)
+                       scales=sc_, rotations=rq, cov3Ds_precomp=None)
             img, mask = out[0], out[3]
             img = img * torch.exp(gaussians.cam_m[cam_idx])[:, None, None] + gaussians.cam_c[cam_idx][:, None, None]
             img = img * mask + (1.0 - mask)
