@@ -32,6 +32,8 @@ ap.add_argument("--substep", type=int, default=400)
 ap.add_argument("--n_grid", type=int, default=250)
 ap.add_argument("--res", type=int, default=800)
 ap.add_argument("--E_mul", type=float, default=1.0, help="E 배수 (두 솔버 같게). 저자 학습값 414.8 은 한쪽만 매단 깃발엔 너무 무르다")
+ap.add_argument("--H", type=float, default=0.9562, help="MPMAvatar 정지 모양 높이 배율 (저자 학습값; 1 이면 끔)")
+ap.add_argument("--joint_faces", action="store_true", help="MPMAvatar: 고정 꼭짓점에 닿은 삼각형도 고정 (아바타 규약)")
 ap.add_argument("--pin_grid", action="store_true", help="PG: 깃대 쪽 띠의 격자 속도를 0 으로 (PG 공식 cuboid 경계조건)")
 a = ap.parse_args()
 import numpy as np                                               # noqa: E402
@@ -43,7 +45,7 @@ W_, H_, NX, NZ, POLE = 1.5, 1.0, 90, 60, 2.2
 Z0 = POLE - H_ - 0.05
 SC = 0.8
 SHIFT = np.array([1.0, 1.0, 1.0]) - SC * np.array([W_ / 2, 0.0, POLE / 2])
-D_, E_, Hs = 0.854, 414.8 * a.E_mul, 0.9562
+D_, E_, Hs = 0.854, 414.8 * a.E_mul, a.H
 NU, GAM, KAP = 0.3, 500.0, 500.0
 
 
@@ -132,6 +134,10 @@ elif a.stage == "mpma":
     inv = np.empty_like(order); inv[order] = np.arange(len(order))
     Vr, Fr = V[order], inv[F]
     nj = int(pin.sum())
+    njf = 0
+    if a.joint_faces:                                              # 고정 꼭짓점에 닿은 삼각형을 앞으로 (공식 joint 면 규약)
+        jf = (Fr < nj).any(1)
+        Fr = np.concatenate([Fr[jf], Fr[~jf]]); njf = int(jf.sum())
     verts = torch.as_tensor(Vr * SC + SHIFT, device=dev).float(); faces = torch.as_tensor(Fr, device=dev).long()
 
     def dir_vol(v, f, th=1e-5):
@@ -158,7 +164,7 @@ elif a.stage == "mpma":
     st.from_torch(pos0.clone(), torch.cat([ev, vv]).clone(), torch.linalg.inv(d0), rinv(verts, faces), faces.int(), pt, pv, pe,
                   torch.zeros(ne, 6, device=dev), device="cuda:0", requires_grad=False, n_grid=a.n_grid, grid_lim=2.0)
     md = MPMModelStruct(); md.init(n, device="cuda:0", requires_grad=False); md.init_other_params(n_grid=a.n_grid, grid_lim=2.0, device="cuda:0")
-    sol = MPMWARP(n, ne, nv, n_grid=a.n_grid, grid_lim=2.0, num_joint_t=0, num_joint_v=nj, num_joint_f=0, device="cuda:0")
+    sol = MPMWARP(n, ne, nv, n_grid=a.n_grid, grid_lim=2.0, num_joint_t=0, num_joint_v=nj, num_joint_f=njf, device="cuda:0")
     sol.set_parameters_dict(md, st, {"material": "sand", "g": [0.0, 0.0, -9.8], "density": 1.0, "grid_v_damping_scale": 1.1,
                                      "friction_angle": 40.0})
     one = torch.ones(n, device=dev)
@@ -172,12 +178,13 @@ elif a.stage == "mpma":
     if a.mode == "a":
         vel[:, 1] = a.vel * SC
         vel[ne:ne + nj] = 0.0
+        vel[:njf] = 0.0
     st.reset_state(nv, pos0.clone(), d0.clone(), None, vel.clone(), tensor_R_inv=R_inv.clone(), device="cuda:0", requires_grad=False)
     st.reset_density((one * D_).clone(), None, "cuda:0", update_mass=True)
     sol.set_E_nu_from_torch(md, one * E_, one * NU, one * GAM, one * KAP, "cuda:0")
     sol.prepare_mu_lam(md, st, "cuda:0")
     sub = (1.0 / 25) / a.substep
-    jv = torch.zeros(nj, 3, device=dev); jf = torch.zeros(0, 3, device=dev)
+    jv = torch.zeros(nj, 3, device=dev); jf = torch.zeros(njf, 3, device=dev)
     traj = [verts.cpu()]
     for f in tqdm(range(a.frames), desc=f"MPMAvatar {a.mode}"):
         for s in range(a.substep):
