@@ -51,6 +51,7 @@ if a.stage in ("dump", "render"):
     num_joint_f = int(split_idx["num_joint_f"])
     cam = scene.test_dataset.camera_list[0]; cam_idx = scene.test_camera_index[0]
 
+torch.set_grad_enabled(False)
 if a.stage == "dump":
     st = torch.load(f"{a.work}/../init_state.pt")              # mpma_cloth --dump_only 결과 (축·회전 기준)
     verts0 = (gaussians.verts_orig[0] + gaussians.verts_offset[0]).detach()

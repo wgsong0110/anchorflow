@@ -226,13 +226,13 @@ def full_verts(cloth_w):
     return v
 
 
-all_verts = [full_verts(init_w)]
+all_verts = [full_verts(init_w).detach()]
 for i in tqdm(range(args.frames), desc="시뮬"):
     for s in range(A.substep):
         solver.p2g2p(mpm_model, mpm_state, sub, mesh_x=body_x_t, mesh_v=body_v_t, joint_traditional_v=None,
                      joint_verts_v=jv0, joint_faces_v=jf0, device=dev)
     pos = wp.to_torch(mpm_state.particle_x).clone()
-    cw = sim2wld(pos[n_elements:])
+    cw = sim2wld(pos[n_elements:]).detach()
     if not torch.isfinite(cw).all():
         print(f"[발산] 프레임 {i + 1}", flush=True); break
     all_verts.append(full_verts(cw))
@@ -249,7 +249,8 @@ rc = os.system(f"{os.environ.get('BLENDER', 'blender')} -b -P blender/bake.py --
 print(f"[AO 굽기] rc={rc}", flush=True)
 ao = [np.array(Image.open(p).convert("L")).astype(np.float32) / 255. for p in sorted(glob(os.path.join(OUT, "aomap/*.png")))]
 ao = torch.from_numpy(np.array(ao)).unsqueeze(1).contiguous().float().cuda()
-prune_faces(gaussians, os.path.join(A.dataset_dir, "demo/a1_prune_f_idx.npy"))
+with torch.no_grad():
+    prune_faces(gaussians, os.path.join(A.dataset_dir, "demo/a1_prune_f_idx.npy"))
 cam = scene.test_dataset.camera_list[0]; cam_idx = scene.test_camera_index[0]
 bg = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
 imgdir = os.path.join(OUT, "frames"); os.makedirs(imgdir, exist_ok=True)
