@@ -23,6 +23,10 @@ sys.path.insert(0, MP)
 os.chdir(MP)
 
 import numpy as np                                               # noqa: E402
+try:
+    import imageio_ffmpeg as _iff; FFMPEG = _iff.get_ffmpeg_exe()
+except Exception:
+    FFMPEG = "ffmpeg"
 import torch                                                     # noqa: E402
 import torch.nn.functional as F                                  # noqa: E402
 from PIL import Image                                            # noqa: E402
@@ -73,7 +77,7 @@ new_cloth_faces = torch.tensor(split_idx["new_cloth_faces"]).long().cuda()
 new_human_faces = torch.tensor(split_idx["new_human_faces"]).long().cuda()
 gaussians = MeshGaussianModel(A.sh_degree, device="cuda")
 scene = Scene(A, gaussians, return_type="image", device="cuda", load_timestep=-1)
-verts0 = (gaussians.verts_orig + gaussians.verts_offset)[0].detach()          # 학습 프레임 460 메쉬
+verts0 = (gaussians.verts_orig[0] + gaussians.verts_offset[0]).detach()          # 학습 프레임 460 메쉬
 best = {k: v for k, v in np.load(os.path.join(A.dataset_dir, "demo/a1_phys_param.npz")).items()}
 D_, E_, H_ = float(best["D"]), float(best["E"]), float(best["H"])
 print(f"[물성] 저자 학습값 D {D_:.4g}  E {E_:.4g}  H {H_:.4g} | 기본값 ν {A.init_nu} γ {A.init_gamma} κ {A.init_kappa} "
@@ -259,6 +263,6 @@ with torch.no_grad():
         img = pkg["render"] * torch.exp(gaussians.cam_m[cam_idx])[:, None, None] + gaussians.cam_c[cam_idx][:, None, None]
         img = img * pkg["mask"] + (1.0 - pkg["mask"])
         Image.fromarray((img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).save(f"{imgdir}/{i:04d}.png")
-os.system(f"ffmpeg -y -hide_banner -loglevel error -framerate 25 -i {imgdir}/%04d.png -pix_fmt yuv420p "
+os.system(f"{FFMPEG} -y -hide_banner -loglevel error -framerate 25 -i {imgdir}/%04d.png -pix_fmt yuv420p "
           f"-vf scale='trunc(iw/2)*2:trunc(ih/2)*2' {OUT}/video.mp4")
 print(f"[영상] {OUT}/video.mp4", flush=True)

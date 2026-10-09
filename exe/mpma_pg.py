@@ -28,6 +28,10 @@ ap.add_argument("--n_grid", type=int, default=250)
 a, rest = ap.parse_known_args()
 os.makedirs(a.work, exist_ok=True)
 import numpy as np                                               # noqa: E402
+try:
+    import imageio_ffmpeg as _iff; FFMPEG = _iff.get_ffmpeg_exe()
+except Exception:
+    FFMPEG = "ffmpeg"
 import torch                                                     # noqa: E402
 
 if a.stage in ("dump", "render"):
@@ -49,7 +53,7 @@ if a.stage in ("dump", "render"):
 
 if a.stage == "dump":
     st = torch.load(f"{a.work}/../init_state.pt")              # mpma_cloth --dump_only 결과 (축·회전 기준)
-    verts0 = (gaussians.verts_orig + gaussians.verts_offset)[0].detach()
+    verts0 = (gaussians.verts_orig[0] + gaussians.verts_offset[0]).detach()
     gaussians.set_mesh_by_verts(verts0)
     prune_faces(gaussians, os.path.join(A.dataset_dir, "demo/a1_prune_f_idx.npy"))
     xyz = gaussians.get_xyz.detach(); cov = gaussians.get_covariance().detach()
@@ -164,6 +168,6 @@ else:
             img = img * torch.exp(gaussians.cam_m[cam_idx])[:, None, None] + gaussians.cam_c[cam_idx][:, None, None]
             img = img * mask + (1.0 - mask)
             Image.fromarray((img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).save(f"{imgdir}/{i:04d}.png")
-    os.system(f"ffmpeg -y -hide_banner -loglevel error -framerate 25 -i {imgdir}/%04d.png -pix_fmt yuv420p "
+    os.system(f"{FFMPEG} -y -hide_banner -loglevel error -framerate 25 -i {imgdir}/%04d.png -pix_fmt yuv420p "
               f"-vf scale='trunc(iw/2)*2:trunc(ih/2)*2' {a.work}/video.mp4")
     print(f"[영상] {a.work}/video.mp4", flush=True)
