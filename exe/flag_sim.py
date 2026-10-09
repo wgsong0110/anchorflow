@@ -36,6 +36,7 @@ ap.add_argument("--H", type=float, default=0.9562, help="MPMAvatar 정지 모양
 ap.add_argument("--joint_faces", action="store_true", help="MPMAvatar: 고정 꼭짓점에 닿은 삼각형도 고정 (아바타 규약)")
 ap.add_argument("--trace", type=int, default=-1, help="MPMAvatar: 이 프레임부터 서브스텝마다 속도·F 를 기록해 처음 터지는 입자를 찾는다")
 ap.add_argument("--trace_every", type=int, default=10, help="추적 간격 (서브스텝)")
+ap.add_argument("--mp_root", default="/home/dkta/work/MPMAvatar", help="MPMAvatar 코드 위치 (하한 넣은 사본: MPMAvatar_clamp)")
 ap.add_argument("--pin_grid", action="store_true", help="PG: 깃대 쪽 띠의 격자 속도를 0 으로 (PG 공식 cuboid 경계조건)")
 a = ap.parse_args()
 import numpy as np                                               # noqa: E402
@@ -126,7 +127,7 @@ if a.stage == "prep":
     print(f"[저장] {a.work}/prep.pt", flush=True)
 
 elif a.stage == "mpma":
-    MP = "/home/dkta/work/MPMAvatar"; sys.path.insert(0, MP); os.chdir(MP)
+    MP = a.mp_root; sys.path.insert(0, MP); os.chdir(MP)
     import warp as wp
     from tqdm import tqdm
     from warp_mpm.mpm_data_structure import MPMStateStruct, MPMModelStruct
