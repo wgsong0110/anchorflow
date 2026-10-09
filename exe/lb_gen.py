@@ -97,7 +97,7 @@ for f in tqdm(range(1, a.frames + 1), desc=f"lb {a.seed}"):
     for s in range(nsub):
         sol.p2g2p(step, dt); step += 1
     xt = sol.export_particle_x_to_torch()
-    Ft = sol.export_particle_F_to_torch() @ Rt
+    Ft = sol.export_particle_F_to_torch().reshape(N, 3, 3) @ Rt           # PG 는 (N, 9) 로 내보낸다
     if not torch.isfinite(xt).all():
         raise SystemExit(f"[발산] 프레임 {f}")
     dump(f, xt.cpu().numpy(), Ft.cpu().numpy())
