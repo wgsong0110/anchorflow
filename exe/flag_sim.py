@@ -34,6 +34,7 @@ ap.add_argument("--res", type=int, default=800)
 ap.add_argument("--E_mul", type=float, default=1.0, help="E 배수 (두 솔버 같게). 저자 학습값 414.8 은 한쪽만 매단 깃발엔 너무 무르다")
 ap.add_argument("--H", type=float, default=0.9562, help="MPMAvatar 정지 모양 높이 배율 (저자 학습값; 1 이면 끔)")
 ap.add_argument("--joint_faces", action="store_true", help="MPMAvatar: 고정 꼭짓점에 닿은 삼각형도 고정 (아바타 규약)")
+ap.add_argument("--trace", type=int, default=-1, help="MPMAvatar: 이 프레임부터 서브스텝마다 속도·F 를 기록해 처음 터지는 입자를 찾는다")
 ap.add_argument("--pin_grid", action="store_true", help="PG: 깃대 쪽 띠의 격자 속도를 0 으로 (PG 공식 cuboid 경계조건)")
 a = ap.parse_args()
 import numpy as np                                               # noqa: E402
@@ -186,9 +187,32 @@ elif a.stage == "mpma":
     sub = (1.0 / 25) / a.substep
     jv = torch.zeros(nj, 3, device=dev); jf = torch.zeros(njf, 3, device=dev)
     traj = [verts.cpu()]
+    tr_ok = True; X0 = pos0.clone(); V0n = a.vel * SC
+
+    def trace(f, s):                                               # 서브스텝 상태 요약. 처음 터진 입자의 정체를 찍는다
+        x = wp.to_torch(st.particle_x); v = wp.to_torch(st.particle_v); Fm = wp.to_torch(st.particle_F)[:ne]
+        dm = wp.to_torch(st.particle_d)[:ne]; sp = v.norm(dim=1)
+        fn = Fm.reshape(ne, 9).norm(dim=1); dn = dm[:, :, 2].norm(dim=1); det = torch.linalg.det(Fm.double()).float()
+        i = int(sp.argmax()); kind = "면" if i < ne else ("고정꼭짓점" if i < ne + nj else "꼭짓점")
+        p = ((X0[i].double().cpu().numpy() - SHIFT) / SC)
+        bad = (~torch.isfinite(sp)).any() or float(sp.max()) > 20 * V0n
+        print(f"[추적] f{f} s{s} |v|max {float(sp.max()):.3g} ({kind} {i}, 처음 위치 x{p[0]:.2f} z{p[2]:.2f}) "
+              f"|F|max {float(fn.max()):.3g} det min {float(det.min()):.3g} max {float(det.max()):.3g} |d3|max {float(dn.max()):.3g} "
+              f"z min {float(x[:, 2].min()):.3f} y max {float(x[:, 1].max()):.3f}", flush=True)
+        if bad:
+            j = int(fn.argmax()); q = ((X0[j].double().cpu().numpy() - SHIFT) / SC)
+            print(f"[터짐] f{f} s{s}  |F| 최대 면 {j} 처음 위치 x{q[0]:.2f} z{q[2]:.2f}, F=\n{Fm[j].cpu().numpy()}\n d=\n{dm[j].cpu().numpy()}", flush=True)
+            return None
+        return True
     for f in tqdm(range(a.frames), desc=f"MPMAvatar {a.mode}"):
         for s in range(a.substep):
             sol.p2g2p(md, st, sub, joint_traditional_v=None, joint_verts_v=jv, joint_faces_v=jf, device="cuda:0")
+            if 0 <= a.trace <= f and (s % 10 == 0 or not tr_ok):
+                tr_ok = trace(f, s)
+                if tr_ok is None:
+                    break
+        if 0 <= a.trace <= f and tr_ok is None:
+            break
         x = wp.to_torch(st.particle_x)[ne:].clone()
         if not torch.isfinite(x).all():
             print(f"[발산] 프레임 {f + 1}", flush=True); break
