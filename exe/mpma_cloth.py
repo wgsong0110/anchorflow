@@ -18,7 +18,7 @@ import math
 import os
 import sys
 
-MP = "/home/dkta/work/MPMAvatar"
+MP = os.environ.get("AF_MP_ROOT", "/home/dkta/work/MPMAvatar")   # 하한 사본 실험: AF_MP_ROOT=.../MPMAvatar_clamp
 sys.path.insert(0, MP)
 os.chdir(MP)
 
@@ -52,6 +52,7 @@ parser.add_argument("--frames", type=int, default=50, help="25 fps")
 parser.add_argument("--out_dir", required=True)
 parser.add_argument("--skip_render", action="store_true")
 parser.add_argument("--render_only", action="store_true", help="저장된 sim_verts.pt 로 렌더만")
+parser.add_argument("--E_mul", type=float, default=1.0, help="저자 E 배수 (PG 도 init_state 로 같은 값)")
 parser.add_argument("--dump_only", action="store_true", help="초기 상태(입자·고정점·축)만 저장하고 끝 (PG 비교용)")
 args = parser.parse_args(sys.argv[1:])
 A = lp.extract(args); PIPE = pp.extract(args)
@@ -80,7 +81,7 @@ gaussians = MeshGaussianModel(A.sh_degree, device="cuda")
 scene = Scene(A, gaussians, return_type="image", device="cuda", load_timestep=-1)
 verts0 = (gaussians.verts_orig[0] + gaussians.verts_offset[0]).detach()          # 학습 프레임 460 메쉬
 best = {k: v for k, v in np.load(os.path.join(A.dataset_dir, "demo/a1_phys_param.npz")).items()}
-D_, E_, H_ = float(best["D"]), float(best["E"]), float(best["H"])
+D_, E_, H_ = float(best["D"]), float(best["E"]) * args.E_mul, float(best["H"])
 print(f"[물성] 저자 학습값 D {D_:.4g}  E {E_:.4g}  H {H_:.4g} | 기본값 ν {A.init_nu} γ {A.init_gamma} κ {A.init_kappa} "
       f"서브스텝 {A.substep}", flush=True)
 
