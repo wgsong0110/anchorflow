@@ -149,6 +149,8 @@ elif a.stage == "mpma":
     ne, nv = faces.shape[0], verts.shape[0]; n = ne + nv
     pos0 = torch.cat([verts[faces].mean(1), verts], 0)
     d0, _, ev, vv = dir_vol(verts, faces)
+    if os.environ.get("WARP_KCACHE"):                          # 동시에 여러 실행이 같은 캐시를 컴파일하다 깨지는 것을 막는다
+        wp.config.kernel_cache_dir = os.environ["WARP_KCACHE"]
     wp.init()
     st = MPMStateStruct(); st.init(n, ne, nv, device="cuda:0", requires_grad=False)
     pt = np.zeros(n, np.int32); pv = np.zeros(n, np.int32); pv[ne:] = 1; pe = np.zeros(n, np.int32); pe[:ne] = 1
@@ -201,6 +203,8 @@ elif a.stage == "pg":
     _, inv_, cnt = torch.unique(key, return_inverse=True, return_counts=True)
     vol = (dx ** 3 / cnt[inv_].float()).contiguous()
     c6 = torch.as_tensor(np.stack([Cv[:, 0, 0], Cv[:, 0, 1], Cv[:, 0, 2], Cv[:, 1, 1], Cv[:, 1, 2], Cv[:, 2, 2]], 1), device=dev).float()
+    if os.environ.get("WARP_KCACHE"):                          # 동시에 여러 실행이 같은 캐시를 컴파일하다 깨지는 것을 막는다
+        wp.config.kernel_cache_dir = os.environ["WARP_KCACHE"]
     wp.init()
     sol = MPM_Simulator_WARP(10)
     sol.load_initial_data_from_torch(x, vol, c6, n_grid=a.n_grid, grid_lim=2.0)
