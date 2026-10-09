@@ -35,6 +35,7 @@ ap.add_argument("--E_mul", type=float, default=1.0, help="E 배수 (두 솔버 �
 ap.add_argument("--H", type=float, default=0.9562, help="MPMAvatar 정지 모양 높이 배율 (저자 학습값; 1 이면 끔)")
 ap.add_argument("--joint_faces", action="store_true", help="MPMAvatar: 고정 꼭짓점에 닿은 삼각형도 고정 (아바타 규약)")
 ap.add_argument("--trace", type=int, default=-1, help="MPMAvatar: 이 프레임부터 서브스텝마다 속도·F 를 기록해 처음 터지는 입자를 찾는다")
+ap.add_argument("--trace_every", type=int, default=10, help="추적 간격 (서브스텝)")
 ap.add_argument("--pin_grid", action="store_true", help="PG: 깃대 쪽 띠의 격자 속도를 0 으로 (PG 공식 cuboid 경계조건)")
 a = ap.parse_args()
 import numpy as np                                               # noqa: E402
@@ -45,6 +46,7 @@ dev = "cuda"
 W_, H_, NX, NZ, POLE = 1.5, 1.0, 90, 60, 2.2
 Z0 = POLE - H_ - 0.05
 SC = 0.8
+GLIM = 2.0
 SHIFT = np.array([1.0, 1.0, 1.0]) - SC * np.array([W_ / 2, 0.0, POLE / 2])
 D_, E_, Hs = 0.854, 414.8 * a.E_mul, a.H
 NU, GAM, KAP = 0.3, 500.0, 500.0
@@ -196,6 +198,18 @@ elif a.stage == "mpma":
         i = int(sp.argmax()); kind = "면" if i < ne else ("고정꼭짓점" if i < ne + nj else "꼭짓점")
         p = ((X0[i].double().cpu().numpy() - SHIFT) / SC)
         bad = (~torch.isfinite(sp)).any() or float(sp.max()) > 20 * V0n
+        gm = wp.to_torch(st.grid_m); dxs = GLIM / a.n_grid
+
+        def stencil_m(q):                                          # 입자 하나가 보는 27 격자점 질량 합 (g2p 와 같은 받침)
+            b = (q / dxs - 0.5).floor().long()
+            return float(gm[b[0]:b[0] + 3, b[1]:b[1] + 3, b[2]:b[2] + 3].sum())
+        vi = i if i >= ne else int(torch.as_tensor(Fr[i], device=dev)[0]) + ne
+        xs = x[ne:]; dd = (xs - x[vi]).norm(dim=1); rd = (X0[ne:] - X0[vi]).norm(dim=1)
+        far = rd > 4 * (W_ / NX) * SC                                 # 쉬던 모양에서 네 칸 넘게 떨어진 꼭짓점
+        near = float(dd[far].min()) / dxs if far.any() else float("nan")
+        med = float(torch.tensor([stencil_m(xs[k]) for k in range(0, nv, max(1, nv // 200))]).median())
+        print(f"   [모서리] 격자질량 {stencil_m(x[vi]):.3g} (꼭짓점 중앙 {med:.3g}), 안 이웃 최근접 {near:.2f} 칸, "
+              f"이웃 꼭짓점 속도 평균 {float(sp[ne:][(rd < 1.5 * (W_ / NX) * SC)].mean()):.3g}", flush=True)
         print(f"[추적] f{f} s{s} |v|max {float(sp.max()):.3g} ({kind} {i}, 처음 위치 x{p[0]:.2f} z{p[2]:.2f}) "
               f"|F|max {float(fn.max()):.3g} det min {float(det.min()):.3g} max {float(det.max()):.3g} |d3|max {float(dn.max()):.3g} "
               f"z min {float(x[:, 2].min()):.3f} y max {float(x[:, 1].max()):.3f}", flush=True)
@@ -207,7 +221,7 @@ elif a.stage == "mpma":
     for f in tqdm(range(a.frames), desc=f"MPMAvatar {a.mode}"):
         for s in range(a.substep):
             sol.p2g2p(md, st, sub, joint_traditional_v=None, joint_verts_v=jv, joint_faces_v=jf, device="cuda:0")
-            if 0 <= a.trace <= f and (s % 10 == 0 or not tr_ok):
+            if 0 <= a.trace <= f and (s % a.trace_every == 0 or not tr_ok):
                 tr_ok = trace(f, s)
                 if tr_ok is None:
                     break
