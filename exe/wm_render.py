@@ -110,7 +110,8 @@ fr_dir = os.path.splitext(a.out)[0] + "_frames"; os.makedirs(fr_dir, exist_ok=Tr
 for t, fp in enumerate(fs):
     with h5py.File(fp, "r") as h:
         x = np.array(h["x"]); x = x.T if x.shape[0] == 3 else x
-        F = np.array(h["f_tensor"] if "f_tensor" in h else h["F"]).reshape(-1, 3, 3)
+        F = np.array(h["f_tensor"] if "f_tensor" in h else h["F"])
+        F = (F.T if F.shape[0] == 9 else F).reshape(-1, 3, 3)          # GF 는 (9, N) 으로 저장한다
     X = torch.as_tensor(x[GIDX] - SC, device=dev).float(); Fg = torch.as_tensor(F[GIDX], device=dev).float()
     ok = torch.isfinite(X).all(1) & torch.isfinite(Fg).all(2).all(1)
     cov = Fg @ C0 @ Fg.transpose(1, 2)
