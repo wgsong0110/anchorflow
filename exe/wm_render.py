@@ -116,8 +116,8 @@ for t, fp in enumerate(fs):
     ok = torch.isfinite(X).all(1) & torch.isfinite(Fg).all(2).all(1)
     cov = Fg @ C0 @ Fg.transpose(1, 2)
     c6 = torch.stack([cov[:, 0, 0], cov[:, 0, 1], cov[:, 0, 2], cov[:, 1, 1], cov[:, 1, 2], cov[:, 2, 2]], 1)
-    U, _, Vh = torch.linalg.svd(Fg)
-    rot = U @ Vh
+    U, _, Vh = torch.linalg.svd(Fg.cpu())                          # GPU 배치 3x3 SVD 는 138 만 개에 1484 s (실측), CPU 는 몇 초
+    rot = (U @ Vh).to(dev)
     pos = apply_inverse_rotations(undotransform2origin(undoshift2center111(X), scale_origin, mean_pos), R)   # noqa: F405
     c6 = apply_inverse_cov_rotations(c6 / (scale_origin * scale_origin), R)                                   # noqa: F405
     cam = get_camera_view(a.model_path, default_camera_index=camera_params["default_camera_index"],          # noqa: F405
