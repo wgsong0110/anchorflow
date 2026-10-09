@@ -21,6 +21,7 @@ ap.add_argument("--h5", required=True)
 ap.add_argument("--config", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=0)
+ap.add_argument("--E", type=float, default=0, help="E 를 GF config 대신 이 값으로 (0 이면 config)")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
 import numpy as np                                               # noqa: E402
@@ -28,7 +29,7 @@ import torch                                                     # noqa: E402
 from tqdm import tqdm                                            # noqa: E402
 
 cfg = json.load(open(a.config))
-E, nu, rho = float(cfg["E"]), float(cfg["nu"]), float(cfg["density"])
+E, nu, rho = (a.E or float(cfg["E"])), float(cfg["nu"]), float(cfg["density"])
 n_grid, GL = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
 dx = GL / n_grid
 c = math.sqrt(E * (1 - nu) / ((1 + nu) * (1 - 2 * nu) * rho))
