@@ -30,6 +30,7 @@ ap.add_argument("--frames", type=int, default=75)
 ap.add_argument("--substep", type=int, default=400)
 ap.add_argument("--n_grid", type=int, default=250)
 ap.add_argument("--res", type=int, default=800)
+ap.add_argument("--pin_grid", action="store_true", help="PG: 깃대 쪽 띠의 격자 속도를 0 으로 (PG 공식 cuboid 경계조건)")
 a = ap.parse_args()
 import numpy as np                                               # noqa: E402
 import torch                                                     # noqa: E402
@@ -205,6 +206,9 @@ elif a.stage == "pg":
     sol.set_parameters_dict({"material": "jelly", "E": E_, "nu": NU, "density": D_, "g": [0.0, 0.0, -9.8],
                              "n_grid": a.n_grid, "grid_lim": 2.0, "grid_v_damping_scale": 1.1})
     sol.add_bounding_box(); sol.add_surface_collider((0.0, 0.0, 0.05), (0.0, 0.0, 1.0), "sticky", 0.0)
+    if a.pin_grid:                                                 # 깃대 쪽 띠 (월드 x 0~한 칸, 천 높이 전체) 의 격자 속도 0
+        lo = np.array([-0.005, -0.03, Z0 - 0.01]) * SC + SHIFT; hi = np.array([W_ / NX * 1.01, 0.03, Z0 + H_ + 0.01]) * SC + SHIFT
+        sol.set_velocity_on_cuboid(tuple(((lo + hi) / 2).tolist()), tuple(((hi - lo) / 2).tolist()), (0.0, 0.0, 0.0))
     sol.finalize_mu_lam()
     pin = torch.as_tensor(P["X"][cl][:, 0].numpy() < W_ / NX * 1.01, device=dev)        # 깃대 쪽 첫 칸
     v0 = torch.zeros_like(x)
