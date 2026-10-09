@@ -56,6 +56,7 @@ def load_checkpoint(model_path, sh_degree=3, iteration=-1):      # GF gs_simulat
     return g
 
 
+torch.set_grad_enabled(False)
 dev = "cuda"
 material_params, bc_params, time_params, pp, camera_params = decode_param_json(a.config)
 gaussians = load_checkpoint(a.model_path)
