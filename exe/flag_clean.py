@@ -23,12 +23,15 @@ ax, mid = sc3[:, 2], sc3[:, 1]
 m = a.margin
 cloth = (X[:, 0] > -m) & (X[:, 0] < 1.5 + m) & (X[:, 2] > 1.15 - m) & (X[:, 2] < 2.15 + m) & (np.abs(X[:, 1]) < a.dy)
 pole = (np.hypot(X[:, 0] + 0.03, X[:, 1]) < 0.025 + m) & (X[:, 2] > -m) & (X[:, 2] < 2.2 + m)
-needle = (ax >= a.max_axis) & (ax / np.maximum(mid, 1e-9) >= a.needle)
+# 흰 군더더기만: 색(SH 0 차)이 흰색이고 긴 것. 천 가우시안 대부분이 가늘고 길어서(평면 학습) 모양만으로 고르면 천까지 지운다
+rgb = np.stack([v[f"f_dc_{i}"] for i in range(3)], 1) * 0.28209479177387814 + 0.5
+white = rgb.min(1) > 0.8
+needle = (ax >= a.max_axis) & white
 # 천 가장자리 밖으로 번지는 큰 가우시안 (위쪽 흰 안개): 중심 + 가장 긴 축이 직사각형을 3 cm 넘게 벗어난다
 spill = cloth & (ax >= a.max_axis) & ((X[:, 2] + ax > 2.15 + 0.03) | (X[:, 2] - ax < 1.15 - 0.03) | (X[:, 0] + ax > 1.5 + 0.03))
 keep = (cloth | pole) & ~needle & ~spill
 op = 1 / (1 + np.exp(-v["opacity"]))
-print(f"[정리] 가우시안 {len(X)} -> {int(keep.sum())} (형상 밖 {int((~(cloth | pole)).sum())}, 바늘 {int(((cloth | pole) & needle).sum())}, 가장자리 번짐 {int((spill & ~needle).sum())}; "
+print(f"[정리] 가우시안 {len(X)} -> {int(keep.sum())} (형상 밖 {int((~(cloth | pole)).sum())}, 흰 긴 것 {int(((cloth | pole) & needle).sum())}, 가장자리 번짐 {int((spill & ~needle).sum())}; "
       f"지운 것 중 불투명 > 0.1: {int(((~keep) & (op > 0.1)).sum())})")
 os.makedirs(f"{a.dst}/point_cloud/iteration_30000", exist_ok=True)
 PlyData([PlyElement.describe(v[keep], "vertex")]).write(f"{a.dst}/point_cloud/iteration_30000/point_cloud.ply")
