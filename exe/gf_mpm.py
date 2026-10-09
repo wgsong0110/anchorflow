@@ -43,6 +43,8 @@ ap.add_argument("--ckpt_every", type=int, default=10,
 ap.add_argument("--resume", action="store_true",
                 help="out 의 state_last.h5 에서 이어 돌린다. 위치뿐 아니라 "
                      "F 와 logJp 까지 들고 있어야 궤적이 이어진다")
+ap.add_argument("--substeps", type=int, default=0, help="프레임당 서브스텝 수를 직접 (안정성 실험). 0 이면 config")
+ap.add_argument("--stab_out", default="", help="안정성 실험: h5 대신 프레임별 측정·부분표본 npz 만 쓴다")
 ap.add_argument("--auto_dt", action="store_true",
                 help="GF 의 씬 러너처럼 substep_dt 를 CFL 로 다시 계산한다 "
                      "(gs_simulation_watermelon.py:416). config 값은 무시된다")
@@ -96,6 +98,8 @@ if a.auto_dt:
     substep_dt = 0.6 * dx / _c
 # GF 는 int() 로 버린다 -- 한 프레임이 frame_dt 보다 살짝 짧다. 그대로 따른다.
 nsub = max(1, int(frame_dt / substep_dt))
+if a.substeps > 0:
+    nsub = a.substeps; substep_dt = frame_dt / nsub
 G = np.array(cfg.get("g", [0.0, 0.0, -9.8]), np.float64)
 # gs_simulation.py:374 가 config 에 없으면 [0,0,-6] 을 그대로 박아 넣는다
 V0 = np.array(cfg.get("init_velocity", [0.0, 0.0, -6.0]), np.float64)
@@ -734,10 +738,20 @@ if a.resume and os.path.exists(STATE):
               np.array(h["ys"]), np.array(h["mu"]), np.array(h["lam"]),
               np.array(h["alive"]))
     print(f"[이어감] {STATE} 의 프레임 {f0} (t={t:.4f}) 에서", flush=True)
-else:
+elif not a.stab_out:
     dump(0)
+if a.stab_out:
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+    from anchorflow import stabstat as _ss
+    _FL = [b for b in cfg.get("boundary_conditions", []) if b["type"] == "surface_collider"]
+    _FZ = float(_FL[0]["point"][2]) if _FL else 0.0
+    _SUB = _ss.subset(N)
+    _ROWS = [_ss.frame_stats(x.to_numpy(), v.to_numpy(), F.to_numpy(), MASS, G, _FZ, (0.0, grid_lim))]
+    _XS = [x.to_numpy()[_SUB].astype(np.float32)]; _T = []
 t0 = time.time()
 for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
+    _tf = time.time()
     for _ in range(nsub):
         quarantine(-0.5 * grid_lim, 1.5 * grid_lim)
         if NP and PC_LO <= t < PC_HI:   # 창이 다 닫혀 있으면 띄울 것도 없다
@@ -748,6 +762,14 @@ for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
         grid_op(substep_dt, t)
         g2p(substep_dt, FLIP)
         t += substep_dt
+    if a.stab_out:
+        ti.sync(); _T.append(time.time() - _tf)
+        _xn = x.to_numpy()
+        _ROWS.append(_ss.frame_stats(_xn, v.to_numpy(), F.to_numpy(), MASS, G, _FZ, (0.0, grid_lim)))
+        _XS.append(_xn[_SUB].astype(np.float32))
+        if _ROWS[-1]["nan"] > 0.5:
+            print(f"  발산 프레임 {f}", flush=True); break
+        continue
     dump(f)
     if a.ckpt_every and (f % a.ckpt_every == 0 or f == n_frames):
         save_state(f, t)
@@ -762,6 +784,12 @@ for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
                   f"logJp 중앙 {np.median(jp):+.4f} p1 {np.percentile(jp, 1):+.4f}  "
                   f"x[{xn[al == 1].min():.3f},{xn[al == 1].max():.3f}]  "
                   f"{time.time() - t0:.0f}s", flush=True)
+if a.stab_out:
+    _K = ("ke", "pe", "nan", "out", "vmax", "detneg", "detmin")
+    np.savez_compressed(a.stab_out, sub=_SUB, x=np.stack(_XS), t=np.array(_T), keys=np.array(_K), substeps=nsub,
+                        dt=substep_dt, stats=np.array([[r.get(k, np.nan) for k in _K] for r in _ROWS]))
+    print(f"[저장] {a.stab_out}  프레임당 {np.mean(_T):.3f}s", flush=True)
+    raise SystemExit(0)
 _el = time.time() - t0
 _nf = max(n_frames - f0, 1)
 print(f"[저장] {a.out}  {n_frames + 1} 프레임  {_el:.0f}s "

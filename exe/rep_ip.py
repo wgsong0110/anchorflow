@@ -49,6 +49,9 @@ ap.add_argument("--riem_cg", type=int, default=50)
 ap.add_argument("--ls_max", type=int, default=30, help="Armijo 되돌림 최대 횟수")
 ap.add_argument("--riem_lr_max", type=float, default=1e8, help="적응 보폭 상한")
 ap.add_argument("--dbg", action="store_true")
+ap.add_argument("--substeps", type=int, default=1, help="프레임당 서브스텝 (증분 포텐셜을 dt = frame_dt / N 으로 N 번)")
+ap.add_argument("--stab_out", default="", help="안정성 실험: 프레임별 측정·부분표본 npz")
+ap.add_argument("--no_ref", action="store_true", help="기준 궤적 없이 (--sim 은 0 프레임만 쓴다)")
 ap.add_argument("--ckpt_every", type=int, default=5, help="이어 돌리기 체크포인트 간격 (프레임). <out>.ckpt.pt")
 ap.add_argument("--no_resume", action="store_true", help="체크포인트가 있어도 처음부터")
 ap.add_argument("--own", action="store_true",
@@ -92,7 +95,7 @@ V0 = rd(files[0], "v")
 V0 = torch.zeros_like(X0) if V0 is None else torch.as_tensor(V0, dtype=torch.float32, device=dev)
 if float(V0.abs().max()) == 0 and "init_velocity" in cfg:
     V0 = torch.as_tensor(cfg["init_velocity"], dtype=torch.float32, device=dev).expand(N, 3).clone()
-h = float(cfg["frame_dt"])
+h = float(cfg["frame_dt"]) / a.substeps
 g = torch.as_tensor(cfg.get("g", [0.0, 0.0, -9.8]), dtype=torch.float32, device=dev)
 n_grid, grid_lim = int(cfg.get("n_grid", 100)), float(cfg.get("grid_lim", 2.0))
 dx = grid_lim / n_grid
@@ -416,6 +419,12 @@ if a.tb != "none":
     _tb = a.tb if a.tb != "auto" else os.path.join(f"{W}/tbrf", "ip_" + os.path.splitext(os.path.basename(a.out))[0])
     TB = SummaryWriter(_tb, purge_step=T_START)
 t0 = time.time()
+if a.stab_out:
+    from anchorflow import stabstat as _ss
+    _SUB = torch.as_tensor(_ss.subset(N), device=dev)
+    _MASSN = MASS.double().cpu().numpy(); _FZ = ZF if ZF is not None else 0.0
+    STROWS = [_ss.frame_stats(X0.cpu().numpy(), V0.cpu().numpy(), None, _MASSN, g.tolist(), _FZ)]
+    STX = [X0[_SUB].cpu().numpy()]; STT = []
 if RENDER:
     FRAME_DIR[0] = a.video + ".frames"; os.makedirs(FRAME_DIR[0], exist_ok=True)
     FRAME_IX[0] = T_START                                     # 프레임 0 = 정지, t 번째 = t
@@ -423,161 +432,169 @@ if RENDER:
         FRAME_IX[0] = 0
         render(gpos(X0, Fcum), Fcum[GI])
 for t in range(T_START, a.frames + 1):
-    if REB:
-        REP.rebind(xn)
-        X_ = xn
-    else:
-        X_ = X0
-    xtil = xn + h * vn
-    JPI = [None if REB else torch.linalg.inv(Jprev)]
-    pairs = contact_pairs(xn)
-    PL = REP.params()
-    shapes, sizes = [q.shape for q in PL], [q.numel() for q in PL]
-    METS = REP.metrics() if a.method != "gaussim" else None
-    if a.own:
-        if a.method == "phystwin":
-            METS = [(rm.res_spring, (r.B, r.rel, r.L0)) for r in reps]
-        elif a.method == "vrgs":
-            METS = [(rm.res_tri_stvk, (r.f, r.D0i, r.A0, 1.0, _sla_m)) for r in reps]
-        else:
-            METS = "particle"                                         # 매 반복 극분해 R 을 다시 구한다
-
-    def particle_mets():
-        """입자 고정공회전 계량 (물체마다): 현재 매개(선형화 점)의 F 로 R 을 구해 순수 잔차 인자로."""
-        with torch.no_grad():
-            out = []
-            for r, ii in zip(reps, idx):
-                Xo = X_[ii]
-                dyo, Jo = r.yJ(Xo, torch.arange(ii.numel(), device=dev))
-                Fp = Fe[ii] if REB else rm.mm3(JPI[0][ii], Fe[ii])
-                F0 = rm.mm3(Jo, Fp)
-                R0 = rm.polar_R(F0)
-                wv = (VOL[ii] / VOL[ii].sum()).sqrt()
-                if a.method == "ours":
-                    out.append((rm.res_lattice_fcr, (r.u.numel(), r.rows, r.lam, r.dlam, r.r, r.dr, r.w, r.dw,
-                                                     r.h, r.a, Fp, R0, wv, 1.0, _sla_m)))
-                elif a.method == "gaussim":
-                    out.append((rm.res_gaussim_fcr, (r.p2.shape[0], r.lab, Fp, R0, wv, 1.0, _sla_m)))
-                else:
-                    out.append((rm.res_simp_fcr, (r.W, r.dW, r.Xh, Fp, R0, wv, 1.0, _sla_m)))
-        return out
-    psizes = [sum(q.numel() for q in r.params()) for r in reps]
-    if a.method == "gaussim" and REB and not a.own:
-        OPT = torch.optim.Adam(PL, lr=a.lr)
-    if METS is not None:
-        # λmax (거듭제곱법) 로 ε 척도 -- 블록 대각 (물체마다)
-        MC = [particle_mets() if METS == "particle" else METS]
-
-        def Hv(th, u):
-            outs, s0 = [], 0
-            for (fn, args), n_ in zip(MC[0], psizes):
-                outs.append(GNP(fn, th[s0:s0 + n_], u[s0:s0 + n_], *args)); s0 += n_
-            return torch.cat(outs)
-        with torch.no_grad():
-            th0 = flat([q.detach() for q in PL])
-            u = torch.randn_like(th0)
-            for _ in range(20):
-                u = Hv(th0, u); lmax = float(u.norm()); u = u / max(lmax, 1e-30)
-        eps = a.riem_eps * max(lmax, 1e-12)
-    nit = a.iters0 if t == 1 else a.iters
-    STP = [a.riem_lr / 2.0]
-    for it_ in range(nit):
-        for q in PL:
-            q.grad = None
-        dy, J = REP.yJ(X_)
-        E, _, _ = energy(dy, J, X_, xtil, pairs)
-        (E * NORM).backward()
-        if METS is None:
-            OPT.step()
-            continue
-        gk = flat([q.grad if q.grad is not None else torch.zeros_like(q) for q in PL]).detach()
-        theta = flat([q.detach() for q in PL])
-        if METS == "particle":
-            MC[0] = particle_mets()                                   # 반복마다 R 을 다시
-        with torch.no_grad():
-            x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
-            for _ in range(a.riem_cg):
-                Gp = Hv(theta, pdir) + eps * pdir
-                al = rr / (pdir * Gp).sum().clamp_min(1e-30)
-                x += al * pdir; r -= al * Gp
-                rr_new = (r * r).sum()
-                if rr_new.sqrt() < 1e-4 * gk.norm():
-                    break
-                pdir = r + (rr_new / rr) * pdir; rr = rr_new
-            # Armijo 되돌림 선탐색 (A 와 같다): 보폭 η 에서 시작해 목적이 충분히 줄 때까지 반으로
-            def setp(vec):
-                s0 = 0
-                for q, n_ in zip(PL, sizes):
-                    q.copy_(vec[s0:s0 + n_].reshape(q.shape)); s0 += n_
-            # 적응 보폭: 직전 반복의 보폭을 두 배로 시도 (계량의 크기와 목적의 크기가 장면마다
-            # 달라 고정 시작 보폭은 강체 이동조차 못 따라갔다 -- i-PG lego 의 ours·GS-Verse)
-            f0 = float(E) * NORM; sl = float((gk * x).sum())
-            stp = min(STP[0] * 2.0, a.riem_lr_max)
-            for _bt in range(a.ls_max):
-                setp(theta - stp * x)
-                dyt, Jt = REP.yJ(X_)
-                ft = float(energy(dyt, Jt, X_, xtil, pairs)[0]) * NORM
-                if ft == ft and ft <= f0 - 1e-4 * stp * sl:
-                    break
-                stp *= 0.5
-            else:
-                setp(theta); stp = STP[0] * 0.25
-            STP[0] = stp
-            if a.dbg and (it_ < 10 or it_ % 50 == 0):
-                print(f"    it {it_:3d} f0 {f0:.6e} ft {ft:.6e} 보폭 {stp:.3e} |g| {float(gk.norm()):.3e} "
-                      f"|x| {float(x.norm()):.3e} g·x {sl:.3e} eps {eps:.3e} lmax {lmax:.3e}", flush=True)
-    # ---- 프레임 마무리: 상태 갱신 (소성 사영), 측정
-    with torch.no_grad():
-        dy, J = REP.yJ(X_)
-        E, pl, Ftr, parts = energy(dy, J, X_, xtil, pairs, parts=True)
-        x1 = X_ + dy
-        Fe = Ftr if a.own else pr.plastic_step(Ftr, pl)
+  _tf = time.time()
+  for ks in range(a.substeps):
         if REB:
-            Fcum = rm.mm3(J, Fcum)
+            REP.rebind(xn)
+            X_ = xn
         else:
-            Fcum = J
-            Jprev = J.clone()
-        vn = (x1 - xn) / h
-        xn = x1
-        ref = torch.as_tensor(rd(files[t], "x"), dtype=torch.float32, device=dev)
-        Fr_ = rd(files[t], "F")
-        Fr_ = torch.eye(3, device=dev).expand(N, 3, 3) if Fr_ is None else \
-            torch.as_tensor(Fr_.reshape(-1, 3, 3), dtype=torch.float32, device=dev)
-        yg, rg = gpos(xn, Fcum), gpos(ref, Fr_)
-        ok = torch.isfinite(rg).all(1)                      # 기준 시뮬이 격리(발산)한 입자는 뺀다
-        rmse = float(((yg[ok] - rg[ok]) ** 2).sum(1).mean().sqrt()) / L
-        NBAD.append(int((~ok).sum()))
-        def _nn(P_, Q_, ch=4096, k=8):                          # 정확한 최근접 거리 (행렬곱 후보 + 직접 거리)
-            out = []
-            for s_ in range(0, P_.shape[0], ch):
-                Pi = P_[s_:s_ + ch]
-                j_ = torch.cdist(Pi, Q_).topk(min(k, Q_.shape[0]), largest=False).indices
-                out.append((Pi[:, None] - Q_[j_]).norm(dim=-1).min(1).values)
-            return torch.cat(out)
-        cdv = 0.5 * float(_nn(yg[ok], rg[ok]).mean() + _nn(rg[ok], yg[ok]).mean())
-        Jd = rm.det3(Fcum)
-        rows.append((t, rmse, cdv / L, float("nan"), float(Jd.min()), float((Jd <= 0).float().mean())))
-        com = (MASS[:, None] * xn).sum(0) / MSUM
-        PHYS.append((t, float(0.5 * (MASS * (vn * vn).sum(1)).sum()), *(MASS[:, None] * vn).sum(0).tolist(),
-                     *(MASS[:, None] * torch.cross(xn - com, vn, dim=-1)).sum(0).tolist(),
-                     float((VOL * Jd).sum() / VOL.sum())))
-        IPV.append((t, float(E), *parts.values()))
-        TRAJ.append(yg.float().cpu().numpy())
-        if t % 10 == 0 or t == a.frames:
-            EMDP.append((t, yg[ok].float().cpu().numpy(), rg[ok].float().cpu().numpy()))
-        if RENDER:
-            render(yg, Fcum[GI])
-        if TB is not None:
-            TB.add_scalar("frame/RMSE_pct", 100 * rmse, t); TB.add_scalar("frame/CD_pct", 100 * cdv / L, t)
-            TB.add_scalar("frame/detJ_min", rows[-1][4], t); TB.add_scalar("frame/inverted_pct", 100 * rows[-1][5], t)
-            TB.add_scalar("frame/IP", float(E), t); TB.add_scalar("frame/KE", PHYS[-1][1], t)
-            TB.flush()
-    if t % 10 == 0 or t == 1:
-        print(f"  [t={t:3d}] RMSE {100 * rmse:.3f}%  CD {100 * cdv / L:.3f}%  IP {float(E):.4e} "
-              f"({', '.join(f'{k} {v:.2e}' for k, v in parts.items())})  det 최소 {rows[-1][4]:.3f} "
-              f"(≤0 {100 * rows[-1][5]:.2f}%)  자유도 {REP.dof}  {time.time() - t0:.0f}s", flush=True)
-    if a.ckpt_every > 0 and t % a.ckpt_every == 0 and t < a.frames:
-        save_ckpt(t)
+            X_ = X0
+        xtil = xn + h * vn
+        JPI = [None if REB else torch.linalg.inv(Jprev)]
+        pairs = contact_pairs(xn)
+        PL = REP.params()
+        shapes, sizes = [q.shape for q in PL], [q.numel() for q in PL]
+        METS = REP.metrics() if a.method != "gaussim" else None
+        if a.own:
+            if a.method == "phystwin":
+                METS = [(rm.res_spring, (r.B, r.rel, r.L0)) for r in reps]
+            elif a.method == "vrgs":
+                METS = [(rm.res_tri_stvk, (r.f, r.D0i, r.A0, 1.0, _sla_m)) for r in reps]
+            else:
+                METS = "particle"                                         # 매 반복 극분해 R 을 다시 구한다
+
+        def particle_mets():
+            """입자 고정공회전 계량 (물체마다): 현재 매개(선형화 점)의 F 로 R 을 구해 순수 잔차 인자로."""
+            with torch.no_grad():
+                out = []
+                for r, ii in zip(reps, idx):
+                    Xo = X_[ii]
+                    dyo, Jo = r.yJ(Xo, torch.arange(ii.numel(), device=dev))
+                    Fp = Fe[ii] if REB else rm.mm3(JPI[0][ii], Fe[ii])
+                    F0 = rm.mm3(Jo, Fp)
+                    R0 = rm.polar_R(F0)
+                    wv = (VOL[ii] / VOL[ii].sum()).sqrt()
+                    if a.method == "ours":
+                        out.append((rm.res_lattice_fcr, (r.u.numel(), r.rows, r.lam, r.dlam, r.r, r.dr, r.w, r.dw,
+                                                         r.h, r.a, Fp, R0, wv, 1.0, _sla_m)))
+                    elif a.method == "gaussim":
+                        out.append((rm.res_gaussim_fcr, (r.p2.shape[0], r.lab, Fp, R0, wv, 1.0, _sla_m)))
+                    else:
+                        out.append((rm.res_simp_fcr, (r.W, r.dW, r.Xh, Fp, R0, wv, 1.0, _sla_m)))
+            return out
+        psizes = [sum(q.numel() for q in r.params()) for r in reps]
+        if a.method == "gaussim" and REB and not a.own:
+            OPT = torch.optim.Adam(PL, lr=a.lr)
+        if METS is not None:
+            # λmax (거듭제곱법) 로 ε 척도 -- 블록 대각 (물체마다)
+            MC = [particle_mets() if METS == "particle" else METS]
+
+            def Hv(th, u):
+                outs, s0 = [], 0
+                for (fn, args), n_ in zip(MC[0], psizes):
+                    outs.append(GNP(fn, th[s0:s0 + n_], u[s0:s0 + n_], *args)); s0 += n_
+                return torch.cat(outs)
+            with torch.no_grad():
+                th0 = flat([q.detach() for q in PL])
+                u = torch.randn_like(th0)
+                for _ in range(20):
+                    u = Hv(th0, u); lmax = float(u.norm()); u = u / max(lmax, 1e-30)
+            eps = a.riem_eps * max(lmax, 1e-12)
+        nit = a.iters0 if t == 1 else a.iters
+        STP = [a.riem_lr / 2.0]
+        for it_ in range(nit):
+            for q in PL:
+                q.grad = None
+            dy, J = REP.yJ(X_)
+            E, _, _ = energy(dy, J, X_, xtil, pairs)
+            (E * NORM).backward()
+            if METS is None:
+                OPT.step()
+                continue
+            gk = flat([q.grad if q.grad is not None else torch.zeros_like(q) for q in PL]).detach()
+            theta = flat([q.detach() for q in PL])
+            if METS == "particle":
+                MC[0] = particle_mets()                                   # 반복마다 R 을 다시
+            with torch.no_grad():
+                x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
+                for _ in range(a.riem_cg):
+                    Gp = Hv(theta, pdir) + eps * pdir
+                    al = rr / (pdir * Gp).sum().clamp_min(1e-30)
+                    x += al * pdir; r -= al * Gp
+                    rr_new = (r * r).sum()
+                    if rr_new.sqrt() < 1e-4 * gk.norm():
+                        break
+                    pdir = r + (rr_new / rr) * pdir; rr = rr_new
+                # Armijo 되돌림 선탐색 (A 와 같다): 보폭 η 에서 시작해 목적이 충분히 줄 때까지 반으로
+                def setp(vec):
+                    s0 = 0
+                    for q, n_ in zip(PL, sizes):
+                        q.copy_(vec[s0:s0 + n_].reshape(q.shape)); s0 += n_
+                # 적응 보폭: 직전 반복의 보폭을 두 배로 시도 (계량의 크기와 목적의 크기가 장면마다
+                # 달라 고정 시작 보폭은 강체 이동조차 못 따라갔다 -- i-PG lego 의 ours·GS-Verse)
+                f0 = float(E) * NORM; sl = float((gk * x).sum())
+                stp = min(STP[0] * 2.0, a.riem_lr_max)
+                for _bt in range(a.ls_max):
+                    setp(theta - stp * x)
+                    dyt, Jt = REP.yJ(X_)
+                    ft = float(energy(dyt, Jt, X_, xtil, pairs)[0]) * NORM
+                    if ft == ft and ft <= f0 - 1e-4 * stp * sl:
+                        break
+                    stp *= 0.5
+                else:
+                    setp(theta); stp = STP[0] * 0.25
+                STP[0] = stp
+                if a.dbg and (it_ < 10 or it_ % 50 == 0):
+                    print(f"    it {it_:3d} f0 {f0:.6e} ft {ft:.6e} 보폭 {stp:.3e} |g| {float(gk.norm()):.3e} "
+                          f"|x| {float(x.norm()):.3e} g·x {sl:.3e} eps {eps:.3e} lmax {lmax:.3e}", flush=True)
+        # ---- 프레임 마무리: 상태 갱신 (소성 사영), 측정
+        with torch.no_grad():
+            dy, J = REP.yJ(X_)
+            E, pl, Ftr, parts = energy(dy, J, X_, xtil, pairs, parts=True)
+            x1 = X_ + dy
+            Fe = Ftr if a.own else pr.plastic_step(Ftr, pl)
+            if REB:
+                Fcum = rm.mm3(J, Fcum)
+            else:
+                Fcum = J
+                Jprev = J.clone()
+            vn = (x1 - xn) / h
+            xn = x1
+            if ks < a.substeps - 1:
+                continue
+            if a.stab_out:
+                torch.cuda.synchronize(); STT.append(time.time() - _tf)
+                STROWS.append(_ss.frame_stats(xn.cpu().numpy(), vn.cpu().numpy(), Fe.cpu().numpy(), _MASSN, g.tolist(), _FZ))
+                STX.append(xn[_SUB].cpu().numpy())
+            ref = xn if a.no_ref else torch.as_tensor(rd(files[t], "x"), dtype=torch.float32, device=dev)
+            Fr_ = None if a.no_ref else rd(files[t], "F")
+            Fr_ = torch.eye(3, device=dev).expand(N, 3, 3) if Fr_ is None else \
+                torch.as_tensor(Fr_.reshape(-1, 3, 3), dtype=torch.float32, device=dev)
+            yg, rg = gpos(xn, Fcum), gpos(ref, Fr_)
+            ok = torch.isfinite(rg).all(1)                      # 기준 시뮬이 격리(발산)한 입자는 뺀다
+            rmse = float(((yg[ok] - rg[ok]) ** 2).sum(1).mean().sqrt()) / L
+            NBAD.append(int((~ok).sum()))
+            def _nn(P_, Q_, ch=4096, k=8):                          # 정확한 최근접 거리 (행렬곱 후보 + 직접 거리)
+                out = []
+                for s_ in range(0, P_.shape[0], ch):
+                    Pi = P_[s_:s_ + ch]
+                    j_ = torch.cdist(Pi, Q_).topk(min(k, Q_.shape[0]), largest=False).indices
+                    out.append((Pi[:, None] - Q_[j_]).norm(dim=-1).min(1).values)
+                return torch.cat(out)
+            cdv = 0.5 * float(_nn(yg[ok], rg[ok]).mean() + _nn(rg[ok], yg[ok]).mean())
+            Jd = rm.det3(Fcum)
+            rows.append((t, rmse, cdv / L, float("nan"), float(Jd.min()), float((Jd <= 0).float().mean())))
+            com = (MASS[:, None] * xn).sum(0) / MSUM
+            PHYS.append((t, float(0.5 * (MASS * (vn * vn).sum(1)).sum()), *(MASS[:, None] * vn).sum(0).tolist(),
+                         *(MASS[:, None] * torch.cross(xn - com, vn, dim=-1)).sum(0).tolist(),
+                         float((VOL * Jd).sum() / VOL.sum())))
+            IPV.append((t, float(E), *parts.values()))
+            TRAJ.append(yg.float().cpu().numpy())
+            if t % 10 == 0 or t == a.frames:
+                EMDP.append((t, yg[ok].float().cpu().numpy(), rg[ok].float().cpu().numpy()))
+            if RENDER:
+                render(yg, Fcum[GI])
+            if TB is not None:
+                TB.add_scalar("frame/RMSE_pct", 100 * rmse, t); TB.add_scalar("frame/CD_pct", 100 * cdv / L, t)
+                TB.add_scalar("frame/detJ_min", rows[-1][4], t); TB.add_scalar("frame/inverted_pct", 100 * rows[-1][5], t)
+                TB.add_scalar("frame/IP", float(E), t); TB.add_scalar("frame/KE", PHYS[-1][1], t)
+                TB.flush()
+        if t % 10 == 0 or t == 1:
+            print(f"  [t={t:3d}] RMSE {100 * rmse:.3f}%  CD {100 * cdv / L:.3f}%  IP {float(E):.4e} "
+                  f"({', '.join(f'{k} {v:.2e}' for k, v in parts.items())})  det 최소 {rows[-1][4]:.3f} "
+                  f"(≤0 {100 * rows[-1][5]:.2f}%)  자유도 {REP.dof}  {time.time() - t0:.0f}s", flush=True)
+        if a.ckpt_every > 0 and t % a.ckpt_every == 0 and t < a.frames:
+            save_ckpt(t)
 if RENDER:
     import glob as _glob
     import shutil as _shutil
@@ -585,6 +602,12 @@ if RENDER:
     for fp_ in sorted(_glob.glob(f"{FRAME_DIR[0]}/*.png"))[:a.frames + 1]:
         WR.append_data(imageio.imread(fp_))
     WR.close()
+if a.stab_out:
+    _K = ("ke", "pe", "nan", "out", "vmax", "detneg", "detmin")
+    np.savez_compressed(a.stab_out, sub=_SUB.cpu().numpy(), x=np.stack(STX).astype(np.float32), t=np.array(STT), keys=np.array(_K),
+                        substeps=a.substeps, dt=h, stats=np.array([[r.get(k, np.nan) for k in _K] for r in STROWS]),
+                        iters0=a.iters0, iters=a.iters)
+    print(f"[안정성 저장] {a.stab_out}  프레임당 {np.mean(STT):.3f}s", flush=True)
 R = np.array(rows)
 print(f"[요약] {a.method}  RMSE {100 * R[:, 1].mean():.3f}%  CD {100 * R[:, 2].mean():.3f}%  "
       f"det 최소 {R[:, 4].min():.4f}  뒤집힘 최대 {100 * R[:, 5].max():.2f}%", flush=True)
