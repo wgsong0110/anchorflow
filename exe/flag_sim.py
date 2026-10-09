@@ -30,6 +30,7 @@ ap.add_argument("--frames", type=int, default=75)
 ap.add_argument("--substep", type=int, default=400)
 ap.add_argument("--n_grid", type=int, default=250)
 ap.add_argument("--res", type=int, default=800)
+ap.add_argument("--E_mul", type=float, default=1.0, help="E 배수 (두 솔버 같게). 저자 학습값 414.8 은 한쪽만 매단 깃발엔 너무 무르다")
 ap.add_argument("--pin_grid", action="store_true", help="PG: 깃대 쪽 띠의 격자 속도를 0 으로 (PG 공식 cuboid 경계조건)")
 a = ap.parse_args()
 import numpy as np                                               # noqa: E402
@@ -41,7 +42,7 @@ W_, H_, NX, NZ, POLE = 1.5, 1.0, 90, 60, 2.2
 Z0 = POLE - H_ - 0.05
 SC = 0.8
 SHIFT = np.array([1.0, 1.0, 1.0]) - SC * np.array([W_ / 2, 0.0, POLE / 2])
-D_, E_, Hs = 0.854, 414.8, 0.9562
+D_, E_, Hs = 0.854, 414.8 * a.E_mul, 0.9562
 NU, GAM, KAP = 0.3, 500.0, 500.0
 
 
