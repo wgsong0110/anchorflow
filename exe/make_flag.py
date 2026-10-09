@@ -42,6 +42,9 @@ pole.apply_translation([-a.pole_r - 0.005, 0.0, a.pole_len / 2])
 gray = Image.new("RGB", (8, 8), (140, 140, 145))
 pole.visual = trimesh.visual.TextureVisuals(uv=np.full((len(pole.vertices), 2), 0.5),
                                             material=trimesh.visual.material.PBRMaterial(baseColorTexture=gray))
+# glTF 는 y 위 규약이다 (mesh_to_nerfsynth 가 y 위 -> z 위로 돌린다). z 위로 만든 것을 y 위로 바꿔 내보낸다
+_zy = np.array([[1, 0, 0, 0], [0, 0, 1, 0], [0, -1, 0, 0], [0, 0, 0, 1]], float)   # (x, y, z) -> (x, z, -y)
+cloth.apply_transform(_zy); pole.apply_transform(_zy)
 sc = trimesh.Scene(); sc.add_geometry(cloth, node_name="flag_cloth"); sc.add_geometry(pole, node_name="flag_pole")
 sc.export(a.out)
 print(f"[깃발] 천 {len(V)} 꼭짓점 {len(F)} 삼각형, 깃대 높이 {a.pole_len} m -> {a.out}")
