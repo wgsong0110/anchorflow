@@ -198,6 +198,12 @@ elif a.stage == "mpma":
         i = int(sp.argmax()); kind = "면" if i < ne else ("고정꼭짓점" if i < ne + nj else "꼭짓점")
         p = ((X0[i].double().cpu().numpy() - SHIFT) / SC)
         bad = (~torch.isfinite(sp)).any() or float(sp.max()) > 20 * V0n
+        _, Rq = torch.linalg.qr(dm.double())                       # 솔버와 같은 QR 부호 규약: R11, R22 를 양수로, R33 은 따라 뒤집힌다
+        r11, r22, r33 = Rq[:, 0, 0], Rq[:, 1, 1], Rq[:, 2, 2]
+        r33e = r33 * torch.sign(r11) * torch.sign(r22)
+        k3 = int(r33e.argmin()); q3 = ((X0[k3].double().cpu().numpy() - SHIFT) / SC)
+        print(f"   [QR] R11 최소 {float(r11.abs().min()):.3g} R22 최소 {float(r22.abs().min()):.3g} "
+              f"R33 최소 {float(r33e.min()):.3g} (면 {k3} 처음 위치 x{q3[0]:.2f} z{q3[2]:.2f}), R33<0.1 인 면 {int((r33e < 0.1).sum())}", flush=True)
         gm = wp.to_torch(st.grid_m); dxs = GLIM / a.n_grid
 
         def stencil_m(q):                                          # 입자 하나가 보는 27 격자점 질량 합 (g2p 와 같은 받침)
