@@ -23,6 +23,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--stage", choices=["prep", "mpma", "pg", "render"], required=True)
 ap.add_argument("--work", required=True)
 ap.add_argument("--flag", default="/home/dkta/work/flag")
+ap.add_argument("--gs", default="flag_gs_clean", help="학습한 3DGS (흰 군더더기 지운 것)")
 ap.add_argument("--mode", choices=["a", "b"], default="a")
 ap.add_argument("--solver", choices=["mpma", "pg"], default="mpma")
 ap.add_argument("--vel", type=float, default=3.0)
@@ -70,7 +71,7 @@ def tri_frame(V, F):
 if a.stage == "prep":
     from plyfile import PlyData
     meta = json.load(open(f"{a.flag}/flag_ns/meta.json"))
-    pl = PlyData.read(f"{a.flag}/flag_gs/point_cloud/iteration_30000/point_cloud.ply").elements[0]
+    pl = PlyData.read(f"{a.flag}/{a.gs}/point_cloud/iteration_30000/point_cloud.ply").elements[0]
     g = lambda k: np.asarray(pl[k], np.float32)                 # noqa: E731
     xyz = np.stack([g("x"), g("y"), g("z")], 1)
     op = 1 / (1 + np.exp(-g("opacity")))
