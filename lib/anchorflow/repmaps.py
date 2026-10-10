@@ -105,10 +105,30 @@ def polar_R(F):
     return U @ torch.diag_embed(D) @ Vh
 
 
-def fcr_psi(F, mu, lam, R=None):
-    """입자 고정 공회전 ψ = μ|F−R|² + λ/2 (J−1)² (det F < 0 에서도 정의, 뒤집히면 벌점이 커진다)."""
+def polar_R_fast(F, iters=8):
+    """polar_R 과 같은 값 (부호 고정 극분해 회전) 을 기울기 없이 빠르게: 크기 조정 Newton 반복
+    R <- (γR + γ⁻¹R⁻ᵀ)/2. det F ≤ 0 이거나 수렴하지 않은 것만 SVD 로 다시 (polar_R 과 같은 규약).
+    ψ_FCR 의 F 기울기는 R 이 |F−R| 의 SO(3) 최소점이면 2μ(F−R) 이라 R 을 떼어도 정확하다 (포락선 정리)."""
+    with torch.no_grad():
+        R = F.detach().clone()
+        for _ in range(iters):
+            d = det3(R)
+            ok = d.abs() > 1e-20
+            Ri = torch.linalg.inv(torch.where(ok[:, None, None], R, torch.eye(3, device=F.device, dtype=F.dtype).expand_as(R)))
+            gm = d.abs().clamp_min(1e-20).pow(-1.0 / 3.0)[:, None, None]
+            R = 0.5 * (gm * R + Ri.transpose(1, 2) / gm)
+        bad = (det3(F.detach()) <= 1e-6) | ~torch.isfinite(R).all((1, 2)) | \
+              ((R.transpose(1, 2) @ R - torch.eye(3, device=F.device, dtype=F.dtype)).abs().amax((1, 2)) > 1e-4)
+        if bad.any():
+            R[bad] = polar_R(F.detach()[bad])
+    return R
+
+
+def fcr_psi(F, mu, lam, R=None, fast=False):
+    """입자 고정 공회전 ψ = μ|F−R|² + λ/2 (J−1)² (det F < 0 에서도 정의, 뒤집히면 벌점이 커진다).
+    fast: R 을 polar_R_fast 로 (같은 값, 기울기는 포락선 정리로 같다)."""
     if R is None:
-        R = polar_R(F)
+        R = polar_R_fast(F) if fast else polar_R(F)
     return mu * ((F - R) ** 2).sum((1, 2)) + 0.5 * lam * (det3(F) - 1.0) ** 2
 
 

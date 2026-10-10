@@ -43,6 +43,9 @@ ap.add_argument("--simp", default="", help="simplicits 가중치 함수 (.pt, �
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--iters0", type=int, default=400)
 ap.add_argument("--iters", type=int, default=200)
+ap.add_argument("--polar_fast", type=int, default=0, help="탄성 에너지의 극분해를 Newton 반복으로 (같은 값, SVD 보다 빠름)")
+ap.add_argument("--newton_tol", type=float, default=0.0, help="ours: 예측 감소 ½g·x < tol² (길이 단위, 정규화 목적) 이면 반복 종료. 0 이면 끝까지")
+ap.add_argument("--cg_tol", type=float, default=1e-4, help="CG 상대 잔차 허용")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
                 help="ours: 서브스텝마다 격자 변위를 관성 예측 h·v 로 초기화 (i-PG 의 du0 = dt·vⁿ 과 같게). 0 이면 예전처럼 변위 0")
@@ -395,7 +398,7 @@ _sla_m = math.sqrt(float(cfg["nu"]) / (1 - 2 * float(cfg["nu"])))   # μ 를 1 �
 def own_elastic(Ftr):
     """각 방법 고유 탄성 에너지 (소성 없음)."""
     if a.method in ("ours", "gaussim", "simplicits"):
-        return (VOL * rm.fcr_psi(Ftr, MU_E, LA_E)).sum()
+        return (VOL * rm.fcr_psi(Ftr, MU_E, LA_E, fast=bool(a.polar_fast))).sum()
     e = torch.zeros((), device=dev)
     for r, ii in zip(reps, idx):
         if a.method == "phystwin":
@@ -539,7 +542,7 @@ for t in range(T_START, a.frames + 1):
                     x += al * pdir; r -= al * Gp
                     rr_new = (r * r).sum()
                     PC["cg"] = PC.get("cg", 0) + 1
-                    if rr_new.sqrt() < 1e-4 * gk.norm():
+                    if rr_new.sqrt() < a.cg_tol * gk.norm():
                         break
                     pdir = r + (rr_new / rr) * pdir; rr = rr_new
                 _t = _tk("CG", _t)
@@ -551,6 +554,9 @@ for t in range(T_START, a.frames + 1):
                 # 적응 보폭: 직전 반복의 보폭을 두 배로 시도 (계량의 크기와 목적의 크기가 장면마다
                 # 달라 고정 시작 보폭은 강체 이동조차 못 따라갔다 -- i-PG lego 의 ours·GS-Verse)
                 f0 = float(E) * NORM; sl = float((gk * x).sum())
+                if a.newton_tol > 0 and 0.5 * sl < a.newton_tol ** 2:   # 예측 감소가 허용 위치 오차² 아래면 수렴
+                    PC["it"] = PC.get("it", 0) + it_
+                    break
                 stp = min(STP[0] * 2.0, a.riem_lr_max)
                 for _bt in range(a.ls_max):
                     PC["ls"] = PC.get("ls", 0) + 1
@@ -601,7 +607,7 @@ for t in range(T_START, a.frames + 1):
                     j_ = torch.cdist(Pi, Q_).topk(min(k, Q_.shape[0]), largest=False).indices
                     out.append((Pi[:, None] - Q_[j_]).norm(dim=-1).min(1).values)
                 return torch.cat(out)
-            cdv = 0.5 * float(_nn(yg[ok], rg[ok]).mean() + _nn(rg[ok], yg[ok]).mean())
+            cdv = 0.0 if a.no_ref else 0.5 * float(_nn(yg[ok], rg[ok]).mean() + _nn(rg[ok], yg[ok]).mean())   # 자기 자신과는 0
             Jd = rm.det3(Fcum)
             rows.append((t, rmse, cdv / L, float("nan"), float(Jd.min()), float((Jd <= 0).float().mean())))
             com = (MASS[:, None] * xn).sum(0) / MSUM
@@ -621,7 +627,7 @@ for t in range(T_START, a.frames + 1):
                 TB.flush()
         if a.prof:
             _tk("마무리·측정", _t)
-            print("  [prof] t=%d " % t + "  ".join(f"{k} {v:.2f}s" for k, v in PT.items()) + f"  | CG 합 {PC.get('cg', 0)} 선탐색 합 {PC.get('ls', 0)}", flush=True); PT.clear(); PC.clear()
+            print("  [prof] t=%d " % t + "  ".join(f"{k} {v:.2f}s" for k, v in PT.items()) + f"  | 바깥 반복 합 {PC.get('it', '끝까지')} CG 합 {PC.get('cg', 0)} 선탐색 합 {PC.get('ls', 0)}", flush=True); PT.clear(); PC.clear()
         if t % 10 == 0 or t == 1:
             print(f"  [t={t:3d}] RMSE {100 * rmse:.3f}%  CD {100 * cdv / L:.3f}%  IP {float(E):.4e} "
                   f"({', '.join(f'{k} {v:.2e}' for k, v in parts.items())})  det 최소 {rows[-1][4]:.3f} "
