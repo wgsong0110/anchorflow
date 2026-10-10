@@ -19,6 +19,7 @@ ap.add_argument("--config", required=True)
 ap.add_argument("--substeps", type=int, required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--pg", default="/home/dkta/work/i-physgaussian")
+ap.add_argument("--dump", default="", help="영상용: 프레임마다 전체 입자 h5 (x, F) 를 이 폴더에")
 a = ap.parse_args()
 sys.path.insert(0, a.pg); os.chdir(a.pg)
 import h5py                                                      # noqa: E402
@@ -60,6 +61,10 @@ sol.add_surface_collider(tuple(floor["point"]), tuple(floor["normal"]), floor["s
 sol.finalize_mu_lam()
 sol.import_particle_v_from_torch(torch.as_tensor(v).cuda())
 print(f"[{a.method}] 입자 {N}, dx {dx:.4f}, N {a.substeps} (dt {dt:.3e}), {NF} 프레임", flush=True)
+if a.dump:
+    os.makedirs(a.dump, exist_ok=True)
+    with h5py.File(f"{a.dump}/sim_{0:010d}.h5", "w") as h:
+        h.create_dataset("x", data=x); h.create_dataset("F", data=np.tile(np.eye(3, dtype=np.float32).reshape(1, 9), (N, 1)))
 rows = [ss.frame_stats(x, v, np.tile(np.eye(3), (N, 1, 1)), MASS, G, float(floor["point"][2]))]
 XS = [x[SUB]]; T = []
 step = 0
@@ -76,6 +81,9 @@ for f in tqdm(range(1, NF + 1), desc=f"{a.method} N{a.substeps}"):
     vt = wp.to_torch(sol.mpm_state.particle_v).cpu().numpy()
     Ft = sol.export_particle_F_to_torch().cpu().numpy()
     rows.append(ss.frame_stats(xt, vt, Ft, MASS, G, float(floor["point"][2])))
+    if a.dump:
+        with h5py.File(f"{a.dump}/sim_{f:010d}.h5", "w") as h:
+            h.create_dataset("x", data=xt.astype(np.float32)); h.create_dataset("F", data=Ft.reshape(N, 9).astype(np.float32))
     XS.append(xt[SUB])
     if rows[-1]["nan"] > 0.5:                                    # 대부분 발산했으면 더 돌 이유가 없다
         print(f"  발산 프레임 {f}", flush=True); break
