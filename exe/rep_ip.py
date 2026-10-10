@@ -63,6 +63,7 @@ ap.add_argument("--cg_fused", type=int, default=0, help="block_pre 단일 물체
 ap.add_argument("--coarse", type=float, default=0, help="cg_fused: 2 단계 전처리 성긴 묶음 배수 (노드를 이 배수×h 칸으로 묶음, 0 이면 끔). 서브스텝마다 한 번 조립·분해")
 ap.add_argument("--diag_u_only", type=int, default=0, help="진단 전용: CG 를 u 성분만으로 (ρ 성분 0) -- 조건수 원인 확인용, 방법이 바뀌므로 결과로 쓰지 말 것")
 ap.add_argument("--cg_hist", type=int, default=0, help="진단: CG 잔차 이력을 바깥 반복마다 찍는다")
+ap.add_argument("--mg", type=int, default=0, help="gn_cuda 단일 물체: 기하 다중격자(2h 삼선형, 정확한 촘촘 A 조립, 성긴 Cholesky) V-사이클 전처리 CG. 서브스텝마다 한 번 조립")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
@@ -544,6 +545,7 @@ for t in range(T_START, a.frames + 1):
 
             GC = [None]                                                # gn_cuda: 바깥 반복마다 커널 입력 보기
             CRS = [None]                                               # 2 단계 전처리 성긴 단계 (서브스텝마다)
+            MGS = [None]                                               # 기하 다중격자 (서브스텝마다)
 
             def gc_build():
                 from anchorflow import gn_warp as gw
@@ -702,7 +704,18 @@ for t in range(T_START, a.frames + 1):
                             outs_.append(gw.block_apply(Bi_, rv[s0_:s0_ + n_], rp_.u.numel())); s0_ += n_
                         return torch.cat(outs_)
                     return rv / PRE if PRE is not None else rv
-                if a.cg_fused and BPRE is not None and len(reps) == 1:
+                if a.mg and MT and a.gn_cuda and len(reps) == 1:
+                    if GC[0] is None:
+                        gc_build()
+                    if MGS[0] is None:                                   # 서브스텝마다 한 번 (첫 선형화 점)
+                        MGS[0] = gw.mg_setup(GC[0][0], theta, reps[0].Xn, reps[0].u.numel(), float(reps[0].h), float(reps[0].a),
+                                             float(MC[0][0][1][14]), math.sqrt(CE[0]), eps)
+                    x, _nc = gw.pcg_mg(gk, lambda pv: Hv(theta, pv), MGS[0], eps, a.riem_cg, a.cg_tol, a.cg_check, hist=bool(a.cg_hist))
+                    PC["cg"] = PC.get("cg", 0) + _nc
+                    if a.cg_hist:
+                        print(f"    [cg] 바깥 {it_} " + " ".join(f"{i_}:{v_:.1e}" for i_, v_ in gw.CG_HIST), flush=True); gw.CG_HIST.clear()
+                    _t = _tk("CG", _t)
+                elif a.cg_fused and BPRE is not None and len(reps) == 1:
                     if a.coarse and CRS[0] is None:                     # 서브스텝마다 한 번
                         CRS[0] = gw.coarse_setup(GC[0][0], theta, reps[0].Xn, reps[0].u.numel(), float(reps[0].h), float(reps[0].a),
                                                  float(MC[0][0][1][14]), math.sqrt(CE[0]), eps, a.coarse)
