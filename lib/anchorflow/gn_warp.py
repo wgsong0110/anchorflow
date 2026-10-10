@@ -361,7 +361,10 @@ _MCG = cp.RawModule(code=_SRC_CG)
 _KGP, _KUPD, _KP, _KINIT = (_MCG.get_function(n) for n in ("cg_gp", "cg_upd", "cg_p", "cg_init"))
 
 
-def pcg_block(gk, hv_fn, Binv, M3, eps, maxit, tol, check=10, coarse=None):
+CG_HIST = []                                                      # 진단: 마지막 CG 의 (반복, |r|/|g|)
+
+
+def pcg_block(gk, hv_fn, Binv, M3, eps, maxit, tol, check=10, coarse=None, hist=False):
     """블록 야코비 전처리 CG (rep_ip 의 CG 와 같은 식). hv_fn(p)->Ap (torch). 돌려주는 것: (x, 반복 수)."""
     n = gk.numel(); nn = M3 // 3
     x = torch.zeros_like(gk); r = gk.clone().contiguous(); z = torch.empty_like(gk)
@@ -382,6 +385,8 @@ def pcg_block(gk, hv_fn, Binv, M3, eps, maxit, tol, check=10, coarse=None):
         pAp = cp.zeros(1, dtype=cp.float64); rzn = cp.zeros(1, dtype=cp.float64); rr = cp.zeros(1, dtype=cp.float64)
         _KGP(gl, (T,), (cG, cpp, cp.float32(eps), cp.int32(n), pAp))
         _KUPD(gn, (T,), (cx, cr, cz, cpp, cG, cB, cp.int32(nn), rz, pAp, rzn, rr))
+        if hist and it % 10 == 0:
+            CG_HIST.append((it, float(rr[0]) ** 0.5 / float(gk.norm())))
         if it % check == 0 and float(rr[0]) < lim:
             break
         if coarse is not None:
