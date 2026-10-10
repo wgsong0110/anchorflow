@@ -172,6 +172,6 @@ def gn_local_diag(A, idx, n):
 
 
 HV = torch.compile(hv_total, dynamic=True)
-GNB = torch.compile(gn_local_blocks, dynamic=True)
+GNB = gn_local_blocks                                   # vmap(jacfwd) 는 compile 안에서 내부 오류 -- 바깥 반복마다 한 번이라 그냥
 GNH = torch.compile(gn_local_hv, dynamic=True)
 OBJ = torch.compile(objective, dynamic=True)
