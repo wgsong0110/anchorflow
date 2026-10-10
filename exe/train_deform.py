@@ -3244,7 +3244,11 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 if not _vs:
                     raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다")
                 st["ov_opt"] = _mk_ov_opt(_vs)
+            _tw = time.time()
             st["ov_opt"].step(_closure)
+            if os.environ.get("AF_OV_ITERS"):
+                torch.cuda.synchronize()
+                print(f"    [반복] t={t} 평가 {_n[0]} 회, {time.time() - _tw:.2f} s", flush=True)
             if a.snap_inv > 0:
                 _nb = _snap_inverted(st, a.snap_inv, a.snap_eps)
                 _SNAP_N[0] = max(_SNAP_N[0], _nb)
