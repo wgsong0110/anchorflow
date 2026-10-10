@@ -30,13 +30,15 @@ H = float(x0[:, 2].max() - fz)
 VCAP = 10.0 * np.sqrt(2 * gz * H)                                # 자유낙하 상한의 10 배
 NAMES = {"pg": "PG", "ipg": "i-PG", "gf": "GaussianFluent", "ours": "우리"}
 runs = {}
-for f in glob.glob(f"{D}/res/*_N*.log"):
+_cand = sorted(set(f[:-4] for f in glob.glob(f"{D}/res/*_N*.log"))
+               | set(f[:-4] for f in glob.glob(f"{D}/res/*_N*.npz") if not f.endswith(".main.npz")))
+for f in (c + ".log" for c in _cand):                                # 로그 없이 npz 만 있는 실행(PG·GF N1024 등)도 넣는다
     m = re.match(r"(\w+?)_N(\d+)(r?)\.log", os.path.basename(f))
     if not m:
         continue
     meth, n, rep = m.group(1), int(m.group(2)), m.group(3) == "r"
     npz = f[:-4] + ".npz"
-    log = open(f, errors="ignore").read()
+    log = open(f, errors="ignore").read() if os.path.exists(f) else ""
     r = dict(method=meth, N=n, rep=rep, crashed=not os.path.exists(npz),
              crash_msg=("illegal memory" if "illegal memory" in log else ("오류" if "rror" in log else "")))
     if os.path.exists(npz):

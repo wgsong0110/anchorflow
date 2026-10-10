@@ -124,6 +124,7 @@ V0 = torch.zeros_like(X0) if V0 is None else torch.as_tensor(V0, dtype=torch.flo
 if float(V0.abs().max()) == 0 and "init_velocity" in cfg:
     V0 = torch.as_tensor(cfg["init_velocity"], dtype=torch.float32, device=dev).expand(N, 3).clone()
 h = float(cfg["frame_dt"]) / a.substeps
+FRAME_DT_NT = float(cfg["frame_dt"])                              # newton_tol 의 속도 단위 환산 기준
 g = torch.as_tensor(cfg.get("g", [0.0, 0.0, -9.8]), dtype=torch.float32, device=dev)
 n_grid, grid_lim = int(cfg.get("n_grid", 100)), float(cfg.get("grid_lim", 2.0))
 dx = grid_lim / n_grid
@@ -772,7 +773,10 @@ for t in range(T_START, a.frames + 1):
                 # 적응 보폭: 직전 반복의 보폭을 두 배로 시도 (계량의 크기와 목적의 크기가 장면마다
                 # 달라 고정 시작 보폭은 강체 이동조차 못 따라갔다 -- i-PG lego 의 ours·GS-Verse)
                 f0 = F0N if F0N is not None else float(E) * NORM; sl = float((gk * x).sum())
-                if a.newton_tol > 0 and 0.5 * sl < a.newton_tol ** 2:   # 예측 감소가 허용 위치 오차² 아래면 수렴
+                # 예측 감소가 허용 위치 오차² 아래면 수렴. 허용 오차는 **속도 단위**(IPC 의 ‖p‖/h < ε)로 둔다:
+                # 위치 허용치 = newton_tol · (h / frame_dt). 절대 길이로 두면 N 이 크면 한 서브스텝의 중력 이동
+                # (½gh²) 자체가 허용치보다 작아 첫 반복에서 멈춰 물체가 영영 안 움직였다 (N ≥ 32 전부). N=1 은 그대로.
+                if a.newton_tol > 0 and 0.5 * sl < (a.newton_tol * h / FRAME_DT_NT) ** 2:
                     PC["it"] = PC.get("it", 0) + it_
                     break
                 stp = min(STP[0] * 2.0, a.riem_lr_max)
