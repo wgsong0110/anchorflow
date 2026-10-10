@@ -108,10 +108,13 @@ V0 = np.array(cfg.get("init_velocity", [0.0, 0.0, -6.0]), np.float64)
 with h5py.File(a.h5, "r") as h:
     X0 = np.array(h["x"]);  X0 = (X0.T if X0.shape[0] == 3 else X0).astype(np.float64)
     V_h5 = np.array(h["v"]) if "v" in h else None
+    PIN_h5 = np.array(h["pin"]).astype(np.int32) if "pin" in h else None    # 고정 입자 (치마: 몸·몸에 붙은 옷 면)
 X0 = X0[::a.stride]
 ok = np.isfinite(X0).all(1)
 X0 = X0[ok]
 N = len(X0)
+if PIN_h5 is not None:
+    PIN_h5 = PIN_h5[::a.stride][ok]
 if V_h5 is not None:
     V_h5 = (V_h5.T if V_h5.shape[0] == 3 else V_h5).astype(np.float64)[::a.stride][ok]
     V_init = V_h5 if np.abs(V_h5).max() > 0 else np.tile(V0, (N, 1))
@@ -688,6 +691,19 @@ init(X0, V_init, VOL, MASS, MU, LM, KP)
 os.makedirs(a.out, exist_ok=True)
 
 
+pin_f = ti.field(ti.i32, N); xpin = ti.Vector.field(3, rt, N)
+if PIN_h5 is not None:
+    pin_f.from_numpy(PIN_h5); xpin.from_numpy(X0.astype(np.float64 if rt == ti.f64 else np.float32))
+
+
+@ti.kernel
+def hold_pins():
+    """고정 입자를 매 서브스텝 처음 위치·속도 0 으로 (mpma_pg 의 PG hold 와 같은 처리)."""
+    for p in x:
+        if pin_f[p] == 1:
+            x[p] = xpin[p]; v[p] = ti.Vector.zero(rt, 3)
+
+
 def dump(f):
     with h5py.File(os.path.join(a.out, f"sim_{f:010d}.h5"), "w") as h:
         h.create_dataset("x", data=x.to_numpy().T.astype(np.float32))
@@ -753,6 +769,8 @@ t0 = time.time()
 for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
     _tf = time.time()
     for _ in range(nsub):
+        if PIN_h5 is not None:
+            hold_pins()
         quarantine(-0.5 * grid_lim, 1.5 * grid_lim)
         if NP and PC_LO <= t < PC_HI:   # 창이 다 닫혀 있으면 띄울 것도 없다
             particle_bc(substep_dt, t)
