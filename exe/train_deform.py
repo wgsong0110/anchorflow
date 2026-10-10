@@ -1293,6 +1293,13 @@ def node_feats(d, t, gsel, x, v, fe=None):
     return (_in, npos, (lo, lat, nn), rows, lam, uniq, (src, dst, cls), _aux)
 
 
+def _ens_offsets(n):
+    if n <= 1:
+        return [None]
+    return [tuple(((k * q) % 1.0) for q in (0.5, 0.25, 0.125))
+            for k in range(n)]
+
+
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
               x0=None, p0=None, fe=None):
     """한 프레임. -> (x_next, p_next, v_next, J, dp, aidx_next)
@@ -3521,13 +3528,6 @@ def _hex_hg_energy(dpn, cell8, lat, cfg, kappa):
     V = float(abs(torch.linalg.det(lat.A.double())))
     h = float(lat.s)
     return 0.5 * kappa * mu * V * (q / h).pow(2).sum() / 8.0
-
-
-def _ens_offsets(n):
-    if n <= 1:
-        return [None]
-    return [tuple(((k * q) % 1.0) for q in (0.5, 0.25, 0.125))
-            for k in range(n)]
 
 
 def _gt_fscal(d, t0, L):
