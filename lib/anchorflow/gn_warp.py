@@ -490,9 +490,8 @@ def mg_setup(pre, th, Xn, M3, hl, aa, sla, sce, eps, omega=0.6):
         for x in range(4):
             pr_.append((nid * 4 + x)[ok]); pc_.append((cinv[t] * 4 + x)[ok]); pv_.append(wgt[ok])
     Pm = torch.sparse_coo_tensor(torch.stack([torch.cat(pr_), torch.cat(pc_)]), torch.cat(pv_), (n4, 4 * nc)).coalesce()
-    Pd = Pm.to_dense()                                                # [4nn, 4nc] -- 성긴 행렬 계산용 (조밀 곱은 작다)
-    AP = torch.sparse.mm(A.to_sparse_coo(), Pd)
-    Ac = Pd.t() @ AP
+    AP = torch.sparse.mm(A.to_sparse_coo(), Pm)                     # 희소 × 희소 (조밀 P 는 수 GB 라 쓰지 않는다)
+    Ac = torch.sparse.mm(Pm.t().coalesce(), AP.coalesce()).to_dense()  # [4nc, 4nc]
     L = torch.linalg.cholesky(Ac.double() + 1e-12 * torch.eye(4 * nc, device=dev, dtype=torch.float64))
     return dict(A=A, P=Pm.to_sparse_csr(), Pt=Pm.t().coalesce().to_sparse_csr(), L=L, Binv=Binv, omega=omega, nn=nn, nc=nc)
 
