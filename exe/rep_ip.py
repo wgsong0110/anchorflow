@@ -647,8 +647,8 @@ for t in range(T_START, a.frames + 1):
                 continue
             gk = flat([q.grad if q.grad is not None else torch.zeros_like(q) for q in PL]).detach()
             theta = flat([q.detach() for q in PL])
-            if METS == "particle":
-                MC[0] = particle_mets()                                   # 반복마다 R 을 다시
+            if METS == "particle" and not (MT and a.gn_cuda and not a.gn_check):
+                MC[0] = particle_mets()                                   # 반복마다 R 을 다시 (CUDA 곱은 R 을 안 쓴다)
                 if MT and a.gn_local:
                     with torch.no_grad():
                         gl_build(theta)
