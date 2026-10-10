@@ -65,6 +65,8 @@ ap.add_argument("--diag_u_only", type=int, default=0, help="진단 전용: CG �
 ap.add_argument("--cg_hist", type=int, default=0, help="진단: CG 잔차 이력을 바깥 반복마다 찍는다")
 ap.add_argument("--mg", type=int, default=0, help="gn_cuda 단일 물체: 기하 다중격자(2h 삼선형, 정확한 촘촘 A 조립, 성긴 Cholesky) V-사이클 전처리 CG. 서브스텝마다 한 번 조립")
 ap.add_argument("--mg_f32", type=int, default=0, help="mg: 성긴 Cholesky 풀이를 float32 로")
+ap.add_argument("--mg_levels", type=int, default=2, help="mg 단계 수 상한 (성긴 노드 1500 이하에서 조밀 Cholesky)")
+ap.add_argument("--cg_ew", type=int, default=0, help="CG 허용오차를 Eisenstat-Walker 로 (min(cg_tol_max, (|g_k|/|g_{k-1}|)), 바깥 수렴 판정은 그대로)")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
@@ -547,6 +549,7 @@ for t in range(T_START, a.frames + 1):
             GC = [None]                                                # gn_cuda: 바깥 반복마다 커널 입력 보기
             CRS = [None]                                               # 2 단계 전처리 성긴 단계 (서브스텝마다)
             MGS = [None]                                               # 기하 다중격자 (서브스텝마다)
+            EW = [None]                                                # Eisenstat-Walker: 직전 바깥 반복의 |g|
 
             def gc_build():
                 from anchorflow import gn_warp as gw
@@ -710,9 +713,17 @@ for t in range(T_START, a.frames + 1):
                         gc_build()
                     if MGS[0] is None:                                   # 서브스텝마다 한 번 (첫 선형화 점)
                         MGS[0] = gw.mg_setup(GC[0][0], theta, reps[0].Xn, reps[0].u.numel(), float(reps[0].h), float(reps[0].a),
-                                             float(MC[0][0][1][14]), math.sqrt(CE[0]), eps, f32=bool(a.mg_f32))
+                                             float(MC[0][0][1][14]), math.sqrt(CE[0]), eps, f32=bool(a.mg_f32), levels=a.mg_levels)
                         _t = _tk("MG 조립", _t)
-                    x, _nc = gw.pcg_mg(gk, lambda pv: Hv(theta, pv), MGS[0], eps, a.riem_cg, a.cg_tol, a.cg_check, hist=bool(a.cg_hist))
+                    _tol = a.cg_tol
+                    if a.cg_ew:                                            # Eisenstat-Walker: 기울기가 많이 줄면 조인다
+                        _gn = float(gk.norm())
+                        if EW[0] is not None:
+                            _tol = min(0.5, max(a.cg_tol, _gn / EW[0]))
+                        else:
+                            _tol = 0.5
+                        EW[0] = _gn
+                    x, _nc = gw.pcg_mg(gk, lambda pv: Hv(theta, pv), MGS[0], eps, a.riem_cg, _tol, a.cg_check, hist=bool(a.cg_hist))
                     PC["cg"] = PC.get("cg", 0) + _nc
                     if a.cg_hist:
                         print(f"    [cg] 바깥 {it_} " + " ".join(f"{i_}:{v_:.1e}" for i_, v_ in gw.CG_HIST), flush=True); gw.CG_HIST.clear()

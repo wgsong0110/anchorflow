@@ -437,12 +437,60 @@ def _dof_perm(nn):
     return None
 
 
-def mg_setup(pre, th, Xn, M3, hl, aa, sla, sce, eps, omega=0.6, f32=False):
-    """촘촘한 A (노드 쌍 4x4 블록, 정확한 가우스-뉴턴) 를 조립하고, 2h 격자 삼선형 P 로 Ac = Pᵀ A P 를 Cholesky.
-    돌려주는 것: dict (A: 희소 [4nn,4nn] 노드 순서, P: 희소 [4nn,4nc], L, Binv: 노드 4x4 블록 역, omega, nn)."""
+def _tri_P(qint, dev):
+    """정수 격자 좌표 qint [n,3] 의 점들을 2 배 성긴 격자로 삼선형 보간하는 P (노드마다 4 성분) 와 성긴 정수 좌표."""
+    n = qint.shape[0]
+    lo = qint // 2; odd = qint % 2
+    corners = []
+    for cx in (0, 1):
+        for cy in (0, 1):
+            for cz in (0, 1):
+                c = torch.tensor([cx, cy, cz], device=dev)
+                ok = ((c == 0) | (odd == 1)).all(1)
+                wgt = torch.where(odd == 1, torch.full(odd.shape, 0.5, device=dev), torch.ones(odd.shape, device=dev)).prod(1)
+                corners.append((lo + c, ok, wgt))
+    allc = torch.cat([cc for cc, ok, _ in corners])
+    ckey = (allc[:, 0] * 100003 + allc[:, 1]) * 100003 + allc[:, 2]
+    uc, cinv = torch.unique(ckey, return_inverse=True)
+    nc = uc.numel()
+    cq = torch.zeros(nc, 3, dtype=torch.long, device=dev)
+    cq[cinv] = allc
+    cinv = cinv.reshape(8, n)
+    pr_, pc_, pv_ = [], [], []
+    nid = torch.arange(n, device=dev)
+    for t, (cc, ok, wgt) in enumerate(corners):
+        for x in range(4):
+            pr_.append((nid * 4 + x)[ok]); pc_.append((cinv[t] * 4 + x)[ok]); pv_.append(wgt[ok])
+    Pm = torch.sparse_coo_tensor(torch.stack([torch.cat(pr_), torch.cat(pc_)]), torch.cat(pv_), (4 * n, 4 * nc)).coalesce()
+    return Pm, cq, nc
+
+
+def _blk_inv(Acoo, n, eps):
+    """희소 [4n,4n] 행렬의 노드 4x4 대각 블록 역."""
+    idx = Acoo.indices(); v = Acoo.values()
+    m = (idx[0] // 4) == (idx[1] // 4)
+    D = torch.zeros(n, 4, 4, device=v.device)
+    D[idx[0][m] // 4, idx[0][m] % 4, idx[1][m] % 4] = v[m]
+    return torch.linalg.inv((D + eps * torch.eye(4, device=v.device)).double()).float()
+
+
+def _chol_jit(Ad):
+    """대칭화하고 양정치가 될 때까지 대각 지터를 키워 Cholesky (성긴 행렬의 float32 조립 반올림 대비)."""
+    Ad = 0.5 * (Ad + Ad.t())
+    d = Ad.diagonal().abs().max().item()
+    for k in range(8):
+        L, info = torch.linalg.cholesky_ex(Ad + (d * 10.0 ** (-9 + k)) * torch.eye(Ad.shape[0], device=Ad.device, dtype=Ad.dtype))
+        if int(info) == 0:
+            return L
+    raise RuntimeError("성긴 행렬 Cholesky 실패")
+
+
+def mg_setup(pre, th, Xn, M3, hl, aa, sla, sce, eps, omega=0.6, f32=False, levels=2, coarse_max=1500):
+    """기하 다중격자. 촘촘한 A (노드 쌍 4x4 블록, 정확한 가우스-뉴턴) 를 CUDA 로 조립하고 2 배씩 삼선형 P 로 Galerkin 성긴 행렬,
+    성긴 노드가 coarse_max 이하가 되거나 levels 단계에서 조밀 Cholesky."""
     dev = th.device
     nn = M3 // 3
-    rows = torch.as_tensor(pre[0], device=dev).long()                 # [P,4]
+    rows = torch.as_tensor(pre[0], device=dev).long()
     Pn = rows.shape[0]
     pk = rows[:, :, None].expand(Pn, 4, 4); pm = rows[:, None, :].expand(Pn, 4, 4)
     key = (pk * nn + pm).reshape(-1)
@@ -454,47 +502,39 @@ def mg_setup(pre, th, Xn, M3, hl, aa, sla, sce, eps, omega=0.6, f32=False):
                                         cp.int32(M3), cp.float32(hl), cp.float32(aa), cp.float32(sla), cp.float32(sce), cp.int32(Pn),
                                         cp.asarray(Ab)))
     bi = uk // nn; bj = uk % nn
-    # 희소 A (노드 순서, 노드마다 4 성분)
     xi = torch.arange(4, device=dev)
     ri = (bi[:, None, None] * 4 + xi[None, :, None]).expand(npair, 4, 4).reshape(-1)
     ci = (bj[:, None, None] * 4 + xi[None, None, :]).expand(npair, 4, 4).reshape(-1)
-    vals = Ab.reshape(-1)
     n4 = 4 * nn
     diag = torch.arange(n4, device=dev)
     A = torch.sparse_coo_tensor(torch.stack([torch.cat([ri, diag]), torch.cat([ci, diag])]),
-                                torch.cat([vals, torch.full((n4,), eps, device=dev)]), (n4, n4)).coalesce().to_sparse_csr()
-    # 노드 4x4 대각 블록의 역 (완화용)
-    dmask = bi == bj
-    D = torch.zeros(nn, 4, 4, device=dev)
-    D[bi[dmask]] = Ab[dmask].reshape(-1, 4, 4)
-    Binv = torch.linalg.inv((D + eps * torch.eye(4, device=dev)).double()).float()
-    # 2h 격자 삼선형 보간
-    q = torch.round((Xn - Xn.min(0).values) / hl).long()             # 촘촘한 격자 정수 좌표
-    lo = q // 2; odd = q % 2
-    corners = []
-    for cx in (0, 1):
-        for cy in (0, 1):
-            for cz in (0, 1):
-                c = torch.stack([cx, cy, cz]) if False else torch.tensor([cx, cy, cz], device=dev)
-                ok = ((c == 0) | (odd == 1)).all(1)                  # 짝수 축은 한 점만
-                wgt = torch.where(odd == 1, torch.full_like(q, 1, dtype=torch.float32) * 0.5, torch.ones_like(q, dtype=torch.float32)).prod(1)
-                corners.append((lo + c, ok, wgt))
-    allc = torch.cat([cc for cc, ok, _ in corners])
-    ckey = (allc[:, 0] * 100003 + allc[:, 1]) * 100003 + allc[:, 2]
-    uc, cinv = torch.unique(ckey, return_inverse=True)
-    nc = uc.numel()
-    cinv = cinv.reshape(8, nn)
-    pr_, pc_, pv_ = [], [], []
-    nid = torch.arange(nn, device=dev)
-    for t, (cc, ok, wgt) in enumerate(corners):
-        for x in range(4):
-            pr_.append((nid * 4 + x)[ok]); pc_.append((cinv[t] * 4 + x)[ok]); pv_.append(wgt[ok])
-    Pm = torch.sparse_coo_tensor(torch.stack([torch.cat(pr_), torch.cat(pc_)]), torch.cat(pv_), (n4, 4 * nc)).coalesce()
-    AP = torch.sparse.mm(A.to_sparse_coo(), Pm)                     # 희소 × 희소 (조밀 P 는 수 GB 라 쓰지 않는다)
-    Ac = torch.sparse.mm(Pm.t().coalesce(), AP.coalesce()).to_dense()  # [4nc, 4nc]
-    L = torch.linalg.cholesky(Ac.double() + 1e-12 * torch.eye(4 * nc, device=dev, dtype=torch.float64))
-    return dict(A=A, P=Pm.to_sparse_csr(), Pt=Pm.t().coalesce().to_sparse_csr(), L=L.float() if f32 else L, Binv=Binv, omega=omega,
-                nn=nn, nc=nc)
+                                torch.cat([Ab.reshape(-1), torch.full((n4,), eps, device=dev)]), (n4, n4)).coalesce()
+    q = torch.round((Xn - Xn.min(0).values) / hl).long()
+    LV = []
+    Acur, qcur, ncur = A, q, nn
+    for lev in range(levels):
+        Pm, cq, nc = _tri_P(qcur, dev)
+        LV.append(dict(A=Acur.to_sparse_csr(), Binv=_blk_inv(Acur, ncur, 0.0), P=Pm.to_sparse_csr(),
+                       Pt=Pm.t().coalesce().to_sparse_csr(), n=ncur))
+        Acur = torch.sparse.mm(Pm.t().coalesce(), torch.sparse.mm(Acur, Pm).coalesce()).coalesce()
+        qcur, ncur = cq, nc
+        if nc <= coarse_max:
+            break
+    L = _chol_jit(Acur.to_dense().double())
+    return dict(LV=LV, L=L.float() if f32 else L, omega=omega, nn=nn)
+
+
+def _vcycle(MG, k, r):
+    if k == len(MG["LV"]):
+        return torch.cholesky_solve(r.to(MG["L"].dtype)[:, None], MG["L"]).squeeze(1).float()
+    lv = MG["LV"][k]; om = MG["omega"]; n = lv["n"]
+    jac = lambda v: (lv["Binv"] @ v.reshape(n, 4, 1)).reshape(-1)      # noqa: E731
+    z = om * jac(r)
+    r1 = r - (lv["A"] @ z[:, None]).squeeze(1)
+    zc = _vcycle(MG, k + 1, (lv["Pt"] @ r1[:, None]).squeeze(1))
+    z = z + (lv["P"] @ zc[:, None]).squeeze(1)
+    r2 = r - (lv["A"] @ z[:, None]).squeeze(1)
+    return z + om * jac(r2)
 
 
 def _to_node(v, nn):
@@ -508,18 +548,9 @@ def _from_node(z, nn):
 
 
 def mg_apply(MG, r):
-    """대칭 2 단계 V-사이클: 블록 야코비 완화 → 성긴 보정 → 블록 야코비 완화. r 은 [u;ρ] 순서."""
-    nn, om, Bi = MG["nn"], MG["omega"], MG["Binv"]
-    rn = _to_node(r, nn)
-    jac = lambda v: (Bi @ v.reshape(nn, 4, 1)).reshape(-1)          # noqa: E731
-    z = om * jac(rn)
-    r1 = rn - (MG["A"] @ z[:, None]).squeeze(1)
-    rc = (MG["Pt"] @ r1[:, None]).squeeze(1).to(MG["L"].dtype)
-    yc = torch.cholesky_solve(rc[:, None], MG["L"]).squeeze(1).float()
-    z = z + (MG["P"] @ yc[:, None]).squeeze(1)
-    r2 = rn - (MG["A"] @ z[:, None]).squeeze(1)
-    z = z + om * jac(r2)
-    return _from_node(z, nn)
+    """대칭 V-사이클 (단계마다 블록 야코비 앞뒤 완화, 마지막은 조밀 Cholesky). r 은 [u;ρ] 순서."""
+    nn = MG["nn"]
+    return _from_node(_vcycle(MG, 0, _to_node(r, nn)), nn)
 
 
 def pcg_mg(gk, hv_fn, MG, eps, maxit, tol, check=10, hist=False):
