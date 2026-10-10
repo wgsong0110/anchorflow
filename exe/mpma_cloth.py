@@ -53,6 +53,7 @@ parser.add_argument("--out_dir", required=True)
 parser.add_argument("--skip_render", action="store_true")
 parser.add_argument("--render_only", action="store_true", help="저장된 sim_verts.pt 로 렌더만")
 parser.add_argument("--E_mul", type=float, default=1.0, help="저자 E 배수 (PG 도 init_state 로 같은 값)")
+parser.add_argument("--cloth_only", action="store_true", help="렌더에서 몸 가우시안을 빼고 옷만 (video_cloth.mp4)")
 parser.add_argument("--dump_only", action="store_true", help="초기 상태(입자·고정점·축)만 저장하고 끝 (PG 비교용)")
 args = parser.parse_args(sys.argv[1:])
 A = lp.extract(args); PIPE = pp.extract(args)
@@ -256,9 +257,11 @@ ao = [np.array(Image.open(p).convert("L")).astype(np.float32) / 255. for p in so
 ao = torch.from_numpy(np.array(ao)).unsqueeze(1).contiguous().float().cuda()
 with torch.no_grad():
     prune_faces(gaussians, os.path.join(A.dataset_dir, "demo/a1_prune_f_idx.npy"))
+    if args.cloth_only:                                          # 몸 면에 붙은 가우시안은 불투명도 0
+        gaussians._opacity[~torch.isin(gaussians.binding, cloth_f)] = -1e4
 cam = scene.test_dataset.camera_list[0]; cam_idx = scene.test_camera_index[0]
 bg = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
-imgdir = os.path.join(OUT, "frames"); os.makedirs(imgdir, exist_ok=True)
+imgdir = os.path.join(OUT, "frames_cloth" if args.cloth_only else "frames"); os.makedirs(imgdir, exist_ok=True)
 with torch.no_grad():
     for i in tqdm(range(len(all_verts)), desc="렌더"):
         gaussians.set_mesh_by_verts(all_verts[i])
@@ -270,5 +273,5 @@ with torch.no_grad():
         img = img * pkg["mask"] + (1.0 - pkg["mask"])
         Image.fromarray((img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).save(f"{imgdir}/{i:04d}.png")
 os.system(f"{FFMPEG} -y -hide_banner -loglevel error -framerate 25 -i {imgdir}/%04d.png -pix_fmt yuv420p "
-          f"-vf scale='trunc(iw/2)*2:trunc(ih/2)*2' {OUT}/video.mp4")
-print(f"[영상] {OUT}/video.mp4", flush=True)
+          f"-vf scale='trunc(iw/2)*2:trunc(ih/2)*2' {OUT}/{'video_cloth' if args.cloth_only else 'video'}.mp4")
+print(f"[영상] {OUT}/{'video_cloth' if args.cloth_only else 'video'}.mp4", flush=True)

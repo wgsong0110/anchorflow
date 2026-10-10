@@ -25,6 +25,7 @@ ap.add_argument("--angle", type=float, default=60.0)
 ap.add_argument("--frames", type=int, default=50)
 ap.add_argument("--substep", type=int, default=400)
 ap.add_argument("--n_grid", type=int, default=250)
+ap.add_argument("--cloth_only", action="store_true", help="렌더에서 몸 가우시안을 빼고 옷만 (video_cloth.mp4)")
 a, rest = ap.parse_known_args()
 os.makedirs(a.work, exist_ok=True)
 import numpy as np                                               # noqa: E402
@@ -105,7 +106,7 @@ if a.stage == "dump":
     pin = (~is_cloth) | is_joint
     torch.save(dict(x=(X * sc + shf)[keep].cpu(), v=(V * sc)[keep].cpu(), cov=(cov * sc * sc)[keep].cpu(),
                     pin=pin[keep].cpu(), col=col[keep].cpu(), op=op[keep].cpu(), scale=sc, shift=shf.cpu(),
-                    E=st["E"], D=st["D"]), f"{a.work}/pg_in.pt")
+                    E=st["E"], D=st["D"], cloth=is_cloth[keep].cpu()), f"{a.work}/pg_in.pt")
     print(f"[PG 입력] 가우시안 {int(keep.sum())} (옷 {int((is_cloth & keep).sum())}, 고정 {int((pin & keep).sum())})", flush=True)
 
 elif a.stage == "sim":
@@ -153,16 +154,19 @@ else:
     I = torch.load(f"{a.work}/pg_in.pt"); T = torch.load(f"{a.work}/pg_traj.pt")
     sc, shf = I["scale"], I["shift"].cuda()
     col, op = I["col"].cuda(), I["op"].cuda()
+    KM = I["cloth"].cuda() if a.cloth_only else torch.ones(col.shape[0], dtype=torch.bool, device="cuda")   # 옷만 그리기
+    col, op = col[KM], op[KM]
     bg = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
     rs = GaussianRasterizationSettings(image_height=int(cam.image_height), image_width=int(cam.image_width),
                                        tanfovx=math.tan(cam.FoVx * 0.5), tanfovy=math.tan(cam.FoVy * 0.5), bg=bg,
                                        scale_modifier=1.0, viewmatrix=cam.world_view_transform, projmatrix=cam.full_proj_transform,
                                        sh_degree=3, campos=cam.camera_center, prefiltered=False, debug=False)
     rast = GaussianRasterizer(raster_settings=rs)
-    imgdir = f"{a.work}/frames"; os.makedirs(imgdir, exist_ok=True)
+    VN = "video_cloth" if a.cloth_only else "video"
+    imgdir = f"{a.work}/frames_cloth" if a.cloth_only else f"{a.work}/frames"; os.makedirs(imgdir, exist_ok=True)
     with torch.no_grad():
         for i in range(T["x"].shape[0]):
-            X = (T["x"][i].cuda() - shf) / sc; C = T["cov"][i].cuda() / (sc * sc)
+            X = ((T["x"][i].cuda() - shf) / sc)[KM]; C = (T["cov"][i].cuda() / (sc * sc))[KM]
             Cm = torch.zeros(C.shape[0], 3, 3, device="cuda")
             Cm[:, 0, 0], Cm[:, 0, 1], Cm[:, 0, 2], Cm[:, 1, 1], Cm[:, 1, 2], Cm[:, 2, 2] = C.T
             Cm[:, 1, 0], Cm[:, 2, 0], Cm[:, 2, 1] = C[:, 1], C[:, 2], C[:, 4]
@@ -178,5 +182,5 @@ else:
             img = img * mask + (1.0 - mask)
             Image.fromarray((img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).save(f"{imgdir}/{i:04d}.png")
     os.system(f"{FFMPEG} -y -hide_banner -loglevel error -framerate 25 -i {imgdir}/%04d.png -pix_fmt yuv420p "
-              f"-vf scale='trunc(iw/2)*2:trunc(ih/2)*2' {a.work}/video.mp4")
-    print(f"[영상] {a.work}/video.mp4", flush=True)
+              f"-vf scale='trunc(iw/2)*2:trunc(ih/2)*2' {a.work}/{VN}.mp4")
+    print(f"[영상] {a.work}/{VN}.mp4", flush=True)
