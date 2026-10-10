@@ -23,7 +23,7 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=0)
 ap.add_argument("--material", choices=["sand", "nacc"], default="sand", help="nacc: GF 와 같은 CD-MPM(NACC) 소성 (β·ξ·경화·초기 log Jp 는 GF config 그대로). MPMAvatar 는 AF_MP_ROOT=MPMAvatar_nacc")
 ap.add_argument("--check", type=int, default=0, help="이 서브스텝마다 동기화하고 x·F NaN 검사 (디버그)")
-ap.add_argument("--drop_isolated", type=int, default=1, help="3×3×3 칸 안에 혼자인 입자(GF 채우기의 외톨이)는 솔버에서 빼고 자유낙하로 채운다 -- APIC+NACC 에서 혼자 발산해 NaN 이 격자 인덱스를 깬다")
+ap.add_argument("--drop_isolated", type=int, default=0, help="3×3×3 칸 안에 혼자인 입자(GF 채우기의 외톨이)는 솔버에서 빼고 자유낙하로 채운다 -- APIC+NACC 에서 혼자 발산해 NaN 이 격자 인덱스를 깬다")
 ap.add_argument("--E", type=float, default=0, help="E 를 GF config 대신 이 값으로 (0 이면 config)")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
@@ -85,6 +85,7 @@ if a.solver == "pg":
     PG = "/home/dkta/work/i-physgaussian"; sys.path.insert(0, PG); os.chdir(PG)
     import warp as wp
     from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP
+    from mpm_solver_warp.mpm_utils import quarantine_nonfinite as QUAR
     wp.init()
     sol = MPM_Simulator_WARP(10)
     sol.load_initial_data_from_torch(X, VOL, None, n_grid=n_grid, grid_lim=GL)
@@ -97,6 +98,7 @@ if a.solver == "pg":
         for s in range(nsub):
             if a.check:
                 ms = sol.mpm_state; prev = {k: wp.to_torch(getattr(ms, k)).clone() for k in ("particle_F_trial", "particle_F", "particle_Jp", "particle_C", "particle_v")}
+            wp.launch(QUAR, dim=N, inputs=[sol.mpm_state, -0.5 * GL, 1.5 * GL, 1e5])   # GF quarantine 과 같은 자리·같은 문턱
             sol.p2g2p(f, sub)
             if a.check:
                 wp.synchronize(); S_ = wp.to_torch(sol.mpm_state.particle_stress).reshape(N, -1)
@@ -126,6 +128,19 @@ else:
     wp.config.enable_backward = False                            # NACC 필드를 더하면 역전파 커널 인자가 4KB 를 넘는다 -- 순전파만 쓴다
     from warp_mpm.mpm_data_structure import MPMStateStruct, MPMModelStruct
     from warp_mpm.mpm_solver import MPMWARP
+
+    @wp.kernel
+    def quar_mpma(state: MPMStateStruct, lo: float, hi: float, vmax: float):
+        """GF quarantine: 상자 밖이거나 |v| ≥ vmax (NaN 포함) 인 입자를 시뮬에서 빼고 속도를 지운다."""
+        p = wp.tid()
+        if state.particle_selection[p] == 0:
+            x = state.particle_x[p]
+            v = state.particle_v[p]
+            ok = (x[0] > lo) and (x[0] < hi) and (x[1] > lo) and (x[1] < hi) and (x[2] > lo) and (x[2] < hi) \
+                and (v[0] > -vmax) and (v[0] < vmax) and (v[1] > -vmax) and (v[1] < vmax) and (v[2] > -vmax) and (v[2] < vmax)
+            if not ok:
+                state.particle_selection[p] = 1
+                state.particle_v[p] = wp.vec3(0.0, 0.0, 0.0)
     wp.init()
     dev = "cuda:0"
     st = MPMStateStruct(); st.init(N, 0, 0, device=dev, requires_grad=False)
@@ -148,6 +163,7 @@ else:
     dump(0, x[KP], np.tile(np.eye(3, dtype=np.float32), (N, 1, 1)))
     for f in tqdm(range(1, NF + 1), desc="MPMAvatar"):
         for s in range(nsub):
+            wp.launch(quar_mpma, dim=N, inputs=[st, -0.5 * GL, 1.5 * GL, 1e5], device=dev)
             sol.p2g2p(md, st, sub, device=dev)
         xt = wp.to_torch(st.particle_x).cpu().numpy()
         dump(f, xt, wp.to_torch(st.particle_F).cpu().numpy())
