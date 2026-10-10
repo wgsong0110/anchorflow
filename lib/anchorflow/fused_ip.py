@@ -73,4 +73,11 @@ def objective(theta, M3: int, rows, r, dr, w, dw, hl: float, aa: float, X_, xtil
     return e * norm, bad
 
 
+
+def res_inertia(x, M3: int, rows, r, dr, w, dw, hl: float, aa: float, sq):
+    """관성 항의 가우스-뉴턴 잔차 √(NORM m/h²)·dy (θ 의 함수, ρ 포함)."""
+    dy, _ = yJ_greg(x[:M3].reshape(-1, 3), x[M3:], rows, r, dr, w, dw, hl, aa)
+    return (sq[:, None] * dy).reshape(-1)
+
+
 OBJ = torch.compile(objective, dynamic=True)

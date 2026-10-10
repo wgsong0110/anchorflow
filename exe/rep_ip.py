@@ -46,6 +46,7 @@ ap.add_argument("--iters", type=int, default=200)
 ap.add_argument("--polar_fast", type=int, default=0, help="탄성 에너지의 극분해를 Newton 반복으로 (같은 값, SVD 보다 빠름)")
 ap.add_argument("--newton_tol", type=float, default=0.0, help="ours: 예측 감소 ½g·x < tol² (길이 단위, 정규화 목적) 이면 반복 종료. 0 이면 끝까지")
 ap.add_argument("--cg_tol", type=float, default=1e-4, help="CG 상대 잔차 허용")
+ap.add_argument("--metric_true", type=int, default=0, help="ours: 계량을 실제 목적의 가우스-뉴턴 헤시안으로 (관성 NORM·m/h² + 탄성 2μΣV·NORM 배). 0 이면 예전 (탄성만, μ=1)")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
@@ -506,10 +507,20 @@ for t in range(T_START, a.frames + 1):
             # λmax (거듭제곱법) 로 ε 척도 -- 블록 대각 (물체마다)
             MC = [particle_mets() if METS == "particle" else METS]
 
+            MT = bool(a.metric_true) and a.method == "ours" and METS == "particle"
+            if MT:                                                 # 관성 잔차 √(NORM m/h²)·dy 와 탄성 계량의 실제 배율
+                from anchorflow import fused_ip as fi
+                IN_ARGS = [(r.u.numel(), r.rows, r.r, r.dr, r.w, r.dw, float(r.h), float(r.a),
+                            (NORM * MASS[ii] / (h * h)).sqrt()) for r, ii in zip(reps, idx)]
+                CE = [float(NORM * 2.0 * MU_E * VOL[ii].sum()) for ii in idx]
+
             def Hv(th, u):
                 outs, s0 = [], 0
-                for (fn, args), n_ in zip(MC[0], psizes):
-                    outs.append(GNP(fn, th[s0:s0 + n_], u[s0:s0 + n_], *args)); s0 += n_
+                for k_, ((fn, args), n_) in enumerate(zip(MC[0], psizes)):
+                    o_ = GNP(fn, th[s0:s0 + n_], u[s0:s0 + n_], *args)
+                    if MT:
+                        o_ = CE[k_] * o_ + GNP(fi.res_inertia, th[s0:s0 + n_], u[s0:s0 + n_], *IN_ARGS[k_])
+                    outs.append(o_); s0 += n_
                 return torch.cat(outs)
             with torch.no_grad():
                 th0 = flat([q.detach() for q in PL])
