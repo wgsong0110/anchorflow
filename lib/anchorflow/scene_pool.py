@@ -352,6 +352,14 @@ class StatePool:
                                            vmax=self.vmax, zbias=self.zbias)
             st["elapsed"] = 0
             self.n_replan += 1
+        if self.drop is not None and st["age"] >= self.frames:
+            # 낙하 모드는 상태 수명을 데이터셋 궤적 길이(frames)로 자른다. 자르지 않으면 풀이 바닥에
+            # 멈춘 상태로 차서 망이 "움직이지 않기" 를 배운다 (실측: 평가 80 프레임 비 1.03, 무게중심이 안 떨어짐).
+            # 폐기가 아니라 만기이므로 n_drop 에 세지 않는다.
+            self.n_expire = getattr(self, "n_expire", 0) + 1
+            if slot is not None:
+                self.items[slot] = None
+            return False
         bad = (not bool(torch.isfinite(st["x"]).all())) or \
             (not np.isfinite(res)) or mean_res > self.thresh
         if bad:
