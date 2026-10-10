@@ -472,7 +472,9 @@ for t in range(T_START, a.frames + 1):
         PL = REP.params()
         shapes, sizes = [q.shape for q in PL], [q.numel() for q in PL]
         METS = REP.metrics() if a.method != "gaussim" else None
-        if a.own:
+        if a.metric_true and a.method == "ours":
+            METS = "particle"                                         # 실제 목적의 가우스-뉴턴: 입자 FCR 탄성 + 관성 (아래 Hv)
+        elif a.own:
             if a.method == "phystwin":
                 METS = [(rm.res_spring, (r.B, r.rel, r.L0)) for r in reps]
             elif a.method == "vrgs":
