@@ -22,6 +22,7 @@ ap.add_argument("--config", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=0)
 ap.add_argument("--material", choices=["sand", "nacc"], default="sand", help="nacc: GF 와 같은 CD-MPM(NACC) 소성 (β·ξ·경화·초기 log Jp 는 GF config 그대로). MPMAvatar 는 AF_MP_ROOT=MPMAvatar_nacc")
+ap.add_argument("--trace", type=int, default=0, help="1 이면 서브스텝마다 F_trial·F 의 det 를 보고 처음 이상해지는 입자의 전후 상태를 저장하고 멈춘다 (PG)")
 ap.add_argument("--check", type=int, default=0, help="이 서브스텝마다 동기화하고 x·F NaN 검사 (디버그)")
 ap.add_argument("--drop_isolated", type=int, default=0, help="3×3×3 칸 안에 혼자인 입자(GF 채우기의 외톨이)는 솔버에서 빼고 자유낙하로 채운다 -- APIC+NACC 에서 혼자 발산해 NaN 이 격자 인덱스를 깬다")
 ap.add_argument("--E", type=float, default=0, help="E 를 GF config 대신 이 값으로 (0 이면 config)")
@@ -103,7 +104,42 @@ if a.solver == "pg":
             if a.check:
                 ms = sol.mpm_state; prev = {k: wp.to_torch(getattr(ms, k)).clone() for k in ("particle_F_trial", "particle_F", "particle_Jp", "particle_C", "particle_v")}
             wp.launch(QUAR, dim=N, inputs=[sol.mpm_state, QLO, QHI, 1e5])   # GF quarantine 과 같은 자리·같은 속도 문턱
+            if a.trace:
+                ms = sol.mpm_state
+                _K = ("particle_F_trial", "particle_F", "particle_C", "particle_v", "particle_x", "particle_Jp", "particle_selection")
+                pre = {k: wp.to_torch(getattr(ms, k)).clone() for k in _K}
             sol.p2g2p(f, sub)
+            if a.trace:
+                wp.synchronize()
+                post = {k: wp.to_torch(getattr(ms, k)).clone() for k in _K + ("particle_stress",)}
+                alive = pre["particle_selection"] == 0
+                d_tr = torch.linalg.det(pre["particle_F_trial"].double())          # 이번 리턴 매핑의 입력
+                d_F = torch.linalg.det(post["particle_F"].double())                # 리턴 매핑 결과
+                d_trn = torch.linalg.det(post["particle_F_trial"].double())        # 다음 입력 (= (I + dt C) F)
+                Fm = post["particle_F"].abs().reshape(N, -1).amax(1)
+                cats = {"입력 F_trial det<=0": alive & ~(d_tr > 0), "결과 F det<=0 또는 비유한": alive & ~(d_F > 0),
+                        "결과 F det>3": alive & (d_F > 3), "결과 F det<0.3": alive & (d_F < 0.3) & (d_F > 0),
+                        "결과 |F|>5": alive & (Fm > 5), "다음 F_trial det<=0": alive & ~(d_trn > 0)}
+                hit = {k: v.nonzero().flatten() for k, v in cats.items() if v.any()}
+                if hit:
+                    print(f"[이상] 프레임 {f} 서브스텝 {s}: " + ", ".join(f"{k} {len(v)} 개" for k, v in hit.items()), flush=True)
+                    i = int(next(iter(hit.values()))[0])
+                    torch.set_printoptions(precision=8, sci_mode=True)
+                    print(f"  입자 {i}: 입력 det {float(d_tr[i]):.6g} 결과 det {float(d_F[i]):.6g} 다음 det {float(d_trn[i]):.6g} "
+                          f"logJp {float(pre['particle_Jp'][i]):.6g}->{float(post['particle_Jp'][i]):.6g}", flush=True)
+                    for k in ("particle_F_trial", "particle_F", "particle_C", "particle_v", "particle_x"):
+                        print(f"  전 {k}: {pre[k][i].tolist()}", flush=True)
+                    for k in ("particle_F", "particle_F_trial", "particle_C", "particle_v", "particle_stress"):
+                        print(f"  후 {k}: {post[k][i].tolist()}", flush=True)
+                    nb = ((pre["particle_x"] - pre["particle_x"][i]).norm(dim=1) < 2 * dx).sum() - 1
+                    print(f"  2dx 안 이웃 {int(nb)}, 같은 서브스텝 입력 det 분위(살아있는) "
+                          f"{torch.quantile(d_tr[alive].float()[::97], torch.tensor([0., .001, .5, .999, 1.], device=d_tr.device)).tolist()}", flush=True)
+                    torch.save(dict(pre={k: v[i].cpu() for k, v in pre.items()}, post={k: v[i].cpu() for k, v in post.items()}, idx=i,
+                                    frame=f, sub=s, dt=sub, mu=float(wp.to_torch(sol.mpm_model.mu)[i]), lam=float(wp.to_torch(sol.mpm_model.lam)[i]),
+                                    kappa=float(wp.to_torch(sol.mpm_model.kappa)[i]), beta=float(wp.to_torch(sol.mpm_model.beta)[i]),
+                                    M=float(sol.mpm_model.M), xi=float(sol.mpm_model.xi), hardening=float(sol.mpm_model.hardening)),
+                               f"{a.out}/trace_first.pt")
+                    raise SystemExit(0)
             if a.check:
                 wp.synchronize(); S_ = wp.to_torch(sol.mpm_state.particle_stress).reshape(N, -1)
                 bad_ = (~torch.isfinite(S_)).any(1)
