@@ -23,6 +23,7 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=0)
 ap.add_argument("--material", choices=["sand", "nacc"], default="sand", help="nacc: GF 와 같은 CD-MPM(NACC) 소성 (β·ξ·경화·초기 log Jp 는 GF config 그대로). MPMAvatar 는 AF_MP_ROOT=MPMAvatar_nacc")
 ap.add_argument("--check", type=int, default=0, help="이 서브스텝마다 동기화하고 x·F NaN 검사 (디버그)")
+ap.add_argument("--drop_isolated", type=int, default=1, help="3×3×3 칸 안에 혼자인 입자(GF 채우기의 외톨이)는 솔버에서 빼고 자유낙하로 채운다 -- APIC+NACC 에서 혼자 발산해 NaN 이 격자 인덱스를 깬다")
 ap.add_argument("--E", type=float, default=0, help="E 를 GF config 대신 이 값으로 (0 이면 config)")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
@@ -41,21 +42,38 @@ NF = a.frames or int(cfg["frame_num"])
 G = [float(g) for g in cfg["g"]]
 with h5py.File(a.h5) as h:
     x = np.array(h["x"]); x = np.ascontiguousarray((x.T if x.shape[0] == 3 else x).astype(np.float32))
-N = x.shape[0]
-X = torch.as_tensor(x).cuda()
-cell = (X / dx).floor().long(); key = (cell[:, 0] * n_grid + cell[:, 1]) * n_grid + cell[:, 2]
+NALL = x.shape[0]
+XA = torch.as_tensor(x).cuda()
+cell = (XA / dx).floor().long(); key = (cell[:, 0] * n_grid + cell[:, 1]) * n_grid + cell[:, 2]
 _, inv, cnt = torch.unique(key, return_inverse=True, return_counts=True)
-VOL = (dx ** 3 / cnt[inv].float()).contiguous()                  # GF/PG get_particle_volume 와 같은 정의
+VOLA = (dx ** 3 / cnt[inv].float()).contiguous()                 # GF/PG get_particle_volume 와 같은 정의 (빼기 전 전체로)
+keep = torch.ones(NALL, dtype=torch.bool, device="cuda")
+if a.drop_isolated:
+    occ = torch.zeros(n_grid + 2, n_grid + 2, n_grid + 2, device="cuda")
+    c1 = (cell + 1).clamp(0, n_grid + 1); occ.index_put_((c1[:, 0], c1[:, 1], c1[:, 2]), torch.ones(NALL, device="cuda"), accumulate=True)
+    nb = torch.nn.functional.conv3d(occ[None, None], torch.ones(1, 1, 3, 3, 3, device="cuda"), padding=1)[0, 0]
+    keep = nb[c1[:, 0], c1[:, 1], c1[:, 2]] > 1.5
+X, VOL = XA[keep].contiguous(), VOLA[keep].contiguous()
+N = X.shape[0]
+print(f"외톨이 입자 {NALL - N} 개를 자유낙하로 (전체 {NALL})", flush=True)
 V0 = torch.tensor([0.0, 0.0, -6.0], device="cuda").expand(N, 3).contiguous()   # GF 수박 러너 하드코딩
 print(f"[{a.solver}] 입자 {N}, 격자 {n_grid} dx {dx:.5f}, 서브스텝 {sub:.3e} × {nsub}, {NF} 프레임, 재질 {a.material} φ "
       f"{cfg.get('friction_angle', 45)} β {cfg.get('beta')} ξ {cfg.get('xi')} 경화 {cfg.get('hardening')}", flush=True)
 os.makedirs(a.out, exist_ok=True)
 
 
+KP = keep.cpu().numpy(); XD = x[~KP]
+
+
 def dump(f, xt, Ft):
+    """빠진 외톨이는 x0 + v0 t + g t²/2 (상자 안으로 자름), F = I 로 채워 GF 와 같은 입자 순서로 저장."""
+    t = f * frame_dt
+    xo = np.empty((NALL, 3), np.float32); Fo = np.tile(np.eye(3, dtype=np.float32).reshape(1, 9), (NALL, 1))
+    xo[KP] = xt; Fo[KP] = Ft.reshape(-1, 9)
+    xo[~KP] = np.clip(XD + np.array([0.0, 0.0, -6.0]) * t + 0.5 * np.array(G) * t * t, 3 * dx, GL - 3 * dx)
     with h5py.File(f"{a.out}/sim_{f:010d}.h5", "w") as h:
-        h.create_dataset("x", data=xt.T.astype(np.float32))
-        h.create_dataset("F", data=Ft.reshape(-1, 9).astype(np.float32))
+        h.create_dataset("x", data=xo.T.astype(np.float32))
+        h.create_dataset("F", data=Fo.astype(np.float32))
 
 
 mat = {"material": "sand", "E": E, "nu": nu, "density": rho, "friction_angle": float(cfg.get("friction_angle", 45.0)),
@@ -74,7 +92,7 @@ if a.solver == "pg":
     sol.add_bounding_box()
     sol.finalize_mu_lam()
     sol.import_particle_v_from_torch(V0)
-    dump(0, x, np.tile(np.eye(3, dtype=np.float32), (N, 1, 1)))
+    dump(0, x[KP], np.tile(np.eye(3, dtype=np.float32), (N, 1, 1)))
     for f in tqdm(range(1, NF + 1), desc="PG"):
         for s in range(nsub):
             if a.check:
@@ -127,7 +145,7 @@ else:
     sol.set_E_nu_from_torch(md, one * E, one * nu, one * 0.0, _kb, dev)
     sol.prepare_mu_lam(md, st, dev)
     sol.add_bounding_box()
-    dump(0, x, np.tile(np.eye(3, dtype=np.float32), (N, 1, 1)))
+    dump(0, x[KP], np.tile(np.eye(3, dtype=np.float32), (N, 1, 1)))
     for f in tqdm(range(1, NF + 1), desc="MPMAvatar"):
         for s in range(nsub):
             sol.p2g2p(md, st, sub, device=dev)
