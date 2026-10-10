@@ -22,6 +22,7 @@ ap.add_argument("--config", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=0)
 ap.add_argument("--material", choices=["sand", "nacc"], default="sand", help="nacc: GF 와 같은 CD-MPM(NACC) 소성 (β·ξ·경화·초기 log Jp 는 GF config 그대로). MPMAvatar 는 AF_MP_ROOT=MPMAvatar_nacc")
+ap.add_argument("--check", type=int, default=0, help="이 서브스텝마다 동기화하고 x·F NaN 검사 (디버그)")
 ap.add_argument("--E", type=float, default=0, help="E 를 GF config 대신 이 값으로 (0 이면 config)")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
@@ -77,11 +78,16 @@ if a.solver == "pg":
     for f in tqdm(range(1, NF + 1), desc="PG"):
         for s in range(nsub):
             sol.p2g2p(f, sub)
+            if a.check and s % a.check == 0:
+                wp.synchronize(); xx = sol.export_particle_x_to_torch(); FF = sol.export_particle_F_to_torch()
+                print(f"  f{f} s{s}: x 비유한 {int((~torch.isfinite(xx)).any(1).sum())} 범위 {float(xx.nan_to_num(0).min()):.3f}~{float(xx.nan_to_num(0).max()):.3f}"
+                      f" F 비유한 {int((~torch.isfinite(FF)).reshape(N, -1).any(1).sum())}", flush=True)
         xt = sol.export_particle_x_to_torch().cpu().numpy()
         dump(f, xt, sol.export_particle_F_to_torch().cpu().numpy())
 else:
     MP = os.environ.get("AF_MP_ROOT", "/home/dkta/work/MPMAvatar"); sys.path.insert(0, MP); os.chdir(MP)
     import warp as wp
+    wp.config.enable_backward = False                            # NACC 필드를 더하면 역전파 커널 인자가 4KB 를 넘는다 -- 순전파만 쓴다
     from warp_mpm.mpm_data_structure import MPMStateStruct, MPMModelStruct
     from warp_mpm.mpm_solver import MPMWARP
     wp.init()
