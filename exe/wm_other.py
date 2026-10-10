@@ -21,6 +21,7 @@ ap.add_argument("--h5", required=True)
 ap.add_argument("--config", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=0)
+ap.add_argument("--material", choices=["sand", "nacc"], default="sand", help="nacc: GF 와 같은 CD-MPM(NACC) 소성 (β·ξ·경화·초기 log Jp 는 GF config 그대로). MPMAvatar 는 AF_MP_ROOT=MPMAvatar_nacc")
 ap.add_argument("--E", type=float, default=0, help="E 를 GF config 대신 이 값으로 (0 이면 config)")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
@@ -45,8 +46,8 @@ cell = (X / dx).floor().long(); key = (cell[:, 0] * n_grid + cell[:, 1]) * n_gri
 _, inv, cnt = torch.unique(key, return_inverse=True, return_counts=True)
 VOL = (dx ** 3 / cnt[inv].float()).contiguous()                  # GF/PG get_particle_volume 와 같은 정의
 V0 = torch.tensor([0.0, 0.0, -6.0], device="cuda").expand(N, 3).contiguous()   # GF 수박 러너 하드코딩
-print(f"[{a.solver}] 입자 {N}, 격자 {n_grid} dx {dx:.5f}, 서브스텝 {sub:.3e} × {nsub}, {NF} 프레임, 재질 sand φ "
-      f"{cfg.get('friction_angle', 45)}", flush=True)
+print(f"[{a.solver}] 입자 {N}, 격자 {n_grid} dx {dx:.5f}, 서브스텝 {sub:.3e} × {nsub}, {NF} 프레임, 재질 {a.material} φ "
+      f"{cfg.get('friction_angle', 45)} β {cfg.get('beta')} ξ {cfg.get('xi')} 경화 {cfg.get('hardening')}", flush=True)
 os.makedirs(a.out, exist_ok=True)
 
 
@@ -58,6 +59,9 @@ def dump(f, xt, Ft):
 
 mat = {"material": "sand", "E": E, "nu": nu, "density": rho, "friction_angle": float(cfg.get("friction_angle", 45.0)),
        "g": G, "grid_v_damping_scale": 1.1, "n_grid": n_grid, "grid_lim": GL}
+if a.material == "nacc":                                        # GF CD-MPM 그대로 (GF config 값, 없으면 GF 기본값)
+    mat.update(material="watermelon", beta=float(cfg.get("beta", 1.0)), xi=float(cfg.get("xi", 0.0)),
+               hardening=float(cfg.get("hardening", 0.0)), alpha_0=float(cfg.get("alpha_0", -0.04)))
 if a.solver == "pg":
     PG = "/home/dkta/work/i-physgaussian"; sys.path.insert(0, PG); os.chdir(PG)
     import warp as wp
@@ -76,7 +80,7 @@ if a.solver == "pg":
         xt = sol.export_particle_x_to_torch().cpu().numpy()
         dump(f, xt, sol.export_particle_F_to_torch().cpu().numpy())
 else:
-    MP = "/home/dkta/work/MPMAvatar"; sys.path.insert(0, MP); os.chdir(MP)
+    MP = os.environ.get("AF_MP_ROOT", "/home/dkta/work/MPMAvatar"); sys.path.insert(0, MP); os.chdir(MP)
     import warp as wp
     from warp_mpm.mpm_data_structure import MPMStateStruct, MPMModelStruct
     from warp_mpm.mpm_solver import MPMWARP
@@ -93,7 +97,10 @@ else:
     one = torch.ones(N, device=dev)
     st.reset_state(0, X.clone(), torch.zeros(0, 3, 3).cuda(), None, V0.clone(), device=dev, requires_grad=False)
     st.reset_density((one * rho).clone(), None, dev, update_mass=True)
-    sol.set_E_nu_from_torch(md, one * E, one * nu, one * 0.0, one * 0.0, dev)
+    _kb = one * 0.0
+    if a.material == "nacc":                                     # NACC 의 체적 탄성계수 (PG compute_mu_lam_from_E_nu 와 같은 식)
+        _mu, _la = E / (2 * (1 + nu)), E * nu / ((1 + nu) * (1 - 2 * nu)); _kb = one * (2.0 * _mu / 3.0 + _la)
+    sol.set_E_nu_from_torch(md, one * E, one * nu, one * 0.0, _kb, dev)
     sol.prepare_mu_lam(md, st, dev)
     sol.add_bounding_box()
     dump(0, x, np.tile(np.eye(3, dtype=np.float32), (N, 1, 1)))
