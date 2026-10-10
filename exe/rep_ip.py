@@ -43,6 +43,7 @@ ap.add_argument("--simp", default="", help="simplicits 가중치 함수 (.pt, �
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--iters0", type=int, default=400)
 ap.add_argument("--iters", type=int, default=200)
+ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
                 help="ours: 서브스텝마다 격자 변위를 관성 예측 h·v 로 초기화 (i-PG 의 du0 = dt·vⁿ 과 같게). 0 이면 예전처럼 변위 0")
 ap.add_argument("--riem_eps", type=float, default=1e-2)
@@ -411,6 +412,16 @@ from torch.func import jvp, vjp                                     # noqa: E402
 GNP = torch.compile(rm.gn_prod, dynamic=True)
 
 
+PT, PC = {}, {}
+
+
+def _tk(key, t0):
+    """--prof: 동기화 뒤 경과 시간을 PT[key] 에 더하고 지금 시각을 돌려준다."""
+    if not a.prof:
+        return t0
+    torch.cuda.synchronize(); t1 = time.time(); PT[key] = PT.get(key, 0.0) + (t1 - t0); return t1
+
+
 def flat(ts):
     return torch.cat([q.reshape(-1) for q in ts])
 
@@ -436,6 +447,7 @@ if RENDER:
 for t in range(T_START, a.frames + 1):
   _tf = time.time()
   for ks in range(a.substeps):
+        _t = _tk("기타", time.time()) if a.prof else 0.0
         if REB:
             REP.rebind(xn)
             X_ = xn
@@ -482,6 +494,7 @@ for t in range(T_START, a.frames + 1):
                     else:
                         out.append((rm.res_simp_fcr, (r.W, r.dW, r.Xh, Fp, R0, wv, 1.0, _sla_m)))
             return out
+        _t = _tk("결합·초기화", _t)
         psizes = [sum(q.numel() for q in r.params()) for r in reps]
         if a.method == "gaussim" and REB and not a.own:
             OPT = torch.optim.Adam(PL, lr=a.lr)
@@ -501,6 +514,7 @@ for t in range(T_START, a.frames + 1):
                     u = Hv(th0, u); lmax = float(u.norm()); u = u / max(lmax, 1e-30)
             eps = a.riem_eps * max(lmax, 1e-12)
         nit = a.iters0 if t == 1 else a.iters
+        _t = _tk("계량 준비(λmax)", _t)
         STP = [a.riem_lr / 2.0]
         for it_ in range(nit):
             for q in PL:
@@ -508,6 +522,7 @@ for t in range(T_START, a.frames + 1):
             dy, J = REP.yJ(X_)
             E, _, _ = energy(dy, J, X_, xtil, pairs)
             (E * NORM).backward()
+            _t = _tk("에너지+기울기", _t)
             if METS is None:
                 OPT.step()
                 continue
@@ -515,6 +530,7 @@ for t in range(T_START, a.frames + 1):
             theta = flat([q.detach() for q in PL])
             if METS == "particle":
                 MC[0] = particle_mets()                                   # 반복마다 R 을 다시
+            _t = _tk("극분해 R(계량)", _t)
             with torch.no_grad():
                 x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
                 for _ in range(a.riem_cg):
@@ -522,9 +538,11 @@ for t in range(T_START, a.frames + 1):
                     al = rr / (pdir * Gp).sum().clamp_min(1e-30)
                     x += al * pdir; r -= al * Gp
                     rr_new = (r * r).sum()
+                    PC["cg"] = PC.get("cg", 0) + 1
                     if rr_new.sqrt() < 1e-4 * gk.norm():
                         break
                     pdir = r + (rr_new / rr) * pdir; rr = rr_new
+                _t = _tk("CG", _t)
                 # Armijo 되돌림 선탐색 (A 와 같다): 보폭 η 에서 시작해 목적이 충분히 줄 때까지 반으로
                 def setp(vec):
                     s0 = 0
@@ -535,6 +553,7 @@ for t in range(T_START, a.frames + 1):
                 f0 = float(E) * NORM; sl = float((gk * x).sum())
                 stp = min(STP[0] * 2.0, a.riem_lr_max)
                 for _bt in range(a.ls_max):
+                    PC["ls"] = PC.get("ls", 0) + 1
                     setp(theta - stp * x)
                     dyt, Jt = REP.yJ(X_)
                     ft = float(energy(dyt, Jt, X_, xtil, pairs)[0]) * NORM
@@ -544,6 +563,7 @@ for t in range(T_START, a.frames + 1):
                 else:
                     setp(theta); stp = STP[0] * 0.25
                 STP[0] = stp
+                _t = _tk("선탐색", _t)
                 if a.dbg and (it_ < 10 or it_ % 50 == 0):
                     print(f"    it {it_:3d} f0 {f0:.6e} ft {ft:.6e} 보폭 {stp:.3e} |g| {float(gk.norm()):.3e} "
                           f"|x| {float(x.norm()):.3e} g·x {sl:.3e} eps {eps:.3e} lmax {lmax:.3e}", flush=True)
@@ -599,6 +619,9 @@ for t in range(T_START, a.frames + 1):
                 TB.add_scalar("frame/detJ_min", rows[-1][4], t); TB.add_scalar("frame/inverted_pct", 100 * rows[-1][5], t)
                 TB.add_scalar("frame/IP", float(E), t); TB.add_scalar("frame/KE", PHYS[-1][1], t)
                 TB.flush()
+        if a.prof:
+            _tk("마무리·측정", _t)
+            print("  [prof] t=%d " % t + "  ".join(f"{k} {v:.2f}s" for k, v in PT.items()) + f"  | CG 합 {PC.get('cg', 0)} 선탐색 합 {PC.get('ls', 0)}", flush=True); PT.clear(); PC.clear()
         if t % 10 == 0 or t == 1:
             print(f"  [t={t:3d}] RMSE {100 * rmse:.3f}%  CD {100 * cdv / L:.3f}%  IP {float(E):.4e} "
                   f"({', '.join(f'{k} {v:.2e}' for k, v in parts.items())})  det 최소 {rows[-1][4]:.3f} "
