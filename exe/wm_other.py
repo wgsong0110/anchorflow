@@ -214,6 +214,17 @@ else:
     sol.set_E_nu_from_torch(md, one * E, one * nu, one * 0.0, _kb, dev)
     sol.prepare_mu_lam(md, st, dev)
     sol.add_bounding_box()
+    if a.grid_mmin > 0:                                          # PG 와 같은 격자점 질량 하한 (외톨이 입자 폭주 수정)
+        import warp_mpm.mpm_solver as _mas
+        _MMIN = wp.constant(float(a.grid_mmin * float((VOL * rho).median())))
+
+        @wp.kernel
+        def grid_norm_mmin_ma(state: MPMStateStruct, model: MPMModelStruct, dt: float):
+            gx, gy, gz = wp.tid()
+            if state.grid_m[gx, gy, gz] > _MMIN:
+                state.grid_v_out[gx, gy, gz] = state.grid_v_in[gx, gy, gz] * (1.0 / state.grid_m[gx, gy, gz]) + dt * model.gravitational_accelaration
+        _mas.grid_normalization_and_gravity = grid_norm_mmin_ma
+        print(f"[격자] 질량 하한 {float(_MMIN):.3e} (입자 질량 중앙값 × {a.grid_mmin})", flush=True)
     dump(0, x[KP], np.tile(np.eye(3, dtype=np.float32), (N, 1, 1)))
     for f in tqdm(range(1, NF + 1), desc="MPMAvatar"):
         for s in range(nsub):
