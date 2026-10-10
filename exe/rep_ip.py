@@ -491,7 +491,7 @@ for t in range(T_START, a.frames + 1):
                     dyo, Jo = r.yJ(Xo, torch.arange(ii.numel(), device=dev))
                     Fp = Fe[ii] if REB else rm.mm3(JPI[0][ii], Fe[ii])
                     F0 = rm.mm3(Jo, Fp)
-                    R0 = rm.polar_R(F0)
+                    R0 = rm.polar_R_fast(F0) if a.polar_fast else rm.polar_R(F0)
                     wv = (VOL[ii] / VOL[ii].sum()).sqrt()
                     if a.method == "ours":
                         out.append((rm.res_lattice_fcr, (r.u.numel(), r.rows, r.lam, r.dlam, r.r, r.dr, r.w, r.dw,
