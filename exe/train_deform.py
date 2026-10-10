@@ -2872,6 +2872,7 @@ for it in pbar:
 
 # ---------------------------------------------------------------- 평가
 _ROLLDUMP = None
+_FCUM, _FDUMP = [None], []
 
 
 def _ov_once(d, t, gsel, p, x, v, F, off=None):
@@ -3640,6 +3641,8 @@ def _rollout(d, t0, L, gsel=None):
     cds, ems, cds_s, ems_s = [], [], [], []
     _RO_CTRL = []
     _NODE_CAP[0] = _ROLLDUMP is not None
+    _FCUM[0] = (take(traj_F(d)[t0], gsel).float().clone()
+                if (_ROLLDUMP is not None and os.environ.get("AF_ROLL_DUMP_F")) else None)
     F_ov = take(traj_F(d)[t0], gsel).float() if a.ov_roll > 0 else None
     if phys_resid.mat_name(d["cfg"]) == "watermelon":
         # CD-MPM 경화 상태(logJp)는 롤아웃마다 초기값 -0.04 에서 다시 시작한다
@@ -3655,10 +3658,13 @@ def _rollout(d, t0, L, gsel=None):
                         d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                         idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
                     x, p, v = x.detach(), p.detach(), v.detach()
-                x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
+                x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _jf = step_once(
                     d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                     idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
             x2 = x2.detach(); p = p.detach(); v = v.detach()
+            if _ROLLDUMP is not None and _FCUM[0] is not None and _jf is not None:
+                # 렌더용: 망이 낸 변형장의 **실제 야코비안**을 누적한 F (이웃 추정 아님)
+                _FCUM[0] = (_jf.detach().float() @ _FCUM[0]).detach()
         gt = take(d["x"][t0 + i + 1], gsel)
         # 평가에서도 손잡이가 명령대로 끌리는지 본다. 학습 경로만 보고 "손잡이는
         # 정확하다" 고 판단했다가, 평가에서는 ctrl_id 가 저장 표본에 없어 대체
@@ -3669,6 +3675,8 @@ def _rollout(d, t0, L, gsel=None):
         stills.append(float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
         if _ROLLDUMP is not None:
             _ROLLDUMP.append((x2.detach().cpu(), gt.detach().cpu()))
+            if _FCUM[0] is not None:
+                _FDUMP.append(_FCUM[0].half().cpu())
             if _NODE_LAST[0] is not None:
                 _NODEDUMP.append(_NODE_LAST[0])
             if F_ov is not None:
@@ -3766,6 +3774,7 @@ for tag, d in TR + held:
                  and t0 == int(os.environ.get("AF_ROLL_T0", "3")))
         _ROLLDUMP = [] if _want else None
         _NODEDUMP, _DETDUMP = [], []
+        _FDUMP.clear()
         # gsel 은 **그 궤적의** 입자 수로 만든다 (궤적마다 다를 수 있고, 풀
         # 루프가 전역 N_FULL 을 씬 값으로 덮어써 전역을 믿을 수 없다).
         e, st, cd, em, cds_, ems_ = rollout(d, t0, L)
@@ -3791,7 +3800,9 @@ for tag, d in TR + held:
                         "gt_fscal": (_gt_fscal(d, t0, L) if _DETDUMP else None),
                         # 풀 루프가 전역 EXT 를 씬 값으로 덮어쓰므로 **그 궤적의**
                         # 것을 쓴다 (덤프를 렌더할 때 길이 단위가 된다)
-                        "EXT": float(d.get("_ext", EXT))}, _rd)
+                        "EXT": float(d.get("_ext", EXT)),
+                        # [L,N,3,3] half: 망 변형장 야코비안 누적 (AF_ROLL_DUMP_F=1 일 때)
+                        "F": (torch.stack(_FDUMP) if _FDUMP else None)}, _rd)
             print(f"[롤아웃 덤프] {_rd}  {tag} t0={t0}", flush=True)
         _ROLLDUMP = None
         rows[tag]["windows"][t0] = dict(L=L, err=e, still=st,
