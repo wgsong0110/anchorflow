@@ -78,8 +78,14 @@ if a.solver == "pg":
     for f in tqdm(range(1, NF + 1), desc="PG"):
         for s in range(nsub):
             sol.p2g2p(f, sub)
-            if a.check and s % a.check == 0:
+            if a.check and (s % a.check == 0 or s >= 95):
                 wp.synchronize(); xx = sol.export_particle_x_to_torch(); FF = sol.export_particle_F_to_torch()
+                ms = sol.mpm_state
+                for nm in ("particle_v", "particle_stress", "particle_C", "particle_Jp"):
+                    tt = wp.to_torch(getattr(ms, nm)).reshape(N, -1)
+                    bad = (~torch.isfinite(tt)).any(1)
+                    print(f"    {nm} 비유한 {int(bad.sum())} |max| {float(tt.nan_to_num(0).abs().max()):.3g}"
+                          + (f" 첫 {int(bad.nonzero()[0])}" if bad.any() else ""), flush=True)
                 print(f"  f{f} s{s}: x 비유한 {int((~torch.isfinite(xx)).any(1).sum())} 범위 {float(xx.nan_to_num(0).min()):.3f}~{float(xx.nan_to_num(0).max()):.3f}"
                       f" F 비유한 {int((~torch.isfinite(FF)).reshape(N, -1).any(1).sum())}", flush=True)
         xt = sol.export_particle_x_to_torch().cpu().numpy()
