@@ -52,6 +52,7 @@ ap.add_argument("--precond", type=int, default=0, help="metric_true 일 때 CG �
 ap.add_argument("--gn_local", type=int, default=0, help="metric_true: 바깥 반복마다 입자별 JᵀJ(16×16) 를 만들어 CG 곱을 모으기·작은 행렬곱·흩뿌리기로 (같은 계량), 전처리도 그 정확한 대각")
 ap.add_argument("--gn_cuda", type=int, default=0, help="metric_true: 가우스-뉴턴 곱을 CUDA 통합 커널 한 번으로 (lib/anchorflow/gn_warp.py, 같은 계량)")
 ap.add_argument("--gn_check", type=int, default=0, help="gn_cuda 를 첫 곱에서 autograd 곱(fi.HV)과 대조해 상대 오차를 찍는다")
+ap.add_argument("--eg_cuda", type=int, default=0, help="fused 경로의 목적·기울기를 CUDA 통합 커널 한 번으로 (gn_warp.eg, fused_ip.objective 와 같은 식)")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
@@ -586,11 +587,22 @@ for t in range(T_START, a.frames + 1):
                      float(ZF if ZF is not None else 0.0), ZF is not None, float(a.k_floor), float(h), float(MU_E),
                      float(LA_E), float(NORM))
 
+            if a.eg_cuda:
+                from anchorflow import gn_warp as gw
+                EGP = gw.prep(_r.rows, _r.r, _r.dr, _r.w, _r.dw, Fe, VOL, MASS)
+                EGA = (X_, xtil, VOL, MASS)
+                EGK = dict(M3=_r.u.numel(), hl=float(_r.h), aa=float(_r.a), g=[float(q) for q in g.tolist()],
+                           zf=float(ZF if ZF is not None else 0.0), use_floor=ZF is not None, kfl=float(a.k_floor),
+                           hdt=float(h), mu=float(MU_E), la=float(LA_E), norm=float(NORM))
+
             def fobj(th):
                 """통합 목적값 (정규화). 자르기·뒤집힘 입자가 있으면 예전 경로로."""
                 with torch.no_grad():
-                    v, b = fi.OBJ(th, *FARGS)
-                    v, b = torch.stack([v, b.to(v.dtype)]).tolist()
+                    if a.eg_cuda:
+                        v, b, _ = gw.eg(EGP, *EGA, th, want_grad=False, **EGK)
+                    else:
+                        v, b = fi.OBJ(th, *FARGS)
+                        v, b = torch.stack([v, b.to(v.dtype)]).tolist()
                 if b > 0:
                     PC["fallback"] = PC.get("fallback", 0) + 1
                     setp_(th); dyt, Jt = REP.yJ(X_)
@@ -605,7 +617,16 @@ for t in range(T_START, a.frames + 1):
             for q in PL:
                 q.grad = None
             F0N = None
-            if FUSED:
+            if FUSED and a.eg_cuda:
+                v_, b_, gr_ = gw.eg(EGP, *EGA, flat([q.detach() for q in PL]), want_grad=True, **EGK)
+                if b_ == 0:
+                    s0 = 0
+                    for q, n_ in zip(PL, sizes):
+                        q.grad = gr_[s0:s0 + n_].reshape(q.shape); s0 += n_
+                    F0N = v_; E = None
+                else:
+                    PC["fallback"] = PC.get("fallback", 0) + 1
+            elif FUSED:
                 th_ = flat([q.detach() for q in PL]).requires_grad_(True)
                 val, bad = fi.OBJ(th_, *FARGS)
                 if int(bad) == 0:
