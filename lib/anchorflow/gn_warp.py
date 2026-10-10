@@ -437,7 +437,7 @@ def _dof_perm(nn):
     return None
 
 
-def mg_setup(pre, th, Xn, M3, hl, aa, sla, sce, eps, omega=0.6):
+def mg_setup(pre, th, Xn, M3, hl, aa, sla, sce, eps, omega=0.6, f32=False):
     """촘촘한 A (노드 쌍 4x4 블록, 정확한 가우스-뉴턴) 를 조립하고, 2h 격자 삼선형 P 로 Ac = Pᵀ A P 를 Cholesky.
     돌려주는 것: dict (A: 희소 [4nn,4nn] 노드 순서, P: 희소 [4nn,4nc], L, Binv: 노드 4x4 블록 역, omega, nn)."""
     dev = th.device
@@ -493,7 +493,8 @@ def mg_setup(pre, th, Xn, M3, hl, aa, sla, sce, eps, omega=0.6):
     AP = torch.sparse.mm(A.to_sparse_coo(), Pm)                     # 희소 × 희소 (조밀 P 는 수 GB 라 쓰지 않는다)
     Ac = torch.sparse.mm(Pm.t().coalesce(), AP.coalesce()).to_dense()  # [4nc, 4nc]
     L = torch.linalg.cholesky(Ac.double() + 1e-12 * torch.eye(4 * nc, device=dev, dtype=torch.float64))
-    return dict(A=A, P=Pm.to_sparse_csr(), Pt=Pm.t().coalesce().to_sparse_csr(), L=L, Binv=Binv, omega=omega, nn=nn, nc=nc)
+    return dict(A=A, P=Pm.to_sparse_csr(), Pt=Pm.t().coalesce().to_sparse_csr(), L=L.float() if f32 else L, Binv=Binv, omega=omega,
+                nn=nn, nc=nc)
 
 
 def _to_node(v, nn):
@@ -513,7 +514,7 @@ def mg_apply(MG, r):
     jac = lambda v: (Bi @ v.reshape(nn, 4, 1)).reshape(-1)          # noqa: E731
     z = om * jac(rn)
     r1 = rn - (MG["A"] @ z[:, None]).squeeze(1)
-    rc = (MG["Pt"] @ r1[:, None]).squeeze(1).double()
+    rc = (MG["Pt"] @ r1[:, None]).squeeze(1).to(MG["L"].dtype)
     yc = torch.cholesky_solve(rc[:, None], MG["L"]).squeeze(1).float()
     z = z + (MG["P"] @ yc[:, None]).squeeze(1)
     r2 = rn - (MG["A"] @ z[:, None]).squeeze(1)

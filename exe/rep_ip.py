@@ -64,6 +64,7 @@ ap.add_argument("--coarse", type=float, default=0, help="cg_fused: 2 단계 전�
 ap.add_argument("--diag_u_only", type=int, default=0, help="진단 전용: CG 를 u 성분만으로 (ρ 성분 0) -- 조건수 원인 확인용, 방법이 바뀌므로 결과로 쓰지 말 것")
 ap.add_argument("--cg_hist", type=int, default=0, help="진단: CG 잔차 이력을 바깥 반복마다 찍는다")
 ap.add_argument("--mg", type=int, default=0, help="gn_cuda 단일 물체: 기하 다중격자(2h 삼선형, 정확한 촘촘 A 조립, 성긴 Cholesky) V-사이클 전처리 CG. 서브스텝마다 한 번 조립")
+ap.add_argument("--mg_f32", type=int, default=0, help="mg: 성긴 Cholesky 풀이를 float32 로")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
@@ -709,7 +710,8 @@ for t in range(T_START, a.frames + 1):
                         gc_build()
                     if MGS[0] is None:                                   # 서브스텝마다 한 번 (첫 선형화 점)
                         MGS[0] = gw.mg_setup(GC[0][0], theta, reps[0].Xn, reps[0].u.numel(), float(reps[0].h), float(reps[0].a),
-                                             float(MC[0][0][1][14]), math.sqrt(CE[0]), eps)
+                                             float(MC[0][0][1][14]), math.sqrt(CE[0]), eps, f32=bool(a.mg_f32))
+                        _t = _tk("MG 조립", _t)
                     x, _nc = gw.pcg_mg(gk, lambda pv: Hv(theta, pv), MGS[0], eps, a.riem_cg, a.cg_tol, a.cg_check, hist=bool(a.cg_hist))
                     PC["cg"] = PC.get("cg", 0) + _nc
                     if a.cg_hist:
