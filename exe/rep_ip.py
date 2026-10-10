@@ -46,6 +46,7 @@ ap.add_argument("--iters", type=int, default=200)
 ap.add_argument("--polar_fast", type=int, default=0, help="탄성 에너지의 극분해를 Newton 반복으로 (같은 값, SVD 보다 빠름)")
 ap.add_argument("--newton_tol", type=float, default=0.0, help="ours: 예측 감소 ½g·x < tol² (길이 단위, 정규화 목적) 이면 반복 종료. 0 이면 끝까지")
 ap.add_argument("--cg_tol", type=float, default=1e-4, help="CG 상대 잔차 허용")
+ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
                 help="ours: 서브스텝마다 격자 변위를 관성 예측 h·v 로 초기화 (i-PG 의 du0 = dt·vⁿ 과 같게). 0 이면 예전처럼 변위 0")
@@ -519,12 +520,48 @@ for t in range(T_START, a.frames + 1):
         nit = a.iters0 if t == 1 else a.iters
         _t = _tk("계량 준비(λmax)", _t)
         STP = [a.riem_lr / 2.0]
+        FUSED = bool(a.fused) and a.method == "ours" and NOBJ == 1 and REB and cfg.get("material", "jelly") == "jelly"
+        if FUSED:
+            from anchorflow import fused_ip as fi
+            _r = REP.reps[0]
+            FARGS = (_r.u.numel(), _r.rows, _r.r, _r.dr, _r.w, _r.dw, float(_r.h), float(_r.a), X_, xtil, Fe, VOL, MASS, g,
+                     float(ZF if ZF is not None else 0.0), ZF is not None, float(a.k_floor), float(h), float(MU_E),
+                     float(LA_E), float(NORM))
+
+            def fobj(th):
+                """통합 목적값 (정규화). 자르기·뒤집힘 입자가 있으면 예전 경로로."""
+                with torch.no_grad():
+                    v, b = fi.OBJ(th, *FARGS)
+                    v, b = torch.stack([v, b.to(v.dtype)]).tolist()
+                if b > 0:
+                    PC["fallback"] = PC.get("fallback", 0) + 1
+                    setp_(th); dyt, Jt = REP.yJ(X_)
+                    return float(energy(dyt, Jt, X_, xtil, pairs)[0]) * NORM
+                return v
+
+            def setp_(vec):
+                s0 = 0
+                for q, n_ in zip(PL, sizes):
+                    q.data.copy_(vec[s0:s0 + n_].reshape(q.shape)); s0 += n_
         for it_ in range(nit):
             for q in PL:
                 q.grad = None
-            dy, J = REP.yJ(X_)
-            E, _, _ = energy(dy, J, X_, xtil, pairs)
-            (E * NORM).backward()
+            F0N = None
+            if FUSED:
+                th_ = flat([q.detach() for q in PL]).requires_grad_(True)
+                val, bad = fi.OBJ(th_, *FARGS)
+                if int(bad) == 0:
+                    val.backward()
+                    s0 = 0
+                    for q, n_ in zip(PL, sizes):
+                        q.grad = th_.grad[s0:s0 + n_].reshape(q.shape); s0 += n_
+                    F0N = float(val); E = None
+                else:
+                    PC["fallback"] = PC.get("fallback", 0) + 1
+            if F0N is None:
+                dy, J = REP.yJ(X_)
+                E, _, _ = energy(dy, J, X_, xtil, pairs)
+                (E * NORM).backward()
             _t = _tk("에너지+기울기", _t)
             if METS is None:
                 OPT.step()
@@ -553,7 +590,7 @@ for t in range(T_START, a.frames + 1):
                         q.copy_(vec[s0:s0 + n_].reshape(q.shape)); s0 += n_
                 # 적응 보폭: 직전 반복의 보폭을 두 배로 시도 (계량의 크기와 목적의 크기가 장면마다
                 # 달라 고정 시작 보폭은 강체 이동조차 못 따라갔다 -- i-PG lego 의 ours·GS-Verse)
-                f0 = float(E) * NORM; sl = float((gk * x).sum())
+                f0 = F0N if F0N is not None else float(E) * NORM; sl = float((gk * x).sum())
                 if a.newton_tol > 0 and 0.5 * sl < a.newton_tol ** 2:   # 예측 감소가 허용 위치 오차² 아래면 수렴
                     PC["it"] = PC.get("it", 0) + it_
                     break
@@ -561,8 +598,11 @@ for t in range(T_START, a.frames + 1):
                 for _bt in range(a.ls_max):
                     PC["ls"] = PC.get("ls", 0) + 1
                     setp(theta - stp * x)
-                    dyt, Jt = REP.yJ(X_)
-                    ft = float(energy(dyt, Jt, X_, xtil, pairs)[0]) * NORM
+                    if FUSED:
+                        ft = fobj(theta - stp * x)
+                    else:
+                        dyt, Jt = REP.yJ(X_)
+                        ft = float(energy(dyt, Jt, X_, xtil, pairs)[0]) * NORM
                     if ft == ft and ft <= f0 - 1e-4 * stp * sl:
                         break
                     stp *= 0.5
@@ -627,7 +667,7 @@ for t in range(T_START, a.frames + 1):
                 TB.flush()
         if a.prof:
             _tk("마무리·측정", _t)
-            print("  [prof] t=%d " % t + "  ".join(f"{k} {v:.2f}s" for k, v in PT.items()) + f"  | 바깥 반복 합 {PC.get('it', '끝까지')} CG 합 {PC.get('cg', 0)} 선탐색 합 {PC.get('ls', 0)}", flush=True); PT.clear(); PC.clear()
+            print("  [prof] t=%d " % t + "  ".join(f"{k} {v:.2f}s" for k, v in PT.items()) + f"  | 바깥 반복 합 {PC.get('it', '끝까지')} CG 합 {PC.get('cg', 0)} 선탐색 합 {PC.get('ls', 0)} 예전경로 {PC.get('fallback', 0)}", flush=True); PT.clear(); PC.clear()
         if t % 10 == 0 or t == 1:
             print(f"  [t={t:3d}] RMSE {100 * rmse:.3f}%  CD {100 * cdv / L:.3f}%  IP {float(E):.4e} "
                   f"({', '.join(f'{k} {v:.2e}' for k, v in parts.items())})  det 최소 {rows[-1][4]:.3f} "
