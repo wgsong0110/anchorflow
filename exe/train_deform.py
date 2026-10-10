@@ -1962,12 +1962,15 @@ def quick_val():
         # 전역 MASS/EXT/N_FULL 을 이 궤적 값으로 (풀 루프가 씬 값으로 덮어쓴다)
         _ts = traj_scope(d); _ts.__enter__()
         gsel = torch.arange(d["x"].shape[1], device=dev)
-        t0 = 3
+        # 평가 롤아웃(_rollout)과 같은 시작점·같은 초기 속도로 잰다 -- 다르면 검증으로 고른 체크포인트가 평가에서 뒤집힌다
+        t0 = int(a.eval_t0[0]) if (a.v0_traj and a.eval_t0) else 3
         x = take(d["x"][t0], gsel)
-        v = (x - take(d["x"][t0 - 1], gsel)) / FRAME_DT
+        v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
+        if a.v0_traj and "v" in d:
+            v = take(d["v"][min(t0, d["v"].shape[0] - 1)], gsel).to(x.dtype)
         p = take(d["x"][t0], AIDX)
         x_still = x.clone()
-        for i in range(a.val_len):
+        for i in range(min(a.val_len, d["x"].shape[0] - t0 - 1)):
             with torch.enable_grad(), dt_scope(FRAME_DT / EVAL_SUB):
                 for _sb in range(EVAL_SUB - 1):
                     x, p, v, _, _, _, _, _, _, _ = step_once(
