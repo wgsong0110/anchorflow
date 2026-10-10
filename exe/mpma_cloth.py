@@ -53,6 +53,7 @@ parser.add_argument("--out_dir", required=True)
 parser.add_argument("--skip_render", action="store_true")
 parser.add_argument("--render_only", action="store_true", help="저장된 sim_verts.pt 로 렌더만")
 parser.add_argument("--E_mul", type=float, default=1.0, help="저자 E 배수 (PG 도 init_state 로 같은 값)")
+parser.add_argument("--skin_cut", action="store_true", help="--cloth_only 에서 옷 면에 붙었지만 피부·갈색(기본색 빨강 > 초록)인 가우시안도 뺀다")
 parser.add_argument("--cloth_only", action="store_true", help="렌더에서 몸 가우시안을 빼고 옷만 (video_cloth.mp4)")
 parser.add_argument("--dump_only", action="store_true", help="초기 상태(입자·고정점·축)만 저장하고 끝 (PG 비교용)")
 args = parser.parse_args(sys.argv[1:])
@@ -259,6 +260,11 @@ with torch.no_grad():
     prune_faces(gaussians, os.path.join(A.dataset_dir, "demo/a1_prune_f_idx.npy"))
     if args.cloth_only:                                          # 몸 면에 붙은 가우시안은 불투명도 0
         gaussians._opacity[~torch.isin(gaussians.binding, cloth_f)] = -1e4
+        if args.skin_cut:                                        # 옷 면 가장자리에 학습된 피부색 (목둘레·어깨)
+            _rgb = 0.5 + 0.28209479177387814 * gaussians._features_dc[:, 0, :]
+            _sk = torch.isin(gaussians.binding, cloth_f) & (_rgb[:, 0] > _rgb[:, 1])
+            gaussians._opacity[_sk] = -1e4
+            print(f"[피부 빼기] 옷 가우시안 중 빨강>초록 {int(_sk.sum())} 개 제외", flush=True)
 cam = scene.test_dataset.camera_list[0]; cam_idx = scene.test_camera_index[0]
 bg = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
 imgdir = os.path.join(OUT, "frames_cloth" if args.cloth_only else "frames"); os.makedirs(imgdir, exist_ok=True)

@@ -25,6 +25,7 @@ ap.add_argument("--angle", type=float, default=60.0)
 ap.add_argument("--frames", type=int, default=50)
 ap.add_argument("--substep", type=int, default=400)
 ap.add_argument("--n_grid", type=int, default=250)
+ap.add_argument("--skin_cut", action="store_true", help="--cloth_only 에서 옷 면에 붙었지만 피부·갈색(빨강 > 초록)인 가우시안도 뺀다")
 ap.add_argument("--cloth_only", action="store_true", help="렌더에서 몸 가우시안을 빼고 옷만 (video_cloth.mp4)")
 a, rest = ap.parse_known_args()
 os.makedirs(a.work, exist_ok=True)
@@ -155,6 +156,9 @@ else:
     sc, shf = I["scale"], I["shift"].cuda()
     col, op = I["col"].cuda(), I["op"].cuda()
     KM = I["cloth"].cuda() if a.cloth_only else torch.ones(col.shape[0], dtype=torch.bool, device="cuda")   # 옷만 그리기
+    if a.cloth_only and a.skin_cut:                              # 옷 면 가장자리에 학습된 피부색 (목둘레·어깨)
+        KM = KM & ~(col[:, 0] > col[:, 1])
+        print(f"[피부 빼기] 옷 가우시안 중 빨강>초록 {int((I['cloth'].cuda() & (col[:, 0] > col[:, 1])).sum())} 개 제외", flush=True)
     col, op = col[KM], op[KM]
     bg = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
     rs = GaussianRasterizationSettings(image_height=int(cam.image_height), image_width=int(cam.image_width),
