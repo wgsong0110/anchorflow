@@ -47,6 +47,7 @@ ap.add_argument("--polar_fast", type=int, default=0, help="탄성 에너지의 �
 ap.add_argument("--newton_tol", type=float, default=0.0, help="ours: 예측 감소 ½g·x < tol² (길이 단위, 정규화 목적) 이면 반복 종료. 0 이면 끝까지")
 ap.add_argument("--cg_tol", type=float, default=1e-4, help="CG 상대 잔차 허용")
 ap.add_argument("--metric_true", type=int, default=0, help="ours: 계량을 실제 목적의 가우스-뉴턴 헤시안으로 (관성 NORM·m/h² + 탄성 2μΣV·NORM 배). 0 이면 예전 (탄성만, μ=1)")
+ap.add_argument("--precond", type=int, default=0, help="metric_true 일 때 CG 에 대각(Jacobi) 전처리: u 는 정확한 대각, ρ 는 탐침 4 개 추정")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
@@ -586,16 +587,36 @@ for t in range(T_START, a.frames + 1):
                 MC[0] = particle_mets()                                   # 반복마다 R 을 다시
             _t = _tk("극분해 R(계량)", _t)
             with torch.no_grad():
-                x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
+                PRE = None
+                if a.precond and MT:                                   # 대각 전처리 (블록마다)
+                    pre, s0 = [], 0
+                    for k_, ((fn, args), n_) in enumerate(zip(MC[0], psizes)):
+                        rr_, ii_ = reps[k_], idx[k_]
+                        M3_ = rr_.u.numel()
+                        Wk, dWk = fi.weights_greg(theta[s0 + M3_:s0 + n_], rr_.rows, rr_.r, rr_.dr, rr_.w, rr_.dw, float(rr_.h), float(rr_.a))
+                        Fp_ = args[10]; R_ = args[11]; wv_ = args[12]; sla_ = args[14]
+                        Fk = rm.mm3(rm.eye_plus(rm.outer_sum(theta[s0:s0 + M3_].reshape(-1, 3)[rr_.rows], dWk)), Fp_)
+                        Du = fi.diag_u(M3_ // 3, rr_.rows, Wk, dWk, IN_ARGS[k_][8], Fp_, Fk, wv_, CE[k_], sla_).reshape(-1)
+                        nr = n_ - M3_
+                        dr_ = torch.zeros(nr, device=dev)
+                        for _p in range(4):                            # ρ 블록 대각: Hutchinson
+                            z = torch.zeros(n_, device=dev); z[M3_:] = torch.randint(0, 2, (nr,), device=dev).float() * 2 - 1
+                            th_full = torch.zeros_like(theta); th_full[s0:s0 + n_] = z
+                            dr_ += (z * Hv(theta, th_full)[s0:s0 + n_])[M3_:] / 4.0
+                        pre.append(torch.cat([Du, dr_.abs().clamp_min(1e-30)])); s0 += n_
+                    PRE = torch.cat(pre) + eps
+                x = torch.zeros_like(gk); r = gk.clone(); zr = r / PRE if PRE is not None else r
+                pdir = zr.clone(); rz = (r * zr).sum()
                 for _ in range(a.riem_cg):
                     Gp = Hv(theta, pdir) + eps * pdir
-                    al = rr / (pdir * Gp).sum().clamp_min(1e-30)
+                    al = rz / (pdir * Gp).sum().clamp_min(1e-30)
                     x += al * pdir; r -= al * Gp
-                    rr_new = (r * r).sum()
                     PC["cg"] = PC.get("cg", 0) + 1
-                    if rr_new.sqrt() < a.cg_tol * gk.norm():
+                    if (r * r).sum().sqrt() < a.cg_tol * gk.norm():
                         break
-                    pdir = r + (rr_new / rr) * pdir; rr = rr_new
+                    zr = r / PRE if PRE is not None else r
+                    rz_new = (r * zr).sum()
+                    pdir = zr + (rz_new / rz) * pdir; rz = rz_new
                 _t = _tk("CG", _t)
                 # Armijo 되돌림 선탐색 (A 와 같다): 보폭 η 에서 시작해 목적이 충분히 줄 때까지 반으로
                 def setp(vec):

@@ -34,6 +34,36 @@ def polar_newton(F, iters=8):
     return R
 
 
+def weights_greg(rho_raw, rows, r, dr, w, dw, hl, aa):
+    """Gregory·방사형 가중치 W [P,4] 와 그 공간 기울기 dW [P,4,3] (Lattice.yJ 와 같은 식)."""
+    rho = hl * (0.05 + 0.95 * torch.sigmoid(rho_raw)[rows])
+    ins = r < rho
+    inner = 1.0 - aa * (torch.minimum(r, rho) / rho) ** 2
+    q = 1.0 + (r - rho).clamp_min(0.0) / (0.5 * hl)
+    outer = (1.0 - aa) / q
+    psi_raw = torch.where(ins, inner, outer)
+    psi = psi_raw.clamp_min(1e-6)
+    dpsi = torch.where(ins, -2.0 * aa * r / (rho * rho), -(1.0 - aa) / (0.5 * hl) / (q * q)) * (psi_raw > 1e-6)
+    g = w * psi
+    dg = dw * psi[..., None] + (w * dpsi)[..., None] * dr
+    G = g.sum(1, keepdim=True).clamp_min(1e-12)
+    W = g / G
+    dW = dg / G[..., None] - W[..., None] * dg.sum(1, keepdim=True) / G[..., None]
+    return W, dW
+
+
+def diag_u(M, rows, W, dW, sq, Fp, F, wv, ce, sla):
+    """가우스-뉴턴 계량의 u 블록 대각 [M,3]: 관성 Σ sq² W² + ce·Σ wv² (|a|² + sla² (cof(F) a)_c²), a = Fpᵀ dW."""
+    a = (Fp.transpose(1, 2)[:, None] @ dW[..., None]).squeeze(-1)          # [P,4,3]
+    cof = cof3(F)                                                           # [P,3,3]
+    ca = (cof[:, None] @ a[..., None]).squeeze(-1)                         # [P,4,3]
+    el = (wv * wv)[:, None, None] * ((a * a).sum(-1, keepdim=True) + sla * sla * ca * ca)
+    inr = ((sq * sq)[:, None] * W * W)[..., None].expand(-1, -1, 3)
+    D = torch.zeros(M, 3, device=W.device, dtype=W.dtype)
+    D.index_add_(0, rows.reshape(-1), (ce * el + inr).reshape(-1, 3))
+    return D
+
+
 def yJ_greg(u, rho_raw, rows, r, dr, w, dw, hl, aa):
     """repmaps.Lattice.yJ (greg) 와 같은 식."""
     U = u[rows]
