@@ -30,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 from anchorflow import repmaps as rm                                  # noqa: E402
 from anchorflow import phys_resid as pr                               # noqa: E402
+from anchorflow import fused_ip as fi                                 # noqa: E402
 
 W = "/home/dkta/work"
 MODEL = {"lego": "lego_whitebg-trained", "mic": "mic_whitebg-trained",
@@ -492,7 +493,7 @@ for t in range(T_START, a.frames + 1):
                     dyo, Jo = r.yJ(Xo, torch.arange(ii.numel(), device=dev))
                     Fp = Fe[ii] if REB else rm.mm3(JPI[0][ii], Fe[ii])
                     F0 = rm.mm3(Jo, Fp)
-                    R0 = rm.polar_R_fast(F0) if a.polar_fast else rm.polar_R(F0)
+                    R0 = (fi.polar_newton(F0) if a.fused else rm.polar_R_fast(F0)) if a.polar_fast else rm.polar_R(F0)
                     wv = (VOL[ii] / VOL[ii].sum()).sqrt()
                     if a.method == "ours":
                         out.append((rm.res_lattice_fcr, (r.u.numel(), r.rows, r.lam, r.dlam, r.r, r.dr, r.w, r.dw,
@@ -520,9 +521,12 @@ for t in range(T_START, a.frames + 1):
             def Hv(th, u):
                 outs, s0 = [], 0
                 for k_, ((fn, args), n_) in enumerate(zip(MC[0], psizes)):
-                    o_ = GNP(fn, th[s0:s0 + n_], u[s0:s0 + n_], *args)
-                    if MT:
-                        o_ = CE[k_] * o_ + GNP(fi.res_inertia, th[s0:s0 + n_], u[s0:s0 + n_], *IN_ARGS[k_])
+                    if MT and a.fused:                                  # 탄성+관성 곱을 한 그래프로
+                        o_ = fi.HV(th[s0:s0 + n_], u[s0:s0 + n_], args, IN_ARGS[k_], math.sqrt(CE[k_]))
+                    else:
+                        o_ = GNP(fn, th[s0:s0 + n_], u[s0:s0 + n_], *args)
+                        if MT:
+                            o_ = CE[k_] * o_ + GNP(fi.res_inertia, th[s0:s0 + n_], u[s0:s0 + n_], *IN_ARGS[k_])
                     outs.append(o_); s0 += n_
                 return torch.cat(outs)
             with torch.no_grad():

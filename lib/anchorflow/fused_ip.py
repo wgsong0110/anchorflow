@@ -110,4 +110,20 @@ def res_inertia(x, M3: int, rows, r, dr, w, dw, hl: float, aa: float, sq):
     return (sq[:, None] * dy).reshape(-1)
 
 
+
+def _res_all(x, el_args, in_args, sce: float):
+    """탄성 FCR 잔차 (√CE 배) 와 관성 잔차를 이어 붙인 것 -- 실제 목적의 가우스-뉴턴 계량 = Jᵀ J."""
+    return torch.cat([sce * rm.res_lattice_fcr(x, *el_args), res_inertia(x, *in_args)])
+
+
+def hv_total(th, v, el_args, in_args, sce: float):
+    """(CE·J_elᵀJ_el + J_inᵀJ_in) v 를 한 그래프로 (jvp 다음 vjp)."""
+    from torch.func import jvp, vjp
+    f = lambda z: _res_all(z, el_args, in_args, sce)          # noqa: E731
+    _, Jv = jvp(f, (th,), (v,))
+    _, vf = vjp(f, th)
+    return vf(Jv)[0]
+
+
+HV = torch.compile(hv_total, dynamic=True)
 OBJ = torch.compile(objective, dynamic=True)
