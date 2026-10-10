@@ -61,6 +61,7 @@ ap.add_argument("--eg_cuda", type=int, default=0, help="fused 경로의 목적·
 ap.add_argument("--block_pre", type=int, default=0, help="gn_cuda: 대각 대신 노드별 4x4 블록 야코비 전처리 (CUDA 로 정확히 모은 블록)")
 ap.add_argument("--cg_fused", type=int, default=0, help="block_pre 단일 물체: CG 를 커널 세 개로 (gn_warp.pcg_block, 같은 식, 판정은 cg_check 마다)")
 ap.add_argument("--coarse", type=float, default=0, help="cg_fused: 2 단계 전처리 성긴 묶음 배수 (노드를 이 배수×h 칸으로 묶음, 0 이면 끔). 서브스텝마다 한 번 조립·분해")
+ap.add_argument("--diag_u_only", type=int, default=0, help="진단 전용: CG 를 u 성분만으로 (ρ 성분 0) -- 조건수 원인 확인용, 방법이 바뀌므로 결과로 쓰지 말 것")
 ap.add_argument("--cg_hist", type=int, default=0, help="진단: CG 잔차 이력을 바깥 반복마다 찍는다")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
@@ -705,7 +706,14 @@ for t in range(T_START, a.frames + 1):
                     if a.coarse and CRS[0] is None:                     # 서브스텝마다 한 번
                         CRS[0] = gw.coarse_setup(GC[0][0], theta, reps[0].Xn, reps[0].u.numel(), float(reps[0].h), float(reps[0].a),
                                                  float(MC[0][0][1][14]), math.sqrt(CE[0]), eps, a.coarse)
-                    x, _nc = gw.pcg_block(gk, lambda pv: Hv(theta, pv), BPRE[0], reps[0].u.numel(), eps, a.riem_cg, a.cg_tol, a.cg_check,
+                    _M3 = reps[0].u.numel()
+                    if a.diag_u_only:
+                        _mk = torch.ones_like(gk); _mk[_M3:] = 0
+                        _hvf = lambda pv: Hv(theta, pv * _mk) * _mk + (1 - _mk) * pv          # noqa: E731
+                        gk = gk * _mk
+                    else:
+                        _hvf = lambda pv: Hv(theta, pv)                                       # noqa: E731
+                    x, _nc = gw.pcg_block(gk, _hvf, BPRE[0], reps[0].u.numel(), eps, a.riem_cg, a.cg_tol, a.cg_check,
                                           coarse=CRS[0] if a.coarse else None, hist=bool(a.cg_hist))
                     if a.cg_hist:
                         print(f"    [cg] 바깥 {it_} " + " ".join(f"{i_}:{v_:.1e}" for i_, v_ in gw.CG_HIST), flush=True); gw.CG_HIST.clear()
