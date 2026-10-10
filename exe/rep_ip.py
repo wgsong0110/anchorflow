@@ -60,6 +60,7 @@ ap.add_argument("--gn_check", type=int, default=0, help="gn_cuda 를 첫 곱에�
 ap.add_argument("--eg_cuda", type=int, default=0, help="fused 경로의 목적·기울기를 CUDA 통합 커널 한 번으로 (gn_warp.eg, fused_ip.objective 와 같은 식)")
 ap.add_argument("--block_pre", type=int, default=0, help="gn_cuda: 대각 대신 노드별 4x4 블록 야코비 전처리 (CUDA 로 정확히 모은 블록)")
 ap.add_argument("--cg_fused", type=int, default=0, help="block_pre 단일 물체: CG 를 커널 세 개로 (gn_warp.pcg_block, 같은 식, 판정은 cg_check 마다)")
+ap.add_argument("--coarse", type=float, default=0, help="cg_fused: 2 단계 전처리 성긴 묶음 배수 (노드를 이 배수×h 칸으로 묶음, 0 이면 끔). 서브스텝마다 한 번 조립·분해")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
@@ -540,6 +541,7 @@ for t in range(T_START, a.frames + 1):
                     s0 += n_
 
             GC = [None]                                                # gn_cuda: 바깥 반복마다 커널 입력 보기
+            CRS = [None]                                               # 2 단계 전처리 성긴 단계 (서브스텝마다)
 
             def gc_build():
                 from anchorflow import gn_warp as gw
@@ -699,7 +701,11 @@ for t in range(T_START, a.frames + 1):
                         return torch.cat(outs_)
                     return rv / PRE if PRE is not None else rv
                 if a.cg_fused and BPRE is not None and len(reps) == 1:
-                    x, _nc = gw.pcg_block(gk, lambda pv: Hv(theta, pv), BPRE[0], reps[0].u.numel(), eps, a.riem_cg, a.cg_tol, a.cg_check)
+                    if a.coarse and CRS[0] is None:                     # 서브스텝마다 한 번
+                        CRS[0] = gw.coarse_setup(GC[0][0], theta, reps[0].Xn, reps[0].u.numel(), float(reps[0].h), float(reps[0].a),
+                                                 float(MC[0][0][1][14]), math.sqrt(CE[0]), eps, a.coarse)
+                    x, _nc = gw.pcg_block(gk, lambda pv: Hv(theta, pv), BPRE[0], reps[0].u.numel(), eps, a.riem_cg, a.cg_tol, a.cg_check,
+                                          coarse=CRS[0] if a.coarse else None)
                     PC["cg"] = PC.get("cg", 0) + _nc
                     _t = _tk("CG", _t)
                 else:

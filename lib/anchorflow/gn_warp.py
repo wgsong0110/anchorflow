@@ -130,7 +130,9 @@ extern "C" __global__ void gn_hv(const int* rows, const float* r, const float* d
 '''
 _SRC = _SRC + '\nextern "C" __global__ void gn_block(const int* rows, const float* r, const float* dr, const float* w, const float* dw,\n                                    const float* Fp, const float* wv, const float* sq, const float* th,\n                                    int M3, float hl, float aa, float sla, float sce, int P, float* B) {\n    // 노드마다 4x4 (u_x, u_y, u_z, ρ) 가우스-뉴턴 블록 Σ_p J_kᵀ J_k 를 모은다 (B: [노드 수, 16])\n    int p = blockIdx.x * blockDim.x + threadIdx.x;\n    if (p >= P) return;\n    int nd[4]; float W[4], wk[4], pr[4], dpr[4], g[4], dg[4][3], dW[4][3], u[4][3], a[4][3], drk[4][3], dwk[4][3];\n    float S[3] = {0.f, 0.f, 0.f}, G = 0.f;\n    for (int k = 0; k < 4; ++k) {\n        nd[k] = rows[4 * p + k];\n        float sg = 1.f / (1.f + expf(-th[M3 + nd[k]]));\n        float rho = hl * (0.05f + 0.95f * sg), drho = hl * 0.95f * sg * (1.f - sg);\n        float o[4]; psi_d(r[4 * p + k], rho, hl, aa, o);\n        wk[k] = w[4 * p + k]; g[k] = wk[k] * o[0]; pr[k] = o[2] * drho; dpr[k] = o[3] * drho;\n        for (int c = 0; c < 3; ++c) {\n            drk[k][c] = dr[(4 * p + k) * 3 + c]; dwk[k][c] = dw[(4 * p + k) * 3 + c];\n            dg[k][c] = dwk[k][c] * o[0] + wk[k] * o[1] * drk[k][c]; S[c] += dg[k][c]; u[k][c] = th[3 * nd[k] + c];\n        }\n        G += g[k];\n    }\n    G = fmaxf(G, 1e-12f);\n    float Fq[3][3]; for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) Fq[i][j] = Fp[9 * p + 3 * i + j];\n    float J[3][3] = {{1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.f, 0.f, 1.f}};\n    for (int k = 0; k < 4; ++k) { W[k] = g[k] / G; for (int c = 0; c < 3; ++c) dW[k][c] = dg[k][c] / G - W[k] * S[c] / G; }\n    for (int k = 0; k < 4; ++k) for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) J[i][j] += u[k][i] * dW[k][j];\n    float F[3][3]; for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) F[i][j] = J[i][0] * Fq[0][j] + J[i][1] * Fq[1][j] + J[i][2] * Fq[2][j];\n    float cof[3][3];\n    cof[0][0] = F[1][1]*F[2][2]-F[1][2]*F[2][1]; cof[0][1] = F[1][2]*F[2][0]-F[1][0]*F[2][2]; cof[0][2] = F[1][0]*F[2][1]-F[1][1]*F[2][0];\n    cof[1][0] = F[0][2]*F[2][1]-F[0][1]*F[2][2]; cof[1][1] = F[0][0]*F[2][2]-F[0][2]*F[2][0]; cof[1][2] = F[0][1]*F[2][0]-F[0][0]*F[2][1];\n    cof[2][0] = F[0][1]*F[1][2]-F[0][2]*F[1][1]; cof[2][1] = F[0][2]*F[1][0]-F[0][0]*F[1][2]; cof[2][2] = F[0][0]*F[1][1]-F[0][1]*F[1][0];\n    for (int k = 0; k < 4; ++k) for (int j = 0; j < 3; ++j) a[k][j] = Fq[0][j] * dW[k][0] + Fq[1][j] * dW[k][1] + Fq[2][j] * dW[k][2];\n    float ce = sce * wv[p], s = sq[p], cs = ce * sla;\n    for (int k = 0; k < 4; ++k) {\n        // 열 4 개: u_c (c=0..2), ρ_k. 각 열 = 잔차 13 개\n        float col[4][13];\n        for (int c = 0; c < 3; ++c) {\n            for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) col[c][3 * i + j] = (i == c) ? ce * a[k][j] : 0.f;\n            float cd = 0.f; for (int j = 0; j < 3; ++j) cd += cof[c][j] * a[k][j];\n            col[c][9] = cs * cd;\n            for (int i = 0; i < 3; ++i) col[c][10 + i] = (i == c) ? s * W[k] : 0.f;\n        }\n        float dgj = wk[k] * pr[k], ddg[3], dWs[4], ddW[4][3];\n        for (int c = 0; c < 3; ++c) ddg[c] = dwk[k][c] * pr[k] + wk[k] * dpr[k] * drk[k][c];\n        rho_dir(k, W, dg, S, G, dgj, ddg, dWs, ddW);\n        float dJ[3][3] = {{0.f}}, dyr[3] = {0.f, 0.f, 0.f};\n        for (int m = 0; m < 4; ++m) for (int i = 0; i < 3; ++i) { dyr[i] += dWs[m] * u[m][i]; for (int j = 0; j < 3; ++j) dJ[i][j] += u[m][i] * ddW[m][j]; }\n        float dd = 0.f;\n        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {\n            float dFr = dJ[i][0] * Fq[0][j] + dJ[i][1] * Fq[1][j] + dJ[i][2] * Fq[2][j];\n            col[3][3 * i + j] = ce * dFr; dd += cof[i][j] * dFr;\n        }\n        col[3][9] = cs * dd;\n        for (int i = 0; i < 3; ++i) col[3][10 + i] = s * dyr[i];\n        for (int x = 0; x < 4; ++x) for (int y = 0; y < 4; ++y) {\n            float acc = 0.f; for (int q = 0; q < 13; ++q) acc += col[x][q] * col[y][q];\n            atomicAdd(&B[16 * nd[k] + 4 * x + y], acc);\n        }\n    }\n}\n'
 _K = cp.RawKernel(_SRC, "gn_hv")
+_SRC2 = _SRC + '\nextern "C" __global__ void gn_coarse(const int* rows, const float* r, const float* dr, const float* w, const float* dw,\n                                     const float* Fp, const float* wv, const float* sq, const float* th, const int* agg,\n                                     int M3, float hl, float aa, float sla, float sce, int P, int nc, float* Ac) {\n    // 성긴 행렬 Pᵀ (JᵀJ) P 를 조밀하게 모은다 (Ac: [4 nc, 4 nc], 성긴 자유도 = 묶음마다 u 3 + ρ 1, P 는 묶음 안 상수)\n    int p = blockIdx.x * blockDim.x + threadIdx.x;\n    if (p >= P) return;\n    int nd[4]; float W[4], wk[4], pr[4], dpr[4], g[4], dg[4][3], dW[4][3], u[4][3], a[4][3], drk[4][3], dwk[4][3];\n    float S[3] = {0.f, 0.f, 0.f}, G = 0.f;\n    for (int k = 0; k < 4; ++k) {\n        nd[k] = rows[4 * p + k];\n        float sg = 1.f / (1.f + expf(-th[M3 + nd[k]]));\n        float rho = hl * (0.05f + 0.95f * sg), drho = hl * 0.95f * sg * (1.f - sg);\n        float o[4]; psi_d(r[4 * p + k], rho, hl, aa, o);\n        wk[k] = w[4 * p + k]; g[k] = wk[k] * o[0]; pr[k] = o[2] * drho; dpr[k] = o[3] * drho;\n        for (int c = 0; c < 3; ++c) {\n            drk[k][c] = dr[(4 * p + k) * 3 + c]; dwk[k][c] = dw[(4 * p + k) * 3 + c];\n            dg[k][c] = dwk[k][c] * o[0] + wk[k] * o[1] * drk[k][c]; S[c] += dg[k][c]; u[k][c] = th[3 * nd[k] + c];\n        }\n        G += g[k];\n    }\n    G = fmaxf(G, 1e-12f);\n    float Fq[3][3]; for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) Fq[i][j] = Fp[9 * p + 3 * i + j];\n    float J[3][3] = {{1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.f, 0.f, 1.f}};\n    for (int k = 0; k < 4; ++k) { W[k] = g[k] / G; for (int c = 0; c < 3; ++c) dW[k][c] = dg[k][c] / G - W[k] * S[c] / G; }\n    for (int k = 0; k < 4; ++k) for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) J[i][j] += u[k][i] * dW[k][j];\n    float F[3][3]; for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) F[i][j] = J[i][0] * Fq[0][j] + J[i][1] * Fq[1][j] + J[i][2] * Fq[2][j];\n    float cof[3][3];\n    cof[0][0] = F[1][1]*F[2][2]-F[1][2]*F[2][1]; cof[0][1] = F[1][2]*F[2][0]-F[1][0]*F[2][2]; cof[0][2] = F[1][0]*F[2][1]-F[1][1]*F[2][0];\n    cof[1][0] = F[0][2]*F[2][1]-F[0][1]*F[2][2]; cof[1][1] = F[0][0]*F[2][2]-F[0][2]*F[2][0]; cof[1][2] = F[0][1]*F[2][0]-F[0][0]*F[2][1];\n    cof[2][0] = F[0][1]*F[1][2]-F[0][2]*F[1][1]; cof[2][1] = F[0][2]*F[1][0]-F[0][0]*F[1][2]; cof[2][2] = F[0][0]*F[1][1]-F[0][1]*F[1][0];\n    for (int k = 0; k < 4; ++k) for (int j = 0; j < 3; ++j) a[k][j] = Fq[0][j] * dW[k][0] + Fq[1][j] * dW[k][1] + Fq[2][j] * dW[k][2];\n    float ce = sce * wv[p], s = sq[p], cs = ce * sla;\n    float col[4][4][13];\n    for (int k = 0; k < 4; ++k) {\n        for (int c = 0; c < 3; ++c) {\n            for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) col[k][c][3 * i + j] = (i == c) ? ce * a[k][j] : 0.f;\n            float cd = 0.f; for (int j = 0; j < 3; ++j) cd += cof[c][j] * a[k][j];\n            col[k][c][9] = cs * cd;\n            for (int i = 0; i < 3; ++i) col[k][c][10 + i] = (i == c) ? s * W[k] : 0.f;\n        }\n        float dgj = wk[k] * pr[k], ddg[3], dWs[4], ddW[4][3];\n        for (int c = 0; c < 3; ++c) ddg[c] = dwk[k][c] * pr[k] + wk[k] * dpr[k] * drk[k][c];\n        rho_dir(k, W, dg, S, G, dgj, ddg, dWs, ddW);\n        float dJ[3][3] = {{0.f}}, dyr[3] = {0.f, 0.f, 0.f};\n        for (int m = 0; m < 4; ++m) for (int i = 0; i < 3; ++i) { dyr[i] += dWs[m] * u[m][i]; for (int j = 0; j < 3; ++j) dJ[i][j] += u[m][i] * ddW[m][j]; }\n        float dd = 0.f;\n        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {\n            float dFr = dJ[i][0] * Fq[0][j] + dJ[i][1] * Fq[1][j] + dJ[i][2] * Fq[2][j];\n            col[k][3][3 * i + j] = ce * dFr; dd += cof[i][j] * dFr;\n        }\n        col[k][3][9] = cs * dd;\n        for (int i = 0; i < 3; ++i) col[k][3][10 + i] = s * dyr[i];\n    }\n    // 같은 묶음 노드의 열은 더한다 (P 가 묶음 안 상수) -- 묶음별 4 열\n    int ag[4]; for (int k = 0; k < 4; ++k) ag[k] = agg[nd[k]];\n    for (int k = 0; k < 4; ++k) {\n        bool first = true; for (int q = 0; q < k; ++q) if (ag[q] == ag[k]) first = false;\n        if (!first) continue;\n        float ck[4][13];\n        for (int x = 0; x < 4; ++x) for (int q = 0; q < 13; ++q) ck[x][q] = 0.f;\n        for (int k2 = 0; k2 < 4; ++k2) if (ag[k2] == ag[k]) for (int x = 0; x < 4; ++x) for (int q = 0; q < 13; ++q) ck[x][q] += col[k2][x][q];\n        for (int m = 0; m < 4; ++m) {\n            bool firstm = true; for (int q = 0; q < m; ++q) if (ag[q] == ag[m]) firstm = false;\n            if (!firstm) continue;\n            float cm[4][13];\n            for (int x = 0; x < 4; ++x) for (int q = 0; q < 13; ++q) cm[x][q] = 0.f;\n            for (int m2 = 0; m2 < 4; ++m2) if (ag[m2] == ag[m]) for (int x = 0; x < 4; ++x) for (int q = 0; q < 13; ++q) cm[x][q] += col[m2][x][q];\n            for (int x = 0; x < 4; ++x) for (int y = 0; y < 4; ++y) {\n                float acc = 0.f; for (int q = 0; q < 13; ++q) acc += ck[x][q] * cm[y][q];\n                atomicAdd(&Ac[(size_t)(4 * ag[k] + x) * (4 * nc) + 4 * ag[m] + y], acc);\n            }\n        }\n    }\n}\n'
 _KB = cp.RawKernel(_SRC, "gn_block")
+_KC = cp.RawKernel(_SRC2, "gn_coarse")
 
 
 def _c(t, dt=None):
@@ -359,7 +361,7 @@ _MCG = cp.RawModule(code=_SRC_CG)
 _KGP, _KUPD, _KP, _KINIT = (_MCG.get_function(n) for n in ("cg_gp", "cg_upd", "cg_p", "cg_init"))
 
 
-def pcg_block(gk, hv_fn, Binv, M3, eps, maxit, tol, check=10):
+def pcg_block(gk, hv_fn, Binv, M3, eps, maxit, tol, check=10, coarse=None):
     """블록 야코비 전처리 CG (rep_ip 의 CG 와 같은 식). hv_fn(p)->Ap (torch). 돌려주는 것: (x, 반복 수)."""
     n = gk.numel(); nn = M3 // 3
     x = torch.zeros_like(gk); r = gk.clone().contiguous(); z = torch.empty_like(gk)
@@ -370,6 +372,8 @@ def pcg_block(gk, hv_fn, Binv, M3, eps, maxit, tol, check=10):
     gl = (min((n + T - 1) // T, 1024),)
     rz = cp.zeros(1, dtype=cp.float64)
     _KINIT(gn, (T,), (cr, cz, cB, cp.int32(nn), rz))
+    if coarse is not None:                                        # 가법 2 단계: z += P Ac⁻¹ Pᵀ r
+        zc, rzc = coarse_apply(r, *coarse, M3); z += zc; rz += rzc
     p = z.clone(); cpp = cp.asarray(p)
     lim = float((tol * gk.norm()) ** 2)
     it = 0
@@ -380,6 +384,40 @@ def pcg_block(gk, hv_fn, Binv, M3, eps, maxit, tol, check=10):
         _KUPD(gn, (T,), (cx, cr, cz, cpp, cG, cB, cp.int32(nn), rz, pAp, rzn, rr))
         if it % check == 0 and float(rr[0]) < lim:
             break
+        if coarse is not None:
+            zc, rzc = coarse_apply(r, *coarse, M3); z += zc; rzn += rzc
         _KP(gl, (T,), (cpp, cz, cp.int32(n), rz, rzn))
         rz = rzn
     return x, it
+
+
+
+def coarse_setup(pre, th, Xn, M3, hl, aa, sla, sce, eps, factor=2.0):
+    """2 단계 전처리의 성긴 단계: 노드를 (factor·h) 칸으로 묶어 Ac = Pᵀ(JᵀJ)P (+eps) 를 조밀하게 모으고 Cholesky.
+    돌려주는 것 (agg [M], nc, L)."""
+    nn = M3 // 3
+    q = torch.floor((Xn - Xn.min(0).values) / (factor * hl * 1.0001)).long()
+    key = (q[:, 0] * 100003 + q[:, 1]) * 100003 + q[:, 2]
+    _, agg = torch.unique(key, return_inverse=True)
+    nc = int(agg.max()) + 1
+    Ac = torch.zeros(4 * nc, 4 * nc, device=th.device)
+    P = pre[0].shape[0]
+    blk = 64
+    _KC(((P + blk - 1) // blk,), (blk,), (*pre, cp.asarray(th.contiguous()), cp.asarray(agg.int().contiguous()), cp.int32(M3),
+                                       cp.float32(hl), cp.float32(aa), cp.float32(sla), cp.float32(sce), cp.int32(P), cp.int32(nc),
+                                       cp.asarray(Ac)))
+    cnt = torch.bincount(agg, minlength=nc).float()
+    Ac = Ac + eps * torch.diag(cnt.repeat_interleave(4))           # Pᵀ (eps I) P
+    L = torch.linalg.cholesky(Ac.double())
+    return agg, nc, L
+
+
+def coarse_apply(r, agg, nc, L, M3):
+    """P Ac⁻¹ Pᵀ r 와 rᵀ(그것)."""
+    nn = M3 // 3
+    rc = torch.zeros(nc, 4, device=r.device, dtype=torch.float64)
+    rc[:, :3].index_add_(0, agg, r[:M3].reshape(nn, 3).double())
+    rc[:, 3].index_add_(0, agg, r[M3:M3 + nn].double())
+    yc = torch.cholesky_solve(rc.reshape(-1, 1), L).reshape(nc, 4)
+    z = torch.cat([yc[agg, :3].reshape(-1), yc[agg, 3]]).float()
+    return z, float((rc * yc).sum())
