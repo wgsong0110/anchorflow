@@ -2,7 +2,7 @@
 
 입력: lego 0 프레임 입자(i-PG visco_drop, PG 공식 채우기) + 탄성 config (stab/lego 와 같은 값).
 무작위 (시드 하나로 전부): 초기 회전(SO(3) 균일), 낙하 높이(바닥 위 여유 [h0, h1]), 초기 속도(크기 [v0, v1], 방향 구 균일, 강체 병진).
-출력 DIR/sim_XXXXXXXXXX.h5 프레임마다 x (N,3) float32, F (N,9) float32 -- F 는 초기 회전 R 을 실은 F_sim·R
+출력 DIR/sim_XXXXXXXXXX.h5 프레임마다 x (N,3) float32, v (N,3) float32, F (N,9) float32 -- F 는 초기 회전 R 을 실은 F_sim·R
   (렌더러가 가우시안 공분산을 F C0 Fᵀ 로 쓰므로 회전이 모양에 반영된다), DIR/meta.json 에 무작위 값.
 
   cd i-physgaussian && python <anchorflow>/exe/lb_gen.py --h5 init.h5 --config cfg.json --seed 0 --out DIR
@@ -25,6 +25,8 @@ ap.add_argument("--h1", type=float, default=0.30)
 ap.add_argument("--v0", type=float, default=0.0, help="초기 속도 크기 최소")
 ap.add_argument("--v1", type=float, default=1.5)
 ap.add_argument("--pg", default="/home/dkta/work/i-physgaussian")
+ap.add_argument("--commit", default="", help="이 코드의 커밋 해시 (meta 에 남긴다)")
+ap.add_argument("--model", default="/home/dkta/work/pgmodel/lego_whitebg-trained", help="렌더·형식 변환에 쓰는 3DGS (meta 에 남긴다)")
 a = ap.parse_args()
 sys.path.insert(0, a.pg); os.chdir(a.pg)
 import h5py                                                      # noqa: E402
@@ -84,15 +86,16 @@ os.makedirs(a.out, exist_ok=True)
 Rt = torch.as_tensor(R, dtype=torch.float32).cuda()
 
 
-def dump(f, xt, Ft):
+def dump(f, xt, vt, Ft):
     with h5py.File(f"{a.out}/sim_{f:010d}.h5", "w") as h:
         h.create_dataset("x", data=xt.astype(np.float32))
+        h.create_dataset("v", data=vt.astype(np.float32))
         h.create_dataset("F", data=Ft.reshape(N, 9).astype(np.float32))
 
 
-dump(0, xr, np.tile(R, (N, 1, 1)))
+dump(0, xr, np.tile(v0, (N, 1)), np.tile(R, (N, 1, 1)))
 print(f"[pg] 입자 {N}, dx {dx:.4f}, 서브스텝 {dt:.3e} × {nsub}, {a.frames} 프레임", flush=True)
-t0 = time.time(); step = 0
+t0 = time.time(); step = 0; TF = []
 for f in tqdm(range(1, a.frames + 1), desc=f"lb {a.seed}"):
     for s in range(nsub):
         sol.p2g2p(step, dt); step += 1
@@ -100,8 +103,10 @@ for f in tqdm(range(1, a.frames + 1), desc=f"lb {a.seed}"):
     Ft = sol.export_particle_F_to_torch().reshape(N, 3, 3) @ Rt           # PG 는 (N, 9) 로 내보낸다
     if not torch.isfinite(xt).all():
         raise SystemExit(f"[발산] 프레임 {f}")
-    dump(f, xt.cpu().numpy(), Ft.cpu().numpy())
+    dump(f, xt.cpu().numpy(), wp.to_torch(sol.mpm_state.particle_v).cpu().numpy(), Ft.cpu().numpy())
+    TF.append(time.time() - t0)
 json.dump(dict(seed=a.seed, R=R.tolist(), lift=lift, speed=spd, dir=d.tolist(), v0=v0.tolist(), frames=a.frames,
                frame_dt=frame_dt, nsub=nsub, N=N, config=os.path.abspath(a.config), h5=os.path.abspath(a.h5),
-               range=dict(h=[a.h0, a.h1], v=[a.v0, a.v1]), sec=time.time() - t0), open(f"{a.out}/meta.json", "w"), indent=1)
+               range=dict(h=[a.h0, a.h1], v=[a.v0, a.v1]), sec=time.time() - t0, commit=a.commit, model=a.model,
+               gaussians_first=297877, saved=["x", "v", "F (초기 회전 실림)"], frame_wall=TF), open(f"{a.out}/meta.json", "w"), indent=1)
 print(f"[저장] {a.out}  {time.time() - t0:.0f}s", flush=True)
