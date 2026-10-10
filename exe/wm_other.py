@@ -22,6 +22,8 @@ ap.add_argument("--config", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=0)
 ap.add_argument("--material", choices=["sand", "nacc"], default="sand", help="nacc: GF 와 같은 CD-MPM(NACC) 소성 (β·ξ·경화·초기 log Jp 는 GF config 그대로). MPMAvatar 는 AF_MP_ROOT=MPMAvatar_nacc")
+ap.add_argument("--grid_mmin", type=float, default=0.0,
+                help="PG: 격자점 질량이 (이 값 × 입자 질량 중앙값) 아래면 그 격자점을 속도 계산에서 뺀다 (0 이면 PG 원래대로 1e-15)")
 ap.add_argument("--trace", type=int, default=0, help="1 이면 서브스텝마다 F_trial·F 의 det 를 보고 처음 이상해지는 입자의 전후 상태를 저장하고 멈춘다 (PG)")
 ap.add_argument("--check", type=int, default=0, help="이 서브스텝마다 동기화하고 x·F NaN 검사 (디버그)")
 ap.add_argument("--drop_isolated", type=int, default=0, help="3×3×3 칸 안에 혼자인 입자(GF 채우기의 외톨이)는 솔버에서 빼고 자유낙하로 채운다 -- APIC+NACC 에서 혼자 발산해 NaN 이 격자 인덱스를 깬다")
@@ -98,6 +100,18 @@ if a.solver == "pg":
     sol.add_bounding_box()
     sol.finalize_mu_lam()
     sol.import_particle_v_from_torch(V0)
+    if a.grid_mmin > 0:                                          # PG 격자 정규화 커널을 질량 하한판으로 바꿔 끼운다
+        import mpm_solver_warp.mpm_solver_warp as _pgs
+        from mpm_solver_warp.mpm_utils import MPMStateStruct as _St, MPMModelStruct as _Md
+        _MMIN = wp.constant(float(a.grid_mmin * float((VOL * rho).median())))
+
+        @wp.kernel
+        def grid_norm_mmin(state: _St, model: _Md, dt: float):
+            gx, gy, gz = wp.tid()
+            if state.grid_m[gx, gy, gz] > _MMIN:
+                state.grid_v_out[gx, gy, gz] = state.grid_v_in[gx, gy, gz] * (1.0 / state.grid_m[gx, gy, gz]) + dt * model.gravitational_accelaration
+        _pgs.grid_normalization_and_gravity = grid_norm_mmin
+        print(f"[격자] 질량 하한 {float(_MMIN):.3e} (입자 질량 중앙값 × {a.grid_mmin})", flush=True)
     dump(0, x[KP], np.tile(np.eye(3, dtype=np.float32), (N, 1, 1)))
     for f in tqdm(range(1, NF + 1), desc="PG"):
         for s in range(nsub):
