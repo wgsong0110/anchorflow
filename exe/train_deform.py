@@ -320,6 +320,10 @@ ap.add_argument("--pool_frames", type=int, default=240,
 ap.add_argument("--pool_fill", default="",
                 help="풀이 읽을 채움 디렉토리(pgfill_<형상>.npy). 비우면 AF_WORK. "
                      "교사와 같은 입자 집합을 쓰려면 그쪽 캐시를 가리킬 것")
+ap.add_argument("--pool_cfg", default="", help="물성 json 디렉토리 ({형상}_{물성}[_t].json). 비우면 $AF_WORK/wmats")
+ap.add_argument("--pool_drop", default="",
+                help="낙하 모드 'h0,h1,v0,v1' (학습 비교 공통 데이터셋 exe/lb_gen.py 와 같은 초기 조건 분포). "
+                     "새 상태를 무작위 회전·바닥 위 높이·초기 병진 속도로 뽑는다")
 ap.add_argument("--pool_combos", default="all",
                 help="쉼표로 구분한 형상_물성. all 이면 12 조합 전부 (기본)")
 ap.add_argument("--ctrl_zbias", type=float, default=0.0,
@@ -2051,12 +2055,20 @@ if a.pool:
     # 채움 디렉토리는 따로 줄 수 있다 -- 교사(i-PG)가 쓴 입자 집합과 **같은
     # 것**을 쓰려면 그쪽 캐시를 가리켜야 한다.
     _FD = a.pool_fill or _W
-    _sc = load_scenes(_FD, os.path.join(_W, "wmats"), _combos,
+    _sc = load_scenes(_FD, a.pool_cfg or os.path.join(_W, "wmats"), _combos,
                       0, dev, seed=a.seed)
     if not _sc:
         raise SystemExit("풀에 넣을 씬이 없다")
     _R = 0.15
     _gl0 = float(_sc[0][1]["cfg"].get("grid_lim", 2.0))
+    _DROP = None
+    if a.pool_drop:
+        _h0, _h1, _v0, _v1 = (float(q) for q in a.pool_drop.split(","))
+        _c0 = _sc[0][1]["cfg"]
+        _fl = [b for b in _c0["boundary_conditions"] if b["type"] == "surface_collider"][0]
+        _DROP = dict(h=(_h0, _h1), v=(_v0, _v1), zf=float(_fl["point"][2]), gz=float(_c0["g"][2]),
+                     margin=3 * _gl0 / int(_c0["n_grid"]))
+        print(f"[풀] 낙하 모드: 높이 여유 {_DROP['h']}, 속도 {_DROP['v']}, 바닥 z {_DROP['zf']}", flush=True)
     # 목표점 마진은 **손잡이 반경보다 커야** 한다. 반경만큼만 두면 손잡이가
     # 목표에 닿는 순간 무리의 바깥쪽 입자가 경계에 걸리고, 딸려 오는 부분까지
     # 생각하면 그 자리에서 영역을 벗어난다.
@@ -2066,7 +2078,7 @@ if a.pool:
                      domain=_gl0, margin=_R + 0.15,
                      start_mid=a.pool_start_mid, keep_prob=a.pool_keep,
                      acc=a.ctrl_acc, vmax=a.ctrl_vmax, zbias=a.ctrl_zbias,
-                     n_side=a.pool_targets)
+                     n_side=a.pool_targets, drop=_DROP)
     for _tag, _s in _sc:
         SCENE_DS.append(dict(x=_s["x0"].unsqueeze(0), cfg=_s["cfg"],
                              sel=torch.arange(_s["x0"].shape[0], device=dev),

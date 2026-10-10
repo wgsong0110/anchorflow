@@ -172,8 +172,11 @@ class StatePool:
     def __init__(self, scenes, size, n_ctrl, radius, dev, gen,
                  frames=60, thresh=0.05, window=30,
                  domain=2.0, margin=0.15, start_mid=False, keep_prob=0.5,
-                 acc=2.4, vmax=0.6, n_side=4, zbias=0.0):
+                 acc=2.4, vmax=0.6, n_side=4, zbias=0.0, drop=None):
         self.scenes = scenes
+        # 낙하 모드 (학습 비교 공통 데이터셋과 같은 초기 조건 분포, exe/lb_gen.py):
+        # dict(h=(h0,h1), v=(v0,v1), zf=바닥 z, margin=상자 여유). None 이면 손잡이 모드.
+        self.drop = drop
         self.size = size
         self.n_ctrl = n_ctrl
         self.radius = radius
@@ -262,6 +265,9 @@ class StatePool:
                                    device=self.dev))
         tag, sc = self.scenes[si]
         x = sc["x0"].clone()
+        v = torch.zeros_like(x)
+        if self.drop is not None:
+            x, v = self._drop_init(x)
         plan = HandlePlan.sample(x, self.n_ctrl, self.radius, self.gen,
                                  self.dev, self.cand, self.frames,
                                  acc=self.acc, vmax=self.vmax,
@@ -270,10 +276,38 @@ class StatePool:
         if self.start_mid:
             el = int(torch.randint(self.frames, (1,), generator=self.gen,
                                    device=self.dev))
-        return dict(si=si, x=x, v=torch.zeros_like(x),
+        return dict(si=si, x=x, v=v,
                     F=torch.eye(3, device=self.dev).expand(
                         x.shape[0], 3, 3).contiguous(),
                     p=None, plan=plan, elapsed=el, hist=[], age=0)
+
+    def _drop_init(self, x0):
+        """lb_gen.py 와 같은 분포: 균일 회전(정규분포 사원수), xy 가운데, 바닥 위 여유 U[h0,h1],
+        강체 병진 속도 크기 U[v0,v1]·방향 구 균일. 상자 밖이거나 최고점이 상자를 넘으면 다시 뽑는다
+        (lb_gen 이 그 시드를 거부하는 것과 같다). F 는 I -- 회전한 정지 자세가 새 기준 형상이다."""
+        d = self.drop; dev = self.dev; GL = self.domain
+        rnd = lambda *s: torch.rand(*s, generator=self.gen, device=dev)            # noqa: E731
+        nrm = lambda *s: torch.randn(*s, generator=self.gen, device=dev)           # noqa: E731
+        c = x0.mean(0)
+        for _ in range(100):
+            q = nrm(4); q = q / q.norm()
+            w_, i_, j_, k_ = q.tolist()
+            R = torch.tensor([[1 - 2 * (j_ * j_ + k_ * k_), 2 * (i_ * j_ - k_ * w_), 2 * (i_ * k_ + j_ * w_)],
+                              [2 * (i_ * j_ + k_ * w_), 1 - 2 * (i_ * i_ + k_ * k_), 2 * (j_ * k_ - i_ * w_)],
+                              [2 * (i_ * k_ - j_ * w_), 2 * (j_ * k_ + i_ * w_), 1 - 2 * (i_ * i_ + j_ * j_)]],
+                             device=dev, dtype=x0.dtype)
+            xr = (x0 - c) @ R.T
+            lift = d["h"][0] + (d["h"][1] - d["h"][0]) * float(rnd(1))
+            xr = xr + torch.tensor([GL / 2, GL / 2, d["zf"] + lift], device=dev, dtype=x0.dtype) \
+                - torch.tensor([0.0, 0.0, float(xr[:, 2].min())], device=dev, dtype=x0.dtype)
+            dr = nrm(3); dr = dr / dr.norm()
+            v0 = dr * (d["v"][0] + (d["v"][1] - d["v"][0]) * float(rnd(1)))
+            lo, hi = xr.min(0).values, xr.max(0).values
+            rise = max(0.0, float(v0[2])) ** 2 / (2 * abs(d["gz"]))
+            if (lo < d["margin"]).any() or (hi > GL - d["margin"]).any() or float(hi[2]) + rise > GL - d["margin"]:
+                continue
+            return xr.contiguous(), v0.to(x0.dtype).expand_as(xr).contiguous()
+        raise RuntimeError("낙하 초기 상태를 100 번 안에 못 뽑았다")
 
     def threshold(self):
         return self.thresh
