@@ -471,7 +471,8 @@ def _blk_inv(Acoo, n, eps):
     m = (idx[0] // 4) == (idx[1] // 4)
     D = torch.zeros(n, 4, 4, device=v.device)
     D[idx[0][m] // 4, idx[0][m] % 4, idx[1][m] % 4] = v[m]
-    return torch.linalg.inv((D + eps * torch.eye(4, device=v.device)).double()).float()
+    jit = 1e-9 * float(D.abs().amax()) + eps
+    return torch.linalg.inv((D + jit * torch.eye(4, device=v.device)).double()).float()
 
 
 def _chol_jit(Ad):
