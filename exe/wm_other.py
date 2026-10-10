@@ -60,6 +60,10 @@ V0 = torch.tensor([0.0, 0.0, -6.0], device="cuda").expand(N, 3).contiguous()   #
 print(f"[{a.solver}] 입자 {N}, 격자 {n_grid} dx {dx:.5f}, 서브스텝 {sub:.3e} × {nsub}, {NF} 프레임, 재질 {a.material} φ "
       f"{cfg.get('friction_angle', 45)} β {cfg.get('beta')} ξ {cfg.get('xi')} 경화 {cfg.get('hardening')}", flush=True)
 os.makedirs(a.out, exist_ok=True)
+# quarantine 위치 문턱: GF 는 [-0.5L, 1.5L] 이지만 GF 격자는 밖을 자르고, PG·MPMAvatar 의 p2g 는 범위 검사가 없어
+# 격자 밖 입자 하나가 잘못된 메모리를 쓴다 (실측: 프레임 25 에서 illegal memory access). 2차 B-스플라인 스텐실이
+# 격자 안에 들도록 [dx, L - 2dx] 로 좁힌다 -- 그 밖은 어차피 경계 상자가 속도를 지우는 층이다.
+QLO, QHI = dx, GL - 2 * dx
 
 
 KP = keep.cpu().numpy(); XD = x[~KP]
@@ -98,7 +102,7 @@ if a.solver == "pg":
         for s in range(nsub):
             if a.check:
                 ms = sol.mpm_state; prev = {k: wp.to_torch(getattr(ms, k)).clone() for k in ("particle_F_trial", "particle_F", "particle_Jp", "particle_C", "particle_v")}
-            wp.launch(QUAR, dim=N, inputs=[sol.mpm_state, -0.5 * GL, 1.5 * GL, 1e5])   # GF quarantine 과 같은 자리·같은 문턱
+            wp.launch(QUAR, dim=N, inputs=[sol.mpm_state, QLO, QHI, 1e5])   # GF quarantine 과 같은 자리·같은 속도 문턱
             sol.p2g2p(f, sub)
             if a.check:
                 wp.synchronize(); S_ = wp.to_torch(sol.mpm_state.particle_stress).reshape(N, -1)
@@ -163,7 +167,7 @@ else:
     dump(0, x[KP], np.tile(np.eye(3, dtype=np.float32), (N, 1, 1)))
     for f in tqdm(range(1, NF + 1), desc="MPMAvatar"):
         for s in range(nsub):
-            wp.launch(quar_mpma, dim=N, inputs=[st, -0.5 * GL, 1.5 * GL, 1e5], device=dev)
+            wp.launch(quar_mpma, dim=N, inputs=[st, QLO, QHI, 1e5], device=dev)
             sol.p2g2p(md, st, sub, device=dev)
         xt = wp.to_torch(st.particle_x).cpu().numpy()
         dump(f, xt, wp.to_torch(st.particle_F).cpu().numpy())
