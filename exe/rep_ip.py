@@ -43,6 +43,8 @@ ap.add_argument("--simp", default="", help="simplicits 가중치 함수 (.pt, �
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--iters0", type=int, default=400)
 ap.add_argument("--iters", type=int, default=200)
+ap.add_argument("--init_inertia", type=int, default=1,
+                help="ours: 서브스텝마다 격자 변위를 관성 예측 h·v 로 초기화 (i-PG 의 du0 = dt·vⁿ 과 같게). 0 이면 예전처럼 변위 0")
 ap.add_argument("--riem_eps", type=float, default=1e-2)
 ap.add_argument("--riem_lr", type=float, default=1.0)
 ap.add_argument("--riem_cg", type=int, default=50)
@@ -440,6 +442,14 @@ for t in range(T_START, a.frames + 1):
         else:
             X_ = X0
         xtil = xn + h * vn
+        if REB and a.method == "ours" and a.init_inertia:     # 관성 예측에서 출발: 노드 변위 = 붙은 입자 h·v 의 무게 평균
+            with torch.no_grad():
+                for r, ii in zip(REP.reps, REP.idx):
+                    dv = h * vn[ii]
+                    num = torch.zeros_like(r.u); den = torch.zeros(r.u.shape[0], device=dev)
+                    num.index_add_(0, r.rows.reshape(-1), (r.lam[..., None] * dv[:, None]).reshape(-1, 3))
+                    den.index_add_(0, r.rows.reshape(-1), r.lam.reshape(-1))
+                    r.u.data.copy_(num / den.clamp_min(1e-12)[:, None])
         JPI = [None if REB else torch.linalg.inv(Jprev)]
         pairs = contact_pairs(xn)
         PL = REP.params()
