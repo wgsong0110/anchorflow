@@ -480,10 +480,12 @@ for t in range(T_START, a.frames + 1):
         else:
             X_ = X0
         xtil = xn + h * vn
-        if REB and a.method == "ours" and a.init_inertia:     # 관성 예측에서 출발: 노드 변위 = 붙은 입자 h·v 의 무게 평균
+        if REB and a.method == "ours" and a.init_inertia:     # 관성 예측에서 출발: 노드 변위 = 붙은 입자 h·v + h²g 의 무게 평균
             with torch.no_grad():
                 for r, ii in zip(REP.reps, REP.idx):
-                    dv = h * vn[ii]
+                    # 중력까지 넣은 IPC 예측 x̃ = x + h v + h² g. h·v 만 넣으면 정지 상태에서 움직여야 할 거리가 h²g 라
+                    # 속도 단위 허용치(∝ h)보다 작아져 N 이 크면 첫 반복에서 멈춘다 (N1024 가 60 프레임 내내 정지).
+                    dv = h * vn[ii] + (h * h) * g
                     num = torch.zeros_like(r.u); den = torch.zeros(r.u.shape[0], device=dev)
                     num.index_add_(0, r.rows.reshape(-1), (r.lam[..., None] * dv[:, None]).reshape(-1, 3))
                     den.index_add_(0, r.rows.reshape(-1), r.lam.reshape(-1))
