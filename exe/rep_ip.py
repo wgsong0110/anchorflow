@@ -59,6 +59,7 @@ ap.add_argument("--gn_cuda", type=int, default=0, help="metric_true: 가우스-�
 ap.add_argument("--gn_check", type=int, default=0, help="gn_cuda 를 첫 곱에서 autograd 곱(fi.HV)과 대조해 상대 오차를 찍는다")
 ap.add_argument("--eg_cuda", type=int, default=0, help="fused 경로의 목적·기울기를 CUDA 통합 커널 한 번으로 (gn_warp.eg, fused_ip.objective 와 같은 식)")
 ap.add_argument("--block_pre", type=int, default=0, help="gn_cuda: 대각 대신 노드별 4x4 블록 야코비 전처리 (CUDA 로 정확히 모은 블록)")
+ap.add_argument("--cg_fused", type=int, default=0, help="block_pre 단일 물체: CG 를 커널 세 개로 (gn_warp.pcg_block, 같은 식, 판정은 cg_check 마다)")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
@@ -697,23 +698,28 @@ for t in range(T_START, a.frames + 1):
                             outs_.append(gw.block_apply(Bi_, rv[s0_:s0_ + n_], rp_.u.numel())); s0_ += n_
                         return torch.cat(outs_)
                     return rv / PRE if PRE is not None else rv
-                x = torch.zeros_like(gk); r = gk.clone(); zr = _apply_pre(r)
-                pdir = zr.clone(); rz = (r * zr).sum()
-                gkn = gk.norm() * a.cg_tol
-                for _ci in range(a.riem_cg):
-                    if a.prof:
-                        _t = _tk("CG", _t)
-                    Gp = Hv(theta, pdir) + eps * pdir
-                    if a.prof:
-                        _t = _tk("CG 곱", _t)
-                    al = rz / (pdir * Gp).sum().clamp_min(1e-30)
-                    x += al * pdir; r -= al * Gp
-                    PC["cg"] = PC.get("cg", 0) + 1
-                    if _ci % a.cg_check == a.cg_check - 1 and bool((r * r).sum().sqrt() < gkn):   # 동기화는 몇 번에 한 번
-                        break
-                    zr = _apply_pre(r)
-                    rz_new = (r * zr).sum()
-                    pdir = zr + (rz_new / rz) * pdir; rz = rz_new
+                if a.cg_fused and BPRE is not None and len(reps) == 1:
+                    x, _nc = gw.pcg_block(gk, lambda pv: Hv(theta, pv), BPRE[0], reps[0].u.numel(), eps, a.riem_cg, a.cg_tol, a.cg_check)
+                    PC["cg"] = PC.get("cg", 0) + _nc
+                    _t = _tk("CG", _t)
+                else:
+                  x = torch.zeros_like(gk); r = gk.clone(); zr = _apply_pre(r)
+                  pdir = zr.clone(); rz = (r * zr).sum()
+                  gkn = gk.norm() * a.cg_tol
+                  for _ci in range(a.riem_cg):
+                      if a.prof:
+                          _t = _tk("CG", _t)
+                      Gp = Hv(theta, pdir) + eps * pdir
+                      if a.prof:
+                          _t = _tk("CG 곱", _t)
+                      al = rz / (pdir * Gp).sum().clamp_min(1e-30)
+                      x += al * pdir; r -= al * Gp
+                      PC["cg"] = PC.get("cg", 0) + 1
+                      if _ci % a.cg_check == a.cg_check - 1 and bool((r * r).sum().sqrt() < gkn):   # 동기화는 몇 번에 한 번
+                          break
+                      zr = _apply_pre(r)
+                      rz_new = (r * zr).sum()
+                      pdir = zr + (rz_new / rz) * pdir; rz = rz_new
                 _t = _tk("CG", _t)
                 # Armijo 되돌림 선탐색 (A 와 같다): 보폭 η 에서 시작해 목적이 충분히 줄 때까지 반으로
                 def setp(vec):

@@ -300,3 +300,86 @@ def block_apply(Binv, r, M3):
     z = torch.cat([r[:M3].reshape(nn, 3), r[M3:M3 + nn, None]], 1)
     y = (Binv @ z[..., None]).squeeze(-1)
     return torch.cat([y[:, :3].reshape(-1), y[:, 3]])
+
+
+# ---------------------------------------------------------------- 블록 전처리 CG 를 커널 세 개로 (스칼라는 장치에)
+_SRC_CG = r"""
+__device__ __forceinline__ void block_sum(double v, double* out) {
+    __shared__ double sh[256];
+    int t = threadIdx.x; sh[t] = v; __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) { if (t < s) sh[t] += sh[t + s]; __syncthreads(); }
+    if (t == 0) atomicAdd(out, sh[0]);
+}
+// Gp += eps p, pAp += p·Gp
+extern "C" __global__ void cg_gp(float* Gp, const float* p, float eps, int n, double* pAp) {
+    double acc = 0.0;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
+        float g = Gp[i] + eps * p[i]; Gp[i] = g; acc += (double)p[i] * (double)g;
+    }
+    block_sum(acc, pAp);
+}
+// 노드마다: α = rz/pAp; x += α p; r -= α Gp; z = B⁻¹ r (4×4); rz_new += r·z; rr += r·r
+extern "C" __global__ void cg_upd(float* x, float* r, float* z, const float* p, const float* Gp, const float* Binv,
+                                  int nn, const double* rz, const double* pAp, double* rz_new, double* rr) {
+    double acc = 0.0, acr = 0.0;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < nn) {
+        double al = rz[0] / fmax(pAp[0], 1e-300);
+        int ix[4] = {3 * i, 3 * i + 1, 3 * i + 2, 3 * nn + i};
+        float rv[4];
+        for (int c = 0; c < 4; ++c) { x[ix[c]] += (float)al * p[ix[c]]; r[ix[c]] -= (float)al * Gp[ix[c]]; rv[c] = r[ix[c]]; }
+        for (int c = 0; c < 4; ++c) {
+            float zc = 0.f; for (int d = 0; d < 4; ++d) zc += Binv[16 * i + 4 * c + d] * rv[d];
+            z[ix[c]] = zc; acc += (double)rv[c] * zc; acr += (double)rv[c] * rv[c];
+        }
+    }
+    block_sum(acc, rz_new);
+    block_sum(acr, rr);
+}
+// p = z + (rz_new / rz) p
+extern "C" __global__ void cg_p(float* p, const float* z, int n, const double* rz, const double* rz_new) {
+    double be = rz_new[0] / fmax(rz[0], 1e-300);
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) p[i] = z[i] + (float)be * p[i];
+}
+// 처음: z = B⁻¹ r, rz = r·z
+extern "C" __global__ void cg_init(const float* r, float* z, const float* Binv, int nn, double* rz) {
+    double acc = 0.0;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < nn) {
+        int ix[4] = {3 * i, 3 * i + 1, 3 * i + 2, 3 * nn + i};
+        for (int c = 0; c < 4; ++c) {
+            float zc = 0.f; for (int d = 0; d < 4; ++d) zc += Binv[16 * i + 4 * c + d] * r[ix[d]];
+            z[ix[c]] = zc; acc += (double)r[ix[c]] * zc;
+        }
+    }
+    block_sum(acc, rz);
+}
+"""
+_MCG = cp.RawModule(code=_SRC_CG)
+_KGP, _KUPD, _KP, _KINIT = (_MCG.get_function(n) for n in ("cg_gp", "cg_upd", "cg_p", "cg_init"))
+
+
+def pcg_block(gk, hv_fn, Binv, M3, eps, maxit, tol, check=10):
+    """블록 야코비 전처리 CG (rep_ip 의 CG 와 같은 식). hv_fn(p)->Ap (torch). 돌려주는 것: (x, 반복 수)."""
+    n = gk.numel(); nn = M3 // 3
+    x = torch.zeros_like(gk); r = gk.clone().contiguous(); z = torch.empty_like(gk)
+    cx, cr, cz = cp.asarray(x), cp.asarray(r), cp.asarray(z)
+    cB = cp.asarray(Binv.contiguous())
+    T = 256
+    gn = ((nn + T - 1) // T,)
+    gl = (min((n + T - 1) // T, 1024),)
+    rz = cp.zeros(1, dtype=cp.float64)
+    _KINIT(gn, (T,), (cr, cz, cB, cp.int32(nn), rz))
+    p = z.clone(); cpp = cp.asarray(p)
+    lim = float((tol * gk.norm()) ** 2)
+    it = 0
+    for it in range(1, maxit + 1):
+        Gp = hv_fn(p).contiguous(); cG = cp.asarray(Gp)
+        pAp = cp.zeros(1, dtype=cp.float64); rzn = cp.zeros(1, dtype=cp.float64); rr = cp.zeros(1, dtype=cp.float64)
+        _KGP(gl, (T,), (cG, cpp, cp.float32(eps), cp.int32(n), pAp))
+        _KUPD(gn, (T,), (cx, cr, cz, cpp, cG, cB, cp.int32(nn), rz, pAp, rzn, rr))
+        if it % check == 0 and float(rr[0]) < lim:
+            break
+        _KP(gl, (T,), (cpp, cz, cp.int32(n), rz, rzn))
+        rz = rzn
+    return x, it
