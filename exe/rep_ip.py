@@ -47,6 +47,7 @@ ap.add_argument("--iters", type=int, default=200)
 ap.add_argument("--polar_fast", type=int, default=0, help="탄성 에너지의 극분해를 Newton 반복으로 (같은 값, SVD 보다 빠름)")
 ap.add_argument("--newton_tol", type=float, default=0.0, help="ours: 예측 감소 ½g·x < tol² (길이 단위, 정규화 목적) 이면 반복 종료. 0 이면 끝까지")
 ap.add_argument("--cg_tol", type=float, default=1e-4, help="CG 상대 잔차 허용")
+ap.add_argument("--cg_check", type=int, default=1, help="CG 수렴 판정(동기화)을 몇 번에 한 번")
 ap.add_argument("--metric_true", type=int, default=0, help="ours: 계량을 실제 목적의 가우스-뉴턴 헤시안으로 (관성 NORM·m/h² + 탄성 2μΣV·NORM 배). 0 이면 예전 (탄성만, μ=1)")
 ap.add_argument("--precond", type=int, default=0, help="metric_true 일 때 CG 에 대각(Jacobi) 전처리: u 는 정확한 대각, ρ 는 탐침 4 개 추정")
 ap.add_argument("--gn_local", type=int, default=0, help="metric_true: 바깥 반복마다 입자별 JᵀJ(16×16) 를 만들어 CG 곱을 모으기·작은 행렬곱·흩뿌리기로 (같은 계량), 전처리도 그 정확한 대각")
@@ -678,12 +679,17 @@ for t in range(T_START, a.frames + 1):
                     PRE = torch.cat(pre) + eps
                 x = torch.zeros_like(gk); r = gk.clone(); zr = r / PRE if PRE is not None else r
                 pdir = zr.clone(); rz = (r * zr).sum()
-                for _ in range(a.riem_cg):
+                gkn = gk.norm() * a.cg_tol
+                for _ci in range(a.riem_cg):
+                    if a.prof:
+                        _t = _tk("CG", _t)
                     Gp = Hv(theta, pdir) + eps * pdir
+                    if a.prof:
+                        _t = _tk("CG 곱", _t)
                     al = rz / (pdir * Gp).sum().clamp_min(1e-30)
                     x += al * pdir; r -= al * Gp
                     PC["cg"] = PC.get("cg", 0) + 1
-                    if (r * r).sum().sqrt() < a.cg_tol * gk.norm():
+                    if _ci % a.cg_check == a.cg_check - 1 and bool((r * r).sum().sqrt() < gkn):   # 동기화는 몇 번에 한 번
                         break
                     zr = r / PRE if PRE is not None else r
                     rz_new = (r * zr).sum()
