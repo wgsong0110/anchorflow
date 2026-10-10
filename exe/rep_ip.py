@@ -31,6 +31,10 @@ sys.path.insert(0, os.path.join(HERE, "..", "lib"))
 from anchorflow import repmaps as rm                                  # noqa: E402
 from anchorflow import phys_resid as pr                               # noqa: E402
 from anchorflow import fused_ip as fi                                 # noqa: E402
+try:
+    from anchorflow import gn_warp as gw                              # noqa: E402
+except Exception:                                                     # cupy 없는 환경
+    gw = None
 
 W = "/home/dkta/work"
 MODEL = {"lego": "lego_whitebg-trained", "mic": "mic_whitebg-trained",
@@ -54,6 +58,7 @@ ap.add_argument("--gn_local", type=int, default=0, help="metric_true: 바깥 반
 ap.add_argument("--gn_cuda", type=int, default=0, help="metric_true: 가우스-뉴턴 곱을 CUDA 통합 커널 한 번으로 (lib/anchorflow/gn_warp.py, 같은 계량)")
 ap.add_argument("--gn_check", type=int, default=0, help="gn_cuda 를 첫 곱에서 autograd 곱(fi.HV)과 대조해 상대 오차를 찍는다")
 ap.add_argument("--eg_cuda", type=int, default=0, help="fused 경로의 목적·기울기를 CUDA 통합 커널 한 번으로 (gn_warp.eg, fused_ip.objective 와 같은 식)")
+ap.add_argument("--block_pre", type=int, default=0, help="gn_cuda: 대각 대신 노드별 4x4 블록 야코비 전처리 (CUDA 로 정확히 모은 블록)")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
@@ -658,7 +663,15 @@ for t in range(T_START, a.frames + 1):
             _t = _tk("극분해 R(계량)", _t)
             with torch.no_grad():
                 PRE = None
-                if a.precond and MT and a.gn_local and GL[0] is not None:   # 같은 블록의 정확한 대각
+                BPRE = None
+                if a.block_pre and MT and a.gn_cuda:                    # 노드 4x4 블록 역 (블록마다)
+                    if GC[0] is None:
+                        gc_build()
+                    BPRE, s0 = [], 0
+                    for k_, ((fn, args), n_) in enumerate(zip(MC[0], psizes)):
+                        BPRE.append(gw.block_inv(GC[0][k_], theta[s0:s0 + n_], reps[k_].u.numel(), float(reps[k_].h), float(reps[k_].a),
+                                                 float(args[14]), math.sqrt(CE[k_]), eps)); s0 += n_
+                elif a.precond and MT and a.gn_local and GL[0] is not None:   # 같은 블록의 정확한 대각
                     PRE = torch.cat([fi.gn_local_diag(A_, ix_, n_) for (A_, ix_), n_ in zip(GL[0], psizes)]).clamp_min(1e-30) + eps
                 elif a.precond and MT:                                   # 대각 전처리 (블록마다)
                     pre, s0 = [], 0
@@ -677,7 +690,14 @@ for t in range(T_START, a.frames + 1):
                             dr_ += (z * Hv(theta, th_full)[s0:s0 + n_])[M3_:] / 4.0
                         pre.append(torch.cat([Du, dr_.abs().clamp_min(1e-30)])); s0 += n_
                     PRE = torch.cat(pre) + eps
-                x = torch.zeros_like(gk); r = gk.clone(); zr = r / PRE if PRE is not None else r
+                def _apply_pre(rv):
+                    if BPRE is not None:
+                        outs_, s0_ = [], 0
+                        for Bi_, n_, rp_ in zip(BPRE, psizes, reps):
+                            outs_.append(gw.block_apply(Bi_, rv[s0_:s0_ + n_], rp_.u.numel())); s0_ += n_
+                        return torch.cat(outs_)
+                    return rv / PRE if PRE is not None else rv
+                x = torch.zeros_like(gk); r = gk.clone(); zr = _apply_pre(r)
                 pdir = zr.clone(); rz = (r * zr).sum()
                 gkn = gk.norm() * a.cg_tol
                 for _ci in range(a.riem_cg):
@@ -691,7 +711,7 @@ for t in range(T_START, a.frames + 1):
                     PC["cg"] = PC.get("cg", 0) + 1
                     if _ci % a.cg_check == a.cg_check - 1 and bool((r * r).sum().sqrt() < gkn):   # 동기화는 몇 번에 한 번
                         break
-                    zr = r / PRE if PRE is not None else r
+                    zr = _apply_pre(r)
                     rz_new = (r * zr).sum()
                     pdir = zr + (rz_new / rz) * pdir; rz = rz_new
                 _t = _tk("CG", _t)

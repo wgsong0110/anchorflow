@@ -128,7 +128,9 @@ extern "C" __global__ void gn_hv(const int* rows, const float* r, const float* d
     }
 }
 '''
+_SRC = _SRC + '\nextern "C" __global__ void gn_block(const int* rows, const float* r, const float* dr, const float* w, const float* dw,\n                                    const float* Fp, const float* wv, const float* sq, const float* th,\n                                    int M3, float hl, float aa, float sla, float sce, int P, float* B) {\n    // 노드마다 4x4 (u_x, u_y, u_z, ρ) 가우스-뉴턴 블록 Σ_p J_kᵀ J_k 를 모은다 (B: [노드 수, 16])\n    int p = blockIdx.x * blockDim.x + threadIdx.x;\n    if (p >= P) return;\n    int nd[4]; float W[4], wk[4], pr[4], dpr[4], g[4], dg[4][3], dW[4][3], u[4][3], a[4][3], drk[4][3], dwk[4][3];\n    float S[3] = {0.f, 0.f, 0.f}, G = 0.f;\n    for (int k = 0; k < 4; ++k) {\n        nd[k] = rows[4 * p + k];\n        float sg = 1.f / (1.f + expf(-th[M3 + nd[k]]));\n        float rho = hl * (0.05f + 0.95f * sg), drho = hl * 0.95f * sg * (1.f - sg);\n        float o[4]; psi_d(r[4 * p + k], rho, hl, aa, o);\n        wk[k] = w[4 * p + k]; g[k] = wk[k] * o[0]; pr[k] = o[2] * drho; dpr[k] = o[3] * drho;\n        for (int c = 0; c < 3; ++c) {\n            drk[k][c] = dr[(4 * p + k) * 3 + c]; dwk[k][c] = dw[(4 * p + k) * 3 + c];\n            dg[k][c] = dwk[k][c] * o[0] + wk[k] * o[1] * drk[k][c]; S[c] += dg[k][c]; u[k][c] = th[3 * nd[k] + c];\n        }\n        G += g[k];\n    }\n    G = fmaxf(G, 1e-12f);\n    float Fq[3][3]; for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) Fq[i][j] = Fp[9 * p + 3 * i + j];\n    float J[3][3] = {{1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.f, 0.f, 1.f}};\n    for (int k = 0; k < 4; ++k) { W[k] = g[k] / G; for (int c = 0; c < 3; ++c) dW[k][c] = dg[k][c] / G - W[k] * S[c] / G; }\n    for (int k = 0; k < 4; ++k) for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) J[i][j] += u[k][i] * dW[k][j];\n    float F[3][3]; for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) F[i][j] = J[i][0] * Fq[0][j] + J[i][1] * Fq[1][j] + J[i][2] * Fq[2][j];\n    float cof[3][3];\n    cof[0][0] = F[1][1]*F[2][2]-F[1][2]*F[2][1]; cof[0][1] = F[1][2]*F[2][0]-F[1][0]*F[2][2]; cof[0][2] = F[1][0]*F[2][1]-F[1][1]*F[2][0];\n    cof[1][0] = F[0][2]*F[2][1]-F[0][1]*F[2][2]; cof[1][1] = F[0][0]*F[2][2]-F[0][2]*F[2][0]; cof[1][2] = F[0][1]*F[2][0]-F[0][0]*F[2][1];\n    cof[2][0] = F[0][1]*F[1][2]-F[0][2]*F[1][1]; cof[2][1] = F[0][2]*F[1][0]-F[0][0]*F[1][2]; cof[2][2] = F[0][0]*F[1][1]-F[0][1]*F[1][0];\n    for (int k = 0; k < 4; ++k) for (int j = 0; j < 3; ++j) a[k][j] = Fq[0][j] * dW[k][0] + Fq[1][j] * dW[k][1] + Fq[2][j] * dW[k][2];\n    float ce = sce * wv[p], s = sq[p], cs = ce * sla;\n    for (int k = 0; k < 4; ++k) {\n        // 열 4 개: u_c (c=0..2), ρ_k. 각 열 = 잔차 13 개\n        float col[4][13];\n        for (int c = 0; c < 3; ++c) {\n            for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) col[c][3 * i + j] = (i == c) ? ce * a[k][j] : 0.f;\n            float cd = 0.f; for (int j = 0; j < 3; ++j) cd += cof[c][j] * a[k][j];\n            col[c][9] = cs * cd;\n            for (int i = 0; i < 3; ++i) col[c][10 + i] = (i == c) ? s * W[k] : 0.f;\n        }\n        float dgj = wk[k] * pr[k], ddg[3], dWs[4], ddW[4][3];\n        for (int c = 0; c < 3; ++c) ddg[c] = dwk[k][c] * pr[k] + wk[k] * dpr[k] * drk[k][c];\n        rho_dir(k, W, dg, S, G, dgj, ddg, dWs, ddW);\n        float dJ[3][3] = {{0.f}}, dyr[3] = {0.f, 0.f, 0.f};\n        for (int m = 0; m < 4; ++m) for (int i = 0; i < 3; ++i) { dyr[i] += dWs[m] * u[m][i]; for (int j = 0; j < 3; ++j) dJ[i][j] += u[m][i] * ddW[m][j]; }\n        float dd = 0.f;\n        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {\n            float dFr = dJ[i][0] * Fq[0][j] + dJ[i][1] * Fq[1][j] + dJ[i][2] * Fq[2][j];\n            col[3][3 * i + j] = ce * dFr; dd += cof[i][j] * dFr;\n        }\n        col[3][9] = cs * dd;\n        for (int i = 0; i < 3; ++i) col[3][10 + i] = s * dyr[i];\n        for (int x = 0; x < 4; ++x) for (int y = 0; y < 4; ++y) {\n            float acc = 0.f; for (int q = 0; q < 13; ++q) acc += col[x][q] * col[y][q];\n            atomicAdd(&B[16 * nd[k] + 4 * x + y], acc);\n        }\n    }\n}\n'
 _K = cp.RawKernel(_SRC, "gn_hv")
+_KB = cp.RawKernel(_SRC, "gn_block")
 
 
 def _c(t, dt=None):
@@ -276,3 +278,25 @@ def eg(pre, X, xt, VOL, MASS, th, M3, hl, aa, g, zf, use_floor, kfl, hdt, mu, la
                                          val, bad, cp.asarray(grad)))
     vb = cp.asnumpy(cp.concatenate([val, bad.astype(cp.float64)]))
     return float(vb[0]), int(vb[1]), (grad if want_grad else None)
+
+
+
+def block_inv(pre, th, M3, hl, aa, sla, sce, eps):
+    """노드별 4x4 가우스-뉴턴 블록 (+eps I) 의 역 [노드 수, 4, 4] -- 블록 야코비 전처리."""
+    nn = M3 // 3
+    B = torch.zeros(nn, 16, device=th.device)
+    P = pre[0].shape[0]
+    blk = 128
+    _KB(((P + blk - 1) // blk,), (blk,), (*pre, cp.asarray(th.contiguous()), cp.int32(M3), cp.float32(hl), cp.float32(aa),
+                                        cp.float32(sla), cp.float32(sce), cp.int32(P), cp.asarray(B)))
+    B = B.reshape(nn, 4, 4) + eps * torch.eye(4, device=th.device)
+    B = B + 1e-30 * torch.eye(4, device=th.device)
+    return torch.linalg.inv(B.double()).float()
+
+
+def block_apply(Binv, r, M3):
+    """r (u 3·노드 + ρ 노드) 에 블록 역을 곱한다."""
+    nn = M3 // 3
+    z = torch.cat([r[:M3].reshape(nn, 3), r[M3:M3 + nn, None]], 1)
+    y = (Binv @ z[..., None]).squeeze(-1)
+    return torch.cat([y[:, :3].reshape(-1), y[:, 3]])
