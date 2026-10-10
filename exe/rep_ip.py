@@ -523,6 +523,7 @@ for t in range(T_START, a.frames + 1):
         FUSED = bool(a.fused) and a.method == "ours" and NOBJ == 1 and REB and cfg.get("material", "jelly") == "jelly"
         if FUSED:
             from anchorflow import fused_ip as fi
+            torch.autograd.set_multithreading_enabled(False)      # Triton 역전파를 부르는 스레드에서 (다른 스레드면 invalid device context)
             _r = REP.reps[0]
             FARGS = (_r.u.numel(), _r.rows, _r.r, _r.dr, _r.w, _r.dw, float(_r.h), float(_r.a), X_, xtil, Fe, VOL, MASS, g,
                      float(ZF if ZF is not None else 0.0), ZF is not None, float(a.k_floor), float(h), float(MU_E),
