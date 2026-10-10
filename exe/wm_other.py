@@ -102,7 +102,7 @@ if a.solver == "pg":
     sol.import_particle_v_from_torch(V0)
     if a.grid_mmin > 0:                                          # PG 격자 정규화 커널을 질량 하한판으로 바꿔 끼운다
         import mpm_solver_warp.mpm_solver_warp as _pgs
-        from mpm_solver_warp.mpm_utils import MPMStateStruct as _St, MPMModelStruct as _Md
+        _St, _Md = _pgs.MPMStateStruct, _pgs.MPMModelStruct           # 솔버가 쓰는 그 구조체 (mpm_utils 를 다른 이름으로 다시 읽으면 형이 달라진다)
         _MMIN = wp.constant(float(a.grid_mmin * float((VOL * rho).median())))
 
         @wp.kernel
