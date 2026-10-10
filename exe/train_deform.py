@@ -3651,6 +3651,8 @@ def _rollout(d, t0, L, gsel=None):
         if a.ov_roll > 0:
             # 출력만 최적화: 서브스텝·jvp 없이 프레임마다 변수를 내린다
             x2, v, F_ov = _ov_frame(d, t0 + i, gsel, p, x, v, F_ov)
+            if _ROLLDUMP is not None and _FCUM[0] is not None:
+                _FCUM[0] = F_ov.detach().float()                 # 출력만 최적화가 실제로 굴린 F (렌더용)
         else:
             with torch.enable_grad(), dt_scope(FRAME_DT / EVAL_SUB):
                 for _sb in range(EVAL_SUB - 1):
