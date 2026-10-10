@@ -77,7 +77,19 @@ if a.solver == "pg":
     dump(0, x, np.tile(np.eye(3, dtype=np.float32), (N, 1, 1)))
     for f in tqdm(range(1, NF + 1), desc="PG"):
         for s in range(nsub):
+            if a.check:
+                ms = sol.mpm_state; prev = {k: wp.to_torch(getattr(ms, k)).clone() for k in ("particle_F_trial", "particle_F", "particle_Jp", "particle_C", "particle_v")}
             sol.p2g2p(f, sub)
+            if a.check:
+                wp.synchronize(); S_ = wp.to_torch(sol.mpm_state.particle_stress).reshape(N, -1)
+                bad_ = (~torch.isfinite(S_)).any(1)
+                if bad_.any():
+                    i = int(bad_.nonzero()[0]); torch.set_printoptions(precision=10)
+                    print(f"[첫 비유한 응력] f{f} s{s} 입자 {i}", {k: v[i].tolist() for k, v in prev.items()},
+                          "F_after", wp.to_torch(sol.mpm_state.particle_F)[i].tolist(), "Jp_after", float(wp.to_torch(sol.mpm_state.particle_Jp)[i]),
+                          "mu", float(wp.to_torch(sol.mpm_model.mu)[i]), "kappa", float(wp.to_torch(sol.mpm_model.kappa)[i]),
+                          "beta", float(wp.to_torch(sol.mpm_model.beta)[i]), "M", sol.mpm_model.M, flush=True)
+                    torch.save(prev, f"{a.out}/prev_bad.pt"); raise SystemExit(1)
             if a.check and (s % a.check == 0 or s >= 95):
                 wp.synchronize(); xx = sol.export_particle_x_to_torch(); FF = sol.export_particle_F_to_torch()
                 ms = sol.mpm_state
