@@ -50,6 +50,8 @@ ap.add_argument("--cg_tol", type=float, default=1e-4, help="CG 상대 잔차 허
 ap.add_argument("--metric_true", type=int, default=0, help="ours: 계량을 실제 목적의 가우스-뉴턴 헤시안으로 (관성 NORM·m/h² + 탄성 2μΣV·NORM 배). 0 이면 예전 (탄성만, μ=1)")
 ap.add_argument("--precond", type=int, default=0, help="metric_true 일 때 CG 에 대각(Jacobi) 전처리: u 는 정확한 대각, ρ 는 탐침 4 개 추정")
 ap.add_argument("--gn_local", type=int, default=0, help="metric_true: 바깥 반복마다 입자별 JᵀJ(16×16) 를 만들어 CG 곱을 모으기·작은 행렬곱·흩뿌리기로 (같은 계량), 전처리도 그 정확한 대각")
+ap.add_argument("--gn_cuda", type=int, default=0, help="metric_true: 가우스-뉴턴 곱을 CUDA 통합 커널 한 번으로 (lib/anchorflow/gn_warp.py, 같은 계량)")
+ap.add_argument("--gn_check", type=int, default=0, help="gn_cuda 를 첫 곱에서 autograd 곱(fi.HV)과 대조해 상대 오차를 찍는다")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
@@ -529,7 +531,28 @@ for t in range(T_START, a.frames + 1):
                                         IN_ARGS[k_][8], float(rr_.h), float(rr_.a), float(args[14]), math.sqrt(CE[k_]), rr_.u.numel()))
                     s0 += n_
 
+            GC = [None]                                                # gn_cuda: 바깥 반복마다 커널 입력 보기
+
+            def gc_build():
+                from anchorflow import gn_warp as gw
+                GC[0] = [gw.prep(reps[k_].rows, reps[k_].r, reps[k_].dr, reps[k_].w, reps[k_].dw, args[10], args[12], IN_ARGS[k_][8])
+                         for k_, (fn, args) in enumerate(MC[0])]
+
             def Hv(th, u):
+                if MT and a.gn_cuda:
+                    from anchorflow import gn_warp as gw
+                    if GC[0] is None:
+                        gc_build()
+                    outs, s0 = [], 0
+                    for k_, ((fn, args), n_) in enumerate(zip(MC[0], psizes)):
+                        o_ = gw.hv(GC[0][k_], th[s0:s0 + n_], u[s0:s0 + n_], reps[k_].u.numel(), float(reps[k_].h),
+                                   float(reps[k_].a), float(args[14]), math.sqrt(CE[k_]))
+                        if a.gn_check and not PC.get("checked"):
+                            ref = fi.HV(th[s0:s0 + n_], u[s0:s0 + n_], args, IN_ARGS[k_], math.sqrt(CE[k_]))
+                            print(f"    [gn_check] CUDA 곱 vs autograd 상대 오차 {float((o_ - ref).norm() / ref.norm()):.3e}", flush=True)
+                            PC["checked"] = 1
+                        outs.append(o_); s0 += n_
+                    return torch.cat(outs)
                 if MT and a.gn_local and GL[0] is not None:
                     outs, s0 = [], 0
                     for (A_, ix_), n_ in zip(GL[0], psizes):
@@ -608,6 +631,8 @@ for t in range(T_START, a.frames + 1):
                 if MT and a.gn_local:
                     with torch.no_grad():
                         gl_build(theta)
+                if MT and a.gn_cuda:
+                    GC[0] = None                                         # 선형화 점이 바뀌었다 (Fp 는 같고 R 만 바뀌나 R 은 곱에 안 들어간다)
             _t = _tk("극분해 R(계량)", _t)
             with torch.no_grad():
                 PRE = None
