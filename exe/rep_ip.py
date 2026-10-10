@@ -811,7 +811,9 @@ for t in range(T_START, a.frames + 1):
             else:
                 Fcum = J
                 Jprev = J.clone()
-            vn = (x1 - xn) / h
+            # 속도는 위치 차분이 아니라 푼 변위로: N 이 크면 한 서브스텝 이동(~h²g)이 float32 위치(≈1)의 최소 단위보다
+            # 작아 x1 - xn 이 0 이 되고 영원히 출발하지 못한다 (N1024 정지). PG 가 v 를 따로 누적하는 것과 같다.
+            vn = (dy / h) if REB else (x1 - xn) / h
             xn = x1
             if ks < a.substeps - 1:
                 continue
