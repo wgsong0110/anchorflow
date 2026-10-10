@@ -125,5 +125,53 @@ def hv_total(th, v, el_args, in_args, sce: float):
     return vf(Jv)[0]
 
 
+
+def _local_res(th, r, dr, w, dw, Fp, R, wv, sq, hl: float, aa: float, sla: float, sce: float):
+    """입자 하나의 잔차 13 개 (탄성 FCR 9 + 부피 1, √CE 배; 관성 3) -- 국소 매개 16 개 (노드 4 × (u 3, ρ 1)) 의 함수.
+    res_lattice_fcr · res_inertia 와 같은 식 (smu 1)."""
+    u = th[:12].reshape(4, 3); rr = th[12:]
+    rho = hl * (0.05 + 0.95 * torch.sigmoid(rr))
+    ins = r < rho
+    inner = 1.0 - aa * (torch.minimum(r, rho) / rho) ** 2
+    q = 1.0 + (r - rho).clamp_min(0.0) / (0.5 * hl)
+    psi_raw = torch.where(ins, inner, (1.0 - aa) / q)
+    psi = psi_raw.clamp_min(1e-6)
+    dpsi = torch.where(ins, -2.0 * aa * r / (rho * rho), -(1.0 - aa) / (0.5 * hl) / (q * q)) * (psi_raw > 1e-6)
+    g = w * psi
+    dg = dw * psi[:, None] + (w * dpsi)[:, None] * dr
+    G = g.sum().clamp_min(1e-12)
+    W = g / G
+    dW = dg / G - W[:, None] * dg.sum(0)[None] / G
+    dy = (W[:, None] * u).sum(0)
+    J = torch.eye(3, device=th.device, dtype=th.dtype) + (u[:, :, None] * dW[:, None, :]).sum(0)
+    F = J @ Fp
+    return torch.cat([sce * wv * (F - R).reshape(-1), (sce * wv * sla * (torch.linalg.det(F) - 1.0)).reshape(1), sq * dy])
+
+
+def gn_local_blocks(theta, rows, r, dr, w, dw, Fp, R, wv, sq, hl, aa, sla, sce, M3):
+    """입자마다 A = JᵀJ (16×16) 와 전역 번호 [P,16]. 바깥 반복마다 한 번 (선형화 점이 CG 동안 고정)."""
+    from torch.func import jacfwd, vmap
+    nodes = rows.long()
+    idx = torch.cat([(nodes[:, :, None] * 3 + torch.arange(3, device=rows.device)).reshape(-1, 12), M3 + nodes], 1)
+    thl = theta[idx]
+    Jp = vmap(jacfwd(_local_res), in_dims=(0, 0, 0, 0, 0, 0, 0, 0, 0, None, None, None, None))(
+        thl, r, dr, w, dw, Fp, R, wv, sq, hl, aa, sla, sce)
+    return Jp.transpose(1, 2) @ Jp, idx
+
+
+def gn_local_hv(A, idx, v, n):
+    out = torch.zeros(n, device=v.device, dtype=v.dtype)
+    out.index_add_(0, idx.reshape(-1), (A @ v[idx][..., None]).squeeze(-1).reshape(-1))
+    return out
+
+
+def gn_local_diag(A, idx, n):
+    out = torch.zeros(n, device=A.device, dtype=A.dtype)
+    out.index_add_(0, idx.reshape(-1), torch.diagonal(A, dim1=1, dim2=2).reshape(-1))
+    return out
+
+
 HV = torch.compile(hv_total, dynamic=True)
+GNB = torch.compile(gn_local_blocks, dynamic=True)
+GNH = torch.compile(gn_local_hv, dynamic=True)
 OBJ = torch.compile(objective, dynamic=True)

@@ -49,6 +49,7 @@ ap.add_argument("--newton_tol", type=float, default=0.0, help="ours: 예측 감�
 ap.add_argument("--cg_tol", type=float, default=1e-4, help="CG 상대 잔차 허용")
 ap.add_argument("--metric_true", type=int, default=0, help="ours: 계량을 실제 목적의 가우스-뉴턴 헤시안으로 (관성 NORM·m/h² + 탄성 2μΣV·NORM 배). 0 이면 예전 (탄성만, μ=1)")
 ap.add_argument("--precond", type=int, default=0, help="metric_true 일 때 CG 에 대각(Jacobi) 전처리: u 는 정확한 대각, ρ 는 탐침 4 개 추정")
+ap.add_argument("--gn_local", type=int, default=0, help="metric_true: 바깥 반복마다 입자별 JᵀJ(16×16) 를 만들어 CG 곱을 모으기·작은 행렬곱·흩뿌리기로 (같은 계량), 전처리도 그 정확한 대각")
 ap.add_argument("--fused", type=int, default=0, help="ours 단일 물체 jelly: 목적·기울기를 torch.compile 통합 커널로 (lib/anchorflow/fused_ip.py, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="반복 단계별 시간 (동기화하며 잰다)")
 ap.add_argument("--init_inertia", type=int, default=1,
@@ -518,7 +519,22 @@ for t in range(T_START, a.frames + 1):
                             (NORM * MASS[ii] / (h * h)).sqrt()) for r, ii in zip(reps, idx)]
                 CE = [float(NORM * 2.0 * MU_E * VOL[ii].sum()) for ii in idx]
 
+            GL = [None]                                                # gn_local: 바깥 반복마다 [(A, idx)] 블록마다
+
+            def gl_build(th):
+                GL[0], s0 = [], 0
+                for k_, ((fn, args), n_) in enumerate(zip(MC[0], psizes)):
+                    rr_ = reps[k_]
+                    GL[0].append(fi.GNB(th[s0:s0 + n_], rr_.rows, rr_.r, rr_.dr, rr_.w, rr_.dw, args[10], args[11], args[12],
+                                        IN_ARGS[k_][8], float(rr_.h), float(rr_.a), float(args[14]), math.sqrt(CE[k_]), rr_.u.numel()))
+                    s0 += n_
+
             def Hv(th, u):
+                if MT and a.gn_local and GL[0] is not None:
+                    outs, s0 = [], 0
+                    for (A_, ix_), n_ in zip(GL[0], psizes):
+                        outs.append(fi.GNH(A_, ix_, u[s0:s0 + n_], n_)); s0 += n_
+                    return torch.cat(outs)
                 outs, s0 = [], 0
                 for k_, ((fn, args), n_) in enumerate(zip(MC[0], psizes)):
                     if MT and a.fused:                                  # 탄성+관성 곱을 한 그래프로
@@ -589,10 +605,15 @@ for t in range(T_START, a.frames + 1):
             theta = flat([q.detach() for q in PL])
             if METS == "particle":
                 MC[0] = particle_mets()                                   # 반복마다 R 을 다시
+                if MT and a.gn_local:
+                    with torch.no_grad():
+                        gl_build(theta)
             _t = _tk("극분해 R(계량)", _t)
             with torch.no_grad():
                 PRE = None
-                if a.precond and MT:                                   # 대각 전처리 (블록마다)
+                if a.precond and MT and a.gn_local and GL[0] is not None:   # 같은 블록의 정확한 대각
+                    PRE = torch.cat([fi.gn_local_diag(A_, ix_, n_) for (A_, ix_), n_ in zip(GL[0], psizes)]).clamp_min(1e-30) + eps
+                elif a.precond and MT:                                   # 대각 전처리 (블록마다)
                     pre, s0 = [], 0
                     for k_, ((fn, args), n_) in enumerate(zip(MC[0], psizes)):
                         rr_, ii_ = reps[k_], idx[k_]
