@@ -256,6 +256,9 @@ ap.add_argument("--dt_sub_set", default="",
                 help="쉼표 목록 (예 1,2,4,8). 물리·풀 학습에서 창마다 여기서 "
                      "하나 뽑아 dt 를 바꾼다 -- dt 를 조건 변수로 학습시키는 "
                      "핵심 스위치다. 비우면 --dt_sub 고정")
+ap.add_argument("--infer", action="store_true",
+                help="추론만: --resume 체크포인트로 홀드아웃 롤아웃·평가만 한다. 표준화 통계 재계산(체크포인트가 덮어씀)·"
+                     "풀 상태 복원(128 상태 ~2.4 GB)·학습·같은 궤적 중복 평가를 건너뛴다")
 ap.add_argument("--net_inertial", action="store_true",
                 help="망 출력을 노드별 관성 예측 τ·v_n + τ²g 위의 **보정**으로 둔다 (출력만 최적화가 출발하는 그 점). "
                      "없으면 망이 초기 속도·중력 이동을 스스로 만들어야 해 첫 스텝부터 틀렸다 (평가 첫 프레임 비 0.82)")
@@ -1849,8 +1852,9 @@ build(n_feat)
 # 입력 표준화 통계는 실제로 뽑는 것과 같은 분포에서 모은다. 채널 스케일이 네 자릿수
 # 넘게 벌어져 있어서(질량은 log 라 -16, 다음 변위를 결정하는 속도는 7e-4) 그냥 넣으면
 # 정작 중요한 채널이 첫 Linear 에서 묻힌다.
-with torch.no_grad():
-    # 학습이 실제로 넣는 것과 **같은 경로**로 통계를 잡는다. 예전에는 여기만
+with torch.no_grad() if not a.infer else contextlib.nullcontext():
+  if not a.infer:                 # 추론 모드: 체크포인트의 in_mu/in_sd 가 덮어쓰므로 재계산하지 않는다
+    # 학습이 실제로 넣는 것과 **같은 경로**로 통계를 잡는다.   예전에는 여기만
     # 어텐션 경로(grid_knn+aggregate+ctrl_feat)로 남아 있어, 폭이 우연히 같은
     # 탓에 에러 없이 전혀 다른 양의 평균/표준편차가 들어갔다 (학습이 안 된 원인).
     samp = []
@@ -2128,7 +2132,7 @@ if a.pool:
           f"창 {a.pool_window}, 목표 후보 {POOL.cand.shape[0]} 개, "
           f"가속 {a.ctrl_acc} 최고속도 {a.ctrl_vmax} z편향 {a.ctrl_zbias}",
           flush=True)
-    _pck = (_rng_ck or {}).get("pool") if not a.resume_fresh else None
+    _pck = (_rng_ck or {}).get("pool") if not (a.resume_fresh or a.infer) else None
     if _pck:
         _nl, _ns = POOL.load_state_dict(_pck)
         _PL_DROP[:] = list((_rng_ck or {}).get("pool_drop_win") or [])
@@ -3789,7 +3793,11 @@ def emd(p_, q_, seed):
 
 
 rows = {}
+_seen_tags = set()
 for tag, d in TR + held:
+    if tag in _seen_tags:             # 풀 모드는 홀드아웃을 학습 목록에도 넣는다 -- 같은 궤적을 두 번 굴리지 않는다
+        continue
+    _seen_tags.add(tag)
     T = d["x"].shape[0]
     rows[tag] = dict(held=(tag in hold), windows={})
     for t0 in a.eval_t0:
