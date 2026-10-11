@@ -259,6 +259,10 @@ ap.add_argument("--dt_sub_set", default="",
 ap.add_argument("--infer", action="store_true",
                 help="추론만: --resume 체크포인트로 홀드아웃 롤아웃·평가만 한다. 표준화 통계 재계산(체크포인트가 덮어씀)·"
                      "풀 상태 복원(128 상태 ~2.4 GB)·학습·같은 궤적 중복 평가를 건너뛴다")
+ap.add_argument("--probe_every", type=int, default=0,
+                help="이 반복마다 고정 확인 상태(첫 검증 궤적의 정답 프레임들)에서 한 스텝 증분 포텐셜·관성 잔차를 재서 TB 에 쓴다")
+ap.add_argument("--probe_frames", default="0,5,10,20,40,60,79")
+ap.add_argument("--keep_ckpts", action="store_true", help="save_every 마다 체크포인트를 따로 남긴다 (<tag>_itNNNNNN.pt)")
 ap.add_argument("--net_inertial", action="store_true",
                 help="망 출력을 노드별 관성 예측 τ·v_n + τ²g 위의 **보정**으로 둔다 (출력만 최적화가 출발하는 그 점). "
                      "없으면 망이 초기 속도·중력 이동을 스스로 만들어야 해 첫 스텝부터 틀렸다 (평가 첫 프레임 비 0.82)")
@@ -1833,6 +1837,42 @@ _best = float(globals().get("_rng_ck", {}).get("best", float("inf"))
               if globals().get("_rng_ck") else float("inf"))
 
 
+def probe_ip():
+    """고정 확인 상태(첫 검증 궤적의 정답 프레임)에서 한 스텝: 학습과 같은 증분 포텐셜과 관성 잔차 (기울기 없음).
+    학습 풀이 모델 자신의 롤아웃으로 오염돼도 이 값은 고정된 상태에서 재므로, 최적화 자체가 되는지 따로 읽는다."""
+    net.eval()
+    _tag, d = _VAL[0]
+    _ts = traj_scope(d); _ts.__enter__()
+    try:
+        gsel = torch.arange(d["x"].shape[1], device=dev)
+        cfg = d["cfg"]; mass = traj_mass(d)[gsel]; vol = mass / float(cfg["density"])
+        gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
+        ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
+        h = FRAME_DT; nrm = float(mass.sum()) * (EXT ** 2) / (h ** 2)
+        Es, Rs, Gs, Ps = [], [], [], {}
+        T = d["x"].shape[0]
+        for t in [int(q) for q in a.probe_frames.split(",") if int(q) < T - 1]:
+            x, v = DM.init_state(d, t, gsel, FRAME_DT, a.v0_traj, dev)
+            x, v = x.float(), v.float()
+            F = take(traj_F(d)[t], gsel).float()
+            p = take(d["x"][t], AIDX)
+            with torch.enable_grad(), dt_scope(h):
+                x2, _, _, _, _, _, _, _, _, _Jd = step_once(d, t, gsel, p, x, v, need_J=False)
+            with torch.no_grad():
+                x2 = x2.detach(); _Jd = _Jd.detach() if torch.is_tensor(_Jd) else _Jd
+                E, _, _, parts = ip_of(x, x2 - x, v, F, mass, vol, cfg, h, ng_, gl_, g=gv, norm=nrm, jac=_Jd)
+                rr = ((x2 - x - h * v - (h ** 2) * gv) / EXT).norm(dim=-1).mean()
+                Gs.append(DM.frame_err(x2, take(d["x"][t + 1], gsel), EXT))
+            Es.append(float(E)); Rs.append(float(rr))
+            for k_, v_ in zip(("관성", "탄성", "중력", "경계"), parts):
+                Ps.setdefault(k_, []).append(float(v_))
+        Ps["한스텝GT오차"] = Gs
+        return float(np.mean(Es)), float(np.mean(Rs)), {k_: float(np.mean(v_)) for k_, v_ in Ps.items()}
+    finally:
+        _ts.__exit__(None, None, None)
+        net.train()
+
+
 def quick_val():
     """홀드아웃 지표 두 가지를 함께 낸다.
 
@@ -2629,6 +2669,8 @@ for it in pbar:
             if TBW is not None:
                 TBW.add_scalar("학습/목적함수", lx, it)
                 TBW.add_scalar("학습/잔차", lres, it)
+                TBW.add_scalar("학습/기울기노름", float(gn), it)
+                TBW.add_scalar("학습/학습률", float(opt.param_groups[0]["lr"]), it)
                 TBW.add_scalar("풀/폐기누적", POOL.n_drop, it)
                 TBW.add_scalar("풀/폐기율", still, it)
                 if a.pool_keep > 0:
@@ -2661,8 +2703,18 @@ for it in pbar:
             else:
                 print(f"  [검증 {it+1}] 비 {_v:.4f} (best {_best:.4f})",
                       flush=True)
+        if a.probe_every and (it == 0 or (it + 1) % a.probe_every == 0):
+            _pe, _pr, _pp = probe_ip()
+            print(f"  [확인 {it+1}] E {_pe:.4e}  관성잔차 {_pr:.3e}  한스텝GT {_pp['한스텝GT오차']:.3e}", flush=True)
+            if TBW is not None:
+                TBW.add_scalar("확인/증분포텐셜", _pe, it)
+                TBW.add_scalar("확인/관성잔차", _pr, it)
+                for _k, _v in _pp.items():
+                    TBW.add_scalar(f"확인/{_k}", _v, it)
         if (it + 1) % a.save_every == 0 or it == a.iters - 1:
             save_ck("last", it + 1)
+            if a.keep_ckpts:
+                save_ck(f"it{it + 1:06d}", it + 1)
         if _PROF_ON and it > 0 and it % 10 == 0:
             _tot = sum(_PROF.values())
             _msg = "  ".join(
