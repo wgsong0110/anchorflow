@@ -3685,6 +3685,7 @@ def _rollout(d, t0, L, gsel=None):
     if phys_resid.mat_name(d["cfg"]) == "watermelon":
         # CD-MPM 경화 상태(logJp)는 롤아웃마다 초기값 -0.04 에서 다시 시작한다
         phys_resid.cdmpm_reset(x.shape[0], x.device, x.dtype)
+    _RO_T0 = time.time()
     for i in range(L):
         if a.ov_roll > 0:
             # 출력만 최적화: 서브스텝·jvp 없이 프레임마다 변수를 내린다
@@ -3705,6 +3706,10 @@ def _rollout(d, t0, L, gsel=None):
             if _ROLLDUMP is not None and _FCUM[0] is not None and _jf is not None:
                 # 렌더용: 망이 낸 변형장의 **실제 야코비안**을 누적한 F (이웃 추정 아님)
                 _FCUM[0] = (_jf.detach().float() @ _FCUM[0]).detach()
+        if _PROF_ON:
+            torch.cuda.synchronize()
+            print(f"    [프레임] {i + 1}/{L} 누적 {time.time() - _RO_T0:.2f} s | "
+                  + " ".join(f"{k} {v:.2f}" for k, v in sorted(_PROF.items(), key=lambda z: -z[1])[:6]), flush=True)
         gt = take(d["x"][t0 + i + 1], gsel)
         # 평가에서도 손잡이가 명령대로 끌리는지 본다. 학습 경로만 보고 "손잡이는
         # 정확하다" 고 판단했다가, 평가에서는 ctrl_id 가 저장 표본에 없어 대체
