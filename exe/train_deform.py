@@ -2561,7 +2561,9 @@ if not a.pool and a.iters > 0:
                      "삭제됐다 (학습은 정지 상태에서 출발해 모델이 상태를 "
                      "갱신하는 상태 풀만 쓴다)")
 
-pbar = tqdm(range(step0, a.iters), desc="학습", ncols=90)
+if a.infer:                           # 추론만: 체크포인트 단계에서 바로 평가로 (예전엔 --iters 까지 남은 반복을 학습한 뒤 평가했다)
+    print(f"[추론] 학습 없이 평가만 (체크포인트 단계 {step0})", flush=True)
+pbar = tqdm(range(step0, step0 if a.infer else a.iters), desc="학습", ncols=90)
 for it in pbar:
     L = a.unroll            # 학습 중 펼치기 길이는 바꾸지 않는다
     opt.zero_grad(set_to_none=True)
