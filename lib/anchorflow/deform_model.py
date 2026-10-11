@@ -11,6 +11,7 @@ args 를 담은 네임스페이스) 이고, 여기서는 읽기만 한다.
   init_state      평가 롤아웃의 초기 (x, v)
   rollout_eval    프레임별 평균 위치 오차 / 정지 기준 (평가 지표 정의)
   EvalModel       체크포인트 하나로 모델을 세워 롤아웃만 하는 추론용 묶음
+  fast_step       no_grad 롤아웃용 빠른 스텝 (fast_roll: 동기화 없음·융합 커널·CUDA 그래프)
 """
 from __future__ import annotations
 
@@ -294,6 +295,27 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
     return x2, v_next, _outs[0], Jf, _outs[2], _outs[3]
 
 
+def fast_step(net, a, d, vel_scale, h, n_mat, n_film, dev="cuda", **kw):
+    """no_grad 롤아웃용 빠른 스텝 (fast_roll.FastStep) 을 궤적 d 에 묶어 세운다.
+
+    EvalModel.step 과 같은 입력(물성 특징·FiLM)을 만든다. train_deform 처럼
+    **살아 있는 망**을 넘겨도 된다 -- 옵티마이저의 제자리 갱신은 그래프에 그대로
+    반영되고, tau 상수는 파라미터 _version 이 바뀌면 다시 만든다.
+    d 에는 "_X0" (정지 위치), "_mass" 가 있어야 한다 (EvalModel.prepare 참조).
+    지원 밖 설정이면 NotImplementedError (fast_roll.fast_supported).
+
+      fs = DM.fast_step(net, a, d, VEL_SCALE, h, N_MAT, N_FILM)
+      with torch.no_grad():
+          x, v, Jf = fs(x, v)
+    """
+    from .fast_roll import FastStep
+    cfg = d["cfg"]
+    mat_vec = (mat_feat(cfg, a.no_mat, dev) if (n_mat and not n_film) else None)
+    mat = (mat_feat(cfg, a.no_mat, dev).reshape(1, n_mat) if n_film else None)
+    return FastStep(net, a, cfg, d["_X0"], d["_mass"], vel_scale, h,
+                    mat_vec=mat_vec, mat=mat, **kw)
+
+
 # ---------------------------------------------------------------- 평가
 def init_state(d, t0, gsel, frame_dt, v0_traj, dev="cuda"):
     """평가 롤아웃의 초기 (x, v). 기본 v 는 (x[t0]-x[t0-1])/dt 차분,
@@ -487,12 +509,11 @@ class EvalModel:
             fs = self._fs
             # 궤적(X0·질량·cfg)과 h 에 묶인다 -- 바뀌면 새로 세운다
             if fs is None or fs.X0 is not d["_X0"] or fs.h != float(h):
-                from .fast_roll import FastStep
-                fs = self._fs = FastStep(self.net, a, cfg, d["_X0"], mass,
-                                         self.vel_scale, h, mat_vec=mat_vec,
-                                         mat=mat, graph=self.fast_graph,
-                                         triton=self.fast_triton,
-                                         edge_triton=self.fast_edge_triton)
+                fs = self._fs = fast_step(self.net, a, d, self.vel_scale, h,
+                                          self.n_mat, self.n_film, self.dev,
+                                          graph=self.fast_graph,
+                                          triton=self.fast_triton,
+                                          edge_triton=self.fast_edge_triton)
             with sec("빠른스텝"):
                 return fs(x, v)
         with sec("셀집계"):

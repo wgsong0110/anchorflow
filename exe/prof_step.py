@@ -17,10 +17,11 @@ ap.add_argument("--traj_dir", default="/home/dkta/work/lbpt/test")
 ap.add_argument("--tag", default="0000")
 ap.add_argument("--steps", type=int, default=5)
 ap.add_argument("--tf32", action="store_true")
+ap.add_argument("--fast", action="store_true", help="빠른 경로 (fast_roll)")
 a = ap.parse_args()
 if a.tf32:
     torch.backends.cuda.matmul.allow_tf32 = True; torch.backends.cudnn.allow_tf32 = True
-M = DM.EvalModel(a.ckpt)
+M = DM.EvalModel(a.ckpt, fast=a.fast)
 d = torch.load(f"{a.traj_dir}/{a.tag}.pt", map_location="cuda", weights_only=False)
 x, v = M.init(d, 0)
 for _ in range(3):                                   # 예열
