@@ -357,6 +357,7 @@ CKPT = a.out + ".ckpt.pt"
 rows, PHYS, TRAJ, IPV, NBAD = [], [], [], [], []
 EMDP = []
 T_START = 1
+_CK_STAB = None
 if os.path.exists(CKPT) and not a.no_resume:
     ck = torch.load(CKPT, map_location=dev, weights_only=False)
     xn, vn, Fe, Fcum, Jprev = ck["xn"], ck["vn"], ck["Fe"], ck["Fcum"], ck["Jprev"]
@@ -367,13 +368,15 @@ if os.path.exists(CKPT) and not a.no_resume:
         OPT = torch.optim.Adam(REP.params(), lr=a.lr); OPT.load_state_dict(ck["opt"])
     rows, PHYS, TRAJ, IPV, NBAD, EMDP = ck["rows"], ck["PHYS"], ck["TRAJ"], ck["IPV"], ck["NBAD"], ck["EMDP"]
     T_START = ck["t"] + 1
+    _CK_STAB = ck.get("stab")                                 # 안정성 기록 (프레임별 통계·부분 위치·시간)
     print(f"[이어 돌리기] {CKPT} 프레임 {ck['t']} 부터", flush=True)
 
 
 def save_ckpt(t):
     torch.save(dict(t=t, xn=xn, vn=vn, Fe=Fe, Fcum=Fcum, Jprev=Jprev, reps=reps,
                     JP=pr._JP[0], opt=OPT.state_dict() if a.method == "gaussim" else None,
-                    rows=rows, PHYS=PHYS, TRAJ=TRAJ, IPV=IPV, NBAD=NBAD, EMDP=EMDP), CKPT + ".tmp")
+                    rows=rows, PHYS=PHYS, TRAJ=TRAJ, IPV=IPV, NBAD=NBAD, EMDP=EMDP,
+                    stab=(dict(STROWS=STROWS, STX=STX, STT=STT) if a.stab_out else None)), CKPT + ".tmp")
     os.replace(CKPT + ".tmp", CKPT)                           # 쓰다 죽어도 이전 체크포인트는 남는다
 
 
@@ -468,6 +471,11 @@ if a.stab_out:
     _MASSN = MASS.double().cpu().numpy(); _FZ = ZF if ZF is not None else 0.0
     STROWS = [_ss.frame_stats(X0.cpu().numpy(), V0.cpu().numpy(), None, _MASSN, g.tolist(), _FZ)]
     STX = [X0[_SUB].cpu().numpy()]; STT = []
+    if T_START > 1:                                           # 이어 돌리기: 안정성 기록도 체크포인트에서 (없으면 결과가 틀리므로 중단)
+        if _CK_STAB is None:
+            raise SystemExit(f"[이어 돌리기] {CKPT} 에 안정성 기록이 없다 -- 이 체크포인트로는 --stab_out 결과를 만들 수 없다")
+        STROWS, STX, STT = _CK_STAB["STROWS"], _CK_STAB["STX"], _CK_STAB["STT"]
+        assert len(STROWS) == T_START and len(STX) == T_START and len(STT) == T_START - 1, "안정성 기록 길이 불일치"
 if RENDER:
     FRAME_DIR[0] = a.video + ".frames"; os.makedirs(FRAME_DIR[0], exist_ok=True)
     FRAME_IX[0] = T_START                                     # 프레임 0 = 정지, t 번째 = t
