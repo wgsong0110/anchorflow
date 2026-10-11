@@ -21,3 +21,6 @@
 - train.dataset_load_skip_frame=6 (60 fps -> 공식 물리 스텝 0.1 s)
 - train.training_start/end_episode=0/100, eval_start/end_episode=100/120
 - train.resume_iteration=-1 (패치 3)
+5. `torch.autograd.set_detect_anomaly(True)` (Trainer.__init__) 를 환경변수로: 기본은 공식대로 켬,
+   `PGND_NO_ANOMALY=1` 이면 끔. 디버그 검사라 계산은 같다. 실측(lbdata, GPU 5 공유): 켬 2.49 s/it, 끔 1.21 s/it.
+   재개가 Adam 상태까지 복원하므로 중간에 바꿔도 이어진다. 끌지는 사용자 결정.

@@ -1,8 +1,18 @@
 diff --git a/experiments/train/train_eval.py b/experiments/train/train_eval.py
-index a70da10..c5da831 100644
+index a70da10..283f4fe 100644
 --- a/experiments/train/train_eval.py
 +++ b/experiments/train/train_eval.py
-@@ -207,6 +207,7 @@ class Trainer:
+@@ -122,7 +122,8 @@ class Trainer:
+         np.random.seed(seed)
+         torch.manual_seed(seed)
+ 
+-        torch.autograd.set_detect_anomaly(True)
++        # [anchorflow] official default ON; PGND_NO_ANOMALY=1 turns this debug check off (math unchanged, ~2x faster)
++        torch.autograd.set_detect_anomaly(os.environ.get('PGND_NO_ANOMALY', '0') != '1')
+ 
+         torch.backends.cudnn.benchmark = True
+ 
+@@ -207,6 +208,7 @@ class Trainer:
          friction.requires_grad_(False)
          friction.train(False)
  
@@ -10,7 +20,7 @@ index a70da10..c5da831 100644
          if cfg.resume and cfg.train.resume_iteration > 0:
              assert (self.ckpt_root / f'{cfg.train.resume_iteration:06d}.pt').exists()
              ckpt = torch.load(self.ckpt_root / f'{cfg.train.resume_iteration:06d}.pt', map_location=self.torch_device)
-@@ -227,6 +228,11 @@ class Trainer:
+@@ -227,6 +229,11 @@ class Trainer:
              if cfg.train.resume_iteration > 0:
                  material_lr_scheduler.last_epoch = cfg.train.resume_iteration - 1
                  material_lr_scheduler.step()
@@ -22,7 +32,7 @@ index a70da10..c5da831 100644
  
          criterion = nn.MSELoss(reduction='mean')
          criterion.to(self.torch_device)
-@@ -464,13 +470,20 @@ class Trainer:
+@@ -464,13 +471,20 @@ class Trainer:
                      self.logger.add_scalar('stat/material_lr', material_lr, step=self.total_step_count)
                      self.logger.add_scalar('stat/material_grad_norm', material_grad_norm, step=self.total_step_count)
  
@@ -47,7 +57,7 @@ index a70da10..c5da831 100644
  
  
      def eval_episode(self, iteration: int, episode: int, save: bool = True):
-@@ -793,6 +806,13 @@ class Trainer:
+@@ -793,6 +807,13 @@ class Trainer:
  @hydra.main(version_base='1.2', config_path=str(root / 'cfg'), config_name='default')
  def main(cfg: DictConfig):
      trainer = Trainer(cfg)

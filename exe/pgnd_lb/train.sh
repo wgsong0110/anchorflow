@@ -5,6 +5,9 @@ source /home/dkta/work/anchorflow/exe/pgnd_lb/common.sh
 cd $W/anchorflow && git fetch -q origin && git merge -q --ff-only FETCH_HEAD
 echo "[시작] $(date) anchorflow $(git log --oneline -1) pgnd $(git -C $P log --oneline -1) + anchorflow.patch"
 nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader
+# 클러스터 사본을 저장소의 패치와 같게 맞춘다
+git -C $P checkout -q -- experiments/train/train_eval.py && git -C $P apply $W/anchorflow/exe/pgnd_lb/anchorflow.patch && cp $W/anchorflow/exe/pgnd_lb/PATCHES_anchorflow.md $P/
+echo "PGND_NO_ANOMALY=${PGND_NO_ANOMALY:-0}"
 cd $P
 ( while true; do sleep 3600; bash $W/anchorflow/exe/pgnd_lb/upload.sh; echo "[R2] $(date)"; done ) &
 UP=$!
