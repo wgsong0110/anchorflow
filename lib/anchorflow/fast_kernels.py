@@ -272,6 +272,48 @@ if HAVE_TRITON:
                 w3 = tl.load(DPT + r3 * 3 + i, mask=m, other=0.0)
                 tl.store(V2O + p * 3 + i, l0 * w0 + l1 * w1 + l2 * w2 + l3 * w3, mask=m)
 
+    @triton.jit
+    def _edge_msg(HT, P, SRC, DST, CLS, ET, EMB, W1, SN, H: tl.constexpr,
+                  W1S: tl.constexpr, HAS_T: tl.constexpr, BE: tl.constexpr,
+                  BK: tl.constexpr):
+        """간선 메시지 첫 층 + SiLU + dst 로 합 (원값·탄젠트 한 번에).
+
+        z  = W1a (h_src * e_cls) + P_dst          (P = W1b h + b1, 노드에서 미리)
+        z' = W1a (t_src * e_cls) + P'_dst
+        s  = silu(z),  s' = silu'(z) z'  ->  SN[dst] += (s, s')
+        행렬곱은 input_precision="ieee" (TF32 아님, fp32 그대로).
+        """
+        pid = tl.program_id(0)
+        e = pid * BE + tl.arange(0, BE)
+        ne = tl.load(ET)
+        m = e < ne
+        s = tl.load(SRC + e, mask=m, other=0)
+        d = tl.load(DST + e, mask=m, other=0)
+        c = tl.load(CLS + e, mask=m, other=0)
+        n = tl.arange(0, H)
+        acc = tl.zeros([BE, H], dtype=tl.float32)
+        if HAS_T:
+            acct = tl.zeros([BE, H], dtype=tl.float32)
+        for k0 in tl.static_range(0, H, BK):
+            k = k0 + tl.arange(0, BK)
+            em = tl.load(EMB + c[:, None] * H + k[None, :], mask=m[:, None], other=0.0)
+            hs = tl.load(HT + s[:, None] * (2 * H) + k[None, :], mask=m[:, None], other=0.0)
+            # W1a^T 조각 [BK, H]: W1[n, k]
+            w = tl.load(W1 + n[None, :] * W1S + k[:, None])
+            acc += tl.dot(hs * em, w, input_precision="ieee")
+            if HAS_T:
+                ts = tl.load(HT + s[:, None] * (2 * H) + H + k[None, :], mask=m[:, None], other=0.0)
+                acct += tl.dot(ts * em, w, input_precision="ieee")
+        z = acc + tl.load(P + d[:, None] * (2 * H) + n[None, :], mask=m[:, None], other=0.0)
+        sig = 1.0 / (1.0 + tl.exp(-z))
+        tl.atomic_add(SN + d[:, None] * (2 * H) + n[None, :], z * sig,
+                      mask=m[:, None], sem="relaxed")
+        if HAS_T:
+            zt = acct + tl.load(P + d[:, None] * (2 * H) + H + n[None, :], mask=m[:, None], other=0.0)
+            st = zt * sig * (1.0 + z * (1.0 - sig))
+            tl.atomic_add(SN + d[:, None] * (2 * H) + H + n[None, :], st,
+                          mask=m[:, None], sem="relaxed")
+
 
 def _grid(n):
     return (triton.cdiv(n, BLOCK),)
@@ -297,3 +339,12 @@ def g2p(rows, lam, perm, dp, dpt, x, Ai, x2, v2, J):
     n = x.shape[0]
     _g2p[_grid(n)](rows, lam, perm, dp, dp if dpt is None else dpt, x, Ai, x2, v2, J, n,
                    HAS_T=dpt is not None, BLOCK=BLOCK)
+
+
+def edge_msg(ht, P, src, dst, cls, et, emb, W1, sn, has_t, BE=64, BK=32):
+    """ht, P, sn: [M, 2, H] 연속. W1: msg 첫 선형층 가중치 [H, 2H] (앞 H 열이 W1a)."""
+    H = ht.shape[-1]
+    ne_cap = src.shape[0]
+    _edge_msg[(triton.cdiv(ne_cap, BE),)](ht, P, src, dst, cls, et, emb, W1, sn, H=H,
+                                          W1S=W1.stride(0), HAS_T=has_t, BE=BE, BK=BK,
+                                          num_warps=8)

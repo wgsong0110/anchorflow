@@ -45,6 +45,8 @@ def model(mode):
             MODELS[mode] = MODELS.get("ref") or DM.EvalModel(a.ckpt, dev)
         elif mode == "eager":       # 융합 커널, 그래프 없이
             MODELS[mode] = DM.EvalModel(a.ckpt, dev, fast=True, fast_graph=False)
+        elif mode == "noedge":      # 입자 커널만, 간선 쪽은 torch
+            MODELS[mode] = DM.EvalModel(a.ckpt, dev, fast=True, fast_edge_triton=False)
         elif mode == "torchg":      # torch 연산판 + 그래프
             MODELS[mode] = DM.EvalModel(a.ckpt, dev, fast=True, fast_triton=False)
         elif mode == "torche":      # torch 연산판, 그래프 없이

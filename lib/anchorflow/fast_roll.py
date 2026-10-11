@@ -107,7 +107,8 @@ class FastStep:
     """
 
     def __init__(self, net, a, cfg, X0, mass, vel_scale, h, *, mat_vec=None,
-                 mat=None, graph=True, clone_out=True, cap=1.25, triton=True):
+                 mat=None, graph=True, clone_out=True, cap=1.25, triton=True,
+                 edge_triton=True):
         global FCAP
         if FCAP is None:
             from .deform_model import FCAP as _fc
@@ -144,6 +145,7 @@ class FastStep:
         self.Ai_c = self.lat.Ai.contiguous()
         # 입자 단위 융합 커널 (Triton). 없으면 같은 식의 torch 연산판.
         self.tri = bool(triton) and FK.HAVE_TRITON and dev.type == "cuda"
+        self.edge_tri = bool(edge_triton)
         self._bc_build(cfg)
         self._gq = torch.as_tensor(cfg["g"], device=dev, dtype=self.dtype)
         self.consts = None
@@ -300,6 +302,7 @@ class FastStep:
         ekey = torch.zeros(Ec + 1, device=dev, dtype=L)
         ekey.scatter_(0, epos, self.key_ar)
         valid = self.e_ar < Et
+        self._et = Et                              # 간선 커널이 실제 간선 수만 돈다
         dnode = torch.where(valid, ekey // 14, Mc)
         ecc = ekey % 14
         offf = (self.off14[:, 0] * nn[1] + self.off14[:, 1]) * nn[2] + self.off14[:, 2]
@@ -453,9 +456,23 @@ class FastStep:
         W1, b1 = blk.msg[0].weight, blk.msg[0].bias
         W2, b2 = blk.msg[2].weight, blk.msg[2].bias
         W1a, W1b = W1[:, :H], W1[:, H:]
-        e = blk.emb.weight[cls]                                     # [E,H]
         two = t is not None
-        if two:
+        if self.tri and self.edge_tri:
+            # 융합 커널: 간선 쪽 (gather·임베딩 곱·W1a·+P·SiLU·탄젠트·dst 합) 한 번
+            ht = torch.stack([h, t if two else h], 1).contiguous()  # [M,2,H]
+            P = F.linear(ht.view(-1, H), W1b).view(-1, 2, H)
+            P[:, 0] += b1
+            Sn = torch.zeros_like(ht)
+            FK.edge_msg(ht, P.contiguous(), src, dst, cls, self._et, blk.emb.weight,
+                        W1, Sn, two)
+            if _SGM._MP_MEAN:
+                Sn = Sn / cnt.clamp_min(1.0).unsqueeze(-1)
+                agg = F.linear(Sn[:, 0], W2, b2)
+            else:
+                agg = F.linear(Sn[:, 0], W2) + cnt * b2
+            aggt = F.linear(Sn[:, 1], W2) if two else None
+        elif two:
+            e = blk.emb.weight[cls]                                 # [E,H]
             ht = torch.stack([h, t], 1)                             # [M,2,H]
             xs = ht[src] * e.unsqueeze(1)                           # [E,2,H]
             Z = F.linear(xs.view(-1, H), W1a).view(-1, 2, H)
@@ -475,6 +492,7 @@ class FastStep:
                 agg = F.linear(Sn[:, 0], W2) + cnt * b2
             aggt = F.linear(Sn[:, 1], W2)
         else:
+            e = blk.emb.weight[cls]
             z = F.linear(h[src] * e, W1a) + F.linear(h, W1b, b1)[dst]
             Sn = torch.zeros_like(h).index_add_(0, dst, F.silu(z))
             if _SGM._MP_MEAN:

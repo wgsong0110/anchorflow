@@ -417,7 +417,7 @@ class EvalModel:
     UNSUPPORTED = ("control", "fe_state", "hex_jac", "cell_poly", "refps")
 
     def __init__(self, ckpt, dev="cuda", fast=False, fast_graph=True,
-                 fast_triton=True):
+                 fast_triton=True, fast_edge_triton=True):
         ck = torch.load(ckpt, map_location=dev, weights_only=False)
         a = ckpt_args(ck)
         for k in self.UNSUPPORTED:
@@ -457,6 +457,7 @@ class EvalModel:
             if ok:
                 self.fast, self.fast_graph = True, bool(fast_graph)
                 self.fast_triton = bool(fast_triton)
+                self.fast_edge_triton = bool(fast_edge_triton)
             else:
                 print(f"[EvalModel] 빠른 경로 미지원 ({why}) -- 느린 경로로 돈다", flush=True)
 
@@ -490,7 +491,8 @@ class EvalModel:
                 fs = self._fs = FastStep(self.net, a, cfg, d["_X0"], mass,
                                          self.vel_scale, h, mat_vec=mat_vec,
                                          mat=mat, graph=self.fast_graph,
-                                         triton=self.fast_triton)
+                                         triton=self.fast_triton,
+                                         edge_triton=self.fast_edge_triton)
             with sec("빠른스텝"):
                 return fs(x, v)
         with sec("셀집계"):
