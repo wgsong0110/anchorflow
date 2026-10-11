@@ -256,6 +256,9 @@ ap.add_argument("--dt_sub_set", default="",
                 help="쉼표 목록 (예 1,2,4,8). 물리·풀 학습에서 창마다 여기서 "
                      "하나 뽑아 dt 를 바꾼다 -- dt 를 조건 변수로 학습시키는 "
                      "핵심 스위치다. 비우면 --dt_sub 고정")
+ap.add_argument("--net_inertial", action="store_true",
+                help="망 출력을 노드별 관성 예측 τ·v_n + τ²g 위의 **보정**으로 둔다 (출력만 최적화가 출발하는 그 점). "
+                     "없으면 망이 초기 속도·중력 이동을 스스로 만들어야 해 첫 스텝부터 틀렸다 (평가 첫 프레임 비 0.82)")
 ap.add_argument("--v0_traj", action="store_true",
                 help="롤아웃 **초기 속도**를 궤적에 저장된 v 로 쓴다. 기본은 "
                      "(x[t0]-x[t0-1])/h 차분이라 t0=0 에서 0 이 되는데, 초기 "
@@ -1341,7 +1344,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         _mv = (mat_feat(d["cfg"]).reshape(1, N_MAT) if N_FILM else None)
         # 손잡이는 **노드 변위를 명령값으로 덮는다** (i-PG 가 격자 속도를 박는
         # 것과 같다). 격자마다 노드가 다르므로 오프셋별로 따로 만든다.
-        _NM, _NV, _TG = [], [], []
+        _NM, _NV, _TG, _VNL = [], [], [], []
         for _nfk in _ENS:
             _npk, _rwk, _lmk = _nfk[1], _nfk[3], _nfk[4]
             _nmk = _nvk = None
@@ -1381,8 +1384,10 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 _gq = torch.as_tensor(d["cfg"]["g"], device=dev, dtype=x.dtype)
                 _hq = float(_DT[0])
                 _TG.append(_hq * _vn + (_hq ** 2) * _gq)
+                _VNL.append((_vn, _gq))
             else:
                 _TG.append(None)
+                _VNL.append(None)
         _nod_m, _nod_v = _NM[0], _NV[0]
         _NOD_M[0] = _nod_m
 
@@ -1399,6 +1404,12 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 if out is None:
                     with _tsec("신경망"):
                         out = net(_ink, _srk, _dsk, _clk, tau, mat=_mv)
+                    if a.net_inertial:
+                        if _VNL[_k] is None:
+                            raise SystemExit("--net_inertial 은 노드 관성 예측(--ov_init predict, 사면체)이 필요하다")
+                        _vnk, _gqk = _VNL[_k]
+                        # τ 의 함수로 더해야 --v_from_dt 의 dΦ/dτ 에 관성 속도가 들어간다
+                        out = (out[0] + tau * _vnk + (tau * tau) * _gqk,) + tuple(out[1:])
                     if _DP_HOOK[0] is not None:
                         out = _DP_HOOK[0](out)
                 dpn_k = torch.nan_to_num(out[0], nan=0.0, posinf=0.0,
