@@ -262,6 +262,13 @@ ap.add_argument("--infer", action="store_true",
 ap.add_argument("--probe_every", type=int, default=0,
                 help="이 반복마다 고정 확인 상태(첫 검증 궤적의 정답 프레임들)에서 한 스텝 증분 포텐셜·관성 잔차를 재서 TB 에 쓴다")
 ap.add_argument("--probe_frames", default="0,5,10,20,40,60,79")
+ap.add_argument("--seq_frames", type=int, default=0,
+                help="프레임 순차 과적합: 풀 대신 상태 하나(--pool_init_traj 0 프레임)를 두고, 모델 출력이 수렴할 때까지 "
+                     "그 상태에서만 학습한 뒤 수렴한 출력으로 한 프레임 전진, 이전 가중치를 초기값으로 다음 프레임 -- 이 수만큼. "
+                     "출력만 최적화(--out_var)와 같은 순서이고 최적화 대상만 망 파라미터다")
+ap.add_argument("--seq_tol", type=float, default=3e-6,
+                help="수렴 판정: 학습 한 반복 사이 출력 위치 변화의 최대값이 이 값 * h/frame_dt 아래 (rep_ip --newton_tol 과 같은 기준)")
+ap.add_argument("--seq_max", type=int, default=2000, help="프레임당 반복 상한 (Adam 잡음으로 수렴 판정이 안 날 때)")
 ap.add_argument("--keep_ckpts", action="store_true", help="save_every 마다 체크포인트를 따로 남긴다 (<tag>_itNNNNNN.pt)")
 ap.add_argument("--net_inertial", action="store_true",
                 help="망 출력을 노드별 관성 예측 τ·v_n + τ²g 위의 **보정**으로 둔다 (출력만 최적화가 출발하는 그 점). "
@@ -1938,6 +1945,8 @@ def save_ck(name, step):
                 "pool": (POOL.state_dict() if POOL is not None else None),
                 "pool_drop_win": list(_PL_DROP),
                 "pool_rms": list(_PL_RMS),
+                "seq": ({k_: (v_.detach().cpu() if torch.is_tensor(v_) else v_) for k_, v_ in SEQ.items()
+                         if k_ != "cand"} if a.seq_frames else None),
                 # 프레임별 출력 변수 (--out_var). 렌더에서 같은 값을 쓰려면 필요하다
                 # out_var 변수는 **상태에 붙어** 있고 상태는 저장하지 않으므로
                 # 체크포인트에 넣지 않는다 (프레임 키 시절의 유물이었다).
@@ -2054,6 +2063,23 @@ if a.pool:
             _PL_RMS[0] = float(_rms[0])
         print(f"[재개] 풀 {_nl} 개 상태 이어받음 (씬이 달라 버린 것 {_ns} 개), "
               f"폐기누적 {POOL.n_drop}, 유예누적 {POOL.n_keep}", flush=True)
+
+# ---- 프레임 순차 과적합 상태 (--seq_frames) ------------------------------------
+# t: 지금 학습 중인 프레임(0 부터), it: 이 프레임에서 돈 반복 수, prev: 직전 반복의 출력 위치,
+# err/iters: 프레임별 (전진한 상태의 GT 오차, 걸린 반복 수), traj: 전진한 위치들 (half, cpu).
+SEQ = dict(t=0, it=0, prev=None, err=[], iters=[], capped=0, traj=[])
+if a.seq_frames:
+    if not a.pool or not a.pool_init_traj:
+        raise SystemExit("--seq_frames 는 풀 경로와 --pool_init_traj 가 필요하다")
+    _sq = (_rng_ck or {}).get("seq") if not (a.resume_fresh or a.infer) else None
+    if _sq:
+        SEQ.update({k_: (v_.to(dev) if (k_ == "prev" and torch.is_tensor(v_)) else v_) for k_, v_ in _sq.items()})
+        print(f"[순차] 재개: 프레임 {SEQ['t']} 의 {SEQ['it']} 번째 반복부터, 끝난 프레임 {len(SEQ['err'])}", flush=True)
+    if not POOL.items:
+        POOL.items = [POOL.fresh()]
+    POOL.items = POOL.items[:1]
+    print(f"[순차] 프레임 {a.seq_frames} 개, 수렴 기준 출력 변화 최대 < {a.seq_tol:g}·h/frame_dt, "
+          f"프레임당 상한 {a.seq_max} 반복, 배치는 상태 하나", flush=True)
 
 ap_dummy = None
 if a.oracle_roll:
@@ -2491,7 +2517,7 @@ for it in pbar:
         # 평균 잔차가 문턱을 넘으면 버린다.
         n_fresh = max(1, int(round(a.batch * a.pool_fresh)))
         lres = 0.0
-        picks = POOL.sample(a.batch - n_fresh, n_fresh)
+        picks = ([("pool", 0)] if a.seq_frames else POOL.sample(a.batch - n_fresh, n_fresh))
         for kind, slot in picks:
             if kind == "pool" and POOL.items[slot] is None:
                 continue          # 이 배치 안에서 이미 버려진 자리
@@ -2632,15 +2658,21 @@ for it in pbar:
                           elapsed=st["elapsed"], hist=list(st["hist"]),
                           age=st["age"]) if a.pool_keep > 0 else None)
             with torch.no_grad(), _tsec("소성·풀"):
-                if not a.out_var:
+                if a.seq_frames:
+                    # 전진하지 않고 이번 출력을 후보로만 둔다 -- 수렴 판정 뒤 이것으로 전진
+                    SEQ["cand"] = (x2.detach(), v2.detach(),
+                                   phys_resid.plastic_step(F_tr, dlog).detach(),
+                                   p2.detach() if torch.is_tensor(p2) else None, float(_hp))
+                elif not a.out_var:
                     st["x"] = x2.detach()
                     st["v"] = v2.detach()
                     st["F"] = phys_resid.plastic_step(F_tr, dlog).detach()
                     st["p"] = p2.detach() if torch.is_tensor(p2) else None
                 # out_var 는 상태를 **전진시키지 않는다** -- 같은 상태의 노드
                 # 출력을 계속 최적화해 하한까지 내린다 (노드 집합도 고정된다)
-            POOL.put_back(slot if kind == "pool" else None, st, res,
-                          prev=_prev, dt_frac=1.0 / _sub)
+            if not a.seq_frames:
+                POOL.put_back(slot if kind == "pool" else None, st, res,
+                              prev=_prev, dt_frac=1.0 / _sub)
         # 폐기율은 **최근 100 반복에서 배치 대비 몇 %가 죽었는가** 로 둔다.
         # 누적 수를 전체 반복으로 나누면 추세가 안 보이고 값도 오해를 부른다.
         _PL_DROP.append(POOL.n_drop)
@@ -2662,6 +2694,40 @@ for it in pbar:
         else:
             opt.zero_grad(set_to_none=True)
             POOL.n_nan = getattr(POOL, "n_nan", 0) + 1
+        if a.seq_frames and SEQ.get("cand") is not None:
+            _cx, _cv, _cF, _cp, _ch = SEQ.pop("cand")
+            _dmax = (float((_cx - SEQ["prev"]).abs().max()) if SEQ["prev"] is not None else float("inf"))
+            SEQ["it"] += 1
+            if TBW is not None and it % 20 == 0:
+                TBW.add_scalar("순차/출력변화최대", _dmax, it)
+                TBW.add_scalar("순차/프레임", SEQ["t"], it)
+            if _dmax < a.seq_tol * _ch / FRAME_DT or SEQ["it"] >= a.seq_max:
+                # 수렴(또는 상한) -- 수렴한 출력으로 한 프레임 전진, 가중치는 그대로 다음 프레임의 초기값
+                _st0 = POOL.items[0]
+                _st0["x"], _st0["v"], _st0["F"], _st0["p"] = _cx, _cv, _cF, _cp
+                _st0["age"] += 1
+                SEQ["t"] += 1
+                _gtd = _VAL[0][1]
+                _e = (DM.frame_err(_cx, take(_gtd["x"][SEQ["t"]], torch.arange(_cx.shape[0], device=dev)),
+                                   float(_gtd.get("_ext", EXT))) if SEQ["t"] < _gtd["x"].shape[0] else float("nan"))
+                SEQ["err"].append(_e); SEQ["iters"].append(SEQ["it"]); SEQ["capped"] += int(_dmax >= a.seq_tol * _ch / FRAME_DT)
+                SEQ["traj"].append(_cx.half().cpu())
+                print(f"  [순차 프레임 {SEQ['t']}] 반복 {SEQ['it']}{' (상한)' if _dmax >= a.seq_tol * _ch / FRAME_DT else ''}  "
+                      f"출력변화 {_dmax:.2e}  GT 오차 {_e * 100:.3f}%", flush=True)
+                if TBW is not None:
+                    TBW.add_scalar("순차/GT오차_프레임별", _e, SEQ["t"])
+                    TBW.add_scalar("순차/반복수_프레임별", SEQ["it"], SEQ["t"])
+                    TBW.add_scalar("순차/상한도달누적", SEQ["capped"], SEQ["t"])
+                SEQ["it"], SEQ["prev"] = 0, None
+                if SEQ["t"] >= a.seq_frames:
+                    save_ck("last", it + 1)
+                    torch.save({"x": torch.stack(SEQ["traj"]), "err": SEQ["err"], "iters": SEQ["iters"]},
+                               os.path.join(a.out, f"{a.tag}_seq_traj.pt"))
+                    print(f"[순차] {a.seq_frames} 프레임 끝 -- 학습 중 궤적 평균 GT 오차 "
+                          f"{float(np.nanmean(SEQ['err'])) * 100:.3f}%, 상한 도달 {SEQ['capped']} 프레임", flush=True)
+                    break
+            else:
+                SEQ["prev"] = _cx
         if it % 20 == 0:
             pbar.set_postfix(E=f"{lx:.3e}", 잔차=f"{lres:.3e}",
                              폐기=f"{POOL.n_drop}",
