@@ -49,6 +49,9 @@ ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--iters0", type=int, default=400)
 ap.add_argument("--iters", type=int, default=200)
 ap.add_argument("--polar_fast", type=int, default=0, help="탄성 에너지의 극분해를 Newton 반복으로 (같은 값, SVD 보다 빠름)")
+ap.add_argument("--newton_tol_nmax", type=int, default=128,
+                help="newton_tol 의 h 비례 축소를 이 N 에서 멈춘다 (더 큰 N 은 이 N 의 허용치). float32 에서 서브스텝 목적이 "
+                     "~1e-17 잡음 바닥이라 그 아래 허용치는 잡음과 싸우며 반복만 늘린다 (N1024 첫 프레임이 3 시간)")
 ap.add_argument("--newton_tol", type=float, default=0.0, help="ours: 예측 감소 ½g·x < tol² (길이 단위, 정규화 목적) 이면 반복 종료. 0 이면 끝까지")
 ap.add_argument("--cg_tol", type=float, default=1e-4, help="CG 상대 잔차 허용")
 ap.add_argument("--cg_check", type=int, default=1, help="CG 수렴 판정(동기화)을 몇 번에 한 번")
@@ -778,7 +781,7 @@ for t in range(T_START, a.frames + 1):
                 # 예측 감소가 허용 위치 오차² 아래면 수렴. 허용 오차는 **속도 단위**(IPC 의 ‖p‖/h < ε)로 둔다:
                 # 위치 허용치 = newton_tol · (h / frame_dt). 절대 길이로 두면 N 이 크면 한 서브스텝의 중력 이동
                 # (½gh²) 자체가 허용치보다 작아 첫 반복에서 멈춰 물체가 영영 안 움직였다 (N ≥ 32 전부). N=1 은 그대로.
-                if a.newton_tol > 0 and 0.5 * sl < (a.newton_tol * h / FRAME_DT_NT) ** 2:
+                if a.newton_tol > 0 and 0.5 * sl < (a.newton_tol * max(h / FRAME_DT_NT, 1.0 / a.newton_tol_nmax)) ** 2:
                     PC["it"] = PC.get("it", 0) + it_
                     break
                 stp = min(STP[0] * 2.0, a.riem_lr_max)
