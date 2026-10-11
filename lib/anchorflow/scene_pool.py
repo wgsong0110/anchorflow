@@ -172,11 +172,13 @@ class StatePool:
     def __init__(self, scenes, size, n_ctrl, radius, dev, gen,
                  frames=60, thresh=0.05, window=30,
                  domain=2.0, margin=0.15, start_mid=False, keep_prob=0.5,
-                 acc=2.4, vmax=0.6, n_side=4, zbias=0.0, drop=None, data=None):
+                 acc=2.4, vmax=0.6, n_side=4, zbias=0.0, drop=None, data=None, init=None):
         self.scenes = scenes
         # 데이터 모드: 학습 궤적 [(x[T,N,3], v[T,N,3], F[T,N,3,3]) ...] (mmap) 에서 (궤적, 프레임) 을 무작위로 뽑아
         # 새 상태로 쓴다. 다른 학습 기반 방법과 같은 학습 궤적을 쓰는 비교용. None 이면 손잡이/낙하 모드.
         self.data = data
+        # 고정 초기 상태 (x0, v0, F0): 새 상태를 늘 이 하나로 -- 한 궤적 과적합 실험용
+        self.init = init
         # 낙하 모드 (학습 비교 공통 데이터셋과 같은 초기 조건 분포, exe/lb_gen.py):
         # dict(h=(h0,h1), v=(v0,v1), zf=바닥 z, margin=상자 여유). None 이면 손잡이 모드.
         self.drop = drop
@@ -270,7 +272,9 @@ class StatePool:
         x = sc["x0"].clone()
         v = torch.zeros_like(x)
         F0 = None
-        if self.data is not None:
+        if self.init is not None:
+            x, v, F0 = (q.clone() for q in self.init)
+        elif self.data is not None:
             k = int(torch.randint(len(self.data), (1,), generator=self.gen, device=self.dev))
             X_, V_, F_ = self.data[k]
             t = int(torch.randint(X_.shape[0] - 1, (1,), generator=self.gen, device=self.dev))
