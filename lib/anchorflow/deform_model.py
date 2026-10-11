@@ -407,11 +407,15 @@ class EvalModel:
       M = EvalModel("MAIN_best.pt")
       x, v = M.init(d, t0)
       x, v, J = M.frame(d, x, v)        # 한 프레임 (서브스텝이면 그 수만큼 망 통과)
+
+    fast=True 면 지원되는 설정에서 lib/anchorflow/fast_roll.FastStep (동기화 없는
+    고정 크기 + 손으로 쓴 탄젠트 + CUDA 그래프) 로 같은 식을 돈다. 지원 밖이면
+    알리고 느린 경로를 쓴다. fast_graph=False 는 같은 계산을 즉시 실행으로.
     """
 
     UNSUPPORTED = ("control", "fe_state", "hex_jac", "cell_poly", "refps")
 
-    def __init__(self, ckpt, dev="cuda"):
+    def __init__(self, ckpt, dev="cuda", fast=False, fast_graph=True):
         ck = torch.load(ckpt, map_location=dev, weights_only=False)
         a = ckpt_args(ck)
         for k in self.UNSUPPORTED:
@@ -444,6 +448,14 @@ class EvalModel:
         self.sub = int(a.eval_dt_sub or a.dt_sub)
         self.h = self.frame_dt / self.sub
         del ck
+        self.fast, self._fs = False, None
+        if fast:
+            from .fast_roll import fast_supported
+            ok, why = fast_supported(a)
+            if ok:
+                self.fast, self.fast_graph = True, bool(fast_graph)
+            else:
+                print(f"[EvalModel] 빠른 경로 미지원 ({why}) -- 느린 경로로 돈다", flush=True)
 
     def prepare(self, d):
         """궤적별 상수 (질량, 크기, 정지 위치) 를 한 번만."""
@@ -467,6 +479,16 @@ class EvalModel:
                    if (self.n_mat and not self.n_film) else None)
         mat = (mat_feat(cfg, a.no_mat, self.dev).reshape(1, self.n_mat)
                if self.n_film else None)
+        if self.fast:
+            fs = self._fs
+            # 궤적(X0·질량·cfg)과 h 에 묶인다 -- 바뀌면 새로 세운다
+            if fs is None or fs.X0 is not d["_X0"] or fs.h != float(h):
+                from .fast_roll import FastStep
+                fs = self._fs = FastStep(self.net, a, cfg, d["_X0"], mass,
+                                         self.vel_scale, h, mat_vec=mat_vec,
+                                         mat=mat, graph=self.fast_graph)
+            with sec("빠른스텝"):
+                return fs(x, v)
         with sec("셀집계"):
             ens = [node_feats(a, cfg, d["_X0"], mass, x, v, self.vel_scale,
                               off=o, mat_vec=mat_vec)
