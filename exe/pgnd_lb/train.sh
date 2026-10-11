@@ -12,7 +12,7 @@ echo "PGND_NO_ANOMALY=${PGND_NO_ANOMALY:-0}"
 cd $P
 ( while true; do sleep 3600; bash $W/anchorflow/exe/pgnd_lb/upload.sh; echo "[R2] $(date)"; done ) &
 UP=$!
-CUDA_VISIBLE_DEVICES=5 python experiments/train/train_eval.py "${PGND_ARGS[@]}" \
+CUDA_VISIBLE_DEVICES=3 python experiments/train/train_eval.py "${PGND_ARGS[@]}" \
   train.name=lego/train train.dataset_name=lego/dataset \
   train.num_iterations=100000 train.iteration_eval_interval=1000 train.iteration_save_interval=1000 \
   2>&1 | stdbuf -oL tr '\r' '\n' | grep --line-buffered -v "it/s]$"
