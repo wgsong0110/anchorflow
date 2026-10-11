@@ -472,6 +472,7 @@ torch.manual_seed(a.seed)
 
 import torch.autograd.forward_ad as _fwAD                       # noqa: E402
 from anchorflow import deform                                  # noqa: E402
+from anchorflow import deform_model as DM                       # noqa: E402
 from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import simplex as SX                            # noqa: E402
 from anchorflow import simplex_gnn as _SGM                      # noqa: E402
@@ -598,6 +599,9 @@ if _DT_SUBS or a.dt_sub != 1 or a.dt_cond or a.dt_scale:
           f"출력 비례 {'on' if a.dt_scale else 'off'}", flush=True)
 X0 = TR[0][1]["x"][0]
 EXT = float((X0.max(0).values - X0.min(0).values).norm())
+# 망 출력 크기(0.02·EXT)와 속도 단위(VEL_SCALE)를 정한 값. 풀 루프가 전역 EXT 를
+# 씬 값으로 덮어쓰므로 따로 남겨 체크포인트에 넣는다 (추론이 같은 모델을 세우게).
+_EXT0 = EXT
 N_FULL = X0.shape[0]
 
 # 앵커는 t=0 배치에서 FPS 로 고른 **가우시안**이다. 인덱스로 들고 있으면 어느
@@ -636,21 +640,8 @@ MASS = ((dx ** 3) / cnt[flat]) * float(cfg0["density"])
 
 # 물성은 앵커 특징에 들어간다. 궤적마다 다르므로 궤적별로 만든다.
 def mat_feat(cfg):
-    # 중력은 방향이라 평행이동 등변성을 깨지 않는다. 궤적마다 다르므로 넣는다.
-    g = torch.tensor(cfg["g"], device=dev, dtype=torch.float32) / 15.0
-    # np.log 는 float64 를 돌려주고, 목록에 섞이면 텐서가 통째로 double 이 된다
-    # 항복응력과 구성모델 종류도 넣는다 -- 형상·손잡이가 같아도 물성이 다르면
-    # 궤적이 다르므로, 이걸 안 주면 학생은 세 물성의 평균만 배운다.
-    if a.no_mat:
-        return torch.zeros(0, device=dev, dtype=torch.float32)
-    _mats = ("jelly", "metal", "foam", "sand")
-    _oh = [1.0 if cfg.get("material", "jelly") == m else 0.0 for m in _mats]
-    return torch.cat([torch.tensor(
-        [np.log(float(cfg["E"])), float(cfg["nu"]), float(cfg.get("xi", 0.0)),
-         np.log(float(cfg["density"])),
-         np.log1p(float(cfg.get("yield_stress", 0.0))),
-         float(cfg.get("friction_angle", 0.0)) / 45.0] + _oh,
-        device=dev, dtype=torch.float32), g])
+    """물성 특징 (lib/anchorflow/deform_model.mat_feat)."""
+    return DM.mat_feat(cfg, a.no_mat, dev)
 
 
 # 프레임별 평균 GT 변위. 어디가 실제로 움직이는 구간인지 여기서 정해진다.
@@ -681,23 +672,16 @@ opt = None
 step0 = 0
 
 
+DM.apply_arch_flags(a)
 if a.gnn_no_norm:
-    _SGM._MP_NORM = False
     print("[구조] 메시지 패싱 LayerNorm 제거", flush=True)
 if a.gnn_sum:
-    _SGM._MP_MEAN = False
     print("[구조] 메시지 집계를 합으로", flush=True)
 
 
 def build(n_feat):
     global net, opt
-    if a.arch != "sgnn":
-        raise SystemExit("사면체 복합체 경로만 남았다 -- --arch sgnn 을 쓸 것 "
-                         "(격자 conv/unet 은 태그 grid-rqs-final 에 있다)")
-    net = SimplexGNN(n_feat=n_feat, hidden=a.hidden, layers=a.gnn_layers,
-                     scale=0.02 * EXT, dt_cond=a.dt_cond, dt_ref=FRAME_DT,
-                     dt_scale=a.dt_scale, n_mat=N_FILM,
-                     ).to(dev)
+    net = DM.build_net(a, n_feat, _EXT0, FRAME_DT, N_FILM, dev)
     opt = (torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=a.wd)
            if a.wd > 0 else torch.optim.Adam(net.parameters(), lr=a.lr))
     global SCHED
@@ -712,11 +696,7 @@ def take(t, idx_gpu):
     CPU 에서 해야 하고 (장치가 섞이면 torch 가 거부한다) 그것이 위치 1.61 ms,
     F 4.08 ms 로 한 스텝의 5 분의 1 을 먹는다 -- 궤적 하나가 98 MB 라 다 올려도
     7 개에 700 MB 다. 못 올릴 이유가 없었다."""
-    if t.is_cuda:
-        r = t[idx_gpu]
-    else:
-        r = t[idx_gpu.cpu()].to(dev, non_blocking=True)
-    return r.float() if r.dtype == torch.float16 else r
+    return DM.take(t, idx_gpu, dev)
 
 
 VOX_OFFS = (np.array([np.random.RandomState(i).rand(3)
@@ -1247,66 +1227,28 @@ _RQS_PEN = [None]        # step_once 가 쌓는 RQS 연속성 벌점, 손실 지
 
 
 def node_feats(d, t, gsel, x, v, fe=None):
-    """사면체 복합체의 **노드** 특징. 입자 물리량을 자기 사면체의 barycentric
-    가중으로 4 꼭짓점에 뿌려 모은다 (P2G 와 같은 구조, 전달 가중치 재사용).
+    """사면체 복합체의 **노드** 특징 (lib/anchorflow/deform_model.node_feats).
 
     -> (_in [M,F], npos [M,3], (lo,lat,nn), rows [N,4], lam [N,4], uniq [M],
-        간선 (src,dst,cls))
+        간선 (src,dst,cls), aux)
     """
     cfg = d["cfg"]
-    X = take(d["x"][0], gsel)
-    lo, lat, nn = (_GRID[0] if _GRID[0] is not None
-                   else SX.grid_for_nodes(x, a.n_nodes,
-                                          hz_ratio=a.hz_ratio,
-                                          off=_GRID_OFF[0],
-                                          h_fix=(a.node_h or None)))
-    idx, lam, _aux = SX.locate(x, lo, lat, nn)   # tau 에 무관 -- 한 번만
-    if a.hex_jac:
-        # 육면체 삼선형을 쓰면 원소가 **셀**이다 -- 활성 노드도 셀의 여덟
-        # 꼭짓점 전부여야 한다 (사면체 네 개만 살리면 나머지 넷이 없어서
-        # 일부 입자가 사면체로 떨어진다). ci 는 nn-2 로 잘려 있어 ci+1 은 항상
-        # 격자 안이다.
-        _nnl = [int(nn[k]) for k in range(3)]
-        _o8 = torch.tensor([[i_, j_, k_] for i_ in (0, 1) for j_ in (0, 1)
-                            for k_ in (0, 1)], device=x.device,
-                           dtype=torch.long)
-        _v8 = _aux[0].unsqueeze(1) + _o8.unsqueeze(0)        # [N,8,3]
-        _f8 = ((_v8[..., 0] * _nnl[1] + _v8[..., 1]) * _nnl[2] + _v8[..., 2])
-        _rall, uniq = SX.active_nodes(torch.cat([idx, _f8], 1))
-        rows = _rall[:, :4]
-    else:
-        rows, uniq = SX.active_nodes(idx)      # **점유 사면체의 꼭짓점만**
-    Mn = int(uniq.numel())
-    npos = SX.node_pos(lo, lat, nn, uniq)
-    hn = lat.s                                 # 길이 단위 = 면내 간격 h
-    mw = MASS[gsel]
-    # 국소 통계(2 차 모멘트·각속도·국소 F) -- 탄성항이 보는 것을 담으려면
-    # 변위·속도 평균만으로는 모자란다 (격자 시절 tri_feats 와 같은 항목)
-    feat = _san(node_moments(x, v / VEL_SCALE, X, mw, rows, lam, Mn, npos, hn))
-    parts = []
-    if a.fe_state:
-        parts.append(fe_invariants(fe) if fe is not None
-                     else torch.zeros(x.shape[0], 3, device=dev, dtype=x.dtype))
-    if a.control:
-        parts.append(ctrl_feat_pts(d, t, x, hn))
-    if parts:
-        feat = torch.cat([feat, _san(scatter_to_nodes(
-            _san(torch.cat(parts, -1)), rows, lam, Mn, mass=mw))], -1)
-    extra = [bc_features(npos, cfg) / hn]
-    if N_MAT and not N_FILM:
-        extra.insert(0, mat_feat(cfg).reshape(1, N_MAT).expand(Mn, N_MAT))
-    _in = torch.cat([_san(feat), _san(torch.cat(extra, -1))], -1)
-    _in = torch.nan_to_num(_in, nan=0.0, posinf=0.0,
-                           neginf=0.0).clamp(-_FCAP, _FCAP)
-    src, dst, cls = SX.edges_of(rows, uniq, nn)
-    return (_in, npos, (lo, lat, nn), rows, lam, uniq, (src, dst, cls), _aux)
+
+    def _parts(hn):
+        parts = []
+        if a.fe_state:
+            parts.append(fe_invariants(fe) if fe is not None
+                         else torch.zeros(x.shape[0], 3, device=dev, dtype=x.dtype))
+        if a.control:
+            parts.append(ctrl_feat_pts(d, t, x, hn))
+        return parts
+    return DM.node_feats(
+        a, cfg, take(d["x"][0], gsel), MASS[gsel], x, v, VEL_SCALE,
+        grid=_GRID[0], off=_GRID_OFF[0], pt_parts=_parts,
+        mat_vec=(mat_feat(cfg) if (N_MAT and not N_FILM) else None))
 
 
-def _ens_offsets(n):
-    if n <= 1:
-        return [None]
-    return [tuple(((k * q) % 1.0) for q in (0.5, 0.25, 0.125))
-            for k in range(n)]
+_ens_offsets = DM.ens_offsets
 
 
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
@@ -1368,10 +1310,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             if a.ov_init == "predict":
                 # **노드별 관성 예측자** h·v_n + h²g (barycentric 가중 질량평균)
                 _Mn = _npk.shape[0]
-                _mw = (MASS[gsel] if MASS.numel() != x.shape[0] else MASS
-                       ).unsqueeze(-1).to(x.dtype)
-                _ws = torch.zeros(_Mn, 1, device=dev, dtype=x.dtype)
-                _vs = torch.zeros(_Mn, 3, device=dev, dtype=x.dtype)
+                _mw = (MASS[gsel] if MASS.numel() != x.shape[0] else MASS)
                 # 육면체면 **여덟 꼭짓점 삼선형 가중**으로 뿌린다. 사면체 네
                 # 개로만 뿌리면 나머지 네 노드가 0 으로 남아 첫 프레임부터
                 # 셀이 접힌다 (실측: 프레임 0 에 det<0 14.7%).
@@ -1379,170 +1318,118 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                     _p8, _, _N8, _, _ = _hex_struct(x, _nfk[2][0],
                                                     _nfk[2][1], _nfk[2][2],
                                                     _nfk[5])
-                    _rr, _ll, _nc = _p8, _N8, 8
+                    _rr, _ll = _p8, _N8
                 else:
-                    _rr, _ll, _nc = _rwk, _lmk, 4
-                for _j in range(_nc):
-                    _w = _ll[:, _j:_j + 1] * _mw
-                    _ws.index_add_(0, _rr[:, _j], _w)
-                    _vs.index_add_(0, _rr[:, _j], _w * v)
-                _vn = _vs / _ws.clamp_min(1e-30)
-                _gq = torch.as_tensor(d["cfg"]["g"], device=dev, dtype=x.dtype)
-                _hq = float(_DT[0])
-                _TG.append(_hq * _vn + (_hq ** 2) * _gq)
-                _VNL.append((_vn, _gq))
+                    _rr, _ll = _rwk, _lmk
+                _tgk, _vnlk = DM.node_inertial(x, v, _mw, _rr, _ll, _Mn,
+                                               d["cfg"]["g"], float(_DT[0]))
+                _TG.append(_tgk)
+                _VNL.append(_vnlk)
             else:
                 _TG.append(None)
                 _VNL.append(None)
         _nod_m, _nod_v = _NM[0], _NV[0]
         _NOD_M[0] = _nod_m
 
-        def _fieldS(tau):
-            _dus, _Jsum = [], None
-            for _k in range(len(_ENS)):
-                (_ink, _npk, (_lok, _latk, _nnk), _rwk, _lmk, _uqk,
-                 (_srk, _dsk, _clk), _lxk) = _ENS[_k]
-                _ENS_K[0] = _k
-                _NOD_M[0] = _NM[_k]
-                _OV_TGT[0] = _TG[_k]
-                out = (_DP_FAST[0](_npk.shape[0], x.dtype, dev)
-                       if _DP_FAST[0] is not None else None)
-                if out is None:
-                    with _tsec("신경망"):
-                        out = net(_ink, _srk, _dsk, _clk, tau, mat=_mv)
-                    if a.net_inertial:
-                        if _VNL[_k] is None:
-                            raise SystemExit("--net_inertial 은 노드 관성 예측(--ov_init predict, 사면체)이 필요하다")
-                        _vnk, _gqk = _VNL[_k]
-                        # τ 의 함수로 더해야 --v_from_dt 의 dΦ/dτ 에 관성 속도가 들어간다
-                        out = (out[0] + tau * _vnk + (tau * tau) * _gqk,) + tuple(out[1:])
-                    if _DP_HOOK[0] is not None:
-                        out = _DP_HOOK[0](out)
-                dpn_k = torch.nan_to_num(out[0], nan=0.0, posinf=0.0,
-                                         neginf=0.0)
-                if _NM[_k] is not None:
-                    # **노드 변위를 명령으로 덮는다.** detach 로 기울기를 끊어
-                    # 그 노드는 최적화 대상에서 빠진다 (상수 경계조건이다).
-                    dpn_k = torch.where(
-                        _NM[_k].unsqueeze(-1),
-                        (tau * _CTRL_SCALE[0] * _NV[_k]).detach(), dpn_k)
-                    if _k == 0:
-                        _PIN[0] = (_NM[0],
-                                   (tau * _CTRL_SCALE[0] * _NV[0]).detach())
-                        with torch.no_grad():
-                            _CTRL_ERR[1] = int(_NM[0].sum())
-                            _CTRL_ERR[2] = float(
-                                (tau * _NV[0])[_NM[0]].norm(dim=-1).mean()
-                                if bool(_NM[0].any()) else 0.0)
-                _duk = SX.g2p_pre(_rwk, _lmk, dpn_k)
-                _u1, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, dpn_k)
-                if a.hex_jac:
-                    # **육면체 삼선형**: 입자 변위와 야코비안을 같은 사상에서
-                    # 뽑는다 (사면체 중심좌표 대신). 여덟 꼭짓점이 다 살아있지
-                    # 않은 입자만 사면체 값을 그대로 쓴다.
-                    _uh, _Jh, _hok = _hex_field(x, dpn_k, _lok, _latk, _nnk,
-                                                _uqk)
-                    if os.environ.get("AF_HEX_DIAG") and _HXD[0] < 3:
-                        _HXD[0] += 1
-                        with torch.no_grad():
-                            _I3d = torch.eye(3, device=_Jk.device,
-                                             dtype=_Jk.dtype)
-                            _dt = torch.linalg.det(_I3d + _Jk)
-                            _dh2 = torch.linalg.det(_I3d + _Jh)
-                            print(f"      [육면체진단] 노드 {dpn_k.shape[0]} "
-                                  f"변위 std {float(dpn_k.std()):.3e} "
-                                  f"max {float(dpn_k.abs().max()):.3e} | "
-                                  f"detJ 사면체 {float(_dt.mean()):.4f}"
-                                  f"(min {float(_dt.min()):.3f}) 육면체 "
-                                  f"{float(_dh2.mean()):.4f}"
-                                  f"(min {float(_dh2.min()):.3f}) | "
-                                  f"|u차| {float((_uh - _duk).abs().max()):.3e} "
-                                  f"쓸수있음 {int(_hok.sum())}/{_hok.numel()}",
-                                  flush=True)
-                    if _k == 0 and a.hex_hg > 0:
-                        _HG_LAST[0] = (dpn_k, _hex_struct(
-                            x, _lok, _latk, _nnk, _uqk)[4], _latk)
-                    if not bool(_hok.all()):
-                        raise SystemExit(
-                            f"--hex_jac: 여덟 꼭짓점이 없는 입자 "
-                            f"{int((~_hok).sum())} 개 -- 활성 노드 구성이 "
-                            f"셀 기준이 아니다")
-                    _duk, _Jk = _uh, _Jh
-                _dus.append(_duk)
-                if _k == 0 and a.smooth_nb > 0:
-                    # **노드 변위를 이웃과 섞어** 야코비안을 만든다. 위치는
-                    # 스무딩하지 않은 변위로 정한다 -- 변형 측정만 넓힌다.
-                    _ds = _smooth_nodes(dpn_k, _uqk, _nnk)
-                    _u3, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, _ds)
-                if _k == 0 and a.cell_poly and _TAU_H[0] is not None:
-                    # **셀 다항식**: 입자 기여를 12 자유도 다항식으로 바꿔
-                    # 셀마다 계수를 합산해 두고, 평가는 셀 수만큼만 돈다.
-                    if _CPOLY[0] is None:
-                        _tp, _hp2 = _TAU_H[0]
-                        _uqt, _invt = torch.unique(_rwk, dim=0,
-                                                   return_inverse=True)
-                        _Tn = int(_uqt.shape[0])
-                        _rept = torch.zeros(_Tn, dtype=torch.long, device=dev)
-                        _rept.scatter_(0, _invt,
-                                       torch.arange(_invt.numel(), device=dev))
-                        _tc2 = torch.zeros(_Tn, 3, 3, device=dev,
-                                           dtype=_tp.dtype
-                                           ).index_add_(0, _invt, _tp)
-                        _hc2 = torch.zeros(_Tn, 3, 3, 3, 3, device=dev,
-                                           dtype=_hp2.dtype
-                                           ).index_add_(0, _invt, _hp2)
-                        _gq2 = torch.as_tensor(d["cfg"]["g"], device=dev,
-                                               dtype=x.dtype)
-                        _tgt2 = FRAME_DT * v + (FRAME_DT ** 2) * _gq2
-                        _wf2 = torch.ones(x.shape[0], device=dev,
-                                          dtype=x.dtype)
-                        if _NM[0] is not None:
-                            _wf2 = 1.0 - _NM[0][_rwk].all(1).to(x.dtype)
-                        _mw2 = (MASS[gsel] if MASS.numel() != x.shape[0]
-                                else MASS).to(x.dtype) / (FRAME_DT ** 2)
-                        _CPOLY[0] = _cell_poly_build(
-                            _rwk, _lmk, _lxk, _latk, _tc2, _hc2, _invt, _rept,
-                            _mw2, _tgt2, _wf2)
-                        _CP_INV[0] = _invt
-                    _ein2, _eel2, _gu2 = _cell_poly_energy(dpn_k, _CPOLY[0])
-                    _CP_E[0] = (_ein2, _eel2)
-                    _Jk = _gu2[_CP_INV[0]]
-                _Jsum = _Jk if _Jsum is None else _Jsum + _Jk
-                if _k == 0:
-                    _dpn0 = dpn_k
-            # **입자 변위는 기준 격자(오프셋 0) 하나로만** 정한다. 오프셋
-            # 평균은 변형구배에만 쓴다 -- 위치까지 평균하면 입자가 어느 격자에도
-            # 속하지 않는 자리로 가고, 변위 자체가 오프셋에 의존하게 된다.
-            _du = _dus[0]
-            _Jm = _Jsum / float(len(_ENS))
-            q = x + _du
-            _qraw = q
-            _act = torch.zeros_like(q[:, :1])
-            if _NM[0] is not None:
-                # 네 꼭짓점이 모두 구속된 입자는 명령만큼 간다
-                _act = _act + _NM[0][rows].all(1).to(q.dtype).unsqueeze(-1)
-            if not a.bc_soft and a.bc_mode == "project" \
-                    and a.bc_level == "particle":
-                _duP, _fa = phys_resid.bc_project(
-                    x, q - x, d["cfg"], tau,
-                    float(d["cfg"].get("grid_lim", 2.0)),
-                    int(d["cfg"]["n_grid"]))
-                q = x + _duP
-                _act = _act + _fa.to(q.dtype).unsqueeze(-1)
-            _corr = q - _qraw
-            return q, (_dpn0, _Jm, _corr, _act)
+        # ---- 학습 쪽 실험 경로 훅 (추론 라이브러리에는 없다) ----------------
+        def _pre_k(_k):
+            _ENS_K[0] = _k
+            _NOD_M[0] = _NM[_k]
+            _OV_TGT[0] = _TG[_k]
 
-        _use_dtS = a.v_from_dt and _DP_HOOK[0] is None and a.dt_cond
-        _tau0 = torch.as_tensor(float(_DT[0]), device=dev, dtype=x.dtype)
-        if _use_dtS:
-            with _tsec("jvp(속도)"):
-                (x2, _outs), (v_next, _) = torch.func.jvp(
-                    _fieldS, (_tau0,), (torch.ones_like(_tau0),))
-        else:
-            x2, _outs = _fieldS(_tau0)
-            v_next = (x2 - x) / _DT[0]
-        dpn = _outs[0]
-        Jf = torch.eye(3, device=dev, dtype=x.dtype) + _outs[1]
+        def _on_pin(tau):
+            _PIN[0] = (_NM[0], (tau * _CTRL_SCALE[0] * _NV[0]).detach())
+            with torch.no_grad():
+                _CTRL_ERR[1] = int(_NM[0].sum())
+                _CTRL_ERR[2] = float(
+                    (tau * _NV[0])[_NM[0]].norm(dim=-1).mean()
+                    if bool(_NM[0].any()) else 0.0)
+
+        def _post_jac(_k, _nfk, dpn_k, _duk, _Jk):
+            (_ink, _npk, (_lok, _latk, _nnk), _rwk, _lmk, _uqk,
+             (_srk, _dsk, _clk), _lxk) = _nfk
+            if a.hex_jac:
+                # **육면체 삼선형**: 입자 변위와 야코비안을 같은 사상에서
+                # 뽑는다 (사면체 중심좌표 대신). 여덟 꼭짓점이 다 살아있지
+                # 않은 입자만 사면체 값을 그대로 쓴다.
+                _uh, _Jh, _hok = _hex_field(x, dpn_k, _lok, _latk, _nnk,
+                                            _uqk)
+                if os.environ.get("AF_HEX_DIAG") and _HXD[0] < 3:
+                    _HXD[0] += 1
+                    with torch.no_grad():
+                        _I3d = torch.eye(3, device=_Jk.device,
+                                         dtype=_Jk.dtype)
+                        _dt = torch.linalg.det(_I3d + _Jk)
+                        _dh2 = torch.linalg.det(_I3d + _Jh)
+                        print(f"      [육면체진단] 노드 {dpn_k.shape[0]} "
+                              f"변위 std {float(dpn_k.std()):.3e} "
+                              f"max {float(dpn_k.abs().max()):.3e} | "
+                              f"detJ 사면체 {float(_dt.mean()):.4f}"
+                              f"(min {float(_dt.min()):.3f}) 육면체 "
+                              f"{float(_dh2.mean()):.4f}"
+                              f"(min {float(_dh2.min()):.3f}) | "
+                              f"|u차| {float((_uh - _duk).abs().max()):.3e} "
+                              f"쓸수있음 {int(_hok.sum())}/{_hok.numel()}",
+                              flush=True)
+                if _k == 0 and a.hex_hg > 0:
+                    _HG_LAST[0] = (dpn_k, _hex_struct(
+                        x, _lok, _latk, _nnk, _uqk)[4], _latk)
+                if not bool(_hok.all()):
+                    raise SystemExit(
+                        f"--hex_jac: 여덟 꼭짓점이 없는 입자 "
+                        f"{int((~_hok).sum())} 개 -- 활성 노드 구성이 "
+                        f"셀 기준이 아니다")
+                _duk, _Jk = _uh, _Jh
+            if _k == 0 and a.smooth_nb > 0:
+                # **노드 변위를 이웃과 섞어** 야코비안을 만든다. 위치는
+                # 스무딩하지 않은 변위로 정한다 -- 변형 측정만 넓힌다.
+                _ds = _smooth_nodes(dpn_k, _uqk, _nnk)
+                _u3, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, _ds)
+            if _k == 0 and a.cell_poly and _TAU_H[0] is not None:
+                # **셀 다항식**: 입자 기여를 12 자유도 다항식으로 바꿔
+                # 셀마다 계수를 합산해 두고, 평가는 셀 수만큼만 돈다.
+                if _CPOLY[0] is None:
+                    _tp, _hp2 = _TAU_H[0]
+                    _uqt, _invt = torch.unique(_rwk, dim=0,
+                                               return_inverse=True)
+                    _Tn = int(_uqt.shape[0])
+                    _rept = torch.zeros(_Tn, dtype=torch.long, device=dev)
+                    _rept.scatter_(0, _invt,
+                                   torch.arange(_invt.numel(), device=dev))
+                    _tc2 = torch.zeros(_Tn, 3, 3, device=dev,
+                                       dtype=_tp.dtype
+                                       ).index_add_(0, _invt, _tp)
+                    _hc2 = torch.zeros(_Tn, 3, 3, 3, 3, device=dev,
+                                       dtype=_hp2.dtype
+                                       ).index_add_(0, _invt, _hp2)
+                    _gq2 = torch.as_tensor(d["cfg"]["g"], device=dev,
+                                           dtype=x.dtype)
+                    _tgt2 = FRAME_DT * v + (FRAME_DT ** 2) * _gq2
+                    _wf2 = torch.ones(x.shape[0], device=dev,
+                                      dtype=x.dtype)
+                    if _NM[0] is not None:
+                        _wf2 = 1.0 - _NM[0][_rwk].all(1).to(x.dtype)
+                    _mw2 = (MASS[gsel] if MASS.numel() != x.shape[0]
+                            else MASS).to(x.dtype) / (FRAME_DT ** 2)
+                    _CPOLY[0] = _cell_poly_build(
+                        _rwk, _lmk, _lxk, _latk, _tc2, _hc2, _invt, _rept,
+                        _mw2, _tgt2, _wf2)
+                    _CP_INV[0] = _invt
+                _ein2, _eel2, _gu2 = _cell_poly_energy(dpn_k, _CPOLY[0])
+                _CP_E[0] = (_ein2, _eel2)
+                _Jk = _gu2[_CP_INV[0]]
+            return _duk, _Jk
+
+        _need_post = a.hex_jac or a.smooth_nb > 0 or a.cell_poly
+        # **한 스텝의 본체는 라이브러리 하나** (lib/anchorflow/deform_model.advance).
+        # 추론(exe/lb_rollout.py)도 같은 함수를 부른다.
+        x2, v_next, dpn, Jf, _corr, _act = DM.advance(
+            net, a, _ENS, x, _DT[0], d["cfg"], inertial=_VNL, node_mask=_NM,
+            node_vel=_NV, ctrl_scale=_CTRL_SCALE[0], mat=_mv, sec=_tsec,
+            dp_fast=((lambda _n, _dt: _DP_FAST[0](_n, _dt, dev))
+                     if _DP_FAST[0] is not None else None),
+            dp_hook=_DP_HOOK[0], pre_k=_pre_k, on_pin=_on_pin,
+            post_jac=(_post_jac if _need_post else None))
         if _NODE_CAP[0]:
             _sup = torch.zeros(npos.shape[0], dtype=torch.bool, device=dev)
             _sup[rows.reshape(-1)] = True
@@ -1555,26 +1442,17 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             _NODE_LAST[0] = (npos.detach().cpu(), dpn.detach().cpu(),
                              _sup.cpu(), _pc)
         _DET_LAST[0] = torch.linalg.det(Jf)
-        _BC_LAST[0] = (_outs[-2], _outs[-1])
+        _BC_LAST[0] = (_corr, _act)
         return (x2, p, v_next, None, dpn, None, dmg, None, fe, Jf)
 def traj_F(d):
     """탄성 변형구배 [T,N,3,3]. 궤적에 든 것은 전부 항등이라 위치에서 되살린다."""
-    if d.get("_Fok") is None:
-        _Fin = d["F"]
-        _id = float((_Fin[:3].float().to(dev)
-                     - torch.eye(3, device=dev)).abs().max()) < 1e-6
-        if _id:
-            t_ = time.time()
-            d["F"] = phys_resid.rebuild_F(d["x"].to(dev).float(), d["cfg"],
-                                          FRAME_DT).cpu() if not a.gpu_data \
-                else phys_resid.rebuild_F(d["x"].to(dev).float(), d["cfg"],
-                                          FRAME_DT)
-            if not _F_MSG:
-                print(f"[Phase2] 궤적의 F 가 항등이라 위치에서 복원한다 "
-                      f"(궤적당 {time.time()-t_:.1f}초)", flush=True)
-                _F_MSG.append(1)
-        d["_Fok"] = True
-    return d["F"]
+    def _msg(sec):
+        if not _F_MSG:
+            print(f"[Phase2] 궤적의 F 가 항등이라 위치에서 복원한다 "
+                  f"(궤적당 {sec:.1f}초)", flush=True)
+            _F_MSG.append(1)
+    return DM.traj_F(d, FRAME_DT, dev, keep_gpu=bool(a.gpu_data),
+                     on_rebuild=_msg)
 
 
 _OV_CUR = [None]           # --out_var 에서 지금 최적화 중인 상태 사전
@@ -1608,19 +1486,7 @@ def traj_scope(d):
 def traj_mass(d):
     """궤적 자기 배치·자기 밀도로 잰 입자 질량 [N_full]. 전조합 학습에서는 씬마다
     밀도도 형상도 다르므로 cfg0 의 것을 쓰면 안 된다."""
-    if "_mass" in d:
-        return d["_mass"]
-    c = d["cfg"]
-    x0 = d["x"][0].to(dev).float()
-    ng_ = int(c.get("n_grid", 100))
-    dx_ = float(c.get("grid_lim", 2.0)) / ng_
-    vi_ = (x0 / dx_).long().clamp(0, ng_ - 1)
-    fl_ = (vi_[:, 0] * ng_ + vi_[:, 1]) * ng_ + vi_[:, 2]
-    cn_ = torch.zeros(ng_ ** 3, device=dev).index_add_(
-        0, fl_, torch.ones(x0.shape[0], device=dev))
-    d["_mass"] = ((dx_ ** 3) / cn_[fl_]) * float(c["density"])
-    d["_ext"] = float((x0.max(0).values - x0.min(0).values).norm())
-    return d["_mass"]
+    return DM.traj_mass(d, dev)
 
 
 CRITIC = None
@@ -1982,10 +1848,7 @@ def quick_val():
         gsel = torch.arange(d["x"].shape[1], device=dev)
         # 평가 롤아웃(_rollout)과 같은 시작점·같은 초기 속도로 잰다 -- 다르면 검증으로 고른 체크포인트가 평가에서 뒤집힌다
         t0 = int(a.eval_t0[0]) if (a.v0_traj and a.eval_t0) else 3
-        x = take(d["x"][t0], gsel)
-        v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
-        if a.v0_traj and "v" in d:
-            v = take(d["v"][min(t0, d["v"].shape[0] - 1)], gsel).to(x.dtype)
+        x, v = DM.init_state(d, t0, gsel, FRAME_DT, a.v0_traj, dev)
         p = take(d["x"][t0], AIDX)
         x_still = x.clone()
         for i in range(min(a.val_len, d["x"].shape[0] - t0 - 1)):
@@ -2017,6 +1880,9 @@ def save_ck(name, step):
                 "critic": (CRITIC.state_dict() if CRITIC is not None else None),
                 "opt_c": (OPT_C.state_dict() if OPT_C is not None else None),
                 "step": step, "aidx": AIDX.cpu(), "H": H, "EXT": EXT,
+                # 망을 세운 기준 (출력 크기 0.02·net_ext0, 속도 단위
+                # net_ext0/frame_dt). 추론(lb_rollout)이 같은 모델을 세운다
+                "net_ext0": _EXT0, "frame_dt": FRAME_DT,
                 "n_feat": n_feat, "args": vars(a),
                 "best": _best,
                 "rng_gen": gen.get_state(),
@@ -2552,9 +2418,11 @@ if a.tb:
     # 재개하면 같은 폴더에 새 이벤트 파일이 생기는데, 이전 파일에 그 지점 이후
     # 기록이 남아 있으면 TensorBoard 가 두 곡선을 겹쳐 그려 스텝이 꼬인다.
     # purge_step 으로 재개 지점 이후를 버리게 한다.
-    TBW = SummaryWriter(os.path.join(a.tb, a.tag),
-                        purge_step=step0 if step0 else None)
-    print(f"[TB] {os.path.join(a.tb, a.tag)}", flush=True)
+    # 실행마다 따로 (태그 + --out 이름). 예전에는 모든 실행이 tb/MAIN 하나에
+    # 섞여 들어갔다.
+    _TBD = os.path.join(a.tb, f"{a.tag}_{os.path.basename(os.path.normpath(a.out))}")
+    TBW = SummaryWriter(_TBD, purge_step=step0 if step0 else None)
+    print(f"[TB] {_TBD}", flush=True)
 
 if not a.pool and a.iters > 0:
     raise SystemExit("--no_pool 은 학습 경로가 없다. 교사 궤적 학습 경로는 "
@@ -3664,35 +3532,35 @@ def _rollout(d, t0, L, gsel=None):
     net.eval()
     if gsel is None:
         gsel = torch.arange(d["x"].shape[1], device=dev)
-    x = take(d["x"][t0], gsel)
-    v = (x - take(d["x"][max(t0 - 1, 0)], gsel)) / FRAME_DT
+    x, v = DM.init_state(d, t0, gsel, FRAME_DT, a.v0_traj, dev)
     if a.v0_traj and "v" in d:
-        v = take(d["v"][min(t0, d["v"].shape[0] - 1)], gsel).to(x.dtype)
         print(f"    [초기속도] 궤적의 v 를 쓴다 (크기 평균 "
               f"{float(v.norm(dim=-1).mean()):.4f})", flush=True)
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
-    errs, stills = [], []
-    x_still = x.clone()
     x0e, p0e = x.clone(), p.clone()
-    dmg_e, idx_e = None, None
-    fe_r = (take(traj_F(d)[t0], gsel).float() if a.fe_state else None)
+    # 프레임 사이에 이어지는 학습 쪽 상태 (앵커·손상·F_e·출력만 최적화의 F)
+    _S = dict(p=p, dmg=None, idx=None,
+              fe=(take(traj_F(d)[t0], gsel).float() if a.fe_state else None),
+              F_ov=(take(traj_F(d)[t0], gsel).float() if a.ov_roll > 0 else None))
     cds, ems, cds_s, ems_s = [], [], [], []
     _RO_CTRL = []
     _NODE_CAP[0] = _ROLLDUMP is not None
     _FCUM[0] = (take(traj_F(d)[t0], gsel).float().clone()
                 if (_ROLLDUMP is not None and os.environ.get("AF_ROLL_DUMP_F")) else None)
-    F_ov = take(traj_F(d)[t0], gsel).float() if a.ov_roll > 0 else None
     if phys_resid.mat_name(d["cfg"]) == "watermelon":
         # CD-MPM 경화 상태(logJp)는 롤아웃마다 초기값 -0.04 에서 다시 시작한다
         phys_resid.cdmpm_reset(x.shape[0], x.device, x.dtype)
     _RO_T0 = time.time()
-    for i in range(L):
+
+    def _step(i, x, v):
+        p = _S["p"]
         if a.ov_roll > 0:
             # 출력만 최적화: 서브스텝·jvp 없이 프레임마다 변수를 내린다
-            x2, v, F_ov = _ov_frame(d, t0 + i, gsel, p, x, v, F_ov)
+            x2, v, _S["F_ov"] = _ov_frame(d, t0 + i, gsel, p, x, v, _S["F_ov"])
             if _ROLLDUMP is not None and _FCUM[0] is not None:
-                _FCUM[0] = F_ov.detach().float()                 # 출력만 최적화가 실제로 굴린 F (렌더용)
+                _FCUM[0] = _S["F_ov"].detach().float()          # 출력만 최적화가 실제로 굴린 F (렌더용)
         else:
+            dmg_e, idx_e, fe_r = _S["dmg"], _S["idx"], _S["fe"]
             with torch.enable_grad(), dt_scope(FRAME_DT / EVAL_SUB):
                 for _sb in range(EVAL_SUB - 1):
                     x, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
@@ -3703,6 +3571,7 @@ def _rollout(d, t0, L, gsel=None):
                     d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                     idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
             x2 = x2.detach(); p = p.detach(); v = v.detach()
+            _S.update(p=p, dmg=dmg_e, idx=idx_e, fe=fe_r)
             if _ROLLDUMP is not None and _FCUM[0] is not None and _jf is not None:
                 # 렌더용: 망이 낸 변형장의 **실제 야코비안**을 누적한 F (이웃 추정 아님)
                 _FCUM[0] = (_jf.detach().float() @ _FCUM[0]).detach()
@@ -3710,14 +3579,18 @@ def _rollout(d, t0, L, gsel=None):
             torch.cuda.synchronize()
             print(f"    [프레임] {i + 1}/{L} 누적 {time.time() - _RO_T0:.2f} s | "
                   + " ".join(f"{k} {v:.2f}" for k, v in sorted(_PROF.items(), key=lambda z: -z[1])[:6]), flush=True)
-        gt = take(d["x"][t0 + i + 1], gsel)
+        return x2, v, None
+
+    def _fm(i, x2):
+        return (free_mask(d, x2.shape[0], x2.device, gsel, x2, t0 + i)
+                if a.control else slice(None))
+
+    def _on_frame(i, x2, gt, _info, x_still):
         # 평가에서도 손잡이가 명령대로 끌리는지 본다. 학습 경로만 보고 "손잡이는
         # 정확하다" 고 판단했다가, 평가에서는 ctrl_id 가 저장 표본에 없어 대체
         # 입자가 중심이 되는 것을 놓쳤다.
         _RO_CTRL.append((_CTRL_ERR[0], _CTRL_ERR[1], _CTRL_ERR[2]))
-        fm = free_mask(d, x2.shape[0], x2.device, gsel, x2, t0 + i) if a.control else slice(None)
-        errs.append(float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
-        stills.append(float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT)
+        F_ov = _S["F_ov"]
         if _ROLLDUMP is not None:
             _ROLLDUMP.append((x2.detach().cpu(), gt.detach().cpu()))
             if _FCUM[0] is not None:
@@ -3746,7 +3619,11 @@ def _rollout(d, t0, L, gsel=None):
             ems.append(emd(x2, gt, t0 * 1000 + i) / EXT)
             cds_s.append(chamfer(x_still, gt) / (EXT ** 2))
             ems_s.append(emd(x_still, gt, t0 * 1000 + i) / EXT)
-        x = x2
+
+    # 롤아웃 루프와 지표 정의는 라이브러리 하나 (lb_rollout 과 같다)
+    errs, stills = DM.rollout_eval(
+        _step, x, v, lambda i: take(d["x"][t0 + i + 1], gsel), L, EXT,
+        fm_fn=_fm, on_frame=_on_frame)
     net.train()
     _NODE_CAP[0] = False
     if not errs:
@@ -3869,12 +3746,16 @@ for tag, d in TR + held:
               + (f"  CD {np.mean(cd):.3e} (정지 {np.mean(cds_):.3e})"
                  f"  EMD {100*np.mean(em):.3f}% (정지 {100*np.mean(ems_):.3f}%)"
                  if a.metrics else ""), flush=True)
-r_all = [(w["err_mean"], w["still_mean"]) for r in rows.values()
-         for w in r["windows"].values()]
-print(f"\n[요약] 전체 창 평균 {100*np.mean([x for x,_ in r_all]):.3f}% "
-      f"(정지 {100*np.mean([y for _,y in r_all]):.3f}%, 비 "
-      f"{np.mean([x/max(y,1e-12) for x,y in r_all]):.2f}) "
+_SUM = DM.summarize(rows)        # 전체 창 평균 (lb_rollout 과 같은 정의)
+print(f"\n[요약] 전체 창 평균 {100*_SUM['err_mean']:.3f}% "
+      f"(정지 {100*_SUM['still_mean']:.3f}%, 비 "
+      f"{_SUM['ratio']:.2f}) "
       f"-- 비가 1 보다 작아야 도움이 된 것이다", flush=True)
+# 최종 평가가 어느 단계의 가중치인가 (추론이면 체크포인트 단계)
+_FINAL_STEP = step0 if a.infer else max(int(a.iters), int(step0))
+if TBW is not None:
+    DM.tb_write_eval(TBW, rows, _FINAL_STEP, prefix="eval")
+    print(f"[TB] 최종 평가 (단계 {_FINAL_STEP}) -> {_TBD}", flush=True)
 if a.metrics:
     _c = [w["cd"] for r in rows.values() for w in r["windows"].values()]
     _cs = [w["cd_still"] for r in rows.values() for w in r["windows"].values()]
@@ -3886,6 +3767,7 @@ if a.metrics:
           f"{np.mean(_e)/max(np.mean(_es),1e-30):.3f})", flush=True)
 
 json.dump(dict(tag=a.tag, args=vars(a), extent=EXT, h=H, n_feat=n_feat,
+               step=_FINAL_STEP, summary=_SUM,
                minutes=(time.time() - t_start) / 60,
                loss_hist=hist[::20], rollout=rows),
           open(os.path.join(a.out, f"{a.tag}.json"), "w"), indent=1,
