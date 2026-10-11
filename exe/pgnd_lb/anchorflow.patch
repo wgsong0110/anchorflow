@@ -1,0 +1,63 @@
+diff --git a/experiments/train/train_eval.py b/experiments/train/train_eval.py
+index a70da10..c5da831 100644
+--- a/experiments/train/train_eval.py
++++ b/experiments/train/train_eval.py
+@@ -207,6 +207,7 @@ class Trainer:
+         friction.requires_grad_(False)
+         friction.train(False)
+ 
++        ckpt = None  # [anchorflow] kept to restore Adam/scheduler state below
+         if cfg.resume and cfg.train.resume_iteration > 0:
+             assert (self.ckpt_root / f'{cfg.train.resume_iteration:06d}.pt').exists()
+             ckpt = torch.load(self.ckpt_root / f'{cfg.train.resume_iteration:06d}.pt', map_location=self.torch_device)
+@@ -227,6 +228,11 @@ class Trainer:
+             if cfg.train.resume_iteration > 0:
+                 material_lr_scheduler.last_epoch = cfg.train.resume_iteration - 1
+                 material_lr_scheduler.step()
++            # [anchorflow] restore Adam moments + scheduler when the checkpoint carries them
++            if ckpt is not None and 'optimizer' in ckpt:
++                material_optimizer.load_state_dict(ckpt['optimizer'])
++                material_lr_scheduler.load_state_dict(ckpt['scheduler'])
++                print(f'[anchorflow] restored optimizer/scheduler state from iteration {ckpt.get("iteration")}')
+ 
+         criterion = nn.MSELoss(reduction='mean')
+         criterion.to(self.torch_device)
+@@ -464,13 +470,20 @@ class Trainer:
+                     self.logger.add_scalar('stat/material_lr', material_lr, step=self.total_step_count)
+                     self.logger.add_scalar('stat/material_grad_norm', material_grad_norm, step=self.total_step_count)
+ 
++            if self.material_requires_grad:
++                self.material_lr_scheduler.step()
++
+             if save and (iteration + 1) % cfg.train.iteration_save_interval == 0:
++                # [anchorflow] also store Adam + scheduler state (resume across PBS jobs); write-then-rename
++                ckpt_path = self.ckpt_root / '{:06d}.pt'.format(iteration + 1)
+                 torch.save({
+                     'material': self.material.state_dict(),
+-                }, self.ckpt_root / '{:06d}.pt'.format(iteration + 1))
+-
+-            if self.material_requires_grad:
+-                self.material_lr_scheduler.step()
++                    'optimizer': self.material_optimizer.state_dict(),
++                    'scheduler': self.material_lr_scheduler.state_dict(),
++                    'iteration': iteration + 1,
++                    'total_step_count': self.total_step_count,
++                }, str(ckpt_path) + '.tmp')
++                os.replace(str(ckpt_path) + '.tmp', ckpt_path)
+ 
+ 
+     def eval_episode(self, iteration: int, episode: int, save: bool = True):
+@@ -793,6 +806,13 @@ class Trainer:
+ @hydra.main(version_base='1.2', config_path=str(root / 'cfg'), config_name='default')
+ def main(cfg: DictConfig):
+     trainer = Trainer(cfg)
++    # [anchorflow] train.resume_iteration=-1 -> continue from the latest checkpoint (0 if none)
++    if cfg.train.resume_iteration < 0:
++        its = [int(p.stem) for p in trainer.ckpt_root.glob('*.pt') if p.stem.isdigit()]
++        cfg.train.resume_iteration = max(its) if its else 0
++        print(f'[anchorflow] auto resume_iteration = {cfg.train.resume_iteration}')
++        if cfg.train.resume_iteration >= cfg.train.num_iterations:
++            print('[anchorflow] already finished'); return
+     trainer.load_train_dataset()
+     trainer.test_cuda_mem()
+     trainer.init_train()
