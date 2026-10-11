@@ -324,6 +324,9 @@ ap.add_argument("--pool_fill", default="",
                 help="풀이 읽을 채움 디렉토리(pgfill_<형상>.npy). 비우면 AF_WORK. "
                      "교사와 같은 입자 집합을 쓰려면 그쪽 캐시를 가리킬 것")
 ap.add_argument("--pool_cfg", default="", help="물성 json 디렉토리 ({형상}_{물성}[_t].json). 비우면 $AF_WORK/wmats")
+ap.add_argument("--pool_data", default="",
+                help="학습 궤적 .pt 디렉토리 (lb_to_pt.py). 새 상태를 이 궤적들의 무작위 (궤적, 프레임) 에서 뽑는다 -- "
+                     "다른 학습 기반 방법과 같은 학습 궤적을 쓰는 설정. --pool_fresh 1 --pool_size 0 이면 매 배치가 데이터 상태뿐")
 ap.add_argument("--pool_drop", default="",
                 help="낙하 모드 'h0,h1,v0,v1' (학습 비교 공통 데이터셋 exe/lb_gen.py 와 같은 초기 조건 분포). "
                      "새 상태를 무작위 회전·바닥 위 높이·초기 병진 속도로 뽑는다")
@@ -2082,6 +2085,13 @@ if a.pool:
         raise SystemExit("풀에 넣을 씬이 없다")
     _R = 0.15
     _gl0 = float(_sc[0][1]["cfg"].get("grid_lim", 2.0))
+    _PDATA = None
+    if a.pool_data:
+        _PDATA = []
+        for _f in sorted(glob.glob(os.path.join(a.pool_data, "*.pt"))):
+            _dd = torch.load(_f, map_location="cpu", weights_only=False, mmap=True)
+            _PDATA.append((_dd["x"], _dd["v"], _dd["F"]))
+        print(f"[풀] 데이터 모드: 학습 궤적 {len(_PDATA)} 개 ({a.pool_data}), 각 {_PDATA[0][0].shape[0]} 프레임", flush=True)
     _DROP = None
     if a.pool_drop:
         _h0, _h1, _v0, _v1 = (float(q) for q in a.pool_drop.split(","))
@@ -2099,7 +2109,7 @@ if a.pool:
                      domain=_gl0, margin=_R + 0.15,
                      start_mid=a.pool_start_mid, keep_prob=a.pool_keep,
                      acc=a.ctrl_acc, vmax=a.ctrl_vmax, zbias=a.ctrl_zbias,
-                     n_side=a.pool_targets, drop=_DROP)
+                     n_side=a.pool_targets, drop=_DROP, data=_PDATA)
     for _tag, _s in _sc:
         SCENE_DS.append(dict(x=_s["x0"].unsqueeze(0), cfg=_s["cfg"],
                              sel=torch.arange(_s["x0"].shape[0], device=dev),

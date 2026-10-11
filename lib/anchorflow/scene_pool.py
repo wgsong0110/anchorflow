@@ -172,8 +172,11 @@ class StatePool:
     def __init__(self, scenes, size, n_ctrl, radius, dev, gen,
                  frames=60, thresh=0.05, window=30,
                  domain=2.0, margin=0.15, start_mid=False, keep_prob=0.5,
-                 acc=2.4, vmax=0.6, n_side=4, zbias=0.0, drop=None):
+                 acc=2.4, vmax=0.6, n_side=4, zbias=0.0, drop=None, data=None):
         self.scenes = scenes
+        # 데이터 모드: 학습 궤적 [(x[T,N,3], v[T,N,3], F[T,N,3,3]) ...] (mmap) 에서 (궤적, 프레임) 을 무작위로 뽑아
+        # 새 상태로 쓴다. 다른 학습 기반 방법과 같은 학습 궤적을 쓰는 비교용. None 이면 손잡이/낙하 모드.
+        self.data = data
         # 낙하 모드 (학습 비교 공통 데이터셋과 같은 초기 조건 분포, exe/lb_gen.py):
         # dict(h=(h0,h1), v=(v0,v1), zf=바닥 z, margin=상자 여유). None 이면 손잡이 모드.
         self.drop = drop
@@ -266,7 +269,15 @@ class StatePool:
         tag, sc = self.scenes[si]
         x = sc["x0"].clone()
         v = torch.zeros_like(x)
-        if self.drop is not None:
+        F0 = None
+        if self.data is not None:
+            k = int(torch.randint(len(self.data), (1,), generator=self.gen, device=self.dev))
+            X_, V_, F_ = self.data[k]
+            t = int(torch.randint(X_.shape[0] - 1, (1,), generator=self.gen, device=self.dev))
+            x = X_[t].to(self.dev).float().contiguous()
+            v = V_[t].to(self.dev).float().contiguous()
+            F0 = F_[t].to(self.dev).float().contiguous()
+        elif self.drop is not None:
             x, v = self._drop_init(x)
         plan = HandlePlan.sample(x, self.n_ctrl, self.radius, self.gen,
                                  self.dev, self.cand, self.frames,
@@ -277,8 +288,8 @@ class StatePool:
             el = int(torch.randint(self.frames, (1,), generator=self.gen,
                                    device=self.dev))
         return dict(si=si, x=x, v=v,
-                    F=torch.eye(3, device=self.dev).expand(
-                        x.shape[0], 3, 3).contiguous(),
+                    F=(F0 if F0 is not None else torch.eye(3, device=self.dev).expand(
+                        x.shape[0], 3, 3).contiguous()),
                     p=None, plan=plan, elapsed=el, hist=[], age=0)
 
     def _drop_init(self, x0):
