@@ -43,8 +43,13 @@ def model(mode):
     if mode not in MODELS:
         if mode.startswith("ref"):
             MODELS[mode] = MODELS.get("ref") or DM.EvalModel(a.ckpt, dev)
-        elif mode == "eager":
+        elif mode == "eager":       # 융합 커널, 그래프 없이
             MODELS[mode] = DM.EvalModel(a.ckpt, dev, fast=True, fast_graph=False)
+        elif mode == "torchg":      # torch 연산판 + 그래프
+            MODELS[mode] = DM.EvalModel(a.ckpt, dev, fast=True, fast_triton=False)
+        elif mode == "torche":      # torch 연산판, 그래프 없이
+            MODELS[mode] = DM.EvalModel(a.ckpt, dev, fast=True, fast_graph=False,
+                                        fast_triton=False)
         else:
             MODELS[mode] = DM.EvalModel(a.ckpt, dev, fast=True)
     return MODELS[mode]

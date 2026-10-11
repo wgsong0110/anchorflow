@@ -20,7 +20,8 @@ from .deform import _inv3
 from .nextstate import DtFiLM
 from .simplex import N_EDGE_CLASS
 
-__all__ = ["scatter_to_nodes", "node_moments", "SimplexGNN"]
+__all__ = ["scatter_to_nodes", "node_moments", "node_centroids",
+           "node_moments_finish", "SimplexGNN"]
 
 
 def scatter_to_nodes(vals, rows, lam, n_node, mass=None):
@@ -64,10 +65,7 @@ def node_moments(x, v, X, m, rows, lam, n_node, npos, hn):
     ones = torch.ones_like(wmf)
     g1 = acc(torch.cat([wmf, wmf * x.unsqueeze(1), wmf * X.unsqueeze(1),
                         wmf * v.unsqueeze(1), ones], -1))
-    Wa = g1[:, 0].clamp(min=1e-12)
-    Wi = Wa.unsqueeze(-1)
-    cx, cX, cv = g1[:, 1:4] / Wi, g1[:, 4:7] / Wi, g1[:, 7:10] / Wi
-    cnt = g1[:, 10:11]
+    Wa, cx, cX, cv = node_centroids(g1)
     dx = x.unsqueeze(1) - cx[rows]
     dX = X.unsqueeze(1) - cX[rows]
     dv = v.unsqueeze(1) - cv[rows]
@@ -77,12 +75,34 @@ def node_moments(x, v, X, m, rows, lam, n_node, npos, hn):
         wmf * torch.cross(dx, dv, dim=-1),
         (ww * (dx.unsqueeze(-1) * dX.unsqueeze(-2))).reshape(-1, K, 9),
         (ww * (dX.unsqueeze(-1) * dX.unsqueeze(-2))).reshape(-1, K, 9)], -1))
+    return node_moments_finish(g1, g2, npos, hn)
+
+
+def node_centroids(g1):
+    """1 차 누적 g1 [M,11] -> (가중치 합 Wa, 질량중심 cx, cX, cv).
+
+    node_moments 와 롤아웃 빠른 경로(fast_roll) 가 함께 쓴다 (같은 연산).
+    """
+    Wa = g1[:, 0].clamp(min=1e-12)
+    Wi = Wa.unsqueeze(-1)
+    return Wa, g1[:, 1:4] / Wi, g1[:, 4:7] / Wi, g1[:, 7:10] / Wi
+
+
+def node_moments_finish(g1, g2, npos, hn):
+    """누적 g1 [M,11] (가중치·1 차) 과 g2 [M,30] (중심 둘레 2 차) -> 노드 특징 [M,29].
+
+    node_moments 의 뒷부분을 떼어 낸 것 -- 빠른 경로가 누적만 융합 커널로 하고
+    여기부터는 같은 연산을 쓰게 하려는 것이다.
+    """
+    dev, n_node = g1.device, g1.shape[0]
+    Wa, cx, cX, cv = node_centroids(g1)
+    cnt = g1[:, 10:11]
     S = g2[:, :9].reshape(n_node, 3, 3) / Wa.reshape(-1, 1, 1)
     iu = torch.triu_indices(3, 3, device=dev)
     S6 = S[:, iu[0], iu[1]] / (hn * hn)
     L = g2[:, 9:12]
     tr = S.diagonal(dim1=-2, dim2=-1).sum(-1).reshape(-1, 1, 1)
-    I3 = torch.eye(3, device=dev, dtype=x.dtype)
+    I3 = torch.eye(3, device=dev, dtype=g1.dtype)
     Ii, _ = _inv3((tr * I3 - S) * Wa.reshape(-1, 1, 1) + 1e-8 * I3)
     om = (Ii @ L.unsqueeze(-1)).squeeze(-1)
     A = g2[:, 12:21].reshape(n_node, 3, 3)

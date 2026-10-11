@@ -45,7 +45,8 @@ import torch.nn.functional as F
 
 from . import simplex as SX
 from . import simplex_gnn as _SGM
-from .simplex_gnn import node_moments
+from .simplex_gnn import node_centroids, node_moments, node_moments_finish
+from . import fast_kernels as FK
 
 __all__ = ["fast_supported", "FastStep"]
 
@@ -55,6 +56,10 @@ FCAP = None          # deform_model.FCAP (순환 import 를 피해 처음 쓸 �
 #   1:(1,0,0)->0  2:(0,1,0)->1  4:(0,0,1)->2  3:(1,1,0)->3  5:(1,0,1)->4
 #   6:(0,1,1)->5  7:(1,1,1)->6
 _BIT2CLS = [-1, 0, 1, 3, 2, 4, 5, 6]
+# 24 칸 대칭 누적 -> node_moments 의 30 칸 배치
+#   dxdx 위삼각 6 -> 9, 각운동량 3, dxdX 9, dXdX 위삼각 6 -> 9
+_IDX30 = ([0, 1, 2, 1, 3, 4, 2, 4, 5] + [6, 7, 8] + list(range(9, 18))
+          + [18 + i for i in [0, 1, 2, 1, 3, 4, 2, 4, 5]])
 # 사면체 6 변 (꼭짓점 i<j)
 _PI = [0, 0, 0, 1, 1, 2]
 _PJ = [1, 2, 3, 2, 3, 3]
@@ -102,7 +107,7 @@ class FastStep:
     """
 
     def __init__(self, net, a, cfg, X0, mass, vel_scale, h, *, mat_vec=None,
-                 mat=None, graph=True, clone_out=True, cap=1.25):
+                 mat=None, graph=True, clone_out=True, cap=1.25, triton=True):
         global FCAP
         if FCAP is None:
             from .deform_model import FCAP as _fc
@@ -135,6 +140,10 @@ class FastStep:
         self.bit2cls = torch.tensor(_BIT2CLS, device=dev, dtype=torch.long)
         self.PI = torch.tensor(_PI, device=dev)
         self.PJ = torch.tensor(_PJ, device=dev)
+        self.idx30 = torch.tensor(_IDX30, device=dev)
+        self.Ai_c = self.lat.Ai.contiguous()
+        # 입자 단위 융합 커널 (Triton). 없으면 같은 식의 torch 연산판.
+        self.tri = bool(triton) and FK.HAVE_TRITON and dev.type == "cuda"
         self._bc_build(cfg)
         self._gq = torch.as_tensor(cfg["g"], device=dev, dtype=self.dtype)
         self.consts = None
@@ -234,6 +243,7 @@ class FastStep:
         Mc, Ec, Cc = self.caps
         a, lat, net, c = self.a, self.lat, self.net, self.consts
         dev = x.device
+        x, v = x.contiguous(), v.contiguous()
         L = torch.long
         # ---- 격자 (SX.grid_for_nodes 의 h_fix 경로와 같은 연산; nn 은 장치에 둔다)
         lo_ = x.min(0).values
@@ -248,28 +258,17 @@ class FastStep:
         nn = (imax - imin + 1).clamp_min(2)
         lo = (lat.A @ imin.to(lat.A.dtype))
         ncell = nn.prod()
-        # ---- locate (SX.locate 와 같은 연산, nn 만 장치값)
-        y = (x - lo) @ lat.Ai.T
-        ci = y.floor().long()
-        ci = torch.minimum(ci.clamp_min(0), nn - 2)
-        f = (y - ci).clamp(0.0, 1.0)
-        perm = torch.argsort(f, dim=1, descending=True)
-        rank = torch.argsort(perm, dim=1)
-        sv = f.gather(1, perm)
-        lam = torch.stack([1.0 - sv[:, 0], sv[:, 0] - sv[:, 1],
-                           sv[:, 1] - sv[:, 2], sv[:, 2]], -1)
-        dirs = self.eye3l[perm]
-        verts = torch.cat([torch.zeros_like(dirs[:, :1]),
-                           dirs.cumsum(1)], 1) + ci.unsqueeze(1)    # [N,4,3]
-        flat = ((verts[..., 0] * nn[1] + verts[..., 1]) * nn[2] + verts[..., 2])
-        flat = flat.clamp(0, Cc - 1)               # 넘치면 결과는 버리지만 메모리는 안전하게
-        # ---- 활성 노드: 격자 표시 + 누적합 (= unique 의 오름차순 압축 색인)
-        mark = torch.zeros(Cc, device=dev, dtype=torch.int32)
-        mark.index_fill_(0, flat.reshape(-1), 1)
-        cs = torch.cumsum(mark, 0, dtype=torch.int32)
+        y = (x - lo) @ lat.Ai.T             # 격자 좌표 (원래와 같은 행렬곱 -> 같은 값)
+        hn = self.hn
+        vn = v / self.vel_scale
+        if self.tri:
+            rows, lam, perm, comp, cs, mark, feat, etab = self._topo_tri(
+                x, vn, y, nn, Mc, Cc)
+            rank = None
+        else:
+            rows, lam, perm, rank, comp, cs, mark, etab = self._topo_torch(
+                x, y, nn, Mc, Cc)
         Mt = cs[-1]
-        comp = cs.long() - 1
-        rows = comp[flat].clamp(0, Mc)                              # [N,4]
         tgt = torch.where(mark > 0, comp, Mc).clamp(0, Mc)
         uniq = torch.zeros(Mc + 1, device=dev, dtype=L)
         uniq.scatter_(0, tgt, self.cell_ar)        # Mc 칸(흡수 노드)은 아무 값이나 남는다
@@ -280,9 +279,11 @@ class FastStep:
         ijk = torch.stack([k0, k1, k2], -1).to(lat.A.dtype)
         npos = ijk @ lat.A.T + lo                                   # [Mc+1,3]
         # ---- 노드 특징 (node_feats 와 같은 식; 노드 수만 용량)
-        hn = self.hn
-        feat = _san(node_moments(x, v / self.vel_scale, self.X0, self.mass,
-                                 rows, lam, Mc + 1, npos, hn))
+        if self.tri:
+            feat = _san(node_moments_finish(feat[0], feat[1], npos, hn))
+        else:
+            feat = _san(node_moments(x, vn, self.X0, self.mass,
+                                     rows, lam, Mc + 1, npos, hn))
         extra = [self._bc_feat(npos) / hn]
         if self.mat_vec is not None:
             extra.insert(0, self.mat_vec.reshape(1, -1).expand(
@@ -290,14 +291,6 @@ class FastStep:
         _in = torch.cat([_san(feat), _san(torch.cat(extra, -1))], -1)
         _in = torch.nan_to_num(_in, nan=0.0, posinf=0.0,
                                neginf=0.0).clamp(-FCAP, FCAP)
-        # ---- 간선: 노드별 14 비트 표 (사면체 6 변 x 양방향)
-        bits = torch.bitwise_left_shift(torch.ones_like(perm), perm)  # 걸음 r 의 축 비트
-        Bc = torch.cat([torch.zeros_like(bits[:, :1]), bits.cumsum(1)], 1)   # [N,4]
-        ecl = self.bit2cls[Bc[:, self.PJ] - Bc[:, self.PI]]                  # [N,6]
-        keys = torch.cat([rows[:, self.PI] * 14 + ecl,
-                          rows[:, self.PJ] * 14 + ecl + 7], 1)
-        etab = torch.zeros((Mc + 1) * 14, device=dev, dtype=torch.int32)
-        etab.index_fill_(0, keys.reshape(-1), 1)
         # etab[d, c] = 1 : d + OFF[c] 가 이웃. 그 이웃 -> d 간선의 종류는 opp(c).
         ecs = torch.cumsum(etab, 0, dtype=torch.int32)
         Et = ecs[-1]
@@ -336,6 +329,19 @@ class FastStep:
             if ot is not None:
                 ot = ot + vn + (tau + tau) * self._gq
         dp = torch.nan_to_num(o, nan=0.0, posinf=0.0, neginf=0.0)
+        dpt = (ot * torch.isfinite(o)) if ot is not None else None
+        stat = torch.stack([Mt.long(), Et.long(), ncell.long()])
+        if self.tri:
+            # 융합 커널: 위치·속도(탄젠트)·야코비안을 한 번에
+            x2 = torch.empty_like(x)
+            v2 = torch.empty_like(x)
+            Jf = torch.empty(x.shape[0], 3, 3, device=dev, dtype=x.dtype)
+            FK.g2p(rows, lam, perm, dp.contiguous(),
+                   None if dpt is None else dpt.contiguous(), x, self.Ai_c,
+                   x2, v2, Jf)
+            if dpt is None:
+                v2 = (x2 - x) / self.h
+            return x2, v2, Jf, stat
         # ---- 입자로 (g2p_pre / g2p_jac_pre 와 같은 식)
         dpc = dp[rows]                                              # [N,4,3]
         du = (lam.unsqueeze(-1) * dpc).sum(1)
@@ -344,13 +350,72 @@ class FastStep:
         Dy = d_.gather(2, rank.unsqueeze(1).expand(-1, 3, -1))
         G = Dy @ lat.Ai.to(Dy.dtype)
         Jf = self.eye3 + G / 1.0
-        if ot is not None:
-            dpt = ot * torch.isfinite(o)
+        if dpt is not None:
             v2 = (lam.unsqueeze(-1) * dpt[rows]).sum(1)
         else:
             v2 = (x2 - x) / self.h
-        stat = torch.stack([Mt.long(), Et.long(), ncell.long()])
         return x2, v2, Jf, stat
+
+    def _topo_torch(self, x, y, nn, Mc, Cc):
+        """locate + 활성 노드 + 간선표 -- torch 연산판 (SX.locate 와 같은 연산)."""
+        dev = x.device
+        ci = y.floor().long()
+        ci = torch.minimum(ci.clamp_min(0), nn - 2)
+        f = (y - ci).clamp(0.0, 1.0)
+        perm = torch.argsort(f, dim=1, descending=True)
+        rank = torch.argsort(perm, dim=1)
+        sv = f.gather(1, perm)
+        lam = torch.stack([1.0 - sv[:, 0], sv[:, 0] - sv[:, 1],
+                           sv[:, 1] - sv[:, 2], sv[:, 2]], -1)
+        dirs = self.eye3l[perm]
+        verts = torch.cat([torch.zeros_like(dirs[:, :1]),
+                           dirs.cumsum(1)], 1) + ci.unsqueeze(1)    # [N,4,3]
+        flat = ((verts[..., 0] * nn[1] + verts[..., 1]) * nn[2] + verts[..., 2])
+        flat = flat.clamp(0, Cc - 1)               # 넘치면 결과는 버리지만 메모리는 안전하게
+        # 활성 노드: 격자 표시 + 누적합 (= unique 의 오름차순 압축 색인)
+        mark = torch.zeros(Cc, device=dev, dtype=torch.int32)
+        mark.index_fill_(0, flat.reshape(-1), 1)
+        cs = torch.cumsum(mark, 0, dtype=torch.int32)
+        comp = cs.long() - 1
+        rows = comp[flat].clamp(0, Mc)                              # [N,4]
+        # 간선: 노드별 14 비트 표 (사면체 6 변 x 양방향). 걸음 r 의 축 비트 누적.
+        # (cumsum 은 안쪽 축 3 칸짜리라도 느린 스캔 커널이 돌아 더하기로 푼다)
+        bits = torch.bitwise_left_shift(torch.ones_like(perm), perm)
+        z0 = torch.zeros_like(bits[:, 0])
+        Bc = torch.stack([z0, bits[:, 0], bits[:, 0] + bits[:, 1],
+                          bits[:, 0] + bits[:, 1] + bits[:, 2]], 1)   # [N,4]
+        ecl = self.bit2cls[Bc[:, self.PJ] - Bc[:, self.PI]]          # [N,6]
+        keys = torch.cat([rows[:, self.PI] * 14 + ecl,
+                          rows[:, self.PJ] * 14 + ecl + 7], 1)
+        etab = torch.zeros((Mc + 1) * 14, device=dev, dtype=torch.int32)
+        etab.index_fill_(0, keys.reshape(-1), 1)
+        return rows, lam, perm, rank, comp, cs, mark, etab
+
+    def _topo_tri(self, x, vn, y, nn, Mc, Cc):
+        """같은 일을 융합 커널 셋으로 (+ 노드 1·2 차 누적까지).
+
+        -> rows[int32], lam, perm(축순열 압축), comp, cs, mark, (g1, g2), etab
+        """
+        dev, n = x.device, x.shape[0]
+        flat = torch.empty(n, 4, device=dev, dtype=torch.int32)
+        lam = torch.empty(n, 4, device=dev, dtype=x.dtype)
+        perm = torch.empty(n, device=dev, dtype=torch.int32)
+        mark = torch.zeros(Cc, device=dev, dtype=torch.int32)
+        FK.locate_mark(y.contiguous(), nn.contiguous(), flat, lam, perm, mark)
+        cs = torch.cumsum(mark, 0, dtype=torch.int32)
+        comp = cs.long() - 1
+        rows = torch.empty(n, 4, device=dev, dtype=torch.int32)
+        g1 = torch.zeros(Mc + 1, 11, device=dev, dtype=x.dtype)
+        etab = torch.zeros((Mc + 1) * 14, device=dev, dtype=torch.int32)
+        FK.p2g_first(flat, cs, rows, lam, self.mass, x, self.X0, vn, perm, g1,
+                     etab, Mc)
+        # 중심 둘레 2 차 누적 (node_moments 의 g2; 대칭 둘은 위 삼각만 더해 거울로)
+        _, cx, cX, cv = node_centroids(g1)
+        c9 = torch.cat([cx, cX, cv], 1).contiguous()
+        g2s = torch.zeros(Mc + 1, 24, device=dev, dtype=x.dtype)
+        FK.p2g_second(rows, lam, self.mass, x, self.X0, vn, c9, g2s)
+        g2 = g2s[:, self.idx30]
+        return rows, lam, perm, comp, cs, mark, (g1, g2), etab
 
     def _node_vel(self, x, v, rows, lam, n_node):
         """deform_model.node_inertial 의 v_n (질량가중 barycentric 평균 속도)."""

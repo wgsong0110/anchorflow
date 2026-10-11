@@ -410,12 +410,14 @@ class EvalModel:
 
     fast=True 면 지원되는 설정에서 lib/anchorflow/fast_roll.FastStep (동기화 없는
     고정 크기 + 손으로 쓴 탄젠트 + CUDA 그래프) 로 같은 식을 돈다. 지원 밖이면
-    알리고 느린 경로를 쓴다. fast_graph=False 는 같은 계산을 즉시 실행으로.
+    알리고 느린 경로를 쓴다. fast_graph=False 는 같은 계산을 즉시 실행으로,
+    fast_triton=False 는 입자 단위 융합 커널 대신 같은 식의 torch 연산으로.
     """
 
     UNSUPPORTED = ("control", "fe_state", "hex_jac", "cell_poly", "refps")
 
-    def __init__(self, ckpt, dev="cuda", fast=False, fast_graph=True):
+    def __init__(self, ckpt, dev="cuda", fast=False, fast_graph=True,
+                 fast_triton=True):
         ck = torch.load(ckpt, map_location=dev, weights_only=False)
         a = ckpt_args(ck)
         for k in self.UNSUPPORTED:
@@ -454,6 +456,7 @@ class EvalModel:
             ok, why = fast_supported(a)
             if ok:
                 self.fast, self.fast_graph = True, bool(fast_graph)
+                self.fast_triton = bool(fast_triton)
             else:
                 print(f"[EvalModel] 빠른 경로 미지원 ({why}) -- 느린 경로로 돈다", flush=True)
 
@@ -486,7 +489,8 @@ class EvalModel:
                 from .fast_roll import FastStep
                 fs = self._fs = FastStep(self.net, a, cfg, d["_X0"], mass,
                                          self.vel_scale, h, mat_vec=mat_vec,
-                                         mat=mat, graph=self.fast_graph)
+                                         mat=mat, graph=self.fast_graph,
+                                         triton=self.fast_triton)
             with sec("빠른스텝"):
                 return fs(x, v)
         with sec("셀집계"):
