@@ -1829,6 +1829,11 @@ if _rng_ck is not None:
         _v = _rng_ck.get(_key)
         if _v is None or _fn is None:
             continue
+        # 체크포인트를 map_location=cuda 로 읽어 난수 상태(ByteTensor)가 GPU 에 올라와 있다 -- CPU 로 돌린다
+        if torch.is_tensor(_v):
+            _v = _v.cpu()
+        elif isinstance(_v, (list, tuple)) and _v and torch.is_tensor(_v[0]):
+            _v = [t_.cpu() for t_ in _v]
         try:
             _fn(_v)
             _ok.append(_nm)
@@ -2074,6 +2079,7 @@ if a.seq_frames:
     _sq = (_rng_ck or {}).get("seq") if not (a.resume_fresh or a.infer) else None
     if _sq:
         SEQ.update({k_: (v_.to(dev) if (k_ == "prev" and torch.is_tensor(v_)) else v_) for k_, v_ in _sq.items()})
+        SEQ["traj"] = [t_.cpu() for t_ in SEQ["traj"]]          # 체크포인트를 GPU 로 읽어 왔다
         print(f"[순차] 재개: 프레임 {SEQ['t']} 의 {SEQ['it']} 번째 반복부터, 끝난 프레임 {len(SEQ['err'])}", flush=True)
     if not POOL.items:
         POOL.items = [POOL.fresh()]
