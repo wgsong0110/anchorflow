@@ -457,7 +457,7 @@ class EvalModel:
             if ok:
                 self.fast, self.fast_graph = True, bool(fast_graph)
                 self.fast_triton = bool(fast_triton)
-                self.fast_edge_triton = bool(fast_edge_triton)
+                self.fast_edge_triton = fast_edge_triton
             else:
                 print(f"[EvalModel] 빠른 경로 미지원 ({why}) -- 느린 경로로 돈다", flush=True)
 

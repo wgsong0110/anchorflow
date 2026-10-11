@@ -146,6 +146,8 @@ class FastStep:
         # 입자 단위 융합 커널 (Triton). 없으면 같은 식의 torch 연산판.
         self.tri = bool(triton) and FK.HAVE_TRITON and dev.type == "cuda"
         self.edge_tri = bool(edge_triton)
+        # "pull": gather -> cuBLAS -> dst 구간 합 (기본), "dot": 한 커널 (tl.dot+atomic)
+        self.edge_mode = edge_triton if isinstance(edge_triton, str) else "pull"
         self._bc_build(cfg)
         self._gq = torch.as_tensor(cfg["g"], device=dev, dtype=self.dtype)
         self.consts = None
@@ -303,6 +305,7 @@ class FastStep:
         ekey.scatter_(0, epos, self.key_ar)
         valid = self.e_ar < Et
         self._et = Et                              # 간선 커널이 실제 간선 수만 돈다
+        self._ecs = ecs                            # 노드 d 의 간선 = [ecs[14d-1], ecs[14d+13])
         dnode = torch.where(valid, ekey // 14, Mc)
         ecc = ekey % 14
         offf = (self.off14[:, 0] * nn[1] + self.off14[:, 1]) * nn[2] + self.off14[:, 2]
@@ -462,9 +465,19 @@ class FastStep:
             ht = torch.stack([h, t if two else h], 1).contiguous()  # [M,2,H]
             P = F.linear(ht.view(-1, H), W1b).view(-1, 2, H)
             P[:, 0] += b1
-            Sn = torch.zeros_like(ht)
-            FK.edge_msg(ht, P.contiguous(), src, dst, cls, self._et, blk.emb.weight,
-                        W1, Sn, two)
+            Sn = torch.empty_like(ht)
+            if self.edge_mode == "dot":
+                Sn.zero_()
+                FK.edge_msg(ht, P.contiguous(), src, dst, cls, self._et, blk.emb.weight,
+                            W1, Sn, two)
+            else:
+                # gather·임베딩 곱 (Triton) -> W1a 행렬곱 (cuBLAS fp32) -> dst 별 연속
+                # 구간을 모아 +P·SiLU·탄젠트·합 (Triton, atomic 없음)
+                nt = 2 if two else 1
+                xs = torch.empty(src.shape[0], nt, H, device=h.device, dtype=h.dtype)
+                FK.edge_gather(ht, src, cls, self._et, blk.emb.weight, xs, nt)
+                Z = F.linear(xs.view(-1, H), W1a).view(-1, nt, H)
+                FK.edge_pull(Z, P.contiguous(), self._ecs, Sn, nt)
             if _SGM._MP_MEAN:
                 Sn = Sn / cnt.clamp_min(1.0).unsqueeze(-1)
                 agg = F.linear(Sn[:, 0], W2, b2)

@@ -315,6 +315,54 @@ if HAVE_TRITON:
                           mask=m[:, None], sem="relaxed")
 
 
+    @triton.jit
+    def _edge_gather(HT, SRC, CLS, ET, EMB, XS, H: tl.constexpr, NT: tl.constexpr,
+                     BE: tl.constexpr):
+        """XS[e, j] = HT[src_e, j] * emb[cls_e]  (j = 원값/탄젠트, NT 줄)."""
+        pid = tl.program_id(0)
+        e = pid * BE + tl.arange(0, BE)
+        m = e < tl.load(ET)
+        s = tl.load(SRC + e, mask=m, other=0)
+        c = tl.load(CLS + e, mask=m, other=0)
+        n = tl.arange(0, H)
+        em = tl.load(EMB + c[:, None] * H + n[None, :], mask=m[:, None], other=0.0)
+        for j in tl.static_range(NT):
+            hs = tl.load(HT + s[:, None] * (2 * H) + j * H + n[None, :],
+                         mask=m[:, None], other=0.0)
+            tl.store(XS + e[:, None] * (NT * H) + j * H + n[None, :], hs * em,
+                     mask=m[:, None])
+
+    @triton.jit
+    def _edge_pull(Z, P, ECS, SN, MN, H: tl.constexpr, NT: tl.constexpr,
+                   BD: tl.constexpr):
+        """노드 d 로 들어오는 간선(간선 배열에서 연속 구간)을 모아
+        SN[d] = (sum silu(z), sum silu'(z) z'),  z = Z_e + P_d.  atomic 없음."""
+        pid = tl.program_id(0)
+        d = pid * BD + tl.arange(0, BD)
+        md = d < MN
+        end = tl.load(ECS + d * 14 + 13, mask=md, other=0)
+        start = tl.load(ECS + d * 14 - 1, mask=md & (d > 0), other=0)
+        n = tl.arange(0, H)
+        Pd = tl.load(P + d[:, None] * (2 * H) + n[None, :], mask=md[:, None], other=0.0)
+        acc = tl.zeros([BD, H], dtype=tl.float32)
+        if NT == 2:
+            Pt = tl.load(P + d[:, None] * (2 * H) + H + n[None, :], mask=md[:, None], other=0.0)
+            acct = tl.zeros([BD, H], dtype=tl.float32)
+        for j in tl.static_range(14):
+            e = start + j
+            me = (md & (e < end))[:, None]
+            z = tl.load(Z + e[:, None] * (NT * H) + n[None, :], mask=me, other=0.0) + Pd
+            ex = tl.exp(-z)
+            acc += tl.where(me, z / (1.0 + ex), 0.0)
+            if NT == 2:
+                zt = tl.load(Z + e[:, None] * (NT * H) + H + n[None, :], mask=me, other=0.0) + Pt
+                sg = 1.0 / (1.0 + ex)
+                acct += tl.where(me, zt * sg * (1.0 + z * (1.0 - sg)), 0.0)
+        tl.store(SN + d[:, None] * (2 * H) + n[None, :], acc, mask=md[:, None])
+        if NT == 2:
+            tl.store(SN + d[:, None] * (2 * H) + H + n[None, :], acct, mask=md[:, None])
+
+
 def _grid(n):
     return (triton.cdiv(n, BLOCK),)
 
@@ -348,3 +396,17 @@ def edge_msg(ht, P, src, dst, cls, et, emb, W1, sn, has_t, BE=64, BK=32):
     _edge_msg[(triton.cdiv(ne_cap, BE),)](ht, P, src, dst, cls, et, emb, W1, sn, H=H,
                                           W1S=W1.stride(0), HAS_T=has_t, BE=BE, BK=BK,
                                           num_warps=8)
+
+
+def edge_gather(ht, src, cls, et, emb, xs, nt, BE=32):
+    """ht: [M,2,H], xs: [Ecap, nt, H] (et 이후 행은 건드리지 않는다)."""
+    H = ht.shape[-1]
+    _edge_gather[(triton.cdiv(src.shape[0], BE),)](ht, src, cls, et, emb, xs, H=H, NT=nt,
+                                                   BE=BE, num_warps=4)
+
+
+def edge_pull(Z, P, ecs, sn, nt, BD=16):
+    """Z: [Ecap, nt, H] (= W1a xs), P: [M,2,H], ecs: 간선표 누적합 [M*14], sn: [M,2,H]."""
+    H = P.shape[-1]
+    mn = P.shape[0]
+    _edge_pull[(triton.cdiv(mn, BD),)](Z, P, ecs, sn, mn, H=H, NT=nt, BD=BD, num_warps=4)
