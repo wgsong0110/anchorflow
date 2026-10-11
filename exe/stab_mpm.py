@@ -19,6 +19,7 @@ ap.add_argument("--config", required=True)
 ap.add_argument("--substeps", type=int, required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--pg", default="/home/dkta/work/i-physgaussian")
+ap.add_argument("--ckpt_every", type=int, default=5, help="이어 돌리기 체크포인트 간격 (프레임). <out>.ckpt.pt, 0 이면 끔")
 ap.add_argument("--dump", default="", help="영상용: 프레임마다 전체 입자 h5 (x, F) 를 이 폴더에")
 a = ap.parse_args()
 sys.path.insert(0, a.pg); os.chdir(a.pg)
@@ -68,7 +69,36 @@ if a.dump:
 rows = [ss.frame_stats(x, v, np.tile(np.eye(3), (N, 1, 1)), MASS, G, float(floor["point"][2]))]
 XS = [x[SUB]]; T = []
 step = 0
-for f in tqdm(range(1, NF + 1), desc=f"{a.method} N{a.substeps}"):
+# ---- 이어 돌리기: 입자 상태 전부 + i-PG 의 직전 속도(_prev_particle_v) + 누적 기록
+CKPT = a.out + ".ckpt.pt"
+_PF = [k for k in ("particle_x", "particle_v", "particle_F", "particle_F_trial", "particle_C", "particle_R", "particle_cov",
+                   "particle_stress", "particle_Jp", "particle_selection") if getattr(sol.mpm_state, k, None) is not None]
+
+
+def _save_ckpt(f):
+    st = {k: wp.to_torch(getattr(sol.mpm_state, k)).clone().cpu() for k in _PF}
+    pv = getattr(sol, "_prev_particle_v", None)
+    st["_prev_particle_v"] = (wp.to_torch(pv).clone().cpu() if isinstance(pv, wp.array) else
+                              (pv.clone().cpu() if torch.is_tensor(pv) else None))
+    torch.save(dict(f=f, step=step, state=st, rows=rows, XS=XS, T=T), CKPT + ".tmp")
+    os.replace(CKPT + ".tmp", CKPT)
+
+
+F_START = 1
+if a.ckpt_every > 0 and os.path.exists(CKPT):
+    ck = torch.load(CKPT, weights_only=False)
+    for k in _PF:
+        wp.to_torch(getattr(sol.mpm_state, k)).copy_(ck["state"][k].cuda())
+    if ck["state"]["_prev_particle_v"] is not None:
+        pv = getattr(sol, "_prev_particle_v", None)
+        if isinstance(pv, wp.array):
+            wp.to_torch(pv).copy_(ck["state"]["_prev_particle_v"].cuda())
+        else:
+            sol._prev_particle_v = (wp.from_torch(ck["state"]["_prev_particle_v"].cuda().contiguous(), dtype=wp.vec3)
+                                    if a.method == "ipg" and ck["state"]["_prev_particle_v"].dim() == 2 else ck["state"]["_prev_particle_v"].cuda())
+    rows, XS, T, step, F_START = ck["rows"], ck["XS"], ck["T"], ck["step"], ck["f"] + 1
+    print(f"[이어 돌리기] {CKPT} 프레임 {ck['f']} 부터 (step {step})", flush=True)
+for f in tqdm(range(F_START, NF + 1), desc=f"{a.method} N{a.substeps}"):
     t0 = time.time()
     for s in range(a.substeps):
         if a.method == "ipg":
@@ -87,6 +117,8 @@ for f in tqdm(range(1, NF + 1), desc=f"{a.method} N{a.substeps}"):
     XS.append(xt[SUB])
     if rows[-1]["nan"] > 0.5:                                    # 대부분 발산했으면 더 돌 이유가 없다
         print(f"  발산 프레임 {f}", flush=True); break
+    if a.ckpt_every > 0 and f % a.ckpt_every == 0 and f < NF:
+        _save_ckpt(f)
 np.savez_compressed(a.out, sub=SUB, x=np.stack(XS).astype(np.float32), t=np.array(T),
                     stats=np.array([[r.get(k, np.nan) for k in ("ke", "pe", "nan", "out", "vmax", "detneg", "detmin")] for r in rows]),
                     keys=np.array(["ke", "pe", "nan", "out", "vmax", "detneg", "detmin"]), substeps=a.substeps, dt=dt)
