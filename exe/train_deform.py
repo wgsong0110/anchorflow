@@ -3647,6 +3647,13 @@ def rollout(d, t0, L, gsel=None):   #    평가가 그래프를 쌓아 메모리
             print(f"[프로파일] 연산 호출 {_n} 회, GPU 자체시간 {_cu:.1f} ms, "
                   f"CPU 자체시간 {_cp:.1f} ms", flush=True)
             return _r
+        if _PROF_ON:
+            _PROF.clear(); torch.cuda.synchronize(); _tw0 = time.time()
+            _r = _rollout(d, t0, L, gsel)
+            torch.cuda.synchronize(); _tw = time.time() - _tw0
+            print(f"[롤아웃 시간] {L} 프레임 {_tw:.2f} s (프레임당 {_tw / max(L, 1):.3f} s) | "
+                  + " ".join(f"{k} {v:.2f}s" for k, v in sorted(_PROF.items(), key=lambda z: -z[1])), flush=True)
+            return _r
         return _rollout(d, t0, L, gsel)
 
 
