@@ -51,7 +51,10 @@ def qmat(q):                                         # wxyz -> 회전 행렬 (ko
 
 
 def tag(img, s):
-    import cv2
+    try:
+        import cv2
+    except ImportError:
+        return img
     img = np.ascontiguousarray(img)
     cv2.putText(img, s, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 0), 3, cv2.LINE_AA)
     return img
