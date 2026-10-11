@@ -16,7 +16,7 @@ E=/home/dkta/.conda/envs/pgnd
 [ -x $E/bin/python ] || conda create -y -q -p $E python=3.10
 conda activate $E
 python -m pip install -q torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu121
-python -m pip install -q dgl -f https://data.dgl.ai/wheels/torch-2.4/cu121/repo.html
+python -m pip install -q dgl==2.4.0 -f https://data.dgl.ai/wheels/torch-2.4/cu121/repo.html
 python -m pip install -q warp-lang==1.1.0 numpy==1.26.4 scipy scikit-learn scikit-image open3d kornia omegaconf \
   hydra-core wandb lpips pyvista opencv-python-headless matplotlib h5py pyyaml tqdm ipdb psutil
 cd $P
