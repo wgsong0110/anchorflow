@@ -3,6 +3,7 @@ W=/home/dkta/work
 P=$W/lb/pgnd
 source /tools/anaconda3/etc/profile.d/conda.sh; conda activate /home/dkta/.conda/envs/pgnd
 export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # 2026-10-11 첫 실행이 단편화 OOM (할당 14.5G, 예약-미사용 16G) -- 계산 불변, 배치 32 유지
 PGND_ARGS=(
  'gpus=[0]' overwrite=False resume=True debug=True
  train.source_dataset_name=data/lego_lb/sub_episodes_v
