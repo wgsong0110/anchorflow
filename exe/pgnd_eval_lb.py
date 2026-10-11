@@ -30,6 +30,7 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--no_official", action="store_true", help="PGND 공식 MDE/CD/EMD 생략")
 ap.add_argument("--chunk", type=int, default=40000)
 ap.add_argument("--n_gauss", type=int, default=297877)
+ap.add_argument("--save_quat", action="store_true", help="가우시안별 누적 회전(PGND 쿼터니언 wxyz, 우리 좌표, 프레임 12 기준)도 저장 -> 렌더용")
 ap.add_argument("--oracle", action="store_true", help="모델 대신 정답 입자(같은 FPS 1000)를 상향 표본 -> 상향 표본 자체 오차의 하한")
 a = ap.parse_args()
 
@@ -172,7 +173,7 @@ for ep in range(e0, e1 + 1):
     xg = h5x(f"{src}/sim_{f0:010d}.h5", a.n_gauss).cuda()
     still = xg.clone()
     q = torch.zeros(xg.shape[0], 4, device="cuda"); q[:, 0] = 1
-    preds, e, es = [], [], []
+    preds, preds_q, e, es = [], [], [], []
     t2 = time.time()
     for i in range(1, len(pts)):
         prev, cur = pts[i - 1], pts[i]
@@ -187,10 +188,13 @@ for ep in range(e0, e1 + 1):
         gt = h5x(f"{src}/sim_{frames[i]:010d}.h5", a.n_gauss).cuda()
         e.append(float((xg - gt).norm(dim=1).mean()) / L); es.append(float((still - gt).norm(dim=1).mean()) / L)
         preds.append(xg.half().cpu())
+        if a.save_quat:
+            preds_q.append(q.half().cpu())
     t_up = time.time() - t2
     torch.save({"x": torch.stack(preds), "frames": frames[1:], "start_frame": f0,
                 "particles": (traj_f * FLIP).float(), "particle_idx": sel[di], "iteration": it,
-                "coords": "ours (lbdata sim coords)"}, f"{a.out}/pred_{ep:04d}.pt")
+                "coords": "ours (lbdata sim coords)", "src": src,
+                "q": (torch.stack(preds_q) if a.save_quat else None)}, f"{a.out}/pred_{ep:04d}.pt")
     e, es = np.array(e), np.array(es)
     r = dict(episode=ep, split=md[ep]["split"], name=md[ep]["name"], L=L, pgnd=float(e.mean()), still=float(es.mean()),
              ratio=float(e.mean() / es.mean()), pgnd_last=float(e[-1]), still_last=float(es[-1]),
