@@ -80,6 +80,8 @@ def _save_ckpt(f):
     pv = getattr(sol, "_prev_particle_v", None)
     st["_prev_particle_v"] = (wp.to_torch(pv).clone().cpu() if isinstance(pv, wp.array) else
                               (pv.clone().cpu() if torch.is_tensor(pv) else None))
+    _pa = getattr(sol, "_particle_a", None)                   # i-PG Newmark 입자 가속도 (다음 스텝 a^n)
+    st["_particle_a"] = wp.to_torch(_pa).clone().cpu() if isinstance(_pa, wp.array) else None
     torch.save(dict(f=f, step=step, state=st, rows=rows, XS=XS, T=T), CKPT + ".tmp")
     os.replace(CKPT + ".tmp", CKPT)
 
@@ -96,6 +98,10 @@ if a.ckpt_every > 0 and os.path.exists(CKPT):
         else:
             sol._prev_particle_v = (wp.from_torch(ck["state"]["_prev_particle_v"].cuda().contiguous(), dtype=wp.vec3)
                                     if a.method == "ipg" and ck["state"]["_prev_particle_v"].dim() == 2 else ck["state"]["_prev_particle_v"].cuda())
+    if ck["state"].get("_particle_a") is not None:
+        sol._particle_a = wp.from_torch(ck["state"]["_particle_a"].cuda().contiguous(), dtype=wp.vec3)
+    elif a.method == "ipg" and ck["f"] > 0:
+        print("[이어 돌리기] 경고: 체크포인트에 i-PG 입자 가속도가 없다 (a^n 패치 전 체크포인트)", flush=True)
     rows, XS, T, step, F_START = ck["rows"], ck["XS"], ck["T"], ck["step"], ck["f"] + 1
     print(f"[이어 돌리기] {CKPT} 프레임 {ck['f']} 부터 (step {step})", flush=True)
 for f in tqdm(range(F_START, NF + 1), desc=f"{a.method} N{a.substeps}"):
