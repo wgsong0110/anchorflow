@@ -426,7 +426,9 @@ class EvalModel:
         else:
             self.ref = train_ref(a)
             d0 = torch.load(self.ref, map_location="cpu", weights_only=False, mmap=True)
-            self.ext0 = extent(d0["x"][0].to(dev).float())
+            # **저장 dtype(half) 그대로** 잰다 -- train_deform 의 EXT 가 half 위에서
+            # 계산돼 float 로 재면 1e-4 쯤 어긋난다 (망 출력 크기·속도 단위에 들어간다)
+            self.ext0 = extent(d0["x"][0].to(dev))
             self.frame_dt = float(d0["cfg"]["frame_dt"])
             del d0
         self.n_mat, self.n_film = n_mat_film(a)
@@ -455,30 +457,33 @@ class EvalModel:
         g = torch.arange(d["x"].shape[1], device=self.dev)
         return init_state(d, t0, g, self.frame_dt, self.a.v0_traj, self.dev)
 
-    def step(self, d, x, v, h=None):
-        """망 한 번 -> (x2, v2, Jf)."""
+    def step(self, d, x, v, h=None, sec=None):
+        """망 한 번 -> (x2, v2, Jf). sec(name) 은 구간 시간 측정용 컨텍스트."""
         a, cfg = self.a, d["cfg"]
+        sec = sec or _null_sec
         h = self.h if h is None else h
         mass = d["_mass"]
         mat_vec = (mat_feat(cfg, a.no_mat, self.dev)
                    if (self.n_mat and not self.n_film) else None)
         mat = (mat_feat(cfg, a.no_mat, self.dev).reshape(1, self.n_mat)
                if self.n_film else None)
-        ens = [node_feats(a, cfg, d["_X0"], mass, x, v, self.vel_scale, off=o,
-                          mat_vec=mat_vec)
-               for o in ens_offsets(max(int(a.ens_off), 1))]
+        with sec("셀집계"):
+            ens = [node_feats(a, cfg, d["_X0"], mass, x, v, self.vel_scale,
+                              off=o, mat_vec=mat_vec)
+                   for o in ens_offsets(max(int(a.ens_off), 1))]
         inert = None
         if a.ov_init == "predict":
-            inert = [node_inertial(x, v, mass, e[3], e[4], e[1].shape[0],
-                                   cfg["g"], h)[1] for e in ens]
+            with sec("관성"):
+                inert = [node_inertial(x, v, mass, e[3], e[4], e[1].shape[0],
+                                       cfg["g"], h)[1] for e in ens]
         x2, v2, _dpn, Jf, _c, _act = advance(self.net, a, ens, x, h, cfg,
-                                            inertial=inert, mat=mat)
+                                            inertial=inert, mat=mat, sec=sec)
         return x2, v2, Jf
 
-    def frame(self, d, x, v):
+    def frame(self, d, x, v, sec=None):
         """한 프레임 (서브스텝 sub 개) -> (x2, v2, J 누적)."""
         J = None
         for _ in range(self.sub):
-            x, v, Jf = self.step(d, x, v)
+            x, v, Jf = self.step(d, x, v, sec=sec)
             J = Jf if J is None else Jf @ J
         return x, v, J

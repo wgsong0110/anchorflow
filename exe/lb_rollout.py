@@ -45,6 +45,7 @@ ap.add_argument("--fps", type=int, default=30)
 ap.add_argument("--json", default="", help="궤적별·요약 지표 JSON")
 ap.add_argument("--tb", default="", help="TensorBoard 루트")
 ap.add_argument("--tb_tag", default="", help="TB 실행 이름 (기본: <체크포인트 폴더>_<파일>)")
+ap.add_argument("--prof", action="store_true", help="모델 한 스텝의 구간별 시간 (동기화가 들어가 조금 느려진다)")
 a = ap.parse_args()
 dev = "cuda"
 
@@ -66,6 +67,23 @@ if a.video_dir:
 
 def sync():
     torch.cuda.synchronize()
+
+
+PROF = {}
+
+
+class _Sec:
+    def __init__(self, name):
+        self.name = name
+
+    def __enter__(self):
+        sync(); self.t0 = time.time()
+
+    def __exit__(self, *_):
+        sync(); PROF[self.name] = PROF.get(self.name, 0.0) + time.time() - self.t0
+
+
+SEC = _Sec if a.prof else None
 
 
 rows, timing = {}, {}
@@ -118,7 +136,7 @@ for tag in tags:
     def step_fn(i, x, v):
         global Fcum
         sync(); t_ = time.time()
-        x2, v2, J = M.frame(d, x, v)
+        x2, v2, J = M.frame(d, x, v, sec=SEC)
         sync(); t_step[0] += time.time() - t_
         if Fcum is not None:
             Fcum = J.float() @ Fcum
@@ -149,6 +167,9 @@ for tag in tags:
           f"(정지 {100*w['still_mean']:.3f}%, 비 {w['ratio']:.2f})  "
           f"[{t_roll:.2f} s = 모델 {t_step[0]:.2f} + 렌더 {t_rend[0]:.2f}, 적재 {t_load:.1f} s]",
           flush=True)
+    if PROF:
+        print("    [구간] " + " ".join(f"{k} {v:.2f}s" for k, v in sorted(PROF.items(), key=lambda z: -z[1])), flush=True)
+        PROF.clear()
     del d
     torch.cuda.empty_cache()
 
