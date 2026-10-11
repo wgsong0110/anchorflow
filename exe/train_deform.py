@@ -2753,7 +2753,7 @@ for it in pbar:
                 if a.pool_keep > 0:
                     TBW.add_scalar("풀/유예누적", POOL.n_keep, it)
                 TBW.add_scalar("풀/NaN배치", getattr(POOL, "n_nan", 0), it)
-                TBW.add_scalar("풀/채움", len(_alive) / POOL.size, it)
+                TBW.add_scalar("풀/채움", len(_alive) / max(POOL.size, 1), it)
                 # 나이·프레임·누적잔차의 분포
                 # 전진 프레임 = 초기 상태에서 지금까지 굴러온 프레임 수.
                 # 계획 안 시점(0~59)은 규칙적으로 돌아 정보가 없어 빼둔다.
