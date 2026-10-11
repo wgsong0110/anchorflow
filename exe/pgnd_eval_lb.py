@@ -30,6 +30,7 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--no_official", action="store_true", help="PGND 공식 MDE/CD/EMD 생략")
 ap.add_argument("--chunk", type=int, default=40000)
 ap.add_argument("--n_gauss", type=int, default=297877)
+ap.add_argument("--oracle", action="store_true", help="모델 대신 정답 입자(같은 FPS 1000)를 상향 표본 -> 상향 표본 자체 오차의 하한")
 a = ap.parse_args()
 
 sys.path[:0] = [a.pgnd, os.path.join(a.pgnd, "experiments")]
@@ -138,10 +139,18 @@ for ep in range(e0, e1 + 1):
     t0 = time.time()
     traj_p, di = rollout(ep)
     t_roll = time.time() - t0
+    if a.oracle:                                     # 같은 1000 인덱스의 정답 궤적 (PGND 좌표) 으로 바꿔 끼운다
+        _o = torch.from_numpy(np.load(f"{src_root}/episode_{ep:04d}/traj.npz")["xyz"]).float()
+        _, _of = inverse_preprocess(cfg, traj_p.clone(), _o.clone())
+        traj_p = None
+        traj_or = _of[f0::skip][:, di]
     ed = f"{src_root}/episode_{ep:04d}"
     xyz_orig = torch.from_numpy(np.load(f"{ed}/traj.npz")["xyz"]).float()      # (81, 10k, 3) 파일 좌표
     sel = torch.from_numpy(np.load(f"{ed}/sel.npy"))
-    traj_f, xyz_orig_f = inverse_preprocess(cfg, traj_p.clone(), xyz_orig.clone())   # 파일 좌표로
+    if a.oracle:
+        traj_f, xyz_orig_f = traj_or, inverse_preprocess(cfg, torch.zeros(1, 1, 3), xyz_orig.clone())[1]
+    else:
+        traj_f, xyz_orig_f = inverse_preprocess(cfg, traj_p.clone(), xyz_orig.clone())   # 파일 좌표로
     gt_traj = xyz_orig_f[f0::skip]
     assert len(gt_traj) == len(traj_f), (len(gt_traj), len(traj_f))
     frames = list(range(f0, f0 + skip * len(traj_f), skip))                          # 12, 18, .., 78
