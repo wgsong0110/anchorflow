@@ -225,7 +225,7 @@ extern "C" __global__ void ip_eg(const int* rows, const float* r, const float* d
     for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) { float t = F[i][j] - R[i][j]; e2 += t * t; }
     float psi = mu * e2 + 0.5f * la * (dF - 1.f) * (dF - 1.f);
     float x[3] = {X[3 * p] + dy[0], X[3 * p + 1] + dy[1], X[3 * p + 2] + dy[2]};
-    float dd[3] = {x[0] - xt[3 * p], x[1] - xt[3 * p + 1], x[2] - xt[3 * p + 2]};
+    float dd[3] = {dy[0] - xt[3 * p], dy[1] - xt[3 * p + 1], dy[2] - xt[3 * p + 2]};   // xt = 관성 목표 변위 (위치 아님)
     float m = MASS[p], ih2 = 1.f / (hdt * hdt);
     float e = 0.5f * ih2 * m * (dd[0] * dd[0] + dd[1] * dd[1] + dd[2] * dd[2]) - m * (dd[0] * gx + dd[1] * gy + dd[2] * gz) + VOL[p] * psi;
     float pen = 0.f;

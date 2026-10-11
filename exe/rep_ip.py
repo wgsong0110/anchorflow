@@ -390,7 +390,8 @@ def contact_pairs(x):
     return torch.cat(pa), torch.cat(pb)
 
 
-def energy(dy, J, X_, xtil, pairs, parts=False):
+def energy(dy, J, X_, dtil, pairs, parts=False):
+    """dtil: 관성 목표 **변위** x̃ − X_ (위치가 아니다 -- float32 반올림을 피한다)."""
     x = X_ + dy
     Finc = J if REB else rm.mm3(J, JPI[0])
     Ftr = rm.mm3(Finc, Fe)
@@ -400,7 +401,7 @@ def energy(dy, J, X_, xtil, pairs, parts=False):
     else:
         psi, pl = pr.psi_of(Ftr, cfg, h)
         e_el = (VOL * psi).sum()
-    d = x - xtil
+    d = dy - dtil
     e_in = 0.5 / (h * h) * (MASS * (d * d).sum(1)).sum()
     e_g = -(MASS * (d * g).sum(1)).sum()
     e_f = torch.zeros((), device=dev)
@@ -483,6 +484,9 @@ for t in range(T_START, a.frames + 1):
         else:
             X_ = X0
         xtil = xn + h * vn
+        # 관성 목표를 **변위**로: x − x̃ 를 float32 위치(≈1)끼리 빼면 서브스텝 이동(~1e-9)이 반올림에 묻혀 N1024 가
+        # PG 보다 느리게 떨어졌다 (3 프레임 0.29%). REB 면 X_ = xn 이라 x̃ − X_ = h·v 를 정확히 쓸 수 있다.
+        DTIL = (h * vn) if REB else (xtil - (xn if REB else X0))
         if REB and a.method == "ours" and a.init_inertia:     # 관성 예측에서 출발: 노드 변위 = 붙은 입자 h·v + h²g 의 무게 평균
             with torch.no_grad():
                 for r, ii in zip(REP.reps, REP.idx):
@@ -606,14 +610,14 @@ for t in range(T_START, a.frames + 1):
             from anchorflow import fused_ip as fi
             torch.autograd.set_multithreading_enabled(False)      # Triton 역전파를 부르는 스레드에서 (다른 스레드면 invalid device context)
             _r = REP.reps[0]
-            FARGS = (_r.u.numel(), _r.rows, _r.r, _r.dr, _r.w, _r.dw, float(_r.h), float(_r.a), X_, xtil, Fe, VOL, MASS, g,
+            FARGS = (_r.u.numel(), _r.rows, _r.r, _r.dr, _r.w, _r.dw, float(_r.h), float(_r.a), X_, DTIL, Fe, VOL, MASS, g,
                      float(ZF if ZF is not None else 0.0), ZF is not None, float(a.k_floor), float(h), float(MU_E),
                      float(LA_E), float(NORM))
 
             if a.eg_cuda:
                 from anchorflow import gn_warp as gw
                 EGP = gw.prep(_r.rows, _r.r, _r.dr, _r.w, _r.dw, Fe, VOL, MASS)
-                EGA = (X_, xtil, VOL, MASS)
+                EGA = (X_, DTIL, VOL, MASS)
                 EGK = dict(M3=_r.u.numel(), hl=float(_r.h), aa=float(_r.a), g=[float(q) for q in g.tolist()],
                            zf=float(ZF if ZF is not None else 0.0), use_floor=ZF is not None, kfl=float(a.k_floor),
                            hdt=float(h), mu=float(MU_E), la=float(LA_E), norm=float(NORM))
@@ -629,7 +633,7 @@ for t in range(T_START, a.frames + 1):
                 if b > 0:
                     PC["fallback"] = PC.get("fallback", 0) + 1
                     setp_(th); dyt, Jt = REP.yJ(X_)
-                    return float(energy(dyt, Jt, X_, xtil, pairs)[0]) * NORM
+                    return float(energy(dyt, Jt, X_, DTIL, pairs)[0]) * NORM
                 return v
 
             def setp_(vec):
@@ -662,7 +666,7 @@ for t in range(T_START, a.frames + 1):
                     PC["fallback"] = PC.get("fallback", 0) + 1
             if F0N is None:
                 dy, J = REP.yJ(X_)
-                E, _, _ = energy(dy, J, X_, xtil, pairs)
+                E, _, _ = energy(dy, J, X_, DTIL, pairs)
                 (E * NORM).backward()
             _t = _tk("에너지+기울기", _t)
             if METS is None:
@@ -792,7 +796,7 @@ for t in range(T_START, a.frames + 1):
                         ft = fobj(theta - stp * x)
                     else:
                         dyt, Jt = REP.yJ(X_)
-                        ft = float(energy(dyt, Jt, X_, xtil, pairs)[0]) * NORM
+                        ft = float(energy(dyt, Jt, X_, DTIL, pairs)[0]) * NORM
                     if ft == ft and ft <= f0 - 1e-4 * stp * sl:
                         break
                     stp *= 0.5
@@ -806,7 +810,7 @@ for t in range(T_START, a.frames + 1):
         # ---- 프레임 마무리: 상태 갱신 (소성 사영), 측정
         with torch.no_grad():
             dy, J = REP.yJ(X_)
-            E, pl, Ftr, parts = energy(dy, J, X_, xtil, pairs, parts=True)
+            E, pl, Ftr, parts = energy(dy, J, X_, DTIL, pairs, parts=True)
             x1 = X_ + dy
             Fe = Ftr if a.own else pr.plastic_step(Ftr, pl)
             if REB:

@@ -96,7 +96,7 @@ def objective(theta, M3: int, rows, r, dr, w, dw, hl: float, aa: float, X_, xtil
         S = R.transpose(1, 2) @ F
         bad = ((dF <= 1e-6) | (S.diagonal(dim1=1, dim2=2).amin(1) < 0.0105)).sum()
     psi = mu * ((F - R) ** 2).sum((1, 2)) + 0.5 * la * (rm.det3(F) - 1.0) ** 2
-    d = x - xtil
+    d = dy - xtil                       # xtil 은 관성 목표 **변위** x̃ − X_ (float32 위치 반올림을 피한다)
     e = 0.5 / (hdt * hdt) * (MASS * (d * d).sum(1)).sum() - (MASS * (d * g).sum(1)).sum() + (VOL * psi).sum()
     if use_floor:
         e = e + kfl * 0.5 / (hdt * hdt) * (MASS * (zf - x[:, 2]).clamp_min(0) ** 2).sum()
