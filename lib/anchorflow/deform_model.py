@@ -11,6 +11,7 @@ args 를 담은 네임스페이스) 이고, 여기서는 읽기만 한다.
   init_state      평가 롤아웃의 초기 (x, v)
   rollout_eval    프레임별 평균 위치 오차 / 정지 기준 (평가 지표 정의)
   EvalModel       체크포인트 하나로 모델을 세워 롤아웃만 하는 추론용 묶음
+  fast_step       no_grad 롤아웃용 빠른 스텝 (fast_roll: 동기화 없음·융합 커널·CUDA 그래프)
 """
 from __future__ import annotations
 
@@ -294,6 +295,27 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
     return x2, v_next, _outs[0], Jf, _outs[2], _outs[3]
 
 
+def fast_step(net, a, d, vel_scale, h, n_mat, n_film, dev="cuda", **kw):
+    """no_grad 롤아웃용 빠른 스텝 (fast_roll.FastStep) 을 궤적 d 에 묶어 세운다.
+
+    EvalModel.step 과 같은 입력(물성 특징·FiLM)을 만든다. train_deform 처럼
+    **살아 있는 망**을 넘겨도 된다 -- 옵티마이저의 제자리 갱신은 그래프에 그대로
+    반영되고, tau 상수는 파라미터 _version 이 바뀌면 다시 만든다.
+    d 에는 "_X0" (정지 위치), "_mass" 가 있어야 한다 (EvalModel.prepare 참조).
+    지원 밖 설정이면 NotImplementedError (fast_roll.fast_supported).
+
+      fs = DM.fast_step(net, a, d, VEL_SCALE, h, N_MAT, N_FILM)
+      with torch.no_grad():
+          x, v, Jf = fs(x, v)
+    """
+    from .fast_roll import FastStep
+    cfg = d["cfg"]
+    mat_vec = (mat_feat(cfg, a.no_mat, dev) if (n_mat and not n_film) else None)
+    mat = (mat_feat(cfg, a.no_mat, dev).reshape(1, n_mat) if n_film else None)
+    return FastStep(net, a, cfg, d["_X0"], d["_mass"], vel_scale, h,
+                    mat_vec=mat_vec, mat=mat, **kw)
+
+
 # ---------------------------------------------------------------- 평가
 def init_state(d, t0, gsel, frame_dt, v0_traj, dev="cuda"):
     """평가 롤아웃의 초기 (x, v). 기본 v 는 (x[t0]-x[t0-1])/dt 차분,
@@ -407,11 +429,17 @@ class EvalModel:
       M = EvalModel("MAIN_best.pt")
       x, v = M.init(d, t0)
       x, v, J = M.frame(d, x, v)        # 한 프레임 (서브스텝이면 그 수만큼 망 통과)
+
+    fast=True 면 지원되는 설정에서 lib/anchorflow/fast_roll.FastStep (동기화 없는
+    고정 크기 + 손으로 쓴 탄젠트 + CUDA 그래프) 로 같은 식을 돈다. 지원 밖이면
+    알리고 느린 경로를 쓴다. fast_graph=False 는 같은 계산을 즉시 실행으로,
+    fast_triton=False 는 입자 단위 융합 커널 대신 같은 식의 torch 연산으로.
     """
 
     UNSUPPORTED = ("control", "fe_state", "hex_jac", "cell_poly", "refps")
 
-    def __init__(self, ckpt, dev="cuda"):
+    def __init__(self, ckpt, dev="cuda", fast=False, fast_graph=True,
+                 fast_triton=True, fast_edge_triton=True):
         ck = torch.load(ckpt, map_location=dev, weights_only=False)
         a = ckpt_args(ck)
         for k in self.UNSUPPORTED:
@@ -444,6 +472,16 @@ class EvalModel:
         self.sub = int(a.eval_dt_sub or a.dt_sub)
         self.h = self.frame_dt / self.sub
         del ck
+        self.fast, self._fs = False, None
+        if fast:
+            from .fast_roll import fast_supported
+            ok, why = fast_supported(a)
+            if ok:
+                self.fast, self.fast_graph = True, bool(fast_graph)
+                self.fast_triton = bool(fast_triton)
+                self.fast_edge_triton = fast_edge_triton
+            else:
+                print(f"[EvalModel] 빠른 경로 미지원 ({why}) -- 느린 경로로 돈다", flush=True)
 
     def prepare(self, d):
         """궤적별 상수 (질량, 크기, 정지 위치) 를 한 번만."""
@@ -467,6 +505,17 @@ class EvalModel:
                    if (self.n_mat and not self.n_film) else None)
         mat = (mat_feat(cfg, a.no_mat, self.dev).reshape(1, self.n_mat)
                if self.n_film else None)
+        if self.fast:
+            fs = self._fs
+            # 궤적(X0·질량·cfg)과 h 에 묶인다 -- 바뀌면 새로 세운다
+            if fs is None or fs.X0 is not d["_X0"] or fs.h != float(h):
+                fs = self._fs = fast_step(self.net, a, d, self.vel_scale, h,
+                                          self.n_mat, self.n_film, self.dev,
+                                          graph=self.fast_graph,
+                                          triton=self.fast_triton,
+                                          edge_triton=self.fast_edge_triton)
+            with sec("빠른스텝"):
+                return fs(x, v)
         with sec("셀집계"):
             ens = [node_feats(a, cfg, d["_X0"], mass, x, v, self.vel_scale,
                               off=o, mat_vec=mat_vec)

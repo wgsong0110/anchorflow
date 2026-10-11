@@ -45,12 +45,14 @@ ap.add_argument("--fps", type=int, default=30)
 ap.add_argument("--json", default="", help="궤적별·요약 지표 JSON")
 ap.add_argument("--tb", default="", help="TensorBoard 루트")
 ap.add_argument("--tb_tag", default="", help="TB 실행 이름 (기본: <체크포인트 폴더>_<파일>)")
+ap.add_argument("--fast", action="store_true",
+                help="빠른 경로 (lib/anchorflow/fast_roll: 융합 커널 + CUDA 그래프, 같은 식)")
 ap.add_argument("--prof", action="store_true", help="모델 한 스텝의 구간별 시간 (동기화가 들어가 조금 느려진다)")
 a = ap.parse_args()
 dev = "cuda"
 
 t_all = time.time()
-M = DM.EvalModel(a.ckpt, dev)
+M = DM.EvalModel(a.ckpt, dev, fast=a.fast)
 ma = M.a
 print(f"[모델] {a.ckpt} 단계 {M.step_ck} | 층 {ma.gnn_layers} hidden {ma.hidden} "
       f"net_inertial {ma.net_inertial} v_from_dt {ma.v_from_dt} v0_traj {ma.v0_traj} "
