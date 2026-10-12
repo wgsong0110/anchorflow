@@ -269,6 +269,12 @@ ap.add_argument("--pool_gate", type=float, default=0.0,
                 help="0 보다 크면 새 풀 규칙: 증분 포텐셜을 노드 변위 출력으로 미분한 노드별 벡터의 크기 × h²/노드질량 ÷ L 의 "
                      "노드 평균(출력 공간 정류 잔차)이 이 값 이하일 때만 상태를 전진시킨다. 넘으면 전진 없이 풀에 남긴다. "
                      "관성 잔차 문턱 폐기·되돌리기는 쓰지 않는다")
+ap.add_argument("--pool_gate_mode", choices=["grad", "objdec"], default="grad",
+                help="전진 기준: grad = 증분 포텐셜을 노드 출력으로 미분한 기울기 전체 L2 노름 (h²/평균노드질량/L 로 환산) ≤ --pool_gate, "
+                     "objdec = 같은 상태를 다시 볼 때 직전 방문 대비 목적함수 상대 감소 < --pool_gate (정체하면 전진)")
+ap.add_argument("--ov_ref", action="store_true",
+                help="순차 보정 모드에서 학습 전에 같은 상태의 출력만 최적화 기준해를 L-BFGS 로 구하고 (망 고정, 노드 출력 탐침이 변수), "
+                     "학습 중 그 해와의 위치·F 차이를 TB '기준해오차/' 로 기록한다")
 ap.add_argument("--pool_rdrop", type=float, default=0.0,
                 help="--pool_gate 에서 풀 상태를 방문할 때마다 이 확률로 무작위로 버린다 (빈자리는 새 상태로)")
 ap.add_argument("--pool_expire", action="store_true",
@@ -2091,7 +2097,51 @@ if a.pool:
 # err/iters: 프레임별 (전진한 상태의 GT 오차, 걸린 반복 수), traj: 전진한 위치들 (half, cpu).
 SEQ = dict(t=0, it=0, prev=None, err=[], iters=[], capped=0, traj=[])
 _DIAG, _DIAG_I = [], [0]
-_GATE_LOG, _GATE_N = [], [0, 0]                              # (나이, 출력잔차) 기록, [전진, 정체] 횟수 (TB 기록 뒤 비움)                                     # --diag_pool 기록과 지금 계산할 풀 자리
+_GATE_LOG, _GATE_N = [], [0, 0]
+_OVREF = {}                                                  # --ov_ref 기준해 (위치·F·목적함수)
+
+
+def _ov_reference(ds, gsel, p_st, x, v, F, sc, h):
+    """같은 상태의 **출력만 최적화** 기준해: 망을 고정하고 노드 출력에 더하는 탐침 텐서(변위 3 + 반경 1)를 변수로 학습과 같은
+    증분 포텐셜을 L-BFGS 로 수렴시킨다 (망 출력 0 에서 출발 -- 학습 전 망의 출력층은 0 초기화). 학습 경로와 같은 step_once·ip_of."""
+    cfg = sc["cfg"]
+    vol = sc["mass"] / float(cfg["density"])
+    gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
+    ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
+    nrm = float(sc["mass"].sum()) * (sc["ext"] ** 2) / (h ** 2)
+    _req = [q.requires_grad for q in net.parameters()]
+    net.requires_grad_(False)
+    DM.PROBE[0] = "want"
+    with dt_scope(h):
+        step_once(ds, 0, gsel, p_st, x, v, need_J=False)
+    Z = DM.PROBE[1][0].detach().clone().requires_grad_(True)
+
+    def _ev():
+        DM.PROBE[0], DM.PROBE[1] = "fixed", [Z]
+        with dt_scope(h):
+            _x2, _, _, _, _, _, _, _, _, _Jd = step_once(ds, 0, gsel, p_st, x, v, need_J=False)
+        _E, _dl, _Ft, _ = ip_of(x, _x2 - x, v, F, sc["mass"], vol, cfg, h, ng_, gl_, g=gv, norm=nrm, jac=_Jd)
+        return _E, _x2, phys_resid.plastic_step(_Ft, _dl)
+
+    opt_ = torch.optim.LBFGS([Z], lr=1.0, max_iter=100, history_size=50, tolerance_grad=0.0, tolerance_change=0.0,
+                             line_search_fn="strong_wolfe")
+
+    def _clo():
+        opt_.zero_grad()
+        _E = _ev()[0]
+        _E.backward()
+        return _E
+    hist = []
+    for _k in range(40):
+        hist.append(float(opt_.step(_clo)))
+        if _k > 3 and abs(hist[-2] - hist[-1]) <= 1e-7 * abs(hist[-1]):
+            break
+    _E, _x2, _Fr = _ev()
+    DM.PROBE[0], DM.PROBE[1] = None, None
+    for q, r in zip(net.parameters(), _req):
+        q.requires_grad_(r)
+    print(f"[기준해] 출력만 최적화 L-BFGS {len(hist)} 번(각 최대 100 반복): 목적함수 {hist[0]:.3e} -> {float(_E):.3e}", flush=True)
+    return dict(x2=_x2.detach(), F=_Fr.detach(), E=float(_E), hist=hist)                              # (나이, 출력잔차) 기록, [전진, 정체] 횟수 (TB 기록 뒤 비움)                                     # --diag_pool 기록과 지금 계산할 풀 자리
 if a.seq_frames:
     if not a.pool or not a.pool_init_traj:
         raise SystemExit("--seq_frames 는 풀 경로와 --pool_init_traj 가 필요하다")
@@ -2575,6 +2625,11 @@ for it in pbar:
                                          max(1, n_p // a.n_anchors),
                                          device=dev)[:a.n_anchors]]))
             _OV_CUR[0] = st if a.out_var else None
+            if a.ov_ref and not _OVREF:
+                _OVREF.update(_ov_reference(ds, gsel, p_st, x, v, F, sc, _hp))
+                if TBW is not None:
+                    for _i, _e in enumerate(_OVREF["hist"]):
+                        TBW.add_scalar("기준해/목적함수_LBFGS", _e, _i)
             DM.PROBE[0] = "want" if (a.pool_gate > 0 or a.out_var) else None
             with dt_scope(_hp), _tsec("step_once"):
                 x2, p2, v2, _J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
@@ -2629,6 +2684,7 @@ for it in pbar:
             # h²/노드질량 을 곱해 길이로 바꾸고 L 로 나눈 노드 평균. 노드질량 = ∂(Σ m x₂)/∂U = Σ_p m_p W_pn (스키닝 가중치 그대로).
             # 탄성·접촉·관성이 모두 들어 있고, 출력이 증분 포텐셜의 최소점이면 0 이다.
             _rout_t = None
+            _gnorm_t = None
             if (a.pool_gate > 0 or a.out_var) and DM.PROBE[1]:
                 _pz = DM.PROBE[1][0]                         # 격자 하나 (ens_off 1) 기준
                 _gU, = torch.autograd.grad(E_ip * nrm, _pz, retain_graph=True)
@@ -2639,6 +2695,7 @@ for it in pbar:
                 # 질량이 거의 없는 가장자리 노드가 평균을 지배해 수렴해도 값이 커진다 (보정 실험 2026-10-12)
                 _mbar = _mN[_sup].mean()
                 _rout_t = (_gU[:, :3].norm(dim=-1)[_sup].mean() * (_hp ** 2) / _mbar / sc["ext"]).detach()
+                _gnorm_t = (_gU[:, :3][_sup].norm() * (_hp ** 2) / _mbar / sc["ext"]).detach()
                 if TBW is not None and it % 20 == 0:          # 진단: 기울기 전체 L2 노름(원값·같은 단위 환산)과 노드 최댓값
                     _gn_all = _gU[:, :3][_sup].norm()
                     _gmax = _gU[:, :3].norm(dim=-1)[_sup].max()
@@ -2667,6 +2724,11 @@ for it in pbar:
                             _Fg = take(traj_F(_gd)[_tn], _gsel).float()
                             _Fm = phys_resid.plastic_step(F_tr, dlog).detach()
                             TBW.add_scalar("실제오차/한스텝F_평균", float((_Fm - _Fg).flatten(1).norm(dim=1).mean()), it)
+                    if _OVREF and SEQ["t"] == 0:                # 출력만 최적화 기준해와의 차이 (사용자: 정답은 이쪽)
+                        _Fm2 = phys_resid.plastic_step(F_tr, dlog).detach()
+                        TBW.add_scalar("기준해오차/위치_L대비", float((x2.detach() - _OVREF["x2"]).norm(dim=-1).mean()) / sc["ext"], it)
+                        TBW.add_scalar("기준해오차/F_평균", float((_Fm2 - _OVREF["F"]).flatten(1).norm(dim=1).mean()), it)
+                        TBW.add_scalar("기준해오차/목적함수_초과비", float(E_ip.detach()) / max(_OVREF["E"], 1e-30), it)
             # 폐기 판정용 길이 단위 잔차.
             if _OBJ_PTS:
                 # 입자 목적함수에서는 dE/dx2 가 **탄성항을 담지 못한다** --
@@ -2707,6 +2769,15 @@ for it in pbar:
                 [_res_t, _oob_t, loss_p.detach().to(_res_t.dtype)]).tolist()
             _rout = float(_rout_t) if _rout_t is not None else float("nan")
             _GATE_LOG.append((int(st["age"]), _rout))
+            # 전진 판정값: grad = 기울기 전체 노름(환산), objdec = 직전 방문 대비 목적함수 상대 감소 (첫 방문은 전진 안 함)
+            _Enow = float(E_ip.detach())
+            if a.pool_gate_mode == "objdec":
+                _Eprev = st.get("_E_last")
+                _gate_val = (float("inf") if _Eprev is None else (_Eprev - _Enow) / max(abs(_Eprev), 1e-30))
+            else:
+                _gate_val = float(_gnorm_t) if _gnorm_t is not None else float("nan")
+            st["_E_last"] = _Enow
+            _gate_ok = bool(_gate_val < a.pool_gate) if a.pool_gate_mode == "objdec" else bool(_gate_val <= a.pool_gate)
             if a.diag_pool:
                 # 진단: 기록만 하고 역전파·전진·폐기 없이 다음 상태로
                 _DIAG.append(dict(age=int(st["age"]), res=float(res), hist=(float(np.mean(st["hist"])) if st["hist"] else None),
@@ -2742,11 +2813,12 @@ for it in pbar:
                     SEQ["cand"] = (x2.detach(), v2.detach(),
                                    phys_resid.plastic_step(F_tr, dlog).detach(),
                                    p2.detach() if torch.is_tensor(p2) else None, float(_hp))
-                elif a.pool_gate > 0 and not (_rout <= a.pool_gate):
+                elif a.pool_gate > 0 and not _gate_ok:
                     _GATE_N[1] += 1                          # 기준 못 넘음: 전진 없이 같은 상태로 남긴다
                 elif not a.out_var:
                     if a.pool_gate > 0:
                         _GATE_N[0] += 1
+                        st.pop("_E_last", None)                  # 새 상태 -- 감소율 비교를 처음부터
                     st["x"] = x2.detach()
                     st["v"] = v2.detach()
                     st["F"] = phys_resid.plastic_step(F_tr, dlog).detach()
@@ -2755,7 +2827,7 @@ for it in pbar:
                 # 출력을 계속 최적화해 하한까지 내린다 (노드 집합도 고정된다)
             if a.pool_gate > 0 and not a.seq_frames:
                 POOL.put_back_gate(slot if kind == "pool" else None, st,
-                                   advanced=bool(_rout <= a.pool_gate) and not a.out_var,
+                                   advanced=_gate_ok and not a.out_var,
                                    rdrop=a.pool_rdrop, expire=a.pool_expire, dt_frac=1.0 / _sub)
             elif not a.seq_frames:
                 POOL.put_back(slot if kind == "pool" else None, st, res,

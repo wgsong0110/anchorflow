@@ -234,6 +234,7 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
     if PROBE[0] == "want":
         _no = getattr(net, "n_out", 3)
         PROBE[1] = [torch.zeros(e[1].shape[0], _no, device=x.device, dtype=x.dtype, requires_grad=True) for e in ens]
+    # "fixed": 바깥에서 준 텐서(출력만 최적화 기준해의 변수)를 그대로 더한다
 
     def _fieldS(tau):
         _dus, _Jsum = [], None
@@ -259,7 +260,7 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                 if dp_hook is not None:
                     out = dp_hook(out)
             dpn_k = torch.nan_to_num(out[0], nan=0.0, posinf=0.0, neginf=0.0)
-            if PROBE[0] == "want":
+            if PROBE[0] in ("want", "fixed"):
                 dpn_k = dpn_k + PROBE[1][_k]
             if node_mask is not None and node_mask[_k] is not None:
                 # **노드 변위를 명령으로 덮는다.** detach 로 기울기를 끊어
