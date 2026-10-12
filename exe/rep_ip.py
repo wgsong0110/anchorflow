@@ -469,7 +469,8 @@ if a.stab_out:
     from anchorflow import stabstat as _ss
     _SUB = torch.as_tensor(_ss.subset(N), device=dev)
     _MASSN = MASS.double().cpu().numpy(); _FZ = ZF if ZF is not None else 0.0
-    STROWS = [_ss.frame_stats(X0.cpu().numpy(), V0.cpu().numpy(), None, _MASSN, g.tolist(), _FZ)]
+    _EK = dict(vol=VOL.double().cpu().numpy(), E=float(cfg["E"]), nu=float(cfg["nu"]))
+    STROWS = [_ss.frame_stats(X0.cpu().numpy(), V0.cpu().numpy(), np.tile(np.eye(3), (N, 1, 1)), _MASSN, g.tolist(), _FZ, **_EK)]
     STX = [X0[_SUB].cpu().numpy()]; STT = []
     if T_START > 1:                                           # 이어 돌리기: 안정성 기록도 체크포인트에서 (없으면 결과가 틀리므로 중단)
         if _CK_STAB is None:
@@ -834,7 +835,7 @@ for t in range(T_START, a.frames + 1):
                 continue
             if a.stab_out:
                 torch.cuda.synchronize(); STT.append(time.time() - _tf)
-                STROWS.append(_ss.frame_stats(xn.cpu().numpy(), vn.cpu().numpy(), Fe.cpu().numpy(), _MASSN, g.tolist(), _FZ))
+                STROWS.append(_ss.frame_stats(xn.cpu().numpy(), vn.cpu().numpy(), Fe.cpu().numpy(), _MASSN, g.tolist(), _FZ, **_EK))
                 STX.append(xn[_SUB].cpu().numpy())
             ref = xn if a.no_ref else torch.as_tensor(rd(files[t], "x"), dtype=torch.float32, device=dev)
             Fr_ = None if a.no_ref else rd(files[t], "F")
@@ -886,7 +887,7 @@ if RENDER:
         WR.append_data(imageio.imread(fp_))
     WR.close()
 if a.stab_out:
-    _K = ("ke", "pe", "nan", "out", "vmax", "detneg", "detmin")
+    _K = _ss.KEYS
     np.savez_compressed(a.stab_out, sub=_SUB.cpu().numpy(), x=np.stack(STX).astype(np.float32), t=np.array(STT), keys=np.array(_K),
                         substeps=a.substeps, dt=h, stats=np.array([[r.get(k, np.nan) for k in _K] for r in STROWS]),
                         iters0=a.iters0, iters=a.iters)

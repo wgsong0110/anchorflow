@@ -66,7 +66,8 @@ if a.dump:
     os.makedirs(a.dump, exist_ok=True)
     with h5py.File(f"{a.dump}/sim_{0:010d}.h5", "w") as h:
         h.create_dataset("x", data=x); h.create_dataset("F", data=np.tile(np.eye(3, dtype=np.float32).reshape(1, 9), (N, 1)))
-rows = [ss.frame_stats(x, v, np.tile(np.eye(3), (N, 1, 1)), MASS, G, float(floor["point"][2]))]
+_VOLN = VOL.double().cpu().numpy(); _EK = dict(vol=_VOLN, E=float(cfg["E"]), nu=float(cfg["nu"]))
+rows = [ss.frame_stats(x, v, np.tile(np.eye(3), (N, 1, 1)), MASS, G, float(floor["point"][2]), **_EK)]
 XS = [x[SUB]]; T = []
 step = 0
 # ---- 이어 돌리기: 입자 상태 전부 + i-PG 의 직전 속도(_prev_particle_v) + 누적 기록
@@ -116,7 +117,7 @@ for f in tqdm(range(F_START, NF + 1), desc=f"{a.method} N{a.substeps}"):
     xt = sol.export_particle_x_to_torch().cpu().numpy()
     vt = wp.to_torch(sol.mpm_state.particle_v).cpu().numpy()
     Ft = sol.export_particle_F_to_torch().cpu().numpy()
-    rows.append(ss.frame_stats(xt, vt, Ft, MASS, G, float(floor["point"][2])))
+    rows.append(ss.frame_stats(xt, vt, Ft, MASS, G, float(floor["point"][2]), **_EK))
     if a.dump:
         with h5py.File(f"{a.dump}/sim_{f:010d}.h5", "w") as h:
             h.create_dataset("x", data=xt.astype(np.float32)); h.create_dataset("F", data=Ft.reshape(N, 9).astype(np.float32))
@@ -126,6 +127,6 @@ for f in tqdm(range(F_START, NF + 1), desc=f"{a.method} N{a.substeps}"):
     if a.ckpt_every > 0 and f % a.ckpt_every == 0 and f < NF:
         _save_ckpt(f)
 np.savez_compressed(a.out, sub=SUB, x=np.stack(XS).astype(np.float32), t=np.array(T),
-                    stats=np.array([[r.get(k, np.nan) for k in ("ke", "pe", "nan", "out", "vmax", "detneg", "detmin")] for r in rows]),
-                    keys=np.array(["ke", "pe", "nan", "out", "vmax", "detneg", "detmin"]), substeps=a.substeps, dt=dt)
+                    stats=np.array([[r.get(k, np.nan) for k in ss.KEYS] for r in rows]),
+                    keys=np.array(ss.KEYS), substeps=a.substeps, dt=dt)
 print(f"[저장] {a.out}  프레임당 {np.mean(T):.3f}s", flush=True)
