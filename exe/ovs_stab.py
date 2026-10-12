@@ -1,6 +1,7 @@
 """서브스텝 안정성: 기본 실행 조합(train_deform 출력만 최적화 --ov_seq)으로 우리 방법을 돌리기 위한 앞뒤 처리.
 
 init : stab/<형상>/init 의 h5 에서 float32 초기 상태(.pt, F=I)와 풀 채우기·설정·데이터 디렉토리를 만든다
+state: 롤아웃 덤프 -> train_deform 궤적 .pt (x·v·F, 0 프레임 = 초기 상태; 문턱 검증의 정답 궤적·초기 상태로 쓴다)
 conv : --ov_roll 롤아웃 덤프 (프레임 경계 x·v·F) -> rep_ip --stab_out 과 같은 형식의 npz (같은 부분표본·같은 stabstat)
 """
 import argparse, glob, json, os, sys
@@ -10,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from anchorflow import stabstat as ss
 
 ap = argparse.ArgumentParser()
-ap.add_argument("mode", choices=["init", "conv"])
+ap.add_argument("mode", choices=["init", "conv", "state"])
 ap.add_argument("--scene", required=True, help="stab/<형상> 디렉토리 (init/ 와 config.json)")
 ap.add_argument("--out", required=True, help="init: 출력 디렉토리 / conv: npz 경로")
 ap.add_argument("--seq", default="", help="conv: AF_ROLL_DUMP 롤아웃 덤프 (.pt: pred, v, F)")
@@ -57,6 +58,15 @@ if a.mode == "init":
         os.remove(d)
     os.symlink(p, d)
     print(f"[초기 상태] {p}  입자 {N}  바닥 {ZF}", flush=True)
+elif a.mode == "state":
+    q = torch.load(a.seq, map_location="cpu", weights_only=False)
+    x0 = torch.from_numpy(X0)[None]
+    st = {"x": torch.cat([x0, q["pred"].float()]), "v": torch.cat([torch.from_numpy(V0)[None], q["v"].float()]),
+          "F": torch.cat([torch.eye(3).expand(1, N, 3, 3), q["F"].float()]), "sel": torch.arange(N), "cfg": cfg, "n_full": N,
+          "meta": {"source": "기본 실행 조합 출력만 최적화 롤아웃", "dump": a.seq, "substeps": a.substeps},
+          "gaussians_first": N, "F_is_true": True}
+    torch.save(st, a.out)
+    print(f"[상태 저장] {a.out}  {st['x'].shape[0]} 프레임", flush=True)
 else:
     q = torch.load(a.seq, map_location="cpu", weights_only=False)
     xs, vs, Fs = q["pred"].float().numpy(), q["v"].float().numpy(), q["F"].float().numpy()
