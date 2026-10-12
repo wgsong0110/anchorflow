@@ -2635,7 +2635,10 @@ for it in pbar:
                 _mN, = torch.autograd.grad((sc["mass"].unsqueeze(-1) * x2).sum(), _pz, retain_graph=True)
                 _mN = _mN[:, 0]
                 _sup = _mN > 1e-9 * _mN.max().clamp_min(1e-30)
-                _rout_t = ((_gU[:, :3].norm(dim=-1)[_sup] * (_hp ** 2) / _mN[_sup]).mean() / sc["ext"]).detach()
+                # 노드별 기울기 크기의 **단순 평균**에 고정 상수(평균 노드 질량)로 단위만 맞춘다. 노드마다 자기 질량으로 나누면
+                # 질량이 거의 없는 가장자리 노드가 평균을 지배해 수렴해도 값이 커진다 (보정 실험 2026-10-12)
+                _mbar = _mN[_sup].mean()
+                _rout_t = (_gU[:, :3].norm(dim=-1)[_sup].mean() * (_hp ** 2) / _mbar / sc["ext"]).detach()
             # 폐기 판정용 길이 단위 잔차.
             if _OBJ_PTS:
                 # 입자 목적함수에서는 dE/dx2 가 **탄성항을 담지 못한다** --
