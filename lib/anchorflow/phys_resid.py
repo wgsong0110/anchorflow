@@ -260,6 +260,17 @@ class _FcrPsi(torch.autograd.Function):
         return go.reshape(*go.shape, 1, 1) * G, None, None, None
 
 
+_CV = {}
+
+
+def _cvec(vals, device, dtype):
+    """경계 조건의 점·법선 같은 상수 텐서를 한 번만 만든다 (매 평가 호스트→장치 복사·동기화 방지)."""
+    k = (tuple(float(q) for q in vals), str(device), dtype)
+    if k not in _CV:
+        _CV[k] = torch.as_tensor(k[0], device=device, dtype=dtype)
+    return _CV[k]
+
+
 def _cof3(A):
     """여인수 행렬 [..,3,3] (A⁻ᵀ = cof / det), 원소별 식이라 bmm 없이 한 번에 돈다."""
     a, b, c = A[..., 0, 0], A[..., 0, 1], A[..., 0, 2]
@@ -597,10 +608,8 @@ def bc_project_nodes(npos, dp, cfg, h, grid_lim, n_grid):
     for bc in (cfg.get("boundary_conditions") or []):
         t = bc.get("type")
         if t == "surface_collider":
-            pt = torch.as_tensor(bc["point"], device=npos.device,
-                                 dtype=npos.dtype)
-            nr = torch.as_tensor(bc["normal"], device=npos.device,
-                                 dtype=npos.dtype)
+            pt = _cvec(bc["point"], npos.device, npos.dtype)
+            nr = _cvec(bc["normal"], npos.device, npos.dtype)
             nr = nr / nr.norm().clamp_min(1e-12)
             # **i-PG 와 같은 판정**: 격자점 자체가 면 아래인 노드만 건다
             # (collide 커널은 grid_x*dx 로 노드 위치를 재서 dot < 0 을 본다).
@@ -912,8 +921,8 @@ def bc_node_mask(uniq, n_grid, dx, cfg, dtype, dev):
     for bc in (cfg.get("boundary_conditions") or []):
         t = bc.get("type")
         if t == "surface_collider":
-            pt = torch.as_tensor(bc["point"], device=dev, dtype=dtype)
-            nr = torch.as_tensor(bc["normal"], device=dev, dtype=dtype)
+            pt = _cvec(bc["point"], dev, dtype)
+            nr = _cvec(bc["normal"], dev, dtype)
             nr = nr / nr.norm().clamp_min(1e-12)
             m |= (((pos - pt) * nr).sum(-1) < 0)
         elif t == "bounding_box":
@@ -1031,8 +1040,8 @@ def bc_energy(x, du, mass, cfg, h, grid_lim, n_grid, stiff=None):
     for bc in (cfg.get("boundary_conditions") or []):
         t = bc.get("type")
         if t == "surface_collider":
-            pt = torch.as_tensor(bc["point"], device=x.device, dtype=x.dtype)
-            nr = torch.as_tensor(bc["normal"], device=x.device, dtype=x.dtype)
+            pt = _cvec(bc["point"], x.device, x.dtype)
+            nr = _cvec(bc["normal"], x.device, x.dtype)
             nr = nr / nr.norm().clamp_min(1e-12)
             sd = ((x2 - pt) * nr).sum(-1)
             if _BARRIER[0] is not None:
@@ -1087,8 +1096,8 @@ def bc_project(x, du, cfg, h, grid_lim, n_grid):
     for bc in (cfg.get("boundary_conditions") or []):
         t = bc.get("type")
         if t == "surface_collider":
-            pt = torch.as_tensor(bc["point"], device=x.device, dtype=x.dtype)
-            nr = torch.as_tensor(bc["normal"], device=x.device, dtype=x.dtype)
+            pt = _cvec(bc["point"], x.device, x.dtype)
+            nr = _cvec(bc["normal"], x.device, x.dtype)
             nr = nr / nr.norm().clamp_min(1e-12)
             sd = ((x + du_p - pt) * nr).sum(-1)            # 부호거리
             pen = sd < 0.0

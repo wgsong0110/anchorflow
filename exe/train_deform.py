@@ -1490,13 +1490,13 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             _sup = torch.zeros(npos.shape[0], dtype=torch.bool, device=dev)
             _sup[rows.reshape(-1)] = True
             if _nod_m is None:
-                _pc = torch.zeros(x.shape[0], dtype=torch.uint8)
+                _pc = torch.zeros(x.shape[0], dtype=torch.uint8, device=dev)
             else:
                 _hit = _nod_m[rows]
                 _pc = (_hit.any(1).to(torch.uint8)
-                       + _hit.all(1).to(torch.uint8)).cpu()
-            _NODE_LAST[0] = (npos.detach().cpu(), dpn.detach().cpu(),
-                             _sup.cpu(), _pc)
+                       + _hit.all(1).to(torch.uint8))
+            # GPU 에 둔다 -- 덤프할 때(프레임 끝) 한 번만 CPU 로 옮긴다. 매 평가마다 .cpu() 하면 동기화가 생긴다
+            _NODE_LAST[0] = (npos.detach(), dpn.detach(), _sup, _pc)
         _DET_LAST[0] = torch.linalg.det(Jf)
         _BC_LAST[0] = (_corr, _act)
         return (x2, p, v_next, None, dpn, None, dmg, None, fe, Jf)
@@ -3955,7 +3955,7 @@ def _rollout(d, t0, L, gsel=None):
             if _FCUM[0] is not None:
                 _FDUMP.append(_FCUM[0].float().cpu() if os.environ.get("AF_ROLL_DUMP_F") == "32" else _FCUM[0].half().cpu())
             if _NODE_LAST[0] is not None:
-                _NODEDUMP.append(_NODE_LAST[0])
+                _NODEDUMP.append(tuple(q_.cpu() for q_ in _NODE_LAST[0]))
             if F_ov is not None:
                 # 입자별 변형 스칼라. C = FᵀF (우 코시-그린), E = (C−I)/2
                 # (그린-라그랑주). 정지 상태면 det 1, trC 3, ‖E‖ 0 이다.

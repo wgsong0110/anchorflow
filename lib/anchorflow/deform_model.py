@@ -202,9 +202,20 @@ def node_inertial(x, v, mass, rows, lam, n_node, g, h):
         _ws.index_add_(0, rows[:, _j], _w)
         _vs.index_add_(0, rows[:, _j], _w * v)
     _vn = _vs / _ws.clamp_min(1e-30)
-    _gq = torch.as_tensor(g, device=x.device, dtype=x.dtype)
+    _gq = _const_vec(g, x)
     _hq = float(h)
     return _hq * _vn + (_hq ** 2) * _gq, (_vn, _gq)
+
+
+_CONST = {}
+
+
+def _const_vec(vals, ref):
+    """파이썬 수 목록 -> ref 와 같은 장치·형의 텐서 (한 번 만들어 재사용; 매번 만들면 호스트→장치 복사로 동기화된다)."""
+    k = (tuple(float(q) for q in vals), ref.device, ref.dtype)
+    if k not in _CONST:
+        _CONST[k] = torch.as_tensor(k[0], device=ref.device, dtype=ref.dtype)
+    return _CONST[k]
 
 
 PROBE = [None, None]                 # [요청 여부 "want", 격자별 탐침 텐서 목록]
@@ -303,7 +314,7 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
         return q, (_dpn0, _Jm, _corr, _act)
 
     _use_dtS = a.v_from_dt and dp_hook is None and a.dt_cond
-    _tau0 = torch.as_tensor(float(h), device=x.device, dtype=x.dtype)
+    _tau0 = torch.full((), float(h), device=x.device, dtype=x.dtype)      # 채우기 커널 -- 호스트 복사·동기화 없음
     if _use_dtS:
         with sec("jvp(속도)"):
             (x2, _outs), (v_next, _) = torch.func.jvp(
