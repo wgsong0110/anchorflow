@@ -20,6 +20,7 @@ ap.add_argument("--substeps", type=int, required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--pg", default="/home/dkta/work/i-physgaussian")
 ap.add_argument("--ckpt_every", type=int, default=5, help="이어 돌리기 체크포인트 간격 (프레임). <out>.ckpt.pt, 0 이면 끔")
+ap.add_argument("--frames", type=int, default=0, help="0 이면 설정의 frame_num (검사용으로 짧게)")
 ap.add_argument("--dump", default="", help="영상용: 프레임마다 전체 입자 h5 (x, F) 를 이 폴더에")
 a = ap.parse_args()
 sys.path.insert(0, a.pg); os.chdir(a.pg)
@@ -34,6 +35,8 @@ from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP   # noqa: E402
 cfg = json.load(open(a.config))
 n_grid, GL = int(cfg["n_grid"]), float(cfg["grid_lim"]); dx = GL / n_grid
 frame_dt, NF = float(cfg["frame_dt"]), int(cfg["frame_num"])
+if a.frames:
+    NF = int(a.frames)
 dt = frame_dt / a.substeps
 G = [float(q) for q in cfg["g"]]
 floor = [b for b in cfg["boundary_conditions"] if b["type"] == "surface_collider"][0]
