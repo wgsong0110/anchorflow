@@ -53,8 +53,6 @@ for S in ("lego", "mic", "ficus"):
             continue
         if b.endswith(".ckpt.pt") and os.path.exists(f"{res}/{name}.npz"):
             continue
-        if not (b.startswith(("ours_N1024", "ours_N512", "ipg_N1024")) or b in ("pg_N1024r.npz",)):
-            continue
         rows, X, done = load(p)
         runs[name] = dict(done=done, rows=rows, X=X)
     rX = load(ref)[1] if ref else None
@@ -65,7 +63,12 @@ for S in ("lego", "mic", "ficus"):
         e = rows[:, 0] + rows[:, 1]
         T = min(len(X), len(rX)) if rX is not None else 0
         err = [float(np.sqrt(((X[t] - rX[t]) ** 2).sum(1)).mean() / L) for t in range(T)]
+        # 자기 방법 N1024 (진행 중이면 체크포인트) 대비 -- 안정성 판정의 기준
+        own = runs.get(name.split("_N")[0] + "_N1024") or runs.get(name.split("_N")[0] + "_N1024r")
+        To = min(len(X), len(own["X"])) if own is not None else 0
+        err_own = [float(np.sqrt(((X[t] - own["X"][t]) ** 2).sum(1)).mean() / L) for t in range(To)]
         out[S][name] = dict(done=r["done"], frames=len(rows), energy=(e / e[0]).tolist(), vmax=rows[:, 4].tolist(),
+                            err_vs_own1024=err_own,
                             detmin=rows[:, 6].tolist(), comz=[float(x[:, 2].mean()) for x in X], err_vs_pg1024=err)
         print(f"{S} {name}: {'끝' if r['done'] else '진행'} {len(rows)} 프레임, PG1024 대비 마지막 {err[-1] * 100 if err else float('nan'):.3f}%", flush=True)
 json.dump(out, open(a.out, "w"))
