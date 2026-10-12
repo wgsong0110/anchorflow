@@ -292,6 +292,8 @@ ap.add_argument("--seq_frames", type=int, default=0,
 ap.add_argument("--seq_tol", type=float, default=3e-6,
                 help="수렴 판정: 학습 한 반복 사이 출력 위치 변화의 최대값이 이 값 * h/frame_dt 아래 (rep_ip --newton_tol 과 같은 기준)")
 ap.add_argument("--seq_max", type=int, default=2000, help="프레임당 반복 상한 (Adam 잡음으로 수렴 판정이 안 날 때)")
+ap.add_argument("--seq_save_every", type=int, default=1,
+                help="순차 궤적을 이 스텝마다 한 번만 저장한다 (--dt_sub N 이면 N 으로 두어 프레임 경계만 남긴다)")
 ap.add_argument("--diag_pool", default="",
                 help="진단: --resume 체크포인트의 풀 상태를 하나씩, 그 체크포인트 가중치로 한 스텝씩만 계산해 (나이, 물리잔차, 증분 포텐셜)을 "
                      "이 json 에 쓰고 끝낸다. 학습 경로의 계산을 그대로 쓰고 갱신·전진·폐기는 하지 않는다")
@@ -2894,10 +2896,11 @@ for it in pbar:
                 _e = (DM.frame_err(_cx, take(_gtd["x"][SEQ["t"]], torch.arange(_cx.shape[0], device=dev)),
                                    float(_gtd.get("_ext", EXT))) if SEQ["t"] < _gtd["x"].shape[0] else float("nan"))
                 SEQ["err"].append(_e); SEQ["iters"].append(SEQ["it"]); SEQ["capped"] += int(_dmax >= a.seq_tol * _ch / FRAME_DT)
-                SEQ["traj"].append(_cx.half().cpu())
-                if a.ov_seq:                                 # 출력만 최적화 궤적은 v·F 까지 (다음 실험의 상태로 쓴다)
-                    SEQ.setdefault("traj_v", []).append(_cv.cpu()); SEQ.setdefault("traj_F", []).append(_cF.cpu())
-                    SEQ["traj"][-1] = _cx.cpu()
+                if SEQ["t"] % a.seq_save_every == 0:
+                    SEQ["traj"].append(_cx.half().cpu())
+                    if a.ov_seq:                             # 출력만 최적화 궤적은 v·F 까지 (다음 실험의 상태로 쓴다)
+                        SEQ.setdefault("traj_v", []).append(_cv.cpu()); SEQ.setdefault("traj_F", []).append(_cF.cpu())
+                        SEQ["traj"][-1] = _cx.cpu()
                 print(f"  [순차 프레임 {SEQ['t']}] 반복 {SEQ['it']}{' (상한)' if _dmax >= a.seq_tol * _ch / FRAME_DT else ''}  "
                       f"출력변화 {_dmax:.2e}  GT 오차 {_e * 100:.3f}%", flush=True)
                 if TBW is not None:
