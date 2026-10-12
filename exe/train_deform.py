@@ -3896,6 +3896,7 @@ def _rollout(d, t0, L, gsel=None):
                 for _sb in range(EVAL_SUB):
                     x2, v, _S["F_ov"] = _ov_frame(d, t0 + i, gsel, p, x2, v, _S["F_ov"])
             _S["v_last"] = v
+            print(f"    [출력만최적화 진행] 프레임 {i + 1}/{L}  서브스텝 {EVAL_SUB}  누적 {time.time() - _RO_T0:.1f} s", flush=True)
             if _ROLLDUMP is not None and _FCUM[0] is not None:
                 _FCUM[0] = _S["F_ov"].detach().float()          # 출력만 최적화가 실제로 굴린 F (렌더용)
         else:
