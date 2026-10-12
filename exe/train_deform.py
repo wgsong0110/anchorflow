@@ -1172,6 +1172,21 @@ def ip_of(x, du, vel, F, mass, vol, cfg, h, ng, gl, g=None, norm=None,
 
 # --- 삭제 과정에서 함께 날아간 전역들 (복구) -----------------------
 _PROF_ON = bool(os.environ.get("AF_PROF"))
+if os.environ.get("AF_SYNC_DEBUG"):
+    # 진단: GPU→CPU 동기화가 일어나는 코드 위치를 센다 (exe/·lib/ 안의 가장 안쪽 줄 기준). 끝날 때 많은 순으로 찍는다
+    import warnings as _wn, traceback as _tb, collections as _co, atexit as _ae
+    _SYNC_N = _co.Counter()
+
+    def _sync_show(msg, cat, fn, ln, file=None, line=None):
+        if "synchroniz" not in str(msg):
+            return
+        fr = [f for f in _tb.extract_stack()[:-1] if ("/exe/" in f.filename or "/lib/anchorflow/" in f.filename)]
+        _SYNC_N[" <- ".join(f"{os.path.basename(f.filename)}:{f.lineno}" for f in fr[-3:][::-1])] += 1
+    _wn.showwarning = _sync_show
+    _wn.simplefilter("always")
+    torch.cuda.set_sync_debug_mode("warn")
+    _ae.register(lambda: print("[동기화 위치]\n" + "\n".join(f"  {n:7d}  {k}" for k, n in _SYNC_N.most_common(30)), flush=True))
+
 _PROF = {}
 _CUR_T = [0]              # step_once 가 남기는 현재 프레임
 _CTRL_SCALE = [1.0]       # 손잡이 명령 변위 배수 (서브스텝이면 1/K)
