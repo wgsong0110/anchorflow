@@ -1,0 +1,30 @@
+767a768,784
+>         # [anchorflow] 위 "BUG 4 FIX"(a^n=0) 를 되돌린다: a^n=0 이면 Newmark(beta 0.25, gamma 0.5) 속도 갱신
+>         # v^{n+1} = v^n + dt(0.5 a^n + 0.5 a^{n+1}) 에서 일정 가속도가 절반만 들어가 자유낙하가 정확히 절반이 됐다.
+>         # 격자는 매 스텝 새로 만들지만 가속도는 **입자에 저장**해 두었다가 P2G 로 옮기면 된다 (첫 스텝만 0).
+>         if getattr(self, "_particle_a", None) is not None:
+>             from af_newmark import af_p2g_acc
+>             _ga = wp.zeros(shape=grid_size, dtype=wp.vec3, device=device)
+>             wp.launch(kernel=af_p2g_acc, dim=self.n_particles,
+>                       inputs=[self.mpm_state, self.mpm_model, self._particle_a, _ga], device=device)
+>             _ga_np = _ga.numpy()
+>             for d in range(3):
+>                 a_n[..., d][mask] = _ga_np[..., d][mask] / _af_m
+>         else:
+>             # [anchorflow] 첫 스텝: 정지·무응력(F=I) 상태의 가속도는 중력이다 (M a0 = f(x0) = M g). 0 으로 두면 첫 서브스텝에
+>             # 중력이 절반만 들어가 N 이 작을수록 자유낙하가 늦어진다 (N1: 1 프레임 뒤 운동량 PG 의 절반).
+>             _g0 = self.mpm_model.gravitational_accelaration
+>             for d in range(3):
+>                 a_n[..., d][mask] = float(_g0[d])
+789c806
+<         du_k = cp.asarray(dt * v_grid_n, dtype=cp.float64)
+---
+>         du_k = cp.asarray(dt * v_grid_n + 0.5 * dt * dt * a_n, dtype=cp.float64)   # [anchorflow] Eq.14 (a^n 복원)
+1008a1026,1032
+>         # [anchorflow] a^{n+1} 을 입자로 (x^n 에서의 가중치 -- g2p 가 x 를 옮기기 전에)
+>         from af_newmark import af_g2p_acc
+>         if getattr(self, "_particle_a", None) is None or self._particle_a.shape[0] != self.n_particles:
+>             self._particle_a = wp.zeros(shape=self.n_particles, dtype=wp.vec3, device=device)
+>         _ga2 = wp.array(cp.asnumpy(a_final.astype(cp.float32)), dtype=wp.vec3, device=device)
+>         wp.launch(kernel=af_g2p_acc, dim=self.n_particles,
+>                   inputs=[self.mpm_state, self.mpm_model, _ga2, self._particle_a], device=device)
