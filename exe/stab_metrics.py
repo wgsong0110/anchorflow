@@ -46,11 +46,14 @@ def load(res, m, n):
         if np.nanmax(rows["nan"]) > 0 or len(z["x"]) < 61:
             st = "발산"
         return dict(status=st, rows=rows, X=z["x"])
+    # 체크포인트가 남아 있어도 로그가 오류로 끝났으면 발산이다 (i-PG 는 SVD 미수렴으로 죽기 전에 체크포인트를 남긴다).
+    # 죽기 전 프레임까지의 값은 남기되 상태는 발산으로 둔다.
+    died = os.path.exists(log) and re.search(r"illegal memory|Error|Traceback|발산", open(log, errors="ignore").read())
     if ck:
         c = torch.load(ck, map_location="cpu", weights_only=False)
         R, X = (c["stab"]["STROWS"], c["stab"]["STX"]) if c.get("stab") else (c["rows"], c["XS"])
         keys = sorted({k for r in R for k in r})
-        return dict(status="진행", rows={k: np.array([r.get(k, np.nan) for r in R]) for k in keys},
+        return dict(status="발산" if died else "진행", rows={k: np.array([r.get(k, np.nan) for r in R]) for k in keys},
                     X=np.stack([np.asarray(x) for x in X]))
     if os.path.exists(log):
         txt = open(log, errors="ignore").read()
