@@ -10,8 +10,12 @@ import glob
 import json
 import os
 
+import sys
+
 import numpy as np
 import torch
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))   # 체크포인트 안 객체 복원용
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--root", default="/home/dkta/work/stab")
