@@ -16,6 +16,8 @@ def subset(n, k=NSUB, seed=0):
 # 결과 npz 의 stats 열 순서 (모든 방법 공통). 뒤의 8 개는 2026-10-12 추가 -- 그 전 결과에는 없다(NaN).
 KEYS = ("ke", "pe", "nan", "out", "vmax", "detneg", "detmin",
         "ee", "jdev", "jdev10", "penr", "pend", "px", "py", "pz")
+# 보정판 누적 개입 횟수 (클램프·되돌림 입자 수, 반으로 나눠 다시 푼 횟수, 관성 대체 횟수). 보정판이 아니면 0
+SAFE_KEYS = ("safe_n", "safe_split", "safe_inert")
 
 
 def elastic_fcr(F, vol, E, nu):
@@ -62,3 +64,39 @@ def unstable(rows, e0, vcap, k_energy=1.5, x_det=0.01):
                 or not np.isfinite(s["vmax"]) or s["vmax"] > vcap):
             return t
     return -1
+
+
+# ---- 발산 방지 보정판 (--safe, 2026-10-12 사용자 지시: 네 방법에 같은 처리) ----------------------------------------
+# 발산해 죽는 작은 N 도 끝까지 돌려 지표를 재기 위한 **공통** 안전장치. 서브스텝마다:
+#   ① 위치·속도·F 중 비유한이 생긴 입자는 직전 위치로 되돌리고 속도 0, F = I
+#   ② 속력을 안정성 판정 상한 VCAP = 10·sqrt(2 g H) (자유낙하 최고 속력의 10 배) 로 자른다
+#   ③ 위치를 영역 상자 [3dx, GL−3dx] 안으로 자른다
+# 정상 실행에서는 한 번도 걸리지 않으므로(속력·위치가 그 범위 안) 결과가 그대로다. 걸린 입자 수를 센다.
+def safe_params(x0, floor_z, g, grid_lim, n_grid):
+    gz = abs(float(g[2])) if hasattr(g, "__len__") else abs(float(g))
+    H = float(np.asarray(x0)[:, 2].max() - floor_z)
+    dx = float(grid_lim) / int(n_grid)
+    return dict(lo=3 * dx, hi=float(grid_lim) - 3 * dx, vcap=10.0 * np.sqrt(2 * gz * max(H, 1e-6)))
+
+
+def safe_fix(x, v, F, x_prev, sp):
+    """torch 텐서 제자리 수정. x,v [N,3], F [N,3,3] 또는 None, x_prev [N,3]. -> 손댄 입자 수 (int)"""
+    import torch
+    bad = ~(torch.isfinite(x).all(1) & torch.isfinite(v).all(1))
+    if F is not None:
+        bad = bad | ~torch.isfinite(F.reshape(F.shape[0], -1)).all(1)
+    n = int(bad.sum())
+    if n:
+        x[bad] = x_prev[bad]; v[bad] = 0.0
+        if F is not None:
+            F[bad] = torch.eye(3, device=F.device, dtype=F.dtype)
+    sp_ = v.norm(dim=1)
+    over = sp_ > sp["vcap"]
+    m = int(over.sum())
+    if m:
+        v[over] *= (sp["vcap"] / sp_[over]).unsqueeze(1)
+    out = ((x < sp["lo"]) | (x > sp["hi"])).any(1)
+    k = int(out.sum())
+    if k:
+        x.clamp_(sp["lo"], sp["hi"])
+    return n + m + k
