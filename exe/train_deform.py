@@ -2639,6 +2639,14 @@ for it in pbar:
                 # 질량이 거의 없는 가장자리 노드가 평균을 지배해 수렴해도 값이 커진다 (보정 실험 2026-10-12)
                 _mbar = _mN[_sup].mean()
                 _rout_t = (_gU[:, :3].norm(dim=-1)[_sup].mean() * (_hp ** 2) / _mbar / sc["ext"]).detach()
+                if TBW is not None and it % 20 == 0:          # 진단: 기울기 전체 L2 노름(원값·같은 단위 환산)과 노드 최댓값
+                    _gn_all = _gU[:, :3][_sup].norm()
+                    _gmax = _gU[:, :3].norm(dim=-1)[_sup].max()
+                    _cv = (_hp ** 2) / _mbar / sc["ext"]
+                    TBW.add_scalar("게이트/출력기울기_전체노름_원값", float(_gn_all), it)
+                    TBW.add_scalar("게이트/출력기울기_전체노름_환산", float(_gn_all * _cv), it)
+                    TBW.add_scalar("게이트/출력기울기_노드최대_환산", float(_gmax * _cv), it)
+                    TBW.add_scalar("게이트/노드수", float(_sup.sum()), it)
             # 폐기 판정용 길이 단위 잔차.
             if _OBJ_PTS:
                 # 입자 목적함수에서는 dE/dx2 가 **탄성항을 담지 못한다** --
