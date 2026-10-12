@@ -81,7 +81,7 @@ def traj_F(d, frame_dt, dev="cuda", keep_gpu=True, on_rebuild=None):
         _Fin = d["F"]
         _id = float((_Fin[:3].float().to(dev)
                      - torch.eye(3, device=dev)).abs().max()) < 1e-6
-        if _id:
+        if _id and not d.get("F_is_true"):            # F_is_true: 항등이 실제 값인 상태(예: 정지 초기 상태) -- 되살리지 않는다
             import time
             t_ = time.time()
             Fr = phys_resid.rebuild_F(d["x"].to(dev).float(), d["cfg"], frame_dt)

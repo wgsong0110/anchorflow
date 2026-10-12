@@ -313,6 +313,52 @@ def _polar_q(F, iters=10):
     return Q
 
 
+def _fcr_grad_core(F, S, mu: float, lam: float):
+    """하한이 안 걸린 입자의 dψ/dF = 2μ(F − Q) + λ(J−1) sign(det F) cof(F)."""
+    J = S.prod(-1)
+    cof = _cof3(F)
+    dt = (F[..., 0, :] * cof[..., 0, :]).sum(-1)
+    return 2.0 * mu * (F - _polar_q(F)) + (lam * (J - 1.0) * torch.sign(dt))[..., None, None] * cof
+
+
+def _fcr_fwd_core(F, mu: float, lam: float, clamp: float):
+    """σ = √eig(FᵀF) (하한 1e-12, clamp), ψ = μΣ(σ−1)² + λ/2(Πσ−1)²  -> (ψ, σ)."""
+    C = (F.unsqueeze(-1) * F.unsqueeze(-2)).sum(-3)              # FᵀF: C_ik = Σ_j F_ji F_jk  [..,3,3]
+    S = _sym_eig3(C).clamp_min(1e-12).sqrt().clamp_min(clamp)
+    J = S.prod(-1)
+    return mu * ((S - 1.0) ** 2).sum(-1) + 0.5 * lam * (J - 1.0) ** 2, S
+
+
+_FCR_FWD = [None]
+
+
+def _fcr_fwd(F, mu, lam, clamp):
+    if _FCR_FWD[0] is None:
+        _FCR_FWD[0] = _fcr_fwd_core
+        if not os.environ.get("AF_NO_COMPILE_FCR"):
+            try:
+                _FCR_FWD[0] = torch.compile(_fcr_fwd_core, dynamic=True)
+            except Exception as e:                                     # noqa: BLE001
+                print(f"[탄성 에너지] torch.compile 실패, 그대로 쓴다: {e}", flush=True)
+    return _FCR_FWD[0](F, float(mu), float(lam), float(clamp))
+
+
+_FCR_GRAD = [None]
+
+
+def _fcr_grad(F, S, mu, lam):
+    """_fcr_grad_core 를 torch.compile 로 한 커널에 묶는다 (극분해 반복이 원소별 연산 수백 개라 그냥 돌리면 커널을 수백 번 띄운다).
+    컴파일이 안 되면 그대로 돈다. AF_NO_COMPILE_FCR=1 이면 끈다."""
+    if _FCR_GRAD[0] is None:
+        _FCR_GRAD[0] = _fcr_grad_core
+        if not os.environ.get("AF_NO_COMPILE_FCR"):
+            try:
+                _FCR_GRAD[0] = torch.compile(_fcr_grad_core, dynamic=True)
+            except Exception as e:                                     # noqa: BLE001
+                print(f"[탄성 기울기] torch.compile 실패, 그대로 쓴다: {e}", flush=True)
+    return _FCR_GRAD[0](F, S, float(mu), float(lam))
+
+
 class _FcrPsiFast(torch.autograd.Function):
     """_FcrPsi 와 같은 값·같은 기울기를 eigh·bmm 없이 (CPU 동기화·커널 수를 줄인다).
 
@@ -324,11 +370,7 @@ class _FcrPsiFast(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, F, mu, lam, clamp):
-        C = (F.unsqueeze(-1) * F.unsqueeze(-2)).sum(-3)              # FᵀF: C_ik = Σ_j F_ji F_jk  [..,3,3]
-        lamb = _sym_eig3(C)
-        S = lamb.clamp_min(1e-12).sqrt().clamp_min(clamp)
-        J = S.prod(-1)
-        psi = mu * ((S - 1.0) ** 2).sum(-1) + 0.5 * lam * (J - 1.0) ** 2
+        psi, S = _fcr_fwd(F, mu, lam, clamp)
         ctx.save_for_backward(F, S)
         ctx.mu, ctx.lam, ctx.clamp = float(mu), float(lam), float(clamp)
         return psi
@@ -337,10 +379,7 @@ class _FcrPsiFast(torch.autograd.Function):
     def backward(ctx, go):
         F, S = ctx.saved_tensors
         mu, lam, clamp = ctx.mu, ctx.lam, ctx.clamp
-        J = S.prod(-1)
-        cof = _cof3(F)
-        dt = (F[..., 0, :] * cof[..., 0, :]).sum(-1)
-        G = 2.0 * mu * (F - _polar_q(F)) + (lam * (J - 1.0) * torch.sign(dt))[..., None, None] * cof
+        G = _fcr_grad(F, S, mu, lam)
         low = S[..., 0] <= clamp                                      # 하한에 걸린 입자 (드물다)
         if bool(low.any()):                                          # 동기화 한 번
             Fl = F[low].detach()

@@ -46,7 +46,8 @@ if a.mode == "init":
     T = 61                                    # 롤아웃 길이 = 데이터 프레임 수 - 1 (정답 자리는 초기 상태 반복, 측정에 안 쓴다)
     st = {"x": x.expand(T, N, 3).clone(), "v": torch.from_numpy(V0).expand(T, N, 3).clone(),
           "F": torch.eye(3).expand(T, N, 3, 3).clone(), "sel": torch.arange(N), "cfg": cfg, "n_full": N,
-          "meta": {"source": "h5 초기 상태 (float32)", "sim": h5}, "gaussians_first": N}
+          "meta": {"source": "h5 초기 상태 (float32)", "sim": h5}, "gaussians_first": N,
+          "F_is_true": True}                    # 정지 초기 상태라 F = I 가 실제 값 (위치에서 되살리지 않는다)
     p = os.path.join(a.out, "init_state.pt")
     torch.save(st, p)
     np.save(os.path.join(a.out, "pool", "fill", f"pgfill_{shape}.npy"), X0)

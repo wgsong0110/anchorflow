@@ -1488,7 +1488,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             post_jac=(_post_jac if _need_post else None))
         if _NODE_CAP[0]:
             _sup = torch.zeros(npos.shape[0], dtype=torch.bool, device=dev)
-            _sup[rows.reshape(-1)] = True
+            _sup.index_fill_(0, rows.reshape(-1), True)       # 값 텐서를 장치로 복사하지 않는다 (동기화 없음)
             if _nod_m is None:
                 _pc = torch.zeros(x.shape[0], dtype=torch.uint8, device=dev)
             else:
