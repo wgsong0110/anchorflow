@@ -2647,6 +2647,26 @@ for it in pbar:
                     TBW.add_scalar("게이트/출력기울기_전체노름_환산", float(_gn_all * _cv), it)
                     TBW.add_scalar("게이트/출력기울기_노드최대_환산", float(_gmax * _cv), it)
                     TBW.add_scalar("게이트/노드수", float(_sup.sum()), it)
+                    if _gU.shape[1] > 3:                       # 셀 변환 반경 채널의 기울기
+                        TBW.add_scalar("게이트/반경기울기_전체노름", float(_gU[:, 3][_sup].norm()), it)
+                    # 기준 후보를 상태의 첫 값 대비 비율로도 (같은 상태를 계속 보는 순차·보정 모드에서 뜻이 있다)
+                    _first = st.setdefault("_diag_first", dict(r=float(_rout_t), g=float(_gn_all), E=float(E_ip.detach())))
+                    TBW.add_scalar("기준후보/출력잔차_처음대비", float(_rout_t) / max(_first["r"], 1e-30), it)
+                    TBW.add_scalar("기준후보/전체노름_처음대비", float(_gn_all) / max(_first["g"], 1e-30), it)
+                    TBW.add_scalar("기준후보/목적함수_처음대비", float(E_ip.detach()) / max(_first["E"], 1e-30), it)
+                    TBW.add_scalar("기준후보/목적함수", float(E_ip.detach()), it)
+                    for _nm, _pv in zip(("관성", "탄성", "중력", "경계"), _pt):
+                        TBW.add_scalar(f"목적함수항/{_nm}", float(_pv), it)
+                    # 실제 오차: 고정 정답 상태(--pool_init_traj 의 --pool_init_frame)면 다음 프레임 정답과 비교
+                    if a.pool_init_traj and a.seq_frames and _VAL:
+                        _gd = _VAL[0][1]; _tn = int(a.pool_init_frame) + int(SEQ["t"]) + 1
+                        if _tn < _gd["x"].shape[0] and _hp == FRAME_DT:
+                            _gsel = torch.arange(x2.shape[0], device=dev)
+                            _xg = take(_gd["x"][_tn], _gsel).float()
+                            TBW.add_scalar("실제오차/한스텝위치_L대비", float((x2.detach() - _xg).norm(dim=-1).mean()) / sc["ext"], it)
+                            _Fg = take(traj_F(_gd)[_tn], _gsel).float()
+                            _Fm = phys_resid.plastic_step(F_tr, dlog).detach()
+                            TBW.add_scalar("실제오차/한스텝F_평균", float((_Fm - _Fg).flatten(1).norm(dim=1).mean()), it)
             # 폐기 판정용 길이 단위 잔차.
             if _OBJ_PTS:
                 # 입자 목적함수에서는 dE/dx2 가 **탄성항을 담지 못한다** --
