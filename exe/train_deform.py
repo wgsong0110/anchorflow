@@ -269,6 +269,9 @@ ap.add_argument("--seq_frames", type=int, default=0,
 ap.add_argument("--seq_tol", type=float, default=3e-6,
                 help="수렴 판정: 학습 한 반복 사이 출력 위치 변화의 최대값이 이 값 * h/frame_dt 아래 (rep_ip --newton_tol 과 같은 기준)")
 ap.add_argument("--seq_max", type=int, default=2000, help="프레임당 반복 상한 (Adam 잡음으로 수렴 판정이 안 날 때)")
+ap.add_argument("--diag_pool", default="",
+                help="진단: --resume 체크포인트의 풀 상태를 하나씩, 그 체크포인트 가중치로 한 스텝씩만 계산해 (나이, 물리잔차, 증분 포텐셜)을 "
+                     "이 json 에 쓰고 끝낸다. 학습 경로의 계산을 그대로 쓰고 갱신·전진·폐기는 하지 않는다")
 ap.add_argument("--keep_ckpts", action="store_true", help="save_every 마다 체크포인트를 따로 남긴다 (<tag>_itNNNNNN.pt)")
 ap.add_argument("--net_inertial", action="store_true",
                 help="망 출력을 노드별 관성 예측 τ·v_n + τ²g 위의 **보정**으로 둔다 (출력만 최적화가 출발하는 그 점). "
@@ -2073,6 +2076,7 @@ if a.pool:
 # t: 지금 학습 중인 프레임(0 부터), it: 이 프레임에서 돈 반복 수, prev: 직전 반복의 출력 위치,
 # err/iters: 프레임별 (전진한 상태의 GT 오차, 걸린 반복 수), traj: 전진한 위치들 (half, cpu).
 SEQ = dict(t=0, it=0, prev=None, err=[], iters=[], capped=0, traj=[])
+_DIAG, _DIAG_I = [], [0]                                     # --diag_pool 기록과 지금 계산할 풀 자리
 if a.seq_frames:
     if not a.pool or not a.pool_init_traj:
         raise SystemExit("--seq_frames 는 풀 경로와 --pool_init_traj 가 필요하다")
@@ -2523,7 +2527,8 @@ for it in pbar:
         # 평균 잔차가 문턱을 넘으면 버린다.
         n_fresh = max(1, int(round(a.batch * a.pool_fresh)))
         lres = 0.0
-        picks = ([("pool", 0)] if a.seq_frames else POOL.sample(a.batch - n_fresh, n_fresh))
+        picks = ([("pool", 0)] if a.seq_frames else
+                 [("pool", _DIAG_I[0])] if a.diag_pool else POOL.sample(a.batch - n_fresh, n_fresh))
         for kind, slot in picks:
             if kind == "pool" and POOL.items[slot] is None:
                 continue          # 이 배치 안에서 이미 버려진 자리
@@ -2640,6 +2645,12 @@ for it in pbar:
                 _oob_t = torch.zeros_like(_res_t)
             res, _oob, _lv = torch.stack(
                 [_res_t, _oob_t, loss_p.detach().to(_res_t.dtype)]).tolist()
+            if a.diag_pool:
+                # 진단: 기록만 하고 역전파·전진·폐기 없이 다음 상태로
+                _DIAG.append(dict(age=int(st["age"]), res=float(res), hist=(float(np.mean(st["hist"])) if st["hist"] else None),
+                                  E=float(E_ip.detach()), parts=[float(q) for q in _pt], oob=float(_oob),
+                                  elapsed=float(st["elapsed"])))
+                continue
             if a.pool_whiten:
                 _PL_RMS[0] = 0.99 * _PL_RMS[0] + 0.01 * _lv ** 2
                 loss_p = loss_p / max(_PL_RMS[0] ** 0.5, 1e-12)
@@ -2681,6 +2692,14 @@ for it in pbar:
                               prev=_prev, dt_frac=1.0 / _sub)
         # 폐기율은 **최근 100 반복에서 배치 대비 몇 %가 죽었는가** 로 둔다.
         # 누적 수를 전체 반복으로 나누면 추세가 안 보이고 값도 오해를 부른다.
+        if a.diag_pool:
+            opt.zero_grad(set_to_none=True)
+            _DIAG_I[0] += 1
+            if _DIAG_I[0] >= len(POOL.items):
+                json.dump(dict(step=int(step0), n=len(_DIAG), items=_DIAG), open(a.diag_pool, "w"))
+                print(f"[진단] {a.resume} 단계 {step0}: 풀 {len(_DIAG)} 개 -> {a.diag_pool}", flush=True)
+                raise SystemExit(0)
+            continue
         _PL_DROP.append(POOL.n_drop)
         if len(_PL_DROP) > 101:
             _PL_DROP.pop(0)
