@@ -272,6 +272,9 @@ ap.add_argument("--pool_gate", type=float, default=0.0,
 ap.add_argument("--pool_gate_mode", choices=["grad", "objdec"], default="grad",
                 help="전진 기준: grad = 증분 포텐셜을 노드 출력으로 미분한 기울기 전체 L2 노름 (h²/평균노드질량/L 로 환산) ≤ --pool_gate, "
                      "objdec = 같은 상태를 다시 볼 때 직전 방문 대비 목적함수 상대 감소 < --pool_gate (정체하면 전진)")
+ap.add_argument("--ov_seq", action="store_true",
+                help="출력만 최적화 궤적 만들기: --seq_frames 순차 모드에서 망 학습 없이 프레임마다 --ov_ref 와 같은 L-BFGS 로 "
+                     "학습과 같은 증분 포텐셜을 수렴시키고 그 해로 전진한다. 궤적은 <out>/<tag>_seq_traj.pt (x, v, F 프레임별)")
 ap.add_argument("--ov_ref", action="store_true",
                 help="순차 보정 모드에서 학습 전에 같은 상태의 출력만 최적화 기준해를 L-BFGS 로 구하고 (망 고정, 노드 출력 탐침이 변수), "
                      "학습 중 그 해와의 위치·F 차이를 TB '기준해오차/' 로 기록한다")
@@ -2119,8 +2122,9 @@ def _ov_reference(ds, gsel, p_st, x, v, F, sc, h):
     def _ev():
         DM.PROBE[0], DM.PROBE[1] = "fixed", [Z]
         with dt_scope(h):
-            _x2, _, _, _, _, _, _, _, _, _Jd = step_once(ds, 0, gsel, p_st, x, v, need_J=False)
+            _x2, _, _v2, _, _, _, _, _, _, _Jd = step_once(ds, 0, gsel, p_st, x, v, need_J=False)
         _E, _dl, _Ft, _ = ip_of(x, _x2 - x, v, F, sc["mass"], vol, cfg, h, ng_, gl_, g=gv, norm=nrm, jac=_Jd)
+        _ev.v2 = _v2
         return _E, _x2, phys_resid.plastic_step(_Ft, _dl)
 
     opt_ = torch.optim.LBFGS([Z], lr=1.0, max_iter=100, history_size=50, tolerance_grad=0.0, tolerance_change=0.0,
@@ -2141,7 +2145,7 @@ def _ov_reference(ds, gsel, p_st, x, v, F, sc, h):
     for q, r in zip(net.parameters(), _req):
         q.requires_grad_(r)
     print(f"[기준해] 출력만 최적화 L-BFGS {len(hist)} 번(각 최대 100 반복): 목적함수 {hist[0]:.3e} -> {float(_E):.3e}", flush=True)
-    return dict(x2=_x2.detach(), F=_Fr.detach(), E=float(_E), hist=hist)                              # (나이, 출력잔차) 기록, [전진, 정체] 횟수 (TB 기록 뒤 비움)                                     # --diag_pool 기록과 지금 계산할 풀 자리
+    return dict(x2=_x2.detach(), v2=_ev.v2.detach(), F=_Fr.detach(), E=float(_E), hist=hist)                              # (나이, 출력잔차) 기록, [전진, 정체] 횟수 (TB 기록 뒤 비움)                                     # --diag_pool 기록과 지금 계산할 풀 자리
 if a.seq_frames:
     if not a.pool or not a.pool_init_traj:
         raise SystemExit("--seq_frames 는 풀 경로와 --pool_init_traj 가 필요하다")
@@ -2149,6 +2153,9 @@ if a.seq_frames:
     if _sq:
         SEQ.update({k_: (v_.to(dev) if (k_ == "prev" and torch.is_tensor(v_)) else v_) for k_, v_ in _sq.items()})
         SEQ["traj"] = [t_.cpu() for t_ in SEQ["traj"]]          # 체크포인트를 GPU 로 읽어 왔다
+        for _kk in ("traj_v", "traj_F"):
+            if SEQ.get(_kk):
+                SEQ[_kk] = [t_.cpu() for t_ in SEQ[_kk]]
         print(f"[순차] 재개: 프레임 {SEQ['t']} 의 {SEQ['it']} 번째 반복부터, 끝난 프레임 {len(SEQ['err'])}", flush=True)
     if not POOL.items:
         POOL.items = [POOL.fresh()]
@@ -2625,6 +2632,15 @@ for it in pbar:
                                          max(1, n_p // a.n_anchors),
                                          device=dev)[:a.n_anchors]]))
             _OV_CUR[0] = st if a.out_var else None
+            if a.ov_seq:
+                # 출력만 최적화 궤적: 이 상태의 기준해를 구해 후보로 두고(아래 순차 전진이 그대로 쓴다) 망 학습은 건너뛴다
+                _r = _ov_reference(ds, gsel, p_st, x, v, F, sc, _hp)
+                SEQ["cand"] = (_r["x2"], _r["v2"], _r["F"], None, float(_hp))
+                SEQ["prev"] = _r["x2"]                       # 출력 변화 0 -> 바로 수렴 판정
+                if TBW is not None:
+                    TBW.add_scalar("출력만최적화궤적/목적함수", _r["E"], SEQ["t"])
+                    TBW.add_scalar("출력만최적화궤적/LBFGS외곽횟수", len(_r["hist"]), SEQ["t"])
+                continue
             if a.ov_ref and not _OVREF:
                 _OVREF.update(_ov_reference(ds, gsel, p_st, x, v, F, sc, _hp))
                 if TBW is not None:
@@ -2879,6 +2895,9 @@ for it in pbar:
                                    float(_gtd.get("_ext", EXT))) if SEQ["t"] < _gtd["x"].shape[0] else float("nan"))
                 SEQ["err"].append(_e); SEQ["iters"].append(SEQ["it"]); SEQ["capped"] += int(_dmax >= a.seq_tol * _ch / FRAME_DT)
                 SEQ["traj"].append(_cx.half().cpu())
+                if a.ov_seq:                                 # 출력만 최적화 궤적은 v·F 까지 (다음 실험의 상태로 쓴다)
+                    SEQ.setdefault("traj_v", []).append(_cv.cpu()); SEQ.setdefault("traj_F", []).append(_cF.cpu())
+                    SEQ["traj"][-1] = _cx.cpu()
                 print(f"  [순차 프레임 {SEQ['t']}] 반복 {SEQ['it']}{' (상한)' if _dmax >= a.seq_tol * _ch / FRAME_DT else ''}  "
                       f"출력변화 {_dmax:.2e}  GT 오차 {_e * 100:.3f}%", flush=True)
                 if TBW is not None:
@@ -2888,7 +2907,10 @@ for it in pbar:
                 SEQ["it"], SEQ["prev"] = 0, None
                 if SEQ["t"] >= a.seq_frames:
                     save_ck("last", it + 1)
-                    torch.save({"x": torch.stack(SEQ["traj"]), "err": SEQ["err"], "iters": SEQ["iters"]},
+                    torch.save({"x": torch.stack(SEQ["traj"]), "err": SEQ["err"], "iters": SEQ["iters"],
+                                "v": (torch.stack(SEQ["traj_v"]) if SEQ.get("traj_v") else None),
+                                "F": (torch.stack(SEQ["traj_F"]) if SEQ.get("traj_F") else None),
+                                "init_frame": int(a.pool_init_frame), "traj": a.pool_init_traj},
                                os.path.join(a.out, f"{a.tag}_seq_traj.pt"))
                     print(f"[순차] {a.seq_frames} 프레임 끝 -- 학습 중 궤적 평균 GT 오차 "
                           f"{float(np.nanmean(SEQ['err'])) * 100:.3f}%, 상한 도달 {SEQ['capped']} 프레임", flush=True)
