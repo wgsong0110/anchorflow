@@ -73,6 +73,8 @@ def fast_supported(a):
         return False, "ens_off > 1 (격자 여러 개)"
     if getattr(a, "hex_jac", False):
         return False, "hex_jac"
+    if getattr(a, "gregory", False):
+        return False, "gregory (Gregory·방사형 스키닝은 아직 융합 커널에 없다)"
     if not float(getattr(a, "node_h", 0.0) or 0.0):
         return False, "node_h 없음 (셀 크기가 매 스텝 바뀌면 동기화가 필요하다)"
     if (not a.bc_soft) and a.bc_mode == "project" and a.bc_level == "particle":

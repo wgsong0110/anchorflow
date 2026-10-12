@@ -156,14 +156,16 @@ class SimplexGNN(nn.Module):
     """
 
     def __init__(self, n_feat, hidden=128, layers=8, scale=1.0,
-                 dt_cond=True, dt_ref=1.0, dt_scale=False, n_mat=0):
+                 dt_cond=True, dt_ref=1.0, dt_scale=False, n_mat=0, n_out=3):
         super().__init__()
         self.scale = scale
         self.register_buffer("in_mu", torch.zeros(n_feat))
         self.register_buffer("in_sd", torch.ones(n_feat))
         self.inp = nn.Linear(n_feat, hidden)
         self.body = nn.ModuleList([_MPLayer(hidden) for _ in range(layers)])
-        self.out = nn.Linear(hidden, 3)
+        # n_out 4 = 변위 3 + Gregory·방사형 스키닝 반경 ρ_raw 1 (lib/anchorflow/skin.py, --gregory)
+        self.n_out = int(n_out)
+        self.out = nn.Linear(hidden, self.n_out)
         nn.init.zeros_(self.out.weight)     # 시작은 항등 (변위 0)
         nn.init.zeros_(self.out.bias)
         # 물성은 씬 안에서 상수라 특징에 붙이면 채널을 상수로 채우는 셈이다.
@@ -202,4 +204,8 @@ class SimplexGNN(nn.Module):
             h = self._dtmod(h, dt, i + 1)
         # 변위는 1 차로 v*dt 라 dt 에 비례한다 (--dt_scale)
         sc = (self.scale * (dt / self.dt_ref) if self.dt_scale else self.scale)
-        return (self.out(h) * sc,)
+        o = self.out(h)
+        if self.n_out == 4:
+            # 반경 채널은 무차원 (σ 로 들어간다) -- 변위 크기·dt 비례를 곱하지 않는다
+            return (torch.cat([o[:, :3] * sc, o[:, 3:4]], -1),)
+        return (o * sc,)

@@ -29,6 +29,7 @@ from . import simplex as SX
 from . import simplex_gnn as _SGM
 from .deform import bc_features
 from .simplex_gnn import SimplexGNN, node_moments, scatter_to_nodes
+from .skin import gregory_skin
 
 FCAP = float(os.environ.get("AF_FEAT_CAP", "50"))   # 특징 상한 (발산 방지)
 N_MAT_FULL = 13      # logE, nu, xi, logρ, log1p(항복), φ, 종류4, g3
@@ -126,7 +127,8 @@ def build_net(a, n_feat, ext0, frame_dt, n_film, dev="cuda"):
                          "(격자 conv/unet 은 태그 grid-rqs-final 에 있다)")
     return SimplexGNN(n_feat=n_feat, hidden=a.hidden, layers=a.gnn_layers,
                       scale=0.02 * ext0, dt_cond=a.dt_cond, dt_ref=frame_dt,
-                      dt_scale=a.dt_scale, n_mat=n_film).to(dev)
+                      dt_scale=a.dt_scale, n_mat=n_film,
+                      n_out=(4 if getattr(a, "gregory", False) else 3)).to(dev)
 
 
 def ens_offsets(n):
@@ -242,7 +244,10 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                         raise SystemExit("--net_inertial 은 노드 관성 예측(--ov_init predict, 사면체)이 필요하다")
                     _vnk, _gqk = inertial[_k]
                     # τ 의 함수로 더해야 --v_from_dt 의 dΦ/dτ 에 관성 속도가 들어간다
-                    out = (out[0] + tau * _vnk + (tau * tau) * _gqk,) + tuple(out[1:])
+                    _io = tau * _vnk + (tau * tau) * _gqk
+                    if out[0].shape[-1] == 4:                      # 반경 채널에는 더하지 않는다
+                        _io = torch.cat([_io, torch.zeros_like(_io[:, :1])], -1)
+                    out = (out[0] + _io,) + tuple(out[1:])
                 if dp_hook is not None:
                     out = dp_hook(out)
             dpn_k = torch.nan_to_num(out[0], nan=0.0, posinf=0.0, neginf=0.0)
@@ -254,8 +259,12 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                     (tau * ctrl_scale * node_vel[_k]).detach(), dpn_k)
                 if _k == 0 and on_pin is not None:
                     on_pin(tau)
-            _duk = SX.g2p_pre(_rwk, _lmk, dpn_k)
-            _u1, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, dpn_k)
+            if getattr(a, "gregory", False):
+                # 셀 안 로컬 변환 (rep_ip ours 와 같은 Gregory·방사형 스키닝) + 노드 변위 글로벌 변환
+                _duk, _Jk = gregory_skin(x, _npk, _rwk, dpn_k[:, :3], dpn_k[:, 3], float(a.node_h))
+            else:
+                _duk = SX.g2p_pre(_rwk, _lmk, dpn_k)
+                _u1, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, dpn_k)
             if post_jac is not None:
                 _duk, _Jk = post_jac(_k, ens[_k], dpn_k, _duk, _Jk)
             _dus.append(_duk)

@@ -262,6 +262,9 @@ ap.add_argument("--infer", action="store_true",
 ap.add_argument("--probe_every", type=int, default=0,
                 help="이 반복마다 고정 확인 상태(첫 검증 궤적의 정답 프레임들)에서 한 스텝 증분 포텐셜·관성 잔차를 재서 TB 에 쓴다")
 ap.add_argument("--probe_frames", default="0,5,10,20,40,60,79")
+ap.add_argument("--gregory", action="store_true",
+                help="셀 안 로컬 변환: 출력만 최적화(rep_ip ours)와 같은 Gregory·방사형 스키닝 (lib/anchorflow/skin.py). "
+                     "망 출력이 노드당 4 채널(변위 3 + 반경 1)이 된다. --node_h 고정 셀 크기가 필요하다")
 ap.add_argument("--seq_frames", type=int, default=0,
                 help="프레임 순차 과적합: 풀 대신 상태 하나(--pool_init_traj 0 프레임)를 두고, 모델 출력이 수렴할 때까지 "
                      "그 상태에서만 학습한 뒤 수렴한 출력으로 한 프레임 전진, 이전 가중치를 초기값으로 다음 프레임 -- 이 수만큼. "
