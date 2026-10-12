@@ -43,8 +43,9 @@ if a.mode == "init":
     os.makedirs(os.path.join(a.out, "d_ref"), exist_ok=True)
     shape = os.path.basename(os.path.normpath(a.scene))
     x = torch.from_numpy(X0)
-    st = {"x": torch.stack([x, x]), "v": torch.from_numpy(V0).expand(2, N, 3).clone(),
-          "F": torch.eye(3).expand(2, N, 3, 3).clone(), "sel": torch.arange(N), "cfg": cfg, "n_full": N,
+    T = 4                                     # 데이터 로더가 프레임 4 개 이상을 요구한다 (정답 비교용 자리, 값은 초기 상태 반복)
+    st = {"x": x.expand(T, N, 3).clone(), "v": torch.from_numpy(V0).expand(T, N, 3).clone(),
+          "F": torch.eye(3).expand(T, N, 3, 3).clone(), "sel": torch.arange(N), "cfg": cfg, "n_full": N,
           "meta": {"source": "h5 초기 상태 (float32)", "sim": h5}, "gaussians_first": N}
     p = os.path.join(a.out, "init_state.pt")
     torch.save(st, p)
