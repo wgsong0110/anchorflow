@@ -96,6 +96,9 @@ ap.add_argument("--lr", type=float, default=1e-3, help="gaussim Adam")
 ap.add_argument("--k_floor", type=float, default=1e3, help="바닥 관통 벌점 (관성항 대비 배수)")
 ap.add_argument("--k_contact", type=float, default=1e3, help="물체 간 접촉 벌점 (관성항 대비 배수)")
 ap.add_argument("--out", required=True)
+ap.add_argument("--state_out", default="",
+                help="프레임마다 전체 입자 상태 (위치, 속도, 탄성 F) 를 train_deform 이 읽는 .pt 로 (half). 출력만 최적화 궤적을 "
+                     "학습 기준 지표 검증의 정답 궤적으로 쓰려고 (2026-10-12)")
 ap.add_argument("--video", default="")
 ap.add_argument("--render_ref", action="store_true", help="기준 궤적만 같은 렌더러로 영상으로 (최적화 없음)")
 ap.add_argument("--tb", default="auto")
@@ -465,6 +468,9 @@ if a.tb != "none":
     _tb = a.tb if a.tb != "auto" else os.path.join(f"{W}/tbrf", "ip_" + os.path.splitext(os.path.basename(a.out))[0])
     TB = SummaryWriter(_tb, purge_step=T_START)
 t0 = time.time()
+SOUT = [(X0.half().cpu(), V0.half().cpu(), torch.eye(3).expand(N, 3, 3).half().clone())] if a.state_out else None
+if a.state_out and T_START > 1:
+    raise SystemExit("--state_out 은 이어 돌리기를 지원하지 않는다 (처음부터, --ckpt_every 0)")
 if a.stab_out:
     from anchorflow import stabstat as _ss
     _SUB = torch.as_tensor(_ss.subset(N), device=dev)
@@ -833,6 +839,8 @@ for t in range(T_START, a.frames + 1):
             xn = x1
             if ks < a.substeps - 1:
                 continue
+            if a.state_out:
+                SOUT.append((xn.half().cpu(), vn.half().cpu(), Fe.half().cpu()))
             if a.stab_out:
                 torch.cuda.synchronize(); STT.append(time.time() - _tf)
                 STROWS.append(_ss.frame_stats(xn.cpu().numpy(), vn.cpu().numpy(), Fe.cpu().numpy(), _MASSN, g.tolist(), _FZ, **_EK))
@@ -895,6 +903,12 @@ if a.stab_out:
 R = np.array(rows)
 print(f"[요약] {a.method}  RMSE {100 * R[:, 1].mean():.3f}%  CD {100 * R[:, 2].mean():.3f}%  "
       f"det 최소 {R[:, 4].min():.4f}  뒤집힘 최대 {100 * R[:, 5].max():.2f}%", flush=True)
+if a.state_out:
+    _SX, _SV, _SF = (torch.stack([q[i] for q in SOUT]) for i in range(3))
+    torch.save({"x": _SX, "v": _SV, "F": _SF, "sel": torch.arange(N), "cfg": cfg, "n_full": int(N),
+                "meta": {"source": "rep_ip " + a.method, "substeps": a.substeps, "sim": a.sim}, "gaussians_first": int(N)},
+               a.state_out)
+    print(f"[상태 저장] {a.state_out}  {_SX.shape[0]} 프레임 x {N} 입자", flush=True)
 np.savez_compressed(a.out, metrics=R, L=L, phys=np.array(PHYS), ip=np.array(IPV),
                     traj=np.stack(TRAJ), emd_t=np.array([q[0] for q in EMDP]),
                     emd_y=np.stack([q[1] for q in EMDP]), emd_tgt=np.stack([q[2] for q in EMDP]),
