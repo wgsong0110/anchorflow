@@ -265,6 +265,16 @@ ap.add_argument("--probe_frames", default="0,5,10,20,40,60,79")
 ap.add_argument("--gregory", action="store_true",
                 help="셀 안 로컬 변환: 출력만 최적화(rep_ip ours)와 같은 Gregory·방사형 스키닝 (lib/anchorflow/skin.py). "
                      "망 출력이 노드당 4 채널(변위 3 + 반경 1)이 된다. --node_h 고정 셀 크기가 필요하다")
+ap.add_argument("--pool_gate", type=float, default=0.0,
+                help="0 보다 크면 새 풀 규칙: 증분 포텐셜을 노드 변위 출력으로 미분한 노드별 벡터의 크기 × h²/노드질량 ÷ L 의 "
+                     "노드 평균(출력 공간 정류 잔차)이 이 값 이하일 때만 상태를 전진시킨다. 넘으면 전진 없이 풀에 남긴다. "
+                     "관성 잔차 문턱 폐기·되돌리기는 쓰지 않는다")
+ap.add_argument("--pool_rdrop", type=float, default=0.0,
+                help="--pool_gate 에서 풀 상태를 방문할 때마다 이 확률로 무작위로 버린다 (빈자리는 새 상태로)")
+ap.add_argument("--pool_noexpire", action="store_true",
+                help="--pool_gate 에서 나이 --pool_frames 만기도 끈다 (기본은 평가 지평을 넘는 상태만 뺀다)")
+ap.add_argument("--pool_init_frame", type=int, default=0,
+                help="--pool_init_traj 의 몇 번째 프레임을 고정 초기 상태로 쓸지 (문턱 보정용 출력만 최적화에 쓴다)")
 ap.add_argument("--seq_frames", type=int, default=0,
                 help="프레임 순차 과적합: 풀 대신 상태 하나(--pool_init_traj 0 프레임)를 두고, 모델 출력이 수렴할 때까지 "
                      "그 상태에서만 학습한 뒤 수렴한 출력으로 한 프레임 전진, 이전 가중치를 초기값으로 다음 프레임 -- 이 수만큼. "
@@ -2020,8 +2030,8 @@ if a.pool:
     _PINIT = None
     if a.pool_init_traj:
         _pi = torch.load(a.pool_init_traj, map_location="cpu", weights_only=False)
-        _PINIT = tuple(_pi[k][0].to(dev).float().contiguous() for k in ("x", "v", "F"))
-        print(f"[풀] 고정 초기 상태: {a.pool_init_traj} 0 프레임 (속도 크기 평균 {float(_PINIT[1].norm(dim=-1).mean()):.3f})", flush=True)
+        _PINIT = tuple(_pi[k][int(a.pool_init_frame)].to(dev).float().contiguous() for k in ("x", "v", "F"))
+        print(f"[풀] 고정 초기 상태: {a.pool_init_traj} {a.pool_init_frame} 프레임 (속도 크기 평균 {float(_PINIT[1].norm(dim=-1).mean()):.3f})", flush=True)
     _PDATA = None
     if a.pool_data:
         _PDATA = []
@@ -2079,7 +2089,8 @@ if a.pool:
 # t: 지금 학습 중인 프레임(0 부터), it: 이 프레임에서 돈 반복 수, prev: 직전 반복의 출력 위치,
 # err/iters: 프레임별 (전진한 상태의 GT 오차, 걸린 반복 수), traj: 전진한 위치들 (half, cpu).
 SEQ = dict(t=0, it=0, prev=None, err=[], iters=[], capped=0, traj=[])
-_DIAG, _DIAG_I = [], [0]                                     # --diag_pool 기록과 지금 계산할 풀 자리
+_DIAG, _DIAG_I = [], [0]
+_GATE_LOG, _GATE_N = [], [0, 0]                              # (나이, 출력잔차) 기록, [전진, 정체] 횟수 (TB 기록 뒤 비움)                                     # --diag_pool 기록과 지금 계산할 풀 자리
 if a.seq_frames:
     if not a.pool or not a.pool_init_traj:
         raise SystemExit("--seq_frames 는 풀 경로와 --pool_init_traj 가 필요하다")
@@ -2470,13 +2481,14 @@ if a.out_var or a.ov_roll > 0:
             _hm = _NOD_M[0]
             st["ov_idx"][_k] = (None if _hm is None else
                                 (~_hm).nonzero(as_tuple=True)[0])
-            z = torch.zeros(M, 3, dtype=dtype, device=device)
+            _no = 4 if a.gregory else 3                 # --gregory: 변위 3 + 반경 1
+            z = torch.zeros(M, _no, dtype=dtype, device=device)
             if a.ov_init in ("target", "predict"):
                 if not torch.is_tensor(_OV_TGT[0]):
                     raise SystemExit(f"--ov_init {a.ov_init} 은 --ov_roll 에서만")
-                z = z + _OV_TGT[0].to(dtype).reshape(-1, 3)
+                z[:, :3] = z[:, :3] + _OV_TGT[0].to(dtype).reshape(-1, 3)
             if a.ov_init == "randn":
-                z = a.ov_init_std * torch.randn(M, 3, dtype=dtype,
+                z = a.ov_init_std * torch.randn(M, _no, dtype=dtype,
                                                 device=device)
             st["ov_M"][_k] = M
             if st["ov_idx"][_k] is not None:
@@ -2484,7 +2496,7 @@ if a.out_var or a.ov_roll > 0:
             st["ov"][_k] = z.requires_grad_(True)
         _v = st["ov"][_k]
         if st["ov_idx"][_k] is not None:
-            _z = torch.zeros(st["ov_M"][_k], 3, dtype=_v.dtype,
+            _z = torch.zeros(st["ov_M"][_k], _v.shape[-1], dtype=_v.dtype,
                              device=_v.device)
             return (_z.index_copy(0, st["ov_idx"][_k], _v),)
         return (_v,)
@@ -2610,6 +2622,16 @@ for it in pbar:
                     x, x2 - x, v, F, sc["mass"], vol, cfg, _hp, ng_, gl_,
                     g=gv, norm=nrm, free=fm, jac=_Jd,
                     elastic_mask=_emask)
+            # 출력 공간 정류 잔차 (--pool_gate 판정·기록): 증분 포텐셜을 노드 변위 출력 U 로 미분한 노드별 벡터의 크기에
+            # h²/노드질량 을 곱해 길이로 바꾸고 L 로 나눈 노드 평균. 노드질량 = ∂(Σ m x₂)/∂U = Σ_p m_p W_pn (스키닝 가중치 그대로).
+            # 탄성·접촉·관성이 모두 들어 있고, 출력이 증분 포텐셜의 최소점이면 0 이다.
+            _rout_t = None
+            if (a.pool_gate > 0 or a.out_var) and torch.is_tensor(_dp) and _dp.requires_grad:
+                _gU, = torch.autograd.grad(E_ip * nrm, _dp, retain_graph=True)
+                _mN, = torch.autograd.grad((sc["mass"].unsqueeze(-1) * x2).sum(), _dp, retain_graph=True)
+                _mN = _mN[:, 0]
+                _sup = _mN > 1e-9 * _mN.max().clamp_min(1e-30)
+                _rout_t = ((_gU[:, :3].norm(dim=-1)[_sup] * (_hp ** 2) / _mN[_sup]).mean() / sc["ext"]).detach()
             # 폐기 판정용 길이 단위 잔차.
             if _OBJ_PTS:
                 # 입자 목적함수에서는 dE/dx2 가 **탄성항을 담지 못한다** --
@@ -2648,11 +2670,13 @@ for it in pbar:
                 _oob_t = torch.zeros_like(_res_t)
             res, _oob, _lv = torch.stack(
                 [_res_t, _oob_t, loss_p.detach().to(_res_t.dtype)]).tolist()
+            _rout = float(_rout_t) if _rout_t is not None else float("nan")
+            _GATE_LOG.append((int(st["age"]), _rout))
             if a.diag_pool:
                 # 진단: 기록만 하고 역전파·전진·폐기 없이 다음 상태로
                 _DIAG.append(dict(age=int(st["age"]), res=float(res), hist=(float(np.mean(st["hist"])) if st["hist"] else None),
                                   E=float(E_ip.detach()), parts=[float(q) for q in _pt], oob=float(_oob),
-                                  elapsed=float(st["elapsed"])))
+                                  elapsed=float(st["elapsed"]), rout=_rout))
                 continue
             if a.pool_whiten:
                 _PL_RMS[0] = 0.99 * _PL_RMS[0] + 0.01 * _lv ** 2
@@ -2683,14 +2707,22 @@ for it in pbar:
                     SEQ["cand"] = (x2.detach(), v2.detach(),
                                    phys_resid.plastic_step(F_tr, dlog).detach(),
                                    p2.detach() if torch.is_tensor(p2) else None, float(_hp))
+                elif a.pool_gate > 0 and not (_rout <= a.pool_gate):
+                    _GATE_N[1] += 1                          # 기준 못 넘음: 전진 없이 같은 상태로 남긴다
                 elif not a.out_var:
+                    if a.pool_gate > 0:
+                        _GATE_N[0] += 1
                     st["x"] = x2.detach()
                     st["v"] = v2.detach()
                     st["F"] = phys_resid.plastic_step(F_tr, dlog).detach()
                     st["p"] = p2.detach() if torch.is_tensor(p2) else None
                 # out_var 는 상태를 **전진시키지 않는다** -- 같은 상태의 노드
                 # 출력을 계속 최적화해 하한까지 내린다 (노드 집합도 고정된다)
-            if not a.seq_frames:
+            if a.pool_gate > 0 and not a.seq_frames:
+                POOL.put_back_gate(slot if kind == "pool" else None, st,
+                                   advanced=bool(_rout <= a.pool_gate) and not a.out_var,
+                                   rdrop=a.pool_rdrop, expire=not a.pool_noexpire, dt_frac=1.0 / _sub)
+            elif not a.seq_frames:
                 POOL.put_back(slot if kind == "pool" else None, st, res,
                               prev=_prev, dt_frac=1.0 / _sub)
         # 폐기율은 **최근 100 반복에서 배치 대비 몇 %가 죽었는가** 로 둔다.
@@ -2764,6 +2796,22 @@ for it in pbar:
                 TBW.add_scalar("학습/목적함수", lx, it)
                 TBW.add_scalar("학습/잔차", lres, it)
                 TBW.add_scalar("학습/기울기노름", float(gn), it)
+                if _GATE_LOG:
+                    _gr = np.asarray([q[1] for q in _GATE_LOG], dtype=np.float64)
+                    _gr = _gr[np.isfinite(_gr)]
+                    if len(_gr):
+                        TBW.add_scalar("게이트/출력잔차_중앙", float(np.median(_gr)), it)
+                        TBW.add_scalar("게이트/출력잔차_상위10%", float(np.quantile(_gr, 0.9)), it)
+                    if a.pool_gate > 0:
+                        TBW.add_scalar("게이트/통과율", _GATE_N[0] / max(_GATE_N[0] + _GATE_N[1], 1), it)
+                        TBW.add_scalar("풀/무작위폐기누적", getattr(POOL, "n_rdrop", 0), it)
+                        TBW.add_scalar("풀/만기누적", getattr(POOL, "n_expire", 0), it)
+                        _stk = [q.get("stuck", 0) for q in POOL.items if q is not None] or [0]
+                        TBW.add_scalar("풀/정체_최대", max(_stk), it)
+                        TBW.add_scalar("풀/정체_평균", float(np.mean(_stk)), it)
+                    if it % 200 == 0 and len(_gr):
+                        TBW.add_histogram("게이트분포/출력잔차", np.log10(np.maximum(_gr, 1e-12)), it)
+                    _GATE_LOG.clear(); _GATE_N[0] = _GATE_N[1] = 0
                 TBW.add_scalar("학습/학습률", float(opt.param_groups[0]["lr"]), it)
                 TBW.add_scalar("풀/폐기누적", POOL.n_drop, it)
                 TBW.add_scalar("풀/폐기율", still, it)

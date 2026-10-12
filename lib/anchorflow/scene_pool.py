@@ -233,8 +233,9 @@ class StatePool:
                 v=q["v"].detach().cpu(), F=q["F"].detach().cpu(),
                 p=(q["p"].detach().cpu() if torch.is_tensor(q["p"]) else None),
                 plan=q["plan"].pack(), elapsed=float(q["elapsed"]),
-                hist=list(q["hist"]), age=int(q["age"])))
+                hist=list(q["hist"]), age=int(q["age"]), stuck=int(q.get("stuck", 0))))
         return dict(items=items, n_drop=self.n_drop, n_keep=self.n_keep,
+                    n_rdrop=getattr(self, "n_rdrop", 0), n_expire=getattr(self, "n_expire", 0),
                     n_replan=self.n_replan, fresh_res=list(self.fresh_res),
                     tags=[t for t, _ in self.scenes])
 
@@ -256,10 +257,11 @@ class StatePool:
                 p=(q["p"].to(self.dev) if torch.is_tensor(q["p"]) else None),
                 plan=HandlePlan.unpack(q["plan"], self.dev),
                 elapsed=float(q["elapsed"]), hist=list(q["hist"]),
-                age=int(q["age"])))
+                age=int(q["age"]), stuck=int(q.get("stuck", 0))))
         self.n_drop = int(d.get("n_drop", 0))
         self.n_keep = int(d.get("n_keep", 0))
         self.n_replan = int(d.get("n_replan", 0))
+        self.n_rdrop = int(d.get("n_rdrop", 0)); self.n_expire = int(d.get("n_expire", 0))
         self.fresh_res = list(d.get("fresh_res") or [])
         return len(self.items), n_skip
 
@@ -337,6 +339,42 @@ class StatePool:
             picks += [("pool", i) for i in sel]
         picks += [("fresh", None)] * n_fresh
         return picks
+
+    def put_back_gate(self, slot, st, advanced, rdrop=0.0, expire=True, dt_frac=1.0):
+        """새 풀 규칙 (--pool_gate): 전진 여부는 호출 쪽이 출력 공간 정류 잔차로 정했다.
+
+        전진했으면 나이·경과 시간을 올리고 정체 수를 0 으로, 아니면 정체 수만 올린다. 폐기는 **무작위** (풀 상태를
+        방문할 때마다 확률 rdrop) 와 비유한, 그리고 expire 면 나이가 frames 에 닿은 상태(평가 지평 밖)뿐이다.
+        새 상태는 풀이 차 있지 않을 때 (전진했든 아니든) 들어간다.
+        """
+        if advanced:
+            st["age"] += 1
+            st["elapsed"] += float(dt_frac)
+            st["stuck"] = 0
+            if st["elapsed"] >= self.frames or st["plan"].arrived(st["x"]):
+                st["plan"] = HandlePlan.sample(st["x"], self.n_ctrl, self.radius, self.gen, self.dev, self.cand,
+                                               self.frames, acc=self.acc, vmax=self.vmax, zbias=self.zbias)
+                st["elapsed"] = 0
+                self.n_replan += 1
+        else:
+            st["stuck"] = st.get("stuck", 0) + 1
+        dead = not bool(torch.isfinite(st["x"]).all())
+        if not dead and expire and st["age"] >= self.frames:
+            self.n_expire = getattr(self, "n_expire", 0) + 1
+            dead = True
+        if not dead and slot is not None and rdrop > 0 and \
+                float(torch.rand(1, generator=self.gen, device=self.dev)) < rdrop:
+            self.n_rdrop = getattr(self, "n_rdrop", 0) + 1
+            dead = True
+        if dead:
+            if slot is not None:
+                self.items[slot] = None
+            return False
+        if slot is not None:
+            self.items[slot] = st
+        elif len(self.items) < self.size:
+            self.items.append(st)
+        return True
 
     def put_back(self, slot, st, res, prev=None, dt_frac=1.0):
         """한 스텝 진행한 상태를 되돌려 놓는다. 문턱을 넘으면 버린다.
