@@ -165,13 +165,13 @@ def _one(h, depth=0):
         if nb:
             for k in _PF:
                 t_ = wp.to_torch(getattr(sol.mpm_state, k))
-                if t_.dtype.is_floating_point:
-                    t_[bad] = pre[k][bad]
+                if t_.dtype.is_floating_point:                   # 공분산처럼 입자당 여러 값이 1 차원으로 펼쳐진 필드도 있다
+                    t_.view(N, -1)[bad] = pre[k].view(N, -1)[bad]
             wp.to_torch(sol.mpm_state.particle_v)[bad] = 0.0
             for nm, key in (("_prev_particle_v", "_pv"), ("_particle_a", "_pa")):
                 q = getattr(sol, nm, None)
                 if pre[key] is not None and q is not None:
-                    (wp.to_torch(q) if isinstance(q, wp.array) else q)[bad] = pre[key][bad]
+                    (wp.to_torch(q) if isinstance(q, wp.array) else q).view(N, -1)[bad] = pre[key].view(N, -1)[bad]
         X_ = wp.to_torch(sol.mpm_state.particle_x); V_ = wp.to_torch(sol.mpm_state.particle_v)
         SAFE_N[0] += nb + ss.safe_fix(X_, V_, None, pre["particle_x"], _SP)
         torch.cuda.synchronize()
