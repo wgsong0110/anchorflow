@@ -271,8 +271,9 @@ ap.add_argument("--pool_gate", type=float, default=0.0,
                      "관성 잔차 문턱 폐기·되돌리기는 쓰지 않는다")
 ap.add_argument("--pool_rdrop", type=float, default=0.0,
                 help="--pool_gate 에서 풀 상태를 방문할 때마다 이 확률로 무작위로 버린다 (빈자리는 새 상태로)")
-ap.add_argument("--pool_noexpire", action="store_true",
-                help="--pool_gate 에서 나이 --pool_frames 만기도 끈다 (기본은 평가 지평을 넘는 상태만 뺀다)")
+ap.add_argument("--pool_expire", action="store_true",
+                help="--pool_gate 에서 나이 --pool_frames 에 닿은 상태를 만기로 뺀다. 기본은 만기 없음 "
+                     "(사용자 2026-10-12: 같은 시기에 들어온 상태가 한꺼번에 빠지는 문제 때문에 기본에서 뺀다)")
 ap.add_argument("--pool_init_frame", type=int, default=0,
                 help="--pool_init_traj 의 몇 번째 프레임을 고정 초기 상태로 쓸지 (문턱 보정용 출력만 최적화에 쓴다)")
 ap.add_argument("--seq_frames", type=int, default=0,
@@ -2724,7 +2725,7 @@ for it in pbar:
             if a.pool_gate > 0 and not a.seq_frames:
                 POOL.put_back_gate(slot if kind == "pool" else None, st,
                                    advanced=bool(_rout <= a.pool_gate) and not a.out_var,
-                                   rdrop=a.pool_rdrop, expire=not a.pool_noexpire, dt_frac=1.0 / _sub)
+                                   rdrop=a.pool_rdrop, expire=a.pool_expire, dt_frac=1.0 / _sub)
             elif not a.seq_frames:
                 POOL.put_back(slot if kind == "pool" else None, st, res,
                               prev=_prev, dt_frac=1.0 / _sub)
