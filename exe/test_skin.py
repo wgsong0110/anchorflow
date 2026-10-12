@@ -28,6 +28,7 @@ with torch.no_grad():
     L.u.copy_(0.01 * torch.randn_like(L.u))
     L.rho_raw.copy_(torch.randn_like(L.rho_raw))
     y0, J0 = L.yJ(P, torch.arange(P.shape[0], device=dev))
-    y1, J1 = gregory_skin(P, L.Xn, L.rows, L.u, L.rho_raw, h)
+    y1, D1 = gregory_skin(P, L.Xn, L.rows, L.u, L.rho_raw, h)
+    J1 = D1 + torch.eye(3, device=dev)                                 # 스키닝은 ∇u 만 낸다
 print(f"[스키닝 일치] 노드 {L.Xn.shape[0]}, 입자 {P.shape[0]}, 변위 최대차 {float((y0 - y1).abs().max()):.3e} "
       f"(변위 크기 {float(y0.abs().max()):.3e}), 야코비안 최대차 {float((J0 - J1).abs().max()):.3e}", flush=True)
