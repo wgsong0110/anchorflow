@@ -1,7 +1,7 @@
 """서브스텝 안정성: 기본 실행 조합(train_deform 출력만 최적화 --ov_seq)으로 우리 방법을 돌리기 위한 앞뒤 처리.
 
 init : stab/<형상>/init 의 h5 에서 float32 초기 상태(.pt, F=I)와 풀 채우기·설정·데이터 디렉토리를 만든다
-conv : <tag>_seq_traj.pt (프레임 경계만 저장) -> rep_ip --stab_out 과 같은 형식의 npz (같은 부분표본·같은 stabstat)
+conv : --ov_roll 롤아웃 덤프 (프레임 경계 x·v·F) -> rep_ip --stab_out 과 같은 형식의 npz (같은 부분표본·같은 stabstat)
 """
 import argparse, glob, json, os, sys
 import numpy as np, torch, h5py
@@ -13,7 +13,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("mode", choices=["init", "conv"])
 ap.add_argument("--scene", required=True, help="stab/<형상> 디렉토리 (init/ 와 config.json)")
 ap.add_argument("--out", required=True, help="init: 출력 디렉토리 / conv: npz 경로")
-ap.add_argument("--seq", default="", help="conv: <tag>_seq_traj.pt")
+ap.add_argument("--seq", default="", help="conv: AF_ROLL_DUMP 롤아웃 덤프 (.pt: pred, v, F)")
 ap.add_argument("--substeps", type=int, default=1)
 a = ap.parse_args()
 
@@ -43,7 +43,7 @@ if a.mode == "init":
     os.makedirs(os.path.join(a.out, "d_ref"), exist_ok=True)
     shape = os.path.basename(os.path.normpath(a.scene))
     x = torch.from_numpy(X0)
-    T = 4                                     # 데이터 로더가 프레임 4 개 이상을 요구한다 (정답 비교용 자리, 값은 초기 상태 반복)
+    T = 61                                    # 롤아웃 길이 = 데이터 프레임 수 - 1 (정답 자리는 초기 상태 반복, 측정에 안 쓴다)
     st = {"x": x.expand(T, N, 3).clone(), "v": torch.from_numpy(V0).expand(T, N, 3).clone(),
           "F": torch.eye(3).expand(T, N, 3, 3).clone(), "sel": torch.arange(N), "cfg": cfg, "n_full": N,
           "meta": {"source": "h5 초기 상태 (float32)", "sim": h5}, "gaussians_first": N}
@@ -58,7 +58,7 @@ if a.mode == "init":
     print(f"[초기 상태] {p}  입자 {N}  바닥 {ZF}", flush=True)
 else:
     q = torch.load(a.seq, map_location="cpu", weights_only=False)
-    xs, vs, Fs = q["x"].float().numpy(), q["v"].float().numpy(), q["F"].float().numpy()
+    xs, vs, Fs = q["pred"].float().numpy(), q["v"].float().numpy(), q["F"].float().numpy()
     sub = ss.subset(N)
     rows = [ss.frame_stats(X0, V0, np.tile(np.eye(3), (N, 1, 1)), MASS, g, ZF, **EK)]
     X = [X0[sub]]

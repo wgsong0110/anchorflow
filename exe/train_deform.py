@@ -3101,6 +3101,7 @@ for it in pbar:
 # ---------------------------------------------------------------- 평가
 _ROLLDUMP = None
 _FCUM, _FDUMP = [None], []
+_VDUMP = []                 # 롤아웃 덤프: 프레임 경계 속도 (--ov_roll)
 
 
 def _ov_once(d, t, gsel, p, x, v, F, off=None):
@@ -3116,16 +3117,16 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     vol = m / float(cfg["density"])
     gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
     ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
-    nrm = float(m.sum()) * (EXT ** 2) / (FRAME_DT ** 2)
+    nrm = float(m.sum()) * (EXT ** 2) / (_DT[0] ** 2)
     st, E0, E1 = {}, None, None
     _E0, _tr = [None], []
     _trp = []                  # 항별 곡선 [(관성, 탄성, 접촉), ...]
 
     def _fwd():
-        with torch.enable_grad(), dt_scope(FRAME_DT):
+        with torch.enable_grad(), dt_scope(_DT[0]):
             x2, _, v2, _, _, _, _, _, _, _Jd = step_once(
                 d, t, gsel, p, x, v, need_J=False)
-        _hd = release_held(d, x, t, FRAME_DT)
+        _hd = release_held(d, x, t, _DT[0])
         if _hd is not None:
             # 아직 안 풀린 입자는 **제자리에 박는다** (PG 는 속도를 0 으로 둔다)
             x2 = torch.where(_hd.unsqueeze(-1), x, x2)
@@ -3155,7 +3156,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                                                         ).values
             _sd2 = _dd - _R2                       # 구 밖이면 양수
             _bb = phys_resid._barrier_b(_sd2, _dh2, ext_kind="linear")
-            _ecb = (a.ctrl_barrier * m / (FRAME_DT ** 2) * _bb
+            _ecb = (a.ctrl_barrier * m / (_DT[0] ** 2) * _bb
                     * d["_cb_out"].to(_bb.dtype)).sum()
         else:
             _ecb = None
@@ -3169,17 +3170,17 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     ).sum()
             _du = x2 - x
             _w = (torch.ones_like(m) if fm is None else fm.to(m.dtype))
-            _ein = (0.5 * _w * m / (FRAME_DT ** 2)
-                    * ((_du - FRAME_DT * v - (FRAME_DT ** 2) * gv) ** 2
+            _ein = (0.5 * _w * m / (_DT[0] ** 2)
+                    * ((_du - _DT[0] * v - (_DT[0] ** 2) * gv) ** 2
                        ).sum(-1)).sum()
-            _ebc = phys_resid.bc_energy(x, _du, m, cfg, FRAME_DT, gl_, ng_)
+            _ebc = phys_resid.bc_energy(x, _du, m, cfg, _DT[0], gl_, ng_)
             E = (_ein + _eel + _ebc) / nrm
             dlog, F_tr = None, _Jd.to(F.dtype) @ F
             _pt = (_ein.detach(), _eel.detach(), torch.zeros(()),
                    _ebc.detach() if torch.is_tensor(_ebc)
                    else torch.zeros(()))
         else:
-            E, dlog, F_tr, _pt = ip_of(x, x2 - x, v, F, m, vol, cfg, FRAME_DT,
+            E, dlog, F_tr, _pt = ip_of(x, x2 - x, v, F, m, vol, cfg, _DT[0],
                                        ng_, gl_, g=gv, norm=nrm, free=fm,
                                        jac=_Jd)
         if _ecb is not None:
@@ -3201,7 +3202,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             """V psi 의 J 에 대한 1차 미분 [N,3,3] (자동미분 1 회)."""
             with torch.enable_grad():
                 _Jx = Jv.detach().clone().requires_grad_(True)
-                _ps, _ = phys_resid.psi_of(_Jx @ F, cfg, FRAME_DT)
+                _ps, _ = phys_resid.psi_of(_Jx @ F, cfg, _DT[0])
                 return torch.autograd.grad((vol * _ps).sum(), _Jx)[0].detach()
 
         _I3L = torch.eye(3, device=dev, dtype=F.dtype).expand(
@@ -3271,7 +3272,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     _GRID_OFF[0] = off
     _SM_HOLD[0] = "want"
     _OV_TGT[0] = ("want" if a.ov_init == "predict" else
-                  (FRAME_DT * v.mean(0) + (FRAME_DT ** 2) * gv).detach())
+                  (_DT[0] * v.mean(0) + (_DT[0] ** 2) * gv).detach())
     _HX_HOLD[0] = {}              # 육면체 색인도 프레임당 한 번만
     _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
     try:
@@ -3289,16 +3290,16 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _r = _lx0[1][:, _j]
                 _b0[_ar0, _r + 1] += _Ai0[_j]
                 _b0[_ar0, _r] -= _Ai0[_j]
-            _tg0 = FRAME_DT * v + (FRAME_DT ** 2) * gv
-            if release_held(d, x, t, FRAME_DT) is not None:
+            _tg0 = _DT[0] * v + (_DT[0] ** 2) * gv
+            if release_held(d, x, t, _DT[0]) is not None:
                 raise SystemExit("--fused 는 release 구속(모래성 씬)을 아직 "
                                  "지원하지 않는다. 그 씬은 --fused 없이 돌릴 것")
             _fm0 = (free_mask(d, x.shape[0], dev, gsel, x, t)
                     if a.control else None)
             _w0 = (torch.ones_like(m) if _fm0 is None
                    else _fm0.to(m.dtype))
-            _mh0 = _w0 * m / (FRAME_DT ** 2)      # 관성 (구속 입자 제외)
-            _mb0 = m / (FRAME_DT ** 2)            # 접촉·장벽 (전체 질량)
+            _mh0 = _w0 * m / (_DT[0] ** 2)      # 관성 (구속 입자 제외)
+            _mb0 = m / (_DT[0] ** 2)            # 접촉·장벽 (전체 질량)
             _bc0 = None
             for _bcd in (cfg.get("boundary_conditions") or []):
                 if _bcd.get("type") == "surface_collider":
@@ -3504,7 +3505,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         x2, v2, E, dlog, F_tr, _pt, _Jd = _fwd()
         E1 = float(E)
         if os.environ.get("AF_OV_DIAG"):
-            _tg = (FRAME_DT * v + (FRAME_DT ** 2) * gv)
+            _tg = (_DT[0] * v + (_DT[0] ** 2) * gv)
             _du = x2 - x
             print(f"    [항] t={t} 관성 {float(_pt[0]):.4e} 탄성 "
                   f"{float(_pt[1]):.4e} 접촉 {float(_pt[3]):.4e} | "
@@ -3828,7 +3829,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     _JR_HOLD[0] = None
     with torch.no_grad():
         F_tr = Jd.to(F.dtype) @ F
-        _, dlog = phys_resid.psi_of(F_tr, cfg, FRAME_DT)
+        _, dlog = phys_resid.psi_of(F_tr, cfg, _DT[0])
         F_next = phys_resid.plastic_step(F_tr, dlog).detach()
     return x2.detach(), v2.detach(), F_next
 
@@ -3889,7 +3890,12 @@ def _rollout(d, t0, L, gsel=None):
         p = _S["p"]
         if a.ov_roll > 0:
             # 출력만 최적화: 서브스텝·jvp 없이 프레임마다 변수를 내린다
-            x2, v, _S["F_ov"] = _ov_frame(d, t0 + i, gsel, p, x, v, _S["F_ov"])
+            # 서브스텝: 한 프레임을 EVAL_SUB 번에 나눠 스텝마다 변수를 새로 내린다 (dt = FRAME_DT / EVAL_SUB)
+            with dt_scope(FRAME_DT / EVAL_SUB):
+                x2 = x
+                for _sb in range(EVAL_SUB):
+                    x2, v, _S["F_ov"] = _ov_frame(d, t0 + i, gsel, p, x2, v, _S["F_ov"])
+            _S["v_last"] = v
             if _ROLLDUMP is not None and _FCUM[0] is not None:
                 _FCUM[0] = _S["F_ov"].detach().float()          # 출력만 최적화가 실제로 굴린 F (렌더용)
         else:
@@ -3926,8 +3932,10 @@ def _rollout(d, t0, L, gsel=None):
         F_ov = _S["F_ov"]
         if _ROLLDUMP is not None:
             _ROLLDUMP.append((x2.detach().cpu(), gt.detach().cpu()))
+            if _S.get("v_last") is not None:
+                _VDUMP.append(_S["v_last"].detach().float().cpu())
             if _FCUM[0] is not None:
-                _FDUMP.append(_FCUM[0].half().cpu())
+                _FDUMP.append(_FCUM[0].float().cpu() if os.environ.get("AF_ROLL_DUMP_F") == "32" else _FCUM[0].half().cpu())
             if _NODE_LAST[0] is not None:
                 _NODEDUMP.append(_NODE_LAST[0])
             if F_ov is not None:
@@ -4033,6 +4041,7 @@ for tag, d in TR + held:
                  and t0 == int(os.environ.get("AF_ROLL_T0", "3")))
         _ROLLDUMP = [] if _want else None
         _NODEDUMP, _DETDUMP = [], []
+        _VDUMP.clear()
         _FDUMP.clear()
         # gsel 은 **그 궤적의** 입자 수로 만든다 (궤적마다 다를 수 있고, 풀
         # 루프가 전역 N_FULL 을 씬 값으로 덮어써 전역을 믿을 수 없다).
@@ -4061,7 +4070,9 @@ for tag, d in TR + held:
                         # 것을 쓴다 (덤프를 렌더할 때 길이 단위가 된다)
                         "EXT": float(d.get("_ext", EXT)),
                         # [L,N,3,3] half: 망 변형장 야코비안 누적 (AF_ROLL_DUMP_F=1 일 때)
-                        "F": (torch.stack(_FDUMP) if _FDUMP else None)}, _rd)
+                        "F": (torch.stack(_FDUMP) if _FDUMP else None),
+                        # [L,N,3] 프레임 경계 속도 (출력만 최적화, 서브스텝 안정성 측정용)
+                        "v": (torch.stack(_VDUMP) if _VDUMP else None)}, _rd)
             print(f"[롤아웃 덤프] {_rd}  {tag} t0={t0}", flush=True)
         _ROLLDUMP = None
         rows[tag]["windows"][t0] = dict(L=L, err=e, still=st,

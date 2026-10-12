@@ -123,7 +123,7 @@ for S in ("lego", "mic", "ficus"):
     L = float(np.linalg.norm(ref[0].max(0) - ref[0].min(0)))
     res_all[S] = {}
     # *_safe = 발산 방지 보정판 (stabstat.safe_*, 네 방법 공통 규칙). 원래 발산했던 N 만 돌렸다
-    for m in ("pg", "gf", "ipg", "ours", "pg_safe", "gf_safe", "ipg_safe"):
+    for m in ("pg", "gf", "ipg", "ours", "ovs", "pg_safe", "gf_safe", "ipg_safe"):
         res_all[S][m] = {}
         for n in NS:
             r = load(res, m, n)
