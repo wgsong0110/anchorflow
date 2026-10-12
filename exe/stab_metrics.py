@@ -122,16 +122,21 @@ for S in ("lego", "mic", "ficus"):
     ref = refr["X"] if refr else None
     L = float(np.linalg.norm(ref[0].max(0) - ref[0].min(0)))
     res_all[S] = {}
-    for m in ("pg", "gf", "ipg", "ours"):
+    # *_safe = 발산 방지 보정판 (stabstat.safe_*, 네 방법 공통 규칙). 원래 발산했던 N 만 돌렸다
+    for m in ("pg", "gf", "ipg", "ours", "pg_safe", "gf_safe", "ipg_safe"):
         res_all[S][m] = {}
         for n in NS:
             r = load(res, m, n)
             if r is None:
                 continue
             d = dict(status=r["status"])
+            if r["rows"] is not None and "safe_n" in r["rows"]:
+                d["safe_n"] = float(np.nanmax(r["rows"]["safe_n"]))
+                d["safe_split"] = float(np.nanmax(r["rows"]["safe_split"]))
+                d["safe_inert"] = float(np.nanmax(r["rows"]["safe_inert"]))
             d.update(metrics(r, ref, L, zf, g, dt, M, dxg))
             # 결과 파일이 있어도 값이 터졌으면 발산으로 (GF N8 은 NaN 없이 1e30 대로 커졌다)
-            if d["status"] == "끝" and (not np.isfinite(d.get("e_drift_max", 0.0)) or d.get("e_drift_max", 0.0) > 1.0
+            if d["status"] == "끝" and not m.endswith("_safe") and (not np.isfinite(d.get("e_drift_max", 0.0)) or d.get("e_drift_max", 0.0) > 1.0
                                        or (d.get("pen_depth_max") or 0.0) > 0.5):
                 d["status"] = "발산"
             res_all[S][m][n] = d
