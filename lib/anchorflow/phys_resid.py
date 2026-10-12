@@ -260,6 +260,87 @@ class _FcrPsi(torch.autograd.Function):
         return go.reshape(*go.shape, 1, 1) * G, None, None, None
 
 
+def _cof3(A):
+    """여인수 행렬 [..,3,3] (A⁻ᵀ = cof / det), 원소별 식이라 bmm 없이 한 번에 돈다."""
+    a, b, c = A[..., 0, 0], A[..., 0, 1], A[..., 0, 2]
+    d, e, f = A[..., 1, 0], A[..., 1, 1], A[..., 1, 2]
+    g, h, i = A[..., 2, 0], A[..., 2, 1], A[..., 2, 2]
+    return torch.stack([e * i - f * h, f * g - d * i, d * h - e * g,
+                        c * h - b * i, a * i - c * g, b * g - a * h,
+                        b * f - c * e, c * d - a * f, a * e - b * d], -1).reshape(A.shape)
+
+
+def _sym_eig3(C):
+    """대칭 3x3 의 고유값 오름차순 [..,3] (삼각함수 닫힌 식, 원소별). eigh(cuSOLVER) 의 동기화·배치 비용이 없다."""
+    a, b, c = C[..., 0, 0], C[..., 1, 1], C[..., 2, 2]
+    d, e, f = C[..., 0, 1], C[..., 1, 2], C[..., 0, 2]
+    q = (a + b + c) / 3.0
+    p1 = d * d + e * e + f * f
+    p2 = (a - q) ** 2 + (b - q) ** 2 + (c - q) ** 2 + 2.0 * p1
+    p = (p2 / 6.0).clamp_min(1e-30).sqrt()
+    ip = 1.0 / p
+    B00, B11, B22 = (a - q) * ip, (b - q) * ip, (c - q) * ip
+    B01, B12, B02 = d * ip, e * ip, f * ip
+    r = 0.5 * (B00 * (B11 * B22 - B12 * B12) - B01 * (B01 * B22 - B12 * B02) + B02 * (B01 * B12 - B11 * B02))
+    phi = torch.acos(r.clamp(-1.0, 1.0)) / 3.0
+    l3 = q + 2.0 * p * torch.cos(phi)
+    l1 = q + 2.0 * p * torch.cos(phi + 2.0 * math.pi / 3.0)
+    l2 = 3.0 * q - l1 - l3
+    return torch.stack([l1, l2, l3], -1)
+
+
+def _polar_q(F, iters=10):
+    """크기 조정 Newton 극분해의 직교 인자 Q (F = Q P, det Q = sign det F). 원소별 식 -- bmm 없음."""
+    Q = F
+    for _ in range(iters):
+        dt = (Q[..., 0, 0] * (Q[..., 1, 1] * Q[..., 2, 2] - Q[..., 1, 2] * Q[..., 2, 1])
+              - Q[..., 0, 1] * (Q[..., 1, 0] * Q[..., 2, 2] - Q[..., 1, 2] * Q[..., 2, 0])
+              + Q[..., 0, 2] * (Q[..., 1, 0] * Q[..., 2, 1] - Q[..., 1, 1] * Q[..., 2, 0]))
+        ds = torch.where(dt.abs() > 1e-30, dt, torch.full_like(dt, 1e-30))
+        gm = ds.abs().pow(-1.0 / 3.0)[..., None, None]
+        Q = 0.5 * (gm * Q + _cof3(Q) / (ds[..., None, None] * gm))
+    return Q
+
+
+class _FcrPsiFast(torch.autograd.Function):
+    """_FcrPsi 와 같은 값·같은 기울기를 eigh·bmm 없이 (CPU 동기화·커널 수를 줄인다).
+
+    σ = √eig(FᵀF) (같은 하한 1e-12, clamp), ψ = μΣ(σ−1)² + λ/2(Πσ−1)²  -- 기존과 같은 식.
+    기울기 U diag(2μ(σ−1) + λ(J−1)J/σ) Vᵀ 는 하한이 안 걸린 입자에서 닫힌 식
+        2μ(F − Q) + λ(J−1) sign(det F) cof(F)      (Q = 극분해 직교 인자, J = Πσ = |det F|)
+    와 같다. 하한(σ < clamp)에 걸린 입자만 기존 _FcrPsi 로 계산한다.
+    """
+
+    @staticmethod
+    def forward(ctx, F, mu, lam, clamp):
+        C = (F.unsqueeze(-1) * F.unsqueeze(-2)).sum(-3)              # FᵀF: C_ik = Σ_j F_ji F_jk  [..,3,3]
+        lamb = _sym_eig3(C)
+        S = lamb.clamp_min(1e-12).sqrt().clamp_min(clamp)
+        J = S.prod(-1)
+        psi = mu * ((S - 1.0) ** 2).sum(-1) + 0.5 * lam * (J - 1.0) ** 2
+        ctx.save_for_backward(F, S)
+        ctx.mu, ctx.lam, ctx.clamp = float(mu), float(lam), float(clamp)
+        return psi
+
+    @staticmethod
+    def backward(ctx, go):
+        F, S = ctx.saved_tensors
+        mu, lam, clamp = ctx.mu, ctx.lam, ctx.clamp
+        J = S.prod(-1)
+        cof = _cof3(F)
+        dt = (F[..., 0, :] * cof[..., 0, :]).sum(-1)
+        G = 2.0 * mu * (F - _polar_q(F)) + (lam * (J - 1.0) * torch.sign(dt))[..., None, None] * cof
+        low = S[..., 0] <= clamp                                      # 하한에 걸린 입자 (드물다)
+        if bool(low.any()):                                          # 동기화 한 번
+            Fl = F[low].detach()
+            with torch.enable_grad():
+                Fl.requires_grad_(True)
+                _FcrPsi.apply(Fl, mu, lam, clamp).sum().backward()
+            G = G.clone()
+            G[low] = Fl.grad
+        return go.reshape(*go.shape, 1, 1) * G, None, None, None
+
+
 def _psi_fcr(sig, mu, lam):
     J = sig.prod(-1)
     return mu * ((sig - 1.0) ** 2).sum(-1) + 0.5 * lam * (J - 1.0) ** 2
@@ -361,7 +442,9 @@ def psi_of(F_trial, cfg, dt):
     if m in ("jelly", "elastic_damage"):
         if not os.environ.get("AF_NO_FAST_FCR"):
             # 해석 기울기 경로 (SVD 한 번, 고유분해 역전파 없음)
-            return _FcrPsi.apply(F_trial, mu, lam, 0.01), None
+            if os.environ.get("AF_OLD_FCR"):
+                return _FcrPsi.apply(F_trial, mu, lam, 0.01), None
+            return _FcrPsiFast.apply(F_trial, mu, lam, 0.01), None
         # 탄성 전용이면 고유벡터가 필요 없다 (값만 쓰는 쪽이 싸다)
         return _psi_fcr(_sig(F_trial).clamp_min(0.01), mu, lam), None
     sig, V = _sig_vec(F_trial)
