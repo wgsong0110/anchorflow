@@ -40,10 +40,11 @@ def h5(f):
 
 
 def tag(img, s):
-    import cv2
-    img = np.ascontiguousarray(img)
-    cv2.putText(img, s, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 3, cv2.LINE_AA)
-    return img
+    """한글 글자 (Noto Sans CJK KR) 로 왼쪽 위에 표시."""
+    from PIL import Image, ImageDraw, ImageFont
+    im = Image.fromarray(np.ascontiguousarray(img))
+    ImageDraw.Draw(im).text((20, 20), s, fill=(0, 0, 0), font=ImageFont.truetype(os.path.expanduser("~/.fonts/NotoSansCJKkr-Bold.otf"), 36))
+    return np.asarray(im)
 
 
 x0, F0 = h5(0)
@@ -51,7 +52,7 @@ W = imageio.get_writer(a.out, fps=a.fps, codec="libx264", quality=8)
 for f in range(len(X) + 1):
     xg, Fg = h5(f)
     xm = x0 if f == 0 else X[f - 1][:R.NG].to(dev).float()
-    e = "" if f == 0 else f"  err {100 * err[f - 1]:.1f}%"
-    W.append_data(np.concatenate([tag(R.image(xg, Fg), f"GT  frame {f}"), tag(R.image(xm, F0), f"model  frame {f}{e}")], 1))
+    e = "" if f == 0 else f"  오차 {100 * err[f - 1]:.1f}%"
+    W.append_data(np.concatenate([tag(R.image(xg, Fg), f"정답  프레임 {f}"), tag(R.image(xm, F0), f"모델  프레임 {f}{e}")], 1))
 W.close()
 print(f"[영상] {a.out}  {len(X) + 1} 프레임", flush=True)
