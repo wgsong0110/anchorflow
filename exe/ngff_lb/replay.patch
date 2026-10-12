@@ -1,0 +1,37 @@
+--- a/dynamic_models/train.py
++++ b/dynamic_models/train.py
+@@ -254,6 +254,11 @@
+     start_epoch = 0
+     global_step = 0
+     ckpt_path = os.path.join(accelerator.project_dir, 'ckpt_last.pt')
++    # [anchorflow] 재연 실험: AF_DIAG_FROM=체크포인트 에서 이어 (난수·Adam·스케줄러 포함), AF_LR_SCALE 로 학습률 배율, AF_CLIP 로 기울기 자르기
++    _afrom = os.environ.get("AF_DIAG_FROM", "")
++    if _afrom:
++        ckpt_path = _afrom
++        args.resume = True
+     if args.resume and os.path.exists(ckpt_path):  # [anchorflow] resume
+         ck = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+         accelerator.unwrap_model(model).load_state_dict(ck['model'])
+@@ -265,6 +270,12 @@
+             torch.cuda.set_rng_state(ck['cuda_rng'])
+         np.random.set_state(ck['np_rng'])
+         logger.info(f"Resumed from {ckpt_path}: next epoch {start_epoch}, global_step {global_step}, best_loss {best_loss}")
++        _lrs = float(os.environ.get("AF_LR_SCALE", "1"))
++        if _lrs != 1.0:   # 스케줄러의 기준 학습률을 배율로 (이후 단계 모두 같은 배율)
++            scheduler.base_lrs = [b * _lrs for b in scheduler.base_lrs]
++            for _g, _b in zip(optimizer.param_groups, scheduler.base_lrs):
++                _g["lr"] = _g["lr"] * _lrs
++            logger.info(f"[af] 학습률 배율 {_lrs}")
+ 
+     def save_resume(epoch):  # [anchorflow]
+         if not accelerator.is_main_process:
+@@ -328,6 +339,9 @@
+                         _before = [p.detach().clone() for p in _ps]
+                         _per = ((pred_points - points) ** 2).flatten(1).mean(1).tolist()
+                         _lr = scheduler.get_last_lr()[0]
++                _aclip = float(os.environ.get("AF_CLIP", "0"))
++                if _aclip > 0:
++                    torch.nn.utils.clip_grad_norm_(model.parameters(), _aclip)
+                 optimizer.step()
+                 if _AFD:
+                     with torch.no_grad():
