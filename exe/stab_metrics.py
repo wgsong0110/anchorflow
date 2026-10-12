@@ -6,7 +6,9 @@
   반전·부피 이상    det F ≤ 0 비율의 최대, |J−1| 평균의 최대, |J−1|>0.1 비율의 최대 (뒤 둘은 새 실행만)
   바닥 관통         바닥 아래 입자 비율의 최대, 최대 깊이 / L (부분표본 32,768 점의 위치로 -- 모든 실행 공통)
   떨림(jitter)      위치 2 차 차분 |x_{t+1} − 2x_t + x_{t−1}| / L 의 평균, 입자 속도 시계열 스펙트럼에서 위쪽 절반 주파수 에너지 비율
-  자유낙하 운동량   접촉 전 프레임에서 무게중심 속도(중앙 차분) 와 g t 의 상대 오차 최대
+  자유낙하 운동량   접촉 전 프레임에서 운동량 크기 |p| 와 이론값 M g t 의 상대 오차 최대. 자유낙하는 강체 병진이라
+                    |p| = sqrt(2 M KE) (KE 는 모든 실행에 있다 -- 예전 실행도 같은 자로). M = 밀도·dx³·점유 셀 수(시뮬과 같은 질량).
+                    접촉 = 부분표본 최저점이 바닥 + 1.5 dx 아래로 내려온 첫 프레임 (PG 충돌체는 바닥 위 격자 노드에서 멈춘다)
   MPM 대비 CD       PG N1024 부분표본과의 대칭 Chamfer (평균 최근접 거리) / L 의 프레임 평균
 자기 관통(self-penetration)은 계산하지 않는다 (표면 정보가 없어 정의가 방법마다 달라진다).
 
@@ -57,7 +59,7 @@ def load(res, m, n):
     return None
 
 
-def metrics(r, ref, L, zf, g, dt):
+def metrics(r, ref, L, zf, g, dt, M, dxg):
     rows, X = r["rows"], r["X"]
     out = {}
     if rows is not None:
@@ -80,13 +82,15 @@ def metrics(r, ref, L, zf, g, dt):
             P = P.sum(-1)                                          # [F,S]
             h = P.shape[0] // 2
             out["jitter_hf"] = float(np.nanmean(P[h:].sum(0) / np.maximum(P.sum(0), 1e-30)))
-        # 자유낙하: 부분표본 최저점이 바닥 위 (여유 0.5 dx 대신 L 의 0.2%) 인 동안
-        free = np.where((z.min(1) > zf + 2e-3 * L))[0]
-        T_c = int(free.max()) if len(free) else 0
-        c = X[..., 2].mean(1)
-        errs = [abs((c[t + 1] - c[t - 1]) / (2 * dt) - g * t * dt) / abs(g * t * dt) for t in range(1, min(T_c, len(c) - 1))]
-        out["freefall_mom_err"] = float(max(errs)) if errs else None
+        # 자유낙하: 접촉(최저점 < 바닥 + 1.5 dx) 전 프레임에서 |p| = sqrt(2 M KE) 와 M g t
+        hit = np.where(z.min(1) < zf + 1.5 * dxg)[0]
+        T_c = int(hit[0]) if len(hit) else len(z)
         out["freefall_frames"] = T_c
+        if rows is not None:
+            ke = rows["ke"]
+            errs = [abs(np.sqrt(2 * M * max(ke[t], 0.0)) - M * abs(g) * t * dt) / (M * abs(g) * t * dt)
+                    for t in range(1, min(T_c, len(ke)))]
+            out["freefall_mom_err"] = float(max(errs)) if errs else None
         if ref is not None:
             T = min(len(X), len(ref))
             cds = []
@@ -106,6 +110,11 @@ for S in ("lego", "mic", "ficus"):
     cfg = json.load(open(f"{a.root}/{S}/config.json"))
     zf = float([b for b in cfg["boundary_conditions"] if b["type"] == "surface_collider"][0]["point"][2])
     g = float(cfg["g"][2]); dt = float(cfg["frame_dt"])
+    import h5py
+    with h5py.File(f"{a.root}/{S}/init/sim_0000000000.h5") as h:
+        x0 = np.array(h["x"]); x0 = x0.T if x0.shape[0] == 3 else x0
+    dxg = float(cfg["grid_lim"]) / int(cfg["n_grid"])
+    M = float(cfg["density"]) * dxg ** 3 * len(np.unique(np.floor(x0 / dxg).astype(np.int64), axis=0))
     refr = load(res, "pg", 1024)
     ref = refr["X"] if refr else None
     L = float(np.linalg.norm(ref[0].max(0) - ref[0].min(0)))
@@ -117,7 +126,11 @@ for S in ("lego", "mic", "ficus"):
             if r is None:
                 continue
             d = dict(status=r["status"])
-            d.update(metrics(r, ref, L, zf, g, dt))
+            d.update(metrics(r, ref, L, zf, g, dt, M, dxg))
+            # 결과 파일이 있어도 값이 터졌으면 발산으로 (GF N8 은 NaN 없이 1e30 대로 커졌다)
+            if d["status"] == "끝" and (not np.isfinite(d.get("e_drift_max", 0.0)) or d.get("e_drift_max", 0.0) > 1.0
+                                       or (d.get("pen_depth_max") or 0.0) > 0.5):
+                d["status"] = "발산"
             res_all[S][m][n] = d
             print(S, m, n, d["status"], {k: (round(v, 6) if isinstance(v, float) else v) for k, v in d.items() if k != "status"}, flush=True)
 json.dump(res_all, open(a.out, "w"), indent=1)
