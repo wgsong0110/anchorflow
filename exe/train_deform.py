@@ -292,6 +292,8 @@ ap.add_argument("--seq_frames", type=int, default=0,
 ap.add_argument("--seq_tol", type=float, default=3e-6,
                 help="수렴 판정: 학습 한 반복 사이 출력 위치 변화의 최대값이 이 값 * h/frame_dt 아래 (rep_ip --newton_tol 과 같은 기준)")
 ap.add_argument("--seq_max", type=int, default=2000, help="프레임당 반복 상한 (Adam 잡음으로 수렴 판정이 안 날 때)")
+ap.add_argument("--gate_log_every", type=int, default=20,
+                help="게이트/·기준후보/·실제오차/ TB 기록 간격 (문턱 보정에서는 1 로 매 반복)")
 ap.add_argument("--seq_save_every", type=int, default=1,
                 help="순차 궤적을 이 스텝마다 한 번만 저장한다 (--dt_sub N 이면 N 으로 두어 프레임 경계만 남긴다)")
 ap.add_argument("--diag_pool", default="",
@@ -2729,7 +2731,7 @@ for it in pbar:
                 _mbar = _mN[_sup].mean()
                 _rout_t = (_gU[:, :3].norm(dim=-1)[_sup].mean() * (_hp ** 2) / _mbar / sc["ext"]).detach()
                 _gnorm_t = (_gU[:, :3][_sup].norm() * (_hp ** 2) / _mbar / sc["ext"]).detach()
-                if TBW is not None and it % 20 == 0:          # 진단: 기울기 전체 L2 노름(원값·같은 단위 환산)과 노드 최댓값
+                if TBW is not None and it % a.gate_log_every == 0:   # 진단: 기울기 전체 L2 노름(원값·같은 단위 환산)과 노드 최댓값
                     _gn_all = _gU[:, :3][_sup].norm()
                     _gmax = _gU[:, :3].norm(dim=-1)[_sup].max()
                     _cv = (_hp ** 2) / _mbar / sc["ext"]
