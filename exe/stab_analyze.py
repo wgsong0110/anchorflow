@@ -1,7 +1,8 @@
 """서브스텝 안정성 실험 정리: 방법별 안정 판정, 기준 궤적(가장 큰 N) 대비 오차, 재현성 바닥, 그림.
 
   python exe/stab_analyze.py --dir /home/dkta/work/stab/lego
-결과: <dir>/summary.md, <dir>/summary.json, <dir>/err_vs_N.png, <dir>/err_vs_time.png
+결과: <dir>/summary.md, <dir>/summary.json, <dir>/err_vs_N.png
+(계산 시간은 다루지 않는다 -- 사용자 2026-10-12: 이 실험은 속도 비교가 아니다)
 """
 import argparse
 import glob
@@ -46,8 +47,7 @@ for f in (c + ".log" for c in _cand):                                # 로그 �
         keys = [str(k) for k in z["keys"]]
         rows = [dict(zip(keys, s)) for s in z["stats"]]
         e0 = rows[0]["ke"] + rows[0]["pe"]
-        r.update(x=z["x"], t=z["t"], rows=rows, fail=ss.unstable(rows, e0, VCAP), nfr=len(rows) - 1,
-                 tpf=float(np.mean(z["t"])) if len(z["t"]) else float("nan"))
+        r.update(x=z["x"], t=z["t"], rows=rows, fail=ss.unstable(rows, e0, VCAP), nfr=len(rows) - 1)
     runs[(meth, n, rep)] = r
 
 
@@ -72,23 +72,23 @@ for meth in ("pg", "gf", "ipg", "ours"):
         info["conv_half"] = float(rmse(ref["x"], runs[(meth, Ns[-2], False)]["x"]).mean())
     lines += [f"## {NAMES[meth]}  (기준 N = {Ns[-1]}, 재현성 바닥 {100 * info.get('repro_floor', np.nan):.3f}%, "
               f"N/2 와 차이 {100 * info.get('conv_half', np.nan):.3f}%)", "",
-              "| N | dt | 안정 | 실패 프레임 | 평균 오차 %L | 마지막 오차 %L | 프레임당 s |", "|---|---|---|---|---|---|---|"]
+              "| N | dt | 안정 | 실패 프레임 | 평균 오차 %L | 마지막 오차 %L |", "|---|---|---|---|---|---|"]
     for n in Ns:
         r = runs[(meth, n, False)]
         dt = cfg["frame_dt"] / n
         if r["crashed"]:
-            row = dict(N=n, stable=False, fail=0, err_mean=None, err_last=None, tpf=None, crash=r["crash_msg"])
+            row = dict(N=n, stable=False, fail=0, err_mean=None, err_last=None, crash=r["crash_msg"])
             lines.append(f"| {n} | {dt:.2e} | ✗ (중단: {r['crash_msg']}) | 0 | - | - | - |")
         else:
             st = r["fail"] < 0 and r["nfr"] >= 60
             e = rmse(r["x"], ref["x"]) if "x" in ref else np.array([np.nan])
             ok = np.isfinite(e)
             row = dict(N=n, stable=bool(st), fail=int(r["fail"]), err_mean=float(e[ok].mean()) if ok.any() else None,
-                       err_last=float(e[-1]) if ok.all() else None, tpf=r["tpf"])
+                       err_last=float(e[-1]) if ok.all() else None)
             lines.append(f"| {n} | {dt:.2e} | {'✓' if st else '✗'} | {r['fail'] if r['fail'] >= 0 else '-'} | "
-                         f"{100 * row['err_mean']:.3f} | {100 * row['err_last']:.3f} | {r['tpf']:.3f} |"
+                         f"{100 * row['err_mean']:.3f} | {100 * row['err_last']:.3f} |"
                          if row["err_mean"] is not None and row["err_last"] is not None else
-                         f"| {n} | {dt:.2e} | {'✓' if st else '✗'} | {r['fail'] if r['fail'] >= 0 else '-'} | - | - | {r['tpf']:.3f} |")
+                         f"| {n} | {dt:.2e} | {'✓' if st else '✗'} | {r['fail'] if r['fail'] >= 0 else '-'} | - | - |")
         info["rows"].append(row)
     stab = [rw["N"] for rw in info["rows"] if rw["stable"]]
     info["N_min"] = min(stab) if stab else None
@@ -98,17 +98,15 @@ open(f"{D}/summary.md", "w").write("\n".join(lines))
 json.dump(out, open(f"{D}/summary.json", "w"), indent=1)
 try:
     import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(1, 2, figsize=(12, 4.5))
+    fig, ax0 = plt.subplots(1, 1, figsize=(6.5, 4.5)); ax = [ax0]
     for meth, info in out["methods"].items():
         rs = [r for r in info["rows"] if r["err_mean"] is not None and r["N"] != info["ref_N"]]
         if rs:
             ax[0].loglog([r["N"] for r in rs], [100 * r["err_mean"] for r in rs], "o-", label=NAMES[meth])
-            ax[1].loglog([r["tpf"] for r in rs], [100 * r["err_mean"] for r in rs], "o-", label=NAMES[meth])
         bad = [r["N"] for r in info["rows"] if not r["stable"]]
         for n in bad:
             ax[0].axvline(n, color="0.85", lw=0.5)
     ax[0].set_xlabel("프레임당 서브스텝 N"); ax[0].set_ylabel("기준 대비 평균 오차 (%L)"); ax[0].legend()
-    ax[1].set_xlabel("프레임당 시간 (s)"); ax[1].set_ylabel("기준 대비 평균 오차 (%L)"); ax[1].legend()
     plt.tight_layout(); plt.savefig(f"{D}/err_vs_N.png", dpi=110)
 except Exception as e:                                           # 그림은 부가물
     print("그림 실패", e)
