@@ -71,7 +71,31 @@ def unstable(rows, e0, vcap, k_energy=1.5, x_det=0.01):
 #   ① 위치·속도·F 중 비유한이 생긴 입자는 직전 위치로 되돌리고 속도 0, F = I
 #   ② 속력을 안정성 판정 상한 VCAP = 10·sqrt(2 g H) (자유낙하 최고 속력의 10 배) 로 자른다
 #   ③ 위치를 영역 상자 [3dx, GL−3dx] 안으로 자른다
-# 정상 실행에서는 한 번도 걸리지 않으므로(속력·위치가 그 범위 안) 결과가 그대로다. 걸린 입자 수를 센다.
+#   ④ 변형구배 F 의 특이값이 SIG_HI = 10 을 넘으면 10 으로 자른다 (2026-10-12 추가: ①~③ 만으로는 유한하지만 거대한 F 가
+#      남아 탄성 에너지가 10^56~10^225 배로 터졌다). 아래 한계는 두지 않는다 -- 발산하지 않은 정상 실행에도 det F ≤ 0 인
+#      뒤집힌 입자가 있어서(우리 lego N1~8 det 최소 −1.07, GF ficus N16 −2.79, i-PG N8 −2.33) 아래를 자르면 정상 실행을 바꾼다
+# 정상 실행에서는 한 번도 걸리지 않으므로(속력·위치·F 가 그 범위 안) 결과가 그대로다. 걸린 입자 수를 센다.
+# 규칙 전체와 확인 결과: doc/stab_safe_rule.md
+SIG_HI = 10.0
+
+
+def clamp_F(F):
+    """F [N,3,3] torch 제자리: 특이값이 SIG_HI 를 넘는 입자만 U diag(min(σ, SIG_HI)) Vᵀ 로 바꾼다 (뒤집힘 부호는 U·V 에 남는다).
+    -> 바꾼 입자 수"""
+    import torch
+    F3 = F.reshape(-1, 3, 3)
+    ok = torch.isfinite(F3.reshape(F3.shape[0], -1)).all(1)
+    if not bool(ok.any()):
+        return 0
+    S = torch.linalg.svdvals(torch.where(ok[:, None, None], F3, torch.eye(3, device=F3.device, dtype=F3.dtype)))
+    bad = ok & (S > SIG_HI).any(1)
+    n = int(bad.sum())
+    if n:
+        U, S2, Vh = torch.linalg.svd(F3[bad])
+        F3[bad] = U @ torch.diag_embed(S2.clamp(max=SIG_HI)) @ Vh
+    return n
+
+
 def safe_params(x0, floor_z, g, grid_lim, n_grid):
     gz = abs(float(g[2])) if hasattr(g, "__len__") else abs(float(g))
     H = float(np.asarray(x0)[:, 2].max() - floor_z)

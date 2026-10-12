@@ -830,6 +830,7 @@ def _one(h, depth=0):
                 cur[kk].view(N, -1)[bad] = pre[kk].view(N, -1)[bad]
             cur["v"][bad] = 0.0
         m = _ss2.safe_fix(cur["x"], cur["v"], None, pre["x"], _SP)
+        m += _ss2.clamp_F(cur["F"]) + _ss2.clamp_F(cur["Ftr"])   # ④ F 특이값 상한 10
         if nb or m:
             for kk, fl in _SFL:
                 fl.from_torch(cur[kk])

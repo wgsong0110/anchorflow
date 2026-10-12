@@ -174,6 +174,9 @@ def _one(h, depth=0):
                     (wp.to_torch(q) if isinstance(q, wp.array) else q).view(N, -1)[bad] = pre[key].view(N, -1)[bad]
         X_ = wp.to_torch(sol.mpm_state.particle_x); V_ = wp.to_torch(sol.mpm_state.particle_v)
         SAFE_N[0] += nb + ss.safe_fix(X_, V_, None, pre["particle_x"], _SP)
+        for _fk in ("particle_F", "particle_F_trial"):          # ④ F 특이값 상한 10
+            if _fk in _PF:
+                SAFE_N[0] += ss.clamp_F(wp.to_torch(getattr(sol.mpm_state, _fk)))
         torch.cuda.synchronize()
     if ok or not a.safe:
         return
