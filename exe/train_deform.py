@@ -3845,6 +3845,8 @@ def rollout(d, t0, L, gsel=None):   #    평가가 그래프를 쌓아 메모리
             _ka = _pf.key_averages()
             print(_ka.table(sort_by="cuda_time_total", row_limit=16),
                   flush=True)
+            print(_ka.table(sort_by="self_cpu_time_total", row_limit=25),     # CPU 에서 오래 걸린 연산 (장치 오가기·동기화 포함)
+                  flush=True)
             _n = sum(int(e.count) for e in _ka)
             _cu = sum(float(e.self_device_time_total) for e in _ka) / 1e3
             _cp = sum(float(e.self_cpu_time_total) for e in _ka) / 1e3
