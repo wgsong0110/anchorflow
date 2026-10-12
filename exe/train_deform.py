@@ -2450,7 +2450,7 @@ if a.out_var or a.ov_roll > 0:
         outs = out if isinstance(out, (tuple, list)) else (out,)
         if st is None:                      # 풀 밖(초기화·검증) 에서는 그대로
             return out
-        if st.get("ov") is None:
+        if st.get("ov") is None or any(o is None for o in st["ov"]):   # _ov_fast 가 빈 자리만 만들어 둔 경우도
             st["ov"] = [o.detach().clone().requires_grad_(True) for o in outs]
             st["ov_opt"] = _mk_ov_opt(st["ov"])
             st["ov_tuple"] = isinstance(out, (tuple, list))
