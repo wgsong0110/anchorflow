@@ -53,8 +53,10 @@ ap.add_argument("--auto_dt", action="store_true",
 a = ap.parse_args()
 
 cfg = json.load(open(a.config))
+# GPU 를 다른 작업과 나눠 쓸 때는 AF_TI_MEM 으로 미리 잡는 비율을 줄인다 (기본 0.85 는 카드의 85% 를 선점해
+# 같은 카드의 다른 작업을 메모리 부족으로 죽인다 -- 2026-10-12 우리 N32 두 건)
 ti.init(arch=ti.gpu, default_fp=ti.f64 if a.f64 else ti.f32,
-        device_memory_fraction=0.85, offline_cache=True)
+        device_memory_fraction=float(os.environ.get("AF_TI_MEM", 0.85)), offline_cache=True)
 
 # ------------------------------------------------------------------ 상수
 # material_2_num (mpm_solver_warp.py:255). foam 이 3, snow 가 4, plasticine 이 5 다.
