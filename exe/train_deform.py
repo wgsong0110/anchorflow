@@ -2574,9 +2574,11 @@ for it in pbar:
                                          max(1, n_p // a.n_anchors),
                                          device=dev)[:a.n_anchors]]))
             _OV_CUR[0] = st if a.out_var else None
+            DM.PROBE[0] = "want" if (a.pool_gate > 0 or a.out_var) else None
             with dt_scope(_hp), _tsec("step_once"):
                 x2, p2, v2, _J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
                     ds, 0, gsel, p_st, x, v, need_J=False)
+            DM.PROBE[0] = None
             with _tsec("free_mask"):
                 fm = (free_mask(ds, n_p, dev, gsel, x, 0)
                       if a.control else None)
@@ -2626,9 +2628,10 @@ for it in pbar:
             # h²/노드질량 을 곱해 길이로 바꾸고 L 로 나눈 노드 평균. 노드질량 = ∂(Σ m x₂)/∂U = Σ_p m_p W_pn (스키닝 가중치 그대로).
             # 탄성·접촉·관성이 모두 들어 있고, 출력이 증분 포텐셜의 최소점이면 0 이다.
             _rout_t = None
-            if (a.pool_gate > 0 or a.out_var) and torch.is_tensor(_dp) and _dp.requires_grad:
-                _gU, = torch.autograd.grad(E_ip * nrm, _dp, retain_graph=True)
-                _mN, = torch.autograd.grad((sc["mass"].unsqueeze(-1) * x2).sum(), _dp, retain_graph=True)
+            if (a.pool_gate > 0 or a.out_var) and DM.PROBE[1]:
+                _pz = DM.PROBE[1][0]                         # 격자 하나 (ens_off 1) 기준
+                _gU, = torch.autograd.grad(E_ip * nrm, _pz, retain_graph=True)
+                _mN, = torch.autograd.grad((sc["mass"].unsqueeze(-1) * x2).sum(), _pz, retain_graph=True)
                 _mN = _mN[:, 0]
                 _sup = _mN > 1e-9 * _mN.max().clamp_min(1e-30)
                 _rout_t = ((_gU[:, :3].norm(dim=-1)[_sup] * (_hp ** 2) / _mN[_sup]).mean() / sc["ext"]).detach()

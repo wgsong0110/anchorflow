@@ -207,6 +207,9 @@ def node_inertial(x, v, mass, rows, lam, n_node, g, h):
     return _hq * _vn + (_hq ** 2) * _gq, (_vn, _gq)
 
 
+PROBE = [None, None]                 # [요청 여부 "want", 격자별 탐침 텐서 목록]
+
+
 def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
             node_vel=None, ctrl_scale=1.0, mat=None, sec=None,
             dp_fast=None, dp_hook=None, pre_k=None, on_pin=None,
@@ -226,6 +229,11 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
     sec = sec or _null_sec
     K = len(ens)
     rows0 = ens[0][3]
+    # 출력 탐침: PROBE[0] 이 "want" 면 격자마다 노드 출력에 더할 0 텐서(기울기 받음)를 만든다. 학습 쪽이 그것으로
+    # 증분 포텐셜을 노드 출력으로 미분한다 (jvp 안에서 만든 출력은 바깥 그래프와 이어지지 않아 직접 미분할 수 없다).
+    if PROBE[0] == "want":
+        _no = getattr(net, "n_out", 3)
+        PROBE[1] = [torch.zeros(e[1].shape[0], _no, device=x.device, dtype=x.dtype, requires_grad=True) for e in ens]
 
     def _fieldS(tau):
         _dus, _Jsum = [], None
@@ -251,6 +259,8 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                 if dp_hook is not None:
                     out = dp_hook(out)
             dpn_k = torch.nan_to_num(out[0], nan=0.0, posinf=0.0, neginf=0.0)
+            if PROBE[0] == "want":
+                dpn_k = dpn_k + PROBE[1][_k]
             if node_mask is not None and node_mask[_k] is not None:
                 # **노드 변위를 명령으로 덮는다.** detach 로 기울기를 끊어
                 # 그 노드는 최적화 대상에서 빠진다 (상수 경계조건이다).
