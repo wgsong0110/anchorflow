@@ -1,0 +1,72 @@
+--- a/dynamic_models/train.py
++++ b/dynamic_models/train.py
+@@ -202,6 +202,28 @@
+ 
+     dataset = prepare_dataset(args,dtype=torch.float32)
+ 
++    # [anchorflow] 발산 진단 (AF_DIAG=디렉토리): 배치마다 손실·기울기 노름·갱신 크기·샘플별 손실·샘플 번호를 남기고,
++    # AF_DIAG_SAVE="40-65,175-195" 에폭마다 전체 체크포인트, AF_DIAG_STOP=에폭 에서 멈춘다. 계산은 바꾸지 않는다.
++    _AFD = os.environ.get("AF_DIAG", "")
++    _AFD_SAVE = set()
++    for _r in os.environ.get("AF_DIAG_SAVE", "").split(","):
++        if "-" in _r:
++            _a, _b = _r.split("-"); _AFD_SAVE |= set(range(int(_a), int(_b) + 1))
++    _AFD_STOP = int(os.environ.get("AF_DIAG_STOP", "-1"))
++    if _AFD:
++        os.makedirs(_AFD, exist_ok=True)
++        _AFD_LOG = open(os.path.join(_AFD, "batches.jsonl"), "a")
++
++        class _IdxDS(torch.utils.data.Dataset):
++            def __init__(self, ds):
++                self.ds = ds
++            def __len__(self):
++                return len(self.ds)
++            def __getitem__(self, i):
++                d = dict(self.ds[i]); d["af_idx"] = i
++                return d
++        dataset = _IdxDS(dataset)
++
+     dataloader = DataLoader(
+         dataset, 
+         batch_size=args.batch_size, 
+@@ -298,7 +320,23 @@
+                 pred_points *= padding.unsqueeze(1).unsqueeze(-1)
+                 loss = F.mse_loss(pred_points, points) # pred_points: [B, steps, num_keypoints, 3], points: [B, steps,num_keypoints, 3]
+                 accelerator.backward(loss)
++                if _AFD:  # [anchorflow] 진단: 갱신 전 기울기 노름·샘플별 손실, 갱신 뒤 가중치 변화 비율
++                    with torch.no_grad():
++                        _ps = [p for p in model.parameters() if p.grad is not None]
++                        _gn = float(torch.sqrt(sum((p.grad.float() ** 2).sum() for p in _ps)))
++                        _gmax = max(float(p.grad.abs().max()) for p in _ps)
++                        _before = [p.detach().clone() for p in _ps]
++                        _per = ((pred_points - points) ** 2).flatten(1).mean(1).tolist()
++                        _lr = scheduler.get_last_lr()[0]
+                 optimizer.step()
++                if _AFD:
++                    with torch.no_grad():
++                        _du = float(torch.sqrt(sum(((p - b) ** 2).sum() for p, b in zip(_ps, _before))))
++                        _pn = float(torch.sqrt(sum((p ** 2).sum() for p in _ps)))
++                        _AFD_LOG.write(json.dumps(dict(ep=epoch, gs=global_step, lr=_lr, loss=float(loss), gn=_gn, gmax=_gmax,
++                                                        upd=_du, pnorm=_pn, per=_per, idx=data["af_idx"].tolist())) + "\n")
++                        if global_step % 50 == 0:
++                            _AFD_LOG.flush()
+                 scheduler.step()
+ 
+                 # log scalars every 10 steps to avoid frequent GPU->CPU sync
+@@ -320,6 +358,16 @@
+                         torch.save(model.state_dict(), f"{accelerator.project_dir}/ngff_best.pth")
+ 
+             # [anchorflow] resume checkpoint + epoch-mean loss log
++            if _AFD and epoch in _AFD_SAVE and accelerator.is_main_process:  # [anchorflow] 진단용 에폭별 전체 체크포인트
++                torch.save({'model': accelerator.unwrap_model(model).state_dict(), 'optimizer': optimizer.state_dict(),
++                            'scheduler': scheduler.state_dict(), 'epoch': epoch, 'global_step': global_step, 'best_loss': best_loss,
++                            'torch_rng': torch.get_rng_state(), 'cuda_rng': torch.cuda.get_rng_state(), 'np_rng': np.random.get_state()},
++                           os.path.join(_AFD, f"ep{epoch:04d}.pt"))
++            if _AFD:
++                _AFD_LOG.flush()
++                logger.info(f"[af-diag] epoch {epoch} mean_loss {np.mean(epoch_losses):.6e} lr {scheduler.get_last_lr()[0]:.3e}")
++                if epoch == _AFD_STOP:
++                    break
+             if (epoch + 1) % args.ckpt_interval == 0 or epoch == args.epochs - 1:
+                 logger.info(f"[af] epoch {epoch} mean_loss {np.mean(epoch_losses):.6e} last_loss {loss.item():.6e} "
+                             f"lr {scheduler.get_last_lr()[0]:.3e} sec/epoch {(time.time()-epoch_t0)/max(1, epoch+1-start_epoch):.2f}")
