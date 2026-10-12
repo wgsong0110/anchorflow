@@ -45,6 +45,8 @@ ap.add_argument("--resume", action="store_true",
                      "F 와 logJp 까지 들고 있어야 궤적이 이어진다")
 ap.add_argument("--substeps", type=int, default=0, help="프레임당 서브스텝 수를 직접 (안정성 실험). 0 이면 config")
 ap.add_argument("--stab_out", default="", help="안정성 실험: h5 대신 프레임별 측정·부분표본 npz 만 쓴다")
+ap.add_argument("--safe", type=int, default=0,
+                help="1 이면 발산 방지 보정판 (lib/anchorflow/stabstat.py safe_*, 네 방법 공통): 발산 조짐에서만 걸리고 정상 실행엔 영향 없음")
 ap.add_argument("--auto_dt", action="store_true",
                 help="GF 의 씬 러너처럼 substep_dt 를 CFL 로 다시 계산한다 "
                      "(gs_simulation_watermelon.py:416). config 값은 무시된다")
@@ -763,29 +765,97 @@ if a.stab_out:
     _FL = [b for b in cfg.get("boundary_conditions", []) if b["type"] == "surface_collider"]
     _FZ = float(_FL[0]["point"][2]) if _FL else 0.0
     _SUB = _ss.subset(N)
-    _ROWS = [_ss.frame_stats(x.to_numpy(), v.to_numpy(), F.to_numpy(), MASS, G, _FZ, (0.0, grid_lim))]
+    _EK = dict(vol=np.asarray(VOL, np.float64), E=float(cfg["E"]), nu=float(cfg["nu"]))
+    _ROWS = [_ss.frame_stats(x.to_numpy(), v.to_numpy(), F.to_numpy(), MASS, G, _FZ, (0.0, grid_lim), **_EK)]
     _XS = [x.to_numpy()[_SUB].astype(np.float32)]; _T = []
+# ---- 보정판 (stab_mpm 과 같은 규칙): 정상 실행에서는 걸리지 않는 조건에서만 개입 ------------------------------
+SAFE_N = [0, 0, 0]
+_SFL = (("x", x), ("v", v), ("F", F), ("Ftr", Ftr), ("C", C), ("Jp", Jp), ("ys", ys))
+if a.safe:
+    import torch as _torch
+    import sys as _sys2
+    _sys2.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+    from anchorflow import stabstat as _ss2
+    _FL2 = [b for b in cfg.get("boundary_conditions", []) if b["type"] == "surface_collider"]
+    _SP = _ss2.safe_params(X0, float(_FL2[0]["point"][2]) if _FL2 else 0.0, G, grid_lim, n_grid)
+    print(f"[보정판] 상자 [{_SP['lo']:.4f}, {_SP['hi']:.4f}], 속력 상한 {_SP['vcap']:.2f}", flush=True)
+
+
+def _sub(h):
+    """GF 공식 서브스텝 그대로 (커널 순서 원본과 같음)."""
+    global t
+    if PIN_h5 is not None:
+        hold_pins()
+    quarantine(-0.5 * grid_lim, 1.5 * grid_lim)
+    if NP and PC_LO <= t < PC_HI:   # 창이 다 닫혀 있으면 띄울 것도 없다
+        particle_bc(h, t)
+    stress_kernel(h)
+    zero_grid()
+    p2g(h)
+    grid_op(h, t)
+    g2p(h, FLIP)
+    t += h
+
+
+def _one(h, depth=0):
+    global t
+    if not a.safe:
+        _sub(h); return
+    ti.sync()
+    pre = {k: fl.to_torch(device="cuda") for k, fl in _SFL}
+    t_pre = t
+    X_, V_ = pre["x"].clone(), pre["v"].clone()
+    nx = X_ + h * V_
+    out = ((nx < _SP["lo"]) | (nx > _SP["hi"])).any(1) | ~_torch.isfinite(nx).all(1)
+    k = int(out.sum())
+    if k:                                                   # 이번 스텝에 상자 밖으로 나갈 입자만 속도를 자른다
+        tgt = nx[out].clamp(_SP["lo"], _SP["hi"]); tgt = _torch.where(_torch.isfinite(tgt), tgt, X_[out])
+        V_[out] = (tgt - X_[out]) / h
+        v.from_torch(V_); SAFE_N[0] += k
+    try:
+        _sub(h); ti.sync(); ok = True
+    except Exception:
+        ok = False
+    if ok:
+        cur = {kk: fl.to_torch(device="cuda") for kk, fl in _SFL}
+        bad = None
+        for kk in ("x", "v", "F", "Ftr", "C"):
+            b_ = ~_torch.isfinite(cur[kk].reshape(N, -1)).all(1)
+            bad = b_ if bad is None else (bad | b_)
+        nb = int(bad.sum())
+        if nb:                                              # 비유한 입자는 상태 전부 직전 값, 속도 0
+            for kk, fl in _SFL:
+                cur[kk].view(N, -1)[bad] = pre[kk].view(N, -1)[bad]
+            cur["v"][bad] = 0.0
+        m = _ss2.safe_fix(cur["x"], cur["v"], None, pre["x"], _SP)
+        if nb or m:
+            for kk, fl in _SFL:
+                fl.from_torch(cur[kk])
+        SAFE_N[0] += nb + m
+        return
+    for kk, fl in _SFL:                                     # 예외: 되돌리고 반으로 두 번, 끝내 실패하면 관성만
+        fl.from_torch(pre[kk])
+    t = t_pre
+    if depth < 6:
+        SAFE_N[1] += 1
+        _one(h / 2, depth + 1); _one(h / 2, depth + 1); return
+    SAFE_N[2] += 1
+    V2 = pre["v"] + h * _torch.as_tensor(G, device="cuda", dtype=pre["v"].dtype)
+    v.from_torch(V2); x.from_torch((pre["x"] + h * V2).clamp(_SP["lo"], _SP["hi"])); t = t_pre + h
+
+
 t0 = time.time()
 for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
     _tf = time.time()
     for _ in range(nsub):
-        if PIN_h5 is not None:
-            hold_pins()
-        quarantine(-0.5 * grid_lim, 1.5 * grid_lim)
-        if NP and PC_LO <= t < PC_HI:   # 창이 다 닫혀 있으면 띄울 것도 없다
-            particle_bc(substep_dt, t)
-        stress_kernel(substep_dt)
-        zero_grid()
-        p2g(substep_dt)
-        grid_op(substep_dt, t)
-        g2p(substep_dt, FLIP)
-        t += substep_dt
+        _one(substep_dt)
     if a.stab_out:
         ti.sync(); _T.append(time.time() - _tf)
         _xn = x.to_numpy()
-        _ROWS.append(_ss.frame_stats(_xn, v.to_numpy(), F.to_numpy(), MASS, G, _FZ, (0.0, grid_lim)))
+        _ROWS.append(_ss.frame_stats(_xn, v.to_numpy(), F.to_numpy(), MASS, G, _FZ, (0.0, grid_lim), **_EK))
+        _ROWS[-1]["safe_n"], _ROWS[-1]["safe_split"], _ROWS[-1]["safe_inert"] = (float(q) for q in SAFE_N)
         _XS.append(_xn[_SUB].astype(np.float32))
-        if _ROWS[-1]["nan"] > 0.5:
+        if _ROWS[-1]["nan"] > 0.5 and not a.safe:
             print(f"  발산 프레임 {f}", flush=True); break
         continue
     dump(f)
@@ -803,8 +873,8 @@ for f in tqdm(range(f0 + 1, n_frames + 1), desc="frames", ncols=78):
                   f"x[{xn[al == 1].min():.3f},{xn[al == 1].max():.3f}]  "
                   f"{time.time() - t0:.0f}s", flush=True)
 if a.stab_out:
-    _K = ("ke", "pe", "nan", "out", "vmax", "detneg", "detmin")
-    np.savez_compressed(a.stab_out, sub=_SUB, x=np.stack(_XS), t=np.array(_T), keys=np.array(_K), substeps=nsub,
+    _K = _ss.KEYS + _ss.SAFE_KEYS
+    np.savez_compressed(a.stab_out, sub=_SUB, x=np.stack(_XS), t=np.array(_T), keys=np.array(_K), substeps=nsub, safe=a.safe,
                         dt=substep_dt, stats=np.array([[r.get(k, np.nan) for k in _K] for r in _ROWS]))
     print(f"[저장] {a.stab_out}  프레임당 {np.mean(_T):.3f}s", flush=True)
     raise SystemExit(0)
