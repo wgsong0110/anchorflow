@@ -43,7 +43,7 @@ def tag(img, s):
     """한글 글자 (Noto Sans CJK KR) 로 왼쪽 위에 표시."""
     from PIL import Image, ImageDraw, ImageFont
     im = Image.fromarray(np.ascontiguousarray(img))
-    ImageDraw.Draw(im).text((20, 20), s, fill=(0, 0, 0), font=ImageFont.truetype(os.path.expanduser("~/.fonts/NotoSansCJKkr-Bold.otf"), 36))
+    ImageDraw.Draw(im).text((20, 20), s, fill=(0, 0, 0), font=ImageFont.truetype(os.path.expanduser("~/.fonts/NotoSansCJKkr-Regular.otf"), 36))
     return np.asarray(im)
 
 
