@@ -414,6 +414,9 @@ class PhysTwin(torch.nn.Module):
         self.rel = torch.cdist(B, B).topk(K + 1, largest=False).indices[:, 1:]
         self.B0 = B.clone()                                  # 스프링 정지 길이 기준 (처음 위치)
         self.L0 = (B[self.rel] - B[:, None]).norm(dim=-1)
+        # 공식 강성 (configs/real.yaml init_spring_Y 3e4, 힘 f = Y(|d|/L0 - 1) -> 에너지 ½(Y/L0)(|d|-L0)²), 길이는 시뮬 좌표 (정규화 × S_NORM)
+        self.spring_Y = 3e4
+        self.kw = torch.sqrt(self.spring_Y / (self.L0 * S_NORM)) * S_NORM          # 잔차 가중: √(Y/L0_sim)·s
         self.m = None
         self.dof = 3 * B.shape[0]
 
@@ -486,6 +489,11 @@ class PhysTwin(torch.nn.Module):
             0, self.pinv, Pt[self.psel], "mean", include_self=False)
         r = (B[self.rel] - B[:, None]).norm(dim=-1) - self.L0
         return 0.5 * float((r * r).sum())
+
+    def spring10_residual(self, m):
+        """공식 강성 스프링 에너지 E = ½ Σ (Y/L0)(|d|-L0)² (시뮬 단위) 의 잔차."""
+        Bn = self.B + m
+        return (self.kw * ((Bn[self.rel] - Bn[:, None]).norm(dim=-1) - self.L0)).reshape(-1)
 
     def elastic_residual(self, m):
         """스프링 에너지 E = ½ Σ (|x_i - x_j| - L0_ij)² 의 잔차 (처음 이웃 16 개, 단위 강성)."""
@@ -989,13 +997,13 @@ for t in range(1, T + 1):
         rep.rebind(Pref); rep.to(dev)
     DOFS.append(rep.dof)
     if a.method == "phystwin" and a.riem_energy == "spring10":
-        _eref = rep.ref_energy(tgt)
+        # 상한 = spring_cap × 궤적을 만든 시뮬레이션 자체의 탄성에너지 (topo_flow 가 h5 의 입자 F 로 잰 값, 프레임 t)
+        assert "eref" in D.files, "목표 파일에 시뮬 탄성에너지(eref)가 없다 -- topo_flow 로 다시 만들 것"
+        _eref = float(D["eref"][t])
         with torch.no_grad():
-            _r0 = rep.elastic_residual(rep.m.detach() if rep.m is not None else torch.zeros_like(rep.B))
+            _r0 = rep.spring10_residual(rep.m.detach() if rep.m is not None else torch.zeros_like(rep.B))
         _e0 = 0.5 * float((_r0 * _r0).sum())
-        # 시작점이 이미 상한 밖이면 시작점의 1.1 배, 정지(정답 에너지 0)면 변형률 1e-3 수준의 바닥 (둘 다 기록)
-        _floor = 0.5 * 1e-6 * float((rep.L0 * rep.L0).sum())
-        SPRING_CAP[0] = max(a.spring_cap * _eref, 1.1 * _e0, _floor)
+        SPRING_CAP[0] = max(a.spring_cap * _eref, 1.1 * _e0)        # 시작점이 이미 상한 밖이면 시작점의 1.1 배 (기록)
         SPRING_LOG.append((t, _eref, _e0, SPRING_CAP[0]))
     it = [0]
 
@@ -1050,11 +1058,11 @@ for t in range(1, T + 1):
             # 가우스-뉴턴: ∇²B ≈ JᵀJ/(c-E) + ∇E∇Eᵀ/(c-E)² -> 잔차 [r/√(c-E0), E/(c-E0)] (E0 = 선형화 점)
             def make_res(th):
                 with torch.no_grad():
-                    r0 = rep.elastic_residual(*unflat(th))
+                    r0 = rep.spring10_residual(*unflat(th))
                     gap = max(SPRING_CAP[0] - 0.5 * float((r0 * r0).sum()), 1e-12)
 
                 def res(x):
-                    r_ = rep.elastic_residual(*unflat(x))
+                    r_ = rep.spring10_residual(*unflat(x))
                     return torch.cat([r_ / math.sqrt(gap), (0.5 * (r_ * r_).sum() / gap).reshape(1)])
                 return res
         elif a.method in ("ours", "tet"):
@@ -1315,7 +1323,7 @@ for t in range(1, T + 1):
                 CFL_LOG.append((t, rep.cfl_max()))                    # 노드 이동 최대 / (cfl·dx) -- 1 넘으면 제약 위반
             if a.method == "phystwin" and a.riem_energy == "spring10":
                 with torch.no_grad():
-                    _r1 = rep.elastic_residual(rep.m.detach())
+                    _r1 = rep.spring10_residual(rep.m.detach())
                 SPRING_LOG[-1] = SPRING_LOG[-1] + (0.5 * float((_r1 * _r1).sum()),)
     elif a.opt == "adam":
         # 뒤집힘 고려 없음: 입자 L2 만 Adam 으로 (장벽·되돌림 없음). det 는 야코비안으로 기록만

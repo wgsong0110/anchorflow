@@ -103,6 +103,29 @@ T = len(files)
 traj = np.empty((T, NG, 3), np.float32)
 for i, f in enumerate(files):
     traj[i] = rd(f)[PIDX]
+# 궤적을 만든 시뮬레이션 자체의 탄성에너지 (프레임별): 저장된 입자 F (전체 입자, 채움 포함), 그 씬의 E·ν,
+# 입자 부피 = 시뮬레이터 정의 (0 프레임 셀마다 세고 dx³/개수). 세 씬 같은 잣대로 고정 공회전 ψ = μ|F−R|² + λ/2 (J−1)².
+_ng, _gl = int(cfg.get("n_grid", 100)), float(cfg.get("grid_lim", 2.0))
+_dx = _gl / _ng
+_cell = np.floor(X0 / _dx).astype(np.int64)
+_key = (_cell[:, 0] * (_ng + 8) + _cell[:, 1]) * (_ng + 8) + _cell[:, 2]
+_, _inv, _cnt = np.unique(_key, return_inverse=True, return_counts=True)
+VOL = _dx ** 3 / _cnt[_inv].astype(np.float64)
+_E, _nu = float(cfg["E"]), float(cfg["nu"])
+_mu, _lam = _E / (2 * (1 + _nu)), _E * _nu / ((1 + _nu) * (1 - 2 * _nu))
+EREF = np.zeros(T)
+for i, f in enumerate(files):
+    with h5py.File(f, "r") as h:
+        Fp = np.array(h["F"])
+    Fp = (Fp.T if Fp.shape[0] == 9 else Fp).reshape(-1, 3, 3).astype(np.float64)
+    okp = np.isfinite(Fp).all((1, 2))
+    Ft = torch.as_tensor(Fp[okp], device="cuda")
+    U, S, Vh = torch.linalg.svd(Ft)
+    R_ = U @ Vh
+    J_ = torch.linalg.det(Ft)
+    psi = _mu * ((Ft - R_) ** 2).sum((1, 2)) + 0.5 * _lam * (J_ - 1) ** 2
+    EREF[i] = float((torch.as_tensor(VOL[okp], device="cuda") * psi).sum())
+print(f"[탄성에너지] 시뮬 자체 (고정 공회전, E {_E:g} ν {_nu:g}): 처음 {EREF[0]:.3e}  최대 {EREF.max():.3e}  끝 {EREF[-1]:.3e}", flush=True)
 ok = np.isfinite(traj).all((0, 2))
 lo = X0.min(0)
 s = float((X0.max(0) - lo).max())
@@ -113,7 +136,7 @@ idx = np.nonzero(ok)[0]
 print(f"[목표] 프레임 {T} (간격 {a.every})  가우시안 {NG} 중 끝까지 유한 {len(idx)}  "
       f"평균 변위 {np.linalg.norm(trajn[-1, idx] - trajn[0, idx], axis=1).mean():.4f} (정규화 단위)", flush=True)
 np.savez_compressed(a.out, X0=Gn[idx].astype(np.float32), traj=trajn[:, idx].astype(np.float32),
-                    idx=idx, lo=lo, s=s, src=a.h5_dir, every=a.every)
+                    idx=idx, lo=lo, s=s, src=a.h5_dir, every=a.every, eref=EREF)
 np.savez(a.aux_out, G=Gn.astype(np.float32), gidx=torch.nonzero(keep).squeeze(1).cpu().numpy(),
          lo=lo, s=s, off=off, scale_origin=float(so), mean=omp.reshape(-1).cpu().numpy(),
          model=a.model, opacity_threshold=float(cfg.get("opacity_threshold", 0.02)),
