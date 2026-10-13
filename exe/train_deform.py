@@ -269,8 +269,9 @@ ap.add_argument("--pool_gate", type=float, default=0.0,
                 help="0 보다 크면 새 풀 규칙: 증분 포텐셜을 노드 변위 출력으로 미분한 노드별 벡터의 크기 × h²/노드질량 ÷ L 의 "
                      "노드 평균(출력 공간 정류 잔차)이 이 값 이하일 때만 상태를 전진시킨다. 넘으면 전진 없이 풀에 남긴다. "
                      "관성 잔차 문턱 폐기·되돌리기는 쓰지 않는다")
-ap.add_argument("--pool_gate_mode", choices=["grad", "objdec"], default="grad",
+ap.add_argument("--pool_gate_mode", choices=["grad", "objdec", "pgrad"], default="grad",
                 help="전진 기준: grad = 증분 포텐셜을 노드 출력으로 미분한 기울기 전체 L2 노름 (h²/평균노드질량/L 로 환산) ≤ --pool_gate, "
+                     "pgrad = 이 상태 손실의 **망 파라미터** 기울기 전체 L2 노름 ≤ --pool_gate (역전파 전후 차이로 구해 역전파를 더 하지 않는다), "
                      "objdec = 같은 상태를 다시 볼 때 직전 방문 대비 목적함수 상대 감소 < --pool_gate (정체하면 전진)")
 ap.add_argument("--ov_seq", action="store_true",
                 help="출력만 최적화 궤적 만들기: --seq_frames 순차 모드에서 망 학습 없이 프레임마다 --ov_ref 와 같은 L-BFGS 로 "
@@ -2813,6 +2814,8 @@ for it in pbar:
                 _gate_val = float(_gnorm_t) if _gnorm_t is not None else float("nan")
             st["_E_last"] = _Enow
             _gate_ok = bool(_gate_val < a.pool_gate) if a.pool_gate_mode == "objdec" else bool(_gate_val <= a.pool_gate)
+            if a.pool_gate_mode == "pgrad":
+                _gate_val, _gate_ok = float("nan"), False     # 역전파 뒤에 정한다 (손실이 유한하지 않으면 전진 안 함)
             if a.diag_pool:
                 # 진단: 기록만 하고 역전파·전진·폐기 없이 다음 상태로
                 _DIAG.append(dict(age=int(st["age"]), res=float(res), hist=(float(np.mean(st["hist"])) if st["hist"] else None),
@@ -2823,8 +2826,19 @@ for it in pbar:
                 _PL_RMS[0] = 0.99 * _PL_RMS[0] + 0.01 * _lv ** 2
                 loss_p = loss_p / max(_PL_RMS[0] ** 0.5, 1e-12)
             if math.isfinite(_lv):
+                _pg0 = ([q.grad.detach().clone() if q.grad is not None else None for q in net.parameters()]
+                        if a.pool_gate_mode == "pgrad" else None)
                 with _tsec("역전파"):
                     (loss_p / a.batch).backward()
+                if _pg0 is not None:
+                    # 이 상태 하나의 파라미터 기울기 = 역전파 뒤 - 앞 (배치 평균이라 batch 배 되돌린다)
+                    _pgs = torch.zeros((), device=dev)
+                    for q, g0 in zip(net.parameters(), _pg0):
+                        if q.grad is not None:
+                            _dg = q.grad.detach() - (g0 if g0 is not None else 0.0)
+                            _pgs = _pgs + (_dg * _dg).sum()
+                    _gate_val = float(_pgs.sqrt()) * a.batch
+                    _gate_ok = bool(_gate_val <= a.pool_gate)
                 if a.out_var and st.get("ov_opt") is not None:
                     # 망 파라미터가 아니라 **이 상태의 출력 변수**를 갱신한다
                     st["ov_opt"].step()
