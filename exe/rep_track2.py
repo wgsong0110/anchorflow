@@ -1000,13 +1000,17 @@ for t in range(1, T + 1):
         rep.rebind(Pref); rep.to(dev)
     DOFS.append(rep.dof)
     if a.method == "phystwin" and a.riem_energy == "spring10":
-        # 상한 = spring_cap × 궤적을 만든 시뮬레이션 자체의 탄성에너지 (topo_flow 가 h5 의 입자 F 로 잰 값, 프레임 t)
+        # 상한 = spring_cap × 궤적을 만든 시뮬레이션 자체 탄성에너지의 **전 프레임 최대값** -- 모든 프레임에 같은 값
+        # (사용자 지시 10-13; 예전에는 프레임마다 그 프레임 값이라 모래 wolf 처럼 에너지가 작은 프레임에서 상한이 1e-6 대로 좁아졌다)
         assert "eref" in D.files, "목표 파일에 시뮬 탄성에너지(eref)가 없다 -- topo_flow 로 다시 만들 것"
-        _eref = float(D["eref"][t])
+        _eref = float(np.max(D["eref"]))                       # 원래 궤적 전체 프레임
         with torch.no_grad():
             _r0 = rep.spring10_residual(rep.m.detach() if rep.m is not None else torch.zeros_like(rep.B))
         _e0 = 0.5 * float((_r0 * _r0).sum())
-        SPRING_CAP[0] = max(a.spring_cap * _eref, 1.1 * _e0)        # 시작점이 이미 상한 밖이면 시작점의 1.1 배 (기록)
+        SPRING_CAP[0] = a.spring_cap * _eref
+        if _e0 >= SPRING_CAP[0]:                                      # 시작점이 이미 상한 밖이면 로그 장벽이 정의되지 않는다
+            print(f"  [경고] t={t} 시작 스프링 에너지 {_e0:.3e} >= 상한 {SPRING_CAP[0]:.3e} -- 이 프레임만 1.1 배로", flush=True)
+            SPRING_CAP[0] = 1.1 * _e0
         SPRING_LOG.append((t, _eref, _e0, SPRING_CAP[0]))
     it = [0]
 
