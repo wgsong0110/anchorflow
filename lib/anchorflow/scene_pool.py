@@ -284,7 +284,12 @@ class StatePool:
             v = V_[t].to(self.dev).float().contiguous()
             F0 = F_[t].to(self.dev).float().contiguous()
         elif self.drop is not None:
-            x, v = self._drop_init(x)
+            if getattr(self, "fixed_set", None):
+                # 유한 집합 모드: 처음에 고정 시드로 뽑아 둔 시작 상태들 중 하나
+                k = int(torch.randint(len(self.fixed_set), (1,), generator=self.gen, device=self.dev))
+                x, v = (q.clone() for q in self.fixed_set[k])
+            else:
+                x, v = self._drop_init(x)
         plan = HandlePlan.sample(x, self.n_ctrl, self.radius, self.gen,
                                  self.dev, self.cand, self.frames,
                                  acc=self.acc, vmax=self.vmax,
@@ -297,6 +302,14 @@ class StatePool:
                     F=(F0 if F0 is not None else torch.eye(3, device=self.dev).expand(
                         x.shape[0], 3, 3).contiguous()),
                     p=None, plan=plan, elapsed=el, hist=[], age=0)
+
+    def fix_start_set(self, k, seed=1234):
+        """새 시작 상태를 낙하 분포에서 고정 시드로 k 개 뽑아 두고, 이후 fresh() 는 그중 하나만 고른다 (k=1 이면 한 상태로 고정)."""
+        g0 = self.gen
+        self.gen = torch.Generator(device=self.dev).manual_seed(int(seed))
+        tag, sc = self.scenes[0]
+        self.fixed_set = [self._drop_init(sc["x0"].clone()) for _ in range(int(k))]
+        self.gen = g0
 
     def _drop_init(self, x0):
         """lb_gen.py 와 같은 분포: 균일 회전(정규분포 사원수), xy 가운데, 바닥 위 여유 U[h0,h1],

@@ -369,6 +369,8 @@ ap.add_argument("--pool_fill", default="",
                 help="풀이 읽을 채움 디렉토리(pgfill_<형상>.npy). 비우면 AF_WORK. "
                      "교사와 같은 입자 집합을 쓰려면 그쪽 캐시를 가리킬 것")
 ap.add_argument("--pool_cfg", default="", help="물성 json 디렉토리 ({형상}_{물성}[_t].json). 비우면 $AF_WORK/wmats")
+ap.add_argument("--pool_start_k", type=int, default=0,
+                help="낙하 모드에서 새 시작 상태를 고정 시드로 이 개수만큼 미리 뽑아 두고 그중에서만 고른다 (1 = 한 상태로 고정, 0 = 매번 새로)")
 ap.add_argument("--pool_init_traj", default="",
                 help="이 궤적 .pt 의 0 프레임 상태(x, v, F)를 풀의 유일한 새 상태로 쓴다 -- 한 궤적 과적합 실험")
 ap.add_argument("--pool_data", default="",
@@ -2087,6 +2089,9 @@ if a.pool:
                      start_mid=a.pool_start_mid, keep_prob=a.pool_keep,
                      acc=a.ctrl_acc, vmax=a.ctrl_vmax, zbias=a.ctrl_zbias,
                      n_side=a.pool_targets, drop=_DROP, data=_PDATA, init=_PINIT)
+    if a.pool_start_k > 0:
+        POOL.fix_start_set(a.pool_start_k)
+        print(f"[풀] 시작 상태 고정 집합 {a.pool_start_k} 개 (고정 시드)", flush=True)
     for _tag, _s in _sc:
         SCENE_DS.append(dict(x=_s["x0"].unsqueeze(0), cfg=_s["cfg"],
                              sel=torch.arange(_s["x0"].shape[0], device=dev),
