@@ -88,6 +88,11 @@ for _m in ["pynput", "gaussian_splatting", "gaussian_splatting.scene", "gaussian
            "gs_render"]:
     sys.modules.setdefault(_m, _Stub(_m))
 
+# open3d 0.18 의 Vector3dVector 는 float32 배열을 받으면 세그폴트 (cma_optimize_warp.py:89 에서 실측) -> float64 로
+import open3d as _o3d                                        # noqa: E402
+_v3 = _o3d.utility.Vector3dVector
+_o3d.utility.Vector3dVector = lambda x: _v3(np.ascontiguousarray(np.asarray(x), dtype=np.float64))
+
 # ---- PhysTwin 설정 (configs/real.yaml 그대로 + synthetic 규약)
 from qqtt.utils import cfg                                   # noqa: E402
 cfg.load_from_yaml("configs/real.yaml")
