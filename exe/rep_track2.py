@@ -70,6 +70,9 @@ ap.add_argument("--tau", type=float, default=0.1, help="adam_bt: det 장벽 문�
 ap.add_argument("--knn_F", type=int, default=8, help="adam_bt: det 를 잴 이웃 수")
 ap.add_argument("--riem_eps", type=float, default=1e-2,
                 help="riem: 계량 G = JᵀJ + ε·λmax·I 의 상대 ε (λmax 는 프레임마다 거듭제곱법)")
+ap.add_argument("--riem_eps_abs", type=float, default=0.0,
+                help="riem: 0 보다 크면 ε·λmax 대신 이 절대값으로 감쇠 (λmax 가 납작한 셀 하나로 커져 "
+                     "모든 방향의 보폭이 같이 줄어드는지 가리는 진단용)")
 ap.add_argument("--profile", type=int, default=0,
                 help="riem: 첫 프레임 이 반복 수만 돌며 구간별 시간 + torch 프로파일러 표를 내고 끝낸다")
 ap.add_argument("--cfl", type=float, default=1.0, help="grid: 한 프레임 노드 이동 상한 (격자 간격 배수)")
@@ -1195,7 +1198,7 @@ for t in range(1, T + 1):
             WARM = 3                                          # 컴파일·첫 호출은 빼고 잰다
             prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
                                                       torch.profiler.ProfilerActivity.CUDA])
-        eps = a.riem_eps * max(lmax, 1e-12)                   # k=1 기준 -> k 를 키우면 계량이 더 딱딱해진다
+        eps = a.riem_eps_abs if a.riem_eps_abs > 0 else a.riem_eps * max(lmax, 1e-12)   # k=1 기준 -> k 를 키우면 계량이 더 딱딱해진다
         if a.opt == "ipm":
             # 내부점법 (장벽법): 매 단계 min L2 + μ·B, B = -Σ w² log J (J>0 영역 안에서만),
             # μ 는 단계마다 1/10. 방향은 같은 계량의 Δ = -G⁻¹∇f, 보폭은 가능성(J>0) + Armijo 되돌림
@@ -1311,10 +1314,7 @@ for t in range(1, T + 1):
                     if ft == ft and ft <= f0 - 1e-4 * stp * sl:
                         break
                     stp *= 0.5; nbt += 1
-                else:
-                    if a.ls_max:
-                        for q, q0 in zip(PL, unflat(theta)):
-                            q.copy_(q0)
+                # 다 실패해도 원래 값으로 되돌리지 않는다 (사용자 지시 10-13): 마지막으로 시도한 보폭을 그대로 둔다
             CURVE.append((t, it_, float(l2), stp, nbt))
         if a.opt == "riem":
             it[0] = it_ + 1
