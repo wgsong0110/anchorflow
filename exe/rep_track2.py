@@ -1241,7 +1241,7 @@ for t in range(1, T + 1):
                         Gp = Gv(pdir); al = rr / (pdir * Gp).sum().clamp_min(1e-30)
                         x += al * pdir; r -= al * Gp
                         rr_new = (r * r).sum()
-                        if rr_new.sqrt() < 1e-4 * gk.norm():
+                        if rr_new.sqrt() <= 1e-4 * gk.norm():          # <= : 기울기 0 (손실 0 프레임) 이면 0/0 으로 NaN 이 되기 전에 멈춘다
                             break
                         pdir = r + (rr_new / rr) * pdir; rr = rr_new
                     f0 = float(f); slope = -float((gk * x).sum())
@@ -1295,7 +1295,7 @@ for t in range(1, T + 1):
                     rr_new = (r * r).sum()
                     if a.profile:
                         NCG[0] += 1
-                    if rr_new.sqrt() < 1e-4 * gk.norm():
+                    if rr_new.sqrt() <= 1e-4 * gk.norm():          # <= : 기울기 0 (손실 0 프레임) 이면 0/0 으로 NaN 이 되기 전에 멈춘다
                         break
                     pdir = r + (rr_new / rr) * pdir; rr = rr_new
                 if a.profile:
