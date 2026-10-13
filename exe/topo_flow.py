@@ -37,6 +37,9 @@ import torch                                                     # noqa: E402
 from utils.transformation_utils import (                          # noqa: E402
     generate_rotation_matrices, apply_rotations, transform2origin, shift2center111)
 from scene.gaussian_model import GaussianModel                   # noqa: E402
+# GaussianFluent 의 utils/transformation_utils.py:777 이 import 때 선형대수 백엔드를 magma 로 바꾼다. magma 는 3x3 묶음
+# SVD 를 사실상 CPU 로 돌려 20 만 개에 390 s (기본 cusolver 1.1 s) -- 수박 목표 파일이 5 시간 넘게 0 프레임에 묶여 있던 원인
+torch.backends.cuda.preferred_linalg_library("default")
 os.chdir(_cwd)
 
 cfg = json.load(open(a.config))
