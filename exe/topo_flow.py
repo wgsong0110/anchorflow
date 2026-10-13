@@ -47,6 +47,16 @@ keep = op > float(cfg.get("opacity_threshold", 0.02))
 pos = gs.get_xyz.detach()[keep]
 R = generate_rotation_matrices(torch.tensor(cfg.get("rotation_degree", [0.0])), cfg.get("rotation_axis", [0]))
 rot = apply_rotations(pos, R)
+if cfg.get("sim_area") is not None:
+    # GaussianFluent: 회전 뒤 시뮬 영역 밖 가우시안을 버리고 남은 것으로 정규화한다 (gs_simulation.py 와 같은 순서)
+    b = cfg["sim_area"]
+    m = torch.ones(rot.shape[0], dtype=torch.bool, device=rot.device)
+    for i in range(3):
+        m &= (rot[:, i] > b[2 * i]) & (rot[:, i] < b[2 * i + 1])
+    kidx = torch.nonzero(keep).squeeze(1)
+    keep = torch.zeros_like(keep); keep[kidx[m]] = True
+    rot = rot[m]
+    print(f"[시뮬 영역] {b} 안 가우시안 {int(m.sum())} / {m.numel()}", flush=True)
 try:
     tpos, so, omp = transform2origin(rot, float(cfg.get("scale", 1.0)))     # PhysGaussian 판
 except TypeError:
