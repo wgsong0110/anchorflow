@@ -38,11 +38,15 @@ for S in ("lego", "mic", "ficus"):
             continue
         L = float(np.linalg.norm(np.ptp(ref[0], 0)))
         for N in NS:
-            x = load(f"{R}/{m}_N{N}.npz")
+            if N >= a.ref:
+                continue
+            x, safe = load(f"{R}/{m}_N{N}.npz"), False
+            if x is None:                                     # 원래 실행이 발산했으면 보정판 (그림에서 다르게 표시)
+                x, safe = load(f"{R}/{m}_safe_N{N}.npz"), True
             if x is None:
                 continue
             e = np.linalg.norm(x - ref, axis=-1).mean(1) / L
-            res[f"{S}|{m}|{N}"] = dict(mean=float(e[1:].mean()), last=float(e[-1]), per_frame=[float(v) for v in e], L=L)
-            print(S, m, N, "평균 %.4f%%  마지막 %.4f%%" % (100 * e[1:].mean(), 100 * e[-1]), flush=True)
+            res[f"{S}|{m}|{N}"] = dict(mean=float(e[1:].mean()), last=float(e[-1]), per_frame=[float(v) for v in e], L=L, safe=safe)
+            print(S, m, N, "보정판" if safe else "", "평균 %.4f%%  마지막 %.4f%%" % (100 * e[1:].mean(), 100 * e[-1]), flush=True)
 json.dump(res, open(a.out, "w"))
 print("ERRREF_DONE")
