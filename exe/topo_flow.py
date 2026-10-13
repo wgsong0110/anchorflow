@@ -116,7 +116,7 @@ _mu, _lam = _E / (2 * (1 + _nu)), _E * _nu / ((1 + _nu) * (1 - 2 * _nu))
 EREF = np.zeros(T)
 for i, f in enumerate(files):
     with h5py.File(f, "r") as h:
-        Fp = np.array(h["F"])
+        Fp = np.array(h["F"] if "F" in h else h["f_tensor"])          # PhysGaussian·GF 는 f_tensor (9, N) 로 저장
     Fp = (Fp.T if Fp.shape[0] == 9 else Fp).reshape(-1, 3, 3).astype(np.float64)
     okp = np.isfinite(Fp).all((1, 2))
     Ft = torch.as_tensor(Fp[okp], device="cuda")
