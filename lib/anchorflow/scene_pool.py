@@ -236,6 +236,7 @@ class StatePool:
                 hist=list(q["hist"]), age=int(q["age"]), stuck=int(q.get("stuck", 0))))
         return dict(items=items, n_drop=self.n_drop, n_keep=self.n_keep,
                     n_rdrop=getattr(self, "n_rdrop", 0), n_expire=getattr(self, "n_expire", 0),
+                    n_stuckdrop=getattr(self, "n_stuckdrop", 0),
                     n_replan=self.n_replan, fresh_res=list(self.fresh_res),
                     tags=[t for t, _ in self.scenes])
 
@@ -262,6 +263,7 @@ class StatePool:
         self.n_keep = int(d.get("n_keep", 0))
         self.n_replan = int(d.get("n_replan", 0))
         self.n_rdrop = int(d.get("n_rdrop", 0)); self.n_expire = int(d.get("n_expire", 0))
+        self.n_stuckdrop = int(d.get("n_stuckdrop", 0))
         self.fresh_res = list(d.get("fresh_res") or [])
         return len(self.items), n_skip
 
@@ -353,7 +355,7 @@ class StatePool:
         picks += [("fresh", None)] * n_fresh
         return picks
 
-    def put_back_gate(self, slot, st, advanced, rdrop=0.0, expire=True, dt_frac=1.0):
+    def put_back_gate(self, slot, st, advanced, rdrop=0.0, expire=True, dt_frac=1.0, stuck_max=0):
         """새 풀 규칙 (--pool_gate): 전진 여부는 호출 쪽이 출력 공간 정류 잔차로 정했다.
 
         전진했으면 나이·경과 시간을 올리고 정체 수를 0 으로, 아니면 정체 수만 올린다. 폐기는 **무작위** (풀 상태를
@@ -372,6 +374,10 @@ class StatePool:
         else:
             st["stuck"] = st.get("stuck", 0) + 1
         dead = not bool(torch.isfinite(st["x"]).all())
+        if not dead and stuck_max > 0 and st.get("stuck", 0) >= stuck_max:
+            # 연속 stuck_max 번 방문하는 동안 한 번도 전진하지 못한 상태는 버린다
+            self.n_stuckdrop = getattr(self, "n_stuckdrop", 0) + 1
+            dead = True
         if not dead and expire and st["age"] >= self.frames:
             self.n_expire = getattr(self, "n_expire", 0) + 1
             dead = True

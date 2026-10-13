@@ -279,6 +279,8 @@ ap.add_argument("--ov_seq", action="store_true",
 ap.add_argument("--ov_ref", action="store_true",
                 help="순차 보정 모드에서 학습 전에 같은 상태의 출력만 최적화 기준해를 L-BFGS 로 구하고 (망 고정, 노드 출력 탐침이 변수), "
                      "학습 중 그 해와의 위치·F 차이를 TB '기준해오차/' 로 기록한다")
+ap.add_argument("--pool_stuck_max", type=int, default=0,
+                help="--pool_gate 에서 연속 이 횟수만큼 방문하는 동안 한 번도 전진하지 못한 상태를 버린다 (0 이면 끔)")
 ap.add_argument("--pool_rdrop", type=float, default=0.0,
                 help="--pool_gate 에서 풀 상태를 방문할 때마다 이 확률로 무작위로 버린다 (빈자리는 새 상태로)")
 ap.add_argument("--pool_expire", action="store_true",
@@ -2882,7 +2884,8 @@ for it in pbar:
             if a.pool_gate > 0 and not a.seq_frames:
                 POOL.put_back_gate(slot if kind == "pool" else None, st,
                                    advanced=_gate_ok and not a.out_var,
-                                   rdrop=a.pool_rdrop, expire=a.pool_expire, dt_frac=1.0 / _sub)
+                                   rdrop=a.pool_rdrop, expire=a.pool_expire, dt_frac=1.0 / _sub,
+                                   stuck_max=a.pool_stuck_max)
             elif not a.seq_frames:
                 POOL.put_back(slot if kind == "pool" else None, st, res,
                               prev=_prev, dt_frac=1.0 / _sub)
@@ -2973,6 +2976,7 @@ for it in pbar:
                     if a.pool_gate > 0:
                         TBW.add_scalar("게이트/통과율", _GATE_N[0] / max(_GATE_N[0] + _GATE_N[1], 1), it)
                         TBW.add_scalar("풀/무작위폐기누적", getattr(POOL, "n_rdrop", 0), it)
+                        TBW.add_scalar("풀/정체폐기누적", getattr(POOL, "n_stuckdrop", 0), it)
                         TBW.add_scalar("풀/만기누적", getattr(POOL, "n_expire", 0), it)
                         _stk = [q.get("stuck", 0) for q in POOL.items if q is not None] or [0]
                         TBW.add_scalar("풀/정체_최대", max(_stk), it)
