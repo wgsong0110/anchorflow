@@ -98,9 +98,15 @@ ap.add_argument("--pt_realtime", action="store_true",
                      "매 프레임 그 이웃까지 거리로 가중치만 다시")
 ap.add_argument("--tb", default="auto",
                 help="TensorBoard 디렉토리 (auto: /home/dkta/work/tbrf/<폴더>_<파일>, none: 끔)")
-ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt", "adam", "riem", "ipm"],
+ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt", "adam", "riem", "ipm", "ipmF"],
                 help="lbfgs (원래 설정) / gd: 고정 학습률 경사하강")
 ap.add_argument("--gd_lr", type=float, default=1.0)
+ap.add_argument("--ipmF_mu0", type=float, default=1e-1,
+                help="ipmF: 첫 장벽 계수 = 이 값 × 프레임 시작 L2 (단계마다 1/10)")
+ap.add_argument("--ipmF_stages", type=int, default=4, help="ipmF: μ 단계 수")
+ap.add_argument("--ipmF_lm", type=float, default=1e-4,
+                help="ipmF: 감쇠 δ = 이 값 × L2 가우스-뉴턴 대각 평균 (λmax 와 무관한 고정 비율)")
+ap.add_argument("--ipmF_cg", type=int, default=100, help="ipmF: CG 최대 반복")
 ap.add_argument("--frames", type=int, default=0, help="앞 몇 프레임만 (0 이면 전부)")
 ap.add_argument("--autograd_jac", action="store_true",
                 help="야코비안을 예전처럼 자동미분 2 차로 (검증·비교용, 느리다)")
@@ -1026,7 +1032,134 @@ for t in range(1, T + 1):
         CURVE.append((t, it[0], float(l2), float(bar)))
         it[0] += 1
         return loss
-    if a.opt in ("riem", "ipm"):
+    if a.opt == "ipmF":
+        # 내부점법: min L2(θ) + μ B(θ),  B = -Σ_k w_k log c_k(θ),  모든 c_k > 0 을 지킨다.
+        #   c (공통) : 입자 det F (F = 이 프레임 야코비안 · 누적 F, 정지 대비) -- 가중 1/N
+        #   c (표현별): 셀 det (ours·tet·tetmesh, 1/셀 수) | CFL 1-|u|²/c² (grid, 1/노드 수) | 스프링 상한 cap-E (phystwin, 1)
+        # 방향: 가우스-뉴턴 뉴턴 (G = J_Rᵀ J_R + δI, R = [√(2/N)(r+dy), √(μw) log c]) -- G 의 장벽 부분이
+        # 정확히 Σ μw ∇c∇cᵀ/c² 이다. δ 는 L2 부분 대각 평균의 고정 비율 (riem 의 ε·λmax 처럼 납작한 셀 하나가
+        # 모든 방향을 죽이지 않게). 보폭: 모든 c > 0 (가능성) + Armijo, 반씩 최대 40 번.
+        from torch.func import jvp, vjp, functional_call
+        PL = rep.params()
+        names = {id(q): n for n, q in rep.named_parameters()}
+        keys = [names[id(q)] for q in PL]
+        shapes = [q.shape for q in PL]
+        sizes = [q.numel() for q in PL]
+
+        def unflat(x):
+            return [c.reshape(sh) for c, sh in zip(torch.split(x, sizes), shapes)]
+
+        def flat(ts):
+            return torch.cat([q.reshape(-1) for q in ts])
+        X_ = Pref[FI]
+        NF = X_.shape[0]
+        detFc = det3(Fcum[FI]) if REB else None
+
+        class _W(torch.nn.Module):
+            def __init__(s_, r_):
+                super().__init__(); s_.r = r_
+
+            def forward(s_, X, sel):
+                return s_.r.yJ(X, sel)
+        _w = _W(rep)
+
+        def _yJ_call(x):
+            return functional_call(_w, {"r." + k: v for k, v in zip(keys, unflat(x))}, (X_, FI))
+
+        def cons(x, J=None):
+            """제약 값 c 와 가중 w (둘 다 1 차원)."""
+            if J is None:
+                _, J = _yJ_call(x)
+            cp = det3(J) * detFc if REB else det3(J)
+            cs, ws = [cp], [torch.full_like(cp, 1.0 / NF)]
+            ps = unflat(x)
+            if a.method in ("ours", "tet", "tetmesh"):
+                Jc, wc = rep.cellJ(*ps)
+                cs.append(Jc); ws.append(wc)
+            elif a.method == "grid":
+                u_ = ps[0]
+                cc = 1.0 - (u_ * u_).sum(1) / (rep.c * rep.c)
+                cs.append(cc); ws.append(torch.full_like(cc, 1.0 / cc.numel()))
+            elif a.method == "phystwin":
+                r_ = rep.spring10_residual(ps[0])
+                cc = (SPRING_CAP[0] - 0.5 * (r_ * r_).sum()).reshape(1)
+                cs.append(cc); ws.append(torch.ones_like(cc))
+            return torch.cat(cs), torch.cat(ws)
+
+        def fobj(x, mu):
+            """(f, L2, c 최소) -- 가능하지 않으면 f = inf."""
+            dy_, J_ = _yJ_call(x)
+            l2_ = ((RES0 + dy_) ** 2).sum(1).mean()
+            c_, w_ = cons(x, J_)
+            cmin = c_.min()
+            if not bool(torch.isfinite(l2_)) or float(cmin) <= 0 or not bool(torch.isfinite(c_).all()):
+                return float("inf"), float(l2_), float(cmin)
+            return float(l2_ - mu * (w_ * torch.log(c_)).sum()), float(l2_), float(cmin)
+
+        def resid(x, mu):
+            dy_, J_ = _yJ_call(x)
+            c_, w_ = cons(x, J_)
+            return torch.cat([math.sqrt(2.0 / NF) * (RES0 + dy_).reshape(-1),
+                              (mu * w_).sqrt() * torch.log(c_.clamp_min(1e-30))])
+
+        theta = flat([q.detach() for q in PL])
+        with torch.no_grad():
+            _, l20, cmin0 = fobj(theta, 0.0)
+        assert cmin0 > 0, f"t={t}: 프레임 시작점이 가능하지 않다 (c 최소 {cmin0:.3e})"
+        mu0 = a.ipmF_mu0 * max(l20, 1e-12)
+        # L2 가우스-뉴턴 대각 평균 (Hutchinson 4 회) -> δ
+        with torch.no_grad():
+            rL = lambda x: math.sqrt(2.0 / NF) * (RES0 + _yJ_call(x)[0]).reshape(-1)
+            gen = torch.Generator(device=dev).manual_seed(t)
+            dg = 0.0
+            for _ in range(4):
+                v_ = (torch.randint(0, 2, theta.shape, generator=gen, device=dev).to(theta.dtype) * 2 - 1)
+                jv = jvp(rL, (theta,), (v_,))[1]
+                dg += float((jv * jv).sum()) / theta.numel() / 4
+        delta = a.ipmF_lm * max(dg, 1e-30)
+        ntot = a.iters0 if t == 1 else a.iters
+        nst = max(ntot // a.ipmF_stages, 1)
+        step = 1.0
+        nfail = 0
+        for it_ in range(ntot):
+            mu = mu0 * (0.1 ** min(it_ // nst, a.ipmF_stages - 1))
+            xg = theta.clone().requires_grad_(True)
+            dy_, J_ = _yJ_call(xg)
+            l2 = ((RES0 + dy_) ** 2).sum(1).mean()
+            c_, w_ = cons(xg, J_)
+            f = l2 - mu * (w_ * torch.log(c_)).sum()
+            gk = torch.autograd.grad(f, xg)[0].detach()
+            with torch.no_grad():
+                _, vjp_fn = vjp(lambda x: resid(x, mu), theta)
+                Gv = lambda u_: vjp_fn(jvp(lambda x: resid(x, mu), (theta,), (u_,))[1])[0] + delta * u_
+                x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
+                for _ in range(a.ipmF_cg):
+                    Gp = Gv(pdir); al = rr / (pdir * Gp).sum().clamp_min(1e-30)
+                    x += al * pdir; r -= al * Gp
+                    rr_new = (r * r).sum()
+                    if rr_new.sqrt() <= 1e-4 * gk.norm():
+                        break
+                    pdir = r + (rr_new / rr) * pdir; rr = rr_new
+                f0 = float(f); slope = -float((gk * x).sum())
+                step = min(step * 2.0, 1.0)
+                ok = False; nbt = 0
+                for _bt in range(40):
+                    f1, l21, _ = fobj(theta - step * x, mu)
+                    if f1 <= f0 + 1e-4 * step * slope:
+                        ok = True; break
+                    step *= 0.5; nbt += 1
+                if ok:
+                    theta = theta - step * x
+                else:
+                    nfail += 1
+            CURVE.append((t, it_, float(l2), step if ok else 0.0, nbt))
+        with torch.no_grad():
+            for q, v_ in zip(PL, unflat(theta)):
+                q.copy_(v_)
+            _, l2e, cmine = fobj(theta, 0.0)
+        it[0] = ntot
+        STOP.append((t, ntot, nfail, cmine, delta, "ipmF"))
+    elif a.opt in ("riem", "ipm"):
         # 탄성 에너지의 가우스-뉴턴 헤시안을 계량으로: Δ = (JᵀJ + ε·λmax·I)⁻¹ ∇L, θ -= ηΔ.
         # 계량은 매 스텝 현재 상태에서 다시 선형화한다. 장벽·되돌림·선탐색 없음
         from torch.func import jvp, vjp
