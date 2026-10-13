@@ -421,6 +421,10 @@ class PhysTwin(torch.nn.Module):
         vox = 0.005 / 0.25
         key = torch.floor((P - P.min(0).values) / vox).long()
         _, inv = torch.unique(key, dim=0, return_inverse=True)
+        if a.pt_fit:
+            # 강성 결정(phystwin_fit, float64 목표 궤적)이 쓴 묶음을 그대로 -- float32 로 다시 묶으면 복셀 경계의 점이
+            # 다른 칸으로 가 질량점 위치가 1.5e-3 어긋났다 (bread)
+            inv = torch.as_tensor(np.load(a.pt_fit)["inv"], device=dev, dtype=torch.long)
         self.pinv = inv
         B = torch.zeros(inv.max() + 1, 3, device=dev).index_reduce_(
             0, inv, P, "mean", include_self=False)
@@ -437,7 +441,7 @@ class PhysTwin(torch.nn.Module):
             fz = np.load(a.pt_fit)
             assert np.array_equal(fz["psel"], self.psel.cpu().numpy()), "fit.npz 의 질량점 표본이 다르다"
             X0f = torch.as_tensor(fz["X0"], device=dev, dtype=B.dtype) / S_NORM
-            assert float((X0f - B).abs().max()) < 1e-4, f"fit.npz 질량점 위치가 다르다 ({float((X0f - B).abs().max()):.2e})"
+            assert float((X0f - B).abs().max()) < 1e-4, f"fit.npz 질량점 위치가 다르다 ({float((X0f - B).abs().max()):.2e})"  # 같은 묶음이면 목표와 가우시안 위치 차(≤1e-5)만
             self.sp = torch.as_tensor(fz["springs"], device=dev, dtype=torch.long)
             self.L0sp = torch.as_tensor(fz["rest_lengths"], device=dev, dtype=B.dtype) / S_NORM
             Ysp = torch.as_tensor(fz["spring_Y"], device=dev, dtype=B.dtype)
