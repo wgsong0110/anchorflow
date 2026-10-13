@@ -828,6 +828,7 @@ def nn_dist(P, Q, ch=4096, k=8):
     """P 각 점의 Q 최근접 거리 (정확): 행렬곱 cdist 로 후보 k 개를 고르고 거리는 직접 다시 잰다.
     행렬곱 cdist 는 |a|²+|b|²-2ab 라 float32 에서 거리² 오차 ~3e-7 -- 최근접 거리 1e-3 근처에서 10% 가 넘는다."""
     out = []
+    ch = max(64, min(ch, int(2e8 // max(Q.shape[0], 1))))        # 거리 행렬 ch×|Q| 를 0.8 GB 이하로 (수박 138 만 점)
     for i in range(0, P.shape[0], ch):
         Pi = P[i:i + ch]
         j = torch.cdist(Pi, Q).topk(min(k, Q.shape[0]), largest=False).indices
