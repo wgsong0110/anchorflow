@@ -1546,6 +1546,10 @@ for t in range(1, T + 1):
     with torch.no_grad():
         y = yall[FI]
         J = torch.linalg.det(Fall[FI])
+        if a.opt == "ipmF" and REB:
+            # 누적 F 행렬(float32 곱)의 det 는 납작한 입자에서 반올림으로 -1e12 같은 값이 나온다 -- 제약에 쓴 것과
+            # 같은 스칼라 곱(float64)으로 보고한다
+            J = DETC[0].to(J.dtype)
         rmse = float(((y - tgt) ** 2).sum(1).mean().sqrt()) / L
         cd = chamfer(y, tgt) / L
         e = float("nan")                            # EMD 는 저장한 위치로 rep_emd.py 가 따로 잰다
