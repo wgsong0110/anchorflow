@@ -992,7 +992,9 @@ for t in range(1, T + 1):
         with torch.no_grad():
             _r0 = rep.elastic_residual(rep.m.detach() if rep.m is not None else torch.zeros_like(rep.B))
         _e0 = 0.5 * float((_r0 * _r0).sum())
-        SPRING_CAP[0] = max(a.spring_cap * _eref, 1.1 * _e0)        # 시작점이 이미 상한 밖이면 시작점의 1.1 배 (기록)
+        # 시작점이 이미 상한 밖이면 시작점의 1.1 배, 정지(정답 에너지 0)면 변형률 1e-3 수준의 바닥 (둘 다 기록)
+        _floor = 0.5 * 1e-6 * float((rep.L0 * rep.L0).sum())
+        SPRING_CAP[0] = max(a.spring_cap * _eref, 1.1 * _e0, _floor)
         SPRING_LOG.append((t, _eref, _e0, SPRING_CAP[0]))
     it = [0]
 

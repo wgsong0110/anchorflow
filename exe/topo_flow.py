@@ -63,18 +63,29 @@ def rd(p):
 
 
 X0 = rd(files[0]).astype(np.float64)
-err = float(np.abs(X0[:NG] - tpos).max())
-print(f"[대응] 가우시안 {NG}  0 프레임 입자 {X0.shape[0]}  앞 {NG} 개와 위치 차 최대 {err:.2e}", flush=True)
-assert err < 1e-4, "시뮬 입자 앞부분이 거른 가우시안과 같은 순서가 아니다 -- 멈춘다"
+if X0.shape[0] >= NG and float(np.abs(X0[:NG] - tpos).max()) < 1e-4:
+    PIDX = np.arange(NG)                                   # PG: 입자 앞부분 = 거른 가우시안 (같은 순서)
+    print(f"[대응] 가우시안 {NG}  0 프레임 입자 {X0.shape[0]}  앞 {NG} 개가 그대로 일치", flush=True)
+else:
+    # GF 는 상자 밖 등 일부를 더 걸러 순서가 어긋난다 -> 0 프레임 위치로 정확히 짝짓는다 (거리 1e-5 안만)
+    from scipy.spatial import cKDTree
+    d, j = cKDTree(X0).query(tpos)
+    ok0 = d < 1e-5
+    print(f"[대응] 가우시안 {NG}  0 프레임 입자 {X0.shape[0]}  위치로 짝지음: {int(ok0.sum())} 개 일치 (최대 거리 {d[ok0].max():.1e})", flush=True)
+    assert ok0.mean() > 0.99, "가우시안 99% 이상이 시뮬 입자와 짝지어지지 않는다 -- 멈춘다"
+    keep_idx = torch.nonzero(keep).squeeze(1).cpu().numpy()[ok0]
+    keep = torch.zeros_like(keep); keep[torch.as_tensor(keep_idx, device=keep.device)] = True
+    tpos, PIDX = tpos[ok0], j[ok0]
+    NG = tpos.shape[0]
 T = len(files)
 traj = np.empty((T, NG, 3), np.float32)
 for i, f in enumerate(files):
-    traj[i] = rd(f)[:NG]
+    traj[i] = rd(f)[PIDX]
 ok = np.isfinite(traj).all((0, 2))
 lo = X0.min(0)
 s = float((X0.max(0) - lo).max())
 off = (1.0 - ((X0.max(0) - lo) / s)) / 2.0
-Gn = (X0[:NG] - lo) / s + off                      # 0 프레임 입자 위치 그대로 (rep_track2 가 목표 0 프레임과 정확히 같은지 본다)
+Gn = (X0[PIDX] - lo) / s + off                      # 0 프레임 입자 위치 그대로 (rep_track2 가 목표 0 프레임과 정확히 같은지 본다)
 trajn = (traj.astype(np.float64) - lo) / s + off
 idx = np.nonzero(ok)[0]
 print(f"[목표] 프레임 {T} (간격 {a.every})  가우시안 {NG} 중 끝까지 유한 {len(idx)}  "
