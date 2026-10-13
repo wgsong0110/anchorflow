@@ -996,6 +996,7 @@ if a.check_jac:
 if RENDER:
     render(G0, Fall=Fcum)
 rows, CURVE, DOFS, STOP, EMDP = [], [], [], [], []
+DETC = [torch.ones(FI.numel(), device=dev, dtype=torch.float64)]   # ipmF: 입자 누적 det (정지 대비)
 SPRING_CAP, SPRING_LOG, CFL_LOG = [float("inf")], [], []
 PHYS, TRAJS, YPREV = [], [], [G0[FI].clone()]
 t0 = time.time()
@@ -1053,7 +1054,9 @@ for t in range(1, T + 1):
             return torch.cat([q.reshape(-1) for q in ts])
         X_ = Pref[FI]
         NF = X_.shape[0]
-        detFc = det3(Fcum[FI]) if REB else None
+        # 누적 det 는 행렬곱 뒤 다시 재지 않고 스칼라 곱으로 이어 간다 (float64): det(J·Fcum) 을 다시 재면
+        # 납작한 F 에서 반올림으로 부호가 뒤집혀 다음 프레임 시작점이 '가능하지 않음' 이 됐다 (bread t=4)
+        detFc = DETC[0].to(DT) if REB else None
 
         class _W(torch.nn.Module):
             def __init__(s_, r_):
@@ -1117,6 +1120,7 @@ for t in range(1, T + 1):
                 jv = jvp(rL, (theta,), (v_,))[1]
                 dg += float((jv * jv).sum()) / theta.numel() / 4
         delta = a.ipmF_lm * max(dg, 1e-30)
+        DLO, DHI = 1e-8 * max(dg, 1e-30), 1e8 * max(dg, 1e-30)
         ntot = a.iters0 if t == 1 else a.iters
         nst = max(ntot // a.ipmF_stages, 1)
         step = 1.0
@@ -1141,7 +1145,7 @@ for t in range(1, T + 1):
                         break
                     pdir = r + (rr_new / rr) * pdir; rr = rr_new
                 f0 = float(f); slope = -float((gk * x).sum())
-                step = min(step * 2.0, 1.0)
+                step = 1.0
                 ok = False; nbt = 0
                 for _bt in range(40):
                     f1, l21, _ = fobj(theta - step * x, mu)
@@ -1152,11 +1156,19 @@ for t in range(1, T + 1):
                     theta = theta - step * x
                 else:
                     nfail += 1
+                # 레벤버그-마쿼트: 보폭 1 이 받아들여지면 δ 를 줄이고, 되돌림이 많으면 키운다
+                # (δ 가 작으면 L2 가 안 보는 방향 -- 입자가 없는 노드 등 -- 이 폭주해 보폭이 1e-13 이 됐다)
+                if ok and nbt == 0:
+                    delta = max(delta / 3.0, DLO)
+                elif nbt >= 2 or not ok:
+                    delta = min(delta * (2.0 ** min(nbt, 20)), DHI)
             CURVE.append((t, it_, float(l2), step if ok else 0.0, nbt))
         with torch.no_grad():
             for q, v_ in zip(PL, unflat(theta)):
                 q.copy_(v_)
             _, l2e, cmine = fobj(theta, 0.0)
+            if REB:
+                DETC[0] = DETC[0] * det3(_yJ_call(theta)[1]).double()
         it[0] = ntot
         STOP.append((t, ntot, nfail, cmine, delta, "ipmF"))
     elif a.opt in ("riem", "ipm"):
