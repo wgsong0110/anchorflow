@@ -114,17 +114,29 @@ VOL = _dx ** 3 / _cnt[_inv].astype(np.float64)
 _E, _nu = float(cfg["E"]), float(cfg["nu"])
 _mu, _lam = _E / (2 * (1 + _nu)), _E * _nu / ((1 + _nu) * (1 - 2 * _nu))
 EREF = np.zeros(T)
-for i, f in enumerate(files):
+from tqdm import tqdm
+for i, f in enumerate(tqdm(files, desc="탄성에너지", mininterval=10)):
     with h5py.File(f, "r") as h:
         Fp = np.array(h["F"] if "F" in h else h["f_tensor"])          # PhysGaussian·GF 는 f_tensor (9, N) 로 저장
     Fp = (Fp.T if Fp.shape[0] == 9 else Fp).reshape(-1, 3, 3).astype(np.float64)
+    # PG·GF 모두 0 프레임 f_tensor 는 시뮬 시작 전 자리값이라 **전부 0** 이다 (2026-10-14 확인: det 0, |F-I| 1).
+    # 그대로 쓰면 ψ(0) = λ/2 가 되어 정지 프레임이 최대 에너지가 됐다 -- 전부 0 인 F 는 정지 (I) 로 본다
+    zero = (np.abs(Fp).reshape(-1, 9).max(1) == 0)
+    Fp[zero] = np.eye(3)
     okp = np.isfinite(Fp).all((1, 2))
-    Ft = torch.as_tensor(Fp[okp], device="cuda")
-    U, S, Vh = torch.linalg.svd(Ft)
-    R_ = U @ Vh
-    J_ = torch.linalg.det(Ft)
-    psi = _mu * ((Ft - R_) ** 2).sum((1, 2)) + 0.5 * _lam * (J_ - 1) ** 2
-    EREF[i] = float((torch.as_tensor(VOL[okp], device="cuda") * psi).sum())
+    vol = torch.as_tensor(VOL[okp], device="cuda")
+    Fo = torch.as_tensor(Fp[okp], device="cuda")
+    e_ = 0.0
+    for c in range(0, Fo.shape[0], 200000):                          # 138 만 개를 한 번에 SVD 하면 끝나지 않았다 (5 시간)
+        Ft = Fo[c:c + 200000]
+        U, S, Vh = torch.linalg.svd(Ft)
+        R_ = U @ Vh
+        J_ = torch.linalg.det(Ft)
+        psi = _mu * ((Ft - R_) ** 2).sum((1, 2)) + 0.5 * _lam * (J_ - 1) ** 2
+        e_ += float((vol[c:c + 200000] * psi).sum())
+    EREF[i] = e_
+    if i == 0:
+        print(f"  [0 프레임] 전부 0 인 F {int(zero.sum())} / {zero.size} 개를 정지(I) 로", flush=True)
 print(f"[탄성에너지] 시뮬 자체 (고정 공회전, E {_E:g} ν {_nu:g}): 처음 {EREF[0]:.3e}  최대 {EREF.max():.3e}  끝 {EREF[-1]:.3e}", flush=True)
 ok = np.isfinite(traj).all((0, 2))
 lo = X0.min(0)
