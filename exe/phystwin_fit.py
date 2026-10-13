@@ -31,6 +31,7 @@ ap.add_argument("--frame_dt", type=float, required=True, help="목표 궤적 한
 ap.add_argument("--out_dir", required=True)
 ap.add_argument("--phystwin", default="/home/dkta/work/PhysTwin")
 ap.add_argument("--cma_iter", type=int, default=20, help="optimize_cma.py 기본값")
+ap.add_argument("--train_iters", type=int, default=0, help="시험용: 0 이면 real.yaml 의 iterations (200)")
 a = ap.parse_args()
 
 os.environ.setdefault("WANDB_MODE", "disabled")
@@ -107,6 +108,8 @@ cfg.reverse_z = False
 cfg.FPS = 1.0 / a.frame_dt
 cfg.num_substeps = round(a.frame_dt / cfg.dt)
 cfg.set_optimal_params(dict(optimal))
+if a.train_iters:
+    cfg.iterations = a.train_iters
 tr = InvPhyTrainerWarp(data_path=f"{OUT}/pts.npy", base_dir=OUT, train_frame=T1, velocity_path=f"{OUT}/vel.npy")
 if not glob.glob(f"{OUT}/train/best_*.pth"):
     tr.train()
