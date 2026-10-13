@@ -282,7 +282,10 @@ if a.render_ref:                                               # 기준 궤적�
 
 if a.render_npz:                                               # 저장된 결과를 영상으로만
     Zr = np.load(a.render_npz)
-    TR = torch.as_tensor(Zr["traj"].astype(np.float32), device=dev)         # [T, n, 3]
+    if "traj_full" in Zr.files:                                # 시뮬 입자 전체 위치 [T, N, 3] (예: train_deform 롤아웃 덤프) -> 가우시안이 붙은 입자만
+        TR = torch.as_tensor(Zr["traj_full"].astype(np.float32), device=dev)[:, GI]
+    else:
+        TR = torch.as_tensor(Zr["traj"].astype(np.float32), device=dev)     # [T, n, 3]
     if a.old_order:
         # 예전 판은 물체마다 시뮬 입자 앞 n0 개를 가우시안으로 가정해 저장했다 -> 그 입자들을 좌표로 모델에 짝짓는다
         n0 = TR.shape[1] // NOBJ
