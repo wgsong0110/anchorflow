@@ -109,6 +109,7 @@ from qqtt.engine.cma_optimize_warp import OptimizerCMA       # noqa: E402
 from qqtt.engine.trainer_warp import InvPhyTrainerWarp       # noqa: E402
 import wandb                                                 # noqa: E402
 wandb.log = lambda *x, **k: None
+wandb.Video = lambda *x, **k: None
 _ef = OptimizerCMA.error_func
 OptimizerCMA.error_func = lambda self, p, visualize=False, video_path=None: _ef(self, p, False, None)
 InvPhyTrainerWarp.visualize_sim = lambda self, *x, **k: None
