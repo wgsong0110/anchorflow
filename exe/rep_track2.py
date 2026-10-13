@@ -52,7 +52,7 @@ ap.add_argument("--flow", required=True)
 ap.add_argument("--aux", required=True)
 ap.add_argument("--fill", default="", help="(쓰지 않는다 -- 내부 채움 없는 3DGS 만)")
 ap.add_argument("--method", required=True,
-                choices=["ours", "tet", "phystwin", "gaussim", "simplicits", "vrgs"])
+                choices=["ours", "tet", "phystwin", "gaussim", "simplicits", "vrgs", "tetmesh", "grid"])
 ap.add_argument("--out", required=True)
 ap.add_argument("--video", default="")
 ap.add_argument("--simp", default="", help="simplicits: 학습된 가중치 함수 (.pt)")
@@ -72,7 +72,10 @@ ap.add_argument("--riem_eps", type=float, default=1e-2,
                 help="riem: 계량 G = JᵀJ + ε·λmax·I 의 상대 ε (λmax 는 프레임마다 거듭제곱법)")
 ap.add_argument("--profile", type=int, default=0,
                 help="riem: 첫 프레임 이 반복 수만 돌며 구간별 시간 + torch 프로파일러 표를 내고 끝낸다")
-ap.add_argument("--riem_energy", default="elastic", choices=["elastic", "logbarrier", "own"],
+ap.add_argument("--cfl", type=float, default=1.0, help="grid: 한 프레임 노드 이동 상한 (격자 간격 배수)")
+ap.add_argument("--spring_cap", type=float, default=10.0,
+                help="phystwin spring10: 스프링 에너지 상한 = 이 배수 × 정답 궤적에서 잰 같은 스프링 에너지")
+ap.add_argument("--riem_energy", default="elastic", choices=["elastic", "logbarrier", "own", "spring10"],
                 help="riem 계량의 에너지: elastic (스프링/StVK 막/고정공회전) | logbarrier "
                      "(det 의 로그 장벽, 잔차 log J, 계량 Σ ∇logJ ∇logJᵀ: ours/tet 격자 셀, "
                      "vrgs 삼각형 셀, gaussim 입자)")
@@ -399,10 +402,12 @@ class PhysTwin(torch.nn.Module):
         # data_process_sample.py: 표면 1024 + 1 만 점, 복셀 0.005 (그쪽 물체 ~0.25 m).
         # 내부 채움 없이 가우시안 중심에서 뽑는다.
         g = torch.Generator(device="cpu").manual_seed(0)
-        P = G0[torch.randperm(NG, generator=g)[:11024].to(dev)]
+        self.psel = torch.randperm(NG, generator=g)[:11024].to(dev)
+        P = G0[self.psel]
         vox = 0.005 / 0.25
         key = torch.floor((P - P.min(0).values) / vox).long()
         _, inv = torch.unique(key, dim=0, return_inverse=True)
+        self.pinv = inv
         B = torch.zeros(inv.max() + 1, 3, device=dev).index_reduce_(
             0, inv, P, "mean", include_self=False)
         self.B, self.K = B, K
@@ -475,6 +480,13 @@ class PhysTwin(torch.nn.Module):
         J = det3(mm3(D, self.D0i))
         return self.V0.sqrt() * torch.log(J.clamp_min(1e-6))
 
+    def ref_energy(self, Pt):
+        """정답 궤적 위치 Pt (맞추는 점 전체) 에서 잰 같은 스프링 에너지: 질점 = 같은 표본점 묶음의 평균 위치."""
+        B = torch.zeros(int(self.pinv.max()) + 1, 3, device=dev, dtype=Pt.dtype).index_reduce_(
+            0, self.pinv, Pt[self.psel], "mean", include_self=False)
+        r = (B[self.rel] - B[:, None]).norm(dim=-1) - self.L0
+        return 0.5 * float((r * r).sum())
+
     def elastic_residual(self, m):
         """스프링 에너지 E = ½ Σ (|x_i - x_j| - L0_ij)² 의 잔차 (처음 이웃 16 개, 단위 강성)."""
         Bn = self.B + m
@@ -518,6 +530,72 @@ class PhysTwin(torch.nn.Module):
         q = rot_to_quat(R)[k]                                        # [n,K,4]
         q = q * torch.sign((q * q[:, :1]).sum(-1, keepdim=True)).clamp_min(-1)
         return quat_mat((w[..., None] * q).sum(1))
+
+
+class TetMesh(Lattice):
+    """사면체 메쉬: 같은 Kuhn 사면체 격자를 **첫 프레임 정지 위치에 한 번만** 깔고 연결·결합(무게중심 좌표)을 고정한다.
+    노드 변위 u 는 정지 대비 누적, 셀 det 도 정지 대비 (로그 장벽 = 사면체 뒤집힘 금지)."""
+    rebind_each_frame = False
+
+    def __init__(self):
+        super().__init__(gregory=False)
+        Lattice.rebind(self, G0)
+        self.Xr = G0.clone()
+
+    def yJ(self, X, sel):
+        U = self.u[self.rows[sel]]
+        y = self.Xr[sel] + (self.lam[sel][..., None] * U).sum(1)
+        return y - X, eye_plus(outer_sum(U, self.dlam[sel]))
+
+    def forward(self, X, sel):
+        return self.Xr[sel] + (self.lam[sel][..., None] * self.u[self.rows[sel]]).sum(1)
+
+
+class GridCFL(torch.nn.Module):
+    """MPM 배경 격자: 간격 = PG dx (2/100 시뮬), 2 차 B-스플라인 (27 노드). 매 프레임 직전 위치에 다시 깐다.
+    변수 = 노드 변위, 제약 = CFL (노드 이동 |u_n| < cfl·dx) -- 로그 장벽 log(1 - |u|²/(cfl·dx)²)."""
+    rebind_each_frame = True
+
+    def __init__(self):
+        super().__init__()
+        self.h = (2.0 / 100.0) / S_NORM
+        self.c = a.cfl * self.h
+
+    def rebind(self, Pall):
+        fx = Pall / self.h
+        base = torch.floor(fx - 0.5).long()                         # [N,3]
+        f = fx - base.to(fx.dtype)                                  # [0.5, 1.5)
+        w = torch.stack([0.5 * (1.5 - f) ** 2, 0.75 - (f - 1.0) ** 2, 0.5 * (f - 0.5) ** 2], 1)   # [N,3(노드),3(축)]
+        dw = torch.stack([f - 1.5, -2.0 * (f - 1.0), f - 0.5], 1) / self.h
+        o = torch.stack(torch.meshgrid(*[torch.arange(3, device=dev)] * 3, indexing="ij"), -1).reshape(27, 3)
+        nodes = base[:, None] + o[None]                             # [N,27,3]
+        key = nodes.reshape(-1, 3)
+        uniq, inv = torch.unique(key, dim=0, return_inverse=True)
+        self.rows = inv.reshape(-1, 27)
+        wx, wy, wz = w[:, o[:, 0], 0], w[:, o[:, 1], 1], w[:, o[:, 2], 2]
+        dx_, dy_, dz_ = dw[:, o[:, 0], 0], dw[:, o[:, 1], 1], dw[:, o[:, 2], 2]
+        self.w = wx * wy * wz                                       # [N,27]
+        self.dw = torch.stack([dx_ * wy * wz, wx * dy_ * wz, wx * wy * dz_], -1)   # [N,27,3]
+        M = uniq.shape[0]
+        self.u = torch.nn.Parameter(torch.zeros(M, 3, device=dev, dtype=Pall.dtype))
+        self.dof = 3 * M
+
+    def params(self):
+        return [self.u]
+
+    def yJ(self, X, sel):
+        U = self.u[self.rows[sel]]
+        return (self.w[sel][..., None] * U).sum(1), eye_plus(outer_sum(U, self.dw[sel]))
+
+    def forward(self, X, sel):
+        return X + (self.w[sel][..., None] * self.u[self.rows[sel]]).sum(1)
+
+    def cfl_residual(self, u):
+        s_ = 1.0 - (u * u).sum(1) / (self.c * self.c)
+        return torch.log(s_.clamp_min(1e-6)) * (1.0 / math.sqrt(u.shape[0]))
+
+    def cfl_max(self):
+        return float(self.u.detach().norm(dim=1).max()) / self.c
 
 
 def rot_to_quat(R):
@@ -699,6 +777,10 @@ if a.method in ("ours", "tet"):
     rep = Lattice(gregory=(a.method == "ours"))
 elif a.method == "phystwin":
     rep = PhysTwin()
+elif a.method == "tetmesh":
+    rep = TetMesh()
+elif a.method == "grid":
+    rep = GridCFL()
 elif a.method == "gaussim":
     rep = GausSim()
 elif a.method == "simplicits":
@@ -896,6 +978,7 @@ if a.check_jac:
 if RENDER:
     render(G0, Fall=Fcum)
 rows, CURVE, DOFS, STOP, EMDP = [], [], [], [], []
+SPRING_CAP, SPRING_LOG, CFL_LOG = [float("inf")], [], []
 PHYS, TRAJS, YPREV = [], [], [G0[FI].clone()]
 t0 = time.time()
 for t in range(1, T + 1):
@@ -904,6 +987,13 @@ for t in range(1, T + 1):
     if REB and t > 1:
         rep.rebind(Pref); rep.to(dev)
     DOFS.append(rep.dof)
+    if a.method == "phystwin" and a.riem_energy == "spring10":
+        _eref = rep.ref_energy(tgt)
+        with torch.no_grad():
+            _r0 = rep.elastic_residual(rep.m.detach() if rep.m is not None else torch.zeros_like(rep.B))
+        _e0 = 0.5 * float((_r0 * _r0).sum())
+        SPRING_CAP[0] = max(a.spring_cap * _eref, 1.1 * _e0)        # 시작점이 이미 상한 밖이면 시작점의 1.1 배 (기록)
+        SPRING_LOG.append((t, _eref, _e0, SPRING_CAP[0]))
     it = [0]
 
     def closure():
@@ -933,9 +1023,25 @@ for t in range(1, T + 1):
             return torch.cat([q.reshape(-1) for q in ts])
         theta = flat([q.detach() for q in PL])
         X_ = Pref[FI]
-        if a.method in ("ours", "tet") and a.riem_energy == "logbarrier":
+        if a.method in ("ours", "tet", "tetmesh") and a.riem_energy == "logbarrier":
             def make_res(th):
                 return lambda x: rep.logbarrier_residual(*unflat(x))
+        elif a.method == "grid":
+            # CFL 로그 장벽 계량
+            def make_res(th):
+                return lambda x: rep.cfl_residual(*unflat(x))
+        elif a.method == "phystwin" and a.riem_energy == "spring10":
+            # 장벽 B = -log(c - E), E = ½|r|² (스프링), c = spring_cap × 정답 위치 스프링 에너지.
+            # 가우스-뉴턴: ∇²B ≈ JᵀJ/(c-E) + ∇E∇Eᵀ/(c-E)² -> 잔차 [r/√(c-E0), E/(c-E0)] (E0 = 선형화 점)
+            def make_res(th):
+                with torch.no_grad():
+                    r0 = rep.elastic_residual(*unflat(th))
+                    gap = max(SPRING_CAP[0] - 0.5 * float((r0 * r0).sum()), 1e-12)
+
+                def res(x):
+                    r_ = rep.elastic_residual(*unflat(x))
+                    return torch.cat([r_ / math.sqrt(gap), (0.5 * (r_ * r_).sum() / gap).reshape(1)])
+                return res
         elif a.method in ("ours", "tet"):
             # 입자 변형 구배로 잰 탄성 에너지 (고정 공회전, PhysGaussian 기본 탄성):
             # ψ(F) = μ|F - R|² + λ/2 (J - 1)²,  F = J_inc(θ) · F_prev (정지 대비 누적).
@@ -1001,7 +1107,7 @@ for t in range(1, T + 1):
             Jfun = None
 
         PURE = None                                         # (순수 잔차, 인자) -- 컴파일 경로
-        if a.riem_energy == "logbarrier" and a.method in ("ours", "tet"):
+        if a.riem_energy == "logbarrier" and a.method in ("ours", "tet", "tetmesh"):
             PURE = (res_lattice_lb, (rep.Xn, rep.cells, rep.cD0i))
         elif a.riem_energy == "logbarrier" and a.method == "vrgs":
             PURE = (res_tri_lb, (rep.f, rep.n0, rep.A0))
@@ -1190,6 +1296,12 @@ for t in range(1, T + 1):
         if a.opt == "riem":
             it[0] = it_ + 1
             STOP.append((t, it_ + 1, it_ + 1, float("nan"), eps, "riem"))
+            if a.method == "grid":
+                CFL_LOG.append((t, rep.cfl_max()))                    # 노드 이동 최대 / (cfl·dx) -- 1 넘으면 제약 위반
+            if a.method == "phystwin" and a.riem_energy == "spring10":
+                with torch.no_grad():
+                    _r1 = rep.elastic_residual(rep.m.detach())
+                SPRING_LOG[-1] = SPRING_LOG[-1] + (0.5 * float((_r1 * _r1).sum()),)
     elif a.opt == "adam":
         # 뒤집힘 고려 없음: 입자 L2 만 Adam 으로 (장벽·되돌림 없음). det 는 야코비안으로 기록만
         if REB or OPT is None:
@@ -1322,5 +1434,7 @@ np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
                     emd_t=np.array([q[0] for q in EMDP]), emd_y=np.stack([q[1] for q in EMDP]),
                     emd_tgt=np.stack([q[2] for q in EMDP]),
                     phys=np.array(PHYS, dtype=np.float64),     # t, KE, P(3), Lang(3), mean detF
+                    cfl_log=np.array(CFL_LOG, dtype=np.float64),          # grid: (t, 노드 이동 최대 / (cfl·dx))
+                    spring_log=np.array([q for q in SPRING_LOG if len(q) == 5], dtype=np.float64),  # (t, E정답, E시작, 상한, E끝)
                     **({"traj": np.stack(TRAJS)} if TRAJS else {}))
 print(f"[저장] {a.out}" + (f"  영상 {a.video}" if a.video else ""), flush=True)
