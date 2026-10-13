@@ -101,6 +101,8 @@ ap.add_argument("--tb", default="auto",
 ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt", "adam", "riem", "ipm", "ipmF"],
                 help="lbfgs (원래 설정) / gd: 고정 학습률 경사하강")
 ap.add_argument("--gd_lr", type=float, default=1.0)
+ap.add_argument("--riem_partF", action="store_true",
+                help="riem: 계량 잔차에 입자 det F 로그 장벽 (√(1/N) log det F, 누적) 을 더한다 -- ipmF 와 같은 제약 집합")
 ap.add_argument("--ipmF_mu0", type=float, default=1e-1,
                 help="ipmF: 첫 장벽 계수 = 이 값 × 프레임 시작 L2 (단계마다 1/10)")
 ap.add_argument("--ipmF_stages", type=int, default=4, help="ipmF: μ 단계 수")
@@ -1321,6 +1323,32 @@ for t in range(1, T + 1):
                 if a.method == "simplicits":
                     return res_simp_fcr, (rep.W[FI], rep.dW[FI], _Xh, R_, _wv, 1.0, _sla)
                 return res_gaussim_fcr, (rep.p2.shape[0], rep.lab[FI], R_, _wv, 1.0, _sla)
+        if a.riem_partF:
+            # ipmF 와 같은 제약: 표현 고유 장벽 잔차 + 입자 det F 로그 장벽 잔차 (가중 1/N, 누적 det = 이 프레임 det J × DETC)
+            from torch.func import functional_call
+            PURE = None
+            _base_make = make_res
+            _names = {id(q): n for n, q in rep.named_parameters()}
+            _keys = [_names[id(q)] for q in PL]
+
+            class _Wr(torch.nn.Module):
+                def __init__(s_, r_):
+                    super().__init__(); s_.r = r_
+
+                def forward(s_, X, sel):
+                    return s_.r.yJ(X, sel)
+            _wr = _Wr(rep)
+            _dFc = DETC[0].to(DT) if REB else None
+            _sw = 1.0 / math.sqrt(FI.numel())
+
+            def make_res(th):
+                rb = _base_make(th)
+
+                def res(x):
+                    _, J_ = functional_call(_wr, {"r." + k: v for k, v in zip(_keys, unflat(x))}, (X_, FI))
+                    cp = det3(J_) * _dFc if REB else det3(J_)
+                    return torch.cat([rb(x), _sw * torch.log(cp.clamp_min(1e-6))])
+                return res
         if PURE is not None and GN_PROD is None and not a.no_compile:
             GN_PROD = torch.compile(_gn_prod, dynamic=True)
 
@@ -1467,6 +1495,9 @@ for t in range(1, T + 1):
             CURVE.append((t, it_, float(l2), stp, nbt))
         if a.opt == "riem":
             it[0] = it_ + 1
+            if a.riem_partF and REB:
+                with torch.no_grad():
+                    DETC[0] = DETC[0] * det3(YJ(X_, FI)[1]).double()
             STOP.append((t, it_ + 1, it_ + 1, float("nan"), eps, "riem"))
             if a.method == "grid":
                 CFL_LOG.append((t, rep.cfl_max()))                    # 노드 이동 최대 / (cfl·dx) -- 1 넘으면 제약 위반
@@ -1546,7 +1577,7 @@ for t in range(1, T + 1):
     with torch.no_grad():
         y = yall[FI]
         J = torch.linalg.det(Fall[FI])
-        if a.opt == "ipmF" and REB:
+        if (a.opt == "ipmF" or a.riem_partF) and REB:
             # 누적 F 행렬(float32 곱)의 det 는 납작한 입자에서 반올림으로 -1e12 같은 값이 나온다 -- 제약에 쓴 것과
             # 같은 스칼라 곱(float64)으로 보고한다
             J = DETC[0].to(J.dtype)
