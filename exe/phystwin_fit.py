@@ -71,6 +71,23 @@ np.save(f"{OUT}/vel.npy", vel.astype(np.float32))
 print(f"[질량점] {M} 개, 프레임 {T1}, 크기 {np.ptp(B[0], 0).round(3).tolist()}, 초기 속력 최대 "
       f"{np.linalg.norm(vel, axis=1).max():.3f}", flush=True)
 
+# ---- 렌더링·대화형 전용 import 는 빈 모듈로 (학습기 trainer_warp.py 가 영상 렌더러·키보드 입력까지 불러온다;
+#      강성 결정 계산 경로는 쓰지 않는다)
+import types                                                 # noqa: E402
+from unittest import mock                                    # noqa: E402
+
+
+class _Stub(types.ModuleType):
+    def __getattr__(self, k):
+        return mock.MagicMock(name=f"{self.__name__}.{k}")
+
+
+for _m in ["pynput", "gaussian_splatting", "gaussian_splatting.scene", "gaussian_splatting.scene.gaussian_model",
+           "gaussian_splatting.scene.cameras", "gaussian_splatting.gaussian_renderer", "gaussian_splatting.dynamic_utils",
+           "gaussian_splatting.utils", "gaussian_splatting.utils.graphics_utils", "gaussian_splatting.rotation_utils",
+           "gs_render"]:
+    sys.modules.setdefault(_m, _Stub(_m))
+
 # ---- PhysTwin 설정 (configs/real.yaml 그대로 + synthetic 규약)
 from qqtt.utils import cfg                                   # noqa: E402
 cfg.load_from_yaml("configs/real.yaml")
