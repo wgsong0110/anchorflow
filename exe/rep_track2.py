@@ -93,6 +93,9 @@ ap.add_argument("--riem_k", type=float, default=1.0,
                 help="riem: 탄성 강성 배수 k (G = k·JᵀJ + ε·λmax(k=1)·I -- ε 는 k=1 기준으로 고정)")
 ap.add_argument("--riem_lr", type=float, default=1.0, help="riem: 고정 보폭 η")
 ap.add_argument("--riem_cg", type=int, default=50, help="riem: CG 최대 반복")
+ap.add_argument("--pt_fit", default="",
+                help="phystwin: PhysTwin 공식 절차(CMA-ES + 스프링별 강성 경사 학습, exe/phystwin_fit.py)로 정한 "
+                     "스프링 연결·정지 길이·강성 (fit.npz). 없으면 real.yaml 초기값 3e4 + 이웃 16 (논문 절차 아님)")
 ap.add_argument("--pt_realtime", action="store_true",
                 help="phystwin: 공식 실시간 데모 방식 -- 이웃 질량점 인덱스는 첫 프레임에 한 번, "
                      "매 프레임 그 이웃까지 거리로 가중치만 다시")
@@ -428,6 +431,19 @@ class PhysTwin(torch.nn.Module):
         # 공식 강성 (configs/real.yaml init_spring_Y 3e4, 힘 f = Y(|d|/L0 - 1) -> 에너지 ½(Y/L0)(|d|-L0)²), 길이는 시뮬 좌표 (정규화 × S_NORM)
         self.spring_Y = 3e4
         self.kw = torch.sqrt(self.spring_Y / (self.L0 * S_NORM)) * S_NORM          # 잔차 가중: √(Y/L0_sim)·s
+        self.sp = None
+        if a.pt_fit:
+            # PhysTwin 절차로 정한 스프링 (연결은 CMA 가 고른 반경·이웃 수, 강성은 스프링마다 학습값). 길이는 시뮬 단위로 저장돼 있다
+            fz = np.load(a.pt_fit)
+            assert np.array_equal(fz["psel"], self.psel.cpu().numpy()), "fit.npz 의 질량점 표본이 다르다"
+            X0f = torch.as_tensor(fz["X0"], device=dev, dtype=B.dtype) / S_NORM
+            assert float((X0f - B).abs().max()) < 1e-4, f"fit.npz 질량점 위치가 다르다 ({float((X0f - B).abs().max()):.2e})"
+            self.sp = torch.as_tensor(fz["springs"], device=dev, dtype=torch.long)
+            self.L0sp = torch.as_tensor(fz["rest_lengths"], device=dev, dtype=B.dtype) / S_NORM
+            Ysp = torch.as_tensor(fz["spring_Y"], device=dev, dtype=B.dtype)
+            self.kwsp = torch.sqrt(Ysp / (self.L0sp * S_NORM)) * S_NORM
+            print(f"[phystwin 학습 스프링] {self.sp.shape[0]} 개, 강성 중앙 {float(Ysp.median()):.4g} "
+                  f"({float(Ysp.min()):.4g}~{float(Ysp.max()):.4g}), {json.loads(str(fz['optimal']))}", flush=True)
         self.m = None
         self.dof = 3 * B.shape[0]
 
@@ -504,6 +520,8 @@ class PhysTwin(torch.nn.Module):
     def spring10_residual(self, m):
         """공식 강성 스프링 에너지 E = ½ Σ (Y/L0)(|d|-L0)² (시뮬 단위) 의 잔차."""
         Bn = self.B + m
+        if self.sp is not None:
+            return self.kwsp * ((Bn[self.sp[:, 1]] - Bn[self.sp[:, 0]]).norm(dim=-1) - self.L0sp)
         return (self.kw * ((Bn[self.rel] - Bn[:, None]).norm(dim=-1) - self.L0)).reshape(-1)
 
     def elastic_residual(self, m):

@@ -62,10 +62,16 @@ B = np.zeros((T1, M, 3))
 for d in range(3):
     for t in range(T1):
         B[t, :, d] = np.bincount(inv, weights=traj[t, psel, d], minlength=M) / cnt
-B *= s                                                       # 시뮬 좌표 (중력 9.8 단위)
+# 길이 규약: PhysTwin 의 반경 범위(0.01~0.05 m)·dt 는 물체 ~0.25 m 를 전제로 한 절대값이다. 우리 PhysTwin 표현은
+# 이미 "정규화 1 = 0.25 m" 로 질량점 간격(복셀 0.005/0.25)을 정하므로 궤적도 같은 규약으로 둔다 (시뮬 좌표 × K,
+# K = 0.25/s). 중력 9.8 이 그대로 맞도록 시간을 √K 배로 (닮음 변환: 가속도 불변) -> 힘·강성 Y 는 단위가 바뀌지 않고,
+# 길이만 시뮬 단위로 되돌려 저장한다 (스프링 에너지 ½(Y/L0)Δ² 는 시뮬 단위에서 1/K 배).
+K = 0.25 / s
+FDT = a.frame_dt * K ** 0.5
+B *= 0.25                                                    # = 시뮬 좌표 × K
 ZSHIFT = float(B[..., 2].min())
 B[..., 2] -= ZSHIFT                                          # 바닥 z = 0
-vel = (B[1] - B[0]) / a.frame_dt
+vel = (B[1] - B[0]) / FDT
 np.save(f"{OUT}/pts.npy", B.astype(np.float32))
 np.save(f"{OUT}/vel.npy", vel.astype(np.float32))
 print(f"[질량점] {M} 개, 프레임 {T1}, 크기 {np.ptp(B[0], 0).round(3).tolist()}, 초기 속력 최대 "
@@ -98,8 +104,8 @@ from qqtt.utils import cfg                                   # noqa: E402
 cfg.load_from_yaml("configs/real.yaml")
 cfg.data_type = "synthetic"
 cfg.reverse_z = False
-cfg.FPS = 1.0 / a.frame_dt
-cfg.num_substeps = round(a.frame_dt / cfg.dt)
+cfg.FPS = 1.0 / FDT
+cfg.num_substeps = round(FDT / cfg.dt)
 print(f"[설정] FPS {cfg.FPS:.2f}  dt {cfg.dt}  substeps {cfg.num_substeps}  iterations {cfg.iterations}  "
       f"init_spring_Y {cfg.init_spring_Y}", flush=True)
 
@@ -128,8 +134,8 @@ print(f"[1 단계] {optimal}", flush=True)
 cfg.load_from_yaml("configs/real.yaml")
 cfg.data_type = "synthetic"
 cfg.reverse_z = False
-cfg.FPS = 1.0 / a.frame_dt
-cfg.num_substeps = round(a.frame_dt / cfg.dt)
+cfg.FPS = 1.0 / FDT
+cfg.num_substeps = round(FDT / cfg.dt)
 cfg.set_optimal_params(dict(optimal))
 if a.train_iters:
     cfg.iterations = a.train_iters
@@ -142,7 +148,8 @@ Y = ck["spring_Y"].float().numpy()
 springs = tr.init_springs.cpu().numpy() if torch.is_tensor(tr.init_springs) else np.asarray(tr.init_springs)
 L0 = tr.init_rest_lengths.cpu().numpy() if torch.is_tensor(tr.init_rest_lengths) else np.asarray(tr.init_rest_lengths)
 X0 = tr.init_vertices.cpu().numpy() if torch.is_tensor(tr.init_vertices) else np.asarray(tr.init_vertices)
-np.savez(f"{OUT}/fit.npz", X0=X0, springs=springs, rest_lengths=L0, spring_Y=Y, psel=psel, inv=inv, s=s,
+X0 = X0.copy(); X0[:, 2] += ZSHIFT
+np.savez(f"{OUT}/fit.npz", X0=X0 / K, springs=springs, rest_lengths=L0 / K, spring_Y=Y, psel=psel, inv=inv, s=s, K=K,
          zshift=ZSHIFT, best=best,
          optimal=json.dumps({k: float(v) for k, v in optimal.items()}))
 print(f"[2 단계] {best}  스프링 {len(springs)}  강성 중앙 {np.median(Y):.4g}  범위 {Y.min():.4g}~{Y.max():.4g}", flush=True)
