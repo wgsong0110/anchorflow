@@ -23,6 +23,8 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--aux_out", required=True)
 ap.add_argument("--every", type=int, default=1, help="이 프레임 간격으로만 (목표 프레임 수 줄이기)")
 ap.add_argument("--pg", default="/home/dkta/work/i-physgaussian")
+ap.add_argument("--particles", action="store_true",
+                help="가우시안과 짝짓지 않고 시뮬 입자 위치 자체를 목표 점으로 (GF 수박: 출력 입자가 우리 변환과 다른 경로로 만들어져 짝이 안 맞는다)")
 a = ap.parse_args()
 sys.path.append(a.pg)
 sys.path.append(os.path.join(a.pg, "gaussian-splatting"))
@@ -76,7 +78,11 @@ def rd(p):
 
 
 X0 = rd(files[0]).astype(np.float64)
-if X0.shape[0] >= NG and float(np.abs(X0[:NG] - tpos).max()) < 1e-4:
+if a.particles:
+    tpos, PIDX, NG = X0, np.arange(X0.shape[0]), X0.shape[0]
+    keep = torch.ones(NG, dtype=torch.bool)
+    print(f"[대응] 시뮬 입자 {NG} 개를 그대로 목표 점으로", flush=True)
+elif X0.shape[0] >= NG and float(np.abs(X0[:NG] - tpos).max()) < 1e-4:
     PIDX = np.arange(NG)                                   # PG: 입자 앞부분 = 거른 가우시안 (같은 순서)
     print(f"[대응] 가우시안 {NG}  0 프레임 입자 {X0.shape[0]}  앞 {NG} 개가 그대로 일치", flush=True)
 else:
