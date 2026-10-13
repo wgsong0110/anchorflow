@@ -1029,9 +1029,21 @@ for t in range(1, T + 1):
             def make_res(th):
                 return lambda x: rep.logbarrier_residual(*unflat(x))
         elif a.method == "grid":
-            # CFL 로그 장벽 계량
+            # CFL 장벽 B = -Σ log(1 - q_n), q_n = |u_n|²/c². 가우스-뉴턴 꼴 (선형화 점 q0):
+            # ∇²B = 2I/(c²(1-q0)) + 4uuᵀ/(c⁴(1-q0)²) -> 잔차 [u·√(2/(c²(1-q0))), q/(1-q0)] (노드 가중 1/√M).
+            # log(1-q) 를 그대로 잔차로 쓰면 u=0 에서 기울기가 0 이라 계량이 0 이 되어 한 걸음도 못 간다.
             def make_res(th):
-                return lambda x: rep.cfl_residual(*unflat(x))
+                with torch.no_grad():
+                    u0 = unflat(th)[0]
+                    g0 = (1.0 - (u0 * u0).sum(1) / (rep.c * rep.c)).clamp_min(1e-6)
+                    wv = 1.0 / math.sqrt(u0.shape[0])
+
+                def res(x):
+                    u_ = unflat(x)[0]
+                    q_ = (u_ * u_).sum(1) / (rep.c * rep.c)
+                    return torch.cat([(wv * u_ * torch.sqrt(2.0 / (rep.c * rep.c * g0))[:, None]).reshape(-1),
+                                      wv * q_ / g0])
+                return res
         elif a.method == "phystwin" and a.riem_energy == "spring10":
             # 장벽 B = -log(c - E), E = ½|r|² (스프링), c = spring_cap × 정답 위치 스프링 에너지.
             # 가우스-뉴턴: ∇²B ≈ JᵀJ/(c-E) + ∇E∇Eᵀ/(c-E)² -> 잔차 [r/√(c-E0), E/(c-E0)] (E0 = 선형화 점)
