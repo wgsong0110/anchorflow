@@ -47,7 +47,10 @@ keep = op > float(cfg.get("opacity_threshold", 0.02))
 pos = gs.get_xyz.detach()[keep]
 R = generate_rotation_matrices(torch.tensor(cfg.get("rotation_degree", [0.0])), cfg.get("rotation_axis", [0]))
 rot = apply_rotations(pos, R)
-tpos, so, omp = transform2origin(rot, float(cfg.get("scale", 1.0)))
+try:
+    tpos, so, omp = transform2origin(rot, float(cfg.get("scale", 1.0)))     # PhysGaussian 판
+except TypeError:
+    tpos, so, omp = transform2origin(rot)                                  # GaussianFluent 판 (크기 인자 없음)
 tpos = shift2center111(tpos).cpu().numpy().astype(np.float64)
 NG = tpos.shape[0]
 
