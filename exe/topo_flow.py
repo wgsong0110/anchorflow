@@ -71,6 +71,9 @@ else:
     from scipy.spatial import cKDTree
     d, j = cKDTree(X0).query(tpos)
     ok0 = d < 1e-5
+    if not ok0.any():
+        print(f"[대응 실패] 가우시안 범위 {tpos.min(0).round(4)}~{tpos.max(0).round(4)}  입자 범위 {X0.min(0).round(4)}~{X0.max(0).round(4)}  "
+              f"최근접 거리 중앙 {np.median(d):.2e}", flush=True)
     print(f"[대응] 가우시안 {NG}  0 프레임 입자 {X0.shape[0]}  위치로 짝지음: {int(ok0.sum())} 개 일치 (최대 거리 {d[ok0].max():.1e})", flush=True)
     assert ok0.mean() > 0.99, "가우시안 99% 이상이 시뮬 입자와 짝지어지지 않는다 -- 멈춘다"
     keep_idx = torch.nonzero(keep).squeeze(1).cpu().numpy()[ok0]
