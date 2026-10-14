@@ -27,6 +27,8 @@ ap.add_argument("--substep", type=int, default=400)
 ap.add_argument("--n_grid", type=int, default=250)
 ap.add_argument("--skin_cut", action="store_true", help="--cloth_only 에서 옷 면에 붙었지만 피부·갈색(빨강 > 초록)인 가우시안도 뺀다")
 ap.add_argument("--cloth_only", action="store_true", help="렌더에서 몸 가우시안을 빼고 옷만 (video_cloth.mp4)")
+ap.add_argument("--ycut", type=float, default=None, help="렌더: 아바타 좌표 처음 높이(y)가 이 값 이상인 가우시안은 그리지 않는다 (MPMAvatar 렌더와 같은 값)")
+ap.add_argument("--tag", default="", help="렌더 영상 이름 뒤에 붙인다")
 a, rest = ap.parse_known_args()
 os.makedirs(a.work, exist_ok=True)
 import numpy as np                                               # noqa: E402
@@ -159,6 +161,12 @@ else:
     if a.cloth_only and a.skin_cut:                              # 옷 면 가장자리에 학습된 피부색 (목둘레·어깨)
         KM = KM & ~(col[:, 0] > col[:, 1])
         print(f"[피부 빼기] 옷 가우시안 중 빨강>초록 {int((I['cloth'].cuda() & (col[:, 0] > col[:, 1])).sum())} 개 제외", flush=True)
+    NO = int(I.get("n_orig", col.shape[0]))                     # skirt_thicken 복제 입자는 그리지 않는다
+    KM = KM.clone(); KM[NO:] = False
+    if a.ycut is not None:
+        y0 = ((T["x"][0].cuda() - shf) / sc)[:, 1]
+        KM = KM & (y0 < a.ycut)
+        print(f"[높이 자르기] y < {a.ycut} 만 ({int(KM.sum())} 개)", flush=True)
     col, op = col[KM], op[KM]
     bg = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
     rs = GaussianRasterizationSettings(image_height=int(cam.image_height), image_width=int(cam.image_width),
@@ -166,8 +174,8 @@ else:
                                        scale_modifier=1.0, viewmatrix=cam.world_view_transform, projmatrix=cam.full_proj_transform,
                                        sh_degree=3, campos=cam.camera_center, prefiltered=False, debug=False)
     rast = GaussianRasterizer(raster_settings=rs)
-    VN = "video_cloth" if a.cloth_only else "video"
-    imgdir = f"{a.work}/frames_cloth" if a.cloth_only else f"{a.work}/frames"; os.makedirs(imgdir, exist_ok=True)
+    VN = ("video_cloth" if a.cloth_only else "video") + a.tag
+    imgdir = f"{a.work}/frames_{VN}"; os.makedirs(imgdir, exist_ok=True)
     with torch.no_grad():
         for i in range(T["x"].shape[0]):
             X = ((T["x"][i].cuda() - shf) / sc)[KM]; C = (T["cov"][i].cuda() / (sc * sc))[KM]

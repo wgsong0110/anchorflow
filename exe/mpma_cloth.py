@@ -55,6 +55,8 @@ parser.add_argument("--render_only", action="store_true", help="저장된 sim_ve
 parser.add_argument("--E_mul", type=float, default=1.0, help="저자 E 배수 (PG 도 init_state 로 같은 값)")
 parser.add_argument("--skin_cut", action="store_true", help="--cloth_only 에서 옷 면에 붙었지만 피부·갈색(기본색 빨강 > 초록)인 가우시안도 뺀다")
 parser.add_argument("--cloth_only", action="store_true", help="렌더에서 몸 가우시안을 빼고 옷만 (video_cloth.mp4)")
+parser.add_argument("--ycut", type=float, default=None, help="렌더: 처음 프레임 높이(y)가 이 값 이상인 가우시안은 그리지 않는다 (PG·GF 렌더와 같은 값)")
+parser.add_argument("--tag", default="", help="렌더 영상 이름 뒤에 붙인다")
 parser.add_argument("--dump_only", action="store_true", help="초기 상태(입자·고정점·축)만 저장하고 끝 (PG 비교용)")
 args = parser.parse_args(sys.argv[1:])
 A = lp.extract(args); PIPE = pp.extract(args)
@@ -267,8 +269,14 @@ with torch.no_grad():
             print(f"[피부 빼기] 옷 가우시안 중 빨강>초록 {int(_sk.sum())} 개 제외", flush=True)
 cam = scene.test_dataset.camera_list[0]; cam_idx = scene.test_camera_index[0]
 bg = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
-imgdir = os.path.join(OUT, "frames_cloth" if args.cloth_only else "frames"); os.makedirs(imgdir, exist_ok=True)
+VN = ("video_cloth" if args.cloth_only else "video") + args.tag
+imgdir = os.path.join(OUT, f"frames_{VN}"); os.makedirs(imgdir, exist_ok=True)
 with torch.no_grad():
+    if args.ycut is not None:
+        gaussians.set_mesh_by_verts(all_verts[0])
+        _hi = gaussians.get_xyz[:, 1] >= args.ycut
+        gaussians._opacity[_hi] = -1e4
+        print(f"[높이 자르기] y >= {args.ycut} 인 가우시안 {int(_hi.sum())} 개 제외", flush=True)
     for i in tqdm(range(len(all_verts)), desc="렌더"):
         gaussians.set_mesh_by_verts(all_verts[i])
         shadow_map = gaussians.shadow_net(ao[i:i + 1] if ao.shape[0] > i else ao[-1:])["shadow_map"]
@@ -279,5 +287,5 @@ with torch.no_grad():
         img = img * pkg["mask"] + (1.0 - pkg["mask"])
         Image.fromarray((img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).save(f"{imgdir}/{i:04d}.png")
 os.system(f"{FFMPEG} -y -hide_banner -loglevel error -framerate 25 -i {imgdir}/%04d.png -pix_fmt yuv420p "
-          f"-vf scale='trunc(iw/2)*2:trunc(ih/2)*2' {OUT}/{'video_cloth' if args.cloth_only else 'video'}.mp4")
-print(f"[영상] {OUT}/{'video_cloth' if args.cloth_only else 'video'}.mp4", flush=True)
+          f"-vf scale='trunc(iw/2)*2:trunc(ih/2)*2' {OUT}/{VN}.mp4")
+print(f"[영상] {OUT}/{VN}.mp4", flush=True)
