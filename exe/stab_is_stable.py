@@ -21,6 +21,10 @@ cfg = json.load(open(f"{root}/config.json"))
 zf = float([b for b in cfg["boundary_conditions"] if b["type"] == "surface_collider"][0]["point"][2])
 X = r["X"]
 L = float(np.linalg.norm(X[0].max(0) - X[0].min(0)))
+# 판정 기준은 모든 방법·모든 실행에 같게: 총에너지 = 운동 + 위치 (탄성에너지 ee 는 10-12 이후 실행에만 기록돼 섞으면
+# 같은 궤적도 판정이 갈린다 -- 10-14 GF 사고). 정수 스캔 때 판정과 같다.
+if r["rows"] is not None:
+    r["rows"] = {k: v for k, v in r["rows"].items() if k != "ee"}
 mt = sm.metrics(r, None, L, zf, float(cfg["g"][2]), float(cfg["frame_dt"]), 1.0, float(cfg["grid_lim"]) / int(cfg["n_grid"]))
 ok = np.isfinite(mt.get("e_drift_max", 0.0)) and mt.get("e_drift_max", 0.0) <= 1.0 and (mt.get("pen_depth_max") or 0.0) <= 0.5
 print(1 if ok else 0)
