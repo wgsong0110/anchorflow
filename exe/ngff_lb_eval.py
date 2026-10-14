@@ -23,6 +23,9 @@ ap.add_argument("--group", default="lb_test")
 ap.add_argument("--cache_dir", default="/home/dkta/work/lb/ngff_data/cache")
 ap.add_argument("--src", default="/home/dkta/work/lbdata/test")
 ap.add_argument("--steps", type=int, default=80)
+ap.add_argument("--t0", type=int, default=0,
+                help="이 프레임의 상태(키포인트·질량중심·각도·질량중심 속도)에서 시작해 steps-1 프레임까지 롤아웃. "
+                     "오차는 프레임 t0+1..steps-1 평균, L 은 그대로 0 프레임 대각선, 정지 = t0 프레임에 그대로 (우리 t0=12 규약과 같다)")
 ap.add_argument("--save_ids", default="0000,0005,0015")
 ap.add_argument("--out", required=True)
 a = ap.parse_args()
@@ -64,8 +67,9 @@ for idx in tqdm(range(len(ds)), desc="eval"):
     nid = os.path.basename(st["src"].rstrip("/"))
     data = {k: (v.unsqueeze(0).to(dev) if torch.is_tensor(v) else v) for k, v in d.items()}
     t0 = time.time()
-    point_seq, com_seq, angle_seq = model(data["points"][:, 0], data["com"][:, 0], data["com_vel"][:, 0], data["angle"][:, 0],
-                                          data["angle_vel"][:, 0], data["padding"], data["knn"], pred_len=a.steps - 1,
+    T0 = a.t0
+    point_seq, com_seq, angle_seq = model(data["points"][:, T0], data["com"][:, T0], data["com_vel"][:, T0], data["angle"][:, T0],
+                                          data["angle_vel"][:, T0], data["padding"], data["knn"], pred_len=a.steps - 1 - T0,
                                           external_forces=None)
     R_seq = euler_xyz_to_matrix(angle_seq)
     fut = torch.matmul(point_seq, R_seq.transpose(-2, -1)) + com_seq.unsqueeze(-2)        # (B,T,O,N,3)
@@ -76,15 +80,17 @@ for idx in tqdm(range(len(ds)), desc="eval"):
     # GT (float32 원본)
     NG = int(st["NG"])
     gt = []
-    for t in range(a.steps):
+    for t in range(T0, a.steps):
         with h5py.File(os.path.join(st["src"], f"sim_{t:010d}.h5")) as h:
             gt.append(torch.as_tensor(np.array(h["x"][:NG])))
     gt = torch.stack(gt).to(dev).float()                                                    # (T,NG,3)
     up_in = dict(data)
     up_in["pos"] = fut
-    up = upsample_gaussian_splatting(up_in, gt[0:1], torch.zeros(1, NG, 1, dtype=torch.long, device=dev), k=8)
+    with h5py.File(os.path.join(st["src"], "sim_0000000000.h5")) as h:                       # 이웃은 0 프레임(정지) 기준 그대로
+        g0 = torch.as_tensor(np.array(h["x"][:NG])).to(dev).float()
+    up = upsample_gaussian_splatting(up_in, g0[None], torch.zeros(1, NG, 1, dtype=torch.long, device=dev), k=8)
     pred = up["pos"][0]                                                                     # (T,NG,3)
-    L = float((gt[0].max(0)[0] - gt[0].min(0)[0]).norm())
+    L = float((g0.max(0)[0] - g0.min(0)[0]).norm())
     e = (pred - gt).norm(dim=-1).mean(1) / L                                                # (T,)
     es = (gt[0:1] - gt).norm(dim=-1).mean(1) / L
     ek = (fut[0] - gt[:, d["keypoint_indices"].to(dev)]).norm(dim=-1).mean(1) / L         # 키포인트만 (업샘플 전)
@@ -112,7 +118,7 @@ def summ(keys):
 
 
 ks = sorted(res)
-out = {"exp_dir": a.exp_dir, "ckpt": a.ckpt, "steps": a.steps,
+out = {"exp_dir": a.exp_dir, "ckpt": a.ckpt, "steps": a.steps, "t0": a.t0,
        "metric": "mean over frames 1..T-1 of (mean L2 over all Gaussians) / L, L = frame-0 Gaussian bbox diagonal",
        "upsample": "NGFF videogen/eval.py upsample_gaussian_splatting, k=8",
        "summary_all": summ(ks), "summary_0_14": summ([k for k in ks if int(k) < 15]),
