@@ -427,6 +427,8 @@ ap.add_argument("--ov_init_std", type=float, default=1e-3)
 ap.add_argument("--ov_vars", choices=["out", "net"], default="out",
                 help="--ov_roll 의 변수: out=노드 출력(출력만 최적화, 기본), net=망 파라미터 -- 같은 증분 포텐셜·장벽을 "
                      "프레임마다 망 파라미터로 내린다 (한 궤적 과적합; 파라미터는 프레임 사이에 이어진다)")
+ap.add_argument("--ov_obj", choices=["ip", "l2"], default="ip",
+                help="--ov_roll 의 프레임별 목적함수: ip=증분 포텐셜(기본), l2=다음 프레임 정답 위치와의 평균 L2 / EXT² (장벽 없음)")
 ap.add_argument("--ov_gd_lr", type=float, default=1e-4, help="--ov_opt gd 의 고정 학습률 (경사하강)")
 ap.add_argument("--ov_opt", choices=["adam", "lbfgs", "cg", "gd"], default="lbfgs",
                 help="--ov_roll 의 최적화기. 탄성 강성(E=2e6)이 관성항보다 "
@@ -3238,6 +3240,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                        jac=_Jd)
         if _ecb is not None:
             E = E + _ecb / nrm
+        if a.ov_obj == "l2":                    # 정답 다음 프레임 위치와의 L2 (장벽·물리 없음)
+            _xt = take(d["x"][min(t + 1, d["x"].shape[0] - 1)], gsel).to(x2.dtype)
+            E = ((x2 - _xt) ** 2).sum(-1).mean() / (EXT ** 2)
         if a.hex_hg > 0 and _HG_LAST[0] is not None:
             _dh, _c8, _lt = _HG_LAST[0]
             E = E + _hex_hg_energy(_dh, _c8, _lt, cfg, a.hex_hg) / nrm
