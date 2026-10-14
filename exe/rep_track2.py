@@ -417,6 +417,8 @@ class PhysTwin(torch.nn.Module):
         # 내부 채움 없이 가우시안 중심에서 뽑는다.
         g = torch.Generator(device="cpu").manual_seed(0)
         self.psel = torch.randperm(NG, generator=g)[:11024].to(dev)
+        if a.pt_fit:                                         # PhysTwin 공식 질량점 (phystwin_fit: 복셀마다 첫 점)
+            self.psel = torch.as_tensor(np.load(a.pt_fit)["psel"], device=dev, dtype=torch.long)
         P = G0[self.psel]
         vox = 0.005 / 0.25
         key = torch.floor((P - P.min(0).values) / vox).long()

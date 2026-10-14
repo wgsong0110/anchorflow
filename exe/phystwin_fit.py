@@ -49,23 +49,17 @@ D = np.load(a.flow)
 traj = D["traj"].astype(np.float64)                          # [T+1,N,3] 정규화
 s = float(D["s"])
 T1, N, _ = traj.shape
-g = torch.Generator(device="cpu").manual_seed(0)
-psel = torch.randperm(N, generator=g)[:11024].numpy()
-P0 = traj[0, psel]
-vox = 0.005 / 0.25
-key = np.floor((P0 - P0.min(0)) / vox).astype(np.int64)
-_, inv = np.unique(key, axis=0, return_inverse=True)
-inv = inv.reshape(-1)
-M = int(inv.max()) + 1
-cnt = np.bincount(inv, minlength=M).astype(np.float64)
-B = np.zeros((T1, M, 3))
-for d in range(3):
-    for t in range(T1):
-        B[t, :, d] = np.bincount(inv, weights=traj[t, psel, d], minlength=M) / cnt
-# 길이 규약: PhysTwin 의 반경 범위(0.01~0.05 m)·dt 는 물체 ~0.25 m 를 전제로 한 절대값이다. 우리 PhysTwin 표현은
-# 이미 "정규화 1 = 0.25 m" 로 질량점 간격(복셀 0.005/0.25)을 정하므로 궤적도 같은 규약으로 둔다 (시뮬 좌표 × K,
-# K = 0.25/s). 중력 9.8 이 그대로 맞도록 시간을 √K 배로 (닮음 변환: 가속도 불변) -> 힘·강성 Y 는 단위가 바뀌지 않고,
-# 길이만 시뮬 단위로 되돌려 저장한다 (스프링 에너지 ½(Y/L0)Δ² 는 시뮬 단위에서 1/K 배).
+# 질량점 = PhysTwin 공식 data_process_sample.py 의 형상 사전정보 없는 경로 그대로: 관측 점(가우시안 중심 전부)을
+# 물체 0.25 m 기준 0.005 m 복셀에 넣고, 복셀마다 처음 들어온 점 하나 (평균 아님). 그 점의 궤적을 그대로 쓴다.
+vox = 0.005 / 0.25                                           # 정규화 좌표 (아래에서 × 0.25 하면 0.005 m)
+key = np.floor((traj[0] - traj[0].min(0)) / vox).astype(np.int64)
+_, first = np.unique(key, axis=0, return_index=True)
+psel = np.sort(first)                                        # 처음 들어온 점 (가우시안 순서)
+inv = np.arange(len(psel))
+M = len(psel)
+B = traj[:, psel].copy()
+# 길이 규약: PhysTwin 의 반경 범위(0.01~0.05 m)·dt 는 물체 ~0.25 m 를 전제로 한 절대값 -> 궤적을 "정규화 1 = 0.25 m"
+# 로 둔다 (시뮬 좌표 × K, K = 0.25/s). 중력 9.8 이 맞도록 시간을 √K 배로 (닮음 변환: 가속도 불변). 저장할 때 길이는 시뮬 단위로.
 K = 0.25 / s
 FDT = a.frame_dt * K ** 0.5
 B *= 0.25                                                    # = 시뮬 좌표 × K
