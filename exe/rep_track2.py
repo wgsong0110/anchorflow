@@ -70,6 +70,10 @@ ap.add_argument("--tau", type=float, default=0.1, help="adam_bt: det 장벽 문�
 ap.add_argument("--knn_F", type=int, default=8, help="adam_bt: det 를 잴 이웃 수")
 ap.add_argument("--riem_eps", type=float, default=1e-2,
                 help="riem: 계량 G = JᵀJ + ε·λmax·I 의 상대 ε (λmax 는 프레임마다 거듭제곱법)")
+ap.add_argument("--riem_norm", action="store_true",
+                help="riem: 계량을 목적함수(입자 L2) 의 가우스-뉴턴 헤시안 크기에 맞춰 정규화한다 -- 프레임마다 "
+                     "G <- G · λmax(H_L2)/λmax(G), 감쇠 ε = riem_eps · λmax(H_L2). 계량의 모양(장벽 방향)은 그대로, 전체 크기만 맞춘다 "
+                     "(스프링 계량이 L2 보다 ~1e9 배 딱딱해 걸음이 0 이던 문제, 10-14 진단)")
 ap.add_argument("--riem_eps_abs", type=float, default=0.0,
                 help="riem: 0 보다 크면 ε·λmax 대신 이 절대값으로 감쇠 (λmax 가 납작한 셀 하나로 커져 "
                      "모든 방향의 보폭이 같이 줄어드는지 가리는 진단용)")
@@ -1399,6 +1403,32 @@ for t in range(1, T + 1):
             WARM = 3                                          # 컴파일·첫 호출은 빼고 잰다
             prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
                                                       torch.profiler.ProfilerActivity.CUDA])
+        GSC = 1.0                                             # 계량 전체 크기 배수 (--riem_norm)
+        if a.riem_norm:
+            from torch.func import functional_call as _fc, jvp as _jvp, vjp as _vjp
+            _nm = {id(q): n for n, q in rep.named_parameters()}
+            _ks = [_nm[id(q)] for q in PL]
+
+            class _WN(torch.nn.Module):
+                def __init__(s_, r_):
+                    super().__init__(); s_.r = r_
+
+                def forward(s_, X, sel):
+                    return s_.r.yJ(X, sel)
+            _wn = _WN(rep)
+
+            def _dy(th_):
+                return _fc(_wn, {"r." + k: v for k, v in zip(_ks, unflat(th_))}, (X_, FI))[0].reshape(-1)
+            with torch.no_grad():
+                _th = theta.detach(); _, _vf = _vjp(_dy, _th)
+                _HL = lambda u_: (2.0 / X_.shape[0]) * _vf(_jvp(_dy, (_th,), (u_,))[1])[0]
+                u = torch.randn_like(_th)
+                for _ in range(20):
+                    u = _HL(u); lmaxL = float(u.norm()); u = u / max(lmaxL, 1e-30)
+            GSC = lmaxL / max(lmax, 1e-30)
+            if t % 10 == 0 or t == 1:
+                print(f"  [계량 정규화] t={t} λmax(G) {lmax:.3e}  λmax(H_L2) {lmaxL:.3e}  배수 {GSC:.3e}", flush=True)
+            lmax = lmaxL
         eps = a.riem_eps_abs if a.riem_eps_abs > 0 else a.riem_eps * max(lmax, 1e-12)   # k=1 기준 -> k 를 키우면 계량이 더 딱딱해진다
         if a.opt == "ipm":
             # 내부점법 (장벽법): 매 단계 min L2 + μ·B, B = -Σ w² log J (J>0 영역 안에서만),
@@ -1488,7 +1518,7 @@ for t in range(1, T + 1):
                 Hv = GN(theta)
                 if a.profile:
                     t2_ = tic(); TM["계량 선형화 (make_res+vjp)"] += t2_ - t_; t_ = t2_
-                Gv = lambda u: a.riem_k * Hv(u) + eps * u
+                Gv = lambda u: GSC * a.riem_k * Hv(u) + eps * u
                 if os.environ.get("AF_RIEM_DIAG") and it_ in (0, 1, 50, (a.iters0 if t == 1 else a.iters) - 1):
                     _gn = float(gk.norm()); _u = gk / max(_gn, 1e-30)
                     _ray = float((_u * Hv(_u)).sum())             # 기울기 방향의 계량 강성 gᵀHg/|g|² (감쇠 제외)
