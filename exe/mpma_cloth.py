@@ -57,6 +57,9 @@ parser.add_argument("--skin_cut", action="store_true", help="--cloth_only 에서
 parser.add_argument("--cloth_only", action="store_true", help="렌더에서 몸 가우시안을 빼고 옷만 (video_cloth.mp4)")
 parser.add_argument("--ycut", type=float, default=None, help="렌더: 처음 프레임 높이(y)가 이 값 이상인 가우시안은 그리지 않는다 (PG·GF 렌더와 같은 값)")
 parser.add_argument("--tag", default="", help="렌더 영상 이름 뒤에 붙인다")
+parser.add_argument("--obj_scale", type=float, default=1.0,
+                    help="시뮬 안에서 물체(아바타·옷·몸 충돌체) 크기 배수. 월드->시뮬 scale 에 곱한다 (격자·재질·중력 그대로, "
+                         "속도도 같은 scale 로 바뀐다). PG·GF 는 init_state.pt 의 scale 을 그대로 받으므로 셋 다 같이 줄어든다")
 parser.add_argument("--dump_only", action="store_true", help="초기 상태(입자·고정점·축)만 저장하고 끝 (PG 비교용)")
 args = parser.parse_args(sys.argv[1:])
 A = lp.extract(args); PIPE = pp.extract(args)
@@ -93,6 +96,7 @@ cverts = verts0[cloth_v]
 min_pos, max_pos = cverts.min(0)[0], cverts.max(0)[0]
 mean_pos = (min_pos + max_pos) / 2.0
 scale = 1.0 / (2.2 - mean_pos[1])                                               # run_demo 와 같은 월드 -> 시뮬
+scale = scale * args.obj_scale
 shift = torch.tensor([[1.0, 1.0, 1.0]]).float().cuda() - mean_pos * scale
 wld2sim = lambda p: p * scale + shift                                           # noqa: E731
 sim2wld = lambda p: (p - shift) / scale                                         # noqa: E731
