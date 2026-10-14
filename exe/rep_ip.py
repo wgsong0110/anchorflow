@@ -100,6 +100,7 @@ ap.add_argument("--state_out", default="",
                 help="프레임마다 전체 입자 상태 (위치, 속도, 탄성 F) 를 train_deform 이 읽는 .pt 로 (half). 출력만 최적화 궤적을 "
                      "학습 기준 지표 검증의 정답 궤적으로 쓰려고 (2026-10-12)")
 ap.add_argument("--video", default="")
+ap.add_argument("--png_dir", default="", help="render_ref / render_npz: 영상 대신 프레임 PNG 로 (시각 지표용, 압축 없음)")
 ap.add_argument("--render_ref", action="store_true", help="기준 궤적만 같은 렌더러로 영상으로 (최적화 없음)")
 ap.add_argument("--tb", default="auto")
 a = ap.parse_args()
@@ -269,6 +270,8 @@ if RENDER:
         else:
             WR.append_data(im)
 
+if a.png_dir and (a.render_ref or a.render_npz):
+    os.makedirs(a.png_dir, exist_ok=True); FRAME_DIR[0] = a.png_dir; FRAME_IX[0] = 0
 if a.render_ref:                                               # 기준 궤적만 영상으로
     for t in range(a.frames + 1):
         x = torch.as_tensor(rd(files[t], "x"), dtype=torch.float32, device=dev)
@@ -276,14 +279,17 @@ if a.render_ref:                                               # 기준 궤적�
         Fr = torch.eye(3, device=dev).expand(N, 3, 3) if Fr is None else \
             torch.as_tensor(Fr.reshape(-1, 3, 3), dtype=torch.float32, device=dev)
         render(gpos(x, Fr), Fr[GI])
-    WR.close()
+    if WR is not None:
+        WR.close()
     print(f"[기준 영상] {a.video}", flush=True)
     raise SystemExit(0)
 
 if a.render_npz:                                               # 저장된 결과를 영상으로만
     Zr = np.load(a.render_npz)
+    FR = None
     if "traj_full" in Zr.files:                                # 시뮬 입자 전체 위치 [T, N, 3] (예: train_deform 롤아웃 덤프) -> 가우시안이 붙은 입자만
         TR = torch.as_tensor(Zr["traj_full"].astype(np.float32), device=dev)[:, GI]
+        FR = (torch.as_tensor(Zr["F_full"], device=dev)[:, GI] if "F_full" in Zr.files else None)   # [T,N,3,3] 있으면 공분산에 F 반영
     else:
         TR = torch.as_tensor(Zr["traj"].astype(np.float32), device=dev)     # [T, n, 3]
     if a.old_order:
@@ -316,8 +322,11 @@ if a.render_npz:                                               # 저장된 결�
         I3 = torch.eye(3, device=dev).expand(TR.shape[1], 3, 3)
         render(_G0, I3)
         for t in range(TR.shape[0]):
-            render(TR[t], I3)
-    WR.close()
+            render(TR[t], I3 if FR is None else FR[t].float())
+    if WR is not None and FRAME_DIR[0] is None:
+        WR.close()
+    elif WR is not None:
+        WR.close()
     print(f"[결과 영상] {a.video}", flush=True)
     raise SystemExit(0)
 
