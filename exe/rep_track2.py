@@ -90,6 +90,7 @@ ap.add_argument("--tet_quality", type=float, default=0.05,
                 help="phystwin logbarrier: 4-클릭 사면체 중 정지 품질 6√2·V/l_rms³ 이 이보다 작은(납작한) 것은 버린다")
 ap.add_argument("--ipm_mu0", type=float, default=1e-4, help="ipm: 첫 장벽 계수 μ")
 ap.add_argument("--ipm_stages", type=int, default=4, help="ipm: μ 를 10 배씩 줄이는 단계 수 (프레임마다)")
+ap.add_argument("--save_F", action="store_true", help="--save_traj 와 함께: 전체 점의 누적 F 도 프레임마다 저장 (float16, 렌더용)")
 ap.add_argument("--save_traj", action="store_true",
                 help="모든 프레임의 가우시안 위치(float16)를 저장 (물리 지표·EMD 재측정용)")
 ap.add_argument("--ls_max", type=int, default=30, help="riem: Armijo 되돌림 최대 횟수 (0 이면 고정 보폭)")
@@ -1029,6 +1030,7 @@ rows, CURVE, DOFS, STOP, EMDP = [], [], [], [], []
 DETC = [torch.ones(FI.numel(), device=dev, dtype=torch.float64)]   # ipmF: 입자 누적 det (정지 대비)
 SPRING_CAP, SPRING_LOG, CFL_LOG = [float("inf")], [], []
 PHYS, TRAJS, YPREV = [], [], [G0[FI].clone()]
+FSAVE = []
 t0 = time.time()
 for t in range(1, T + 1):
     tgt = TRAJ[t]
@@ -1657,6 +1659,8 @@ for t in range(1, T + 1):
         YPREV[0] = y.clone()
         if a.save_traj:
             TRAJS.append(yall.float().cpu().numpy())         # float32 (사후 CD/EMD 재계산용)
+            if a.save_F:
+                FSAVE.append(Fall.half().cpu().numpy())
         if TBW is not None:
             for k_, v_ in (("RMSE_pct", 100 * rmse), ("CD_pct", 100 * cd),
                            ("detJ_min", rows[-1][4]), ("inverted_pct", 100 * rows[-1][5]),
@@ -1705,5 +1709,6 @@ np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
                     phys=np.array(PHYS, dtype=np.float64),     # t, KE, P(3), Lang(3), mean detF
                     cfl_log=np.array(CFL_LOG, dtype=np.float64),          # grid: (t, 노드 이동 최대 / (cfl·dx))
                     spring_log=np.array([q for q in SPRING_LOG if len(q) == 5], dtype=np.float64),  # (t, E정답, E시작, 상한, E끝)
-                    **({"traj": np.stack(TRAJS)} if TRAJS else {}))
+                    **({"traj": np.stack(TRAJS)} if TRAJS else {}),
+                    **({"F": np.stack(FSAVE)} if FSAVE else {}))
 print(f"[저장] {a.out}" + (f"  영상 {a.video}" if a.video else ""), flush=True)
