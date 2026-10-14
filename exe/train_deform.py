@@ -3557,6 +3557,11 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                  _snap_inverted(st, a.snap_inv, a.snap_eps))
         x2, v2, E, dlog, F_tr, _pt, _Jd = _fwd()
         E1 = float(E)
+        if a.ov_vars == "net" and os.environ.get("AF_OVNET_DIAG"):
+            _pv = torch.cat([q.detach().reshape(-1) for q in net.parameters()])
+            _gn = sum(float(q.grad.norm()) ** 2 for q in net.parameters() if q.grad is not None) ** 0.5
+            print(f"    [망 변수] t={t} E0 {E0} E1 {E1:.6e} |θ| {float(_pv.norm()):.6e} |∇θ| {_gn:.3e} "
+                  f"요구기울기 {sum(int(q.requires_grad) for q in net.parameters())}/{len(list(net.parameters()))}", flush=True)
         if os.environ.get("AF_OV_DIAG"):
             _tg = (_DT[0] * v + (_DT[0] ** 2) * gv)
             _du = x2 - x
