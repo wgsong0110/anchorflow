@@ -1489,6 +1489,10 @@ for t in range(1, T + 1):
                 if a.profile:
                     t2_ = tic(); TM["계량 선형화 (make_res+vjp)"] += t2_ - t_; t_ = t2_
                 Gv = lambda u: a.riem_k * Hv(u) + eps * u
+                if os.environ.get("AF_RIEM_DIAG") and it_ in (0, 1, 50, (a.iters0 if t == 1 else a.iters) - 1):
+                    _gn = float(gk.norm()); _u = gk / max(_gn, 1e-30)
+                    _ray = float((_u * Hv(_u)).sum())             # 기울기 방향의 계량 강성 gᵀHg/|g|² (감쇠 제외)
+                    _DIAG = (_gn, _ray)
                 x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
                 for _ in range(a.riem_cg):                    # CG: G x = g
                     Gp = Gv(pdir); al = rr / (pdir * Gp).sum().clamp_min(1e-30)
@@ -1504,6 +1508,10 @@ for t in range(1, T + 1):
                 # Armijo 되돌림 선탐색: 보폭 η 에서 시작해 손실이 충분히 줄 때까지 반으로
                 # (고정 보폭은 형상·구간이 바뀌면 발산했다 -- r9 의 bread ours, ship vrgs)
                 f0 = float(l2); sl = float((gk * x).sum()); stp = a.riem_lr; nbt = 0
+                if os.environ.get("AF_RIEM_DIAG") and it_ in (0, 1, 50, (a.iters0 if t == 1 else a.iters) - 1):
+                    print(f"  [계량 진단] t={t} it={it_} L2 {float(l2):.3e} |g| {_DIAG[0]:.3e} λmax {lmax:.3e} ε {eps:.3e} "
+                          f"gᵀHg/|g|² {_DIAG[1]:.3e} |Δ| {float(x.norm()):.3e} gᵀΔ {sl:.3e} "
+                          f"(계량 없이 같은 길이 걸음의 1 차 감소 {_DIAG[0] * float(x.norm()):.3e})", flush=True)
                 if a.ls_max == 0:
                     for q, dq in zip(PL, unflat(x)):
                         q -= stp * dq
