@@ -31,7 +31,9 @@ ap.add_argument("--frame_dt", type=float, required=True, help="목표 궤적 한
 ap.add_argument("--out_dir", required=True)
 ap.add_argument("--phystwin", default="/home/dkta/work/PhysTwin")
 ap.add_argument("--cma_iter", type=int, default=20, help="optimize_cma.py 기본값")
-ap.add_argument("--train_iters", type=int, default=0, help="시험용: 0 이면 real.yaml 의 iterations (200)")
+ap.add_argument("--train_iters", type=int, default=0, help="0 이면 real.yaml 의 iterations (200)")
+ap.add_argument("--lr", type=float, default=0.0, help="0 이면 real.yaml 의 base_lr (1e-3)")
+ap.add_argument("--tb", default="", help="TensorBoard 폴더 (CMA 평가별 오차·세대 최저, 학습 반복별 손실)")
 a = ap.parse_args()
 
 os.environ.setdefault("WANDB_MODE", "disabled")
@@ -108,10 +110,35 @@ _sd.SimpleData.visualize_data = lambda self, visualize=False: None
 from qqtt.engine.cma_optimize_warp import OptimizerCMA       # noqa: E402
 from qqtt.engine.trainer_warp import InvPhyTrainerWarp       # noqa: E402
 import wandb                                                 # noqa: E402
+TBW = None
+if a.tb:
+    from torch.utils.tensorboard import SummaryWriter
+    TBW = SummaryWriter(a.tb)
+    from qqtt.utils import logger as _lg
+    import re as _re
+    _info = _lg.info
+
+    def _info_tb(msg, *x, **k):
+        m_ = _re.search(r"Iteration: (\d+), Loss: ([0-9.eE+-]+)", str(msg))
+        if m_:
+            TBW.add_scalar("2_학습/손실", float(m_.group(2)), int(m_.group(1))); TBW.flush()
+        return _info(msg, *x, **k)
+    _lg.info = _info_tb
 wandb.log = lambda *x, **k: None
 wandb.Video = lambda *x, **k: None
 _ef = OptimizerCMA.error_func
-OptimizerCMA.error_func = lambda self, p, visualize=False, video_path=None: _ef(self, p, False, None)
+_ncma = [0, float("inf")]
+
+
+def _ef_tb(self, p, visualize=False, video_path=None):
+    e = _ef(self, p, False, None)
+    _ncma[0] += 1; _ncma[1] = min(_ncma[1], float(e))
+    if TBW is not None:
+        TBW.add_scalar("1_CMA/평가별_오차", float(e), _ncma[0]); TBW.add_scalar("1_CMA/지금까지_최저", _ncma[1], _ncma[0]); TBW.flush()
+    return e
+
+
+OptimizerCMA.error_func = _ef_tb
 InvPhyTrainerWarp.visualize_sim = lambda self, *x, **k: None
 
 # ---- 1 단계: CMA-ES
@@ -133,6 +160,9 @@ cfg.num_substeps = round(FDT / cfg.dt)
 cfg.set_optimal_params(dict(optimal))
 if a.train_iters:
     cfg.iterations = a.train_iters
+if a.lr:
+    cfg.base_lr = a.lr
+print(f"[2 단계 설정] lr {cfg.base_lr}  iterations {cfg.iterations}", flush=True)
 tr = InvPhyTrainerWarp(data_path=f"{OUT}/pts.npy", base_dir=OUT, train_frame=T1, velocity_path=f"{OUT}/vel.npy")
 if not glob.glob(f"{OUT}/train/best_*.pth"):
     tr.train()
