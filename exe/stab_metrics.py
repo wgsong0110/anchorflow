@@ -26,12 +26,6 @@ import torch
 from scipy.spatial import cKDTree
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
-ap = argparse.ArgumentParser()
-ap.add_argument("--root", default="/home/dkta/work/stab")
-ap.add_argument("--out", required=True)
-ap.add_argument("--nmax", type=int, default=128)
-a = ap.parse_args()
-NS = [n for n in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024) if n <= a.nmax]
 
 
 def load(res, m, n):
@@ -107,39 +101,50 @@ def metrics(r, ref, L, zf, g, dt, M, dxg):
     return out
 
 
-res_all = {}
-for S in ("lego", "mic", "ficus"):
-    res = f"{a.root}/{S}/res"
-    cfg = json.load(open(f"{a.root}/{S}/config.json"))
-    zf = float([b for b in cfg["boundary_conditions"] if b["type"] == "surface_collider"][0]["point"][2])
-    g = float(cfg["g"][2]); dt = float(cfg["frame_dt"])
-    import h5py
-    with h5py.File(f"{a.root}/{S}/init/sim_0000000000.h5") as h:
-        x0 = np.array(h["x"]); x0 = x0.T if x0.shape[0] == 3 else x0
-    dxg = float(cfg["grid_lim"]) / int(cfg["n_grid"])
-    M = float(cfg["density"]) * dxg ** 3 * len(np.unique(np.floor(x0 / dxg).astype(np.int64), axis=0))
-    refr = load(res, "pg", 1024)
-    ref = refr["X"] if refr else None
-    L = float(np.linalg.norm(ref[0].max(0) - ref[0].min(0)))
-    res_all[S] = {}
-    # *_safe = 발산 방지 보정판 (stabstat.safe_*, 네 방법 공통 규칙). 원래 발산했던 N 만 돌렸다
-    for m in ("pg", "gf", "ipg", "ours", "ovs", "pg_safe", "gf_safe", "ipg_safe"):
-        res_all[S][m] = {}
-        for n in NS:
-            r = load(res, m, n)
-            if r is None:
-                continue
-            d = dict(status=r["status"])
-            if r["rows"] is not None and "safe_n" in r["rows"]:
-                d["safe_n"] = float(np.nanmax(r["rows"]["safe_n"]))
-                d["safe_split"] = float(np.nanmax(r["rows"]["safe_split"]))
-                d["safe_inert"] = float(np.nanmax(r["rows"]["safe_inert"]))
-            d.update(metrics(r, ref, L, zf, g, dt, M, dxg))
-            # 결과 파일이 있어도 값이 터졌으면 발산으로 (GF N8 은 NaN 없이 1e30 대로 커졌다)
-            if d["status"] == "끝" and not m.endswith("_safe") and (not np.isfinite(d.get("e_drift_max", 0.0)) or d.get("e_drift_max", 0.0) > 1.0
-                                       or (d.get("pen_depth_max") or 0.0) > 0.5):
-                d["status"] = "발산"
-            res_all[S][m][n] = d
-            print(S, m, n, d["status"], {k: (round(v, 6) if isinstance(v, float) else v) for k, v in d.items() if k != "status"}, flush=True)
-json.dump(res_all, open(a.out, "w"), indent=1)
-print("METRICS_DONE", flush=True)
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", default="/home/dkta/work/stab")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--nmax", type=int, default=128)
+    a = ap.parse_args()
+    NS = [n for n in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024) if n <= a.nmax]
+    res_all = {}
+    for S in ("lego", "mic", "ficus"):
+        res = f"{a.root}/{S}/res"
+        cfg = json.load(open(f"{a.root}/{S}/config.json"))
+        zf = float([b for b in cfg["boundary_conditions"] if b["type"] == "surface_collider"][0]["point"][2])
+        g = float(cfg["g"][2]); dt = float(cfg["frame_dt"])
+        import h5py
+        with h5py.File(f"{a.root}/{S}/init/sim_0000000000.h5") as h:
+            x0 = np.array(h["x"]); x0 = x0.T if x0.shape[0] == 3 else x0
+        dxg = float(cfg["grid_lim"]) / int(cfg["n_grid"])
+        M = float(cfg["density"]) * dxg ** 3 * len(np.unique(np.floor(x0 / dxg).astype(np.int64), axis=0))
+        refr = load(res, "pg", 1024)
+        ref = refr["X"] if refr else None
+        L = float(np.linalg.norm(ref[0].max(0) - ref[0].min(0)))
+        res_all[S] = {}
+        # *_safe = 발산 방지 보정판 (stabstat.safe_*, 네 방법 공통 규칙). 원래 발산했던 N 만 돌렸다
+        for m in ("pg", "gf", "ipg", "ours", "ovs", "pg_safe", "gf_safe", "ipg_safe"):
+            res_all[S][m] = {}
+            for n in NS:
+                r = load(res, m, n)
+                if r is None:
+                    continue
+                d = dict(status=r["status"])
+                if r["rows"] is not None and "safe_n" in r["rows"]:
+                    d["safe_n"] = float(np.nanmax(r["rows"]["safe_n"]))
+                    d["safe_split"] = float(np.nanmax(r["rows"]["safe_split"]))
+                    d["safe_inert"] = float(np.nanmax(r["rows"]["safe_inert"]))
+                d.update(metrics(r, ref, L, zf, g, dt, M, dxg))
+                # 결과 파일이 있어도 값이 터졌으면 발산으로 (GF N8 은 NaN 없이 1e30 대로 커졌다)
+                if d["status"] == "끝" and not m.endswith("_safe") and (not np.isfinite(d.get("e_drift_max", 0.0)) or d.get("e_drift_max", 0.0) > 1.0
+                                           or (d.get("pen_depth_max") or 0.0) > 0.5):
+                    d["status"] = "발산"
+                res_all[S][m][n] = d
+                print(S, m, n, d["status"], {k: (round(v, 6) if isinstance(v, float) else v) for k, v in d.items() if k != "status"}, flush=True)
+    json.dump(res_all, open(a.out, "w"), indent=1)
+    print("METRICS_DONE", flush=True)
+
+
+if __name__ == "__main__":
+    main()
