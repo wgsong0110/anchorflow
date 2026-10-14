@@ -424,7 +424,11 @@ ap.add_argument("--ov_init",
                      "솔버가 뉴턴을 시작하는 그 지점이다 -- 0 에서 출발하면 "
                      "탄성 강성에 묻혀 자유낙하조차 못 찾는다")
 ap.add_argument("--ov_init_std", type=float, default=1e-3)
-ap.add_argument("--ov_opt", choices=["adam", "lbfgs", "cg"], default="lbfgs",
+ap.add_argument("--ov_vars", choices=["out", "net"], default="out",
+                help="--ov_roll 의 변수: out=노드 출력(출력만 최적화, 기본), net=망 파라미터 -- 같은 증분 포텐셜·장벽을 "
+                     "프레임마다 망 파라미터로 내린다 (한 궤적 과적합; 파라미터는 프레임 사이에 이어진다)")
+ap.add_argument("--ov_gd_lr", type=float, default=1e-4, help="--ov_opt gd 의 고정 학습률 (경사하강)")
+ap.add_argument("--ov_opt", choices=["adam", "lbfgs", "cg", "gd"], default="lbfgs",
                 help="--ov_roll 의 최적화기. 탄성 강성(E=2e6)이 관성항보다 "
                      "원시 값으로 700 배 커서 문제가 심하게 비등방이다 -- "
                      "Adam 은 0 에서 출발하면 자유낙하조차 못 찾는다(실측: "
@@ -2491,6 +2495,10 @@ def _ov_clip_grads(st):
 
 
 def _mk_ov_opt(vs):
+    if a.ov_vars == "net":
+        vs = [q for q in net.parameters() if q.requires_grad]     # 출력 대신 망 파라미터
+    if a.ov_opt == "gd":
+        return torch.optim.SGD(vs, lr=a.ov_gd_lr)
     if a.ov_opt == "lbfgs":
         return torch.optim.LBFGS(vs, lr=1.0, max_iter=max(a.ov_roll, 1),
                                  history_size=50,
@@ -2535,6 +2543,11 @@ if a.out_var or a.ov_roll > 0:
         outs = out if isinstance(out, (tuple, list)) else (out,)
         if st is None:                      # 풀 밖(초기화·검증) 에서는 그대로
             return out
+        if a.ov_vars == "net":              # 변수 = 망 파라미터: 망 출력을 그대로 쓰고 최적화기만 만든다
+            if st.get("ov_opt") is None:
+                st["ov"] = [q for q in net.parameters() if q.requires_grad]
+                st["ov_opt"] = _mk_ov_opt(st["ov"])
+            return out
         if st.get("ov") is None or any(o is None for o in st["ov"]):   # _ov_fast 가 빈 자리만 만들어 둔 경우도
             st["ov"] = [o.detach().clone().requires_grad_(True) for o in outs]
             st["ov_opt"] = _mk_ov_opt(st["ov"])
@@ -2552,7 +2565,7 @@ if a.out_var or a.ov_roll > 0:
         최적화기는 **모든 격자의 변수가 만들어진 뒤** _ov_once 가 만든다.
         """
         st = _OV_CUR[0]
-        if st is None:
+        if st is None or a.ov_vars == "net":     # 망을 건너뛰지 않는다
             return None
         _k = _ENS_K[0]
         if st.get("ov") is None:
