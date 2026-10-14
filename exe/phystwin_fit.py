@@ -33,6 +33,8 @@ ap.add_argument("--phystwin", default="/home/dkta/work/PhysTwin")
 ap.add_argument("--cma_iter", type=int, default=20, help="optimize_cma.py 기본값")
 ap.add_argument("--train_iters", type=int, default=0, help="0 이면 real.yaml 의 iterations (200)")
 ap.add_argument("--lr", type=float, default=0.0, help="0 이면 real.yaml 의 base_lr (1e-3)")
+ap.add_argument("--diag", action="store_true",
+                help="진단: Adam 한 걸음마다 매개변수별 기울기 노름·값을 TB(3_진단/*)에 (log 강성 평균·최소·최대, 충돌 매개변수 넷)")
 ap.add_argument("--tb", default="", help="TensorBoard 폴더 (CMA 평가별 오차·세대 최저, 학습 반복별 손실)")
 a = ap.parse_args()
 
@@ -164,6 +166,30 @@ if a.lr:
     cfg.base_lr = a.lr
 print(f"[2 단계 설정] lr {cfg.base_lr}  iterations {cfg.iterations}", flush=True)
 tr = InvPhyTrainerWarp(data_path=f"{OUT}/pts.npy", base_dir=OUT, train_frame=T1, velocity_path=f"{OUT}/vel.npy")
+if a.diag and TBW is not None:
+    _names = ["log강성", "충돌_탄성", "충돌_마찰", "물체충돌_탄성", "물체충돌_마찰"]
+    _st = [0]
+    _step = tr.optimizer.step
+
+    def _step_diag(*x, **k):
+        for nm, q in zip(_names, tr.optimizer.param_groups[0]["params"]):
+            g_ = q.grad
+            if g_ is not None:
+                TBW.add_scalar(f"3_진단/기울기노름_{nm}", float(g_.norm()), _st[0])
+                TBW.add_scalar(f"3_진단/기울기유한_{nm}", float(torch.isfinite(g_).all()), _st[0])
+        r = _step(*x, **k)
+        for nm, q in zip(_names, tr.optimizer.param_groups[0]["params"]):
+            d_ = q.detach()
+            TBW.add_scalar(f"3_진단/값평균_{nm}", float(d_.float().mean()), _st[0])
+            if d_.numel() > 1:
+                TBW.add_scalar(f"3_진단/값최소_{nm}", float(d_.min()), _st[0]); TBW.add_scalar(f"3_진단/값최대_{nm}", float(d_.max()), _st[0])
+        TBW.add_scalar("3_진단/프레임손실", float(wp.to_torch(tr.simulator.loss, requires_grad=False)), _st[0])
+        _st[0] += 1
+        if _st[0] % 25 == 0:
+            TBW.flush()
+        return r
+    tr.optimizer.step = _step_diag
+    import warp as wp                                        # noqa: E402
 if not glob.glob(f"{OUT}/train/best_*.pth"):
     tr.train()
 best = sorted(glob.glob(f"{OUT}/train/best_*.pth"), key=lambda p: int(p.split("_")[-1].split(".")[0]))[-1]
