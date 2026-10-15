@@ -178,6 +178,21 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
     if parts:
         feat = torch.cat([feat, san(scatter_to_nodes(
             san(torch.cat(parts, -1)), rows, lam, Mn, mass=mass))], -1)
+    _K = int(getattr(a, "bary_pe", 0) or 0)
+    if _K > 0:
+        # 셀 안 배치의 다주파수 요약: 입자 p 가 자기 사면체의 꼭짓점 j 에 갖는 barycentric 좌표 λ_pj 를
+        # sin/cos(2^k π λ) (k < K) 로 인코딩해 노드 j 로 질량 가중 평균한다 -- 평균·2차 모멘트로는 안 보이는
+        # 셀 내부 분포를 여러 해상도로 노드에 싣는다 (--bary_pe K).
+        _fr = (2.0 ** torch.arange(_K, device=lam.device, dtype=lam.dtype)) * math.pi
+        _ang = lam.unsqueeze(-1) * _fr                                   # [N,4,K]
+        _pe = torch.cat([torch.sin(_ang), torch.cos(_ang)], -1)          # [N,4,2K]
+        _w = mass.to(lam.dtype).reshape(-1, 1, 1).expand(-1, 4, 1)
+        _r = rows.reshape(-1)
+        _num = torch.zeros(Mn, 2 * _K, device=lam.device, dtype=lam.dtype).index_add_(
+            0, _r, (_w * _pe).reshape(-1, 2 * _K))
+        _den = torch.zeros(Mn, 1, device=lam.device, dtype=lam.dtype).index_add_(
+            0, _r, _w.reshape(-1, 1))
+        feat = torch.cat([feat, san(_num / _den.clamp_min(1e-20))], -1)
     extra = [bc_features(npos, cfg) / hn]
     if mat_vec is not None:
         extra.insert(0, mat_vec.reshape(1, -1).expand(Mn, mat_vec.numel()))
