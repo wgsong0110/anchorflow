@@ -1044,6 +1044,7 @@ def free_mask(d, n, device, gsel, x=None, t=0):
     return m
 
 
+_NODE_FIT_DONE = [False]
 _DPN_LIVE = [None]         # (노드 위치, 노드 출력) -- 마지막 step_once 의 것, 기울기 유지
 _NODE_TGT = None           # --ov_obj node: 목표 롤아웃 덤프 (pred·v·F·nodes)
 if os.environ.get("AF_OV_NODE_TGT"):
@@ -4073,6 +4074,42 @@ def _rollout(d, t0, L, gsel=None):
         print(f"    [초기속도] 궤적의 v 를 쓴다 (크기 평균 "
               f"{float(v.norm(dim=-1).mean()):.4f})", flush=True)
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
+    if os.environ.get("AF_NODE_FIT") and not _NODE_FIT_DONE[0]:
+        # 망 하나를 **전 프레임 한꺼번에** 학습: 목표 실행(출력만 최적화)의 프레임 i 상태에서 망의 노드 출력이
+        # 그 실행의 프레임 i 노드 출력과 같아지게 (상태가 같아 격자·노드가 같다). 끝나면 고정된 망으로 아래 롤아웃.
+        _NODE_FIT_DONE[0] = True
+        _sp = os.environ["AF_NODE_FIT"].split(":")
+        _tg = torch.load(_sp[0], map_location="cpu", weights_only=False)
+        _it, _lr = int(_sp[1]), float(_sp[2])
+        _nf = len(_tg["nodes"])
+        _opt = torch.optim.Adam([q for q in net.parameters() if q.requires_grad], lr=_lr)
+        _sch = torch.optim.lr_scheduler.CosineAnnealingLR(_opt, T_max=_it, eta_min=_lr * 0.01)
+        _gen = torch.Generator().manual_seed(0)
+        _x0, _v0 = x.clone(), v.clone()
+        _hist = []
+        _tw = time.time()
+        for _k in range(_it):
+            _i = int(torch.randint(0, _nf, (1,), generator=_gen))
+            _xs = _x0 if _i == 0 else _tg["pred"][_i - 1].to(dev, x.dtype)
+            _vs = _v0 if _i == 0 else _tg["v"][_i - 1].to(dev, v.dtype)
+            with torch.enable_grad(), dt_scope(FRAME_DT):
+                step_once(d, t0 + _i, gsel, p, _xs, _vs, need_J=False)
+                _np, _dp = _DPN_LIVE[0]
+                _tp, _td = _tg["nodes"][_i][0].to(dev), _tg["nodes"][_i][1].to(dev)
+                if _tp.shape != _np.shape or float((_tp - _np.detach()).abs().max()) > 1e-5:
+                    raise SystemExit(f"AF_NODE_FIT: 프레임 {_i} 노드가 목표와 다르다")
+                _loss = ((_dp[:, :3] - _td[:, :3].to(_dp.dtype)) ** 2).sum(-1).mean() / (EXT ** 2)
+                _opt.zero_grad(set_to_none=True)
+                _loss.backward()
+                _opt.step(); _sch.step()
+            _hist.append((_k, _i, float(_loss)))
+            if _k % 100 == 0 or _k == _it - 1:
+                _rec = [h[2] for h in _hist[-100:]]
+                print(f"    [노드 맞춤 학습] {_k + 1}/{_it}  최근 100 평균 손실 {sum(_rec) / len(_rec):.4e}  "
+                      f"lr {_sch.get_last_lr()[0]:.2e}  {time.time() - _tw:.0f} s", flush=True)
+        if os.environ.get("AF_NODE_FIT_LOG"):
+            json.dump(_hist, open(os.environ["AF_NODE_FIT_LOG"], "w"))
+        torch.save({"net": net.state_dict()}, os.environ.get("AF_NODE_FIT_CKPT", "/tmp/node_fit.pt"))
     x0e, p0e = x.clone(), p.clone()
     # 프레임 사이에 이어지는 학습 쪽 상태 (앵커·손상·F_e·출력만 최적화의 F)
     _S = dict(p=p, dmg=None, idx=None,
