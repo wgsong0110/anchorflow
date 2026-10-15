@@ -114,8 +114,9 @@ else:
     # 정지 이웃 8 개 (청크로)
     k = 8
     nbr = torch.empty(G0.shape[0], k, dtype=torch.long, device=dev)
-    for i in range(0, G0.shape[0], 8192):
-        nbr[i:i + 8192] = torch.cdist(G0[i:i + 8192], G0).topk(
+    _ch = max(64, min(8192, int(2e9 // (4 * G0.shape[0]))))   # 거리 행렬 한 덩이 ≤ 2 GB (수박 138 만 입자에서 8192 면 42 GB)
+    for i in range(0, G0.shape[0], _ch):
+        nbr[i:i + _ch] = torch.cdist(G0[i:i + _ch], G0).topk(
             k + 1, largest=False).indices[:, 1:]
     dX = G0[nbr] - G0[:, None]
     Binv = torch.linalg.inv(dX.transpose(1, 2) @ dX + 1e-12 * torch.eye(3, device=dev))
