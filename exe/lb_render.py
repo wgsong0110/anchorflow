@@ -21,6 +21,7 @@ ap.add_argument("--config", required=True)
 ap.add_argument("--shape", default="lego")
 ap.add_argument("--out", required=True)
 ap.add_argument("--fps", type=int, default=30)
+ap.add_argument("--iso", type=float, default=0.0, help="공분산을 등방형 (iso × 가우시안 축 길이 중앙값)² I 로 (F 무시). 0 이면 FΣFᵀ")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
 import imageio.v2 as imageio                                     # noqa: E402
@@ -73,7 +74,10 @@ for p in files:
     with h5py.File(p) as h:
         x = torch.as_tensor(np.array(h["x"][:NG]), device=dev).float()
         F = torch.as_tensor(np.array(h["F"][:NG]), device=dev).float().reshape(-1, 3, 3)
-    cov = F @ C0 @ F.transpose(1, 2)
+    if a.iso > 0:
+        cov = torch.eye(3, device=dev).expand(NG, 3, 3) * (a.iso * float(gs.get_scaling[KIDX].median())) ** 2
+    else:
+        cov = F @ C0 @ F.transpose(1, 2)
     cc = torch.stack([cov[:, 0, 0], cov[:, 0, 1], cov[:, 0, 2], cov[:, 1, 1], cov[:, 1, 2], cov[:, 2, 2]], 1)
     Pm = (x - 1.0) / SO + MEAN
     img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=SHS, colors_precomp=None, opacities=OPA, scales=None,
