@@ -432,8 +432,9 @@ ap.add_argument("--ov_init_std", type=float, default=1e-3)
 ap.add_argument("--ov_vars", choices=["out", "net"], default="out",
                 help="--ov_roll 의 변수: out=노드 출력(출력만 최적화, 기본), net=망 파라미터 -- 같은 증분 포텐셜·장벽을 "
                      "프레임마다 망 파라미터로 내린다 (한 궤적 과적합; 파라미터는 프레임 사이에 이어진다)")
-ap.add_argument("--ov_obj", choices=["ip", "l2"], default="ip",
-                help="--ov_roll 의 프레임별 목적함수: ip=증분 포텐셜(기본), l2=다음 프레임 정답 위치와의 평균 L2 / EXT² (장벽 없음)")
+ap.add_argument("--ov_obj", choices=["ip", "l2", "node"], default="ip",
+                help="--ov_roll 의 프레임별 목적함수: ip=증분 포텐셜(기본), l2=다음 프레임 정답 위치와의 평균 L2 / EXT² (장벽 없음), "
+                     "node=노드 출력을 다른 실행(출력만 최적화)의 노드 출력에 맞춘다 (AF_OV_NODE_TGT=그 롤아웃 덤프; 상태도 그 덤프로 매 프레임 맞춘다)")
 ap.add_argument("--ov_gd_lr", type=float, default=1e-4, help="--ov_opt gd 의 고정 학습률 (경사하강)")
 ap.add_argument("--ov_opt", choices=["adam", "lbfgs", "cg", "gd"], default="lbfgs",
                 help="--ov_roll 의 최적화기. 탄성 강성(E=2e6)이 관성항보다 "
@@ -1043,6 +1044,10 @@ def free_mask(d, n, device, gsel, x=None, t=0):
     return m
 
 
+_DPN_LIVE = [None]         # (노드 위치, 노드 출력) -- 마지막 step_once 의 것, 기울기 유지
+_NODE_TGT = None           # --ov_obj node: 목표 롤아웃 덤프 (pred·v·F·nodes)
+if os.environ.get("AF_OV_NODE_TGT"):
+    _NODE_TGT = torch.load(os.environ["AF_OV_NODE_TGT"], map_location="cpu", weights_only=False)
 _SIM_T = [0.0]             # --cfg_bc: 롤아웃 시작부터의 물리 시각 (서브스텝마다 갱신)
 
 
@@ -1590,6 +1595,7 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                      if _DP_FAST[0] is not None else None),
             dp_hook=_DP_HOOK[0], pre_k=_pre_k, on_pin=_on_pin,
             post_jac=(_post_jac if _need_post else None))
+        _DPN_LIVE[0] = (npos, dpn)                     # --ov_obj node: 기울기가 붙은 노드 출력
         if _NODE_CAP[0]:
             _sup = torch.zeros(npos.shape[0], dtype=torch.bool, device=dev)
             _sup.index_fill_(0, rows.reshape(-1), True)       # 값 텐서를 장치로 복사하지 않는다 (동기화 없음)
@@ -3357,6 +3363,13 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                        jac=_Jd)
         if _ecb is not None:
             E = E + _ecb / nrm
+        if a.ov_obj == "node":                  # 노드 출력을 목표 실행의 같은 프레임 노드 출력에 (같은 상태라 격자가 같다)
+            _np, _dp = _DPN_LIVE[0]
+            _tn = _NODE_TGT["nodes"][int(t) - int(_NODE_TGT.get("t0", 0))]
+            _tp, _td = _tn[0].to(dev), _tn[1].to(dev)
+            if _tp.shape != _np.shape or float((_tp - _np.detach()).abs().max()) > 1e-5:
+                raise SystemExit(f"--ov_obj node: t={t} 노드가 목표와 다르다 ({tuple(_np.shape)} vs {tuple(_tp.shape)})")
+            E = ((_dp[:, :3] - _td[:, :3].to(_dp.dtype)) ** 2).sum(-1).mean() / (EXT ** 2)
         if a.ov_obj == "l2":                    # 정답 다음 프레임 위치와의 L2 (장벽·물리 없음)
             _xt = take(d["x"][min(t + 1, d["x"].shape[0] - 1)], gsel).to(x2.dtype)
             E = ((x2 - _xt) ** 2).sum(-1).mean() / (EXT ** 2)
@@ -4082,6 +4095,11 @@ def _rollout(d, t0, L, gsel=None):
             # 서브스텝: 한 프레임을 EVAL_SUB 번에 나눠 스텝마다 변수를 새로 내린다 (dt = FRAME_DT / EVAL_SUB)
             with dt_scope(FRAME_DT / EVAL_SUB):
                 x2 = x
+                if _NODE_TGT is not None and i > 0:
+                    # --ov_obj node: 목표 실행과 같은 상태에서 노드 출력을 맞춘다 (격자가 같아야 노드가 대응한다)
+                    x2 = _NODE_TGT["pred"][i - 1].to(dev, x2.dtype)
+                    v = _NODE_TGT["v"][i - 1].to(dev, v.dtype)
+                    _S["F_ov"] = _NODE_TGT["F"][i - 1].to(dev, _S["F_ov"].dtype)
                 for _sb in range(EVAL_SUB):
                     _SIM_T[0] = (i + _sb / EVAL_SUB) * FRAME_DT       # --cfg_bc 시간창 (롤아웃 시작 = 0)
                     x2, v, _S["F_ov"] = _ov_frame(d, t0 + i, gsel, p, x2, v, _S["F_ov"])
