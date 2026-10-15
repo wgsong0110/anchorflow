@@ -38,7 +38,8 @@ except Exception:                                                     # cupy 없
 
 W = "/home/dkta/work"
 MODEL = {"lego": "lego_whitebg-trained", "mic": "mic_whitebg-trained",
-         "ficus": "ficus_whitebg-trained", "wolf": "wolf_whitebg-trained"}
+         "ficus": "ficus_whitebg-trained", "wolf": "wolf_whitebg-trained",
+         "plane": "plane-trained", "pillow2sofa": "pillow2sofa_whitebg-trained"}
 ap = argparse.ArgumentParser()
 ap.add_argument("--sim", required=True, help="기준 시뮬 h5 프레임 폴더")
 ap.add_argument("--cfg", required=True, help="그 시뮬의 설정 json")
@@ -150,14 +151,26 @@ ZF = float(FLOOR[0]["point"][2]) if FLOOR else None
 sys.path.append(f"{W}/i-physgaussian"); sys.path.append(f"{W}/i-physgaussian/gaussian-splatting")
 _cwd = os.getcwd(); os.chdir(f"{W}/i-physgaussian")
 from scene.gaussian_model import GaussianModel                       # noqa: E402
-from utils.transformation_utils import (transform2origin, shift2center111)  # noqa: E402
+from utils.transformation_utils import (transform2origin, shift2center111,  # noqa: E402
+                                        generate_rotation_matrices, apply_rotations)
 os.chdir(_cwd)
 mp = f"{W}/pgmodel/{MODEL[a.shape]}"
 gs = GaussianModel(3)
 gs.load_ply(f"{mp}/point_cloud/iteration_30000/point_cloud.ply")
 _op = gs.get_opacity.detach()[:, 0]
 KIDX = torch.nonzero(_op > float(cfg.get("opacity_threshold", 0.02))).squeeze(1)
-_TP, SO, MEAN = transform2origin(gs.get_xyz.detach()[KIDX], float(cfg.get("scale", 1.0)))
+# 공식 gs_simulation 과 같은 전처리: 불투명도 거르기 -> 회전 (rotation_degree/axis) -> sim_area 자르기 -> 원점·크기 맞춤
+_RM = generate_rotation_matrices(torch.tensor(cfg.get("rotation_degree", []), dtype=torch.float32),
+                                 cfg.get("rotation_axis", [])) if cfg.get("rotation_degree") else []
+_RPOS = apply_rotations(gs.get_xyz.detach()[KIDX], _RM) if _RM else gs.get_xyz.detach()[KIDX]
+R_TOT = (apply_rotations(torch.eye(3, device=_RPOS.device), _RM).T if _RM
+         else torch.eye(3, device=_RPOS.device))                    # x_sim회전 = R_TOT x_model (열벡터)
+if cfg.get("sim_area") is not None:
+    _sa = cfg["sim_area"]
+    _keep = ((_RPOS[:, 0] > _sa[0]) & (_RPOS[:, 0] < _sa[1]) & (_RPOS[:, 1] > _sa[2]) & (_RPOS[:, 1] < _sa[3])
+             & (_RPOS[:, 2] > _sa[4]) & (_RPOS[:, 2] < _sa[5]))
+    KIDX, _RPOS = KIDX[_keep], _RPOS[_keep]
+_TP, SO, MEAN = transform2origin(_RPOS, float(cfg.get("scale", 1.0)))
 _TP = shift2center111(_TP)                                        # 가우시안의 시뮬 좌표 (회전 항등)
 NEACH = N // NOBJ
 # 물체마다 시뮬 좌표 -> 모델 좌표 (충돌 씬은 두 벌을 옮겨 놓았다)
@@ -201,7 +214,7 @@ SHIFT_R = SHIFT.mean(0)
 
 
 def to_model(P, ob):
-    return (P - SHIFT_R - 1.0) / SO + MEAN
+    return ((P - SHIFT_R - 1.0) / SO + MEAN) @ R_TOT.to(P.device)    # 회전 되돌림 (행벡터: x_model = x_rot R)
 
 
 _G0 = X0[GI] + OFFG
@@ -258,7 +271,9 @@ if RENDER:
         if a.iso > 0:
             cov = torch.eye(3, device=dev).expand(Pg.shape[0], 3, 3) * (a.iso * _SMED) ** 2
         else:
-            cov = Fg @ c0 @ Fg.transpose(1, 2)
+            _R = R_TOT.to(Fg.device)
+            _Fm = _R.T @ Fg @ _R                                     # 시뮬(회전) 좌표의 F 를 모델 좌표로
+            cov = _Fm @ c0 @ _Fm.transpose(1, 2)
         c6_ = torch.stack([cov[:, 0, 0], cov[:, 0, 1], cov[:, 0, 2], cov[:, 1, 1], cov[:, 1, 2],
                            cov[:, 2, 2]], 1)
         with torch.no_grad():
