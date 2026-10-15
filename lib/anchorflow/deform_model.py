@@ -173,7 +173,46 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
     Mn = int(uniq.numel())
     npos = SX.node_pos(lo, lat, nn, uniq)
     hn = lat.s                                 # 길이 단위 = 면내 간격 h
-    feat = san(node_moments(x, v / vel_scale, X, mass, rows, lam, Mn, npos, hn))
+    _agg = str(getattr(a, "agg", "bary") or "bary")
+    if _agg == "bspline":
+        # **격자 B-스플라인 집계** (MPM P2G 와 같은 2 차 B-스플라인, 격자 좌표 기준 27 노드). 활성 노드가 아닌
+        # 이웃은 덤프 노드(Mn 번)로 보내 버린다. 변위 사상·간선은 그대로 사면체(rows, lam) 를 쓴다.
+        _y = (x - lo) @ lat.Ai.T
+        _b = torch.floor(_y - 0.5)
+        _f = _y - _b                                                   # [N,3] in [0.5, 1.5)
+        _wq = torch.stack([0.5 * (1.5 - _f) ** 2, 0.75 - (_f - 1.0) ** 2, 0.5 * (_f - 0.5) ** 2], 1)   # [N,3(o),3(axis)]
+        _o = torch.tensor([[i_, j_, k_] for i_ in range(3) for j_ in range(3) for k_ in range(3)],
+                          device=x.device, dtype=torch.long)                                          # [27,3]
+        _ijk = _b.long().unsqueeze(1) + _o.unsqueeze(0)                                                # [N,27,3]
+        _w27 = (_wq[:, _o[:, 0], 0] * _wq[:, _o[:, 1], 1] * _wq[:, _o[:, 2], 2])                      # [N,27]
+        _nnl = [int(nn[k]) for k in range(3)]
+        _ok = ((_ijk >= 0) & (_ijk < torch.tensor(_nnl, device=x.device))).all(-1)
+        _flat = ((_ijk[..., 0] * _nnl[1] + _ijk[..., 1]) * _nnl[2] + _ijk[..., 2])
+        _pos = torch.searchsorted(uniq, _flat.clamp_min(0)).clamp(max=Mn - 1)
+        _hit = _ok & (uniq[_pos] == _flat)
+        _rows27 = torch.where(_hit, _pos, torch.full_like(_pos, Mn))
+        _w27 = torch.where(_hit, _w27, torch.zeros_like(_w27))
+        _npos1 = torch.cat([npos, npos[:1]], 0)
+        feat = san(node_moments(x, v / vel_scale, X, mass, _rows27, _w27, Mn + 1, _npos1, hn))[:Mn]
+        _prow, _pw = _rows27, _w27
+    else:
+        feat = san(node_moments(x, v / vel_scale, X, mass, rows, lam, Mn, npos, hn))
+        _prow, _pw = rows, lam
+    _Kr = int(getattr(a, "rel_pe", 0) or 0)
+    if _Kr > 0:
+        # **상대 위치 다주파수 인코딩**: 입자-노드 쌍마다 (x_p - x_j)/h 를 sin/cos(2^k π ·) (k < K) 로, 집계 가중치(질량×w)로 평균
+        _Mx = int(_prow.max()) + 1
+        _np2 = npos if _Mx <= Mn else torch.cat([npos, npos[:1]], 0)
+        _rel = (x.unsqueeze(1) - _np2[_prow]) / hn                                                   # [N,K,3]
+        _fr = (2.0 ** torch.arange(_Kr, device=x.device, dtype=x.dtype)) * math.pi
+        _ang = _rel.unsqueeze(-1) * _fr                                                                # [N,K,3,Kr]
+        _pe = torch.cat([torch.sin(_ang), torch.cos(_ang)], -1).flatten(2)                            # [N,K,6Kr]
+        _ww = (mass.to(x.dtype).unsqueeze(1) * _pw).unsqueeze(-1)
+        _r = _prow.reshape(-1)
+        _num = torch.zeros(_Mx, _pe.shape[-1], device=x.device, dtype=x.dtype).index_add_(
+            0, _r, (_ww * _pe).reshape(-1, _pe.shape[-1]))
+        _den = torch.zeros(_Mx, 1, device=x.device, dtype=x.dtype).index_add_(0, _r, _ww.reshape(-1, 1))
+        feat = torch.cat([feat, san((_num / _den.clamp_min(1e-20))[:Mn])], -1)
     parts = pt_parts(hn) if pt_parts is not None else []
     if parts:
         feat = torch.cat([feat, san(scatter_to_nodes(

@@ -262,6 +262,10 @@ ap.add_argument("--infer", action="store_true",
 ap.add_argument("--probe_every", type=int, default=0,
                 help="이 반복마다 고정 확인 상태(첫 검증 궤적의 정답 프레임들)에서 한 스텝 증분 포텐셜·관성 잔차를 재서 TB 에 쓴다")
 ap.add_argument("--probe_frames", default="0,5,10,20,40,60,79")
+ap.add_argument("--agg", choices=["bary", "bspline"], default="bary",
+                help="노드 특징 집계 가중치: bary=자기 사면체 4 꼭짓점 barycentric (기본), bspline=격자 좌표 2 차 B-스플라인 27 노드 (MPM P2G 식)")
+ap.add_argument("--rel_pe", type=int, default=0,
+                help="노드 특징에 입자-노드 상대 위치 (x_p-x_j)/h 의 다주파수 인코딩 sin/cos(2^k π ·), k<K 를 집계 가중으로 더한다")
 ap.add_argument("--bary_pe", type=int, default=0,
                 help="노드 특징에 셀 안 barycentric 좌표의 다주파수 위치 인코딩 sin/cos(2^k π λ), k<K 를 질량 가중으로 더한다 (0 이면 끔)")
 ap.add_argument("--gregory", action="store_true",
