@@ -262,6 +262,8 @@ ap.add_argument("--infer", action="store_true",
 ap.add_argument("--probe_every", type=int, default=0,
                 help="이 반복마다 고정 확인 상태(첫 검증 궤적의 정답 프레임들)에서 한 스텝 증분 포텐셜·관성 잔차를 재서 TB 에 쓴다")
 ap.add_argument("--probe_frames", default="0,5,10,20,40,60,79")
+ap.add_argument("--pe_only", type=int, default=0,
+                help="대조군: 노드 입력을 노드 위치·프레임 번호의 다주파수 인코딩(sin/cos(2^k π ·), k<K)만으로 (물리 특징 없음)")
 ap.add_argument("--agg", choices=["bary", "bspline"], default="bary",
                 help="노드 특징 집계 가중치: bary=자기 사면체 4 꼭짓점 barycentric (기본), bspline=격자 좌표 2 차 B-스플라인 27 노드 (MPM P2G 식)")
 ap.add_argument("--rel_pe", type=int, default=0,
@@ -1411,10 +1413,20 @@ def node_feats(d, t, gsel, x, v, fe=None):
         if a.control:
             parts.append(ctrl_feat_pts(d, t, x, hn))
         return parts
-    return DM.node_feats(
+    _o = DM.node_feats(
         a, cfg, take(d["x"][0], gsel), MASS[gsel], x, v, VEL_SCALE,
         grid=_GRID[0], off=_GRID_OFF[0], pt_parts=_parts,
         mat_vec=(mat_feat(cfg) if (N_MAT and not N_FILM) else None))
+    if a.pe_only > 0:
+        # **대조군**: 물리 특징을 다 버리고 노드 세계 위치와 프레임 번호의 다주파수 인코딩만 입력으로 (한 궤적이면
+        # (위치, 시각) 이 목표를 유일하게 가리킨다 -- 순수 암기 능력의 기준)
+        _K = int(a.pe_only)
+        _fr = (2.0 ** torch.arange(_K, device=x.device, dtype=x.dtype)) * math.pi
+        _p = (_o[1] / 2.0).unsqueeze(-1) * _fr                                   # 영역 [0,2] -> [0,1]
+        _tt = torch.full((_o[1].shape[0], 1), float(t) / 80.0, device=x.device, dtype=x.dtype) * _fr
+        _pe = torch.cat([torch.sin(_p).flatten(1), torch.cos(_p).flatten(1), torch.sin(_tt), torch.cos(_tt)], -1)
+        _o = (_pe,) + tuple(_o[1:])
+    return _o
 
 
 _ens_offsets = DM.ens_offsets
