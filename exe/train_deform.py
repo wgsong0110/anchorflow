@@ -4096,6 +4096,17 @@ def _rollout(d, t0, L, gsel=None):
         # AF_NODE_FIT_NOISE="sx:sv" -- 입력 상태에 가우스 잡음 (위치 표준편차 sx, 속도 sv). 목표는 깨끗한 상태의 출력 그대로
         # (입력 섭동에 강하게). 잡음으로 활성 노드가 조금 달라지므로 노드는 격자 정수 좌표로 짝지어 겹치는 것만 센다.
         _nz = [float(q) for q in os.environ.get("AF_NODE_FIT_NOISE", "0:0").split(":")]
+        if not a.resume:
+            # 새 망: --infer 는 입력 표준화를 체크포인트에서 받는다고 보고 건너뛴다 -- 여기서 목표 실행의 전 프레임 상태로 잰다
+            with torch.no_grad():
+                _sf = []
+                for _i in range(_nf):
+                    _xs = _x0 if _i == 0 else _tg["pred"][_i - 1].to(dev, x.dtype)
+                    _vs = _v0 if _i == 0 else _tg["v"][_i - 1].to(dev, v.dtype)
+                    _sf.append(node_feats(d, t0 + _i, gsel, _xs, _vs)[0])
+                net.set_input_stats(torch.cat(_sf, 0))
+            print(f"    [입력 표준화] 목표 실행 {_nf} 프레임 노드 특징으로 평균·표준편차 (채널 {net.in_mu.numel()}, "
+                  f"sd 최소 {float(net.in_sd.min()):.2e} 최대 {float(net.in_sd.max()):.2e})", flush=True)
         _tw = time.time()
         for _k in range(_it):
             _i = int(torch.randint(0, _nf, (1,), generator=_gen))
