@@ -4158,6 +4158,11 @@ def _rollout(d, t0, L, gsel=None):
         if os.environ.get("AF_NODE_FIT_LOG"):
             json.dump(_hist, open(os.environ["AF_NODE_FIT_LOG"], "w"))
         torch.save({"net": net.state_dict()}, os.environ.get("AF_NODE_FIT_CKPT", "/tmp/node_fit.pt"))
+        _DPN_LIVE[0] = None
+    if os.environ.get("AF_NODE_FIT") or os.environ.get("AF_ROLL_NOGRAD"):
+        # 롤아웃은 고정 망 -- 파라미터 기울기를 끄지 않으면 enable_grad 안에서 층마다 활성값을 들고 있어 큰 망이 OOM
+        net.requires_grad_(False)
+        _DPN_LIVE[0] = None
     x0e, p0e = x.clone(), p.clone()
     # 프레임 사이에 이어지는 학습 쪽 상태 (앵커·손상·F_e·출력만 최적화의 F)
     _S = dict(p=p, dmg=None, idx=None,
