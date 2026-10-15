@@ -4087,18 +4087,37 @@ def _rollout(d, t0, L, gsel=None):
         _gen = torch.Generator().manual_seed(0)
         _x0, _v0 = x.clone(), v.clone()
         _hist = []
+        # AF_NODE_FIT_NOISE="sx:sv" -- 입력 상태에 가우스 잡음 (위치 표준편차 sx, 속도 sv). 목표는 깨끗한 상태의 출력 그대로
+        # (입력 섭동에 강하게). 잡음으로 활성 노드가 조금 달라지므로 노드는 격자 정수 좌표로 짝지어 겹치는 것만 센다.
+        _nz = [float(q) for q in os.environ.get("AF_NODE_FIT_NOISE", "0:0").split(":")]
         _tw = time.time()
         for _k in range(_it):
             _i = int(torch.randint(0, _nf, (1,), generator=_gen))
             _xs = _x0 if _i == 0 else _tg["pred"][_i - 1].to(dev, x.dtype)
             _vs = _v0 if _i == 0 else _tg["v"][_i - 1].to(dev, v.dtype)
+            if _nz[0] > 0:
+                _xs = _xs + _nz[0] * torch.randn_like(_xs)
+            if _nz[1] > 0:
+                _vs = _vs + _nz[1] * torch.randn_like(_vs)
             with torch.enable_grad(), dt_scope(FRAME_DT):
                 step_once(d, t0 + _i, gsel, p, _xs, _vs, need_J=False)
                 _np, _dp = _DPN_LIVE[0]
                 _tp, _td = _tg["nodes"][_i][0].to(dev), _tg["nodes"][_i][1].to(dev)
-                if _tp.shape != _np.shape or float((_tp - _np.detach()).abs().max()) > 1e-5:
-                    raise SystemExit(f"AF_NODE_FIT: 프레임 {_i} 노드가 목표와 다르다")
-                _loss = ((_dp[:, :3] - _td[:, :3].to(_dp.dtype)) ** 2).sum(-1).mean() / (EXT ** 2)
+                if _nz[0] > 0 or _nz[1] > 0:
+                    _h = float(a.node_h)                                   # 노드는 세계 고정 격자 위 -- 위치/h 반올림으로 짝짓기
+                    _ka = torch.round(_np.detach() / (_h * 1e-3)).long()
+                    _kb = torch.round(_tp / (_h * 1e-3)).long()
+                    _key = lambda k_: (k_[:, 0] * 1000003 + k_[:, 1]) * 1000003 + k_[:, 2]
+                    _ka1, _kb1 = _key(_ka), _key(_kb)
+                    _sb, _ob = torch.sort(_kb1)
+                    _pos = torch.searchsorted(_sb, _ka1).clamp(max=_sb.numel() - 1)
+                    _hit = _sb[_pos] == _ka1
+                    _ia, _ib = torch.nonzero(_hit).squeeze(1), _ob[_pos[_hit]]
+                    _loss = ((_dp[_ia, :3] - _td[_ib, :3].to(_dp.dtype)) ** 2).sum(-1).mean() / (EXT ** 2)
+                else:
+                    if _tp.shape != _np.shape or float((_tp - _np.detach()).abs().max()) > 1e-5:
+                        raise SystemExit(f"AF_NODE_FIT: 프레임 {_i} 노드가 목표와 다르다")
+                    _loss = ((_dp[:, :3] - _td[:, :3].to(_dp.dtype)) ** 2).sum(-1).mean() / (EXT ** 2)
                 _opt.zero_grad(set_to_none=True)
                 _loss.backward()
                 _opt.step(); _sch.step()
