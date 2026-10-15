@@ -41,7 +41,9 @@ if a.frames:
     NF = int(a.frames)
 dt = frame_dt / a.substeps
 G = [float(q) for q in cfg["g"]]
-floor = [b for b in cfg["boundary_conditions"] if b["type"] == "surface_collider"][0]
+floor = ([b for b in cfg["boundary_conditions"] if b["type"] == "surface_collider"] or [None])[0]
+FZ = float(floor["point"][2]) if floor is not None else 0.0      # 바닥이 없는 씬(plane·pillow2sofa)은 관통 지표를 안 쓴다
+OFFICIAL_BC = any(b["type"] not in ("bounding_box", "surface_collider") for b in cfg["boundary_conditions"])
 with h5py.File(a.h5) as h:
     x = np.array(h["x"]); x = np.ascontiguousarray((x.T if x.shape[0] == 3 else x).astype(np.float32))
     v = np.array(h["v"]) if "v" in h else np.zeros_like(x.T)
@@ -60,10 +62,20 @@ if a.method == "ipg":
 else:
     sol = MPM_Simulator_WARP(10)
 sol.load_initial_data_from_torch(X, VOL, None, n_grid=n_grid, grid_lim=GL)
-sol.set_parameters_dict({"material": "jelly", "E": float(cfg["E"]), "nu": float(cfg["nu"]), "density": float(cfg["density"]),
-                         "g": G, "n_grid": n_grid, "grid_lim": GL, "grid_v_damping_scale": 1.1})
-sol.add_bounding_box()
-sol.add_surface_collider(tuple(floor["point"]), tuple(floor["normal"]), floor["surface"], float(floor.get("friction", 0.0)))
+if OFFICIAL_BC:
+    # 공식 씬 (plane·pillow2sofa 등): 재질·감쇠·경계조건을 **공식 gs_simulation 과 같은 함수**로 넣는다
+    from utils.decode_param import set_boundary_conditions
+    _mp = {k: cfg[k] for k in ("material", "E", "nu", "density", "yield_stress", "hardening", "xi", "friction_angle",
+                                "grid_v_damping_scale", "softening", "beta", "mass") if k in cfg}
+    _mp.update({"g": G, "n_grid": n_grid, "grid_lim": GL})
+    sol.set_parameters_dict(_mp)
+    set_boundary_conditions(sol, cfg["boundary_conditions"], {"substep_dt": dt, "frame_dt": frame_dt, "frame_num": NF})
+    print(f"[공식 설정] 재질 {_mp.get('material')}, 경계조건 {[b['type'] for b in cfg['boundary_conditions']]}", flush=True)
+else:
+    sol.set_parameters_dict({"material": "jelly", "E": float(cfg["E"]), "nu": float(cfg["nu"]), "density": float(cfg["density"]),
+                             "g": G, "n_grid": n_grid, "grid_lim": GL, "grid_v_damping_scale": 1.1})
+    sol.add_bounding_box()
+    sol.add_surface_collider(tuple(floor["point"]), tuple(floor["normal"]), floor["surface"], float(floor.get("friction", 0.0)))
 sol.finalize_mu_lam()
 sol.import_particle_v_from_torch(torch.as_tensor(v).cuda())
 print(f"[{a.method}] 입자 {N}, dx {dx:.4f}, N {a.substeps} (dt {dt:.3e}), {NF} 프레임", flush=True)
@@ -72,7 +84,7 @@ if a.dump:
     with h5py.File(f"{a.dump}/sim_{0:010d}.h5", "w") as h:
         h.create_dataset("x", data=x); h.create_dataset("F", data=np.tile(np.eye(3, dtype=np.float32).reshape(1, 9), (N, 1)))
 _VOLN = VOL.double().cpu().numpy(); _EK = dict(vol=_VOLN, E=float(cfg["E"]), nu=float(cfg["nu"]))
-rows = [ss.frame_stats(x, v, np.tile(np.eye(3), (N, 1, 1)), MASS, G, float(floor["point"][2]), **_EK)]
+rows = [ss.frame_stats(x, v, np.tile(np.eye(3), (N, 1, 1)), MASS, G, FZ, **_EK)]
 XS = [x[SUB]]; T = []
 step = 0
 # ---- 이어 돌리기: 입자 상태 전부 + i-PG 의 직전 속도(_prev_particle_v) + 누적 기록
@@ -95,7 +107,7 @@ def _save_ckpt(f):
 # ---- 보정판: 정상 실행에서는 걸리지 않는 조건에서만 개입한다 -------------------------------------------
 SAFE_N = [0, 0, 0]                                           # [클램프·되돌림 입자 수, 반으로 나눠 다시 푼 횟수, 관성 대체 횟수]
 if a.safe:
-    _SP = ss.safe_params(x, float(floor["point"][2]), G, float(cfg["grid_lim"]), int(cfg["n_grid"]))
+    _SP = ss.safe_params(x, FZ, G, float(cfg["grid_lim"]), int(cfg["n_grid"]))
     print(f"[보정판] 상자 [{_SP['lo']:.4f}, {_SP['hi']:.4f}], 속력 상한 {_SP['vcap']:.2f}", flush=True)
 
 
@@ -219,7 +231,7 @@ for f in tqdm(range(F_START, NF + 1), desc=f"{a.method} N{a.substeps}"):
     xt = sol.export_particle_x_to_torch().cpu().numpy()
     vt = wp.to_torch(sol.mpm_state.particle_v).cpu().numpy()
     Ft = sol.export_particle_F_to_torch().cpu().numpy()
-    rows.append(ss.frame_stats(xt, vt, Ft, MASS, G, float(floor["point"][2]), **_EK))
+    rows.append(ss.frame_stats(xt, vt, Ft, MASS, G, FZ, **_EK))
     rows[-1]["safe_n"], rows[-1]["safe_split"], rows[-1]["safe_inert"] = (float(q) for q in SAFE_N)
     if a.dump:
         with h5py.File(f"{a.dump}/sim_{f:010d}.h5", "w") as h:

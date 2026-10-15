@@ -44,7 +44,7 @@ if a.mode == "init":
     os.makedirs(os.path.join(a.out, "d_ref"), exist_ok=True)
     shape = os.path.basename(os.path.normpath(a.scene))
     x = torch.from_numpy(X0)
-    T = 61                                    # 롤아웃 길이 = 데이터 프레임 수 - 1 (정답 자리는 초기 상태 반복, 측정에 안 쓴다)
+    T = int(cfg.get("frame_num", 60)) + 1    # 롤아웃 길이 = 데이터 프레임 수 - 1 (정답 자리는 초기 상태 반복, 측정에 안 쓴다)
     st = {"x": x.expand(T, N, 3).clone(), "v": torch.from_numpy(V0).expand(T, N, 3).clone(),
           "F": torch.eye(3).expand(T, N, 3, 3).clone(), "sel": torch.arange(N), "cfg": cfg, "n_full": N,
           "meta": {"source": "h5 초기 상태 (float32)", "sim": h5}, "gaussians_first": N,

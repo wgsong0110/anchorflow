@@ -324,6 +324,11 @@ ap.add_argument("--f_from_jac", action="store_true",
                      "**변형장 자신의 야코비안**으로 민다: F <- grad_x Phi * F. "
                      "g2p_grad 는 셀 내부 재배열·스키닝 가중치를 무시해 실제로 "
                      "입자를 옮긴 사상과 다른 F 를 만든다")
+ap.add_argument("--cfg_bc", action="store_true",
+                help="씬 config 의 공식 경계조건(enforce_particle_translation·enforce_particle_velocity_rotation·cuboid, "
+                     "시간창 포함)과 grid_v_damping_scale 을 **노드 하드 구속**으로 옮긴다 (손잡이와 같은 경로: 노드 변위를 "
+                     "τ·v_bc 로 덮고 최적화에서 뺀다). 입자 구속은 PG 처럼 0 프레임 위치로 입자를 고르고, 노드는 그 입자의 "
+                     "질량 가중 비율이 절반을 넘으면 묶는다. cuboid 는 PG 처럼 상자 안 격자(=노드) 속도를 박는다")
 ap.add_argument("--eval_dt_sub", type=int, default=0,
                 help="평가·롤아웃에서 한 프레임을 몇 서브스텝으로 나눌지 "
                      "(0 이면 --dt_sub). 프레임 경계는 그대로라 교사와 계속 "
@@ -1038,6 +1043,89 @@ def free_mask(d, n, device, gsel, x=None, t=0):
     return m
 
 
+_SIM_T = [0.0]             # --cfg_bc: 롤아웃 시작부터의 물리 시각 (서브스텝마다 갱신)
+
+
+def _cfg_bc_rot_v(pos, bc):
+    """PG enforce_particle_velocity_rotation 의 속도: 축 n 둘레 각속도 rotation_scale + 축 방향 translation_scale.
+    PG 식 (axis1 = -d sinθ ω, axis2 = d cosθ ω, h2 = h1 × n) 은 v = ω (r_⊥ × n) 와 같다."""
+    n = torch.tensor(bc["normal"], device=pos.device, dtype=pos.dtype)
+    n = n / n.norm()
+    q = torch.tensor(bc["point"], device=pos.device, dtype=pos.dtype)
+    off = pos - q
+    rp = off - (off @ n).unsqueeze(-1) * n
+    return (float(bc["rotation_scale"]) * torch.cross(rp, n.expand_as(rp), dim=-1)
+            + float(bc["translation_scale"]) * n)
+
+
+def _cfg_bc_sel(d, gsel, dev, dtype):
+    """입자 구속의 입자 선택 (PG 처럼 0 프레임 위치로 한 번) -> [(bc, mask[N])]."""
+    key = "_cfgbc_sel"
+    if key not in d:
+        x0 = take(d["x"][0], gsel).to(dev, dtype)
+        out = []
+        for bc in (d["cfg"].get("boundary_conditions") or []):
+            tp = bc.get("type")
+            if tp == "enforce_particle_translation":
+                q = torch.tensor(bc["point"], device=dev, dtype=dtype)
+                sz = torch.tensor(bc["size"], device=dev, dtype=dtype)
+                out.append((bc, ((x0 - q).abs() < sz).all(-1)))
+            elif tp == "enforce_particle_velocity_rotation":
+                n = torch.tensor(bc["normal"], device=dev, dtype=dtype); n = n / n.norm()
+                q = torch.tensor(bc["point"], device=dev, dtype=dtype)
+                off = x0 - q
+                vd = (off @ n).abs()
+                hd = (off - (off @ n).unsqueeze(-1) * n).norm(dim=-1)
+                hh, rr = (float(z) for z in bc["half_height_and_radius"])
+                out.append((bc, (vd < hh) & (hd < rr)))
+        d[key] = out
+        for bc, m in out:
+            print(f"[경계조건] {bc['type']} 입자 {int(m.sum())} 개, 시간 [{bc.get('start_time', 0)}, {bc.get('end_time', 1e3)})",
+                  flush=True)
+    return d[key]
+
+
+def cfg_bc_nodes(d, gsel, x, npos, rows, lam, mass, now):
+    """--cfg_bc: 시각 now 에 묶이는 노드와 속도 -> (mask[M] bool, vel[M,3]) 또는 (None, None)."""
+    M = npos.shape[0]
+    dev, dt_ = npos.device, npos.dtype
+    msk = torch.zeros(M, dtype=torch.bool, device=dev)
+    vel = torch.zeros(M, 3, device=dev, dtype=dt_)
+    hit = False
+    wl = (lam * mass.to(dt_).unsqueeze(1))                    # [N,4] 질량 가중
+    den = None
+    for bc, pm in _cfg_bc_sel(d, gsel, dev, dt_):
+        if not (float(bc.get("start_time", 0.0)) <= now < float(bc.get("end_time", 1e3))):
+            continue
+        if den is None:
+            den = torch.zeros(M, device=dev, dtype=dt_).index_add_(0, rows.reshape(-1), wl.reshape(-1))
+        num = torch.zeros(M, device=dev, dtype=dt_).index_add_(
+            0, rows.reshape(-1), (wl * pm.to(dt_).unsqueeze(1)).reshape(-1))
+        nm = num > 0.5 * den.clamp_min(1e-30)
+        if bc["type"] == "enforce_particle_translation":
+            vv = torch.tensor(bc["velocity"], device=dev, dtype=dt_).expand(M, 3)
+        else:
+            vv = _cfg_bc_rot_v(npos, bc)
+        vel = torch.where(nm.unsqueeze(-1), vv, vel); msk = msk | nm; hit = True
+    for bc in (d["cfg"].get("boundary_conditions") or []):
+        if bc.get("type") != "cuboid":
+            continue
+        t0_, t1_ = float(bc.get("start_time", 0.0)), float(bc.get("end_time", 1e3))
+        if not (t0_ <= now < t1_):
+            continue                                          # reset 은 끝시각 뒤 15 dt 동안 격자 전체 속도 0 (아래)
+        vb = torch.tensor(bc["velocity"], device=dev, dtype=dt_)
+        q = torch.tensor(bc["point"], device=dev, dtype=dt_) + (now - t0_) * vb    # PG 는 상자를 dt·v 씩 옮긴다
+        sz = torch.tensor(bc["size"], device=dev, dtype=dt_)
+        nm = ((npos - q).abs() < sz).all(-1)
+        vel = torch.where(nm.unsqueeze(-1), vb.expand(M, 3), vel); msk = msk | nm; hit = True
+    for bc in (d["cfg"].get("boundary_conditions") or []):
+        if bc.get("type") == "cuboid" and int(bc.get("reset", 0)) == 1:
+            t1_ = float(bc.get("end_time", 1e3))
+            if t1_ <= now < t1_ + 15.0 * float(_DT[0]):
+                msk = torch.ones(M, dtype=torch.bool, device=dev); vel = torch.zeros(M, 3, device=dev, dtype=dt_); hit = True
+    return (msk, vel) if hit else (None, None)
+
+
 def release_held(d, x, t, dt=None):
     """PG 의 `release_particles_sequentially` 를 그대로 옮긴다 -> 아직 **묶여
     있는** 입자 마스크 [N] (True = 아직 못 움직인다).
@@ -1375,6 +1463,9 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 _dmin, _kmin = _dn.min(1)
                 _nmk = _dmin < _Rc
                 _nvk = _cvc[_kmin]
+            if a.cfg_bc and _nmk is None:
+                _mwk = (MASS[gsel] if MASS.numel() != x.shape[0] else MASS)
+                _nmk, _nvk = cfg_bc_nodes(d, gsel, x, _npk, _rwk, _lmk, _mwk, _SIM_T[0])
             _NM.append(_nmk); _NV.append(_nvk)
             if a.ov_init == "predict":
                 # **노드별 관성 예측자** h·v_n + h²g (barycentric 가중 질량평균)
@@ -2083,7 +2174,10 @@ if a.pool:
     if a.pool_drop:
         _h0, _h1, _v0, _v1 = (float(q) for q in a.pool_drop.split(","))
         _c0 = _sc[0][1]["cfg"]
-        _fl = [b for b in _c0["boundary_conditions"] if b["type"] == "surface_collider"][0]
+        _fl = ([b for b in _c0["boundary_conditions"] if b["type"] == "surface_collider"] or [None])[0]
+    if a.pool_drop and _fl is None:
+        print("[풀] 바닥(surface_collider)이 없는 씬이라 낙하 모드를 끈다", flush=True)
+    elif a.pool_drop:
         _DROP = dict(h=(_h0, _h1), v=(_v0, _v1), zf=float(_fl["point"][2]), gz=float(_c0["g"][2]),
                      margin=3 * _gl0 / int(_c0["n_grid"]))
         print(f"[풀] 낙하 모드: 높이 여유 {_DROP['h']}, 속도 {_DROP['v']}, 바닥 z {_DROP['zf']}", flush=True)
@@ -3959,7 +4053,10 @@ def _rollout(d, t0, L, gsel=None):
             with dt_scope(FRAME_DT / EVAL_SUB):
                 x2 = x
                 for _sb in range(EVAL_SUB):
+                    _SIM_T[0] = (i + _sb / EVAL_SUB) * FRAME_DT       # --cfg_bc 시간창 (롤아웃 시작 = 0)
                     x2, v, _S["F_ov"] = _ov_frame(d, t0 + i, gsel, p, x2, v, _S["F_ov"])
+                    if a.cfg_bc and float(d["cfg"].get("grid_v_damping_scale", 1.1)) < 1.0:
+                        v = v * float(d["cfg"]["grid_v_damping_scale"])   # PG 와 같이 서브스텝마다 곱한다
             _S["v_last"] = v
             print(f"    [출력만최적화 진행] 프레임 {i + 1}/{L}  서브스텝 {EVAL_SUB}  누적 {time.time() - _RO_T0:.1f} s", flush=True)
             if _ROLLDUMP is not None and _FCUM[0] is not None:
