@@ -3253,7 +3253,30 @@ _FCUM, _FDUMP = [None], []
 _VDUMP = []                 # 롤아웃 덤프: 프레임 경계 속도 (--ov_roll)
 
 
+# AF_OV_SNAP="t:반복:간격:경로" -- 프레임 t 한 번만 반복을 늘리고, 목적함수 평가 '간격' 번마다 그 시점 위치·F 를 저장
+#   (최적화 진행을 렌더로 보기 위함; 덤프 형식은 AF_ROLL_DUMP 와 같아 lb_roll_to_h5 로 바로 렌더한다)
+_OV_SNAP = None
+if os.environ.get("AF_OV_SNAP"):
+    _sp = os.environ["AF_OV_SNAP"].split(":")
+    _OV_SNAP = dict(t=int(_sp[0]), iters=int(_sp[1]), every=int(_sp[2]), path=_sp[3], done=False)
+
+
 def _ov_once(d, t, gsel, p, x, v, F, off=None):
+    if _OV_SNAP is not None and int(t) == _OV_SNAP["t"] and not _OV_SNAP["done"]:
+        _OV_SNAP["done"] = True
+        _keep = a.ov_roll
+        a.ov_roll = _OV_SNAP["iters"]
+        _OV_SNAP["active"], _OV_SNAP["P"], _OV_SNAP["F"], _OV_SNAP["E"], _OV_SNAP["k"] = True, [], [], [], []
+        _OV_SNAP["F0"] = F
+        try:
+            out = _ov_once(d, t, gsel, p, x, v, F, off)
+        finally:
+            a.ov_roll = _keep
+            _OV_SNAP["active"] = False
+        torch.save({"pred": torch.stack(_OV_SNAP["P"]), "F": torch.stack(_OV_SNAP["F"]),
+                    "evals": _OV_SNAP["k"], "E": _OV_SNAP["E"], "t": int(t)}, _OV_SNAP["path"])
+        print(f"    [중간 저장] t={t} 평가 {len(_OV_SNAP['k'])} 장 -> {_OV_SNAP['path']}", flush=True)
+        return out
     """한 프레임을 **한 격자(오프셋 off)** 에서 최적화한다 -> (x2, v2, J).
 
     --out_var 는 상태를 전진시키지 않아 한 스텝 하한만 잰다. 그 값으로 롤아웃을
@@ -3608,9 +3631,16 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
 
             def _closure():
                 st["ov_opt"].zero_grad(set_to_none=True)
-                _, _, E, _, _, _pq, _ = _fwd()
+                _x2s, _, E, _, _, _pq, _Jds = _fwd()
                 if _n[0] == 0:
                     _E0[0] = float(E)
+                if _OV_SNAP is not None and _OV_SNAP.get("active") and _n[0] % _OV_SNAP["every"] == 0:
+                    with torch.no_grad():
+                        _OV_SNAP["P"].append(_x2s.detach().float().cpu())
+                        _F0s = _OV_SNAP["F0"]
+                        _OV_SNAP["F"].append((_Jds.detach().float() @ _F0s.float()).cpu() if _F0s is not None
+                                             else _Jds.detach().float().cpu())
+                        _OV_SNAP["E"].append(float(E)); _OV_SNAP["k"].append(_n[0])
                 _n[0] += 1
                 if _CURVE is not None:
                     _tr.append(float(E))
