@@ -3311,6 +3311,7 @@ for it in pbar:
 _ROLLDUMP = None
 _FCUM, _FDUMP = [None], []
 _VDUMP = []                 # 롤아웃 덤프: 프레임 경계 속도 (--ov_roll)
+_ROLL_IP = [] if os.environ.get("AF_ROLL_IP") else None   # 롤아웃 프레임별 증분 포텐셜 (망: 서브스텝별 E·출력잔차, 출력만 최적화: 최적화 전·후 E)
 
 
 # AF_OV_SNAP="t:반복:간격:경로" -- 프레임 t 한 번만 반복을 늘리고, 목적함수 평가 '간격' 번마다 그 시점 위치·F 를 저장
@@ -4202,7 +4203,8 @@ def _rollout(d, t0, L, gsel=None):
     # 프레임 사이에 이어지는 학습 쪽 상태 (앵커·손상·F_e·출력만 최적화의 F)
     _S = dict(p=p, dmg=None, idx=None,
               fe=(take(traj_F(d)[t0], gsel).float() if a.fe_state else None),
-              F_ov=(take(traj_F(d)[t0], gsel).float() if a.ov_roll > 0 else None))
+              F_ov=(take(traj_F(d)[t0], gsel).float() if a.ov_roll > 0 else None),
+              F_ip=take(traj_F(d)[t0], gsel).float())
     cds, ems, cds_s, ems_s = [], [], [], []
     _RO_CTRL = []
     _NODE_CAP[0] = _ROLLDUMP is not None
@@ -4231,9 +4233,53 @@ def _rollout(d, t0, L, gsel=None):
                     if a.cfg_bc and float(d["cfg"].get("grid_v_damping_scale", 1.1)) < 1.0:
                         v = v * float(d["cfg"]["grid_v_damping_scale"])   # PG 와 같이 서브스텝마다 곱한다
             _S["v_last"] = v
+            if _ROLL_IP is not None:
+                _lg = _OV_LOG[-EVAL_SUB:]
+                _ROLL_IP.append(dict(frame=i + 1, E=[q[1] for q in _lg], E_init=[q[0] for q in _lg]))
             print(f"    [출력만최적화 진행] 프레임 {i + 1}/{L}  서브스텝 {EVAL_SUB}  누적 {time.time() - _RO_T0:.1f} s", flush=True)
             if _ROLLDUMP is not None and _FCUM[0] is not None:
                 _FCUM[0] = _S["F_ov"].detach().float()          # 출력만 최적화가 실제로 굴린 F (렌더용)
+        elif _ROLL_IP is not None:
+            # AF_ROLL_IP: 망 롤아웃의 매 서브스텝에서 증분 포텐셜(장벽 포함, det 마스크 없음 -- 출력만 최적화와 같은 식)과
+            # 출력잔차를 잰다. F 는 정답 t0 의 F 에서 시작해 plastic_step 으로 전진한다
+            dmg_e, idx_e, fe_r = _S["dmg"], _S["idx"], _S["fe"]
+            _hs = FRAME_DT / EVAL_SUB
+            _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+            _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
+            _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
+            _nrm = float(_m.sum()) * (EXT ** 2) / (_hs ** 2)
+            _Es, _Rs = [], []
+            for _sb in range(EVAL_SUB):
+                with torch.enable_grad(), dt_scope(_hs):
+                    DM.PROBE[0] = "want"
+                    x2, p2, v2, _, _, _, dmg_e, idx_e, fe_r, _jf = step_once(
+                        d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
+                        idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
+                    DM.PROBE[0] = None
+                    _fmi = (free_mask(d, x2.shape[0], dev, gsel, x, t0 + i) if a.control else None)
+                    if _BC_LAST[0] is not None:
+                        _am = _BC_LAST[0][1].reshape(-1) > 0.5
+                        _fmi = (~_am) if _fmi is None else (_fmi & ~_am)
+                    _E, _dl, _Ftr, _ = ip_of(x, x2 - x, v, _S["F_ip"], _m, _vol, _cfg, _hs, _ng, _gl,
+                                             g=_gv, norm=_nrm, free=_fmi, jac=_jf)
+                    _r = float("nan")
+                    if DM.PROBE[1]:
+                        _pz = DM.PROBE[1][0]
+                        _gU, = torch.autograd.grad(_E * _nrm, _pz, retain_graph=True)
+                        _mN, = torch.autograd.grad((_m.unsqueeze(-1) * x2).sum(), _pz)
+                        _mN = _mN[:, 0]
+                        _sup = _mN > 1e-9 * _mN.max().clamp_min(1e-30)
+                        _r = float(_gU[:, :3].norm(dim=-1)[_sup].mean() * (_hs ** 2) / _mN[_sup].mean() / EXT)
+                    DM.PROBE[1] = None
+                    _Es.append(float(_E)); _Rs.append(_r)
+                with torch.no_grad():
+                    _S["F_ip"] = phys_resid.plastic_step(_Ftr, _dl).detach()
+                if _ROLLDUMP is not None and _FCUM[0] is not None and _jf is not None:
+                    _FCUM[0] = (_jf.detach().float() @ _FCUM[0]).detach()
+                x, p, v = x2.detach(), p2.detach(), v2.detach()
+            x2 = x
+            _S.update(p=p, dmg=dmg_e, idx=idx_e, fe=fe_r)
+            _ROLL_IP.append(dict(frame=i + 1, E=_Es, rout=_Rs))
         else:
             dmg_e, idx_e, fe_r = _S["dmg"], _S["idx"], _S["fe"]
             with torch.enable_grad(), dt_scope(FRAME_DT / EVAL_SUB):
@@ -4318,6 +4364,11 @@ def _rollout(d, t0, L, gsel=None):
                       _f)
         print(f"  [곡선] {_cp}  프레임 {len(_CURVE)}", flush=True)
         del _CURVE[:]
+    if _ROLL_IP:
+        json.dump({"tag": d.get("tag", ""), "t0": t0, "sub": EVAL_SUB, "ov": a.ov_roll > 0,
+                   "errs": [float(q) for q in errs], "frames": _ROLL_IP}, open(os.environ["AF_ROLL_IP"], "w"))
+        print(f"  [증분포텐셜 기록] {os.environ['AF_ROLL_IP']}  프레임 {len(_ROLL_IP)}", flush=True)
+        del _ROLL_IP[:]
     if _OV_LOG:
         _b = sum(q[0] for q in _OV_LOG) / len(_OV_LOG)
         _af = sum(q[1] for q in _OV_LOG) / len(_OV_LOG)
