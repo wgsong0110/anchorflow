@@ -2058,16 +2058,18 @@ def probe_ip():
 
 
 def quick_val():
-    """홀드아웃 지표 두 가지를 함께 낸다.
+    """홀드아웃 지표를 함께 낸다 -> (비, 목적함수, 출력잔차).
 
     (1) 짧은 롤아웃의 정지기준 대비 비 -- best 체크포인트의 기준
-    (2) **학습과 똑같은 목적함수**를 홀드아웃에서 잰 값 -- 과적합을 읽으려면
-        train/test 가 같은 자여야 한다
+    (2) **학습과 똑같은 목적함수**(증분 포텐셜, 학습과 같은 정규화)를 홀드아웃 롤아웃의 매 서브스텝에서 잰 평균
+    (3) 학습 게이트와 같은 출력잔차(노드별 |dE/dU| 평균의 무차원 환산)의 평균
+    (2)(3) 은 2026-09-30 교사 경로를 지울 때 0 으로 남겨둔 것을 되살린 것이다 (2026-10-16).
+    롤아웃 상태 F 는 정답 t0 의 F 에서 시작해 학습과 같이 plastic_step 으로 전진한다.
     """
     net.eval()
     tot = ref = 0.0
-    # 보조 지표였던 지도 손실은 지웠다 -- 학습이 교사를 안 쓰므로 그 창도 없다.
-    obj = 0.0
+    obj_s = rout_s = 0.0
+    n_obj = n_rout = 0
     for _tag, d in _VAL:
         # 전역 MASS/EXT/N_FULL 을 이 궤적 값으로 (풀 루프가 씬 값으로 덮어쓴다)
         _ts = traj_scope(d); _ts.__enter__()
@@ -2075,26 +2077,56 @@ def quick_val():
         # 평가 롤아웃(_rollout)과 같은 시작점·같은 초기 속도로 잰다 -- 다르면 검증으로 고른 체크포인트가 평가에서 뒤집힌다
         t0 = int(a.eval_t0[0]) if (a.v0_traj and a.eval_t0) else 3
         x, v = DM.init_state(d, t0, gsel, FRAME_DT, a.v0_traj, dev)
+        F = take(traj_F(d)[t0], gsel).float()
         p = take(d["x"][t0], AIDX)
         x_still = x.clone()
+        cfg = d["cfg"]
+        m = MASS[gsel]
+        vol = m / float(cfg["density"])
+        gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
+        ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
+        _hs = FRAME_DT / EVAL_SUB
+        nrm = float(m.sum()) * (EXT ** 2) / (_hs ** 2)
         for i in range(min(a.val_len, d["x"].shape[0] - t0 - 1)):
-            with torch.enable_grad(), dt_scope(FRAME_DT / EVAL_SUB):
-                for _sb in range(EVAL_SUB - 1):
-                    x, p, v, _, _, _, _, _, _, _ = step_once(
+            for _sb in range(EVAL_SUB):
+                with torch.enable_grad(), dt_scope(_hs):
+                    DM.PROBE[0] = "want"
+                    x2, p2, v2, _, _, _, _, _, _, _Jd = step_once(
                         d, t0 + i, gsel, p, x, v, need_J=False)
-                    x, p, v = x.detach(), p.detach(), v.detach()
-                x2, p, v, _, _, _, _, _, _, _ = step_once(
-                    d, t0 + i, gsel, p, x, v, need_J=False)
-            x2, p, v = x2.detach(), p.detach(), v.detach()
+                    DM.PROBE[0] = None
+                    fm = (free_mask(d, x2.shape[0], dev, gsel, x, t0 + i)
+                          if a.control else None)
+                    if _BC_LAST[0] is not None:
+                        _am = _BC_LAST[0][1].reshape(-1) > 0.5
+                        fm = (~_am) if fm is None else (fm & ~_am)
+                    _emask, _ = det_take()
+                    E_ip, dlog, F_tr, _ = ip_of(
+                        x, x2 - x, v, F, m, vol, cfg, _hs, ng_, gl_,
+                        g=gv, norm=nrm, free=fm, jac=_Jd, elastic_mask=_emask)
+                    if math.isfinite(float(E_ip)):
+                        obj_s += float(E_ip); n_obj += 1
+                    if DM.PROBE[1]:
+                        _pz = DM.PROBE[1][0]
+                        _gU, = torch.autograd.grad(E_ip * nrm, _pz, retain_graph=True)
+                        _mN, = torch.autograd.grad((m.unsqueeze(-1) * x2).sum(), _pz)
+                        _mN = _mN[:, 0]
+                        _sup = _mN > 1e-9 * _mN.max().clamp_min(1e-30)
+                        _r = float(_gU[:, :3].norm(dim=-1)[_sup].mean() * (_hs ** 2) / _mN[_sup].mean() / EXT)
+                        if math.isfinite(_r):
+                            rout_s += _r; n_rout += 1
+                    DM.PROBE[1] = None
+                with torch.no_grad():
+                    F = phys_resid.plastic_step(F_tr, dlog).detach()
+                x, p, v = x2.detach(), p2.detach(), v2.detach()
             gt = take(d["x"][t0 + i + 1], gsel)
-            fm = (free_mask(d, x2.shape[0], dev, gsel, x2, t0 + i)
+            fm = (free_mask(d, x.shape[0], dev, gsel, x, t0 + i)
                   if a.control else slice(None))
-            tot += float((x2[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
+            tot += float((x[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
             ref += float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
-            x = x2
         _ts.__exit__(None, None, None)
     net.train()
-    return tot / max(ref, 1e-20), obj
+    return (tot / max(ref, 1e-20), obj_s / max(n_obj, 1),
+            (rout_s / n_rout) if n_rout else float("nan"))
 
 
 def save_ck(name, step):
@@ -3141,15 +3173,17 @@ for it in pbar:
                         _si = np.asarray([q["si"] for q in _alive] or [0])
                         TBW.add_histogram("풀분포/씬", _si, it)
         if a.val_every and (it + 1) % a.val_every == 0:
-            _v, _vo = quick_val()
+            _v, _vo, _vr = quick_val()
             if TBW is not None:
                 TBW.add_scalar("검증/비", _v, it)
+                TBW.add_scalar("검증/증분포텐셜", _vo, it)
+                TBW.add_scalar("검증/출력잔차", _vr, it)
             if _v < _best:
                 _best = _v
                 save_ck("best", it + 1)
-                print(f"  [검증 {it+1}] 비 {_v:.4f} -- best 갱신", flush=True)
+                print(f"  [검증 {it+1}] 비 {_v:.4f} 증분포텐셜 {_vo:.3e} 출력잔차 {_vr:.3e} -- best 갱신", flush=True)
             else:
-                print(f"  [검증 {it+1}] 비 {_v:.4f} (best {_best:.4f})",
+                print(f"  [검증 {it+1}] 비 {_v:.4f} 증분포텐셜 {_vo:.3e} 출력잔차 {_vr:.3e} (best {_best:.4f})",
                       flush=True)
         if a.probe_every and (it == 0 or (it + 1) % a.probe_every == 0):
             _pe, _pr, _pp = probe_ip()
@@ -3255,10 +3289,11 @@ for it in pbar:
             TBW.add_scalar("det/최소", min(_DET_MIN), it)
             TBW.add_scalar("det/중앙", sum(_DET_MED) / len(_DET_MED), it)
     if a.val_every and ((it + 1) % a.val_every == 0 or it == a.iters - 1):
-        _v, _vo = quick_val()
+        _v, _vo, _vr = quick_val()
         if TBW is not None:
             TBW.add_scalar("검증/비", _v, it)
-            TBW.add_scalar("목적함수/검증", _vo, it)
+            TBW.add_scalar("검증/증분포텐셜", _vo, it)
+            TBW.add_scalar("검증/출력잔차", _vr, it)
         if _v < _best:
             _best = _v
             save_ck("best", it + 1)
