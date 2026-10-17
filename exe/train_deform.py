@@ -2286,6 +2286,7 @@ SEQ = dict(t=0, it=0, prev=None, err=[], iters=[], capped=0, traj=[])
 _DIAG, _DIAG_I = [], [0]
 _GATE_LOG, _GATE_N = [], [0, 0]
 _OVREF = {}                                                  # --ov_ref 기준해 (위치·F·목적함수)
+_MINS = {}                                                   # AF_OV_MIN: 상태별 출력만 최적화 최솟값 (상태 적합 초과% 기록)
 _GAP = []                                                    # AF_GAP_*: 같은 상태의 망 증분 포텐셜 vs 출력만 최적화 최솟값
 
 
@@ -4567,7 +4568,7 @@ def _rollout(d, t0, L, gsel=None):
         for _k in range(_k0, _it):
             _idx = torch.randint(0, len(_pairs), (_B,), generator=_gen).tolist()
             _opt.zero_grad(set_to_none=True)
-            _Ls, _Es, _Ds, _Rs = [], [], [], []
+            _Ls, _Es, _Ds, _Rs, _Os = [], [], [], [], []
             for _b, _pi in enumerate(_idx):
                 j, i = _pairs[_pi]; T_ = _TJ[j]
                 cfg_, m_, vol_, gv_, ng_, gl_, nrm_ = _consts(T_)
@@ -4580,6 +4581,8 @@ def _rollout(d, t0, L, gsel=None):
                         _em, _dpen = det_take()
                         _E, _, _, _ = ip_of(xs, x2 - xs, vs, Fs, m_, vol_, cfg_, _hs, ng_, gl_, g=gv_, norm=nrm_,
                                             jac=_jf, elastic_mask=_em)
+                        with torch.no_grad():
+                            _Os.append(float((x2.detach() - T_["P"][i].to(dev)).norm(dim=-1).mean()) / T_["ext"])
                         if _b == 0 and DM.PROBE[1]:
                             _pz = DM.PROBE[1][0]
                             _gU, = torch.autograd.grad(_E * nrm_, _pz, retain_graph=True)
@@ -4593,11 +4596,13 @@ def _rollout(d, t0, L, gsel=None):
                             _loss.backward()
                 _Ls.append(float(_loss) * _B); _Es.append(float(_E)); _Ds.append(float(_dpen))
                 _tb.add_scalar(f"다궤적적합_궤적/{T_['tag']}", float(_E), _k)
+                _tb.add_scalar(f"다궤적적합_출력오차%/{T_['tag']}", 100 * _Os[-1], _k)
             _gn = float(torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0))
             _opt.step()
             _win.append(np.mean(_Ls))
             _tb.add_scalar("다궤적적합/손실", float(np.mean(_Ls)), _k)
             _tb.add_scalar("다궤적적합/증분포텐셜", float(np.mean(_Es)), _k)
+            _tb.add_scalar("다궤적적합/출력오차%_평균", 100 * float(np.mean(_Os)), _k)
             _tb.add_scalar("다궤적적합/det벌점", float(np.mean(_Ds)), _k)
             _tb.add_scalar("다궤적적합/기울기노름", _gn, _k)
             if _Rs:
@@ -4698,7 +4703,12 @@ def _rollout(d, t0, L, gsel=None):
         for _k in range(_k0, _it):
             _idx = torch.randint(0, _nf, (_B,), generator=_gen).tolist()
             _opt.zero_grad(set_to_none=True)
-            _Ls, _Es, _Ds, _Rs = [], [], [], []
+            _Ls, _Es, _Ds, _Rs, _Os, _Cs = [], [], [], [], [], []
+            if not _MINS and _k % 100 == 0 and os.environ.get("AF_OV_MIN") and os.path.exists(os.environ["AF_OV_MIN"]):
+                _ml = json.load(open(os.environ["AF_OV_MIN"]))
+                if len(_ml) >= _nf:                         # 상태 전부의 최솟값이 다 나왔을 때만 쓴다
+                    _MINS.update({r["state"]: r["E_min"] for r in _ml})
+                    print(f"    [상태 적합] 최솟값 {len(_MINS)} 상태 읽음 -> 초과% 기록 시작", flush=True)
             for _j, _i in enumerate(_idx):
                 xs, vs, Fs = _state(_i)
                 with torch.enable_grad(), dt_scope(_hs):
@@ -4712,6 +4722,16 @@ def _rollout(d, t0, L, gsel=None):
                     _em, _dpen = det_take()
                     _E, _, _, _pt = ip_of(xs, x2 - xs, vs, Fs, _m, _vol, _cfg, _hs, _ng, _gl,
                                           g=_gv, norm=_nrm, free=_fmi, jac=_jf, elastic_mask=_em)
+                    # 출력 오차: 출력만 최적화 궤적의 다음 상태와의 평균 위치 차 / EXT.  초과%: det 마스크 없는 같은 식의 E 로
+                    with torch.no_grad():
+                        _Os.append(float((x2.detach() - _P[_i].to(dev)).norm(dim=-1).mean()) / EXT)
+                        if _i in _MINS:
+                            _Eu = (float(_E) if (_em is None or bool(_em.all())) else
+                                   float(ip_of(xs, x2.detach() - xs, vs, Fs, _m, _vol, _cfg, _hs, _ng, _gl,
+                                               g=_gv, norm=_nrm, free=_fmi, jac=_jf.detach())[0]))
+                            _Cs.append(100 * (_Eu / _MINS[_i] - 1))
+                        else:
+                            _Cs.append(None)
                     if _j == 0 and DM.PROBE[1]:
                         _pz = DM.PROBE[1][0]
                         _gU, = torch.autograd.grad(_E * _nrm, _pz, retain_graph=True)
@@ -4733,8 +4753,14 @@ def _rollout(d, t0, L, gsel=None):
             _tb.add_scalar("상태적합/기울기노름", _gn, _k)
             if _Rs:
                 _tb.add_scalar("상태적합/출력잔차", _Rs[0], _k)
-            for _i, _e in zip(_idx, _Es):
+            for _i, _e, _o, _c in zip(_idx, _Es, _Os, _Cs):
                 _tb.add_scalar(f"상태적합_프레임/{_i:02d}", _e, _k)
+                _tb.add_scalar(f"상태적합_출력오차%/{_i:02d}", 100 * _o, _k)
+                if _c is not None:
+                    _tb.add_scalar(f"상태적합_최솟값대비초과%/{_i:02d}", _c, _k)
+            _tb.add_scalar("상태적합/출력오차%_평균", 100 * float(np.mean(_Os)), _k)
+            if any(c_ is not None for c_ in _Cs):
+                _tb.add_scalar("상태적합/최솟값대비초과%_중앙", float(np.median([c_ for c_ in _Cs if c_ is not None])), _k)
             if _DET_BAD:
                 _tb.add_scalar("상태적합/det무효비율", _DET_BAD[-1], _k)
             if _k % 100 == 0:
