@@ -4740,7 +4740,15 @@ def _rollout(d, t0, L, gsel=None):
 
         _tw = time.time(); _win = []
         for _k in range(_k0, _it):
-            _idx = torch.randint(0, _nf, (_B,), generator=_gen).tolist()
+            _KMAX = int(os.environ.get("AF_STATE_FIT_KMAX", "1"))
+            if _KMAX > 1:
+                # AF_STATE_FIT_KMAX: k ~ U{1..KMAX}, 시작 상태 i ~ U{0..nf-k}. 망으로 k-1 스텝 굴린 뒤(기울기 없음)
+                # k 번째 스텝만 손실로 학습한다. L2 목표 = 출력만 최적화 궤적의 i+k 번째 상태
+                _ks = torch.randint(1, _KMAX + 1, (_B,), generator=_gen).tolist()
+                _ik = [(int(torch.randint(0, _nf - k_ + 1, (1,), generator=_gen)), k_) for k_ in _ks]
+            else:
+                _ik = [(i_, 1) for i_ in torch.randint(0, _nf, (_B,), generator=_gen).tolist()]
+            _idx = [i_ + k_ - 1 for i_, k_ in _ik]
             _opt.zero_grad(set_to_none=True)
             _Ls, _Es, _Ds, _Rs, _Os, _Cs = [], [], [], [], [], []
             if not _MINS and _k % 100 == 0 and os.environ.get("AF_OV_MIN") and os.path.exists(os.environ["AF_OV_MIN"]):
@@ -4748,8 +4756,23 @@ def _rollout(d, t0, L, gsel=None):
                 if len(_ml) >= _nf:                         # 상태 전부의 최솟값이 다 나왔을 때만 쓴다
                     _MINS.update({r["state"]: r["E_min"] for r in _ml})
                     print(f"    [상태 적합] 최솟값 {len(_MINS)} 상태 읽음 -> 초과% 기록 시작", flush=True)
-            for _j, _i in enumerate(_idx):
-                xs, vs, Fs = _state(_i)
+            for _j, (_i0, _kk) in enumerate(_ik):
+                xs, vs, Fs = _state(_i0)
+                if _kk > 1:
+                    _rq = [q.requires_grad for q in net.parameters()]
+                    net.requires_grad_(False)
+                    for _s in range(_kk - 1):
+                        with torch.enable_grad(), dt_scope(_hs):
+                            _xa, _, _va, _, _, _, _, _, _, _ja = step_once(d, t0 + _i0 + _s, gsel, p, xs, vs, need_J=False)
+                            _Ea, _dla, _Fta, _ = ip_of(xs, _xa - xs, vs, Fs, _m, _vol, _cfg, _hs, _ng, _gl,
+                                                       g=_gv, norm=_nrm, jac=_ja)
+                        _DET_LAST[0] = None
+                        with torch.no_grad():
+                            Fs = phys_resid.plastic_step(_Fta, _dla).detach()
+                        xs, vs = _xa.detach(), _va.detach()
+                    for q, r in zip(net.parameters(), _rq):
+                        q.requires_grad_(r)
+                _i = _i0 + _kk - 1
                 with torch.enable_grad(), dt_scope(_hs):
                     DM.PROBE[0] = "want" if _j == 0 else None
                     x2, _, _, _, _, _, _, _, _, _jf = step_once(d, t0 + _i, gsel, p, xs, vs, need_J=False)
@@ -4764,7 +4787,7 @@ def _rollout(d, t0, L, gsel=None):
                     # 출력 오차: 출력만 최적화 궤적의 다음 상태와의 평균 위치 차 / EXT.  초과%: det 마스크 없는 같은 식의 E 로
                     with torch.no_grad():
                         _Os.append(float((x2.detach() - _P[_i].to(dev)).norm(dim=-1).mean()) / EXT)
-                        if _i in _MINS:
+                        if _kk == 1 and _i in _MINS:           # 최솟값은 출력만 최적화 상태에서 잰 것 -- 망이 굴린 상태(k>1)에는 안 맞는다
                             _Eu = (float(_E) if (_em is None or bool(_em.all())) else
                                    float(ip_of(xs, x2.detach() - xs, vs, Fs, _m, _vol, _cfg, _hs, _ng, _gl,
                                                g=_gv, norm=_nrm, free=_fmi, jac=_jf.detach())[0]))
@@ -4802,6 +4825,8 @@ def _rollout(d, t0, L, gsel=None):
                 if _c is not None:
                     _tb.add_scalar(f"상태적합_최솟값대비초과%/{_i:02d}", _c, _k)
             _tb.add_scalar("상태적합/출력오차%_평균", 100 * float(np.mean(_Os)), _k)
+            if _KMAX > 1:
+                _tb.add_scalar("상태적합/롤아웃스텝_평균", float(np.mean([k_ for _, k_ in _ik])), _k)
             if any(c_ is not None for c_ in _Cs):
                 _tb.add_scalar("상태적합/최솟값대비초과%_중앙", float(np.median([c_ for c_ in _Cs if c_ is not None])), _k)
             if _DET_BAD:
