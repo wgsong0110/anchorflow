@@ -2286,9 +2286,10 @@ SEQ = dict(t=0, it=0, prev=None, err=[], iters=[], capped=0, traj=[])
 _DIAG, _DIAG_I = [], [0]
 _GATE_LOG, _GATE_N = [], [0, 0]
 _OVREF = {}                                                  # --ov_ref 기준해 (위치·F·목적함수)
+_GAP = []                                                    # AF_GAP_*: 같은 상태의 망 증분 포텐셜 vs 출력만 최적화 최솟값
 
 
-def _ov_reference(ds, gsel, p_st, x, v, F, sc, h):
+def _ov_reference(ds, gsel, p_st, x, v, F, sc, h, t=0):
     """같은 상태의 **출력만 최적화** 기준해: 망을 고정하고 노드 출력에 더하는 탐침 텐서(변위 3 + 반경 1)를 변수로 학습과 같은
     증분 포텐셜을 L-BFGS 로 수렴시킨다 (망 출력 0 에서 출발 -- 학습 전 망의 출력층은 0 초기화). 학습 경로와 같은 step_once·ip_of."""
     cfg = sc["cfg"]
@@ -2300,13 +2301,13 @@ def _ov_reference(ds, gsel, p_st, x, v, F, sc, h):
     net.requires_grad_(False)
     DM.PROBE[0] = "want"
     with dt_scope(h):
-        step_once(ds, 0, gsel, p_st, x, v, need_J=False)
+        step_once(ds, t, gsel, p_st, x, v, need_J=False)
     Z = DM.PROBE[1][0].detach().clone().requires_grad_(True)
 
     def _ev():
         DM.PROBE[0], DM.PROBE[1] = "fixed", [Z]
         with dt_scope(h):
-            _x2, _, _v2, _, _, _, _, _, _, _Jd = step_once(ds, 0, gsel, p_st, x, v, need_J=False)
+            _x2, _, _v2, _, _, _, _, _, _, _Jd = step_once(ds, t, gsel, p_st, x, v, need_J=False)
         _E, _dl, _Ft, _ = ip_of(x, _x2 - x, v, F, sc["mass"], vol, cfg, h, ng_, gl_, g=gv, norm=nrm, jac=_Jd)
         _ev.v2 = _v2
         return _E, _x2, phys_resid.plastic_step(_Ft, _dl)
@@ -2825,6 +2826,17 @@ for it in pbar:
                                          max(1, n_p // a.n_anchors),
                                          device=dev)[:a.n_anchors]]))
             _OV_CUR[0] = st if a.out_var else None
+            if os.environ.get("AF_GAP_POOL"):
+                # 진단 (사용자 10-17): 학습 풀 상태에서 같은 상태의 망 증분 포텐셜(탐침 0 = 망 출력 그대로)과
+                # 망 출력에서 출발한 출력만 최적화(L-BFGS) 최솟값. 학습·전진 없이 N 개 모아 기록하고 끝낸다
+                _r = _ov_reference(ds, gsel, p_st, x, v, F, sc, _hp)
+                _GAP.append(dict(kind="pool", age=int(st["age"]), h=float(_hp), E_model=_r["hist"][0],
+                                 E_min=_r["E"], hist=_r["hist"]))
+                if len(_GAP) >= int(os.environ.get("AF_GAP_N", "40")):
+                    json.dump(_GAP, open(os.environ["AF_GAP_POOL"], "w"))
+                    print(f"[간극 기록] {os.environ['AF_GAP_POOL']} 상태 {len(_GAP)}", flush=True)
+                    raise SystemExit(0)
+                continue
             if a.ov_seq:
                 # 출력만 최적화 궤적: 이 상태의 기준해를 구해 후보로 두고(아래 순차 전진이 그대로 쓴다) 망 학습은 건너뛴다
                 _r = _ov_reference(ds, gsel, p_st, x, v, F, sc, _hp)
@@ -4128,6 +4140,43 @@ def _rollout(d, t0, L, gsel=None):
         print(f"    [초기속도] 궤적의 v 를 쓴다 (크기 평균 "
               f"{float(v.norm(dim=-1).mean()):.4f})", flush=True)
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
+    if os.environ.get("AF_GAP_ROLL"):
+        # 진단 (사용자 10-17): 같은 상태에서 망 증분 포텐셜 vs 망 출력에서 출발한 출력만 최적화 최솟값 (_ov_reference).
+        # 상태 = (가) 이 망 자신의 롤아웃이 지나간 상태, (나) AF_IP_STATES 덤프(출력만 최적화 궤적)의 상태. 프레임 AF_GAP_FRAMES
+        _fr = [int(q) for q in os.environ.get("AF_GAP_FRAMES", ",".join(str(k) for k in range(4, 81, 4))).split(",")]
+        _sc = dict(cfg=d["cfg"], mass=MASS[gsel], ext=EXT)
+        _hs = FRAME_DT / EVAL_SUB
+        _out = []
+        xc, vc, pc = x.clone(), v.clone(), p
+        Fc = take(traj_F(d)[t0], gsel).float()
+        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+        _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
+        _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
+        for i in range(max(_fr)):
+            if i in _fr:                                    # 프레임 i 상태 (i=0 이 시작) 에서 잰다
+                _r = _ov_reference(d, gsel, pc, xc, vc, Fc, _sc, _hs, t=t0 + i)
+                _out.append(dict(kind="model_roll", frame=i, E_model=_r["hist"][0], E_min=_r["E"], hist=_r["hist"]))
+            with torch.enable_grad(), dt_scope(_hs):
+                x2, p2, v2, _, _, _, _, _, _, _jf = step_once(d, t0 + i, gsel, pc, xc, vc, need_J=False)
+                _E, _dl, _Ftr, _ = ip_of(xc, x2 - xc, vc, Fc, _m, _vol, _cfg, _hs, _ng, _gl, g=_gv,
+                                         norm=float(_m.sum()) * (EXT ** 2) / (_hs ** 2), jac=_jf)
+            _DET_LAST[0] = None
+            with torch.no_grad():
+                Fc = phys_resid.plastic_step(_Ftr, _dl).detach()
+            xc, vc, pc = x2.detach(), v2.detach(), p2.detach()
+        if os.environ.get("AF_IP_STATES"):
+            _D = torch.load(os.environ["AF_IP_STATES"], map_location="cpu", weights_only=False)
+            for i in _fr:
+                if i < 1 or i > _D["pred"].shape[0]:
+                    continue
+                xs, vs = _D["pred"][i - 1].float().to(dev), _D["v"][i - 1].float().to(dev)
+                Fs = _D["F"][i - 1].float().to(dev).reshape(-1, 3, 3)
+                ps = xs[AIDX] if (torch.is_tensor(AIDX) and int(AIDX.max()) < xs.shape[0]) else p
+                _r = _ov_reference(d, gsel, ps, xs, vs, Fs, _sc, _hs, t=t0 + i)
+                _out.append(dict(kind="ov_traj", frame=i, E_model=_r["hist"][0], E_min=_r["E"], hist=_r["hist"]))
+        json.dump(_out, open(os.environ["AF_GAP_ROLL"], "w"))
+        print(f"[간극 기록] {os.environ['AF_GAP_ROLL']} 상태 {len(_out)}", flush=True)
+        raise SystemExit(0)
     if os.environ.get("AF_IP_INPERT"):
         # 망 입력 섭동 민감도 (사용자 10-17): 출력만 최적화 롤아웃 덤프(AF_IP_STATES=덤프 경로)에서 바닥에 닿은 뒤의
         # 프레임을 무작위로 골라 그 상태(x, v, F)에서 망 한 스텝의 증분 포텐셜을 잰다.
