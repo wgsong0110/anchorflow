@@ -4708,7 +4708,17 @@ def _rollout(d, t0, L, gsel=None):
                 print(f"    [상태 적합] 체크포인트 {k} -> {_r2} ({'성공' if _r.returncode == 0 else '실패 ' + _r.stderr[-200:]})", flush=True)
 
         def _eval_roll():
-            # 같은 망으로 정답 시작 상태에서 굴린다: 프레임별 위치 오차(정답 대비, EXT 로 나눔)와 증분 포텐셜
+            # 같은 망으로 정답 시작 상태에서 굴린다: 프레임별 위치 오차(정답 대비, EXT 로 나눔)와 증분 포텐셜.
+            # 파라미터 기울기는 끈다 -- 켜 두면 enable_grad 안에서 층마다 활성값을 들고 있어 24GB 카드에서 OOM (10-17)
+            _rq = [q.requires_grad for q in net.parameters()]
+            net.requires_grad_(False)
+            try:
+                return _eval_roll_body()
+            finally:
+                for q, r in zip(net.parameters(), _rq):
+                    q.requires_grad_(r)
+
+        def _eval_roll_body():
             net.eval()
             xc, vc, Fc = _x0.clone(), _v0.clone(), _F0.clone()
             pc = p
