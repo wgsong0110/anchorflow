@@ -4384,6 +4384,154 @@ def _rollout(d, t0, L, gsel=None):
             json.dump(_hist, open(os.environ["AF_NODE_FIT_LOG"], "w"))
         torch.save({"net": net.state_dict()}, os.environ.get("AF_NODE_FIT_CKPT", "/tmp/node_fit.pt"))
         _DPN_LIVE[0] = None
+    if os.environ.get("AF_STATE_FIT_MULTI") and not _NODE_FIT_DONE[0]:
+        # 출력만 최적화 **여러 궤적**의 상태로 새 망 학습 (사용자 10-17). AF_STATE_FIT_MULTI="태그=덤프,태그=덤프,...:반복:배치".
+        # 궤적마다 상태 = 프레임 0(정답 시작) + 덤프 프레임 1..L-1. 매 반복 (궤적, 프레임)을 균등하게 배치만큼 뽑아 그 궤적의
+        # 질량·크기(traj_scope)로 망 한 스텝(dt = 프레임)의 phys_w·증분 포텐셜 + det 벌점을 평균해 Adam (lr = --lr), 기울기 1.0 자르기.
+        # 체크포인트는 AF_STATE_FIT_EVERY(500)마다 AF_STATE_FIT_CK 에 쓰고 AF_STATE_FIT_R2 로 바로 올린다; 있으면(로컬 또는 R2) 이어 돈다.
+        # AF_STATE_FIT_EVAL(1000)마다 궤적별로 정답 시작에서 굴려 위치 오차·증분 포텐셜을 TB 에 남긴다.
+        _NODE_FIT_DONE[0] = True
+        import subprocess as _sp_
+        from torch.utils.tensorboard import SummaryWriter as _SW
+        _spec, _it, _B = os.environ["AF_STATE_FIT_MULTI"].rsplit(":", 2)
+        _it, _B = int(_it), int(_B)
+        _ckp = os.environ["AF_STATE_FIT_CK"]; _r2 = os.environ.get("AF_STATE_FIT_R2")
+        _every = int(os.environ.get("AF_STATE_FIT_EVERY", "500")); _evev = int(os.environ.get("AF_STATE_FIT_EVAL", "1000"))
+        _byt = {t_: d_ for t_, d_ in TR + held}
+        _TJ = []
+        for _q in _spec.split(","):
+            _tg_, _pth = _q.split("=", 1)
+            _dj = _byt[_tg_]
+            _Dj = torch.load(_pth, map_location="cpu", weights_only=False)
+            _gs = torch.arange(_dj["x"].shape[1], device=dev)
+            with traj_scope(_dj):
+                _xj, _vj = DM.init_state(_dj, t0, _gs, FRAME_DT, a.v0_traj, dev)
+                _mj = MASS[_gs].clone(); _ej = float(EXT)
+            _TJ.append(dict(tag=_tg_, d=_dj, gsel=_gs, x0=_xj, v0=_vj, F0=take(traj_F(_dj)[t0], _gs).float(),
+                            P=_Dj["pred"].float(), V=_Dj["v"].float(), F=_Dj["F"].float(), m=_mj, ext=_ej))
+            print(f"    [다궤적 적합] {_tg_}: 덤프 {_pth} 프레임 {_Dj['pred'].shape[0]}", flush=True)
+
+        def _st(j, i):
+            T_ = _TJ[j]
+            if i == 0:
+                return T_["x0"], T_["v0"], T_["F0"]
+            return T_["P"][i - 1].to(dev), T_["V"][i - 1].to(dev), T_["F"][i - 1].to(dev).reshape(-1, 3, 3)
+        _pairs = [(j, i) for j in range(len(_TJ)) for i in range(_TJ[j]["P"].shape[0])]
+        _opt = torch.optim.Adam([q for q in net.parameters() if q.requires_grad], lr=a.lr)
+        _gen = torch.Generator().manual_seed(a.seed)
+        _k0 = 0
+        if os.path.exists(_ckp) or (_r2 and _sp_.run(["rclone", "copyto", _r2, _ckp], capture_output=True).returncode == 0
+                                    and os.path.exists(_ckp)):
+            _c = torch.load(_ckp, map_location=dev, weights_only=False)
+            net.load_state_dict(_c["net"]); _opt.load_state_dict(_c["opt"]); _gen.set_state(_c["gen"].cpu())
+            _k0 = int(_c["k"])
+            print(f"    [다궤적 적합] 이어 돈다: {_ckp} 반복 {_k0}", flush=True)
+        else:
+            with torch.no_grad():
+                _sf = []
+                for (j, i) in _pairs:
+                    with traj_scope(_TJ[j]["d"]):
+                        xs, vs, _ = _st(j, i)
+                        _sf.append(node_feats(_TJ[j]["d"], t0 + i, _TJ[j]["gsel"], xs, vs)[0])
+                net.set_input_stats(torch.cat(_sf, 0)); del _sf
+            print(f"    [다궤적 적합] 새 망, 입력 표준화 = {len(_TJ)} 궤적 {len(_pairs)} 상태", flush=True)
+        _tb = _SW(os.environ["AF_STATE_FIT_TB"], purge_step=_k0 if _k0 > 0 else None)
+        _hs = FRAME_DT
+
+        def _consts(T_):
+            cfg_ = T_["d"]["cfg"]
+            return (cfg_, T_["m"], T_["m"] / float(cfg_["density"]), torch.tensor(cfg_["g"], device=dev, dtype=torch.float32),
+                    int(cfg_["n_grid"]), float(cfg_.get("grid_lim", 2.0)), float(T_["m"].sum()) * (T_["ext"] ** 2) / (_hs ** 2))
+
+        def _anch(T_, xs):
+            return xs[AIDX] if (torch.is_tensor(AIDX) and int(AIDX.max()) < xs.shape[0]) else take(T_["d"]["x"][t0], AIDX)
+
+        def _save(k):
+            torch.save({"net": net.state_dict(), "opt": _opt.state_dict(), "gen": _gen.get_state(), "k": k,
+                        "n_feat": n_feat, "args": vars(a), "step": k, "aidx": AIDX.cpu(), "H": H, "EXT": EXT,
+                        "net_ext0": _EXT0, "frame_dt": FRAME_DT}, _ckp + ".tmp")
+            os.replace(_ckp + ".tmp", _ckp)
+            if _r2:
+                _r = _sp_.run(["rclone", "copyto", _ckp, _r2], capture_output=True, text=True)
+                print(f"    [다궤적 적합] 체크포인트 {k} -> {_r2} ({'성공' if _r.returncode == 0 else '실패 ' + _r.stderr[-200:]})", flush=True)
+
+        def _eval_roll(T_):
+            net.eval()
+            cfg_, m_, vol_, gv_, ng_, gl_, nrm_ = _consts(T_)
+            xc, vc, Fc = T_["x0"].clone(), T_["v0"].clone(), T_["F0"].clone()
+            pc = _anch(T_, xc)
+            errs, Es = [], []
+            with traj_scope(T_["d"]):
+                for i in range(min(L, T_["d"]["x"].shape[0] - t0 - 1)):
+                    with torch.enable_grad(), dt_scope(_hs):
+                        x2, p2, v2, _, _, _, _, _, _, _jf = step_once(T_["d"], t0 + i, T_["gsel"], pc, xc, vc, need_J=False)
+                        _E, _dl, _Ftr, _ = ip_of(xc, x2 - xc, vc, Fc, m_, vol_, cfg_, _hs, ng_, gl_, g=gv_, norm=nrm_, jac=_jf)
+                    _DET_LAST[0] = None
+                    with torch.no_grad():
+                        Fc = phys_resid.plastic_step(_Ftr, _dl).detach()
+                    xc, vc, pc = x2.detach(), v2.detach(), p2.detach()
+                    gt = take(T_["d"]["x"][t0 + i + 1], T_["gsel"])
+                    errs.append(float((xc - gt).norm(dim=-1).mean()) / T_["ext"]); Es.append(float(_E))
+            net.train()
+            return errs, Es
+
+        _tw = time.time(); _win = []
+        for _k in range(_k0, _it):
+            _idx = torch.randint(0, len(_pairs), (_B,), generator=_gen).tolist()
+            _opt.zero_grad(set_to_none=True)
+            _Ls, _Es, _Ds, _Rs = [], [], [], []
+            for _b, _pi in enumerate(_idx):
+                j, i = _pairs[_pi]; T_ = _TJ[j]
+                cfg_, m_, vol_, gv_, ng_, gl_, nrm_ = _consts(T_)
+                with traj_scope(T_["d"]):
+                    xs, vs, Fs = _st(j, i)
+                    with torch.enable_grad(), dt_scope(_hs):
+                        DM.PROBE[0] = "want" if _b == 0 else None
+                        x2, _, _, _, _, _, _, _, _, _jf = step_once(T_["d"], t0 + i, T_["gsel"], _anch(T_, xs), xs, vs, need_J=False)
+                        DM.PROBE[0] = None
+                        _em, _dpen = det_take()
+                        _E, _, _, _ = ip_of(xs, x2 - xs, vs, Fs, m_, vol_, cfg_, _hs, ng_, gl_, g=gv_, norm=nrm_,
+                                            jac=_jf, elastic_mask=_em)
+                        if _b == 0 and DM.PROBE[1]:
+                            _pz = DM.PROBE[1][0]
+                            _gU, = torch.autograd.grad(_E * nrm_, _pz, retain_graph=True)
+                            _mN, = torch.autograd.grad((m_.unsqueeze(-1) * x2).sum(), _pz, retain_graph=True)
+                            _mN = _mN[:, 0]
+                            _sup = _mN > 1e-9 * _mN.max().clamp_min(1e-30)
+                            _Rs.append(float(_gU[:, :3].norm(dim=-1)[_sup].mean() * (_hs ** 2) / _mN[_sup].mean() / T_["ext"]))
+                        DM.PROBE[1] = None
+                        _loss = (a.phys_w * _E + _dpen) / _B
+                        if torch.isfinite(_loss):
+                            _loss.backward()
+                _Ls.append(float(_loss) * _B); _Es.append(float(_E)); _Ds.append(float(_dpen))
+                _tb.add_scalar(f"다궤적적합_궤적/{T_['tag']}", float(_E), _k)
+            _gn = float(torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0))
+            _opt.step()
+            _win.append(np.mean(_Ls))
+            _tb.add_scalar("다궤적적합/손실", float(np.mean(_Ls)), _k)
+            _tb.add_scalar("다궤적적합/증분포텐셜", float(np.mean(_Es)), _k)
+            _tb.add_scalar("다궤적적합/det벌점", float(np.mean(_Ds)), _k)
+            _tb.add_scalar("다궤적적합/기울기노름", _gn, _k)
+            if _Rs:
+                _tb.add_scalar("다궤적적합/출력잔차", _Rs[0], _k)
+            if _DET_BAD:
+                _tb.add_scalar("다궤적적합/det무효비율", _DET_BAD[-1], _k)
+            if _k % 100 == 0:
+                print(f"    [다궤적 적합] {_k + 1}/{_it}  최근 손실 {np.mean(_win[-100:]):.4e}  기울기 {_gn:.2e}  "
+                      f"{time.time() - _tw:.0f} s", flush=True)
+            if (_k + 1) % _evev == 0 or _k == _it - 1:
+                for T_ in _TJ:
+                    _er, _ee = _eval_roll(T_)
+                    _tb.add_scalar(f"다궤적적합_롤아웃_위치오차%/{T_['tag']}", 100 * float(np.mean(_er)), _k)
+                    _tb.add_scalar(f"다궤적적합_롤아웃_증분포텐셜/{T_['tag']}", float(np.mean(_ee)), _k)
+                    print(f"    [다궤적 롤아웃] {_k + 1} {T_['tag']}: 위치 오차 평균 {100 * np.mean(_er):.3f}%  "
+                          f"증분포텐셜 평균 {np.mean(_ee):.3e}", flush=True)
+                _tb.flush()
+            if (_k + 1) % _every == 0 or _k == _it - 1:
+                _save(_k + 1)
+        _tb.close()
+        _DPN_LIVE[0] = None
+        net.requires_grad_(False)
     if os.environ.get("AF_STATE_FIT") and not _NODE_FIT_DONE[0]:
         # 출력만 최적화 궤적의 상태로 망 학습 (사용자 10-17): AF_STATE_FIT=덤프:반복:배치.
         # 상태 집합 = 프레임 0(정답 시작) + 덤프의 프레임 1..L-1 (위치·속도·F). 매 반복 배치만큼 프레임을 무작위로 뽑아
