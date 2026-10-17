@@ -4175,10 +4175,12 @@ def _rollout(d, t0, L, gsel=None):
         _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
         _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
         _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
-        for i in range(max(_fr)):
+        for i in range(max(_fr) + 1):
             if i in _fr:                                    # 프레임 i 상태 (i=0 이 시작) 에서 잰다
                 _r = _ov_reference(d, gsel, pc, xc, vc, Fc, _sc, _hs, t=t0 + i)
                 _out.append(dict(kind="model_roll", frame=i, E_model=_r["hist"][0], E_min=_r["E"], hist=_r["hist"]))
+            if i == max(_fr):
+                break
             with torch.enable_grad(), dt_scope(_hs):
                 x2, p2, v2, _, _, _, _, _, _, _jf = step_once(d, t0 + i, gsel, pc, xc, vc, need_J=False)
                 _E, _dl, _Ftr, _ = ip_of(xc, x2 - xc, vc, Fc, _m, _vol, _cfg, _hs, _ng, _gl, g=_gv,
