@@ -1491,7 +1491,9 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                 _mwk = (MASS[gsel] if MASS.numel() != x.shape[0] else MASS)
                 _nmk, _nvk = cfg_bc_nodes(d, gsel, x, _npk, _rwk, _lmk, _mwk, _SIM_T[0])
             _NM.append(_nmk); _NV.append(_nvk)
-            if a.ov_init == "predict":
+            if a.ov_init == "predict" or a.net_inertial:
+                # **노드별 관성 예측자** h·v_n + h²g (barycentric 가중 질량평균). --net_inertial 은 망 출력에 더하므로
+                # --ov_init net(망 출력에서 출발하는 출력만 최적화)일 때도 만든다
                 # **노드별 관성 예측자** h·v_n + h²g (barycentric 가중 질량평균)
                 _Mn = _npk.shape[0]
                 _mw = (MASS[gsel] if MASS.numel() != x.shape[0] else MASS)
