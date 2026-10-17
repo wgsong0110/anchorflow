@@ -4335,6 +4335,137 @@ def _rollout(d, t0, L, gsel=None):
             json.dump(_hist, open(os.environ["AF_NODE_FIT_LOG"], "w"))
         torch.save({"net": net.state_dict()}, os.environ.get("AF_NODE_FIT_CKPT", "/tmp/node_fit.pt"))
         _DPN_LIVE[0] = None
+    if os.environ.get("AF_STATE_FIT") and not _NODE_FIT_DONE[0]:
+        # 출력만 최적화 궤적의 상태로 망 학습 (사용자 10-17): AF_STATE_FIT=덤프:반복:배치.
+        # 상태 집합 = 프레임 0(정답 시작) + 덤프의 프레임 1..L-1 (위치·속도·F). 매 반복 배치만큼 프레임을 무작위로 뽑아
+        # 그 상태에서 망 한 스텝(dt = 프레임)의 증분 포텐셜 + det 벌점(학습과 같은 손실: phys_w·E + det)을 평균해 Adam.
+        # 체크포인트(망·최적화기·반복·난수)를 AF_STATE_FIT_CK 에 500 반복마다 쓰고 AF_STATE_FIT_R2 로 바로 올린다. 있으면 이어 돈다.
+        _NODE_FIT_DONE[0] = True
+        import subprocess as _sp_
+        from torch.utils.tensorboard import SummaryWriter as _SW
+        _ap = os.environ["AF_STATE_FIT"].split(":")
+        _D = torch.load(_ap[0], map_location="cpu", weights_only=False)
+        _it, _B = int(_ap[1]), int(_ap[2])
+        _ckp = os.environ["AF_STATE_FIT_CK"]; _r2 = os.environ.get("AF_STATE_FIT_R2")
+        _every = int(os.environ.get("AF_STATE_FIT_EVERY", "500"))
+        _P, _V, _FF = _D["pred"].float(), _D["v"].float(), _D["F"].float()
+        _F0 = take(traj_F(d)[t0], gsel).float()
+        _nf = _P.shape[0]                                  # 상태 0..nf-1 (마지막 덤프 프레임은 다음 정답이 없어도 되지만 맞춰 둔다)
+        _x0, _v0 = x.clone(), v.clone()
+
+        def _state(i):
+            if i == 0:
+                return _x0, _v0, _F0
+            return _P[i - 1].to(dev), _V[i - 1].to(dev), _FF[i - 1].to(dev).reshape(-1, 3, 3)
+        _opt = torch.optim.Adam([q for q in net.parameters() if q.requires_grad], lr=a.lr)
+        _gen = torch.Generator().manual_seed(a.seed)
+        _k0 = 0
+        if os.path.exists(_ckp) or (_r2 and _sp_.run(["rclone", "copyto", _r2, _ckp], capture_output=True).returncode == 0
+                                    and os.path.exists(_ckp)):
+            _c = torch.load(_ckp, map_location=dev, weights_only=False)
+            net.load_state_dict(_c["net"]); _opt.load_state_dict(_c["opt"]); _gen.set_state(_c["gen"])
+            _k0 = int(_c["k"])
+            print(f"    [상태 적합] 이어 돈다: {_ckp} 반복 {_k0}", flush=True)
+        else:
+            with torch.no_grad():
+                _sf = [node_feats(d, t0 + _i, gsel, *_state(_i)[:2])[0] for _i in range(_nf)]
+                net.set_input_stats(torch.cat(_sf, 0))
+            print(f"    [상태 적합] 새 망, 입력 표준화 = 출력만 최적화 {_nf} 상태 (sd 최소 {float(net.in_sd.min()):.2e} "
+                  f"최대 {float(net.in_sd.max()):.2e})", flush=True)
+        _tb = _SW(os.environ["AF_STATE_FIT_TB"], purge_step=_k0 if _k0 > 0 else None)
+        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+        _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
+        _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
+        _hs = FRAME_DT
+        _nrm = float(_m.sum()) * (EXT ** 2) / (_hs ** 2)
+
+        def _save(k):
+            torch.save({"net": net.state_dict(), "opt": _opt.state_dict(), "gen": _gen.get_state(), "k": k,
+                        "n_feat": n_feat, "args": vars(a), "step": k, "aidx": AIDX.cpu(), "H": H, "EXT": EXT,
+                        "net_ext0": _EXT0, "frame_dt": FRAME_DT}, _ckp + ".tmp")
+            os.replace(_ckp + ".tmp", _ckp)
+            if _r2:
+                _r = _sp_.run(["rclone", "copyto", _ckp, _r2], capture_output=True, text=True)
+                print(f"    [상태 적합] 체크포인트 {k} -> {_r2} ({'성공' if _r.returncode == 0 else '실패 ' + _r.stderr[-200:]})", flush=True)
+
+        def _eval_roll():
+            # 같은 망으로 정답 시작 상태에서 굴린다: 프레임별 위치 오차(정답 대비, EXT 로 나눔)와 증분 포텐셜
+            net.eval()
+            xc, vc, Fc = _x0.clone(), _v0.clone(), _F0.clone()
+            pc = p
+            errs, Es = [], []
+            for i in range(min(L, d["x"].shape[0] - t0 - 1)):
+                with torch.enable_grad(), dt_scope(_hs):
+                    x2, p2, v2, _, _, _, _, _, _, _jf = step_once(d, t0 + i, gsel, pc, xc, vc, need_J=False)
+                    _fmi = (free_mask(d, x2.shape[0], dev, gsel, xc, t0 + i) if a.control else None)
+                    _E, _dl, _Ftr, _ = ip_of(xc, x2 - xc, vc, Fc, _m, _vol, _cfg, _hs, _ng, _gl,
+                                             g=_gv, norm=_nrm, free=_fmi, jac=_jf)
+                _DET_LAST[0] = None
+                with torch.no_grad():
+                    Fc = phys_resid.plastic_step(_Ftr, _dl).detach()
+                xc, vc, pc = x2.detach(), v2.detach(), p2.detach()
+                gt = take(d["x"][t0 + i + 1], gsel)
+                errs.append(float((xc - gt).norm(dim=-1).mean()) / EXT); Es.append(float(_E))
+            net.train()
+            return errs, Es
+
+        _tw = time.time(); _win = []
+        for _k in range(_k0, _it):
+            _idx = torch.randint(0, _nf, (_B,), generator=_gen).tolist()
+            _opt.zero_grad(set_to_none=True)
+            _Ls, _Es, _Ds, _Rs = [], [], [], []
+            for _j, _i in enumerate(_idx):
+                xs, vs, Fs = _state(_i)
+                with torch.enable_grad(), dt_scope(_hs):
+                    DM.PROBE[0] = "want" if _j == 0 else None
+                    x2, _, _, _, _, _, _, _, _, _jf = step_once(d, t0 + _i, gsel, p, xs, vs, need_J=False)
+                    DM.PROBE[0] = None
+                    _fmi = (free_mask(d, x2.shape[0], dev, gsel, xs, t0 + _i) if a.control else None)
+                    if _BC_LAST[0] is not None:
+                        _am = _BC_LAST[0][1].reshape(-1) > 0.5
+                        _fmi = (~_am) if _fmi is None else (_fmi & ~_am)
+                    _em, _dpen = det_take()
+                    _E, _, _, _pt = ip_of(xs, x2 - xs, vs, Fs, _m, _vol, _cfg, _hs, _ng, _gl,
+                                          g=_gv, norm=_nrm, free=_fmi, jac=_jf, elastic_mask=_em)
+                    if _j == 0 and DM.PROBE[1]:
+                        _pz = DM.PROBE[1][0]
+                        _gU, = torch.autograd.grad(_E * _nrm, _pz, retain_graph=True)
+                        _mN, = torch.autograd.grad((_m.unsqueeze(-1) * x2).sum(), _pz, retain_graph=True)
+                        _mN = _mN[:, 0]
+                        _sup = _mN > 1e-9 * _mN.max().clamp_min(1e-30)
+                        _Rs.append(float(_gU[:, :3].norm(dim=-1)[_sup].mean() * (_hs ** 2) / _mN[_sup].mean() / EXT))
+                    DM.PROBE[1] = None
+                    _loss = (a.phys_w * _E + _dpen) / _B
+                    if torch.isfinite(_loss):
+                        _loss.backward()
+                _Ls.append(float(_loss) * _B); _Es.append(float(_E)); _Ds.append(float(_dpen))
+            _gn = float(torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0))
+            _opt.step()
+            _win.append(np.mean(_Ls))
+            _tb.add_scalar("상태적합/손실", float(np.mean(_Ls)), _k)
+            _tb.add_scalar("상태적합/증분포텐셜", float(np.mean(_Es)), _k)
+            _tb.add_scalar("상태적합/det벌점", float(np.mean(_Ds)), _k)
+            _tb.add_scalar("상태적합/기울기노름", _gn, _k)
+            if _Rs:
+                _tb.add_scalar("상태적합/출력잔차", _Rs[0], _k)
+            for _i, _e in zip(_idx, _Es):
+                _tb.add_scalar(f"상태적합_프레임/{_i:02d}", _e, _k)
+            if _DET_BAD:
+                _tb.add_scalar("상태적합/det무효비율", _DET_BAD[-1], _k)
+            if _k % 100 == 0:
+                print(f"    [상태 적합] {_k + 1}/{_it}  최근 손실 {np.mean(_win[-100:]):.4e}  기울기 {_gn:.2e}  "
+                      f"{time.time() - _tw:.0f} s", flush=True)
+            if (_k + 1) % _every == 0 or _k == _it - 1:
+                _er, _ee = _eval_roll()
+                _tb.add_scalar("상태적합_롤아웃/위치오차_평균%", 100 * float(np.mean(_er)), _k)
+                _tb.add_scalar("상태적합_롤아웃/증분포텐셜_평균", float(np.mean(_ee)), _k)
+                _tb.add_scalar("상태적합_롤아웃/위치오차_마지막%", 100 * _er[-1], _k)
+                print(f"    [상태 적합 롤아웃] {_k + 1}: 위치 오차 평균 {100 * np.mean(_er):.3f}%  증분포텐셜 평균 {np.mean(_ee):.3e}", flush=True)
+                _tb.flush()
+                _save(_k + 1)
+        _tb.close()
+        _DPN_LIVE[0] = None
+        net.requires_grad_(False)
     if os.environ.get("AF_NODE_FIT") or os.environ.get("AF_ROLL_NOGRAD"):
         # 롤아웃은 고정 망 -- 파라미터 기울기를 끄지 않으면 enable_grad 안에서 층마다 활성값을 들고 있어 큰 망이 OOM
         net.requires_grad_(False)
