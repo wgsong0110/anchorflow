@@ -4128,6 +4128,85 @@ def _rollout(d, t0, L, gsel=None):
         print(f"    [초기속도] 궤적의 v 를 쓴다 (크기 평균 "
               f"{float(v.norm(dim=-1).mean()):.4f})", flush=True)
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
+    if os.environ.get("AF_IP_INPERT"):
+        # 망 입력 섭동 민감도 (사용자 10-17): 출력만 최적화 롤아웃 덤프(AF_IP_STATES=덤프 경로)에서 바닥에 닿은 뒤의
+        # 프레임을 무작위로 골라 그 상태(x, v, F)에서 망 한 스텝의 증분 포텐셜을 잰다.
+        #   E0 = 그대로, E(σ) = 표준화된 입력 공간에서 σ 크기 가우시안 섭동 (feat + σ·in_sd·n),
+        #   E_rand = 입력 자체를 무작위로 (in_mu + in_sd·n) -- 같은 물리 상태에서 여러 번 재서 평균
+        # 비율 = (E(σ) − E0) / mean(E_rand)
+        _D = torch.load(os.environ["AF_IP_STATES"], map_location="cpu", weights_only=False)
+        _sg = [float(q) for q in os.environ.get("AF_IP_SIGMAS", "1e-3,3e-3,1e-2,3e-2,1e-1,3e-1,1,3").split(",")]
+        _ns = int(os.environ.get("AF_IP_SEEDS", "4")); _nr = int(os.environ.get("AF_IP_NRAND", "8"))
+        _nst = int(os.environ.get("AF_IP_NSTATES", "5"))
+        _P, _V, _FF = _D["pred"].float(), _D["v"].float(), _D["F"].float()
+        _floor = [b for b in (d["cfg"].get("boundary_conditions") or []) if b.get("type") == "surface_collider"][0]
+        _fz = float(_floor["point"][2])
+        _zmin = _P[:, :, 2].min(1).values
+        _hit = [k for k in range(_P.shape[0]) if float(_zmin[k]) <= _fz + 1e-3]
+        _k0 = _hit[0] if _hit else 0
+        _rg = np.random.RandomState(0)
+        _cand = list(range(_k0 + 1, _P.shape[0] - 1))
+        _pick = sorted(_rg.choice(_cand, size=min(_nst, len(_cand)), replace=False).tolist())
+        print(f"  [입력섭동] 바닥 z={_fz}, 처음 닿은 프레임 {_k0 + 1}, 고른 상태(프레임) {[k + 1 for k in _pick]}", flush=True)
+        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+        _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
+        _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
+        _hs = FRAME_DT / EVAL_SUB
+        _nrm = float(_m.sum()) * (EXT ** 2) / (_hs ** 2)
+
+        def _ip1(t, xs, vs, Fs):
+            Fc, xc, vc, Es = Fs, xs, vs, []
+            pc = xs[AIDX] if (torch.is_tensor(AIDX) and AIDX.numel() and int(AIDX.max()) < xs.shape[0]) else p
+            for _sb in range(EVAL_SUB):
+                with torch.enable_grad(), dt_scope(_hs):
+                    x2, p2, v2, _, _, _, _, _, _, _jf = step_once(d, t, gsel, pc, xc, vc, need_J=False)
+                    _fmi = (free_mask(d, x2.shape[0], dev, gsel, xc, t) if a.control else None)
+                    if _BC_LAST[0] is not None:
+                        _am = _BC_LAST[0][1].reshape(-1) > 0.5
+                        _fmi = (~_am) if _fmi is None else (_fmi & ~_am)
+                    _E, _dl, _Ftr, _ = ip_of(xc, x2 - xc, vc, Fc, _m, _vol, _cfg, _hs, _ng, _gl,
+                                             g=_gv, norm=_nrm, free=_fmi, jac=_jf)
+                    Es.append(float(_E))
+                with torch.no_grad():
+                    Fc = phys_resid.plastic_step(_Ftr, _dl).detach()
+                xc, vc, pc = x2.detach(), v2.detach(), p2.detach()
+            return float(np.mean(Es))
+
+        def _hook_pert(sig, seed):
+            def h(f, nt):
+                g = torch.Generator(device=f.device).manual_seed(seed)
+                return f + sig * nt.in_sd.to(f.dtype) * torch.randn(f.shape, device=f.device, dtype=f.dtype, generator=g)
+            return h
+
+        def _hook_rand(seed):
+            def h(f, nt):
+                g = torch.Generator(device=f.device).manual_seed(seed)
+                return nt.in_mu.to(f.dtype) + nt.in_sd.to(f.dtype) * torch.randn(f.shape, device=f.device, dtype=f.dtype, generator=g)
+            return h
+
+        _res = {"sigmas": _sg, "floor_frame": _k0 + 1, "states": []}
+        for k in _pick:
+            xs, vs, Fs = _P[k].to(dev), _V[k].to(dev), _FF[k].to(dev).reshape(-1, 3, 3)
+            t = t0 + k + 1
+            DM.INPUT_HOOK[0] = None
+            E0 = _ip1(t, xs, vs, Fs)
+            Er = []
+            for r in range(_nr):
+                DM.INPUT_HOOK[0] = _hook_rand(5000 + r); Er.append(_ip1(t, xs, vs, Fs))
+            Ep = []
+            for sgm in _sg:
+                row = []
+                for sd in range(_ns):
+                    DM.INPUT_HOOK[0] = _hook_pert(sgm, 1000 + sd); row.append(_ip1(t, xs, vs, Fs))
+                Ep.append(row)
+            DM.INPUT_HOOK[0] = None
+            _mr = float(np.mean(Er))
+            _res["states"].append(dict(frame=k + 1, E0=E0, E_rand=Er, E_pert=Ep))
+            print(f"  [입력섭동] 프레임 {k + 1}: E0 {E0:.3e}  무작위입력 평균 {_mr:.3e}  "
+                  + " ".join(f"σ={s_:g}:{(np.mean(r_) - E0) / _mr:+.2e}" for s_, r_ in zip(_sg, Ep)), flush=True)
+        json.dump(_res, open(os.environ["AF_IP_INPERT"], "w"))
+        print(f"[입력섭동 기록] {os.environ['AF_IP_INPERT']}", flush=True)
+        raise SystemExit(0)
     if os.environ.get("AF_IP_PERTURB"):
         # 상태 섭동 민감도: 시작 상태(t0)에 크기 σ 의 가우시안 섭동을 주고 망 한 스텝의 증분 포텐셜·출력잔차를 잰다.
         # 위치: x + σ·EXT·n (앵커도 같은 섭동), 속도: v + σ·mean|v|·n. F 는 정답 t0 그대로. 값 = 서브스텝 평균

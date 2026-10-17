@@ -273,6 +273,7 @@ def _const_vec(vals, ref):
 
 
 PROBE = [None, None]                 # [요청 여부 "want", 격자별 탐침 텐서 목록]
+INPUT_HOOK = [None]                  # 진단용: (망 입력 특징, net) -> 바꾼 특징
 
 
 def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
@@ -312,6 +313,8 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                    if dp_fast is not None else None)
             if out is None:
                 with sec("신경망"):
+                    if INPUT_HOOK[0] is not None:          # 진단: 망 입력 특징을 바꿔 넣는다 (섭동·무작위 입력)
+                        _ink = INPUT_HOOK[0](_ink, net)
                     out = net(_ink, _srk, _dsk, _clk, tau, mat=mat)
                 if a.net_inertial:
                     if inertial is None or inertial[_k] is None:
