@@ -4140,6 +4140,29 @@ def _rollout(d, t0, L, gsel=None):
         print(f"    [초기속도] 궤적의 v 를 쓴다 (크기 평균 "
               f"{float(v.norm(dim=-1).mean()):.4f})", flush=True)
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
+    if os.environ.get("AF_OV_MIN_STATES"):
+        # 상태별 출력만 최적화 최솟값 (사용자 10-17): AF_IP_STATES 덤프의 상태(0 = 정답 시작, i = 덤프 프레임 i)마다
+        # 롤아웃과 **같은 경로**(_ov_frame, --ov_init·--ov_roll·--ov_opt 그대로)로 한 스텝을 최적화해 최적화 전·후 증분 포텐셜을 남긴다
+        if a.ov_roll <= 0:
+            raise SystemExit("AF_OV_MIN_STATES 는 --out_var --ov_roll 설정이 필요하다")
+        _D = torch.load(os.environ["AF_IP_STATES"], map_location="cpu", weights_only=False)
+        _F0 = take(traj_F(d)[t0], gsel).float()
+        _res = []
+        for i in range(_D["pred"].shape[0]):
+            if i == 0:
+                xs, vs, Fs = x, v, _F0
+            else:
+                xs, vs = _D["pred"][i - 1].float().to(dev), _D["v"][i - 1].float().to(dev)
+                Fs = _D["F"][i - 1].float().to(dev).reshape(-1, 3, 3)
+            ps = xs[AIDX] if (torch.is_tensor(AIDX) and int(AIDX.max()) < xs.shape[0]) else p
+            with dt_scope(FRAME_DT / EVAL_SUB):
+                _ov_frame(d, t0 + i, gsel, ps, xs, vs, Fs)
+            _e0, _e1 = _OV_LOG[-1]
+            _res.append(dict(state=i, E_init=float(_e0), E_min=float(_e1)))
+            print(f"    [상태 최솟값] 상태 {i}: {_e0:.4e} -> {_e1:.4e}", flush=True)
+            json.dump(_res, open(os.environ["AF_OV_MIN_STATES"], "w"))
+        print(f"[상태 최솟값 기록] {os.environ['AF_OV_MIN_STATES']} 상태 {len(_res)}", flush=True)
+        raise SystemExit(0)
     if os.environ.get("AF_GAP_ROLL"):
         # 진단 (사용자 10-17): 같은 상태에서 망 증분 포텐셜 vs 망 출력에서 출발한 출력만 최적화 최솟값 (_ov_reference).
         # 상태 = (가) 이 망 자신의 롤아웃이 지나간 상태, (나) AF_IP_STATES 덤프(출력만 최적화 궤적)의 상태. 프레임 AF_GAP_FRAMES
