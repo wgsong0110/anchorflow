@@ -4611,7 +4611,12 @@ def _rollout(d, t0, L, gsel=None):
                             _sup = _mN > 1e-9 * _mN.max().clamp_min(1e-30)
                             _Rs.append(float(_gU[:, :3].norm(dim=-1)[_sup].mean() * (_hs ** 2) / _mN[_sup].mean() / T_["ext"]))
                         DM.PROBE[1] = None
-                        _loss = (a.phys_w * _E + _dpen) / _B
+                        if os.environ.get("AF_STATE_FIT_LOSS", "ip") == "l2":
+                            # L2: 출력만 최적화 궤적의 다음 상태 위치와의 평균 제곱 거리 / EXT² (det 벌점 그대로)
+                            _l2 = ((x2 - T_["P"][i].to(dev)) ** 2).sum(-1).mean() / (T_["ext"] ** 2)
+                            _loss = (_l2 + _dpen) / _B
+                        else:
+                            _loss = (a.phys_w * _E + _dpen) / _B
                         if torch.isfinite(_loss):
                             _loss.backward()
                 _Ls.append(float(_loss) * _B); _Es.append(float(_E)); _Ds.append(float(_dpen))
