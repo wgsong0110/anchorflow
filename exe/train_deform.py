@@ -4363,7 +4363,7 @@ def _rollout(d, t0, L, gsel=None):
         if os.path.exists(_ckp) or (_r2 and _sp_.run(["rclone", "copyto", _r2, _ckp], capture_output=True).returncode == 0
                                     and os.path.exists(_ckp)):
             _c = torch.load(_ckp, map_location=dev, weights_only=False)
-            net.load_state_dict(_c["net"]); _opt.load_state_dict(_c["opt"]); _gen.set_state(_c["gen"])
+            net.load_state_dict(_c["net"]); _opt.load_state_dict(_c["opt"]); _gen.set_state(_c["gen"].cpu())
             _k0 = int(_c["k"])
             print(f"    [상태 적합] 이어 돈다: {_ckp} 반복 {_k0}", flush=True)
         else:
