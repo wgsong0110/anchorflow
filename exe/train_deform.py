@@ -4128,6 +4128,67 @@ def _rollout(d, t0, L, gsel=None):
         print(f"    [초기속도] 궤적의 v 를 쓴다 (크기 평균 "
               f"{float(v.norm(dim=-1).mean()):.4f})", flush=True)
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
+    if os.environ.get("AF_IP_PERTURB"):
+        # 상태 섭동 민감도: 시작 상태(t0)에 크기 σ 의 가우시안 섭동을 주고 망 한 스텝의 증분 포텐셜·출력잔차를 잰다.
+        # 위치: x + σ·EXT·n (앵커도 같은 섭동), 속도: v + σ·mean|v|·n. F 는 정답 t0 그대로. 값 = 서브스텝 평균
+        _sg = [float(q) for q in os.environ.get("AF_IP_SIGMAS", "0,1e-6,3e-6,1e-5,3e-5,1e-4,3e-4,1e-3,3e-3,1e-2,3e-2,1e-1").split(",")]
+        _ns = int(os.environ.get("AF_IP_SEEDS", "4"))
+        _F0 = take(traj_F(d)[t0], gsel).float()
+        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+        _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
+        _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
+        _hs = FRAME_DT / EVAL_SUB
+        _nrm = float(_m.sum()) * (EXT ** 2) / (_hs ** 2)
+        _vm = float(v.norm(dim=-1).mean())
+        _aidx = AIDX if torch.is_tensor(AIDX) else None
+
+        def _ip_at(xs, vs, ps):
+            Fc, xc, vc, pc, Es, Rs = _F0, xs, vs, ps, [], []
+            for _sb in range(EVAL_SUB):
+                with torch.enable_grad(), dt_scope(_hs):
+                    DM.PROBE[0] = "want"
+                    x2, p2, v2, _, _, _, _, _, _, _jf = step_once(d, t0, gsel, pc, xc, vc, need_J=False)
+                    DM.PROBE[0] = None
+                    _fmi = (free_mask(d, x2.shape[0], dev, gsel, xc, t0) if a.control else None)
+                    if _BC_LAST[0] is not None:
+                        _am = _BC_LAST[0][1].reshape(-1) > 0.5
+                        _fmi = (~_am) if _fmi is None else (_fmi & ~_am)
+                    _E, _dl, _Ftr, _ = ip_of(xc, x2 - xc, vc, Fc, _m, _vol, _cfg, _hs, _ng, _gl,
+                                             g=_gv, norm=_nrm, free=_fmi, jac=_jf)
+                    _r = float("nan")
+                    if DM.PROBE[1]:
+                        _pz = DM.PROBE[1][0]
+                        _gU, = torch.autograd.grad(_E * _nrm, _pz, retain_graph=True)
+                        _mN, = torch.autograd.grad((_m.unsqueeze(-1) * x2).sum(), _pz)
+                        _mN = _mN[:, 0]
+                        _sup = _mN > 1e-9 * _mN.max().clamp_min(1e-30)
+                        _r = float(_gU[:, :3].norm(dim=-1)[_sup].mean() * (_hs ** 2) / _mN[_sup].mean() / EXT)
+                    DM.PROBE[1] = None
+                    Es.append(float(_E)); Rs.append(_r)
+                with torch.no_grad():
+                    Fc = phys_resid.plastic_step(_Ftr, _dl).detach()
+                xc, vc, pc = x2.detach(), v2.detach(), p2.detach()
+            return float(np.mean(Es)), float(np.mean(Rs))
+
+        _res = {"t0": t0, "ext": EXT, "v_mean": _vm, "sigmas": _sg, "pos": [], "vel": []}
+        for _kind in ("pos", "vel"):
+            for _s in _sg:
+                _row = []
+                for _sd in range(_ns if _s > 0 else 1):
+                    _g = torch.Generator(device=dev).manual_seed(1000 + _sd)
+                    _n = torch.randn(x.shape, device=dev, dtype=x.dtype, generator=_g)
+                    if _kind == "pos":
+                        _xs, _vs = x + _s * EXT * _n, v
+                        _ps = (_xs[_aidx] if (_aidx is not None and _aidx.numel() and int(_aidx.max()) < _xs.shape[0]) else p)
+                    else:
+                        _xs, _vs, _ps = x, v + _s * _vm * _n, p
+                    _row.append(_ip_at(_xs, _vs, _ps))
+                _res[_kind].append(_row)
+                print(f"  [섭동] {_kind} σ={_s:g}: E " + " ".join(f"{q[0]:.3e}" for q in _row)
+                      + " | 출력잔차 " + " ".join(f"{q[1]:.3e}" for q in _row), flush=True)
+        json.dump(_res, open(os.environ["AF_IP_PERTURB"], "w"))
+        print(f"[섭동 기록] {os.environ['AF_IP_PERTURB']}", flush=True)
+        raise SystemExit(0)
     if os.environ.get("AF_NODE_FIT") and not _NODE_FIT_DONE[0]:
         # 망 하나를 **전 프레임 한꺼번에** 학습: 목표 실행(출력만 최적화)의 프레임 i 상태에서 망의 노드 출력이
         # 그 실행의 프레임 i 노드 출력과 같아지게 (상태가 같아 격자·노드가 같다). 끝나면 고정된 망으로 아래 롤아웃.
