@@ -4140,6 +4140,69 @@ def _rollout(d, t0, L, gsel=None):
         print(f"    [초기속도] 궤적의 v 를 쓴다 (크기 평균 "
               f"{float(v.norm(dim=-1).mean()):.4f})", flush=True)
     p = x[fps(x, a.n_anchors, a.seed)] if a.refps else take(d["x"][t0], AIDX)
+    if os.environ.get("AF_STATE_EVAL"):
+        # 상태 적합 감시 (사용자 10-17): AF_STATE_EVAL=체크포인트:TB디렉토리:끝반복. 체크포인트가 바뀔 때마다 그 망으로
+        # AF_IP_STATES 덤프의 상태 전부(0 = 정답 시작)에서 한 스텝 굴려
+        #   출력오차% = mean|x2_망 - x_출력만최적화 다음 상태| / EXT x 100,  증분 포텐셜,  (AF_OV_MIN 있으면) 최솟값 대비 초과%
+        # 를 TB 에 쓴다. 학습 실행은 건드리지 않는다
+        from torch.utils.tensorboard import SummaryWriter as _SW
+        _ckp, _tbd, _end = os.environ["AF_STATE_EVAL"].rsplit(":", 2); _end = int(_end)
+        _D = torch.load(os.environ["AF_IP_STATES"], map_location="cpu", weights_only=False)
+        _mins = ({r["state"]: r["E_min"] for r in json.load(open(os.environ["AF_OV_MIN"]))}
+                 if os.environ.get("AF_OV_MIN") and os.path.exists(os.environ["AF_OV_MIN"]) else {})
+        _F0 = take(traj_F(d)[t0], gsel).float()
+        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+        _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
+        _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
+        _hs = FRAME_DT; _nrm = float(_m.sum()) * (EXT ** 2) / (_hs ** 2)
+        _nst = _D["pred"].shape[0]
+        _tb = _SW(_tbd); _seen = None
+        net.requires_grad_(False)
+        while True:
+            if not os.path.exists(_ckp):
+                time.sleep(60); continue
+            _mt = os.path.getmtime(_ckp)
+            if _mt == _seen:
+                time.sleep(60); continue
+            time.sleep(5)
+            try:
+                _c = torch.load(_ckp, map_location=dev, weights_only=False)
+            except Exception as _e:
+                print(f"    [감시] 읽기 실패 ({_e}) -- 다음에", flush=True); time.sleep(30); continue
+            _seen = _mt; _k = int(_c["k"])
+            net.load_state_dict(_c["net"]); net.eval()
+            _errs, _Es, _pc = [], [], []
+            for i in range(_nst):
+                if i == 0:
+                    xs, vs, Fs = x, v, _F0
+                else:
+                    xs, vs = _D["pred"][i - 1].float().to(dev), _D["v"][i - 1].float().to(dev)
+                    Fs = _D["F"][i - 1].float().to(dev).reshape(-1, 3, 3)
+                ps = xs[AIDX] if (torch.is_tensor(AIDX) and int(AIDX.max()) < xs.shape[0]) else p
+                with torch.enable_grad(), dt_scope(_hs):
+                    x2, _, _, _, _, _, _, _, _, _jf = step_once(d, t0 + i, gsel, ps, xs, vs, need_J=False)
+                    _E, _, _, _ = ip_of(xs, x2 - xs, vs, Fs, _m, _vol, _cfg, _hs, _ng, _gl, g=_gv, norm=_nrm, jac=_jf)
+                _DET_LAST[0] = None
+                _er = float((x2.detach() - _D["pred"][i].float().to(dev)).norm(dim=-1).mean()) / EXT
+                _errs.append(_er); _Es.append(float(_E))
+                _tb.add_scalar(f"출력오차%/{i:02d}", 100 * _er, _k)
+                _tb.add_scalar(f"증분포텐셜/{i:02d}", float(_E), _k)
+                if i in _mins:
+                    _pc.append(100 * (float(_E) / _mins[i] - 1))
+                    _tb.add_scalar(f"최솟값대비_초과%/{i:02d}", _pc[-1], _k)
+            _tb.add_scalar("요약/출력오차%_평균", 100 * float(np.mean(_errs)), _k)
+            _tb.add_scalar("요약/출력오차%_최대", 100 * float(np.max(_errs)), _k)
+            _tb.add_scalar("요약/증분포텐셜_평균", float(np.mean(_Es)), _k)
+            if _pc:
+                _tb.add_scalar("요약/최솟값대비_초과%_평균", float(np.mean(_pc)), _k)
+                _tb.add_scalar("요약/최솟값대비_초과%_중앙", float(np.median(_pc)), _k)
+            _tb.flush()
+            print(f"    [감시] 반복 {_k}: 출력오차 평균 {100 * np.mean(_errs):.4f}%  증분포텐셜 평균 {np.mean(_Es):.3e}"
+                  + (f"  초과 중앙 {np.median(_pc):.1f}%" if _pc else ""), flush=True)
+            if _k >= _end:
+                break
+        _tb.close()
+        raise SystemExit(0)
     if os.environ.get("AF_OV_MIN_STATES"):
         # 상태별 출력만 최적화 최솟값 (사용자 10-17): AF_IP_STATES 덤프의 상태(0 = 정답 시작, i = 덤프 프레임 i)마다
         # 롤아웃과 **같은 경로**(_ov_frame, --ov_init·--ov_roll·--ov_opt 그대로)로 한 스텝을 최적화해 최적화 전·후 증분 포텐셜을 남긴다
