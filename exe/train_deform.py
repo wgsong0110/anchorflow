@@ -4693,6 +4693,7 @@ def _rollout(d, t0, L, gsel=None):
                   f"최대 {float(net.in_sd.max()):.2e})", flush=True)
         _tb = _SW(os.environ["AF_STATE_FIT_TB"], purge_step=_k0 if _k0 > 0 else None)
         _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+        _SAVE0 = (_it == 0 and _k0 == 0)                     # 반복 0: 학습 전 망(같은 입력 표준화)을 체크포인트로 남긴다 (비교용)
         _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
         _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
         _hs = FRAME_DT
@@ -4738,6 +4739,8 @@ def _rollout(d, t0, L, gsel=None):
             net.train()
             return errs, Es
 
+        if _SAVE0:
+            _save(0)
         _tw = time.time(); _win = []
         for _k in range(_k0, _it):
             _KMAX = int(os.environ.get("AF_STATE_FIT_KMAX", "1"))
