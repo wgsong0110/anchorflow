@@ -2288,6 +2288,7 @@ SEQ = dict(t=0, it=0, prev=None, err=[], iters=[], capped=0, traj=[])
 _DIAG, _DIAG_I = [], [0]
 _GATE_LOG, _GATE_N = [], [0, 0]
 _OVREF = {}                                                  # --ov_ref 기준해 (위치·F·목적함수)
+_LGV = {"eta": None, "T": None}                              # AF_OV_LANGEVIN: 프레임 사이에 이어 쓰는 MALA 걸음 크기
 _MINSM = {}                                                  # AF_OV_MIN_MULTI: 궤적 태그 -> 상태별 최솟값
 _MINS = {}                                                   # AF_OV_MIN: 상태별 출력만 최적화 최솟값 (상태 적합 초과% 기록)
 _GAP = []                                                    # AF_GAP_*: 같은 상태의 망 증분 포텐셜 vs 출력만 최적화 최솟값
@@ -3768,6 +3769,50 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             if a.snap_inv > 0:
                 _SNAP_N[0] = max(_SNAP_N[0],
                                  _snap_inverted(st, a.snap_inv, a.snap_eps))
+        if os.environ.get("AF_OV_LANGEVIN") and a.ov_vars == "out" and st.get("ov"):
+            # 증분 포텐셜 랑제빈 표본 (사용자 10-18): 최적화가 끝난 노드 출력 u 에서 p(u|s) ∝ exp(-E(u;s)/T) 를 MALA 로 걷는다.
+            # T = 2·rho·E_min / d (2 차 근사에서 평형 <E - E_min> = d·T/2 = rho·E_min, d = 자유 노드 출력 수).
+            # 걸음 크기는 수락률 ~0.57 로 맞춰 프레임 사이에 이어 쓴다. 마지막 표본으로 상태를 전진시킨다
+            _lg = os.environ["AF_OV_LANGEVIN"].split(":")
+            _ns, _rho, _sd = int(_lg[0]), float(_lg[1]), int(_lg[2]) if len(_lg) > 2 else 0
+            _vs = [q for q in st["ov"] if q is not None]
+            _gen = torch.Generator(device=dev).manual_seed(_sd * 100003 + int(t) * 7 + int(_E0[0] is not None))
+
+            def _EG():
+                with torch.enable_grad():
+                    _Ev = _fwd()[2]
+                    _g = torch.autograd.grad(_Ev, _vs)
+                return float(_Ev), [gi.detach() for gi in _g]
+            _Ec, _gc = _EG()
+            _dof = sum(q.numel() for q in _vs)
+            _T = 2.0 * _rho * max(_Ec, 1e-30) / _dof
+            if _LGV["eta"] is None:                    # 첫 걸음: 잡음 표준편차 1e-4·EXT 에서 시작
+                _LGV["eta"] = (1e-4 * EXT) ** 2 / (2.0 * _T)
+            _eta = _LGV["eta"] * (_T / _LGV["T"] if _LGV["T"] else 1.0)
+            _acc, _E_start = 0, _Ec
+            for _it in range(_ns):
+                _u0 = [q.detach().clone() for q in _vs]
+                _nz = [torch.randn(q.shape, device=q.device, dtype=q.dtype, generator=_gen) for q in _vs]
+                with torch.no_grad():
+                    for q, g_, z_ in zip(_vs, _gc, _nz):
+                        q.add_(-_eta * g_ + (2.0 * _eta * _T) ** 0.5 * z_)
+                _Ep, _gp = _EG()
+                # MALA 수락: log a = -(E'-E)/T - |u-u'+eta g'|²/(4 eta T) + |u'-u+eta g|²/(4 eta T)
+                with torch.no_grad():
+                    _fw = sum(float(((q - u0 + _eta * g_) ** 2).sum()) for q, u0, g_ in zip(_vs, _u0, _gc))
+                    _bw = sum(float(((u0 - q + _eta * gp_) ** 2).sum()) for q, u0, gp_ in zip(_vs, _u0, _gp))
+                _la = -(_Ep - _Ec) / _T - _bw / (4 * _eta * _T) + _fw / (4 * _eta * _T)
+                if math.isfinite(_Ep) and math.log(max(float(torch.rand(1, generator=_gen, device=dev)), 1e-30)) < _la:
+                    _Ec, _gc, _acc = _Ep, _gp, _acc + 1
+                    _eta *= 1.1
+                else:
+                    with torch.no_grad():
+                        for q, u0 in zip(_vs, _u0):
+                            q.copy_(u0)
+                    _eta *= 0.7
+            _LGV["eta"], _LGV["T"] = _eta, _T
+            print(f"    [랑제빈] t={t} 걸음 {_ns} 수락 {_acc}/{_ns}  E {_E_start:.3e} -> {_Ec:.3e} "
+                  f"(+{100 * (_Ec / max(_E_start, 1e-30) - 1):.1f}%, 목표 +{100 * _rho:.0f}%)  eta {_eta:.2e}", flush=True)
         x2, v2, E, dlog, F_tr, _pt, _Jd = _fwd()
         E1 = float(E)
         if a.ov_vars == "net" and os.environ.get("AF_OVNET_DIAG"):
