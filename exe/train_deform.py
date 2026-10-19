@@ -368,6 +368,10 @@ ap.add_argument("--pg_impulse", action="store_true",
                 help="PG config 의 particle_impulse 를 0 프레임 초기 속도에 더한다: PG add_impulse_on_particles 그대로 "
                      "상자(point 기본 [1,1,1], size 기본 [1,1,1], |x0-point|<size) 안 입자에 v += force/m · substep_dt · num_dt "
                      "(start_time 0 만). --v0_traj 필요 (궤적 v[0] 에 더한다)")
+ap.add_argument("--pg_vdamp", action="store_true",
+                help="PG grid_v_damping_scale 을 PG 처럼 **PG 서브스텝마다** 곱한 만큼 우리 한 스텝 뒤 속도에 곱한다: "
+                     "v *= s^(h/substep_dt) (ficus: 0.9999^400 = 0.961/프레임). 출력만 최적화·망 롤아웃·상태 적합 롤아웃 모두. "
+                     "--cfg_bc 의 스텝당 한 번 곱하기 대신 쓴다")
 ap.add_argument("--eval_dt_sub", type=int, default=0,
                 help="평가·롤아웃에서 한 프레임을 몇 서브스텝으로 나눌지 "
                      "(0 이면 --dt_sub). 프레임 경계는 그대로라 교사와 계속 "
@@ -758,6 +762,16 @@ def _pvol(m, cfg):
     if r.shape[0] != m.shape[0]:
         raise SystemExit(f"--pg_region_density: 부피 계산의 입자 수 {m.shape[0]} 가 밀도 배열 {r.shape[0]} 와 다르다 (부분표본 미지원)")
     return m / r.to(m.device, m.dtype)
+
+
+def _pg_vdamp(v, d, h):
+    """--pg_vdamp: PG 가 서브스텝마다 격자 속도에 곱하는 grid_v_damping_scale 을 우리 스텝 h 만큼 (s^(h/substep_dt))."""
+    if not a.pg_vdamp:
+        return v
+    s_ = float(d["cfg"].get("grid_v_damping_scale", 1.0))
+    if s_ >= 1.0:
+        return v
+    return v * (s_ ** (float(h) / float(d["cfg"]["substep_dt"])))
 
 
 if a.pg_impulse:
@@ -5115,7 +5129,7 @@ def _rollout(d, t0, L, gsel=None):
                 _DET_LAST[0] = None
                 with torch.no_grad():
                     Fc = phys_resid.plastic_step(_Ftr, _dl).detach()
-                xc, vc, pc = x2.detach(), v2.detach(), p2.detach()
+                xc, vc, pc = x2.detach(), _pg_vdamp(v2.detach(), d, _hs), p2.detach()
                 gt = take(d["x"][t0 + i + 1], gsel)
                 errs.append(float((xc - gt).norm(dim=-1).mean()) / EXT); Es.append(float(_E))
             net.train()
@@ -5861,7 +5875,9 @@ def _rollout(d, t0, L, gsel=None):
                 for _sb in range(EVAL_SUB):
                     _SIM_T[0] = (i + _sb / EVAL_SUB) * FRAME_DT       # --cfg_bc 시간창 (롤아웃 시작 = 0)
                     x2, v, _S["F_ov"] = _ov_frame(d, t0 + i, gsel, p, x2, v, _S["F_ov"])
-                    if a.cfg_bc and float(d["cfg"].get("grid_v_damping_scale", 1.1)) < 1.0:
+                    if a.pg_vdamp:
+                        v = _pg_vdamp(v, d, FRAME_DT / EVAL_SUB)
+                    elif a.cfg_bc and float(d["cfg"].get("grid_v_damping_scale", 1.1)) < 1.0:
                         v = v * float(d["cfg"]["grid_v_damping_scale"])   # PG 와 같이 서브스텝마다 곱한다
             _S["v_last"] = v
             if _ROLL_IP is not None:
@@ -5907,7 +5923,7 @@ def _rollout(d, t0, L, gsel=None):
                     _S["F_ip"] = phys_resid.plastic_step(_Ftr, _dl).detach()
                 if _ROLLDUMP is not None and _FCUM[0] is not None and _jf is not None:
                     _FCUM[0] = (_jf.detach().float() @ _FCUM[0]).detach()
-                x, p, v = x2.detach(), p2.detach(), v2.detach()
+                x, p, v = x2.detach(), p2.detach(), _pg_vdamp(v2.detach(), d, _hs)
             x2 = x
             _S.update(p=p, dmg=dmg_e, idx=idx_e, fe=fe_r)
             _ROLL_IP.append(dict(frame=i + 1, E=_Es, rout=_Rs))
@@ -5918,11 +5934,11 @@ def _rollout(d, t0, L, gsel=None):
                     x, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
                         d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                         idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
-                    x, p, v = x.detach(), p.detach(), v.detach()
+                    x, p, v = x.detach(), p.detach(), _pg_vdamp(v.detach(), d, FRAME_DT / EVAL_SUB)
                 x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _jf = step_once(
                     d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                     idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
-            x2 = x2.detach(); p = p.detach(); v = v.detach()
+            x2 = x2.detach(); p = p.detach(); v = _pg_vdamp(v.detach(), d, FRAME_DT / EVAL_SUB)
             _S.update(p=p, dmg=dmg_e, idx=idx_e, fe=fe_r)
             if _ROLLDUMP is not None and _FCUM[0] is not None and _jf is not None:
                 # 렌더용: 망이 낸 변형장의 **실제 야코비안**을 누적한 F (이웃 추정 아님)
