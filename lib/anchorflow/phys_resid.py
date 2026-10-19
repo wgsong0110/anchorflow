@@ -1032,6 +1032,10 @@ def _barrier_b(d, dhat, eps_r=1e-3, ext_kind="quad"):
     큰 에너지만 지고 **밀어내는 힘을 전혀 못 받는다** (바닥 clamp 에서 겪은 그
     함정이다). eps 지점의 값과 기울기로 선형으로 이어 붙여 기울기를 살린다.
     """
+    if ext_kind == "none":
+        # 연장 없음 (매니폴드 실험 AF_ROLL_PRW): d -> 0 에서 무한대 그대로, d <= 0 은 정의 밖 (nan)
+        b = -((d - dhat) ** 2) * torch.log(d / dhat)
+        return torch.where(d < dhat, b, torch.zeros_like(b))
     eps = eps_r * dhat
     dc = d.clamp_min(eps)
     b = -((dc - dhat) ** 2) * torch.log(dc / dhat)

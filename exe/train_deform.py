@@ -5431,11 +5431,22 @@ def _rollout(d, t0, L, gsel=None):
         rows, lamd = st["rows"], st["lamd"]
         H = torch.zeros(P, P, device=dev, dtype=torch.float64)
         for (q_, n_), dq in zip(_PR["fl"], ds):
+            # 바닥: 출력만 최적화·학습과 같은 IPC 장벽 E_b = Σ_p kappa m_p b(d_p) / (Σm · EXT²)  (phys_resid._barrier_b, 연장만 끔).
+            #   헤시안 Σ_p w_p b''(d_p) ∇d_p ∇d_pᵀ (d̂ 밖 입자는 0). b'' 는 phys_resid 함수를 autograd 로 두 번 미분.
+            act = dq < st["bc_dh"]
+            if not bool(act.any()):
+                continue
             Jnn = torch.einsum("i,mip->mp", n_, Jn)                      # [Mn,P]
-            gd = torch.zeros(xp.shape[0], P, device=dev, dtype=torch.float64)
+            ra, la = rows[act], lamd[act]
+            gd = torch.zeros(ra.shape[0], P, device=dev, dtype=torch.float64)
             for k_ in range(4):
-                gd += lamd[:, k_:k_ + 1] * Jnn[rows[:, k_]]
-            A_ = gd / dq.clamp_min(1e-300).unsqueeze(-1)
+                gd += la[:, k_:k_ + 1] * Jnn[ra[:, k_]]
+            with torch.enable_grad():
+                dd_ = dq[act].detach().clone().requires_grad_(True)
+                b_ = phys_resid._barrier_b(dd_, st["bc_dh"], ext_kind="none")
+                g1_ = torch.autograd.grad(b_.sum(), dd_, create_graph=True)[0]
+                b2_ = torch.autograd.grad(g1_.sum(), dd_)[0].detach()
+            A_ = gd * (st["bc_w"][act] * b2_).clamp_min(0.0).sqrt().unsqueeze(-1)
             H += A_.T @ A_
             del gd, A_
         if not _PR["flow"]:
@@ -5509,6 +5520,13 @@ def _rollout(d, t0, L, gsel=None):
         Bc = Bm[rows[rep]]
         dd = (Bc[:, 1:] - Bc[:, :-1]).transpose(1, 2)
         psi = dd.gather(2, aux[1][rep].unsqueeze(1).expand(-1, nb, -1)) @ Ai     # [T,nb,3]: J − I = Θᵀ ψ (덧셈)
+        if phys_resid._BARRIER[0] is None:
+            raise SystemExit("AF_ROLL_PRW: 바닥 장벽(--bc_mode barrier)이 꺼져 있다 -- 출력만 최적화와 같은 바닥을 쓰려면 켜야 한다")
+        _bk, _bdh, _bext = phys_resid._BARRIER[0]
+        _mw = (MASS[gsel] if MASS.numel() != x.shape[0] else MASS).double()
+        st["bc_dh"] = float(_bdh)
+        st["bc_w"] = _bk * _mw / (float(_mw.sum()) * EXT * EXT)          # 정규화 증분 포텐셜(ip_of norm=Σm·EXT²/h²)에서의 가중
+        st["bc_info"] = (float(_bk), float(_bdh), _bext)
         st.update(ens=_ens, Bm=Bm, Bfun=Bfun, y0=y0, rows=rows, lamd=lam_.double(), xd=xd, rep=rep, tid=tid,
                   rank_r=aux[1][rep], Ai=Ai, I3=I3, psi=psi, P=P, nb=nb, Mn=Mn, N=N, epsI=0.0,
                   F0=(_FCUM[0].clone() if _FCUM[0] is not None else None))
@@ -5530,11 +5548,31 @@ def _rollout(d, t0, L, gsel=None):
             ex = float((x2.double() - xpt).abs().max())
             eJ = float((Jd[rep].double() - Jtt).abs().max())
             rres = float((C0 @ tht).abs().max())
-        info = dict(nb=nb, P=P, Mn=Mn, N=N, T=int(rep.numel()), epsI=st["epsI"], check_x=ex, check_J=eJ, rigid_resid=rres)
+            _svb, _svs = phys_resid._BARRIER[0], os.environ.get("AF_BC_SLIP")
+            phys_resid._BARRIER[0] = (st["bc_info"][0], st["bc_info"][1], "none")
+            os.environ["AF_BC_SLIP"] = "1"
+            try:
+                _cfg = d["cfg"]
+                eb_ref = float(phys_resid.bc_energy(st["xd"], xpt - st["xd"], _mw, _cfg, 1.0, float(_cfg.get("grid_lim", 2.0)),
+                                                    int(_cfg["n_grid"]))) / (float(_mw.sum()) * EXT * EXT)
+            finally:
+                phys_resid._BARRIER[0] = _svb
+                if _svs is None:
+                    os.environ.pop("AF_BC_SLIP", None)
+                else:
+                    os.environ["AF_BC_SLIP"] = _svs
+            eb_me = sum(float((st["bc_w"] * phys_resid._barrier_b(((xpt - q_) * n_).sum(-1), st["bc_dh"], ext_kind="none")).sum())
+                        for q_, n_ in _PR["fl"])
+            nact0 = sum(int((q_ < st["bc_dh"]).sum()) for q_ in ds0)
+        info = dict(nb=nb, P=P, Mn=Mn, N=N, T=int(rep.numel()), epsI=st["epsI"], check_x=ex, check_J=eJ, rigid_resid=rres,
+                    bc=st["bc_info"], bc_energy_ref=eb_ref, bc_energy_mine=eb_me, bc_active0=nact0)
         _PR["info"] = info
         print(f"[파라미터 표본 준비] 기저 수 {nb} -> θ 차원 {P}, 노드 {Mn}, 입자 {N}, 사면체 {info['T']}, "
               f"{'흐름 RK4 ' + str(_PR['nst']) if _PR['flow'] else '덧셈'}  eps 항 {st['epsI']:.3e}  "
-              f"내 식 vs step_once 최대차 x {ex:.1e} J {eJ:.1e}  강체 제약 잔차 {rres:.1e}", flush=True)
+              f"내 식 vs step_once 최대차 x {ex:.1e} J {eJ:.1e}  강체 제약 잔차 {rres:.1e}  | 바닥 = phys_resid IPC 장벽 kappa "
+              f"{st['bc_info'][0]:g} d̂ {st['bc_info'][1]:.5f} (학습 연장 {st['bc_info'][2]} -> 여기서는 none), 입자 수준, "
+              f"가중 kappa·m/(Σm·EXT²), 시작 d<d̂ 입자 {nact0}, sticky 접선 항은 계량에 안 넣음; "
+              f"장벽 값 확인 bc_energy {eb_ref:.6e} vs 내 합 {eb_me:.6e}", flush=True)
 
     def _prw_pad(Ud, dt_):
         _no = int(getattr(net, "n_out", 3))
