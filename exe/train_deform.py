@@ -2384,13 +2384,14 @@ def _lgv_metric(ens0, J, M, free):
     return G, P, Ph
 
 
-def _lgv_step(ds, gsel, p_st, x, v, F, sc, h, ens0, U0, s0, nod_m):
+def _lgv_step(ds, gsel, p_st, x, v, F, sc, h, ens, U0, s0, nod_m):
     """노드 출력 공간 MALA 한 걸음 (블록 대각 계량 P 를 u0 의 것으로 고정한 근사 MALA). s0 = 시작점 _lgv_eval 결과.
 
     T = 2·rho·E(u0)/d,  u' = u0 − η P∇E + √(2ηT) P^{1/2} ξ.  제안의 어떤 셀이든 det J <= --det_eps 면 걸음(기울기·잡음 둘 다)을
     반으로 (최대 --lgv_backtrack 번), 그래도 안 되면 u0. 수락:
       log α = −(E'−E0)/T − |u0−u'+aP∇E'|²_G/(2b) + |u'−u0+aP∇E0|²_G/(2b),  a = η·s, b = 2ηT·s² (s = 백트래킹 배율; s=1 이면 4ηT)
     기각이면 u0 로 전진. -> 전진에 쓸 out (x2, v2, p2, F_tr, dlog)."""
+    ens0 = ens[0]                                                # 계량은 첫 격자, 평가는 격자 목록 전체 (step_once 가 목록을 받는다)
     M = U0.shape[0]
     free = (torch.ones(M, dtype=torch.bool, device=dev) if nod_m is None else ~nod_m)
     fz = free.unsqueeze(-1).to(U0.dtype)
@@ -2409,7 +2410,7 @@ def _lgv_step(ds, gsel, p_st, x, v, F, sc, h, ens0, U0, s0, nod_m):
     while True:
         Zp = s0["Z"].clone()
         Zp[:, :3] = Zp[:, :3] + s * (-eta * Pg0 + nz)
-        r = _lgv_eval(ds, gsel, p_st, x, v, F, sc, h, ens0, U0, Zp, True)
+        r = _lgv_eval(ds, gsel, p_st, x, v, F, sc, h, ens, U0, Zp, True)
         _dmin, _ef = torch.stack([torch.linalg.det(r["J"]).min(), r["E"].to(r["J"].dtype)]).tolist()
         if math.isfinite(_ef) and _dmin > float(a.det_eps) and bool(torch.isfinite(r["g"]).all()):
             break
@@ -3229,7 +3230,7 @@ for it in pbar:
                         _Zi = _Zm.clone()
                         _Zi[:, :3] = (_uin - _U0[:, :3]).detach()
                         _s0 = _lgv_eval(ds, gsel, p_st, x, v, F, sc, _hp, _lgv_ens, _U0, _Zi, True)
-                    _lgv_out = _lgv_step(ds, gsel, p_st, x, v, F, sc, _hp, _lgv_ens[0], _U0, _s0, _lgv_nodm)
+                    _lgv_out = _lgv_step(ds, gsel, p_st, x, v, F, sc, _hp, _lgv_ens, _U0, _s0, _lgv_nodm)
                 if dev == "cuda" or str(dev).startswith("cuda"):
                     torch.cuda.synchronize()
                 _PLGV["t_cur"] += time.perf_counter() - _tp0
