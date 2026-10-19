@@ -136,6 +136,10 @@ ap.add_argument("--bc_ipg", action="store_true",
                      "아래인 노드의 이번 스텝 변위를 세 성분 모두 0 으로 박는다 (collide 커널 "
                      "surface_type 0 과 같은 판정). --bc_mode project --bc_level node 와 함께, "
                      "--bc_mpm·--bc_soft 없이 쓴다")
+ap.add_argument("--bc_softplus", type=float, default=0.0,
+                help="**softplus 바닥 매핑** (0 이면 끔): 노드는 사영하지 않고, g2p 로 구한 입자 위치의 바닥 법선 "
+                     "좌표 s 를 s'=ε·log(1+exp(s/ε)) 로 옮기고 F 에 그 야코비안 I+(σ(s/ε)-1)nnᵀ 를 곱한다. 값이 ε. "
+                     "--bc_mode project --bc_level node 와 함께 (--bc_ipg/--bc_mpm/--bc_soft 없이) -- 장벽·접선 벌점 없음")
 ap.add_argument("--bc_slip", action="store_true",
                 help="바닥의 **접선 고정(no-slip) 항을 끈다**. 비관통만 남고 "
                      "닿은 입자가 면을 따라 미끄러진다")
@@ -1163,6 +1167,7 @@ _DPN_LIVE = [None]         # (노드 위치, 노드 출력) -- 마지막 step_on
 _NODE_TGT = None           # --ov_obj node: 목표 롤아웃 덤프 (pred·v·F·nodes)
 if os.environ.get("AF_OV_NODE_TGT"):
     _NODE_TGT = torch.load(os.environ["AF_OV_NODE_TGT"], map_location="cpu", weights_only=False)
+_PIN = [None]              # (손잡이 노드 마스크, 명령 변위) -- 풀 학습 경로에서도 on_pin 이 쓰므로 여기서 먼저 만든다
 _SIM_T = [0.0]             # --cfg_bc: 롤아웃 시작부터의 물리 시각 (서브스텝마다 갱신)
 
 
@@ -2975,6 +2980,12 @@ if a.bc_ipg:
         raise SystemExit("--bc_ipg 는 --bc_mode project --bc_level node 와만 (--bc_mpm/--bc_soft/--bc_slip 없이)")
     print("[바닥] i-PG 방식: 면 아래 격자점(노드) 변위 세 성분 0 사영 -- 장벽·접선 벌점 없음", flush=True)
 
+if a.bc_softplus > 0:
+    if a.bc_mode != "project" or a.bc_level != "node" or a.bc_ipg or a.bc_mpm or a.bc_soft:
+        raise SystemExit("--bc_softplus 는 --bc_mode project --bc_level node 와만 (--bc_ipg/--bc_mpm/--bc_soft 없이)")
+    print(f"[바닥] softplus 매핑 ε {a.bc_softplus:g}: 노드 사영 없음, 입자 법선 좌표 softplus + F 에 매핑 야코비안 "
+          f"-- 장벽·접선 벌점 없음 (AF_NO_BC={os.environ.get('AF_NO_BC')})", flush=True)
+
 if a.bc_mpm:
     os.environ["AF_BC_NODE_MPM"] = "1"
     print("[바닥] 접선 구속을 MPM 과 맞춘다 (면 아래만, dx 띠 아님)",
@@ -4275,7 +4286,6 @@ class _FuseCmpDone(Exception):
     pass
 
 
-_PIN = [None]       # (손잡이 노드 마스크, 명령 변위)
 _TAU_H = [None]     # (_TAU, _HES) -- _ov_once 가 _fieldS 로 넘긴다
 _JR_HOLD = [None]   # 2차 근사를 전개하는 중심 J (바깥 반복용)
 _CPOLY = [None]     # 셀 다항식 계수 (프레임마다 한 번 만든다)

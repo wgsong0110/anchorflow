@@ -81,6 +81,8 @@ def fast_supported(a):
         return False, "입자 단위 bc project"
     if getattr(a, "bc_ipg", False):
         return False, "bc_ipg (i-PG 방식 노드 바닥은 융합 커널에 없다)"
+    if float(getattr(a, "bc_softplus", 0.0) or 0.0) > 0.0:
+        return False, "bc_softplus (softplus 바닥 매핑은 융합 커널에 없다)"
     for k in ("control", "fe_state", "cell_poly", "refps"):
         if getattr(a, k, False):
             return False, k

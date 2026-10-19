@@ -330,6 +330,34 @@ def bc_ipg_nodes(npos, dpn, cfg):
     return d if dpn.shape[-1] == 3 else torch.cat([d, dpn[:, 3:]], -1)
 
 
+def bc_softplus_map(q, Jm, cfg, eps):
+    """**softplus 바닥 매핑** (--bc_softplus EPS): 노드는 그대로 두고, barycentric 으로 구한 입자 위치 q 를
+    바닥 법선 좌표 s = n·(q-p) 에 대해 s' = ε·log(1+exp(s/ε)) 로 옮긴다 (접선 성분은 그대로).
+
+        q <- q + (s' - s) n,      J_map = I + (σ(s/ε) - 1) n nᵀ,      F <- J_map F
+
+    Jm 은 grad u (단위행렬 없음, g2p_jac_pre 규약) -- 돌려줄 때도 같은 규약 (J_map (I+Jm) - I).
+    s ≫ ε 에서는 softplus 가 s 를 그대로 돌려줘 정확히 항등이다 (torch softplus threshold).
+    det J_map = σ(s/ε) > 0.
+    """
+    I3 = torch.eye(3, device=q.device, dtype=q.dtype)
+    Jf = I3 + Jm
+    for bc in (cfg.get("boundary_conditions") or []):
+        if bc.get("type") != "surface_collider":
+            continue
+        pt = _const_vec(bc["point"], q)
+        nr = _const_vec(bc["normal"], q)
+        nr = nr / nr.norm().clamp_min(1e-12)
+        s = ((q - pt) * nr).sum(-1)
+        sp = torch.nn.functional.softplus(s, beta=1.0 / eps, threshold=20.0)
+        q = q + (sp - s).unsqueeze(-1) * nr
+        sg = torch.sigmoid(s / eps)
+        nn_ = nr.unsqueeze(-1) * nr.unsqueeze(0)
+        Jmap = I3 + (sg - 1.0)[:, None, None] * nn_
+        Jf = Jmap @ Jf
+    return q, Jf - I3
+
+
 def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
             node_vel=None, ctrl_scale=1.0, mat=None, sec=None,
             dp_fast=None, dp_hook=None, pre_k=None, on_pin=None,
@@ -416,6 +444,10 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
         _du = _dus[0]
         _Jm = _Jsum / float(K)
         q = x + _du
+        if float(getattr(a, "bc_softplus", 0.0) or 0.0) > 0.0:
+            # **softplus 바닥 매핑** (--bc_softplus): g2p 직후 입자 위치와 야코비안에 함께 -- 위치(x2)·속도(jvp)·
+            # 관성·탄성(Jf) 이 모두 매핑된 위치 기준이 된다. 노드는 사영하지 않는다
+            q, _Jm = bc_softplus_map(q, _Jm, cfg, float(a.bc_softplus))
         _qraw = q
         _act = torch.zeros_like(q[:, :1])
         if node_mask is not None and node_mask[0] is not None:
@@ -548,7 +580,7 @@ _ARG_DEFAULTS = dict(
     n_nodes=32, hz_ratio=1.0 / 6 ** 0.5, node_h=0.0, hex_jac=False,
     fe_state=False, control=False, net_inertial=False, v_from_dt=False,
     dt_cond=False, dt_scale=False, dt_sub=1, eval_dt_sub=0, ens_off=0,
-    bc_soft=False, bc_mode="project", bc_level="node", bc_ipg=False, ov_init="predict",
+    bc_soft=False, bc_mode="project", bc_level="node", bc_ipg=False, bc_softplus=0.0, ov_init="predict",
     no_mat=False, mat_film=False, v0_traj=False, smooth_nb=0,
     cell_poly=False, ov_roll=0, refps=False, hold_traj=None, pool=True)
 
