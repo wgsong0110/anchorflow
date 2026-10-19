@@ -5479,11 +5479,13 @@ def _rollout(d, t0, L, gsel=None):
             Nb = torch.eye(P, device=dev, dtype=torch.float64)
         GR = Nb.T @ G @ Nb
         ev, Q = torch.linalg.eigh(GR)
-        if float(ev.min()) <= 0:
-            raise SystemExit(f"AF_ROLL_PRW: 계량이 양정부호가 아니다 (고윳값 최소 {float(ev.min()):.3e})")
+        # G >= eps·I 는 식으로 보장된다 (나머지 항은 전부 반정부호). 바닥에 바짝 붙은 입자의 b''(d) ~ d̂²/d² 가 커지면
+        # 고윳값 범위가 1e15 를 넘어 반올림으로 음수가 나온다 -- 그 부분만 eps 로 올린다 (원래 고윳값 최소는 기록).
+        ev_raw = float(ev.min())
+        ev = ev.clamp_min(st["epsI"])
         zR = z[:Nb.shape[1]]
         dth = Nb @ ((Q * ev.rsqrt().unsqueeze(-2)) @ Q.T @ zR) / zR.norm()
-        return dth, G, float(ev.min()), float(ev.max())
+        return dth, G, ev_raw, float(ev.max())
 
     def _prw_setup(p, x, v):
         st = dict(p=p, x=x.detach().clone(), v=v.detach().clone())
@@ -5619,6 +5621,10 @@ def _rollout(d, t0, L, gsel=None):
                 acc_bad.append((K, nfb, ntb))
                 break
             th, U, xp, ds, Jt, sm, sx = c_th, cU, cxp, cds, cJt, csm, csx
+            if K % 100 == 0:
+                _dm = min(float(q_.min()) for q_ in ds) if ds else float("nan")
+                print(f"      [걷기] 서브스텝 {K}  신축 평균 {sm:.3f} 최대 {sx:.3f}  백트래킹 누적 {nbt} 크기맞춤 {nfit}  "
+                      f"d최소 {_dm:.3e}  계량 고윳값(반올림 전) {e1:.3e}~{e2:.3e}  ‖θ‖ {float(th.norm()):.3e}", flush=True)
             if sm >= _PR["s_mean"] and sx >= _PR["s_max"]:
                 break
         return th, U, dict(K=K, backtrack=nbt, size_fit=nfit, sub_viol=bad_sub[:50], n_sub_viol=len(bad_sub),
