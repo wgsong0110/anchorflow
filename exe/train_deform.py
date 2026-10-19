@@ -1451,6 +1451,10 @@ _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최
 # AF_INV_LOG=경로: 롤아웃 프레임마다 이번 스텝 det(grad Phi) <= 0 인 사면체·입자 수와 누적 det F <= 0 입자 수를 한 줄씩 남긴다
 _INV_LOG = os.environ.get("AF_INV_LOG") or None
 _INV_CUR = [None]
+# AF_TUNNEL_LOG=경로: 롤아웃 프레임마다 활성 사면체 중 스텝 시작에 꼭지점 하나라도 바닥면 위였다가
+# 스텝 끝에 네 꼭지점이 모두 바닥면 아래가 된 것의 수를 한 줄씩 남긴다
+_TUN_LOG = os.environ.get("AF_TUNNEL_LOG") or None
+_TUN_CUR = [None]
 _BC_DIAG = []              # (활성비, 보정최대/ext, 바닥아래/ext, 손잡이오차/ext)
 # [오차/ext, 구속 입자 수, 명령 변위 평균] -- 학습·평가 공통으로 갱신된다
 _CTRL_ERR = [0.0, 0, 0.0]
@@ -1743,6 +1747,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
         _DET_LAST[0] = torch.linalg.det(Jf)
         if _INV_LOG is not None:                       # AF_INV_LOG: 프레임별 뒤집힌 사면체 수 (마지막 step_once 의 것)
             _INV_CUR[0] = (_DET_LAST[0].detach(), rows.detach())
+        if _TUN_LOG is not None:                       # AF_TUNNEL_LOG: 바닥을 통째로 통과한 사면체 (마지막 step_once 의 것)
+            _TUN_CUR[0] = (npos.detach(), dpn.detach(), rows.detach())
         _BC_LAST[0] = (_corr, _act)
         return (x2, p, v_next, None, dpn, None, dmg, None, fe, Jf)
 def traj_F(d):
@@ -5983,6 +5989,27 @@ def _rollout(d, t0, L, gsel=None):
                 if a.control else slice(None))
 
     def _on_frame(i, x2, gt, _info, x_still):
+        if _TUN_LOG is not None and _TUN_CUR[0] is not None:
+            with torch.no_grad():
+                _np, _dp, _rT = _TUN_CUR[0]
+                _tet = torch.unique(_rT, dim=0)                     # 활성 사면체 [K,4] (노드 번호)
+                _rec = {"frame": int(i) + 1, "tets": int(_tet.shape[0])}
+                for _bc in (d["cfg"].get("boundary_conditions") or []):
+                    if _bc.get("type") != "surface_collider":
+                        continue
+                    _pt = torch.tensor(_bc["point"], dtype=_np.dtype, device=_np.device)
+                    _nr = torch.tensor(_bc["normal"], dtype=_np.dtype, device=_np.device)
+                    _nr = _nr / _nr.norm().clamp_min(1e-12)
+                    _s0 = ((_np - _pt) * _nr).sum(-1)[_tet]         # 스텝 시작 꼭지점 부호 거리 [K,4]
+                    _s1 = ((_np + _dp[:, :3] - _pt) * _nr).sum(-1)[_tet]   # 스텝 끝 (반경 채널 제외)
+                    _thru = (_s0 > 0).any(1) & (_s1 < 0).all(1)
+                    _rec.update(tunnel=int(_thru.sum()),
+                                below_end_all=int((_s1 < 0).all(1).sum()),
+                                below_end_any=int((_s1 < 0).any(1).sum()),
+                                above_start_any=int((_s0 > 0).any(1).sum()))
+                    break
+            with open(_TUN_LOG, "a") as _fT:
+                _fT.write(json.dumps(_rec) + "\n")
         if _INV_LOG is not None and _INV_CUR[0] is not None:
             with torch.no_grad():
                 _dI, _rI = _INV_CUR[0]
