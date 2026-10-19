@@ -5256,7 +5256,12 @@ def _rollout(d, t0, L, gsel=None):
                    flow=bool(os.environ.get("AF_ROLL_PRW_FLOW")), nst=int(os.environ.get("AF_ROLL_PRW_NST", "16")),
                    s_mean=float(os.environ.get("AF_ROLL_PRW_STRAIN", "0.2")), s_max=float(os.environ.get("AF_ROLL_PRW_SMAX", "0.5")),
                    kmax=int(os.environ.get("AF_ROLL_PRW_KMAX", "500")),
-                   norigid=os.environ.get("AF_ROLL_PRW_RIGID", "remove") == "remove", rec=[], st=None, info={})
+                   norigid=os.environ.get("AF_ROLL_PRW_RIGID", "remove") == "remove", rec=[], st=None, info={},
+                   # AF_ROLL_PRW_PUSH=w (사용자 10-19 "바닥하고도 부딪치게"): 바닥 법선 방향 평행이동만 다시 허용하고, 걸음 방향에
+                   #   아래쪽(평균 법선 변위를 줄이는 계량 최급강하, 백색화 좌표) 을 비중 w 로 섞는다. 회전·수평 이동은 계속 뺀다.
+                   #   목표에 바닥 띠(시작 d < AF_ROLL_PRW_BAND) 입자 중 d < d̂ 비율 >= AF_ROLL_PRW_CONTACT 를 더한다.
+                   push=float(os.environ.get("AF_ROLL_PRW_PUSH", "0")), band=float(os.environ.get("AF_ROLL_PRW_BAND", "0.05")),
+                   contact=float(os.environ.get("AF_ROLL_PRW_CONTACT", "0.3")))
         if _PR["kind"] not in ("affine", "fourier", "rbf"):
             raise SystemExit(f"AF_ROLL_PRW 기저는 affine|fourier|rbf ({_RPRW})")
         _PR["gen"] = torch.Generator(device=dev).manual_seed(_PR["seed"])
@@ -5266,7 +5271,8 @@ def _rollout(d, t0, L, gsel=None):
         _PR["fl"] = [(q_, n_ / n_.norm()) for q_, n_ in _PR["fl"]]
         print(f"[파라미터 랜덤 표본 롤아웃] 기저 {_PR['kind']}:{_PR['size']}  {'흐름 RK4 ' + str(_PR['nst']) if _PR['flow'] else '덧셈 u=Bθ'}  "
               f"서브스텝 ‖Δθ‖_G = r_s {_PR['r']:g}  eps {_PR['eps']:g}  시드 {_PR['seed']}  강체 성분 {'제거' if _PR['norigid'] else '유지'}  "
-              f"목표 신축 평균 {_PR['s_mean']:g} 최대 {_PR['s_max']:g} (서브스텝 상한 {_PR['kmax']})  바닥 {len(_PR['fl'])} 개 -- "
+              f"목표 신축 평균 {_PR['s_mean']:g} 최대 {_PR['s_max']:g} (서브스텝 상한 {_PR['kmax']})  "
+              f"{('아래로 밀기 비중 ' + format(_PR['push'], 'g') + ' 바닥 띠 d<' + format(_PR['band'], 'g') + ' 접촉 목표 ' + format(_PR['contact'], 'g')) if _PR['push'] > 0 else ''}  바닥 {len(_PR['fl'])} 개 -- "
               f"프레임마다 시작 상태에서 독립 표본, 증분 포텐셜·중력·관성·망 없음", flush=True)
 
     def _prw_basis(s):
@@ -5479,9 +5485,19 @@ def _rollout(d, t0, L, gsel=None):
         cen = xp.mean(0)
         rel = xp - cen
         E3 = st["I3"]
-        rig = [E3[k_].expand_as(xp) for k_ in range(3)] + [torch.cross(E3[k_].expand_as(xp), rel, dim=-1) for k_ in range(3)]
-        C = torch.stack([torch.einsum("mi,mip->p", torch.zeros(Mn, 3, device=dev, dtype=torch.float64).index_add_(
-            0, rows.reshape(-1), (lamd.unsqueeze(-1) * r_.unsqueeze(1)).reshape(-1, 3)), Jn) for r_ in rig], 0)   # [6,P]
+        _sc = lambda r_: torch.einsum("mi,mip->p", torch.zeros(Mn, 3, device=dev, dtype=torch.float64).index_add_(
+            0, rows.reshape(-1), (lamd.unsqueeze(-1) * r_.unsqueeze(1)).reshape(-1, 3)), Jn)
+        if _PR["push"] > 0 and _PR["fl"]:
+            # 바닥 법선 평행이동은 허용 (제약에서 뺀다): 수평 두 방향 + 회전 셋만 제약
+            n0 = _PR["fl"][0][1]
+            t1 = torch.linalg.svd(n0.view(1, 3), full_matrices=True)[2][1:]          # n 에 수직인 두 단위벡터
+            rig = [t1[0].expand_as(xp), t1[1].expand_as(xp)] + [torch.cross(E3[k_].expand_as(xp), rel, dim=-1) for k_ in range(3)]
+            cn = _sc(n0.expand_as(xp)) / xp.shape[0]                    # ∂(평균 법선 변위)/∂θ
+        else:
+            rig = [E3[k_].expand_as(xp) for k_ in range(3)] + [torch.cross(E3[k_].expand_as(xp), rel, dim=-1) for k_ in range(3)]
+            cn = None
+        C = torch.stack([_sc(r_) for r_ in rig], 0)                       # [5|6,P]
+        st["_cn"] = cn
         return H, C
 
     def _prw_dir(H, C, z):
@@ -5502,7 +5518,15 @@ def _rollout(d, t0, L, gsel=None):
         ev_raw = float(ev.min())
         ev = ev.clamp_min(st["epsI"])
         zR = z[:Nb.shape[1]]
-        dth = Nb @ ((Q * ev.rsqrt().unsqueeze(-2)) @ Q.T @ zR) / zR.norm()
+        Ph = (Q * ev.rsqrt().unsqueeze(-2)) @ Q.T
+        vR = zR / zR.norm()
+        cn = st.get("_cn")
+        if _PR["push"] > 0 and cn is not None:
+            gw = Ph @ (Nb.T @ cn)                                        # 백색화 좌표의 평균 법선 변위 기울기
+            if float(gw.norm()) > 0:
+                vR = _PR["push"] * (-gw / gw.norm()) + (1.0 - _PR["push"]) * vR
+                vR = vR / vR.norm()
+        dth = Nb @ (Ph @ vR)                                             # ‖Δθ‖_G = ‖vR‖ = 1
         return dth, G, ev_raw, float(ev.max())
 
     def _prw_setup(p, x, v):
@@ -5587,6 +5611,8 @@ def _rollout(d, t0, L, gsel=None):
             eb_me = sum(float((st["bc_wref"] * phys_resid._barrier_b(((xpt - q_) * n_).sum(-1), st["bc_dh"], ext_kind="none")).sum())
                         for q_, n_ in _PR["fl"])
             nact0 = sum(int((q_ < st["bc_dh"]).sum()) for q_ in ds0)
+            st["band"] = (torch.stack(ds0, 0).min(0).values < _PR["band"]) if ds0 else torch.zeros(N, dtype=torch.bool, device=dev)
+            st["band_tet"] = st["band"][rep]
         info = dict(nb=nb, P=P, Mn=Mn, N=N, T=int(rep.numel()), epsI=st["epsI"], check_x=ex, check_J=eJ, rigid_resid=rres,
                     bc=st["bc_info"], bc_energy_ref=eb_ref, bc_energy_mine=eb_me, bc_active0=nact0)
         _PR["info"] = info
@@ -5602,6 +5628,15 @@ def _rollout(d, t0, L, gsel=None):
         U = torch.zeros(Ud.shape[0], _no, device=dev, dtype=dt_)
         U[:, :3] = Ud.to(dt_)
         return U
+
+    def _prw_contact(ds_):
+        # (d < d̂ 입자 수, 전체 비율, 바닥 띠 안 비율)
+        if not ds_:
+            return 0, 0.0, 0.0
+        dm_ = torch.stack(ds_, 0).min(0).values
+        c_ = dm_ < _PR["st"]["bc_dh"]
+        nb_ = int(_PR["st"]["band"].sum())
+        return int(c_.sum()), float(c_.float().mean()), (float((c_ & _PR["st"]["band"]).sum()) / nb_ if nb_ else 0.0)
 
     def _prw_walk():
         # 표본 하나: θ=0 에서 방향 z 고정, 서브스텝마다 현재 θ 의 계량으로 r_s 걸음 -> (θ, 기록)
@@ -5646,7 +5681,7 @@ def _rollout(d, t0, L, gsel=None):
                 _dm = min(float(q_.min()) for q_ in ds) if ds else float("nan")
                 print(f"      [걷기] 서브스텝 {K}  신축 평균 {sm:.3f} 최대 {sx:.3f}  백트래킹 누적 {nbt} 크기맞춤 {nfit}  "
                       f"d최소 {_dm:.3e}  계량 고윳값(반올림 전) {e1:.3e}~{e2:.3e}  ‖θ‖ {float(th.norm()):.3e}", flush=True)
-            if sm >= _PR["s_mean"] and sx >= _PR["s_max"]:
+            if sm >= _PR["s_mean"] and sx >= _PR["s_max"] and (_PR["push"] <= 0 or _prw_contact(ds)[2] >= _PR["contact"]):
                 break
         return th, U, dict(K=K, backtrack=nbt, size_fit=nfit, sub_viol=bad_sub[:50], n_sub_viol=len(bad_sub),
                            acc_viol=acc_bad, stuck=len(acc_bad), gR_eig_min=gmin, gR_eig_max=gmax, walk_strain_mean=sm, walk_strain_max=sx)
@@ -5672,6 +5707,13 @@ def _rollout(d, t0, L, gsel=None):
             djt = torch.linalg.det(Jt)
             s_mean, s_max = _prw_strain(Jt)
             du = (x2d - st["xd"]).norm(dim=-1)
+            ds2 = [((x2d - q_) * n_).sum(-1) for q_, n_ in _PR["fl"]]
+            ncon, fcon, fband = _prw_contact(ds2)
+            bt_ = st["band_tet"]
+            if bool(bt_.any()):
+                sb_mean, sb_max = _prw_strain(Jt[bt_])
+            else:
+                sb_mean = sb_max = float("nan")
             fdm = float("nan")
             if st["F0"] is not None:
                 _FCUM[0] = (Jd.float() @ st["F0"]).detach()
@@ -5681,7 +5723,9 @@ def _rollout(d, t0, L, gsel=None):
                    d_min=(dmin if _PR["fl"] else None), floor_bad=nfb,
                    detJ_tet_min=float(djt.min()), detJ_tet_max=float(djt.max()), tet_bad=int((djt <= 0).sum()), n_tets=int(djt.numel()),
                    detJ_part_min=float(djp.min()), part_bad=int((djp <= 0).sum()), detF_cum_min=fdm,
-                   theta_norm=float(th.norm()), sec=time.time() - _t, **wk)
+                   theta_norm=float(th.norm()), sec=time.time() - _t, contact_n=ncon, contact_frac=fcon, contact_band_frac=fband,
+                   band_n=int(st["band"].sum()), band_strain_mean=sb_mean, band_strain_max=sb_max,
+                   contact_target=(_PR["contact"] if _PR["push"] > 0 else 0.0), **wk)
         _PR["rec"].append(rec)
         print(f"    [파라미터 표본] {i + 1}/{L}  서브스텝 {wk['K']} (백트래킹 {wk['backtrack']}, 크기맞춤 {wk['size_fit']}, "
               f"후보 위반 서브스텝 {wk['n_sub_viol']}{' ' + str(wk['sub_viol'][:5]) if wk['n_sub_viol'] else ''})  "
@@ -5689,7 +5733,8 @@ def _rollout(d, t0, L, gsel=None):
               f"바닥 d최소 {'없음' if not _PR['fl'] else format(dmin, '.3e')} d<=0 입자 {nfb}  "
               f"det 사면체 {rec['detJ_tet_min']:.3f}~{rec['detJ_tet_max']:.3f} det<=0 사면체 {rec['tet_bad']}/{rec['n_tets']}  "
               f"det 입자 최소 {rec['detJ_part_min']:.3f} det<=0 입자 {rec['part_bad']}  누적detF최소 {fdm:.3f}  "
-              f"{rec['sec']:.1f} s", flush=True)
+              f"접촉(d<d̂) 입자 {ncon} ({100 * fcon:.2f}%, 바닥 띠 {rec['band_n']} 중 {100 * fband:.1f}%)  "
+              f"바닥 띠 신축 평균 {sb_mean:.3f} 최대 {sb_max:.3f}  {rec['sec']:.1f} s", flush=True)
         return x2, st["v"], st["p"]
 
     def _step(i, x, v):
@@ -5906,6 +5951,9 @@ def _rollout(d, t0, L, gsel=None):
               f"det 사면체 최소 {min(q['detJ_tet_min'] for q in _rr):.3f} 최대 {max(q['detJ_tet_max'] for q in _rr):.3f}  "
               f"서브스텝 평균 {np.mean([q['K'] for q in _rr]):.1f} 최대 {max(q['K'] for q in _rr)}  목표 미달 표본 "
               f"{sum((q['strain_mean'] < _PR['s_mean']) or (q['strain_max'] < _PR['s_max']) for q in _rr)}  "
+              f"접촉 입자 비율 평균 {100 * np.mean([q['contact_frac'] for q in _rr]):.2f}% 바닥 띠 접촉 비율 평균 "
+              f"{100 * np.mean([q['contact_band_frac'] for q in _rr]):.1f}% (최소 {100 * min(q['contact_band_frac'] for q in _rr):.1f}%)  "
+              f"바닥 띠 신축 평균 {np.nanmean([q['band_strain_mean'] for q in _rr]):.3f}  "
               f"후보 위반 서브스텝 (합) {sum(q['n_sub_viol'] for q in _rr)}  반감 40 번 실패로 멈춘 표본 {sum(len(q['acc_viol']) for q in _rr)}", flush=True)
         if os.environ.get("AF_ROLL_PRW_LOG"):
             json.dump({"tag": d.get("tag", ""), "t0": t0, "spec": _RPRW, "flow": _PR["flow"], "info": _PR["info"],
