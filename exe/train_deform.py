@@ -6003,7 +6003,12 @@ def _rollout(d, t0, L, gsel=None):
                     _s0 = ((_np - _pt) * _nr).sum(-1)[_tet]         # 스텝 시작 꼭지점 부호 거리 [K,4]
                     _s1 = ((_np + _dp[:, :3] - _pt) * _nr).sum(-1)[_tet]   # 스텝 끝 (반경 채널 제외)
                     _thru = (_s0 > 0).any(1) & (_s1 < 0).all(1)
+                    # 그 사면체에 든 입자 수 (_rT 는 입자마다 자기 사면체의 네 노드)
+                    _ps0 = ((_np - _pt) * _nr).sum(-1)[_rT]
+                    _ps1 = ((_np + _dp[:, :3] - _pt) * _nr).sum(-1)[_rT]
+                    _thru_p = (_ps0 > 0).any(1) & (_ps1 < 0).all(1)
                     _rec.update(tunnel=int(_thru.sum()),
+                                tunnel_particles=int(_thru_p.sum()), particles=int(_rT.shape[0]),
                                 below_end_all=int((_s1 < 0).all(1).sum()),
                                 below_end_any=int((_s1 < 0).any(1).sum()),
                                 above_start_any=int((_s0 > 0).any(1).sum()))
