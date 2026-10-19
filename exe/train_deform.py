@@ -2088,6 +2088,19 @@ def quick_val():
     롤아웃 상태 F 는 정답 t0 의 F 에서 시작해 학습과 같이 plastic_step 으로 전진한다.
     """
     net.eval()
+    # 검증은 탐침(노드 출력)에 대한 기울기만 쓴다 -- 망 파라미터 기울기를 끄면 GNN 활성값을 그래프에 남기지 않는다
+    # (값은 같다). 켜 둔 채로는 8층 GNN 활성값이 서브스텝마다 쌓여 44GB 카드에서 OOM 이 났다 (m6lgv8_inertial_fd, 10-19).
+    _vreq = [q.requires_grad for q in net.parameters()]
+    net.requires_grad_(False)
+    try:
+        return _quick_val_body()
+    finally:
+        for q, r_ in zip(net.parameters(), _vreq):
+            q.requires_grad_(r_)
+        net.train()
+
+
+def _quick_val_body():
     tot = ref = 0.0
     obj_s = rout_s = 0.0
     n_obj = n_rout = 0
@@ -2145,7 +2158,6 @@ def quick_val():
             tot += float((x[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
             ref += float((x_still[fm] - gt[fm]).norm(dim=-1).mean()) / EXT
         _ts.__exit__(None, None, None)
-    net.train()
     return (tot / max(ref, 1e-20), obj_s / max(n_obj, 1),
             (rout_s / n_rout) if n_rout else float("nan"))
 
