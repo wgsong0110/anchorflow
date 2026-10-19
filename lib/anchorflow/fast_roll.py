@@ -79,6 +79,8 @@ def fast_supported(a):
         return False, "node_h 없음 (셀 크기가 매 스텝 바뀌면 동기화가 필요하다)"
     if (not a.bc_soft) and a.bc_mode == "project" and a.bc_level == "particle":
         return False, "입자 단위 bc project"
+    if getattr(a, "bc_ipg", False):
+        return False, "bc_ipg (i-PG 방식 노드 바닥은 융합 커널에 없다)"
     for k in ("control", "fe_state", "cell_poly", "refps"):
         if getattr(a, k, False):
             return False, k

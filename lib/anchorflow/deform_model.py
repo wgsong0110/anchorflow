@@ -276,6 +276,33 @@ PROBE = [None, None]                 # [요청 여부 "want", 격자별 탐침 �
 INPUT_HOOK = [None]                  # 진단용: (망 입력 특징, net) -> 바꾼 특징
 
 
+def bc_ipg_nodes(npos, dpn, cfg):
+    """i-PG collide 커널과 같은 바닥: 면 아래 격자점(노드)의 변위 세 성분을 0 으로 (반경 채널은 둔다).
+
+    surface_collider 는 i-PG 의 dot(격자점 - point, normal) < 0 판정 그대로 (dx 띠 없음, 변위 뒤
+    위치 아님). bounding_box 는 i-PG grid 갱신처럼 영역 가장자리 bound 칸 안 노드의 바깥 방향
+    성분만 0 으로 한다.
+    """
+    keep = torch.ones(npos.shape[0], 3, dtype=torch.bool, device=npos.device)
+    for bc in (cfg.get("boundary_conditions") or []):
+        t = bc.get("type")
+        if t == "surface_collider":
+            if str(bc.get("surface", "sticky")) != "sticky":
+                raise SystemExit(f"--bc_ipg: sticky 아닌 바닥({bc.get('surface')})은 아직 없다")
+            pt = torch.as_tensor(bc["point"], device=npos.device, dtype=npos.dtype)
+            nr = torch.as_tensor(bc["normal"], device=npos.device, dtype=npos.dtype)
+            nr = nr / nr.norm().clamp_min(1e-12)
+            und = ((npos - pt) * nr).sum(-1) < 0.0
+            keep = keep & ~und.unsqueeze(-1)
+        elif t == "bounding_box":
+            gl = float(cfg.get("grid_lim", 2.0)); dx = gl / float(cfg["n_grid"])
+            b = 3.0 * dx                                   # i-PG add_bounding_box: padding = 3 고정
+            d3 = dpn[:, :3].detach()
+            keep = keep & ~(((npos < b) & (d3 < 0)) | ((npos >= gl - b) & (d3 > 0)))
+    d = torch.where(keep, dpn[:, :3], torch.zeros_like(dpn[:, :3]))
+    return d if dpn.shape[-1] == 3 else torch.cat([d, dpn[:, 3:]], -1)
+
+
 def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
             node_vel=None, ctrl_scale=1.0, mat=None, sec=None,
             dp_fast=None, dp_hook=None, pre_k=None, on_pin=None,
@@ -338,6 +365,13 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                     (tau * ctrl_scale * node_vel[_k]).detach(), dpn_k)
                 if _k == 0 and on_pin is not None:
                     on_pin(tau)
+            if getattr(a, "bc_ipg", False):
+                # **i-PG(MPM) 와 같은 바닥** (--bc_ipg): 장벽·접선 벌점 없이, 격자점(노드) 자체의
+                # 위치가 면 아래인 노드의 이번 스텝 변위를 세 성분 모두 0 으로 박는다 -- collide 커널
+                # (surface_type 0, sticky: grid_x*dx 로 격자점 위치를 재서 dot(offset, n) < 0 이면
+                # grid_v = 0) 와 같은 판정이다. 노드 격자는 원점 고정(정수배)이라 i-PG 격자처럼 공간에
+                # 고정된 점이다. 마스크는 변수와 무관한 상수라 나머지 노드의 기울기는 그대로 흐른다.
+                dpn_k = bc_ipg_nodes(_npk, dpn_k, cfg)
             if getattr(a, "gregory", False):
                 # 셀 안 로컬 변환 (rep_ip ours 와 같은 Gregory·방사형 스키닝) + 노드 변위 글로벌 변환
                 _duk, _Jk = gregory_skin(x, _npk, _rwk, dpn_k[:, :3], dpn_k[:, 3], float(a.node_h))
@@ -487,7 +521,7 @@ _ARG_DEFAULTS = dict(
     n_nodes=32, hz_ratio=1.0 / 6 ** 0.5, node_h=0.0, hex_jac=False,
     fe_state=False, control=False, net_inertial=False, v_from_dt=False,
     dt_cond=False, dt_scale=False, dt_sub=1, eval_dt_sub=0, ens_off=0,
-    bc_soft=False, bc_mode="project", bc_level="node", ov_init="predict",
+    bc_soft=False, bc_mode="project", bc_level="node", bc_ipg=False, ov_init="predict",
     no_mat=False, mat_film=False, v0_traj=False, smooth_nb=0,
     cell_poly=False, ov_roll=0, refps=False, hold_traj=None, pool=True)
 
