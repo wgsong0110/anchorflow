@@ -294,6 +294,22 @@ ap.add_argument("--pool_rdrop", type=float, default=0.0,
 ap.add_argument("--pool_expire", action="store_true",
                 help="--pool_gate 에서 나이 --pool_frames 에 닿은 상태를 만기로 뺀다. 기본은 만기 없음 "
                      "(사용자 2026-10-12: 같은 시기에 들어온 상태가 한꺼번에 빠지는 문제 때문에 기본에서 뺀다)")
+ap.add_argument("--pool_adv", choices=["model", "langevin"], default="model",
+                help="풀 상태 전진: model = 모델 출력으로 (기존), langevin = 노드 출력 공간에서 증분 포텐셜 MALA 한 걸음 "
+                     "(로그 장벽 계량, 게이트 없이 항상 전진; 무작위 버림 --pool_rdrop·만기 --pool_expire 는 그대로)")
+ap.add_argument("--lgv_start", choices=["model", "inertial"], default="model",
+                help="--pool_adv langevin 의 시작점: model = 모델 출력 (Z0=0, 학습 역전파의 기울기 재활용), "
+                     "inertial = 관성 예측 노드 변위 h·v_n + h²g (그 점에서 기울기 한 번 더)")
+ap.add_argument("--lgv_rho", type=float, default=0.5,
+                help="랑제빈 온도 T = 2·rho·E(u0)/d (d = 자유 노드 출력 수)")
+ap.add_argument("--lgv_eta0", type=float, default=1e-2,
+                help="랑제빈 걸음 크기 eta 시작값 (전역, 수락 ×--lgv_up, 기각 ×--lgv_down 으로 적응)")
+ap.add_argument("--lgv_up", type=float, default=1.1, help="랑제빈 수락 때 eta 배수")
+ap.add_argument("--lgv_down", type=float, default=0.7, help="랑제빈 기각 때 eta 배수")
+ap.add_argument("--lgv_backtrack", type=int, default=5,
+                help="제안에서 det J <= --det_eps 인 셀이 있으면 걸음(기울기·잡음)을 반으로 줄이는 최대 횟수 (그래도 안 되면 u0 로 전진)")
+ap.add_argument("--lgv_lam", type=float, default=1e-2,
+                help="계량 블록 G_n 에 더하는 정규화 lam·I 의 lam (전체 노드 블록 대각 평균에 대한 비)")
 ap.add_argument("--pool_init_frame", type=int, default=0,
                 help="--pool_init_traj 의 몇 번째 프레임을 고정 초기 상태로 쓸지 (문턱 보정용 출력만 최적화에 쓴다)")
 ap.add_argument("--seq_frames", type=int, default=0,
@@ -1328,6 +1344,9 @@ _DP_FAST = [None]
 _NF_HOLD = [None]
 _SNAP_N = [0]       # 사영이 손본 사면체 최대 개수 (보고용)
 _OV_TGT = [None]           # --ov_init target 이 쓸 자유낙하 평행이동 [3]
+# --pool_adv langevin: 전역 걸음 크기와 TB 창 집계 (수락·백트래킹·E 증가·시간)
+_PLGV = {"eta": None, "acc": [], "bt": [], "dE": [], "dEc": [], "T": [], "fail": 0,
+         "t_it": [], "t_pool": [], "t_cur": 0.0}
 # AF_OV_CURVE=경로 를 주면 프레임별 (반복, E) 곡선을 그 경로에 남긴다
 _CURVE = [] if os.environ.get("AF_OV_CURVE") else None
 # 롤아웃 덤프에 격자점을 함께 담을지. (노드 위치, 노드 변위, 유효 여부)
@@ -2156,6 +2175,7 @@ def save_ck(name, step):
                 "pool": (POOL.state_dict() if POOL is not None else None),
                 "pool_drop_win": list(_PL_DROP),
                 "pool_rms": list(_PL_RMS),
+                "pool_lgv_eta": _PLGV["eta"],
                 "seq": ({k_: (v_.detach().cpu() if torch.is_tensor(v_) else v_) for k_, v_ in SEQ.items()
                          if k_ != "cand"} if a.seq_frames else None),
                 # 프레임별 출력 변수 (--out_var). 렌더에서 같은 값을 쓰려면 필요하다
@@ -2276,6 +2296,9 @@ if a.pool:
         _nl, _ns = POOL.load_state_dict(_pck)
         _PL_DROP[:] = list((_rng_ck or {}).get("pool_drop_win") or [])
         _rms = (_rng_ck or {}).get("pool_rms")
+        if (_rng_ck or {}).get("pool_lgv_eta") is not None:
+            _PLGV["eta"] = float(_rng_ck["pool_lgv_eta"])
+            print(f"[재개] 랑제빈 eta {_PLGV['eta']:.3e} 이어받음", flush=True)
         if _rms:
             _PL_RMS[0] = float(_rms[0])
         print(f"[재개] 풀 {_nl} 개 상태 이어받음 (씬이 달라 버린 것 {_ns} 개), "
@@ -2292,6 +2315,131 @@ _LGV = {"eta": None, "T": None}                              # AF_OV_LANGEVIN: �
 _MINSM = {}                                                  # AF_OV_MIN_MULTI: 궤적 태그 -> 상태별 최솟값
 _MINS = {}                                                   # AF_OV_MIN: 상태별 출력만 최적화 최솟값 (상태 적합 초과% 기록)
 _GAP = []                                                    # AF_GAP_*: 같은 상태의 망 증분 포텐셜 vs 출력만 최적화 최솟값
+
+
+def _lgv_eval(ds, gsel, p_st, x, v, F, sc, h, ens, U0, Z, need_grad):
+    """노드 출력 u = U0 + Z 에서 학습과 같은 증분 포텐셜(정규화된 E, ip_of 그대로)과 need_grad 면 ∂E/∂Z (= ∂E/∂u).
+
+    망은 부르지 않는다: U0 (이 상태의 망 출력, 관성 예측 포함·고정) 를 _DP_FAST 로 돌려주고 탐침 "fixed" 로 Z 를 더한다.
+    격자·노드특징은 학습 forward 때 만든 것(ens)을 그대로 쓴다. det 통계(_DET_BAD 등)는 건드리지 않는다.
+    """
+    cfg = sc["cfg"]
+    vol = sc["mass"] / float(cfg["density"])
+    gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
+    ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
+    nrm = sc["_msum"] * (sc["ext"] ** 2) / (h ** 2)
+    Zv = Z.detach().clone().requires_grad_(bool(need_grad))
+    _sv = (_DP_FAST[0], _NF_HOLD[0], DM.PROBE[0], DM.PROBE[1])
+    _DP_FAST[0] = lambda _n, _dt, _dev: (U0,)
+    _NF_HOLD[0] = ens
+    DM.PROBE[0], DM.PROBE[1] = "fixed", [Zv]
+    try:
+        with (torch.enable_grad() if need_grad else torch.no_grad()), dt_scope(h):
+            x2, p2, v2, _, _, _, _, _, _, Jd = step_once(ds, 0, gsel, p_st, x, v, need_J=False)
+            fm = free_mask(ds, x.shape[0], dev, gsel, x, 0) if a.control else None
+            if _BC_LAST[0] is not None:
+                _am = _BC_LAST[0][1].reshape(-1) > 0.5
+                fm = (~_am) if fm is None else (fm & ~_am)
+            _dt_ = _DET_LAST[0]
+            _DET_LAST[0] = None
+            _emask = (_dt_ >= float(a.det_eps)) if _dt_ is not None else None   # det_take 과 같은 탄성 마스크
+            E, dlog, F_tr, _ = ip_of(x, x2 - x, v, F, sc["mass"], vol, cfg, h, ng_, gl_,
+                                     g=gv, norm=nrm, free=fm, jac=Jd, elastic_mask=_emask)
+            g = torch.autograd.grad(E, Zv)[0].detach() if need_grad else None
+    finally:
+        _DP_FAST[0], _NF_HOLD[0], DM.PROBE[0], DM.PROBE[1] = _sv
+    return dict(Z=Z.detach(), E=E.detach(), g=g, J=Jd.detach(),
+                out=(x2.detach(), v2.detach(), p2.detach() if torch.is_tensor(p2) else None,
+                     F_tr.detach(), dlog.detach()))
+
+
+def _lgv_metric(ens0, J, M, free):
+    """셀 뒤집힘 로그 장벽 φ(u) = −Σ_c log det J_c 의 헤시안을 노드별 3×3 블록 대각으로: G_n = Σ_{c∋n} w wᵀ + lam·I,
+    w = J_c^{-T} g_n (g_n = 사면체 c 에서 노드 n 의 형상함수 기울기). 셀 = 입자가 든 사면체 (tet_id 로 중복 제거).
+    -> (G, P = G^{-1}, P^{1/2}) 각 [M,3,3]."""
+    lo, lat, nn = ens0[2]
+    rows, aux = ens0[3], ens0[7]
+    N = rows.shape[0]
+    tid = SX.tet_id(lo, lat, nn, aux)
+    ut, inv = torch.unique(tid, return_inverse=True)
+    rep = torch.zeros(ut.shape[0], dtype=torch.long, device=rows.device).scatter_(
+        0, inv, torch.arange(N, device=rows.device))              # 사면체마다 대표 입자 하나 (J 는 사면체 안에서 상수)
+    # Kuhn 사슬 꼭짓점 r 의 형상함수 기울기: J = I + Σ_r u_r g_rᵀ, g_r = Ai[perm[r-1]] − Ai[perm[r]] (끝은 한쪽만)
+    Ar = lat.Ai.to(J.dtype)[aux[2][rep]]                          # [T,3(r),3]
+    gs = torch.zeros(rep.shape[0], 4, 3, device=J.device, dtype=J.dtype)
+    gs[:, 1:] += Ar
+    gs[:, :3] -= Ar
+    Ji, _info = torch.linalg.inv_ex(J[rep])
+    Ji = torch.nan_to_num(Ji, nan=0.0, posinf=0.0, neginf=0.0)
+    w = torch.einsum("tji,trj->tri", Ji, gs)                      # J^{-T} g_r  [T,4,3]
+    G = torch.zeros(M, 3, 3, device=J.device, dtype=J.dtype).index_add_(
+        0, rows[rep].reshape(-1), (w.unsqueeze(-1) * w.unsqueeze(-2)).reshape(-1, 3, 3))
+    dg = G.diagonal(dim1=-2, dim2=-1).mean(-1)
+    lam = float(a.lgv_lam) * dg[free].mean().clamp_min(1e-30)
+    G = G + lam * torch.eye(3, device=J.device, dtype=J.dtype)
+    e, Q = torch.linalg.eigh(G)
+    e = e.clamp_min(lam)
+    P = (Q * (1.0 / e).unsqueeze(-2)) @ Q.transpose(-1, -2)
+    Ph = (Q * e.rsqrt().unsqueeze(-2)) @ Q.transpose(-1, -2)
+    return G, P, Ph
+
+
+def _lgv_step(ds, gsel, p_st, x, v, F, sc, h, ens0, U0, s0, nod_m):
+    """노드 출력 공간 MALA 한 걸음 (블록 대각 계량 P 를 u0 의 것으로 고정한 근사 MALA). s0 = 시작점 _lgv_eval 결과.
+
+    T = 2·rho·E(u0)/d,  u' = u0 − η P∇E + √(2ηT) P^{1/2} ξ.  제안의 어떤 셀이든 det J <= --det_eps 면 걸음(기울기·잡음 둘 다)을
+    반으로 (최대 --lgv_backtrack 번), 그래도 안 되면 u0. 수락:
+      log α = −(E'−E0)/T − |u0−u'+aP∇E'|²_G/(2b) + |u'−u0+aP∇E0|²_G/(2b),  a = η·s, b = 2ηT·s² (s = 백트래킹 배율; s=1 이면 4ηT)
+    기각이면 u0 로 전진. -> 전진에 쓸 out (x2, v2, p2, F_tr, dlog)."""
+    M = U0.shape[0]
+    free = (torch.ones(M, dtype=torch.bool, device=dev) if nod_m is None else ~nod_m)
+    fz = free.unsqueeze(-1).to(U0.dtype)
+    d = 3 * int(free.sum())
+    E0 = float(s0["E"])
+    if not (math.isfinite(E0) and d > 0 and s0["g"] is not None and bool(torch.isfinite(s0["g"]).all())):
+        _PLGV["fail"] += 1
+        return s0["out"]
+    T = 2.0 * float(a.lgv_rho) * max(E0, 1e-30) / d
+    G, P, Ph = _lgv_metric(ens0, s0["J"], M, free)
+    eta = float(_PLGV["eta"])
+    Pg0 = (P @ s0["g"][:, :3].unsqueeze(-1)).squeeze(-1) * fz
+    xi = torch.randn(M, 3, device=dev, dtype=U0.dtype, generator=gen)
+    nz = (Ph @ xi.unsqueeze(-1)).squeeze(-1) * fz * math.sqrt(2.0 * eta * T)
+    s, nbt, r, Zp = 1.0, 0, None, None
+    while True:
+        Zp = s0["Z"].clone()
+        Zp[:, :3] = Zp[:, :3] + s * (-eta * Pg0 + nz)
+        r = _lgv_eval(ds, gsel, p_st, x, v, F, sc, h, ens0, U0, Zp, True)
+        _dmin, _ef = torch.stack([torch.linalg.det(r["J"]).min(), r["E"].to(r["J"].dtype)]).tolist()
+        if math.isfinite(_ef) and _dmin > float(a.det_eps) and bool(torch.isfinite(r["g"]).all()):
+            break
+        if nbt >= int(a.lgv_backtrack):
+            r = None
+            break
+        s *= 0.5
+        nbt += 1
+    _PLGV["bt"].append(nbt)
+    _PLGV["T"].append(T)
+    acc = False
+    if r is None:
+        _PLGV["fail"] += 1
+    else:
+        E1 = float(r["E"])
+        Pg1 = (P @ r["g"][:, :3].unsqueeze(-1)).squeeze(-1) * fz
+        du = (Zp[:, :3] - s0["Z"][:, :3]) * fz
+        a_, b_ = eta * s, 2.0 * eta * T * s * s
+        fw = du + a_ * Pg0
+        bw = -du + a_ * Pg1
+        qf = float((fw.unsqueeze(-2) @ G @ fw.unsqueeze(-1)).sum())
+        qb = float((bw.unsqueeze(-2) @ G @ bw.unsqueeze(-1)).sum())
+        la = -(E1 - E0) / T - qb / (2.0 * b_) + qf / (2.0 * b_)
+        _PLGV["dE"].append(E1 / max(E0, 1e-30) - 1.0)
+        _u = float(torch.rand(1, device=dev, generator=gen))
+        acc = math.isfinite(la) and math.log(max(_u, 1e-300)) < la
+    _PLGV["acc"].append(float(acc))
+    _PLGV["dEc"].append((float(r["E"]) / max(E0, 1e-30) - 1.0) if acc else 0.0)
+    _PLGV["eta"] = min(max(eta * (float(a.lgv_up) if acc else float(a.lgv_down)), 1e-12), 1e6)
+    return r["out"] if acc else s0["out"]
 
 
 def _ov_reference(ds, gsel, p_st, x, v, F, sc, h, t=0):
@@ -2787,8 +2935,16 @@ if not a.pool and a.iters > 0:
 if a.infer:                           # 추론만: 체크포인트 단계에서 바로 평가로 (예전엔 --iters 까지 남은 반복을 학습한 뒤 평가했다)
     print(f"[추론] 학습 없이 평가만 (체크포인트 단계 {step0})", flush=True)
 pbar = tqdm(range(step0, step0 if a.infer else a.iters), desc="학습", ncols=90)
+if a.pool_adv == "langevin":
+    if _PLGV["eta"] is None:
+        _PLGV["eta"] = float(a.lgv_eta0)
+    print(f"[랑제빈] 풀 전진 = 증분 포텐셜 MALA 한 걸음 (시작점 {a.lgv_start}, rho {a.lgv_rho:g}, eta {_PLGV['eta']:.3e}, "
+          f"백트래킹 {a.lgv_backtrack}, lam {a.lgv_lam:g}, det_w {a.det_w:g})", flush=True)
 for it in pbar:
     L = a.unroll            # 학습 중 펼치기 길이는 바꾸지 않는다
+    if a.pool_adv == "langevin":
+        torch.cuda.synchronize()
+        _PLGV["t_it0"], _PLGV["t_cur"] = time.perf_counter(), 0.0
     opt.zero_grad(set_to_none=True)
     lx = lJ = la = ldm = ldet = 0.0
     still = arel = dmean = 0.0
@@ -2856,11 +3012,17 @@ for it in pbar:
                 if TBW is not None:
                     for _i, _e in enumerate(_OVREF["hist"]):
                         TBW.add_scalar("기준해/목적함수_LBFGS", _e, _i)
-            DM.PROBE[0] = "want" if (a.pool_gate > 0 or a.out_var) else None
+            _LGV_ON = (a.pool_adv == "langevin")
+            DM.PROBE[0] = "want" if (a.pool_gate > 0 or a.out_var or _LGV_ON) else None
+            if _LGV_ON:
+                _NF_HOLD[0] = "want"                     # 격자·노드특징을 붙잡아 랑제빈 평가에서 재사용
             with dt_scope(_hp), _tsec("step_once"):
                 x2, p2, v2, _J, _dp, _ai, _dmg, _cr, _fe, _Jd = step_once(
                     ds, 0, gsel, p_st, x, v, need_J=False)
             DM.PROBE[0] = None
+            if _LGV_ON:
+                _lgv_ens, _NF_HOLD[0] = _NF_HOLD[0], None
+                _lgv_nodm = _NOD_M[0]
             with _tsec("free_mask"):
                 fm = (free_mask(ds, n_p, dev, gsel, x, 0)
                       if a.control else None)
@@ -2911,7 +3073,8 @@ for it in pbar:
             # 탄성·접촉·관성이 모두 들어 있고, 출력이 증분 포텐셜의 최소점이면 0 이다.
             _rout_t = None
             _gnorm_t = None
-            if (a.pool_gate > 0 or a.out_var) and DM.PROBE[1]:
+            _gU = None
+            if (a.pool_gate > 0 or a.out_var or _LGV_ON) and DM.PROBE[1]:
                 _pz = DM.PROBE[1][0]                         # 격자 하나 (ens_off 1) 기준
                 _gU, = torch.autograd.grad(E_ip * nrm, _pz, retain_graph=True)
                 _mN, = torch.autograd.grad((sc["mass"].unsqueeze(-1) * x2).sum(), _pz, retain_graph=True)
@@ -3037,6 +3200,34 @@ for it in pbar:
                 _PL_MSG.append(1)
                 print(f"[풀] 씬 {tag} 손실이 비유한 -- 이 배치는 건너뛴다",
                       flush=True)
+            _lgv_out = None
+            if _LGV_ON:
+                # 풀 상태 전진 = 노드 출력 공간 증분 포텐셜 MALA 한 걸음 (게이트 없음, 항상 전진)
+                if dev == "cuda" or str(dev).startswith("cuda"):
+                    torch.cuda.synchronize()
+                _tp0 = time.perf_counter()
+                with _tsec("랑제빈"):
+                    _U0 = _dp.detach()
+                    _Zm = torch.zeros_like(_U0)
+                    if a.lgv_start == "model":
+                        # 시작점 = 모델 출력 (Z0 = 0). 기울기는 위에서 구한 _gU (= ∂(E·nrm)/∂u) 를 재활용
+                        _s0 = dict(Z=_Zm, E=E_ip.detach(),
+                                   g=(_gU / nrm if _gU is not None else None), J=_Jd.detach(),
+                                   out=(x2.detach(), v2.detach(), p2.detach() if torch.is_tensor(p2) else None,
+                                        F_tr.detach(), dlog.detach()))
+                    else:
+                        # 시작점 = 관성 예측 노드 변위 h·v_n + h²g (Z0 = u_inertial − u_θ), 그 점에서 기울기 한 번 더 (망 기울기 없음)
+                        _e0 = _lgv_ens[0]
+                        _uin = DM.node_inertial(x, v, sc["mass"], _e0[3], _e0[4], _e0[1].shape[0],
+                                                sc["cfg"]["g"], _hp)[0]
+                        _Zi = _Zm.clone()
+                        _Zi[:, :3] = (_uin - _U0[:, :3]).detach()
+                        _s0 = _lgv_eval(ds, gsel, p_st, x, v, F, sc, _hp, _lgv_ens, _U0, _Zi, True)
+                    _lgv_out = _lgv_step(ds, gsel, p_st, x, v, F, sc, _hp, _lgv_ens[0], _U0, _s0, _lgv_nodm)
+                if dev == "cuda" or str(dev).startswith("cuda"):
+                    torch.cuda.synchronize()
+                _PLGV["t_cur"] += time.perf_counter() - _tp0
+                del _lgv_ens
             lx = lx + _lv / a.batch
             lres = lres + res / a.batch
             if _oob > 0.5:
@@ -3052,6 +3243,11 @@ for it in pbar:
                     SEQ["cand"] = (x2.detach(), v2.detach(),
                                    phys_resid.plastic_step(F_tr, dlog).detach(),
                                    p2.detach() if torch.is_tensor(p2) else None, float(_hp))
+                elif _lgv_out is not None:
+                    _lx2, _lv2, _lp2, _lFt, _ldl = _lgv_out
+                    st["x"], st["v"] = _lx2, _lv2
+                    st["F"] = phys_resid.plastic_step(_lFt, _ldl).detach()
+                    st["p"] = _lp2
                 elif a.pool_gate > 0 and not _gate_ok:
                     _GATE_N[1] += 1                          # 기준 못 넘음: 전진 없이 같은 상태로 남긴다
                 elif not a.out_var:
@@ -3064,7 +3260,11 @@ for it in pbar:
                     st["p"] = p2.detach() if torch.is_tensor(p2) else None
                 # out_var 는 상태를 **전진시키지 않는다** -- 같은 상태의 노드
                 # 출력을 계속 최적화해 하한까지 내린다 (노드 집합도 고정된다)
-            if a.pool_gate > 0 and not a.seq_frames:
+            if _LGV_ON and not a.seq_frames:
+                POOL.put_back_gate(slot if kind == "pool" else None, st, advanced=True,
+                                   rdrop=a.pool_rdrop, expire=a.pool_expire, dt_frac=1.0 / _sub,
+                                   stuck_max=0)
+            elif a.pool_gate > 0 and not a.seq_frames:
                 POOL.put_back_gate(slot if kind == "pool" else None, st,
                                    advanced=_gate_ok and not a.out_var,
                                    rdrop=a.pool_rdrop, expire=a.pool_expire, dt_frac=1.0 / _sub,
@@ -3142,6 +3342,31 @@ for it in pbar:
                     break
             else:
                 SEQ["prev"] = _cx
+        if a.pool_adv == "langevin":
+            torch.cuda.synchronize()
+            _PLGV["t_it"].append(time.perf_counter() - _PLGV["t_it0"])
+            _PLGV["t_pool"].append(_PLGV["t_cur"])
+        if it % 20 == 0 and a.pool_adv == "langevin" and TBW is not None and _PLGV["acc"]:
+            _tit, _tpl = float(np.mean(_PLGV["t_it"])), float(np.mean(_PLGV["t_pool"]))
+            TBW.add_scalar("랑제빈/수락률", float(np.mean(_PLGV["acc"])), it)
+            TBW.add_scalar("랑제빈/백트래킹_평균", float(np.mean(_PLGV["bt"])) if _PLGV["bt"] else 0.0, it)
+            TBW.add_scalar("랑제빈/백트래킹_실패누적", _PLGV["fail"], it)
+            if _PLGV["dE"]:
+                TBW.add_scalar("랑제빈/E증가_비율", float(np.mean(_PLGV["dE"])), it)
+                TBW.add_scalar("랑제빈/E증가_비율_중앙", float(np.median(_PLGV["dE"])), it)
+            TBW.add_scalar("랑제빈/E증가_비율_채택", float(np.mean(_PLGV["dEc"])), it)
+            TBW.add_scalar("랑제빈/eta", float(_PLGV["eta"]), it)
+            if _PLGV["T"]:
+                TBW.add_scalar("랑제빈/온도_중앙", float(np.median(_PLGV["T"])), it)
+            TBW.add_scalar("속도/반복당_초", _tit, it)
+            TBW.add_scalar("속도/모델업데이트_초", _tit - _tpl, it)
+            TBW.add_scalar("속도/풀업데이트_초", _tpl, it)
+            if it % 100 == 0:
+                print(f"  [랑제빈 {it}] 수락 {np.mean(_PLGV['acc']):.3f}  백트래킹 {np.mean(_PLGV['bt'] or [0]):.2f}  "
+                      f"E증가 {np.mean(_PLGV['dE'] or [float('nan')]):+.3f}  eta {_PLGV['eta']:.3e}  실패누적 {_PLGV['fail']}  "
+                      f"반복당 {_tit:.3f}초 (모델 {_tit - _tpl:.3f} / 풀 {_tpl:.3f})  전진프레임 평균 {arel:.1f}", flush=True)
+            for _k in ("acc", "bt", "dE", "dEc", "T", "t_it", "t_pool"):
+                _PLGV[_k].clear()
         if it % 20 == 0:
             pbar.set_postfix(E=f"{lx:.3e}", 잔차=f"{lres:.3e}",
                              폐기=f"{POOL.n_drop}",
