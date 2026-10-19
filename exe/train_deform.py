@@ -2830,7 +2830,13 @@ def _mk_ov_opt(vs):
     if a.ov_opt == "gd":
         return torch.optim.SGD(vs, lr=a.ov_gd_lr)
     if a.ov_opt == "lbfgs":
-        return torch.optim.LBFGS(vs, lr=1.0, max_iter=max(a.ov_roll, 1),
+        # AF_OV_LBFGS_LR: 초기 걸음 배율(기본 1). 첫 걸음은 곡률 이력이 없어 t = lr·min(1, 1/|g|₁) 로
+        # 시작하고 strong_wolfe 선 탐색(최대 25 평가, max_eval 과 무관)이 늘리거나 줄인다.
+        # AF_OV_LBFGS_MAX_EVAL: 한 step 의 함수 평가 상한(기본 torch 값 max_iter*5/4)
+        _me = os.environ.get("AF_OV_LBFGS_MAX_EVAL")
+        return torch.optim.LBFGS(vs, lr=float(os.environ.get("AF_OV_LBFGS_LR", 1.0)),
+                                 max_iter=max(a.ov_roll, 1),
+                                 max_eval=(int(_me) if _me else None),
                                  history_size=50,
                                  tolerance_grad=float(a.ov_tol),
                                  tolerance_change=float(a.ov_tol),
