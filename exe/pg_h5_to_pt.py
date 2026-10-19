@@ -38,6 +38,11 @@ for f in fs:
     X.append(torch.from_numpy(x.T.copy()).float()); V.append(torch.from_numpy(v.T.copy()).half())
     F.append(torch.from_numpy(Fm.T.copy()).reshape(-1, 3, 3).half())
 X, V, F = torch.stack(X), torch.stack(V), torch.stack(F)
+if float(F[0].float().abs().max()) == 0.0:
+    # PG 는 0 프레임 h5 를 첫 서브스텝 전에 쓰는데 그때 f_tensor 는 아직 채워지지 않은 0 이다 (1 프레임은 ≈I).
+    # PG 솔버의 시작 F 는 항등이므로 0 프레임 F 를 항등으로 둔다.
+    F[0] = torch.eye(3).half().expand_as(F[0])
+    print("[F] 0 프레임 f_tensor 가 전부 0 (PG 미초기화 저장) -> 항등으로", flush=True)
 assert torch.isfinite(X).all() and torch.isfinite(F.float()).all()
 err0 = float((F[0].float() - torch.eye(3)).abs().max())
 os.makedirs(os.path.dirname(a.out_pt), exist_ok=True)

@@ -21,6 +21,7 @@ ap.add_argument("--config", required=True)
 ap.add_argument("--shape", default="lego")
 ap.add_argument("--out", required=True)
 ap.add_argument("--fps", type=int, default=30)
+ap.add_argument("--iter", type=int, default=-1, help="3DGS 체크포인트 반복. -1 이면 PG load_checkpoint 처럼 가장 큰 반복")
 ap.add_argument("--iso", type=float, default=0.0, help="공분산을 등방형 (iso × 가우시안 축 길이 중앙값)² I 로 (F 무시). 0 이면 FΣFᵀ")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
@@ -40,7 +41,9 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 os.chdir(_cwd)
 mp = f"{W}/pgmodel/{MODEL[a.shape]}"
 gs = GaussianModel(3)
-gs.load_ply(f"{mp}/point_cloud/iteration_30000/point_cloud.ply")
+_it = a.iter if a.iter >= 0 else max(int(q.split("_")[-1]) for q in os.listdir(f"{mp}/point_cloud") if q.startswith("iteration_"))
+print(f"[3DGS] {mp} iteration_{_it}", flush=True)
+gs.load_ply(f"{mp}/point_cloud/iteration_{_it}/point_cloud.ply")
 KIDX = torch.nonzero(gs.get_opacity[:, 0] > float(cfg.get("opacity_threshold", 0.02))).squeeze(1)
 TP, SO, MEAN = transform2origin(gs.get_xyz[KIDX], float(cfg.get("scale", 1.0)))
 TP = shift2center111(TP)
