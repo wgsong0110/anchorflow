@@ -5213,6 +5213,57 @@ def _rollout(d, t0, L, gsel=None):
         if not _RW["fl"]:
             print("[랜덤 걸음 롤아웃] 경고: 씬에 surface_collider 가 없다 -- 바닥 장벽 없이 뒤집힘 장벽만", flush=True)
 
+    # AF_ROLL_PRW=기저:크기:r[:eps[:seed]] (사용자 10-19): 증분 포텐셜·중력·관성·망 없이 **매끄러운 함수 파라미터 θ 를 랜덤하게 뽑아**
+    #   시작 상태(롤아웃 t0)를 노드 변위 u = B(x_node)·Θ 로 변형한다. **프레임마다 독립 표본** (누적·표류 없음, 항상 시작 상태 기준).
+    #   B: 노드 위치를 입자 경계 상자로 [0,1]³ 정규화한 s 의 기저 -- fourier:K (축별 1, cos 2πks, sin 2πks, k<=K 텐서곱),
+    #      rbf:n (n×n×n 격자 중심 가우시안, 폭 σ = 간격 1/(n-1)), affine (1, s-0.5). θ = vec Θ (기저 nb × 성분 3).
+    #   계량 G_θ: 시작 상태에서 정확히 만든다 (입자 변위·셀 야코비안이 θ 에 선형 -- 같은 g2p_pre/g2p_jac_pre 식).
+    #      바닥 −Σ_i log d_i : 정확한 헤시안 Σ_i (∇d_i)(∇d_i)ᵀ / d_i²  (d 가 θ 에 선형).
+    #      뒤집힘 −Σ_c log det J_c : 정확한 헤시안 Σ_c tr(J⁻¹dJ J⁻¹dJ') 는 비대칭 J 에서 **부정부호**다 (회전·비대칭 방향
+    #        dJ=skew 이면 tr((dJ)²) = −‖dJ‖² < 0). 그래서 기본(met=frob)은 Σ_c ‖J_c⁻¹ dJ_c‖_F² 를 쓴다 -- 정확한 헤시안의
+    #        대칭부는 같고 반대칭부 부호만 +. ‖θ‖_G < 1 이면 각 셀 ‖J⁻¹dJ‖_2 <= ‖·‖_F < 1 이라 det(J+dJ) > 0, 각 입자
+    #        |Δd_i| < d_i 라 d_i > 0 -- 두 장벽 안이 **보장**된다. AF_ROLL_PRW_MET=exact 면 정확한 헤시안을 그대로 쓴다
+    #        (양정부호가 아니면 중단). 정확한 헤시안의 고윳값 범위는 어느 쪽이든 기록한다.
+    #      + eps · mean(diag) · I (θ 정규화, eps 무차원).
+    #   θ = r · G^{-1/2} z / ‖z‖, z ~ N(0, I)  ->  ‖θ‖_G = r.
+    _RPRW = os.environ.get("AF_ROLL_PRW") or None
+    if _RPRW:
+        if _RRW or _RLGV or a.ov_roll > 0 or _ROLL_IP is not None:
+            raise SystemExit("AF_ROLL_PRW 는 AF_ROLL_RW·AF_ROLL_LGV·--ov_roll·AF_ROLL_IP 와 함께 쓰지 않는다")
+        _pq = _RPRW.split(":")
+        _PR = dict(kind=_pq[0], size=(int(_pq[1]) if len(_pq) > 1 and _pq[1] else 1), r=float(_pq[2]),
+                   eps=(float(_pq[3]) if len(_pq) > 3 and _pq[3] else 1e-2),
+                   seed=(int(_pq[4]) if len(_pq) > 4 and _pq[4] else int(a.seed)),
+                   met=os.environ.get("AF_ROLL_PRW_MET", "frob"), rec=[], st=None, info={})
+        if _PR["kind"] not in ("affine", "fourier", "rbf") or _PR["met"] not in ("frob", "exact"):
+            raise SystemExit(f"AF_ROLL_PRW 기저는 affine|fourier|rbf, AF_ROLL_PRW_MET 는 frob|exact ({_RPRW})")
+        _PR["gen"] = torch.Generator(device=dev).manual_seed(_PR["seed"])
+        _PR["fl"] = [(torch.as_tensor(bc["point"], device=dev, dtype=torch.float64),
+                      torch.as_tensor(bc["normal"], device=dev, dtype=torch.float64))
+                     for bc in (d["cfg"].get("boundary_conditions") or []) if bc.get("type") == "surface_collider"]
+        _PR["fl"] = [(q_, n_ / n_.norm()) for q_, n_ in _PR["fl"]]
+        print(f"[파라미터 랜덤 표본 롤아웃] 기저 {_PR['kind']}:{_PR['size']}  ‖θ‖_G = r {_PR['r']:g}  eps {_PR['eps']:g}  "
+              f"시드 {_PR['seed']}  계량 {_PR['met']}  바닥 {len(_PR['fl'])} 개 -- 프레임마다 시작 상태에서 독립 표본, "
+              f"증분 포텐셜·중력·관성·망 없음", flush=True)
+
+    def _prw_basis(s):
+        # s [M,3] float64 (경계 상자 정규화) -> [M, nb]
+        k_, n_ = _PR["kind"], _PR["size"]
+        if k_ == "affine":
+            return torch.cat([torch.ones_like(s[:, :1]), s - 0.5], 1)
+        if k_ == "fourier":
+            fs = []
+            for ax in range(3):
+                c_ = [torch.ones_like(s[:, ax])]
+                for kk in range(1, n_ + 1):
+                    c_ += [torch.cos(2 * math.pi * kk * s[:, ax]), torch.sin(2 * math.pi * kk * s[:, ax])]
+                fs.append(torch.stack(c_, 1))                           # [M, 2K+1]
+            return torch.einsum("ma,mb,mc->mabc", fs[0], fs[1], fs[2]).reshape(s.shape[0], -1)
+        g1 = torch.linspace(0.0, 1.0, n_, device=s.device, dtype=s.dtype)
+        cen = torch.stack(torch.meshgrid(g1, g1, g1, indexing="ij"), -1).reshape(-1, 3)
+        sig = 1.0 / max(n_ - 1, 1)
+        return torch.exp(-((s.unsqueeze(1) - cen.unsqueeze(0)) ** 2).sum(-1) / (2 * sig * sig))
+
     def _rw_floor_d(xq):
         # [N] 모든 바닥 중 최소 부호거리 (float64)
         ds = [((xq.double() - q_) * n_).sum(-1) for q_, n_ in _RW["fl"]]
@@ -5313,8 +5364,212 @@ def _rollout(d, t0, L, gsel=None):
         del _ens
         return x2, v2, p2
 
+    def _prw_flow(Bfun, y0, th, nst=16):
+        # 속도장 v_θ(y) = B(s(y)) Θ 를 t∈[0,1] 동안 RK4 nst 스텝 적분 -> 노드 변위 y(1) − y0  (θ 에 미분 가능)
+        Th = th.view(-1, 3)
+        h_ = 1.0 / nst
+        y = y0
+        for _ in range(nst):
+            k1 = Bfun(y) @ Th
+            k2 = Bfun(y + 0.5 * h_ * k1) @ Th
+            k3 = Bfun(y + 0.5 * h_ * k2) @ Th
+            k4 = Bfun(y + h_ * k3) @ Th
+            y = y + (h_ / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+        return y - y0
+
+    def _prw_U(th):
+        st = _PR["st"]
+        if st["flow"]:
+            return _prw_flow(st["Bfun"], st["y0"], th, st["nst"])
+        return st["Bm"] @ th.view(-1, 3)
+
+    def _prw_floor_bar(xq):
+        # (바닥 장벽 값 Σ_c Σ_i −log d_i, 최소 d, d<=0 개수) -- 바닥마다 따로 (장벽은 바닥별 합)
+        bsum, dmin, nb_ = 0.0, float("inf"), 0
+        for q_, n_ in _PR["fl"]:
+            dq = ((xq.double() - q_) * n_).sum(-1)
+            dmin = min(dmin, float(dq.min()))
+            nb_ += int((dq <= 0).sum())
+            bsum += float(-torch.log(dq.clamp_min(1e-300)).sum())
+        return bsum, (dmin if _PR["fl"] else None), nb_
+
+    def _prw_setup(p, x, v):
+        st = dict(p=p, x=x.detach().clone(), v=v.detach().clone(), flow=bool(os.environ.get("AF_ROLL_PRW_FLOW")),
+                  nst=int(os.environ.get("AF_ROLL_PRW_NST", "16")))
+        _no = int(getattr(net, "n_out", 3))
+        _SIM_T[0] = 0.0
+        _NF_HOLD[0] = "want"
+        _sv = _DP_FAST[0]
+        _DP_FAST[0] = lambda _n, _dt, _dev: (torch.zeros(_n, _no, device=_dev, dtype=x.dtype),)
+        try:
+            with torch.enable_grad(), dt_scope(FRAME_DT):
+                step_once(d, t0, gsel, p, x, v, need_J=False)
+        finally:
+            _DP_FAST[0] = _sv
+        _ens, _NF_HOLD[0] = _NF_HOLD[0], None
+        _DET_LAST[0] = None
+        if len(_ens) != 1 or _NOD_M[0] is not None or a.hex_jac or a.smooth_nb > 0 or a.cell_poly or getattr(a, "gregory", False):
+            raise SystemExit("AF_ROLL_PRW: 격자 하나·손잡이 없음·사면체 선형 전달일 때만 (계량이 정확하려면)")
+        e0 = _ens[0]
+        npos, (lo, lat, nn), rows, lam_, aux = e0[1], e0[2], e0[3], e0[4], e0[7]
+        Mn, N = npos.shape[0], x.shape[0]
+        xd = st["x"].double()
+        blo, bhi = xd.min(0).values, xd.max(0).values
+        bsz = (bhi - blo).clamp_min(1e-12)
+        Bfun = lambda y: _prw_basis((y - blo) / bsz)
+        y0 = npos.double()
+        Bm = Bfun(y0)                                                    # [Mn, nb]
+        nb = Bm.shape[1]
+        P = 3 * nb
+        lamd = lam_.double()
+        info = dict(nb=nb, P=P, Mn=Mn, N=N, flow=st["flow"])
+        with torch.no_grad():
+            if st["flow"]:
+                # 흐름 사상의 야코비안 ∂U/∂θ (θ=0) 를 autograd 로 -> 입자 변위 야코비안 (같은 중심좌표 전달)
+                _fz = lambda th: _prw_flow(Bfun, y0, th, st["nst"])
+                _th0 = torch.zeros(P, device=dev, dtype=torch.float64)
+                _Ep = torch.eye(P, device=dev, dtype=torch.float64)
+                Jn = torch.cat([torch.func.vmap(lambda t_: torch.func.jvp(_fz, (_th0,), (t_,))[1])(_Ep[c_:c_ + 8])
+                                for c_ in range(0, P, 8)], 0).permute(1, 2, 0).contiguous()   # 전진 모드 정확 야코비안 [Mn,3,P]
+                info["flowjac_vs_B"] = float((Jn - torch.einsum("ma,ij->miaj", Bm, torch.eye(3, device=dev, dtype=torch.float64)
+                                                                ).reshape(Mn, 3, P)).abs().max())
+            Phi = (lamd.unsqueeze(-1) * Bm[rows]).sum(1)                 # [N, nb] 입자 변위 = Phi Θ (선형 경우)
+            # 바닥: 정확한 헤시안 Σ_i ∇d_i ∇d_iᵀ / d_i²
+            Hf = torch.zeros(P, P, device=dev, dtype=torch.float64)
+            nbad0 = 0
+            for q_, n_ in _PR["fl"]:
+                dq = ((xd - q_) * n_).sum(-1)
+                nbad0 += int((dq <= 0).sum())
+                dq = dq.abs().clamp_min(1e-6 * EXT)
+                if st["flow"]:
+                    gd = torch.zeros(N, P, device=dev, dtype=torch.float64)
+                    for k_ in range(4):                                  # ∇_θ d_i = nᵀ Σ_k lam_ik Jn[rows_ik]
+                        gd += lamd[:, k_:k_ + 1] * torch.einsum("i,nip->np", n_, Jn[rows[:, k_]])
+                    A_ = gd / dq.unsqueeze(-1)
+                    Hf += A_.T @ A_
+                else:
+                    A_ = Phi / dq.unsqueeze(-1)
+                    Hf += torch.kron(A_.T @ A_, torch.outer(n_, n_))
+            info["floor_bad_start"] = nbad0
+            if nbad0:
+                print(f"[파라미터 표본] 경고: 시작 상태가 바닥 장벽 밖 -- d<=0 입자 {nbad0} 개 (계량에서는 |d| 를 EXT·1e-6 아래로 안 내린다)",
+                      flush=True)
+            # 뒤집힘 (선형 경우만): 셀 = 입자가 든 사면체, 셀마다 대표 입자. ψ_c [nb,3]: J_c − I = Θᵀ ψ_c (g2p_jac_pre 와 같은 식)
+            tid = SX.tet_id(lo, lat, nn, aux)
+            ut, inv = torch.unique(tid, return_inverse=True)
+            rep = torch.zeros(ut.shape[0], dtype=torch.long, device=dev).scatter_(0, inv, torch.arange(N, device=dev))
+            info["T"] = int(rep.shape[0])
+            H = Hf.clone()
+            if not st["flow"]:
+                Bc = Bm[rows[rep]]                                       # [T,4,nb]
+                dd = (Bc[:, 1:] - Bc[:, :-1]).transpose(1, 2)            # [T,nb,3(r)]
+                Dy = dd.gather(2, aux[1][rep].unsqueeze(1).expand(-1, nb, -1))
+                psi = Dy @ lat.Ai.double()                               # [T,nb,3(j)]  (시작점 J = I 라 W = ψ J⁻¹ = ψ)
+                X_ = psi.reshape(psi.shape[0], nb * 3)
+                Hex_flip = (X_.T @ X_).view(nb, 3, nb, 3).permute(0, 3, 2, 1).reshape(P, P)   # Σ_c tr(dJ dJ')  (정확)
+                Hfr_flip = torch.kron(torch.einsum("taj,tbj->ab", psi, psi), torch.eye(3, device=dev, dtype=torch.float64))
+                Hex = Hf + Hex_flip
+                ee = torch.linalg.eigvalsh(Hex)
+                info.update(hex_eig_min=float(ee.min()), hex_eig_max=float(ee.max()), hex_neg=int((ee < 0).sum()))
+                H = Hex if _PR["met"] == "exact" else Hf + Hfr_flip
+                st.update(psi=psi, Hex=Hex)
+            dg = H.diagonal().mean()
+            G = H + _PR["eps"] * dg * torch.eye(P, device=dev, dtype=torch.float64)
+            ev, Q = torch.linalg.eigh(G)
+            info.update(G_eig_min=float(ev.min()), G_eig_max=float(ev.max()), diag_mean=float(dg))
+            if float(ev.min()) <= 0:
+                raise SystemExit(f"AF_ROLL_PRW: 계량이 양정부호가 아니다 (고윳값 최소 {float(ev.min()):.3e}, 계량 {_PR['met']})")
+            Ph = (Q * ev.rsqrt().unsqueeze(-2)) @ Q.T
+        st.update(ens=_ens, Bm=Bm, Bfun=Bfun, y0=y0, Phi=Phi, rep=rep, G=G, Ph=Ph, P=P, nb=nb,
+                  F0=(_FCUM[0].clone() if _FCUM[0] is not None else None))
+        _PR["st"], _PR["info"] = st, info
+        print(f"[파라미터 표본 계량] 기저 수 {nb} -> θ 차원 {P}, 노드 {Mn}, 입자 {N}, 사면체 {info['T']}, 흐름 {st['flow']}"
+              + (f" (RK4 {st['nst']} 스텝, ∂U/∂θ(autograd) − B⊗I 최대 {info['flowjac_vs_B']:.2e})" if st["flow"] else "")
+              + f"  계량 {'바닥만' if st['flow'] else _PR['met']}  고윳값 {info['G_eig_min']:.3e}~{info['G_eig_max']:.3e}"
+              + (f"  | 정확한 헤시안(바닥+뒤집힘) 고윳값 {info['hex_eig_min']:.3e}~{info['hex_eig_max']:.3e}, 음수 {info['hex_neg']} 개"
+                 if not st["flow"] else ""), flush=True)
+        # 확인: 실제 경로(step_once)의 장벽 값 2차 차분 vs 계량 (작은 걸음, ‖θ‖_G = 0.02)
+        with torch.no_grad():
+            z = torch.randn(P, device=dev, dtype=torch.float64, generator=_PR["gen"])
+            th = 0.02 * (Ph @ z) / z.norm()
+            fv = []
+            for sg in (1.0, -1.0, 0.0):
+                x2, _, _, Jd = _rw_eval(0, st["p"], st["x"], st["v"], _ens, _prw_pad(_prw_U(sg * th), x.dtype))
+                fb = _prw_floor_bar(x2)[0]
+                if not st["flow"]:
+                    dj = torch.linalg.det(Jd[rep].double())
+                    fb += float(-torch.log(dj.clamp_min(1e-300)).sum())
+                fv.append(fb)
+            fd = (fv[0] + fv[1] - 2 * fv[2])
+            qg = float(th @ G @ th)
+            qx = float(th @ (st["Hex"] if not st["flow"] else Hf) @ th)
+            print(f"[파라미터 표본 확인] 실제 경로 장벽 2차 차분 {fd:.4e}  θᵀHθ(정확한 헤시안{'' if not st['flow'] else ', 바닥, 1차 흐름'}) {qx:.4e}  "
+                  f"θᵀGθ {qg:.4e}  (‖θ‖_G² = 4e-4)", flush=True)
+            info.update(fd_check=fd, fd_hex=qx, fd_G=qg)
+
+    def _prw_pad(Ud, dt_):
+        _no = int(getattr(net, "n_out", 3))
+        U = torch.zeros(Ud.shape[0], _no, device=dev, dtype=dt_)
+        U[:, :3] = Ud.to(dt_)
+        return U
+
+    def _prw_step(i, p, x, v):
+        if _PR["st"] is None:
+            _prw_setup(p, x, v)
+        st = _PR["st"]
+        _SIM_T[0] = 0.0
+        with torch.no_grad():
+            z = torch.randn(st["P"], device=dev, dtype=torch.float64, generator=_PR["gen"])
+            th = _PR["r"] * (st["Ph"] @ z) / z.norm()
+            gn0 = float((th @ st["G"] @ th).sqrt())
+        nbt = 0
+        while True:
+            with torch.no_grad():
+                Ud = _prw_U(th)
+            x2, v2, p2, Jd = _rw_eval(0, st["p"], st["x"], st["v"], st["ens"], _prw_pad(Ud, x.dtype))
+            _, dmin, nfb = _prw_floor_bar(x2)
+            if not (st["flow"] and nfb > 0) or nbt >= 30:
+                break
+            th = 0.5 * th                                                # 흐름은 비선형 -- 바닥을 뚫으면 같은 방향으로 반씩
+            nbt += 1
+        with torch.no_grad():
+            gn = float((th @ st["G"] @ th).sqrt())
+            dj = torch.linalg.det(Jd.double())
+            jbad = dj <= 0
+            ntb = 0
+            if bool(jbad.any()):
+                e0 = st["ens"][0]
+                tid = SX.tet_id(e0[2][0], e0[2][1], e0[2][2], e0[7])
+                ntb = int(torch.unique(tid[jbad]).numel())
+            du = (x2 - st["x"]).norm(dim=-1)
+            perr = float(((x2 - st["x"]).double() - (st["Phi"] @ th.view(-1, 3) if not st["flow"]
+                          else (st["ens"][0][4].double().unsqueeze(-1) * Ud[st["ens"][0][3]]).sum(1))).abs().max())
+            jerr = float("nan")
+            if not st["flow"]:
+                Jp = torch.eye(3, device=dev, dtype=torch.float64) + th.view(-1, 3).T @ st["psi"]
+                jerr = float((Jp - Jd[st["rep"]].double()).abs().max())
+            fdm = float("nan")
+            if st["F0"] is not None:
+                _FCUM[0] = (Jd.float() @ st["F0"]).detach()
+                fdm = float(torch.linalg.det(_FCUM[0].double()).min())
+        rec = dict(frame=i + 1, gnorm=gn, gnorm_draw=gn0, backtrack=nbt, du_mean=100 * float(du.mean()) / EXT,
+                   du_max=100 * float(du.max()) / EXT, d_min=dmin, floor_bad=nfb, detJ_min=float(dj.min()),
+                   detJ_bad_particles=int(jbad.sum()), detJ_bad_tets=ntb, n_tets=int(st["rep"].numel()),
+                   detF_cum_min=fdm, pred_err_x=perr, pred_err_J=jerr)
+        _PR["rec"].append(rec)
+        print(f"    [파라미터 표본] 프레임 {i + 1}/{L}  ‖θ‖_G {gn:.4f}" + (f" (뽑은 값 {gn0:.4f}, 백트래킹 {nbt})" if st["flow"] else "")
+              + f"  변위 평균 {rec['du_mean']:.4f}% 최대 {rec['du_max']:.4f}% EXT  d최소 "
+              f"{'없음' if dmin is None else format(dmin, '.3e')} 바닥위반 {nfb}  detJ최소 {rec['detJ_min']:.4f} "
+              f"뒤집힌 사면체 {ntb}/{rec['n_tets']}  누적detF최소 {fdm:.4f}  선형예측 오차 x {perr:.1e} J {jerr:.1e}  "
+              f"누적 {time.time() - _RO_T0:.1f} s", flush=True)
+        return x2, st["v"], st["p"]
+
     def _step(i, x, v):
         p = _S["p"]
+        if _RPRW:
+            x2, v2, p2 = _prw_step(i, p, x, v)
+            _S["p"] = p2 if p2 is not None else p
+            return x2, v2, None
         if _RRW:
             x2, v2, p2 = _rw_step(i, p, x, v)
             _S["p"] = p2 if p2 is not None else p
@@ -5500,6 +5755,20 @@ def _rollout(d, t0, L, gsel=None):
                       _f)
         print(f"  [곡선] {_cp}  프레임 {len(_CURVE)}", flush=True)
         del _CURVE[:]
+    if _RPRW and _PR["rec"]:
+        _rr = _PR["rec"]
+        print(f"  [파라미터 표본 요약] 기저 {_PR['kind']}:{_PR['size']} 흐름 {_PR['st']['flow']} r {_PR['r']:g} eps {_PR['eps']:g} "
+              f"시드 {_PR['seed']}  표본 {len(_rr)}  변위 평균 {np.mean([q['du_mean'] for q in _rr]):.4f}% EXT "
+              f"(표본별 최대의 최대 {max(q['du_max'] for q in _rr):.4f}%)  바닥 위반 (합) {sum(q['floor_bad'] for q in _rr)} "
+              f"위반 표본 {sum(q['floor_bad'] > 0 for q in _rr)}  뒤집힌 사면체 (합) {sum(q['detJ_bad_tets'] for q in _rr)} "
+              f"위반 표본 {sum(q['detJ_bad_tets'] > 0 for q in _rr)}  detJ최소 {min(q['detJ_min'] for q in _rr):.4f}  "
+              f"d최소 {min((q['d_min'] for q in _rr if q['d_min'] is not None), default=float('nan')):.3e}  "
+              f"백트래킹 합 {sum(q['backtrack'] for q in _rr)}  누적detF최소 {min(q['detF_cum_min'] for q in _rr):.4f}", flush=True)
+        if os.environ.get("AF_ROLL_PRW_LOG"):
+            json.dump({"tag": d.get("tag", ""), "t0": t0, "spec": _RPRW, "met": _PR["met"], "info": _PR["info"],
+                       "frames": _rr}, open(os.environ["AF_ROLL_PRW_LOG"], "w"))
+            print(f"  [파라미터 표본 기록] {os.environ['AF_ROLL_PRW_LOG']}", flush=True)
+        _PR["rec"] = []
     if _RRW and _RW["rec"]:
         _rr = _RW["rec"]
         print(f"  [랜덤 걸음 요약] r {_RW['r']:g} eps {_RW['eps']:g} 시드 {_RW['seed']}  프레임 {len(_rr)}  "
