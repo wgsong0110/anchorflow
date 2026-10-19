@@ -2439,6 +2439,12 @@ def _lgv_step(ds, gsel, p_st, x, v, F, sc, h, ens0, U0, s0, nod_m):
     _PLGV["acc"].append(float(acc))
     _PLGV["dEc"].append((float(r["E"]) / max(E0, 1e-30) - 1.0) if acc else 0.0)
     _PLGV["eta"] = min(max(eta * (float(a.lgv_up) if acc else float(a.lgv_down)), 1e-12), 1e6)
+    _PLGV["n"] = _PLGV.get("n", 0) + 1
+    if _PLGV["n"] <= 24:                                          # 처음 몇 걸음은 한 줄씩 (시험 확인용)
+        print(f"    [랑제빈 걸음 {_PLGV['n']}] d {d}  E0 {E0:.4e}  T {T:.3e}  eta {eta:.3e}  백트래킹 {nbt}  "
+              f"E' {(float(r['E']) if r is not None else float('nan')):.4e}  "
+              f"logα {(la if r is not None else float('nan')):+.3f}  수락 {int(acc)}  "
+              f"|Δu|최대 {(float(du.norm(dim=-1).max()) if r is not None else 0.0):.3e}", flush=True)
     return r["out"] if acc else s0["out"]
 
 
@@ -3346,22 +3352,23 @@ for it in pbar:
             torch.cuda.synchronize()
             _PLGV["t_it"].append(time.perf_counter() - _PLGV["t_it0"])
             _PLGV["t_pool"].append(_PLGV["t_cur"])
-        if it % 20 == 0 and a.pool_adv == "langevin" and TBW is not None and _PLGV["acc"]:
+        if (it % 20 == 0 or it == a.iters - 1) and a.pool_adv == "langevin" and _PLGV["acc"]:
             _tit, _tpl = float(np.mean(_PLGV["t_it"])), float(np.mean(_PLGV["t_pool"]))
-            TBW.add_scalar("랑제빈/수락률", float(np.mean(_PLGV["acc"])), it)
-            TBW.add_scalar("랑제빈/백트래킹_평균", float(np.mean(_PLGV["bt"])) if _PLGV["bt"] else 0.0, it)
-            TBW.add_scalar("랑제빈/백트래킹_실패누적", _PLGV["fail"], it)
+            _tbw = TBW if TBW is not None else type("_N", (), {"add_scalar": staticmethod(lambda *q, **k: None)})
+            _tbw.add_scalar("랑제빈/수락률", float(np.mean(_PLGV["acc"])), it)
+            _tbw.add_scalar("랑제빈/백트래킹_평균", float(np.mean(_PLGV["bt"])) if _PLGV["bt"] else 0.0, it)
+            _tbw.add_scalar("랑제빈/백트래킹_실패누적", _PLGV["fail"], it)
             if _PLGV["dE"]:
-                TBW.add_scalar("랑제빈/E증가_비율", float(np.mean(_PLGV["dE"])), it)
-                TBW.add_scalar("랑제빈/E증가_비율_중앙", float(np.median(_PLGV["dE"])), it)
-            TBW.add_scalar("랑제빈/E증가_비율_채택", float(np.mean(_PLGV["dEc"])), it)
-            TBW.add_scalar("랑제빈/eta", float(_PLGV["eta"]), it)
+                _tbw.add_scalar("랑제빈/E증가_비율", float(np.mean(_PLGV["dE"])), it)
+                _tbw.add_scalar("랑제빈/E증가_비율_중앙", float(np.median(_PLGV["dE"])), it)
+            _tbw.add_scalar("랑제빈/E증가_비율_채택", float(np.mean(_PLGV["dEc"])), it)
+            _tbw.add_scalar("랑제빈/eta", float(_PLGV["eta"]), it)
             if _PLGV["T"]:
-                TBW.add_scalar("랑제빈/온도_중앙", float(np.median(_PLGV["T"])), it)
-            TBW.add_scalar("속도/반복당_초", _tit, it)
-            TBW.add_scalar("속도/모델업데이트_초", _tit - _tpl, it)
-            TBW.add_scalar("속도/풀업데이트_초", _tpl, it)
-            if it % 100 == 0:
+                _tbw.add_scalar("랑제빈/온도_중앙", float(np.median(_PLGV["T"])), it)
+            _tbw.add_scalar("속도/반복당_초", _tit, it)
+            _tbw.add_scalar("속도/모델업데이트_초", _tit - _tpl, it)
+            _tbw.add_scalar("속도/풀업데이트_초", _tpl, it)
+            if it % 100 == 0 or it == a.iters - 1:
                 print(f"  [랑제빈 {it}] 수락 {np.mean(_PLGV['acc']):.3f}  백트래킹 {np.mean(_PLGV['bt'] or [0]):.2f}  "
                       f"E증가 {np.mean(_PLGV['dE'] or [float('nan')]):+.3f}  eta {_PLGV['eta']:.3e}  실패누적 {_PLGV['fail']}  "
                       f"반복당 {_tit:.3f}초 (모델 {_tit - _tpl:.3f} / 풀 {_tpl:.3f})  전진프레임 평균 {arel:.1f}", flush=True)
