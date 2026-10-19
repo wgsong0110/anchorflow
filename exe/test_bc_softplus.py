@@ -50,7 +50,7 @@ chk("   s ≫ ε 야코비안 항등", float((Jm2[far] - Jm[far]).abs().max()) <
     f"{float((Jm2[far] - Jm[far]).abs().max()):.1e}")
 I3 = torch.eye(3, dtype=dt)
 d_old = torch.linalg.det(I3 + Jm); d_new = torch.linalg.det(I3 + Jm2)
-sg = torch.sigmoid(s0 / EPS)
+sg = torch.where(s0 / EPS > 20.0, torch.ones_like(s0), torch.sigmoid(s0 / EPS))
 chk("3) det J_map = σ > 0", bool((sg > 0).all()) and float((d_new - sg * d_old).abs().max()) < 1e-10,
     f"σ 최소 {float(sg.min()):.3e}, |det새 - σ det옛| 최대 {float((d_new - sg * d_old).abs().max()):.1e}")
 # 4) 매핑 야코비안 == 위치 매핑의 미분 (입자 몇 개를 골라 jacobian)

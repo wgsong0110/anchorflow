@@ -351,7 +351,8 @@ def bc_softplus_map(q, Jm, cfg, eps):
         s = ((q - pt) * nr).sum(-1)
         sp = torch.nn.functional.softplus(s, beta=1.0 / eps, threshold=20.0)
         q = q + (sp - s).unsqueeze(-1) * nr
-        sg = torch.sigmoid(s / eps)
+        # softplus 의 threshold(βs>20 에서 s 를 그대로) 와 같은 경계로 -- 그 너머는 위치·야코비안 모두 정확히 항등
+        sg = torch.where(s / eps > 20.0, torch.ones_like(s), torch.sigmoid(s / eps))
         nn_ = nr.unsqueeze(-1) * nr.unsqueeze(0)
         Jmap = I3 + (sg - 1.0)[:, None, None] * nn_
         Jf = Jmap @ Jf
