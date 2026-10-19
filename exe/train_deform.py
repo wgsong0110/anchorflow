@@ -5189,9 +5189,136 @@ def _rollout(d, t0, L, gsel=None):
         _LACC = []
         print(f"[랑제빈 롤아웃] 매 서브스텝 = 증분 포텐셜 MALA 한 걸음 (시작점 {_RLGV}, rho {a.lgv_rho:g}, "
               f"eta {_PLGV['eta']:.3e} ({_src}), 백트래킹 {a.lgv_backtrack}, lam {a.lgv_lam:g}, 서브스텝 {EVAL_SUB})", flush=True)
+    # AF_ROLL_RW=r[:eps[:seed]]: 증분 포텐셜·중력·관성을 전혀 쓰지 않는 **순수 랜덤 걸음** (사용자 10-19).
+    #   프레임마다 한 걸음, 노드 출력(변위) 공간에서 Δ = r · G^{-1/2} z / ‖z‖ (z ~ N(0,I)) -> ‖Δ‖_G = r (Dikin 타원 안, 선 탐색 없음).
+    #   G = (뒤집힘 장벽 −Σ log det J_c 의 블록 대각 계량: _lgv_metric 그대로, lam·I 포함)
+    #     + (바닥 장벽 −Σ_i log d_i 헤시안의 블록 대각 상계: G_n += Σ_i λ_in n nᵀ / d_i²  -- 코시-슈바르츠로 정확한 헤시안을 위에서 누름)
+    #     + eps · (M_n / 평균 M) · (뒤집힘 계량 대각 평균) · I   (노드 질량 항, eps 는 무차원)
+    #   망은 부르지 않는다 (노드 출력 = Δ 그 자체, 기준 0). 걸음 뒤 d_i>0·det J>0 를 매 프레임 기록한다.
+    _RRW = os.environ.get("AF_ROLL_RW") or None
+    if _RRW:
+        if _RLGV or a.ov_roll > 0 or _ROLL_IP is not None:
+            raise SystemExit("AF_ROLL_RW 는 AF_ROLL_LGV·--ov_roll·AF_ROLL_IP 와 함께 쓰지 않는다")
+        _rwq = _RRW.split(":")
+        _RW = dict(r=float(_rwq[0]), eps=(float(_rwq[1]) if len(_rwq) > 1 and _rwq[1] else 1e-2),
+                   seed=(int(_rwq[2]) if len(_rwq) > 2 and _rwq[2] else int(a.seed)), rec=[])
+        _RW["gen"] = torch.Generator(device=dev).manual_seed(_RW["seed"])
+        _RW["fl"] = [(torch.as_tensor(bc["point"], device=dev, dtype=torch.float64),
+                      torch.as_tensor(bc["normal"], device=dev, dtype=torch.float64))
+                     for bc in (d["cfg"].get("boundary_conditions") or []) if bc.get("type") == "surface_collider"]
+        _RW["fl"] = [(q_, n_ / n_.norm()) for q_, n_ in _RW["fl"]]
+        _RW["m"] = MASS[gsel]
+        print(f"[랜덤 걸음 롤아웃] 프레임마다 한 걸음 ‖Δ‖_G = r {_RW['r']:g}, eps {_RW['eps']:g}, 시드 {_RW['seed']}, "
+              f"바닥 {len(_RW['fl'])} 개, lam {a.lgv_lam:g} -- 증분 포텐셜·중력·관성 없음", flush=True)
+        if not _RW["fl"]:
+            print("[랜덤 걸음 롤아웃] 경고: 씬에 surface_collider 가 없다 -- 바닥 장벽 없이 뒤집힘 장벽만", flush=True)
+
+    def _rw_floor_d(xq):
+        # [N] 모든 바닥 중 최소 부호거리 (float64)
+        ds = [((xq.double() - q_) * n_).sum(-1) for q_, n_ in _RW["fl"]]
+        return torch.stack(ds, 0).min(0).values if ds else None
+
+    def _rw_eval(i, p, x, v, ens, U):
+        # 노드 출력 U 를 그대로 쓰는 한 스텝 (망 호출 없음) -> (x2, v2, p2, Jd)
+        _sv = (_DP_FAST[0], _NF_HOLD[0])
+        _DP_FAST[0] = lambda _n, _dt, _dev: (U,)
+        _NF_HOLD[0] = ens
+        try:
+            with torch.enable_grad(), dt_scope(FRAME_DT):
+                _x2, _p2, _v2, _, _, _, _, _, _, _Jd = step_once(d, t0 + i, gsel, p, x, v, need_J=False)
+            _DET_LAST[0] = None
+        finally:
+            _DP_FAST[0], _NF_HOLD[0] = _sv
+        return _x2.detach(), _v2.detach(), (_p2.detach() if torch.is_tensor(_p2) else _p2), _Jd.detach()
+
+    def _rw_step(i, p, x, v):
+        _SIM_T[0] = i * FRAME_DT
+        _no = int(getattr(net, "n_out", 3))
+        # 1) 격자·노드 구성만 만든다 (출력 0 -- 망 안 부름)
+        _NF_HOLD[0] = "want"
+        _sv = _DP_FAST[0]
+        _DP_FAST[0] = lambda _n, _dt, _dev: (torch.zeros(_n, _no, device=_dev, dtype=x.dtype),)
+        try:
+            with torch.enable_grad(), dt_scope(FRAME_DT):
+                step_once(d, t0 + i, gsel, p, x, v, need_J=False)
+        finally:
+            _DP_FAST[0] = _sv
+        _ens, _NF_HOLD[0] = _NF_HOLD[0], None
+        _DET_LAST[0] = None
+        e0 = _ens[0]
+        rows, lam_ = e0[3], e0[4]
+        Mn = e0[1].shape[0]
+        nm = _NOD_M[0]
+        free = torch.ones(Mn, dtype=torch.bool, device=dev) if nm is None else ~nm
+        with torch.no_grad():
+            # 2) 계량: 뒤집힘 (J = I, 시작점 출력 0) + 바닥 + 질량
+            _I = torch.eye(3, device=dev, dtype=x.dtype).expand(x.shape[0], 3, 3)
+            Gd, _, _ = _lgv_metric(e0, _I, Mn, free)
+            G = Gd.double()
+            dg = Gd.diagonal(dim1=-2, dim2=-1).mean(-1)[free].mean().double()
+            d0 = _rw_floor_d(x)
+            nbad0 = 0
+            if d0 is not None:
+                nbad0 = int((d0 <= 0).sum())
+                if nbad0 and i == 0:
+                    print(f"[랜덤 걸음] 경고: 시작 상태가 바닥 장벽 밖 -- d<=0 입자 {nbad0} 개, d 최소 {float(d0.min()):.3e} "
+                          f"(계량에서는 |d| 를 EXT·1e-6 아래로 안 내린다)", flush=True)
+                lw = lam_.double().clamp_min(0.0)
+                for q_, n_ in _RW["fl"]:
+                    dq = ((x.double() - q_) * n_).sum(-1).abs().clamp_min(1e-6 * EXT)
+                    c_ = (lw / (dq * dq).unsqueeze(-1))                      # [N,4]
+                    s_ = torch.zeros(Mn, device=dev, dtype=torch.float64).index_add_(0, rows.reshape(-1), c_.reshape(-1))
+                    G = G + s_.view(-1, 1, 1) * torch.outer(n_, n_)
+            Mnode = torch.zeros(Mn, device=dev, dtype=torch.float64).index_add_(
+                0, rows.reshape(-1), (lam_.double().clamp_min(0.0) * _RW["m"].double().unsqueeze(-1)).reshape(-1))
+            G = G + (_RW["eps"] * dg * Mnode / Mnode[free].mean().clamp_min(1e-30)).view(-1, 1, 1) \
+                * torch.eye(3, device=dev, dtype=torch.float64)
+            ev, Q = torch.linalg.eigh(G)
+            ev = ev.clamp_min(1e-30)
+            Ph = (Q * ev.rsqrt().unsqueeze(-2)) @ Q.transpose(-1, -2)
+            # 3) 랜덤 방향, 계량 길이 r
+            z = torch.randn(Mn, 3, device=dev, dtype=torch.float64, generator=_RW["gen"]) * free.unsqueeze(-1)
+            Dl = _RW["r"] * (Ph @ z.unsqueeze(-1)).squeeze(-1) / z.norm().clamp_min(1e-30)
+            gn = float((Dl.unsqueeze(-2) @ G @ Dl.unsqueeze(-1)).sum().sqrt())
+            U = torch.zeros(Mn, _no, device=dev, dtype=x.dtype)
+            U[:, :3] = Dl.to(x.dtype)
+        x2, v2, p2, Jd = _rw_eval(i, p, x, v, _ens, U)
+        with torch.no_grad():
+            dj = torch.linalg.det(Jd.double())
+            jbad = dj <= 0
+            tid = SX.tet_id(e0[2][0], e0[2][1], e0[2][2], e0[7])
+            ntet = int(torch.unique(tid).numel())
+            ntb = int(torch.unique(tid[jbad]).numel()) if bool(jbad.any()) else 0
+            d1 = _rw_floor_d(x2)
+            nfb = int((d1 <= 0).sum()) if d1 is not None else 0
+            du = (x2 - x).norm(dim=-1)
+            dun = Dl.norm(dim=-1)[free]
+            fdm = float("nan")
+            if _FCUM[0] is not None:
+                _FCUM[0] = (Jd.float() @ _FCUM[0]).detach()
+                fdm = float(torch.linalg.det(_FCUM[0].double()).min())
+        rec = dict(frame=i + 1, gnorm=gn, du_mean=100 * float(du.mean()) / EXT, du_max=100 * float(du.max()) / EXT,
+                   dnode_mean=100 * float(dun.mean()) / EXT, dnode_max=100 * float(dun.max()) / EXT,
+                   d_min_before=(float(d0.min()) if d0 is not None else None),
+                   d_min_after=(float(d1.min()) if d1 is not None else None),
+                   floor_bad=nfb, floor_bad_start=nbad0, detJ_min=float(dj.min()), detJ_bad_particles=int(jbad.sum()),
+                   detJ_bad_tets=ntb, n_tets=ntet, detF_cum_min=fdm, n_nodes=Mn, n_free=int(free.sum()))
+        _RW["rec"].append(rec)
+        print(f"    [랜덤 걸음] 프레임 {i + 1}/{L}  ‖Δ‖_G {gn:.4f}  변위 입자 평균 {rec['du_mean']:.4f}% 최대 {rec['du_max']:.4f}% "
+              f"(노드 평균 {rec['dnode_mean']:.4f}% 최대 {rec['dnode_max']:.4f}%) EXT  "
+              f"d최소 {rec['d_min_before'] if rec['d_min_before'] is None else format(rec['d_min_before'], '.3e')}"
+              f"->{rec['d_min_after'] if rec['d_min_after'] is None else format(rec['d_min_after'], '.3e')} 바닥위반 {nfb}  "
+              f"detJ최소 {rec['detJ_min']:.4f} 뒤집힘 입자 {rec['detJ_bad_particles']} 사면체 {ntb}/{ntet}  "
+              f"누적detF최소 {fdm:.4f}  누적 {time.time() - _RO_T0:.1f} s", flush=True)
+        del _ens
+        return x2, v2, p2
 
     def _step(i, x, v):
         p = _S["p"]
+        if _RRW:
+            x2, v2, p2 = _rw_step(i, p, x, v)
+            _S["p"] = p2 if p2 is not None else p
+            return x2, v2, None
         if _RLGV:
             _hs = FRAME_DT / EVAL_SUB
             _ln = []
@@ -5373,6 +5500,20 @@ def _rollout(d, t0, L, gsel=None):
                       _f)
         print(f"  [곡선] {_cp}  프레임 {len(_CURVE)}", flush=True)
         del _CURVE[:]
+    if _RRW and _RW["rec"]:
+        _rr = _RW["rec"]
+        print(f"  [랜덤 걸음 요약] r {_RW['r']:g} eps {_RW['eps']:g} 시드 {_RW['seed']}  프레임 {len(_rr)}  "
+              f"바닥 위반 (프레임 합) {sum(q['floor_bad'] for q in _rr)}  위반 프레임 {sum(q['floor_bad'] > 0 for q in _rr)}  "
+              f"뒤집힘 사면체 (프레임 합) {sum(q['detJ_bad_tets'] for q in _rr)}  위반 프레임 {sum(q['detJ_bad_tets'] > 0 for q in _rr)}  "
+              f"‖Δ‖_G 범위 {min(q['gnorm'] for q in _rr):.4f}~{max(q['gnorm'] for q in _rr):.4f}  "
+              f"입자 변위 평균 {np.mean([q['du_mean'] for q in _rr]):.4f}% EXT (최대 {max(q['du_max'] for q in _rr):.4f}%)  "
+              f"d최소 {min((q['d_min_after'] for q in _rr if q['d_min_after'] is not None), default=float('nan')):.3e}  "
+              f"누적detF최소 {min(q['detF_cum_min'] for q in _rr):.4f}", flush=True)
+        if os.environ.get("AF_ROLL_RW_LOG"):
+            json.dump({"tag": d.get("tag", ""), "t0": t0, "r": _RW["r"], "eps": _RW["eps"], "seed": _RW["seed"],
+                       "frames": _rr}, open(os.environ["AF_ROLL_RW_LOG"], "w"))
+            print(f"  [랜덤 걸음 기록] {os.environ['AF_ROLL_RW_LOG']}", flush=True)
+        _RW["rec"] = []
     if _ROLL_IP:
         json.dump({"tag": d.get("tag", ""), "t0": t0, "sub": EVAL_SUB, "ov": a.ov_roll > 0,
                    "errs": [float(q) for q in errs], "frames": _ROLL_IP}, open(os.environ["AF_ROLL_IP"], "w"))
