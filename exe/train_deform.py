@@ -5611,7 +5611,7 @@ def _rollout(d, t0, L, gsel=None):
             if st["F0"] is not None:
                 _FCUM[0] = (Jd.float() @ st["F0"]).detach()
                 fdm = float(torch.linalg.det(_FCUM[0].double()).min())
-        rec = dict(frame=i + 1, K=wk["K"], strain_mean=s_mean, strain_max=s_max,
+        rec = dict(frame=i + 1, strain_mean=s_mean, strain_max=s_max,
                    du_mean=100 * float(du.mean()) / EXT, du_max=100 * float(du.max()) / EXT,
                    d_min=(dmin if _PR["fl"] else None), floor_bad=nfb,
                    detJ_tet_min=float(djt.min()), detJ_tet_max=float(djt.max()), tet_bad=int((djt <= 0).sum()), n_tets=int(djt.numel()),
