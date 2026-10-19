@@ -5527,7 +5527,10 @@ def _rollout(d, t0, L, gsel=None):
         _bk, _bdh, _bext = phys_resid._BARRIER[0]
         _mw = (MASS[gsel] if MASS.numel() != x.shape[0] else MASS).double()
         st["bc_dh"] = float(_bdh)
-        st["bc_w"] = _bk * _mw / (float(_mw.sum()) * EXT * EXT)          # 정규화 증분 포텐셜(ip_of norm=Σm·EXT²/h²)에서의 가중
+        st["bc_wref"] = _bk * _mw / (float(_mw.sum()) * EXT * EXT)       # 정규화 증분 포텐셜(ip_of norm=Σm·EXT²/h²)에서의 가중 (값 대조용)
+        # 계량용 가중 (사용자 10-19 결정): 입자마다 kappa/d̂² -- d→0 에서 b(d) ≈ d̂²(−log d) 라 −log d 와 같은 크기의 장벽이 된다.
+        #   출력만 최적화 가중(위)을 그대로 쓰면 곡률이 −log d 의 d̂²·w ≈ 3e-10 배라 Dikin 걸음이 바닥을 못 막는다 (d≈5e-17 까지 붙어 멈춤).
+        st["bc_w"] = torch.full_like(_mw, _bk / (float(_bdh) ** 2))
         st["bc_info"] = (float(_bk), float(_bdh), _bext)
         st.update(ens=_ens, Bm=Bm, Bfun=Bfun, y0=y0, rows=rows, lamd=lam_.double(), xd=xd, rep=rep, tid=tid,
                   rank_r=aux[1][rep], Ai=Ai, I3=I3, psi=psi, P=P, nb=nb, Mn=Mn, N=N, epsI=0.0,
@@ -5563,7 +5566,7 @@ def _rollout(d, t0, L, gsel=None):
                     os.environ.pop("AF_BC_SLIP", None)
                 else:
                     os.environ["AF_BC_SLIP"] = _svs
-            eb_me = sum(float((st["bc_w"] * phys_resid._barrier_b(((xpt - q_) * n_).sum(-1), st["bc_dh"], ext_kind="none")).sum())
+            eb_me = sum(float((st["bc_wref"] * phys_resid._barrier_b(((xpt - q_) * n_).sum(-1), st["bc_dh"], ext_kind="none")).sum())
                         for q_, n_ in _PR["fl"])
             nact0 = sum(int((q_ < st["bc_dh"]).sum()) for q_ in ds0)
         info = dict(nb=nb, P=P, Mn=Mn, N=N, T=int(rep.numel()), epsI=st["epsI"], check_x=ex, check_J=eJ, rigid_resid=rres,
@@ -5573,7 +5576,7 @@ def _rollout(d, t0, L, gsel=None):
               f"{'흐름 RK4 ' + str(_PR['nst']) if _PR['flow'] else '덧셈'}  eps 항 {st['epsI']:.3e}  "
               f"내 식 vs step_once 최대차 x {ex:.1e} J {eJ:.1e}  강체 제약 잔차 {rres:.1e}  | 바닥 = phys_resid IPC 장벽 kappa "
               f"{st['bc_info'][0]:g} d̂ {st['bc_info'][1]:.5f} (학습 연장 {st['bc_info'][2]} -> 여기서는 none), 입자 수준, "
-              f"가중 kappa·m/(Σm·EXT²), 시작 d<d̂ 입자 {nact0}, sticky 접선 항은 계량에 안 넣음; "
+              f"계량 가중 kappa/d̂² (값 대조는 출력만 최적화 가중 kappa·m/(Σm·EXT²)), 시작 d<d̂ 입자 {nact0}, sticky 접선 항은 계량에 안 넣음; "
               f"장벽 값 확인 bc_energy {eb_ref:.6e} vs 내 합 {eb_me:.6e}", flush=True)
 
     def _prw_pad(Ud, dt_):
