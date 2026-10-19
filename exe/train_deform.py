@@ -242,6 +242,9 @@ ap.add_argument("--lr_cos", action="store_true",
                 help="학습률을 코사인으로 0 까지 감쇠한다. PT/KB/SH/SL/SW 전 "
                      "실행이 초반(250~1750 스텝) 최고 뒤 악화했고, 후반 큰 "
                      "보폭이 그 원인 후보다")
+ap.add_argument("--det_keep_elastic", action="store_true",
+                help="det < --det_eps 인 사면체를 **탄성항에서 빼지 않는다** (모든 사면체가 탄성항에 "
+                     "들어간다). 기본은 뺀다. 복구 손실은 --det_w 로 따로 끈다")
 ap.add_argument("--det_every", type=int, default=50,
                 help="det 통계(무효 비율·최소·중앙) 를 몇 스텝마다 로그에 "
                      "남길지. 0 이면 끔")
@@ -1271,7 +1274,7 @@ def det_take():
     for _q in (_DET_BAD, _DET_MIN, _DET_MED):
         if len(_q) > 200:
             _q.pop(0)
-    return (~bad), a.det_w * pen.mean()
+    return (None if a.det_keep_elastic else ~bad), a.det_w * pen.mean()
 
 
 def det_report():
@@ -1363,6 +1366,9 @@ _ENS_N = [1]               # 앙상블 격자 수
 _NODE_CAP = [False]
 _NODE_LAST = [None]
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
+# AF_INV_LOG=경로: 롤아웃 프레임마다 이번 스텝 det(grad Phi) <= 0 인 사면체·입자 수와 누적 det F <= 0 입자 수를 한 줄씩 남긴다
+_INV_LOG = os.environ.get("AF_INV_LOG") or None
+_INV_CUR = [None]
 _BC_DIAG = []              # (활성비, 보정최대/ext, 바닥아래/ext, 손잡이오차/ext)
 # [오차/ext, 구속 입자 수, 명령 변위 평균] -- 학습·평가 공통으로 갱신된다
 _CTRL_ERR = [0.0, 0, 0.0]
@@ -1653,6 +1659,8 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
             # GPU 에 둔다 -- 덤프할 때(프레임 끝) 한 번만 CPU 로 옮긴다. 매 평가마다 .cpu() 하면 동기화가 생긴다
             _NODE_LAST[0] = (npos.detach(), dpn.detach(), _sup, _pc)
         _DET_LAST[0] = torch.linalg.det(Jf)
+        if _INV_LOG is not None:                       # AF_INV_LOG: 프레임별 뒤집힌 사면체 수 (마지막 step_once 의 것)
+            _INV_CUR[0] = (_DET_LAST[0].detach(), rows.detach())
         _BC_LAST[0] = (_corr, _act)
         return (x2, p, v_next, None, dpn, None, dmg, None, fe, Jf)
 def traj_F(d):
@@ -5818,6 +5826,18 @@ def _rollout(d, t0, L, gsel=None):
                 if a.control else slice(None))
 
     def _on_frame(i, x2, gt, _info, x_still):
+        if _INV_LOG is not None and _INV_CUR[0] is not None:
+            with torch.no_grad():
+                _dI, _rI = _INV_CUR[0]
+                _bI = _dI <= 0
+                _nt = int(torch.unique(_rI[_bI], dim=0).shape[0]) if bool(_bI.any()) else 0
+                _ntot = int(torch.unique(_rI, dim=0).shape[0])
+                _Fc = _S.get("F_ov") if _S.get("F_ov") is not None else _FCUM[0]
+                _nc = int((torch.linalg.det(_Fc.float()) <= 0).sum()) if _Fc is not None else -1
+            with open(_INV_LOG, "a") as _fI:
+                _fI.write(json.dumps({"frame": int(i) + 1, "inv_tets": _nt, "tets": _ntot,
+                                      "inv_particles_step": int(_bI.sum()), "inv_particles_cum": _nc,
+                                      "det_min": float(_dI.min())}) + "\n")
         # 평가에서도 손잡이가 명령대로 끌리는지 본다. 학습 경로만 보고 "손잡이는
         # 정확하다" 고 판단했다가, 평가에서는 ctrl_id 가 저장 표본에 없어 대체
         # 입자가 중심이 되는 것을 놓쳤다.
