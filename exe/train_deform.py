@@ -2329,7 +2329,7 @@ _MINS = {}                                                   # AF_OV_MIN: 상태
 _GAP = []                                                    # AF_GAP_*: 같은 상태의 망 증분 포텐셜 vs 출력만 최적화 최솟값
 
 
-def _lgv_eval(ds, gsel, p_st, x, v, F, sc, h, ens, U0, Z, need_grad):
+def _lgv_eval(ds, gsel, p_st, x, v, F, sc, h, ens, U0, Z, need_grad, t=0):
     """노드 출력 u = U0 + Z 에서 학습과 같은 증분 포텐셜(정규화된 E, ip_of 그대로)과 need_grad 면 ∂E/∂Z (= ∂E/∂u).
 
     망은 부르지 않는다: U0 (이 상태의 망 출력, 관성 예측 포함·고정) 를 _DP_FAST 로 돌려주고 탐침 "fixed" 로 Z 를 더한다.
@@ -2347,8 +2347,8 @@ def _lgv_eval(ds, gsel, p_st, x, v, F, sc, h, ens, U0, Z, need_grad):
     DM.PROBE[0], DM.PROBE[1] = "fixed", [Zv]
     try:
         with (torch.enable_grad() if need_grad else torch.no_grad()), dt_scope(h):
-            x2, p2, v2, _, _, _, _, _, _, Jd = step_once(ds, 0, gsel, p_st, x, v, need_J=False)
-            fm = free_mask(ds, x.shape[0], dev, gsel, x, 0) if a.control else None
+            x2, p2, v2, _, _, _, _, _, _, Jd = step_once(ds, t, gsel, p_st, x, v, need_J=False)
+            fm = free_mask(ds, x.shape[0], dev, gsel, x, t) if a.control else None
             if _BC_LAST[0] is not None:
                 _am = _BC_LAST[0][1].reshape(-1) > 0.5
                 fm = (~_am) if fm is None else (fm & ~_am)
@@ -2396,7 +2396,7 @@ def _lgv_metric(ens0, J, M, free):
     return G, P, Ph
 
 
-def _lgv_step(ds, gsel, p_st, x, v, F, sc, h, ens, U0, s0, nod_m):
+def _lgv_step(ds, gsel, p_st, x, v, F, sc, h, ens, U0, s0, nod_m, t=0):
     """노드 출력 공간 MALA 한 걸음 (블록 대각 계량 P 를 u0 의 것으로 고정한 근사 MALA). s0 = 시작점 _lgv_eval 결과.
 
     T = 2·rho·E(u0)/d,  u' = u0 − η P∇E + √(2ηT) P^{1/2} ξ.  제안의 어떤 셀이든 det J <= --det_eps 면 걸음(기울기·잡음 둘 다)을
@@ -2411,6 +2411,7 @@ def _lgv_step(ds, gsel, p_st, x, v, F, sc, h, ens, U0, s0, nod_m):
     E0 = float(s0["E"])
     if not (math.isfinite(E0) and d > 0 and s0["g"] is not None and bool(torch.isfinite(s0["g"]).all())):
         _PLGV["fail"] += 1
+        _PLGV["last"] = dict(acc=0, nbt=-1, E0=E0, E1=float("nan"), eta=float(_PLGV["eta"]), J=s0["J"])
         return s0["out"]
     T = 2.0 * float(a.lgv_rho) * max(E0, 1e-30) / d
     G, P, Ph = _lgv_metric(ens0, s0["J"], M, free)
@@ -2422,7 +2423,7 @@ def _lgv_step(ds, gsel, p_st, x, v, F, sc, h, ens, U0, s0, nod_m):
     while True:
         Zp = s0["Z"].clone()
         Zp[:, :3] = Zp[:, :3] + s * (-eta * Pg0 + nz)
-        r = _lgv_eval(ds, gsel, p_st, x, v, F, sc, h, ens, U0, Zp, True)
+        r = _lgv_eval(ds, gsel, p_st, x, v, F, sc, h, ens, U0, Zp, True, t=t)
         _dmin, _ef = torch.stack([torch.linalg.det(r["J"]).min(), r["E"].to(r["J"].dtype)]).tolist()
         if math.isfinite(_ef) and _dmin > float(a.det_eps) and bool(torch.isfinite(r["g"]).all()):
             break
@@ -2452,6 +2453,9 @@ def _lgv_step(ds, gsel, p_st, x, v, F, sc, h, ens, U0, s0, nod_m):
     _PLGV["acc"].append(float(acc))
     _PLGV["dEc"].append((float(r["E"]) / max(E0, 1e-30) - 1.0) if acc else 0.0)
     _PLGV["eta"] = min(max(eta * (float(a.lgv_up) if acc else float(a.lgv_down)), 1e-12), 1e6)
+    # 마지막 걸음 요약 (AF_ROLL_LGV 롤아웃 로그·F 누적용; J = 실제로 전진한 출력의 야코비안)
+    _PLGV["last"] = dict(acc=int(acc), nbt=nbt, E0=E0, E1=(float(r["E"]) if r is not None else float("nan")),
+                         eta=eta, J=(r["J"] if acc else s0["J"]))
     _PLGV["n"] = _PLGV.get("n", 0) + 1
     if _PLGV["n"] <= 24:                                          # 처음 몇 걸음은 한 줄씩 (시험 확인용)
         print(f"    [랑제빈 걸음 {_PLGV['n']}] d {d}  E0 {E0:.4e}  T {T:.3e}  eta {eta:.3e}  백트래킹 {nbt}  "
@@ -5157,9 +5161,65 @@ def _rollout(d, t0, L, gsel=None):
         # CD-MPM 경화 상태(logJp)는 롤아웃마다 초기값 -0.04 에서 다시 시작한다
         phys_resid.cdmpm_reset(x.shape[0], x.device, x.dtype)
     _RO_T0 = time.time()
+    # AF_ROLL_LGV=model|inertial: 롤아웃의 매 서브스텝을 풀 학습(--pool_adv langevin)과 **같은 _lgv_step** 으로 전진한다
+    #   (시작점 model = 모델 출력과 그 점의 기울기, inertial = 관성 예측 노드 변위와 그 점의 기울기). 온도·rho·백트래킹은
+    #   학습 플래그 그대로, 걸음 eta 는 AF_ROLL_LGV_ETA > 체크포인트의 pool_lgv_eta > --lgv_eta0 순. eta 는 학습처럼 걸음마다 적응한다.
+    _RLGV = os.environ.get("AF_ROLL_LGV") or None
+    if _RLGV:
+        if _RLGV not in ("model", "inertial"):
+            raise SystemExit(f"AF_ROLL_LGV 는 model 또는 inertial ({_RLGV})")
+        if a.ov_roll > 0 or _ROLL_IP is not None:
+            raise SystemExit("AF_ROLL_LGV 는 --ov_roll·AF_ROLL_IP 와 함께 쓰지 않는다")
+        _ck_eta = (_rng_ck or {}).get("pool_lgv_eta")
+        if os.environ.get("AF_ROLL_LGV_ETA"):
+            _PLGV["eta"], _src = float(os.environ["AF_ROLL_LGV_ETA"]), "AF_ROLL_LGV_ETA"
+        elif _ck_eta is not None:
+            _PLGV["eta"], _src = float(_ck_eta), "체크포인트"
+        else:
+            _PLGV["eta"], _src = float(a.lgv_eta0), "--lgv_eta0"
+        _PLGV["n"] = 0
+        _S["F_ip"] = take(traj_F(d)[t0], gsel).float()
+        _LSC = dict(cfg=d["cfg"], mass=MASS[gsel], ext=EXT, _msum=float(MASS[gsel].sum()))
+        _LACC = []
+        print(f"[랑제빈 롤아웃] 매 서브스텝 = 증분 포텐셜 MALA 한 걸음 (시작점 {_RLGV}, rho {a.lgv_rho:g}, "
+              f"eta {_PLGV['eta']:.3e} ({_src}), 백트래킹 {a.lgv_backtrack}, lam {a.lgv_lam:g}, 서브스텝 {EVAL_SUB})", flush=True)
 
     def _step(i, x, v):
         p = _S["p"]
+        if _RLGV:
+            _hs = FRAME_DT / EVAL_SUB
+            _ln = []
+            for _sb in range(EVAL_SUB):
+                _SIM_T[0] = (i + _sb / EVAL_SUB) * FRAME_DT
+                _NF_HOLD[0] = "want"                     # 격자·노드특징을 붙잡아 MALA 평가에서 재사용 (학습과 같다)
+                with torch.enable_grad(), dt_scope(_hs):     # 일반 롤아웃과 같은 문맥 (망 파라미터 기울기는 꺼져 있다)
+                    _, _, _, _, _dp, _, _, _, _, _ = step_once(d, t0 + i, gsel, p, x, v, need_J=False)
+                _ens, _NF_HOLD[0] = _NF_HOLD[0], None
+                _U0 = _dp.detach()
+                _Z0 = torch.zeros_like(_U0)
+                if _RLGV == "inertial":
+                    _e0 = _ens[0]
+                    _uin = DM.node_inertial(x, v, _LSC["mass"], _e0[3], _e0[4], _e0[1].shape[0],
+                                            d["cfg"]["g"], _hs)[0]
+                    _Z0[:, :3] = (_uin - _U0[:, :3]).detach()
+                _s0 = _lgv_eval(d, gsel, p, x, v, _S["F_ip"], _LSC, _hs, _ens, _U0, _Z0, True, t=t0 + i)
+                _ox, _ov, _op, _oF, _odl = _lgv_step(d, gsel, p, x, v, _S["F_ip"], _LSC, _hs, _ens, _U0, _s0,
+                                                     _NOD_M[0], t=t0 + i)
+                _lst = _PLGV["last"]
+                with torch.no_grad():
+                    _S["F_ip"] = phys_resid.plastic_step(_oF, _odl).detach()
+                    if _ROLLDUMP is not None and _FCUM[0] is not None:
+                        _FCUM[0] = (_lst["J"].detach().float() @ _FCUM[0]).detach()
+                x, v = _ox.detach(), _ov.detach()
+                p = _op if _op is not None else p
+                _LACC.append(_lst["acc"])
+                _ln.append(f"수락 {_lst['acc']} 백트래킹 {_lst['nbt']} E {_lst['E0']:.4e}->{_lst['E1']:.4e} "
+                           f"(ΔE {100 * (_lst['E1'] / max(_lst['E0'], 1e-30) - 1):+.2f}%) eta {_lst['eta']:.3e}")
+                del _ens
+            _S["p"] = p
+            print(f"    [랑제빈 롤아웃] 프레임 {i + 1}/{L}  " + " | ".join(_ln)
+                  + f"  누적수락률 {100 * np.mean(_LACC):.1f}%  누적 {time.time() - _RO_T0:.1f} s", flush=True)
+            return x, v, None
         if a.ov_roll > 0:
             # 출력만 최적화: 서브스텝·jvp 없이 프레임마다 변수를 내린다
             # 서브스텝: 한 프레임을 EVAL_SUB 번에 나눠 스텝마다 변수를 새로 내린다 (dt = FRAME_DT / EVAL_SUB)
