@@ -426,6 +426,10 @@ ap.add_argument("--pool_init_traj", default="",
 ap.add_argument("--pool_data", default="",
                 help="학습 궤적 .pt 디렉토리 (lb_to_pt.py). 새 상태를 이 궤적들의 무작위 (궤적, 프레임) 에서 뽑는다 -- "
                      "다른 학습 기반 방법과 같은 학습 궤적을 쓰는 설정. --pool_fresh 1 --pool_size 0 이면 매 배치가 데이터 상태뿐")
+ap.add_argument("--pool_impulse", default="",
+                help="충격 모드 'lo,hi' (PG 공식 config 씬, lego 낙하 모드의 대응): 풀 새 상태 = 정지 자세(x0, F=I) + "
+                     "config 의 particle_impulse 를 PG 규칙(상자 그대로, v += force/m·substep_dt·num_dt)으로 준 초기 속도. "
+                     "힘 방향은 위쪽 축(mpm_space_vertical_upward_axis) 둘레로 균일 회전, 크기는 공식의 U[lo,hi] 배")
 ap.add_argument("--pool_drop", default="",
                 help="낙하 모드 'h0,h1,v0,v1' (학습 비교 공통 데이터셋 exe/lb_gen.py 와 같은 초기 조건 분포). "
                      "새 상태를 무작위 회전·바닥 위 높이·초기 병진 속도로 뽑는다")
@@ -2352,12 +2356,37 @@ if a.pool:
             _dd = torch.load(_f, map_location="cpu", weights_only=False, mmap=True)
             _PDATA.append((_dd["x"], _dd["v"], _dd["F"]))
         print(f"[풀] 데이터 모드: 학습 궤적 {len(_PDATA)} 개 ({a.pool_data}), 각 {_PDATA[0][0].shape[0]} 프레임", flush=True)
+    if a.pg_region_density:
+        for _tg, _s in _sc:
+            _rr = DM.region_rho(_s["cfg"], _s["x0"].float())
+            if _rr is not None:
+                _s["mass"] = _s["mass"] / float(_s["cfg"]["density"]) * _rr
+                _RHO[id(_s["cfg"])] = _rr
+                print(f"[풀] {_tg}: 영역별 밀도 질량 합 {float(_s['mass'].sum()):.5g}", flush=True)
     _DROP = None
-    if a.pool_drop:
+    if a.pool_impulse:
+        _lo, _hi = (float(q) for q in a.pool_impulse.split(","))
+        _c0 = _sc[0][1]["cfg"]; _x00 = _sc[0][1]["x0"].float(); _m00 = _sc[0][1]["mass"].float()
+        _imps = [b for b in (_c0.get("boundary_conditions") or []) if b.get("type") == "particle_impulse"]
+        if len(_imps) != 1 or float(_imps[0].get("start_time", 0.0)) != 0.0:
+            raise SystemExit(f"--pool_impulse: start_time 0 인 particle_impulse 가 하나여야 한다 ({_imps})")
+        _bi = _imps[0]
+        _q = torch.as_tensor(_bi.get("point", [1, 1, 1]), device=dev, dtype=torch.float32)
+        _sz = torch.as_tensor(_bi.get("size", [1, 1, 1]), device=dev, dtype=torch.float32)
+        _in = ((_x00 - _q).abs() < _sz).all(-1)
+        _sdt = float(_c0["substep_dt"]) * int(_bi.get("num_dt", 1))
+        _up = torch.as_tensor(_c0.get("mpm_space_vertical_upward_axis", [0, 0, 1]), device=dev, dtype=torch.float32)
+        _DROP = dict(kind="impulse", s=(_lo, _hi), f=torch.as_tensor(_bi["force"], device=dev, dtype=torch.float32),
+                     up=_up / _up.norm(), coef=torch.where(_in, _sdt / _m00, torch.zeros_like(_m00)))
+        print(f"[풀] 충격 모드: 공식 힘 {_bi['force']} 를 위쪽 축 {_up.tolist()} 둘레 균일 회전, 크기 x U[{_lo}, {_hi}], "
+              f"상자 안 {int(_in.sum())}/{_in.numel()} 입자, {_sdt:g} s", flush=True)
+    elif a.pool_drop:
         _h0, _h1, _v0, _v1 = (float(q) for q in a.pool_drop.split(","))
         _c0 = _sc[0][1]["cfg"]
         _fl = ([b for b in _c0["boundary_conditions"] if b["type"] == "surface_collider"] or [None])[0]
-    if a.pool_drop and _fl is None:
+    if a.pool_impulse:
+        pass
+    elif a.pool_drop and _fl is None:
         print("[풀] 바닥(surface_collider)이 없는 씬이라 낙하 모드를 끈다", flush=True)
     elif a.pool_drop:
         _DROP = dict(h=(_h0, _h1), v=(_v0, _v1), zf=float(_fl["point"][2]), gz=float(_c0["g"][2]),
@@ -3380,7 +3409,7 @@ for it in pbar:
                         _GATE_N[0] += 1
                         st.pop("_E_last", None)                  # 새 상태 -- 감소율 비교를 처음부터
                     st["x"] = x2.detach()
-                    st["v"] = v2.detach()
+                    st["v"] = _pg_vdamp(v2.detach(), ds, _hp)
                     st["F"] = phys_resid.plastic_step(F_tr, dlog).detach()
                     st["p"] = p2.detach() if torch.is_tensor(p2) else None
                 # out_var 는 상태를 **전진시키지 않는다** -- 같은 상태의 노드

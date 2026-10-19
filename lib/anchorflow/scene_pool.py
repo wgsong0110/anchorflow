@@ -319,6 +319,13 @@ class StatePool:
         (lb_gen 이 그 시드를 거부하는 것과 같다). F 는 I -- 회전한 정지 자세가 새 기준 형상이다."""
         d = self.drop; dev = self.dev; GL = self.domain
         rnd = lambda *s: torch.rand(*s, generator=self.gen, device=dev)            # noqa: E731
+        if d.get("kind") == "impulse":
+            # 충격 모드 (train_deform --pool_impulse): 정지 자세 그대로, PG particle_impulse 를 위쪽 축 둘레로
+            # 균일 회전·크기 U[lo,hi] 배로 준 초기 속도 v = s·coef·R(θ)f (coef = 상자 안 substep_dt·num_dt/m, 밖 0)
+            th = 2.0 * math.pi * float(rnd(1)); sc_ = d["s"][0] + (d["s"][1] - d["s"][0]) * float(rnd(1))
+            f, u = d["f"].to(x0.dtype), d["up"].to(x0.dtype)
+            fr = f * math.cos(th) + torch.cross(u, f, dim=0) * math.sin(th) + u * float(u @ f) * (1.0 - math.cos(th))
+            return x0.clone().contiguous(), (sc_ * d["coef"].to(x0.dtype).unsqueeze(-1) * fr).contiguous()
         nrm = lambda *s: torch.randn(*s, generator=self.gen, device=dev)           # noqa: E731
         c = x0.mean(0)
         for _ in range(100):
