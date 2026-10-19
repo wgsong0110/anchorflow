@@ -5500,7 +5500,7 @@ def _rollout(d, t0, L, gsel=None):
         st["_cn"] = cn
         return H, C
 
-    def _prw_dir(H, C, z):
+    def _prw_dir(H, C, z, push=None):
         # 강체 성분이 0 인 부분공간 R 에서 Δθ = G_R^{-1/2} z_R / ‖z_R‖  (‖Δθ‖_G = 1)
         st = _PR["st"]
         P = st["P"]
@@ -5521,10 +5521,11 @@ def _rollout(d, t0, L, gsel=None):
         Ph = (Q * ev.rsqrt().unsqueeze(-2)) @ Q.T
         vR = zR / zR.norm()
         cn = st.get("_cn")
-        if _PR["push"] > 0 and cn is not None:
+        pw = _PR["push"] if push is None else push
+        if pw > 0 and cn is not None:
             gw = Ph @ (Nb.T @ cn)                                        # 백색화 좌표의 평균 법선 변위 기울기
             if float(gw.norm()) > 0:
-                vR = _PR["push"] * (-gw / gw.norm()) + (1.0 - _PR["push"]) * vR
+                vR = pw * (-gw / gw.norm()) + (1.0 - pw) * vR
                 vR = vR / vR.norm()
         dth = Nb @ (Ph @ vR)                                             # ‖Δθ‖_G = ‖vR‖ = 1
         return dth, G, ev_raw, float(ev.max())
@@ -5650,7 +5651,9 @@ def _rollout(d, t0, L, gsel=None):
         gmin, gmax = float("inf"), 0.0
         while K < _PR["kmax"]:
             H, C = _prw_metric(th, xp, ds, Jt)
-            dth, G, e1, e2 = _prw_dir(H, C, z)
+            # 밀기 모드에서 신축 목표를 이미 채웠으면 접촉 목표만 남는다: 순수 아래쪽 방향, 크기 맞춤 상한 없음 (눌려 퍼지게)
+            s_done = _PR["push"] > 0 and sm >= _PR["s_mean"] and sx >= _PR["s_max"]
+            dth, G, e1, e2 = _prw_dir(H, C, z, push=(1.0 if s_done else None))
             gmin, gmax = min(gmin, e1), max(gmax, e2)
             dth = _PR["r"] * dth
             K += 1
@@ -5667,7 +5670,7 @@ def _rollout(d, t0, L, gsel=None):
                     nbt += 1
                     continue
                 csm, csx = _prw_strain(cJt)
-                if csm > 2.0 * _PR["s_mean"] and _bt < 39:
+                if csm > 2.0 * _PR["s_mean"] and _bt < 39 and not s_done:
                     dth = 0.5 * dth
                     nfit += 1
                     continue
