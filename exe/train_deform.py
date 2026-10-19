@@ -361,6 +361,13 @@ ap.add_argument("--cfg_bc", action="store_true",
                      "시간창 포함)과 grid_v_damping_scale 을 **노드 하드 구속**으로 옮긴다 (손잡이와 같은 경로: 노드 변위를 "
                      "τ·v_bc 로 덮고 최적화에서 뺀다). 입자 구속은 PG 처럼 0 프레임 위치로 입자를 고르고, 노드는 그 입자의 "
                      "질량 가중 비율이 절반을 넘으면 묶는다. cuboid 는 PG 처럼 상자 안 격자(=노드) 속도를 박는다")
+ap.add_argument("--pg_region_density", action="store_true",
+                help="PG config 의 additional_material_params 영역별 밀도를 질량에 넣는다 (PG apply_additional_params 와 같은 "
+                     "0 프레임 상자 판정). 부피(= 질량/밀도)는 입자별 밀도로 나눠 그대로 둔다. 기본은 cfg density 하나")
+ap.add_argument("--pg_impulse", action="store_true",
+                help="PG config 의 particle_impulse 를 0 프레임 초기 속도에 더한다: PG add_impulse_on_particles 그대로 "
+                     "상자(point 기본 [1,1,1], size 기본 [1,1,1], |x0-point|<size) 안 입자에 v += force/m · substep_dt · num_dt "
+                     "(start_time 0 만). --v0_traj 필요 (궤적 v[0] 에 더한다)")
 ap.add_argument("--eval_dt_sub", type=int, default=0,
                 help="평가·롤아웃에서 한 프레임을 몇 서브스텝으로 나눌지 "
                      "(0 이면 --dt_sub). 프레임 경계는 그대로라 교사와 계속 "
@@ -575,6 +582,7 @@ from anchorflow.deform import (DeformNet, aggregate, anchor_knn,  # noqa: E402
                                bc_features, bond_stretch, bures_w2_sq,
                                fps, gauss_stretch, grid_knn,
                                jacobian_of)
+DM.REGION_DENSITY[0] = bool(a.pg_region_density)
 
 # ---------------------------------------------------------------- 데이터
 files = sorted(glob.glob(os.path.join(a.data, "*.pt")))
@@ -728,7 +736,63 @@ vi = (X0d / dx).long().clamp(0, ng - 1)
 flat = (vi[:, 0] * ng + vi[:, 1]) * ng + vi[:, 2]
 cnt = torch.zeros(ng ** 3, device=dev).index_add_(
     0, flat, torch.ones(N_FULL, device=dev))
-MASS = ((dx ** 3) / cnt[flat]) * float(cfg0["density"])
+_RHO0 = DM.region_rho(cfg0, X0d.float())
+MASS = ((dx ** 3) / cnt[flat]) * (float(cfg0["density"]) if _RHO0 is None else _RHO0)
+_RHO = {}                                   # id(cfg) -> 입자별 밀도 [N_full] (--pg_region_density)
+if _RHO0 is not None:
+    _RHO[id(cfg0)] = _RHO0
+    for _t, _d in TR + held:
+        DM.traj_mass(_d, dev)
+        if "_rho" in _d:
+            _RHO[id(_d["cfg"])] = _d["_rho"]
+    print(f"[밀도] 영역별 밀도 (PG additional_material_params): " + ", ".join(
+        f"{float(r_):g}: {int((_RHO0 == r_).sum())} 입자" for r_ in torch.unique(_RHO0)) +
+        f" | 질량 합 {float(MASS.sum()):.5g}", flush=True)
+
+
+def _pvol(m, cfg):
+    """입자 부피 = 질량 / 밀도. --pg_region_density 면 입자별 밀도로 나눈다 (부분표본이면 멈춘다)."""
+    r = _RHO.get(id(cfg))
+    if r is None:
+        return m / float(cfg["density"])
+    if r.shape[0] != m.shape[0]:
+        raise SystemExit(f"--pg_region_density: 부피 계산의 입자 수 {m.shape[0]} 가 밀도 배열 {r.shape[0]} 와 다르다 (부분표본 미지원)")
+    return m / r.to(m.device, m.dtype)
+
+
+if a.pg_impulse:
+    # PG add_impulse_on_particles: 시각 [start, start + substep_dt·num_dt) 의 매 서브스텝 v += force/m · substep_dt.
+    # 0 프레임(시각 0) 에서 시작하는 것만 -- 우리 한 스텝이 프레임이라 그 서브스텝들의 합을 초기 속도에 싣는다.
+    if not a.v0_traj:
+        raise SystemExit("--pg_impulse 는 --v0_traj 와 같이 (궤적 v[0] 에 더한다)")
+    for _t, _d in TR + held:
+        if _d.get("_imp_done"):
+            continue
+        _c = _d["cfg"]; _x0 = _d["x"][0].to(dev).float(); _m = DM.traj_mass(_d, dev)
+        _dv = torch.zeros_like(_x0)
+        for _bc in (_c.get("boundary_conditions") or []):
+            if _bc.get("type") != "particle_impulse":
+                continue
+            if float(_bc.get("start_time", 0.0)) != 0.0:
+                raise SystemExit(f"--pg_impulse: start_time 0 이 아닌 충격은 아직 없다 ({_bc})")
+            _q = torch.as_tensor(_bc.get("point", [1, 1, 1]), device=dev, dtype=torch.float32)
+            _sz = torch.as_tensor(_bc.get("size", [1, 1, 1]), device=dev, dtype=torch.float32)
+            _in = ((_x0 - _q).abs() < _sz).all(-1)
+            _f = torch.as_tensor(_bc["force"], device=dev, dtype=torch.float32)
+            _sdt = float(_c["substep_dt"]) * int(_bc.get("num_dt", 1))
+            _dv[_in] += _f * _sdt / _m[_in].unsqueeze(-1)
+            print(f"[충격] {_t}: particle_impulse 힘 {_bc['force']} x {_sdt:g} s, 상자 안 입자 {int(_in.sum())}/{_in.numel()}", flush=True)
+        _v0 = _d["v"][0].to(dev).float()
+        _d["v"][0] = (_v0 + _dv).to(_d["v"].dtype).cpu() if _d["v"].device.type == "cpu" else (_v0 + _dv).to(_d["v"].dtype)
+        _d["_imp_done"] = True
+        _vn = _dv.norm(dim=-1)
+        _msg = (f"[충격] {_t}: 초기 속도 |v0| 평균 {float(_vn.mean()):.4f} 최대 {float(_vn.max()):.4f}, "
+                f"운동량 Σm·v0 {[round(float(z), 5) for z in (_m.unsqueeze(-1) * _dv).sum(0)]}")
+        if _d["v"].shape[0] > 1:
+            _v1 = _d["v"][1].to(dev).float()
+            _msg += (f" | 정답 1 프레임 |v| 평균 {float(_v1.norm(dim=-1).mean()):.4f} 최대 {float(_v1.norm(dim=-1).max()):.4f}, "
+                     f"Σm·v1 {[round(float(z), 5) for z in (_m.unsqueeze(-1) * _v1).sum(0)]}")
+        print(_msg, flush=True)
 
 # 물성은 앵커 특징에 들어간다. 궤적마다 다르므로 궤적별로 만든다.
 def mat_feat(cfg):
@@ -1792,7 +1856,7 @@ def rl_episode(d, t0, E, gsel, gen):
     mass = mass_full[gsel]
     ext = d.get("_ext", EXT)
     cfg = d["cfg"]
-    vol = mass / float(cfg["density"])
+    vol = _pvol(mass, cfg)
     g = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
     h = FRAME_DT
     norm = float(mass.sum()) * (ext ** 2) / (h * h)
@@ -2063,7 +2127,7 @@ def probe_ip():
     _ts = traj_scope(d); _ts.__enter__()
     try:
         gsel = torch.arange(d["x"].shape[1], device=dev)
-        cfg = d["cfg"]; mass = traj_mass(d)[gsel]; vol = mass / float(cfg["density"])
+        cfg = d["cfg"]; mass = traj_mass(d)[gsel]; vol = _pvol(mass, cfg)
         gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
         ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
         h = FRAME_DT; nrm = float(mass.sum()) * (EXT ** 2) / (h ** 2)
@@ -2129,7 +2193,7 @@ def _quick_val_body():
         x_still = x.clone()
         cfg = d["cfg"]
         m = MASS[gsel]
-        vol = m / float(cfg["density"])
+        vol = _pvol(m, cfg)
         gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
         ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
         _hs = FRAME_DT / EVAL_SUB
@@ -2225,7 +2289,7 @@ if a.phys_probe:
         mass = traj_mass(d)[gsel]
         ext = d.get("_ext", EXT)
         cfg = d["cfg"]
-        vol = mass / float(cfg["density"])
+        vol = _pvol(mass, cfg)
         gvec = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
         h = FRAME_DT
         norm = float(mass.sum()) * (ext ** 2) / (h * h)
@@ -2349,7 +2413,7 @@ def _lgv_eval(ds, gsel, p_st, x, v, F, sc, h, ens, U0, Z, need_grad, t=0):
     격자·노드특징은 학습 forward 때 만든 것(ens)을 그대로 쓴다. det 통계(_DET_BAD 등)는 건드리지 않는다.
     """
     cfg = sc["cfg"]
-    vol = sc["mass"] / float(cfg["density"])
+    vol = _pvol(sc["mass"], cfg)
     gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
     ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
     nrm = sc["_msum"] * (sc["ext"] ** 2) / (h ** 2)
@@ -2482,7 +2546,7 @@ def _ov_reference(ds, gsel, p_st, x, v, F, sc, h, t=0):
     """같은 상태의 **출력만 최적화** 기준해: 망을 고정하고 노드 출력에 더하는 탐침 텐서(변위 3 + 반경 1)를 변수로 학습과 같은
     증분 포텐셜을 L-BFGS 로 수렴시킨다 (망 출력 0 에서 출발 -- 학습 전 망의 출력층은 0 초기화). 학습 경로와 같은 step_once·ip_of."""
     cfg = sc["cfg"]
-    vol = sc["mass"] / float(cfg["density"])
+    vol = _pvol(sc["mass"], cfg)
     gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
     ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
     nrm = float(sc["mass"].sum()) * (sc["ext"] ** 2) / (h ** 2)
@@ -2552,7 +2616,7 @@ if a.oracle_roll:
     _mass = traj_mass(_d)[_gsel]
     _ext = _d.get("_ext", EXT)
     _cfg = _d["cfg"]
-    _vol = _mass / float(_cfg["density"])
+    _vol = _pvol(_mass, _cfg)
     _g = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
     _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
     _norm = float(_mass.sum()) * (_ext ** 2) / (FRAME_DT ** 2)
@@ -2742,7 +2806,7 @@ if a.roll_scen:
                 _cfg = _sc["cfg"]
                 _E, _dlog, _Ftr, _ = ip_of(
                     x, x2 - x, v, F, _sc["mass"],
-                    _sc["mass"] / float(_cfg["density"]),
+                    _pvol(_sc["mass"], _cfg),
                     _cfg, _hr, int(_cfg["n_grid"]),
                     float(_cfg.get("grid_lim", 2.0)),
                     g=torch.tensor(_cfg["g"], device=dev), norm=1.0, free=_fm,
@@ -3104,7 +3168,7 @@ for it in pbar:
             # det 가 문턱 아래인 사면체는 탄성에서 빼고 복구 손실을 크게 준다
             _emask, _dpen = det_take()
             cfg = sc["cfg"]
-            vol = sc["mass"] / float(cfg["density"])
+            vol = _pvol(sc["mass"], cfg)
             gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
             ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
             if "_msum" not in sc:                 # 씬 상수 -- 한 번만 내린다
@@ -3637,7 +3701,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     """
     cfg = d["cfg"]
     m = MASS[gsel]
-    vol = m / float(cfg["density"])
+    vol = _pvol(m, cfg)
     gv = torch.tensor(cfg["g"], device=dev, dtype=torch.float32)
     ng_, gl_ = int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0))
     nrm = float(m.sum()) * (EXT ** 2) / (_DT[0] ** 2)
@@ -4473,7 +4537,7 @@ def _rollout(d, t0, L, gsel=None):
         _mins = ({r["state"]: r["E_min"] for r in json.load(open(os.environ["AF_OV_MIN"]))}
                  if os.environ.get("AF_OV_MIN") and os.path.exists(os.environ["AF_OV_MIN"]) else {})
         _F0 = take(traj_F(d)[t0], gsel).float()
-        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _pvol(_m, _cfg)
         _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
         _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
         _hs = FRAME_DT; _nrm = float(_m.sum()) * (EXT ** 2) / (_hs ** 2)
@@ -4557,7 +4621,7 @@ def _rollout(d, t0, L, gsel=None):
         _out = []
         xc, vc, pc = x.clone(), v.clone(), p
         Fc = take(traj_F(d)[t0], gsel).float()
-        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _pvol(_m, _cfg)
         _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
         _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
         for i in range(max(_fr) + 1):
@@ -4607,7 +4671,7 @@ def _rollout(d, t0, L, gsel=None):
         _cand = list(range(_k0 + 1, _P.shape[0] - 1))
         _pick = sorted(_rg.choice(_cand, size=min(_nst, len(_cand)), replace=False).tolist())
         print(f"  [입력섭동] 바닥 z={_fz}, 처음 닿은 프레임 {_k0 + 1}, 고른 상태(프레임) {[k + 1 for k in _pick]}", flush=True)
-        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _pvol(_m, _cfg)
         _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
         _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
         _hs = FRAME_DT / EVAL_SUB
@@ -4672,7 +4736,7 @@ def _rollout(d, t0, L, gsel=None):
         _sg = [float(q) for q in os.environ.get("AF_IP_SIGMAS", "0,1e-6,3e-6,1e-5,3e-5,1e-4,3e-4,1e-3,3e-3,1e-2,3e-2,1e-1").split(",")]
         _ns = int(os.environ.get("AF_IP_SEEDS", "4"))
         _F0 = take(traj_F(d)[t0], gsel).float()
-        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _pvol(_m, _cfg)
         _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
         _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
         _hs = FRAME_DT / EVAL_SUB
@@ -4850,7 +4914,7 @@ def _rollout(d, t0, L, gsel=None):
 
         def _consts(T_):
             cfg_ = T_["d"]["cfg"]
-            return (cfg_, T_["m"], T_["m"] / float(cfg_["density"]), torch.tensor(cfg_["g"], device=dev, dtype=torch.float32),
+            return (cfg_, T_["m"], _pvol(T_["m"], cfg_), torch.tensor(cfg_["g"], device=dev, dtype=torch.float32),
                     int(cfg_["n_grid"]), float(cfg_.get("grid_lim", 2.0)), float(T_["m"].sum()) * (T_["ext"] ** 2) / (_hs ** 2))
 
         def _anch(T_, xs):
@@ -5010,7 +5074,7 @@ def _rollout(d, t0, L, gsel=None):
             print(f"    [상태 적합] 새 망, 입력 표준화 = 출력만 최적화 {_nf} 상태 (sd 최소 {float(net.in_sd.min()):.2e} "
                   f"최대 {float(net.in_sd.max()):.2e})", flush=True)
         _tb = _SW(os.environ["AF_STATE_FIT_TB"], purge_step=_k0 if _k0 > 0 else None)
-        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+        _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _pvol(_m, _cfg)
         _SAVE0 = (_it == 0 and _k0 == 0)                     # 반복 0: 학습 전 망(같은 입력 표준화)을 체크포인트로 남긴다 (비교용)
         _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
         _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
@@ -5811,7 +5875,7 @@ def _rollout(d, t0, L, gsel=None):
             # 출력잔차를 잰다. F 는 정답 t0 의 F 에서 시작해 plastic_step 으로 전진한다
             dmg_e, idx_e, fe_r = _S["dmg"], _S["idx"], _S["fe"]
             _hs = FRAME_DT / EVAL_SUB
-            _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _m / float(_cfg["density"])
+            _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _pvol(_m, _cfg)
             _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
             _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
             _nrm = float(_m.sum()) * (EXT ** 2) / (_hs ** 2)

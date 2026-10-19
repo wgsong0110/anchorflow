@@ -58,8 +58,30 @@ def extent(x0):
     return float((x0.max(0).values - x0.min(0).values).norm())
 
 
+REGION_DENSITY = [False]   # --pg_region_density: PG additional_material_params 의 영역별 밀도를 질량에 (기본 꺼짐)
+
+
+def region_rho(cfg, x0):
+    """PG apply_additional_params 그대로: 0 프레임 위치가 상자 (point-size, point+size) 안(엄격 부등식)인
+    입자의 밀도를 그 영역 값으로 -> 입자별 밀도 [N]. REGION_DENSITY 가 꺼져 있거나 영역이 없으면 None.
+    PG 는 나중 영역이 앞 영역을 덮어쓴다 (순서대로 적용). E·nu 가 기본과 다른 영역은 아직 없다 (멈춘다)."""
+    regs = cfg.get("additional_material_params") or []
+    if not REGION_DENSITY[0] or not regs:
+        return None
+    rho = torch.full((x0.shape[0],), float(cfg["density"]), device=x0.device, dtype=torch.float32)
+    for r in regs:
+        if float(r.get("E", cfg["E"])) != float(cfg["E"]) or float(r.get("nu", cfg["nu"])) != float(cfg["nu"]):
+            raise SystemExit(f"--pg_region_density: E/nu 가 다른 영역은 아직 없다 ({r})")
+        q = torch.as_tensor(r["point"], device=x0.device, dtype=x0.dtype)
+        sz = torch.as_tensor(r["size"], device=x0.device, dtype=x0.dtype)
+        ins = ((x0 > q - sz) & (x0 < q + sz)).all(-1)
+        rho[ins] = float(r["density"])
+    return rho
+
+
 def traj_mass(d, dev="cuda"):
-    """궤적 자기 배치·자기 밀도로 잰 입자 질량 [N_full] (d["_mass"], d["_ext"] 도 채운다)."""
+    """궤적 자기 배치·자기 밀도로 잰 입자 질량 [N_full] (d["_mass"], d["_ext"] 도 채운다).
+    --pg_region_density 면 영역별 밀도 (d["_rho"] 에 입자별 밀도도 남긴다)."""
     if "_mass" in d:
         return d["_mass"]
     c = d["cfg"]
@@ -70,7 +92,12 @@ def traj_mass(d, dev="cuda"):
     fl_ = (vi_[:, 0] * ng_ + vi_[:, 1]) * ng_ + vi_[:, 2]
     cn_ = torch.zeros(ng_ ** 3, device=dev).index_add_(
         0, fl_, torch.ones(x0.shape[0], device=dev))
-    d["_mass"] = ((dx_ ** 3) / cn_[fl_]) * float(c["density"])
+    _rho = region_rho(c, x0)
+    if _rho is None:
+        d["_mass"] = ((dx_ ** 3) / cn_[fl_]) * float(c["density"])
+    else:
+        d["_mass"] = ((dx_ ** 3) / cn_[fl_]) * _rho
+        d["_rho"] = _rho
     d["_ext"] = extent(x0)
     return d["_mass"]
 
