@@ -2350,7 +2350,7 @@ def _lgv_eval(ds, gsel, p_st, x, v, F, sc, h, ens, U0, Z, need_grad):
         _DP_FAST[0], _NF_HOLD[0], DM.PROBE[0], DM.PROBE[1] = _sv
     return dict(Z=Z.detach(), E=E.detach(), g=g, J=Jd.detach(),
                 out=(x2.detach(), v2.detach(), p2.detach() if torch.is_tensor(p2) else None,
-                     F_tr.detach(), dlog.detach()))
+                     F_tr.detach(), dlog.detach() if torch.is_tensor(dlog) else dlog))
 
 
 def _lgv_metric(ens0, J, M, free):
@@ -3220,7 +3220,7 @@ for it in pbar:
                         _s0 = dict(Z=_Zm, E=E_ip.detach(),
                                    g=(_gU / nrm if _gU is not None else None), J=_Jd.detach(),
                                    out=(x2.detach(), v2.detach(), p2.detach() if torch.is_tensor(p2) else None,
-                                        F_tr.detach(), dlog.detach()))
+                                        F_tr.detach(), dlog.detach() if torch.is_tensor(dlog) else dlog))
                     else:
                         # 시작점 = 관성 예측 노드 변위 h·v_n + h²g (Z0 = u_inertial − u_θ), 그 점에서 기울기 한 번 더 (망 기울기 없음)
                         _e0 = _lgv_ens[0]
