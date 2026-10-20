@@ -509,6 +509,10 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                 _Jk = SX.bspline_jac_pre(_rwk, _lxk.bsp, _latk, dpn_k)
             elif getattr(_lxk, "wf", None) is not None:
                 # --interp c1wf: 변위·야코비안 모두 Worsey–Farin C1 3 차 요소 다항식에서 (입자 F 는 실제 기울기)
+                if str(getattr(a, "c1_base", "none")) == "pl":
+                    # 기울기·변 채널 = 노드 값의 PL 장에서 만든 C1 자유도 + 출력(보정). 보정 0 이면 '매끄럽게 한 PL' --
+                    # 관성 예측자(값만 있다)로 시작할 때 기울기 0 인 3 차 보간이 손잡이 경계에서 접히는 것을 막는다
+                    dpn_k = torch.cat([dpn_k[:, :3], dpn_k[:, 3:] + WF.pl_c1_dofs(dpn_k[:, :3], _lxk.wft, dpn_k.shape[0])], 1)
                 _duk, _Jk = WF.jac_pre(_rwk, _lxk.wf, _latk, dpn_k)
                 if _k == 0:
                     C1_LAST[0] = (WF.det_coefs(dpn_k, _lxk.wft, _latk), _lxk.wft["svol"], dpn_k, _lxk.wft, _lok, _latk, _nnk, _uqk)

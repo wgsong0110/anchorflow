@@ -296,6 +296,9 @@ ap.add_argument("--c1_barrier", type=float, default=0.0,
                      "Σ (V_조각/84) κ μ b(c), b(c)=-(c-ĉ)² ln(c/ĉ) (c<ĉ), c<=0 이면 +inf (연장 없음). 0 이면 끔. "
                      "켜면 출력만 최적화의 L-BFGS 가 유한 에너지를 지키는 되추적 판(feas_lbfgs)으로 바뀐다")
 ap.add_argument("--c1_jhat", type=float, default=0.3, help="--c1_barrier 가 작동하기 시작하는 계수 ĉ")
+ap.add_argument("--c1_base", choices=["pl", "none"], default="pl",
+                help="--interp c1wf 기울기·변 채널의 매개화: pl=노드 값의 PL 장에서 만든 C1 자유도 + 출력 (기본; 출력 0 이 매끄럽게 한 PL), "
+                     "none=출력이 곧 자유도")
 ap.add_argument("--agg", choices=["bary", "bspline"], default="bary",
                 help="노드 특징 집계 가중치: bary=자기 사면체 4 꼭짓점 barycentric (기본), bspline=격자 좌표 2 차 B-스플라인 27 노드 (MPM P2G 식)")
 ap.add_argument("--rel_pe", type=int, default=0,
@@ -1487,6 +1490,7 @@ _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최
 # AF_INV_LOG=경로: 롤아웃 프레임마다 이번 스텝 det(grad Phi) <= 0 인 사면체·입자 수와 누적 det F <= 0 입자 수를 한 줄씩 남긴다
 _INV_LOG = os.environ.get("AF_INV_LOG") or None
 _INV_CUR = [None]
+_C1_P1 = [0]               # --c1_barrier: 이번 프레임 실현 가능 시작점 1 단계 외곽 횟수
 _OV_CUR_OPT = [None]       # 마지막으로 쓴 출력만 최적화 옵티마이저 (feas_lbfgs 통계 기록용)
 # AF_TUNNEL_LOG=경로: 롤아웃 프레임마다 활성 사면체 중 스텝 시작에 꼭지점 하나라도 바닥면 위였다가
 # 스텝 끝에 네 꼭지점이 모두 바닥면 아래가 된 것의 수를 한 줄씩 남긴다
@@ -4473,6 +4477,30 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             _tw = time.time()
             if not (_GRAD_PROBE is not None and _GRAD_PROBE.get("skip") and not _gpr):
                 _OV_CUR_OPT[0] = st["ov_opt"]
+                _p1 = 0
+                if a.c1_barrier > 0:
+                    # **실현 가능 시작점 찾기** (1 단계): 시작점에서 Bernstein det 계수가 0 이하이면 장벽 에너지가 +inf 라
+                    # 되추적 L-BFGS 가 한 걸음도 못 뗀다. 계수 벌점 Σ relu(ĉ/2 - c)² 만 내려 모든 계수 > 0 으로 만든 뒤 시작한다
+                    _vs1 = [q for q in st["ov"] if q is not None]
+                    with torch.no_grad():
+                        _fwd()
+                    if bool((DM.C1_LAST[0][0] <= 0).any()):
+                        _o1 = torch.optim.LBFGS(_vs1, lr=1.0, max_iter=20, history_size=20, line_search_fn="strong_wolfe")
+
+                        def _cl1():
+                            _o1.zero_grad(set_to_none=True)
+                            _fwd()
+                            _P = torch.relu(0.5 * a.c1_jhat - DM.C1_LAST[0][0]).pow(2).sum()
+                            _P.backward()
+                            return _P
+                        for _p1 in range(1, 51):
+                            _o1.step(_cl1)
+                            with torch.no_grad():
+                                _fwd()
+                            if not bool((DM.C1_LAST[0][0] <= 0).any()):
+                                break
+                        print(f"    [C1 실현 가능 시작점] t={t} 1 단계 {_p1} 회 -> 계수 최소 {float(DM.C1_LAST[0][0].min()):.3e}", flush=True)
+                    _C1_P1[0] = _p1
                 st["ov_opt"].step(_closure)       # AF_GRAD_PROBE_SKIP: 상태를 덤프로 맞추는 탐침 실행에서 탐침 밖 프레임은 최적화 생략
             if _gpr:
                 _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, "opt", _gp_rec)           # L-BFGS ov_roll 회 뒤 (실제로 쓴 해)
@@ -6406,7 +6434,7 @@ def _rollout(d, t0, L, gsel=None):
                     _recI.update(c1_curled=_ncl, c1_curl_pairs=_npl)
                 _oI = _OV_CUR_OPT[0]
                 if _oI is not None and getattr(_oI, "stats", None):
-                    _recI["opt"] = _oI.stats
+                    _recI["opt"] = dict(_oI.stats, phase1=_C1_P1[0])
             with open(_INV_LOG, "a") as _fI:
                 _fI.write(json.dumps(_recI) + "\n")
         # 평가에서도 손잡이가 명령대로 끌리는지 본다. 학습 경로만 보고 "손잡이는

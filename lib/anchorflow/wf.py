@@ -427,3 +427,32 @@ def curl_check(dpn, wt, lo, lat, nn, uniq, chunk=512, eps=1e-7):
             hit = good & (u > eps) & (vv > eps) & (u + vv < 1 - eps) & (tt > eps) & (tt < 1 - eps)
             n_pair += int(hit.sum()); n_el += int(hit.flatten(1).any(1).sum())
         return n_el, n_pair
+
+
+def pl_c1_dofs(val, wt, M):
+    """노드 값 [M,3] 의 barycentric(PL) 장에서 C1 기울기·변 채널 [M,51] 을 만든다 (선형 연산, 미분 가능).
+    노드 ∂u/∂y = 점유 사면체 PL 기울기의 평균(Kuhn 사면체는 부피가 모두 같다), 변 가로 미분 = 두 끝 노드 기울기 평균 · t
+    (끝 노드가 점유 사면체에 없으면 시작 노드 것). 아핀 값이면 정확한 아핀 C1 자유도가 된다.
+    --interp c1wf 의 기본 매개화: 기울기·변 채널 = 이 값 + 변수 (변수 0 이면 '매끄럽게 한 PL')."""
+    import torch
+    T = tables(val.device, val.dtype)
+    rows, ty = wt["rows"], wt["ty"]
+    perm = torch.as_tensor(np.array(PERMS), device=val.device)[ty]                       # [T,3] 순위 -> 축
+    f = val[rows]                                                                          # [T,4,3]
+    st = (f[:, 1:] - f[:, :-1])                                                            # [T,3(r),3(c)]
+    Gy = torch.zeros_like(st).scatter_(1, perm.unsqueeze(-1).expand(-1, -1, 3), st)      # [T,3(d),3(c)] ∂u_c/∂y_d
+    Gy = Gy.transpose(1, 2)                                                                # [T,3c,3d]
+    cnt = torch.zeros(M, device=val.device, dtype=val.dtype).index_add_(0, rows.reshape(-1), torch.ones(rows.numel(), device=val.device, dtype=val.dtype))
+    Gn = torch.zeros(M, 9, device=val.device, dtype=val.dtype).index_add_(
+        0, rows.reshape(-1), Gy.reshape(-1, 1, 9).expand(-1, 4, -1).reshape(-1, 9)) / cnt.clamp_min(1.0).unsqueeze(-1)
+    out = torch.cat([Gn, torch.zeros(M, 42, device=val.device, dtype=val.dtype)], 1)
+    TR = torch.as_tensor(_TRANS, device=val.device, dtype=val.dtype)                     # [7,2,3]
+    e0, e1 = T["edg"][:, 0], T["edg"][:, 1]
+    sN, eN = rows[:, e0], rows[:, e1]                                                      # [T,6]
+    cls = T["cls"][ty]                                                                     # [T,6]
+    Gm = 0.5 * (Gn[sN] + Gn[eN]).reshape(sN.shape + (3, 3))                              # [T,6,3c,3d]
+    dv = torch.einsum("tecd,tesd->tesc", Gm, TR[cls])                                      # [T,6,2,3c]
+    ch = 9 + (cls.unsqueeze(-1) * 2 + torch.arange(2, device=val.device)).unsqueeze(-1) * 3 + torch.arange(3, device=val.device)
+    idx_r = sN.unsqueeze(-1).unsqueeze(-1).expand_as(ch)
+    out = out.index_put((idx_r.reshape(-1), ch.reshape(-1)), dv.reshape(-1))              # 같은 변은 같은 값 (끝 노드로만 정해짐)
+    return out
