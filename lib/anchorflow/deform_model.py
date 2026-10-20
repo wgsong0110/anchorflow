@@ -416,9 +416,11 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
             if node_mask is not None and node_mask[_k] is not None:
                 # **노드 변위를 명령으로 덮는다.** detach 로 기울기를 끊어
                 # 그 노드는 최적화 대상에서 빠진다 (상수 경계조건이다).
-                dpn_k = torch.where(
-                    node_mask[_k].unsqueeze(-1),
-                    (tau * ctrl_scale * node_vel[_k]).detach(), dpn_k)
+                _pvk = (tau * ctrl_scale * node_vel[_k]).detach()
+                if dpn_k.shape[-1] == 4 and _pvk.shape[-1] == 3:
+                    # --gregory: 묶는 것은 변위 3 채널뿐, 반경 채널은 그대로 (4 채널과 3 채널이 브로드캐스트되지 않는다)
+                    _pvk = torch.cat([_pvk, dpn_k[:, 3:]], -1)
+                dpn_k = torch.where(node_mask[_k].unsqueeze(-1), _pvk, dpn_k)
                 if _k == 0 and on_pin is not None:
                     on_pin(tau)
             if getattr(a, "bc_ipg", False):
