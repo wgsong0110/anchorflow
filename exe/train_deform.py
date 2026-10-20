@@ -23,6 +23,8 @@ import json
 import os
 import random
 import sys
+import subprocess
+import threading
 import time
 
 _lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
@@ -2308,8 +2310,36 @@ def save_ck(name, step):
                 "out_var": None},
                os.path.join(a.out, f"{a.tag}_{name}.pt"))
     if a.r2:
-        os.system(f"rclone copy {a.out} {a.r2} --include '*.pt' "
-                  f"--include '*.json' >/dev/null 2>&1 &")
+        _r2_upload_request()
+
+
+# --r2 업로드는 **한 번에 하나만** 돈다. 저장마다 rclone 을 떼어 띄우면 2.4 GB 체크포인트
+# 업로드가 저장 간격보다 길 때 같은 파일 업로드가 수십 개 쌓여 대역을 다 먹는다 (10-20 실측:
+# 풀 학습 12 개·랑제빈 11 개). 업로드 중에 새 저장이 오면 "다음에 올릴 것 있음" 만 표시하고,
+# 진행 중인 업로드가 끝나는 순간 그때의 최신 파일을 한 번 더 올린다. 진행 중인 것을 끊고
+# 새로 시작하면 업로드가 저장 간격보다 길 때 아무것도 끝나지 않으므로 끊지 않는다.
+# 스레드는 daemon 이 아니라서 학습이 끝나도 마지막 업로드를 마치고 프로세스가 끝난다.
+_R2_UP = {"lock": threading.Lock(), "running": False, "pending": False}
+
+
+def _r2_upload_loop():
+    while True:
+        subprocess.run(f"rclone copy {a.out} {a.r2} --include '*.pt' --include '*.json'",
+                       shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with _R2_UP["lock"]:
+            if not _R2_UP["pending"]:
+                _R2_UP["running"] = False
+                return
+            _R2_UP["pending"] = False
+
+
+def _r2_upload_request():
+    with _R2_UP["lock"]:
+        if _R2_UP["running"]:
+            _R2_UP["pending"] = True
+            return
+        _R2_UP["running"] = True
+    threading.Thread(target=_r2_upload_loop, daemon=False).start()
 
 
 if a.phys_probe:
