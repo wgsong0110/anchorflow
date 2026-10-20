@@ -285,16 +285,32 @@ def quasi_static(interp, barrier, push=(0.0, 0.0, -0.6), steps=12, iters=300, ns
         tets, tinv = torch.unique(rows, dim=0, return_inverse=True)
         trep = torch.zeros(tets.shape[0], dtype=torch.long, device=dev).scatter_(0, tinv, torch.arange(rows.shape[0], device=dev))
         tvol = abs(float(torch.linalg.det(lat.A))) / 6.0
-    z = torch.zeros(M, nch, dtype=dt, device=dev)
-    free = (~fixed).nonzero(as_tuple=True)[0]
-    var = z[free].clone().requires_grad_(True)
+    # 위·아래 판 노드는 **값(변위 3 성분)만** 고정 -- 기울기·변 미분은 자유 (2D 의 "값 + 접선 미분" 고정에 해당하는 최소 구속)
+    fm = torch.ones(M, nch, dtype=torch.bool, device=dev)
+    fm[fixed, :3] = False
     pv = torch.as_tensor(push, dtype=dt, device=dev)
+    var = torch.zeros(M, nch, dtype=dt, device=dev).requires_grad_(True)
     hist = []
+    A_ = lat.A.to(dt)
+    # 아핀 증분장 Δu(x) = frac(z)·Δ, frac = (z-zlo)/(zhi-zlo) 의 자유도 (값·∂/∂y·변 가로 미분)
+    frac = ((npos[:, 2] - zlo) / (zhi - zlo))
+    dzdy = A_[2] / (zhi - zlo)                                            # ∂frac/∂y [3]
+    TR = torch.as_tensor(WF._TRANS, dtype=dt, device=dev)
+
+    def inc_field(delta):
+        f = torch.zeros(M, nch, dtype=dt, device=dev)
+        f[:, :3] = frac.unsqueeze(-1) * delta
+        if nch == WF.C1_NOUT:
+            f[:, 3:12] = (delta.unsqueeze(-1) * dzdy.unsqueeze(0)).reshape(9)
+            for k in range(7):
+                for s_ in range(2):
+                    f[:, 12 + (k * 2 + s_) * 3:12 + (k * 2 + s_) * 3 + 3] = delta * float(dzdy @ TR[k, s_])
+        return f
 
     def full(var, s):
-        d = z.clone()
-        d[top, :3] = s * pv
-        return d.index_copy(0, free, var)
+        presc = torch.zeros(M, nch, dtype=dt, device=dev)
+        presc[top, :3] = s * pv
+        return torch.where(fm, var, presc)
 
     def energy(var, s, parts=False):
         d = full(var, s)
@@ -324,13 +340,20 @@ def quasi_static(interp, barrier, push=(0.0, 0.0, -0.6), steps=12, iters=300, ns
         return Ee + Eb
 
     t0 = time.time()
-    for k in range(1, steps + 1):
-        s = k / steps
+    s_done, ds = 0.0, 1.0 / steps
+    while s_done < 1.0 - 1e-12:
+        dl = min(ds, 1.0 - s_done); s = s_done + dl
         with torch.no_grad():
-            E0 = energy(var, s)
-        sc = 1.0
-        if not math.isfinite(float(E0)):
-            hist.append(dict(step=k, infeasible_start=True))
+            trial = var + inc_field(dl * pv)                               # 아핀 증분으로 초기 추정 (경계와 일치)
+            E0 = energy(trial, s)
+        if barrier and not math.isfinite(float(E0)):
+            ds *= 0.5                                                      # 실현 불가면 하중 증분을 반으로
+            hist.append(dict(s=s, halve=True))
+            if ds < 1e-4:
+                raise SystemExit("[준정적] 하중 증분이 너무 작아졌다")
+            continue
+        with torch.no_grad():
+            var.copy_(trial)
         opt = FeasLBFGS([var], max_iter=iters, history_size=30) if barrier else torch.optim.LBFGS(
             [var], lr=1.0, max_iter=iters, history_size=30, tolerance_grad=0.0, tolerance_change=0.0, line_search_fn="strong_wolfe")
 
@@ -340,19 +363,14 @@ def quasi_static(interp, barrier, push=(0.0, 0.0, -0.6), steps=12, iters=300, ns
             if torch.isfinite(E):
                 E.backward()
             return E
-        if barrier and not math.isfinite(float(E0)):
-            # 경계 이동 직후 실현 불가: 내부를 경계 이동 비율만큼 미리 옮긴다 (아핀 초기 추정)
-            with torch.no_grad():
-                frac = ((npos[free, 2] - zlo) / (zhi - zlo)).clamp(0, 1).unsqueeze(-1)
-                var[:, :3] = var[:, :3] + (1.0 / steps) * frac * pv
-            E0 = energy(var, s)
         opt.step(clo)
+        s_done = s
         Ee, Eb, cmin, dJ, u, G = energy(var.detach(), s, parts=True)
-        hist.append(dict(step=k, E_el=float(Ee), E_bar=float(Eb), coef_min=float(cmin), particle_det_min=float(dJ.min()),
+        hist.append(dict(s=s, E_el=float(Ee), E_bar=float(Eb), coef_min=float(cmin), particle_det_min=float(dJ.min()),
                          particle_det_neg=int((dJ <= 0).sum()), stats=getattr(opt, "stats", None)))
     d = full(var.detach(), 1.0)
     res = dict(interp=interp, barrier=barrier, sec=round(time.time() - t0, 1), hist=hist, M=M, particles=int(P.shape[0]),
-               free_dofs=int(var.numel()))
+               free_dofs=int(fm.sum()))
     Ee, Eb, cmin, dJ, u, G = energy(var.detach(), 1.0, parts=True)
     res.update(E_el=float(Ee), coef_min=float(cmin), particle_det_min=float(dJ.min()), particle_det_neg=int((dJ <= 0).sum()))
     if interp == "c1wf":
@@ -383,7 +401,7 @@ for interp, bar in (("c1wf", True), ("c1wf", False), ("bary", True), ("bary", Fa
                                                     if interp == 'c1wf' else f"셀 det≤0 {r.get('tets_det_neg')}") + f" ({r['sec']} 초)", flush=True)
 qb = RES["qs"]["c1wf|장벽"]
 chk("7) 준정적 c1wf+장벽: 모든 단계 계수>0, 조밀 표본·입자 det>0", qb["coef_min"] > 0 and qb["dense_det_neg"] == 0 and qb["particle_det_neg"] == 0
-    and all(h_.get("coef_min", 1) > 0 for h_ in qb["hist"]), f"계수 최소 {qb['coef_min']:.3e}, 조밀 det 최소 {qb['dense_det_min']:.3e}")
+    and all(h_.get("coef_min", 1) > 0 for h_ in qb["hist"]) and qb["hist"][-1].get("s", 0) > 1 - 1e-9, f"계수 최소 {qb['coef_min']:.3e}, 조밀 det 최소 {qb['dense_det_min']:.3e}")
 
 
 # ------------------------------------------------------------------ 8) 바닥 시연 (외팔보)
