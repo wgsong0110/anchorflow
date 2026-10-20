@@ -393,12 +393,14 @@ def tess_tables(device, dtype):
     return _TT[k]
 
 
-def curl_check(dpn, wt, lo, lat, nn, uniq, chunk=512, eps=1e-7):
+def curl_check(dpn, wt, lo, lat, nn, uniq, chunk=512, eps=1e-6, coplanar=1e-6):
     """요소 말림 근사 검사: 각 점유 사면체의 상(경계 면 48 삼각형 근사)에서, 꼭짓점을 공유하지 않는 변-삼각형 쌍이
     교차하면 그 요소의 경계 면이 스스로 교차한 것(요소가 겹쳐 말림)으로 센다 (Möller–Trumbore, 엄격한 내부).
     -> (말린 요소 수, 교차 쌍 수)."""
     import torch
     with torch.no_grad():
+        dpn = dpn.double()                                       # float32 에서는 같은 면 위 쌍이 반올림으로 '교차' 로 잡힌다
+        lo = lo.double(); lat = type(lat)(lat.A.double(), lat.Ai.double(), lat.s, lat.hz)
         TT = tess_tables(dpn.device, dpn.dtype)
         nnl = [int(nn[k_]) for k_ in range(3)]
         fl = uniq[wt["rows"][:, 0]]
@@ -420,7 +422,7 @@ def curl_check(dpn, wt, lo, lat, nn, uniq, chunk=512, eps=1e-7):
             o = o.expand_as(dd)
             pv = torch.cross(dd, e2, dim=-1); det = (e1 * pv).sum(-1)                        # [C,E,Q]
             sc = (e1.norm(dim=-1) * e2.norm(dim=-1) * dd.norm(dim=-1)).clamp_min(1e-30)
-            good = ok & (det.abs() > 1e-9 * sc)
+            good = ok & (det.abs() > coplanar * sc)
             inv = 1.0 / torch.where(good, det, torch.ones_like(det))
             tv = o - v0; u = (tv * pv).sum(-1) * inv
             qv = torch.cross(tv, e1, dim=-1); vv = (dd * qv).sum(-1) * inv; tt = (e2 * qv).sum(-1) * inv
