@@ -359,6 +359,44 @@ def bc_softplus_map(q, Jm, cfg, eps):
     return q, Jf - I3
 
 
+def bc_stick_map(x0, q, Jm, cfg, eps, xn_term=False):
+    """**미끄러짐 방지 매핑** (--bc_stick EPS, --bc_softplus 와 함께; 그 앞에 적용): 스텝 시작 입자 위치 x0,
+    barycentric 결과 q(=x̃) 에서 Δ = q - x0 를 바닥 법선 n 으로 Δ_n·Δ_t 로 나누고
+
+        q' = x0 + Δ_n + w Δ_t,   w = σ(s̃/ε),   s̃ = n·(q - p)   (스텝 끝 = q 의 법선 거리)
+
+    접선 축소는 법선 좌표를 바꾸지 않는다 (뒤따르는 softplus 의 s 가 그대로 s̃).
+    야코비안 ∂q'/∂q = n nᵀ + w (I - n nᵀ) + w(1-w)/ε · Δ_t nᵀ  (w 의 s̃ 의존 항 포함), det = w².
+    xn_term=True 면 F 에 x0 의 명시적 의존 (1-w)(I - n nᵀ) 도 더한다 (q' 를 x0 의 함수로 본 전미분;
+    기본은 끔 = 사용자 정의 그대로 ∂q'/∂q 만 곱한다).
+    s̃/ε > 20 에서는 softplus threshold 와 같은 경계로 w=1 -- 위치·야코비안 정확히 항등.
+    Jm 은 grad u (단위행렬 없음) -- 돌려줄 때도 같은 규약.
+    """
+    I3 = torch.eye(3, device=q.device, dtype=q.dtype)
+    Jf = I3 + Jm
+    for bc in (cfg.get("boundary_conditions") or []):
+        if bc.get("type") != "surface_collider":
+            continue
+        pt = _const_vec(bc["point"], q)
+        nr = _const_vec(bc["normal"], q)
+        nr = nr / nr.norm().clamp_min(1e-12)
+        s = ((q - pt) * nr).sum(-1)
+        far = s / eps > 20.0
+        sg = torch.sigmoid(s / eps)
+        w = torch.where(far, torch.ones_like(s), sg)
+        dw = torch.where(far, torch.zeros_like(s), sg * (1.0 - sg) / eps)
+        d = q - x0
+        dt_ = d - (d * nr).sum(-1, keepdim=True) * nr
+        q = q - (1.0 - w).unsqueeze(-1) * dt_
+        nn_ = nr.unsqueeze(-1) * nr.unsqueeze(0)
+        Pt = I3 - nn_
+        Jst = nn_ + w[:, None, None] * Pt + dw[:, None, None] * (dt_.unsqueeze(-1) * nr.view(1, 1, 3))
+        Jf = Jst @ Jf
+        if xn_term:
+            Jf = Jf + (1.0 - w)[:, None, None] * Pt
+    return q, Jf - I3
+
+
 def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
             node_vel=None, ctrl_scale=1.0, mat=None, sec=None,
             dp_fast=None, dp_hook=None, pre_k=None, on_pin=None,
@@ -447,6 +485,10 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
         _du = _dus[0]
         _Jm = _Jsum / float(K)
         q = x + _du
+        if float(getattr(a, "bc_stick", 0.0) or 0.0) > 0.0:
+            # **미끄러짐 방지 매핑** (--bc_stick): x 는 이 스텝 시작 입자 위치. softplus 앞에 -- 접선 성분만 줄이고
+            # 법선 좌표는 그대로라 softplus 의 s 가 스텝 끝(q) 의 법선 거리 그대로다
+            q, _Jm = bc_stick_map(x, q, _Jm, cfg, float(a.bc_stick), bool(getattr(a, "bc_stick_xn", False)))
         if float(getattr(a, "bc_softplus", 0.0) or 0.0) > 0.0:
             # **softplus 바닥 매핑** (--bc_softplus): g2p 직후 입자 위치와 야코비안에 함께 -- 위치(x2)·속도(jvp)·
             # 관성·탄성(Jf) 이 모두 매핑된 위치 기준이 된다. 노드는 사영하지 않는다
@@ -583,7 +625,7 @@ _ARG_DEFAULTS = dict(
     n_nodes=32, hz_ratio=1.0 / 6 ** 0.5, node_h=0.0, hex_jac=False,
     fe_state=False, control=False, net_inertial=False, v_from_dt=False,
     dt_cond=False, dt_scale=False, dt_sub=1, eval_dt_sub=0, ens_off=0,
-    bc_soft=False, bc_mode="project", bc_level="node", bc_ipg=False, bc_softplus=0.0, ov_init="predict",
+    bc_soft=False, bc_mode="project", bc_level="node", bc_ipg=False, bc_softplus=0.0, bc_stick=0.0, bc_stick_xn=False, ov_init="predict",
     no_mat=False, mat_film=False, v0_traj=False, smooth_nb=0,
     cell_poly=False, ov_roll=0, refps=False, hold_traj=None, pool=True)
 

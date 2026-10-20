@@ -140,6 +140,12 @@ ap.add_argument("--bc_softplus", type=float, default=0.0,
                 help="**softplus 바닥 매핑** (0 이면 끔): 노드는 사영하지 않고, g2p 로 구한 입자 위치의 바닥 법선 "
                      "좌표 s 를 s'=ε·log(1+exp(s/ε)) 로 옮기고 F 에 그 야코비안 I+(σ(s/ε)-1)nnᵀ 를 곱한다. 값이 ε. "
                      "--bc_mode project --bc_level node 와 함께 (--bc_ipg/--bc_mpm/--bc_soft 없이) -- 장벽·접선 벌점 없음")
+ap.add_argument("--bc_stick", type=float, default=0.0,
+                help="**미끄러짐 방지 매핑** (0 이면 끔, --bc_softplus 와 함께): 스텝 시작 x_n, g2p 결과 x̃ 에서 "
+                     "Δ=x̃-x_n 의 접선 성분을 w=σ(n·(x̃-p)/ε) 배로 줄이고(법선 성분 그대로) 그 뒤 softplus. "
+                     "F 에 접선 축소의 ∂x/∂x̃ (w 의 s̃ 의존 항 포함) 를 곱한다. 값이 ε. 증분 포텐셜은 그대로")
+ap.add_argument("--bc_stick_xn", action="store_true",
+                help="--bc_stick 의 F 에 x_n 명시적 의존 항 (1-w)(I-nnᵀ) 를 더한다 (스텝 사상의 x_n 전미분). 기본 끔")
 ap.add_argument("--bc_slip", action="store_true",
                 help="바닥의 **접선 고정(no-slip) 항을 끈다**. 비관통만 남고 "
                      "닿은 입자가 면을 따라 미끄러진다")
@@ -2985,6 +2991,12 @@ if a.bc_softplus > 0:
         raise SystemExit("--bc_softplus 는 --bc_mode project --bc_level node 와만 (--bc_ipg/--bc_mpm/--bc_soft 없이)")
     print(f"[바닥] softplus 매핑 ε {a.bc_softplus:g}: 노드 사영 없음, 입자 법선 좌표 softplus + F 에 매핑 야코비안 "
           f"-- 장벽·접선 벌점 없음 (AF_NO_BC={os.environ.get('AF_NO_BC')})", flush=True)
+
+if a.bc_stick > 0:
+    if not a.bc_softplus > 0:
+        raise SystemExit("--bc_stick 은 --bc_softplus 와 함께만")
+    print(f"[바닥] 미끄러짐 방지 매핑 ε {a.bc_stick:g}: 접선 변위 ×σ(s̃/ε) (s̃ = 스텝 끝 법선 거리) -> softplus, "
+          f"F 에 ∂x/∂x̃{' + x_n 명시 항' if a.bc_stick_xn else ''} -- 증분 포텐셜 그대로", flush=True)
 
 if a.bc_mpm:
     os.environ["AF_BC_NODE_MPM"] = "1"
