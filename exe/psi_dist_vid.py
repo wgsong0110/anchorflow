@@ -32,8 +32,8 @@ ap.add_argument("--w", type=int, default=1600)
 ap.add_argument("--h", type=int, default=520)
 ap.add_argument("--lab_gt", default="정답 (PG)", help="정답 이름")
 ap.add_argument("--lab_ov", default="출력만 최적화", help="--hist 의 h_ov 이름")
-ap.add_argument("--hist2", default="", help="세 번째 궤적: 다른 psi_color 출력의 psi_hist.npz (같은 구간이어야 함) 의 h_ov 를 겹친다")
-ap.add_argument("--lab2", default="", help="--hist2 이름")
+ap.add_argument("--hist2", nargs="*", default=[], help="더 겹칠 궤적들: 다른 psi_color 출력의 psi_hist.npz (같은 구간·같은 정답) 의 h_ov")
+ap.add_argument("--lab2", nargs="*", default=[], help="--hist2 이름들 (같은 개수)")
 a = ap.parse_args()
 os.makedirs(a.out_dir, exist_ok=True)
 Z = np.load(a.hist)
@@ -42,13 +42,15 @@ lo, hi, eps, cmap = R["lo"], R["hi"], R["eps"], matplotlib.colormaps[R["cmap"]]
 E = Z["edges"]; cen = 0.5 * (E[:-1] + E[1:]); bw = E[1] - E[0]
 Hg, Ho = Z["h_gt"], Z["h_ov"]
 T = Hg.shape[0]
-C_GT, C_OV, C_2 = "#222222", "#d9480f", "#1c7ed6"
+C_GT, C_OV = "#222222", "#d9480f"
+C_X = ["#1c7ed6", "#2f9e44", "#ae3ec9", "#f59f00"]
 TR = [(Hg, Z["mean_gt"], Z["med_gt"], C_GT, a.lab_gt, a.lab_gt), (Ho, Z["mean_ov"], Z["med_ov"], C_OV, a.lab_ov, a.lab_ov)]
-if a.hist2:
-    Z2 = np.load(a.hist2)
-    assert np.allclose(Z2["edges"], E), "--hist2 구간이 다르다"
-    assert np.allclose(Z2["h_gt"], Hg), "--hist2 의 정답이 다르다"
-    TR.append((Z2["h_ov"], Z2["mean_ov"], Z2["med_ov"], C_2, a.lab2, a.lab2))
+assert len(a.hist2) == len(a.lab2), "--hist2 와 --lab2 개수가 다르다"
+for _i, (_hp, _lb) in enumerate(zip(a.hist2, a.lab2)):
+    Z2 = np.load(_hp)
+    assert np.allclose(Z2["edges"], E), f"--hist2 {_hp} 구간이 다르다"
+    assert np.allclose(Z2["h_gt"], Hg), f"--hist2 {_hp} 의 정답이 다르다"
+    TR.append((Z2["h_ov"], Z2["mean_ov"], Z2["med_ov"], C_X[_i % len(C_X)], _lb, _lb))
 ymax = 1.1 * max(h[1:].max() for h, *_ in TR)
 tt = np.arange(T)
 ser = [q for _, mn, md, *_ in TR for q in (mn, md)]
