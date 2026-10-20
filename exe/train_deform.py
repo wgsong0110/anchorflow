@@ -3748,6 +3748,58 @@ if os.environ.get("AF_OV_SNAP"):
     _OV_SNAP = dict(t=int(_sp[0]), iters=int(_sp[1]), every=int(_sp[2]), path=_sp[3], done=False)
 
 
+# AF_GRAD_PROBE=출력디렉토리:프레임,프레임,...[:추가반복] (사용자 10-20 "정지한 끝 프레임에서 셀 탄성 에너지 기울기가 0 인가"):
+# 그 프레임의 출력만 최적화에서 u = 관성 예측 / 0 / L-BFGS 해 (/ 추가 반복 해) 각각의
+#   노드별 증분 포텐셜 기울기 ∂(E·nrm)/∂u, 탄성항만의 기울기 ∂E_el/∂u (자유 노드, 고정 노드는 변수 밖),
+#   셀(사면체)별 자기 탄성 에너지의 꼭지점 기울기 Σ_{p∈셀} (∂E_el/∂J_p) ∇λ_pk, 셀 탄성 에너지·부피, 노드 질량
+# 을 저장한다. 계산은 _fwd (출력만 최적화가 쓰는 바로 그 경로: step_once → pts_ip_energy, 화분 고정·영역 밀도·부피 그대로).
+_GRAD_PROBE = None
+if os.environ.get("AF_GRAD_PROBE"):
+    _gpa = os.environ["AF_GRAD_PROBE"].split(":")
+    _GRAD_PROBE = {"out": _gpa[0], "frames": set(int(q) for q in _gpa[1].split(",") if q),
+                   "extra": int(_gpa[2]) if len(_gpa) > 2 else 0}
+    os.makedirs(_GRAD_PROBE["out"], exist_ok=True)
+
+
+def _grad_probe(st, _fwd, F, m, vol, cfg, x, tag, rec):
+    _vs = [q for q in st["ov"] if q is not None]
+    with torch.enable_grad():
+        x2, _, E, _, _, _pq, Jd = _fwd()
+        Jd = Jd if Jd.requires_grad else Jd.requires_grad_(True)
+        psi = phys_resid.psi_of(Jd.to(F.dtype) @ F, cfg, _DT[0])[0]
+        e_p = vol * psi
+        E_el = e_p.sum()
+        g_ip = torch.autograd.grad(E * rec["nrm"], _vs[0], retain_graph=True)[0]
+        g_el, G = torch.autograd.grad(E_el, [_vs[0], Jd])
+    ens = _NF_HOLD[0][0] if isinstance(_NF_HOLD[0], list) else None
+    out = {"E": float(E) * rec["nrm"], "E_el": float(E_el), "E_in": float(_pq[0]), "E_el_ip": float(_pq[1]),
+           "du_mean": float((x2 - x).norm(dim=-1).mean()),
+           "g_ip": g_ip[:, :3].detach().cpu(), "g_el": g_el[:, :3].detach().cpu()}
+    if ens is not None:
+        npos, rows, lam = ens[1], ens[3], ens[4]
+        Xv = npos[rows].to(torch.float64)
+        Minv = torch.linalg.inv((Xv[:, 1:] - Xv[:, :1]).transpose(1, 2))
+        dlam = torch.cat([-Minv.sum(1, keepdim=True), Minv], 1)               # [N,4,3] (barycentric ∇λ)
+        gpk = torch.einsum("nab,nkb->nka", G.to(torch.float64), dlam)          # [N,4,3] 입자 p 가 꼭지점 k 에 주는 힘
+        cells, inv = torch.unique(rows, dim=0, return_inverse=True)
+        nc = cells.shape[0]
+        gc = torch.zeros(nc, 4, 3, dtype=torch.float64, device=G.device).index_add_(0, inv, gpk)
+        ec = torch.zeros(nc, dtype=torch.float64, device=G.device).index_add_(0, inv, e_p.detach().double())
+        vc = torch.zeros(nc, dtype=torch.float64, device=G.device).index_add_(0, inv, vol.detach().double())
+        # 검산: 셀 꼭지점 힘을 노드로 모으면 ∂E_el/∂u (자유 노드) 와 같아야 한다
+        gn = torch.zeros(npos.shape[0], 3, dtype=torch.float64, device=G.device).index_add_(
+            0, rows.reshape(-1), gpk.reshape(-1, 3))
+        idx = st["ov_idx"][0]
+        gn_free = gn if idx is None else gn[idx]
+        chk = float((gn_free - g_el[:, :3].double()).norm() / g_el[:, :3].double().norm().clamp_min(1e-30))
+        mn = torch.zeros(npos.shape[0], dtype=torch.float64, device=G.device).index_add_(
+            0, rows.reshape(-1), (lam.double() * m.double().unsqueeze(1)).reshape(-1))
+        out.update({"cell_g": gc.norm(dim=-1).float().cpu(), "cell_e": ec.float().cpu(), "cell_vol": vc.float().cpu(),
+                    "node_m": (mn if idx is None else mn[idx]).float().cpu(), "chk_rel": chk,
+                    "n_nodes": int(npos.shape[0]), "n_free": int(g_el.shape[0]), "n_cells": int(nc)})
+    rec[tag] = out
+
+
 def _ov_once(d, t, gsel, p, x, v, F, off=None):
     if _OV_SNAP is not None and int(t) == _OV_SNAP["t"] and not _OV_SNAP["done"]:
         _OV_SNAP["done"] = True
@@ -4149,8 +4201,45 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 if not _vs:
                     raise SystemExit("--ov_roll: 출력 훅이 변수를 못 만들었다")
                 st["ov_opt"] = _mk_ov_opt(_vs)
+            _gpr = _GRAD_PROBE is not None and int(t) in _GRAD_PROBE["frames"]
+            if _gpr:
+                _gp_rec = {"t": int(t), "nrm": float(nrm), "h": float(_DT[0])}
+                _gp_z0 = [q.detach().clone() for q in st["ov"] if q is not None]
+                _grad_probe(st, _fwd, F, m, vol, cfg, x, "pred", _gp_rec)          # 관성 예측 u = h v (출발점)
+                with torch.no_grad():
+                    for q in st["ov"]:
+                        if q is not None:
+                            q[:, :3] = 0.0
+                _grad_probe(st, _fwd, F, m, vol, cfg, x, "zero", _gp_rec)          # u = 0 (현재 배치 그대로)
+                with torch.no_grad():
+                    for q, z0 in zip([q for q in st["ov"] if q is not None], _gp_z0):
+                        q.copy_(z0)
             _tw = time.time()
             st["ov_opt"].step(_closure)
+            if _gpr:
+                _grad_probe(st, _fwd, F, m, vol, cfg, x, "opt", _gp_rec)           # L-BFGS ov_roll 회 뒤 (실제로 쓴 해)
+                _ext = int(_GRAD_PROBE.get("extra", 0))
+                if _ext > 0:
+                    # 같은 프레임을 더 오래: 이어서 _ext 회 더 (새 L-BFGS), 기록 뒤 원래 해로 되돌린다 (롤아웃은 그대로)
+                    _gp_z1 = [q.detach().clone() for q in st["ov"] if q is not None]
+                    _vsx = [q for q in st["ov"] if q is not None]
+                    _optx = torch.optim.LBFGS(_vsx, lr=1.0, max_iter=_ext, history_size=50, tolerance_grad=0.0,
+                                              tolerance_change=0.0, line_search_fn="strong_wolfe")
+
+                    def _clx():
+                        _optx.zero_grad(set_to_none=True)
+                        _, _, _Ex, _, _, _, _ = _fwd()
+                        _Ex.backward()
+                        return _Ex
+                    _optx.step(_clx)
+                    _grad_probe(st, _fwd, F, m, vol, cfg, x, f"opt{_ext + a.ov_roll}", _gp_rec)
+                    with torch.no_grad():
+                        for q, z1 in zip(_vsx, _gp_z1):
+                            q.copy_(z1)
+                torch.save(_gp_rec, os.path.join(_GRAD_PROBE["out"], f"probe_t{int(t):04d}.pt"))
+                print(f"    [기울기 탐침] t={t} -> {_GRAD_PROBE['out']}/probe_t{int(t):04d}.pt  " + "  ".join(
+                    f"{k}: E {_gp_rec[k]['E']:.4e} 탄성 {_gp_rec[k]['E_el']:.4e} |du| {_gp_rec[k]['du_mean']:.3e}"
+                    for k in _gp_rec if isinstance(_gp_rec[k], dict)), flush=True)
             if os.environ.get("AF_OV_ITERS"):
                 torch.cuda.synchronize()
                 print(f"    [반복] t={t} 평가 {_n[0]} 회, {time.time() - _tw:.2f} s", flush=True)
