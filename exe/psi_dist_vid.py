@@ -30,6 +30,7 @@ ap.add_argument("--out_dir", required=True)
 ap.add_argument("--cbar", required=True)
 ap.add_argument("--w", type=int, default=1600)
 ap.add_argument("--h", type=int, default=520)
+ap.add_argument("--lab_gt", default="정답 (PG)", help="정답 이름")
 ap.add_argument("--lab_ov", default="출력만 최적화", help="--hist 의 h_ov 이름")
 ap.add_argument("--hist2", default="", help="세 번째 궤적: 다른 psi_color 출력의 psi_hist.npz (같은 구간이어야 함) 의 h_ov 를 겹친다")
 ap.add_argument("--lab2", default="", help="--hist2 이름")
@@ -42,7 +43,7 @@ E = Z["edges"]; cen = 0.5 * (E[:-1] + E[1:]); bw = E[1] - E[0]
 Hg, Ho = Z["h_gt"], Z["h_ov"]
 T = Hg.shape[0]
 C_GT, C_OV, C_2 = "#222222", "#d9480f", "#1c7ed6"
-TR = [(Hg, Z["mean_gt"], Z["med_gt"], C_GT, "정답 (PG)", "정답"), (Ho, Z["mean_ov"], Z["med_ov"], C_OV, a.lab_ov, a.lab_ov)]
+TR = [(Hg, Z["mean_gt"], Z["med_gt"], C_GT, a.lab_gt, a.lab_gt), (Ho, Z["mean_ov"], Z["med_ov"], C_OV, a.lab_ov, a.lab_ov)]
 if a.hist2:
     Z2 = np.load(a.hist2)
     assert np.allclose(Z2["edges"], E), "--hist2 구간이 다르다"
