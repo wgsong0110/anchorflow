@@ -183,16 +183,27 @@ for amp in (0.01, 0.03, 0.06, 0.1):
 # 5) autograd
 a5 = mk_a("c1wf")
 ens5 = DM.node_feats(a5, cfg, x, mass, x, v, 1.0)
-sub = torch.randperm(N, device=dev)[:30]
+sub = torch.randperm(N, device=dev)[:8]
 M5 = ens5[1].shape[0]
-dq = (1e-2 * torch.randn(M5, WF.C1_NOUT, dtype=dt, device=dev)).requires_grad_(True)
+base5 = 1e-2 * torch.randn(M5, WF.C1_NOUT, dtype=dt, device=dev)
+
+
+def embed(nodes):
+    def f(qs):
+        return base5.index_copy(0, nodes, qs)
+    return f
+
+
+nd1 = torch.unique(ens5[3][sub])                                   # 이 입자들이 쓰는 노드만 변수로 (gradcheck 비용)
 ws5 = {k: (vv[sub] if torch.is_tensor(vv) and vv.shape[0] == N else vv) for k, vv in ens5[7].wf.items()}
-g1 = torch.autograd.gradcheck(lambda q: WF.jac_pre(ens5[3][sub], ws5, ens5[2][1], q), (dq,), eps=1e-6, atol=1e-8)
+e1 = embed(nd1)
+g1 = torch.autograd.gradcheck(lambda q: WF.jac_pre(ens5[3][sub], ws5, ens5[2][1], e1(q)), (base5[nd1].clone().requires_grad_(True),), eps=1e-6, atol=1e-8)
 wt5 = ens5[7].wft
-wts = dict(rows=wt5["rows"][:6], ty=wt5["ty"][:6], svol=wt5["svol"][:6])
-g2 = torch.autograd.gradcheck(lambda q: WF.det_coefs(q, wts, ens5[2][1]), (dq,), eps=1e-6, atol=1e-8)
-dq3 = (1e-2 * torch.randn(M5, WF.C1_NOUT, dtype=dt, device=dev)).requires_grad_(True)
-g3 = torch.autograd.gradcheck(lambda q: WF.barrier_energy(WF.det_coefs(q, wts, ens5[2][1]), wts["svol"], 1.0, 1.5), (dq3,), eps=1e-6, atol=1e-7)
+wts = dict(rows=wt5["rows"][:2], ty=wt5["ty"][:2], svol=wt5["svol"][:2])
+nd2 = torch.unique(wts["rows"]); e2 = embed(nd2)
+g2 = torch.autograd.gradcheck(lambda q: WF.det_coefs(e2(q), wts, ens5[2][1]), (base5[nd2].clone().requires_grad_(True),), eps=1e-6, atol=1e-8)
+g3 = torch.autograd.gradcheck(lambda q: WF.barrier_energy(WF.det_coefs(e2(q), wts, ens5[2][1]), wts["svol"], 1.0, 1.5),
+                              (base5[nd2].clone().requires_grad_(True),), eps=1e-6, atol=1e-7)
 chk("5) gradcheck jac_pre / det_coefs / 로그 장벽", g1 and g2 and g3)
 
 
