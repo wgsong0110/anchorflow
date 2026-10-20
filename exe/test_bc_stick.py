@@ -77,11 +77,15 @@ chk("   --bc_stick_xn 반환 F == x_n 전미분 autograd", max(e2) < 1e-9, f"최
 # 4) det
 sg = torch.where(s0 / EPS > 20.0, torch.ones_like(s0), torch.sigmoid(s0 / EPS))
 dold = torch.linalg.det(I3 + Jm); dnew = torch.linalg.det(I3 + J2)
-chk("4) det > 0 (기본)", bool((dnew * dold > 0).all()) and float(((dnew - sg ** 3 * dold) / dold.abs()).abs().max()) < 1e-8,
-    f"w 최소 {float(sg.min()):.2e}, det새/det옛 = w³ 최대 상대차 {float(((dnew - sg ** 3 * dold) / dold.abs()).abs().max()):.1e}")
+# det 부호 판정은 s̃ >= -0.1 (w >= 4.5e-5) 에서 -- 더 깊으면 det ~ w³ < 1e-13 이 LU 반올림(1e-16·항목 크기)에 묻힌다
+mid = s0 >= -0.1
+rel = ((dnew - sg ** 3 * dold) / dold.abs())
+chk("4) det > 0 (기본, s̃>=-0.1)", bool((dnew[mid] * dold[mid] > 0).all()), f"최소 det새 {float(dnew[mid].min()):.2e}")
+chk("   det새 = w³ det옛 (전 범위, 상대차)", float(rel.abs().max()) < 1e-8,
+    f"w 최소 {float(sg.min()):.2e}, 최대 상대차 {float(rel.abs().max()):.1e}, 전 범위 det새<=0 {int((dnew <= 0).sum())} 개 (s̃<-0.1 반올림)")
 _, J2x = full(x0, q, Jm, True)
 dx_ = torch.linalg.det(I3 + J2x)
-chk("   det > 0 (--bc_stick_xn, |Jm|=0.1 에서)", bool((dx_ * dold > 0).all()), f"최소 det {float(dx_.min()):.2e}")
+chk("   det > 0 (--bc_stick_xn, |Jm|=0.1, s̃>=-0.1)", bool((dx_[mid] > 0).all()), f"최소 det {float(dx_[mid].min()):.2e}")
 # 강체 평행이동(grad u = 0) 접촉 입자: 기본 det = w³, xn 전미분 det = w
 rig_def = torch.linalg.det(I3 + full(x0[con], q[con], torch.zeros(int(con.sum()), 3, 3, dtype=dt))[1])
 rig_xn = torch.linalg.det(I3 + full(x0[con], q[con], torch.zeros(int(con.sum()), 3, 3, dtype=dt), True)[1])
