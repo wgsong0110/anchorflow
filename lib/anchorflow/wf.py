@@ -416,12 +416,14 @@ def curl_check(dpn, wt, lo, lat, nn, uniq, chunk=512, eps=1e-7):
             Pe = g(E)                                                                         # [C,E,2,3]
             o = Pe[:, :, 0].unsqueeze(2); dd = (Pe[:, :, 1] - Pe[:, :, 0]).unsqueeze(2)    # [C,E,1,3]
             v0, e1, e2 = T3[:, :, 0].unsqueeze(1), (T3[:, :, 1] - T3[:, :, 0]).unsqueeze(1), (T3[:, :, 2] - T3[:, :, 0]).unsqueeze(1)
-            pv = torch.cross(dd.expand_as(e2), e2, dim=-1); det = (e1 * pv).sum(-1)       # [C,E,Q]
+            dd, e1, e2, v0 = torch.broadcast_tensors(dd, e1, e2, v0)                         # [C,E,Q,3]
+            o = o.expand_as(dd)
+            pv = torch.cross(dd, e2, dim=-1); det = (e1 * pv).sum(-1)                        # [C,E,Q]
             sc = (e1.norm(dim=-1) * e2.norm(dim=-1) * dd.norm(dim=-1)).clamp_min(1e-30)
             good = ok & (det.abs() > 1e-9 * sc)
             inv = 1.0 / torch.where(good, det, torch.ones_like(det))
             tv = o - v0; u = (tv * pv).sum(-1) * inv
-            qv = torch.cross(tv, e1.expand_as(tv), dim=-1); vv = (dd * qv).sum(-1) * inv; tt = (e2 * qv).sum(-1) * inv
+            qv = torch.cross(tv, e1, dim=-1); vv = (dd * qv).sum(-1) * inv; tt = (e2 * qv).sum(-1) * inv
             hit = good & (u > eps) & (vv > eps) & (u + vv < 1 - eps) & (tt > eps) & (tt < 1 - eps)
             n_pair += int(hit.sum()); n_el += int(hit.flatten(1).any(1).sum())
         return n_el, n_pair
