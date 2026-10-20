@@ -3837,6 +3837,155 @@ def _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, tag, rec):
     rec[tag] = out
 
 
+# AF_GD_PROBE=출력디렉토리:프레임:반복:덤프간격 (사용자 10-20 "멈춘 상태에서 경사하강으로 변형"): 그 프레임에서 노드 변위 u 를
+# u=0 에서 시작해 u <- u - α ∂IP/∂u (매 반복 Armijo 백트래킹, α 는 직전 값의 2 배에서 시작) 로 내리며 반복마다 IP·탄성·|g|·이동·α 를,
+# 덤프간격마다 입자 위치·ψ·F 를 저장한다. 또 같은 u=0 에서 L-BFGS 첫 걸음과 같은 방향(-g)·크기(t0 = min(1, 1/|g|₁))의 시험 걸음
+# 여러 배율로 IP 변화를 재고 float32 합 반올림 크기와 비교한다. 끝나면 u 를 원래 값으로 되돌린다 (롤아웃은 그대로).
+_GD_PROBE = None
+if os.environ.get("AF_GD_PROBE"):
+    _gda = os.environ["AF_GD_PROBE"].split(":")
+    _GD_PROBE = {"out": _gda[0], "t": int(_gda[1]), "iters": int(_gda[2]), "every": int(_gda[3]) if len(_gda) > 3 else 1}
+    os.makedirs(_GD_PROBE["out"], exist_ok=True)
+
+
+def _gd_run(st, _fwd, F, vol, cfg, x, t, nrm):
+    _vs = [q for q in st["ov"] if q is not None]
+    u = _vs[0]
+    keep = u.detach().clone()
+
+    def ev(need_g=True, keep_state=False):
+        with torch.enable_grad():
+            x2, _, E, _, _, _pq, Jd = _fwd()
+            Et = E * nrm
+            g = torch.autograd.grad(Et, u)[0] if need_g else None
+        with torch.no_grad():
+            F_tr = Jd.detach().to(F.dtype) @ F
+            psi = phys_resid.psi_of(F_tr, cfg, _DT[0])[0]
+            Eel = float((vol * psi).sum())
+        out = dict(E=float(Et), E_el=Eel, du=float((x2 - x).norm(dim=-1).mean()), g=g)
+        if keep_state:
+            out.update(x2=x2.detach().float().cpu(), psi=psi.detach().float().cpu(), F=F_tr.detach().float().cpu())
+        return out
+    with torch.no_grad():
+        u[:, :3] = 0.0
+    r0 = ev(keep_state=True)
+    g0 = r0["g"]
+    # L-BFGS 첫 걸음 재현: 방향 -g, 크기 t0 = lr·min(1, 1/|g|₁) (torch LBFGS 첫 반복), 배율 여러 개
+    t0 = min(1.0, 1.0 / float(g0.abs().sum()))
+    ls = []
+    E_terms = abs(r0["E"])
+    rnd = float(torch.finfo(torch.float32).eps) * E_terms
+    for f_ in (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6):
+        with torch.no_grad():
+            u[:, :3] = -(t0 * f_) * g0[:, :3]
+        r_ = ev(need_g=False)
+        ls.append(dict(scale=f_, step=t0 * f_, dE=r_["E"] - r0["E"], du=r_["du"]))
+    print(f"    [경사하강] t={t} u=0: IP {r0['E']:.6e} 탄성 {r0['E_el']:.6e} |g| {float(g0.norm()):.3e} |g|₁ {float(g0.abs().sum()):.3e}, "
+          f"L-BFGS 첫 걸음 t0 {t0:.3e}, float32 반올림 크기(eps·IP) {rnd:.2e}", flush=True)
+    for q_ in ls:
+        print(f"      시험 걸음 t0x{q_['scale']:g} ({q_['step']:.3e}): ΔIP {q_['dE']:+.3e} (반올림 대비 {q_['dE'] / max(rnd, 1e-30):+.1f}), 이동 {q_['du']:.3e}", flush=True)
+    # 경사하강 -- 뒤집힘 로그 장벽 매니폴드 위 (사용자 정정 10-20): Δu = -α G⁻¹∇IP,
+    #   G = Σ_c ‖J_c⁻¹ dJ_c‖_F² (-Σ log det J_c 의 정확 헤시안 tr(J⁻¹dJ J⁻¹dJ) 은 부정부호일 수 있어 prw 와 같은 PSD 계량) + eps·I,
+    #   J_c = I + Σ_k u_k ⊗ ∇λ_k (셀 = 입자가 든 사면체, 변형장이 셀마다 선형). 노드 공간 정확 행렬(밀집, float64)로 푼다.
+    #   ‖Δu‖_G ≤ r (Dikin: 셀마다 ‖J⁻¹dJ‖_F ≤ r < 1 이라 det 가 양수로 남는다), 그 안에서 Armijo 백트래킹. 바닥 항 없음 (ficus).
+    ens = _NF_HOLD[0][0]
+    npos, rows = ens[1], ens[3]
+    cells = torch.unique(rows, dim=0)
+    Xv = npos[cells].double()
+    Minv = torch.linalg.inv((Xv[:, 1:] - Xv[:, :1]).transpose(1, 2))
+    B = torch.cat([-Minv.sum(1, keepdim=True), Minv], 1)                    # [C,4,3] ∇λ_k
+    M_ = npos.shape[0]
+    idx = (st.get("ov_idx") or [None])[0]
+    free = torch.zeros(M_, dtype=torch.bool, device=npos.device)
+    free[idx if idx is not None else slice(None)] = True
+    pos_of = torch.full((M_,), -1, dtype=torch.long, device=npos.device)
+    pos_of[free] = torch.arange(int(free.sum()), device=npos.device)
+    nf = int(free.sum())
+    r_dk = float(os.environ.get("AF_GD_R", 0.5)); eps_rel = float(os.environ.get("AF_GD_EPS", 1e-6))
+
+    def node_u():
+        U = torch.zeros(M_, 3, dtype=torch.float64, device=npos.device)
+        U[free] = u.detach()[:, :3].double()
+        return U
+
+    def cellJ(U):
+        return torch.eye(3, dtype=torch.float64, device=U.device) + torch.einsum("cka,ckb->cab", U[cells], B)
+
+    def metric(U):
+        A = torch.linalg.inv(cellJ(U)); AtA = A.transpose(1, 2) @ A          # [C,3,3]
+        bb = torch.einsum("cka,cla->ckl", B, B)                                # [C,4,4]
+        blk = bb[:, :, :, None, None] * AtA[:, None, None]                     # [C,4,4,3,3]
+        G = torch.zeros(nf * 3, nf * 3, dtype=torch.float64, device=U.device)
+        pk = pos_of[cells]                                                     # [C,4]
+        ok = (pk >= 0)
+        for k in range(4):
+            for l in range(4):
+                m_ = ok[:, k] & ok[:, l]
+                if not bool(m_.any()):
+                    continue
+                ri = (pk[m_, k] * 3)[:, None, None] + torch.arange(3, device=U.device)[None, :, None]
+                ci = (pk[m_, l] * 3)[:, None, None] + torch.arange(3, device=U.device)[None, None, :]
+                G.index_put_((ri.expand(-1, 3, 3).reshape(-1), ci.expand(-1, 3, 3).reshape(-1)),
+                             blk[m_, k, l].reshape(-1), accumulate=True)
+        G = 0.5 * (G + G.T)
+        G += eps_rel * float(G.diagonal().mean()) * torch.eye(nf * 3, dtype=torch.float64, device=U.device)
+        return G
+
+    def detmin(U):
+        return float(torch.linalg.det(cellJ(U)).min())
+
+    hist, X, PS, FF, ks = [], [r0["x2"]], [r0["psi"]], [r0["F"]], [0]
+    with torch.no_grad():
+        u[:, :3] = 0.0
+    cur, g = r0, g0
+    a_ = None
+    print(f"      [다양체 경사하강] 셀 {cells.shape[0]}, 자유 노드 {nf}, Dikin r {r_dk}, eps {eps_rel:g}·평균대각, 밀집 {3 * nf}²", flush=True)
+    for k in range(1, _GD_PROBE["iters"] + 1):
+        U0 = node_u()
+        G = metric(U0)
+        gv_ = g[:, :3].double().reshape(-1)
+        d_ = torch.linalg.solve(G, gv_)                                        # G⁻¹∇IP
+        nG = float(torch.sqrt((gv_ * d_).sum()).clamp_min(1e-300))           # ‖G⁻¹g‖_G
+        amax = r_dk / nG
+        a_ = amax if a_ is None else min(amax, 2.0 * a_)
+        u0 = u.detach().clone()
+        acc = False
+        for _bt in range(60):
+            with torch.no_grad():
+                u.copy_(u0); u[:, :3] -= (a_ * d_).reshape(-1, 3).to(u.dtype)
+            dm_ = detmin(node_u())
+            if dm_ > 0:
+                r_ = ev(need_g=False)
+                if r_["E"] <= cur["E"] - 1e-4 * a_ * float((gv_ * d_).sum()):
+                    acc = True
+                    break
+            a_ *= 0.5
+        if not acc:
+            with torch.no_grad():
+                u.copy_(u0)
+            hist.append(dict(k=k, E=cur["E"], E_el=cur["E_el"], gnorm=float(g.norm()), gG=nG, du=cur["du"], alpha=0.0,
+                             stepG=0.0, detmin=detmin(U0), acc=False))
+            print(f"      [다양체 경사하강] 반복 {k}: 백트래킹 60 회 실패 -- 멈춤 (IP {cur['E']:.6e}, ‖g‖_G* {nG:.3e})", flush=True)
+            break
+        last = (k % _GD_PROBE["every"] == 0) or k == _GD_PROBE["iters"]
+        cur = ev(keep_state=last)
+        g = cur["g"]
+        dmk = detmin(node_u())
+        hist.append(dict(k=k, E=cur["E"], E_el=cur["E_el"], gnorm=float(g.norm()), gG=nG, du=cur["du"], alpha=a_,
+                         stepG=a_ * nG, detmin=dmk, acc=True))
+        if last:
+            X.append(cur["x2"]); PS.append(cur["psi"]); FF.append(cur["F"]); ks.append(k)
+        if k % max(1, _GD_PROBE["iters"] // 20) == 0 or k <= 3:
+            print(f"      [다양체 경사하강] 반복 {k}: IP {cur['E']:.6e} (시작 대비 {cur['E'] - r0['E']:+.3e}) 탄성 {cur['E_el']:.6e} "
+                  f"|g| {float(g.norm()):.3e} ‖g‖_G* {nG:.3e} 걸음 ‖Δu‖_G {a_ * nG:.3f} 이동 {cur['du']:.3e} 셀 det 최소 {dmk:.4f}", flush=True)
+    torch.save({"t": t, "E0": r0["E"], "Eel0": r0["E_el"], "t0": t0, "round": rnd, "linesearch": ls, "hist": hist, "k": ks,
+                "pred": torch.stack(X), "psi": torch.stack(PS), "F": torch.stack(FF), "x": x.detach().float().cpu()},
+               os.path.join(_GD_PROBE["out"], f"gd_t{t:04d}.pt"))
+    print(f"    [경사하강] t={t} 저장 {_GD_PROBE['out']}/gd_t{t:04d}.pt ({len(ks)} 장, 마지막 반복 {hist[-1]['k'] if hist else 0})", flush=True)
+    with torch.no_grad():
+        u.copy_(keep)
+
+
 def _ov_once(d, t, gsel, p, x, v, F, off=None):
     if _OV_SNAP is not None and int(t) == _OV_SNAP["t"] and not _OV_SNAP["done"]:
         _OV_SNAP["done"] = True
@@ -4251,6 +4400,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 with torch.no_grad():
                     for q, z0 in zip([q for q in st["ov"] if q is not None], _gp_z0):
                         q.copy_(z0)
+            if _GD_PROBE is not None and int(t) == _GD_PROBE["t"]:
+                _gd_run(st, _fwd, F, vol, cfg, x, int(t), nrm)
             _tw = time.time()
             if not (_GRAD_PROBE is not None and _GRAD_PROBE.get("skip") and not _gpr):
                 st["ov_opt"].step(_closure)       # AF_GRAD_PROBE_SKIP: 상태를 덤프로 맞추는 탐침 실행에서 탐침 밖 프레임은 최적화 생략
