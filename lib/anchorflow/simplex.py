@@ -242,3 +242,89 @@ def edges_of(idx_rows, uniq, nn):
         tbl[(o[0] + 1) * 9 + (o[1] + 1) * 3 + (o[2] + 1)] = c
     cls = tbl[key]
     return src, dst, cls
+
+
+# ---------------------------------------------------------------- 변형 기울기 매끄럽게 (--interp)
+class Aux(tuple):
+    """locate 의 보조 (ci, rank, perm) 에 --interp 용 부가 정보를 붙인다.
+
+    3-튜플 풀기(`_ci, rank, _perm = aux`)는 그대로 된다. 부가 정보는 속성으로:
+      bsp: [N,27,3] 2 차 B-스플라인 가중치의 격자 좌표 기울기 ∂w/∂y (--interp bspline)
+      nav: (tet_rows [T,4], tet_rank [T,3], tet_w [T], node_wsum [M]) (--interp nodeavg)
+    """
+    bsp = None
+    nav = None
+
+
+_O27 = {}
+
+
+def _o27(device):
+    if device not in _O27:
+        _O27[device] = torch.tensor([[i, j, k] for i in range(3) for j in range(3) for k in range(3)],
+                                    device=device, dtype=torch.long)
+    return _O27[device]
+
+
+def bspline27(q, lo, lat, nn):
+    """MPM 과 같은 2 차 B-스플라인 (격자 좌표 y = Ai(q - lo) 에서 축별 곱, 27 노드).
+
+    base = floor(y - 0.5), f = y - base ∈ [0.5, 1.5),
+    w = [0.5(1.5-f)², 0.75-(f-1)², 0.5(f-0.5)²],  ∂w/∂f = [f-1.5, -2(f-1), f-0.5].
+    -> (flat [N,27] 평탄 노드 색인, w [N,27], dwdy [N,27,3])
+    """
+    nnl = [int(nn[k]) for k in range(3)]
+    y = (q - lo) @ lat.Ai.T
+    b = torch.floor(y - 0.5)
+    f = y - b                                                         # [N,3]
+    wq = torch.stack([0.5 * (1.5 - f) ** 2, 0.75 - (f - 1.0) ** 2, 0.5 * (f - 0.5) ** 2], 1)   # [N,3(o),3(축)]
+    dq = torch.stack([f - 1.5, -2.0 * (f - 1.0), f - 0.5], 1)                                    # [N,3(o),3(축)]
+    o = _o27(q.device)
+    w0, w1, w2 = wq[:, o[:, 0], 0], wq[:, o[:, 1], 1], wq[:, o[:, 2], 2]                          # [N,27]
+    d0, d1, d2 = dq[:, o[:, 0], 0], dq[:, o[:, 1], 1], dq[:, o[:, 2], 2]
+    w = w0 * w1 * w2
+    dwdy = torch.stack([d0 * w1 * w2, w0 * d1 * w2, w0 * w1 * d2], -1)                            # [N,27,3]
+    ijk = b.long().unsqueeze(1) + o.unsqueeze(0)                                                  # [N,27,3]
+    lim = torch.tensor(nnl, device=q.device)
+    if bool(((ijk < 0) | (ijk >= lim)).any()):
+        raise SystemExit("[bspline27] 27 이웃 노드가 격자 밖이다 -- 격자 여백이 모자라다")
+    flat = (ijk[..., 0] * nnl[1] + ijk[..., 1]) * nnl[2] + ijk[..., 2]
+    return flat, w, dwdy
+
+
+def bspline_jac_pre(rows, dwdy, lat, dp_act):
+    """grad_x u = (Σ_j dp_j ⊗ ∂w_j/∂y) Ai  [N,3,3] (g2p_jac_pre 와 같은 규약, 단위행렬 없음)."""
+    dpc = dp_act[rows][..., :3]                                        # [N,27,3]
+    Dy = torch.einsum("nji,njl->nil", dpc, dwdy.to(dpc.dtype))
+    return Dy @ lat.Ai.to(Dy.dtype)
+
+
+def nodeavg_struct(rows, aux, lat, M):
+    """--interp nodeavg 구조: 점유 사면체 (중복 제거), 사면체 부피, 노드별 부피 합."""
+    tets, inv = torch.unique(rows, dim=0, return_inverse=True)        # [T,4]
+    T = int(tets.shape[0])
+    rep = torch.zeros(T, dtype=torch.long, device=rows.device)
+    rep.scatter_(0, inv, torch.arange(inv.numel(), device=rows.device))
+    trank = aux[1][rep]                                                # [T,3]
+    vol = abs(float(torch.linalg.det(lat.A.double()))) / 6.0          # Kuhn 사면체는 모두 같은 부피
+    tw = torch.full((T,), vol, device=rows.device, dtype=lat.A.dtype)
+    ws = torch.zeros(M, device=rows.device, dtype=lat.A.dtype).index_add_(
+        0, tets.reshape(-1), tw.repeat_interleave(4))
+    return tets, trank, tw, ws
+
+
+def nodeavg_jac_pre(rows, lam, nav, lat, dp_act):
+    """셀(사면체)별 grad u 를 노드에 부피 가중 평균한 뒤 입자로 barycentric 보간 [N,3,3].
+
+    G_n = Σ_{T∋n} V_T G_T / Σ_{T∋n} V_T,   G_p = Σ_i λ_i G_{rows_i}.
+    """
+    tets, trank, tw, ws = nav
+    dpc = dp_act[tets][..., :3]                                        # [T,4,3]
+    d = (dpc[:, 1:] - dpc[:, :-1]).transpose(1, 2)
+    Dy = d.gather(2, trank.unsqueeze(1).expand(-1, 3, -1))
+    GT = Dy @ lat.Ai.to(Dy.dtype)                                      # [T,3,3]
+    M = ws.shape[0]
+    src = (tw.to(GT.dtype).unsqueeze(-1).unsqueeze(-1) * GT).repeat_interleave(4, 0).reshape(-1, 9)
+    Gn = torch.zeros(M, 9, device=GT.device, dtype=GT.dtype).index_add(0, tets.reshape(-1), src)
+    Gn = Gn / ws.to(GT.dtype).clamp_min(1e-30).unsqueeze(-1)
+    return (lam.to(GT.dtype).unsqueeze(-1) * Gn[rows]).sum(1).reshape(-1, 3, 3)

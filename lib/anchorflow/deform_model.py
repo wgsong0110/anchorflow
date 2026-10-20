@@ -197,8 +197,28 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
         rows = _rall[:, :4]
     else:
         rows, uniq = SX.active_nodes(idx)      # **점유 사면체의 꼭짓점만**
+    _interp = str(getattr(a, "interp", "bary") or "bary")
+    rows_tet = rows                            # 간선은 언제나 사면체에서
+    if _interp == "bspline":
+        # **2 차 B-스플라인 보간** (--interp bspline): 입자 변위·야코비안을 주변 27 노드에서 (MPM 과 같은 가중치).
+        # 활성 노드 = 사면체 꼭짓점 ∪ 입자가 쓰는 27 이웃 전부. rows/lam 은 27 열로 바꿔 돌려준다 -- 관성 예측자·
+        # 손잡이(--cfg_bc) 노드 판정·노드 특징이 모두 같은 가중치를 쓴다.
+        _f27, _w27, _dw27 = SX.bspline27(x, lo, lat, nn)
+        uniq = torch.unique(torch.cat([idx.reshape(-1), _f27.reshape(-1)]))
+        rows_tet = torch.searchsorted(uniq, idx)
+        rows = torch.searchsorted(uniq, _f27)
+        lam = _w27.to(x.dtype)
+        _aux = SX.Aux(_aux)
+        _aux.bsp = _dw27.to(x.dtype)
+    elif _interp == "nodeavg":
+        _aux = SX.Aux(_aux)
+    elif _interp != "bary":
+        raise SystemExit(f"--interp {_interp} 모름")
     Mn = int(uniq.numel())
     npos = SX.node_pos(lo, lat, nn, uniq)
+    if _interp == "nodeavg":
+        # **노드 평균 기울기** (--interp nodeavg): 사면체별 grad u 를 노드에 부피 가중 평균 -> 입자로 barycentric
+        _aux.nav = SX.nodeavg_struct(rows, _aux, lat, Mn)
     hn = lat.s                                 # 길이 단위 = 면내 간격 h
     _agg = str(getattr(a, "agg", "bary") or "bary")
     if _agg == "bspline":
@@ -265,7 +285,7 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
     _in = torch.cat([san(feat), san(torch.cat(extra, -1))], -1)
     _in = torch.nan_to_num(_in, nan=0.0, posinf=0.0,
                            neginf=0.0).clamp(-FCAP, FCAP)
-    src, dst, cls = SX.edges_of(rows, uniq, nn)
+    src, dst, cls = SX.edges_of(rows_tet, uniq, nn)
     return (_in, npos, (lo, lat, nn), rows, lam, uniq, (src, dst, cls), _aux)
 
 
@@ -471,6 +491,14 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
             if getattr(a, "gregory", False):
                 # 셀 안 로컬 변환 (rep_ip ours 와 같은 Gregory·방사형 스키닝) + 노드 변위 글로벌 변환
                 _duk, _Jk = gregory_skin(x, _npk, _rwk, dpn_k[:, :3], dpn_k[:, 3], float(a.node_h))
+            elif getattr(_lxk, "bsp", None) is not None:
+                # --interp bspline: 변위·야코비안 모두 같은 27 노드 2 차 B-스플라인에서 (일관)
+                _duk = SX.g2p_pre(_rwk, _lmk, dpn_k[:, :3])
+                _Jk = SX.bspline_jac_pre(_rwk, _lxk.bsp, _latk, dpn_k)
+            elif getattr(_lxk, "nav", None) is not None:
+                # --interp nodeavg: 변위는 barycentric 그대로, 야코비안만 노드 평균 기울기의 barycentric 보간
+                _duk = SX.g2p_pre(_rwk, _lmk, dpn_k)
+                _Jk = SX.nodeavg_jac_pre(_rwk, _lmk, _lxk.nav, _latk, dpn_k)
             else:
                 _duk = SX.g2p_pre(_rwk, _lmk, dpn_k)
                 _u1, _Jk = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, dpn_k)
@@ -624,7 +652,7 @@ _ARG_DEFAULTS = dict(
     arch="sgnn", hidden=128, gnn_layers=8, gnn_no_norm=False, gnn_sum=False,
     n_nodes=32, hz_ratio=1.0 / 6 ** 0.5, node_h=0.0, hex_jac=False,
     fe_state=False, control=False, net_inertial=False, v_from_dt=False,
-    dt_cond=False, dt_scale=False, dt_sub=1, eval_dt_sub=0, ens_off=0,
+    dt_cond=False, dt_scale=False, dt_sub=1, eval_dt_sub=0, ens_off=0, interp="bary",
     bc_soft=False, bc_mode="project", bc_level="node", bc_ipg=False, bc_softplus=0.0, bc_stick=0.0, bc_stick_xn=False, ov_init="predict",
     no_mat=False, mat_film=False, v0_traj=False, smooth_nb=0,
     cell_poly=False, ov_roll=0, refps=False, hold_traj=None, pool=True)

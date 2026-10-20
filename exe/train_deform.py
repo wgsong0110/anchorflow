@@ -284,6 +284,11 @@ ap.add_argument("--probe_every", type=int, default=0,
 ap.add_argument("--probe_frames", default="0,5,10,20,40,60,79")
 ap.add_argument("--pe_only", type=int, default=0,
                 help="대조군: 노드 입력을 노드 위치·프레임 번호의 다주파수 인코딩(sin/cos(2^k π ·), k<K)만으로 (물리 특징 없음)")
+ap.add_argument("--interp", choices=["bary", "bspline", "nodeavg"], default="bary",
+                help="노드 변위 -> 입자 변위·한 스텝 야코비안 보간. bary=Kuhn 사면체 barycentric (기본; 야코비안이 사면체마다 "
+                     "상수, 경계에서 불연속), bspline=같은 노드 격자의 2 차 B-스플라인 27 노드 (MPM 가중치, C1; 변위·야코비안 "
+                     "같은 보간), nodeavg=변위는 barycentric 그대로, 야코비안만 사면체별 grad u 를 노드에 부피 가중 평균한 뒤 "
+                     "barycentric 보간 (F 누적·탄성 에너지 모두 이 값)")
 ap.add_argument("--agg", choices=["bary", "bspline"], default="bary",
                 help="노드 특징 집계 가중치: bary=자기 사면체 4 꼭짓점 barycentric (기본), bspline=격자 좌표 2 차 B-스플라인 27 노드 (MPM P2G 식)")
 ap.add_argument("--rel_pe", type=int, default=0,
@@ -585,6 +590,13 @@ ap.add_argument("--mat_film", action="store_true",
                 help="물성을 셀 특징에 붙이지 않고 **FiLM** 으로 넣는다. 씬 안에서 "
                      "물성이 상수라 붙이면 채널 하나를 상수로 채우는 셈이다")
 a = ap.parse_args()
+if a.interp != "bary":
+    _bad = [k for k, on in (("hex_jac", a.hex_jac), ("gregory", getattr(a, "gregory", False)), ("fused", a.fused),
+                            ("ens_off>1", int(a.ens_off) > 1), ("elast lin", a.elast == "lin"),
+                            ("smooth_nb", int(a.smooth_nb) > 0), ("cell_poly", a.cell_poly)) if on]
+    if _bad:
+        raise SystemExit(f"--interp {a.interp} 는 {_bad} 와 함께 쓸 수 없다")
+    print(f"[보간] --interp {a.interp}", flush=True)
 
 dev = "cuda"
 torch.manual_seed(a.seed)
