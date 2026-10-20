@@ -22,6 +22,8 @@ ap.add_argument("--shape", default="lego")
 ap.add_argument("--out", required=True)
 ap.add_argument("--fps", type=int, default=30)
 ap.add_argument("--iter", type=int, default=-1, help="3DGS 체크포인트 반복. -1 이면 PG load_checkpoint 처럼 가장 큰 반복")
+ap.add_argument("--colors", default="", help="가우시안 색 덮어쓰기 .npy [T,NG,3] (0~1, 프레임 순서 = sim_*.h5 정렬 순). "
+                "주면 SH 대신 colors_precomp 로 래스터화한다 (불투명도·공분산은 그대로)")
 ap.add_argument("--iso", type=float, default=0.0, help="공분산을 등방형 (iso × 가우시안 축 길이 중앙값)² I 로 (F 무시). 0 이면 FΣFᵀ")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
@@ -73,7 +75,12 @@ RAST = GaussianRasterizer(raster_settings=GaussianRasterizationSettings(
     campos=wv.inverse()[3, :3], prefiltered=False, debug=False))
 WR = imageio.get_writer(a.out, fps=a.fps, codec="libx264", quality=8)
 files = sorted(glob.glob(f"{a.sim}/sim_*.h5"))
-for p in files:
+COL = None
+if a.colors:
+    COL = np.load(a.colors, mmap_mode="r")
+    assert COL.shape[0] == len(files) and COL.shape[1] == NG and COL.shape[2] == 3, (COL.shape, len(files), NG)
+    print(f"[색 덮어쓰기] {a.colors} {tuple(COL.shape)}", flush=True)
+for fi, p in enumerate(files):
     with h5py.File(p) as h:
         x = torch.as_tensor(np.array(h["x"][:NG]), device=dev).float()
         F = torch.as_tensor(np.array(h["F"][:NG]), device=dev).float().reshape(-1, 3, 3)
@@ -83,7 +90,8 @@ for p in files:
         cov = F @ C0 @ F.transpose(1, 2)
     cc = torch.stack([cov[:, 0, 0], cov[:, 0, 1], cov[:, 0, 2], cov[:, 1, 1], cov[:, 1, 2], cov[:, 2, 2]], 1)
     Pm = (x - 1.0) / SO + MEAN
-    img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=SHS, colors_precomp=None, opacities=OPA, scales=None,
+    _cp = torch.as_tensor(np.asarray(COL[fi], dtype=np.float32), device=dev) if COL is not None else None
+    img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=(SHS if _cp is None else None), colors_precomp=_cp, opacities=OPA, scales=None,
                rotations=None, cov3D_precomp=cc)[0]
     WR.append_data((img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
 WR.close()
