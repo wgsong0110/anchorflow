@@ -24,6 +24,8 @@ ap.add_argument("--safe", type=int, default=0,
                 help="1 이면 발산 방지 보정판 (lib/anchorflow/stabstat.py safe_*): 발산 조짐에서만 걸리고 정상 실행엔 영향 없음")
 ap.add_argument("--frames", type=int, default=0, help="0 이면 설정의 frame_num (검사용으로 짧게)")
 ap.add_argument("--dump", default="", help="영상용: 프레임마다 전체 입자 h5 (x, F) 를 이 폴더에")
+ap.add_argument("--dump_meta", default="",
+                help="lb_gen 궤적 meta.json: 덤프 F 를 F_sim·R 로 (lb_gen 과 같은 규약, 0 프레임 F=R), meta 를 덤프 폴더에 복사 (lb_render 용)")
 a = ap.parse_args()
 sys.path.insert(0, a.pg); os.chdir(a.pg)
 import h5py                                                      # noqa: E402
@@ -79,10 +81,16 @@ else:
 sol.finalize_mu_lam()
 sol.import_particle_v_from_torch(torch.as_tensor(v).cuda())
 print(f"[{a.method}] 입자 {N}, dx {dx:.4f}, N {a.substeps} (dt {dt:.3e}), {NF} 프레임", flush=True)
+RD = np.eye(3, dtype=np.float32)                               # 덤프 F 에 오른쪽으로 곱할 초기 회전 (lb_gen: F_sim·R)
 if a.dump:
     os.makedirs(a.dump, exist_ok=True)
+    if a.dump_meta:
+        import shutil
+        RD = np.array(json.load(open(a.dump_meta))["R"], dtype=np.float32)
+        shutil.copyfile(a.dump_meta, f"{a.dump}/meta.json")
+        print(f"[덤프] F = F_sim·R (meta {a.dump_meta})", flush=True)
     with h5py.File(f"{a.dump}/sim_{0:010d}.h5", "w") as h:
-        h.create_dataset("x", data=x); h.create_dataset("F", data=np.tile(np.eye(3, dtype=np.float32).reshape(1, 9), (N, 1)))
+        h.create_dataset("x", data=x); h.create_dataset("F", data=np.tile(RD.reshape(1, 9), (N, 1)))
 _VOLN = VOL.double().cpu().numpy(); _EK = dict(vol=_VOLN, E=float(cfg["E"]), nu=float(cfg["nu"]))
 rows = [ss.frame_stats(x, v, np.tile(np.eye(3), (N, 1, 1)), MASS, G, FZ, **_EK)]
 XS = [x[SUB]]; T = []
@@ -235,7 +243,8 @@ for f in tqdm(range(F_START, NF + 1), desc=f"{a.method} N{a.substeps}"):
     rows[-1]["safe_n"], rows[-1]["safe_split"], rows[-1]["safe_inert"] = (float(q) for q in SAFE_N)
     if a.dump:
         with h5py.File(f"{a.dump}/sim_{f:010d}.h5", "w") as h:
-            h.create_dataset("x", data=xt.astype(np.float32)); h.create_dataset("F", data=Ft.reshape(N, 9).astype(np.float32))
+            h.create_dataset("x", data=xt.astype(np.float32))
+            h.create_dataset("F", data=(Ft.reshape(N, 3, 3).astype(np.float32) @ RD).reshape(N, 9))
     XS.append(xt[SUB])
     if rows[-1]["nan"] > 0.5 and not a.safe:                     # 대부분 발산했으면 더 돌 이유가 없다
         print(f"  발산 프레임 {f}", flush=True); break
