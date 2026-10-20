@@ -34,6 +34,11 @@ ap.add_argument("--config", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--eps", type=float, default=1e-3, help="log10(psi+eps) 의 작은 상수 [Pa]")
 ap.add_argument("--q", type=float, nargs=2, default=[1.0, 99.0], help="색 범위 분위수 (두 궤적 합쳐서, 0 프레임 제외)")
+ap.add_argument("--range", type=float, nargs=2, default=None,
+                help="색 범위 log10(psi+eps) [lo, hi] 를 이 고정값으로 (다른 실행 영상과 같은 색 척도; 없으면 --q 분위수)")
+ap.add_argument("--stats_frames", type=int, nargs="*", default=[],
+                help="이 프레임들에서 변형 통계(입자별 max|σ-1| 의 중앙·상위 1%·최대, det F<0 입자 수)를 정답·우리 같이 "
+                     "def_stats.json 에 (σ = F 특이값, 같은 float32 F)")
 ap.add_argument("--cmap", default="turbo")
 ap.add_argument("--bins", type=int, default=120)
 ap.add_argument("--pad", type=float, default=1.0, help="히스토그램 구간 = [lo-pad, hi+pad] (바깥 값은 끝 칸에)")
@@ -62,6 +67,18 @@ def psi(F):
 # 정답: PG 원본 h5 (float32 F)
 fs = sorted(glob.glob(os.path.join(a.gt_h5, "**", "sim_*.h5"), recursive=True),
             key=lambda p: int(re.findall(r"(\d+)", os.path.basename(p))[-1]))
+@torch.no_grad()
+def defstat(F):
+    F = torch.as_tensor(F).to(dev).float().reshape(-1, 3, 3)
+    ms, dt = [], []
+    for s in range(0, F.shape[0], 65536):
+        ms.append((torch.linalg.svdvals(F[s:s + 65536]) - 1.0).abs().amax(-1)); dt.append(torch.linalg.det(F[s:s + 65536]))
+    ms, dt = torch.cat(ms), torch.cat(dt)
+    return dict(med=float(ms.median()), p99=float(torch.quantile(ms, 0.99)), max=float(ms.max()), det_neg=int((dt < 0).sum()),
+                N=int(F.shape[0]))
+
+
+STATS = {"gt": {}, "ov": {}}
 PG = []
 for i, f in enumerate(tqdm(fs, desc="정답 psi")):
     with h5py.File(f, "r") as h:
@@ -70,6 +87,8 @@ for i, f in enumerate(tqdm(fs, desc="정답 psi")):
     if i == 0 and np.abs(Fm).max() == 0.0:
         Fm = np.broadcast_to(np.eye(3, dtype=np.float32), Fm.shape).copy()   # PG 0 프레임 미초기화 -> 항등 (b670068)
     PG.append(psi(Fm))
+    if i in a.stats_frames:
+        STATS["gt"][i] = defstat(Fm)
 PG = np.stack(PG)
 # 우리: 덤프 F (프레임 1..L), 0 프레임은 항등
 D = torch.load(a.dump, map_location="cpu", weights_only=False)
@@ -78,6 +97,8 @@ L = D["F"].shape[0]
 OV = [np.zeros(D["F"].shape[1], np.float32)]
 for i in tqdm(range(L), desc="우리 psi"):
     OV.append(psi(D["F"][i]))
+    if i + 1 in a.stats_frames:
+        STATS["ov"][i + 1] = defstat(D["F"][i])     # 덤프 F[i] = 프레임 i+1
 OV = np.stack(OV)
 assert OV.shape == PG.shape, (OV.shape, PG.shape)
 T, N = PG.shape
@@ -91,6 +112,14 @@ if D.get("gt_fscal") is not None:
     g_ = np.asarray(D["gt_fscal"][..., 4].float())
     print(f"[검산] 정답 psi(원본 h5 f32) vs 덤프 gt_fscal psi(half F): 합 비 "
           f"{PG[1:].sum() / max(g_.sum(), 1e-12):.4f}, 중앙값 {np.median(PG[1:]):.4g} vs {np.median(g_):.4g}", flush=True)
+if a.stats_frames:
+    json.dump(STATS, open(f"{a.out}/def_stats.json", "w"), indent=1)
+    for t in a.stats_frames:
+        for nm in ("gt", "ov"):
+            r = STATS[nm].get(t)
+            if r:
+                print(f"[변형] 프레임 {t} {'정답' if nm == 'gt' else '우리'}: max|σ-1| 중앙 {r['med']:.3e} 상위1% {r['p99']:.3e} "
+                      f"최대 {r['max']:.3e}, det<0 {r['det_neg']}/{r['N']}", flush=True)
 np.save(f"{a.out}/psi_gt.npy", PG)
 np.save(f"{a.out}/psi_ov.npy", OV)
 del D
@@ -98,8 +127,13 @@ del D
 lg_gt, lg_ov = np.log10(PG + a.eps), np.log10(OV + a.eps)
 both = np.concatenate([lg_gt[1:].ravel(), lg_ov[1:].ravel()])
 lo, hi = (float(v) for v in np.percentile(both, a.q))
+print(f"[색 범위] 이 두 궤적의 {a.q} 분위수 [{lo:.4f}, {hi:.4f}]", flush=True)
+if a.range is not None:
+    lo, hi = float(a.range[0]), float(a.range[1])
+    print(f"[색 범위] --range 고정값 [{lo:.4f}, {hi:.4f}] 를 쓴다; 범위 밖 비율 아래 {float((both < lo).mean()):.4f} "
+          f"위 {float((both > hi).mean()):.4f}", flush=True)
 del both
-rng = dict(lo=lo, hi=hi, eps=a.eps, q=a.q, cmap=a.cmap, unit="Pa (J/m^3)",
+rng = dict(lo=lo, hi=hi, eps=a.eps, q=a.q, fixed_range=a.range is not None, cmap=a.cmap, unit="Pa (J/m^3)",
            psi="fixed corotated mu*sum(sig-1)^2 + lam/2*(J-1)^2", mu=mu, lam=lam, E=cfg["E"], nu=cfg["nu"],
            T=T, N=N, frames_for_range="1..T-1 (두 궤적 합침)")
 json.dump(rng, open(f"{a.out}/range.json", "w"), indent=1)

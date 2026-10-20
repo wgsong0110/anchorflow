@@ -22,6 +22,11 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--h5_dir", required=True)
 ap.add_argument("--config", required=True)
 ap.add_argument("--out_pt", required=True)
+ap.add_argument("--v0_from_bc", action="store_true",
+                help="config 의 enforce_particle_translation 중 시작 0·끝 <= substep_dt 인 것(= 첫 서브스텝 P2G 직전에만 입자 속도를 "
+                     "박는 PG 공식 초기 속도 지정)을 0 프레임 v 로 옮긴다. PG 는 0 프레임 h5 를 첫 서브스텝 전에 써서 v[0]=0 으로 "
+                     "남는다. 그 경계조건은 저장 cfg 에서 빼고 cfg['init_velocity_bc'] 에 적는다 (--cfg_bc 가 첫 스텝 노드를 "
+                     "박지 않게 -- 우리 한 스텝은 PG 400 서브스텝)")
 ap.add_argument("--out_dir", default="", help="lb_render·lb_roll_to_h5 용 궤적 디렉토리 (x (N,3), F (N,9), meta.json R=I)")
 a = ap.parse_args()
 fs = sorted(glob.glob(os.path.join(a.h5_dir, "**", "sim_*.h5"), recursive=True),
@@ -43,6 +48,25 @@ if float(F[0].float().abs().max()) == 0.0:
     # PG 솔버의 시작 F 는 항등이므로 0 프레임 F 를 항등으로 둔다.
     F[0] = torch.eye(3).half().expand_as(F[0])
     print("[F] 0 프레임 f_tensor 가 전부 0 (PG 미초기화 저장) -> 항등으로", flush=True)
+if a.v0_from_bc:
+    keep, moved = [], []
+    sdt = float(cfg["substep_dt"])
+    for bc in cfg.get("boundary_conditions") or []:
+        if (bc.get("type") == "enforce_particle_translation" and float(bc["start_time"]) == 0.0
+                and float(bc["end_time"]) <= sdt):
+            q = torch.tensor(bc["point"], dtype=torch.float32); sz = torch.tensor(bc["size"], dtype=torch.float32)
+            m_ = ((X[0] - q).abs() < sz).all(-1)          # PG selection_enforce_particle_velocity_translation (0 프레임 위치)
+            v0 = V[0].float()
+            v0[m_] = torch.tensor(bc["velocity"], dtype=torch.float32)
+            V[0] = v0.half()
+            moved.append(bc)
+            print(f"[초기 속도] enforce_particle_translation {bc['velocity']} (시각 [0, {bc['end_time']}) = 첫 서브스텝만) "
+                  f"-> 0 프레임 v, 입자 {int(m_.sum())}/{m_.numel()}", flush=True)
+        else:
+            keep.append(bc)
+    assert moved, "--v0_from_bc: 시작 0·끝 <= substep_dt 인 enforce_particle_translation 이 없다"
+    cfg["boundary_conditions"] = keep
+    cfg["init_velocity_bc"] = moved
 assert torch.isfinite(X).all() and torch.isfinite(F.float()).all()
 err0 = float((F[0].float() - torch.eye(3)).abs().max())
 os.makedirs(os.path.dirname(a.out_pt), exist_ok=True)
