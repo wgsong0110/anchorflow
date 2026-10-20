@@ -511,7 +511,7 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                 # --interp c1wf: 변위·야코비안 모두 Worsey–Farin C1 3 차 요소 다항식에서 (입자 F 는 실제 기울기)
                 _duk, _Jk = WF.jac_pre(_rwk, _lxk.wf, _latk, dpn_k)
                 if _k == 0:
-                    C1_LAST[0] = (WF.det_coefs(dpn_k, _lxk.wft, _latk), _lxk.wft["svol"])
+                    C1_LAST[0] = (WF.det_coefs(dpn_k, _lxk.wft, _latk), _lxk.wft["svol"], dpn_k, _lxk.wft, _lok, _latk, _nnk, _uqk)
             elif getattr(_lxk, "nav", None) is not None:
                 # --interp nodeavg: 변위는 barycentric 그대로, 야코비안만 노드 평균 기울기의 barycentric 보간
                 _duk = SX.g2p_pre(_rwk, _lmk, dpn_k)

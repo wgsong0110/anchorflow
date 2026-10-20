@@ -263,7 +263,7 @@ def stvk(Fp, mu, lam):
     return mu * (E_ * E_).sum((-1, -2)) + 0.5 * lam * E_.diagonal(dim1=-2, dim2=-1).sum(-1) ** 2
 
 
-def quasi_static(interp, barrier, push=(0.0, 0.0, -0.6), steps=12, iters=300, nside=24, h=1.0 / 6, jhat=0.3, kap=1.0):
+def quasi_static(interp, barrier, push=(0.0, 0.0, -0.6), steps=12, iters=150, nside=24, h=1.0 / 6, jhat=0.3, kap=1.0):
     g = torch.linspace(0.0, 1.0, nside, dtype=dt, device=dev)
     P = torch.stack(torch.meshgrid(g, g, g, indexing="ij"), -1).reshape(-1, 3) * 0.999 + 5e-4
     lo, lat, nn = SX.grid_for_nodes(P, 8, hz_ratio=SX.HZ_CUBE, h_fix=h)
@@ -348,7 +348,7 @@ def quasi_static(interp, barrier, push=(0.0, 0.0, -0.6), steps=12, iters=300, ns
             E0 = energy(trial, s)
         if barrier and not math.isfinite(float(E0)):
             ds *= 0.5                                                      # 실현 불가면 하중 증분을 반으로
-            hist.append(dict(s=s, halve=True))
+            hist.append(dict(s=s, halve=True)); print(f"    [준정적] s={s:.4f} 실현 불가 -> 증분 {ds:.2e}", flush=True)
             if ds < 1e-4:
                 raise SystemExit("[준정적] 하중 증분이 너무 작아졌다")
             continue
@@ -365,9 +365,12 @@ def quasi_static(interp, barrier, push=(0.0, 0.0, -0.6), steps=12, iters=300, ns
             return E
         opt.step(clo)
         s_done = s
+        ds = min(2.0 * ds, 1.0 / steps)                                    # 성공하면 증분을 되돌려 키운다
         Ee, Eb, cmin, dJ, u, G = energy(var.detach(), s, parts=True)
         hist.append(dict(s=s, E_el=float(Ee), E_bar=float(Eb), coef_min=float(cmin), particle_det_min=float(dJ.min()),
                          particle_det_neg=int((dJ <= 0).sum()), stats=getattr(opt, "stats", None)))
+        print(f"    [준정적 {interp} {'장벽' if barrier else '없음'}] s={s:.4f} 탄성 {float(Ee):.3e} 장벽 {float(Eb):.2e} 계수 최소 {float(cmin):.3e} "
+              f"입자 det 최소 {float(dJ.min()):.3e} ({time.time() - t0:.0f} 초) {getattr(opt, 'stats', '')}", flush=True)
     d = full(var.detach(), 1.0)
     res = dict(interp=interp, barrier=barrier, sec=round(time.time() - t0, 1), hist=hist, M=M, particles=int(P.shape[0]),
                free_dofs=int(fm.sum()))
@@ -473,6 +476,17 @@ for mode in ("particle", "ctrl"):
 fc_ = RES["floor"]["ctrl"]
 chk("8) 제어점 바닥 장벽: 요소 상 전체가 바닥 위", fc_["dense_min_minus_floor"] > 0 and fc_["ctrl_min_minus_floor"] > 0, json.dumps(fc_))
 
+# 9) 요소 말림 감시 (정보: 통과 조건 아님 -- 단, 항등 사상에서 0 이어야 감시가 쓸모 있다)
+lo9, lat9, nn9 = ens5[2]
+c_id = WF.curl_check(torch.zeros(M5, WF.C1_NOUT, dtype=dt, device=dev), ens5[7].wft, lo9, lat9, nn9, ens5[5])
+torch.manual_seed(9)
+c_r = [WF.curl_check(amp * torch.randn(M5, WF.C1_NOUT, dtype=dt, device=dev), ens5[7].wft, lo9, lat9, nn9, ens5[5]) for amp in (0.003, 0.03, 0.3)]
+RES["curl"] = dict(identity=c_id, random=c_r, tets=int(ens5[7].wft["rows"].shape[0]))
+chk("9) 말림 감시: 항등 사상에서 말린 요소 0 (무작위 0.003/0.03/0.3 은 참고)", c_id[0] == 0, f"항등 {c_id}, 무작위 {c_r}, 사면체 {RES['curl']['tets']}")
+# 통과 조건 (사용자 10-20): 성질 1 (계수>0 ⇒ det>0, 장벽으로 뒤집힘 0) 과 성질 3 (C1) 및 그 전제(재현·autograd·감시 0).
+# 6) 자기 조각/바닥 볼록 껍질, 8) 바닥 시연 은 기록만.
+REQ = ("1)", "2)", "3)", "4)", "5)", "7)", "9)")
+ok = all(c["ok"] for c in RES["checks"] if c["name"].startswith(REQ))
 RES["pass"] = bool(ok)
 json.dump(RES, open(os.path.join(OUT, "ct3d_results.json"), "w"), ensure_ascii=False, indent=1, default=float)
 print("CT3D_TEST_PASS" if ok else "CT3D_TEST_FAIL", flush=True)

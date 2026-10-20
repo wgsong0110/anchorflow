@@ -4146,7 +4146,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             # --interp c1wf: 점유 사면체 모든 조각의 det(I+∇u) Bernstein 계수에 진짜 로그 장벽 (advance 가 계수를 남긴다)
             if DM.C1_LAST[0] is None:
                 raise SystemExit("--c1_barrier: advance 가 Bernstein 계수를 남기지 않았다")
-            _c1c, _c1v = DM.C1_LAST[0]
+            _c1c, _c1v = DM.C1_LAST[0][0], DM.C1_LAST[0][1]
             _mu1, _ = phys_resid.lame(cfg["E"], cfg["nu"])
             _mu1 = float(_mu1.float().mean()) if torch.is_tensor(_mu1) else float(_mu1)
             E = E + WF.barrier_energy(_c1c, _c1v, a.c1_barrier * _mu1, a.c1_jhat) / nrm
@@ -6400,6 +6400,10 @@ def _rollout(d, t0, L, gsel=None):
                     _cI = DM.C1_LAST[0][0].detach()
                     _recI.update(c1_coef_min=float(_cI.min()), c1_coef_neg=int((_cI <= 0).sum()),
                                  c1_subtets=int(_cI.shape[0] * _cI.shape[1]))
+                    # 요소 말림 (det>0 이어도 휘어진 요소 경계 면이 스스로 교차): 면당 12 삼각형 근사의 변-삼각형 교차
+                    _, _, _dpI, _wtI, _loI, _laI, _nnI, _uqI = DM.C1_LAST[0]
+                    _ncl, _npl = WF.curl_check(_dpI.detach(), _wtI, _loI, _laI, _nnI, _uqI)
+                    _recI.update(c1_curled=_ncl, c1_curl_pairs=_npl)
                 _oI = _OV_CUR_OPT[0]
                 if _oI is not None and getattr(_oI, "stats", None):
                     _recI["opt"] = _oI.stats

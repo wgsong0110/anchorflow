@@ -346,3 +346,82 @@ def barrier_energy(c, svol, kappa, jhat):
     cc = torch.minimum(c, torch.full_like(c, jhat))
     b = -((cc - jhat) ** 2) * torch.log(cc / jhat)
     return kappa * ((svol / 84.0).unsqueeze(-1) * b).sum()
+
+
+# --------------------------------------------------------------- 요소 말림 감시 (det>0 이어도 휘어진 요소가 스스로 겹치는 것)
+def _face_tess(T):
+    """요소 경계(4 면)를 WF 면 분할 3 삼각형 x 2 단계 세분 = 면당 12, 요소당 48 삼각형으로.
+    -> 점 (조각, barycentric) [P], 삼각형 [Q,3], 변 [E,2], (변,삼각형) 유효쌍 마스크 [E,Q] (꼭짓점 공유 제외)."""
+    key = lambda x: tuple(np.round(x * 3e6).astype(np.int64))
+    pts, P_sub, P_L, tris = {}, [], [], []
+    for s, (a_, b_, i) in enumerate(T["sub_lbl"]):
+        S = T["sub"][s]                                   # (V_a, V_b, w_i, z) -- 앞 셋이 경계 면 위
+        loc = {}
+        for (p, q, r) in ((2, 0, 0), (0, 2, 0), (0, 0, 2), (1, 1, 0), (0, 1, 1), (1, 0, 1)):
+            L = np.array([p, q, r, 0]) / 2.0; x = L @ S; k = key(x)
+            if k not in pts:
+                pts[k] = len(pts); P_sub.append(s); P_L.append(L)
+            loc[(p, q, r)] = pts[k]
+        for tr in (((2, 0, 0), (1, 1, 0), (1, 0, 1)), ((1, 1, 0), (0, 2, 0), (0, 1, 1)), ((1, 0, 1), (0, 1, 1), (0, 0, 2)),
+                   ((1, 1, 0), (0, 1, 1), (1, 0, 1))):
+            tris.append([loc[t] for t in tr])
+    tris = np.array(tris)
+    E = sorted({tuple(sorted((t[j], t[(j + 1) % 3]))) for t in tris for j in range(3)})
+    E = np.array(E)
+    ok = np.ones((len(E), len(tris)), bool)
+    for e, (p, q) in enumerate(E):
+        for t, tr in enumerate(tris):
+            if p in tr or q in tr:
+                ok[e, t] = False
+    return np.array(P_sub), np.array(P_L), tris, E, ok
+
+
+_TESS = [_face_tess(t) for t in TYPES]
+
+
+def tess_tables(device, dtype):
+    import torch
+    k = ("tess", str(device), dtype)
+    if k not in _TT:
+        P_sub = np.stack([t[0] for t in _TESS]); P_L = np.stack([t[1] for t in _TESS])
+        W = np.stack([np.einsum("pk,pkn->pn", bern_np(3, P_L[ti]), TYPES[ti]["ord"][P_sub[ti]]) for ti in range(6)])   # [6,P,28]
+        Y = np.stack([np.einsum("pj,pjd->pd", P_L[ti], TYPES[ti]["sub"][P_sub[ti]]) for ti in range(6)])               # [6,P,3] 셀 국소 y
+        f = lambda a: torch.as_tensor(np.asarray(a), device=device, dtype=dtype)
+        li = lambda a: torch.as_tensor(np.asarray(a), device=device, dtype=torch.long)
+        _TT[k] = dict(W=f(W), Y=f(Y), tri=li(np.stack([t[2] for t in _TESS])), E=li(np.stack([t[3] for t in _TESS])),
+                      ok=torch.as_tensor(np.stack([t[4] for t in _TESS]), device=device))
+    return _TT[k]
+
+
+def curl_check(dpn, wt, lo, lat, nn, uniq, chunk=512, eps=1e-7):
+    """요소 말림 근사 검사: 각 점유 사면체의 상(경계 면 48 삼각형 근사)에서, 꼭짓점을 공유하지 않는 변-삼각형 쌍이
+    교차하면 그 요소의 경계 면이 스스로 교차한 것(요소가 겹쳐 말림)으로 센다 (Möller–Trumbore, 엄격한 내부).
+    -> (말린 요소 수, 교차 쌍 수)."""
+    import torch
+    with torch.no_grad():
+        TT = tess_tables(dpn.device, dpn.dtype)
+        nnl = [int(nn[k_]) for k_ in range(3)]
+        fl = uniq[wt["rows"][:, 0]]
+        ijk = torch.stack([fl // (nnl[1] * nnl[2]), (fl // nnl[2]) % nnl[1], fl % nnl[2]], -1).to(dpn.dtype)
+        base = ijk @ lat.A.to(dpn.dtype).T + lo.to(dpn.dtype)
+        n_el, n_pair = 0, 0
+        for s0 in range(0, wt["rows"].shape[0], chunk):
+            sl = slice(s0, s0 + chunk)
+            ty = wt["ty"][sl]
+            D = gather_dofs(dpn, wt["rows"][sl], ty)                                         # [C,28,3]
+            X = base[sl].unsqueeze(1) + TT["Y"][ty] @ lat.A.to(dpn.dtype).T + torch.einsum("cpn,cnd->cpd", TT["W"][ty], D)
+            tri, E, ok = TT["tri"][ty], TT["E"][ty], TT["ok"][ty]                            # [C,Q,3] [C,E,2] [C,E,Q]
+            g = lambda idx: torch.gather(X, 1, idx.reshape(idx.shape[0], -1, 1).expand(-1, -1, 3)).reshape(idx.shape + (3,))
+            T3 = g(tri)                                                                       # [C,Q,3,3]
+            Pe = g(E)                                                                         # [C,E,2,3]
+            o = Pe[:, :, 0].unsqueeze(2); dd = (Pe[:, :, 1] - Pe[:, :, 0]).unsqueeze(2)    # [C,E,1,3]
+            v0, e1, e2 = T3[:, :, 0].unsqueeze(1), (T3[:, :, 1] - T3[:, :, 0]).unsqueeze(1), (T3[:, :, 2] - T3[:, :, 0]).unsqueeze(1)
+            pv = torch.cross(dd.expand_as(e2), e2, dim=-1); det = (e1 * pv).sum(-1)       # [C,E,Q]
+            sc = (e1.norm(dim=-1) * e2.norm(dim=-1) * dd.norm(dim=-1)).clamp_min(1e-30)
+            good = ok & (det.abs() > 1e-9 * sc)
+            inv = 1.0 / torch.where(good, det, torch.ones_like(det))
+            tv = o - v0; u = (tv * pv).sum(-1) * inv
+            qv = torch.cross(tv, e1.expand_as(tv), dim=-1); vv = (dd * qv).sum(-1) * inv; tt = (e2 * qv).sum(-1) * inv
+            hit = good & (u > eps) & (vv > eps) & (u + vv < 1 - eps) & (tt > eps) & (tt < 1 - eps)
+            n_pair += int(hit.sum()); n_el += int(hit.flatten(1).any(1).sum())
+        return n_el, n_pair
