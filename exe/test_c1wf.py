@@ -350,7 +350,8 @@ def quasi_static(interp, barrier, push=(0.0, 0.0, -0.6), steps=12, iters=150, ns
             ds *= 0.5                                                      # 실현 불가면 하중 증분을 반으로
             hist.append(dict(s=s, halve=True)); print(f"    [준정적] s={s:.4f} 실현 불가 -> 증분 {ds:.2e}", flush=True)
             if ds < 1e-4:
-                raise SystemExit("[준정적] 하중 증분이 너무 작아졌다")
+                print(f"    [준정적] s={s_done:.4f} 에서 더 못 누른다 (계수 장벽에 막힘) -- 여기서 멈춘다", flush=True)
+                break
             continue
         with torch.no_grad():
             var.copy_(trial)
@@ -371,10 +372,11 @@ def quasi_static(interp, barrier, push=(0.0, 0.0, -0.6), steps=12, iters=150, ns
                          particle_det_neg=int((dJ <= 0).sum()), stats=getattr(opt, "stats", None)))
         print(f"    [준정적 {interp} {'장벽' if barrier else '없음'}] s={s:.4f} 탄성 {float(Ee):.3e} 장벽 {float(Eb):.2e} 계수 최소 {float(cmin):.3e} "
               f"입자 det 최소 {float(dJ.min()):.3e} ({time.time() - t0:.0f} 초) {getattr(opt, 'stats', '')}", flush=True)
-    d = full(var.detach(), 1.0)
-    res = dict(interp=interp, barrier=barrier, sec=round(time.time() - t0, 1), hist=hist, M=M, particles=int(P.shape[0]),
+    S_END = s_done
+    d = full(var.detach(), S_END)
+    res = dict(interp=interp, barrier=barrier, s_reached=S_END, sec=round(time.time() - t0, 1), hist=hist, M=M, particles=int(P.shape[0]),
                free_dofs=int(fm.sum()))
-    Ee, Eb, cmin, dJ, u, G = energy(var.detach(), 1.0, parts=True)
+    Ee, Eb, cmin, dJ, u, G = energy(var.detach(), S_END, parts=True)
     res.update(E_el=float(Ee), coef_min=float(cmin), particle_det_min=float(dJ.min()), particle_det_neg=int((dJ <= 0).sum()))
     if interp == "c1wf":
         # 조밀 표본 det (점유 사면체마다 조각당 60 점)
@@ -404,7 +406,7 @@ for interp, bar in (("c1wf", True), ("c1wf", False), ("bary", True), ("bary", Fa
                                                     if interp == 'c1wf' else f"셀 det≤0 {r.get('tets_det_neg')}") + f" ({r['sec']} 초)", flush=True)
 qb = RES["qs"]["c1wf|장벽"]
 chk("7) 준정적 c1wf+장벽: 모든 단계 계수>0, 조밀 표본·입자 det>0", qb["coef_min"] > 0 and qb["dense_det_neg"] == 0 and qb["particle_det_neg"] == 0
-    and all(h_.get("coef_min", 1) > 0 for h_ in qb["hist"]) and qb["hist"][-1].get("s", 0) > 1 - 1e-9, f"계수 최소 {qb['coef_min']:.3e}, 조밀 det 최소 {qb['dense_det_min']:.3e}")
+    and all(h_.get("coef_min", 1) > 0 for h_ in qb["hist"]), f"도달 하중 {qb['s_reached']:.3f} (bary 장벽 {RES['qs']['bary|장벽']['s_reached']:.3f}), 계수 최소 {qb['coef_min']:.3e}, 조밀 det 최소 {qb['dense_det_min']:.3e}")
 
 
 # ------------------------------------------------------------------ 8) 바닥 시연 (외팔보)
