@@ -3757,24 +3757,61 @@ _GRAD_PROBE = None
 if os.environ.get("AF_GRAD_PROBE"):
     _gpa = os.environ["AF_GRAD_PROBE"].split(":")
     _GRAD_PROBE = {"out": _gpa[0], "frames": set(int(q) for q in _gpa[1].split(",") if q),
-                   "extra": int(_gpa[2]) if len(_gpa) > 2 else 0}
+                   "extra": int(_gpa[2]) if len(_gpa) > 2 else 0, "skip": bool(os.environ.get("AF_GRAD_PROBE_SKIP"))}
     os.makedirs(_GRAD_PROBE["out"], exist_ok=True)
 
 
-def _grad_probe(st, _fwd, F, m, vol, cfg, x, tag, rec):
+def _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, tag, rec):
     _vs = [q for q in st["ov"] if q is not None]
     with torch.enable_grad():
         x2, _, E, _, _, _pq, Jd = _fwd()
         Jd = Jd if Jd.requires_grad else Jd.requires_grad_(True)
-        psi = phys_resid.psi_of(Jd.to(F.dtype) @ F, cfg, _DT[0])[0]
+        h_ = _DT[0]
+        F_tr = Jd.to(F.dtype) @ F
+        psi = phys_resid.psi_of(F_tr, cfg, h_)[0]
         e_p = vol * psi
         E_el = e_p.sum()
+        du_ = x2 - x
+        _d = du_ - h_ * v - (h_ * h_) * gv
+        terms = {"in": (0.5 * m / (h_ * h_) * (_d * _d).sum(-1)).sum()}
+        _ip = phys_resid._inv_pen(F_tr, cfg)
+        if _ip is not None:
+            terms["det"] = (vol * _ip).sum()
+        _cp = phys_resid._cell_pen(Jd, cfg)
+        if _cp is not None:
+            terms["cell"] = (vol * _cp).sum()
+        # 바닥: bc_energy 와 같은 식을 장벽(비관통)·접선 벌점(sticky)으로 나눠서
+        gl_ = float(cfg.get("grid_lim", 2.0)); dx_ = gl_ / int(cfg["n_grid"])
+        k_ = float(os.environ.get("AF_BC_STIFF", 1000.0)); c_ = 0.5 * k_ * m / (h_ * h_)
+        for bc in (cfg.get("boundary_conditions") or []):
+            if bc.get("type") != "surface_collider" or os.environ.get("AF_NO_BC"):
+                continue
+            pt = torch.as_tensor(bc["point"], device=x.device, dtype=x.dtype)
+            nr = torch.as_tensor(bc["normal"], device=x.device, dtype=x.dtype); nr = nr / nr.norm().clamp_min(1e-12)
+            sd = ((x2 - pt) * nr).sum(-1)
+            if phys_resid._BARRIER[0] is not None:
+                _kap, _dh, _ek = phys_resid._BARRIER[0]
+                terms["floor"] = terms.get("floor", 0.0) + (_kap * m / (h_ * h_) * phys_resid._barrier_b(sd, _dh, ext_kind=_ek)).sum()
+            else:
+                terms["floor"] = terms.get("floor", 0.0) + (c_ * sd.clamp_max(0.0) ** 2).sum()
+            if str(bc.get("surface", "sticky")) == "sticky" and not os.environ.get("AF_BC_SLIP"):
+                _thr = 0.0 if os.environ.get("AF_BC_NODE_MPM") else dx_
+                touch = (((x - pt) * nr).sum(-1) < _thr).to(x.dtype).detach()
+                du_t = du_ - (du_ * nr).sum(-1, keepdim=True) * nr
+                terms["tan"] = terms.get("tan", 0.0) + (c_ * touch * (du_t * du_t).sum(-1)).sum()
         g_ip = torch.autograd.grad(E * rec["nrm"], _vs[0], retain_graph=True)[0]
+        g_terms = {k: torch.autograd.grad(t_, _vs[0], retain_graph=True, allow_unused=True)[0]
+                   for k, t_ in terms.items() if torch.is_tensor(t_) and t_.requires_grad}
         g_el, G = torch.autograd.grad(E_el, [_vs[0], Jd])
     ens = _NF_HOLD[0][0] if isinstance(_NF_HOLD[0], list) else None
+    _tsum = float(sum(float(t_) for t_ in terms.values())) + float(E_el)
     out = {"E": float(E) * rec["nrm"], "E_el": float(E_el), "E_in": float(_pq[0]), "E_el_ip": float(_pq[1]),
-           "du_mean": float((x2 - x).norm(dim=-1).mean()),
+           "du_mean": float((x2 - x).norm(dim=-1).mean()), "E_terms_sum": _tsum,
            "g_ip": g_ip[:, :3].detach().cpu(), "g_el": g_el[:, :3].detach().cpu()}
+    for k_t, t_ in terms.items():
+        out[f"E_{k_t}"] = float(t_)
+        if k_t in g_terms and g_terms[k_t] is not None:
+            out[f"g_{k_t}"] = g_terms[k_t][:, :3].detach().cpu()
     if ens is not None:
         npos, rows, lam = ens[1], ens[3], ens[4]
         Xv = npos[rows].to(torch.float64)
@@ -3789,7 +3826,7 @@ def _grad_probe(st, _fwd, F, m, vol, cfg, x, tag, rec):
         # 검산: 셀 꼭지점 힘을 노드로 모으면 ∂E_el/∂u (자유 노드) 와 같아야 한다
         gn = torch.zeros(npos.shape[0], 3, dtype=torch.float64, device=G.device).index_add_(
             0, rows.reshape(-1), gpk.reshape(-1, 3))
-        idx = st["ov_idx"][0]
+        idx = (st.get("ov_idx") or [None])[0]
         gn_free = gn if idx is None else gn[idx]
         chk = float((gn_free - g_el[:, :3].double()).norm() / g_el[:, :3].double().norm().clamp_min(1e-30))
         mn = torch.zeros(npos.shape[0], dtype=torch.float64, device=G.device).index_add_(
@@ -4205,19 +4242,20 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             if _gpr:
                 _gp_rec = {"t": int(t), "nrm": float(nrm), "h": float(_DT[0])}
                 _gp_z0 = [q.detach().clone() for q in st["ov"] if q is not None]
-                _grad_probe(st, _fwd, F, m, vol, cfg, x, "pred", _gp_rec)          # 관성 예측 u = h v (출발점)
+                _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, "pred", _gp_rec)          # 관성 예측 u = h v (출발점)
                 with torch.no_grad():
                     for q in st["ov"]:
                         if q is not None:
                             q[:, :3] = 0.0
-                _grad_probe(st, _fwd, F, m, vol, cfg, x, "zero", _gp_rec)          # u = 0 (현재 배치 그대로)
+                _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, "zero", _gp_rec)          # u = 0 (현재 배치 그대로)
                 with torch.no_grad():
                     for q, z0 in zip([q for q in st["ov"] if q is not None], _gp_z0):
                         q.copy_(z0)
             _tw = time.time()
-            st["ov_opt"].step(_closure)
+            if not (_GRAD_PROBE is not None and _GRAD_PROBE.get("skip") and not _gpr):
+                st["ov_opt"].step(_closure)       # AF_GRAD_PROBE_SKIP: 상태를 덤프로 맞추는 탐침 실행에서 탐침 밖 프레임은 최적화 생략
             if _gpr:
-                _grad_probe(st, _fwd, F, m, vol, cfg, x, "opt", _gp_rec)           # L-BFGS ov_roll 회 뒤 (실제로 쓴 해)
+                _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, "opt", _gp_rec)           # L-BFGS ov_roll 회 뒤 (실제로 쓴 해)
                 _ext = int(_GRAD_PROBE.get("extra", 0))
                 if _ext > 0:
                     # 같은 프레임을 더 오래: 이어서 _ext 회 더 (새 L-BFGS), 기록 뒤 원래 해로 되돌린다 (롤아웃은 그대로)
@@ -4232,7 +4270,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                         _Ex.backward()
                         return _Ex
                     _optx.step(_clx)
-                    _grad_probe(st, _fwd, F, m, vol, cfg, x, f"opt{_ext + a.ov_roll}", _gp_rec)
+                    _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, f"opt{_ext + a.ov_roll}", _gp_rec)
                     with torch.no_grad():
                         for q, z1 in zip(_vsx, _gp_z1):
                             q.copy_(z1)
