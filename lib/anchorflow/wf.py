@@ -1,0 +1,348 @@
+"""Worsey–Farin C1 3 차 매크로 요소 (--interp c1wf).
+
+Kuhn 사면체 하나를 내심 z 와 면마다 한 점 w_f 로 12 조각으로 나누고, 조각마다
+3 차 Bernstein–Bézier 다항식을 둔다. 자유도 (성분마다):
+  꼭짓점: 값 1 + 격자좌표 기울기 ∂u/∂y 3         -> 4 x 4 = 16
+  변:     중점에서 변에 가로지르는 미분 2 방향      -> 6 x 2 = 12      (합 28)
+변 방향은 Kuhn 격자에서 7 종류(0/1 벡터)뿐이고, 가로 방향 쌍은 종류마다 고정
+(_TRANS) 이라 변을 공유하는 모든 사면체가 같은 자유도를 본다.
+
+w_f 는 면을 공유하는 두 사면체의 내심을 잇는 선분이 그 면과 만나는 점이다
+(Worsey–Farin 조건; 이래야 면을 가로질러 C1). Kuhn 분할은 축 순열·평행이동에
+불변이라 6 종류 사면체 표만 있으면 되고, 격자좌표 y 에서 만들면 월드 좌표로의
+아핀 사상이 C1 을 그대로 지킨다.
+
+노드 출력 채널 (C1_NOUT = 54):
+  [0:3]   u (변위)
+  [3:12]  ∂u_c/∂y_d  (c*3 + d)
+  [12:54] 변 (종류 k, 방향 s, 성분 c) -> 12 + (k*2 + s)*3 + c, 변은 **아래쪽 끝 노드**가 든다
+
+det(I + ∇u) 는 조각마다 6 차 다항식 -> Bernstein 계수 84 개. 계수가 모두 양수면
+조각 전체에서 det>0 (볼록 결합). 표는 import 때 numpy 로 한 번 만든다.
+"""
+import itertools
+import math
+
+import numpy as np
+
+C1_NOUT = 54
+CLASSES = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 1, 1]], float)
+
+
+def _trans_pairs():
+    E = np.eye(3); out = []
+    for d in CLASSES:
+        for a_, b_ in ((0, 1), (0, 2), (1, 2)):
+            if abs(np.linalg.det(np.stack([d, E[a_], E[b_]]))) > 0.5:
+                out.append((E[a_], E[b_])); break
+    return np.array(out)                         # [7,2,3]
+
+
+_TRANS = _trans_pairs()
+
+
+def multi4(n):
+    return [m for m in itertools.product(range(n + 1), repeat=4) if sum(m) == n][::-1]
+
+
+I1, I2, I3, I4, I6 = multi4(1), multi4(2), multi4(3), multi4(4), multi4(6)
+ID3 = {m: k for k, m in enumerate(I3)}
+
+
+def mcoef(m):
+    return math.factorial(sum(m)) / np.prod([math.factorial(x) for x in m])
+
+
+def bern_np(n, L):
+    L = np.atleast_2d(L)
+    return np.stack([mcoef(m) * np.prod([L[:, i] ** m[i] for i in range(4)], 0) for m in multi4(n)], 1)
+
+
+def _add(m, e):
+    return tuple(x + y for x, y in zip(m, e))
+
+
+EYE4 = [tuple(int(i == j) for j in range(4)) for i in range(4)]
+
+PERMS = list(itertools.permutations(range(3)))  # 사면체 종류 = 축 순열 (locate 의 perm)
+
+
+def chain(p):
+    v = [np.zeros(3)]
+    for r in range(3):
+        v.append(v[-1] + np.eye(3)[p[r]])
+    return np.array(v)
+
+
+def incenter(V):
+    A = []
+    for i in range(4):
+        f = [V[j] for j in range(4) if j != i]
+        A.append(0.5 * np.linalg.norm(np.cross(f[1] - f[0], f[2] - f[0])))
+    A = np.array(A); return (A[:, None] * V).sum(0) / A.sum()
+
+
+def neighbor_vertex(V, i):
+    """Kuhn 뒤집기: 면 (i 제외) 건너편 사면체의 새 꼭짓점."""
+    return V[(i - 1) % 4] + V[(i + 1) % 4] - V[i]      # 순환 첨자 (Freudenthal 피벗)
+
+
+def bary4(P, x):
+    """사면체 P[4,3] 에서 점 x 의 barycentric."""
+    A = np.vstack([P.T, np.ones(4)]); return np.linalg.solve(A, np.r_[x, 1.0])
+
+
+def build_type(p):
+    """종류 p 하나의 WF 요소 -> dict(sub [12,4,3], ord [12,20,28], face_bary, ...)"""
+    V = chain(p); z = incenter(V)
+    W = {}
+    for i in range(4):
+        F = [V[j] for j in range(4) if j != i]
+        Vn = np.array(F + [neighbor_vertex(V, i)]); zn = incenter(Vn)
+        # z + t (zn - z) 가 면 평면 위
+        nrm = np.cross(F[1] - F[0], F[2] - F[0]); t = np.dot(F[0] - z, nrm) / np.dot(zn - z, nrm)
+        w = z + t * (zn - z)
+        lb = np.linalg.lstsq(np.vstack([np.array(F).T, np.ones(3)]), np.r_[w, 1.0], rcond=None)[0]
+        assert lb.min() > 1e-6, ("면 점이 면 밖", p, i, lb)
+        W[i] = (w, lb)
+    subs = []                                    # (a, b, w_i, z), a,b 는 면 i 의 꼭짓점 번호
+    sub_lbl = []
+    for i in range(4):
+        f = [j for j in range(4) if j != i]
+        for k in range(3):
+            a_, b_ = f[k], f[(k + 1) % 3]
+            subs.append(np.array([V[a_], V[b_], W[i][0], z])); sub_lbl.append((a_, b_, i))
+    subs = np.array(subs)
+    # 영역점
+    key = lambda x: tuple(np.round(x * 3e6).astype(np.int64))
+    pts = {}; sidx = np.zeros((12, 20), int)
+    for s, S in enumerate(subs):
+        for k, m in enumerate(I3):
+            x = (np.array(m)[:, None] * S).sum(0) / 3.0
+            kk = key(x)
+            if kk not in pts: pts[kk] = len(pts)
+            sidx[s, k] = pts[kk]
+    U = len(pts)
+    rows, rhs = [], []                           # rhs: 28 열
+    # C1 조건 (조각끼리 공유하는 면)
+    for s1 in range(12):
+        for s2 in range(s1 + 1, 12):
+            k1 = {key(x): j for j, x in enumerate(subs[s1])}
+            sh = [key(x) for x in subs[s2] if key(x) in k1]
+            if len(sh) != 3: continue
+            e2 = [j for j, x in enumerate(subs[s2]) if key(x) not in k1][0]
+            lam = bary4(subs[s1], subs[s2][e2])
+            sh1 = [k1[kk] for kk in sh]                       # s1 의 공유 꼭짓점 번호
+            sh2 = [j for j, x in enumerate(subs[s2]) if key(x) in k1]
+            for mu in itertools.product(range(3), repeat=3):
+                if sum(mu) != 2: continue
+                # s2 쪽: mu on shared + 1 at e2 ; 점으로 찾는다
+                base = sum(mu[q] * subs[s1][sh1[q]] for q in range(3))
+                r = np.zeros(U)
+                r[pts[key((base + subs[s2][e2]) / 3.0)]] -= 1
+                for j in range(4):
+                    r[pts[key((base + subs[s1][j]) / 3.0)]] += lam[j]
+                rows.append(r); rhs.append(np.zeros(28))
+    nC = len(rows)
+    # 보간 조건. 자유도 번호: 꼭짓점 i -> 4i (값), 4i+1+d (∂/∂y_d); 변 e(i<j) -> 16 + 2e + s
+    EDG = [(i, j) for i in range(4) for j in range(i + 1, 4)]
+    def sub_with(*verts):
+        for s, S in enumerate(subs):
+            ks = {key(x) for x in S}
+            if all(key(v) in ks for v in verts): return s
+        raise RuntimeError
+    for i in range(4):
+        r = np.zeros(U); r[pts[key(V[i])]] = 1; e = np.zeros(28); e[4 * i] = 1; rows.append(r); rhs.append(e)
+        s = sub_with(V[i]); S = subs[s]
+        for q in S:
+            if np.allclose(q, V[i]): continue
+            r = np.zeros(U); r[pts[key((2 * V[i] + q) / 3)]] += 3; r[pts[key(V[i])]] -= 3
+            e = np.zeros(28); e[4 * i + 1:4 * i + 4] = q - V[i]; rows.append(r); rhs.append(e)
+    cls_of = []
+    for ei, (i, j) in enumerate(EDG):
+        d = V[j] - V[i]; c = int(np.where((np.abs(CLASSES - d).sum(1) < 1e-9))[0][0]); cls_of.append(c)
+        mid = 0.5 * (V[i] + V[j]); s = sub_with(V[i], V[j]); S = subs[s]
+        for sdir in range(2):
+            t = _TRANS[c, sdir]
+            # 방향 t 의 barycentric 방향좌표
+            dl = np.linalg.solve(np.vstack([S.T, np.ones(4)]), np.r_[t, 0.0])
+            Lm = bary4(S, mid); B2 = bern_np(2, Lm)[0]
+            r = np.zeros(U)
+            for g_, gm in enumerate(I2):
+                for j4 in range(4):
+                    r[pts[key((np.array(_add(gm, EYE4[j4]))[:, None] * S).sum(0) / 3)]] += 3 * B2[g_] * dl[j4]
+            e = np.zeros(28); e[16 + 2 * ei + sdir] = 1; rows.append(r); rhs.append(e)
+    A = np.array(rows); B = np.array(rhs)
+    sol, res, rk, sv = np.linalg.lstsq(A, B, rcond=None)
+    assert rk == U, ("WF 계가 유일해를 안 준다", rk, U)
+    resid = float(np.abs(A @ sol - B).max())
+    assert resid < 1e-9, ("WF 계 잔차", resid)
+    ordm = sol[sidx]                             # [12,20,28]
+    # 기울기 Bernstein (y 좌표) : [12,10,3,28]
+    GD = np.zeros((12, 10, 3, 28))
+    for s, S in enumerate(subs):
+        Em = np.stack([S[1] - S[0], S[2] - S[0], S[3] - S[0]], 1); Ei = np.linalg.inv(Em)
+        for g_, gm in enumerate(I2):
+            D = np.stack([3 * (ordm[s, ID3[_add(gm, EYE4[k])]] - ordm[s, ID3[_add(gm, EYE4[0])]]) for k in (1, 2, 3)], 0)  # [3(edge),28]
+            GD[s, g_] = Ei.T @ D                 # ∇_y = Ei^T [D1 D2 D3]
+    Hinv = np.stack([np.linalg.inv(np.vstack([S.T, np.ones(4)])) for S in subs])   # [12,4,4]
+    return dict(V=V, z=z, W=W, sub=subs, ord=ordm, GD=GD, Hinv=Hinv, cls=np.array(cls_of), EDG=EDG, U=U, nC=nC,
+                resid=resid, sub_lbl=sub_lbl)
+
+
+TYPES = [build_type(p) for p in PERMS]
+
+
+def _prod_table(na, nb):
+    Ia, Ib, Ic = multi4(na), multi4(nb), multi4(na + nb)
+    ic = {m: k for k, m in enumerate(Ic)}
+    A, B, C, Wt = [], [], [], []
+    for a_, ma in enumerate(Ia):
+        for b_, mb in enumerate(Ib):
+            mc = _add(ma, mb); A.append(a_); B.append(b_); C.append(ic[mc]); Wt.append(mcoef(ma) * mcoef(mb) / mcoef(mc))
+    return np.array(A), np.array(B), np.array(C), np.array(Wt), len(Ic)
+
+
+P22 = _prod_table(2, 2)
+P42 = _prod_table(4, 2)
+
+
+def perm_type_index():
+    """locate 의 perm (순위->축) 을 종류 번호로: 키 perm0*3+perm1."""
+    t = -np.ones(9, int)
+    for k, p in enumerate(PERMS):
+        t[p[0] * 3 + p[1]] = k
+    return t
+
+
+# --------------------------------------------------------------- numpy 평가 (시험용)
+def np_eval(ti, yl, dofs):
+    """종류 ti, 셀 국소 좌표 yl [P,3], 국소 자유도 dofs [28, C] -> 값 [P,C], ∇_y [P,C,3], 조각 [P]."""
+    T = TYPES[ti]
+    H = np.einsum("sij,pj->psi", T["Hinv"], np.c_[yl, np.ones(len(yl))])   # [P,12,4]
+    s = H.min(2).argmax(1); L = H[np.arange(len(yl)), s]
+    val = np.einsum("pk,pkn,nc->pc", bern_np(3, L), T["ord"][s], dofs)
+    gr = np.einsum("pk,pkdn,nc->pcd", bern_np(2, L), T["GD"][s], dofs)
+    return val, gr, s
+
+
+# --------------------------------------------------------------- torch
+_TT = {}
+
+
+def tables(device, dtype):
+    import torch
+    k = (str(device), dtype)
+    if k not in _TT:
+        f = lambda a: torch.as_tensor(np.asarray(a), device=device, dtype=dtype)
+        li = lambda a: torch.as_tensor(np.asarray(a), device=device, dtype=torch.long)
+        _TT[k] = dict(
+            ord=f(np.stack([t["ord"] for t in TYPES])),          # [6,12,20,28]
+            GD=f(np.stack([t["GD"] for t in TYPES])),            # [6,12,10,3,28]
+            Hinv=f(np.stack([t["Hinv"] for t in TYPES])),        # [6,12,4,4]
+            cls=li(np.stack([t["cls"] for t in TYPES])),         # [6,6]
+            edg=li(np.array(TYPES[0]["EDG"])),                   # [6,2] (모든 종류 같은 순서)
+            ptype=li(perm_type_index()),
+            p22=tuple(li(x) for x in P22[:3]) + (f(P22[3]), P22[4]),
+            p42=tuple(li(x) for x in P42[:3]) + (f(P42[3]), P42[4]),
+            I2=li(np.array(I2)), I3=li(np.array(I3)), I6=li(np.array(I6)),
+            mc2=f([mcoef(m) for m in I2]), mc3=f([mcoef(m) for m in I3]))
+    return _TT[k]
+
+
+def _bern_t(L, I, mc):
+    import torch
+    # L [N,4], I [K,4] -> [N,K]
+    return mc * torch.prod(L.unsqueeze(1) ** I.unsqueeze(0).to(L.dtype), -1)
+
+
+def particle_struct(q, lo, lat, nn, aux, rows):
+    """입자마다: 종류 [N], 조각 [N], 값 가중 [N,28], 기울기 가중 [N,28,3] (y 좌표), 자유도 모으기 색인."""
+    import torch
+    T = tables(q.device, q.dtype)
+    ci, rank, perm = aux[0], aux[1], aux[2]
+    y = (q - lo) @ lat.Ai.T
+    yl = (y - ci.to(y.dtype)).clamp(0.0, 1.0)
+    ty = T["ptype"][perm[:, 0] * 3 + perm[:, 1]]
+    Hh = torch.einsum("nsij,nj->nsi", T["Hinv"][ty], torch.cat([yl, torch.ones_like(yl[:, :1])], 1))   # [N,12,4]
+    sb = Hh.min(2).values.argmax(1)
+    L = Hh[torch.arange(q.shape[0], device=q.device), sb]                                                  # [N,4]
+    wv = torch.einsum("nk,nkd->nd", _bern_t(L, T["I3"], T["mc3"]), T["ord"][ty, sb])                    # [N,28]
+    wg = torch.einsum("nk,nkcd->ndc", _bern_t(L, T["I2"], T["mc2"]), T["GD"][ty, sb])                    # [N,28,3]
+    return dict(ty=ty, sb=sb, wv=wv.detach(), wg=wg.detach(), L=L)
+
+
+def gather_dofs(dpn, rows, ty):
+    """노드 출력 [M,54] -> 입자(또는 사면체)별 국소 자유도 [N,28,3]. rows [N,4] (사슬 순서 v0..v3)."""
+    import torch
+    T = tables(dpn.device, dpn.dtype)
+    N = rows.shape[0]
+    nd = dpn[rows]                                                       # [N,4,54]
+    val = nd[..., 0:3]                                                   # [N,4,3]
+    gr = nd[..., 3:12].reshape(N, 4, 3, 3).transpose(-1, -2)             # [N,4,3(d),3(c)]
+    vtx = torch.cat([val.unsqueeze(2), gr], 2).reshape(N, 16, 3)        # 꼭짓점 i: [값, d0, d1, d2]
+    cls = T["cls"][ty]                                                   # [N,6]
+    st = rows[:, T["edg"][:, 0]]                                         # [N,6] 아래쪽 끝 노드
+    ch = 12 + (cls.unsqueeze(-1) * 2 + torch.arange(2, device=dpn.device)).unsqueeze(-1) * 3 \
+        + torch.arange(3, device=dpn.device)                             # [N,6,2,3]
+    ed = dpn[st.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 2, 3), ch]    # [N,6,2,3]
+    return torch.cat([vtx, ed.reshape(N, 12, 3)], 1)                     # [N,28,3]
+
+
+def jac_pre(rows, ws, lat, dpn):
+    """값 u [N,3], ∇_x u [N,3,3] (g2p_jac_pre 와 같은 규약: 단위행렬 없음)."""
+    import torch
+    D = gather_dofs(dpn, rows, ws["ty"])
+    u = torch.einsum("nk,nkc->nc", ws["wv"].to(D.dtype), D)
+    Gy = torch.einsum("nkd,nkc->ncd", ws["wg"].to(D.dtype), D)
+    return u, Gy @ lat.Ai.to(Gy.dtype)
+
+
+def tet_struct(rows, ty, lat):
+    """점유 사면체 (중복 제거): rows [T,4], 종류 [T], 조각 부피 [T,12]."""
+    import torch
+    key = torch.cat([rows, ty.unsqueeze(1)], 1)
+    uq, inv = torch.unique(key, dim=0, return_inverse=True)
+    T = tables(rows.device, lat.A.dtype)
+    trows, tty = uq[:, :4], uq[:, 4]
+    detA = abs(float(torch.linalg.det(lat.A.double())))
+    sv = []
+    for t in TYPES:
+        S = t["sub"]; sv.append([abs(np.linalg.det(np.stack([S_[1] - S_[0], S_[2] - S_[0], S_[3] - S_[0]], 1))) / 6 for S_ in S])
+    svol = torch.as_tensor(np.array(sv), device=rows.device, dtype=lat.A.dtype)[tty] * detA   # [T,12]
+    return dict(rows=trows, ty=tty, svol=svol)
+
+
+def _bprod(a, b, tab):
+    """Bernstein 곱: a [...,Ka], b [...,Kb] -> [...,Kc]."""
+    import torch
+    ia, ib, ic, w, nc = tab
+    t = a[..., ia] * b[..., ib] * w
+    out = torch.zeros(t.shape[:-1] + (nc,), device=t.device, dtype=t.dtype)
+    return out.index_add_(t.dim() - 1, ic, t)
+
+
+def det_coefs(dpn, ts, lat):
+    """점유 사면체의 모든 조각에서 det(I + ∇_x u) 의 6 차 Bernstein 계수 [T,12,84]."""
+    import torch
+    T = tables(dpn.device, dpn.dtype)
+    D = gather_dofs(dpn, ts["rows"], ts["ty"])                           # [T,28,3]
+    Gy = torch.einsum("tsgdk,tkc->tsgcd", T["GD"][ts["ty"]], D)         # [T,12,10,3c,3d]
+    Gx = Gy @ lat.Ai.to(Gy.dtype)
+    F = Gx + torch.eye(3, device=dpn.device, dtype=dpn.dtype)          # 상수 I 의 Bernstein 계수는 모두 1
+    F = F.permute(0, 1, 3, 4, 2)                                         # [T,12,3,3,10]
+    p22, p42 = T["p22"], T["p42"]
+    c0 = _bprod(F[..., 1, 1, :], F[..., 2, 2, :], p22) - _bprod(F[..., 1, 2, :], F[..., 2, 1, :], p22)
+    c1 = _bprod(F[..., 1, 2, :], F[..., 2, 0, :], p22) - _bprod(F[..., 1, 0, :], F[..., 2, 2, :], p22)
+    c2 = _bprod(F[..., 1, 0, :], F[..., 2, 1, :], p22) - _bprod(F[..., 1, 1, :], F[..., 2, 0, :], p22)
+    return _bprod(c0, F[..., 0, 0, :], p42) + _bprod(c1, F[..., 0, 1, :], p42) + _bprod(c2, F[..., 0, 2, :], p42)
+
+
+def barrier_energy(c, svol, kappa, jhat):
+    """진짜 로그 장벽 Σ_조각 (V_s/84) Σ_k κ b(c_k),  b(c) = -(c-ĉ)² ln(c/ĉ)  (c<ĉ), c<=0 이면 +inf."""
+    import torch
+    if bool((c <= 0).any()):
+        return torch.full((), float("inf"), device=c.device, dtype=c.dtype)
+    cc = torch.minimum(c, torch.full_like(c, jhat))
+    b = -((cc - jhat) ** 2) * torch.log(cc / jhat)
+    return kappa * ((svol / 84.0).unsqueeze(-1) * b).sum()

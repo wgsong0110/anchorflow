@@ -284,11 +284,18 @@ ap.add_argument("--probe_every", type=int, default=0,
 ap.add_argument("--probe_frames", default="0,5,10,20,40,60,79")
 ap.add_argument("--pe_only", type=int, default=0,
                 help="대조군: 노드 입력을 노드 위치·프레임 번호의 다주파수 인코딩(sin/cos(2^k π ·), k<K)만으로 (물리 특징 없음)")
-ap.add_argument("--interp", choices=["bary", "bspline", "nodeavg"], default="bary",
+ap.add_argument("--interp", choices=["bary", "bspline", "nodeavg", "c1wf"], default="bary",
                 help="노드 변위 -> 입자 변위·한 스텝 야코비안 보간. bary=Kuhn 사면체 barycentric (기본; 야코비안이 사면체마다 "
                      "상수, 경계에서 불연속), bspline=같은 노드 격자의 2 차 B-스플라인 27 노드 (MPM 가중치, C1; 변위·야코비안 "
                      "같은 보간), nodeavg=변위는 barycentric 그대로, 야코비안만 사면체별 grad u 를 노드에 부피 가중 평균한 뒤 "
-                     "barycentric 보간 (F 누적·탄성 에너지 모두 이 값)")
+                     "barycentric 보간 (F 누적·탄성 에너지 모두 이 값), c1wf=Worsey–Farin C1 3 차 매크로 요소 (사면체를 "
+                     "12 조각, 노드 출력 54 채널 = 변위 3 + 격자좌표 기울기 9 + 변 가로 미분 42; 입자 F 는 요소 다항식의 실제 "
+                     "기울기, lib/anchorflow/wf.py)")
+ap.add_argument("--c1_barrier", type=float, default=0.0,
+                help="--interp c1wf: 점유 사면체 모든 조각의 det(I+∇u) 6 차 Bernstein 계수에 진짜 로그 장벽 "
+                     "Σ (V_조각/84) κ μ b(c), b(c)=-(c-ĉ)² ln(c/ĉ) (c<ĉ), c<=0 이면 +inf (연장 없음). 0 이면 끔. "
+                     "켜면 출력만 최적화의 L-BFGS 가 유한 에너지를 지키는 되추적 판(feas_lbfgs)으로 바뀐다")
+ap.add_argument("--c1_jhat", type=float, default=0.3, help="--c1_barrier 가 작동하기 시작하는 계수 ĉ")
 ap.add_argument("--agg", choices=["bary", "bspline"], default="bary",
                 help="노드 특징 집계 가중치: bary=자기 사면체 4 꼭짓점 barycentric (기본), bspline=격자 좌표 2 차 B-스플라인 27 노드 (MPM P2G 식)")
 ap.add_argument("--rel_pe", type=int, default=0,
@@ -597,6 +604,8 @@ if a.interp != "bary":
     if _bad:
         raise SystemExit(f"--interp {a.interp} 는 {_bad} 와 함께 쓸 수 없다")
     print(f"[보간] --interp {a.interp}", flush=True)
+if a.c1_barrier > 0 and a.interp != "c1wf":
+    raise SystemExit("--c1_barrier 는 --interp c1wf 에서만")
 
 dev = "cuda"
 torch.manual_seed(a.seed)
@@ -606,6 +615,8 @@ from anchorflow import deform                                  # noqa: E402
 from anchorflow import deform_model as DM                       # noqa: E402
 from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import simplex as SX                            # noqa: E402
+from anchorflow import wf as WF                                 # noqa: E402
+from anchorflow.feas_lbfgs import FeasLBFGS                     # noqa: E402
 from anchorflow import simplex_gnn as _SGM                      # noqa: E402
 from anchorflow.simplex_gnn import (SimplexGNN, node_moments,    # noqa: E402
                                     scatter_to_nodes)
@@ -1476,6 +1487,7 @@ _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최
 # AF_INV_LOG=경로: 롤아웃 프레임마다 이번 스텝 det(grad Phi) <= 0 인 사면체·입자 수와 누적 det F <= 0 입자 수를 한 줄씩 남긴다
 _INV_LOG = os.environ.get("AF_INV_LOG") or None
 _INV_CUR = [None]
+_OV_CUR_OPT = [None]       # 마지막으로 쓴 출력만 최적화 옵티마이저 (feas_lbfgs 통계 기록용)
 # AF_TUNNEL_LOG=경로: 롤아웃 프레임마다 활성 사면체 중 스텝 시작에 꼭지점 하나라도 바닥면 위였다가
 # 스텝 끝에 네 꼭지점이 모두 바닥면 아래가 된 것의 수를 한 줄씩 남긴다
 _TUN_LOG = os.environ.get("AF_TUNNEL_LOG") or None
@@ -3008,6 +3020,12 @@ def _mk_ov_opt(vs):
         vs = [q for q in net.parameters() if q.requires_grad]     # 출력 대신 망 파라미터
     if a.ov_opt == "gd":
         return torch.optim.SGD(vs, lr=a.ov_gd_lr)
+    if a.ov_opt == "lbfgs" and a.c1_barrier > 0:
+        # 진짜 로그 장벽(+inf)과 함께: 시도점이 무한이면 반감하는 되추적 L-BFGS (같은 반복 수·이력·첫 걸음 규칙)
+        _me = os.environ.get("AF_OV_LBFGS_MAX_EVAL")
+        return FeasLBFGS(vs, lr=float(os.environ.get("AF_OV_LBFGS_LR", 1.0)), max_iter=max(a.ov_roll, 1),
+                         max_eval=(int(_me) if _me else None), history_size=50,
+                         tolerance_grad=float(a.ov_tol), tolerance_change=float(a.ov_tol))
     if a.ov_opt == "lbfgs":
         # AF_OV_LBFGS_LR: 초기 걸음 배율(기본 1). 첫 걸음은 곡률 이력이 없어 t = lr·min(1, 1/|g|₁) 로
         # 시작하고 strong_wolfe 선 탐색(최대 25 평가, max_eval 과 무관)이 늘리거나 줄인다.
@@ -3111,7 +3129,7 @@ if a.out_var or a.ov_roll > 0:
             _hm = _NOD_M[0]
             st["ov_idx"][_k] = (None if _hm is None else
                                 (~_hm).nonzero(as_tuple=True)[0])
-            _no = 4 if a.gregory else 3                 # --gregory: 변위 3 + 반경 1
+            _no = 4 if a.gregory else (WF.C1_NOUT if a.interp == "c1wf" else 3)   # --gregory: 변위 3 + 반경 1, c1wf: 54
             z = torch.zeros(M, _no, dtype=dtype, device=device)
             if a.ov_init in ("target", "predict"):
                 if not torch.is_tensor(_OV_TGT[0]):
@@ -4124,6 +4142,14 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                        jac=_Jd)
         if _ecb is not None:
             E = E + _ecb / nrm
+        if a.c1_barrier > 0:
+            # --interp c1wf: 점유 사면체 모든 조각의 det(I+∇u) Bernstein 계수에 진짜 로그 장벽 (advance 가 계수를 남긴다)
+            if DM.C1_LAST[0] is None:
+                raise SystemExit("--c1_barrier: advance 가 Bernstein 계수를 남기지 않았다")
+            _c1c, _c1v = DM.C1_LAST[0]
+            _mu1, _ = phys_resid.lame(cfg["E"], cfg["nu"])
+            _mu1 = float(_mu1.float().mean()) if torch.is_tensor(_mu1) else float(_mu1)
+            E = E + WF.barrier_energy(_c1c, _c1v, a.c1_barrier * _mu1, a.c1_jhat) / nrm
         if a.ov_obj == "node":                  # 노드 출력을 목표 실행의 같은 프레임 노드 출력에 (같은 상태라 격자가 같다)
             _np, _dp = _DPN_LIVE[0]
             _tn = _NODE_TGT["nodes"][int(t) - int(_NODE_TGT.get("t0", 0))]
@@ -4446,6 +4472,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _gd_run(st, _fwd, F, vol, cfg, x, int(t), nrm)
             _tw = time.time()
             if not (_GRAD_PROBE is not None and _GRAD_PROBE.get("skip") and not _gpr):
+                _OV_CUR_OPT[0] = st["ov_opt"]
                 st["ov_opt"].step(_closure)       # AF_GRAD_PROBE_SKIP: 상태를 덤프로 맞추는 탐침 실행에서 탐침 밖 프레임은 최적화 생략
             if _gpr:
                 _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, "opt", _gp_rec)           # L-BFGS ov_roll 회 뒤 (실제로 쓴 해)
@@ -6366,9 +6393,18 @@ def _rollout(d, t0, L, gsel=None):
                 _Fc = _S.get("F_ov") if _S.get("F_ov") is not None else _FCUM[0]
                 _nc = int((torch.linalg.det(_Fc.float()) <= 0).sum()) if _Fc is not None else -1
             with open(_INV_LOG, "a") as _fI:
-                _fI.write(json.dumps({"frame": int(i) + 1, "inv_tets": _nt, "tets": _ntot,
-                                      "inv_particles_step": int(_bI.sum()), "inv_particles_cum": _nc,
-                                      "det_min": float(_dI.min())}) + "\n")
+                _recI = {"frame": int(i) + 1, "inv_tets": _nt, "tets": _ntot,
+                         "inv_particles_step": int(_bI.sum()), "inv_particles_cum": _nc,
+                         "det_min": float(_dI.min())}
+                if DM.C1_LAST[0] is not None:          # --interp c1wf: 마지막 평가(받아들인 해)의 Bernstein det 계수
+                    _cI = DM.C1_LAST[0][0].detach()
+                    _recI.update(c1_coef_min=float(_cI.min()), c1_coef_neg=int((_cI <= 0).sum()),
+                                 c1_subtets=int(_cI.shape[0] * _cI.shape[1]))
+                _oI = _OV_CUR_OPT[0]
+                if _oI is not None and getattr(_oI, "stats", None):
+                    _recI["opt"] = _oI.stats
+            with open(_INV_LOG, "a") as _fI:
+                _fI.write(json.dumps(_recI) + "\n")
         # 평가에서도 손잡이가 명령대로 끌리는지 본다. 학습 경로만 보고 "손잡이는
         # 정확하다" 고 판단했다가, 평가에서는 ctrl_id 가 저장 표본에 없어 대체
         # 입자가 중심이 되는 것을 놓쳤다.

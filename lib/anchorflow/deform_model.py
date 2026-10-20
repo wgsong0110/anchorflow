@@ -26,6 +26,7 @@ import torch
 
 from . import phys_resid
 from . import simplex as SX
+from . import wf as WF
 from . import simplex_gnn as _SGM
 from .deform import bc_features
 from .simplex_gnn import SimplexGNN, node_moments, scatter_to_nodes
@@ -155,7 +156,8 @@ def build_net(a, n_feat, ext0, frame_dt, n_film, dev="cuda"):
     return SimplexGNN(n_feat=n_feat, hidden=a.hidden, layers=a.gnn_layers,
                       scale=0.02 * ext0, dt_cond=a.dt_cond, dt_ref=frame_dt,
                       dt_scale=a.dt_scale, n_mat=n_film,
-                      n_out=(4 if getattr(a, "gregory", False) else 3)).to(dev)
+                      n_out=(4 if getattr(a, "gregory", False) else
+                             (WF.C1_NOUT if str(getattr(a, "interp", "bary")) == "c1wf" else 3))).to(dev)
 
 
 def ens_offsets(n):
@@ -212,6 +214,12 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
         _aux.bsp = _dw27.to(x.dtype)
     elif _interp == "nodeavg":
         _aux = SX.Aux(_aux)
+    elif _interp == "c1wf":
+        # **Worsey–Farin C1 3 차** (--interp c1wf): 사면체·노드는 bary 와 같다. 입자마다 (종류, 조각, 값·기울기
+        # 가중 28) 을 프레임마다 한 번 만들고, 점유 사면체 목록(장벽용)도 함께 든다.
+        _aux = SX.Aux(_aux)
+        _aux.wf = WF.particle_struct(x, lo, lat, nn, _aux, rows)
+        _aux.wft = WF.tet_struct(rows, _aux.wf["ty"], lat)
     elif _interp != "bary":
         raise SystemExit(f"--interp {_interp} 모름")
     Mn = int(uniq.numel())
@@ -320,6 +328,7 @@ def _const_vec(vals, ref):
 
 
 PROBE = [None, None]                 # [요청 여부 "want", 격자별 탐침 텐서 목록]
+C1_LAST = [None]                     # --interp c1wf: 마지막 advance 의 (Bernstein det 계수 [T,12,84], 조각 부피 [T,12])
 INPUT_HOOK = [None]                  # 진단용: (망 입력 특징, net) -> 바꾼 특징
 
 
@@ -463,8 +472,8 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                     _vnk, _gqk = inertial[_k]
                     # τ 의 함수로 더해야 --v_from_dt 의 dΦ/dτ 에 관성 속도가 들어간다
                     _io = tau * _vnk + (tau * tau) * _gqk
-                    if out[0].shape[-1] == 4:                      # 반경 채널에는 더하지 않는다
-                        _io = torch.cat([_io, torch.zeros_like(_io[:, :1])], -1)
+                    if out[0].shape[-1] > 3:                       # 반경 채널(gregory)·C1 기울기 채널(c1wf)에는 더하지 않는다
+                        _io = torch.cat([_io, torch.zeros_like(_io[:, :1]).expand(-1, out[0].shape[-1] - 3)], -1)
                     out = (out[0] + _io,) + tuple(out[1:])
                 if dp_hook is not None:
                     out = dp_hook(out)
@@ -478,6 +487,9 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                 if dpn_k.shape[-1] == 4 and _pvk.shape[-1] == 3:
                     # --gregory: 묶는 것은 변위 3 채널뿐, 반경 채널은 그대로 (4 채널과 3 채널이 브로드캐스트되지 않는다)
                     _pvk = torch.cat([_pvk, dpn_k[:, 3:]], -1)
+                elif dpn_k.shape[-1] == WF.C1_NOUT and _pvk.shape[-1] == 3:
+                    # --interp c1wf: 손잡이 노드는 명령 평행이동 -> 기울기·변 가로 미분 채널은 0 으로 묶는다
+                    _pvk = torch.cat([_pvk, torch.zeros_like(dpn_k[:, 3:])], -1)
                 dpn_k = torch.where(node_mask[_k].unsqueeze(-1), _pvk, dpn_k)
                 if _k == 0 and on_pin is not None:
                     on_pin(tau)
@@ -495,6 +507,11 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                 # --interp bspline: 변위·야코비안 모두 같은 27 노드 2 차 B-스플라인에서 (일관)
                 _duk = SX.g2p_pre(_rwk, _lmk, dpn_k[:, :3])
                 _Jk = SX.bspline_jac_pre(_rwk, _lxk.bsp, _latk, dpn_k)
+            elif getattr(_lxk, "wf", None) is not None:
+                # --interp c1wf: 변위·야코비안 모두 Worsey–Farin C1 3 차 요소 다항식에서 (입자 F 는 실제 기울기)
+                _duk, _Jk = WF.jac_pre(_rwk, _lxk.wf, _latk, dpn_k)
+                if _k == 0:
+                    C1_LAST[0] = (WF.det_coefs(dpn_k, _lxk.wft, _latk), _lxk.wft["svol"])
             elif getattr(_lxk, "nav", None) is not None:
                 # --interp nodeavg: 변위는 barycentric 그대로, 야코비안만 노드 평균 기울기의 barycentric 보간
                 _duk = SX.g2p_pre(_rwk, _lmk, dpn_k)
