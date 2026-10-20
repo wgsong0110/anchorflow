@@ -185,7 +185,7 @@ a5 = mk_a("c1wf")
 ens5 = DM.node_feats(a5, cfg, x, mass, x, v, 1.0)
 sub = torch.randperm(N, device=dev)[:8]
 M5 = ens5[1].shape[0]
-base5 = 1e-2 * torch.randn(M5, WF.C1_NOUT, dtype=dt, device=dev)
+base5 = 1e-3 * torch.randn(M5, WF.C1_NOUT, dtype=dt, device=dev)
 
 
 def embed(nodes):
