@@ -3863,6 +3863,12 @@ def _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, tag, rec):
                 touch = (((x - pt) * nr).sum(-1) < _thr).to(x.dtype).detach()
                 du_t = du_ - (du_ * nr).sum(-1, keepdim=True) * nr
                 terms["tan"] = terms.get("tan", 0.0) + (c_ * touch * (du_t * du_t).sum(-1)).sum()
+        if a.c1_barrier > 0 and DM.C1_LAST[0] is not None:
+            # --interp c1wf: Bernstein det 계수 진짜 로그 장벽 (증분 포텐셜 E 에 들어 있는 것과 같은 식)
+            _mu1, _ = phys_resid.lame(cfg["E"], cfg["nu"])
+            _mu1 = float(_mu1.float().mean()) if torch.is_tensor(_mu1) else float(_mu1)
+            terms["c1bar"] = WF.barrier_energy(DM.C1_LAST[0][0], DM.C1_LAST[0][1], a.c1_barrier * _mu1, a.c1_jhat)
+            rec.setdefault("c1_coef_min", {})[tag] = float(DM.C1_LAST[0][0].min())
         g_ip = torch.autograd.grad(E * rec["nrm"], _vs[0], retain_graph=True)[0]
         g_terms = {k: torch.autograd.grad(t_, _vs[0], retain_graph=True, allow_unused=True)[0]
                    for k, t_ in terms.items() if torch.is_tensor(t_) and t_.requires_grad}
@@ -3871,12 +3877,20 @@ def _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, tag, rec):
     _tsum = float(sum(float(t_) for t_ in terms.values())) + float(E_el)
     out = {"E": float(E) * rec["nrm"], "E_el": float(E_el), "E_in": float(_pq[0]), "E_el_ip": float(_pq[1]),
            "du_mean": float((x2 - x).norm(dim=-1).mean()), "E_terms_sum": _tsum,
-           "g_ip": g_ip[:, :3].detach().cpu(), "g_el": g_el[:, :3].detach().cpu()}
+           "g_ip": g_ip.detach().cpu(), "g_el": g_el.detach().cpu()}      # c1wf 면 54 채널 전부 (값 0:3, 기울기 3:12, 변 12:54)
     for k_t, t_ in terms.items():
         out[f"E_{k_t}"] = float(t_)
         if k_t in g_terms and g_terms[k_t] is not None:
-            out[f"g_{k_t}"] = g_terms[k_t][:, :3].detach().cpu()
-    if ens is not None:
+            out[f"g_{k_t}"] = g_terms[k_t].detach().cpu()
+    if ens is not None and a.interp == "c1wf":
+        # c1wf: 셀 꼭짓점 힘 분해는 barycentric 전용이라 건너뛰고 노드 질량(이동 환산용)만
+        npos, rows, lam = ens[1], ens[3], ens[4]
+        idx = (st.get("ov_idx") or [None])[0]
+        mn = torch.zeros(npos.shape[0], dtype=torch.float64, device=G.device).index_add_(
+            0, rows.reshape(-1), (lam.double() * m.double().unsqueeze(1)).reshape(-1))
+        out.update({"node_m": (mn if idx is None else mn[idx]).float().cpu(), "chk_rel": float("nan"),
+                    "n_nodes": int(npos.shape[0]), "n_free": int(g_el.shape[0]), "n_cells": -1})
+    elif ens is not None:
         npos, rows, lam = ens[1], ens[3], ens[4]
         Xv = npos[rows].to(torch.float64)
         Minv = torch.linalg.inv((Xv[:, 1:] - Xv[:, :1]).transpose(1, 2))
@@ -4467,7 +4481,10 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 with torch.no_grad():
                     for q in st["ov"]:
                         if q is not None:
-                            q[:, :3] = 0.0
+                            if a.interp == "c1wf":
+                                q.zero_()          # 값·기울기·변 채널 모두 (c1_base pl 이면 '매끄럽게 한 PL' 의 관성 예측만 남는다)
+                            else:
+                                q[:, :3] = 0.0
                 _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, "zero", _gp_rec)          # u = 0 (현재 배치 그대로)
                 with torch.no_grad():
                     for q, z0 in zip([q for q in st["ov"] if q is not None], _gp_z0):
@@ -4509,8 +4526,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     # 같은 프레임을 더 오래: 이어서 _ext 회 더 (새 L-BFGS), 기록 뒤 원래 해로 되돌린다 (롤아웃은 그대로)
                     _gp_z1 = [q.detach().clone() for q in st["ov"] if q is not None]
                     _vsx = [q for q in st["ov"] if q is not None]
-                    _optx = torch.optim.LBFGS(_vsx, lr=1.0, max_iter=_ext, history_size=50, tolerance_grad=0.0,
-                                              tolerance_change=0.0, line_search_fn="strong_wolfe")
+                    _optx = (FeasLBFGS(_vsx, lr=1.0, max_iter=_ext, max_eval=int(_ext * 5 / 4), history_size=50) if a.c1_barrier > 0 else
+                             torch.optim.LBFGS(_vsx, lr=1.0, max_iter=_ext, history_size=50, tolerance_grad=0.0,
+                                               tolerance_change=0.0, line_search_fn="strong_wolfe"))
 
                     def _clx():
                         _optx.zero_grad(set_to_none=True)
