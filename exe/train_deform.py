@@ -1534,6 +1534,9 @@ _BC_DIAG = []              # (활성비, 보정최대/ext, 바닥아래/ext, 손
 # [오차/ext, 구속 입자 수, 명령 변위 평균] -- 학습·평가 공통으로 갱신된다
 _CTRL_ERR = [0.0, 0, 0.0]
 _OV_LOG = []               # --ov_roll: 프레임별 (최적화 전 E, 후 E)
+# AF_OV_STOP_LOG=경로 (진단, 계산 불변): --ov_roll L-BFGS 프레임마다 반복·평가 수·종료 사유·시작점 크기·최적화 전/후 E 를 jsonl 로
+_OV_STOP_LOG = os.environ.get("AF_OV_STOP_LOG") or None
+_OV_STOP_REC = [None]
 
 
 def bc_report():
@@ -4795,7 +4798,36 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                        else _vgrec["start_run"])                                             # 참 기울기
                 if _VARGRAD is None or _VARGRAD["resolve"]:
                     _vg_tw = time.time()
+                    if _OV_STOP_LOG and isinstance(st["ov_opt"], torch.optim.LBFGS):
+                        with torch.no_grad():       # 시작점 (변수 그대로) -- 읽기만
+                            _z0s = [q.detach() for q in st["ov"] if q is not None]
+                            _OV_STOP_REC[0] = {"init_absmax": max(float(q.abs().max()) for q in _z0s),
+                                               "init_rms": float((sum(float((q[:, :3] ** 2).sum()) for q in _z0s)
+                                                                  / max(sum(q[:, :3].numel() for q in _z0s), 1)) ** 0.5)}
                     st["ov_opt"].step(_closure)       # AF_GRAD_PROBE_SKIP: 상태를 덤프로 맞추는 탐침 실행에서 탐침 밖 프레임은 최적화 생략
+                    if _OV_STOP_LOG and isinstance(st["ov_opt"], torch.optim.LBFGS):
+                        # torch LBFGS.step 의 종료 조건을 남은 상태로 되짚는다 (판정 순서 그대로: gtd -> max_iter -> max_eval -> 기울기 -> 걸음 -> 손실 변화)
+                        _o_ = st["ov_opt"]
+                        _sq = _o_.state[_o_._params[0]]
+                        _ni, _fe = int(_sq.get("n_iter", 0)), int(_sq.get("func_evals", 0))
+                        _mi, _me2 = int(_o_.defaults["max_iter"]), int(_o_.defaults["max_eval"])
+                        _tl = float(_o_.defaults["tolerance_change"])
+                        _d_, _pg, _t_ = _sq.get("d"), _sq.get("prev_flat_grad"), _sq.get("t")
+                        _gtd = float(_pg.dot(_d_)) if (_d_ is not None and _pg is not None) else float("nan")
+                        if _ni == 0:
+                            _why = "시작 기울기 0 (tolerance_grad)"
+                        elif _gtd == _gtd and _gtd > -_tl:
+                            _why = "하강 방향 아님 (gtd>=0)"
+                        elif _ni >= _mi:
+                            _why = "최대 반복"
+                        elif _fe >= _me2:
+                            _why = "최대 평가"
+                        elif _d_ is not None and _t_ is not None and float((_d_ * _t_).abs().max()) <= _tl:
+                            _why = "걸음 0 (tolerance_change)"
+                        else:
+                            _why = "손실 변화 0 또는 기울기 0"
+                        _OV_STOP_REC[0].update({"iters": _ni, "evals": _fe, "max_iter": _mi, "max_eval": _me2,
+                                                "why": _why, "gtd": _gtd, "last_t": float(_t_) if _t_ is not None else float("nan")})
                     if _vgr:
                         _o_ = st["ov_opt"]
                         if getattr(_o_, "stats", None):
@@ -4979,6 +5011,11 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         _OV_TGT[0] = None
         _GRID_OFF[0] = None
     _OV_LOG.append((E0 if E0 is not None else E1, E1))
+    if _OV_STOP_LOG and _OV_STOP_REC[0] is not None:
+        with open(_OV_STOP_LOG, "a") as _fs:
+            _fs.write(json.dumps(dict(t=int(t), ov_init=a.ov_init, E0=float(E0 if E0 is not None else E1), E1=float(E1),
+                                      **_OV_STOP_REC[0]), ensure_ascii=False) + "\n")
+        _OV_STOP_REC[0] = None
     if _CURVE is not None:
         _CURVE.append((int(t), _tr, _trp))
     return x2.detach(), v2.detach(), _Jd.detach()
