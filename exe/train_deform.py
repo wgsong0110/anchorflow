@@ -4582,7 +4582,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 torch.save(_gp_rec, os.path.join(_GRAD_PROBE["out"], f"probe_t{int(t):04d}.pt"))
                 print(f"    [기울기 탐침] t={t} -> {_GRAD_PROBE['out']}/probe_t{int(t):04d}.pt  " + "  ".join(
                     f"{k}: E {_gp_rec[k]['E']:.4e} 탄성 {_gp_rec[k]['E_el']:.4e} |du| {_gp_rec[k]['du_mean']:.3e}"
-                    for k in _gp_rec if isinstance(_gp_rec[k], dict)), flush=True)
+                    for k in _gp_rec if isinstance(_gp_rec[k], dict) and "E" in _gp_rec[k]), flush=True)
             if os.environ.get("AF_OV_ITERS"):
                 torch.cuda.synchronize()
                 print(f"    [반복] t={t} 평가 {_n[0]} 회, {time.time() - _tw:.2f} s", flush=True)
