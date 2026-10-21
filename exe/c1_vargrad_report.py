@@ -28,6 +28,9 @@ ap.add_argument("--inv", required=True, help="C¹ N1 inv_ov.jsonl")
 ap.add_argument("--png", required=True)
 ap.add_argument("--md", required=True)
 ap.add_argument("--tex", default="")
+ap.add_argument("--c1dir", default="", help="C¹ vargrad.jsonl 디렉토리 (기본 <vg>/c1)")
+ap.add_argument("--c1name", default="C¹ pl (N1)")
+ap.add_argument("--title", default="ficus C$^1$ N1 최적화 변수 기준 기울기 (2026-10-21)")
 a = ap.parse_args()
 
 
@@ -38,17 +41,21 @@ def load(p):
     return sorted(R, key=lambda r: r["t"])
 
 
-C = load(f"{a.vg}/c1/vargrad.jsonl")
+C = load(f"{a.c1dir or a.vg + '/c1'}/vargrad.jsonl")
 B = load(f"{a.vg}/bary/vargrad.jsonl")
 N = load(f"{a.vg}/basenone/vargrad.jsonl")
-INV = {r["frame"]: r for r in (json.loads(l) for l in open(a.inv))}
+INV = {r["frame"]: r for r in (json.loads(l) for l in open(a.inv))} if os.path.exists(a.inv) else {}
 
-RS = ["반복 상한", "평가 상한", "선 탐색 실패"]
+RS = ["수렴 tol", "반복 상한", "평가 상한", "선 탐색 실패"]
 
 
 def reason(o):
     if o is None:
         return "?"
+    if "stop" in o:                       # feas_lbfgs 가 기록한 종료 사유 (8f602d1 이후)
+        st_ = str(o["stop"])
+        return {"max_iter": "반복 상한", "max_eval": "평가 상한", "grad_tol": "수렴 tol", "change_tol": "수렴 tol"}.get(
+            st_, "선 탐색 실패" if st_.startswith("ls_fail") else st_)
     if o.get("kind") == "torch_lbfgs":
         if o["iters"] >= o["max_iter"]:
             return "반복 상한"
@@ -96,7 +103,7 @@ RN = [row(r, r.get("opt")) for r in N]
 
 # ---------------------------------------------------------------- 그림
 COL = {"C¹ (pl)": "#2a78d6", "선형": "#eb6834", "C¹ none 첫 스텝": "#6250d6"}
-WC = {"반복 상한": "#1baf7a", "평가 상한": "#e34948", "선 탐색 실패": "#6250d6", "?": "#9a9a96"}
+WC = {"수렴 tol": "#2a78d6", "반복 상한": "#1baf7a", "평가 상한": "#e34948", "선 탐색 실패": "#6250d6", "?": "#9a9a96"}
 fig, ax = plt.subplots(4, 1, figsize=(11, 13), sharex=True, gridspec_kw=dict(height_ratios=[3, 3, 3, 1]))
 
 
@@ -133,7 +140,7 @@ for k in range(3):
     ax[k].set_yscale("log"); ax[k].grid(True, which="major", color="#e4e3df", lw=0.6); ax[k].legend(fontsize=8, ncol=2, frameon=False)
 for j, (nm, R) in enumerate((("C¹ (pl)", RC), ("선형", RB))):
     for q in R:
-        ax[3].add_patch(plt.Rectangle((q["fr"] - 0.5, j - 0.4), 1.0, 0.8, color=WC[q["why"]], lw=0))
+        ax[3].add_patch(plt.Rectangle((q["fr"] - 0.5, j - 0.4), 1.0, 0.8, color=WC.get(q["why"], "#9a9a96"), lw=0))
 ax[3].set_yticks([0, 1]); ax[3].set_yticklabels(["C¹ (pl)", "선형"]); ax[3].set_ylim(-0.6, 1.6)
 ax[3].set_title("L-BFGS 종료 사유 (500 반복 / 625 평가 상한, tol 0)")
 for w, c in WC.items():
@@ -157,7 +164,7 @@ def cnt(R):
     return ", ".join(f"{k} {c[k]}" for k in RS if c[k])
 
 
-L = ["# ficus C¹ N1 최적화 변수 θ 기준 기울기 (2026-10-21)", "",
+L = ["# " + a.title.replace("C$^1$", "C¹").replace("\\_", "_"), "",
      "측정 지점: 스텝 t (프레임 t+1 을 만드는 스텝) 마다, 프레임 t 상태(덤프)에서 그 스텝용으로 깐 격자 위에 실행이 실제로 쓴 해 θ*_t 를 "
      "넣은 점에서 ∂E_t/∂θ. E_t 는 L-BFGS 가 내리는 목적함수 그대로(증분 포텐셜 + Bernstein det 장벽 등 켜진 항 전부, J). "
      "g₀ 는 같은 스텝의 L-BFGS 시작점(관성 예측 초기화, 계수 ≤ 0 이면 1 단계 사영 뒤). "
@@ -168,7 +175,7 @@ if RC:
           + (f"선형 {RB[0]['nvar']} 개 (자유 노드 × 3 변위)" if RB else "") + ".", ""]
 L += ["| 실행 | 스텝 수 | 해 ‖g‖₂ 중앙 | ‖g‖/‖g₀‖ 중앙 | ½λ² 중앙 (J) | ½λ² 최대 (J) | 탄성 중앙 (J) | ½λ²/탄성 중앙 | 음곡률 스텝 | 종료 사유 | 검산 위치 최대차 | 검산 F 최대차 |",
       "|---|---|---|---|---|---|---|---|---|---|---|---|"]
-for nm, R in (("C¹ pl (N1)", RC), ("선형 (ficus_v0)", RB), ("C¹ none 첫 스텝 500 회", RN)):
+for nm, R in ((a.c1name, RC), ("선형 (ficus_v0)", RB), ("C¹ none 첫 스텝 500 회", RN)):
     if not R:
         continue
     rat = [q["nd"] / q["Eel"] for q in R if q["Eel"] > 0]
@@ -180,13 +187,19 @@ L += ["", "## 프레임별", "",
       "선형 ‖g‖ | 선형 비 | 선형 ½λ² (J) | 선형 탄성 (J) | 선형 반복/평가 | 선형 종료 |",
       "|" + "---|" * 16]
 bm = {q["fr"]: q for q in RB}
-for q in RC:
-    b = bm.get(q["fr"])
-    L.append(f"| {q['fr']} | {q['g']:.3e} | {q['g0']:.3e} | {q['ratio']:.2e} | {q['nd']:.3e} | {q['Eel']:.3e} | "
-             f"{q['gv']:.2e}/{q['gg']:.2e}/{q['ge']:.2e} | {q['cg']}{' 음' if q['neg'] else ''} | {q['it']}/{q['ev']} | {q['why']} | "
+cm = {q["fr"]: q for q in RC}
+for fr in sorted(set(bm) | set(cm)):
+    q, b = cm.get(fr), bm.get(fr)
+    L.append(f"| {fr} | "
+             + (f"{q['g']:.3e} | {q['g0']:.3e} | {q['ratio']:.2e} | {q['nd']:.3e} | {q['Eel']:.3e} | "
+                f"{q['gv']:.2e}/{q['gg']:.2e}/{q['ge']:.2e} | {q['cg']}{' 음' if q['neg'] else ''} | {q['it']}/{q['ev']} | {q['why']} | "
+                if q else "– | – | – | – | – | – | – | – | – | ")
              + (f"{b['g']:.3e} | {b['ratio']:.2e} | {b['nd']:.3e} | {b['Eel']:.3e} | {b['it']}/{b['ev']} | {b['why']} |" if b else "– | – | – | – | – | – |"))
 L += ["", "## 검산", ""]
-if RC:
+_BUG = bool(RC) and med(RC, "gerr_run") > 10 * max(med(RC, "gerr"), 1e-6)
+if RC and not _BUG:
+    L.append(f"- C¹ 기울기 방향 미분 검산(시작점) 상대차 중앙: L-BFGS 가 본 기울기 {med(RC, 'gerr_run'):.2e}, 참 기울기 {med(RC, 'gerr'):.2e} (둘이 같은 코드)")
+if _BUG:
     L.append(f"- **C¹ pl 의 L-BFGS 기울기는 참 기울기가 아니다**: 시작점(기울기가 커서 float32 차분이 반올림에 안 묻히는 곳)의 임의 방향 d 에서 g·d 대 중앙차분 (E(θ+sd)-E(θ-sd))/2s 상대차 "
              f"— 실행 기울기 중앙 {med(RC, 'gerr_run'):.2e} (최대 {np.nanmax([q['gerr_run'] for q in RC]):.2e}), "
              f"중복 쓰기 원천 하나로 고친 참 기울기 중앙 {med(RC, 'gerr'):.2e}. 원인: WF.pl_c1_dofs 의 index_put(accumulate=False) 에서 "
@@ -209,7 +222,7 @@ print("[표]", a.md)
 if a.tex:
     def f3(v):
         return f"{v:.3g}"
-    T = [r"\section*{ficus C$^1$ N1 최적화 변수 기준 기울기 (2026-10-21)}",
+    T = [r"\section*{" + a.title + "}",
          r"스텝 $t$ (프레임 $t{+}1$ 을 만드는 스텝) 마다 프레임 $t$ 상태에 그 스텝용으로 깐 격자 위에서, 실행이 실제로 쓴 해 $\theta^*_t$ "
          r"(덤프 노드 출력 역변환; $\theta^*_t$ 로 만든 입자 위치·F 를 덤프 프레임 $t{+}1$ 과 대조) 의 $g=\partial E_t/\partial\theta$, "
          r"같은 스텝 L-BFGS 시작점의 $g_0$, 뉴턴 감소량 $\tfrac12 g^\top H^{-1}g$ (헤시안-벡터 곱 + CG 100 회, 하한). "
@@ -222,7 +235,7 @@ if a.tex:
             T.append(f"{nm} & {len(R)} & {f3(med(R, 'ratio'))} & {f3(med(R, 'nd'))} & {f3(np.nanmax([q['nd'] for q in R]))} & "
                      f"{f3(med(R, 'Eel'))} & {f3(float(np.nanmedian(rat)))} & {cnt(R)} \\\\")
     T.append(r"\bottomrule\end{tabular}}\\")
-    if RC:
+    if RC and _BUG:
         T.append(r"\textbf{C$^1$ pl 의 L-BFGS 기울기는 참 기울기가 아니다}: 시작점 임의 방향 방향미분 대비 상대차 중앙 "
                  + f3(med(RC, "gerr_run")) + r" (참 기울기 " + f3(med(RC, "gerr")) + r"). \texttt{WF.pl\_c1\_dofs} 의 \texttt{index\_put} "
                  r"(같은 노드·변 채널 자리를 여러 사면체가 같은 값으로 씀) 역전파가 중복 원천 모두에 기울기를 줘 값 채널 $\to$ 변 채널 경로를 부풀린다. "
