@@ -400,8 +400,16 @@ def frame(x32, F32, nodes_t):
 
 
 RES = {}
+_OLD = json.load(open(f"{a.out}/summary.json")) if os.path.exists(f"{a.out}/summary.json") else {}
 for t in TR:
     k = t["key"]
+    # 재사용: 같은 경로·같은 프레임 수로 이미 끝난 궤적은 다시 계산하지 않는다
+    if (k in _OLD and _OLD[k].get("path") == t["path"] and len(_OLD[k]["st"]) == T
+            and os.path.exists(f"{a.out}/cells_{k}.npz") and os.path.exists(f"{a.out}/dens_{k}.npy")):
+        RES[k] = dict(lab=t["lab"], col=t["col"], path=t["path"], st=_OLD[k]["st"])
+        say(f"[재사용] {k}: {a.out}/cells_{k}.npz · dens_{k}.npy ({T} 프레임) -- 다시 계산하지 않음")
+        del t["X"], t["F"]
+        continue
     Es, Ls, Ns, Ds, ST = [], [], [], [], []
     for f in tqdm(range(T), desc=f"{k} 잠긴 에너지"):
         nod = t["nodes"][f] if (t["nodes"] is not None and f < len(t["nodes"])) else None
