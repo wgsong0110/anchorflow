@@ -32,8 +32,9 @@ MD
 fi
 # ---- 2) 고친 C¹ 실행 기다림 (최대 48 h)
 t0=$(date +%s)
-until grep -q C1FIX_DONE $FIXL 2>/dev/null; do
-  grep -q C1FIX_FAIL $FIXL 2>/dev/null && die "C1FIX_FAIL 이라 고친 C¹ 측정 안 함"
+# C1FIX_FAIL 은 다른 에이전트가 다시 띄울 수 있어 그만두지 않는다 -- 마지막 C1FIX_FAIL 뒤에 C1FIX_DONE 이 올 때까지 (48 h 상한)
+fixdone(){ awk '/C1FIX_FAIL/{d=0} /C1FIX_DONE/{d=1} END{exit !d}' $FIXL 2>/dev/null; }
+until fixdone; do
   [ $(( $(date +%s) - t0 )) -gt 172800 ] && die "C1FIX_DONE 48 h 안 옴"
   sleep 600
 done
