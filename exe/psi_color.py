@@ -39,6 +39,8 @@ ap.add_argument("--range", type=float, nargs=2, default=None,
 ap.add_argument("--stats_frames", type=int, nargs="*", default=[],
                 help="이 프레임들에서 변형 통계(입자별 max|σ-1| 의 중앙·상위 1%·최대, det F<0 입자 수)를 정답·우리 같이 "
                      "def_stats.json 에 (σ = F 특이값, 같은 float32 F)")
+ap.add_argument("--gt_trunc", action="store_true",
+                help="우리 롤아웃이 정답보다 짧으면 (예: N32s 15 프레임) 정답을 우리 길이(0..L)로 잘라 같은 프레임만 비교한다. 없으면 길이가 다를 때 멈춘다")
 ap.add_argument("--cmap", default="turbo")
 ap.add_argument("--bins", type=int, default=120)
 ap.add_argument("--pad", type=float, default=1.0, help="히스토그램 구간 = [lo-pad, hi+pad] (바깥 값은 끝 칸에)")
@@ -100,6 +102,10 @@ for i in tqdm(range(L), desc="우리 psi"):
     if i + 1 in a.stats_frames:
         STATS["ov"][i + 1] = defstat(D["F"][i])     # 덤프 F[i] = 프레임 i+1
 OV = np.stack(OV)
+if a.gt_trunc and OV.shape[0] < PG.shape[0] and OV.shape[1] == PG.shape[1]:
+    print(f"[정답 자름] --gt_trunc: 정답 {PG.shape[0]} 프레임 -> 우리 길이 {OV.shape[0]} (0..{OV.shape[0] - 1})", flush=True)
+    PG = PG[:OV.shape[0]]
+    STATS["gt"] = {k: v for k, v in STATS["gt"].items() if k < OV.shape[0]}
 assert OV.shape == PG.shape, (OV.shape, PG.shape)
 T, N = PG.shape
 print(f"[psi] 정답 {PG.shape} 우리 {OV.shape}; 0 프레임 최대 정답 {PG[0].max():.3g} 우리 {OV[0].max():.3g}", flush=True)
