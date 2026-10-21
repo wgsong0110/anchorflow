@@ -87,6 +87,8 @@ def fast_supported(a):
         return False, "bc_softplus (softplus 바닥 매핑은 융합 커널에 없다)"
     if float(getattr(a, "bc_stick", 0.0) or 0.0) > 0.0:
         return False, "bc_stick (미끄러짐 방지 매핑은 융합 커널에 없다)"
+    if str(getattr(a, "bc_feat", "dist") or "dist") != "dist":
+        return False, "bc_feat contact (접촉 셀 바닥 특징은 융합 커널에 없다)"
     if getattr(a, "ip_feat", False):
         return False, "ip_feat (증분 포텐셜 노드 특징은 융합 커널에 없다)"
     for k in ("control", "fe_state", "cell_poly", "refps"):

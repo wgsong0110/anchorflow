@@ -174,7 +174,7 @@ def node_grid(a, x, off=None):
 
 
 def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
-               pt_parts=None, mat_vec=None, ip_state=None):
+               pt_parts=None, mat_vec=None, ip_state=None, h=None):
     """사면체 복합체의 **노드** 특징. 입자 물리량을 자기 사면체의 barycentric
     가중으로 4 꼭짓점에 뿌려 모은다 (P2G 와 같은 구조, 전달 가중치 재사용).
 
@@ -183,6 +183,7 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
     mat_vec: 물성 특징 [N_MAT] (특징에 붙일 때만).
     ip_state: --ip_feat 일 때 dict(F=[N,3,3] 이 상태의 F, vol=[N], h=스텝 dt, free=[N] 또는 None[, feat=캐시 [M,18]])
               -- 특징 끝에 IP_FEAT_N 채널을 덧붙인다 (ip_node_feats). --ip_feat_only 면 그 18 채널만 남긴다.
+    h: 스텝 dt -- --bc_feat contact 의 관성 예측(조건 b)에 쓴다 (그때만 필수).
 
     -> (_in [M,F], npos [M,3], (lo,lat,nn), rows [N,4], lam [N,4], uniq [M],
         간선 (src,dst,cls), aux)
@@ -290,7 +291,15 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
         _den = torch.zeros(Mn, 1, device=lam.device, dtype=lam.dtype).index_add_(
             0, _r, _w.reshape(-1, 1))
         feat = torch.cat([feat, san(_num / _den.clamp_min(1e-20))], -1)
-    extra = [bc_features(npos, cfg) / hn]
+    if str(getattr(a, "bc_feat", "dist") or "dist") == "contact":
+        # --bc_feat contact (사용자 10-21): 접촉 셀의 꼭짓점 노드에만 [플래그 1, 거리/hn, 법선], 나머지 0
+        if h is None:
+            raise RuntimeError("--bc_feat contact: node_feats 에 스텝 dt (h) 가 필요하다 (관성 예측 조건)")
+        if rows.shape[1] != 4 or _interp != "bary" or getattr(a, "hex_jac", False):
+            raise SystemExit("--bc_feat contact 는 사면체 barycentric (--interp bary, hex_jac 없음) 만 지원한다")
+        extra = [bc_contact_feats(cfg, x, v, mass, rows, lam, npos, Mn, h, hn)]
+    else:
+        extra = [bc_features(npos, cfg) / hn]
     if mat_vec is not None:
         extra.insert(0, mat_vec.reshape(1, -1).expand(Mn, mat_vec.numel()))
     _in = torch.cat([san(feat), san(torch.cat(extra, -1))], -1)
@@ -330,6 +339,46 @@ def node_inertial(x, v, mass, rows, lam, n_node, g, h):
     _gq = _const_vec(g, x)
     _hq = float(h)
     return _hq * _vn + (_hq ** 2) * _gq, (_vn, _gq)
+
+
+def bc_contact_feats(cfg, x, v, mass, rows, lam, npos, Mn, h, hn):
+    """**--bc_feat contact** 노드 바닥 특징 (기울기 차단). bc_features 의 surface_collider 마다 4 채널(거리, 법선) 대신 5 채널:
+    [접촉 플래그, 부호 거리/hn, 법선 3]. 접촉 셀의 꼭짓점 노드만 플래그 1 과 실제 값, 나머지 노드는 모두 0.
+
+    접촉 셀 = 입자가 든 사면체(rows 의 행) 중
+      (a) 꼭짓점 노드 현재 위치의 부호 거리 중 하나라도 ≤ 0 (섞임 포함), 또는
+      (b) 이번 스텝 노드 관성 예측 u₀ = h·v_n + h²g (node_inertial 과 같은 것) 으로 옮긴 꼭짓점 위치의 부호 거리 중 하나라도 ≤ 0.
+    cuboid·enforce_particle_translation 칸은 bc_features 와 같다.
+    -> [M, C]
+    """
+    with torch.no_grad():
+        x, v, mass, lam, npos = x.detach(), v.detach(), mass.detach(), lam.detach(), npos.detach()
+        dev, dt = npos.device, npos.dtype
+        u0 = None
+        out = []
+        for bc in cfg.get("boundary_conditions", []):
+            t = bc["type"]
+            if t == "surface_collider":
+                if u0 is None:
+                    u0, _ = node_inertial(x, v, mass.to(x.dtype), rows, lam, Mn, cfg["g"], float(h))
+                    u0 = u0.to(dt)
+                n = torch.tensor(bc["normal"], device=dev, dtype=dt)
+                n = n / n.norm().clamp(min=1e-12)
+                q = torch.tensor(bc["point"], device=dev, dtype=dt)
+                sd = ((npos - q) * n).sum(-1)                                   # [M] 현재
+                sp = ((npos + u0 - q) * n).sum(-1)                              # [M] 관성 예측 뒤
+                cell = (sd[rows] <= 0).any(1) | (sp[rows] <= 0).any(1)          # [N] 입자의 사면체가 접촉 셀인가
+                fl = torch.zeros(Mn, device=dev, dtype=dt).index_add_(
+                    0, rows.reshape(-1), cell.to(dt).unsqueeze(1).expand(-1, 4).reshape(-1)) > 0
+                f = fl.to(dt).unsqueeze(1)
+                out.append(f)
+                out.append(f * (sd / hn).unsqueeze(1))
+                out.append(f * n.reshape(1, 3))
+            elif t in ("cuboid", "enforce_particle_translation"):
+                out.append(bc_features(npos, {"boundary_conditions": [bc]}) / hn)
+        if not out:
+            return torch.zeros(Mn, 0, device=dev, dtype=dt)
+        return torch.cat(out, -1).detach()
 
 
 IP_FEAT_N = 18           # --ip_feat 채널: 기울기 총합 3, 탄성 3, 관성+중력 3, 블록 헤시안 대칭 6, 뉴턴 걸음 3
@@ -901,7 +950,7 @@ class EvalModel:
                 return fs(x, v)
         with sec("셀집계"):
             ens = [node_feats(a, cfg, d["_X0"], mass, x, v, self.vel_scale,
-                              off=o, mat_vec=mat_vec)
+                              off=o, mat_vec=mat_vec, h=h)
                    for o in ens_offsets(max(int(a.ens_off), 1))]
         inert = None
         if a.ov_init == "predict":
