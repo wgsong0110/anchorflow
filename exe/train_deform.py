@@ -1514,6 +1514,11 @@ _ENS_K = [0]               # 지금 다루는 앙상블 격자 번호
 _ENS_N = [1]               # 앙상블 격자 수
 _NODE_CAP = [False]
 _NODE_LAST = [None]
+# AF_DELTA_DUMP=경로 (진단, 계산 불변): --net_inertial 롤아웃 덤프 프레임마다 노드별 관성 예측 u₀(=h·v_n+h²g)·망 출력 합 dpn(=u₀+δ)·
+#   노드 위치·노드 질량(Σ λ m)·노드 바닥 법선 거리·지지 입자 중 최소 바닥 거리를 모아 이 경로에 저장한다 (AF_ROLL_DUMP 와 함께만)
+_DDIAG = os.environ.get("AF_DELTA_DUMP") or None
+_DDIAG_LAST = [None]
+_DDIAG_DUMP = []
 _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최근 step_once
 # AF_INV_LOG=경로: 롤아웃 프레임마다 이번 스텝 det(grad Phi) <= 0 인 사면체·입자 수와 누적 det F <= 0 입자 수를 한 줄씩 남긴다
 _INV_LOG = os.environ.get("AF_INV_LOG") or None
@@ -1843,6 +1848,29 @@ def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
                        + _hit.all(1).to(torch.uint8))
             # GPU 에 둔다 -- 덤프할 때(프레임 끝) 한 번만 CPU 로 옮긴다. 매 평가마다 .cpu() 하면 동기화가 생긴다
             _NODE_LAST[0] = (npos.detach(), dpn.detach(), _sup, _pc)
+            if _DDIAG is not None:
+                # 진단만 -- 읽기 전용 (계산 경로의 텐서를 바꾸지 않는다)
+                with torch.no_grad():
+                    if _TG[0] is None:
+                        raise SystemExit("AF_DELTA_DUMP 는 --net_inertial (관성 예측 u₀) 이 필요하다")
+                    _mwD = (MASS[gsel] if MASS.numel() != x.shape[0] else MASS).to(x.dtype)
+                    _wsD = torch.zeros(npos.shape[0], device=dev, dtype=x.dtype)
+                    _pmD = torch.full((npos.shape[0],), float("inf"), device=dev, dtype=x.dtype)
+                    _sp = torch.full((x.shape[0],), float("inf"), device=dev, dtype=x.dtype)
+                    _sn = torch.full((npos.shape[0],), float("inf"), device=dev, dtype=x.dtype)
+                    for _bcD in (d["cfg"].get("boundary_conditions") or []):
+                        if _bcD.get("type") != "surface_collider":
+                            continue
+                        _ptD = torch.as_tensor(_bcD["point"], device=dev, dtype=x.dtype)
+                        _nrD = torch.as_tensor(_bcD["normal"], device=dev, dtype=x.dtype)
+                        _nrD = _nrD / _nrD.norm().clamp_min(1e-12)
+                        _sp = torch.minimum(_sp, ((x - _ptD) * _nrD).sum(-1))
+                        _sn = torch.minimum(_sn, ((npos - _ptD) * _nrD).sum(-1))
+                    for _jD in range(rows.shape[1]):
+                        _wsD.index_add_(0, rows[:, _jD], lam[:, _jD].to(x.dtype) * _mwD)
+                        _pmD.scatter_reduce_(0, rows[:, _jD], _sp, reduce="amin")
+                    _DDIAG_LAST[0] = (npos.detach().float(), _TG[0].detach().float(), dpn[:, :3].detach().float(),
+                                      _wsD.float(), _sn.float(), _pmD.float())
         _DET_LAST[0] = torch.linalg.det(Jf)
         if _INV_LOG is not None:                       # AF_INV_LOG: 프레임별 뒤집힌 사면체 수 (마지막 step_once 의 것)
             _INV_CUR[0] = (_DET_LAST[0].detach(), rows.detach())
@@ -6836,6 +6864,9 @@ def _rollout(d, t0, L, gsel=None):
                 _FDUMP.append(_FCUM[0].float().cpu() if os.environ.get("AF_ROLL_DUMP_F") == "32" else _FCUM[0].half().cpu())
             if _NODE_LAST[0] is not None:
                 _NODEDUMP.append(tuple(q_.cpu() for q_ in _NODE_LAST[0]))
+            if _DDIAG is not None and _DDIAG_LAST[0] is not None:
+                _DDIAG_DUMP.append(tuple(q_.cpu() for q_ in _DDIAG_LAST[0]))
+                _DDIAG_LAST[0] = None
             if F_ov is not None:
                 # 입자별 변형 스칼라. C = FᵀF (우 코시-그린), E = (C−I)/2
                 # (그린-라그랑주). 정지 상태면 det 1, trC 3, ‖E‖ 0 이다.
@@ -6978,6 +7009,7 @@ for tag, d in TR + held:
                  and t0 == int(os.environ.get("AF_ROLL_T0", "3")))
         _ROLLDUMP = [] if _want else None
         _NODEDUMP, _DETDUMP = [], []
+        _DDIAG_DUMP.clear()
         _VDUMP.clear()
         _FDUMP.clear()
         # gsel 은 **그 궤적의** 입자 수로 만든다 (궤적마다 다를 수 있고, 풀
@@ -7011,6 +7043,12 @@ for tag, d in TR + held:
                         # [L,N,3] 프레임 경계 속도 (출력만 최적화, 서브스텝 안정성 측정용)
                         "v": (torch.stack(_VDUMP) if _VDUMP else None)}, _rd)
             print(f"[롤아웃 덤프] {_rd}  {tag} t0={t0}", flush=True)
+            if _DDIAG is not None:
+                # 프레임 i 의 스텝 (상태 i -> i+1) 마다: 노드 위치·u₀·dpn(=u₀+δ)·노드 질량·노드 바닥 거리·지지 입자 최소 바닥 거리
+                torch.save({"keys": ["npos", "u0", "dpn", "mass", "node_floor", "part_floor_min"],
+                            "frames": list(_DDIAG_DUMP), "h": float(FRAME_DT), "tag": tag, "t0": t0,
+                            "EXT": float(d.get("_ext", EXT)), "cfg_bc": d["cfg"].get("boundary_conditions")}, _DDIAG)
+                print(f"[δ 덤프] {_DDIAG}  {len(_DDIAG_DUMP)} 프레임", flush=True)
         _ROLLDUMP = None
         rows[tag]["windows"][t0] = dict(L=L, err=e, still=st,
                                         err_mean=float(np.mean(e)),
