@@ -5171,11 +5171,180 @@ def _rollout(d, t0, L, gsel=None):
             _fo.close()
             print(f"    [기울기 진단 끝] {len(_pl)} 상태, 노드 불일치 {_bad} -> {_gout}  GRADAC_PROC_DONE", flush=True)
             raise SystemExit(0)
+        # ---- AF_SF_RELEX / AF_SF_BALANCE (사용자 10-21, 공중 상태 기울기가 접촉에 끌려가는 진단 ovnet/lego_grad_air_vs_contact.md 대응) ----
+        # AF_SF_RELEX=1: 상태별 정규화 손실 L_s = (E_s(θ) − E_s*) / D_s, 손실 = phys_w·L_s + det 벌점 (벌점은 정규화 안 함).
+        #   E_s* = 그 상태에서 출력만 최적화 해(덤프 nodes 의 노드 변위)를 _DP_FAST 로 넣어 학습과 같은 경로(step_once -> det_take -> ip_of,
+        #          같은 nrm)로 잰 증분 포텐셜 (AF_GRADAC 의 "dump" 와 같은 방식). 학습 시작 전 상태 전부 한 번 계산해 캐시.
+        #   D_s  = ½ Σ_p m_p ‖x*_p − x_p‖² / h² / nrm (x* = 덤프 다음 상태 = 출력만 최적화 최적 스텝 끝 위치; E 와 같은 nrm).
+        #          하한 = AF_SF_RELEX_DFLOOR(1e-3) × 상태 전부 D 의 중앙값.
+        # AF_SF_BALANCE=na:nc: 배치를 공중 na + 접촉 nc 로 (공중 = 상태 시작 위치의 바닥 위 최소 높이 > 20ε, ε = max(bc_softplus, bc_stick); gradac 기준).
+        # AF_SF_RELEX_TEST=1: 단위 시험만 하고 끝 (RELEX_TEST_OK / RELEX_TEST_FAIL). 둘 다 없으면 이 블록은 아무것도 바꾸지 않는다.
+        _RELEX = bool(os.environ.get("AF_SF_RELEX"))
+        _BAL = os.environ.get("AF_SF_BALANCE", "")
+        _RTEST = bool(os.environ.get("AF_SF_RELEX_TEST"))
+        _SFX = _RELEX or bool(_BAL) or _RTEST
+        if _SFX:
+            _epsm_sf = max(float(a.bc_softplus or 0.0), float(a.bc_stick or 0.0))
+            _air_thr = 20.0 * _epsm_sf
+
+            def _hgt_sf(cfg_, q):
+                hs_ = []
+                for bc in (cfg_.get("boundary_conditions") or []):
+                    if bc.get("type") != "surface_collider":
+                        continue
+                    pt = torch.as_tensor(bc["point"], device=q.device, dtype=q.dtype)
+                    nr = torch.as_tensor(bc["normal"], device=q.device, dtype=q.dtype)
+                    hs_.append(((q - pt) * (nr / nr.norm().clamp_min(1e-12))).sum(-1))
+                return float(torch.stack(hs_).min()) if hs_ else float("inf")
+
+            def _ip_state(j, i, dpo=None):
+                # 학습 루프 본문과 같은 줄 (step_once -> det_take -> ip_of, 같은 _consts·nrm·elastic_mask). dpo 가 있으면 망 대신
+                # 그 노드 변위를 _DP_FAST 로 넣고 탐침 "fixed" 로 0 을 더한다 (AF_GRADAC _eval_u "dump" 와 같음).
+                T_ = _TJ[j]
+                cfg_, m_, vol_, gv_, ng_, gl_, nrm_ = _consts(T_)
+                _sv = (_DP_FAST[0], DM.PROBE[0], DM.PROBE[1])
+                try:
+                    if dpo is not None:
+                        _DP_FAST[0] = lambda n_, dt_, dv_: (dpo.to(dt_),)
+                        DM.PROBE[0], DM.PROBE[1] = "fixed", [torch.zeros(dpo.shape[0], int(getattr(net, "n_out", 3)), device=dev,
+                                                                         dtype=torch.float32, requires_grad=True)]
+                    else:
+                        DM.PROBE[0], DM.PROBE[1] = None, None
+                    with traj_scope(T_["d"]):
+                        xs, vs, Fs = _st(j, i)
+                        with torch.enable_grad(), dt_scope(_hs):
+                            x2, _, _, _, _, _, _, _, _, _jf = step_once(T_["d"], t0 + i, T_["gsel"], _anch(T_, xs), xs, vs, need_J=False)
+                            _em, _dpen = det_take()
+                            _E, _, _, _ = ip_of(xs, x2 - xs, vs, Fs, m_, vol_, cfg_, _hs, ng_, gl_, g=gv_, norm=nrm_,
+                                                jac=_jf, elastic_mask=_em)
+                    return xs.detach(), x2.detach(), float(_E), float(_dpen), nrm_, m_, cfg_
+                finally:
+                    _DP_FAST[0], DM.PROBE[0], DM.PROBE[1] = _sv
+
+            # 상태 시작 높이 (공중/접촉 분류)
+            _HS = []
+            for (j, i) in _pairs:
+                with traj_scope(_TJ[j]["d"]), torch.no_grad():
+                    _HS.append(_hgt_sf(_TJ[j]["d"]["cfg"], _st(j, i)[0]))
+            _AIR = [p for p in range(len(_pairs)) if _HS[p] > _air_thr]
+            _CON = [p for p in range(len(_pairs)) if not (_HS[p] > _air_thr)]
+            print(f"    [공중/접촉] 기준 상태 시작 위치 바닥 위 최소 높이 > 20ε = {_air_thr:g}: 공중 {len(_AIR)} / 접촉 {len(_CON)} / 전체 {len(_pairs)}", flush=True)
+            print("    [공중 상태 목록] " + " ".join(f"{_TJ[_pairs[p][0]]['tag']}:{_pairs[p][1]}" for p in _AIR), flush=True)
+            if _BAL:
+                _na, _nc = (int(s_) for s_ in _BAL.split(":"))
+                if _na + _nc != _B or not _AIR or not _CON:
+                    raise SystemExit(f"AF_SF_BALANCE={_BAL}: 배치 {_B} 와 합이 다르거나 한쪽 상태가 없다 (공중 {len(_AIR)}, 접촉 {len(_CON)})")
+                print(f"    [균형 샘플링] 배치 {_B} = 공중 {_na} + 접촉 {_nc} (각 그룹 안에서 균등, 같은 생성기 --seed {a.seed})", flush=True)
+
+            def _draw(gen_):
+                if _BAL:
+                    return ([_AIR[q] for q in torch.randint(0, len(_AIR), (_na,), generator=gen_).tolist()]
+                            + [_CON[q] for q in torch.randint(0, len(_CON), (_nc,), generator=gen_).tolist()])
+                return torch.randint(0, len(_pairs), (_B,), generator=gen_).tolist()
+
+            _AIRS = set(_AIR)
+            _ESTAR, _DN, _DNU, _REP = [None] * len(_pairs), [None] * len(_pairs), [None] * len(_pairs), [None] * len(_pairs)
+            if _RELEX or _RTEST:
+                _nodes_sf = [torch.load(q_.split("=", 1)[1], map_location="cpu", weights_only=False, mmap=True)["nodes"]
+                             for q_ in _spec.split(",")]
+                _t_c = time.time()
+                for p, (j, i) in enumerate(tqdm(_pairs, desc="E* 캐시")):
+                    T_ = _TJ[j]
+                    with traj_scope(T_["d"]), torch.no_grad():
+                        xs, vs, _ = _st(j, i)
+                        _npos = node_feats(T_["d"], t0 + i, T_["gsel"], xs, vs)[1]
+                    _nd = _nodes_sf[j][i]
+                    _npo, _dpo = _nd[0].to(dev).float(), _nd[1].to(dev).float()
+                    if _npo.shape != _npos.shape or float((_npo - _npos.float()).abs().max()) > 1e-5:
+                        raise SystemExit(f"AF_SF_RELEX: {T_['tag']} 상태 {i} 노드 격자가 덤프와 다르다")
+                    xs, x2, _E, _, nrm_, m_, cfg_ = _ip_state(j, i, _dpo)
+                    _Pn = T_["P"][i].to(dev)
+                    _REP[p] = float((x2 - _Pn).norm(dim=-1).max()) / T_["ext"]
+                    _ESTAR[p] = _E
+                    _DN[p] = float((0.5 * m_ * ((x2 - xs) ** 2).sum(-1)).sum()) / (_hs ** 2) / nrm_
+                    if not (math.isfinite(_E) and math.isfinite(_DN[p])):
+                        raise SystemExit(f"AF_SF_RELEX: {T_['tag']} 상태 {i} E*={_E} D={_DN[p]} 비유한")
+                _dmed = float(np.median(_DN))
+                _dfl = float(os.environ.get("AF_SF_RELEX_DFLOOR", "1e-3")) * _dmed
+                _DNU = [max(d_, _dfl) for d_ in _DN]
+                _nfl = sum(1 for d_ in _DN if d_ < _dfl)
+                _q = lambda v_: " ".join(f"{np.quantile(v_, qq):.4e}" for qq in (0.0, 0.01, 0.1, 0.5, 0.9, 0.99, 1.0))
+                print(f"    [E* 캐시] {len(_pairs)} 상태 {time.time() - _t_c:.0f} s, 재현 최대 거리/EXT {max(_REP):.3e} (덤프 다음 상태 대비)", flush=True)
+                print(f"    [D 분포] 최소/1%/10%/중앙/90%/99%/최대  전체 {_q(_DN)}", flush=True)
+                print(f"    [D 분포] 공중 {_q([_DN[p] for p in _AIR])}", flush=True)
+                print(f"    [D 분포] 접촉 {_q([_DN[p] for p in _CON])}", flush=True)
+                print(f"    [D 하한] 중앙값 {_dmed:.4e} × {os.environ.get('AF_SF_RELEX_DFLOOR', '1e-3')} = {_dfl:.4e}, 하한에 걸린 상태 {_nfl} 개: "
+                      + " ".join(f"{_TJ[_pairs[p][0]]['tag']}:{_pairs[p][1]}(D={_DN[p]:.2e})" for p in range(len(_pairs)) if _DN[p] < _dfl), flush=True)
+                print(f"    [E* 분포] 공중 {_q([_ESTAR[p] for p in _AIR])}", flush=True)
+                print(f"    [E* 분포] 접촉 {_q([_ESTAR[p] for p in _CON])}", flush=True)
+                _cache = dict(pairs=[(_TJ[j]["tag"], i) for (j, i) in _pairs], E_star=_ESTAR, D=_DN, D_used=_DNU, D_floor=_dfl, D_median=_dmed,
+                              h_state=_HS, air=[p in set(_AIR) for p in range(len(_pairs))], replay=_REP, air_thr=_air_thr)
+                _cf = os.path.join(os.path.dirname(os.path.abspath(_ckp)), "relex_cache.json")
+                if os.path.exists(_cf) and not _RTEST:
+                    _old = json.load(open(_cf))
+                    _dd = max(abs(x_ - y_) for x_, y_ in zip(_old["E_star"] + _old["D_used"], _ESTAR + _DNU))
+                    print(f"    [E* 캐시] 이전 캐시 {_cf} 와 최대 차 {_dd:.3e} (이어 돌기: 같아야 한다)", flush=True)
+                    if _dd != 0.0:
+                        raise SystemExit("AF_SF_RELEX: 캐시가 이전 실행과 다르다")
+                else:
+                    json.dump(_cache, open(_cf, "w"), ensure_ascii=False)
+                    print(f"    [E* 캐시] -> {_cf}", flush=True)
+
+            def _state_errs():
+                # 상태 전부에서 망 한 스텝: 출력 오차/EXT (덤프 다음 상태 대비), (E−E*)/D. 학습 모드 그대로 (gradac out_err 와 같은 정의)
+                _oe, _lr = [], []
+                for p, (j, i) in enumerate(_pairs):
+                    xs, x2, _E, _, _, _, _ = _ip_state(j, i)
+                    _oe.append(float((x2 - _TJ[j]["P"][i].to(dev)).norm(dim=-1).mean()) / _TJ[j]["ext"])
+                    _lr.append((_E - _ESTAR[p]) / _DNU[p] if _ESTAR[p] is not None else float("nan"))
+                return _oe, _lr
+
+            if _RTEST:
+                _ok = True
+                # (1) E* 재현: 덤프 노드 변위를 넣은 한 스텝 = 덤프 다음 상태, 다시 계산한 E − 캐시 E* = 0
+                _r1 = max(_REP)
+                _d2 = []
+                for p, (j, i) in enumerate(_pairs):
+                    _dpo = _nodes_sf[j][i][1].to(dev).float()
+                    _d2.append(_ip_state(j, i, _dpo)[2] - _ESTAR[p])
+                _r2 = max(abs(x_) for x_ in _d2)
+                print(f"    [시험 1] 재현 최대 거리/EXT {_r1:.3e}, 덤프 노드 변위 넣은 E − E* 최대 |.| {_r2:.3e} (상태 {len(_pairs)})", flush=True)
+                _ok &= (_r1 == 0.0 and _r2 == 0.0)
+                _ref = os.environ.get("AF_SF_RELEX_REF")
+                if _ref:
+                    _rr = {(r_["traj"], r_["state"]): r_ for r_ in map(json.loads, open(_ref))}
+                    _dr = [abs(_ESTAR[p] - _rr[(_TJ[j]["tag"], i)]["E_star"]) / max(abs(_rr[(_TJ[j]["tag"], i)]["E_star"]), 1e-30)
+                           for p, (j, i) in enumerate(_pairs) if (_TJ[j]["tag"], i) in _rr]
+                    print(f"    [시험 1b] gradac E_star ({_ref}) 대비 상대차 최대 {max(_dr):.3e} ({len(_dr)} 상태)", flush=True)
+                    _ok &= (len(_dr) == len(_pairs) and max(_dr) < 1e-6)
+                # (2) L_s >= 0 (이 실행의 망: 새 망이면 학습 시작점, AF_STATE_FIT_CK 가 있으면 그 망)
+                _oe, _lr = _state_errs()
+                _neg = [(p, v_) for p, v_ in enumerate(_lr) if v_ < 0]
+                print(f"    [시험 2] 망 시작 반복 {_k0}: L_s 최소 {min(_lr):.4e} 중앙 {np.median(_lr):.4e} 최대 {max(_lr):.4e}, 음수 {len(_neg)} 개 "
+                      + " ".join(f"{_TJ[_pairs[p][0]]['tag']}:{_pairs[p][1]}({'공중' if p in set(_AIR) else '접촉'},L={v_:.2e},E*={_ESTAR[p]:.2e})" for p, v_ in _neg[:20]), flush=True)
+                print(f"    [시험 2] L_s 중앙 공중 {np.median([_lr[p] for p in _AIR]):.4e} 접촉 {np.median([_lr[p] for p in _CON]):.4e}; "
+                      f"출력 오차 중앙 공중 {np.median([_oe[p] for p in _AIR]):.4e} 접촉 {np.median([_oe[p] for p in _CON]):.4e}", flush=True)
+                _ok &= (len(_neg) == 0)
+                # (3) 균형 샘플링 비율
+                if _BAL:
+                    _g2 = torch.Generator().manual_seed(a.seed)
+                    _ca, _cc, _bad_b, _seen = 0, 0, 0, set()
+                    for _ in range(5000):
+                        _ix = _draw(_g2)
+                        na_ = sum(1 for p in _ix if p in set(_AIR)); _ca += na_; _cc += len(_ix) - na_
+                        _bad_b += int(na_ != _na or len(_ix) != _B); _seen.update(_ix)
+                    _sa = len(_seen & set(_AIR)); _sc = len(_seen & set(_CON))
+                    print(f"    [시험 3] 5000 배치: 공중 비율 {_ca / (_ca + _cc):.4f} (목표 {_na / _B:.4f}), 배치별 공중 {_na} 아닌 배치 {_bad_b}, "
+                          f"뽑힌 공중 상태 {_sa}/{len(_AIR)}, 접촉 상태 {_sc}/{len(_CON)}", flush=True)
+                    _ok &= (_bad_b == 0 and _sa == len(_AIR) and _sc == len(_CON))
+                print(f"    [시험] {'RELEX_TEST_OK' if _ok else 'RELEX_TEST_FAIL'}", flush=True)
+                raise SystemExit(0)
         _tw = time.time(); _win = []
         for _k in range(_k0, _it):
-            _idx = torch.randint(0, len(_pairs), (_B,), generator=_gen).tolist()
+            _idx = _draw(_gen) if _SFX else torch.randint(0, len(_pairs), (_B,), generator=_gen).tolist()
             _opt.zero_grad(set_to_none=True)
             _Ls, _Es, _Ds, _Rs, _Os, _Cs = [], [], [], [], [], []
+            _LRa, _LRc = [], []
             if _k % 100 == 0 and os.environ.get("AF_OV_MIN_MULTI"):
                 # 궤적별 상태 최솟값 (태그=json,...) -- 그 궤적 상태 전부가 다 나온 파일만 읽는다
                 for _q in os.environ["AF_OV_MIN_MULTI"].split(","):
@@ -5219,6 +5388,11 @@ def _rollout(d, t0, L, gsel=None):
                             # L2: 출력만 최적화 궤적의 다음 상태 위치와의 평균 제곱 거리 / EXT² (det 벌점 그대로)
                             _l2 = ((x2 - T_["P"][i].to(dev)) ** 2).sum(-1).mean() / (T_["ext"] ** 2)
                             _loss = (_l2 + _dpen) / _B
+                        elif _RELEX:
+                            # 상태별 정규화: (E − E*) / D, det 벌점은 그대로 더한다
+                            _Lrel = (_E - _ESTAR[_pi]) / _DNU[_pi]
+                            (_LRa if _pi in _AIRS else _LRc).append(float(_Lrel))
+                            _loss = (a.phys_w * _Lrel + _dpen) / _B
                         else:
                             _loss = (a.phys_w * _E + _dpen) / _B
                         if torch.isfinite(_loss):
@@ -5237,6 +5411,10 @@ def _rollout(d, t0, L, gsel=None):
             if _Cs:
                 _tb.add_scalar("다궤적적합/최솟값대비초과%_중앙", float(np.median(_Cs)), _k)
             _tb.add_scalar("다궤적적합/det벌점", float(np.mean(_Ds)), _k)
+            if _LRa:
+                _tb.add_scalar("다궤적적합/정규화초과_공중", float(np.mean(_LRa)), _k)
+            if _LRc:
+                _tb.add_scalar("다궤적적합/정규화초과_접촉", float(np.mean(_LRc)), _k)
             _tb.add_scalar("다궤적적합/기울기노름", _gn, _k)
             if _Rs:
                 _tb.add_scalar("다궤적적합/출력잔차", _Rs[0], _k)
@@ -5252,6 +5430,17 @@ def _rollout(d, t0, L, gsel=None):
                     _tb.add_scalar(f"다궤적적합_롤아웃_증분포텐셜/{T_['tag']}", float(np.mean(_ee)), _k)
                     print(f"    [다궤적 롤아웃] {_k + 1} {T_['tag']}: 위치 오차 평균 {100 * np.mean(_er):.3f}%  "
                           f"증분포텐셜 평균 {np.mean(_ee):.3e}", flush=True)
+                if _SFX:
+                    _oe, _lr = _state_errs()
+                    _ma, _mc = float(np.median([_oe[p] for p in _AIR])), float(np.median([_oe[p] for p in _CON]))
+                    _tb.add_scalar("다궤적적합_상태/출력오차_공중_중앙", _ma, _k)
+                    _tb.add_scalar("다궤적적합_상태/출력오차_접촉_중앙", _mc, _k)
+                    _la, _lc = float(np.median([_lr[p] for p in _AIR])), float(np.median([_lr[p] for p in _CON]))
+                    if _RELEX:
+                        _tb.add_scalar("다궤적적합_상태/정규화초과_공중_중앙", _la, _k)
+                        _tb.add_scalar("다궤적적합_상태/정규화초과_접촉_중앙", _lc, _k)
+                    print(f"    [상태 출력 오차] {_k + 1} 공중 {len(_AIR)} 중앙 {_ma:.4e}  접촉 {len(_CON)} 중앙 {_mc:.4e} (/EXT, 덤프 다음 상태 대비)  "
+                          f"(E−E*)/D 중앙 공중 {_la:.4e} 접촉 {_lc:.4e}", flush=True)
                 _tb.flush()
             if (_k + 1) % _every == 0 or _k == _it - 1:
                 _save(_k + 1)
