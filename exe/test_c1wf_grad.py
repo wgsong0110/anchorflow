@@ -102,7 +102,17 @@ def setup(interp, base):
 GROUPS = {"임의 전체": None, "값 채널 0:3": (0, 3), "기울기 채널 3:12": (3, 12), "변 채널 12:54": (12, 54)}
 
 
-def fd_check(E, th0, nrep=3, eps=1e-6):
+def fd_err(E, th0, d, gd):
+    """중심 차분 상대오차: 걸음 여러 개(절단 O(ε²) 대 반올림) 중 가장 작은 것."""
+    best = float("inf")
+    with torch.no_grad():
+        for eps in (1e-1, 3e-2, 1e-2, 3e-3, 1e-3):
+            fd = (float(E(th0 + eps * d)) - float(E(th0 - eps * d))) / (2 * eps)
+            best = min(best, abs(fd - gd) / max(abs(fd), abs(gd), 1e-300))
+    return best
+
+
+def fd_check(E, th0, nrep=3):
     th = th0.clone().requires_grad_(True)
     e0 = E(th)
     assert torch.isfinite(e0), "E 가 유한하지 않다 (장벽 계수 ≤0?)"
@@ -117,16 +127,12 @@ def fd_check(E, th0, nrep=3, eps=1e-6):
             if sl is not None:
                 m = torch.zeros_like(d); m[:, sl[0]:sl[1]] = 1.0; d = d * m
             d = d / d.norm() * th0.norm() * 1e-2
-            with torch.no_grad():
-                fd = (float(E(th0 + eps * d)) - float(E(th0 - eps * d))) / (2 * eps)
             gd = float((g * d).sum())
-            rs.append(abs(fd - gd) / max(abs(fd), abs(gd), 1e-300))
+            rs.append(fd_err(E, th0, d, gd))
         out[gname] = max(rs)
     d = -g / g.norm() * th0.norm() * 1e-2
-    with torch.no_grad():
-        fd = (float(E(th0 + eps * d)) - float(E(th0 - eps * d))) / (2 * eps)
     gd = float((g * d).sum())
-    out["-∇E"] = abs(fd - gd) / max(abs(fd), abs(gd), 1e-300)
+    out["-∇E"] = fd_err(E, th0, d, gd)
     return out
 
 
