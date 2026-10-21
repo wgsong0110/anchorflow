@@ -1,14 +1,14 @@
-"""lego --net_inertial 롤아웃의 "멈춤" 진단: 노드 변위 = 관성 예측 u₀ + 망 출력 δ 에서 δ ≈ −u₀ (상쇄) 인가.
+"""lego --net_inertial 롤아웃의 "멈춤" 진단: 노드 변위 = 관성 예측 u0 + 망 출력 δ 에서 δ ≈ −u0 (상쇄) 인가.
 
-입력 (사례마다): train_deform 의 AF_DELTA_DUMP 덤프 (프레임별 노드 위치·u₀·dpn=u₀+δ·노드 질량·노드 바닥 거리·지지 입자
+입력 (사례마다): train_deform 의 AF_DELTA_DUMP 덤프 (프레임별 노드 위치·u0·dpn=u0+δ·노드 질량·노드 바닥 거리·지지 입자
 최소 바닥 거리), 같은 실행의 AF_ROLL_DUMP (pred·gt·x0 -- 정답 대비 이동량), 기존 렌더 mp4 (모델·정답).
 
   python exe/out_cancel_viz.py --out_vid <v20261009> --out_fig <ovnet> --json <x.json> \
       --case 이름=제목=δ덤프=롤덤프=모델mp4=정답mp4=멈춤프레임 ...
 
 정의 (노드 = 질량 > 0 인 활성 노드, 프레임 i = 상태 i -> i+1 스텝):
-  cos(δ,u₀),  |δ|/|u₀|,  δ·û₀/|u₀| (관성 방향 성분 비: −1 = 완전 상쇄),  상쇄 비율 c = −δ·û₀/|u₀|
-  운동량 비 |Σm(u₀+δ)| / |Σm u₀| (0 = 노드 합 운동량이 관성 예측을 완전히 상쇄)
+  cos(δ,u0),  |δ|/|u0|,  δ·û0/|u0| (관성 방향 성분 비: −1 = 완전 상쇄),  상쇄 비율 c = −δ·û0/|u0|
+  운동량 비 |Σm(u0+δ)| / |Σm u0| (0 = 노드 합 운동량이 관성 예측을 완전히 상쇄)
   접촉 노드 = 지지 입자(그 노드의 사면체 꼭짓점인 입자) 중 스텝 시작 바닥 거리 최소값 < --contact (기본 0.02 = 2ε), 나머지 공중
   이동량 = 입자 평균 |x_{i+1} − x_i| / EXT ×100 (모델·정답 각자, 고정 상수 EXT 로만 나눔)
 색 범위·축은 모든 사례·프레임 공통 고정.
@@ -43,8 +43,8 @@ os.makedirs(a.out_vid, exist_ok=True); os.makedirs(a.out_fig, exist_ok=True)
 
 C_AIR, C_CON, C_ALL = "#1c7ed6", "#e8590c", "#495057"
 B_COS = np.linspace(-1, 1, 61)
-B_LR = np.linspace(-2, 2, 61)              # log10 |δ|/|u₀|
-B_PAR = np.linspace(-2.5, 1.5, 61)         # δ·û₀/|u₀|
+B_LR = np.linspace(-2, 2, 61)              # log10 |δ|/|u0|
+B_PAR = np.linspace(-2.5, 1.5, 61)         # δ·û0/|u0|
 
 
 def wmed(x, w):
@@ -98,15 +98,15 @@ def load(spec):
 
 
 CS = [load(s) for s in a.case]
-# 공통 색 범위: 모든 사례·프레임의 |δ|·|u₀| (EXT%) 99 분위수의 최대
+# 공통 색 범위: 모든 사례·프레임의 |δ|·|u0| (EXT%) 99 분위수의 최대
 VMAX = max(max(np.percentile(100 * np.concatenate([r["nd"], r["nu"]]) / c["EXT"], 99) for r in c["fr"]) for c in CS)
-print(f"[색 범위] |δ|, |u₀| 0 ~ {VMAX:.4f} (EXT%)", flush=True)
+print(f"[색 범위] |δ|, |u0| 0 ~ {VMAX:.4f} (EXT%)", flush=True)
 MOTMAX = max(max(c["mot_p"].max(), c["mot_g"].max()) for c in CS) * 1.05
 
 
 def curve_keys():
-    return [("medcos", "중앙값 cos(δ, u₀)", (-1.05, 1.05)), ("medcan", "중앙값 상쇄 비율 −δ·û₀/|u₀|", (-0.5, 1.6)),
-            ("mom", "운동량 비 |Σm(u₀+δ)|/|Σm u₀|", (0, 1.6))]
+    return [("medcos", "중앙값 cos(δ, u0)", (-1.05, 1.05)), ("medcan", "중앙값 상쇄 비율 −δ·û0/|u0|", (-0.5, 1.6)),
+            ("mom", "운동량 비 |Σm(u0+δ)|/|Σm u0|", (0, 1.6))]
 
 
 def sphere(ax, v, col, title, mk="o"):
@@ -153,7 +153,7 @@ for c in CS:
         fig = plt.figure(figsize=(22, 15), dpi=72)
         gs = fig.add_gridspec(4, 8, height_ratios=[1.25, 1.25, 1, 1], hspace=0.45, wspace=0.55)
         fig.suptitle(f"{c['title']} — 스텝 {i}→{i + 1} (상태 {i} 렌더)  |  노드 {r['n_all']} (접촉 {r['n_con']}, 공중 {r['n_air']}),"
-                     f" 위치 오차 {c['err'][i]:.2f}%, 운동량 비 {r['mom']:.3f}, 중앙값 |u₀| {r['med_u0']:.3f}% |δ| {r['med_de']:.3f}% (EXT)",
+                     f" 위치 오차 {c['err'][i]:.2f}%, 운동량 비 {r['mom']:.3f}, 중앙값 |u0| {r['med_u0']:.3f}% |δ| {r['med_de']:.3f}% (EXT)",
                      fontsize=13)
         for j, (fr_, lab) in enumerate(((MV, "모델 렌더"), (GV, "정답 렌더"))):
             ax = fig.add_subplot(gs[0, 2 * j:2 * j + 2])
@@ -163,16 +163,16 @@ for c in CS:
         ax = fig.add_subplot(gs[0, 4:6], projection="3d")
         sc = sphere(ax, r["de"], 100 * r["nd"] / c["EXT"], "δ 방향 (색 = |δ|, EXT%)")
         mu = (r["m"][:, None] * r["u0"]).sum(0); mu = mu / max(np.linalg.norm(mu), 1e-30)
-        ax.scatter([mu[0]], [mu[1]], [mu[2]], color="red", s=200, marker="*", depthshade=False, label="질량평균 u₀ 방향")
-        ax.scatter([-mu[0]], [-mu[1]], [-mu[2]], color="red", s=200, marker="X", depthshade=False, label="−u₀ (완전 상쇄 방향)")
+        ax.scatter([mu[0]], [mu[1]], [mu[2]], color="red", s=200, marker="*", depthshade=False, label="질량평균 u0 방향")
+        ax.scatter([-mu[0]], [-mu[1]], [-mu[2]], color="red", s=200, marker="X", depthshade=False, label="−u0 (완전 상쇄 방향)")
         ax.legend(fontsize=7, loc="lower left")
         ax = fig.add_subplot(gs[0, 6:8], projection="3d")
-        sphere(ax, r["u0"], 100 * r["nu"] / c["EXT"], "u₀ 방향 (색 = |u₀|, 같은 색 범위)", mk="^")
+        sphere(ax, r["u0"], 100 * r["nu"] / c["EXT"], "u0 방향 (색 = |u0|, 같은 색 범위)", mk="^")
         cb = fig.add_axes([0.915, 0.74, 0.006, 0.14]); fig.colorbar(sc, cax=cb).set_label("크기 (EXT%)", fontsize=8)
         for row, wt in ((1, False), (2, True)):
-            hist(fig.add_subplot(gs[row, 0:3]), r["cos"], r, B_COS, "cos(δ, u₀)", -1, wt)
-            hist(fig.add_subplot(gs[row, 3:5]), r["lr"], r, B_LR, "log10 |δ|/|u₀|", 0, wt)
-            hist(fig.add_subplot(gs[row, 5:8]), r["par"], r, B_PAR, "δ·û₀/|u₀| (−1 = 완전 상쇄)", -1, wt)
+            hist(fig.add_subplot(gs[row, 0:3]), r["cos"], r, B_COS, "cos(δ, u0)", -1, wt)
+            hist(fig.add_subplot(gs[row, 3:5]), r["lr"], r, B_LR, "log10 |δ|/|u0|", 0, wt)
+            hist(fig.add_subplot(gs[row, 5:8]), r["par"], r, B_PAR, "δ·û0/|u0| (−1 = 완전 상쇄)", -1, wt)
         fig.text(0.005, 0.50, "개수 기준", rotation=90, fontsize=12); fig.text(0.005, 0.30, "질량 가중", rotation=90, fontsize=12)
         for j, (k, lab, yl) in enumerate(curve_keys()):
             ax = fig.add_subplot(gs[3, 2 * j:2 * j + 2])
@@ -222,7 +222,7 @@ for j, t in enumerate(TRJ):
     for ri, (k, lab, yl) in enumerate(rowsK):
         ax = axs[ri, j]; ax.set_ylim(*yl); ax.set_title(f"{t}: {lab}", fontsize=10); ax.set_xlabel("프레임")
         ax.legend(fontsize=6, ncol=2)
-fig.suptitle(f"lego 롤아웃 노드 변위 u₀+δ 의 상쇄 진단 (접촉 = 지지 입자 최소 바닥 거리 < {a.contact}; 세로 점선 = 멈춤 프레임)", fontsize=12)
+fig.suptitle(f"lego 롤아웃 노드 변위 u0+δ 의 상쇄 진단 (접촉 = 지지 입자 최소 바닥 거리 < {a.contact}; 세로 점선 = 멈춤 프레임)", fontsize=12)
 fig.tight_layout(rect=(0, 0, 1, 0.97))
 sp = os.path.join(a.out_fig, "lego_out_cancel_summary.png"); fig.savefig(sp, dpi=110); plt.close(fig); print(f"[그림] {sp}")
 
@@ -232,9 +232,9 @@ def wavg(c, k, lo, hi):
     return np.mean(v) if v else np.nan
 
 
-md = [f"# lego 롤아웃: 노드 변위 = u₀ + δ 상쇄 진단\n",
-      f"접촉 노드 = 그 노드를 꼭짓점으로 쓰는 입자 중 스텝 시작 바닥 거리 최소 < {a.contact}. 상쇄 비율 c = −δ·û₀/|u₀| (1 = 완전 상쇄), "
-      "운동량 비 = |Σm(u₀+δ)|/|Σm u₀| (0 = 완전 상쇄), '상쇄 노드 비율' = c ∈ (0.8, 1.2) 인 노드 비율. 구간 값은 프레임 평균.\n",
+md = [f"# lego 롤아웃: 노드 변위 = u0 + δ 상쇄 진단\n",
+      f"접촉 노드 = 그 노드를 꼭짓점으로 쓰는 입자 중 스텝 시작 바닥 거리 최소 < {a.contact}. 상쇄 비율 c = −δ·û0/|u0| (1 = 완전 상쇄), "
+      "운동량 비 = |Σm(u0+δ)|/|Σm u0| (0 = 완전 상쇄), '상쇄 노드 비율' = c ∈ (0.8, 1.2) 인 노드 비율. 구간 값은 프레임 평균.\n",
       "| 사례 | 구간 | 오차 % | 이동량 모델/정답 (EXT%) | 중앙값 cos 전체/접촉/공중 | 중앙값 c 전체/접촉/공중 | 질량가중 중앙값 c 전체 | 운동량 비 전체/접촉/공중 | 상쇄 노드 비율 전체/접촉/공중 | 접촉 노드 비율 |",
       "|---|---|---|---|---|---|---|---|---|---|"]
 f3 = lambda v: "-" if v != v else f"{v:.3f}"  # noqa: E731
