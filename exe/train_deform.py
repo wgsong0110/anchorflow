@@ -5020,6 +5020,157 @@ def _rollout(d, t0, L, gsel=None):
             net.train()
             return errs, Es
 
+        if os.environ.get("AF_GRADAC"):
+            # 진단 (사용자 10-21): 위 학습 루프와 **같은 손실 경로**(step_once -> det_take -> ip_of, 같은 nrm·det 벌점, phys_w·E + 벌점)를
+            # 배치 대신 상태 하나씩 (B=1) 돌려, 상태마다 손실·‖∂손실/∂θ‖ (전체 파라미터), 같은 상태에서 출력만 최적화 해(덤프 nodes 의
+            # 노드 변위를 _DP_FAST 로 그대로 넣어 같은 경로로 한 스텝)의 증분 포텐셜 E*, 모델 출력 오차, 셀 스텝 야코비안 max|σ−1|,
+            # 바닥 위 최소 높이를 AF_GRADAC(jsonl) 에 쓴다. 망은 바꾸지 않는다 (옵티마이저 step 없음). 끝나면 종료.
+            # AF_GRADAC_U=1 이면 망과 무관한 두 출발점 (i) u=0 (관성 안 더함), (ii) u=u₀ (관성 예측 = 망 출력 0) 에서도
+            # ∂E/∂u (노드 변위)를 재고 관성+중력/탄성/바닥 매핑(매핑 켬 − 끔)으로 나눈다.
+            _gout = os.environ["AF_GRADAC"]; _doU = bool(os.environ.get("AF_GRADAC_U"))
+            _nout = int(getattr(net, "n_out", 3))
+            _prm = [q for q in net.parameters() if q.requires_grad]
+            _psum = float(sum(float(q.detach().double().abs().sum()) for q in _prm))
+            _nodes = []
+            for _q in _spec.split(","):
+                _nodes.append(torch.load(_q.split("=", 1)[1], map_location="cpu", weights_only=False, mmap=True)["nodes"])
+            _epsm = max(float(a.bc_softplus or 0.0), float(a.bc_stick or 0.0))
+            print(f"    [기울기 진단] 상태 {len(_pairs)} 개, 망 시작 반복 {_k0}, 파라미터 {sum(q.numel() for q in _prm)} 개 |θ|₁ {_psum:.6e}, "
+                  f"바닥 매핑 ε {_epsm:g}, u 출발점 측정 {'켬' if _doU else '끔'} -> {_gout}", flush=True)
+
+            def _hgt(cfg_, q):
+                hs_ = []
+                for bc in (cfg_.get("boundary_conditions") or []):
+                    if bc.get("type") != "surface_collider":
+                        continue
+                    pt = torch.as_tensor(bc["point"], device=q.device, dtype=q.dtype)
+                    nr = torch.as_tensor(bc["normal"], device=q.device, dtype=q.dtype)
+                    hs_.append(((q - pt) * (nr / nr.norm().clamp_min(1e-12))).sum(-1))
+                return float(torch.stack(hs_).min()) if hs_ else float("inf")
+
+            def _ustat(gE, gEn, mN, ext_):
+                # gE = ∂E/∂u (학습 정규화 E), gEn = ∂(E·nrm)/∂u; 이동량 환산 r = ‖gEn‖·h²/m_N/EXT (지지 노드만, 학습 출력잔차와 같은 식)
+                raw = gE[:, :3].norm(dim=-1)
+                sup = mN > 1e-9 * mN.max().clamp_min(1e-30)
+                r = gEn[:, :3].norm(dim=-1)[sup] * (_hs ** 2) / mN[sup] / ext_
+                return dict(raw_med=float(raw.median()), raw_q99=float(torch.quantile(raw.float(), 0.99)),
+                            raw_norm=float(raw.norm()), mv_med=float(r.median()),
+                            mv_q99=float(torch.quantile(r.float(), 0.99)), mv_norm=float(r.norm()))
+
+            def _eval_u(j, i, mode, M, dpo=None, nomap=False, want_theta=False):
+                T_ = _TJ[j]
+                cfg_, m_, vol_, gv_, ng_, gl_, nrm_ = _consts(T_)
+                _sv = (_DP_FAST[0], DM.PROBE[0], DM.PROBE[1], a.bc_stick, a.bc_softplus)
+                Z = torch.zeros(M, _nout, device=dev, dtype=torch.float32, requires_grad=True)
+                try:
+                    if mode == "zero":
+                        _DP_FAST[0] = lambda n_, dt_, dv_: (torch.zeros(n_, _nout, device=dv_, dtype=dt_),)
+                    elif mode == "dump":
+                        _DP_FAST[0] = lambda n_, dt_, dv_: (dpo.to(dt_),)
+                    elif mode == "inertial":
+                        _of = net.forward
+                        net.forward = lambda *a_, **k_: (lambda o_: (torch.zeros_like(o_[0]),) + tuple(o_[1:]))(_of(*a_, **k_))
+                    if nomap:
+                        a.bc_stick = 0.0; a.bc_softplus = 0.0
+                    DM.PROBE[0], DM.PROBE[1] = "fixed", [Z]
+                    with traj_scope(T_["d"]):
+                        xs, vs, Fs = _st(j, i)
+                        with torch.enable_grad(), dt_scope(_hs):
+                            x2, _, _, _, _, _, _, _, _, _jf = step_once(T_["d"], t0 + i, T_["gsel"], _anch(T_, xs), xs, vs, need_J=False)
+                            _np_, _dp_ = _DPN_LIVE[0]
+                            _em, _dpen = det_take()
+                            _E, _, _, _pt = ip_of(xs, x2 - xs, vs, Fs, m_, vol_, cfg_, _hs, ng_, gl_, g=gv_, norm=nrm_,
+                                                  jac=_jf, elastic_mask=_em)
+                            _dd = (x2 - xs) - _hs * vs - (_hs ** 2) * gv_
+                            _Ein = (0.5 * m_ / (_hs ** 2) * (_dd * _dd).sum(-1)).sum() / nrm_
+                            _loss = a.phys_w * _E + _dpen
+                            gE, = torch.autograd.grad(_E, Z, retain_graph=True)
+                            gIn, = torch.autograd.grad(_Ein, Z, retain_graph=True)
+                            mN, = torch.autograd.grad((m_.unsqueeze(-1) * x2).sum(), Z, retain_graph=True)
+                            mN = mN[:, 0]
+                            r = dict(E=float(_E), E_in=float(_Ein), E_bc=float(_pt[3]) / nrm_, dpen=float(_dpen), loss=float(_loss),
+                                     x2=x2.detach(), dpn=_dp_.detach(), npos=_np_.detach(), gE=gE, gIn=gIn, mN=mN,
+                                     nrm=nrm_, ext=T_["ext"], h_end=_hgt(cfg_, x2.detach()))
+                            if want_theta:
+                                for q in _prm:
+                                    q.grad = None
+                                ok = bool(torch.isfinite(_loss))
+                                if ok:
+                                    _loss.backward()
+                                gsq = sum(float((q.grad.double() ** 2).sum()) for q in _prm if q.grad is not None) if ok else float("nan")
+                                r["gth"] = math.sqrt(gsq); r["finite"] = ok
+                                for q in _prm:
+                                    q.grad = None
+                    return r
+                finally:
+                    _DP_FAST[0], DM.PROBE[0], DM.PROBE[1], a.bc_stick, a.bc_softplus = _sv
+                    if mode == "inertial" and "forward" in net.__dict__:
+                        del net.forward
+
+            def _udec(r, rn):
+                # 항별: 전체 / 관성+중력 / 탄성(=전체−관성, 바닥 장벽 e_bc=0 확인) / 바닥 매핑(매핑 켬 − 끔, 같은 출발점)
+                n_, e_ = r["nrm"], r["ext"]
+                out = {}
+                for nm, g in (("all", r["gE"]), ("in", r["gIn"]), ("el", r["gE"] - r["gIn"])):
+                    out[nm] = _ustat(g, g * n_, r["mN"], e_)
+                if rn is not None:
+                    gm = r["gE"] - rn["gE"]
+                    out["map"] = _ustat(gm, gm * n_, r["mN"], e_)
+                    out["E_nomap"] = rn["E"]
+                return out
+
+            net.train()
+            _fo = open(_gout, "w")
+            _bad = 0
+            _pl = _pairs[:int(os.environ.get("AF_GRADAC_N", len(_pairs)))]   # 시험용으로 앞 N 상태만
+            for (j, i) in tqdm(_pl, desc="기울기 진단"):
+                T_ = _TJ[j]
+                cfg_ = T_["d"]["cfg"]
+                with traj_scope(T_["d"]), torch.no_grad():
+                    xs, vs, Fs = _st(j, i)
+                    _nf = node_feats(T_["d"], t0 + i, T_["gsel"], xs, vs)
+                _npos, (_lo, _lat, _nn), _rows, _lam, _aux = _nf[1], _nf[2], _nf[3], _nf[4], _nf[7]
+                M = int(_npos.shape[0])
+                rec = dict(traj=T_["tag"], state=i, M=M, ext=T_["ext"], h_state=_hgt(cfg_, xs),
+                           h_ov_next=_hgt(cfg_, T_["P"][i].to(dev)), eps_map=_epsm, k0=_k0)
+                # (1) 출력만 최적화 해 E* -- 덤프 노드 변위를 그대로
+                _nd = _nodes[j][i]
+                _npo, _dpo = _nd[0].to(dev).float(), _nd[1].to(dev).float()
+                if _npo.shape != _npos.shape or float((_npo - _npos.float()).abs().max()) > 1e-5:
+                    rec["ov_node_mismatch"] = True; _bad += 1
+                else:
+                    ro = _eval_u(j, i, "dump", M, dpo=_dpo)
+                    rec.update(E_star=ro["E"], E_star_in=ro["E_in"], E_star_bc=ro["E_bc"], dpen_star=ro["dpen"],
+                               replay_err=float((ro["x2"] - T_["P"][i].to(dev)).norm(dim=-1).mean()) / T_["ext"],
+                               replay_max=float((ro["x2"] - T_["P"][i].to(dev)).norm(dim=-1).max()) / T_["ext"],
+                               gu_star=_udec(ro, None))
+                # (2) 망 (학습과 같은 손실)
+                rn = _eval_u(j, i, "net", M, want_theta=True)
+                rec.update(E=rn["E"], E_in=rn["E_in"], E_bc=rn["E_bc"], dpen=rn["dpen"], loss=rn["loss"], gtheta=rn["gth"],
+                           finite=rn["finite"], h_model=rn["h_end"],
+                           out_err=float((rn["x2"] - T_["P"][i].to(dev)).norm(dim=-1).mean()) / T_["ext"],
+                           gu_net=_udec(rn, None))
+                with torch.no_grad():
+                    _u, _G = SX.g2p_jac_pre(_rows, _lam, _aux, _lat, rn["dpn"][:, :3].float())
+                    _tid = SX.tet_id(_lo, _lat, _nn, _aux)
+                    _, _first = np.unique(_tid.cpu().numpy(), return_index=True)
+                    _Jc = torch.eye(3, device=dev) + _G[torch.as_tensor(_first, device=dev)]
+                    _sv_ = torch.linalg.svdvals(_Jc.double())
+                    _dv = (_sv_ - 1).abs().max(1).values
+                    rec.update(jcell_med=float(_dv.median()), jcell_q99=float(torch.quantile(_dv, 0.99)),
+                               jcell_detmin=float(torch.det(_Jc.double()).min()), n_cells=int(len(_first)))
+                # (3) 망과 무관한 출발점 두 개
+                if _doU:
+                    for nm in ("zero", "inertial"):
+                        r1 = _eval_u(j, i, nm, M)
+                        r0 = _eval_u(j, i, nm, M, nomap=True)
+                        rec[f"U_{nm}"] = dict(E=r1["E"], E_in=r1["E_in"], E_bc=r1["E_bc"], h_end=r1["h_end"],
+                                              out_err=float((r1["x2"] - T_["P"][i].to(dev)).norm(dim=-1).mean()) / T_["ext"],
+                                              gu=_udec(r1, r0))
+                _fo.write(json.dumps(rec, ensure_ascii=False) + "\n"); _fo.flush()
+            _fo.close()
+            print(f"    [기울기 진단 끝] {len(_pl)} 상태, 노드 불일치 {_bad} -> {_gout}  GRADAC_PROC_DONE", flush=True)
+            raise SystemExit(0)
         _tw = time.time(); _win = []
         for _k in range(_k0, _it):
             _idx = torch.randint(0, len(_pairs), (_B,), generator=_gen).tolist()
