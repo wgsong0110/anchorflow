@@ -1210,6 +1210,14 @@ _DPN_LIVE = [None]         # (노드 위치, 노드 출력) -- 마지막 step_on
 _NODE_TGT = None           # --ov_obj node: 목표 롤아웃 덤프 (pred·v·F·nodes)
 if os.environ.get("AF_OV_NODE_TGT"):
     _NODE_TGT = torch.load(os.environ["AF_OV_NODE_TGT"], map_location="cpu", weights_only=False)
+# AF_OV_CONT=덤프:s (사용자 10-21 "모델이 멈춘 프레임 상태에서 출력만 최적화로 이어 굴리기"): 덤프(pred·v·F, [L,N,..], pred[k] = 프레임 k+1)
+# 의 프레임 1..s 를 그대로 옮겨 적고(최적화 없음), 프레임 s 의 상태(x = pred[s-1], v = v[s-1], F = F[s-1])에서 s+1 부터 출력만 최적화로 굴린다.
+_OV_CONT = None
+if os.environ.get("AF_OV_CONT"):
+    _oc_p, _oc_s = os.environ["AF_OV_CONT"].rsplit(":", 1)
+    _OV_CONT = torch.load(_oc_p, map_location="cpu", weights_only=False)
+    _OV_CONT["s"] = int(_oc_s)
+    print(f"[이어 굴리기] {_oc_p}: 프레임 1..{_OV_CONT['s']} 은 덤프 그대로, {_OV_CONT['s'] + 1} 부터 출력만 최적화", flush=True)
 _PIN = [None]              # (손잡이 노드 마스크, 명령 변위) -- 풀 학습 경로에서도 on_pin 이 쓰므로 여기서 먼저 만든다
 _SIM_T = [0.0]             # --cfg_bc: 롤아웃 시작부터의 물리 시각 (서브스텝마다 갱신)
 
@@ -6370,7 +6378,14 @@ def _rollout(d, t0, L, gsel=None):
                     x2 = _NODE_TGT["pred"][i - 1].to(dev, x2.dtype)
                     v = _NODE_TGT["v"][i - 1].to(dev, v.dtype)
                     _S["F_ov"] = _NODE_TGT["F"][i - 1].to(dev, _S["F_ov"].dtype)
-                for _sb in range(EVAL_SUB):
+                _oc_copy = _OV_CONT is not None and i < _OV_CONT["s"]
+                if _oc_copy:
+                    # AF_OV_CONT: 멈춘 프레임까지는 덤프 상태를 그대로 (최적화 없음). 마지막으로 옮긴 상태가 이어 굴리기의 시작 상태
+                    assert _OV_CONT["pred"].shape[1] == x2.shape[0], ("AF_OV_CONT 입자 수 불일치", _OV_CONT["pred"].shape, x2.shape)
+                    x2 = _OV_CONT["pred"][i].to(dev, x2.dtype)
+                    v = _OV_CONT["v"][i].to(dev, v.dtype)
+                    _S["F_ov"] = _OV_CONT["F"][i].to(dev, _S["F_ov"].dtype)
+                for _sb in (range(0) if _oc_copy else range(EVAL_SUB)):
                     _SIM_T[0] = (i + _sb / EVAL_SUB) * FRAME_DT       # --cfg_bc 시간창 (롤아웃 시작 = 0)
                     x2, v, _S["F_ov"] = _ov_frame(d, t0 + i, gsel, p, x2, v, _S["F_ov"])
                     if a.pg_vdamp:
