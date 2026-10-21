@@ -1,6 +1,6 @@
 """기울기 공중/접촉 진단 (exe/gradac.sh -> train_deform AF_GRADAC 훅) 결과의 그림·표.
 
-  python exe/grad_air_contact_plot.py --dir <grad_air_contact 결과> --out <ovnet>
+  python exe/grad_air_contact_plot.py --dir <grad_air_contact 결과> (R2 lbours/grad_air_contact 를 받은 곳) --out <ovnet>
 
 분류: 공중 = 그 상태(h_state)와 모델 한 스텝 결과(h_model) 모두 바닥 위 최소 높이 > 문턱. 기본 문턱 = 20ε
 (deform_model.bc_softplus_map·bc_stick_map 이 s/ε > 20 에서 위치·야코비안 모두 정확히 항등 -- 그 너머는 바닥 매핑이 손실에
@@ -59,7 +59,7 @@ def excess_pct(r):
 
 
 # ---------------- 그림 1: 망 기울기 ----------------
-PAN = [("‖∂손실/∂θ‖₂", lambda r: r["gtheta"], "log"),
+PAN = [("‖∂손실/∂θ‖ (2-노름)", lambda r: r["gtheta"], "log"),
        ("초과량 E − E*", excess, "symlog"),
        ("모델 출력 오차 / EXT", lambda r: r["out_err"], "log"),
        ("민감도 ‖∂손실/∂θ‖ / 출력 오차", sens, "log")]
@@ -102,7 +102,7 @@ p1 = f"{a.out}/lego_grad_air_vs_contact{a.suffix}.png"; fig.savefig(p1, dpi=130)
 
 # ---------------- 그림 2: 망과 무관한 출발점 u=0, u=u₀ ----------------
 TR = R["trained"]
-PTS = [("U_zero", "(i) u = 0 (관성 안 더함)"), ("U_inertial", "(ii) u = u₀ (관성 예측)")]
+PTS = [("U_zero", "(i) u = 0 (관성 안 더함)"), ("U_inertial", "(ii) u = u0 (관성 예측)")]
 PAN2 = [("전체 ‖∂E/∂u‖ 이동량 환산 노름", lambda q: q["gu"]["all"]["mv_norm"], "log"),
         ("관성+중력 항", lambda q: q["gu"]["in"]["mv_norm"], "log"),
         ("탄성 항", lambda q: q["gu"]["el"]["mv_norm"], "log"),
@@ -154,6 +154,7 @@ L = ["# lego 새 바닥 다섯 궤적 상태 적합: 공중 vs 접촉 상태의 
      f"- 자료: `{a.dir}` (states_trained.jsonl, states_init.jsonl; 400 상태 = 5 궤적 × 80), 학습과 같은 손실 경로(step_once → det_take → ip_of, 같은 nrm, phys_w·E + det 벌점)를 상태 하나씩.",
      f"- 공중 = 그 상태와 모델 한 스텝 결과 모두 바닥 위 최소 높이 > 문턱. 기본 문턱 20ε = {20 * eps:g} (바닥 매핑이 s/ε > 20 에서 정확히 항등), 보조 ε = {eps:g}.",
      "- E* = 같은 상태에서 출력만 최적화 해(덤프 노드 변위를 그대로 넣어 같은 경로로 한 스텝)의 증분 포텐셜. 초과% = 100·(E/E* − 1).",
+     "- 공중 상태는 E* 가 0 에 가깝다 (관성 예측이 곧 최적해) -- 공중 행의 초과 % 는 분모가 ~1e-13 이라 뜻이 없다, E − E* 를 볼 것.",
      "- 값은 `중앙값 / 평균`.", ""]
 for thn in (TH_MAIN, "ε"):
     th = TH[thn]
@@ -191,7 +192,7 @@ L += ["## 망과 무관한 출발점의 ∂E/∂u (노드 변위; 학습 끝 망
       "원값 = ‖∂E/∂u_N‖ (학습 정규화 E), 이동량 = ‖∂(E·nrm)/∂u_N‖·h²/m_N/EXT (지지 노드). 노름 = 노드 전체 2-노름. 바닥 매핑 항 = 같은 점에서 매핑 켬 − 끔의 기울기 차.", "",
       "| 출발점 | 그룹 | 상태 수 | 원값 중앙 | 원값 99% | 원값 노름 | 이동량 중앙 | 이동량 99% | 이동량 노름 | 관성+중력 이동량 노름 | 탄성 이동량 노름 | 바닥 매핑 이동량 노름 | E − E* | 출력 오차/EXT |",
       "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
-PT_ALL = PTS + [("net", "(a) 학습 끝 망 출력"), ("star", "출력만 최적화 해 E*")]
+PT_ALL = [(k_, l_.replace("u0", "u₀")) for k_, l_ in PTS] + [("net", "(a) 학습 끝 망 출력"), ("star", "출력만 최적화 해 E*")]
 for pk, lab in PT_ALL:
     for gn, sel in (("공중", True), ("접촉", False)):
         if pk in ("U_zero", "U_inertial"):
