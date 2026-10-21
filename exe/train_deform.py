@@ -152,6 +152,9 @@ ap.add_argument("--ip_feat", action="store_true",
                 help="**증분 포텐셜 노드 특징** (사용자 10-21): 노드 관성 예측점 u₀ 에서 이 실행의 증분 포텐셜(바닥 매핑 포함)의 "
                      "노드별 기울기(총합·탄성·관성+중력), 블록 대각 헤시안 6, 뉴턴 걸음 3 = 18 채널을 망 입력에 덧붙인다 "
                      "(deform_model.ip_node_feats, 기울기 차단, 스텝마다 한 번). 사면체 barycentric 만")
+ap.add_argument("--ip_feat_only", action="store_true",
+                help="**노드 입력 = ip_node_feats 18 채널만** (사용자 10-21, --ip_feat 와 함께): 입자 모멘트·바닥 거리/법선(bc)·"
+                     "물성·추가 특징을 모두 뺀다 (deform_model.node_feats 끝에서 잘라 학습·표준화·롤아웃이 같은 입력)")
 ap.add_argument("--ip_feat_eps", type=float, default=1e-3,
                 help="--ip_feat 뉴턴 걸음의 정칙화 ε (관성 척도 M_i/h² 로 나눈 무차원 헤시안의 고윳값을 max(λ,0)+ε 로)")
 ap.add_argument("--bc_slip", action="store_true",
@@ -2077,6 +2080,9 @@ with torch.no_grad():
         n_feat = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1]
         if a.ip_feat:
             print(f"[--ip_feat] 증분 포텐셜 노드 특징 {DM.IP_FEAT_N} 채널 덧붙임 -> 입력 {n_feat} (ε {a.ip_feat_eps:g})", flush=True)
+        if a.ip_feat_only:
+            assert n_feat == DM.IP_FEAT_N, f"--ip_feat_only: 입력 {n_feat} != {DM.IP_FEAT_N}"
+            print(f"[--ip_feat_only] 노드 입력 = 증분 포텐셜 특징 {DM.IP_FEAT_N} 채널만 (모멘트·bc·물성 뺌)", flush=True)
 if a.voxel:
     VOX_CELL = H
     # 격자는 모든 궤적을 덮도록 공간에 고정한다 (프레임마다 새로 잡으면 물체가

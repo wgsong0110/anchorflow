@@ -10,6 +10,7 @@
   4) 뉴턴 걸음 d 가 1-노드 이차 근사 m(δ)=g̃·δ+½δᵀ(H̃₊+εI)δ 의 최소점: 정류 잔차 ≈ 0, 무작위 섭동은 m 을 올림;
      양정부호 노드는 (H̃+εI)d = -g̃ 그대로
   5) 바닥 깊이 아래·큰 속도·거의 퇴화한 F 에서도 원시 값·특징 모두 유한, node_feats 폭 = 기본 + 18, 기울기 차단
+  6) --ip_feat_only: 폭 18, 값 = 전체 입력의 끝 18 채널
 """
 import math
 import os
@@ -199,4 +200,10 @@ a0 = mk_a()
 a0.ip_feat = False
 w0 = DM.node_feats(a0, cfg, x, m, x, v, 1.0)[0].shape[1]
 chk("   node_feats 폭 = 기본 + 18", _in.shape[1] == w0 + DM.IP_FEAT_N == w0 + 18, f"{w0} + {DM.IP_FEAT_N} = {_in.shape[1]}")
+# 6) --ip_feat_only: 노드 입력 = 18 채널만, 값은 전체 입력의 마지막 18 채널과 같다
+a6 = mk_a()
+a6.ip_feat_only = True
+_in6 = DM.node_feats(a6, cfg, x, m, x, v, 1.0, ip_state=dict(F=F, vol=m / cfg["density"], h=h, free=None))[0]
+chk("6) --ip_feat_only 폭 = 18, 값 = 전체 입력의 끝 18 채널", _in6.shape[1] == DM.IP_FEAT_N == 18
+    and float((_in6 - _in[:, -DM.IP_FEAT_N:]).abs().max()) == 0.0, f"폭 {_in6.shape[1]}")
 print("IP_FEAT_TEST_OK" if ok else "IP_FEAT_TEST_FAIL", flush=True)
