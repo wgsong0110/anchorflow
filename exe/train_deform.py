@@ -4943,6 +4943,7 @@ def _rollout(d, t0, L, gsel=None):
         _ckp = os.environ["AF_STATE_FIT_CK"]; _r2 = os.environ.get("AF_STATE_FIT_R2")
         _every = int(os.environ.get("AF_STATE_FIT_EVERY", "500")); _evev = int(os.environ.get("AF_STATE_FIT_EVAL", "1000"))
         _byt = {t_: d_ for t_, d_ in TR + held}
+        _EVT = set(q for q in os.environ.get("AF_EVAL_TAGS", "").split(",") if q)
         _TJ = []
         for _q in _spec.split(","):
             _tg_, _pth = _q.split("=", 1)
@@ -4973,12 +4974,32 @@ def _rollout(d, t0, L, gsel=None):
             print(f"    [다궤적 적합] 이어 돈다: {_ckp} 반복 {_k0}", flush=True)
         else:
             with torch.no_grad():
-                _sf = []
-                for (j, i) in _pairs:
-                    with traj_scope(_TJ[j]["d"]):
-                        xs, vs, _ = _st(j, i)
-                        _sf.append(node_feats(_TJ[j]["d"], t0 + i, _TJ[j]["gsel"], xs, vs)[0])
-                net.set_input_stats(torch.cat(_sf, 0)); del _sf
+                if os.environ.get("AF_STATE_FIT_STATS_STREAM"):
+                    _n_, _mu_, _m2_ = 0, None, None
+                    for (j, i) in _pairs:
+                        with traj_scope(_TJ[j]["d"]):
+                            xs, vs, _ = _st(j, i)
+                            _f_ = node_feats(_TJ[j]["d"], t0 + i, _TJ[j]["gsel"], xs, vs)[0]
+                        _f_ = _f_.detach().double().reshape(-1, _f_.shape[-1])
+                        _nb_ = _f_.shape[0]; _mb_ = _f_.mean(0); _m2b_ = ((_f_ - _mb_) ** 2).sum(0)
+                        if _mu_ is None:
+                            _n_, _mu_, _m2_ = _nb_, _mb_, _m2b_
+                        else:
+                            _dl_ = _mb_ - _mu_; _nt_ = _n_ + _nb_
+                            _mu_ = _mu_ + _dl_ * (_nb_ / _nt_)
+                            _m2_ = _m2_ + _m2b_ + _dl_ ** 2 * (_n_ * _nb_ / _nt_)
+                            _n_ = _nt_
+                    _sd_ = (_m2_ / max(_n_ - 1, 1)).sqrt().float()
+                    net.in_mu.copy_(_mu_.float())
+                    net.in_sd.copy_(torch.where(_sd_ > 1e-4 * _sd_.max().clamp(min=1e-12), _sd_, torch.ones_like(_sd_)))
+                    print(f"    [다궤적 적합] 입력 표준화 (스트리밍 float64): 노드 표본 {_n_}, 채널 {_mu_.numel()}", flush=True)
+                else:
+                    _sf = []
+                    for (j, i) in _pairs:
+                        with traj_scope(_TJ[j]["d"]):
+                            xs, vs, _ = _st(j, i)
+                            _sf.append(node_feats(_TJ[j]["d"], t0 + i, _TJ[j]["gsel"], xs, vs)[0])
+                    net.set_input_stats(torch.cat(_sf, 0)); del _sf
             print(f"    [다궤적 적합] 새 망, 입력 표준화 = {len(_TJ)} 궤적 {len(_pairs)} 상태", flush=True)
         _tb = _SW(os.environ["AF_STATE_FIT_TB"], purge_step=_k0 if _k0 > 0 else None)
         _hs = FRAME_DT
@@ -5096,6 +5117,8 @@ def _rollout(d, t0, L, gsel=None):
                       f"{time.time() - _tw:.0f} s", flush=True)
             if (_k + 1) % _evev == 0 or _k == _it - 1:
                 for T_ in _TJ:
+                    if _EVT and T_["tag"] not in _EVT:
+                        continue              # AF_EVAL_TAGS: 정답 MPM 없는 학습 전용 궤적은 검증 롤아웃을 하지 않는다
                     _er, _ee = _eval_roll(T_)
                     _tb.add_scalar(f"다궤적적합_롤아웃_위치오차%/{T_['tag']}", 100 * float(np.mean(_er)), _k)
                     _tb.add_scalar(f"다궤적적합_롤아웃_증분포텐셜/{T_['tag']}", float(np.mean(_ee)), _k)
@@ -6189,8 +6212,12 @@ def emd(p_, q_, seed):
 
 rows = {}
 _seen_tags = set()
+_EVAL_TAGS = set(q for q in os.environ.get("AF_EVAL_TAGS", "").split(",") if q)
 for tag, d in TR + held:
     if tag in _seen_tags:             # 풀 모드는 홀드아웃을 학습 목록에도 넣는다 -- 같은 궤적을 두 번 굴리지 않는다
+        continue
+    if _EVAL_TAGS and tag not in _EVAL_TAGS:
+        # AF_EVAL_TAGS (manytraj 10-21): 정답 MPM 이 없는 학습 전용 궤적(초기 상태만 있는 .pt)은 마지막 롤아웃을 하지 않는다
         continue
     _seen_tags.add(tag)
     T = d["x"].shape[0]
