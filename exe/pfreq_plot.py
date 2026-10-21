@@ -21,7 +21,9 @@ if F:
 plt.rcParams["axes.unicode_minus"] = False
 M = json.load(open(src))
 RUNS = [("spstick", "기존 (입자 모멘트 29 + 바닥 4 = 33 채널)", "#2a78d6"),
-        ("pfreq", f"이번 (입자 주파수 인코딩 15×(1+2·{KF}) + 바닥 4 채널)", "#eb6834")]
+        ("pfreq", f"입자 주파수 인코딩 15×(1+2·{KF}) + 바닥 4 채널", "#eb6834"),
+        ("pfreq_bcc", f"입자 주파수 인코딩 15×(1+2·{KF}) + 접촉 셀 바닥 5 채널", "#1baf7a")]
+RUNS = [r for r in RUNS if r[0] in M]
 TAGS = ["L000", "0000", "0001", "0002", "0003"]
 
 
@@ -65,7 +67,8 @@ for c, t in enumerate(TAGS):
     ax.set_title(f"검증: 정답 시작 80프레임 롤아웃 위치 오차 % · {t}", fontsize=11); ax.set_xlabel("반복"); ax.grid(alpha=0.3)
     if c == 0:
         ax.legend(fontsize=9)
-fig.suptitle(f"lego 다섯 궤적 학습: 기존 spstick vs 노드 입력 = 입자 물리량 주파수 인코딩 (--pfreq {KF}) -- 반복별 학습 곡선과 검증", fontsize=14)
+fig.suptitle(f"lego 다섯 궤적 학습: 기존 spstick vs 노드 입력 = 입자 물리량 주파수 인코딩 (--pfreq {KF})"
+             + (" vs 같은 인코딩 + 접촉 셀 바닥 특징" if "pfreq_bcc" in M else "") + " -- 반복별 학습 곡선과 검증", fontsize=14)
 fig.tight_layout()
 fig.savefig(out, dpi=110)
 print("그림", out)
