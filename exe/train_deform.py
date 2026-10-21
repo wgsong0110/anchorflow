@@ -522,6 +522,10 @@ ap.add_argument("--ov_vars", choices=["out", "net"], default="out",
 ap.add_argument("--ov_obj", choices=["ip", "l2", "node"], default="ip",
                 help="--ov_roll 의 프레임별 목적함수: ip=증분 포텐셜(기본), l2=다음 프레임 정답 위치와의 평균 L2 / EXT² (장벽 없음), "
                      "node=노드 출력을 다른 실행(출력만 최적화)의 노드 출력에 맞춘다 (AF_OV_NODE_TGT=그 롤아웃 덤프; 상태도 그 덤프로 매 프레임 맞춘다)")
+ap.add_argument("--integrator", choices=["be", "midpoint"], default="be",
+                help="--ov_roll 의 시간 적분기: be=후퇴 오일러(기본, 프레임당 증분 포텐셜 한 번), midpoint=암시적 중점법 -- "
+                     "같은 증분 포텐셜을 h/2 로 풀어 중점 y 를 구하고 x_{n+1}=2y-x_n, v_{n+1}=(4/h)(y-x_n)-v_n, "
+                     "F_{n+1}=(2J_mid-I)F_n (유도: lib/anchorflow/midpoint.py). 외삽 사상 det<=0 은 막지 않고 AF_INV_LOG 에 기록")
 ap.add_argument("--ov_gd_lr", type=float, default=1e-4, help="--ov_opt gd 의 고정 학습률 (경사하강)")
 ap.add_argument("--ov_opt", choices=["adam", "lbfgs", "cg", "gd"], default="lbfgs",
                 help="--ov_roll 의 최적화기. 탄성 강성(E=2e6)이 관성항보다 "
@@ -633,6 +637,7 @@ from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import simplex as SX                            # noqa: E402
 from anchorflow import wf as WF                                 # noqa: E402
 from anchorflow.feas_lbfgs import FeasLBFGS                     # noqa: E402
+from anchorflow import midpoint as MIDP                          # noqa: E402
 from anchorflow import simplex_gnn as _SGM                      # noqa: E402
 from anchorflow.simplex_gnn import (SimplexGNN, node_moments,    # noqa: E402
                                     scatter_to_nodes)
@@ -1513,6 +1518,7 @@ _BC_LAST = [None]          # (구속 보정량 [N,3], 활성집합 [N,1]) -- 최
 # AF_INV_LOG=경로: 롤아웃 프레임마다 이번 스텝 det(grad Phi) <= 0 인 사면체·입자 수와 누적 det F <= 0 입자 수를 한 줄씩 남긴다
 _INV_LOG = os.environ.get("AF_INV_LOG") or None
 _INV_CUR = [None]
+_MID_STAT = [None]         # --integrator midpoint: 프레임별 외삽 사상 뒤집힘·경계조건 확인 (AF_INV_LOG 에 붙인다)
 _C1_P1 = [0]               # --c1_barrier: 이번 프레임 실현 가능 시작점 1 단계 외곽 횟수
 _OV_CUR_OPT = [None]       # 마지막으로 쓴 출력만 최적화 옵티마이저 (feas_lbfgs 통계 기록용)
 # AF_TUNNEL_LOG=경로: 롤아웃 프레임마다 활성 사면체 중 스텝 시작에 꼭지점 하나라도 바닥면 위였다가
@@ -3222,6 +3228,11 @@ if a.out_var or a.ov_roll > 0:
           + ("). --ov_roll 이라 프레임마다 변수를 새로 만들고 상태는 정상 "
              f"전진한다 (프레임당 {a.ov_roll} 반복)" if a.ov_roll > 0 else
              "). 상태는 전진하지 않는다 -- 한 스텝 하한만 잰다"), flush=True)
+    if a.integrator == "midpoint":
+        if a.ov_roll <= 0:
+            raise SystemExit("--integrator midpoint 는 --ov_roll 에서만")
+        print("[적분기] 암시적 중점법: 스텝 h/2 증분 포텐셜로 중점 -> x=2y-x_n, v=(4/h)(y-x_n)-v_n, F=(2J-I)F_n "
+              "(구속 입자 속도 = 2u/h)", flush=True)
 
 TBW = None
 if a.tb:
@@ -5238,6 +5249,43 @@ def _ov_frame(d, t, gsel, p, x, v, F):
         if _s2 is not None:
             _s2["ov"] = None
             _s2["ov_opt"] = None
+    elif a.integrator == "midpoint":
+        # **암시적 중점법** (lib/anchorflow/midpoint.py 유도): 중점 y 는 스텝 h/2 후퇴 오일러의 증분 포텐셜 최소점
+        # (관성 목표 (h/2)v_n + (h/2)²g, 탄성·장벽·경계조건 그대로). 끝 상태는 2 배 외삽
+        if a.elast == "lin" or a.cmp_lin:
+            raise SystemExit("--integrator midpoint 는 --elast lin·--cmp_lin 과 함께 쓰지 않는다")
+        _h = float(_DT[0])
+        with dt_scope(0.5 * _h):
+            x_mid, _vbe, Jm = _ov_once(d, t, gsel, p, x, v, F)
+        with torch.no_grad():
+            x_mid, Jm = x_mid.detach(), Jm.detach()
+            _pin = None
+            if _BC_LAST[0] is not None:                 # 모든 꼭짓점 노드가 구속된 입자 (속도가 정해진 입자)
+                _pin = _BC_LAST[0][1].reshape(-1) > 0.5
+            _hd = release_held(d, x, t, 0.5 * _h)
+            if _hd is not None:
+                _pin = _hd if _pin is None else (_pin | _hd)
+            x2, v2 = MIDP.mid_to_end(x, x_mid, v, _h, pinned=_pin)
+            Jd = MIDP.extrap_jac(Jm)
+            _de = torch.linalg.det(Jd.float())
+            _dm = torch.linalg.det(Jm.float())
+            _bad = _de <= 0
+            _rec = {"mid_det_min": float(_dm.min()), "mid_inv_particles": int((_dm <= 0).sum()),
+                    "ext_det_min": float(_de.min()), "ext_inv_particles": int(_bad.sum())}
+            if _INV_CUR[0] is not None and _INV_CUR[0][1].shape[0] == x.shape[0]:
+                _rI = _INV_CUR[0][1]
+                _rec["ext_inv_tets"] = int(torch.unique(_rI[_bad], dim=0).shape[0]) if bool(_bad.any()) else 0
+                _rec["mid_inv_tets"] = (int(torch.unique(_rI[_dm <= 0], dim=0).shape[0])
+                                        if bool((_dm <= 0).any()) else 0)
+            if _pin is not None and bool(_pin.any()):
+                # 경계조건 확인: 구속 입자의 중점·끝 변위 (화분 v_bc=0 이면 둘 다 0 이어야 한다)
+                _rec.update(bc_pinned=int(_pin.sum()),
+                            bc_mid_disp_max=float((x_mid - x)[_pin].norm(dim=-1).max()),
+                            bc_end_disp_max=float((x2 - x)[_pin].norm(dim=-1).max()),
+                            bc_end_v_max=float(v2[_pin].norm(dim=-1).max()))
+            else:
+                _rec.update(bc_pinned=0)
+            _MID_STAT[0] = _rec
     else:
         _no = max(int(a.lin_outer), 1) if a.elast == "lin" else 1
         for _oi in range(_no):
@@ -6768,6 +6816,8 @@ def _rollout(d, t0, L, gsel=None):
                     _, _, _dpI, _wtI, _loI, _laI, _nnI, _uqI = DM.C1_LAST[0]
                     _ncl, _npl = WF.curl_check(_dpI.detach(), _wtI, _loI, _laI, _nnI, _uqI)
                     _recI.update(c1_curled=_ncl, c1_curl_pairs=_npl)
+                if _MID_STAT[0] is not None:            # --integrator midpoint: 외삽 사상 뒤집힘·경계조건 (마지막 서브스텝)
+                    _recI.update(_MID_STAT[0])
                 _oI = _OV_CUR_OPT[0]
                 if _oI is not None and getattr(_oI, "stats", None):
                     _recI["opt"] = dict(_oI.stats, phase1=_C1_P1[0])
