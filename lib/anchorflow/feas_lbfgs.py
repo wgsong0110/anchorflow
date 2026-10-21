@@ -48,16 +48,17 @@ class FeasLBFGS:
         nev = 0
         E = float(closure()); nev += 1
         if not math.isfinite(E):
-            self.stats = dict(evals=nev, iters=0, infeasible_start=True, E=E)
+            self.stats = dict(evals=nev, iters=0, infeasible_start=True, E=E, stop="infeasible_start")
             return E
         g = self._flat_grad().detach().clone()
         g = torch.nan_to_num(g, nan=0.0)
         x = self._flat()
         S, Y = [], []
         it, n_bt, n_inf = 0, 0, 0
+        stop = "max_iter"                      # 종료 사유 (기록용, 계산에는 안 쓴다)
         for it in range(1, self.max_iter + 1):
             if self.tg > 0 and float(g.abs().max()) <= self.tg:
-                break
+                stop = "grad_tol"; break
             q = g.clone(); al = []
             for s, y in reversed(list(zip(S, Y))):
                 r = 1.0 / float(y @ s); a_ = r * float(s @ q); q -= a_ * y; al.append((r, a_, s, y))
@@ -70,10 +71,10 @@ class FeasLBFGS:
             if not (gtd < 0):
                 d = -g; gtd = float(g @ d); S, Y = [], []
             t = self.lr * (min(1.0, 1.0 / float(g.abs().sum().clamp_min(1e-30))) if it == 1 else 1.0)
-            ok = False
+            ok = False; ls_cap = "max_ls"
             for _ in range(self.max_ls):
                 if nev >= self.max_eval:
-                    break
+                    ls_cap = "max_eval_in_ls"; break
                 self._set(x + t * d)
                 En = float(closure()); nev += 1
                 if math.isfinite(En) and En <= E + self.c1 * t * gtd:
@@ -84,6 +85,7 @@ class FeasLBFGS:
                 t *= 0.5
             if not ok:
                 self._set(x)
+                stop = "ls_fail_" + ls_cap         # 선 탐색 실패 (되추적 max_ls 소진 또는 평가 상한)
                 break
             gn = torch.nan_to_num(self._flat_grad().detach().clone(), nan=0.0)
             xn = x + t * d
@@ -95,10 +97,11 @@ class FeasLBFGS:
             dE = abs(E - En)
             x, g, E = xn, gn, En
             if self.tc > 0 and dE < self.tc:
-                break
+                stop = "change_tol"; break
             if nev >= self.max_eval:
-                break
+                stop = "max_eval"; break
         # 마지막 x 의 기울기를 params 에 남긴다 (호출부가 읽을 수 있게)
         self._set(x)
-        self.stats = dict(evals=nev, iters=it, backtracks=n_bt, infeasible_trials=n_inf, E=E)
+        self.stats = dict(evals=nev, iters=it, backtracks=n_bt, infeasible_trials=n_inf, E=E, stop=stop,
+                          gnorm=float(g.norm()), ginf=float(g.abs().max()))
         return E

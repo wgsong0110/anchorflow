@@ -3916,14 +3916,16 @@ def _vg_groups(g):
 
 
 def _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton=False, cg_max=60, dedup=False):
-    """dedup: c1wf pl 의 pl_c1_dofs 중복 쓰기 역전파를 원천 하나로 (참 기울기·헤시안). 순전파 값은 같다."""
-    _keep = WF.PL_DEDUP[0]
-    WF.PL_DEDUP[0] = bool(dedup)
+    """dedup=True: 참 기울기·헤시안 (pl_c1_dofs 중복 쓰기 원천 하나). dedup=False: 실행 그대로.
+    WF.pl_c1_dofs 를 고친 뒤(중복 제거가 기본)로는 둘이 같다 -- 고치기 전 실행을 재현하려면 WF.PL_LEGACY_DUP[0]=True."""
+    _keep = WF.PL_LEGACY_DUP[0]
+    if dedup:
+        WF.PL_LEGACY_DUP[0] = False
     try:
         r_ = _vg_measure0(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton, cg_max)
     finally:
-        WF.PL_DEDUP[0] = _keep
-    r_["dedup"] = bool(dedup)
+        WF.PL_LEGACY_DUP[0] = _keep
+    r_["dedup"] = bool(dedup or not WF.PL_LEGACY_DUP[0])
     return r_
 
 
