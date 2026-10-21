@@ -69,49 +69,70 @@ def mk_state(N, z_lo, z_hi, vs=0.3, fs=0.15, seed=0):
     return x, v, F, m
 
 
-x, v, F, m = mk_state(300, FLOOR - 0.02, FLOOR + 0.12)
-vol = m / cfg["density"]
-a = mk_a()
-ips = dict(F=F, vol=vol, h=h, free=None)
-ens = DM.node_feats(a, cfg, x, m, x, v, 1.0, ip_state=ips)
-raw = DM.IPF_LAST[0]
-_in, npos, (lo, lat, nn), rows, lam, uniq, _e, aux = ens
-Mn = npos.shape[0]
-print(f"[설정] 입자 {x.shape[0]}, 노드 {Mn}, 바닥 아래 입자 {int((x[:, 2] < FLOOR).sum())}, 특징 폭 {_in.shape[1]}", flush=True)
-u0, (vn, gq) = DM.node_inertial(x, v, m, rows, lam, Mn, cfg["g"], h)
+def setup(x, v, F, m, a):
+    ens = DM.node_feats(a, cfg, x, m, x, v, 1.0, ip_state=dict(F=F, vol=m / cfg["density"], h=h, free=None))
+    raw = DM.IPF_LAST[0]
+    Mn = ens[1].shape[0]
+    u0, (vn, gq) = DM.node_inertial(x, v, m, ens[3], ens[4], Mn, cfg["g"], h)
+    return dict(x=x, v=v, F=F, m=m, vol=m / cfg["density"], a=a, ens=ens, raw=raw, Mn=Mn, u0=u0, vn=vn, gq=gq)
 
 
-def E_ref(Z, parts=False):
-    """학습 경로 그대로: advance(망 출력 = 0 + 탐침 Z, --net_inertial 관성 예측 더함) -> pts_ip_energy (정규화 없음)."""
-    DM.PROBE[0], DM.PROBE[1] = "fixed", [Z.reshape(Mn, 3)]
+def E_ref(c, Z, parts=False, ret_J=False):
+    """학습 경로 그대로: advance(망 출력 0 + 관성 예측 + 탐침 Z) -> pts_ip_energy (정규화 없음)."""
+    DM.PROBE[0], DM.PROBE[1] = "fixed", [Z.reshape(c["Mn"], 3)]
     try:
         # dp_fast 를 쓰면 advance 는 망을 건너뛰고 관성 예측도 더하지 않는다 -> 망 출력 0 + τ·v_n + τ²g (τ = h) = u₀ 를 직접 준다
-        x2, _vn, _dpn, Jf, _c, _act = DM.advance(None, a, [ens], x, h, cfg, dp_fast=lambda M, _d: (u0.clone(),),
-                                                 inertial=[(vn, gq)])
+        x2, _vn, _dpn, Jf, _c, _act = DM.advance(None, c["a"], [c["ens"]], c["x"], h, cfg,
+                                                 dp_fast=lambda M, _d: (c["u0"].clone(),), inertial=[(c["vn"], c["gq"])])
     finally:
         DM.PROBE[0], DM.PROBE[1] = None, None
-    E, _dl, _Ft, pr = PR.pts_ip_energy(x, x2 - x, v, F, Jf, m, vol, cfg, h, cfg["n_grid"], cfg["grid_lim"],
-                                       g=torch.tensor(cfg["g"]), parts_grad=parts)
+    E, _dl, _Ft, pr = PR.pts_ip_energy(c["x"], x2 - c["x"], c["v"], c["F"], Jf, c["m"], c["vol"], cfg, h, cfg["n_grid"],
+                                       cfg["grid_lim"], g=torch.tensor(cfg["g"]), parts_grad=parts)
+    if ret_J:
+        return E, pr, Jf
     return (E, pr) if parts else E
 
 
-# 1) 기울기
-Z = torch.zeros(Mn * 3, requires_grad=True)
-E0, pr = E_ref(Z, parts=True)
-gR, = torch.autograd.grad(E0, Z, retain_graph=True)
-gelR, = torch.autograd.grad(pr[1], Z, retain_graph=True)
-ginR, = torch.autograd.grad(pr[0], Z)
-gR, gelR, ginR = gR.reshape(Mn, 3), gelR.reshape(Mn, 3), ginR.reshape(Mn, 3)
 rel = lambda A, B: float((A - B).abs().max() / B.abs().max().clamp_min(1e-300))
-chk("1) 노드 기울기 == 학습 경로 autograd", rel(raw["g"], gR) < 1e-9, f"상대 최대오차 {rel(raw['g'], gR):.1e}, |g|최대 {float(gR.abs().max()):.3e}")
-chk("   탄성 기울기 == 학습 경로 탄성항 autograd", rel(raw["g_el"], gelR) < 1e-9, f"{rel(raw['g_el'], gelR):.1e}")
-chk("   관성+중력 기울기 == 학습 경로 관성항 autograd", rel(raw["g_in"], ginR) < 1e-9, f"{rel(raw['g_in'], ginR):.1e}")
-chk("   탄성 + 관성+중력 == 총합 (AF_NO_BC)", rel(raw["g_el"] + raw["g_in"], raw["g"]) < 1e-12, f"{rel(raw['g_el'] + raw['g_in'], raw['g']):.1e}")
-chk("   IP 값 == 학습 경로", abs(float(raw["E"]) - float(E0)) <= 1e-10 * abs(float(E0)), f"{float(raw['E']):.6e} vs {float(E0):.6e}")
+
+
+def grad_check(c, tag):
+    Z = torch.zeros(c["Mn"] * 3, requires_grad=True)
+    E0, pr, Jf = E_ref(c, Z, parts=True, ret_J=True)
+    gR, = torch.autograd.grad(E0, Z, retain_graph=True)
+    gelR, = torch.autograd.grad(pr[1], Z, retain_graph=True)
+    ginR, = torch.autograd.grad(pr[0], Z)
+    gR, gelR, ginR = gR.reshape(-1, 3), gelR.reshape(-1, 3), ginR.reshape(-1, 3)
+    raw = c["raw"]
+    nlow = int((torch.linalg.svdvals((Jf @ c["F"]).detach())[:, -1] <= 0.01).sum())
+    chk(f"1) [{tag}] 노드 기울기 == 학습 경로 autograd", rel(raw["g"], gR) < 1e-9,
+        f"상대 최대오차 {rel(raw['g'], gR):.1e}, |g|최대 {float(gR.abs().max()):.3e}, 하한(σ≤0.01) 입자 {nlow}")
+    chk(f"   [{tag}] 탄성 기울기 == 학습 경로 탄성항 autograd", rel(raw["g_el"], gelR) < 1e-9, f"{rel(raw['g_el'], gelR):.1e}")
+    chk(f"   [{tag}] 관성+중력 기울기 == 학습 경로 관성항 autograd", rel(raw["g_in"], ginR) < 1e-9, f"{rel(raw['g_in'], ginR):.1e}")
+    chk(f"   [{tag}] 탄성 + 관성+중력 == 총합 (AF_NO_BC)", rel(raw["g_el"] + raw["g_in"], raw["g"]) < 1e-12,
+        f"{rel(raw['g_el'] + raw['g_in'], raw['g']):.1e}")
+    chk(f"   [{tag}] IP 값 == 학습 경로", abs(float(raw["E"]) - float(E0)) <= 1e-10 * abs(float(E0)), f"{float(raw['E']):.6e} vs {float(E0):.6e}")
+    return nlow
+
+
+a = mk_a()
+# 바닥 근처(일부 접촉·softplus 영역)지만 탄성 하한(σ ≤ 0.01)에 안 걸리는 상태 -- 헤시안·테일러는 매끄러운 곳에서 잰다
+x, v, F, m = mk_state(300, FLOOR + 0.002, FLOOR + 0.12, vs=0.1)
+v[:, 2] = v[:, 2] * 0.3
+C0 = setup(x, v, F, m, a)
+ens, raw, Mn, _in = C0["ens"], C0["raw"], C0["Mn"], C0["ens"][0]
+print(f"[설정] 입자 {x.shape[0]}, 노드 {Mn}, 바닥 0.01 안 입자 {int((x[:, 2] < FLOOR + 0.01).sum())}, 특징 폭 {_in.shape[1]}", flush=True)
+nlow0 = grad_check(C0, "매끄러운 접촉")
+chk("   매끄러운 상태는 하한 입자 0 (헤시안 대조 조건)", nlow0 == 0, f"{nlow0}")
+# 바닥 아래에서 시작·아래로 빠른 상태: 하한 입자가 생긴다 -- 1 차는 여기서도 학습 경로와 같아야 한다
+xb, vb, Fb, mb = mk_state(300, FLOOR - 0.03, FLOOR + 0.08, vs=0.3)
+Cb = setup(xb, vb, Fb, mb, a)
+nlowb = grad_check(Cb, "깊은 접촉")
+print(f"    (깊은 접촉: 하한 입자 {nlowb} 개 -- 그 입자의 탄성 헤시안 기여는 0, 1 차는 학습 경로 그대로)", flush=True)
 
 # 2) 블록 대각 헤시안 == 전체 헤시안의 대각 블록 (탄성 = 고유값 autograd 경로)
 os.environ["AF_NO_FAST_FCR"] = "1"
-Hfull = torch.autograd.functional.hessian(lambda z: E_ref(z), torch.zeros(Mn * 3))
+Hfull = torch.autograd.functional.hessian(lambda z: E_ref(C0, z), torch.zeros(Mn * 3))
 del os.environ["AF_NO_FAST_FCR"]
 Hd = torch.stack([Hfull[3 * i:3 * i + 3, 3 * i:3 * i + 3] for i in range(Mn)])
 eh = rel(raw["H"], Hd)
@@ -123,7 +144,7 @@ print(f"    (참고) 비대각 블록 최대 {float(_off.abs().max()):.3e} -- �
 
 # 3) 실제 IP 의 1-노드 테일러: 나머지가 δ³ 로 줄어듦
 with torch.no_grad():
-    Eb = float(E_ref(torch.zeros(Mn * 3)))
+    Eb = float(E_ref(C0, torch.zeros(Mn * 3)))
     nod = torch.argsort(raw["M"], descending=True)[:5].tolist()
     worst = 0.0
     for i in nod:
@@ -134,7 +155,7 @@ with torch.no_grad():
             dl = sc * H * dvec
             Zt = torch.zeros(Mn, 3)
             Zt[i] = dl
-            dE = float(E_ref(Zt.reshape(-1))) - Eb
+            dE = float(E_ref(C0, Zt.reshape(-1))) - Eb
             qm = float(raw["g"][i] @ dl + 0.5 * dl @ raw["H"][i] @ dl)
             rs.append(abs(dE - qm))
         worst = max(worst, rs[1] / max(rs[0], 1e-300))

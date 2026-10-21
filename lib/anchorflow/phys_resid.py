@@ -416,19 +416,34 @@ def _fcr_grad_h(F, mu: float, lam: float):
 
 
 class _FcrPsiH(torch.autograd.Function):
-    """hess_mode 의 jelly ψ: 순전파 = _fcr_fwd_core 그대로, 역전파 = _fcr_grad_h (2 차 미분 가능)."""
+    """hess_mode 의 jelly ψ: 순전파 = _fcr_fwd_core 그대로, 역전파 = _fcr_grad_h (2 차 미분 가능).
+
+    하한(σ_min ≤ clamp)에 걸린 입자는 _FcrPsiFast 와 똑같이 _FcrPsi 기울기를 쓰되 **상수**로 둔다 (1 차는 학습 경로와
+    같고, 그 입자의 탄성 헤시안 기여는 0). 그 입자의 닫힌 식은 단위행렬 자리에서 계산해 2 차 역전파에 NaN 이 안 섞이게 한다."""
 
     @staticmethod
     def forward(ctx, F, mu, lam, clamp):
-        psi, _S = _fcr_fwd_core(F, float(mu), float(lam), float(clamp))
-        ctx.save_for_backward(F)
-        ctx.mu, ctx.lam = float(mu), float(lam)
+        psi, S = _fcr_fwd_core(F, float(mu), float(lam), float(clamp))
+        ctx.save_for_backward(F, S)
+        ctx.mu, ctx.lam, ctx.clamp = float(mu), float(lam), float(clamp)
         return psi
 
     @staticmethod
     def backward(ctx, go):
-        F, = ctx.saved_tensors
-        return go.reshape(*go.shape, 1, 1) * _fcr_grad_h(F, ctx.mu, ctx.lam), None, None, None
+        F, S = ctx.saved_tensors
+        low = (S[..., 0] <= ctx.clamp).detach()
+        if bool(low.any()):
+            I3 = torch.eye(3, device=F.device, dtype=F.dtype)
+            G = _fcr_grad_h(torch.where(low[..., None, None], I3, F), ctx.mu, ctx.lam)
+            Fl = F.detach()[low].clone().requires_grad_(True)
+            with torch.enable_grad():
+                Gl, = torch.autograd.grad(_FcrPsi.apply(Fl, ctx.mu, ctx.lam, ctx.clamp).sum(), Fl)
+            Gc = torch.zeros_like(F.detach())
+            Gc[low] = Gl.detach()
+            G = torch.where(low[..., None, None], Gc, G)
+        else:
+            G = _fcr_grad_h(F, ctx.mu, ctx.lam)
+        return go.reshape(*go.shape, 1, 1) * G, None, None, None
 
 
 def _psi_fcr(sig, mu, lam):
