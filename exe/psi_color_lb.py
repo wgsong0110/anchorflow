@@ -35,6 +35,8 @@ ap.add_argument("--q", type=float, nargs=2, default=[1.0, 99.0])
 ap.add_argument("--cmap", default="turbo")
 ap.add_argument("--bins", type=int, default=120)
 ap.add_argument("--pad", type=float, default=1.0)
+ap.add_argument("--range", default="", help="고정 범위 range.json (주면 lo/hi 를 그대로 쓰고 분위수로 다시 정하지 않는다; eps 도 같아야 함)")
+ap.add_argument("--stats_name", default="lego_psi_defstats.txt")
 ap.add_argument("--stats_frames", type=int, nargs="+", default=[1, 40, 80])
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
@@ -102,7 +104,7 @@ for k in RUNS:
 print(f"[psi] {', '.join(f'{k} {v.shape}' for k, v in RUNS.items())}; 0 프레임 정답 최대 {RUNS['gt'][0].max():.3g}", flush=True)
 
 # 변형 통계 표
-with open(f"{a.out}/lego_psi_defstats.txt", "w") as o:
+with open(f"{a.out}/{a.stats_name}", "w") as o:
     o.write(f"# max_i|σ_i-1| (입자별) 중앙값·상위 1% (99 분위수), det F < 0 입자 수 / 전체 {N}; psi 평균·중앙값 [Pa]\n")
     o.write(f"# psi_of: {phys_resid.mat_name(cfg)} FCR, E {cfg['E']} nu {cfg['nu']}\n")
     for k, v in info.items():
@@ -114,15 +116,22 @@ with open(f"{a.out}/lego_psi_defstats.txt", "w") as o:
                 continue
             o.write(f"{k:<6} {t:>5} {np.median(SM[k][t]):>14.4e} {np.percentile(SM[k][t], 99):>16.4e} "
                     f"{int((DT[k][t] < 0).sum()):>7d} {RUNS[k][t].mean():>11.4e} {np.median(RUNS[k][t]):>11.4e}\n")
-print(open(f"{a.out}/lego_psi_defstats.txt").read(), flush=True)
+print(open(f"{a.out}/{a.stats_name}").read(), flush=True)
 
 LG = {k: np.log10(v + a.eps) for k, v in RUNS.items()}
 both = np.concatenate([v[1:].ravel() for v in LG.values()])
 lo, hi = (float(v) for v in np.percentile(both, a.q))
+q_lo, q_hi = lo, hi
+if a.range:
+    _R = json.load(open(a.range))
+    assert abs(float(_R["eps"]) - a.eps) < 1e-15, ("eps 가 다르다", _R["eps"], a.eps)
+    lo, hi = float(_R["lo"]), float(_R["hi"])
+    print(f"[색 범위] {a.range} 고정 범위 그대로 [{lo:.4f}, {hi:.4f}] (이 실행들만의 {a.q} 분위수는 [{q_lo:.4f}, {q_hi:.4f}])", flush=True)
 del both
 json.dump(dict(lo=lo, hi=hi, eps=a.eps, q=a.q, cmap=a.cmap, unit="Pa (J/m^3)", runs=list(RUNS), dumps=info,
                psi="fixed corotated mu*sum(sig-1)^2 + lam/2*(J-1)^2", mu=mu, lam=lam, E=cfg["E"], nu=cfg["nu"],
-               T=T, N=N, frames_for_range=f"1..{T - 1} (실행 {len(RUNS)} 개 합침)"),
+               T=T, N=N, frames_for_range=(f"고정: {a.range}" if a.range else f"1..{T - 1} (실행 {len(RUNS)} 개 합침)"),
+               own_quantile_range=[q_lo, q_hi]),
           open(f"{a.out}/range.json", "w"), indent=1)
 print(f"[색 범위] log10(psi+{a.eps}) [{lo:.4f}, {hi:.4f}] (분위수 {a.q}, {a.cmap}, 실행 {list(RUNS)})", flush=True)
 
