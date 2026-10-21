@@ -3886,6 +3886,141 @@ if os.environ.get("AF_GRAD_PROBE"):
     os.makedirs(_GRAD_PROBE["out"], exist_ok=True)
 
 
+# AF_VARGRAD=출력디렉토리[:프레임,프레임,...] (사용자 10-21 "L-BFGS 가 실제로 움직이는 최적화 변수 기준 기울기"):
+# 스텝 t (프레임 t -> t+1) 마다, 그 스텝을 위해 깐 격자 위에서
+#   (1) L-BFGS 시작점(관성 예측 초기화, c1 이면 1 단계 실현 가능 사영 뒤 = 실행이 step 을 부르는 바로 그 점) 의 g0 = ∂E/∂θ,
+#   (2) 해 θ* 의 g, 뉴턴 감소량 ½ gᵀH⁻¹g (H 는 hess_mode 이중 역전파 헤시안-벡터 곱, CG, 음곡률이면 멈춤·표시) [J],
+# 를 잰다. E 는 L-BFGS 가 내리는 목적함수 그대로(_fwd 의 E) 에 nrm 을 곱해 J 단위.
+# θ* 는 AF_OV_NODE_TGT 덤프(상태도 그 덤프로 매 스텝 맞춘다)의 노드 출력에서 역변환한다:
+#   bary: θ = 노드 변위(자유 노드), c1wf pl: θ = [값, 기울기·변 채널 - pl_c1_dofs(값)] (자유 노드).
+#   검산: θ* 로 만든 노드 출력·입자 위치·F 가 덤프의 스텝 t 노드·프레임 t+1 위치·F 와 같은지 (최대 차이 기록).
+# AF_VARGRAD_RESOLVE=1: 실행과 같은 옵티마이저로 그 스텝을 다시 풀어 종료 통계(반복·평가)와 다시 푼 해의 g 도 남긴다
+#   (덤프가 없으면 다시 푼 해가 θ*). AF_VARGRAD_CG: CG 반복 상한 (기본 60).
+_VARGRAD = None
+if os.environ.get("AF_VARGRAD"):
+    _vga = os.environ["AF_VARGRAD"].split(":")
+    _VARGRAD = {"out": _vga[0], "frames": (set(int(q) for q in _vga[1].split(",") if q) if len(_vga) > 1 and _vga[1] else None),
+                "resolve": bool(os.environ.get("AF_VARGRAD_RESOLVE")), "cg": int(os.environ.get("AF_VARGRAD_CG", 60))}
+    os.makedirs(_VARGRAD["out"], exist_ok=True)
+
+
+def _vg_groups(g):
+    """변수 종류별 (L2, L∞). c1wf 54 채널: 값 0:3, 기울기 3:12, 변 12:54. bary: 값 0:3."""
+    out = {"all": (float(g.norm()), float(g.abs().max()))}
+    if g.shape[-1] == WF.C1_NOUT:
+        for k_, (s_, e_) in {"val": (0, 3), "grad": (3, 12), "edge": (12, 54)}.items():
+            out[k_] = (float(g[:, s_:e_].norm()), float(g[:, s_:e_].abs().max()))
+    else:
+        out["val"] = (float(g[:, :3].norm()), float(g[:, :3].abs().max()))
+    return out
+
+
+def _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton=False, cg_max=60):
+    u = [q for q in st["ov"] if q is not None][0]
+    with torch.enable_grad():
+        x2, _, E, _, _, _pq, Jd = _fwd()
+        EJ = E * nrm
+        g = torch.autograd.grad(EJ, u)[0].detach()
+    h_ = _DT[0]
+    with torch.no_grad():
+        F_tr = Jd.detach().to(F.dtype) @ F
+        E_el = float((vol * phys_resid.psi_of(F_tr, cfg, h_)[0]).sum())
+        _d = (x2 - x) - h_ * v - (h_ * h_) * gv
+        E_in = float((0.5 * m / (h_ * h_) * (_d * _d).sum(-1)).sum())
+    rec = {"E": float(EJ), "E_el": E_el, "E_in": E_in, "n_var": int(u.numel()), "shape": tuple(u.shape),
+           "g": _vg_groups(g), "x2": x2.detach(), "F_tr": F_tr.detach(), "dpn": _DPN_LIVE[0][1].detach()}
+    if a.c1_barrier > 0 and DM.C1_LAST[0] is not None:
+        _mu1, _ = phys_resid.lame(cfg["E"], cfg["nu"])
+        _mu1 = float(_mu1.float().mean()) if torch.is_tensor(_mu1) else float(_mu1)
+        rec["E_c1bar"] = float(WF.barrier_energy(DM.C1_LAST[0][0], DM.C1_LAST[0][1], a.c1_barrier * _mu1, a.c1_jhat))
+        rec["c1_coef_min"] = float(DM.C1_LAST[0][0].min())
+    rec["g_vec"] = g.float().cpu()
+    if not newton or not math.isfinite(rec["E"]):
+        return rec
+
+    def _hvp(vec):
+        with torch.enable_grad(), phys_resid.hess_mode():
+            _E = _fwd()[2] * nrm
+            _g = torch.autograd.grad(_E, u, create_graph=True)[0]
+            _Hv = torch.autograd.grad((_g * vec).sum(), u)[0]
+        return _Hv.detach()
+
+    def _grad_at(du):
+        with torch.no_grad():
+            u.add_(du)
+        try:
+            with torch.enable_grad():
+                _E = _fwd()[2] * nrm
+                return torch.autograd.grad(_E, u)[0].detach(), float(_E)
+        finally:
+            with torch.no_grad():
+                u.sub_(du)
+    # hess_mode 의 값·기울기가 실행 경로와 같은지, 헤시안-벡터 곱이 유한차분과 맞는지 (임의 방향 하나)
+    with torch.enable_grad(), phys_resid.hess_mode():
+        _Eh = _fwd()[2] * nrm
+        _gh = torch.autograd.grad(_Eh, u)[0].detach()
+    rec["hess_mode_dE"] = float(_Eh) - rec["E"]
+    rec["hess_mode_dg_rel"] = float((_gh - g).norm() / g.norm().clamp_min(1e-30))
+    _gen = torch.Generator(device=u.device).manual_seed(12345)
+    _r = torch.randn(u.shape, device=u.device, dtype=u.dtype, generator=_gen)
+    _Hr = _hvp(_r)
+    _fd = {}
+    for _eps in (1e-4, 1e-5):
+        _s = _eps / float(_r.abs().max())
+        _gp, _ = _grad_at(_s * _r)
+        _gm, _ = _grad_at(-_s * _r)
+        _fd[f"{_eps:g}"] = float(((_gp - _gm) / (2 * _s) - _Hr).norm() / _Hr.norm().clamp_min(1e-30))
+    rec["hvp_fd_rel"] = _fd
+    rec["rHr"] = float((_r * _Hr).sum())
+    # CG: H p = g, p_0 = 0. gᵀp_k 는 H 가 양정치면 k 에 대해 단조 증가하는 ½λ² 의 하한열
+    p_ = torch.zeros_like(g); r_ = g.clone(); d_ = r_.clone(); rr = float((r_ * r_).sum()); g2 = rr
+    hist, neg, k_ = [], False, 0
+    for k_ in range(1, cg_max + 1):
+        Hd = _hvp(d_)
+        dHd = float((d_ * Hd).sum())
+        if not dHd > 0:
+            neg = True
+            hist.append({"k": k_, "dHd": dHd, "gp": float((g * p_).sum()), "res": (rr / g2) ** 0.5})
+            break
+        al = rr / dHd
+        p_ = p_ + al * d_
+        r_ = r_ - al * Hd
+        rr2 = float((r_ * r_).sum())
+        hist.append({"k": k_, "dHd": dHd, "gp": float((g * p_).sum()), "res": (rr2 / g2) ** 0.5})
+        if rr2 / g2 < 1e-8:
+            break
+        d_ = r_ + (rr2 / rr) * d_
+        rr = rr2
+    rec["newton"] = {"half_lam2": 0.5 * float((g * p_).sum()), "cg_iters": k_, "neg_curv": neg,
+                     "res_rel": hist[-1]["res"] if hist else float("nan"), "hist": hist,
+                     "step_norm": float(p_.norm())}
+    # 뉴턴 걸음을 실제로 밟으면 (2 차 모형이 아니라) E 가 얼마나 내려가는지 -- 걸음 1, ½, ¼
+    _act = {}
+    for _al in (1.0, 0.5, 0.25):
+        _, _En = _grad_at(-_al * p_)
+        _act[f"{_al:g}"] = rec["E"] - _En
+    rec["newton"]["actual_drop"] = _act
+    return rec
+
+
+def _vg_save(rec, t):
+    _sl = {k: v_ for k, v_ in rec.items() if not torch.is_tensor(v_)}
+    for k in ("start", "sol", "resolve"):
+        if isinstance(_sl.get(k), dict):
+            _sl[k] = {kk: vv for kk, vv in _sl[k].items() if not torch.is_tensor(vv) and kk != "hist"}
+            if "newton" in _sl[k]:
+                _sl[k]["newton"] = {kk: vv for kk, vv in _sl[k]["newton"].items() if kk != "hist"}
+    with open(os.path.join(_VARGRAD["out"], "vargrad.jsonl"), "a") as f_:
+        f_.write(json.dumps(_sl) + "\n")
+    _full = {}
+    for k, v_ in rec.items():
+        if isinstance(v_, dict):
+            _full[k] = {kk: vv for kk, vv in v_.items() if kk not in ("x2", "F_tr", "dpn")}
+        else:
+            _full[k] = v_
+    torch.save(_full, os.path.join(_VARGRAD["out"], f"vg_t{int(t):04d}.pt"))
+
+
 def _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, tag, rec):
     _vs = [q for q in st["ov"] if q is not None]
     with torch.enable_grad():
@@ -4553,7 +4688,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             if _GD_PROBE is not None and int(t) == _GD_PROBE["t"]:
                 _gd_run(st, _fwd, F, vol, cfg, x, int(t), nrm)
             _tw = time.time()
-            if not (_GRAD_PROBE is not None and _GRAD_PROBE.get("skip") and not _gpr):
+            _vgr = _VARGRAD is not None and (_VARGRAD["frames"] is None or int(t) in _VARGRAD["frames"])
+            _vgrec = None
+            if not (_GRAD_PROBE is not None and _GRAD_PROBE.get("skip") and not _gpr) and (_VARGRAD is None or _vgr):
                 _OV_CUR_OPT[0] = st["ov_opt"]
                 _p1 = 0
                 if a.c1_barrier > 0:
@@ -4579,7 +4716,70 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                 break
                         print(f"    [C1 실현 가능 시작점] t={t} 1 단계 {_p1} 회 -> 계수 최소 {float(DM.C1_LAST[0][0].min()):.3e}", flush=True)
                     _C1_P1[0] = _p1
-                st["ov_opt"].step(_closure)       # AF_GRAD_PROBE_SKIP: 상태를 덤프로 맞추는 탐침 실행에서 탐침 밖 프레임은 최적화 생략
+                if _vgr:
+                    # AF_VARGRAD: L-BFGS 시작점 (1 단계 뒤, step 직전) 의 g0
+                    _vgrec = {"t": int(t), "nrm": float(nrm), "h": float(_DT[0]), "phase1": int(_C1_P1[0]) if a.c1_barrier > 0 else 0}
+                    _vgrec["start"] = _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm)
+                if _VARGRAD is None or _VARGRAD["resolve"]:
+                    _vg_tw = time.time()
+                    st["ov_opt"].step(_closure)       # AF_GRAD_PROBE_SKIP: 상태를 덤프로 맞추는 탐침 실행에서 탐침 밖 프레임은 최적화 생략
+                    if _vgr:
+                        _o_ = st["ov_opt"]
+                        if getattr(_o_, "stats", None):
+                            _vgrec["opt"] = dict(_o_.stats, kind="feas_lbfgs", max_iter=_o_.max_iter, max_eval=_o_.max_eval)
+                        else:
+                            _sq = _o_.state[_o_._params[0]]
+                            _vgrec["opt"] = {"kind": "torch_lbfgs", "iters": int(_sq.get("n_iter", 0)), "evals": int(_sq.get("func_evals", 0)),
+                                             "max_iter": int(_o_.defaults["max_iter"]), "max_eval": int(_o_.defaults["max_eval"]),
+                                             "last_t": float(_sq.get("t", float("nan")))}
+                        _vgrec["opt"]["sec"] = time.time() - _vg_tw
+                        _vgrec["resolve"] = _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm,
+                                                        newton=_NODE_TGT is None, cg_max=_VARGRAD["cg"])
+                        _vgrec["resolve"]["theta"] = [q for q in st["ov"] if q is not None][0].detach().float().cpu()
+            if _vgrec is not None:
+                _u_ = [q for q in st["ov"] if q is not None][0]
+                if _NODE_TGT is not None:
+                    # θ* = 덤프 노드 출력의 역변환 (스텝 t 의 노드 = nodes[t - t0], 그 결과 = pred[t - t0] = 프레임 t+1)
+                    _i_ = int(t) - int(_NODE_TGT.get("t0", 0))
+                    _nd = _NODE_TGT["nodes"][_i_]
+                    _np_d, _dp_d = _nd[0].to(dev), _nd[1].to(dev).to(_u_.dtype)
+                    _np_live = _DPN_LIVE[0][0].detach()
+                    _vgrec["chk_grid"] = (float((_np_d.to(_np_live.dtype) - _np_live).abs().max())
+                                          if _np_d.shape == _np_live.shape else float("inf"))
+                    if _dp_d.shape[-1] == WF.C1_NOUT and str(a.c1_base) == "pl":
+                        _wft = DM.C1_LAST[0][3]
+                        _th = torch.cat([_dp_d[:, :3], _dp_d[:, 3:] - WF.pl_c1_dofs(_dp_d[:, :3], _wft, _dp_d.shape[0])], 1)
+                    else:
+                        _th = _dp_d[:, :_u_.shape[-1]]
+                    _idx_ = (st.get("ov_idx") or [None])[0]
+                    if _idx_ is not None:
+                        _th = _th[_idx_]
+                    if "resolve" in _vgrec:
+                        _vgrec["resolve_vs_dump"] = {"theta_rel": float((_vgrec["resolve"]["theta"].to(dev) - _th.float()).norm()
+                                                                        / _th.float().norm().clamp_min(1e-30))}
+                    with torch.no_grad():
+                        _u_.copy_(_th)
+                    _vgrec["sol"] = _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton=True, cg_max=_VARGRAD["cg"])
+                    _x1 = _NODE_TGT["pred"][_i_].to(dev, _vgrec["sol"]["x2"].dtype)
+                    _vgrec["chk"] = {"dpn_maxabs": float((_vgrec["sol"]["dpn"] - _dp_d.to(_vgrec["sol"]["dpn"].dtype)).abs().max()),
+                                     "dpn_scale": float(_dp_d.abs().max()),
+                                     "x_maxabs": float((_vgrec["sol"]["x2"] - _x1).abs().max()),
+                                     "x_disp_scale": float((_x1 - x).abs().max())}
+                    if _NODE_TGT.get("F") is not None:
+                        _F1 = _NODE_TGT["F"][_i_].to(dev).to(_vgrec["sol"]["F_tr"].dtype)
+                        _vgrec["chk"]["F_maxabs"] = float((_vgrec["sol"]["F_tr"] - _F1).abs().max())
+                    if "resolve" in _vgrec:
+                        _vgrec["resolve_vs_dump"]["x_maxabs"] = float((_vgrec["resolve"]["x2"] - _x1).abs().max())
+                else:
+                    _vgrec["sol"] = _vgrec.get("resolve")
+                _vgrec["sol"]["theta"] = _u_.detach().float().cpu()
+                _s0 = _vgrec["start"]["g"]["all"][0]
+                _vgrec["ratio"] = _vgrec["sol"]["g"]["all"][0] / max(_s0, 1e-30) if math.isfinite(_s0) else float("nan")
+                _vg_save(_vgrec, t)
+                _nw = _vgrec["sol"].get("newton", {})
+                print(f"    [변수 기울기] t={t} |g0| {_s0:.3e} |g| {_vgrec['sol']['g']['all'][0]:.3e} 비 {_vgrec['ratio']:.3e} "
+                      f"½λ² {_nw.get('half_lam2', float('nan')):.3e} J (CG {_nw.get('cg_iters')} 음곡률 {_nw.get('neg_curv')}) "
+                      f"E {_vgrec['sol']['E']:.4e} 탄성 {_vgrec['sol']['E_el']:.4e} 검산 {_vgrec.get('chk')}", flush=True)
             if _gpr:
                 _grad_probe(st, _fwd, F, m, vol, cfg, x, v, gv, "opt", _gp_rec)           # L-BFGS ov_roll 회 뒤 (실제로 쓴 해)
                 _ext = int(_GRAD_PROBE.get("extra", 0))
