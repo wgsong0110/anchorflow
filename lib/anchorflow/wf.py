@@ -39,6 +39,7 @@ def _trans_pairs():
 
 
 _TRANS = _trans_pairs()
+PL_DEDUP = [False]     # pl_c1_dofs 중복 쓰기 원천 하나만 (측정용, 기본 꺼짐 = 실행 그대로)
 
 
 def multi4(n):
@@ -456,5 +457,14 @@ def pl_c1_dofs(val, wt, M):
     dv = torch.einsum("tecd,tesd->tesc", Gm, TR[cls])                                      # [T,6,2,3c]
     ch = 9 + (cls.unsqueeze(-1) * 2 + torch.arange(2, device=val.device)).unsqueeze(-1) * 3 + torch.arange(3, device=val.device)
     idx_r = sN.unsqueeze(-1).unsqueeze(-1).expand_as(ch)
-    out = out.index_put((idx_r.reshape(-1), ch.reshape(-1)), dv.reshape(-1))              # 같은 변은 같은 값 (끝 노드로만 정해짐)
+    _ir, _ic, _dv = idx_r.reshape(-1), ch.reshape(-1), dv.reshape(-1)
+    if PL_DEDUP[0]:
+        # 측정용 (AF_VARGRAD): 같은 (노드, 채널) 자리에 여러 사면체가 같은 값을 쓴다. index_put(accumulate=False) 의 역전파는
+        # 중복된 모든 원천에 기울기를 다 주어 그 경로의 기울기를 중복 수만큼 부풀린다. 첫 원천 하나만 남겨 참 기울기를 만든다
+        _lin = _ir * out.shape[1] + _ic
+        _u, _inv = torch.unique(_lin, return_inverse=True)
+        _first = torch.full((_u.numel(),), _lin.numel(), device=_lin.device, dtype=torch.long).scatter_reduce(
+            0, _inv, torch.arange(_lin.numel(), device=_lin.device), reduce="amin")
+        _ir, _ic, _dv = _ir[_first], _ic[_first], _dv[_first]
+    out = out.index_put((_ir, _ic), _dv)              # 같은 변은 같은 값 (끝 노드로만 정해짐)
     return out

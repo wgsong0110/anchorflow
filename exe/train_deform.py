@@ -3915,7 +3915,23 @@ def _vg_groups(g):
     return out
 
 
-def _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton=False, cg_max=60):
+def _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton=False, cg_max=60, dedup=False):
+    """dedup: c1wf pl 의 pl_c1_dofs 중복 쓰기 역전파를 원천 하나로 (참 기울기·헤시안). 순전파 값은 같다."""
+    _keep = WF.PL_DEDUP[0]
+    WF.PL_DEDUP[0] = bool(dedup)
+    try:
+        r_ = _vg_measure0(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton, cg_max)
+    finally:
+        WF.PL_DEDUP[0] = _keep
+    r_["dedup"] = bool(dedup)
+    return r_
+
+
+def _vg_pl():
+    return a.interp == "c1wf" and str(a.c1_base) == "pl"
+
+
+def _vg_measure0(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton=False, cg_max=60):
     u = [q for q in st["ov"] if q is not None][0]
     with torch.enable_grad():
         x2, _, E, _, _, _pq, Jd = _fwd()
@@ -3935,16 +3951,6 @@ def _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton=False, cg_max=60
         rec["E_c1bar"] = float(WF.barrier_energy(DM.C1_LAST[0][0], DM.C1_LAST[0][1], a.c1_barrier * _mu1, a.c1_jhat))
         rec["c1_coef_min"] = float(DM.C1_LAST[0][0].min())
     rec["g_vec"] = g.float().cpu()
-    if not newton or not math.isfinite(rec["E"]):
-        return rec
-
-    def _hvp(vec):
-        with torch.enable_grad(), phys_resid.hess_mode():
-            _E = _fwd()[2] * nrm
-            _g = torch.autograd.grad(_E, u, create_graph=True)[0]
-            _Hv = torch.autograd.grad((_g * vec).sum(), u)[0]
-        return _Hv.detach()
-
     def _grad_at(du):
         with torch.no_grad():
             u.add_(du)
@@ -3955,6 +3961,30 @@ def _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton=False, cg_max=60
         finally:
             with torch.no_grad():
                 u.sub_(du)
+    if math.isfinite(rec["E"]):
+        # 기울기 자체 검산: 방향 미분 (E(θ+s d) - E(θ-s d)) / 2s  대  g·d  (d = 임의 방향, -g, 채널 묶음별 -g)
+        _gc = {}
+        _gen0 = torch.Generator(device=u.device).manual_seed(777)
+        _dirs = {"rand": torch.randn(u.shape, device=u.device, dtype=u.dtype, generator=_gen0), "neg_g": -g}
+        if g.shape[-1] == WF.C1_NOUT:
+            for k_, (s_, e_) in {"val": (0, 3), "grad": (3, 12), "edge": (12, 54)}.items():
+                _dk = torch.zeros_like(g); _dk[:, s_:e_] = -g[:, s_:e_]; _dirs["neg_g_" + k_] = _dk
+        for k_, d_ in _dirs.items():
+            _s = 1e-4 / float(d_.abs().max().clamp_min(1e-30))
+            _, _Ep = _grad_at(_s * d_)
+            _, _Em = _grad_at(-_s * d_)
+            _gc[k_] = {"fd": (_Ep - _Em) / (2 * _s), "ad": float((g * d_).sum())}
+        rec["grad_fd"] = _gc
+    if not newton or not math.isfinite(rec["E"]):
+        return rec
+
+    def _hvp(vec):
+        with torch.enable_grad(), phys_resid.hess_mode():
+            _E = _fwd()[2] * nrm
+            _g = torch.autograd.grad(_E, u, create_graph=True)[0]
+            _Hv = torch.autograd.grad((_g * vec).sum(), u)[0]
+        return _Hv.detach()
+
     # hess_mode 의 값·기울기가 실행 경로와 같은지, 헤시안-벡터 곱이 유한차분과 맞는지 (임의 방향 하나)
     with torch.enable_grad(), phys_resid.hess_mode():
         _Eh = _fwd()[2] * nrm
@@ -4005,7 +4035,7 @@ def _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton=False, cg_max=60
 
 def _vg_save(rec, t):
     _sl = {k: v_ for k, v_ in rec.items() if not torch.is_tensor(v_)}
-    for k in ("start", "sol", "resolve"):
+    for k in ("start", "sol", "resolve", "start_run", "sol_run"):
         if isinstance(_sl.get(k), dict):
             _sl[k] = {kk: vv for kk, vv in _sl[k].items() if not torch.is_tensor(vv) and kk != "hist"}
             if "newton" in _sl[k]:
@@ -4719,7 +4749,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 if _vgr:
                     # AF_VARGRAD: L-BFGS 시작점 (1 단계 뒤, step 직전) 의 g0
                     _vgrec = {"t": int(t), "nrm": float(nrm), "h": float(_DT[0]), "phase1": int(_C1_P1[0]) if a.c1_barrier > 0 else 0}
-                    _vgrec["start"] = _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm)
+                    _vgrec["start_run"] = _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm)       # L-BFGS 가 본 기울기 (실행 그대로)
+                    _vgrec["start"] = (_vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, dedup=True) if _vg_pl()
+                                       else _vgrec["start_run"])                                             # 참 기울기
                 if _VARGRAD is None or _VARGRAD["resolve"]:
                     _vg_tw = time.time()
                     st["ov_opt"].step(_closure)       # AF_GRAD_PROBE_SKIP: 상태를 덤프로 맞추는 탐침 실행에서 탐침 밖 프레임은 최적화 생략
@@ -4759,7 +4791,10 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                                                         / _th.float().norm().clamp_min(1e-30))}
                     with torch.no_grad():
                         _u_.copy_(_th)
-                    _vgrec["sol"] = _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton=True, cg_max=_VARGRAD["cg"])
+                    _vgrec["sol"] = _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm, newton=True, cg_max=_VARGRAD["cg"], dedup=_vg_pl())
+                    if _vg_pl():
+                        _vgrec["sol_run"] = _vg_measure(st, _fwd, F, m, vol, cfg, x, v, gv, nrm)
+                        _vgrec["sol_run"].pop("x2"); _vgrec["sol_run"].pop("F_tr"); _vgrec["sol_run"].pop("dpn")
                     _x1 = _NODE_TGT["pred"][_i_].to(dev, _vgrec["sol"]["x2"].dtype)
                     _vgrec["chk"] = {"dpn_maxabs": float((_vgrec["sol"]["dpn"] - _dp_d.to(_vgrec["sol"]["dpn"].dtype)).abs().max()),
                                      "dpn_scale": float(_dp_d.abs().max()),
@@ -4775,6 +4810,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _vgrec["sol"]["theta"] = _u_.detach().float().cpu()
                 _s0 = _vgrec["start"]["g"]["all"][0]
                 _vgrec["ratio"] = _vgrec["sol"]["g"]["all"][0] / max(_s0, 1e-30) if math.isfinite(_s0) else float("nan")
+                if "sol_run" in _vgrec:
+                    _vgrec["ratio_run"] = _vgrec["sol_run"]["g"]["all"][0] / max(_vgrec["start_run"]["g"]["all"][0], 1e-30)
+                    _vgrec["dedup_dE"] = _vgrec["sol"]["E"] - _vgrec["sol_run"]["E"]
                 _vg_save(_vgrec, t)
                 _nw = _vgrec["sol"].get("newton", {})
                 print(f"    [변수 기울기] t={t} |g0| {_s0:.3e} |g| {_vgrec['sol']['g']['all'][0]:.3e} 비 {_vgrec['ratio']:.3e} "
