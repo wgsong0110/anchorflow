@@ -17,6 +17,8 @@
 마지막 줄 MIDPOINT_TEST PASS / FAIL.
 """
 import os, sys, math
+# CPU float64 에서 torch.compile(inductor) 된 FCR 기울기 커널이 힙을 깨뜨린다 (실측 abort) -- 같은 식을 컴파일 없이
+os.environ.setdefault("AF_NO_COMPILE_FCR", "1")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 import torch
 from anchorflow import simplex as SX
