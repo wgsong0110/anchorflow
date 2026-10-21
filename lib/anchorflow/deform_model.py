@@ -7,6 +7,7 @@ args 를 담은 네임스페이스) 이고, 여기서는 읽기만 한다.
 
   node_feats      입자 -> 사면체 노드 특징·간선 (P2G 구조)
   node_inertial   노드별 관성 예측자 h·v_n + h²g (--net_inertial 의 기반)
+  ip_node_feats   --ip_feat: 관성 예측점에서 증분 포텐셜의 노드별 기울기·블록 대각 헤시안·뉴턴 걸음 (입력 특징)
   advance         망 한 번 통과 -> 다음 위치·속도(--v_from_dt 면 jvp)·야코비안
   init_state      평가 롤아웃의 초기 (x, v)
   rollout_eval    프레임별 평균 위치 오차 / 정지 기준 (평가 지표 정의)
@@ -173,13 +174,15 @@ def node_grid(a, x, off=None):
 
 
 def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
-               pt_parts=None, mat_vec=None):
+               pt_parts=None, mat_vec=None, ip_state=None):
     """사면체 복합체의 **노드** 특징. 입자 물리량을 자기 사면체의 barycentric
     가중으로 4 꼭짓점에 뿌려 모은다 (P2G 와 같은 구조, 전달 가중치 재사용).
 
     X: 정지(0 프레임) 위치 [N,3], mass: 입자 질량 [N], vel_scale: 속도 단위.
     pt_parts(hn) -> 입자별 추가 특징 목록 (fe 불변량, 손잡이 특징 등).
     mat_vec: 물성 특징 [N_MAT] (특징에 붙일 때만).
+    ip_state: --ip_feat 일 때 dict(F=[N,3,3] 이 상태의 F, vol=[N], h=스텝 dt, free=[N] 또는 None) -- 특징 끝에
+              IP_FEAT_N 채널을 덧붙인다 (ip_node_feats).
 
     -> (_in [M,F], npos [M,3], (lo,lat,nn), rows [N,4], lam [N,4], uniq [M],
         간선 (src,dst,cls), aux)
@@ -291,6 +294,12 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
     if mat_vec is not None:
         extra.insert(0, mat_vec.reshape(1, -1).expand(Mn, mat_vec.numel()))
     _in = torch.cat([san(feat), san(torch.cat(extra, -1))], -1)
+    if getattr(a, "ip_feat", False):
+        if ip_state is None:
+            raise RuntimeError("--ip_feat: node_feats 에 이 상태의 F (ip_state) 가 필요하다")
+        _ipf = ip_node_feats(a, cfg, x, v, ip_state["F"], mass, ip_state["vol"], ip_state["h"],
+                             rows, lam, _aux, lat, Mn, free=ip_state.get("free"))
+        _in = torch.cat([_in, _ipf.to(_in.dtype)], -1)
     _in = torch.nan_to_num(_in, nan=0.0, posinf=0.0,
                            neginf=0.0).clamp(-FCAP, FCAP)
     src, dst, cls = SX.edges_of(rows_tet, uniq, nn)
@@ -314,6 +323,89 @@ def node_inertial(x, v, mass, rows, lam, n_node, g, h):
     _gq = _const_vec(g, x)
     _hq = float(h)
     return _hq * _vn + (_hq ** 2) * _gq, (_vn, _gq)
+
+
+IP_FEAT_N = 18           # --ip_feat 채널: 기울기 총합 3, 탄성 3, 관성+중력 3, 블록 헤시안 대칭 6, 뉴턴 걸음 3
+IPF_LAST = [None]        # 진단·단위 시험: 마지막 ip_node_feats 의 원시 값 (정규화 전)
+
+
+def ip_node_feats(a, cfg, x, v, F, mass, vol, h, rows, lam, aux, lat, Mn, free=None):
+    """**--ip_feat**: 노드 i 가 움직이면 증분 포텐셜이 어떻게 바뀌는지를 망 입력으로 (기울기 차단, 스텝마다 한 번).
+
+    기준점 u₀ = 노드 관성 예측 h·v_n + h²g (node_inertial; --net_inertial 에서 망 출력 0 일 때의 노드 변위).
+    IP(u) = 학습과 같은 식: g2p(barycentric) -> bc_maps(--bc_stick·--bc_stick_xn·--bc_softplus) 를 거친 입자 위치·F 로
+    phys_resid.pts_ip_energy (관성·중력 + 탄성 (+ 켜진 장벽·접촉항)), 정규화 없음.
+
+    블록 대각 헤시안 H_ii: IP 는 입자별 항의 합이고 입자 p 는 자기 사면체 꼭짓점 4 개에만 의존한다. 그래서 입자마다
+    꼭짓점 변위의 **사본** U[p,j] (= u₀[rows[p,j]]) 를 변수로 두면 IP 의 헤시안이 입자별 12×12 블록 대각이 되고,
+    헤시안-벡터 곱 12 회 (꼭짓점 칸 j 4 × 성분 c 3, 모든 입자 동시) 로 각 입자의 꼭짓점 대각 3×3 블록이 정확히 나온다.
+    H_ii = Σ_{(p,j): rows[p,j]=i} ∂²IP_p/∂U_pj², g_i = Σ ∂IP_p/∂U_pj (노드 변수로 미분한 것과 같다 -- 단위 시험).
+    jelly 탄성은 hess_mode 의 미분 가능한 닫힌 식 기울기(_FcrPsiH)로 2 차 미분한다.
+
+    정규화: s_i = M_i/h² (M_i = Σ_p λ_pi m_p). g̃ = g/s_i/h_node (길이 -> 노드 간격 단위), H̃ = H/s_i (무차원).
+    뉴턴 걸음: H̃ 대칭화 -> 고윳값 분해, λ' = max(λ, 0) + ε (ε = --ip_feat_eps; 양정부호면 (H̃+εI)⁻¹ 그대로,
+    음의 고윳값은 0 으로 자른 뒤 ε) -> d = −Q diag(1/λ') Qᵀ (g/s_i) / h_node.
+    -> [M, IP_FEAT_N]: g̃ 총합 3 | g̃ 탄성 3 | g̃ 관성+중력 3 | H̃ (xx,yy,zz,xy,yz,xz) 6 | d 3  (detach)
+    """
+    if rows.shape[1] != 4 or getattr(a, "hex_jac", False) or getattr(a, "gregory", False) \
+            or str(getattr(a, "interp", "bary") or "bary") != "bary" or str(getattr(a, "agg", "bary") or "bary") != "bary":
+        raise SystemExit("--ip_feat 는 사면체 barycentric (--interp bary, --agg bary, hex_jac·gregory 없음) 만 지원한다")
+    dev, dt = x.device, x.dtype
+    hn = float(lat.s)
+    hq = float(h)
+    eps = float(getattr(a, "ip_feat_eps", 1e-3) or 1e-3)
+    with torch.enable_grad():
+        x = x.detach()
+        v = v.detach()
+        F = F.detach().to(dt)
+        mass = mass.detach().to(dt)
+        vol = vol.detach().to(dt)
+        u0, _ = node_inertial(x, v, mass, rows, lam, Mn, cfg["g"], hq)
+        N = rows.shape[0]
+        U = u0.detach()[rows].clone().requires_grad_(True)                      # [N,4,3] 꼭짓점 사본
+        vr = torch.arange(4 * N, device=dev).view(N, 4)
+        dv = U.reshape(-1, 3)
+        du = SX.g2p_pre(vr, lam, dv)
+        _u1, Jm = SX.g2p_jac_pre(vr, lam, aux, lat, dv)
+        q, Jm = bc_maps(a, cfg, x, x + du, Jm)
+        I3 = torch.eye(3, device=dev, dtype=dt)
+        with phys_resid.hess_mode():
+            E, _dl, _Ft, parts = phys_resid.pts_ip_energy(
+                x, q - x, v, F, I3 + Jm, mass, vol, cfg, hq, int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0)),
+                g=_const_vec(cfg["g"], x), norm=None, free=free, parts_grad=True)
+        e_in, e_el = parts[0], parts[1]
+        G, = torch.autograd.grad(E, U, create_graph=True)
+        Gel = torch.autograd.grad(e_el, U, retain_graph=True, allow_unused=True)[0]
+        Gin = torch.autograd.grad(e_in, U, retain_graph=True, allow_unused=True)[0]
+        Gel = torch.zeros_like(U) if Gel is None else Gel
+        Gin = torch.zeros_like(U) if Gin is None else Gin
+        Hb = torch.zeros(N, 4, 3, 3, device=dev, dtype=dt)
+        for j in range(4):
+            for c in range(3):
+                T = torch.zeros_like(U)
+                T[:, j, c] = 1.0
+                Hv = torch.autograd.grad(G, U, T, retain_graph=not (j == 3 and c == 2), allow_unused=True)[0]
+                if Hv is not None:
+                    Hb[:, j, :, c] = Hv[:, j, :].detach()
+    G, Gel, Gin = G.detach(), Gel.detach(), Gin.detach()
+    r = rows.reshape(-1)
+    gn = torch.zeros(Mn, 3, device=dev, dtype=dt).index_add_(0, r, G.reshape(-1, 3))
+    gel = torch.zeros(Mn, 3, device=dev, dtype=dt).index_add_(0, r, Gel.reshape(-1, 3))
+    gin = torch.zeros(Mn, 3, device=dev, dtype=dt).index_add_(0, r, Gin.reshape(-1, 3))
+    Hn = torch.zeros(Mn, 3, 3, device=dev, dtype=dt).index_add_(0, r, Hb.reshape(-1, 3, 3))
+    Mi = torch.zeros(Mn, device=dev, dtype=dt).index_add_(0, r, (lam * mass.unsqueeze(-1)).reshape(-1))
+    s = (Mi / (hq * hq)).clamp_min(1e-30)
+    Ht = Hn / s[:, None, None]
+    Ht = 0.5 * (Ht + Ht.transpose(-1, -2))
+    gt = gn / s[:, None]                                                         # 길이
+    ev, Q = torch.linalg.eigh(Ht.double())
+    ev = ev.clamp_min(0.0) + eps
+    step = -(Q @ ((Q.transpose(-1, -2) @ gt.double().unsqueeze(-1)) / ev.unsqueeze(-1))).squeeze(-1)
+    IPF_LAST[0] = dict(u0=u0.detach(), g=gn, g_el=gel, g_in=gin, H=Hn, M=Mi, s=s, Ht=Ht, gt=gt,
+                       step=step.to(dt), E=E.detach(), hn=hn, eps=eps)
+    H6 = torch.stack([Ht[:, 0, 0], Ht[:, 1, 1], Ht[:, 2, 2], Ht[:, 0, 1], Ht[:, 1, 2], Ht[:, 0, 2]], -1)
+    out = torch.cat([gt / hn, gel / s[:, None] / hn, gin / s[:, None] / hn, H6, step.to(dt) / hn], -1)
+    return torch.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).clamp(-FCAP, FCAP).detach()
 
 
 _CONST = {}
@@ -426,6 +518,20 @@ def bc_stick_map(x0, q, Jm, cfg, eps, xn_term=False):
     return q, Jf - I3
 
 
+def bc_maps(a, cfg, x0, q, Jm):
+    """g2p 직후 입자 위치 q·grad u (Jm) 에 바닥 매핑을 advance 순서대로: --bc_stick (x0 = 스텝 시작 위치) -> --bc_softplus.
+    advance 와 ip_node_feats 가 같이 쓴다."""
+    if float(getattr(a, "bc_stick", 0.0) or 0.0) > 0.0:
+        # **미끄러짐 방지 매핑** (--bc_stick): x 는 이 스텝 시작 입자 위치. softplus 앞에 -- 접선 성분만 줄이고
+        # 법선 좌표는 그대로라 softplus 의 s 가 스텝 끝(q) 의 법선 거리 그대로다
+        q, Jm = bc_stick_map(x0, q, Jm, cfg, float(a.bc_stick), bool(getattr(a, "bc_stick_xn", False)))
+    if float(getattr(a, "bc_softplus", 0.0) or 0.0) > 0.0:
+        # **softplus 바닥 매핑** (--bc_softplus): g2p 직후 입자 위치와 야코비안에 함께 -- 위치(x2)·속도(jvp)·
+        # 관성·탄성(Jf) 이 모두 매핑된 위치 기준이 된다. 노드는 사영하지 않는다
+        q, Jm = bc_softplus_map(q, Jm, cfg, float(a.bc_softplus))
+    return q, Jm
+
+
 def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
             node_vel=None, ctrl_scale=1.0, mat=None, sec=None,
             dp_fast=None, dp_hook=None, pre_k=None, on_pin=None,
@@ -534,14 +640,7 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
         _du = _dus[0]
         _Jm = _Jsum / float(K)
         q = x + _du
-        if float(getattr(a, "bc_stick", 0.0) or 0.0) > 0.0:
-            # **미끄러짐 방지 매핑** (--bc_stick): x 는 이 스텝 시작 입자 위치. softplus 앞에 -- 접선 성분만 줄이고
-            # 법선 좌표는 그대로라 softplus 의 s 가 스텝 끝(q) 의 법선 거리 그대로다
-            q, _Jm = bc_stick_map(x, q, _Jm, cfg, float(a.bc_stick), bool(getattr(a, "bc_stick_xn", False)))
-        if float(getattr(a, "bc_softplus", 0.0) or 0.0) > 0.0:
-            # **softplus 바닥 매핑** (--bc_softplus): g2p 직후 입자 위치와 야코비안에 함께 -- 위치(x2)·속도(jvp)·
-            # 관성·탄성(Jf) 이 모두 매핑된 위치 기준이 된다. 노드는 사영하지 않는다
-            q, _Jm = bc_softplus_map(q, _Jm, cfg, float(a.bc_softplus))
+        q, _Jm = bc_maps(a, cfg, x, q, _Jm)          # --bc_stick -> --bc_softplus (ip_node_feats 와 같은 함수)
         _qraw = q
         _act = torch.zeros_like(q[:, :1])
         if node_mask is not None and node_mask[0] is not None:
@@ -722,6 +821,8 @@ class EvalModel:
                 raise NotImplementedError(f"EvalModel: --{k} 체크포인트는 지원하지 않는다")
         if int(a.smooth_nb) or int(a.ov_roll):
             raise NotImplementedError("EvalModel: --smooth_nb / --ov_roll 미지원")
+        if getattr(a, "ip_feat", False):
+            raise NotImplementedError("EvalModel: --ip_feat (상태 F 가 필요) 미지원 -- train_deform --infer 로 굴릴 것")
         self.a, self.dev, self.step_ck = a, dev, int(ck.get("step", 0))
         if ck.get("net_ext0") is not None:
             self.ext0, self.frame_dt = float(ck["net_ext0"]), float(ck["frame_dt"])

@@ -16,6 +16,7 @@ E 를 낮추는 것과 잔차를 0 으로 보내는 것이 같다. 손실로는 
 eigvalsh 의 역전파는 고유벡터 차이(1/(li-lj))를 타지 않아 겹친 특이값에서도
 안전하다 -- 회전 대칭인 배치에서 SVD 역전파가 터지는 것을 피하는 길이다.
 """
+import contextlib
 import math
 import os
 
@@ -391,6 +392,45 @@ class _FcrPsiFast(torch.autograd.Function):
         return go.reshape(*go.shape, 1, 1) * G, None, None, None
 
 
+_HESS = [False]
+
+
+@contextlib.contextmanager
+def hess_mode():
+    """2 차 미분이 필요한 계산(--ip_feat 의 노드 블록 헤시안)용: jelly 탄성의 기울기를 **미분 가능한 닫힌 식**으로 돌려주는
+    _FcrPsiH 를 쓴다 (값·기울기는 _FcrPsiFast 와 같다 -- 하한 σ ≤ 0.01 입자만 다르다). 다른 계산에는 영향 없음."""
+    _o = _HESS[0]
+    _HESS[0] = True
+    try:
+        yield
+    finally:
+        _HESS[0] = _o
+
+
+def _fcr_grad_h(F, mu: float, lam: float):
+    """dψ/dF = 2μ(F − Q) + λ(det F − sign det F) cof F  (_fcr_grad_core 와 같은 식, J = |det F|) -- 컴파일·고유분해 없이
+    원소별 연산만이라 create_graph 역전파로 한 번 더 미분된다 (극분해 Q 는 Newton 반복을 그대로 미분)."""
+    cof = _cof3(F)
+    dt = (F[..., 0, :] * cof[..., 0, :]).sum(-1)
+    return 2.0 * mu * (F - _polar_q(F)) + (lam * (dt - torch.sign(dt)))[..., None, None] * cof
+
+
+class _FcrPsiH(torch.autograd.Function):
+    """hess_mode 의 jelly ψ: 순전파 = _fcr_fwd_core 그대로, 역전파 = _fcr_grad_h (2 차 미분 가능)."""
+
+    @staticmethod
+    def forward(ctx, F, mu, lam, clamp):
+        psi, _S = _fcr_fwd_core(F, float(mu), float(lam), float(clamp))
+        ctx.save_for_backward(F)
+        ctx.mu, ctx.lam = float(mu), float(lam)
+        return psi
+
+    @staticmethod
+    def backward(ctx, go):
+        F, = ctx.saved_tensors
+        return go.reshape(*go.shape, 1, 1) * _fcr_grad_h(F, ctx.mu, ctx.lam), None, None, None
+
+
 def _psi_fcr(sig, mu, lam):
     J = sig.prod(-1)
     return mu * ((sig - 1.0) ** 2).sum(-1) + 0.5 * lam * (J - 1.0) ** 2
@@ -490,6 +530,8 @@ def psi_of(F_trial, cfg, dt):
             return _psi_fcr(sig, mu * h, lam * h), None
         return _psi_fcr(sig, mu, lam), None
     if m in ("jelly", "elastic_damage"):
+        if _HESS[0]:
+            return _FcrPsiH.apply(F_trial, mu, lam, 0.01), None
         if not os.environ.get("AF_NO_FAST_FCR"):
             # 해석 기울기 경로 (SVD 한 번, 고유분해 역전파 없음)
             if os.environ.get("AF_OLD_FCR"):
@@ -577,7 +619,7 @@ def ip_energy(x2, xtil, F_trial, mass, vol, cfg, h, free=None, g=None,
 
 
 def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
-                  g=None, norm=None, free=None, elastic_mask=None):
+                  g=None, norm=None, free=None, elastic_mask=None, parts_grad=False):
     """증분 포텐셜을 **입자에서 바로** 잰다 -- MPM 격자를 전혀 거치지 않는다.
 
         E = Σ_p m_p/(2h²)‖Δu_p − h v_p − h² g‖² + Σ_p V_p Ψ(F_p) + E_c
@@ -590,6 +632,7 @@ def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
 
     n_grid, grid_lim 은 접촉항의 길이 단위(dx)에만 쓰인다 -- 전달이 아니다.
     """
+    # parts_grad=True 면 보고용 항 (e_in, e_el, e_g, e_bc) 을 떼지 않고 돌려준다 (--ip_feat 의 항별 기울기)
     F_tr = (jac.to(F.dtype) @ F) if jac is not None else F
     psi, dlog = psi_of(F_tr, cfg, h)
     _ip = _inv_pen(F_tr, cfg)
@@ -627,6 +670,8 @@ def pts_ip_energy(x, du, vel, F, jac, mass, vol, cfg, h, n_grid, grid_lim,
         tot = tot / norm
     # 보고용 항은 **텐서로** 돌려준다. float() 는 GPU 동기화라 스텝마다
     # 배치x4 회 파이프라인을 세운다 -- 출력하는 자리에서만 변환한다.
+    if parts_grad:
+        return tot, dlog, F_tr, (e_in, e_el, e_g, e_bc)
     return tot, dlog, F_tr, (e_in.detach(), e_el.detach(),
                              e_g.detach(), e_bc.detach())
 

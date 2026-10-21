@@ -148,6 +148,12 @@ ap.add_argument("--bc_stick", type=float, default=0.0,
                      "F 에 접선 축소의 ∂x/∂x̃ (w 의 s̃ 의존 항 포함) 를 곱한다. 값이 ε. 증분 포텐셜은 그대로")
 ap.add_argument("--bc_stick_xn", action="store_true",
                 help="--bc_stick 의 F 에 x_n 명시적 의존 항 (1-w)(I-nnᵀ) 를 더한다 (스텝 사상의 x_n 전미분). 기본 끔")
+ap.add_argument("--ip_feat", action="store_true",
+                help="**증분 포텐셜 노드 특징** (사용자 10-21): 노드 관성 예측점 u₀ 에서 이 실행의 증분 포텐셜(바닥 매핑 포함)의 "
+                     "노드별 기울기(총합·탄성·관성+중력), 블록 대각 헤시안 6, 뉴턴 걸음 3 = 18 채널을 망 입력에 덧붙인다 "
+                     "(deform_model.ip_node_feats, 기울기 차단, 스텝마다 한 번). 사면체 barycentric 만")
+ap.add_argument("--ip_feat_eps", type=float, default=1e-3,
+                help="--ip_feat 뉴턴 걸음의 정칙화 ε (관성 척도 M_i/h² 로 나눈 무차원 헤시안의 고윳값을 max(λ,0)+ε 로)")
 ap.add_argument("--bc_slip", action="store_true",
                 help="바닥의 **접선 고정(no-slip) 항을 끈다**. 비관통만 남고 "
                      "닿은 입자가 면을 따라 미끄러진다")
@@ -1570,10 +1576,18 @@ def node_feats(d, t, gsel, x, v, fe=None):
         if a.control:
             parts.append(ctrl_feat_pts(d, t, x, hn))
         return parts
+    _ips = None
+    if a.ip_feat:
+        _r = _IPF_F[0]
+        if _r is None or _r[0] is not x:
+            raise RuntimeError("--ip_feat: 이 상태의 F 가 걸려 있지 않다 (이 호출 지점에서 step_once/node_feats 앞에 ipf_set(x, F) 할 것)")
+        _mq = MASS[gsel]
+        _ips = dict(F=_r[1], vol=_pvol(_mq, cfg), h=float(_DT[0]),
+                    free=(free_mask(d, x.shape[0], dev, gsel, x, t) if a.control else None))
     _o = DM.node_feats(
         a, cfg, take(d["x"][0], gsel), MASS[gsel], x, v, VEL_SCALE,
         grid=_GRID[0], off=_GRID_OFF[0], pt_parts=_parts,
-        mat_vec=(mat_feat(cfg) if (N_MAT and not N_FILM) else None))
+        mat_vec=(mat_feat(cfg) if (N_MAT and not N_FILM) else None), ip_state=_ips)
     if a.pe_only > 0:
         # **대조군**: 물리 특징을 다 버리고 노드 세계 위치와 프레임 번호의 다주파수 인코딩만 입력으로 (한 궤적이면
         # (위치, 시각) 이 목표를 유일하게 가리킨다 -- 순수 암기 능력의 기준)
@@ -1587,6 +1601,22 @@ def node_feats(d, t, gsel, x, v, fe=None):
 
 
 _ens_offsets = DM.ens_offsets
+_IPF_F = [None]          # --ip_feat: (x 텐서, F) -- step_once/node_feats 를 부르는 쪽이 그 상태의 F 를 건다
+
+
+def ipf_set(x, F):
+    """--ip_feat: 다음 node_feats(.., x, ..) 호출이 쓸 상태 F 를 건다 (x 는 **같은 텐서 객체**여야 한다 -- 다른 상태의 F 를
+    잘못 쓰는 일을 막는다). 꺼져 있으면 아무 일도 안 한다."""
+    if a.ip_feat:
+        _IPF_F[0] = (x, F)
+
+
+def _ipf_advance_F(F, jd, cfg, h):
+    """--ip_feat 롤아웃: 이 스텝의 실제 야코비안으로 F 를 전진 (F_tr = J F, 소성 사영) -- _eval_roll 의 ip_of+plastic_step 과 같은 식."""
+    with torch.no_grad():
+        _Ftr = jd.detach().to(F.dtype) @ F
+        _, _dl = phys_resid.psi_of(_Ftr, cfg, h)
+        return phys_resid.plastic_step(_Ftr, _dl).detach()
 
 
 def step_once(d, t, gsel, p, x, v, need_J=True, dmg=None, idx_prev=None,
@@ -2038,7 +2068,10 @@ with torch.no_grad():
                   + (7 * a.n_ctrl if a.control else 0))
     else:
         _fe0 = (take(traj_F(_d)[1], _g).float() if a.fe_state else None)
+        ipf_set(_x, take(traj_F(_d)[1], _g).float() if a.ip_feat else None)
         n_feat = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1]
+        if a.ip_feat:
+            print(f"[--ip_feat] 증분 포텐셜 노드 특징 {DM.IP_FEAT_N} 채널 덧붙임 -> 입력 {n_feat} (ε {a.ip_feat_eps:g})", flush=True)
 if a.voxel:
     VOX_CELL = H
     # 격자는 모든 궤적을 덮도록 공간에 고정한다 (프레임마다 새로 잡으면 물체가
@@ -2096,6 +2129,7 @@ with torch.no_grad() if not a.infer else contextlib.nullcontext():
             _cr = None
         else:
             _fes = (take(traj_F(_dd)[_t], _gs).float() if a.fe_state else None)
+            ipf_set(_x, take(traj_F(_dd)[_t], _gs).float() if a.ip_feat else None)
             _s, _cr = node_feats(_dd, _t, _gs, _x, _v, fe=_fes)[0], None
         if a.stat_occ and _cr is not None:  # 빈 칸이 96% 라 통계를 장악한다
             _m = torch.zeros(_s.shape[0], dtype=torch.bool, device=_s.device)
@@ -5368,8 +5402,9 @@ def _rollout(d, t0, L, gsel=None):
             with torch.no_grad():
                 _sf = []
                 for (j, i) in _pairs:
-                    with traj_scope(_TJ[j]["d"]):
-                        xs, vs, _ = _st(j, i)
+                    with traj_scope(_TJ[j]["d"]), dt_scope(FRAME_DT):
+                        xs, vs, _Fq = _st(j, i)
+                        ipf_set(xs, _Fq)
                         _sf.append(node_feats(_TJ[j]["d"], t0 + i, _TJ[j]["gsel"], xs, vs)[0])
                 net.set_input_stats(torch.cat(_sf, 0)); del _sf
             print(f"    [다궤적 적합] 새 망, 입력 표준화 = {len(_TJ)} 궤적 {len(_pairs)} 상태", flush=True)
@@ -5402,6 +5437,7 @@ def _rollout(d, t0, L, gsel=None):
             with traj_scope(T_["d"]):
                 for i in range(min(L, T_["d"]["x"].shape[0] - t0 - 1)):
                     with torch.enable_grad(), dt_scope(_hs):
+                        ipf_set(xc, Fc)
                         x2, p2, v2, _, _, _, _, _, _, _jf = step_once(T_["d"], t0 + i, T_["gsel"], pc, xc, vc, need_J=False)
                         _E, _dl, _Ftr, _ = ip_of(xc, x2 - xc, vc, Fc, m_, vol_, cfg_, _hs, ng_, gl_, g=gv_, norm=nrm_, jac=_jf)
                     _DET_LAST[0] = None
@@ -5435,6 +5471,7 @@ def _rollout(d, t0, L, gsel=None):
                     xs, vs, Fs = _st(j, i)
                     with torch.enable_grad(), dt_scope(_hs):
                         DM.PROBE[0] = "want" if _b == 0 else None
+                        ipf_set(xs, Fs)
                         x2, _, _, _, _, _, _, _, _, _jf = step_once(T_["d"], t0 + i, T_["gsel"], _anch(T_, xs), xs, vs, need_J=False)
                         DM.PROBE[0] = None
                         _em, _dpen = det_take()
@@ -6349,6 +6386,7 @@ def _rollout(d, t0, L, gsel=None):
             for _sb in range(EVAL_SUB):
                 with torch.enable_grad(), dt_scope(_hs):
                     DM.PROBE[0] = "want"
+                    ipf_set(x, _S["F_ip"])
                     x2, p2, v2, _, _, _, dmg_e, idx_e, fe_r, _jf = step_once(
                         d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                         idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
@@ -6381,13 +6419,19 @@ def _rollout(d, t0, L, gsel=None):
             dmg_e, idx_e, fe_r = _S["dmg"], _S["idx"], _S["fe"]
             with torch.enable_grad(), dt_scope(FRAME_DT / EVAL_SUB):
                 for _sb in range(EVAL_SUB - 1):
-                    x, p, v, _, _, _, dmg_e, idx_e, fe_r, _ = step_once(
+                    ipf_set(x, _S["F_ip"])
+                    x, p, v, _, _, _, dmg_e, idx_e, fe_r, _jsb = step_once(
                         d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                         idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
+                    if a.ip_feat:          # --ip_feat: 특징에 쓰는 F 를 망의 실제 야코비안으로 전진 (_eval_roll 과 같은 식)
+                        _S["F_ip"] = _ipf_advance_F(_S["F_ip"], _jsb, d["cfg"], FRAME_DT / EVAL_SUB)
                     x, p, v = x.detach(), p.detach(), _pg_vdamp(v.detach(), d, FRAME_DT / EVAL_SUB)
+                ipf_set(x, _S["F_ip"])
                 x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _jf = step_once(
                     d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                     idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
+                if a.ip_feat:
+                    _S["F_ip"] = _ipf_advance_F(_S["F_ip"], _jf, d["cfg"], FRAME_DT / EVAL_SUB)
             x2 = x2.detach(); p = p.detach(); v = _pg_vdamp(v.detach(), d, FRAME_DT / EVAL_SUB)
             _S.update(p=p, dmg=dmg_e, idx=idx_e, fe=fe_r)
             if _ROLLDUMP is not None and _FCUM[0] is not None and _jf is not None:
