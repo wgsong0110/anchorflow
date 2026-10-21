@@ -316,6 +316,11 @@ ap.add_argument("--agg", choices=["bary", "bspline"], default="bary",
                 help="노드 특징 집계 가중치: bary=자기 사면체 4 꼭짓점 barycentric (기본), bspline=격자 좌표 2 차 B-스플라인 27 노드 (MPM P2G 식)")
 ap.add_argument("--rel_pe", type=int, default=0,
                 help="노드 특징에 입자-노드 상대 위치 (x_p-x_j)/h 의 다주파수 인코딩 sin/cos(2^k π ·), k<K 를 집계 가중으로 더한다")
+ap.add_argument("--pfreq", type=int, default=0,
+                help="**입자 물리량 주파수 인코딩 노드 입력** (사용자 10-21, 0 이면 끔): 입자 모멘트 29 채널을 빼고, 입자 p 가 자기 사면체 "
+                     "꼭짓점 j 에 갖는 15 스칼라 [(x_p-x_j)/h_node 3, v_p/vel_scale 3, F_p-I 9] 각각을 [s, sin(2^k π s), cos(2^k π s)] "
+                     "(k<K) 로 인코딩해 λ_pj·m_p 가중 평균 -> 15(1+2K) 채널 (simplex_gnn.particle_freq_feats). 바닥 채널은 그대로. "
+                     "F 는 --ip_feat 와 같은 경로(ipf_set)로 학습 상태·롤아웃 전진 F 를 쓴다. 사면체 barycentric 만")
 ap.add_argument("--bary_pe", type=int, default=0,
                 help="노드 특징에 셀 안 barycentric 좌표의 다주파수 위치 인코딩 sin/cos(2^k π λ), k<K 를 질량 가중으로 더한다 (0 이면 끔)")
 ap.add_argument("--gregory", action="store_true",
@@ -1608,6 +1613,12 @@ def node_feats(d, t, gsel, x, v, fe=None):
             parts.append(ctrl_feat_pts(d, t, x, hn))
         return parts
     _ips = None
+    _pF = None
+    if a.pfreq > 0:
+        _r = _IPF_F[0]
+        if _r is None or _r[0] is not x or _r[1] is None:
+            raise RuntimeError("--pfreq: 이 상태의 F 가 걸려 있지 않다 (이 호출 지점에서 step_once/node_feats 앞에 ipf_set(x, F) 할 것)")
+        _pF = _r[1]
     if a.ip_feat:
         _r = _IPF_F[0]
         if _r is None or _r[0] is not x:
@@ -1620,7 +1631,7 @@ def node_feats(d, t, gsel, x, v, fe=None):
     _o = DM.node_feats(
         a, cfg, take(d["x"][0], gsel), MASS[gsel], x, v, VEL_SCALE,
         grid=_GRID[0], off=_GRID_OFF[0], pt_parts=_parts,
-        mat_vec=(mat_feat(cfg) if (N_MAT and not N_FILM) else None), ip_state=_ips, h=float(_DT[0]))
+        mat_vec=(mat_feat(cfg) if (N_MAT and not N_FILM) else None), ip_state=_ips, h=float(_DT[0]), pF=_pF)
     if _ips is not None and _ck is not None and _ck not in _IPF_CACHE:
         _IPF_CACHE[_ck] = _o[0][:, -DM.IP_FEAT_N:].detach().to("cpu", copy=True)
     if a.pe_only > 0:
@@ -1643,7 +1654,7 @@ _IPF_CACHE = {}          # --ip_feat: 고정 상태(다궤적 적합의 (궤적,
 def ipf_set(x, F, key=None):
     """--ip_feat: 다음 node_feats(.., x, ..) 호출이 쓸 상태 F 를 건다 (x 는 **같은 텐서 객체**여야 한다 -- 다른 상태의 F 를
     잘못 쓰는 일을 막는다). key 를 주면 (상태가 고정인 학습 표본) 특징을 CPU 에 캐시해 다시 쓴다. 꺼져 있으면 아무 일도 안 한다."""
-    if a.ip_feat:
+    if a.ip_feat or a.pfreq > 0:
         _IPF_F[0] = (x, F, key)
 
 
@@ -2127,8 +2138,11 @@ with torch.no_grad():
                   + (7 * a.n_ctrl if a.control else 0))
     else:
         _fe0 = (take(traj_F(_d)[1], _g).float() if a.fe_state else None)
-        ipf_set(_x, take(traj_F(_d)[1], _g).float() if a.ip_feat else None)
+        ipf_set(_x, take(traj_F(_d)[1], _g).float() if (a.ip_feat or a.pfreq > 0) else None)
         n_feat = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1]
+        if a.pfreq > 0:
+            print(f"[--pfreq {a.pfreq}] 노드 입력 = 입자 주파수 인코딩 {DM._SGM.pfreq_channels(a.pfreq)} 채널 "
+                  f"(15 스칼라 x (1+2·{a.pfreq}), 입자 모멘트 29 채널 뺌) + 나머지 {n_feat - DM._SGM.pfreq_channels(a.pfreq)} -> 입력 {n_feat}", flush=True)
         if a.ip_feat:
             print(f"[--ip_feat] 증분 포텐셜 노드 특징 {DM.IP_FEAT_N} 채널 덧붙임 -> 입력 {n_feat} (ε {a.ip_feat_eps:g})", flush=True)
         if a.bc_feat != "dist":
@@ -2193,7 +2207,7 @@ with torch.no_grad() if not a.infer else contextlib.nullcontext():
             _cr = None
         else:
             _fes = (take(traj_F(_dd)[_t], _gs).float() if a.fe_state else None)
-            ipf_set(_x, take(traj_F(_dd)[_t], _gs).float() if a.ip_feat else None)
+            ipf_set(_x, take(traj_F(_dd)[_t], _gs).float() if (a.ip_feat or a.pfreq > 0) else None)
             _s, _cr = node_feats(_dd, _t, _gs, _x, _v, fe=_fes)[0], None
         if a.stat_occ and _cr is not None:  # 빈 칸이 96% 라 통계를 장악한다
             _m = torch.zeros(_s.shape[0], dtype=torch.bool, device=_s.device)
@@ -6810,14 +6824,14 @@ def _rollout(d, t0, L, gsel=None):
                     x, p, v, _, _, _, dmg_e, idx_e, fe_r, _jsb = step_once(
                         d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                         idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
-                    if a.ip_feat:          # --ip_feat: 특징에 쓰는 F 를 망의 실제 야코비안으로 전진 (_eval_roll 과 같은 식)
+                    if a.ip_feat or a.pfreq > 0:   # --ip_feat·--pfreq: 특징에 쓰는 F 를 망의 실제 야코비안으로 전진 (_eval_roll 과 같은 식)
                         _S["F_ip"] = _ipf_advance_F(_S["F_ip"], _jsb, d["cfg"], FRAME_DT / EVAL_SUB)
                     x, p, v = x.detach(), p.detach(), _pg_vdamp(v.detach(), d, FRAME_DT / EVAL_SUB)
                 ipf_set(x, _S["F_ip"])
                 x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _jf = step_once(
                     d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                     idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
-                if a.ip_feat:
+                if a.ip_feat or a.pfreq > 0:
                     _S["F_ip"] = _ipf_advance_F(_S["F_ip"], _jf, d["cfg"], FRAME_DT / EVAL_SUB)
             x2 = x2.detach(); p = p.detach(); v = _pg_vdamp(v.detach(), d, FRAME_DT / EVAL_SUB)
             _S.update(p=p, dmg=dmg_e, idx=idx_e, fe=fe_r)

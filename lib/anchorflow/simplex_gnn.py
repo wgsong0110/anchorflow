@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 
@@ -76,6 +78,45 @@ def node_moments(x, v, X, m, rows, lam, n_node, npos, hn):
         (ww * (dx.unsqueeze(-1) * dX.unsqueeze(-2))).reshape(-1, K, 9),
         (ww * (dX.unsqueeze(-1) * dX.unsqueeze(-2))).reshape(-1, K, 9)], -1))
     return node_moments_finish(g1, g2, npos, hn)
+
+
+PFREQ_NS = 15        # --pfreq 가 인코딩하는 입자-노드 스칼라 수: 상대위치 3 + 속도 3 + (F - I) 9
+
+
+def pfreq_channels(K):
+    """--pfreq K 노드 특징 폭 = 15 × (1 + 2K)."""
+    return PFREQ_NS * (1 + 2 * int(K))
+
+
+def particle_freq_feats(x, v, F, m, rows, lam, n_node, npos, hn, K):
+    """**--pfreq K** 노드 특징 (node_moments 29 채널 대신, 사용자 10-21).
+
+    입자 p 가 자기 원소 꼭짓점 노드 j (rows[p, c] = j, 가중 lam[p, c] = λ_pj) 에 대해 갖는 스칼라 15 개
+        s = [ (x_p - x_j)/hn (3),  v_p (3, 부르는 쪽이 vel_scale 로 나눈 값),  F_p - I (9, 행 우선) ]
+    를 하나씩 [s, sin(2^k π s) (k<K), cos(2^k π s) (k<K)] 로 인코딩해 노드 j 로 λ_pj·m_p 가중 평균한다
+    (node_moments 와 같은 가중·같은 분모 Σλm, 같은 하한 1e-12 -- 가중 0 인 노드는 0).
+    채널 순서: 스칼라 i (위 순서) 마다 1+2K 칸 [s, sin_0..sin_{K-1}, cos_0..cos_{K-1}].
+
+    x, v: [N,3], F: [N,3,3] 또는 [N,9], m: [N], rows/lam: [N,C], npos: [M,3] -> [M, 15(1+2K)]
+    """
+    dev, dt = x.device, x.dtype
+    K = int(K)
+    N, C = rows.shape
+    F9 = F.reshape(N, 9).to(dt) - torch.eye(3, device=dev, dtype=dt).reshape(1, 9)
+    v = v.to(dt)
+    fr = (2.0 ** torch.arange(K, device=dev, dtype=dt)) * math.pi                  # [K]
+    nch = pfreq_channels(K)
+    num = torch.zeros(n_node, nch, device=dev, dtype=dt)
+    den = torch.zeros(n_node, 1, device=dev, dtype=dt)
+    for c in range(C):                     # 꼭짓점 열마다 (메모리: N × 15(1+2K) 하나씩)
+        r = rows[:, c]
+        w = (lam[:, c].to(dt) * m.to(dt)).unsqueeze(-1)                            # [N,1]
+        s = torch.cat([(x - npos[r]) / hn, v, F9], -1)                              # [N,15]
+        ang = s.unsqueeze(-1) * fr                                                  # [N,15,K]
+        enc = torch.cat([s.unsqueeze(-1), torch.sin(ang), torch.cos(ang)], -1)      # [N,15,1+2K]
+        num.index_add_(0, r, w * enc.reshape(N, nch))
+        den.index_add_(0, r, w)
+    return num / den.clamp(min=1e-12)
 
 
 def node_centroids(g1):

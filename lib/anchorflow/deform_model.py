@@ -174,7 +174,7 @@ def node_grid(a, x, off=None):
 
 
 def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
-               pt_parts=None, mat_vec=None, ip_state=None, h=None):
+               pt_parts=None, mat_vec=None, ip_state=None, h=None, pF=None):
     """사면체 복합체의 **노드** 특징. 입자 물리량을 자기 사면체의 barycentric
     가중으로 4 꼭짓점에 뿌려 모은다 (P2G 와 같은 구조, 전달 가중치 재사용).
 
@@ -184,6 +184,7 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
     ip_state: --ip_feat 일 때 dict(F=[N,3,3] 이 상태의 F, vol=[N], h=스텝 dt, free=[N] 또는 None[, feat=캐시 [M,18]])
               -- 특징 끝에 IP_FEAT_N 채널을 덧붙인다 (ip_node_feats). --ip_feat_only 면 그 18 채널만 남긴다.
     h: 스텝 dt -- --bc_feat contact 의 관성 예측(조건 b)에 쓴다 (그때만 필수).
+    pF: 이 상태의 입자 F [N,3,3] -- --pfreq 일 때 필수 (입자 모멘트 29 채널 대신 particle_freq_feats).
 
     -> (_in [M,F], npos [M,3], (lo,lat,nn), rows [N,4], lam [N,4], uniq [M],
         간선 (src,dst,cls), aux)
@@ -233,6 +234,8 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
         _aux.nav = SX.nodeavg_struct(rows, _aux, lat, Mn)
     hn = lat.s                                 # 길이 단위 = 면내 간격 h
     _agg = str(getattr(a, "agg", "bary") or "bary")
+    if int(getattr(a, "pfreq", 0) or 0) > 0 and (_agg != "bary" or _interp != "bary" or getattr(a, "hex_jac", False)):
+        raise SystemExit("--pfreq 는 사면체 barycentric (--agg bary, --interp bary, hex_jac 없음) 만 지원한다")
     if _agg == "bspline":
         # **격자 B-스플라인 집계** (MPM P2G 와 같은 2 차 B-스플라인, 격자 좌표 기준 27 노드). 활성 노드가 아닌
         # 이웃은 덤프 노드(Mn 번)로 보내 버린다. 변위 사상·간선은 그대로 사면체(rows, lam) 를 쓴다.
@@ -255,7 +258,15 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
         feat = san(node_moments(x, v / vel_scale, X, mass, _rows27, _w27, Mn + 1, _npos1, hn))[:Mn]
         _prow, _pw = _rows27, _w27
     else:
-        feat = san(node_moments(x, v / vel_scale, X, mass, rows, lam, Mn, npos, hn))
+        _Kp = int(getattr(a, "pfreq", 0) or 0)
+        if _Kp > 0:
+            # **--pfreq K** (사용자 10-21): 입자 모멘트 29 채널을 빼고, 입자-노드 쌍의 [(x_p-x_j)/hn, v_p/vel_scale, F_p-I]
+            # 15 스칼라 각각의 [s, sin/cos(2^k π s), k<K] 를 λ·m 가중 평균 (simplex_gnn.particle_freq_feats). 바닥 채널은 아래 그대로.
+            if pF is None:
+                raise RuntimeError("--pfreq: node_feats 에 이 상태의 입자 F (pF) 가 필요하다")
+            feat = san(_SGM.particle_freq_feats(x, v / vel_scale, pF, mass, rows, lam, Mn, npos, hn, _Kp))
+        else:
+            feat = san(node_moments(x, v / vel_scale, X, mass, rows, lam, Mn, npos, hn))
         _prow, _pw = rows, lam
     _Kr = int(getattr(a, "rel_pe", 0) or 0)
     if _Kr > 0:
@@ -948,6 +959,8 @@ class EvalModel:
                                           edge_triton=self.fast_edge_triton)
             with sec("빠른스텝"):
                 return fs(x, v)
+        if int(getattr(a, "pfreq", 0) or 0) > 0:
+            raise NotImplementedError("--pfreq: EvalModel 은 입자 F 를 들고 다니지 않는다 -- train_deform 롤아웃(--infer --resume)을 쓸 것")
         with sec("셀집계"):
             ens = [node_feats(a, cfg, d["_X0"], mass, x, v, self.vel_scale,
                               off=o, mat_vec=mat_vec, h=h)
