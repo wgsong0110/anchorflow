@@ -18,7 +18,7 @@ C=${OVNOIN_C:?커밋}; WT=$W/wt/ovnoin_$C; WS=$W/wt/spstick_13471f4; WP=$W/wt/ps
 P=$W/lbpool; S=$W/lbours/spstick; U=$W/lbours/ov_noinertial; R=r2:storage/result/anchorflow/lbours/ov_noinertial
 RANGE=$W/lbours/lego_psi/range.json; STD=2.8284e-05
 mkdir -p $U
-fail(){ echo "[실패] $1 $(date)"; echo "$1 $(date)" > $U/OVNOIN_FAIL; rclone copy $U $R -q; exit 1; }
+fail(){ kill ${HBL:-} ${SYNC:-} 2>/dev/null; echo "[실패] $1 $(date)"; echo "$1 $(date)" > $U/OVNOIN_FAIL; rclone copy $U $R -q; exit 1; }
 cd $WT || exit 1
 echo "[시작] $(date) 커밋 $(git rev-parse --short HEAD) (13471f4 대비: $(git diff --stat 13471f4 HEAD | tail -1))"
 git diff 13471f4 HEAD -- exe/train_deform.py > $U/code_diff_vs_13471f4.patch
@@ -130,9 +130,10 @@ task(){ name=$1; g=$2; echo "[시작] $name GPU$g $(date +%T)"
   echo "[끝] $name GPU$g $(date +%T)"; touch $U/.done_$name; }
 freeg(){ nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | awk -F', *' '$1!=1 && $2<1024{print $1}'; }
 nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader | tee $U/gpu_at_start.txt
-G0=$(freeg | head -1); [ -n "$G0" ] || fail "빈 GPU 없음"
-smoke $G0 > $U/smoke.log 2>&1; cat $U/smoke.log
-grep -q '시험 판정\] 통과' $U/smoke.log || fail "짧은 시험 실패 (smoke.log)"
+if grep -q '시험 판정\] 통과' $U/smoke.log 2>/dev/null; then echo "[시험] 이미 통과 -- 다시 돌리지 않음 (smoke/ 보존)"; else
+  G0=$(freeg | head -1); [ -n "$G0" ] || fail "빈 GPU 없음"
+  smoke $G0 > $U/smoke.log 2>&1; cat $U/smoke.log
+  grep -q '시험 판정\] 통과' $U/smoke.log || fail "짧은 시험 실패 (smoke.log)"; fi
 up
 declare -A BUSY
 Q=(); for t in z_L000 z_0004 n_L000 n_0004 ms_z_L000 ms_z_0004 ms_n_L000 ms_n_0004 ms_p_L000 ms_p_0004; do [ -f $U/.done_$t ] || Q+=($t); done
@@ -151,14 +152,17 @@ while :; do
   done
   sleep 120
 done
+( while true; do date +%s > $U/heartbeat; rclone copyto $U/heartbeat $R/heartbeat -q; sleep 120; done ) & HBL=$!
 for k in z_L000 z_0004 n_L000 n_0004; do cat $U/err_$k.txt; done
 python -u $WT/exe/ov_noinertial_ana.py --dir $U --spstick $S > $U/ana.log 2>&1 < /dev/null; cat $U/ana.log
 grep -q OVNOIN_ANA_DONE $U/ana.log || fail "집계 실패 (ana.log)"
 for k in z_L000 z_0004 n_L000 n_0004; do [ -f $U/ov_$k.mp4 ] || fail "3DGS 렌더 없음 $k"; done
 for T in L000 0004; do [ -f $U/psi/$T/DONE ] || fail "psi 렌더 없음 $T"; done
+# 동기화 루프를 **먼저** 끈다: 인자 없는 wait 는 무한 루프인 SYNC 까지 기다려 영원히 멈췄다 (10-21, 하트비트 끊김 -> 감시가 중복 재기동)
+kill $SYNC 2>/dev/null; wait $SYNC 2>/dev/null
 wait
-kill $SYNC 2>/dev/null
 rclone copy $U $R -q && echo "[R2 업로드 완료] $(date)"
 rclone check $U $R --one-way --size-only -q && echo "[R2 대조 통과]" || fail "R2 대조 실패"
+kill $HBL 2>/dev/null
 echo "$(date)" > $U/OVNOIN_CLUSTER_DONE; rclone copy $U $R -q
 echo OVNOIN_CLUSTER_END
