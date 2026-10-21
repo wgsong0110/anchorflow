@@ -32,9 +32,14 @@ MD
 fi
 # ---- 2) 고친 C¹ 실행 기다림 (최대 48 h)
 t0=$(date +%s)
-# C1FIX_FAIL 은 다른 에이전트가 다시 띄울 수 있어 그만두지 않는다 -- 마지막 C1FIX_FAIL 뒤에 C1FIX_DONE 이 올 때까지 (48 h 상한)
-fixdone(){ awk '/C1FIX_FAIL/{d=0} /C1FIX_DONE/{d=1} END{exit !d}' $FIXL 2>/dev/null; }
-until fixdone; do
+# 10-21 07:15:56 의 C1FIX_FAIL 은 c1fix 감시 오판 (지시): 10-21 07:20:00 이후 시각이 찍힌 줄(과 그 뒤 시각 없는 줄)만 본다.
+# 그 구간에서 마지막 표식이 C1FIX_DONE 이면 진행, C1FIX_FAIL 이면 실패 (48 h 상한)
+fixstate(){ awk '{ if (match($0, /^[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/)) ok = (substr($0, 1, 14) >= "10-21 07:20:00") }
+                 ok && /C1FIX_FAIL/ {s = "FAIL"} ok && /C1FIX_DONE/ {s = "DONE"} END {print s}' $FIXL 2>/dev/null; }
+while true; do
+  fs=$(fixstate)
+  [ "$fs" = DONE ] && break
+  [ "$fs" = FAIL ] && die "07:20 이후 새 C1FIX_FAIL -- 고친 C¹ 측정 안 함"
   [ $(( $(date +%s) - t0 )) -gt 172800 ] && die "C1FIX_DONE 48 h 안 옴"
   sleep 600
 done
