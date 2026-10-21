@@ -181,8 +181,8 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
     X: 정지(0 프레임) 위치 [N,3], mass: 입자 질량 [N], vel_scale: 속도 단위.
     pt_parts(hn) -> 입자별 추가 특징 목록 (fe 불변량, 손잡이 특징 등).
     mat_vec: 물성 특징 [N_MAT] (특징에 붙일 때만).
-    ip_state: --ip_feat 일 때 dict(F=[N,3,3] 이 상태의 F, vol=[N], h=스텝 dt, free=[N] 또는 None) -- 특징 끝에
-              IP_FEAT_N 채널을 덧붙인다 (ip_node_feats).
+    ip_state: --ip_feat 일 때 dict(F=[N,3,3] 이 상태의 F, vol=[N], h=스텝 dt, free=[N] 또는 None[, feat=캐시 [M,18]])
+              -- 특징 끝에 IP_FEAT_N 채널을 덧붙인다 (ip_node_feats).
 
     -> (_in [M,F], npos [M,3], (lo,lat,nn), rows [N,4], lam [N,4], uniq [M],
         간선 (src,dst,cls), aux)
@@ -297,8 +297,10 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
     if getattr(a, "ip_feat", False):
         if ip_state is None:
             raise RuntimeError("--ip_feat: node_feats 에 이 상태의 F (ip_state) 가 필요하다")
-        _ipf = ip_node_feats(a, cfg, x, v, ip_state["F"], mass, ip_state["vol"], ip_state["h"],
-                             rows, lam, _aux, lat, Mn, free=ip_state.get("free"))
+        _ipf = ip_state.get("feat")          # 같은 상태에서 이미 계산한 값 (학습 쪽 캐시; 결정적 함수라 같은 값)
+        if _ipf is None or _ipf.shape[0] != Mn:
+            _ipf = ip_node_feats(a, cfg, x, v, ip_state["F"], mass, ip_state["vol"], ip_state["h"],
+                                 rows, lam, _aux, lat, Mn, free=ip_state.get("free"))
         _in = torch.cat([_in, _ipf.to(_in.dtype)], -1)
     _in = torch.nan_to_num(_in, nan=0.0, posinf=0.0,
                            neginf=0.0).clamp(-FCAP, FCAP)

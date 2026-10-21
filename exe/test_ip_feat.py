@@ -161,22 +161,26 @@ with torch.no_grad():
         worst = max(worst, rs[1] / max(rs[0], 1e-300))
     chk("3) 1-노드 테일러 나머지 O(δ³) (δ 반으로 -> 나머지 1/8 근처)", worst < 0.2, f"나머지 비 최대 {worst:.3f}")
 
-# 4) 뉴턴 걸음 = 1-노드 이차 근사 최소점
+# 4) 뉴턴 걸음 = 1-노드 이차 근사 최소점 (매끄러운 상태 + 깊은 접촉 상태: 음의 고윳값 클램프 포함)
+for tag, cc in (("매끄러운 접촉", C0), ("깊은 접촉", Cb)):
+    rw = cc["raw"]
+    Ht, gt, d = rw["Ht"], rw["gt"], rw["step"]
+    eps = rw["eps"]
+    ev, Q = torch.linalg.eigh(Ht)
+    Hp = Q @ torch.diag_embed(ev.clamp_min(0.0) + eps) @ Q.transpose(-1, -2)
+    res = (Hp @ d.unsqueeze(-1)).squeeze(-1) + gt
+    chk(f"4) [{tag}] 정류: (H̃₊+εI) d + g̃ = 0", float(res.abs().max() / gt.abs().max()) < 1e-10, f"{float(res.abs().max() / gt.abs().max()):.1e}")
+    pd = ev.min(-1).values > 0
+    res2 = ((Ht[pd] + eps * torch.eye(3)) @ d[pd].unsqueeze(-1)).squeeze(-1) + gt[pd]
+    chk(f"   [{tag}] 양정부호 노드: (H̃+εI) d = -g̃", float(res2.abs().max() / gt.abs().max()) < 1e-10,
+        f"{int(pd.sum())}/{cc['Mn']} 노드, {float(res2.abs().max() / gt.abs().max()):.1e}")
+    mq = lambda dd: (gt * dd).sum(-1) + 0.5 * (dd.unsqueeze(-2) @ Hp @ dd.unsqueeze(-1)).squeeze(-1).squeeze(-1)
+    worse = True
+    for _ in range(20):
+        pert = 1e-2 * d.abs().max() * torch.randn(cc["Mn"], 3)
+        worse = worse and bool((mq(d + pert) >= mq(d) - 1e-15 * mq(d).abs().max()).all())
+    chk(f"   [{tag}] 무작위 섭동은 이차 근사를 올린다", worse, f"음의 고윳값 노드 {int((~pd).sum())} 개 (클램프)")
 Ht, gt, d = raw["Ht"], raw["gt"], raw["step"]
-eps = raw["eps"]
-ev, Q = torch.linalg.eigh(Ht)
-Hp = Q @ torch.diag_embed(ev.clamp_min(0.0) + eps) @ Q.transpose(-1, -2)
-res = (Hp @ d.unsqueeze(-1)).squeeze(-1) + gt
-chk("4) 정류: (H̃₊+εI) d + g̃ = 0", float(res.abs().max() / gt.abs().max()) < 1e-10, f"{float(res.abs().max() / gt.abs().max()):.1e}")
-pd = ev.min(-1).values > 0
-res2 = ((Ht[pd] + eps * torch.eye(3)) @ d[pd].unsqueeze(-1)).squeeze(-1) + gt[pd]
-chk("   양정부호 노드: (H̃+εI) d = -g̃", float(res2.abs().max() / gt.abs().max()) < 1e-10, f"{int(pd.sum())}/{Mn} 노드, {float(res2.abs().max() / gt.abs().max()):.1e}")
-mq = lambda dd: (gt * dd).sum(-1) + 0.5 * (dd.unsqueeze(-2) @ Hp @ dd.unsqueeze(-1)).squeeze(-1).squeeze(-1)
-worse = True
-for _ in range(20):
-    pert = 1e-2 * d.abs().max() * torch.randn(Mn, 3)
-    worse = worse and bool((mq(d + pert) >= mq(d) - 1e-15 * mq(d).abs().max()).all())
-chk("   무작위 섭동은 이차 근사를 올린다", worse, f"음의 고윳값 노드 {int((~pd).sum())} 개 (클램프)")
 f = _in[:, -DM.IP_FEAT_N:]
 chk("   특징 채널 = 정규화 값 (g̃/h, H̃, d/h)", rel(f[:, 15:18], (d / raw["hn"]).clamp(-DM.FCAP, DM.FCAP)) < 1e-12
     and rel(f[:, 0:3], (gt / raw["hn"]).clamp(-DM.FCAP, DM.FCAP)) < 1e-12, "")

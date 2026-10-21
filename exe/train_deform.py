@@ -1582,12 +1582,16 @@ def node_feats(d, t, gsel, x, v, fe=None):
         if _r is None or _r[0] is not x:
             raise RuntimeError("--ip_feat: 이 상태의 F 가 걸려 있지 않다 (이 호출 지점에서 step_once/node_feats 앞에 ipf_set(x, F) 할 것)")
         _mq = MASS[gsel]
+        _ck = ((_r[2], _GRID_OFF[0], float(_DT[0])) if _r[2] is not None else None)
         _ips = dict(F=_r[1], vol=_pvol(_mq, cfg), h=float(_DT[0]),
-                    free=(free_mask(d, x.shape[0], dev, gsel, x, t) if a.control else None))
+                    free=(free_mask(d, x.shape[0], dev, gsel, x, t) if a.control else None),
+                    feat=(_IPF_CACHE[_ck].to(dev, x.dtype, non_blocking=True) if _ck in _IPF_CACHE else None))
     _o = DM.node_feats(
         a, cfg, take(d["x"][0], gsel), MASS[gsel], x, v, VEL_SCALE,
         grid=_GRID[0], off=_GRID_OFF[0], pt_parts=_parts,
         mat_vec=(mat_feat(cfg) if (N_MAT and not N_FILM) else None), ip_state=_ips)
+    if _ips is not None and _ck is not None and _ck not in _IPF_CACHE:
+        _IPF_CACHE[_ck] = _o[0][:, -DM.IP_FEAT_N:].detach().to("cpu", copy=True)
     if a.pe_only > 0:
         # **대조군**: 물리 특징을 다 버리고 노드 세계 위치와 프레임 번호의 다주파수 인코딩만 입력으로 (한 궤적이면
         # (위치, 시각) 이 목표를 유일하게 가리킨다 -- 순수 암기 능력의 기준)
@@ -1601,14 +1605,15 @@ def node_feats(d, t, gsel, x, v, fe=None):
 
 
 _ens_offsets = DM.ens_offsets
-_IPF_F = [None]          # --ip_feat: (x 텐서, F) -- step_once/node_feats 를 부르는 쪽이 그 상태의 F 를 건다
+_IPF_F = [None]          # --ip_feat: (x 텐서, F, 캐시 키) -- step_once/node_feats 를 부르는 쪽이 그 상태의 F 를 건다
+_IPF_CACHE = {}          # --ip_feat: 고정 상태(다궤적 적합의 (궤적, 프레임))의 특징 -- 같은 상태면 같은 값이라 한 번만 계산
 
 
-def ipf_set(x, F):
+def ipf_set(x, F, key=None):
     """--ip_feat: 다음 node_feats(.., x, ..) 호출이 쓸 상태 F 를 건다 (x 는 **같은 텐서 객체**여야 한다 -- 다른 상태의 F 를
-    잘못 쓰는 일을 막는다). 꺼져 있으면 아무 일도 안 한다."""
+    잘못 쓰는 일을 막는다). key 를 주면 (상태가 고정인 학습 표본) 특징을 CPU 에 캐시해 다시 쓴다. 꺼져 있으면 아무 일도 안 한다."""
     if a.ip_feat:
-        _IPF_F[0] = (x, F)
+        _IPF_F[0] = (x, F, key)
 
 
 def _ipf_advance_F(F, jd, cfg, h):
@@ -5404,7 +5409,7 @@ def _rollout(d, t0, L, gsel=None):
                 for (j, i) in _pairs:
                     with traj_scope(_TJ[j]["d"]), dt_scope(FRAME_DT):
                         xs, vs, _Fq = _st(j, i)
-                        ipf_set(xs, _Fq)
+                        ipf_set(xs, _Fq, key=("다궤적", j, i))
                         _sf.append(node_feats(_TJ[j]["d"], t0 + i, _TJ[j]["gsel"], xs, vs)[0])
                 net.set_input_stats(torch.cat(_sf, 0)); del _sf
             print(f"    [다궤적 적합] 새 망, 입력 표준화 = {len(_TJ)} 궤적 {len(_pairs)} 상태", flush=True)
@@ -5471,7 +5476,7 @@ def _rollout(d, t0, L, gsel=None):
                     xs, vs, Fs = _st(j, i)
                     with torch.enable_grad(), dt_scope(_hs):
                         DM.PROBE[0] = "want" if _b == 0 else None
-                        ipf_set(xs, Fs)
+                        ipf_set(xs, Fs, key=("다궤적", j, i))
                         x2, _, _, _, _, _, _, _, _, _jf = step_once(T_["d"], t0 + i, T_["gsel"], _anch(T_, xs), xs, vs, need_J=False)
                         DM.PROBE[0] = None
                         _em, _dpen = det_take()
