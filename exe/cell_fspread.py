@@ -274,12 +274,16 @@ say(f"[글꼴] {plt.rcParams['font.family']}")
 
 # 가로축: 지표마다 영상 전체 고정 로그 구간. 하한 = 1..T-1 프레임 세 궤적 합친 양수 값의 0.1% 분위수, 상한 = 최대 x1.05.
 EDG = []
+FLOOR = {"1": 1e-7, "도": 1e-5}
 for j in range(6):
     allv = np.concatenate([v[:, j] for t in TR for v in VALS[t["key"]][1:]])
     allv = allv[np.isfinite(allv) & (allv > 0)]
-    lo_, hi_ = np.percentile(allv, 0.1), allv.max() * 1.05
+    # 하한: 0.1% 분위수, 단 반올림 바닥(F 가 float32 라 무차원 1e-7, 각 1e-5 도) 아래로는 내리지 않는다 --
+    # 같은 사면체에서 같은 F 를 받은 입자뿐인 셀은 1e-18 같은 float64 반올림 값이 나온다 (사실상 0)
+    lo_, hi_ = max(np.percentile(allv, 0.1), FLOOR[MET[j][2]]), allv.max() * 1.05
     EDG.append(np.logspace(np.log10(lo_), np.log10(hi_), a.bins + 1))
-    say(f"[구간] {MET[j][0]}: [{lo_:.3e}, {hi_:.3e}] 로그 {a.bins} 칸 (하한 아래·0 은 첫 칸에)")
+    say(f"[구간] {MET[j][0]}: [{lo_:.3e}, {hi_:.3e}] 로그 {a.bins} 칸 (하한 아래·0 은 첫 칸에), 하한 아래 비율 "
+        + ", ".join(f"{t['key']} {np.mean(np.concatenate([v[:, j] for v in VALS[t['key']][1:]])[np.isfinite(np.concatenate([v[:, j] for v in VALS[t['key']][1:]]))] < lo_):.4f}" for t in TR))
 HIST = {}
 for t in TR:
     k = t["key"]; H = np.zeros((T, 6, a.bins))
@@ -309,14 +313,13 @@ def hist_fig(f, W_px, H_px, dpi=100):
         if j % 3 == 0:
             ax.set_ylabel("셀 비율 (세로축 로그)", fontsize=10)
         txt = "\n".join(f"{t['lab']}: 중앙 {FMT(SUM['traj'][t['key']]['med'][f][j])}  99% {FMT(SUM['traj'][t['key']]['p99'][f][j])}"
-                        for t in TR)
+                        f"  (셀 {int(np.isfinite(VALS[t['key']][f][:, j]).sum())})" for t in TR)
         ax.text(0.02, 0.98, txt, transform=ax.transAxes, va="top", ha="left", fontsize=9,
                 bbox=dict(fc="white", ec="0.7", alpha=0.85))
         ax.grid(alpha=0.25, which="major")
     axs[0, 2].legend(loc="upper right", fontsize=10)
-    cnt = "   ".join(f"{t['lab']} 셀 {INFO[t['key']][f]['n_cells']}" for t in TR)
-    fig.suptitle(f"셀(사면체, node_h {a.node_h}, 입자 ≥ {a.min_pts})별 입자 F 퍼짐 분포 · 프레임 {f}   ({cnt})   "
-                 f"하한 아래 값·0 은 첫 칸에", fontsize=13)
+    fig.suptitle(f"셀(사면체, node_h {a.node_h}, 입자 ≥ {a.min_pts})별 입자 F 퍼짐 분포 · 프레임 {f}    "
+                 f"세로축 = 그 지표 값이 있는 셀 중 비율;  가로축 하한 아래(반올림 수준, 사실상 0)는 첫 칸에", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     fig.canvas.draw()
     img = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
