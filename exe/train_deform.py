@@ -5248,7 +5248,7 @@ def _rollout(d, t0, L, gsel=None):
                 _nodes_sf = [torch.load(q_.split("=", 1)[1], map_location="cpu", weights_only=False, mmap=True)["nodes"]
                              for q_ in _spec.split(",")]
                 _t_c = time.time()
-                for p, (j, i) in enumerate(tqdm(_pairs, desc="E* 캐시")):
+                for _pp, (j, i) in enumerate(tqdm(_pairs, desc="E* 캐시")):
                     T_ = _TJ[j]
                     with traj_scope(T_["d"]), torch.no_grad():
                         xs, vs, _ = _st(j, i)
@@ -5259,11 +5259,11 @@ def _rollout(d, t0, L, gsel=None):
                         raise SystemExit(f"AF_SF_RELEX: {T_['tag']} 상태 {i} 노드 격자가 덤프와 다르다")
                     xs, x2, _E, _, nrm_, m_, cfg_ = _ip_state(j, i, _dpo)
                     _Pn = T_["P"][i].to(dev)
-                    _REP[p] = float((x2 - _Pn).norm(dim=-1).max()) / T_["ext"]
-                    _ESTAR[p] = _E
-                    _DN[p] = float((0.5 * m_ * ((x2 - xs) ** 2).sum(-1)).sum()) / (_hs ** 2) / nrm_
-                    if not (math.isfinite(_E) and math.isfinite(_DN[p])):
-                        raise SystemExit(f"AF_SF_RELEX: {T_['tag']} 상태 {i} E*={_E} D={_DN[p]} 비유한")
+                    _REP[_pp] = float((x2 - _Pn).norm(dim=-1).max()) / T_["ext"]
+                    _ESTAR[_pp] = _E
+                    _DN[_pp] = float((0.5 * m_ * ((x2 - xs) ** 2).sum(-1)).sum()) / (_hs ** 2) / nrm_
+                    if not (math.isfinite(_E) and math.isfinite(_DN[_pp])):
+                        raise SystemExit(f"AF_SF_RELEX: {T_['tag']} 상태 {i} E*={_E} D={_DN[_pp]} 비유한")
                 _dmed = float(np.median(_DN))
                 _dfl = float(os.environ.get("AF_SF_RELEX_DFLOOR", "1e-3")) * _dmed
                 _DNU = [max(d_, _dfl) for d_ in _DN]
@@ -5304,12 +5304,12 @@ def _rollout(d, t0, L, gsel=None):
                 # (1) E* 재현: 덤프 노드 변위를 넣은 한 스텝 = 덤프 다음 상태, 다시 계산한 E − 캐시 E* = 0
                 _r1 = max(_REP)
                 _d2 = []
-                for p, (j, i) in enumerate(_pairs):
+                for _pp, (j, i) in enumerate(_pairs):
                     _dpo = _nodes_sf[j][i][1].to(dev).float()
-                    _d2.append(_ip_state(j, i, _dpo)[2] - _ESTAR[p])
-                _r2 = max(abs(x_) for x_ in _d2)
-                print(f"    [시험 1] 재현 최대 거리/EXT {_r1:.3e}, 덤프 노드 변위 넣은 E − E* 최대 |.| {_r2:.3e} (상태 {len(_pairs)})", flush=True)
-                _ok &= (_r1 == 0.0 and _r2 == 0.0)
+                    _d2.append(_ip_state(j, i, _dpo)[2] - _ESTAR[_pp])
+                _rB = max(abs(x_) for x_ in _d2)
+                print(f"    [시험 1] 재현 최대 거리/EXT {_r1:.3e}, 덤프 노드 변위 넣은 E − E* 최대 |.| {_rB:.3e} (상태 {len(_pairs)})", flush=True)
+                _ok &= (_r1 == 0.0 and _rB == 0.0)
                 _ref = os.environ.get("AF_SF_RELEX_REF")
                 if _ref:
                     _rr = {(r_["traj"], r_["state"]): r_ for r_ in map(json.loads, open(_ref))}

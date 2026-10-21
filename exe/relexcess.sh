@@ -37,7 +37,7 @@ OUTD=$(comm -23 <(tr ' ' '\n' <<<"$SPB" | sort) <(tr ' ' '\n' <<<"$BASE" | sort)
 IND=$(comm -13 <(tr ' ' '\n' <<<"$SPB" | sort) <(tr ' ' '\n' <<<"$BASE" | sort) | paste -sd' ')
 echo "[spstick BASE  ] $SPB"
 echo "[relexcess BASE] $BASE"
-echo "[명령줄 차이 spstick multi -> relexcess] 플래그 빠짐: '$OUTD' | 플래그 더함: '$IND' | 환경변수 더함: $ENVX" | tee $U/cmdline_diff.txt
+echo "[명령줄 차이 spstick multi -> relexcess] 플래그 빠짐: '$OUTD' | 플래그 더함: '$IND' | 환경변수 더함: $ENVX" | tee -a $U/cmdline_diff.txt
 [ "$SPB" = "$BASE" ] || fail "BASE 가 spstick.sh 와 글자 그대로가 아니다"
 [ "[BASE] $BASE" = "$(grep -a -m1 '^\[BASE\]' $W/spstick.out)" ] && echo "[BASE] spstick 학습 실행 로그(spstick.out)와 일치" | tee -a $U/cmdline_diff.txt || fail "BASE 가 spstick.out 과 다르다"
 gt_of(){ [ $1 = L000 ] && echo $W/lbdata/test_low/L000 || echo $W/lbdata/test/$1; }
@@ -58,25 +58,25 @@ fit(){ # fit <출력디렉토리> <반복> <저장간격> <gpu> <로그> [평가
   env $ENVX "$@" AF_STATE_FIT_MULTI=$SPEC:$N:8 AF_STATE_FIT_LOSS=ip AF_STATE_FIT_EVERY=$E AF_STATE_FIT_EVAL=$EV AF_STATE_FIT_CK=$O/ck.pt AF_STATE_FIT_TB=$O/tb \
     CUDA_VISIBLE_DEVICES=$G python -u exe/train_deform.py --infer --data $W/multi5 --hold_traj L000,0000,0001,0002,0003 --out $O/run --tag EV $BASE --iters 0 --eval_t0 0 --eval_len 1 --tb none > $LG 2>&1 < /dev/null; }
 # ---- 0) 단위 시험: 새 망(학습 시작점) 필수 통과, 학습 끝 spstick 망(사본)은 L≥0 여부 기록 ----
-if [ ! -f $U/unit_test.ok ]; then
+if [ ! -f $U/unit_test_$C.ok ]; then
   g=$(wait_gpu); echo "[단위 시험] GPU$g $(date +%T)"
-  rm -rf $U/unit_init $U/unit_trained; mkdir -p $U/unit_init $U/unit_trained
-  S0=$(sha1sum $S/multi/ck.pt | cut -c1-12); cp $S/multi/ck.pt $U/unit_trained/ck.pt
-  fit $U/unit_init 15000 500 $g $U/unit_init.log 1000 AF_SF_RELEX_TEST=1 AF_SF_RELEX_REF=$GA/states_trained.jsonl
-  fit $U/unit_trained 15000 500 $g $U/unit_trained.log 1000 AF_SF_RELEX_TEST=1 AF_SF_RELEX_REF=$GA/states_trained.jsonl
-  S1=$(sha1sum $S/multi/ck.pt | cut -c1-12); S2=$(sha1sum $U/unit_trained/ck.pt | cut -c1-12)
-  { echo "== 새 망 (학습 시작점) =="; grep -a "공중/접촉\]\|공중 상태 목록\|균형 샘플링\|E\* 캐시\]\|D 분포\|D 하한\|E\* 분포\|시험\|Traceback\|Error" $U/unit_init.log
-    echo "== 학습 끝 spstick multi 망 (사본, 15000 반복) =="; grep -a "이어 돈다\|시험 \|Traceback\|Error" $U/unit_trained.log
-    echo "spstick multi/ck.pt sha1 전 $S0 후 $S1, 사본 $S2; 새 망 시험 뒤 ck.pt 생김: $([ -e $U/unit_init/ck.pt ] && echo 예 || echo 아니오)"; } | tee $U/unit_test.txt
+  UI=$U/unit_$C/init; UT=$U/unit_$C/trained; [ -e $U/unit_$C ] && mv $U/unit_$C $U/unit_${C}_prev_$(date +%H%M%S); mkdir -p $UI $UT
+  S0=$(sha1sum $S/multi/ck.pt | cut -c1-12); cp $S/multi/ck.pt $UT/ck.pt
+  fit $UI 15000 500 $g $UI.log 1000 AF_SF_RELEX_TEST=1 AF_SF_RELEX_REF=$GA/states_trained.jsonl
+  fit $UT 15000 500 $g $UT.log 1000 AF_SF_RELEX_TEST=1 AF_SF_RELEX_REF=$GA/states_trained.jsonl
+  S1=$(sha1sum $S/multi/ck.pt | cut -c1-12); S2=$(sha1sum $UT/ck.pt | cut -c1-12)
+  { echo "== 새 망 (학습 시작점) =="; grep -a "공중/접촉\]\|공중 상태 목록\|균형 샘플링\|E\* 캐시\]\|D 분포\|D 하한\|E\* 분포\|시험\|Traceback\|Error" $UI.log
+    echo "== 학습 끝 spstick multi 망 (사본, 15000 반복) =="; grep -a "이어 돈다\|시험 \|Traceback\|Error" $UT.log
+    echo "spstick multi/ck.pt sha1 전 $S0 후 $S1, 사본 $S2; 새 망 시험 뒤 ck.pt 생김: $([ -e $UI/ck.pt ] && echo 예 || echo 아니오)"; echo "커밋 $C"; } | tee $U/unit_test.txt
   [ "$S0" = "$S1" ] && [ "$S0" = "$S2" ] || fail "spstick ck.pt 가 바뀌었다"
-  [ -e $U/unit_init/ck.pt ] && fail "시험이 체크포인트를 썼다"
-  grep -q RELEX_TEST_OK $U/unit_init.log || fail "단위 시험 실패 (새 망)"
-  touch $U/unit_test.ok; up
+  [ -e $UI/ck.pt ] && fail "시험이 체크포인트를 썼다"
+  grep -q RELEX_TEST_OK $UI.log || fail "단위 시험 실패 (새 망)"
+  touch $U/unit_test_$C.ok; up
 fi
 # ---- 1) 이어 돌리기 시험: A = 20 반복(10 마다 저장) 뒤 같은 체크포인트로 30 까지, B = 한 번에 30 -> 비교 ----
-if [ ! -f $U/multi_resume.ok ]; then
+if [ ! -f $U/multi_resume_$C.ok ]; then
   g=$(wait_gpu); echo "[이어 돌리기 시험] GPU$g $(date +%T)"
-  RT=$U/multi_resume_test; RB=$U/multi_resume_ref; rm -rf $RT $RB; mkdir -p $RT $RB
+  RT=$U/resume_$C/test; RB=$U/resume_$C/ref; [ -e $U/resume_$C ] && mv $U/resume_$C $U/resume_${C}_prev_$(date +%H%M%S); mkdir -p $RT $RB
   t0=$(date +%s); fit $RT 20 10 $g $RT/r20.log 100000; t1=$(date +%s); fit $RT 30 10 $g $RT/r30.log 100000; t2=$(date +%s)
   fit $RB 30 10 $g $RB/r30.log 100000
   K=$(ck_k $RT/ck.pt); RS=$(grep -a -m1 "이어 돈다" $RT/r30.log | cut -c1-120); CC=$(grep -a -m1 "이전 캐시" $RT/r30.log | cut -c1-160)
@@ -96,7 +96,7 @@ PY
   env AF_ROLL_NOGRAD=1 CUDA_VISIBLE_DEVICES=$g python -u exe/train_deform.py --infer --data $W/one/L000 --hold_traj L000 --out $RT/roll --tag EV --resume $RT/ck.pt $BASE --iters 0 --eval_t0 0 --eval_len 3 --tb none > $RT/roll.log 2>&1 < /dev/null
   RL=$(grep -a "롤아웃\] L000" $RT/roll.log | tail -1 | cut -c1-160); echo "[롤아웃 연기 시험] $RL | Traceback $(grep -a -c Traceback $RT/roll.log)" | tee -a $U/resume_test.txt
   [ -n "$RL" ] && [ "$(grep -a -c Traceback $RT/roll.log)" = 0 ] || fail "롤아웃 연기 시험 실패 -- 학습 안 함"
-  touch $U/multi_resume.ok; up
+  touch $U/multi_resume_$C.ok; up
 fi
 # ---- 2) 학습 15000 반복 (500 마다 체크포인트 -> R2 바로, 1000 마다 다섯 궤적 검증 + 공중·접촉 상태 출력 오차) ----
 mkdir -p $U/multi
