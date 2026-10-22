@@ -5379,6 +5379,193 @@ def _ov_frame(d, t, gsel, p, x, v, F):
     return x2.detach(), v2.detach(), F_next
 
 
+def _perframe_fit(d, t0, L, gsel, x, v, p):
+    """프레임별 맞춤 (사용자 10-22): "한 프레임은 맞출 수 있는데 여러 프레임을 함께 학습하면 간섭 때문에 안 된다" 확인.
+
+    AF_PERFRAME_FIT=출력만최적화덤프:반복   AF_PERFRAME_OUT=출력디렉토리   (AF_PERFRAME_R2=R2 디렉토리)
+    AF_PERFRAME_STATS=체크포인트 -- 새 망의 입력 표준화(in_mu/in_sd)를 이 체크포인트(다섯 궤적 학습)의 것으로
+    AF_PERFRAME_INIT=체크포인트 -- (검증용) 프레임 0 망을 새 망 대신 이 체크포인트의 망 전체로
+    AF_PERFRAME_LOG=25 -- 프레임 안 증분 포텐셜 곡선 기록 간격
+    프레임 t = 0..L-1 마다:
+      1) 망 갱신: 출력만 최적화 상태 t (t=0 정답 시작, t>=1 덤프 프레임 t-1 의 위치·속도·F -- AF_STATE_FIT(_MULTI) 와 같은 상태)
+         **하나만**으로 다섯 궤적 학습(AF_STATE_FIT_MULTI)과 같은 한 스텝 손실 phys_w·E + det 벌점(배치 1), 앵커 = 그 상태의
+         AIDX 입자, Adam lr=--lr, 기울기 노름 1.0 자르기, 반복 고정. 망·Adam 상태는 직전 프레임 것에서 이어 간다.
+      2) 옮기기: 그 망으로 **모델 자신의 롤아웃 상태**(t=0 정답 시작)에서 한 스텝 -- 메인 롤아웃 기본 분기와 같은 step_once
+         호출(앵커·dmg·idx_prev·x0·p0·fe 를 이어 나름). 출력만 최적화 상태는 쓰지 않는다.
+    프레임마다 frames/frame_{t:02d}.pt (망·Adam 상태 전체 + 옮기기 전/후 모델 상태 x,v,F,p) 를 쓰고 바로 R2 로 올린다.
+    이어 돌기: frames/ 에 있는 마지막 프레임 파일에서 망·Adam·모델 상태를 읽어 다음 프레임부터.
+    끝나면 roll_pf.pt (AF_ROLL_DUMP 와 같은 형식, F float32) 와 records.json.
+    """
+    import subprocess as _sp_
+    _dp, _it = os.environ["AF_PERFRAME_FIT"].rsplit(":", 1)
+    _it = int(_it)
+    _out = os.environ["AF_PERFRAME_OUT"]; _r2 = os.environ.get("AF_PERFRAME_R2")
+    _lev = int(os.environ.get("AF_PERFRAME_LOG", "25"))
+    _fd = os.path.join(_out, "frames"); os.makedirs(_fd, exist_ok=True)
+    _D = torch.load(_dp, map_location="cpu", weights_only=False)
+    _P, _V, _FF = _D["pred"].float(), _D["v"].float(), _D["F"].float()
+    _nf = min(L, _P.shape[0])
+    _x0, _v0 = x.clone(), v.clone()
+    _F0 = take(traj_F(d)[t0], gsel).float()
+    _cfg = d["cfg"]; _m = MASS[gsel]; _vol = _pvol(_m, _cfg)
+    _gv = torch.tensor(_cfg["g"], device=dev, dtype=torch.float32)
+    _ng, _gl = int(_cfg["n_grid"]), float(_cfg.get("grid_lim", 2.0))
+    _hs = FRAME_DT
+    _nrm = float(_m.sum()) * (EXT ** 2) / (_hs ** 2)
+    _ext = float(EXT)
+
+    def _ovst(i):
+        if i == 0:
+            return _x0, _v0, _F0
+        return _P[i - 1].to(dev), _V[i - 1].to(dev), _FF[i - 1].to(dev).reshape(-1, 3, 3)
+
+    def _anch(xs):
+        return xs[AIDX] if (torch.is_tensor(AIDX) and int(AIDX.max()) < xs.shape[0]) else take(d["x"][t0], AIDX)
+
+    def _one(xs, vs, Fs, i, grad):
+        # 출력만 최적화 상태 i 에서 망 한 스텝: (E, det 벌점, x2). 다섯 궤적 학습 루프와 같은 호출
+        with torch.enable_grad(), dt_scope(_hs):
+            ipf_set(xs, Fs, key=("프레임별", i))
+            x2, _, _, _, _, _, _, _, _, _jf = step_once(d, t0 + i, gsel, _anch(xs), xs, vs, need_J=False)
+            _em, _dpen = det_take()
+            _E, _, _, _ = ip_of(xs, x2 - xs, vs, Fs, _m, _vol, _cfg, _hs, _ng, _gl, g=_gv, norm=_nrm,
+                                jac=_jf, elastic_mask=_em)
+            _Eu = _E
+            if _em is not None and not bool(_em.all()):
+                _Eu = ip_of(xs, x2.detach() - xs, vs, Fs, _m, _vol, _cfg, _hs, _ng, _gl, g=_gv, norm=_nrm,
+                            jac=_jf.detach())[0]
+            if not grad:
+                _DET_LAST[0] = None
+                return float(_E), float(_dpen), float(_Eu), x2.detach()
+            return _E, _dpen, float(_Eu), x2
+
+    def _set_rg(on):
+        for q in net.parameters():
+            q.requires_grad_(on)
+
+    _opt = torch.optim.Adam([q for q in net.parameters()], lr=a.lr)
+    # 이어 돌기: 마지막 프레임 파일
+    _done = sorted(int(f_[6:8]) for f_ in os.listdir(_fd) if f_.startswith("frame_") and f_.endswith(".pt"))
+    _recs = []
+    _rp = os.path.join(_out, "records.json")
+    if _done:
+        _t1 = _done[-1]
+        _c = torch.load(os.path.join(_fd, f"frame_{_t1:02d}.pt"), map_location=dev, weights_only=False)
+        net.load_state_dict(_c["net"]); _opt.load_state_dict(_c["opt"])
+        so = _c["state_out"]
+        xm, vm, Fm, pm = so["x"].to(dev), so["v"].to(dev), so["F"].to(dev), so["p"].to(dev)
+        _SM = dict(dmg=so.get("dmg"), idx=so.get("idx"), fe=so.get("fe"))
+        _recs = [r_ for r_ in json.load(open(_rp)) if r_["t"] <= _t1] if os.path.exists(_rp) else []
+        if len(_recs) != _t1 + 1:
+            raise SystemExit(f"[프레임별 맞춤] records.json 프레임 수 {len(_recs)} 가 마지막 프레임 파일 {_t1} 과 맞지 않는다")
+        _ts = _t1 + 1
+        print(f"    [프레임별 맞춤] 이어 돈다: frame_{_t1:02d}.pt -> 프레임 {_ts} 부터", flush=True)
+    else:
+        _ts = 0
+        if os.environ.get("AF_PERFRAME_INIT"):
+            _c = torch.load(os.environ["AF_PERFRAME_INIT"], map_location=dev, weights_only=False)
+            net.load_state_dict(_c["net"])
+            print(f"    [프레임별 맞춤] 프레임 0 망 = {os.environ['AF_PERFRAME_INIT']} (검증용)", flush=True)
+        elif os.environ.get("AF_PERFRAME_STATS"):
+            _c = torch.load(os.environ["AF_PERFRAME_STATS"], map_location=dev, weights_only=False)
+            with torch.no_grad():
+                net.in_mu.copy_(_c["net"]["in_mu"]); net.in_sd.copy_(_c["net"]["in_sd"])
+            print(f"    [프레임별 맞춤] 새 망 (출력층 0 초기화), 입력 표준화 = {os.environ['AF_PERFRAME_STATS']} 의 in_mu/in_sd", flush=True)
+        else:
+            raise SystemExit("AF_PERFRAME_FIT: 새 망의 입력 표준화를 정할 AF_PERFRAME_STATS 가 필요하다")
+        xm, vm, Fm, pm = _x0.clone(), _v0.clone(), _F0.clone(), p
+        _SM = dict(dmg=None, idx=None, fe=(take(traj_F(d)[t0], gsel).float() if a.fe_state else None))
+    _x0e, _p0e = _x0.clone(), p.clone()
+    print(f"    [프레임별 맞춤] 덤프 {_dp} 상태 {_nf}, 프레임당 반복 {_it}, lr {a.lr:g}, 손실 phys_w {a.phys_w:g}·E + det 벌점 "
+          f"(det_w {a.det_w:g}, keep_elastic {a.det_keep_elastic}), EXT {_ext:.5f}", flush=True)
+    _tw = time.time()
+    _set_rg(True)
+    for t in range(_ts, _nf):
+        _tf = time.time()
+        xs, vs, Fs = _ovst(t)
+        _tgt = _P[t].to(dev)
+        # --- 1) 갱신 전 측정 (직전 프레임 망으로 출력만 최적화 상태 t)
+        net.eval()
+        _set_rg(False)
+        E0, D0, Eu0, x2a = _one(xs, vs, Fs, t, False)
+        O0 = float((x2a - _tgt).norm(dim=-1).mean()) / _ext
+        _set_rg(True)
+        net.train()
+        curve = [(0, E0, D0)]
+        gns = []
+        for k in range(_it):
+            _opt.zero_grad(set_to_none=True)
+            _E, _dpen, _Eu, _ = _one(xs, vs, Fs, t, True)
+            _loss = a.phys_w * _E + _dpen
+            if torch.isfinite(_loss):
+                _loss.backward()
+            _gn = float(torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0))
+            _opt.step()
+            gns.append(_gn)
+            if (k + 1) % _lev == 0 or k == 0:
+                curve.append((k + 1, float(_E), float(_dpen)))   # 이 반복의 갱신 **전** 값 (k 번 갱신 뒤의 망)
+        # --- 갱신 뒤 측정
+        net.eval()
+        _set_rg(False)
+        E1, D1, Eu1, x2b = _one(xs, vs, Fs, t, False)
+        O1 = float((x2b - _tgt).norm(dim=-1).mean()) / _ext
+        curve.append((_it + 1, E1, D1))
+        # --- 2) 옮기기: 모델 자신의 상태에서 한 스텝 (메인 롤아웃 기본 분기와 같은 호출)
+        _state_in = dict(x=xm.detach().cpu(), v=vm.detach().cpu(), F=Fm.detach().cpu(), p=pm.detach().cpu(),
+                         dmg=_SM["dmg"], idx=_SM["idx"], fe=_SM["fe"])
+        with torch.enable_grad(), dt_scope(_hs):
+            ipf_set(xm, Fm)
+            xn, pn, vn, _, _, _, dmg_e, idx_e, fe_r, _jf = step_once(
+                d, t0 + t, gsel, pm, xm, vm, need_J=False, dmg=_SM["dmg"],
+                idx_prev=_SM["idx"], x0=_x0e, p0=_p0e, fe=_SM["fe"])
+            Em, _dl, _Ftr, _ = ip_of(xm, xn - xm, vm, Fm, _m, _vol, _cfg, _hs, _ng, _gl, g=_gv, norm=_nrm, jac=_jf)
+        _DET_LAST[0] = None
+        with torch.no_grad():
+            Fn = phys_resid.plastic_step(_Ftr, _dl).detach().float()
+        xm, vm, pm = xn.detach(), _pg_vdamp(vn.detach(), d, _hs), pn.detach()
+        Fm = Fn
+        _SM = dict(dmg=dmg_e, idx=idx_e, fe=fe_r)
+        _set_rg(True)
+        gt = take(d["x"][t0 + t + 1], gsel)
+        em = DM.frame_err(xm, gt, _ext)
+        dmo = float((xm - _tgt).norm(dim=-1).mean()) / _ext        # 모델 상태 t+1 vs 출력만 최적화 상태 t+1
+        rec = dict(t=t, iters=_it, E_before=E0, E_after=E1, Eu_before=Eu0, Eu_after=Eu1, det_before=D0, det_after=D1,
+                   out_err_before=O0, out_err_after=O1, pos_err_model=em, dist_model_ov=dmo, E_model_step=float(Em),
+                   ov_err=DM.frame_err(_tgt, gt, _ext), gnorm_last=gns[-1] if gns else None,
+                   gnorm_mean_last100=(float(np.mean(gns[-100:])) if gns else None), curve=curve,
+                   sec=time.time() - _tf)
+        _recs.append(rec)
+        _f = os.path.join(_fd, f"frame_{t:02d}.pt")
+        torch.save({"t": t, "iters": _it, "net": net.state_dict(), "opt": _opt.state_dict(),
+                    "state_in": _state_in,
+                    "state_out": dict(x=xm.cpu(), v=vm.cpu(), F=Fm.cpu(), p=pm.cpu(), dmg=_SM["dmg"], idx=_SM["idx"], fe=_SM["fe"]),
+                    "rec": rec, "n_feat": n_feat, "args": vars(a), "aidx": AIDX.cpu(), "H": H, "EXT": _ext,
+                    "net_ext0": _EXT0, "frame_dt": FRAME_DT, "dump": _dp}, _f + ".tmp")
+        os.replace(_f + ".tmp", _f)
+        json.dump(_recs, open(_rp + ".tmp", "w")); os.replace(_rp + ".tmp", _rp)
+        if _r2:
+            _sp_.Popen(["rclone", "copyto", _f, f"{_r2}/frames/frame_{t:02d}.pt", "-q"])
+            _sp_.Popen(["rclone", "copyto", _rp, f"{_r2}/records.json", "-q"])
+        print(f"    [프레임별 맞춤] 프레임 {t + 1}/{_nf}  E {E0:.4e} -> {E1:.4e}  출력오차 {100 * O0:.3f}% -> {100 * O1:.3f}%  "
+              f"모델 위치오차 {100 * em:.3f}%  모델-출력만최적화 {100 * dmo:.3f}%  기울기 {rec['gnorm_mean_last100'] or 0:.2e}  "
+              f"프레임 {time.time() - _tf:.0f} s 누적 {time.time() - _tw:.0f} s", flush=True)
+    # 롤아웃 덤프 (AF_ROLL_DUMP 형식): 프레임 파일의 state_out 에서
+    if len(_recs) == _nf:
+        _pr, _vv, _Fv = [], [], []
+        for t in range(_nf):
+            so = torch.load(os.path.join(_fd, f"frame_{t:02d}.pt"), map_location="cpu", weights_only=False)["state_out"]
+            _pr.append(so["x"].float()); _vv.append(so["v"].float()); _Fv.append(so["F"].float())
+        _rd = os.path.join(_out, "roll_pf.pt")
+        torch.save({"pred": torch.stack(_pr), "gt": torch.stack([take(d["x"][t0 + i + 1], gsel).cpu() for i in range(_nf)]),
+                    "x0": d["x"][t0].to(dev).float().cpu(), "ctrl_pos": d.get("ctrl_pos"), "ctrl_R": d.get("ctrl_R"),
+                    "ctrl_id": d.get("ctrl_id"), "t0": t0, "tag": d.get("tag", ""), "nodes": None, "fscal": None,
+                    "gt_fscal": None, "EXT": float(d.get("_ext", EXT)), "F": torch.stack(_Fv), "v": torch.stack(_vv)}, _rd + ".tmp")
+        os.replace(_rd + ".tmp", _rd)
+        _pe = [r_["pos_err_model"] for r_ in _recs]
+        print(f"[프레임별 맞춤 끝] {_nf} 프레임, 모델 위치 오차 평균 {100 * np.mean(_pe):.3f}%  덤프 {_rd}", flush=True)
+        print("PERFRAME_FIT_DONE", flush=True)
+
+
 @torch.no_grad()        # <- _ov_frame 을 위에 끼우면서 이 데코레이터를 빼앗았다.
 def rollout(d, t0, L, gsel=None):   #    평가가 그래프를 쌓아 메모리가 터진다.
     with traj_scope(d):
@@ -6125,6 +6312,9 @@ def _rollout(d, t0, L, gsel=None):
         _tb.close()
         _DPN_LIVE[0] = None
         net.requires_grad_(False)
+    if os.environ.get("AF_PERFRAME_FIT") and not _NODE_FIT_DONE[0]:
+        _perframe_fit(d, t0, L, gsel, x, v, p)
+        raise SystemExit(0)
     if os.environ.get("AF_NODE_FIT") or os.environ.get("AF_ROLL_NOGRAD"):
         # 롤아웃은 고정 망 -- 파라미터 기울기를 끄지 않으면 enable_grad 안에서 층마다 활성값을 들고 있어 큰 망이 OOM
         net.requires_grad_(False)
