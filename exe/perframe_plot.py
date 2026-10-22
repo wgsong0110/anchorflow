@@ -26,7 +26,7 @@ import numpy as np  # noqa: E402
 plt.rcParams["font.family"] = "Noto Sans CJK KR"
 plt.rcParams["axes.unicode_minus"] = False
 U, OUT = sys.argv[1], sys.argv[2]
-TR = ("L000", "0004")
+TR = [T for T in ("0004", "L000") if any(os.path.exists(os.path.join(U, f"n{N}", T, "records.json")) for N in (1000, 3000))]
 C_PF = {1000: "#2a78d6", 3000: "#1c5cab"}
 C_OV, C_MM = "#eb6834", "#1baf7a"
 INK, MUTED = "#2b2b2b", "#8a8a85"
@@ -36,7 +36,7 @@ def J(p, default=None):
     return json.load(open(p)) if os.path.exists(p) else default
 
 
-fig, ax = plt.subplots(4, 2, figsize=(14, 15), sharex=True, sharey="row")
+fig, ax = plt.subplots(4, len(TR), figsize=(7 * len(TR), 15), sharex=True, sharey="row", squeeze=False)
 for c, T in enumerate(TR):
     E = {r["state"]: r["E_min"] for r in J(os.path.join(U, f"estar_{T}.json"), [])}
     me = J(os.path.join(U, f"multi_err_{T}.json"), [])
@@ -63,14 +63,14 @@ for c, T in enumerate(TR):
             ax[2, c].plot(t + 1, oe, color=C_OV, lw=2.0, label=f"출력만 최적화 (평균 {oe.mean():.2f}%)")
             if me:
                 ax[2, c].plot(np.arange(1, len(me) + 1), 100 * np.array(me), color=C_MM, lw=2.0,
-                              label=f"다섯 궤적 학습 모델 (평균 {100 * np.mean(me):.2f}%)")
+                              label=f"다섯 궤적 학습 모델, 망 출력만 (평균 {100 * np.mean(me):.2f}%)")
             ov_drawn = True
         ax[3, c].plot(t + 1, 100 * np.array([r["dist_model_ov"] for r in R]), **ls_a, label=f"{N} 반복")
     ax[0, c].set_title(f"{T}" + (" (다섯 궤적 학습에 안 쓴 궤적)" if T == "0004" else " (다섯 궤적 학습에 쓴 궤적)"), color=INK)
 for r_, (yl, lg) in enumerate([("E/E* − 1 (%)  [출력만 최적화 상태 t]", True), ("출력 오차 (%)  [망 한 스텝 vs 출력만 최적화 다음 상태]", False),
                               ("위치 오차 (%)  [정답 대비]", False), ("모델 롤아웃 − 출력만 최적화 상태 거리 (%)", False)]):
     ax[r_, 0].set_ylabel(yl, color=INK)
-    for c in range(2):
+    for c in range(len(TR)):
         a_ = ax[r_, c]
         if lg:
             a_.set_yscale("log")
@@ -81,9 +81,9 @@ for r_, (yl, lg) in enumerate([("E/E* − 1 (%)  [출력만 최적화 상태 t]"
             a_.spines[s].set_color(MUTED)
         a_.tick_params(colors=INK)
         a_.legend(fontsize=9, frameon=False)
-for c in range(2):
+for c in range(len(TR)):
     ax[3, c].set_xlabel("프레임", color=INK)
-fig.suptitle("프레임별 맞춤: 프레임 t 의 출력만 최적화 상태 하나로 망 갱신 → 모델 자신의 상태에서 한 스텝", color=INK, fontsize=14)
-fig.tight_layout(rect=(0, 0, 1, 0.97))
+fig.suptitle("프레임별 맞춤 (관성 예측 없음, 망 출력만)\n프레임 t 의 출력만 최적화 상태 하나로 망 갱신 → 모델 자신의 상태에서 한 스텝", color=INK, fontsize=14)
+fig.tight_layout(rect=(0, 0, 1, 0.95))
 fig.savefig(OUT, dpi=110)
 print("저장", OUT)

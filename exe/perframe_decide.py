@@ -6,7 +6,7 @@
     정체율 = (g80 - g100) / g80   (마지막 20% 반복에서 E - E* 가 줄어든 비율; g80 <= 0 이면 0)
   정체율 중앙값(두 궤적 전 프레임) < 0.05 이면 "충분"(DECISION n1000), 아니면 DECISION n3000.
 요약 (--summary): 반복 수별·궤적별 위치 오차 평균(기존 출력만 최적화·다섯 궤적 학습과 비교), E - E*, 출력 오차, 모델-출력만최적화 거리.
-  다섯 궤적 모델의 프레임별 위치 오차는 lego_psi_spstick/roll_mm_T.pt (pred vs gt) 로 다시 재서 multi_err_T.json 에 쓴다.
+  다섯 궤적 모델(--net_inertial 없음, lbours/noinertial)의 프레임별 위치 오차는 roll_noinertial_multi_T.pt (pred vs gt) 로 다시 재서 multi_err_T.json 에 쓴다.
 """
 import argparse
 import json
@@ -20,9 +20,11 @@ ap.add_argument("--n", type=int, default=1000)
 ap.add_argument("--min_frames", type=int, default=10)
 ap.add_argument("--summary", action="store_true")
 ap.add_argument("--thr", type=float, default=0.05)
+ap.add_argument("--trajs", default="L000,0004")
 a = ap.parse_args()
-TR = ("L000", "0004")
-REF = {"L000": (11.47, 12.21), "0004": (6.92, 25.57)}
+TR = tuple(a.trajs.split(","))
+# (출력만 최적화, spstick 다섯 궤적 = 관성 예측 + 망, noinertial 다섯 궤적 = 망 출력만)
+REF = {"L000": (11.47, 12.21, 13.26), "0004": (6.92, 25.57, 24.82)}
 
 
 def load(T, N):
@@ -76,7 +78,7 @@ out = {}
 for T in TR:
     mp = os.path.join(a.u, f"multi_err_{T}.json")
     if not os.path.exists(mp):
-        D = torch.load(f"/home/dkta/work/lbours/lego_psi_spstick/roll_mm_{T}.pt", map_location="cpu", weights_only=False)
+        D = torch.load(f"/home/dkta/work/lbours/noinertial/roll_noinertial_multi_{T}.pt", map_location="cpu", weights_only=False)
         ext = float(D["EXT"])
         me = [float((D["pred"][i].float() - D["gt"][i].float()).norm(dim=-1).mean()) / ext for i in range(D["pred"].shape[0])]
         json.dump(me, open(mp, "w"))
@@ -100,9 +102,9 @@ for T in TR:
                                 excess_before_median=float(np.median(exb)) if exb else None,
                                 stall_median=float(np.median(st)) if st else None)
         o = out[f"{T}_n{N}"]
-        print(f"[{T} 반복 {N}] {o['frames']} 프레임  위치 오차 평균 {o['pos_err_mean']:.2f}% (출력만 최적화 {REF[T][0]}%, 다섯 궤적 {REF[T][1]}%; "
+        print(f"[{T} 반복 {N}] {o['frames']} 프레임  위치 오차 평균 {o['pos_err_mean']:.2f}% (출력만 최적화 {REF[T][0]}%, 다섯 궤적 망 출력만 {REF[T][2]}%, 관성 예측 + 망 {REF[T][1]}%; "
               f"다시 잰 값 {o['ov_err_mean']:.2f}%/{o['multi_err_mean']:.2f}%)  출력 오차 {o['out_err_before_mean']:.3f}% -> {o['out_err_after_mean']:.3f}%  "
               f"E-E* 초과 중앙 {o['excess_before_median']}% -> {o['excess_after_median']}%  모델-출력만최적화 거리 평균 {o['dist_model_ov_mean']:.2f}%  "
               f"정체율 중앙 {o['stall_median']}")
-json.dump(out, open(os.path.join(a.u, "summary.json"), "w"), ensure_ascii=False, indent=1)
+json.dump(out, open(os.path.join(a.u, f"summary_{a.trajs.replace(',', '_')}.json"), "w"), ensure_ascii=False, indent=1)
 print("SUMMARY_DONE")
