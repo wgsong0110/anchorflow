@@ -524,9 +524,11 @@ ap.add_argument("--ov_init_std", type=float, default=1e-3)
 ap.add_argument("--ov_vars", choices=["out", "net"], default="out",
                 help="--ov_roll 의 변수: out=노드 출력(출력만 최적화, 기본), net=망 파라미터 -- 같은 증분 포텐셜·장벽을 "
                      "프레임마다 망 파라미터로 내린다 (한 궤적 과적합; 파라미터는 프레임 사이에 이어진다)")
-ap.add_argument("--ov_obj", choices=["ip", "l2", "node"], default="ip",
+ap.add_argument("--ov_obj", choices=["ip", "l2", "node", "newton"], default="ip",
                 help="--ov_roll 의 프레임별 목적함수: ip=증분 포텐셜(기본), l2=다음 프레임 정답 위치와의 평균 L2 / EXT² (장벽 없음), "
-                     "node=노드 출력을 다른 실행(출력만 최적화)의 노드 출력에 맞춘다 (AF_OV_NODE_TGT=그 롤아웃 덤프; 상태도 그 덤프로 매 프레임 맞춘다)")
+                     "node=노드 출력을 다른 실행(출력만 최적화)의 노드 출력에 맞춘다 (AF_OV_NODE_TGT=그 롤아웃 덤프; 상태도 그 덤프로 매 프레임 맞춘다), "
+                     "newton=뉴턴 목표 L2 (--ov_vars net 전용): 망 노드 변위 u 에서 증분 포텐셜의 감쇠 뉴턴 걸음 d=-(H+λI)⁻¹g (CG, 음곡률 직전까지) 로 "
+                     "목표 u_t=sg(u+d), 손실 Σ M_i|u_i-u_t,i|²/ΣM_i (노드 질량 = 입자 질량의 barycentric 합) -- AF_OV_NEWTON_EVERY·_CG·_DAMP")
 ap.add_argument("--integrator", choices=["be", "midpoint"], default="be",
                 help="--ov_roll 의 시간 적분기: be=후퇴 오일러(기본, 프레임당 증분 포텐셜 한 번), midpoint=암시적 중점법 -- "
                      "같은 증분 포텐셜을 h/2 로 풀어 중점 y 를 구하고 x_{n+1}=2y-x_n, v_{n+1}=(4/h)(y-x_n)-v_n, "
@@ -1224,6 +1226,12 @@ def free_mask(d, n, device, gsel, x=None, t=0):
 _NODE_FIT_DONE = [False]
 _DPN_LIVE = [None]         # (노드 위치, 노드 출력) -- 마지막 step_once 의 것, 기울기 유지
 _NODE_TGT = None           # --ov_obj node: 목표 롤아웃 덤프 (pred·v·F·nodes)
+# AF_OV_L2_TGT=롤아웃 덤프 (사용자 10-22): --ov_obj l2 의 목표를 정답 다음 프레임 대신 그 덤프(출력만 최적화)의 **같은 프레임 번호** 다음 상태 위치
+# pred[t - t0] 로 (모델 상태가 덤프 상태와 갈라져도 목표는 덤프의 것). 없으면 기존 l2 그대로 (정답 다음 프레임)
+_L2_TGT = (torch.load(os.environ["AF_OV_L2_TGT"], map_location="cpu", weights_only=False)
+           if os.environ.get("AF_OV_L2_TGT") else None)
+_EIP_LAST = [None]         # _ov_once._fwd 의 증분 포텐셜 (목적함수 바꾸기 전 값) -- AF_OVNET_FIT 기록용
+_NEWTON_LOG = []           # --ov_obj newton: 목표를 만들 때마다 (반복, CG 횟수, 음곡률, 잔차, 시간, ...) -- AF_OVNET_FIT 가 프레임마다 비운다
 if os.environ.get("AF_OV_NODE_TGT"):
     _NODE_TGT = torch.load(os.environ["AF_OV_NODE_TGT"], map_location="cpu", weights_only=False)
 # AF_OV_CONT=덤프:s (사용자 10-21 "모델이 멈춘 프레임 상태에서 출력만 최적화로 이어 굴리기"): 덤프(pred·v·F, [L,N,..], pred[k] = 프레임 k+1)
@@ -4380,6 +4388,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     st, E0, E1 = {}, None, None
     _E0, _tr = [None], []
     _trp = []                  # 항별 곡선 [(관성, 탄성, 접촉), ...]
+    _NTG = [None]              # --ov_obj newton: (목표 노드 변위 u_t [M,3], 노드 질량 [M])
 
     def _fwd():
         with torch.enable_grad(), dt_scope(_DT[0]):
@@ -4452,7 +4461,14 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             _mu1, _ = phys_resid.lame(cfg["E"], cfg["nu"])
             _mu1 = float(_mu1.float().mean()) if torch.is_tensor(_mu1) else float(_mu1)
             E = E + WF.barrier_energy(_c1c, _c1v, a.c1_barrier * _mu1, a.c1_jhat) / nrm
-        if a.ov_obj == "node":                  # 노드 출력을 목표 실행의 같은 프레임 노드 출력에 (같은 상태라 격자가 같다)
+        _EIP_LAST[0] = E.detach()
+        if a.ov_obj == "newton" and _NTG[0] is not None:     # 뉴턴 목표 L2: 망 노드 변위(관성 예측 + 망 출력)를 목표로
+            _ut, _Mn = _NTG[0]
+            _dpl = _DPN_LIVE[0][1][:, :3]
+            if _dpl.shape != _ut.shape:
+                raise SystemExit(f"--ov_obj newton: 노드 수가 목표와 다르다 {tuple(_dpl.shape)} vs {tuple(_ut.shape)}")
+            E = (_Mn.unsqueeze(-1) * (_dpl - _ut) ** 2).sum() / _Mn.sum()
+        if a.ov_obj == "node":                 # 노드 출력을 목표 실행의 같은 프레임 노드 출력에 (같은 상태라 격자가 같다)
             _np, _dp = _DPN_LIVE[0]
             _tn = _NODE_TGT["nodes"][int(t) - int(_NODE_TGT.get("t0", 0))]
             _tp, _td = _tn[0].to(dev), _tn[1].to(dev)
@@ -4460,8 +4476,14 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 raise SystemExit(f"--ov_obj node: t={t} 노드가 목표와 다르다 ({tuple(_np.shape)} vs {tuple(_tp.shape)})")
             E = ((_dp[:, :3] - _td[:, :3].to(_dp.dtype)) ** 2).sum(-1).mean() / (EXT ** 2)
         if a.ov_obj == "l2":                    # 정답 다음 프레임 위치와의 L2 (장벽·물리 없음)
-            _xt = take(d["x"][min(t + 1, d["x"].shape[0] - 1)], gsel).to(x2.dtype)
-            E = ((x2 - _xt) ** 2).sum(-1).mean() / (EXT ** 2)
+            if _L2_TGT is not None:             # AF_OV_L2_TGT: 출력만 최적화 덤프의 같은 프레임 번호 다음 상태
+                _li = int(t) - int(_L2_TGT.get("t0", 0))
+                if not (0 <= _li < _L2_TGT["pred"].shape[0]) or tuple(_L2_TGT["pred"].shape[1:]) != tuple(x2.shape):
+                    raise SystemExit(f"AF_OV_L2_TGT: t={t} 색인 {_li} / 덤프 {tuple(_L2_TGT['pred'].shape)} vs 입자 {tuple(x2.shape)}")
+                _xt = _L2_TGT["pred"][_li].to(dev, x2.dtype)
+            else:
+                _xt = take(d["x"][min(t + 1, d["x"].shape[0] - 1)], gsel).to(x2.dtype)
+            E =((x2 - _xt) ** 2).sum(-1).mean() / (EXT ** 2)
         if a.hex_hg > 0 and _HG_LAST[0] is not None:
             _dh, _c8, _lt = _HG_LAST[0]
             E = E + _hex_hg_energy(_dh, _c8, _lt, cfg, a.hex_hg) / nrm
@@ -4938,7 +4960,12 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _SNAP_N[0] = max(_SNAP_N[0], _nb)
             E0 = _E0[0]
         else:
+            if a.ov_obj == "newton" and a.ov_vars != "net":
+                raise SystemExit("--ov_obj newton 은 --ov_vars net 과만")
+            _nev = int(os.environ.get("AF_OV_NEWTON_EVERY", "50"))
             for _k in range(a.ov_roll):
+                if a.ov_obj == "newton" and _k % _nev == 0:
+                    _newton_target(_fwd, _NTG, m, nrm, _k, t)
                 _, _, E, _, _, _pt, _ = _fwd()
                 if st.get("ov_opt") is None:
                     _vs = [q for q in (st.get("ov") or []) if q is not None]
@@ -5033,6 +5060,64 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     if _CURVE is not None:
         _CURVE.append((int(t), _tr, _trp))
     return x2.detach(), v2.detach(), _Jd.detach()
+
+
+def _newton_target(_fwd, _NTG, m, nrm, k, t):
+    """--ov_obj newton: 지금 망의 노드 변위 U0 (관성 예측 + 망 출력) 에서 증분 포텐셜(_fwd 의 E 그대로, 목적함수 바꾸기 전)의
+    노드 변위 기울기 g 와 헤시안-벡터 곱(--ip_feat/vargrad 와 같은 탐침 "fixed" + hess_mode 경로, 그래프 한 번 만들고 재사용)으로
+    (H + λI) p = g 를 CG 로 풀어 (최대 AF_OV_NEWTON_CG 회, 상대 잔차 1e-6, 음곡률 dHd<=0 이면 그 직전 p) 목표 u_t = sg(U0 - p).
+    λ = AF_OV_NEWTON_DAMP x 평균(노드 질량)/h² (관성 항 헤시안 대각의 평균 크기 기준). 노드 질량 M_i = Σ_p m_p λ_pi (관성 항과 같은 질량)."""
+    _t0 = time.time()
+    _NTG[0] = None
+    _fwd()                                                  # 지금 망 출력 (격자·특징은 이 프레임 것 그대로 붙잡혀 있다)
+    U0 = _DPN_LIVE[0][1].detach().clone()
+    _ens = _NF_HOLD[0]
+    if not isinstance(_ens, (list, tuple)) or len(_ens) != 1:
+        raise SystemExit("--ov_obj newton: 격자 한 벌(앙상블 없음)만")
+    _rw, _lm = _ens[0][3], _ens[0][4]
+    Mn = torch.zeros(U0.shape[0], device=dev, dtype=torch.float32).index_add_(
+        0, _rw.reshape(-1), (m.float().unsqueeze(-1) * _lm.float()).reshape(-1))
+    h_ = float(_DT[0])
+    lam = float(os.environ.get("AF_OV_NEWTON_DAMP", "1e-3")) * float(Mn[Mn > 0].mean()) / (h_ * h_)
+    ncg = int(os.environ.get("AF_OV_NEWTON_CG", "50"))
+    Z = torch.zeros_like(U0).requires_grad_(True)
+    _sv = (_DP_FAST[0], DM.PROBE[0], DM.PROBE[1])
+    _DP_FAST[0] = lambda _n, _dt, _dev: (U0,)
+    DM.PROBE[0], DM.PROBE[1] = "fixed", [Z]
+    try:
+        with torch.enable_grad(), phys_resid.hess_mode():
+            EJ = _fwd()[2] * nrm
+            g = torch.autograd.grad(EJ, Z, create_graph=True)[0]
+            gd = g.detach()
+
+            def _hvp(vec):
+                return torch.autograd.grad((g * vec).sum(), Z, retain_graph=True)[0].detach() + lam * vec
+            p_ = torch.zeros_like(gd); r_ = gd.clone(); d_ = r_.clone(); rr = float((r_ * r_).sum()); g2 = max(rr, 1e-60)
+            neg, kk, dHd = False, 0, float("nan")
+            for kk in range(1, ncg + 1):
+                Hd = _hvp(d_)
+                dHd = float((d_ * Hd).sum())
+                if not dHd > 0:
+                    neg = True
+                    kk -= 1
+                    break
+                al = rr / dHd
+                p_ = p_ + al * d_
+                r_ = r_ - al * Hd
+                rr2 = float((r_ * r_).sum())
+                if rr2 / g2 < 1e-12:
+                    rr = rr2
+                    break
+                d_ = r_ + (rr2 / rr) * d_
+                rr = rr2
+            qdrop = float((gd * p_).sum()) - 0.5 * float((p_ * (_hvp(p_) - lam * p_)).sum()) if kk > 0 else 0.0
+        del g
+    finally:
+        _DP_FAST[0], DM.PROBE[0], DM.PROBE[1] = _sv
+    _NTG[0] = ((U0 - p_)[:, :3].detach(), Mn)
+    _NEWTON_LOG.append(dict(t=int(t), k=int(k), E=float(EJ) / nrm, cg=int(kk), neg=bool(neg), res=(rr / g2) ** 0.5,
+                            step_rms=float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT), lam=lam,
+                            qdrop_rel=qdrop / max(abs(float(EJ)), 1e-30), sec=time.time() - _t0))
 
 
 # 앙상블 오프셋 (셀의 분수). 첫 번째는 원점이고 나머지는 고르게 흩어 놓는다.
@@ -5566,8 +5651,140 @@ def _perframe_fit(d, t0, L, gsel, x, v, p):
         print("PERFRAME_FIT_DONE", flush=True)
 
 
+def _ovnet_fit(d, t0, L, gsel, x, v, p):
+    """망 파라미터 프레임별 최적화 (--ov_vars net) 를 프레임 파일·이어 돌기·E* 와 함께 (사용자 10-22, pf3obj).
+
+    프레임마다 하는 일은 메인 롤아웃의 --ov_roll 분기와 **같은 호출**이다: _ov_frame(d, t0+i, gsel, p, x, v, F_ov)
+    (모델 자신의 롤아웃 상태에서 망 파라미터를 그 프레임 목적함수 --ov_obj 로 --ov_roll 회 --ov_opt 로 내리고, 그 망 출력으로
+    한 스텝; 망은 프레임 사이에 이어지고 최적화기는 프레임마다 새로 -- 예전 B3i/B3j 그대로). 여기서 더하는 것은 기록뿐:
+      AF_OVNET_FIT=출력디렉토리  (AF_OVNET_R2=R2 디렉토리, AF_OVNET_ESTAR=출력만최적화 L-BFGS 반복(기본 500, 0 이면 E* 안 함),
+                                  AF_OVNET_REF=출력만 최적화 롤아웃 덤프 (모델-출력만최적화 거리·그 오차 기록용), AF_OVNET_CURVE_EVERY=10)
+      프레임 i: 목적함수 곡선(반복별, AF_OV_CURVE 의 것), 최종 증분 포텐셜 E (목적함수가 l2 여도 같은 출력에서 잰 증분 포텐셜),
+                E* = 같은 모델 상태에서 출력만 최적화(--ov_vars out --ov_opt lbfgs --ov_roll AF_OVNET_ESTAR --ov_obj ip, 관성 예측 시작;
+                spstick 출력만 최적화 실행과 같은 _ov_frame 경로)로 푼 최솟값, 위치 오차(정답 대비), 망 파라미터, 모델 상태 전/후
+      -> frames/frame_{i:02d}.pt, records.json, 끝나면 roll_net.pt (AF_ROLL_DUMP 형식, F float32)
+    이어 돌기: frames/ 의 마지막 프레임 파일에서 망·모델 상태를 읽어 다음 프레임부터.
+    """
+    import subprocess as _sp_
+    if not (a.ov_roll > 0 and a.ov_vars == "net"):
+        raise SystemExit("AF_OVNET_FIT 는 --ov_roll N --ov_vars net 과 함께")
+    if EVAL_SUB != 1 or a.integrator != "be" or a.cmp_lin:
+        raise SystemExit("AF_OVNET_FIT: 서브스텝 1·후퇴 오일러만")
+    if _CURVE is None:
+        raise SystemExit("AF_OVNET_FIT: 목적함수 곡선을 위해 AF_OV_CURVE 가 필요하다")
+    _out = os.environ["AF_OVNET_FIT"]; _r2 = os.environ.get("AF_OVNET_R2")
+    _nes = int(os.environ.get("AF_OVNET_ESTAR", "500")); _cev = int(os.environ.get("AF_OVNET_CURVE_EVERY", "10"))
+    _fd = os.path.join(_out, "frames"); os.makedirs(_fd, exist_ok=True)
+    _REF = (torch.load(os.environ["AF_OVNET_REF"], map_location="cpu", weights_only=False)
+            if os.environ.get("AF_OVNET_REF") else None)
+    _ext = float(EXT)
+    _hs = FRAME_DT / EVAL_SUB
+    _F0 = take(traj_F(d)[t0], gsel).float()
+    _rp = os.path.join(_out, "records.json")
+    _done = sorted(int(f_[6:8]) for f_ in os.listdir(_fd) if f_.startswith("frame_") and f_.endswith(".pt"))
+    _recs = []
+    if _done:
+        _t1 = _done[-1]
+        _c = torch.load(os.path.join(_fd, f"frame_{_t1:02d}.pt"), map_location=dev, weights_only=False)
+        net.load_state_dict(_c["net"])
+        so = _c["state_out"]
+        xm, vm, Fm = so["x"].to(dev), so["v"].to(dev), so["F"].to(dev)
+        _recs = [r_ for r_ in json.load(open(_rp)) if r_["t"] <= _t1] if os.path.exists(_rp) else []
+        if len(_recs) != _t1 + 1:
+            raise SystemExit(f"[망 프레임별] records.json 프레임 수 {len(_recs)} 가 마지막 프레임 파일 {_t1} 과 맞지 않는다")
+        _ts = _t1 + 1
+        print(f"    [망 프레임별] 이어 돈다: frame_{_t1:02d}.pt -> 프레임 {_ts} 부터", flush=True)
+    else:
+        _ts = 0
+        xm, vm, Fm = x.clone(), v.clone(), _F0.clone()
+    print(f"    [망 프레임별] 목적함수 {a.ov_obj}{' (목표 = ' + os.environ['AF_OV_L2_TGT'] + ')' if a.ov_obj == 'l2' and _L2_TGT is not None else ''}, "
+          f"{a.ov_opt} {a.ov_roll} 회/프레임 (lr {a.out_var_lr:g}), E* 출력만 최적화 L-BFGS {_nes}, 프레임 {_ts}..{L - 1}", flush=True)
+    _tw = time.time()
+    for i in range(_ts, L):
+        _tf = time.time()
+        _SIM_T[0] = i * FRAME_DT
+        _state_in = dict(x=xm.detach().cpu(), v=vm.detach().cpu(), F=Fm.detach().cpu())
+        _nc = len(_CURVE)
+        with dt_scope(_hs):
+            xn, vn, Fn = _ov_frame(d, t0 + i, gsel, p, xm, vm, Fm)
+        if a.pg_vdamp:
+            vn = _pg_vdamp(vn, d, _hs)
+        elif a.cfg_bc and float(d["cfg"].get("grid_v_damping_scale", 1.1)) < 1.0:
+            vn = vn * float(d["cfg"]["grid_v_damping_scale"])
+        _o0, _o1 = _OV_LOG[-1]                       # 목적함수 처음·끝
+        E_ip = float(_EIP_LAST[0])                   # 끝 출력의 증분 포텐셜
+        if len(_CURVE) != _nc + 1:
+            raise SystemExit(f"[망 프레임별] 곡선 항목 {len(_CURVE) - _nc} 개 (1 이어야)")
+        _ct, _ctr, _ctp = _CURVE.pop()
+        _nlog = list(_NEWTON_LOG); del _NEWTON_LOG[:]
+        _sec_fit = time.time() - _tf
+        # E*: 같은 모델 상태에서 출력만 최적화 (spstick OV 와 같은 플래그로 잠시 바꿔 같은 _ov_frame 경로)
+        Es, Es0, dstar, x_star = None, None, None, None
+        if _nes > 0:
+            _keep = (a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj)
+            try:
+                a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj = "out", "lbfgs", _nes, "ip"
+                with dt_scope(_hs):
+                    x_star, _, _ = _ov_frame(d, t0 + i, gsel, p, xm, vm, Fm)
+            finally:
+                a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj = _keep
+            Es0, Es = (float(q) for q in _OV_LOG[-1])
+            if len(_CURVE) > _nc:
+                _CURVE.pop()
+            dstar = float((xn - x_star).norm(dim=-1).mean()) / _ext
+        gt = take(d["x"][t0 + i + 1], gsel)
+        em = DM.frame_err(xn, gt, _ext)
+        rec = dict(t=i, obj=a.ov_obj, obj_first=float(_o0), obj_last=float(_o1),
+                   obj_curve=[(k, float(e)) for k, e in enumerate(_ctr) if k % _cev == 0 or k == len(_ctr) - 1] + [(len(_ctr), float(_o1))],
+                   E_ip=E_ip, E_star=Es, E_star_init=Es0, ratio_E_Estar=(E_ip / Es if Es else None),
+                   dist_model_out_vs_star=dstar, pos_err_model=em, sec_fit=_sec_fit, sec=time.time() - _tf)
+        if _nlog:
+            rec["newton"] = dict(n_solves=len(_nlog), every=int(os.environ.get("AF_OV_NEWTON_EVERY", "50")),
+                                 cg_mean=float(np.mean([q["cg"] for q in _nlog])), cg_max=int(max(q["cg"] for q in _nlog)),
+                                 neg_count=int(sum(q["neg"] for q in _nlog)), sec_mean=float(np.mean([q["sec"] for q in _nlog])),
+                                 lam=_nlog[0]["lam"], log=_nlog)
+        if x_star is not None:
+            rec["pos_err_star"] = DM.frame_err(x_star, gt, _ext)
+        if _REF is not None:
+            _rx = _REF["pred"][i].to(dev).float()
+            rec["dist_model_ref"] = float((xn - _rx).norm(dim=-1).mean()) / _ext
+            rec["ref_err"] = DM.frame_err(_rx, gt, _ext)
+        xm, vm, Fm = xn.detach(), vn.detach(), Fn.detach().float()
+        _recs.append(rec)
+        _f = os.path.join(_fd, f"frame_{i:02d}.pt")
+        torch.save({"t": i, "net": net.state_dict(), "state_in": _state_in,
+                    "state_out": dict(x=xm.cpu(), v=vm.cpu(), F=Fm.cpu()),
+                    "x_star": (x_star.detach().cpu() if x_star is not None else None),
+                    "curve": dict(obj=_ctr, terms=_ctp), "newton_log": _nlog, "rec": rec, "n_feat": n_feat, "args": vars(a),
+                    "EXT": _ext, "frame_dt": FRAME_DT, "l2_tgt": os.environ.get("AF_OV_L2_TGT")}, _f + ".tmp")
+        os.replace(_f + ".tmp", _f)
+        json.dump(_recs, open(_rp + ".tmp", "w")); os.replace(_rp + ".tmp", _rp)
+        if _r2:
+            _sp_.Popen(["rclone", "copyto", _f, f"{_r2}/frames/frame_{i:02d}.pt", "-q"])
+            _sp_.Popen(["rclone", "copyto", _rp, f"{_r2}/records.json", "-q"])
+        print(f"    [망 프레임별] 프레임 {i + 1}/{L}  목적함수 {_o0:.4e} -> {_o1:.4e}  E {E_ip:.4e}"
+              + (f"  E* {Es:.4e}  E/E* {E_ip / Es:.3f}  출력-E*해 {100 * dstar:.3f}%" if Es else "")
+              + f"  위치오차 {100 * em:.3f}%" + (f" (E*해 {100 * rec['pos_err_star']:.3f}%)" if x_star is not None else "")
+              + (f"  모델-출력만최적화 {100 * rec['dist_model_ref']:.3f}%" if _REF is not None else "")
+              + f"  맞춤 {_sec_fit:.0f} s 프레임 {rec['sec']:.0f} s 누적 {time.time() - _tw:.0f} s", flush=True)
+    if len(_recs) == L:
+        _pr, _vv, _Fv = [], [], []
+        for i in range(L):
+            so = torch.load(os.path.join(_fd, f"frame_{i:02d}.pt"), map_location="cpu", weights_only=False)["state_out"]
+            _pr.append(so["x"].float()); _vv.append(so["v"].float()); _Fv.append(so["F"].float())
+        _rd = os.path.join(_out, "roll_net.pt")
+        torch.save({"pred": torch.stack(_pr), "gt": torch.stack([take(d["x"][t0 + i + 1], gsel).cpu() for i in range(L)]),
+                    "x0": d["x"][t0].to(dev).float().cpu(), "ctrl_pos": d.get("ctrl_pos"), "ctrl_R": d.get("ctrl_R"),
+                    "ctrl_id": d.get("ctrl_id"), "t0": t0, "tag": d.get("tag", ""), "nodes": None, "fscal": None,
+                    "gt_fscal": None, "EXT": float(d.get("_ext", EXT)), "F": torch.stack(_Fv), "v": torch.stack(_vv)}, _rd + ".tmp")
+        os.replace(_rd + ".tmp", _rd)
+        _pe = [r_["pos_err_model"] for r_ in _recs]
+        print(f"[망 프레임별 끝] {L} 프레임, 위치 오차 평균 {100 * np.mean(_pe):.3f}%  덤프 {_rd}", flush=True)
+        print("OVNET_FIT_DONE", flush=True)
+
+
 @torch.no_grad()        # <- _ov_frame 을 위에 끼우면서 이 데코레이터를 빼앗았다.
-def rollout(d, t0, L, gsel=None):   #    평가가 그래프를 쌓아 메모리가 터진다.
+def rollout(d, t0, L, gsel=None):  #    평가가 그래프를 쌓아 메모리가 터진다.
     with traj_scope(d):
         if os.environ.get("AF_TORCH_PROF"):
             from torch.profiler import profile, ProfilerActivity
@@ -6314,6 +6531,9 @@ def _rollout(d, t0, L, gsel=None):
         net.requires_grad_(False)
     if os.environ.get("AF_PERFRAME_FIT") and not _NODE_FIT_DONE[0]:
         _perframe_fit(d, t0, L, gsel, x, v, p)
+        raise SystemExit(0)
+    if os.environ.get("AF_OVNET_FIT"):
+        _ovnet_fit(d, t0, L, gsel, x, v, p)
         raise SystemExit(0)
     if os.environ.get("AF_NODE_FIT") or os.environ.get("AF_ROLL_NOGRAD"):
         # 롤아웃은 고정 망 -- 파라미터 기울기를 끄지 않으면 enable_grad 안에서 층마다 활성값을 들고 있어 큰 망이 OOM
