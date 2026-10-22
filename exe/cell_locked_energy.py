@@ -46,7 +46,7 @@ ap.add_argument("--vol_pt", required=True, help="입자 부피용 F_pg_v0.pt (cf
 ap.add_argument("--node_h", type=float, required=True)
 ap.add_argument("--hz_ratio", type=float, default=SX.HZ_CUBE)
 ap.add_argument("--n_nodes", type=float, default=32)
-ap.add_argument("--traj", action="append", required=True, help="키:이름:색:h5|dump:경로 (첫 번째가 정답 h5)")
+ap.add_argument("--traj", action="append", required=True, help="키:이름:색:h5|dump|dump_nonode:경로 (첫 번째가 정답 h5)")
 ap.add_argument("--out", required=True)
 ap.add_argument("--energy_json", default="", help="검산용 기존 에너지 (ficus_c1/energy.json: 라벨별 E 1..125)")
 ap.add_argument("--energy_keys", default="gt=정답 (PG),lin=선형 (기존 bary),c1=C1 N1")
@@ -293,8 +293,11 @@ def load_traj(t):
         I = torch.eye(3).expand(D["F"].shape[1], 3, 3)
         t["X"] = [D["x0"].float()] + [D["pred"][i] for i in range(L)]
         t["F"] = [I] + [D["F"][i] for i in range(L)]
-        t["nodes"] = D.get("nodes")
-        say(f"[{t['key']}] 덤프 F {tuple(D['F'].shape)} {D['F'].dtype}, nodes {'있음' if D.get('nodes') else '없음'}")
+        # dump_nonode: 서브스텝(--eval_dt_sub N>1) 덤프의 nodes 는 그 프레임 **마지막 서브스텝** 격자(_NODE_LAST 덮어쓰기)라
+        # 프레임 시작 위치 격자와 대조할 수 없다 -> 노드 대조만 끈다 (셀 분할 정의는 같다: 프레임 현재 위치에 새로 깐다)
+        t["nodes"] = None if t["kind"] == "dump_nonode" else D.get("nodes")
+        say(f"[{t['key']}] 덤프 F {tuple(D['F'].shape)} {D['F'].dtype}, nodes {'있음' if D.get('nodes') else '없음'}"
+            f"{' (서브스텝 덤프: 노드 대조 안 함)' if t['kind'] == 'dump_nonode' else ''}")
     return t
 
 
