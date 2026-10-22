@@ -5579,6 +5579,10 @@ def _perframe_fit(d, t0, L, gsel, x, v, p):
             if _em is not None and not bool(_em.all()):
                 _Eu = ip_of(xs, x2.detach() - xs, vs, Fs, _m, _vol, _cfg, _hs, _ng, _gl, g=_gv, norm=_nrm,
                             jac=_jf.detach())[0]
+            if os.environ.get("AF_PERFRAME_DEBUG"):
+                print(f"    [진단] grad {grad} 기울기켜짐 {torch.is_grad_enabled()} 망기울기 {any(q.requires_grad for q in net.parameters())} "
+                      f"training {net.training} x2 {x2.requires_grad} jf {None if _jf is None else _jf.requires_grad} E {_E.requires_grad} "
+                      f"DP_FAST {_DP_FAST[0] is not None} DP_HOOK {_DP_HOOK[0] is not None} PROBE {DM.PROBE[0]} INPUT_HOOK {DM.INPUT_HOOK[0] is not None}", flush=True)
             if not grad:
                 _DET_LAST[0] = None
                 return float(_E), float(_dpen), float(_Eu), x2.detach()
