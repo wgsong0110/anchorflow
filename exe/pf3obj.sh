@@ -192,7 +192,11 @@ psi(){ T=$1; g=$2; SD=$3; KL="$4"; D=$U/$SD/$T; mkdir -p $D    # psi <T> <gpu> <
   touch $D/.done; up; }
 job(){ K=$1; T=$2; g=$3; echo "[시작] $K $T GPU$g $(date +%T)"; fitrun $K $T $g && render $K $T $g && touch $U/.done_${K}_$T; echo "[끝] $K $T GPU$g $(date +%T)"; }
 declare -A PIDS GPUOF; PEND=""
-for K in nt nl2 ip l2ov l2gt; do for T in L000 0004; do [ -f $U/.done_${K}_$T ] || PEND="$PEND ${K}_$T"; done; done
+KSF=$W/pf3obj.ks   # 띄울 목적함수 목록 (틱마다 다시 읽는다 -- 짧은 시험이 끝난 목적함수를 나중에 더할 수 있게). 끝은 다섯 개 전부 끝나야
+add_pending(){ local K T; for K in $(cat $KSF 2>/dev/null); do case " ip nt nl2 l2ov l2gt " in *" $K "*) ;; *) echo "[경고] 모르는 목적함수 $K" >&2; continue;; esac
+    for T in L000 0004; do [ -f $U/.done_${K}_$T ] && continue; [ -n "${PIDS[${K}_$T]:-}" ] && continue
+      case " $PEND " in *" ${K}_$T "*) continue;; esac; PEND="$PEND ${K}_$T"; done; done; PEND=$(echo $PEND); }
+add_pending; echo "[목록] $(cat $KSF 2>/dev/null) -> 대기 $PEND" | tee -a $U/gpu.log
 busy(){ local b=""; for k in "${!PIDS[@]}"; do kill -0 ${PIDS[$k]} 2>/dev/null && b="$b ${GPUOF[$k]}"; done; echo $b; }
 launch_pending(){ # 빈 GPU 가 있는 만큼만 띄우고 나머지는 다음 틱으로 (돌고 있는 실행의 GPU 는 뺀다)
   local np="" kt g K T; for kt in $PEND; do
@@ -206,6 +210,7 @@ launch_pending; up
 PSI_L=""; PSI_4=""; NL_L=""; NL_4=""
 while :; do
   sleep 300
+  add_pending
   [ -n "$PEND" ] && { launch_pending; up; }
   for T in L000 0004; do     # 이번 것(nl2)만 따로 psi -> 둘 다 끝나면 PF3OBJ_NL2_DONE
     v=NL_$( [ $T = L000 ] && echo L || echo 4 )
@@ -228,6 +233,10 @@ while :; do
   need=0; [ ! -f $U/psi/L000/.done ] && [ -z "$PSI_L" ] && need=1; [ ! -f $U/psi/0004/.done ] && [ -z "$PSI_4" ] && need=1
   [ ! -f $U/psi_nl2/L000/.done ] && [ -z "$NL_L" ] && need=1; [ ! -f $U/psi_nl2/0004/.done ] && [ -z "$NL_4" ] && need=1
   [ $ok = 1 ] && [ $need = 1 ] && continue
+  if [ $ok = 0 ]; then   # 실패한 실행이 있으면 끝, 아니면 목록에 아직 안 들어온 목적함수를 기다린다
+    nf=0; for K in ip nt nl2 l2ov l2gt; do for T in L000 0004; do [ -n "${PIDS[${K}_$T]:-}" ] && [ ! -f $U/.done_${K}_$T ] && nf=1; done; done
+    [ $nf = 0 ] && { echo "[대기] 목록 $KSF 에 남은 목적함수 $(date '+%F %T')" >> $U/wait.log; continue; }
+  fi
   break
 done
 for K in ip nt nl2 l2ov l2gt; do for T in L000 0004; do [ -f $U/.done_${K}_$T ] || fail "$K $T 실패 (task_${K}_$T.log)"; done; done
