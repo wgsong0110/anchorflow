@@ -5644,10 +5644,11 @@ def _perframe_fit(d, t0, L, gsel, x, v, p):
         gns = []
         for k in range(_it):
             _opt.zero_grad(set_to_none=True)
-            _E, _dpen, _Eu, _ = _one(xs, vs, Fs, t, True)
-            _loss = a.phys_w * _E + _dpen
-            if torch.isfinite(_loss):
-                _loss.backward()
+            with torch.enable_grad():          # rollout() 이 no_grad 라 손실도 기울기 문맥 안에서 만든다
+                _E, _dpen, _Eu, _ = _one(xs, vs, Fs, t, True)
+                _loss = a.phys_w * _E + _dpen
+                if torch.isfinite(_loss):
+                    _loss.backward()
             _gn = float(torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0))
             _opt.step()
             gns.append(_gn)
