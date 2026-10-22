@@ -21,7 +21,8 @@ C=$(git rev-parse --short HEAD); STAGE=${PF3_STAGE:?PF3_STAGE=test 또는 full}
 U=$W/lbours/pf3obj; S=$W/lbours/spstick; NS=$W/lbours/lego_psi_spstick
 WP=$W/wt/psi_d993fb5; RANGE=$W/lbours/lego_psi/range.json
 R=r2:storage/result/anchorflow/lbours/pf3obj; mkdir -p $U
-NEV=${PF3_NEWTON_EVERY:-50}   # 뉴턴 목표를 다시 만드는 간격 (반복) -- 짧은 시험의 풀이 시간으로 정한다
+NEV=${PF3_NEWTON_EVERY:-10}   # 뉴턴 목표를 다시 만드는 간격 (반복): 풀이 1.15 s vs Adam 반복 0.12 s (짧은 시험 823f510) -> 매 반복이면 프레임당 ~40 분(80 프레임 53 h, 잡 남은 시간 초과), 10 이면 ~2 배
+NDAMP=${PF3_NEWTON_DAMP:-1e-2} # 감쇠 = 이 값 x 헤시안 대각 평균 (허친슨)
 if [ -f $U/driver.hb ] && [ $(( $(date +%s) - $(cat $U/driver.hb) )) -lt 300 ]; then echo "[중단] 다른 드라이버가 돌고 있다 (하트비트 5 분 안) $(date)"; exit 0; fi
 echo $$ > $U/driver.pid; date +%s > $U/driver.hb
 ( while true; do date +%s > $U/driver.hb; sleep 120; done ) & HB=$!
@@ -46,7 +47,7 @@ pyargs(){ # pyargs <T> <obj> <출력>
   echo "--infer --data $W/one/$1 --hold_traj $1 --out $3/run --tag OVN $BASE --out_var --ov_init predict $XA $(objx $2) --iters 0 --eval_t0 0 --eval_len 80 --tb none"; }
 fitcmd(){ # fitcmd <T> <obj> <출력> <gpu> [추가 env]
   local T=$1 K=$2 O=$3 g=$4; shift 4
-  local TG=""; [ $K = l2ov ] && TG="AF_OV_L2_TGT=$S/roll_ov_$T.pt"; [ $K = nt ] && TG="AF_OV_NEWTON_EVERY=$NEV AF_OV_NEWTON_CG=50 AF_OV_NEWTON_DAMP=1e-3"
+  local TG=""; [ $K = l2ov ] && TG="AF_OV_L2_TGT=$S/roll_ov_$T.pt"; [ $K = nt ] && TG="AF_OV_NEWTON_EVERY=$NEV AF_OV_NEWTON_CG=50 AF_OV_NEWTON_DAMP=$NDAMP"
   echo "env $* $TG AF_OV_CURVE=$O/curve_unused.json AF_OVNET_FIT=$O AF_OVNET_REF=$S/roll_ov_$T.pt AF_OVNET_ESTAR=500 CUDA_VISIBLE_DEVICES=$g python -u exe/train_deform.py $(pyargs $T $K $O)"; }
 OLDA(){ echo "--infer --data $W/lbours/vid/d_$1 --hold_traj $1 --out RUN --tag OVN $BASE_OLD --out_var --ov_init predict $XA --iters 0 --eval_t0 0 --eval_len 80 --tb none"; }
 tokdiff(){ comm -$1 <(tr ' ' '\n' <<<"$2" | sort) <(tr ' ' '\n' <<<"$3" | sort) | paste -sd' '; }
@@ -187,7 +188,7 @@ psi(){ T=$1; g=$2; D=$U/psi/$T; mkdir -p $D
   touch $D/.done; up; }
 job(){ K=$1; T=$2; g=$3; echo "[시작] $K $T GPU$g $(date +%T)"; fitrun $K $T $g && render $K $T $g && touch $U/.done_${K}_$T; echo "[끝] $K $T GPU$g $(date +%T)"; }
 declare -A PIDS GPUOF; PEND=""
-for K in ip nt l2ov l2gt; do for T in L000 0004; do [ -f $U/.done_${K}_$T ] || PEND="$PEND ${K}_$T"; done; done
+for K in nt ip l2ov l2gt; do for T in L000 0004; do [ -f $U/.done_${K}_$T ] || PEND="$PEND ${K}_$T"; done; done
 busy(){ local b=""; for k in "${!PIDS[@]}"; do kill -0 ${PIDS[$k]} 2>/dev/null && b="$b ${GPUOF[$k]}"; done; echo $b; }
 launch_pending(){ # 빈 GPU 가 있는 만큼만 띄우고 나머지는 다음 틱으로 (돌고 있는 실행의 GPU 는 뺀다)
   local np="" kt g K T; for kt in $PEND; do

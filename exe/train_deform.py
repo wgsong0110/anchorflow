@@ -5066,7 +5066,7 @@ def _newton_target(_fwd, _NTG, m, nrm, k, t):
     """--ov_obj newton: 지금 망의 노드 변위 U0 (관성 예측 + 망 출력) 에서 증분 포텐셜(_fwd 의 E 그대로, 목적함수 바꾸기 전)의
     노드 변위 기울기 g 와 헤시안-벡터 곱(--ip_feat/vargrad 와 같은 탐침 "fixed" + hess_mode 경로, 그래프 한 번 만들고 재사용)으로
     (H + λI) p = g 를 CG 로 풀어 (최대 AF_OV_NEWTON_CG 회, 상대 잔차 1e-6, 음곡률 dHd<=0 이면 그 직전 p) 목표 u_t = sg(U0 - p).
-    λ = AF_OV_NEWTON_DAMP x 평균(노드 질량)/h² (관성 항 헤시안 대각의 평균 크기 기준). 노드 질량 M_i = Σ_p m_p λ_pi (관성 항과 같은 질량)."""
+    λ = AF_OV_NEWTON_DAMP(기본 1e-2) x 헤시안 대각 평균(허친슨 한 방향). 노드 질량 M_i = Σ_p m_p λ_pi (관성 항과 같은 질량)."""
     _t0 = time.time()
     _NTG[0] = None
     _fwd()                                                  # 지금 망 출력 (격자·특징은 이 프레임 것 그대로 붙잡혀 있다)
@@ -5078,7 +5078,6 @@ def _newton_target(_fwd, _NTG, m, nrm, k, t):
     Mn = torch.zeros(U0.shape[0], device=dev, dtype=torch.float32).index_add_(
         0, _rw.reshape(-1), (m.float().unsqueeze(-1) * _lm.float()).reshape(-1))
     h_ = float(_DT[0])
-    lam = float(os.environ.get("AF_OV_NEWTON_DAMP", "1e-3")) * float(Mn[Mn > 0].mean()) / (h_ * h_)
     ncg = int(os.environ.get("AF_OV_NEWTON_CG", "50"))
     Z = torch.zeros_like(U0).requires_grad_(True)
     _sv = (_DP_FAST[0], DM.PROBE[0], DM.PROBE[1])
@@ -5090,8 +5089,18 @@ def _newton_target(_fwd, _NTG, m, nrm, k, t):
             g = torch.autograd.grad(EJ, Z, create_graph=True)[0]
             gd = g.detach()
 
+            def _hvp0(vec):
+                return torch.autograd.grad((g * vec).sum(), Z, retain_graph=True)[0].detach()
+            # 감쇠 λ = AF_OV_NEWTON_DAMP x 헤시안 대각 평균 (허친슨 추정: 단위 난수 방향 하나의 vᵀHv = tr H / n 의 불편 추정).
+            # 관성 대각(M/h²)은 탄성 곡률보다 세 자릿수 작아(진단 5b22177: 21.8 vs 6.4e4) 기준으로 쓰면 감쇠가 없는 것과 같다
+            _gq = torch.Generator(device=gd.device).manual_seed(1000003 * int(t) + int(k))
+            _vq = torch.randn(gd.shape, device=gd.device, dtype=gd.dtype, generator=_gq)
+            _vq = _vq / float(_vq.norm())
+            hdiag = float((_vq * _hvp0(_vq)).sum())
+            lam = float(os.environ.get("AF_OV_NEWTON_DAMP", "1e-2")) * max(hdiag, 0.0)
+
             def _hvp(vec):
-                return torch.autograd.grad((g * vec).sum(), Z, retain_graph=True)[0].detach() + lam * vec
+                return _hvp0(vec) + lam * vec
             p_ = torch.zeros_like(gd); r_ = gd.clone(); d_ = r_.clone(); rr = float((r_ * r_).sum()); g2 = max(rr, 1e-60)
             neg, kk, dHd = False, 0, float("nan")
             for kk in range(1, ncg + 1):
@@ -5138,7 +5147,7 @@ def _newton_target(_fwd, _NTG, m, nrm, k, t):
         _DP_FAST[0], DM.PROBE[0], DM.PROBE[1] = _sv
     _NTG[0] = ((U0 - p_)[:, :3].detach(), Mn)
     _NEWTON_LOG.append(dict(t=int(t), k=int(k), E=float(EJ) / nrm, cg=int(kk), neg=bool(neg), res=(rr / g2) ** 0.5,
-                            step_rms=float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT), lam=lam,
+                            step_rms=float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT), lam=lam, hdiag=hdiag,
                             qdrop_rel=qdrop / max(abs(float(EJ)), 1e-30), sec=time.time() - _t0, diag=_diag))
 
 
