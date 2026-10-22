@@ -15,7 +15,7 @@ while :; do
   S=$(ssh -o ConnectTimeout=20 $LOGIN "cd $U 2>/dev/null || exit 0; for f in ALLMODELS_CLUSTER_DONE FAILMODE_CLUSTER_DONE ALLMODELS_FAIL FAILMODE_FAIL ALL_DONE; do [ -f \$f ] && echo MARK \$f; done
     echo HB \$(( \$(date +%s) - \$(cat driver.hb 2>/dev/null || echo 0) ))
     echo NROLL \$(ls roll/.done_* 2>/dev/null | wc -l) NVID \$(ls vid/*.mp4 2>/dev/null | wc -l) NFM \$(ls fail/fm_*.json 2>/dev/null | wc -l)
-    for f in ALLMODELS_FAIL FAILMODE_FAIL; do [ -f \$f ] && echo \"TXT \$f: \$(tail -2 \$f | tr '\n' ' ')\"; done" 2>&1)
+    for f in ALLMODELS_FAIL FAILMODE_FAIL; do [ -f \$f ] && echo \"TXT \$f: \$(tail -2 \$f | tr '\n' ' ')\"; done; true" 2>&1)
   rc=$?
   if [ $rc -ne 0 ] || ! grep -q '^HB ' <<<"$S"; then log "접속 실패 (rc $rc) -- 이번 틱 건너뜀: $(echo "$S" | tail -1)"; sleep 600; continue; fi
   log "상태: $(grep -E '^(HB|NROLL)' <<<"$S" | tr '\n' ' ') $(grep '^MARK' <<<"$S" | tr '\n' ' ')"
