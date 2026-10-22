@@ -24,6 +24,8 @@ echo $$ > $U/driver.pid
 ( while true; do rclone copy $U $R -q; sleep 300; done ) & SYNC=$!
 trap 'kill $SYNC $HB 2>/dev/null' EXIT
 echo "[시작] $(date) 커밋 $C 노드 $(hostname) 잡 ${PBS_JOBID:-?}"
+for f in $U/ALLMODELS_FAIL $U/FAILMODE_FAIL; do   # 이전 실패 표식은 지우지 않고 정정 줄을 덧붙인다 (감시는 마지막 줄이 [정정] 이면 실패로 보지 않음)
+  [ -f $f ] && [ "$(tail -1 $f | cut -c1-8)" != "[정정]" ] && echo "[정정] $(date '+%F %T') 커밋 $C 로 다시 띄움 -- 원인: 0000 정답 판정 문턱 1e-4 가 .pt half 반올림 차 4.88e-4 보다 엄격 (문턱 1e-3 으로); 끝난 롤아웃은 재사용" >> $f; done
 up(){ rclone copy $U $R -q --include "*.mp4" --include "*.txt" --include "*.json" --include "*.jsonl" --include "*.log" --include "*.md" --include "*.png" --include "*.tsv" --include "ALLMODELS_*" --include "FAILMODE_*"; }
 bgup(){ ( rclone copyto $1 $R/${1#$U/} -q && echo "[R2 덤프 올림] ${1#$U/} $(date +%T)" ) & }
 fail(){ echo "[오류] $1 $(date)"; echo "$1" >> $U/ALLMODELS_FAIL; echo "$1" >> $U/FAILMODE_FAIL; up; exit 1; }

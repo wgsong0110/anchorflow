@@ -12,7 +12,8 @@ log(){ echo "[$(date '+%F %T')] $*" >> $LOG; }
 log "감시 시작 (부트 $BOOT, 커밋 $C)"
 NRE=0; AD=0; FD=0
 while :; do
-  S=$(ssh -o ConnectTimeout=20 $LOGIN "cd $U 2>/dev/null || exit 0; for f in ALLMODELS_CLUSTER_DONE FAILMODE_CLUSTER_DONE ALLMODELS_FAIL FAILMODE_FAIL ALL_DONE; do [ -f \$f ] && echo MARK \$f; done
+  S=$(ssh -o ConnectTimeout=20 $LOGIN "cd $U 2>/dev/null || exit 0; for f in ALLMODELS_CLUSTER_DONE FAILMODE_CLUSTER_DONE ALL_DONE; do [ -f \$f ] && echo MARK \$f; done
+    for f in ALLMODELS_FAIL FAILMODE_FAIL; do [ -f \$f ] && [ \"\$(tail -1 \$f | cut -c1-8)\" != \"[정정]\" ] && echo MARK \$f; done
     echo HB \$(( \$(date +%s) - \$(cat driver.hb 2>/dev/null || echo 0) ))
     echo NROLL \$(ls roll/.done_* 2>/dev/null | wc -l) NVID \$(ls vid/*.mp4 2>/dev/null | wc -l) NFM \$(ls fail/fm_*.json 2>/dev/null | wc -l)
     for f in ALLMODELS_FAIL FAILMODE_FAIL; do [ -f \$f ] && echo \"TXT \$f: \$(tail -2 \$f | tr '\n' ' ')\"; done; true" 2>&1)

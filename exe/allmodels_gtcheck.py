@@ -1,7 +1,7 @@
 """롤아웃 덤프의 처음 상태(x0)·정답 첫 프레임(gt[0])이 어느 lbdata 궤적 디렉토리와 맞는지 판정 -> GTDIR <경로>.
 
 덤프 x0 = 학습 데이터 .pt 의 프레임 0, gt[0] = 프레임 1 (같은 .pt). 후보 디렉토리의 sim_0000000000.h5·sim_0000000001.h5 의 x 와
-입자 수·최대 절대차를 비교해, 둘 다 1e-4 이내인 후보를 고른다 (여럿이면 차가 가장 작은 것, 없으면 GTDIR 를 내지 않는다).
+입자 수·최대 절대차를 비교해, 둘 다 1e-3 이내인 (.pt 가 half 라 반올림 차 ~4.9e-4) 후보를 고른다 (여럿이면 차가 가장 작은 것, 없으면 GTDIR 를 내지 않는다).
 
   python exe/allmodels_gtcheck.py --dump roll.pt --cand test=/home/dkta/work/lbdata/test/0000 --cand train=... --out c.json
 """
@@ -16,7 +16,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--dump", required=True)
 ap.add_argument("--cand", action="append", required=True, help="이름=lbdata 궤적 디렉토리")
 ap.add_argument("--out", required=True)
-ap.add_argument("--tol", type=float, default=1e-4)
+ap.add_argument("--tol", type=float, default=1e-3)   # .pt 위치가 half 라 반올림 4.9e-4 (L000 대조 때도 같음)
 a = ap.parse_args()
 D = torch.load(a.dump, map_location="cpu", weights_only=False)
 x0 = D["x0"].float().numpy(); g1 = D["gt"][0].float().numpy()
