@@ -529,7 +529,7 @@ ap.add_argument("--ov_obj", choices=["ip", "l2", "node", "newton", "nodeov"], de
                      "node=노드 출력을 다른 실행(출력만 최적화)의 노드 출력에 맞춘다 (AF_OV_NODE_TGT=그 롤아웃 덤프; 상태도 그 덤프로 매 프레임 맞춘다), "
                      "newton=뉴턴 목표 L2 (--ov_vars net 전용): 망 노드 변위 u 에서 증분 포텐셜의 감쇠 뉴턴 걸음 d=-(H+λI)⁻¹g (CG, 음곡률 직전까지) 로 "
                      "목표 u_t=sg(u+d), 손실 Σ M_i|u_i-u_t,i|²/ΣM_i (노드 질량 = 입자 질량의 barycentric 합) -- AF_OV_NEWTON_EVERY·_CG·_DAMP, "
-                     "nodeov=모델 상태에서 푼 출력만 최적화 노드 출력 u* 를 같은 손실로 (AF_OVNET_FIT 전용; u* 는 그 프레임 E* 풀이)")
+                     "nodeov=출력만 최적화 덤프(AF_OVNET_REF 의 nodes)의 같은 프레임 노드 출력 u* 를 같은 손실로, 노드는 격자 좌표로 짝지어 둘 다 있는 노드만 (AF_OVNET_FIT 전용)")
 ap.add_argument("--integrator", choices=["be", "midpoint"], default="be",
                 help="--ov_roll 의 시간 적분기: be=후퇴 오일러(기본, 프레임당 증분 포텐셜 한 번), midpoint=암시적 중점법 -- "
                      "같은 증분 포텐셜을 h/2 로 풀어 중점 y 를 구하고 x_{n+1}=2y-x_n, v_{n+1}=(4/h)(y-x_n)-v_n, "
@@ -1232,7 +1232,7 @@ _NODE_TGT = None           # --ov_obj node: 목표 롤아웃 덤프 (pred·v·F�
 _L2_TGT = (torch.load(os.environ["AF_OV_L2_TGT"], map_location="cpu", weights_only=False)
            if os.environ.get("AF_OV_L2_TGT") else None)
 _EIP_LAST = [None]         # _ov_once._fwd 의 증분 포텐셜 (목적함수 바꾸기 전 값) -- AF_OVNET_FIT 기록용
-_NODEOV_TGT = [None]       # --ov_obj nodeov: (노드 위치, u* 노드 변위, 노드 질량 또는 None) -- _ovnet_fit 이 프레임마다 채운다
+_NODEOV_TGT = [None]       # --ov_obj nodeov: {"tp": 덤프 노드 위치, "td": 덤프 노드 변위, 짝·질량 캐시} -- _ovnet_fit 이 프레임마다 채운다
 _NEWTON_LOG = []           # --ov_obj newton: 목표를 만들 때마다 (반복, CG 횟수, 음곡률, 잔차, 시간, ...) -- AF_OVNET_FIT 가 프레임마다 비운다
 if os.environ.get("AF_OV_NODE_TGT"):
     _NODE_TGT = torch.load(os.environ["AF_OV_NODE_TGT"], map_location="cpu", weights_only=False)
@@ -4464,19 +4464,33 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             _mu1 = float(_mu1.float().mean()) if torch.is_tensor(_mu1) else float(_mu1)
             E = E + WF.barrier_energy(_c1c, _c1v, a.c1_barrier * _mu1, a.c1_jhat) / nrm
         _EIP_LAST[0] = E.detach()
-        if a.ov_obj == "nodeov" and a.ov_vars == "net":       # 모델 상태 출력만 최적화 노드 출력 u* 를 노드 질량 가중 L2 로
-            if _NODEOV_TGT[0] is None:
-                raise SystemExit("--ov_obj nodeov: u* 가 없다 (AF_OVNET_FIT 에서만)")
+        if a.ov_obj == "nodeov" and a.ov_vars == "net":       # 출력만 최적화 덤프의 같은 프레임 노드 출력 u* 를 노드 질량 가중 L2 로
+            _NT_ = _NODEOV_TGT[0]
+            if _NT_ is None:
+                raise SystemExit("--ov_obj nodeov: 목표가 없다 (AF_OVNET_FIT 에서만)")
             _np_, _dpl = _DPN_LIVE[0][0], _DPN_LIVE[0][1][:, :3]
-            _tp_, _us, _Mo = _NODEOV_TGT[0]
-            if _dpl.shape != _us.shape or float((_np_.detach() - _tp_).abs().max()) > 1e-6:
-                raise SystemExit(f"--ov_obj nodeov: 노드가 u* 풀이와 다르다 {tuple(_dpl.shape)} vs {tuple(_us.shape)}")
-            if _Mo is None:
+            if "ia" not in _NT_:
+                # 짝짓기 (939751f AF_NODE_FIT_NOISE 와 같은 방식): 노드는 세계 고정 격자(--node_h) 위 -- 위치/(h·1e-3) 반올림 정수 좌표로
+                _h = float(a.node_h)
+                _ka = torch.round(_np_.detach().double() / (_h * 1e-3)).long()
+                _kb = torch.round(_NT_["tp"].double() / (_h * 1e-3)).long()
+                _key = lambda k_: (k_[:, 0] * 1000003 + k_[:, 1]) * 1000003 + k_[:, 2]
+                _ka1, _kb1 = _key(_ka), _key(_kb)
+                _sb, _ob = torch.sort(_kb1)
+                _pos = torch.searchsorted(_sb, _ka1).clamp(max=_sb.numel() - 1)
+                _hit = _sb[_pos] == _ka1
+                _ia, _ib = torch.nonzero(_hit).squeeze(1), _ob[_pos[_hit]]
+                _pd = float((_np_.detach()[_ia] - _NT_["tp"][_ib]).abs().max()) if _ia.numel() else float("nan")
                 _ens_ = _NF_HOLD[0]
-                _Mo = torch.zeros(_us.shape[0], device=dev, dtype=torch.float32).index_add_(
+                _Mo = torch.zeros(_np_.shape[0], device=dev, dtype=torch.float32).index_add_(
                     0, _ens_[0][3].reshape(-1), (m.float().unsqueeze(-1) * _ens_[0][4].float()).reshape(-1))
-                _NODEOV_TGT[0] = (_tp_, _us, _Mo)
-            E = (_Mo.unsqueeze(-1) * (_dpl - _us) ** 2).sum() / _Mo.sum()
+                _NT_.update(ia=_ia, ib=_ib, M=_Mo[_ia], n_model=int(_np_.shape[0]), n_tgt=int(_NT_["tp"].shape[0]),
+                            n_match=int(_ia.numel()), pos_maxdiff=_pd,
+                            mass_frac=float(_Mo[_ia].sum() / _Mo.sum().clamp_min(1e-30)))
+                if _ia.numel() == 0 or not (_pd < 1e-5):
+                    raise SystemExit(f"--ov_obj nodeov: 짝지은 노드 {_ia.numel()} 개, 위치 최대차 {_pd}")
+            _Mm = _NT_["M"]
+            E = (_Mm.unsqueeze(-1) * (_dpl[_NT_["ia"]] - _NT_["td"][_NT_["ib"]].to(_dpl.dtype)) ** 2).sum() / _Mm.sum()
         if a.ov_obj == "newton" and _NTG[0] is not None:     # 뉴턴 목표 L2: 망 노드 변위(관성 예측 + 망 출력)를 목표로
             _ut, _Mn = _NTG[0]
             _dpl = _DPN_LIVE[0][1][:, :3]
@@ -5768,18 +5782,21 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
             return _xs, _e0, _e1, _us, _npo
         _pre = None
         if a.ov_obj == "nodeov":
-            if _nes <= 0:
-                raise SystemExit("--ov_obj nodeov 는 AF_OVNET_ESTAR > 0 (u* 풀이) 이 필요하다")
-            _pre = _estar()
-            _NODEOV_TGT[0] = (_pre[4], _pre[3], None)
-            _nc = len(_CURVE)
+            if _REF is None or _REF.get("nodes") is None:
+                raise SystemExit("--ov_obj nodeov 는 AF_OVNET_REF 덤프에 nodes 가 필요하다")
+            _nd_ = _REF["nodes"][i]
+            _NODEOV_TGT[0] = dict(tp=_nd_[0].to(dev).float(), td=_nd_[1].to(dev).float()[:, :3])
         with dt_scope(_hs):
             xn, vn, Fn = _ov_frame(d, t0 + i, gsel, p, xm, vm, Fm)
         _ndiff = None
         if a.ov_obj == "nodeov":
-            _Mo = _NODEOV_TGT[0][2]
-            _ndiff = dict(rms=float(((_DPN_LIVE[0][1][:, :3].detach() - _pre[3]) ** 2).sum(-1).mul(_Mo).sum().div(_Mo.sum()).sqrt()) / _ext,
-                          ustar_rms=float((_pre[3] ** 2).sum(-1).mul(_Mo).sum().div(_Mo.sum()).sqrt()) / _ext)
+            _NT_ = _NODEOV_TGT[0]; _Mm = _NT_["M"]
+            _du_ = _DPN_LIVE[0][1][:, :3].detach()[_NT_["ia"]] - _NT_["td"][_NT_["ib"]]
+            _ndiff = dict(rms=float(((_du_ ** 2).sum(-1) * _Mm).sum().div(_Mm.sum()).sqrt()) / _ext,
+                          ustar_rms=float(((_NT_["td"][_NT_["ib"]] ** 2).sum(-1) * _Mm).sum().div(_Mm.sum()).sqrt()) / _ext,
+                          n_model=_NT_["n_model"], n_tgt=_NT_["n_tgt"], n_match=_NT_["n_match"],
+                          frac_model=_NT_["n_match"] / max(_NT_["n_model"], 1), frac_tgt=_NT_["n_match"] / max(_NT_["n_tgt"], 1),
+                          mass_frac=_NT_["mass_frac"], pos_maxdiff=_NT_["pos_maxdiff"])
             _NODEOV_TGT[0] = None
         if a.pg_vdamp:
             vn = _pg_vdamp(vn, d, _hs)
@@ -5838,7 +5855,7 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
               + (f"  E* {Es:.4e}  E/E* {E_ip / Es:.3f}  출력-E*해 {100 * dstar:.3f}%" if Es else "")
               + f"  위치오차 {100 * em:.3f}%" + (f" (E*해 {100 * rec['pos_err_star']:.3f}%)" if x_star is not None else "")
               + (f"  모델-출력만최적화 {100 * rec['dist_model_ref']:.3f}%" if _REF is not None else "")
-              + (f"  노드-u* {100 * _ndiff['rms']:.4f}% (u* 크기 {100 * _ndiff['ustar_rms']:.3f}%)" if _ndiff is not None else "")
+              + (f"  노드-u* {100 * _ndiff['rms']:.4f}% (u* 크기 {100 * _ndiff['ustar_rms']:.3f}%) 짝 {_ndiff['n_match']}/{_ndiff['n_model']} (덤프 {_ndiff['n_tgt']}, 질량 {100 * _ndiff['mass_frac']:.1f}%)" if _ndiff is not None else "")
               + f"  det 최소 {rec['F_stats']['det_min']:.3f}"
               + f"  맞춤 {_sec_fit:.0f} s 프레임 {rec['sec']:.0f} s 누적 {time.time() - _tw:.0f} s", flush=True)
     if len(_recs) == L:

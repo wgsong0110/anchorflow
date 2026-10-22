@@ -2,7 +2,9 @@
 # 목적함수 넷 비교 (exe/pf3obj.sh full) 로컬 감시·재기동·후처리. 로그 /tmp/pf3obj_local.log (tmux pf3obj)
 #   10 분마다 (ssh 한 번, ControlMaster 재사용): 클러스터 드라이버 하트비트 -> 죽었고 안 끝났고 오류 없으면 돌고 있는 잡에
 #   exe/job_run.sh(AF_DETACH=1)로 다시 띄움 (잡이 바뀌어도 드라이버는 프레임 파일에서 이어 돈다), R2 표식 PF3OBJ_LAUNCHED / FAIL / CLUSTER_DONE
-#   끝나면: 3DGS 6칸 영상 2 개, psi 색 6칸 영상 2 개 (공통 고정 범위), 변형 통계, 프레임별 곡선, outputs.md, learned_results.tex -> PF3OBJ_DONE
+#   끝나면: 3DGS 7칸 영상 2 개, psi 색 7칸 영상 2 개 (공통 고정 범위), 변형 통계, 프레임별 곡선, outputs.md, learned_results.tex -> PF3OBJ_DONE
+#   nl2(모델 상태 출력만 최적화 노드 L2) 만 먼저 끝나면 (R2 PF3OBJ_NL2_DONE): pf_nodel2_{L000,0004}.mp4 (정답 | 출력만 최적화 | 이번 것),
+#   lego_psi_pf_nodel2_{L000,0004}.mp4, outputs.md·tex -> PFNODEL2_DONE
 # 중복 방지 flock. 기존 결과 파일은 덮어쓰지 않는다. 이 루프는 끝없는 동기화를 기다리지 않는다 (틱마다 조회만).
 exec 9>/tmp/pf3obj_local.lock
 flock -n 9 || { echo "[중단] 다른 감시가 돌고 있다 $(date)"; exit 0; }
@@ -13,7 +15,7 @@ TEX=/home/wgsong/workspace/writing/anchorflow/learned_results.tex
 REPO=/home/wgsong/workspace/execute/anchorflow/master
 LOGIN=dkta@147.46.121.39
 F=$(fc-list :lang=ko file | head -1 | cut -d: -f1)
-KS="ip nt l2ov l2gt"
+KS="ip nt l2ov l2gt nl2"
 get(){ rclone copyto $1 $2 -q 2>/dev/null; }
 lab(){ printf '%s' "$1" > $T/$2.txt; echo "drawtext=fontfile=$F:textfile=$T/$2.txt:expansion=none:x=10:y=8:fontsize=20:fontcolor=black"; }
 cell(){ ffmpeg -loglevel error -y -i $1 -vf "pad=iw:ih+40:0:40:white,$(lab "$3" $2)" -c:v libx264 -pix_fmt yuv420p $T/c_$2.mp4; }
@@ -42,18 +44,18 @@ post(){
     get $RSP/ov_$x.mp4 $T/ov_$x.mp4; get $RSP/gt_$x.mp4 $T/gt_$x.mp4; done
   cat $T/summary.txt
   declare -A E; for k in $KS; do for x in L000 0004; do E[${k}_$x]=$(pe $k $x); [ -n "${E[${k}_$x]}" ] || fail "요약 값 없음 $k $x"; done; done
-  NM_ip="증분 포텐셜"; NM_nt="뉴턴 목표 L2"; NM_l2ov="출력만 최적화 L2"; NM_l2gt="정답 L2"
-  # (a) 3DGS 6칸: 정답 | 출력만 최적화 | 증분 포텐셜 | 뉴턴 목표 L2 | 출력만 최적화 L2 | 정답 L2
+  NM_ip="증분 포텐셜"; NM_nt="뉴턴 목표 L2"; NM_l2ov="출력만 최적화 위치 L2"; NM_l2gt="정답 위치 L2"; NM_nl2="모델 상태 출력만 최적화 노드 L2"
+  # (a) 3DGS 7칸: 정답 | 출력만 최적화 | 증분 포텐셜 | 뉴턴 목표 L2 | 출력만 최적화 위치 L2 | 정답 위치 L2 | 모델 상태 출력만 최적화 노드 L2
   for x in L000 0004; do
     OUT=$D/pf3obj_$x.mp4; [ -e $OUT ] && { echo "[건너뜀] $OUT 이미 있음 -- 덮어쓰지 않음"; continue; }
     [ $x = L000 ] && { EO=11.47%; TT="L000"; } || { EO=6.92%; TT="0004 (다섯 궤적 학습에 안 쓴 궤적)"; }
     cell $T/gt_$x.mp4 a "정답"; cell $T/ov_$x.mp4 b "출력만 최적화 $EO"
-    n=c; for k in $KS; do v=NM_$k; cell $T/$k/$x/net.mp4 $n "${!v} ${E[${k}_$x]}"; n=$(echo $n | tr 'cdef' 'defg'); done
-    ffmpeg -loglevel error -y -i $T/c_a.mp4 -i $T/c_b.mp4 -i $T/c_c.mp4 -i $T/c_d.mp4 -i $T/c_e.mp4 -i $T/c_f.mp4 -filter_complex "hstack=inputs=6:shortest=1" -c:v libx264 -pix_fmt yuv420p $T/stack.mp4 \
+    n=c; for k in $KS; do v=NM_$k; cell $T/$k/$x/net.mp4 $n "${!v} ${E[${k}_$x]}"; n=$(echo $n | tr 'cdefg' 'defgh'); done
+    ffmpeg -loglevel error -y -i $T/c_a.mp4 -i $T/c_b.mp4 -i $T/c_c.mp4 -i $T/c_d.mp4 -i $T/c_e.mp4 -i $T/c_f.mp4 -i $T/c_g.mp4 -filter_complex "hstack=inputs=7:shortest=1" -c:v libx264 -pix_fmt yuv420p $T/stack.mp4 \
      && ffmpeg -loglevel error -y -i $T/stack.mp4 -vf "pad=iw:ih+44:0:44:white,$(lab "$TT 80프레임 · 망 파라미터 프레임별 최적화 (Adam 1e-3, 2000 회/프레임, 새 망) · 목적함수별 · % = 위치 오차 평균" title),drawtext=fontfile=$F:text='프레임 %{frame_num}':x=w-tw-12:y=h-th-10:fontsize=20:fontcolor=black" -c:v libx264 -pix_fmt yuv420p $OUT \
-     && ls -la $OUT || fail "6칸 영상 $x"
+     && ls -la $OUT || fail "7칸 영상 $x"
   done
-  # (b) psi 색 6칸 (공통 고정 범위 lbours/lego_psi/range.json, 색 막대 + 분포 패널)
+  # (b) psi 색 7칸 (공통 고정 범위 lbours/lego_psi/range.json, 색 막대 + 분포 패널)
   DT="fontfile=$F:fontsize=26:fontcolor=black:box=1:boxcolor=white@0.8:boxborderw=6:expansion=none"
   for x in L000 0004; do P=$T/psi/$x; OUT=$D/lego_psi_pf3obj_$x.mp4
     [ -e $OUT ] && { echo "[건너뜀] $OUT 이미 있음 -- 덮어쓰지 않음"; continue; }
@@ -65,16 +67,16 @@ post(){
     NS=""; for n in gt sp $KS; do NS="$NS $(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 $P/psi_${n}_lego.mp4)"; done
     echo "[psi 렌더 $x] 폭 $W, 프레임$NS"; NG=$(echo $NS | cut -d' ' -f1)
     [ $(echo $NS | tr ' ' '\n' | sort -u | wc -l) = 1 ] || fail "$x psi 프레임 수 다름"
-    TW=$((W*6)); rm -rf $P/frames
-    ( cd $REPO && python3 exe/psi_dist_vid.py --hist $P/psi_hist_sp.npz --hist2 $P/psi_hist_ip.npz $P/psi_hist_nt.npz $P/psi_hist_l2ov.npz $P/psi_hist_l2gt.npz --range $P/range.json --out_dir $P/frames --cbar $P/cbar.png \
-      --w $TW --h 560 --lab_gt "정답 (MPM)" --lab_ov "출력만 최적화" --lab2 "증분 포텐셜" "뉴턴 목표 L2" "출력만 최적화 L2" "정답 L2" ) || fail "분포 패널 $x"
+    TW=$((W*7)); rm -rf $P/frames
+    ( cd $REPO && python3 exe/psi_dist_vid.py --hist $P/psi_hist_sp.npz --hist2 $P/psi_hist_ip.npz $P/psi_hist_nt.npz $P/psi_hist_l2ov.npz $P/psi_hist_l2gt.npz $P/psi_hist_nl2.npz --range $P/range.json --out_dir $P/frames --cbar $P/cbar.png \
+      --w $TW --h 560 --lab_gt "정답 (MPM)" --lab_ov "출력만 최적화" --lab2 "증분 포텐셜" "뉴턴 목표 L2" "출력만 최적화 위치 L2" "정답 위치 L2" "모델 상태 출력만 최적화 노드 L2" ) || fail "분포 패널 $x"
     NP=$(ls $P/frames/*.png | wc -l); [ "$NP" = "$NG" ] || fail "패널 $NP 장 vs 렌더 $NG"
-    ffmpeg -y -v error -r 15 -i $P/psi_gt_lego.mp4 -r 15 -i $P/psi_sp_lego.mp4 -r 15 -i $P/psi_ip_lego.mp4 -r 15 -i $P/psi_nt_lego.mp4 -r 15 -i $P/psi_l2ov_lego.mp4 -r 15 -i $P/psi_l2gt_lego.mp4 \
+    ffmpeg -y -v error -r 15 -i $P/psi_gt_lego.mp4 -r 15 -i $P/psi_sp_lego.mp4 -r 15 -i $P/psi_ip_lego.mp4 -r 15 -i $P/psi_nt_lego.mp4 -r 15 -i $P/psi_l2ov_lego.mp4 -r 15 -i $P/psi_l2gt_lego.mp4 -r 15 -i $P/psi_nl2_lego.mp4 \
       -loop 1 -r 15 -i $P/cbar.png -framerate 15 -i $P/frames/%04d.png \
      -filter_complex "[0:v]setpts=N/15/TB,drawtext=textfile=$T/l_gt.txt:x=20:y=20:$DT[a];[1:v]setpts=N/15/TB,drawtext=textfile=$T/l_sp.txt:x=20:y=20:$DT[b];\
 [2:v]setpts=N/15/TB,drawtext=textfile=$T/l_ip.txt:x=20:y=20:$DT[c];[3:v]setpts=N/15/TB,drawtext=textfile=$T/l_nt.txt:x=20:y=20:$DT[e];\
-[4:v]setpts=N/15/TB,drawtext=textfile=$T/l_l2ov.txt:x=20:y=20:$DT[f];[5:v]setpts=N/15/TB,drawtext=textfile=$T/l_l2gt.txt:x=20:y=20:$DT[h];[a][b][c][e][f][h]hstack=inputs=6[top];\
-[6:v]scale=$TW:-2,setsar=1[cb];[7:v]scale=$TW:-2,setsar=1[d];[top][cb][d]vstack=inputs=3:shortest=1,\
+[4:v]setpts=N/15/TB,drawtext=textfile=$T/l_l2ov.txt:x=20:y=20:$DT[f];[5:v]setpts=N/15/TB,drawtext=textfile=$T/l_l2gt.txt:x=20:y=20:$DT[h];[6:v]setpts=N/15/TB,drawtext=textfile=$T/l_nl2.txt:x=20:y=20:$DT[i];[a][b][c][e][f][h][i]hstack=inputs=7[top];\
+[7:v]scale=$TW:-2,setsar=1[cb];[8:v]scale=$TW:-2,setsar=1[d];[top][cb][d]vstack=inputs=3:shortest=1,\
 drawtext=fontfile=$F:text='$x 프레임 %{frame_num}':x=w-tw-20:y=h-th-20:fontsize=28:fontcolor=black:box=1:boxcolor=white@0.8:boxborderw=6,format=yuv420p" \
      -frames:v $NG -c:v libx264 -crf 18 -r 15 $OUT || fail "psi ffmpeg $x"
     ffprobe -v error -count_frames -show_entries stream=nb_read_frames,width,height -of csv=p=0 $OUT
@@ -87,7 +89,7 @@ drawtext=fontfile=$F:text='$x 프레임 %{frame_num}':x=w-tw-20:y=h-th-20:fontsi
     for k in gt sp $KS; do [ "$(awk -v k=$k '$1==k' $S_ | wc -l)" = 3 ] || fail "defstats $x 칸 $k 행 수"; done
   done
   DS=$D/lego_psi_pf3obj_defstats.txt
-  [ -e $DS ] || { echo "# 칸: gt = 정답(MPM), sp = 출력만 최적화, ip = 증분 포텐셜, nt = 뉴턴 목표 L2, l2ov = 출력만 최적화 L2, l2gt = 정답 L2 (망 파라미터 프레임별 최적화)"
+  [ -e $DS ] || { echo "# 칸: gt = 정답(MPM), sp = 출력만 최적화, ip = 증분 포텐셜, nt = 뉴턴 목표 L2, l2ov = 출력만 최적화 위치 L2, l2gt = 정답 위치 L2, nl2 = 모델 상태 출력만 최적화 노드 L2 (망 파라미터 프레임별 최적화)"
                   cat $T/psi/L000/defstats_L000.txt $T/psi/0004/defstats_0004.txt; } > $DS; cat $DS
   # (d) 프레임별 곡선
   CV=$OVN/pf3obj.png; [ -e $CV ] || python3 $REPO/exe/pf3obj_plot.py $T $CV || fail "곡선"
@@ -99,31 +101,83 @@ drawtext=fontfile=$F:text='$x 프레임 %{frame_num}':x=w-tw-20:y=h-th-20:fontsi
   cat >> $RR/outputs.md <<EOM
 
 ## $(date +%F) 목적함수 넷 비교 (망 파라미터 프레임별 최적화, pf3obj)
-- Path: $D/pf3obj_L000.mp4, $D/pf3obj_0004.mp4 (정답 | 출력만 최적화 | 증분 포텐셜 | 뉴턴 목표 L2 | 출력만 최적화 L2 | 정답 L2, 3DGS), $D/lego_psi_pf3obj_L000.mp4, $D/lego_psi_pf3obj_0004.mp4 (탄성 에너지 색, 공통 고정 범위 lbours/lego_psi/range.json), 변형 통계 $DS, 프레임별 곡선 $CV
-- R2 원본: $R/ ({ip,nt,l2ov,l2gt}/{L000,0004}/frames/frame_XX.pt = 프레임마다 망 파라미터 + 모델 상태 전/후 + E* 해 + 목적함수 곡선(뉴턴은 CG 기록), records.json, roll_net.pt F32 덤프, h5_net, net.mp4; psi/; cmdline_diff.txt; test_result.txt; summary.json)
+- Path: $D/pf3obj_L000.mp4, $D/pf3obj_0004.mp4 (정답 | 출력만 최적화 | 증분 포텐셜 | 뉴턴 목표 L2 | 출력만 최적화 위치 L2 | 정답 위치 L2 | 모델 상태 출력만 최적화 노드 L2, 3DGS), $D/lego_psi_pf3obj_L000.mp4, $D/lego_psi_pf3obj_0004.mp4 (탄성 에너지 색, 공통 고정 범위 lbours/lego_psi/range.json), 변형 통계 $DS, 프레임별 곡선 $CV
+- R2 원본: $R/ ({ip,nt,l2ov,l2gt,nl2}/{L000,0004}/frames/frame_XX.pt = 프레임마다 망 파라미터 + 모델 상태 전/후 + E* 해 + 목적함수 곡선(뉴턴은 CG 기록), records.json, roll_net.pt F32 덤프, h5_net, net.mp4; psi/; cmdline_diff.txt; test_result.txt; summary.json)
 - Commit: $C (exe/train_deform.py _ovnet_fit = AF_OVNET_FIT, AF_OV_L2_TGT, --ov_obj newton; 드라이버 exe/pf3obj.sh, 감시 exe/pf3obj_local.sh)
-- Config: spstick BASE 글자 그대로 + 예전 B3j adam3 (--out_var --ov_init predict --ov_vars net --ov_opt adam --out_var_lr 1e-3 --ov_roll 2000), 새 망(출력층 0), --ov_obj ip / newton (CG 50, 감쇠 1e-3·평균 노드질량/h², 목표 갱신 간격은 cmd.txt) / l2 + AF_OV_L2_TGT=spstick roll_ov_T.pt / l2; E* = 같은 모델 상태 출력만 최적화 L-BFGS 500 (spstick OV 플래그)
+- Config: spstick BASE 글자 그대로 + 예전 B3j adam3 (--out_var --ov_init predict --ov_vars net --ov_opt adam --out_var_lr 1e-3 --ov_roll 2000), 새 망(출력층 0), --ov_obj ip / newton (CG 50, 감쇠 1e-3·평균 노드질량/h², 목표 갱신 간격은 cmd.txt) / l2 + AF_OV_L2_TGT=spstick roll_ov_T.pt / l2 / nodeov (모델 상태에서 먼저 출력만 최적화로 u* 를 풀어 노드 질량 가중 L2); E* = 같은 모델 상태 출력만 최적화 L-BFGS 500 (spstick OV 플래그)
 - 결과: $SUM
 EOM
   texadd "
 \\subsection*{목적함수 넷 비교: 망 파라미터 프레임별 최적화 (2026-10-22, $C)}
 매 프레임 모델 자신의 롤아웃 상태에서 망 파라미터를 그 프레임 목적함수로 내리고(Adam \$10^{-3}\$, 프레임당 2000 회, 새 망에서 시작, 망은 프레임 사이에 이어 씀) 그 망 출력으로 한 스텝 옮긴다. 설정은 다섯 궤적 학습과 같은 BASE(softplus 바닥 + 미끄러짐 방지). \$E/E^*\$ 는 같은 모델 상태에서 출력만 최적화로 푼 최솟값 대비 망 출력의 증분 포텐셜 (프레임 중앙값).
 \\begin{center}
-\\begin{tabular}{lcccccc}
+\\begin{tabular}{lccccccc}
 \\hline
-위치 오차 평균 & 출력만 최적화 & 다섯 궤적 학습 & 증분 포텐셜 & 뉴턴 목표 L2 & 출력만 최적화 L2 & 정답 L2 \\\\
+위치 오차 평균 & 출력만 최적화 & 다섯 궤적 학습 & 증분 포텐셜 & 뉴턴 목표 L2 & 출력만 최적화 위치 L2 & 정답 위치 L2 & 모델 상태 출력만 최적화 노드 L2 \\\\
 \\hline
-L000 & 11.47\\% & 12.21\\% & $(q ${E[ip_L000]}) & $(q ${E[nt_L000]}) & $(q ${E[l2ov_L000]}) & $(q ${E[l2gt_L000]}) \\\\
-0004 & 6.92\\% & 25.57\\% & $(q ${E[ip_0004]}) & $(q ${E[nt_0004]}) & $(q ${E[l2ov_0004]}) & $(q ${E[l2gt_0004]}) \\\\
-\$E/E^*\$ L000 & & & $(rat ip L000) & $(rat nt L000) & $(rat l2ov L000) & $(rat l2gt L000) \\\\
-\$E/E^*\$ 0004 & & & $(rat ip 0004) & $(rat nt 0004) & $(rat l2ov 0004) & $(rat l2gt 0004) \\\\
+L000 & 11.47\\% & 12.21\\% & $(q ${E[ip_L000]}) & $(q ${E[nt_L000]}) & $(q ${E[l2ov_L000]}) & $(q ${E[l2gt_L000]}) & $(q ${E[nl2_L000]}) \\\\
+0004 & 6.92\\% & 25.57\\% & $(q ${E[ip_0004]}) & $(q ${E[nt_0004]}) & $(q ${E[l2ov_0004]}) & $(q ${E[l2gt_0004]}) & $(q ${E[nl2_0004]}) \\\\
+\$E/E^*\$ L000 & & & $(rat ip L000) & $(rat nt L000) & $(rat l2ov L000) & $(rat l2gt L000) & $(rat nl2 L000) \\\\
+\$E/E^*\$ 0004 & & & $(rat ip 0004) & $(rat nt 0004) & $(rat l2ov 0004) & $(rat l2gt 0004) & $(rat nl2 0004) \\\\
 \\hline
 \\end{tabular}
 \\end{center}
 "
   touch $D/PF3OBJ_DONE; echo PF3OBJ_DONE
-  notify "목적함수 넷 비교 끝" "L000 증분 ${E[ip_L000]} 뉴턴 ${E[nt_L000]} 출력L2 ${E[l2ov_L000]} 정답L2 ${E[l2gt_L000]} / 0004 ${E[ip_0004]} ${E[nt_0004]} ${E[l2ov_0004]} ${E[l2gt_0004]}" --tags white_check_mark
+  notify "목적함수 넷 비교 끝" "L000 증분 ${E[ip_L000]} 뉴턴 ${E[nt_L000]} 출력L2 ${E[l2ov_L000]} 정답L2 ${E[l2gt_L000]} 노드L2 ${E[nl2_L000]} / 0004 ${E[ip_0004]} ${E[nt_0004]} ${E[l2ov_0004]} ${E[l2gt_0004]} ${E[nl2_0004]}" --tags white_check_mark
 }
+postnl2(){
+  echo "[후처리 nl2] $(date)"
+  for x in L000 0004; do
+    rclone copy $R/nl2/$x $T/nl2/$x --max-depth 1 --include "records.json" --include "net.mp4" --include "cmd.txt" -q
+    rclone copy $R/psi_nl2/$x $T/psi_nl2/$x --include "psi_*_lego.mp4" --include "*.npz" --include "*.json" --include "*.txt" --include "*.log" -q
+    get $RSP/ov_$x.mp4 $T/ov_$x.mp4; get $RSP/gt_$x.mp4 $T/gt_$x.mp4; done
+  declare -A EN; for x in L000 0004; do EN[$x]=$(python3 -c "import json,numpy as np;r=json.load(open('$T/nl2/$x/records.json'));assert len(r)==80;print(f\"{100*np.mean([q['pos_err_model'] for q in r]):.2f}%\")") || fail "nl2 $x 기록"; done
+  for x in L000 0004; do
+    OUT=$D/pf_nodel2_$x.mp4
+    if [ -e $OUT ]; then echo "[건너뜀] $OUT 이미 있음 -- 덮어쓰지 않음"; else
+      [ $x = L000 ] && { EO=11.47%; TT="L000"; } || { EO=6.92%; TT="0004 (다섯 궤적 학습에 안 쓴 궤적)"; }
+      cell $T/gt_$x.mp4 a "정답"; cell $T/ov_$x.mp4 b "출력만 최적화 $EO"; cell $T/nl2/$x/net.mp4 c "모델 상태 출력만 최적화 노드 L2 ${EN[$x]}"
+      ffmpeg -loglevel error -y -i $T/c_a.mp4 -i $T/c_b.mp4 -i $T/c_c.mp4 -filter_complex "hstack=inputs=3:shortest=1" -c:v libx264 -pix_fmt yuv420p $T/stack.mp4 \
+       && ffmpeg -loglevel error -y -i $T/stack.mp4 -vf "pad=iw:ih+44:0:44:white,$(lab "$TT 80프레임 · 매 프레임 모델 상태에서 출력만 최적화로 u* 를 풀고 망 노드 출력을 노드 L2 로 맞춰 옮김 · % = 위치 오차 평균" title),drawtext=fontfile=$F:text='프레임 %{frame_num}':x=w-tw-12:y=h-th-10:fontsize=20:fontcolor=black" -c:v libx264 -pix_fmt yuv420p $OUT \
+       && ls -la $OUT || fail "nl2 3칸 영상 $x"; fi
+    P=$T/psi_nl2/$x; OUT=$D/lego_psi_pf_nodel2_$x.mp4
+    if [ -e $OUT ]; then echo "[건너뜀] $OUT 이미 있음 -- 덮어쓰지 않음"; continue; fi
+    python3 -c "import json;a=json.load(open('$P/range_spstick.json'));b=json.load(open('$P/range.json'));assert abs(a['lo']-b['lo'])<1e-9 and abs(a['hi']-b['hi'])<1e-9;print('[범위 동일]',a['lo'],a['hi'])" || fail "nl2 psi 범위 다름 $x"
+    [ $x = L000 ] && EO=11.47% || EO=6.92%
+    printf '정답 (MPM)' > $T/l_gt.txt; printf '출력만 최적화 · %s' "$EO" > $T/l_sp.txt; printf '모델 상태 출력만 최적화 노드 L2 · %s' "${EN[$x]}" > $T/l_nl2.txt
+    W=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 $P/psi_gt_lego.mp4)
+    NS=""; for n in gt sp nl2; do NS="$NS $(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 $P/psi_${n}_lego.mp4)"; done
+    NG=$(echo $NS | cut -d' ' -f1); [ $(echo $NS | tr ' ' '\n' | sort -u | wc -l) = 1 ] || fail "nl2 $x psi 프레임 수 다름"
+    TW=$((W*3)); rm -rf $P/frames
+    ( cd $REPO && python3 exe/psi_dist_vid.py --hist $P/psi_hist_sp.npz --hist2 $P/psi_hist_nl2.npz --range $P/range.json --out_dir $P/frames --cbar $P/cbar.png \
+      --w $TW --h 560 --lab_gt "정답 (MPM)" --lab_ov "출력만 최적화" --lab2 "모델 상태 출력만 최적화 노드 L2" ) || fail "nl2 분포 패널 $x"
+    DT="fontfile=$F:fontsize=26:fontcolor=black:box=1:boxcolor=white@0.8:boxborderw=6:expansion=none"
+    ffmpeg -y -v error -r 15 -i $P/psi_gt_lego.mp4 -r 15 -i $P/psi_sp_lego.mp4 -r 15 -i $P/psi_nl2_lego.mp4 -loop 1 -r 15 -i $P/cbar.png -framerate 15 -i $P/frames/%04d.png \
+     -filter_complex "[0:v]setpts=N/15/TB,drawtext=textfile=$T/l_gt.txt:x=20:y=20:$DT[a];[1:v]setpts=N/15/TB,drawtext=textfile=$T/l_sp.txt:x=20:y=20:$DT[b];\
+[2:v]setpts=N/15/TB,drawtext=textfile=$T/l_nl2.txt:x=20:y=20:$DT[c];[a][b][c]hstack=inputs=3[top];[3:v]scale=$TW:-2,setsar=1[cb];[4:v]scale=$TW:-2,setsar=1[d];[top][cb][d]vstack=inputs=3:shortest=1,\
+drawtext=fontfile=$F:text='$x 프레임 %{frame_num}':x=w-tw-20:y=h-th-20:fontsize=28:fontcolor=black:box=1:boxcolor=white@0.8:boxborderw=6,format=yuv420p" \
+     -frames:v $NG -c:v libx264 -crf 18 -r 15 $OUT || fail "nl2 psi ffmpeg $x"
+  done
+  for f in $D/pf_nodel2_L000.mp4 $D/pf_nodel2_0004.mp4 $D/lego_psi_pf_nodel2_L000.mp4 $D/lego_psi_pf_nodel2_0004.mp4; do rclone copy $f r2:storage/result/anchorflow/v20261009 -q; rclone copy $f $R/final -q; done
+  RT=$(for x in L000 0004; do python3 -c "import json,numpy as np;r=json.load(open('$T/nl2/$x/records.json'));print(f\"$x E/E* 중앙 {np.median([q['ratio_E_Estar'] for q in r]):.2f}, 노드-u* 평균 {100*np.mean([q['node_vs_ustar']['rms'] for q in r]):.3f}% EXT, det 최소 {min(q['F_stats']['det_min'] for q in r):.3f}\")"; done | tr '\n' ';')
+  cat >> $RR/outputs.md <<EOM
+
+## $(date +%F) 모델 상태 출력만 최적화 노드 L2 (pf3obj nl2, 망 파라미터 프레임별 최적화)
+- Path: $D/pf_nodel2_L000.mp4, $D/pf_nodel2_0004.mp4 (정답 | 출력만 최적화 | 이번 것, 3DGS), $D/lego_psi_pf_nodel2_L000.mp4, $D/lego_psi_pf_nodel2_0004.mp4 (탄성 에너지 색, 공통 고정 범위 lbours/lego_psi/range.json)
+- R2 원본: $R/nl2/{L000,0004}/ (frames/frame_XX.pt = 망 파라미터 + 모델 상태 전/후 + u* 풀이 위치 x_star, records.json, roll_net.pt), $R/psi_nl2/
+- Commit: $C (--ov_obj nodeov, exe/pf3obj.sh)
+- Config: spstick BASE + --out_var --ov_init predict --ov_vars net --ov_opt adam --out_var_lr 1e-3 --ov_roll 2000 --ov_obj nodeov; u* = 모델 상태에서 spstick OV 플래그(L-BFGS 500, 관성 예측 시작) 풀이의 노드 변위, 손실 Σ M|u-u*|²/ΣM
+- 결과: 위치 오차 L000 ${EN[L000]}, 0004 ${EN[0004]} (출력만 최적화 11.47% / 6.92%, 다섯 궤적 학습 12.21% / 25.57%); $RT
+EOM
+  texadd "
+\\subsection*{모델 상태 출력만 최적화 노드 L2 (2026-10-22, $C)}
+매 프레임 모델 자신의 상태에서 출력만 최적화로 노드 출력 \$u^*\$ 를 풀고, 망 파라미터를 \$\\sum_i M_i\\|u_i(\\theta)-u_i^*\\|^2/\\sum_i M_i\$ 로 맞춘 뒤(Adam \$10^{-3}\$, 2000 회) 망 출력으로 옮긴다. 위치 오차 평균 L000 $(q ${EN[L000]}), 0004 $(q ${EN[0004]}) (출력만 최적화 11.47\\% / 6.92\\%, 다섯 궤적 학습 12.21\\% / 25.57\\%). $(q "$RT")
+"
+  touch $D/PFNODEL2_DONE; echo PFNODEL2_DONE
+  notify "모델 상태 노드 L2 끝" "L000 ${EN[L000]}, 0004 ${EN[0004]}" --tags white_check_mark
+}
+SEEN_N=$( [ -f $D/PFNODEL2_DONE ] && echo 1 || echo 0 )
 SEEN_L=$( [ -f /tmp/pf3obj_seen_launched ] && echo 1 || echo 0 ); ERRN=0
 echo "[시작] $(date) 커밋 $C"
 while true; do
@@ -134,7 +188,8 @@ while true; do
   if [ $SEEN_L = 0 ] && grep -qx 'PF3OBJ_LAUNCHED' <<<"$L"; then
     get $R/PF3OBJ_LAUNCHED $T/PF3OBJ_LAUNCHED; cut -c1-300 $T/PF3OBJ_LAUNCHED; echo PF3OBJ_LAUNCHED; touch /tmp/pf3obj_seen_launched; SEEN_L=1
     notify "목적함수 넷 비교 시작" "$(wc -l < $T/PF3OBJ_LAUNCHED) 실행 띄움" --tags rocket; fi
-  if grep -qx 'PF3OBJ_CLUSTER_DONE' <<<"$L"; then post; break; fi
+  if [ $SEEN_N = 0 ] && grep -qx 'PF3OBJ_NL2_DONE' <<<"$L"; then postnl2; SEEN_N=1; fi
+  if grep -qx 'PF3OBJ_CLUSTER_DONE' <<<"$L"; then [ $SEEN_N = 0 ] && { postnl2; SEEN_N=1; }; post; break; fi
   if grep -qx 'PF3OBJ_FAIL' <<<"$L" || grep -q '^FAILMARK' <<<"$ST"; then
     get $R/PF3OBJ_FAIL $T/PF3OBJ_FAIL; fail "클러스터 드라이버: $(cat $T/PF3OBJ_FAIL 2>/dev/null) ($(cat /tmp/pf3obj_cur_driver_log))"; fi
   if ! grep -q '^DONE' <<<"$ST" && ! grep -q 'NOJOB\|PBSERR' <<<"$ST" && grep -q '^HB ' <<<"$ST"; then
