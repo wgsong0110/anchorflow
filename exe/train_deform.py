@@ -524,11 +524,12 @@ ap.add_argument("--ov_init_std", type=float, default=1e-3)
 ap.add_argument("--ov_vars", choices=["out", "net"], default="out",
                 help="--ov_roll 의 변수: out=노드 출력(출력만 최적화, 기본), net=망 파라미터 -- 같은 증분 포텐셜·장벽을 "
                      "프레임마다 망 파라미터로 내린다 (한 궤적 과적합; 파라미터는 프레임 사이에 이어진다)")
-ap.add_argument("--ov_obj", choices=["ip", "l2", "node", "newton"], default="ip",
+ap.add_argument("--ov_obj", choices=["ip", "l2", "node", "newton", "nodeov"], default="ip",
                 help="--ov_roll 의 프레임별 목적함수: ip=증분 포텐셜(기본), l2=다음 프레임 정답 위치와의 평균 L2 / EXT² (장벽 없음), "
                      "node=노드 출력을 다른 실행(출력만 최적화)의 노드 출력에 맞춘다 (AF_OV_NODE_TGT=그 롤아웃 덤프; 상태도 그 덤프로 매 프레임 맞춘다), "
                      "newton=뉴턴 목표 L2 (--ov_vars net 전용): 망 노드 변위 u 에서 증분 포텐셜의 감쇠 뉴턴 걸음 d=-(H+λI)⁻¹g (CG, 음곡률 직전까지) 로 "
-                     "목표 u_t=sg(u+d), 손실 Σ M_i|u_i-u_t,i|²/ΣM_i (노드 질량 = 입자 질량의 barycentric 합) -- AF_OV_NEWTON_EVERY·_CG·_DAMP")
+                     "목표 u_t=sg(u+d), 손실 Σ M_i|u_i-u_t,i|²/ΣM_i (노드 질량 = 입자 질량의 barycentric 합) -- AF_OV_NEWTON_EVERY·_CG·_DAMP, "
+                     "nodeov=모델 상태에서 푼 출력만 최적화 노드 출력 u* 를 같은 손실로 (AF_OVNET_FIT 전용; u* 는 그 프레임 E* 풀이)")
 ap.add_argument("--integrator", choices=["be", "midpoint"], default="be",
                 help="--ov_roll 의 시간 적분기: be=후퇴 오일러(기본, 프레임당 증분 포텐셜 한 번), midpoint=암시적 중점법 -- "
                      "같은 증분 포텐셜을 h/2 로 풀어 중점 y 를 구하고 x_{n+1}=2y-x_n, v_{n+1}=(4/h)(y-x_n)-v_n, "
@@ -1231,6 +1232,7 @@ _NODE_TGT = None           # --ov_obj node: 목표 롤아웃 덤프 (pred·v·F�
 _L2_TGT = (torch.load(os.environ["AF_OV_L2_TGT"], map_location="cpu", weights_only=False)
            if os.environ.get("AF_OV_L2_TGT") else None)
 _EIP_LAST = [None]         # _ov_once._fwd 의 증분 포텐셜 (목적함수 바꾸기 전 값) -- AF_OVNET_FIT 기록용
+_NODEOV_TGT = [None]       # --ov_obj nodeov: (노드 위치, u* 노드 변위, 노드 질량 또는 None) -- _ovnet_fit 이 프레임마다 채운다
 _NEWTON_LOG = []           # --ov_obj newton: 목표를 만들 때마다 (반복, CG 횟수, 음곡률, 잔차, 시간, ...) -- AF_OVNET_FIT 가 프레임마다 비운다
 if os.environ.get("AF_OV_NODE_TGT"):
     _NODE_TGT = torch.load(os.environ["AF_OV_NODE_TGT"], map_location="cpu", weights_only=False)
@@ -4462,6 +4464,19 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             _mu1 = float(_mu1.float().mean()) if torch.is_tensor(_mu1) else float(_mu1)
             E = E + WF.barrier_energy(_c1c, _c1v, a.c1_barrier * _mu1, a.c1_jhat) / nrm
         _EIP_LAST[0] = E.detach()
+        if a.ov_obj == "nodeov" and a.ov_vars == "net":       # 모델 상태 출력만 최적화 노드 출력 u* 를 노드 질량 가중 L2 로
+            if _NODEOV_TGT[0] is None:
+                raise SystemExit("--ov_obj nodeov: u* 가 없다 (AF_OVNET_FIT 에서만)")
+            _np_, _dpl = _DPN_LIVE[0][0], _DPN_LIVE[0][1][:, :3]
+            _tp_, _us, _Mo = _NODEOV_TGT[0]
+            if _dpl.shape != _us.shape or float((_np_.detach() - _tp_).abs().max()) > 1e-6:
+                raise SystemExit(f"--ov_obj nodeov: 노드가 u* 풀이와 다르다 {tuple(_dpl.shape)} vs {tuple(_us.shape)}")
+            if _Mo is None:
+                _ens_ = _NF_HOLD[0]
+                _Mo = torch.zeros(_us.shape[0], device=dev, dtype=torch.float32).index_add_(
+                    0, _ens_[0][3].reshape(-1), (m.float().unsqueeze(-1) * _ens_[0][4].float()).reshape(-1))
+                _NODEOV_TGT[0] = (_tp_, _us, _Mo)
+            E = (_Mo.unsqueeze(-1) * (_dpl - _us) ** 2).sum() / _Mo.sum()
         if a.ov_obj == "newton" and _NTG[0] is not None:     # 뉴턴 목표 L2: 망 노드 변위(관성 예측 + 망 출력)를 목표로
             _ut, _Mn = _NTG[0]
             _dpl = _DPN_LIVE[0][1][:, :3]
@@ -5736,8 +5751,36 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
         _SIM_T[0] = i * FRAME_DT
         _state_in = dict(x=xm.detach().cpu(), v=vm.detach().cpu(), F=Fm.detach().cpu())
         _nc = len(_CURVE)
+
+        def _estar():
+            # E*: 같은 모델 상태에서 출력만 최적화 (spstick OV 와 같은 플래그로 잠시 바꿔 같은 _ov_frame 경로) -> (x*, E*처음, E*, u*, 노드위치)
+            _keep = (a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj)
+            try:
+                a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj = "out", "lbfgs", _nes, "ip"
+                with dt_scope(_hs):
+                    _xs, _, _ = _ov_frame(d, t0 + i, gsel, p, xm, vm, Fm)
+            finally:
+                a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj = _keep
+            _us = _DPN_LIVE[0][1][:, :3].detach().clone(); _npo = _DPN_LIVE[0][0].detach().clone()
+            _e0, _e1 = (float(q) for q in _OV_LOG[-1])
+            if len(_CURVE) > _nc:
+                _CURVE.pop()
+            return _xs, _e0, _e1, _us, _npo
+        _pre = None
+        if a.ov_obj == "nodeov":
+            if _nes <= 0:
+                raise SystemExit("--ov_obj nodeov 는 AF_OVNET_ESTAR > 0 (u* 풀이) 이 필요하다")
+            _pre = _estar()
+            _NODEOV_TGT[0] = (_pre[4], _pre[3], None)
+            _nc = len(_CURVE)
         with dt_scope(_hs):
             xn, vn, Fn = _ov_frame(d, t0 + i, gsel, p, xm, vm, Fm)
+        _ndiff = None
+        if a.ov_obj == "nodeov":
+            _Mo = _NODEOV_TGT[0][2]
+            _ndiff = dict(rms=float(((_DPN_LIVE[0][1][:, :3].detach() - _pre[3]) ** 2).sum(-1).mul(_Mo).sum().div(_Mo.sum()).sqrt()) / _ext,
+                          ustar_rms=float((_pre[3] ** 2).sum(-1).mul(_Mo).sum().div(_Mo.sum()).sqrt()) / _ext)
+            _NODEOV_TGT[0] = None
         if a.pg_vdamp:
             vn = _pg_vdamp(vn, d, _hs)
         elif a.cfg_bc and float(d["cfg"].get("grid_v_damping_scale", 1.1)) < 1.0:
@@ -5752,16 +5795,7 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
         # E*: 같은 모델 상태에서 출력만 최적화 (spstick OV 와 같은 플래그로 잠시 바꿔 같은 _ov_frame 경로)
         Es, Es0, dstar, x_star = None, None, None, None
         if _nes > 0:
-            _keep = (a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj)
-            try:
-                a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj = "out", "lbfgs", _nes, "ip"
-                with dt_scope(_hs):
-                    x_star, _, _ = _ov_frame(d, t0 + i, gsel, p, xm, vm, Fm)
-            finally:
-                a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj = _keep
-            Es0, Es = (float(q) for q in _OV_LOG[-1])
-            if len(_CURVE) > _nc:
-                _CURVE.pop()
+            x_star, Es0, Es, _, _ = _pre if _pre is not None else _estar()
             dstar = float((xn - x_star).norm(dim=-1).mean()) / _ext
         gt = take(d["x"][t0 + i + 1], gsel)
         em = DM.frame_err(xn, gt, _ext)
@@ -5769,6 +5803,13 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
                    obj_curve=[(k, float(e)) for k, e in enumerate(_ctr) if k % _cev == 0 or k == len(_ctr) - 1] + [(len(_ctr), float(_o1))],
                    E_ip=E_ip, E_star=Es, E_star_init=Es0, ratio_E_Estar=(E_ip / Es if Es else None),
                    dist_model_out_vs_star=dstar, pos_err_model=em, sec_fit=_sec_fit, sec=time.time() - _tf)
+        with torch.no_grad():                        # 입자 F 통계 (옮긴 뒤)
+            _dF = torch.linalg.det(Fn.double().reshape(-1, 3, 3)); _sF = torch.linalg.svdvals(Fn.double().reshape(-1, 3, 3))
+            rec["F_stats"] = dict(det_min=float(_dF.min()), det_p01=float(_dF.quantile(0.01)), det_median=float(_dF.median()),
+                                  det_le0=int((_dF <= 0).sum()), det_lt05=float((_dF < 0.5).double().mean()),
+                                  sig_max=float(_sF.max()), sig_min=float(_sF.min()), strain_mean=float((_sF - 1).abs().amax(-1).mean()))
+        if _ndiff is not None:
+            rec["node_vs_ustar"] = _ndiff
         if _nlog:
             rec["newton"] = dict(n_solves=len(_nlog), every=int(os.environ.get("AF_OV_NEWTON_EVERY", "50")),
                                  cg_mean=float(np.mean([q["cg"] for q in _nlog])), cg_max=int(max(q["cg"] for q in _nlog)),
@@ -5797,6 +5838,8 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
               + (f"  E* {Es:.4e}  E/E* {E_ip / Es:.3f}  출력-E*해 {100 * dstar:.3f}%" if Es else "")
               + f"  위치오차 {100 * em:.3f}%" + (f" (E*해 {100 * rec['pos_err_star']:.3f}%)" if x_star is not None else "")
               + (f"  모델-출력만최적화 {100 * rec['dist_model_ref']:.3f}%" if _REF is not None else "")
+              + (f"  노드-u* {100 * _ndiff['rms']:.4f}% (u* 크기 {100 * _ndiff['ustar_rms']:.3f}%)" if _ndiff is not None else "")
+              + f"  det 최소 {rec['F_stats']['det_min']:.3f}"
               + f"  맞춤 {_sec_fit:.0f} s 프레임 {rec['sec']:.0f} s 누적 {time.time() - _tw:.0f} s", flush=True)
     if len(_recs) == L:
         _pr, _vv, _Fv = [], [], []

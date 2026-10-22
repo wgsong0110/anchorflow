@@ -8,6 +8,9 @@
 #     l2gt = 정답 다음 프레임 L2 (--ov_obj l2, 기존 그대로)
 #     nt   = 뉴턴 목표 L2 (--ov_obj newton, 사용자 10-22 추가): 망 노드 변위 u 에서 증분 포텐셜의 감쇠 뉴턴 걸음(CG 최대 50, 음곡률 직전까지)으로
 #            목표 u_t = sg(u + d), 손실 Σ M|u - u_t|²/ΣM; 목표는 NEV 반복마다 다시
+#     nl2  = 모델 상태 출력만 최적화 노드 L2 (--ov_obj nodeov, 사용자 10-22 추가): 프레임마다 모델 상태에서 먼저 출력만 최적화(spstick OV 플래그)로
+#            u* 를 풀고 (= 그 프레임 E*), 망 노드 출력을 Σ M|u - u*|²/ΣM 로 맞춘 뒤 망 출력으로 옮긴다 (u* 로 옮기지 않음).
+#            두 궤적이 끝나면 따로 psi_nl2/ (출력만 최적화 + 이번 것) 색 -> PF3OBJ_NL2_DONE
 #   기록 (exe/train_deform.py _ovnet_fit = AF_OVNET_FIT): 프레임별 목적함수 곡선, 같은 출력의 증분 포텐셜 E, 같은 모델 상태에서 출력만 최적화로 푼 E*
 #   (spstick OV 플래그로 같은 _ov_frame 경로, L-BFGS 500), 위치 오차, 망 파라미터·모델 상태 frames/frame_XX.pt
 # 단계 PF3_STAGE=test: 명령줄 대조 -> (1) 메인 롤아웃 경로와 같은지 (2) 이어 돌리기 (3) E* 경로 = 출력만 최적화 실행 (4) 짧은 시험(세 목적함수 L000 2 프레임)
@@ -42,7 +45,7 @@ XA=$(grep -o 'adam3) X="[^"]*"' $W/ovnet_t1.sh | sed 's/^adam3) X="//; s/"$//')
 gt_of(){ [ $1 = L000 ] && echo $W/lbdata/test_low/L000 || echo $W/lbdata/test/$1; }
 pt_of(){ [ $1 = L000 ] && echo $W/lbpt/test_low/L000.pt || echo $W/lbpt/test/$1.pt; }
 for T in L000 0004; do [ -f $S/roll_ov_$T.pt ] || fail "출력만 최적화 덤프 없음 $S/roll_ov_$T.pt"; done
-objx(){ case $1 in ip) echo "--ov_obj ip";; nt) echo "--ov_obj newton";; l2ov|l2gt) echo "--ov_obj l2";; esac; }
+objx(){ case $1 in ip) echo "--ov_obj ip";; nt) echo "--ov_obj newton";; nl2) echo "--ov_obj nodeov";; l2ov|l2gt) echo "--ov_obj l2";; esac; }
 pyargs(){ # pyargs <T> <obj> <출력>
   echo "--infer --data $W/one/$1 --hold_traj $1 --out $3/run --tag OVN $BASE --out_var --ov_init predict $XA $(objx $2) --iters 0 --eval_t0 0 --eval_len 80 --tb none"; }
 fitcmd(){ # fitcmd <T> <obj> <출력> <gpu> [추가 env]
@@ -56,14 +59,14 @@ tokdiff(){ comm -$1 <(tr ' ' '\n' <<<"$2" | sort) <(tr ' ' '\n' <<<"$3" | sort) 
   echo "[예전 adam3 변수·최적화기 (ovnet_t1.sh)] $XA"
   echo "[예전 python 인자 (adam3, L000)] $(OLDA L000)"
   echo "[BASE 차이 예전->지금] 빠짐: '$(tokdiff 23 "$BASE_OLD" "$BASE")' | 더함: '$(tokdiff 13 "$BASE_OLD" "$BASE")'"
-  for K in ip nt l2ov l2gt; do for T in L000 0004; do
+  for K in ip nt nl2 l2ov l2gt; do for T in L000 0004; do
     N=$(pyargs $T $K $U/$K/$T | sed "s#$U/$K/$T/run#RUN#")
     NB=$(sed "s# $BASE # #" <<<"$N"); OB=$(sed "s# $BASE_OLD # #" <<<"$(OLDA $T)")
     echo "[명령 $K $T] $(fitcmd $T $K $U/$K/$T G AF_OVNET_R2=$R/$K/$T)"
     echo "[대조 $K $T: BASE 뺀 나머지 예전->지금] 빠짐: '$(tokdiff 23 "$OB" "$NB")' | 더함: '$(tokdiff 13 "$OB" "$NB")'  | BASE 글자 그대로 $(grep -c -F -- " $BASE " <<<"$N") 번"
   done; done; } > $U/cmdline_diff.txt
 # 자동 판정: BASE 뺀 나머지 차이는 데이터 경로(spstick 실행과 같은 one/T)와 --ov_obj 뿐이어야
-for K in ip nt l2ov l2gt; do for T in L000 0004; do
+for K in ip nt nl2 l2ov l2gt; do for T in L000 0004; do
   N=$(pyargs $T $K $U/$K/$T | sed "s#$U/$K/$T/run#RUN#"); NB=$(sed "s# $BASE # #" <<<"$N"); OB=$(sed "s# $BASE_OLD # #" <<<"$(OLDA $T)")
   [ "$(grep -c -F -- " $BASE " <<<"$N")" = 1 ] || fail "$K $T 명령줄에 BASE 가 글자 그대로 없다"
   [ "$(tokdiff 23 "$OB" "$NB")" = "$W/lbours/vid/d_$T" ] || fail "$K $T 예전 대비 빠진 인자가 데이터 경로 말고도 있다"
@@ -172,13 +175,14 @@ render(){ K=$1; T=$2; g=$3; O=$U/$K/$T
   [ -f $O/net.mp4 ] || CUDA_VISIBLE_DEVICES=$g python -u exe/lb_render.py --sim $O/h5_net --config $W/lbdata/config.json --shape lego --out $O/net.mp4 > $O/r_net.log 2>&1 < /dev/null
   [ -f $O/net.mp4 ] || { echo "[오류] $K $T 렌더"; return 1; }
   touch $O/.done_render; up; }
-psi(){ T=$1; g=$2; D=$U/psi/$T; mkdir -p $D
+psi(){ T=$1; g=$2; SD=$3; KL="$4"; D=$U/$SD/$T; mkdir -p $D    # psi <T> <gpu> <하위 디렉토리> "<목적함수들>"
   [ -f $D/.done ] && return 0
-  ( cd $WP && { [ -f $D/col_l2gt.npy ] || CUDA_VISIBLE_DEVICES=$g python -u exe/psi_color_lb.py --gt_dir $(gt_of $T) --pt $(pt_of $T) --dump sp=$S/roll_ov_$T.pt \
-        --dump ip=$U/ip/$T/roll_net.pt --dump nt=$U/nt/$T/roll_net.pt --dump l2ov=$U/l2ov/$T/roll_net.pt --dump l2gt=$U/l2gt/$T/roll_net.pt --out $D \
+  local DM="" LK=""; for K in $KL; do DM="$DM --dump $K=$U/$K/$T/roll_net.pt"; LK=$K; done
+  ( cd $WP && { [ -f $D/col_$LK.npy ] || CUDA_VISIBLE_DEVICES=$g python -u exe/psi_color_lb.py --gt_dir $(gt_of $T) --pt $(pt_of $T) --dump sp=$S/roll_ov_$T.pt \
+        $DM --out $D \
         --eps 1e-3 --q 1 99 --cmap turbo --range $RANGE --stats_name defstats_$T.txt --stats_frames 1 40 80 > $D/psi_color.log 2>&1 < /dev/null; }
     grep -q PSI_COLOR_DONE $D/psi_color.log || { tail -5 $D/psi_color.log; exit 1; }
-    for K in ip nt l2ov l2gt; do
+    for K in $KL; do
       [ -f $D/h5_$K/meta.json ] || python -u exe/lb_roll_to_h5.py --dump $U/$K/$T/roll_net.pt --traj $(gt_of $T) --out $D/h5_$K > $D/h5_$K.log 2>&1
       [ -f $D/psi_${K}_lego.mp4 ] || CUDA_VISIBLE_DEVICES=$g python -u exe/lb_render.py --sim $D/h5_$K --config $W/lbdata/config.json --shape lego \
          --colors $D/col_$K.npy --out $D/psi_${K}_lego.mp4 > $D/r_$K.log 2>&1 < /dev/null
@@ -188,7 +192,7 @@ psi(){ T=$1; g=$2; D=$U/psi/$T; mkdir -p $D
   touch $D/.done; up; }
 job(){ K=$1; T=$2; g=$3; echo "[시작] $K $T GPU$g $(date +%T)"; fitrun $K $T $g && render $K $T $g && touch $U/.done_${K}_$T; echo "[끝] $K $T GPU$g $(date +%T)"; }
 declare -A PIDS GPUOF; PEND=""
-for K in nt ip l2ov l2gt; do for T in L000 0004; do [ -f $U/.done_${K}_$T ] || PEND="$PEND ${K}_$T"; done; done
+for K in nt nl2 ip l2ov l2gt; do for T in L000 0004; do [ -f $U/.done_${K}_$T ] || PEND="$PEND ${K}_$T"; done; done
 busy(){ local b=""; for k in "${!PIDS[@]}"; do kill -0 ${PIDS[$k]} 2>/dev/null && b="$b ${GPUOF[$k]}"; done; echo $b; }
 launch_pending(){ # 빈 GPU 가 있는 만큼만 띄우고 나머지는 다음 틱으로 (돌고 있는 실행의 GPU 는 뺀다)
   local np="" kt g K T; for kt in $PEND; do
@@ -199,30 +203,40 @@ launch_pending(){ # 빈 GPU 가 있는 만큼만 띄우고 나머지는 다음 �
   done; PEND=$(echo $np); }
 launch_pending; up
 [ -n "$PEND" ] && echo "[대기] 빈 GPU 가 날 때까지: $PEND $(date '+%F %T')" | tee -a $U/gpu.log
-PSI_L=""; PSI_4=""
+PSI_L=""; PSI_4=""; NL_L=""; NL_4=""
 while :; do
   sleep 300
   [ -n "$PEND" ] && { launch_pending; up; }
+  for T in L000 0004; do     # 이번 것(nl2)만 따로 psi -> 둘 다 끝나면 PF3OBJ_NL2_DONE
+    v=NL_$( [ $T = L000 ] && echo L || echo 4 )
+    if [ -z "${!v}" ] && [ ! -f $U/psi_nl2/$T/.done ] && [ -f $U/.done_nl2_$T ]; then
+      g=$(free_gpu $(busy)); [ -z "$g" ] && continue
+      ( psi $T $g psi_nl2 "nl2" >> $U/task_psinl2_$T.log 2>&1 ) & PIDS[psinl2_$T]=$!; GPUOF[psinl2_$T]=$g; printf -v $v '%s' 1
+      echo "[배정] psi_nl2 $T GPU$g $(date '+%F %T')" | tee -a $U/gpu.log; fi
+  done
+  [ -f $U/psi_nl2/L000/.done ] && [ -f $U/psi_nl2/0004/.done ] && [ ! -f $U/PF3OBJ_NL2_DONE ] && { echo "nl2 두 궤적·psi 끝 $(date '+%F %T')" > $U/PF3OBJ_NL2_DONE; up; }
   for T in L000 0004; do
     v=PSI_$( [ $T = L000 ] && echo L || echo 4 )
-    if [ -z "${!v}" ] && [ ! -f $U/psi/$T/.done ] && [ -f $U/.done_ip_$T ] && [ -f $U/.done_nt_$T ] && [ -f $U/.done_l2ov_$T ] && [ -f $U/.done_l2gt_$T ]; then
+    if [ -z "${!v}" ] && [ ! -f $U/psi/$T/.done ] && [ -f $U/.done_ip_$T ] && [ -f $U/.done_nt_$T ] && [ -f $U/.done_nl2_$T ] && [ -f $U/.done_l2ov_$T ] && [ -f $U/.done_l2gt_$T ]; then
       g=$(free_gpu $(busy)); [ -z "$g" ] && continue
-      ( psi $T $g >> $U/task_psi_$T.log 2>&1 ) & PIDS[psi_$T]=$!; GPUOF[psi_$T]=$g; printf -v $v '%s' 1
+      ( psi $T $g psi "ip nt nl2 l2ov l2gt" >> $U/task_psi_$T.log 2>&1 ) & PIDS[psi_$T]=$!; GPUOF[psi_$T]=$g; printf -v $v '%s' 1
       echo "[배정] psi $T GPU$g $(date '+%F %T')" | tee -a $U/gpu.log; fi
   done
   [ "$(alive "${PIDS[@]}")" = 1 ] && continue
   [ -n "$PEND" ] && continue
-  ok=1; for K in ip nt l2ov l2gt; do for T in L000 0004; do [ -f $U/.done_${K}_$T ] || ok=0; done; done
+  ok=1; for K in ip nt nl2 l2ov l2gt; do for T in L000 0004; do [ -f $U/.done_${K}_$T ] || ok=0; done; done
   need=0; [ ! -f $U/psi/L000/.done ] && [ -z "$PSI_L" ] && need=1; [ ! -f $U/psi/0004/.done ] && [ -z "$PSI_4" ] && need=1
+  [ ! -f $U/psi_nl2/L000/.done ] && [ -z "$NL_L" ] && need=1; [ ! -f $U/psi_nl2/0004/.done ] && [ -z "$NL_4" ] && need=1
   [ $ok = 1 ] && [ $need = 1 ] && continue
   break
 done
-for K in ip nt l2ov l2gt; do for T in L000 0004; do [ -f $U/.done_${K}_$T ] || fail "$K $T 실패 (task_${K}_$T.log)"; done; done
-for T in L000 0004; do [ -f $U/psi/$T/.done ] || fail "psi $T 실패"; done
+for K in ip nt nl2 l2ov l2gt; do for T in L000 0004; do [ -f $U/.done_${K}_$T ] || fail "$K $T 실패 (task_${K}_$T.log)"; done; done
+for T in L000 0004; do [ -f $U/psi/$T/.done ] || fail "psi $T 실패"; [ -f $U/psi_nl2/$T/.done ] || fail "psi_nl2 $T 실패"; done
+[ -f $U/PF3OBJ_NL2_DONE ] || echo "nl2 두 궤적·psi 끝 $(date '+%F %T')" > $U/PF3OBJ_NL2_DONE
 python - $U > $U/summary.txt 2>&1 <<'PY'
 import sys, json, numpy as np
 U = sys.argv[1]; S = {}
-for k in ("ip", "nt", "l2ov", "l2gt"):
+for k in ("ip", "nt", "nl2", "l2ov", "l2gt"):
     for T in ("L000", "0004"):
         r = json.load(open(f"{U}/{k}/{T}/records.json"))
         rt = [q["ratio_E_Estar"] for q in r if q.get("ratio_E_Estar") is not None]
