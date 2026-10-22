@@ -60,9 +60,13 @@ ap.add_argument("--eps", type=float, default=1e-3, help="색: log10(밀도+eps)"
 ap.add_argument("--q", type=float, nargs=2, default=[1.0, 99.0])
 ap.add_argument("--hist_frames", type=int, nargs="+", default=[30, 60, 124])
 ap.add_argument("--table_frames", type=int, nargs="+", default=[1, 10, 30, 60, 124])
+ap.add_argument("--device", default="cuda", help="cuda | cpu (계산식은 같다, float64)")
+ap.add_argument("--threads", type=int, default=0, help="cpu 일 때 torch 스레드 수 (0 = 기본)")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
-dev = "cuda"
+dev = a.device
+if a.threads > 0:
+    torch.set_num_threads(a.threads)
 DT = torch.float64
 TR = []
 for s in a.traj:
