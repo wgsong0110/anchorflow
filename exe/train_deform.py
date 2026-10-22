@@ -5111,13 +5111,33 @@ def _newton_target(_fwd, _NTG, m, nrm, k, t):
                 d_ = r_ + (rr2 / rr) * d_
                 rr = rr2
             qdrop = float((gd * p_).sum()) - 0.5 * float((p_ * (_hvp(p_) - lam * p_)).sum()) if kk > 0 else 0.0
+            _diag = None
+            if os.environ.get("AF_OV_NEWTON_DIAG"):
+                # 진단: g 방향 곡률 -- 헤시안-벡터 곱 gᵀHg vs 유한차분 (E(+s g) + E(-s g) - 2E)/s², 항별(관성·탄성·접촉) 유한차분
+                _gHg = float((gd * (_hvp(gd) - lam * gd)).sum())
+                _s = 1e-4 * float(EXT) / float(gd.abs().max().clamp_min(1e-30))
+                _vals = []
+                for _sg in (1.0, -1.0):
+                    with torch.no_grad():
+                        Z.add_(_sg * _s * gd)
+                    _o = _fwd(); _vals.append((float(_o[2]) * nrm, [float(q_) for q_ in _o[5]]))
+                    with torch.no_grad():
+                        Z.sub_(_sg * _s * gd)
+                _o0 = _fwd(); _e0 = float(_o0[2]) * nrm; _p0 = [float(q_) for q_ in _o0[5]]
+                _fd2 = (_vals[0][0] + _vals[1][0] - 2 * _e0) / (_s * _s)
+                _fdt = [(_vals[0][1][i_] + _vals[1][1][i_] - 2 * _p0[i_]) / (_s * _s) for i_ in range(len(_p0))]
+                _gg = float((gd * gd).sum())
+                _diag = dict(gg=_gg, gHg=_gHg, fd2=_fd2 * _gg, fd_terms=[q_ * _gg for q_ in _fdt], s=_s, E=_e0,
+                             inert_scale=float(Mn.sum()) / (h_ * h_) / Mn.numel())
+                print(f"    [뉴턴 진단] t={t} k={k} |g|² {_gg:.3e}  gᵀHg {_gHg:.3e}  유한차분 {_fd2 * _gg:.3e}  항별 유한차분(관성,탄성,?,접촉) "
+                      + " ".join(f"{q_ * _gg:.3e}" for q_ in _fdt) + f"  λ {lam:.3e}  CG {kk} 음곡률 {neg}  걸음 rms {float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT):.3e} EXT", flush=True)
         del g
     finally:
         _DP_FAST[0], DM.PROBE[0], DM.PROBE[1] = _sv
     _NTG[0] = ((U0 - p_)[:, :3].detach(), Mn)
     _NEWTON_LOG.append(dict(t=int(t), k=int(k), E=float(EJ) / nrm, cg=int(kk), neg=bool(neg), res=(rr / g2) ** 0.5,
                             step_rms=float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT), lam=lam,
-                            qdrop_rel=qdrop / max(abs(float(EJ)), 1e-30), sec=time.time() - _t0))
+                            qdrop_rel=qdrop / max(abs(float(EJ)), 1e-30), sec=time.time() - _t0, diag=_diag))
 
 
 # 앙상블 오프셋 (셀의 분수). 첫 번째는 원점이고 나머지는 고르게 흩어 놓는다.
