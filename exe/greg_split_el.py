@@ -101,10 +101,16 @@ for t in range(a.t1):
                      "du_med_over_h": float(dub.norm(dim=-1).median() / a.node_h)}
     du_a, Du_a = gregory_skin(x, npos, rows, U, Z1, a.node_h)
     rec["c_minus_a_Du_max"] = float((Dc - Du_a).abs().max())
+    # 로컬 -> 글로벌 순서 분해 (사용자 지정): 글로벌 = 노드 변위 U 의 barycentric(조각 선형) 보간,
+    # 로컬 = 셀 안 Gregory·방사형 스키닝(반경 포함)이 그 위에 더하는 나머지 (실제 ∇u − barycentric ∇u).
+    #   F_loc = (I + Du_c − Du_bary) F,  F_full = (I + Du_c) F  ->  ΔE_loc = E(F_loc) − E(F), ΔE_glob = E(F_full) − E(F_loc)
+    E_loc = E_el((I3 + Dc - Dub) @ F)
+    E_full = E0 + rec["c_both"]["dE_el"]
+    rec["dE_loc"], rec["dE_glob"], rec["dE"] = E_loc - E0, E_full - E_loc, E_full - E0
     rows_out.append(rec)
     print(f"t={t:2d} 노드위치차 {pdiff:.1e} | E_el(상태) {E0:.4e} | ΔE_el a(U만) {rec['a_U_only']['dE_el']:+.4e} "
           f"b(ρ만) {rec['b_rho_only']['dE_el']:+.4e} c(둘다) {rec['c_both']['dE_el']:+.4e} d(bary) {rec['d_bary']['dE_el']:+.4e} "
           f"| |ρ_raw|max {rec['rho_raw_absmax']:.1e} | c-a ∇u 최대차 {rec['c_minus_a_Du_max']:.1e} "
-          f"| 검산 x {rec['chk_x_maxdiff']:.1e} F {rec['chk_F_maxdiff']:.1e}", flush=True)
+          f"| ΔE {rec['dE']:+.4e} = 로컬 {rec['dE_loc']:+.4e} + 글로벌 {rec['dE_glob']:+.4e} | 검산 x {rec['chk_x_maxdiff']:.1e} F {rec['chk_F_maxdiff']:.1e}", flush=True)
     json.dump(rows_out, open(a.out, "w"), ensure_ascii=False, indent=1)
 print("GREG_SPLIT_DONE", flush=True)
