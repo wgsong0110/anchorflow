@@ -214,8 +214,9 @@ if a.png:
                         for t in v["span"][kk]:
                             ax.axvspan(t - 0.5, t + 0.5, color=COL[kk], alpha=0.18 if v[kk] else 0.07, lw=0)
                 if key == "mv":
-                    y = np.array(r["mv"]) / np.maximum(np.array(d["gt"]["mv"]), 1e-12)
-                    yc = np.array(r["com"]) / np.maximum(np.array(d["gt"]["com"]), 1e-12)
+                    gm, gc = np.array(d["gt"]["mv"]), np.array(d["gt"]["com"])
+                    y = np.where(gm >= TH["gmin"] * d["EXT"], np.array(r["mv"]) / np.maximum(gm, 1e-12), np.nan)    # 정답 정지 프레임은 비우기
+                    yc = np.where(gc >= TH["gmin"] * d["EXT"], np.array(r["com"]) / np.maximum(gc, 1e-12), np.nan)
                     ax.plot(x, np.clip(y, 1e-3, 1e3), color="k", lw=1.0, label="입자 평균")
                     ax.plot(x, np.clip(yc, 1e-3, 1e3), color="0.5", lw=0.8, ls="--", label="무게중심")
                     ax.axhline(TH["stop"], color=COL["A"], lw=0.8, ls=":"); ax.set_yscale("log")
