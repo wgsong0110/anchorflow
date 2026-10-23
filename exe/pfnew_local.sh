@@ -5,7 +5,6 @@
 #   outputs.md·learned_results.tex 에 덧붙이고 알림. 기존 결과 파일은 덮어쓰지 않는다.
 exec 9>/tmp/pfnew_local.lock
 flock -n 9 || { echo "[중단] 다른 감시가 돌고 있다 $(date)"; exit 0; }
-C=${PFNEW_COMMIT:?커밋}
 RL=r2:storage/result/anchorflow/lbours; RSP=$RL/spstick
 RR=/home/wgsong/workspace/result/anchorflow; D=$RR/v20261009; T=/tmp/pfnew_dl; mkdir -p $T $D
 TEX=/home/wgsong/workspace/writing/anchorflow/learned_results.tex
@@ -56,6 +55,7 @@ post(){ k=$1; vn=${VN[$k]}; dd=${DIR[$k]}; declare -A EN; declare -A RT
     [ -f $T/ov_$x.mp4 ] || rclone copyto $RSP/ov_$x.mp4 $T/ov_$x.mp4 -q; [ -f $T/gt_$x.mp4 ] || rclone copyto $RSP/gt_$x.mp4 $T/gt_$x.mp4 -q
     o=$(summ $T/$dd/$x/records.json $k) || { fail "$k $x 기록"; return 1; }
     EN[$x]=${o%%|*}; RT[$x]=${o#*|}; done
+  C=$(grep -ao '커밋 [0-9a-f]*' $T/$dd/L000/cmd.txt | tail -1 | cut -d' ' -f2)
   for x in L000 0004; do
     [ $x = L000 ] && { EO=11.47%; TT="L000"; } || { EO=6.92%; TT="0004"; }
     OUT=$D/pf_${vn}_$x.mp4
