@@ -17,6 +17,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--dump", required=True)
 ap.add_argument("--traj", required=True, help="원래 lbdata 궤적 디렉토리 (meta.json, sim_0000000000.h5)")
 ap.add_argument("--out", required=True)
+ap.add_argument("--first_from_dump", action="store_true",
+                help="프레임 0 을 원래 궤적 0 프레임 대신 덤프 pred[0]·F[0] 으로 (이어 돌리기 덤프: pred[0] = 시작 상태), 그 뒤 pred[1:]")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
 d = torch.load(a.dump, weights_only=False)
@@ -24,10 +26,16 @@ assert d.get("F") is not None, "덤프에 F 가 없다 -- AF_ROLL_DUMP_F=1 로 �
 meta = json.load(open(f"{a.traj}/meta.json"))
 R = torch.as_tensor(np.array(meta["R"]), dtype=torch.float32)
 json.dump(meta, open(f"{a.out}/meta.json", "w"), indent=1)
-with h5py.File(f"{a.traj}/sim_0000000000.h5") as h, h5py.File(f"{a.out}/sim_0000000000.h5", "w") as o:
-    for k in ("x", "F"):
-        o.create_dataset(k, data=np.array(h[k]))
 P, F = d["pred"].float(), d["F"].float()
+if a.first_from_dump:
+    P, F = P[1:], F[1:]
+    with h5py.File(f"{a.out}/sim_0000000000.h5", "w") as o:
+        o.create_dataset("x", data=d["pred"][0].float().numpy().astype(np.float32))
+        o.create_dataset("F", data=(d["F"][0].float() @ R).reshape(-1, 9).numpy().astype(np.float32))
+else:
+    with h5py.File(f"{a.traj}/sim_0000000000.h5") as h, h5py.File(f"{a.out}/sim_0000000000.h5", "w") as o:
+        for k in ("x", "F"):
+            o.create_dataset(k, data=np.array(h[k]))
 for i in range(P.shape[0]):
     Fr = (F[i] @ R).reshape(-1, 9)
     with h5py.File(f"{a.out}/sim_{i + 1:010d}.h5", "w") as o:

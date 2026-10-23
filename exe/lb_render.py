@@ -25,6 +25,8 @@ ap.add_argument("--iter", type=int, default=-1, help="3DGS 체크포인트 반�
 ap.add_argument("--colors", default="", help="가우시안 색 덮어쓰기 .npy [T,>=NG,3] (h5 행 순서, 앞 NG 개를 쓴다) (0~1, 프레임 순서 = sim_*.h5 정렬 순). "
                 "주면 SH 대신 colors_precomp 로 래스터화한다 (불투명도·공분산은 그대로)")
 ap.add_argument("--iso", type=float, default=0.0, help="공분산을 등방형 (iso × 가우시안 축 길이 중앙값)² I 로 (F 무시). 0 이면 FΣFᵀ")
+ap.add_argument("--frame_label", type=int, default=None, help="주면 프레임 번호 (이 값 + 영상 프레임 순번) 를 크게 빨간색으로 찍는다")
+ap.add_argument("--caption", default="", help="--frame_label 과 함께 왼쪽 위에 찍을 설명 (한국어 가능)")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
 import imageio.v2 as imageio                                     # noqa: E402
@@ -73,6 +75,27 @@ RAST = GaussianRasterizer(raster_settings=GaussianRasterizationSettings(
     image_height=int(cam["height"]), image_width=int(cam["width"]), tanfovx=math.tan(fx_ * 0.5), tanfovy=math.tan(fy_ * 0.5),
     bg=torch.ones(3, device=dev), scale_modifier=1.0, viewmatrix=wv, projmatrix=(wv[None] @ pj[None])[0], sh_degree=3,
     campos=wv.inverse()[3, :3], prefiltered=False, debug=False))
+_FONT = None
+
+
+def _label(fr, n):
+    """프레임 번호를 크게 빨간색으로 (그리고 --caption)."""
+    global _FONT
+    from PIL import Image, ImageDraw, ImageFont
+    if _FONT is None:
+        from matplotlib import font_manager as fm
+        _cand = [f for f in fm.findSystemFonts() if "Noto" in f and ("CJK" in f or "KR" in f)] or \
+                [f for f in fm.findSystemFonts() if "DejaVuSans-Bold" in f] or [fm.findfont("DejaVu Sans")]
+        _H = fr.shape[0]
+        _FONT = (ImageFont.truetype(_cand[0], int(_H * 0.09)), ImageFont.truetype(_cand[0], int(_H * 0.035)))
+    im = Image.fromarray(fr)
+    dr = ImageDraw.Draw(im)
+    dr.text((int(fr.shape[1] * 0.03), int(fr.shape[0] * 0.02)), f"{n}", fill=(230, 0, 0), font=_FONT[0])
+    if a.caption:
+        dr.text((int(fr.shape[1] * 0.03), int(fr.shape[0] * 0.13)), a.caption, fill=(230, 0, 0), font=_FONT[1])
+    return np.asarray(im)
+
+
 WR = imageio.get_writer(a.out, fps=a.fps, codec="libx264", quality=8)
 files = sorted(glob.glob(f"{a.sim}/sim_*.h5"))
 COL = None
@@ -93,6 +116,9 @@ for fi, p in enumerate(files):
     _cp = torch.as_tensor(np.asarray(COL[fi][:NG], dtype=np.float32), device=dev) if COL is not None else None
     img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=(SHS if _cp is None else None), colors_precomp=_cp, opacities=OPA, scales=None,
                rotations=None, cov3D_precomp=cc)[0]
-    WR.append_data((img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
+    _fr = (img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+    if a.frame_label is not None:
+        _fr = _label(_fr, a.frame_label + fi)
+    WR.append_data(_fr)
 WR.close()
 print(f"[영상] {a.out} ({len(files)} 프레임)", flush=True)

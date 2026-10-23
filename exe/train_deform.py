@@ -6304,6 +6304,396 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
         print("OVNET_FIT_DONE", flush=True)
 
 
+# ===================== AF_PHYSCHECK / AF_OVCONT_FIT (사용자 10-23 "ipL000 물리 점검") =====================
+# 계산은 전부 출력만 최적화·망 프레임별 최적화가 쓰는 바로 그 경로: step_once (같은 격자·바닥 사상 --bc_softplus/--bc_stick)
+# -> ip_of (= _ov_once._fwd 의 증분 포텐셜, 같은 free 마스크) / phys_resid.pts_ip_energy(parts_grad) 의 탄성·바닥 항.
+# 노드 변위 기울기는 DM.PROBE (노드 출력에 더하는 0 텐서) 로 잰다 -- AF_ROLL_IP·_newton_target 과 같은 방식.
+def _pc_consts(d, gsel):
+    cfg = d["cfg"]
+    m = MASS[gsel]
+    h_ = FRAME_DT / EVAL_SUB
+    return (cfg, m, _pvol(m, cfg), torch.tensor(cfg["g"], device=dev, dtype=torch.float32),
+            int(cfg["n_grid"]), float(cfg.get("grid_lim", 2.0)), h_, float(m.sum()) * (EXT ** 2) / (h_ ** 2))
+
+
+def _pc_eval(d, t, gsel, p, xs, vs, Fs, U=None, kind="ip"):
+    """한 상태 (xs, vs, Fs) 에서 노드 변위 U 의 목적함수와 그 노드 변위 기울기.
+    kind = ip     : 증분 포텐셜 E·nrm (J). U=None 이면 지금 망 출력 (--net_inertial 이면 관성 예측 + 망), 아니면 U 고정.
+           static : Π(U) = Σ V ψ(J F) + E_bc − Σ w m g·(x2 − x)  at U = 0 (탄성 + 중력 + 같은 바닥 사상) -- 정적 평형 잔여 힘
+           hold   : 증분 포텐셜 at U = 0, v = 0 (속도 0 으로 그 자리에 머무는 것이 이 이산 동역학의 고정점인지; softplus 밀어올림 포함)
+    -> dict(E, g [M,3] (N), Mn [M] 노드 질량 Σ λ m, U [M,C], U_pred [M,3] 노드 관성 예측, x2, npos)"""
+    cfg, m, vol, gv, ng_, gl_, h_, nrm = _pc_consts(d, gsel)
+    n_out = int(getattr(net, "n_out", 3))
+    _sv = (_DP_FAST[0], _NF_HOLD[0], DM.PROBE[0], DM.PROBE[1], _OV_CUR[0])
+    try:
+        _OV_CUR[0] = None
+        _NF_HOLD[0] = "want"
+        if kind in ("static", "hold"):
+            _DP_FAST[0] = lambda _n, _dt, _dev: (torch.zeros(_n, n_out, device=dev, dtype=xs.dtype),)
+            if kind == "hold":
+                vs = torch.zeros_like(vs)
+        elif U is not None:
+            _Uc = U.detach().to(dev, xs.dtype)
+            _DP_FAST[0] = lambda _n, _dt, _dev: (_Uc,)
+        else:
+            _DP_FAST[0] = None
+        DM.PROBE[0] = "want"
+        with torch.enable_grad(), dt_scope(h_):
+            x2, _, v2, _, dpn, _, _, _, _, Jd = step_once(d, t, gsel, p, xs, vs, need_J=False)
+            Z = DM.PROBE[1][0]
+            # free 마스크: _ov_once._fwd 와 같은 식
+            _hd = release_held(d, xs, t, h_)
+            if _hd is not None:
+                x2 = torch.where(_hd.unsqueeze(-1), xs, x2)
+            fm = (free_mask(d, x2.shape[0], x2.device, gsel, xs, t) if a.control else None)
+            if _hd is not None:
+                fm = (~_hd) if fm is None else (fm & ~_hd)
+            if _BC_LAST[0] is not None:
+                _am = _BC_LAST[0][1].reshape(-1) > 0.5
+                fm = (~_am) if fm is None else (fm & ~_am)
+            if kind == "static":
+                _, _, _, pq = phys_resid.pts_ip_energy(xs, x2 - xs, vs, Fs, Jd, m, vol, cfg, h_, ng_, gl_, g=gv, norm=None,
+                                                       free=fm, parts_grad=True)
+                w = torch.ones_like(m) if fm is None else fm.to(m.dtype)
+                obj = pq[1] + pq[3] - (w * m * ((x2 - xs) * gv).sum(-1)).sum()
+                Ev = float(obj)
+            else:
+                E, _, _, pq = ip_of(xs, x2 - xs, vs, Fs, m, vol, cfg, h_, ng_, gl_, g=gv, norm=nrm, free=fm, jac=Jd)
+                obj = E * nrm
+                Ev = float(E)
+            g = torch.autograd.grad(obj, Z)[0][:, :3].detach()
+        ens = _NF_HOLD[0][0]
+        npos, rows, lam = ens[1], ens[3], ens[4]
+        M = npos.shape[0]
+        Mn = torch.zeros(M, device=dev, dtype=torch.float64).index_add_(
+            0, rows.reshape(-1), (m.double().unsqueeze(-1) * lam.double()).reshape(-1))
+        Up = DM.node_inertial(xs, vs, m, rows, lam, M, cfg["g"], h_)[0].detach()
+        return dict(E=Ev, g=g, Mn=Mn, U=dpn.detach(), U_pred=Up, x2=x2.detach(), npos=npos.detach(),
+                    parts=[float(q) for q in pq])
+    finally:
+        _DP_FAST[0], _NF_HOLD[0], DM.PROBE[0], DM.PROBE[1], _OV_CUR[0] = _sv
+
+
+def _pc_gstats(r, h_, gnorm):
+    """노드 변위 기울기 통계 (지지 노드 = 노드 질량 > 0). 단위: g 는 힘 (N).
+      f_l1_w   = Σ|g_i| / Σ M_i|g|          (잔여 힘 / 무게)
+      f_net_w  = |Σ g_i| / Σ M_i|g|         (합력 / 무게)
+      disp_pct = Σ|g_i| h² / Σ M_i / EXT·100 (관성 척도 M/h² 로 나눈 변위 환산, % EXT)
+      g_over_inU = Σ|g_i| / Σ (M_i/h²)|U_i| (관성 척도 × 그 출력 변위 대비)"""
+    sup = r["Mn"] > 0
+    g = r["g"].double()[sup]
+    Mn = r["Mn"][sup]
+    U = r["U"][:, :3].double()[sup]
+    gn = g.norm(dim=-1)
+    W = float(Mn.sum()) * gnorm
+    q = gn / (Mn * gnorm).clamp_min(1e-30)
+    return dict(n_sup=int(sup.sum()), g_l1=float(gn.sum()), g_l2=float(g.norm()), g_max=float(gn.max()),
+                f_l1_w=float(gn.sum()) / W, f_net_w=float(g.sum(0).norm()) / W,
+                node_ratio_med=float(q.median()), node_ratio_p90=float(torch.quantile(q.float(), 0.9)),
+                disp_pct=100.0 * float(gn.sum()) * h_ ** 2 / float(Mn.sum()) / float(EXT),
+                g_over_inU=float(gn.sum()) / max(float(((Mn / h_ ** 2) * U.norm(dim=-1)).sum()), 1e-30),
+                U_mean_pct=100.0 * float((Mn * U.norm(dim=-1)).sum() / Mn.sum()) / float(EXT))
+
+
+def _pc_state(d, gsel, xs, vs, Fs):
+    """상태 하나의 에너지·질량중심·바닥·det (입자 질량 MASS, 부피 _pvol, ψ = phys_resid.psi_of -- psi_color_lb 와 같은 함수)."""
+    cfg, m, vol, gv, ng_, gl_, h_, nrm = _pc_consts(d, gsel)
+    with torch.no_grad():
+        xs, vs = xs.to(dev).float(), vs.to(dev).float()
+        Fs = Fs.to(dev).float().reshape(-1, 3, 3)
+        md = m.double()
+        ps = torch.cat([phys_resid.psi_of(Fs[s:s + 65536], cfg, h_)[0] for s in range(0, Fs.shape[0], 65536)])
+        sd = None
+        for bc in (cfg.get("boundary_conditions") or []):
+            if bc.get("type") != "surface_collider":
+                continue
+            pt = torch.as_tensor(bc["point"], device=dev, dtype=torch.float32)
+            nr = torch.as_tensor(bc["normal"], device=dev, dtype=torch.float32)
+            nr = nr / nr.norm().clamp_min(1e-12)
+            s_ = ((xs - pt) * nr).sum(-1)
+            sd = s_ if sd is None else torch.minimum(sd, s_)
+        dt_ = torch.linalg.det(Fs.double())
+        sp = vs.norm(dim=-1)
+        com = (md.unsqueeze(-1) * xs.double()).sum(0) / md.sum()
+        return dict(K=0.5 * float((md * (vs.double() ** 2).sum(-1)).sum()),
+                    Ug=-float((md * (xs.double() * gv.double()).sum(-1)).sum()),
+                    Eel=float((vol.double() * ps.double()).sum()),
+                    com=[float(q) for q in com], vcom=[float(q) for q in ((md.unsqueeze(-1) * vs.double()).sum(0) / md.sum())],
+                    sd_min=(float(sd.min()) if sd is not None else None),
+                    n_below=(int((sd < 0).sum()) if sd is not None else 0),
+                    depth_max=(float((-sd).clamp_min(0).max()) if sd is not None else 0.0),
+                    det_le0=int((dt_ <= 0).sum()), det_min=float(dt_.min()),
+                    v_max=float(sp.max()), v_mean=float(sp.mean()))
+
+
+def _pc_static(d, t, gsel, p, xs, vs, Fs):
+    cfg, m, vol, gv, ng_, gl_, h_, nrm = _pc_consts(d, gsel)
+    gnorm = float(gv.norm())
+    rs = _pc_eval(d, t, gsel, p, xs, vs, Fs, kind="static")
+    rh = _pc_eval(d, t, gsel, p, xs, vs, Fs, kind="hold")
+    return dict(static=dict(Pi=rs["E"], **_pc_gstats(rs, h_, gnorm)),
+                hold=dict(E=rh["E"], **_pc_gstats(rh, h_, gnorm),
+                          x2_move_pct=100.0 * float((rh["x2"] - xs).norm(dim=-1).mean()) / float(EXT),
+                          x2_move_max_pct=100.0 * float((rh["x2"] - xs).norm(dim=-1).max()) / float(EXT)))
+
+
+def _pc_gt_F(gtdir, t):
+    import h5py
+    with h5py.File(f"{gtdir}/sim_{t:010d}.h5") as h_:
+        return torch.as_tensor(np.array(h_["F"], dtype=np.float32)).reshape(-1, 3, 3)
+
+
+def _pc_gt_v(d, gtdir, t, T):
+    """정답 속도: lbdata h5 에 v 가 있으면 그것, 없으면 lbpt 의 v (프레임 수가 맞을 때), 없으면 후퇴 차분."""
+    import h5py
+    with h5py.File(f"{gtdir}/sim_{t:010d}.h5") as h_:
+        if "v" in h_:
+            return torch.as_tensor(np.array(h_["v"], dtype=np.float32)), "h5"
+    if "v" in d and d["v"].shape[0] == T:
+        return d["v"][t].float().cpu(), "pt"
+    if t == 0:
+        return d["v"][0].float().cpu(), "pt0"
+    return ((d["x"][t].float() - d["x"][t - 1].float()) / FRAME_DT).cpu(), "diff"
+
+
+def _physcheck(d, t0, L, gsel, x, v, p):
+    """AF_PHYSCHECK=출력디렉토리  AF_PHYSCHECK_FRAMES=망 프레임별 frames/  AF_PHYSCHECK_MODEL=roll_net.pt
+       AF_PHYSCHECK_OV=출력만 최적화 덤프  AF_PHYSCHECK_GTDIR=lbdata 궤적 디렉토리 (h5 F)  AF_PHYSCHECK_CONT=이어 돌리기 디렉토리
+       AF_PHYSCHECK_ESTAR=500 (E* L-BFGS 반복)  AF_PHYSCHECK_STAGES=step,static,series (순서대로; 각 단계는 이어 돈다)
+    step  : 망 프레임 i 마다 state_in 에서 (a) 망 출력 (b) 노드 관성 예측 (c) 같은 상태의 출력만 최적화 L-BFGS 해 (E*) 의
+            증분 포텐셜·노드 변위 기울기, 망-E* 위치·노드 차, 기록(records.json)·프레임 파일(state_out, x_star) 대조 -> step.jsonl
+    static: 정답·망·출력만 최적화 상태 0..L 마다 정적 평형 잔여 힘 (Π) 과 정지 유지 잔차 (hold) -> static.jsonl
+    series: 세 실행 (+ 이어 돌리기) 프레임별 에너지·질량중심·바닥·det -> series.json"""
+    out = os.environ["AF_PHYSCHECK"]
+    os.makedirs(out, exist_ok=True)
+    fd = os.environ["AF_PHYSCHECK_FRAMES"]
+    gtdir = os.environ["AF_PHYSCHECK_GTDIR"]
+    nes = int(os.environ.get("AF_PHYSCHECK_ESTAR", "500"))
+    stages = [q for q in os.environ.get("AF_PHYSCHECK_STAGES", "step,static,series").split(",") if q]
+    cfg, m, vol, gv, ng_, gl_, h_, nrm = _pc_consts(d, gsel)
+    gnorm = float(gv.norm())
+    T = d["x"].shape[0]
+    F0 = take(traj_F(d)[t0], gsel).float()
+    net.requires_grad_(False)
+    _ld = lambda q: torch.load(q, map_location="cpu", weights_only=False, mmap=True)
+    MD = _ld(os.environ["AF_PHYSCHECK_MODEL"])
+    OV = _ld(os.environ["AF_PHYSCHECK_OV"])
+    recs = json.load(open(os.path.join(os.path.dirname(fd.rstrip("/")), "records.json")))
+    nfr = len(recs)
+    print(f"[물리 점검] 단계 {stages}, 망 프레임 {nfr}, 궤적 프레임 {T}, h {h_:.5g}, |g| {gnorm:.4g}, 입자 {x.shape[0]}, 질량 {float(m.sum()):.5g}, "
+          f"EXT {float(EXT):.5g}, 바닥 {[bc for bc in (cfg.get('boundary_conditions') or []) if bc.get('type') == 'surface_collider']}", flush=True)
+
+    def _jl_done(path):
+        if not os.path.exists(path):
+            return set()
+        return set(json.loads(q)["key"] for q in open(path) if q.strip())
+
+    def _jl_add(path, rec):
+        with open(path, "a") as f_:
+            f_.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    for stage in stages:
+        if stage == "step":
+            sp = os.path.join(out, "step.jsonl")
+            done = _jl_done(sp)
+            for i in tqdm(range(nfr), desc="한 스텝 최적성"):
+                if f"f{i}" in done:
+                    continue
+                _tw = time.time()
+                c = torch.load(os.path.join(fd, f"frame_{i:02d}.pt"), map_location=dev, weights_only=False)
+                net.load_state_dict(c["net"])
+                net.eval()
+                si, so = c["state_in"], c["state_out"]
+                xs, vs, Fs = si["x"].to(dev).float(), si["v"].to(dev).float(), si["F"].to(dev).float()
+                t = t0 + i
+                _SIM_T[0] = i * FRAME_DT
+                rm = _pc_eval(d, t, gsel, p, xs, vs, Fs)                       # (a) 망 출력
+                Upred = torch.zeros_like(rm["U"])
+                Upred[:, :3] = rm["U_pred"].to(Upred.dtype)
+                rp = _pc_eval(d, t, gsel, p, xs, vs, Fs, U=Upred)              # (b) 관성 예측 (L-BFGS 시작점)
+                _keep = (a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj)
+                try:                                                           # (c) E* -- _ovnet_fit._estar 와 같은 호출
+                    a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj = "out", "lbfgs", nes, "ip"
+                    with dt_scope(h_):
+                        xst, _, _ = _ov_frame(d, t, gsel, p, xs, vs, Fs)
+                finally:
+                    a.ov_vars, a.ov_opt, a.ov_roll, a.ov_obj = _keep
+                Ust = _DPN_LIVE[0][1].detach().clone()
+                Es0, Es1 = (float(q) for q in _OV_LOG[-1])
+                rs = _pc_eval(d, t, gsel, p, xs, vs, Fs, U=Ust)
+                ext_ = float(EXT)
+                dxs = (rm["x2"] - xst).norm(dim=-1)
+                sup = rm["Mn"] > 0
+                dU = (rm["U"][:, :3] - Ust[:, :3]).double().norm(dim=-1)[sup]
+                rec = dict(key=f"f{i}", frame=i + 1, sec=None,
+                           E_model=rm["E"], E_pred=rp["E"], E_star=rs["E"], E_star_lbfgs=Es1, E_star_init=Es0,
+                           rec_E_ip=recs[i]["E_ip"], rec_E_star=recs[i]["E_star"],
+                           ratio_E_Estar=rm["E"] / rs["E"],
+                           chk_model_x_max_pct=100 * float((rm["x2"] - so["x"].to(dev)).norm(dim=-1).max()) / ext_,
+                           chk_star_x_max_pct=100 * float((rs["x2"] - xst).norm(dim=-1).max()) / ext_,
+                           chk_star_vs_file_mean_pct=(100 * float((xst - c["x_star"].to(dev)).norm(dim=-1).mean()) / ext_
+                                                      if c.get("x_star") is not None else None),
+                           pos_model_star_mean_pct=100 * float(dxs.mean()) / ext_, pos_model_star_max_pct=100 * float(dxs.max()) / ext_,
+                           node_model_star_rms_pct=100 * float(((rm["Mn"][sup] * dU ** 2).sum() / rm["Mn"][sup].sum()).sqrt()) / ext_,
+                           g_model=_pc_gstats(rm, h_, gnorm), g_pred=_pc_gstats(rp, h_, gnorm), g_star=_pc_gstats(rs, h_, gnorm))
+                rec["sec"] = time.time() - _tw
+                _jl_add(sp, rec)
+                print(f"    [한 스텝] 프레임 {i + 1}: E/E* {rec['ratio_E_Estar']:.4f} (기록 {recs[i]['ratio_E_Estar']:.4f})  "
+                      f"기울기 변위환산 망 {rec['g_model']['disp_pct']:.3e}% E*해 {rec['g_star']['disp_pct']:.3e}% 관성예측 {rec['g_pred']['disp_pct']:.3e}%  "
+                      f"잔여힘/무게 망 {rec['g_model']['f_l1_w']:.3e} E*해 {rec['g_star']['f_l1_w']:.3e}  망-E* 위치 {rec['pos_model_star_mean_pct']:.4f}% "
+                      f"| 대조: 망 재계산-기록 위치 최대 {rec['chk_model_x_max_pct']:.2e}% E {rm['E']:.6e} vs {recs[i]['E_ip']:.6e}, "
+                      f"E*해 재계산 {rec['chk_star_x_max_pct']:.2e}%, E*해-기록 x_star 평균 {rec['chk_star_vs_file_mean_pct']}%  {rec['sec']:.0f} s", flush=True)
+                del c
+        elif stage == "static":
+            sp = os.path.join(out, "static.jsonl")
+            done = _jl_done(sp)
+            NF = int(os.environ.get("AF_PHYSCHECK_STATIC_N", str(nfr)))     # 상태 0..nfr
+            jobs = []
+            for k in range(0, nfr + 1):
+                if k < nfr + 1 - NF:
+                    continue
+                jobs += [("gt", k), ("model", k), ("ov", k)]
+            for src, k in tqdm(jobs, desc="정적 평형"):
+                if f"{src}{k}" in done:
+                    continue
+                if k == 0:
+                    xs, vs, Fs = x, v, F0
+                elif src == "gt":
+                    xs = take(d["x"][t0 + k], gsel).float()
+                    vs = _pc_gt_v(d, gtdir, t0 + k, T)[0].to(dev)
+                    Fs = _pc_gt_F(gtdir, t0 + k).to(dev)
+                else:
+                    D_ = MD if src == "model" else OV
+                    xs, vs, Fs = D_["pred"][k - 1].float().to(dev), D_["v"][k - 1].float().to(dev), D_["F"][k - 1].float().to(dev)
+                _tw = time.time()
+                r_ = _pc_static(d, t0 + k, gsel, p, xs, vs, Fs)
+                _jl_add(sp, dict(key=f"{src}{k}", src=src, frame=k, sec=time.time() - _tw, **r_))
+                if k % 10 == 0 or k == nfr:
+                    print(f"    [정적] {src} 프레임 {k}: 잔여힘/무게 {r_['static']['f_l1_w']:.4e} (합력 {r_['static']['f_net_w']:.4e})  "
+                          f"정지유지 {r_['hold']['f_l1_w']:.4e}", flush=True)
+        elif stage == "series":
+            S = {}
+            srcs = [("gt", None), ("model", MD), ("ov", OV)]
+            cdir = os.environ.get("AF_PHYSCHECK_CONT")
+            for src, D_ in srcs:
+                rows_ = []
+                vsrc = set()
+                for k in tqdm(range(nfr + 1), desc=f"{src} 에너지"):
+                    if k == 0:
+                        xs, vs, Fs = x, v, _pc_gt_F(gtdir, t0)
+                        vsrc.add("v0")
+                    elif src == "gt":
+                        xs = take(d["x"][t0 + k], gsel).float()
+                        vs, vk = _pc_gt_v(d, gtdir, t0 + k, T)
+                        vsrc.add(vk)
+                        Fs = _pc_gt_F(gtdir, t0 + k)
+                    else:
+                        xs, vs, Fs = D_["pred"][k - 1].float(), D_["v"][k - 1].float(), D_["F"][k - 1].float()
+                    rows_.append(dict(frame=k, **_pc_state(d, gsel, xs, vs, Fs)))
+                S[src] = dict(rows=rows_, v_source=sorted(vsrc))
+            if cdir:
+                cf = sorted(f_ for f_ in os.listdir(os.path.join(cdir, "frames")) if f_.startswith("cont_"))
+                rows_ = []
+                s0 = MD["pred"].shape[0]
+                rows_.append(dict(frame=s0, **_pc_state(d, gsel, MD["pred"][s0 - 1].float(), MD["v"][s0 - 1].float(), MD["F"][s0 - 1].float())))
+                for f_ in tqdm(cf, desc="이어 돌리기 에너지"):
+                    c = torch.load(os.path.join(cdir, "frames", f_), map_location="cpu", weights_only=False)
+                    rows_.append(dict(frame=int(c["frame"]), **_pc_state(d, gsel, c["x"], c["v"], c["F"])))
+                S["cont"] = dict(rows=rows_, start_frame=s0)
+            json.dump(dict(series=S, h=h_, g=[float(q) for q in gv], EXT=float(EXT), mass=float(m.sum()),
+                           floor=[bc for bc in (cfg.get("boundary_conditions") or []) if bc.get("type") == "surface_collider"],
+                           mat=phys_resid.mat_name(cfg), E=cfg["E"], nu=cfg["nu"], density=cfg.get("density"),
+                           vol_sum=float(vol.sum())), open(os.path.join(out, "series.json"), "w"), ensure_ascii=False)
+            print(f"[계열] {out}/series.json  " + ", ".join(f"{k}: {len(v_['rows'])} 프레임" for k, v_ in S.items())
+                  + f"  정답 속도 출처 {S['gt']['v_source']}", flush=True)
+        else:
+            raise SystemExit(f"AF_PHYSCHECK_STAGES: 모르는 단계 {stage}")
+    print("PHYSCHECK_DONE", flush=True)
+
+
+def _ovcont_fit(d, t0, gsel, x, v, p):
+    """AF_OVCONT_FIT=출력디렉토리  AF_OVCONT_FROM=롤아웃 덤프 (pred·v·F; 마지막 프레임 상태에서 시작)  AF_OVCONT_N=이어갈 프레임 수
+    출력만 최적화 (명령줄 --ov_vars out --ov_obj ip --ov_opt lbfgs --ov_roll N --ov_init predict 그대로) 를 메인 롤아웃 --ov_roll 분기와
+    같은 _ov_frame 호출로 프레임마다 한 스텝씩. 프레임마다 frames/cont_{k:03d}.pt (x, v, F float32, 기록) 를 쓰고 이어 돈다.
+    기록: 최적화 전/후 E, 시작 상태 대비 질량중심 이동·입자 최대/평균 이동, 운동 에너지, 정적 평형 잔여 힘 (Π)·정지 유지 잔차.
+    끝나면 roll_cont.pt (pred[0] = 시작 상태, F·v float32 -- lb_roll_to_h5 --first_from_dump 로 렌더)."""
+    if a.ov_vars != "out" or a.ov_roll <= 0 or EVAL_SUB != 1:
+        raise SystemExit("AF_OVCONT_FIT 은 --ov_vars out --ov_roll N, 서브스텝 1 과 함께")
+    out = os.environ["AF_OVCONT_FIT"]
+    fdir = os.path.join(out, "frames")
+    os.makedirs(fdir, exist_ok=True)
+    N = int(os.environ.get("AF_OVCONT_N", "120"))
+    D = torch.load(os.environ["AF_OVCONT_FROM"], map_location="cpu", weights_only=False, mmap=True)
+    s0 = int(D["pred"].shape[0])
+    xs0, vs0, Fs0 = D["pred"][s0 - 1].float().to(dev), D["v"][s0 - 1].float().to(dev), D["F"][s0 - 1].float().to(dev)
+    del D
+    cfg, m, vol, gv, ng_, gl_, h_, nrm = _pc_consts(d, gsel)
+    md = m.double()
+    rp = os.path.join(out, "records.json")
+    done = sorted(int(f_[5:8]) for f_ in os.listdir(fdir) if f_.startswith("cont_") and f_.endswith(".pt"))
+    if done:
+        k0 = done[-1] + 1
+        c = torch.load(os.path.join(fdir, f"cont_{done[-1]:03d}.pt"), map_location=dev, weights_only=False)
+        xm, vm, Fm = c["x"].to(dev).float(), c["v"].to(dev).float(), c["F"].to(dev).float()
+        recs = [r_ for r_ in json.load(open(rp)) if r_["k"] < k0]
+        if len(recs) != k0 + 1:
+            raise SystemExit(f"[이어 돌리기] records.json {len(recs)} 항목, 프레임 파일 {k0} 개 (+시작 1) 와 맞지 않는다")
+        print(f"[이어 돌리기] cont_{done[-1]:03d}.pt 에서 이어 돈다 -> k {k0}", flush=True)
+    else:
+        k0 = 0
+        xm, vm, Fm = xs0.clone(), vs0.clone(), Fs0.clone()
+        r0 = dict(k=-1, frame=s0, **_pc_state(d, gsel, xm, vm, Fm), **_pc_static(d, t0 + s0, gsel, p, xm, vm, Fm),
+                  com_disp_pct=0.0, disp_max_pct=0.0, disp_mean_pct=0.0)
+        recs = [r0]
+        json.dump(recs, open(rp, "w"), ensure_ascii=False)
+        print(f"[이어 돌리기] 시작 상태 = {os.environ['AF_OVCONT_FROM']} 프레임 {s0}: 속도 최대 {r0['v_max']:.3e} 평균 {r0['v_mean']:.3e}, "
+              f"잔여힘/무게 {r0['static']['f_l1_w']:.4e}, 정지유지 {r0['hold']['f_l1_w']:.4e}", flush=True)
+    com0 = (md.unsqueeze(-1) * xs0.double()).sum(0) / md.sum()
+    _tw = time.time()
+    for k in range(k0, N):
+        _tf = time.time()
+        fr = s0 + k + 1                                  # 이 스텝의 결과 프레임 번호
+        t = t0 + s0 + k
+        _SIM_T[0] = (s0 + k) * FRAME_DT
+        with dt_scope(h_):
+            xn, vn, Fn = _ov_frame(d, t, gsel, p, xm, vm, Fm)
+        if a.pg_vdamp:
+            vn = _pg_vdamp(vn, d, h_)
+        elif a.cfg_bc and float(d["cfg"].get("grid_v_damping_scale", 1.1)) < 1.0:
+            vn = vn * float(d["cfg"]["grid_v_damping_scale"])
+        E0, E1 = (float(q) for q in _OV_LOG[-1])
+        xm, vm, Fm = xn.detach(), vn.detach(), Fn.detach().float()
+        dd = (xm - xs0).norm(dim=-1)
+        com = (md.unsqueeze(-1) * xm.double()).sum(0) / md.sum()
+        rec = dict(k=k, frame=fr, E0=E0, E1=E1, **_pc_state(d, gsel, xm, vm, Fm), **_pc_static(d, t + 1, gsel, p, xm, vm, Fm),
+                   com_disp_pct=100 * float((com - com0).norm()) / float(EXT),
+                   com_disp=[float(q) for q in (com - com0)],
+                   disp_max_pct=100 * float(dd.max()) / float(EXT), disp_mean_pct=100 * float(dd.mean()) / float(EXT),
+                   step_mean_pct=100 * float((xn - xm).norm(dim=-1).mean()) / float(EXT), sec=time.time() - _tf)
+        recs.append(rec)
+        f_ = os.path.join(fdir, f"cont_{k:03d}.pt")
+        torch.save({"k": k, "frame": fr, "x": xm.cpu(), "v": vm.cpu(), "F": Fm.cpu(), "rec": rec, "args": vars(a),
+                    "EXT": float(EXT), "frame_dt": FRAME_DT, "from": os.environ["AF_OVCONT_FROM"]}, f_ + ".tmp")
+        os.replace(f_ + ".tmp", f_)
+        json.dump(recs, open(rp + ".tmp", "w"), ensure_ascii=False)
+        os.replace(rp + ".tmp", rp)
+        print(f"    [이어 돌리기] 프레임 {fr} ({k + 1}/{N})  E {E0:.4e} -> {E1:.4e}  속도 최대 {rec['v_max']:.3e} 평균 {rec['v_mean']:.3e}  "
+              f"시작 대비 질량중심 {rec['com_disp_pct']:.4f}% 최대 {rec['disp_max_pct']:.4f}% 평균 {rec['disp_mean_pct']:.4f}%  K {rec['K']:.3e}  "
+              f"잔여힘/무게 {rec['static']['f_l1_w']:.4e} 정지유지 {rec['hold']['f_l1_w']:.4e}  det<=0 {rec['det_le0']}  바닥아래 {rec['n_below']}  "
+              f"{rec['sec']:.0f} s 누적 {time.time() - _tw:.0f} s", flush=True)
+    P_, V_, F_ = [xs0.cpu()], [vs0.cpu()], [Fs0.cpu()]
+    for k in range(N):
+        c = torch.load(os.path.join(fdir, f"cont_{k:03d}.pt"), map_location="cpu", weights_only=False)
+        P_.append(c["x"].float()); V_.append(c["v"].float()); F_.append(c["F"].float())
+    rd = os.path.join(out, "roll_cont.pt")
+    torch.save({"pred": torch.stack(P_), "v": torch.stack(V_), "F": torch.stack(F_), "x0": xs0.cpu(), "t0": s0,
+                "start_frame": s0, "tag": d.get("tag", ""), "EXT": float(EXT), "gt": None, "nodes": None,
+                "from": os.environ["AF_OVCONT_FROM"]}, rd + ".tmp")
+    os.replace(rd + ".tmp", rd)
+    print(f"[이어 돌리기 끝] 프레임 {s0} -> {s0 + N}, 덤프 {rd} (pred[0] = 시작 상태)", flush=True)
+    print("OVCONT_FIT_DONE", flush=True)
+
+
 @torch.no_grad()        # <- _ov_frame 을 위에 끼우면서 이 데코레이터를 빼앗았다.
 def rollout(d, t0, L, gsel=None):  #    평가가 그래프를 쌓아 메모리가 터진다.
     with traj_scope(d):
@@ -7055,6 +7445,12 @@ def _rollout(d, t0, L, gsel=None):
         raise SystemExit(0)
     if os.environ.get("AF_OVNET_FIT"):
         _ovnet_fit(d, t0, L, gsel, x, v, p)
+        raise SystemExit(0)
+    if os.environ.get("AF_PHYSCHECK"):         # 사용자 10-23 ipL000 물리 점검 (한 스텝 최적성·정적 평형·에너지 계열)
+        _physcheck(d, t0, L, gsel, x, v, p)
+        raise SystemExit(0)
+    if os.environ.get("AF_OVCONT_FIT"):        # 사용자 10-23 마지막 상태에서 출력만 최적화 이어 돌리기 (프레임 파일로 이어 돈다)
+        _ovcont_fit(d, t0, gsel, x, v, p)
         raise SystemExit(0)
     if os.environ.get("AF_NODE_FIT") or os.environ.get("AF_ROLL_NOGRAD"):
         # 롤아웃은 고정 망 -- 파라미터 기울기를 끄지 않으면 enable_grad 안에서 층마다 활성값을 들고 있어 큰 망이 OOM
