@@ -158,7 +158,8 @@ def build_net(a, n_feat, ext0, frame_dt, n_film, dev="cuda"):
     _cls = SimplexGNN
     if str(getattr(a, "gnn_layer", "mp") or "mp") == "lattn":
         # --gnn_layer lattn (사용자 10-23): 몸통만 국소 어텐션 (같은 이웃 집합·같은 층 수·폭), 나머지 SimplexGNN 그대로
-        _cls, _kw = _SGM.LocalAttnGNN, dict(heads=int(getattr(a, "attn_heads", 8)))
+        _cls, _kw = _SGM.LocalAttnGNN, dict(heads=int(getattr(a, "attn_heads", 8)),
+                                            ring=int(getattr(a, "attn_ring", 1) or 1))   # --attn_ring K (사용자 10-23): 어텐션 이웃 = K 링
     elif str(getattr(a, "gnn_layer", "mp") or "mp") != "mp":
         raise SystemExit(f"--gnn_layer {a.gnn_layer} 모름")
     return _cls(n_feat=n_feat, hidden=a.hidden, layers=a.gnn_layers, **_kw,

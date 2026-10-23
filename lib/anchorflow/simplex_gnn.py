@@ -24,7 +24,7 @@ from .simplex import N_EDGE_CLASS
 
 __all__ = ["scatter_to_nodes", "node_moments", "node_centroids",
            "node_moments_finish", "SimplexGNN", "p2g_feats", "P2G_NCH",
-           "LocalAttnGNN"]
+           "LocalAttnGNN", "ring_edges", "ring_offset_table"]
 
 
 def scatter_to_nodes(vals, rows, lam, n_node, mass=None):
@@ -292,13 +292,15 @@ class _LAttnLayer(nn.Module):
     잔차 + LayerNorm (pre-norm): h <- h + Wo·attn(LN(h)), h <- h + FFN(LN(h)).
     """
 
-    def __init__(self, hidden, heads):
+    def __init__(self, hidden, heads, ring=1):
         super().__init__()
         if hidden % heads:
             raise SystemExit(f"--attn_heads {heads} 가 --hidden {hidden} 을 나누지 못한다")
         from .simplex import EDGE_OFFSETS
         self.H, self.dh = int(heads), hidden // int(heads)
-        self.register_buffer("off", torch.tensor(EDGE_OFFSETS, dtype=torch.float32), persistent=False)
+        # ring 1: 간선 종류 14 가지 표 (cls = edges_of 의 클래스). ring K>1: [-K,K]^3 전부의 표 (cls = ring_edges 의 색인)
+        _tab = EDGE_OFFSETS if int(ring) == 1 else ring_offset_table(int(ring))
+        self.register_buffer("off", torch.tensor(_tab, dtype=torch.float32), persistent=False)
         self.ln1 = nn.LayerNorm(hidden)
         self.qkv = nn.Linear(hidden, 3 * hidden)
         self.rpe = nn.Sequential(nn.Linear(3, hidden), nn.SiLU(), nn.Linear(hidden, 2 * hidden + self.H))
@@ -310,7 +312,7 @@ class _LAttnLayer(nn.Module):
         M, D = h.shape
         H, dh = self.H, self.dh
         q, k, v = self.qkv(self.ln1(h)).split(D, -1)
-        rt = self.rpe(self.off.to(h.dtype))                                 # [14, 2D+H] (간선 종류 14 가지뿐)
+        rt = self.rpe(self.off.to(h.dtype))                                 # [14, 2D+H] (간선 종류 14 가지뿐; ring K>1 이면 (2K+1)^3)
         rk, rv, rb = rt[:, :D], rt[:, D:2 * D], rt[:, 2 * D:]
         ke = (k[src] + rk[cls]).reshape(-1, H, dh)
         ve = (v[src] + rv[cls]).reshape(-1, H, dh)
@@ -326,9 +328,100 @@ class _LAttnLayer(nn.Module):
         return h + self.ff(self.ln2(h))
 
 
-class LocalAttnGNN(SimplexGNN):
-    """SimplexGNN 과 같은 입출력·입력 정규화·dt/물성 FiLM·0 초기화 출력, 몸통 층만 국소 어텐션 (--gnn_layer lattn)."""
+def ring_offset_table(K):
+    """[-K,K]^3 정수 오프셋 전부 ((2K+1)^3 행). 색인 = (ox+K)(2K+1)^2 + (oy+K)(2K+1) + (oz+K)."""
+    r = range(-K, K + 1)
+    return [(i, j, k) for i in r for j in r for k in r]
 
-    def __init__(self, n_feat, hidden=128, layers=8, heads=8, **kw):
+
+def ring_edges(src, dst, cls, K, n_node=None):
+    """1 링 간선 (src -> dst, 종류 cls = EDGE_OFFSETS 색인) -> **K 링** 간선 (사용자 10-23, --attn_ring K).
+
+    dst 의 K 링 = 간선을 K 번 이하로 건너 닿는 노드 전부 (자기 자신 제외, 중복 제거).
+    희소 확장: 쌍 (d, s, o = pos[d]-pos[s]) 마다 s 로 들어오는 1 링 간선 (s2 -> s, o2) 을 붙여 (d, s2, o + o2) --
+    한 바퀴에 **새로 생긴 쌍만** 다음 바퀴로 넘긴다 (BFS 경계). 키 d·M + s 로 torch.unique.
+    오프셋은 경로에 무관하다 (pos[d]-pos[s2]) -- 그래서 어느 경로로 왔든 같은 값.
+    K = 1 이면 들어온 그대로 돌려준다 (cls 도 EDGE_OFFSETS 색인 그대로).
+    -> (src [E_K], dst [E_K], cls [E_K] = ring_offset_table(K) 색인), (src, dst) 키 오름차순 정렬
+    """
+    K = int(K)
+    if K <= 1:
+        return src, dst, cls
+    from .simplex import EDGE_OFFSETS
+    dev = src.device
+    M = int(n_node) if n_node is not None else int(torch.maximum(src.max(), dst.max())) + 1
+    src, dst = src.long(), dst.long()
+    o1 = torch.tensor(EDGE_OFFSETS, device=dev, dtype=torch.long)[cls.long()]       # pos[dst] - pos[src]
+    order = torch.argsort(dst, stable=True)
+    in_src, in_off = src[order], o1[order]                    # dst 별 들어오는 간선 (CSR)
+    deg = torch.bincount(dst, minlength=M)
+    ptr = torch.zeros(M + 1, device=dev, dtype=torch.long)
+    ptr[1:] = torch.cumsum(deg, 0)
+    all_key = dst * M + src
+    all_off = o1
+    fd, fs, fo = dst, src, o1                                 # 경계 (지난 바퀴에 새로 생긴 쌍)
+    for _ in range(K - 1):
+        n = deg[fs]
+        tot = int(n.sum())
+        if tot == 0:
+            break
+        rep = torch.repeat_interleave(torch.arange(fs.numel(), device=dev), n)
+        base = torch.cumsum(n, 0) - n
+        e = ptr[fs][rep] + (torch.arange(tot, device=dev) - base[rep])
+        nd, ns, no = fd[rep], in_src[e], fo[rep] + in_off[e]
+        keep = nd != ns                                       # 자기 자신 제외
+        nd, ns, no = nd[keep], ns[keep], no[keep]
+        key = nd * M + ns
+        uk, inv = torch.unique(key, return_inverse=True)
+        uo = torch.zeros(uk.numel(), 3, device=dev, dtype=torch.long).index_copy_(
+            0, inv, no)                                       # 같은 키는 같은 오프셋 (경로 무관)
+        new = ~torch.isin(uk, all_key)
+        uk, uo = uk[new], uo[new]
+        all_key = torch.cat([all_key, uk])
+        all_off = torch.cat([all_off, uo])
+        fd, fs, fo = uk // M, uk % M, uo
+    # (src, dst) 오름차순 (edges_of 와 같은 정렬 규약)
+    sk = (all_key % M) * M + all_key // M
+    srt = torch.argsort(sk)
+    all_key, all_off = all_key[srt], all_off[srt]
+    d_, s_ = all_key // M, all_key % M
+    W = 2 * K + 1
+    c_ = (all_off[:, 0] + K) * W * W + (all_off[:, 1] + K) * W + (all_off[:, 2] + K)
+    if bool((all_off.abs() > K).any()):
+        raise RuntimeError("ring_edges: 오프셋이 [-K,K] 를 넘었다")
+    return s_, d_, c_
+
+
+class LocalAttnGNN(SimplexGNN):
+    """SimplexGNN 과 같은 입출력·입력 정규화·dt/물성 FiLM·0 초기화 출력, 몸통 층만 국소 어텐션 (--gnn_layer lattn).
+
+    ring (--attn_ring K, 사용자 10-23): 어텐션 이웃 = K 링 (1 = 지금, 메시지 패싱 이웃 그대로). K>1 이면 forward 가
+    받은 1 링 간선에서 ring_edges 로 K 링 간선을 만든다 -- 같은 간선 텐서 객체가 다시 오면 (한 프레임 안의 Adam 반복)
+    만들어 둔 것을 쓴다. ring_stats: 마지막으로 만든 이웃 목록의 노드 수·간선 수·노드당 평균/최소/최대 이웃·구성 ms.
+    """
+
+    def __init__(self, n_feat, hidden=128, layers=8, heads=8, ring=1, **kw):
         super().__init__(n_feat, hidden=hidden, layers=layers, **kw)
-        self.body = nn.ModuleList([_LAttnLayer(hidden, heads) for _ in range(layers)])
+        self.ring = int(ring)
+        if self.ring < 1:
+            raise SystemExit(f"--attn_ring {ring} 는 1 이상")
+        self.body = nn.ModuleList([_LAttnLayer(hidden, heads, ring=self.ring) for _ in range(layers)])
+        self._rc = None              # (src, dst, cls 원본 객체, 결과) -- 원본을 붙잡아 두어 같은 객체 판정이 안전하다
+        self.ring_stats = None
+
+    def forward(self, feat, src, dst, cls, dt, mat=None):
+        rc = self._rc
+        if rc is None or rc[0] is not src or rc[1] is not dst or rc[2] is not cls:
+            import time as _t
+            if feat.is_cuda:
+                torch.cuda.synchronize(feat.device)
+            t0 = _t.time()
+            out = ring_edges(src, dst, cls, self.ring, n_node=feat.shape[0])
+            if feat.is_cuda:
+                torch.cuda.synchronize(feat.device)
+            ms = 1e3 * (_t.time() - t0)
+            nb = torch.bincount(out[1], minlength=feat.shape[0])
+            self.ring_stats = dict(K=self.ring, M=int(feat.shape[0]), E=int(out[1].numel()), avg=float(nb.float().mean()),
+                                   min=int(nb.min()), max=int(nb.max()), build_ms=ms)
+            self._rc = rc = (src, dst, cls, out)
+        return super().forward(feat, *rc[3], dt, mat=mat)

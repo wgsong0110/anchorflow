@@ -332,6 +332,9 @@ ap.add_argument("--gnn_layer", choices=["mp", "lattn"], default="mp",
                 help="--arch sgnn 몸통 층: mp(기본) = 메시지 패싱 (_MPLayer), lattn = 국소 어텐션 (사용자 10-23): 같은 이웃 집합에만, "
                      "다중 헤드(--attn_heads), 격자 상대 오프셋 MLP 상대 위치 인코딩, 잔차 + LayerNorm (simplex_gnn.LocalAttnGNN)")
 ap.add_argument("--attn_heads", type=int, default=8, help="--gnn_layer lattn 의 헤드 수 (hidden 을 나눠야 한다)")
+ap.add_argument("--attn_ring", type=int, default=1,
+                help="--gnn_layer lattn 의 어텐션 이웃 범위 (사용자 10-23): 1 = 메시지 패싱 이웃 그대로 (지금), "
+                     "K = 간선 K 번 이하로 닿는 노드 전부 (자기 제외, 중복 제거; simplex_gnn.ring_edges), 상대 위치 = [-K,K]^3 정수 오프셋")
 ap.add_argument("--bary_pe", type=int, default=0,
                 help="노드 특징에 셀 안 barycentric 좌표의 다주파수 위치 인코딩 sin/cos(2^k π λ), k<K 를 질량 가중으로 더한다 (0 이면 끔)")
 ap.add_argument("--gregory", action="store_true",
@@ -2193,10 +2196,15 @@ with torch.no_grad():
             print("[P2G 칸 확인] 노드 " + str(_pfx.shape[0]) + f", nan {int((~torch.isfinite(_pfx)).sum())}, 칸별 [최소, 최대] "
                   + " ".join(f"{_c}:[{float(_pfx[:, _c].min()):.3g},{float(_pfx[:, _c].max()):.3g}]" for _c in range(_pfx.shape[1])), flush=True)
         if a.gnn_layer == "lattn":
-            print(f"[--gnn_layer lattn] 몸통 = 국소 어텐션 {a.gnn_layers} 층, 폭 {a.hidden}, 헤드 {a.attn_heads}", flush=True)
-            _src, _dst = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[6][:2]
+            print(f"[--gnn_layer lattn] 몸통 = 국소 어텐션 {a.gnn_layers} 층, 폭 {a.hidden}, 헤드 {a.attn_heads}, 이웃 {a.attn_ring} 링", flush=True)
+            _src, _dst, _cls = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[6][:3]
             _nb = torch.bincount(_dst, minlength=int(_dst.max()) + 1).float()
             print(f"[어텐션 이웃 수] 노드당 최소 {int(_nb.min())} 평균 {float(_nb.mean()):.2f} 최대 {int(_nb.max())} (간선 {_dst.numel()})", flush=True)
+            if a.attn_ring > 1:
+                _rs = DM._SGM.ring_edges(_src, _dst, _cls, a.attn_ring, n_node=int(_nb.numel()))[1]
+                _nbr = torch.bincount(_rs, minlength=int(_nb.numel())).float()
+                print(f"[어텐션 이웃 수 {a.attn_ring} 링] 노드당 최소 {int(_nbr.min())} 평균 {float(_nbr.mean()):.2f} 최대 {int(_nbr.max())} "
+                      f"(간선 {_rs.numel()})", flush=True)
         if a.ip_feat:
             print(f"[--ip_feat] 증분 포텐셜 노드 특징 {DM.IP_FEAT_N} 채널 덧붙임 -> 입력 {n_feat} (ε {a.ip_feat_eps:g})", flush=True)
         if a.bc_feat == "contact":
@@ -5153,7 +5161,15 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             if a.out_precond != "none" and a.ov_vars == "net":
                 _precond_build(_fwd, m, nrm, t)     # 이 프레임의 P (지금 상태·지금 망 출력에서 한 번, 프레임 안 고정)
             _nev = int(os.environ.get("AF_OV_NEWTON_EVERY", "50"))
+            # AF_ITER_TIME=파일 (사용자 10-23, 비용 측정): Adam 반복마다 cuda 동기화로 (순전파 + 역전파 + 자르기 + 걸음) 시간,
+            # 이 반복 묶음의 최대 GPU 메모리를 프레임마다 한 줄 JSON 으로 덧붙인다. 계산은 그대로 (동기화만 더한다)
+            _itf = os.environ.get("AF_ITER_TIME")
+            _its = []
+            if _itf:
+                torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats()
             for _k in range(a.ov_roll):
+                if _itf:
+                    torch.cuda.synchronize(); _ti0 = time.perf_counter()
                 if a.ov_obj == "newton" and _k % _nev == 0:
                     _newton_target(_fwd, _NTG, m, nrm, _k, t)
                 _, _, E, _, _, _pt, _ = _fwd()
@@ -5171,6 +5187,16 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 E.backward()
                 _ov_clip_grads(st)
                 st["ov_opt"].step()
+                if _itf:
+                    torch.cuda.synchronize(); _its.append(time.perf_counter() - _ti0)
+            if _itf:
+                _rs_ = getattr(net, "ring_stats", None)
+                with open(_itf, "a") as _fi:
+                    _fi.write(json.dumps(dict(t=int(t), iters=_its, peak_alloc_mib=torch.cuda.max_memory_allocated() / 2 ** 20,
+                                              peak_reserved_mib=torch.cuda.max_memory_reserved() / 2 ** 20,
+                                              n_param=int(sum(q.numel() for q in net.parameters())),
+                                              gnn_layer=a.gnn_layer, layers=a.gnn_layers, attn_ring=a.attn_ring,
+                                              ring_stats=_rs_), ensure_ascii=False) + "\n")
             if a.snap_inv > 0:
                 _SNAP_N[0] = max(_SNAP_N[0],
                                  _snap_inverted(st, a.snap_inv, a.snap_eps))
