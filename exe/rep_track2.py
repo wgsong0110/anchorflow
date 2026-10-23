@@ -77,6 +77,14 @@ ap.add_argument("--riem_norm", action="store_true",
 ap.add_argument("--riem_eps_abs", type=float, default=0.0,
                 help="riem: 0 보다 크면 ε·λmax 대신 이 절대값으로 감쇠 (λmax 가 납작한 셀 하나로 커져 "
                      "모든 방향의 보폭이 같이 줄어드는지 가리는 진단용)")
+ap.add_argument("--riem_damp", default="rel", choices=["rel", "fix", "lm"],
+                help="riem 감쇠 ε 정하는 법: rel (원래 기본, ε = riem_eps·λmax 프레임마다 -- λmax 가 가장 납작한 셀 det 에 묶인다) | "
+                     "fix (ε = riem_eps0 고정) | lm (표준 Levenberg-Marquardt: 시작 riem_eps0, 실제/예측 감소 비율 ρ 로만 "
+                     "키우고 줄인다, Nielsen 규칙). fix·lm 은 선탐색에 가능성 검사(셀 det > 0) + Armijo 되돌림을 같이 한다")
+ap.add_argument("--riem_eps0", type=float, default=0.0, help="riem_damp fix·lm: 고정 ε / LM 시작 ε")
+ap.add_argument("--save_nodes", action="store_true", help="노드 변위 u 를 프레임마다 저장 (사면체 메쉬 등, float32)")
+ap.add_argument("--ckpt_every", type=int, default=5, help="이어 돌리기 체크포인트 간격 (프레임, 0 이면 끔) -- <out>.ckpt.pt")
+ap.add_argument("--resume", action="store_true", help="<out>.ckpt.pt 에서 이어 돌린다")
 ap.add_argument("--profile", type=int, default=0,
                 help="riem: 첫 프레임 이 반복 수만 돌며 구간별 시간 + torch 프로파일러 표를 내고 끝낸다")
 ap.add_argument("--cfl", type=float, default=1.0, help="grid: 한 프레임 노드 이동 상한 (격자 간격 배수)")
@@ -1031,8 +1039,27 @@ DETC = [torch.ones(FI.numel(), device=dev, dtype=torch.float64)]   # ipmF: 입�
 SPRING_CAP, SPRING_LOG, CFL_LOG = [float("inf")], [], []
 PHYS, TRAJS, YPREV = [], [], [G0[FI].clone()]
 FSAVE = []
+RIEMLOG, LMAX_LOG, TETLOG, NODES = [], [], [], []      # riem 반복별 (t, it, ε, 걸음 |sΔ|, s, 되돌림, ρ, 셀 det 최소) / 프레임별
+LMST = {"eps": None, "nu": 2.0}                         # riem_damp lm 상태 (프레임을 넘어 이어진다)
+CKPT = a.out + ".ckpt.pt"
+T_START = 1
 t0 = time.time()
-for t in range(1, T + 1):
+if a.resume and os.path.exists(CKPT):
+    assert not RENDER and TBW is None, "이어 돌리기는 --video·TB 없이만"
+    _ck = torch.load(CKPT, map_location=dev, weights_only=False)
+    Pref, Fcum, Rcum = _ck["Pref"], _ck["Fcum"], _ck["Rcum"]
+    if REB:
+        rep.rebind(Pref); rep.to(dev)
+    rep.load_state_dict(_ck["rep"])
+    (rows, CURVE, DOFS, STOP, EMDP, PHYS, TRAJS, YPREV, FSAVE, DETC, SPRING_CAP, SPRING_LOG, CFL_LOG,
+     RIEMLOG, LMAX_LOG, TETLOG, NODES) = [_ck["L"][k] for k in (
+        "rows", "CURVE", "DOFS", "STOP", "EMDP", "PHYS", "TRAJS", "YPREV", "FSAVE", "DETC", "SPRING_CAP",
+        "SPRING_LOG", "CFL_LOG", "RIEMLOG", "LMAX_LOG", "TETLOG", "NODES")]
+    LMST = _ck["LMST"]; OPT = None
+    T_START = _ck["t"] + 1
+    t0 -= _ck["elapsed"]
+    print(f"[이어 돌리기] {CKPT}: 프레임 {_ck['t']} 까지 완료 -> {T_START} 부터", flush=True)
+for t in range(T_START, T + 1):
     tgt = TRAJ[t]
     RES0 = Pref[FI] - tgt                               # 직전 위치 - 목표 (가까운 두 수의 차)
     if REB and t > 1:
@@ -1432,6 +1459,13 @@ for t in range(1, T + 1):
                 print(f"  [계량 정규화] t={t} λmax(G) {lmax:.3e}  λmax(H_L2) {lmaxL:.3e}  배수 {GSC:.3e}", flush=True)
             lmax = lmaxL
         eps = a.riem_eps_abs if a.riem_eps_abs > 0 else a.riem_eps * max(lmax, 1e-12)   # k=1 기준 -> k 를 키우면 계량이 더 딱딱해진다
+        if a.riem_damp == "fix":
+            eps = a.riem_eps0
+        elif a.riem_damp == "lm":
+            eps = LMST["eps"] if LMST["eps"] is not None else a.riem_eps0
+        if a.riem_damp != "rel":
+            assert a.riem_eps0 > 0 and Jfun is not None, "riem_damp fix/lm: riem_eps0 > 0, 셀 det 가 있는 방법만"
+        LMAX_LOG.append((t, lmax))
         if a.opt == "ipm":
             # 내부점법 (장벽법): 매 단계 min L2 + μ·B, B = -Σ w² log J (J>0 영역 안에서만),
             # μ 는 단계마다 1/10. 방향은 같은 계량의 Δ = -G⁻¹∇f, 보폭은 가능성(J>0) + Armijo 되돌림
@@ -1544,19 +1578,61 @@ for t in range(1, T + 1):
                     print(f"  [계량 진단] t={t} it={it_} L2 {float(l2):.3e} |g| {_DIAG[0]:.3e} λmax {lmax:.3e} ε {eps:.3e} "
                           f"gᵀHg/|g|² {_DIAG[1]:.3e} |Δ| {float(x.norm()):.3e} gᵀΔ {sl:.3e} "
                           f"(계량 없이 같은 길이 걸음의 1 차 감소 {_DIAG[0] * float(x.norm()):.3e})", flush=True)
-                if a.ls_max == 0:
-                    for q, dq in zip(PL, unflat(x)):
-                        q -= stp * dq
-                for _bt in range(a.ls_max):
-                    for q, q0, dq in zip(PL, unflat(theta), unflat(x)):
-                        q.copy_(q0 - stp * dq)
-                    dyt, _ = YJ(X_, FI)
-                    ft = float(((RES0 + dyt) ** 2).sum(1).mean())
-                    if ft == ft and ft <= f0 - 1e-4 * stp * sl:
-                        break
-                    stp *= 0.5; nbt += 1
-                # 다 실패해도 원래 값으로 되돌리지 않는다 (사용자 지시 10-13): 마지막으로 시도한 보폭을 그대로 둔다
+                rho = float("nan"); eps_used = eps
+                if a.riem_damp == "rel":
+                    if a.ls_max == 0:
+                        for q, dq in zip(PL, unflat(x)):
+                            q -= stp * dq
+                    for _bt in range(a.ls_max):
+                        for q, q0, dq in zip(PL, unflat(theta), unflat(x)):
+                            q.copy_(q0 - stp * dq)
+                        dyt, _ = YJ(X_, FI)
+                        ft = float(((RES0 + dyt) ** 2).sum(1).mean())
+                        if ft == ft and ft <= f0 - 1e-4 * stp * sl:
+                            break
+                        stp *= 0.5; nbt += 1
+                    # 다 실패해도 원래 값으로 되돌리지 않는다 (사용자 지시 10-13): 마지막으로 시도한 보폭을 그대로 둔다
+                else:
+                    # fix·lm: 가능성 검사(장벽 셀 det 모두 > 0) + Armijo 되돌림. 뒤집힘은 여기서만 막는다
+                    def _trial(s_):
+                        th_s = theta - s_ * x
+                        jm_ = float(Jfun(th_s)[0].min())
+                        for q, dq in zip(PL, unflat(th_s)):
+                            q.copy_(dq)
+                        if not jm_ > 0:
+                            return float("inf"), jm_
+                        dyt_, _ = YJ(X_, FI)
+                        ft_ = float(((RES0 + dyt_) ** 2).sum(1).mean())
+                        return (ft_ if ft_ == ft_ else float("inf")), jm_
+                    ft, jm = _trial(stp)
+                    if a.riem_damp == "lm":
+                        # 이차 모형 m(s) = f - s gᵀΔ + ½ s² Δᵀ G Δ 의 예측 감소 (보폭 s = riem_lr 의 시도 걸음)
+                        pred = stp * sl - 0.5 * stp * stp * float((x * Gv(x)).sum())
+                        if pred > 0 and float(gk.norm()) > 0:             # 기울기 0 (정지 목표 프레임) 이면 정보가 없어 그대로
+                            rho = (f0 - ft) / pred if ft < float("inf") else float("-inf")
+                            if rho > 0:
+                                LMST["eps"] = eps * max(1.0 / 3.0, 1.0 - (2.0 * rho - 1.0) ** 3); LMST["nu"] = 2.0
+                            else:
+                                LMST["eps"] = eps * LMST["nu"]; LMST["nu"] = min(LMST["nu"] * 2.0, 1e6)
+                            LMST["eps"] = min(max(LMST["eps"], 1e-12), 1e12)
+                        else:
+                            LMST["eps"] = eps
+                    ok = ft <= f0 - 1e-4 * stp * sl
+                    while not ok and nbt < a.ls_max:
+                        stp *= 0.5; nbt += 1
+                        ft, jm = _trial(stp)
+                        ok = ft <= f0 - 1e-4 * stp * sl
+                    if not ok and not jm > 0:                        # 마지막 시도도 뒤집히면 이 반복은 걷지 않는다
+                        for q, dq in zip(PL, unflat(theta)):
+                            q.copy_(dq)
+                        stp = 0.0
+                    if a.riem_damp == "lm":
+                        eps = LMST["eps"]                            # 다음 반복의 ε
             CURVE.append((t, it_, float(l2), stp, nbt))
+            if a.opt == "riem":
+                with torch.no_grad():
+                    _jm = float(Jfun(flat([q.detach() for q in PL]))[0].min()) if Jfun is not None else float("nan")
+                RIEMLOG.append((t, it_, eps_used, stp * float(x.norm()), stp, nbt, rho, _jm))
         if a.opt == "riem":
             it[0] = it_ + 1
             if a.riem_partF and REB:
@@ -1685,6 +1761,20 @@ for t in range(1, T + 1):
             Fcum = Fall
     if RENDER:
         render(yall, Fall=Fall, Rall=(Rcum if a.method == "phystwin" else None))
+    if hasattr(rep, "cellJ") and hasattr(rep, "cells") and not REB:
+        with torch.no_grad():
+            _Jc = rep.cellJ(*[q.detach() for q in rep.params()])[0]
+        TETLOG.append((t, float(_Jc.min()), int((_Jc < 0.5).sum()), int((_Jc <= 0).sum()), _Jc.numel(),
+                       STOP[-1][4] if STOP else float("nan")))
+    if a.save_nodes and hasattr(rep, "u"):
+        NODES.append(rep.u.detach().float().cpu().numpy().copy())
+    if a.ckpt_every > 0 and (t % a.ckpt_every == 0) and t < T:
+        _L = dict(rows=rows, CURVE=CURVE, DOFS=DOFS, STOP=STOP, EMDP=EMDP, PHYS=PHYS, TRAJS=TRAJS, YPREV=YPREV,
+                  FSAVE=FSAVE, DETC=DETC, SPRING_CAP=SPRING_CAP, SPRING_LOG=SPRING_LOG, CFL_LOG=CFL_LOG,
+                  RIEMLOG=RIEMLOG, LMAX_LOG=LMAX_LOG, TETLOG=TETLOG, NODES=NODES)
+        torch.save(dict(t=t, rep=rep.state_dict(), Pref=Pref, Fcum=Fcum, Rcum=Rcum, L=_L, LMST=LMST,
+                        elapsed=time.time() - t0), CKPT + ".tmp")
+        os.replace(CKPT + ".tmp", CKPT)
     if t % 10 == 0 or t == 1:
         print(f"  [t={t:3d}] RMSE {100*rmse:.3f}%  CD {100*cd:.3f}%  "
               + (f"EMD {100*e:.3f}%  " if e == e else "")
@@ -1710,5 +1800,12 @@ np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
                     cfl_log=np.array(CFL_LOG, dtype=np.float64),          # grid: (t, 노드 이동 최대 / (cfl·dx))
                     spring_log=np.array([q for q in SPRING_LOG if len(q) == 5], dtype=np.float64),  # (t, E정답, E시작, 상한, E끝)
                     **({"traj": np.stack(TRAJS)} if TRAJS else {}),
-                    **({"F": np.stack(FSAVE)} if FSAVE else {}))
+                    **({"F": np.stack(FSAVE)} if FSAVE else {}),
+                    riem_log=np.array(RIEMLOG, dtype=np.float64).reshape(-1, 8),   # t, it, ε, |sΔ|, s, 되돌림, ρ, 셀 det 최소
+                    lmax_log=np.array(LMAX_LOG, dtype=np.float64).reshape(-1, 2),
+                    tet_log=np.array(TETLOG, dtype=np.float64).reshape(-1, 6),     # t, 셀 det 최소, J<0.5 수, J≤0 수, 셀 수, ε(끝)
+                    riem_damp=a.riem_damp, riem_eps0=a.riem_eps0,
+                    **({"nodes_u": np.stack(NODES)} if NODES else {}),
+                    **({"Xn": rep.Xn.float().cpu().numpy(), "cells": rep.cells.cpu().numpy()}
+                       if NODES and hasattr(rep, "cells") else {}))
 print(f"[저장] {a.out}" + (f"  영상 {a.video}" if a.video else ""), flush=True)
