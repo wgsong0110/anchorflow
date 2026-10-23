@@ -32,6 +32,7 @@ ap.add_argument("--stall", type=int, default=-1)
 ap.add_argument("--cam", type=int, default=0)
 ap.add_argument("--iso", type=float, default=1.0)
 ap.add_argument("--fps", type=int, default=25)
+ap.add_argument("--edge_div", type=int, default=8, help="보이는 표면 모서리 중 1/edge_div 만 그린다")
 ap.add_argument("--font", default="/home/dkta/.fonts/NotoSansCJKkr-Regular.otf")
 a = ap.parse_args()
 
@@ -290,8 +291,9 @@ with torch.no_grad():
         fv = SF[vis]
         ed = torch.unique(torch.cat([fv[:, [0, 1]], fv[:, [1, 2]], fv[:, [0, 2]]]).sort(1).values, dim=0)
         ed = ed[GOOD[ed].all(1)]
-        vv = torch.unique(fv)
-        vv = vv[GOOD[vv]]
+        # 보이는 표면 모서리가 ~4.9 만 개라 렌더를 덮는다 -> 모서리 쌍의 고정 해시로 1/EDGE_DIV 만 (프레임 사이 같은 모서리)
+        ed = ed[((ed[:, 0] * 1000003 + ed[:, 1] * 7919) % a.edge_div) == 0]
+        vv = torch.unique(ed)
         nvis.append((int(vis.sum()), ed.shape[0], vv.numel()))
         uv = project(NODES[t]).cpu().numpy()
         # 투영 확인: 입자 투영이 렌더의 흰 배경이 아닌 곳에 떨어지는 비율
@@ -304,7 +306,7 @@ with torch.no_grad():
         dr = ImageDraw.Draw(ov)
         en = ed.cpu().numpy()
         for i, j in en:
-            dr.line([tuple(uv[i]), tuple(uv[j])], fill=(0, 70, 230, 110), width=1)
+            dr.line([tuple(uv[i]), tuple(uv[j])], fill=(0, 60, 220, 170), width=1)
         for k in vv.cpu().numpy():
             x_, y_ = uv[k]
             dr.ellipse([x_ - 1.3, y_ - 1.3, x_ + 1.3, y_ + 1.3], fill=(0, 30, 140, 200))
@@ -316,7 +318,7 @@ with torch.no_grad():
         d.text((12, 6), f"프레임 {t}", fill=(220, 0, 0), font=font_big)
         d.text((Wd + 12, 6), f"프레임 {t}", fill=(220, 0, 0), font=font_big)
         d.text((12, Hd - 40), "정답 (PG 모래)", fill=(0, 0, 0), font=font_mid)
-        d.text((Wd + 12, Hd - 40), "사면체 메쉬 (riem) + 꼭짓점·모서리", fill=(0, 0, 0), font=font_mid)
+        d.text((Wd + 12, Hd - 40), f"사면체 메쉬 (riem) + 보이는 표면 모서리 1/{a.edge_div}·그 꼭짓점", fill=(0, 0, 0), font=font_mid)
         if a.stall >= 0 and t >= a.stall:
             d.text((2 * Wd - 150, 6), "멈춤", fill=(220, 0, 0), font=font_big)
         fr = np.asarray(canvas)

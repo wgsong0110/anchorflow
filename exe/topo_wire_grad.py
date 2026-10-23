@@ -175,7 +175,7 @@ ax[2].semilogy(ts, S0[:, 7], "^-", ms=3, color="#666666", label=r"riem 걸음 �
 axe = ax[2].twinx()
 axe.semilogy(ts, S0[:, 5], "v:", ms=3, color="#2b8a3e", label=r"감쇠 $\varepsilon$ (실행 기록, 오른쪽 축)")
 axe.set_ylabel(r"감쇠 $\varepsilon = 0.01\,\lambda_{\max}$", color="#2b8a3e")
-axe.legend(fontsize=9, loc="lower right")
+axe.legend(fontsize=9, loc="upper left")
 ax[2].set_title("기울기 크기 (변수 = 메쉬 꼭짓점 변위, G = 셀 det 로그 장벽 GN + εI)")
 ax[2].set_xlabel("프레임"); ax[2].set_ylabel("기울기 크기")
 for k in (0, 2):
@@ -183,7 +183,7 @@ for k in (0, 2):
         ax[k].axvline(a.stall, color="red", lw=1.5, ls=":")
         ax[k].text(a.stall + 0.5, ax[k].get_ylim()[1], f"멈춤 {a.stall}", color="red", va="top")
 for k in range(3):
-    ax[k].grid(alpha=0.3, which="both"); ax[k].legend(fontsize=9)
+    ax[k].grid(alpha=0.3, which="both"); ax[k].legend(fontsize=9, loc=("lower right" if k == 2 else "best"))
 fig.suptitle("wolf 사면체 메쉬 riem 추적 (κ=0: 목적함수 = 입자 L2 만, 장벽은 계량에만)")
 fig.tight_layout()
 png = a.out.replace(".npz", ".png")
