@@ -46,25 +46,38 @@ spec = importlib.util.spec_from_file_location("anchorflow._old_simplex_gnn", a.o
 OLD = importlib.util.module_from_spec(spec)
 sys.modules["anchorflow._old_simplex_gnn"] = OLD
 spec.loader.exec_module(OLD)
-for L in (4, 8):
-    torch.manual_seed(123)
-    n_old = OLD.LocalAttnGNN(n_feat=20, hidden=128, layers=L, heads=8, dt_cond=True, dt_ref=1 / 24, dt_scale=True).to(dev)
-    torch.manual_seed(123)
-    n_new = SG.LocalAttnGNN(n_feat=20, hidden=128, layers=L, heads=8, ring=1, dt_cond=True, dt_ref=1 / 24, dt_scale=True).to(dev)
-    so, sn = n_old.state_dict(), n_new.state_dict()
-    chk(f"K=1 {L}층 파라미터 이름·값 같음", list(so) == list(sn) and all(torch.equal(so[k], sn[k]) for k in so))
-    for n_ in (n_old, n_new):
-        torch.manual_seed(7)
-        torch.nn.init.normal_(n_.out.weight, std=0.01)
-    feat = torch.randn(M, 20, device=dev, generator=torch.Generator(device=dev).manual_seed(5))
-    yo = n_old(feat, src, dst, cls, 1 / 24)[0]
-    yn = n_new(feat, src, dst, cls, 1 / 24)[0]
-    chk(f"K=1 {L}층 출력 비트 같음", torch.equal(yo, yn), f"최대차 {float((yo - yn).abs().max()):.3e}")
-    yo.square().sum().backward(); yn.square().sum().backward()
-    go = [p.grad for p in n_old.parameters()]; gn = [p.grad for p in n_new.parameters()]
-    chk(f"K=1 {L}층 기울기 비트 같음", all((p is None and q is None) or torch.equal(p, q) for p, q in zip(go, gn)))
-    rs = n_new.ring_stats
-    chk(f"K=1 이웃 목록 = 입력 그대로", rs["E"] == src.numel(), str(rs))
+# 비트 비교는 CPU 에서 (CUDA index_add_ 는 원자적 덧셈이라 같은 망을 두 번 돌려도 1e-7 정도 갈린다 -- 아래 대조로 그 크기를 적는다)
+for dv in ("cpu", dev):
+    for L in (4, 8):
+        torch.manual_seed(123)
+        n_old = OLD.LocalAttnGNN(n_feat=20, hidden=128, layers=L, heads=8, dt_cond=True, dt_ref=1 / 24, dt_scale=True).to(dv)
+        torch.manual_seed(123)
+        n_new = SG.LocalAttnGNN(n_feat=20, hidden=128, layers=L, heads=8, ring=1, dt_cond=True, dt_ref=1 / 24, dt_scale=True).to(dv)
+        so, sn = n_old.state_dict(), n_new.state_dict()
+        chk(f"[{dv}] K=1 {L}층 파라미터 이름·값 같음", list(so) == list(sn) and all(torch.equal(so[k], sn[k]) for k in so))
+        for n_ in (n_old, n_new):
+            torch.manual_seed(7)
+            torch.nn.init.normal_(n_.out.weight, std=0.01)
+        feat = torch.randn(M, 20, generator=torch.Generator().manual_seed(5)).to(dv)
+        s_, d_, c_ = src.to(dv), dst.to(dv), cls.to(dv)
+        yo = n_old(feat, s_, d_, c_, 1 / 24)[0]
+        yo2 = n_old(feat, s_, d_, c_, 1 / 24)[0]
+        yn = n_new(feat, s_, d_, c_, 1 / 24)[0]
+        dif, rep = float((yo - yn).abs().max()), float((yo - yo2).abs().max())
+        if dv == "cpu":
+            chk(f"[cpu] K=1 {L}층 출력 비트 같음", torch.equal(yo, yn), f"최대차 {dif:.3e}")
+        else:
+            chk(f"[{dv}] K=1 {L}층 출력 차이 <= 옛 망 두 번 돌린 차이 수준", dif <= max(10 * rep, 1e-6),
+                f"옛-새 {dif:.3e}, 옛-옛 {rep:.3e}, 출력 크기 {float(yo.abs().max()):.3e}")
+        yo.square().sum().backward(); yn.square().sum().backward()
+        go = [p.grad for p in n_old.parameters()]; gn = [p.grad for p in n_new.parameters()]
+        if dv == "cpu":
+            chk(f"[cpu] K=1 {L}층 기울기 비트 같음", all((p is None and q is None) or torch.equal(p, q) for p, q in zip(go, gn)))
+        else:
+            gd = max(float((p - q).abs().max() / p.abs().max().clamp_min(1e-30)) for p, q in zip(go, gn) if p is not None)
+            chk(f"[{dv}] K=1 {L}층 기울기 상대차", gd < 1e-4, f"{gd:.3e}")
+        rs = n_new.ring_stats
+        chk(f"[{dv}] K=1 이웃 목록 = 입력 그대로", rs["E"] == src.numel(), str(rs))
 
 # 2) ring_edges == 조밀 BFS
 A = torch.zeros(M, M, dtype=torch.bool, device=dev)
