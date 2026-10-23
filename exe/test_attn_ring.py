@@ -47,7 +47,9 @@ OLD = importlib.util.module_from_spec(spec)
 sys.modules["anchorflow._old_simplex_gnn"] = OLD
 spec.loader.exec_module(OLD)
 # 비트 비교는 CPU 에서 (CUDA index_add_ 는 원자적 덧셈이라 같은 망을 두 번 돌려도 1e-7 정도 갈린다 -- 아래 대조로 그 크기를 적는다)
+_nth = torch.get_num_threads()
 for dv in ("cpu", dev):
+    torch.set_num_threads(1 if dv == "cpu" else _nth)     # CPU 도 다중 스레드 누적은 순서가 갈린다 -- 비트 비교는 한 스레드로
     for L in (4, 8):
         torch.manual_seed(123)
         n_old = OLD.LocalAttnGNN(n_feat=20, hidden=128, layers=L, heads=8, dt_cond=True, dt_ref=1 / 24, dt_scale=True).to(dv)
@@ -69,14 +71,20 @@ for dv in ("cpu", dev):
         else:
             chk(f"[{dv}] K=1 {L}층 출력 차이 <= 옛 망 두 번 돌린 차이 수준", dif <= max(10 * rep, 1e-6),
                 f"옛-새 {dif:.3e}, 옛-옛 {rep:.3e}, 출력 크기 {float(yo.abs().max()):.3e}")
+        yo2.square().sum().backward()
+        go2 = [p.grad.clone() if p.grad is not None else None for p in n_old.parameters()]
+        n_old.zero_grad(set_to_none=True)
         yo.square().sum().backward(); yn.square().sum().backward()
         go = [p.grad for p in n_old.parameters()]; gn = [p.grad for p in n_new.parameters()]
         if dv == "cpu":
-            chk(f"[cpu] K=1 {L}층 기울기 비트 같음", all((p is None and q is None) or torch.equal(p, q) for p, q in zip(go, gn)))
+            same_oo = all((p is None and q is None) or torch.equal(p, q) for p, q in zip(go, go2))
+            chk(f"[cpu] K=1 {L}층 기울기 비트 같음", all((p is None and q is None) or torch.equal(p, q) for p, q in zip(go, gn)),
+                f"(대조: 옛-옛 비트 같음 {same_oo})")
         else:
             gd = max(float((p - q).abs().max() / p.abs().max().clamp_min(1e-30)) for p, q in zip(go, gn) if p is not None)
             chk(f"[{dv}] K=1 {L}층 기울기 상대차", gd < 1e-4, f"{gd:.3e}")
         rs = n_new.ring_stats
+        torch.set_num_threads(_nth)
         chk(f"[{dv}] K=1 이웃 목록 = 입력 그대로", rs["E"] == src.numel(), str(rs))
 
 # 2) ring_edges == 조밀 BFS
