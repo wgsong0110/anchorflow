@@ -1233,6 +1233,7 @@ _L2_TGT = (torch.load(os.environ["AF_OV_L2_TGT"], map_location="cpu", weights_on
            if os.environ.get("AF_OV_L2_TGT") else None)
 _EIP_LAST = [None]         # _ov_once._fwd 의 증분 포텐셜 (목적함수 바꾸기 전 값) -- AF_OVNET_FIT 기록용
 _NODEOV_TGT = [None]       # --ov_obj nodeov: {"tp": 덤프 노드 위치, "td": 덤프 노드 변위, 짝·질량 캐시} -- _ovnet_fit 이 프레임마다 채운다
+_OVN_BAD = [None]          # --ov_obj newton --ov_vars out: 뉴턴 걸음 중 p·변수가 nan/inf 가 되면 사유 문자열 (_ovnet_fit 이 그 프레임에서 멈춘다)
 _NEWTON_LOG = []           # --ov_obj newton: 목표를 만들 때마다 (반복, CG 횟수, 음곡률, 잔차, 시간, ...) -- AF_OVNET_FIT 가 프레임마다 비운다
 if os.environ.get("AF_OV_NODE_TGT"):
     _NODE_TGT = torch.load(os.environ["AF_OV_NODE_TGT"], map_location="cpu", weights_only=False)
@@ -4605,7 +4606,39 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     _NF_HOLD[0] = "want"          # 이 프레임의 격자·간선·노드특징을 한 번만
     try:
       with torch.enable_grad():
-        if a.fused:
+        if a.ov_obj == "newton" and a.ov_vars == "out":
+            # **출력만 최적화 + 뉴턴 걸음 고정 횟수** (사용자 10-23, nt 발산 원인 확인): 망 nt(--ov_vars net) 의 목표 u_t = U0 - p 를
+            # 따라가는 대신 노드 출력 변수에 바로 U <- U - p 를 정확히 AF_OV_NEWTON_STEPS(기본 40) 번 (선탐색·안전장치 없음).
+            # p 는 망 nt 와 같은 _newton_target (CG 최대 AF_OV_NEWTON_CG, λ = AF_OV_NEWTON_DAMP x 허친슨 헤시안 대각, 음곡률이면 직전 p).
+            # 시작점 = --ov_init (predict 면 출력만 최적화 표준과 같은 노드 관성 예측). --ov_opt·--ov_roll 은 쓰지 않는다
+            _OVN_BAD[0] = None
+            _, _, E, _, _, _pt, _ = _fwd()          # 변수를 만든다 (--ov_init)
+            E0 = float(E)
+            _vs = [q for q in (st.get("ov") or []) if q is not None]
+            if len(_vs) != 1:
+                raise SystemExit(f"--ov_obj newton --ov_vars out: 변수 {len(_vs)} 벌 (격자 한 벌만)")
+            _z = _vs[0]
+            _zi = (st.get("ov_idx") or [None])[0]
+            _nst = int(os.environ.get("AF_OV_NEWTON_STEPS", "40"))
+            for _k in range(_nst):
+                _newton_target(_fwd, _NTG, m, nrm, _k, t)
+                if _CURVE is not None:
+                    _tr.append(float(_NEWTON_LOG[-1]["E"]))
+                _ut = _NTG[0][0]                   # U0 - p (노드 전체, 변위 3 채널)
+                _NTG[0] = None                     # _fwd 는 다시 증분 포텐셜
+                with torch.no_grad():
+                    _new = _ut if _zi is None else _ut[_zi]
+                    _z[:, :3] = _new.to(_z.dtype)
+                _bad = []
+                if not math.isfinite(_NEWTON_LOG[-1]["p_norm"]):
+                    _bad.append("p")
+                if not bool(torch.isfinite(_z).all()):
+                    _bad.append("U")
+                if _bad:
+                    _OVN_BAD[0] = f"뉴턴 걸음 {_k + 1}/{_nst} 에서 {'·'.join(_bad)} 가 nan/inf"
+                    print(f"    [출력 뉴턴] t={t} {_OVN_BAD[0]} -- 이 프레임에서 멈춘다", flush=True)
+                    break
+        elif a.fused:
             # **커널 한 번 경로**: 구조를 한 번 만든 뒤 반복마다 커널만 돈다.
             _fwd()                      # 격자·변수·손잡이 마스크를 만든다
             _ens0 = _NF_HOLD[0][0]
@@ -5176,6 +5209,7 @@ def _newton_target(_fwd, _NTG, m, nrm, k, t):
         _DP_FAST[0], DM.PROBE[0], DM.PROBE[1] = _sv
     _NTG[0] = ((U0 - p_)[:, :3].detach(), Mn)
     _NEWTON_LOG.append(dict(t=int(t), k=int(k), E=float(EJ) / nrm, cg=int(kk), neg=bool(neg), res=(rr / g2) ** 0.5,
+                            p_norm=float(p_[:, :3].norm()) / float(EXT),
                             step_rms=float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT), lam=lam, hdiag=hdiag,
                             qdrop_rel=qdrop / max(abs(float(EJ)), 1e-30), sec=time.time() - _t0, diag=_diag))
 
@@ -5731,8 +5765,9 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
     이어 돌기: frames/ 의 마지막 프레임 파일에서 망·모델 상태를 읽어 다음 프레임부터.
     """
     import subprocess as _sp_
-    if not (a.ov_roll > 0 and a.ov_vars == "net"):
-        raise SystemExit("AF_OVNET_FIT 는 --ov_roll N --ov_vars net 과 함께")
+    _OVN = a.ov_obj == "newton" and a.ov_vars == "out"     # 출력만 최적화 + 뉴턴 걸음 고정 횟수 (사용자 10-23): 기록·E* 는 망 nt 와 같은 이 함수로
+    if not (a.ov_roll > 0 and (a.ov_vars == "net" or _OVN)):
+        raise SystemExit("AF_OVNET_FIT 는 --ov_roll N --ov_vars net (또는 --ov_vars out --ov_obj newton) 과 함께")
     if EVAL_SUB != 1 or a.integrator != "be" or a.cmp_lin:
         raise SystemExit("AF_OVNET_FIT: 서브스텝 1·후퇴 오일러만")
     if _CURVE is None:
@@ -5793,6 +5828,25 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
             _NODEOV_TGT[0] = dict(tp=_nd_[0].to(dev).float(), td=_nd_[1].to(dev).float()[:, :3])
         with dt_scope(_hs):
             xn, vn, Fn = _ov_frame(d, t0 + i, gsel, p, xm, vm, Fm)
+        if _OVN and (_OVN_BAD[0] is not None or not bool(torch.isfinite(xn).all())):
+            # nan/inf: 끝까지 돌리지 않고 이 프레임에서 멈춘다 (E* 는 재지 않는다), 기록·그 전 프레임까지의 덤프는 남긴다
+            _why = _OVN_BAD[0] or "위치 x 가 nan/inf"
+            _nlog = list(_NEWTON_LOG); del _NEWTON_LOG[:]
+            if len(_CURVE) > _nc:
+                _CURVE.pop()
+            _recs.append(dict(t=i, obj=a.ov_obj, nan=True, nan_reason=_why, E_ip=float(_EIP_LAST[0]),
+                              newton=dict(n_solves=len(_nlog), steps=int(os.environ.get("AF_OV_NEWTON_STEPS", "40")),
+                                          cg_mean=float(np.mean([q["cg"] for q in _nlog])) if _nlog else None,
+                                          neg_count=int(sum(q["neg"] for q in _nlog)), lam=(_nlog[0]["lam"] if _nlog else None), log=_nlog),
+                              sec=time.time() - _tf))
+            _f = os.path.join(_fd, f"frame_{i:02d}.pt")
+            torch.save({"t": i, "state_in": _state_in, "state_out": dict(x=xn.detach().cpu(), v=vn.detach().cpu(), F=Fn.detach().cpu()),
+                        "newton_log": _nlog, "rec": _recs[-1], "args": vars(a), "EXT": _ext, "frame_dt": FRAME_DT}, _f + ".tmp")
+            os.replace(_f + ".tmp", _f)
+            json.dump(_recs, open(_rp + ".tmp", "w")); os.replace(_rp + ".tmp", _rp)
+            print(f"    [출력 뉴턴] 프레임 {i + 1}/{L} nan/inf: {_why} -- 여기서 멈춘다", flush=True)
+            L = i                                    # 덤프는 그 전 프레임까지
+            break
         _ndiff = None
         if a.ov_obj == "nodeov":
             _NT_ = _NODEOV_TGT[0]; _Mm = _NT_["M"]
@@ -5827,6 +5881,8 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
                    dist_model_out_vs_star=dstar, pos_err_model=em, sec_fit=_sec_fit, sec=time.time() - _tf)
         with torch.no_grad():                        # 입자 F 통계 (옮긴 뒤)
             _dF = torch.linalg.det(Fn.double().reshape(-1, 3, 3)); _sF = torch.linalg.svdvals(Fn.double().reshape(-1, 3, 3))
+            if _OVN:
+                rec["nan"] = False
             rec["F_stats"] = dict(det_min=float(_dF.min()), det_p01=float(_dF.quantile(0.01)), det_median=float(_dF.median()),
                                   det_le0=int((_dF <= 0).sum()), det_lt05=float((_dF < 0.5).double().mean()),
                                   sig_max=float(_sF.max()), sig_min=float(_sF.min()), strain_mean=float((_sF - 1).abs().amax(-1).mean()))
@@ -5834,6 +5890,8 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
             rec["node_vs_ustar"] = _ndiff
         if _nlog:
             rec["newton"] = dict(n_solves=len(_nlog), every=int(os.environ.get("AF_OV_NEWTON_EVERY", "50")),
+                                 **(dict(mode="out_steps", steps=int(os.environ.get("AF_OV_NEWTON_STEPS", "40")),
+                                         p_norm_last=_nlog[-1].get("p_norm"), E_steps=[q["E"] for q in _nlog]) if _OVN else {}),
                                  cg_mean=float(np.mean([q["cg"] for q in _nlog])), cg_max=int(max(q["cg"] for q in _nlog)),
                                  neg_count=int(sum(q["neg"] for q in _nlog)), sec_mean=float(np.mean([q["sec"] for q in _nlog])),
                                  lam=_nlog[0]["lam"], log=_nlog)
@@ -5863,7 +5921,7 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
               + (f"  노드-u* {100 * _ndiff['rms']:.4f}% (u* 크기 {100 * _ndiff['ustar_rms']:.3f}%) 짝 {_ndiff['n_match']}/{_ndiff['n_model']} (덤프 {_ndiff['n_tgt']}, 질량 {100 * _ndiff['mass_frac']:.1f}%)" if _ndiff is not None else "")
               + f"  det 최소 {rec['F_stats']['det_min']:.3f}"
               + f"  맞춤 {_sec_fit:.0f} s 프레임 {rec['sec']:.0f} s 누적 {time.time() - _tw:.0f} s", flush=True)
-    if len(_recs) == L:
+    if len(_recs) == L or (_OVN and _recs and _recs[-1].get("nan") and L > 0):
         _pr, _vv, _Fv = [], [], []
         for i in range(L):
             so = torch.load(os.path.join(_fd, f"frame_{i:02d}.pt"), map_location="cpu", weights_only=False)["state_out"]
@@ -5874,7 +5932,7 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
                     "ctrl_id": d.get("ctrl_id"), "t0": t0, "tag": d.get("tag", ""), "nodes": None, "fscal": None,
                     "gt_fscal": None, "EXT": float(d.get("_ext", EXT)), "F": torch.stack(_Fv), "v": torch.stack(_vv)}, _rd + ".tmp")
         os.replace(_rd + ".tmp", _rd)
-        _pe = [r_["pos_err_model"] for r_ in _recs]
+        _pe = [r_["pos_err_model"] for r_ in _recs if "pos_err_model" in r_]
         print(f"[망 프레임별 끝] {L} 프레임, 위치 오차 평균 {100 * np.mean(_pe):.3f}%  덤프 {_rd}", flush=True)
         print("OVNET_FIT_DONE", flush=True)
 
