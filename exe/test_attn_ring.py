@@ -51,6 +51,7 @@ _nth = torch.get_num_threads()
 for dv in ("cpu", dev):
     torch.set_num_threads(1 if dv == "cpu" else _nth)     # CPU 도 다중 스레드 누적은 순서가 갈린다 -- 비트 비교는 한 스레드로
     for L in (4, 8):
+        torch.set_num_threads(1 if dv == "cpu" else _nth)
         torch.manual_seed(123)
         n_old = OLD.LocalAttnGNN(n_feat=20, hidden=128, layers=L, heads=8, dt_cond=True, dt_ref=1 / 24, dt_scale=True).to(dv)
         torch.manual_seed(123)
@@ -84,8 +85,8 @@ for dv in ("cpu", dev):
             gd = max(float((p - q).abs().max() / p.abs().max().clamp_min(1e-30)) for p, q in zip(go, gn) if p is not None)
             chk(f"[{dv}] K=1 {L}층 기울기 상대차", gd < 1e-4, f"{gd:.3e}")
         rs = n_new.ring_stats
-        torch.set_num_threads(_nth)
         chk(f"[{dv}] K=1 이웃 목록 = 입력 그대로", rs["E"] == src.numel(), str(rs))
+torch.set_num_threads(_nth)
 
 # 2) ring_edges == 조밀 BFS
 A = torch.zeros(M, M, dtype=torch.bool, device=dev)

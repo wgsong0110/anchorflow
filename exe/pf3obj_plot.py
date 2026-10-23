@@ -1,6 +1,6 @@
 """목적함수 다섯 비교 (exe/pf3obj.sh) 프레임별 곡선 -> PNG.
 
-  python exe/pf3obj_plot.py <내려받은 lbours/pf3obj 디렉토리> <출력.png>
+  python exe/pf3obj_plot.py <내려받은 lbours/pf3obj 디렉토리> <출력.png> [목적함수 목록, 쉼표 구분 (기본 전부)]
 열 = 궤적 (L000, 0004), 행:
   1) 위치 오차 (정답 대비, %) -- 네 목적함수 모델 롤아웃 + 출력만 최적화
   2) E/E* -- 같은 모델 상태에서 망 출력의 증분 포텐셜 / 출력만 최적화 최솟값 (로그 축)
@@ -29,6 +29,10 @@ U, OUT = sys.argv[1], sys.argv[2]
 TR = ("L000", "0004")
 KS = [("ip", "증분 포텐셜", "#2a78d6"), ("nt", "뉴턴 목표 L2", "#8a4fc9"),
       ("l2ov", "출력만 최적화 위치 L2", "#e08a1e"), ("l2gt", "정답 위치 L2", "#2f9e57"), ("nl2", "모델 상태 출력만 최적화 노드 L2", "#c0392b")]
+if len(sys.argv) > 3:
+    _sel = sys.argv[3].split(",")
+    KS = [x for x in KS if x[0] in _sel]
+    assert len(KS) == len(_sel), f"모르는 목적함수: {_sel}"
 R = {(k, T): json.load(open(f"{U}/{k}/{T}/records.json")) for k, _, _ in KS for T in TR}
 fig, ax = plt.subplots(4, 2, figsize=(13, 14), sharex=True)
 rows = [("위치 오차 (정답 대비, %)", lambda q: 100 * q["pos_err_model"], False),
@@ -57,7 +61,7 @@ for i in range(len(rows)):
     lo = min(ax[i, 0].get_ylim()[0], ax[i, 1].get_ylim()[0]); hi = max(ax[i, 0].get_ylim()[1], ax[i, 1].get_ylim()[1])
     ax[i, 0].set_ylim(lo, hi); ax[i, 1].set_ylim(lo, hi)
 ax[0, 0].legend(fontsize=9)
-fig.suptitle("망 파라미터 프레임별 최적화 · 목적함수 다섯 (Adam 1e-3, 프레임당 2000 회, 새 망)")
+fig.suptitle(f"망 파라미터 프레임별 최적화 · 목적함수 {'하나 둘 셋 넷 다섯'.split()[len(KS) - 1]} (Adam 1e-3, 프레임당 2000 회, 새 망)")
 fig.tight_layout()
 fig.savefig(OUT, dpi=110)
 print("저장", OUT)
