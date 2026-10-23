@@ -154,7 +154,14 @@ def build_net(a, n_feat, ext0, frame_dt, n_film, dev="cuda"):
     if a.arch != "sgnn":
         raise SystemExit("사면체 복합체 경로만 남았다 -- --arch sgnn 을 쓸 것 "
                          "(격자 conv/unet 은 태그 grid-rqs-final 에 있다)")
-    return SimplexGNN(n_feat=n_feat, hidden=a.hidden, layers=a.gnn_layers,
+    _kw = {}
+    _cls = SimplexGNN
+    if str(getattr(a, "gnn_layer", "mp") or "mp") == "lattn":
+        # --gnn_layer lattn (사용자 10-23): 몸통만 국소 어텐션 (같은 이웃 집합·같은 층 수·폭), 나머지 SimplexGNN 그대로
+        _cls, _kw = _SGM.LocalAttnGNN, dict(heads=int(getattr(a, "attn_heads", 8)))
+    elif str(getattr(a, "gnn_layer", "mp") or "mp") != "mp":
+        raise SystemExit(f"--gnn_layer {a.gnn_layer} 모름")
+    return _cls(n_feat=n_feat, hidden=a.hidden, layers=a.gnn_layers, **_kw,
                       scale=0.02 * ext0, dt_cond=a.dt_cond, dt_ref=frame_dt,
                       dt_scale=a.dt_scale, n_mat=n_film,
                       n_out=(4 if getattr(a, "gregory", False) else
@@ -185,6 +192,7 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
               -- 특징 끝에 IP_FEAT_N 채널을 덧붙인다 (ip_node_feats). --ip_feat_only 면 그 18 채널만 남긴다.
     h: 스텝 dt -- --bc_feat contact 의 관성 예측(조건 b)에 쓴다 (그때만 필수).
     pF: 이 상태의 입자 F [N,3,3] -- --pfreq 일 때 필수 (입자 모멘트 29 채널 대신 particle_freq_feats).
+        --node_feat p2g 일 때도 필수 (입자 모멘트 29 채널 대신 MPM P2G 질량·속도·F 13 채널, simplex_gnn.p2g_feats).
 
     -> (_in [M,F], npos [M,3], (lo,lat,nn), rows [N,4], lam [N,4], uniq [M],
         간선 (src,dst,cls), aux)
@@ -236,6 +244,12 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
     _agg = str(getattr(a, "agg", "bary") or "bary")
     if int(getattr(a, "pfreq", 0) or 0) > 0 and (_agg != "bary" or _interp != "bary" or getattr(a, "hex_jac", False)):
         raise SystemExit("--pfreq 는 사면체 barycentric (--agg bary, --interp bary, hex_jac 없음) 만 지원한다")
+    _nf = str(getattr(a, "node_feat", "mom") or "mom")
+    if _nf not in ("mom", "p2g"):
+        raise SystemExit(f"--node_feat {_nf} 모름")
+    if _nf == "p2g" and (_agg != "bary" or _interp != "bary" or getattr(a, "hex_jac", False)
+                         or int(getattr(a, "pfreq", 0) or 0) > 0):
+        raise SystemExit("--node_feat p2g 는 --agg bary, --interp bary, hex_jac·--pfreq 없이만")
     if _agg == "bspline":
         # **격자 B-스플라인 집계** (MPM P2G 와 같은 2 차 B-스플라인, 격자 좌표 기준 27 노드). 활성 노드가 아닌
         # 이웃은 덤프 노드(Mn 번)로 보내 버린다. 변위 사상·간선은 그대로 사면체(rows, lam) 를 쓴다.
@@ -259,7 +273,20 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
         _prow, _pw = _rows27, _w27
     else:
         _Kp = int(getattr(a, "pfreq", 0) or 0)
-        if _Kp > 0:
+        if _nf == "p2g":
+            # **--node_feat p2g** (사용자 10-23): 입자 모멘트 29 채널 대신 MPM P2G -- 입자 -> 노드를 격자 좌표 y = Ai(x - lo)
+            # 기준 텐서곱 2 차 B-스플라인 27 노드 가중 (SX.bspline27, MPM 과 같은 식; 노드 = 격자 정수점) 으로
+            # m_i = Σ w m, v_i = Σ w m v / m_i, F_i = Σ w m F / m_i. 활성 노드(점유 사면체 꼭짓점)가 아닌 이웃은 덤프 노드(Mn 번)로
+            # 보내 버린다 (망은 활성 노드에서만 돈다). 변위 사상·간선은 그대로 사면체(rows, lam). 바닥 채널은 아래 그대로.
+            if pF is None:
+                raise RuntimeError("--node_feat p2g: node_feats 에 이 상태의 입자 F (pF) 가 필요하다")
+            _f27, _w27, _ = SX.bspline27(x, lo, lat, nn)
+            _pos = torch.searchsorted(uniq, _f27).clamp(max=Mn - 1)
+            _hit = uniq[_pos] == _f27
+            _r27 = torch.where(_hit, _pos, torch.full_like(_pos, Mn))
+            _w27 = torch.where(_hit, _w27, torch.zeros_like(_w27)).to(x.dtype)
+            feat = san(_SGM.p2g_feats(v / vel_scale, pF, mass, _r27, _w27, Mn + 1)[:Mn])
+        elif _Kp > 0:
             # **--pfreq K** (사용자 10-21): 입자 모멘트 29 채널을 빼고, 입자-노드 쌍의 [(x_p-x_j)/hn, v_p/vel_scale, F_p-I]
             # 15 스칼라 각각의 [s, sin/cos(2^k π s), k<K] 를 λ·m 가중 평균 (simplex_gnn.particle_freq_feats). 바닥 채널은 아래 그대로.
             if pF is None:
@@ -867,7 +894,8 @@ _ARG_DEFAULTS = dict(
     dt_cond=False, dt_scale=False, dt_sub=1, eval_dt_sub=0, ens_off=0, interp="bary",
     bc_soft=False, bc_mode="project", bc_level="node", bc_ipg=False, bc_softplus=0.0, bc_stick=0.0, bc_stick_xn=False, ov_init="predict",
     no_mat=False, mat_film=False, v0_traj=False, smooth_nb=0,
-    cell_poly=False, ov_roll=0, refps=False, hold_traj=None, pool=True)
+    cell_poly=False, ov_roll=0, refps=False, hold_traj=None, pool=True,
+    node_feat="mom", gnn_layer="mp", attn_heads=8)
 
 
 def ckpt_args(ck):
@@ -984,8 +1012,8 @@ class EvalModel:
                                           edge_triton=self.fast_edge_triton)
             with sec("빠른스텝"):
                 return fs(x, v)
-        if int(getattr(a, "pfreq", 0) or 0) > 0:
-            raise NotImplementedError("--pfreq: EvalModel 은 입자 F 를 들고 다니지 않는다 -- train_deform 롤아웃(--infer --resume)을 쓸 것")
+        if int(getattr(a, "pfreq", 0) or 0) > 0 or str(getattr(a, "node_feat", "mom")) == "p2g":
+            raise NotImplementedError("--pfreq·--node_feat p2g: EvalModel 은 입자 F 를 들고 다니지 않는다 -- train_deform 롤아웃(--infer --resume)을 쓸 것")
         with sec("셀집계"):
             ens = [node_feats(a, cfg, d["_X0"], mass, x, v, self.vel_scale,
                               off=o, mat_vec=mat_vec, h=h)

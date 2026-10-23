@@ -23,7 +23,8 @@ from .nextstate import DtFiLM
 from .simplex import N_EDGE_CLASS
 
 __all__ = ["scatter_to_nodes", "node_moments", "node_centroids",
-           "node_moments_finish", "SimplexGNN"]
+           "node_moments_finish", "SimplexGNN", "p2g_feats", "P2G_NCH",
+           "LocalAttnGNN"]
 
 
 def scatter_to_nodes(vals, rows, lam, n_node, mass=None):
@@ -117,6 +118,34 @@ def particle_freq_feats(x, v, F, m, rows, lam, n_node, npos, hn, K):
         num.index_add_(0, r, w * enc.reshape(N, nch))
         den.index_add_(0, r, w)
     return num / den.clamp(min=1e-12)
+
+
+P2G_NCH = 13         # --node_feat p2g 노드 입력 폭: log1p(1e3·m_i) 1 + v_i 3 + (F_i - I) 9
+
+
+def p2g_feats(v, F, m, rows, w, n_node):
+    """**--node_feat p2g** 노드 특징 (사용자 10-23): MPM P2G 그대로 입자 -> 노드.
+
+    rows/w: 입자마다 27 노드 (2 차 B-스플라인, 격자 좌표 기준 텐서곱) 의 노드 색인·가중 w_ip [N,27].
+    활성 노드가 아닌 이웃은 부르는 쪽이 덤프 노드(n_node-1 번)로 보내고 가중 0 으로 둔다.
+      m_i = Σ_p w_ip m_p,  v_i = Σ_p w_ip m_p v_p / m_i,  F_i = Σ_p w_ip m_p F_p / m_i
+    정규화는 node_moments 규약 그대로: 질량 칸 log1p(1e3·m_i) (node_moments 의 log1p(1e3·Σλm) 과 같은 꼴),
+    속도는 부르는 쪽이 vel_scale 로 나눈 값, F 는 F_i - I (node_moments 의 Fa - I 와 같은 꼴). 분모 하한 1e-12.
+
+    v: [N,3], F: [N,3,3] 또는 [N,9], m: [N] -> [M, 13] = [log1p(1e3 m_i), v_i (3), F_i - I (9, 행 우선)]
+    """
+    dev, dt = v.device, v.dtype
+    N, C = rows.shape
+    F9 = F.reshape(N, 9).to(dt)
+    wm = w.to(dt) * m.to(dt).unsqueeze(1)                                  # [N,27]
+    r = rows.reshape(-1)
+    num = torch.zeros(n_node, 1 + 3 + 9, device=dev, dtype=dt)
+    vals = torch.cat([torch.ones_like(v[:, :1]), v, F9], -1)               # [N,13]
+    num.index_add_(0, r, (wm.unsqueeze(-1) * vals.unsqueeze(1)).reshape(-1, 13))
+    mi = num[:, :1]
+    den = mi.clamp(min=1e-12)
+    I9 = torch.eye(3, device=dev, dtype=dt).reshape(1, 9)
+    return torch.cat([torch.log1p(mi * 1e3), num[:, 1:4] / den, num[:, 4:13] / den - I9], -1)
 
 
 def node_centroids(g1):
@@ -250,3 +279,56 @@ class SimplexGNN(nn.Module):
             # 반경 채널은 무차원 (σ 로 들어간다) -- 변위 크기·dt 비례를 곱하지 않는다
             return (torch.cat([o[:, :3] * sc, o[:, 3:4]], -1),)
         return (o * sc,)
+
+
+class _LAttnLayer(nn.Module):
+    """**국소 어텐션** 한 층 (--gnn_layer lattn, 사용자 10-23).
+
+    각 노드(질의)는 메시지 패싱이 쓰는 **같은 이웃 집합** (src -> dst 간선, edges_of) 에만 주의를 둔다.
+    다중 헤드; 상대 위치 인코딩 = 간선의 격자 상대 오프셋 (EDGE_OFFSETS[cls], 정수 3) 을 MLP 로
+      키 편향 r_k, 값 편향 r_v (폭 hidden) 와 헤드별 로짓 편향 b (헤드 수) 로 넣는다:
+        logit_e,h = <q_dst, k_src + r_k(cls)>_h / sqrt(d_h) + b_h(cls),  softmax 는 같은 dst 의 간선끼리
+        out_dst  = Σ_e α_e,h (v_src + r_v(cls))_h
+    잔차 + LayerNorm (pre-norm): h <- h + Wo·attn(LN(h)), h <- h + FFN(LN(h)).
+    """
+
+    def __init__(self, hidden, heads):
+        super().__init__()
+        if hidden % heads:
+            raise SystemExit(f"--attn_heads {heads} 가 --hidden {hidden} 을 나누지 못한다")
+        from .simplex import EDGE_OFFSETS
+        self.H, self.dh = int(heads), hidden // int(heads)
+        self.register_buffer("off", torch.tensor(EDGE_OFFSETS, dtype=torch.float32), persistent=False)
+        self.ln1 = nn.LayerNorm(hidden)
+        self.qkv = nn.Linear(hidden, 3 * hidden)
+        self.rpe = nn.Sequential(nn.Linear(3, hidden), nn.SiLU(), nn.Linear(hidden, 2 * hidden + self.H))
+        self.o = nn.Linear(hidden, hidden)
+        self.ln2 = nn.LayerNorm(hidden)
+        self.ff = nn.Sequential(nn.Linear(hidden, 2 * hidden), nn.SiLU(), nn.Linear(2 * hidden, hidden))
+
+    def forward(self, h, src, dst, cls):
+        M, D = h.shape
+        H, dh = self.H, self.dh
+        q, k, v = self.qkv(self.ln1(h)).split(D, -1)
+        rt = self.rpe(self.off.to(h.dtype))                                 # [14, 2D+H] (간선 종류 14 가지뿐)
+        rk, rv, rb = rt[:, :D], rt[:, D:2 * D], rt[:, 2 * D:]
+        ke = (k[src] + rk[cls]).reshape(-1, H, dh)
+        ve = (v[src] + rv[cls]).reshape(-1, H, dh)
+        lg = (q[dst].reshape(-1, H, dh) * ke).sum(-1) / math.sqrt(dh) + rb[cls]     # [E,H]
+        # 같은 dst 끼리 softmax: 최댓값 빼기는 상수 이동이라 값에 무관 -- 기울기를 끊어 둔다
+        mx = torch.full((M, H), -1e30, device=h.device, dtype=lg.dtype).scatter_reduce(
+            0, dst.unsqueeze(-1).expand(-1, H), lg.detach(), reduce="amax", include_self=True)
+        ex = torch.exp(lg - mx[dst])
+        den = torch.zeros(M, H, device=h.device, dtype=lg.dtype).index_add(0, dst, ex)
+        al = ex / den[dst].clamp_min(1e-30)                                  # [E,H]
+        agg = torch.zeros(M, H, dh, device=h.device, dtype=h.dtype).index_add(0, dst, al.unsqueeze(-1) * ve)
+        h = h + self.o(agg.reshape(M, D))
+        return h + self.ff(self.ln2(h))
+
+
+class LocalAttnGNN(SimplexGNN):
+    """SimplexGNN 과 같은 입출력·입력 정규화·dt/물성 FiLM·0 초기화 출력, 몸통 층만 국소 어텐션 (--gnn_layer lattn)."""
+
+    def __init__(self, n_feat, hidden=128, layers=8, heads=8, **kw):
+        super().__init__(n_feat, hidden=hidden, layers=layers, **kw)
+        self.body = nn.ModuleList([_LAttnLayer(hidden, heads) for _ in range(layers)])

@@ -324,6 +324,14 @@ ap.add_argument("--pfreq", type=int, default=0,
                      "꼭짓점 j 에 갖는 15 스칼라 [(x_p-x_j)/h_node 3, v_p/vel_scale 3, F_p-I 9] 각각을 [s, sin(2^k π s), cos(2^k π s)] "
                      "(k<K) 로 인코딩해 λ_pj·m_p 가중 평균 -> 15(1+2K) 채널 (simplex_gnn.particle_freq_feats). 바닥 채널은 그대로. "
                      "F 는 --ip_feat 와 같은 경로(ipf_set)로 학습 상태·롤아웃 전진 F 를 쓴다. 사면체 barycentric 만")
+ap.add_argument("--node_feat", choices=["mom", "p2g"], default="mom",
+                help="노드 입력의 입자 부분: mom(기본) = 입자 모멘트 29 채널 (node_moments), p2g = MPM P2G (사용자 10-23): 격자 좌표 기준 "
+                     "2 차 B-스플라인 27 노드 가중 w_ip 로 m_i=Σwm, v_i=Σwmv/m_i, F_i=ΣwmF/m_i -> [log1p(1e3 m_i), v_i/vel_scale, F_i-I] 13 채널 "
+                     "(simplex_gnn.p2g_feats). 바닥·물성 등 나머지 입력 그대로. F 는 --pfreq 와 같은 경로(ipf_set)")
+ap.add_argument("--gnn_layer", choices=["mp", "lattn"], default="mp",
+                help="--arch sgnn 몸통 층: mp(기본) = 메시지 패싱 (_MPLayer), lattn = 국소 어텐션 (사용자 10-23): 같은 이웃 집합에만, "
+                     "다중 헤드(--attn_heads), 격자 상대 오프셋 MLP 상대 위치 인코딩, 잔차 + LayerNorm (simplex_gnn.LocalAttnGNN)")
+ap.add_argument("--attn_heads", type=int, default=8, help="--gnn_layer lattn 의 헤드 수 (hidden 을 나눠야 한다)")
 ap.add_argument("--bary_pe", type=int, default=0,
                 help="노드 특징에 셀 안 barycentric 좌표의 다주파수 위치 인코딩 sin/cos(2^k π λ), k<K 를 질량 가중으로 더한다 (0 이면 끔)")
 ap.add_argument("--gregory", action="store_true",
@@ -1616,6 +1624,9 @@ _OBJ_PTS = (a.obj == "pts")   # 목적함수를 입자에서 바로 재는가 (�
 _RQS_PEN = [None]        # step_once 가 쌓는 RQS 연속성 벌점, 손실 지점이 소비
 
 
+_NEEDPF = (a.pfreq > 0 or a.node_feat == "p2g")   # 노드 특징이 입자 F 를 쓰는가 (--pfreq·--node_feat p2g)
+
+
 def node_feats(d, t, gsel, x, v, fe=None):
     """사면체 복합체의 **노드** 특징 (lib/anchorflow/deform_model.node_feats).
 
@@ -1634,7 +1645,7 @@ def node_feats(d, t, gsel, x, v, fe=None):
         return parts
     _ips = None
     _pF = None
-    if a.pfreq > 0:
+    if _NEEDPF:
         _r = _IPF_F[0]
         if _r is None or _r[0] is not x or _r[1] is None:
             raise RuntimeError("--pfreq: 이 상태의 F 가 걸려 있지 않다 (이 호출 지점에서 step_once/node_feats 앞에 ipf_set(x, F) 할 것)")
@@ -1674,7 +1685,7 @@ _IPF_CACHE = {}          # --ip_feat: 고정 상태(다궤적 적합의 (궤적,
 def ipf_set(x, F, key=None):
     """--ip_feat: 다음 node_feats(.., x, ..) 호출이 쓸 상태 F 를 건다 (x 는 **같은 텐서 객체**여야 한다 -- 다른 상태의 F 를
     잘못 쓰는 일을 막는다). key 를 주면 (상태가 고정인 학습 표본) 특징을 CPU 에 캐시해 다시 쓴다. 꺼져 있으면 아무 일도 안 한다."""
-    if a.ip_feat or a.pfreq > 0:
+    if a.ip_feat or _NEEDPF:
         _IPF_F[0] = (x, F, key)
 
 
@@ -2158,11 +2169,22 @@ with torch.no_grad():
                   + (7 * a.n_ctrl if a.control else 0))
     else:
         _fe0 = (take(traj_F(_d)[1], _g).float() if a.fe_state else None)
-        ipf_set(_x, take(traj_F(_d)[1], _g).float() if (a.ip_feat or a.pfreq > 0) else None)
+        ipf_set(_x, take(traj_F(_d)[1], _g).float() if (a.ip_feat or _NEEDPF) else None)
         n_feat = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1]
         if a.pfreq > 0:
             print(f"[--pfreq {a.pfreq}] 노드 입력 = 입자 주파수 인코딩 {DM._SGM.pfreq_channels(a.pfreq)} 채널 "
                   f"(15 스칼라 x (1+2·{a.pfreq}), 입자 모멘트 29 채널 뺌) + 나머지 {n_feat - DM._SGM.pfreq_channels(a.pfreq)} -> 입력 {n_feat}", flush=True)
+        if a.node_feat == "p2g":
+            print(f"[--node_feat p2g] 노드 입력 = MPM P2G (2 차 B-스플라인 27 노드) [log1p(1e3 m_i) 1, v_i/vel_scale 3, F_i-I 9] "
+                  f"{DM._SGM.P2G_NCH} 채널 (입자 모멘트 29 채널 뺌) + 나머지 {n_feat - DM._SGM.P2G_NCH} -> 입력 {n_feat}", flush=True)
+            _pfx = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0][:, :DM._SGM.P2G_NCH]
+            print("[P2G 칸 확인] 노드 " + str(_pfx.shape[0]) + f", nan {int((~torch.isfinite(_pfx)).sum())}, 칸별 [최소, 최대] "
+                  + " ".join(f"{_c}:[{float(_pfx[:, _c].min()):.3g},{float(_pfx[:, _c].max()):.3g}]" for _c in range(_pfx.shape[1])), flush=True)
+        if a.gnn_layer == "lattn":
+            print(f"[--gnn_layer lattn] 몸통 = 국소 어텐션 {a.gnn_layers} 층, 폭 {a.hidden}, 헤드 {a.attn_heads}", flush=True)
+            _src, _dst = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[6][:2]
+            _nb = torch.bincount(_dst, minlength=int(_dst.max()) + 1).float()
+            print(f"[어텐션 이웃 수] 노드당 최소 {int(_nb.min())} 평균 {float(_nb.mean()):.2f} 최대 {int(_nb.max())} (간선 {_dst.numel()})", flush=True)
         if a.ip_feat:
             print(f"[--ip_feat] 증분 포텐셜 노드 특징 {DM.IP_FEAT_N} 채널 덧붙임 -> 입력 {n_feat} (ε {a.ip_feat_eps:g})", flush=True)
         if a.bc_feat == "contact":
@@ -2238,7 +2260,7 @@ with torch.no_grad() if not a.infer else contextlib.nullcontext():
             _cr = None
         else:
             _fes = (take(traj_F(_dd)[_t], _gs).float() if a.fe_state else None)
-            ipf_set(_x, take(traj_F(_dd)[_t], _gs).float() if (a.ip_feat or a.pfreq > 0) else None)
+            ipf_set(_x, take(traj_F(_dd)[_t], _gs).float() if (a.ip_feat or _NEEDPF) else None)
             _s, _cr = node_feats(_dd, _t, _gs, _x, _v, fe=_fes)[0], None
         if a.stat_occ and _cr is not None:  # 빈 칸이 96% 라 통계를 장악한다
             _m = torch.zeros(_s.shape[0], dtype=torch.bool, device=_s.device)
@@ -4418,6 +4440,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
     _NTG = [None]              # --ov_obj newton: (목표 노드 변위 u_t [M,3], 노드 질량 [M])
 
     def _fwd():
+        if a.node_feat == "p2g":
+            ipf_set(x, F)          # --node_feat p2g: 노드 특징의 입자 F = 이 프레임 상태의 F (모델 롤아웃 상태)
         with torch.enable_grad(), dt_scope(_DT[0]):
             x2, _, v2, _, _, _, _, _, _, _Jd = step_once(
                 d, t, gsel, p, x, v, need_J=False)
@@ -7504,14 +7528,14 @@ def _rollout(d, t0, L, gsel=None):
                     x, p, v, _, _, _, dmg_e, idx_e, fe_r, _jsb = step_once(
                         d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                         idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
-                    if a.ip_feat or a.pfreq > 0:   # --ip_feat·--pfreq: 특징에 쓰는 F 를 망의 실제 야코비안으로 전진 (_eval_roll 과 같은 식)
+                    if a.ip_feat or _NEEDPF:   # --ip_feat·--pfreq: 특징에 쓰는 F 를 망의 실제 야코비안으로 전진 (_eval_roll 과 같은 식)
                         _S["F_ip"] = _ipf_advance_F(_S["F_ip"], _jsb, d["cfg"], FRAME_DT / EVAL_SUB)
                     x, p, v = x.detach(), p.detach(), _pg_vdamp(v.detach(), d, FRAME_DT / EVAL_SUB)
                 ipf_set(x, _S["F_ip"])
                 x2, p, v, _, _, _, dmg_e, idx_e, fe_r, _jf = step_once(
                     d, t0 + i, gsel, p, x, v, need_J=False, dmg=dmg_e,
                     idx_prev=idx_e, x0=x0e, p0=p0e, fe=fe_r)
-                if a.ip_feat or a.pfreq > 0:
+                if a.ip_feat or _NEEDPF:
                     _S["F_ip"] = _ipf_advance_F(_S["F_ip"], _jf, d["cfg"], FRAME_DT / EVAL_SUB)
             x2 = x2.detach(); p = p.detach(); v = _pg_vdamp(v.detach(), d, FRAME_DT / EVAL_SUB)
             _S.update(p=p, dmg=dmg_e, idx=idx_e, fe=fe_r)

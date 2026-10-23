@@ -6,6 +6,9 @@
 #        floorpe      = --ov_obj ip + --bc_feat distpe (바닥 부호 거리 + sin/cos, K=--bc_pe 6)
 #        floorcontact = --ov_obj ip + --bc_feat contact (접촉 셀 꼭짓점만 바닥 정보)
 #        noin         = --ov_obj ip (바닥 입력 원래 그대로) -- 위 둘의 기준판
+#        p2g          = noin + --node_feat p2g (노드 입력의 입자 부분 = MPM P2G 질량·속도·F, 2 차 B-스플라인; 사용자 10-23)
+#        lattn        = noin + --gnn_layer lattn --attn_heads 8 (몸통 = 국소 어텐션 8 층 128; 사용자 10-23)
+#   PFNEW_LEN=N (기본 80): 짧은 시험 -- 프레임 N 개만 맞추고 렌더·psi 없이 끝 (출력 lbours/<디렉토리>_lenN/<T>)
 #   공통 명령 = lbours/pf3obj/{ip,nl2}/<T>/cmd.txt 의 명령에서 --net_inertial 을 빼고 (사용자 규칙: 새 실행에 관성 예측 더하기 금지)
 #   --ov_obj·바닥 입력·출력 경로만 바꾼 것. 출력 lbours/<디렉토리>/<T>, R2 r2:storage/result/anchorflow/lbours/<디렉토리>/<T>.
 #   이어 돌기: AF_OVNET_FIT 의 frames/frame_XX.pt (다시 띄우면 마지막 프레임 다음부터). 끝 표식 <출력>/.done
@@ -18,8 +21,11 @@ case $K in
   floorpe) DIR=pfip_floorpe; OBJ=ip; XF="--bc_feat distpe --bc_pe 6"; XE="" ;;
   floorcontact) DIR=pfip_floorcontact; OBJ=ip; XF="--bc_feat contact"; XE="" ;;
   noin) DIR=pfip_noin; OBJ=ip; XF=""; XE="" ;;
+  p2g) DIR=pfip_p2g; OBJ=ip; XF="--node_feat p2g"; XE="" ;;
+  lattn) DIR=pfip_lattn; OBJ=ip; XF="--gnn_layer lattn --attn_heads 8"; XE="" ;;
   *) echo "[오류] 판 $K"; exit 1 ;;
 esac
+NL=${PFNEW_LEN:-80}; [ "$NL" = 80 ] || DIR=${DIR}_len$NL
 O=$W/lbours/$DIR/$T; R=r2:storage/result/anchorflow/lbours/$DIR/$T; mkdir -p $O
 S=$W/lbours/spstick; NS=$W/lbours/lego_psi_spstick; WP=$W/wt/psi_d993fb5; RANGE=$W/lbours/lego_psi/range.json
 gt_of(){ [ $1 = L000 ] && echo $W/lbdata/test_low/L000 || echo $W/lbdata/test/$1; }
@@ -35,10 +41,11 @@ BASE=$(sed -n 's/^\[실행 명령[^]]*\] //p' $W/lbours/pf3obj/ip/$T/cmd.txt | h
 [ -n "$BASE" ] || { echo "[오류] 기준 명령 없음"; exit 1; }
 CMD=$(sed -e "s#/home/dkta/work/lbours/pf3obj/ip/$T#$O#g" -e "s#r2:storage/result/anchorflow/lbours/pf3obj/ip/$T#$R#g" \
           -e "s/CUDA_VISIBLE_DEVICES=[0-9]*/$XE CUDA_VISIBLE_DEVICES=$G/" -e 's/ --net_inertial / /' \
-          -e "s/ --ov_obj ip / --ov_obj $OBJ /" -e "s# --bc_stick_xn # --bc_stick_xn $XF #" <<<"$BASE" | tr -s ' ')
+          -e "s/ --ov_obj ip / --ov_obj $OBJ /" -e "s# --bc_stick_xn # --bc_stick_xn $XF #" -e "s/ --eval_len 80 / --eval_len $NL /" <<<"$BASE" | tr -s ' ')
 grep -q -- "--net_inertial" <<<"$CMD" && { echo "[오류] --net_inertial 이 남았다"; exit 1; }
 grep -q -- "--ov_obj $OBJ " <<<"$CMD" || { echo "[오류] --ov_obj 바꾸기 실패"; exit 1; }
-[ -z "$XF" ] || grep -q -- "$XF" <<<"$CMD" || { echo "[오류] 바닥 입력 넣기 실패"; exit 1; }
+[ -z "$XF" ] || grep -q -- "$XF" <<<"$CMD" || { echo "[오류] 추가 인자 넣기 실패 ($XF)"; exit 1; }
+grep -q -- "--eval_len $NL " <<<"$CMD" || { echo "[오류] --eval_len $NL 바꾸기 실패"; exit 1; }
 echo "[기준] $BASE" > $O/cmd_base.txt
 echo "[실행 명령 $(date '+%F_%T') 커밋 $C] $CMD" >> $O/cmd.txt
 echo "[명령] $CMD"
@@ -47,6 +54,7 @@ if [ ! -f $O/roll_net.pt ]; then
   grep -q OVNET_FIT_DONE $O/run.log || { echo "[오류] 맞춤 안 끝남"; tail -5 $O/run.log; up; exit 1; }
 fi
 up
+[ "$NL" = 80 ] || { touch $O/.done; up; echo "PFNEW_DONE $K $T 짧은 시험 $NL 프레임 $(date '+%F %T')"; exit 0; }
 # 2) 3DGS 렌더 (pf3obj.sh render 와 같은 명령)
 cd $WT
 [ -f $O/h5_net/meta.json ] || python -u exe/lb_roll_to_h5.py --dump $O/roll_net.pt --traj $(gt_of $T) --out $O/h5_net > $O/h5_net.log 2>&1
