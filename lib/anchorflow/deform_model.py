@@ -309,6 +309,9 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
         if rows.shape[1] != 4 or _interp != "bary" or getattr(a, "hex_jac", False):
             raise SystemExit("--bc_feat contact 는 사면체 barycentric (--interp bary, hex_jac 없음) 만 지원한다")
         extra = [bc_contact_feats(cfg, x, v, mass, rows, lam, npos, Mn, h, hn)]
+    elif str(getattr(a, "bc_feat", "dist") or "dist") == "distpe":
+        # --bc_feat distpe (사용자 10-23): 모든 노드에 부호 거리/hn 원래 값 + sin/cos 다중 주파수 (--pfreq 방식), 법선 그대로
+        extra = [bc_pe_feats(npos, cfg, hn, int(getattr(a, "bc_pe", 6)))]
     else:
         extra = [bc_features(npos, cfg) / hn]
     if mat_vec is not None:
@@ -350,6 +353,28 @@ def node_inertial(x, v, mass, rows, lam, n_node, g, h):
     _gq = _const_vec(g, x)
     _hq = float(h)
     return _hq * _vn + (_hq ** 2) * _gq, (_vn, _gq)
+
+
+def bc_pe_feats(npos, cfg, hn, K):
+    """**--bc_feat distpe** 노드 바닥 특징: bc_features 와 같은 순서·같은 값(÷hn)인데 surface_collider 의 부호 거리 s = d/hn 한 칸을
+    [s, sin(2^k π s) (k<K), cos(2^k π s) (k<K)] 1+2K 칸으로 (simplex_gnn.particle_freq_feats 와 같은 인코딩·기준 길이 h_node).
+    원래 칸(거리/hn, 법선/hn -- dist 경로와 같은 값)은 그대로 두고 sin/cos 만 더한다. 법선 3 (길이 차원 아님) 과 cuboid·enforce_particle_translation 칸은 bc_features 그대로. -> [M, C]
+    """
+    dev, dt = npos.device, npos.dtype
+    fr = (2.0 ** torch.arange(int(K), device=dev, dtype=dt)) * math.pi
+    out = []
+    for bc in cfg.get("boundary_conditions", []):
+        t = bc["type"]
+        if t == "surface_collider":
+            f = bc_features(npos, {"boundary_conditions": [bc]}) / hn          # [M, 4]: 거리/hn, 법선/hn (dist 경로와 같은 값)
+            s = f[:, :1]
+            ang = s * fr
+            out += [s, torch.sin(ang), torch.cos(ang), f[:, 1:4]]               # 법선 칸은 dist 경로 값 그대로 (그쪽도 ÷hn)
+        elif t in ("cuboid", "enforce_particle_translation"):
+            out.append(bc_features(npos, {"boundary_conditions": [bc]}) / hn)
+    if not out:
+        return torch.zeros(npos.shape[0], 0, device=dev, dtype=dt)
+    return torch.cat(out, -1)
 
 
 def bc_contact_feats(cfg, x, v, mass, rows, lam, npos, Mn, h, hn):
