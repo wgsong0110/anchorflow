@@ -91,28 +91,27 @@ md += ["", f"대조: 저장된 망으로 다시 낸 다음 상태 vs 기록 stat
        f"다시 푼 E* 해 vs 기록 x_star 평균 위치차 최대 {ck[:, 2].max():.2e}%, E* 상대차 최대 {ck[:, 3].max():.2e}", ""]
 
 # ---- 2 공중 자유낙하 ----
-md += ["## 2 공중 자유낙하 (질량중심 가속도, 세 상태 모두 바닥 부호거리 최소 > 0 인 스텝)", "",
-       "| 실행 | 공중 스텝 수 | 첫 접촉 프레임 | 평균 가속도 [m/s²] | |ā−g|/|g| | 스텝별 |a−g|/|g| 최대 | g 방향 성분 평균/|g| |", "|---|---|---|---|---|---|---|"]
+# 공중 구간 = **정답** 바닥 부호거리 최소가 > 0 인 상태만으로 된 스텝 (세 실행 같은 스텝 번호로 비교). 우리 두 실행은 softplus 바닥 사상
+# (ε 0.01 m) 이 부호거리를 늘 > 0 으로 두므로 자기 부호거리로는 접촉을 판정할 수 없다 (그래서 정답 기준).
+sdg = ser("gt", "sd_min")
+air_g = [t for t in range(len(sdg) - 1) if sdg[t + 1] > 0 and sdg[t] > 0 and (t == 0 or sdg[t - 1] > 0)]
+md += ["## 2 공중 자유낙하 (질량중심 가속도)", "",
+       f"공중 스텝 = 정답 바닥 부호거리 최소 > 0 인 상태로만 된 스텝: {air_g} (시작 높이 {sdg[0]:.4f} m, 정답 첫 접촉 상태 {contact('gt')}). "
+       "스텝 t 가속도 = (c_(t+1) − 2c_t + c_(t−1))/h², t=0 은 (c_1 − c_0 − h v_0)/h².", "",
+       "| 실행 | 스텝 | 가속도 [m/s²] | g 방향 성분/|g| | |a−g|/|g| | 스텝 끝 바닥 부호거리 최소 [m] |", "|---|---|---|---|---|---|"]
 for src in SRC:
     C = com(src); sd = ser(src, "sd_min")
     v0 = np.array(S["series"][src]["rows"][0]["vcom"])
-    A = [(C[1] - C[0] - h * v0) / h ** 2] + [(C[t + 1] - 2 * C[t] + C[t - 1]) / h ** 2 for t in range(1, len(C) - 1)]
-    A = np.array(A)
-    air = np.array([sd[t + 1] > 0 and sd[t] > 0 and (t == 0 or sd[t - 1] > 0) for t in range(len(A))])
+    A = np.array([(C[1] - C[0] - h * v0) / h ** 2] + [(C[t + 1] - 2 * C[t] + C[t - 1]) / h ** 2 for t in range(1, len(C) - 1)])
     along = A @ gh
     ax[3].plot(np.arange(len(A)), along / gn, c=COL[src], lw=1.6 if src != "gt" else 2.0, label=NAME[src])
-    ct = contact(src)
-    if ct is not None:
-        ax[3].axvline(ct, c=COL[src], ls=":", lw=1.0)
-    if air.any():
-        Am = A[air].mean(0)
-        md.append(f"| {NAME[src]} | {int(air.sum())} | {ct} | {np.round(Am, 4).tolist()} | {np.linalg.norm(Am - g) / gn:.4e} | "
-                  f"{(np.linalg.norm(A[air] - g, axis=1) / gn).max():.4e} | {along[air].mean() / gn:.6f} |")
-    else:
-        md.append(f"| {NAME[src]} | 0 | {ct} | - | - | - | - |")
+    for t in sorted(set(air_g) | {max(air_g) + 1, max(air_g) + 2} if air_g else {0, 1, 2}):
+        md.append(f"| {NAME[src]} | {t} | {np.round(A[t], 3).tolist()} | {along[t] / gn:.4f} | {np.linalg.norm(A[t] - g) / gn:.4f} | {sd[t + 1]:.4f} |")
+if air_g:
+    ax[3].axvspan(-0.5, max(air_g) + 0.5, color="#dee2e6", alpha=0.6, label="정답 공중 구간")
 ax[3].axhline(1.0, c="#868e96", ls="--", lw=1.0, label="중력 g")
-ax[3].set_ylim(-1.5, 3.0)
-ax[3].set_title("2 질량중심 가속도의 g 방향 성분 / |g|  (점선 = 첫 접촉 프레임)"); ax[3].set_xlabel("스텝 (상태 t)"); ax[3].legend(fontsize=9)
+ax[3].set_ylim(-1.5, 3.0); ax[3].set_xlim(-0.5, 20.5)
+ax[3].set_title("2 질량중심 가속도의 g 방향 성분 / |g|  (처음 20 스텝)"); ax[3].set_xlabel("스텝 (상태 t)"); ax[3].legend(fontsize=9)
 md.append("")
 
 # ---- 3 에너지 ----
@@ -139,7 +138,7 @@ for src, (fx, T_, K, Ee) in TOT.items():
     ax[4].plot(fx, T_, c=COL[src], lw=1.6, label=NAME[src])
     ax[5].semilogy(fx, np.maximum(K, 1e-12), c=COL[src], lw=1.6, label=NAME[src])
     ax[6].semilogy(fx, np.maximum(Ee, 1e-12), c=COL[src], lw=1.6, label=NAME[src])
-ax[4].set_title("3 총 에너지 K + (Ug − Ug₀) + 탄성  [J]"); ax[5].set_title("3 운동 에너지 ½Σm|v|²  [J]"); ax[6].set_title("3 탄성 에너지 ΣVψ(F)  [J]")
+ax[4].set_title("3 총 에너지 K + (Ug − Ug(0)) + 탄성  [J]"); ax[5].set_title("3 운동 에너지 ½Σm|v|²  [J]"); ax[6].set_title("3 탄성 에너지 ΣVψ(F)  [J]")
 for i in (4, 5, 6):
     ax[i].set_xlabel("프레임"); ax[i].legend(fontsize=9)
 md.append("")
@@ -185,7 +184,7 @@ ax[11].semilogy(cf, [r["hold"]["f_l1_w"] for r in CR], c=COL["cont"], lw=1.0, ls
 ax[11].set_title("5 이어 돌리기: 정적 평형 잔여 힘"); ax[11].set_xlabel("프레임"); ax[11].legend(fontsize=9)
 dz = np.array([r["com_disp"] for r in CR[1:]]) @ gh if len(CR) > 1 else np.zeros(1)
 md += [f"## 5 출력만 최적화 이어 돌리기 (시작 = 한 프레임씩 결과 프레임 {CR[0]['frame']}, {len(CR) - 1} 프레임)", "",
-       "| 프레임 | 질량중심 이동 % | 그중 g 방향 [m] | 입자 최대 이동 % | 평균 이동 % | 속도 최대 | 평균 | K [J] | 잔여힘/무게 | 정지 유지 | det≤0 | 바닥 아래 |",
+       "| 프레임 | 질량중심 이동 % | 그중 아래로 (g 방향) [m] | 입자 최대 이동 % | 평균 이동 % | 속도 최대 | 평균 | K [J] | 잔여힘/무게 | 정지 유지 | det≤0 | 바닥 아래 |",
        "|---|---|---|---|---|---|---|---|---|---|---|---|"]
 for j in sorted(set([0, 1, 2, 5, 10, 20, 30, 60, 90, len(CR) - 1]) & set(range(len(CR)))):
     r = CR[j]
