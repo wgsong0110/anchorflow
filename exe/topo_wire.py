@@ -115,15 +115,16 @@ if a.stage == "analyze":
         dgc = dg.clamp_min(1e-12)[:, None]
         z = r / dgc
         p = z.clone(); rz = (r * z).sum(0)
-        n0 = rhs.norm()
-        for k in range(3000):
+        n0 = float(rhs.norm())
+        k = -1
+        for k in range(3000):                                          # 오른쪽이 0 (프레임 1·2: 정답이 안 움직임) 이면 그대로
+            if float(r.norm()) <= 1e-11 * n0 or n0 == 0.0:
+                break
             Ap = AT @ (A @ p)
             al = rz / (p * Ap).sum(0).clamp_min(1e-300)
             x += al * p; r -= al * Ap
-            if r.norm() < 1e-11 * n0:
-                break
             z = r / dgc
-            rz2 = (r * z).sum(0); p = z + (rz2 / rz) * p; rz = rz2
+            rz2 = (r * z).sum(0); p = z + (rz2 / rz.clamp_min(1e-300)) * p; rz = rz2
         U.append(x.clone())
         e = (A @ x - b).norm(dim=1)
         rec.append((float(e.mean()) / L, float(e.max()) / L, k + 1))
