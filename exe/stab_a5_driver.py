@@ -84,7 +84,9 @@ def O(S):
 
 def mpm_cmd(S, m, N, out_npz, g, dump="", ckpt=5, frames=0):
     o = O(S)
-    c = (f"cd {PGDIR} && CUDA_VISIBLE_DEVICES={g} {PY} -u {WT}/exe/stab_mpm.py --method {m} --h5 {o}/init/sim_0000000000.h5 "
+    # i-PG 통합 커널(AF_IPG_FUSED)은 탄성(재질 0)만 지원 -> metal(plane)은 공식 Warp 경로 (10-23 자가 시험 AssertionError)
+    fz = " AF_IPG_FUSED=0" if (m == "ipg" and S == "plane") else ""
+    c = (f"cd {PGDIR} && CUDA_VISIBLE_DEVICES={g}{fz} {PY} -u {WT}/exe/stab_mpm.py --method {m} --h5 {o}/init/sim_0000000000.h5 "
          f"--config {o}/config.json --substeps {N} --out {out_npz} --ckpt_every {ckpt}")
     if dump:
         c += f" --dump {dump}"
