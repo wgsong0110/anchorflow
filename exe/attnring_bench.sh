@@ -13,7 +13,7 @@
 set -u
 C=${1:?커밋}
 W=/home/dkta/work; WT=$W/wt/attnring_$C
-O=$W/lbours/attnring_bench/$C; R=r2:storage/result/anchorflow/lbours/attnring_bench/$C
+O=${AB_OUT:-$W/lbours/attnring_bench/$C}; R=r2:storage/result/anchorflow/lbours/attnring_bench/$(basename $O)  # AB_OUT: 앞 판의 출력에 이어서 (측정 코드는 같고 스크립트만 고친 경우)
 ROLL=${AB_ROLL:-40}; WAIT=${AB_WAIT:-21600}
 mkdir -p $O
 set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; set -u
@@ -67,8 +67,13 @@ grep -q "TEST_ATTN_RING OK" $O/test_attn_ring.log || { echo "[경고] 단위 확
 
 CFGS="sgnn8 sgnn4 lattn4_k1 lattn4_k2 lattn4_k3 lattn8_k1 lattn8_k2 lattn8_k3"
 for K in $CFGS; do
-  D=$O/$K; RD=$R/$K
-  [ -f $D/.done ] && { echo "[이미 끝] $K"; continue; }
+ D=$O/$K; RD=$R/$K
+ for TRY in 1 2 3 4; do
+  # 끝난 것이라도 그 카드에 우리 말고 다른 PID 가 있었으면 (경합) 버리지 않고 옆으로 옮기고 다시 잰다
+  if [ -f $D/.done ] && ! grep -q "pids_on_card=1 " $D/exclusive.txt; then
+    echo "[경합 기록] $K $(cat $D/exclusive.txt) -> $D.contended_$(date +%H%M%S), 다시 잰다"; mv $D $D.contended_$(date +%H%M%S)
+  fi
+  [ -f $D/.done ] && { echo "[이미 끝·단독] $K"; break; }
   case $K in
     sgnn8) LY=8; XF="" ;;
     sgnn4) LY=4; XF="" ;;
@@ -106,10 +111,11 @@ for K in $CFGS; do
   # 단독 판정: 감시 기록에 나온 PID 가 하나뿐인가
   npid=$(grep -o "$U, [0-9]*" $D.partial/gpu_watch.txt | awk '{print $2}' | sort -u | wc -l)
   echo "$K GPU$G pids_on_card=$npid ($(grep -o "$U, [0-9]*" $D.partial/gpu_watch.txt | awk '{print $2}' | sort -u | tr '\n' ' '))" > $D.partial/exclusive.txt
-  grep -q OVNET_FIT_DONE $D.partial/run.log || { echo "[오류] $K 안 끝남 rc=$rc"; tail -5 $D.partial/run.log; mv $D.partial $D.fail_$(date +%H%M%S); up; continue; }
+  grep -q OVNET_FIT_DONE $D.partial/run.log || { echo "[오류] $K 안 끝남 rc=$rc"; tail -5 $D.partial/run.log; mv $D.partial $D.fail_$(date +%H%M%S); up; break; }
   mv $D.partial $D; touch $D/.done
   echo "[끝] $K $(cat $D/exclusive.txt) $(date '+%T')"
   up
+ done
 done
 ( cd $WT && python -u exe/attnring_report.py $O > $O/report.txt 2>&1 ); cat $O/report.txt
 up
