@@ -545,6 +545,16 @@ ap.add_argument("--ov_obj", choices=["ip", "l2", "node", "newton", "nodeov", "no
                      "nodealt=번갈아 (--ov_vars net, 사용자 10-23): 바퀴마다 지금 망 노드 출력 U 에서 노드 출력을 변수로 증분 포텐셜 L-BFGS AF_ALT_LBFGS(10) 회 "
                      "-> 그 노드 출력을 목표로 망 Adam AF_ALT_ADAM(50) 회 (nodeov 와 같은 노드 질량 가중 L2) 를 AF_ALT_ROUNDS(40) 바퀴; "
                      "L-BFGS 곡률 기록은 프레임 안 바퀴 사이에 잇고 변수 값은 매 바퀴 망 출력으로 다시 맞춘다, Adam 상태도 프레임 안에서 잇는다")
+ap.add_argument("--out_precond", choices=["none", "diag", "ms", "lbfgs"], default="none",
+                help="망 출력 전처리 (사용자 10-23, --ov_vars net --ov_obj ip --ov_opt adam 전용; 증분 포텐셜 조건수 가설): "
+                     "프레임마다 지금 상태에서 P 를 한 번 만들어 고정하고 망 출력 z 대신 u = P z 를 노드 변위로 쓴다. "
+                     "diag = 노드별 d_i = M_i/h² + (탄성 헤시안 대각)_i (세 성분 평균), u_i = z_i·sqrt(median(d)/d_i) -- "
+                     "대각은 hess_mode 헤시안-벡터 곱 24 회(격자 색 2³ x 성분 3 탐침, 정확한 대각; AF_PRE_HUTCH=K 면 허친슨 K 방향 오차도 기록), "
+                     "탄성 대각 = 전체 헤시안 대각 - 일관 질량 관성 대각 Σ m λ²/h²; "
+                     "ms = 다중 해상도 계층 평활 u = (z + Σ_l 2^l I_l R_l z) / (1 + Σ_l 2^l), l=1..AF_PRE_MS_LEVELS(3) "
+                     "(격자 2^l h 거친 노드, I_l = 삼선형 보간, R_l = 그 전치의 가중 평균; 상수 모드 그대로·고주파 감쇠, BPX 형); "
+                     "lbfgs = 지금 망 출력에서 노드 출력 변수로 증분 포텐셜 L-BFGS AF_PRE_LBFGS(50) 회로 곡률 쌍 (s,y) 를 모아 "
+                     "2-loop 역헤시안 H⁻¹/γ (γ = 마지막 sᵀy/yᵀy) 를 **출력 기울기에** 적용 (순전파 u = z 그대로, 역전파 g_u -> H⁻¹g_u/γ)")
 ap.add_argument("--integrator", choices=["be", "midpoint"], default="be",
                 help="--ov_roll 의 시간 적분기: be=후퇴 오일러(기본, 프레임당 증분 포텐셜 한 번), midpoint=암시적 중점법 -- "
                      "같은 증분 포텐셜을 h/2 로 풀어 중점 y 를 구하고 x_{n+1}=2y-x_n, v_{n+1}=(4/h)(y-x_n)-v_n, "
@@ -1251,6 +1261,8 @@ _ALT_LOG = []              # --ov_obj nodealt: 바퀴별 기록 (_ovnet_fit 이 
 _EIP_LAST = [None]         # _ov_once._fwd 의 증분 포텐셜 (목적함수 바꾸기 전 값) -- AF_OVNET_FIT 기록용
 _NODEOV_TGT = [None]       # --ov_obj nodeov: {"tp": 덤프 노드 위치, "td": 덤프 노드 변위, 짝·질량 캐시} -- _ovnet_fit 이 프레임마다 채운다
 _OVN_BAD = [None]          # --ov_obj newton --ov_vars out: 뉴턴 걸음 중 p·변수가 nan/inf 가 되면 사유 문자열 (_ovnet_fit 이 그 프레임에서 멈춘다)
+_PRE = {"fn": None}        # --out_precond: 이 프레임의 출력 전처리 (망 출력 튜플 -> 튜플), _ov_once 가 프레임마다 만들고 끝에 지운다
+_PRE_LOG = []              # --out_precond: 프레임별 전처리 기록 (구성 시간·통계) -- AF_OVNET_FIT 가 프레임마다 가져가고 비운다
 _NEWTON_LOG = []           # --ov_obj newton: 목표를 만들 때마다 (반복, CG 횟수, 음곡률, 잔차, 시간, ...) -- AF_OVNET_FIT 가 프레임마다 비운다
 if os.environ.get("AF_OV_NODE_TGT"):
     _NODE_TGT = torch.load(os.environ["AF_OV_NODE_TGT"], map_location="cpu", weights_only=False)
@@ -3270,6 +3282,8 @@ if a.out_var or a.ov_roll > 0:
                 _ALT["cap"] = [o.detach().clone() for o in outs]
                 if _ALT["U"] is not None:
                     return (tuple(_ALT["U"]) if isinstance(out, (tuple, list)) else _ALT["U"][0])
+            if _PRE["fn"] is not None:      # --out_precond: u = P z (diag·ms) 또는 기울기만 H⁻¹ (lbfgs)
+                return _PRE["fn"](out)
             return out
         if st.get("ov") is None or any(o is None for o in st["ov"]):   # _ov_fast 가 빈 자리만 만들어 둔 경우도
             st["ov"] = [o.detach().clone().requires_grad_(True) for o in outs]
@@ -5136,6 +5150,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         else:
             if a.ov_obj == "newton" and a.ov_vars != "net":
                 raise SystemExit("--ov_obj newton 은 --ov_vars net 과만")
+            if a.out_precond != "none" and a.ov_vars == "net":
+                _precond_build(_fwd, m, nrm, t)     # 이 프레임의 P (지금 상태·지금 망 출력에서 한 번, 프레임 안 고정)
             _nev = int(os.environ.get("AF_OV_NEWTON_EVERY", "50"))
             for _k in range(a.ov_roll):
                 if a.ov_obj == "newton" and _k % _nev == 0:
@@ -5220,6 +5236,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                   f"F {float(F.reshape(-1, 9).abs().max()):.3f}", flush=True)
     finally:
         _OV_CUR[0] = _ov
+        _PRE["fn"] = None
         _NF_HOLD[0] = None
         _HX_HOLD[0] = None
         _SM_HOLD[0] = None
@@ -5324,6 +5341,187 @@ def _newton_target(_fwd, _NTG, m, nrm, k, t):
                             p_norm=float(p_[:, :3].norm()) / float(EXT),
                             step_rms=float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT), lam=lam, hdiag=hdiag,
                             qdrop_rel=qdrop / max(abs(float(EJ)), 1e-30), sec=time.time() - _t0, diag=_diag))
+
+
+def _precond_build(_fwd, m, nrm, t):
+    """--out_precond (사용자 10-23): 이 프레임 상태·지금 망 출력에서 출력 전처리 P 를 한 번 만들어 _PRE["fn"] 에 둔다
+    (프레임 안 고정, _ov_once 끝에 지운다). 만드는 동안은 P 를 끈다 (망 출력 그대로). 기록은 _PRE_LOG."""
+    if a.ov_obj != "ip" or a.ov_opt != "adam" or a.fused or a.c1_barrier > 0:
+        raise SystemExit("--out_precond 는 --ov_vars net --ov_obj ip --ov_opt adam 에서만 (--fused·--c1_barrier 없이)")
+    _t0 = time.time()
+    _PRE["fn"] = None
+    _E_net = float(_fwd()[2])                                # 지금 망 출력 (격자·특징은 이 프레임 것 그대로 붙잡힌다)
+    U0 = _DPN_LIVE[0][1].detach().clone()
+    _ens = _NF_HOLD[0]
+    if not isinstance(_ens, (list, tuple)) or len(_ens) != 1:
+        raise SystemExit("--out_precond: 격자 한 벌(앙상블 없음)만")
+    _rw, _lm, _uq, _nn = _ens[0][3], _ens[0][4], _ens[0][5], _ens[0][2][2]
+    Mn_ = U0.shape[0]
+    _nnl = [int(_nn[k]) for k in range(3)]
+    ijk = torch.stack([_uq // (_nnl[1] * _nnl[2]), (_uq // _nnl[2]) % _nnl[1], _uq % _nnl[2]], -1).long()   # 노드 정수 격자 좌표
+    h_ = float(_DT[0])
+    rec = dict(t=int(t), mode=a.out_precond, n_node=int(Mn_), n_out=int(U0.shape[1]), E_net=_E_net)
+    _f64 = torch.float64
+    if a.out_precond == "diag":
+        _mw = m.to(_f64).unsqueeze(-1) * _lm.to(_f64)
+        Mi = torch.zeros(Mn_, device=dev, dtype=_f64).index_add_(0, _rw.reshape(-1), _mw.reshape(-1))            # 노드 질량 Σ m λ
+        Mc = torch.zeros(Mn_, device=dev, dtype=_f64).index_add_(0, _rw.reshape(-1), (_mw * _lm.to(_f64)).reshape(-1))   # 일관 질량 대각 Σ m λ²
+        Z = torch.zeros_like(U0).requires_grad_(True)
+        _sv = (_DP_FAST[0], DM.PROBE[0], DM.PROBE[1])
+        _DP_FAST[0] = lambda _n, _dt, _dev: (U0,)
+        DM.PROBE[0], DM.PROBE[1] = "fixed", [Z]
+        try:
+            with torch.enable_grad(), phys_resid.hess_mode():
+                EJ = _fwd()[2] * nrm
+                g = torch.autograd.grad(EJ, Z, create_graph=True)[0]
+
+                def _hvp(vec):
+                    return torch.autograd.grad((g * vec).sum(), Z, retain_graph=True)[0].detach()
+                # 정확한 대각: 같은 색(격자 좌표 짝홀 2³) 노드끼리는 한 사면체를 공유하지 않는다 (Kuhn 사면체는 한 셀 안,
+                # 꼭짓점 좌표 차 ≤ 1) -> 색 x 성분 하나씩 탐침하면 그 색 노드의 대각이 섞임 없이 나온다 (24 회)
+                col = ((ijk % 2) * torch.tensor([4, 2, 1], device=dev)).sum(-1)
+                Hd = torch.zeros(Mn_, 3, device=dev, dtype=_f64)
+                _th = time.time()
+                for c_ in range(8):
+                    sel = col == c_
+                    if not bool(sel.any()):
+                        continue
+                    for k_ in range(3):
+                        vv = torch.zeros_like(U0)
+                        vv[sel, k_] = 1.0
+                        Hd[sel, k_] = _hvp(vv)[sel, k_].to(_f64)
+                rec["sec_hvp24"] = time.time() - _th
+                # 검산: 색 0 성분 0 을 무작위 부호로 한 번 더 -> 섞임이 없으면 r⊙Hv 가 같은 대각
+                _gq = torch.Generator(device=dev).manual_seed(77 + int(t))
+                sel = col == int(col[0])
+                rr = (torch.randint(0, 2, (Mn_,), device=dev, generator=_gq) * 2 - 1).to(U0.dtype)
+                vv = torch.zeros_like(U0); vv[sel, 0] = rr[sel]
+                _chk = (rr[sel].to(_f64) * _hvp(vv)[sel, 0].to(_f64))
+                rec["color_check_rel"] = float((_chk - Hd[sel, 0]).norm() / Hd[sel, 0].norm().clamp_min(1e-300))
+                _K = int(os.environ.get("AF_PRE_HUTCH", "0"))
+                if _K > 0:                                   # 허친슨 K 방향 (라데마허) 과 정확한 대각 비교 (비용·정확도 보고용)
+                    _th = time.time()
+                    Hh = torch.zeros_like(Hd)
+                    for _ in range(_K):
+                        rv = (torch.randint(0, 2, U0.shape, device=dev, generator=_gq) * 2 - 1).to(U0.dtype)
+                        Hh += (rv * _hvp(rv))[:, :3].to(_f64)
+                    Hh /= _K
+                    rec["hutch"] = dict(K=_K, sec=time.time() - _th,
+                                        rel_err=float((Hh - Hd).norm() / Hd.norm()),
+                                        rel_err_node=float((Hh.mean(1) - Hd.mean(1)).norm() / Hd.mean(1).norm()))
+                del g
+        finally:
+            _DP_FAST[0], DM.PROBE[0], DM.PROBE[1] = _sv
+        el = (Hd - (Mc / (h_ * h_)).unsqueeze(-1)).mean(1)       # 탄성 대각 (세 성분 평균) = 전체 - 일관 질량 관성
+        di = Mi / (h_ * h_) + el.clamp_min(0.0)
+        sc = (di / di.median()).sqrt().to(U0.dtype)              # u_i = z_i / sc_i  (중앙 노드 배율 1)
+        rec.update(inert_med=float((Mi / h_ ** 2).median()), elast_med=float(el.median()), elast_neg=int((el < 0).sum()),
+                   d_min=float(di.min()), d_med=float(di.median()), d_max=float(di.max()),
+                   scale_min=float(1 / sc.max()), scale_max=float(1 / sc.min()))
+
+        def _fn(out, _s=sc.unsqueeze(-1)):
+            o0 = out[0] if isinstance(out, (tuple, list)) else out
+            u = torch.cat([o0[:, :3] / _s, o0[:, 3:]], 1) if o0.shape[1] > 3 else o0 / _s
+            return ((u,) + tuple(out[1:])) if isinstance(out, (tuple, list)) else u
+    elif a.out_precond == "ms":
+        _L = int(os.environ.get("AF_PRE_MS_LEVELS", "3"))
+        _o8 = torch.tensor([[i_, j_, k_] for i_ in (0, 1) for j_ in (0, 1) for k_ in (0, 1)], device=dev, dtype=torch.long)
+        ops, wts = [], []
+        for l_ in range(1, _L + 1):
+            s_ = 2 ** l_
+            base = torch.div(ijk, s_, rounding_mode="floor")
+            fr = (ijk - base * s_).to(U0.dtype) / s_                                   # [M,3] in [0,1)
+            key = base.unsqueeze(1) + _o8.unsqueeze(0)                                 # [M,8,3]
+            w8 = torch.where(_o8.unsqueeze(0) == 1, fr.unsqueeze(1), 1 - fr.unsqueeze(1)).prod(-1)   # 삼선형 [M,8]
+            keep = w8 > 0
+            B_ = int(key.max()) + 2
+            fl = ((key[..., 0] * B_ + key[..., 1]) * B_ + key[..., 2])[keep]
+            uk, inv = torch.unique(fl, return_inverse=True)
+            rows_ = torch.arange(Mn_, device=dev).unsqueeze(1).expand(Mn_, 8)[keep]
+            ww = w8[keep]
+            den = torch.zeros(uk.numel(), device=dev, dtype=U0.dtype).index_add_(0, inv, ww)
+            ops.append((rows_, inv, ww, int(uk.numel()), den))
+            wts.append(float(2 ** l_))
+        _tot = 1.0 + sum(wts)
+
+        def _P(z):
+            acc = z
+            for (rows_, inv, ww, nc, den), wl in zip(ops, wts):
+                zc = torch.zeros(nc, z.shape[1], device=z.device, dtype=z.dtype).index_add_(0, inv, ww.unsqueeze(-1) * z[rows_]) / den.unsqueeze(-1)
+                acc = acc + wl * torch.zeros_like(z).index_add_(0, rows_, ww.unsqueeze(-1) * zc[inv])
+            return acc / _tot
+        with torch.no_grad():
+            _one = torch.ones(Mn_, 3, device=dev, dtype=U0.dtype)
+            _chk = ((-1) ** ijk.sum(-1)).to(U0.dtype).unsqueeze(-1).expand(Mn_, 3)
+            rec.update(levels=_L, weights=wts, n_coarse=[o_[3] for o_ in ops], const_err=float((_P(_one) - 1).abs().max()),
+                       checker_gain=float(_P(_chk).norm() / _chk.norm()))
+
+        def _fn(out):
+            o0 = out[0] if isinstance(out, (tuple, list)) else out
+            u = torch.cat([_P(o0[:, :3]), o0[:, 3:]], 1) if o0.shape[1] > 3 else _P(o0)
+            return ((u,) + tuple(out[1:])) if isinstance(out, (tuple, list)) else u
+    elif a.out_precond == "lbfgs":
+        _nl = int(os.environ.get("AF_PRE_LBFGS", "50"))
+        U = U0.clone().requires_grad_(True)
+        _sv = _DP_FAST[0]
+        _DP_FAST[0] = lambda _n, _dt, _dev: (U,)
+        _ne = [0]
+        _E0s = max(abs(_E_net), 1e-30)                 # 목적함수를 처음 값으로 나눈다 (torch LBFGS 의 sᵀy > 1e-10 문턱이 작은 E 에서 쌍을 버리지 않게)
+        try:
+            _lb = torch.optim.LBFGS([U], lr=1.0, max_iter=_nl, max_eval=int(_nl * 5 / 4), history_size=_nl,
+                                    tolerance_grad=0.0, tolerance_change=0.0, line_search_fn="strong_wolfe")
+
+            def _clo():
+                _lb.zero_grad(set_to_none=True)
+                _Ec = _fwd()[2] / _E0s
+                _ne[0] += 1
+                _Ec.backward()
+                return _Ec
+            _th = time.time()
+            with torch.enable_grad():
+                _lb.step(_clo)
+            rec["sec_lbfgs"] = time.time() - _th
+            with torch.no_grad():
+                rec["E_lbfgs_after"] = float(_fwd()[2])
+        finally:
+            _DP_FAST[0] = _sv
+        _stl = _lb.state[U]
+        Ys = [y_.detach().clone() for y_ in _stl.get("old_dirs", [])]
+        Ss = [s_.detach().clone() for s_ in _stl.get("old_stps", [])]
+        Ro = [float(r_) for r_ in _stl.get("ro", [])]
+        if not Ys:
+            raise SystemExit(f"--out_precond lbfgs: t={t} 곡률 쌍이 없다 (평가 {_ne[0]})")
+        gam = float(Ss[-1].dot(Ys[-1]) / Ys[-1].dot(Ys[-1]))
+        rec.update(n_pairs=len(Ys), n_eval=_ne[0], gamma=gam, iters=_nl)
+        _shp = U0.shape
+
+        def _Hinv(gr):
+            q = gr.reshape(-1).to(Ss[0].dtype).clone()
+            al = [0.0] * len(Ss)
+            for i_ in range(len(Ss) - 1, -1, -1):
+                al[i_] = Ro[i_] * float(Ss[i_].dot(q))
+                q.add_(Ys[i_], alpha=-al[i_])
+            r_ = q * gam
+            for i_ in range(len(Ss)):
+                be = Ro[i_] * float(Ys[i_].dot(r_))
+                r_.add_(Ss[i_], alpha=al[i_] - be)
+            return (r_ / gam).reshape(_shp).to(gr.dtype)    # H⁻¹ g / γ (γ = 처음 역헤시안 배율 -> 기본 배율 1)
+        with torch.no_grad():                               # 검산: 마지막 쌍의 할선 조건 H⁻¹ y = s
+            rec["secant_rel"] = float((_Hinv(Ys[-1].reshape(_shp)).reshape(-1) * gam - Ss[-1]).norm() / Ss[-1].norm())
+
+        def _fn(out):
+            o0 = out[0] if isinstance(out, (tuple, list)) else out
+            if o0.requires_grad:
+                o0 = o0 * 1.0
+                o0.register_hook(_Hinv)                     # 순전파 그대로, 출력 기울기만 H⁻¹ g / γ
+            return ((o0,) + tuple(out[1:])) if isinstance(out, (tuple, list)) else o0
+    else:
+        raise SystemExit(f"--out_precond {a.out_precond} 모름")
+    rec["sec"] = time.time() - _t0
+    _PRE_LOG.append(rec)
+    _PRE["fn"] = _fn
+    print(f"    [출력 전처리 {a.out_precond}] t={t} " + " ".join(
+        f"{k_} {v_:.4g}" if isinstance(v_, float) else f"{k_} {v_}" for k_, v_ in rec.items() if k_ not in ("t", "mode")), flush=True)
 
 
 # 앙상블 오프셋 (셀의 분수). 첫 번째는 원점이고 나머지는 고르게 흩어 놓는다.
@@ -5993,6 +6191,7 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
             raise SystemExit(f"[망 프레임별] 곡선 항목 {len(_CURVE) - _nc} 개 (1 이어야)")
         _ct, _ctr, _ctp = _CURVE.pop()
         _nlog = list(_NEWTON_LOG); del _NEWTON_LOG[:]
+        _plog = list(_PRE_LOG); del _PRE_LOG[:]
         _sec_fit = time.time() - _tf
         # E*: 같은 모델 상태에서 출력만 최적화 (spstick OV 와 같은 플래그로 잠시 바꿔 같은 _ov_frame 경로)
         Es, Es0, dstar, x_star = None, None, None, None
@@ -6016,6 +6215,8 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
                                   sig_max=float(_sF.max()), sig_min=float(_sF.min()), strain_mean=float((_sF - 1).abs().amax(-1).mean()))
         if _ndiff is not None:
             rec["node_vs_ustar"] = _ndiff
+        if _plog:
+            rec["precond"] = _plog[-1]
         if _alt is not None:
             rec["alt"] = _alt
             rec["alt_cfg"] = dict(rounds=int(os.environ.get("AF_ALT_ROUNDS", "40")), lbfgs=int(os.environ.get("AF_ALT_LBFGS", "10")),

@@ -8,6 +8,9 @@
 #        noin         = --ov_obj ip (바닥 입력 원래 그대로) -- 위 둘의 기준판
 #        p2g          = noin + --node_feat p2g (노드 입력의 입자 부분 = MPM P2G 질량·속도·F, 2 차 B-스플라인; 사용자 10-23)
 #        lattn        = noin + --gnn_layer lattn --attn_heads 8 (몸통 = 국소 어텐션 8 층 128; 사용자 10-23)
+#        prediag      = noin + --out_precond diag  (망 출력 u = z·sqrt(median d / d_i), d = M/h² + 탄성 헤시안 대각; 사용자 10-23)
+#        prems        = noin + --out_precond ms    (다중 해상도 계층 평활 u = (z + Σ 2^l I_l R_l z)/(1+Σ 2^l), 2h·4h·8h)
+#        prelbfgs     = noin + --out_precond lbfgs (프레임마다 노드 출력 L-BFGS 50 회 곡률 쌍 -> 출력 기울기에 H⁻¹/γ)
 #   PFNEW_LEN=N (기본 80): 짧은 시험 -- 프레임 N 개만 맞추고 렌더·psi 없이 끝 (출력 lbours/<디렉토리>_lenN/<T>)
 #   공통 명령 = lbours/pf3obj/{ip,nl2}/<T>/cmd.txt 의 명령에서 --net_inertial 을 빼고 (사용자 규칙: 새 실행에 관성 예측 더하기 금지)
 #   --ov_obj·바닥 입력·출력 경로만 바꾼 것. 출력 lbours/<디렉토리>/<T>, R2 r2:storage/result/anchorflow/lbours/<디렉토리>/<T>.
@@ -23,6 +26,9 @@ case $K in
   noin) DIR=pfip_noin; OBJ=ip; XF=""; XE="" ;;
   p2g) DIR=pfip_p2g; OBJ=ip; XF="--node_feat p2g"; XE="" ;;
   lattn) DIR=pfip_lattn; OBJ=ip; XF="--gnn_layer lattn --attn_heads 8"; XE="" ;;
+  prediag) DIR=pfip_prediag; OBJ=ip; XF="--out_precond diag"; XE="AF_PRE_HUTCH=${AF_PRE_HUTCH:-0}" ;;
+  prems) DIR=pfip_prems; OBJ=ip; XF="--out_precond ms"; XE="AF_PRE_MS_LEVELS=${AF_PRE_MS_LEVELS:-3}" ;;
+  prelbfgs) DIR=pfip_prelbfgs; OBJ=ip; XF="--out_precond lbfgs"; XE="AF_PRE_LBFGS=${AF_PRE_LBFGS:-50}" ;;
   *) echo "[오류] 판 $K"; exit 1 ;;
 esac
 NL=${PFNEW_LEN:-80}; [ "$NL" = 80 ] || DIR=${DIR}_len$NL
