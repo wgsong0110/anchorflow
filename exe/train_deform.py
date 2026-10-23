@@ -1274,7 +1274,15 @@ if os.environ.get("AF_OV_NODE_TGT"):
 _OV_CONT = None
 if os.environ.get("AF_OV_CONT"):
     _oc_p, _oc_s = os.environ["AF_OV_CONT"].rsplit(":", 1)
-    _OV_CONT = torch.load(_oc_p, map_location="cpu", weights_only=False)
+    if os.path.isdir(_oc_p):
+        # AF_ROLL_PART 조각 폴더 (c<끝 프레임>.pt, 프레임 순서대로 이어 붙인다) -- 잡이 끊긴 롤아웃 이어 돌리기 (A5, 10-23)
+        _oc_fs = sorted(glob.glob(os.path.join(_oc_p, "c[0-9]*.pt")))
+        _oc_parts = [torch.load(f_, map_location="cpu", weights_only=False) for f_ in _oc_fs]
+        _OV_CONT = {k_: torch.cat([q_[k_] for q_ in _oc_parts]) for k_ in ("pred", "v", "F")}
+        del _oc_parts
+        assert _OV_CONT["pred"].shape[0] >= int(_oc_s), ("AF_OV_CONT 조각이 모자란다", _OV_CONT["pred"].shape, _oc_s)
+    else:
+        _OV_CONT = torch.load(_oc_p, map_location="cpu", weights_only=False)
     _OV_CONT["s"] = int(_oc_s)
     print(f"[이어 굴리기] {_oc_p}: 프레임 1..{_OV_CONT['s']} 은 덤프 그대로, {_OV_CONT['s'] + 1} 부터 출력만 최적화", flush=True)
 _PIN = [None]              # (손잡이 노드 마스크, 명령 변위) -- 풀 학습 경로에서도 on_pin 이 쓰므로 여기서 먼저 만든다
@@ -8240,6 +8248,18 @@ def _rollout(d, t0, L, gsel=None):
                 _VDUMP.append(_S["v_last"].detach().float().cpu())
             if _FCUM[0] is not None:
                 _FDUMP.append(_FCUM[0].float().cpu() if os.environ.get("AF_ROLL_DUMP_F") == "32" else _FCUM[0].half().cpu())
+            # AF_ROLL_PART=폴더 (A5 이어 돌리기, 10-23): AF_ROLL_PART_EVERY 프레임마다 그 사이 프레임의 pred·v·F 를 조각
+            # c<끝 프레임>.pt 로 남긴다 (계산 불변). 끊기면 AF_OV_CONT=폴더:s 로 1..s 를 옮겨 적고 s+1 부터 이어 굴린다.
+            _rp = os.environ.get("AF_ROLL_PART")
+            if _rp:
+                _rk, _rn = int(os.environ.get("AF_ROLL_PART_EVERY", "10")), len(_ROLLDUMP)
+                _rf = os.path.join(_rp, f"c{_rn:05d}.pt")
+                if _rn % _rk == 0 and not os.path.exists(_rf) and len(_VDUMP) == _rn and len(_FDUMP) == _rn:
+                    os.makedirs(_rp, exist_ok=True)
+                    torch.save({"pred": torch.stack([a_ for a_, _ in _ROLLDUMP[_rn - _rk:]]),
+                                "v": torch.stack(_VDUMP[_rn - _rk:]), "F": torch.stack(_FDUMP[_rn - _rk:]).float()},
+                               _rf + ".tmp")
+                    os.replace(_rf + ".tmp", _rf)
             if _NODE_LAST[0] is not None:
                 _NODEDUMP.append(tuple(q_.cpu() for q_ in _NODE_LAST[0]))
             if _DDIAG is not None and _DDIAG_LAST[0] is not None:
