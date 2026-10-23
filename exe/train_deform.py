@@ -524,13 +524,16 @@ ap.add_argument("--ov_init_std", type=float, default=1e-3)
 ap.add_argument("--ov_vars", choices=["out", "net"], default="out",
                 help="--ov_roll 의 변수: out=노드 출력(출력만 최적화, 기본), net=망 파라미터 -- 같은 증분 포텐셜·장벽을 "
                      "프레임마다 망 파라미터로 내린다 (한 궤적 과적합; 파라미터는 프레임 사이에 이어진다)")
-ap.add_argument("--ov_obj", choices=["ip", "l2", "node", "newton", "nodeov", "nodestar"], default="ip",
+ap.add_argument("--ov_obj", choices=["ip", "l2", "node", "newton", "nodeov", "nodestar", "nodealt"], default="ip",
                 help="--ov_roll 의 프레임별 목적함수: ip=증분 포텐셜(기본), l2=다음 프레임 정답 위치와의 평균 L2 / EXT² (장벽 없음), "
                      "node=노드 출력을 다른 실행(출력만 최적화)의 노드 출력에 맞춘다 (AF_OV_NODE_TGT=그 롤아웃 덤프; 상태도 그 덤프로 매 프레임 맞춘다), "
                      "newton=뉴턴 목표 L2 (--ov_vars net 전용): 망 노드 변위 u 에서 증분 포텐셜의 감쇠 뉴턴 걸음 d=-(H+λI)⁻¹g (CG, 음곡률 직전까지) 로 "
                      "목표 u_t=sg(u+d), 손실 Σ M_i|u_i-u_t,i|²/ΣM_i (노드 질량 = 입자 질량의 barycentric 합) -- AF_OV_NEWTON_EVERY·_CG·_DAMP, "
                      "nodeov=출력만 최적화 덤프(AF_OVNET_REF 의 nodes)의 같은 프레임 노드 출력 u* 를 같은 손실로, 노드는 격자 좌표로 짝지어 둘 다 있는 노드만 (AF_OVNET_FIT 전용), "
-                     "nodestar=같은 손실인데 목표 u* 를 매 프레임 **모델 자신의 현재 상태**에서 출력만 최적화(L-BFGS AF_OVNET_ESTAR 회)로 먼저 구한 노드 출력으로 (AF_OVNET_FIT 전용, 사용자 10-23)")
+                     "nodestar=같은 손실인데 목표 u* 를 매 프레임 **모델 자신의 현재 상태**에서 출력만 최적화(L-BFGS AF_OVNET_ESTAR 회)로 먼저 구한 노드 출력으로 (AF_OVNET_FIT 전용, 사용자 10-23), "
+                     "nodealt=번갈아 (--ov_vars net, 사용자 10-23): 바퀴마다 지금 망 노드 출력 U 에서 노드 출력을 변수로 증분 포텐셜 L-BFGS AF_ALT_LBFGS(10) 회 "
+                     "-> 그 노드 출력을 목표로 망 Adam AF_ALT_ADAM(50) 회 (nodeov 와 같은 노드 질량 가중 L2) 를 AF_ALT_ROUNDS(40) 바퀴; "
+                     "L-BFGS 곡률 기록은 프레임 안 바퀴 사이에 잇고 변수 값은 매 바퀴 망 출력으로 다시 맞춘다, Adam 상태도 프레임 안에서 잇는다")
 ap.add_argument("--integrator", choices=["be", "midpoint"], default="be",
                 help="--ov_roll 의 시간 적분기: be=후퇴 오일러(기본, 프레임당 증분 포텐셜 한 번), midpoint=암시적 중점법 -- "
                      "같은 증분 포텐셜을 h/2 로 풀어 중점 y 를 구하고 x_{n+1}=2y-x_n, v_{n+1}=(4/h)(y-x_n)-v_n, "
@@ -1232,6 +1235,8 @@ _NODE_TGT = None           # --ov_obj node: 목표 롤아웃 덤프 (pred·v·F�
 # pred[t - t0] 로 (모델 상태가 덤프 상태와 갈라져도 목표는 덤프의 것). 없으면 기존 l2 그대로 (정답 다음 프레임)
 _L2_TGT = (torch.load(os.environ["AF_OV_L2_TGT"], map_location="cpu", weights_only=False)
            if os.environ.get("AF_OV_L2_TGT") else None)
+_ALT = {"U": None, "cap": None, "phase": None}   # --ov_obj nodealt: U=노드 출력 대신 쓸 변수, cap=망 노드 출력(훅이 잡음), phase=adam 이면 노드 L2
+_ALT_LOG = []              # --ov_obj nodealt: 바퀴별 기록 (_ovnet_fit 이 프레임마다 가져가고 비운다)
 _EIP_LAST = [None]         # _ov_once._fwd 의 증분 포텐셜 (목적함수 바꾸기 전 값) -- AF_OVNET_FIT 기록용
 _NODEOV_TGT = [None]       # --ov_obj nodeov: {"tp": 덤프 노드 위치, "td": 덤프 노드 변위, 짝·질량 캐시} -- _ovnet_fit 이 프레임마다 채운다
 _OVN_BAD = [None]          # --ov_obj newton --ov_vars out: 뉴턴 걸음 중 p·변수가 nan/inf 가 되면 사유 문자열 (_ovnet_fit 이 그 프레임에서 멈춘다)
@@ -3225,6 +3230,10 @@ if a.out_var or a.ov_roll > 0:
             if st.get("ov_opt") is None:
                 st["ov"] = [q for q in net.parameters() if q.requires_grad]
                 st["ov_opt"] = _mk_ov_opt(st["ov"])
+            if a.ov_obj == "nodealt":       # 번갈아: 망 출력을 잡아 두고, 변수 단계면 망 출력 대신 변수 U 를 쓴다
+                _ALT["cap"] = [o.detach().clone() for o in outs]
+                if _ALT["U"] is not None:
+                    return (tuple(_ALT["U"]) if isinstance(out, (tuple, list)) else _ALT["U"][0])
             return out
         if st.get("ov") is None or any(o is None for o in st["ov"]):   # _ov_fast 가 빈 자리만 만들어 둔 경우도
             st["ov"] = [o.detach().clone().requires_grad_(True) for o in outs]
@@ -4466,7 +4475,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             _mu1 = float(_mu1.float().mean()) if torch.is_tensor(_mu1) else float(_mu1)
             E = E + WF.barrier_energy(_c1c, _c1v, a.c1_barrier * _mu1, a.c1_jhat) / nrm
         _EIP_LAST[0] = E.detach()
-        if a.ov_obj in ("nodeov", "nodestar") and a.ov_vars == "net":   # 노드 출력 u* (nodeov: 덤프, nodestar: 이 상태의 E* 해) 를 노드 질량 가중 L2 로
+        if a.ov_vars == "net" and (a.ov_obj in ("nodeov", "nodestar") or (a.ov_obj == "nodealt" and _ALT["phase"] == "adam")):   # 노드 출력 u* (nodeov: 덤프, nodestar: 이 상태의 E* 해) 를 노드 질량 가중 L2 로
             _NT_ = _NODEOV_TGT[0]
             if _NT_ is None:
                 raise SystemExit("--ov_obj nodeov: 목표가 없다 (AF_OVNET_FIT 에서만)")
@@ -4639,6 +4648,70 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     _OVN_BAD[0] = f"뉴턴 걸음 {_k + 1}/{_nst} 에서 {'·'.join(_bad)} 가 nan/inf"
                     print(f"    [출력 뉴턴] t={t} {_OVN_BAD[0]} -- 이 프레임에서 멈춘다", flush=True)
                     break
+        elif a.ov_obj == "nodealt":
+            # **번갈아** (사용자 10-23): L-BFGS 조금(노드 출력 변수, 증분 포텐셜) -> Adam 으로 따라감(망 파라미터, 노드 질량 가중 L2) 반복
+            if a.ov_vars != "net" or _ENS_N[0] != 1 or a.fused or a.c1_barrier > 0:
+                raise SystemExit("--ov_obj nodealt 는 --ov_vars net, 격자 한 벌, --fused·--c1_barrier 없이")
+            _nr = int(os.environ.get("AF_ALT_ROUNDS", "40"))
+            _nl = int(os.environ.get("AF_ALT_LBFGS", "10"))
+            _na = int(os.environ.get("AF_ALT_ADAM", "50"))
+            _ALT["U"], _ALT["phase"], _ALT["cap"] = None, None, None
+            del _ALT_LOG[:]
+            try:
+                _fwd()                                 # 지금 망 노드 출력을 잡고 (훅), 망 Adam 을 만든다 (프레임마다 새로)
+                if _ALT["cap"] is None or st.get("ov_opt") is None:
+                    raise SystemExit("--ov_obj nodealt: 훅이 망 출력을 못 잡았다")
+                _U = [c.clone().requires_grad_(True) for c in _ALT["cap"]]
+                _me = os.environ.get("AF_OV_LBFGS_MAX_EVAL")
+                _lb = torch.optim.LBFGS(_U, lr=float(os.environ.get("AF_OV_LBFGS_LR", 1.0)), max_iter=max(_nl, 1),
+                                        max_eval=(int(_me) if _me else None), history_size=50,
+                                        tolerance_grad=float(a.ov_tol), tolerance_change=float(a.ov_tol),
+                                        line_search_fn="strong_wolfe")
+                for _r in range(_nr):
+                    # (1) 변수 = 지금 망 출력. 곡률 기록은 잇되, 시작점을 옮긴 걸음은 곡률 쌍으로 넣지 않는다
+                    #     (torch LBFGS 는 다음 step 첫 반복에서 s = d·t 로 쌍을 만든다 -> d=0, t=0 이면 ys=0 이라 갱신 생략)
+                    with torch.no_grad():
+                        for q, c in zip(_U, _ALT["cap"]):
+                            q.copy_(c)
+                    _sl = _lb.state.get(_lb._params[0])
+                    if _sl and "d" in _sl:
+                        _sl["d"] = torch.zeros_like(_sl["d"]); _sl["t"] = 0.0
+                    _ALT["U"], _ALT["phase"] = _U, "ip"
+                    _ne, _eb = [0], [None]
+
+                    def _clo():
+                        _lb.zero_grad(set_to_none=True)
+                        _Ec = _fwd()[2]
+                        if _ne[0] == 0:
+                            _eb[0] = float(_Ec)
+                        _ne[0] += 1
+                        _Ec.backward()
+                        return _Ec
+                    _lb.step(_clo)
+                    _Ea = float(_fwd()[2])             # L-BFGS 끝 변수의 증분 포텐셜 + 그 노드 출력 (목표)
+                    _NODEOV_TGT[0] = dict(tp=_DPN_LIVE[0][0].detach().float(), td=_DPN_LIVE[0][1][:, :3].detach().float())
+                    # (2) 망을 그 노드 출력으로 (Adam, 노드 질량 가중 L2)
+                    _ALT["U"], _ALT["phase"] = None, "adam"
+                    _l2b = None
+                    for _k in range(_na):
+                        _, _, E, _, _, _pt, _ = _fwd()
+                        if _k == 0:
+                            _l2b = float(E)
+                        if _CURVE is not None:
+                            _tr.append(float(E))
+                            _trp.append((float(_pt[0]), float(_pt[1]), float(_pt[3])))
+                        st["ov_opt"].zero_grad(set_to_none=True)
+                        E.backward()
+                        _ov_clip_grads(st)
+                        st["ov_opt"].step()
+                    _l2a = float(_fwd()[2])            # 따라간 뒤 목표-망 L2, 망 출력 증분 포텐셜(_EIP_LAST), 다음 바퀴 시작 출력(cap)
+                    _ALT_LOG.append(dict(r=_r, E_lbfgs_before=_eb[0], E_lbfgs_after=_Ea, lbfgs_evals=_ne[0],
+                                         lbfgs_hist=len((_lb.state.get(_lb._params[0]) or {}).get("old_dirs", [])),
+                                         l2_before=_l2b, l2_after=_l2a, E_net_after=float(_EIP_LAST[0])))
+                    if E0 is None:
+                        E0 = _ALT_LOG[-1]["E_lbfgs_before"]   # 처음 망 출력의 증분 포텐셜
+            finally:
+                _ALT["U"], _ALT["phase"] = None, None     # 끝 _fwd 는 망 출력, 목적함수 = 증분 포텐셜 (obj_last = 끝 망 출력 E)
         elif a.fused:
             # **커널 한 번 경로**: 구조를 한 번 만든 뒤 반복마다 커널만 돈다.
             _fwd()                      # 격자·변수·손잡이 마스크를 만든다
@@ -5822,6 +5895,7 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
                 _CURVE.pop()
             return _xs, _e0, _e1, _us, _npo
         _pre = None
+        _last_us = [None]
         if a.ov_obj == "nodestar":
             # 목표를 먼저: 이 프레임 모델 상태에서 출력만 최적화(E*) -> 그 노드 출력 u* 를 망이 노드 질량 가중 L2 로 따라간다
             if _nes <= 0:
@@ -5854,6 +5928,13 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
             print(f"    [출력 뉴턴] 프레임 {i + 1}/{L} nan/inf: {_why} -- 여기서 멈춘다", flush=True)
             L = i                                    # 덤프는 그 전 프레임까지
             break
+        _alt = None
+        if a.ov_obj == "nodealt":
+            _alt = list(_ALT_LOG); del _ALT_LOG[:]
+            _alt_dn = _DPN_LIVE[0][1][:, :3].detach().clone()     # 끝 망 노드 출력 (E* 해와 비교용)
+            _alt_np = _DPN_LIVE[0][0].detach().clone()
+            _alt_M = (_NODEOV_TGT[0] or {}).get("M"); _alt_ia = (_NODEOV_TGT[0] or {}).get("ia")
+            _NODEOV_TGT[0] = None
         _ndiff = None
         if a.ov_obj in ("nodeov", "nodestar"):
             _NT_ = _NODEOV_TGT[0]; _Mm = _NT_["M"]
@@ -5878,7 +5959,9 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
         # E*: 같은 모델 상태에서 출력만 최적화 (spstick OV 와 같은 플래그로 잠시 바꿔 같은 _ov_frame 경로)
         Es, Es0, dstar, x_star = None, None, None, None
         if _nes > 0:
-            x_star, Es0, Es, _, _ = _pre if _pre is not None else _estar()
+            _pe_ = _pre if _pre is not None else _estar()
+            x_star, Es0, Es = _pe_[0], _pe_[1], _pe_[2]
+            _last_us[0] = (_pe_[3], _pe_[4])
             dstar = float((xn - x_star).norm(dim=-1).mean()) / _ext
         gt = take(d["x"][t0 + i + 1], gsel)
         em = DM.frame_err(xn, gt, _ext)
@@ -5895,6 +5978,16 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
                                   sig_max=float(_sF.max()), sig_min=float(_sF.min()), strain_mean=float((_sF - 1).abs().amax(-1).mean()))
         if _ndiff is not None:
             rec["node_vs_ustar"] = _ndiff
+        if _alt is not None:
+            rec["alt"] = _alt
+            rec["alt_cfg"] = dict(rounds=int(os.environ.get("AF_ALT_ROUNDS", "40")), lbfgs=int(os.environ.get("AF_ALT_LBFGS", "10")),
+                                  adam=int(os.environ.get("AF_ALT_ADAM", "50")))
+            if x_star is not None:                   # 끝 망 노드 출력 vs E* 해 노드 출력 (같은 상태 같은 격자)
+                _us_, _unp_ = _last_us[0]
+                if _alt_M is not None and _us_.shape == _alt_dn.shape and float((_unp_ - _alt_np).abs().max()) < 1e-5:
+                    _du_ = (_alt_dn - _us_)[_alt_ia]
+                    rec["node_vs_ustar"] = dict(rms=float(((_du_ ** 2).sum(-1) * _alt_M).sum().div(_alt_M.sum()).sqrt()) / _ext,
+                                                ustar_rms=float(((_us_[_alt_ia] ** 2).sum(-1) * _alt_M).sum().div(_alt_M.sum()).sqrt()) / _ext)
         if _nlog:
             rec["newton"] = dict(n_solves=len(_nlog), every=int(os.environ.get("AF_OV_NEWTON_EVERY", "50")),
                                  **(dict(mode="out_steps", steps=int(os.environ.get("AF_OV_NEWTON_STEPS", "40")),
@@ -5926,6 +6019,8 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
               + f"  위치오차 {100 * em:.3f}%" + (f" (E*해 {100 * rec['pos_err_star']:.3f}%)" if x_star is not None else "")
               + (f"  모델-출력만최적화 {100 * rec['dist_model_ref']:.3f}%" if _REF is not None else "")
               + (f"  노드-u* {100 * _ndiff['rms']:.4f}% (u* 크기 {100 * _ndiff['ustar_rms']:.3f}%) 짝 {_ndiff['n_match']}/{_ndiff['n_model']} (덤프 {_ndiff['n_tgt']}, 질량 {100 * _ndiff['mass_frac']:.1f}%)" if _ndiff is not None else "")
+              + (f"  번갈아 {len(_alt)} 바퀴: 첫 바퀴 L-BFGS E {_alt[0]['E_lbfgs_before']:.4e}->{_alt[0]['E_lbfgs_after']:.4e} 끝 바퀴 {_alt[-1]['E_lbfgs_before']:.4e}->{_alt[-1]['E_lbfgs_after']:.4e}"
+                 f" 끝 L2 rms {100 * _alt[-1]['l2_after'] ** 0.5 / _ext:.4f}%" + (f" 노드-u* {100 * rec['node_vs_ustar']['rms']:.4f}%" if 'node_vs_ustar' in rec else "") if _alt else "")
               + f"  det 최소 {rec['F_stats']['det_min']:.3f}"
               + f"  맞춤 {_sec_fit:.0f} s 프레임 {rec['sec']:.0f} s 누적 {time.time() - _tw:.0f} s", flush=True)
     if len(_recs) == L or (_OVN and _recs and _recs[-1].get("nan") and L > 0):
