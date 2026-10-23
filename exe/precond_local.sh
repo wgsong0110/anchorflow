@@ -143,8 +143,30 @@ EOM
   touch $D/PRECOND_CURVE_DONE
 }
 done_r2(){ [ -n "$(rclone lsf $RL/$1/$X/.done 2>/dev/null)" ]; }
+smoke(){ # 짧은 시험 2 프레임 세 판이 R2 에 다 있으면 기준판 같은 반복 비교를 한 번 (outputs.md·알림)
+  [ -f $D/PRECOND_SMOKE_DONE ] && return 0
+  for k in prediag prems prelbfgs; do done_r2 ${DIR[$k]}_len2 || return 0; done
+  for k in noin prediag prems prelbfgs; do d2=${DIR[$k]}; [ $k = noin ] || d2=${d2}_len2
+    rclone copyto $RL/$d2/$X/records.json $T/smoke_$k.json -q || { fail "짧은 시험 기록 $k"; return 1; }; done
+  S=$(cd $REPO && python3 exe/precond_smoke_sum.py $T/smoke_noin.json "${NM[prediag]}=$T/smoke_prediag.json" \
+       "${NM[prems]}=$T/smoke_prems.json" "${NM[prelbfgs]}=$T/smoke_prelbfgs.json") || { fail "짧은 시험 요약"; return 1; }
+  echo "$S" | tee $RR/precond_smoke_summary.txt
+  rclone copy $RR/precond_smoke_summary.txt r2:storage/result/anchorflow/precond -q
+  cat >> $RR/outputs.md <<EOM
+
+## $(date +%F) 출력 전처리 세 판 짧은 시험 (L000 2 프레임, 커밋 f5ad7ab)
+- Path: $RR/precond_smoke_summary.txt, R2 $RL/pfip_{prediag,prems,prelbfgs}_len2/L000/ (records.json, frames/)
+- 반복별 E/E* (괄호 = 기준판 pfip_noin 같은 프레임):
+\`\`\`
+$S
+\`\`\`
+EOM
+  touch $D/PRECOND_SMOKE_DONE
+  notify "출력 전처리 짧은 시험 끝" "$(echo "$S" | grep -a '끝 E/E\*' | sed 's/,.*//' | tr -s ' ' | head -6 | tr '\n' ' ')" --tags white_check_mark
+}
 while true; do
   left=0; FAILED=0
+  smoke
   for k in $KS; do
     [ -f $D/PRECOND_${k}_DONE ] && continue
     if done_r2 ${DIR[$k]} && done_r2 pfip_noin; then post $k; [ -f $D/PRECOND_${k}_DONE ] || left=$((left+1)); else left=$((left+1)); fi
