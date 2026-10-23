@@ -25,6 +25,7 @@ ap.add_argument("--out", required=True, help="npz (그림은 같은 이름 .png)
 ap.add_argument("--stall", type=int, default=-1)
 ap.add_argument("--riem_eps", type=float, default=1e-2)
 ap.add_argument("--cg", type=int, default=3000)
+ap.add_argument("--plot_only", action="store_true", help="계산은 건너뛰고 저장된 --out npz 로 그림만")
 ap.add_argument("--font", default="/home/dkta/.fonts/NotoSansCJKkr-Regular.otf")
 a = ap.parse_args()
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -96,17 +97,21 @@ def lam_max(Hv, n):
 
 def cg(Av, b, maxit, tol=1e-8):
     x = torch.zeros_like(b); r = b.clone(); p = r.clone(); rr = (r * r).sum(); nb = b.norm()
+    if float(nb) == 0.0:                                             # 정답이 안 움직인 프레임: g = 0
+        return x, 0, 0.0
     for k in range(maxit):
         Ap = Av(p); al = rr / (p * Ap).sum().clamp_min(1e-300)
         x += al * p; r -= al * Ap
         rr2 = (r * r).sum()
         if rr2.sqrt() < tol * nb:
             break
-        p = r + (rr2 / rr) * p; rr = rr2
+        p = r + (rr2 / rr.clamp_min(1e-300)) * p; rr = rr2
     return x, k + 1, float(rr2.sqrt() / nb)
 
 
 out = []
+if a.plot_only:
+    T = 0
 print("t | 상태 | f | ‖g‖ | √(gᵀG⁻¹g) | ε(기록) | λmax 재계산·ε/0.01 비 | ‖G⁻¹g‖ | J_c 최소 | CG 반복·상대잔차", flush=True)
 with torch.no_grad():
     for t in range(1, T + 1):
@@ -130,11 +135,13 @@ with torch.no_grad():
             print(f"{t:2d} | {'처음' if s_ == 0 else '끝  '} | {f:.4e} | {row[3]:.4e} | {rn:.4e} | {eps:.3e} | "
                   f"{lm:.3e} {lm * a.riem_eps / eps if s_ == 0 else float('nan'):.3f} | {row[7]:.3e} | {row[8]:.2e} | {k} {rel:.1e}",
                   flush=True)
-O = np.array(out)
-np.savez(a.out, rows=O, curve=curve, metrics=met, L=L,
+O = np.load(a.out)["rows"] if a.plot_only else np.array(out)
+T = Y.shape[0]
+if not a.plot_only:
+  np.savez(a.out, rows=O, curve=curve, metrics=met, L=L,
          cols=np.array(["t", "state(0 처음,1 끝)", "f", "g_euc", "g_riem", "eps", "lmax_recomp", "Ginv_g_norm",
                         "cellJ_min", "cg_iters", "cg_rel"]))
-print(f"[저장] {a.out}", flush=True)
+  print(f"[저장] {a.out}", flush=True)
 
 # ---------------------------------------------------------------- 그림
 import matplotlib                                                    # noqa: E402
