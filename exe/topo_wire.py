@@ -243,6 +243,23 @@ Z = np.load(a.nodes)
 NODES = torch.as_tensor(Z["nodes"], device=dev)                      # [T+1,M,3] (정규화)
 SF = torch.as_tensor(Z["sface"], device=dev).long()
 SO = torch.as_tensor(Z["sopp"], device=dev).long()
+# 관측이 약한 노드 (노드별 Σλ² < 1e-3: 그 노드에 거의 무게가 없는 입자뿐) 는 입자 위치로 되찾을 수 없다
+# (ΛᵀΛ 의 영공간 쪽) -> 겹침에서 뺀다. 나머지 노드만으로 이동량·셀 det 를 다시 보고
+_h, _rows, _lam, _Xn, _cells = build_mesh()
+_dg = torch.zeros(_Xn.shape[0], device=dev).index_add_(0, _rows.reshape(-1), _lam.reshape(-1) ** 2)
+GOOD = _dg >= 1e-3
+assert int(_cells.shape[0]) == int(Z["cells"].shape[0])
+cgood = GOOD[_cells].all(1)
+print(f"[관측] 약한 노드 {int((~GOOD).sum())} / {GOOD.numel()} 제외, 그 노드가 없는 사면체 {int(cgood.sum())} / {cgood.numel()}", flush=True)
+L_ = float(Z["L"])
+_X0 = NODES[0][_cells].double()
+_V0 = torch.linalg.det((_X0[:, 1:] - _X0[:, :1]).transpose(1, 2))
+for t in range(1, NODES.shape[0]):
+    dn = (NODES[t] - NODES[t - 1]).norm(dim=1)[GOOD]
+    Xc = NODES[t][_cells].double()
+    Jc = torch.linalg.det((Xc[:, 1:] - Xc[:, :1]).transpose(1, 2)) / _V0
+    print(f"  [좋은 노드] t={t:2d} 이동 평균 {100 * float(dn.mean()) / L_:.5f} 최대 {100 * float(dn.max()) / L_:.4f} %L  "
+          f"셀 det 최소 (좋은 셀) {float(Jc[cgood].min()):.4f} (전체 {float(Jc.min()):.4f}, ≤0 셀 {int((Jc <= 0).sum())})", flush=True)
 R = np.load(a.res)
 AY = np.concatenate([AX["G"][None].astype(np.float32), R["traj"].astype(np.float32)], 0)   # rep_render 와 같음
 TR = D["traj"]
@@ -272,7 +289,9 @@ with torch.no_grad():
         vis = ((eye[None] - ctr) * n).sum(1) > 0
         fv = SF[vis]
         ed = torch.unique(torch.cat([fv[:, [0, 1]], fv[:, [1, 2]], fv[:, [0, 2]]]).sort(1).values, dim=0)
+        ed = ed[GOOD[ed].all(1)]
         vv = torch.unique(fv)
+        vv = vv[GOOD[vv]]
         nvis.append((int(vis.sum()), ed.shape[0], vv.numel()))
         uv = project(NODES[t]).cpu().numpy()
         # 투영 확인: 입자 투영이 렌더의 흰 배경이 아닌 곳에 떨어지는 비율

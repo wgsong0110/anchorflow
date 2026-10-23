@@ -160,7 +160,7 @@ ax[0].semilogy(ts, f0, "o-", ms=3, color="#1f5fbf", label="프레임 처음")
 ax[0].semilogy(ts, f1, "s-", ms=3, color="#d9480f", label="프레임 끝")
 ax[0].set_title("목적함수 (입자 L2 평균) -- 프레임별")
 ax[0].set_xlabel("프레임"); ax[0].set_ylabel("입자 L2")
-sel = sorted(set([1, 10, a.stall - 2, a.stall, a.stall + 2, 30, T] if a.stall > 0 else [1, 10, 20, 30, T]))
+sel = sorted(set([3, 10, a.stall - 2, a.stall, a.stall + 2, 30, T] if a.stall > 0 else [3, 10, 20, 30, T]))
 cm = plt.get_cmap("viridis")
 for i, t in enumerate([t for t in sel if 1 <= t <= T]):
     cv = curve[curve[:, 0] == t]
@@ -169,10 +169,15 @@ ax[1].set_title("프레임 안 반복별 목적함수 (처음 값으로 나눔)"
 ax[1].set_xlabel("반복"); ax[1].set_ylabel("L2 / 처음 L2")
 ax[2].semilogy(ts, S0[:, 3], "o-", ms=3, color="#1f5fbf", label="유클리드 ‖g‖ (처음)")
 ax[2].semilogy(ts, S1[:, 3], "o--", ms=3, color="#1f5fbf", alpha=0.6, label="유클리드 ‖g‖ (끝)")
-ax[2].semilogy(ts, S0[:, 4], "s-", ms=3, color="#d9480f", label="리만 √(gᵀG⁻¹g) (처음)")
-ax[2].semilogy(ts, S1[:, 4], "s--", ms=3, color="#d9480f", alpha=0.6, label="리만 √(gᵀG⁻¹g) (끝)")
+ax[2].semilogy(ts, S0[:, 4], "s-", ms=3, color="#d9480f", label=r"리만 $\sqrt{g^\top G^{-1} g}$ (처음)")
+ax[2].semilogy(ts, S1[:, 4], "s--", ms=3, color="#d9480f", alpha=0.6, label=r"리만 $\sqrt{g^\top G^{-1} g}$ (끝)")
+ax[2].semilogy(ts, S0[:, 7], "^-", ms=3, color="#666666", label=r"riem 걸음 방향 $\|G^{-1} g\|$ (처음)")
+axe = ax[2].twinx()
+axe.semilogy(ts, S0[:, 5], "v:", ms=3, color="#2b8a3e", label=r"감쇠 $\varepsilon$ (실행 기록, 오른쪽 축)")
+axe.set_ylabel(r"감쇠 $\varepsilon = 0.01\,\lambda_{\max}$", color="#2b8a3e")
+axe.legend(fontsize=9, loc="lower right")
 ax[2].set_title("기울기 크기 (변수 = 메쉬 꼭짓점 변위, G = 셀 det 로그 장벽 GN + εI)")
-ax[2].set_xlabel("프레임")
+ax[2].set_xlabel("프레임"); ax[2].set_ylabel("기울기 크기")
 for k in (0, 2):
     if a.stall > 0:
         ax[k].axvline(a.stall, color="red", lw=1.5, ls=":")
