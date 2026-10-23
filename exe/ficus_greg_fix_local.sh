@@ -5,8 +5,9 @@ set -u
 M=/home/wgsong/workspace/execute/anchorflow/master
 B=/home/wgsong/workspace/result/anchorflow/lbours/ficus_v0_greg_fix; RES=/home/wgsong/workspace/result/anchorflow
 LOG=/tmp/gregfix_local.log
+START=/tmp/gregfix_local.start; touch $START   # 이 시각 전의 실패 표식(이전 시도)은 무시
 while true; do
-  if [ -f $B/GREGFIX_FAIL ]; then
+  if [ -n "$(find $B -maxdepth 1 -name GREGFIX_FAIL -newer $START 2>/dev/null)" ]; then
     notify "ficus 로컬 변형 수정판 실패" "$(tail -1 $B/GREGFIX_FAIL)" --priority high --session anchorflow; exit 1; fi
   [ -f $B/GREGFIX_CLUSTER_DONE ] && break
   sleep 300
