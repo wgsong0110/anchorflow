@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import torch                                                     # noqa: E402
 from anchorflow import simplex as SX                             # noqa: E402
 from anchorflow import phys_resid                                # noqa: E402
-from anchorflow.skin import gregory_skin                         # noqa: E402
+from anchorflow import skin as SK                                # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--dump", required=True)
@@ -31,7 +31,10 @@ ap.add_argument("--hz_ratio", type=float, default=1.0 / 6 ** 0.5)
 ap.add_argument("--dt", type=float, default=0.04)
 ap.add_argument("--threads", type=int, default=8)
 ap.add_argument("--out", required=True)
+ap.add_argument("--skin", choices=["v0", "fix"], default="v0",
+                help="v0 = 옛 구현(du = ΣW U, ficus_v0_greg 덤프), fix = 고친 로컬 변형(λ' = λ + W(ρ) − W(ρ_ref), x' = Σλ'Y; ficus_v0_greg_fix)")
 a = ap.parse_args()
+gregory_skin = SK.gregory_skin_v0 if a.skin == "v0" else SK.gregory_skin
 torch.set_num_threads(a.threads)
 torch.set_grad_enabled(False)
 dt64 = torch.float64
@@ -95,6 +98,7 @@ for t in range(a.t1):
         if k == "c_both":
             rec["chk_x_maxdiff"] = float((x + du - D["pred"][t].to(f32)).abs().max())
             rec["chk_F_maxdiff"] = float((F2 - D["F"][t].to(f32)).abs().max())
+            rec["chk_F_frac_gt1e-3"] = float(((F2 - D["F"][t].to(f32)).abs().flatten(1).max(1).values > 1e-3).float().mean())
             Dc = Du
     dub, Dub = bary(x, npos, rows, U)
     rec["d_bary"] = {"dE_el": E_el((I3 + Dub) @ F) - E0, "Du_med": float(Dub.flatten(1).norm(dim=-1).median()),
@@ -111,6 +115,6 @@ for t in range(a.t1):
     print(f"t={t:2d} 노드위치차 {pdiff:.1e} | E_el(상태) {E0:.4e} | ΔE_el a(U만) {rec['a_U_only']['dE_el']:+.4e} "
           f"b(ρ만) {rec['b_rho_only']['dE_el']:+.4e} c(둘다) {rec['c_both']['dE_el']:+.4e} d(bary) {rec['d_bary']['dE_el']:+.4e} "
           f"| |ρ_raw|max {rec['rho_raw_absmax']:.1e} | c-a ∇u 최대차 {rec['c_minus_a_Du_max']:.1e} "
-          f"| ΔE {rec['dE']:+.4e} = 로컬 {rec['dE_loc']:+.4e} + 글로벌 {rec['dE_glob']:+.4e} | 검산 x {rec['chk_x_maxdiff']:.1e} F {rec['chk_F_maxdiff']:.1e}", flush=True)
+          f"| ΔE {rec['dE']:+.4e} = 로컬 {rec['dE_loc']:+.4e} + 글로벌 {rec['dE_glob']:+.4e} | 검산 x {rec['chk_x_maxdiff']:.1e} F {rec['chk_F_maxdiff']:.1e} (차>1e-3 입자 비율 {rec['chk_F_frac_gt1e-3']:.1e})", flush=True)
     json.dump(rows_out, open(a.out, "w"), ensure_ascii=False, indent=1)
 print("GREG_SPLIT_DONE", flush=True)
