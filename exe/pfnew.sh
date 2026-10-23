@@ -1,0 +1,69 @@
+#!/bin/bash
+# 망 파라미터 프레임별 최적화 새 판 다섯 (사용자 10-23): 맞춤 -> 3DGS 렌더 -> 탄성 에너지 색 -> R2 통째 (한 궤적).
+#   bash exe/pfnew.sh <판> <궤적 L000|0004> <GPU>
+#   판:  nodestar     = --ov_obj nodestar (매 프레임 모델 상태 L-BFGS 500 해 u* 를 노드 L2 로 따라가기)
+#        nodealt      = --ov_obj nodealt  (L-BFGS 10 -> Adam 50 을 40 바퀴)
+#        floorpe      = --ov_obj ip + --bc_feat distpe (바닥 부호 거리 + sin/cos, K=--bc_pe 6)
+#        floorcontact = --ov_obj ip + --bc_feat contact (접촉 셀 꼭짓점만 바닥 정보)
+#        noin         = --ov_obj ip (바닥 입력 원래 그대로) -- 위 둘의 기준판
+#   공통 명령 = lbours/pf3obj/{ip,nl2}/<T>/cmd.txt 의 명령에서 --net_inertial 을 빼고 (사용자 규칙: 새 실행에 관성 예측 더하기 금지)
+#   --ov_obj·바닥 입력·출력 경로만 바꾼 것. 출력 lbours/<디렉토리>/<T>, R2 r2:storage/result/anchorflow/lbours/<디렉토리>/<T>.
+#   이어 돌기: AF_OVNET_FIT 의 frames/frame_XX.pt (다시 띄우면 마지막 프레임 다음부터). 끝 표식 <출력>/.done
+set -u
+K=${1:?판}; T=${2:?궤적}; G=${3:?GPU}
+W=/home/dkta/work; WT=$(cd "$(dirname "$0")/.." && pwd); C=$(cd $WT && git rev-parse --short HEAD)
+case $K in
+  nodestar) DIR=nodestar; OBJ=nodestar; XF=""; XE="" ;;
+  nodealt) DIR=nodealt; OBJ=nodealt; XF=""; XE="AF_ALT_ROUNDS=${AF_ALT_ROUNDS:-40} AF_ALT_LBFGS=${AF_ALT_LBFGS:-10} AF_ALT_ADAM=${AF_ALT_ADAM:-50}" ;;
+  floorpe) DIR=pfip_floorpe; OBJ=ip; XF="--bc_feat distpe --bc_pe 6"; XE="" ;;
+  floorcontact) DIR=pfip_floorcontact; OBJ=ip; XF="--bc_feat contact"; XE="" ;;
+  noin) DIR=pfip_noin; OBJ=ip; XF=""; XE="" ;;
+  *) echo "[오류] 판 $K"; exit 1 ;;
+esac
+O=$W/lbours/$DIR/$T; R=r2:storage/result/anchorflow/lbours/$DIR/$T; mkdir -p $O
+S=$W/lbours/spstick; NS=$W/lbours/lego_psi_spstick; WP=$W/wt/psi_d993fb5; RANGE=$W/lbours/lego_psi/range.json
+gt_of(){ [ $1 = L000 ] && echo $W/lbdata/test_low/L000 || echo $W/lbdata/test/$1; }
+pt_of(){ [ $1 = L000 ] && echo $W/lbpt/test_low/L000.pt || echo $W/lbpt/test/$1.pt; }
+set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; set -u
+export PYTHONUTF8=1 OMP_NUM_THREADS=4 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True PATH=$HOME/bin:$PATH
+up(){ rclone copy $O $R -q; }
+echo "[시작] $K $T GPU$G 커밋 $C $(date '+%F %T') 노드 $(hostname)"
+nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader | tr '\n' ' '; echo
+[ -f $O/.done ] && { echo "[끝나 있음] $O/.done"; exit 0; }
+# 1) 맞춤 (기준 명령 = pf3obj ip 명령; --net_inertial 빼고 --ov_obj·바닥 입력·경로만 바꾼다)
+BASE=$(sed -n 's/^\[실행 명령[^]]*\] //p' $W/lbours/pf3obj/ip/$T/cmd.txt | head -1)
+[ -n "$BASE" ] || { echo "[오류] 기준 명령 없음"; exit 1; }
+CMD=$(sed -e "s#/home/dkta/work/lbours/pf3obj/ip/$T#$O#g" -e "s#r2:storage/result/anchorflow/lbours/pf3obj/ip/$T#$R#g" \
+          -e "s/CUDA_VISIBLE_DEVICES=[0-9]*/$XE CUDA_VISIBLE_DEVICES=$G/" -e 's/ --net_inertial / /' \
+          -e "s/ --ov_obj ip / --ov_obj $OBJ /" -e "s# --bc_stick_xn # --bc_stick_xn $XF #" <<<"$BASE" | tr -s ' ')
+grep -q -- "--net_inertial" <<<"$CMD" && { echo "[오류] --net_inertial 이 남았다"; exit 1; }
+grep -q -- "--ov_obj $OBJ " <<<"$CMD" || { echo "[오류] --ov_obj 바꾸기 실패"; exit 1; }
+[ -z "$XF" ] || grep -q -- "$XF" <<<"$CMD" || { echo "[오류] 바닥 입력 넣기 실패"; exit 1; }
+echo "[기준] $BASE" > $O/cmd_base.txt
+echo "[실행 명령 $(date '+%F_%T') 커밋 $C] $CMD" >> $O/cmd.txt
+echo "[명령] $CMD"
+if [ ! -f $O/roll_net.pt ]; then
+  ( cd $WT && $CMD >> $O/run.log 2>&1 < /dev/null )
+  grep -q OVNET_FIT_DONE $O/run.log || { echo "[오류] 맞춤 안 끝남"; tail -5 $O/run.log; up; exit 1; }
+fi
+up
+# 2) 3DGS 렌더 (pf3obj.sh render 와 같은 명령)
+cd $WT
+[ -f $O/h5_net/meta.json ] || python -u exe/lb_roll_to_h5.py --dump $O/roll_net.pt --traj $(gt_of $T) --out $O/h5_net > $O/h5_net.log 2>&1
+[ -f $O/net.mp4 ] || CUDA_VISIBLE_DEVICES=$G python -u exe/lb_render.py --sim $O/h5_net --config $W/lbdata/config.json --shape lego --out $O/net.mp4 > $O/r_net.log 2>&1 < /dev/null
+[ -f $O/net.mp4 ] || { echo "[오류] 렌더"; up; exit 1; }
+up
+# 3) 탄성 에너지 색 (pf3obj.sh psi 와 같은 명령, 고정 범위)
+D=$O/psi; mkdir -p $D
+( cd $WP && { [ -f $D/col_$K.npy ] || CUDA_VISIBLE_DEVICES=$G python -u exe/psi_color_lb.py --gt_dir $(gt_of $T) --pt $(pt_of $T) --dump sp=$S/roll_ov_$T.pt \
+      --dump $K=$O/roll_net.pt --out $D --eps 1e-3 --q 1 99 --cmap turbo --range $RANGE --stats_name defstats_$T.txt --stats_frames 1 40 80 > $D/psi_color.log 2>&1 < /dev/null; }
+  grep -q PSI_COLOR_DONE $D/psi_color.log || { tail -5 $D/psi_color.log; exit 1; }
+  [ -f $D/h5_$K/meta.json ] || python -u exe/lb_roll_to_h5.py --dump $O/roll_net.pt --traj $(gt_of $T) --out $D/h5_$K > $D/h5_$K.log 2>&1
+  [ -f $D/psi_${K}_lego.mp4 ] || CUDA_VISIBLE_DEVICES=$G python -u exe/lb_render.py --sim $D/h5_$K --config $W/lbdata/config.json --shape lego \
+      --colors $D/col_$K.npy --out $D/psi_${K}_lego.mp4 > $D/r_$K.log 2>&1 < /dev/null
+  [ -f $D/psi_${K}_lego.mp4 ] ) || { echo "[오류] psi"; up; exit 1; }
+for n in gt sp; do cp $NS/$T/psi_${n}_lego.mp4 $D/psi_${n}_lego.mp4; done; cp $NS/$T/range.json $D/range_spstick.json
+cat $D/defstats_$T.txt
+touch $O/.done; up
+rclone check $O $R --one-way --size-only -q && echo "[R2 대조] 전부 올라감"
+echo "PFNEW_DONE $K $T $(date '+%F %T')"

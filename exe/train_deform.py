@@ -524,12 +524,13 @@ ap.add_argument("--ov_init_std", type=float, default=1e-3)
 ap.add_argument("--ov_vars", choices=["out", "net"], default="out",
                 help="--ov_roll 의 변수: out=노드 출력(출력만 최적화, 기본), net=망 파라미터 -- 같은 증분 포텐셜·장벽을 "
                      "프레임마다 망 파라미터로 내린다 (한 궤적 과적합; 파라미터는 프레임 사이에 이어진다)")
-ap.add_argument("--ov_obj", choices=["ip", "l2", "node", "newton", "nodeov"], default="ip",
+ap.add_argument("--ov_obj", choices=["ip", "l2", "node", "newton", "nodeov", "nodestar"], default="ip",
                 help="--ov_roll 의 프레임별 목적함수: ip=증분 포텐셜(기본), l2=다음 프레임 정답 위치와의 평균 L2 / EXT² (장벽 없음), "
                      "node=노드 출력을 다른 실행(출력만 최적화)의 노드 출력에 맞춘다 (AF_OV_NODE_TGT=그 롤아웃 덤프; 상태도 그 덤프로 매 프레임 맞춘다), "
                      "newton=뉴턴 목표 L2 (--ov_vars net 전용): 망 노드 변위 u 에서 증분 포텐셜의 감쇠 뉴턴 걸음 d=-(H+λI)⁻¹g (CG, 음곡률 직전까지) 로 "
                      "목표 u_t=sg(u+d), 손실 Σ M_i|u_i-u_t,i|²/ΣM_i (노드 질량 = 입자 질량의 barycentric 합) -- AF_OV_NEWTON_EVERY·_CG·_DAMP, "
-                     "nodeov=출력만 최적화 덤프(AF_OVNET_REF 의 nodes)의 같은 프레임 노드 출력 u* 를 같은 손실로, 노드는 격자 좌표로 짝지어 둘 다 있는 노드만 (AF_OVNET_FIT 전용)")
+                     "nodeov=출력만 최적화 덤프(AF_OVNET_REF 의 nodes)의 같은 프레임 노드 출력 u* 를 같은 손실로, 노드는 격자 좌표로 짝지어 둘 다 있는 노드만 (AF_OVNET_FIT 전용), "
+                     "nodestar=같은 손실인데 목표 u* 를 매 프레임 **모델 자신의 현재 상태**에서 출력만 최적화(L-BFGS AF_OVNET_ESTAR 회)로 먼저 구한 노드 출력으로 (AF_OVNET_FIT 전용, 사용자 10-23)")
 ap.add_argument("--integrator", choices=["be", "midpoint"], default="be",
                 help="--ov_roll 의 시간 적분기: be=후퇴 오일러(기본, 프레임당 증분 포텐셜 한 번), midpoint=암시적 중점법 -- "
                      "같은 증분 포텐셜을 h/2 로 풀어 중점 y 를 구하고 x_{n+1}=2y-x_n, v_{n+1}=(4/h)(y-x_n)-v_n, "
@@ -4465,7 +4466,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             _mu1 = float(_mu1.float().mean()) if torch.is_tensor(_mu1) else float(_mu1)
             E = E + WF.barrier_energy(_c1c, _c1v, a.c1_barrier * _mu1, a.c1_jhat) / nrm
         _EIP_LAST[0] = E.detach()
-        if a.ov_obj == "nodeov" and a.ov_vars == "net":       # 출력만 최적화 덤프의 같은 프레임 노드 출력 u* 를 노드 질량 가중 L2 로
+        if a.ov_obj in ("nodeov", "nodestar") and a.ov_vars == "net":   # 노드 출력 u* (nodeov: 덤프, nodestar: 이 상태의 E* 해) 를 노드 질량 가중 L2 로
             _NT_ = _NODEOV_TGT[0]
             if _NT_ is None:
                 raise SystemExit("--ov_obj nodeov: 목표가 없다 (AF_OVNET_FIT 에서만)")
@@ -5821,6 +5822,12 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
                 _CURVE.pop()
             return _xs, _e0, _e1, _us, _npo
         _pre = None
+        if a.ov_obj == "nodestar":
+            # 목표를 먼저: 이 프레임 모델 상태에서 출력만 최적화(E*) -> 그 노드 출력 u* 를 망이 노드 질량 가중 L2 로 따라간다
+            if _nes <= 0:
+                raise SystemExit("--ov_obj nodestar 는 AF_OVNET_ESTAR > 0 이 필요하다")
+            _pre = _estar()
+            _NODEOV_TGT[0] = dict(tp=_pre[4].float(), td=_pre[3].float())
         if a.ov_obj == "nodeov":
             if _REF is None or _REF.get("nodes") is None:
                 raise SystemExit("--ov_obj nodeov 는 AF_OVNET_REF 덤프에 nodes 가 필요하다")
@@ -5848,7 +5855,7 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
             L = i                                    # 덤프는 그 전 프레임까지
             break
         _ndiff = None
-        if a.ov_obj == "nodeov":
+        if a.ov_obj in ("nodeov", "nodestar"):
             _NT_ = _NODEOV_TGT[0]; _Mm = _NT_["M"]
             _du_ = _DPN_LIVE[0][1][:, :3].detach()[_NT_["ia"]] - _NT_["td"][_NT_["ib"]]
             _ndiff = dict(rms=float(((_du_ ** 2).sum(-1) * _Mm).sum().div(_Mm.sum()).sqrt()) / _ext,
