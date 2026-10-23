@@ -140,6 +140,13 @@ json.dump(out, open(sys.argv[1], "w"), ensure_ascii=False)
 PY
 # 3d) 스텝별 탄성 에너지 변화의 로컬/글로벌 분해 (고친 스키닝; CPU)
 SP=$AN/split_el; mkdir -p $SP
+if ! grep -q GREG_SPLIT_DONE $SP/run.out 2>/dev/null; then
+  ts=$(date +%m%d_%H%M); for f in run.out greg_split_el.json; do [ -f $SP/$f ] && mv $SP/$f $SP/$f.partial_$ts; done
+  # 시험: 노드 집합이 바뀐 스텝(78~80) 먼저
+  python -u exe/greg_split_el.py --skin fix --dump $O/roll_ov.pt --data $PT --t0 78 --t1 81 --out $SP/check_t78_80.json --threads 8 > $SP/check_t78_80.out 2>&1
+  grep -q GREG_SPLIT_DONE $SP/check_t78_80.out || fail "분해 시험(78~80) 실패 $(tail -2 $SP/check_t78_80.out)"
+  grep "^t=" $SP/check_t78_80.out | cut -c1-200
+fi
 grep -q GREG_SPLIT_DONE $SP/run.out 2>/dev/null || python -u exe/greg_split_el.py --skin fix --dump $O/roll_ov.pt --data $PT --t1 $LEN --out $SP/greg_split_el.json --threads 8 > $SP/run.out 2>&1
 grep -q GREG_SPLIT_DONE $SP/run.out || fail "분해 실패 $(tail -3 $SP/run.out)"
 tail -3 $SP/run.out | cut -c1-400
