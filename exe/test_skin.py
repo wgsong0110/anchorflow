@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 import torch                                                     # noqa: E402
 from anchorflow import repmaps as rm                             # noqa: E402
-from anchorflow.skin import gregory_skin                         # noqa: E402
+from anchorflow.skin import gregory_skin_v0 as gregory_skin                         # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--pt", required=True)
