@@ -145,6 +145,10 @@ EOM
 done_r2(){ [ -n "$(rclone lsf $RL/$1/$X/.done 2>/dev/null)" ]; }
 smoke(){ # 짧은 시험 2 프레임 세 판이 R2 에 다 있으면 기준판 같은 반복 비교를 한 번 (outputs.md·알림)
   [ -f $D/PRECOND_SMOKE_DONE ] && return 0
+  for k in prediag prems prelbfgs; do   # 실패 (pfnew.sh 가 .done 없이 올린 run.log 에 Traceback) 면 알리고 멈춘다
+    if ! done_r2 ${DIR[$k]}_len2 && rclone cat $RL/${DIR[$k]}_len2/$X/run.log 2>/dev/null | grep -aq "Traceback\|SystemExit\|Error"; then
+      fail "짧은 시험 $k 실패: $(rclone cat $RL/${DIR[$k]}_len2/$X/run.log 2>/dev/null | grep -a 'Error\|SystemExit\|--' | tail -1 | cut -c1-150)"; return 1; fi
+  done
   for k in prediag prems prelbfgs; do done_r2 ${DIR[$k]}_len2 || return 0; done
   for k in noin prediag prems prelbfgs; do d2=${DIR[$k]}; [ $k = noin ] || d2=${d2}_len2
     rclone copyto $RL/$d2/$X/records.json $T/smoke_$k.json -q || { fail "짧은 시험 기록 $k"; return 1; }; done
