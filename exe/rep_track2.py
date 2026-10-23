@@ -1056,6 +1056,7 @@ if a.resume and os.path.exists(CKPT):
         "rows", "CURVE", "DOFS", "STOP", "EMDP", "PHYS", "TRAJS", "YPREV", "FSAVE", "DETC", "SPRING_CAP",
         "SPRING_LOG", "CFL_LOG", "RIEMLOG", "LMAX_LOG", "TETLOG", "NODES")]
     LMST = _ck["LMST"]; OPT = None
+    torch.set_rng_state(_ck["rng"].cpu()); torch.cuda.set_rng_state(_ck["cuda_rng"].cpu())   # 거듭제곱법 시작 벡터까지 같게
     T_START = _ck["t"] + 1
     t0 -= _ck["elapsed"]
     print(f"[이어 돌리기] {CKPT}: 프레임 {_ck['t']} 까지 완료 -> {T_START} 부터", flush=True)
@@ -1773,7 +1774,8 @@ for t in range(T_START, T + 1):
                   FSAVE=FSAVE, DETC=DETC, SPRING_CAP=SPRING_CAP, SPRING_LOG=SPRING_LOG, CFL_LOG=CFL_LOG,
                   RIEMLOG=RIEMLOG, LMAX_LOG=LMAX_LOG, TETLOG=TETLOG, NODES=NODES)
         torch.save(dict(t=t, rep=rep.state_dict(), Pref=Pref, Fcum=Fcum, Rcum=Rcum, L=_L, LMST=LMST,
-                        elapsed=time.time() - t0), CKPT + ".tmp")
+                        elapsed=time.time() - t0, rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state()),
+                   CKPT + ".tmp")
         os.replace(CKPT + ".tmp", CKPT)
     if t % 10 == 0 or t == 1:
         print(f"  [t={t:3d}] RMSE {100*rmse:.3f}%  CD {100*cd:.3f}%  "
