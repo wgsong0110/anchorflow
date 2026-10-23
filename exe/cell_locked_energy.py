@@ -337,6 +337,9 @@ if a.energy_json and os.path.exists(a.energy_json):
     say(f"[검산 기준] {a.energy_json}: {list(EJ)}")
 
 
+UNMATCHED = [0]   # 덤프와 짝 없는 노드 수 누적 (전 궤적·프레임)
+
+
 def frame(x32, F32, nodes_t):
     global SCALE
     lo, lat, nn = SX.grid_for_nodes(x32, a.n_nodes, hz_ratio=a.hz_ratio, off=None, h_fix=a.node_h)
@@ -346,9 +349,20 @@ def frame(x32, F32, nodes_t):
         _rows, uniq = SX.active_nodes(idx)
         npos = SX.node_pos(lo, lat, nn, uniq)
         nd = nodes_t[0].to(dev).float()
-        if npos.shape != nd.shape:
-            return None, f"노드 수 {tuple(npos.shape)} vs 덤프 {tuple(nd.shape)}"
-        chk = float((npos - nd).abs().max())
+        # 개수 일치를 요구하지 않고 격자 정수 좌표로 짝을 맞춘다 (반올림으로 입자 하나가 이웃 칸에 들면 노드 집합이
+        # 하나 달라진다 -- 셀 계산은 현재 위치에서 새로 까는 것이라 영향 없고, 짝 없는 수만 기록한다)
+        nnl = [int(nn[k]) for k in range(3)]
+        ijk = torch.round((nd.double() - lo.double()) @ lat.Ai.double().T).long()
+        inb = ((ijk >= 0) & (ijk < torch.tensor(nnl, device=ijk.device))).all(1)
+        fl_d = (ijk[:, 0] * nnl[1] + ijk[:, 1]) * nnl[2] + ijk[:, 2]
+        lut = torch.full((nnl[0] * nnl[1] * nnl[2],), -1, dtype=torch.long, device=ijk.device)
+        lut[fl_d[inb]] = torch.nonzero(inb).squeeze(1)
+        m_ = lut[uniq]
+        have = m_ >= 0
+        UNMATCHED[0] += int((~have).sum()) + int(nd.shape[0] - have.sum())
+        if int((~have).sum()) + int(nd.shape[0] - have.sum()) > max(3, 0.01 * nd.shape[0]):
+            return None, f"노드 짝 없음 많음: 새 {int((~have).sum())}, 덤프 {int(nd.shape[0] - have.sum())} (덤프 {tuple(nd.shape)})"
+        chk = float((npos[have] - nd[m_[have]]).abs().max())
         if chk > 1e-5:
             return None, f"노드 위치 최대 차 {chk:.3e}"
     tid = SX.tet_id(lo, lat, nn, aux)
@@ -529,4 +543,5 @@ for k, v in LG.items():
     for f in range(v.shape[0]):
         Cc[f] = cmap(np.clip((v[f] - lo) / (hi - lo), 0.0, 1.0))[:, :3].astype(np.float16)
     np.save(f"{a.out}/col_{k}.npy", Cc)
+say(f"[노드 짝] 덤프와 짝 없는 노드 누적 {UNMATCHED[0]} (전 궤적·프레임)")
 say("LOCKED_CALC_DONE")

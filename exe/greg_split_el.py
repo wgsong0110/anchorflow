@@ -25,6 +25,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--dump", required=True)
 ap.add_argument("--data", required=True)
 ap.add_argument("--t1", type=int, default=11)
+ap.add_argument("--t0", type=int, default=0, help="시험용: 이 스텝부터")
 ap.add_argument("--node_h", type=float, default=0.056569)
 ap.add_argument("--n_nodes", type=float, default=32)
 ap.add_argument("--hz_ratio", type=float, default=1.0 / 6 ** 0.5)
@@ -72,7 +73,7 @@ def bary(x, npos, rows, U):
 
 rows_out = []
 print(f"[시작] 입자 {N}, 프레임 0..{a.t1 - 1}, 덤프 키 {sorted(D.keys())}", flush=True)
-for t in range(a.t1):
+for t in range(a.t0, a.t1):
     x = x0 if t == 0 else D["pred"][t - 1].to(f32)
     F = I3.expand(N, 3, 3).clone() if t == 0 else D["F"][t - 1].to(f32)
     lo, lat, nn = SX.grid_for_nodes(x, a.n_nodes, hz_ratio=a.hz_ratio, off=None, h_fix=a.node_h)
@@ -81,13 +82,28 @@ for t in range(a.t1):
     npos = SX.node_pos(lo, lat, nn, uniq)
     nd = D["nodes"][t]
     tp, dpn = nd[0].to(f32), nd[1].to(f32)
-    if tp.shape != npos.shape:
-        raise SystemExit(f"t={t} 노드 수 다름 {tuple(tp.shape)} vs {tuple(npos.shape)}")
-    pdiff = float((tp - npos).abs().max())
+    # 노드 짝: 개수 일치를 요구하지 않고 격자 정수 좌표로 맞춘다 (덤프 노드 집합이 그 프레임의 기준).
+    # 다시 깐 격자에만 있는 노드(덤프 위치가 반올림으로 다른 칸에 든 입자 때문)는 출력 0 으로 두고 수를 기록한다.
+    nnl = [int(nn[k]) for k in range(3)]
+    ijk = torch.round((tp.double() - lo.double()) @ lat.Ai.double().T).long()
+    inb = ((ijk >= 0) & (ijk < torch.tensor(nnl))).all(1)
+    fl_d = (ijk[:, 0] * nnl[1] + ijk[:, 1]) * nnl[2] + ijk[:, 2]
+    lut = torch.full((nnl[0] * nnl[1] * nnl[2],), -1, dtype=torch.long)
+    lut[fl_d[inb]] = torch.nonzero(inb).squeeze(1)
+    m_ = lut[uniq]                                                # 다시 깐 노드 -> 덤프 노드 색인 (-1 = 없음)
+    have = m_ >= 0
+    n_new_only = int((~have).sum())
+    n_dump_only = int(tp.shape[0] - have.sum())
+    dpn_full = torch.zeros(npos.shape[0], dpn.shape[1], dtype=dpn.dtype)
+    dpn_full[have] = dpn[m_[have]]
+    p_aff = int((~have)[rows].any(1).sum())
+    pdiff = float((tp[m_[have]] - npos[have]).abs().max())
+    dpn = dpn_full
     U, R = dpn[:, :3], dpn[:, 3]
     Z3, Z1 = torch.zeros_like(U), torch.zeros_like(R)
     E0 = E_el(F)
-    rec = {"t": t, "nodes": int(npos.shape[0]), "node_pos_maxdiff": pdiff, "E_el_state": E0,
+    rec = {"t": t, "nodes": int(npos.shape[0]), "nodes_dump": int(tp.shape[0]), "nodes_rebuilt_only": n_new_only,
+           "nodes_dump_only": n_dump_only, "particles_on_unmatched": p_aff, "node_pos_maxdiff": pdiff, "E_el_state": E0,
            "U_med_over_h": float(U.norm(dim=-1).median() / a.node_h),
            "rho_raw_absmax": float(R.abs().max()), "rho_raw_med": float(R.abs().median())}
     for k, (UU, RR) in {"a_U_only": (U, Z1), "b_rho_only": (Z3, R), "c_both": (U, R)}.items():
@@ -112,7 +128,7 @@ for t in range(a.t1):
     E_full = E0 + rec["c_both"]["dE_el"]
     rec["dE_loc"], rec["dE_glob"], rec["dE"] = E_loc - E0, E_full - E_loc, E_full - E0
     rows_out.append(rec)
-    print(f"t={t:2d} 노드위치차 {pdiff:.1e} | E_el(상태) {E0:.4e} | ΔE_el a(U만) {rec['a_U_only']['dE_el']:+.4e} "
+    print(f"t={t:2d} 노드위치차 {pdiff:.1e} 짝없음(새 {n_new_only}, 덤프 {n_dump_only}, 입자 {p_aff}) | E_el(상태) {E0:.4e} | ΔE_el a(U만) {rec['a_U_only']['dE_el']:+.4e} "
           f"b(ρ만) {rec['b_rho_only']['dE_el']:+.4e} c(둘다) {rec['c_both']['dE_el']:+.4e} d(bary) {rec['d_bary']['dE_el']:+.4e} "
           f"| |ρ_raw|max {rec['rho_raw_absmax']:.1e} | c-a ∇u 최대차 {rec['c_minus_a_Du_max']:.1e} "
           f"| ΔE {rec['dE']:+.4e} = 로컬 {rec['dE_loc']:+.4e} + 글로벌 {rec['dE_glob']:+.4e} | 검산 x {rec['chk_x_maxdiff']:.1e} F {rec['chk_F_maxdiff']:.1e} (차>1e-3 입자 비율 {rec['chk_F_frac_gt1e-3']:.1e})", flush=True)
