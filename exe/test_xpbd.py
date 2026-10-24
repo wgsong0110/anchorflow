@@ -4,7 +4,7 @@
   0b) 구속 에너지: ½C_R²/α_R + ½C_V²/α_V = Σ V_p ψ_FCR(J F_p) (셀 안 F 가 같으면 정확, 다르면 상계)
   1) 정지: 중력·바닥 없이 정지 물체 (F = I, v = 0) -> 위치·F 그대로 (N=4 K=1, N=1 K=10)
   2) 자유낙하: 중력만 -> 질량중심 속도 = g t, 프레임 2 계 차분 = g Δt², 모양 그대로
-  3) 사면체 하나를 x 로 1.3 배 늘였다 놓기 -> 정지 모양을 지나 되돌아오고 (σ_max 가 1 근처까지), 처음보다 더 늘지 않고, 뒤집히지 않는다
+  3) 사면체 하나를 x 로 1.3 배 늘였다 놓기 -> 정지 모양을 지나 되돌아오고 (σ_max 가 1 근처까지), 에너지(운동+탄성)가 처음보다 늘지 않고, 뒤집히지 않는다
   4) 바닥: 비스듬히 떨어지는 정육면체 -> 입자 바닥 침투 ≤ 0.02 h, 뒤집힘 없음 (닿은 뒤 접선 미끄러짐·끝 속도는 출력만)
 """
 import math
@@ -109,23 +109,28 @@ X = torch.stack([torch.zeros(3, dtype=dt64), lat.A[:, 0], lat.A[:, 0] + lat.A[:,
 S1 = dict(tets=torch.tensor([[0, 1, 2, 3]]), groups=[torch.tensor([0])], T=1)
 DmI1, V1 = XP.tet_rest(X, S1["tets"])
 cen = X.mean(0)
-xs = X.clone(); xs[:, 0] = cen[0] + 1.3 * (X[:, 0] - cen[0])
+xs = X.clone(); xs[:, 0] = cen[0] + 1.3 * (X[:, 0] - cen[0]); xs0_ = xs.clone()
 vs = torch.zeros_like(xs)
 w = torch.full((4,), 1.0 / (1000.0 * float(V1) / 4), dtype=dt64)
 E1, nu1 = 1e4, 0.3
 mu1, la1 = XP.lame(E1, nu1)
 sol = XP.Solver(mu1, la1, 10, 1)
-Bm, Mbm, m1v, m2v = torch.eye(3, dtype=dt64)[None], torch.eye(3, dtype=dt64)[None], torch.ones(1, dtype=dt64), torch.ones(1, dtype=dt64)
-smax, dets, j00 = [], [], []
+Bm, Mbm, m1v, m2v = torch.zeros(1, 3, 3, dtype=dt64), torch.eye(3, dtype=dt64)[None], torch.ones(1, dtype=dt64), torch.ones(1, dtype=dt64)
+smax, dets, j00, etot = [], [], [], []
+m4 = 1000.0 * float(V1) / 4
+Etot = lambda xq, vq: float(V1 * XP.psi_fcr(XP.tet_J(xq, S1["tets"], DmI1), mu1, la1)) + 0.5 * m4 * float((vq * vq).sum())   # noqa: E731
 s0 = float(torch.linalg.svdvals(XP.tet_J(xs, S1["tets"], DmI1))[0, 0])
+E_0 = None
 for i in range(600):
     xs, vs, _ = sol.frame(S1, xs, vs, w, [0, 0, 0], 1e-3, V=V1, B=Bm, Mb=Mbm, m1=m1v, m2=m2v, DmI=DmI1)
     J = XP.tet_J(xs, S1["tets"], DmI1)
+    etot.append(Etot(xs, vs))
     smax.append(float(torch.linalg.svdvals(J)[0, 0])); dets.append(float(torch.linalg.det(J)[0])); j00.append(float(J[0, 0, 0]))
 first_back = next((i for i, s in enumerate(j00) if s < 1.0), None)
-chk("사면체 늘였다 놓기", first_back is not None and min(smax) < 1.05 and max(smax) <= s0 + 1e-6 and min(dets) > 0,
+E_0 = Etot(xs0_, torch.zeros_like(xs0_))
+chk("사면체 늘였다 놓기", first_back is not None and min(smax) < 1.05 and max(etot) <= E_0 * (1 + 1e-6) and min(dets) > 0,
     f"처음 σ_max {s0:.4f} (J_xx 1.3), J_xx 가 1 아래로 (정지 모양을 지나) 간 첫 프레임 {first_back} (프레임 1 ms), J_xx 최소 {min(j00):.4f}, "
-    f"σ_max 최대 {max(smax):.4f} 최소 {min(smax):.4f}, "
+    f"σ_max 최대 {max(smax):.4f} 최소 {min(smax):.4f}, 에너지(운동+탄성) 처음 {E_0:.4e} 최대 {max(etot):.4e} 끝 {etot[-1]:.4e}, "
     f"평균 {sum(smax) / len(smax):.4f}, det 최소 {min(dets):.4f} 최대 {max(dets):.4f}")
 
 # ---- 4) 바닥 ----

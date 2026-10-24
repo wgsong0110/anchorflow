@@ -70,7 +70,7 @@ def cell_constraints(J, B, Mb, m1, m2):
     """셀 구속 값 (C_R, C_V) -- Solver._elastic 과 같은 식 (시험·진단용)."""
     JM = J @ Mb
     Rc = polar_R(JM)
-    Cv = B - Mb @ Mb.transpose(1, 2)                 # 셀 안 F 의 공분산 (같으면 0)
+    Cv = B                                           # aggregates 의 둘째 값 = 셀 안 F 의 공분산 B̄ − M̄M̄ᵀ (같으면 0)
     CR = (((JM - Rc) ** 2).sum((1, 2)) + (J * (J @ Cv)).sum((1, 2)).clamp_min(0.0)).sqrt()
     s2 = m2.clamp_min(1e-300).sqrt()
     return CR, s2 * torch.linalg.det(J) - m1 / s2
@@ -124,17 +124,20 @@ def tet_J(xs, tets, DmI):
 
 
 def aggregates(pinv, T, Vp, F):
-    """셀 모음 V, B̄ = Σ V F Fᵀ / V, M̄ = Σ V F / V, m1, m2 (float64)."""
+    """셀 모음 V, 공분산 B̄ − M̄M̄ᵀ = Σ V (F − M̄)(F − M̄)ᵀ / V, M̄ = Σ V F / V, m1, m2 (float64)."""
     dt = torch.float64
     Vp = Vp.to(dt); F = F.to(dt)
     V = torch.zeros(T, device=F.device, dtype=dt).index_add_(0, pinv, Vp)
-    B = torch.zeros(T, 3, 3, device=F.device, dtype=dt).index_add_(0, pinv, Vp[:, None, None] * (F @ F.transpose(1, 2)))
     a = torch.linalg.det(F)
     m1 = torch.zeros(T, device=F.device, dtype=dt).index_add_(0, pinv, Vp * a)
     m2 = torch.zeros(T, device=F.device, dtype=dt).index_add_(0, pinv, Vp * a * a)
     Mb = torch.zeros(T, 3, 3, device=F.device, dtype=dt).index_add_(0, pinv, Vp[:, None, None] * F)
     Vc = V.clamp_min(1e-300)
-    return V, B / Vc[:, None, None], Mb / Vc[:, None, None], m1 / Vc, m2 / Vc
+    Mb = Mb / Vc[:, None, None]
+    # B̄ − M̄M̄ᵀ 를 편차로 바로 모은다 (B̄ 와 M̄M̄ᵀ 를 따로 빼면 같은 F 셀에서 반올림 1e-16 이 sqrt 로 1e-8 이 된다)
+    dF = F - Mb[pinv]
+    Cv = torch.zeros(T, 3, 3, device=F.device, dtype=dt).index_add_(0, pinv, Vp[:, None, None] * (dF @ dF.transpose(1, 2)))
+    return V, Cv / Vc[:, None, None], Mb, m1 / Vc, m2 / Vc
 
 
 def p2g(rows, lam, m, v, M_nodes):
@@ -159,8 +162,9 @@ def planes_of(cfg):
 class Solver:
     """한 프레임 XPBD. S = build_lattice(...) 결과 + 노드 상태."""
 
-    def __init__(self, mu, la, n_sub, n_iter, planes=(), mu_s=math.inf, vdamp=1.0):
+    def __init__(self, mu, la, n_sub, n_iter, planes=(), mu_s=math.inf, vdamp=1.0, sweeps=10, tol=0.0):
         self.mu, self.la = float(mu), float(la)
+        self.sweeps, self.tol = int(sweeps), float(tol)    # 바닥 쓸기 최대 횟수 (반복마다), 침투 허용 [m]
         self.N, self.K = int(n_sub), int(n_iter)
         self.planes = list(planes)
         self.mu_s = float(mu_s)
@@ -174,7 +178,7 @@ class Solver:
         JM = J @ Mg
         Rc = polar_R(JM)
         # C_R² = ‖J M̄ − R_c‖² + tr(J (B̄ − M̄M̄ᵀ) Jᵀ) (= tr(JᵀJB̄) − 2tr(R_cᵀJM̄) + 3, 상쇄 없는 꼴), ½∂C_R²/∂J = (JM̄ − R_c)M̄ᵀ + J(B̄ − M̄M̄ᵀ)
-        Cv = Bg - Mg @ Mg.transpose(1, 2)
+        Cv = Bg                                                   # = B̄ − M̄M̄ᵀ (aggregates)
         JC = J @ Cv
         CR = (((JM - Rc) ** 2).sum((1, 2)) + (J * JC).sum((1, 2)).clamp_min(0.0)).sqrt()
         live = CR > 1e-12
@@ -206,8 +210,17 @@ class Solver:
         xs.index_add_(0, r.reshape(-1), dx.reshape(-1, 3))
 
     def _contact(self, xs, xprev, w, S, st):
+        """바닥 접촉: 사면체마다 가장 깊은 입자 하나를 사영하는 쓸기를, 침투 입자가 없어지거나 self.sweeps 번이 될 때까지
+        (한 쓸기는 각 사면체의 최심 입자만 고친다 -- 같은 사면체의 다음으로 깊은 입자는 다음 쓸기에서)."""
+        for _sw in range(self.sweeps):
+            if not self._contact_sweep(xs, xprev, w, S, st):
+                break
+            st["contact_sweeps"] = max(st.get("contact_sweeps", 0), _sw + 1)
+
+    def _contact_sweep(self, xs, xprev, w, S, st):
         if not self.planes:
-            return
+            return False
+        hit = False
         rows, lam, pinv, tets, col = S["rows"], S["lam64"], S["pinv"], S["tets"], S["col"]
         T = S["T"]
         for (p0, n, _kind) in self.planes:
@@ -215,9 +228,10 @@ class Solver:
             xp = (lam.unsqueeze(-1) * xs[rows]).sum(1)
             s = (xp - p0) @ n
             smin = torch.full((T,), math.inf, device=xs.device, dtype=xs.dtype).scatter_reduce_(0, pinv, s, "amin")
-            act = smin < 0
+            act = smin < -self.tol
             if not bool(act.any()):
                 continue
+            hit = True
             cand = (s == smin[pinv]) & act[pinv]
             ci = torch.nonzero(cand).squeeze(1)
             pst = torch.full((T,), -1, device=xs.device, dtype=torch.long).scatter_reduce_(0, pinv[ci], ci, "amax")
@@ -244,6 +258,7 @@ class Solver:
                 corr = corr - torch.where(stick[:, None, None], (wr * lp).unsqueeze(-1) * dtan.unsqueeze(1) / Wc[:, None, None],
                                           torch.zeros_like(corr))
                 xs.index_add_(0, r.reshape(-1), corr.reshape(-1, 3))
+        return hit
 
     def frame(self, S, x0n, v0n, w, g, dt, pin=None, pin_vel=None, V=None, B=None, Mb=None, m1=None, m2=None, DmI=None):
         """노드 시작 위치 x0n, 속도 v0n (float64) -> (끝 위치, 끝 속도, 통계)."""
@@ -276,11 +291,12 @@ class Solver:
         return xs, vs, st
 
 
-def advance_frame(solver, x, v, F, m, Vp, node_h, g, dt, bc_fn=None, hz_ratio=HZ, m_floor=1e-9):
+def advance_frame(solver, x, v, F, m, Vp, node_h, g, dt, bc_fn=None, hz_ratio=HZ, m_floor=0.05):
     """입자 상태 (x, v, F) 한 프레임 -> (x2, v2, F2, J_p, 통계). 계산은 float64, 반환도 float64.
 
     bc_fn(npos, rows, lam) -> (노드 마스크, 노드 속도) 또는 (None, None) -- --cfg_bc 노드 하드 구속.
-    질량이 최대의 m_floor 배 미만인 노드(입자 λ 가 모두 0 인 꼭짓점)는 그 바닥값 질량으로 둔다.
+    질량이 중앙값의 m_floor 배 미만인 노드(입자가 가장자리에만 걸친 꼭짓점)는 그 바닥값을 역질량에만 쓴다 (관성 예측·속도는 P2G 그대로).
+    바닥값이 없으면 그런 노드는 역질량이 커서, 입자 접촉 사영이 λ 작은 꼭짓점을 1/λ 배로 크게 옮겨 셀이 뒤집힌다.
     """
     dt64 = torch.float64
     x = x.to(dt64); v = v.to(dt64); F = F.to(dt64)
@@ -289,7 +305,7 @@ def advance_frame(solver, x, v, F, m, Vp, node_h, g, dt, bc_fn=None, hz_ratio=HZ
     npos = S["npos"].to(dt64)
     Mn = npos.shape[0]
     M, vn = p2g(S["rows"], S["lam"], m, v, Mn)
-    Mf = M.clamp_min(float(M.max()) * m_floor)
+    Mf = M.clamp_min(float(M.median()) * m_floor)
     w = 1.0 / Mf
     pin = pv = None
     if bc_fn is not None:
@@ -310,5 +326,5 @@ def advance_frame(solver, x, v, F, m, Vp, node_h, g, dt, bc_fn=None, hz_ratio=HZ
     F2 = Jp @ F
     st.update(nodes=int(Mn), tets=int(S["T"]), colors=len(S["groups"]), pinned=int(pin.sum()) if pin is not None else 0,
               detJ_min=float(detJ.min()), tets_inv=int((detJ <= 0).sum()),
-              fill_ratio_mean=float((V / Vt).mean()), light_nodes=int((M < float(M.max()) * m_floor).sum()))
+              fill_ratio_mean=float((V / Vt).mean()), light_nodes=int((M < float(M.median()) * m_floor).sum()))
     return x2, v2, F2, Jp, st

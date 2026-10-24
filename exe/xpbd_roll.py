@@ -38,6 +38,8 @@ ap.add_argument("--hz_ratio", type=float, default=XP.HZ)
 ap.add_argument("--sub", type=int, default=1, help="서브스텝 N")
 ap.add_argument("--iters", type=int, default=1, help="반복 K")
 ap.add_argument("--mu_s", type=float, default=math.inf, help="바닥 정적 마찰 계수 (inf = 닿으면 접선 고정 = sticky)")
+ap.add_argument("--contact_sweeps", type=int, default=10, help="반복마다 바닥 쓸기 최대 횟수 (사면체별 최심 입자 사영을 침투가 없어질 때까지)")
+ap.add_argument("--m_floor", type=float, default=0.05, help="역질량에 쓰는 노드 질량 바닥 (노드 질량 중앙값 대비)")
 ap.add_argument("--pg_region_density", action="store_true")
 ap.add_argument("--cfg_bc", action="store_true")
 ap.add_argument("--pg_vdamp", action="store_true")
@@ -73,11 +75,11 @@ if a.pg_vdamp:
     s_ = float(cfg.get("grid_v_damping_scale", 1.0))
     if s_ < 1.0:
         vd = s_ ** ((FRAME_DT / a.sub) / float(cfg["substep_dt"]))
-solver = XP.Solver(mu, la, a.sub, a.iters, planes=planes, mu_s=a.mu_s, vdamp=vd)
+solver = XP.Solver(mu, la, a.sub, a.iters, planes=planes, mu_s=a.mu_s, vdamp=vd, sweeps=a.contact_sweeps)
 _bcs = [b.get("type") for b in (cfg.get("boundary_conditions") or [])]
 print(f"[설정] {a.tag}: 입자 {N}, 프레임 {L} (dt {FRAME_DT:g}), XPBD 서브스텝 N={a.sub} 반복 K={a.iters}, node_h {a.node_h}, "
       f"E {cfg['E']:g} ν {cfg['nu']:g} -> μ {mu:.6g} λ {la:.6g} (fixed corotated 구속), g {g}, 질량 합 {float(m.sum()):.6g}, 부피 합 {float(Vp.sum()):.6g}, "
-      f"EXT {EXT:.6f}, 경계조건 {_bcs}, 바닥 평면 {len(planes)} 개 (μ_s {a.mu_s}), 감쇠 서브스텝당 {vd:.8f}, "
+      f"EXT {EXT:.6f}, 경계조건 {_bcs}, 바닥 평면 {len(planes)} 개 (μ_s {a.mu_s}), 감쇠 서브스텝당 {vd:.8f}, 바닥 쓸기 ≤{a.contact_sweeps}, 노드 질량 바닥 중앙값 x{a.m_floor}, "
       f"|v0| 평균 {float(v.norm(dim=-1).mean()):.5f}, F0 det 범위 {float(torch.linalg.det(F).min()):.4f}~{float(torch.linalg.det(F).max()):.4f}",
       flush=True)
 for bc in (cfg.get("boundary_conditions") or []):
@@ -170,7 +172,7 @@ for i in pbar:
     NOW[0] = i * FRAME_DT
     t_ = time.time()
     with torch.no_grad():
-        x2, v2, F2, Jp, st = XP.advance_frame(solver, x, v, F, m, Vp, a.node_h, g, FRAME_DT, bc_fn=bc_fn, hz_ratio=a.hz_ratio)
+        x2, v2, F2, Jp, st = XP.advance_frame(solver, x, v, F, m, Vp, a.node_h, g, FRAME_DT, bc_fn=bc_fn, hz_ratio=a.hz_ratio, m_floor=a.m_floor)
     if dev == "cuda":
         torch.cuda.synchronize()
     gt = DM.take(d["x"][i + 1], torch.arange(N), dev).double()
