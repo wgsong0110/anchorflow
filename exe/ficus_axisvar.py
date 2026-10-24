@@ -30,7 +30,7 @@ ap.add_argument("--dump", default=f"{W}/lbours/ficus_v0/roll_ov.pt")
 ap.add_argument("--ov_h5", default=f"{W}/lbours/ficus_v0/h5_ov", help="선형 롤아웃 h5 (R 확인·F 대조용)")
 ap.add_argument("--out", default=f"{W}/lbours/ficus_axisvar")
 ap.add_argument("--node_h", type=float, default=0.056569)
-ap.add_argument("--eps", type=float, default=1e-3)
+ap.add_argument("--eps", type=float, default=1e-5, help="σ 비 1+eps 미만이면 그 축 제외. 1e-3 은 정답 입자 93~98%% 를 지워 1e-5 로 (F 는 float32, 상대 분해능 ~1e-7)")
 ap.add_argument("--min_cnt", type=int, default=5)
 ap.add_argument("--tol", type=float, default=1e-10)
 ap.add_argument("--max_it", type=int, default=200)
@@ -188,8 +188,9 @@ def plot():
     T = info["T_gt"]; tt = np.arange(T)
     summ = {}
     fin_all = np.concatenate([Z[f"{tr}_{ax}_var"][np.isfinite(Z[f"{tr}_{ax}_var"])] for tr in ("gt", "ov") for ax in ("long", "short")])
-    lo = max(float(np.percentile(fin_all, 0.5)), 1e-12); hi = float(fin_all.max())
-    lo = 10 ** np.floor(np.log10(lo)); hi = 10 ** np.ceil(np.log10(hi))
+    # 선형 축, 두 궤적·두 축·전 프레임 공통: 0 ~ 풀린 값 99.9% 를 0.1 단위로 올림 (넘는 값은 히스토그램 마지막 구간에 넣는다)
+    lo = 0.0; hi = float(np.ceil(np.percentile(fin_all, 99.9) * 10) / 10)
+    RND = np.pi - 2  # 균등 무작위 축의 고정 평균 둘레 E[θ²] = ∫θ² sinθ dθ (0..π/2) = π - 2
     fig, axs = plt.subplots(1, 2, figsize=(14, 5.2), sharey=True)
     for j, ax in enumerate(("long", "short")):
         A = axs[j]
@@ -207,24 +208,35 @@ def plot():
             A.fill_between(tt, q[:, 1], q[:, 3], color=c, alpha=0.30, lw=0)
             A.plot(tt, q[:, 2], color=c, lw=2, label=f"{NAMES[tr]} 중앙값")
             A.plot(tt, mu, color=c, lw=1.2, ls="--", label=f"{NAMES[tr]} 평균")
-        A.set_yscale("log"); A.set_ylim(lo, hi); A.set_xlim(0, T - 1)
+        A.axhline(RND, color="#777777", lw=1, ls=":", label="균등 무작위 축 참고값 π−2")
+        A.set_ylim(lo, max(hi, RND * 1.05)); A.set_xlim(0, T - 1)
         A.set_title(f"{AXN[ax]} 방향: 셀 안 측지 분산 (띠: 25–75%, 5–95%)")
         A.set_xlabel("프레임"); A.grid(alpha=0.25, lw=0.6)
         if j == 0:
             A.set_ylabel("셀 분산 (rad²)")
         A.legend(fontsize=8.5, loc="lower right")
-    fig.suptitle(f"ficus: 셀(Kuhn 사면체, 입자 ≥ {info['min_cnt']}) 안 F 주축 방향의 흩어짐 -- 정답 대 선형 출력만 최적화", fontsize=12)
+    fig.suptitle(f"ficus: 셀(Kuhn 사면체, 유효 입자 ≥ {info['min_cnt']}, 축 제외 σ비 < 1+{info['eps']:g}) 안 F 주축 방향의 흩어짐 -- 정답 대 선형 출력만 최적화", fontsize=12)
     fig.tight_layout()
     fig.savefig(a.png, dpi=130); plt.close(fig)
     json.dump(summ, open(f"{a.out}/quantiles.json", "w"))
+    for t in (0, 1, 10, 30, 60, 90, 125):
+        for ax in ("long", "short"):
+            for tr in ("gt", "ov"):
+                q = summ[f"{tr}_{ax}"]
+                print(f"[요약] 프레임 {t:3d} {AXN[ax]} {NAMES[tr]:10s} 셀 {q['ncell'][t]:4d} 제외 {q['excl'][t]:.4f}  "
+                      f"5/25/50/75/95% {q['q5'][t]:.3f}/{q['q25'][t]:.3f}/{q['q50'][t]:.3f}/{q['q75'][t]:.3f}/{q['q95'][t]:.3f}  평균 {q['mean'][t]:.3f}", flush=True)
+    for ax in ("long", "short"):
+        d = np.array(summ[f"ov_{ax}"]["q50"]) - np.array(summ[f"gt_{ax}"]["q50"])
+        print(f"[차이] {AXN[ax]} 중앙값 (선형-정답): 프레임 1~10 평균 {np.nanmean(d[1:11]):.3f}, 11~40 {np.nanmean(d[11:41]):.3f}, 41~125 {np.nanmean(d[41:]):.3f}; "
+              f"선형>정답 프레임 비율 {np.nanmean(d[1:] > 0):.3f}, 첫 프레임부터 연속 선형>정답 시작 {int(np.argmax([np.all(d[k:] > 0) for k in range(1, T)])) + 1}", flush=True)
     # 히스토그램 영상: 로그 구간, 두 궤적·전 프레임 같은 구간·같은 세로축
-    bins = np.logspace(np.log10(lo), np.log10(hi), 61)
+    bins = np.linspace(lo, hi, 61)
     ymax = 0.0
     for tr in ("gt", "ov"):
         for ax in ("long", "short"):
             V = Z[f"{tr}_{ax}_var"]
             for t in range(T):
-                f = V[t][np.isfinite(V[t])]
+                f = np.minimum(V[t][np.isfinite(V[t])], hi)
                 if len(f):
                     ymax = max(ymax, np.histogram(f, bins)[0].max() / len(f))
     wr = imageio.get_writer(a.hist_mp4, fps=10, codec="libx264", quality=8, macro_block_size=1)
@@ -233,14 +245,14 @@ def plot():
         for j, ax in enumerate(("long", "short")):
             A = axs[j]
             for tr in ("gt", "ov"):
-                f = Z[f"{tr}_{ax}_var"][t]; f = f[np.isfinite(f)]
+                f = Z[f"{tr}_{ax}_var"][t]; f = np.minimum(f[np.isfinite(f)], hi)
                 if len(f):
                     A.hist(f, bins, weights=np.full(len(f), 1.0 / len(f)), histtype="stepfilled", alpha=0.35, color=COLS[tr])
                     A.hist(f, bins, weights=np.full(len(f), 1.0 / len(f)), histtype="step", lw=1.8, color=COLS[tr],
                            label=f"{NAMES[tr]} (셀 {len(f)}, 중앙 {np.median(f):.2e})")
                 else:
                     A.plot([], [], color=COLS[tr], label=f"{NAMES[tr]} (유효 셀 없음)")
-            A.set_xscale("log"); A.set_xlim(lo, hi); A.set_ylim(0, ymax * 1.08)
+            A.set_xlim(lo, hi); A.set_ylim(0, ymax * 1.08)
             A.set_title(f"{AXN[ax]} 방향 셀 분산"); A.set_xlabel("셀 분산 (rad²)"); A.grid(alpha=0.25, lw=0.6)
             if j == 0:
                 A.set_ylabel("셀 비율")
