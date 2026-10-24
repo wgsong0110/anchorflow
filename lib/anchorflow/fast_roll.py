@@ -94,7 +94,7 @@ def fast_supported(a):
     if str(getattr(a, "node_feat", "mom") or "mom") != "mom":
         return False, "node_feat p2g (P2G 노드 특징은 융합 커널에 없다)"
     if str(getattr(a, "gnn_layer", "mp") or "mp") != "mp":
-        return False, "gnn_layer lattn (국소 어텐션 층은 융합 커널에 없다)"
+        return False, f"gnn_layer {a.gnn_layer} (국소 어텐션·Graph U-Net 층은 융합 커널에 없다)"
     if int(getattr(a, "pfreq", 0) or 0) > 0:
         return False, "pfreq (입자 물리량 주파수 인코딩 노드 특징은 융합 커널에 없다)"
     for k in ("control", "fe_state", "cell_poly", "refps"):

@@ -328,9 +328,13 @@ ap.add_argument("--node_feat", choices=["mom", "p2g"], default="mom",
                 help="노드 입력의 입자 부분: mom(기본) = 입자 모멘트 29 채널 (node_moments), p2g = MPM P2G (사용자 10-23): 격자 좌표 기준 "
                      "2 차 B-스플라인 27 노드 가중 w_ip 로 m_i=Σwm, v_i=Σwmv/m_i, F_i=ΣwmF/m_i -> [log1p(1e3 m_i), v_i/vel_scale, F_i-I] 13 채널 "
                      "(simplex_gnn.p2g_feats). 바닥·물성 등 나머지 입력 그대로. F 는 --pfreq 와 같은 경로(ipf_set)")
-ap.add_argument("--gnn_layer", choices=["mp", "lattn"], default="mp",
+ap.add_argument("--gnn_layer", choices=["mp", "lattn", "unet"], default="mp",
                 help="--arch sgnn 몸통 층: mp(기본) = 메시지 패싱 (_MPLayer), lattn = 국소 어텐션 (사용자 10-23): 같은 이웃 집합에만, "
-                     "다중 헤드(--attn_heads), 격자 상대 오프셋 MLP 상대 위치 인코딩, 잔차 + LayerNorm (simplex_gnn.LocalAttnGNN)")
+                     "다중 헤드(--attn_heads), 격자 상대 오프셋 MLP 상대 위치 인코딩, 잔차 + LayerNorm (simplex_gnn.LocalAttnGNN), "
+                     "unet = Graph U-Net (사용자 10-24): 격자 2h·4h 거칠게 묶기 풀링 + 언풀링·스킵, 수준마다 메시지 패싱 층 "
+                     "(simplex_gnn.GraphUNetGNN; 층 수는 --gunet_levels 로 정해지고 --gnn_layers 는 안 쓴다)")
+ap.add_argument("--gunet_levels", type=int, default=3,
+                help="--gnn_layer unet 의 수준 수 (원 격자 포함; 3 = h·2h·4h). 층 배분: 인코더 수준마다 2, 바닥 2, 디코더 수준마다 1")
 ap.add_argument("--attn_heads", type=int, default=8, help="--gnn_layer lattn 의 헤드 수 (hidden 을 나눠야 한다)")
 ap.add_argument("--attn_ring", type=int, default=1,
                 help="--gnn_layer lattn 의 어텐션 이웃 범위 (사용자 10-23): 1 = 메시지 패싱 이웃 그대로 (지금), "
@@ -950,6 +954,9 @@ if a.gnn_sum:
 def build(n_feat):
     global net, opt
     net = DM.build_net(a, n_feat, _EXT0, FRAME_DT, N_FILM, dev)
+    if a.gnn_layer == "unet":
+        print(f"[Graph U-Net] 파라미터 {sum(q.numel() for q in net.parameters())} (몸통 {sum(q.numel() for q in net.body.parameters())}, "
+              f"스킵 결합 {sum(q.numel() for q in net.fuse.parameters())}), 층 {len(net.body)}, 입력 {n_feat}", flush=True)
     opt = (torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=a.wd)
            if a.wd > 0 else torch.optim.Adam(net.parameters(), lr=a.lr))
     global SCHED
@@ -2203,6 +2210,10 @@ with torch.no_grad():
             _pfx = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0][:, :DM._SGM.P2G_NCH]
             print("[P2G 칸 확인] 노드 " + str(_pfx.shape[0]) + f", nan {int((~torch.isfinite(_pfx)).sum())}, 칸별 [최소, 최대] "
                   + " ".join(f"{_c}:[{float(_pfx[:, _c].min()):.3g},{float(_pfx[:, _c].max()):.3g}]" for _c in range(_pfx.shape[1])), flush=True)
+        if a.gnn_layer == "unet":
+            _src, _dst, _cls = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[6][:3]
+            print(f"[--gnn_layer unet] 몸통 = Graph U-Net {a.gunet_levels} 수준, 층 배분 {DM._SGM.gunet_plan(a.gunet_levels)} "
+                  f"(--gnn_layers {a.gnn_layers} 무시), 폭 {a.hidden}, 첫 상태 수준 0 노드 {int(_dst.max()) + 1} 간선 {_dst.numel()}", flush=True)
         if a.gnn_layer == "lattn":
             print(f"[--gnn_layer lattn] 몸통 = 국소 어텐션 {a.gnn_layers} 층, 폭 {a.hidden}, 헤드 {a.attn_heads}, 이웃 {a.attn_ring} 링", flush=True)
             _src, _dst, _cls = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[6][:3]

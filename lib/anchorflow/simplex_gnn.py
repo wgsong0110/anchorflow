@@ -24,7 +24,8 @@ from .simplex import N_EDGE_CLASS
 
 __all__ = ["scatter_to_nodes", "node_moments", "node_centroids",
            "node_moments_finish", "SimplexGNN", "p2g_feats", "P2G_NCH",
-           "LocalAttnGNN", "ring_edges", "ring_offset_table"]
+           "LocalAttnGNN", "ring_edges", "ring_offset_table",
+           "GraphUNetGNN", "grid_ijk", "coarsen_grid", "gunet_plan"]
 
 
 def scatter_to_nodes(vals, rows, lam, n_node, mass=None):
@@ -425,3 +426,139 @@ class LocalAttnGNN(SimplexGNN):
                                    min=int(nb.min()), max=int(nb.max()), build_ms=ms)
             self._rc = rc = (src, dst, cls, out)
         return super().forward(feat, *rc[3], dt, mat=mat)
+
+
+# ---------------------------------------------------------------- Graph U-Net (--gnn_layer unet, 사용자 10-24)
+def grid_ijk(uniq, nn):
+    """압축 노드 색인 uniq [M] (평탄 색인) -> 정수 격자좌표 [M,3] (edges_of 와 같은 풀이)."""
+    nnl = [int(nn[k]) for k in range(3)]
+    z = uniq % nnl[2]
+    y = (uniq // nnl[2]) % nnl[1]
+    xx = uniq // (nnl[1] * nnl[2])
+    return torch.stack([xx, y, z], -1).long()
+
+
+def _off_cls(off):
+    """정수 오프셋 [E,3] (성분 {-1,0,1}) -> 간선 종류 (EDGE_OFFSETS 색인, 없으면 -1)."""
+    from .simplex import EDGE_OFFSETS
+    tbl = torch.full((27,), -1, device=off.device, dtype=torch.long)
+    for c, o in enumerate(EDGE_OFFSETS):
+        tbl[(o[0] + 1) * 9 + (o[1] + 1) * 3 + (o[2] + 1)] = c
+    ok = (off.abs() <= 1).all(-1)
+    key = ((off[:, 0] + 1) * 9 + (off[:, 1] + 1) * 3 + (off[:, 2] + 1)).clamp(0, 26)
+    return torch.where(ok, tbl[key], torch.full_like(key, -1))
+
+
+def coarsen_grid(pos, src, dst):
+    """한 수준 거칠게 (간격 h -> 2h): 거친 노드 = 정수 좌표를 2 로 내림 나눈 칸 (점유 칸만).
+
+    거친 간선 = 고운 간선 (s -> d) 의 부모 쌍 (P[s] -> P[d]), 자기 자신 제외, 중복 제거 --
+    물체 위상을 따른다 (고운 수준에서 이어진 칸끼리만 이웃). 고운 Kuhn 변은 성분 부호가 한쪽뿐
+    ({0,1}^3 또는 {0,-1}^3) 이라 부모 오프셋도 같은 14 종류 안에 든다 (아니면 오류).
+    -> (parent [M] 거친 색인, cpos [Mc,3], (csrc, cdst, ccls), cnt [Mc] 자식 수)
+    """
+    cp = torch.div(pos, 2, rounding_mode="floor")
+    mn = cp.min(0).values
+    q = cp - mn
+    R = q.max(0).values + 1
+    key = (q[:, 0] * R[1] + q[:, 1]) * R[2] + q[:, 2]
+    uk, parent = torch.unique(key, return_inverse=True)
+    Mc = int(uk.numel())
+    cpos = torch.zeros(Mc, 3, device=pos.device, dtype=pos.dtype).index_copy_(0, parent, cp)
+    cnt = torch.bincount(parent, minlength=Mc)
+    cs, cd = parent[src], parent[dst]
+    keep = cs != cd
+    cs, cd = cs[keep], cd[keep]
+    if cs.numel():
+        e = torch.unique(torch.stack([cs, cd], -1), dim=0)
+        cs, cd = e[:, 0], e[:, 1]
+    ccls = _off_cls(cpos[cd] - cpos[cs])
+    if bool((ccls < 0).any()):
+        raise RuntimeError("coarsen_grid: 거친 간선 오프셋이 14 종류 밖이다")
+    return parent, cpos, (cs, cd, ccls), cnt
+
+
+def gunet_plan(levels, enc=2, bot=2, dec=1):
+    """층 배분: [(수준, 'enc'|'bot'|'dec', 층 수)] -- 인코더 0..L-2 각 enc, 바닥 L-1 bot, 디코더 L-2..0 각 dec."""
+    L = int(levels)
+    if L < 2:
+        raise SystemExit(f"--gunet_levels {levels} 는 2 이상")
+    return ([(l, "enc", enc) for l in range(L - 1)] + [(L - 1, "bot", bot)]
+            + [(l, "dec", dec) for l in range(L - 2, -1, -1)])
+
+
+class GraphUNetGNN(SimplexGNN):
+    """**Graph U-Net** 몸통 (Gao & Ji 2019 구조를 우리 격자에 맞게, --gnn_layer unet, 사용자 10-24).
+
+    수준 0 = 원 격자 (node_h), 수준 l = 간격 2^l h. 풀링은 top-k (gPool) 대신 **격자 거칠게 묶기**
+    (coarsen_grid: 정수 좌표 // 2, 특징은 자식 평균), 언풀링은 부모 특징을 자식에 복사한 뒤 같은 수준
+    인코더 특징과 스킵 (이어붙이기 -> 선형, 잔차: h = skip + W[skip, up]). 각 수준의 층은 SimplexGNN 의
+    메시지 전달 층 (_MPLayer, 간선 종류 14 그대로) 이다. 층 배분 gunet_plan(levels): 기본 3 수준이면
+    인코더 0·1 각 2 층, 바닥(4h) 2 층, 디코더 1·0 각 1 층 = 8 층 (기존 8 층 128 과 같은 층 수).
+    입력 정규화·물성 FiLM·dt FiLM (층마다 한 자리, 순서대로)·0 초기화 출력은 SimplexGNN 그대로.
+
+    forward 는 grid=(uniq, nn) (노드 압축 색인 -> 정수 좌표) 가 필요하다 (deform_model.advance 가 needs_grid 를 보고 넘긴다).
+    같은 (uniq, src) 객체가 다시 오면 (한 프레임 안의 Adam 반복) 만들어 둔 계층을 쓴다. 노드 수가 바뀌면 새로 만든다.
+    level_stats: 마지막 계층의 수준별 노드·간선 수.
+    """
+
+    needs_grid = True
+
+    def __init__(self, n_feat, hidden=128, levels=3, enc=2, bot=2, dec=1, **kw):
+        kw.pop("layers", None)
+        self.plan = gunet_plan(levels, enc, bot, dec)
+        n_layers = sum(n for _, _, n in self.plan)
+        super().__init__(n_feat, hidden=hidden, layers=n_layers, **kw)
+        self.levels = int(levels)
+        self.body = nn.ModuleList([_MPLayer(hidden) for _ in range(n_layers)])
+        self.fuse = nn.ModuleList([nn.Linear(2 * hidden, hidden) for _ in range(self.levels - 1)])
+        self._hc = None
+        self.level_stats = None
+
+    def hierarchy(self, src, dst, cls, grid):
+        uniq, nn_ = grid
+        hc = self._hc
+        if hc is not None and hc[0] is uniq and hc[1] is src:
+            return hc[2]
+        pos = grid_ijk(uniq, nn_)
+        lv = [dict(src=src, dst=dst, cls=cls, M=int(uniq.numel()))]
+        for _ in range(self.levels - 1):
+            parent, pos, (cs, cd, cc), cnt = coarsen_grid(pos, lv[-1]["src"], lv[-1]["dst"])
+            lv[-1]["parent"] = parent
+            lv.append(dict(src=cs, dst=cd, cls=cc, M=int(cnt.numel()), cnt=cnt))
+        self.level_stats = [dict(M=d["M"], E=int(d["src"].numel())) for d in lv]
+        self._hc = (uniq, src, lv)
+        return lv
+
+    def forward(self, feat, src, dst, cls, dt, mat=None, grid=None):
+        if grid is None:
+            raise RuntimeError("GraphUNetGNN: grid=(uniq, nn) 가 필요하다")
+        lv = self.hierarchy(src, dst, cls, grid)
+        h = self.inp((feat - self.in_mu) / self.in_sd)
+        if self.n_mat and mat is not None:
+            g, b = self.mfilm(mat).chunk(2, -1)
+            h = (1.0 + g) * h + b
+        h = self._dtmod(h, dt, 0)
+        i, skips, cur = 0, {}, 0
+        for (l, kind, n) in self.plan:
+            if kind == "dec":                                       # 언풀링: 부모 복사 + 스킵
+                up = h[lv[l]["parent"]]
+                sk = skips[l]
+                h = sk + self.fuse[l](torch.cat([sk, up], -1))
+            elif l != cur:                                          # 풀링: 자식 평균
+                d = lv[l]
+                agg = torch.zeros(d["M"], h.shape[1], device=h.device, dtype=h.dtype).index_add_(0, lv[l - 1]["parent"], h)
+                h = agg / d["cnt"].clamp_min(1).unsqueeze(-1).to(h.dtype)
+            cur = l
+            d = lv[l]
+            for _ in range(n):
+                h = self.body[i](h, d["src"], d["dst"], d["cls"])
+                i += 1
+                h = self._dtmod(h, dt, i)
+            if kind == "enc":
+                skips[l] = h
+        sc = (self.scale * (dt / self.dt_ref) if self.dt_scale else self.scale)
+        o = self.out(h)
+        if self.n_out == 4:
+            return (torch.cat([o[:, :3] * sc, o[:, 3:4]], -1),)
+        return (o * sc,)

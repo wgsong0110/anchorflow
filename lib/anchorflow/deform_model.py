@@ -160,6 +160,10 @@ def build_net(a, n_feat, ext0, frame_dt, n_film, dev="cuda"):
         # --gnn_layer lattn (사용자 10-23): 몸통만 국소 어텐션 (같은 이웃 집합·같은 층 수·폭), 나머지 SimplexGNN 그대로
         _cls, _kw = _SGM.LocalAttnGNN, dict(heads=int(getattr(a, "attn_heads", 8)),
                                             ring=int(getattr(a, "attn_ring", 1) or 1))   # --attn_ring K (사용자 10-23): 어텐션 이웃 = K 링
+    elif str(getattr(a, "gnn_layer", "mp") or "mp") == "unet":
+        # --gnn_layer unet (사용자 10-24): 몸통만 Graph U-Net (격자 2h·4h 거칠게 묶기 풀링, 스킵), 나머지 SimplexGNN 그대로.
+        # 층 수는 --gunet_levels 로 정해진다 (gunet_plan; --gnn_layers 는 쓰지 않는다)
+        _cls, _kw = _SGM.GraphUNetGNN, dict(levels=int(getattr(a, "gunet_levels", 3) or 3))
     elif str(getattr(a, "gnn_layer", "mp") or "mp") != "mp":
         raise SystemExit(f"--gnn_layer {a.gnn_layer} 모름")
     return _cls(n_feat=n_feat, hidden=a.hidden, layers=a.gnn_layers, **_kw,
@@ -691,7 +695,10 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                 with sec("신경망"):
                     if INPUT_HOOK[0] is not None:          # 진단: 망 입력 특징을 바꿔 넣는다 (섭동·무작위 입력)
                         _ink = INPUT_HOOK[0](_ink, net)
-                    out = net(_ink, _srk, _dsk, _clk, tau, mat=mat)
+                    if getattr(net, "needs_grid", False):     # --gnn_layer unet: 노드 정수 좌표 (압축 색인, 축별 개수)
+                        out = net(_ink, _srk, _dsk, _clk, tau, mat=mat, grid=(_uqk, _nnk))
+                    else:
+                        out = net(_ink, _srk, _dsk, _clk, tau, mat=mat)
                 if a.net_inertial:
                     if inertial is None or inertial[_k] is None:
                         raise SystemExit("--net_inertial 은 노드 관성 예측(--ov_init predict, 사면체)이 필요하다")
