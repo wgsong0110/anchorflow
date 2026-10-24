@@ -339,6 +339,14 @@ ap.add_argument("--gnn_layer", choices=["mp", "lattn", "unet"], default="mp",
                      "(simplex_gnn.GraphUNetGNN; 층 수는 --gunet_levels 로 정해지고 --gnn_layers 는 안 쓴다)")
 ap.add_argument("--gunet_levels", type=int, default=3,
                 help="--gnn_layer unet 의 수준 수 (원 격자 포함; 3 = h·2h·4h). 층 배분: 인코더 수준마다 2, 바닥 2, 디코더 수준마다 1")
+ap.add_argument("--apic", action="store_true",
+                help="(사용자 10-24, --node_feat p2g 전용) 입자 상태에 APIC 아핀 속도 행렬 C_p (3x3) 를 더한다: 시작 0 (초기 속도장이 균일할 때; "
+                     "아니면 초기 속도의 최소제곱 아핀 기울기), 매 스텝 C_p = (J_p - I)/h (J_p = 이번 스텝 셀 사상 야코비안, F 갱신 F <- J F 와 같은 것). "
+                     "노드 입력 = APIC P2G: m_i v_i = Σ w m (v_p + C_p (x_i - x_p)), C_i = Σ w m C / m_i 를 C_i·h/vel_scale 9 칸으로 덧붙임. "
+                     "관성 예측은 x + h v 그대로 (C 는 망 입력에만). AF_OVNET_FIT 경로 전용 (프레임 파일·덤프에 C)")
+ap.add_argument("--p2g_stress", action="store_true",
+                help="(사용자 10-24, --node_feat p2g 전용) 노드 입력에 응력: 입자 Kirchhoff τ_p = P(F_p) F_pᵀ (phys_resid.psi_of 의 ψ 미분) 을 "
+                     "MPM P2G 내부력 f_i = -Σ V⁰ τ ∇w_ip (÷ E h²) 3 칸 + 질량 가중 평균 τ_i (÷ E) 대칭 6 칸으로 덧붙임 (탄성만, 바닥 장벽 등 외력 없음)")
 ap.add_argument("--attn_heads", type=int, default=8, help="--gnn_layer lattn 의 헤드 수 (hidden 을 나눠야 한다)")
 ap.add_argument("--attn_ring", type=int, default=1,
                 help="--gnn_layer lattn 의 어텐션 이웃 범위 (사용자 10-23): 1 = 메시지 패싱 이웃 그대로 (지금), "
@@ -1658,7 +1666,30 @@ _OBJ_PTS = (a.obj == "pts")   # 목적함수를 입자에서 바로 재는가 (�
 _RQS_PEN = [None]        # step_once 가 쌓는 RQS 연속성 벌점, 손실 지점이 소비
 
 
+_P2G_W = (DM._SGM.P2G_NCH + (DM._SGM.P2G_APIC_NCH if a.apic else 0) + (DM._SGM.P2G_STRESS_NCH if a.p2g_stress else 0))   # p2g 입자 부분 폭
+if (a.apic or a.p2g_stress) and a.node_feat != "p2g":
+    raise SystemExit("--apic·--p2g_stress 는 --node_feat p2g 와 함께")
 _NEEDPF = (a.pfreq > 0 or a.node_feat == "p2g")   # 노드 특징이 입자 F 를 쓰는가 (--pfreq·--node_feat p2g)
+
+
+def traj_C(d, t, gsel):
+    """--apic: 정답 궤적 상태 t 의 C 추정 = (F_t F_{t-1}⁻¹ - I)/FRAME_DT (속도를 (x_t - x_{t-1})/FRAME_DT 로 잡는 것과 같은 후퇴 차분;
+    우리 갱신 C = (J - I)/h, J = F_t F_{t-1}⁻¹ 과 같은 정의). t=0 이면 0. 입력 표준화 통계·입력폭 확인에만 쓴다."""
+    _Ft = take(traj_F(d)[t], gsel).float()
+    if t <= 0:
+        return torch.zeros_like(_Ft)
+    _Fp = take(traj_F(d)[t - 1], gsel).float()
+    _J = torch.linalg.solve(_Fp.double().transpose(-1, -2), _Ft.double().transpose(-1, -2)).transpose(-1, -2)   # F_t F_{t-1}⁻¹
+    return ((_J - torch.eye(3, device=_J.device, dtype=_J.dtype)) / FRAME_DT).float()
+
+
+def apic_C0(v):
+    """--apic 시작값: 초기 속도장이 균일하면 0, 아니면 v ≈ a + B x 의 최소제곱 B (전역 하나) -> (C0 [N,3,3], 설명 문자열)."""
+    _sp = float((v - v.mean(0, keepdim=True)).norm(dim=-1).max())
+    _vm = float(v.mean(0).norm())
+    if _sp <= 1e-6 * max(_vm, 1e-12):
+        return torch.zeros(v.shape[0], 3, 3, device=v.device, dtype=v.dtype), f"초기 속도 균일 (|v - 평균| 최대 {_sp:.3e}, |평균 v| {_vm:.3e}) -> C0 = 0"
+    return None, f"초기 속도 비균일 (|v - 평균| 최대 {_sp:.3e}, |평균 v| {_vm:.3e})"
 
 
 def node_feats(d, t, gsel, x, v, fe=None):
@@ -1684,6 +1715,11 @@ def node_feats(d, t, gsel, x, v, fe=None):
         if _r is None or _r[0] is not x or _r[1] is None:
             raise RuntimeError("--pfreq: 이 상태의 F 가 걸려 있지 않다 (이 호출 지점에서 step_once/node_feats 앞에 ipf_set(x, F) 할 것)")
         _pF = _r[1]
+    _pC = None
+    if a.apic:
+        _pC = _IPF_F[0][3] if len(_IPF_F[0]) > 3 else None
+        if _pC is None:
+            raise RuntimeError("--apic: 이 상태의 C 가 걸려 있지 않다 (ipf_set(x, F, C=...) 할 것)")
     if a.ip_feat:
         _r = _IPF_F[0]
         if _r is None or _r[0] is not x:
@@ -1696,7 +1732,8 @@ def node_feats(d, t, gsel, x, v, fe=None):
     _o = DM.node_feats(
         a, cfg, take(d["x"][0], gsel), MASS[gsel], x, v, VEL_SCALE,
         grid=_GRID[0], off=_GRID_OFF[0], pt_parts=_parts,
-        mat_vec=(mat_feat(cfg) if (N_MAT and not N_FILM) else None), ip_state=_ips, h=float(_DT[0]), pF=_pF)
+        mat_vec=(mat_feat(cfg) if (N_MAT and not N_FILM) else None), ip_state=_ips, h=float(_DT[0]), pF=_pF,
+        pC=_pC, pvol=(_pvol(MASS[gsel], cfg) if a.p2g_stress else None))
     if _ips is not None and _ck is not None and _ck not in _IPF_CACHE:
         _IPF_CACHE[_ck] = _o[0][:, -DM.IP_FEAT_N:].detach().to("cpu", copy=True)
     if a.pe_only > 0:
@@ -1712,15 +1749,17 @@ def node_feats(d, t, gsel, x, v, fe=None):
 
 
 _ens_offsets = DM.ens_offsets
+_APIC_C = [None]         # --apic: 지금 전진시키는 모델 상태의 입자 C [N,3,3] (_ovnet_fit 가 _ov_frame 앞에 건다)
+_LAST_JD = [None]        # _ov_frame 이 마지막으로 F 갱신에 쓴 스텝 야코비안 J [N,3,3] (--apic: C = (J - I)/h)
 _IPF_F = [None]          # --ip_feat: (x 텐서, F, 캐시 키) -- step_once/node_feats 를 부르는 쪽이 그 상태의 F 를 건다
 _IPF_CACHE = {}          # --ip_feat: 고정 상태(다궤적 적합의 (궤적, 프레임))의 특징 -- 같은 상태면 같은 값이라 한 번만 계산
 
 
-def ipf_set(x, F, key=None):
+def ipf_set(x, F, key=None, C=None):
     """--ip_feat: 다음 node_feats(.., x, ..) 호출이 쓸 상태 F 를 건다 (x 는 **같은 텐서 객체**여야 한다 -- 다른 상태의 F 를
     잘못 쓰는 일을 막는다). key 를 주면 (상태가 고정인 학습 표본) 특징을 CPU 에 캐시해 다시 쓴다. 꺼져 있으면 아무 일도 안 한다."""
     if a.ip_feat or _NEEDPF:
-        _IPF_F[0] = (x, F, key)
+        _IPF_F[0] = (x, F, key, C)       # C: --apic 의 이 상태 아핀 속도 행렬 (아니면 None)
 
 
 def _ipf_advance_F(F, jd, cfg, h):
@@ -2203,15 +2242,19 @@ with torch.no_grad():
                   + (7 * a.n_ctrl if a.control else 0))
     else:
         _fe0 = (take(traj_F(_d)[1], _g).float() if a.fe_state else None)
-        ipf_set(_x, take(traj_F(_d)[1], _g).float() if (a.ip_feat or _NEEDPF) else None)
+        ipf_set(_x, take(traj_F(_d)[1], _g).float() if (a.ip_feat or _NEEDPF) else None,
+                C=(traj_C(_d, 1, _g) if a.apic else None))
         n_feat = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0].shape[-1]
         if a.pfreq > 0:
             print(f"[--pfreq {a.pfreq}] 노드 입력 = 입자 주파수 인코딩 {DM._SGM.pfreq_channels(a.pfreq)} 채널 "
                   f"(15 스칼라 x (1+2·{a.pfreq}), 입자 모멘트 29 채널 뺌) + 나머지 {n_feat - DM._SGM.pfreq_channels(a.pfreq)} -> 입력 {n_feat}", flush=True)
         if a.node_feat == "p2g":
             print(f"[--node_feat p2g] 노드 입력 = MPM P2G (2 차 B-스플라인 27 노드) [log1p(1e3 m_i) 1, v_i/vel_scale 3, F_i-I 9] "
-                  f"{DM._SGM.P2G_NCH} 채널 (입자 모멘트 29 채널 뺌) + 나머지 {n_feat - DM._SGM.P2G_NCH} -> 입력 {n_feat}", flush=True)
-            _pfx = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0][:, :DM._SGM.P2G_NCH]
+                  f"{DM._SGM.P2G_NCH} 채널 (입자 모멘트 29 채널 뺌)"
+                  + (f" [--apic: 속도 = APIC P2G, + C_i·h/vel_scale {DM._SGM.P2G_APIC_NCH}]" if a.apic else "")
+                  + (f" [--p2g_stress: + f_i/(E h²) 3, τ_i/E 대칭 6 = {DM._SGM.P2G_STRESS_NCH}]" if a.p2g_stress else "")
+                  + f" + 나머지 {n_feat - _P2G_W} -> 입력 {n_feat}", flush=True)
+            _pfx = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0][:, :_P2G_W]
             print("[P2G 칸 확인] 노드 " + str(_pfx.shape[0]) + f", nan {int((~torch.isfinite(_pfx)).sum())}, 칸별 [최소, 최대] "
                   + " ".join(f"{_c}:[{float(_pfx[:, _c].min()):.3g},{float(_pfx[:, _c].max()):.3g}]" for _c in range(_pfx.shape[1])), flush=True)
         if a.gnn_layer == "unet":
@@ -2307,7 +2350,8 @@ with torch.no_grad() if not a.infer else contextlib.nullcontext():
             _cr = None
         else:
             _fes = (take(traj_F(_dd)[_t], _gs).float() if a.fe_state else None)
-            ipf_set(_x, take(traj_F(_dd)[_t], _gs).float() if (a.ip_feat or _NEEDPF) else None)
+            ipf_set(_x, take(traj_F(_dd)[_t], _gs).float() if (a.ip_feat or _NEEDPF) else None,
+                    C=(traj_C(_dd, _t, _gs) if a.apic else None))
             _s, _cr = node_feats(_dd, _t, _gs, _x, _v, fe=_fes)[0], None
         if a.stat_occ and _cr is not None:  # 빈 칸이 96% 라 통계를 장악한다
             _m = torch.zeros(_s.shape[0], dtype=torch.bool, device=_s.device)
@@ -4490,7 +4534,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
 
     def _fwd():
         if a.node_feat == "p2g":
-            ipf_set(x, F)          # --node_feat p2g: 노드 특징의 입자 F = 이 프레임 상태의 F (모델 롤아웃 상태)
+            ipf_set(x, F, C=_APIC_C[0])   # --node_feat p2g: 노드 특징의 입자 F (와 --apic 의 C) = 이 프레임 상태의 것 (모델 롤아웃 상태)
         with torch.enable_grad(), dt_scope(_DT[0]):
             x2, _, v2, _, _, _, _, _, _, _Jd = step_once(
                 d, t, gsel, p, x, v, need_J=False)
@@ -5914,6 +5958,7 @@ def _ov_frame(d, t, gsel, p, x, v, F):
             if _no > 1 and _oi + 1 < _no:
                 _JR_HOLD[0] = Jd.detach()
     _JR_HOLD[0] = None
+    _LAST_JD[0] = Jd.detach()
     with torch.no_grad():
         F_tr = Jd.to(F.dtype) @ F
         _, dlog = phys_resid.psi_of(F_tr, cfg, _DT[0])
@@ -6152,6 +6197,11 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
         net.load_state_dict(_c["net"])
         so = _c["state_out"]
         xm, vm, Fm = so["x"].to(dev), so["v"].to(dev), so["F"].to(dev)
+        if a.apic:
+            if so.get("C") is None:
+                raise SystemExit(f"[망 프레임별] --apic: frame_{_t1:02d}.pt 에 C 가 없다 (APIC 아닌 실행의 프레임 파일)")
+            Cm = so["C"].to(dev).float()
+            print(f"    [APIC] 이어 돌기: frame_{_t1:02d}.pt 의 C 읽음 (|C| 최대 {float(Cm.abs().max()):.4e})", flush=True)
         _recs = [r_ for r_ in json.load(open(_rp)) if r_["t"] <= _t1] if os.path.exists(_rp) else []
         if len(_recs) != _t1 + 1:
             raise SystemExit(f"[망 프레임별] records.json 프레임 수 {len(_recs)} 가 마지막 프레임 파일 {_t1} 과 맞지 않는다")
@@ -6160,6 +6210,13 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
     else:
         _ts = 0
         xm, vm, Fm = x.clone(), v.clone(), _F0.clone()
+        if a.apic:
+            Cm, _msg0 = apic_C0(vm)
+            if Cm is None:
+                raise SystemExit(f"[APIC] {_msg0} -- 비균일 초기 속도장의 기울기 시작값은 아직 안 넣었다")
+            print(f"    [APIC] 시작 C: {_msg0}", flush=True)
+    if a.apic and (a.pg_vdamp or EVAL_SUB != 1):
+        raise SystemExit("--apic: --pg_vdamp·서브스텝은 아직 (C 를 같은 식으로 줄이는 규칙 미정)")
     print(f"    [망 프레임별] 목적함수 {a.ov_obj}{' (목표 = ' + os.environ['AF_OV_L2_TGT'] + ')' if a.ov_obj == 'l2' and _L2_TGT is not None else ''}, "
           f"{a.ov_opt} {a.ov_roll} 회/프레임 (lr {a.out_var_lr:g}), E* 출력만 최적화 L-BFGS {_nes}, 프레임 {_ts}..{L - 1}", flush=True)
     _tw = time.time()
@@ -6167,6 +6224,9 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
         _tf = time.time()
         _SIM_T[0] = i * FRAME_DT
         _state_in = dict(x=xm.detach().cpu(), v=vm.detach().cpu(), F=Fm.detach().cpu())
+        if a.apic:
+            _state_in["C"] = Cm.detach().cpu()
+            _APIC_C[0] = Cm
         _nc = len(_CURVE)
 
         def _estar():
@@ -6198,6 +6258,10 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
             _NODEOV_TGT[0] = dict(tp=_nd_[0].to(dev).float(), td=_nd_[1].to(dev).float()[:, :3])
         with dt_scope(_hs):
             xn, vn, Fn = _ov_frame(d, t0 + i, gsel, p, xm, vm, Fm)
+        Cn = None
+        if a.apic:
+            # C_p = (J_p - I)/h: 이번 스텝 셀 사상 야코비안 (F 갱신 F_tr = J F 에 쓴 바로 그 J, _ov_frame 이 남김), 스텝 = 프레임 (서브스텝 1)
+            Cn = ((_LAST_JD[0].float() - torch.eye(3, device=dev)) / _hs).detach()
         if _OVN and (_OVN_BAD[0] is not None or not bool(torch.isfinite(xn).all())):
             # nan/inf: 끝까지 돌리지 않고 이 프레임에서 멈춘다 (E* 는 재지 않는다), 기록·그 전 프레임까지의 덤프는 남긴다
             _why = _OVN_BAD[0] or "위치 x 가 nan/inf"
@@ -6238,6 +6302,8 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
             vn = _pg_vdamp(vn, d, _hs)
         elif a.cfg_bc and float(d["cfg"].get("grid_v_damping_scale", 1.1)) < 1.0:
             vn = vn * float(d["cfg"]["grid_v_damping_scale"])
+            if Cn is not None:                       # 격자 속도 감쇠는 C (격자 속도의 기울기) 에도 같은 배율
+                Cn = Cn * float(d["cfg"]["grid_v_damping_scale"])
         _o0, _o1 = _OV_LOG[-1]                       # 목적함수 처음·끝
         E_ip = float(_EIP_LAST[0])                   # 끝 출력의 증분 포텐셜
         if len(_CURVE) != _nc + 1:
@@ -6294,10 +6360,14 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
             rec["dist_model_ref"] = float((xn - _rx).norm(dim=-1).mean()) / _ext
             rec["ref_err"] = DM.frame_err(_rx, gt, _ext)
         xm, vm, Fm = xn.detach(), vn.detach(), Fn.detach().float()
+        if a.apic:
+            Cm = Cn
+            rec["C_stats"] = dict(abs_max=float(Cm.abs().max()), fro_mean=float(Cm.reshape(-1, 9).norm(dim=-1).mean()),
+                                  skew_fro_mean=float((0.5 * (Cm - Cm.transpose(-1, -2))).reshape(-1, 9).norm(dim=-1).mean()))
         _recs.append(rec)
         _f = os.path.join(_fd, f"frame_{i:02d}.pt")
         torch.save({"t": i, "net": net.state_dict(), "state_in": _state_in,
-                    "state_out": dict(x=xm.cpu(), v=vm.cpu(), F=Fm.cpu()),
+                    "state_out": dict(x=xm.cpu(), v=vm.cpu(), F=Fm.cpu(), **({"C": Cm.cpu()} if a.apic else {})),
                     "x_star": (x_star.detach().cpu() if x_star is not None else None),
                     "curve": dict(obj=_ctr, terms=_ctp), "newton_log": _nlog, "rec": rec, "n_feat": n_feat, "args": vars(a),
                     "EXT": _ext, "frame_dt": FRAME_DT, "l2_tgt": os.environ.get("AF_OV_L2_TGT")}, _f + ".tmp")
@@ -6316,15 +6386,18 @@ def _ovnet_fit(d, t0, L, gsel, x, v, p):
               + f"  det 최소 {rec['F_stats']['det_min']:.3f}"
               + f"  맞춤 {_sec_fit:.0f} s 프레임 {rec['sec']:.0f} s 누적 {time.time() - _tw:.0f} s", flush=True)
     if len(_recs) == L or (_OVN and _recs and _recs[-1].get("nan") and L > 0):
-        _pr, _vv, _Fv = [], [], []
+        _pr, _vv, _Fv, _Cv = [], [], [], []
         for i in range(L):
             so = torch.load(os.path.join(_fd, f"frame_{i:02d}.pt"), map_location="cpu", weights_only=False)["state_out"]
             _pr.append(so["x"].float()); _vv.append(so["v"].float()); _Fv.append(so["F"].float())
+            if a.apic:
+                _Cv.append(so["C"].float())
         _rd = os.path.join(_out, "roll_net.pt")
         torch.save({"pred": torch.stack(_pr), "gt": torch.stack([take(d["x"][t0 + i + 1], gsel).cpu() for i in range(L)]),
                     "x0": d["x"][t0].to(dev).float().cpu(), "ctrl_pos": d.get("ctrl_pos"), "ctrl_R": d.get("ctrl_R"),
                     "ctrl_id": d.get("ctrl_id"), "t0": t0, "tag": d.get("tag", ""), "nodes": None, "fscal": None,
-                    "gt_fscal": None, "EXT": float(d.get("_ext", EXT)), "F": torch.stack(_Fv), "v": torch.stack(_vv)}, _rd + ".tmp")
+                    "gt_fscal": None, "EXT": float(d.get("_ext", EXT)), "F": torch.stack(_Fv), "v": torch.stack(_vv),
+                    **({"C": torch.stack(_Cv)} if a.apic else {})}, _rd + ".tmp")
         os.replace(_rd + ".tmp", _rd)
         _pe = [r_["pos_err_model"] for r_ in _recs if "pos_err_model" in r_]
         print(f"[망 프레임별 끝] {L} 프레임, 위치 오차 평균 {100 * np.mean(_pe):.3f}%  덤프 {_rd}", flush=True)

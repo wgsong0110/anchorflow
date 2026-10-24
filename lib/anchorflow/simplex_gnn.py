@@ -23,7 +23,7 @@ from .nextstate import DtFiLM
 from .simplex import N_EDGE_CLASS
 
 __all__ = ["scatter_to_nodes", "node_moments", "node_centroids",
-           "node_moments_finish", "SimplexGNN", "p2g_feats", "P2G_NCH",
+           "node_moments_finish", "SimplexGNN", "p2g_feats", "P2G_NCH", "p2g_stress_feats", "P2G_APIC_NCH", "P2G_STRESS_NCH",
            "LocalAttnGNN", "ring_edges", "ring_offset_table",
            "GraphUNetGNN", "grid_ijk", "coarsen_grid", "gunet_plan"]
 
@@ -122,9 +122,11 @@ def particle_freq_feats(x, v, F, m, rows, lam, n_node, npos, hn, K):
 
 
 P2G_NCH = 13         # --node_feat p2g 노드 입력 폭: log1p(1e3·m_i) 1 + v_i 3 + (F_i - I) 9
+P2G_APIC_NCH = 9     # --apic 가 더하는 칸: 질량 가중 평균 C_i·h/vel_scale (9, 행 우선)
+P2G_STRESS_NCH = 9   # --p2g_stress 가 더하는 칸: 노드 내부력 f_i/(E h²) 3 + 질량 가중 평균 τ_i/E 대칭 6 (xx,yy,zz,xy,xz,yz)
 
 
-def p2g_feats(v, F, m, rows, w, n_node):
+def p2g_feats(v, F, m, rows, w, n_node, C=None, dx=None, hn=None):
     """**--node_feat p2g** 노드 특징 (사용자 10-23): MPM P2G 그대로 입자 -> 노드.
 
     rows/w: 입자마다 27 노드 (2 차 B-스플라인, 격자 좌표 기준 텐서곱) 의 노드 색인·가중 w_ip [N,27].
@@ -134,9 +136,16 @@ def p2g_feats(v, F, m, rows, w, n_node):
     속도는 부르는 쪽이 vel_scale 로 나눈 값, F 는 F_i - I (node_moments 의 Fa - I 와 같은 꼴). 분모 하한 1e-12.
 
     v: [N,3], F: [N,3,3] 또는 [N,9], m: [N] -> [M, 13] = [log1p(1e3 m_i), v_i (3), F_i - I (9, 행 우선)]
+
+    **APIC** (--apic, 사용자 10-24): C [N,3,3] (입자 아핀 속도 행렬을 vel_scale 로 나눈 것), dx [N,27,3] = x_i - x_p (월드),
+    hn = 면내 격자 간격 h 를 주면 노드 속도를 APIC P2G 로
+      m_i v_i = Σ_p w_ip m_p (v_p + C_p (x_i - x_p))
+    로 바꾸고 (아핀 속도장 v(x) = a + B x, C_p = B 이면 무게와 무관하게 v_i = v(x_i) 정확히), 질량 가중 평균
+      C_i = Σ_p w_ip m_p C_p / m_i
+    를 무차원 C_i·h/vel_scale (속도/vel_scale 과 같은 척도: 셀 하나를 건너는 속도 차) 9 칸으로 끝에 덧붙인다 -> [M, 22].
     """
     dev, dt = v.device, v.dtype
-    N, C = rows.shape
+    N, K = rows.shape
     F9 = F.reshape(N, 9).to(dt)
     wm = w.to(dt) * m.to(dt).unsqueeze(1)                                  # [N,27]
     r = rows.reshape(-1)
@@ -146,7 +155,39 @@ def p2g_feats(v, F, m, rows, w, n_node):
     mi = num[:, :1]
     den = mi.clamp(min=1e-12)
     I9 = torch.eye(3, device=dev, dtype=dt).reshape(1, 9)
-    return torch.cat([torch.log1p(mi * 1e3), num[:, 1:4] / den, num[:, 4:13] / den - I9], -1)
+    if C is None:
+        return torch.cat([torch.log1p(mi * 1e3), num[:, 1:4] / den, num[:, 4:13] / den - I9], -1)
+    if dx is None or hn is None:
+        raise RuntimeError("p2g_feats --apic: dx (x_i - x_p) 와 hn 이 필요하다")
+    Cd = C.reshape(N, 3, 3).to(dt)
+    aff = torch.einsum("nab,nkb->nka", Cd, dx.to(dt))                      # C_p (x_i - x_p) [N,27,3]
+    mva = torch.zeros(n_node, 3, device=dev, dtype=dt).index_add_(0, r, (wm.unsqueeze(-1) * aff).reshape(-1, 3))
+    mC = torch.zeros(n_node, 9, device=dev, dtype=dt).index_add_(
+        0, r, (wm.unsqueeze(-1) * Cd.reshape(N, 1, 9)).reshape(-1, 9))
+    return torch.cat([torch.log1p(mi * 1e3), (num[:, 1:4] + mva) / den, num[:, 4:13] / den - I9,
+                      mC / den * float(hn)], -1)
+
+
+def p2g_stress_feats(tau, vol0, m, rows, w, gradw, n_node, E, hn):
+    """**--p2g_stress** 노드 특징 (사용자 10-24 "응력도 계산해서 넘겨야지"): 입자 Kirchhoff 응력 τ_p = P(F_p) F_pᵀ 를 격자로.
+
+    gradw [N,27,3] = ∇_x w_ip (월드, 2 차 B-스플라인 기울기; 활성 아닌 이웃은 0), vol0 [N] = 초기 부피 V_p^0.
+      (1) 노드 내부력 (MPM P2G 와 같은 식, PhysGaussian/Warp p2g 의 -V⁰ τ ∇w):  f_i = -Σ_p V_p^0 τ_p ∇w_ip  -> f_i / (E h²) 3 칸
+      (2) 질량 가중 평균 응력 τ_i = Σ_p w_ip m_p τ_p / m_i  -> τ_i / E 대칭 6 칸 (xx, yy, zz, xy, xz, yz)
+    -> [M, 9]
+    """
+    dev, dt = gradw.device, gradw.dtype
+    N = tau.shape[0]
+    tau = tau.reshape(N, 3, 3).to(dt)
+    r = rows.reshape(-1)
+    fp = -vol0.to(dt).reshape(N, 1, 1) * torch.einsum("nab,nkb->nka", tau, gradw)    # [N,27,3]
+    f = torch.zeros(n_node, 3, device=dev, dtype=dt).index_add_(0, r, fp.reshape(-1, 3))
+    wm = w.to(dt) * m.to(dt).unsqueeze(1)
+    ts = torch.stack([tau[:, 0, 0], tau[:, 1, 1], tau[:, 2, 2], tau[:, 0, 1], tau[:, 0, 2], tau[:, 1, 2]], -1)   # [N,6]
+    num = torch.zeros(n_node, 7, device=dev, dtype=dt).index_add_(
+        0, r, (wm.unsqueeze(-1) * torch.cat([torch.ones_like(ts[:, :1]), ts], -1).unsqueeze(1)).reshape(-1, 7))
+    den = num[:, :1].clamp(min=1e-12)
+    return torch.cat([f / (float(E) * float(hn) ** 2), num[:, 1:] / den / float(E)], -1)
 
 
 def node_centroids(g1):

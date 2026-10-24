@@ -7,6 +7,8 @@
 #        floorcontact = --ov_obj ip + --bc_feat contact (접촉 셀 꼭짓점만 바닥 정보)
 #        noin         = --ov_obj ip (바닥 입력 원래 그대로) -- 위 둘의 기준판
 #        p2g          = noin + --node_feat p2g (노드 입력의 입자 부분 = MPM P2G 질량·속도·F, 2 차 B-스플라인; 사용자 10-23)
+#        apic         = noin + --node_feat p2g --apic --p2g_stress --bc_feat near (APIC C 상태·입력 + 응력 입력 + near 바닥; 사용자 10-24)
+#        p2gnear      = noin + --node_feat p2g --bc_feat near (apic 의 비교판)
 #        lattn        = noin + --gnn_layer lattn --attn_heads 8 (몸통 = 국소 어텐션 8 층 128; 사용자 10-23)
 #        lattn4       = lattn 과 같고 4 층
 #        gunet        = noin + --gnn_layer unet --gunet_levels 3 (몸통 = Graph U-Net, 격자 2h·4h 묶기 풀링 + 스킵; 사용자 10-24)
@@ -29,6 +31,8 @@ case $K in
   floorcontact) DIR=pfip_floorcontact; OBJ=ip; XF="--bc_feat contact"; XE="" ;;
   noin) DIR=pfip_noin; OBJ=ip; XF=""; XE="" ;;
   p2g) DIR=pfip_p2g; OBJ=ip; XF="--node_feat p2g"; XE="" ;;
+  apic) DIR=pfip_apic; OBJ=ip; XF="--node_feat p2g --apic --p2g_stress --bc_feat near --bc_near_h 1.0"; XE="" ;;   # 사용자 10-24: (A) P2G + APIC 아핀 속도 C (상태·입력) + 응력 (내부력·평균 τ) + near 바닥
+  p2gnear) DIR=pfip_p2gnear; OBJ=ip; XF="--node_feat p2g --bc_feat near --bc_near_h 1.0"; XE="" ;;   # 사용자 10-24: (B) apic 의 비교판 = P2G + near 바닥 (APIC·응력 없이)
   lattn) DIR=pfip_lattn; OBJ=ip; XF="--gnn_layer lattn --attn_heads 8"; XE="" ;;
   gunet_near) DIR=pfip_gunet_near; OBJ=ip; XF="--gnn_layer unet --gunet_levels 3 --bc_feat near --bc_near_h 1.0"; XE="" ;;   # 사용자 10-24: + 바닥 입력 = 접촉 여지 셀만 [플래그, 거리/h], 법선 없음, 거친 수준에도
   gunet_cf) DIR=pfip_gunet_contactflag; OBJ=ip; XF="--gnn_layer unet --gunet_levels 3 --bc_feat contactflag"; XE="" ;;   # 사용자 10-24: + 바닥 입력 = 교차 셀 플래그만

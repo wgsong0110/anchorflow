@@ -188,8 +188,21 @@ def node_grid(a, x, off=None):
                              h_fix=(a.node_h or None))
 
 
+_TAU_CACHE = [None]      # --p2g_stress: (키, τ, F 참조 -- 같은 메모리가 재사용돼 키가 겹치지 않게 붙잡아 둔다)
+
+
+def kirchhoff_tau(F, cfg):
+    """입자 Kirchhoff 응력 τ = P(F) Fᵀ, P = ∂ψ/∂F (phys_resid.psi_of 의 ψ 를 그대로 미분 -- 실행의 탄성 모델·씬 E·ν 와 같은 정의;
+    jelly 면 FCR: τ = 2μ(F-R)Fᵀ + λJ(J-1)I). 기울기 그래프는 끊는다 (입력 특징). F [N,3,3] -> τ [N,3,3]."""
+    with torch.enable_grad():
+        Fq = F.detach().reshape(-1, 3, 3).to(torch.float64).requires_grad_(True)
+        psi, _ = phys_resid.psi_of(Fq, cfg, 1.0)
+        P, = torch.autograd.grad(psi.sum(), Fq)
+    return (P @ Fq.detach().transpose(-1, -2)).to(F.dtype)
+
+
 def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
-               pt_parts=None, mat_vec=None, ip_state=None, h=None, pF=None):
+               pt_parts=None, mat_vec=None, ip_state=None, h=None, pF=None, pC=None, pvol=None):
     """사면체 복합체의 **노드** 특징. 입자 물리량을 자기 사면체의 barycentric
     가중으로 4 꼭짓점에 뿌려 모은다 (P2G 와 같은 구조, 전달 가중치 재사용).
 
@@ -201,6 +214,8 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
     h: 스텝 dt -- --bc_feat contact 의 관성 예측(조건 b)에 쓴다 (그때만 필수).
     pF: 이 상태의 입자 F [N,3,3] -- --pfreq 일 때 필수 (입자 모멘트 29 채널 대신 particle_freq_feats).
         --node_feat p2g 일 때도 필수 (입자 모멘트 29 채널 대신 MPM P2G 질량·속도·F 13 채널, simplex_gnn.p2g_feats).
+    pC: 이 상태의 입자 아핀 속도 행렬 C [N,3,3] (APIC) -- --apic 일 때 필수 (노드 속도를 APIC P2G 로, C_i 9 칸 추가).
+    pvol: 입자 초기 부피 V_p^0 [N] -- --p2g_stress 일 때 필수 (노드 내부력 f_i = -Σ V⁰ τ ∇w, 평균 τ; 9 칸 추가).
 
     -> (_in [M,F], npos [M,3], (lo,lat,nn), rows [N,4], lam [N,4], uniq [M],
         간선 (src,dst,cls), aux)
@@ -255,6 +270,8 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
     _nf = str(getattr(a, "node_feat", "mom") or "mom")
     if _nf not in ("mom", "p2g"):
         raise SystemExit(f"--node_feat {_nf} 모름")
+    if (getattr(a, "apic", False) or getattr(a, "p2g_stress", False)) and _nf != "p2g":
+        raise SystemExit("--apic·--p2g_stress 는 --node_feat p2g 와 함께")
     if _nf == "p2g" and (_agg != "bary" or _interp != "bary" or getattr(a, "hex_jac", False)
                          or int(getattr(a, "pfreq", 0) or 0) > 0):
         raise SystemExit("--node_feat p2g 는 --agg bary, --interp bary, hex_jac·--pfreq 없이만")
@@ -288,12 +305,32 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
             # 보내 버린다 (망은 활성 노드에서만 돈다). 변위 사상·간선은 그대로 사면체(rows, lam). 바닥 채널은 아래 그대로.
             if pF is None:
                 raise RuntimeError("--node_feat p2g: node_feats 에 이 상태의 입자 F (pF) 가 필요하다")
-            _f27, _w27, _ = SX.bspline27(x, lo, lat, nn)
+            _f27, _w27, _dw27 = SX.bspline27(x, lo, lat, nn)
             _pos = torch.searchsorted(uniq, _f27).clamp(max=Mn - 1)
             _hit = uniq[_pos] == _f27
             _r27 = torch.where(_hit, _pos, torch.full_like(_pos, Mn))
             _w27 = torch.where(_hit, _w27, torch.zeros_like(_w27)).to(x.dtype)
-            feat = san(_SGM.p2g_feats(v / vel_scale, pF, mass, _r27, _w27, Mn + 1)[:Mn])
+            if getattr(a, "apic", False):
+                # --apic (사용자 10-24): 노드 속도 = APIC P2G (v_p + C_p (x_i - x_p)), 질량 가중 C_i·h/vel_scale 9 칸
+                if pC is None:
+                    raise RuntimeError("--apic: node_feats 에 이 상태의 입자 C (pC) 가 필요하다")
+                _np1 = torch.cat([npos, npos[:1]], 0)
+                _dx = _np1[_r27] - x.unsqueeze(1)                                   # x_i - x_p [N,27,3] (덤프 노드는 가중 0)
+                feat = san(_SGM.p2g_feats(v / vel_scale, pF, mass, _r27, _w27, Mn + 1,
+                                          C=pC / vel_scale, dx=_dx, hn=float(hn))[:Mn])
+            else:
+                feat = san(_SGM.p2g_feats(v / vel_scale, pF, mass, _r27, _w27, Mn + 1)[:Mn])
+            if getattr(a, "p2g_stress", False):
+                # --p2g_stress (사용자 10-24): τ_p = P(F_p)F_pᵀ -> f_i = -Σ V⁰ τ ∇w (÷ E h²) 3 + 평균 τ_i (÷ E) 대칭 6
+                if pvol is None:
+                    raise RuntimeError("--p2g_stress: node_feats 에 입자 초기 부피 (pvol) 가 필요하다")
+                _gw = (_dw27.to(x.dtype) @ lat.Ai.to(x.dtype)) * _hit.unsqueeze(-1).to(x.dtype)   # ∇_x w_ip [N,27,3]
+                _tk = (pF.data_ptr(), pF._version, tuple(pF.shape), id(cfg))      # 같은 상태(프레임 안 Adam 반복)면 다시 안 잰다
+                if _TAU_CACHE[0] is None or _TAU_CACHE[0][0] != _tk:
+                    _TAU_CACHE[0] = (_tk, kirchhoff_tau(pF, cfg), pF)
+                _tau = _TAU_CACHE[0][1]
+                feat = torch.cat([feat, san(_SGM.p2g_stress_feats(_tau, pvol, mass, _r27, _w27, _gw, Mn + 1,
+                                                                  float(cfg["E"]), float(hn))[:Mn])], -1)
         elif _Kp > 0:
             # **--pfreq K** (사용자 10-21): 입자 모멘트 29 채널을 빼고, 입자-노드 쌍의 [(x_p-x_j)/hn, v_p/vel_scale, F_p-I]
             # 15 스칼라 각각의 [s, sin/cos(2^k π s), k<K] 를 λ·m 가중 평균 (simplex_gnn.particle_freq_feats). 바닥 채널은 아래 그대로.
@@ -945,7 +982,7 @@ _ARG_DEFAULTS = dict(
     bc_soft=False, bc_mode="project", bc_level="node", bc_ipg=False, bc_softplus=0.0, bc_stick=0.0, bc_stick_xn=False, ov_init="predict",
     no_mat=False, mat_film=False, v0_traj=False, smooth_nb=0,
     cell_poly=False, ov_roll=0, refps=False, hold_traj=None, pool=True,
-    node_feat="mom", gnn_layer="mp", attn_heads=8)
+    node_feat="mom", gnn_layer="mp", attn_heads=8, apic=False, p2g_stress=False)
 
 
 def ckpt_args(ck):
