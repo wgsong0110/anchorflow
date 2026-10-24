@@ -98,7 +98,7 @@ ANOTE=0; BNOTE=0
 while true; do
   ST=$(ssh -o ConnectTimeout=20 $LOGIN "bash /home/dkta/work/apic_hb.sh" 2>&1)
   echo "[점검] $(date '+%F %T') $(echo "$ST" | tr '\n' ' ' | cut -c1-300)"
-  grep -q "APIC_SMOKE_FAIL\|APIC_NO_GPU" <<<"$ST" && { fail "짧은 시험/띄우기: $(grep 'APIC_' <<<"$ST")"; break; }
+  ! grep -q "APIC_FULL_LAUNCHED" <<<"$ST" && grep -q "APIC_SMOKE_FAIL\|APIC_NO_GPU" <<<"$ST" && { fail "짧은 시험/띄우기: $(grep 'APIC_' <<<"$ST")"; break; }
   [ $ANOTE = 0 ] && grep -q "^ADONE" <<<"$ST" && { ANOTE=1; echo "[A 클러스터 끝] $(date)"; }
   [ $BNOTE = 0 ] && grep -q "^BDONE" <<<"$ST" && { BNOTE=1; echo "[B 클러스터 끝] $(date)"; }
   if grep -q "APIC_FULL_LAUNCHED" <<<"$ST" && ! grep -q "NOJOB\|PBSERR\|kex_exchange\|Connection" <<<"$ST"; then
