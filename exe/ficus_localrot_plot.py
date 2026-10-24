@@ -106,7 +106,7 @@ axs[2, 0].legend(frameon=False, fontsize=9)
 tm = th["theta_max"]
 R = th["nodes"]
 t = [r["t"] for r in R]
-axs[2, 1].fill_between(t, [r["eff_med"] for r in R], [r["eff_p99"] for r in R], color="#2b8a3e", alpha=0.25, label="상한 뒤 |θ̃| 중앙~99%")
+axs[2, 1].fill_between(t, [r["eff_med"] for r in R], [r["eff_p99"] for r in R], color="#2b8a3e", alpha=0.25, label="상한 적용 뒤 |θ| 중앙~99%")
 axs[2, 1].plot(t, [r["med"] for r in R], color="#2b8a3e", lw=1.2, ls="--", label="출력 |θ| 중앙")
 axs[2, 1].plot(t, [r["p99"] for r in R], color="#2b8a3e", lw=1.2, ls=":", label="출력 |θ| 99%")
 axs[2, 1].axhline(tm, color="#c92a2a", lw=1.0, label=f"상한 θmax = {tm:.4f} rad")
