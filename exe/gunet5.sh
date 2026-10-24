@@ -15,16 +15,18 @@ cd "$(dirname "$0")/.." || exit 1
 C=$(git rev-parse --short HEAD)
 NIT=${GUNET5_ITERS:-15000}
 XF="--gnn_layer unet --gunet_levels 3"
+TAG=${GUNET5_TAG:-}     # near (사용자 10-24): 바닥 입력 = 접촉 여지 셀 꼭짓점만 [플래그, 거리/h], 법선 없음, 거친 수준에도 -> 출력 gunet5_near
+case "$TAG" in "") ;; near) XF="$XF --bc_feat near --bc_near_h 1.0" ;; *) echo "[오류] GUNET5_TAG $TAG"; exit 1 ;; esac
 P=$W/lbpool; NI=$W/lbours/noinertial; S=$W/lbours/spstick; NS=$W/lbours/lego_psi_spstick
 WP=$W/wt/psi_d993fb5; RANGE=$W/lbours/lego_psi/range.json
-DN=gunet5; [ "$NIT" = 15000 ] || DN=gunet5_it$NIT
+DN=gunet5${TAG:+_$TAG}; [ "$NIT" = 15000 ] || DN=${DN}_it$NIT
 U=$W/lbours/$DN; R=r2:storage/result/anchorflow/lbours/$DN; mkdir -p $U
 if [ -f $U/driver.hb ] && [ $(( $(date +%s) - $(cat $U/driver.hb) )) -lt 300 ]; then echo "[중단] 다른 드라이버가 돌고 있다 (하트비트 5 분 안) $(date)"; exit 0; fi
 echo $$ > $U/driver.pid
 ( while true; do date +%s > $U/driver.hb; sleep 120; done ) & HB=$!
 ( while true; do rclone copy $U $R -q; sleep 300; done ) & SYNC=$!
 trap 'kill $SYNC $HB 2>/dev/null' EXIT
-echo "[시작] $(date) 커밋 $C 노드 $(hostname) 잡 ${PBS_JOBID:-?} GPU$G 반복 $NIT"
+echo "[시작] $(date) 커밋 $C 노드 $(hostname) 잡 ${PBS_JOBID:-?} GPU$G 반복 $NIT 출력 $DN 추가 인자 $XF"
 up(){ rclone copy $U $R -q; }
 bgup(){ ( rclone copyto $1 $R/${1#$U/} -q && echo "[R2 덤프 올림] ${1#$U/} $(date +%T)" ) & }
 fail(){ echo "[오류] $1 $(date)"; echo "$1" > $U/GUNET5_FAIL; up; exit 1; }

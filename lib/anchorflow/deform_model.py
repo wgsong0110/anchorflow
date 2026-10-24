@@ -164,6 +164,9 @@ def build_net(a, n_feat, ext0, frame_dt, n_film, dev="cuda"):
         # --gnn_layer unet (사용자 10-24): 몸통만 Graph U-Net (격자 2h·4h 거칠게 묶기 풀링, 스킵), 나머지 SimplexGNN 그대로.
         # 층 수는 --gunet_levels 로 정해진다 (gunet_plan; --gnn_layers 는 쓰지 않는다)
         _cls, _kw = _SGM.GraphUNetGNN, dict(levels=int(getattr(a, "gunet_levels", 3) or 3))
+        if str(getattr(a, "bc_feat", "dist") or "dist") in ("near", "contactflag"):
+            # 거친 수준(2h, 4h)에도 같은 바닥 규칙을 그 수준 셀 크기로 다시 계산해 풀링 뒤에 더한다 (사용자 10-24)
+            _kw.update(bc_mode=str(a.bc_feat), bc_near_h=float(getattr(a, "bc_near_h", 1.0)))
     elif str(getattr(a, "gnn_layer", "mp") or "mp") != "mp":
         raise SystemExit(f"--gnn_layer {a.gnn_layer} 모름")
     return _cls(n_feat=n_feat, hidden=a.hidden, layers=a.gnn_layers, **_kw,
@@ -341,6 +344,12 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
         if rows.shape[1] != 4 or _interp != "bary" or getattr(a, "hex_jac", False):
             raise SystemExit("--bc_feat contact 는 사면체 barycentric (--interp bary, hex_jac 없음) 만 지원한다")
         extra = [bc_contact_feats(cfg, x, v, mass, rows, lam, npos, Mn, h, hn)]
+    elif str(getattr(a, "bc_feat", "dist") or "dist") in ("near", "contactflag"):
+        # --bc_feat near (사용자 10-24): 꼭짓점 중 하나라도 바닥 부호 거리 < bc_near_h·hn 인 셀의 네 꼭짓점에만 [플래그 1, 거리/hn], 나머지 0, 법선 없음
+        # --bc_feat contactflag (사용자 10-24): 꼭짓점 중 하나라도 부호 거리 ≤ 0 (바닥과 교차) 인 셀의 네 꼭짓점에만 [플래그 1], 거리·법선 없음
+        if rows.shape[1] != 4 or _interp != "bary" or getattr(a, "hex_jac", False):
+            raise SystemExit(f"--bc_feat {a.bc_feat} 는 사면체 barycentric (--interp bary, hex_jac 없음) 만 지원한다")
+        extra = [bc_near_feats(cfg, rows, npos, Mn, hn, str(a.bc_feat), float(getattr(a, "bc_near_h", 1.0)))]
     elif str(getattr(a, "bc_feat", "dist") or "dist") == "distpe":
         # --bc_feat distpe (사용자 10-23): 모든 노드에 부호 거리/hn 원래 값 + sin/cos 다중 주파수 (--pfreq 방식), 법선 그대로
         extra = [bc_pe_feats(npos, cfg, hn, int(getattr(a, "bc_pe", 6)))]
@@ -407,6 +416,39 @@ def bc_pe_feats(npos, cfg, hn, K):
     if not out:
         return torch.zeros(npos.shape[0], 0, device=dev, dtype=dt)
     return torch.cat(out, -1)
+
+
+def bc_near_feats(cfg, rows, npos, Mn, hn, mode, near_h=1.0):
+    """**--bc_feat near / contactflag** 노드 바닥 특징 (기울기 차단, 사용자 10-24). surface_collider 마다:
+      near        -> [플래그, 플래그·부호거리/hn] 2 채널. 셀 = 입자가 든 사면체(rows 의 행); 꼭짓점 노드 부호 거리 중 하나라도
+                     < near_h·hn (접촉했거나 접촉할 여지) 이면 그 셀의 네 꼭짓점 모두 플래그 1·실제 거리, 나머지 노드 0. 법선 없음.
+      contactflag -> [플래그] 1 채널. 꼭짓점 부호 거리 중 하나라도 ≤ 0 (바닥과 교차·접촉) 인 셀의 네 꼭짓점만 1. 거리·법선 없음.
+    cuboid·enforce_particle_translation 칸은 bc_features/hn 그대로 (dist 경로와 같은 값). -> [M, C]
+    """
+    with torch.no_grad():
+        npos = npos.detach()
+        dev, dt = npos.device, npos.dtype
+        out = []
+        for bc in cfg.get("boundary_conditions", []):
+            t = bc["type"]
+            if t == "surface_collider":
+                n = torch.tensor(bc["normal"], device=dev, dtype=dt)
+                n = n / n.norm().clamp(min=1e-12)
+                q = torch.tensor(bc["point"], device=dev, dtype=dt)
+                sd = ((npos - q) * n).sum(-1)                                   # [M]
+                vert = (sd < float(near_h) * hn) if mode == "near" else (sd <= 0)
+                cell = vert[rows].any(1)                                        # [N] 입자의 사면체
+                fl = torch.zeros(Mn, device=dev, dtype=dt).index_add_(
+                    0, rows.reshape(-1), cell.to(dt).unsqueeze(1).expand(-1, 4).reshape(-1)) > 0
+                f = fl.to(dt).unsqueeze(1)
+                out.append(f)
+                if mode == "near":
+                    out.append(f * (sd / hn).unsqueeze(1))
+            elif t in ("cuboid", "enforce_particle_translation"):
+                out.append(bc_features(npos, {"boundary_conditions": [bc]}) / hn)
+        if not out:
+            return torch.zeros(Mn, 0, device=dev, dtype=dt)
+        return torch.cat(out, -1).detach()
 
 
 def bc_contact_feats(cfg, x, v, mass, rows, lam, npos, Mn, h, hn):
@@ -696,7 +738,7 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                     if INPUT_HOOK[0] is not None:          # 진단: 망 입력 특징을 바꿔 넣는다 (섭동·무작위 입력)
                         _ink = INPUT_HOOK[0](_ink, net)
                     if getattr(net, "needs_grid", False):     # --gnn_layer unet: 노드 정수 좌표 (압축 색인, 축별 개수, 격자 원점)
-                        out = net(_ink, _srk, _dsk, _clk, tau, mat=mat, grid=(_uqk, _nnk, _lok, _latk))
+                        out = net(_ink, _srk, _dsk, _clk, tau, mat=mat, grid=(_uqk, _nnk, _lok, _latk, cfg))
                     else:
                         out = net(_ink, _srk, _dsk, _clk, tau, mat=mat)
                 if a.net_inertial:

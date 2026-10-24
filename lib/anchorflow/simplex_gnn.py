@@ -487,6 +487,44 @@ def gunet_plan(levels, enc=2, bot=2, dec=1):
             + [(l, "dec", dec) for l in range(L - 2, -1, -1)])
 
 
+def coarse_bc_feats(gpos, level, lat, cfg, mode, near_h, src, dst):
+    """거친 수준 l 의 노드 바닥 특징 (--bc_feat near / contactflag + --gnn_layer unet, 사용자 10-24; 기울기 없음).
+
+    수준 l 노드 = 전역 정수 좌표 c (간격 2^l h) -> 위치 A·(2^l c) (그 수준 격자점). 셀 크기 h_l = 2^l h.
+    수준 0 규칙(셀의 꼭짓점 하나라도 조건이면 셀의 네 꼭짓점 모두)을 거친 수준에서는 **거친 간선 이웃**으로 옮긴다:
+    노드 i 는 자기 또는 거친 이웃 하나라도 조건이면 플래그 1 (거친 간선 = 고운 사면체 변의 부모 쌍이라 그 수준 '같은 셀' 이웃).
+      near:        조건 부호 거리 < near_h·h_l,  값 [플래그, 플래그·거리/h_l]
+      contactflag: 조건 부호 거리 ≤ 0,           값 [플래그]
+    cuboid 등 다른 경계는 거친 수준에 넣지 않는다 (lego 는 바닥 하나). -> [Mc, C]
+    """
+    with torch.no_grad():
+        dt = lat.A.dtype
+        sc = float(2 ** int(level))
+        w = (gpos.to(dt) * sc) @ lat.A.T                                        # [Mc,3] 월드 (lo = A·imin 이라 전역 좌표면 원점 불필요)
+        hl = sc * float(lat.s)
+        out = []
+        for bc in cfg.get("boundary_conditions", []):
+            if bc["type"] != "surface_collider":
+                continue
+            n = torch.tensor(bc["normal"], device=w.device, dtype=dt)
+            n = n / n.norm().clamp(min=1e-12)
+            q = torch.tensor(bc["point"], device=w.device, dtype=dt)
+            sd = ((w - q) * n).sum(-1)
+            v = ((sd < float(near_h) * hl) if mode == "near" else (sd <= 0)).to(dt)
+            nb = torch.zeros_like(v).index_add_(0, dst, v[src]) if src.numel() else torch.zeros_like(v)
+            f = ((v + nb) > 0).to(dt).unsqueeze(1)
+            out.append(f)
+            if mode == "near":
+                out.append(f * (sd / hl).unsqueeze(1))
+        if not out:
+            return torch.zeros(w.shape[0], 0, device=w.device, dtype=dt)
+        return torch.cat(out, -1)
+
+
+def _n_coarse_bc(mode):
+    return {"near": 2, "contactflag": 1}.get(mode, 0)
+
+
 class GraphUNetGNN(SimplexGNN):
     """**Graph U-Net** 몸통 (Gao & Ji 2019 구조를 우리 격자에 맞게, --gnn_layer unet, 사용자 10-24).
 
@@ -505,7 +543,7 @@ class GraphUNetGNN(SimplexGNN):
 
     needs_grid = True
 
-    def __init__(self, n_feat, hidden=128, levels=3, enc=2, bot=2, dec=1, **kw):
+    def __init__(self, n_feat, hidden=128, levels=3, enc=2, bot=2, dec=1, bc_mode=None, bc_near_h=1.0, **kw):
         kw.pop("layers", None)
         self.plan = gunet_plan(levels, enc, bot, dec)
         n_layers = sum(n for _, _, n in self.plan)
@@ -513,8 +551,13 @@ class GraphUNetGNN(SimplexGNN):
         self.levels = int(levels)
         self.body = nn.ModuleList([_MPLayer(hidden) for _ in range(n_layers)])
         self.fuse = nn.ModuleList([nn.Linear(2 * hidden, hidden) for _ in range(self.levels - 1)])
+        # 거친 수준 바닥 특징 (bc_mode near/contactflag, 사용자 10-24): 수준 l>=1 마다 풀링 평균 뒤 h += W_l·bc_l
+        self.bc_mode, self.bc_near_h = bc_mode, float(bc_near_h)
+        nbc = _n_coarse_bc(bc_mode)
+        self.bc_proj = nn.ModuleList([nn.Linear(nbc, hidden) for _ in range(self.levels - 1)]) if nbc else None
         self._hc = None
         self.level_stats = None
+        self._printed = False
 
     def hierarchy(self, src, dst, cls, grid):
         uniq, nn_ = grid[0], grid[1]
@@ -529,11 +572,25 @@ class GraphUNetGNN(SimplexGNN):
             imin = torch.round(lat.Ai.to(lo.dtype) @ lo).long()
             pos = pos + imin.to(pos.device)
         lv = [dict(src=src, dst=dst, cls=cls, M=int(uniq.numel()))]
-        for _ in range(self.levels - 1):
+        for _l in range(self.levels - 1):
             parent, pos, (cs, cd, cc), cnt = coarsen_grid(pos, lv[-1]["src"], lv[-1]["dst"])
             lv[-1]["parent"] = parent
             lv.append(dict(src=cs, dst=cd, cls=cc, M=int(cnt.numel()), cnt=cnt))
-        self.level_stats = [dict(M=d["M"], E=int(d["src"].numel())) for d in lv]
+            if self.bc_proj is not None:
+                if len(grid) < 5 or grid[4] is None or len(grid) < 4 or grid[2] is None:
+                    raise RuntimeError("GraphUNetGNN bc_mode: grid=(uniq, nn, lo, lat, cfg) 가 필요하다")
+                lv[-1]["bc"] = coarse_bc_feats(pos, _l + 1, grid[3], grid[4], self.bc_mode, self.bc_near_h, cs, cd)
+        self.level_stats = [dict(M=d["M"], E=int(d["src"].numel()),
+                                 **({} if "bc" not in d else dict(bc_nonzero=float((d["bc"] != 0).any(-1).float().mean()),
+                                                                 bc_min=[float(t) for t in d["bc"].min(0).values],
+                                                                 bc_max=[float(t) for t in d["bc"].max(0).values])))
+                            for d in lv]
+        if self.bc_proj is not None and not self._printed:
+            self._printed = True
+            print("[Graph U-Net 거친 수준 바닥] " + " | ".join(
+                f"수준 {l} 노드 {d['M']}" + (f" 0 아닌 노드 {100 * d['bc_nonzero']:.2f}% 칸별 [최소,최대] "
+                                            + " ".join(f"[{a_:.3g},{b_:.3g}]" for a_, b_ in zip(d['bc_min'], d['bc_max'])) if 'bc_nonzero' in d else "")
+                for l, d in enumerate(self.level_stats)), flush=True)
         self._hc = (uniq, src, lv)
         return lv
 
@@ -556,6 +613,8 @@ class GraphUNetGNN(SimplexGNN):
                 d = lv[l]
                 agg = torch.zeros(d["M"], h.shape[1], device=h.device, dtype=h.dtype).index_add_(0, lv[l - 1]["parent"], h)
                 h = agg / d["cnt"].clamp_min(1).unsqueeze(-1).to(h.dtype)
+                if self.bc_proj is not None:                            # 그 수준에서 다시 계산한 바닥 특징 (풀링 평균에 묻히지 않게)
+                    h = h + self.bc_proj[l - 1](d["bc"].to(h.dtype))
             cur = l
             d = lv[l]
             for _ in range(n):

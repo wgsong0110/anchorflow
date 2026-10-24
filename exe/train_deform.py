@@ -155,12 +155,16 @@ ap.add_argument("--ip_feat", action="store_true",
 ap.add_argument("--ip_feat_only", action="store_true",
                 help="**노드 입력 = ip_node_feats 18 채널만** (사용자 10-21, --ip_feat 와 함께): 입자 모멘트·바닥 거리/법선(bc)·"
                      "물성·추가 특징을 모두 뺀다 (deform_model.node_feats 끝에서 잘라 학습·표준화·롤아웃이 같은 입력)")
-ap.add_argument("--bc_feat", default="dist", choices=["dist", "contact", "distpe"],
+ap.add_argument("--bc_feat", default="dist", choices=["dist", "contact", "distpe", "near", "contactflag"],
                 help="노드 바닥 특징. dist = 모든 노드에 부호 거리 1 + 법선 3 (기본). contact (사용자 10-21) = [접촉 플래그 1, 거리 1, "
                      "법선 3]: 입자가 든 사면체 중 꼭짓점 현재 위치 또는 노드 관성 예측(h·v_n+h²g)으로 옮긴 위치가 바닥에 닿거나 "
                      "넘는 셀의 꼭짓점 노드만 플래그 1 과 실제 거리·법선, 나머지 0 (deform_model.bc_contact_feats, 기울기 차단). "
                      "distpe (사용자 10-23) = dist 의 모든 노드에 부호 거리/h_node 를 원래 값 그대로 두고 [s, sin(2^k π s), cos(2^k π s)] (k<--bc_pe, "
-                     "--pfreq 와 같은 방식·기준 길이 h_node) 로, 법선 3 은 그대로 (deform_model.bc_pe_feats)")
+                     "--pfreq 와 같은 방식·기준 길이 h_node) 로, 법선 3 은 그대로 (deform_model.bc_pe_feats). "
+                     "near (사용자 10-24) = [플래그 1, 거리/h_node 1], 꼭짓점 하나라도 부호 거리 < --bc_near_h·h_node 인 셀의 네 꼭짓점만, 나머지 0, 법선 없음. "
+                     "contactflag (사용자 10-24) = [플래그 1] 만, 꼭짓점 하나라도 부호 거리 ≤ 0 인 셀의 네 꼭짓점만 (deform_model.bc_near_feats). "
+                     "near·contactflag 에 --gnn_layer unet 이면 거친 수준에도 같은 규칙을 그 수준 셀 크기로 다시 계산해 넣는다")
+ap.add_argument("--bc_near_h", type=float, default=1.0, help="--bc_feat near 의 접촉 여지 범위 (h_node 배수, 기본 1 = 격자 간격)")
 ap.add_argument("--bc_pe", type=int, default=6, help="--bc_feat distpe 의 주파수 수 K (기본 6 = --pfreq 실행 값)")
 ap.add_argument("--ip_feat_eps", type=float, default=1e-3,
                 help="--ip_feat 뉴턴 걸음의 정칙화 ε (관성 척도 M_i/h² 로 나눈 무차원 헤시안의 고윳값을 max(λ,0)+ε 로)")
@@ -2228,13 +2232,17 @@ with torch.no_grad():
             print(f"[--ip_feat] 증분 포텐셜 노드 특징 {DM.IP_FEAT_N} 채널 덧붙임 -> 입력 {n_feat} (ε {a.ip_feat_eps:g})", flush=True)
         if a.bc_feat == "contact":
             print(f"[--bc_feat {a.bc_feat}] 노드 바닥 특징 = 접촉 플래그 1 + 거리 1 + 법선 3 (접촉 셀 꼭짓점만) -> 입력 {n_feat}", flush=True)
+        elif a.bc_feat == "near":
+            print(f"[--bc_feat near] 노드 바닥 특징 = 플래그 1 + 거리/h_node 1 (부호 거리 < {a.bc_near_h}·h_node 꼭짓점이 있는 셀의 네 꼭짓점만, 법선 없음) -> 입력 {n_feat}", flush=True)
+        elif a.bc_feat == "contactflag":
+            print(f"[--bc_feat contactflag] 노드 바닥 특징 = 플래그 1 (부호 거리 ≤ 0 꼭짓점이 있는 셀의 네 꼭짓점만, 거리·법선 없음) -> 입력 {n_feat}", flush=True)
         elif a.bc_feat == "distpe":
             print(f"[--bc_feat distpe] 노드 바닥 특징 = 부호 거리/h_node [s, sin/cos(2^k π s), k<{a.bc_pe}] {1 + 2 * a.bc_pe} + 법선 3 "
                   f"(바닥마다, 모든 노드) -> 입력 {n_feat}", flush=True)
         if a.bc_feat != "dist" and not a.ip_feat:
             # 바닥 채널 확인 (사용자 10-23): 노드 입력 끝의 바닥 칸 값 범위·바닥 칸이 전부 0 인 노드 비율 (진단, 계산 불변)
             _nsc = sum(1 for _b in _d["cfg"].get("boundary_conditions", []) if _b["type"] == "surface_collider")
-            _nbc = n_bc + (2 * a.bc_pe * _nsc if a.bc_feat == "distpe" else _nsc)
+            _nbc = n_bc + {"distpe": 2 * a.bc_pe * _nsc, "near": -2 * _nsc, "contactflag": -3 * _nsc}.get(a.bc_feat, _nsc)
             _bcx = node_feats(_d, 1, _g, _x, _v, fe=_fe0)[0][:, -_nbc:]
             print(f"[바닥 칸 확인] --bc_feat {a.bc_feat}: 바닥 칸 {_nbc} (바닥 {_nsc} 개), 노드 {_bcx.shape[0]}, 바닥 칸 전부 0 인 노드 "
                   f"{100 * float((_bcx == 0).all(-1).float().mean()):.2f}%, 칸별 [최소, 최대] "

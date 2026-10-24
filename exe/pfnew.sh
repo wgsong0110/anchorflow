@@ -10,6 +10,8 @@
 #        lattn        = noin + --gnn_layer lattn --attn_heads 8 (몸통 = 국소 어텐션 8 층 128; 사용자 10-23)
 #        lattn4       = lattn 과 같고 4 층
 #        gunet        = noin + --gnn_layer unet --gunet_levels 3 (몸통 = Graph U-Net, 격자 2h·4h 묶기 풀링 + 스킵; 사용자 10-24)
+#        gunet_near   = gunet + --bc_feat near --bc_near_h 1.0 (바닥 = 부호 거리 < h 꼭짓점이 있는 셀의 꼭짓점만 [플래그, 거리/h], 법선 없음, 거친 수준에도)
+#        gunet_cf     = gunet + --bc_feat contactflag (바닥 = 교차 셀 꼭짓점 플래그 1 채널만)
 #        prediag      = noin + --out_precond diag  (망 출력 u = z·sqrt(median d / d_i), d = M/h² + 탄성 헤시안 대각; 사용자 10-23)
 #        prems        = noin + --out_precond ms    (다중 해상도 계층 평활 u = (z + Σ 2^l I_l R_l z)/(1+Σ 2^l), 2h·4h·8h)
 #        prelbfgs     = noin + --out_precond lbfgs (프레임마다 노드 출력 L-BFGS 50 회 곡률 쌍 -> 출력 기울기에 H⁻¹/γ)
@@ -28,6 +30,8 @@ case $K in
   noin) DIR=pfip_noin; OBJ=ip; XF=""; XE="" ;;
   p2g) DIR=pfip_p2g; OBJ=ip; XF="--node_feat p2g"; XE="" ;;
   lattn) DIR=pfip_lattn; OBJ=ip; XF="--gnn_layer lattn --attn_heads 8"; XE="" ;;
+  gunet_near) DIR=pfip_gunet_near; OBJ=ip; XF="--gnn_layer unet --gunet_levels 3 --bc_feat near --bc_near_h 1.0"; XE="" ;;   # 사용자 10-24: + 바닥 입력 = 접촉 여지 셀만 [플래그, 거리/h], 법선 없음, 거친 수준에도
+  gunet_cf) DIR=pfip_gunet_contactflag; OBJ=ip; XF="--gnn_layer unet --gunet_levels 3 --bc_feat contactflag"; XE="" ;;   # 사용자 10-24: + 바닥 입력 = 교차 셀 플래그만
   gunet) DIR=pfip_gunet; OBJ=ip; XF="--gnn_layer unet --gunet_levels 3"; XE="" ;;   # 사용자 10-24: 몸통만 Graph U-Net (h·2h·4h, 층 2+2+2+1+1)
   lattn4) DIR=pfip_lattn4; OBJ=ip; XF="--gnn_layer lattn --attn_heads 8 --gnn_layers 4"; XE="" ;;   # 사용자 10-23: 국소 어텐션 층수 낮춤 (8 -> 4, 뒤의 --gnn_layers 가 앞 값을 덮는다)
   prediag) DIR=pfip_prediag; OBJ=ip; XF="--out_precond diag"; XE="AF_PRE_HUTCH=${AF_PRE_HUTCH:-0}" ;;

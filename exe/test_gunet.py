@@ -148,5 +148,56 @@ net4 = SG.GraphUNetGNN(n_feat=NF, hidden=H, levels=4, dt_cond=True, dt_ref=1 / 2
 torch.nn.init.normal_(net4.out.weight, std=0.01)
 o6 = net4(feat, src, dst, cls, 1 / 24, grid=(uniq, nn))[0]
 chk("4 수준 동작", bool(torch.isfinite(o6).all()), f"층 {len(net4.body)}, 파라미터 {npar(net4)}, 수준별 노드 {[d['M'] for d in net4._hc[2]]}")
+# --- 바닥 입력 near / contactflag (사용자 10-24): 수준 0 (deform_model.bc_near_feats) + 거친 수준 (coarse_bc_feats)
+from anchorflow import deform_model as DM                  # noqa: E402
+xb = (torch.rand(5000, 3, generator=torch.Generator().manual_seed(5), dtype=torch.float64) * 0.2 + 0.4).to(dev).float()
+zf = 0.45                                                   # 바닥 높이 (점 구름 z 0.4~0.6 의 아래쪽 1/4)
+cfgb = {"boundary_conditions": [{"type": "surface_collider", "point": [0.0, 0.0, zf], "normal": [0.0, 0.0, 1.0]}]}
+lo_, lat_, nn_ = SX.grid_for_nodes(xb, 0, h_fix=0.028284)
+idx_, lam_, _ = SX.locate(xb, lo_, lat_, nn_)
+rows_, uq_ = SX.active_nodes(idx_)
+Mb = uq_.numel(); hn_ = float(lat_.s)
+np_ = SX.node_pos(lo_, lat_, nn_, uq_)
+sd_ = np_[:, 2] - zf
+for mode in ("near", "contactflag"):
+    fb = DM.bc_near_feats(cfgb, rows_, np_, Mb, hn_, mode, 1.0)
+    vert = (sd_ < hn_) if mode == "near" else (sd_ <= 0)
+    ref = torch.zeros(Mb, dtype=torch.bool, device=dev)
+    tets = torch.unique(rows_, dim=0)
+    ref[tets[vert[tets].any(1)].reshape(-1)] = True
+    ok = fb.shape[1] == (2 if mode == "near" else 1) and bool(((fb[:, 0] > 0) == ref).all())
+    if mode == "near":
+        ok &= float((fb[ref, 1] - sd_[ref] / hn_).abs().max()) < 1e-5 and bool((fb[~ref] == 0).all())
+    chk(f"수준 0 {mode}: 플래그 == 셀 꼭짓점 직접 계산, 나머지 0", ok,
+        f"칸 {fb.shape[1]}, 0 아닌 노드 {100 * float(ref.float().mean()):.1f}%, 칸별 [최소,최대] "
+        + " ".join(f"[{float(fb[:, c].min()):.3g},{float(fb[:, c].max()):.3g}]" for c in range(fb.shape[1])))
+s_, d_, c_ = SX.edges_of(rows_, uq_, nn_)
+for mode in ("near", "contactflag"):
+    nb_ = SG.GraphUNetGNN(n_feat=NF, hidden=H, levels=3, bc_mode=mode, bc_near_h=1.0, dt_cond=True, dt_ref=1 / 24, dt_scale=True).to(dev)
+    torch.nn.init.normal_(nb_.out.weight, std=0.01)
+    fx = torch.randn(Mb, NF, device=dev)
+    ob = nb_(fx, s_, d_, c_, 1 / 24, grid=(uq_, nn_, lo_, lat_, cfgb))[0]
+    ob.square().sum().backward()
+    gb = [float(m.weight.grad.abs().sum()) for m in nb_.bc_proj]
+    lvb = nb_._hc[2]
+    okc = True
+    for l in (1, 2):
+        d = lvb[l]
+        # 직접: 수준 l 격자점 높이, 조건, 이웃 포함 플래그
+        imin = torch.round(lat_.Ai @ lo_).long()
+        g0 = SG.grid_ijk(uq_, nn_) + imin
+        cp = torch.div(g0, 2 ** l, rounding_mode="floor")
+        P = lvb[0]["parent"] if l == 1 else lvb[1]["parent"][lvb[0]["parent"]]
+        cpos = torch.zeros(d["M"], 3, dtype=torch.long, device=dev).index_copy_(0, P, cp)
+        wz = ((cpos.float() * 2 ** l) @ lat_.A.T)[:, 2] - zf
+        hl = 2 ** l * hn_
+        v = (wz < hl) if mode == "near" else (wz <= 0)
+        fl = v.clone()
+        fl[d["dst"][v[d["src"]]]] = True
+        okc &= bool(((d["bc"][:, 0] > 0) == fl).all())
+        if mode == "near":
+            okc &= float((d["bc"][fl, 1] - wz[fl] / hl).abs().max()) < 1e-4
+    chk(f"거친 수준 {mode}: 직접 계산과 같음·투영 기울기 > 0", okc and all(g > 0 for g in gb) and bool(torch.isfinite(ob).all()),
+        " | ".join(f"수준 {l} 0 아닌 {100 * lvb[l]['bc'].ne(0).any(-1).float().mean():.1f}%" for l in (1, 2)) + f", 기울기 {gb}")
 print("TEST_GUNET", "OK" if OK[0] else "FAIL", flush=True)
 sys.exit(0 if OK[0] else 1)
