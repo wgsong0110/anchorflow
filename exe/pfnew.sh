@@ -33,6 +33,7 @@ case $K in
   p2g) DIR=pfip_p2g; OBJ=ip; XF="--node_feat p2g"; XE="" ;;
   apic) DIR=pfip_apic; OBJ=ip; XF="--node_feat p2g --apic --p2g_stress --bc_feat near --bc_near_h 1.0"; XE="" ;;   # 사용자 10-24: (A) P2G + APIC 아핀 속도 C (상태·입력) + 응력 (내부력·평균 τ) + near 바닥
   p2gnear) DIR=pfip_p2gnear; OBJ=ip; XF="--node_feat p2g --bc_feat near --bc_near_h 1.0"; XE="" ;;   # 사용자 10-24: (B) apic 의 비교판 = P2G + near 바닥 (APIC·응력 없이)
+  p2gstress) DIR=pfip_p2gstress; OBJ=ip; XF="--node_feat p2g --p2g_stress --bc_feat near --bc_near_h 1.0"; XE="" ;;   # 사용자 10-24: 비교판(p2gnear) + 응력 (내부력·평균 τ), APIC 없음
   lattn) DIR=pfip_lattn; OBJ=ip; XF="--gnn_layer lattn --attn_heads 8"; XE="" ;;
   gunet_near) DIR=pfip_gunet_near; OBJ=ip; XF="--gnn_layer unet --gunet_levels 3 --bc_feat near --bc_near_h 1.0"; XE="" ;;   # 사용자 10-24: + 바닥 입력 = 접촉 여지 셀만 [플래그, 거리/h], 법선 없음, 거친 수준에도
   gunet_cf) DIR=pfip_gunet_contactflag; OBJ=ip; XF="--gnn_layer unet --gunet_levels 3 --bc_feat contactflag"; XE="" ;;   # 사용자 10-24: + 바닥 입력 = 교차 셀 플래그만
