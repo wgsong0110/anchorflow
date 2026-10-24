@@ -497,7 +497,8 @@ class GraphUNetGNN(SimplexGNN):
     인코더 0·1 각 2 층, 바닥(4h) 2 층, 디코더 1·0 각 1 층 = 8 층 (기존 8 층 128 과 같은 층 수).
     입력 정규화·물성 FiLM·dt FiLM (층마다 한 자리, 순서대로)·0 초기화 출력은 SimplexGNN 그대로.
 
-    forward 는 grid=(uniq, nn) (노드 압축 색인 -> 정수 좌표) 가 필요하다 (deform_model.advance 가 needs_grid 를 보고 넘긴다).
+    forward 는 grid=(uniq, nn[, lo, lat]) (노드 압축 색인 -> 정수 좌표; lo·lat 가 있으면 격자 원점을 더한 전역 정수 좌표로 묶어
+    물체가 움직여도 묶는 칸이 월드에 고정된다) 가 필요하다 (deform_model.advance 가 needs_grid 를 보고 넘긴다).
     같은 (uniq, src) 객체가 다시 오면 (한 프레임 안의 Adam 반복) 만들어 둔 계층을 쓴다. 노드 수가 바뀌면 새로 만든다.
     level_stats: 마지막 계층의 수준별 노드·간선 수.
     """
@@ -516,11 +517,17 @@ class GraphUNetGNN(SimplexGNN):
         self.level_stats = None
 
     def hierarchy(self, src, dst, cls, grid):
-        uniq, nn_ = grid
+        uniq, nn_ = grid[0], grid[1]
         hc = self._hc
         if hc is not None and hc[0] is uniq and hc[1] is src:
             return hc[2]
         pos = grid_ijk(uniq, nn_)
+        if len(grid) >= 4 and grid[2] is not None:
+            # 격자 원점 lo (월드) = A·imin (grid_for_nodes) -> 전역 정수 좌표 = 국소 + imin. 바운딩박스가 움직여
+            # imin 이 프레임마다 바뀌어도 묶는 칸(정수 // 2^l)이 월드에 고정된다 (off 로 민 앙상블 격자는 반올림 원점)
+            lo, lat = grid[2], grid[3]
+            imin = torch.round(lat.Ai.to(lo.dtype) @ lo).long()
+            pos = pos + imin.to(pos.device)
         lv = [dict(src=src, dst=dst, cls=cls, M=int(uniq.numel()))]
         for _ in range(self.levels - 1):
             parent, pos, (cs, cd, cc), cnt = coarsen_grid(pos, lv[-1]["src"], lv[-1]["dst"])
@@ -532,7 +539,7 @@ class GraphUNetGNN(SimplexGNN):
 
     def forward(self, feat, src, dst, cls, dt, mat=None, grid=None):
         if grid is None:
-            raise RuntimeError("GraphUNetGNN: grid=(uniq, nn) 가 필요하다")
+            raise RuntimeError("GraphUNetGNN: grid=(uniq, nn[, lo, lat]) 가 필요하다")
         lv = self.hierarchy(src, dst, cls, grid)
         h = self.inp((feat - self.in_mu) / self.in_sd)
         if self.n_mat and mat is not None:

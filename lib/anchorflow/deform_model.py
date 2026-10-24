@@ -695,8 +695,8 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                 with sec("신경망"):
                     if INPUT_HOOK[0] is not None:          # 진단: 망 입력 특징을 바꿔 넣는다 (섭동·무작위 입력)
                         _ink = INPUT_HOOK[0](_ink, net)
-                    if getattr(net, "needs_grid", False):     # --gnn_layer unet: 노드 정수 좌표 (압축 색인, 축별 개수)
-                        out = net(_ink, _srk, _dsk, _clk, tau, mat=mat, grid=(_uqk, _nnk))
+                    if getattr(net, "needs_grid", False):     # --gnn_layer unet: 노드 정수 좌표 (압축 색인, 축별 개수, 격자 원점)
+                        out = net(_ink, _srk, _dsk, _clk, tau, mat=mat, grid=(_uqk, _nnk, _lok, _latk))
                     else:
                         out = net(_ink, _srk, _dsk, _clk, tau, mat=mat)
                 if a.net_inertial:

@@ -99,17 +99,42 @@ chk("노드 집합 바뀜 -> 새 계층·출력 형상", o2.shape == (u2.numel()
 o3 = net(feat, src, dst, cls, 1 / 24, grid=(uniq, nn))[0]
 chk("되돌아오면 같은 출력", float((o3 - o).abs().max()) < 1e-6)
 
-# --- 정수 좌표 짝수 이동 불변 (풀링 칸이 같다): nn 을 키워 uniq 를 (2,2,2) 만큼 민 색인으로
+# --- 정수 좌표 2^(수준-1) = 4 배수 이동 불변 (모든 수준에서 묶는 칸이 같다): nn 을 키워 uniq 를 (4,4,4) 만큼 민 색인으로
+#     (2 만 밀면 수준 1 에서 1 칸 = 홀수 이동이 되어 수준 2 묶음이 달라진다 -- 그래서 4)
 nnl = [int(nn[k]) for k in range(3)]
-nnb = torch.tensor([nnl[0] + 4, nnl[1] + 4, nnl[2] + 4], device=dev)
-pb = pos0 + 2
+nnb = torch.tensor([nnl[0] + 8, nnl[1] + 8, nnl[2] + 8], device=dev)
+pb = pos0 + 4
 ub = (pb[:, 0] * nnb[1] + pb[:, 1]) * nnb[2] + pb[:, 2]
 o4 = net(feat, src, dst, cls, 1 / 24, grid=(ub, nnb))[0]
-chk("정수 좌표 (2,2,2) 이동 -> 같은 출력", float((o4 - o).abs().max()) < 1e-6, f"{float((o4 - o).abs().max()):.2e}")
+chk("정수 좌표 (4,4,4) 이동 -> 같은 출력", float((o4 - o).abs().max()) < 1e-6, f"{float((o4 - o).abs().max()):.2e}")
 pc = pos0 + torch.tensor([1, 0, 0], device=dev)
 uc = (pc[:, 0] * nnb[1] + pc[:, 1]) * nnb[2] + pc[:, 2]
 o5 = net(feat, src, dst, cls, 1 / 24, grid=(uc, nnb))[0]
 print(f"  (참고) 홀수 (1,0,0) 이동은 묶는 칸이 달라져 출력이 달라진다: 최대차 {float((o5 - o).abs().max()):.2e}")
+pd = pos0 + 2
+ud = (pd[:, 0] * nnb[1] + pd[:, 1]) * nnb[2] + pd[:, 2]
+o7 = net(feat, src, dst, cls, 1 / 24, grid=(ud, nnb))[0]
+print(f"  (참고) (2,2,2) 이동은 수준 2 묶음만 달라진다: 최대차 {float((o7 - o).abs().max()):.2e}")
+
+# --- 격자 원점 (lo, lat): 같은 점 집합을 격자 한 칸 민 바운딩박스로 잡아도 (imin 이 1 바뀜) 전역 좌표 묶음이 같다
+xw = (torch.rand(3000, 3, generator=torch.Generator().manual_seed(3), dtype=torch.float64) * 0.2 + 0.5).to(dev)
+def build_w(xx, extra=None):
+    lo_, lat_, nn__ = SX.grid_for_nodes(xx if extra is None else torch.cat([xx, extra]), 0, h_fix=0.028284)
+    idx_, lam_, _ = SX.locate(xx, lo_, lat_, nn__)
+    rows_, uq_ = SX.active_nodes(idx_)
+    s_, d_, c_ = SX.edges_of(rows_, uq_, nn__)
+    return uq_, nn__, lo_, lat_, s_, d_, c_
+A_ = build_w(xw)
+A_lat = A_[3]
+far = (xw.min(0).values - 1.0 * A_lat.A[:, 0] * 1.0001).reshape(1, 3)   # 바운딩박스만 격자 한 칸 넓힘 (이 점은 locate 하지 않음)
+B_ = build_w(xw, far)
+iA = torch.round(A_[3].Ai @ A_[2]).long(); iB = torch.round(B_[3].Ai @ B_[2]).long()
+fw = torch.randn(A_[0].numel(), NF, device=dev)
+oA = net(fw, A_[4], A_[5], A_[6], 1 / 24, grid=(A_[0], A_[1], A_[2], A_[3]))[0]
+oB = net(fw, B_[4], B_[5], B_[6], 1 / 24, grid=(B_[0], B_[1], B_[2], B_[3]))[0]
+oBn = net(fw, B_[4], B_[5], B_[6], 1 / 24, grid=(B_[0], B_[1]))[0]
+chk("격자 원점 반영: 바운딩박스가 바뀌어도 같은 출력", A_[0].numel() == B_[0].numel() and float((oA - oB).abs().max()) < 1e-6,
+    f"imin {iA.tolist()} -> {iB.tolist()}, 최대차 {float((oA - oB).abs().max()):.2e} (원점 없이 국소 좌표면 {float((oA - oBn).abs().max()):.2e})")
 
 # --- jvp (계층을 jvp 안에서 처음 만드는 경우 포함)
 net._hc = None
