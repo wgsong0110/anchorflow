@@ -115,6 +115,10 @@ def one_scene():
             ok = [q for q in st if not q.get("diverged")]
             out["E_fcr64"] = [q["E_fcr64"] for q in ok]
             out["floor_min_s"] = min((q["floor_min_s"] for q in ok if q.get("floor_min_s") is not None), default=None)
+        tot = np.array(out["K"]) + np.array(out["E"]) + np.array(out["U"])
+        E0t = R["E0"]["K"] + R["E0"]["E"]
+        big = np.nonzero(tot > 10.0 * E0t)[0]
+        out["energy_div_frame"] = int(big[0] + 1) if len(big) else None      # 총 에너지가 처음의 10 배를 넘은 첫 프레임
         R["runs"][key] = out
         print(f"[{a.scene}] {key}: 프레임 {nf}, 위치 오차 평균 {100 * out['err_mean']:.3f}%"
               + (f" (실행 기록 {100 * out['err_mean_run']:.3f}%)" if out.get("err_mean_run") is not None else "")
@@ -144,21 +148,23 @@ def merge():
     lines = ["# XPBD 한 스텝 vs 출력만 최적화 (사용자 10-24)", "",
              f"커밋 {a.commit}. XPBD = 우리 표현(세계 고정 Kuhn 사면체 격자, 입자 barycentric, x·v·F) 그대로, 한 프레임을 서브스텝 N x 반복 K 의 XPBD 로 "
              "(사면체마다 fixed corotated 회전·부피 구속 결합 풀이, 48 색 가우스-자이델, 바닥 = 사면체별 최심 입자 비침투 + 정적 마찰 μ_s = ∞). "
-             "위치 오차 = 입자 평균 |x − x_gt| / 대각선, 끝낸 프레임 평균. 탄성 = Σ V ψ_FCR (정답과 같은 식).", ""]
+             "위치 오차 = 입자 평균 |x − x_gt| / 대각선, 끝낸 프레임 평균. 탄성 = Σ V ψ_FCR (정답과 같은 식). "
+             "총 에너지 = 운동 + 탄성 + 중력 위치 (처음 = 0 프레임 운동 + 탄성).", ""]
     for si, R in enumerate(SC):
         sc = R["scene"]; fd = R["frame_dt"]; T = R["frames"]
         keys = [k for k in ["ov", "n1k1", "n1k10", "n4k1", "n16k1", "n64k1"] if k in R["runs"]]
         lines += [f"## {sc} ({T} 프레임)", "",
-                  "| 실행 | 위치 오차 평균 | 끝낸 프레임 | 발산 | 탄성 에너지 평균 [J] | det F 최소 | 뒤집힌 입자 최대 (프레임 수) | 총 에너지 처음 → 끝 [J] |"
+                  "| 실행 | 위치 오차 평균 | 끝낸 프레임 | 발산 (비유한·이동 > 20 EXT) | 총 에너지 > 10 x 처음 첫 프레임 | 탄성 에너지 평균 [J] | det F 최소 | 뒤집힌 입자 최대 (프레임 수) | 총 에너지 처음 → 끝 [J] |"
                   + (" 주기 [s] | 멈춤 [s] |" if sc.startswith("ficus") else ""),
-                  "|---|---|---|---|---|---|---|---|" + ("---|---|" if sc.startswith("ficus") else "")]
+                  "|---|---|---|---|---|---|---|---|---|" + ("---|---|" if sc.startswith("ficus") else "")]
         E0 = R["E0"]["K"] + R["E0"]["E"]
         for k in ["gt"] + keys:
             r = R["runs"][k]
             tot = np.array(r["K"]) + np.array(r["E"]) + np.array(r["U"])
             em = np.nanmean(r["E"])
             row = (f"| {LAB[k]} | {'—' if k == 'gt' else '%.2f%%' % (100 * r['err_mean'])} | {r['frames_done']}/{T} | "
-                   f"{'—' if k in ('gt', 'ov') else (('프레임 %d' % r['diverged_at']) if r.get('diverged_at') else '없음')} | {em:.4e} | "
+                   f"{'—' if k in ('gt', 'ov') else (('프레임 %d' % r['diverged_at']) if r.get('diverged_at') else '없음')} | "
+                   f"{'—' if k == 'gt' else (('프레임 %d' % r['energy_div_frame']) if r.get('energy_div_frame') else '없음')} | {em:.4e} | "
                    f"{'—' if r.get('detF_min') is None else '%.4f' % r['detF_min']} | "
                    f"{'—' if r.get('inv_particles_max') is None else '%d (%d)' % (r['inv_particles_max'], r['inv_frames'])} | "
                    f"{E0:.4e} → {tot[-1]:.4e} |")
