@@ -1,15 +1,17 @@
 #!/bin/bash
 # Graph U-Net 두 실행 (사용자 10-24) 로컬 감시·재기동·후처리. 로그 /tmp/gunet_local.log (tmux gunet)
 #   (0) 짧은 시험+본 실행 부트(/home/dkta/work/gunet_go_boot.sh)를 아직 안 띄웠으면, 돌고 있는 잡(129788 이 아닌 것)에 띄운다
-#   (1) pfip_gunet/L000 (증분 포텐셜 프레임별, 몸통 Graph U-Net)   (2) gunet5 (다섯 궤적 학습, 몸통 Graph U-Net)
+#   바닥 입력 바꾼 판 (사용자 10-24): (1n) pfip_gunet_near/L000, (1c) pfip_gunet_contactflag/L000 (증분 포텐셜 프레임별), (5n) gunet5_near (다섯 궤적 학습)
+#   (옛 바닥 입력 판 pfip_gunet·gunet5 는 사용자 지시로 중단 -- 후처리 안 함, 출력은 보관)
 #   10 분마다 gunet_check.sh 로 하트비트 확인 -> 죽었고 안 끝났으면 job_run.sh(AF_DETACH=1)로 같은 부트 다시 (멱등, 이어 돈다)
-#   끝나면: (1) pf_ip_gunet_L000.mp4 (정답 | 출력만 최적화 | Graph U-Net), lego_psi_pf_ip_gunet_L000.mp4 -> GUNET1_DONE
-#           (2) gunet5_multi_{L000,0004}.mp4 (정답 | 기준 noinertial | Graph U-Net), lego_psi_gunet5_*.mp4, 변형 통계, 학습 곡선 -> GUNET5_DONE
+#   끝나면: (1n) pf_ip_gunet_near_L000.mp4 (정답 | 출력만 최적화 | Graph U-Net), lego_psi_pf_ip_gunet_near_L000.mp4 -> GUNET1_DONE
+#           (1c) pf_ip_gunet_contactflag_L000.mp4, lego_psi_pf_ip_gunet_contactflag_L000.mp4 -> GUNET_CF_DONE
+#           (5n) gunet5_near_multi_{L000,0004}.mp4 (정답 | 기준 noinertial | Graph U-Net), lego_psi_gunet5_near_*.mp4, 변형 통계, 학습 곡선 -> GUNET5_DONE
 #   outputs.md·learned_results.tex 에 덧붙이고 notify. 기존 결과 파일은 덮어쓰지 않는다. ssh 는 ControlMaster 재사용, 10 분 간격.
 exec 9>/tmp/gunet_local.lock
 flock -n 9 || { echo "[중단] 다른 감시가 돌고 있다 $(date)"; exit 0; }
-C=2f8fa21; OLDJOB=129788
-RL=r2:storage/result/anchorflow/lbours; R1=$RL/pfip_gunet/L000; R5=$RL/gunet5; RNI=$RL/noinertial; RSP=$RL/spstick; RS=$RL/gunet_smoke_$C
+C=f7e1990
+RL=r2:storage/result/anchorflow/lbours; R5=$RL/gunet5_near; RNI=$RL/noinertial; RSP=$RL/spstick; RS=$RL/gunet_smoke_$C
 RR=/home/wgsong/workspace/result/anchorflow; D=$RR/v20261009; T=/tmp/gunet_dl; mkdir -p $T $D
 TEX=/home/wgsong/workspace/writing/anchorflow/learned_results.tex
 REPO=/home/wgsong/workspace/execute/anchorflow/master
@@ -50,7 +52,7 @@ drawtext=fontfile=$F:text='$X 프레임 %{frame_num}':x=w-tw-20:y=h-th-20:fontsi
   ffprobe -v error -count_frames -show_entries stream=nb_read_frames,width,height -of csv=p=0 $OUT; }
 
 # ---------------- (1) 증분 포텐셜 프레임별 ----------------
-post1(){ echo "[후처리 (1)] $(date)"; X=$T/g1; mkdir -p $X
+post1(){ K=$1; R1=$RL/$2/L000; VN=$3; NMK=$4; MK=$5; DSC=$6; echo "[후처리 (1) $K] $(date)"; X=$T/g1_$K; mkdir -p $X
   rclone copy $R1 $X --max-depth 1 --include "records.json" --include "net.mp4" --include "cmd*.txt" -q
   rclone copy $R1/psi $X/psi --include "psi_*_lego.mp4" --include "*.npz" --include "*.json" --include "*.txt" --include "*.log" -q
   get $RL/pfip_noin/L000/records.json $X/noin_records.json
@@ -69,31 +71,31 @@ if n: print(f"기준판(관성 예측 없음, 중단 {n} 프레임)과 같은 {n
 PY
 ) || { fail "(1) 기록 요약"; return 1; }
   EN=$(echo "$SUM" | sed -n 1p); S2=$(echo "$SUM" | sed -n 2p); S3=$(echo "$SUM" | sed -n 3p); echo "$SUM"
-  OUT=$D/pf_ip_gunet_L000.mp4
+  OUT=$D/pf_ip_${VN}_L000.mp4
   if [ -e $OUT ]; then echo "[건너뜀] $OUT"; else
-    cell $T/gt_L000.mp4 a "정답"; cell $T/ov_L000.mp4 b "출력만 최적화 · 위치 오차 평균 11.47%"; cell $X/net.mp4 c "Graph U-Net 몸통 · 위치 오차 평균 $EN"
-    stack3 $OUT "L000 80프레임 · 증분 포텐셜 프레임별 망 최적화 · 관성 예측 없음 · 몸통 Graph U-Net (h·2h·4h)" || { fail "(1) 3칸 영상"; return 1; }; fi
-  P=$X/psi; OUT=$D/lego_psi_pf_ip_gunet_L000.mp4
+    cell $T/gt_L000.mp4 a "정답"; cell $T/ov_L000.mp4 b "출력만 최적화 · 위치 오차 평균 11.47%"; cell $X/net.mp4 c "$NMK · 위치 오차 평균 $EN"
+    stack3 $OUT "L000 80프레임 · 증분 포텐셜 프레임별 망 최적화 · 관성 예측 없음 · 몸통 Graph U-Net (h·2h·4h) · $DSC" || { fail "(1) 3칸 영상"; return 1; }; fi
+  P=$X/psi; OUT=$D/lego_psi_pf_ip_${VN}_L000.mp4
   if [ ! -e $OUT ]; then
     python3 -c "import json;a=json.load(open('$P/range_spstick.json'));b=json.load(open('$P/range.json'));assert abs(a['lo']-b['lo'])<1e-9 and abs(a['hi']-b['hi'])<1e-9;print('[범위 동일]',a['lo'],a['hi'])" || { fail "(1) psi 범위 다름"; return 1; }
-    psi3 $P sp gunet "출력만 최적화 · 11.47%" "Graph U-Net 몸통 · $EN" $OUT L000 || return 1; fi
-  for f in $D/pf_ip_gunet_L000.mp4 $D/lego_psi_pf_ip_gunet_L000.mp4; do rclone copy $f r2:storage/result/anchorflow/v20261009 -q; rclone copy $f $R1/final -q; done
-  PS=$(awk '$1=="gunet" && ($2==40||$2==80){printf "프레임 %s ψ 평균 %s det<0 %s; ", $2, $6, $5}' $P/defstats_L000.txt)
+    psi3 $P sp $K "출력만 최적화 · 11.47%" "$NMK · $EN" $OUT L000 || return 1; fi
+  for f in $D/pf_ip_${VN}_L000.mp4 $D/lego_psi_pf_ip_${VN}_L000.mp4; do rclone copy $f r2:storage/result/anchorflow/v20261009 -q; rclone copy $f $R1/final -q; done
+  PS=$(awk -v k=$K '$1==k && ($2==40||$2==80){printf "프레임 %s ψ 평균 %s det<0 %s; ", $2, $6, $5}' $P/defstats_L000.txt)
   cat >> $RR/outputs.md <<EOM
 
-## $(date +%F) pf_ip_gunet: 증분 포텐셜 프레임별 망 최적화 · 몸통 Graph U-Net
-- Path: $D/pf_ip_gunet_L000.mp4 (정답 | 출력만 최적화 | Graph U-Net, 3DGS), $D/lego_psi_pf_ip_gunet_L000.mp4 (탄성 에너지 색, 공통 고정 범위 lbours/lego_psi/range.json)
+## $(date +%F) pf_ip_${VN}: 증분 포텐셜 프레임별 망 최적화 · 몸통 Graph U-Net · $DSC
+- Path: $D/pf_ip_${VN}_L000.mp4 (정답 | 출력만 최적화 | Graph U-Net, 3DGS), $D/lego_psi_pf_ip_${VN}_L000.mp4 (탄성 에너지 색, 공통 고정 범위 lbours/lego_psi/range.json)
 - R2 원본: $R1/ (frames/frame_XX.pt, records.json, roll_net.pt, net.mp4, psi/), 짧은 시험 $RS/
-- Commit: $C (exe/pfnew.sh gunet; 부트 /home/dkta/work/gunet1_boot.sh)
-- Config: 기준판 pfip_noin 명령 + --gnn_layer unet --gunet_levels 3 (몸통 h·2h·4h, 층 2+2+2+1+1, 폭 128, 파라미터 1,176,451 vs 기존 1,110,659); Adam 2000/프레임, --ov_obj ip
+- Commit: $C (exe/pfnew.sh $K; 부트 /home/dkta/work/gunet1n_boot.sh(near)·gunet1c_boot.sh(contactflag))
+- Config: 기준판 pfip_noin 명령 + --gnn_layer unet --gunet_levels 3 + 바닥 입력 $DSC (몸통 h·2h·4h, 층 2+2+2+1+1, 폭 128, 파라미터 1,176,451 vs 기존 1,110,659); Adam 2000/프레임, --ov_obj ip
 - 결과: $S2; $S3; $PS
 EOM
   texadd "
-\\subsection*{증분 포텐셜 프레임별 망 최적화 · 몸통 Graph U-Net (2026-10-24, $C)}
-기준판(관성 예측 없음, \\texttt{--ov\\_obj ip}, Adam 2000/프레임)에서 몸통만 Graph U-Net 으로 바꿨다: 수준 0(원 격자 \$h\$)·1(\$2h\$)·2(\$4h\$), 풀링 = 정수 격자좌표를 2 로 내림 나눈 칸으로 묶기(자식 평균), 언풀링 = 부모 복사 후 같은 수준 인코더 특징과 이어붙여 선형(잔차), 층 배분 인코더 2+2, 바닥 2, 디코더 1+1 (메시지 전달 층 8, 폭 128, 파라미터 1{,}176{,}451; 기존 8 층 1{,}110{,}659). $(q "$S2"). $(q "$S3"). $(q "$PS")
+\\subsection*{증분 포텐셜 프레임별 망 최적화 · 몸통 Graph U-Net · $(q "$DSC") (2026-10-24, $C)}
+기준판(관성 예측 없음, \\texttt{--ov\\_obj ip}, Adam 2000/프레임)에서 몸통만 Graph U-Net 으로 바꿨다: 수준 0(원 격자 \$h\$)·1(\$2h\$)·2(\$4h\$), 풀링 = 정수 격자좌표를 2 로 내림 나눈 칸으로 묶기(자식 평균), 언풀링 = 부모 복사 후 같은 수준 인코더 특징과 이어붙여 선형(잔차), 층 배분 인코더 2+2, 바닥 2, 디코더 1+1 (메시지 전달 층 8, 폭 128, 파라미터 1{,}176{,}451 + 거친 수준 바닥 투영; 기존 8 층 1{,}110{,}659). 바닥 입력: $(q "$DSC"). $(q "$S2"). $(q "$S3"). $(q "$PS")
 "
-  touch $D/GUNET1_DONE; echo GUNET1_DONE
-  notify "Graph U-Net (1) 끝" "프레임별 증분 포텐셜 L000 위치 오차 $EN (출력만 최적화 11.47%)" --tags white_check_mark; }
+  touch $D/${MK}; echo ${MK}
+  notify "Graph U-Net (1) $K 끝" "프레임별 증분 포텐셜 L000 위치 오차 $EN (출력만 최적화 11.47%)" --tags white_check_mark; }
 
 # ---------------- (2) 다섯 궤적 학습 ----------------
 post5(){ echo "[후처리 (2)] $(date)"; X=$T/g5; mkdir -p $X
@@ -104,24 +106,24 @@ post5(){ echo "[후처리 (2)] $(date)"; X=$T/g5; mkdir -p $X
   EL=$(grep -a '^gunet5_multi_L000 ' $X/errors_multi.txt | grep -o '[0-9.]*%'); E4=$(grep -a '^gunet5_multi_0004 ' $X/errors_multi.txt | grep -o '[0-9.]*%')
   [ -n "$EL" ] && [ -n "$E4" ] || { fail "(2) 오차 값 없음"; return 1; }
   for x in L000 0004; do
-    OUT=$D/gunet5_multi_$x.mp4; [ -e $OUT ] && { echo "[건너뜀] $OUT"; continue; }
+    OUT=$D/gunet5_near_multi_$x.mp4; [ -e $OUT ] && { echo "[건너뜀] $OUT"; continue; }
     [ $x = L000 ] && { EE=$EL; EO=13.26%; TT="L000"; } || { EE=$E4; EO=24.82%; TT="0004 (학습 안 쓴 궤적)"; }
-    cell $X/gt_$x.mp4 a "정답"; cell $X/ni_multi_$x.mp4 b "기준 (메시지 패싱 8 층) $EO"; cell $X/gunet5_multi_$x.mp4 c "Graph U-Net 몸통 $EE"
-    stack3 $OUT "$TT 다섯 궤적 학습 모델 롤아웃 80프레임 · 관성 예측 없음 · % = 위치 오차" || { fail "(2) 3칸 영상 $x"; return 1; }
+    cell $X/gt_$x.mp4 a "정답"; cell $X/ni_multi_$x.mp4 b "기준 (메시지 패싱 8 층) $EO"; cell $X/gunet5_multi_$x.mp4 c "Graph U-Net · 바닥 접촉 여지 셀만 $EE"
+    stack3 $OUT "$TT 다섯 궤적 학습 모델 롤아웃 80프레임 · 관성 예측 없음 · Graph U-Net 바닥 입력 = 부호 거리 < h 셀의 꼭짓점만 [플래그, 거리/h] · % = 위치 오차" || { fail "(2) 3칸 영상 $x"; return 1; }
   done
-  for x in L000 0004; do P=$X/psi/$x; OUT=$D/lego_psi_gunet5_$x.mp4; [ -e $OUT ] && continue
+  for x in L000 0004; do P=$X/psi/$x; OUT=$D/lego_psi_gunet5_near_$x.mp4; [ -e $OUT ] && continue
     python3 -c "import json;a=json.load(open('$P/range_noinertial.json'));b=json.load(open('$P/range.json'));assert abs(a['lo']-b['lo'])<1e-9 and abs(a['hi']-b['hi'])<1e-9;print('[범위 동일]',a['lo'],a['hi'])" || { fail "(2) psi 범위 다름 $x"; return 1; }
     [ $x = L000 ] && { EE=$EL; EO=13.26%; } || { EE=$E4; EO=24.82%; }
-    psi3 $P ni gu "기준 (메시지 패싱) · 위치 오차 $EO" "Graph U-Net 몸통 · 위치 오차 $EE" $OUT $x || return 1
+    psi3 $P ni gu "기준 (메시지 패싱) · 위치 오차 $EO" "Graph U-Net · 바닥 접촉 여지 · 위치 오차 $EE" $OUT $x || return 1
   done
   for x in L000 0004; do S_=$X/psi/$x/defstats_$x.txt
     [ -f $S_ ] || { fail "(2) defstats 없음 $x"; return 1; }
-    grep -q "^# ni = .*/lbours/noinertial/roll_noinertial_multi_$x.pt" $S_ && grep -q "^# gu = .*/lbours/gunet5/roll_gunet5_multi_$x.pt" $S_ || { fail "(2) defstats $x 덤프 경로 다름"; return 1; }
+    grep -q "^# ni = .*/lbours/noinertial/roll_noinertial_multi_$x.pt" $S_ && grep -q "^# gu = .*/lbours/gunet5_near/roll_gunet5_multi_$x.pt" $S_ || { fail "(2) defstats $x 덤프 경로 다름"; return 1; }
   done
-  DS=$D/lego_psi_gunet5_defstats.txt
-  [ -e $DS ] || { echo "# 칸: gt = 정답(MPM), ni = 기준 noinertial (메시지 패싱 8 층 128), gu = Graph U-Net 몸통 (이번)"; cat $X/psi/L000/defstats_L000.txt $X/psi/0004/defstats_0004.txt; } > $DS; cat $DS
-  CV=$D/gunet5_multi_curves.png; [ -e $CV ] || python3 $REPO/exe/gunet5_plot.py $X/curves.json $CV || { fail "(2) 곡선"; return 1; }
-  for f in $D/gunet5_multi_L000.mp4 $D/gunet5_multi_0004.mp4 $D/lego_psi_gunet5_L000.mp4 $D/lego_psi_gunet5_0004.mp4 $DS $CV; do rclone copy $f r2:storage/result/anchorflow/v20261009 -q; rclone copy $f $R5/final -q; done
+  DS=$D/lego_psi_gunet5_near_defstats.txt
+  [ -e $DS ] || { echo "# 칸: gt = 정답(MPM), ni = 기준 noinertial (메시지 패싱 8 층 128), gu = Graph U-Net 몸통 + 바닥 near (이번)"; cat $X/psi/L000/defstats_L000.txt $X/psi/0004/defstats_0004.txt; } > $DS; cat $DS
+  CV=$D/gunet5_near_multi_curves.png; [ -e $CV ] || python3 $REPO/exe/gunet5_plot.py $X/curves.json $CV || { fail "(2) 곡선"; return 1; }
+  for f in $D/gunet5_near_multi_L000.mp4 $D/gunet5_near_multi_0004.mp4 $D/lego_psi_gunet5_near_L000.mp4 $D/lego_psi_gunet5_near_0004.mp4 $DS $CV; do rclone copy $f r2:storage/result/anchorflow/v20261009 -q; rclone copy $f $R5/final -q; done
   rclone copy $REPO/exe/gunet_local.sh $R5/final -q; rclone copy $REPO/exe/gunet5_plot.py $R5/final -q
   VAL=$(python3 -c "
 import json; M=json.load(open('$X/curves.json'))
@@ -130,11 +132,11 @@ for r in ('noinertial','gunet5'):
   DSL=$(awk '$1=="ni" || $1=="gu"' $DS | tr -s ' ' | tr '\n' ';')
   cat >> $RR/outputs.md <<EOM
 
-## $(date +%F) gunet5 다섯 궤적 학습 -- 몸통 Graph U-Net (기준 noinertial)
-- Path: $D/gunet5_multi_L000.mp4, $D/gunet5_multi_0004.mp4 (정답 | 기준 noinertial | Graph U-Net, 3DGS), $D/lego_psi_gunet5_L000.mp4, $D/lego_psi_gunet5_0004.mp4 (탄성 에너지 색), 변형 통계 $DS, 학습 곡선 $CV
+## $(date +%F) gunet5_near 다섯 궤적 학습 -- 몸통 Graph U-Net + 바닥 입력 near (기준 noinertial)
+- Path: $D/gunet5_near_multi_L000.mp4, $D/gunet5_near_multi_0004.mp4 (정답 | 기준 noinertial | Graph U-Net, 3DGS), $D/lego_psi_gunet5_near_L000.mp4, $D/lego_psi_gunet5_near_0004.mp4 (탄성 에너지 색), 변형 통계 $DS, 학습 곡선 $CV
 - R2 원본: $R5/ (multi/ 체크포인트·tb·run.log, roll_gunet5_multi_*.pt F32 덤프, h5_*, psi/{L000,0004}/, resume_test.txt, cmdline_diff.txt, curves.json, final/), 짧은 시험 $RS/
-- Commit: $C (exe/gunet5.sh; 부트 /home/dkta/work/gunet5_boot.sh, 다시 띄우기 /home/dkta/work/gunet_relaunch.txt)
-- Config: noinertial 실행 학습 명령줄 + --gnn_layer unet --gunet_levels 3 (명령줄 자동 대조); 15000 반복 배치 8, 손실 증분 포텐셜; 몸통 h·2h·4h, 층 2+2+2+1+1, 폭 128, 파라미터 1,176,451 (기준 1,110,659)
+- Commit: $C (GUNET5_TAG=near exe/gunet5.sh; 부트 /home/dkta/work/gunet5n_boot.sh, 다시 띄우기 /home/dkta/work/gunet_relaunch.txt)
+- Config: noinertial 실행 학습 명령줄 + --gnn_layer unet --gunet_levels 3 --bc_feat near --bc_near_h 1.0 (명령줄 자동 대조; 바닥 = 부호 거리 < h 꼭짓점이 있는 셀의 네 꼭짓점만 [플래그, 거리/h], 법선 없음, 2h·4h 수준에도 같은 규칙); 15000 반복 배치 8, 손실 증분 포텐셜; 몸통 h·2h·4h, 층 2+2+2+1+1, 폭 128, 파라미터 1,176,451 (기준 1,110,659)
 - 위치 오차: L000 $EL (기준 13.26%), 0004 $E4 (기준 24.82%)
 - 마지막 검증(학습 중 정답 시작 80프레임 롤아웃): $(echo "$VAL" | tr '\n' ';')
 - 변형 통계 (ni = 기준, gu = 이번; 프레임 |σ-1|max 중앙 99% det<0 ψ평균 ψ중앙): $DSL
@@ -142,8 +144,8 @@ for r in ('noinertial','gunet5'):
 - 이어 돌리기 시험: $(head -2 $X/resume_test.txt | tr '\n' ' ')
 EOM
   texadd "
-\\subsection*{다섯 궤적 학습 · 몸통 Graph U-Net (2026-10-24, $C)}
-관성 예측 없이 학습한 다섯 궤적 실행(noinertial)과 모든 설정을 같게 두고 몸통만 Graph U-Net(수준 \$h\$·\$2h\$·\$4h\$, 격자 묶기 풀링, 스킵 이어붙이기, 층 2+2+2+1+1, 폭 128)으로 바꿨다.
+\\subsection*{다섯 궤적 학습 · 몸통 Graph U-Net · 바닥 입력 접촉 여지 셀만 (2026-10-24, $C)}
+관성 예측 없이 학습한 다섯 궤적 실행(noinertial)과 모든 설정을 같게 두고 몸통만 Graph U-Net(수준 \$h\$·\$2h\$·\$4h\$, 격자 묶기 풀링, 스킵 이어붙이기, 층 2+2+2+1+1, 폭 128)으로 바꾸고, 바닥 입력은 부호 거리 \$< h\$ 꼭짓점이 있는 셀의 네 꼭짓점에만 [플래그, 거리\$/h\$] (법선 없음, 거친 수준에도 그 수준 셀 크기로 다시 계산)로 줬다.
 \\begin{center}
 \\begin{tabular}{lcc}
 \\hline
@@ -157,39 +159,31 @@ L000 & 13.26\\% & $(q $EL) \\\\
 학습 중 검증(정답 시작 80프레임, 마지막): $(q "$(echo "$VAL" | sed 's/^noinertial/기준/; s/^gunet5/Graph U-Net/' | tr '\n' ';')"). 변형 통계(ni = 기준, gu = Graph U-Net; 프레임, \$|\\sigma-1|\$ 최대·중앙·99\\%, det\$<0\$, \$\\psi\$ 평균·중앙): $(q "$DSL")
 "
   touch $D/GUNET5_DONE; echo GUNET5_DONE
-  notify "Graph U-Net (2) 끝" "다섯 궤적 학습 L000 $EL (기준 13.26%), 0004 $E4 (기준 24.82%)" --tags white_check_mark; }
+  notify "Graph U-Net (2) near 끝" "다섯 궤적 학습 L000 $EL (기준 13.26%), 0004 $E4 (기준 24.82%)" --tags white_check_mark; }
 
 relaunch(){ local k=$1 LG=/home/dkta/work/gunet${1}_driver_$(date +%m%d_%H%M).log
   echo "[재기동 ($k)] $(date '+%F %T') -> $LG"
   ssh -o ConnectTimeout=20 $LOGIN "cd /home/dkta/work/anchorflow && AF_DETACH=1 bash exe/job_run.sh /home/dkta/work/gunet${k}_boot.sh $LG" 2>&1 | tail -3
   date +%s > /tmp/gunet_last_launch_$k; }
+NM_N="Graph U-Net · 바닥 접촉 여지 셀만"; DS_N="바닥 = 부호 거리 < h 꼭짓점이 있는 셀의 네 꼭짓점만 [플래그, 거리/h], 법선 없음, 2h·4h 수준에도"
+NM_C="Graph U-Net · 바닥 교차 플래그만"; DS_C="바닥 = 교차(부호 거리 ≤ 0) 셀의 네 꼭짓점 플래그 1 채널만, 거리·법선 없음, 2h·4h 수준에도"
 echo "[시작] $(date) 커밋 $C"
+date +%s > /tmp/gunet_last_launch_1n; date +%s > /tmp/gunet_last_launch_1c; date +%s > /tmp/gunet_last_launch_5n
 while true; do
   date +%s > /tmp/gunet_local.hb; FAILED=0
-  ST=$(ssh -o ConnectTimeout=20 $LOGIN "bash /home/dkta/work/gunet_check.sh; /opt/pbs/bin/qstat -answ1 -u dkta 2>/dev/null | awk '\$10==\"R\"{print \"JOB\", \$1}'" 2>&1)
-  echo "[점검] $(date '+%F %T') $(echo "$ST" | tr '\n' ' ' | cut -c1-400)"
-  JOB=$(grep -o '^JOB [0-9]*' <<<"$ST" | awk '{print $2}')
-  VER=$(rclone cat $RS/verdict.txt 2>/dev/null)
-  if [ ! -f /tmp/gunet_go_launched ] && [ -n "$JOB" ] && [ "$JOB" != $OLDJOB ]; then
-    LG=/home/dkta/work/gunet_go_$(date +%m%d_%H%M).log; echo "[짧은 시험+본 실행 부트] 잡 $JOB -> $LG"
-    ssh -o ConnectTimeout=20 $LOGIN "cd /home/dkta/work/anchorflow && AF_DETACH=1 bash exe/job_run.sh /home/dkta/work/gunet_go_boot.sh $LG" 2>&1 | tail -3
-    touch /tmp/gunet_go_launched; date +%s > /tmp/gunet_last_launch_1; date +%s > /tmp/gunet_last_launch_5
-  fi
-  if grep -q GUNET_SMOKE_FAIL <<<"$VER" && [ ! -f /tmp/gunet_smoke_fail_seen ]; then
-    touch /tmp/gunet_smoke_fail_seen; fail "짧은 시험 기준 미달: $(echo "$VER" | head -1)"; fi
-  if grep -q GUNET_FULL_LAUNCHED <<<"$VER" && [ ! -f /tmp/gunet_full_seen ]; then
-    touch /tmp/gunet_full_seen; echo "[본 실행 띄움] $VER"; notify "Graph U-Net 본 실행 시작" "$(echo "$VER" | head -1 | cut -c1-150)" --tags rocket; fi
-  [ -f $D/GUNET1_DONE ] || { [ -n "$(rclone lsf $R1/.done 2>/dev/null)" ] && post1; }
+  ST=$(ssh -o ConnectTimeout=20 $LOGIN "bash /home/dkta/work/gunet_check.sh" 2>&1)
+  echo "[점검] $(date '+%F %T') $(echo "$ST" | tr '\n' ' ' | cut -c1-500)"
+  [ -f $D/GUNET1_DONE ] || { [ -n "$(rclone lsf $RL/pfip_gunet_near/L000/.done 2>/dev/null)" ] && post1 gunet_near pfip_gunet_near gunet_near "$NM_N" GUNET1_DONE "$DS_N"; }
+  [ -f $D/GUNET_CF_DONE ] || { [ -n "$(rclone lsf $RL/pfip_gunet_contactflag/L000/.done 2>/dev/null)" ] && post1 gunet_cf pfip_gunet_contactflag gunet_contactflag "$NM_C" GUNET_CF_DONE "$DS_C"; }
   [ -f $D/GUNET5_DONE ] || { [ -n "$(rclone lsf $R5/GUNET5_CLUSTER_DONE 2>/dev/null)" ] && post5; }
-  grep -q '^G5FAIL' <<<"$ST" && [ ! -f /tmp/gunet_g5fail_seen ] && { touch /tmp/gunet_g5fail_seen; fail "(2) 드라이버: $(grep '^G5FAIL' <<<"$ST")"; }
-  if [ -f /tmp/gunet_full_seen ] && ! grep -q 'NOJOB\|PBSERR' <<<"$ST"; then
-    for k in 1 5; do
-      [ $k = 1 ] && { grep -q '^G1DONE' <<<"$ST" && continue; }
-      [ $k = 5 ] && { grep -q '^G5DONE\|^G5FAIL' <<<"$ST" && continue; }
-      AGE=$(grep -o "^G${k}HB [0-9]*" <<<"$ST" | awk '{print $2}'); SINCE=$(( $(date +%s) - $(cat /tmp/gunet_last_launch_$k 2>/dev/null || echo 0) ))
+  grep -q '^5nFAIL' <<<"$ST" && [ ! -f /tmp/gunet_g5nfail_seen ] && { touch /tmp/gunet_g5nfail_seen; fail "(2) near 드라이버: $(grep '^5nFAIL' <<<"$ST")"; }
+  if ! grep -q 'NOJOB\|PBSERR' <<<"$ST"; then
+    for k in 1n 1c 5n; do
+      grep -q "^${k}DONE\|^${k}FAIL" <<<"$ST" && continue
+      AGE=$(grep -o "^${k}HB [0-9]*" <<<"$ST" | awk '{print $2}'); SINCE=$(( $(date +%s) - $(cat /tmp/gunet_last_launch_$k 2>/dev/null || echo 0) ))
       [ -n "$AGE" ] && [ "$AGE" -gt 900 ] && [ "$SINCE" -gt 1500 ] && relaunch $k
     done
   fi
-  [ -f $D/GUNET1_DONE ] && [ -f $D/GUNET5_DONE ] && { echo "GUNET_ALL_DONE $(date)"; notify "Graph U-Net 두 실행 끝" "v20261009/pf_ip_gunet_L000.mp4, gunet5_multi_*.mp4" --tags white_check_mark; break; }
+  [ -f $D/GUNET1_DONE ] && [ -f $D/GUNET_CF_DONE ] && [ -f $D/GUNET5_DONE ] && { echo "GUNET_ALL_DONE $(date)"; notify "Graph U-Net 세 실행 끝" "v20261009/pf_ip_gunet_near_L000.mp4, pf_ip_gunet_contactflag_L000.mp4, gunet5_near_multi_*.mp4" --tags white_check_mark; break; }
   sleep 600
 done
