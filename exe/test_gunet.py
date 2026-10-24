@@ -132,6 +132,7 @@ iA = torch.round(A_[3].Ai @ A_[2]).long(); iB = torch.round(B_[3].Ai @ B_[2]).lo
 fw = torch.randn(A_[0].numel(), NF, device=dev)
 oA = net(fw, A_[4], A_[5], A_[6], 1 / 24, grid=(A_[0], A_[1], A_[2], A_[3]))[0]
 oB = net(fw, B_[4], B_[5], B_[6], 1 / 24, grid=(B_[0], B_[1], B_[2], B_[3]))[0]
+net._hc = None   # 같은 (uniq, src) 객체라 캐시를 비워야 국소 좌표로 다시 묶는다
 oBn = net(fw, B_[4], B_[5], B_[6], 1 / 24, grid=(B_[0], B_[1]))[0]
 chk("격자 원점 반영: 바운딩박스가 바뀌어도 같은 출력", A_[0].numel() == B_[0].numel() and float((oA - oB).abs().max()) < 1e-6,
     f"imin {iA.tolist()} -> {iB.tolist()}, 최대차 {float((oA - oB).abs().max()):.2e} (원점 없이 국소 좌표면 {float((oA - oBn).abs().max()):.2e})")
