@@ -32,6 +32,7 @@ from . import simplex_gnn as _SGM
 from .deform import bc_features
 from .simplex_gnn import SimplexGNN, node_moments, scatter_to_nodes
 from .skin import gregory_skin
+from . import localrot as LR
 
 FCAP = float(os.environ.get("AF_FEAT_CAP", "50"))   # 특징 상한 (발산 방지)
 N_MAT_FULL = 13      # logE, nu, xi, logρ, log1p(항복), φ, 종류4, g3
@@ -173,7 +174,8 @@ def build_net(a, n_feat, ext0, frame_dt, n_film, dev="cuda"):
                       scale=0.02 * ext0, dt_cond=a.dt_cond, dt_ref=frame_dt,
                       dt_scale=a.dt_scale, n_mat=n_film,
                       n_out=(4 if getattr(a, "gregory", False) else
-                             (WF.C1_NOUT if str(getattr(a, "interp", "bary")) == "c1wf" else 3))).to(dev)
+                             (6 if str(getattr(a, "local_rot", "none") or "none") == "bubble" else
+                              (WF.C1_NOUT if str(getattr(a, "interp", "bary")) == "c1wf" else 3)))).to(dev)
 
 
 def ens_offsets(n):
@@ -761,8 +763,14 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
         PROBE[1] = [torch.zeros(e[1].shape[0], _no, device=x.device, dtype=x.dtype, requires_grad=True) for e in ens]
     # "fixed": 바깥에서 준 텐서(출력만 최적화 기준해의 변수)를 그대로 더한다
 
+    _lrot = str(getattr(a, "local_rot", "none") or "none") == "bubble"
+    if _lrot and (K != 1 or getattr(a, "gregory", False) or getattr(a, "hex_jac", False)
+                  or str(getattr(a, "interp", "bary") or "bary") != "bary"):
+        raise SystemExit("--local_rot bubble 은 격자 하나(--ens_off ≤ 1)·사면체 선형 전달(--interp bary, --gregory·--hex_jac 없음)에서만")
+
     def _fieldS(tau):
         _dus, _Jsum = [], None
+        _lrst = None
         for _k in range(K):
             (_ink, _npk, (_lok, _latk, _nnk), _rwk, _lmk, _uqk,
              (_srk, _dsk, _clk), _lxk) = ens[_k]
@@ -796,8 +804,9 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                 # **노드 변위를 명령으로 덮는다.** detach 로 기울기를 끊어
                 # 그 노드는 최적화 대상에서 빠진다 (상수 경계조건이다).
                 _pvk = (tau * ctrl_scale * node_vel[_k]).detach()
-                if dpn_k.shape[-1] == 4 and _pvk.shape[-1] == 3:
+                if dpn_k.shape[-1] in (4, 6) and _pvk.shape[-1] == 3:
                     # --gregory: 묶는 것은 변위 3 채널뿐, 반경 채널은 그대로 (4 채널과 3 채널이 브로드캐스트되지 않는다)
+                    # --local_rot bubble (6 채널) 도 같다: 회전 채널은 그대로 (손잡이 노드는 자유변수에서 빠져 0)
                     _pvk = torch.cat([_pvk, dpn_k[:, 3:]], -1)
                 elif dpn_k.shape[-1] == WF.C1_NOUT and _pvk.shape[-1] == 3:
                     # --interp c1wf: 손잡이 노드는 명령 평행이동 -> 기울기·변 가로 미분 채널은 0 으로 묶는다
@@ -815,6 +824,16 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
             if getattr(a, "gregory", False):
                 # 셀 안 로컬 변환 (rep_ip ours 와 같은 Gregory·방사형 스키닝) + 노드 변위 글로벌 변환
                 _duk, _Jk = gregory_skin(x, _npk, _rwk, dpn_k[:, :3], dpn_k[:, 3], float(a.node_h))
+            elif _lrot:
+                # --local_rot bubble (사용자 10-24): 셀 안 버블 회전 (로컬) 뒤 셀 아핀 사상 (글로벌, 선형 경로 그대로).
+                # θ = 0 이면 선형 경로와 비트 단위로 같다 (lib/anchorflow/localrot.py)
+                _dul = SX.g2p_pre(_rwk, _lmk, dpn_k[:, :3])
+                _u1, _Jl = SX.g2p_jac_pre(_rwk, _lmk, _lxk, _latk, dpn_k[:, :3])
+                _r = LR.local_rot(x, _npk, _rwk, _lmk, dpn_k[:, 3:6], _dul, _Jl,
+                                  kappa=float(getattr(a, "local_rot_kappa", LR.KAPPA)), with_stats=(_k == 0))
+                _duk, _Jk = _r[0], _r[1]
+                if _k == 0:
+                    _lrst = _r[2]
             elif getattr(_lxk, "bsp", None) is not None:
                 # --interp bspline: 변위·야코비안 모두 같은 27 노드 2 차 B-스플라인에서 (일관)
                 _duk = SX.g2p_pre(_rwk, _lmk, dpn_k[:, :3])
@@ -860,6 +879,8 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
             q = x + _duP
             _act = _act + _fa.to(q.dtype).unsqueeze(-1)
         _corr = q - _qraw
+        if _lrot:
+            return q, (_dpn0, _Jm, _corr, _act, _lrst)
         return q, (_dpn0, _Jm, _corr, _act)
 
     _use_dtS = a.v_from_dt and dp_hook is None and a.dt_cond
@@ -872,6 +893,8 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
         x2, _outs = _fieldS(_tau0)
         v_next = (x2 - x) / h
     Jf = torch.eye(3, device=x.device, dtype=x.dtype) + _outs[1]
+    if _lrot:
+        LR.LAST[0] = _outs[4].detach()          # jvp 밖 (원값): det J_loc 최소·셀 밖 입자 수 등
     return x2, v_next, _outs[0], Jf, _outs[2], _outs[3]
 
 

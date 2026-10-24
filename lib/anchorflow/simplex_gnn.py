@@ -317,9 +317,9 @@ class SimplexGNN(nn.Module):
         # 변위는 1 차로 v*dt 라 dt 에 비례한다 (--dt_scale)
         sc = (self.scale * (dt / self.dt_ref) if self.dt_scale else self.scale)
         o = self.out(h)
-        if self.n_out == 4:
-            # 반경 채널은 무차원 (σ 로 들어간다) -- 변위 크기·dt 비례를 곱하지 않는다
-            return (torch.cat([o[:, :3] * sc, o[:, 3:4]], -1),)
+        if self.n_out in (4, 6):
+            # 반경 채널(4)·회전 벡터 채널(6, --local_rot bubble)은 무차원 -- 변위 크기·dt 비례를 곱하지 않는다
+            return (torch.cat([o[:, :3] * sc, o[:, 3:]], -1),)
         return (o * sc,)
 
 
@@ -666,6 +666,6 @@ class GraphUNetGNN(SimplexGNN):
                 skips[l] = h
         sc = (self.scale * (dt / self.dt_ref) if self.dt_scale else self.scale)
         o = self.out(h)
-        if self.n_out == 4:
-            return (torch.cat([o[:, :3] * sc, o[:, 3:4]], -1),)
+        if self.n_out in (4, 6):
+            return (torch.cat([o[:, :3] * sc, o[:, 3:]], -1),)
         return (o * sc,)

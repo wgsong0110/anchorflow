@@ -75,6 +75,8 @@ def fast_supported(a):
         return False, "hex_jac"
     if str(getattr(a, "interp", "bary") or "bary") != "bary":
         return False, "interp != bary (B-스플라인·노드 평균 기울기는 융합 커널에 없다)"
+    if str(getattr(a, "local_rot", "none") or "none") != "none":
+        return False, "local_rot (셀 안 버블 회전은 융합 커널에 없다)"
     if getattr(a, "gregory", False):
         return False, "gregory (Gregory·방사형 스키닝은 아직 융합 커널에 없다)"
     if not float(getattr(a, "node_h", 0.0) or 0.0):

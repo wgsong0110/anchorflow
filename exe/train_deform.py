@@ -356,6 +356,11 @@ ap.add_argument("--bary_pe", type=int, default=0,
 ap.add_argument("--gregory", action="store_true",
                 help="셀 안 로컬 변환: 출력만 최적화(rep_ip ours)와 같은 Gregory·방사형 스키닝 (lib/anchorflow/skin.py). "
                      "망 출력이 노드당 4 채널(변위 3 + 반경 1)이 된다. --node_h 고정 셀 크기가 필요하다")
+ap.add_argument("--local_rot", choices=["none", "bubble"], default="none",
+                help="셀 안 로컬 회전 (사용자 10-24, lib/anchorflow/localrot.py): 노드 출력 = 변위 3 + 회전 벡터 3. "
+                     "y = c + R(b(λ) Σλθ)(x − c), b = 256 λ0λ1λ2λ3 (면 위 0), 그 뒤 셀 아핀 사상. θ = 0 이면 선형과 같다")
+ap.add_argument("--local_rot_kappa", type=float, default=0.9,
+                help="--local_rot 회전각 상한 θmax_c = κ / (r_c (16 g_c + S_c)) 의 κ (< 1 이면 셀 전체에서 det J_loc ≥ (1−κ)³ > 0)")
 ap.add_argument("--pool_gate", type=float, default=0.0,
                 help="0 보다 크면 새 풀 규칙: 증분 포텐셜을 노드 변위 출력으로 미분한 노드별 벡터의 크기 × h²/노드질량 ÷ L 의 "
                      "노드 평균(출력 공간 정류 잔차)이 이 값 이하일 때만 상태를 전진시킨다. 넘으면 전진 없이 풀에 남긴다. "
@@ -687,6 +692,7 @@ from anchorflow import deform                                  # noqa: E402
 from anchorflow import deform_model as DM                       # noqa: E402
 from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import simplex as SX                            # noqa: E402
+from anchorflow import localrot as _LR                           # noqa: E402
 from anchorflow import wf as WF                                 # noqa: E402
 from anchorflow.feas_lbfgs import FeasLBFGS                     # noqa: E402
 from anchorflow import midpoint as MIDP                          # noqa: E402
@@ -3395,7 +3401,8 @@ if a.out_var or a.ov_roll > 0:
             _hm = _NOD_M[0]
             st["ov_idx"][_k] = (None if _hm is None else
                                 (~_hm).nonzero(as_tuple=True)[0])
-            _no = 4 if a.gregory else (WF.C1_NOUT if a.interp == "c1wf" else 3)   # --gregory: 변위 3 + 반경 1, c1wf: 54
+            _no = 4 if a.gregory else (6 if a.local_rot == "bubble" else
+                                       (WF.C1_NOUT if a.interp == "c1wf" else 3))   # --gregory: 변위 3 + 반경 1, --local_rot: 변위 3 + 회전 3, c1wf: 54
             z = torch.zeros(M, _no, dtype=dtype, device=device)
             if a.ov_init in ("target", "predict"):
                 if not torch.is_tensor(_OV_TGT[0]):
@@ -8314,6 +8321,8 @@ def _rollout(d, t0, L, gsel=None):
                 _recI = {"frame": int(i) + 1, "inv_tets": _nt, "tets": _ntot,
                          "inv_particles_step": int(_bI.sum()), "inv_particles_cum": _nc,
                          "det_min": float(_dI.min())}
+                if a.local_rot == "bubble" and _LR.LAST[0] is not None:   # det J_loc 최소·셀 밖 입자 수 (0 이어야 한다) 등
+                    _recI["local_rot"] = dict(zip(_LR.STAT_KEYS, [float(q) for q in _LR.LAST[0].cpu()]))
                 if DM.C1_LAST[0] is not None:          # --interp c1wf: 마지막 평가(받아들인 해)의 Bernstein det 계수
                     _cI = DM.C1_LAST[0][0].detach()
                     _recI.update(c1_coef_min=float(_cI.min()), c1_coef_neg=int((_cI <= 0).sum()),
