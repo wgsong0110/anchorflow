@@ -1,7 +1,7 @@
 """lib/anchorflow/xpbd.py 단위 시험 (CPU float64). 끝에 XPBD_TEST PASS / FAIL.
 
   0) 격자: 같은 색 사면체 꼭짓점 겹침 0, Σλ X_node = x, 셀 사상 J = D_s D_m⁻¹ 가 train_deform 의 I + ∇u (SX.g2p_jac_pre) 와 같다
-  0b) 구속 에너지: ½C_R²/α_R + ½C_V²/α_V = Σ V_p ψ_FCR(J F_p) (셀 안 F 가 같으면 정확, 다르면 상계)
+  0b) 구속 에너지: ½C_R²/α_R + ½C_V²/α_V = Σ V_p ψ_FCR(J F_p) (입자별 회전이라 셀 안 F 가 달라도 정확)
   1) 정지: 중력·바닥 없이 정지 물체 (F = I, v = 0) -> 위치·F 그대로 (N=4 K=1, N=1 K=10)
   2) 자유낙하: 중력만 -> 질량중심 속도 = g t, 프레임 2 계 차분 = g Δt², 모양 그대로
   3) 사면체 하나를 x 로 1.3 배 늘였다 놓기 -> 정지 모양을 지나 되돌아오고 (σ_max 가 1 근처까지), 에너지(운동+탄성)가 처음보다 늘지 않고, 뒤집히지 않는다
@@ -67,16 +67,17 @@ Jr = torch.linalg.matrix_exp(0.2 * torch.randn(Tn, 3, 3, dtype=dt64))
 ok0 = []
 for nm_, FF in (("셀 안 같은 F", Fsame), ("입자마다 다른 F", Fr)):
     V_, B_, M_, m1_, m2_ = XP.aggregates(S["pinv"], Tn, Vp, FF)
-    CR_, CV_ = XP.cell_constraints(Jr, B_, M_, m1_, m2_)
+    CR_, CV_ = XP.cell_constraints_particle(Jr, S["pinv"], Tn, FF, Vp, V_, m1_, m2_)
     Ec = float((V_ * (mu * CR_ ** 2 + 0.5 * la * CV_ ** 2)).sum())                # ½C²/α 합
     Ep = float((Vp * XP.psi_fcr(Jr[S["pinv"]] @ FF, mu, la)).sum())               # 입자별 Σ V ψ_FCR(J F_p)
     # C_V 는 상수만 다르다: 그 상수를 더해 비교
     cst = float((V_ * 0.5 * la * (1 - m1_ ** 2 / m2_)).sum())      # Σ V_p (j a_p − 1)² = V m2 (j − m1/m2)² + V (1 − m1²/m2)
     ok0.append((nm_, Ec + cst, Ep))
 r0 = abs(ok0[0][1] / ok0[0][2] - 1)
-chk("구속 에너지", r0 < 1e-10 and ok0[1][1] >= ok0[1][2] * (1 - 1e-10),
+r1 = abs(ok0[1][1] / ok0[1][2] - 1)
+chk("구속 에너지", r0 < 1e-10 and r1 < 1e-10,
     f"셀 안 같은 F: Σ V(½C_R²/α_R+½C_V²/α_V) {ok0[0][1]:.10e} vs Σ V_p ψ_FCR(J F_p) {ok0[0][2]:.10e} (상대차 {r0:.1e}); "
-    f"입자마다 다른 F: {ok0[1][1]:.6e} vs {ok0[1][2]:.6e} (셀 공통 회전 상계, 비 {ok0[1][1] / ok0[1][2]:.4f})")
+    f"입자마다 다른 F: {ok0[1][1]:.10e} vs {ok0[1][2]:.10e} (상대차 {r1:.1e})")
 
 # ---- 1) 정지 ----
 for (N, K) in ((4, 1), (1, 10)):
@@ -106,7 +107,8 @@ chk("자유낙하", abs(float(vc[2]) - (-9.8 * t)) < 1e-9 * 9.8 * t and float(vc
 # ---- 3) 사면체 하나 늘였다 놓기 ----
 lat = SX.lattice(0.1, 0.1 * XP.HZ, dtype=dt64)
 X = torch.stack([torch.zeros(3, dtype=dt64), lat.A[:, 0], lat.A[:, 0] + lat.A[:, 1], lat.A.sum(1)], 0)
-S1 = dict(tets=torch.tensor([[0, 1, 2, 3]]), groups=[torch.tensor([0])], T=1)
+S1 = dict(tets=torch.tensor([[0, 1, 2, 3]]), groups=[torch.tensor([0])], T=1,
+          pgroups=[(torch.tensor([0]), torch.tensor([0]))])                     # 입자 하나 (F = I, 부피 = 사면체 부피)
 DmI1, V1 = XP.tet_rest(X, S1["tets"])
 cen = X.mean(0)
 xs = X.clone(); xs[:, 0] = cen[0] + 1.3 * (X[:, 0] - cen[0]); xs0_ = xs.clone()
@@ -122,7 +124,7 @@ Etot = lambda xq, vq: float(V1 * XP.psi_fcr(XP.tet_J(xq, S1["tets"], DmI1), mu1,
 s0 = float(torch.linalg.svdvals(XP.tet_J(xs, S1["tets"], DmI1))[0, 0])
 E_0 = None
 for i in range(600):
-    xs, vs, _ = sol.frame(S1, xs, vs, w, [0, 0, 0], 1e-3, V=V1, B=Bm, Mb=Mbm, m1=m1v, m2=m2v, DmI=DmI1)
+    xs, vs, _ = sol.frame(S1, xs, vs, w, [0, 0, 0], 1e-3, Fp=torch.eye(3, dtype=dt64)[None], Vp=V1.clone(), V=V1, B=Bm, Mb=Mbm, m1=m1v, m2=m2v, DmI=DmI1)
     J = XP.tet_J(xs, S1["tets"], DmI1)
     etot.append(Etot(xs, vs))
     smax.append(float(torch.linalg.svdvals(J)[0, 0])); dets.append(float(torch.linalg.det(J)[0])); j00.append(float(J[0, 0, 0]))

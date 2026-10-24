@@ -39,6 +39,7 @@ ap.add_argument("--sub", type=int, default=1, help="서브스텝 N")
 ap.add_argument("--iters", type=int, default=1, help="반복 K")
 ap.add_argument("--mu_s", type=float, default=math.inf, help="바닥 정적 마찰 계수 (inf = 닿으면 접선 고정 = sticky)")
 ap.add_argument("--contact_sweeps", type=int, default=10, help="반복마다 바닥 쓸기 최대 횟수 (사면체별 최심 입자 사영을 침투가 없어질 때까지)")
+ap.add_argument("--rot", default="particle", choices=["particle", "cell"], help="회전 구속: 입자별 R_p (정확) | 셀 공통 R_c (상계, 비교용)")
 ap.add_argument("--m_floor", type=float, default=0.05, help="역질량에 쓰는 노드 질량 바닥 (노드 질량 중앙값 대비)")
 ap.add_argument("--pg_region_density", action="store_true")
 ap.add_argument("--cfg_bc", action="store_true")
@@ -75,11 +76,11 @@ if a.pg_vdamp:
     s_ = float(cfg.get("grid_v_damping_scale", 1.0))
     if s_ < 1.0:
         vd = s_ ** ((FRAME_DT / a.sub) / float(cfg["substep_dt"]))
-solver = XP.Solver(mu, la, a.sub, a.iters, planes=planes, mu_s=a.mu_s, vdamp=vd, sweeps=a.contact_sweeps)
+solver = XP.Solver(mu, la, a.sub, a.iters, planes=planes, mu_s=a.mu_s, vdamp=vd, sweeps=a.contact_sweeps, rot=a.rot)
 _bcs = [b.get("type") for b in (cfg.get("boundary_conditions") or [])]
 print(f"[설정] {a.tag}: 입자 {N}, 프레임 {L} (dt {FRAME_DT:g}), XPBD 서브스텝 N={a.sub} 반복 K={a.iters}, node_h {a.node_h}, "
       f"E {cfg['E']:g} ν {cfg['nu']:g} -> μ {mu:.6g} λ {la:.6g} (fixed corotated 구속), g {g}, 질량 합 {float(m.sum()):.6g}, 부피 합 {float(Vp.sum()):.6g}, "
-      f"EXT {EXT:.6f}, 경계조건 {_bcs}, 바닥 평면 {len(planes)} 개 (μ_s {a.mu_s}), 감쇠 서브스텝당 {vd:.8f}, 바닥 쓸기 ≤{a.contact_sweeps}, 노드 질량 바닥 중앙값 x{a.m_floor}, "
+      f"EXT {EXT:.6f}, 경계조건 {_bcs}, 바닥 평면 {len(planes)} 개 (μ_s {a.mu_s}), 감쇠 서브스텝당 {vd:.8f}, 회전 구속 {a.rot}, 바닥 쓸기 ≤{a.contact_sweeps}, 노드 질량 바닥 중앙값 x{a.m_floor}, "
       f"|v0| 평균 {float(v.norm(dim=-1).mean()):.5f}, F0 det 범위 {float(torch.linalg.det(F).min()):.4f}~{float(torch.linalg.det(F).max()):.4f}",
       flush=True)
 for bc in (cfg.get("boundary_conditions") or []):
@@ -209,7 +210,7 @@ if nf:
     torch.save({"pred": torch.stack(P), "gt": torch.stack(G), "x0": x0.float().cpu(), "ctrl_pos": None, "ctrl_R": None, "ctrl_id": None,
                 "t0": 0, "tag": a.tag, "nodes": None, "fscal": None, "gt_fscal": None, "EXT": EXT,
                 "F": torch.stack(FD), "v": torch.stack(VD),
-                "xpbd": dict(N=a.sub, K=a.iters, node_h=a.node_h, mu=mu, lam=la, model="fcr", mu_s=a.mu_s, vdamp_sub=vd,
+                "xpbd": dict(N=a.sub, K=a.iters, node_h=a.node_h, mu=mu, lam=la, model="fcr", rot=a.rot, mu_s=a.mu_s, vdamp_sub=vd,
                              diverged_at=div_at, frames=nf)},
                os.path.join(a.out, f"roll_{a.name}.pt"))
 summ = dict(tag=a.tag, N=a.sub, K=a.iters, frames_req=L, frames_done=nf, diverged_at=div_at,
@@ -217,7 +218,7 @@ summ = dict(tag=a.tag, N=a.sub, K=a.iters, frames_req=L, frames_done=nf, diverge
             detF_min=min((r["detF_min"] for r in recs), default=None), detJ_min=min((r["detJ_min"] for r in recs), default=None),
             inv_particles_max=max((r["inv_particles"] for r in recs), default=None), tets_inv_max=max((r["tets_inv"] for r in recs), default=None),
             E_fcr_mean=float(np.mean([r["E_fcr"] for r in recs])) if recs else None, wall_s=time.time() - t_all,
-            mu=mu, lam=la, model="fcr", mu_s=a.mu_s, vdamp_sub=vd, node_h=a.node_h, pt=a.pt)
+            mu=mu, lam=la, model="fcr", rot=a.rot, mu_s=a.mu_s, vdamp_sub=vd, node_h=a.node_h, pt=a.pt)
 json.dump(summ, open(os.path.join(a.out, f"summary_{a.name}.json"), "w"), ensure_ascii=False, indent=1)
 print(f"[롤아웃] {a.tag} t0=  0: {nf} 프레임, 평균 {100 * (summ['err_mean'] or float('nan')):.3f}%"
       + (f" (발산 프레임 {div_at})" if div_at else "") + f" -- XPBD N={a.sub} K={a.iters}", flush=True)

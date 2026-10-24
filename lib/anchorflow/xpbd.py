@@ -9,12 +9,14 @@
             회전  C_R = ‖F − R‖_F, R = polar(F),  컴플라이언스 α_R = 1/(2μV)
             부피  C_V = det F − 1,                 컴플라이언스 α_V = 1/(λV)
           (½C_R²/α_R + ½C_V²/α_V = V ψ_FCR). 셀 안 입자마다 F_p 가 다르므로 셀 사상 J (= D_s D_m⁻¹, train_deform 의 I + ∇u)
-          에 대해 Σ_p V_p ψ(J F_p) 를 셀 하나의 두 구속으로 모은다:
-            C_R² = tr(Jᵀ J B̄) − 2 tr(R_cᵀ J M̄) + 3 = ‖J M̄ − R_c‖² + tr(J (B̄ − M̄M̄ᵀ) Jᵀ),  B̄ = Σ V_p F_p F_pᵀ / V,  M̄ = Σ V_p F_p / V,  R_c = polar(J M̄)
-                   (모든 F_p 가 같으면 정확히 ‖JF − R(JF)‖²; 다르면 셀 공통 회전 R_c 를 쓴 상계 -- 입자별 회전 대신)
+          에 대해 Σ_p V_p ψ(J F_p) 를 셀 하나의 두 구속으로 **정확히** 모은다 (rot="particle", 기본):
+            C_R = sqrt(Σ_{p∈c} V_p ‖J F_p − R_p‖² / V),  R_p = polar(J F_p)   (모든 F_p 가 같으면 ‖JF − R(JF)‖)
+            ∂C_R/∂J = Σ V_p (J F_p − R_p) F_pᵀ / (V C_R) -- 극분해 미분 dR 을 빼는 표준 corotated 꼴이지만 **정확한** 미분이다
+                   ((J F_p − R_p) : dR_p = 0: R_pᵀ J F_p 가 대칭이고 dR = R Ω, Ω 반대칭)
             C_V = sqrt(m₂) det J − m₁/sqrt(m₂),  m_k = Σ V_p (det F_p)^k / V   (Σ V_p (det J det F_p − 1)² 와 상수만 다르다 -- 정확)
-          기울기 ∂C_R/∂J = (J B̄ − R_c M̄ᵀ)/C_R: 극분해 미분 dR 을 빼는 표준 corotated 꼴이지만 여기서는 **정확한** 미분이다
-          (R_cᵀ J M̄ 가 대칭이고 dR = R Ω (Ω 반대칭) 이라 tr(dRᵀ J M̄) = 0). ∂C/∂노드 = ∂C/∂J · D_m⁻ᵀ (열 j = 노드 j+1, 노드 0 = −합).
+          (비교용 rot="cell": 셀 공통 회전 R_c = polar(J M̄), C_R² = ‖J M̄ − R_c‖² + tr(J (B̄ − M̄M̄ᵀ) Jᵀ) -- 셀 안 F 가 다르면 상계.
+           격자를 매 프레임 다시 짜면 셀 안 F 의 섞임이 바뀌어 이 상계가 에너지를 밀어 넣는다 (lego 진단 diag_9cc3478 에서 접촉 뒤 발산))
+          ∂C/∂노드 = ∂C/∂J · D_m⁻ᵀ (열 j = 노드 j+1, 노드 0 = −합).
           V = Σ_{p∈c} V_p⁰ (입자 초기 부피 = 증분 포텐셜 탄성항과 같은 부피; 꽉 찬 셀이면 격자 사면체 부피와 같다).
           두 구속은 사면체마다 2x2 로 **함께** 푼다 (결합 풀이). C_R < 1e-12 인 셀은 회전 구속을 건너뛴다 (기울기 0/0).
   풀이    가우스-자이델: 셀 정수좌표 홀짝(8) x Kuhn 순열(6) = 48 색. 같은 색 사면체는 꼭짓점을 공유하지 않아 한꺼번에 푼다.
@@ -66,8 +68,17 @@ def cof_cols(J):
     return torch.stack([torch.cross(c1, c2, dim=-1), torch.cross(c2, c0, dim=-1), torch.cross(c0, c1, dim=-1)], -1)
 
 
+def cell_constraints_particle(J, pinv, T, Fp, Vp, V, m1, m2):
+    """입자별 회전 구속 값 (C_R, C_V) -- Solver._elastic rot="particle" 과 같은 식 (시험용)."""
+    A = J[pinv] @ Fp
+    E_ = A - polar_R(A)
+    CR = (torch.zeros(T, dtype=J.dtype).index_add_(0, pinv, Vp * (E_ * E_).sum((1, 2))) / V).sqrt()
+    s2 = m2.clamp_min(1e-300).sqrt()
+    return CR, s2 * torch.linalg.det(J) - m1 / s2
+
+
 def cell_constraints(J, B, Mb, m1, m2):
-    """셀 구속 값 (C_R, C_V) -- Solver._elastic 과 같은 식 (시험·진단용)."""
+    """셀 구속 값 (C_R, C_V) -- Solver._elastic rot="cell" 과 같은 식 (시험·진단용)."""
     JM = J @ Mb
     Rc = polar_R(JM)
     Cv = B                                           # aggregates 의 둘째 값 = 셀 안 F 의 공분산 B̄ − M̄M̄ᵀ (같으면 0)
@@ -98,7 +109,16 @@ def build_lattice(x, node_h, hz_ratio=HZ):
         raise RuntimeError("Kuhn 순열 색 실패")
     groups = [torch.nonzero(col == c).squeeze(1) for c in range(48)]
     groups = [g for g in groups if g.numel()]
-    return dict(lo=lo, lat=lat, nn=nn, rows=rows, lam=lam, aux=aux, npos=npos, pinv=pinv, tets=tets, col=col, groups=groups, T=T)
+    # 색마다 그 사면체에 든 입자와 색 안 사면체 번호 (입자별 회전 구속용)
+    colp = col[pinv]
+    loc = torch.full((T,), -1, dtype=torch.long, device=x.device)
+    pgroups = []
+    for g in groups:
+        loc[g] = torch.arange(g.numel(), device=x.device)
+        pc = torch.nonzero(colp == col[g[0]]).squeeze(1)
+        pgroups.append((pc, loc[pinv[pc]]))
+    return dict(lo=lo, lat=lat, nn=nn, rows=rows, lam=lam, aux=aux, npos=npos, pinv=pinv, tets=tets, col=col, groups=groups,
+                pgroups=pgroups, T=T)
 
 
 def check_coloring(tets, groups):
@@ -162,27 +182,41 @@ def planes_of(cfg):
 class Solver:
     """한 프레임 XPBD. S = build_lattice(...) 결과 + 노드 상태."""
 
-    def __init__(self, mu, la, n_sub, n_iter, planes=(), mu_s=math.inf, vdamp=1.0, sweeps=10, tol=0.0):
+    def __init__(self, mu, la, n_sub, n_iter, planes=(), mu_s=math.inf, vdamp=1.0, sweeps=10, tol=0.0, rot="particle"):
         self.mu, self.la = float(mu), float(la)
+        self.rot = rot                                     # "particle" (정확, 기본) | "cell" (셀 공통 회전 상계, 비교용)
         self.sweeps, self.tol = int(sweeps), float(tol)    # 바닥 쓸기 최대 횟수 (반복마다), 침투 허용 [m]
         self.N, self.K = int(n_sub), int(n_iter)
         self.planes = list(planes)
         self.mu_s = float(mu_s)
         self.vdamp = float(vdamp)                 # 서브스텝마다 노드 속도에 곱함 (1 = 감쇠 없음)
 
-    def _elastic(self, xs, w, tets, DmI, V, B, Mb, m1, m2, lR, lV, g, dts2):
+    def _elastic(self, xs, w, tets, DmI, V, B, Mb, m1, m2, lR, lV, g, dts2, pg=None, Fp=None, Vp=None):
         r = tets[g]
         Di = DmI[g]
         J = tet_J(xs, r, Di)
-        Bg, Mg = B[g], Mb[g]
-        JM = J @ Mg
-        Rc = polar_R(JM)
-        # C_R² = ‖J M̄ − R_c‖² + tr(J (B̄ − M̄M̄ᵀ) Jᵀ) (= tr(JᵀJB̄) − 2tr(R_cᵀJM̄) + 3, 상쇄 없는 꼴), ½∂C_R²/∂J = (JM̄ − R_c)M̄ᵀ + J(B̄ − M̄M̄ᵀ)
-        Cv = Bg                                                   # = B̄ − M̄M̄ᵀ (aggregates)
-        JC = J @ Cv
-        CR = (((JM - Rc) ** 2).sum((1, 2)) + (J * JC).sum((1, 2)).clamp_min(0.0)).sqrt()
+        Tg = g.numel()
+        if self.rot == "particle":
+            # 입자별: C_R² = Σ V_p ‖J F_p − R_p‖² / V, ½∂C_R²/∂J = Σ V_p (J F_p − R_p) F_pᵀ / V
+            pc, lc = pg
+            Fq = Fp[pc]
+            A = J[lc] @ Fq
+            E_ = A - polar_R(A)
+            vq = Vp[pc]
+            Vg0 = V[g].clamp_min(1e-300)
+            ss = torch.zeros(Tg, device=xs.device, dtype=xs.dtype).index_add_(0, lc, vq * (E_ * E_).sum((1, 2))) / Vg0
+            GG = torch.zeros(Tg, 3, 3, device=xs.device, dtype=xs.dtype).index_add_(0, lc, vq[:, None, None] * (E_ @ Fq.transpose(1, 2))) / Vg0[:, None, None]
+            CR = ss.clamp_min(0.0).sqrt()
+        else:
+            Mg = Mb[g]
+            JM = J @ Mg
+            Rc = polar_R(JM)
+            # C_R² = ‖J M̄ − R_c‖² + tr(J (B̄ − M̄M̄ᵀ) Jᵀ), ½∂C_R²/∂J = (JM̄ − R_c)M̄ᵀ + J(B̄ − M̄M̄ᵀ)   (B = 공분산, aggregates)
+            JC = J @ B[g]
+            CR = (((JM - Rc) ** 2).sum((1, 2)) + (J * JC).sum((1, 2)).clamp_min(0.0)).sqrt()
+            GG = (JM - Rc) @ Mg.transpose(1, 2) + JC
         live = CR > 1e-12
-        GR = torch.where(live[:, None, None], ((JM - Rc) @ Mg.transpose(1, 2) + JC) / CR.clamp_min(1e-300)[:, None, None],
+        GR = torch.where(live[:, None, None], GG / CR.clamp_min(1e-300)[:, None, None],
                          torch.zeros_like(J)) @ Di.transpose(1, 2)       # ∂C_R/∂D_s, 열 j = 노드 j+1
         s2 = m2[g].clamp_min(1e-300).sqrt()
         detJ = torch.linalg.det(J)
@@ -260,7 +294,8 @@ class Solver:
                 xs.index_add_(0, r.reshape(-1), corr.reshape(-1, 3))
         return hit
 
-    def frame(self, S, x0n, v0n, w, g, dt, pin=None, pin_vel=None, V=None, B=None, Mb=None, m1=None, m2=None, DmI=None):
+    def frame(self, S, x0n, v0n, w, g, dt, pin=None, pin_vel=None, V=None, B=None, Mb=None, m1=None, m2=None, DmI=None,
+              Fp=None, Vp=None):
         """노드 시작 위치 x0n, 속도 v0n (float64) -> (끝 위치, 끝 속도, 통계)."""
         tets, groups = S["tets"], S["groups"]
         T = S["T"]
@@ -281,8 +316,8 @@ class Solver:
                 xs[pin] = x0n[pin] + (s + 1) * dts * pin_vel[pin]
             lD.zero_(); lH.zero_()
             for _k in range(self.K):
-                for gi in groups:
-                    self._elastic(xs, w, tets, DmI, V, B, Mb, m1, m2, lD, lH, gi, dts2)
+                for gi, pg in zip(groups, S.get("pgroups") or [None] * len(groups)):
+                    self._elastic(xs, w, tets, DmI, V, B, Mb, m1, m2, lD, lH, gi, dts2, pg=pg, Fp=Fp, Vp=Vp)
                 self._contact(xs, xprev, w, S, st)
             vs = (xs - xprev) / dts
             if self.vdamp != 1.0:
@@ -316,7 +351,8 @@ def advance_frame(solver, x, v, F, m, Vp, node_h, g, dt, bc_fn=None, hz_ratio=HZ
             pv = pv.to(dt64)
     DmI, Vt = tet_rest(npos, S["tets"])
     V, B, Mb, m1, m2 = aggregates(S["pinv"], S["T"], Vp, F)
-    xs, vs, st = solver.frame(S, npos, vn, w, g, dt, pin=pin, pin_vel=pv, V=V, B=B, Mb=Mb, m1=m1, m2=m2, DmI=DmI)
+    xs, vs, st = solver.frame(S, npos, vn, w, g, dt, pin=pin, pin_vel=pv, V=V, B=B, Mb=Mb, m1=m1, m2=m2, DmI=DmI,
+                              Fp=F, Vp=Vp.to(dt64))
     lam = S["lam64"]; rows = S["rows"]
     x2 = (lam.unsqueeze(-1) * xs[rows]).sum(1)
     v2 = (lam.unsqueeze(-1) * vs[rows]).sum(1)
