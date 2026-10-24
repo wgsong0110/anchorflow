@@ -70,7 +70,8 @@ print(f"반복 {a['k']}/{b['k']}  입력폭 {a['n_feat']}  스킵 결합 키 {su
 PY
 )
   echo "[이어 돌리기 gunet5] 30 실행: $RS | 마지막 반복 $K | Traceback $TB | 이어 돈 것 vs 한 번에: $CMP | 20 반복 $((t1-t0)) s, 이어 10 반복 $((t2-t1)) s | $NF" | tee $U/resume_test.txt
-  [ "$K" = 30 ] && [ -n "$RS" ] && [ "$TB" = 0 ] && grep -q "입력폭 33 " <<<"$CMP" && grep -q "생성기 같음 True" <<<"$CMP" && ! grep -q "스킵 결합 키 0 " <<<"$CMP" || fail "이어 돌리기 확인 실패 -- 학습 안 함"
+  NFW=33; [ "$TAG" = near ] && NFW=31     # 입력폭: 바닥 dist 4 칸 -> near 2 칸 (플래그, 거리/h)
+  [ "$K" = 30 ] && [ -n "$RS" ] && [ "$TB" = 0 ] && grep -q "입력폭 $NFW " <<<"$CMP" && grep -q "생성기 같음 True" <<<"$CMP" && ! grep -q "스킵 결합 키 0 " <<<"$CMP" || fail "이어 돌리기 확인 실패 -- 학습 안 함"
   python -c "import re,sys;m=re.search(r'망 파라미터 최대차 ([0-9.e+-]+)', sys.argv[1]);sys.exit(0 if m and float(m.group(1))<1e-3 else 1)" "$CMP" || fail "이어 돈 것과 한 번에 돈 것의 망 차이가 1e-3 이상"
   env AF_ROLL_NOGRAD=1 CUDA_VISIBLE_DEVICES=$G python -u exe/train_deform.py --infer --data $W/one/L000 --hold_traj L000 --out $RT/roll --tag EV --resume $RT/ck.pt $BASE_GU --iters 0 --eval_t0 0 --eval_len 3 --tb none > $RT/roll.log 2>&1 < /dev/null
   RL=$(grep -a "롤아웃\] L000" $RT/roll.log | tail -1 | cut -c1-160); echo "[롤아웃 연기 시험] $RL | Traceback $(grep -a -c Traceback $RT/roll.log)" | tee -a $U/resume_test.txt
