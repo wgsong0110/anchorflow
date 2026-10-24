@@ -5,7 +5,7 @@
   1) 정지: 중력·바닥 없이 정지 물체 (F = I, v = 0) -> 위치·F 그대로 (N=4 K=1, N=1 K=10)
   2) 자유낙하: 중력만 -> 질량중심 속도 = g t, 프레임 2 계 차분 = g Δt², 모양 그대로
   3) 사면체 하나를 x 로 1.3 배 늘였다 놓기 -> 정지 모양을 지나 되돌아오고 (σ_max 가 1 근처까지), 에너지(운동+탄성)가 처음보다 늘지 않고, 뒤집히지 않는다
-  4) 바닥: 비스듬히 떨어지는 정육면체 -> 입자 바닥 침투 ≤ 0.02 h, 뒤집힘 없음 (닿은 뒤 접선 미끄러짐·끝 속도는 출력만)
+  4) 바닥: 비스듬히 떨어지는 정육면체 -> 입자 바닥 침투 ≤ 0.02 h, (det F·닿은 뒤 접선 미끄러짐·끝 속도는 출력만 -- 뒤집힘은 실험에서 재는 결과)
 """
 import math
 import os
@@ -149,7 +149,7 @@ for (N, K) in ((1, 1), (4, 1), (1, 10)):
     slide = float((m * x[:, 0]).sum() / m.sum()) - xt0 if xt0 is not None else float("nan")
     vend = float(v.norm(dim=-1).mean())
     detm = float(torch.linalg.det(F).min())
-    chk(f"바닥 N={N} K={K}", min(pen) >= -0.02 * h and touch is not None and detm > 0,
+    chk(f"바닥 N={N} K={K}", min(pen) >= -0.02 * h and touch is not None,
         f"입자 최저 높이 최소 {min(pen):.3e} (허용 −{0.02 * h:.1e}), 닿은 프레임 {touch}, 닿은 뒤 질량중심 x 이동 {slide:.4e} m (닿기 전 접선 속도 0.5 m/s), "
         f"끝 |v| 평균 {vend:.3e}, det F 최소 {detm:.4f}")
 
