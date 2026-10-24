@@ -74,7 +74,8 @@ if [ ! -f $S/SMOKE_OK ]; then
     PIDS+=($!)
     [ ${#GL[@]} -lt 3 ] && wait ${PIDS[-1]}      # 빈 카드가 모자라면 차례로
   done
-  wait
+  # 시험 실행만 기다린다 (인자 없는 wait 는 심장박동·동기화 루프까지 기다려 영영 안 끝난다 -- 10-24 첫 실행에서 멈춤)
+  for p_ in "${PIDS[@]}"; do wait $p_; done
   for k in lin zero rot; do [ -f $S/$k/roll_ov.pt ] || fail "3 프레임 시험 $k 실패 $(grep -a 'Traceback\|Error' $S/$k/v_ov.log | tail -2)"; done
   python - $S $O0/roll_ov.pt <<'PY' | tee $S/smoke.txt
 import sys, json, torch
