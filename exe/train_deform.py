@@ -398,6 +398,13 @@ ap.add_argument("--lgv_backtrack", type=int, default=5,
                 help="제안에서 det J <= --det_eps 인 셀이 있으면 걸음(기울기·잡음)을 반으로 줄이는 최대 횟수 (그래도 안 되면 u0 로 전진)")
 ap.add_argument("--lgv_lam", type=float, default=1e-2,
                 help="계량 블록 G_n 에 더하는 정규화 lam·I 의 lam (전체 노드 블록 대각 평균에 대한 비)")
+ap.add_argument("--pool_trace", default="",
+                help="풀 상태 탈락 과정 기록 디렉토리 (사용자 10-25, lib/anchorflow/pool_trace.py): 상태별 전진 이력(위치·F float16)을 들고 "
+                     "다니다 탈락하면 drops.jsonl 에 사유·나이·정체 수, 주기마다 그 구간 탈락 중 나이 상위 --pool_trace_long 개 + 무작위 "
+                     "--pool_trace_rand 개의 이력 저장, 최대 나이를 갱신하면 그 이력 저장. 비우면 끔 (학습 난수·결과에 영향 없음)")
+ap.add_argument("--pool_trace_period", type=int, default=500, help="--pool_trace 탈락 이력 저장 주기 (반복)")
+ap.add_argument("--pool_trace_long", type=int, default=2, help="--pool_trace 주기마다 저장할 나이 상위 탈락 수")
+ap.add_argument("--pool_trace_rand", type=int, default=1, help="--pool_trace 주기마다 저장할 무작위 탈락 수")
 ap.add_argument("--pool_init_frame", type=int, default=0,
                 help="--pool_init_traj 의 몇 번째 프레임을 고정 초기 상태로 쓸지 (문턱 보정용 출력만 최적화에 쓴다)")
 ap.add_argument("--seq_frames", type=int, default=0,
@@ -2739,6 +2746,12 @@ if a.pool:
                      start_mid=a.pool_start_mid, keep_prob=a.pool_keep,
                      acc=a.ctrl_acc, vmax=a.ctrl_vmax, zbias=a.ctrl_zbias,
                      n_side=a.pool_targets, drop=_DROP, data=_PDATA, init=_PINIT)
+    if a.pool_trace and not a.infer:
+        from anchorflow.pool_trace import PoolTracer
+        POOL.tracer = PoolTracer(a.pool_trace, period=a.pool_trace_period, n_long=a.pool_trace_long, n_rand=a.pool_trace_rand)
+        POOL.tracer.it = int(step0)
+        print(f"[풀 이력] {a.pool_trace}: 주기 {a.pool_trace_period}, 나이 상위 {a.pool_trace_long} + 무작위 {a.pool_trace_rand}, "
+              f"이어받은 최대 나이 {POOL.tracer.best_age}, 반복 {step0} 부터", flush=True)
     if a.pool_start_k > 0:
         POOL.fix_start_set(a.pool_start_k)
         print(f"[풀] 시작 상태 고정 집합 {a.pool_start_k} 개 (고정 시드)", flush=True)
@@ -4068,6 +4081,8 @@ for it in pbar:
         else:
             print(f"  [검증 {it+1}] 비 {_v:.4f} 목적 {_vo:.3e} "
                   f"(best {_best:.4f})", flush=True)
+    if POOL is not None and getattr(POOL, "tracer", None) is not None:
+        POOL.tracer.step_end(it)
     if (it + 1) % a.save_every == 0 or it == a.iters - 1:
         save_ck("last", it + 1)
 

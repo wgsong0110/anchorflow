@@ -220,6 +220,8 @@ class StatePool:
         self.items = []
         self.n_drop = 0
         self.n_replan = 0
+        # --pool_trace: 상태별 전진 이력·탈락 기록 (lib/anchorflow/pool_trace.py). None 이면 아무 일도 안 한다
+        self.tracer = None
 
     def state_dict(self):
         """풀 전체와 누적 집계. 재개할 때 빈 풀에서 0 부터 다시 세면 TB 의
@@ -259,6 +261,8 @@ class StatePool:
                 plan=HandlePlan.unpack(q["plan"], self.dev),
                 elapsed=float(q["elapsed"]), hist=list(q["hist"]),
                 age=int(q["age"]), stuck=int(q.get("stuck", 0))))
+            if self.tracer is not None:
+                self.tracer.on_load(self.items[-1])
         self.n_drop = int(d.get("n_drop", 0))
         self.n_keep = int(d.get("n_keep", 0))
         self.n_replan = int(d.get("n_replan", 0))
@@ -300,10 +304,13 @@ class StatePool:
         if self.start_mid:
             el = int(torch.randint(self.frames, (1,), generator=self.gen,
                                    device=self.dev))
-        return dict(si=si, x=x, v=v,
-                    F=(F0 if F0 is not None else torch.eye(3, device=self.dev).expand(
-                        x.shape[0], 3, 3).contiguous()),
-                    p=None, plan=plan, elapsed=el, hist=[], age=0)
+        st = dict(si=si, x=x, v=v,
+                  F=(F0 if F0 is not None else torch.eye(3, device=self.dev).expand(
+                      x.shape[0], 3, 3).contiguous()),
+                  p=None, plan=plan, elapsed=el, hist=[], age=0)
+        if self.tracer is not None:
+            self.tracer.on_fresh(st)
+        return st
 
     def fix_start_set(self, k, seed=1234):
         """새 시작 상태를 낙하 분포에서 고정 시드로 k 개 뽑아 두고, 이후 fresh() 는 그중 하나만 고른다 (k=1 이면 한 상태로 고정)."""
@@ -380,26 +387,33 @@ class StatePool:
                 self.n_replan += 1
         else:
             st["stuck"] = st.get("stuck", 0) + 1
+        if advanced and self.tracer is not None:
+            self.tracer.on_advance(st)
         dead = not bool(torch.isfinite(st["x"]).all())
+        why = "비유한" if dead else None
         if not dead and stuck_max > 0 and st.get("stuck", 0) >= stuck_max:
             # 연속 stuck_max 번 방문하는 동안 한 번도 전진하지 못한 상태는 버린다
             self.n_stuckdrop = getattr(self, "n_stuckdrop", 0) + 1
-            dead = True
+            dead, why = True, "정체폐기"
         if not dead and expire and st["age"] >= self.frames:
             self.n_expire = getattr(self, "n_expire", 0) + 1
-            dead = True
+            dead, why = True, "만기"
         if not dead and slot is not None and rdrop > 0 and \
                 float(torch.rand(1, generator=self.gen, device=self.dev)) < rdrop:
             self.n_rdrop = getattr(self, "n_rdrop", 0) + 1
-            dead = True
+            dead, why = True, "무작위폐기"
         if dead:
             if slot is not None:
                 self.items[slot] = None
+            if self.tracer is not None:
+                self.tracer.on_drop(st, why)
             return False
         if slot is not None:
             self.items[slot] = st
         elif len(self.items) < self.size:
             self.items.append(st)
+        elif self.tracer is not None:
+            self.tracer.on_drop(st, "신규_풀가득")     # 풀이 차 있어 새 상태가 들어가지 못했다
         return True
 
     def put_back(self, slot, st, res, prev=None, dt_frac=1.0):

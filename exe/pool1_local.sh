@@ -133,6 +133,45 @@ $(grep -v '^#' $TB)
   touch $D/POOL1_DONE; echo POOL1_DONE
   notify "pool1 한 궤적 풀 학습 끝" "일반 GNN L000 $EP_L / 0004 $EP_4, Graph U-Net L000 $EQ_L / 0004 $EQ_4 (sf1 GNN $EG_L / $EG_4)" --tags white_check_mark; }
 
+# ---- 풀 탈락·최고 기록 이력 영상 (사용자 10-25): 클러스터가 렌더한 pool_trace/vid/<이름>.mp4 를 정답 L000 같은 프레임과 나란히 ----
+DROPD=$D/pool1_drop
+dropvids(){ for m in gnn gunet; do
+    RV=$RL/pool1_$m/pool/pool_trace/vid; X=$T/drop_$m; OD=$DROPD/pool1_$m; mkdir -p $X $OD
+    [ -f $T/gt_L000.mp4 ] || get $RG/gt_L000.mp4 $T/gt_L000.mp4
+    [ -f $T/gt_L000.mp4 ] || return 0
+    for f in $(rclone lsf $RV --include "*.mp4" 2>/dev/null); do n=${f%.mp4}; OUT=$OD/$n.mp4
+      [ -e $OUT ] && continue
+      get $RV/$n.mp4 $X/$n.mp4; get $RV/$n.json $X/$n.json
+      [ -f $X/$n.mp4 ] && [ -f $X/$n.json ] || continue
+      read A NF LAB <<<"$(python3 -c "
+import json; m=json.load(open('$X/$n.json')); fr=m['frames']; tf=m['trace_from']
+a = 0 if tf == 0 else fr[0]                      # 영상 첫 프레임의 프레임 번호
+nf = len(fr) + (1 if tf == 0 else 0)
+k = '최대 나이 갱신' if m.get('kind') == 'best' else ('탈락 ' + m['reason'] + ' (' + m.get('select', '') + ' 선택)')
+print(a, nf, f\"pool1_$m · uid {m['uid']} · {k} · 반복 {m['it']} · 나이 {m['age']} 프레임 · 정체 {m['stuck']} · 태어난 반복 {m['it_born']}\" + (f' · 이력은 프레임 {fr[0]} 부터 (이어 돌리기 전 상태)' if tf else ''))")"
+      [ -n "$NF" ] || continue
+      printf '정답 L000 (MPM)' > $T/dl_g.txt; printf '풀 상태 (모델로 전진)' > $T/dl_p.txt; printf '%s' "$LAB" > $T/dl_t.txt
+      DT="fontfile=$F:fontsize=22:fontcolor=black:box=1:boxcolor=white@0.8:boxborderw=5:expansion=none"
+      ffmpeg -loglevel error -y -i $T/gt_L000.mp4 -i $X/$n.mp4 -filter_complex \
+"[0:v]trim=start_frame=$A,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop=$NF,trim=end_frame=$NF,setpts=PTS-STARTPTS,drawtext=textfile=$T/dl_g.txt:x=14:y=14:$DT[g];\
+[1:v]trim=end_frame=$NF,setpts=PTS-STARTPTS,drawtext=textfile=$T/dl_p.txt:x=14:y=14:$DT[q];[g][q]hstack=inputs=2,pad=iw:ih+44:0:44:white,\
+drawtext=textfile=$T/dl_t.txt:x=10:y=10:fontfile=$F:fontsize=22:fontcolor=black:expansion=none,\
+drawtext=fontfile=$F:text='프레임 %{eif\:n+$A\:d}':x=w-tw-16:y=h-th-14:fontsize=48:fontcolor=red,format=yuv420p" \
+        -c:v libx264 -crf 20 $OUT && echo "[탈락 영상] $OUT ($NF 프레임)" || { echo "[탈락 영상 실패] $n"; [ -e $OUT ] && mv $OUT $OUT.fail_$(date +%H%M%S); continue; }
+      rclone copy $OUT r2:storage/result/anchorflow/v20261009/pool1_drop/pool1_$m -q
+      if [ ! -f $DROPD/.outputs_noted ]; then touch $DROPD/.outputs_noted
+        cat >> $RR/outputs.md <<EOM
+
+## $(date +%F) pool1_drop: 한 궤적 풀 학습 풀 상태 탈락·최고 기록 이력 영상 (pool1_gnn, pool1_gunet)
+- Path: $DROPD/pool1_{gnn,gunet}/<이름>.mp4 (정답 L000 같은 프레임 | 풀 상태, 3DGS, 프레임 번호 빨간색, 사유·반복·나이 라벨); R2 v20261009/pool1_drop/
+- 원본: r2:storage/result/anchorflow/lbours/pool1_<실행>/pool/pool_trace/ (drop_it*_uid*_<사유>_age*.pt·best_it*_age*_uid*.pt = 위치·F float16 이력, drops.jsonl = 모든 탈락, saved.jsonl, vid/)
+- Commit: 학습 --pool_trace (lib/anchorflow/pool_trace.py), 렌더 exe/pool1.sh render_trace, 합성 exe/pool1_local.sh dropvids
+- 규칙: 500 반복마다 그 구간 탈락 중 나이 상위 2 + 무작위 1, 최대 나이 갱신 때마다 (30 초과부터 5 프레임마다)
+EOM
+      fi
+    done
+  done; }
+
 relaunch(){ local m=$1 LG=/home/dkta/work/pool1_${1}_run_$(date +%m%d_%H%M).log
   echo "[재기동 $m] $(date '+%F %T') -> $LG"
   ssh -o ConnectTimeout=20 $LOGIN "cd /home/dkta/work/anchorflow && read J N < /home/dkta/work/pool1_job.txt; AF_JOB=\$J AF_NODE=\$N AF_DETACH=1 bash exe/job_run.sh /home/dkta/work/pool1_${m}_run_boot.sh $LG" 2>&1 | tail -3
@@ -158,6 +197,7 @@ while true; do
       [ -n "$AGE" ] && [ "$AGE" -gt 900 ] && [ "$SINCE" -gt 1500 ] && relaunch $m
     done
   fi
+  dropvids 2>&1 | tail -20
   if [ -n "$(rclone lsf $RG/POOL1_GNN_CLUSTER_DONE 2>/dev/null)" ] && [ -n "$(rclone lsf $RU/POOL1_GUNET_CLUSTER_DONE 2>/dev/null)" ]; then
     NP=$(( $(cat /tmp/pool1_post_tries 2>/dev/null || echo 0) + 1 )); echo $NP > /tmp/pool1_post_tries
     post && { echo "POOL1_DONE $(date)"; break; }

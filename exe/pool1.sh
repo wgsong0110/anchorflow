@@ -16,6 +16,11 @@
 #       (3) 15000 반복 (500 마다 체크포인트 -> --r2 로 R2; 체크포인트가 바뀔 때마다 풀을 뺀 망만 hist/step_N.pt 로 남긴다 -- 학습 곡선용)
 #       (4) L000·0004 롤아웃 80 프레임 (F float32 덤프, 뒤집힘·바닥 통과 기록) + 3DGS 영상 + psi 색(공통 고정 범위)
 #       (5) 학습 곡선: hist 체크포인트마다 L000 정답 시작 80 프레임 롤아웃 위치 오차 -> hist_eval.jsonl, TB -> curves.json
+# 풀 탈락 과정 기록 (사용자 10-25): 본 학습에 --pool_trace $O/pool_trace (lib/anchorflow/pool_trace.py) -- drops.jsonl(모든 탈락: 사유·나이·정체·반복),
+#   500 반복마다 그 구간 탈락 중 나이 상위 2 + 무작위 1 이력, 최대 나이 갱신 때마다 그 이력 (위치·F float16 .pt). 학습 중 같은 GPU 에서
+#   새 이력을 3DGS 로 렌더 (pool_trace/vid/<이름>.mp4 + .json; 변환 h5 는 노드 /tmp 에 두었다 렌더 뒤 지움 -- 원본 .pt 는 그대로).
+#   (2b) 이력 시험: 120 반복(주기 20) 이력 켬, 60 -> 120 이어 돌리기 vs 한 번에, 이력 끈 같은 120 반복과 망 비교 (이력이 학습을 바꾸지 않음).
+# 멈추기: touch $U/STOP_REQUEST 뒤 학습 python 만 종료 -> 드라이버가 실패 표시 없이 정리하고 끝난다 (다시 띄우면 MAIN_last.pt 에서 이어 돈다).
 # 멱등: 다시 띄우면 끝난 단계는 건너뛰고 학습은 MAIN_last.pt 에서 이어 돈다. GPU 는 인자 하나만 쓴다 (다른 프로세스가 있으면 빌 때까지 기다림).
 # 출력은 처음부터 R2 와 통째 동기화 (제외 없음, 5분 루프). 아무것도 지우지 않는다 (이전 시험 디렉토리는 _prev_ 로 옮긴다).
 export PYTHONUTF8=1 OMP_NUM_THREADS=2 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -28,12 +33,14 @@ NIT=15000
 NI=$W/lbours/noinertial; G5=$W/lbours/gunet5_near
 WP=$W/wt/psi_d993fb5; RANGE=$W/lbours/lego_psi/range.json
 L0PT=$W/lbpt/test_low/L000.pt
-U=$W/lbours/pool1_$M; R=r2:storage/result/anchorflow/lbours/pool1_$M; O=$U/pool; mkdir -p $U $O $U/hist
+U=$W/lbours/pool1_$M${POOL1_SUFFIX:-}; R=r2:storage/result/anchorflow/lbours/pool1_$M${POOL1_SUFFIX:-};   # POOL1_SUFFIX: 시험을 본 실행과 다른 디렉토리에서 (본 실행이 돌고 있을 때)
+ O=$U/pool; mkdir -p $U $O $U/hist
 if [ -f $U/driver.hb ] && [ $(( $(date +%s) - $(cat $U/driver.hb) )) -lt 300 ]; then echo "[중단] 다른 드라이버가 돌고 있다 (하트비트 5 분 안) $(date)"; exit 0; fi
 echo $$ > $U/driver.pid
 ( while true; do date +%s > $U/driver.hb; sleep 120; done ) & HB=$!
 ( while true; do rclone copy $U $R -q; sleep 300; done ) & SYNC=$!
-trap 'kill $SYNC $HB ${SNAP:-} 2>/dev/null; rm -f $U/driver.hb' EXIT
+trap 'kill $SYNC $HB ${SNAP:-} ${RDR:-} 2>/dev/null; rm -f $U/driver.hb' EXIT
+trap 'exit 143' TERM INT     # TERM 으로도 EXIT 정리(동기화·하트비트·스냅 루프 종료)가 돌게
 echo "[시작] $(date) 커밋 $C 노드 $(hostname) 잡 ${PBS_JOBID:-?} 모델 $M GPU$G 반복 $NIT"
 up(){ rclone copy $U $R -q; }
 bgup(){ ( rclone copyto $1 $R/${1#$U/} -q && echo "[R2 덤프 올림] ${1#$U/} $(date +%T)" ) & }
@@ -103,6 +110,16 @@ print(f"반복 {a['step']}/{b['step']}  입력폭 {a['n_feat']}/{b['n_feat']}  �
 PY_
 maxd(){ python -c "import re,sys;m=re.search(r'망 파라미터 최대차 ([0-9.e+-]+)', sys.argv[1]);sys.exit(0 if m and float(m.group(1))<$2 else 1)" "$1"; }
 NFW=33; [ $M = gunet ] && NFW=31
+render_trace(){ # render_trace <이력 .pt> <vid 디렉토리> -- 3DGS 렌더 (프레임 0 = 풀 시작 = L000 0 프레임; 이력 시작이 0 이 아니면 덤프 첫 프레임부터)
+  local f=$1 V=$2 n; n=$(basename $1 .pt); mkdir -p $V
+  [ -f $V/$n.mp4 ] && return 0
+  local H=/tmp/pool1_h5_${M}_$n; [ -e $H ] && mv $H ${H}_prev_$(date +%s)
+  local FF; FF=$(python -c "import torch,json;m=torch.load('$f',map_location='cpu',weights_only=False);d=dict(m['meta'],frames=m['frames']);json.dump(d,open('$V/$n.json','w'),ensure_ascii=False);print('--first_from_dump' if d['trace_from']>0 else '')") || return 1
+  python -u exe/lb_roll_to_h5.py --dump $f --traj $W/lbdata/test_low/L000 --out $H $FF > $V/$n.h5.log 2>&1 \
+    && CUDA_VISIBLE_DEVICES=$G python -u exe/lb_render.py --sim $H --config $W/lbdata/config.json --shape lego --out $V/$n.mp4 > $V/$n.r.log 2>&1 < /dev/null
+  local rc=$?; rm -rf $H     # 변환 h5 (float32 다시 쓴 것) 만 지운다 -- 원본 이력 .pt 는 그대로
+  [ $rc = 0 ] && [ -f $V/$n.mp4 ] || { touch $V/$n.fail; return 1; }; }
+render_loop(){ while true; do for f in $(ls $O/pool_trace/*.pt 2>/dev/null); do n=$(basename $f .pt); [ -f $O/pool_trace/vid/$n.mp4 ] || [ -f $O/pool_trace/vid/$n.fail ] || { render_trace $f $O/pool_trace/vid && echo "[이력 렌더] $n $(date +%T)"; }; done; sleep 120; done; }
 # ---- (1) 기본 경로 대조: 같은 명령 2 반복 -- 이 커밋 vs 기준 커밋 ----
 if [ ! -f $U/base_equiv_$C.ok ]; then
   wait_gpu; echo "[기본 경로 대조] GPU$G $(date +%T)"
@@ -143,6 +160,30 @@ if [ ! -f $U/resume_$C.ok ]; then
   done
   touch $U/resume_$C.ok; up
 fi
+# ---- (2b) 풀 이력 시험 ----
+if [ ! -f $U/trace_$C.ok ]; then
+  wait_gpu; echo "[이력 시험] GPU$G $(date +%T)"
+  TT=$U/trace_$C; [ -e $TT ] && mv $TT ${TT}_prev_$(date +%H%M%S); mkdir -p $TT/a $TT/b $TT/c
+  TRF="--pool_trace_period 20"
+  tr1 $TT/a 60 30 0 $TT/a60.log --pool_trace $TT/a/pool_trace $TRF; tr1 $TT/a 120 30 0 $TT/a120.log --resume $TT/a/MAIN_last.pt --pool_trace $TT/a/pool_trace $TRF
+  tr1 $TT/b 120 30 0 $TT/b120.log --pool_trace $TT/b/pool_trace $TRF
+  tr1 $TT/c 120 30 0 $TT/c120.log
+  TB=$(cat $TT/*.log | grep -a -c Traceback)
+  CAB=$(python $CMPPY $TT/a/MAIN_last.pt $TT/b/MAIN_last.pt 2>&1 | tail -1); CBC=$(python $CMPPY $TT/b/MAIN_last.pt $TT/c/MAIN_last.pt 2>&1 | tail -1)
+  ND=$(cat $TT/b/pool_trace/drops.jsonl 2>/dev/null | wc -l); NS=$(cat $TT/b/pool_trace/saved.jsonl 2>/dev/null | wc -l)
+  RS=$(grep -a "\[풀 이력\]" $TT/a120.log | head -1 | cut -c1-160)
+  SZ=$(du -sh $TT/b/pool_trace | cut -f1)
+  { echo "[이력 시험 $M] Traceback $TB | 탈락 기록 $ND 줄 (사유 $(python -c "import json,collections;print(dict(collections.Counter(json.loads(l)['reason'] for l in open('$TT/b/pool_trace/drops.jsonl'))))" 2>/dev/null)) | 저장 이력 $NS 개, 디렉토리 $SZ"
+    echo "[이력 시험 저장] $(python -c "import json;[print(r['file'],r['n_trace'],'프레임',round(r['bytes']/1e6,1),'MB') for r in map(json.loads,open('$TT/b/pool_trace/saved.jsonl'))]" 2>/dev/null | tr '\n' ';')"
+    echo "[이력 켬 60 -> 120 이어 vs 한 번에] $CAB"
+    echo "[이력 켬 vs 끔 (120 반복)] $CBC"
+    echo "[이어 돌릴 때 이력] $RS | 이어 돈 쪽 탈락 기록 $(cat $TT/a/pool_trace/drops.jsonl 2>/dev/null | wc -l) 줄"; } | tee $U/trace_test.txt
+  [ "$TB" = 0 ] && [ "$ND" -gt 0 ] && [ "$NS" -gt 0 ] && [ -n "$RS" ] || fail "이력 시험 실패 (Traceback·탈락 기록·저장 이력·이어받기)"
+  maxd "$CAB" 1e-3 && maxd "$CBC" 1e-5 || fail "이력이 학습을 바꾸거나 이어 돌리기가 다르다"
+  # 저장 이력 하나를 실제로 3DGS 로 렌더해 본다
+  f=$(ls $TT/b/pool_trace/*.pt | head -1); render_trace $f $TT/b/pool_trace/vid && ls -la $TT/b/pool_trace/vid | tee -a $U/trace_test.txt || fail "이력 렌더 시험 실패"
+  touch $U/trace_$C.ok; up
+fi
 if [ -n "${POOL1_TEST_ONLY:-}" ]; then touch $U/POOL1_${MU}_TEST_DONE; up; echo "POOL1_${MU}_TEST_DONE"; exit 0; fi
 # ---- (3) 학습 15000 반복 ----
 snap(){ # MAIN_last.pt 가 바뀔 때마다 풀·크리틱을 뺀 망 체크포인트를 hist/step_N.pt 로 (학습 곡선용; 원본은 그대로)
@@ -166,14 +207,17 @@ K=$(ck_k $O/MAIN_last.pt)
 if [ "$K" != $NIT ] || ! grep -a -q DEFORM_OK $U/pool.log 2>/dev/null; then
   wait_gpu
   snap >> $U/snap.log 2>&1 & SNAP=$!
+  render_loop >> $U/render.log 2>&1 & RDR=$!
   RES=''; [ -f $O/MAIN_last.pt ] && RES="--resume $O/MAIN_last.pt"
-  CMD="python -u exe/train_deform.py --data $W/lbpt/test --hold_traj $HOLD --out $O --tag MAIN $RES $B --iters $NIT --eval_t0 0 --eval_len 80 --save_every 500 --val_every 500 --val_n 4 --val_len 80 --tb $U/tb --r2 $R/pool"
+  CMD="python -u exe/train_deform.py --data $W/lbpt/test --hold_traj $HOLD --out $O --tag MAIN $RES $B --iters $NIT --eval_t0 0 --eval_len 80 --save_every 500 --val_every 500 --val_n 4 --val_len 80 --tb $U/tb --r2 $R/pool --pool_trace $O/pool_trace"
   echo "[학습 시작] pool1 $M: 커밋 $C, GPU$G, 이어 돌기 ${K:-없음}, $(date '+%F %T')" | tee -a $U/POOL1_LAUNCHED
   echo "[학습 명령줄] CUDA_VISIBLE_DEVICES=$G $CMD" | tee -a $U/POOL1_LAUNCHED; up
   CUDA_VISIBLE_DEVICES=$G $CMD >> $U/pool.log 2>&1 < /dev/null
-  K=$(ck_k $O/MAIN_last.pt); echo "[학습 끝] 반복 $K $(date +%T)"; sleep 120; kill $SNAP 2>/dev/null; up
+  if [ -f $U/STOP_REQUEST ]; then mv $U/STOP_REQUEST $U/STOP_REQUEST.done_$(date +%m%d_%H%M%S); echo "[멈춤 요청] 학습 중단 -- 다시 띄우면 MAIN_last.pt 에서 이어 돈다 $(date)"; kill $SNAP $RDR 2>/dev/null; up; exit 0; fi
+  K=$(ck_k $O/MAIN_last.pt); echo "[학습 끝] 반복 $K $(date +%T)"; sleep 120; kill $SNAP $RDR 2>/dev/null; up
   [ "$K" = $NIT ] && grep -a -q DEFORM_OK $U/pool.log || fail "$NIT 못 미침 (반복 $K) -- 롤아웃 생략"
 fi
+for f in $(ls $O/pool_trace/*.pt 2>/dev/null); do render_trace $f $O/pool_trace/vid > /dev/null 2>&1; done; up
 # ---- (4) L000·0004 롤아웃 + 영상 + psi (sf1 과 같은 명령·도구) ----
 roll(){ T=$1; N=pool1_${M}_$T
   if [ ! -f $U/roll_$N.pt ] || ! grep -a -q "롤아웃\] $T" $U/v_$N.log 2>/dev/null; then
