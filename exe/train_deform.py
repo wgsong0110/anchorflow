@@ -3991,6 +3991,8 @@ for it in pbar:
             if TBW is not None and _DET_BAD:
                 TBW.add_scalar("det/무효비율",
                                sum(_DET_BAD) / len(_DET_BAD), it)
+        if getattr(POOL, "tracer", None) is not None:
+            POOL.tracer.step_end(it)          # --pool_trace: 주기 경계면 이번 구간 탈락 이력 저장 (풀 경로는 여기서 continue)
         continue
     if a.rl and OPT_C is not None:
         torch.nn.utils.clip_grad_norm_(CRITIC.parameters(), 1.0)

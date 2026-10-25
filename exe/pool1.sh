@@ -178,7 +178,9 @@ if [ ! -f $U/trace_$C.ok ]; then
     echo "[이력 켬 60 -> 120 이어 vs 한 번에] $CAB"
     echo "[이력 켬 vs 끔 (120 반복)] $CBC"
     echo "[이어 돌릴 때 이력] $RS | 이어 돈 쪽 탈락 기록 $(cat $TT/a/pool_trace/drops.jsonl 2>/dev/null | wc -l) 줄"; } | tee $U/trace_test.txt
-  [ "$TB" = 0 ] && [ "$ND" -gt 0 ] && [ "$NS" -gt 0 ] && [ -n "$RS" ] || fail "이력 시험 실패 (Traceback·탈락 기록·저장 이력·이어받기)"
+  NP=$(grep -a -c "\[풀 이력\] 반복" $TT/b120.log)
+  echo "[이력 시험 주기 저장] 주기 경계 저장 줄 $NP 개 (120/20 = 6 이어야): $(grep -a "\[풀 이력\] 반복" $TT/b120.log | tail -2 | tr '\n' ' ')" | tee -a $U/trace_test.txt
+  [ "$TB" = 0 ] && [ "$ND" -gt 0 ] && [ "$NS" -gt 0 ] && [ -n "$RS" ] && [ "$NP" = 6 ] || fail "이력 시험 실패 (Traceback·탈락 기록·저장 이력·이어받기·주기 저장)"
   maxd "$CAB" 1e-3 && maxd "$CBC" 1e-5 || fail "이력이 학습을 바꾸거나 이어 돌리기가 다르다"
   # 저장 이력 하나를 실제로 3DGS 로 렌더해 본다
   f=$(ls $TT/b/pool_trace/*.pt | head -1); render_trace $f $TT/b/pool_trace/vid && ls -la $TT/b/pool_trace/vid | tee -a $U/trace_test.txt || fail "이력 렌더 시험 실패"
