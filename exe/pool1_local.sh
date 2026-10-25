@@ -198,6 +198,14 @@ while true; do
     done
   fi
   dropvids 2>&1 | tail -20
+  # 렌더 실패(.fail, mp4 없음) 이력이 있으면 30 분에 한 번 재렌더 잡 (exe/pool1_render_fail.sh, c3ab3e4) -- 빈 카드 pool1_rf.gpu
+  if [ $(( $(date +%s) - $(cat /tmp/pool1_rf_last 2>/dev/null || echo 0) )) -gt 1800 ]; then
+    NF=$(timeout 60 ssh -o ConnectTimeout=20 $LOGIN 'n=0; for m in gnn gunet; do V=/home/dkta/work/lbours/pool1_$m/pool/pool_trace/vid; for f in $(ls $V/*.fail 2>/dev/null); do [ -f ${f%.fail}.mp4 ] || n=$((n+1)); done; done; echo $n' 2>/dev/null)
+    if [ -n "$NF" ] && [ "$NF" -gt 0 ]; then date +%s > /tmp/pool1_rf_last
+      echo "[재렌더 잡] 실패 이력 $NF 개 $(date)"
+      timeout 110 ssh -o ConnectTimeout=20 $LOGIN "cd /home/dkta/work/anchorflow && read J N < /home/dkta/work/pool1_job.txt; AF_JOB=\$J AF_NODE=\$N AF_DETACH=1 bash exe/job_run.sh /home/dkta/work/pool1_render_fail_boot.sh /home/dkta/work/pool1_render_fail_\$(date +%m%d_%H%M).log" 2>&1 | tail -2
+    fi
+  fi
   if [ -n "$(rclone lsf $RG/POOL1_GNN_CLUSTER_DONE 2>/dev/null)" ] && [ -n "$(rclone lsf $RU/POOL1_GUNET_CLUSTER_DONE 2>/dev/null)" ]; then
     NP=$(( $(cat /tmp/pool1_post_tries 2>/dev/null || echo 0) + 1 )); echo $NP > /tmp/pool1_post_tries
     post && { echo "POOL1_DONE $(date)"; break; }
