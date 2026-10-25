@@ -41,4 +41,5 @@ for i in range(P.shape[0]):
     with h5py.File(f"{a.out}/sim_{i + 1:010d}.h5", "w") as o:
         o.create_dataset("x", data=P[i].numpy().astype(np.float32))
         o.create_dataset("F", data=Fr.numpy().astype(np.float32))
-print(f"[저장] {a.out}  {P.shape[0] + 1} 프레임, det F 범위 {float(torch.linalg.det(F[-1]).min()):.3f}~{float(torch.linalg.det(F[-1]).max()):.3f}", flush=True)
+_Fl = F[-1] if F.shape[0] else d["F"][0].float()     # --first_from_dump 에 덤프가 한 프레임뿐이면 P·F 가 비어 있다 (프레임 0 만)
+print(f"[저장] {a.out}  {P.shape[0] + 1} 프레임, det F 범위 {float(torch.linalg.det(_Fl).min()):.3f}~{float(torch.linalg.det(_Fl).max()):.3f}", flush=True)
