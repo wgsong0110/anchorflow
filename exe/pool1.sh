@@ -1,0 +1,235 @@
+#!/bin/bash
+# lego 한 궤적 풀 학습 (사용자 10-25) -- 일반 GNN / Graph U-Net, 바닥 softplus 0.01 + 미끄러짐 방지, 관성 예측 없음, 15000 반복.
+#   bash exe/pool1.sh <gnn|gunet> <GPU>     (잡 안에서만: AF_DETACH=1 bash exe/job_run.sh $W/pool1_<m>_run_boot.sh <로그>)
+#   풀 학습 명령 = 예전 lego 풀 학습 spstick pool (/home/dkta/work/spstick2.sh 의 PC, 커밋 13471f4, 결과 lbours/spstick/lgvpool/pool) 이
+#     실제로 실행한 인자([pool] 줄, spstick2.out) 그대로에서
+#     (1) --net_inertial 하나를 뺀다 (예전 풀은 COMMON 에 --net_inertial 이 있었다)
+#     (2) gunet 은 gunet5_near 와 같은 --gnn_layer unet --gunet_levels 3 --bc_feat near --bc_near_h 1.0 을 더한다
+#     (3) --pool_init_traj /home/dkta/work/lbpt/test_low/L000.pt 를 더한다: 풀의 새 상태가 전부 L000 의 0 프레임(x, v, F) 하나가 된다
+#         (예전 풀은 학습 궤적이 없었다 -- --pool_drop 0.0,0.02,0.0,1.5 낙하 분포에서 매번 새 시작 상태(무작위 회전·높이·속도)를
+#          뽑고(--pool_start_k 0), 그 뒤는 모델 출력으로 전진. --pool_init_traj 가 있으면 scene_pool.fresh() 가 낙하 분포 대신 이 상태를 쓴다)
+#   학습 루프 인자(--data lbpt/test --hold_traj 전부 --iters 15000 --save_every 500 --val_every 500 --val_n 4 --val_len 80)도 spstick2.sh train() 그대로.
+#   망·바닥 인자가 sf1·다섯 궤적 실행(noinertial / gunet5_near)과 같은지 자동 대조 (차이는 풀 학습 전용 인자뿐이어야 한다).
+# 순서: (0) 명령줄 대조 (1) 기본 경로 대조: 2 반복, 이 커밋 vs 기준 커밋(gnn 13471f4 / gunet cc5a559), 다르면 멈춤
+#       (2) 짧은 시험 겸 이어 돌리기 시험: A = 100 반복(50 마다 저장) -> 같은 체크포인트로 200, B = 한 번에 200 -> 망·Adam·난수·풀 비교 + 롤아웃 연기 시험
+#       POOL1_TEST_ONLY=1 이면 여기서 끝 (POOL1_<M>_TEST_DONE)
+#       (3) 15000 반복 (500 마다 체크포인트 -> --r2 로 R2; 체크포인트가 바뀔 때마다 풀을 뺀 망만 hist/step_N.pt 로 남긴다 -- 학습 곡선용)
+#       (4) L000·0004 롤아웃 80 프레임 (F float32 덤프, 뒤집힘·바닥 통과 기록) + 3DGS 영상 + psi 색(공통 고정 범위)
+#       (5) 학습 곡선: hist 체크포인트마다 L000 정답 시작 80 프레임 롤아웃 위치 오차 -> hist_eval.jsonl, TB -> curves.json
+# 멱등: 다시 띄우면 끝난 단계는 건너뛰고 학습은 MAIN_last.pt 에서 이어 돈다. GPU 는 인자 하나만 쓴다 (다른 프로세스가 있으면 빌 때까지 기다림).
+# 출력은 처음부터 R2 와 통째 동기화 (제외 없음, 5분 루프). 아무것도 지우지 않는다 (이전 시험 디렉토리는 _prev_ 로 옮긴다).
+export PYTHONUTF8=1 OMP_NUM_THREADS=2 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+W=/home/dkta/work; set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; export PATH=$HOME/bin:$PATH
+M=${1:?gnn 또는 gunet}; G=${2:?GPU}
+case $M in gnn) MU=GNN; CN=p1 ;; gunet) MU=GUNET; CN=q1 ;; *) echo "[오류] 모델 $M"; exit 1 ;; esac
+cd "$(dirname "$0")/.." || exit 1
+C=$(git rev-parse --short HEAD)
+NIT=15000
+NI=$W/lbours/noinertial; G5=$W/lbours/gunet5_near
+WP=$W/wt/psi_d993fb5; RANGE=$W/lbours/lego_psi/range.json
+L0PT=$W/lbpt/test_low/L000.pt
+U=$W/lbours/pool1_$M; R=r2:storage/result/anchorflow/lbours/pool1_$M; O=$U/pool; mkdir -p $U $O $U/hist
+if [ -f $U/driver.hb ] && [ $(( $(date +%s) - $(cat $U/driver.hb) )) -lt 300 ]; then echo "[중단] 다른 드라이버가 돌고 있다 (하트비트 5 분 안) $(date)"; exit 0; fi
+echo $$ > $U/driver.pid
+( while true; do date +%s > $U/driver.hb; sleep 120; done ) & HB=$!
+( while true; do rclone copy $U $R -q; sleep 300; done ) & SYNC=$!
+trap 'kill $SYNC $HB ${SNAP:-} 2>/dev/null; rm -f $U/driver.hb' EXIT
+echo "[시작] $(date) 커밋 $C 노드 $(hostname) 잡 ${PBS_JOBID:-?} 모델 $M GPU$G 반복 $NIT"
+up(){ rclone copy $U $R -q; }
+bgup(){ ( rclone copyto $1 $R/${1#$U/} -q && echo "[R2 덤프 올림] ${1#$U/} $(date +%T)" ) & }
+fail(){ echo "[오류] $1 $(date)"; echo "$1" > $U/POOL1_${MU}_FAIL; up; exit 1; }
+rm -f $U/POOL1_${MU}_FAIL
+[ -f $L0PT ] || fail "L000 궤적 없음 $L0PT"
+HOLD=$(ls $W/lbpt/test | sed 's/.pt$//' | paste -sd,)
+# ---- (0) 명령줄 ----
+toks(){ tr ' ' '\n' <<<"$1" | grep . | LC_ALL=C sort | paste -sd' '; }
+dif(){ echo "빠짐: '$(LC_ALL=C comm -23 <(tr ' ' '\n' <<<"$1" | grep . | LC_ALL=C sort) <(tr ' ' '\n' <<<"$2" | grep . | LC_ALL=C sort) | paste -sd' ')' | 더함: '$(LC_ALL=C comm -13 <(tr ' ' '\n' <<<"$1" | grep . | LC_ALL=C sort) <(tr ' ' '\n' <<<"$2" | grep . | LC_ALL=C sort) | paste -sd' ')'"; }
+PC_RUN=$(grep -a -m1 '^\[pool\] ' $W/spstick2.out | sed 's/^\[pool\] //')
+PC_RE=$(P=$W/lbpool bash -c "$(grep -E '^(GATE|COMMON|PCOMMON_SP|PC)=' $W/spstick2.sh); echo \"\$PC\"")
+[ -n "$PC_RUN" ] && [ "$PC_RUN" = "$PC_RE" ] || fail "spstick pool 실행 인자([pool] 줄)가 spstick2.sh 원문 재구성(PC)과 다르다"
+grep -q -- " --net_inertial " <<<" $PC_RUN " || fail "예전 풀 명령에 --net_inertial 이 없다 (예상과 다름)"
+PC_NI="${PC_RUN/ --net_inertial / }"
+GATE="--pool_gate 1e-4 --pool_gate_mode pgrad --pool_rdrop 0.01 --pool_start_k 0 --pool_stuck_max 0"
+XF="--gnn_layer unet --gunet_levels 3 --bc_feat near --bc_near_h 1.0"
+INIT="--pool_init_traj $L0PT"
+flags_of(){ grep -a "^\[학습 명령줄\]" $1 | sed -e 's/.* --tag EV //' -e 's/ --iters 0 --eval_t0 0 --eval_len 80 --tb none$//' | sort -u; }
+B_NI=$(flags_of $NI/NOINERTIAL_LAUNCHED); B_G5=$(flags_of $G5/GUNET5_LAUNCHED)
+B_GNN="$PC_NI $INIT"; B_GU="$PC_NI $XF $INIT"
+if [ $M = gnn ]; then B=$B_GNN; REF=$B_NI; REFN=noinertial; REFWT=$W/wt/spstick_13471f4; REFC=13471f4
+else B=$B_GU; REF=$B_G5; REFN=gunet5_near; REFWT=$W/wt/gunet_cc5a559; REFC=cc5a559; fi
+D1=$(dif "$PC_RUN" "$B_GNN"); D2=$(dif "$B_GNN" "$B_GU"); D3=$(dif "$REF" "$B")
+[ "$D1" = "빠짐: '--net_inertial' | 더함: '--pool_init_traj $L0PT'" ] || fail "예전 풀 -> 이번 일반 GNN 차이가 예상과 다르다 ($D1)"
+[ "$(LC_ALL=C comm -13 <(tr ' ' '\n' <<<"$B_GNN" | grep . | LC_ALL=C sort) <(tr ' ' '\n' <<<"$B_GU" | grep . | LC_ALL=C sort) | paste -sd' ')" = "$(toks "$XF")" ] \
+  && [ -z "$(LC_ALL=C comm -23 <(tr ' ' '\n' <<<"$B_GNN" | grep . | LC_ALL=C sort) <(tr ' ' '\n' <<<"$B_GU" | grep . | LC_ALL=C sort))" ] || fail "일반 GNN -> Graph U-Net 차이가 몸통·바닥 입력(XF)만이 아니다 ($D2)"
+# 망·바닥 인자 대조: 기준 다섯 궤적 실행 인자에서 '--save_every 100000'(상태 적합 전용)을 빼고, 이번 인자에서 풀 게이트·초기 상태(풀 학습 전용)를 빼면 같아야 한다
+[ "$(toks "${REF/ --save_every 100000/}")" = "$(toks "$(sed -e "s# $GATE##" -e "s# $INIT##" <<<" $B")")" ] || fail "망·바닥 인자가 $REFN 과 다르다 ($D3)"
+grep -q -- "--net_inertial" <<<"$B" && fail "명령줄에 --net_inertial 이 있다"
+for f in "--bc_softplus 0.01" "--bc_stick 0.01" "--bc_stick_xn"; do grep -q -- " $f\( \|$\)" <<<" $B " || fail "명령줄에 '$f' 없음"; done
+{ echo "[명령줄 pool1 $M] $B"
+  echo "[예전 풀 spstick pool (13471f4) 실행 인자] $PC_RUN"
+  echo "[차이 예전 풀 -> pool1 gnn] $D1"
+  echo "[차이 pool1 gnn -> pool1 gunet] $D2 (= 몸통·바닥 입력만)"
+  echo "[차이 $REFN(다섯 궤적·sf1 과 같은 망) -> pool1 $M] $D3 (= 풀 학습 전용 인자만: 게이트·초기 상태 더함, 상태 적합 전용 --save_every 100000 빠짐)"
+  echo "[풀 새 상태] 예전: --pool_drop 0.0,0.02,0.0,1.5 낙하 분포에서 매번 새로 (학습 궤적 없음, --data lbpt/test 는 전부 홀드아웃 = 검증용) -> 이번: --pool_init_traj 로 L000 0 프레임 하나"; } | tee $U/cmdline.txt
+gt_of(){ [ $1 = L000 ] && echo $W/lbdata/test_low/L000 || echo $W/lbdata/test/$1; }
+pt_of(){ [ $1 = L000 ] && echo $W/lbpt/test_low/L000.pt || echo $W/lbpt/test/$1.pt; }
+cp -n $W/lbdata/test/0004/video.mp4 $U/gt_0004.mp4; cp -n $W/lbdata/test_low/L000/video.mp4 $U/gt_L000.mp4
+ck_k(){ python -c "import torch;c=torch.load('$1',map_location='cpu',weights_only=False,mmap=True);print(c.get('step','?'))" 2>/dev/null; }
+wait_gpu(){ local u; u=$(nvidia-smi -i $G --query-gpu=uuid --format=csv,noheader)
+  while nvidia-smi --query-compute-apps=gpu_uuid --format=csv,noheader | grep -q "$u" || [ "$(nvidia-smi -i $G --query-gpu=memory.used --format=csv,noheader,nounits)" -ge 500 ]; do
+    echo "[대기] GPU$G 사용 중 $(date +%T)" >> $U/wait.log; sleep 120; done
+  echo "[GPU] $G $(date '+%F %T') $(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader | tr '\n' ' ')" >> $U/gpu.log; }
+tr1(){ # tr1 <출력> <반복> <저장간격> <검증간격> <로그> [--resume ..]  -- 본 실행과 같은 학습 명령 (반복·저장·검증 간격만 인자)
+  local OO=$1 N=$2 E=$3 V=$4 LG=$5; shift 5
+  CUDA_VISIBLE_DEVICES=$G python -u exe/train_deform.py --data $W/lbpt/test --hold_traj $HOLD --out $OO --tag MAIN "$@" $B \
+    --iters $N --eval_t0 0 --eval_len 1 --save_every $E --val_every $V --val_n 4 --val_len 80 > $LG 2>&1 < /dev/null; }
+CMPPY=$U/cmp_ck.py; cat > $CMPPY <<'PY_'
+import sys, torch
+a = torch.load(sys.argv[1], map_location="cpu", weights_only=False); b = torch.load(sys.argv[2], map_location="cpu", weights_only=False)
+d = max(float((a["net"][k].float() - b["net"][k].float()).abs().max()) for k in a["net"] if k in b["net"])
+s = max(float(b["net"][k].float().abs().max()) for k in b["net"])
+oa = [t for st in a["opt"]["state"].values() for t in st.values() if torch.is_tensor(t) and t.numel() > 1]
+ob = [t for st in b["opt"]["state"].values() for t in st.values() if torch.is_tensor(t) and t.numel() > 1]
+o = max(float((x - y).abs().max()) for x, y in zip(oa, ob)) if oa and len(oa) == len(ob) else float("nan")
+pa, pb = (a.get("pool") or {}).get("items") or [], (b.get("pool") or {}).get("items") or []
+na, nb = sum(q is not None for q in pa), sum(q is not None for q in pb)
+px = float("nan")
+if na and na == nb:
+    px = max(float((qa["x"].float() - qb["x"].float()).abs().max()) for qa, qb in zip(pa, pb) if qa is not None and qb is not None)
+fz = sum("fuse" in k for k in a["net"])
+print(f"반복 {a['step']}/{b['step']}  입력폭 {a['n_feat']}/{b['n_feat']}  키 같음 {sorted(a['net']) == sorted(b['net'])}  스킵 결합 키 {fz}  "
+      f"망 파라미터 최대차 {d:.3e} (최대 크기 {s:.3e})  Adam 상태 최대차 {o:.3e}  생성기 같음 {bool((a['rng_gen'] == b['rng_gen']).all())}  "
+      f"풀 상태 {na}/{nb} 위치 최대차 {px:.3e}")
+PY_
+maxd(){ python -c "import re,sys;m=re.search(r'망 파라미터 최대차 ([0-9.e+-]+)', sys.argv[1]);sys.exit(0 if m and float(m.group(1))<$2 else 1)" "$1"; }
+NFW=33; [ $M = gunet ] && NFW=31
+# ---- (1) 기본 경로 대조: 같은 명령 2 반복 -- 이 커밋 vs 기준 커밋 ----
+if [ ! -f $U/base_equiv_$C.ok ]; then
+  wait_gpu; echo "[기본 경로 대조] GPU$G $(date +%T)"
+  BE=$U/base_equiv_$C; [ -e $BE ] && mv $BE ${BE}_prev_$(date +%H%M%S); mkdir -p $BE
+  [ -d $REFWT ] || fail "기준 워크트리 없음 $REFWT"
+  tr1 $BE/new 2 1 0 $BE/new.log
+  ( cd $REFWT && tr1 $BE/old 2 1 0 $BE/old.log )
+  TB=$(cat $BE/new.log $BE/old.log | grep -a -c Traceback)
+  CMPB=$(python $CMPPY $BE/new/MAIN_last.pt $BE/old/MAIN_last.pt 2>&1 | tail -1)
+  INI=$(grep -a -m1 "\[풀\] 고정 초기 상태" $BE/new.log | cut -c1-200)
+  echo "[기본 경로 대조 $M] 이 커밋 $C vs 기준 커밋 $REFC (2 반복): $CMPB | Traceback $TB | $INI" | tee $U/base_equiv.txt
+  [ "$TB" = 0 ] && grep -q "입력폭 $NFW/$NFW  키 같음 True" <<<"$CMPB" && [ -n "$INI" ] || fail "기본 경로 대조 실패 (Traceback·입력폭·키·고정 초기 상태)"
+  maxd "$CMPB" 1e-4 || fail "기본 경로 망 파라미터 차이 1e-4 이상"
+  touch $U/base_equiv_$C.ok; up
+fi
+# ---- (2) 짧은 시험 겸 이어 돌리기 시험: A = 100 반복(50 마다 저장, 100 마다 검증) -> 같은 체크포인트로 200, B = 한 번에 200 ----
+if [ ! -f $U/resume_$C.ok ]; then
+  wait_gpu; echo "[짧은 시험·이어 돌리기 시험] GPU$G $(date +%T)"
+  RT=$U/resume_$C/test; RB=$U/resume_$C/ref; [ -e $U/resume_$C ] && mv $U/resume_$C $U/resume_${C}_prev_$(date +%H%M%S); mkdir -p $RT $RB
+  t0=$(date +%s); tr1 $RT 100 50 100 $RT/r100.log; t1=$(date +%s); tr1 $RT 200 50 100 $RT/r200.log --resume $RT/MAIN_last.pt; t2=$(date +%s)
+  tr1 $RB 200 50 100 $RB/r200.log; t3=$(date +%s)
+  K=$(ck_k $RT/MAIN_last.pt); RS=$(grep -a "\[재개\]" $RT/r200.log | cut -c1-140 | tr '\n' ' ')
+  TB=$(cat $RT/r100.log $RT/r200.log $RB/r200.log | grep -a -c Traceback)
+  CMP=$(python $CMPPY $RT/MAIN_last.pt $RB/MAIN_last.pt 2>&1 | tail -1)
+  INI=$(grep -a -m1 "\[풀\] 고정 초기 상태" $RB/r200.log | cut -c1-200)
+  VL=$(grep -a "\[검증 [0-9]*\]" $RB/r200.log | sed 's/ *(best.*//; s/비 [0-9.]* //' | cut -c1-80 | tr '\n' ' ')
+  { echo "[이어 돌리기 $M] 200 실행: $RS | 마지막 반복 $K | Traceback $TB | 이어 돈 것 vs 한 번에: $CMP"
+    echo "[시간] 100 반복 $((t1-t0)) s, 이어 100 반복 $((t2-t1)) s, 한 번에 200 반복 $((t3-t2)) s (검증 포함) | $INI"
+    echo "[짧은 시험 200 반복 검증 목적함수] $VL"; } | tee $U/resume_test.txt
+  [ "$K" = 200 ] && grep -q "step 100" <<<"$RS" && grep -q "풀 [0-9]* 개 상태 이어받음" <<<"$RS" && [ "$TB" = 0 ] && grep -q "입력폭 $NFW/$NFW " <<<"$CMP" && [ -n "$INI" ] || fail "이어 돌리기 확인 실패 -- 학습 안 함"
+  [ $M = gunet ] && grep -q "스킵 결합 키 0 " <<<"$CMP" && fail "Graph U-Net 스킵 결합 키 없음"
+  maxd "$CMP" 1e-3 || fail "이어 돈 것과 한 번에 돈 것의 망 차이가 1e-3 이상"
+  for T in L000 0004; do
+    env AF_INV_LOG=$RT/inv_$T.jsonl AF_TUNNEL_LOG=$RT/tun_$T.jsonl AF_ROLL_DUMP=$RT/roll_$T.pt AF_ROLL_DUMP_F=32 AF_ROLL_TAG=$T AF_ROLL_T0=0 AF_ROLL_NOGRAD=1 CUDA_VISIBLE_DEVICES=$G \
+      python -u exe/train_deform.py --infer --data $W/one/$T --hold_traj $T --out $RT/roll_$T --tag EV --resume $RT/MAIN_last.pt $B --iters 0 --eval_t0 0 --eval_len 3 --tb none > $RT/roll_$T.log 2>&1 < /dev/null
+    RL=$(grep -a "롤아웃\] $T" $RT/roll_$T.log | tail -1 | sed 's/ (정지.*//' | cut -c1-160); echo "[롤아웃 연기 시험 $T] $RL | Traceback $(grep -a -c Traceback $RT/roll_$T.log) | 덤프 $(ls -la $RT/roll_$T.pt 2>/dev/null | awk '{print $5}') B | 뒤집힘 기록 $(wc -l < $RT/inv_$T.jsonl 2>/dev/null) 줄" | tee -a $U/resume_test.txt
+    [ -n "$RL" ] && [ "$(grep -a -c Traceback $RT/roll_$T.log)" = 0 ] && [ -f $RT/roll_$T.pt ] || fail "롤아웃 연기 시험 실패 ($T) -- 학습 안 함"
+  done
+  touch $U/resume_$C.ok; up
+fi
+if [ -n "${POOL1_TEST_ONLY:-}" ]; then touch $U/POOL1_${MU}_TEST_DONE; up; echo "POOL1_${MU}_TEST_DONE"; exit 0; fi
+# ---- (3) 학습 15000 반복 ----
+snap(){ # MAIN_last.pt 가 바뀔 때마다 풀·크리틱을 뺀 망 체크포인트를 hist/step_N.pt 로 (학습 곡선용; 원본은 그대로)
+  while true; do
+    if [ -f $O/MAIN_last.pt ] && [ $O/MAIN_last.pt -nt $U/hist/.last ]; then
+      s0=$(stat -c %s $O/MAIN_last.pt); sleep 30
+      if [ "$(stat -c %s $O/MAIN_last.pt)" = "$s0" ]; then
+        touch -r $O/MAIN_last.pt $U/hist/.cand
+        python - $O/MAIN_last.pt $U/hist <<'PY' && mv $U/hist/.cand $U/hist/.last
+import os, sys, torch
+c = torch.load(sys.argv[1], map_location="cpu", weights_only=False)
+p = os.path.join(sys.argv[2], f"step_{int(c['step']):06d}.pt")
+if not os.path.exists(p):
+    c = {k: v for k, v in c.items() if k not in ("pool", "critic", "opt_c")}
+    torch.save(c, p + ".tmp"); os.replace(p + ".tmp", p); print("[망 기록]", p, flush=True)
+PY
+      fi
+    fi
+    sleep 60; done; }
+K=$(ck_k $O/MAIN_last.pt)
+if [ "$K" != $NIT ] || ! grep -a -q DEFORM_OK $U/pool.log 2>/dev/null; then
+  wait_gpu
+  snap >> $U/snap.log 2>&1 & SNAP=$!
+  RES=''; [ -f $O/MAIN_last.pt ] && RES="--resume $O/MAIN_last.pt"
+  CMD="python -u exe/train_deform.py --data $W/lbpt/test --hold_traj $HOLD --out $O --tag MAIN $RES $B --iters $NIT --eval_t0 0 --eval_len 80 --save_every 500 --val_every 500 --val_n 4 --val_len 80 --tb $U/tb --r2 $R/pool"
+  echo "[학습 시작] pool1 $M: 커밋 $C, GPU$G, 이어 돌기 ${K:-없음}, $(date '+%F %T')" | tee -a $U/POOL1_LAUNCHED
+  echo "[학습 명령줄] CUDA_VISIBLE_DEVICES=$G $CMD" | tee -a $U/POOL1_LAUNCHED; up
+  CUDA_VISIBLE_DEVICES=$G $CMD >> $U/pool.log 2>&1 < /dev/null
+  K=$(ck_k $O/MAIN_last.pt); echo "[학습 끝] 반복 $K $(date +%T)"; sleep 120; kill $SNAP 2>/dev/null; up
+  [ "$K" = $NIT ] && grep -a -q DEFORM_OK $U/pool.log || fail "$NIT 못 미침 (반복 $K) -- 롤아웃 생략"
+fi
+# ---- (4) L000·0004 롤아웃 + 영상 + psi (sf1 과 같은 명령·도구) ----
+roll(){ T=$1; N=pool1_${M}_$T
+  if [ ! -f $U/roll_$N.pt ] || ! grep -a -q "롤아웃\] $T" $U/v_$N.log 2>/dev/null; then
+    for f in $U/roll_$N.pt $U/inv_$N.jsonl $U/tun_$N.jsonl $U/v_$N.log; do [ -e $f ] && mv $f $f.prev_$(date +%H%M%S); done
+    echo "[롤아웃 명령] AF_INV_LOG=$U/inv_$N.jsonl AF_TUNNEL_LOG=$U/tun_$N.jsonl AF_ROLL_DUMP=$U/roll_$N.pt AF_ROLL_DUMP_F=32 AF_ROLL_TAG=$T AF_ROLL_T0=0 AF_ROLL_NOGRAD=1 CUDA_VISIBLE_DEVICES=$G python -u exe/train_deform.py --infer --data $W/one/$T --hold_traj $T --out $U/v_$N --tag EV --resume $O/MAIN_last.pt $B --iters 0 --eval_t0 0 --eval_len 80 --tb none" > $U/cmd_roll_$T.txt
+    env AF_INV_LOG=$U/inv_$N.jsonl AF_TUNNEL_LOG=$U/tun_$N.jsonl AF_ROLL_DUMP=$U/roll_$N.pt AF_ROLL_DUMP_F=32 AF_ROLL_TAG=$T AF_ROLL_T0=0 AF_ROLL_NOGRAD=1 CUDA_VISIBLE_DEVICES=$G \
+      python -u exe/train_deform.py --infer --data $W/one/$T --hold_traj $T --out $U/v_$N --tag EV --resume $O/MAIN_last.pt $B --iters 0 --eval_t0 0 --eval_len 80 --tb none > $U/v_$N.log 2>&1 < /dev/null
+    bgup $U/roll_$N.pt; fi
+  grep -a "롤아웃\] $T\|Traceback\|Error" $U/v_$N.log | tail -2 | sed 's/ (정지.*//' | cut -c1-200
+  [ -f $U/roll_$N.pt ] || { echo "[오류] $T 롤아웃 덤프 없음"; return 1; }
+  echo "$N $(grep -a '롤아웃\] ' $U/v_$N.log | tail -1 | grep -o '평균 [0-9.]*%')" > $U/err_$N.txt; up
+  [ -f $U/h5_$N/meta.json ] || python -u exe/lb_roll_to_h5.py --dump $U/roll_$N.pt --traj $(gt_of $T) --out $U/h5_$N > $U/h5_$N.log 2>&1
+  [ -f $U/$N.mp4 ] || CUDA_VISIBLE_DEVICES=$G python -u exe/lb_render.py --sim $U/h5_$N --config $W/lbdata/config.json --shape lego --out $U/$N.mp4 > $U/r_$N.log 2>&1 < /dev/null
+  [ -f $U/$N.mp4 ] || { echo "[오류] $T 렌더"; return 1; }
+  up
+  D=$U/psi/$T; mkdir -p $D
+  ( cd $WP && { [ -f $D/col_$CN.npy ] || CUDA_VISIBLE_DEVICES=$G python -u exe/psi_color_lb.py --gt_dir $(gt_of $T) --pt $(pt_of $T) --dump $CN=$U/roll_$N.pt --out $D \
+        --eps 1e-3 --q 1 99 --cmap turbo --range $RANGE --stats_name defstats_$T.txt --stats_frames 1 40 80 > $D/psi_color.log 2>&1 < /dev/null; }
+    grep -q PSI_COLOR_DONE $D/psi_color.log || { tail -5 $D/psi_color.log; exit 1; }
+    [ -f $D/h5_$CN/meta.json ] || python -u exe/lb_roll_to_h5.py --dump $U/roll_$N.pt --traj $(gt_of $T) --out $D/h5_$CN > $D/h5_$CN.log 2>&1
+    [ -f $D/psi_${CN}_lego.mp4 ] || CUDA_VISIBLE_DEVICES=$G python -u exe/lb_render.py --sim $D/h5_$CN --config $W/lbdata/config.json --shape lego \
+       --colors $D/col_$CN.npy --out $D/psi_${CN}_lego.mp4 > $D/r_$CN.log 2>&1 < /dev/null
+    [ -f $D/psi_${CN}_lego.mp4 ] ) || { echo "[오류] $T psi"; return 1; }
+  grep -a "\[색 범위\]" $D/psi_color.log; cat $D/defstats_$T.txt
+  cp $NI/psi/$T/psi_gt_lego.mp4 $D/psi_gt_lego.mp4; cp $NI/psi/$T/range.json $D/range_noinertial.json
+  touch $U/.done_roll_$T; }
+for T in L000 0004; do
+  [ -f $U/.done_roll_$T ] || { wait_gpu; roll $T > $U/task_roll_$T.log 2>&1; cat $U/task_roll_$T.log | cut -c1-200; }
+  [ -f $U/.done_roll_$T ] || fail "롤아웃·영상·psi 단계 실패 ($T)"
+done
+cat $U/err_pool1_${M}_L000.txt $U/err_pool1_${M}_0004.txt > $U/errors.txt
+# ---- (5) 학습 곡선: hist 망마다 L000 정답 시작 80 프레임 롤아웃 위치 오차 ----
+wait_gpu
+for f in $(ls $U/hist/step_*.pt 2>/dev/null); do s=$(basename $f .pt | sed 's/step_0*//')
+  grep -q "\"step\": $s," $U/hist_eval.jsonl 2>/dev/null && continue
+  AF_ROLL_NOGRAD=1 CUDA_VISIBLE_DEVICES=$G python -u exe/train_deform.py --infer --data $W/one/L000 --hold_traj L000 --out $U/hist_ev/s$s --tag EV --resume $f $B \
+    --iters 0 --eval_t0 0 --eval_len 80 --tb none > $U/hist_ev_$s.log 2>&1 < /dev/null
+  e=$(grep -a "롤아웃\] L000" $U/hist_ev_$s.log | tail -1 | grep -o '평균 [0-9.]*%' | grep -o '[0-9.]*')
+  [ -n "$e" ] && echo "{\"step\": $s, \"err_L000\": $e}" >> $U/hist_eval.jsonl && echo "[곡선] 반복 $s L000 $e%"
+done
+python - $U/tb $U/hist_eval.jsonl $U/curves.json $M <<'PY'
+import glob, json, sys
+from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+out = {}
+for d in sorted(glob.glob(sys.argv[1] + "/*")) or [sys.argv[1]]:
+    ea = EventAccumulator(d, size_guidance={"scalars": 0}); ea.Reload()
+    for k in ea.Tags()["scalars"]:
+        if k.split("/")[0] in ("학습", "검증", "풀", "게이트", "속도"):
+            out.setdefault(k, []).extend((e.step, e.value) for e in ea.Scalars(k))
+H = sorted((json.loads(l) for l in open(sys.argv[2]) if l.strip()), key=lambda r: r["step"])
+out["L000롤아웃_위치오차%"] = [(r["step"], r["err_L000"]) for r in H]
+json.dump({"pool1_" + sys.argv[4]: out}, open(sys.argv[3], "w"), ensure_ascii=False)
+print("곡선", {k: len(v) for k, v in out.items() if k.startswith("학습/") or "롤아웃" in k})
+PY
+up
+kill $SYNC 2>/dev/null
+rclone copy $U $R -q && echo "[R2 업로드 완료] $(date)" && touch $U/ALL_DONE $U/POOL1_${MU}_CLUSTER_DONE && rclone copy $U $R -q
+rclone check $U $R --one-way --size-only -q && echo "[R2 대조] 전부 올라감"
+echo POOL1_${MU}_CLUSTER_DONE
