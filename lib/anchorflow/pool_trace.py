@@ -97,8 +97,8 @@ class PoolTracer:
                    trace_from=int(st.get("trace_from", 0)), n_trace=len(st["trace"]))
         with open(os.path.join(self.dir, "drops.jsonl"), "a") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        if rec["n_trace"] == 0:
-            return
+        if rec["n_trace"] == 0 and st.get("trace_start") is None:
+            return                            # 전진 없이 빠졌고 시작도 안 들고 있으면 남길 이력이 없다 (낙하 시작이면 시작 한 프레임을 남긴다)
         if st.get("trace_R") is not None:
             rec["R"] = st["trace_R"]
         item = (rec, st["trace"], st.get("trace_start"))
