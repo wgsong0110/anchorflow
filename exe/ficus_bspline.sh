@@ -111,6 +111,8 @@ run_full(){ local k=$1 X=$2 G=$3 O=$OB/$1; mkdir -p $O
     python -u exe/train_deform.py $NA < /dev/null > $O/v_ov.log 2>&1
   [ -f $O/roll_ov.pt ] && echo "ov $(grep -a "롤아웃\] $T" $O/v_ov.log | tail -1 | grep -o '평균 [0-9.]*%')" > $O/err_ov.txt
 }
+# /home 이 100% 근처라 두 실행(~9 GB) 전에 여유 12 GB 를 기다린다
+while [ $(df -BG --output=avail /home | tail -1 | tr -dc 0-9) -lt 12 ]; do echo "[디스크] /home 여유 $(df -h --output=avail /home | tail -1) -- 기다림 $(date)" | tee -a $OB/wait_disk; sleep 600; done
 PIDS=()
 for k in A B; do
   [ -f $OB/$k/roll_ov.pt ] && continue
