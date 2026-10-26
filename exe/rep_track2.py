@@ -121,8 +121,9 @@ ap.add_argument("--cons_delta", type=float, default=0.05,
 ap.add_argument("--proj_rho", type=float, default=1.0,
                 help="proj: ADMM 벌점 ρ 의 상대값 -- ρ = proj_rho · λmax(H_L2) / λmax(w AᵀA), w = 1/셀 수")
 ap.add_argument("--proj_cg", type=int, default=100, help="proj: 전역 단계 CG 최대 반복")
+ap.add_argument("--proj_every", type=int, default=10, help="proj: ρ 잔차 균형 간격 (반복, 0 이면 ρ 고정)")
 ap.add_argument("--alm_mu", type=float, default=1.0,
-                help="alm: 시작 벌점 μ0 의 상대값 -- μ0 = alm_mu · λmax(H_L2) / λmax(w AᵀA) (프레임마다 μ0 에서 다시)")
+                help="alm: 시작 벌점 μ0 의 상대값 -- μ0 = alm_mu · λmax(H_L2) / λmax(w AᵀA) (μ 는 프레임을 넘어 이어진다)")
 ap.add_argument("--alm_inner", type=int, default=20, help="alm: 승수 갱신 간격 (내부 가우스-뉴턴 반복 수)")
 ap.add_argument("--alm_mu_max", type=float, default=1e6, help="alm: μ 상한 = μ0 × 이 값")
 ap.add_argument("--gd_lr", type=float, default=1.0)
@@ -1313,7 +1314,10 @@ for t in range(T_START, T + 1):
                 #   Π = 부호 SVD (det U·det V < 0 이면 셋째 특이값 부호를 뒤집어 반사 제거) 후 특이값 ≥ δ 로 자름
                 #   (c) 전역: u = argmin f(u) + (ρ/2) Σ w ‖F_t(u) - Z_t + Λ_t‖² + (ε/2)‖u - u_a‖²  (선형, CG, u_a 에서 시작)
                 #   (d) 쌍대: Λ_t += F_t(u) - Z_t   (scaled ADMM, Λ 는 프레임을 넘어 이어진다)
-                rho = PST["rho"]
+                #   (e) ρ 잔차 균형 (Boyd 등 2011 §3.4.1): proj_every 반복마다 주 잔차 r = √(wΣ‖F-Z‖²), 쌍대 잔차 s = ρ√(wΣ‖Z-Z_prev‖²);
+                #       r > 10s 면 ρ×2·Λ/2, s > 10r 면 ρ/2·Λ×2 (ρ0·1e-3 ~ ρ0·1e6). ρ 도 프레임을 넘어 이어진다.
+                #   (첫 실행 559c2be 는 ρ 고정 -- wolf 프레임 20 에 det≤0 42 개, 주 잔차가 줄지 않았다)
+                rho = PST.get("rho_cur", PST["rho"])
                 if "Lam" not in PST:
                     PST["Lam"] = torch.zeros(C_, 3, 3, device=dev, dtype=u.dtype)
                 Lam = PST["Lam"]
@@ -1328,6 +1332,7 @@ for t in range(T_START, T + 1):
                 Hop = lambda v: HL(v) + eps * v
                 Kop = lambda v: HL(v) + rho * w_ * ATop(Aop(v)) + eps * v
                 bL = -(2.0 / Nn) * BTop(RES0)
+                Zp = None
                 for it_ in range(nit):
                     g = (2.0 / Nn) * BTop(RES0 + Bop(u))
                     ua = u - cg(Hop, g, torch.zeros_like(u), a.riem_cg)
@@ -1337,20 +1342,30 @@ for t in range(T_START, T + 1):
                     Lam += Fn - Z
                     stp_n = float((un - u).norm()); u = un
                     prim = float((Fn - Z).norm()) / math.sqrt(C_)
+                    if a.proj_every > 0:
+                        dual = rho * float((Z - Zp).norm()) / math.sqrt(C_) if Zp is not None else 0.0
+                        Zp = Z
+                        if (it_ + 1) % a.proj_every == 0 and Zp is not None:
+                            if prim > 10 * dual and rho < PST["rho"] * 1e6:
+                                rho *= 2.0; Lam /= 2.0
+                            elif dual > 10 * prim and rho > PST["rho"] * 1e-3:
+                                rho /= 2.0; Lam *= 2.0
+                            Kop = lambda v: HL(v) + rho * w_ * ATop(Aop(v)) + eps * v
                     CURVE.append((t, it_, fL2(u), prim, 0))
                     RIEMLOG.append((t, it_, eps, stp_n, 1.0, 0, rho, float(det3(Fn).min())))
                 endres = prim
-                PST["Lam"] = Lam
+                PST["Lam"] = Lam; PST["rho_cur"] = rho
                 par = rho
             else:
                 # min f(u) s.t. c_t = det F_t(u) - δ ≥ 0. 증강 라그랑지안 (Nocedal-Wright 17.65 꼴, 셀 가중 w):
                 #   L_A = f + Σ w (max(0, λ_t - μ c_t)² - λ_t²) / (2μ)
                 #   내부: 가우스-뉴턴 G = H + μ Σ_{활성} w ∇c∇cᵀ + εI, Armijo (보폭 1 에서 반씩, ls_max 번; 실패면 걷지 않음)
                 #   alm_inner 반복마다 λ ← max(0, λ - μ c);  최대 위반이 직전 갱신의 1/4 아래로 안 줄면 μ ← 10μ (상한 μ0·alm_mu_max)
-                #   λ 는 프레임을 넘어 이어지고 μ 는 프레임마다 μ0 에서 다시
+                #   λ·μ 모두 프레임을 넘어 이어진다 (첫 실행 559c2be 는 μ 를 프레임마다 μ0 로 되돌려, 매 프레임 첫 20 반복이
+                #   제약을 무시한 L2 걸음으로 셀을 뒤집고 (det 최소 -33 ~ -4e8) 프레임 22 부터 되돌아오지 못해 발산했다)
                 if "lam" not in PST:
                     PST["lam"] = torch.zeros(C_, device=dev, dtype=u.dtype)
-                lamc = PST["lam"]; mu = PST["mu0"]; vprev = float("inf")
+                lamc = PST["lam"]; mu = PST.get("mu_cur", PST["mu0"]); vprev = float("inf")
 
                 def cofdet(v):
                     Fm = I3 + Aop(v)
@@ -1393,7 +1408,7 @@ for t in range(T_START, T + 1):
                         vprev = viol
                     CURVE.append((t, it_, fL2(u), mu, nbt))
                     RIEMLOG.append((t, it_, eps, stp * float(x.norm()), stp, nbt, mu, float(det3(I3 + Aop(u)).min())))
-                PST["lam"] = lamc
+                PST["lam"] = lamc; PST["mu_cur"] = mu
                 endres = float((DL - cofdet(u)[0]).clamp_min(0).max())
                 par = mu
             rep.u.copy_(u)
