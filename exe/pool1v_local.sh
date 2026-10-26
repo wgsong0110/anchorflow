@@ -8,6 +8,7 @@ VAR=${1:?s32 · s32g3 · s32r · s32g3r}
 #   s32r·s32g3r (10-26) = s32·s32g3 에서 --pool_init_traj 빼고 예전 풀 낙하 분포 시작 -> 탈락 영상은 정답 칸 없이 풀 상태만 (시작이 L000 이 아니다)
 case $VAR in s32) LABV="무작위 폐기 끔·풀 32"; MARK=POOL1S32_DONE ;; s32g3) LABV="무작위 폐기 끔·풀 32·전진 문턱 1e-3"; MARK=POOL1S32G3_DONE ;;
   s32r) LABV="무작위 폐기 끔·풀 32·낙하 분포 시작"; MARK=POOL1S32R_DONE ;; s32g3r) LABV="무작위 폐기 끔·풀 32·전진 문턱 1e-3·낙하 분포 시작"; MARK=POOL1S32G3R_DONE ;;
+  s32g34) LABV="무작위 폐기 끔·풀 32·전진 문턱 3e-4"; MARK=POOL1S32G34_DONE ;; s32g34r) LABV="무작위 폐기 끔·풀 32·전진 문턱 3e-4·낙하 분포 시작"; MARK=POOL1S32G34R_DONE ;;
   *) echo "[오류] $VAR"; exit 1 ;; esac
 RUN=pool1${VAR}_gunet
 exec 9>/tmp/${RUN}_local.lock
@@ -142,7 +143,7 @@ assert all(abs(a['lo']-r[0]['lo'])<1e-9 and abs(a['hi']-r[0]['hi'])<1e-9 for a i
     [ $x = L000 ] && { A=$EQ_L; B_=$EV_L; } || { A=$EQ_4; B_=$EV_4; }
     psi3 $P "pool1 Graph U-Net · 위치 오차 $A" "$LABV · 위치 오차 $B_" $OUT $x || return 1
   done
-  OTH=""; case $VAR in s32g3) OTH=s32 ;; s32g3r) OTH=s32r ;; esac
+  OTH=""; case $VAR in s32g3|s32g34) OTH=s32 ;; s32g3r|s32g34r) OTH=s32r ;; esac
   CJ="$T/gunet/curves.json $XD/curves_named.json"
   if [ -n "$OTH" ] && rclone lsf $RL/pool1${OTH}_gunet/curves.json >/dev/null 2>&1; then
     get $RL/pool1${OTH}_gunet/curves.json $T/oth_curves.json && python3 -c "import json;d=json.load(open('$T/oth_curves.json'));json.dump({'pool1${OTH}_gunet':list(d.values())[0]},open('$T/oth_named.json','w'),ensure_ascii=False)" && CJ="$CJ $T/oth_named.json"

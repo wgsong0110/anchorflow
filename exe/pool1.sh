@@ -34,7 +34,7 @@ NI=$W/lbours/noinertial; G5=$W/lbours/gunet5_near
 WP=$W/wt/psi_d993fb5; RANGE=$W/lbours/lego_psi/range.json
 L0PT=$W/lbpt/test_low/L000.pt
 VAR=${POOL1_VARIANT:-}    # s32 (사용자 10-26): 무작위 폐기 끔 --pool_rdrop 0 + 풀 크기 32 --pool_size 32, 나머지 그대로 -> 출력 pool1s32_<모델>
-case "$VAR" in ""|s32|s32g3|s32r|s32g3r) ;; *) echo "[오류] POOL1_VARIANT $VAR"; exit 1 ;; esac   # s32g3 (10-26): s32 + 전진 문턱 --pool_gate 1e-3; *r (10-26): --pool_init_traj 빼고 낙하 분포 시작
+case "$VAR" in ""|s32|s32g3|s32r|s32g3r|s32g34|s32g34r) ;; *) echo "[오류] POOL1_VARIANT $VAR"; exit 1 ;; esac   # s32g3 (10-26): s32 + 전진 문턱 --pool_gate 1e-3; *r (10-26): --pool_init_traj 빼고 낙하 분포 시작
 U=$W/lbours/pool1${VAR}_$M${POOL1_SUFFIX:-}; R=r2:storage/result/anchorflow/lbours/pool1${VAR}_$M${POOL1_SUFFIX:-};   # POOL1_SUFFIX: 시험을 본 실행과 다른 디렉토리에서 (본 실행이 돌고 있을 때)
  O=$U/pool; mkdir -p $U $O $U/hist
 if [ -f $U/driver.hb ] && [ $(( $(date +%s) - $(cat $U/driver.hb) )) -lt 300 ]; then echo "[중단] 다른 드라이버가 돌고 있다 (하트비트 5 분 안) $(date)"; exit 0; fi
@@ -79,10 +79,11 @@ if [ -n "$VAR" ]; then
   DV=$(dif "$B" "$BV")
   [ "$DV" = "빠짐: '0.01' | 더함: '--pool_size 0 32'" ] || fail "s32 변형 차이가 '--pool_rdrop 0.01 -> 0, --pool_size 32 더함' 이 아니다 ($DV)"
   echo "[s32 변형] pool1 $M 명령 -> 무작위 폐기 끔·풀 크기 32: $DV (--pool_stuck_max 0, 만기 없음 그대로)" | tee $U/variant.txt
-  if [ "$VAR" = s32g3 ] || [ "$VAR" = s32g3r ]; then
-    BG="$(sed 's# --pool_gate 1e-4 # --pool_gate 1e-3 #' <<<"$BV")"; DG=$(dif "$BV" "$BG")
-    [ "$DG" = "빠짐: '1e-4' | 더함: '1e-3'" ] || fail "s32g3 변형 차이가 '--pool_gate 1e-4 -> 1e-3' 이 아니다 ($DG)"
-    echo "[s32g3 변형] s32 명령 -> 전진 문턱 --pool_gate 1e-4 -> 1e-3: $DG" | tee -a $U/variant.txt
+  GV=""; case "$VAR" in s32g3|s32g3r) GV=1e-3 ;; s32g34|s32g34r) GV=3e-4 ;; esac   # s32g34 (10-26): 문턱 3e-4 (1e-4 와 1e-3 의 로그 중간 근처)
+  if [ -n "$GV" ]; then
+    BG="$(sed "s# --pool_gate 1e-4 # --pool_gate $GV #" <<<"$BV")"; DG=$(dif "$BV" "$BG")
+    [ "$DG" = "빠짐: '1e-4' | 더함: '$GV'" ] || fail "$VAR 변형 차이가 '--pool_gate 1e-4 -> $GV' 이 아니다 ($DG)"
+    echo "[$VAR 변형] s32 명령 -> 전진 문턱 --pool_gate 1e-4 -> $GV: $DG" | tee -a $U/variant.txt
     BV=$BG
   fi
   if [ "${VAR: -1}" = r ]; then

@@ -34,7 +34,9 @@ RUNS = [("pool1_gnn", "일반 GNN · 한 궤적 풀", BLUE, "-", "L000롤아웃_
         ("pool1s32_gunet", "Graph U-Net · 한 궤적 풀, 무작위 폐기 끔·풀 32", "#1baf7a", "-", "L000롤아웃_위치오차%", 0),
         ("pool1s32g3_gunet", "Graph U-Net · 한 궤적 풀, 무작위 폐기 끔·풀 32·문턱 1e-3", "#e87ba4", "-", "L000롤아웃_위치오차%", 0),
         ("pool1s32r_gunet", "Graph U-Net · 낙하 분포 시작 풀, 무작위 폐기 끔·풀 32", "#1baf7a", "-.", "L000롤아웃_위치오차%", 0),
-        ("pool1s32g3r_gunet", "Graph U-Net · 낙하 분포 시작 풀, 무작위 폐기 끔·풀 32·문턱 1e-3", "#e87ba4", "-.", "L000롤아웃_위치오차%", 0)]
+        ("pool1s32g3r_gunet", "Graph U-Net · 낙하 분포 시작 풀, 무작위 폐기 끔·풀 32·문턱 1e-3", "#e87ba4", "-.", "L000롤아웃_위치오차%", 0),
+        ("pool1s32g34_gunet", "Graph U-Net · 한 궤적 풀, 무작위 폐기 끔·풀 32·문턱 3e-4", "#eda100", "-", "L000롤아웃_위치오차%", 0),
+        ("pool1s32g34r_gunet", "Graph U-Net · 낙하 분포 시작 풀, 무작위 폐기 끔·풀 32·문턱 3e-4", "#eda100", "-.", "L000롤아웃_위치오차%", 0)]
 RUNS = [r for r in RUNS if r[0] in M]
 
 
