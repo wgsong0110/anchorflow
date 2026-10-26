@@ -114,8 +114,17 @@ ap.add_argument("--pt_realtime", action="store_true",
                      "매 프레임 그 이웃까지 거리로 가중치만 다시")
 ap.add_argument("--tb", default="auto",
                 help="TensorBoard 디렉토리 (auto: /home/dkta/work/tbrf/<폴더>_<파일>, none: 끔)")
-ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt", "adam", "riem", "ipm", "ipmF"],
-                help="lbfgs (원래 설정) / gd: 고정 학습률 경사하강")
+ap.add_argument("--opt", default="lbfgs", choices=["lbfgs", "gd", "adam_bt", "adam", "riem", "ipm", "ipmF", "proj", "alm"],
+                help="lbfgs (원래 설정) / gd: 고정 학습률 경사하강 / proj: 투영 ADMM (tetmesh) / alm: 증강 라그랑지안 (tetmesh)")
+ap.add_argument("--cons_delta", type=float, default=0.05,
+                help="proj: 셀 F 특이값 하한 σ ≥ δ (부호 유지, 반사 제거) | alm: 셀 det F ≥ δ")
+ap.add_argument("--proj_rho", type=float, default=1.0,
+                help="proj: ADMM 벌점 ρ 의 상대값 -- ρ = proj_rho · λmax(H_L2) / λmax(w AᵀA), w = 1/셀 수")
+ap.add_argument("--proj_cg", type=int, default=100, help="proj: 전역 단계 CG 최대 반복")
+ap.add_argument("--alm_mu", type=float, default=1.0,
+                help="alm: 시작 벌점 μ0 의 상대값 -- μ0 = alm_mu · λmax(H_L2) / λmax(w AᵀA) (프레임마다 μ0 에서 다시)")
+ap.add_argument("--alm_inner", type=int, default=20, help="alm: 승수 갱신 간격 (내부 가우스-뉴턴 반복 수)")
+ap.add_argument("--alm_mu_max", type=float, default=1e6, help="alm: μ 상한 = μ0 × 이 값")
 ap.add_argument("--gd_lr", type=float, default=1.0)
 ap.add_argument("--riem_partF", action="store_true",
                 help="riem: 계량 잔차에 입자 det F 로그 장벽 (√(1/N) log det F, 누적) 을 더한다 -- ipmF 와 같은 제약 집합")
@@ -1039,6 +1048,7 @@ DETC = [torch.ones(FI.numel(), device=dev, dtype=torch.float64)]   # ipmF: 입�
 SPRING_CAP, SPRING_LOG, CFL_LOG = [float("inf")], [], []
 PHYS, TRAJS, YPREV = [], [], [G0[FI].clone()]
 FSAVE = []
+PST, CONSLOG = {}, []                                 # proj·alm 상태 (ρ, μ0, ε, 쌍대 Λ / 승수 λ -- 프레임을 넘어 이어진다) / 프레임별 제약 기록
 RIEMLOG, LMAX_LOG, TETLOG, NODES = [], [], [], []      # riem 반복별 (t, it, ε, 걸음 |sΔ|, s, 되돌림, ρ, 셀 det 최소) / 프레임별
 LMST = {"eps": None, "nu": 2.0}                         # riem_damp lm 상태 (프레임을 넘어 이어진다)
 CKPT = a.out + ".ckpt.pt"
@@ -1056,6 +1066,7 @@ if a.resume and os.path.exists(CKPT):
         "rows", "CURVE", "DOFS", "STOP", "EMDP", "PHYS", "TRAJS", "YPREV", "FSAVE", "DETC", "SPRING_CAP",
         "SPRING_LOG", "CFL_LOG", "RIEMLOG", "LMAX_LOG", "TETLOG", "NODES")]
     LMST = _ck["LMST"]; OPT = None
+    PST.update(_ck.get("PST", {})); CONSLOG = _ck["L"].get("CONSLOG", [])
     torch.set_rng_state(_ck["rng"].cpu()); torch.cuda.set_rng_state(_ck["cuda_rng"].cpu())   # 거듭제곱법 시작 벡터까지 같게
     T_START = _ck["t"] + 1
     t0 -= _ck["elapsed"]
@@ -1231,6 +1242,170 @@ for t in range(T_START, T + 1):
                 DETC[0] = DETC[0] * det3(_yJ_call(theta)[1]).double()
         it[0] = ntot
         STOP.append((t, ntot, nfail, cmine, delta, "ipmF"))
+    elif a.opt in ("proj", "alm"):
+        # 사용자 10-26: 장벽 계량 대신 (1) proj = 투영 ADMM (지역 SVD 투영 + 전역 최소제곱), (2) alm = 증강 라그랑지안.
+        # 사면체 메쉬는 무게중심 선형 보간이라 입자 L2 f(u) = (1/N)|r0 + B u|² 가 노드 변위 u 의 이차식이고 셀 F = I + A u 는 선형.
+        #   H = (2/N) BᵀB (L2 의 가우스-뉴턴 = 정확한 헤시안), ε = riem_eps · λmax(H) 고정 (첫 프레임에 한 번 재고 고정)
+        #   셀 가중 w = V_t/ΣV = 1/셀 수 (Kuhn 사면체 부피 동일)
+        assert a.method == "tetmesh", "proj·alm 은 tetmesh 전용"
+        DL = a.cons_delta
+        with torch.no_grad():
+            u = rep.u.detach().clone()
+            rows_, lam_ = rep.rows[FI], rep.lam[FI]
+            cells_, cD0i_ = rep.cells, rep.cD0i
+            C_ = cells_.shape[0]; w_ = 1.0 / C_; Nn = FI.numel()
+            I3 = torch.eye(3, device=dev, dtype=u.dtype)
+
+            def Bop(v):                                         # 노드 변위 -> 입자 변위
+                return (lam_[..., None] * v[rows_]).sum(1)
+
+            def BTop(r_):
+                return torch.zeros_like(u).index_add_(0, rows_.reshape(-1), (lam_[..., None] * r_[:, None]).reshape(-1, 3))
+
+            def Aop(v):                                         # 노드 변위 -> 셀 F 변화 (F = I + A u)
+                X = v[cells_]
+                return mm3((X[:, 1:] - X[:, :1]).transpose(1, 2), cD0i_)
+
+            def ATop(G_):
+                dD = G_ @ cD0i_.transpose(1, 2)                 # ∂<G, D D0⁻¹>/∂D, 열 k = 꼭짓점 k+1 - 꼭짓점 0
+                out = torch.zeros_like(u)
+                for k_ in range(3):
+                    out.index_add_(0, cells_[:, k_ + 1], dD[:, :, k_])
+                out.index_add_(0, cells_[:, 0], -dD.sum(2))
+                return out
+
+            def HL(v):
+                return (2.0 / Nn) * BTop(Bop(v))
+
+            def fL2(v):
+                return float(((RES0 + Bop(v)) ** 2).sum(1).mean())
+
+            def cg(Op, b, x0, n):
+                x = x0.clone(); r_ = b - Op(x); p_ = r_.clone(); rr = (r_ * r_).sum(); bn = float(b.norm())
+                for _ in range(n):
+                    if float(rr.sqrt()) <= 1e-4 * bn:
+                        break
+                    Ap = Op(p_); al = rr / (p_ * Ap).sum().clamp_min(1e-30)
+                    x += al * p_; r_ -= al * Ap; rn = (r_ * r_).sum(); p_ = r_ + (rn / rr) * p_; rr = rn
+                return x
+
+            def cstat(v):                                       # 셀 det, 부호 σ_min (det<0 이면 음수)
+                Fm = I3 + Aop(v)
+                J_ = det3(Fm)
+                sv = torch.linalg.svdvals(Fm.double())[:, 2].to(J_.dtype)
+                return J_, torch.where(J_ < 0, -sv, sv)
+            if "lmH" not in PST:
+                def _pw(Op):
+                    v = torch.randn_like(u); lm_ = 0.0
+                    for _ in range(30):
+                        v = Op(v); lm_ = float(v.norm()); v = v / max(lm_, 1e-30)
+                    return lm_
+                PST["lmH"] = _pw(HL); PST["lmA"] = _pw(lambda v: w_ * ATop(Aop(v)))
+                PST["eps"] = a.riem_eps * PST["lmH"]
+                PST["rho"] = a.proj_rho * PST["lmH"] / PST["lmA"]
+                PST["mu0"] = a.alm_mu * PST["lmH"] / PST["lmA"]
+                print(f"  [{a.opt}] λmax(H_L2) {PST['lmH']:.3e}  λmax(wAᵀA) {PST['lmA']:.3e}  ε {PST['eps']:.3e}  "
+                      f"ρ {PST['rho']:.3e}  μ0 {PST['mu0']:.3e}  δ {DL}  셀 {C_}", flush=True)
+            eps = PST["eps"]
+            nit = a.iters0 if t == 1 else a.iters
+            if a.opt == "proj":
+                # 반복: (a) L2 가우스-뉴턴 걸음 u_a = u - (H+εI)⁻¹∇f  (b) 지역: Z_t = Π(F_t(u_a) + Λ_t),
+                #   Π = 부호 SVD (det U·det V < 0 이면 셋째 특이값 부호를 뒤집어 반사 제거) 후 특이값 ≥ δ 로 자름
+                #   (c) 전역: u = argmin f(u) + (ρ/2) Σ w ‖F_t(u) - Z_t + Λ_t‖² + (ε/2)‖u - u_a‖²  (선형, CG, u_a 에서 시작)
+                #   (d) 쌍대: Λ_t += F_t(u) - Z_t   (scaled ADMM, Λ 는 프레임을 넘어 이어진다)
+                rho = PST["rho"]
+                if "Lam" not in PST:
+                    PST["Lam"] = torch.zeros(C_, 3, 3, device=dev, dtype=u.dtype)
+                Lam = PST["Lam"]
+
+                def proj(Fm):
+                    U_, S_, Vh_ = torch.linalg.svd(Fm.double())
+                    d_ = torch.sign(torch.linalg.det(U_) * torch.linalg.det(Vh_))
+                    d_ = torch.where(d_ == 0, torch.ones_like(d_), d_)
+                    U_ = U_.clone(); S_ = S_.clone()
+                    U_[:, :, 2] *= d_[:, None]; S_[:, 2] *= d_
+                    return ((U_ * S_.clamp_min(DL)[:, None, :]) @ Vh_).to(Fm.dtype)
+                Hop = lambda v: HL(v) + eps * v
+                Kop = lambda v: HL(v) + rho * w_ * ATop(Aop(v)) + eps * v
+                bL = -(2.0 / Nn) * BTop(RES0)
+                for it_ in range(nit):
+                    g = (2.0 / Nn) * BTop(RES0 + Bop(u))
+                    ua = u - cg(Hop, g, torch.zeros_like(u), a.riem_cg)
+                    Z = proj(I3 + Aop(ua) + Lam)
+                    un = cg(Kop, bL + rho * w_ * ATop(Z - Lam - I3) + eps * ua, ua, a.proj_cg)
+                    Fn = I3 + Aop(un)
+                    Lam += Fn - Z
+                    stp_n = float((un - u).norm()); u = un
+                    prim = float((Fn - Z).norm()) / math.sqrt(C_)
+                    CURVE.append((t, it_, fL2(u), prim, 0))
+                    RIEMLOG.append((t, it_, eps, stp_n, 1.0, 0, rho, float(det3(Fn).min())))
+                endres = prim
+                PST["Lam"] = Lam
+                par = rho
+            else:
+                # min f(u) s.t. c_t = det F_t(u) - δ ≥ 0. 증강 라그랑지안 (Nocedal-Wright 17.65 꼴, 셀 가중 w):
+                #   L_A = f + Σ w (max(0, λ_t - μ c_t)² - λ_t²) / (2μ)
+                #   내부: 가우스-뉴턴 G = H + μ Σ_{활성} w ∇c∇cᵀ + εI, Armijo (보폭 1 에서 반씩, ls_max 번; 실패면 걷지 않음)
+                #   alm_inner 반복마다 λ ← max(0, λ - μ c);  최대 위반이 직전 갱신의 1/4 아래로 안 줄면 μ ← 10μ (상한 μ0·alm_mu_max)
+                #   λ 는 프레임을 넘어 이어지고 μ 는 프레임마다 μ0 에서 다시
+                if "lam" not in PST:
+                    PST["lam"] = torch.zeros(C_, device=dev, dtype=u.dtype)
+                lamc = PST["lam"]; mu = PST["mu0"]; vprev = float("inf")
+
+                def cofdet(v):
+                    Fm = I3 + Aop(v)
+                    f0_, f1_, f2_ = Fm[:, :, 0], Fm[:, :, 1], Fm[:, :, 2]
+                    cof = torch.stack([torch.cross(f1_, f2_, dim=-1), torch.cross(f2_, f0_, dim=-1),
+                                       torch.cross(f0_, f1_, dim=-1)], 2)      # 열 k = ∂det/∂(F 의 열 k)
+                    return (f0_ * cof[:, :, 0]).sum(-1), cof
+
+                def LA(v, mu_):
+                    J_, _ = cofdet(v)
+                    m_ = (lamc - mu_ * (J_ - DL)).clamp_min(0)
+                    return fL2(v) + w_ * float((m_ * m_ - lamc * lamc).sum()) / (2 * mu_)
+                for it_ in range(nit):
+                    J_, cof = cofdet(u)
+                    m_ = (lamc - mu * (J_ - DL)).clamp_min(0)
+                    act = (m_ > 0).to(u.dtype)
+                    r_ = RES0 + Bop(u)
+                    LA0 = float((r_ * r_).sum(1).mean()) + w_ * float((m_ * m_ - lamc * lamc).sum()) / (2 * mu)
+                    g = (2.0 / Nn) * BTop(r_) - w_ * ATop(m_[:, None, None] * cof)
+                    Gop = lambda v: HL(v) + mu * w_ * ATop((act * (cof * Aop(v)).sum((1, 2)))[:, None, None] * cof) + eps * v
+                    x = cg(Gop, g, torch.zeros_like(u), a.riem_cg)
+                    sl = float((g * x).sum()); stp = 1.0; nbt = 0; ok = False
+                    while True:
+                        ft = LA(u - stp * x, mu)
+                        if ft == ft and ft <= LA0 - 1e-4 * stp * sl:
+                            ok = True; break
+                        if nbt >= a.ls_max:
+                            break
+                        stp *= 0.5; nbt += 1
+                    if ok:
+                        u = u - stp * x
+                    else:
+                        stp = 0.0
+                    if (it_ + 1) % a.alm_inner == 0:
+                        J_, _ = cofdet(u)
+                        lamc = (lamc - mu * (J_ - DL)).clamp_min(0)
+                        viol = float((DL - J_).clamp_min(0).max())
+                        if viol > 0.25 * vprev:
+                            mu = min(mu * 10.0, PST["mu0"] * a.alm_mu_max)
+                        vprev = viol
+                    CURVE.append((t, it_, fL2(u), mu, nbt))
+                    RIEMLOG.append((t, it_, eps, stp * float(x.norm()), stp, nbt, mu, float(det3(I3 + Aop(u)).min())))
+                PST["lam"] = lamc
+                endres = float((DL - cofdet(u)[0]).clamp_min(0).max())
+                par = mu
+            rep.u.copy_(u)
+            Jc_, sm_ = cstat(u)
+            CONSLOG.append((t, float(Jc_.min()), float(sm_.min()), int((sm_ < DL).sum()), int((Jc_ < DL).sum()),
+                            int((Jc_ <= 0).sum()), par, endres))
+        it[0] = nit
+        STOP.append((t, nit, nit, float("nan"), eps, a.opt))
+        if t % 10 == 0 or t == 1:
+            print(f"  [{a.opt} t={t}] 셀 det 최소 {CONSLOG[-1][1]:.4f}  σ_min {CONSLOG[-1][2]:.4f}  σ<δ {CONSLOG[-1][3]}  "
+                  f"det<δ {CONSLOG[-1][4]}  det≤0 {CONSLOG[-1][5]}  {'ρ' if a.opt == 'proj' else 'μ'} {par:.3e}  "
+                  f"끝 잔차 {endres:.3e}", flush=True)
     elif a.opt in ("riem", "ipm"):
         # 탄성 에너지의 가우스-뉴턴 헤시안을 계량으로: Δ = (JᵀJ + ε·λmax·I)⁻¹ ∇L, θ -= ηΔ.
         # 계량은 매 스텝 현재 상태에서 다시 선형화한다. 장벽·되돌림·선탐색 없음
@@ -1772,8 +1947,8 @@ for t in range(T_START, T + 1):
     if a.ckpt_every > 0 and (t % a.ckpt_every == 0) and t < T:
         _L = dict(rows=rows, CURVE=CURVE, DOFS=DOFS, STOP=STOP, EMDP=EMDP, PHYS=PHYS, TRAJS=TRAJS, YPREV=YPREV,
                   FSAVE=FSAVE, DETC=DETC, SPRING_CAP=SPRING_CAP, SPRING_LOG=SPRING_LOG, CFL_LOG=CFL_LOG,
-                  RIEMLOG=RIEMLOG, LMAX_LOG=LMAX_LOG, TETLOG=TETLOG, NODES=NODES)
-        torch.save(dict(t=t, rep=rep.state_dict(), Pref=Pref, Fcum=Fcum, Rcum=Rcum, L=_L, LMST=LMST,
+                  RIEMLOG=RIEMLOG, LMAX_LOG=LMAX_LOG, TETLOG=TETLOG, NODES=NODES, CONSLOG=CONSLOG)
+        torch.save(dict(t=t, rep=rep.state_dict(), Pref=Pref, Fcum=Fcum, Rcum=Rcum, L=_L, LMST=LMST, PST=PST,
                         elapsed=time.time() - t0, rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state()),
                    CKPT + ".tmp")
         os.replace(CKPT + ".tmp", CKPT)
@@ -1807,6 +1982,9 @@ np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
                     lmax_log=np.array(LMAX_LOG, dtype=np.float64).reshape(-1, 2),
                     tet_log=np.array(TETLOG, dtype=np.float64).reshape(-1, 6),     # t, 셀 det 최소, J<0.5 수, J≤0 수, 셀 수, ε(끝)
                     riem_damp=a.riem_damp, riem_eps0=a.riem_eps0,
+                    # proj·alm: t, 셀 det 최소, 부호 σ_min 최소, σ<δ 수, det<δ 수, det≤0 수, ρ 또는 끝 μ, 끝 반복 제약 잔차
+                    cons_log=np.array(CONSLOG, dtype=np.float64).reshape(-1, 8),
+                    **({"cons_par": np.array([PST[k] for k in ("lmH", "lmA", "eps", "rho", "mu0")])} if "lmH" in PST else {}),
                     **({"nodes_u": np.stack(NODES)} if NODES else {}),
                     **({"Xn": rep.Xn.float().cpu().numpy(), "cells": rep.cells.cpu().numpy()}
                        if NODES and hasattr(rep, "cells") else {}))
