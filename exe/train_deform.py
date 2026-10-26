@@ -4891,8 +4891,12 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _mu0 = float(os.environ.get("AF_FEM_LM_MU0", "1e-4"))
                 _mumax = float(os.environ.get("AF_FEM_LM_MUMAX", "1e8"))
                 _alm = float(os.environ.get("AF_FEM_LM_ALPHA", "0.0625"))
-                _mu = 0.0
-                _frec["lm"] = dict(on=_lm_on, mu0=_mu0, mumax=_mumax, alpha_min=_alm) if _lm_on else None
+                # AF_FEM_LM_MUMIN (기본 0.1): μ 의 하한 = 노드 집중 질량 관성의 0.1 배를 항상 더한다 (방향만). lego t≥14 처럼 바닥 매핑이
+                # 곡률을 지운 방향에서 μ=0 방향이 |p|∞/(h·EXT) 1e6~1e8 로 폭주해 수렴 판정이 영영 안 걸리던 것을 막는다.
+                # 관성이 있는 방향에서는 걸음이 많아야 1/(1+0.1) 로만 줄어 (≤ 9%) 허용치 판정이 일찍 걸리지 않는다
+                _mumin = float(os.environ.get("AF_FEM_LM_MUMIN", "0.1")) if _lm_on else 0.0
+                _mu = _mumin
+                _frec["lm"] = dict(on=_lm_on, mu0=_mu0, mumax=_mumax, alpha_min=_alm, mumin=_mumin) if _lm_on else None
                 _FEM_CTX[0] = (cfg, x.detach()) if os.environ.get("AF_FEM_DIAG") else None
                 for _k in range(_nst):
                     (_newton_target_asm if _fsol == "pcg" else _newton_target)(_fwd, _NTG, m, nrm, _k, t)
@@ -4908,13 +4912,22 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                         _U0l = _U0l if _zi is None else _U0l[_zi]
                         _frec["z_vs_U0"] = float((_zc - _U0l.to(_zc.dtype)).abs().max()) if _U0l.shape == _zc.shape else float("inf")
                     _g0n = _nl["g_norm"] if _g0n is None else _g0n
-                    _srec = dict(k=_k, E=_Ec, g_rel=_nl["g_norm"] / max(_g0n, 1e-30), g_norm=_nl["g_norm"], p_vel=_pin,
+                    _pin0 = _pin                                     # μ=0 (투영 뉴턴) 방향 크기 -- 기록용
+                    _pmin = None
+                    if _mumin > 0:
+                        # 수렴 판정·기본 방향 = μ_min 정규화 방향 (위 주석)
+                        _pmm, _infm = _asm_resolve(_mumin)
+                        _utm = _ASM_SYS["U0"][:, :3] - _pmm
+                        _pvm = _zc - (_utm if _zi is None else _utm[_zi]).to(_z.dtype)
+                        _pin = float(_pvm.abs().max()) / (_hf * float(EXT))
+                        _pmin = (_pvm, _infm["gp"], _infm["cg"] > 0 and _infm["gp"] > 0 and math.isfinite(_pin), _pin)
+                    _srec = dict(k=_k, E=_Ec, g_rel=_nl["g_norm"] / max(_g0n, 1e-30), g_norm=_nl["g_norm"], p_vel=_pin, p_vel_base=_pin0,
                                  p_inf_all=_nl["p_inf"] / (_hf * float(EXT)), cg=_nl["cg"], neg=_nl["neg"], cg_res=_nl["res"], gp=_nl["gp"])
                     if _fsol == "pcg":
                         _srec.update({q: _nl[q] for q in ("t_hess", "t_asm", "t_pcg", "n_tet", "nnz", "neg_eig", "neg_tet_frac", "eig_min", "sec")})
                         if _nl.get("diag") is not None:
                             _srec["asm_check"] = _nl["diag"]
-                    if not (math.isfinite(_pin) and math.isfinite(_nl["gp"])):
+                    if not (math.isfinite(_pin) and math.isfinite(_pmin[1] if _pmin is not None else _nl["gp"])):
                         _frec.update(why="걸음 nan/inf"); _frec["steps"].append(_srec); _OVN_BAD[0] = "FEM 걸음 nan/inf"
                         break
                     if _pin < _ftol:
@@ -4945,7 +4958,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                         _mt, _tries = _mu, []
                         while True:
                             if _mt == 0.0:
-                                _pd, _gpd, _okd, _pvd = _pv, _nl["gp"], _nl["cg"] > 0 and _nl["gp"] > 0, _pin
+                                _pd, _gpd, _okd, _pvd = _pv, _nl["gp"], _nl["cg"] > 0 and _nl["gp"] > 0, _pin0
+                            elif _pmin is not None and _mt == _mumin:
+                                _pd, _gpd, _okd, _pvd = _pmin
                             else:
                                 _pm, _inf = _asm_resolve(_mt)
                                 _utm = _ASM_SYS["U0"][:, :3] - _pm
@@ -4968,6 +4983,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                         if _acc:
                             _mu = ((_mt / 10.0 if _mt / 10.0 >= _mu0 else 0.0) if _al >= 1.0 else
                                    (max(10.0 * _mt, _mu0) if _al < _alm else _mt))
+                            _mu = max(_mu, _mumin)
                         _srec.update(mu=_tries[-1]["mu"], p_vel_dir=_tries[-1]["p_vel"], lm_tries=_tries, mu_next=_mu)
                     _srec.update(alpha=_al, E_new=_En if _acc else None)
                     _frec["steps"].append(_srec)
@@ -4975,7 +4991,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                           f"{' 음곡률' if _nl['neg'] else ''} α {_al:.3g} E {_Ec:.6e} -> {_En:.6e} {time.time() - _tf0:.0f} s"
                           + (f" [pcg 잔차 {_nl['res']:.1e} 헤시안 {_nl['t_hess']:.1f}s 조립 {_nl['t_asm']:.1f}s PCG {_nl['t_pcg']:.1f}s 음고유 사면체 {_nl['neg_tet_frac']:.3f}]"
                              if _fsol == "pcg" else "")
-                          + (f" [LM μ {_srec['mu']:.0e} 방향 |p|∞/(h·EXT) {_srec['p_vel_dir']:.2e} 시도 {len(_srec['lm_tries'])} 다음 μ {_mu:.0e}]"
+                          + (f" [LM μ {_srec['mu']:.0e} 방향 |p|∞/(h·EXT) {_srec['p_vel_dir']:.2e} (μ=0 방향 {_pin0:.2e}) 시도 {len(_srec['lm_tries'])} 다음 μ {_mu:.0e}]"
                              if _lm_on else ""), flush=True)
                     if not _acc:
                         with torch.no_grad():
