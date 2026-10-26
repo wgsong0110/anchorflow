@@ -4891,10 +4891,10 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _mu0 = float(os.environ.get("AF_FEM_LM_MU0", "1e-4"))
                 _mumax = float(os.environ.get("AF_FEM_LM_MUMAX", "1e8"))
                 _alm = float(os.environ.get("AF_FEM_LM_ALPHA", "0.0625"))
-                # AF_FEM_LM_MUMIN (기본 0.1): μ 의 하한 = 노드 집중 질량 관성의 0.1 배를 항상 더한다 (방향만). lego t≥14 처럼 바닥 매핑이
-                # 곡률을 지운 방향에서 μ=0 방향이 |p|∞/(h·EXT) 1e6~1e8 로 폭주해 수렴 판정이 영영 안 걸리던 것을 막는다.
-                # 관성이 있는 방향에서는 걸음이 많아야 1/(1+0.1) 로만 줄어 (≤ 9%) 허용치 판정이 일찍 걸리지 않는다
-                _mumin = float(os.environ.get("AF_FEM_LM_MUMIN", "0.1")) if _lm_on else 0.0
+                # AF_FEM_LM_MUMIN (기본 0): μ 의 하한 = 노드 집중 질량 관성의 배수를 항상 더한다 (방향만, 수렴 판정도 그 방향).
+                # 0.1 은 clamp 투영에서 t=14·15 폭주(|p|∞/(h·EXT) 1e6~1e8)는 막았지만 lego t=10~13 E 가 CG 판보다 7~25% 높았고,
+                # abs 투영(AF_FEM_EIG_PROJ=abs)과 함께여도 t=12 E 가 8% 높아 기본은 끈다 (10-27 시험)
+                _mumin = float(os.environ.get("AF_FEM_LM_MUMIN", "0")) if _lm_on else 0.0
                 _mu = _mumin
                 _frec["lm"] = dict(on=_lm_on, mu0=_mu0, mumax=_mumax, alpha_min=_alm, mumin=_mumin) if _lm_on else None
                 _FEM_CTX[0] = (cfg, x.detach()) if os.environ.get("AF_FEM_DIAG") else None
