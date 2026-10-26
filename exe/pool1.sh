@@ -166,7 +166,20 @@ if [ ! -f $U/resume_$C.ok ]; then
     echo "[짧은 시험 200 반복 검증 목적함수] $VL"; } | tee $U/resume_test.txt
   [ "$K" = 200 ] && grep -q "step 100" <<<"$RS" && grep -q "풀 [0-9]* 개 상태 이어받음" <<<"$RS" && [ "$TB" = 0 ] && grep -q "입력폭 $NFW/$NFW " <<<"$CMP" && [ -n "$INI" ] || fail "이어 돌리기 확인 실패 -- 학습 안 함"
   [ $M = gunet ] && grep -q "스킵 결합 키 0 " <<<"$CMP" && fail "Graph U-Net 스킵 결합 키 없음"
-  maxd "$CMP" 1e-3 || fail "이어 돈 것과 한 번에 돈 것의 망 차이가 1e-3 이상"
+  if ! maxd "$CMP" 1e-3; then
+    # 전진 판정(pgrad <= 문턱)이 문턱 근처에 몰리면 GPU 비결정성(1e-6 수준)만으로 판정이 갈려 풀 궤적이 갈라진다 (s32g3 문턱 1e-3 실측).
+    # 이어 돌리기 탓인지 가리려고 같은 200 반복을 한 번 더 한 번에 돌려 비교: 한 번에 두 번 돈 차이가 같은 크기면 이어 돌리기 문제가 아니다.
+    RB2=$U/resume_$C/ref2; mkdir -p $RB2; tr1 $RB2 200 50 100 $RB2/r200.log
+    CMP2=$(python $CMPPY $RB/MAIN_last.pt $RB2/MAIN_last.pt 2>&1 | tail -1)
+    echo "[비결정성 확인] 한 번에 200 두 번 비교: $CMP2" | tee -a $U/resume_test.txt
+    python - "$CMP" "$CMP2" <<'PY_' || fail "이어 돈 것과 한 번에 돈 것의 망 차이가 1e-3 이상이고, 한 번에 두 번 돈 차이보다 10 배 넘게 크다"
+import re, sys
+d1 = float(re.search(r"망 파라미터 최대차 ([0-9.e+-]+)", sys.argv[1]).group(1))
+d2 = float(re.search(r"망 파라미터 최대차 ([0-9.e+-]+)", sys.argv[2]).group(1))
+print(f"[비결정성 확인] 이어 돈 것 vs 한 번에 {d1:.3e}, 한 번에 두 번 {d2:.3e} -> {'같은 크기 (판정 경계 비결정성, 이어 돌리기 문제 아님)' if d1 <= 10 * d2 else '이어 돌리기 쪽이 훨씬 큼'}")
+sys.exit(0 if d1 <= 10 * d2 else 1)
+PY_
+  fi
   for T in L000 0004; do
     env AF_INV_LOG=$RT/inv_$T.jsonl AF_TUNNEL_LOG=$RT/tun_$T.jsonl AF_ROLL_DUMP=$RT/roll_$T.pt AF_ROLL_DUMP_F=32 AF_ROLL_TAG=$T AF_ROLL_T0=0 AF_ROLL_NOGRAD=1 CUDA_VISIBLE_DEVICES=$G \
       python -u exe/train_deform.py --infer --data $W/one/$T --hold_traj $T --out $RT/roll_$T --tag EV --resume $RT/MAIN_last.pt $B --iters 0 --eval_t0 0 --eval_len 3 --tb none > $RT/roll_$T.log 2>&1 < /dev/null
