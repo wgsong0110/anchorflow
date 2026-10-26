@@ -6,7 +6,7 @@ export PYTHONUTF8=1 OMP_NUM_THREADS=2
 W=/home/dkta/work; set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; export PATH=$HOME/bin:$PATH
 G=${1:?GPU}; cd "$(dirname "$0")/.." || exit 1
 exec 9>/tmp/pool1_render_fail.lock; flock -n 9 || { echo "[중단] 다른 재렌더가 돌고 있다"; exit 0; }
-for m in gnn gunet; do TD=$W/lbours/pool1_$m/pool/pool_trace; V=$TD/vid; R=r2:storage/result/anchorflow/lbours/pool1_$m/pool/pool_trace/vid
+for TD in $(ls -d $W/lbours/pool1*/pool/pool_trace 2>/dev/null | grep -v tracetest); do m=$(basename $(dirname $(dirname $TD))); V=$TD/vid; R=r2:storage/result/anchorflow/lbours/$m/pool/pool_trace/vid   # pool1_gnn·pool1_gunet·pool1s32_gunet·pool1s32g3_gunet ...
   for fl in $(ls $V/*.fail 2>/dev/null); do n=$(basename $fl .fail); f=$TD/$n.pt
     [ -f $V/$n.mp4 ] && continue; [ -f $f ] || continue
     H=/tmp/pool1_h5r_${m}_$n; [ -e $H ] && mv $H ${H}_prev_$(date +%s)

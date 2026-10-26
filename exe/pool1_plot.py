@@ -30,7 +30,9 @@ RUNS = [("pool1_gnn", "일반 GNN · 한 궤적 풀", BLUE, "-", "L000롤아웃_
         ("noinertial", "일반 GNN · 다섯 궤적 상태 적합", BLUE, ":", "다궤적적합_롤아웃_위치오차%/L000", 1),
         ("pool1_gunet", "Graph U-Net · 한 궤적 풀", ORANGE, "-", "L000롤아웃_위치오차%", 0),
         ("sf1_gunet", "Graph U-Net · 한 궤적 상태 적합", ORANGE, "--", "상태적합_롤아웃/위치오차_평균%", 1),
-        ("gunet5_near", "Graph U-Net · 다섯 궤적 상태 적합", ORANGE, ":", "다궤적적합_롤아웃_위치오차%/L000", 1)]
+        ("gunet5_near", "Graph U-Net · 다섯 궤적 상태 적합", ORANGE, ":", "다궤적적합_롤아웃_위치오차%/L000", 1),
+        ("pool1s32_gunet", "Graph U-Net · 한 궤적 풀, 무작위 폐기 끔·풀 32", "#1baf7a", "-", "L000롤아웃_위치오차%", 0),
+        ("pool1s32g3_gunet", "Graph U-Net · 한 궤적 풀, 무작위 폐기 끔·풀 32·문턱 1e-3", "#e87ba4", "-", "L000롤아웃_위치오차%", 0)]
 RUNS = [r for r in RUNS if r[0] in M]
 
 
@@ -59,14 +61,14 @@ ax.set_xlabel("반복"); ax.grid(alpha=0.3); ax.legend(fontsize=10, loc="upper r
 for ax, key, tt, sm in ((axs[1], "학습/목적함수", "풀 학습 목적함수 (100 반복 이동평균)", True),
                         (axs[2], "검증/증분포텐셜", "풀 검증 증분 포텐셜 (홀드아웃 4 궤적, 80 프레임)", False)):
     for run, lab, col, ls, _, _ in RUNS:
-        if not run.startswith("pool1"):
+        if not run.startswith("pool1"):  # 풀 학습 실행만
             continue
         x, y = ser(run, key)
         if len(x):
             ax.plot(x, smooth(y) if sm else y, ls, marker=None if sm else "o", ms=5, color=col, lw=2, label=lab)
     ax.set_title(tt, fontsize=13); ax.set_xlabel("반복"); ax.grid(alpha=0.3); ax.legend(fontsize=10); ax.set_yscale("log")
 fig.suptitle("lego 학습 곡선: 한 궤적 풀 학습 vs 한 궤적·다섯 궤적 상태 적합 (관성 예측 없음, 바닥 softplus + 미끄러짐 방지)", fontsize=15)
-fig.text(0.01, 0.005, "  |  ".join(txt[:3]) + "\n" + "  |  ".join(txt[3:]), fontsize=9)
-fig.tight_layout(rect=(0, 0.05, 1, 0.97))
+fig.text(0.01, 0.005, "\n".join("  |  ".join(txt[i:i + 3]) for i in range(0, len(txt), 3)), fontsize=9)
+fig.tight_layout(rect=(0, 0.07, 1, 0.97))
 fig.savefig(out, dpi=110)
 print("그림", out)

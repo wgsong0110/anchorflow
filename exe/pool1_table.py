@@ -12,6 +12,9 @@ rows = [("일반 GNN · 다섯 궤적 상태 적합 (noinertial)", "ni", T + "/n
         ("Graph U-Net · 한 궤적 상태 적합 (sf1_gunet)", "u1", T + "/sf1_gunet/defstats_{t}.txt", T + "/sf1_gunet/inv_sf1_gunet_{t}.jsonl", E[6], E[7]),
         ("일반 GNN · 한 궤적 풀 (pool1_gnn)", "p1", T + "/gnn/psi/{t}/defstats_{t}.txt", T + "/gnn/inv_pool1_gnn_{t}.jsonl", E[8], E[9]),
         ("Graph U-Net · 한 궤적 풀 (pool1_gunet)", "q1", T + "/gunet/psi/{t}/defstats_{t}.txt", T + "/gunet/inv_pool1_gunet_{t}.jsonl", E[10], E[11])]
+# 덧붙일 행 (pool1 변형, 10-26): 환경 변수 POOL1_EXTRA_ROWS = json [[이름, 칸, defstats 형식, inv 형식, 오차 L000, 0004], ...] ({t} = 궤적)
+import os
+rows += [tuple(r) for r in json.loads(os.environ.get("POOL1_EXTRA_ROWS", "[]"))]
 
 
 def ds(p, k):
