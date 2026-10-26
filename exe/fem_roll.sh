@@ -15,6 +15,8 @@
 # FEM_SOLVER=pcg (사용자 10-26 "FEM CG 쓰면 빨라진다고? 그럼 그걸로 해봐"): 같은 증분 포텐셜·같은 플래그·같은 허용치에서 뉴턴 방향만
 #   조립 헤시안(입자별 12x12 -> 사면체 합 -> 고유값 절단 투영 -> CSR) + 블록 야코비 PCG 로 (train_deform AF_FEM_SOLVER=pcg).
 #   출력 lbours/fem2_<씬>, 표식 FEM2_<씬>_{LAUNCHED,DONE,FAIL}. 처음 FEM_ASM_CHECK(기본 1) 번은 투영 전 조립 H·v / 기울기를 자동미분과 대조해 [FEM 검산] 줄.
+#   FEM_LM (기본 1, 10-26 lego 폭주 수정): 선탐색 실패·작은 α 때만 (H + μ·diag(Mn/h²)) p = g 로 다시 푸는 Levenberg 재시도 (방향만;
+#   에너지·tol 그대로, 수렴 판정은 μ=0 방향). FEM_DIAG=1: 걸음마다 [FEM 진단] (노드 블록 곡률 / 집중 질량 관성, p 몰림, 바닥 매핑 σ) -> fem_diag.jsonl.
 #   단계 short = 앞 FEM_SHORT 프레임만 ($U/short_<커밋>) 돌리고 기존 FEM(cg) 실행의 같은 프레임과 위치 차·걸음 수·시간 비교 -> short_cmp.txt, 표식 FEM2_SHORT_OK.
 export PYTHONUTF8=1 OMP_NUM_THREADS=4 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 W=/home/dkta/work; set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; export PATH=$HOME/bin:$PATH
@@ -38,7 +40,7 @@ esac
 REST="--inv_barrier 0 --node_h $NH --dt_cond --dt_scale --v0_traj --det_eps 0.1 --det_w 0 --det_keep_elastic --lr 3e-4 --batch 8 --det_every 200 --pool_fill $W/lbpool/fill --pool_cfg $W/lbpool/cfg --pool_combos lego_jelly --pool_drop 0.0,0.02,0.0,1.5 --pool_frames 80 --phase2 --phys_w 1.0 --save_every 100000"
 OV="--out_var --ov_init predict --ov_roll 500 --ov_opt lbfgs --ov_vars out --ov_obj newton"
 FEMENV="AF_FEM_TOL=${FEM_TOL:-$TOL0} AF_OV_NEWTON_STEPS=${FEM_STEPS:-100} AF_OV_NEWTON_DAMP=0 AF_OV_NEWTON_CG=${FEM_CG:-200}"
-[ $SOLV = pcg ] && FEMENV="$FEMENV AF_FEM_SOLVER=pcg AF_FEM_ASM_CHECK=${FEM_ASM_CHECK:-1} AF_FEM_PCG_MAX=${FEM_PCG_MAX:-2000} AF_FEM_PCG_RTOL=${FEM_PCG_RTOL:-1e-6} AF_FEM_EIG_FLOOR=${FEM_EIG_FLOOR:-0}"
+[ $SOLV = pcg ] && FEMENV="$FEMENV AF_FEM_SOLVER=pcg AF_FEM_ASM_CHECK=${FEM_ASM_CHECK:-1} AF_FEM_PCG_MAX=${FEM_PCG_MAX:-2000} AF_FEM_PCG_RTOL=${FEM_PCG_RTOL:-1e-6} AF_FEM_EIG_FLOOR=${FEM_EIG_FLOOR:-0} AF_FEM_LM=${FEM_LM:-1}${FEM_DIAG:+ AF_FEM_DIAG=1}"
 case $STAGE in test) O=$U/test_$C; L=1 ;; short) O=$U/short_$C${FEM_TAG:-}; L=${FEM_SHORT:?short 단계는 FEM_SHORT 프레임 수} ;; full) O=$U/run; L=$LEN ;; *) echo "[오류] 단계 $STAGE"; exit 1 ;; esac
 mkdir -p $O
 up(){ rclone copy $U $R -q; }
@@ -55,7 +57,7 @@ while [ "$(nvidia-smi -i $G --query-gpu=memory.used --format=csv,noheader,nounit
 nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader > $O/gpu_at_start.txt
 B="$COMMON $FLOOR $REST $PGF"
 ARGS="--infer --data $DATA --hold_traj $T --out $O/fem --tag OVN $B $OV --iters 0 --eval_t0 0 --eval_len $L --tb none"
-ENVS="$FEMENV AF_FEM_LOG=$O/fem.jsonl AF_INV_LOG=$O/inv_fem.jsonl AF_ROLL_DUMP=$O/roll_fem.pt AF_ROLL_DUMP_F=32 AF_ROLL_TAG=$T AF_ROLL_T0=0 AF_ROLL_PART=$O/parts AF_ROLL_PART_EVERY=10"
+ENVS="$FEMENV AF_FEM_LOG=$O/fem.jsonl AF_INV_LOG=$O/inv_fem.jsonl AF_ROLL_DUMP=$O/roll_fem.pt AF_ROLL_DUMP_F=32 AF_ROLL_TAG=$T AF_ROLL_T0=0 AF_ROLL_PART=$O/parts AF_ROLL_PART_EVERY=10${FEM_DIAG:+ AF_FEM_DIAG_LOG=$O/fem_diag.jsonl}"
 # 이어 돌리기
 if [ ! -f $O/roll_fem.pt ] && ls $O/parts/c*.pt > /dev/null 2>&1; then
   NS=$(ls $O/parts/c*.pt | sed 's/.*c0*\([0-9]*\)\.pt/\1/' | sort -n | tail -1)

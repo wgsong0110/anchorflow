@@ -4887,6 +4887,13 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 if _fsol not in ("cg", "pcg"):
                     raise SystemExit(f"AF_FEM_SOLVER={_fsol}: cg(기존, 자동미분 헤시안-벡터 곱 CG) 또는 pcg(조립 투영 헤시안 + 블록 야코비 PCG)")
                 _frec["solver"] = _fsol
+                _lm_on = _fsol == "pcg" and os.environ.get("AF_FEM_LM", "1") != "0"
+                _mu0 = float(os.environ.get("AF_FEM_LM_MU0", "1e-4"))
+                _mumax = float(os.environ.get("AF_FEM_LM_MUMAX", "1e8"))
+                _alm = float(os.environ.get("AF_FEM_LM_ALPHA", "0.0625"))
+                _mu = 0.0
+                _frec["lm"] = dict(on=_lm_on, mu0=_mu0, mumax=_mumax, alpha_min=_alm) if _lm_on else None
+                _FEM_CTX[0] = (cfg, x.detach()) if os.environ.get("AF_FEM_DIAG") else None
                 for _k in range(_nst):
                     (_newton_target_asm if _fsol == "pcg" else _newton_target)(_fwd, _NTG, m, nrm, _k, t)
                     _nl = _NEWTON_LOG.pop()
@@ -4913,28 +4920,67 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     if _pin < _ftol:
                         _frec.update(conv=True, why="수렴 (|p|∞/(h·EXT) < tol)"); _frec["steps"].append(_srec)
                         break
-                    if _nl["cg"] == 0 or not _nl["gp"] > 0:
+                    if not _lm_on and (_nl["cg"] == 0 or not _nl["gp"] > 0):
                         _frec.update(why="하강 방향 없음 (첫 CG 음곡률 또는 gᵀp≤0)"); _frec["steps"].append(_srec)
                         break
-                    _al, _acc = 1.0, False
-                    for _ls in range(30):
-                        with torch.no_grad():
-                            _z[:, :3] = _zc - _al * _pv
-                        _En = float(_fwd()[2])
-                        if math.isfinite(_En) and _En <= _Ec - 1e-4 * _al * _nl["gp"] / nrm:
-                            _acc = True
-                            break
-                        _al *= 0.5
+
+                    def _lsearch(_pd, _gpd):
+                        _al_, _acc_, _En_ = 1.0, False, float("nan")
+                        for _ls in range(30):
+                            with torch.no_grad():
+                                _z[:, :3] = _zc - _al_ * _pd
+                            _En_ = float(_fwd()[2])
+                            if math.isfinite(_En_) and _En_ <= _Ec - 1e-4 * _al_ * _gpd / nrm:
+                                _acc_ = True
+                                break
+                            _al_ *= 0.5
+                        return _al_, _acc_, _En_
+                    if not _lm_on:
+                        _al, _acc, _En = _lsearch(_pv, _nl["gp"])
+                    else:
+                        # **AF_FEM_LM** (사용자 10-26 lego 폭주 수정, 방향만): 먼저 지금 μ (프레임 시작 0 = 위 투영 뉴턴 방향 그대로) 로
+                        # 선탐색. 실패하면 되돌리고 μ <- max(10μ, μ0) 로 (A + μ·diag(Mn/h²)) p = g 를 다시 풀어 재시도 (Levenberg),
+                        # μ > μmax 이면 포기. 받아들인 α 가 AF_FEM_LM_ALPHA 보다 작으면 다음 걸음 μ 를 10 배, α=1 이면 1/10 (μ0 아래면 0).
+                        # 수렴 판정은 위에서 μ=0 방향 |p|∞ 로만 한다 (정규화가 걸음을 줄여 일찍 멈추지 않게).
+                        _mt, _tries = _mu, []
+                        while True:
+                            if _mt == 0.0:
+                                _pd, _gpd, _okd, _pvd = _pv, _nl["gp"], _nl["cg"] > 0 and _nl["gp"] > 0, _pin
+                            else:
+                                _pm, _inf = _asm_resolve(_mt)
+                                _utm = _ASM_SYS["U0"][:, :3] - _pm
+                                _pd = _zc - (_utm if _zi is None else _utm[_zi]).to(_z.dtype)
+                                _gpd = _inf["gp"]
+                                _pvd = float(_pd.abs().max()) / (_hf * float(EXT))
+                                _okd = _inf["cg"] > 0 and _gpd > 0 and math.isfinite(_pvd)
+                            if _okd:
+                                _al, _acc, _En = _lsearch(_pd, _gpd)
+                            else:
+                                _al, _acc, _En = 0.0, False, float("nan")
+                            _tries.append(dict(mu=_mt, p_vel=_pvd, alpha=_al, acc=_acc))
+                            if _acc:
+                                break
+                            with torch.no_grad():
+                                _z[:, :3] = _zc
+                            _mt = max(10.0 * _mt, _mu0)
+                            if _mt > _mumax:
+                                break
+                        if _acc:
+                            _mu = ((_mt / 10.0 if _mt / 10.0 >= _mu0 else 0.0) if _al >= 1.0 else
+                                   (max(10.0 * _mt, _mu0) if _al < _alm else _mt))
+                        _srec.update(mu=_tries[-1]["mu"], p_vel_dir=_tries[-1]["p_vel"], lm_tries=_tries, mu_next=_mu)
                     _srec.update(alpha=_al, E_new=_En if _acc else None)
                     _frec["steps"].append(_srec)
                     print(f"      [FEM 걸음] t={t} k={_k} |p|∞/(h·EXT) {_pin:.3e} |g|/|g0| {_srec['g_rel']:.3e} CG {_nl['cg']}"
                           f"{' 음곡률' if _nl['neg'] else ''} α {_al:.3g} E {_Ec:.6e} -> {_En:.6e} {time.time() - _tf0:.0f} s"
                           + (f" [pcg 잔차 {_nl['res']:.1e} 헤시안 {_nl['t_hess']:.1f}s 조립 {_nl['t_asm']:.1f}s PCG {_nl['t_pcg']:.1f}s 음고유 사면체 {_nl['neg_tet_frac']:.3f}]"
-                             if _fsol == "pcg" else ""), flush=True)
+                             if _fsol == "pcg" else "")
+                          + (f" [LM μ {_srec['mu']:.0e} 방향 |p|∞/(h·EXT) {_srec['p_vel_dir']:.2e} 시도 {len(_srec['lm_tries'])} 다음 μ {_mu:.0e}]"
+                             if _lm_on else ""), flush=True)
                     if not _acc:
                         with torch.no_grad():
                             _z[:, :3] = _zc
-                        _frec.update(why="선탐색 실패 (30 회 반감)")
+                        _frec.update(why="선탐색 실패 (30 회 반감)" if not _lm_on else f"선탐색 실패 (μ {_mumax:g} 까지 Levenberg 재시도)")
                         break
                     _stall = (_stall + 1) if (_Ec - _En) <= 1e-7 * abs(_Ec) else 0
                     _Ec = _En
@@ -5659,7 +5705,9 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     AF_FEM_ASM_CHECK=N: 처음 N 번 투영 전 조립 헤시안·벡터 곱을 자동미분 헤시안-벡터 곱과, 국소 기울기 합을 전역 기울기와 대조해 출력."""
     _t0 = time.time()
     _NTG[0] = None
-    _fwd()
+    _r0 = _fwd()
+    _DIAG_X2[0] = _r0[0].detach() if os.environ.get("AF_FEM_DIAG") else None
+    del _r0
     U0 = _DPN_LIVE[0][1].detach().clone()
     _ens = _NF_HOLD[0]
     if not isinstance(_ens, (list, tuple)) or len(_ens) != 1:
@@ -5746,6 +5794,7 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     _nneg = int((_ew < 0).sum())
     _emin = float(_ew.min())
     _neg_tet = float((_ew.min(1).values < 0).double().mean())
+    _elmin = _ew.min(1).values if os.environ.get("AF_FEM_DIAG") else None   # AF_FEM_DIAG: 사면체별 투영 전 최소 고유값
     # AF_FEM_EIG_FLOOR=η (기본 0 = 0 으로 절단): 요소마다 고유값을 η·max|λ_e| 아래로 내려가지 않게 (양정치). 고착(stick) 입자만 든
     # 사면체는 접선 곡률이 0 이라 투영 H 가 특이해져 PCG 방향에 거대한 성분이 생긴다 -- 그것을 막는 바닥. 에너지는 그대로
     _efl = float(os.environ.get("AF_FEM_EIG_FLOOR", "0") or 0.0)
@@ -5771,6 +5820,7 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     A = torch.sparse_coo_tensor(torch.stack([_ri, _ci]), _vv, (3 * M_, 3 * M_)).coalesce().to_sparse_csr()
     _nnz = int(A.values().numel())
     del He, _vv, _ri, _ci
+    _Draw = D.clone() if os.environ.get("AF_FEM_DIAG") else None        # AF_FEM_DIAG: 투영 뒤 노드 블록 (단위행렬 채우기 전)
     D = D + lam * torch.eye(3, device=dev, dtype=torch.float64)
     D[_fixd] = torch.eye(3, device=dev, dtype=torch.float64)
     _dd = torch.diagonal(D, dim1=1, dim2=2)
@@ -5782,8 +5832,45 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     # 블록 야코비 전처리 CG
     _tp = time.time()
     b = gd.reshape(-1).double().masked_fill(_fx3, 0.0)
-    pre = lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1)
     mv = lambda v_: (A @ v_.unsqueeze(-1)).squeeze(-1)
+    x_, kk, rr, neg = _asm_pcg(mv, Dinv, b, M_, ncg, rtol)
+    b2 = max(float((b * b).sum()), 1e-300)
+    _t_pcg = time.time() - _tp
+    p_ = x_.reshape(M_, 3).to(U0.dtype)
+    qdrop = float((b * x_).sum()) - 0.5 * float((x_ * (mv(x_) - lam * x_)).sum()) if kk > 0 else 0.0
+    # AF_FEM_LM (기본 1, 사용자 10-26 lego 선탐색 폭주 수정): 같은 조립 A 로 (A + μ·diag(Mn/h²)) p = g 를 다시 푸는 함수를 남긴다.
+    # Mn/h² = 노드 집중 질량 관성 (바닥 매핑을 거치지 않은 입자 질량 Σ m λ) -- 바닥 softplus·고착 매핑이 입자 곡률을 지운 노드에도
+    # 양의 하한이 된다. μ=0 걸음은 위와 같은 계산 그대로 (뉴턴 루프가 선탐색 실패·작은 α 일 때만 μ>0 을 부른다)
+    _MnH = (Mn.double() / (h_ * h_)).masked_fill(_fixd, 0.0)                 # [M]
+    _ASM_SYS.clear()
+    _ASM_SYS.update(A=A, D=D, b=b, U0=U0, M=M_, ncg=ncg, rtol=rtol, MnH=_MnH, fixd=_fixd, dtype=U0.dtype, lam=lam)
+    if os.environ.get("AF_FEM_DIAG"):
+        _asm_diag(t, k, A, _Draw, b, x_, _MnH, Mn, _fixd, h_, _rw, _lm, m, M_, _elmin, _uq)
+    del Dinv, D
+    if _diag is not None:
+        print(f"    [FEM 검산] t={t} k={k} 투영 전 조립 헤시안 vs 자동미분 (자유 노드 {int((~_fixd).sum())}/{M_}, 입자 {N_}, 사면체 {T_}): "
+              f"기울기 상대오차 {_diag['g_rel']:.3e} (|g| {_diag['g_norm']:.3e}) | "
+              + " ".join(f"H·v[{q}] 상대오차 {_diag[f'Hv_{q}_rel']:.3e} (vᵀHv 조립 {_diag[f'vHv_{q}_asm']:.6e} / 자동미분 {_diag[f'vHv_{q}_ad']:.6e})"
+                         for q in ("g", "rand", "rand2"))
+              + f" | E(탐침)-E(그대로) {_diag['E_probe_vs_plain']:.3e} | 음 고유값 사면체 비율 {_neg_tet:.3f} 최소 고유값 {_emin:.3e}", flush=True)
+    _NTG[0] = ((U0 - p_)[:, :3].detach(), Mn)
+    _NEWTON_LOG.append(dict(t=int(t), k=int(k), E=_EJv / nrm, cg=int(kk), neg=bool(neg), res=(rr / b2) ** 0.5,
+                            p_norm=float(p_[:, :3].norm()) / float(EXT),
+                            step_rms=float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT), lam=lam, hdiag=_hd_mean,
+                            qdrop_rel=qdrop / max(abs(_EJv), 1e-30), sec=time.time() - _t0, diag=_diag,
+                            p_inf=float(p_[:, :3].abs().max()), g_norm=float(gd.norm()), gp=float((gd * p_).sum()),
+                            solver="pcg", t_hess=_t_hess, t_asm=_t_asm, t_pcg=_t_pcg, n_tet=T_, nnz=_nnz,
+                            neg_eig=_nneg, neg_tet_frac=_neg_tet, eig_min=_emin))
+
+
+
+_ASM_SYS = {}                 # AF_FEM_SOLVER=pcg: 마지막 조립 계 (A, 블록 대각 D, g, 노드 집중 질량/h²) -- _asm_resolve 가 μ>0 으로 다시 푼다
+_FEM_CTX = [None]             # AF_FEM_DIAG: (cfg, 스텝 시작 입자 위치 x) -- 진단에서 바닥 법선 거리를 구한다
+
+
+def _asm_pcg(mv, Dinv, b, M_, ncg, rtol):
+    """블록 야코비 전처리 CG (AF_FEM_SOLVER=pcg). 반환 (x, 반복수, |r|², 음곡률)."""
+    pre = lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1)
     x_ = torch.zeros_like(b); r_ = b.clone(); z_ = pre(r_); d_ = z_.clone()
     rz = float((r_ * z_).sum()); b2 = max(float((b * b).sum()), 1e-300)
     neg, kk, rr = False, 0, float((r_ * r_).sum())
@@ -5804,24 +5891,85 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
         rz2 = float((r_ * z_).sum())
         d_ = z_ + (rz2 / rz) * d_
         rz = rz2
-    _t_pcg = time.time() - _tp
-    p_ = x_.reshape(M_, 3).to(U0.dtype)
-    qdrop = float((b * x_).sum()) - 0.5 * float((x_ * (mv(x_) - lam * x_)).sum()) if kk > 0 else 0.0
-    del A, Dinv, D
-    if _diag is not None:
-        print(f"    [FEM 검산] t={t} k={k} 투영 전 조립 헤시안 vs 자동미분 (자유 노드 {int((~_fixd).sum())}/{M_}, 입자 {N_}, 사면체 {T_}): "
-              f"기울기 상대오차 {_diag['g_rel']:.3e} (|g| {_diag['g_norm']:.3e}) | "
-              + " ".join(f"H·v[{q}] 상대오차 {_diag[f'Hv_{q}_rel']:.3e} (vᵀHv 조립 {_diag[f'vHv_{q}_asm']:.6e} / 자동미분 {_diag[f'vHv_{q}_ad']:.6e})"
-                         for q in ("g", "rand", "rand2"))
-              + f" | E(탐침)-E(그대로) {_diag['E_probe_vs_plain']:.3e} | 음 고유값 사면체 비율 {_neg_tet:.3f} 최소 고유값 {_emin:.3e}", flush=True)
-    _NTG[0] = ((U0 - p_)[:, :3].detach(), Mn)
-    _NEWTON_LOG.append(dict(t=int(t), k=int(k), E=_EJv / nrm, cg=int(kk), neg=bool(neg), res=(rr / b2) ** 0.5,
-                            p_norm=float(p_[:, :3].norm()) / float(EXT),
-                            step_rms=float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT), lam=lam, hdiag=_hd_mean,
-                            qdrop_rel=qdrop / max(abs(_EJv), 1e-30), sec=time.time() - _t0, diag=_diag,
-                            p_inf=float(p_[:, :3].abs().max()), g_norm=float(gd.norm()), gp=float((gd * p_).sum()),
-                            solver="pcg", t_hess=_t_hess, t_asm=_t_asm, t_pcg=_t_pcg, n_tet=T_, nnz=_nnz,
-                            neg_eig=_nneg, neg_tet_frac=_neg_tet, eig_min=_emin))
+    return x_, kk, rr, neg
+
+
+def _asm_resolve(mu):
+    """AF_FEM_LM: 마지막 조립 계에서 (A + μ·diag(Mn/h²)) p = g 를 블록 야코비 PCG 로. 반환 (p [M,3], dict).
+    에너지·기울기는 그대로 -- 방향만 바뀐다 (μ → ∞ 이면 질량으로 나눈 기울기 방향)."""
+    S = _ASM_SYS
+    A, D, b, M_, MnH = S["A"], S["D"], S["b"], S["M"], S["MnH"]
+    _tp = time.time()
+    reg = (mu * MnH).unsqueeze(-1).expand(-1, 3).reshape(-1)
+    Dm = D + torch.diag_embed((mu * MnH).unsqueeze(-1).expand(-1, 3))
+    Dm[S["fixd"]] = torch.eye(3, device=D.device, dtype=D.dtype)
+    _bad = ~(torch.diagonal(Dm, dim1=1, dim2=2) > 0).all(1)
+    if bool(_bad.any()):
+        Dm[_bad] = torch.eye(3, device=D.device, dtype=D.dtype)
+    mv = lambda v_: (A @ v_.unsqueeze(-1)).squeeze(-1) + reg * v_
+    x_, kk, rr, neg = _asm_pcg(mv, torch.linalg.inv(Dm), b, M_, S["ncg"], S["rtol"])
+    b2 = max(float((b * b).sum()), 1e-300)
+    gp = float((b * x_).sum())
+    return x_.reshape(M_, 3).to(S["dtype"]), dict(mu=mu, cg=int(kk), res=(rr / b2) ** 0.5, neg=bool(neg), gp=gp,
+                                                    t_pcg=time.time() - _tp)
+
+
+def _asm_diag(t, k, A, D, b, x_, MnH, Mn, fixd, h_, _rw, _lm, m, M_, elmin, uq):
+    """AF_FEM_DIAG: 투영 헤시안의 노드 블록 곡률을 노드 집중 질량 관성 Mn/h² 와 비교하고, 뉴턴 방향 p 가 어디에 몰리는지,
+    그 노드의 입자들이 바닥 매핑(softplus·고착, σ = 1 - exp(-s'/ε))으로 얼마나 묶였는지 출력한다. 계산 경로에는 영향 없음."""
+    free = ~fixd
+    dmin = torch.linalg.eigvalsh(0.5 * (D + D.transpose(1, 2))).min(1).values           # 노드 3x3 블록 최소 고유값
+    r = dmin / MnH.clamp_min(1e-300)
+    P = x_.reshape(M_, 3)
+    G = b.reshape(M_, 3)
+    p2, g2 = (P ** 2).sum(1), (G ** 2).sum(1)
+    hasm = (Mn > 0) & free
+    weak = hasm & (r < 1e-3)
+    res_true = float((((A @ x_.unsqueeze(-1)).squeeze(-1)) - b).norm() / b.norm().clamp_min(1e-300))
+    i0 = int(p2.argmax())
+    o = dict(t=int(t), k=int(k), nodes=int(hasm.sum()), weak=int(weak.sum()),
+             p2_on_weak=float(p2[weak].sum() / p2.sum().clamp_min(1e-300)), g2_on_weak=float(g2[weak].sum() / g2.sum().clamp_min(1e-300)),
+             res_true=res_true, pmax=float(p2[i0].sqrt()) / (h_ * float(EXT)), pmax_r=float(r[i0]), pmax_Mn=float(Mn[i0]),
+             pmax_g=float(g2[i0].sqrt()), pmax_dmin=float(dmin[i0]), MnH_med=float(MnH[hasm].median()),
+             D_med=float(torch.diagonal(D, dim1=1, dim2=2)[hasm].mean(1).median()))
+    # 그 노드를 쓰는 사면체의 투영 전 최소 고유값
+    tet_on = (uq == i0).any(1)
+    o["pmax_tet_eigmin_pre"] = float(elmin[tet_on].min()) if bool(tet_on.any()) else float("nan")
+    ctx = _FEM_CTX[0]
+    if ctx is not None:
+        cfg, xs = ctx
+        x2 = _DIAG_X2[0]
+        eps = float(a.bc_softplus) if float(getattr(a, "bc_softplus", 0.0) or 0.0) > 0 else 0.0
+        for bc in (cfg.get("boundary_conditions") or []):
+            if bc.get("type") != "surface_collider" or x2 is None or eps <= 0:
+                continue
+            pt = torch.tensor(bc["point"], device=dev, dtype=torch.float64)
+            nr = torch.tensor(bc["normal"], device=dev, dtype=torch.float64); nr = nr / nr.norm()
+            sp = ((x2.double() - pt) * nr).sum(-1)                                     # 매핑 뒤 법선 거리 s' (softplus 값)
+            sig = -torch.expm1(-sp.clamp_min(0) / eps)                                  # σ(s/ε) = 1 - exp(-s'/ε): 매핑 야코비안 배율
+            s0 = ((xs.double() - pt) * nr).sum(-1)
+            mw = (m.double().unsqueeze(-1) * _lm.double())
+            for thr in (1e-1, 1e-3, 1e-6):
+                deep = (sig < thr).double().unsqueeze(-1)
+                Md = torch.zeros(M_, device=dev, dtype=torch.float64).index_add_(0, _rw.reshape(-1), (mw * deep).reshape(-1))
+                fr = Md / Mn.double().clamp_min(1e-300)
+                o[f"part_sig<{thr:g}"] = int((sig < thr).sum())
+                o[f"weak_deepmass_frac_sig<{thr:g}"] = float(fr[weak].mean()) if bool(weak.any()) else float("nan")
+                o[f"pmax_deepmass_frac_sig<{thr:g}"] = float(fr[i0])
+            o["part_n"] = int(sig.numel())
+            o["s_start_min_over_eps"] = float(s0.min()) / eps
+    # μ 별 정규화 방향 크기 (같은 계)
+    for mu in (1e-4, 1e-3, 1e-2, 1e-1, 1.0):
+        pm, inf = _asm_resolve(mu)
+        o[f"mu{mu:g}_pvel"] = float(pm.abs().max()) / (h_ * float(EXT))
+        o[f"mu{mu:g}_cg"] = inf["cg"]
+    print(f"    [FEM 진단] {json.dumps(o, ensure_ascii=False)}", flush=True)
+    if os.environ.get("AF_FEM_DIAG_LOG"):
+        with open(os.environ["AF_FEM_DIAG_LOG"], "a") as f_:
+            f_.write(json.dumps(o, ensure_ascii=False) + "\n")
+
+
+_DIAG_X2 = [None]
 
 
 def _precond_build(_fwd, m, nrm, t):
