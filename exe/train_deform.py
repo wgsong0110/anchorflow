@@ -2748,7 +2748,8 @@ if a.pool:
                      n_side=a.pool_targets, drop=_DROP, data=_PDATA, init=_PINIT)
     if a.pool_trace and not a.infer:
         from anchorflow.pool_trace import PoolTracer
-        POOL.tracer = PoolTracer(a.pool_trace, period=a.pool_trace_period, n_long=a.pool_trace_long, n_rand=a.pool_trace_rand)
+        POOL.tracer = PoolTracer(a.pool_trace, period=a.pool_trace_period, n_long=a.pool_trace_long, n_rand=a.pool_trace_rand,
+                                 keep_start=not a.pool_init_traj)
         POOL.tracer.it = int(step0)
         print(f"[풀 이력] {a.pool_trace}: 주기 {a.pool_trace_period}, 나이 상위 {a.pool_trace_long} + 무작위 {a.pool_trace_rand}, "
               f"이어받은 최대 나이 {POOL.tracer.best_age}, 반복 {step0} 부터", flush=True)

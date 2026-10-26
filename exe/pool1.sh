@@ -34,7 +34,7 @@ NI=$W/lbours/noinertial; G5=$W/lbours/gunet5_near
 WP=$W/wt/psi_d993fb5; RANGE=$W/lbours/lego_psi/range.json
 L0PT=$W/lbpt/test_low/L000.pt
 VAR=${POOL1_VARIANT:-}    # s32 (사용자 10-26): 무작위 폐기 끔 --pool_rdrop 0 + 풀 크기 32 --pool_size 32, 나머지 그대로 -> 출력 pool1s32_<모델>
-case "$VAR" in ""|s32|s32g3) ;; *) echo "[오류] POOL1_VARIANT $VAR"; exit 1 ;; esac   # s32g3 (10-26): s32 + 전진 문턱 --pool_gate 1e-3
+case "$VAR" in ""|s32|s32g3|s32r|s32g3r) ;; *) echo "[오류] POOL1_VARIANT $VAR"; exit 1 ;; esac   # s32g3 (10-26): s32 + 전진 문턱 --pool_gate 1e-3; *r (10-26): --pool_init_traj 빼고 낙하 분포 시작
 U=$W/lbours/pool1${VAR}_$M${POOL1_SUFFIX:-}; R=r2:storage/result/anchorflow/lbours/pool1${VAR}_$M${POOL1_SUFFIX:-};   # POOL1_SUFFIX: 시험을 본 실행과 다른 디렉토리에서 (본 실행이 돌고 있을 때)
  O=$U/pool; mkdir -p $U $O $U/hist
 if [ -f $U/driver.hb ] && [ $(( $(date +%s) - $(cat $U/driver.hb) )) -lt 300 ]; then echo "[중단] 다른 드라이버가 돌고 있다 (하트비트 5 분 안) $(date)"; exit 0; fi
@@ -74,19 +74,27 @@ D1=$(dif "$PC_RUN" "$B_GNN"); D2=$(dif "$B_GNN" "$B_GU"); D3=$(dif "$REF" "$B")
 [ "$(toks "${REF/ --save_every 100000/}")" = "$(toks "$(sed -e "s# $GATE##" -e "s# $INIT##" <<<" $B")")" ] || fail "망·바닥 인자가 $REFN 과 다르다 ($D3)"
 grep -q -- "--net_inertial" <<<"$B" && fail "명령줄에 --net_inertial 이 있다"
 for f in "--bc_softplus 0.01" "--bc_stick 0.01" "--bc_stick_xn"; do grep -q -- " $f\( \|$\)" <<<" $B " || fail "명령줄에 '$f' 없음"; done
-if [ "$VAR" = s32 ] || [ "$VAR" = s32g3 ]; then
+if [ -n "$VAR" ]; then
   BV="$(sed 's# --pool_rdrop 0.01 # --pool_rdrop 0 #' <<<"$B") --pool_size 32"
   DV=$(dif "$B" "$BV")
   [ "$DV" = "빠짐: '0.01' | 더함: '--pool_size 0 32'" ] || fail "s32 변형 차이가 '--pool_rdrop 0.01 -> 0, --pool_size 32 더함' 이 아니다 ($DV)"
   echo "[s32 변형] pool1 $M 명령 -> 무작위 폐기 끔·풀 크기 32: $DV (--pool_stuck_max 0, 만기 없음 그대로)" | tee $U/variant.txt
-  if [ "$VAR" = s32g3 ]; then
+  if [ "$VAR" = s32g3 ] || [ "$VAR" = s32g3r ]; then
     BG="$(sed 's# --pool_gate 1e-4 # --pool_gate 1e-3 #' <<<"$BV")"; DG=$(dif "$BV" "$BG")
     [ "$DG" = "빠짐: '1e-4' | 더함: '1e-3'" ] || fail "s32g3 변형 차이가 '--pool_gate 1e-4 -> 1e-3' 이 아니다 ($DG)"
     echo "[s32g3 변형] s32 명령 -> 전진 문턱 --pool_gate 1e-4 -> 1e-3: $DG" | tee -a $U/variant.txt
     BV=$BG
   fi
+  if [ "${VAR: -1}" = r ]; then
+    BR="$(sed "s# --pool_init_traj $L0PT##" <<<"$BV")"; DR=$(dif "$BV" "$BR")
+    [ "$DR" = "빠짐: '--pool_init_traj $L0PT' | 더함: ''" ] || fail "r 변형 차이가 '--pool_init_traj 뺌' 이 아니다 ($DR)"
+    grep -q -- " --pool_drop 0.0,0.02,0.0,1.5 " <<<" $BR " && grep -q -- " --pool_start_k 0 " <<<" $BR " || fail "r 변형에 낙하 분포(--pool_drop 0.0,0.02,0.0,1.5 --pool_start_k 0)가 없다"
+    echo "[r 변형] 시작 상태 L000 0 프레임 고정 -> 예전 풀과 같은 낙하 분포 (--pool_drop 0.0,0.02,0.0,1.5: 바닥 위 0~0.02, 속도 0~1.5, 무작위 회전; --pool_start_k 0 매번 새로): $DR" | tee -a $U/variant.txt
+    BV=$BR
+  fi
   B=$BV
 fi
+[ "${VAR: -1}" = r ] && INIPAT="\[풀\] 낙하 모드" || INIPAT="\[풀\] 고정 초기 상태"
 { echo "[명령줄 pool1${VAR} $M] $B"
   echo "[예전 풀 spstick pool (13471f4) 실행 인자] $PC_RUN"
   echo "[차이 예전 풀 -> pool1 gnn] $D1"
@@ -129,10 +137,15 @@ render_trace(){ # render_trace <이력 .pt> <vid 디렉토리> -- 3DGS 렌더 (�
   local f=$1 V=$2 n; n=$(basename $1 .pt); mkdir -p $V
   [ -f $V/$n.mp4 ] && return 0
   local H=/tmp/pool1_h5_${M}_$n; [ -e $H ] && mv $H ${H}_prev_$(date +%s)
-  local FF; FF=$(python -c "import torch,json;m=torch.load('$f',map_location='cpu',weights_only=False);d=dict(m['meta'],frames=m['frames']);json.dump(d,open('$V/$n.json','w'),ensure_ascii=False);print('--first_from_dump' if d['trace_from']>0 else '')") || return 1
-  python -u exe/lb_roll_to_h5.py --dump $f --traj $W/lbdata/test_low/L000 --out $H $FF > $V/$n.h5.log 2>&1 \
+  local FF; FF=$(python -c "import torch,json;m=torch.load('$f',map_location='cpu',weights_only=False);d=dict(m['meta'],frames=m['frames']);json.dump(d,open('$V/$n.json','w'),ensure_ascii=False);print('--first_from_dump' if d['trace_from']>0 or d.get('has_start') else '')") || return 1
+  local TJ=$W/lbdata/test_low/L000
+  if python -c "import json,sys;sys.exit(0 if 'R' in json.load(open('$V/$n.json')) else 1)"; then
+    # 낙하 분포 시작(r 변형): 렌더용 회전 R 은 그 상태의 시작 자세 것 (meta.json 만 바꾼 임시 궤적 디렉토리, h5 와 함께 지움)
+    TJ=$H.traj; mkdir -p $TJ; python -c "import json;m=json.load(open('$W/lbdata/test_low/L000/meta.json'));m['R']=json.load(open('$V/$n.json'))['R'];json.dump(m,open('$TJ/meta.json','w'))" || return 1
+  fi
+  python -u exe/lb_roll_to_h5.py --dump $f --traj $TJ --out $H $FF > $V/$n.h5.log 2>&1 \
     && CUDA_VISIBLE_DEVICES=$G python -u exe/lb_render.py --sim $H --config $W/lbdata/config.json --shape lego --out $V/$n.mp4 > $V/$n.r.log 2>&1 < /dev/null
-  local rc=$?; rm -rf $H     # 변환 h5 (float32 다시 쓴 것) 만 지운다 -- 원본 이력 .pt 는 그대로
+  local rc=$?; rm -rf $H $H.traj     # 변환 h5 (float32 다시 쓴 것) 만 지운다 -- 원본 이력 .pt 는 그대로
   [ $rc = 0 ] && [ -f $V/$n.mp4 ] || { touch $V/$n.fail; return 1; }; }
 render_loop(){ while true; do for f in $(ls $O/pool_trace/*.pt 2>/dev/null); do n=$(basename $f .pt); [ -f $O/pool_trace/vid/$n.mp4 ] || [ -f $O/pool_trace/vid/$n.fail ] || { render_trace $f $O/pool_trace/vid && echo "[이력 렌더] $n $(date +%T)"; }; done; sleep 120; done; }
 # ---- (1) 기본 경로 대조: 같은 명령 2 반복 -- 이 커밋 vs 기준 커밋 ----
@@ -144,7 +157,7 @@ if [ ! -f $U/base_equiv_$C.ok ]; then
   ( cd $REFWT && tr1 $BE/old 2 1 0 $BE/old.log )
   TB=$(cat $BE/new.log $BE/old.log | grep -a -c Traceback)
   CMPB=$(python $CMPPY $BE/new/MAIN_last.pt $BE/old/MAIN_last.pt 2>&1 | tail -1)
-  INI=$(grep -a -m1 "\[풀\] 고정 초기 상태" $BE/new.log | cut -c1-200)
+  INI=$(grep -a -m1 "$INIPAT" $BE/new.log | cut -c1-200)
   echo "[기본 경로 대조 $M] 이 커밋 $C vs 기준 커밋 $REFC (2 반복): $CMPB | Traceback $TB | $INI" | tee $U/base_equiv.txt
   [ "$TB" = 0 ] && grep -q "입력폭 $NFW/$NFW  키 같음 True" <<<"$CMPB" && [ -n "$INI" ] || fail "기본 경로 대조 실패 (Traceback·입력폭·키·고정 초기 상태)"
   maxd "$CMPB" 1e-4 || fail "기본 경로 망 파라미터 차이 1e-4 이상"
@@ -159,7 +172,7 @@ if [ ! -f $U/resume_$C.ok ]; then
   K=$(ck_k $RT/MAIN_last.pt); RS=$(grep -a "\[재개\]" $RT/r200.log | cut -c1-140 | tr '\n' ' ')
   TB=$(cat $RT/r100.log $RT/r200.log $RB/r200.log | grep -a -c Traceback)
   CMP=$(python $CMPPY $RT/MAIN_last.pt $RB/MAIN_last.pt 2>&1 | tail -1)
-  INI=$(grep -a -m1 "\[풀\] 고정 초기 상태" $RB/r200.log | cut -c1-200)
+  INI=$(grep -a -m1 "$INIPAT" $RB/r200.log | cut -c1-200)
   VL=$(grep -a "\[검증 [0-9]*\]" $RB/r200.log | sed 's/ *(best.*//; s/비 [0-9.]* //' | cut -c1-80 | tr '\n' ' ')
   { echo "[이어 돌리기 $M] 200 실행: $RS | 마지막 반복 $K | Traceback $TB | 이어 돈 것 vs 한 번에: $CMP"
     echo "[시간] 100 반복 $((t1-t0)) s, 이어 100 반복 $((t2-t1)) s, 한 번에 200 반복 $((t3-t2)) s (검증 포함) | $INI"

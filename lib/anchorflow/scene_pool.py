@@ -312,6 +312,13 @@ class StatePool:
                   p=None, plan=plan, elapsed=el, hist=[], age=0)
         if self.tracer is not None:
             self.tracer.on_fresh(st)
+            if self.tracer.keep_start:
+                # 시작 자세의 회전 (렌더용 F_render = F·R, lb_gen 의 meta R 과 같은 뜻: x = R(x_rest - c) + t) -- 정지 자세에 Kabsch
+                A_ = sc["x0"].float() - sc["x0"].float().mean(0)
+                B_ = st["x"].float() - st["x"].float().mean(0)
+                U_, _, Vt_ = torch.linalg.svd(A_.T @ B_)
+                d_ = float(torch.sign(torch.det(Vt_.T @ U_.T)))
+                st["trace_R"] = (Vt_.T @ torch.diag(torch.tensor([1.0, 1.0, d_], device=A_.device)) @ U_.T).cpu().tolist()
         return st
 
     def fix_start_set(self, k, seed=1234):

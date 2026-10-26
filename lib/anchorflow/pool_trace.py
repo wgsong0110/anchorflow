@@ -19,12 +19,14 @@ import torch
 
 
 class PoolTracer:
-    def __init__(self, out_dir, period=500, n_long=2, n_rand=1, best_every_after=30, best_step=5, max_frames=400):
+    def __init__(self, out_dir, period=500, n_long=2, n_rand=1, best_every_after=30, best_step=5, max_frames=400, keep_start=False):
         self.dir = out_dir
         os.makedirs(out_dir, exist_ok=True)
         self.period, self.n_long, self.n_rand = int(period), int(n_long), int(n_rand)
         self.best_every_after, self.best_step, self.max_frames = int(best_every_after), int(best_step), int(max_frames)
         self.it = 0
+        # keep_start: 새 상태의 시작 (위치, F) 도 들고 다닌다 -- 시작이 고정(--pool_init_traj)이 아니라 낙하 분포에서 뽑힐 때 (10-26)
+        self.keep_start = bool(keep_start)
         self.rng = random.Random(12345)
         st = self._load_state()
         self.uid = int(st.get("uid", 0))
@@ -59,6 +61,9 @@ class PoolTracer:
         st["it_born"] = int(self.it)
         st["trace"] = []
         st["trace_from"] = 0
+        if self.keep_start:
+            st["trace_start"] = (st["x"].detach().to("cpu", torch.float16),
+                                 st["F"].detach().reshape(-1, 3, 3).to("cpu", torch.float16))
 
     def on_load(self, st):
         """체크포인트에서 이어받은 상태: 이력은 지금 나이부터."""
@@ -94,7 +99,9 @@ class PoolTracer:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         if rec["n_trace"] == 0:
             return
-        item = (rec, st["trace"])
+        if st.get("trace_R") is not None:
+            rec["R"] = st["trace_R"]
+        item = (rec, st["trace"], st.get("trace_start"))
         # 나이 상위 n_long (같으면 먼저 탈락한 것), 그 밖은 저수지 표본
         self.win_long.append(item)
         self.win_long.sort(key=lambda q: -q[0]["age"])
@@ -117,9 +124,9 @@ class PoolTracer:
             return
         n = 0
         for tag, items in (("긴것", self.win_long), ("무작위", self.win_res)):
-            for rec, tr in items:
+            for rec, tr, s0 in items:
                 fn = f"drop_it{self.it:06d}_uid{rec['uid']}_{rec['reason']}_age{rec['age']:03d}.pt"
-                self._write_trace(tr, rec, fn, tag, kind="drop")
+                self._write_trace(tr, rec, fn, tag, kind="drop", start=s0)
                 n += 1
         print(f"[풀 이력] 반복 {self.it}: 구간 탈락 이력 {n} 개 저장 (누적 탈락 {self.n_drop_total}, 최대 나이 {self.best_age})", flush=True)
         self._reset_window()
@@ -130,15 +137,20 @@ class PoolTracer:
         rec = dict(it=int(self.it) + 1, uid=int(st.get("uid", -1)), reason=tag, age=int(st.get("age", 0)),
                    stuck=int(st.get("stuck", 0)), it_born=int(st.get("it_born", -1)),
                    trace_from=int(st.get("trace_from", 0)), n_trace=len(st["trace"]))
-        self._write_trace(st["trace"], rec, fn, tag, kind)
+        if st.get("trace_R") is not None:
+            rec["R"] = st["trace_R"]
+        self._write_trace(st["trace"], rec, fn, tag, kind, start=st.get("trace_start"))
 
-    def _write_trace(self, tr, rec, fn, tag, kind):
+    def _write_trace(self, tr, rec, fn, tag, kind, start=None):
         p = os.path.join(self.dir, fn)
-        P = torch.stack([q[0] for q in tr])
-        Fq = torch.stack([q[1] for q in tr])
         t0 = rec["trace_from"]
         frames = list(range(t0 + 1, t0 + 1 + len(tr)))
-        torch.save(dict(pred=P, F=Fq, frames=frames, meta=dict(rec, select=tag, kind=kind)), p + ".tmp")
+        if start is not None and t0 == 0:
+            tr = [start] + list(tr)          # 시작 상태(프레임 0)를 맨 앞에 -- lb_roll_to_h5 --first_from_dump 로 렌더
+            frames = [0] + frames
+        P = torch.stack([q[0] for q in tr])
+        Fq = torch.stack([q[1] for q in tr])
+        torch.save(dict(pred=P, F=Fq, frames=frames, meta=dict(rec, select=tag, kind=kind, has_start=bool(start is not None and t0 == 0))), p + ".tmp")
         os.replace(p + ".tmp", p)
         with open(os.path.join(self.dir, "saved.jsonl"), "a") as f:
             f.write(json.dumps(dict(rec, file=fn, select=tag, kind=kind, bytes=os.path.getsize(p)), ensure_ascii=False) + "\n")

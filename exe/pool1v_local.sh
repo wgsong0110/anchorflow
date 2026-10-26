@@ -4,8 +4,11 @@
 #   s32g3 = s32 + --pool_gate 1e-3                                           -> lbours/pool1s32g3_gunet, 완료 POOL1S32G3_DONE
 #   10 분마다 하트비트·[풀 상태]·[pgrad] 로그 확인, 죽었으면 같은 부트 (멱등), 새 탈락 영상 합성 (pool1_drop/<실행>/), 렌더 실패분 재렌더 잡.
 #   끝나면: <실행>_{L000,0004}.mp4 (정답 | pool1_gunet | 이 변형), lego_psi_<실행>_*.mp4 (공통 고정 범위), 학습 곡선, 풀 관찰 그림, 표 -> outputs.md·tex·notify.
-VAR=${1:?s32 또는 s32g3}
-case $VAR in s32) LABV="무작위 폐기 끔·풀 32"; MARK=POOL1S32_DONE ;; s32g3) LABV="무작위 폐기 끔·풀 32·전진 문턱 1e-3"; MARK=POOL1S32G3_DONE ;; *) echo "[오류] $VAR"; exit 1 ;; esac
+VAR=${1:?s32 · s32g3 · s32r · s32g3r}
+#   s32r·s32g3r (10-26) = s32·s32g3 에서 --pool_init_traj 빼고 예전 풀 낙하 분포 시작 -> 탈락 영상은 정답 칸 없이 풀 상태만 (시작이 L000 이 아니다)
+case $VAR in s32) LABV="무작위 폐기 끔·풀 32"; MARK=POOL1S32_DONE ;; s32g3) LABV="무작위 폐기 끔·풀 32·전진 문턱 1e-3"; MARK=POOL1S32G3_DONE ;;
+  s32r) LABV="무작위 폐기 끔·풀 32·낙하 분포 시작"; MARK=POOL1S32R_DONE ;; s32g3r) LABV="무작위 폐기 끔·풀 32·전진 문턱 1e-3·낙하 분포 시작"; MARK=POOL1S32G3R_DONE ;;
+  *) echo "[오류] $VAR"; exit 1 ;; esac
 RUN=pool1${VAR}_gunet
 exec 9>/tmp/${RUN}_local.lock
 flock -n 9 || { echo "[중단] 다른 감시가 돌고 있다 $(date)"; exit 0; }
@@ -61,19 +64,27 @@ dropvids(){ for m in gunet; do
       [ -f $X/$n.mp4 ] && [ -f $X/$n.json ] || continue
       read A NF LAB <<<"$(python3 -c "
 import json; m=json.load(open('$X/$n.json')); fr=m['frames']; tf=m['trace_from']
-a = 0 if tf == 0 else fr[0]                      # 영상 첫 프레임의 프레임 번호
-nf = len(fr) + (1 if tf == 0 else 0)
+a = fr[0] if (tf or m.get('has_start')) else 0     # 영상 첫 프레임의 프레임 번호
+nf = len(fr) + (0 if (tf or m.get('has_start')) else 1)
 k = '최대 나이 갱신' if m.get('kind') == 'best' else ('탈락 ' + m['reason'] + ' (' + m.get('select', '') + ' 선택)')
 print(a, nf, f\"$RUN · uid {m['uid']} · {k} · 반복 {m['it']} · 나이 {m['age']} 프레임 · 정체 {m['stuck']} · 태어난 반복 {m['it_born']}\" + (f' · 이력은 프레임 {fr[0]} 부터 (이어 돌리기 전 상태)' if tf else ''))")"
       [ -n "$NF" ] || continue
       printf '정답 L000 (MPM)' > $T/dl_g.txt; printf '풀 상태 (모델로 전진)' > $T/dl_p.txt; printf '%s' "$LAB" > $T/dl_t.txt
       DT="fontfile=$F:fontsize=22:fontcolor=black:box=1:boxcolor=white@0.8:boxborderw=5:expansion=none"
+      if [ "${VAR: -1}" = r ]; then   # 낙하 분포 시작: 정답 칸 없음
+      ffmpeg -loglevel error -y -i $X/$n.mp4 -filter_complex \
+"[0:v]trim=end_frame=$NF,setpts=PTS-STARTPTS,drawtext=textfile=$T/dl_p.txt:x=14:y=14:$DT,pad=iw:ih+44:0:44:white,\
+drawtext=textfile=$T/dl_t.txt:x=10:y=10:fontfile=$F:fontsize=22:fontcolor=black:expansion=none,\
+drawtext=fontfile=$F:text='프레임 %{eif\:n+$A\:d}':x=w-tw-16:y=h-th-14:fontsize=48:fontcolor=red,format=yuv420p" \
+        -c:v libx264 -crf 20 $OUT && echo "[탈락 영상] $OUT ($NF 프레임)" || { echo "[탈락 영상 실패] $n"; [ -e $OUT ] && mv $OUT $OUT.fail_$(date +%H%M%S); continue; }
+      else
       ffmpeg -loglevel error -y -i $T/gt_L000.mp4 -i $X/$n.mp4 -filter_complex \
 "[0:v]trim=start_frame=$A,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop=$NF,trim=end_frame=$NF,setpts=PTS-STARTPTS,drawtext=textfile=$T/dl_g.txt:x=14:y=14:$DT[g];\
 [1:v]trim=end_frame=$NF,setpts=PTS-STARTPTS,drawtext=textfile=$T/dl_p.txt:x=14:y=14:$DT[q];[g][q]hstack=inputs=2,pad=iw:ih+44:0:44:white,\
 drawtext=textfile=$T/dl_t.txt:x=10:y=10:fontfile=$F:fontsize=22:fontcolor=black:expansion=none,\
 drawtext=fontfile=$F:text='프레임 %{eif\:n+$A\:d}':x=w-tw-16:y=h-th-14:fontsize=48:fontcolor=red,format=yuv420p" \
         -c:v libx264 -crf 20 $OUT && echo "[탈락 영상] $OUT ($NF 프레임)" || { echo "[탈락 영상 실패] $n"; [ -e $OUT ] && mv $OUT $OUT.fail_$(date +%H%M%S); continue; }
+      fi
       rclone copy $OUT r2:storage/result/anchorflow/v20261009/pool1_drop/$RUN -q
       if [ ! -f $OD/.outputs_noted ]; then touch $OD/.outputs_noted
         cat >> $RR/outputs.md <<EOM
@@ -131,7 +142,7 @@ assert all(abs(a['lo']-r[0]['lo'])<1e-9 and abs(a['hi']-r[0]['hi'])<1e-9 for a i
     [ $x = L000 ] && { A=$EQ_L; B_=$EV_L; } || { A=$EQ_4; B_=$EV_4; }
     psi3 $P "pool1 Graph U-Net · 위치 오차 $A" "$LABV · 위치 오차 $B_" $OUT $x || return 1
   done
-  OTH=""; [ $VAR = s32g3 ] && OTH=s32
+  OTH=""; case $VAR in s32g3) OTH=s32 ;; s32g3r) OTH=s32r ;; esac
   CJ="$T/gunet/curves.json $XD/curves_named.json"
   if [ -n "$OTH" ] && rclone lsf $RL/pool1${OTH}_gunet/curves.json >/dev/null 2>&1; then
     get $RL/pool1${OTH}_gunet/curves.json $T/oth_curves.json && python3 -c "import json;d=json.load(open('$T/oth_curves.json'));json.dump({'pool1${OTH}_gunet':list(d.values())[0]},open('$T/oth_named.json','w'),ensure_ascii=False)" && CJ="$CJ $T/oth_named.json"
@@ -144,7 +155,7 @@ assert all(abs(a['lo']-r[0]['lo'])<1e-9 and abs(a['hi']-r[0]['hi'])<1e-9 for a i
     rclone copy $RL/pool1${OTH}_gunet $Z --max-depth 1 --include "errors.txt" --include "inv_*.jsonl" -q
     for t in L000 0004; do get $RL/pool1${OTH}_gunet/psi/$t/defstats_$t.txt $Z/defstats_$t.txt; done
     EO_L=$(ER $Z/errors.txt pool1_gunet_L000); EO_4=$(ER $Z/errors.txt pool1_gunet_0004)
-    [ -n "$EO_L" ] && XR="[[\"Graph U-Net · 한 궤적 풀, 무작위 폐기 끔·풀 32 (pool1s32_gunet)\", \"q1\", \"$Z/defstats_{t}.txt\", \"$Z/inv_pool1_gunet_{t}.jsonl\", \"$EO_L\", \"$EO_4\"], ${XR:1:-1}]"
+    [ -n "$EO_L" ] && XR="[[\"Graph U-Net · 한 궤적 풀, 비교 변형 (pool1${OTH}_gunet)\", \"q1\", \"$Z/defstats_{t}.txt\", \"$Z/inv_pool1_gunet_{t}.jsonl\", \"$EO_L\", \"$EO_4\"], ${XR:1:-1}]"
   fi
   TB=$D/${RUN}_table.txt
   [ -e $TB ] || POOL1_EXTRA_ROWS="$XR" python3 $REPO/exe/pool1_table.py $T $TB "$EN_L" "$EN_4" "$E5_L" "$E5_4" "$EG_L" "$EG_4" "$EU_L" "$EU_4" "$EP_L" "$EP_4" "$EQ_L" "$EQ_4" || { fail "표"; return 1; }

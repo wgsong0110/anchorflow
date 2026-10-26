@@ -24,7 +24,9 @@ for s in srcs:
     M.update(json.load(open(s)))
 STY = {"pool1_gunet": ("기준: 풀 128 · 무작위 폐기 0.01 · 문턱 1e-4", "#eb6834"),
        "pool1s32_gunet": ("풀 32 · 무작위 폐기 끔 · 문턱 1e-4", "#1baf7a"),
-       "pool1s32g3_gunet": ("풀 32 · 무작위 폐기 끔 · 문턱 1e-3", "#e87ba4")}
+       "pool1s32g3_gunet": ("풀 32 · 무작위 폐기 끔 · 문턱 1e-3", "#e87ba4"),
+       "pool1s32r_gunet": ("낙하 분포 시작 · 풀 32 · 무작위 폐기 끔 · 문턱 1e-4", "#2a78d6"),
+       "pool1s32g3r_gunet": ("낙하 분포 시작 · 풀 32 · 무작위 폐기 끔 · 문턱 1e-3", "#eda100")}
 RUNS = [r for r in STY if r in M]
 
 
