@@ -165,13 +165,31 @@ def g2p_pre(rows, lam, dp_act):
     변위다. locate 는 tau 에 무관하므로 jvp 안에서 다시 돌 이유가 없고, Mtot
     크기 zeros + index_copy 도 필요 없다.
     """
-    return (lam.unsqueeze(-1) * dp_act[rows]).sum(1)
+    dpc = dp_act[rows]
+    if LOCAL_PROBE[0] is not None:
+        dpc = dpc + _local_probe(rows)
+    return (lam.unsqueeze(-1) * dpc).sum(1)
+
+
+# AF_FEM_SOLVER=pcg (조립 헤시안 뉴턴): 입자마다 자기 사면체 네 노드 값의 사본에 더할 0 텐서 [N,4,3] (기울기 받음).
+# 입자 하나의 에너지는 그 사본에만 의존하므로 이 탐침에 대한 헤시안은 입자별 12x12 블록 대각 -> 12 번의
+# 헤시안-벡터 곱으로 모든 입자의 12x12 를 한 번에 뽑는다. None 이면 계산 경로가 비트 단위로 그대로다.
+LOCAL_PROBE = [None]
+
+
+def _local_probe(rows):
+    z = LOCAL_PROBE[0]
+    if tuple(z.shape[:2]) != tuple(rows.shape):
+        raise RuntimeError(f"LOCAL_PROBE 모양 {tuple(z.shape)} 이 rows {tuple(rows.shape)} 와 다르다")
+    return z
 
 
 def g2p_jac_pre(rows, lam, aux, lat, dp_act):
     """`locate` 를 이미 한 경우의 값·grad_x u. g2p_jac 과 같은 식이다."""
     _ci, rank, _perm = aux
     dpc = dp_act[rows]                                  # [N,4,3]
+    if LOCAL_PROBE[0] is not None:
+        dpc = dpc + _local_probe(rows)
     u = (lam.unsqueeze(-1) * dpc).sum(1)
     d = (dpc[:, 1:] - dpc[:, :-1]).transpose(1, 2)      # [N,3(i),3(r)]
     Dy = d.gather(2, rank.unsqueeze(1).expand(-1, 3, -1))

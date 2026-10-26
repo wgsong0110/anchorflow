@@ -4883,8 +4883,12 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _frec = dict(t=int(t), h=_hf, tol=_ftol, E0=_Ec, conv=False, why="최대 반복", steps=[])
                 _g0n = None
                 _stall = 0
+                _fsol = os.environ.get("AF_FEM_SOLVER", "cg")
+                if _fsol not in ("cg", "pcg"):
+                    raise SystemExit(f"AF_FEM_SOLVER={_fsol}: cg(기존, 자동미분 헤시안-벡터 곱 CG) 또는 pcg(조립 투영 헤시안 + 블록 야코비 PCG)")
+                _frec["solver"] = _fsol
                 for _k in range(_nst):
-                    _newton_target(_fwd, _NTG, m, nrm, _k, t)
+                    (_newton_target_asm if _fsol == "pcg" else _newton_target)(_fwd, _NTG, m, nrm, _k, t)
                     _nl = _NEWTON_LOG.pop()
                     _ut = _NTG[0][0]
                     _NTG[0] = None
@@ -4899,6 +4903,10 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     _g0n = _nl["g_norm"] if _g0n is None else _g0n
                     _srec = dict(k=_k, E=_Ec, g_rel=_nl["g_norm"] / max(_g0n, 1e-30), g_norm=_nl["g_norm"], p_vel=_pin,
                                  p_inf_all=_nl["p_inf"] / (_hf * float(EXT)), cg=_nl["cg"], neg=_nl["neg"], cg_res=_nl["res"], gp=_nl["gp"])
+                    if _fsol == "pcg":
+                        _srec.update({q: _nl[q] for q in ("t_hess", "t_asm", "t_pcg", "n_tet", "nnz", "neg_eig", "neg_tet_frac", "eig_min", "sec")})
+                        if _nl.get("diag") is not None:
+                            _srec["asm_check"] = _nl["diag"]
                     if not (math.isfinite(_pin) and math.isfinite(_nl["gp"])):
                         _frec.update(why="걸음 nan/inf"); _frec["steps"].append(_srec); _OVN_BAD[0] = "FEM 걸음 nan/inf"
                         break
@@ -4920,7 +4928,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     _srec.update(alpha=_al, E_new=_En if _acc else None)
                     _frec["steps"].append(_srec)
                     print(f"      [FEM 걸음] t={t} k={_k} |p|∞/(h·EXT) {_pin:.3e} |g|/|g0| {_srec['g_rel']:.3e} CG {_nl['cg']}"
-                          f"{' 음곡률' if _nl['neg'] else ''} α {_al:.3g} E {_Ec:.6e} -> {_En:.6e} {time.time() - _tf0:.0f} s", flush=True)
+                          f"{' 음곡률' if _nl['neg'] else ''} α {_al:.3g} E {_Ec:.6e} -> {_En:.6e} {time.time() - _tf0:.0f} s"
+                          + (f" [pcg 잔차 {_nl['res']:.1e} 헤시안 {_nl['t_hess']:.1f}s 조립 {_nl['t_asm']:.1f}s PCG {_nl['t_pcg']:.1f}s 음고유 사면체 {_nl['neg_tet_frac']:.3f}]"
+                             if _fsol == "pcg" else ""), flush=True)
                     if not _acc:
                         with torch.no_grad():
                             _z[:, :3] = _zc
@@ -5629,6 +5639,185 @@ def _newton_target(_fwd, _NTG, m, nrm, k, t):
                             step_rms=float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT), lam=lam, hdiag=hdiag,
                             qdrop_rel=qdrop / max(abs(float(EJ)), 1e-30), sec=time.time() - _t0, diag=_diag,
                             p_inf=float(p_[:, :3].abs().max()), g_norm=float(gd.norm()), gp=float((gd * p_).sum())))
+
+
+_ASM_CACHE = {}               # AF_FEM_SOLVER=pcg: 프레임 안 고정인 사면체 묶음 (rows 의 유일 사면체·역색인·자유도 색인)
+_ASM_CHECKED = [0]            # AF_FEM_ASM_CHECK: 검산한 횟수
+
+
+def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
+    """AF_FEM_SOLVER=pcg (사용자 10-26 "FEM CG 쓰면 빨라진다고? 그럼 그걸로 해봐"): _newton_target 과 **같은 증분 포텐셜**
+    (_fwd 의 E 그대로 -- 탄성·관성·바닥 매핑·경계 전부 같은 코드)의 뉴턴 방향을 조립 헤시안으로 정확히 푼다.
+
+    1. 입자별 12x12 헤시안: 입자 p 의 에너지는 자기 사면체 네 노드 값에만 의존한다 -> 그 사본에 0 탐침
+       SX.LOCAL_PROBE [N,4,3] 를 더하면 탐침 헤시안이 블록 대각이라 12 번의 이중 역전파로 전 입자의 12x12 를 한 번에 얻는다.
+       (관성·바닥 softplus/stick 매핑·탄성이 모두 입자 단위라 같은 블록 안에 정확히 들어간다.)
+    2. 같은 사면체(같은 네 노드) 입자 블록을 더해 요소 헤시안 H_e, 고유값 절단(λ<0 -> 0)으로 양정치 투영 (Projected Newton).
+    3. 희소 행렬(CSR, float64)로 조립, 손잡이·경계로 덮인 노드(_NOD_M: 자유변수에서 빠진 노드)는 행·열을 빼고 대각 1.
+    4. (H + λI) p = g 를 블록 야코비(노드 3x3) 전처리 CG 로 (상대 잔차 AF_FEM_PCG_RTOL 기본 1e-6, 최대 AF_FEM_PCG_MAX 기본 2000).
+    기울기 g 는 기존과 같은 전역 탐침 Z 의 것. 반환 규약·_NEWTON_LOG 항목은 _newton_target 과 같다 (cg = PCG 반복수).
+    AF_FEM_ASM_CHECK=N: 처음 N 번 투영 전 조립 헤시안·벡터 곱을 자동미분 헤시안-벡터 곱과, 국소 기울기 합을 전역 기울기와 대조해 출력."""
+    _t0 = time.time()
+    _NTG[0] = None
+    _fwd()
+    U0 = _DPN_LIVE[0][1].detach().clone()
+    _ens = _NF_HOLD[0]
+    if not isinstance(_ens, (list, tuple)) or len(_ens) != 1:
+        raise SystemExit("AF_FEM_SOLVER=pcg: 격자 한 벌(앙상블 없음)만")
+    if (a.gregory or a.hex_jac or a.smooth_nb > 0 or a.cell_poly or a.interp != "bary" or a.local_rot != "none"
+            or a.c1_barrier > 0 or a.ctrl_barrier > 0 or a.elast == "lin" or U0.shape[1] != 3):
+        raise SystemExit("AF_FEM_SOLVER=pcg: 사면체 선형 전달(--interp bary)·노드 출력 3 채널·입자 단위 에너지에서만")
+    _rw, _lm = _ens[0][3], _ens[0][4]
+    M_, N_ = U0.shape[0], _rw.shape[0]
+    Mn = torch.zeros(M_, device=dev, dtype=torch.float32).index_add_(
+        0, _rw.reshape(-1), (m.float().unsqueeze(-1) * _lm.float()).reshape(-1))
+    _ck = (int(t), _rw.data_ptr(), N_, M_)
+    if _ASM_CACHE.get("key") != _ck:
+        _uq, _inv = torch.unique(_rw, dim=0, return_inverse=True)           # 유일 사면체 [T,4], 입자 -> 사면체
+        _dof = (_uq.unsqueeze(-1) * 3 + torch.arange(3, device=dev)).reshape(-1, 12)   # [T,12] 전역 자유도 (노드*3+성분)
+        _ASM_CACHE.clear()
+        _ASM_CACHE.update(key=_ck, uq=_uq, inv=_inv, dof=_dof,
+                          ri=_dof.unsqueeze(-1).expand(-1, 12, 12).reshape(-1),
+                          ci=_dof.unsqueeze(1).expand(-1, 12, 12).reshape(-1))
+    _uq, _inv, _dof = _ASM_CACHE["uq"], _ASM_CACHE["inv"], _ASM_CACHE["dof"]
+    T_ = int(_uq.shape[0])
+    _pin = _NOD_M[0]
+    _fixd = (torch.zeros(M_, dtype=torch.bool, device=dev) if _pin is None else _pin.to(dev).bool().reshape(-1))
+    if _fixd.numel() != M_:
+        raise SystemExit(f"AF_FEM_SOLVER=pcg: 손잡이 마스크 {_fixd.numel()} != 노드 {M_}")
+    _fx3 = _fixd.unsqueeze(-1).expand(-1, 3).reshape(-1)                   # [3M] 고정 자유도
+    h_ = float(_DT[0])
+    ncg = int(os.environ.get("AF_FEM_PCG_MAX", "2000"))
+    rtol = float(os.environ.get("AF_FEM_PCG_RTOL", "1e-6"))
+    _chk = _ASM_CHECKED[0] < int(os.environ.get("AF_FEM_ASM_CHECK", "0") or 0)
+    Z = torch.zeros_like(U0).requires_grad_(True)
+    ZL = torch.zeros(N_, 4, 3, device=dev, dtype=U0.dtype).requires_grad_(True)
+    _sv = (_DP_FAST[0], DM.PROBE[0], DM.PROBE[1], SX.LOCAL_PROBE[0])
+    _DP_FAST[0] = lambda _n, _dt, _dev: (U0,)
+    DM.PROBE[0], DM.PROBE[1] = "fixed", [Z]
+    SX.LOCAL_PROBE[0] = ZL
+    _diag = None
+    try:
+        with torch.enable_grad(), phys_resid.hess_mode():
+            EJ = _fwd()[2] * nrm
+            gZ, gL = torch.autograd.grad(EJ, [Z, ZL], create_graph=True)
+            gd = gZ.detach()
+            _th = time.time()
+            HL = torch.empty(N_, 12, 12, device=dev, dtype=torch.float64)
+            _gLf = gL.reshape(N_, 12)
+            for j in range(12):
+                _col = torch.autograd.grad(_gLf[:, j].sum(), ZL, retain_graph=True)[0]
+                HL[:, :, j] = _col.reshape(N_, 12).double()
+            _t_hess = time.time() - _th
+            if _chk:
+                # 검산 (투영 전): 국소 기울기를 노드로 모은 것 vs 전역 기울기, 조립 H·v vs 자동미분 헤시안-벡터 곱 (자유 노드만)
+                _free3 = ~_fx3
+                _gs = torch.zeros(M_ * 3, device=dev, dtype=torch.float64).index_add_(
+                    0, (_rw.unsqueeze(-1) * 3 + torch.arange(3, device=dev)).reshape(-1), gL.detach().reshape(-1).double())
+                _gz = gd.reshape(-1).double()
+                _diag = dict(g_rel=float((_gs - _gz)[_free3].norm() / _gz[_free3].norm().clamp_min(1e-300)),
+                             g_norm=float(_gz[_free3].norm()))
+                _He0 = torch.zeros(T_, 12, 12, device=dev, dtype=torch.float64).index_add_(0, _inv, HL)
+                _A0 = torch.sparse_coo_tensor(torch.stack([_ASM_CACHE["ri"], _ASM_CACHE["ci"]]), _He0.reshape(-1),
+                                              (3 * M_, 3 * M_)).coalesce().to_sparse_csr()
+                _gen = torch.Generator(device=dev).manual_seed(4242 + int(t))
+                for _nm, _v in (("g", gd.clone()), ("rand", torch.randn(gd.shape, device=dev, dtype=gd.dtype, generator=_gen)),
+                                ("rand2", torch.randn(gd.shape, device=dev, dtype=gd.dtype, generator=_gen))):
+                    _v = _v.reshape(-1).masked_fill(_fx3, 0.0)
+                    _v = _v / _v.norm().clamp_min(1e-30)
+                    _ad = torch.autograd.grad((gZ.reshape(-1) * _v).sum(), Z, retain_graph=True)[0].reshape(-1).double()
+                    _as = (_A0 @ _v.double().unsqueeze(-1)).squeeze(-1)
+                    _diag[f"Hv_{_nm}_rel"] = float((_as - _ad)[_free3].norm() / _ad[_free3].norm().clamp_min(1e-300))
+                    _diag[f"vHv_{_nm}_asm"] = float((_v.double() * _as).sum())
+                    _diag[f"vHv_{_nm}_ad"] = float((_v.double() * _ad).sum())
+                _diag["E_probe_vs_plain"] = float(EJ.detach()) / nrm - float(_fwd()[2])
+                del _A0, _He0
+                _ASM_CHECKED[0] += 1
+        _EJv = float(EJ.detach())
+        del gZ, gL, _gLf, EJ
+    finally:
+        _DP_FAST[0], DM.PROBE[0], DM.PROBE[1], SX.LOCAL_PROBE[0] = _sv
+    # 요소 헤시안 (같은 사면체 입자 합) -> 대칭화 -> 고유값 절단 투영
+    _ta = time.time()
+    He = torch.zeros(T_, 12, 12, device=dev, dtype=torch.float64).index_add_(0, _inv, HL)
+    del HL
+    He = 0.5 * (He + He.transpose(1, 2))
+    _ew, _eV = torch.linalg.eigh(He)
+    _nneg = int((_ew < 0).sum())
+    _emin = float(_ew.min())
+    _neg_tet = float((_ew.min(1).values < 0).double().mean())
+    He = (_eV * _ew.clamp_min(0.0).unsqueeze(1)) @ _eV.transpose(1, 2)
+    del _eV, _ew
+    # 블록 야코비: 노드 3x3 대각 블록
+    _ar = torch.arange(4, device=dev)
+    _blk = He.reshape(T_, 4, 3, 4, 3)[:, _ar, :, _ar, :]                 # [4,T,3,3] (고급 색인이 앞으로)
+    D = torch.zeros(M_, 3, 3, device=dev, dtype=torch.float64).index_add_(
+        0, _uq.t().reshape(-1), _blk.reshape(-1, 3, 3))
+    # 고정 자유도: 행·열 0, 대각 1 (g 도 그 자리 0 -- 전역 탐침은 덮인 노드에서 기울기가 0)
+    _keep = ~(_fx3[_ASM_CACHE["ri"]] | _fx3[_ASM_CACHE["ci"]])
+    _ri, _ci, _vv = _ASM_CACHE["ri"][_keep], _ASM_CACHE["ci"][_keep], He.reshape(-1)[_keep]
+    _hd_mean = float(torch.diagonal(D, dim1=1, dim2=2)[~_fixd].mean()) if bool((~_fixd).any()) else 0.0
+    lam = float(os.environ.get("AF_OV_NEWTON_DAMP", "1e-2")) * max(_hd_mean, 0.0)
+    _fi = torch.nonzero(_fx3).squeeze(1)
+    _di = torch.arange(3 * M_, device=dev)
+    _ri = torch.cat([_ri, _fi, _di]) if lam > 0 else torch.cat([_ri, _fi])
+    _ci = torch.cat([_ci, _fi, _di]) if lam > 0 else torch.cat([_ci, _fi])
+    _vv = torch.cat([_vv, torch.ones(_fi.numel(), device=dev, dtype=torch.float64)]
+                    + ([torch.full((3 * M_,), lam, device=dev, dtype=torch.float64)] if lam > 0 else []))
+    A = torch.sparse_coo_tensor(torch.stack([_ri, _ci]), _vv, (3 * M_, 3 * M_)).coalesce().to_sparse_csr()
+    _nnz = int(A.values().numel())
+    del He, _vv, _ri, _ci
+    D = D + lam * torch.eye(3, device=dev, dtype=torch.float64)
+    D[_fixd] = torch.eye(3, device=dev, dtype=torch.float64)
+    _dd = torch.diagonal(D, dim1=1, dim2=2)
+    _bad = ~(_dd > 0).all(1)
+    if bool(_bad.any()):                                                  # 곡률이 전혀 없는 노드 (투영 뒤 0): 대각 1
+        D[_bad] = torch.eye(3, device=dev, dtype=torch.float64)
+    Dinv = torch.linalg.inv(D)
+    _t_asm = time.time() - _ta
+    # 블록 야코비 전처리 CG
+    _tp = time.time()
+    b = gd.reshape(-1).double().masked_fill(_fx3, 0.0)
+    pre = lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1)
+    mv = lambda v_: (A @ v_.unsqueeze(-1)).squeeze(-1)
+    x_ = torch.zeros_like(b); r_ = b.clone(); z_ = pre(r_); d_ = z_.clone()
+    rz = float((r_ * z_).sum()); b2 = max(float((b * b).sum()), 1e-300)
+    neg, kk, rr = False, 0, float((r_ * r_).sum())
+    for kk in range(1, ncg + 1):
+        Ad = mv(d_)
+        dAd = float((d_ * Ad).sum())
+        if not dAd > 0:
+            neg = True
+            kk -= 1
+            break
+        al = rz / dAd
+        x_ = x_ + al * d_
+        r_ = r_ - al * Ad
+        rr = float((r_ * r_).sum())
+        if rr / b2 < rtol * rtol:
+            break
+        z_ = pre(r_)
+        rz2 = float((r_ * z_).sum())
+        d_ = z_ + (rz2 / rz) * d_
+        rz = rz2
+    _t_pcg = time.time() - _tp
+    p_ = x_.reshape(M_, 3).to(U0.dtype)
+    qdrop = float((b * x_).sum()) - 0.5 * float((x_ * (mv(x_) - lam * x_)).sum()) if kk > 0 else 0.0
+    del A, Dinv, D
+    if _diag is not None:
+        print(f"    [FEM 검산] t={t} k={k} 투영 전 조립 헤시안 vs 자동미분 (자유 노드 {int((~_fixd).sum())}/{M_}, 입자 {N_}, 사면체 {T_}): "
+              f"기울기 상대오차 {_diag['g_rel']:.3e} (|g| {_diag['g_norm']:.3e}) | "
+              + " ".join(f"H·v[{q}] 상대오차 {_diag[f'Hv_{q}_rel']:.3e} (vᵀHv 조립 {_diag[f'vHv_{q}_asm']:.6e} / 자동미분 {_diag[f'vHv_{q}_ad']:.6e})"
+                         for q in ("g", "rand", "rand2"))
+              + f" | E(탐침)-E(그대로) {_diag['E_probe_vs_plain']:.3e} | 음 고유값 사면체 비율 {_neg_tet:.3f} 최소 고유값 {_emin:.3e}", flush=True)
+    _NTG[0] = ((U0 - p_)[:, :3].detach(), Mn)
+    _NEWTON_LOG.append(dict(t=int(t), k=int(k), E=_EJv / nrm, cg=int(kk), neg=bool(neg), res=(rr / b2) ** 0.5,
+                            p_norm=float(p_[:, :3].norm()) / float(EXT),
+                            step_rms=float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT), lam=lam, hdiag=_hd_mean,
+                            qdrop_rel=qdrop / max(abs(_EJv), 1e-30), sec=time.time() - _t0, diag=_diag,
+                            p_inf=float(p_[:, :3].abs().max()), g_norm=float(gd.norm()), gp=float((gd * p_).sum()),
+                            solver="pcg", t_hess=_t_hess, t_asm=_t_asm, t_pcg=_t_pcg, n_tet=T_, nnz=_nnz,
+                            neg_eig=_nneg, neg_tet_frac=_neg_tet, eig_min=_emin))
 
 
 def _precond_build(_fwd, m, nrm, t):
