@@ -1301,6 +1301,7 @@ _NODEOV_TGT = [None]       # --ov_obj nodeov: {"tp": 덤프 노드 위치, "td":
 _OVN_BAD = [None]          # --ov_obj newton --ov_vars out: 뉴턴 걸음 중 p·변수가 nan/inf 가 되면 사유 문자열 (_ovnet_fit 이 그 프레임에서 멈춘다)
 _PRE = {"fn": None}        # --out_precond: 이 프레임의 출력 전처리 (망 출력 튜플 -> 튜플), _ov_once 가 프레임마다 만들고 끝에 지운다
 _PRE_LOG = []              # --out_precond: 프레임별 전처리 기록 (구성 시간·통계) -- AF_OVNET_FIT 가 프레임마다 가져가고 비운다
+_FEM_BAR = [None]          # AF_FEM_TOL (FEM 수렴 모드): 롤아웃 프레임 tqdm
 _NEWTON_LOG = []           # --ov_obj newton: 목표를 만들 때마다 (반복, CG 횟수, 음곡률, 잔차, 시간, ...) -- AF_OVNET_FIT 가 프레임마다 비운다
 if os.environ.get("AF_OV_NODE_TGT"):
     _NODE_TGT = torch.load(os.environ["AF_OV_NODE_TGT"], map_location="cpu", weights_only=False)
@@ -4858,6 +4859,77 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             _z = _vs[0]
             _zi = (st.get("ov_idx") or [None])[0]
             _nst = int(os.environ.get("AF_OV_NEWTON_STEPS", "40"))
+            if os.environ.get("AF_FEM_TOL"):
+                # **FEM 수렴 모드** (사용자 10-26 "모델 학습 대신 격자 업데이트를 FEM 으로"): 같은 증분 포텐셜(같은 플래그의 관성·탄성·
+                # 바닥·장벽 그대로)을 노드 변위로 뉴턴-CG 로 **수렴까지** 푼다. 걸음 p = _newton_target 그대로 (AF_OV_NEWTON_DAMP=0 이면
+                # 감쇠 없는 뉴턴), 그 위에 아르미호 되추적 선탐색, 수렴 판정 = IPC 식 속도 단위 |p|∞ / (h·EXT) < AF_FEM_TOL (dt 비례),
+                # 최대 AF_OV_NEWTON_STEPS 회. 프레임마다 반복수·|p|∞/(h·EXT)·|g|/|g0|·E·선탐색 걸음을 출력하고 AF_FEM_LOG(jsonl) 에 남긴다.
+                _ftol = float(os.environ["AF_FEM_TOL"])
+                _hf = float(_DT[0]); _tf0 = time.time()
+                _Ec = float(E)
+                _frec = dict(t=int(t), h=_hf, tol=_ftol, E0=_Ec, conv=False, why="최대 반복", steps=[])
+                _g0n = None
+                for _k in range(_nst):
+                    _newton_target(_fwd, _NTG, m, nrm, _k, t)
+                    _nl = _NEWTON_LOG.pop()
+                    _ut = _NTG[0][0]
+                    _NTG[0] = None
+                    _zt = (_ut if _zi is None else _ut[_zi]).to(_z.dtype)
+                    _zc = _z[:, :3].detach().clone()
+                    _pv = _zc - _zt                                  # 변수 공간 뉴턴 걸음 (U <- U - α p)
+                    _pin = float(_pv.abs().max()) / (_hf * float(EXT))
+                    if _k == 0:                                      # 검산: 변수 = 뉴턴 걸음의 기준 노드 변위 U0 (같은 노드 집합)
+                        _U0l = _DPN_LIVE[0][1][:, :3].detach()
+                        _U0l = _U0l if _zi is None else _U0l[_zi]
+                        _frec["z_vs_U0"] = float((_zc - _U0l.to(_zc.dtype)).abs().max()) if _U0l.shape == _zc.shape else float("inf")
+                    _g0n = _nl["g_norm"] if _g0n is None else _g0n
+                    _srec = dict(k=_k, E=_Ec, g_rel=_nl["g_norm"] / max(_g0n, 1e-30), g_norm=_nl["g_norm"], p_vel=_pin,
+                                 p_inf_all=_nl["p_inf"] / (_hf * float(EXT)), cg=_nl["cg"], neg=_nl["neg"], cg_res=_nl["res"], gp=_nl["gp"])
+                    if not (math.isfinite(_pin) and math.isfinite(_nl["gp"])):
+                        _frec.update(why="걸음 nan/inf"); _frec["steps"].append(_srec); _OVN_BAD[0] = "FEM 걸음 nan/inf"
+                        break
+                    if _pin < _ftol:
+                        _frec.update(conv=True, why="수렴 (|p|∞/(h·EXT) < tol)"); _frec["steps"].append(_srec)
+                        break
+                    if _nl["cg"] == 0 or not _nl["gp"] > 0:
+                        _frec.update(why="하강 방향 없음 (첫 CG 음곡률 또는 gᵀp≤0)"); _frec["steps"].append(_srec)
+                        break
+                    _al, _acc = 1.0, False
+                    for _ls in range(30):
+                        with torch.no_grad():
+                            _z[:, :3] = _zc - _al * _pv
+                        _En = float(_fwd()[2])
+                        if math.isfinite(_En) and _En <= _Ec - 1e-4 * _al * _nl["gp"] / nrm:
+                            _acc = True
+                            break
+                        _al *= 0.5
+                    _srec.update(alpha=_al, E_new=_En if _acc else None)
+                    _frec["steps"].append(_srec)
+                    if not _acc:
+                        with torch.no_grad():
+                            _z[:, :3] = _zc
+                        _frec.update(why="선탐색 실패 (30 회 반감)")
+                        break
+                    _Ec = _En
+                    if _CURVE is not None:
+                        _tr.append(_Ec)
+                _frec.update(iters=len([q for q in _frec["steps"] if "alpha" in q and q.get("E_new") is not None]),
+                             E1=_Ec, sec=time.time() - _tf0,
+                             p_vel_last=_frec["steps"][-1]["p_vel"] if _frec["steps"] else float("nan"),
+                             g_rel_last=_frec["steps"][-1]["g_rel"] if _frec["steps"] else float("nan"),
+                             cg_total=sum(q["cg"] for q in _frec["steps"]))
+                print(f"    [FEM 뉴턴] t={t} {'수렴' if _frec['conv'] else '미수렴'} ({_frec['why']}) 걸음 {_frec['iters']} "
+                      f"|p|∞/(h·EXT) {_frec['p_vel_last']:.3e} (허용 {_ftol:g}) |g|/|g0| {_frec['g_rel_last']:.3e} "
+                      f"E {_frec['E0']:.6e} -> {_Ec:.6e} CG 합 {_frec['cg_total']} α "
+                      + ",".join(f"{q['alpha']:.3g}" for q in _frec["steps"] if "alpha" in q) + f" {_frec['sec']:.1f} s" + (f" 검산 |z-U0| {_frec['z_vs_U0']:.2e}" if "z_vs_U0" in _frec else ""), flush=True)
+                if os.environ.get("AF_FEM_LOG"):
+                    with open(os.environ["AF_FEM_LOG"], "a") as _ff:
+                        _ff.write(json.dumps(_frec, ensure_ascii=False) + "\n")
+                if _FEM_BAR[0] is None:
+                    _FEM_BAR[0] = tqdm(total=int(a.eval_len), desc="FEM 롤아웃", ncols=90, mininterval=0)
+                _FEM_BAR[0].update(1)
+                _FEM_BAR[0].set_postfix_str(f"t={t} {'수렴' if _frec['conv'] else '미수렴'} 걸음 {_frec['iters']}")
+                _nst = 0                                             # 아래 고정 횟수 루프는 건너뛴다
             for _k in range(_nst):
                 _newton_target(_fwd, _NTG, m, nrm, _k, t)
                 if _CURVE is not None:
@@ -5534,7 +5606,8 @@ def _newton_target(_fwd, _NTG, m, nrm, k, t):
     _NEWTON_LOG.append(dict(t=int(t), k=int(k), E=float(EJ) / nrm, cg=int(kk), neg=bool(neg), res=(rr / g2) ** 0.5,
                             p_norm=float(p_[:, :3].norm()) / float(EXT),
                             step_rms=float((p_[:, :3] ** 2).sum(-1).mean().sqrt()) / float(EXT), lam=lam, hdiag=hdiag,
-                            qdrop_rel=qdrop / max(abs(float(EJ)), 1e-30), sec=time.time() - _t0, diag=_diag))
+                            qdrop_rel=qdrop / max(abs(float(EJ)), 1e-30), sec=time.time() - _t0, diag=_diag,
+                            p_inf=float(p_[:, :3].abs().max()), g_norm=float(gd.norm()), gp=float((gd * p_).sum())))
 
 
 def _precond_build(_fwd, m, nrm, t):
