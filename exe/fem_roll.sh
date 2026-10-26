@@ -4,7 +4,7 @@
 #   뉴턴-CG 직접 풀이로 **수렴까지** 구한다: train_deform --out_var --ov_vars out --ov_obj newton + AF_FEM_TOL (수렴 모드, 같은 커밋에서 추가).
 #   기존 출력만 최적화(L-BFGS 500 고정) 실행과 명령줄 차이는 --ov_obj ip -> newton 과 --net_inertial 제거(10-22 지시)뿐 -- 자동 대조 (OVN.json args).
 #   걸음: 감쇠 없는 뉴턴 (AF_OV_NEWTON_DAMP=0), CG 최대 AF_OV_NEWTON_CG, 아르미호 되추적 선탐색, 수렴 = |p|∞/(h·EXT) < AF_FEM_TOL (속도 단위, dt 비례),
-#   최대 AF_OV_NEWTON_STEPS 걸음, E 가 3 걸음 연속 상대 1e-7 도 안 줄면 정체(float32 잡음 바닥)로 멈춤. 허용치: FEM_TOL (lego 1e-2 = IPC 기본, float32 바닥 ~4e-3 위; ficus 1e-3). 프레임마다 [FEM 뉴턴] 줄 + fem.jsonl (반복수·잔차·선탐색·시간), tqdm "FEM 롤아웃".
+#   최대 AF_OV_NEWTON_STEPS 걸음, E 가 3 걸음 연속 상대 1e-7 도 안 줄면 정체(float32 잡음 바닥)로 멈춤. 허용치: FEM_TOL 기본 1e-2 (IPC 기본; lego t=0 float32 바닥 ~4e-3 위, ficus 1e-3 은 프레임당 56 걸음·7 분이라 잡 시간 안에 못 끝남 -> 두 씬 같게 1e-2). 프레임마다 [FEM 뉴턴] 줄 + fem.jsonl (반복수·잔차·선탐색·시간), tqdm "FEM 롤아웃".
 #   정답 궤적 = 그 형상-물성의 기존 평가 궤적 (lego L000 = one/L000 80 프레임, ficus = lbours/ficus_v0 F_pg_v0 125 프레임), 같은 초기 조건.
 #   오차 = 롤아웃 [롤아웃] 줄의 평균 % (기존 실행과 같은 지표, 고정 상수 EXT 정규화) -> err_fem.txt, 기존 실행 값과 나란히 err_cmp.txt.
 #   영상 = 3DGS 알파블렌딩 (lb_render) 정답 | FEM 나란히, 프레임 번호·한국어 라벨 -> cmp_<씬>.mp4.
@@ -26,7 +26,7 @@ case $S in
          FLOOR="--bc_level node --bc_mode project --bc_softplus 0.01 --bc_stick 0.01 --bc_stick_xn"; NH=0.028284; PGF=""; TOL0=1e-2 ;;
   ficus) T=F_pg_v0; DATA=$W/lbours/ficus_v0/data/F_pg_v0; LEN=125; GTD=$W/lbours/ficus_v0/gt; CFG=$GTD/config.json; SHAPE=ficus
          REFJ=$W/lbours/ficus_v0/ov/OVN.json; REFERR="출력만 최적화 L-BFGS 500 (ficus_v0)=$W/lbours/ficus_v0/err_ov.txt"
-         FLOOR="--bc_level node --bc_mode project"; NH=0.056569; PGF="--cfg_bc --pg_region_density --pg_vdamp"; TOL0=1e-3 ;;
+         FLOOR="--bc_level node --bc_mode project"; NH=0.056569; PGF="--cfg_bc --pg_region_density --pg_vdamp"; TOL0=1e-2 ;;
   *) echo "[오류] 씬 $S"; exit 1 ;;
 esac
 REST="--inv_barrier 0 --node_h $NH --dt_cond --dt_scale --v0_traj --det_eps 0.1 --det_w 0 --det_keep_elastic --lr 3e-4 --batch 8 --det_every 200 --pool_fill $W/lbpool/fill --pool_cfg $W/lbpool/cfg --pool_combos lego_jelly --pool_drop 0.0,0.02,0.0,1.5 --pool_frames 80 --phase2 --phys_w 1.0 --save_every 100000"
