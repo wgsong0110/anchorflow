@@ -4905,6 +4905,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                         _al *= 0.5
                     _srec.update(alpha=_al, E_new=_En if _acc else None)
                     _frec["steps"].append(_srec)
+                    print(f"      [FEM 걸음] t={t} k={_k} |p|∞/(h·EXT) {_pin:.3e} |g|/|g0| {_srec['g_rel']:.3e} CG {_nl['cg']}"
+                          f"{' 음곡률' if _nl['neg'] else ''} α {_al:.3g} E {_Ec:.6e} -> {_En:.6e} {time.time() - _tf0:.0f} s", flush=True)
                     if not _acc:
                         with torch.no_grad():
                             _z[:, :3] = _zc

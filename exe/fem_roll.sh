@@ -60,15 +60,21 @@ if [ ! -f $O/roll_fem.pt ]; then
   echo "[실행] GPU$G $(date) 커밋 $C 단계 $STAGE" >> $U/FEM_${SU}_LAUNCHED; up
   ( # 기존 출력만 최적화 실행과 인자 대조 (OVN.json 이 생기면 바로)
     for i in $(seq 1 120); do [ -f $O/fem/OVN.json ] && break; sleep 5; done
-    python - $REFJ $O/fem/OVN.json <<'PY' > $O/args_vs_ref.txt 2>&1
+    python - $REFJ $O/fem/OVN.json "$ARGS" <<'PY' > $O/args_vs_ref.txt 2>&1
 import sys, json
-a, b = (json.load(open(p))["args"] for p in sys.argv[1:])
+a, b = (json.load(open(p))["args"] for p in sys.argv[1:3])
+given = set(sys.argv[3].split())
 ok = {"out", "ov_obj", "net_inertial", "eval_len"}
 d = {k: (a.get(k), b.get(k)) for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k)}
+# 기준 실행 뒤에 생긴 인자: 기준 json 에 키가 없고 이번 명령줄에도 안 줬으면 기본값이다 (계산 경로 그대로)
+new = {k for k in d if k not in a and f"--{k}" not in given}
 print(f"[인자 대조] 기준 {sys.argv[1]} vs {sys.argv[2]}")
 for k, (x, y) in d.items():
-    print(f"  {k}: {x!r} -> {y!r}" + ("" if k in ok else "   <-- 예상 밖"))
-print("ARGS_OK" if set(d) <= ok else "ARGS_UNEXPECTED")
+    if k not in new:
+        print(f"  {k}: {x!r} -> {y!r}" + ("" if k in ok else "   <-- 예상 밖"))
+print(f"  (기준 실행 뒤 생긴 인자 {len(new)} 개는 명령줄에 없어 기본값: {', '.join(sorted(new))})")
+bad = set(d) - ok - new
+print("ARGS_OK" if not bad else f"ARGS_UNEXPECTED {sorted(bad)}")
 PY
     cat $O/args_vs_ref.txt ) & AC=$!
   env $ENVS CUDA_VISIBLE_DEVICES=$G python -u exe/train_deform.py $ARGS < /dev/null > $O/v_fem.log 2>&1
