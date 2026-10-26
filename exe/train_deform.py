@@ -2792,6 +2792,7 @@ if a.pool:
 SEQ = dict(t=0, it=0, prev=None, err=[], iters=[], capped=0, traj=[])
 _DIAG, _DIAG_I = [], [0]
 _GATE_LOG, _GATE_N = [], [0, 0]
+_POOL_OBS = {}                                               # 풀 관찰 (교체율: 직전 uid 집합)
 _OVREF = {}                                                  # --ov_ref 기준해 (위치·F·목적함수)
 _LGV = {"eta": None, "T": None}                              # AF_OV_LANGEVIN: 프레임 사이에 이어 쓰는 MALA 걸음 크기
 _MINSM = {}                                                  # AF_OV_MIN_MULTI: 궤적 태그 -> 상태별 최솟값
@@ -3924,6 +3925,28 @@ for it in pbar:
                         _stk = [q.get("stuck", 0) for q in POOL.items if q is not None] or [0]
                         TBW.add_scalar("풀/정체_최대", max(_stk), it)
                         TBW.add_scalar("풀/정체_평균", float(np.mean(_stk)), it)
+                        # 관찰용 (사용자 10-26): 정체 중앙·100 이상 비율, 새 상태 입장/거부 누적, 풀 안 상태 교체율 (학습에 영향 없음)
+                        TBW.add_scalar("풀/정체_중앙", float(np.median(_stk)), it)
+                        TBW.add_scalar("풀/정체100이상_비율", float(np.mean(np.asarray(_stk) >= 100)), it)
+                        TBW.add_scalar("풀/신규입장누적", getattr(POOL, "n_admit", 0), it)
+                        TBW.add_scalar("풀/신규거부누적", getattr(POOL, "n_reject", 0), it)
+                        _uids = {q["uid"] for q in POOL.items if q is not None and "uid" in q}
+                        if _uids and it % 100 == 0:
+                            _pu = _POOL_OBS.get("uids")
+                            if _pu:
+                                TBW.add_scalar("풀/교체율_100반복", 1.0 - len(_uids & _pu) / len(_pu), it)
+                            _POOL_OBS["uids"] = _uids
+                        if it % 200 == 0:
+                            TBW.add_histogram("풀분포/정체", np.asarray(_stk, dtype=np.float64), it)
+                        if it % 500 == 0:
+                            _ag = np.asarray([q.get("age", 0) for q in POOL.items if q is not None] or [0])
+                            _p5 = _POOL_OBS.get("uids500")
+                            _rep = (1.0 - len(_uids & _p5) / len(_p5)) if (_p5 and _uids) else float("nan")
+                            _POOL_OBS["uids500"] = _uids
+                            print(f"  [풀 상태 {it}] 크기 {len(_ag)}/{POOL.size}  나이 평균 {_ag.mean():.1f} 중앙 {np.median(_ag):.0f} 최대 {_ag.max()}  "
+                                  f"정체 평균 {np.mean(_stk):.1f} 중앙 {np.median(_stk):.0f} 최대 {max(_stk)} (100 이상 {100 * np.mean(np.asarray(_stk) >= 100):.0f}%)  "
+                                  f"교체율(500 반복) {100 * _rep:.0f}%  신규 입장 {getattr(POOL, 'n_admit', 0)} 거부 {getattr(POOL, 'n_reject', 0)}  "
+                                  f"무작위폐기 {getattr(POOL, 'n_rdrop', 0)}", flush=True)
                     if it % 200 == 0 and len(_gr):
                         TBW.add_histogram("게이트분포/출력잔차", np.log10(np.maximum(_gr, 1e-12)), it)
                     _GATE_LOG.clear(); _GATE_N[0] = _GATE_N[1] = 0

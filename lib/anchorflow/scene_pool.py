@@ -239,6 +239,7 @@ class StatePool:
         return dict(items=items, n_drop=self.n_drop, n_keep=self.n_keep,
                     n_rdrop=getattr(self, "n_rdrop", 0), n_expire=getattr(self, "n_expire", 0),
                     n_stuckdrop=getattr(self, "n_stuckdrop", 0),
+                    n_admit=getattr(self, "n_admit", 0), n_reject=getattr(self, "n_reject", 0),
                     n_replan=self.n_replan, fresh_res=list(self.fresh_res),
                     tags=[t for t, _ in self.scenes])
 
@@ -268,6 +269,7 @@ class StatePool:
         self.n_replan = int(d.get("n_replan", 0))
         self.n_rdrop = int(d.get("n_rdrop", 0)); self.n_expire = int(d.get("n_expire", 0))
         self.n_stuckdrop = int(d.get("n_stuckdrop", 0))
+        self.n_admit = int(d.get("n_admit", 0)); self.n_reject = int(d.get("n_reject", 0))
         self.fresh_res = list(d.get("fresh_res") or [])
         return len(self.items), n_skip
 
@@ -412,8 +414,11 @@ class StatePool:
             self.items[slot] = st
         elif len(self.items) < self.size:
             self.items.append(st)
-        elif self.tracer is not None:
-            self.tracer.on_drop(st, "신규_풀가득")     # 풀이 차 있어 새 상태가 들어가지 못했다
+            self.n_admit = getattr(self, "n_admit", 0) + 1          # 새 상태가 풀에 들어감 (관찰용 집계)
+        else:
+            self.n_reject = getattr(self, "n_reject", 0) + 1        # 풀이 차 있어 새 상태가 못 들어감 (관찰용 집계)
+            if self.tracer is not None:
+                self.tracer.on_drop(st, "신규_풀가득")
         return True
 
     def put_back(self, slot, st, res, prev=None, dt_frac=1.0):
