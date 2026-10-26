@@ -40,7 +40,7 @@ esac
 REST="--inv_barrier 0 --node_h $NH --dt_cond --dt_scale --v0_traj --det_eps 0.1 --det_w 0 --det_keep_elastic --lr 3e-4 --batch 8 --det_every 200 --pool_fill $W/lbpool/fill --pool_cfg $W/lbpool/cfg --pool_combos lego_jelly --pool_drop 0.0,0.02,0.0,1.5 --pool_frames 80 --phase2 --phys_w 1.0 --save_every 100000"
 OV="--out_var --ov_init predict --ov_roll 500 --ov_opt lbfgs --ov_vars out --ov_obj newton"
 FEMENV="AF_FEM_TOL=${FEM_TOL:-$TOL0} AF_OV_NEWTON_STEPS=${FEM_STEPS:-100} AF_OV_NEWTON_DAMP=0 AF_OV_NEWTON_CG=${FEM_CG:-200}"
-[ $SOLV = pcg ] && FEMENV="$FEMENV AF_FEM_SOLVER=pcg AF_FEM_ASM_CHECK=${FEM_ASM_CHECK:-1} AF_FEM_PCG_MAX=${FEM_PCG_MAX:-2000} AF_FEM_PCG_RTOL=${FEM_PCG_RTOL:-1e-6} AF_FEM_EIG_FLOOR=${FEM_EIG_FLOOR:-0} AF_FEM_LM=${FEM_LM:-1} AF_FEM_LM_MUMIN=${FEM_LM_MUMIN:-0.1}${FEM_DIAG:+ AF_FEM_DIAG=1}"
+[ $SOLV = pcg ] && FEMENV="$FEMENV AF_FEM_SOLVER=pcg AF_FEM_ASM_CHECK=${FEM_ASM_CHECK:-1} AF_FEM_PCG_MAX=${FEM_PCG_MAX:-2000} AF_FEM_PCG_RTOL=${FEM_PCG_RTOL:-1e-6} AF_FEM_EIG_FLOOR=${FEM_EIG_FLOOR:-0} AF_FEM_LM=${FEM_LM:-1} AF_FEM_LM_MUMIN=${FEM_LM_MUMIN:-0.1} AF_FEM_EIG_PROJ=${FEM_EIG_PROJ:-clamp}${FEM_DIAG:+ AF_FEM_DIAG=1}"
 case $STAGE in test) O=$U/test_$C; L=1 ;; short) O=$U/short_$C${FEM_TAG:-}; L=${FEM_SHORT:?short 단계는 FEM_SHORT 프레임 수} ;; full) O=$U/run; L=$LEN ;; *) echo "[오류] 단계 $STAGE"; exit 1 ;; esac
 mkdir -p $O
 up(){ rclone copy $U $R -q; }

@@ -5815,7 +5815,11 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     # 사면체는 접선 곡률이 0 이라 투영 H 가 특이해져 PCG 방향에 거대한 성분이 생긴다 -- 그것을 막는 바닥. 에너지는 그대로
     _efl = float(os.environ.get("AF_FEM_EIG_FLOOR", "0") or 0.0)
     _elo = (_efl * _ew.abs().amax(1, keepdim=True)) if _efl > 0 else torch.zeros_like(_ew[:, :1])
-    He = (_eV * torch.maximum(_ew, _elo).unsqueeze(1)) @ _eV.transpose(1, 2)
+    # AF_FEM_EIG_PROJ (기본 clamp): clamp = 음 고유값을 0(바닥)으로, abs = |λ| 로 뒤집는다 (방향만; 음곡률 방향 걸음이 무한대로 가지 않는다)
+    _eproj = os.environ.get("AF_FEM_EIG_PROJ", "clamp")
+    if _eproj not in ("clamp", "abs"):
+        raise SystemExit(f"AF_FEM_EIG_PROJ={_eproj}: clamp 또는 abs")
+    He = (_eV * torch.maximum(_ew.abs() if _eproj == "abs" else _ew, _elo).unsqueeze(1)) @ _eV.transpose(1, 2)
     del _eV, _ew
     # 블록 야코비: 노드 3x3 대각 블록
     _ar = torch.arange(4, device=dev)
