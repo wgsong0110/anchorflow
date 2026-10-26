@@ -58,9 +58,13 @@ echo "[명령] env $ENVS CUDA_VISIBLE_DEVICES=$G python -u exe/train_deform.py $
 if [ ! -f $O/roll_fem.pt ]; then
   ts=$(date +%m%d_%H%M); for f in v_fem.log fem.jsonl inv_fem.jsonl; do [ -f $O/$f ] && mv $O/$f $O/$f.partial_$ts; done
   echo "[실행] GPU$G $(date) 커밋 $C 단계 $STAGE" >> $U/FEM_${SU}_LAUNCHED; up
-  ( # 기존 출력만 최적화 실행과 인자 대조 (OVN.json 이 생기면 바로)
-    for i in $(seq 1 120); do [ -f $O/fem/OVN.json ] && break; sleep 5; done
-    python - $REFJ $O/fem/OVN.json "$ARGS" <<'PY' > $O/args_vs_ref.txt 2>&1
+  env $ENVS CUDA_VISIBLE_DEVICES=$G python -u exe/train_deform.py $ARGS < /dev/null > $O/v_fem.log 2>&1
+  grep -a "롤아웃\] $T\|Traceback\|Error" $O/v_fem.log | tail -4 | cut -c1-300
+  [ -f $O/roll_fem.pt ] || fail "롤아웃 실패 $(grep -a 'Traceback\|Error' $O/v_fem.log | tail -2)"
+  rclone copyto $O/roll_fem.pt $R/${O#$U/}/roll_fem.pt -q
+fi
+# 기존 출력만 최적화 실행과 인자 대조 (OVN.json 은 실행이 끝날 때 쓰인다)
+python - $REFJ $O/fem/OVN.json "$ARGS" <<'PY' > $O/args_vs_ref.txt 2>&1
 import sys, json
 a, b = (json.load(open(p))["args"] for p in sys.argv[1:3])
 given = set(sys.argv[3].split())
@@ -76,13 +80,7 @@ print(f"  (기준 실행 뒤 생긴 인자 {len(new)} 개는 명령줄에 없어
 bad = set(d) - ok - new
 print("ARGS_OK" if not bad else f"ARGS_UNEXPECTED {sorted(bad)}")
 PY
-    cat $O/args_vs_ref.txt ) & AC=$!
-  env $ENVS CUDA_VISIBLE_DEVICES=$G python -u exe/train_deform.py $ARGS < /dev/null > $O/v_fem.log 2>&1
-  wait $AC
-  grep -a "롤아웃\] $T\|Traceback\|Error" $O/v_fem.log | tail -4 | cut -c1-300
-  [ -f $O/roll_fem.pt ] || fail "롤아웃 실패 $(grep -a 'Traceback\|Error' $O/v_fem.log | tail -2)"
-  rclone copyto $O/roll_fem.pt $R/${O#$U/}/roll_fem.pt -q
-fi
+cat $O/args_vs_ref.txt
 grep -q ARGS_OK $O/args_vs_ref.txt || echo "[경고] 기준 인자와 예상 밖 차이 -- $O/args_vs_ref.txt"
 echo "fem $(grep -a "롤아웃\] $T" $O/v_fem.log | tail -1 | grep -o '평균 [0-9.]*%')" > $O/err_fem.txt; cat $O/err_fem.txt
 python - $O/fem.jsonl <<'PY' | tee $O/conv_summary.txt
