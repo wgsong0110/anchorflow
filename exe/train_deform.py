@@ -304,13 +304,15 @@ ap.add_argument("--probe_every", type=int, default=0,
 ap.add_argument("--probe_frames", default="0,5,10,20,40,60,79")
 ap.add_argument("--pe_only", type=int, default=0,
                 help="대조군: 노드 입력을 노드 위치·프레임 번호의 다주파수 인코딩(sin/cos(2^k π ·), k<K)만으로 (물리 특징 없음)")
-ap.add_argument("--interp", choices=["bary", "bspline", "nodeavg", "c1wf"], default="bary",
+ap.add_argument("--interp", choices=["bary", "bspline", "nodeavg", "c1wf", "bspline2", "bspline3"], default="bary",
                 help="노드 변위 -> 입자 변위·한 스텝 야코비안 보간. bary=Kuhn 사면체 barycentric (기본; 야코비안이 사면체마다 "
                      "상수, 경계에서 불연속), bspline=같은 노드 격자의 2 차 B-스플라인 27 노드 (MPM 가중치, C1; 변위·야코비안 "
                      "같은 보간), nodeavg=변위는 barycentric 그대로, 야코비안만 사면체별 grad u 를 노드에 부피 가중 평균한 뒤 "
                      "barycentric 보간 (F 누적·탄성 에너지 모두 이 값), c1wf=Worsey–Farin C1 3 차 매크로 요소 (사면체를 "
                      "12 조각, 노드 출력 54 채널 = 변위 3 + 격자좌표 기울기 9 + 변 가로 미분 42; 입자 F 는 요소 다항식의 실제 "
-                     "기울기, lib/anchorflow/wf.py)")
+                     "기울기, lib/anchorflow/wf.py); bspline2|bspline3=정육면체 노드 격자 텐서곱 B-스플라인 FFD (사용자 10-26, "
+                     "lib/anchorflow/bspfd.py): 2 차 27 노드(+ --cell_barrier 면 입자와 점유 조각 표본점 8 개에 같은 det F_step 장벽) / "
+                     "3 차 64 노드(축 이웃 노드 변위 차 상한 0.48Δ 매끄러운 사상 -> 공간 전체 det>0); 화분(cuboid) 안 입자의 지지 노드 전부 구속")
 ap.add_argument("--c1_barrier", type=float, default=0.0,
                 help="--interp c1wf: 점유 사면체 모든 조각의 det(I+∇u) 6 차 Bernstein 계수에 진짜 로그 장벽 "
                      "Σ (V_조각/84) κ μ b(c), b(c)=-(c-ĉ)² ln(c/ĉ) (c<ĉ), c<=0 이면 +inf (연장 없음). 0 이면 끔. "
@@ -701,6 +703,7 @@ from anchorflow import phys_resid                                # noqa: E402
 from anchorflow import simplex as SX                            # noqa: E402
 from anchorflow import localrot as _LR                           # noqa: E402
 from anchorflow import wf as WF                                 # noqa: E402
+from anchorflow import bspfd as _BF                              # noqa: E402
 from anchorflow.feas_lbfgs import FeasLBFGS                     # noqa: E402
 from anchorflow import midpoint as MIDP                          # noqa: E402
 from anchorflow import simplex_gnn as _SGM                      # noqa: E402
@@ -1360,6 +1363,9 @@ def _cfg_bc_sel(d, gsel, dev, dtype):
     return d[key]
 
 
+_BSP_PIN_INFO = []
+
+
 def cfg_bc_nodes(d, gsel, x, npos, rows, lam, mass, now):
     """--cfg_bc: 시각 now 에 묶이는 노드와 속도 -> (mask[M] bool, vel[M,3]) 또는 (None, None)."""
     M = npos.shape[0]
@@ -1392,6 +1398,20 @@ def cfg_bc_nodes(d, gsel, x, npos, rows, lam, mass, now):
         q = torch.tensor(bc["point"], device=dev, dtype=dt_) + (now - t0_) * vb    # PG 는 상자를 dt·v 씩 옮긴다
         sz = torch.tensor(bc["size"], device=dev, dtype=dt_)
         nm = ((npos - q).abs() < sz).all(-1)
+        if a.interp in ("bspline2", "bspline3"):
+            # B-스플라인: 상자 안 노드만 묶으면 상자 안 입자가 상자 밖 지지 노드 때문에 움직인다 -> 상자 안 입자(현재 위치)의
+            # 지지 노드(가중 > 0) 전부를 같은 속도로 묶는다 (상자 안 입자는 정확히 명령대로)
+            _pin_p = ((x - q).abs() < sz).all(-1)
+            _nm0 = nm
+            nm = nm.clone()
+            nm[rows[_pin_p][lam[_pin_p] > 0]] = True
+            if not _BSP_PIN_INFO:
+                _allp = nm[rows].all(1)
+                _BSP_PIN_INFO.append(1)
+                print(f"[B-스플라인 구속] 상자 안 노드 {int(_nm0.sum())} -> 상자 안 입자 지지까지 {int(nm.sum())} (활성 {M}); "
+                      f"상자 안 입자 {int(_pin_p.sum())} 전부 지지 구속 {bool(_allp[_pin_p].all())}; "
+                      f"상자 밖인데 지지 전부 구속(정확히 고정) {int((_allp & ~_pin_p).sum())}, "
+                      f"상자 밖 일부 구속 {int((nm[rows].any(1) & ~_allp & ~_pin_p).sum())}", flush=True)
         vel = torch.where(nm.unsqueeze(-1), vb.expand(M, 3), vel); msk = msk | nm; hit = True
     for bc in (d["cfg"].get("boundary_conditions") or []):
         if bc.get("type") == "cuboid" and int(bc.get("reset", 0)) == 1:
@@ -4672,6 +4692,16 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
             _mu1, _ = phys_resid.lame(cfg["E"], cfg["nu"])
             _mu1 = float(_mu1.float().mean()) if torch.is_tensor(_mu1) else float(_mu1)
             E = E + WF.barrier_energy(_c1c, _c1v, a.c1_barrier * _mu1, a.c1_jhat) / nrm
+        if a.interp == "bspline2" and a.cell_barrier > 0:
+            # --interp bspline2 (A): 입자 det F_step 장벽(--cell_barrier, pts_ip_energy 의 _cell_pen) 에 더해 점유 조각 표본점에도
+            # 같은 장벽 κ μ b(det) (가중 = 조각 부피/8) -- 입자 사이 빈 곳까지
+            if DM.BSP_LAST[0] is None:
+                raise SystemExit("--interp bspline2: advance 가 표본점 det 를 남기지 않았다")
+            _mu2, _ = phys_resid.lame(cfg["E"], cfg["nu"])
+            _mu2 = float(_mu2.float().mean()) if torch.is_tensor(_mu2) else float(_mu2)
+            _bs = DM.BSP_LAST[0]
+            E = E + (_bs["w"].to(E.dtype) * (a.cell_barrier * _mu2) * phys_resid._barrier_b(
+                _bs["det"].to(E.dtype), a.cell_jhat, ext_kind=a.cell_ext)).sum() / nrm
         _EIP_LAST[0] = E.detach()
         if a.ov_vars == "net" and (a.ov_obj in ("nodeov", "nodestar") or (a.ov_obj == "nodealt" and _ALT["phase"] == "adam")):   # 노드 출력 u* (nodeov: 덤프, nodestar: 이 상태의 E* 해) 를 노드 질량 가중 L2 로
             _NT_ = _NODEOV_TGT[0]
@@ -8391,6 +8421,12 @@ def _rollout(d, t0, L, gsel=None):
                     _, _, _dpI, _wtI, _loI, _laI, _nnI, _uqI = DM.C1_LAST[0]
                     _ncl, _npl = WF.curl_check(_dpI.detach(), _wtI, _loI, _laI, _nnI, _uqI)
                     _recI.update(c1_curled=_ncl, c1_curl_pairs=_npl)
+                if a.interp in ("bspline2", "bspline3") and DM.BSP_LAST[0] is not None:   # 표본점 det F_step·(B) 차 상한 통계
+                    _bI2 = DM.BSP_LAST[0]
+                    _recI.update(smp_det_min=float(_bI2["det"].min()), smp_det_neg=int((_bI2["det"] <= 0).sum()),
+                                 smp_n=int(_bI2["det"].numel()))
+                    if _bI2["cap"] is not None:
+                        _recI["cap"] = dict(zip(("dV_max", "m_smooth", "s", "dU_max"), [float(q) for q in _bI2["cap"].cpu()]))
                 if _MID_STAT[0] is not None:            # --integrator midpoint: 외삽 사상 뒤집힘·경계조건 (마지막 서브스텝)
                     _recI.update(_MID_STAT[0])
                 _oI = _OV_CUR_OPT[0]

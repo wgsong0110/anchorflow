@@ -33,6 +33,7 @@ from .deform import bc_features
 from .simplex_gnn import SimplexGNN, node_moments, scatter_to_nodes
 from .skin import gregory_skin
 from . import localrot as LR
+from . import bspfd as BF
 
 FCAP = float(os.environ.get("AF_FEAT_CAP", "50"))   # 특징 상한 (발산 방지)
 N_MAT_FULL = 13      # logE, nu, xi, logρ, log1p(항복), φ, 종류4, g3
@@ -250,6 +251,29 @@ def node_feats(a, cfg, X, mass, x, v, vel_scale, grid=None, off=None,
         lam = _w27.to(x.dtype)
         _aux = SX.Aux(_aux)
         _aux.bsp = _dw27.to(x.dtype)
+    elif _interp in ("bspline2", "bspline3"):
+        # **텐서곱 B-스플라인 FFD** (--interp bspline2|bspline3, 사용자 10-26; lib/anchorflow/bspfd.py): 정육면체 노드 격자
+        # (기존 노드) 위 2 차(27 노드) / 3 차(64 노드). 활성 노드 = 사면체 꼭짓점 ∪ 입자 B-스플라인 지지 전부. rows/lam 을
+        # B-스플라인 열로 바꿔 관성 예측자·노드 질량·손잡이 판정·노드 특징이 모두 N_i 가중을 쓴다. 간선은 사면체에서.
+        _ord = 2 if _interp == "bspline2" else 3
+        _fb, _wb, _dwb = BF.weights(x, lo, lat, nn, _ord)
+        _uq_tet = torch.unique(idx.reshape(-1))
+        uniq = torch.unique(torch.cat([idx.reshape(-1), _fb.reshape(-1)]))
+        rows_tet = torch.searchsorted(uniq, idx)
+        rows = torch.searchsorted(uniq, _fb)
+        lam = _wb.to(x.dtype)
+        _aux = SX.Aux(_aux)
+        _aux.bsp = _dwb.to(x.dtype)
+        _aux.smp = BF.samples(x, lo, lat, nn, _ord, uniq)            # 점유 조각 표본점 (장벽·det 기록)
+        _aux.cap = BF.axis_pairs(uniq, nn) if _ord == 3 else None     # (B) 축 이웃 쌍
+        _aux.delta = float(torch.linalg.norm(lat.A[:, 0]))
+        if not BSP_INFO:
+            BSP_INFO.append(dict(order=_ord, n_tet_nodes=int(_uq_tet.numel()), n_nodes=int(uniq.numel()),
+                                 n_piece=_aux.smp["n_piece"], n_smp=int(_aux.smp["w"].numel()),
+                                 n_pairs=(int(_aux.cap[0].numel()) if _aux.cap is not None else 0), delta=_aux.delta))
+            print(f"[B-스플라인] {_ord} 차, 활성 노드 {uniq.numel()} (사면체 꼭짓점만이면 {_uq_tet.numel()}), Δ {_aux.delta:.5f}, "
+                  f"점유 조각 {_aux.smp['n_piece']} x 표본 {BF.N_SMP_AX ** 3} = {_aux.smp['w'].numel()}"
+                  + (f", 축 이웃 쌍 {_aux.cap[0].numel()}, 차 상한 {BF.CAP_C}Δ" if _aux.cap is not None else ""), flush=True)
     elif _interp == "nodeavg":
         _aux = SX.Aux(_aux)
     elif _interp == "c1wf":
@@ -625,6 +649,8 @@ def _const_vec(vals, ref):
 
 
 PROBE = [None, None]                 # [요청 여부 "want", 격자별 탐침 텐서 목록]
+BSP_LAST = [None]                    # --interp bspline2|3: 마지막 advance 의 dict(det 표본 det [S], w [S], cap (B) 통계 [4] 또는 None)
+BSP_INFO = []                        # --interp bspline2|3: 첫 node_feats 의 노드·표본 수 (한 번 출력)
 C1_LAST = [None]                     # --interp c1wf: 마지막 advance 의 (Bernstein det 계수 [T,12,84], 조각 부피 [T,12])
 INPUT_HOOK = [None]                  # 진단용: (망 입력 특징, net) -> 바꾼 특징
 
@@ -836,6 +862,13 @@ def advance(net, a, ens, x, h, cfg, *, inertial=None, node_mask=None,
                     _lrst = _r[2]
             elif getattr(_lxk, "bsp", None) is not None:
                 # --interp bspline: 변위·야코비안 모두 같은 27 노드 2 차 B-스플라인에서 (일관)
+                # --interp bspline2|3: 같은 식 (27 / 64 노드). bspline3 은 먼저 축 이웃 변위 차 상한 사상 (bspfd.cap_map)
+                _cst = None
+                if getattr(_lxk, "cap", None) is not None:
+                    dpn_k, _cst = BF.cap_map(dpn_k, _lxk.cap, _lxk.delta,
+                                             pin=(node_mask[_k] if node_mask is not None else None))
+                if _k == 0 and getattr(_lxk, "smp", None) is not None:
+                    BSP_LAST[0] = dict(det=BF.smp_det(_lxk.smp, _latk, dpn_k), w=_lxk.smp["w"], cap=_cst)
                 _duk = SX.g2p_pre(_rwk, _lmk, dpn_k[:, :3])
                 _Jk = SX.bspline_jac_pre(_rwk, _lxk.bsp, _latk, dpn_k)
             elif getattr(_lxk, "wf", None) is not None:
