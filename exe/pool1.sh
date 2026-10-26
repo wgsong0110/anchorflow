@@ -210,7 +210,20 @@ if [ ! -f $U/trace_$C.ok ]; then
   echo "[이력 시험 주기 저장] 주기 경계 저장 줄 $NP 개 (120/20 = 6 이어야): $(grep -a "\[풀 이력\] 반복" $TT/b120.log | tail -2 | tr '\n' ' ')" | tee -a $U/trace_test.txt
   [ "$TB" = 0 ] && [ "$ND" -gt 0 ] && [ "$NS" -gt 0 ] && [ -n "$RS" ] && [ "$NP" = 6 ] || fail "이력 시험 실패 (Traceback·탈락 기록·저장 이력·이어받기·주기 저장)"
   # 문턱: 같은 설정 두 번 돌린 차이(GPU 원자 연산 비결정성, 120 반복에 1e-6~2e-5)보다 크게 -- b085da6 gnn 실측: 이력 켬 두 실행 차 1.67e-05, 켬/끔 차 1.75e-05
-  maxd "$CAB" 1e-3 && maxd "$CBC" 1e-3 || fail "이력이 학습을 바꾸거나 이어 돌리기가 다르다"
+  maxd "$CBC" 1e-3 || fail "이력이 학습을 바꾼다 (켬/끔 망 차이 1e-3 이상)"
+  if ! maxd "$CAB" 1e-3; then
+    # 전진 판정 경계 비결정성 (이어 돌리기 시험과 같은 사정): 이력 켜고 한 번에 120 을 한 번 더 돌려 그 차이와 비교
+    tr1 $TT/d 120 30 0 $TT/d120.log --pool_trace $TT/d/pool_trace $TRF
+    CBD=$(python $CMPPY $TT/b/MAIN_last.pt $TT/d/MAIN_last.pt 2>&1 | tail -1)
+    echo "[비결정성 확인] 이력 켬 한 번에 120 두 번 비교: $CBD" | tee -a $U/trace_test.txt
+    python - "$CAB" "$CBD" <<'PY_' | tee -a $U/trace_test.txt; [ "${PIPESTATUS[0]}" = 0 ] || fail "이력 켠 이어 돌리기 차이가 1e-3 이상이고 한 번에 두 번 돈 차이보다 10 배 넘게 크다"
+import re, sys
+d1 = float(re.search(r"망 파라미터 최대차 ([0-9.e+-]+)", sys.argv[1]).group(1))
+d2 = float(re.search(r"망 파라미터 최대차 ([0-9.e+-]+)", sys.argv[2]).group(1))
+print(f"[비결정성 확인] 이력 켬 이어 돈 것 vs 한 번에 {d1:.3e}, 한 번에 두 번 {d2:.3e} -> {'같은 크기 (판정 경계 비결정성)' if d1 <= 10 * d2 else '이어 돌리기 쪽이 훨씬 큼'}")
+sys.exit(0 if d1 <= 10 * d2 else 1)
+PY_
+  fi
   # 저장 이력 하나를 실제로 3DGS 로 렌더해 본다
   f=$(ls $TT/b/pool_trace/*.pt | head -1); render_trace $f $TT/b/pool_trace/vid && ls -la $TT/b/pool_trace/vid | tee -a $U/trace_test.txt || fail "이력 렌더 시험 실패"
   touch $U/trace_$C.ok; up
