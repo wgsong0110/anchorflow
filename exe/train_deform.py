@@ -3726,6 +3726,7 @@ for it in pbar:
                             _dg = q.grad.detach() - (g0 if g0 is not None else 0.0)
                             _pgs = _pgs + (_dg * _dg).sum()
                     _gate_val = float(_pgs.sqrt()) * a.batch
+                    _POOL_OBS.setdefault("pg", []).append(_gate_val)     # 관찰용: 상태별 pgrad 판정값 분포 (사용자 10-26)
                     _gate_ok = bool(_gate_val <= a.pool_gate)
                 if a.out_var and st.get("ov_opt") is not None:
                     # 망 파라미터가 아니라 **이 상태의 출력 변수**를 갱신한다
@@ -3938,6 +3939,19 @@ for it in pbar:
                             _POOL_OBS["uids"] = _uids
                         if it % 200 == 0:
                             TBW.add_histogram("풀분포/정체", np.asarray(_stk, dtype=np.float64), it)
+                        _pgv = np.asarray(_POOL_OBS.get("pg") or [], dtype=np.float64)
+                        _pgv = _pgv[np.isfinite(_pgv)]
+                        if len(_pgv):
+                            # 상태별 파라미터 기울기 노름(pgrad 판정값)의 분포: 분위수, 1e-4·1e-3 이하 비율 (지금 문턱과 무관하게 둘 다)
+                            TBW.add_scalar("게이트/pgrad_중앙", float(np.median(_pgv)), it)
+                            TBW.add_scalar("게이트/pgrad_하위10%", float(np.quantile(_pgv, 0.1)), it)
+                            TBW.add_scalar("게이트/pgrad_상위10%", float(np.quantile(_pgv, 0.9)), it)
+                            TBW.add_scalar("게이트/pgrad_1e-4이하_비율", float(np.mean(_pgv <= 1e-4)), it)
+                            TBW.add_scalar("게이트/pgrad_1e-3이하_비율", float(np.mean(_pgv <= 1e-3)), it)
+                            _POOL_OBS.setdefault("pg500", []).extend(_pgv.tolist())
+                            if it % 200 == 0:
+                                TBW.add_histogram("게이트분포/pgrad_log10", np.log10(np.maximum(_pgv, 1e-12)), it)
+                        _POOL_OBS["pg"] = []
                         if it % 500 == 0:
                             _ag = np.asarray([q.get("age", 0) for q in POOL.items if q is not None] or [0])
                             _p5 = _POOL_OBS.get("uids500")
@@ -3947,6 +3961,11 @@ for it in pbar:
                                   f"정체 평균 {np.mean(_stk):.1f} 중앙 {np.median(_stk):.0f} 최대 {max(_stk)} (100 이상 {100 * np.mean(np.asarray(_stk) >= 100):.0f}%)  "
                                   f"교체율(500 반복) {100 * _rep:.0f}%  신규 입장 {getattr(POOL, 'n_admit', 0)} 거부 {getattr(POOL, 'n_reject', 0)}  "
                                   f"무작위폐기 {getattr(POOL, 'n_rdrop', 0)}", flush=True)
+                            _q = np.asarray(_POOL_OBS.get("pg500") or [float("nan")])
+                            print(f"  [pgrad {it}] 최근 500 반복 {len(_q)} 표본: 10/50/90% {np.nanquantile(_q, 0.1):.2e}/{np.nanquantile(_q, 0.5):.2e}/"
+                                  f"{np.nanquantile(_q, 0.9):.2e}  1e-4 이하 {100 * np.mean(_q <= 1e-4):.1f}%  1e-3 이하 {100 * np.mean(_q <= 1e-3):.1f}%  "
+                                  f"(문턱 {a.pool_gate:g})", flush=True)
+                            _POOL_OBS["pg500"] = []
                     if it % 200 == 0 and len(_gr):
                         TBW.add_histogram("게이트분포/출력잔차", np.log10(np.maximum(_gr, 1e-12)), it)
                     _GATE_LOG.clear(); _GATE_N[0] = _GATE_N[1] = 0
