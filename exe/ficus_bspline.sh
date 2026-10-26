@@ -205,7 +205,7 @@ if [ ! -f $LK/LOCKED_BSP_DONE ]; then
   CUDA_VISIBLE_DEVICES=$G python -u exe/cell_locked_energy.py --config $GTD/config.json --vol_pt $PT --node_h 0.056569 --out $LK \
     --traj "gt:정답 (PG):#222222:h5:$TOPO" --traj "lin:선형:#d9480f:dump:$O0/roll_ov.pt" \
     --traj "gfix:수정 Gregory:#1c7ed6:dump:$OGF/run/roll_ov.pt" --traj "rot:회전판:#2b8a3e:dump:$OLR/run/roll_ov.pt" \
-    --traj "bsp2:A 2차+장벽:#e8590c:dump:$OB/A/roll_ov.pt" --traj "bsp3:B 3차+차 상한:#7048e8:dump:$OB/B/roll_ov.pt" \
+    --traj "bsp2:A 2차+장벽:#e8590c:dump_nonode:$OB/A/roll_ov.pt" --traj "bsp3:B 3차+차 상한:#7048e8:dump_nonode:$OB/B/roll_ov.pt" \
     --energy_json $EG/energy.json --energy_keys "gt=정답 (PG),lin=선형,gfix=수정 Gregory,rot=회전판,bsp2=A,bsp3=B" \
     --fig $LK/ficus_bspline_locked.png --table $LK/ficus_bspline_locked.md < /dev/null > $LK/run.log 2>&1
   grep -q LOCKED_CALC_DONE $LK/run.log || fail "잠긴 에너지 실패 $(grep -av 'it/s\|s/it' $LK/run.log | tail -3)"
