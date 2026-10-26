@@ -172,13 +172,16 @@ class StatePool:
     def __init__(self, scenes, size, n_ctrl, radius, dev, gen,
                  frames=60, thresh=0.05, window=30,
                  domain=2.0, margin=0.15, start_mid=False, keep_prob=0.5,
-                 acc=2.4, vmax=0.6, n_side=4, zbias=0.0, drop=None, data=None, init=None):
+                 acc=2.4, vmax=0.6, n_side=4, zbias=0.0, drop=None, data=None, init=None, init_frames=None):
         self.scenes = scenes
         # 데이터 모드: 학습 궤적 [(x[T,N,3], v[T,N,3], F[T,N,3,3]) ...] (mmap) 에서 (궤적, 프레임) 을 무작위로 뽑아
         # 새 상태로 쓴다. 다른 학습 기반 방법과 같은 학습 궤적을 쓰는 비교용. None 이면 손잡이/낙하 모드.
         self.data = data
         # 고정 초기 상태 (x0, v0, F0): 새 상태를 늘 이 하나로 -- 한 궤적 과적합 실험용
         self.init = init
+        # 무작위 시작 프레임 (--pool_init_frames rand, 10-26): (X[T,N,3], V[T,N,3], F[T,N,3,3]) CPU -- 새 상태마다 프레임 t 를 균등하게 뽑아
+        # 그 프레임 상태 그대로 시작, st["init_frame"] = t. None 이면 init (고정) 또는 다른 모드
+        self.init_frames = init_frames
         # 낙하 모드 (학습 비교 공통 데이터셋과 같은 초기 조건 분포, exe/lb_gen.py):
         # dict(h=(h0,h1), v=(v0,v1), zf=바닥 z, margin=상자 여유). None 이면 손잡이 모드.
         self.drop = drop
@@ -235,7 +238,8 @@ class StatePool:
                 v=q["v"].detach().cpu(), F=q["F"].detach().cpu(),
                 p=(q["p"].detach().cpu() if torch.is_tensor(q["p"]) else None),
                 plan=q["plan"].pack(), elapsed=float(q["elapsed"]),
-                hist=list(q["hist"]), age=int(q["age"]), stuck=int(q.get("stuck", 0))))
+                hist=list(q["hist"]), age=int(q["age"]), stuck=int(q.get("stuck", 0)),
+                **({"init_frame": int(q["init_frame"])} if "init_frame" in q else {})))
         return dict(items=items, n_drop=self.n_drop, n_keep=self.n_keep,
                     n_rdrop=getattr(self, "n_rdrop", 0), n_expire=getattr(self, "n_expire", 0),
                     n_stuckdrop=getattr(self, "n_stuckdrop", 0),
@@ -261,7 +265,8 @@ class StatePool:
                 p=(q["p"].to(self.dev) if torch.is_tensor(q["p"]) else None),
                 plan=HandlePlan.unpack(q["plan"], self.dev),
                 elapsed=float(q["elapsed"]), hist=list(q["hist"]),
-                age=int(q["age"]), stuck=int(q.get("stuck", 0))))
+                age=int(q["age"]), stuck=int(q.get("stuck", 0)),
+                **({"init_frame": int(q["init_frame"])} if "init_frame" in q else {})))
             if self.tracer is not None:
                 self.tracer.on_load(self.items[-1])
         self.n_drop = int(d.get("n_drop", 0))
@@ -282,7 +287,12 @@ class StatePool:
         x = sc["x0"].clone()
         v = torch.zeros_like(x)
         F0 = None
-        if self.init is not None:
+        t_init = None
+        if self.init_frames is not None:
+            X_, V_, F_ = self.init_frames
+            t_init = int(torch.randint(X_.shape[0], (1,), generator=self.gen, device=self.dev))
+            x, v, F0 = (q[t_init].to(self.dev).float().contiguous() for q in (X_, V_, F_))
+        elif self.init is not None:
             x, v, F0 = (q.clone() for q in self.init)
         elif self.data is not None:
             k = int(torch.randint(len(self.data), (1,), generator=self.gen, device=self.dev))
@@ -310,9 +320,11 @@ class StatePool:
                   F=(F0 if F0 is not None else torch.eye(3, device=self.dev).expand(
                       x.shape[0], 3, 3).contiguous()),
                   p=None, plan=plan, elapsed=el, hist=[], age=0)
+        if t_init is not None:
+            st["init_frame"] = t_init
         if self.tracer is not None:
             self.tracer.on_fresh(st)
-            if self.tracer.keep_start:
+            if self.tracer.keep_start and t_init is None:   # 궤적 프레임 시작이면 F 가 이미 그 궤적 기준 -- 렌더 회전은 궤적 meta R 그대로
                 # 시작 자세의 회전 (렌더용 F_render = F·R, lb_gen 의 meta R 과 같은 뜻: x = R(x_rest - c) + t) -- 정지 자세에 Kabsch
                 A_ = sc["x0"].float() - sc["x0"].float().mean(0)
                 B_ = st["x"].float() - st["x"].float().mean(0)

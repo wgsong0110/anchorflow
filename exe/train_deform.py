@@ -512,6 +512,10 @@ ap.add_argument("--pool_start_k", type=int, default=0,
                 help="낙하 모드에서 새 시작 상태를 고정 시드로 이 개수만큼 미리 뽑아 두고 그중에서만 고른다 (1 = 한 상태로 고정, 0 = 매번 새로)")
 ap.add_argument("--pool_init_traj", default="",
                 help="이 궤적 .pt 의 0 프레임 상태(x, v, F)를 풀의 유일한 새 상태로 쓴다 -- 한 궤적 과적합 실험")
+ap.add_argument("--pool_init_frames", default="fixed", choices=("fixed", "rand"),
+                help="--pool_init_traj 의 어느 프레임으로 새 상태를 시작할지: fixed = --pool_init_frame 하나 고정 (기본), "
+                     "rand = 새 상태마다 그 궤적의 전 프레임 중 균등 무작위 (x, v, F 그 프레임 그대로; 풀 난수 생성기로 뽑음). "
+                     "뽑힌 프레임은 상태의 init_frame 으로 들고 다니며 --pool_trace 의 fresh.jsonl·drops.jsonl·이력 meta 에 남는다 (사용자 10-26)")
 ap.add_argument("--pool_data", default="",
                 help="학습 궤적 .pt 디렉토리 (lb_to_pt.py). 새 상태를 이 궤적들의 무작위 (궤적, 프레임) 에서 뽑는다 -- "
                      "다른 학습 기반 방법과 같은 학습 궤적을 쓰는 설정. --pool_fresh 1 --pool_size 0 이면 매 배치가 데이터 상태뿐")
@@ -2642,7 +2646,8 @@ _R2_UP = {"lock": threading.Lock(), "running": False, "pending": False}
 
 def _r2_upload_loop():
     while True:
-        subprocess.run(f"rclone copy {a.out} {a.r2} --include '*.pt' --include '*.json'",
+        # AF_R2_EXCLUDE: 앞에 붙일 rclone 제외 규칙 (첫 일치가 이긴다) -- 예: pool1.sh s32s 의 "--exclude 'pool_trace/drop_*.pt'" (풀 이력 용량)
+        subprocess.run(f"rclone copy {a.out} {a.r2} {os.environ.get('AF_R2_EXCLUDE', '')} --include '*.pt' --include '*.json'",
                        shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with _R2_UP["lock"]:
             if not _R2_UP["pending"]:
@@ -2714,6 +2719,13 @@ if a.pool:
         _pi = torch.load(a.pool_init_traj, map_location="cpu", weights_only=False)
         _PINIT = tuple(_pi[k][int(a.pool_init_frame)].to(dev).float().contiguous() for k in ("x", "v", "F"))
         print(f"[풀] 고정 초기 상태: {a.pool_init_traj} {a.pool_init_frame} 프레임 (속도 크기 평균 {float(_PINIT[1].norm(dim=-1).mean()):.3f})", flush=True)
+    _PFRAMES = None
+    if a.pool_init_frames == "rand":
+        if not a.pool_init_traj:
+            raise SystemExit("--pool_init_frames rand 는 --pool_init_traj 가 필요하다")
+        _PFRAMES = tuple(_pi[k].float().contiguous() for k in ("x", "v", "F"))
+        print(f"[풀] 무작위 시작 프레임: {a.pool_init_traj} 의 0~{_PFRAMES[0].shape[0] - 1} 프레임 ({_PFRAMES[0].shape[0]} 개) 중 "
+              f"새 상태마다 균등 무작위 (x, v, F 그 프레임 그대로)", flush=True)
     _PDATA = None
     if a.pool_data:
         _PDATA = []
@@ -2766,11 +2778,12 @@ if a.pool:
                      domain=_gl0, margin=_R + 0.15,
                      start_mid=a.pool_start_mid, keep_prob=a.pool_keep,
                      acc=a.ctrl_acc, vmax=a.ctrl_vmax, zbias=a.ctrl_zbias,
-                     n_side=a.pool_targets, drop=_DROP, data=_PDATA, init=_PINIT)
+                     n_side=a.pool_targets, drop=_DROP, data=_PDATA, init=_PINIT,
+                     init_frames=_PFRAMES)
     if a.pool_trace and not a.infer:
         from anchorflow.pool_trace import PoolTracer
         POOL.tracer = PoolTracer(a.pool_trace, period=a.pool_trace_period, n_long=a.pool_trace_long, n_rand=a.pool_trace_rand,
-                                 keep_start=not a.pool_init_traj)
+                                 keep_start=(not a.pool_init_traj) or _PFRAMES is not None)
         POOL.tracer.it = int(step0)
         print(f"[풀 이력] {a.pool_trace}: 주기 {a.pool_trace_period}, 나이 상위 {a.pool_trace_long} + 무작위 {a.pool_trace_rand}, "
               f"이어받은 최대 나이 {POOL.tracer.best_age}, 반복 {step0} 부터", flush=True)

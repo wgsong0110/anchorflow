@@ -53,6 +53,7 @@ class PoolTracer:
         self.win_long = []            # (나이, 기록) 상위 n_long
         self.win_res = []             # 저수지 표본 (무작위 n_rand)
         self.win_n = 0                # 저수지에 들어온 수
+        self.win_init = []            # 이번 구간 새 상태의 시작 프레임 (--pool_init_frames rand)
 
     # ---- 풀 쪽 훅 ----
     def on_fresh(self, st):
@@ -61,6 +62,11 @@ class PoolTracer:
         st["it_born"] = int(self.it)
         st["trace"] = []
         st["trace_from"] = 0
+        if "init_frame" in st:
+            # --pool_init_frames rand: 뽑힌 시작 프레임 (정답 궤적 프레임 번호) -- 렌더 때 그 정답 프레임부터 비교
+            self.win_init.append(int(st["init_frame"]))
+            with open(os.path.join(self.dir, "fresh.jsonl"), "a") as f:
+                f.write(json.dumps(dict(it=int(self.it) + 1, uid=int(self.uid), init_frame=int(st["init_frame"]))) + "\n")
         if self.keep_start:
             st["trace_start"] = (st["x"].detach().to("cpu", torch.float16),
                                  st["F"].detach().reshape(-1, 3, 3).to("cpu", torch.float16))
@@ -94,7 +100,8 @@ class PoolTracer:
         self.n_drop_total += 1
         rec = dict(it=int(self.it) + 1, uid=int(st.get("uid", -1)), reason=reason, age=int(st.get("age", 0)),
                    stuck=int(st.get("stuck", 0)), it_born=int(st.get("it_born", -1)),
-                   trace_from=int(st.get("trace_from", 0)), n_trace=len(st["trace"]))
+                   trace_from=int(st.get("trace_from", 0)), n_trace=len(st["trace"]),
+                   **({"init_frame": int(st["init_frame"])} if "init_frame" in st else {}))
         with open(os.path.join(self.dir, "drops.jsonl"), "a") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         if rec["n_trace"] == 0 and st.get("trace_start") is None:
@@ -128,7 +135,11 @@ class PoolTracer:
                 fn = f"drop_it{self.it:06d}_uid{rec['uid']}_{rec['reason']}_age{rec['age']:03d}.pt"
                 self._write_trace(tr, rec, fn, tag, kind="drop", start=s0)
                 n += 1
-        print(f"[풀 이력] 반복 {self.it}: 구간 탈락 이력 {n} 개 저장 (누적 탈락 {self.n_drop_total}, 최대 나이 {self.best_age})", flush=True)
+        msg = ""
+        if self.win_init:
+            w = sorted(self.win_init)
+            msg = f", 이번 구간 새 상태 {len(w)} 개 시작 프레임 최소/중앙/최대 {w[0]}/{w[len(w) // 2]}/{w[-1]}"
+        print(f"[풀 이력] 반복 {self.it}: 구간 탈락 이력 {n} 개 저장 (누적 탈락 {self.n_drop_total}, 최대 나이 {self.best_age}){msg}", flush=True)
         self._reset_window()
         self._save_state()
 
@@ -136,7 +147,8 @@ class PoolTracer:
     def _write(self, st, fn, tag, kind):
         rec = dict(it=int(self.it) + 1, uid=int(st.get("uid", -1)), reason=tag, age=int(st.get("age", 0)),
                    stuck=int(st.get("stuck", 0)), it_born=int(st.get("it_born", -1)),
-                   trace_from=int(st.get("trace_from", 0)), n_trace=len(st["trace"]))
+                   trace_from=int(st.get("trace_from", 0)), n_trace=len(st["trace"]),
+                   **({"init_frame": int(st["init_frame"])} if "init_frame" in st else {}))
         if st.get("trace_R") is not None:
             rec["R"] = st["trace_R"]
         self._write_trace(st["trace"], rec, fn, tag, kind, start=st.get("trace_start"))

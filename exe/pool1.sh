@@ -34,17 +34,22 @@ NI=$W/lbours/noinertial; G5=$W/lbours/gunet5_near
 WP=$W/wt/psi_d993fb5; RANGE=$W/lbours/lego_psi/range.json
 L0PT=$W/lbpt/test_low/L000.pt
 VAR=${POOL1_VARIANT:-}    # s32 (사용자 10-26): 무작위 폐기 끔 --pool_rdrop 0 + 풀 크기 32 --pool_size 32, 나머지 그대로 -> 출력 pool1s32_<모델>
-case "$VAR" in ""|s32|s32g3|s32r|s32g3r|s32g34|s32g34r) ;; *) echo "[오류] POOL1_VARIANT $VAR"; exit 1 ;; esac   # s32g3 (10-26): s32 + 전진 문턱 --pool_gate 1e-3; *r (10-26): --pool_init_traj 빼고 낙하 분포 시작
+case "$VAR" in ""|s32|s32g3|s32r|s32g3r|s32g34|s32g34r|s32s) ;; *) echo "[오류] POOL1_VARIANT $VAR"; exit 1 ;; esac   # s32g3 (10-26): s32 + 전진 문턱 --pool_gate 1e-3; *r (10-26): --pool_init_traj 빼고 낙하 분포 시작
+# s32s (10-26): s32 + --pool_init_frames rand (새 상태를 L000 0 프레임 고정 대신 L000 정답 궤적의 전 프레임 중 균등 무작위로; 뽑힌 프레임은
+#   pool_trace/fresh.jsonl·drops.jsonl·이력 meta 의 init_frame). 풀 이력 용량 때문에 R2 동기화에서 구간 탈락 이력 pool_trace/drop_*.pt 만 뺀다
+#   (체크포인트·hist·tb·로그·drops.jsonl·best_*.pt 이력·렌더는 올라간다; drop_*.pt 는 클러스터 디스크에만 있다).
+XR=(); [ "$VAR" = s32s ] && XR=(--exclude "pool_trace/drop_*.pt")
+export AF_R2_EXCLUDE="${XR[0]:+--exclude 'pool_trace/drop_*.pt'}"
 U=$W/lbours/pool1${VAR}_$M${POOL1_SUFFIX:-}; R=r2:storage/result/anchorflow/lbours/pool1${VAR}_$M${POOL1_SUFFIX:-};   # POOL1_SUFFIX: 시험을 본 실행과 다른 디렉토리에서 (본 실행이 돌고 있을 때)
  O=$U/pool; mkdir -p $U $O $U/hist
 if [ -f $U/driver.hb ] && [ $(( $(date +%s) - $(cat $U/driver.hb) )) -lt 300 ]; then echo "[중단] 다른 드라이버가 돌고 있다 (하트비트 5 분 안) $(date)"; exit 0; fi
 echo $$ > $U/driver.pid
 ( while true; do date +%s > $U/driver.hb; sleep 120; done ) & HB=$!
-( while true; do rclone copy $U $R -q; sleep 300; done ) & SYNC=$!
+( while true; do rclone copy $U $R "${XR[@]}" -q; sleep 300; done ) & SYNC=$!
 trap 'kill $SYNC $HB ${SNAP:-} ${RDR:-} 2>/dev/null; rm -f $U/driver.hb' EXIT
 trap 'exit 143' TERM INT     # TERM 으로도 EXIT 정리(동기화·하트비트·스냅 루프 종료)가 돌게
 echo "[시작] $(date) 커밋 $C 노드 $(hostname) 잡 ${PBS_JOBID:-?} 모델 $M GPU$G 반복 $NIT"
-up(){ rclone copy $U $R -q; }
+up(){ rclone copy $U $R "${XR[@]}" -q; }
 bgup(){ ( rclone copyto $1 $R/${1#$U/} -q && echo "[R2 덤프 올림] ${1#$U/} $(date +%T)" ) & }
 fail(){ echo "[오류] $1 $(date)"; echo "$1" > $U/POOL1_${MU}_FAIL; up; exit 1; }
 rm -f $U/POOL1_${MU}_FAIL
@@ -93,9 +98,19 @@ if [ -n "$VAR" ]; then
     echo "[r 변형] 시작 상태 L000 0 프레임 고정 -> 예전 풀과 같은 낙하 분포 (--pool_drop 0.0,0.02,0.0,1.5: 바닥 위 0~0.02, 속도 0~1.5, 무작위 회전; --pool_start_k 0 매번 새로): $DR" | tee -a $U/variant.txt
     BV=$BR
   fi
+  B0=$BV     # s 변형 전 명령 (기본 경로 대조용 -- 기준 커밋에는 --pool_init_frames 가 없다)
+  if [ "$VAR" = s32s ]; then
+    BS="$BV --pool_init_frames rand"; DS=$(dif "$BV" "$BS")
+    [ "$DS" = "빠짐: '' | 더함: '--pool_init_frames rand'" ] || fail "s 변형 차이가 '--pool_init_frames rand 더함' 이 아니다 ($DS)"
+    grep -q -- " --pool_init_traj $L0PT " <<<" $BS " || fail "s 변형에 --pool_init_traj $L0PT 가 없다"
+    echo "[s 변형] s32 명령 -> 새 상태 시작 프레임 L000 0 고정 -> L000 정답 궤적 전 프레임 균등 무작위 (--pool_init_frames rand): $DS" | tee -a $U/variant.txt
+    BV=$BS
+  fi
   B=$BV
 fi
+B0=${B0:-$B}
 [ "${VAR: -1}" = r ] && INIPAT="\[풀\] 낙하 모드" || INIPAT="\[풀\] 고정 초기 상태"
+INIPAT0=$INIPAT; [ "$VAR" = s32s ] && INIPAT="\[풀\] 무작위 시작 프레임"
 { echo "[명령줄 pool1${VAR} $M] $B"
   echo "[예전 풀 spstick pool (13471f4) 실행 인자] $PC_RUN"
   echo "[차이 예전 풀 -> pool1 gnn] $D1"
@@ -155,11 +170,11 @@ if [ ! -f $U/base_equiv_$C.ok ]; then
   wait_gpu; echo "[기본 경로 대조] GPU$G $(date +%T)"
   BE=$U/base_equiv_$C; [ -e $BE ] && mv $BE ${BE}_prev_$(date +%H%M%S); mkdir -p $BE
   [ -d $REFWT ] || fail "기준 워크트리 없음 $REFWT"
-  tr1 $BE/new 2 1 0 $BE/new.log
-  ( cd $REFWT && tr1 $BE/old 2 1 0 $BE/old.log )
+  ( B=$B0; tr1 $BE/new 2 1 0 $BE/new.log )       # s 변형도 기본 경로(그 옵션 뺀 s32 명령)로 대조
+  ( B=$B0; cd $REFWT && tr1 $BE/old 2 1 0 $BE/old.log )
   TB=$(cat $BE/new.log $BE/old.log | grep -a -c Traceback)
   CMPB=$(python $CMPPY $BE/new/MAIN_last.pt $BE/old/MAIN_last.pt 2>&1 | tail -1)
-  INI=$(grep -a -m1 "$INIPAT" $BE/new.log | cut -c1-200)
+  INI=$(grep -a -m1 "$INIPAT0" $BE/new.log | cut -c1-200)
   echo "[기본 경로 대조 $M] 이 커밋 $C vs 기준 커밋 $REFC (2 반복): $CMPB | Traceback $TB | $INI" | tee $U/base_equiv.txt
   [ "$TB" = 0 ] && grep -q "입력폭 $NFW/$NFW  키 같음 True" <<<"$CMPB" && [ -n "$INI" ] || fail "기본 경로 대조 실패 (Traceback·입력폭·키·고정 초기 상태)"
   maxd "$CMPB" 1e-4 || fail "기본 경로 망 파라미터 차이 1e-4 이상"
@@ -334,6 +349,6 @@ print("곡선", {k: len(v) for k, v in out.items() if k.startswith("학습/") or
 PY
 up
 kill $SYNC 2>/dev/null
-rclone copy $U $R -q && echo "[R2 업로드 완료] $(date)" && touch $U/ALL_DONE $U/POOL1_${MU}_CLUSTER_DONE && rclone copy $U $R -q
-rclone check $U $R --one-way --size-only -q && echo "[R2 대조] 전부 올라감"
+rclone copy $U $R "${XR[@]}" -q && echo "[R2 업로드 완료] $(date)" && touch $U/ALL_DONE $U/POOL1_${MU}_CLUSTER_DONE && rclone copy $U $R "${XR[@]}" -q
+rclone check $U $R "${XR[@]}" --one-way --size-only -q && echo "[R2 대조] 전부 올라감"
 echo POOL1_${MU}_CLUSTER_DONE
