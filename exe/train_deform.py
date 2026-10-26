@@ -4869,6 +4869,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _Ec = float(E)
                 _frec = dict(t=int(t), h=_hf, tol=_ftol, E0=_Ec, conv=False, why="최대 반복", steps=[])
                 _g0n = None
+                _stall = 0
                 for _k in range(_nst):
                     _newton_target(_fwd, _NTG, m, nrm, _k, t)
                     _nl = _NEWTON_LOG.pop()
@@ -4912,9 +4913,14 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                             _z[:, :3] = _zc
                         _frec.update(why="선탐색 실패 (30 회 반감)")
                         break
+                    _stall = (_stall + 1) if (_Ec - _En) <= 1e-7 * abs(_Ec) else 0
                     _Ec = _En
                     if _CURVE is not None:
                         _tr.append(_Ec)
+                    if _stall >= 3:
+                        # E 가 3 걸음 연속 상대 1e-7 도 안 줄었다 = float32 목적 잡음 바닥 (lego 시험 t=0: k≥39 에서 E 고정, |p|∞/(h·EXT) ~4e-3)
+                        _frec.update(why="정체 (E 상대 감소 < 1e-7 3 걸음 연속, float32 잡음 바닥)")
+                        break
                 _frec.update(iters=len([q for q in _frec["steps"] if "alpha" in q and q.get("E_new") is not None]),
                              E1=_Ec, sec=time.time() - _tf0,
                              p_vel_last=_frec["steps"][-1]["p_vel"] if _frec["steps"] else float("nan"),
