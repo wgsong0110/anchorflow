@@ -136,7 +136,8 @@ NFW=33; [ $M = gunet ] && NFW=31
 render_trace(){ # render_trace <이력 .pt> <vid 디렉토리> -- 3DGS 렌더 (프레임 0 = 풀 시작 = L000 0 프레임; 이력 시작이 0 이 아니면 덤프 첫 프레임부터)
   local f=$1 V=$2 n; n=$(basename $1 .pt); mkdir -p $V
   [ -f $V/$n.mp4 ] && return 0
-  local H=/tmp/pool1_h5_${M}_$n; [ -e $H ] && mv $H ${H}_prev_$(date +%s)
+  local H=/tmp/pool1_h5_${M}${VAR}_$n;   # 변형 이름까지 (같은 노드에서 변형들이 같은 이름 이력을 동시에 렌더해 서로 지웠다)
+  [ -e $H ] && mv $H ${H}_prev_$(date +%s)
   local FF; FF=$(python -c "import torch,json;m=torch.load('$f',map_location='cpu',weights_only=False);d=dict(m['meta'],frames=m['frames']);json.dump(d,open('$V/$n.json','w'),ensure_ascii=False);print('--first_from_dump' if d['trace_from']>0 or d.get('has_start') else '')") || return 1
   local TJ=$W/lbdata/test_low/L000
   if python -c "import json,sys;sys.exit(0 if 'R' in json.load(open('$V/$n.json')) else 1)"; then
