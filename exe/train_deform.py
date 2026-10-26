@@ -5746,7 +5746,11 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     _nneg = int((_ew < 0).sum())
     _emin = float(_ew.min())
     _neg_tet = float((_ew.min(1).values < 0).double().mean())
-    He = (_eV * _ew.clamp_min(0.0).unsqueeze(1)) @ _eV.transpose(1, 2)
+    # AF_FEM_EIG_FLOOR=η (기본 0 = 0 으로 절단): 요소마다 고유값을 η·max|λ_e| 아래로 내려가지 않게 (양정치). 고착(stick) 입자만 든
+    # 사면체는 접선 곡률이 0 이라 투영 H 가 특이해져 PCG 방향에 거대한 성분이 생긴다 -- 그것을 막는 바닥. 에너지는 그대로
+    _efl = float(os.environ.get("AF_FEM_EIG_FLOOR", "0") or 0.0)
+    _elo = (_efl * _ew.abs().amax(1, keepdim=True)) if _efl > 0 else torch.zeros_like(_ew[:, :1])
+    He = (_eV * torch.maximum(_ew, _elo).unsqueeze(1)) @ _eV.transpose(1, 2)
     del _eV, _ew
     # 블록 야코비: 노드 3x3 대각 블록
     _ar = torch.arange(4, device=dev)
