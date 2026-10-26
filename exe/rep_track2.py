@@ -121,6 +121,9 @@ ap.add_argument("--cons_delta", type=float, default=0.05,
 ap.add_argument("--proj_rho", type=float, default=1.0,
                 help="proj: ADMM 벌점 ρ 의 상대값 -- ρ = proj_rho · λmax(H_L2) / λmax(w AᵀA), w = 1/셀 수")
 ap.add_argument("--proj_cg", type=int, default=100, help="proj: 전역 단계 CG 최대 반복")
+ap.add_argument("--proj_local", default="u", choices=["u", "ua"],
+                help="proj: 지역 투영을 어느 점의 F 로 -- u (직전 전역 단계 결과, 표준 ADMM) | ua (L2 가우스-뉴턴 걸음 뒤; 8f7f784 판, "
+                     "ua 가 약하게 정해진 방향으로 크게 튀어 Z 가 흔들리고 쌍대 잔차가 커져 ρ 가 자라지 못했다)")
 ap.add_argument("--proj_every", type=int, default=10, help="proj: ρ 잔차 균형 간격 (반복, 0 이면 ρ 고정)")
 ap.add_argument("--alm_mu", type=float, default=1.0,
                 help="alm: 시작 벌점 μ0 의 상대값 -- μ0 = alm_mu · λmax(H_L2) / λmax(w AᵀA) (μ 는 프레임을 넘어 이어진다)")
@@ -1311,6 +1314,7 @@ for t in range(T_START, T + 1):
             nit = a.iters0 if t == 1 else a.iters
             if a.opt == "proj":
                 # 반복: (a) L2 가우스-뉴턴 걸음 u_a = u - (H+εI)⁻¹∇f  (b) 지역: Z_t = Π(F_t(u_a) + Λ_t),
+                #   (--proj_local u 면 (b) 는 직전 전역 단계 결과 u 의 F 로 -- 표준 ADMM 순서; (a) 의 u_a 는 (c) 의 근접 중심으로만)
                 #   Π = 부호 SVD (det U·det V < 0 이면 셋째 특이값 부호를 뒤집어 반사 제거) 후 특이값 ≥ δ 로 자름
                 #   (c) 전역: u = argmin f(u) + (ρ/2) Σ w ‖F_t(u) - Z_t + Λ_t‖² + (ε/2)‖u - u_a‖²  (선형, CG, u_a 에서 시작)
                 #   (d) 쌍대: Λ_t += F_t(u) - Z_t   (scaled ADMM, Λ 는 프레임을 넘어 이어진다)
@@ -1336,7 +1340,7 @@ for t in range(T_START, T + 1):
                 for it_ in range(nit):
                     g = (2.0 / Nn) * BTop(RES0 + Bop(u))
                     ua = u - cg(Hop, g, torch.zeros_like(u), a.riem_cg)
-                    Z = proj(I3 + Aop(ua) + Lam)
+                    Z = proj(I3 + Aop(ua if a.proj_local == "ua" else u) + Lam)
                     un = cg(Kop, bL + rho * w_ * ATop(Z - Lam - I3) + eps * ua, ua, a.proj_cg)
                     Fn = I3 + Aop(un)
                     Lam += Fn - Z
