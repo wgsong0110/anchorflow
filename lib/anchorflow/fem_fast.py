@@ -56,6 +56,7 @@ class FemFrame:
         self.gl = self.glT[self.inv]                                           # [N,4,3]
         import os as _os
         self.kmode = _os.environ.get("AF_FEM_FAST_K", "autograd")            # compile = vmap(jacfwd) 닫힌 식을 torch.compile 한 커널
+        self.near_mode = _os.environ.get("AF_FEM_FAST_NEAR", "autograd")     # chain = 바닥 후보도 manual K + 매핑만 든 작은 그래프 (정확히 같은 식)
 
     # ---- 입자 단위 에너지 (Up = 입자별 네 노드 변위 사본 [n,4,3]) ----
     def _maps(self, x0, q, Jf):
@@ -177,8 +178,46 @@ class FemFrame:
         Hel = torch.einsum("tib,tcbde,tje->ticjd", gl, K4, gl).reshape(T, 12, 12)
         H += Hel
         if nidx.numel():
-            H.index_add_(0, self.inv[nidx], self.hess_particle(U, nidx))
+            H.index_add_(0, self.inv[nidx], self.hess_near_chain(U, nidx) if self.near_mode == "chain" else self.hess_particle(U, nidx))
         return H, dict(n_near=int(nidx.numel()), n_far=int(far.numel()))
+
+    def hess_near_chain(self, U, idx):
+        """바닥 후보 입자 12x12 (AF_FEM_FAST_NEAR=chain): 연쇄법칙으로 정확히 같은 헤시안을 싼 그래프로.
+            ∂²[V ψ(J_f(u) F)] = J'ᵀ K J' + Σ_ab P_ab ∂²J_f,ab/∂u²,   J' = ∂vec J_f/∂u (9x12), K = V ∂²ψ(AF)/∂A² (manual 커널),
+            P = V ∂ψ/∂A (hess_mode 의 1 차 기울기 그대로, σ_min ≤ 0.01 이면 _FcrPsi 상수 기울기)
+        관성 항과 Σ P ∂²J_f 는 매핑만 든 작은 함수 φ(u) = 관성 + <P(고정), J_f(u)> 의 이중 역전파 12 회 (극분해 반복이 그래프에 없다)."""
+        rw = self.rw[idx]
+        x, lm, gl, Fp = self.x[idx], self.lm[idx], self.gl[idx], self.F[idx]
+        n = rw.shape[0]
+        I3 = _eye(x.device, self.dt)
+        Up = U[:, :3].to(self.dt)[rw].detach().requires_grad_(True)
+        with torch.enable_grad():
+            u = (lm.unsqueeze(-1) * Up).sum(1)
+            G = (Up.unsqueeze(-1) * gl.unsqueeze(-2)).sum(1)
+            q, Jf = self._maps(x, x + u, I3 + G)
+            Jf9 = Jf.reshape(n, 9)
+            JJ = torch.empty(n, 9, 12, device=x.device, dtype=torch.float64)
+            for a_ in range(9):
+                JJ[:, a_, :] = torch.autograd.grad(Jf9[:, a_].sum(), Up, retain_graph=True)[0].reshape(n, 12).double()
+        A0 = Jf.detach()
+        ZA = torch.zeros_like(A0).requires_grad_(True)
+        with torch.enable_grad(), phys_resid.hess_mode():
+            psi = phys_resid.psi_of((A0 + ZA) @ Fp, self.cfg, self.h)[0]
+            Pc, = torch.autograd.grad((self.vol[idx] * psi).sum(), ZA)
+        K = _k_manual_run(A0, Fp, self.vol[idx], float(self.mu), float(self.lam))
+        H = JJ.transpose(1, 2) @ K @ JJ
+        Up2 = U[:, :3].to(self.dt)[rw].detach().requires_grad_(True)
+        with torch.enable_grad():
+            u = (lm.unsqueeze(-1) * Up2).sum(1)
+            G = (Up2.unsqueeze(-1) * gl.unsqueeze(-2)).sum(1)
+            q, Jf = self._maps(x, x + u, I3 + G)
+            d = q - x - self.c[idx]
+            phi = (0.5 * self.w[idx] * self.m[idx] / (self.h * self.h) * (d * d).sum(-1)).sum() + (Pc.detach() * Jf).sum()
+            gq, = torch.autograd.grad(phi, Up2, create_graph=True)
+            gqf = gq.reshape(n, 12)
+            for j in range(12):
+                H[:, :, j] += torch.autograd.grad(gqf[:, j].sum(), Up2, retain_graph=True)[0].reshape(n, 12).double()
+        return H
 
 
 # ---- K_p = V ∂²ψ(A F)/∂A² 를 원소별 닫힌 식의 전진 미분으로 (AF_FEM_FAST_K=compile) ----

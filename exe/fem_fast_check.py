@@ -73,7 +73,15 @@ for dt in (torch.float32, torch.float64):
             del HTc
         except Exception as e:  # noqa: BLE001
             print(f"[{nm}] {km} K 실패: {e!r}"[:500])
-    fr.kmode = "autograd"
+    try:
+        fr.kmode, fr.near_mode = "manual", "chain"
+        (HTc, _), tHc = timed(lambda: fr.hess_tet(U0), reps=3)
+        R[f"{nm}_HT_chain_rel"] = float((HTc - HTd).norm() / HTd.norm()); R[f"{nm}_t_hess_tet_chain_ms"] = 1e3 * tHc
+        print(f"[{nm}] 사면체 축약 + manual K + 바닥 후보 연쇄법칙: 기존 대비 {R[f'{nm}_HT_chain_rel']:.3e} ({1e3 * tHc:.1f} ms)")
+        del HTc
+    except Exception as e:  # noqa: BLE001
+        import traceback; traceback.print_exc()
+    fr.kmode, fr.near_mode = "autograd", "autograd"
     print(f"[{nm}] 입자 12x12 vs 기존 HL 상대차 {R[f'{nm}_HL_rel']:.3e} ({1e3 * tHp:.1f} ms) | 사면체 축약 12x12 vs 기존 사면체 합 {R[f'{nm}_HT_rel']:.3e} "
           f"({1e3 * tHt:.1f} ms, 바닥 후보 {info['n_near']} / 항등 {info['n_far']})")
     # B (∇λ) vs 덤프 Bp (매핑 항등 입자)
