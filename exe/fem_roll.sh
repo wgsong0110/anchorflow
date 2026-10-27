@@ -19,7 +19,8 @@
 #   에너지·tol 그대로). FEM_EIG_PROJ (기본 abs, 10-27): 요소 헤시안 음 고유값을 |λ| 로 (clamp = 0 으로 자르기, c465fe7 까지의 방식).
 #   FEM_LM_MUMIN (기본 0): μ 하한 (0.1 은 lego E 가 CG 판보다 높아 끔). FEM_DIAG=1: 걸음마다 [FEM 진단] (노드 블록 곡률 / 집중 질량 관성, p 몰림, 바닥 매핑 σ) -> fem_diag.jsonl.
 # 실시간 판 선택지 (10-27, doc/fem_realtime.md): FEM_FIX_NEWTON=N (뉴턴 걸음 최대 N, 수렴 판정·에너지 그대로), FEM_PROF=1 (구간마다 CUDA 동기화해 정확한
-#   시간: t_fwd0·t_eg·t_hess·t_proj·t_asm·t_pcg·t_ls), FEM_DUMP=폴더 FEM_DUMP_T=프레임들 (축약 검증 덤프, exe/fem_reduce_check.py).
+#   시간: t_fwd0·t_eg·t_hess·t_proj·t_asm·t_pcg·t_ls), FEM_FAST=particle|tet (lib/anchorflow/fem_fast.py 로 E·기울기·헤시안·선탐색, 같은 식;
+#   FEM_FAST_CHECK=N 처음 N 프레임 기존 파이프라인과 [FEM 빠른 검산]), FEM_DUMP=폴더 FEM_DUMP_T=프레임들 (축약 검증 덤프, exe/fem_reduce_check.py).
 #   단계 short 에서 이 폴더 parts/ 에 기존 실행 조각(c*.pt)을 미리 넣어 두면 그 다음 프레임부터 이어 돌린다.
 #   단계 short = 앞 FEM_SHORT 프레임만 ($U/short_<커밋>) 돌리고 기존 FEM(cg) 실행의 같은 프레임과 위치 차·걸음 수·시간 비교 -> short_cmp.txt, 표식 FEM2_SHORT_OK.
 export PYTHONUTF8=1 OMP_NUM_THREADS=4 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -44,7 +45,7 @@ esac
 REST="--inv_barrier 0 --node_h $NH --dt_cond --dt_scale --v0_traj --det_eps 0.1 --det_w 0 --det_keep_elastic --lr 3e-4 --batch 8 --det_every 200 --pool_fill $W/lbpool/fill --pool_cfg $W/lbpool/cfg --pool_combos lego_jelly --pool_drop 0.0,0.02,0.0,1.5 --pool_frames 80 --phase2 --phys_w 1.0 --save_every 100000"
 OV="--out_var --ov_init predict --ov_roll 500 --ov_opt lbfgs --ov_vars out --ov_obj newton"
 FEMENV="AF_FEM_TOL=${FEM_TOL:-$TOL0} AF_OV_NEWTON_STEPS=${FEM_STEPS:-100} AF_OV_NEWTON_DAMP=0 AF_OV_NEWTON_CG=${FEM_CG:-200}"
-[ $SOLV = pcg ] && FEMENV="$FEMENV AF_FEM_SOLVER=pcg AF_FEM_ASM_CHECK=${FEM_ASM_CHECK:-1} AF_FEM_PCG_MAX=${FEM_PCG_MAX:-2000} AF_FEM_PCG_RTOL=${FEM_PCG_RTOL:-1e-6} AF_FEM_EIG_FLOOR=${FEM_EIG_FLOOR:-0} AF_FEM_LM=${FEM_LM:-1} AF_FEM_LM_MUMIN=${FEM_LM_MUMIN:-0} AF_FEM_EIG_PROJ=${FEM_EIG_PROJ:-abs}${FEM_DIAG:+ AF_FEM_DIAG=1}${FEM_FIX_NEWTON:+ AF_FEM_FIX_NEWTON=$FEM_FIX_NEWTON}${FEM_PROF:+ AF_FEM_PROF=1}${FEM_DUMP:+ AF_FEM_DUMP=$FEM_DUMP AF_FEM_DUMP_T=${FEM_DUMP_T:-0}}"
+[ $SOLV = pcg ] && FEMENV="$FEMENV AF_FEM_SOLVER=pcg AF_FEM_ASM_CHECK=${FEM_ASM_CHECK:-1} AF_FEM_PCG_MAX=${FEM_PCG_MAX:-2000} AF_FEM_PCG_RTOL=${FEM_PCG_RTOL:-1e-6} AF_FEM_EIG_FLOOR=${FEM_EIG_FLOOR:-0} AF_FEM_LM=${FEM_LM:-1} AF_FEM_LM_MUMIN=${FEM_LM_MUMIN:-0} AF_FEM_EIG_PROJ=${FEM_EIG_PROJ:-abs}${FEM_DIAG:+ AF_FEM_DIAG=1}${FEM_FIX_NEWTON:+ AF_FEM_FIX_NEWTON=$FEM_FIX_NEWTON}${FEM_PROF:+ AF_FEM_PROF=1}${FEM_FAST:+ AF_FEM_FAST=$FEM_FAST AF_FEM_FAST_CHECK=${FEM_FAST_CHECK:-1}}${FEM_DUMP:+ AF_FEM_DUMP=$FEM_DUMP AF_FEM_DUMP_T=${FEM_DUMP_T:-0}}"
 case $STAGE in test) O=$U/test_$C; L=1 ;; short) O=$U/short_$C${FEM_TAG:-}; L=${FEM_SHORT:?short 단계는 FEM_SHORT 프레임 수} ;; full) O=$U/run; L=$LEN ;; *) echo "[오류] 단계 $STAGE"; exit 1 ;; esac
 mkdir -p $O
 up(){ rclone copy $U $R -q; }

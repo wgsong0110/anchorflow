@@ -711,6 +711,7 @@ from anchorflow import bspfd as _BF                              # noqa: E402
 from anchorflow.feas_lbfgs import FeasLBFGS                     # noqa: E402
 from anchorflow import midpoint as MIDP                          # noqa: E402
 from anchorflow import simplex_gnn as _SGM                      # noqa: E402
+from anchorflow import fem_fast as _FF                           # noqa: E402
 from anchorflow.simplex_gnn import (SimplexGNN, node_moments,    # noqa: E402
                                     scatter_to_nodes)
 from anchorflow import voxel                                    # noqa: E402
@@ -1308,6 +1309,28 @@ _PRE_LOG = []              # --out_precond: 프레임별 전처리 기록 (구�
 _FEM_BAR = [None]          # AF_FEM_TOL (FEM 수렴 모드): 롤아웃 프레임 tqdm
 _FEM_JD = [None, False]    # AF_FEM_DUMP: _fwd 가 남기는 입자 야코비안 (켰을 때만)
 _FEM_STATE = [None]        # AF_FEM_DUMP: 프레임 시작 상태 (cfg, x, v, F, m, vol, t, nrm)
+_FEM_Z = [None]            # AF_FEM_FAST: (노드 변수 z, 색인 zi) -- U = z (z_vs_U0 = 0 확인됨)
+_FEM_FR = {}               # AF_FEM_FAST: 프레임 고정 자료 (fem_fast.FemFrame), 키 = (t, rows 포인터)
+
+
+def _fem_fast_mode():
+    """AF_FEM_FAST (사용자 10-27 실시간 판, 선택지): particle = 입자 12x12 를 작은 함수로, tet = 사면체 정확 축약 (바닥 후보만 입자).
+    에너지·기울기·헤시안·선탐색 E 를 lib/anchorflow/fem_fast.py 로 (같은 식). 안 주면 기존 경로 그대로."""
+    m_ = os.environ.get("AF_FEM_FAST", "")
+    if m_ and m_ not in ("particle", "tet"):
+        raise SystemExit(f"AF_FEM_FAST={m_}: particle 또는 tet")
+    return m_
+
+
+def _fem_U_of_z():
+    """AF_FEM_FAST: 지금 변수 z 로 노드 변위 U (마지막 조립 U0 의 나머지 채널·고정 노드는 그대로)."""
+    _z, _zi = _FEM_Z[0]
+    U = _ASM_SYS["U0"].clone()
+    if _zi is None:
+        U[:, :3] = _z[:, :3].detach().to(U.dtype)
+    else:
+        U[_zi, :3] = _z[:, :3].detach().to(U.dtype)
+    return U
 
 
 def _fsync():
@@ -4916,7 +4939,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _frec["lm"] = dict(on=_lm_on, mu0=_mu0, mumax=_mumax, alpha_min=_alm, mumin=_mumin) if _lm_on else None
                 _FEM_CTX[0] = (cfg, x.detach()) if os.environ.get("AF_FEM_DIAG") else None
                 _FEM_STATE[0] = (dict(cfg=cfg, x=x.detach(), v=v.detach(), F=F.detach(), m=m.detach(), vol=vol.detach() if torch.is_tensor(vol) else vol,
-                                      t=int(t), nrm=nrm) if os.environ.get("AF_FEM_DUMP") else None)
+                                      t=int(t), nrm=nrm) if (os.environ.get("AF_FEM_DUMP") or os.environ.get("AF_FEM_FAST")) else None)
+                _FEM_Z[0] = (_z, _zi)
                 # AF_FEM_FIX_NEWTON=N (사용자 10-27 실시간 판, 선택지): 뉴턴 걸음 최대 N (수렴 판정·에너지·선탐색은 그대로 -- 일찍 수렴하면 그 전에 멈춘다).
                 # PCG 반복 상한은 기존 AF_FEM_PCG_MAX 로. 시작점은 기존 --ov_init predict (이전 프레임 해의 속도로 낸 관성 예측 = warm start)
                 _nfix = int(os.environ.get("AF_FEM_FIX_NEWTON", "0") or 0)
@@ -4926,6 +4950,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 for _k in range(_nst):
                     (_newton_target_asm if _fsol == "pcg" else _newton_target)(_fwd, _NTG, m, nrm, _k, t)
                     _nl = _NEWTON_LOG.pop()
+                    if _k == 0 and _fem_fast_mode():
+                        _Ec = _nl["E"]                               # AF_FEM_FAST: 선탐색과 같은 계산으로 (기존 E 와의 차는 [FEM 빠른 검산])
+                        _frec["E0_pipeline"], _frec["E0"] = _frec["E0"], _Ec
                     _ut = _NTG[0][0]
                     _NTG[0] = None
                     _zt = (_ut if _zi is None else _ut[_zi]).to(_z.dtype)
@@ -4971,7 +4998,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                         for _ls in range(30):
                             with torch.no_grad():
                                 _z[:, :3] = _zc - _al_ * _pd
-                            _En_ = float(_fwd()[2])
+                            _En_ = (float(_FEM_FR["fr"].energy(_fem_U_of_z())) / nrm if _fem_fast_mode() else float(_fwd()[2]))
                             _srec["n_ls"] += 1
                             if math.isfinite(_En_) and _En_ <= _Ec - 1e-4 * _al_ * _gpd / nrm:
                                 _acc_ = True
@@ -5753,13 +5780,19 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     _fsync()
     _t0 = time.time()
     _NTG[0] = None
-    _r0 = _fwd()
-    _DIAG_X2[0] = _r0[0].detach() if os.environ.get("AF_FEM_DIAG") else None
-    _r0x2 = _r0[0].detach().cpu() if _fem_dump_on(t, k) else None       # AF_FEM_DUMP: 매핑 뒤 입자 위치 (검산용)
-    del _r0
+    _fast = _fem_fast_mode()
+    if _fast and int(k) > 0 and _FEM_FR.get("key", (None,))[0] == int(t) and not os.environ.get("AF_FEM_DIAG"):
+        # AF_FEM_FAST: 같은 프레임 둘째 걸음부터는 파이프라인 순전파 없이 U = z (격자·특징·rows 는 프레임 안 고정)
+        U0 = _fem_U_of_z()
+        _r0x2 = None
+    else:
+        _r0 = _fwd()
+        _DIAG_X2[0] = _r0[0].detach() if os.environ.get("AF_FEM_DIAG") else None
+        _r0x2 = _r0[0].detach().cpu() if _fem_dump_on(t, k) else None       # AF_FEM_DUMP: 매핑 뒤 입자 위치 (검산용)
+        del _r0
+        U0 = _DPN_LIVE[0][1].detach().clone()
     _fsync()
     _t_fwd0 = time.time() - _t0                                           # 전처리 순전파 (변수 → U0)
-    U0 = _DPN_LIVE[0][1].detach().clone()
     _ens = _NF_HOLD[0]
     if not isinstance(_ens, (list, tuple)) or len(_ens) != 1:
         raise SystemExit("AF_FEM_SOLVER=pcg: 격자 한 벌(앙상블 없음)만")
@@ -5789,15 +5822,67 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     ncg = int(os.environ.get("AF_FEM_PCG_MAX", "2000"))
     rtol = float(os.environ.get("AF_FEM_PCG_RTOL", "1e-6"))
     _chk = _ASM_CHECKED[0] < int(os.environ.get("AF_FEM_ASM_CHECK", "0") or 0)
-    Z = torch.zeros_like(U0).requires_grad_(True)
-    ZL = torch.zeros(N_, 4, 3, device=dev, dtype=U0.dtype).requires_grad_(True)
-    _sv = (_DP_FAST[0], DM.PROBE[0], DM.PROBE[1], SX.LOCAL_PROBE[0])
-    _DP_FAST[0] = lambda _n, _dt, _dev: (U0,)
-    DM.PROBE[0], DM.PROBE[1] = "fixed", [Z]
-    SX.LOCAL_PROBE[0] = ZL
     _diag = None
+    _HT_fast = None
+    if _fast:
+        _fk = (int(t), _rw.data_ptr(), N_, M_)
+        if _FEM_FR.get("key") != _fk:
+            _st = _FEM_STATE[0]
+            _FEM_FR.clear()
+            _FEM_FR.update(key=_fk, fr=_FF.FemFrame(_st["x"], _st["v"], _st["F"], _st["m"], _st["vol"], _rw, _lm, _DPN_LIVE[0][0].detach(), _fixd,
+                                                   _st["cfg"], h_, eps_sp=float(a.bc_softplus or 0), eps_st=float(a.bc_stick or 0),
+                                                   stick_xn=bool(a.bc_stick_xn), dtype=U0.dtype))
+        _fr = _FEM_FR["fr"]
+        _teg0 = time.time()
+        _Ef, _gf, _ = _fr.energy_grad(U0)
+        gd = _gf.to(U0.dtype).masked_fill(_fixd.unsqueeze(-1), 0.0)
+        _EJv = float(_Ef)
+        _fsync()
+        _t_eg = time.time() - _teg0
+        _th = time.time()
+        if _fast == "tet":
+            _HT_fast, _finfo = _fr.hess_tet(U0)
+        else:
+            HL = _fr.hess_particle(U0)
+            _finfo = {}
+        _fsync()
+        _t_hess = time.time() - _th
+        if _ASM_CHECKED[0] < int(os.environ.get("AF_FEM_FAST_CHECK", "0") or 0) and int(k) == 0:
+            # 검산: 같은 U0 에서 기존 파이프라인 (탐침 Z·ZL, 이중 역전파 12 회) 의 E·기울기·사면체 헤시안과 대조
+            _ASM_CHECKED[0] += 1
+            Z = torch.zeros_like(U0).requires_grad_(True)
+            ZL = torch.zeros(N_, 4, 3, device=dev, dtype=U0.dtype).requires_grad_(True)
+            _sv = (_DP_FAST[0], DM.PROBE[0], DM.PROBE[1], SX.LOCAL_PROBE[0])
+            _DP_FAST[0] = lambda _n, _dt, _dev: (U0,)
+            DM.PROBE[0], DM.PROBE[1] = "fixed", [Z]
+            SX.LOCAL_PROBE[0] = ZL
+            try:
+                with torch.enable_grad(), phys_resid.hess_mode():
+                    _EJp = _fwd()[2] * nrm
+                    _gZp, _gLp = torch.autograd.grad(_EJp, [Z, ZL], create_graph=True)
+                    _HLp = torch.empty(N_, 12, 12, device=dev, dtype=torch.float64)
+                    _gLpf = _gLp.reshape(N_, 12)
+                    for j in range(12):
+                        _HLp[:, :, j] = torch.autograd.grad(_gLpf[:, j].sum(), ZL, retain_graph=True)[0].reshape(N_, 12).double()
+            finally:
+                _DP_FAST[0], DM.PROBE[0], DM.PROBE[1], SX.LOCAL_PROBE[0] = _sv
+            _HTp = torch.zeros(T_, 12, 12, device=dev, dtype=torch.float64).index_add_(0, _inv, _HLp)
+            _HTf = _HT_fast if _HT_fast is not None else torch.zeros_like(_HTp).index_add_(0, _inv, HL)
+            _gp_ = _gZp.detach().double()[~_fixd]
+            print(f"    [FEM 빠른 검산] t={t} 모드 {_fast}: E 빠른 {_EJv:.10e} 기존 {float(_EJp):.10e} 상대차 {abs(_EJv - float(_EJp)) / abs(float(_EJp)):.3e} | "
+                  f"기울기 상대차 {float((gd.double()[~_fixd] - _gp_).norm() / _gp_.norm()):.3e} | 사면체 헤시안 상대차 {float((_HTf - _HTp).norm() / _HTp.norm()):.3e} "
+                  f"| 바닥 후보 {_finfo.get('n_near', '-')}", flush=True)
+            del _EJp, _gZp, _gLp, _HLp, _HTp, _HTf
+    Z = torch.zeros_like(U0).requires_grad_(True) if not _fast else None
+    ZL = torch.zeros(N_, 4, 3, device=dev, dtype=U0.dtype).requires_grad_(True) if not _fast else None
+    _sv = (_DP_FAST[0], DM.PROBE[0], DM.PROBE[1], SX.LOCAL_PROBE[0])
+    if not _fast:
+        _DP_FAST[0] = lambda _n, _dt, _dev: (U0,)
+        DM.PROBE[0], DM.PROBE[1] = "fixed", [Z]
+        SX.LOCAL_PROBE[0] = ZL
     _teg0 = time.time()
     try:
+      if not _fast:
         with torch.enable_grad(), phys_resid.hess_mode():
             EJ = _fwd()[2] * nrm
             gZ, gL = torch.autograd.grad(EJ, [Z, ZL], create_graph=True)
@@ -5867,8 +5952,12 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
         _DP_FAST[0], DM.PROBE[0], DM.PROBE[1], SX.LOCAL_PROBE[0] = _sv
     # 요소 헤시안 (같은 사면체 입자 합) -> 대칭화 -> 고유값 절단 투영
     _ta = time.time()
-    He = torch.zeros(T_, 12, 12, device=dev, dtype=torch.float64).index_add_(0, _inv, HL)
-    del HL
+    if _HT_fast is not None:
+        He = _HT_fast                                                     # AF_FEM_FAST=tet: 이미 사면체 단위
+        del _HT_fast
+    else:
+        He = torch.zeros(T_, 12, 12, device=dev, dtype=torch.float64).index_add_(0, _inv, HL)
+        del HL
     He = 0.5 * (He + He.transpose(1, 2))
     _ew, _eV = torch.linalg.eigh(He)
     _nneg = int((_ew < 0).sum())
