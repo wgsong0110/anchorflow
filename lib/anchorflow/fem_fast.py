@@ -208,5 +208,13 @@ def _k_compiled(A, F, vol, mu, lam):
             _KC[0] = _k_batch
     out = []
     for i in range(0, A.shape[0], 131072):
-        out.append(_KC[0](A[i:i + 131072], F[i:i + 131072], vol[i:i + 131072], mu, lam).double())
+        try:
+            out.append(_KC[0](A[i:i + 131072], F[i:i + 131072], vol[i:i + 131072], mu, lam).double())
+        except Exception as e:                                               # noqa: BLE001
+            if _KC[0] is _k_batch:
+                raise
+            # torch 2.5 dynamo 가 vmap(jacfwd) 안 matmul 을 못 넘긴다 (10-27 실측) -> 컴파일 없이 같은 함수 (값 같음)
+            print(f"[fem_fast] 컴파일 K 실행 실패 -> 컴파일 없이: {type(e).__name__}", flush=True)
+            _KC[0] = _k_batch
+            out.append(_KC[0](A[i:i + 131072], F[i:i + 131072], vol[i:i + 131072], mu, lam).double())
     return torch.cat(out) if out else torch.zeros(0, 9, 9, device=A.device, dtype=torch.float64)
