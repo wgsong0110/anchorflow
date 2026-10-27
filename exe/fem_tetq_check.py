@@ -114,6 +114,15 @@ He = 0.5 * (Hq + Hq.transpose(1, 2))
 _, tEig = timed(lambda: torch.linalg.eigh(He.float()), reps=3)
 R["t_ms"]["eigh_f32"] = 1e3 * tEig
 print(f"[시간 ms, float32] {json.dumps(R['t_ms'], ensure_ascii=False)} | 사면체 활성 {info['n_act']}/{T} 바닥 후보 {info['n_near']} 항등 {info['n_far']}")
+# 바닥 후보 닫힌 식 본체 torch.compile (AF_FEM_NEAR_COMPILE) -- 같은 값인지·시간
+fr.tetq_setup(U)
+ni = fr.tq["ni"]
+fem_fast._NC[0] = None; os.environ.pop("AF_FEM_NEAR_COMPILE", None)
+Hn0, tN0 = timed(lambda: fr.hess_near_analytic(U, ni), reps=3)
+fem_fast._NC[0] = None; os.environ["AF_FEM_NEAR_COMPILE"] = "1"
+Hn1, tN1 = timed(lambda: fr.hess_near_analytic(U, ni), reps=3)
+R["near_compile"] = dict(ms_eager=1e3 * tN0, ms_compile=1e3 * tN1, rel=float((Hn1 - Hn0).norm() / Hn0.norm()), compiled=fem_fast._NC[0] is not fem_fast._near_core)
+print(f"[바닥 후보 {ni.numel()} 입자] 닫힌 식 eager {1e3 * tN0:.1f} ms, 컴파일 {1e3 * tN1:.1f} ms, 상대차 {R['near_compile']['rel']:.3e}")
 if A.out:
     json.dump(R, open(A.out, "w"), indent=1, ensure_ascii=False)
 print("FEM_TETQ_CHECK_DONE")

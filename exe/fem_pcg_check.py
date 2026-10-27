@@ -89,9 +89,34 @@ R = []
 x0, r0 = run("block_jacobi_f64", mv64, jac); R.append(r0)
 for nm, mv in (("block_jacobi_f32spmv", mv32),):
     x, r = run(nm, mv, jac); r["x_rel"] = float((x - x0).norm() / x0.norm()); R.append(r)
+for ck in (50, 25):
+    torch.cuda.synchronize(); t0 = time.time()
+    ep = fem_fast.EllPcg(Acsr, Dinv, M_, ck=ck)
+    torch.cuda.synchronize(); tb = time.time() - t0
+    x, r = run(f"ell_eager_ck{ck}", ep.mv, jac) if ck == 50 else (None, None)
+    if r:
+        r["x_rel"] = float((x - x0).norm() / x0.norm()); r["ms_ell_build"] = 1e3 * tb; r["K"] = int(ep.ecol.shape[1]); R.append(r)
+    for rep in range(2):                                  # 첫 번은 그래프 잡기 포함, 둘째는 새로 잡기 (매 걸음 다시 잡는 비용 그대로)
+        torch.cuda.synchronize(); t0 = time.time()
+        xg, itg, rrg, ng = ep.solve(b, 10000, 1e-6, use_graph=True)
+        torch.cuda.synchronize(); tg = time.time() - t0
+        R.append(dict(name=f"ell_graph_ck{ck}_rep{rep}", it=itg, ms_solve=1e3 * tg, ms_per_it=1e3 * tg / max(itg, 1),
+                      res=float((mv64(xg) - b).norm() / b.norm()), x_rel=float((xg - x0).norm() / x0.norm())))
+    # CSR 곱 + 그래프 (cuSPARSE 를 그래프에 잡을 수 있는지)
+    try:
+        cp = fem_fast.EllPcg(Acsr, Dinv, M_, ck=ck); cp.mv = mv64
+        torch.cuda.synchronize(); t0 = time.time()
+        xg, itg, _, _ = cp.solve(b, 10000, 1e-6, use_graph=True)
+        torch.cuda.synchronize(); tg = time.time() - t0
+        R.append(dict(name=f"csr_graph_ck{ck}", it=itg, ms_solve=1e3 * tg, ms_per_it=1e3 * tg / max(itg, 1), x_rel=float((xg - x0).norm() / x0.norm())))
+    except Exception as e:  # noqa: BLE001
+        R.append(dict(name=f"csr_graph_ck{ck}", err=repr(e)[:200]))
+for r in R:
+    print(json.dumps(r, ensure_ascii=False), flush=True)
+R0 = len(R)
 npos = D["npos"].to(dev)
 nh = float(a.get("node_h", 0.028284))
-for agg in (2, 3, 4, 6):
+for agg in (3, 4, 6):
     for mode, om in (("add", 0.0), ("mult", 0.5), ("mult", 0.7)):
         try:
             holder = {}
@@ -100,13 +125,13 @@ for agg in (2, 3, 4, 6):
                 holder["tl"] = fem_fast.TwoLevel(He, fr.uq, npos, fixd, Dinv, mv64, nh, agg=agg, mode=mode, omega=om)
                 return holder["tl"]
             x, r = run(f"2lvl_{mode}_agg{agg}" + (f"_w{om}" if mode == "mult" else ""), mv64, None, build=bld)
-            r["x_rel"] = float((x - x0).norm() / x0.norm()); r["n_coarse"] = holder["tl"].n6; r["coarse_f32"] = holder["tl"].f32
+            r["x_rel"] = float((x - x0).norm() / x0.norm()); r["n_coarse"] = holder["tl"].n6; r["coarse_f32"] = holder["tl"].f32; r["coarse_jit"] = getattr(holder["tl"], "jit", None)
             R.append(r)
             del holder
             torch.cuda.empty_cache()
         except Exception as e:  # noqa: BLE001
             R.append(dict(name=f"2lvl_{mode}_agg{agg}", err=repr(e)[:300]))
-for r in R:
+for r in R[R0:]:
     print(json.dumps(r, ensure_ascii=False), flush=True)
 if A.out:
     json.dump(R, open(A.out, "w"), indent=1, ensure_ascii=False)

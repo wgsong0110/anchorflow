@@ -387,89 +387,11 @@ class FemFrame:
             psi = phys_resid.psi_of((A0 + ZA) @ Fp, self.cfg, self.h)[0]
             Pc, = torch.autograd.grad((self.vol[idx] * psi).sum(), ZA)
         K = _k_manual_run(A0, Fp, self.vol[idx], float(self.mu), float(self.lam))   # [n,9,9] f64
-        Pc = Pc.to(f8)
         pt, nr = self.bcs[0]
-        pt, nv = pt.to(f8), nr.to(f8)
-        I3 = torch.eye(3, device=x.device, dtype=f8)
-        N = nv[:, None] * nv[None, :]
-        P = I3 - N
-        u8, G8, x8 = u.to(f8), G.to(f8), x.to(f8)
-        s = ((x8 + u8 - pt) * nv).sum(-1)                                    # [n]
-
-        def sigs(e):
-            far = s / e > 20.0
-            sg_ = torch.sigmoid(s / e)
-            one, zero = torch.ones_like(s), torch.zeros_like(s)
-            d0 = torch.where(far, one, sg_)
-            d1 = torch.where(far, zero, sg_ * (1 - sg_) / e)
-            d2 = torch.where(far, zero, sg_ * (1 - sg_) * (1 - 2 * sg_) / e ** 2)
-            d3 = torch.where(far, zero, sg_ * (1 - sg_) * (1 - 6 * sg_ + 6 * sg_ * sg_) / e ** 3)
-            return d0, d1, d2, d3
-        if self.eps_st > 0:
-            w, w1, w2, w3 = sigs(self.eps_st)
-        else:
-            w, w1, w2, w3 = torch.ones_like(s), torch.zeros_like(s), torch.zeros_like(s), torch.zeros_like(s)
-        if self.eps_sp > 0:
-            g, g1, g2, _ = sigs(self.eps_sp)
-            sp = torch.nn.functional.softplus(s, beta=1.0 / self.eps_sp, threshold=20.0)
-        else:
-            g, g1, g2, sp = torch.ones_like(s), torch.zeros_like(s), torch.zeros_like(s), s
         xn = 1.0 if (self.stick_xn and self.eps_st > 0) else 0.0
-        a = u8 @ P                                                           # P u (P 대칭) [n,3]
-        IG = I3 + G8
-        c8 = self.c[idx].to(f8)
-        r = u8 - (1 - w)[:, None] * a + (sp - s)[:, None] * nv - c8         # q - x - c
         k = (self.w[idx] * self.m[idx]).to(f8) / (self.h * self.h)
-        # 관성 (y_u 3x3)
-        Ru = I3 - (1 - w)[:, None, None] * P + w1[:, None, None] * a[:, :, None] * nv[None, None, :] + (g - 1)[:, None, None] * N
-        Pr = r @ P
-        Huu = k[:, None, None] * (Ru.transpose(1, 2) @ Ru + (w2 * (r * a).sum(-1) + g1 * (r @ nv))[:, None, None] * N
-                                   + w1[:, None, None] * (Pr[:, :, None] * nv[None, None, :] + nv[None, :, None] * Pr[:, None, :]))
-        # K1, Jst, Mn
-        Jst = N + w[:, None, None] * P + w1[:, None, None] * a[:, :, None] * nv[None, None, :]
-        K1 = Jst @ IG + xn * (1 - w)[:, None, None] * P
-        Mn = I3 + (g - 1)[:, None, None] * N
-        # u 방향 (기저 e_c, ds = n_c) 의 dK1, d2K1
-        E = I3                                                               # e_c 행
-        ds = nv                                                              # [3] (방향 c 에서 ds = n_c)
-        PE = P                                                               # P e_c = P[:, c]
-        # dK1[c] = (w1 ds_c P + w2 ds_c a nᵀ + w1 (P e_c) nᵀ)(I+G) - xn w1 ds_c P      -> [n,3(c),3,3]
-        aN = a[:, :, None] * nv[None, None, :]                               # a nᵀ [n,3,3]
-        PcN = PE.t()[:, :, None] * nv[None, None, :]                         # [3(c),3,3] = (P e_c) nᵀ
-        dK1 = ((w1[:, None, None, None] * ds[None, :, None, None] * P[None, None] + w2[:, None, None, None] * ds[None, :, None, None] * aN[:, None]
-                + w1[:, None, None, None] * PcN[None]) @ IG[:, None] - xn * w1[:, None, None, None] * ds[None, :, None, None] * P[None, None])
-        dsd = ds[:, None] * ds[None, :]                                      # [3,3] ds_c ds_d
-        # d2K1[c,d] = (w2 ds_c ds_d P + w3 ds_c ds_d a nᵀ + w2 ds_c (P e_d) nᵀ + w2 ds_d (P e_c) nᵀ)(I+G) - xn w2 ds_c ds_d P
-        d2K1 = ((w2[:, None, None, None, None] * dsd[None, :, :, None, None] * P + w3[:, None, None, None, None] * dsd[None, :, :, None, None] * aN[:, None, None]
-                 + w2[:, None, None, None, None] * (ds[None, :, None, None, None] * PcN[None, None, :] + ds[None, None, :, None, None] * PcN[None, :, None]))
-                @ IG[:, None, None] - xn * w2[:, None, None, None, None] * dsd[None, :, :, None, None] * P)
-        # Φ = <Pc, Mn K1>: uu
-        PN = (Pc * (N @ K1)).sum((-1, -2))                                   # <Pc, N K1> [n]
-        PNdK = (Pc[:, None] * (N @ dK1)).sum((-1, -2))                       # [n,3] <Pc, N dK1[c]>
-        PMd2 = (Pc[:, None, None] * (Mn[:, None, None] @ d2K1)).sum((-1, -2))  # [n,3,3]
-        Phi_uu = (g2 * PN)[:, None, None] * dsd + g1[:, None, None] * (ds[None, :, None] * PNdK[:, None, :] + ds[None, None, :] * PNdK[:, :, None]) + PMd2
-        # uG: <Pc, g1 ds_c N (Jst dG) + Mn (w1 ds_c P + w2 ds_c a nᵀ + w1 (P e_c) nᵀ) dG>,  dG = 기저 E_(a,b)
-        Bc = (w1[:, None, None, None] * ds[None, :, None, None] * P + w2[:, None, None, None] * ds[None, :, None, None] * aN[:, None]
-              + w1[:, None, None, None] * PcN[None])                         # [n,3,3,3]
-        Mc = g1[:, None, None, None] * ds[None, :, None, None] * (N @ Jst)[:, None] + Mn[:, None] @ Bc   # [n,3(c),3,3]: 계수 행렬 X 에서 <Pc, X dG>
-        # <Pc, X E_ab> = (Xᵀ Pc)_ab  -> [n,3(c),9]
-        Phi_uG = (Mc.transpose(-1, -2) @ Pc[:, None]).reshape(n, 3, 9)
-        # J' (y 공간): u 방향 dJf = g1 ds_c N K1 + Mn dK1[c],  G 방향 dJf = Mn Jst E_ab
-        dJu = g1[:, None, None, None] * ds[None, :, None, None] * (N @ K1)[:, None] + Mn[:, None] @ dK1     # [n,3,3,3]
-        MJ = Mn @ Jst                                                        # [n,3,3]
-        Eab = torch.eye(9, device=x.device, dtype=f8).reshape(9, 3, 3)
-        dJG = MJ[:, None] @ Eab[None]                                        # [n,9,3,3]
-        JJ = torch.cat([dJu.reshape(n, 3, 9), dJG.reshape(n, 9, 9)], 1).transpose(1, 2)   # [n,9(Jf),12(y)]
-        Hy = JJ.transpose(1, 2) @ K @ JJ
-        Hy[:, :3, :3] += Huu + Phi_uu
-        Hy[:, :3, 3:] += Phi_uG
-        Hy[:, 3:, :3] += Phi_uG.transpose(1, 2)
-        # y -> 국소 12 (i,c): y_u[a] = Σ λ_i u_ia,  y_G[a,b] = Σ_i u_ia ∇λ_ib
-        lm8, gl8 = lm.to(f8), gl.to(f8)
-        Lu = lm8[:, None, :, None] * I3[None, :, None, :]                    # [n,3(a),4(i),3(c)]
-        LG = I3[None, :, None, None, :] * gl8.permute(0, 2, 1)[:, None, :, :, None]   # [n,3(a),3(b),4(i),3(c)] = δ_ac ∇λ_ib
-        L = torch.cat([Lu.reshape(n, 3, 12), LG.reshape(n, 9, 12)], 1)      # [n,12(y),12]
-        return L.transpose(1, 2) @ Hy @ L
+        return _near_core_run(Pc.to(f8), K, x.to(f8), u.to(f8), G.to(f8), lm.to(f8), gl.to(f8), self.c[idx].to(f8), k,
+                              pt.to(f8), nr.to(f8), float(self.eps_st), float(self.eps_sp), xn)
 
     def hess_near_chain(self, U, idx, fwd=False):
         """바닥 후보 입자 12x12 (AF_FEM_FAST_NEAR=chain): 연쇄법칙으로 정확히 같은 헤시안을 싼 그래프로.
@@ -518,6 +440,110 @@ class FemFrame:
                 H[:, :, j] += torch.autograd.grad(gqf[:, j].sum(), Up2, retain_graph=True)[0].reshape(n, 12).double()
         return H
 
+
+
+# ---- 바닥 후보 12x12 닫힌 식 본체 (FemFrame.hess_near_analytic 에서 분리; AF_FEM_NEAR_COMPILE=1 이면 torch.compile -- 같은 식) ----
+def _near_core(Pc, K, x8, u8, G8, lm8, gl8, c8, k, pt, nv, eps_st: float, eps_sp: float, xn: float):
+    f8 = torch.float64
+    n = x8.shape[0]
+    x = x8
+    I3 = torch.eye(3, device=x8.device, dtype=f8)
+    N = nv[:, None] * nv[None, :]
+    P = I3 - N
+    s = ((x8 + u8 - pt) * nv).sum(-1)                                    # [n]
+
+    def sigs(e):
+        far = s / e > 20.0
+        sg_ = torch.sigmoid(s / e)
+        one, zero = torch.ones_like(s), torch.zeros_like(s)
+        d0 = torch.where(far, one, sg_)
+        d1 = torch.where(far, zero, sg_ * (1 - sg_) / e)
+        d2 = torch.where(far, zero, sg_ * (1 - sg_) * (1 - 2 * sg_) / e ** 2)
+        d3 = torch.where(far, zero, sg_ * (1 - sg_) * (1 - 6 * sg_ + 6 * sg_ * sg_) / e ** 3)
+        return d0, d1, d2, d3
+    if eps_st > 0:
+        w, w1, w2, w3 = sigs(eps_st)
+    else:
+        w, w1, w2, w3 = torch.ones_like(s), torch.zeros_like(s), torch.zeros_like(s), torch.zeros_like(s)
+    if eps_sp > 0:
+        g, g1, g2, _ = sigs(eps_sp)
+        sp = torch.nn.functional.softplus(s, beta=1.0 / eps_sp, threshold=20.0)
+    else:
+        g, g1, g2, sp = torch.ones_like(s), torch.zeros_like(s), torch.zeros_like(s), s
+    a = u8 @ P                                                           # P u (P 대칭) [n,3]
+    IG = I3 + G8
+    r = u8 - (1 - w)[:, None] * a + (sp - s)[:, None] * nv - c8         # q - x - c
+    # 관성 (y_u 3x3)
+    Ru = I3 - (1 - w)[:, None, None] * P + w1[:, None, None] * a[:, :, None] * nv[None, None, :] + (g - 1)[:, None, None] * N
+    Pr = r @ P
+    Huu = k[:, None, None] * (Ru.transpose(1, 2) @ Ru + (w2 * (r * a).sum(-1) + g1 * (r @ nv))[:, None, None] * N
+                               + w1[:, None, None] * (Pr[:, :, None] * nv[None, None, :] + nv[None, :, None] * Pr[:, None, :]))
+    # K1, Jst, Mn
+    Jst = N + w[:, None, None] * P + w1[:, None, None] * a[:, :, None] * nv[None, None, :]
+    K1 = Jst @ IG + xn * (1 - w)[:, None, None] * P
+    Mn = I3 + (g - 1)[:, None, None] * N
+    # u 방향 (기저 e_c, ds = n_c) 의 dK1, d2K1
+    E = I3                                                               # e_c 행
+    ds = nv                                                              # [3] (방향 c 에서 ds = n_c)
+    PE = P                                                               # P e_c = P[:, c]
+    # dK1[c] = (w1 ds_c P + w2 ds_c a nᵀ + w1 (P e_c) nᵀ)(I+G) - xn w1 ds_c P      -> [n,3(c),3,3]
+    aN = a[:, :, None] * nv[None, None, :]                               # a nᵀ [n,3,3]
+    PcN = PE.t()[:, :, None] * nv[None, None, :]                         # [3(c),3,3] = (P e_c) nᵀ
+    dK1 = ((w1[:, None, None, None] * ds[None, :, None, None] * P[None, None] + w2[:, None, None, None] * ds[None, :, None, None] * aN[:, None]
+            + w1[:, None, None, None] * PcN[None]) @ IG[:, None] - xn * w1[:, None, None, None] * ds[None, :, None, None] * P[None, None])
+    dsd = ds[:, None] * ds[None, :]                                      # [3,3] ds_c ds_d
+    # d2K1[c,d] = (w2 ds_c ds_d P + w3 ds_c ds_d a nᵀ + w2 ds_c (P e_d) nᵀ + w2 ds_d (P e_c) nᵀ)(I+G) - xn w2 ds_c ds_d P
+    d2K1 = ((w2[:, None, None, None, None] * dsd[None, :, :, None, None] * P + w3[:, None, None, None, None] * dsd[None, :, :, None, None] * aN[:, None, None]
+             + w2[:, None, None, None, None] * (ds[None, :, None, None, None] * PcN[None, None, :] + ds[None, None, :, None, None] * PcN[None, :, None]))
+            @ IG[:, None, None] - xn * w2[:, None, None, None, None] * dsd[None, :, :, None, None] * P)
+    # Φ = <Pc, Mn K1>: uu
+    PN = (Pc * (N @ K1)).sum((-1, -2))                                   # <Pc, N K1> [n]
+    PNdK = (Pc[:, None] * (N @ dK1)).sum((-1, -2))                       # [n,3] <Pc, N dK1[c]>
+    PMd2 = (Pc[:, None, None] * (Mn[:, None, None] @ d2K1)).sum((-1, -2))  # [n,3,3]
+    Phi_uu = (g2 * PN)[:, None, None] * dsd + g1[:, None, None] * (ds[None, :, None] * PNdK[:, None, :] + ds[None, None, :] * PNdK[:, :, None]) + PMd2
+    # uG: <Pc, g1 ds_c N (Jst dG) + Mn (w1 ds_c P + w2 ds_c a nᵀ + w1 (P e_c) nᵀ) dG>,  dG = 기저 E_(a,b)
+    Bc = (w1[:, None, None, None] * ds[None, :, None, None] * P + w2[:, None, None, None] * ds[None, :, None, None] * aN[:, None]
+          + w1[:, None, None, None] * PcN[None])                         # [n,3,3,3]
+    Mc = g1[:, None, None, None] * ds[None, :, None, None] * (N @ Jst)[:, None] + Mn[:, None] @ Bc   # [n,3(c),3,3]: 계수 행렬 X 에서 <Pc, X dG>
+    # <Pc, X E_ab> = (Xᵀ Pc)_ab  -> [n,3(c),9]
+    Phi_uG = (Mc.transpose(-1, -2) @ Pc[:, None]).reshape(n, 3, 9)
+    # J' (y 공간): u 방향 dJf = g1 ds_c N K1 + Mn dK1[c],  G 방향 dJf = Mn Jst E_ab
+    dJu = g1[:, None, None, None] * ds[None, :, None, None] * (N @ K1)[:, None] + Mn[:, None] @ dK1     # [n,3,3,3]
+    MJ = Mn @ Jst                                                        # [n,3,3]
+    Eab = torch.eye(9, device=x.device, dtype=f8).reshape(9, 3, 3)
+    dJG = MJ[:, None] @ Eab[None]                                        # [n,9,3,3]
+    JJ = torch.cat([dJu.reshape(n, 3, 9), dJG.reshape(n, 9, 9)], 1).transpose(1, 2)   # [n,9(Jf),12(y)]
+    Hy = JJ.transpose(1, 2) @ K @ JJ
+    Hy[:, :3, :3] += Huu + Phi_uu
+    Hy[:, :3, 3:] += Phi_uG
+    Hy[:, 3:, :3] += Phi_uG.transpose(1, 2)
+    # y -> 국소 12 (i,c): y_u[a] = Σ λ_i u_ia,  y_G[a,b] = Σ_i u_ia ∇λ_ib
+    Lu = lm8[:, None, :, None] * I3[None, :, None, :]                    # [n,3(a),4(i),3(c)]
+    LG = I3[None, :, None, None, :] * gl8.permute(0, 2, 1)[:, None, :, :, None]   # [n,3(a),3(b),4(i),3(c)] = δ_ac ∇λ_ib
+    L = torch.cat([Lu.reshape(n, 3, 12), LG.reshape(n, 9, 12)], 1)      # [n,12(y),12]
+    return L.transpose(1, 2) @ Hy @ L
+
+
+_NC = [None]
+
+
+def _near_core_run(*args):
+    import os as _os
+    if _NC[0] is None:
+        _NC[0] = _near_core
+        if _os.environ.get("AF_FEM_NEAR_COMPILE"):
+            try:
+                _NC[0] = torch.compile(_near_core, dynamic=True)
+            except Exception as e:                                           # noqa: BLE001
+                print(f"[fem_fast] 바닥 후보 컴파일 실패: {e}", flush=True)
+    try:
+        return _NC[0](*args)
+    except Exception as e:                                                   # noqa: BLE001
+        if _NC[0] is _near_core:
+            raise
+        print(f"[fem_fast] 바닥 후보 컴파일 실행 실패 -> 컴파일 없이: {type(e).__name__}: {str(e)[:200]}", flush=True)
+        _NC[0] = _near_core
+        return _near_core(*args)
 
 # ---- K_p = V ∂²ψ(A F)/∂A² 를 원소별 닫힌 식의 전진 미분으로 (AF_FEM_FAST_K=compile) ----
 # hess_mode 의 _FcrPsiH 와 같은 정의: 기울기 = _fcr_grad_h(AF) Fᵀ (극분해 Newton 10 회를 그대로 미분), σ_min ≤ 0.01 입자는 기울기가
@@ -768,10 +794,14 @@ class TwoLevel:
         Ac += torch.diag(torch.where(dg > 0, 1e-8 * dg, torch.ones_like(dg)))
         self.f32 = False
         if f32:
-            L, info = torch.linalg.cholesky_ex(Ac.float())
-            if int(info) == 0:
-                self.Ai = torch.cholesky_inverse(L)
-                self.f32 = True
+            Af = Ac.float()
+            jd = Af.diagonal().mean()
+            for jit in (0.0, 1e-6, 1e-5, 1e-4):                                # 전처리일 뿐이라 작은 대각 이동은 허용 (양정치 유지)
+                L, info = torch.linalg.cholesky_ex(Af + jit * jd * torch.eye(n6, device=dev) if jit else Af)
+                if int(info) == 0:
+                    self.Ai = torch.cholesky_inverse(L)
+                    self.f32, self.jit = True, jit
+                    break
         if not self.f32:
             L = torch.linalg.cholesky(Ac)
             self.Ai = torch.cholesky_inverse(L)
@@ -792,3 +822,41 @@ class TwoLevel:
         z1 = self.omega * self.jac(r)
         z2 = z1 + self.coarse(r - self.mv(z1))
         return z2 + self.omega * self.jac(r - self.mv(z2))
+
+
+# ---- ELL 희소 곱 + CUDA 그래프 PCG (AF_FEM_PCG_ELL=1, 실시간 판 선택지) ----
+# 조립 CSR (고정 자유도 행·열 0 + 대각 1 포함 -- 같은 행렬) 을 행마다 길이를 맞춘 ELL [3M, K] (모자란 칸은 열 = 자기 행, 값 0) 로 옮겨
+# y = Σ_k val[:, k] x[col[:, k]] (gather + 곱 + 합, 원자 합 없음). 반복이 커널 띄우기 비용에 묶여 있어 (CSR 0.32 ms/회 vs 자료 20 MB)
+# PCG 본체 ck 회를 CUDA 그래프 하나로 잡아 재생한다 (MFPcg 와 같은 본체·같은 판정). 색인은 CSR 패턴이 같으면 재사용.
+_ELL = {}
+
+
+def ell_from_csr(A, key=None):
+    """key: 패턴이 같다는 호출자 표식 (예: CSR 캐시 객체 id + 프레임). 없으면 포인터·크기."""
+    crow, col = A.crow_indices(), A.col_indices()
+    key = (key, crow.data_ptr(), col.data_ptr(), int(col.numel()))
+    if _ELL.get("key") != key:
+        n = crow.numel() - 1
+        ln = crow[1:] - crow[:-1]
+        K = int(ln.max())
+        row = torch.repeat_interleave(torch.arange(n, device=col.device), ln)
+        pos = torch.arange(col.numel(), device=col.device) - crow[:-1][row]
+        flat = row * K + pos
+        ecol = torch.arange(n, device=col.device).unsqueeze(1).expand(n, K).contiguous().reshape(-1)
+        ecol[flat] = col
+        _ELL.clear()
+        _ELL.update(key=key, n=n, K=K, flat=flat, col=ecol.reshape(n, K))
+    E = _ELL
+    val = torch.zeros(E["n"] * E["K"], device=col.device, dtype=A.values().dtype)
+    val[E["flat"]] = A.values()
+    return E["col"], val.reshape(E["n"], E["K"])
+
+
+class EllPcg(MFPcg):
+    def __init__(self, A, Dinv, M_, ck=50, key=None):
+        self.ecol, self.eval_ = ell_from_csr(A, key)
+        self.Dinv, self.M, self.ck = Dinv, M_, int(ck)
+        self.graph = None
+
+    def mv(self, v):
+        return (self.eval_ * v[self.ecol]).sum(1)
