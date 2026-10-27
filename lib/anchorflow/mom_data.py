@@ -1,7 +1,7 @@
 """운동량 잔차 변위 망의 자기지도 학습 상태 생성 (사용자 10-27) -- 정답 궤적과 무관.
 
 lego 형상(L000 0 프레임 입자 = 기준 배치 X, 질량·부피 그대로) 위에서 한 스텝 시작 상태 (x, v, F, h) 를 무작위로 만든다.
-  회전   R: 확률 p_rot_full 로 SO(3) 균등, 나머지는 연직축 균등 회전 뒤 무작위 축 기울기 logU[1e-4, tilt_max] (바닥에 평평히)
+  회전   R: 확률 p_rot_full 로 SO(3) 균등, 나머지는 축 정렬 자세 24 개 중 하나 -> 연직축 균등 회전 뒤 무작위 축 기울기 logU[1e-4, tilt_max] (바닥에 평평히)
   무변형 확률 p_rest 로 변형·퍼짐 없음 (F = R, 힘 0 근처)
   변형   y = F_aff (X + u(X)),  u = Σ_k a_k sin(ω_k·X + φ_k)  (매끈한 무작위 변형장, 파장 logU[3 h_node, 3 EXT])
          변형 크기 S ~ logU[strain_min, strain_max] (모드 변형률 |a_k||ω_k| = S·U/√K), F_aff = Q diag(exp ε) Qᵀ, |ε| ≤ S_aff ~ logU
@@ -45,6 +45,20 @@ def _rodrigues(axis, ang):
     return I + s * K + (1 - c) * (K @ K)
 
 
+def _cube_rots(dev):
+    """정육면체 회전군 24 개 (부호 있는 치환 행렬, det +1)."""
+    import itertools
+    out = []
+    for pm in itertools.permutations(range(3)):
+        for sg in itertools.product((1.0, -1.0), repeat=3):
+            M = torch.zeros(3, 3)
+            for i, j in enumerate(pm):
+                M[i, j] = sg[i]
+            if float(torch.linalg.det(M)) > 0:
+                out.append(M)
+    return torch.stack(out).to(dev)
+
+
 def _rand_rot(gen, dev):
     q = torch.randn(4, generator=gen, device=dev)
     q = q / q.norm()
@@ -79,6 +93,7 @@ class StateGen:
         self.c0 = sc.x0.mean(0)
         self.X = sc.x0 - self.c0                    # 기준 배치 (중심 원점)
         self.N = self.X.shape[0]
+        self.cube = _cube_rots(dev)
 
     def sample(self, gen):
         o, sc, dev, X, N = self.o, self.sc, self.dev, self.X, self.N
@@ -89,7 +104,8 @@ class StateGen:
         else:                                       # 연직축 회전 (균등) 뒤 작은 기울기 logU[1e-4, tilt_max] -- 바닥에 평평히 놓인 자세 (실제 롤아웃의 넓은 접촉)
             nz = sc.planes[0][1] if sc.planes else torch.tensor([0.0, 0.0, 1.0], device=dev)
             Ry = _rodrigues(nz, torch.rand((), generator=gen, device=dev) * 2 * math.pi)
-            R = _rodrigues(_unit(gen, 1, dev)[0], _logu(gen, 1e-4, o["tilt_max"], (), dev)) @ Ry
+            Rc = self.cube[int(torch.randint(0, 24, (), generator=gen, device=dev))]   # 축 정렬 자세 24 개 중 하나 (어느 면이든 바닥에 눕게)
+            R = _rodrigues(_unit(gen, 1, dev)[0], _logu(gen, 1e-4, o["tilt_max"], (), dev)) @ Ry @ Rc
         # 변형
         S = float(_logu(gen, o["strain_min"], o["strain_max"], (), dev))
         Sa = float(_logu(gen, o["strain_min"], o["aff_max"], (), dev))
@@ -164,7 +180,7 @@ def state_stats(sc, P, x, F, h_eval=None):
     out["det F̄"] = torch.linalg.det(P.Fb)
     out["|F_p − F̄_T|"] = (F - P.Fb[S.pinv]).flatten(1).norm(dim=-1)
     out["|v_n| m/s"] = P.vn.norm(dim=-1)
-    out["|f_n/m_n| / |g|"] = (P.f / P.mn.clamp_min(1e-30).unsqueeze(-1)).norm(dim=-1) / sc.gmag
+    out["|f_n/m_n| / |g|"] = (P.f / P.mn.clamp_min(sc.m_floor).unsqueeze(-1)).norm(dim=-1) / sc.gmag
     if sc.planes:
         p0, n = sc.planes[0]
         out["바닥 최소 거리/h_node"] = (((x - p0) @ n).min() / sc.node_h).reshape(1)

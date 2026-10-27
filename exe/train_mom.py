@@ -178,7 +178,8 @@ if a.mode == "cover":
     print("MOM_COVER_DONE", flush=True)
     sys.exit(0)
 
-# ---------------------------------------------------------------- 망
+# ---------------------------------------------------------------- 망 (초기값도 --seed 로 고정 -- 이어 돌리기 시험에서 바로 비교되게)
+torch.manual_seed(a.seed)
 net = MC.build_net(sc, dev=dev)
 print(f"[망] Graph U-Net 3 수준 (gunet5_near 몸통), 파라미터 {sum(p.numel() for p in net.parameters())}", flush=True)
 
