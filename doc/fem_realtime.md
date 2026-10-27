@@ -139,7 +139,7 @@ c5c1dc3 / c4814bb, `EXTRA="AF_FEM_FAST=tet AF_FEM_FAST_K=manual AF_FEM_FAST_NEAR
 | final2_solo | **11.268 %** | **0.796 s** | **1.26** | 0.522 s |
 | final2_prof (AF_FEM_PROF 동기화 계측) | 11.115 % | 0.835 s | 1.20 | 0.525 s |
 | **final3_eig32** (+ AF_FEM_EIG_F32=1, c4814bb) | **11.125 %** | **0.731 s** | **1.37** | -- |
-| final3_eig32_prof (계측) | (기록 중) | 0.790 s | 1.27 | 0.449 s |
+| final3_eig32_prof (계측) | 11.542 % | 0.790 s | 1.27 | 0.449 s |
 
 걸음당 구간 (final2_prof, 첫 프레임 뺀 중앙값): 순전파 4.8 ms · E+기울기 29.8 ms · **헤시안 188 ms** · 투영(eigh) 77 ms · CSR 7 ms · **PCG 206 ms (601 회)** · 선탐색 3.8 ms
 = 뉴턴 루프 0.52 s (eigh float32 판: 투영 7.4 ms, CSR 7 ms, 나머지 같음 → 0.45 s), 루프 밖 (프레임 시작·끝 파이프라인 순전파, 프레임 자료(FemFrame·사면체 unique) 만들기, 롤아웃 덤프·조각 저장) ~0.3 s.
