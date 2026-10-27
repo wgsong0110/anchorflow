@@ -443,6 +443,12 @@ if a.mode == "bench":
     with torch.no_grad():
         res["격자·셀 묶기 ms"] = tm(lambda: real_batch(R, s0))
         res["모델 응력 (회전 정규화+망+τ_FCR(F̄') 기저+되돌림) ms"] = tm(lambda: net(b))
+        _VT, _Fb, _mc, _lc = SN.cell_means(b)
+        res["  ├ 셀 평균 (V_T, F̄, 물성) ms"] = tm(lambda: SN.cell_means(b))
+        res["  ├ 셀 회전 polar(F̄) ms"] = tm(lambda: SN.polar_R(_Fb))
+        res["  ├ 기저 τ_FCR(F̄') ms"] = tm(lambda: SN.tau_fcr(_Fb, _mc, _lc))
+        _Rsv = SN._polar_svd(_Fb.double()).float()
+        res["  (참고) polar 뉴턴 vs SVD 최대차"] = float((SN.polar_R(_Fb) - _Rsv).abs().max())
         def full():
             tq, VT = net(b)
             fl = SN.quad_forces(a.interp, b, LAT, tq, VT, a.K)

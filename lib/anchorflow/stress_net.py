@@ -65,13 +65,43 @@ def tau_fcr(F, mu, lam):
     return (mu * t_mu + lam * t_lam).to(F.dtype).reshape(sh)
 
 
-def polar_R(F):
-    """극분해 회전 (det R = +1). F [T,3,3] -> R [T,3,3] (float64 로 계산)."""
-    Fd = F.double()
+def _polar_svd(Fd):
     U, S, Vh = torch.linalg.svd(Fd)
     d = torch.linalg.det(U @ Vh)
     U = torch.cat([U[..., :2], U[..., 2:] * d[:, None, None]], -1)
-    return (U @ Vh).to(F.dtype)
+    return U @ Vh
+
+
+def _inv_T3(X):
+    """X^{-T} (3x3 여인수 닫힌 식) 과 det."""
+    c0 = torch.cross(X[..., 1, :], X[..., 2, :], dim=-1)
+    c1 = torch.cross(X[..., 2, :], X[..., 0, :], dim=-1)
+    c2 = torch.cross(X[..., 0, :], X[..., 1, :], dim=-1)
+    cof = torch.stack([c0, c1, c2], -2)                      # 여인수 행렬 (행 i = 행 j×k)
+    det = (X[..., 0, :] * c0).sum(-1)
+    return cof / det[..., None, None], det
+
+
+def polar_R(F, iters=10, tol=1e-10):
+    """극분해 회전 (det R = +1). F [T,3,3] -> R [T,3,3] (float64 로 계산).
+
+    배율 붙인 뉴턴 반복 X ← ½(γX + γ⁻¹X^{-T}), γ = |det X|^{-1/3} (닫힌 식 3x3 역행렬, 일괄 SVD 보다 훨씬 빠르다).
+    det F ≤ 0 (또는 거의 특이) 이거나 반복 뒤 ‖XᵀX − I‖ > tol 인 셀만 SVD 로 (det R = +1 이 되게 최소 특이벡터 부호를 뒤집는다).
+    """
+    Fd = F.double()
+    X = Fd
+    _, d0 = _inv_T3(Fd)
+    for _ in range(iters):
+        Xit, det = _inv_T3(X)
+        g = det.abs().clamp_min(1e-300).pow(-1.0 / 3.0)[..., None, None]
+        X = 0.5 * (g * X + Xit / g)
+    I = torch.eye(3, device=F.device, dtype=torch.float64)
+    bad = (d0 <= 1e-6 * Fd.flatten(1).norm(dim=1).pow(3).clamp_min(1e-300)) | ((X.transpose(1, 2) @ X - I).flatten(1).abs().amax(1) > tol) \
+        | ~torch.isfinite(X).flatten(1).all(1)
+    if bool(bad.any()):
+        X = X.clone()
+        X[bad] = _polar_svd(Fd[bad])
+    return X.to(F.dtype)
 
 
 def sym6(t):
@@ -171,7 +201,7 @@ def global_assemble(fl, ci):
     B = 1 << 20
     key = ((gi[:, 0] + 512) * B + (gi[:, 1] + 512)) * B + (gi[:, 2] + 512)
     uk, inv = torch.unique(key, return_inverse=True)
-    F = torch.zeros(uk.numel(), 3, device=fl.device, dtype=fl.dtype).index_add_(0, inv, fv)
+    F = torch.zeros(uk.numel(), fl.shape[-1], device=fl.device, dtype=fl.dtype).index_add_(0, inv, fv)
     ijk = torch.zeros(uk.numel(), 3, device=fl.device, dtype=torch.long)
     ijk[inv] = gi
     return ijk, F
@@ -318,7 +348,7 @@ GEN_DEFAULTS = dict(
     p_mode=[0.3, 0.25, 0.25, 0.2],               # 균등 / 몇 점으로 수축 / 부분 사면체 / 정규 부분격자
     shrink_min=0.02, sharp_max=4.0, sub_s_min=0.12, sub_s_max=0.9,
     v_lo=4e-9, v_hi=1.6e-5, p_vcell=0.5,         # V_p 모양 (상대 크기); 실제 lego log10 V_p [−8.12, −5.10] (test_1a9bcd9 cover)
-    occ_lo=0.003, occ_hi=30.0,                   # 셀 점유 V_T/V_tet ~ logU (실제 lego [0.0057, 22], 99.9 % 12) -- 입자 수와 따로 뽑아 V_p 를 맞춘다
+    occ_lo=0.3, occ_hi=30.0,                     # 셀 점유 상한 V_T/V_tet ≤ logU[occ_lo, occ_hi] (실제 lego [0.0057, 22], 99.9 % 12) -- 넘는 셀만 V_p 를 비례로 줄인다
     S_max=0.7, g_max=0.6, sig_max=0.4, p_sig0=0.15,
     p_out=0.5, out_frac=0.3, out_ang_min=1e-2, out_ang_max=math.pi, out_str_max=0.7,
     det_min=0.05, p_inv=0.1, p_lego=0.4, E_fac=100.0, nu_max=0.45, p_mix=0.1,
@@ -368,7 +398,7 @@ class CellGen:
       부분 사면체 (꼭짓점 4 개를 셀 안 균등으로 뽑은 작은 사면체 안 균등 -- 표면 셀처럼 셀 일부만 참) /
       정규 부분격자 (세계 축 정렬 간격 s·node_h, s ~ logU[sub_s_min, sub_s_max], 무작위 원점·약간 흔들림 -- PG 채우기 입자처럼).
     입자 수: 정규 부분격자 외에는 확률 p_logn 로 logU[1, n_max], 나머지 U{1..n_max}.
-    V_p: 확률 p_vcell 로 셀 안 같은 값, 나머지 입자별 logU[v_lo, v_hi] 모양을, 셀 합이 점유 logU[occ_lo, occ_hi] × V_tet 이 되게 비례 조정.
+    V_p: 확률 p_vcell 로 셀 안 같은 값, 나머지 입자별 logU[v_lo, v_hi]; 셀 합이 점유 상한 logU[occ_lo, occ_hi] × V_tet 을 넘으면 비례로 줄인다.
     F: F_p = R_out,p · R_c U_c (I + G·(y_p − ȳ)) (I + σ N_p) (I + ε_out,p),
        R_c ∈ SO(3) 균등, U_c = Q diag(e^ε) Qᵀ, |ε_i| ≤ S ~ logU[1e-4, S_max]; G [3,3,3] 크기 g ~ logU[1e-4, g_max] (격자 단위당);
        σ ~ logU[1e-4, sig_max] (확률 p_sig0 로 0); 확률 p_out 로 입자 비율 U[0, out_frac] 가 추가 회전 (각 logU[out_ang_min, out_ang_max])
@@ -461,8 +491,8 @@ class CellGen:
         vc = _logu(gen, o["v_lo"], o["v_hi"], B, dev)
         vp = _logu(gen, o["v_lo"], o["v_hi"], N, dev)
         Vp = torch.where((torch.rand(B, generator=gen, device=dev) < o["p_vcell"])[seg], vc[seg], vp)
-        occ = _logu(gen, o["occ_lo"], o["occ_hi"], B, dev) * float(torch.linalg.det(lat.A.double()).abs() / 6.0)
-        Vp = Vp * (occ / seg_sum(Vp, seg, B))[seg]                                                  # Σ_{p∈T} V_p = 점유 × V_tet
+        cap = _logu(gen, o["occ_lo"], o["occ_hi"], B, dev) * float(torch.linalg.det(lat.A.double()).abs() / 6.0)
+        Vp = Vp * (cap / seg_sum(Vp, seg, B)).clamp(max=1.0)[seg]                                  # 셀 점유 상한 V_T ≤ cap (넘으면 비례로 줄임)
         # 물성
         def mat(k):
             E = _logu(gen, self.E_ref / o["E_fac"], self.E_ref * o["E_fac"], k, dev)
