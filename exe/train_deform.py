@@ -5992,7 +5992,11 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     _ci = torch.cat([_ci, _fi, _di]) if lam > 0 else torch.cat([_ci, _fi])
     _vv = torch.cat([_vv, torch.ones(_fi.numel(), device=dev, dtype=torch.float64)]
                     + ([torch.full((3 * M_,), lam, device=dev, dtype=torch.float64)] if lam > 0 else []))
-    if os.environ.get("AF_FEM_CSR_CACHE") and lam == 0.0:
+    # AF_FEM_PCG_MF=1 (실시간 판 선택지): CSR 을 만들지 않고 사면체 12x12 투영 헤시안으로 행렬 없는 곱 + CUDA 그래프 PCG (fem_fast.MFPcg)
+    _mfp = He if (os.environ.get("AF_FEM_PCG_MF") and lam == 0.0) else None
+    if _mfp is not None:
+        A = None
+    elif os.environ.get("AF_FEM_CSR_CACHE") and lam == 0.0:
         # AF_FEM_CSR_CACHE=1 (실시간 판 선택지): 프레임 안 희소 패턴(사면체·고정 노드)이 같으므로 정렬·중복 합 색인을 한 번만 만들고
         # 이후 걸음은 값만 index_add (coalesce 와 같은 합 -- 합산 순서만 다를 수 있다)
         _ck_ = _ASM_CACHE.get("csr")
@@ -6008,7 +6012,7 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
         A = torch.sparse_csr_tensor(_ck_[2], _ck_[3], _vals, (3 * M_, 3 * M_))
     else:
         A = torch.sparse_coo_tensor(torch.stack([_ri, _ci]), _vv, (3 * M_, 3 * M_)).coalesce().to_sparse_csr()
-    _nnz = int(A.values().numel())
+    _nnz = int(A.values().numel()) if A is not None else int(_vv.numel())
     del He, _vv, _ri, _ci
     _Draw = D.clone() if os.environ.get("AF_FEM_DIAG") else None        # AF_FEM_DIAG: 투영 뒤 노드 블록 (단위행렬 채우기 전)
     D = D + lam * torch.eye(3, device=dev, dtype=torch.float64)
@@ -6022,8 +6026,13 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     # 블록 야코비 전처리 CG
     _tp = time.time()
     b = gd.reshape(-1).double().masked_fill(_fx3, 0.0)
-    mv = lambda v_: (A @ v_.unsqueeze(-1)).squeeze(-1)
-    x_, kk, rr, neg = _asm_pcg(mv, Dinv, b, M_, ncg, rtol)
+    if _mfp is not None:
+        _MF = _FF.MFPcg(_mfp, _ASM_CACHE["dof"], _fx3, Dinv, M_, ck=int(os.environ.get("AF_FEM_PCG_CHECK", "50") or 50))
+        mv = _MF.mv
+        x_, kk, rr, neg = _MF.solve(b, ncg, rtol, use_graph=not os.environ.get("AF_FEM_PCG_NOGRAPH"))
+    else:
+        mv = lambda v_: (A @ v_.unsqueeze(-1)).squeeze(-1)
+        x_, kk, rr, neg = _asm_pcg(mv, Dinv, b, M_, ncg, rtol)
     b2 = max(float((b * b).sum()), 1e-300)
     _t_pcg = time.time() - _tp
     p_ = x_.reshape(M_, 3).to(U0.dtype)
@@ -6033,7 +6042,7 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     # 양의 하한이 된다. μ=0 걸음은 위와 같은 계산 그대로 (뉴턴 루프가 선탐색 실패·작은 α 일 때만 μ>0 을 부른다)
     _MnH = (Mn.double() / (h_ * h_)).masked_fill(_fixd, 0.0)                 # [M]
     _ASM_SYS.clear()
-    _ASM_SYS.update(A=A, D=D, b=b, U0=U0, M=M_, ncg=ncg, rtol=rtol, MnH=_MnH, fixd=_fixd, dtype=U0.dtype, lam=lam)
+    _ASM_SYS.update(A=A, mvA=(mv if _mfp is not None else None), D=D, b=b, U0=U0, M=M_, ncg=ncg, rtol=rtol, MnH=_MnH, fixd=_fixd, dtype=U0.dtype, lam=lam)
     if os.environ.get("AF_FEM_DIAG"):
         _asm_diag(t, k, A, _Draw, b, x_, _MnH, Mn, _fixd, h_, _rw, _lm, m, M_, _elmin, _uq)
     del Dinv, D
@@ -6135,7 +6144,8 @@ def _asm_resolve(mu):
     _bad = ~(torch.diagonal(Dm, dim1=1, dim2=2) > 0).all(1)
     if bool(_bad.any()):
         Dm[_bad] = torch.eye(3, device=D.device, dtype=D.dtype)
-    mv = lambda v_: (A @ v_.unsqueeze(-1)).squeeze(-1) + reg * v_
+    _mvA = S.get("mvA")
+    mv = ((lambda v_: _mvA(v_) + reg * v_) if _mvA is not None else (lambda v_: (A @ v_.unsqueeze(-1)).squeeze(-1) + reg * v_))
     x_, kk, rr, neg = _asm_pcg(mv, torch.linalg.inv(Dm), b, M_, S["ncg"], S["rtol"])
     b2 = max(float((b * b).sum()), 1e-300)
     gp = float((b * x_).sum())

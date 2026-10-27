@@ -94,9 +94,47 @@ for dt in (torch.float32, torch.float64):
     print(f"[{nm}] B(∇λ) vs 덤프 ∂Jd/∂U (매핑 항등 입자) 상대차 {R[f'{nm}_B_rel_far']:.3e}")
     # 투영 (eigh) 시간
     He = 0.5 * (HT + HT.transpose(1, 2))
-    _, tEig = timed(lambda: torch.linalg.eigh(He), reps=2)
+    (ew, eV), tEig = timed(lambda: torch.linalg.eigh(He), reps=2)
     R[f"{nm}_t_eigh_ms"] = 1e3 * tEig
     print(f"[{nm}] 사면체 {T} 개 12x12 eigh (float64) {1e3 * tEig:.1f} ms")
+    if nm == "f32":
+        # PCG: 기준판과 같은 투영 (|λ|, 바닥 1e-6·max|λ|) -> CSR 동기 PCG (기준판 식) vs 행렬 없는 CUDA 그래프 PCG
+        Hp = (eV * torch.maximum(ew.abs(), 1e-6 * ew.abs().amax(1, keepdim=True)).unsqueeze(1)) @ eV.transpose(1, 2)
+        M_ = U0.shape[0]; fixd = D["fixd"].to(dev)
+        fx3 = fixd.unsqueeze(-1).expand(-1, 3).reshape(-1)
+        dof = (fr.uq.unsqueeze(-1) * 3 + torch.arange(3, device=dev)).reshape(-1, 12)
+        ri = dof.unsqueeze(-1).expand(-1, 12, 12).reshape(-1); ci = dof.unsqueeze(1).expand(-1, 12, 12).reshape(-1)
+        kp = ~(fx3[ri] | fx3[ci]); fi = torch.nonzero(fx3).squeeze(1)
+        A_ = torch.sparse_coo_tensor(torch.stack([torch.cat([ri[kp], fi]), torch.cat([ci[kp], fi])]),
+                                     torch.cat([Hp.reshape(-1)[kp], torch.ones(fi.numel(), device=dev, dtype=torch.float64)]), (3 * M_, 3 * M_)).coalesce().to_sparse_csr()
+        ar = torch.arange(4, device=dev)
+        blk = Hp.reshape(T, 4, 3, 4, 3)[:, ar, :, ar, :]
+        Dg = torch.zeros(M_, 3, 3, device=dev, dtype=torch.float64).index_add_(0, fr.uq.t().reshape(-1), blk.reshape(-1, 3, 3))
+        Dg[fixd] = torch.eye(3, device=dev, dtype=torch.float64)
+        bad = ~(torch.diagonal(Dg, dim1=1, dim2=2) > 0).all(1); Dg[bad] = torch.eye(3, device=dev, dtype=torch.float64)
+        Dinv = torch.linalg.inv(Dg)
+        bb = g.double().reshape(-1).masked_fill(fx3, 0.0)
+
+        def pcg_sync(ncg, rtol=1e-6):
+            pre = lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1)
+            x_ = torch.zeros_like(bb); r_ = bb.clone(); z_ = pre(r_); d_ = z_.clone(); rz = float((r_ * z_).sum()); b2 = float((bb * bb).sum())
+            for kk in range(1, ncg + 1):
+                Ad = (A_ @ d_.unsqueeze(-1)).squeeze(-1); dAd = float((d_ * Ad).sum())
+                if not dAd > 0:
+                    break
+                al = rz / dAd; x_ = x_ + al * d_; r_ = r_ - al * Ad; rr = float((r_ * r_).sum())
+                if rr / b2 < rtol * rtol:
+                    break
+                z_ = pre(r_); rz2 = float((r_ * z_).sum()); d_ = z_ + (rz2 / rz) * d_; rz = rz2
+            return x_, kk
+        for ncg in (10000, 500, 50):
+            (xs, ks), ts = timed(lambda: pcg_sync(ncg), reps=1)
+            mf = fem_fast.MFPcg(Hp, dof, fx3, Dinv, M_, ck=50)
+            (xm, km, _, _), tm = timed(lambda: mf.solve(bb, ncg, 1e-6), reps=1)
+            rel = float((xm - xs).norm() / xs.norm())
+            R[f"pcg{ncg}"] = dict(sync_s=ts, sync_it=ks, mf_s=tm, mf_it=km, x_rel=rel)
+            print(f"[PCG 상한 {ncg}] CSR 동기 {ks} 회 {1e3 * ts:.1f} ms ({1e3 * ts / max(ks, 1):.3f} ms/회) | 행렬 없는 CUDA 그래프 {km} 회 {1e3 * tm:.1f} ms "
+                  f"({1e3 * tm / max(km, 1):.3f} ms/회) | 해 상대차 {rel:.3e}")
     del HL, HT, HLd, HTd, He
     torch.cuda.empty_cache()
 if A.out:

@@ -342,3 +342,78 @@ def _k_manual_run(A, F, vol, mu, lam):
             _KM[0] = _k_manual
             out.append(_KM[0](A[i:i + 131072], F[i:i + 131072], vol[i:i + 131072], float(mu), float(lam)).double())
     return torch.cat(out) if out else torch.zeros(0, 9, 9, device=A.device, dtype=torch.float64)
+
+
+# ---- 행렬 없는 블록 PCG + CUDA 그래프 (AF_FEM_PCG_MF=1, 실시간 판 선택지) ----
+# A v = Σ_T scatter(H_T v_T) (사면체 12x12 투영 헤시안 그대로, 고정 자유도는 행·열 0 + 대각 1) -- 조립 CSR 과 같은 행렬 (합산 순서만 다름).
+# PCG 본체 ck 회를 CUDA 그래프 하나로 잡아 재생 (커널 띄우기·호스트 동기화 없음), 재생마다 한 번 수렴 확인. 판정식은 _asm_pcg 와 같다.
+class MFPcg:
+    def __init__(self, He, dof, fx3, Dinv, M_, ck=50):
+        self.He, self.dof, self.M, self.ck = He, dof.reshape(-1), M_, int(ck)
+        self.keep = (~fx3).to(He.dtype)
+        self.fx = fx3.to(He.dtype)
+        self.Dinv = Dinv
+        self.T = He.shape[0]
+        self.graph = None
+
+    def mv(self, v):
+        vk = v * self.keep
+        y = torch.bmm(self.He, vk[self.dof].reshape(self.T, 12, 1)).reshape(-1)
+        out = torch.zeros_like(v).index_add_(0, self.dof, y)
+        return out * self.keep + v * self.fx
+
+    def pre(self, r):
+        return (self.Dinv @ r.reshape(self.M, 3, 1)).reshape(-1)
+
+    def _body(self):
+        S = self.S
+        Ad = self.mv(S["d"])
+        dAd = (S["d"] * Ad).sum()
+        neg_now = S["alive"] & ~(dAd > 0)
+        S["neg"].copy_(S["neg"] | neg_now)
+        S["alive"].copy_(S["alive"] & ~neg_now)
+        al = torch.where(S["alive"], S["rz"] / torch.where(dAd > 0, dAd, S["one"]), S["zero"])
+        S["x"].add_(al * S["d"])
+        S["r"].sub_(al * Ad)
+        rr = (S["r"] * S["r"]).sum()
+        S["nit"].add_(S["alive"].long())
+        S["alive"].copy_(S["alive"] & ~(rr < S["thr"]))
+        z = self.pre(S["r"])
+        rz2 = (S["r"] * z).sum()
+        beta = torch.where(S["alive"], rz2 / S["rz"], S["zero"])
+        S["d"].copy_(z + beta * S["d"])
+        S["rz"].copy_(torch.where(S["alive"], rz2, S["rz"]))
+
+    def solve(self, b, ncg, rtol, use_graph=True):
+        dev, dt = b.device, b.dtype
+        r = b.clone()
+        z = self.pre(r)
+        self.S = S = dict(x=torch.zeros_like(b), r=r, d=z.clone(), rz=(r * z).sum(), thr=(b * b).sum().clamp_min(1e-300) * (rtol * rtol),
+                          alive=torch.ones((), dtype=torch.bool, device=dev), neg=torch.zeros((), dtype=torch.bool, device=dev),
+                          nit=torch.zeros((), dtype=torch.long, device=dev), one=torch.ones((), dtype=dt, device=dev),
+                          zero=torch.zeros((), dtype=dt, device=dev))
+        nrep = (ncg + self.ck - 1) // self.ck
+        if use_graph and b.is_cuda:
+            s = torch.cuda.Stream()
+            s.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(s):                     # 데우기 (그래프 잡기 전 한 번; 상태를 바꾸므로 되돌린다)
+                keep = {k: v.clone() for k, v in S.items()}
+                self._body()
+                for k, v in keep.items():
+                    S[k].copy_(v)
+            torch.cuda.current_stream().wait_stream(s)
+            g = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(g):
+                for _ in range(self.ck):
+                    self._body()
+            for _ in range(nrep):
+                g.replay()
+                if not bool(S["alive"]):
+                    break
+        else:
+            for _ in range(nrep):
+                for _ in range(self.ck):
+                    self._body()
+                if not bool(S["alive"]):
+                    break
+        return S["x"], int(S["nit"]), float((S["r"] * S["r"]).sum()), bool(S["neg"])
