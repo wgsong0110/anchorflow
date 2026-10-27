@@ -78,6 +78,9 @@ FEM_LM_MUMIN=0, FEM_EIG_PROJ=abs, tol 1e-2), 결과 `lbours/fem2_lego/run`: **L0
 - 시간 (A6000 단독): 기존 헤시안 1.5 s → 입자 12x12 작은 함수 1.56 s (그대로 -- 비용은 파이프라인이 아니라 극분해 Newton 10 회의 이중 역전파),
   사면체 축약 1.03 s, + manual K 커널 0.73 s, **+ 바닥 후보 연쇄법칙 (J'ᵀKJ' + ⟨P, ∂²J_f⟩, 매핑만 든 작은 그래프) 0.47 s** -- 모두 기존 대비 5.25e-6 (같은 값).
   eigh 투영 74 ms. E 3.8 ms, E+기울기 32 ms.
+  연쇄법칙 판 구간 (AF_FEM_PROF, f32): 관성 1.0 ms, **K (매핑 항등 166,662 입자, manual 커널) 17.7 ms**, 사면체 합·B 7.4 ms,
+  **바닥 후보 147,088 입자 451 ms** (J' 역전파 9 회 + φ 이중 역전파 12 회 + 1 차 기울기) -- 남은 헤시안 비용은 거의 전부 바닥 후보다.
+  (torch.compile 은 vmap(jacfwd) 안 matmul 에서 dynamo 오류라 manual K 는 컴파일 없이 돈다 -- 그래도 17.7 ms.)
 
 ### C. 빠른 경로 80 프레임 (41c7b72, FAST=tet + PCG 동기화 없음(50 회마다 확인) + CSR 캐시, AF_FEM_PROF=1)
 
