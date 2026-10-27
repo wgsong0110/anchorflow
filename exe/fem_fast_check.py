@@ -77,7 +77,7 @@ for dt in (torch.float32, torch.float64):
         fr.kmode, fr.near_mode = "manual", "chain"
         (HTc, _), tHc = timed(lambda: fr.hess_tet(U0), reps=3)
         R[f"{nm}_HT_chain_rel"] = float((HTc - HTd).norm() / HTd.norm()); R[f"{nm}_t_hess_tet_chain_ms"] = 1e3 * tHc
-        print(f"[{nm}] 사면체 축약 + manual K + 바닥 후보 연쇄법칙: 기존 대비 {R[f'{nm}_HT_chain_rel']:.3e} ({1e3 * tHc:.1f} ms)")
+        print(f"[{nm}] 사면체 축약 + manual K + 바닥 후보 연쇄법칙: 기존 대비 {R[f'{nm}_HT_chain_rel']:.3e} ({1e3 * tHc:.1f} ms) 구간 {getattr(fr, 'last_t', {})}")
         del HTc
     except Exception as e:  # noqa: BLE001
         import traceback; traceback.print_exc()

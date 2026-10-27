@@ -25,6 +25,25 @@ def _eye(dev, dt):
     return _I3[k]
 
 
+class _Tick:
+    """AF_FEM_PROF=1 일 때만 동기화해 구간 시간 (ms) 을 모은다."""
+    def __init__(self):
+        import os as _os, time as _time
+        self.on = bool(_os.environ.get("AF_FEM_PROF")) and torch.cuda.is_available()
+        self._time = _time
+        self.d = {}
+        if self.on:
+            torch.cuda.synchronize()
+        self.t = _time.time()
+
+    def __call__(self, k):
+        if self.on:
+            torch.cuda.synchronize()
+            t = self._time.time()
+            self.d[k] = 1e3 * (t - self.t)
+            self.t = t
+
+
 class FemFrame:
     def __init__(self, x, v, F, m, vol, rw, lm, npos, fixd, cfg, h, eps_sp=0.0, eps_st=0.0, stick_xn=False, dtype=None):
         dt = dtype or x.dtype
@@ -142,6 +161,7 @@ class FemFrame:
     def hess_tet(self, U):
         """사면체 12x12 [T,12,12] (float64, 투영 전) -- 매핑 항등 입자는 사면체 축약, 바닥 후보만 입자 12x12."""
         T = self.uq.shape[0]
+        tk = _Tick()
         near = self.near(U)
         far = (~near).nonzero().squeeze(1)
         nidx = near.nonzero().squeeze(1)
@@ -153,6 +173,7 @@ class FemFrame:
             0, self.inv[far], wm[:, None, None] * lmf.unsqueeze(2) * lmf.unsqueeze(1))
         I3 = torch.eye(3, device=U.device, dtype=torch.float64)
         H += (LL[:, :, None, :, None] * I3[None, None, :, None, :]).reshape(T, 12, 12)
+        tk("관성")
         # 탄성 (매핑 항등): K_p = ∂²ψ(A F_p)/∂A² (A = I + G_T), Σ V_p K_p 를 사면체로 모은 뒤 B_T
         Up = U[:, :3].to(self.dt)[self.rw[far]]
         G = (Up.unsqueeze(-1) * self.gl[far].unsqueeze(-2)).sum(1)
@@ -171,15 +192,19 @@ class FemFrame:
                 gAf = gA.reshape(n, 9)
                 for j in range(9):
                     K[:, :, j] = torch.autograd.grad(gAf[:, j].sum(), ZA, retain_graph=True)[0].reshape(n, 9).double()
+        tk("K(항등)")
         KT = torch.zeros(T, 9, 9, device=U.device, dtype=torch.float64).index_add_(0, self.inv[far], K)
         # B_T [9 (a,b), 12 (i,c)] = δ_ac ∇λ_i,b  ->  H_el[(i,c),(j,d)] = Σ_{b,e} ∇λ_i,b K[(c,b),(d,e)] ∇λ_j,e
         gl = self.glT.double()
         K4 = KT.reshape(T, 3, 3, 3, 3)                                          # [T, c, b, d, e]
         Hel = torch.einsum("tib,tcbde,tje->ticjd", gl, K4, gl).reshape(T, 12, 12)
         H += Hel
+        tk("사면체 합·B")
         if nidx.numel():
             H.index_add_(0, self.inv[nidx], self.hess_near_chain(U, nidx) if self.near_mode == "chain" else self.hess_particle(U, nidx))
-        return H, dict(n_near=int(nidx.numel()), n_far=int(far.numel()))
+        tk("바닥 후보")
+        self.last_t = tk.d
+        return H, dict(n_near=int(nidx.numel()), n_far=int(far.numel()), t=tk.d)
 
     def hess_near_chain(self, U, idx):
         """바닥 후보 입자 12x12 (AF_FEM_FAST_NEAR=chain): 연쇄법칙으로 정확히 같은 헤시안을 싼 그래프로.
