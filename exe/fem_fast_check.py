@@ -56,6 +56,15 @@ for dt in (torch.float32, torch.float64):
     (HT, info), tHt = timed(lambda: fr.hess_tet(U0), reps=2)
     R[f"{nm}_HT_rel"] = float((HT - HTd).norm() / HTd.norm())
     R[f"{nm}_t_hess_particle_ms"] = 1e3 * tHp; R[f"{nm}_t_hess_tet_ms"] = 1e3 * tHt; R[f"{nm}_near"] = info
+    try:
+        fr.kmode = "compile"
+        (HTc, _), tHc = timed(lambda: fr.hess_tet(U0), reps=3)
+        R[f"{nm}_HTc_rel"] = float((HTc - HTd).norm() / HTd.norm()); R[f"{nm}_t_hess_tet_compile_ms"] = 1e3 * tHc
+        print(f"[{nm}] 사면체 축약 + 컴파일 K 커널: 기존 대비 {R[f'{nm}_HTc_rel']:.3e} ({1e3 * tHc:.1f} ms)")
+        del HTc
+    except Exception as e:  # noqa: BLE001
+        print(f"[{nm}] 컴파일 K 실패: {e!r}"[:500])
+    fr.kmode = "autograd"
     print(f"[{nm}] 입자 12x12 vs 기존 HL 상대차 {R[f'{nm}_HL_rel']:.3e} ({1e3 * tHp:.1f} ms) | 사면체 축약 12x12 vs 기존 사면체 합 {R[f'{nm}_HT_rel']:.3e} "
           f"({1e3 * tHt:.1f} ms, 바닥 후보 {info['n_near']} / 항등 {info['n_far']})")
     # B (∇λ) vs 덤프 Bp (매핑 항등 입자)

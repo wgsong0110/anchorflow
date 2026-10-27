@@ -54,6 +54,8 @@ class FemFrame:
         gl = torch.cat([-Di.sum(1, keepdim=True), Di], 1)                      # [T,4,3]
         self.glT = gl.to(dt)
         self.gl = self.glT[self.inv]                                           # [N,4,3]
+        import os as _os
+        self.kmode = _os.environ.get("AF_FEM_FAST_K", "autograd")            # compile = vmap(jacfwd) 닫힌 식을 torch.compile 한 커널
 
     # ---- 입자 단위 에너지 (Up = 입자별 네 노드 변위 사본 [n,4,3]) ----
     def _maps(self, x0, q, Jf):
@@ -154,15 +156,18 @@ class FemFrame:
         Up = U[:, :3].to(self.dt)[self.rw[far]]
         G = (Up.unsqueeze(-1) * self.gl[far].unsqueeze(-2)).sum(1)
         A0 = (_eye(Up.device, self.dt) + G).detach()
-        ZA = torch.zeros_like(A0).requires_grad_(True)
         n = A0.shape[0]
-        K = torch.empty(n, 9, 9, device=U.device, dtype=torch.float64)
-        with torch.enable_grad(), phys_resid.hess_mode():
-            psi = phys_resid.psi_of((A0 + ZA) @ self.F[far], self.cfg, self.h)[0]
-            gA, = torch.autograd.grad((self.vol[far] * psi).sum(), ZA, create_graph=True)
-            gAf = gA.reshape(n, 9)
-            for j in range(9):
-                K[:, :, j] = torch.autograd.grad(gAf[:, j].sum(), ZA, retain_graph=True)[0].reshape(n, 9).double()
+        if self.kmode == "compile":
+            K = _k_compiled(A0, self.F[far], self.vol[far], float(self.mu), float(self.lam))
+        else:
+            ZA = torch.zeros_like(A0).requires_grad_(True)
+            K = torch.empty(n, 9, 9, device=U.device, dtype=torch.float64)
+            with torch.enable_grad(), phys_resid.hess_mode():
+                psi = phys_resid.psi_of((A0 + ZA) @ self.F[far], self.cfg, self.h)[0]
+                gA, = torch.autograd.grad((self.vol[far] * psi).sum(), ZA, create_graph=True)
+                gAf = gA.reshape(n, 9)
+                for j in range(9):
+                    K[:, :, j] = torch.autograd.grad(gAf[:, j].sum(), ZA, retain_graph=True)[0].reshape(n, 9).double()
         KT = torch.zeros(T, 9, 9, device=U.device, dtype=torch.float64).index_add_(0, self.inv[far], K)
         # B_T [9 (a,b), 12 (i,c)] = δ_ac ∇λ_i,b  ->  H_el[(i,c),(j,d)] = Σ_{b,e} ∇λ_i,b K[(c,b),(d,e)] ∇λ_j,e
         gl = self.glT.double()
@@ -172,3 +177,36 @@ class FemFrame:
         if nidx.numel():
             H.index_add_(0, self.inv[nidx], self.hess_particle(U, nidx))
         return H, dict(n_near=int(nidx.numel()), n_far=int(far.numel()))
+
+
+# ---- K_p = V ∂²ψ(A F)/∂A² 를 원소별 닫힌 식의 전진 미분으로 (AF_FEM_FAST_K=compile) ----
+# hess_mode 의 _FcrPsiH 와 같은 정의: 기울기 = _fcr_grad_h(AF) Fᵀ (극분해 Newton 10 회를 그대로 미분), σ_min ≤ 0.01 입자는 기울기가
+# 상수라 K = 0. vmap(jacfwd) 를 torch.compile 로 한 커널에 묶는다 (반복마다 커널 수백 개를 띄우던 것을 없앤다).
+_KC = [None]
+
+
+def _k_one(Av, Fp, mu, lam):
+    Am = Av.reshape(3, 3)
+    P = phys_resid._fcr_grad_h((Am @ Fp).unsqueeze(0), mu, lam)[0]
+    return (P @ Fp.transpose(0, 1)).reshape(9)
+
+
+def _k_batch(A, F, vol, mu: float, lam: float):
+    J = torch.func.vmap(torch.func.jacfwd(_k_one), in_dims=(0, 0, None, None))(A.reshape(-1, 9), F, mu, lam)   # [n,9,9]
+    AF = A @ F
+    C = (AF.unsqueeze(-1) * AF.unsqueeze(-2)).sum(-3)
+    smin = phys_resid._sym_eig3(C).clamp_min(1e-12).sqrt()[:, 0]
+    return torch.where((smin <= 0.01)[:, None, None], torch.zeros_like(J), J) * vol[:, None, None]
+
+
+def _k_compiled(A, F, vol, mu, lam):
+    if _KC[0] is None:
+        try:
+            _KC[0] = torch.compile(_k_batch, dynamic=True)
+        except Exception as e:                                               # noqa: BLE001
+            print(f"[fem_fast] torch.compile 실패, 그대로: {e}", flush=True)
+            _KC[0] = _k_batch
+    out = []
+    for i in range(0, A.shape[0], 131072):
+        out.append(_KC[0](A[i:i + 131072], F[i:i + 131072], vol[i:i + 131072], mu, lam).double())
+    return torch.cat(out) if out else torch.zeros(0, 9, 9, device=A.device, dtype=torch.float64)
