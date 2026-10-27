@@ -347,9 +347,9 @@ GEN_DEFAULTS = dict(
     n_max=640, p_logn=0.85,
     p_mode=[0.3, 0.25, 0.25, 0.2],               # 균등 / 몇 점으로 수축 / 부분 사면체 / 정규 부분격자
     shrink_min=0.02, sharp_max=4.0, sub_s_min=0.12, sub_s_max=0.9,
-    v_lo=4e-9, v_hi=1.6e-5, p_vcell=0.5,         # V_p 모양 (상대 크기); 실제 lego log10 V_p [−8.12, −5.10] (test_1a9bcd9 cover)
+    v_lo=4e-9, v_hi=6e-5, p_vcell=0.5,         # V_p 모양 (상대 크기); 실제 lego log10 V_p [−8.12, −5.10] (test_1a9bcd9 cover)
     occ_lo=0.3, occ_hi=30.0,                     # 셀 점유 상한 V_T/V_tet ≤ logU[occ_lo, occ_hi] (실제 lego [0.0057, 22], 99.9 % 12) -- 넘는 셀만 V_p 를 비례로 줄인다
-    S_max=0.7, g_max=0.6, sig_max=0.4, p_sig0=0.15,
+    S_max=0.7, g_max=0.6, sig_max=0.4, p_sig0=0.15, p_sameF=0.15,   # p_sameF: 셀 안 F 가 모두 같은 셀 (실제 롤아웃에 흔하다: 같이 머문 입자는 같은 A_T 를 받는다)
     p_out=0.5, out_frac=0.3, out_ang_min=1e-2, out_ang_max=math.pi, out_str_max=0.7,
     det_min=0.05, p_inv=0.1, p_lego=0.4, E_fac=100.0, nu_max=0.45, p_mix=0.1,
 )
@@ -403,6 +403,7 @@ class CellGen:
        R_c ∈ SO(3) 균등, U_c = Q diag(e^ε) Qᵀ, |ε_i| ≤ S ~ logU[1e-4, S_max]; G [3,3,3] 크기 g ~ logU[1e-4, g_max] (격자 단위당);
        σ ~ logU[1e-4, sig_max] (확률 p_sig0 로 0); 확률 p_out 로 입자 비율 U[0, out_frac] 가 추가 회전 (각 logU[out_ang_min, out_ang_max])
        + 추가 늘임 (|ε| ≤ logU[1e-3, out_str_max]), 그중 p_inv 는 한 축 반사 (뒤집힌 입자). 나머지 입자 det F_p < det_min 이면 그 셀 변형을 절반으로 줄여 다시 (최대 8 번).
+    확률 p_sameF 로 셀 안 모든 입자 F 가 같다 (G = σ = 이상 입자 = 0).
     물성: 확률 p_lego 로 씬 값 (E, ν), 나머지 E ~ logU[E/E_fac, E·E_fac], ν ~ U[0, nu_max]; 확률 p_mix 로 셀 안 두 물성 섞기.
     """
 
@@ -513,8 +514,12 @@ class CellGen:
         gm = _logu(gen, 1e-4, o["g_max"], B, dev)
         G = torch.randn(B, 3, 3, 3, generator=gen, device=dev) / math.sqrt(27.0)
         sig = _logu(gen, 1e-4, o["sig_max"], B, dev) * (torch.rand(B, generator=gen, device=dev) >= o["p_sig0"]).float()
+        same = torch.rand(B, generator=gen, device=dev) < o["p_sameF"]
+        gm = gm * (~same).float()
+        sig = sig * (~same).float()
         Np = torch.randn(N, 3, 3, generator=gen, device=dev)
         fo = torch.rand(B, generator=gen, device=dev) * o["out_frac"] * (torch.rand(B, generator=gen, device=dev) < o["p_out"]).float()
+        fo = fo * (~same).float()
         isout = torch.rand(N, generator=gen, device=dev) < fo[seg]
         oang = _logu(gen, o["out_ang_min"], o["out_ang_max"], N, dev) * isout.float()
         Ro = _rodrigues(_unit(gen, N, dev), oang)
