@@ -76,6 +76,134 @@ class FemFrame:
         import os as _os
         self.kmode = _os.environ.get("AF_FEM_FAST_K", "autograd")            # compile = vmap(jacfwd) 닫힌 식을 torch.compile 한 커널
         self.near_mode = _os.environ.get("AF_FEM_FAST_NEAR", "autograd")     # chain = 바닥 후보도 manual K + 매핑만 든 작은 그래프 (정확히 같은 식)
+        self.tq = None                                                         # AF_FEM_TETQ=1: tetq_setup 이 채운다
+
+    # ---- AF_FEM_TETQ=1 (사용자 10-27 확정): 사면체 적분점 하나 -- MPM 처럼 고정 사면체 격자가 grid, 격자 안 계산을 FEM 이 ----
+    # 에너지가 바뀌는 새 모델 (입자 적분점 -> 사면체 적분점 1 개). 바닥 매핑(stick·softplus)은 입자마다 J_f 를 바꾸는 정의라 **그대로 두려고**
+    # 바닥 후보 입자(매핑이 항등이 아닌 입자, s/ε ≤ 20) 는 지금 빠른 경로와 똑같이 입자 단위 (관성·탄성 모두, 닫힌 식 헤시안) 로 남기고,
+    # 매핑이 항등인 입자만 사면체로 모은다 (P2G):
+    #   관성   Σ_p w m/(2h²) |Σ_i λ_i U_i - c_p|² = Σ_T [½ Σ_ij M_T,ij U_i·U_j - Σ_i b_T,i·U_i] + C0   (일관 질량 -- 정확, 근사 아님)
+    #   탄성   Σ_T V_T ψ(A_T F̄_T),  V_T = Σ_{p∈T} V_p,  F̄_T = Σ V_p F_p / V_T  (입자 부피 가중 평균),  A_T = I + Σ_i U_i ⊗ ∇λ_i
+    # 분할(바닥 후보 / 항등)은 뉴턴 걸음 시작 U 에서 정해 그 걸음(헤시안·선탐색) 동안 고정한다. 입자가 없는(항등 입자가 없는) 사면체는 탄성에서 빠진다.
+    # G2P 는 기존 파이프라인 그대로 (입자 위치·속도 barycentric 보간, F_p <- J_f F_p 입자별 누적).
+    def tetq_setup(self, U):
+        f8 = torch.float64
+        if not isinstance(self.cfg.get("E"), (int, float)) or not isinstance(self.cfg.get("nu"), (int, float)):
+            raise SystemExit("AF_FEM_TETQ: 물성이 입자별이면 사면체 부피 가중 평균이 필요하다 (지금은 균일 물성만)")
+        dev = self.dev
+        near = self.near(U)
+        fi = (~near).nonzero().squeeze(1)
+        ni = near.nonzero().squeeze(1)
+        T = self.uq.shape[0]
+        inv = self.inv[fi]
+        V = self.vol[fi].to(f8)
+        VT = torch.zeros(T, device=dev, dtype=f8).index_add_(0, inv, V)
+        FT = torch.zeros(T, 3, 3, device=dev, dtype=f8).index_add_(0, inv, V[:, None, None] * self.F[fi].to(f8))
+        k = (self.w[fi] * self.m[fi]).to(f8) / (self.h * self.h)
+        lm = self.lm[fi].to(f8)
+        c = self.c[fi].to(f8)
+        M4 = torch.zeros(T, 4, 4, device=dev, dtype=f8).index_add_(0, inv, k[:, None, None] * lm[:, :, None] * lm[:, None, :])
+        B4 = torch.zeros(T, 4, 3, device=dev, dtype=f8).index_add_(0, inv, k[:, None, None] * lm[:, :, None] * c[:, None, :])
+        C0 = 0.5 * (k * (c * c).sum(-1)).sum()
+        act = (VT > 0).nonzero().squeeze(1)
+        self.tq = dict(near=near, fi=fi, ni=ni, act=act, uq=self.uq[act], gl=self.glT[act].to(f8), VT=VT[act],
+                       FT=FT[act] / VT[act][:, None, None], M4=M4[act], B4=B4[act], C0=C0)
+        return self.tq
+
+    def _tq_energy(self, Ut):
+        """사면체 부분 에너지 (float64): Ut [Ta,4,3] = 활성 사면체 네 노드 변위."""
+        q = self.tq
+        inert = 0.5 * ((q["M4"] @ Ut) * Ut).sum() - (q["B4"] * Ut).sum() + q["C0"]
+        A = _eye(Ut.device, Ut.dtype) + (Ut.unsqueeze(-1) * q["gl"].unsqueeze(-2)).sum(1)
+        psi = phys_resid.psi_of(A @ q["FT"], self.cfg, self.h)[0]
+        return inert + (q["VT"] * psi).sum()
+
+    def _tq_near_energy(self, U, grad=False):
+        ni = self.tq["ni"]
+        if not ni.numel():
+            return None, None
+        Up = U[:, :3].to(self.dt)[self.rw[ni]].detach()
+        if not grad:
+            return self.particle_energy(Up, ni).sum().double(), None
+        Up.requires_grad_(True)
+        with torch.enable_grad():
+            En = self.particle_energy(Up, ni).sum()
+            gn, = torch.autograd.grad(En, Up)
+        return En.detach().double(), gn
+
+    def tetq_energy(self, U):
+        E = self._tq_energy(U[:, :3].double()[self.tq["uq"]])
+        En, _ = self._tq_near_energy(U)
+        return E if En is None else E + En
+
+    def tetq_energy_grad(self, U):
+        q = self.tq
+        Ut = U[:, :3].double()[q["uq"]].requires_grad_(True)
+        with torch.enable_grad():
+            Et = self._tq_energy(Ut)
+            gt, = torch.autograd.grad(Et, Ut)
+        g = torch.zeros(U.shape[0], 3, device=U.device, dtype=torch.float64).index_add_(0, q["uq"].reshape(-1), gt.reshape(-1, 3))
+        En, gn = self._tq_near_energy(U, grad=True)
+        if En is not None:
+            g.index_add_(0, self.rw[q["ni"]].reshape(-1), gn.reshape(-1, 3).double())
+            Et = Et + En
+        return Et.detach(), g.to(self.dt), None
+
+    def hess_tetq(self, U):
+        """사면체 12x12 [T,12,12] (float64, 투영 전): 활성 사면체 = M_T ⊗ I + B_Tᵀ K_T B_T (K_T = V_T ∂²ψ(A_T F̄_T)/∂A², 사면체 수만큼만
+        manual 커널), 바닥 후보 입자는 지금 빠른 경로와 같은 입자 12x12 (닫힌 식) 를 자기 사면체에 더한다."""
+        q = self.tq
+        T = self.uq.shape[0]
+        tk = _Tick()
+        f8 = torch.float64
+        Ta = int(q["act"].numel())
+        I3 = torch.eye(3, device=U.device, dtype=f8)
+        Hq = (q["M4"][:, :, None, :, None] * I3[None, None, :, None, :]).reshape(Ta, 12, 12)
+        tk("관성")
+        Ut = U[:, :3].double()[q["uq"]]
+        A0 = I3 + (Ut.unsqueeze(-1) * q["gl"].unsqueeze(-2)).sum(1)
+        K = _k_manual_run(A0, q["FT"], q["VT"], float(self.mu), float(self.lam))
+        tk("K(사면체)")
+        Hq = Hq + torch.einsum("tib,tcbde,tje->ticjd", q["gl"], K.reshape(Ta, 3, 3, 3, 3), q["gl"]).reshape(Ta, 12, 12)
+        H = torch.zeros(T, 12, 12, device=U.device, dtype=f8)
+        H[q["act"]] = Hq
+        tk("사면체 합·B")
+        ni = q["ni"]
+        if ni.numel():
+            if self.near_mode == "analytic":
+                H.index_add_(0, self.inv[ni], self.hess_near_analytic(U, ni))
+            elif self.near_mode in ("chain", "chainfwd"):
+                H.index_add_(0, self.inv[ni], self.hess_near_chain(U, ni, fwd=(self.near_mode == "chainfwd")))
+            else:
+                H.index_add_(0, self.inv[ni], self.hess_particle(U, ni))
+        tk("바닥 후보")
+        self.last_t = tk.d
+        return H, dict(n_near=int(ni.numel()), n_far=int(q["fi"].numel()), n_act=Ta, t=tk.d)
+
+    def tetq_diag(self, U):
+        """축약 근사 정도 (AF_FEM_TETQ_DIAG=1, 계측 구간 밖): 같은 A_T 에서 입자 적분점 Σ V_p ψ(A_T F_p) vs 사면체 적분점 Σ V_T ψ(A_T F̄_T)
+        (매핑 항등 입자만 -- 바닥 후보는 두 모델이 같다), U=0 (A=I) 에서도. F 퍼짐 = 부피 가중 평균 |F_p - F̄_T|_F."""
+        q = self.tq
+        f8 = torch.float64
+        fi = q["fi"]
+        with torch.no_grad():
+            T = self.uq.shape[0]
+            FTf = torch.zeros(T, 3, 3, device=U.device, dtype=f8)
+            FTf[q["act"]] = q["FT"]
+            Ut = U[:, :3].double()[self.uq]
+            AT = torch.eye(3, device=U.device, dtype=f8) + (Ut.unsqueeze(-1) * self.glT.double().unsqueeze(-2)).sum(1)
+            inv = self.inv[fi]
+            Fp, V, Fb, Ap = self.F[fi].double(), self.vol[fi].double(), FTf[inv], AT[inv]
+            ps = lambda X: phys_resid.psi_of(X, self.cfg, self.h)[0].double()
+            Ep, Et = float((V * ps(Ap @ Fp)).sum()), float((q["VT"] * ps(AT[q["act"]] @ q["FT"])).sum())
+            E0p, E0t = float((V * ps(Fp)).sum()), float((q["VT"] * ps(q["FT"])).sum())
+            dF = (Fp - Fb).flatten(1).norm(dim=1)
+            vs = float(V.sum())
+            return dict(E_el_part=Ep, E_el_tet=Et, E_el_rel=(Et - Ep) / max(abs(Ep), 1e-30),
+                        E0_el_part=E0p, E0_el_tet=E0t, E0_el_rel=(E0t - E0p) / max(abs(E0p), 1e-30),
+                        dF_mean=float((V * dF).sum()) / vs, dF_max=float(dF.max()),
+                        F_mean=float((V * Fb.flatten(1).norm(dim=1)).sum()) / vs,
+                        n_act=int(q["act"].numel()), n_tet=int(T), n_near=int(q["ni"].numel()), n_far=int(fi.numel()))
 
     # ---- 입자 단위 에너지 (Up = 입자별 네 노드 변위 사본 [n,4,3]) ----
     def _maps(self, x0, q, Jf):
@@ -120,6 +248,8 @@ class FemFrame:
         return 0.5 * self.w[sl] * self.m[sl] / (self.h * self.h) * (d * d).sum(-1) + self.vol[sl] * psi
 
     def energy(self, U):
+        if self.tq is not None:
+            return self.tetq_energy(U)
         return self.particle_energy(U[:, :3].to(self.dt)[self.rw]).sum()
 
     def near(self, U):
@@ -137,6 +267,8 @@ class FemFrame:
 
     def energy_grad(self, U):
         """(E, dE/dU [M,3]) -- 입자 국소 기울기를 노드로 모은다."""
+        if self.tq is not None:
+            return self.tetq_energy_grad(U)
         Up = U[:, :3].to(self.dt)[self.rw].detach().requires_grad_(True)
         with torch.enable_grad():
             E = self.particle_energy(Up).sum()

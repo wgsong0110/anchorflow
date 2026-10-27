@@ -1311,6 +1311,12 @@ _FEM_JD = [None, False]    # AF_FEM_DUMP: _fwd 가 남기는 입자 야코비안
 _FEM_STATE = [None]        # AF_FEM_DUMP: 프레임 시작 상태 (cfg, x, v, F, m, vol, t, nrm)
 _FEM_Z = [None]            # AF_FEM_FAST: (노드 변수 z, 색인 zi) -- U = z (z_vs_U0 = 0 확인됨)
 _FEM_FR = {}               # AF_FEM_FAST: 프레임 고정 자료 (fem_fast.FemFrame), 키 = (t, rows 포인터)
+_FEM_TT = {}               # AF_FEM_TOL: 루프 밖 시간 (end = 앞 프레임 뉴턴 루프 끝, ret = 그 프레임 _ov_once 반환)
+
+
+def _tetq_on():
+    """AF_FEM_TETQ=1 (사용자 10-27 확정, 선택지): 사면체 적분점 하나 모델 (fem_fast.FemFrame.tetq_*). 안 주면 기존 입자 적분점 그대로."""
+    return os.environ.get("AF_FEM_TETQ", "") == "1"
 
 
 def _fem_fast_mode():
@@ -4918,7 +4924,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 # 감쇠 없는 뉴턴), 그 위에 아르미호 되추적 선탐색, 수렴 판정 = IPC 식 속도 단위 |p|∞ / (h·EXT) < AF_FEM_TOL (dt 비례),
                 # 최대 AF_OV_NEWTON_STEPS 회. 프레임마다 반복수·|p|∞/(h·EXT)·|g|/|g0|·E·선탐색 걸음을 출력하고 AF_FEM_LOG(jsonl) 에 남긴다.
                 _ftol = float(os.environ["AF_FEM_TOL"])
+                _fsync()
                 _hf = float(_DT[0]); _tf0 = time.time()
+                _ptt = dict(_FEM_TT)
                 _Ec = float(E)
                 _frec = dict(t=int(t), h=_hf, tol=_ftol, E0=_Ec, conv=False, why="최대 반복", steps=[])
                 _g0n = None
@@ -4947,12 +4955,19 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 if _nfix > 0:
                     _nst = _nfix
                 _frec["fix_newton"] = _nfix
+                if "end" in _ptt:
+                    # 앞 프레임 루프 끝 -> 이번 루프 시작 (루프 밖 전체), 그중 앞 프레임 _ov_once 반환까지 (G2P: 파이프라인 끝 순전파)
+                    _frec["t_out_prev"] = _tf0 - _ptt["end"]
+                    _frec["t_g2p_prev"] = (_ptt["ret"] - _ptt["end"]) if _ptt.get("ret", 0) > _ptt["end"] else None
+                _frec["tetq"] = _tetq_on()
                 for _k in range(_nst):
                     (_newton_target_asm if _fsol == "pcg" else _newton_target)(_fwd, _NTG, m, nrm, _k, t)
                     _nl = _NEWTON_LOG.pop()
                     if _k == 0 and _fem_fast_mode():
                         _Ec = _nl["E"]                               # AF_FEM_FAST: 선탐색과 같은 계산으로 (기존 E 와의 차는 [FEM 빠른 검산])
                         _frec["E0_pipeline"], _frec["E0"] = _frec["E0"], _Ec
+                    elif _tetq_on():
+                        _Ec = _nl["E"]                               # AF_FEM_TETQ: 걸음마다 분할이 새로 정해져 그 걸음 에너지로 다시 잰다
                     _ut = _NTG[0][0]
                     _NTG[0] = None
                     _zt = (_ut if _zi is None else _ut[_zi]).to(_z.dtype)
@@ -4977,7 +4992,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                  p_inf_all=_nl["p_inf"] / (_hf * float(EXT)), cg=_nl["cg"], neg=_nl["neg"], cg_res=_nl["res"], gp=_nl["gp"])
                     if _fsol == "pcg":
                         _srec.update({q: _nl[q] for q in ("t_hess", "t_asm", "t_pcg", "n_tet", "nnz", "neg_eig", "neg_tet_frac", "eig_min", "sec",
-                                                         "t_fwd0", "t_eg", "t_proj")})
+                                                         "t_fwd0", "t_eg", "t_proj", "t_p2g", "tetq", "t_hess_parts") if q in _nl})
                         if _nl.get("diag") is not None:
                             _srec["asm_check"] = _nl["diag"]
                     if not (math.isfinite(_pin) and math.isfinite(_pmin[1] if _pmin is not None else _nl["gp"])):
@@ -5044,6 +5059,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                             _mu = max(_mu, _mumin)
                         _srec.update(mu=_tries[-1]["mu"], p_vel_dir=_tries[-1]["p_vel"], lm_tries=_tries, mu_next=_mu)
                     _srec.update(alpha=_al, E_new=_En if _acc else None)
+                    if _tetq_on() and os.environ.get("AF_FEM_TETQ_DIAG") and _acc:
+                        _fr_ = _FEM_FR["fr"]
+                        _srec["tetq_viol"] = int((_fr_.near(_fem_U_of_z()) & ~_fr_.tq["near"]).sum())
                     _frec["steps"].append(_srec)
                     print(f"      [FEM 걸음] t={t} k={_k} |p|∞/(h·EXT) {_pin:.3e} |g|/|g0| {_srec['g_rel']:.3e} CG {_nl['cg']}"
                           f"{' 음곡률' if _nl['neg'] else ''} α {_al:.3g} E {_Ec:.6e} -> {_En:.6e} {time.time() - _tf0:.0f} s"
@@ -5076,6 +5094,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 if os.environ.get("AF_FEM_LOG"):
                     with open(os.environ["AF_FEM_LOG"], "a") as _ff:
                         _ff.write(json.dumps(_frec, ensure_ascii=False) + "\n")
+                _fsync()
+                _FEM_TT.clear(); _FEM_TT["end"] = time.time()
                 if _FEM_BAR[0] is None:
                     _FEM_BAR[0] = tqdm(total=int(a.eval_len), desc="FEM 롤아웃", ncols=90, mininterval=0)
                 _FEM_BAR[0].update(1)
@@ -5824,6 +5844,7 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     _chk = _ASM_CHECKED[0] < int(os.environ.get("AF_FEM_ASM_CHECK", "0") or 0)
     _diag = None
     _HT_fast = None
+    _tqi, _t_p2g = None, None
     if _fast:
         _fk = (int(t), _rw.data_ptr(), N_, M_)
         if _FEM_FR.get("key") != _fk:
@@ -5833,6 +5854,20 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
                                                    _st["cfg"], h_, eps_sp=float(a.bc_softplus or 0), eps_st=float(a.bc_stick or 0),
                                                    stick_xn=bool(a.bc_stick_xn), dtype=U0.dtype))
         _fr = _FEM_FR["fr"]
+        _tqi = None
+        if _tetq_on():
+            # AF_FEM_TETQ=1 (사용자 10-27 확정): P2G -- 이 걸음의 분할(바닥 후보/항등)과 사면체 F̄_T·V_T·일관 질량을 만든다 (fem_fast.tetq_setup)
+            if _fast != "tet":
+                raise SystemExit("AF_FEM_TETQ=1 은 AF_FEM_FAST=tet 와 함께")
+            _fsync()
+            _tq0 = time.time()
+            _fr.tetq_setup(U0)
+            _fsync()
+            _t_p2g = time.time() - _tq0
+            _tqi = dict(n_act=int(_fr.tq["act"].numel()), n_near=int(_fr.tq["ni"].numel()), n_far=int(_fr.tq["fi"].numel()))
+            if os.environ.get("AF_FEM_TETQ_DIAG") and int(k) == 0:
+                _tqi["diag"] = _fr.tetq_diag(U0)                         # 계측 구간 밖 (아래 _teg0 는 이 뒤부터)
+                _fsync()
         _teg0 = time.time()
         _Ef, _gf, _ = _fr.energy_grad(U0)
         gd = _gf.to(U0.dtype).masked_fill(_fixd.unsqueeze(-1), 0.0)
@@ -5841,7 +5876,7 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
         _t_eg = time.time() - _teg0
         _th = time.time()
         if _fast == "tet":
-            _HT_fast, _finfo = _fr.hess_tet(U0)
+            _HT_fast, _finfo = (_fr.hess_tetq(U0) if _tqi is not None else _fr.hess_tet(U0))
         else:
             HL = _fr.hess_particle(U0)
             _finfo = {}
@@ -6065,7 +6100,9 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
                             p_inf=float(p_[:, :3].abs().max()), g_norm=float(gd.norm()), gp=float((gd * p_).sum()),
                             solver="pcg", t_hess=_t_hess, t_asm=_t_asm, t_pcg=_t_pcg, n_tet=T_, nnz=_nnz,
                             t_fwd0=_t_fwd0, t_eg=_t_eg, t_proj=_t_proj,
-                            neg_eig=_nneg, neg_tet_frac=_neg_tet, eig_min=_emin))
+                            neg_eig=_nneg, neg_tet_frac=_neg_tet, eig_min=_emin,
+                            t_p2g=(_t_p2g if _tqi is not None else None), tetq=_tqi,
+                            t_hess_parts=(dict(_finfo.get("t") or {}) if _fast == "tet" else None)))
 
 
 
@@ -6731,6 +6768,8 @@ def _ov_frame(d, t, gsel, p, x, v, F):
         _no = max(int(a.lin_outer), 1) if a.elast == "lin" else 1
         for _oi in range(_no):
             x2, v2, Jd = _ov_once(d, t, gsel, p, x, v, F)
+            if "end" in _FEM_TT:
+                _fsync(); _FEM_TT["ret"] = time.time()
             if _no > 1 and _oi + 1 < _no:
                 _JR_HOLD[0] = Jd.detach()
     _JR_HOLD[0] = None
