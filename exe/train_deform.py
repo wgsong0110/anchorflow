@@ -5992,7 +5992,22 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     _ci = torch.cat([_ci, _fi, _di]) if lam > 0 else torch.cat([_ci, _fi])
     _vv = torch.cat([_vv, torch.ones(_fi.numel(), device=dev, dtype=torch.float64)]
                     + ([torch.full((3 * M_,), lam, device=dev, dtype=torch.float64)] if lam > 0 else []))
-    A = torch.sparse_coo_tensor(torch.stack([_ri, _ci]), _vv, (3 * M_, 3 * M_)).coalesce().to_sparse_csr()
+    if os.environ.get("AF_FEM_CSR_CACHE") and lam == 0.0:
+        # AF_FEM_CSR_CACHE=1 (실시간 판 선택지): 프레임 안 희소 패턴(사면체·고정 노드)이 같으므로 정렬·중복 합 색인을 한 번만 만들고
+        # 이후 걸음은 값만 index_add (coalesce 와 같은 합 -- 합산 순서만 다를 수 있다)
+        _ck_ = _ASM_CACHE.get("csr")
+        if _ck_ is None or _ck_[0] != int(_ri.numel()):
+            _key = _ri * (3 * M_) + _ci
+            _uk, _ix = torch.unique(_key, return_inverse=True)
+            _rows = _uk // (3 * M_)
+            _crow = torch.zeros(3 * M_ + 1, device=dev, dtype=torch.long)
+            _crow[1:] = torch.bincount(_rows, minlength=3 * M_).cumsum(0)
+            _ck_ = (int(_ri.numel()), _ix, _crow, _uk % (3 * M_), int(_uk.numel()))
+            _ASM_CACHE["csr"] = _ck_
+        _vals = torch.zeros(_ck_[4], device=dev, dtype=torch.float64).index_add_(0, _ck_[1], _vv)
+        A = torch.sparse_csr_tensor(_ck_[2], _ck_[3], _vals, (3 * M_, 3 * M_))
+    else:
+        A = torch.sparse_coo_tensor(torch.stack([_ri, _ci]), _vv, (3 * M_, 3 * M_)).coalesce().to_sparse_csr()
     _nnz = int(A.values().numel())
     del He, _vv, _ri, _ci
     _Draw = D.clone() if os.environ.get("AF_FEM_DIAG") else None        # AF_FEM_DIAG: 투영 뒤 노드 블록 (단위행렬 채우기 전)
@@ -6045,7 +6060,12 @@ _FEM_CTX = [None]             # AF_FEM_DIAG: (cfg, 스텝 시작 입자 위치 x
 
 
 def _asm_pcg(mv, Dinv, b, M_, ncg, rtol):
-    """블록 야코비 전처리 CG (AF_FEM_SOLVER=pcg). 반환 (x, 반복수, |r|², 음곡률)."""
+    """블록 야코비 전처리 CG (AF_FEM_SOLVER=pcg). 반환 (x, 반복수, |r|², 음곡률).
+    AF_FEM_PCG_CHECK=k (>1, 실시간 판 선택지): 스칼라를 GPU 에 둔 채 k 회마다만 수렴·음곡률을 확인 (반복마다 호스트 동기화 2 회 제거).
+    수렴 판정식은 같고, 확인 간격 때문에 최대 k-1 회 더 돌 수 있다 (더 정확한 쪽). 음곡률(dAd≤0) 이 나온 반복부터는 x 를 고정한다."""
+    _ck = int(os.environ.get("AF_FEM_PCG_CHECK", "1") or 1)
+    if _ck > 1:
+        return _asm_pcg_nosync(mv, Dinv, b, M_, ncg, rtol, _ck)
     pre = lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1)
     x_ = torch.zeros_like(b); r_ = b.clone(); z_ = pre(r_); d_ = z_.clone()
     rz = float((r_ * z_).sum()); b2 = max(float((b * b).sum()), 1e-300)
@@ -6068,6 +6088,39 @@ def _asm_pcg(mv, Dinv, b, M_, ncg, rtol):
         d_ = z_ + (rz2 / rz) * d_
         rz = rz2
     return x_, kk, rr, neg
+
+
+def _asm_pcg_nosync(mv, Dinv, b, M_, ncg, rtol, ck):
+    """_asm_pcg 의 동기화 없는 판 (AF_FEM_PCG_CHECK=ck). 같은 반환 규약."""
+    pre = lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1)
+    x_ = torch.zeros_like(b); r_ = b.clone(); z_ = pre(r_); d_ = z_.clone()
+    rz = (r_ * z_).sum()
+    b2 = (b * b).sum().clamp_min(1e-300)
+    thr = b2 * (rtol * rtol)
+    alive = torch.ones((), dtype=torch.bool, device=b.device)          # 아직 안 멈춤 (수렴·음곡률 전)
+    negf = torch.zeros((), dtype=torch.bool, device=b.device)
+    nit = torch.zeros((), dtype=torch.long, device=b.device)
+    one = torch.ones((), dtype=b.dtype, device=b.device)
+    kk = 0
+    for kk in range(1, ncg + 1):
+        Ad = mv(d_)
+        dAd = (d_ * Ad).sum()
+        neg_now = alive & ~(dAd > 0)
+        negf = negf | neg_now
+        alive = alive & ~neg_now
+        al = torch.where(alive, rz / torch.where(dAd > 0, dAd, one), torch.zeros_like(rz))
+        x_ = x_ + al * d_
+        r_ = r_ - al * Ad
+        rr = (r_ * r_).sum()
+        nit = nit + alive.long()
+        alive = alive & ~(rr < thr)
+        z_ = pre(r_)
+        rz2 = (r_ * z_).sum()
+        d_ = z_ + torch.where(alive, rz2 / rz, torch.zeros_like(rz)) * d_
+        rz = torch.where(alive, rz2, rz)
+        if kk % ck == 0 and not bool(alive):
+            break
+    return x_, int(nit), float((r_ * r_).sum()), bool(negf)
 
 
 def _asm_resolve(mu):
