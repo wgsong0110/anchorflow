@@ -6072,7 +6072,11 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
         x_, kk, rr, neg = _MF.solve(b, ncg, rtol, use_graph=not os.environ.get("AF_FEM_PCG_NOGRAPH"))
     else:
         mv = lambda v_: (A @ v_.unsqueeze(-1)).squeeze(-1)
-        x_, kk, rr, neg = _asm_pcg(mv, Dinv, b, M_, ncg, rtol)
+        # AF_FEM_PCG_WARM=1 (실시간 판 선택지): 앞 풀이(앞 걸음·앞 프레임)의 해 x 를 A-노름 최적 배율로 줄여 시작점으로 (풀 식·판정 그대로)
+        _x0 = _PCG_WARM[0] if (os.environ.get("AF_FEM_PCG_WARM") and _PCG_WARM[0] is not None and _PCG_WARM[0].shape == b.shape) else None
+        x_, kk, rr, neg = _asm_pcg(mv, Dinv, b, M_, ncg, rtol, x0=_x0)
+        if os.environ.get("AF_FEM_PCG_WARM"):
+            _PCG_WARM[0] = x_.detach().clone()
     b2 = max(float((b * b).sum()), 1e-300)
     _t_pcg = time.time() - _tp
     p_ = x_.reshape(M_, 3).to(U0.dtype)
@@ -6110,15 +6114,29 @@ _ASM_SYS = {}                 # AF_FEM_SOLVER=pcg: 마지막 조립 계 (A, 블�
 _FEM_CTX = [None]             # AF_FEM_DIAG: (cfg, 스텝 시작 입자 위치 x) -- 진단에서 바닥 법선 거리를 구한다
 
 
-def _asm_pcg(mv, Dinv, b, M_, ncg, rtol):
+_PCG_WARM = [None]            # AF_FEM_PCG_WARM: 앞 PCG 해
+
+
+def _x0_scaled(mv, b, x0):
+    """warm start 시작점: s x0, s = x0ᵀb / x0ᵀA x0 (2 차 모형 ½xᵀAx - bᵀx 를 그 방향에서 최소 -- 0 보다 나빠지지 않는다)."""
+    Ax = mv(x0)
+    den = (x0 * Ax).sum()
+    s_ = torch.where(den > 0, (x0 * b).sum() / torch.where(den > 0, den, torch.ones_like(den)), torch.zeros_like(den))
+    return s_ * x0, s_ * Ax
+
+
+def _asm_pcg(mv, Dinv, b, M_, ncg, rtol, x0=None):
     """블록 야코비 전처리 CG (AF_FEM_SOLVER=pcg). 반환 (x, 반복수, |r|², 음곡률).
     AF_FEM_PCG_CHECK=k (>1, 실시간 판 선택지): 스칼라를 GPU 에 둔 채 k 회마다만 수렴·음곡률을 확인 (반복마다 호스트 동기화 2 회 제거).
     수렴 판정식은 같고, 확인 간격 때문에 최대 k-1 회 더 돌 수 있다 (더 정확한 쪽). 음곡률(dAd≤0) 이 나온 반복부터는 x 를 고정한다."""
     _ck = int(os.environ.get("AF_FEM_PCG_CHECK", "1") or 1)
     if _ck > 1:
-        return _asm_pcg_nosync(mv, Dinv, b, M_, ncg, rtol, _ck)
+        return _asm_pcg_nosync(mv, Dinv, b, M_, ncg, rtol, _ck, x0=x0)
     pre = lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1)
-    x_ = torch.zeros_like(b); r_ = b.clone(); z_ = pre(r_); d_ = z_.clone()
+    x_ = torch.zeros_like(b); r_ = b.clone()
+    if x0 is not None:
+        x_, _Ax = _x0_scaled(mv, b, x0); r_ = b - _Ax
+    z_ = pre(r_); d_ = z_.clone()
     rz = float((r_ * z_).sum()); b2 = max(float((b * b).sum()), 1e-300)
     neg, kk, rr = False, 0, float((r_ * r_).sum())
     for kk in range(1, ncg + 1):
@@ -6141,10 +6159,13 @@ def _asm_pcg(mv, Dinv, b, M_, ncg, rtol):
     return x_, kk, rr, neg
 
 
-def _asm_pcg_nosync(mv, Dinv, b, M_, ncg, rtol, ck):
+def _asm_pcg_nosync(mv, Dinv, b, M_, ncg, rtol, ck, x0=None):
     """_asm_pcg 의 동기화 없는 판 (AF_FEM_PCG_CHECK=ck). 같은 반환 규약."""
     pre = lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1)
-    x_ = torch.zeros_like(b); r_ = b.clone(); z_ = pre(r_); d_ = z_.clone()
+    x_ = torch.zeros_like(b); r_ = b.clone()
+    if x0 is not None:
+        x_, _Ax = _x0_scaled(mv, b, x0); r_ = b - _Ax
+    z_ = pre(r_); d_ = z_.clone()
     rz = (r_ * z_).sum()
     b2 = (b * b).sum().clamp_min(1e-300)
     thr = b2 * (rtol * rtol)

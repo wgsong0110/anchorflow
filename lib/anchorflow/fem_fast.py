@@ -716,3 +716,79 @@ class MFPcg:
                 if not bool(S["alive"]):
                     break
         return S["x"], int(S["nit"]), float((S["r"] * S["r"]).sum()), bool(S["neg"])
+
+
+# ---- 2 단계 전처리 (AF_FEM_PCG_PRE=add|mult, 실시간 판 선택지) ----
+# 노드 격자를 agg x agg x agg 칸으로 묶고 (세계 고정 격자 -> 기하 집합), 묶음마다 강체 6 모드 (병진 3 + 회전 3) 로 거친 공간 P 를 만든다.
+# 거친 행렬 Ac = Pᵀ A P 는 사면체 12x12 투영 헤시안에서 바로 (Qᵀ H_T Q, Q = 네 노드의 P 블록) 모아 조밀 행렬로, 역행렬을 한 번 만들어 둔다.
+#   add : z = D⁻¹ r + P Ac⁻¹ Pᵀ r                                    (항상 대칭 양정치)
+#   mult: z1 = ω D⁻¹ r, z2 = z1 + P Ac⁻¹ Pᵀ (r - A z1), z = z2 + ω D⁻¹ (r - A z2)   (대칭 V(1,1), SpMV 2 회 더)
+# 전처리만 바뀐다 -- 푸는 식 (A p = g) 과 수렴 판정은 그대로.
+class TwoLevel:
+    def __init__(self, He, uq, npos, fixd, Dinv, mv, node_h, agg=3, mode="add", omega=0.5, f32=True):
+        dev = He.device
+        f8 = torch.float64
+        M_ = npos.shape[0]
+        T = He.shape[0]
+        self.mode, self.omega, self.M, self.Dinv, self.mv = mode, float(omega), M_, Dinv, mv
+        X = npos.to(f8)
+        ijk = torch.floor((X - X.min(0).values) / (agg * node_h) + 1e-6).long()
+        nk = ijk.max(0).values + 1
+        key = (ijk[:, 0] * nk[1] + ijk[:, 1]) * nk[2] + ijk[:, 2]
+        used = torch.zeros(M_, dtype=torch.bool, device=dev)
+        used[uq.reshape(-1)] = True
+        used &= ~fixd
+        key = torch.where(used, key, torch.full_like(key, -1))
+        uk, ag = torch.unique(key, return_inverse=True)
+        off = 1 if bool((uk < 0).any()) else 0                               # -1 묶음 = 안 쓰는·고정 노드 (P 행 0)
+        Na = int(uk.numel()) - off
+        ag = ag - off
+        cnt = torch.zeros(Na + 1, device=dev, dtype=f8).index_add_(0, (ag + 1).clamp_min(0), torch.ones(M_, device=dev, dtype=f8))[1:]
+        cen = torch.zeros(Na + 1, 3, device=dev, dtype=f8).index_add_(0, (ag + 1).clamp_min(0), X)[1:] / cnt.clamp_min(1)[:, None]
+        agc = ag.clamp_min(0)
+        r = (X - cen[agc]) / node_h                                          # 회전 모드 크기를 병진과 맞춘다
+        Sk = torch.zeros(M_, 3, 3, device=dev, dtype=f8)                     # Sk v = r × v
+        Sk[:, 0, 1], Sk[:, 0, 2] = -r[:, 2], r[:, 1]
+        Sk[:, 1, 0], Sk[:, 1, 2] = r[:, 2], -r[:, 0]
+        Sk[:, 2, 0], Sk[:, 2, 1] = -r[:, 1], r[:, 0]
+        P = torch.cat([torch.eye(3, device=dev, dtype=f8).expand(M_, 3, 3), -Sk], -1)   # [M,3,6]: 변위 = t + θ × r
+        P = P * (ag >= 0).to(f8)[:, None, None]
+        self.P, self.ag, self.Na = P, agc, Na
+        Pt = P[uq]                                                           # [T,4,3,6]
+        Q = torch.zeros(T, 4, 3, 4, 6, device=dev, dtype=f8)
+        ar = torch.arange(4, device=dev)
+        Q[:, ar, :, ar, :] = Pt.permute(1, 0, 2, 3)
+        Q = Q.reshape(T, 12, 24)
+        Hc = Q.transpose(1, 2) @ He @ Q                                      # [T,24,24]
+        ci = (agc[uq].unsqueeze(-1) * 6 + torch.arange(6, device=dev)).reshape(T, 24)
+        n6 = 6 * Na
+        Ac = torch.zeros(n6 * n6, device=dev, dtype=f8).index_add_(0, (ci.unsqueeze(-1) * n6 + ci.unsqueeze(1)).reshape(-1), Hc.reshape(-1)).reshape(n6, n6)
+        Ac = 0.5 * (Ac + Ac.t())
+        dg = Ac.diagonal()
+        Ac += torch.diag(torch.where(dg > 0, 1e-8 * dg, torch.ones_like(dg)))
+        self.f32 = False
+        if f32:
+            L, info = torch.linalg.cholesky_ex(Ac.float())
+            if int(info) == 0:
+                self.Ai = torch.cholesky_inverse(L)
+                self.f32 = True
+        if not self.f32:
+            L = torch.linalg.cholesky(Ac)
+            self.Ai = torch.cholesky_inverse(L)
+        self.n6 = n6
+
+    def coarse(self, r):
+        rc = torch.zeros(self.Na, 6, device=r.device, dtype=r.dtype).index_add_(
+            0, self.ag, (self.P.transpose(1, 2) @ r.reshape(self.M, 3, 1)).squeeze(-1))
+        yc = (self.Ai @ rc.reshape(-1).to(self.Ai.dtype)).to(r.dtype).reshape(self.Na, 6)
+        return (self.P @ yc[self.ag].unsqueeze(-1)).reshape(-1)
+
+    def jac(self, r):
+        return (self.Dinv @ r.reshape(self.M, 3, 1)).reshape(-1)
+
+    def __call__(self, r):
+        if self.mode == "add":
+            return self.jac(r) + self.coarse(r)
+        z1 = self.omega * self.jac(r)
+        z2 = z1 + self.coarse(r - self.mv(z1))
+        return z2 + self.omega * self.jac(r - self.mv(z2))
