@@ -201,12 +201,37 @@ class FemFrame:
         H += Hel
         tk("사면체 합·B")
         if nidx.numel():
-            H.index_add_(0, self.inv[nidx], self.hess_near_chain(U, nidx) if self.near_mode == "chain" else self.hess_particle(U, nidx))
+            H.index_add_(0, self.inv[nidx], self.hess_near_chain(U, nidx, fwd=(self.near_mode == "chainfwd"))
+                         if self.near_mode in ("chain", "chainfwd") else self.hess_particle(U, nidx))
         tk("바닥 후보")
         self.last_t = tk.d
         return H, dict(n_near=int(nidx.numel()), n_far=int(far.numel()), t=tk.d)
 
-    def hess_near_chain(self, U, idx):
+    def _maps1(self, x0, up, lm, gl):
+        """입자 하나 (vmap 용): 국소 변위 up [12] -> (q [3], J_f [3,3]) -- _maps 를 묶음 1 로 그대로."""
+        U4 = up.reshape(4, 3)
+        u = (lm.unsqueeze(-1) * U4).sum(0)
+        G = (U4.unsqueeze(-1) * gl.unsqueeze(-2)).sum(0)
+        q, Jf = self._maps(x0.unsqueeze(0), (x0 + u).unsqueeze(0), (_eye(up.device, up.dtype) + G).unsqueeze(0))
+        return q[0], Jf[0]
+
+    def _near_fwd(self, Up, x, lm, gl, c, wm, Pc):
+        """AF_FEM_FAST_NEAR=chainfwd: J' 와 φ 의 헤시안을 vmap(jacfwd) 전진 미분으로 (역전파 21 회 대신 한 번에)."""
+        h2 = self.h * self.h
+
+        def jf(up, x0, l_, g_):
+            return self._maps1(x0, up, l_, g_)[1].reshape(9)
+
+        def phi(up, x0, l_, g_, c_, wm_, P_):
+            q, Jf = self._maps1(x0, up, l_, g_)
+            d = q - x0 - c_
+            return 0.5 * wm_ / h2 * (d * d).sum() + (P_ * Jf).sum()
+        n = Up.shape[0]
+        JJ = torch.func.vmap(torch.func.jacfwd(jf))(Up.reshape(n, 12), x, lm, gl)                       # [n,9,12]
+        Hp = torch.func.vmap(torch.func.jacfwd(torch.func.jacfwd(phi)))(Up.reshape(n, 12), x, lm, gl, c, wm, Pc)   # [n,12,12]
+        return JJ.double(), Hp.double()
+
+    def hess_near_chain(self, U, idx, fwd=False):
         """바닥 후보 입자 12x12 (AF_FEM_FAST_NEAR=chain): 연쇄법칙으로 정확히 같은 헤시안을 싼 그래프로.
             ∂²[V ψ(J_f(u) F)] = J'ᵀ K J' + Σ_ab P_ab ∂²J_f,ab/∂u²,   J' = ∂vec J_f/∂u (9x12), K = V ∂²ψ(AF)/∂A² (manual 커널),
             P = V ∂ψ/∂A (hess_mode 의 1 차 기울기 그대로, σ_min ≤ 0.01 이면 _FcrPsi 상수 기울기)
@@ -215,21 +240,30 @@ class FemFrame:
         x, lm, gl, Fp = self.x[idx], self.lm[idx], self.gl[idx], self.F[idx]
         n = rw.shape[0]
         I3 = _eye(x.device, self.dt)
-        Up = U[:, :3].to(self.dt)[rw].detach().requires_grad_(True)
-        with torch.enable_grad():
-            u = (lm.unsqueeze(-1) * Up).sum(1)
-            G = (Up.unsqueeze(-1) * gl.unsqueeze(-2)).sum(1)
-            q, Jf = self._maps(x, x + u, I3 + G)
-            Jf9 = Jf.reshape(n, 9)
-            JJ = torch.empty(n, 9, 12, device=x.device, dtype=torch.float64)
-            for a_ in range(9):
-                JJ[:, a_, :] = torch.autograd.grad(Jf9[:, a_].sum(), Up, retain_graph=True)[0].reshape(n, 12).double()
-        A0 = Jf.detach()
+        if fwd:
+            Upd = U[:, :3].to(self.dt)[rw].detach()
+            u = (lm.unsqueeze(-1) * Upd).sum(1)
+            G = (Upd.unsqueeze(-1) * gl.unsqueeze(-2)).sum(1)
+            A0 = self._maps(x, x + u, I3 + G)[1].detach()
+        else:
+            Up = U[:, :3].to(self.dt)[rw].detach().requires_grad_(True)
+            with torch.enable_grad():
+                u = (lm.unsqueeze(-1) * Up).sum(1)
+                G = (Up.unsqueeze(-1) * gl.unsqueeze(-2)).sum(1)
+                q, Jf = self._maps(x, x + u, I3 + G)
+                Jf9 = Jf.reshape(n, 9)
+                JJ = torch.empty(n, 9, 12, device=x.device, dtype=torch.float64)
+                for a_ in range(9):
+                    JJ[:, a_, :] = torch.autograd.grad(Jf9[:, a_].sum(), Up, retain_graph=True)[0].reshape(n, 12).double()
+            A0 = Jf.detach()
         ZA = torch.zeros_like(A0).requires_grad_(True)
         with torch.enable_grad(), phys_resid.hess_mode():
             psi = phys_resid.psi_of((A0 + ZA) @ Fp, self.cfg, self.h)[0]
             Pc, = torch.autograd.grad((self.vol[idx] * psi).sum(), ZA)
         K = _k_manual_run(A0, Fp, self.vol[idx], float(self.mu), float(self.lam))
+        if fwd:
+            JJ, Hphi = self._near_fwd(Upd, x, lm, gl, self.c[idx], self.w[idx] * self.m[idx], Pc.detach())
+            return JJ.transpose(1, 2) @ K @ JJ + Hphi
         H = JJ.transpose(1, 2) @ K @ JJ
         Up2 = U[:, :3].to(self.dt)[rw].detach().requires_grad_(True)
         with torch.enable_grad():
