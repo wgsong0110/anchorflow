@@ -56,10 +56,16 @@ if [ $STAGE = test ]; then
     CUDA_VISIBLE_DEVICES=$G $TS $RS --gen "$GENJ" --iters 20 --out $RA > $RA/a20.log 2>&1 < /dev/null
     CUDA_VISIBLE_DEVICES=$G $TS $RS --gen "$GENJ" --iters 30 --out $RA > $RA/a30.log 2>&1 < /dev/null
     CUDA_VISIBLE_DEVICES=$G $TS $RS --gen "$GENJ" --iters 30 --out $RB > $RB/b30.log 2>&1 < /dev/null
-    CMP=$(python - $RA/ck.pt $RB/ck.pt <<'PY'
+    # 잡음 바닥: 같은 설정 한 번에 30 을 한 번 더 (GPU index_add 원자 합 순서가 비결정적이라 비트 단위로 같지 않다)
+    RB2=$O/resB2; rm -rf $RB2; mkdir -p $RB2
+    CUDA_VISIBLE_DEVICES=$G $TS $RS --gen "$GENJ" --iters 30 --out $RB2 > $RB2/b30.log 2>&1 < /dev/null
+    CMP=$(python - $RA/ck.pt $RB/ck.pt $RB2/ck.pt <<'PY'
 import sys, torch
 a = torch.load(sys.argv[1], map_location="cpu", weights_only=False); b = torch.load(sys.argv[2], map_location="cpu", weights_only=False)
+b2 = torch.load(sys.argv[3], map_location="cpu", weights_only=False)
 d = max(float((a["net"][k].float() - b["net"][k].float()).abs().max()) for k in a["net"])
+d0 = max(float((b2["net"][k].float() - b["net"][k].float()).abs().max()) for k in b["net"])
+print(f"잡음바닥 {d0:.3e} ", end="")
 s = max(float(b["net"][k].float().abs().max()) for k in b["net"])
 o = max(float((x - y).abs().max()) for x, y in zip([t for st in a["opt"]["state"].values() for t in st.values() if torch.is_tensor(t) and t.numel() > 1],
                                                     [t for st in b["opt"]["state"].values() for t in st.values() if torch.is_tensor(t) and t.numel() > 1]))
@@ -72,7 +78,8 @@ PY
     echo "[이어 돌리기] $RSL | $CMP | Traceback $TB_" | tee $O/resume_test.txt
     echo "  A 마지막 평가: $LA" | tee -a $O/resume_test.txt; echo "  B 마지막 평가: $LB" | tee -a $O/resume_test.txt
     grep -q "반복 30/30" <<<"$CMP" && grep -q "생성기 같음 True" <<<"$CMP" && [ -n "$RSL" ] && [ "$TB_" = 0 ] || fail "이어 돌리기 확인 실패"
-    python -c "import re,sys;m=re.search(r'망 파라미터 최대차 ([0-9.e+-]+)', sys.argv[1]);sys.exit(0 if m and float(m.group(1))<1e-4 else 1)" "$CMP" || fail "이어 돈 것과 한 번에 돈 것의 망 차이 1e-4 이상"
+    # 판정: 이어 돈 것 − 한 번에 돈 것 ≤ max(1e-4, 3 × 같은 설정 두 번 돈 차이 (잡음 바닥))
+    python -c "import re,sys;m=re.search(r'망 파라미터 최대차 ([0-9.e+-]+)', sys.argv[1]);n=re.search(r'잡음바닥 ([0-9.e+-]+)', sys.argv[1]);sys.exit(0 if m and n and float(m.group(1))<=max(1e-4,3*float(n.group(1))) else 1)" "$CMP" || fail "이어 돈 것과 한 번에 돈 것의 망 차이가 잡음 바닥의 3 배 초과"
     touch $O/resume.ok; up
   fi
   # 4) 짧은 학습 (두 보간) + 평가 + 추론 시간

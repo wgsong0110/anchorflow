@@ -317,7 +317,8 @@ GEN_DEFAULTS = dict(
     n_max=640, p_logn=0.85,
     p_mode=[0.3, 0.25, 0.25, 0.2],               # 균등 / 몇 점으로 수축 / 부분 사면체 / 정규 부분격자
     shrink_min=0.02, sharp_max=4.0, sub_s_min=0.12, sub_s_max=0.9,
-    v_lo=4e-9, v_hi=1.6e-5, p_vcell=0.5,         # V_p 범위 (실제 lego log10 V_p [−8.12, −5.10] 를 덮게, test_1a9bcd9 cover)
+    v_lo=4e-9, v_hi=1.6e-5, p_vcell=0.5,         # V_p 모양 (상대 크기); 실제 lego log10 V_p [−8.12, −5.10] (test_1a9bcd9 cover)
+    occ_lo=0.003, occ_hi=30.0,                   # 셀 점유 V_T/V_tet ~ logU (실제 lego [0.0057, 22], 99.9 % 12) -- 입자 수와 따로 뽑아 V_p 를 맞춘다
     S_max=0.7, g_max=0.6, sig_max=0.4, p_sig0=0.15,
     p_out=0.5, out_frac=0.3, out_ang_min=1e-2, out_ang_max=math.pi, out_str_max=0.7,
     det_min=0.05, p_inv=0.1, p_lego=0.4, E_fac=100.0, nu_max=0.45, p_mix=0.1,
@@ -367,7 +368,7 @@ class CellGen:
       부분 사면체 (꼭짓점 4 개를 셀 안 균등으로 뽑은 작은 사면체 안 균등 -- 표면 셀처럼 셀 일부만 참) /
       정규 부분격자 (세계 축 정렬 간격 s·node_h, s ~ logU[sub_s_min, sub_s_max], 무작위 원점·약간 흔들림 -- PG 채우기 입자처럼).
     입자 수: 정규 부분격자 외에는 확률 p_logn 로 logU[1, n_max], 나머지 U{1..n_max}.
-    V_p: 확률 p_vcell 로 셀 안 같은 값, 나머지 입자별; 모두 logU[v_lo, v_hi].
+    V_p: 확률 p_vcell 로 셀 안 같은 값, 나머지 입자별 logU[v_lo, v_hi] 모양을, 셀 합이 점유 logU[occ_lo, occ_hi] × V_tet 이 되게 비례 조정.
     F: F_p = R_out,p · R_c U_c (I + G·(y_p − ȳ)) (I + σ N_p) (I + ε_out,p),
        R_c ∈ SO(3) 균등, U_c = Q diag(e^ε) Qᵀ, |ε_i| ≤ S ~ logU[1e-4, S_max]; G [3,3,3] 크기 g ~ logU[1e-4, g_max] (격자 단위당);
        σ ~ logU[1e-4, sig_max] (확률 p_sig0 로 0); 확률 p_out 로 입자 비율 U[0, out_frac] 가 추가 회전 (각 logU[out_ang_min, out_ang_max])
@@ -460,6 +461,8 @@ class CellGen:
         vc = _logu(gen, o["v_lo"], o["v_hi"], B, dev)
         vp = _logu(gen, o["v_lo"], o["v_hi"], N, dev)
         Vp = torch.where((torch.rand(B, generator=gen, device=dev) < o["p_vcell"])[seg], vc[seg], vp)
+        occ = _logu(gen, o["occ_lo"], o["occ_hi"], B, dev) * float(torch.linalg.det(lat.A.double()).abs() / 6.0)
+        Vp = Vp * (occ / seg_sum(Vp, seg, B))[seg]                                                  # Σ_{p∈T} V_p = 점유 × V_tet
         # 물성
         def mat(k):
             E = _logu(gen, self.E_ref / o["E_fac"], self.E_ref * o["E_fac"], k, dev)
