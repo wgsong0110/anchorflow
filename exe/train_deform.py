@@ -1306,6 +1306,21 @@ _OVN_BAD = [None]          # --ov_obj newton --ov_vars out: 뉴턴 걸음 중 p�
 _PRE = {"fn": None}        # --out_precond: 이 프레임의 출력 전처리 (망 출력 튜플 -> 튜플), _ov_once 가 프레임마다 만들고 끝에 지운다
 _PRE_LOG = []              # --out_precond: 프레임별 전처리 기록 (구성 시간·통계) -- AF_OVNET_FIT 가 프레임마다 가져가고 비운다
 _FEM_BAR = [None]          # AF_FEM_TOL (FEM 수렴 모드): 롤아웃 프레임 tqdm
+_FEM_JD = [None, False]    # AF_FEM_DUMP: _fwd 가 남기는 입자 야코비안 (켰을 때만)
+_FEM_STATE = [None]        # AF_FEM_DUMP: 프레임 시작 상태 (cfg, x, v, F, m, vol, t, nrm)
+
+
+def _fsync():
+    """AF_FEM_PROF=1: 구간 시간을 정확히 재려고 CUDA 동기화 (끄면 아무 것도 안 한다 -- 계산 불변)."""
+    if os.environ.get("AF_FEM_PROF") and torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def _fem_dump_on(t, k):
+    """AF_FEM_DUMP=폴더, AF_FEM_DUMP_T=프레임 목록 (쉼표): 그 프레임 첫 뉴턴 걸음에서 축약 검증용 덤프."""
+    if not os.environ.get("AF_FEM_DUMP") or int(k) != 0:
+        return False
+    return str(int(t)) in os.environ.get("AF_FEM_DUMP_T", "0").split(",")
 _NEWTON_LOG = []           # --ov_obj newton: 목표를 만들 때마다 (반복, CG 횟수, 음곡률, 잔차, 시간, ...) -- AF_OVNET_FIT 가 프레임마다 비운다
 if os.environ.get("AF_OV_NODE_TGT"):
     _NODE_TGT = torch.load(os.environ["AF_OV_NODE_TGT"], map_location="cpu", weights_only=False)
@@ -4639,6 +4654,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
         with torch.enable_grad(), dt_scope(_DT[0]):
             x2, _, v2, _, _, _, _, _, _, _Jd = step_once(
                 d, t, gsel, p, x, v, need_J=False)
+        if _FEM_JD[1]:
+            _FEM_JD[0] = _Jd                       # AF_FEM_DUMP: 입자 야코비안 (바닥 매핑 포함, 그래프 붙은 채)
         _hd = release_held(d, x, t, _DT[0])
         if _hd is not None:
             # 아직 안 풀린 입자는 **제자리에 박는다** (PG 는 속도를 0 으로 둔다)
@@ -4898,6 +4915,14 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _mu = _mumin
                 _frec["lm"] = dict(on=_lm_on, mu0=_mu0, mumax=_mumax, alpha_min=_alm, mumin=_mumin) if _lm_on else None
                 _FEM_CTX[0] = (cfg, x.detach()) if os.environ.get("AF_FEM_DIAG") else None
+                _FEM_STATE[0] = (dict(cfg=cfg, x=x.detach(), v=v.detach(), F=F.detach(), m=m.detach(), vol=vol.detach() if torch.is_tensor(vol) else vol,
+                                      t=int(t), nrm=nrm) if os.environ.get("AF_FEM_DUMP") else None)
+                # AF_FEM_FIX_NEWTON=N (사용자 10-27 실시간 판, 선택지): 뉴턴 걸음 최대 N (수렴 판정·에너지·선탐색은 그대로 -- 일찍 수렴하면 그 전에 멈춘다).
+                # PCG 반복 상한은 기존 AF_FEM_PCG_MAX 로. 시작점은 기존 --ov_init predict (이전 프레임 해의 속도로 낸 관성 예측 = warm start)
+                _nfix = int(os.environ.get("AF_FEM_FIX_NEWTON", "0") or 0)
+                if _nfix > 0:
+                    _nst = _nfix
+                _frec["fix_newton"] = _nfix
                 for _k in range(_nst):
                     (_newton_target_asm if _fsol == "pcg" else _newton_target)(_fwd, _NTG, m, nrm, _k, t)
                     _nl = _NEWTON_LOG.pop()
@@ -4924,7 +4949,8 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     _srec = dict(k=_k, E=_Ec, g_rel=_nl["g_norm"] / max(_g0n, 1e-30), g_norm=_nl["g_norm"], p_vel=_pin, p_vel_base=_pin0,
                                  p_inf_all=_nl["p_inf"] / (_hf * float(EXT)), cg=_nl["cg"], neg=_nl["neg"], cg_res=_nl["res"], gp=_nl["gp"])
                     if _fsol == "pcg":
-                        _srec.update({q: _nl[q] for q in ("t_hess", "t_asm", "t_pcg", "n_tet", "nnz", "neg_eig", "neg_tet_frac", "eig_min", "sec")})
+                        _srec.update({q: _nl[q] for q in ("t_hess", "t_asm", "t_pcg", "n_tet", "nnz", "neg_eig", "neg_tet_frac", "eig_min", "sec",
+                                                         "t_fwd0", "t_eg", "t_proj")})
                         if _nl.get("diag") is not None:
                             _srec["asm_check"] = _nl["diag"]
                     if not (math.isfinite(_pin) and math.isfinite(_pmin[1] if _pmin is not None else _nl["gp"])):
@@ -4937,16 +4963,21 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                         _frec.update(why="하강 방향 없음 (첫 CG 음곡률 또는 gᵀp≤0)"); _frec["steps"].append(_srec)
                         break
 
+                    _srec["t_ls"], _srec["n_ls"] = 0.0, 0
+
                     def _lsearch(_pd, _gpd):
                         _al_, _acc_, _En_ = 1.0, False, float("nan")
+                        _tl0 = time.time()
                         for _ls in range(30):
                             with torch.no_grad():
                                 _z[:, :3] = _zc - _al_ * _pd
                             _En_ = float(_fwd()[2])
+                            _srec["n_ls"] += 1
                             if math.isfinite(_En_) and _En_ <= _Ec - 1e-4 * _al_ * _gpd / nrm:
                                 _acc_ = True
                                 break
                             _al_ *= 0.5
+                        _srec["t_ls"] += time.time() - _tl0          # 선탐색 시간 (E 평가 n_ls 회; float() 가 동기화)
                         return _al_, _acc_, _En_
                     if not _lm_on:
                         _al, _acc, _En = _lsearch(_pv, _nl["gp"])
@@ -5719,11 +5750,14 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     4. (H + λI) p = g 를 블록 야코비(노드 3x3) 전처리 CG 로 (상대 잔차 AF_FEM_PCG_RTOL 기본 1e-6, 최대 AF_FEM_PCG_MAX 기본 2000).
     기울기 g 는 기존과 같은 전역 탐침 Z 의 것. 반환 규약·_NEWTON_LOG 항목은 _newton_target 과 같다 (cg = PCG 반복수).
     AF_FEM_ASM_CHECK=N: 처음 N 번 투영 전 조립 헤시안·벡터 곱을 자동미분 헤시안-벡터 곱과, 국소 기울기 합을 전역 기울기와 대조해 출력."""
+    _fsync()
     _t0 = time.time()
     _NTG[0] = None
     _r0 = _fwd()
     _DIAG_X2[0] = _r0[0].detach() if os.environ.get("AF_FEM_DIAG") else None
     del _r0
+    _fsync()
+    _t_fwd0 = time.time() - _t0                                           # 전처리 순전파 (변수 → U0)
     U0 = _DPN_LIVE[0][1].detach().clone()
     _ens = _NF_HOLD[0]
     if not isinstance(_ens, (list, tuple)) or len(_ens) != 1:
@@ -5761,18 +5795,46 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     DM.PROBE[0], DM.PROBE[1] = "fixed", [Z]
     SX.LOCAL_PROBE[0] = ZL
     _diag = None
+    _teg0 = time.time()
     try:
         with torch.enable_grad(), phys_resid.hess_mode():
             EJ = _fwd()[2] * nrm
             gZ, gL = torch.autograd.grad(EJ, [Z, ZL], create_graph=True)
             gd = gZ.detach()
+            _fsync()
+            _t_eg = time.time() - _teg0                                   # 에너지 + 기울기 (그래프 유지)
             _th = time.time()
             HL = torch.empty(N_, 12, 12, device=dev, dtype=torch.float64)
             _gLf = gL.reshape(N_, 12)
             for j in range(12):
                 _col = torch.autograd.grad(_gLf[:, j].sum(), ZL, retain_graph=True)[0]
                 HL[:, :, j] = _col.reshape(N_, 12).double()
+            _fsync()
             _t_hess = time.time() - _th
+            if _fem_dump_on(t, k):
+                # 축약 검증 덤프 (사용자 10-27 실시간 판 (1)): 입자 12x12 HL, 입자 야코비안 Jd (바닥 매핑 포함) 와 그 국소 탐침 미분
+                # B_p = ∂vec(Jd_p)/∂ZL_p [9x12], 프레임 상태 (x, v, F^n, m, vol) -- exe/fem_reduce_check.py 가 읽는다
+                _FEM_JD[1] = True
+                _EJd = _fwd()[2] * nrm
+                _FEM_JD[1] = False
+                _Jd9 = _FEM_JD[0].reshape(N_, 9)
+                _Bp = torch.empty(N_, 9, 12, device="cpu", dtype=torch.float64)
+                for _a9 in range(9):
+                    _Bp[:, _a9, :] = torch.autograd.grad(_Jd9[:, _a9].sum(), ZL, retain_graph=True)[0].reshape(N_, 12).double().cpu()
+                _st = _FEM_STATE[0] or {}
+                _cfg = _st.get("cfg", {})
+                os.makedirs(os.environ["AF_FEM_DUMP"], exist_ok=True)
+                _dp = os.path.join(os.environ["AF_FEM_DUMP"], f"dump_t{int(t):04d}.pt")
+                torch.save(dict(t=int(t), k=int(k), U0=U0.cpu(), rw=_rw.cpu(), lm=_lm.cpu(), HL=HL.cpu(), gL=gL.detach().cpu(),
+                                gd=gd.cpu(), EJ=float(EJ.detach()), EJd=float(_EJd.detach()), Jd=_Jd9.detach().cpu(), Bp=_Bp,
+                                x=_st.get("x").cpu(), v=_st.get("v").cpu(), F=_st.get("F").cpu(), m=_st.get("m").cpu(),
+                                vol=(_st.get("vol").cpu() if torch.is_tensor(_st.get("vol")) else _st.get("vol")),
+                                nrm=float(nrm), h=h_, E=_cfg.get("E"), nu=_cfg.get("nu"), mat=phys_resid.mat_name(_cfg),
+                                bcs=_cfg.get("boundary_conditions"), g=_cfg.get("g"), n_grid=_cfg.get("n_grid"), grid_lim=_cfg.get("grid_lim"),
+                                fixd=_fixd.cpu(), uq=_uq.cpu(), inv=_inv.cpu(), args=vars(a)), _dp)
+                print(f"    [FEM 덤프] t={t} -> {_dp} (입자 {N_}, 사면체 {T_})", flush=True)
+                _FEM_JD[0] = None
+                del _EJd, _Jd9, _Bp
             if _chk:
                 # 검산 (투영 전): 국소 기울기를 노드로 모은 것 vs 전역 기울기, 조립 H·v vs 자동미분 헤시안-벡터 곱 (자유 노드만)
                 _free3 = ~_fx3
@@ -5821,6 +5883,8 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
         raise SystemExit(f"AF_FEM_EIG_PROJ={_eproj}: clamp 또는 abs")
     He = (_eV * torch.maximum(_ew.abs() if _eproj == "abs" else _ew, _elo).unsqueeze(1)) @ _eV.transpose(1, 2)
     del _eV, _ew
+    _fsync()
+    _t_proj = time.time() - _ta                                           # 사면체 합 + 대칭화 + 고유분해 투영
     # 블록 야코비: 노드 3x3 대각 블록
     _ar = torch.arange(4, device=dev)
     _blk = He.reshape(T_, 4, 3, 4, 3)[:, _ar, :, _ar, :]                 # [4,T,3,3] (고급 색인이 앞으로)
@@ -5880,6 +5944,7 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
                             qdrop_rel=qdrop / max(abs(_EJv), 1e-30), sec=time.time() - _t0, diag=_diag,
                             p_inf=float(p_[:, :3].abs().max()), g_norm=float(gd.norm()), gp=float((gd * p_).sum()),
                             solver="pcg", t_hess=_t_hess, t_asm=_t_asm, t_pcg=_t_pcg, n_tet=T_, nnz=_nnz,
+                            t_fwd0=_t_fwd0, t_eg=_t_eg, t_proj=_t_proj,
                             neg_eig=_nneg, neg_tet_frac=_neg_tet, eig_min=_emin))
 
 
