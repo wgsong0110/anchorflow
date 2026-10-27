@@ -709,11 +709,17 @@ class MFPcg:
         S["d"].copy_(z + beta * S["d"])
         S["rz"].copy_(torch.where(S["alive"], rz2, S["rz"]))
 
-    def solve(self, b, ncg, rtol, use_graph=True):
+    def solve(self, b, ncg, rtol, use_graph=True, x0=None):
         dev, dt = b.device, b.dtype
+        x = torch.zeros_like(b)
         r = b.clone()
+        if x0 is not None:                                   # warm start: s x0, s = x0ᵀb / x0ᵀA x0
+            Ax = self.mv(x0)
+            den = (x0 * Ax).sum()
+            sc = torch.where(den > 0, (x0 * b).sum() / torch.where(den > 0, den, torch.ones_like(den)), torch.zeros_like(den))
+            x, r = sc * x0, b - sc * Ax
         z = self.pre(r)
-        self.S = S = dict(x=torch.zeros_like(b), r=r, d=z.clone(), rz=(r * z).sum(), thr=(b * b).sum().clamp_min(1e-300) * (rtol * rtol),
+        self.S = S = dict(x=x, r=r, d=z.clone(), rz=(r * z).sum(), thr=(b * b).sum().clamp_min(1e-300) * (rtol * rtol),
                           alive=torch.ones((), dtype=torch.bool, device=dev), neg=torch.zeros((), dtype=torch.bool, device=dev),
                           nit=torch.zeros((), dtype=torch.long, device=dev), one=torch.ones((), dtype=dt, device=dev),
                           zero=torch.zeros((), dtype=dt, device=dev))

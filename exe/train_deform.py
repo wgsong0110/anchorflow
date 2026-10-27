@@ -4992,7 +4992,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                                  p_inf_all=_nl["p_inf"] / (_hf * float(EXT)), cg=_nl["cg"], neg=_nl["neg"], cg_res=_nl["res"], gp=_nl["gp"])
                     if _fsol == "pcg":
                         _srec.update({q: _nl[q] for q in ("t_hess", "t_asm", "t_pcg", "n_tet", "nnz", "neg_eig", "neg_tet_frac", "eig_min", "sec",
-                                                         "t_fwd0", "t_eg", "t_proj", "t_p2g", "tetq", "t_hess_parts") if q in _nl})
+                                                         "t_fwd0", "t_eg", "t_proj", "t_p2g", "tetq", "t_hess_parts", "t_pre") if q in _nl})
                         if _nl.get("diag") is not None:
                             _srec["asm_check"] = _nl["diag"]
                     if not (math.isfinite(_pin) and math.isfinite(_pmin[1] if _pmin is not None else _nl["gp"])):
@@ -6053,6 +6053,17 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     else:
         A = torch.sparse_coo_tensor(torch.stack([_ri, _ci]), _vv, (3 * M_, 3 * M_)).coalesce().to_sparse_csr()
     _nnz = int(A.values().numel()) if A is not None else int(_vv.numel())
+    # AF_FEM_PCG_PRE=add|mult (실시간 판 선택지): 2 단계 전처리 (fem_fast.TwoLevel -- 노드 격자 AF_FEM_MG_AGG 칸 묶음 x 강체 6 모드 거친 공간)
+    _tl, _t_pre = None, 0.0
+    _pmode = os.environ.get("AF_FEM_PCG_PRE", "")
+    if _pmode:
+        if _pmode not in ("add", "mult") or A is None:
+            raise SystemExit(f"AF_FEM_PCG_PRE={_pmode}: add 또는 mult (CSR 조립과 함께)")
+        _tq_ = time.time()
+        _tl = _FF.TwoLevel(He, _uq, _DPN_LIVE[0][0].detach(), _fixd, None, (lambda v_: (A @ v_.unsqueeze(-1)).squeeze(-1)), float(a.node_h),
+                           agg=int(os.environ.get("AF_FEM_MG_AGG", "3")), mode=_pmode, omega=float(os.environ.get("AF_FEM_MG_OMEGA", "0.5")))
+        _fsync()
+        _t_pre = time.time() - _tq_
     del He, _vv, _ri, _ci
     _Draw = D.clone() if os.environ.get("AF_FEM_DIAG") else None        # AF_FEM_DIAG: 투영 뒤 노드 블록 (단위행렬 채우기 전)
     D = D + lam * torch.eye(3, device=dev, dtype=torch.float64)
@@ -6062,6 +6073,8 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     if bool(_bad.any()):                                                  # 곡률이 전혀 없는 노드 (투영 뒤 0): 대각 1
         D[_bad] = torch.eye(3, device=dev, dtype=torch.float64)
     Dinv = torch.linalg.inv(D)
+    if _tl is not None:
+        _tl.Dinv = Dinv
     _t_asm = time.time() - _ta
     # 블록 야코비 전처리 CG
     _tp = time.time()
@@ -6071,10 +6084,19 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
         mv = _MF.mv
         x_, kk, rr, neg = _MF.solve(b, ncg, rtol, use_graph=not os.environ.get("AF_FEM_PCG_NOGRAPH"))
     else:
-        mv = lambda v_: (A @ v_.unsqueeze(-1)).squeeze(-1)
         # AF_FEM_PCG_WARM=1 (실시간 판 선택지): 앞 풀이(앞 걸음·앞 프레임)의 해 x 를 A-노름 최적 배율로 줄여 시작점으로 (풀 식·판정 그대로)
         _x0 = _PCG_WARM[0] if (os.environ.get("AF_FEM_PCG_WARM") and _PCG_WARM[0] is not None and _PCG_WARM[0].shape == b.shape) else None
-        x_, kk, rr, neg = _asm_pcg(mv, Dinv, b, M_, ncg, rtol, x0=_x0)
+        if os.environ.get("AF_FEM_PCG_ELL") and A is not None:
+            # AF_FEM_PCG_ELL=1 (실시간 판 선택지): 같은 행렬을 ELL 로 옮겨 gather 곱 + PCG 본체 AF_FEM_PCG_CHECK 회를 CUDA 그래프로 (fem_fast.EllPcg)
+            _EP = _FF.EllPcg(A, Dinv, M_, ck=int(os.environ.get("AF_FEM_PCG_CHECK", "50") or 50), key=(int(t), id(_ASM_CACHE.get("csr"))))
+            if _tl is not None:
+                _tl.mv = _EP.mv
+                _EP.pre = _tl
+            mv = _EP.mv
+            x_, kk, rr, neg = _EP.solve(b, ncg, rtol, use_graph=not os.environ.get("AF_FEM_PCG_NOGRAPH"), x0=_x0)
+        else:
+            mv = lambda v_: (A @ v_.unsqueeze(-1)).squeeze(-1)
+            x_, kk, rr, neg = _asm_pcg(mv, Dinv, b, M_, ncg, rtol, x0=_x0, pre=_tl)
         if os.environ.get("AF_FEM_PCG_WARM"):
             _PCG_WARM[0] = x_.detach().clone()
     b2 = max(float((b * b).sum()), 1e-300)
@@ -6105,7 +6127,7 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
                             solver="pcg", t_hess=_t_hess, t_asm=_t_asm, t_pcg=_t_pcg, n_tet=T_, nnz=_nnz,
                             t_fwd0=_t_fwd0, t_eg=_t_eg, t_proj=_t_proj,
                             neg_eig=_nneg, neg_tet_frac=_neg_tet, eig_min=_emin,
-                            t_p2g=(_t_p2g if _tqi is not None else None), tetq=_tqi,
+                            t_p2g=(_t_p2g if _tqi is not None else None), tetq=_tqi, t_pre=_t_pre,
                             t_hess_parts=(dict(_finfo.get("t") or {}) if _fast == "tet" else None)))
 
 
@@ -6125,14 +6147,14 @@ def _x0_scaled(mv, b, x0):
     return s_ * x0, s_ * Ax
 
 
-def _asm_pcg(mv, Dinv, b, M_, ncg, rtol, x0=None):
+def _asm_pcg(mv, Dinv, b, M_, ncg, rtol, x0=None, pre=None):
     """블록 야코비 전처리 CG (AF_FEM_SOLVER=pcg). 반환 (x, 반복수, |r|², 음곡률).
     AF_FEM_PCG_CHECK=k (>1, 실시간 판 선택지): 스칼라를 GPU 에 둔 채 k 회마다만 수렴·음곡률을 확인 (반복마다 호스트 동기화 2 회 제거).
     수렴 판정식은 같고, 확인 간격 때문에 최대 k-1 회 더 돌 수 있다 (더 정확한 쪽). 음곡률(dAd≤0) 이 나온 반복부터는 x 를 고정한다."""
     _ck = int(os.environ.get("AF_FEM_PCG_CHECK", "1") or 1)
     if _ck > 1:
-        return _asm_pcg_nosync(mv, Dinv, b, M_, ncg, rtol, _ck, x0=x0)
-    pre = lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1)
+        return _asm_pcg_nosync(mv, Dinv, b, M_, ncg, rtol, _ck, x0=x0, pre=pre)
+    pre = pre or (lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1))
     x_ = torch.zeros_like(b); r_ = b.clone()
     if x0 is not None:
         x_, _Ax = _x0_scaled(mv, b, x0); r_ = b - _Ax
@@ -6159,9 +6181,9 @@ def _asm_pcg(mv, Dinv, b, M_, ncg, rtol, x0=None):
     return x_, kk, rr, neg
 
 
-def _asm_pcg_nosync(mv, Dinv, b, M_, ncg, rtol, ck, x0=None):
+def _asm_pcg_nosync(mv, Dinv, b, M_, ncg, rtol, ck, x0=None, pre=None):
     """_asm_pcg 의 동기화 없는 판 (AF_FEM_PCG_CHECK=ck). 같은 반환 규약."""
-    pre = lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1)
+    pre = pre or (lambda r: (Dinv @ r.reshape(M_, 3, 1)).reshape(-1))
     x_ = torch.zeros_like(b); r_ = b.clone()
     if x0 is not None:
         x_, _Ax = _x0_scaled(mv, b, x0); r_ = b - _Ax
