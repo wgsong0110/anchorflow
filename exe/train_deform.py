@@ -5959,7 +5959,12 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
         He = torch.zeros(T_, 12, 12, device=dev, dtype=torch.float64).index_add_(0, _inv, HL)
         del HL
     He = 0.5 * (He + He.transpose(1, 2))
-    _ew, _eV = torch.linalg.eigh(He)
+    if os.environ.get("AF_FEM_EIG_F32"):
+        # AF_FEM_EIG_F32=1 (실시간 판 선택지): 사면체 12x12 고유분해만 float32 로 (투영 방향만 바뀐다; 에너지·기울기·수렴 판정 그대로)
+        _ew, _eV = torch.linalg.eigh(He.float())
+        _ew, _eV = _ew.double(), _eV.double()
+    else:
+        _ew, _eV = torch.linalg.eigh(He)
     _nneg = int((_ew < 0).sum())
     _emin = float(_ew.min())
     _neg_tet = float((_ew.min(1).values < 0).double().mean())
