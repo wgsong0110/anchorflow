@@ -157,7 +157,9 @@ class FemFrame:
         G = (Up.unsqueeze(-1) * self.gl[far].unsqueeze(-2)).sum(1)
         A0 = (_eye(Up.device, self.dt) + G).detach()
         n = A0.shape[0]
-        if self.kmode == "compile":
+        if self.kmode == "manual":
+            K = _k_manual_run(A0, self.F[far], self.vol[far], float(self.mu), float(self.lam))
+        elif self.kmode == "compile":
             K = _k_compiled(A0, self.F[far], self.vol[far], float(self.mu), float(self.lam))
         else:
             ZA = torch.zeros_like(A0).requires_grad_(True)
@@ -217,4 +219,87 @@ def _k_compiled(A, F, vol, mu, lam):
             print(f"[fem_fast] 컴파일 K 실행 실패 -> 컴파일 없이: {type(e).__name__}", flush=True)
             _KC[0] = _k_batch
             out.append(_KC[0](A[i:i + 131072], F[i:i + 131072], vol[i:i + 131072], mu, lam).double())
+    return torch.cat(out) if out else torch.zeros(0, 9, 9, device=A.device, dtype=torch.float64)
+
+
+# ---- 손으로 쓴 전진 미분 (AF_FEM_FAST_K=manual): _fcr_grad_h 의 방향 미분을 원소별 식으로 직접 -- functorch 없이 torch.compile 이 한 커널로 묶는다 ----
+def _cof_lin(A, dA):
+    """cof(A) 의 A 방향 dA 미분 (각 원소가 2x2 소행렬식이라 곱의 미분)."""
+    a, b, c = A[..., 0, 0], A[..., 0, 1], A[..., 0, 2]
+    d, e, f = A[..., 1, 0], A[..., 1, 1], A[..., 1, 2]
+    g, h, i = A[..., 2, 0], A[..., 2, 1], A[..., 2, 2]
+    da, db, dc = dA[..., 0, 0], dA[..., 0, 1], dA[..., 0, 2]
+    dd, de, df = dA[..., 1, 0], dA[..., 1, 1], dA[..., 1, 2]
+    dg, dh, di = dA[..., 2, 0], dA[..., 2, 1], dA[..., 2, 2]
+    out = torch.stack([de * i + e * di - df * h - f * dh, df * g + f * dg - dd * i - d * di, dd * h + d * dh - de * g - e * dg,
+                       dc * h + c * dh - db * i - b * di, da * i + a * di - dc * g - c * dg, db * g + b * dg - da * h - a * dh,
+                       db * f + b * df - dc * e - c * de, dc * d + c * dd - da * f - a * df, da * e + a * de - db * d - b * dd], -1)
+    return out.reshape(dA.shape)
+
+
+def _det_rows(Q):
+    return (Q[..., 0, 0] * (Q[..., 1, 1] * Q[..., 2, 2] - Q[..., 1, 2] * Q[..., 2, 1])
+            - Q[..., 0, 1] * (Q[..., 1, 0] * Q[..., 2, 2] - Q[..., 1, 2] * Q[..., 2, 0])
+            + Q[..., 0, 2] * (Q[..., 1, 0] * Q[..., 2, 1] - Q[..., 1, 1] * Q[..., 2, 0]))
+
+
+def _k_manual(A, F, vol, mu: float, lam: float):
+    """K = V ∂(_fcr_grad_h(AF) Fᵀ)/∂A [n,9,9] -- phys_resid._polar_q (Newton 10 회) 와 _fcr_grad_h 를 그대로 따라가며 9 방향 전진 미분."""
+    n = A.shape[0]
+    X = A @ F                                                              # [n,3,3]
+    I9 = torch.eye(9, device=A.device, dtype=A.dtype).reshape(9, 3, 3)
+    dX = I9.unsqueeze(0) @ F.unsqueeze(1)                                  # [n,9,3,3]  (E_j F)
+    Q = X.unsqueeze(1)                                                     # [n,1,3,3]
+    dQ = dX
+    for _ in range(10):
+        C = phys_resid._cof3(Q)
+        dC = _cof_lin(Q, dQ)
+        dt = _det_rows(Q)                                                  # [n,1]
+        ddt = (C * dQ).sum((-1, -2))                                       # [n,9]  d det = cof : dQ
+        big = dt.abs() > 1e-30
+        ds = torch.where(big, dt, torch.full_like(dt, 1e-30))
+        dds = torch.where(big, ddt, torch.zeros_like(ddt))
+        gm = ds.abs().pow(-1.0 / 3.0)
+        dgm = -(1.0 / 3.0) * gm * dds / ds
+        sg = ds * gm
+        dsg = dds * gm + ds * dgm
+        Qn = 0.5 * (gm[..., None, None] * Q + C / sg[..., None, None])
+        dQ = 0.5 * (dgm[..., None, None] * Q + gm[..., None, None] * dQ + dC / sg[..., None, None]
+                    - C * (dsg / (sg * sg))[..., None, None])
+        Q = Qn
+    Xb = X.unsqueeze(1)
+    cof = phys_resid._cof3(Xb)
+    dcof = _cof_lin(Xb, dX)
+    det = (Xb[..., 0, :] * cof[..., 0, :]).sum(-1)                         # _fcr_grad_h 와 같은 식
+    ddet = (cof * dX).sum((-1, -2))
+    dP = 2.0 * mu * (dX - dQ) + (lam * ddet)[..., None, None] * cof + (lam * (det - torch.sign(det)))[..., None, None] * dcof
+    dG = dP @ F.transpose(1, 2).unsqueeze(1)                               # [n,9(j),3,3]
+    K = dG.reshape(n, 9, 9).transpose(1, 2)                                # K[:, a, j] = ∂gA_a/∂A_j
+    Cx = (X.unsqueeze(-1) * X.unsqueeze(-2)).sum(-3)
+    smin = phys_resid._sym_eig3(Cx).clamp_min(1e-12).sqrt()[:, 0]
+    return torch.where((smin <= 0.01)[:, None, None], torch.zeros_like(K), K) * vol[:, None, None]
+
+
+_KM = [None]
+
+
+def _k_manual_run(A, F, vol, mu, lam):
+    import os as _os
+    if _KM[0] is None:
+        _KM[0] = _k_manual
+        if not _os.environ.get("AF_FEM_FAST_NOCOMPILE"):
+            try:
+                _KM[0] = torch.compile(_k_manual, dynamic=True)
+            except Exception as e:                                           # noqa: BLE001
+                print(f"[fem_fast] manual K compile 실패: {e}", flush=True)
+    out = []
+    for i in range(0, A.shape[0], 131072):
+        try:
+            out.append(_KM[0](A[i:i + 131072], F[i:i + 131072], vol[i:i + 131072], float(mu), float(lam)).double())
+        except Exception as e:                                               # noqa: BLE001
+            if _KM[0] is _k_manual:
+                raise
+            print(f"[fem_fast] manual K 컴파일 실행 실패 -> 컴파일 없이: {type(e).__name__}: {str(e)[:200]}", flush=True)
+            _KM[0] = _k_manual
+            out.append(_KM[0](A[i:i + 131072], F[i:i + 131072], vol[i:i + 131072], float(mu), float(lam)).double())
     return torch.cat(out) if out else torch.zeros(0, 9, 9, device=A.device, dtype=torch.float64)
