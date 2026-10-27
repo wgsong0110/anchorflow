@@ -1,7 +1,8 @@
 """운동량 잔차 변위 망의 자기지도 학습 상태 생성 (사용자 10-27) -- 정답 궤적과 무관.
 
 lego 형상(L000 0 프레임 입자 = 기준 배치 X, 질량·부피 그대로) 위에서 한 스텝 시작 상태 (x, v, F, h) 를 무작위로 만든다.
-  회전   R: 확률 p_rot_full 로 SO(3) 균등, 나머지는 무작위 축 · 각 U[0, tilt_max]
+  회전   R: 확률 p_rot_full 로 SO(3) 균등, 나머지는 연직축 균등 회전 뒤 무작위 축 기울기 logU[1e-4, tilt_max] (바닥에 평평히)
+  무변형 확률 p_rest 로 변형·퍼짐 없음 (F = R, 힘 0 근처)
   변형   y = F_aff (X + u(X)),  u = Σ_k a_k sin(ω_k·X + φ_k)  (매끈한 무작위 변형장, 파장 logU[3 h_node, 3 EXT])
          변형 크기 S ~ logU[strain_min, strain_max] (모드 변형률 |a_k||ω_k| = S·U/√K), F_aff = Q diag(exp ε) Qᵀ, |ε| ≤ S_aff ~ logU
          F_p = R_p R F_aff (I + ∇u(X_p)) (I + σ N_p)  -- 입자별 퍼짐 σ ~ logU[spread_min, spread_max],
@@ -19,8 +20,8 @@ import math
 
 import torch
 
-DEFAULTS = dict(p_rot_full=0.5, tilt_max=0.6, K=6, strain_min=1e-4, strain_max=0.4, aff_max=0.3, spread_min=1e-4, spread_max=0.05,
-                out_frac=0.03, out_ang=1.5, det_min=0.15, p_pen=0.1, p_near=0.5, clear_max=0.5, v_min=1e-3, v_max=6.0, w_min=1e-3,
+DEFAULTS = dict(p_rest=0.15, p_rot_full=0.3, tilt_max=0.6, K=6, strain_min=1e-6, strain_max=0.4, aff_max=0.3, spread_min=1e-6, spread_max=0.05,
+                out_frac=0.03, out_ang=1.5, det_min=0.15, p_pen=0.15, p_near=0.55, clear_max=0.5, v_min=1e-3, v_max=6.0, w_min=1e-3,
                 w_max=10.0, vs_min=1e-4, vs_max=2.0, vnoise_max=0.1, p_frame=0.25, dt_sub_max=64)
 
 
@@ -85,8 +86,10 @@ class StateGen:
         # 회전
         if float(torch.rand((), generator=gen, device=dev)) < o["p_rot_full"]:
             R = _rand_rot(gen, dev)
-        else:
-            R = _rodrigues(_unit(gen, 1, dev)[0], torch.rand((), generator=gen, device=dev) * o["tilt_max"])
+        else:                                       # 연직축 회전 (균등) 뒤 작은 기울기 logU[1e-4, tilt_max] -- 바닥에 평평히 놓인 자세 (실제 롤아웃의 넓은 접촉)
+            nz = sc.planes[0][1] if sc.planes else torch.tensor([0.0, 0.0, 1.0], device=dev)
+            Ry = _rodrigues(nz, torch.rand((), generator=gen, device=dev) * 2 * math.pi)
+            R = _rodrigues(_unit(gen, 1, dev)[0], _logu(gen, 1e-4, o["tilt_max"], (), dev)) @ Ry
         # 변형
         S = float(_logu(gen, o["strain_min"], o["strain_max"], (), dev))
         Sa = float(_logu(gen, o["strain_min"], o["aff_max"], (), dev))
@@ -99,11 +102,12 @@ class StateGen:
         om = torch.rand(N, generator=gen, device=dev) < fo
         oang = _logu(gen, 1e-3, o["out_ang"], (N,), dev)
         Rp = _rodrigues(_unit(gen, N, dev), oang * om.float())
-        scale = 1.0
+        rest = float(torch.rand((), generator=gen, device=dev)) < o["p_rest"]   # 변형 없는 상태 (회전만, 힘 0 근처 -- 실제 0 프레임 같은 것)
+        scale = 0.0 if rest else 1.0
         for _ in range(6):
             Fa = Q @ torch.diag(torch.exp(eps * scale)) @ Q.T
             Fs = Fa @ (I3 + scale * fu.grad(X))
-            Fp = Rp @ (R @ Fs) @ (I3 + scale * sig * Np)
+            Fp = (Rp if not rest else I3) @ (R @ Fs) @ (I3 + scale * sig * Np)
             if float(torch.linalg.det(Fp).min()) >= o["det_min"]:
                 break
             scale *= 0.5
@@ -144,7 +148,7 @@ class StateGen:
         else:
             h = float(_logu(gen, sc.frame_dt / o["dt_sub_max"], sc.frame_dt, (), dev))
         info = dict(strain=S * scale, aff=Sa * scale, spread=sig * scale, out_frac=fo, v_lin=float(vl.norm()), w=float(wv.norm()),
-                    v_sm=vs, h=h, full_rot=bool(R.trace() < 2.99))
+                    v_sm=vs, h=h, rest=rest)
         return x.contiguous(), v.contiguous(), Fp.contiguous(), h, info
 
 

@@ -308,7 +308,7 @@ for it in pbar:
         isbest = best is None or summ["err_mean"] < best["err_mean"]
         if isbest:
             best = dict(it=k1, **summ)
-        print(f"[평가] 반복 {k1}: 80 프레임 롤아웃 위치 오차 평균 {100 * summ['err_mean']:.3f}% (마지막 {100 * summ['err_last']:.3f}%) | "
+        print(f"[평가] 반복 {k1}: {a.eval_len} 프레임 롤아웃 위치 오차 평균 {100 * summ['err_mean']:.3f}% (마지막 {100 * summ['err_last']:.3f}%) | "
               f"뒤집힌 사면체 합 {summ['inv_tets_sum']} 최대 {summ['inv_tets_max']} | 뒤집힌 입자 최대 {summ['inv_particles_max']} | "
               f"프레임당 {summ['sec_per_frame']:.4f} s | 발산 {summ['diverged_at']} | 최저 {100 * best['err_mean']:.3f}% (반복 {best['it']})", flush=True)
         tb.flush()

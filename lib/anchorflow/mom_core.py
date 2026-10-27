@@ -13,7 +13,7 @@
   (4) G2P   x_p += Σ λ Δx_n, v_p = Σ λ Δx_n / h, F_p ← A_T F_p, A_T = I + Σ_i Δx_i ⊗ ∇λ_i.
 
 손실 (탄성 에너지를 다시 계산하지 않는다; f 는 스텝 시작 상태에서 정해진 상수):
-  잔차  r_n = m_n (Δx_n − h v_n)/h² − f_n − m_n g
+  잔차  r_n = m_n (Δx_n − h v_n)/h² − f_n − m_n g   (m_n 은 max(m_n, m_floor = 1e-3·ρ·격자점당 부피): λ=0 이라 질량 0 인 노드 대비)
         E_res = Σ_n h² |r_n|² / (2 m_n) = Σ_n m_n/(2h²) |Δx_n − x̃_n|²,   x̃_n = h v_n + h²(f_n/m_n + g)   [J]
         (잔차 제곱을 노드 질량으로 나눈 M⁻¹ 노름 × h²/2 -- 증분 포텐셜의 관성항과 같은 꼴·단위라 아래 장벽과 단위가 맞고,
          망 출력 속도 Δx/h 의 오차로 보면 ½Σm|δv|² 라 dt 에 따라 무게가 바뀌지 않는다)
@@ -78,6 +78,9 @@ class Scene:
         lat = SX.lattice(self.node_h, HZ * self.node_h, dtype=torch.float64)
         self.v_node = float(torch.linalg.det(lat.A).abs())            # 격자점 하나당 부피 (꽉 찬 노드의 질량 = ρ·v_node)
         self.m_full = self.rho * self.v_node
+        # 노드 질량 바닥 (고정 상수): 입자가 꼭짓점·면 위에 있어 λ=0 이면 m_n = 0 인 노드가 생긴다 (cover 실측 f/m 비유한).
+        # f/m·명시해·잔차 무게에는 max(m_n, m_floor) 를 쓴다 (P2G 속도는 p_n/m_n 그대로)
+        self.m_floor = 1e-3 * self.m_full
         self.h_ref = self.frame_dt
         self.k_inv, self.jhat, self.k_bc = float(k_inv), float(jhat), float(k_bc)
         self.dhat = float(dhat) if dhat > 0 else 0.5 * float(cfg.get("grid_lim", 2.0)) / int(cfg["n_grid"])
@@ -153,7 +156,7 @@ def cell_A(S, dx):
 
 
 def node_feats(sc, S, mn, vn, f, h):
-    a = f / mn.clamp_min(1e-30).unsqueeze(-1)
+    a = f / mn.clamp_min(sc.m_floor).unsqueeze(-1)
     near = DM.bc_near_feats(sc.cfg, S.rows, S.npos, S.M, sc.node_h, "near", 1.0)
     M = S.M
     return torch.cat([symlog(a, sc.gmag), vn, torch.log(mn.clamp_min(1e-30) / sc.m_full).unsqueeze(1), (S.ninc / 24.0).unsqueeze(1),
@@ -186,7 +189,7 @@ def prepare(sc, x, v, F, h, stress):
 def explicit_dx(sc, P):
     """명시적 오일러 해 x̃ = h v + h²(f/m + g) (잔차 0 인 Δx)."""
     h = P.h
-    return h * P.vn + h * h * (P.f / P.mn.clamp_min(1e-30).unsqueeze(-1) + sc.g)
+    return h * P.vn + h * h * (P.f / P.mn.clamp_min(sc.m_floor).unsqueeze(-1) + sc.g)
 
 
 def loss_terms(sc, P, dx, xp):
@@ -194,7 +197,7 @@ def loss_terms(sc, P, dx, xp):
     h, S = P.h, P.S
     hh = h * h
     xt = explicit_dx(sc, P)
-    E_res = (P.mn / (2.0 * hh) * ((dx - xt) ** 2).sum(-1)).sum()
+    E_res = (P.mn.clamp_min(sc.m_floor) / (2.0 * hh) * ((dx - xt) ** 2).sum(-1)).sum()
     J = torch.linalg.det(cell_A(S, dx))
     E_inv = (P.VT * (sc.k_inv * sc.mu) * phys_resid._barrier_b(J, sc.jhat, ext_kind="linear")).sum()
     E_bc = torch.zeros((), device=dx.device)
