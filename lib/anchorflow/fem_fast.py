@@ -162,7 +162,8 @@ class FemFrame:
         tk("관성")
         Ut = U[:, :3].double()[q["uq"]]
         A0 = I3 + (Ut.unsqueeze(-1) * q["gl"].unsqueeze(-2)).sum(1)
-        K = _k_manual_run(A0, q["FT"], q["VT"], float(self.mu), float(self.lam))
+        # K 는 실행 dtype 으로 (기존 입자 K 와 같은 정밀도; A6000 float64 가 느려 float64 면 31 ms -- 10-27 계측)
+        K = _k_manual_run(A0.to(self.dt), q["FT"].to(self.dt), q["VT"].to(self.dt), float(self.mu), float(self.lam))
         tk("K(사면체)")
         Hq = Hq + torch.einsum("tib,tcbde,tje->ticjd", q["gl"], K.reshape(Ta, 3, 3, 3, 3), q["gl"]).reshape(Ta, 12, 12)
         H = torch.zeros(T, 12, 12, device=U.device, dtype=f8)

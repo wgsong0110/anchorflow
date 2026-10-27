@@ -9214,10 +9214,18 @@ def _rollout(d, t0, L, gsel=None):
                 _rf = os.path.join(_rp, f"c{_rn:05d}.pt")
                 if _rn % _rk == 0 and not os.path.exists(_rf) and len(_VDUMP) == _rn and len(_FDUMP) == _rn:
                     os.makedirs(_rp, exist_ok=True)
-                    torch.save({"pred": torch.stack([a_ for a_, _ in _ROLLDUMP[_rn - _rk:]]),
-                                "v": torch.stack(_VDUMP[_rn - _rk:]), "F": torch.stack(_FDUMP[_rn - _rk:]).float()},
-                               _rf + ".tmp")
-                    os.replace(_rf + ".tmp", _rf)
+                    _pd_ = {"pred": torch.stack([a_ for a_, _ in _ROLLDUMP[_rn - _rk:]]),
+                            "v": torch.stack(_VDUMP[_rn - _rk:]), "F": torch.stack(_FDUMP[_rn - _rk:]).float()}
+
+                    def _sv_part(_pd_=_pd_, _rf=_rf):
+                        torch.save(_pd_, _rf + ".tmp")
+                        os.replace(_rf + ".tmp", _rf)
+                    if os.environ.get("AF_ROLL_PART_ASYNC"):
+                        # AF_ROLL_PART_ASYNC=1 (실시간 판 선택지): 같은 내용을 뒤 스레드에서 쓴다 (NFS 쓰기 ~1.9 s 가 롤아웃을 막지 않게; 끝날 때 합류)
+                        import threading as _thr
+                        _thr.Thread(target=_sv_part, daemon=False).start()
+                    else:
+                        _sv_part()
             if _NODE_LAST[0] is not None:
                 _NODEDUMP.append(tuple(q_.cpu() for q_ in _NODE_LAST[0]))
             if _DDIAG is not None and _DDIAG_LAST[0] is not None:
