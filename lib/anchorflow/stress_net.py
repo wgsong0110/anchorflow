@@ -314,13 +314,13 @@ class StressNet(nn.Module):
 
 # ---------------------------------------------------------------- 자기지도 셀 생성 (실제 궤적 무관)
 GEN_DEFAULTS = dict(
-    n_max=160, p_logn=0.8,
-    p_mode=[0.3, 0.25, 0.25, 0.2],               # 균등 / 한 점으로 수축 / 부분 사면체 / 정규 부분격자
-    shrink_min=0.02, sub_s_min=0.12, sub_s_max=0.9,
-    v_lo=1e-8, v_hi=3e-6, p_vcell=0.5,           # V_p 범위 (실제 분포 측정 뒤 덮게 잡는다)
+    n_max=640, p_logn=0.85,
+    p_mode=[0.3, 0.25, 0.25, 0.2],               # 균등 / 몇 점으로 수축 / 부분 사면체 / 정규 부분격자
+    shrink_min=0.02, sharp_max=4.0, sub_s_min=0.12, sub_s_max=0.9,
+    v_lo=4e-9, v_hi=1.6e-5, p_vcell=0.5,         # V_p 범위 (실제 lego log10 V_p [−8.12, −5.10] 를 덮게, test_1a9bcd9 cover)
     S_max=0.7, g_max=0.6, sig_max=0.4, p_sig0=0.15,
     p_out=0.5, out_frac=0.3, out_ang_min=1e-2, out_ang_max=math.pi, out_str_max=0.7,
-    det_min=0.05, p_lego=0.4, E_fac=100.0, nu_max=0.45, p_mix=0.1,
+    det_min=0.05, p_inv=0.1, p_lego=0.4, E_fac=100.0, nu_max=0.45, p_mix=0.1,
 )
 
 
@@ -363,7 +363,7 @@ _PERMS = [(0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)]
 class CellGen:
     """무작위 셀 B 개 -> 셀 묶음 (batch_from_particles 와 같은 꼴, ci = 0).
 
-    위치 (셀 모드별): 균등 (Dirichlet(1)) / 한 점으로 수축 (중심 + t(균등 − 중심), t ~ logU[shrink_min, 1]) /
+    위치 (셀 모드별): 균등 (Dirichlet(1)) / 몇 점으로 수축 (중심 1~4 개, 꼭짓점 쪽 치우침, 중심 + t(균등 − 중심), t ~ logU[shrink_min, 1]) /
       부분 사면체 (꼭짓점 4 개를 셀 안 균등으로 뽑은 작은 사면체 안 균등 -- 표면 셀처럼 셀 일부만 참) /
       정규 부분격자 (세계 축 정렬 간격 s·node_h, s ~ logU[sub_s_min, sub_s_max], 무작위 원점·약간 흔들림 -- PG 채우기 입자처럼).
     입자 수: 정규 부분격자 외에는 확률 p_logn 로 logU[1, n_max], 나머지 U{1..n_max}.
@@ -371,7 +371,7 @@ class CellGen:
     F: F_p = R_out,p · R_c U_c (I + G·(y_p − ȳ)) (I + σ N_p) (I + ε_out,p),
        R_c ∈ SO(3) 균등, U_c = Q diag(e^ε) Qᵀ, |ε_i| ≤ S ~ logU[1e-4, S_max]; G [3,3,3] 크기 g ~ logU[1e-4, g_max] (격자 단위당);
        σ ~ logU[1e-4, sig_max] (확률 p_sig0 로 0); 확률 p_out 로 입자 비율 U[0, out_frac] 가 추가 회전 (각 logU[out_ang_min, out_ang_max])
-       + 추가 늘임 (|ε| ≤ logU[1e-3, out_str_max]). det F_p < det_min 이면 그 셀 변형을 절반으로 줄여 다시 (최대 8 번).
+       + 추가 늘임 (|ε| ≤ logU[1e-3, out_str_max]), 그중 p_inv 는 한 축 반사 (뒤집힌 입자). 나머지 입자 det F_p < det_min 이면 그 셀 변형을 절반으로 줄여 다시 (최대 8 번).
     물성: 확률 p_lego 로 씬 값 (E, ν), 나머지 E ~ logU[E/E_fac, E·E_fac], ν ~ U[0, nu_max]; 확률 p_mix 로 셀 안 두 물성 섞기.
     """
 
@@ -420,9 +420,10 @@ class CellGen:
             n_sub = cnt.clamp_min(1)
             n = n.clone()
             n[sub] = n_sub
-            sel = order[:, :nmax]
-            fsel = fy.gather(1, sel.unsqueeze(-1).expand(-1, -1, 3))                                # [nb,nmax,3]
-            okm = torch.arange(nmax, device=dev).unsqueeze(0) < cnt.unsqueeze(1)
+            nk = min(nmax, int(order.shape[1]))
+            sel = order[:, :nk]
+            fsel = fy.gather(1, sel.unsqueeze(-1).expand(-1, -1, 3))                                # [nb,nk,3]
+            okm = torch.arange(nk, device=dev).unsqueeze(0) < cnt.unsqueeze(1)
             cen = lam_to_y(torch.full((nb, 4), 0.25, device=dev), ps)
             fsel = torch.where(okm.unsqueeze(-1), fsel, cen.unsqueeze(1))
             sub_f = fsel                                                                           # 셀마다 n_sub 개를 앞에서
@@ -431,10 +432,17 @@ class CellGen:
         perm_p = perm[seg]
         lam_u = _dirichlet1(gen, N, dev)
         md = mode[seg]
-        # 한 점으로 수축
-        cen_l = _dirichlet1(gen, B, dev)
+        # 몇 점으로 수축: 셀마다 중심 k ∈ {1..4} 개 (꼭짓점 쪽으로 치우친 무작위 점: Dirichlet(1) 표본을 지수 s ~ U[1, sharp_max] 로 날카롭게),
+        # 입자는 중심 하나를 골라 t ~ logU[shrink_min, 1] 만큼 균등점 쪽으로 (꼭짓점 하나에 몰린 셀·마주 보는 꼭짓점에 갈린 셀 포함)
+        ek = -torch.log(torch.rand(B, 4, 4, generator=gen, device=dev).clamp_min(1e-12))
+        shp = 1.0 + (o["sharp_max"] - 1.0) * torch.rand(B, 1, 1, generator=gen, device=dev)
+        ek = ek ** shp
+        cen4 = ek / ek.sum(-1, keepdim=True)                                                      # [B,4(중심),4(λ)]
+        kc = torch.randint(1, 5, (B,), generator=gen, device=dev)
+        pick = (torch.rand(N, generator=gen, device=dev) * kc[seg].float()).long().clamp(max=3)
+        cen_p = cen4[seg, pick]
         t = _logu(gen, o["shrink_min"], 1.0, B, dev)
-        lam_s = cen_l[seg] + t[seg].unsqueeze(1) * (lam_u - cen_l[seg])
+        lam_s = cen_p + t[seg].unsqueeze(1) * (lam_u - cen_p)
         # 부분 사면체: 꼭짓점 4 개 (셀 안 균등) 의 볼록 결합
         Vs = torch.stack([_dirichlet1(gen, B, dev) for _ in range(4)], 1)                         # [B,4(꼭짓점),4(λ)]
         lam_b = (lam_u.unsqueeze(-1) * Vs[seg]).sum(1)
@@ -480,6 +488,13 @@ class CellGen:
         ostr = _logu(gen, 1e-3, o["out_str_max"], N, dev) * isout.float()
         oeps = (2 * torch.rand(N, 3, generator=gen, device=dev) - 1) * ostr.unsqueeze(1)
         Qo = _rand_rot(gen, N, dev)
+        # 뒤집힌 입자 (실제 lego 롤아웃에 det F_p 최소 −1.0 이 있다): 이상 입자 중 p_inv 를 한 축 반사 + 압축 s ~ U[0.05, 1]
+        isinv = isout & (torch.rand(N, generator=gen, device=dev) < o["p_inv"])
+        rs = 0.05 + 0.95 * torch.rand(N, generator=gen, device=dev)
+        Dv = torch.ones(N, 3, device=dev)
+        Dv[:, 2] = torch.where(isinv, -rs, torch.ones_like(rs))
+        Qi = _rand_rot(gen, N, dev)
+        Finv = Qi @ torch.diag_embed(Dv) @ Qi.transpose(1, 2)
         cen = seg_sum(f, seg, B) / n.unsqueeze(1).float()
         dy = f - cen[seg]
         I3 = torch.eye(3, device=dev)
@@ -489,11 +504,13 @@ class CellGen:
             Gp = torch.einsum("pijk,pk->pij", G[seg], dy) * (gm * sc)[seg].reshape(-1, 1, 1)
             Eo = Qo @ torch.diag_embed(torch.exp(oeps * sc[seg].unsqueeze(1))) @ Qo.transpose(1, 2)
             Fp = (Ro @ (Rc[seg] @ Uc[seg] @ (I3 + Gp))) @ (I3 + (sig * sc)[seg].reshape(-1, 1, 1) * Np) @ Eo
-            dmin = torch.full((B,), 1e30, device=dev).scatter_reduce(0, seg, torch.linalg.det(Fp), "amin")
+            dt_ = torch.linalg.det(Fp).masked_fill(isinv, 1e30)                                   # 일부러 뒤집은 입자는 판정에서 뺀다
+            dmin = torch.full((B,), 1e30, device=dev).scatter_reduce(0, seg, dt_, "amin")
             bad = dmin < o["det_min"]
             if not bool(bad.any()):
                 break
             sc = torch.where(bad, sc * 0.5, sc)
+        Fp = Fp @ Finv
         info = dict(mode=mode, n=n, S=S * sc, g=gm * sc, sig=sig * sc, out=fo)
         return dict(seg=seg, T=B, ci=torch.zeros(B, 3, device=dev, dtype=torch.long), perm=perm, f=f, F=Fp, Vp=Vp, mu=mu, lam=lam), info
 

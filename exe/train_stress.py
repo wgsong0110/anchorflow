@@ -359,10 +359,21 @@ if a.mode == "check":
             cov32 = float(((t2 - Q.float().unsqueeze(1) @ t1 @ Q.float().transpose(1, 2).unsqueeze(1)).flatten(1).norm(dim=1)
                            / t1.flatten(1).norm(dim=1).clamp_min(1e-30)).max())
             sym = float((tq - tq.transpose(-1, -2)).abs().max() / tq.abs().max())
+            # 오차의 출처 가르기: (i) 정규화 좌표계 출력 τ'_q 는 Q 에 무관해야 한다 (망 입력 F' 가 같으면 비트 단위로 같다)
+            _t1, P1 = net(b, return_parts=True); _t2, P2 = net(b2, return_parts=True)
+            dn = float(((P2["tq_n"] - P1["tq_n"]).flatten(1).norm(dim=1) / P1["tq_n"].flatten(1).norm(dim=1).clamp_min(1e-300)).max())
+            dF = float(((P2["R"].transpose(1, 2)[b["seg"]] @ b2["F"]) - (P1["R"].transpose(1, 2)[b["seg"]] @ b["F"])).abs().max())
+            # (ii) 기존 고정 FCR (kirchhoff_tau) 자체의 공변 오차 (입자 τ, 같은 Q)
+            tp1 = SN.tau_fcr(b["F"], b["mu"], b["lam"]); tp2 = SN.tau_fcr(b2["F"], b["mu"], b["lam"])
+            Qs = Q[b["seg"]]
+            cfcr = float(((tp2 - Qs @ tp1 @ Qs.transpose(1, 2)).flatten(1).norm(dim=1) / tp1.flatten(1).norm(dim=1).clamp_min(1e-300)).max())
+            cfcr_m = float((tp2 - Qs @ tp1 @ Qs.transpose(1, 2)).norm() / tp1.norm())
         say(f"[보존 {kind} K={K}] 무작위 셀 2048 개 (float64, 출력 층 무작위): 셀별 |Σ_n f_n|/Σ_n|f_n| 최대 — 모델 {res['모델'][0]:.2e}, 정답 {res['정답'][0]:.2e}; "
             f"|Σ_n (x_n−x̄)×f_n|/Σ|x_n−x̄||f_n| 최대 — 모델 {res['모델'][1]:.2e}, 정답 {res['정답'][1]:.2e}, "
             f"반대칭 τ 를 더한 대조 {res['모델+반대칭 τ (대조)'][1]:.2e} (τ 대칭성 {sym:.1e})")
-        say(f"[회전 공변 {kind} K={K}] F_p -> Q F_p (셀마다 무작위 Q ∈ SO(3)): max_셀 ‖τ_q(QF) − Q τ_q(F) Qᵀ‖/‖τ_q‖ = {cov:.2e} (float64), {cov32:.2e} (float32)")
+        say(f"[회전 공변 {kind} K={K}] F_p -> Q F_p (셀마다 무작위 Q ∈ SO(3)): max_셀 ‖τ_q(QF) − Q τ_q(F) Qᵀ‖/‖τ_q‖ = {cov:.2e} (float64), {cov32:.2e} (float32); "
+            f"출처: 정규화 입력 F'_p 최대차 {dF:.1e}, 정규화 출력 τ'_q 최대 상대차 {dn:.1e}, 기존 FCR (kirchhoff_tau, 내부 특이값 float32) 자체 공변 오차 "
+            f"입자 최대 {cfcr:.1e} / 전체 {cfcr_m:.1e} -- 남은 차는 기저 τ_FCR(F̄') 의 FCR 구현 정밀도")
         del net, b, b2
     # (5) mom_core 색인 규약 대조 (lego 실제 상태, bary)
     from anchorflow import mom_core as MC
@@ -469,6 +480,7 @@ if a.mode == "eval":
 # ---------------------------------------------------------------- train
 from torch.utils.tensorboard import SummaryWriter  # noqa: E402
 
+torch.manual_seed(a.seed)                     # 망 초기값을 seed 로 고정 (이어 돌리기 시험: 한 번에 돈 것과 같은 출발점)
 net = make_net()
 opt = torch.optim.Adam(net.parameters(), lr=a.lr)
 GEN = SN.CellGen(LAT, a.E, a.nu, dev, **GEN_KW)
