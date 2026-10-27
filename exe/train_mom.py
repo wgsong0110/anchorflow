@@ -40,6 +40,8 @@ ap.add_argument("--eval_every", type=int, default=1000)
 ap.add_argument("--eval_len", type=int, default=80)
 ap.add_argument("--ckpt_every", type=int, default=500)
 ap.add_argument("--log_every", type=int, default=50)
+ap.add_argument("--val_every", type=int, default=500, help="고정 생성 검증 상태 (--n_val 개, 학습 난수와 따로) 손실을 잴 간격")
+ap.add_argument("--n_val", type=int, default=16)
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--k_inv", type=float, default=1.0, help="뒤집힘 장벽 κ (기존 --inv_barrier 와 같은 뜻: 에너지밀도 κ μ b(det))")
 ap.add_argument("--jhat", type=float, default=0.3)
@@ -242,6 +244,27 @@ def save_ck(path, it):
     bg_copy(path, os.path.basename(path))
 
 
+# 고정 생성 검증 상태 (학습 난수와 별개의 생성기 -- 손실 추세를 표본 잡음 없이 본다)
+_gv = torch.Generator(device=dev).manual_seed(a.seed + 777)
+VAL = [sg.sample(_gv)[:4] for _ in range(a.n_val)]
+
+
+def val_loss():
+    net.eval()
+    tot = dict(res=0.0, inv=0.0, bc=0.0, inv_net=0.0, pen=0.0)
+    with torch.no_grad():
+        for (x, v, F, h) in VAL:
+            P = MC.prepare(sc, x, v, F, h, stress)
+            dx = MC.net_dx(net, sc, P.S, P.feat, h)
+            terms, J, sds = MC.loss_terms(sc, P, dx, x)
+            for k in ("res", "inv", "bc"):
+                tot[k] += float(terms[k]) / len(VAL)
+            tot["inv_net"] += float((J <= 0).float().mean()) / len(VAL)
+            tot["pen"] += (float((sds[0] < 0).float().mean()) if sds else 0.0) / len(VAL)
+    tot["loss"] = tot["res"] + tot["inv"] + tot["bc"]
+    return tot
+
+
 tb = SummaryWriter(os.path.join(a.out, "tb"))
 evl = open(os.path.join(a.out, "evals.jsonl"), "a")
 pbar = tqdm(range(it0, a.iters), desc="운동량 잔차 학습", ncols=110, mininterval=10, initial=it0, total=a.iters)
@@ -294,6 +317,13 @@ for it in pbar:
         if k1 % (a.log_every * 10) == 0:
             print(f"  [반복 {k1}] 손실 {m_['loss']:.4e} (잔차 {m_['res']:.4e} 뒤집힘 {m_['inv']:.3e} 바닥 {m_['bc']:.3e}) | 망 뒤집힌 사면체 {m_['inv_net']:.2e} "
                   f"명시해 {m_['inv_exp']:.2e} (있는 표본 {m_['any_exp']:.2f}) | 관통 입자 {m_['pen']:.2e} | {time.time() - T0:.0f} s", flush=True)
+    if k1 % a.val_every == 0 or k1 == a.iters:
+        vl = val_loss()
+        for k, nm in (("loss", "손실_합"), ("res", "잔차_항"), ("inv", "뒤집힘_장벽_항"), ("bc", "바닥_장벽_항"), ("inv_net", "망_뒤집힌_사면체_비율"),
+                      ("pen", "망_바닥_관통_입자_비율")):
+            tb.add_scalar(f"고정검증/{nm}", vl[k], k1)
+        print(f"  [고정 검증 {k1}] 손실 {vl['loss']:.4e} (잔차 {vl['res']:.4e} 뒤집힘 {vl['inv']:.3e} 바닥 {vl['bc']:.3e}) | 망 뒤집힌 사면체 {vl['inv_net']:.2e} "
+              f"관통 입자 {vl['pen']:.2e}", flush=True)
     if k1 % a.eval_every == 0 or k1 == a.iters:
         net.eval()
         summ, recs, _ = rollout(net, a.eval_len, desc=f"평가 {k1}")

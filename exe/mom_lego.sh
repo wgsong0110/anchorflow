@@ -1,6 +1,6 @@
 #!/bin/bash
 # 운동량 잔차 변위 망 lego L000 (사용자 10-27 확정 설계, doc/mom_lego.md, exe/train_mom.py).
-#   bash exe/mom_lego.sh test <GPU>   생성 분포 vs 실제 롤아웃 분포 (cover) -> 이어 돌리기 시험 (20 -> 30 vs 한 번에 30) -> 짧은 학습 (MOM_SMOKE_IT, 기본 300)
+#   bash exe/mom_lego.sh test <GPU>   생성 분포 vs 실제 롤아웃 분포 (cover) -> 이어 돌리기 시험 (20 -> 30 vs 한 번에 30) -> 짧은 학습 (MOM_SMOKE_IT, 기본 1000)
 #                                     -> 그 체크포인트 롤아웃·h5·3DGS 렌더 시험. 출력 lbours/mom_lego/test_<커밋>, 표식 MOM_TEST_DONE / MOM_TEST_FAIL
 #   bash exe/mom_lego.sh run <GPU>    본 학습 (MOM_ITERS, 기본 30000; 1000 마다 80 프레임 롤아웃 평가 -> TB) -> 최저 오차 체크포인트로 80 프레임 롤아웃 덤프
 #                                     -> 3DGS 렌더 (정답 | 변위 망, 프레임 번호·한국어 라벨) -> 기존 결과와 비교 err_cmp.txt.
@@ -92,10 +92,10 @@ PY
     touch $O/resume.ok; up
   fi
   # 3) 짧은 학습 + 롤아웃·렌더 시험
-  SM=$O/smoke; mkdir -p $SM; NS=${MOM_SMOKE_IT:-300}
+  SM=$O/smoke; mkdir -p $SM; NS=${MOM_SMOKE_IT:-1000}
   if [ "$(ck_it $SM/ck.pt)" != "$NS" ]; then
-    echo "[짧은 학습 명령] CUDA_VISIBLE_DEVICES=$G $TM --mode train --iters $NS --eval_every 100 --ckpt_every 100 --log_every 10 --out $SM --r2 $RO/smoke" > $SM/cmd.txt
-    CUDA_VISIBLE_DEVICES=$G $TM --mode train --iters $NS --eval_every 100 --ckpt_every 100 --log_every 10 --out $SM --r2 $RO/smoke >> $SM/train.log 2>&1 < /dev/null
+    echo "[짧은 학습 명령] CUDA_VISIBLE_DEVICES=$G $TM --mode train --iters $NS --eval_every 250 --val_every 100 --ckpt_every 250 --log_every 10 --out $SM --r2 $RO/smoke" > $SM/cmd.txt
+    CUDA_VISIBLE_DEVICES=$G $TM --mode train --iters $NS --eval_every 250 --val_every 100 --ckpt_every 250 --log_every 10 --out $SM --r2 $RO/smoke >> $SM/train.log 2>&1 < /dev/null
   fi
   grep -a "\[반복\|\[평가\]\|입력 표준화\|Traceback\|Error" $SM/train.log | cut -c1-300 | tail -20
   [ "$(ck_it $SM/ck.pt)" = "$NS" ] || fail "짧은 학습 실패"

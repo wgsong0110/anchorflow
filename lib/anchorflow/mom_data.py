@@ -8,6 +8,7 @@ lego 형상(L000 0 프레임 입자 = 기준 배치 X, 질량·부피 그대로)
          F_p = R_p R F_aff (I + ∇u(X_p)) (I + σ N_p)  -- 입자별 퍼짐 σ ~ logU[spread_min, spread_max],
          일부(비율 U[0, out_frac]) 입자는 추가 회전 R_p (각 logU[1e-3, out_ang]) -- 사면체 안 F 퍼짐 (실제 롤아웃의 이력 차)
          det F 가 det_min 아래로 가면 변형 크기를 절반으로 줄여 다시 (최대 6 번)
+  눌림   확률 p_flat 로 바닥 법선 방향 비 U[flat_min, 1] 로 눌러 x·F 에 같이 (바닥에 납작해진 상태)
   위치   x = R y + t,  바닥 최소 거리 c: 확률 (p_pen, p_near, 나머지) 로 U[−0.5, 0]·h_node / U[0, 2]·h_node / U[2 h_node, clear_max·EXT],
          바닥 면 안 방향 이동 U[−2, 2]·h_node (격자 정렬 바꾸기)
   속도   v = v_lin + ω × (x − c) + v_sm(X) + 입자 잡음: |v_lin| ~ logU[v_min, v_max], |ω| ~ logU[w_min, w_max],
@@ -20,7 +21,7 @@ import math
 
 import torch
 
-DEFAULTS = dict(p_rest=0.15, p_rot_full=0.3, tilt_max=0.6, K=6, strain_min=1e-6, strain_max=0.4, aff_max=0.3, spread_min=1e-6, spread_max=0.05,
+DEFAULTS = dict(p_rest=0.15, p_rot_full=0.3, tilt_max=0.6, K=6, strain_min=1e-6, strain_max=0.2, aff_max=0.15, p_flat=0.25, flat_min=0.4, spread_min=1e-6, spread_max=0.05,
                 out_frac=0.03, out_ang=1.5, det_min=0.15, p_pen=0.15, p_near=0.55, clear_max=0.5, v_min=1e-3, v_max=6.0, w_min=1e-3,
                 w_max=10.0, vs_min=1e-4, vs_max=2.0, vnoise_max=0.1, p_frame=0.25, dt_sub_max=64)
 
@@ -129,6 +130,15 @@ class StateGen:
             scale *= 0.5
         y = (X + scale * fu.val(X)) @ Fa.T
         x = y @ R.T
+        # 바닥 법선 방향 눌림 (확률 p_flat, 비 U[flat_min, 1]): 실제 롤아웃은 바닥에서 높이가 반까지 납작해진다 (정답 80 프레임 높이 1.056 -> 0.52)
+        if sc.planes and not rest and float(torch.rand((), generator=gen, device=dev)) < o["p_flat"]:
+            nf = sc.planes[0][1]
+            sq = o["flat_min"] + (1 - o["flat_min"]) * float(torch.rand((), generator=gen, device=dev))
+            Sq = I3 + (sq - 1.0) * torch.outer(nf, nf)
+            x = x @ Sq.T
+            Fp = Sq @ Fp
+        else:
+            sq = 1.0
         # 바닥 높이·면 안 이동
         if sc.planes:
             p0, n = sc.planes[0]
@@ -164,7 +174,7 @@ class StateGen:
         else:
             h = float(_logu(gen, sc.frame_dt / o["dt_sub_max"], sc.frame_dt, (), dev))
         info = dict(strain=S * scale, aff=Sa * scale, spread=sig * scale, out_frac=fo, v_lin=float(vl.norm()), w=float(wv.norm()),
-                    v_sm=vs, h=h, rest=rest)
+                    v_sm=vs, h=h, rest=rest, flat=sq)
         return x.contiguous(), v.contiguous(), Fp.contiguous(), h, info
 
 
