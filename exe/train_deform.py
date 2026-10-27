@@ -5755,6 +5755,7 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
     _NTG[0] = None
     _r0 = _fwd()
     _DIAG_X2[0] = _r0[0].detach() if os.environ.get("AF_FEM_DIAG") else None
+    _r0x2 = _r0[0].detach().cpu() if _fem_dump_on(t, k) else None       # AF_FEM_DUMP: 매핑 뒤 입자 위치 (검산용)
     del _r0
     _fsync()
     _t_fwd0 = time.time() - _t0                                           # 전처리 순전파 (변수 → U0)
@@ -5831,7 +5832,8 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
                                 vol=(_st.get("vol").cpu() if torch.is_tensor(_st.get("vol")) else _st.get("vol")),
                                 nrm=float(nrm), h=h_, E=_cfg.get("E"), nu=_cfg.get("nu"), mat=phys_resid.mat_name(_cfg),
                                 bcs=_cfg.get("boundary_conditions"), g=_cfg.get("g"), n_grid=_cfg.get("n_grid"), grid_lim=_cfg.get("grid_lim"),
-                                fixd=_fixd.cpu(), uq=_uq.cpu(), inv=_inv.cpu(), args=vars(a)), _dp)
+                                fixd=_fixd.cpu(), uq=_uq.cpu(), inv=_inv.cpu(), args=vars(a),
+                                npos=_DPN_LIVE[0][0].detach().cpu(), x2=_r0x2), _dp)
                 print(f"    [FEM 덤프] t={t} -> {_dp} (입자 {N_}, 사면체 {T_})", flush=True)
                 _FEM_JD[0] = None
                 del _EJd, _Jd9, _Bp
