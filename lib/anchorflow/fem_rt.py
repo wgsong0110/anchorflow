@@ -111,7 +111,7 @@ def barrier3(d, dhat, eps_r=1e-3):
 
 # ---------------------------------------------------------------- --floor node: 사면체 적분점 + 노드 바닥 항
 class NodeFrame:
-    def __init__(self, G, x, v, F, m, vol, cfg, h, kappa=1.0, dhat=0.01, k_st=0.0, eps_st=0.01):
+    def __init__(self, G, x, v, F, m, vol, cfg, h, kappa=1.0, dhat=0.01, k_st=0.0, eps_st=0.01, clear="min", m_floor=0.0):
         dev = x.device
         self.G, self.cfg, self.h = G, cfg, float(h)
         self.mu, self.lam_ = PR.lame(cfg["E"], cfg["nu"])
@@ -137,12 +137,17 @@ class NodeFrame:
                 nr = torch.as_tensor(bc["normal"], device=dev, dtype=F8)
                 nr = nr / nr.norm()
                 s = ((x.double() - pt) * nr).sum(-1)
-                cn = torch.full((M,), float("inf"), device=dev, dtype=F8).scatter_reduce_(
-                    0, G.rows.reshape(-1), s.unsqueeze(1).expand(-1, 4).reshape(-1), reduce="amin")
+                if clear == "lam":
+                    # 노드 n 만 움직일 때 입자 p 가 바닥에 닿는 노드 변위 s_p/λ_pn 의 최소 (λ 작은 꼭짓점은 덜 묶인다; 보장은 볼록 결합이 아니라 근사)
+                    sv = (s.unsqueeze(1) / G.lam.double().clamp_min(1e-3)).reshape(-1)
+                else:
+                    sv = s.unsqueeze(1).expand(-1, 4).reshape(-1)
+                cn = torch.full((M,), float("inf"), device=dev, dtype=F8).scatter_reduce_(0, G.rows.reshape(-1), sv, reduce="amin")
                 w = 1.0 - torch.sigmoid(cn / eps_st) if k_st > 0 else torch.zeros_like(cn)
                 self.planes.append((nr, cn, w))
-        self.kb = float(kappa) * self.mn / h2                                   # κ m_n/h²
-        self.ks = float(k_st) * self.mn / h2                                   # k_st m_n/h²
+        mw = self.mn.clamp_min(float(m_floor))                                  # 장벽·고착 무게 질량 (작은 질량 노드가 탄성에 밀려 뚫리지 않게 하한)
+        self.kb = float(kappa) * mw / h2                                       # κ m_n/h²
+        self.ks = float(k_st) * mw / h2                                        # k_st m_n/h²
         self.dhat, self.k_st = float(dhat), float(k_st)
 
     def _el(self, Ut):
@@ -210,8 +215,18 @@ class NodeFrame:
 
 
 # ---------------------------------------------------------------- 고유값 투영 (train_deform _newton_target_asm 과 같은 식)
-def project(He, floor=1e-6, f32=True):
+def project(He, floor=1e-6, f32=True, gate=False):
+    """gate=True: 배치 Cholesky 가 되는 (양정치) 사면체는 그대로 두고 실패한 사면체만 고유분해 투영 (|λ| 투영은 양정치에서 항등 --
+    다만 바닥 floor·max|λ| 아래 고유값을 올리지 않는 차이만 있다)."""
     He = 0.5 * (He + He.transpose(1, 2))
+    if gate:
+        _, info = torch.linalg.cholesky_ex(He.float())
+        bad = (info != 0).nonzero().squeeze(1)
+        neg = float(bad.numel()) / max(He.shape[0], 1)
+        if bad.numel():
+            Hb, _ = project(He[bad], floor, f32, gate=False)
+            He = He.index_copy(0, bad, Hb)
+        return He, neg
     if f32:
         ew, eV = torch.linalg.eigh(He.float())
         ew, eV = ew.double(), eV.double()
@@ -296,6 +311,58 @@ def pcg(mv, pre, b, ncg, rtol, ck=50):
     return x, int(nit), float((r * r).sum() / b2), bool(negf)
 
 
+def pcg_graph(mv, pre, b, ncg, rtol, ck=4):
+    """pcg 와 같은 식·같은 판정을 CUDA 그래프로: 반복 한 번 (곱 + 전처리 + 갱신) 을 잡아 두고 재생, ck 회 재생마다 수렴 확인.
+    커널 띄우기 비용을 없앤다 (멀티그리드 V 사이클은 반복당 커널 수백 개). 잡기 실패하면 None."""
+    dev, dt = b.device, b.dtype
+    z = pre(b)
+    S = dict(x=torch.zeros_like(b), r=b.clone(), d=z.clone(), rz=(b * z).sum(), thr=(b * b).sum().clamp_min(1e-300) * (rtol * rtol),
+             alive=torch.ones((), dtype=torch.bool, device=dev), neg=torch.zeros((), dtype=torch.bool, device=dev),
+             nit=torch.zeros((), dtype=torch.long, device=dev), one=torch.ones((), dtype=dt, device=dev), zero=torch.zeros((), dtype=dt, device=dev))
+
+    def body():
+        Ad = mv(S["d"])
+        dAd = (S["d"] * Ad).sum()
+        neg_now = S["alive"] & ~(dAd > 0)
+        S["neg"].copy_(S["neg"] | neg_now)
+        S["alive"].copy_(S["alive"] & ~neg_now)
+        al = torch.where(S["alive"], S["rz"] / torch.where(dAd > 0, dAd, S["one"]), S["zero"])
+        S["x"].add_(al * S["d"])
+        S["r"].sub_(al * Ad)
+        rr = (S["r"] * S["r"]).sum()
+        S["nit"].add_(S["alive"].long())
+        S["alive"].copy_(S["alive"] & ~(rr < S["thr"]))
+        zz = pre(S["r"])
+        rz2 = (S["r"] * zz).sum()
+        beta = torch.where(S["alive"], rz2 / S["rz"], S["zero"])
+        S["d"].copy_(zz + beta * S["d"])
+        S["rz"].copy_(torch.where(S["alive"], rz2, S["rz"]))
+    try:
+        st = torch.cuda.Stream()
+        st.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(st):
+            keep = {k: v.clone() for k, v in S.items()}
+            body()
+            for k, v in keep.items():
+                S[k].copy_(v)
+        torch.cuda.current_stream().wait_stream(st)
+        gr = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(gr):
+            body()
+    except Exception as e:                                                    # noqa: BLE001
+        print(f"[pcg_graph] 잡기 실패 -> 그래프 없이: {type(e).__name__}: {str(e)[:200]}", flush=True)
+        return None
+    n = 0
+    while n < ncg:
+        for _ in range(ck):
+            gr.replay()
+        n += ck
+        if not bool(S["alive"]):
+            break
+    b2 = (b * b).sum().clamp_min(1e-300)
+    return S["x"], int(S["nit"]), float((S["r"] * S["r"]).sum() / b2), bool(S["neg"])
+
+
 # ---------------------------------------------------------------- Kuhn 격자 기하 멀티그리드 (블록 ELL, 15 점 스텐실)
 # 변 오프셋은 0/1 벡터 7 개와 그 음수 (simplex.EDGE_OFFSETS) + 자기 자신 = 15. 격자를 2 배로 성기게 하면 Freudenthal 분할이 포개지므로
 # (가는 사면체가 성긴 사면체 하나 안에 든다) 가는 점 g = 2c + r (r ∈ {0,1}³) 은 성긴 변 (c, c+r) 의 중점 -> 선형 보간 P 의 행은 많아야 2 개,
@@ -356,6 +423,23 @@ class BEll:
         X = x.reshape(self.M, 3)[self.nb]                                      # [M,15,3]
         return torch.einsum("mkab,mkb->ma", self.B.view(self.M, 15, 3, 3), X.to(self.B.dtype)).reshape(-1).to(x.dtype)
 
+    def to_csr(self):
+        M = self.M
+        dev = self.B.device
+        m = torch.arange(M, device=dev)[:, None, None, None].expand(M, 15, 3, 3)
+        a_ = torch.arange(3, device=dev)[None, None, :, None].expand(M, 15, 3, 3)
+        b_ = torch.arange(3, device=dev)[None, None, None, :].expand(M, 15, 3, 3)
+        nbx = self.nb[:, :, None, None].expand(M, 15, 3, 3)
+        ok = self.valid[:, :, None, None].expand(M, 15, 3, 3)
+        r = (m * 3 + a_)[ok]
+        c = (nbx * 3 + b_)[ok]
+        vals = self.B.view(M, 15, 3, 3)[ok]
+        n = 3 * M
+        o = torch.argsort(r * n + c)
+        crow = torch.zeros(n + 1, device=dev, dtype=torch.long)
+        crow[1:] = torch.bincount(r, minlength=n).cumsum(0)
+        return torch.sparse_csr_tensor(crow, c[o], vals[o], (n, n))
+
     def dense(self):
         M = self.M
         i = torch.arange(M, device=self.B.device).unsqueeze(1).expand(M, 15)
@@ -398,7 +482,7 @@ def galerkin(Af, gc, pidx, w):
 class KuhnMG:
     """기하 멀티그리드 V(ν,ν) 전처리: 블록 야코비 ω 매끄럽게, 가장 성긴 수준은 조밀 Cholesky (float64)."""
 
-    def __init__(self, A0, nu=2, omega=0.6, nmin=400, maxlev=8, dtype=F8):
+    def __init__(self, A0, nu=2, omega=0.6, nmin=400, maxlev=8, dtype=F8, A0csr=None):
         self.levels = []
         A = A0
         self.drop = 0
@@ -413,12 +497,16 @@ class KuhnMG:
                 dg = K.diagonal()
                 K = K + torch.diag(torch.where(dg > 0, 1e-12 * dg, torch.ones_like(dg)))
                 self.Lc = torch.linalg.cholesky(K)
+                self.Ki = torch.cholesky_inverse(self.Lc).to(dtype)
                 self.levels.append(dict(A=A, Dinv=Dinv, P=None))
                 break
             gc, pidx, w = coarsen(A.gi)
             Ac, dr = galerkin(A, gc, pidx, w)
             self.drop += dr
-            self.levels.append(dict(A=A, Dinv=Dinv, P=(pidx, w.to(dtype)), Mc=int(gc.shape[0])))
+            Cs = A0csr if (A is A0 and A0csr is not None) else A.to_csr()
+            if Cs.values().dtype != dtype:
+                Cs = torch.sparse_csr_tensor(Cs.crow_indices(), Cs.col_indices(), Cs.values().to(dtype), Cs.shape)
+            self.levels.append(dict(A=A, C=Cs, Dinv=Dinv, P=(pidx, w.to(dtype)), Mc=int(gc.shape[0])))
             A = Ac
         self.nu, self.omega, self.dtype = int(nu), float(omega), dtype
         self.sizes = [lv["A"].M for lv in self.levels]
@@ -429,20 +517,21 @@ class KuhnMG:
     def _cycle(self, l, r):
         lv = self.levels[l]
         if lv["P"] is None:
-            return torch.cholesky_solve(r.to(F8).unsqueeze(-1), self.Lc).squeeze(-1).to(r.dtype)
-        A = lv["A"]
+            return self.Ki @ r
+        C = lv["C"]
+        mv = lambda q: (C @ q.unsqueeze(-1)).squeeze(-1)
         om = self.omega
         x = om * self._jac(lv, r)
         for _ in range(self.nu - 1):
-            x = x + om * self._jac(lv, r - A.mv(x))
-        res = (r - A.mv(x)).reshape(-1, 3)
+            x = x + om * self._jac(lv, r - mv(x))
+        res = (r - mv(x)).reshape(-1, 3)
         pidx, w = lv["P"]
         rc = torch.zeros(lv["Mc"], 3, device=r.device, dtype=r.dtype).index_add_(
             0, pidx.reshape(-1), (w.unsqueeze(-1) * res.unsqueeze(1)).reshape(-1, 3))
         ec = self._cycle(l + 1, rc.reshape(-1)).reshape(-1, 3)
         x = x + (w.unsqueeze(-1) * ec[pidx]).sum(1).reshape(-1)
         for _ in range(self.nu):
-            x = x + om * self._jac(lv, r - A.mv(x))
+            x = x + om * self._jac(lv, r - mv(x))
         return x
 
     def __call__(self, r):

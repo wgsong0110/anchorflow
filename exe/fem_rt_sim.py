@@ -39,6 +39,8 @@ ap.add_argument("--eps_st", type=float, default=0.01)
 ap.add_argument("--kappa", type=float, default=1.0)
 ap.add_argument("--dhat", type=float, default=0.0, help="0 이면 0.5·grid_lim/n_grid (기존 --bc_dhat 기본)")
 ap.add_argument("--k_st", type=float, default=1000.0, help="노드 고착 세기 (관성 m/h² 배수, 0 = 미끄러짐)")
+ap.add_argument("--nf_clear", choices=["min", "lam"], default="min", help="노드 여유 c_n: min = 받치는 입자 최저 높이, lam = min s_p/λ_pn")
+ap.add_argument("--nf_mfloor", type=float, default=0.0, help="장벽·고착 무게 질량 하한 (꽉 찬 노드 질량 ρ·v_node 의 배수)")
 ap.add_argument("--solver", choices=["pcg", "mg", "pdpcg", "pd"], default="pcg")
 ap.add_argument("--newton", type=int, default=1)
 ap.add_argument("--tol", type=float, default=1e-2, help="AF_FEM_TOL: |p|∞/(h·EXT) < tol 이면 수렴 (걸음 안 함)")
@@ -54,6 +56,8 @@ ap.add_argument("--pd_w", type=float, default=1.0, help="PD 라플라시안 무�
 ap.add_argument("--pd_iters", type=int, default=10)
 ap.add_argument("--pd_reuse", type=int, default=1, help="1 = 노드 집합이 같으면 분해 재사용")
 ap.add_argument("--pd_floor_diag", type=int, default=1, help="1 = 바닥 장벽·고착 곡률의 등방 대각을 L 에 (분해 때 값)")
+ap.add_argument("--proj_gate", action="store_true", help="배치 Cholesky 로 양정치인 사면체는 고유분해 투영을 건너뛴다")
+ap.add_argument("--graph", action="store_true", help="PCG 반복 한 번을 CUDA 그래프로 잡아 재생")
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--dump_sys", default="", help="쉼표 프레임 목록: 그 프레임 첫 걸음 선형계 (블록 ELL·b) 를 <out>/sys_t###.pt 로")
@@ -81,6 +85,7 @@ dhat = a.dhat if a.dhat > 0 else 0.5 * float(cfg.get("grid_lim", 2.0)) / int(cfg
 planes = [(torch.as_tensor(b["point"], device=dev, dtype=torch.float32), torch.as_tensor(b["normal"], device=dev, dtype=torch.float32))
           for b in (cfg.get("boundary_conditions") or []) if b.get("type") == "surface_collider"]
 planes = [(p, n / n.norm()) for p, n in planes]
+M_FULL = float(cfg["density"]) * float(torch.linalg.det(RT.SX.lattice(a.node_h, RT.SX.HZ_CUBE * a.node_h, dtype=torch.float64).A).abs())
 sys_dump = {int(q) for q in a.dump_sys.split(",") if q.strip()}
 print(f"[실시간 FEM] 입자 {N}, 프레임 {L}, h {h:.6f}, E {cfg['E']:g} ν {cfg['nu']:g} (μ {mu:.4g} λ {lam:.4g}), EXT {EXT:.6f}, 바닥 {a.floor} "
       f"(d̂ {dhat:g}, κ {a.kappa:g}, k_st {a.k_st:g}), 풀이 {a.solver}, 뉴턴 {a.newton}, 계측 {'동기화' if a.prof else '끝만'}", flush=True)
@@ -114,7 +119,8 @@ for i in range(L):
     MnH = ws.double() / (h * h)
     tk("grid")
     if a.floor == "node":
-        fr = RT.NodeFrame(G, x, v, F, m, vol, cfg, h, kappa=a.kappa, dhat=dhat, k_st=a.k_st, eps_st=a.eps_st)
+        fr = RT.NodeFrame(G, x, v, F, m, vol, cfg, h, kappa=a.kappa, dhat=dhat, k_st=a.k_st, eps_st=a.eps_st, clear=a.nf_clear,
+                          m_floor=a.nf_mfloor * M_FULL)
         tets = G.tets
     else:
         fr = FF.FemFrame(x, v, F, m, vol, G.rows, G.lam, G.npos, None, cfg, h, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True, dtype=torch.float32)
@@ -179,7 +185,7 @@ for i in range(L):
             He, _fi = fr.hess_tetq(U)
             Dn = None
         tk("hess")
-        He, negf = RT.project(He, a.eig_floor)
+        He, negf = RT.project(He, a.eig_floor, gate=a.proj_gate)
         tk("proj")
         A = csr.build(He, Dn)
         D = RT.block_diag(tets, He, G.M, Dn)
@@ -193,7 +199,7 @@ for i in range(L):
             Be.add_tets(tets, He)
             if Dn is not None:
                 Be.add_diag(Dn)
-            MG = RT.KuhnMG(Be, nu=a.mg_nu, omega=a.mg_omega, nmin=a.mg_nmin, dtype=torch.float32 if a.mg_f32 else torch.float64)
+            MG = RT.KuhnMG(Be, nu=a.mg_nu, omega=a.mg_omega, nmin=a.mg_nmin, dtype=torch.float32 if a.mg_f32 else torch.float64, A0csr=A)
             pre = MG
             st.update(mg_levels=MG.sizes, mg_drop=MG.drop)
         elif a.solver == "pdpcg":
@@ -215,7 +221,8 @@ for i in range(L):
                             Dn=(Dn.cpu() if Dn is not None else None), M=G.M, t=i, mn=ws.cpu(), VT=(fr.VT.cpu() if a.floor == "node" else None),
                             gl=G.gl8.cpu(), mu=mu, h=h), os.path.join(a.out, f"sys_t{i:03d}.pt"))
             tk("dump")
-        xx, it, res, negc = RT.pcg(mv, pre, b, a.pcg_max, a.rtol, a.ck)
+        _r = RT.pcg_graph(mv, pre, b, a.pcg_max, a.rtol) if a.graph else None
+        xx, it, res, negc = _r if _r is not None else RT.pcg(mv, pre, b, a.pcg_max, a.rtol, a.ck)
         tk("pcg")
         p = xx.reshape(G.M, 3).to(U.dtype)
         pin = float(p.abs().max()) / (h * EXT)
