@@ -1,13 +1,13 @@
 #!/bin/bash
 # 절 L 최종 판: F 덤프 켠 실행 (속도 측정 단독) + 3DGS 렌더 (lb_roll_to_h5 -> lb_render 알파블렌딩, 프레임 번호, 설명 글자 비움 --
 # 판 이름·ms·fps·오차 띠는 로컬 exe/fem_ex_compose.py 가 합성). ficus 면 ψ 색 (psi_color, 기존 판과 같은 고정 범위) 도.
-# 사용: SHAPE=lego|ficus bash exe/fem_ex_final.sh <태그> <GPU> <fem_ex_sim.py 인자...>
+# 사용: SHAPE=lego|ficus [EX_ROOT=..] bash exe/fem_ex_final.sh <태그> <GPU> <fem_ex_sim.py 인자...>   (EX_ROOT 없으면 fem_ex_<SHAPE>)
 export PYTHONUTF8=1 OMP_NUM_THREADS=4 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 W=/home/dkta/work; set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; export PATH=$HOME/bin:$PATH
 TG=${1:?태그}; G=${2:?GPU}; shift 2
 cd "$(dirname "$0")/.." || exit 1
 SHAPE=${SHAPE:-lego}
-if [ "$SHAPE" = ficus ]; then export EX_ROOT=fem_ex_ficus; GTD=$W/lbours/ficus_v0/gt; CFG=$GTD/config.json; else export EX_ROOT=fem_ex_lego; GTD=$W/lbdata/test_low/L000; CFG=$W/lbdata/config.json; fi
+if [ "$SHAPE" = ficus ]; then export EX_ROOT=${EX_ROOT:-fem_ex_ficus}; GTD=$W/lbours/ficus_v0/gt; CFG=$GTD/config.json; else export EX_ROOT=${EX_ROOT:-fem_ex_lego}; GTD=$W/lbdata/test_low/L000; CFG=$W/lbdata/config.json; fi
 O=$W/lbours/$EX_ROOT/$TG; R=r2:storage/result/anchorflow/lbours/$EX_ROOT/$TG
 bash exe/fem_ex_run.sh $TG $G "$@"
 [ -f $O/roll_fem.pt ] || { echo "[오류] $O/roll_fem.pt 없음"; exit 1; }
