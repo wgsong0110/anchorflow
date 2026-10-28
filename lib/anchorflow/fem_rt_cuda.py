@@ -1479,6 +1479,24 @@ __device__ __forceinline__ void pcg_mix_body(int M, int Ms, const float* B, cons
     }
     if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; sc[5]=nup; }
 }
+// micro benchmark: nit iterations of (per-thread work over M rows, 2 block sums + atomics + grid barrier) x 2 -- the PCG skeleton without the math
+__global__ void bar_only(int M, int nit, double* acc, unsigned int* bar, float* v) {
+    unsigned int nblk = gridDim.x;
+    int tid = blockIdx.x*blockDim.x + threadIdx.x, nth = gridDim.x*blockDim.x;
+    int p = 0;
+    for (int it=0; it<nit; it++) {
+        float s = 0.f;
+        for (int m=tid; m<M; m+=nth) s += v[m];
+        double b1 = block_sum((double)s); double b2 = block_sum((double)s);
+        if (threadIdx.x==0) { atomicAdd(&acc[p*3+1], b1); atomicAdd(&acc[p*3+2], b2); }
+        if (tid==0) { acc[(1-p)*3]=0; acc[(1-p)*3+1]=0; acc[(1-p)*3+2]=0; }
+        gbar(bar, bar+1, nblk);
+        double b3 = block_sum((double)s);
+        if (threadIdx.x==0) atomicAdd(&acc[(1-p)*3], b3);
+        gbar(bar, bar+1, nblk);
+        p = 1-p;
+    }
+}
 #define PCG_MIX_ARGS int M, int Ms, const float* B, const int* nb, const float* Dinv, const double* bs, double* xh, double* rh, \
     float* x, float* r, float* z, float* d, float* Ad, double* acc, double* sc, unsigned int* bar, double thr, int maxit, int sym, int mode, double delta2, int rows
 #define PCG_MIX_CALL pcg_mix_body(M, Ms, B, nb, Dinv, bs, xh, rh, x, r, z, d, Ad, acc, sc, bar, thr, maxit, sym, mode, delta2, rows)
