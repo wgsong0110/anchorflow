@@ -60,6 +60,7 @@ ap.add_argument("--dump_pred", action="store_true")
 ap.add_argument("--interp", choices=["bary", "bspline2"], default="bary",
                 help="bspline2: MPM 표준 2 차 B-스플라인 (절 M, lib/anchorflow/fem_bs_cuda.py) -- 질량 Σ w m (P2G), G2P PIC, --mode sub 만")
 ap.add_argument("--quad", choices=["particle", "cell"], default="particle", help="--interp bspline2 탄성 적분점: 입자 (MPM 식) / 셀 대표 F̄ (K 점)")
+ap.add_argument("--psort", action="store_true", help="--interp bspline2 --opt: 프레임마다 입자를 B-스플라인 셀 번호로 정렬 (P2G·G2P 원자 합·읽기 지역성; 계산은 같고 합 순서만 바뀜)")
 ap.add_argument("--K", type=int, default=8, help="--quad cell: 셀 안 ∇w 평균 점 수 (1 중심, 8 가우스 2x2x2)")
 ap.add_argument("--diag", action="store_true", help="첫 프레임: 노드별 국소 안정 걸음 2/ω (ω² = Σ_T V_T (λ+2μ)|∇λ_i|² / m_i) 분포, 서브스텝마다 최대 |v|")
 a = ap.parse_args()
@@ -558,6 +559,11 @@ class BS:
         self.bc_key = None
         self.M, self.T = 0, 0
         self.PLr = [np.float32(q) for q in PLf] if opt else PL
+        self.SORT = bool(a.psort and opt)
+        self.mA, self.volA = m, vol
+        if self.SORT:
+            self.mA, self.volA = m.clone(), vol.clone()
+            self.OX, self.OV, self.OF = z(Np, 3), z(Np, 3), z(Np, 9)
 
     def _alloc(self, Pn):
         if Pn <= self.Pcap:
@@ -629,7 +635,7 @@ class BS:
     def _near(self, xc, Fc):
         if FLOOR:
             BSC.launch(self._k("bs_near"), Np, (BSC.P(self.sz), BSC.P(self.nidx), BSC.P(self.x0c), BSC.P(self.F0c), BSC.P(self.cc), BSC.P(xc), BSC.P(Fc),
-                                                 BSC.P(self.F0i), BSC.P(m), BSC.P(vol), np.float64(h), *PL, np.float64(a.eps_st), np.float64(a.eps_sp),
+                                                 BSC.P(self.F0i), BSC.P(self.mA), BSC.P(self.volA), np.float64(h), *PL, np.float64(a.eps_st), np.float64(a.eps_sp),
                                                  np.float64(XN), np.float64(mu), np.float64(lam), BSC.P(self.gpar), BSC.P(self.ipar),
                                                  self._c(hs), BSC.P(self.gmv)), b=64)
 
@@ -644,13 +650,13 @@ class BS:
                                                    self._c(gv[2]), self._c(hs_), self._c(damp), BSC.P(fix), BSC.P(self.vbc)), b=256)
 
     def _p2g_d(self, xa, va, Fa, quad, hs_):
-        BSC.launch("bs_p2g_d", Np, (np.int32(Np), BSC.P(xa), BSC.P(va), BSC.P(Fa), BSC.P(m), BSC.P(vol), BSC.P(self.nslot if FLOOR else None), np.int32(quad),
+        BSC.launch("bs_p2g_d", Np, (np.int32(Np), BSC.P(xa), BSC.P(va), BSC.P(Fa), BSC.P(self.mA), BSC.P(self.volA), BSC.P(self.nslot if FLOOR else None), np.int32(quad),
                                     BSC.P(self.gpar), BSC.P(self.ipar), np.float64(hs_), np.float64(mu), np.float64(lam), BSC.P(self.gm), BSC.P(self.gmv),
                                     BSC.P(self.cV), BSC.P(self.cVF), BSC.P(self.sz)), b=128)
 
     def _g2p_p2g_f(self, xa, va, Fa, xb, vb, Fb, do_g2p, do_p2g, quad, hs_):
         BSC.launch("bs_g2p_p2g_f", Np, (np.int32(Np), BSC.P(xa), BSC.P(va), BSC.P(Fa), BSC.P(self.vg), BSC.P(self.gpar), BSC.P(self.ipar), np.float32(hs_),
-                                        np.int32(do_g2p), np.int32(do_p2g), BSC.P(xb), BSC.P(vb), BSC.P(Fb), BSC.P(m), BSC.P(vol),
+                                        np.int32(do_g2p), np.int32(do_p2g), BSC.P(xb), BSC.P(vb), BSC.P(Fb), BSC.P(self.mA), BSC.P(self.volA),
                                         BSC.P(self.nslot if FLOOR else None), np.int32(quad), np.float32(mu), np.float32(lam), BSC.P(self.gm), BSC.P(self.gmv),
                                         BSC.P(self.cV), BSC.P(self.cVF), BSC.P(self.sz), BSC.P(self.gK)), b=128)
 
@@ -692,6 +698,15 @@ class BS:
         va.copy_(v)
         Fa.copy_(Fv)
         self.box(xa, va, now, True if self.opt else False)
+        if self.SORT:
+            # B-스플라인 셀 번호 (base) 로 입자 정렬 -- 같은 27 노드를 쓰는 입자가 이웃 스레드에
+            n_ = self.ipar[:3].long()
+            yy = (xa.double() - self.gpar[:3].double()) @ self.gpar[3:].double().view(3, 3).T
+            bb = torch.floor(yy - 0.5).long()
+            key = (bb[:, 0] * n_[1] + bb[:, 1]) * n_[2] + bb[:, 2]
+            self.perm = torch.argsort(key)
+            for t_, src in ((xa, x), (va, v), (Fa, Fv), (self.mA, m), (self.volA, vol)):
+                torch.index_select(src, 0, self.perm, out=t_)
         self.sz[2:3].zero_()
         # 프레임 분할: 프레임 상태 P2G (운동량만) -> 격자 속도 (중력·감쇠·고정 없음, ex_vfin 과 같다) -> 바닥 후보
         if self.opt:
@@ -744,6 +759,11 @@ class BS:
             EX.launch("ex_near_fin", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c), EX.P(self.F0c), EX.P(None), EX.P(x2), EX.P(F2),
                                           EX.P(self.F0i), EX.P(None), EX.P(None), EX.P(None), EX.P(None), *near_args(0), np.float64(h),
                                           EX.P(x2), EX.P(v2), EX.P(F2)), b=128)
+        if self.SORT:
+            self.OX.index_copy_(0, self.perm, x2)
+            self.OV.index_copy_(0, self.perm, v2)
+            self.OF.index_copy_(0, self.perm, F2)
+            x2, v2, F2 = self.OX, self.OV, self.OF
         return x2, v2, F2.view(Np, 3, 3)
 
 
