@@ -2,18 +2,18 @@
 사면체 적분점 (셀별 F̄_T = 입자 부피 가중 평균, P2G), 고정 FCR 탄성, 같은 관성 (질량)·중력·감쇠, 입자 바닥 (stick -> softplus 매핑) --
 을 뉴턴 대신 명시적 (symplectic Euler) 으로 푼다.
 
+바닥 후보 (매핑이 항등이 아닌 입자, 프레임 시작에 관성 예측 끝 높이 s/ε ≤ 20 -- 암시적 판과 같은 분할) 는 사면체 F̄ 에서 빠지고,
+기존 입자 바닥 에너지를 **프레임 단위 그대로** (걸음 h, 프레임 시작 x0·F0, c = h v + h² g) 둔다:
+    E_fl(u, G) = m/(2h²)(|q(x0+u) - x0 - c|² - |u - c|²) + V ψ(J_f F0)      (u·G = 프레임 시작부터의 변위·변위 기울기)
+(첫 항: 매핑이 바꾼 관성 몫 -- 매핑 없는 관성은 노드 질량 동역학이 갖는다; 둘째: 이 입자의 탄성 (매핑 J_f 포함)).
+매핑 (softplus 이동 sp(s) - s, stick) 은 한 번 쓸 때마다 같은 양을 옮기는 걸음 정의라 서브스텝마다 쓰면 N 배로 밀어 낸다 (진단: N=64 첫 서브스텝 |v| 160 m/s)
+-> 매핑은 프레임 끝 G2P 에 한 번 (암시적 판과 같다), 서브스텝에는 그 에너지의 음의 기울기를 힘으로.
 한 서브스텝 (h_s = h / N):
-  f_el  = -∂Ψ_far/∂U                    (매핑 항등 입자의 사면체 적분점 탄성, 서브스텝 시작 상태에서 -- 명시적)
-  v*    = v_n + h_s (f_el / m_n + g)      (노드 질량 = Σ λ m_p, 속도 = 질량 가중 P2G; --cfg_bc 묶인 노드는 v_bc)
-  ΔU*   = h_s v*
-  바닥 항 (바닥 후보 입자, 매핑이 항등이 아닌 입자 s/ε ≤ 20): 기존 입자 바닥 에너지
-        E_p(ΔU) = m_p/(2h_s²) |q(x_p + u_p) - x_p - c_p|² + V_p ψ(J_f F_p)     (fem_fast._near_core / near_eg 와 같은 식, h -> h_s)
-    의 기울기를 c_p = u_p(ΔU*) (명시적 예측 변위) 로 두고 ΔU* 에서 잰다 -> 매핑 항등이면 0, 매핑이 밀어 올린 만큼 (softplus) · 접선을 붙잡은 만큼 (stick) 이
-    노드로 간다 (+ 바닥 후보 입자의 탄성, 매핑 J_f 포함). 노드 힘 f_fl = -∇E, ΔU = ΔU* + h_s² f_fl / m_n, v = ΔU / h_s.
-  G2P:
-    sub (MPM 식)  : 매 서브스텝 P2G·G2P -- x <- q(x + u) (매핑), F <- J_f F, v <- (q - x)/h_s (암시적 판 G2P 와 같은 꼴, h -> h_s)
-    lag (라그랑주): 프레임 동안 격자 노드가 움직이고 (U 누적, 셀 F̄ 는 A_T(U) F̄_T 로 갱신), 바닥 후보 입자만 위치·F 를 서브스텝마다 보간·매핑 갱신,
-                    프레임 끝에 G2P (나머지 입자 x + Σλ U, F <- (I + Σ U ⊗ ∇λ) F, v = Σ λ v_n).
+  f   = -∂Ψ_far/∂x - ∂E_fl/∂x   (지금 상태에서 -- 명시적)
+  v  <- (v + h_s (f / m_n + g)) · 감쇠,  x_n += h_s v  (노드 질량 = Σ λ m_p, 속도 = 질량 가중 P2G; --cfg_bc 묶인 노드는 v_bc)
+  sub (MPM 식)  : 매 서브스텝 P2G (질량·속도·F̄) -> 힘 -> 선형 G2P (x += Σλ ΔU, F <- (I + Σ ΔU ⊗ ∇λ) F, v = ΔU / h_s)
+  lag (라그랑주): 프레임 동안 격자 노드가 움직인다 (U 누적, 셀 F = A_T(U) F̄_T), 바닥 후보는 u = Σλ U 보간, 프레임 끝 선형 G2P (v = Σλ v_n)
+  프레임 끝 (둘 다): 바닥 후보 입자만 x = q(x0 + u), F = J_f F0, v += (q - x0 - u)/h.
 커널 소스는 fem_rt_cuda._SRC (극분해·고유값·near_map 장치 함수) 뒤에 붙여 한 모듈로 컴파일한다.
 """
 from __future__ import annotations
@@ -69,8 +69,8 @@ __global__ void ex_tet_force_ff(const int* szp, int Targ, const long long* tets,
     if (t < T) ex_tet_force_body<float, float>(t, tets, U, gl, FT, VT, mu, lam, f);
 }
 
-__global__ void ex_node_step(const int* szp, int Marg, const float* mn, const float* f, float* vn, float* dU, float g0, float g1, float g2,
-                             float hs, float damp, const unsigned char* fixd, const float* vbc) {
+__global__ void ex_node_step(const int* szp, int Marg, const float* mn, const float* f, const float* gn, float* vn, float* dU, float* Ucum,
+                             float g0, float g1, float g2, float hs, float damp, const unsigned char* fixd, const float* vbc) {
     int M = szp ? szp[0] : Marg;
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= M) return;
@@ -79,36 +79,49 @@ __global__ void ex_node_step(const int* szp, int Marg, const float* mn, const fl
     for (int c=0;c<3;c++) {
         float v;
         if (fixd && fixd[n]) v = vbc[n*3+c];
-        else if (m > 0.f) v = (vn[n*3+c] + hs*(f[n*3+c]/m + gg[c]))*damp;
+        else if (m > 0.f) v = (vn[n*3+c] + hs*((f[n*3+c] - (gn ? gn[n*3+c] : 0.f))/m + gg[c]))*damp;
         else v = 0.f;
         vn[n*3+c] = v; dU[n*3+c] = hs*v;
+        if (Ucum) Ucum[n*3+c] += hs*v;
     }
 }
 
-// 바닥 후보 입자: E_p(ΔU) = m/(2h_s²)|q - x - c|² + V ψ(J_f F) 의 기울기를 c = u(ΔU*) 로 두고 ΔU* 에서 (near_eg 와 같은 식) -> gn (노드, 원자 합)
-__global__ void ex_near_force(const int* szp, int nnarg, const long long* nidx, const float* xs, const float* Fn, const float* dU, const long long* rows,
-                              const float* lamb, const float* glT, const long long* tinv, const float* mp, const float* vol, double hs,
+// 바닥 후보 입자의 프레임 바닥 에너지 (기존 정의, 프레임 걸음 h·프레임 시작 x0·F0·c = h v + h² g 그대로):
+//   E_fl = m/(2h²)(|q(x0+u) - x0 - c|² - |u - c|²) + V ψ(J_f(u, G) F0)
+//   (매핑이 항등이면 첫 항 0; 탄성은 이 입자들이 사면체 F̄ 에서 빠져 있으므로 여기서), u·G = 프레임 시작부터의 변위·변위 기울기
+//   lag: u = Σλ U_cum, G = Σ U_cum ⊗ ∇λ (변수 U_cum)       sub: u = x - x0, G = F F0⁻¹ - I (변수 = 지금 서브스텝 노드 변위 δU, δG = D (I + G))
+//   기울기를 노드로 gn (힘 = -gn) -- 서브스텝마다 지금 상태에서 (명시적)
+__global__ void ex_near_force(const int* szp, int nnarg, const long long* nidx, const float* x0c, const float* F0c, const float* cc,
+                              const float* Ucum, const float* xcur, const float* Fcur, const float* F0inv,
+                              const long long* rows, const float* lamb, const float* glT, const long long* tinv, const float* mp, const float* vol, double h,
                               double p0, double p1, double p2, double n0, double n1, double n2, double eps_st, double eps_sp, double xn,
                               double mu, double lam, float* gn) {
     int nn_ = szp ? szp[2] : nnarg;
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     if (q >= nn_) return;
     long long p = nidx[q];
-    long long nd[4]; double lm[4], gl[12], u[3]={0,0,0}, G[9]={0,0,0,0,0,0,0,0,0}, xx[3], c[3];
+    long long nd[4]; double lm[4], gl[12], u[3]={0,0,0}, G[9]={0,0,0,0,0,0,0,0,0}, xx[3], c[3], IGt[9]={1,0,0,0,1,0,0,0,1};
     const float* glp = glT + tinv[p]*12;
     for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; }
     for (int k=0;k<12;k++) gl[k]=glp[k];
-    for (int i=0;i<4;i++) for (int a=0;a<3;a++){ double Ua=(double)dU[nd[i]*3+a]; u[a]+=lm[i]*Ua; for (int b=0;b<3;b++) G[a*3+b]+=Ua*gl[i*3+b]; }
-    for (int k=0;k<3;k++){ xx[k]=xs[q*3+k]; c[k]=u[k]; }
+    for (int k=0;k<3;k++){ xx[k]=x0c[q*3+k]; c[k]=cc[q*3+k]; }
+    if (Ucum) {
+        for (int i=0;i<4;i++) for (int a=0;a<3;a++){ double Ua=(double)Ucum[nd[i]*3+a]; u[a]+=lm[i]*Ua; for (int b=0;b<3;b++) G[a*3+b]+=Ua*gl[i*3+b]; }
+    } else {
+        for (int k=0;k<3;k++) u[k] = (double)xcur[p*3+k] - xx[k];
+        double Fc[9], Fi[9]; for (int k=0;k<9;k++){ Fc[k]=Fcur[p*9+k]; Fi[k]=F0inv[q*9+k]; }
+        mm3(Fc, Fi, IGt);
+        for (int k=0;k<9;k++) G[k] = IGt[k] - ((k%4==0)?1.0:0.0);
+    }
     double pt[3]={p0,p1,p2}, nv[3]={n0,n1,n2};
     NearMap M; near_map(xx, u, G, c, pt, nv, eps_st, eps_sp, xn, M);
     double Jf[9]; mm3(M.Mn, M.K1, Jf);
-    double F[9]; for (int k=0;k<9;k++) F[k]=Fn[q*9+k];
+    double F[9]; for (int k=0;k<9;k++) F[k]=F0c[q*9+k];
     double X[9]; mm3(Jf, F, X);
     double C[9]; for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
     double l[3]; symeig3(C, l);
     double J=1; for (int k=0;k<3;k++){ double s=fmax(sqrt(fmax(l[k],1e-12)),0.01); J*=s; }
-    double V = vol[p], k_ = (double)mp[p]/(hs*hs);
+    double V = vol[p], k_ = (double)mp[p]/(h*h);
     double Q[9], cf[9], P[9], Pc[9];
     polar(X, Q); cof3(X, cf);
     double dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
@@ -119,6 +132,7 @@ __global__ void ex_near_force(const int* szp, int nnarg, const long long* nidx, 
     double NK1[9]; mm3(M.Nm, M.K1, NK1);
     for (int c3=0;c3<3;c3++) {
         double t=0; for (int i=0;i<3;i++) t += M.Ru[i*3+c3]*M.r[i];
+        t -= u[c3] - c[c3];                                            // - 매핑 없는 관성 (노드 질량 동역학이 이미 갖는 몫)
         double Bc[9], dK[9], MdK[9]; near_Bc(M, c3, Bc); mm3(Bc, M.IG, dK);
         for (int k=0;k<9;k++) dK[k] -= xn*M.w1*M.n[c3]*M.Pm[k];
         mm3(M.Mn, dK, MdK);
@@ -126,7 +140,10 @@ __global__ void ex_near_force(const int* szp, int nnarg, const long long* nidx, 
         gy[c3] = k_*t + pj;
     }
     double MJ[9]; mm3(M.Mn, M.Jst, MJ);
-    for (int a=0;a<3;a++) for (int b=0;b<3;b++){ double t=0; for (int i=0;i<3;i++) t += MJ[i*3+a]*Pc[i*3+b]; gy[3+a*3+b]=t; }
+    double gG[9];
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++){ double t=0; for (int i=0;i<3;i++) t += MJ[i*3+a]*Pc[i*3+b]; gG[a*3+b]=t; }
+    if (!Ucum) { double T2[9]; mmt3(gG, IGt, T2); for (int k=0;k<9;k++) gG[k]=T2[k]; }     // sub: ∂/∂δU 는 gG (I+G)ᵀ
+    for (int k=0;k<9;k++) gy[3+k]=gG[k];
     for (int i=0;i<4;i++) for (int c3=0;c3<3;c3++) {
         double t = lm[i]*gy[c3];
         for (int b=0;b<3;b++) t += gl[i*3+b]*gy[3+c3*3+b];
@@ -134,54 +151,42 @@ __global__ void ex_near_force(const int* szp, int nnarg, const long long* nidx, 
     }
 }
 
-// ΔU = ΔU* - h_s² gn / m,  v = ΔU / h_s,  U 누적 (Ucum 이 null 이면 생략)
-__global__ void ex_node_corr(const int* szp, int Marg, const float* mn, const float* gn, float* vn, float* dU, float* Ucum, float hs,
-                             const unsigned char* fixd, int has_near) {
-    int M = szp ? szp[0] : Marg;
-    int n = blockIdx.x*blockDim.x + threadIdx.x;
-    if (n >= M) return;
-    float m = mn[n];
-    bool fx = fixd && fixd[n];
-    for (int c=0;c<3;c++) {
-        float d = dU[n*3+c];
-        if (has_near && !fx && m > 0.f) { d -= hs*hs*gn[n*3+c]/m; dU[n*3+c] = d; vn[n*3+c] = d/hs; }
-        if (Ucum) Ucum[n*3+c] += d;
-    }
-}
-
-// (lag) 바닥 후보 입자 서브스텝 갱신: q = 매핑(xs + u), F <- J_f F, v = (q - xs)/h_s  (g2p_part 와 같은 식, 압축 배열)
-__global__ void ex_near_upd(const int* szp, int nnarg, const long long* nidx, float* xs, float* Fn, const float* dU, const long long* rows, const float* lamb,
-                            const float* glT, const long long* tinv, double p0, double p1, double p2, double n0, double n1, double n2,
-                            double eps_st, double eps_sp, double xn, double hs, float* vnear) {
+// 프레임 끝 바닥 후보 입자: 기존 G2P 매핑을 프레임 변위에 한 번 (암시적 판 G2P 와 같은 식) -- x2 = q(x0 + u), F2 = J_f F0,
+// v2 = (선형 G2P 가 이미 쓴 v2) + (q - x0 - u)/h  (매핑이 옮긴 만큼을 프레임 속도로)
+__global__ void ex_near_fin(const int* szp, int nnarg, const long long* nidx, const float* x0c, const float* F0c,
+                            const float* Ucum, const float* xcur, const float* Fcur, const float* F0inv,
+                            const long long* rows, const float* lamb, const float* glT, const long long* tinv,
+                            double p0, double p1, double p2, double n0, double n1, double n2, double eps_st, double eps_sp, double xn, double h,
+                            float* x2, float* v2, float* F2) {
     int nn_ = szp ? szp[2] : nnarg;
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     if (q >= nn_) return;
     long long p = nidx[q];
     double u[3]={0,0,0}, G[9]={0,0,0,0,0,0,0,0,0}, xx[3], c0[3]={0,0,0};
-    const float* gl = glT + tinv[p]*12;
-    for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; double lm=lamb[p*4+i]; for (int a=0;a<3;a++){ double Ua=dU[nd*3+a]; u[a]+=lm*Ua; for (int b=0;b<3;b++) G[a*3+b]+=Ua*gl[i*3+b]; } }
-    for (int k=0;k<3;k++) xx[k]=xs[q*3+k];
+    for (int k=0;k<3;k++) xx[k]=x0c[q*3+k];
+    if (Ucum) {
+        const float* gl = glT + tinv[p]*12;
+        for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; double lm=lamb[p*4+i]; for (int a=0;a<3;a++){ double Ua=Ucum[nd*3+a]; u[a]+=lm*Ua; for (int b=0;b<3;b++) G[a*3+b]+=Ua*gl[i*3+b]; } }
+    } else {
+        for (int k=0;k<3;k++) u[k] = (double)xcur[p*3+k] - xx[k];
+        double Fc[9], Fi[9], IG[9]; for (int k=0;k<9;k++){ Fc[k]=Fcur[p*9+k]; Fi[k]=F0inv[q*9+k]; }
+        mm3(Fc, Fi, IG);
+        for (int k=0;k<9;k++) G[k] = IG[k] - ((k%4==0)?1.0:0.0);
+    }
     double pt[3]={p0,p1,p2}, nv[3]={n0,n1,n2};
     NearMap M; near_map(xx, u, G, c0, pt, nv, eps_st, eps_sp, xn, M);
     double Jf[9]; mm3(M.Mn, M.K1, Jf);
-    for (int k=0;k<3;k++) { xs[q*3+k] = (float)(xx[k] + M.r[k]); vnear[q*3+k] = (float)(M.r[k]/hs); }
-    double F[9]; for (int k=0;k<9;k++) F[k]=Fn[q*9+k];
+    for (int k=0;k<3;k++) { x2[p*3+k] = (float)(xx[k] + M.r[k]); v2[p*3+k] = (float)((double)v2[p*3+k] + (M.r[k] - u[k])/h); }
+    double F[9]; for (int k=0;k<9;k++) F[k]=F0c[q*9+k];
     double F2d[9]; mm3(Jf, F, F2d);
-    for (int k=0;k<9;k++) Fn[q*9+k] = (float)F2d[k];
+    for (int k=0;k<9;k++) F2[p*9+k] = (float)F2d[k];
 }
 
-// (lag) 프레임 끝 G2P: 바닥 후보 (nslot >= 0) 는 압축 배열에서, 나머지는 x + Σλ U, v = Σλ v_n, F <- (I + Σ U ⊗ ∇λ) F
+// (lag) 프레임 끝 선형 G2P: x + Σλ U, v = Σλ v_n, F <- (I + Σ U ⊗ ∇λ) F  (바닥 후보는 뒤이어 ex_near_fin 이 덮어쓴다)
 __global__ void ex_g2p_lag(int N, const float* x, const float* Ucum, const float* Vn, const long long* rows, const float* lamb, const float* glT,
-                           const long long* tinv, const float* Fp, const int* nslot, const float* xs, const float* vnear, const float* Fn,
-                           float* x2, float* v2, float* F2) {
+                           const long long* tinv, const float* Fp, float* x2, float* v2, float* F2) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
-    int q = nslot ? nslot[p] : -1;
-    if (q >= 0) {
-        for (int k=0;k<3;k++){ x2[p*3+k]=xs[q*3+k]; v2[p*3+k]=vnear[q*3+k]; }
-        for (int k=0;k<9;k++) F2[p*9+k]=Fn[q*9+k];
-        return;
-    }
     double u[3]={0,0,0}, vv[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1};
     const float* gl = glT + tinv[p]*12;
     for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; double lm=lamb[p*4+i];
@@ -190,6 +195,21 @@ __global__ void ex_g2p_lag(int N, const float* x, const float* Ucum, const float
     double F[9]; for (int k=0;k<9;k++) F[k]=Fp[p*9+k];
     double F2d[9]; mm3(A, F, F2d);
     for (int k=0;k<9;k++) F2[p*9+k] = (float)F2d[k];
+}
+// 프레임 시작 바닥 후보 압축 배열: x0, F0, F0⁻¹, c = h v + h² g
+__global__ void ex_near_init(const int* szp, int nnarg, const long long* nidx, const float* x, const float* v, const float* Fp, float h, float g0, float g1, float g2,
+                             float* x0c, float* F0c, float* F0inv, float* cc) {
+    int nn_ = szp ? szp[2] : nnarg;
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= nn_) return;
+    long long p = nidx[q];
+    float gg[3] = {g0, g1, g2};
+    for (int k=0;k<3;k++){ x0c[q*3+k]=x[p*3+k]; cc[q*3+k]=h*v[p*3+k] + h*h*gg[k]; }
+    double A[9], C[9];
+    for (int k=0;k<9;k++){ A[k]=Fp[p*9+k]; F0c[q*9+k]=Fp[p*9+k]; }
+    cof3(A, C);
+    double det = A[0]*C[0]+A[1]*C[1]+A[2]*C[2];
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) F0inv[q*9+i*3+j] = (float)(C[j*3+i]/det);
 }
 
 // (sub) 서브스텝 G2P: 매핑 포함 (floor=1, g2p_part 와 같은 식) 또는 선형, v = (q - x)/h_s * damp
@@ -316,10 +336,14 @@ __global__ void ex_vfin(const int* szp, int Marg, const float* mn, const float* 
 // 분할 (CudaTetqK 와 같은 정의: 예측 변위 u0 = Σλ (H v_n + H² g) 의 끝 높이 s/ε ≤ 20 이면 바닥 후보) + 항등 입자만 사면체 V·V F 합
 __global__ void ex_split(int N, const float* x, const long long* rows, const float* lamb, const long long* pinv, const float* vn, float H,
                          float g0, float g1, float g2, int floor, float p0, float p1, float p2, float q0, float q1, float q2, float eps_sp, float eps_st,
-                         const float* vol, const float* Fp, float* VTs, float* FTs, int* nslot, long long* nidx, int* szp) {
+                         const float* vol, const float* Fp, float* VTs, float* FTs, int* nslot, long long* nidx, int* szp, int keep) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     bool near = false;
+    if (keep) {
+        if (nslot[p] < 0) { long long t = pinv[p]; float V = vol[p]; atomicAdd(&VTs[t], V); for (int k=0;k<9;k++) atomicAdd(&FTs[t*9+k], V*Fp[p*9+k]); }
+        return;
+    }
     if (floor) {
         float u[3]={0,0,0}, gg[3]={g0,g1,g2};
         for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; float lm=lamb[p*4+i]; for (int c=0;c<3;c++) u[c] += lm*(H*vn[nd*3+c] + H*H*gg[c]); }

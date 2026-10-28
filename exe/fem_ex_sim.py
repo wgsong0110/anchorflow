@@ -128,97 +128,100 @@ def near_args(n_near):
 
 
 # ---------------------------------------------------------------- 기준 판 (fem_rt 격자 + CudaTetqK, float64)
+NEAR_N = []
+
+
+def tet_fv(G, F_, far):
+    """사면체 V_T·F̄_T (float64, 항등 입자만) -- CudaTetqK 와 같은 식."""
+    Vf = vol.double() * far
+    VT = torch.zeros(G.T, device=dev, dtype=torch.float64).index_add_(0, G.pinv, Vf)
+    FT = torch.zeros(G.T, 3, 3, device=dev, dtype=torch.float64).index_add_(0, G.pinv, Vf[:, None, None] * F_.double())
+    FT = torch.where((VT > 0)[:, None, None], FT / VT.clamp_min(1e-300)[:, None, None], torch.eye(3, device=dev, dtype=torch.float64))
+    return VT.contiguous(), FT.contiguous()
+
+
 def frame_base(i, x, v, F):
     st = dict()
+    G = RTC.GridK(x, a.node_h)
+    mn, vn = node_mv(G, x, v)
+    U0 = h * vn + (h * h) * torch.tensor(gv, device=dev)
+    CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, h, U0, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True, floor=FLOOR)   # 프레임 분할 (암시적 판과 같다)
+    ni, nn = CF.ni, CF.nn
+    far = torch.ones(Np, device=dev, dtype=torch.float64)
+    far[ni] = 0.0
+    Fv = F.reshape(Np, 9).contiguous()
+    x0c, F0c, F0i, cc = (torch.zeros(max(nn, 1), k, device=dev) for k in (3, 9, 9, 3))
+    if nn:
+        EX.launch("ex_near_init", nn, (EX.P(None), np.int32(nn), EX.P(ni), EX.P(x), EX.P(v), EX.P(Fv), np.float32(h), np.float32(gv[0]), np.float32(gv[1]),
+                                       np.float32(gv[2]), EX.P(x0c), EX.P(F0c), EX.P(F0i), EX.P(cc)))
+
+    def near_force(G_, gn, Uc=None, xc=None, Fc=None):
+        if nn:
+            EX.launch("ex_near_force", nn, (EX.P(None), np.int32(nn), EX.P(ni), EX.P(x0c), EX.P(F0c), EX.P(cc), EX.P(Uc), EX.P(xc), EX.P(Fc), EX.P(F0i),
+                                            EX.P(G_.rows), EX.P(G_.lam), EX.P(G_.gl4), EX.P(G_.pinv), EX.P(m), EX.P(vol), np.float64(h), *near_args(nn),
+                                            np.float64(mu), np.float64(lam), EX.P(gn)))
     if a.mode == "lag":
-        G = RTC.GridK(x, a.node_h)
-        mn, vn = node_mv(G, x, v)
-        U0 = h * vn + (h * h) * torch.tensor(gv, device=dev)
-        CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, h, U0, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True, floor=FLOOR)
+        G.gl4 = G.gl8.reshape(G.T, 12).float().contiguous()
         fixd, vbc = fixd_of(G.npos, G.rows, G.lam, i * h)
-        ni, nn = CF.ni, CF.nn
-        xs = x[ni].contiguous()
-        Fn = F.reshape(Np, 9)[ni].contiguous()
-        vnear = torch.zeros(max(nn, 1), 3, device=dev)
-        nslot = torch.full((Np,), -1, dtype=torch.int32, device=dev)
-        nslot[ni] = torch.arange(nn, device=dev, dtype=torch.int32)
+        VT, FT = tet_fv(G, F, far)
         Uc = torch.zeros(G.M, 3, device=dev)
         Vn = vn.clone()
+        gl8 = G.gl8.reshape(G.T, 12).contiguous()
         if a.diag and i == 0:
             kd = torch.zeros(G.M, device=dev, dtype=torch.float64).index_add_(
-                0, G.tets.reshape(-1), (CF.VT8[:, None] * (lam + 2 * mu) * (CF.gl8.view(-1, 4, 3) ** 2).sum(-1)).reshape(-1))
-            om = (kd / mn.double().clamp_min(1e-30)).sqrt()
-            dtl = 2.0 / om.clamp_min(1e-30)
+                0, G.tets.reshape(-1), (VT[:, None] * (lam + 2 * mu) * (G.gl8 ** 2).sum(-1)).reshape(-1))
+            dtl = 2.0 / (kd / mn.double().clamp_min(1e-30)).sqrt().clamp_min(1e-30)
             ok = kd > 0
             qs = torch.quantile(dtl[ok].float().cpu(), torch.tensor([0.0, 1e-4, 1e-3, 0.01, 0.1, 0.5]))
-            mfull = float(cfg["density"]) * float(torch.linalg.det(SX.lattice(a.node_h, SX.HZ_CUBE * a.node_h, dtype=torch.float64).A).abs())
-            print(f"[진단] 노드 {G.M} (힘 받는 {int(ok.sum())}), 국소 안정 걸음 2/ω 분위 (0, 1e-4, 1e-3, 1e-2, 0.1, 0.5): "
-                  + ", ".join(f"{float(q):.2e}" for q in qs) + f" s -> 필요 N (최소) {h / float(qs[0]):.0f}, (1e-3 분위) {h / float(qs[2]):.0f}; "
-                  f"노드 질량 / 꽉 찬 노드 질량 분위 " + ", ".join(f"{float(q):.2e}" for q in torch.quantile((mn[ok] / mfull).float().cpu(), torch.tensor([0.0, 1e-3, 0.01, 0.1, 0.5]))), flush=True)
-            lo_ = dtl < hs
-            print(f"[진단] h_s {hs:.2e} 보다 국소 안정 걸음이 짧은 노드 {int((lo_ & ok).sum())}", flush=True)
+            print(f"[진단] 국소 안정 걸음 2/ω 분위 (0, 1e-4, 1e-3, 1e-2, 0.1, 0.5): " + ", ".join(f"{float(q):.2e}" for q in qs)
+                  + f" s -> 필요 N (최소) {h / float(qs[0]):.0f}; h_s 보다 짧은 노드 {int(((dtl < hs) & ok).sum())}", flush=True)
         for j in range(a.N):
             f = torch.zeros(G.M, 3, device=dev)
-            EX.launch("ex_tet_force_dd", G.T, (EX.P(None), np.int32(G.T), EX.P(G.tets), EX.P(Uc), EX.P(CF.gl8), EX.P(CF.FT8), EX.P(CF.VT8),
+            EX.launch("ex_tet_force_dd", G.T, (EX.P(None), np.int32(G.T), EX.P(G.tets), EX.P(Uc), EX.P(gl8), EX.P(FT), EX.P(VT),
                                                np.float64(mu), np.float64(lam), EX.P(f)))
-            dU = torch.empty(G.M, 3, device=dev)
-            EX.launch("ex_node_step", G.M, (EX.P(None), np.int32(G.M), EX.P(mn), EX.P(f), EX.P(Vn), EX.P(dU), np.float32(gv[0]), np.float32(gv[1]),
-                                            np.float32(gv[2]), np.float32(hs), np.float32(DAMP), EX.P(fixd), EX.P(vbc)))
             gn = torch.zeros(G.M, 3, device=dev)
-            if nn:
-                EX.launch("ex_near_force", nn, (EX.P(None), np.int32(nn), EX.P(ni), EX.P(xs), EX.P(Fn), EX.P(dU), EX.P(G.rows), EX.P(CF.lamb),
-                                                EX.P(CF.gl4), EX.P(CF.tinv), EX.P(m), EX.P(vol), np.float64(hs), *near_args(nn),
-                                                np.float64(mu), np.float64(lam), EX.P(gn)))
-            EX.launch("ex_node_corr", G.M, (EX.P(None), np.int32(G.M), EX.P(mn), EX.P(gn), EX.P(Vn), EX.P(dU), EX.P(Uc), np.float32(hs), EX.P(fixd),
-                                            np.int32(1 if nn else 0)))
-            if a.diag and i == 0 and (j < 8 or j % 8 == 0):
+            near_force(G, gn, Uc=Uc)
+            dU = torch.empty(G.M, 3, device=dev)
+            EX.launch("ex_node_step", G.M, (EX.P(None), np.int32(G.M), EX.P(mn), EX.P(f), EX.P(gn), EX.P(Vn), EX.P(dU), EX.P(Uc), np.float32(gv[0]),
+                                            np.float32(gv[1]), np.float32(gv[2]), np.float32(hs), np.float32(DAMP), EX.P(fixd), EX.P(vbc)))
+            if a.diag and i == 0 and (j < 4 or j % max(1, a.N // 8) == 0):
                 print(f"    [진단] 서브스텝 {j}: 최대 |v_n| {float(Vn.norm(dim=-1).max()):.3e}, 최대 |f/m| {float((f.norm(dim=-1) / mn.clamp_min(1e-30)).max()):.3e}, "
                       f"최대 |바닥 g/m| {float((gn.norm(dim=-1) / mn.clamp_min(1e-30)).max()):.3e}, 비유한 {int((~torch.isfinite(Vn)).sum())}", flush=True)
-            if nn:
-                EX.launch("ex_near_upd", nn, (EX.P(None), np.int32(nn), EX.P(ni), EX.P(xs), EX.P(Fn), EX.P(dU), EX.P(G.rows), EX.P(CF.lamb),
-                                              EX.P(CF.gl4), EX.P(CF.tinv), *near_args(nn), np.float64(hs), EX.P(vnear)))
-        x2 = torch.empty_like(x)
-        v2 = torch.empty_like(x)
-        F2 = torch.empty(Np, 9, device=dev)
-        EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(x), EX.P(Uc), EX.P(Vn), EX.P(G.rows), EX.P(CF.lamb), EX.P(CF.gl4), EX.P(CF.tinv),
-                                     EX.P(F.reshape(Np, 9).contiguous()), EX.P(nslot), EX.P(xs), EX.P(vnear), EX.P(Fn), EX.P(x2), EX.P(v2), EX.P(F2)), b=256)
+        x2, v2, F2 = torch.empty_like(x), torch.empty_like(x), torch.empty(Np, 9, device=dev)
+        EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(x), EX.P(Uc), EX.P(Vn), EX.P(G.rows), EX.P(G.lam), EX.P(G.gl4), EX.P(G.pinv),
+                                     EX.P(Fv), EX.P(x2), EX.P(v2), EX.P(F2)), b=256)
+        if nn:
+            EX.launch("ex_near_fin", nn, (EX.P(None), np.int32(nn), EX.P(ni), EX.P(x0c), EX.P(F0c), EX.P(Uc), EX.P(None), EX.P(None), EX.P(F0i),
+                                          EX.P(G.rows), EX.P(G.lam), EX.P(G.gl4), EX.P(G.pinv), *near_args(nn), np.float64(h), EX.P(x2), EX.P(v2), EX.P(F2)))
         st.update(M=G.M, T=G.T, n_near=nn)
         return x2, v2, F2.view(Np, 3, 3), st
-    # sub: 매 서브스텝 격자·P2G·G2P
-    nns = []
+    # sub: 매 서브스텝 격자·P2G·선형 G2P, 바닥 후보 분할은 프레임 것
+    xc, vc, Fc = x, v, Fv
     for j in range(a.N):
-        G = RTC.GridK(x, a.node_h)
-        mn, vn = node_mv(G, x, v)
-        U0 = hs * vn + (hs * hs) * torch.tensor(gv, device=dev)
-        CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, hs, U0, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True, floor=FLOOR)
-        fixd, vbc = fixd_of(G.npos, G.rows, G.lam, i * h + j * hs)
-        ni, nn = CF.ni, CF.nn
-        nns.append(nn)
-        f = torch.zeros(G.M, 3, device=dev)
-        EX.launch("ex_tet_force_dd", G.T, (EX.P(None), np.int32(G.T), EX.P(G.tets), EX.P(None), EX.P(CF.gl8), EX.P(CF.FT8), EX.P(CF.VT8),
-                                           np.float64(mu), np.float64(lam), EX.P(f)))
-        dU = torch.empty(G.M, 3, device=dev)
-        Vn = vn.clone()
-        EX.launch("ex_node_step", G.M, (EX.P(None), np.int32(G.M), EX.P(mn), EX.P(f), EX.P(Vn), EX.P(dU), np.float32(gv[0]), np.float32(gv[1]),
-                                        np.float32(gv[2]), np.float32(hs), np.float32(1.0), EX.P(fixd), EX.P(vbc)))
-        gn = torch.zeros(G.M, 3, device=dev)
-        if nn:
-            xs = x[ni].contiguous()
-            Fn = F.reshape(Np, 9)[ni].contiguous()
-            EX.launch("ex_near_force", nn, (EX.P(None), np.int32(nn), EX.P(ni), EX.P(xs), EX.P(Fn), EX.P(dU), EX.P(G.rows), EX.P(CF.lamb),
-                                            EX.P(CF.gl4), EX.P(CF.tinv), EX.P(m), EX.P(vol), np.float64(hs), *near_args(nn),
-                                            np.float64(mu), np.float64(lam), EX.P(gn)))
-            EX.launch("ex_node_corr", G.M, (EX.P(None), np.int32(G.M), EX.P(mn), EX.P(gn), EX.P(Vn), EX.P(dU), EX.P(None), np.float32(hs), EX.P(fixd),
-                                            np.int32(1)))
-        x2 = torch.empty_like(x)
-        v2 = torch.empty_like(x)
-        F2 = torch.empty(Np, 9, device=dev)
-        EX.launch("ex_g2p_sub", Np, (np.int32(Np), EX.P(x), EX.P(dU), EX.P(G.rows), EX.P(CF.lamb), EX.P(CF.gl4), EX.P(CF.tinv),
-                                     EX.P(F.reshape(Np, 9).contiguous()), np.int32(1 if FLOOR else 0), *PL, np.float64(a.eps_st), np.float64(a.eps_sp),
-                                     np.float64(XN), np.float64(hs), np.float64(DAMP), EX.P(x2), EX.P(v2), EX.P(F2)), b=256)
-        x, v, F = x2, v2, F2.view(Np, 3, 3)
-    st.update(M=G.M, T=G.T, n_near=int(sum(nns) / len(nns)))
-    return x, v, F, st
+        Gj = G if j == 0 else RTC.GridK(xc, a.node_h)
+        Gj.gl4 = Gj.gl8.reshape(Gj.T, 12).float().contiguous()
+        mnj, vnj = (mn, vn) if j == 0 else node_mv(Gj, xc, vc)
+        fixd, vbc = fixd_of(Gj.npos, Gj.rows, Gj.lam, i * h + j * hs)
+        VT, FT = tet_fv(Gj, Fc.view(Np, 3, 3), far)
+        f = torch.zeros(Gj.M, 3, device=dev)
+        EX.launch("ex_tet_force_dd", Gj.T, (EX.P(None), np.int32(Gj.T), EX.P(Gj.tets), EX.P(None), EX.P(Gj.gl8.reshape(Gj.T, 12).contiguous()), EX.P(FT),
+                                            EX.P(VT), np.float64(mu), np.float64(lam), EX.P(f)))
+        gn = torch.zeros(Gj.M, 3, device=dev)
+        near_force(Gj, gn, xc=xc, Fc=Fc)
+        dU = torch.empty(Gj.M, 3, device=dev)
+        Vn = vnj.clone()
+        EX.launch("ex_node_step", Gj.M, (EX.P(None), np.int32(Gj.M), EX.P(mnj), EX.P(f), EX.P(gn), EX.P(Vn), EX.P(dU), EX.P(None), np.float32(gv[0]),
+                                         np.float32(gv[1]), np.float32(gv[2]), np.float32(hs), np.float32(1.0), EX.P(fixd), EX.P(vbc)))
+        x2, v2, F2 = torch.empty_like(x), torch.empty_like(x), torch.empty(Np, 9, device=dev)
+        EX.launch("ex_g2p_sub", Np, (np.int32(Np), EX.P(xc), EX.P(dU), EX.P(Gj.rows), EX.P(Gj.lam), EX.P(Gj.gl4), EX.P(Gj.pinv), EX.P(Fc), np.int32(0), *PL,
+                                     np.float64(a.eps_st), np.float64(a.eps_sp), np.float64(XN), np.float64(hs), np.float64(DAMP), EX.P(x2), EX.P(v2), EX.P(F2)), b=256)
+        xc, vc, Fc = x2, v2, F2
+    if nn:
+        EX.launch("ex_near_fin", nn, (EX.P(None), np.int32(nn), EX.P(ni), EX.P(x0c), EX.P(F0c), EX.P(None), EX.P(xc), EX.P(Fc), EX.P(F0i),
+                                      EX.P(G.rows), EX.P(G.lam), EX.P(G.gl4), EX.P(G.pinv), *near_args(nn), np.float64(h), EX.P(xc), EX.P(vc), EX.P(Fc)))
+    st.update(M=G.M, T=G.T, n_near=nn)
+    return xc, vc, Fc.view(Np, 3, 3), st
+
 
 
 # ---------------------------------------------------------------- 최적화 판
@@ -236,7 +239,7 @@ class Opt:
         self.pinv = z(Np, dt=torch.long)
         self.nslot = z(Np, dt=torch.int32)
         self.nidx = z(Np, dt=torch.long)
-        self.xs, self.Fn, self.vnear = z(Np, 3), z(Np, 9), z(Np, 3)
+        self.x0c, self.F0c, self.F0i, self.cc = z(Np, 3), z(Np, 9), z(Np, 9), z(Np, 3)
         self.X = [z(Np, 3), z(Np, 3)]
         self.V = [z(Np, 3), z(Np, 3)]
         self.FF = [z(Np, 9), z(Np, 9)]
@@ -345,13 +348,14 @@ class Opt:
         return M, T
 
     # ---- 커널 묶음 (그래프에 들어가는 부분은 크기를 self.sz 에서 읽는다) ----
-    def _p2g(self, x, v, F, H):
+    def _p2g(self, x, v, F, H, keep):
         Mc, Tc = self.Mcap, self.Tcap
         self.mn.zero_()
         self.mv.zero_()
         self.VTs.zero_()
         self.FTs.zero_()
-        self.sz[2:3].zero_()
+        if not keep:
+            self.sz[2:3].zero_()
         EX.launch("ex_locate", Np, (np.int32(Np), EX.P(x), EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.tcm), EX.P(self.tmark),
                                     EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.sz)), b=256)
         EX.launch("ex_p2g_mv", Np, (np.int32(Np), EX.P(self.rows), EX.P(self.lamb), EX.P(m), EX.P(v), EX.P(self.mn), EX.P(self.mv)), b=256)
@@ -359,57 +363,38 @@ class Opt:
         EX.launch("ex_split", Np, (np.int32(Np), EX.P(x), EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.vn), np.float32(H),
                                    np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.int32(1 if FLOOR else 0), *PLf,
                                    np.float32(a.eps_sp), np.float32(a.eps_st), EX.P(vol), EX.P(F), EX.P(self.VTs), EX.P(self.FTs),
-                                   EX.P(self.nslot), EX.P(self.nidx), EX.P(self.sz)), b=256)
+                                   EX.P(self.nslot), EX.P(self.nidx), EX.P(self.sz), np.int32(1 if keep else 0)), b=256)
         EX.launch("ex_ffin", Tc, (EX.P(self.sz), np.int32(0), EX.P(self.VTs), EX.P(self.FTs), EX.P(self.FT)), b=256)
 
-    def _force_step(self, Ucum):
+    def _step(self, Ucum, xc, Fc):
+        """한 서브스텝 힘 + 노드 걸음 (크기는 self.sz 에서)."""
         Mc, Tc = self.Mcap, self.Tcap
         self.f.zero_()
         EX.launch("ex_tet_force_ff", Tc, (EX.P(self.sz), np.int32(0), EX.P(self.tets), EX.P(Ucum), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
                                           np.float32(mu), np.float32(lam), EX.P(self.f)))
-        EX.launch("ex_node_step", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), EX.P(self.dU), np.float32(gv[0]),
-                                       np.float32(gv[1]), np.float32(gv[2]), np.float32(hs),
-                                       np.float32(DAMP if a.mode == "lag" else 1.0), EX.P(self.fx if self.fixd else None), EX.P(self.vbc)), b=256)
-
-    def _near(self, Ucum, upd):
-        Mc = self.Mcap
         if FLOOR:
             self.gn.zero_()
-            EX.launch("ex_near_force", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.xs), EX.P(self.Fn), EX.P(self.dU), EX.P(self.rows),
-                                            EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv), EX.P(m), EX.P(vol), np.float64(hs), *near_args(0),
-                                            np.float64(mu), np.float64(lam), EX.P(self.gn)), b=64)
-        EX.launch("ex_node_corr", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.gn), EX.P(self.vn), EX.P(self.dU), EX.P(Ucum),
-                                       np.float32(hs), EX.P(self.fx if self.fixd else None), np.int32(1 if FLOOR else 0)), b=256)
-        if FLOOR and upd:
-            EX.launch("ex_near_upd", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.xs), EX.P(self.Fn), EX.P(self.dU), EX.P(self.rows),
-                                          EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv), *near_args(0), np.float64(hs), EX.P(self.vnear)), b=64)
+            EX.launch("ex_near_force", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.cc), EX.P(Ucum),
+                                            EX.P(xc), EX.P(Fc), EX.P(self.F0i), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv), EX.P(m),
+                                            EX.P(vol), np.float64(h), *near_args(0), np.float64(mu), np.float64(lam), EX.P(self.gn)), b=64)
+        EX.launch("ex_node_step", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.f), EX.P(self.gn if FLOOR else None), EX.P(self.vn),
+                                       EX.P(self.dU), EX.P(Ucum), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs),
+                                       np.float32(DAMP if a.mode == "lag" else 1.0), EX.P(self.fx if self.fixd else None), EX.P(self.vbc)), b=256)
 
     def _substeps(self):
         if a.mode == "lag":
             for j in range(a.N):
-                self._force_step(self.Uc)
-                self._near(self.Uc, True)
+                self._step(self.Uc, None, None)
         else:
             for j in range(a.N):
                 xa, va, Fa = self.X[j % 2], self.V[j % 2], self.FF[j % 2]
                 xb, vb, Fb = self.X[(j + 1) % 2], self.V[(j + 1) % 2], self.FF[(j + 1) % 2]
-                self._p2g(xa, va, Fa, hs)
-                self._force_step(None)
-                if FLOOR:
-                    EX.launch("ex_gather", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(xa), EX.P(Fa), EX.P(self.xs), EX.P(self.Fn)), b=256)
-                self._near(None, False)
+                if j > 0:                                                           # 서브스텝 0 의 P2G 는 프레임 분할과 함께 (frame)
+                    self._p2g(xa, va, Fa, hs, True)
+                self._step(None, xa, Fa)
                 EX.launch("ex_g2p_sub", Np, (np.int32(Np), EX.P(xa), EX.P(self.dU), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv),
-                                             EX.P(Fa), np.int32(1 if FLOOR else 0), *PL, np.float64(a.eps_st), np.float64(a.eps_sp), np.float64(XN),
+                                             EX.P(Fa), np.int32(0), *PL, np.float64(a.eps_st), np.float64(a.eps_sp), np.float64(XN),
                                              np.float64(hs), np.float64(DAMP), EX.P(xb), EX.P(vb), EX.P(Fb)), b=256)
-
-    def run_substeps(self):
-        if a.no_graph:
-            self._substeps()
-            return
-        if self.graph is None:
-            self._substeps()                                                       # 데우기 (컴파일), 결과는 버린다 -> 아래에서 상태를 되돌린다
-            raise _Recapture()
-        self.graph.replay()
 
     def capture(self):
         s = torch.cuda.Stream()
@@ -424,43 +409,51 @@ class Opt:
         self.n_cap += 1
 
     def frame(self, i, x, v, F):
-        M, T = self.grid(x, v, i * h)
+        self.grid(x, v, i * h)
         Fv = F.reshape(Np, 9)
-        if a.mode == "lag":
-            self._p2g(x, v, Fv, h)
+        lagm = a.mode == "lag"
+        if lagm:
+            xa, va, Fa = x, v, Fv
+        else:
+            xa, va, Fa = self.X[0], self.V[0], self.FF[0]
+            xa.copy_(x)
+            va.copy_(v)
+            Fa.copy_(Fv)
+        self._p2g(xa, va, Fa, h, False)                                             # 프레임 분할 (관성 예측 h v_n + h² g 의 끝 높이)
+        if FLOOR:
+            EX.launch("ex_near_init", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(x), EX.P(v), EX.P(Fv), np.float32(h), np.float32(gv[0]),
+                                           np.float32(gv[1]), np.float32(gv[2]), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.F0i), EX.P(self.cc)), b=256)
+        if lagm:
             self.Uc.zero_()
-            self.vnear.zero_()
-            if FLOOR:
-                EX.launch("ex_gather", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(x), EX.P(Fv), EX.P(self.xs), EX.P(self.Fn)), b=256)
-            snap = (self.vn.clone(), self.xs.clone(), self.Fn.clone()) if (self.graph is None and not a.no_graph) else None
-            try:
-                self.run_substeps()
-            except _Recapture:
-                self.vn.copy_(snap[0])
-                self.xs.copy_(snap[1])
-                self.Fn.copy_(snap[2])
-                self.Uc.zero_()
-                self.vnear.zero_()
+        if a.no_graph:
+            self._substeps()
+        else:
+            if self.graph is None:
+                snap = [t.clone() for t in (self.vn, self.Uc, self.mn, self.VTs, self.FT, self.rows, self.lamb, self.pinv)]
+                self._substeps()                                                    # 데우기 (NVRTC 컴파일·지연 할당) -- 결과 버림
+                for t, s_ in zip((self.vn, self.Uc, self.mn, self.VTs, self.FT, self.rows, self.lamb, self.pinv), snap):
+                    t.copy_(s_)
+                if not lagm:
+                    xa.copy_(x)
+                    va.copy_(v)
+                    Fa.copy_(Fv)
                 self.capture()
-                self.graph.replay()
+            self.graph.replay()
+        if lagm:
             x2, v2, F2 = self.X[1], self.V[1], self.FF[1]
             EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(x), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
-                                         EX.P(self.pinv), EX.P(Fv), EX.P(self.nslot if FLOOR else None), EX.P(self.xs), EX.P(self.vnear), EX.P(self.Fn),
-                                         EX.P(x2), EX.P(v2), EX.P(F2)), b=256)
-            return x2, v2, F2.view(Np, 3, 3)
-        self.X[0].copy_(x)
-        self.V[0].copy_(v)
-        self.FF[0].copy_(Fv)
-        try:
-            self.run_substeps()
-        except _Recapture:
-            self.X[0].copy_(x)
-            self.V[0].copy_(v)
-            self.FF[0].copy_(Fv)
-            self.capture()
-            self.graph.replay()
-        k = a.N % 2
-        return self.X[k], self.V[k], self.FF[k].view(Np, 3, 3)
+                                         EX.P(self.pinv), EX.P(Fv), EX.P(x2), EX.P(v2), EX.P(F2)), b=256)
+            uc, xc_, Fc_ = self.Uc, None, None
+        else:
+            k = a.N % 2
+            x2, v2, F2 = self.X[k], self.V[k], self.FF[k]
+            uc, xc_, Fc_ = None, x2, F2
+        if FLOOR:
+            EX.launch("ex_near_fin", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c), EX.P(self.F0c), EX.P(uc), EX.P(xc_), EX.P(Fc_),
+                                          EX.P(self.F0i), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv), *near_args(0), np.float64(h),
+                                          EX.P(x2), EX.P(v2), EX.P(F2)), b=128)
+        return x2, v2, F2.view(Np, 3, 3)
+
 
 
 class _Recapture(Exception):
