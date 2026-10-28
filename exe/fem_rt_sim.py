@@ -72,6 +72,7 @@ ap.add_argument("--tprof", type=int, default=-1, help="이 프레임부터 5 프
 ap.add_argument("--gate_tau", type=float, default=0.0, help="--cuda: H + τ|H|_F I 가 Cholesky 되면 고유분해 투영 생략 (0 = 끔)")
 ap.add_argument("--dump_pred", action="store_true", help="위치 궤적만 pred.pt 로 (결과 불변 대조용)")
 ap.add_argument("--lite", action="store_true", help="--floor particle --cuda: 격자 locate·사면체 ∇λ·P2G·G2P 도 커널/마스크 합으로 (FemFrame 안 거침)")
+ap.add_argument("--warp", action="store_true", help="--cuda: 사면체 헤시안을 워프당 사면체 하나 (공유 메모리 병렬 야코비)")
 ap.add_argument("--mmax", type=int, default=60000)
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
@@ -148,6 +149,7 @@ for i in range(L):
     tk("grid")
     if a.lite:
         fr = CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, h, U, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True)
+        CF.warp = a.warp
         tets = G.tets
         rec["n_near"] = CF.nn
     elif a.floor == "node":

@@ -101,6 +101,138 @@ __device__ void kmanual(const float* X, const float* Fb, float mu, float lam, fl
     }
 }
 
+
+// ---------------- warp per tet: same as tet_hess (K, 12x12, |lambda| projection, block-ELL atomics), parallel round-robin Jacobi in shared memory ----------------
+__global__ void tet_hess_w(int T, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
+                           const float* M4, float mu, float lam, float efloor, const int* slots, float* Bell, int* nneg, int maxsw, float jtol,
+                           const float* Ht, int Ms) {
+    __shared__ float sH[4][12][13], sV[4][12][13], sK[4][81], sR[4][6][2], sL[4][12], sG[4][12], sF[4][9], sM[4][16];
+    int w = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    int t = blockIdx.x*4 + w;
+    if (t >= T) return;   // whole warp exits together
+    float (*H)[13] = sH[w]; float (*V)[13] = sV[w]; float* K = sK[w];
+    if (lane < 12) sG[w][lane] = gl[t*12+lane];
+    if (lane < 9) sF[w][lane] = FT[t*9+lane];
+    if (lane < 16) sM[w][lane] = M4[t*16+lane];
+    __syncwarp();
+    float A[9];
+    for (int c=0;c<3;c++) for (int b=0;b<3;b++) {
+        float sacc=(c==b)?1.f:0.f;
+        for (int i=0;i<4;i++) sacc += U[tets[t*4+i]*3+c]*sG[w][i*3+b];
+        A[c*3+b]=sacc;
+    }
+    float X[9]; mm3(A, sF[w], X);
+    float V_ = VT[t];
+    // K: lane j < 9 computes column j
+    if (lane < 9) {
+        float Cx[9]; for (int i=0;i<3;i++) for (int k=0;k<3;k++) Cx[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+        float l[3]; symeig3(Cx, l);
+        float smin = sqrtf(fmaxf(l[0],1e-12f));
+        int j = lane;
+        if (smin <= 0.01f || V_ == 0.f) { for (int k=0;k<9;k++) K[k*9+j]=0.f; }
+        else {
+            const float* Fb = sF[w];
+            float cf[9]; cof3(X, cf);
+            float det = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+            float sg = (det>0)?1.f:((det<0)?-1.f:0.f);
+            int a=j/3, bb=j%3;
+            float dX[9];
+            for (int r=0;r<3;r++) for (int c=0;c<3;c++) dX[r*3+c] = (r==a) ? Fb[bb*3+c] : 0.f;
+            float Q[9], dQ[9], C[9], dC[9];
+            for (int k=0;k<9;k++){ Q[k]=X[k]; dQ[k]=dX[k]; }
+            for (int it=0; it<10; it++) {
+                cof3(Q, C); coflin(Q, dQ, dC);
+                float dt = det3(Q);
+                float ddt=0; for (int k=0;k<9;k++) ddt += C[k]*dQ[k];
+                bool big = fabsf(dt) > 1e-30f;
+                float ds = big ? dt : 1e-30f, dds = big ? ddt : 0.f;
+                float gm = powf(fabsf(ds), -1.f/3.f);
+                float dgm = -(1.f/3.f)*gm*dds/ds;
+                float sgm = ds*gm, dsg = dds*gm + ds*dgm;
+                for (int k=0;k<9;k++) {
+                    float qn = 0.5f*(gm*Q[k] + C[k]/sgm);
+                    dQ[k] = 0.5f*(dgm*Q[k] + gm*dQ[k] + dC[k]/sgm - C[k]*(dsg/(sgm*sgm)));
+                    Q[k] = qn;
+                }
+            }
+            float dcf[9]; coflin(X, dX, dcf);
+            float ddet=0; for (int k=0;k<9;k++) ddet += cf[k]*dX[k];
+            float dP[9];
+            for (int k=0;k<9;k++) dP[k] = 2.f*mu*(dX[k]-dQ[k]) + lam*ddet*cf[k] + lam*(det-sg)*dcf[k];
+            float dG[9]; mmt3(dP, Fb, dG);
+            for (int k=0;k<9;k++) K[k*9+j] = V_*dG[k];
+        }
+    }
+    __syncwarp();
+    const float* G = sG[w];
+    for (int e=lane; e<144; e+=32) {
+        int r = e/12, q = e%12; int i=r/3, c=r%3, j=q/3, d=q%3;
+        float sacc=0;
+        for (int b=0;b<3;b++) { float kb=0; for (int e2=0;e2<3;e2++) kb += K[(c*3+b)*9 + d*3+e2]*G[j*3+e2]; sacc += G[i*3+b]*kb; }
+        sacc += (c==d) ? sM[w][i*4+j] : 0.f;
+        if (Ht != 0) sacc += Ht[(long long)t*144 + e];
+        H[r][q] = sacc;
+        V[r][q] = (r==q) ? 1.f : 0.f;
+    }
+    __syncwarp();
+    for (int e=lane; e<144; e+=32) { int r=e/12, q=e%12; if (r<q) { float sv=0.5f*(H[r][q]+H[q][r]); H[r][q]=sv; H[q][r]=sv; } }
+    __syncwarp();
+    float fro=0; for (int e=lane; e<144; e+=32) { float hv=H[e/12][e%12]; fro += hv*hv; }
+    for (int o=16;o>0;o>>=1) fro += __shfl_xor_sync(0xffffffff, fro, o);
+    for (int sw=0; sw<maxsw; sw++) {
+        float off=0; for (int e=lane; e<144; e+=32) { int r=e/12, q=e%12; if (r<q) off += H[r][q]*H[r][q]; }
+        for (int o=16;o>0;o>>=1) off += __shfl_xor_sync(0xffffffff, off, o);
+        if (off <= jtol*fro) break;
+        for (int rd=0; rd<11; rd++) {
+            // circle method: player 11 fixed, others rotate
+            if (lane < 6) {
+                int pa, pb;
+                if (lane == 0) { pa = 11; pb = rd; } else { pa = (rd + lane) % 11; pb = (rd + 11 - lane) % 11; }
+                int p_ = min(pa,pb), q_ = max(pa,pb);
+                float apq = H[p_][q_];
+                float cc=1.f, ss=0.f;
+                if (fabsf(apq) > 1e-30f) {
+                    float th = 0.5f*(H[q_][q_]-H[p_][p_])/apq;
+                    float tt = 1.f/(fabsf(th)+sqrtf(1.f+th*th)); if (th<0) tt=-tt;
+                    cc = 1.f/sqrtf(1.f+tt*tt); ss = tt*cc;
+                }
+                sR[w][lane][0]=cc; sR[w][lane][1]=ss;
+                sL[w][lane*2]=(float)p_; sL[w][lane*2+1]=(float)q_;
+            }
+            __syncwarp();
+            // A <- A J (columns p,q) and V <- V J
+            for (int e=lane; e<144; e+=32) {
+                int pr = e/24, rem = e%24, row = rem%12; bool isV = rem >= 12;
+                int p_ = (int)sL[w][pr*2], q_ = (int)sL[w][pr*2+1]; float cc=sR[w][pr][0], ss=sR[w][pr][1];
+                if (!isV) { float ap=H[row][p_], aq=H[row][q_]; H[row][p_]=cc*ap-ss*aq; H[row][q_]=ss*ap+cc*aq; }
+                else { float ap=V[row][p_], aq=V[row][q_]; V[row][p_]=cc*ap-ss*aq; V[row][q_]=ss*ap+cc*aq; }
+            }
+            __syncwarp();
+            // A <- J^T A (rows p,q)
+            for (int e=lane; e<72; e+=32) {
+                int pr = e/12, col = e%12;
+                int p_ = (int)sL[w][pr*2], q_ = (int)sL[w][pr*2+1]; float cc=sR[w][pr][0], ss=sR[w][pr][1];
+                float ap=H[p_][col], aq=H[q_][col]; H[p_][col]=cc*ap-ss*aq; H[q_][col]=ss*ap+cc*aq;
+            }
+            __syncwarp();
+        }
+    }
+    float ev = (lane < 12) ? H[lane][lane] : 0.f;
+    int neg = __any_sync(0xffffffff, lane < 12 && ev < 0.f);
+    float mx = fabsf(ev); for (int o=16;o>0;o>>=1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, o));
+    if (lane < 12) sL[w][lane] = fmaxf(fabsf(ev), efloor*mx);
+    if (lane == 0 && neg) atomicAdd(nneg, 1);
+    __syncwarp();
+    const int* sl = slots + t*16;
+    for (int e=lane; e<144; e+=32) {
+        int r=e/12, q=e%12; float sacc=0;
+        for (int k=0;k<12;k++) sacc += V[r][k]*sL[w][k]*V[q][k];
+        int i=r/3, c=r%3, j=q/3, d=q%3;
+        int sv = sl[i*4+j]; long long node = sv/15, cls = sv%15;
+        atomicAdd(&Bell[((long long)cls*9 + c*3+d)*Ms + node], sacc);
+    }
+}
+
 // ---------------- bottom-candidate particle (stick -> softplus maps), fem_fast._near_core closed form ----------------
 struct NearMap {
     double s, w, w1, w2, w3, g, g1, g2, sp;
@@ -1070,10 +1202,16 @@ class CudaTetq:
                 gr, bl = _grid(self.nn, 64)
                 md.get_function("near_hess")(gr, bl, (np.int32(self.nn), _cp(self.ni), _cp(self.tinv)) + self._near_args(Uf)[2:] +
                                              (np.float32(self.mu), np.float32(self.lam), _cp(self.Ht)))
-            gr, bl = _grid(self.T, 64)
-            md.get_function("tet_hess")(gr, bl, (np.int32(self.T), _cp(self.tets), _cp(Uf), _cp(self.gl4), _cp(self.FT4), _cp(self.VT4), _cp(self.M44),
-                                                  np.float32(self.mu), np.float32(self.lam), np.float32(efloor), _cp(slots), _cp(Bell), _cp(self.cnt[1:2]),
-                                                  np.int32(maxsw), np.float32(jtol), _cp(self.Ht), np.int32(Ms), np.float32(gtau), _cp(self.cnt[0:1])))
+            if getattr(self, "warp", False):
+                md.get_function("tet_hess_w")(((self.T + 3) // 4,), (128,), (np.int32(self.T), _cp(self.tets), _cp(Uf), _cp(self.gl4), _cp(self.FT4),
+                                                                            _cp(self.VT4), _cp(self.M44), np.float32(self.mu), np.float32(self.lam),
+                                                                            np.float32(efloor), _cp(slots), _cp(Bell), _cp(self.cnt[1:2]),
+                                                                            np.int32(maxsw), np.float32(jtol), _cp(self.Ht), np.int32(Ms)))
+            else:
+                gr, bl = _grid(self.T, 64)
+                md.get_function("tet_hess")(gr, bl, (np.int32(self.T), _cp(self.tets), _cp(Uf), _cp(self.gl4), _cp(self.FT4), _cp(self.VT4), _cp(self.M44),
+                                                      np.float32(self.mu), np.float32(self.lam), np.float32(efloor), _cp(slots), _cp(Bell), _cp(self.cnt[1:2]),
+                                                      np.int32(maxsw), np.float32(jtol), _cp(self.Ht), np.int32(Ms), np.float32(gtau), _cp(self.cnt[0:1])))
 
     def near_only(self, U):
         """대조용: 바닥 후보 입자 12x12 를 사면체 버퍼 [T,12,12] 로만."""

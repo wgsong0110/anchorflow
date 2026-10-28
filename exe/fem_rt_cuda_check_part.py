@@ -76,7 +76,17 @@ for t in [int(q) for q in a.t.split(",")]:
     Bc = torch.zeros(M * 135, dtype=torch.float32, device=dev)
 
     Bt = Be.B.view(M, 15, 3, 3)
-    for gt_ in (0.0, 1e-6, 1e-5):
+    for wv in (False, True):
+        CF.warp = wv
+        def ch(wv=wv):
+            Bc.zero_()
+            CF.cnt.zero_()
+            CF.hess_into(U, slots, Bc, 1e-6, Ms=M)
+        _, t_hc = tm(ch)
+        Bcv = Bc.view(15, 9, M).permute(2, 0, 1).reshape(M, 15, 3, 3).double()
+        print(f"  [{'워프' if wv else '스레드'}당 사면체] 투영 헤시안 블록 ELL 상대차 {float((Bcv - Bt).norm() / Bt.norm()):.2e} | cuda {t_hc:.2f} ms", flush=True)
+    CF.warp = False
+    for gt_ in (0.0, 1e-6):
         def ch(gt_=gt_):
             Bc.zero_()
             CF.cnt.zero_()
