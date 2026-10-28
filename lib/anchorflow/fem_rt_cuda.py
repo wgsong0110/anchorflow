@@ -112,11 +112,30 @@ template <typename V> __device__ __forceinline__ float ell_row32(int m, int c, i
     }
     return y;
 }
+
+template <bool CG> __device__ __forceinline__ double ell_row_sym(int m, int c, int Ms, const float* B, const int* nb, const double* v) {
+    double y = 0;
+    for (int k=0;k<8;k++) {
+        int j = nb[k*Ms+m]; if (j < 0) continue;
+        const float* bb = B + ((long long)k*9 + c*3)*Ms + m;
+        double x0, x1, x2;
+        if (CG) { x0=__ldcg(&v[j*3]); x1=__ldcg(&v[j*3+1]); x2=__ldcg(&v[j*3+2]); } else { x0=v[j*3]; x1=v[j*3+1]; x2=v[j*3+2]; }
+        y += bb[0]*x0 + bb[Ms]*x1 + bb[2*Ms]*x2;
+    }
+    for (int k=1;k<8;k++) {
+        int j = nb[(7+k)*Ms+m]; if (j < 0) continue;
+        const float* bb = B + ((long long)k*9 + c)*Ms + j;      // (B_k at node j)^T row c = column c
+        double x0, x1, x2;
+        if (CG) { x0=__ldcg(&v[j*3]); x1=__ldcg(&v[j*3+1]); x2=__ldcg(&v[j*3+2]); } else { x0=v[j*3]; x1=v[j*3+1]; x2=v[j*3+2]; }
+        y += bb[0]*x0 + bb[3*(long long)Ms]*x1 + bb[6*(long long)Ms]*x2;
+    }
+    return y;
+}
 extern "C" {
 // ---------------- warp per tet: same as tet_hess (K, 12x12, |lambda| projection, block-ELL atomics), parallel round-robin Jacobi in shared memory ----------------
 __global__ void tet_hess_w(int T, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
                            const float* M4, float mu, float lam, float efloor, const int* slots, float* Bell, int* nneg, int maxsw, float jtol,
-                           const float* Ht, int Ms) {
+                           const float* Ht, int Ms, int sym) {
     __shared__ float sH[4][12][13], sV[4][12][13], sK[4][81], sR[4][6][2], sL[4][12], sG[4][12], sF[4][9], sM[4][16];
     int w = threadIdx.x >> 5, lane = threadIdx.x & 31;
     int t = blockIdx.x*4 + w;
@@ -240,6 +259,7 @@ __global__ void tet_hess_w(int T, const long long* tets, const float* U, const f
         for (int k=0;k<12;k++) sacc += V[r][k]*sL[w][k]*V[q][k];
         int i=r/3, c=r%3, j=q/3, d=q%3;
         int sv = sl[i*4+j]; long long node = sv/15, cls = sv%15;
+        if (sym && cls >= 8) continue;
         atomicAdd(&Bell[((long long)cls*9 + c*3+d)*Ms + node], sacc);
     }
 }
@@ -927,7 +947,7 @@ __global__ void pcg_coop32(int M, int Ms, const float* B, const int* nb, const d
 }
 
 __global__ void pcg_coop1(int M, int Ms, const float* B, const int* nb, const double* Dinv, double* x, double* r, double* z, double* d, double* Ad,
-                         double* acc, double* sc, unsigned int* bar, double thr, int maxit) {
+                         double* acc, double* sc, unsigned int* bar, double thr, int maxit, int sym) {
     // sc: [0] rz0, [1] dAd0 (input); out [2] nit, [3] rr, [4] neg
     unsigned int nblk = gridDim.x;
     int tid = blockIdx.x*blockDim.x + threadIdx.x, nth = gridDim.x*blockDim.x;
@@ -956,7 +976,7 @@ __global__ void pcg_coop1(int M, int Ms, const float* B, const int* nb, const do
         double pd = 0;
         for (int m=tid; m<M; m+=nth) {
             double q[3];
-            for (int c=0;c<3;c++) q[c] = ell_row<true>(m, c, Ms, B, nb, z);
+            for (int c=0;c<3;c++) q[c] = sym ? ell_row_sym<true>(m, c, Ms, B, nb, z) : ell_row<true>(m, c, Ms, B, nb, z);
             for (int c=0;c<3;c++){ double dd = z[m*3+c] + be*d[m*3+c]; double aa = q[c] + be*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; pd += dd*aa; }
         }
         double b3 = block_sum(pd);
@@ -1037,17 +1057,10 @@ __global__ void pcg2_d(int p, const int* Mp, const float* B, const int* nb, cons
     }
     block_add(part, &acc[(1-p)*3]);
 }
-__global__ void bell_mv(const int* Mp, const float* B, const int* nb, const double* v, double* y, int Ms) {
+__global__ void bell_mv(const int* Mp, const float* B, const int* nb, const double* v, double* y, int Ms, int sym) {
     int m = blockIdx.x*blockDim.x + threadIdx.x;
     if (m >= *Mp) return;
-    double y0=0,y1=0,y2=0;
-    for (int k=0;k<15;k++) {
-        int j = nb[k*Ms+m];
-        const float* b = B + (long long)k*9*Ms + m;
-        double x0=v[j*3], x1=v[j*3+1], x2=v[j*3+2];
-        y0 += b[0]*x0 + b[Ms]*x1 + b[2*Ms]*x2; y1 += b[3*Ms]*x0 + b[4*Ms]*x1 + b[5*Ms]*x2; y2 += b[6*Ms]*x0 + b[7*Ms]*x1 + b[8*Ms]*x2;
-    }
-    y[m*3]=y0; y[m*3+1]=y1; y[m*3+2]=y2;
+    for (int c=0;c<3;c++) y[m*3+c] = sym ? ell_row_sym<false>(m, c, Ms, B, nb, v) : ell_row<false>(m, c, Ms, B, nb, v);
 }
 __global__ void pcg_s1(double* st) {
     if (st[5] > 0.5) {
@@ -1208,7 +1221,7 @@ class CudaPcg:
         self.d.copy_(self.z)
         g1, b1 = _grid(self.Mmax)
         with _Stream():
-            _mod().get_function("bell_mv")(g1, b1, (self.cMp, self.cB, self.cnb, self.cd, self.cAd, np.int32(self.Mmax)))
+            _mod().get_function("bell_mv")(g1, b1, (self.cMp, self.cB, self.cnb, self.cd, self.cAd, np.int32(self.Mmax), np.int32(getattr(self, 'sym', 0))))
         bb = (b * b).sum().clamp_min(1e-300)
         thr = float(bb) * rtol * rtol
         self.scal.zero_()
@@ -1287,7 +1300,7 @@ class CudaPcg:
         self.d[:n].copy_(z)
         g1, b1 = _grid(self.Mmax)
         with _Stream():
-            _mod().get_function("bell_mv")(g1, b1, (_cp(self.Mp), _cp(self.B), _cp(self.nb), _cp(self.d), _cp(self.Ad), np.int32(self.Mmax)))
+            _mod().get_function("bell_mv")(g1, b1, (_cp(self.Mp), _cp(self.B), _cp(self.nb), _cp(self.d), _cp(self.Ad), np.int32(self.Mmax), np.int32(getattr(self, 'sym', 0))))
         self.acc6.zero_()
         self.bar.zero_()
         self.sc[0] = (bs * z).sum()
@@ -1295,7 +1308,7 @@ class CudaPcg:
         with _Stream():
             _mod().get_function("pcg_coop" if getattr(self, "d3", False) else "pcg_coop1")((self.nblk,), (getattr(self, "bsz", 256),), (np.int32(M), np.int32(self.Mmax), _cp(self.B), _cp(self.nb), _cp(self.Dinv), _cp(self.x), _cp(self.r),
                                                                  _cp(self.z), _cp(self.d), _cp(self.Ad), _cp(self.acc6), _cp(self.sc), _cp(self.bar),
-                                                                 np.float64(rtol * rtol), np.int32(ncg)))
+                                                                 np.float64(rtol * rtol), np.int32(ncg), np.int32(getattr(self, "sym", 0))))
         out = self.sc[2:5].tolist()
         return self.x[:n] * sc_, int(out[0]), float(out[1]) ** 0.5, bool(out[2] > 0.5)
 
@@ -1321,7 +1334,7 @@ class CudaPcg:
         self.d[:n].copy_(z)
         g1, b1 = _grid(self.Mmax)
         with _Stream():
-            _mod().get_function("bell_mv")(g1, b1, (_cp(self.Mp), _cp(self.B), _cp(self.nb), _cp(self.d), _cp(self.Ad), np.int32(self.Mmax)))
+            _mod().get_function("bell_mv")(g1, b1, (_cp(self.Mp), _cp(self.B), _cp(self.nb), _cp(self.d), _cp(self.Ad), np.int32(self.Mmax), np.int32(getattr(self, 'sym', 0))))
         self.z32[:n].copy_(z)
         self.d32[:n].copy_(z)
         self.Ad32[:n].copy_(self.Ad[:n])
@@ -1346,7 +1359,7 @@ class CudaPcg:
         self.tr_v[:n].copy_(x)
         g1, b1 = _grid(self.Mmax)
         with _Stream():
-            _mod().get_function("bell_mv")(g1, b1, (_cp(self.Mp), _cp(self.B), _cp(self.nb), _cp(self.tr_v), _cp(self.tr_y), np.int32(self.Mmax)))
+            _mod().get_function("bell_mv")(g1, b1, (_cp(self.Mp), _cp(self.B), _cp(self.nb), _cp(self.tr_v), _cp(self.tr_y), np.int32(self.Mmax), np.int32(getattr(self, 'sym', 0))))
         return float((b - self.tr_y[:n]).norm() / b.norm())
 
     def solve(self, M, b, rtol, ncg, use_graph=True):
@@ -1480,7 +1493,8 @@ class CudaTetq:
                 md.get_function("tet_hess_w")(((self.T + 3) // 4,), (128,), (np.int32(self.T), _cp(self.tets), _cp(Uf), _cp(self.gl4), _cp(self.FT4),
                                                                             _cp(self.VT4), _cp(self.M44), np.float32(self.mu), np.float32(self.lam),
                                                                             np.float32(efloor), _cp(slots), _cp(Bell), _cp(self.cnt[1:2]),
-                                                                            np.int32(maxsw), np.float32(jtol), _cp(self.Ht), np.int32(Ms)))
+                                                                            np.int32(maxsw), np.float32(jtol), _cp(self.Ht), np.int32(Ms),
+                                                                            np.int32(getattr(self, "sym", 0))))
             else:
                 gr, bl = _grid(self.T, 64)
                 md.get_function("tet_hess")(gr, bl, (np.int32(self.T), _cp(self.tets), _cp(Uf), _cp(self.gl4), _cp(self.FT4), _cp(self.VT4), _cp(self.M44),

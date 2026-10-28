@@ -76,6 +76,7 @@ ap.add_argument("--warp", action="store_true", help="--cuda: 사면체 헤시안
 ap.add_argument("--d3", action="store_true", help="--cuda PCG 곱 노드당 3 스레드 (기본 노드당 1)")
 ap.add_argument("--near32", action="store_true", help="--cuda: 바닥 후보 헤시안 매핑 대수를 float32 로")
 ap.add_argument("--true_res", action="store_true", help="--cuda: PCG 뒤 실제 잔차 |b-Ax|/|b| (float64) 기록")
+ap.add_argument("--sym", action="store_true", help="--cuda --warp --pcg2 2: 블록 ELL 대칭 반쪽 (자기+양의 오프셋 7 칸) 저장 -- L2 에 들어간다")
 ap.add_argument("--mmax", type=int, default=60000)
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
@@ -113,6 +114,7 @@ print(f"[명령] {' '.join(sys.argv)}", flush=True)
 PC = RTC.CudaPcg(a.mmax, dev) if a.cuda else None
 if PC is not None:
     PC.d3 = a.d3
+    PC.sym = int(a.sym)
 PDF = RT.PdFactor() if a.solver in ("pdpcg", "pd") else None
 PRED = torch.empty(L, N, 3, device=dev) if (not a.no_dump or a.dump_pred) else None
 VD = torch.empty(L, N, 3, device=dev, dtype=torch.float16) if not a.no_dump else None
@@ -156,6 +158,7 @@ for i in range(L):
         fr = CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, h, U, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True)
         CF.warp = a.warp
         CF.near32 = a.near32
+        CF.sym = int(a.sym)
         tets = G.tets
         rec["n_near"] = CF.nn
     elif a.floor == "node":
@@ -246,7 +249,7 @@ for i in range(L):
             Dinv = torch.linalg.inv(D)
             PC.Dinv[:M_ * 9].copy_(Dinv.reshape(-1))
             nbl = RT.BEll(G.gi, dtype=torch.float32)
-            PC.nb.view(15, Ms)[:, :M_] = nbl.nb.t().int()
+            PC.nb.view(15, Ms)[:, :M_] = (torch.where(nbl.valid, nbl.nb, torch.full_like(nbl.nb, -1)) if a.sym else nbl.nb).t().int()
             tk("asm")
             b = gg.reshape(-1).double()
             xx, it, res, negc = {3: PC.solve_coop32, 2: PC.solve_coop, 1: PC.solve2, 0: PC.solve}[a.pcg2](M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
@@ -257,6 +260,12 @@ for i in range(L):
             tk("pcg")
             Bd = Bs[:, :, :M_].permute(2, 0, 1).reshape(M_, 15, 3, 3)
             nbi = nbl.nb
+            if a.sym:
+                # LM 재풀이용 전체 블록: 음의 오프셋 칸 = 이웃의 양의 칸 전치 (무효 칸은 0)
+                Bd = Bd.clone()
+                for k_ in range(1, 8):
+                    j_ = nbl.nb[:, 7 + k_]
+                    Bd[:, 7 + k_] = torch.where(nbl.valid[:, 7 + k_, None, None], Bd[j_, k_].transpose(1, 2), torch.zeros_like(Bd[:, 0]))
             mv = lambda q: torch.einsum("mkab,mkb->ma", Bd.double(), q.reshape(M_, 3)[nbi]).reshape(-1)
         if a.cuda:
             pass

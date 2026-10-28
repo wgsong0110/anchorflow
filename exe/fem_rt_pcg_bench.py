@@ -64,6 +64,21 @@ for bsz, nb_per_sm in ((128, 1), (128, 2), (128, 4), (128, 8), (256, 1), (256, 2
             print(f"[지속 블록 {PC.nblk} x {bsz}] {it} 회 {tt:.2f} ms ({1e3 * tt / it:.1f} us/회) 실제 잔차 {PC.true_res(M, xx, b):.2e} 해 차 {float((xx - x0).norm() / x0.norm()):.2e}", flush=True)
         except Exception as e:                                               # noqa: BLE001
             print(f"[지속 블록 {PC.nblk} x {bsz}] 실패 {type(e).__name__}: {str(e)[:120]}", flush=True)
+# 대칭 반쪽 저장
+PC.bsz, PC.nblk = 256, 2 * sm
+nbl = RT.BEll(G.gi, dtype=torch.float32)
+PC.B.zero_()
+CF.sym = 1
+CF.hess_into(U, slots, PC.B, 1e-6, Ms=PC.Mmax)
+PC.nb.view(15, PC.Mmax)[:, :M] = torch.where(nbl.valid, nbl.nb, torch.full_like(nbl.nb, -1)).t().int()
+PC.sym = 1
+(xs, it, rr, _), tt = tm(lambda: PC.solve_coop(M, b, 1e-6, 20000))
+print(f"[지속 대칭 반쪽] {it} 회 {tt:.2f} ms ({1e3 * tt / it:.1f} us/회) 실제 잔차 {PC.true_res(M, xs, b):.2e} 해 차 {float((xs - x0).norm() / x0.norm()):.2e}", flush=True)
+PC.sym = 0
+CF.sym = 0
+PC.B.zero_()
+CF.hess_into(U, slots, PC.B, 1e-6, Ms=PC.Mmax)
+PC.nb.view(15, PC.Mmax)[:, :M] = nbl.nb.t().int()
 # 고정 반복 수로 장벽만의 비용: rtol 0 (끝까지), maxit 200
 PC.bsz, PC.nblk = 256, 2 * sm
 (_, it, _, _), tt = tm(lambda: PC.solve_coop(M, b, 0.0, 200))
