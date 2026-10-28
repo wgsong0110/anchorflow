@@ -25,6 +25,7 @@ from anchorflow import deform_model as DM                                       
 from anchorflow import fem_rt as RT                                                 # noqa: E402
 from anchorflow import fem_rt_cuda as RTC                                           # noqa: E402
 from anchorflow import fem_ex_cuda as EX                                            # noqa: E402
+from anchorflow import fem_bs_cuda as BSC                                           # noqa: E402
 from anchorflow import phys_resid as PR                                             # noqa: E402
 from anchorflow import simplex as SX                                                # noqa: E402
 
@@ -56,6 +57,10 @@ ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--dump_f32", action="store_true")
 ap.add_argument("--dump_pred", action="store_true")
+ap.add_argument("--interp", choices=["bary", "bspline2"], default="bary",
+                help="bspline2: MPM 표준 2 차 B-스플라인 (절 M, lib/anchorflow/fem_bs_cuda.py) -- 질량 Σ w m (P2G), G2P PIC, --mode sub 만")
+ap.add_argument("--quad", choices=["particle", "cell"], default="particle", help="--interp bspline2 탄성 적분점: 입자 (MPM 식) / 셀 대표 F̄ (K 점)")
+ap.add_argument("--K", type=int, default=8, help="--quad cell: 셀 안 ∇w 평균 점 수 (1 중심, 8 가우스 2x2x2)")
 ap.add_argument("--diag", action="store_true", help="첫 프레임: 노드별 국소 안정 걸음 2/ω (ω² = Σ_T V_T (λ+2μ)|∇λ_i|² / m_i) 분포, 서브스텝마다 최대 |v|")
 a = ap.parse_args()
 
@@ -104,9 +109,18 @@ G0 = RTC.GridK(x, a.node_h)
 lmin = EX.kuhn_min_altitude(G0.gl8)
 dt_cfl = lmin / cwave
 del G0
-print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N} (h_s {hs:.3e}), 판 {a.mode} {'최적화' if a.opt else '기준'}, 노드 질량 {'Σλm (기본)' if a.mass == 'bary' else '사면체 등분 m_T/4 (정의 변경)'}, E {cfg['E']:g} ν {cfg['nu']:g} "
+BSP = a.interp == "bspline2"
+if BSP:
+    if a.mode != "sub":
+        raise SystemExit("--interp bspline2 는 --mode sub 만 (MPM 식)")
+    _latd = SX.lattice(float(a.node_h), SX.HZ_CUBE * float(a.node_h), device=dev, dtype=torch.float64)
+    lmin = float(_latd.A[:, 0].norm())                                              # 정육면체 격자 간격 dx (B-스플라인 CFL 길이)
+    dt_cfl = lmin / cwave
+print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N} (h_s {hs:.3e}), 판 {a.mode} {'최적화' if a.opt else '기준'}, "
+      + (f"보간 2 차 B-스플라인 (적분점 {a.quad}{' K %d' % a.K if a.quad == 'cell' else ''}), 노드 질량 Σ w m (P2G), G2P PIC, " if BSP else
+         f"노드 질량 {'Σλm (기본)' if a.mass == 'bary' else '사면체 등분 m_T/4 (정의 변경)'}, ") + f"E {cfg['E']:g} ν {cfg['nu']:g} "
       f"(μ {mu:.4g} λ {lam:.4g}), EXT {EXT:.6f}, 바닥 {'입자 (stick·softplus)' if FLOOR else '없음'}, 감쇠 {DAMP:.8f}/서브스텝", flush=True)
-print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), Kuhn 최소 높이 {lmin:.5f} (node_h {a.node_h}), "
+print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), {'격자 간격 dx' if BSP else 'Kuhn 최소 높이'} {lmin:.5f} (node_h {a.node_h}), "
       f"Δt_CFL = {dt_cfl:.3e} s -> N_CFL = h/Δt_CFL = {h / dt_cfl:.1f} (지금 h_s/Δt_CFL = {hs / dt_cfl:.3f})", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
 
@@ -514,6 +528,223 @@ class Opt:
 
 
 
+# ---------------------------------------------------------------- 2 차 B-스플라인 판 (--interp bspline2, 절 M)
+class BS:
+    """밀집 격자 (월드 고정 정육면체 격자 = 기존 노드 격자, 상자만 프레임/서브스텝마다) 위 MPM 식 명시적 서브스텝 -- 식은 fem_bs_cuda 머리말.
+    opt  : float32 대수, G2P + 다음 P2G 융합, 격자 상자 프레임당 한 번 (서브스텝 재사용, 동기화 1 번), 서브스텝 N 번 + 마지막 G2P 를 CUDA 그래프 하나로
+    기준 : float64 대수, 커널 따로 (G2P / P2G / 바닥 후보 / 셀 / 격자), 격자 상자 서브스텝마다 다시 (동기화), 파이썬 서브스텝 루프"""
+
+    def __init__(self, opt):
+        self.opt = opt
+        self.R = torch.float32 if opt else torch.float64
+        self.sfx = "f" if opt else "d"
+        self.lat = SX.lattice(float(a.node_h), SX.HZ_CUBE * float(a.node_h), device=dev, dtype=torch.float64)
+        self.dx = float(self.lat.A[:, 0].norm())
+        self.gpar = torch.zeros(12, device=dev, dtype=self.R)
+        self.ipar = torch.zeros(4, dtype=torch.int32, device=dev)
+        self.sz = torch.zeros(4, dtype=torch.int32, device=dev)
+        self.QUAD = 0 if a.quad == "particle" else 1
+        self.gK = BSC.cell_grad_table(self.lat.Ai, a.K).to(dev, self.R).contiguous() if self.QUAD == 1 else None
+        self.Pcap = 0
+        z = lambda *s, dt=torch.float32: torch.zeros(*s, device=dev, dtype=dt)
+        self.nslot = z(Np, dt=torch.int32) - 1
+        self.nidx = z(Np, dt=torch.long)
+        self.x0c, self.F0c, self.F0i, self.cc = z(Np, 3), z(Np, 9), z(Np, 9), z(Np, 3)
+        self.X = [z(Np, 3), z(Np, 3)]
+        self.V = [z(Np, 3), z(Np, 3)]
+        self.FF = [z(Np, 9), z(Np, 9)]
+        self.graph = None
+        self.n_cap = 0
+        self.bc_key = None
+        self.M, self.T = 0, 0
+        self.PLr = [np.float32(q) for q in PLf] if opt else PL
+
+    def _alloc(self, Pn):
+        if Pn <= self.Pcap:
+            return
+        self.Pcap = int(Pn * 1.3) + 64
+        z = lambda n, dt=self.R: torch.zeros(n, device=dev, dtype=dt)
+        self.gm, self.gmv, self.vg = z(self.Pcap), z(self.Pcap * 3), z(self.Pcap * 3)
+        self.cV = z(self.Pcap) if self.QUAD == 1 else None
+        self.cVF = z(self.Pcap * 9) if self.QUAD == 1 else None
+        self.fx = torch.zeros(self.Pcap, dtype=torch.uint8, device=dev)
+        self.vbc = torch.zeros(self.Pcap * 3, device=dev)
+        self.bc_key = None
+        self.graph = None
+
+    def box(self, x, v, now, motion):
+        """밀집 상자: 입자 범위 + 여백 (motion: 프레임 동안 이동 max|v|·h·1.5) + 3 dx, base ∈ [0, n-3] 이 되게 정수 범위 ±2. 동기화 1 번."""
+        lat = self.lat
+        lo_ = x.min(0).values.double()
+        hi_ = x.max(0).values.double()
+        vmax = v.norm(dim=-1).max().double()
+        ext = (hi_ - lo_).max().clamp_min(1e-12)
+        pad = 0.05 * ext + 3.0 * self.dx + (vmax * h * 1.5 if motion else 0.0)
+        b0, b1 = lo_ - pad, hi_ + pad
+        cor = torch.stack([torch.stack([b0[0] if (mm & 1) else b1[0], b0[1] if (mm & 2) else b1[1], b0[2] if (mm & 4) else b1[2]]) for mm in range(8)], 0)
+        y = cor @ lat.Ai.T
+        imin = torch.floor(y.min(0).values).long() - 2
+        imax = torch.ceil(y.max(0).values).long() + 2
+        ii = torch.cat([imin, imax, (vmax * h / self.dx).ceil().long().view(1)]).tolist()       # 동기화
+        if motion and float(ii[6]) * self.dx > 0.25 * EXT:
+            raise _Diverge(f"프레임 이동 max|v|·h > 0.25 EXT ({ii[6]} 셀)")
+        dims = [max(ii[3 + k] - ii[k] + 1, 4) for k in range(3)]
+        Pn = dims[0] * dims[1] * dims[2]
+        if not hasattr(self, "P0"):
+            self.P0 = Pn
+        if Pn > 8 * self.P0:
+            raise _Diverge(f"격자 상자 {Pn} > 8 x 첫 프레임 {self.P0}")
+        imin_l = ii[:3]
+        lo = lat.A @ torch.tensor(imin_l, device=dev, dtype=torch.float64)
+        self.gpar[:3] = lo.to(self.R)
+        self.gpar[3:] = lat.Ai.reshape(-1).to(self.R)
+        self.ipar.copy_(torch.tensor(dims + [0], dtype=torch.int32), non_blocking=True)
+        self._alloc(Pn)
+        self.M = Pn
+        if BC_SEL is not None:
+            # cuboid 만 (입자 구속 없음): train_deform.cfg_bc_nodes 의 cuboid 판정 그대로 (상자 안 노드 = v_bc) -- 밀집 상자의 모든 노드 위치에서
+            act = tuple((float(bc.get("start_time", 0.0)) <= now < float(bc.get("end_time", 1e3)),
+                         int(bc.get("reset", 0)) == 1 and float(bc.get("end_time", 1e3)) <= now < float(bc.get("end_time", 1e3)) + 15.0 * h)
+                        for bc in (cfg.get("boundary_conditions") or []) if bc.get("type") == "cuboid")
+            key = (tuple(imin_l), tuple(dims), act)
+            if key != self.bc_key:
+                ar = [torch.arange(dims[k], device=dev) for k in range(3)]
+                ijk = torch.stack(torch.meshgrid(*ar, indexing="ij"), -1).reshape(-1, 3).double()
+                npos = ((ijk + torch.tensor(imin_l, device=dev, dtype=torch.float64)) @ lat.A.T).float()
+                fx, vb = RT.cfg_bc_nodes(cfg, [], npos, torch.zeros(1, 4, dtype=torch.long, device=dev), torch.zeros(1, 4, device=dev), m[:1], now, h)
+                self.fx.zero_()
+                self.vbc.zero_()
+                if fx is not None:
+                    self.fx[:Pn] = fx.to(torch.uint8)
+                    self.vbc[:Pn * 3] = vb.float().reshape(-1)
+                self.bc_key = key
+        return Pn
+
+    def _k(self, name):
+        return f"{name}_{self.sfx}"
+
+    def _fix(self):
+        return self.fx if BC_SEL is not None else None
+
+    def _near(self, xc, Fc):
+        if FLOOR:
+            BSC.launch(self._k("bs_near"), Np, (BSC.P(self.sz), BSC.P(self.nidx), BSC.P(self.x0c), BSC.P(self.F0c), BSC.P(self.cc), BSC.P(xc), BSC.P(Fc),
+                                                 BSC.P(self.F0i), BSC.P(m), BSC.P(vol), np.float64(h), *PL, np.float64(a.eps_st), np.float64(a.eps_sp),
+                                                 np.float64(XN), np.float64(mu), np.float64(lam), BSC.P(self.gpar), BSC.P(self.ipar),
+                                                 self._c(hs), BSC.P(self.gmv)), b=64)
+
+    def _c(self, val):
+        return np.float32(val) if self.opt else np.float64(val)
+
+    def _grid_step(self, hs_, damp, fix):
+        if self.QUAD == 1:
+            BSC.launch(self._k("bs_cell"), self.Pcap, (BSC.P(self.ipar), BSC.P(self.cV), BSC.P(self.cVF), BSC.P(self.gK), self._c(mu), self._c(lam), self._c(hs_),
+                                                       BSC.P(self.gmv)), b=128)
+        BSC.launch(self._k("bs_node"), self.Pcap, (BSC.P(self.ipar), BSC.P(self.gm), BSC.P(self.gmv), BSC.P(self.vg), self._c(gv[0]), self._c(gv[1]),
+                                                   self._c(gv[2]), self._c(hs_), self._c(damp), BSC.P(fix), BSC.P(self.vbc)), b=256)
+
+    def _p2g_d(self, xa, va, Fa, quad, hs_):
+        BSC.launch("bs_p2g_d", Np, (np.int32(Np), BSC.P(xa), BSC.P(va), BSC.P(Fa), BSC.P(m), BSC.P(vol), BSC.P(self.nslot if FLOOR else None), np.int32(quad),
+                                    BSC.P(self.gpar), BSC.P(self.ipar), np.float64(hs_), np.float64(mu), np.float64(lam), BSC.P(self.gm), BSC.P(self.gmv),
+                                    BSC.P(self.cV), BSC.P(self.cVF), BSC.P(self.sz)), b=128)
+
+    def _g2p_p2g_f(self, xa, va, Fa, xb, vb, Fb, do_g2p, do_p2g, quad, hs_):
+        BSC.launch("bs_g2p_p2g_f", Np, (np.int32(Np), BSC.P(xa), BSC.P(va), BSC.P(Fa), BSC.P(self.vg), BSC.P(self.gpar), BSC.P(self.ipar), np.float32(hs_),
+                                        np.int32(do_g2p), np.int32(do_p2g), BSC.P(xb), BSC.P(vb), BSC.P(Fb), BSC.P(m), BSC.P(vol),
+                                        BSC.P(self.nslot if FLOOR else None), np.int32(quad), np.float32(mu), np.float32(lam), BSC.P(self.gm), BSC.P(self.gmv),
+                                        BSC.P(self.cV), BSC.P(self.cVF), BSC.P(self.sz)), b=128)
+
+    def _substeps(self):
+        """opt: 서브스텝 N 번 (융합 G2P+P2G -> 바닥 후보 -> 셀 -> 격자) + 마지막 G2P. 상태 S[j%2] = 서브스텝 j 시작 상태."""
+        S = lambda k: (self.X[k % 2], self.V[k % 2], self.FF[k % 2])
+        for j in range(a.N):
+            if j == 0:
+                xa, va, Fa = S(0)
+                self._g2p_p2g_f(xa, va, Fa, xa, va, Fa, 0, 1, self.QUAD, hs)
+            else:
+                xa, va, Fa = S(j - 1)
+                xb, vb, Fb = S(j)
+                self._g2p_p2g_f(xa, va, Fa, xb, vb, Fb, 1, 1, self.QUAD, hs)
+            xc, _, Fc = S(j)
+            self._near(xc, Fc)
+            self._grid_step(hs, DAMP, self._fix())
+        xa, va, Fa = S(a.N - 1)
+        xb, vb, Fb = S(a.N)
+        self._g2p_p2g_f(xa, va, Fa, xb, vb, Fb, 1, 0, self.QUAD, hs)
+
+    def capture(self):
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.stream(s):
+            g.capture_begin()
+            self._substeps()
+            g.capture_end()
+        torch.cuda.current_stream().wait_stream(s)
+        self.graph = g
+        self.n_cap += 1
+
+    def frame(self, i, x, v, F):
+        now = i * h
+        Fv = F.reshape(Np, 9)
+        xa, va, Fa = self.X[0], self.V[0], self.FF[0]
+        xa.copy_(x)
+        va.copy_(v)
+        Fa.copy_(Fv)
+        self.box(xa, va, now, True if self.opt else False)
+        self.sz[2:3].zero_()
+        # 프레임 분할: 프레임 상태 P2G (운동량만) -> 격자 속도 (중력·감쇠·고정 없음, ex_vfin 과 같다) -> 바닥 후보
+        if self.opt:
+            self._g2p_p2g_f(xa, va, Fa, xa, va, Fa, 0, 1, -1, 0.0)
+        else:
+            self._p2g_d(xa, va, Fa, -1, 0.0)
+        BSC.launch(self._k("bs_node"), self.Pcap, (BSC.P(self.ipar), BSC.P(self.gm), BSC.P(self.gmv), BSC.P(self.vg), self._c(0), self._c(0), self._c(0),
+                                                   self._c(0), self._c(1), BSC.P(None), BSC.P(self.vbc)), b=256)
+        BSC.launch(self._k("bs_split"), Np, (np.int32(Np), BSC.P(xa), BSC.P(self.vg), BSC.P(self.gpar), BSC.P(self.ipar), self._c(h), self._c(gv[0]),
+                                             self._c(gv[1]), self._c(gv[2]), np.int32(1 if FLOOR else 0), *[self._c(q) for q in PL], self._c(a.eps_sp),
+                                             self._c(a.eps_st), BSC.P(self.nslot), BSC.P(self.nidx), BSC.P(self.sz)), b=256)
+        if FLOOR:
+            EX.launch("ex_near_init", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(xa), EX.P(va), EX.P(Fa), np.float32(h), np.float32(gv[0]),
+                                           np.float32(gv[1]), np.float32(gv[2]), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.F0i), EX.P(self.cc)), b=256)
+        if self.opt:
+            if a.no_graph:
+                self._substeps()
+            else:
+                if self.graph is None:
+                    bufs = [self.vg, self.gm, self.gmv, self.sz] + [t for t in (self.cV, self.cVF) if t is not None] + self.X + self.V + self.FF
+                    snap = [t.clone() for t in bufs]
+                    self._substeps()                                            # 데우기 (NVRTC 컴파일·지연 할당) -- 결과 버림
+                    for t, s_ in zip(bufs, snap):
+                        t.copy_(s_)
+                    self.capture()
+                self.graph.replay()
+            k = a.N % 2
+        else:
+            S = lambda k_: (self.X[k_ % 2], self.V[k_ % 2], self.FF[k_ % 2])
+            for j in range(a.N):
+                if j > 0:
+                    xa_, va_, Fa_ = S(j - 1)
+                    xb, vb, Fb = S(j)
+                    BSC.launch("bs_g2p_d", Np, (np.int32(Np), BSC.P(xa_), BSC.P(Fa_), BSC.P(self.vg), BSC.P(self.gpar), BSC.P(self.ipar), np.float64(hs),
+                                                BSC.P(xb), BSC.P(vb), BSC.P(Fb), BSC.P(self.sz)), b=128)
+                    self.box(xb, vb, now + j * hs, False)                       # 격자 상자 서브스텝마다 다시
+                xc, vc, Fc = S(j)
+                self._p2g_d(xc, vc, Fc, self.QUAD, hs)
+                self._near(xc, Fc)
+                self._grid_step(hs, DAMP, self._fix())
+            xa_, va_, Fa_ = S(a.N - 1)
+            xb, vb, Fb = S(a.N)
+            BSC.launch("bs_g2p_d", Np, (np.int32(Np), BSC.P(xa_), BSC.P(Fa_), BSC.P(self.vg), BSC.P(self.gpar), BSC.P(self.ipar), np.float64(hs),
+                                        BSC.P(xb), BSC.P(vb), BSC.P(Fb), BSC.P(self.sz)), b=128)
+            k = a.N % 2
+        x2, v2, F2 = self.X[k], self.V[k], self.FF[k]
+        if FLOOR:
+            EX.launch("ex_near_fin", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c), EX.P(self.F0c), EX.P(None), EX.P(x2), EX.P(F2),
+                                          EX.P(self.F0i), EX.P(None), EX.P(None), EX.P(None), EX.P(None), *near_args(0), np.float64(h),
+                                          EX.P(x2), EX.P(v2), EX.P(F2)), b=128)
+        return x2, v2, F2.view(Np, 3, 3)
+
+
 class _Recapture(Exception):
     pass
 
@@ -522,7 +753,7 @@ class _Diverge(Exception):
     pass
 
 
-OPT = Opt() if a.opt else None
+OPT = BS(a.opt) if BSP else (Opt() if a.opt else None)
 if OPT is not None:
     RTC.RAWPTR[0] = True
 PRED = torch.empty(L, Np, 3, device=dev) if (not a.no_dump or a.dump_pred) else None
@@ -601,7 +832,8 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             N=a.N, hs=hs, mass=a.mass, dt_cfl=dt_cfl, N_cfl=h / dt_cfl, cwave=cwave, lmin=lmin, mode=a.mode, opt=a.opt,
             s_min=(min(r["s_min"] for r in recs) if FLOOR else None), n_below_max=(max(r["n_below"] for r in recs) if FLOOR else None),
             spread_last=recs[-1]["spread"], n_near_med=med([r.get("n_near") or 0 for r in recs]),
-            overflow_frames=sum(1 for r in recs if r.get("overflow")), gpu=torch.cuda.get_device_name(0), tag=a.tag, damp_sub=DAMP)
+            overflow_frames=sum(1 for r in recs if r.get("overflow")), gpu=torch.cuda.get_device_name(0), tag=a.tag, damp_sub=DAMP,
+            interp=a.interp, quad=(a.quad if BSP else None), K=(a.K if BSP and a.quad == "cell" else None))
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
 print(f"[롤아웃] {a.tag} 서브스텝 {a.N} {a.mode}{' 최적화' if a.opt else ''}: {done}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%  "
       f"프레임당 {summ['ms_mean']:.2f} ms (중앙 {summ['ms_med']:.2f}, {summ['fps']:.2f} fps, 앞 {W} 프레임 제외) 퍼짐 {summ['spread_last']:.3f} "
