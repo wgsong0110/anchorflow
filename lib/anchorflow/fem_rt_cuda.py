@@ -1293,7 +1293,7 @@ class CudaPcg:
         self.sc[0] = (bs * z).sum()
         self.sc[1] = (self.d[:n] * self.Ad[:n]).sum()
         with _Stream():
-            _mod().get_function("pcg_coop" if getattr(self, "d3", False) else "pcg_coop1")((self.nblk,), (256,), (np.int32(M), np.int32(self.Mmax), _cp(self.B), _cp(self.nb), _cp(self.Dinv), _cp(self.x), _cp(self.r),
+            _mod().get_function("pcg_coop" if getattr(self, "d3", False) else "pcg_coop1")((self.nblk,), (getattr(self, "bsz", 256),), (np.int32(M), np.int32(self.Mmax), _cp(self.B), _cp(self.nb), _cp(self.Dinv), _cp(self.x), _cp(self.r),
                                                                  _cp(self.z), _cp(self.d), _cp(self.Ad), _cp(self.acc6), _cp(self.sc), _cp(self.bar),
                                                                  np.float64(rtol * rtol), np.int32(ncg)))
         out = self.sc[2:5].tolist()
