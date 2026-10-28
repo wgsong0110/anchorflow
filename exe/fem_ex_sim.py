@@ -44,6 +44,7 @@ ap.add_argument("--mode", choices=["sub", "lag"], default="lag")
 ap.add_argument("--N", type=int, required=True, help="프레임당 서브스텝 수")
 ap.add_argument("--opt", action="store_true")
 ap.add_argument("--dil", type=int, default=-1, help="--opt --mode sub: 셀 팽창 (셀 수; -1 = 프레임 최대 이동으로 자동)")
+ap.add_argument("--near32", action="store_true", help="--opt: 바닥 후보 힘 float32 대수 (암시적 판 --near32 와 같은 방식)")
 ap.add_argument("--no_graph", action="store_true", help="--opt 에서 CUDA 그래프 끄기 (대조)")
 ap.add_argument("--div", type=float, default=3.0)
 ap.add_argument("--warm", type=int, default=2)
@@ -374,7 +375,7 @@ class Opt:
                                           np.float32(mu), np.float32(lam), EX.P(self.f)))
         if FLOOR:
             self.gn.zero_()
-            EX.launch("ex_near_force", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.cc), EX.P(Ucum),
+            EX.launch("ex_near_force32" if a.near32 else "ex_near_force", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.cc), EX.P(Ucum),
                                             EX.P(xc), EX.P(Fc), EX.P(self.F0i), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv), EX.P(m),
                                             EX.P(vol), np.float64(h), *near_args(0), np.float64(mu), np.float64(lam), EX.P(self.gn)), b=64)
         EX.launch("ex_node_step", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.f), EX.P(self.gn if FLOOR else None), EX.P(self.vn),

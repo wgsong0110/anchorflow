@@ -54,6 +54,64 @@ __device__ __forceinline__ void ex_tet_force_body(int t, const long long* tets, 
     }
 }
 
+template <typename R> __device__ __forceinline__ void ex_near_force_body(int q, int nn_, const long long* nidx, const float* x0c, const float* F0c, const float* cc,
+                              const float* Ucum, const float* xcur, const float* Fcur, const float* F0inv,
+                              const long long* rows, const float* lamb, const float* glT, const long long* tinv, const float* mp, const float* vol, R h,
+                              R p0, R p1, R p2, R n0, R n1, R n2, R eps_st, R eps_sp, R xn, R mu, R lam, float* gn) {
+    if (q >= nn_) return;
+    long long p = nidx[q];
+    long long nd[4]; R lm[4], gl[12], u[3]={0,0,0}, G[9]={0,0,0,0,0,0,0,0,0}, xx[3], c[3], IGt[9]={1,0,0,0,1,0,0,0,1};
+    const float* glp = glT + tinv[p]*12;
+    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; }
+    for (int k=0;k<12;k++) gl[k]=glp[k];
+    for (int k=0;k<3;k++){ xx[k]=x0c[q*3+k]; c[k]=cc[q*3+k]; }
+    if (Ucum) {
+        for (int i=0;i<4;i++) for (int a=0;a<3;a++){ R Ua=(R)Ucum[nd[i]*3+a]; u[a]+=lm[i]*Ua; for (int b=0;b<3;b++) G[a*3+b]+=Ua*gl[i*3+b]; }
+    } else {
+        for (int k=0;k<3;k++) u[k] = (R)xcur[p*3+k] - xx[k];
+        R Fc[9], Fi[9]; for (int k=0;k<9;k++){ Fc[k]=Fcur[p*9+k]; Fi[k]=F0inv[q*9+k]; }
+        mm3(Fc, Fi, IGt);
+        for (int k=0;k<9;k++) G[k] = IGt[k] - ((k%4==0)?(R)1:(R)0);
+    }
+    R pt[3]={p0,p1,p2}, nv[3]={n0,n1,n2};
+    NearMapT<R> M; near_map(xx, u, G, c, pt, nv, eps_st, eps_sp, xn, M);
+    R Jf[9]; mm3(M.Mn, M.K1, Jf);
+    R F[9]; for (int k=0;k<9;k++) F[k]=F0c[q*9+k];
+    R X[9]; mm3(Jf, F, X);
+    R C[9]; for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+    R l[3]; symeig3(C, l);
+    R J=1; for (int k=0;k<3;k++){ R s=fmax(sqrt(fmax(l[k],(R)1e-12)),(R)0.01); J*=s; }
+    R V = vol[p], k_ = (R)mp[p]/(h*h);
+    R Q[9], cf[9], P[9], Pc[9];
+    polar(X, Q); cof3(X, cf);
+    R dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+    R sg = (dt>0)?(R)1:((dt<0)?(R)-1:(R)0);
+    for (int k=0;k<9;k++) P[k] = (R)2*mu*(X[k]-Q[k]) + lam*(J-(R)1)*sg*cf[k];
+    mmt3(P, F, Pc); for (int k=0;k<9;k++) Pc[k]*=V;
+    R gy[12];
+    R NK1[9]; mm3(M.Nm, M.K1, NK1);
+    for (int c3=0;c3<3;c3++) {
+        R t=0; for (int i=0;i<3;i++) t += M.Ru[i*3+c3]*M.r[i];
+        t -= u[c3] - c[c3];                                            // - 매핑 없는 관성 (노드 질량 동역학이 이미 갖는 몫)
+        R Bc[9], dK[9], MdK[9]; near_Bc(M, c3, Bc); mm3(Bc, M.IG, dK);
+        for (int k=0;k<9;k++) dK[k] -= xn*M.w1*M.n[c3]*M.Pm[k];
+        mm3(M.Mn, dK, MdK);
+        R pj=0; for (int k=0;k<9;k++) pj += Pc[k]*(M.g1*M.n[c3]*NK1[k] + MdK[k]);
+        gy[c3] = k_*t + pj;
+    }
+    R MJ[9]; mm3(M.Mn, M.Jst, MJ);
+    R gG[9];
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++){ R t=0; for (int i=0;i<3;i++) t += MJ[i*3+a]*Pc[i*3+b]; gG[a*3+b]=t; }
+    if (!Ucum) { R T2[9]; mmt3(gG, IGt, T2); for (int k=0;k<9;k++) gG[k]=T2[k]; }     // sub: ∂/∂δU 는 gG (I+G)ᵀ
+    for (int k=0;k<9;k++) gy[3+k]=gG[k];
+    for (int i=0;i<4;i++) for (int c3=0;c3<3;c3++) {
+        R t = lm[i]*gy[c3];
+        for (int b=0;b<3;b++) t += gl[i*3+b]*gy[3+c3*3+b];
+        atomicAdd(&gn[nd[i]*3+c3], (float)t);
+    }
+}
+
+
 extern "C" {
 // szp (선택): 장치 크기 [M, T, nn, 넘침] -- 그래프 재생에서 프레임마다 바뀌는 크기를 장치에서 읽는다 (없으면 인자 값)
 __global__ void ex_tet_force_dd(const int* szp, int Targ, const long long* tets, const float* U, const double* gl, const double* FT, const double* VT,
@@ -96,59 +154,19 @@ __global__ void ex_near_force(const int* szp, int nnarg, const long long* nidx, 
                               const long long* rows, const float* lamb, const float* glT, const long long* tinv, const float* mp, const float* vol, double h,
                               double p0, double p1, double p2, double n0, double n1, double n2, double eps_st, double eps_sp, double xn,
                               double mu, double lam, float* gn) {
-    int nn_ = szp ? szp[2] : nnarg;
     int q = blockIdx.x*blockDim.x + threadIdx.x;
-    if (q >= nn_) return;
-    long long p = nidx[q];
-    long long nd[4]; double lm[4], gl[12], u[3]={0,0,0}, G[9]={0,0,0,0,0,0,0,0,0}, xx[3], c[3], IGt[9]={1,0,0,0,1,0,0,0,1};
-    const float* glp = glT + tinv[p]*12;
-    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; }
-    for (int k=0;k<12;k++) gl[k]=glp[k];
-    for (int k=0;k<3;k++){ xx[k]=x0c[q*3+k]; c[k]=cc[q*3+k]; }
-    if (Ucum) {
-        for (int i=0;i<4;i++) for (int a=0;a<3;a++){ double Ua=(double)Ucum[nd[i]*3+a]; u[a]+=lm[i]*Ua; for (int b=0;b<3;b++) G[a*3+b]+=Ua*gl[i*3+b]; }
-    } else {
-        for (int k=0;k<3;k++) u[k] = (double)xcur[p*3+k] - xx[k];
-        double Fc[9], Fi[9]; for (int k=0;k<9;k++){ Fc[k]=Fcur[p*9+k]; Fi[k]=F0inv[q*9+k]; }
-        mm3(Fc, Fi, IGt);
-        for (int k=0;k<9;k++) G[k] = IGt[k] - ((k%4==0)?1.0:0.0);
-    }
-    double pt[3]={p0,p1,p2}, nv[3]={n0,n1,n2};
-    NearMap M; near_map(xx, u, G, c, pt, nv, eps_st, eps_sp, xn, M);
-    double Jf[9]; mm3(M.Mn, M.K1, Jf);
-    double F[9]; for (int k=0;k<9;k++) F[k]=F0c[q*9+k];
-    double X[9]; mm3(Jf, F, X);
-    double C[9]; for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
-    double l[3]; symeig3(C, l);
-    double J=1; for (int k=0;k<3;k++){ double s=fmax(sqrt(fmax(l[k],1e-12)),0.01); J*=s; }
-    double V = vol[p], k_ = (double)mp[p]/(h*h);
-    double Q[9], cf[9], P[9], Pc[9];
-    polar(X, Q); cof3(X, cf);
-    double dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
-    double sg = (dt>0)?1.0:((dt<0)?-1.0:0.0);
-    for (int k=0;k<9;k++) P[k] = 2.0*mu*(X[k]-Q[k]) + lam*(J-1.0)*sg*cf[k];
-    mmt3(P, F, Pc); for (int k=0;k<9;k++) Pc[k]*=V;
-    double gy[12];
-    double NK1[9]; mm3(M.Nm, M.K1, NK1);
-    for (int c3=0;c3<3;c3++) {
-        double t=0; for (int i=0;i<3;i++) t += M.Ru[i*3+c3]*M.r[i];
-        t -= u[c3] - c[c3];                                            // - 매핑 없는 관성 (노드 질량 동역학이 이미 갖는 몫)
-        double Bc[9], dK[9], MdK[9]; near_Bc(M, c3, Bc); mm3(Bc, M.IG, dK);
-        for (int k=0;k<9;k++) dK[k] -= xn*M.w1*M.n[c3]*M.Pm[k];
-        mm3(M.Mn, dK, MdK);
-        double pj=0; for (int k=0;k<9;k++) pj += Pc[k]*(M.g1*M.n[c3]*NK1[k] + MdK[k]);
-        gy[c3] = k_*t + pj;
-    }
-    double MJ[9]; mm3(M.Mn, M.Jst, MJ);
-    double gG[9];
-    for (int a=0;a<3;a++) for (int b=0;b<3;b++){ double t=0; for (int i=0;i<3;i++) t += MJ[i*3+a]*Pc[i*3+b]; gG[a*3+b]=t; }
-    if (!Ucum) { double T2[9]; mmt3(gG, IGt, T2); for (int k=0;k<9;k++) gG[k]=T2[k]; }     // sub: ∂/∂δU 는 gG (I+G)ᵀ
-    for (int k=0;k<9;k++) gy[3+k]=gG[k];
-    for (int i=0;i<4;i++) for (int c3=0;c3<3;c3++) {
-        double t = lm[i]*gy[c3];
-        for (int b=0;b<3;b++) t += gl[i*3+b]*gy[3+c3*3+b];
-        atomicAdd(&gn[nd[i]*3+c3], (float)t);
-    }
+    ex_near_force_body<double>(q, szp ? szp[2] : nnarg, nidx, x0c, F0c, cc, Ucum, xcur, Fcur, F0inv, rows, lamb, glT, tinv, mp, vol, h,
+                               p0, p1, p2, n0, n1, n2, eps_st, eps_sp, xn, mu, lam, gn);
+}
+// float32 대수 판 (암시적 판 --near32 / --eg32 와 같은 방식)
+__global__ void ex_near_force32(const int* szp, int nnarg, const long long* nidx, const float* x0c, const float* F0c, const float* cc,
+                              const float* Ucum, const float* xcur, const float* Fcur, const float* F0inv,
+                              const long long* rows, const float* lamb, const float* glT, const long long* tinv, const float* mp, const float* vol, double h,
+                              double p0, double p1, double p2, double n0, double n1, double n2, double eps_st, double eps_sp, double xn,
+                              double mu, double lam, float* gn) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    ex_near_force_body<float>(q, szp ? szp[2] : nnarg, nidx, x0c, F0c, cc, Ucum, xcur, Fcur, F0inv, rows, lamb, glT, tinv, mp, vol, (float)h,
+                              (float)p0, (float)p1, (float)p2, (float)n0, (float)n1, (float)n2, (float)eps_st, (float)eps_sp, (float)xn, (float)mu, (float)lam, gn);
 }
 
 // 프레임 끝 바닥 후보 입자: 기존 G2P 매핑을 프레임 변위에 한 번 (암시적 판 G2P 와 같은 식) -- x2 = q(x0 + u), F2 = J_f F0,
