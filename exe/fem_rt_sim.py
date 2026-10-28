@@ -74,6 +74,8 @@ ap.add_argument("--dump_pred", action="store_true", help="위치 궤적만 pred.
 ap.add_argument("--lite", action="store_true", help="--floor particle --cuda: 격자 locate·사면체 ∇λ·P2G·G2P 도 커널/마스크 합으로 (FemFrame 안 거침)")
 ap.add_argument("--warp", action="store_true", help="--cuda: 사면체 헤시안을 워프당 사면체 하나 (공유 메모리 병렬 야코비)")
 ap.add_argument("--d3", action="store_true", help="--cuda PCG 곱 노드당 3 스레드 (기본 노드당 1)")
+ap.add_argument("--near32", action="store_true", help="--cuda: 바닥 후보 헤시안 매핑 대수를 float32 로")
+ap.add_argument("--true_res", action="store_true", help="--cuda: PCG 뒤 실제 잔차 |b-Ax|/|b| (float64) 기록")
 ap.add_argument("--mmax", type=int, default=60000)
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
@@ -153,6 +155,7 @@ for i in range(L):
     if a.lite:
         fr = CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, h, U, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True)
         CF.warp = a.warp
+        CF.near32 = a.near32
         tets = G.tets
         rec["n_near"] = CF.nn
     elif a.floor == "node":
@@ -246,7 +249,9 @@ for i in range(L):
             PC.nb.view(15, Ms)[:, :M_] = nbl.nb.t().int()
             tk("asm")
             b = gg.reshape(-1).double()
-            xx, it, res, negc = (PC.solve_coop if a.pcg2 == 2 else (PC.solve2 if a.pcg2 else PC.solve))(M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
+            xx, it, res, negc = {3: PC.solve_coop32, 2: PC.solve_coop, 1: PC.solve2, 0: PC.solve}[a.pcg2](M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
+            if a.true_res:
+                st["true_res"] = PC.true_res(M_, xx, b)
             negf = int(CF.cnt[1]) / G.T
             st["gate"] = int(CF.cnt[0])
             tk("pcg")

@@ -59,8 +59,11 @@ for t in [int(q) for q in a.t.split(",")]:
     print(f"  에너지만 torch {t_et2:.2f} ms cuda {t_e:.2f} ms", flush=True)
     # 바닥 후보 12x12 (사면체로 합) 대조
     Hn_t, t_nt = tm(lambda: torch.zeros(CF.T, 12, 12, device=dev, dtype=torch.float64).index_add_(0, fr.inv[ni], fr.hess_near_analytic(U, ni)))
-    Hn_c, t_nc = tm(lambda: CF.near_only(U))
-    print(f"  바닥 후보 헤시안 (사면체 합) 상대차 {float((Hn_c.double() - Hn_t).norm() / Hn_t.norm()):.2e} | torch {t_nt:.1f} ms cuda {t_nc:.2f} ms", flush=True)
+    for n32 in (False, True):
+        CF.near32 = n32
+        Hn_c, t_nc = tm(lambda: CF.near_only(U))
+        print(f"  바닥 후보 헤시안{' (float32 대수)' if n32 else ''} (사면체 합) 상대차 {float((Hn_c.double() - Hn_t).norm() / Hn_t.norm()):.2e} | torch {t_nt:.1f} ms cuda {t_nc:.2f} ms", flush=True)
+    CF.near32 = False
     # 전체 투영 헤시안 블록 ELL
     def th():
         He, _ = fr.hess_tetq(U)

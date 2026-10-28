@@ -102,6 +102,16 @@ __device__ void kmanual(const float* X, const float* Fb, float mu, float lam, fl
 }
 
 
+
+template <typename V> __device__ __forceinline__ float ell_row32(int m, int c, int Ms, const float* B, const int* nb, const float* v) {
+    float y = 0.f;
+    for (int k=0;k<15;k++) {
+        int j = nb[k*Ms+m];
+        const float* bb = B + ((long long)k*9 + c*3)*Ms + m;
+        y += bb[0]*__ldcg(&v[j*3]) + bb[Ms]*__ldcg(&v[j*3+1]) + bb[2*Ms]*__ldcg(&v[j*3+2]);
+    }
+    return y;
+}
 extern "C" {
 // ---------------- warp per tet: same as tet_hess (K, 12x12, |lambda| projection, block-ELL atomics), parallel round-robin Jacobi in shared memory ----------------
 __global__ void tet_hess_w(int T, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
@@ -236,42 +246,43 @@ __global__ void tet_hess_w(int T, const long long* tets, const float* U, const f
 
 }
 // ---------------- bottom-candidate particle (stick -> softplus maps), fem_fast._near_core closed form ----------------
-struct NearMap {
-    double s, w, w1, w2, w3, g, g1, g2, sp;
-    double n[3], a[3], r[3];
-    double Nm[9], Pm[9], IG[9], Jst[9], K1[9], Mn[9], Ru[9];
+template <typename R> struct NearMapT {
+    R s, w, w1, w2, w3, g, g1, g2, sp;
+    R n[3], a[3], r[3];
+    R Nm[9], Pm[9], IG[9], Jst[9], K1[9], Mn[9], Ru[9];
 };
-__device__ void near_map(const double* x, const double* u, const double* G, const double* c, const double* pt, const double* nv,
-                         double eps_st, double eps_sp, double xn, NearMap& M) {
+template <typename R> __device__ void near_map(const R* x, const R* u, const R* G, const R* c, const R* pt, const R* nv,
+                         R eps_st, R eps_sp, R xn, NearMapT<R>& M) {
     for (int k=0;k<3;k++) M.n[k]=nv[k];
-    double s = 0; for (int k=0;k<3;k++) s += (x[k]+u[k]-pt[k])*nv[k];
+    R s = 0; for (int k=0;k<3;k++) s += (x[k]+u[k]-pt[k])*nv[k];
     M.s = s;
     if (eps_st > 0) {
-        double e=eps_st; bool far = s/e > 20.0; double sg = 1.0/(1.0+exp(-s/e));
-        M.w = far?1.0:sg; M.w1 = far?0.0:sg*(1-sg)/e; M.w2 = far?0.0:sg*(1-sg)*(1-2*sg)/(e*e); M.w3 = far?0.0:sg*(1-sg)*(1-6*sg+6*sg*sg)/(e*e*e);
+        R e=eps_st; bool far = s/e > R(20); R sg = R(1)/(R(1)+exp(-s/e));
+        M.w = far?R(1):sg; M.w1 = far?R(0):sg*(1-sg)/e; M.w2 = far?R(0):sg*(1-sg)*(1-2*sg)/(e*e); M.w3 = far?R(0):sg*(1-sg)*(1-6*sg+6*sg*sg)/(e*e*e);
     } else { M.w=1; M.w1=0; M.w2=0; M.w3=0; }
     if (eps_sp > 0) {
-        double e=eps_sp; bool far = s/e > 20.0; double sg = 1.0/(1.0+exp(-s/e));
-        M.g = far?1.0:sg; M.g1 = far?0.0:sg*(1-sg)/e; M.g2 = far?0.0:sg*(1-sg)*(1-2*sg)/(e*e);
+        R e=eps_sp; bool far = s/e > R(20); R sg = R(1)/(R(1)+exp(-s/e));
+        M.g = far?R(1):sg; M.g1 = far?R(0):sg*(1-sg)/e; M.g2 = far?R(0):sg*(1-sg)*(1-2*sg)/(e*e);
         M.sp = far ? s : e*log1p(exp(s/e));
     } else { M.g=1; M.g1=0; M.g2=0; M.sp=s; }
-    for (int i=0;i<3;i++) for (int j=0;j<3;j++) { M.Nm[i*3+j]=nv[i]*nv[j]; M.Pm[i*3+j]=((i==j)?1.0:0.0)-nv[i]*nv[j]; M.IG[i*3+j]=((i==j)?1.0:0.0)+G[i*3+j]; }
-    for (int i=0;i<3;i++){ double t=0; for (int j=0;j<3;j++) t += u[j]*M.Pm[j*3+i]; M.a[i]=t; }
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) { M.Nm[i*3+j]=nv[i]*nv[j]; M.Pm[i*3+j]=((i==j)?R(1):R(0))-nv[i]*nv[j]; M.IG[i*3+j]=((i==j)?R(1):R(0))+G[i*3+j]; }
+    for (int i=0;i<3;i++){ R t=0; for (int j=0;j<3;j++) t += u[j]*M.Pm[j*3+i]; M.a[i]=t; }
     for (int i=0;i<3;i++) M.r[i] = u[i] - (1-M.w)*M.a[i] + (M.sp-s)*nv[i] - c[i];
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) {
-        double I_ = (i==j)?1.0:0.0;
+        R I_ = (i==j)?R(1):R(0);
         M.Ru[i*3+j] = I_ - (1-M.w)*M.Pm[i*3+j] + M.w1*M.a[i]*nv[j] + (M.g-1)*M.Nm[i*3+j];
         M.Jst[i*3+j] = M.Nm[i*3+j] + M.w*M.Pm[i*3+j] + M.w1*M.a[i]*nv[j];
         M.Mn[i*3+j] = I_ + (M.g-1)*M.Nm[i*3+j];
     }
-    double T[9]; mm3(M.Jst, M.IG, T);
+    R T[9]; mm3(M.Jst, M.IG, T);
     for (int k=0;k<9;k++) M.K1[k] = T[k] + xn*(1-M.w)*M.Pm[k];
 }
 // Bc[c] = w1 n_c P + w2 n_c a n^T + w1 P[:,c] n^T ; dK1[c] = Bc[c] IG - xn w1 n_c P
-__device__ void near_Bc(const NearMap& M, int c, double* Bc) {
+template <typename R> __device__ void near_Bc(const NearMapT<R>& M, int c, R* Bc) {
     for (int i=0;i<3;i++) for (int j=0;j<3;j++)
         Bc[i*3+j] = M.w1*M.n[c]*M.Pm[i*3+j] + M.w2*M.n[c]*M.a[i]*M.n[j] + M.w1*M.Pm[i*3+c]*M.n[j];
 }
+typedef NearMapT<double> NearMap;
 
 __device__ __forceinline__ double warp_sum(double v) {
     for (int o=16;o>0;o>>=1) v += __shfl_down_sync(0xffffffff, v, o);
@@ -596,6 +607,92 @@ __global__ void near_hess(int nn_, const long long* idx, const long long* tinv, 
         }
     }
 }
+__global__ void near_hess32(int nn_, const long long* idx, const long long* tinv, const float* x, const float* U, const long long* rows, const float* lamb,
+                          const float* glp, const float* Fp, const float* vol, const float* kk, const float* cc,
+                          double p0, double p1, double p2, double n0, double n1, double n2, double eps_st, double eps_sp, double xn,
+                          float mu, float lam, float* Ht) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= nn_) return;
+    long long p = idx[q];
+    long long nd[4]; float lm[4], gl[12], u[3]={0,0,0}, G[9]={0,0,0,0,0,0,0,0,0}, xx[3], c[3];
+    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; }
+    for (int k=0;k<12;k++) gl[k]=glp[p*12+k];
+    for (int i=0;i<4;i++) for (int a=0;a<3;a++){ float Ua=(float)U[nd[i]*3+a]; u[a]+=lm[i]*Ua; for (int b=0;b<3;b++) G[a*3+b]+=Ua*gl[i*3+b]; }
+    for (int k=0;k<3;k++){ xx[k]=x[p*3+k]; c[k]=cc[p*3+k]; }
+    float pt[3]={(float)p0,(float)p1,(float)p2}, nv[3]={(float)n0,(float)n1,(float)n2};
+    NearMapT<float> M; near_map<float>(xx, u, G, c, pt, nv, (float)eps_st, (float)eps_sp, (float)xn, M);
+    float Jf[9]; mm3(M.Mn, M.K1, Jf);
+    float Ff[9], Xf[9], Af[9];
+    for (int k=0;k<9;k++){ Ff[k]=Fp[p*9+k]; Af[k]=(float)Jf[k]; }
+    mm3(Af, Ff, Xf);
+    float Cx[9]; for (int i=0;i<3;i++) for (int k=0;k<3;k++) Cx[i*3+k]=Xf[i]*Xf[k]+Xf[3+i]*Xf[3+k]+Xf[6+i]*Xf[6+k];
+    float l[3]; symeig3(Cx, l);
+    float smin = sqrtf(fmaxf(l[0],1e-12f));
+    float V = vol[p];
+    float K[81]; kmanual(Xf, Ff, mu, lam, V, smin, K);
+    float Pc[9];
+    { float Q[9], cf[9], P[9], Pf[9]; polar(Xf, Q); cof3(Xf, cf);
+      float det = Xf[0]*cf[0]+Xf[1]*cf[1]+Xf[2]*cf[2]; float sg=(det>0)?1.f:((det<0)?-1.f:0.f);
+      for (int k=0;k<9;k++) P[k] = 2.f*mu*(Xf[k]-Q[k]) + lam*(det-sg)*cf[k];
+      mmt3(P, Ff, Pf); for (int k=0;k<9;k++) Pc[k]=(float)(V*Pf[k]); }
+    float k_ = kk[p];
+    // JJ [9 x 12]: col c (u): vec(dJu[c]), col 3+ab: vec(MJ E_ab)
+    float JJ[108];
+    float NK1[9]; mm3(M.Nm, M.K1, NK1);
+    float dK1s[27];
+    for (int c3=0;c3<3;c3++) {
+        float Bc[9], dK[9], MdK[9]; near_Bc(M, c3, Bc); mm3(Bc, M.IG, dK);
+        for (int k=0;k<9;k++) dK[k] -= xn*M.w1*M.n[c3]*M.Pm[k];
+        for (int k=0;k<9;k++) dK1s[c3*9+k]=dK[k];
+        mm3(M.Mn, dK, MdK);
+        for (int k=0;k<9;k++) JJ[k*12+c3] = M.g1*M.n[c3]*NK1[k] + MdK[k];
+    }
+    float MJ[9]; mm3(M.Mn, M.Jst, MJ);
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++) for (int i=0;i<3;i++) for (int j=0;j<3;j++) JJ[(i*3+j)*12 + 3+a*3+b] = (j==b) ? MJ[i*3+a] : 0.0;
+    float Hy[144];
+    { float KJ[108];
+      for (int r=0;r<9;r++) for (int cc2=0;cc2<12;cc2++){ float t=0; for (int k=0;k<9;k++) t += (float)K[r*9+k]*JJ[k*12+cc2]; KJ[r*12+cc2]=t; }
+      for (int r=0;r<12;r++) for (int cc2=0;cc2<12;cc2++){ float t=0; for (int k=0;k<9;k++) t += JJ[k*12+r]*KJ[k*12+cc2]; Hy[r*12+cc2]=t; } }
+    // Huu
+    float ra = M.r[0]*M.a[0]+M.r[1]*M.a[1]+M.r[2]*M.a[2], rn = M.r[0]*M.n[0]+M.r[1]*M.n[1]+M.r[2]*M.n[2];
+    float Pr[3]; for (int i=0;i<3;i++){ float t=0; for (int j=0;j<3;j++) t += M.r[j]*M.Pm[j*3+i]; Pr[i]=t; }
+    float PN=0; for (int k=0;k<9;k++) PN += Pc[k]*NK1[k];
+    float PNdK[3];
+    for (int c3=0;c3<3;c3++){ float NdK[9]; mm3(M.Nm, dK1s+c3*9, NdK); float t=0; for (int k=0;k<9;k++) t += Pc[k]*NdK[k]; PNdK[c3]=t; }
+    for (int c3=0;c3<3;c3++) for (int d3=0;d3<3;d3++) {
+        float t=0; for (int i=0;i<3;i++) t += M.Ru[i*3+c3]*M.Ru[i*3+d3];
+        float huu = k_*(t + (M.w2*ra + M.g1*rn)*M.Nm[c3*3+d3] + M.w1*(Pr[c3]*M.n[d3] + M.n[c3]*Pr[d3]));
+        float ncd = M.n[c3]*M.n[d3];
+        float D2[9];
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++)
+            D2[i*3+j] = M.w2*ncd*M.Pm[i*3+j] + M.w3*ncd*M.a[i]*M.n[j] + M.w2*(M.n[c3]*M.Pm[i*3+d3]*M.n[j] + M.n[d3]*M.Pm[i*3+c3]*M.n[j]);
+        float D2I[9], MD2[9]; mm3(D2, M.IG, D2I);
+        for (int k=0;k<9;k++) D2I[k] -= xn*M.w2*ncd*M.Pm[k];
+        mm3(M.Mn, D2I, MD2);
+        float pm=0; for (int k=0;k<9;k++) pm += Pc[k]*MD2[k];
+        float phi = M.g2*PN*ncd + M.g1*(M.n[c3]*PNdK[d3] + M.n[d3]*PNdK[c3]) + pm;
+        Hy[c3*12+d3] += huu + phi;
+    }
+    // Phi_uG[c][ab] = (Mc[c]^T Pc)_ab,  Mc[c] = g1 n_c N Jst + Mn Bc[c]
+    float NJ[9]; mm3(M.Nm, M.Jst, NJ);
+    for (int c3=0;c3<3;c3++) {
+        float Bc[9], MB[9]; near_Bc(M, c3, Bc); mm3(M.Mn, Bc, MB);
+        for (int a=0;a<3;a++) for (int b=0;b<3;b++) {
+            float t=0; for (int i=0;i<3;i++) t += (M.g1*M.n[c3]*NJ[i*3+a] + MB[i*3+a])*Pc[i*3+b];
+            Hy[c3*12 + 3+a*3+b] += t; Hy[(3+a*3+b)*12 + c3] += t;
+        }
+    }
+    // local = L^T Hy L ; L[a][(i,c)] = lm_i d_ac ; L[3+a*3+b][(i,c)] = d_ac gl_ib
+    float* Ho = Ht + tinv[p]*144;
+    for (int i=0;i<4;i++) for (int c3=0;c3<3;c3++) {
+        float Lr[12]; for (int y=0;y<12;y++) Lr[y]=0; Lr[c3]=lm[i]; for (int b=0;b<3;b++) Lr[3+c3*3+b]=gl[i*3+b];
+        float HL[12]; for (int y2=0;y2<12;y2++){ float t=0; for (int y=0;y<12;y++) t += Lr[y]*Hy[y*12+y2]; HL[y2]=t; }
+        for (int j=0;j<4;j++) for (int d3=0;d3<3;d3++) {
+            float t = HL[d3]*lm[j]; for (int b=0;b<3;b++) t += HL[3+d3*3+b]*gl[j*3+b];
+            atomicAdd(&Ho[(i*3+c3)*12 + j*3+d3], (float)t);
+        }
+    }
+}
 
 
 // ---------------- grid: locate (simplex.locate same formula) ----------------
@@ -784,6 +881,51 @@ __global__ void pcg_coop(int M, int Ms, const float* B, const int* nb, const dou
     }
     if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; }
 }
+
+// persistent PCG with float32 search vectors (z, d, Ad) and float32 SpMV; x, r and all scalars float64 (same stopping test on the recursive residual)
+__global__ void pcg_coop32(int M, int Ms, const float* B, const int* nb, const double* Dinv, double* x, double* r, float* z, float* d, float* Ad,
+                           double* acc, double* sc, unsigned int* bar, double thr, int maxit) {
+    unsigned int nblk = gridDim.x;
+    int tid = blockIdx.x*blockDim.x + threadIdx.x, nth = gridDim.x*blockDim.x;
+    volatile double* va = acc;
+    double rz = sc[0], dAd = sc[1];
+    int nit = 0, neg = 0, p = 0;
+    double rr = 0;
+    for (int it=0; it<maxit; it++) {
+        if (!(dAd > 0)) { neg = 1; break; }
+        double al = rz/dAd;
+        double prr=0, prz=0;
+        for (int m=tid; m<M; m+=nth) {
+            double rv[3];
+            for (int c=0;c<3;c++){ x[m*3+c] += al*(double)d[m*3+c]; double rc = r[m*3+c] - al*(double)Ad[m*3+c]; r[m*3+c]=rc; rv[c]=rc; }
+            const double* D = Dinv + m*9;
+            for (int c=0;c<3;c++){ double zz = D[c*3]*rv[0]+D[c*3+1]*rv[1]+D[c*3+2]*rv[2]; z[m*3+c]=(float)zz; prz += rv[c]*zz; prr += rv[c]*rv[c]; }
+        }
+        double b1 = block_sum(prr); double b2 = block_sum(prz);
+        if (threadIdx.x==0) { atomicAdd(&acc[p*3+1], b1); atomicAdd(&acc[p*3+2], b2); }
+        if (tid==0) { acc[(1-p)*3]=0; acc[(1-p)*3+1]=0; acc[(1-p)*3+2]=0; }
+        gbar(bar, bar+1, nblk);
+        rr = va[p*3+1]; double rz2 = va[p*3+2];
+        nit++;
+        if (rr < thr) break;
+        double be = rz2/rz; rz = rz2;
+        double pd = 0;
+        float bef = (float)be;
+        for (int m=tid; m<M; m+=nth) {
+            for (int c=0;c<3;c++) {
+                float q = ell_row32<float>(m, c, Ms, B, nb, z);
+                float dd = z[m*3+c] + bef*d[m*3+c]; float aa = q + bef*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; pd += (double)dd*(double)aa;
+            }
+        }
+        double b3 = block_sum(pd);
+        if (threadIdx.x==0) atomicAdd(&acc[(1-p)*3], b3);
+        gbar(bar, bar+1, nblk);
+        dAd = va[(1-p)*3];
+        p = 1-p;
+    }
+    if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; }
+}
+
 __global__ void pcg_coop1(int M, int Ms, const float* B, const int* nb, const double* Dinv, double* x, double* r, double* z, double* d, double* Ad,
                          double* acc, double* sc, unsigned int* bar, double thr, int maxit) {
     // sc: [0] rz0, [1] dAd0 (input); out [2] nit, [3] rr, [4] neg
@@ -1157,6 +1299,56 @@ class CudaPcg:
         out = self.sc[2:5].tolist()
         return self.x[:n] * sc_, int(out[0]), float(out[1]) ** 0.5, bool(out[2] > 0.5)
 
+    def solve_coop32(self, M, b, rtol, ncg, use_graph=True):
+        """pcg_coop32: 탐색 벡터 (z, d, Ad) 와 곱을 float32 로 (x, r, 스칼라·판정은 float64). 같은 rtol 판정 (재귀 잔차)."""
+        n = 3 * M
+        dev = self.dev
+        if not hasattr(self, "acc6"):
+            self.acc6 = torch.zeros(6, dtype=torch.float64, device=dev)
+            self.sc = torch.zeros(8, dtype=torch.float64, device=dev)
+            self.bar = torch.zeros(2, dtype=torch.int32, device=dev)
+            self.nblk = 2 * torch.cuda.get_device_properties(dev).multi_processor_count
+        if not hasattr(self, "z32"):
+            self.z32, self.d32, self.Ad32 = [torch.zeros(self.Mmax * 3, dtype=torch.float32, device=dev) for _ in range(3)]
+            self.Ad = torch.zeros(self.Mmax * 3, dtype=torch.float64, device=dev) if not hasattr(self, "Ad") else self.Ad
+        self.Mp.fill_(M)
+        Di = self.Dinv[:M * 9].view(M, 3, 3)
+        sc_ = (b * b).sum().clamp_min(1e-300).sqrt()
+        bs = b / sc_
+        z = (Di @ bs.view(M, 3, 1)).view(-1)
+        self.x.zero_()
+        self.r[:n].copy_(bs)
+        self.d[:n].copy_(z)
+        g1, b1 = _grid(self.Mmax)
+        with _Stream():
+            _mod().get_function("bell_mv")(g1, b1, (_cp(self.Mp), _cp(self.B), _cp(self.nb), _cp(self.d), _cp(self.Ad), np.int32(self.Mmax)))
+        self.z32[:n].copy_(z)
+        self.d32[:n].copy_(z)
+        self.Ad32[:n].copy_(self.Ad[:n])
+        self.acc6.zero_()
+        self.bar.zero_()
+        self.sc[0] = (bs * z).sum()
+        self.sc[1] = (self.d32[:n].double() * self.Ad32[:n].double()).sum()
+        with _Stream():
+            _mod().get_function("pcg_coop32")((self.nblk,), (256,), (np.int32(M), np.int32(self.Mmax), _cp(self.B), _cp(self.nb), _cp(self.Dinv), _cp(self.x),
+                                                                   _cp(self.r), _cp(self.z32), _cp(self.d32), _cp(self.Ad32), _cp(self.acc6), _cp(self.sc),
+                                                                   _cp(self.bar), np.float64(rtol * rtol), np.int32(ncg)))
+        out = self.sc[2:5].tolist()
+        return self.x[:n] * sc_, int(out[0]), float(out[1]) ** 0.5, bool(out[2] > 0.5)
+
+    def true_res(self, M, x, b):
+        """|b - A x| / |b| (float64 곱, 대조용)."""
+        n = 3 * M
+        if not hasattr(self, "tr_v"):
+            self.tr_v = torch.zeros(self.Mmax * 3, dtype=torch.float64, device=self.dev)
+            self.tr_y = torch.zeros(self.Mmax * 3, dtype=torch.float64, device=self.dev)
+        self.tr_v.zero_()
+        self.tr_v[:n].copy_(x)
+        g1, b1 = _grid(self.Mmax)
+        with _Stream():
+            _mod().get_function("bell_mv")(g1, b1, (_cp(self.Mp), _cp(self.B), _cp(self.nb), _cp(self.tr_v), _cp(self.tr_y), np.int32(self.Mmax)))
+        return float((b - self.tr_y[:n]).norm() / b.norm())
+
     def solve(self, M, b, rtol, ncg, use_graph=True):
         """B·nb·Dinv 는 호출 전에 채워 둔다 (앞 M 노드). b [3M] float64. -> (x [3M], 반복, |r|/|b|, 음곡률)."""
         n = 3 * M
@@ -1282,8 +1474,8 @@ class CudaTetq:
         with _Stream():
             if self.nn:
                 gr, bl = _grid(self.nn, 64)
-                md.get_function("near_hess")(gr, bl, (np.int32(self.nn), _cp(self.ni), _cp(self.tinv)) + self._near_args(Uf)[2:] +
-                                             (np.float32(self.mu), np.float32(self.lam), _cp(self.Ht)))
+                md.get_function("near_hess32" if getattr(self, "near32", False) else "near_hess")(gr, bl, (np.int32(self.nn), _cp(self.ni), _cp(self.tinv)) +
+                                             self._near_args(Uf)[2:] + (np.float32(self.mu), np.float32(self.lam), _cp(self.Ht)))
             if getattr(self, "warp", False):
                 md.get_function("tet_hess_w")(((self.T + 3) // 4,), (128,), (np.int32(self.T), _cp(self.tets), _cp(Uf), _cp(self.gl4), _cp(self.FT4),
                                                                             _cp(self.VT4), _cp(self.M44), np.float32(self.mu), np.float32(self.lam),
@@ -1301,7 +1493,7 @@ class CudaTetq:
         Ht = torch.zeros(self.T * 144, dtype=torch.float32, device=self.dev)
         with _Stream():
             gr, bl = _grid(self.nn, 64)
-            _mod().get_function("near_hess")(gr, bl, (np.int32(self.nn), _cp(self.ni), _cp(self.tinv)) + self._near_args(Uf)[2:] +
+            _mod().get_function("near_hess32" if getattr(self, "near32", False) else "near_hess")(gr, bl, (np.int32(self.nn), _cp(self.ni), _cp(self.tinv)) + self._near_args(Uf)[2:] +
                                              (np.float32(self.mu), np.float32(self.lam), _cp(Ht)))
         return Ht.view(self.T, 12, 12)
 
