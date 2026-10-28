@@ -1516,6 +1516,7 @@ __device__ __forceinline__ void pcg_mix_body(int M, int Ms, const float* B, cons
     }
     if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; sc[5]=nup; }
 }
+}  // extern "C" (templates below need C++ linkage)
 // ---------------- tiled block-ELL matvec: a block of 512 threads = 16 warps handles a tile of 32 nodes; warp k (< 15) takes neighbor slot k
 // (coalesced over the 32 nodes), partial 3-vectors are summed over slots in shared memory. Much more parallelism than one thread per node.
 template <typename V> __device__ __forceinline__ void tile_part(int m, int k, int M, int Ms, const float* B, const int* nb, const V* v, int sym,
@@ -1622,6 +1623,7 @@ template <typename V> __device__ void pcg_tile_body(int M, int Ms, const float* 
     }
     if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; sc[5]=nup; }
 }
+extern "C" {
 __global__ void bell_mv_t32(int M, const float* B, const int* nb, const float* v, float* y, int Ms, int sym) { bell_mv_tile_body<float>(M, B, nb, v, y, Ms, sym); }
 __global__ void bell_mv_t64(int M, const float* B, const int* nb, const double* v, double* y, int Ms, int sym) { bell_mv_tile_body<double>(M, B, nb, v, y, Ms, sym); }
 #define PCG_T_ARGS(V) int M, int Ms, const float* B, const int* nb, const V* Dinv, const double* bs, double* xh, V* x, V* r, V* z, V* d, V* Ad, \
