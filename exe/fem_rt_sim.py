@@ -65,7 +65,13 @@ ap.add_argument("--bell", action="store_true", help="CSR 대신 블록 ELL (15 �
 ap.add_argument("--hess", choices=["newton", "gn"], default="newton", help="gn = 가우스-뉴턴 탄성 헤시안 (양반정, 고유분해 투영 없음; --floor node)")
 ap.add_argument("--csr_bell", action="store_true", help="CSR 를 블록 ELL 에서 정렬 없이 (패턴 정렬 생략, 곱은 cuSPARSE)")
 ap.add_argument("--cuda", action="store_true", help="손으로 쓴 CUDA 커널 (fem_rt_cuda): E·기울기, 헤시안+|λ| 투영+블록 ELL 합, PCG (--floor node)")
-ap.add_argument("--pcg2", type=int, default=1, help="--cuda: 2 커널 PCG (1) / 5 커널 (0)")
+ap.add_argument("--pcg2", type=int, default=1, help="--cuda: 2 커널 PCG (1) / 5 커널 (0) / 지속 커널 (2) / 지속 f32 탐색 벡터 (3) / "
+                "지속 float32 + float64 신뢰 갱신 = 혼합 정밀도 반복 개선 (4) / 지속 float32 단독 (5)")
+ap.add_argument("--mix_delta", type=float, default=0.1, help="--pcg2 4: 재귀 잔차가 지난 갱신 뒤 최대의 δ 배 아래면 float64 잔차로 갱신")
+ap.add_argument("--mix_cap", type=int, default=2, help="--pcg2 4/5: SM 당 상주 블록 상한")
+ap.add_argument("--vbd_ls", type=int, default=0, help="--solver vbd: 노드 국소 선탐색 (α = 1, 1/2, ..., 2^-(k-1) 중 국소 에너지가 줄어드는 가장 큰 α; 0 = 끔)")
+ap.add_argument("--vbd_warm", choices=["none", "acc", "adapt"], default="none",
+                help="--solver vbd 시작점: none = h v_n + h² g, acc = 이전 프레임 입자 가속도 (노드 평균) 로 h² a_n, adapt = VBD 논문 적응 초기화 (중력 방향 성분만 [0, |g|] 로 자름)")
 ap.add_argument("--jac_sweeps", type=int, default=10)
 ap.add_argument("--jac_tol", type=float, default=1e-12)
 ap.add_argument("--tprof", type=int, default=-1, help="이 프레임부터 5 프레임을 torch.profiler 로 (CPU·GPU 상위 연산 표)")
@@ -119,12 +125,14 @@ PC = RTC.CudaPcg(a.mmax, dev) if a.cuda else None
 if PC is not None:
     PC.d3 = a.d3
     PC.sym = int(a.sym)
+    PC.mx_cap = a.mix_cap
 PDF = RT.PdFactor() if a.solver in ("pdpcg", "pd") else None
 PRED = torch.empty(L, N, 3, device=dev) if (not a.no_dump or a.dump_pred) else None
 VD = torch.empty(L, N, 3, device=dev, dtype=torch.float16) if not a.no_dump else None
 FD = torch.empty(L, N, 3, 3, device=dev, dtype=torch.float16) if not a.no_dump else None
 errs = []
 recs = []
+v_prev = None
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
 
 
@@ -156,9 +164,16 @@ for i in range(L):
     rec = dict(t=i)
     G = RTC.GridK(x, a.node_h) if a.lite else RT.Grid(x, a.node_h, fast=a.fast)
     U, ws = RT.node_inertial(x, v, m, G, g, h)                                # --ov_init predict
+    if a.solver == "vbd" and a.vbd_warm != "none" and v_prev is not None:
+        # VBD 시작점: h v_n + h² ã_n (ã = 이전 프레임 입자 가속도의 노드 질량 가중 평균; adapt = 중력 방향 성분만 [0, |g|] 로 자른 것 -- Chen et al. 2024)
+        ap_ = (v - v_prev) / h
+        if a.vbd_warm == "adapt":
+            gh = g / g.norm()
+            ap_ = gh * (ap_ @ gh).clamp(0.0, float(g.norm())).unsqueeze(-1)
+        U = U + (h * h) * (RT.node_inertial(x, ap_, m, G, torch.zeros_like(g), 1.0)[0] - g)
     MnH = ws.double() / (h * h)
     tk("grid")
-    if a.lite:
+    if a.lite and a.floor == "particle":
         fr = CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, h, U, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True)
         CF.warp = a.warp
         CF.near32 = a.near32
@@ -174,7 +189,11 @@ for i in range(L):
             fr.energy, fr.energy_grad = fr.energy_fast, fr.energy_grad_fast
         if a.cuda:
             CF = RTC.CudaFem(fr)
+            CF.warp = a.warp
+            CF.sym = int(a.sym)
             fr.energy, fr.energy_grad = CF.energy, CF.energy_grad
+            if a.solver == "vbd":
+                CF.vbd_setup(G)
         tets = G.tets
     else:
         fr = FF.FemFrame(x, v, F, m, vol, G.rows, G.lam, G.npos, None, cfg, h, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True, dtype=torch.float32)
@@ -265,17 +284,30 @@ for i in range(L):
                     PC.B.zero_()
                     CF.hess_into(Uc, slots, PC.B, a.eig_floor, a.jac_sweeps, a.jac_tol, Ms=Ms)
                     D_ = PC.B.view(15, 9, Ms)[0, :, :M_].t().double().reshape(M_, 3, 3)
+                    if a.floor == "node":
+                        D_ = D_ + fr._floor_hess(Uc.double())
                     bad_ = ~(torch.diagonal(D_, dim1=1, dim2=2) > 0).all(1)
                     D_[bad_] = torch.eye(3, device=dev, dtype=D_.dtype)
                     return torch.linalg.inv(D_)
-                U = CF.vbd(U, Dinv, a.vbd_iters, rho=a.vbd_rho, maxstep=a.vbd_maxstep * a.node_h, refresh=a.vbd_refresh, dinv_fn=_dinv)
+                vfl = None
+                if a.floor == "node" and fr.planes:
+                    nr_, cn_, w_ = fr.planes[0]
+                    vfl = dict(cn=cn_.contiguous(), w=w_.contiguous(), kb=fr.kb.contiguous(), ks=(fr.ks * (1.0 if fr.k_st > 0 else 0.0)).contiguous(),
+                               n=nr_, dhat=fr.dhat)
+                U = CF.vbd(U, Dinv, a.vbd_iters, rho=a.vbd_rho, maxstep=a.vbd_maxstep * a.node_h, refresh=a.vbd_refresh, dinv_fn=_dinv,
+                           ls=a.vbd_ls, floor=vfl)
                 tk("vbd")
-                st.update(E0=Ec, E1=float(fr.energy(U)), vbd_iters=a.vbd_iters)
+                st.update(E0=Ec, E1=float(fr.energy(U)), vbd_iters=a.vbd_iters,
+                          vbd_rej=(int(CF.vbd_nrej) if a.vbd_ls > 0 else None))
                 tk("ls")
                 steps.append(st)
                 break
             b = gg.reshape(-1).double()
-            xx, it, res, negc = {3: PC.solve_coop32, 2: PC.solve_coop, 1: PC.solve2, 0: PC.solve}[a.pcg2](M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
+            if a.pcg2 in (4, 5):
+                xx, it, res, negc = PC.solve_mix(M_, b, a.rtol, a.pcg_max, mode=(1 if a.pcg2 == 4 else 0), delta=a.mix_delta)
+                st["mix_upd"] = PC.last_nup
+            else:
+                xx, it, res, negc = {3: PC.solve_coop32, 2: PC.solve_coop, 1: PC.solve2, 0: PC.solve}[a.pcg2](M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
             if a.true_res:
                 st["true_res"] = PC.true_res(M_, xx, b)
             negf = int(CF.cnt[1]) / G.T
@@ -407,7 +439,7 @@ for i in range(L):
         st.update(alpha=al if acc else 0.0, acc=acc, n_ls=nls, E1=(En if acc else Ec), lm=(tries if len(tries) > 1 else None))
         steps.append(st)
     # G2P
-    if a.lite:
+    if a.lite and a.floor == "particle":
         x2, v2k, F2 = CF.g2p(U, F)
     elif a.floor == "node":
         x2, F2 = fr.g2p(x, F, U)
@@ -444,6 +476,7 @@ for i in range(L):
     print(f"  프레임 {i + 1}/{L} {1e3 * t_frame:.1f} ms 오차 {100 * e:.3f}% (누적 평균 {100 * sum(errs) / len(errs):.3f}%) 노드 {G.M} 사면체 {G.T} "
           f"PCG {s0.get('cg', '-')} α {s0.get('alpha', '-')} 최저 입자 {smin:+.5f} 아래 {nbelow} "
           + " ".join(f"{k_} {v_:.1f}" for k_, v_ in tk.d.items()), flush=True)
+    v_prev = v
     x, v, F = x2.detach(), v2.detach(), F2.detach()
 
 flog.close()
@@ -461,10 +494,15 @@ summ = dict(out=a.out, args=vars(a), frames=L, err_mean=sum(errs) / len(errs), m
             lm_frames=sum(1 for r in recs if r["steps"] and r["steps"][0].get("lm")),
             rej_frames=sum(1 for r in recs if r["steps"] and r["steps"][0].get("acc") is False),
             pd_nfact=(PDF.n_fact if PDF else None), pd_tfact_ms=(1e3 * PDF.t_fact / max(PDF.n_fact, 1) if PDF else None),
+            true_res_max=max([r["steps"][0].get("true_res") or 0.0 for r in recs if r["steps"]] or [0.0]),
+            true_res_med=med([r["steps"][0].get("true_res") or 0.0 for r in recs if r["steps"]]),
+            mix_upd_mean=(sum(r["steps"][0].get("mix_upd") or 0 for r in recs if r["steps"]) / L),
+            vbd_rej_mean=(sum(r["steps"][0].get("vbd_rej") or 0 for r in recs if r["steps"]) / L),
             gpu=torch.cuda.get_device_name(0))
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
 print(f"[롤아웃] L000 t0=  0: {L} 프레임, 평균 {100 * summ['err_mean']:.3f}%  프레임당 {summ['ms_mean']:.1f} ms (중앙 {summ['ms_med']:.1f}, "
-      f"{summ['fps']:.2f} fps, 앞 {W} 프레임 제외) PCG 중앙 {summ['cg_med']} 최저 입자 {summ['s_min']} 아래 최대 {summ['n_below_max']}", flush=True)
+      f"{summ['fps']:.2f} fps, 앞 {W} 프레임 제외) PCG 중앙 {summ['cg_med']} 최저 입자 {summ['s_min']} 아래 최대 {summ['n_below_max']} "
+      f"실제 잔차 최대 {summ['true_res_max']:.2e} 갱신 평균 {summ['mix_upd_mean']:.2f}", flush=True)
 print("[구간 중앙 ms] " + " ".join(f"{k} {v_:.2f}" for k, v_ in summ["ms_parts_med"].items()), flush=True)
 if a.dump_pred and PRED is not None:
     torch.save({"pred": PRED.half().cpu() if False else PRED.cpu(), "EXT": EXT}, os.path.join(a.out, "pred.pt"))

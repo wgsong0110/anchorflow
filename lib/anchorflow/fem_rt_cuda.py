@@ -1241,6 +1241,235 @@ __global__ void pcg_dir(const int* Mp, double* d, const double* z, const double*
     int k = blockIdx.x*blockDim.x + threadIdx.x;
     if (k < (*Mp)*3 && st[5] > 0.5) d[k] = z[k] + st[9]*d[k];
 }
+// ---------------- VBD extras: node floor terms, per-node local line search ----------------
+__device__ __forceinline__ void barrier3_d(double d, double dhat, double* b, double* b1) {
+    double eps = 1e-3*dhat;
+    if (!(d < dhat)) { *b = 0; *b1 = 0; return; }
+    double le = log(eps/dhat), ke = eps - dhat;
+    if (d < eps) {
+        double be = -(ke*ke)*le, bp = -2.0*ke*le - ke*ke/eps, bpp = -2.0*le - 4.0*ke/eps + ke*ke/(eps*eps);
+        double de = d - eps;
+        *b = be + bp*de + 0.5*bpp*de*de; *b1 = bp + bpp*de; return;
+    }
+    double L = log(d/dhat), k = d - dhat;
+    *b = -(k*k)*L; *b1 = -2.0*k*L - k*k/d;
+}
+// node floor gradient (barrier kb b(c_n + n.U_n) + stick ks w |P U_n|^2 / 2) for nodes of color cc, added to g
+__global__ void vbd_floor_g(int M, const int* color, int cc, const float* U, const double* cn, const double* w, const double* kb, const double* ks,
+                            double n0, double n1, double n2, double dhat, float* g) {
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    if (m >= M || color[m] != cc) return;
+    double nv[3] = {n0, n1, n2}, u[3] = {U[m*3], U[m*3+1], U[m*3+2]};
+    double un = u[0]*n0 + u[1]*n1 + u[2]*n2;
+    double b, b1; barrier3_d(cn[m] + un, dhat, &b, &b1);
+    for (int c=0;c<3;c++) g[m*3+c] += (float)(kb[m]*b1*nv[c] + ks[m]*w[m]*(u[c] - un*nv[c]));
+}
+// step dl = D^-1 g (clamped to maxstep, non-finite -> 0) for nodes of color cc; g reset
+__global__ void vbd_step(int M, const int* color, int cc, const float* Dinv, float* g, float* dl, float maxstep) {
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    if (m >= M || color[m] != cc) return;
+    float g0=g[m*3], g1=g[m*3+1], g2=g[m*3+2];
+    const float* D = Dinv + m*9;
+    float d0 = D[0]*g0 + D[1]*g1 + D[2]*g2, d1 = D[3]*g0 + D[4]*g1 + D[5]*g2, d2 = D[6]*g0 + D[7]*g1 + D[8]*g2;
+    float nd = sqrtf(d0*d0+d1*d1+d2*d2);
+    if (!isfinite(nd)) { d0=0; d1=0; d2=0; }
+    else if (maxstep > 0.f && nd > maxstep) { float sc = maxstep/nd; d0*=sc; d1*=sc; d2*=sc; }
+    dl[m*3]=d0; dl[m*3+1]=d1; dl[m*3+2]=d2;
+    g[m*3]=0; g[m*3+1]=0; g[m*3+2]=0;
+}
+__device__ __forceinline__ float psi_f(const float* X, float mu, float lam) {
+    float C[9]; for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+    float l[3]; symeig3(C, l);
+    float J=1.f, ps=0.f;
+    for (int k=0;k<3;k++){ float S=fmaxf(sqrtf(fmaxf(l[k],1e-12f)),0.01f); J*=S; ps += (S-1.f)*(S-1.f); }
+    return mu*ps + 0.5f*lam*(J-1.f)*(J-1.f);
+}
+// local energies of tets touching a color-cc node at U_n - a dl_n, a in {0, 1, 1/2, ..., 2^-(K-2)} -> Eo[n*K + k] (double atomics)
+__global__ void vbd_tet_e(int T, const long long* tets, const int* color, int cc, const float* U, const float* dl, const float* gl, const float* FT,
+                          const float* VT, const float* M4, const float* B4, float mu, float lam, int K, double* Eo) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    long long n[4]; int ii = -1;
+    for (int i=0;i<4;i++){ n[i]=tets[t*4+i]; if (color[n[i]]==cc) ii=i; }
+    if (ii < 0) return;
+    float u0[4][3];
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) u0[i][c]=U[n[i]*3+c];
+    float dd[3] = {dl[n[ii]*3], dl[n[ii]*3+1], dl[n[ii]*3+2]};
+    if (dd[0]==0.f && dd[1]==0.f && dd[2]==0.f) return;
+    const float* G = gl + t*12; const float* Fb = FT + t*9; float V = VT[t];
+    for (int k=0;k<K;k++) {
+        float al = (k==0) ? 0.f : ldexpf(1.f, -(k-1));
+        float u[4][3];
+        for (int i=0;i<4;i++) for (int c=0;c<3;c++) u[i][c] = u0[i][c] - ((i==ii) ? al*dd[c] : 0.f);
+        // inertia: only terms involving node ii matter for the comparison: 0.5 M_ii |u_ii|^2 + sum_{j!=ii} M_ij u_ii.u_j - B_ii.u_ii
+        float e = 0.f;
+        for (int c=0;c<3;c++) {
+            float s = 0.5f*M4[t*16+ii*4+ii]*u[ii][c];
+            for (int j=0;j<4;j++) if (j != ii) s += M4[t*16+ii*4+j]*u[j][c];
+            e += s*u[ii][c] - B4[t*12+ii*3+c]*u[ii][c];
+        }
+        if (V > 0.f) {
+            float A[9];
+            for (int c=0;c<3;c++) for (int b=0;b<3;b++){ float s=(c==b)?1.f:0.f; for (int i=0;i<4;i++) s += u[i][c]*G[i*3+b]; A[c*3+b]=s; }
+            float X[9]; mm3(A, Fb, X);
+            e += V*psi_f(X, mu, lam);
+        }
+        atomicAdd(&Eo[n[ii]*K + k], (double)e);
+    }
+}
+__global__ void vbd_near_e(int nn_, const long long* idx, const float* x, const float* U, const long long* rows, const float* lamb,
+                           const float* glp, const float* Fp, const float* vol, const float* kk, const float* ccv,
+                           double p0, double p1, double p2, double n0, double n1, double n2, double eps_st, double eps_sp, double xn,
+                           float mu, float lam, const int* color, int cc, const float* dl, int K, double* Eo) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= nn_) return;
+    long long p = idx[q];
+    long long nd[4]; int ii=-1;
+    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; if (color[nd[i]]==cc) ii=i; }
+    if (ii < 0) return;
+    float dd[3] = {dl[nd[ii]*3], dl[nd[ii]*3+1], dl[nd[ii]*3+2]};
+    if (dd[0]==0.f && dd[1]==0.f && dd[2]==0.f) return;
+    float lm[4], gl[12], xx[3], c[3], F[9];
+    for (int i=0;i<4;i++) lm[i]=lamb[p*4+i];
+    for (int k=0;k<12;k++) gl[k]=glp[p*12+k];
+    for (int k=0;k<3;k++){ xx[k]=x[p*3+k]; c[k]=ccv[p*3+k]; }
+    for (int k=0;k<9;k++) F[k]=Fp[p*9+k];
+    float pt[3]={(float)p0,(float)p1,(float)p2}, nv[3]={(float)n0,(float)n1,(float)n2};
+    float V = vol[p], k_ = kk[p];
+    for (int k=0;k<K;k++) {
+        float al = (k==0) ? 0.f : ldexpf(1.f, -(k-1));
+        float u[3]={0,0,0}, G[9]={0,0,0,0,0,0,0,0,0};
+        for (int i=0;i<4;i++) for (int a=0;a<3;a++){ float Ua=U[nd[i]*3+a] - ((i==ii) ? al*dd[a] : 0.f); u[a]+=lm[i]*Ua; for (int b=0;b<3;b++) G[a*3+b]+=Ua*gl[i*3+b]; }
+        NearMapT<float> Mp; near_map<float>(xx, u, G, c, pt, nv, (float)eps_st, (float)eps_sp, (float)xn, Mp);
+        float Jf[9]; mm3(Mp.Mn, Mp.K1, Jf);
+        float X[9]; mm3(Jf, F, X);
+        float rr = Mp.r[0]*Mp.r[0]+Mp.r[1]*Mp.r[1]+Mp.r[2]*Mp.r[2];
+        atomicAdd(&Eo[nd[ii]*K + k], (double)(0.5f*k_*rr + V*psi_f(X, mu, lam)));
+    }
+}
+// pick the largest a with E(a) <= E(0) (node floor terms added here when fl != 0), U -= a dl, reset Eo
+__global__ void vbd_node_ls(int M, const int* color, int cc, const float* dl, double* Eo, int K, float* U, int* nrej,
+                            int fl, const double* cn, const double* w, const double* kb, const double* ks, double n0, double n1, double n2, double dhat) {
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    if (m >= M || color[m] != cc) return;
+    double nv[3] = {n0, n1, n2};
+    int best = -1; double e0 = 0;
+    for (int k=0;k<K;k++) {
+        double al = (k==0) ? 0.0 : ldexp(1.0, -(k-1));
+        double e = Eo[m*K+k];
+        if (fl) {
+            double u[3]; for (int c=0;c<3;c++) u[c] = (double)U[m*3+c] - al*(double)dl[m*3+c];
+            double un = u[0]*nv[0]+u[1]*nv[1]+u[2]*nv[2];
+            double b, b1; barrier3_d(cn[m] + un, dhat, &b, &b1);
+            double pu = 0; for (int c=0;c<3;c++){ double t = u[c]-un*nv[c]; pu += t*t; }
+            e += kb[m]*b + 0.5*ks[m]*w[m]*pu;
+        }
+        if (k==0) e0 = e; else if (best < 0 && e <= e0) best = k;
+        Eo[m*K+k] = 0;
+    }
+    if (best < 0) { if (dl[m*3]!=0.f || dl[m*3+1]!=0.f || dl[m*3+2]!=0.f) atomicAdd(nrej, 1); return; }
+    float al = ldexpf(1.f, -(best-1));
+    for (int c=0;c<3;c++) U[m*3+c] -= al*dl[m*3+c];
+}
+// ---------------- float32 PCG (+ optional float64 reliable updates = mixed-precision refinement), persistent kernel ----------------
+// row of y = A v with float32 vector (sym = half storage: self + positive offsets 0..7, negative offsets = neighbor's transpose)
+__device__ __forceinline__ float ell_row_f(int m, int c, int Ms, const float* B, const int* nb, const float* v, int sym) {
+    float y = 0.f;
+    if (!sym) {
+        for (int k=0;k<15;k++) {
+            int j = nb[k*Ms+m];
+            const float* bb = B + ((long long)k*9 + c*3)*Ms + m;
+            y += bb[0]*__ldcg(&v[j*3]) + bb[Ms]*__ldcg(&v[j*3+1]) + bb[2*Ms]*__ldcg(&v[j*3+2]);
+        }
+        return y;
+    }
+    for (int k=0;k<8;k++) {
+        int j = nb[k*Ms+m]; if (j < 0) continue;
+        const float* bb = B + ((long long)k*9 + c*3)*Ms + m;
+        y += bb[0]*__ldcg(&v[j*3]) + bb[Ms]*__ldcg(&v[j*3+1]) + bb[2*Ms]*__ldcg(&v[j*3+2]);
+    }
+    for (int k=1;k<8;k++) {
+        int j = nb[(7+k)*Ms+m]; if (j < 0) continue;
+        const float* bb = B + ((long long)k*9 + c)*Ms + j;
+        y += bb[0]*__ldcg(&v[j*3]) + bb[3*(long long)Ms]*__ldcg(&v[j*3+1]) + bb[6*(long long)Ms]*__ldcg(&v[j*3+2]);
+    }
+    return y;
+}
+__global__ void bell_mv_f(int M, const float* B, const int* nb, const float* v, float* y, int Ms, int sym) {
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    if (m >= M) return;
+    for (int c=0;c<3;c++) y[m*3+c] = ell_row_f(m, c, Ms, B, nb, v, sym);
+}
+// mode 0: pure float32 PCG (stop on recursive float32 residual).
+// mode 1: float32 PCG with float64 reliable updates (x_hi += x_lo; r = b - A x_hi in float64) whenever |r|^2 < delta2 * max|r|^2 since
+//         the last update, and always before stopping: the stop test |r|^2 < thr is made on the float64 true residual only.
+// sc in: [0] rz0 [1] dAd0 ; out: [2] nit [3] rr (true when mode 1) [4] neg [5] n_updates.   acc: 6 x 2 parities (+ 2 for update sums)
+__global__ void pcg_mix(int M, int Ms, const float* B, const int* nb, const float* Dinv, const double* bs, double* xh, double* rh,
+                        float* x, float* r, float* z, float* d, float* Ad, double* acc, double* sc, unsigned int* bar,
+                        double thr, int maxit, int sym, int mode, double delta2) {
+    unsigned int nblk = gridDim.x;
+    int tid = blockIdx.x*blockDim.x + threadIdx.x, nth = gridDim.x*blockDim.x;
+    volatile double* va = acc;
+    double rz = sc[0], dAd = sc[1];
+    int nit = 0, neg = 0, p = 0, nup = 0, q = 0;
+    double rr = 1.0, rmax = 1.0;
+    for (int it=0; it<maxit; it++) {
+        if (!(dAd > 0)) { neg = 1; break; }
+        float al = (float)(rz/dAd);
+        float prr=0.f, prz=0.f;
+        for (int m=tid; m<M; m+=nth) {
+            float rv[3];
+            for (int c=0;c<3;c++){ x[m*3+c] += al*d[m*3+c]; float rc = r[m*3+c] - al*Ad[m*3+c]; r[m*3+c]=rc; rv[c]=rc; }
+            const float* D = Dinv + m*9;
+            for (int c=0;c<3;c++){ float zz = D[c*3]*rv[0]+D[c*3+1]*rv[1]+D[c*3+2]*rv[2]; z[m*3+c]=zz; prz += rv[c]*zz; prr += rv[c]*rv[c]; }
+        }
+        double b1 = block_sum((double)prr); double b2 = block_sum((double)prz);
+        if (threadIdx.x==0) { atomicAdd(&acc[p*3+1], b1); atomicAdd(&acc[p*3+2], b2); }
+        if (tid==0) { acc[(1-p)*3]=0; acc[(1-p)*3+1]=0; acc[(1-p)*3+2]=0; }
+        gbar(bar, bar+1, nblk);
+        rr = va[p*3+1]; double rz2 = va[p*3+2];
+        nit++;
+        if (mode == 1 && (rr < delta2*rmax || rr < thr)) {
+            // reliable update: x_hi += x_lo, r = b - A x_hi (float64 accumulation of the float32-stored matrix), z = D^-1 r
+            for (int m=tid; m<M; m+=nth) for (int c=0;c<3;c++){ xh[m*3+c] += (double)x[m*3+c]; x[m*3+c] = 0.f; }
+            if (tid==0) { acc[6+(1-q)*2]=0; acc[6+(1-q)*2+1]=0; }
+            gbar(bar, bar+1, nblk);
+            double trr=0, trz=0;
+            for (int m=tid; m<M; m+=nth) {
+                double rv[3];
+                for (int c=0;c<3;c++) {
+                    double ax = sym ? ell_row_sym<true>(m, c, Ms, B, nb, xh) : ell_row<true>(m, c, Ms, B, nb, xh);
+                    rv[c] = bs[m*3+c] - ax; rh[m*3+c] = rv[c]; r[m*3+c] = (float)rv[c];
+                }
+                const float* D = Dinv + m*9;
+                for (int c=0;c<3;c++){ float zz = D[c*3]*(float)rv[0]+D[c*3+1]*(float)rv[1]+D[c*3+2]*(float)rv[2]; z[m*3+c]=zz; trz += rv[c]*(double)zz; trr += rv[c]*rv[c]; }
+            }
+            double c1 = block_sum(trr); double c2 = block_sum(trz);
+            if (threadIdx.x==0) { atomicAdd(&acc[6+q*2], c1); atomicAdd(&acc[6+q*2+1], c2); }
+            gbar(bar, bar+1, nblk);
+            rr = va[6+q*2]; rz2 = va[6+q*2+1];
+            q = 1-q; nup++;
+            rmax = rr;
+            if (rr < thr) break;
+        } else if (mode == 0 && rr < thr) {
+            break;
+        } else if (rr > rmax) rmax = rr;
+        double be = rz2/rz; rz = rz2;
+        float bef = (float)be;
+        float pd = 0.f;
+        for (int m=tid; m<M; m+=nth) {
+            float qq[3];
+            for (int c=0;c<3;c++) qq[c] = ell_row_f(m, c, Ms, B, nb, z, sym);
+            for (int c=0;c<3;c++){ float dd = z[m*3+c] + bef*d[m*3+c]; float aa = qq[c] + bef*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; pd += dd*aa; }
+        }
+        double b3 = block_sum((double)pd);
+        if (threadIdx.x==0) atomicAdd(&acc[(1-p)*3], b3);
+        gbar(bar, bar+1, nblk);
+        dAd = va[(1-p)*3];
+        p = 1-p;
+    }
+    if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; sc[5]=nup; }
+}
 }
 '''
 
@@ -1305,6 +1534,7 @@ class CudaFem:
         self.mu, self.lam = float(fr.mu), float(fr.lam_)
         self.dev = G.tets.device
         self.cnt = torch.zeros(2, dtype=torch.int32, device=self.dev)
+        self.nn = 0                                                            # 바닥 후보 입자 없음 (노드 바닥)
 
     def energy_grad(self, U, want_g=True):
         M = self.fr.G.M
@@ -1323,9 +1553,17 @@ class CudaFem:
         return self.energy_grad(U, want_g=False)[0]
 
     def hess_into(self, U, slots, Bell, efloor, maxsw=10, jtol=1e-12, Ms=None, gtau=0.0):
+        Uf = U.float().contiguous()
+        if getattr(self, "warp", False):
+            with _Stream():
+                _mod().get_function("tet_hess_w")(((self.T + 3) // 4,), (128,), (np.int32(self.T), _cp(self.tets), _cp(Uf), _cp(self.gl4), _cp(self.FT4),
+                                                                              _cp(self.VT4), _cp(self.M44), np.float32(self.mu), np.float32(self.lam),
+                                                                              np.float32(efloor), _cp(slots), _cp(Bell), _cp(self.cnt[1:2]),
+                                                                              np.int32(maxsw), np.float32(jtol), np.uint64(0), np.int32(Ms),
+                                                                              np.int32(getattr(self, "sym", 0))))
+            return
         k = _mod().get_function("tet_hess")
         gr, bl = _grid(self.T, 64)
-        Uf = U.float().contiguous()
         with _Stream():
             k(gr, bl, (np.int32(self.T), _cp(self.tets), _cp(Uf), _cp(self.gl4), _cp(self.FT4), _cp(self.VT4), _cp(self.M44),
                        np.float32(self.mu), np.float32(self.lam), np.float32(efloor), _cp(slots), _cp(Bell), _cp(self.cnt[1:2]),
@@ -1510,6 +1748,53 @@ class CudaPcg:
                                                                    _cp(self.bar), np.float64(rtol * rtol), np.int32(ncg)))
         out = self.sc[2:5].tolist()
         return self.x[:n] * sc_, int(out[0]), float(out[1]) ** 0.5, bool(out[2] > 0.5)
+
+    def solve_mix(self, M, b, rtol, ncg, use_graph=True, mode=1, delta=0.1):
+        """pcg_mix: 탐색·잔차·해 벡터와 곱 모두 float32 (블록 야코비도 float32) 인 지속 커널 PCG.
+        mode 1 (혼합 정밀도 반복 개선 = 신뢰 갱신): 재귀 잔차가 지난 갱신 뒤 최대의 δ 배 아래로 내려가면 x_hi (float64) += x_lo,
+        r = b − A x_hi 를 float64 로 다시 재고 이어 간다 (탐색 방향 유지). 멈춤 판정은 float64 실제 잔차 |b−Ax|/|b| < rtol 로만.
+        mode 0: float32 PCG 단독 (재귀 잔차로 판정)."""
+        n = 3 * M
+        dev = self.dev
+        if not hasattr(self, "mx_acc"):
+            f4 = torch.float32
+            self.mx_acc = torch.zeros(12, dtype=torch.float64, device=dev)
+            self.mx_sc = torch.zeros(8, dtype=torch.float64, device=dev)
+            self.mx_bar = torch.zeros(2, dtype=torch.int32, device=dev)
+            self.mx_bs, self.mx_xh, self.mx_rh = [torch.zeros(self.Mmax * 3, dtype=torch.float64, device=dev) for _ in range(3)]
+            self.mx_x, self.mx_r, self.mx_z, self.mx_d, self.mx_Ad = [torch.zeros(self.Mmax * 3, dtype=f4, device=dev) for _ in range(5)]
+            self.mx_Di = torch.zeros(self.Mmax * 9, dtype=f4, device=dev)
+            self.mx_nblk, self.mx_info = coop_blocks("pcg_mix", 256, cap=getattr(self, "mx_cap", 2))
+        sym = int(getattr(self, "sym", 0))
+        self.Mp.fill_(M)
+        sc_ = (b * b).sum().clamp_min(1e-300).sqrt()
+        bs = b / sc_
+        self.mx_bs[:n].copy_(bs)
+        self.mx_Di[:M * 9].copy_(self.Dinv[:M * 9])
+        self.mx_xh.zero_()
+        self.mx_x.zero_()
+        r32 = bs.float()
+        self.mx_r[:n].copy_(r32)
+        z32 = (self.mx_Di[:M * 9].view(M, 3, 3) @ r32.view(M, 3, 1)).view(-1)
+        self.mx_z[:n].copy_(z32)
+        self.mx_d[:n].copy_(z32)
+        g1, b1 = _grid(M)
+        with _Stream():
+            _mod().get_function("bell_mv_f")(g1, b1, (np.int32(M), _cp(self.B), _cp(self.nb), _cp(self.mx_d), _cp(self.mx_Ad), np.int32(self.Mmax), np.int32(sym)))
+        self.mx_acc.zero_()
+        self.mx_bar.zero_()
+        self.mx_sc[0] = (r32.double() * z32.double()).sum()
+        self.mx_sc[1] = (self.mx_d[:n].double() * self.mx_Ad[:n].double()).sum()
+        with _Stream():
+            _mod().get_function("pcg_mix")((self.mx_nblk,), (256,), (np.int32(M), np.int32(self.Mmax), _cp(self.B), _cp(self.nb), _cp(self.mx_Di),
+                                                                     _cp(self.mx_bs), _cp(self.mx_xh), _cp(self.mx_rh), _cp(self.mx_x), _cp(self.mx_r),
+                                                                     _cp(self.mx_z), _cp(self.mx_d), _cp(self.mx_Ad), _cp(self.mx_acc), _cp(self.mx_sc),
+                                                                     _cp(self.mx_bar), np.float64(rtol * rtol), np.int32(ncg), np.int32(sym),
+                                                                     np.int32(mode), np.float64(delta * delta)))
+        out = self.mx_sc[2:6].tolist()
+        self.last_nup = int(out[3])
+        xx = (self.mx_xh[:n] + self.mx_x[:n].double()) if mode == 1 else self.mx_x[:n].double()
+        return xx * sc_, int(out[0]), float(out[1]) ** 0.5, bool(out[2] > 0.5)
 
     def true_res(self, M, x, b):
         """|b - A x| / |b| (float64 곱, 대조용)."""
@@ -1822,9 +2107,12 @@ def vbd_grad_all(self, U):
     return self.gvb.view(-1, 3).double().clone()
 
 
-def vbd(self, U, Dinv, iters, rho=0.0, step=1.0, maxstep=0.0, refresh=0, dinv_fn=None):
+def vbd(self, U, Dinv, iters, rho=0.0, step=1.0, maxstep=0.0, refresh=0, dinv_fn=None, ls=0, floor=None):
     """VBD: 색마다 (그 색 노드의 국소 기울기 -> 3x3 블록 뉴턴 U_n -= D_n⁻¹ g_n), iters 번. D = 걸음 시작 투영 헤시안의 노드 대각 블록.
-    rho > 0 이면 체비셰프 가속 (Chen et al. 2024 식: ω₁ = 1, ω₂ = 2/(2-ρ²), ω_{k+1} = 4/(4-ρ²ω_k))."""
+    rho > 0 이면 체비셰프 가속 (Chen et al. 2024 식: ω₁ = 1, ω₂ = 2/(2-ρ²), ω_{k+1} = 4/(4-ρ²ω_k)).
+    ls > 0 이면 노드 국소 선탐색: α ∈ {1, 1/2, ..., 2^-(ls-1)} 중 그 노드에 걸린 국소 에너지 (사면체 관성·탄성 + 바닥 후보 입자 + 노드 바닥) 가
+    α = 0 보다 크지 않은 가장 큰 α (없으면 그 노드는 이번에 안 움직인다).
+    floor = dict(cn, w, kb, ks, n, dhat) 이면 노드 바닥 항 (--floor node) 의 기울기·에너지를 더한다."""
     Uf = U.float().contiguous().clone()
     Di = Dinv.float().reshape(-1).contiguous()
     md = _mod()
@@ -1832,6 +2120,19 @@ def vbd(self, U, Dinv, iters, rho=0.0, step=1.0, maxstep=0.0, refresh=0, dinv_fn
     gn, bn = _grid(M, 256)
     prev2 = Uf.clone()
     om = 1.0
+    K = int(ls) + 1
+    if ls > 0:
+        if getattr(self, "_vbd_dl", None) is None or self._vbd_dl.numel() < M * 3:
+            self._vbd_dl = torch.zeros(M * 3, dtype=torch.float32, device=self.dev)
+        if getattr(self, "_vbd_E", None) is None or self._vbd_E.numel() < M * K:
+            self._vbd_E = torch.zeros(M * K, dtype=torch.float64, device=self.dev)
+        self._vbd_E.zero_()
+        dl, Eo = self._vbd_dl, self._vbd_E
+        self.vbd_nrej = torch.zeros(1, dtype=torch.int32, device=self.dev)
+    if floor is not None:
+        fn = [float(q) for q in floor["n"].tolist()]
+        fargs = (_cp(floor["cn"]), _cp(floor["w"]), _cp(floor["kb"]), _cp(floor["ks"]), np.float64(fn[0]), np.float64(fn[1]), np.float64(fn[2]),
+                 np.float64(floor["dhat"]))
     with _Stream():
         for k in range(iters):
             if refresh > 0 and k > 0 and k % refresh == 0 and dinv_fn is not None:
@@ -1839,7 +2140,27 @@ def vbd(self, U, Dinv, iters, rho=0.0, step=1.0, maxstep=0.0, refresh=0, dinv_fn
             prev1 = Uf.clone() if rho > 0 else None
             for cc in range(8):
                 _vbd_grad_color(self, Uf, cc)
-                md.get_function("vbd_node")(gn, bn, (np.int32(M), _cp(self.color), np.int32(cc), _cp(Di), _cp(self.gvb), _cp(Uf), np.float32(step), np.float32(maxstep)))
+                if floor is not None:
+                    md.get_function("vbd_floor_g")(gn, bn, (np.int32(M), _cp(self.color), np.int32(cc), _cp(Uf)) + fargs[:4] + fargs[4:] + (_cp(self.gvb),))
+                if ls > 0:
+                    md.get_function("vbd_step")(gn, bn, (np.int32(M), _cp(self.color), np.int32(cc), _cp(Di), _cp(self.gvb), _cp(dl), np.float32(maxstep)))
+                    gr, bl = _grid(self.T, 128)
+                    md.get_function("vbd_tet_e")(gr, bl, (np.int32(self.T), _cp(self.tets), _cp(self.color), np.int32(cc), _cp(Uf), _cp(dl), _cp(self.gl4),
+                                                          _cp(self.FT4), _cp(self.VT4), _cp(self.M44), _cp(self.B44), np.float32(self.mu),
+                                                          np.float32(self.lam), np.int32(K), _cp(Eo)))
+                    if self.nn:
+                        gr, bl = _grid(self.nn, 128)
+                        md.get_function("vbd_near_e")(gr, bl, self._near_args(Uf) + (np.float32(self.mu), np.float32(self.lam), _cp(self.color),
+                                                                                    np.int32(cc), _cp(dl), np.int32(K), _cp(Eo)))
+                    if floor is not None:
+                        fl_ = (np.int32(1),) + fargs
+                    else:
+                        z8 = _cp(self._vbd_E)
+                        fl_ = (np.int32(0), z8, z8, z8, z8, np.float64(0), np.float64(0), np.float64(0), np.float64(1))
+                    md.get_function("vbd_node_ls")(gn, bn, (np.int32(M), _cp(self.color), np.int32(cc), _cp(dl), _cp(Eo), np.int32(K), _cp(Uf),
+                                                            _cp(self.vbd_nrej)) + fl_)
+                else:
+                    md.get_function("vbd_node")(gn, bn, (np.int32(M), _cp(self.color), np.int32(cc), _cp(Di), _cp(self.gvb), _cp(Uf), np.float32(step), np.float32(maxstep)))
             if rho > 0:
                 om = 1.0 if k == 0 else (2.0 / (2.0 - rho * rho) if k == 1 else 4.0 / (4.0 - rho * rho * om))
                 if k > 0:
@@ -1851,3 +2172,6 @@ def vbd(self, U, Dinv, iters, rho=0.0, step=1.0, maxstep=0.0, refresh=0, dinv_fn
 CudaTetq.vbd_setup = _vbd_setup
 CudaTetq.vbd_grad_all = vbd_grad_all
 CudaTetq.vbd = vbd
+CudaFem.vbd_setup = _vbd_setup
+CudaFem.vbd_grad_all = vbd_grad_all
+CudaFem.vbd = vbd
