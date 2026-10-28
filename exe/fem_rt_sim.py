@@ -114,6 +114,9 @@ ap.add_argument("--p2gk", action="store_true", help="J4: 입자 바닥 P2G (바�
 ap.add_argument("--lowsync", action="store_true", help="J4: E0·|p|∞·gᵀp 를 선탐색 직전 한 번에 읽고, 실제 잔차·음 사면체 수 기록은 시간 측정 밖에서")
 ap.add_argument("--th", type=int, default=-1, help="J2: --pcg2 9 의 안쪽 행렬 형식 (0 f32 척도, 1 f16, 2 bf16; 야코비 대칭 척도 S A S)")
 ap.add_argument("--th_dg32", action="store_true", help="J2: 16 비트 행렬에서 대각 블록은 float32")
+ap.add_argument("--eg32", choices=["none", "tet", "near", "both"], default="none",
+                help="J4: E·기울기 탄성 대수를 float32 로 (관성·합은 float64; 바닥 후보 헤시안 --near32 와 같은 방식) -- tet / near (바닥 후보) / both")
+ap.add_argument("--warm_pcg", action="store_true", help="J1: PCG 시작 해 = 이전 프레임 뉴턴 방향 (격자 좌표로 대응) x A-노름 최적 배율 (--pcg2 10 만; 멈춤 판정 그대로)")
 ap.add_argument("--gk", type=int, default=20, help="J2: --pcg2 12 그래프 하나에 담는 반복 수")
 ap.add_argument("--t2_kern", default="pcg_t2_r2", help="J2: --pcg2 10 (pcg_t6 혼합과 같은 식, 곱 메모리 병렬도 높인 지속 커널) 의 커널 이름 (pcg_t2_r{1,2,4}[b2])")
 ap.add_argument("--no_dump", action="store_true")
@@ -167,6 +170,7 @@ print(f"[물리 조건] 중력 {cfg['g']}, 바닥 {'없음 (surface_collider 없
 PC = RTC.CudaPcg(a.mmax, dev) if a.cuda else None
 RTC.RAWPTR[0] = bool(a.rawptr)
 HM = RTC2.HalfMat(a.mmax, dev) if a.pcg2 == 9 else None
+WS = RTC2.WarmStart() if a.warm_pcg else None
 if PC is not None:
     PC.d3 = a.d3
     PC.sym = int(a.sym)
@@ -239,6 +243,9 @@ for i in range(L):
         CF.warp = a.warp
         CF.near32 = a.near32
         CF.sym = int(a.sym)
+        if a.eg32 != "none":
+            CF.energy_grad = (lambda U_, want_g=True, CF=CF: RTC2.energy_grad32(CF, U_, want_g, a.eg32))
+            CF.energy = (lambda U_, CF=CF: RTC2.energy_grad32(CF, U_, False, a.eg32)[0])
         if a.solver == "vbd":
             CF.vbd_setup(G)
         tets = G.tets
@@ -388,9 +395,16 @@ for i in range(L):
                     PC.gp = RTC2.GraphPcg(PC, K=a.gk)
                 xx, it, res, negc = PC.gp.solve(M_, b, a.rtol, a.pcg_max, delta=a.mix_delta)
                 st["mix_upd"] = PC.last_nup
-            elif a.pcg2 in (10, 11):
-                # J2: 10 = pcg_t2 (pcg_t6 혼합과 같은 식, 곱 메모리 병렬도), 11 = pcg_p1 (파이프라인 혼합 PCG, 반복당 장벽 1)
-                xx, it, res, negc = (RTC2.solve_t2 if a.pcg2 == 10 else RTC2.solve_p1)(PC, M_, b, a.rtol, a.pcg_max, kern=a.t2_kern, delta=a.mix_delta, cap=3)
+            elif a.pcg2 == 10:
+                # J2: pcg_t2 (pcg_t6 혼합과 같은 식, 곱 메모리 병렬도), J1 --warm_pcg: 이전 프레임 방향으로 시작
+                x0_ = WS.guess(G, PC, b) if WS is not None else None
+                xx, it, res, negc = RTC2.solve_t2(PC, M_, b, a.rtol, a.pcg_max, kern=a.t2_kern, delta=a.mix_delta, cap=3, x0=x0_)
+                if WS is not None:
+                    WS.store(G, xx)
+                st["mix_upd"] = PC.last_nup
+            elif a.pcg2 == 11:
+                # J2: pcg_p1 (파이프라인 혼합 PCG, 반복당 장벽 1)
+                xx, it, res, negc = RTC2.solve_p1(PC, M_, b, a.rtol, a.pcg_max, kern=a.t2_kern, delta=a.mix_delta, cap=3)
                 st["mix_upd"] = PC.last_nup
             elif a.pcg2 == 9:
                 # J2: 안쪽 반복 16 비트 (또는 float32) 척도 행렬 + float64 신뢰 갱신 (멈춤 = float64 실제 잔차 < rtol)

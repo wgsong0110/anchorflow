@@ -384,6 +384,11 @@ template <int R> __device__ void pcg_p1_body(int M, int Ms, const float* __restr
     if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; sc[5]=nup; }
 }
 extern "C" {
+__global__ void bell_mv_d(int M, int Ms, const float* B, const int* nb, const double* v, double* y) {
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    if (m >= M) return;
+    for (int c=0;c<3;c++) y[m*3+c] = ell_row_sym_d(m, c, Ms, B, nb, v);
+}
 __global__ void bell_mv_th0(int M, const void* B, const float* Bd, const int* nb, const float* v, float* y, int Ms) { bell_mv_th_body<0>(M, B, Bd, nb, v, y, Ms); }
 __global__ void bell_mv_th1(int M, const void* B, const float* Bd, const int* nb, const float* v, float* y, int Ms) { bell_mv_th_body<1>(M, B, Bd, nb, v, y, Ms); }
 __global__ void bell_mv_th2(int M, const void* B, const float* Bd, const int* nb, const float* v, float* y, int Ms) { bell_mv_th_body<2>(M, B, Bd, nb, v, y, Ms); }
@@ -867,8 +872,9 @@ def make_tq(G, x, v, F, m, vol, cfg, h, U, eps_sp=0.01, eps_st=0.01, stick_xn=Tr
     return CF
 
 
-def solve_t2(PC, M, b, rtol, ncg, kern="pcg_t2_r2", delta=0.1, cap=2):
-    """pcg_t2_*: fem_rt_cuda.CudaPcg.solve_tile (prec 32, mode 1) 과 같은 식, 곱의 메모리 병렬도만 높인 판. PC.Dinv32 (asm_k) 또는 PC.Dinv 의 float32."""
+def solve_t2(PC, M, b, rtol, ncg, kern="pcg_t2_r2", delta=0.1, cap=2, x0=None):
+    """pcg_t2_*: fem_rt_cuda.CudaPcg.solve_tile (prec 32, mode 1) 과 같은 식, 곱의 메모리 병렬도만 높인 판. PC.Dinv32 (asm_k) 또는 PC.Dinv 의 float32.
+    x0 (선택, float64 [3M]): 시작 해 -- 커널의 float64 해 xh 를 x0 으로, r = b − A x0 (float64) 로 시작 (멈춤 판정은 그대로 |b − A x| < rtol |b|)."""
     n = 3 * M
     dev = PC.dev
     key = "t2_" + kern
@@ -891,13 +897,21 @@ def solve_t2(PC, M, b, rtol, ncg, kern="pcg_t2_r2", delta=0.1, cap=2):
     T_["Di"][:M * 9].copy_(PC.Dinv[:M * 9])
     T_["xh"].zero_()
     T_["x"].zero_()
-    rV = bs.float()
+    md = _mod2()
+    if x0 is not None:
+        T_["xh"][:n].copy_(x0 / sc_)
+        if "Ax" not in T_:
+            T_["Ax"] = torch.zeros(PC.Mmax * 3, dtype=torch.float64, device=dev)
+        with _Stream():
+            md.get_function("bell_mv_d")(((M + 127) // 128,), (128,), (np.int32(M), np.int32(PC.Mmax), _p(PC.B), _p(PC.nb), _p(T_["xh"]), _p(T_["Ax"])))
+        rV = (bs - T_["Ax"][:n]).float()
+    else:
+        rV = bs.float()
     T_["r"][:n].copy_(rV)
     zV = (T_["Di"][:M * 9].view(M, 3, 3) @ rV.view(M, 3, 1)).view(-1)
     T_["z"][:n].copy_(zV)
     T_["d"][:n].copy_(zV)
     nt = (M + 31) // 32
-    md = _mod2()
     with _Stream():
         md.get_function("bell_mv_th0")((nt,), (512,), (np.int32(M), _p(PC.B), _p(None), _p(PC.nb), _p(T_["d"]), _p(T_["Ad"]), np.int32(PC.Mmax)))
     T_["acc"].zero_()
@@ -1050,3 +1064,180 @@ class GraphPcg:
         out_s = self.st.tolist()
         PC.last_nup = int(out_f[3])
         return (self.xh[:n] + v["x"][:n].double()) * sc_, int(out_f[2]), float(out_s[2]) ** 0.5, bool(out_f[4])
+
+
+# ---------------------------------------------------------------- 절 J 항목 4: E·기울기 float32 대수 (관성은 float64, 탄성 대수만 float32, 합은 float64)
+_SRC3_EXTRA = r"""
+extern "C" {
+// tet_eg 와 같은 식: 관성 ½uᵀM4u − B4·u 와 그 기울기는 float64 (싸다), F = A F̄ 의 고유값·극분해·P 는 float32, 노드 합은 float64 원자
+__global__ void tet_eg32(int T, const long long* tets, const float* U, const double* gl, const double* FT, const double* VT,
+                         const double* M4, const double* B4, double mu_, double lam_, int want_g, double* E, double* g, int* nlow) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    double e = 0.0;
+    if (t < T) {
+        float mu = (float)mu_, lam = (float)lam_;
+        long long n[4]; double u[4][3]; float uf[4][3], G[12];
+        for (int i=0;i<4;i++){ n[i]=tets[t*4+i]; for(int c=0;c<3;c++){ uf[i][c]=U[n[i]*3+c]; u[i][c]=(double)uf[i][c]; } }
+        for (int k=0;k<12;k++) G[k]=(float)gl[t*12+k];
+        const double* m4 = M4 + t*16; const double* b4 = B4 + t*12;
+        double gi[4][3];
+        for (int i=0;i<4;i++) for (int c=0;c<3;c++) {
+            double s=0; for (int j=0;j<4;j++) s += m4[i*4+j]*u[j][c];
+            e += 0.5*s*u[i][c] - b4[i*3+c]*u[i][c];
+            gi[i][c] = s - b4[i*3+c];
+        }
+        float A[9];
+        for (int c=0;c<3;c++) for (int b=0;b<3;b++) {
+            float s = (c==b)?1.f:0.f;
+            for (int i=0;i<4;i++) s += uf[i][c]*G[i*3+b];
+            A[c*3+b]=s;
+        }
+        float Fb[9]; for (int k=0;k<9;k++) Fb[k]=(float)FT[t*9+k];
+        float X[9]; mm3(A, Fb, X);
+        float C[9];
+        for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+        float l[3]; symeig3(C, l);
+        float S[3], J=1.f, ps=0.f;
+        for (int k=0;k<3;k++){ S[k]=fmaxf(sqrtf(fmaxf(l[k],1e-12f)),0.01f); J*=S[k]; ps += (S[k]-1.f)*(S[k]-1.f); }
+        float V = (float)VT[t];
+        e += (double)V*((double)mu*(double)ps + 0.5*(double)lam*(double)(J-1.f)*(double)(J-1.f));
+        if (S[0] <= 0.01f) atomicAdd(nlow, 1);
+        if (want_g) {
+            float Q[9], cf[9], P[9], Gm[9];
+            polar(X, Q); cof3(X, cf);
+            float dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+            float sg = (dt>0)?1.f:((dt<0)?-1.f:0.f);
+            for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(J-1.f)*sg*cf[k];
+            mmt3(P, Fb, Gm);
+            for (int i=0;i<4;i++) for (int c=0;c<3;c++) {
+                float s = 0.f;
+                for (int b=0;b<3;b++) s += V*Gm[c*3+b]*G[i*3+b];
+                atomicAdd(&g[n[i]*3+c], gi[i][c] + (double)s);
+            }
+        }
+    }
+    block_add(e, E);
+}
+// near_eg 와 같은 식을 float32 대수로 (near_hess32 와 같은 방식), 입자 에너지·노드 합은 float64
+__global__ void near_eg32(int nn_, const long long* idx, const float* x, const float* U, const long long* rows, const float* lamb,
+                          const float* glp, const float* Fp, const float* vol, const float* kk, const float* cc,
+                          double p0, double p1, double p2, double n0, double n1, double n2, double eps_st, double eps_sp, double xn,
+                          double mu_, double lam_, int want_g, double* E, double* g) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    double e = 0.0;
+    if (q < nn_) {
+        float mu = (float)mu_, lam = (float)lam_;
+        long long p = idx[q];
+        long long nd[4]; float lm[4], gl[12], u[3]={0,0,0}, G[9]={0,0,0,0,0,0,0,0,0}, xx[3], c[3];
+        for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; }
+        for (int k=0;k<12;k++) gl[k]=glp[p*12+k];
+        for (int i=0;i<4;i++) for (int a=0;a<3;a++){ float Ua=U[nd[i]*3+a]; u[a]+=lm[i]*Ua; for (int b=0;b<3;b++) G[a*3+b]+=Ua*gl[i*3+b]; }
+        for (int k=0;k<3;k++){ xx[k]=x[p*3+k]; c[k]=cc[p*3+k]; }
+        float pt[3]={(float)p0,(float)p1,(float)p2}, nv[3]={(float)n0,(float)n1,(float)n2};
+        NearMapT<float> M; near_map<float>(xx, u, G, c, pt, nv, (float)eps_st, (float)eps_sp, (float)xn, M);
+        float Jf[9]; mm3(M.Mn, M.K1, Jf);
+        float F[9]; for (int k=0;k<9;k++) F[k]=Fp[p*9+k];
+        float X[9]; mm3(Jf, F, X);
+        float C[9]; for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+        float l[3]; symeig3(C, l);
+        float S[3], J=1.f, ps=0.f; for (int k=0;k<3;k++){ S[k]=fmaxf(sqrtf(fmaxf(l[k],1e-12f)),0.01f); J*=S[k]; ps+=(S[k]-1.f)*(S[k]-1.f); }
+        float V = vol[p], k_ = kk[p];
+        double rr = (double)M.r[0]*M.r[0]+(double)M.r[1]*M.r[1]+(double)M.r[2]*M.r[2];
+        e = 0.5*(double)k_*rr + (double)V*((double)mu*(double)ps + 0.5*(double)lam*(double)(J-1.f)*(double)(J-1.f));
+        if (want_g) {
+            float Q[9], cf[9], P[9], Pc[9];
+            polar(X, Q); cof3(X, cf);
+            float dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+            float sg = (dt>0)?1.f:((dt<0)?-1.f:0.f);
+            for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(J-1.f)*sg*cf[k];
+            mmt3(P, F, Pc); for (int k=0;k<9;k++) Pc[k]*=V;
+            float gy[12];
+            float NK1[9]; mm3(M.Nm, M.K1, NK1);
+            for (int c3=0;c3<3;c3++) {
+                float t=0; for (int i=0;i<3;i++) t += M.Ru[i*3+c3]*M.r[i];
+                float Bc[9], dK[9], MdK[9]; near_Bc(M, c3, Bc); mm3(Bc, M.IG, dK);
+                for (int k=0;k<9;k++) dK[k] -= (float)xn*M.w1*M.n[c3]*M.Pm[k];
+                mm3(M.Mn, dK, MdK);
+                float pj=0; for (int k=0;k<9;k++) pj += Pc[k]*(M.g1*M.n[c3]*NK1[k] + MdK[k]);
+                gy[c3] = k_*t + pj;
+            }
+            float MJ[9]; mm3(M.Mn, M.Jst, MJ);
+            for (int a=0;a<3;a++) for (int b=0;b<3;b++){ float t=0; for (int i=0;i<3;i++) t += MJ[i*3+a]*Pc[i*3+b]; gy[3+a*3+b]=t; }
+            for (int i=0;i<4;i++) for (int c3=0;c3<3;c3++) {
+                float t = lm[i]*gy[c3];
+                for (int b=0;b<3;b++) t += gl[i*3+b]*gy[3+c3*3+b];
+                atomicAdd(&g[nd[i]*3+c3], (double)t);
+            }
+        }
+    }
+    block_add(e, E);
+}
+}
+"""
+_MOD3 = [None]
+
+
+def _mod3():
+    if _MOD3[0] is None:
+        import cupy as cp
+        from . import fem_rt_cuda as RTC
+        _MOD3[0] = cp.RawModule(code=(RTC._SRC + _SRC3_EXTRA).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+    return _MOD3[0]
+
+
+def energy_grad32(CF, U, want_g=True, which="both"):
+    """CudaTetq.energy_grad 와 같은 반환 (E + C0, g float64 [M,3]); which = tet / near / both 를 float32 대수 커널로."""
+    from . import fem_rt_cuda as RTC
+    M = U.shape[0]
+    E = torch.zeros(1, dtype=torch.float64, device=CF.dev)
+    g = torch.zeros(M, 3, dtype=torch.float64, device=CF.dev)
+    Uf = U.float().contiguous()
+    md0, md3 = RTC._mod(), _mod3()
+    with RTC._Stream():
+        gr, bl = RTC._grid(CF.T)
+        (md3.get_function("tet_eg32") if which in ("tet", "both") else md0.get_function("tet_eg"))(
+            gr, bl, (np.int32(CF.T), RTC._cp(CF.tets), RTC._cp(Uf), RTC._cp(CF.gl8), RTC._cp(CF.FT8), RTC._cp(CF.VT8), RTC._cp(CF.M48),
+                     RTC._cp(CF.B48), np.float64(CF.mu), np.float64(CF.lam), np.int32(1 if want_g else 0), RTC._cp(E), RTC._cp(g), RTC._cp(CF.cnt[0:1])))
+        if CF.nn:
+            gr, bl = RTC._grid(CF.nn)
+            (md3.get_function("near_eg32") if which in ("near", "both") else md0.get_function("near_eg"))(
+                gr, bl, CF._near_args(Uf) + (np.float64(CF.mu), np.float64(CF.lam), np.int32(1 if want_g else 0), RTC._cp(E), RTC._cp(g)))
+    return E[0] + CF.C0, g
+
+
+class WarmStart:
+    """PCG 시작 해 = 이전 프레임 뉴턴 방향 (격자 정수 좌표 gi 로 노드 대응 -- 격자는 세계 고정이라 같은 gi = 같은 노드 자리) 에
+    A-노름 최적 배율 α = (x̃ᵀb)/(x̃ᵀAx̃) 를 곱한 것 (오차의 A-노름이 0 시작보다 커지지 않는다; x̃ᵀAx̃ ≤ 0 이면 0 시작). 동기화 없음."""
+
+    def __init__(self):
+        self.keys, self.p = None, None
+
+    @staticmethod
+    def key(gi):
+        g = gi.long() + 4096
+        return (g[:, 0] * 8192 + g[:, 1]) * 8192 + g[:, 2]
+
+    def guess(self, G, PC, b):
+        if self.keys is None:
+            return None
+        M = G.M
+        k = self.key(G.gi)
+        idx = torch.searchsorted(self.keys, k).clamp_max(self.keys.numel() - 1)
+        hit = self.keys[idx] == k
+        xt = torch.where(hit.unsqueeze(1), self.p[idx], torch.zeros_like(self.p[idx])).reshape(-1).contiguous()
+        if not hasattr(self, "Ax") or self.Ax.numel() < PC.Mmax * 3:
+            self.Ax = torch.zeros(PC.Mmax * 3, dtype=torch.float64, device=b.device)
+            self.xv = torch.zeros(PC.Mmax * 3, dtype=torch.float64, device=b.device)
+        self.xv[:3 * M].copy_(xt)
+        with _Stream():
+            _mod2().get_function("bell_mv_d")(((M + 127) // 128,), (128,), (np.int32(M), np.int32(PC.Mmax), _p(PC.B), _p(PC.nb), _p(self.xv), _p(self.Ax)))
+        xAx = (xt * self.Ax[:3 * M]).sum()
+        al = torch.where(xAx > 0, (xt * b).sum() / xAx.clamp_min(1e-300), torch.zeros_like(xAx))
+        self.n_hit = hit
+        return xt * al
+
+    def store(self, G, x):
+        k = self.key(G.gi)
+        o = torch.argsort(k)
+        self.keys = k[o].contiguous()
+        self.p = x.view(-1, 3)[o].double().contiguous()
