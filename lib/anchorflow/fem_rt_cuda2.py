@@ -441,6 +441,109 @@ __global__ void gather12(int N, const long long* pinv, const float* gl4, float* 
     int p = i / 12, e = i - p*12;
     glp[i] = gl4[pinv[p]*12 + e];
 }
+
+// ---------------- pcg_g* (절 J 항목 2): 같은 혼합 정밀도 PCG (fem_rt_cuda pcg_t32 mode 1 과 같은 식) 를 지속 커널 대신 반복당 커널 4 개로
+// (그래프로 잡아 재생): g_upd (x·r·z 갱신 + rr·rz 합), g_rel_a / g_rel_b (신뢰 갱신 -- 걸릴 때만 일, 아니면 바로 끝), g_dir (타일 곱 + 방향 갱신 + dAd 합).
+// 전역 장벽 대신 커널 경계, 스칼라는 마지막으로 끝난 블록이 장치 메모리에서 갱신 (호스트 동기화 없음). 노드 수 M 은 장치 정수 (fl[6]) -- 그래프 재사용.
+// st: [0] rz [1] dAd [2] rr [3] rmax [4] β [5] thr [6] δ²      fl: [0] 끝 [1] 신뢰 갱신 대기 [2] 반복 [3] 갱신 수 [4] 음곡률 [5] 상한 [6] M
+__device__ __forceinline__ bool last_block(unsigned int* cnt) {
+    __shared__ int am_last;
+    __threadfence();
+    __syncthreads();
+    if (threadIdx.x == 0) am_last = (atomicAdd(cnt, 1u) == gridDim.x - 1);
+    __syncthreads();
+    return am_last;
+}
+__global__ void g_upd(const float* __restrict__ Dinv, float* x, float* r, float* z, const float* d, const float* Ad, double* st, int* fl, double* acc, unsigned int* cnt) {
+    if (((volatile int*)fl)[0]) return;
+    int M = fl[6];
+    float al = (float)(st[0]/st[1]);
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    float prr = 0.f, prz = 0.f;
+    if (m < M) {
+        float rv[3];
+        for (int c=0;c<3;c++){ x[m*3+c] += al*d[m*3+c]; float rc = r[m*3+c] - al*Ad[m*3+c]; r[m*3+c]=rc; rv[c]=rc; }
+        const float* D = Dinv + m*9;
+        for (int c=0;c<3;c++){ float zz = __ldg(&D[c*3])*rv[0]+__ldg(&D[c*3+1])*rv[1]+__ldg(&D[c*3+2])*rv[2]; z[m*3+c]=zz; prz += rv[c]*zz; prr += rv[c]*rv[c]; }
+    }
+    double b1 = block_sum((double)prr); double b2 = block_sum((double)prz);
+    if (threadIdx.x==0) { atomicAdd(&acc[0], b1); atomicAdd(&acc[1], b2); }
+    if (last_block(cnt) && threadIdx.x == 0) {
+        volatile double* va = acc;
+        double rr = va[0], rz2 = va[1];
+        acc[0] = 0; acc[1] = 0; *cnt = 0;
+        int nit = fl[2] + 1; fl[2] = nit;
+        st[2] = rr;
+        if (rr < st[6]*st[3] || rr < st[5]) fl[1] = 1;
+        else {
+            if (rr > st[3]) st[3] = rr;
+            st[4] = rz2/st[0]; st[0] = rz2;
+            if (nit >= fl[5]) fl[0] = 1;
+        }
+        __threadfence();
+    }
+}
+__global__ void g_rel_a(double* xh, float* x, int* fl) {
+    if (((volatile int*)fl)[0] || !((volatile int*)fl)[1]) return;
+    int e = blockIdx.x*blockDim.x + threadIdx.x;
+    if (e < 3*fl[6]) { xh[e] += (double)x[e]; x[e] = 0.f; }
+}
+__global__ void g_rel_b(int Ms, const float* __restrict__ B, const int* __restrict__ nb, const float* __restrict__ Dinv, const double* bs, const double* xh,
+                        float* r, float* z, double* st, int* fl, double* acc, unsigned int* cnt) {
+    if (((volatile int*)fl)[0] || !((volatile int*)fl)[1]) return;
+    int M = fl[6];
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    double trr = 0, trz = 0;
+    if (m < M) {
+        double rv[3];
+        for (int c=0;c<3;c++) { double ax = ell_row_sym_d(m, c, Ms, B, nb, xh); rv[c] = bs[m*3+c] - ax; r[m*3+c] = (float)rv[c]; }
+        const float* D = Dinv + m*9;
+        for (int c=0;c<3;c++){ float zz = D[c*3]*(float)rv[0]+D[c*3+1]*(float)rv[1]+D[c*3+2]*(float)rv[2]; z[m*3+c]=zz; trz += rv[c]*(double)zz; trr += rv[c]*rv[c]; }
+    }
+    double c1 = block_sum(trr); double c2 = block_sum(trz);
+    if (threadIdx.x==0) { atomicAdd(&acc[2], c1); atomicAdd(&acc[3], c2); }
+    if (last_block(cnt) && threadIdx.x == 0) {
+        volatile double* va = acc;
+        double rr = va[2], rz2 = va[3];
+        acc[2] = 0; acc[3] = 0; *cnt = 0;
+        st[2] = rr; st[3] = rr;
+        st[4] = rz2/st[0]; st[0] = rz2;
+        fl[3] = fl[3] + 1; fl[1] = 0;
+        if (rr < st[5] || fl[2] >= fl[5]) fl[0] = 1;
+        __threadfence();
+    }
+}
+__global__ void g_dir(int Ms, const float* __restrict__ B, const int* __restrict__ nb, const float* z, float* d, float* Ad, double* st, int* fl, double* acc,
+                      unsigned int* cnt) {
+    __shared__ float sy[16][3][33];
+    if (((volatile int*)fl)[0]) return;
+    int M = fl[6];
+    int ntile = (M + 31) / 32;
+    int lane = threadIdx.x & 31, kw = threadIdx.x >> 5;
+    float bev = (float)st[4];
+    float pd = 0.f;
+    int tile = blockIdx.x;
+    int m = tile*32 + lane;
+    float a0, a1, a2; tile_part_h<0>(m, kw, (tile < ntile) ? M : 0, Ms, B, (const float*)0, nb, z, a0, a1, a2);
+    sy[kw][0][lane]=a0; sy[kw][1][lane]=a1; sy[kw][2][lane]=a2;
+    __syncthreads();
+    if (kw < 3 && m < M) {
+        float s_=0.f; for (int k=0;k<15;k++) s_ += sy[k][kw][lane];
+        int e = m*3+kw;
+        float dd = z[e] + bev*d[e]; float aa = s_ + bev*Ad[e]; d[e]=dd; Ad[e]=aa; pd += dd*aa;
+    }
+    double b3 = block_sum((double)pd);
+    if (threadIdx.x==0) atomicAdd(&acc[4], b3);
+    if (last_block(cnt) && threadIdx.x == 0) {
+        volatile double* va = acc;
+        double dAd = va[4];
+        acc[4] = 0; *cnt = 0;
+        st[1] = dAd;
+        if (!(dAd > 0)) { fl[4] = 1; fl[0] = 1; }
+        __threadfence();
+    }
+}
+
 #define PCG_T2_ARGS int M, int Ms, const float* B, const int* nb, const float* Dinv, const double* bs, double* xh, float* x, float* r, float* z, \
     float* d, float* Ad, double* acc, double* sc, unsigned int* bar, double thr, int maxit, double delta2
 #define PCG_T2_CALL(R) pcg_t2_body<R>(M, Ms, B, nb, Dinv, bs, xh, x, r, z, d, Ad, acc, sc, bar, thr, maxit, delta2)
@@ -844,3 +947,106 @@ def solve_p1(PC, M, b, rtol, ncg, kern="pcg_p1_r2", delta=0.1, cap=2):
     out = T_["sc"][2:6].tolist()
     PC.last_nup = int(out[3])
     return (T_["xh"][:n] + T_["x"][:n].double()) * sc_, int(out[0]), float(out[1]) ** 0.5, bool(out[2] > 0.5)
+
+
+class GraphPcg:
+    """pcg_g*: 그래프 재생 혼합 정밀도 PCG (fem_rt_cuda solve_tile prec 32 mode 1 과 같은 식·같은 멈춤 판정). 반복 K 개를 그래프 하나로 잡고
+    (노드 수 상한 묶음별로 한 번), 재생 j 를 띄운 뒤 재생 j-1 의 끝 표식만 확인 (한 재생 앞서 보내 GPU 가 호스트를 기다리지 않게)."""
+
+    def __init__(self, PC, K=20, bucket=2048):
+        self.PC, self.K, self.bucket = PC, int(K), int(bucket)
+        dev = PC.dev
+        Mx = PC.Mmax
+        f4, f8 = torch.float32, torch.float64
+        self.v = {nm: torch.zeros(Mx * 3, dtype=f4, device=dev) for nm in ("x", "r", "z", "d", "Ad")}
+        self.bs = torch.zeros(Mx * 3, dtype=f8, device=dev)
+        self.xh = torch.zeros(Mx * 3, dtype=f8, device=dev)
+        self.Di = torch.zeros(Mx * 9, dtype=f4, device=dev)
+        self.st = torch.zeros(8, dtype=f8, device=dev)
+        self.fl = torch.zeros(8, dtype=torch.int32, device=dev)
+        self.acc = torch.zeros(8, dtype=f8, device=dev)
+        self.cnt = torch.zeros(2, dtype=torch.int32, device=dev)
+        self.pin = [torch.zeros(8, dtype=torch.int32).pin_memory() for _ in range(2)]
+        self.ev = [torch.cuda.Event() for _ in range(2)]
+        self.graphs = {}
+
+    def _launch(self, Mcap):
+        md = _mod2()
+        PC = self.PC
+        v = self.v
+        gn = ((Mcap + 255) // 256,)
+        ge = ((3 * Mcap + 255) // 256,)
+        gt = ((Mcap + 31) // 32,)
+        fu, fa, fb, fd = (md.get_function(q) for q in ("g_upd", "g_rel_a", "g_rel_b", "g_dir"))
+        au = (_p(self.Di), _p(v["x"]), _p(v["r"]), _p(v["z"]), _p(v["d"]), _p(v["Ad"]), _p(self.st), _p(self.fl), _p(self.acc), _p(self.cnt))
+        aa = (_p(self.xh), _p(v["x"]), _p(self.fl))
+        ab = (np.int32(PC.Mmax), _p(PC.B), _p(PC.nb), _p(self.Di), _p(self.bs), _p(self.xh), _p(v["r"]), _p(v["z"]), _p(self.st), _p(self.fl), _p(self.acc), _p(self.cnt))
+        ad = (np.int32(PC.Mmax), _p(PC.B), _p(PC.nb), _p(v["z"]), _p(v["d"]), _p(v["Ad"]), _p(self.st), _p(self.fl), _p(self.acc), _p(self.cnt))
+        for _ in range(self.K):
+            fu(gn, (256,), au)
+            fa(ge, (256,), aa)
+            fb(gn, (256,), ab)
+            fd(gt, (512,), ad)
+
+    def solve(self, M, b, rtol, ncg, delta=0.1):
+        PC = self.PC
+        n = 3 * M
+        v = self.v
+        Mcap = ((M + self.bucket - 1) // self.bucket) * self.bucket
+        sc_ = (b * b).sum().clamp_min(1e-300).sqrt()
+        bs = b / sc_
+        self.bs[:n].copy_(bs)
+        self.Di[:M * 9].copy_(PC.Dinv[:M * 9])
+        self.xh.zero_()
+        for q in v.values():
+            q.zero_()
+        rV = bs.float()
+        v["r"][:n].copy_(rV)
+        zV = (self.Di[:M * 9].view(M, 3, 3) @ rV.view(M, 3, 1)).view(-1)
+        v["z"][:n].copy_(zV)
+        v["d"][:n].copy_(zV)
+        nt = (M + 31) // 32
+        with _Stream():
+            _mod2().get_function("bell_mv_th0")((nt,), (512,), (np.int32(M), _p(PC.B), _p(None), _p(PC.nb), _p(v["d"]), _p(v["Ad"]), np.int32(PC.Mmax)))
+        self.acc.zero_()
+        self.cnt.zero_()
+        self.st.zero_()
+        self.st[0] = (rV.double() * zV.double()).sum()
+        self.st[1] = (v["d"][:n].double() * v["Ad"][:n].double()).sum()
+        self.st[2] = 1.0
+        self.st[3] = 1.0
+        self.st[5] = rtol * rtol
+        self.st[6] = delta * delta
+        self.fl.copy_(torch.tensor([0, 0, 0, 0, 0, int(ncg), M, 0], dtype=torch.int32), non_blocking=True)
+        if Mcap not in self.graphs:
+            s = torch.cuda.Stream()
+            s.wait_stream(torch.cuda.current_stream())
+            gr = torch.cuda.CUDAGraph()
+            with torch.cuda.stream(s), _Stream():
+                gr.capture_begin()
+                self._launch(Mcap)
+                gr.capture_end()
+            torch.cuda.current_stream().wait_stream(s)
+            self.graphs[Mcap] = gr
+        gr = self.graphs[Mcap]
+        cs = torch.cuda.current_stream()
+        nrep = 0
+        maxrep = (int(ncg) + self.K - 1) // self.K + 2
+        gr.replay()
+        self.pin[0].copy_(self.fl, non_blocking=True)
+        self.ev[0].record(cs)
+        nrep = 1
+        while nrep < maxrep:
+            gr.replay()                                                        # 재생 nrep (앞서 보냄)
+            j = nrep % 2
+            self.pin[j].copy_(self.fl, non_blocking=True)
+            self.ev[j].record(cs)
+            self.ev[1 - j].synchronize()                                      # 재생 nrep-1 의 끝 표식
+            nrep += 1
+            if int(self.pin[1 - j][0]):
+                break
+        self.n_replay = nrep
+        out_f = self.fl.tolist()
+        out_s = self.st.tolist()
+        PC.last_nup = int(out_f[3])
+        return (self.xh[:n] + v["x"][:n].double()) * sc_, int(out_f[2]), float(out_s[2]) ** 0.5, bool(out_f[4])

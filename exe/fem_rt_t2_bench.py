@@ -76,8 +76,15 @@ for t in a.t:
           flush=True)
     for kern in [q for q in a.kerns.split(",") if q]:
         try:
-            fsolve = R2.solve_p1 if kern.startswith("pcg_p1") else R2.solve_t2
-            (xx, it, rr, neg), tt = tm(lambda: fsolve(PC, M, b, 1e-6, 20000, kern=kern, delta=0.1, cap=3))
+            if kern.startswith("graph"):
+                if not hasattr(PC, "gp_" + kern):
+                    setattr(PC, "gp_" + kern, R2.GraphPcg(PC, K=int(kern[5:] or 20)))
+                GP = getattr(PC, "gp_" + kern)
+                (xx, it, rr, neg), tt = tm(lambda: GP.solve(M, b, 1e-6, 20000, delta=0.1))
+                PC.t2_info = f"K {GP.K}, 재생 {GP.n_replay}"
+            else:
+                fsolve = R2.solve_p1 if kern.startswith("pcg_p1") else R2.solve_t2
+                (xx, it, rr, neg), tt = tm(lambda: fsolve(PC, M, b, 1e-6, 20000, kern=kern, delta=0.1, cap=3))
         except Exception as ex:                                          # noqa: BLE001
             print(f"  {kern}: 실패 {ex!r}", flush=True)
             continue

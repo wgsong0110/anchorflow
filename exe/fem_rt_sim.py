@@ -114,6 +114,7 @@ ap.add_argument("--p2gk", action="store_true", help="J4: 입자 바닥 P2G (바�
 ap.add_argument("--lowsync", action="store_true", help="J4: E0·|p|∞·gᵀp 를 선탐색 직전 한 번에 읽고, 실제 잔차·음 사면체 수 기록은 시간 측정 밖에서")
 ap.add_argument("--th", type=int, default=-1, help="J2: --pcg2 9 의 안쪽 행렬 형식 (0 f32 척도, 1 f16, 2 bf16; 야코비 대칭 척도 S A S)")
 ap.add_argument("--th_dg32", action="store_true", help="J2: 16 비트 행렬에서 대각 블록은 float32")
+ap.add_argument("--gk", type=int, default=20, help="J2: --pcg2 12 그래프 하나에 담는 반복 수")
 ap.add_argument("--t2_kern", default="pcg_t2_r2", help="J2: --pcg2 10 (pcg_t6 혼합과 같은 식, 곱 메모리 병렬도 높인 지속 커널) 의 커널 이름 (pcg_t2_r{1,2,4}[b2])")
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--dump_f32", action="store_true", help="덤프 F 를 float32 로 (ψ 계산용 -- float16 은 작은 변형의 ψ 를 덮는다; 기본 float16)")
@@ -381,7 +382,13 @@ for i in range(L):
                 steps.append(st)
                 break
             b = gg.reshape(-1).double()
-            if a.pcg2 in (10, 11):
+            if a.pcg2 == 12:
+                # J2: 그래프 재생 혼합 PCG (반복당 커널 4 개, 전역 장벽 없음; pcg_t6 혼합과 같은 식·판정)
+                if not hasattr(PC, "gp"):
+                    PC.gp = RTC2.GraphPcg(PC, K=a.gk)
+                xx, it, res, negc = PC.gp.solve(M_, b, a.rtol, a.pcg_max, delta=a.mix_delta)
+                st["mix_upd"] = PC.last_nup
+            elif a.pcg2 in (10, 11):
                 # J2: 10 = pcg_t2 (pcg_t6 혼합과 같은 식, 곱 메모리 병렬도), 11 = pcg_p1 (파이프라인 혼합 PCG, 반복당 장벽 1)
                 xx, it, res, negc = (RTC2.solve_t2 if a.pcg2 == 10 else RTC2.solve_p1)(PC, M_, b, a.rtol, a.pcg_max, kern=a.t2_kern, delta=a.mix_delta, cap=3)
                 st["mix_upd"] = PC.last_nup
