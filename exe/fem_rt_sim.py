@@ -56,6 +56,9 @@ ap.add_argument("--nf_mfloor", type=float, default=0.0, help="장벽·고착 무
 ap.add_argument("--solver", choices=["pcg", "mg", "pdpcg", "pd", "vbd"], default="pcg")
 ap.add_argument("--newton", type=int, default=1)
 ap.add_argument("--tol", type=float, default=1e-2, help="AF_FEM_TOL: |p|∞/(h·EXT) < tol 이면 수렴 (걸음 안 함)")
+ap.add_argument("--min_steps", type=int, default=0, help="AF_FEM_MIN_STEPS: 받아들인 걸음이 n 개 미만이면 |p| 판정으로 수렴 처리 안 함 (1 = 걸음 0 수렴 금지; 기본 0 = 기존)")
+ap.add_argument("--gtol", type=float, default=0.0, help="AF_FEM_GTOL: |p| 판정에 더해 |g|/|g0| < gtol 도 요구 (g0 = 프레임 시작 기울기, 자유 노드; 0 = 끔 = 기존). "
+                "뉴턴 상한 1 이면 판정은 걸음 0 에서만 일어나고 그때 |g|/|g0| = 1 이라 gtol < 1 이면 걸음 0 수렴이 막힌다 (min_steps 1 과 같은 효과)")
 ap.add_argument("--pcg_max", type=int, default=10000)
 ap.add_argument("--rtol", type=float, default=1e-6)
 ap.add_argument("--ck", type=int, default=50, help="PCG 수렴 확인 간격")
@@ -248,6 +251,7 @@ for i in range(L):
     csr = RT.Csr(tets, G.M) if not (a.bell or a.csr_bell or a.cuda) else None
     tk("pattern")
     steps = []
+    nacc, g0n = 0, None
     for k in range(a.newton):
         st = {}
         if a.floor == "particle" and k > 0:
@@ -480,7 +484,10 @@ for i in range(L):
             st["why"] = "nan"
             steps.append(st)
             break
-        if pin < a.tol:
+        gn_ = float(gg.double().norm())
+        g0n = gn_ if g0n is None else g0n
+        st["g_rel"] = gn_ / max(g0n, 1e-300)
+        if pin < a.tol and nacc >= a.min_steps and (a.gtol <= 0 or st["g_rel"] < a.gtol):
             st["why"] = "수렴"
             steps.append(st)
             break
@@ -510,6 +517,7 @@ for i in range(L):
                 break
         if acc:
             U = U - al * pd_
+            nacc += 1
         tk("ls")
         st.update(alpha=al if acc else 0.0, acc=acc, n_ls=nls, E1=(En if acc else Ec), lm=(tries if len(tries) > 1 else None))
         steps.append(st)
@@ -571,6 +579,7 @@ summ = dict(out=a.out, args=vars(a), frames=L, err_mean=sum(errs) / len(errs), m
             frames_below=sum(1 for r in recs if (r["n_below"] or 0) > 0),
             lm_frames=sum(1 for r in recs if r["steps"] and r["steps"][0].get("lm")),
             rej_frames=sum(1 for r in recs if r["steps"] and r["steps"][0].get("acc") is False),
+            nostep_frames=sum(1 for r in recs if not any(q.get("acc") for q in r["steps"])),
             pd_nfact=(PDF.n_fact if PDF else None), pd_tfact_ms=(1e3 * PDF.t_fact / max(PDF.n_fact, 1) if PDF else None),
             true_res_max=max([r["steps"][0].get("true_res") or 0.0 for r in recs if r["steps"]] or [0.0]),
             true_res_med=med([r["steps"][0].get("true_res") or 0.0 for r in recs if r["steps"]]),
