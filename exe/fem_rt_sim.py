@@ -26,6 +26,7 @@ import torch                                                                    
 from anchorflow import deform_model as DM                                           # noqa: E402
 from anchorflow import fem_fast as FF                                               # noqa: E402
 from anchorflow import fem_rt as RT                                                 # noqa: E402
+from anchorflow import fem_rt_cuda as RTC                                           # noqa: E402
 from anchorflow import phys_resid as PR                                             # noqa: E402
 
 ap = argparse.ArgumentParser()
@@ -63,6 +64,8 @@ ap.add_argument("--fast", action="store_true", help="정렬 없는 격자 압축
 ap.add_argument("--bell", action="store_true", help="CSR 대신 블록 ELL (15 점 스텐실) 곱만 (패턴 정렬 없음)")
 ap.add_argument("--hess", choices=["newton", "gn"], default="newton", help="gn = 가우스-뉴턴 탄성 헤시안 (양반정, 고유분해 투영 없음; --floor node)")
 ap.add_argument("--csr_bell", action="store_true", help="CSR 를 블록 ELL 에서 정렬 없이 (패턴 정렬 생략, 곱은 cuSPARSE)")
+ap.add_argument("--cuda", action="store_true", help="손으로 쓴 CUDA 커널 (fem_rt_cuda): E·기울기, 헤시안+|λ| 투영+블록 ELL 합, PCG (--floor node)")
+ap.add_argument("--mmax", type=int, default=60000)
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--dump_sys", default="", help="쉼표 프레임 목록: 그 프레임 첫 걸음 선형계 (블록 ELL·b) 를 <out>/sys_t###.pt 로")
@@ -96,6 +99,7 @@ print(f"[실시간 FEM] 입자 {N}, 프레임 {L}, h {h:.6f}, E {cfg['E']:g} ν 
       f"(d̂ {dhat:g}, κ {a.kappa:g}, k_st {a.k_st:g}), 풀이 {a.solver}, 뉴턴 {a.newton}, 계측 {'동기화' if a.prof else '끝만'}", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
 
+PC = RTC.CudaPcg(a.mmax, dev) if a.cuda else None
 PDF = RT.PdFactor() if a.solver in ("pdpcg", "pd") else None
 PRED = torch.empty(L, N, 3, device=dev) if not a.no_dump else None
 VD = torch.empty(L, N, 3, device=dev, dtype=torch.float16) if not a.no_dump else None
@@ -128,6 +132,9 @@ for i in range(L):
                           m_floor=a.nf_mfloor * M_FULL, stick_w=a.nf_stick)
         if a.fast:
             fr.energy, fr.energy_grad = fr.energy_fast, fr.energy_grad_fast
+        if a.cuda:
+            CF = RTC.CudaFem(fr)
+            fr.energy, fr.energy_grad = CF.energy, CF.energy_grad
         tets = G.tets
     else:
         fr = FF.FemFrame(x, v, F, m, vol, G.rows, G.lam, G.npos, None, cfg, h, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True, dtype=torch.float32)
@@ -186,80 +193,109 @@ for i in range(L):
         gg = gg.to(U.dtype)
         Ec = float(E0)
         tk("eg")
-        if a.floor == "node":
-            He, Dn = fr.hess_gn(U) if a.hess == "gn" else fr.hess(U, f32_b=a.fast)
-        else:
-            He, _fi = fr.hess_tetq(U)
-            Dn = None
-        tk("hess")
-        if a.hess == "gn":
-            negf = None
-        else:
-            He, negf = RT.project(He, a.eig_floor, gate=a.proj_gate)
-        tk("proj")
-        if a.bell:
-            Be = RT.BEll(G.gi)
-            Be.add_tets(tets, He)
-            if Dn is not None:
-                Be.add_diag(Dn)
-            A = Be
-            D = Be.diag().clone()
+        if a.cuda:
+            M_ = G.M
+            gi = G.gi
+            slots = (tets.unsqueeze(-1) * 15 + RT.off_cls(gi[tets].unsqueeze(1) - gi[tets].unsqueeze(2))).int().contiguous()
+            PC.B[:M_ * 135].zero_()
+            CF.cnt.zero_()
+            CF.hess_into(U, slots, PC.B, a.eig_floor)
+            Dn = fr._floor_hess(U)
+            Bv = PC.B[:M_ * 135].view(M_, 15, 9)
+            Bv[:, 0] += Dn.reshape(M_, 9).float()
+            tk("hess")
+            D = Bv[:, 0].double().reshape(M_, 3, 3)
             bad = ~(torch.diagonal(D, dim1=1, dim2=2) > 0).all(1)
             D[bad] = torch.eye(3, device=dev, dtype=D.dtype)
-            mv = Be.mv
-        elif a.csr_bell:
-            Be = RT.BEll(G.gi)
-            Be.add_tets(tets, He)
-            if Dn is not None:
-                Be.add_diag(Dn)
-            A = Be.to_csr_sorted(G.nn)
-            if i == 0 and k == 0:
-                _v = torch.randn(3 * G.M, device=dev, dtype=torch.float64)
-                print(f"[검산] 정렬 없는 CSR 곱 vs 블록 ELL 곱 상대차 {float(((A @ _v.unsqueeze(-1)).squeeze(-1) - Be.mv(_v)).norm() / Be.mv(_v).norm()):.2e}", flush=True)
-            D = Be.diag().clone()
-            bad = ~(torch.diagonal(D, dim1=1, dim2=2) > 0).all(1)
-            D[bad] = torch.eye(3, device=dev, dtype=D.dtype)
-            mv = lambda q: (A @ q.unsqueeze(-1)).squeeze(-1)
-        else:
-            A = csr.build(He, Dn)
-            D = RT.block_diag(tets, He, G.M, Dn)
-            mv = lambda q: (A @ q.unsqueeze(-1)).squeeze(-1)
-        Dinv = torch.linalg.inv(D)
-        tk("asm")
-        jac = lambda r: (Dinv @ r.reshape(-1, 3, 1)).reshape(-1)
-        pre = jac
-        if a.solver == "mg":
-            if not (a.bell or a.csr_bell):
+            Dinv = torch.linalg.inv(D)
+            PC.Dinv[:M_ * 9].copy_(Dinv.reshape(-1))
+            nbl = RT.BEll(G.gi, dtype=torch.float32)
+            PC.nb[:M_ * 15].copy_(nbl.nb.reshape(-1).int())
+            tk("asm")
+            b = gg.reshape(-1).double()
+            xx, it, res, negc = PC.solve(M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
+            negf = int(CF.cnt[1]) / G.T
+            tk("pcg")
+            Bd = Bv.view(M_, 15, 3, 3)
+            nbi = nbl.nb
+            mv = lambda q: torch.einsum("mkab,mkb->ma", Bd.double(), q.reshape(M_, 3)[nbi]).reshape(-1)
+        if a.cuda:
+            pass
+        elif True:
+            if a.floor == "node":
+                He, Dn = fr.hess_gn(U) if a.hess == "gn" else fr.hess(U, f32_b=a.fast)
+            else:
+                He, _fi = fr.hess_tetq(U)
+                Dn = None
+            tk("hess")
+            if a.hess == "gn":
+                negf = None
+            else:
+                He, negf = RT.project(He, a.eig_floor, gate=a.proj_gate)
+            tk("proj")
+            if a.bell:
                 Be = RT.BEll(G.gi)
                 Be.add_tets(tets, He)
                 if Dn is not None:
                     Be.add_diag(Dn)
-            MG = RT.KuhnMG(Be, nu=a.mg_nu, omega=a.mg_omega, nmin=a.mg_nmin, dtype=torch.float32 if a.mg_f32 else torch.float64,
-                           A0csr=(None if a.bell else A), bell=a.bell)
-            pre = MG
-            st.update(mg_levels=MG.sizes, mg_drop=MG.drop)
-        elif a.solver == "pdpcg":
-            cd = None
-            if a.pd_floor_diag and Dn is not None:
-                cd = torch.diagonal(Dn, dim1=1, dim2=2).mean(1)
-            VT = fr.VT if a.floor == "node" else torch.zeros(G.T, device=dev, dtype=torch.float64).index_add_(0, G.pinv, vol.double())
-            new = PDF.build(G, ws.double(), VT, h, a.pd_w * 2.0 * mu, cdiag=cd, reuse=bool(a.pd_reuse))
-            st["pd_fact"] = bool(new)
-            pre = PDF.solve
-        tk("pre")
-        b = gg.reshape(-1).double()
-        if i in sys_dump and k == 0:
-            Be2 = RT.BEll(G.gi)
-            Be2.add_tets(tets, He)
-            if Dn is not None:
-                Be2.add_diag(Dn)
-            torch.save(dict(gi=G.gi.cpu(), nb=Be2.nb.cpu(), valid=Be2.valid.cpu(), B=Be2.B.cpu(), b=b.cpu(), tets=tets.cpu(), He=He.float().cpu(),
-                            Dn=(Dn.cpu() if Dn is not None else None), M=G.M, t=i, mn=ws.cpu(), VT=(fr.VT.cpu() if a.floor == "node" else None),
-                            gl=G.gl8.cpu(), mu=mu, h=h), os.path.join(a.out, f"sys_t{i:03d}.pt"))
-            tk("dump")
-        _r = RT.pcg_graph(mv, pre, b, a.pcg_max, a.rtol) if a.graph else None
-        xx, it, res, negc = _r if _r is not None else RT.pcg(mv, pre, b, a.pcg_max, a.rtol, (min(a.ck, 2) if a.solver == 'mg' else a.ck))
-        tk("pcg")
+                A = Be
+                D = Be.diag().clone()
+                bad = ~(torch.diagonal(D, dim1=1, dim2=2) > 0).all(1)
+                D[bad] = torch.eye(3, device=dev, dtype=D.dtype)
+                mv = Be.mv
+            elif a.csr_bell:
+                Be = RT.BEll(G.gi)
+                Be.add_tets(tets, He)
+                if Dn is not None:
+                    Be.add_diag(Dn)
+                A = Be.to_csr_sorted(G.nn)
+                if i == 0 and k == 0:
+                    _v = torch.randn(3 * G.M, device=dev, dtype=torch.float64)
+                    print(f"[검산] 정렬 없는 CSR 곱 vs 블록 ELL 곱 상대차 {float(((A @ _v.unsqueeze(-1)).squeeze(-1) - Be.mv(_v)).norm() / Be.mv(_v).norm()):.2e}", flush=True)
+                D = Be.diag().clone()
+                bad = ~(torch.diagonal(D, dim1=1, dim2=2) > 0).all(1)
+                D[bad] = torch.eye(3, device=dev, dtype=D.dtype)
+                mv = lambda q: (A @ q.unsqueeze(-1)).squeeze(-1)
+            else:
+                A = csr.build(He, Dn)
+                D = RT.block_diag(tets, He, G.M, Dn)
+                mv = lambda q: (A @ q.unsqueeze(-1)).squeeze(-1)
+            Dinv = torch.linalg.inv(D)
+            tk("asm")
+            jac = lambda r: (Dinv @ r.reshape(-1, 3, 1)).reshape(-1)
+            pre = jac
+            if a.solver == "mg":
+                if not (a.bell or a.csr_bell):
+                    Be = RT.BEll(G.gi)
+                    Be.add_tets(tets, He)
+                    if Dn is not None:
+                        Be.add_diag(Dn)
+                MG = RT.KuhnMG(Be, nu=a.mg_nu, omega=a.mg_omega, nmin=a.mg_nmin, dtype=torch.float32 if a.mg_f32 else torch.float64,
+                               A0csr=(None if a.bell else A), bell=a.bell)
+                pre = MG
+                st.update(mg_levels=MG.sizes, mg_drop=MG.drop)
+            elif a.solver == "pdpcg":
+                cd = None
+                if a.pd_floor_diag and Dn is not None:
+                    cd = torch.diagonal(Dn, dim1=1, dim2=2).mean(1)
+                VT = fr.VT if a.floor == "node" else torch.zeros(G.T, device=dev, dtype=torch.float64).index_add_(0, G.pinv, vol.double())
+                new = PDF.build(G, ws.double(), VT, h, a.pd_w * 2.0 * mu, cdiag=cd, reuse=bool(a.pd_reuse))
+                st["pd_fact"] = bool(new)
+                pre = PDF.solve
+            tk("pre")
+            b = gg.reshape(-1).double()
+            if i in sys_dump and k == 0:
+                Be2 = RT.BEll(G.gi)
+                Be2.add_tets(tets, He)
+                if Dn is not None:
+                    Be2.add_diag(Dn)
+                torch.save(dict(gi=G.gi.cpu(), nb=Be2.nb.cpu(), valid=Be2.valid.cpu(), B=Be2.B.cpu(), b=b.cpu(), tets=tets.cpu(), He=He.float().cpu(),
+                                Dn=(Dn.cpu() if Dn is not None else None), M=G.M, t=i, mn=ws.cpu(), VT=(fr.VT.cpu() if a.floor == "node" else None),
+                                gl=G.gl8.cpu(), mu=mu, h=h), os.path.join(a.out, f"sys_t{i:03d}.pt"))
+                tk("dump")
+            _r = RT.pcg_graph(mv, pre, b, a.pcg_max, a.rtol) if a.graph else None
+            xx, it, res, negc = _r if _r is not None else RT.pcg(mv, pre, b, a.pcg_max, a.rtol, (min(a.ck, 2) if a.solver == 'mg' else a.ck))
+            tk("pcg")
         p = xx.reshape(G.M, 3).to(U.dtype)
         pin = float(p.abs().max()) / (h * EXT)
         gp = float((gg * p).sum())
