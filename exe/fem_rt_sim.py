@@ -108,7 +108,7 @@ print(f"[명령] {' '.join(sys.argv)}", flush=True)
 
 PC = RTC.CudaPcg(a.mmax, dev) if a.cuda else None
 PDF = RT.PdFactor() if a.solver in ("pdpcg", "pd") else None
-PRED = torch.empty(L, N, 3, device=dev) if not a.no_dump else None
+PRED = torch.empty(L, N, 3, device=dev) if (not a.no_dump or a.dump_pred) else None
 VD = torch.empty(L, N, 3, device=dev, dtype=torch.float16) if not a.no_dump else None
 FD = torch.empty(L, N, 3, 3, device=dev, dtype=torch.float16) if not a.no_dump else None
 errs = []
@@ -389,6 +389,7 @@ for i in range(L):
         smin, nbelow = float(s.min()), int((s < 0).sum())
     if PRED is not None:
         PRED[i] = x2
+    if VD is not None:
         VD[i] = v2.half()
         FD[i] = F2.half()
     rec.update(sec=t_frame, ms=tk.d, steps=steps, err=e, s_min=smin, n_below=nbelow, M=G.M, T=G.T, nnz=(csr.nnz if csr is not None else None))
