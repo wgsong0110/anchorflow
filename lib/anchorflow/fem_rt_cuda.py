@@ -1516,6 +1516,118 @@ __device__ __forceinline__ void pcg_mix_body(int M, int Ms, const float* B, cons
     }
     if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; sc[5]=nup; }
 }
+// ---------------- tiled block-ELL matvec: a block of 512 threads = 16 warps handles a tile of 32 nodes; warp k (< 15) takes neighbor slot k
+// (coalesced over the 32 nodes), partial 3-vectors are summed over slots in shared memory. Much more parallelism than one thread per node.
+template <typename V> __device__ __forceinline__ void tile_part(int m, int k, int M, int Ms, const float* B, const int* nb, const V* v, int sym,
+                                                                V& a0, V& a1, V& a2) {
+    a0 = 0; a1 = 0; a2 = 0;
+    if (m >= M || k >= 15) return;
+    int j = nb[k*Ms+m];
+    if (j < 0) return;
+    V x0 = __ldcg(&v[j*3]), x1 = __ldcg(&v[j*3+1]), x2 = __ldcg(&v[j*3+2]);
+    if (!sym || k < 8) {
+        const float* bb = B + (long long)k*9*Ms + m;
+        a0 = (V)bb[0]*x0 + (V)bb[Ms]*x1 + (V)bb[2*(long long)Ms]*x2;
+        a1 = (V)bb[3*(long long)Ms]*x0 + (V)bb[4*(long long)Ms]*x1 + (V)bb[5*(long long)Ms]*x2;
+        a2 = (V)bb[6*(long long)Ms]*x0 + (V)bb[7*(long long)Ms]*x1 + (V)bb[8*(long long)Ms]*x2;
+    } else {
+        const float* bb = B + (long long)(k-7)*9*Ms + j;          // transpose of neighbor's positive block
+        a0 = (V)bb[0]*x0 + (V)bb[3*(long long)Ms]*x1 + (V)bb[6*(long long)Ms]*x2;
+        a1 = (V)bb[Ms]*x0 + (V)bb[4*(long long)Ms]*x1 + (V)bb[7*(long long)Ms]*x2;
+        a2 = (V)bb[2*(long long)Ms]*x0 + (V)bb[5*(long long)Ms]*x1 + (V)bb[8*(long long)Ms]*x2;
+    }
+}
+template <typename V> __device__ void bell_mv_tile_body(int M, const float* B, const int* nb, const V* v, V* y, int Ms, int sym) {
+    __shared__ V sy[16][3][33];
+    int lane = threadIdx.x & 31, k = threadIdx.x >> 5;
+    int m = blockIdx.x*32 + lane;
+    V a0, a1, a2; tile_part<V>(m, k, M, Ms, B, nb, v, sym, a0, a1, a2);
+    sy[k][0][lane]=a0; sy[k][1][lane]=a1; sy[k][2][lane]=a2;
+    __syncthreads();
+    if (k < 3 && m < M) { V s=0; for (int q=0;q<15;q++) s += sy[q][k][lane]; y[m*3+k] = s; }
+}
+// persistent PCG on the tiled matvec. V = float: float32 vectors (mode 1 = float64 reliable updates, mode 0 = float32 alone);
+// V = double: float64 vectors (mode 0 = plain float64 PCG, same algebra as pcg_coop1). blockDim must be 512.
+template <typename V> __device__ void pcg_tile_body(int M, int Ms, const float* B, const int* nb, const V* Dinv, const double* bs, double* xh,
+                        V* x, V* r, V* z, V* d, V* Ad, double* acc, double* sc, unsigned int* bar, double thr, int maxit, int sym, int mode, double delta2) {
+    __shared__ V sy[16][3][33];
+    unsigned int nblk = gridDim.x;
+    int tid = blockIdx.x*blockDim.x + threadIdx.x, nth = gridDim.x*blockDim.x;
+    int lane = threadIdx.x & 31, kw = threadIdx.x >> 5;
+    int ntile = (M + 31) / 32;
+    volatile double* va = acc;
+    double rz = sc[0], dAd = sc[1];
+    int nit = 0, neg = 0, p = 0, nup = 0, q = 0;
+    double rr = 1.0, rmax = 1.0;
+    for (int it=0; it<maxit; it++) {
+        if (!(dAd > 0)) { neg = 1; break; }
+        V al = (V)(rz/dAd);
+        V prr=0, prz=0;
+        for (int m=tid; m<M; m+=nth) {
+            V rv[3];
+            for (int c=0;c<3;c++){ x[m*3+c] += al*d[m*3+c]; V rc = r[m*3+c] - al*Ad[m*3+c]; r[m*3+c]=rc; rv[c]=rc; }
+            const V* D = Dinv + m*9;
+            for (int c=0;c<3;c++){ V zz = D[c*3]*rv[0]+D[c*3+1]*rv[1]+D[c*3+2]*rv[2]; z[m*3+c]=zz; prz += rv[c]*zz; prr += rv[c]*rv[c]; }
+        }
+        double b1 = block_sum((double)prr); double b2 = block_sum((double)prz);
+        if (threadIdx.x==0) { atomicAdd(&acc[p*3+1], b1); atomicAdd(&acc[p*3+2], b2); }
+        if (tid==0) { acc[(1-p)*3]=0; acc[(1-p)*3+1]=0; acc[(1-p)*3+2]=0; }
+        gbar(bar, bar+1, nblk);
+        rr = va[p*3+1]; double rz2 = va[p*3+2];
+        nit++;
+        if (mode == 1 && (rr < delta2*rmax || rr < thr)) {
+            for (int m=tid; m<M; m+=nth) for (int c=0;c<3;c++){ xh[m*3+c] += (double)x[m*3+c]; x[m*3+c] = 0; }
+            if (tid==0) { acc[6+(1-q)*2]=0; acc[6+(1-q)*2+1]=0; }
+            gbar(bar, bar+1, nblk);
+            double trr=0, trz=0;
+            for (int m=tid; m<M; m+=nth) {
+                double rv[3];
+                for (int c=0;c<3;c++) {
+                    double ax = sym ? ell_row_sym<true>(m, c, Ms, B, nb, xh) : ell_row<true>(m, c, Ms, B, nb, xh);
+                    rv[c] = bs[m*3+c] - ax; r[m*3+c] = (V)rv[c];
+                }
+                const V* D = Dinv + m*9;
+                for (int c=0;c<3;c++){ V zz = D[c*3]*(V)rv[0]+D[c*3+1]*(V)rv[1]+D[c*3+2]*(V)rv[2]; z[m*3+c]=zz; trz += rv[c]*(double)zz; trr += rv[c]*rv[c]; }
+            }
+            double c1 = block_sum(trr); double c2 = block_sum(trz);
+            if (threadIdx.x==0) { atomicAdd(&acc[6+q*2], c1); atomicAdd(&acc[6+q*2+1], c2); }
+            gbar(bar, bar+1, nblk);
+            rr = va[6+q*2]; rz2 = va[6+q*2+1];
+            q = 1-q; nup++;
+            rmax = rr;
+            if (rr < thr) break;
+        } else if (mode != 1 && rr < thr) {
+            break;
+        } else if (rr > rmax) rmax = rr;
+        double be = rz2/rz; rz = rz2;
+        V bev = (V)be;
+        V pd = 0;
+        for (int tile = blockIdx.x; tile < ntile; tile += gridDim.x) {
+            int m = tile*32 + lane;
+            V a0, a1, a2; tile_part<V>(m, kw, M, Ms, B, nb, z, sym, a0, a1, a2);
+            sy[kw][0][lane]=a0; sy[kw][1][lane]=a1; sy[kw][2][lane]=a2;
+            __syncthreads();
+            if (kw < 3 && m < M) {
+                V s=0; for (int qq=0;qq<15;qq++) s += sy[qq][kw][lane];
+                int e = m*3+kw;
+                V dd = z[e] + bev*d[e]; V aa = s + bev*Ad[e]; d[e]=dd; Ad[e]=aa; pd += dd*aa;
+            }
+            __syncthreads();
+        }
+        double b3 = block_sum((double)pd);
+        if (threadIdx.x==0) atomicAdd(&acc[(1-p)*3], b3);
+        gbar(bar, bar+1, nblk);
+        dAd = va[(1-p)*3];
+        p = 1-p;
+    }
+    if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; sc[5]=nup; }
+}
+__global__ void bell_mv_t32(int M, const float* B, const int* nb, const float* v, float* y, int Ms, int sym) { bell_mv_tile_body<float>(M, B, nb, v, y, Ms, sym); }
+__global__ void bell_mv_t64(int M, const float* B, const int* nb, const double* v, double* y, int Ms, int sym) { bell_mv_tile_body<double>(M, B, nb, v, y, Ms, sym); }
+#define PCG_T_ARGS(V) int M, int Ms, const float* B, const int* nb, const V* Dinv, const double* bs, double* xh, V* x, V* r, V* z, V* d, V* Ad, \
+    double* acc, double* sc, unsigned int* bar, double thr, int maxit, int sym, int mode, double delta2
+__global__ void pcg_t32(PCG_T_ARGS(float)) { pcg_tile_body<float>(M, Ms, B, nb, Dinv, bs, xh, x, r, z, d, Ad, acc, sc, bar, thr, maxit, sym, mode, delta2); }
+__global__ void pcg_t64(PCG_T_ARGS(double)) { pcg_tile_body<double>(M, Ms, B, nb, Dinv, bs, xh, x, r, z, d, Ad, acc, sc, bar, thr, maxit, sym, mode, delta2); }
 // micro benchmark: nit iterations of (per-thread work over M rows, 2 block sums + atomics + grid barrier) x 2 -- the PCG skeleton without the math
 __global__ void bar_only(int M, int nit, double* acc, unsigned int* bar, float* v) {
     unsigned int nblk = gridDim.x;
@@ -1866,6 +1978,56 @@ class CudaPcg:
         out = self.mx_sc[2:6].tolist()
         self.last_nup = int(out[3])
         xx = (self.mx_xh[:n] + self.mx_x[:n].double()) if mode == 1 else self.mx_x[:n].double()
+        return xx * sc_, int(out[0]), float(out[1]) ** 0.5, bool(out[2] > 0.5)
+
+    def solve_tile(self, M, b, rtol, ncg, use_graph=True, prec=32, mode=1, delta=0.1):
+        """pcg_t32 / pcg_t64: 노드 32 개 x 이웃 칸 15 워프 타일 곱 (공유 메모리 합) 위의 지속 커널 PCG.
+        prec 32: float32 벡터 (mode 1 = float64 신뢰 갱신 -- 멈춤은 float64 실제 잔차로만, mode 0 = float32 단독);
+        prec 64: float64 벡터 (mode 0, pcg_coop1 과 같은 식). 블록 야코비 역은 같은 정밀도."""
+        n = 3 * M
+        dev = self.dev
+        V = torch.float32 if prec == 32 else torch.float64
+        key = f"tl{prec}"
+        if not hasattr(self, key):
+            bufs = dict(acc=torch.zeros(12, dtype=torch.float64, device=dev), sc=torch.zeros(8, dtype=torch.float64, device=dev),
+                        bar=torch.zeros(2, dtype=torch.int32, device=dev),
+                        bs=torch.zeros(self.Mmax * 3, dtype=torch.float64, device=dev), xh=torch.zeros(self.Mmax * 3, dtype=torch.float64, device=dev),
+                        Di=torch.zeros(self.Mmax * 9, dtype=V, device=dev))
+            for nm in ("x", "r", "z", "d", "Ad"):
+                bufs[nm] = torch.zeros(self.Mmax * 3, dtype=V, device=dev)
+            bufs["nblk"], bufs["info"] = coop_blocks(f"pcg_t{prec}", 512, cap=getattr(self, "tl_cap", 3))
+            setattr(self, key, bufs)
+        T_ = getattr(self, key)
+        self.tl_info = (T_["nblk"], T_["info"])
+        sym = int(getattr(self, "sym", 0))
+        self.Mp.fill_(M)
+        sc_ = (b * b).sum().clamp_min(1e-300).sqrt()
+        bs = b / sc_
+        T_["bs"][:n].copy_(bs)
+        T_["Di"][:M * 9].copy_(self.Dinv[:M * 9])
+        T_["xh"].zero_()
+        T_["x"].zero_()
+        rV = bs.to(V)
+        T_["r"][:n].copy_(rV)
+        zV = (T_["Di"][:M * 9].view(M, 3, 3) @ rV.view(M, 3, 1)).view(-1)
+        T_["z"][:n].copy_(zV)
+        T_["d"][:n].copy_(zV)
+        nt = (M + 31) // 32
+        with _Stream():
+            _mod().get_function(f"bell_mv_t{prec}")((nt,), (512,), (np.int32(M), _cp(self.B), _cp(self.nb), _cp(T_["d"]), _cp(T_["Ad"]), np.int32(self.Mmax), np.int32(sym)))
+        T_["acc"].zero_()
+        T_["bar"].zero_()
+        T_["sc"][0] = (rV.double() * zV.double()).sum()
+        T_["sc"][1] = (T_["d"][:n].double() * T_["Ad"][:n].double()).sum()
+        md = mode if prec == 32 else 0
+        with _Stream():
+            _mod().get_function(f"pcg_t{prec}")((T_["nblk"],), (512,), (np.int32(M), np.int32(self.Mmax), _cp(self.B), _cp(self.nb), _cp(T_["Di"]),
+                                                                    _cp(T_["bs"]), _cp(T_["xh"]), _cp(T_["x"]), _cp(T_["r"]), _cp(T_["z"]), _cp(T_["d"]),
+                                                                    _cp(T_["Ad"]), _cp(T_["acc"]), _cp(T_["sc"]), _cp(T_["bar"]), np.float64(rtol * rtol),
+                                                                    np.int32(ncg), np.int32(sym), np.int32(md), np.float64(delta * delta)))
+        out = T_["sc"][2:6].tolist()
+        self.last_nup = int(out[3])
+        xx = (T_["xh"][:n] + T_["x"][:n].double()) if md == 1 else T_["x"][:n].double()
         return xx * sc_, int(out[0]), float(out[1]) ** 0.5, bool(out[2] > 0.5)
 
     def true_res(self, M, x, b):

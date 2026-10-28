@@ -95,6 +95,24 @@ for t in a.t:
                     md.get_function("bell_mv")(g1, b1, (RTC._cp(PC.Mp), RTC._cp(PC.B), RTC._cp(PC.nb), RTC._cp(x64), RTC._cp(y64), np.int32(PC.Mmax), np.int32(1)))
         _, tmv64 = tm(_mv64)
         print(f"  [곱만 float64 벡터 대칭 반쪽, 커널 100 회 연속] {1e3 * tmv64 / 100:.1f} us/회", flush=True)
+    for prec, mode in ((64, 0), (32, 1), (32, 0)):
+        (xx, it, rr, neg), tt = tm(lambda: PC.solve_tile(M, b, 1e-6, 20000, prec=prec, mode=mode, delta=0.1))
+        tr = PC.true_res(M, xx, b)
+        print(f"  [타일 곱 지속] float{prec} {'혼합' if mode == 1 else ''} 블록 {PC.tl_info}: {it} 회 갱신 {PC.last_nup} {tt:.2f} ms ({1e3 * tt / max(it, 1):.1f} us/회) "
+              f"실제 잔차 {tr:.2e} 해 차 {float((xx - x0).norm() / x0.norm()):.2e}", flush=True)
+    if a.micro:
+        for prec in (32, 64):
+            vv = torch.randn(3 * M, dtype=torch.float32 if prec == 32 else torch.float64, device=dev)
+            yy = torch.empty_like(vv)
+            nt = (M + 31) // 32
+
+            def _mvt(vv=vv, yy=yy, prec=prec, nt=nt):
+                with RTC._Stream():
+                    for _ in range(100):
+                        md.get_function(f"bell_mv_t{prec}")((nt,), (512,), (np.int32(M), RTC._cp(PC.B), RTC._cp(PC.nb), RTC._cp(vv), RTC._cp(yy), np.int32(PC.Mmax), np.int32(1)))
+            _, tq = tm(_mvt)
+            ref = PC.true_res  # noqa
+            print(f"  [타일 곱만 float{prec}, 커널 100 회 연속] {1e3 * tq / 100:.1f} us/회", flush=True)
     for kern, cap, rows in [(q.split(":")[0], int(q.split(":")[1]), int(q.split(":")[2])) for q in a.variants.split(",") if q]:
         PC.mx_cap, PC.mx_kern, PC.mx_rows = cap, kern, rows
         if hasattr(PC, "mx_acc"):

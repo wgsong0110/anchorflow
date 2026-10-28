@@ -66,7 +66,8 @@ ap.add_argument("--hess", choices=["newton", "gn"], default="newton", help="gn =
 ap.add_argument("--csr_bell", action="store_true", help="CSR 를 블록 ELL 에서 정렬 없이 (패턴 정렬 생략, 곱은 cuSPARSE)")
 ap.add_argument("--cuda", action="store_true", help="손으로 쓴 CUDA 커널 (fem_rt_cuda): E·기울기, 헤시안+|λ| 투영+블록 ELL 합, PCG (--floor node)")
 ap.add_argument("--pcg2", type=int, default=1, help="--cuda: 2 커널 PCG (1) / 5 커널 (0) / 지속 커널 (2) / 지속 f32 탐색 벡터 (3) / "
-                "지속 float32 + float64 신뢰 갱신 = 혼합 정밀도 반복 개선 (4) / 지속 float32 단독 (5)")
+                "지속 float32 + float64 신뢰 갱신 = 혼합 정밀도 반복 개선 (4) / 지속 float32 단독 (5) / "
+                "타일 곱 (노드 32 x 이웃 칸 15 워프) 지속 커널: 혼합 (6) / float64 (7) / float32 단독 (8)")
 ap.add_argument("--mix_delta", type=float, default=0.1, help="--pcg2 4: 재귀 잔차가 지난 갱신 뒤 최대의 δ 배 아래면 float64 잔차로 갱신")
 ap.add_argument("--mix_cap", type=int, default=2, help="--pcg2 4/5: SM 당 상주 블록 상한")
 ap.add_argument("--mix_kern", default="pcg_mix", help="--pcg2 4/5: 커널 (pcg_mix / pcg_mix_lb2·lb3·lb4 = __launch_bounds__(256, k))")
@@ -321,7 +322,12 @@ for i in range(L):
                 steps.append(st)
                 break
             b = gg.reshape(-1).double()
-            if a.pcg2 in (4, 5):
+            if a.pcg2 in (6, 7, 8):
+                # 타일 곱 지속 커널: 6 = float32 + float64 신뢰 갱신 (혼합), 7 = float64, 8 = float32 단독
+                xx, it, res, negc = PC.solve_tile(M_, b, a.rtol, a.pcg_max, prec=(64 if a.pcg2 == 7 else 32), mode=(1 if a.pcg2 == 6 else 0),
+                                                  delta=a.mix_delta)
+                st["mix_upd"] = PC.last_nup
+            elif a.pcg2 in (4, 5):
                 xx, it, res, negc = PC.solve_mix(M_, b, a.rtol, a.pcg_max, mode=(1 if a.pcg2 == 4 else 0), delta=a.mix_delta)
                 st["mix_upd"] = PC.last_nup
             else:
