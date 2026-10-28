@@ -14,6 +14,7 @@ while [ "$(nvidia-smi -i $G --query-gpu=memory.used --format=csv,noheader,nounit
 nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader > $O/gpu_at_start.txt
 echo "[명령] 커밋 $C CUDA_VISIBLE_DEVICES=$G python -u exe/fem_rt_sim.py --out $O $*" | tee $O/cmd.txt
 CUDA_VISIBLE_DEVICES=$G python -u exe/fem_rt_sim.py --out $O "$@" < /dev/null > $O/v_fem.log 2>&1
+nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader > $O/gpu_at_end.txt; nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader >> $O/gpu_at_end.txt
 grep -a "롤아웃\]\|구간 중앙" $O/v_fem.log | tail -2 > $O/err_fem.txt
 if [ -f $O/summary.json ]; then touch $O/RT_DONE; else grep -a "Traceback\|Error" $O/v_fem.log | tail -3 > $O/RT_FAIL; fi
 cat $O/err_fem.txt
