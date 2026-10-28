@@ -299,6 +299,8 @@ class Opt:
         imin = torch.floor(y.min(0).values).long() - 1
         imax = torch.ceil(y.max(0).values).long() + 1
         ii = torch.cat([imin, imax, (vmax * h / lmin).ceil().long().view(1)]).tolist()                       # 동기화 1
+        if float(ii[6]) * lmin > 0.25 * EXT:
+            raise _Diverge(f"프레임 이동 max|v|·h > 0.25 EXT ({ii[6]} 셀)")
         nnl = [max(ii[3 + k] - ii[k] + 1, 2) for k in range(3)]
         if a.mode == "sub" and dil < 0:
             dil = int(ii[6]) + 2                                                       # 프레임 최대 이동 (셀) + 2
@@ -306,6 +308,10 @@ class Opt:
             dil = 0
         n0, n1, n2 = nnl
         Pn = n0 * n1 * n2
+        if not hasattr(self, "P0"):
+            self.P0 = Pn
+        if Pn > 8 * self.P0:
+            raise _Diverge(f"격자 상자 {Pn} > 8 x 첫 프레임 {self.P0}")
         lo = (lat.A @ imin.to(lat.A.dtype))
         self.gpar[:3] = lo
         self.gpar[3:] = self.Ai.reshape(-1)
@@ -489,6 +495,10 @@ class _Recapture(Exception):
     pass
 
 
+class _Diverge(Exception):
+    pass
+
+
 OPT = Opt() if a.opt else None
 if OPT is not None:
     RTC.RAWPTR[0] = True
@@ -504,14 +514,23 @@ for i in range(L):
         from torch.profiler import profile, ProfilerActivity
         _TP = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
         _TP.__enter__()
+    if float(v.norm(dim=-1).max()) * h > 0.25 * EXT:                              # 측정 밖 기준과 같은 판정 (기준 판 격자 폭증 방지)
+        div_at = i + 1
+        print(f"[발산] 프레임 {div_at}: 이전 프레임 속도 max|v|·h > 0.25 EXT -- 멈춤", flush=True)
+        break
     torch.cuda.synchronize()
     t0 = time.perf_counter()
-    if OPT is None:
-        x2, v2, F2, st = frame_base(i, x, v, F)
-    else:
-        ncap0 = OPT.n_cap
-        x2, v2, F2 = OPT.frame(i, x, v, F)
-        st = dict(M=OPT.M, T=OPT.T, recap=OPT.n_cap - ncap0)
+    try:
+        if OPT is None:
+            x2, v2, F2, st = frame_base(i, x, v, F)
+        else:
+            ncap0 = OPT.n_cap
+            x2, v2, F2 = OPT.frame(i, x, v, F)
+            st = dict(M=OPT.M, T=OPT.T, recap=OPT.n_cap - ncap0)
+    except _Diverge as ex_:
+        div_at = i + 1
+        print(f"[발산] 프레임 {div_at}: {ex_} -- 멈춤", flush=True)
+        break
     torch.cuda.synchronize()
     t_frame = time.perf_counter() - t0
     if _TP is not None:
