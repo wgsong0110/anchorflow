@@ -44,6 +44,8 @@ ap.add_argument("--mode", choices=["sub", "lag"], default="lag")
 ap.add_argument("--N", type=int, required=True, help="프레임당 서브스텝 수")
 ap.add_argument("--opt", action="store_true")
 ap.add_argument("--dil", type=int, default=-1, help="--opt --mode sub: 셀 팽창 (셀 수; -1 = 프레임 최대 이동으로 자동)")
+ap.add_argument("--mass", choices=["bary", "tet"], default="bary",
+                help="노드 질량: bary = Σ λ m_p (암시적 판 관성 행렬의 행 합, 기본), tet = 사면체 등분 Σ_T m_T/4 (정의 변경: 선형 사면체 표준 질량 집중)")
 ap.add_argument("--near32", action="store_true", help="--opt: 바닥 후보 힘 float32 대수 (암시적 판 --near32 와 같은 방식)")
 ap.add_argument("--no_graph", action="store_true", help="--opt 에서 CUDA 그래프 끄기 (대조)")
 ap.add_argument("--div", type=float, default=3.0)
@@ -99,7 +101,7 @@ G0 = RTC.GridK(x, a.node_h)
 lmin = EX.kuhn_min_altitude(G0.gl8)
 dt_cfl = lmin / cwave
 del G0
-print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N} (h_s {hs:.3e}), 판 {a.mode} {'최적화' if a.opt else '기준'}, E {cfg['E']:g} ν {cfg['nu']:g} "
+print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N} (h_s {hs:.3e}), 판 {a.mode} {'최적화' if a.opt else '기준'}, 노드 질량 {'Σλm (기본)' if a.mass == 'bary' else '사면체 등분 m_T/4 (정의 변경)'}, E {cfg['E']:g} ν {cfg['nu']:g} "
       f"(μ {mu:.4g} λ {lam:.4g}), EXT {EXT:.6f}, 바닥 {'입자 (stick·softplus)' if FLOOR else '없음'}, 감쇠 {DAMP:.8f}/서브스텝", flush=True)
 print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), Kuhn 최소 높이 {lmin:.5f} (node_h {a.node_h}), "
       f"Δt_CFL = {dt_cfl:.3e} s -> N_CFL = h/Δt_CFL = {h / dt_cfl:.1f} (지금 h_s/Δt_CFL = {hs / dt_cfl:.3f})", flush=True)
@@ -118,7 +120,7 @@ def fixd_of(npos, rows_, lam_, now):
 
 
 def node_mv(G, x_, v_):
-    w = G.lam * m.unsqueeze(-1)
+    w = (torch.full_like(G.lam, 0.25) if a.mass == "tet" else G.lam) * m.unsqueeze(-1)
     ws = torch.zeros(G.M, device=dev).index_add_(0, G.rows.reshape(-1), w.reshape(-1))
     vs = torch.zeros(G.M, 3, device=dev).index_add_(0, G.rows.reshape(-1), (w.unsqueeze(-1) * v_.unsqueeze(1)).reshape(-1, 3))
     return ws.contiguous(), (vs / ws.clamp_min(1e-30).unsqueeze(-1)).contiguous()
@@ -359,7 +361,7 @@ class Opt:
             self.sz[2:3].zero_()
         EX.launch("ex_locate", Np, (np.int32(Np), EX.P(x), EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.tcm), EX.P(self.tmark),
                                     EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.sz)), b=256)
-        EX.launch("ex_p2g_mv", Np, (np.int32(Np), EX.P(self.rows), EX.P(self.lamb), EX.P(m), EX.P(v), EX.P(self.mn), EX.P(self.mv)), b=256)
+        EX.launch("ex_p2g_mv", Np, (np.int32(Np), EX.P(self.rows), EX.P(self.lamb), EX.P(m), EX.P(v), EX.P(self.mn), EX.P(self.mv), np.int32(1 if a.mass == "tet" else 0)), b=256)
         EX.launch("ex_vfin", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.mv), EX.P(self.vn)), b=256)
         EX.launch("ex_split", Np, (np.int32(Np), EX.P(x), EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.vn), np.float32(H),
                                    np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.int32(1 if FLOOR else 0), *PLf,
@@ -520,7 +522,7 @@ med = lambda xs: sorted(xs)[len(xs) // 2] if xs else float("nan")
 done = len(recs)
 summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at, err_mean=(sum(errs) / len(errs) if div_at is None else None),
             err_mean_done=float(np.nanmean(errs)), ms_mean=1e3 * sum(sec) / max(len(sec), 1), ms_med=1e3 * med(sec), fps=len(sec) / max(sum(sec), 1e-9),
-            N=a.N, hs=hs, dt_cfl=dt_cfl, N_cfl=h / dt_cfl, cwave=cwave, lmin=lmin, mode=a.mode, opt=a.opt,
+            N=a.N, hs=hs, mass=a.mass, dt_cfl=dt_cfl, N_cfl=h / dt_cfl, cwave=cwave, lmin=lmin, mode=a.mode, opt=a.opt,
             s_min=(min(r["s_min"] for r in recs) if FLOOR else None), n_below_max=(max(r["n_below"] for r in recs) if FLOOR else None),
             spread_last=recs[-1]["spread"], n_near_med=med([r.get("n_near") or 0 for r in recs]),
             overflow_frames=sum(1 for r in recs if r.get("overflow")), gpu=torch.cuda.get_device_name(0), tag=a.tag, damp_sub=DAMP)

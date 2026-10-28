@@ -338,11 +338,12 @@ __global__ void ex_locate(int N, const float* x, const float* gpar, const int* i
     }
 }
 // P2G 질량·운동량 (float 원자 합)
-__global__ void ex_p2g_mv(int N, const long long* rows, const float* lamb, const float* m, const float* v, float* mn, float* mv) {
+// tetmass = 0: 노드 질량 Σ λ m_p (기본, 암시적 판 관성 행렬의 행 합), 1: 사면체 등분 Σ_T m_T / 4 (정의 변경 -- 선형 사면체 표준 질량 집중)
+__global__ void ex_p2g_mv(int N, const long long* rows, const float* lamb, const float* m, const float* v, float* mn, float* mv, int tetmass) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     float mp = m[p];
-    for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; float w=lamb[p*4+i]*mp; atomicAdd(&mn[nd], w); for (int c=0;c<3;c++) atomicAdd(&mv[nd*3+c], w*v[p*3+c]); }
+    for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; float w=(tetmass ? 0.25f : lamb[p*4+i])*mp; atomicAdd(&mn[nd], w); for (int c=0;c<3;c++) atomicAdd(&mv[nd*3+c], w*v[p*3+c]); }
 }
 __global__ void ex_vfin(const int* szp, int Marg, const float* mn, const float* mv, float* vn) {
     int M = szp ? szp[0] : Marg;
