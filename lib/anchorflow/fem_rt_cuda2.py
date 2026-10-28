@@ -178,7 +178,7 @@ template <int MK> __device__ void pcg_th_body(int M, int Ms, const float* B32, c
 
 // ---------------- pcg_t2 (절 J 항목 2, 반복 비용): fem_rt_cuda pcg_t32 mode 1 (혼합 정밀도, float32 저장 행렬 그대로) 과 같은 식,
 // 곱에서 한 블록이 타일 R 개를 동시에 (메모리 병렬도 R 배), 행렬·이웃 표는 읽기 전용 경로 (__ldg).
-template <int R> __device__ void pcg_t2_body(int M, int Ms, const float* __restrict__ B, const int* __restrict__ nb, const float* __restrict__ Dinv,
+template <int R, int DIAG=0> __device__ void pcg_t2_body(int M, int Ms, const float* __restrict__ B, const int* __restrict__ nb, const float* __restrict__ Dinv,
                         const double* bs, double* xh, float* x, float* r, float* z, float* d, float* Ad,
                         double* acc, double* sc, unsigned int* bar, double thr, int maxit, double delta2) {
     __shared__ float sy[R][16][3][33];
@@ -191,9 +191,10 @@ template <int R> __device__ void pcg_t2_body(int M, int Ms, const float* __restr
     int nit = 0, neg = 0, p = 0, nup = 0, q = 0;
     double rr = 1.0, rmax = 1.0;
     for (int it=0; it<maxit; it++) {
-        if (!(dAd > 0)) { neg = 1; break; }
+        if (DIAG == 0 && !(dAd > 0)) { neg = 1; break; }
         float al = (float)(rz/dAd);
         float prr=0.f, prz=0.f;
+        if (DIAG != 2 && DIAG != 3)
         for (int m=tid; m<M; m+=nth) {
             float rv[3];
             for (int c=0;c<3;c++){ x[m*3+c] += al*d[m*3+c]; float rc = r[m*3+c] - al*Ad[m*3+c]; r[m*3+c]=rc; rv[c]=rc; }
@@ -206,7 +207,7 @@ template <int R> __device__ void pcg_t2_body(int M, int Ms, const float* __restr
         gbar(bar, bar+1, nblk);
         rr = va[p*3+1]; double rz2 = va[p*3+2];
         nit++;
-        if (rr < delta2*rmax || rr < thr) {
+        if (DIAG == 0 && (rr < delta2*rmax || rr < thr)) {
             for (int m=tid; m<M; m+=nth) for (int c=0;c<3;c++){ xh[m*3+c] += (double)x[m*3+c]; x[m*3+c] = 0.f; }
             if (tid==0) { acc[6+(1-q)*2]=0; acc[6+(1-q)*2+1]=0; }
             gbar(bar, bar+1, nblk);
@@ -228,6 +229,7 @@ template <int R> __device__ void pcg_t2_body(int M, int Ms, const float* __restr
         double be = rz2/rz; rz = rz2;
         float bev = (float)be;
         float pd = 0.f;
+        if (DIAG != 1 && DIAG != 3)
         for (int t0 = blockIdx.x*R; t0 < ntile; t0 += gridDim.x*R) {
             float a[R][3];
             #pragma unroll
@@ -558,6 +560,10 @@ __global__ void __launch_bounds__(512, 1) pcg_t2_r4(PCG_T2_ARGS) { PCG_T2_CALL(4
 __global__ void __launch_bounds__(512, 2) pcg_t2_r1b2(PCG_T2_ARGS) { PCG_T2_CALL(1); }
 __global__ void __launch_bounds__(512, 2) pcg_t2_r2b2(PCG_T2_ARGS) { PCG_T2_CALL(2); }
 __global__ void __launch_bounds__(512, 2) pcg_t2_r4b2(PCG_T2_ARGS) { PCG_T2_CALL(4); }
+// 진단 (반복 비용 분해, 결과 무의미): 1 = 곱 단계 뺌, 2 = 벡터 단계 뺌, 3 = 둘 다 뺌 (장벽·블록 합 뼈대만)
+__global__ void __launch_bounds__(512, 1) pcg_t2_d1(PCG_T2_ARGS) { pcg_t2_body<1, 1>(M, Ms, B, nb, Dinv, bs, xh, x, r, z, d, Ad, acc, sc, bar, thr, maxit, delta2); }
+__global__ void __launch_bounds__(512, 1) pcg_t2_d2(PCG_T2_ARGS) { pcg_t2_body<1, 2>(M, Ms, B, nb, Dinv, bs, xh, x, r, z, d, Ad, acc, sc, bar, thr, maxit, delta2); }
+__global__ void __launch_bounds__(512, 1) pcg_t2_d3(PCG_T2_ARGS) { pcg_t2_body<1, 3>(M, Ms, B, nb, Dinv, bs, xh, x, r, z, d, Ad, acc, sc, bar, thr, maxit, delta2); }
 #define PCG_P1_ARGS int M, int Ms, const float* B, const int* nb, const float* Dinv, const double* bs, double* xh, float* x, float* r, float* u, \
     float* w, float* m0, float* m1, float* z, float* q, float* sv, float* p, double* acc, double* sc, unsigned int* bar, double thr, int maxit, double delta2
 #define PCG_P1_CALL(R) pcg_p1_body<R>(M, Ms, B, nb, Dinv, bs, xh, x, r, u, w, m0, m1, z, q, sv, p, acc, sc, bar, thr, maxit, delta2)
@@ -892,6 +898,8 @@ def solve_t2(PC, M, b, rtol, ncg, kern="pcg_t2_r2", delta=0.1, cap=2, x0=None):
     if not hasattr(PC, key):
         setattr(PC, key, coop_blocks2(kern, 512, cap=cap))
     nblk, info = getattr(PC, key)
+    if getattr(PC, "t2_nblk", 0):
+        nblk = min(nblk, int(PC.t2_nblk))
     PC.t2_info = (nblk, info)
     sc_ = (b * b).sum().clamp_min(1e-300).sqrt()
     bs = b / sc_
