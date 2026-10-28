@@ -64,6 +64,7 @@ ap.add_argument("--psort", action="store_true", help="--interp bspline2 --opt: �
 ap.add_argument("--apic", action="store_true", help="--interp bspline2 --opt: G2P/P2G 를 APIC 로 (정답 PG 와 같은 rpic_damping 0 식, 입자 C 운반; 절 N)")
 ap.add_argument("--K", type=int, default=8, help="--quad cell: 셀 안 ∇w 평균 점 수 (1 중심, 8 가우스 2x2x2)")
 ap.add_argument("--affine", action="store_true", help="--opt --mode lag: 프레임 끝 G2P 에서 입자 속도 기울기 C 를 남겨 다음 프레임 P2G 를 아핀 전달 (APIC 꼴, 절 N.3)")
+ap.add_argument("--near_c0", action="store_true", help="--apic/--affine: 프레임 끝 바닥 후보 입자 (매핑으로 위치·속도가 바뀐 입자) 의 C 를 0 으로 (PIC 로 되돌림, 절 N.3)")
 ap.add_argument("--near_diag", default="", help="진단 전용 (절 N.2): 바닥 후보 힘 항 배율 '관성,변위탄성,기울기탄성' (예 0,1,1) -- 원래 식은 1,1,1")
 ap.add_argument("--lagdiag", action="store_true", help="--opt --mode lag 진단 (절 N.2): 그래프 없이 서브스텝마다 최대 |v_n| (8 표본·노드 높이·질량), 프레임 끝 사면체 det A_T 분포, 바닥 힘 크기 -> lagdiag.jsonl")
 ap.add_argument("--diag", action="store_true", help="첫 프레임: 노드별 국소 안정 걸음 2/ω (ω² = Σ_T V_T (λ+2μ)|∇λ_i|² / m_i) 분포, 서브스텝마다 최대 |v|")
@@ -565,6 +566,9 @@ class Opt:
             EX.launch("ex_near_fin", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c), EX.P(self.F0c), EX.P(uc), EX.P(xc_), EX.P(Fc_),
                                           EX.P(self.F0i), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv), *near_args(0), np.float64(h),
                                           EX.P(x2), EX.P(v2), EX.P(F2)), b=128)
+            if a.affine and a.near_c0:
+                nn_ = int(self.sz[2])
+                self.CL[self.nidx[:nn_]] = 0.0
         if self.SORT:
             self.OX.index_copy_(0, self.perm, x2)
             self.OV.index_copy_(0, self.perm, v2)
@@ -814,6 +818,9 @@ class BS:
             EX.launch("ex_near_fin", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c), EX.P(self.F0c), EX.P(None), EX.P(x2), EX.P(F2),
                                           EX.P(self.F0i), EX.P(None), EX.P(None), EX.P(None), EX.P(None), *near_args(0), np.float64(h),
                                           EX.P(x2), EX.P(v2), EX.P(F2)), b=128)
+            if self.APIC and a.near_c0:
+                nn_ = int(self.sz[2])
+                self.CC[k][self.nidx[:nn_]] = 0.0
         if self.SORT:
             self.OX.index_copy_(0, self.perm, x2)
             self.OV.index_copy_(0, self.perm, v2)
