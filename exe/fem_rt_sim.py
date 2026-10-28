@@ -68,6 +68,7 @@ ap.add_argument("--cuda", action="store_true", help="손으로 쓴 CUDA 커널 (
 ap.add_argument("--pcg2", type=int, default=1, help="--cuda: 2 커널 PCG (1) / 5 커널 (0)")
 ap.add_argument("--jac_sweeps", type=int, default=10)
 ap.add_argument("--jac_tol", type=float, default=1e-12)
+ap.add_argument("--tprof", type=int, default=-1, help="이 프레임부터 5 프레임을 torch.profiler 로 (CPU·GPU 상위 연산 표)")
 ap.add_argument("--mmax", type=int, default=60000)
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
@@ -121,7 +122,19 @@ def lm_resolve(mvA, D, MnH, b, mu_):
     return xx, it, neg
 
 
+_TP = None
 for i in range(L):
+    if i == a.tprof:
+        from torch.profiler import profile, ProfilerActivity
+        _TP = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=False)
+        _TP.__enter__()
+    if _TP is not None and i == a.tprof + 5:
+        torch.cuda.synchronize()
+        _TP.__exit__(None, None, None)
+        _ka = _TP.key_averages()
+        print(_ka.table(sort_by="self_cpu_time_total", row_limit=30), flush=True)
+        print(_ka.table(sort_by="self_cuda_time_total", row_limit=20), flush=True)
+        _TP = None
     torch.cuda.synchronize()
     t_frame0 = time.perf_counter()
     tk = RT.Tick(a.prof)
@@ -144,6 +157,9 @@ for i in range(L):
         fr.tetq_setup(U)
         tets = fr.uq
         rec["n_near"] = int(fr.tq["ni"].numel())
+        if a.cuda:
+            CF = RTC.CudaTetq(fr)
+            fr.energy, fr.energy_grad = CF.energy, CF.energy_grad
     tk("p2g")
     csr = RT.Csr(tets, G.M) if not (a.bell or a.csr_bell or a.cuda) else None
     tk("pattern")
@@ -203,9 +219,10 @@ for i in range(L):
             PC.B[:M_ * 135].zero_()
             CF.cnt.zero_()
             CF.hess_into(U, slots, PC.B, a.eig_floor, a.jac_sweeps, a.jac_tol)
-            Dn = fr._floor_hess(U)
             Bv = PC.B[:M_ * 135].view(M_, 15, 9)
-            Bv[:, 0] += Dn.reshape(M_, 9).float()
+            if a.floor == "node":
+                Dn = fr._floor_hess(U)
+                Bv[:, 0] += Dn.reshape(M_, 9).float()
             tk("hess")
             D = Bv[:, 0].double().reshape(M_, 3, 3)
             bad = ~(torch.diagonal(D, dim1=1, dim2=2) > 0).all(1)
