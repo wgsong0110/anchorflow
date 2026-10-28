@@ -241,7 +241,7 @@ for i in range(L):
             PC.nb.view(15, Ms)[:, :M_] = nbl.nb.t().int()
             tk("asm")
             b = gg.reshape(-1).double()
-            xx, it, res, negc = (PC.solve2 if a.pcg2 else PC.solve)(M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
+            xx, it, res, negc = (PC.solve_coop if a.pcg2 == 2 else (PC.solve2 if a.pcg2 else PC.solve))(M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
             negf = int(CF.cnt[1]) / G.T
             st["gate"] = int(CF.cnt[0])
             tk("pcg")

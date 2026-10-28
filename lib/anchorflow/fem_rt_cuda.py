@@ -510,6 +510,113 @@ __global__ void g2p_part(int N, const float* x, const float* U, const long long*
     for (int k=0;k<9;k++) F2[p*9+k] = (float)F2d[k];
 }
 
+
+
+// 16 lanes per node block-ELL row: lane k<15 does slot k (3x3 f32 block x f64 3-vector), shuffle-reduce to lane 0 of the 16-group
+__device__ __forceinline__ void ell16(int m, int k, bool on, int Ms, const float* B, const int* nb, const double* v, double* y) {
+    double y0=0, y1=0, y2=0;
+    if (on && k < 15) {
+        int j = nb[k*Ms+m];
+        const float* bb = B + (long long)k*9*Ms + m;
+        double x0=__ldcg(&v[j*3]), x1=__ldcg(&v[j*3+1]), x2=__ldcg(&v[j*3+2]);
+        y0 = bb[0]*x0 + bb[Ms]*x1 + bb[2*Ms]*x2;
+        y1 = bb[3*Ms]*x0 + bb[4*Ms]*x1 + bb[5*Ms]*x2;
+        y2 = bb[6*Ms]*x0 + bb[7*Ms]*x1 + bb[8*Ms]*x2;
+    }
+    for (int o=8;o>0;o>>=1) { y0 += __shfl_down_sync(0xffffffff, y0, o, 16); y1 += __shfl_down_sync(0xffffffff, y1, o, 16); y2 += __shfl_down_sync(0xffffffff, y2, o, 16); }
+    y[0]=y0; y[1]=y1; y[2]=y2;
+}
+__global__ void pcg2_d16(int p, const int* Mp, const float* B, const int* nb, const double* z, double* d, double* Ad,
+                         double* scal, double* acc, double thr, int Ms) {
+    int gid = blockIdx.x*blockDim.x + threadIdx.x;
+    int m = gid >> 4, k = gid & 15;
+    int M = *Mp;
+    const double* S = scal + p*4; const double* A = acc + p*3;
+    bool alive = S[1] > 0.5;
+    bool ae = alive && (A[0] > 0);
+    bool an = ae && !(A[1] < thr);
+    double be = an ? A[2]/S[0] : 0.0;
+    double part = 0.0;
+    double q[3];
+    ell16(m, k, an && m < M, Ms, B, nb, z, q);
+    if (an && m < M && k == 0) {
+        for (int c=0;c<3;c++){ double dd = z[m*3+c] + be*d[m*3+c]; double aa = q[c] + be*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; part += dd*aa; }
+    }
+    if (blockIdx.x==0 && threadIdx.x==0) {
+        double* O = scal + (1-p)*4;
+        O[0] = an ? A[2] : S[0]; O[1] = an ? 1.0 : 0.0; O[2] = S[2] + (ae ? 1.0 : 0.0); O[3] = (S[3] > 0.5 || (alive && !(A[0] > 0))) ? 1.0 : 0.0;
+    }
+    block_add(part, &acc[(1-p)*3]);
+}
+
+// ---------------- persistent PCG (one launch, software grid barrier, all blocks co-resident) ----------------
+__device__ void gbar(unsigned int* cnt, volatile unsigned int* gen, unsigned int nblk) {
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        unsigned int g = *gen;
+        __threadfence();
+        if (atomicAdd(cnt, 1u) == nblk - 1) { *cnt = 0; __threadfence(); atomicAdd((unsigned int*)gen, 1u); }
+        else { while (*gen == g) { } }
+        __threadfence();
+    }
+    __syncthreads();
+}
+__device__ double block_sum(double v) {
+    __shared__ double sh2[32];
+    __syncthreads();
+    v = warp_sum(v);
+    int lane = threadIdx.x & 31, w = threadIdx.x >> 5;
+    if (lane==0) sh2[w]=v;
+    __syncthreads();
+    double t = 0;
+    if (w==0) { t = (lane < (blockDim.x>>5)) ? sh2[lane] : 0.0; t = warp_sum(t); }
+    return t;  // valid in thread 0
+}
+__global__ void pcg_coop(int M, int Ms, const float* B, const int* nb, const double* Dinv, double* x, double* r, double* z, double* d, double* Ad,
+                         double* acc, double* sc, unsigned int* bar, double thr, int maxit) {
+    // sc: [0] rz0, [1] dAd0 (input); out [2] nit, [3] rr, [4] neg
+    unsigned int nblk = gridDim.x;
+    int tid = blockIdx.x*blockDim.x + threadIdx.x, nth = gridDim.x*blockDim.x;
+    volatile double* va = acc;
+    double rz = sc[0], dAd = sc[1];
+    int nit = 0, neg = 0, p = 0;
+    double rr = 0;
+    for (int it=0; it<maxit; it++) {
+        if (!(dAd > 0)) { neg = 1; break; }
+        double al = rz/dAd;
+        double prr=0, prz=0;
+        for (int m=tid; m<M; m+=nth) {
+            double rv[3];
+            for (int c=0;c<3;c++){ x[m*3+c] += al*d[m*3+c]; double rc = r[m*3+c] - al*Ad[m*3+c]; r[m*3+c]=rc; rv[c]=rc; }
+            const double* D = Dinv + m*9;
+            for (int c=0;c<3;c++){ double zz = D[c*3]*rv[0]+D[c*3+1]*rv[1]+D[c*3+2]*rv[2]; z[m*3+c]=zz; prz += rv[c]*zz; prr += rv[c]*rv[c]; }
+        }
+        double b1 = block_sum(prr); double b2 = block_sum(prz);
+        if (threadIdx.x==0) { atomicAdd(&acc[p*3+1], b1); atomicAdd(&acc[p*3+2], b2); }
+        if (tid==0) { acc[(1-p)*3]=0; acc[(1-p)*3+1]=0; acc[(1-p)*3+2]=0; }
+        gbar(bar, bar+1, nblk);
+        rr = va[p*3+1]; double rz2 = va[p*3+2];
+        nit++;
+        if (rr < thr) break;
+        double be = rz2/rz; rz = rz2;
+        double pd = 0;
+        for (int base = blockIdx.x*blockDim.x; base < M*16; base += nth) {
+            int w = base + threadIdx.x; int m = w >> 4, k = w & 15;
+            double q[3];
+            ell16(m, k, m < M, Ms, B, nb, z, q);
+            if (m < M && k == 0) {
+                for (int c=0;c<3;c++){ double dd = z[m*3+c] + be*d[m*3+c]; double aa = q[c] + be*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; pd += dd*aa; }
+            }
+        }
+        double b3 = block_sum(pd);
+        if (threadIdx.x==0) atomicAdd(&acc[(1-p)*3], b3);
+        gbar(bar, bar+1, nblk);
+        dAd = va[(1-p)*3];
+        p = 1-p;
+    }
+    if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; }
+}
+
 // ---------------- PCG (블록 ELL float32 행렬, float64 벡터; 상태 st: 0 rz 1 dAd 2 rr 3 rz2 4 thr 5 alive 6 nit 7 neg 8 alpha 9 beta) ----------------
 __global__ void pcg_spmv(const int* Mp, const float* B, const int* nb, const double* d, double* y, double* st, int Ms) {
     int m = blockIdx.x*blockDim.x + threadIdx.x;
@@ -759,11 +866,12 @@ class CudaPcg:
         self.scal[1] = 1.0
         self.acc[0] = (self.d[:n] * self.Ad[:n]).sum()
         md = _mod()
-        kb, kd = md.get_function("pcg2_b"), md.get_function("pcg2_d")
+        kb, kd = md.get_function("pcg2_b"), md.get_function("pcg2_d16")
+        g16, b16 = _grid(self.Mmax * 16, 256)
 
         def it2(p, thr_):
             kb(g1, b1, (np.int32(p), self.cMp, self.cDinv, self.cx, self.cr, self.cz, self.cd, self.cAd, self.cscal, self.cacc))
-            kd(g1, b1, (np.int32(p), self.cMp, self.cB, self.cnb, self.cz, self.cd, self.cAd, self.cscal, self.cacc, np.float64(thr_), np.int32(self.Mmax)))
+            kd(g16, b16, (np.int32(p), self.cMp, self.cB, self.cnb, self.cz, self.cd, self.cAd, self.cscal, self.cacc, np.float64(thr_), np.int32(self.Mmax)))
         ck = self.ck - (self.ck % 2)
         it = 0
         if use_graph:
@@ -799,6 +907,41 @@ class CudaPcg:
         x = self.x[:n] * sc
         rr = float((self.r[:n] * self.r[:n]).sum())
         return x, int(self.scal[2]), rr ** 0.5, bool(self.scal[3] > 0.5)
+
+    def solve_coop(self, M, b, rtol, ncg, use_graph=True):
+        """지속 커널 PCG (pcg_coop): 반복 전체가 커널 한 번 (블록 사이 소프트웨어 장벽 2 회/반복), 호스트 동기화 없음. 식·판정은 solve2 와 같다."""
+        n = 3 * M
+        dev = self.dev
+        if not hasattr(self, "Ad"):
+            self.Ad = torch.zeros(self.Mmax * 3, dtype=torch.float64, device=dev)
+        if not hasattr(self, "acc6"):
+            self.acc6 = torch.zeros(6, dtype=torch.float64, device=dev)
+            self.sc = torch.zeros(8, dtype=torch.float64, device=dev)
+            self.bar = torch.zeros(2, dtype=torch.int32, device=dev)
+            sm = torch.cuda.get_device_properties(dev).multi_processor_count
+            self.nblk = 2 * sm
+        self.Mp.fill_(M)
+        Di = self.Dinv[:M * 9].view(M, 3, 3)
+        sc_ = (b * b).sum().clamp_min(1e-300).sqrt()
+        bs = b / sc_
+        z = (Di @ bs.view(M, 3, 1)).view(-1)
+        self.x.zero_()
+        self.r[:n].copy_(bs)
+        self.z[:n].copy_(z)
+        self.d[:n].copy_(z)
+        g1, b1 = _grid(self.Mmax)
+        with _Stream():
+            _mod().get_function("bell_mv")(g1, b1, (_cp(self.Mp), _cp(self.B), _cp(self.nb), _cp(self.d), _cp(self.Ad), np.int32(self.Mmax)))
+        self.acc6.zero_()
+        self.bar.zero_()
+        self.sc[0] = (bs * z).sum()
+        self.sc[1] = (self.d[:n] * self.Ad[:n]).sum()
+        with _Stream():
+            _mod().get_function("pcg_coop")((self.nblk,), (256,), (np.int32(M), np.int32(self.Mmax), _cp(self.B), _cp(self.nb), _cp(self.Dinv), _cp(self.x), _cp(self.r),
+                                                                 _cp(self.z), _cp(self.d), _cp(self.Ad), _cp(self.acc6), _cp(self.sc), _cp(self.bar),
+                                                                 np.float64(rtol * rtol), np.int32(ncg)))
+        out = self.sc[2:5].tolist()
+        return self.x[:n] * sc_, int(out[0]), float(out[1]) ** 0.5, bool(out[2] > 0.5)
 
     def solve(self, M, b, rtol, ncg, use_graph=True):
         """B·nb·Dinv 는 호출 전에 채워 둔다 (앞 M 노드). b [3M] float64. -> (x [3M], 반복, |r|/|b|, 음곡률)."""
