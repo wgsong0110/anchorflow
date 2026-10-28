@@ -33,9 +33,9 @@ for dt in (torch.float32, torch.float64):
     torch.cuda.synchronize(); print(dt, f"{5 * 2 * 8192**3 / (time.perf_counter() - t) / 1e12:.1f} TFLOPS")
 PY
 nvidia-smi --query-gpu=name,power.limit,power.draw,clocks.current.sm,clocks.max.sm --format=csv | tee -a $O/gpu_boot.txt
-python -u exe/fem_rt_mix_bench.py --data $D --t 0 40 --micro < /dev/null > $O/bench.log 2>&1
+python -u exe/fem_rt_mix_bench.py --data $D --t 0 40 --micro --variants pcg_mix:2:0 < /dev/null > $O/bench.log 2>&1
 P="--data $D --floor particle --fast --cuda --graph --lite --warp --near32 --sym --true_res --no_dump --dump_pred"
-for run in "final_rt --pcg2 2" "mix --pcg2 4 --mix_delta 0.1 ${MIXARGS:-}" "final_rt_r2 --pcg2 2"; do
+for run in "final_rt --pcg2 2" "mix --pcg2 4 --mix_delta 0.1" "t64_asm --pcg2 7 --asm_k" "tmix_asm --pcg2 6 --mix_delta 0.1 --asm_k" "final_rt_r2 --pcg2 2"; do
   set -- $run; tg=$1; shift
   mkdir -p $O/$tg
   nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader > $O/$tg/gpu_at_start.txt
