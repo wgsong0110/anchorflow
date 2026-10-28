@@ -251,9 +251,13 @@ def bigblock(S, A, s, contact_only):
     return prec, dict(n_agg=na, size=3 * nl, chol_fail=nbad, nodes_in=int((agg >= 0).sum()))
 
 
-def sweeps(S, A, kind):
-    """8 색 대칭 블록 GS (ssor) / 블록 D-ILU (dilu): (D̃ + L) D̃⁻¹ (D̃ + Lᵀ)."""
+def sweeps(S, A, kind, sub=None):
+    """8 색 대칭 블록 GS (ssor) / 블록 D-ILU (dilu): (D̃ + L) D̃⁻¹ (D̃ + Lᵀ).
+    sub (노드별 부분영역 번호) 가 있으면 부분영역 안 결합만 쓴다 (lsgs: 블록 지역 SGS -- 지속 커널에서 전역 장벽 없이 블록 안 __syncthreads 로만)."""
     M, I, J, Bk = S["M"], S["I"], S["J"], S["Bk"]
+    if sub is not None:
+        keep = sub[I] == sub[J]
+        I, J, Bk = I[keep], J[keep], Bk[keep]
     col = color_of(S["gi"])
     off = I != J
     Dt = S["D"].clone()
@@ -436,6 +440,16 @@ for t in a.t:
                 xx, it, tr = pcg(A, pr, b)
             elif vn in ("ssor", "dilu"):
                 pr, extra = sweeps(S, A, vn)
+                xx, it, tr = pcg(A, pr, b)
+            elif vn.startswith("lsgs"):
+                from anchorflow import fem_rt_cuda2 as R2
+                Sz = int(vn[4:])
+                perm = R2.morton_perm(S["gi"])
+                rank = torch.empty_like(perm)
+                rank[perm] = torch.arange(M, device=dev)
+                sub = torch.div(rank, Sz, rounding_mode="floor")
+                pr, extra = sweeps(S, A, "ssor", sub=sub)
+                extra["n_sub"] = int(sub.max()) + 1
                 xx, it, tr = pcg(A, pr, b)
             elif vn[:3] in ("add", "def") or vn[:2] in ("dc", "ac"):
                 if vn.startswith("defl"):

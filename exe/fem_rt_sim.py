@@ -381,8 +381,9 @@ for i in range(L):
                 steps.append(st)
                 break
             b = gg.reshape(-1).double()
-            if a.pcg2 == 10:
-                xx, it, res, negc = RTC2.solve_t2(PC, M_, b, a.rtol, a.pcg_max, kern=a.t2_kern, delta=a.mix_delta, cap=3)
+            if a.pcg2 in (10, 11):
+                # J2: 10 = pcg_t2 (pcg_t6 혼합과 같은 식, 곱 메모리 병렬도), 11 = pcg_p1 (파이프라인 혼합 PCG, 반복당 장벽 1)
+                xx, it, res, negc = (RTC2.solve_t2 if a.pcg2 == 10 else RTC2.solve_p1)(PC, M_, b, a.rtol, a.pcg_max, kern=a.t2_kern, delta=a.mix_delta, cap=3)
                 st["mix_upd"] = PC.last_nup
             elif a.pcg2 == 9:
                 # J2: 안쪽 반복 16 비트 (또는 float32) 척도 행렬 + float64 신뢰 갱신 (멈춤 = float64 실제 잔차 < rtol)

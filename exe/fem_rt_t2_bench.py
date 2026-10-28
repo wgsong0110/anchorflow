@@ -19,7 +19,7 @@ from anchorflow import fem_rt_cuda2 as R2                                       
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", default="/home/dkta/work/one/L000/L000.pt")
 ap.add_argument("--t", type=int, nargs="+", default=[0, 40, 70])
-ap.add_argument("--kerns", default="pcg_t2_r1,pcg_t2_r2,pcg_t2_r4,pcg_t2_r1b2,pcg_t2_r2b2,pcg_t2_r4b2")
+ap.add_argument("--kerns", default="pcg_t2_r1,pcg_t2_r2,pcg_t2_r4,pcg_t2_r1b2,pcg_t2_r2b2,pcg_t2_r4b2,pcg_p1_r1,pcg_p1_r2,pcg_p1_r4,pcg_p1_r2b2")
 a = ap.parse_args()
 dev = "cuda"
 RTC.RAWPTR[0] = True
@@ -76,11 +76,12 @@ for t in a.t:
           flush=True)
     for kern in [q for q in a.kerns.split(",") if q]:
         try:
-            (xx, it, rr, neg), tt = tm(lambda: R2.solve_t2(PC, M, b, 1e-6, 20000, kern=kern, delta=0.1, cap=3))
+            fsolve = R2.solve_p1 if kern.startswith("pcg_p1") else R2.solve_t2
+            (xx, it, rr, neg), tt = tm(lambda: fsolve(PC, M, b, 1e-6, 20000, kern=kern, delta=0.1, cap=3))
         except Exception as ex:                                          # noqa: BLE001
             print(f"  {kern}: 실패 {ex!r}", flush=True)
             continue
-        print(f"  {kern} 블록 {PC.t2_info}: {it} 회 갱신 {PC.last_nup} {tt:.2f} ms ({1e3 * tt / max(it, 1):.1f} us/회) 실제 잔차 {PC.true_res(M, xx, b):.2e} "
+        print(f"  {kern} 블록 {getattr(PC, 'p1_info' if kern.startswith('pcg_p1') else 't2_info')}: {it} 회 갱신 {PC.last_nup} {tt:.2f} ms ({1e3 * tt / max(it, 1):.1f} us/회) 실제 잔차 {PC.true_res(M, xx, b):.2e} "
               f"해 차 {float((xx - x0).norm() / x0.norm()):.2e} 음곡률 {neg}", flush=True)
     md, md2 = RTC._mod(), R2._mod2()
     nt = (M + 31) // 32

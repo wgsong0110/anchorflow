@@ -254,6 +254,135 @@ template <int R> __device__ void pcg_t2_body(int M, int Ms, const float* __restr
     }
     if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; sc[5]=nup; }
 }
+
+// ---------------- pcg_p1 (절 J 항목 2): 파이프라인 PCG (Ghysels & Vanroose 2014, 블록 야코비 Mi = D⁻¹) -- 반복당 전역 장벽 1 번.
+// 내적 γ = (r,u), δ = (w,u) 를 갱신 단계에서 같이 모으고, 곱 n = A m 은 다음 반복 첫 부분에서 (m 은 두 벌로 번갈아 -- 이웃이 읽는 중에 덮지 않게).
+// 혼합 정밀도: float32 벡터·저장 행렬, 신뢰 갱신 (재귀 잔차가 지난 갱신 뒤 최대의 δ_r 배 아래, 또는 thr 아래) 때 xh += x, r = b − A xh (float64),
+// u = Mi r, w = A u, m = Mi w, 보조 z·q·s·p = 0 으로 다시 시작. 멈춤은 float64 실제 잔차 |r|² < thr 로만 (pcg_t32 mode 1 과 같다).
+// acc: [0..8] 반복 내적 (3 벌 순환 x γ δ rr -- 장벽이 하나라 방금 읽은 칸을 다음 반복에 지우면 늦은 블록과 경합), [9..14] 재시작 (2 짝 x γ δ rr)
+template <int R> __device__ void pcg_p1_body(int M, int Ms, const float* __restrict__ B, const int* __restrict__ nb, const float* __restrict__ Dinv,
+                        const double* bs, double* xh, float* x, float* r, float* u, float* w, float* m0, float* m1, float* z, float* q, float* sv, float* p,
+                        double* acc, double* sc, unsigned int* bar, double thr, int maxit, double delta2) {
+    __shared__ float sy[R][16][3][33];
+    __shared__ float sw[R][3][33];
+    unsigned int nblk = gridDim.x;
+    int tid = blockIdx.x*blockDim.x + threadIdx.x, nth = gridDim.x*blockDim.x;
+    int lane = threadIdx.x & 31, kw = threadIdx.x >> 5;
+    int ntile = (M + 31) / 32;
+    volatile double* va = acc;
+    int nit = 0, neg = 0, nup = 0, ps = 0, qr = 0, cur = 0;
+    double rr = 1.0, rmax = 1.0, gam = 0, dlt = 0, gam_o = 1, alp_o = 1;
+    bool first = true, reset = true;
+    for (int it=0; it<=2*maxit+2; it++) {
+        if (reset) {
+            // A: xh += x, x = 0
+            for (int e=tid; e<3*M; e+=nth) { xh[e] += (double)x[e]; x[e] = 0.f; }
+            if (tid==0) { acc[9+qr*3]=0; acc[9+qr*3+1]=0; acc[9+qr*3+2]=0; }
+            gbar(bar, bar+1, nblk);
+            // B: r = b - A xh (float64), u = Mi r
+            double trr = 0;
+            for (int mm=tid; mm<M; mm+=nth) {
+                float rv[3];
+                for (int c=0;c<3;c++) { double rc = bs[mm*3+c] - ell_row_sym_d(mm, c, Ms, B, nb, xh); trr += rc*rc; rv[c] = (float)rc; r[mm*3+c] = rv[c]; }
+                const float* D = Dinv + mm*9;
+                for (int c=0;c<3;c++) u[mm*3+c] = __ldg(&D[c*3])*rv[0]+__ldg(&D[c*3+1])*rv[1]+__ldg(&D[c*3+2])*rv[2];
+            }
+            double c3 = block_sum(trr);
+            if (threadIdx.x==0) atomicAdd(&acc[9+qr*3+2], c3);
+            gbar(bar, bar+1, nblk);
+            // C: w = A u, m = Mi w, z = q = s = p = 0, γ = r·u, δ = w·u
+            float* mc = cur ? m1 : m0;
+            float pg = 0.f, pdl = 0.f;
+            for (int t0 = blockIdx.x*R; t0 < ntile; t0 += gridDim.x*R) {
+                float a[R][3];
+                #pragma unroll
+                for (int uu=0; uu<R; uu++) { int mm = (t0+uu)*32 + lane; tile_part_h<0>(mm, kw, (t0+uu < ntile) ? M : 0, Ms, B, (const float*)0, nb, u, a[uu][0], a[uu][1], a[uu][2]); }
+                #pragma unroll
+                for (int uu=0; uu<R; uu++) { sy[uu][kw][0][lane]=a[uu][0]; sy[uu][kw][1][lane]=a[uu][1]; sy[uu][kw][2][lane]=a[uu][2]; }
+                __syncthreads();
+                #pragma unroll
+                for (int uu=0; uu<R; uu++) {
+                    int mm = (t0+uu)*32 + lane;
+                    if (kw < 3 && mm < M && t0+uu < ntile) {
+                        float s_=0.f; for (int k=0;k<15;k++) s_ += sy[uu][k][kw][lane];
+                        int e = mm*3+kw;
+                        w[e] = s_; sw[uu][kw][lane] = s_; z[e] = 0.f; q[e] = 0.f; sv[e] = 0.f; p[e] = 0.f;
+                        float uv = u[e]; pg += r[e]*uv; pdl += s_*uv;
+                    }
+                }
+                __syncthreads();
+                #pragma unroll
+                for (int uu=0; uu<R; uu++) {
+                    int mm = (t0+uu)*32 + lane;
+                    if (kw < 3 && mm < M && t0+uu < ntile) {
+                        const float* D = Dinv + mm*9 + kw*3;
+                        mc[mm*3+kw] = __ldg(&D[0])*sw[uu][0][lane] + __ldg(&D[1])*sw[uu][1][lane] + __ldg(&D[2])*sw[uu][2][lane];
+                    }
+                }
+                __syncthreads();
+            }
+            double c1 = block_sum((double)pg); double c2 = block_sum((double)pdl);
+            if (threadIdx.x==0) { atomicAdd(&acc[9+qr*3], c1); atomicAdd(&acc[9+qr*3+1], c2); }
+            gbar(bar, bar+1, nblk);
+            gam = va[9+qr*3]; dlt = va[9+qr*3+1]; rr = va[9+qr*3+2];
+            qr = 1-qr; nup++;
+            rmax = rr; first = true; reset = false;
+            if (rr < thr || nit >= maxit) break;
+        }
+        // iteration: α, β from γ, δ (reduced at the end of the previous phase)
+        double be = first ? 0.0 : gam/gam_o;
+        double den = first ? dlt : (dlt - be*gam/alp_o);
+        if (!(den > 0) || !(gam > 0)) { neg = 1; break; }
+        double al = gam/den;
+        float alf = (float)al, bef = (float)be;
+        float* mc = cur ? m1 : m0;
+        float* mn = cur ? m0 : m1;
+        int pn = (ps+1)%3;
+        if (tid==0) { acc[pn*3]=0; acc[pn*3+1]=0; acc[pn*3+2]=0; }
+        float pg = 0.f, pdl = 0.f, prr = 0.f;
+        for (int t0 = blockIdx.x*R; t0 < ntile; t0 += gridDim.x*R) {
+            float a[R][3];
+            #pragma unroll
+            for (int uu=0; uu<R; uu++) { int mm = (t0+uu)*32 + lane; tile_part_h<0>(mm, kw, (t0+uu < ntile) ? M : 0, Ms, B, (const float*)0, nb, mc, a[uu][0], a[uu][1], a[uu][2]); }
+            #pragma unroll
+            for (int uu=0; uu<R; uu++) { sy[uu][kw][0][lane]=a[uu][0]; sy[uu][kw][1][lane]=a[uu][1]; sy[uu][kw][2][lane]=a[uu][2]; }
+            __syncthreads();
+            #pragma unroll
+            for (int uu=0; uu<R; uu++) {
+                int mm = (t0+uu)*32 + lane;
+                if (kw < 3 && mm < M && t0+uu < ntile) {
+                    float nn = 0.f; for (int k=0;k<15;k++) nn += sy[uu][k][kw][lane];
+                    int e = mm*3+kw;
+                    float zz = nn + bef*z[e], qq = mc[e] + bef*q[e], ss = w[e] + bef*sv[e], pp = u[e] + bef*p[e];
+                    z[e] = zz; q[e] = qq; sv[e] = ss; p[e] = pp;
+                    x[e] += alf*pp;
+                    float rv = r[e] - alf*ss, uv = u[e] - alf*qq, wv = w[e] - alf*zz;
+                    r[e] = rv; u[e] = uv; w[e] = wv; sw[uu][kw][lane] = wv;
+                    pg += rv*uv; pdl += wv*uv; prr += rv*rv;
+                }
+            }
+            __syncthreads();
+            #pragma unroll
+            for (int uu=0; uu<R; uu++) {
+                int mm = (t0+uu)*32 + lane;
+                if (kw < 3 && mm < M && t0+uu < ntile) {
+                    const float* D = Dinv + mm*9 + kw*3;
+                    mn[mm*3+kw] = __ldg(&D[0])*sw[uu][0][lane] + __ldg(&D[1])*sw[uu][1][lane] + __ldg(&D[2])*sw[uu][2][lane];
+                }
+            }
+            __syncthreads();
+        }
+        double b1 = block_sum((double)pg); double b2 = block_sum((double)pdl); double b3 = block_sum((double)prr);
+        if (threadIdx.x==0) { atomicAdd(&acc[ps*3], b1); atomicAdd(&acc[ps*3+1], b2); atomicAdd(&acc[ps*3+2], b3); }
+        gbar(bar, bar+1, nblk);
+        gam_o = gam; alp_o = al;
+        gam = va[ps*3]; dlt = va[ps*3+1]; rr = va[ps*3+2];
+        ps = pn; cur = 1-cur; first = false; nit++;
+        if (rr < delta2*rmax || rr < thr || nit >= maxit) reset = true;
+        else if (rr > rmax) rmax = rr;
+    }
+    if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; sc[5]=nup; }
+}
 extern "C" {
 __global__ void bell_mv_th0(int M, const void* B, const float* Bd, const int* nb, const float* v, float* y, int Ms) { bell_mv_th_body<0>(M, B, Bd, nb, v, y, Ms); }
 __global__ void bell_mv_th1(int M, const void* B, const float* Bd, const int* nb, const float* v, float* y, int Ms) { bell_mv_th_body<1>(M, B, Bd, nb, v, y, Ms); }
@@ -321,6 +450,13 @@ __global__ void __launch_bounds__(512, 1) pcg_t2_r4(PCG_T2_ARGS) { PCG_T2_CALL(4
 __global__ void __launch_bounds__(512, 2) pcg_t2_r1b2(PCG_T2_ARGS) { PCG_T2_CALL(1); }
 __global__ void __launch_bounds__(512, 2) pcg_t2_r2b2(PCG_T2_ARGS) { PCG_T2_CALL(2); }
 __global__ void __launch_bounds__(512, 2) pcg_t2_r4b2(PCG_T2_ARGS) { PCG_T2_CALL(4); }
+#define PCG_P1_ARGS int M, int Ms, const float* B, const int* nb, const float* Dinv, const double* bs, double* xh, float* x, float* r, float* u, \
+    float* w, float* m0, float* m1, float* z, float* q, float* sv, float* p, double* acc, double* sc, unsigned int* bar, double thr, int maxit, double delta2
+#define PCG_P1_CALL(R) pcg_p1_body<R>(M, Ms, B, nb, Dinv, bs, xh, x, r, u, w, m0, m1, z, q, sv, p, acc, sc, bar, thr, maxit, delta2)
+__global__ void __launch_bounds__(512, 1) pcg_p1_r1(PCG_P1_ARGS) { PCG_P1_CALL(1); }
+__global__ void __launch_bounds__(512, 1) pcg_p1_r2(PCG_P1_ARGS) { PCG_P1_CALL(2); }
+__global__ void __launch_bounds__(512, 1) pcg_p1_r4(PCG_P1_ARGS) { PCG_P1_CALL(4); }
+__global__ void __launch_bounds__(512, 2) pcg_p1_r2b2(PCG_P1_ARGS) { PCG_P1_CALL(2); }
 #define PCG_TH_ARGS int M, int Ms, const float* B32, const void* B, const float* Bd, const int* nb, const float* Dh, const float* sv, const double* bs, \
     double* xh, float* x, float* r, float* z, float* d, float* Ad, double* acc, double* sc, unsigned int* bar, double thr, int maxit, double delta2
 #define PCG_TH_CALL(K) pcg_th_body<K>(M, Ms, B32, B, Bd, nb, Dh, sv, bs, xh, x, r, z, d, Ad, acc, sc, bar, thr, maxit, delta2)
@@ -669,6 +805,42 @@ def solve_t2(PC, M, b, rtol, ncg, kern="pcg_t2_r2", delta=0.1, cap=2):
         md.get_function(kern)((nblk,), (512,), (np.int32(M), np.int32(PC.Mmax), _p(PC.B), _p(PC.nb), _p(T_["Di"]), _p(T_["bs"]), _p(T_["xh"]), _p(T_["x"]),
                                                 _p(T_["r"]), _p(T_["z"]), _p(T_["d"]), _p(T_["Ad"]), _p(T_["acc"]), _p(T_["sc"]), _p(T_["bar"]),
                                                 np.float64(rtol * rtol), np.int32(ncg), np.float64(delta * delta)))
+    out = T_["sc"][2:6].tolist()
+    PC.last_nup = int(out[3])
+    return (T_["xh"][:n] + T_["x"][:n].double()) * sc_, int(out[0]), float(out[1]) ** 0.5, bool(out[2] > 0.5)
+
+
+def solve_p1(PC, M, b, rtol, ncg, kern="pcg_p1_r2", delta=0.1, cap=2):
+    """pcg_p1_*: 파이프라인 혼합 정밀도 PCG (반복당 전역 장벽 1 번). 시작은 커널 안 재시작 단계 (r = b, u, w, m) 로."""
+    n = 3 * M
+    dev = PC.dev
+    if not hasattr(PC, "p1buf"):
+        bufs = dict(acc=torch.zeros(16, dtype=torch.float64, device=dev), sc=torch.zeros(8, dtype=torch.float64, device=dev),
+                    bar=torch.zeros(2, dtype=torch.int32, device=dev),
+                    bs=torch.zeros(PC.Mmax * 3, dtype=torch.float64, device=dev), xh=torch.zeros(PC.Mmax * 3, dtype=torch.float64, device=dev),
+                    Di=torch.zeros(PC.Mmax * 9, dtype=torch.float32, device=dev))
+        for nm in ("x", "r", "u", "w", "m0", "m1", "z", "q", "s", "p"):
+            bufs[nm] = torch.zeros(PC.Mmax * 3, dtype=torch.float32, device=dev)
+        PC.p1buf = bufs
+    T_ = PC.p1buf
+    key = "p1_" + kern
+    if not hasattr(PC, key):
+        setattr(PC, key, coop_blocks2(kern, 512, cap=cap))
+    nblk, info = getattr(PC, key)
+    PC.p1_info = (nblk, info)
+    sc_ = (b * b).sum().clamp_min(1e-300).sqrt()
+    T_["bs"][:n].copy_(b / sc_)
+    T_["Di"][:M * 9].copy_(PC.Dinv[:M * 9])
+    T_["xh"].zero_()
+    T_["x"].zero_()
+    T_["acc"].zero_()
+    T_["bar"].zero_()
+    md = _mod2()
+    with _Stream():
+        md.get_function(kern)((nblk,), (512,), (np.int32(M), np.int32(PC.Mmax), _p(PC.B), _p(PC.nb), _p(T_["Di"]), _p(T_["bs"]), _p(T_["xh"]),
+                                                _p(T_["x"]), _p(T_["r"]), _p(T_["u"]), _p(T_["w"]), _p(T_["m0"]), _p(T_["m1"]), _p(T_["z"]), _p(T_["q"]),
+                                                _p(T_["s"]), _p(T_["p"]), _p(T_["acc"]), _p(T_["sc"]), _p(T_["bar"]), np.float64(rtol * rtol),
+                                                np.int32(ncg), np.float64(delta * delta)))
     out = T_["sc"][2:6].tolist()
     PC.last_nup = int(out[3])
     return (T_["xh"][:n] + T_["x"][:n].double()) * sc_, int(out[0]), float(out[1]) ** 0.5, bool(out[2] > 0.5)
