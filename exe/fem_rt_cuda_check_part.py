@@ -75,10 +75,13 @@ for t in [int(q) for q in a.t.split(",")]:
     slots = (tets.unsqueeze(-1) * 15 + RT.off_cls(gi[tets].unsqueeze(1) - gi[tets].unsqueeze(2))).int().contiguous()
     Bc = torch.zeros(M * 135, dtype=torch.float32, device=dev)
 
-    def ch():
-        Bc.zero_()
-        CF.hess_into(U, slots, Bc, 1e-6)
-    _, t_hc = tm(ch)
     Bt = Be.B.view(M, 15, 3, 3)
-    Bcv = Bc.view(M, 15, 3, 3).double()
-    print(f"  투영 헤시안 블록 ELL 상대차 {float((Bcv - Bt).norm() / Bt.norm()):.2e} | 헤시안+투영+합 torch {t_ht:.1f} ms cuda {t_hc:.2f} ms", flush=True)
+    for gt_ in (0.0, 1e-6, 1e-5):
+        def ch(gt_=gt_):
+            Bc.zero_()
+            CF.cnt.zero_()
+            CF.hess_into(U, slots, Bc, 1e-6, Ms=M, gtau=gt_)
+        _, t_hc = tm(ch)
+        Bcv = Bc.view(15, 9, M).permute(2, 0, 1).reshape(M, 15, 3, 3).double()
+        print(f"  [판정 τ {gt_:g}] 투영 헤시안 블록 ELL 상대차 {float((Bcv - Bt).norm() / Bt.norm()):.2e} | 헤시안+투영+합 torch {t_ht:.1f} ms cuda {t_hc:.2f} ms "
+              f"| 판정 통과 사면체 {int(CF.cnt[0])}/{CF.T}", flush=True)

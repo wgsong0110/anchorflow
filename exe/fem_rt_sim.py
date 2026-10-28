@@ -69,6 +69,8 @@ ap.add_argument("--pcg2", type=int, default=1, help="--cuda: 2 커널 PCG (1) / 
 ap.add_argument("--jac_sweeps", type=int, default=10)
 ap.add_argument("--jac_tol", type=float, default=1e-12)
 ap.add_argument("--tprof", type=int, default=-1, help="이 프레임부터 5 프레임을 torch.profiler 로 (CPU·GPU 상위 연산 표)")
+ap.add_argument("--gate_tau", type=float, default=0.0, help="--cuda: H + τ|H|_F I 가 Cholesky 되면 고유분해 투영 생략 (0 = 끔)")
+ap.add_argument("--lite", action="store_true", help="--floor particle --cuda: 격자 locate·사면체 ∇λ·P2G·G2P 도 커널/마스크 합으로 (FemFrame 안 거침)")
 ap.add_argument("--mmax", type=int, default=60000)
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
@@ -139,11 +141,15 @@ for i in range(L):
     t_frame0 = time.perf_counter()
     tk = RT.Tick(a.prof)
     rec = dict(t=i)
-    G = RT.Grid(x, a.node_h, fast=a.fast)
+    G = RTC.GridK(x, a.node_h) if a.lite else RT.Grid(x, a.node_h, fast=a.fast)
     U, ws = RT.node_inertial(x, v, m, G, g, h)                                # --ov_init predict
     MnH = ws.double() / (h * h)
     tk("grid")
-    if a.floor == "node":
+    if a.lite:
+        fr = CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, h, U, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True)
+        tets = G.tets
+        rec["n_near"] = CF.nn
+    elif a.floor == "node":
         fr = RT.NodeFrame(G, x, v, F, m, vol, cfg, h, kappa=a.kappa, dhat=dhat, k_st=a.k_st, eps_st=a.eps_st, clear=a.nf_clear,
                           m_floor=a.nf_mfloor * M_FULL, stick_w=a.nf_stick)
         if a.fast:
@@ -216,27 +222,29 @@ for i in range(L):
             M_ = G.M
             gi = G.gi
             slots = (tets.unsqueeze(-1) * 15 + RT.off_cls(gi[tets].unsqueeze(1) - gi[tets].unsqueeze(2))).int().contiguous()
-            PC.B[:M_ * 135].zero_()
+            Ms = PC.Mmax
+            PC.B.zero_()
             CF.cnt.zero_()
-            CF.hess_into(U, slots, PC.B, a.eig_floor, a.jac_sweeps, a.jac_tol)
-            Bv = PC.B[:M_ * 135].view(M_, 15, 9)
+            CF.hess_into(U, slots, PC.B, a.eig_floor, a.jac_sweeps, a.jac_tol, Ms=Ms, gtau=a.gate_tau)
+            Bs = PC.B.view(15, 9, Ms)
             if a.floor == "node":
                 Dn = fr._floor_hess(U)
-                Bv[:, 0] += Dn.reshape(M_, 9).float()
+                Bs[0, :, :M_] += Dn.reshape(M_, 9).t().float()
             tk("hess")
-            D = Bv[:, 0].double().reshape(M_, 3, 3)
+            D = Bs[0, :, :M_].t().double().reshape(M_, 3, 3)
             bad = ~(torch.diagonal(D, dim1=1, dim2=2) > 0).all(1)
             D[bad] = torch.eye(3, device=dev, dtype=D.dtype)
             Dinv = torch.linalg.inv(D)
             PC.Dinv[:M_ * 9].copy_(Dinv.reshape(-1))
             nbl = RT.BEll(G.gi, dtype=torch.float32)
-            PC.nb[:M_ * 15].copy_(nbl.nb.reshape(-1).int())
+            PC.nb.view(15, Ms)[:, :M_] = nbl.nb.t().int()
             tk("asm")
             b = gg.reshape(-1).double()
             xx, it, res, negc = (PC.solve2 if a.pcg2 else PC.solve)(M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
             negf = int(CF.cnt[1]) / G.T
+            st["gate"] = int(CF.cnt[0])
             tk("pcg")
-            Bd = Bv.view(M_, 15, 3, 3)
+            Bd = Bs[:, :, :M_].permute(2, 0, 1).reshape(M_, 15, 3, 3)
             nbi = nbl.nb
             mv = lambda q: torch.einsum("mkab,mkb->ma", Bd.double(), q.reshape(M_, 3)[nbi]).reshape(-1)
         if a.cuda:
@@ -356,7 +364,9 @@ for i in range(L):
         st.update(alpha=al if acc else 0.0, acc=acc, n_ls=nls, E1=(En if acc else Ec), lm=(tries if len(tries) > 1 else None))
         steps.append(st)
     # G2P
-    if a.floor == "node":
+    if a.lite:
+        x2, v2k, F2 = CF.g2p(U, F)
+    elif a.floor == "node":
         x2, F2 = fr.g2p(x, F, U)
     else:
         Uf = U.to(x.dtype)

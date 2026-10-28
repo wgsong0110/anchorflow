@@ -212,7 +212,7 @@ __global__ void tet_eg(int T, const long long* tets, const float* U, const doubl
 
 // ---------------- 사면체 헤시안 + |λ| 투영 + 블록 ELL 원자 합 ----------------
 __global__ void tet_hess(int T, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
-                         const float* M4, float mu, float lam, float efloor, const int* slots, float* Bell, int* nneg, int maxsw, float jtol, const float* Ht) {
+                         const float* M4, float mu, float lam, float efloor, const int* slots, float* Bell, int* nneg, int maxsw, float jtol, const float* Ht, int Ms, float gtau, int* ngate) {
     int t = blockIdx.x*blockDim.x + threadIdx.x;
     if (t >= T) return;
     float u[4][3], G[12];
@@ -244,8 +244,34 @@ __global__ void tet_hess(int T, const long long* tets, const float* U, const flo
     }
     if (Ht != 0) { const float* ht = Ht + (long long)t*144; for (int k=0;k<144;k++) H[k] += ht[k]; }
     for (int p=0;p<12;p++) for (int q=p+1;q<12;q++) { float s=0.5f*(H[p*12+q]+H[q*12+p]); H[p*12+q]=s; H[q*12+p]=s; }
-    for (int k=0;k<144;k++) W[k] = (k%13==0) ? 1.f : 0.f;
     float fro=0; for (int k=0;k<144;k++) fro += H[k]*H[k];
+    const int* sl = slots + t*16;
+    if (gtau > 0.f) {
+        // Cholesky gate: if H + tau*|H|_F*I is SPD, use it as is (|lambda| projection differs only for eigenvalues within tau*|H|_F of 0)
+        float sh = gtau*sqrtf(fro);
+        for (int k=0;k<144;k++) W[k] = H[k];
+        for (int k=0;k<12;k++) W[k*13] += sh;
+        bool ok = true;
+        for (int j=0;j<12 && ok;j++) {
+            float dsum = W[j*13];
+            for (int k=0;k<j;k++) dsum -= W[j*12+k]*W[j*12+k];
+            if (!(dsum > 0.f)) { ok = false; break; }
+            float ljj = sqrtf(dsum); W[j*13] = ljj;
+            for (int i=j+1;i<12;i++) { float s2 = W[i*12+j]; for (int k=0;k<j;k++) s2 -= W[i*12+k]*W[j*12+k]; W[i*12+j] = s2/ljj; }
+        }
+        if (ok) {
+            atomicAdd(ngate, 1);
+            for (int i=0;i<4;i++) for (int j=0;j<4;j++) {
+                int sv = sl[i*4+j]; long long node = sv/15, cls = sv%15;
+                for (int c=0;c<3;c++) for (int d=0;d<3;d++) {
+                    int r=i*3+c, q=j*3+d;
+                    atomicAdd(&Bell[((long long)cls*9 + c*3+d)*Ms + node], H[r*12+q] + ((r==q)?sh:0.f));
+                }
+            }
+            return;
+        }
+    }
+    for (int k=0;k<144;k++) W[k] = (k%13==0) ? 1.f : 0.f;
     float skip = sqrtf(jtol*fro)*1e-3f;
     for (int sw=0; sw<maxsw; sw++) {
         float off=0; for (int p=0;p<12;p++) for (int q=p+1;q<12;q++) off += H[p*12+q]*H[p*12+q];
@@ -269,13 +295,12 @@ __global__ void tet_hess(int T, const long long* tets, const float* U, const flo
     for (int k=0;k<12;k++){ ev[k]=H[k*13]; if (ev[k]<0) neg=1; mx=fmaxf(mx,fabsf(ev[k])); }
     if (neg) atomicAdd(nneg, 1);
     for (int k=0;k<12;k++) ev[k] = fmaxf(fabsf(ev[k]), efloor*mx);
-    const int* sl = slots + t*16;
     for (int i=0;i<4;i++) for (int j=0;j<4;j++) {
-        float* Bo = Bell + (long long)sl[i*4+j]*9;
+        int sv = sl[i*4+j]; long long node = sv/15, cls = sv%15;
         for (int c=0;c<3;c++) for (int d=0;d<3;d++) {
             int r=i*3+c, q=j*3+d; float s=0;
             for (int k=0;k<12;k++) s += W[r*12+k]*ev[k]*W[q*12+k];
-            atomicAdd(&Bo[c*3+d], s);
+            atomicAdd(&Bell[((long long)cls*9 + c*3+d)*Ms + node], s);
         }
     }
 }
@@ -424,20 +449,81 @@ __global__ void near_hess(int nn_, const long long* idx, const long long* tinv, 
     }
 }
 
+
+// ---------------- grid: locate (simplex.locate same formula) ----------------
+__global__ void locate_k(int N, const float* x, const float* lo, const float* Ai, int n0, int n1, int n2,
+                         long long* idx, float* lamb, long long* tid, unsigned char* nmark, unsigned char* tmark) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    float q[3] = {x[p*3]-lo[0], x[p*3+1]-lo[1], x[p*3+2]-lo[2]};
+    float y[3]; for (int k=0;k<3;k++) y[k] = Ai[k*3]*q[0] + Ai[k*3+1]*q[1] + Ai[k*3+2]*q[2];
+    int nl[3] = {n0, n1, n2};
+    int ci[3]; float f[3];
+    for (int k=0;k<3;k++){ int c = (int)floorf(y[k]); c = min(max(c, 0), nl[k]-2); ci[k]=c; f[k] = fminf(fmaxf(y[k]-(float)c, 0.f), 1.f); }
+    int pr[3] = {0,1,2};
+    // descending sort of f with index
+    if (f[pr[0]] < f[pr[1]]) { int t=pr[0]; pr[0]=pr[1]; pr[1]=t; }
+    if (f[pr[1]] < f[pr[2]]) { int t=pr[1]; pr[1]=pr[2]; pr[2]=t; }
+    if (f[pr[0]] < f[pr[1]]) { int t=pr[0]; pr[0]=pr[1]; pr[1]=t; }
+    float s0=f[pr[0]], s1=f[pr[1]], s2=f[pr[2]];
+    lamb[p*4]=1.f-s0; lamb[p*4+1]=s0-s1; lamb[p*4+2]=s1-s2; lamb[p*4+3]=s2;
+    int v[3] = {ci[0], ci[1], ci[2]};
+    for (int r=0;r<4;r++) {
+        if (r>0) v[pr[r-1]] += 1;
+        long long fl = ((long long)v[0]*n1 + v[1])*n2 + v[2];
+        idx[p*4+r] = fl; nmark[fl] = 1;
+    }
+    long long cell = ((long long)ci[0]*n1 + ci[1])*n2 + ci[2];
+    long long tt = cell*9 + pr[0]*3 + pr[1];
+    tid[p] = tt; tmark[tt] = 1;
+}
+// per-tet closed-form gradient of barycentric (float64): Dm = [X1-X0, X2-X0, X3-X0] columns, Di = inv(Dm) rows = grad lambda_{1..3}
+__global__ void tet_geo(int T, const long long* tets, const float* npos, double* gl) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    double X[4][3];
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) X[i][c] = (double)npos[tets[t*4+i]*3+c];
+    double D[9];
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) D[r*3+c] = X[c+1][r]-X[0][r];
+    double C[9]; cof3(D, C);
+    double det = D[0]*C[0]+D[1]*C[1]+D[2]*C[2];
+    // inv = cof^T / det
+    for (int i=0;i<3;i++) for (int b=0;b<3;b++) gl[t*12 + (i+1)*3 + b] = C[b*3+i]/det;
+    for (int b=0;b<3;b++) gl[t*12+b] = -(gl[t*12+3+b]+gl[t*12+6+b]+gl[t*12+9+b]);
+}
+// ---------------- G2P with stick -> softplus maps (fem_fast.FemFrame._maps), float64 inside ----------------
+__global__ void g2p_part(int N, const float* x, const float* U, const long long* rows, const float* lamb, const float* glT, const long long* tinv,
+                         const float* Fp, double p0, double p1, double p2, double n0, double n1, double n2,
+                         double eps_st, double eps_sp, double xn, double h, float* x2, float* v2, float* F2) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    double u[3]={0,0,0}, G[9]={0,0,0,0,0,0,0,0,0}, xx[3], c0[3]={0,0,0};
+    const float* gl = glT + tinv[p]*12;
+    for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; double lm=lamb[p*4+i]; for (int a=0;a<3;a++){ double Ua=U[nd*3+a]; u[a]+=lm*Ua; for (int b=0;b<3;b++) G[a*3+b]+=Ua*gl[i*3+b]; } }
+    for (int k=0;k<3;k++) xx[k]=x[p*3+k];
+    double pt[3]={p0,p1,p2}, nv[3]={n0,n1,n2};
+    NearMap M; near_map(xx, u, G, c0, pt, nv, eps_st, eps_sp, xn, M);
+    double Jf[9]; mm3(M.Mn, M.K1, Jf);
+    for (int k=0;k<3;k++) { double qk = xx[k] + M.r[k]; x2[p*3+k] = (float)qk; v2[p*3+k] = (float)((qk - xx[k])/h); }
+    double F[9]; for (int k=0;k<9;k++) F[k]=Fp[p*9+k];
+    double F2d[9]; mm3(Jf, F, F2d);
+    for (int k=0;k<9;k++) F2[p*9+k] = (float)F2d[k];
+}
+
 // ---------------- PCG (블록 ELL float32 행렬, float64 벡터; 상태 st: 0 rz 1 dAd 2 rr 3 rz2 4 thr 5 alive 6 nit 7 neg 8 alpha 9 beta) ----------------
-__global__ void pcg_spmv(const int* Mp, const float* B, const int* nb, const double* d, double* y, double* st) {
+__global__ void pcg_spmv(const int* Mp, const float* B, const int* nb, const double* d, double* y, double* st, int Ms) {
     int m = blockIdx.x*blockDim.x + threadIdx.x;
     int M = *Mp;
     double part = 0.0;
     if (m < M && st[5] > 0.5) {
         double y0=0,y1=0,y2=0;
         for (int k=0;k<15;k++) {
-            int j = nb[m*15+k];
-            const float* b = B + ((long long)m*15+k)*9;
+            int j = nb[k*Ms+m];
+            const float* b = B + (long long)k*9*Ms + m;
             double x0=d[j*3], x1=d[j*3+1], x2=d[j*3+2];
-            y0 += b[0]*x0 + b[1]*x1 + b[2]*x2;
-            y1 += b[3]*x0 + b[4]*x1 + b[5]*x2;
-            y2 += b[6]*x0 + b[7]*x1 + b[8]*x2;
+            y0 += b[0]*x0 + b[Ms]*x1 + b[2*Ms]*x2;
+            y1 += b[3*Ms]*x0 + b[4*Ms]*x1 + b[5*Ms]*x2;
+            y2 += b[6*Ms]*x0 + b[7*Ms]*x1 + b[8*Ms]*x2;
         }
         y[m*3]=y0; y[m*3+1]=y1; y[m*3+2]=y2;
         part = d[m*3]*y0 + d[m*3+1]*y1 + d[m*3+2]*y2;
@@ -465,7 +551,7 @@ __global__ void pcg2_b(int p, const int* Mp, const double* Dinv, double* x, doub
     block_add(prz, &A[2]);
 }
 __global__ void pcg2_d(int p, const int* Mp, const float* B, const int* nb, const double* z, double* d, double* Ad,
-                       double* scal, double* acc, double thr) {
+                       double* scal, double* acc, double thr, int Ms) {
     int m = blockIdx.x*blockDim.x + threadIdx.x;
     int M = *Mp;
     const double* S = scal + p*4; const double* A = acc + p*3;
@@ -477,12 +563,12 @@ __global__ void pcg2_d(int p, const int* Mp, const float* B, const int* nb, cons
     if (m < M && an) {
         double y0=0,y1=0,y2=0;
         for (int k=0;k<15;k++) {
-            int j = nb[m*15+k];
-            const float* b = B + ((long long)m*15+k)*9;
+            int j = nb[k*Ms+m];
+            const float* b = B + (long long)k*9*Ms + m;
             double x0=z[j*3], x1=z[j*3+1], x2=z[j*3+2];
-            y0 += b[0]*x0 + b[1]*x1 + b[2]*x2;
-            y1 += b[3]*x0 + b[4]*x1 + b[5]*x2;
-            y2 += b[6]*x0 + b[7]*x1 + b[8]*x2;
+            y0 += b[0]*x0 + b[Ms]*x1 + b[2*Ms]*x2;
+            y1 += b[3*Ms]*x0 + b[4*Ms]*x1 + b[5*Ms]*x2;
+            y2 += b[6*Ms]*x0 + b[7*Ms]*x1 + b[8*Ms]*x2;
         }
         double q[3] = {y0,y1,y2};
         for (int c=0;c<3;c++){ double dd = z[m*3+c] + be*d[m*3+c]; double aa = q[c] + be*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; part += dd*aa; }
@@ -493,15 +579,15 @@ __global__ void pcg2_d(int p, const int* Mp, const float* B, const int* nb, cons
     }
     block_add(part, &acc[(1-p)*3]);
 }
-__global__ void bell_mv(const int* Mp, const float* B, const int* nb, const double* v, double* y) {
+__global__ void bell_mv(const int* Mp, const float* B, const int* nb, const double* v, double* y, int Ms) {
     int m = blockIdx.x*blockDim.x + threadIdx.x;
     if (m >= *Mp) return;
     double y0=0,y1=0,y2=0;
     for (int k=0;k<15;k++) {
-        int j = nb[m*15+k];
-        const float* b = B + ((long long)m*15+k)*9;
+        int j = nb[k*Ms+m];
+        const float* b = B + (long long)k*9*Ms + m;
         double x0=v[j*3], x1=v[j*3+1], x2=v[j*3+2];
-        y0 += b[0]*x0 + b[1]*x1 + b[2]*x2; y1 += b[3]*x0 + b[4]*x1 + b[5]*x2; y2 += b[6]*x0 + b[7]*x1 + b[8]*x2;
+        y0 += b[0]*x0 + b[Ms]*x1 + b[2*Ms]*x2; y1 += b[3*Ms]*x0 + b[4*Ms]*x1 + b[5*Ms]*x2; y2 += b[6*Ms]*x0 + b[7*Ms]*x1 + b[8*Ms]*x2;
     }
     y[m*3]=y0; y[m*3+1]=y1; y[m*3+2]=y2;
 }
@@ -605,14 +691,14 @@ class CudaFem:
     def energy(self, U):
         return self.energy_grad(U, want_g=False)[0]
 
-    def hess_into(self, U, slots, Bell, efloor, maxsw=10, jtol=1e-12):
+    def hess_into(self, U, slots, Bell, efloor, maxsw=10, jtol=1e-12, Ms=None, gtau=0.0):
         k = _mod().get_function("tet_hess")
         gr, bl = _grid(self.T, 64)
         Uf = U.float().contiguous()
         with _Stream():
             k(gr, bl, (np.int32(self.T), _cp(self.tets), _cp(Uf), _cp(self.gl4), _cp(self.FT4), _cp(self.VT4), _cp(self.M44),
                        np.float32(self.mu), np.float32(self.lam), np.float32(efloor), _cp(slots), _cp(Bell), _cp(self.cnt[1:2]),
-                       np.int32(maxsw), np.float32(jtol), np.uint64(0)))
+                       np.int32(maxsw), np.float32(jtol), np.uint64(0), np.int32(Ms), np.float32(gtau), _cp(self.cnt[0:1])))
 
 
 class CudaPcg:
@@ -621,7 +707,7 @@ class CudaPcg:
     def __init__(self, Mmax, dev, ck=10):
         self.Mmax, self.ck, self.dev = int(Mmax), int(ck), dev
         f8 = torch.float64
-        self.B = torch.zeros(self.Mmax * 15 * 9, dtype=torch.float32, device=dev)
+        self.B = torch.zeros(self.Mmax * 15 * 9, dtype=torch.float32, device=dev)          # [15 칸, 9, Mmax] (노드 연속 -- 곱이 합쳐 읽힌다)
         self.nb = torch.zeros(self.Mmax * 15, dtype=torch.int32, device=dev)
         self.Dinv = torch.zeros(self.Mmax * 9, dtype=f8, device=dev)
         self.x, self.r, self.z, self.d, self.y = [torch.zeros(self.Mmax * 3, dtype=f8, device=dev) for _ in range(5)]
@@ -633,7 +719,7 @@ class CudaPcg:
         md = _mod()
         g1, b1 = _grid(self.Mmax)
         g3, b3 = _grid(self.Mmax * 3)
-        md.get_function("pcg_spmv")(g1, b1, (self.cMp, self.cB, self.cnb, self.cd, self.cy, self.cst))
+        md.get_function("pcg_spmv")(g1, b1, (self.cMp, self.cB, self.cnb, self.cd, self.cy, self.cst, np.int32(self.Mmax)))
         md.get_function("pcg_s1")((1,), (1,), (self.cst,))
         md.get_function("pcg_upd")(g1, b1, (self.cMp, self.cDinv, self.cx, self.cr, self.cz, self.cd, self.cy, self.cst))
         md.get_function("pcg_s2")((1,), (1,), (self.cst,))
@@ -664,7 +750,7 @@ class CudaPcg:
         self.d.copy_(self.z)
         g1, b1 = _grid(self.Mmax)
         with _Stream():
-            _mod().get_function("bell_mv")(g1, b1, (self.cMp, self.cB, self.cnb, self.cd, self.cAd))
+            _mod().get_function("bell_mv")(g1, b1, (self.cMp, self.cB, self.cnb, self.cd, self.cAd, np.int32(self.Mmax)))
         bb = (b * b).sum().clamp_min(1e-300)
         thr = float(bb) * rtol * rtol
         self.scal.zero_()
@@ -677,7 +763,7 @@ class CudaPcg:
 
         def it2(p, thr_):
             kb(g1, b1, (np.int32(p), self.cMp, self.cDinv, self.cx, self.cr, self.cz, self.cd, self.cAd, self.cscal, self.cacc))
-            kd(g1, b1, (np.int32(p), self.cMp, self.cB, self.cnb, self.cz, self.cd, self.cAd, self.cscal, self.cacc, np.float64(thr_)))
+            kd(g1, b1, (np.int32(p), self.cMp, self.cB, self.cnb, self.cz, self.cd, self.cAd, self.cscal, self.cacc, np.float64(thr_), np.int32(self.Mmax)))
         ck = self.ck - (self.ck % 2)
         it = 0
         if use_graph:
@@ -829,7 +915,7 @@ class CudaTetq:
     def energy(self, U):
         return self.energy_grad(U, want_g=False)[0]
 
-    def hess_into(self, U, slots, Bell, efloor, maxsw=10, jtol=1e-12):
+    def hess_into(self, U, slots, Bell, efloor, maxsw=10, jtol=1e-12, Ms=None, gtau=0.0):
         Uf = U.float().contiguous()
         if self.Ht is None:
             self.Ht = torch.zeros(self.T * 144, dtype=torch.float32, device=self.dev)
@@ -844,7 +930,7 @@ class CudaTetq:
             gr, bl = _grid(self.T, 64)
             md.get_function("tet_hess")(gr, bl, (np.int32(self.T), _cp(self.tets), _cp(Uf), _cp(self.gl4), _cp(self.FT4), _cp(self.VT4), _cp(self.M44),
                                                   np.float32(self.mu), np.float32(self.lam), np.float32(efloor), _cp(slots), _cp(Bell), _cp(self.cnt[1:2]),
-                                                  np.int32(maxsw), np.float32(jtol), _cp(self.Ht)))
+                                                  np.int32(maxsw), np.float32(jtol), _cp(self.Ht), np.int32(Ms), np.float32(gtau), _cp(self.cnt[0:1])))
 
     def near_only(self, U):
         """대조용: 바닥 후보 입자 12x12 를 사면체 버퍼 [T,12,12] 로만."""
@@ -855,3 +941,122 @@ class CudaTetq:
             _mod().get_function("near_hess")(gr, bl, (np.int32(self.nn), _cp(self.ni), _cp(self.tinv)) + self._near_args(Uf)[2:] +
                                              (np.float32(self.mu), np.float32(self.lam), _cp(Ht)))
         return Ht.view(self.T, 12, 12)
+
+
+class GridK:
+    """fem_rt.Grid(fast=True) 와 같은 격자·같은 순서 (사면체는 tid 오름차순), locate 와 사면체 ∇λ 를 커널로."""
+
+    def __init__(self, x, node_h):
+        from . import simplex as SX
+        dev = x.device
+        lo, lat, nn = SX.grid_for_nodes(x, 32, hz_ratio=SX.HZ_CUBE, h_fix=node_h)
+        n0, n1, n2 = [int(q) for q in nn.tolist()]
+        P = n0 * n1 * n2
+        N = x.shape[0]
+        idx = torch.empty(N, 4, dtype=torch.long, device=dev)
+        lamb = torch.empty(N, 4, dtype=torch.float32, device=dev)
+        tid = torch.empty(N, dtype=torch.long, device=dev)
+        nmark = torch.zeros(P, dtype=torch.uint8, device=dev)
+        tmark = torch.zeros(P * 9, dtype=torch.uint8, device=dev)
+        xs = x.float().contiguous()
+        lo_ = lo.float().contiguous()
+        Ai = lat.Ai.float().contiguous()
+        gr, bl = _grid(N, 256)
+        with _Stream():
+            _mod().get_function("locate_k")(gr, bl, (np.int32(N), _cp(xs), _cp(lo_), _cp(Ai), np.int32(n0), np.int32(n1), np.int32(n2),
+                                                     _cp(idx), _cp(lamb), _cp(tid), _cp(nmark), _cp(tmark)))
+        ncm = torch.cumsum(nmark, 0, dtype=torch.int64) - 1
+        tcm = torch.cumsum(tmark, 0, dtype=torch.int64) - 1
+        uniq = nmark.nonzero().squeeze(1)
+        M = int(uniq.numel())
+        rows = ncm[idx]
+        pinv = tcm[tid]
+        T = int(tcm[-1]) + 1
+        rep = torch.empty(T, dtype=torch.long, device=dev).scatter_(0, pinv, torch.arange(N, device=dev))
+        tets = rows[rep].contiguous()
+        npos = SX.node_pos(lo, lat, nn, uniq).float().contiguous()
+        gl8 = torch.empty(T, 12, dtype=torch.float64, device=dev)
+        gr, bl = _grid(T, 128)
+        with _Stream():
+            _mod().get_function("tet_geo")(gr, bl, (np.int32(T), _cp(tets), _cp(npos), _cp(gl8)))
+        imin = torch.round(lat.Ai.double() @ lo.double()).long()
+        k2 = uniq % n2
+        k1 = (uniq // n2) % n1
+        k0 = uniq // (n1 * n2)
+        self.gi = torch.stack([k0, k1, k2], -1) + imin
+        self.rows, self.lam, self.uniq, self.npos, self.tets, self.pinv = rows, lamb, uniq, npos, tets, pinv
+        self.T, self.M, self.N, self.nn = T, M, N, (n0, n1, n2)
+        self.gl8 = gl8.view(T, 4, 3)
+
+
+class CudaTetqK(CudaTetq):
+    """fem_fast.FemFrame + tetq_setup 를 거치지 않고 GridK 에서 바로 (같은 식: 분할은 걸음 시작 U 에서 s/ε ≤ 20, 항등 입자만 사면체로 P2G)."""
+
+    def __init__(self, G, x, v, F, m, vol, cfg, h, U, eps_sp=0.01, eps_st=0.01, stick_xn=True):
+        from . import phys_resid as PR
+        dev = x.device
+        f8 = torch.float64
+        T, N = G.T, G.N
+        self.T, self.dev = T, dev
+        self.tets = G.tets
+        h = float(h)
+        bc = [b for b in (cfg.get("boundary_conditions") or []) if b.get("type") == "surface_collider"][0]
+        pt = torch.as_tensor(bc["point"], device=dev, dtype=torch.float32)
+        nr = torch.as_tensor(bc["normal"], device=dev, dtype=torch.float32)
+        nr = nr / nr.norm()
+        u = (G.lam.unsqueeze(-1) * U.float()[G.rows]).sum(1)
+        s = ((x + u - pt) * nr).sum(-1)
+        near = torch.zeros_like(s, dtype=torch.bool)
+        for e in (eps_sp, eps_st):
+            if e > 0:
+                near |= s / e <= 20.0
+        far = (~near).to(f8)
+        g = torch.as_tensor(cfg["g"], device=dev, dtype=f8)
+        k = m.double() / (h * h)
+        kf = k * far
+        lm = G.lam.double()
+        c = h * v.double() + (h * h) * g
+        pinv = G.pinv
+        self.M48 = torch.zeros(T, 4, 4, device=dev, dtype=f8).index_add_(0, pinv, kf[:, None, None] * lm[:, :, None] * lm[:, None, :])
+        self.B48 = torch.zeros(T, 4, 3, device=dev, dtype=f8).index_add_(0, pinv, kf[:, None, None] * lm[:, :, None] * c[:, None, :])
+        self.C0 = 0.5 * (kf * (c * c).sum(-1)).sum()
+        Vf = vol.double() * far
+        self.VT8 = torch.zeros(T, device=dev, dtype=f8).index_add_(0, pinv, Vf)
+        FT = torch.zeros(T, 3, 3, device=dev, dtype=f8).index_add_(0, pinv, Vf[:, None, None] * F.double())
+        okT = self.VT8 > 0
+        I3 = torch.eye(3, device=dev, dtype=f8)
+        self.FT8 = torch.where(okT[:, None, None], FT / self.VT8.clamp_min(1e-300)[:, None, None], I3).contiguous()
+        self.gl8 = G.gl8.reshape(T, 12).contiguous()
+        self.gl4, self.FT4, self.VT4, self.M44 = self.gl8.float(), self.FT8.float(), self.VT8.float(), self.M48.float()
+        self.mu, self.lam = PR.lame(cfg["E"], cfg["nu"])
+        self.ni = near.nonzero().squeeze(1)
+        self.nn = int(self.ni.numel())
+        self.x = x.float().contiguous()
+        self.rows = G.rows
+        self.lamb = G.lam.contiguous()
+        self.glp = self.gl4.view(T, 12)[pinv].contiguous()
+        self.Fp = F.float().reshape(-1, 9).contiguous()
+        self.vol = vol.float().contiguous()
+        self.kk = k.float().contiguous()
+        self.cc = c.float().contiguous()
+        self.tinv = pinv.contiguous()
+        self.pl = [float(q) for q in pt.tolist()] + [float(q) for q in nr.tolist()]
+        self.eps_st, self.eps_sp = float(eps_st), float(eps_sp)
+        self.xn = 1.0 if (stick_xn and eps_st > 0) else 0.0
+        self.cnt = torch.zeros(2, dtype=torch.int32, device=dev)
+        self.Ht = None
+        self.h = h
+
+    def g2p(self, U, F):
+        N = self.x.shape[0]
+        x2 = torch.empty_like(self.x)
+        v2 = torch.empty_like(self.x)
+        F2 = torch.empty(N, 9, dtype=torch.float32, device=self.dev)
+        P = self.pl
+        gr, bl = _grid(N, 256)
+        with _Stream():
+            _mod().get_function("g2p_part")(gr, bl, (np.int32(N), _cp(self.x), _cp(U.float().contiguous()), _cp(self.rows), _cp(self.lamb), _cp(self.gl4),
+                                                     _cp(self.tinv), _cp(self.Fp), np.float64(P[0]), np.float64(P[1]), np.float64(P[2]),
+                                                     np.float64(P[3]), np.float64(P[4]), np.float64(P[5]), np.float64(self.eps_st), np.float64(self.eps_sp),
+                                                     np.float64(self.xn), np.float64(self.h), _cp(x2), _cp(v2), _cp(F2)))
+        return x2, v2, F2.view(N, 3, 3)
