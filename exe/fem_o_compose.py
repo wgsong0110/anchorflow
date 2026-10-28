@@ -3,7 +3,7 @@
   2. ficus 3DGS: 정답 | 암시적 최종 (실시간 + 수정 판정 rt_tmix_fix) | 명시적 새 판 (같은 코드 경로, 바닥 없음)
   3. ficus 프레임별 입자 평균 ψ (정답 · 암시적 최종 · 명시적 새 판, 로그축)
   4. ficus 잎·가지 끝 변위 시계열과 진동 주기 (z 상위 5 % 입자 평균, 정답 주 방향 -- /tmp/ficper/fig.py 와 같은 분석)
-사용: python exe/fem_o_compose.py <lego 태그> <ficus 태그>   (lbours/fem_o_{lego,ficus}/<태그>)"""
+사용: python exe/fem_o_compose.py <lego 태그 또는 -> <ficus 태그>   (lbours/fem_o_{lego,ficus}/<태그>)"""
 import json
 import os
 import subprocess
@@ -21,9 +21,11 @@ OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
 TMP = "/tmp/fem_o_compose"
 os.makedirs(TMP, exist_ok=True)
 here = os.path.dirname(os.path.abspath(__file__))
+LEGO = sys.argv[1] != "-"                                                           # "-": lego 완주 판 없음 -> lego 영상 건너뜀
 LO = f"{L}/fem_o_lego/{sys.argv[1]}"
 FO = f"{L}/fem_o_ficus/{sys.argv[2]}"
-SL, SF = json.load(open(f"{LO}/summary.json")), json.load(open(f"{FO}/summary.json"))
+SL = json.load(open(f"{LO}/summary.json")) if LEGO else None
+SF = json.load(open(f"{FO}/summary.json"))
 SFI = json.load(open(f"{L}/fem_rt_ficus/rt_tmix_fix/summary.json"))
 SLI = json.load(open(f"{L}/fem_rt_lego/k_final_F/summary.json"))
 VN = lambda s: f"lag 서브스텝 {s['N']}" + (f", 속도 바닥 고착 {'질량 비율' if s.get('vfl_mode') == 'frac' else '노드 전체'}" if s.get("vfl_mode") else "") \
@@ -31,12 +33,12 @@ VN = lambda s: f"lag 서브스텝 {s['N']}" + (f", 속도 바닥 고착 {'질량
 outs = []
 # 1
 o1 = f"{OUT}/fem_o_lego_cmp.mp4"
-subprocess.run([sys.executable, f"{here}/fem_ex_compose.py", o1,
+LEGO and subprocess.run([sys.executable, f"{here}/fem_ex_compose.py", o1,
                 f"lego L000 80 프레임 · A6000 단독 · 정답 | 암시적 최종 (뉴턴 1 + 혼합 PCG) | 명시적 새 판 ({VN(SL)}, 사면체 등분 질량)",
                 f"정답 (MPM)|-|{L}/fem2_lego/gt_lego.mp4",
                 f"암시적 FEM 최종|{L}/fem_rt_lego/k_final_F/summary.json|{L}/fem_rt_lego/k_final_F/vj/fem_lego.mp4",
                 f"명시적 새 판 (속도 바닥, N {SL['N']})|{LO}/summary.json|{LO}/vj/fem_lego.mp4"], check=True)
-outs.append(o1)
+LEGO and outs.append(o1)
 # 2
 o2 = f"{OUT}/fem_o_ficus_cmp.mp4"
 subprocess.run([sys.executable, f"{here}/fem_ex_compose.py", o2,
