@@ -289,6 +289,20 @@ __device__ __forceinline__ void block_add(double v, double* out) {
     }
 }
 
+// 3 threads per node (row c), node index contiguous across threads (coalesced SoA reads)
+template <bool CG> __device__ __forceinline__ double ell_row(int m, int c, int Ms, const float* B, const int* nb, const double* v) {
+    double y = 0;
+    #pragma unroll 5
+    for (int k=0;k<15;k++) {
+        int j = nb[k*Ms+m];
+        const float* bb = B + ((long long)k*9 + c*3)*Ms + m;
+        double x0, x1, x2;
+        if (CG) { x0=__ldcg(&v[j*3]); x1=__ldcg(&v[j*3+1]); x2=__ldcg(&v[j*3+2]); } else { x0=v[j*3]; x1=v[j*3+1]; x2=v[j*3+2]; }
+        y += bb[0]*x0 + bb[Ms]*x1 + bb[2*Ms]*x2;
+    }
+    return y;
+}
+
 extern "C" {
 
 // ---------------- E·기울기 (float64) ----------------
@@ -681,6 +695,29 @@ __global__ void pcg2_d16(int p, const int* Mp, const float* B, const int* nb, co
     block_add(part, &acc[(1-p)*3]);
 }
 
+
+__global__ void pcg2_d3(int p, const int* Mp, const float* B, const int* nb, const double* z, double* d, double* Ad,
+                        double* scal, double* acc, double thr, int Ms) {
+    int gid = blockIdx.x*blockDim.x + threadIdx.x;
+    int c = gid / Ms, m = gid - c*Ms;
+    int M = *Mp;
+    const double* S = scal + p*4; const double* A = acc + p*3;
+    bool alive = S[1] > 0.5;
+    bool ae = alive && (A[0] > 0);
+    bool an = ae && !(A[1] < thr);
+    double be = an ? A[2]/S[0] : 0.0;
+    double part = 0.0;
+    if (an && c < 3 && m < M) {
+        double q = ell_row<false>(m, c, Ms, B, nb, z);
+        double dd = z[m*3+c] + be*d[m*3+c]; double aa = q + be*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; part = dd*aa;
+    }
+    if (blockIdx.x==0 && threadIdx.x==0) {
+        double* O = scal + (1-p)*4;
+        O[0] = an ? A[2] : S[0]; O[1] = an ? 1.0 : 0.0; O[2] = S[2] + (ae ? 1.0 : 0.0); O[3] = (S[3] > 0.5 || (alive && !(A[0] > 0))) ? 1.0 : 0.0;
+    }
+    block_add(part, &acc[(1-p)*3]);
+}
+
 // ---------------- persistent PCG (one launch, software grid barrier, all blocks co-resident) ----------------
 __device__ void gbar(unsigned int* cnt, volatile unsigned int* gen, unsigned int nblk) {
     __syncthreads();
@@ -732,13 +769,10 @@ __global__ void pcg_coop(int M, int Ms, const float* B, const int* nb, const dou
         if (rr < thr) break;
         double be = rz2/rz; rz = rz2;
         double pd = 0;
-        for (int base = blockIdx.x*blockDim.x; base < M*16; base += nth) {
-            int w = base + threadIdx.x; int m = w >> 4, k = w & 15;
-            double q[3];
-            ell16(m, k, m < M, Ms, B, nb, z, q);
-            if (m < M && k == 0) {
-                for (int c=0;c<3;c++){ double dd = z[m*3+c] + be*d[m*3+c]; double aa = q[c] + be*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; pd += dd*aa; }
-            }
+        for (int w2 = tid; w2 < 3*M; w2 += nth) {
+            int c = w2 / M, m = w2 - c*M;
+            double q = ell_row<true>(m, c, Ms, B, nb, z);
+            double dd = z[m*3+c] + be*d[m*3+c]; double aa = q + be*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; pd += dd*aa;
         }
         double b3 = block_sum(pd);
         if (threadIdx.x==0) atomicAdd(&acc[(1-p)*3], b3);
@@ -998,8 +1032,8 @@ class CudaPcg:
         self.scal[1] = 1.0
         self.acc[0] = (self.d[:n] * self.Ad[:n]).sum()
         md = _mod()
-        kb, kd = md.get_function("pcg2_b"), md.get_function("pcg2_d16")
-        g16, b16 = _grid(self.Mmax * 16, 256)
+        kb, kd = md.get_function("pcg2_b"), md.get_function("pcg2_d3")
+        g16, b16 = _grid(self.Mmax * 3, 256)
 
         def it2(p, thr_):
             kb(g1, b1, (np.int32(p), self.cMp, self.cDinv, self.cx, self.cr, self.cz, self.cd, self.cAd, self.cscal, self.cacc))
