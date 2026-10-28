@@ -297,7 +297,7 @@ _MOD = [None]
 def _mod():
     if _MOD[0] is None:
         import cupy as cp
-        _MOD[0] = cp.RawModule(code=_SRC, options=("--std=c++14",))
+        _MOD[0] = cp.RawModule(code=_SRC.encode("ascii", "ignore").decode(), options=("--std=c++14",))
     return _MOD[0]
 
 
