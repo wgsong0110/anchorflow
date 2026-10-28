@@ -90,6 +90,7 @@ ap.add_argument("--vbd_rho", type=float, default=0.0, help="--solver vbd: 체비
 ap.add_argument("--vbd_maxstep", type=float, default=0.0, help="--solver vbd: 노드 한 번 이동 상한 (node_h 배수, 0 = 없음)")
 ap.add_argument("--vbd_refresh", type=int, default=0, help="--solver vbd: R 반복마다 노드 블록 헤시안을 지금 상태에서 다시 (0 = 걸음 시작 값 고정)")
 ap.add_argument("--mmax", type=int, default=60000)
+ap.add_argument("--asm_k", action="store_true", help="--cuda --lite: slots·블록 야코비 역·이웃 표를 커널로 (같은 값), LM 용 전체 블록은 필요할 때만")
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--dump_sys", default="", help="쉼표 프레임 목록: 그 프레임 첫 걸음 선형계 (블록 ELL·b) 를 <out>/sys_t###.pt 로")
@@ -262,7 +263,10 @@ for i in range(L):
         if a.cuda:
             M_ = G.M
             gi = G.gi
-            slots = (tets.unsqueeze(-1) * 15 + RT.off_cls(gi[tets].unsqueeze(1) - gi[tets].unsqueeze(2))).int().contiguous()
+            if a.asm_k:
+                slots = RTC.slots_k(G)
+            else:
+                slots = (tets.unsqueeze(-1) * 15 + RT.off_cls(gi[tets].unsqueeze(1) - gi[tets].unsqueeze(2))).int().contiguous()
             Ms = PC.Mmax
             PC.B.zero_()
             CF.cnt.zero_()
@@ -272,13 +276,23 @@ for i in range(L):
                 Dn = fr._floor_hess(U)
                 Bs[0, :, :M_] += Dn.reshape(M_, 9).t().float()
             tk("hess")
-            D = Bs[0, :, :M_].t().double().reshape(M_, 3, 3)
-            bad = ~(torch.diagonal(D, dim1=1, dim2=2) > 0).all(1)
-            D[bad] = torch.eye(3, device=dev, dtype=D.dtype)
-            Dinv = torch.linalg.inv(D)
-            PC.Dinv[:M_ * 9].copy_(Dinv.reshape(-1))
-            nbl = RT.BEll(G.gi, dtype=torch.float32)
-            PC.nb.view(15, Ms)[:, :M_] = (torch.where(nbl.valid, nbl.nb, torch.full_like(nbl.nb, -1)) if a.sym else nbl.nb).t().int()
+
+            def _getD(Bs=Bs, M_=M_):
+                D_ = Bs[0, :, :M_].t().double().reshape(M_, 3, 3)
+                bad_ = ~(torch.diagonal(D_, dim1=1, dim2=2) > 0).all(1)
+                D_[bad_] = torch.eye(3, device=dev, dtype=D_.dtype)
+                return D_
+            if a.asm_k:
+                RTC.asm_k(G, PC, int(a.sym), Ms)
+                Dinv = PC.Dinv[:M_ * 9].view(M_, 3, 3)
+                D = None
+                nbl = None
+            else:
+                D = _getD()
+                Dinv = torch.linalg.inv(D)
+                PC.Dinv[:M_ * 9].copy_(Dinv.reshape(-1))
+                nbl = RT.BEll(G.gi, dtype=torch.float32)
+                PC.nb.view(15, Ms)[:, :M_] = (torch.where(nbl.valid, nbl.nb, torch.full_like(nbl.nb, -1)) if a.sym else nbl.nb).t().int()
             tk("asm")
             if a.solver == "vbd":
                 if i == 0:
@@ -317,15 +331,25 @@ for i in range(L):
             negf = int(CF.cnt[1]) / G.T
             st["gate"] = int(CF.cnt[0])
             tk("pcg")
-            Bd = Bs[:, :, :M_].permute(2, 0, 1).reshape(M_, 15, 3, 3)
-            nbi = nbl.nb
-            if a.sym:
-                # LM 재풀이용 전체 블록: 음의 오프셋 칸 = 이웃의 양의 칸 전치 (무효 칸은 0)
-                Bd = Bd.clone()
-                for k_ in range(1, 8):
-                    j_ = nbl.nb[:, 7 + k_]
-                    Bd[:, 7 + k_] = torch.where(nbl.valid[:, 7 + k_, None, None], Bd[j_, k_].transpose(1, 2), torch.zeros_like(Bd[:, 0]))
-            mv = lambda q: torch.einsum("mkab,mkb->ma", Bd.double(), q.reshape(M_, 3)[nbi]).reshape(-1)
+
+            def _mk_mv(Bs=Bs, M_=M_, nbl=nbl):
+                # LM 재풀이용 전체 블록 곱 (필요할 때만 만든다): 대칭 반쪽이면 음의 오프셋 칸 = 이웃의 양의 칸 전치 (무효 칸은 0)
+                nbl = nbl if nbl is not None else RT.BEll(G.gi, dtype=torch.float32)
+                Bd = Bs[:, :, :M_].permute(2, 0, 1).reshape(M_, 15, 3, 3)
+                nbi = nbl.nb
+                if a.sym:
+                    Bd = Bd.clone()
+                    for k_ in range(1, 8):
+                        j_ = nbl.nb[:, 7 + k_]
+                        Bd[:, 7 + k_] = torch.where(nbl.valid[:, 7 + k_, None, None], Bd[j_, k_].transpose(1, 2), torch.zeros_like(Bd[:, 0]))
+                Bd = Bd.double()
+                return lambda q: torch.einsum("mkab,mkb->ma", Bd, q.reshape(M_, 3)[nbi]).reshape(-1)
+            _mv_cache = []
+
+            def mv(q, _mk_mv=_mk_mv, _c=_mv_cache):
+                if not _c:
+                    _c.append(_mk_mv())
+                return _c[0](q)
         if a.cuda:
             pass
         elif True:
@@ -419,6 +443,8 @@ for i in range(L):
         pd_ = p
         while True:
             if mu_ > 0:
+                if D is None:
+                    D = _getD()
                 xm, itm, _ = lm_resolve(mv, D, MnH, b, mu_)
                 pd_ = xm.reshape(G.M, 3).to(U.dtype)
             gpd = float((gg * pd_).sum())

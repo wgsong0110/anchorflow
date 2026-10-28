@@ -1241,6 +1241,43 @@ __global__ void pcg_dir(const int* Mp, double* d, const double* z, const double*
     int k = blockIdx.x*blockDim.x + threadIdx.x;
     if (k < (*Mp)*3 && st[5] > 0.5) d[k] = z[k] + st[9]*d[k];
 }
+// ---------------- assembly helpers (result-invariant replacements of the torch glue) ----------------
+// slots[t, a*4+b] = tets[t,a]*15 + class(gi[tets[t,b]] - gi[tets[t,a]])   (class table: 27 -> 0..14 or -1)
+__global__ void slots_k(int T, const long long* tets, const long long* gi, const int* tbl, int* slots) {
+    int e = blockIdx.x*blockDim.x + threadIdx.x;
+    if (e >= T*16) return;
+    int t = e >> 4, a = (e >> 2) & 3, b = e & 3;
+    long long na = tets[t*4+a], nb_ = tets[t*4+b];
+    long long d0 = gi[nb_*3]-gi[na*3], d1 = gi[nb_*3+1]-gi[na*3+1], d2 = gi[nb_*3+2]-gi[na*3+2];
+    int cls = -1;
+    if (d0 >= -1 && d0 <= 1 && d1 >= -1 && d1 <= 1 && d2 >= -1 && d2 <= 1) cls = tbl[(d0+1)*9 + (d1+1)*3 + (d2+1)];
+    slots[e] = (int)(na*15 + cls);
+}
+// per node: block-Jacobi inverse of the self block (cls 0) in float64 (identity if a diagonal entry is not > 0), and the 15-neighbor table
+// (lattice index of node = uniq[m]; neighbor = ncm[lattice + offset] if marked; invalid -> -1 when sym else self)
+__global__ void asm_k(int M, int Ms, const float* B, double* Dinv, float* Dinv32, const long long* uniq, int n0, int n1, int n2,
+                      const unsigned char* nmark, const long long* ncm, const int* offs, int sym, int* nb) {
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    if (m >= M) return;
+    double D[9];
+    for (int e=0;e<9;e++) D[e] = (double)B[(long long)e*Ms + m];
+    if (!(D[0] > 0 && D[4] > 0 && D[8] > 0)) { for (int e=0;e<9;e++) D[e] = (e%4==0) ? 1.0 : 0.0; }
+    double C[9]; cof3(D, C);
+    double det = D[0]*C[0] + D[1]*C[1] + D[2]*C[2];
+    // inverse = cof^T / det
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) { double v = C[c*3+r]/det; Dinv[m*9+r*3+c] = v; if (Dinv32) Dinv32[m*9+r*3+c] = (float)v; }
+    long long L = uniq[m];
+    int k2 = (int)(L % n2), k1 = (int)((L / n2) % n1), k0 = (int)(L / ((long long)n1*n2));
+    for (int k=0;k<15;k++) {
+        int a0 = k0 + offs[k*3], a1 = k1 + offs[k*3+1], a2 = k2 + offs[k*3+2];
+        int j = -1;
+        if (a0 >= 0 && a0 < n0 && a1 >= 0 && a1 < n1 && a2 >= 0 && a2 < n2) {
+            long long q = ((long long)a0*n1 + a1)*n2 + a2;
+            if (nmark[q]) j = (int)ncm[q];
+        }
+        nb[k*Ms+m] = (j >= 0) ? j : (sym ? -1 : m);
+    }
+}
 // ---------------- VBD extras: node floor terms, per-node local line search ----------------
 __device__ __forceinline__ void barrier3_d(double d, double dhat, double* b, double* b1) {
     double eps = 1e-3*dhat;
@@ -2036,8 +2073,38 @@ class GridK:
         k0 = uniq // (n1 * n2)
         self.gi = torch.stack([k0, k1, k2], -1) + imin
         self.rows, self.lam, self.uniq, self.npos, self.tets, self.pinv = rows, lamb, uniq, npos, tets, pinv
+        self.nmark, self.ncm = nmark, ncm
         self.T, self.M, self.N, self.nn = T, M, N, (n0, n1, n2)
         self.gl8 = gl8.view(T, 4, 3)
+
+
+def slots_k(G):
+    """slots [T,16] int32 (= (tets*15 + off_cls(gi[b] - gi[a])) 의 커널 판)."""
+    from . import fem_rt as RT
+    dev = G.tets.device
+    if not hasattr(slots_k, "tbl") or slots_k.tbl.device != torch.device(dev):
+        slots_k.tbl = RT._tbl(dev)[1].int().contiguous()
+    out = torch.empty(G.T * 16, dtype=torch.int32, device=dev)
+    gr, bl = _grid(G.T * 16, 256)
+    with _Stream():
+        _mod().get_function("slots_k")(gr, bl, (np.int32(G.T), _cp(G.tets), _cp(G.gi.contiguous()), _cp(slots_k.tbl), _cp(out)))
+    return out.view(G.T, 16)
+
+
+def asm_k(G, PC, sym, Ms):
+    """블록 야코비 역 (float64, 자기 블록 대각이 양이 아니면 단위) + 15 이웃 표 (대칭이면 없는 칸 -1, 아니면 자기) 를 PC.Dinv·PC.nb 에."""
+    from . import fem_rt as RT
+    dev = G.tets.device
+    if not hasattr(asm_k, "offs") or asm_k.offs.device != torch.device(dev):
+        asm_k.offs = torch.tensor(RT._OFFS, dtype=torch.int32, device=dev).contiguous()
+    if getattr(PC, "Dinv32", None) is None:
+        PC.Dinv32 = torch.zeros(PC.Mmax * 9, dtype=torch.float32, device=dev)
+    M = G.M
+    n0, n1, n2 = G.nn
+    gr, bl = _grid(M, 128)
+    with _Stream():
+        _mod().get_function("asm_k")(gr, bl, (np.int32(M), np.int32(Ms), _cp(PC.B), _cp(PC.Dinv), _cp(PC.Dinv32), _cp(G.uniq), np.int32(n0), np.int32(n1),
+                                              np.int32(n2), _cp(G.nmark), _cp(G.ncm), _cp(asm_k.offs), np.int32(sym), _cp(PC.nb)))
 
 
 class CudaTetqK(CudaTetq):
