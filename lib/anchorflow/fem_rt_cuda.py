@@ -1112,6 +1112,19 @@ def _cp(t):
     return cp.asarray(t)
 
 
+def coop_blocks(name, bsz=256, cap=4):
+    """소프트웨어 장벽 지속 커널이 모두 동시 상주할 수 있는 블록 수 (SM 수 x SM 당 상주 블록, 레지스터·스레드 한도로)."""
+    import cupy as cp
+    f = _mod().get_function(name)
+    dev = cp.cuda.Device()
+    sm = int(dev.attributes["MultiProcessorCount"])
+    regs_sm = int(dev.attributes["MaxRegistersPerMultiprocessor"])
+    thr_sm = int(dev.attributes["MaxThreadsPerMultiProcessor"])
+    nreg = max(int(f.num_regs), 1)
+    per = min(cap, thr_sm // bsz, regs_sm // (((nreg + 7) // 8 * 8) * bsz))
+    return sm * max(per, 1), dict(sm=sm, regs=nreg, per_sm=per)
+
+
 class _Stream:
     """torch 지금 스트림에 CuPy 커널을 띄운다."""
     def __enter__(self):
@@ -1287,8 +1300,7 @@ class CudaPcg:
             self.acc6 = torch.zeros(6, dtype=torch.float64, device=dev)
             self.sc = torch.zeros(8, dtype=torch.float64, device=dev)
             self.bar = torch.zeros(2, dtype=torch.int32, device=dev)
-            sm = torch.cuda.get_device_properties(dev).multi_processor_count
-            self.nblk = 2 * sm
+            self.nblk, self.coop_info = coop_blocks("pcg_coop1", 256, cap=2)
         self.Mp.fill_(M)
         Di = self.Dinv[:M * 9].view(M, 3, 3)
         sc_ = (b * b).sum().clamp_min(1e-300).sqrt()
@@ -1320,7 +1332,7 @@ class CudaPcg:
             self.acc6 = torch.zeros(6, dtype=torch.float64, device=dev)
             self.sc = torch.zeros(8, dtype=torch.float64, device=dev)
             self.bar = torch.zeros(2, dtype=torch.int32, device=dev)
-            self.nblk = 2 * torch.cuda.get_device_properties(dev).multi_processor_count
+            self.nblk, self.coop_info = coop_blocks("pcg_coop32", 256, cap=2)
         if not hasattr(self, "z32"):
             self.z32, self.d32, self.Ad32 = [torch.zeros(self.Mmax * 3, dtype=torch.float32, device=dev) for _ in range(3)]
             self.Ad = torch.zeros(self.Mmax * 3, dtype=torch.float64, device=dev) if not hasattr(self, "Ad") else self.Ad

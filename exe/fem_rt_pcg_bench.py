@@ -56,16 +56,13 @@ def tm(fn, rep=3):
 sm = torch.cuda.get_device_properties(0).multi_processor_count
 (x0, it0, r0, _), t0 = tm(lambda: PC.solve2(M, b, 1e-6, 20000))
 print(f"[2 커널 그래프] {it0} 회 {t0:.2f} ms ({1e3 * t0 / it0:.1f} us/회) 실제 잔차 {PC.true_res(M, x0, b):.2e}", flush=True)
-# 모든 블록이 동시에 상주해야 한다 (소프트웨어 장벽) -- SM 당 스레드 1024 이하로만
-for bsz, nb_per_sm in ((128, 1), (128, 2), (128, 4), (128, 8), (256, 1), (256, 2), (256, 4), (512, 1), (512, 2)):
-        PC.bsz, PC.nblk = bsz, nb_per_sm * sm
-        try:
-            (xx, it, rr, _), tt = tm(lambda: PC.solve_coop(M, b, 1e-6, 20000))
-            print(f"[지속 블록 {PC.nblk} x {bsz}] {it} 회 {tt:.2f} ms ({1e3 * tt / it:.1f} us/회) 실제 잔차 {PC.true_res(M, xx, b):.2e} 해 차 {float((xx - x0).norm() / x0.norm()):.2e}", flush=True)
-        except Exception as e:                                               # noqa: BLE001
-            print(f"[지속 블록 {PC.nblk} x {bsz}] 실패 {type(e).__name__}: {str(e)[:120]}", flush=True)
+nbk, info = RTC.coop_blocks("pcg_coop1", 256, cap=2)
+print(f"[지속 커널 상주] {info} -> 블록 {nbk}", flush=True)
+PC.bsz, PC.nblk = 256, nbk
+(xx, it, rr, _), tt = tm(lambda: PC.solve_coop(M, b, 1e-6, 20000))
+print(f"[지속 블록 {PC.nblk} x 256] {it} 회 {tt:.2f} ms ({1e3 * tt / it:.1f} us/회) 실제 잔차 {PC.true_res(M, xx, b):.2e} 해 차 {float((xx - x0).norm() / x0.norm()):.2e}", flush=True)
 # 대칭 반쪽 저장
-PC.bsz, PC.nblk = 256, 2 * sm
+PC.bsz, PC.nblk = 256, nbk
 nbl = RT.BEll(G.gi, dtype=torch.float32)
 PC.B.zero_()
 CF.sym = 1
@@ -80,6 +77,6 @@ PC.B.zero_()
 CF.hess_into(U, slots, PC.B, 1e-6, Ms=PC.Mmax)
 PC.nb.view(15, PC.Mmax)[:, :M] = nbl.nb.t().int()
 # 고정 반복 수로 장벽만의 비용: rtol 0 (끝까지), maxit 200
-PC.bsz, PC.nblk = 256, 2 * sm
+PC.bsz, PC.nblk = 256, nbk
 (_, it, _, _), tt = tm(lambda: PC.solve_coop(M, b, 0.0, 200))
 print(f"[지속 200 회 고정] {tt:.2f} ms ({1e3 * tt / 200:.1f} us/회)", flush=True)
