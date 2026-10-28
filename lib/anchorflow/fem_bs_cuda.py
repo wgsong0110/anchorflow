@@ -26,6 +26,8 @@ import torch
 from . import fem_rt_cuda as RTC
 
 _BS = r'''
+// 진단 전용 배율 (fem_ex_cuda EXD 와 같은 뜻, --near_diag)
+__device__ float EXD[3] = {1.f, 1.f, 1.f};
 // ---------------- 2 차 B-스플라인 가중치 (simplex.bspline27 과 같은 식) ----------------
 // gpar = [lo(3), Ai(9)] (R), ipar = [n0, n1, n2] -- 밀집 격자 상자. 밖이면 1 (base 를 상자 안으로 자른다)
 template <typename R> __device__ __forceinline__ int bs_base(const R* x, const R* gpar, const int* ipar, int* b, R W[3][3], R D[3][3]) {
@@ -162,13 +164,13 @@ template <typename R> __device__ __forceinline__ void bs_near_gy(int q, long lon
         for (int k=0;k<9;k++) dK[k] -= xn*M.w1*M.n[c3]*M.Pm[k];
         mm3(M.Mn, dK, MdK);
         R pj=0; for (int k=0;k<9;k++) pj += Pc[k]*(M.g1*M.n[c3]*NK1[k] + MdK[k]);
-        gy[c3] = k_*t + pj;
+        gy[c3] = (R)EXD[0]*k_*t + (R)EXD[1]*pj;
     }
     R MJ[9]; mm3(M.Mn, M.Jst, MJ);
     R gG[9];
     for (int a=0;a<3;a++) for (int b=0;b<3;b++){ R t=0; for (int i=0;i<3;i++) t += MJ[i*3+a]*Pc[i*3+b]; gG[a*3+b]=t; }
     R T2[9]; mmt3(gG, IGt, T2);
-    for (int k=0;k<9;k++) gy[3+k]=T2[k];
+    for (int k=0;k<9;k++) gy[3+k]=(R)EXD[2]*T2[k];
 }
 template <typename R, typename G> __device__ __forceinline__ void bs_near_body(int q, int nn_, const long long* nidx, const float* x0c, const float* F0c, const float* cc,
                               const float* xcur, const float* Fcur, const float* F0inv, const float* mp, const float* vol, double h,
@@ -353,6 +355,12 @@ def mod():
         import cupy as cp
         _MOD[0] = cp.RawModule(code=(RTC._SRC + _BS).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     return _MOD[0]
+
+
+def set_diag(vals):
+    import cupy as cp
+    ptr = mod().get_global("EXD")
+    cp.ndarray((3,), cp.float32, ptr)[:] = cp.asarray(np.asarray(vals, dtype=np.float32))
 
 
 def P(t):

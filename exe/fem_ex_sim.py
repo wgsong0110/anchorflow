@@ -827,6 +827,7 @@ class _Diverge(Exception):
 OPT = BS(a.opt) if BSP else (Opt() if a.opt else None)
 if a.near_diag:
     EX.set_diag([float(q) for q in a.near_diag.split(",")])
+    BSC.set_diag([float(q) for q in a.near_diag.split(",")])
     print(f"[진단 배율] 바닥 후보 힘 (관성, 변위 탄성, 기울기 탄성) = {a.near_diag}", flush=True)
 if OPT is not None:
     RTC.RAWPTR[0] = True
