@@ -411,6 +411,106 @@ __global__ void ex_tet_geo32(const int* szp, const long long* tets, const float*
     for (int b=0;b<3;b++) g[b] = -(g[3+b]+g[6+b]+g[9+b]);
     for (int k=0;k<12;k++) gl[t*12+k] = (float)g[k];
 }
+// ======== sub 판 융합 커널 (최적화: 값은 같은 식, 소비하며 비우기 -> 채우기 커널 없음) ========
+// 사면체 힘 + F̄ 나누기 융합: F̄ = FTs/VTs 를 그 자리에서, 쓴 뒤 VTs·FTs 를 0 으로 (다음 서브스텝 P2G 가 다시 쌓는다)
+__global__ void ex_tet_force_sub(const int* szp, const long long* tets, const float* gl, float* FTs, float* VTs, float mu, float lam, float* f) {
+    int T = szp[1];
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    float V = VTs[t];
+    if (!(V > 0.f)) return;
+    float Fb[9]; for (int k=0;k<9;k++) { Fb[k] = FTs[t*9+k]/V; FTs[t*9+k] = 0.f; }
+    VTs[t] = 0.f;
+    long long n[4]; float G[12];
+    for (int i=0;i<4;i++) n[i]=tets[t*4+i];
+    for (int k=0;k<12;k++) G[k]=gl[t*12+k];
+    float X[9]; for (int k=0;k<9;k++) X[k]=Fb[k];
+    float C[9];
+    for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+    float l[3]; symeig3(C, l);
+    float J = 1.f;
+    for (int k=0;k<3;k++){ float s = sqrtf(fmaxf(l[k], 1e-12f)); s = fmaxf(s, 0.01f); J *= s; }
+    float Q[9], cf[9], P[9], Gm[9];
+    polar(X, Q); cof3(X, cf);
+    float dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+    float sg = (dt>0)?1.f:((dt<0)?-1.f:0.f);
+    for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(J-1.f)*sg*cf[k];
+    mmt3(P, Fb, Gm);
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) {
+        float s = 0.f; for (int b=0;b<3;b++) s += Gm[c*3+b]*G[i*3+b];
+        atomicAdd(&f[n[i]*3+c], -V*s);
+    }
+}
+// 노드 걸음 + 속도 나누기 융합: v = mv/m + h_s((f - gn)/m + g), 쓴 뒤 mn·mv·f·gn 을 0 으로
+__global__ void ex_node_step_sub(const int* szp, float* mn, float* mv, float* f, float* gn, float* dU, float g0, float g1, float g2, float hs,
+                                 const unsigned char* fixd, const float* vbc) {
+    int M = szp[0];
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= M) return;
+    float gg[3] = {g0, g1, g2};
+    float m = mn[n];
+    for (int c=0;c<3;c++) {
+        float v;
+        if (fixd && fixd[n]) v = vbc[n*3+c];
+        else if (m > 0.f) v = mv[n*3+c]/m + hs*((f[n*3+c] - (gn ? gn[n*3+c] : 0.f))/m + gg[c]);
+        else v = 0.f;
+        dU[n*3+c] = hs*v;
+        mv[n*3+c] = 0.f; f[n*3+c] = 0.f; if (gn) gn[n*3+c] = 0.f;
+    }
+    mn[n] = 0.f;
+}
+// 선형 G2P (float) + 다음 서브스텝 locate + P2G (질량·운동량, 항등 입자 V·VF) 융합
+__global__ void ex_g2p_p2g(int N, const float* xa, const float* Fa, const float* dU, long long* rows, float* lamb, long long* pinv, const float* glT,
+                           float hs, float damp, float* xb, float* vb, float* Fb, int do_p2g,
+                           const float* gpar, const int* ipar, const long long* ncm, const long long* tcm, const unsigned char* tmark,
+                           const float* m, const float* vol, const int* nslot, int tetmass, float* mn, float* mv, float* VTs, float* FTs, int* szp) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    float u[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1};
+    const float* gl = glT + pinv[p]*12;
+    for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; float lm=lamb[p*4+i]; for (int a=0;a<3;a++){ float Ua=dU[nd*3+a]; u[a]+=lm*Ua; for (int b=0;b<3;b++) A[a*3+b]+=Ua*gl[i*3+b]; } }
+    float xn[3], vn_[3], F[9], F2[9];
+    for (int k=0;k<3;k++) { xn[k] = xa[p*3+k] + u[k]; vn_[k] = u[k]/hs*damp; xb[p*3+k] = xn[k]; vb[p*3+k] = vn_[k]; }
+    for (int k=0;k<9;k++) F[k]=Fa[p*9+k];
+    mm3(A, F, F2);
+    for (int k=0;k<9;k++) Fb[p*9+k] = F2[k];
+    if (!do_p2g) return;
+    int n0=ipar[0], n1=ipar[1], n2=ipar[2];
+    float q[3] = {xn[0]-gpar[0], xn[1]-gpar[1], xn[2]-gpar[2]};
+    const float* Ai = gpar + 3;
+    float y[3]; for (int k=0;k<3;k++) y[k] = Ai[k*3]*q[0] + Ai[k*3+1]*q[1] + Ai[k*3+2]*q[2];
+    int nl[3] = {n0, n1, n2};
+    int ci[3]; float fr[3];
+    for (int k=0;k<3;k++){ int c = (int)floorf(y[k]); c = min(max(c, 0), nl[k]-2); ci[k]=c; fr[k] = fminf(fmaxf(y[k]-(float)c, 0.f), 1.f); }
+    int pr[3] = {0,1,2};
+    if (fr[pr[0]] < fr[pr[1]]) { int t=pr[0]; pr[0]=pr[1]; pr[1]=t; }
+    if (fr[pr[1]] < fr[pr[2]]) { int t=pr[1]; pr[1]=pr[2]; pr[2]=t; }
+    if (fr[pr[0]] < fr[pr[1]]) { int t=pr[0]; pr[0]=pr[1]; pr[1]=t; }
+    float s0=fr[pr[0]], s1=fr[pr[1]], s2=fr[pr[2]];
+    float lmb[4] = {1.f-s0, s0-s1, s1-s2, s2};
+    long long cell = ((long long)ci[0]*n1 + ci[1])*n2 + ci[2];
+    long long tt = cell*9 + pr[0]*3 + pr[1];
+    if (!tmark[tt]) atomicAdd(&szp[3], 1);
+    long long t = tmark[tt] ? tcm[tt] : 0;
+    pinv[p] = t;
+    int v[3] = {ci[0], ci[1], ci[2]};
+    float mp = m[p];
+    for (int r=0;r<4;r++) {
+        if (r>0) v[pr[r-1]] += 1;
+        long long cm = ncm[((long long)v[0]*n1 + v[1])*n2 + v[2]];
+        long long nd = cm >= 0 ? cm : 0;
+        rows[p*4+r] = nd; lamb[p*4+r] = lmb[r];
+        float w = (tetmass ? 0.25f : lmb[r])*mp;
+        atomicAdd(&mn[nd], w);
+        for (int c=0;c<3;c++) atomicAdd(&mv[nd*3+c], w*vn_[c]);
+    }
+    if (nslot[p] < 0) {
+        float V = vol[p];
+        atomicAdd(&VTs[t], V);
+        for (int k=0;k<9;k++) atomicAdd(&FTs[t*9+k], V*F2[k]);
+    }
+}
+
 }
 '''
 

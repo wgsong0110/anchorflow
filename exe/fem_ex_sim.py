@@ -48,6 +48,7 @@ ap.add_argument("--mass", choices=["bary", "tet"], default="bary",
                 help="노드 질량: bary = Σ λ m_p (암시적 판 관성 행렬의 행 합, 기본), tet = 사면체 등분 Σ_T m_T/4 (정의 변경: 선형 사면체 표준 질량 집중)")
 ap.add_argument("--near32", action="store_true", help="--opt: 바닥 후보 힘 float32 대수 (암시적 판 --near32 와 같은 방식)")
 ap.add_argument("--tprof", type=int, default=-1, help="이 프레임 하나를 torch.profiler 로 (커널별 GPU 시간 표; --no_graph 와 함께)")
+ap.add_argument("--no_fuse", action="store_true", help="--opt --mode sub: 융합 커널 끄기 (G2P·locate·P2G·분할 따로, F̄ 나누기·채우기 따로, G2P float64) -- 대조")
 ap.add_argument("--no_graph", action="store_true", help="--opt 에서 CUDA 그래프 끄기 (대조)")
 ap.add_argument("--div", type=float, default=3.0)
 ap.add_argument("--warm", type=int, default=2)
@@ -389,6 +390,29 @@ class Opt:
         if a.mode == "lag":
             for j in range(a.N):
                 self._step(self.Uc, None, None)
+        elif not a.no_fuse:
+            # 융합 판: [사면체 힘 (F̄ 나누기 포함, 쓴 뒤 비움)] [바닥 후보 힘] [노드 걸음 (속도 나누기 포함, 쓴 뒤 비움)] [G2P + locate + P2G + 분할]
+            Mc, Tc = self.Mcap, self.Tcap
+            self.f.zero_()
+            self.gn.zero_()
+            for j in range(a.N):
+                xa, Fa = self.X[j % 2], self.FF[j % 2]
+                xb, vb, Fb = self.X[(j + 1) % 2], self.V[(j + 1) % 2], self.FF[(j + 1) % 2]
+                EX.launch("ex_tet_force_sub", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.FTs), EX.P(self.VTs), np.float32(mu),
+                                                   np.float32(lam), EX.P(self.f)))
+                if FLOOR:
+                    EX.launch("ex_near_force32" if a.near32 else "ex_near_force", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c),
+                              EX.P(self.F0c), EX.P(self.cc), EX.P(None), EX.P(xa), EX.P(Fa), EX.P(self.F0i), EX.P(self.rows), EX.P(self.lamb),
+                              EX.P(self.gl), EX.P(self.pinv), EX.P(m), EX.P(vol), np.float64(h), *near_args(0), np.float64(mu), np.float64(lam),
+                              EX.P(self.gn)), b=64)
+                EX.launch("ex_node_step_sub", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.mv), EX.P(self.f), EX.P(self.gn if FLOOR else None),
+                                                   EX.P(self.dU), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs),
+                                                   EX.P(self.fx if self.fixd else None), EX.P(self.vbc)), b=256)
+                EX.launch("ex_g2p_p2g", Np, (np.int32(Np), EX.P(xa), EX.P(Fa), EX.P(self.dU), EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv),
+                                             EX.P(self.gl), np.float32(hs), np.float32(DAMP), EX.P(xb), EX.P(vb), EX.P(Fb), np.int32(1 if j < a.N - 1 else 0),
+                                             EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.tcm), EX.P(self.tmark), EX.P(m), EX.P(vol),
+                                             EX.P(self.nslot), np.int32(1 if a.mass == "tet" else 0), EX.P(self.mn), EX.P(self.mv), EX.P(self.VTs),
+                                             EX.P(self.FTs), EX.P(self.sz)), b=256)
         else:
             for j in range(a.N):
                 xa, va, Fa = self.X[j % 2], self.V[j % 2], self.FF[j % 2]
@@ -433,9 +457,10 @@ class Opt:
             self._substeps()
         else:
             if self.graph is None:
-                snap = [t.clone() for t in (self.vn, self.Uc, self.mn, self.VTs, self.FT, self.rows, self.lamb, self.pinv)]
+                bufs = (self.vn, self.Uc, self.mn, self.mv, self.VTs, self.FTs, self.FT, self.rows, self.lamb, self.pinv)
+                snap = [t.clone() for t in bufs]
                 self._substeps()                                                    # 데우기 (NVRTC 컴파일·지연 할당) -- 결과 버림
-                for t, s_ in zip((self.vn, self.Uc, self.mn, self.VTs, self.FT, self.rows, self.lamb, self.pinv), snap):
+                for t, s_ in zip(bufs, snap):
                     t.copy_(s_)
                 if not lagm:
                     xa.copy_(x)
