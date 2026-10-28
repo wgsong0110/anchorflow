@@ -34,7 +34,12 @@ ap.add_argument("--data", default="/home/dkta/work/one/L000/L000.pt")
 ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=80)
 ap.add_argument("--node_h", type=float, default=0.028284)
-ap.add_argument("--floor", choices=["particle", "none"], default="particle")
+ap.add_argument("--floor", choices=["particle", "none", "vel"], default="particle",
+                help="vel (절 O, --opt --mode lag 만): 서브스텝마다 속도 단위 바닥 -- 바닥 후보 입자의 지금 보간 위치로 접촉 판정, 걸린 노드 속도에 정답 sticky 고착 + 비관통; 에너지 바닥 힘 끔")
+ap.add_argument("--vfl_mode", choices=["frac", "full"], default="frac",
+                help="--floor vel 고착 분배: frac = 노드 속도 x (1 - 접촉 입자 질량 몫) (접촉 입자 운동량만 0), full = 접촉 입자가 걸린 노드 속도 0 (정답 노드 sticky 와 같은 꼴)")
+ap.add_argument("--vfl_np", type=int, default=1, help="--floor vel: 1 = 고착 뒤 접촉 노드 속도의 안쪽 법선 성분 제거 (비관통), 0 = 끔")
+ap.add_argument("--vfl_margin", type=float, default=0.2, help="--floor vel: 바닥 후보 = 프레임 관성 예측 끝 높이 ≤ 이 값 (m) -- 기존 분할 s/ε ≤ 20, ε 0.01 과 같은 0.2")
 ap.add_argument("--cfg_bc", action="store_true")
 ap.add_argument("--region_density", action="store_true")
 ap.add_argument("--pg_vdamp", action="store_true")
@@ -95,10 +100,14 @@ GT = d["x"][1:L + 1].to(dev).float()
 gv = [float(q) for q in cfg["g"]]
 mu, lam = PR.lame(cfg["E"], cfg["nu"])
 planes = [b for b in (cfg.get("boundary_conditions") or []) if b.get("type") == "surface_collider"]
-FLOOR = a.floor == "particle" and bool(planes)
-if a.floor == "particle" and not planes:
-    raise SystemExit("--floor particle 인데 surface_collider 가 없다")
-if FLOOR:
+FLOOR = a.floor == "particle" and bool(planes)                                     # 에너지 바닥 (입자 stick·softplus 매핑의 프레임 에너지 힘)
+VFL = a.floor == "vel" and bool(planes)                                             # 절 O 속도 단위 바닥
+HASPL = FLOOR or VFL
+if a.floor in ("particle", "vel") and not planes:
+    raise SystemExit(f"--floor {a.floor} 인데 surface_collider 가 없다")
+if VFL and not (a.opt and a.mode == "lag" and not a.lagdiag):
+    raise SystemExit("--floor vel 은 --opt --mode lag (--lagdiag 없이) 만")
+if HASPL:
     pt_ = [float(q) for q in planes[0]["point"]]
     nr_ = np.array(planes[0]["normal"], dtype=np.float64)
     nr_ = (nr_ / np.linalg.norm(nr_)).tolist()
@@ -125,7 +134,7 @@ if BSP:
 print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N} (h_s {hs:.3e}), 판 {a.mode} {'최적화' if a.opt else '기준'}, "
       + (f"보간 2 차 B-스플라인 (적분점 {a.quad}{' K %d' % a.K if a.quad == 'cell' else ''}), 노드 질량 Σ w m (P2G), 전달 {'APIC' if a.apic else 'PIC'}, " if BSP else
          f"노드 질량 {'Σλm (기본)' if a.mass == 'bary' else '사면체 등분 m_T/4 (정의 변경)'}, ") + f"E {cfg['E']:g} ν {cfg['nu']:g} "
-      f"(μ {mu:.4g} λ {lam:.4g}), EXT {EXT:.6f}, 바닥 {'입자 (stick·softplus)' if FLOOR else '없음'}, 감쇠 {DAMP:.8f}/서브스텝", flush=True)
+      f"(μ {mu:.4g} λ {lam:.4g}), EXT {EXT:.6f}, 바닥 {'입자 (stick·softplus)' if FLOOR else ('속도 단위 (입자 판정, 고착 %s, 비관통 %d, 후보 여유 %g)' % (a.vfl_mode, a.vfl_np, a.vfl_margin) if VFL else '없음')}, 감쇠 {DAMP:.8f}/서브스텝", flush=True)
 print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), {'격자 간격 dx' if BSP else 'Kuhn 최소 높이'} {lmin:.5f} (node_h {a.node_h}), "
       f"Δt_CFL = {dt_cfl:.3e} s -> N_CFL = h/Δt_CFL = {h / dt_cfl:.1f} (지금 h_s/Δt_CFL = {hs / dt_cfl:.3f})", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
@@ -278,6 +287,7 @@ class Opt:
             self.mA, self.volA = m.clone(), vol.clone()
             self.OX, self.OV, self.OF = z(Np, 3), z(Np, 3), z(Np, 9)
         self.fixd = None
+        self.ncon = torch.zeros(1, dtype=torch.int32, device=dev)                    # --floor vel: 프레임 동안 접촉 (입자·서브스텝) 수
         self.CL = z(Np, 9) if a.affine else None                                     # --affine: 입자 속도 기울기 (프레임 사이)
         if a.affine and (a.mode != "lag" or self.SORT):
             raise SystemExit("--affine 은 --opt --mode lag 만")
@@ -291,6 +301,7 @@ class Opt:
                 z(self.Mcap, 3), z(self.Mcap, 3), z(self.Mcap, 3)
             self.fx = torch.zeros(self.Mcap, dtype=torch.uint8, device=dev)
             self.vbc = z(self.Mcap, 3)
+            self.acc = z(self.Mcap)                                                  # --floor vel: 노드별 접촉 입자 질량 (쓴 뒤 비움)
             new = True
         if T > self.Tcap:
             self.Tcap = int(T * 1.3) + 64
@@ -405,9 +416,10 @@ class Opt:
                                     EX.P(aff), EX.P(x if aff is not None else None), EX.P(self.npos if aff is not None else None)), b=256)
         EX.launch("ex_vfin", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.mv), EX.P(self.vn)), b=256)
         EX.launch("ex_split", Np, (np.int32(Np), EX.P(x), EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.vn), np.float32(H),
-                                   np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.int32(1 if FLOOR else 0), *PLf,
-                                   np.float32(a.eps_sp), np.float32(a.eps_st), EX.P(self.volA), EX.P(F), EX.P(self.VTs), EX.P(self.FTs),
-                                   EX.P(self.nslot), EX.P(self.nidx), EX.P(self.sz), np.int32(1 if keep else 0)), b=256)
+                                   np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.int32(1 if HASPL else 0), *PLf,
+                                   np.float32(a.vfl_margin / 20.0 if VFL else a.eps_sp), np.float32(0.0 if VFL else a.eps_st), EX.P(self.volA), EX.P(F),
+                                   EX.P(self.VTs), EX.P(self.FTs), EX.P(self.nslot), EX.P(self.nidx), EX.P(self.sz), np.int32(1 if keep else 0),
+                                   np.int32(1 if VFL else 0)), b=256)
         EX.launch("ex_ffin", Tc, (EX.P(self.sz), np.int32(0), EX.P(self.VTs), EX.P(self.FTs), EX.P(self.FT)), b=256)
 
     def _step(self, Ucum, xc, Fc):
@@ -425,10 +437,32 @@ class Opt:
                                        EX.P(self.dU), EX.P(Ucum), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs),
                                        np.float32(DAMP if a.mode == "lag" else 1.0), EX.P(self.fx if self.fixd else None), EX.P(self.vbc)), b=256)
 
+    def _step_lag(self):
+        """lag 한 서브스텝 (절 O 판): 사면체 힘 -> [에너지 바닥 후보 힘] -> [속도 바닥 접촉 판정] -> 노드 걸음 (+ 고착·비관통, f·gn·acc 비움)."""
+        Mc, Tc = self.Mcap, self.Tcap
+        EX.launch("ex_tet_force_ff", Tc, (EX.P(self.sz), np.int32(0), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
+                                          np.float32(mu), np.float32(lam), EX.P(self.f)))
+        if FLOOR:
+            EX.launch("ex_near_force32" if a.near32 else "ex_near_force", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c), EX.P(self.F0c),
+                                            EX.P(self.cc), EX.P(self.Uc), EX.P(None), EX.P(None), EX.P(self.F0i), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
+                                            EX.P(self.pinv), EX.P(self.mA), EX.P(self.volA), np.float64(h), *near_args(0), np.float64(mu), np.float64(lam),
+                                            EX.P(self.gn)), b=64)
+        if VFL:
+            EX.launch("ex_vfl_contact", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf), EX.P(self.Uc), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
+                                             np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128)
+        EX.launch("ex_node_step_lag", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.gn if FLOOR else None), EX.P(self.vn), EX.P(self.Uc),
+                                           np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs), np.float32(DAMP),
+                                           EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
+                                           np.int32(1 if a.vfl_mode == "full" else 0), np.int32(a.vfl_np), *PLf[3:]), b=256)
+
     def _substeps(self):
         if a.mode == "lag":
+            self.f.zero_()
+            self.gn.zero_()
+            if VFL:
+                self.acc.zero_()
             for j in range(a.N):
-                self._step(self.Uc, None, None)
+                self._step_lag()
         elif not a.no_fuse:
             # 융합 판: [사면체 힘 (F̄ 나누기 포함, 쓴 뒤 비움)] [바닥 후보 힘] [노드 걸음 (속도 나누기 포함, 쓴 뒤 비움)] [G2P + locate + P2G + 분할]
             Mc, Tc = self.Mcap, self.Tcap
@@ -514,6 +548,9 @@ class Opt:
         lagm = a.mode == "lag"
         if lagm:
             xa, va, Fa = x, v, Fv
+            if VFL:
+                self.Xf = self.X[0]                                                 # 프레임 시작 입자 위치 (상주 버퍼 -- 그래프 주소 고정; 접촉 판정 = x + Σλ U)
+                self.Xf.copy_(x)
         else:
             xa, va, Fa = self.X[0], self.V[0], self.FF[0]
             if self.SORT:
@@ -536,6 +573,8 @@ class Opt:
                                            np.float32(gv[1]), np.float32(gv[2]), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.F0i), EX.P(self.cc)), b=256)
         if lagm:
             self.Uc.zero_()
+            if VFL:
+                self.ncon.zero_()
         if lagm and a.lagdiag:
             self._lagdiag(i)
         elif a.no_graph:
@@ -551,6 +590,7 @@ class Opt:
                 if not lagm:
                     for t, s_ in zip((xa, va, Fa), xs_snap):
                         t.copy_(s_)
+                self.ncon.zero_()
                 self.capture()
             self.graph.replay()
         if lagm:
@@ -882,6 +922,8 @@ for i in range(L):
     if OPT is not None:
         szh = OPT.sz.tolist()
         st.update(n_near=int(szh[2]), overflow=int(szh[3]))
+        if VFL:
+            st.update(n_contact=int(OPT.ncon.item()))                               # 프레임 동안 접촉 (입자 x 서브스텝) 수
         if szh[3]:
             print(f"  [경고] 프레임 {i + 1}: 팽창 영역 밖 입자 {szh[3]} (격자 넘침)", flush=True)
             OPT.sz[3:4].zero_()
@@ -889,7 +931,7 @@ for i in range(L):
     spread = float((x2.max(0).values - x2.min(0).values).norm()) / EXT
     fin = bool(torch.isfinite(x2).all()) and math.isfinite(e)
     smin = nbelow = None
-    if FLOOR:
+    if HASPL:
         s = ((x2 - torch.tensor(pt_, device=dev)) * torch.tensor(nr_, device=dev)).sum(-1)
         smin, nbelow = float(s.min()), int((s < 0).sum())
     errs.append(e if fin else float("nan"))
@@ -898,7 +940,7 @@ for i in range(L):
     flog.flush()
     recs.append(rec)
     print(f"  프레임 {i + 1}/{L} {1e3 * t_frame:.2f} ms 오차 {100 * e:.3f}% (누적 평균 {100 * np.nanmean(errs):.3f}%) 퍼짐 {spread:.3f} "
-          f"노드 {st.get('M')} 사면체 {st.get('T')} 바닥 후보 {st.get('n_near')}" + (f" 최저 입자 {smin:+.5f} 아래 {nbelow}" if FLOOR else ""), flush=True)
+          f"노드 {st.get('M')} 사면체 {st.get('T')} 바닥 후보 {st.get('n_near')}" + (f" 최저 입자 {smin:+.5f} 아래 {nbelow}" if HASPL else "") + (f" 접촉 {st.get('n_contact')}" if VFL else ""), flush=True)
     if PRED is not None:
         PRED[i] = x2
     if VD is not None:
@@ -918,7 +960,9 @@ done = len(recs)
 summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at, err_mean=(sum(errs) / len(errs) if div_at is None else None),
             err_mean_done=float(np.nanmean(errs)), ms_mean=1e3 * sum(sec) / max(len(sec), 1), ms_med=1e3 * med(sec), fps=len(sec) / max(sum(sec), 1e-9),
             N=a.N, hs=hs, mass=a.mass, dt_cfl=dt_cfl, N_cfl=h / dt_cfl, cwave=cwave, lmin=lmin, mode=a.mode, opt=a.opt,
-            s_min=(min(r["s_min"] for r in recs) if FLOOR else None), n_below_max=(max(r["n_below"] for r in recs) if FLOOR else None),
+            s_min=(min(r["s_min"] for r in recs) if HASPL else None), n_below_max=(max(r["n_below"] for r in recs) if HASPL else None),
+            floor=a.floor, vfl_mode=(a.vfl_mode if VFL else None), vfl_np=(a.vfl_np if VFL else None), affine=bool(a.affine),
+            n_contact_max=(max(r.get("n_contact") or 0 for r in recs) if VFL else None),
             spread_last=recs[-1]["spread"], n_near_med=med([r.get("n_near") or 0 for r in recs]),
             overflow_frames=sum(1 for r in recs if r.get("overflow")), gpu=torch.cuda.get_device_name(0), tag=a.tag, damp_sub=DAMP,
             interp=a.interp, quad=(a.quad if BSP else None), K=(a.K if BSP and a.quad == "cell" else None), apic=bool(a.apic))

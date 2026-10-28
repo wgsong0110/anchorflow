@@ -227,6 +227,58 @@ __global__ void ex_g2p_lag(int N, const float* x, const float* Ucum, const float
         for (int k=0;k<9;k++) C2[p*9+k] = (float)Cc[k];
     }
 }
+// ======== 절 O: lag 판 속도 단위 바닥 (--floor vel, 사용자 10-28 "2번") ========
+// 정답 (PG mpm_solver_warp add_surface_collider, surface "sticky"): 격자 노드 (x_n - p)·n < 0 이면 grid_v_out = 0 (세 성분 모두),
+//   서브스텝마다 격자 정규화·중력·감쇠 뒤, G2P 앞.
+// 여기서는 판정을 **입자** 로: 바닥 후보 입자의 지금 보간 위치 x_p + Σλ U (서브스텝 시작) 의 높이 s = (x - p)·n < 0 이면 접촉.
+// 접촉 입자가 걸린 사면체 네 노드에 P2G 와 같은 질량 가중 w_pn (사면체 등분 0.25 m_p / Σλm 판은 λ m_p) 을 쌓는다 -> acc_n.
+__global__ void ex_vfl_contact(const int* szp, const long long* nidx, const float* x, const float* Ucum, const long long* rows, const float* lamb,
+                               const float* m, int tetmass, float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon) {
+    int nn_ = szp[2];
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= nn_) return;
+    long long p = nidx[q];
+    float u[3] = {0,0,0};
+    long long nd[4]; float lm[4];
+    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; for (int a=0;a<3;a++) u[a] += lm[i]*Ucum[nd[i]*3+a]; }
+    float s = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
+    if (!(s < 0.f)) return;
+    float mp = m[p];
+    for (int i=0;i<4;i++) atomicAdd(&acc[nd[i]], (tetmass ? 0.25f : lm[i])*mp);
+    if (ncon) atomicAdd(ncon, 1);
+}
+// lag 노드 걸음 (ex_node_step 과 같은 식) + 속도 바닥 + 쓴 뒤 f·gn·acc 비우기 (채우기 커널 없음):
+//   v = (v + h_s((f - gn)/m + g))·감쇠  (--cfg_bc 묶인 노드 = v_bc)
+//   acc_n > 0 (접촉 입자가 걸린 노드):
+//     mode 0 (질량 비율 고착): v <- (1 - α) v,  α = min(acc_n / m_n, 1)  -- 접촉 입자 몫의 운동량을 0 으로 (정답 sticky 의 v = 0 을 접촉 입자 질량에만)
+//     mode 1 (노드 전체 고착): v <- 0  -- 정답 sticky 와 같은 노드 속도 0 (판정만 입자)
+//     np = 1 (비관통): 그 뒤 v·n < 0 이면 법선 성분 제거 -> 접촉 입자의 보간 속도 Σλ v_n (볼록 결합) 의 법선 성분 ≥ 0
+//   U += h_s v
+__global__ void ex_node_step_lag(const int* szp, const float* mn, float* f, float* gn, float* vn, float* Ucum, float g0, float g1, float g2, float hs, float damp,
+                                 const unsigned char* fixd, const float* vbc, float* acc, int mode, int np_, float n0, float n1, float n2) {
+    int M = szp[0];
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= M) return;
+    float gg[3] = {g0, g1, g2};
+    float m = mn[n];
+    float v[3];
+    for (int c=0;c<3;c++) {
+        if (fixd && fixd[n]) v[c] = vbc[n*3+c];
+        else if (m > 0.f) v[c] = (vn[n*3+c] + hs*((f[n*3+c] - (gn ? gn[n*3+c] : 0.f))/m + gg[c]))*damp;
+        else v[c] = 0.f;
+        f[n*3+c] = 0.f; if (gn) gn[n*3+c] = 0.f;
+    }
+    if (acc) {
+        float a = acc[n];
+        acc[n] = 0.f;
+        if (a > 0.f && !(fixd && fixd[n])) {
+            float k = (mode == 1) ? 0.f : fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f);
+            for (int c=0;c<3;c++) v[c] *= k;
+            if (np_) { float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vn_ < 0.f) { v[0] -= vn_*n0; v[1] -= vn_*n1; v[2] -= vn_*n2; } }
+        }
+    }
+    for (int c=0;c<3;c++) { vn[n*3+c] = v[c]; Ucum[n*3+c] += hs*v[c]; }
+}
 // 프레임 시작 바닥 후보 압축 배열: x0, F0, F0⁻¹, c = h v + h² g
 __global__ void ex_near_init(const int* szp, int nnarg, const long long* nidx, const float* x, const float* v, const float* Fp, float h, float g0, float g1, float g2,
                              float* x0c, float* F0c, float* F0inv, float* cc) {
@@ -374,7 +426,8 @@ __global__ void ex_vfin(const int* szp, int Marg, const float* mn, const float* 
 // 분할 (CudaTetqK 와 같은 정의: 예측 변위 u0 = Σλ (H v_n + H² g) 의 끝 높이 s/ε ≤ 20 이면 바닥 후보) + 항등 입자만 사면체 V·V F 합
 __global__ void ex_split(int N, const float* x, const long long* rows, const float* lamb, const long long* pinv, const float* vn, float H,
                          float g0, float g1, float g2, int floor, float p0, float p1, float p2, float q0, float q1, float q2, float eps_sp, float eps_st,
-                         const float* vol, const float* Fp, float* VTs, float* FTs, int* nslot, long long* nidx, int* szp, int keep) {
+                         const float* vol, const float* Fp, float* VTs, float* FTs, int* nslot, long long* nidx, int* szp, int keep, int near_in_tet) {
+    // near_in_tet = 1 (--floor vel, 절 O): 바닥 후보도 사면체 F̄ 에 넣는다 (에너지 바닥이 없으므로 탄성은 사면체가 갖는다) -- 후보 표시는 접촉 판정용
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     bool near = false;
@@ -392,6 +445,7 @@ __global__ void ex_split(int N, const float* x, const long long* rows, const flo
     if (near) {
         int q = atomicAdd(&szp[2], 1);
         nidx[q] = p; nslot[p] = q;
+        if (near_in_tet) { long long t = pinv[p]; float V = vol[p]; atomicAdd(&VTs[t], V); for (int k=0;k<9;k++) atomicAdd(&FTs[t*9+k], V*Fp[p*9+k]); }
     } else {
         nslot[p] = -1;
         long long t = pinv[p]; float V = vol[p];
