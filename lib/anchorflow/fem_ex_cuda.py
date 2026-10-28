@@ -204,17 +204,28 @@ __global__ void ex_near_fin(const int* szp, int nnarg, const long long* nidx, co
 
 // (lag) 프레임 끝 선형 G2P: x + Σλ U, v = Σλ v_n, F <- (I + Σ U ⊗ ∇λ) F  (바닥 후보는 뒤이어 ex_near_fin 이 덮어쓴다)
 __global__ void ex_g2p_lag(int N, const float* x, const float* Ucum, const float* Vn, const long long* rows, const float* lamb, const float* glT,
-                           const long long* tinv, const float* Fp, float* x2, float* v2, float* F2) {
+                           const long long* tinv, const float* Fp, float* x2, float* v2, float* F2, float* C2) {
+    // C2 (선택, --affine): 입자 속도 기울기 C = (Σ v_n ⊗ ∇λ_n) A⁻¹ (사면체 안 선형 속도장의 현재 배치 기울기) -- 다음 프레임 P2G 의 아핀 전달 (APIC 와 같은 꼴)
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
-    double u[3]={0,0,0}, vv[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1};
+    double u[3]={0,0,0}, vv[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1}, Gv[9]={0,0,0,0,0,0,0,0,0};
     const float* gl = glT + tinv[p]*12;
     for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; double lm=lamb[p*4+i];
-        for (int a=0;a<3;a++){ double Ua=Ucum[nd*3+a]; u[a]+=lm*Ua; vv[a]+=lm*(double)Vn[nd*3+a]; for (int b=0;b<3;b++) A[a*3+b]+=Ua*gl[i*3+b]; } }
+        for (int a=0;a<3;a++){ double Ua=Ucum[nd*3+a]; double Va=(double)Vn[nd*3+a]; u[a]+=lm*Ua; vv[a]+=lm*Va;
+            for (int b=0;b<3;b++) { A[a*3+b]+=Ua*gl[i*3+b]; Gv[a*3+b]+=Va*gl[i*3+b]; } } }
     for (int k=0;k<3;k++) { x2[p*3+k] = (float)((double)x[p*3+k] + u[k]); v2[p*3+k] = (float)vv[k]; }
     double F[9]; for (int k=0;k<9;k++) F[k]=Fp[p*9+k];
     double F2d[9]; mm3(A, F, F2d);
     for (int k=0;k<9;k++) F2[p*9+k] = (float)F2d[k];
+    if (C2) {
+        double cf[9]; cof3(A, cf);
+        double dA = A[0]*cf[0]+A[1]*cf[1]+A[2]*cf[2];
+        double Ci[9];
+        if (fabs(dA) > 1e-12) { for (int i=0;i<3;i++) for (int j=0;j<3;j++) Ci[i*3+j] = cf[j*3+i]/dA; }   // A⁻¹ = cofᵀ / det
+        else { for (int k=0;k<9;k++) Ci[k] = (k%4==0)?1.0:0.0; }
+        double Cc[9]; mm3(Gv, Ci, Cc);
+        for (int k=0;k<9;k++) C2[p*9+k] = (float)Cc[k];
+    }
 }
 // 프레임 시작 바닥 후보 압축 배열: x0, F0, F0⁻¹, c = h v + h² g
 __global__ void ex_near_init(const int* szp, int nnarg, const long long* nidx, const float* x, const float* v, const float* Fp, float h, float g0, float g1, float g2,
@@ -341,11 +352,17 @@ __global__ void ex_locate(int N, const float* x, const float* gpar, const int* i
 }
 // P2G 질량·운동량 (float 원자 합)
 // tetmass = 0: 노드 질량 Σ λ m_p (기본, 암시적 판 관성 행렬의 행 합), 1: 사면체 등분 Σ_T m_T / 4 (정의 변경 -- 선형 사면체 표준 질량 집중)
-__global__ void ex_p2g_mv(int N, const long long* rows, const float* lamb, const float* m, const float* v, float* mn, float* mv, int tetmass) {
+__global__ void ex_p2g_mv(int N, const long long* rows, const float* lamb, const float* m, const float* v, float* mn, float* mv, int tetmass,
+                          const float* Cp, const float* xp, const float* npos) {
+    // Cp (선택, --affine): 운동량에 m w C (x_n - x_p) -- 아핀 속도장은 노드 값이 정확히 v(x_n)
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     float mp = m[p];
-    for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; float w=(tetmass ? 0.25f : lamb[p*4+i])*mp; atomicAdd(&mn[nd], w); for (int c=0;c<3;c++) atomicAdd(&mv[nd*3+c], w*v[p*3+c]); }
+    for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; float w=(tetmass ? 0.25f : lamb[p*4+i])*mp; atomicAdd(&mn[nd], w);
+        float d[3] = {0,0,0};
+        if (Cp) for (int b=0;b<3;b++) d[b] = npos[nd*3+b] - xp[p*3+b];
+        for (int c=0;c<3;c++) { float vc = v[p*3+c]; if (Cp) vc += Cp[p*9+c*3]*d[0] + Cp[p*9+c*3+1]*d[1] + Cp[p*9+c*3+2]*d[2];
+            atomicAdd(&mv[nd*3+c], w*vc); } }
 }
 __global__ void ex_vfin(const int* szp, int Marg, const float* mn, const float* mv, float* vn) {
     int M = szp ? szp[0] : Marg;

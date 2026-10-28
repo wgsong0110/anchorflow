@@ -63,6 +63,7 @@ ap.add_argument("--quad", choices=["particle", "cell"], default="particle", help
 ap.add_argument("--psort", action="store_true", help="--interp bspline2 --opt: 프레임마다 입자를 B-스플라인 셀 번호로 정렬 (P2G·G2P 원자 합·읽기 지역성; 계산은 같고 합 순서만 바뀜)")
 ap.add_argument("--apic", action="store_true", help="--interp bspline2 --opt: G2P/P2G 를 APIC 로 (정답 PG 와 같은 rpic_damping 0 식, 입자 C 운반; 절 N)")
 ap.add_argument("--K", type=int, default=8, help="--quad cell: 셀 안 ∇w 평균 점 수 (1 중심, 8 가우스 2x2x2)")
+ap.add_argument("--affine", action="store_true", help="--opt --mode lag: 프레임 끝 G2P 에서 입자 속도 기울기 C 를 남겨 다음 프레임 P2G 를 아핀 전달 (APIC 꼴, 절 N.3)")
 ap.add_argument("--near_diag", default="", help="진단 전용 (절 N.2): 바닥 후보 힘 항 배율 '관성,변위탄성,기울기탄성' (예 0,1,1) -- 원래 식은 1,1,1")
 ap.add_argument("--lagdiag", action="store_true", help="--opt --mode lag 진단 (절 N.2): 그래프 없이 서브스텝마다 최대 |v_n| (8 표본·노드 높이·질량), 프레임 끝 사면체 det A_T 분포, 바닥 힘 크기 -> lagdiag.jsonl")
 ap.add_argument("--diag", action="store_true", help="첫 프레임: 노드별 국소 안정 걸음 2/ω (ω² = Σ_T V_T (λ+2μ)|∇λ_i|² / m_i) 분포, 서브스텝마다 최대 |v|")
@@ -213,7 +214,7 @@ def frame_base(i, x, v, F):
                       f"최대 |바닥 g/m| {float((gn.norm(dim=-1) / mn.clamp_min(1e-30)).max()):.3e}, 비유한 {int((~torch.isfinite(Vn)).sum())}", flush=True)
         x2, v2, F2 = torch.empty_like(x), torch.empty_like(x), torch.empty(Np, 9, device=dev)
         EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(x), EX.P(Uc), EX.P(Vn), EX.P(G.rows), EX.P(G.lam), EX.P(G.gl4), EX.P(G.pinv),
-                                     EX.P(Fv), EX.P(x2), EX.P(v2), EX.P(F2)), b=256)
+                                     EX.P(Fv), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(None)), b=256)
         if nn:
             EX.launch("ex_near_fin", nn, (EX.P(None), np.int32(nn), EX.P(ni), EX.P(x0c), EX.P(F0c), EX.P(Uc), EX.P(None), EX.P(None), EX.P(F0i),
                                           EX.P(G.rows), EX.P(G.lam), EX.P(G.gl4), EX.P(G.pinv), *near_args(nn), np.float64(h), EX.P(x2), EX.P(v2), EX.P(F2)))
@@ -276,6 +277,9 @@ class Opt:
             self.mA, self.volA = m.clone(), vol.clone()
             self.OX, self.OV, self.OF = z(Np, 3), z(Np, 3), z(Np, 9)
         self.fixd = None
+        self.CL = z(Np, 9) if a.affine else None                                     # --affine: 입자 속도 기울기 (프레임 사이)
+        if a.affine and (a.mode != "lag" or self.SORT):
+            raise SystemExit("--affine 은 --opt --mode lag 만")
 
     def _alloc(self, M, T, P):
         new = False
@@ -395,7 +399,9 @@ class Opt:
             self.sz[2:3].zero_()
         EX.launch("ex_locate", Np, (np.int32(Np), EX.P(x), EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.tcm), EX.P(self.tmark),
                                     EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.sz)), b=256)
-        EX.launch("ex_p2g_mv", Np, (np.int32(Np), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA), EX.P(v), EX.P(self.mn), EX.P(self.mv), np.int32(1 if a.mass == "tet" else 0)), b=256)
+        aff = self.CL if (a.affine and a.mode == "lag") else None
+        EX.launch("ex_p2g_mv", Np, (np.int32(Np), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA), EX.P(v), EX.P(self.mn), EX.P(self.mv), np.int32(1 if a.mass == "tet" else 0),
+                                    EX.P(aff), EX.P(x if aff is not None else None), EX.P(self.npos if aff is not None else None)), b=256)
         EX.launch("ex_vfin", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.mv), EX.P(self.vn)), b=256)
         EX.launch("ex_split", Np, (np.int32(Np), EX.P(x), EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.vn), np.float32(H),
                                    np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.int32(1 if FLOOR else 0), *PLf,
@@ -549,7 +555,7 @@ class Opt:
         if lagm:
             x2, v2, F2 = self.X[1], self.V[1], self.FF[1]
             EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(x), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
-                                         EX.P(self.pinv), EX.P(Fv), EX.P(x2), EX.P(v2), EX.P(F2)), b=256)
+                                         EX.P(self.pinv), EX.P(Fv), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(self.CL if a.affine else None)), b=256)
             uc, xc_, Fc_ = self.Uc, None, None
         else:
             k = a.N % 2
