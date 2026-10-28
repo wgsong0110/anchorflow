@@ -244,7 +244,7 @@ for i in range(L):
                             gl=G.gl8.cpu(), mu=mu, h=h), os.path.join(a.out, f"sys_t{i:03d}.pt"))
             tk("dump")
         _r = RT.pcg_graph(mv, pre, b, a.pcg_max, a.rtol) if a.graph else None
-        xx, it, res, negc = _r if _r is not None else RT.pcg(mv, pre, b, a.pcg_max, a.rtol, a.ck)
+        xx, it, res, negc = _r if _r is not None else RT.pcg(mv, pre, b, a.pcg_max, a.rtol, (min(a.ck, 2) if a.solver == 'mg' else a.ck))
         tk("pcg")
         p = xx.reshape(G.M, 3).to(U.dtype)
         pin = float(p.abs().max()) / (h * EXT)
