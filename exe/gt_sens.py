@@ -52,8 +52,9 @@ if a.floor_z is not None:
 if a.surface is not None:
     floor["surface"] = a.surface
 d = torch.load(a.pt, map_location="cpu", weights_only=False, mmap=True)
-EXT = float(d["_ext"])
-del d
+x0d = d["x"][0].float()
+EXT = float((x0d.max(0).values - x0d.min(0).values).norm())       # deform_model.extent (바운딩박스 대각선) 와 같다 -- fem_ex_sim 의 EXT
+del d, x0d
 
 
 def h5x(t, key="x"):

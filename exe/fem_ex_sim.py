@@ -63,6 +63,7 @@ ap.add_argument("--quad", choices=["particle", "cell"], default="particle", help
 ap.add_argument("--psort", action="store_true", help="--interp bspline2 --opt: 프레임마다 입자를 B-스플라인 셀 번호로 정렬 (P2G·G2P 원자 합·읽기 지역성; 계산은 같고 합 순서만 바뀜)")
 ap.add_argument("--apic", action="store_true", help="--interp bspline2 --opt: G2P/P2G 를 APIC 로 (정답 PG 와 같은 rpic_damping 0 식, 입자 C 운반; 절 N)")
 ap.add_argument("--K", type=int, default=8, help="--quad cell: 셀 안 ∇w 평균 점 수 (1 중심, 8 가우스 2x2x2)")
+ap.add_argument("--near_diag", default="", help="진단 전용 (절 N.2): 바닥 후보 힘 항 배율 '관성,변위탄성,기울기탄성' (예 0,1,1) -- 원래 식은 1,1,1")
 ap.add_argument("--lagdiag", action="store_true", help="--opt --mode lag 진단 (절 N.2): 그래프 없이 서브스텝마다 최대 |v_n| (8 표본·노드 높이·질량), 프레임 끝 사면체 det A_T 분포, 바닥 힘 크기 -> lagdiag.jsonl")
 ap.add_argument("--diag", action="store_true", help="첫 프레임: 노드별 국소 안정 걸음 2/ω (ω² = Σ_T V_T (λ+2μ)|∇λ_i|² / m_i) 분포, 서브스텝마다 최대 |v|")
 a = ap.parse_args()
@@ -824,6 +825,9 @@ class _Diverge(Exception):
 
 
 OPT = BS(a.opt) if BSP else (Opt() if a.opt else None)
+if a.near_diag:
+    EX.set_diag([float(q) for q in a.near_diag.split(",")])
+    print(f"[진단 배율] 바닥 후보 힘 (관성, 변위 탄성, 기울기 탄성) = {a.near_diag}", flush=True)
 if OPT is not None:
     RTC.RAWPTR[0] = True
 PRED = torch.empty(L, Np, 3, device=dev) if (not a.no_dump or a.dump_pred) else None

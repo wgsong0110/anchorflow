@@ -24,6 +24,8 @@ import torch
 from . import fem_rt_cuda as RTC
 
 _EX = r'''
+// 진단 전용 배율 (절 N.2, --near_diag): [0] 바닥 후보 관성 보정 항 m/h² (J_qᵀ r - (u - c)), [1] 변위 쪽 탄성 항 pj, [2] 변위 기울기 쪽 탄성 항 gG. 기본 1 (원래 식)
+__device__ float EXD[3] = {1.f, 1.f, 1.f};
 template <typename R, typename S>
 __device__ __forceinline__ void ex_tet_force_body(int t, const long long* tets, const float* U, const S* gl, const S* FT, const S* VT, R mu, R lam, float* f) {
     R V = (R)VT[t];
@@ -97,13 +99,13 @@ template <typename R> __device__ __forceinline__ void ex_near_force_body(int q, 
         for (int k=0;k<9;k++) dK[k] -= xn*M.w1*M.n[c3]*M.Pm[k];
         mm3(M.Mn, dK, MdK);
         R pj=0; for (int k=0;k<9;k++) pj += Pc[k]*(M.g1*M.n[c3]*NK1[k] + MdK[k]);
-        gy[c3] = k_*t + pj;
+        gy[c3] = (R)EXD[0]*k_*t + (R)EXD[1]*pj;
     }
     R MJ[9]; mm3(M.Mn, M.Jst, MJ);
     R gG[9];
     for (int a=0;a<3;a++) for (int b=0;b<3;b++){ R t=0; for (int i=0;i<3;i++) t += MJ[i*3+a]*Pc[i*3+b]; gG[a*3+b]=t; }
     if (!Ucum) { R T2[9]; mmt3(gG, IGt, T2); for (int k=0;k<9;k++) gG[k]=T2[k]; }     // sub: ∂/∂δU 는 gG (I+G)ᵀ
-    for (int k=0;k<9;k++) gy[3+k]=gG[k];
+    for (int k=0;k<9;k++) gy[3+k]=(R)EXD[2]*gG[k];
     for (int i=0;i<4;i++) for (int c3=0;c3<3;c3++) {
         R t = lm[i]*gy[c3];
         for (int b=0;b<3;b++) t += gl[i*3+b]*gy[3+c3*3+b];
@@ -613,6 +615,13 @@ def mod():
         import cupy as cp
         _MOD[0] = cp.RawModule(code=(RTC._SRC + _EX).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     return _MOD[0]
+
+
+def set_diag(vals):
+    """진단 배율 EXD (fem_ex_cuda 머리말) 를 장치에 쓴다."""
+    import cupy as cp
+    ptr = mod().get_global("EXD")
+    cp.ndarray((3,), cp.float32, ptr)[:] = cp.asarray(np.asarray(vals, dtype=np.float32))
 
 
 def P(t):
