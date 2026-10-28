@@ -73,6 +73,7 @@ ap.add_argument("--gate_tau", type=float, default=0.0, help="--cuda: H + τ|H|_F
 ap.add_argument("--dump_pred", action="store_true", help="위치 궤적만 pred.pt 로 (결과 불변 대조용)")
 ap.add_argument("--lite", action="store_true", help="--floor particle --cuda: 격자 locate·사면체 ∇λ·P2G·G2P 도 커널/마스크 합으로 (FemFrame 안 거침)")
 ap.add_argument("--warp", action="store_true", help="--cuda: 사면체 헤시안을 워프당 사면체 하나 (공유 메모리 병렬 야코비)")
+ap.add_argument("--d3", action="store_true", help="--cuda PCG 곱 노드당 3 스레드 (기본 노드당 1)")
 ap.add_argument("--mmax", type=int, default=60000)
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
@@ -108,6 +109,8 @@ print(f"[실시간 FEM] 입자 {N}, 프레임 {L}, h {h:.6f}, E {cfg['E']:g} ν 
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
 
 PC = RTC.CudaPcg(a.mmax, dev) if a.cuda else None
+if PC is not None:
+    PC.d3 = a.d3
 PDF = RT.PdFactor() if a.solver in ("pdpcg", "pd") else None
 PRED = torch.empty(L, N, 3, device=dev) if (not a.no_dump or a.dump_pred) else None
 VD = torch.empty(L, N, 3, device=dev, dtype=torch.float16) if not a.no_dump else None

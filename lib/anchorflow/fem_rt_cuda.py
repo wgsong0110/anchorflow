@@ -102,6 +102,7 @@ __device__ void kmanual(const float* X, const float* Fb, float mu, float lam, fl
 }
 
 
+extern "C" {
 // ---------------- warp per tet: same as tet_hess (K, 12x12, |lambda| projection, block-ELL atomics), parallel round-robin Jacobi in shared memory ----------------
 __global__ void tet_hess_w(int T, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
                            const float* M4, float mu, float lam, float efloor, const int* slots, float* Bell, int* nneg, int maxsw, float jtol,
@@ -233,6 +234,7 @@ __global__ void tet_hess_w(int T, const long long* tets, const float* U, const f
     }
 }
 
+}
 // ---------------- bottom-candidate particle (stick -> softplus maps), fem_fast._near_core closed form ----------------
 struct NearMap {
     double s, w, w1, w2, w3, g, g1, g2, sp;
@@ -782,6 +784,47 @@ __global__ void pcg_coop(int M, int Ms, const float* B, const int* nb, const dou
     }
     if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; }
 }
+__global__ void pcg_coop1(int M, int Ms, const float* B, const int* nb, const double* Dinv, double* x, double* r, double* z, double* d, double* Ad,
+                         double* acc, double* sc, unsigned int* bar, double thr, int maxit) {
+    // sc: [0] rz0, [1] dAd0 (input); out [2] nit, [3] rr, [4] neg
+    unsigned int nblk = gridDim.x;
+    int tid = blockIdx.x*blockDim.x + threadIdx.x, nth = gridDim.x*blockDim.x;
+    volatile double* va = acc;
+    double rz = sc[0], dAd = sc[1];
+    int nit = 0, neg = 0, p = 0;
+    double rr = 0;
+    for (int it=0; it<maxit; it++) {
+        if (!(dAd > 0)) { neg = 1; break; }
+        double al = rz/dAd;
+        double prr=0, prz=0;
+        for (int m=tid; m<M; m+=nth) {
+            double rv[3];
+            for (int c=0;c<3;c++){ x[m*3+c] += al*d[m*3+c]; double rc = r[m*3+c] - al*Ad[m*3+c]; r[m*3+c]=rc; rv[c]=rc; }
+            const double* D = Dinv + m*9;
+            for (int c=0;c<3;c++){ double zz = D[c*3]*rv[0]+D[c*3+1]*rv[1]+D[c*3+2]*rv[2]; z[m*3+c]=zz; prz += rv[c]*zz; prr += rv[c]*rv[c]; }
+        }
+        double b1 = block_sum(prr); double b2 = block_sum(prz);
+        if (threadIdx.x==0) { atomicAdd(&acc[p*3+1], b1); atomicAdd(&acc[p*3+2], b2); }
+        if (tid==0) { acc[(1-p)*3]=0; acc[(1-p)*3+1]=0; acc[(1-p)*3+2]=0; }
+        gbar(bar, bar+1, nblk);
+        rr = va[p*3+1]; double rz2 = va[p*3+2];
+        nit++;
+        if (rr < thr) break;
+        double be = rz2/rz; rz = rz2;
+        double pd = 0;
+        for (int m=tid; m<M; m+=nth) {
+            double q[3];
+            for (int c=0;c<3;c++) q[c] = ell_row<true>(m, c, Ms, B, nb, z);
+            for (int c=0;c<3;c++){ double dd = z[m*3+c] + be*d[m*3+c]; double aa = q[c] + be*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; pd += dd*aa; }
+        }
+        double b3 = block_sum(pd);
+        if (threadIdx.x==0) atomicAdd(&acc[(1-p)*3], b3);
+        gbar(bar, bar+1, nblk);
+        dAd = va[(1-p)*3];
+        p = 1-p;
+    }
+    if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; }
+}
 
 // ---------------- PCG (블록 ELL float32 행렬, float64 벡터; 상태 st: 0 rz 1 dAd 2 rr 3 rz2 4 thr 5 alive 6 nit 7 neg 8 alpha 9 beta) ----------------
 __global__ void pcg_spmv(const int* Mp, const float* B, const int* nb, const double* d, double* y, double* st, int Ms) {
@@ -1032,8 +1075,13 @@ class CudaPcg:
         self.scal[1] = 1.0
         self.acc[0] = (self.d[:n] * self.Ad[:n]).sum()
         md = _mod()
-        kb, kd = md.get_function("pcg2_b"), md.get_function("pcg2_d3")
-        g16, b16 = _grid(self.Mmax * 3, 256)
+        if getattr(self, "d3", False):
+            kd = md.get_function("pcg2_d3")
+            g16, b16 = _grid(self.Mmax * 3, 256)
+        else:
+            kd = md.get_function("pcg2_d")
+            g16, b16 = g1, b1
+        kb = md.get_function("pcg2_b")
 
         def it2(p, thr_):
             kb(g1, b1, (np.int32(p), self.cMp, self.cDinv, self.cx, self.cr, self.cz, self.cd, self.cAd, self.cscal, self.cacc))
@@ -1103,7 +1151,7 @@ class CudaPcg:
         self.sc[0] = (bs * z).sum()
         self.sc[1] = (self.d[:n] * self.Ad[:n]).sum()
         with _Stream():
-            _mod().get_function("pcg_coop")((self.nblk,), (256,), (np.int32(M), np.int32(self.Mmax), _cp(self.B), _cp(self.nb), _cp(self.Dinv), _cp(self.x), _cp(self.r),
+            _mod().get_function("pcg_coop" if getattr(self, "d3", False) else "pcg_coop1")((self.nblk,), (256,), (np.int32(M), np.int32(self.Mmax), _cp(self.B), _cp(self.nb), _cp(self.Dinv), _cp(self.x), _cp(self.r),
                                                                  _cp(self.z), _cp(self.d), _cp(self.Ad), _cp(self.acc6), _cp(self.sc), _cp(self.bar),
                                                                  np.float64(rtol * rtol), np.int32(ncg)))
         out = self.sc[2:5].tolist()
