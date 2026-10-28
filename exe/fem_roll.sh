@@ -27,6 +27,8 @@ export PYTHONUTF8=1 OMP_NUM_THREADS=4 PYTORCH_CUDA_ALLOC_CONF=expandable_segment
 W=/home/dkta/work; set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; export PATH=$HOME/bin:$PATH
 S=${1:?lego 또는 ficus}; G=${2:?GPU}; STAGE=${3:?test·short·full}
 SOLV=${FEM_SOLVER:-cg}; case $SOLV in cg) PFX=fem; MK=FEM ;; pcg) PFX=fem2; MK=FEM2 ;; *) echo "[오류] FEM_SOLVER $SOLV"; exit 1 ;; esac
+# FEM_OUT=이름 (선택, 10-28): 출력 lbours/<이름>_<씬>, 표식 <이름 대문자>_<씬>_* (기본은 위 fem/fem2 그대로)
+[ -n "${FEM_OUT:-}" ] && { PFX=$FEM_OUT; MK=$(tr a-z A-Z <<<"$FEM_OUT"); }
 cd "$(dirname "$0")/.." || exit 1
 C=$(git rev-parse --short HEAD)
 SU=$(tr a-z A-Z <<<"$S")
@@ -46,6 +48,8 @@ REST="--inv_barrier 0 --node_h $NH --dt_cond --dt_scale --v0_traj --det_eps 0.1 
 OV="--out_var --ov_init predict --ov_roll 500 --ov_opt lbfgs --ov_vars out --ov_obj newton"
 FEMENV="AF_FEM_TOL=${FEM_TOL:-$TOL0} AF_OV_NEWTON_STEPS=${FEM_STEPS:-100} AF_OV_NEWTON_DAMP=0 AF_OV_NEWTON_CG=${FEM_CG:-200}"
 [ $SOLV = pcg ] && FEMENV="$FEMENV AF_FEM_SOLVER=pcg AF_FEM_ASM_CHECK=${FEM_ASM_CHECK:-1} AF_FEM_PCG_MAX=${FEM_PCG_MAX:-2000} AF_FEM_PCG_RTOL=${FEM_PCG_RTOL:-1e-6} AF_FEM_EIG_FLOOR=${FEM_EIG_FLOOR:-0} AF_FEM_LM=${FEM_LM:-1} AF_FEM_LM_MUMIN=${FEM_LM_MUMIN:-0} AF_FEM_EIG_PROJ=${FEM_EIG_PROJ:-abs}${FEM_DIAG:+ AF_FEM_DIAG=1}${FEM_FIX_NEWTON:+ AF_FEM_FIX_NEWTON=$FEM_FIX_NEWTON}${FEM_PROF:+ AF_FEM_PROF=1}${FEM_PCG_CHECK:+ AF_FEM_PCG_CHECK=$FEM_PCG_CHECK}${FEM_CSR_CACHE:+ AF_FEM_CSR_CACHE=1}${FEM_PCG_MF:+ AF_FEM_PCG_MF=1}${FEM_FAST:+ AF_FEM_FAST=$FEM_FAST AF_FEM_FAST_CHECK=${FEM_FAST_CHECK:-1}}${FEM_DUMP:+ AF_FEM_DUMP=$FEM_DUMP AF_FEM_DUMP_T=${FEM_DUMP_T:-0}}"
+# 수렴 판정 선택지 (10-28, 기본 없음 = 기존 판정): FEM_MIN_STEPS=n (받아들인 걸음 n 미만이면 수렴 처리 안 함), FEM_GTOL=g (|g|/|g0| < g 도 요구)
+FEMENV="$FEMENV${FEM_MIN_STEPS:+ AF_FEM_MIN_STEPS=$FEM_MIN_STEPS}${FEM_GTOL:+ AF_FEM_GTOL=$FEM_GTOL}"
 case $STAGE in test) O=$U/test_$C; L=1 ;; short) O=$U/short_$C${FEM_TAG:-}; L=${FEM_SHORT:?short 단계는 FEM_SHORT 프레임 수} ;; full) O=$U/run; L=$LEN ;; *) echo "[오류] 단계 $STAGE"; exit 1 ;; esac
 mkdir -p $O
 up(){ rclone copy $U $R -q; }
@@ -150,6 +154,7 @@ fi
 { echo "[오차 비교] $S $T $LEN 프레임 (같은 지표: 롤아웃 평균 위치 오차 / EXT)"
   echo "  FEM 뉴턴 수렴 풀이 $SOLV (커밋 $C): $(cat $O/err_fem.txt)"
   [ $SOLV = pcg ] && echo "  기존 FEM 뉴턴 (자동미분 헤시안-벡터 곱 CG, fem_$S): $(cat $U1/run/err_fem.txt 2>/dev/null)"
+  [ $SOLV = pcg ] && [ $PFX != fem2 ] && echo "  기존 FEM 뉴턴 PCG (fem2_$S): $(cat $W/lbours/fem2_$S/run/err_fem.txt 2>/dev/null)"
   IFS='|' read -ra RE <<<"$REFERR"; for q in "${RE[@]}"; do echo "  ${q%%=*}: $(cat ${q#*=} 2>/dev/null)"; done; } | tee $U/err_cmp.txt
 up
 # 3DGS 렌더: 정답 | FEM (프레임 번호·한국어 라벨)

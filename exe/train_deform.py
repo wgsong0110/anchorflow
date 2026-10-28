@@ -4929,6 +4929,15 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                 _ptt = dict(_FEM_TT)
                 _Ec = float(E)
                 _frec = dict(t=int(t), h=_hf, tol=_ftol, E0=_Ec, conv=False, why="최대 반복", steps=[])
+                # 수렴 판정 선택지 (사용자 10-28, ficus ψ 튐·진동 원인 = 걸음 0 수렴): 기본값이면 기존 판정 그대로.
+                #   AF_FEM_MIN_STEPS=n (기본 0): 받아들인 걸음이 n 개 미만이면 |p| 판정으로 수렴 처리하지 않는다 (1 = 걸음 0 수렴 금지 --
+                #     기존엔 첫 방향 |p|∞/(h·EXT) < tol 이면 시작값(관성 예측)을 |g|/|g0| = 1 그대로 채택했다).
+                #   AF_FEM_GTOL=g (기본 없음): |p| 판정에 더해 |g|/|g0| < g 도 만족해야 수렴 (g0 = 그 프레임 시작값의 기울기).
+                #   float32 정체 판정(E 상대 감소 < 1e-7 3 걸음)·선탐색·최대 걸음은 그대로.
+                _fmin = int(os.environ.get("AF_FEM_MIN_STEPS", "0") or 0)
+                _fgtol = float(os.environ["AF_FEM_GTOL"]) if os.environ.get("AF_FEM_GTOL") else None
+                _frec.update(min_steps=_fmin, gtol=_fgtol)
+                _nacc = 0                                            # 받아들인 걸음 수
                 _g0n = None
                 _stall = 0
                 _fsol = os.environ.get("AF_FEM_SOLVER", "cg")
@@ -4998,8 +5007,9 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                     if not (math.isfinite(_pin) and math.isfinite(_pmin[1] if _pmin is not None else _nl["gp"])):
                         _frec.update(why="걸음 nan/inf"); _frec["steps"].append(_srec); _OVN_BAD[0] = "FEM 걸음 nan/inf"
                         break
-                    if _pin < _ftol:
-                        _frec.update(conv=True, why="수렴 (|p|∞/(h·EXT) < tol)"); _frec["steps"].append(_srec)
+                    if _pin < _ftol and _nacc >= _fmin and (_fgtol is None or _srec["g_rel"] < _fgtol):
+                        _frec.update(conv=True, why="수렴 (|p|∞/(h·EXT) < tol" + (f", 걸음 ≥ {_fmin}" if _fmin else "")
+                                     + (f", |g|/|g0| < {_fgtol:g}" if _fgtol is not None else "") + ")"); _frec["steps"].append(_srec)
                         break
                     if not _lm_on and (_nl["cg"] == 0 or not _nl["gp"] > 0):
                         _frec.update(why="하강 방향 없음 (첫 CG 음곡률 또는 gᵀp≤0)"); _frec["steps"].append(_srec)
@@ -5076,6 +5086,7 @@ def _ov_once(d, t, gsel, p, x, v, F, off=None):
                         break
                     _stall = (_stall + 1) if (_Ec - _En) <= 1e-7 * abs(_Ec) else 0
                     _Ec = _En
+                    _nacc += 1
                     if _CURVE is not None:
                         _tr.append(_Ec)
                     if _stall >= 3:
