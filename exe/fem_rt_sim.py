@@ -43,7 +43,7 @@ ap.add_argument("--k_st", type=float, default=1000.0, help="노드 고착 세기
 ap.add_argument("--nf_clear", choices=["min", "lam"], default="min", help="노드 여유 c_n: min = 받치는 입자 최저 높이, lam = min s_p/λ_pn")
 ap.add_argument("--nf_stick", choices=["min", "lam"], default="min", help="고착 무게 w_n: min = 1-σ(c_n/ε), lam = max_p λ_pn (1-σ(s_p/ε))")
 ap.add_argument("--nf_mfloor", type=float, default=0.0, help="장벽·고착 무게 질량 하한 (꽉 찬 노드 질량 ρ·v_node 의 배수)")
-ap.add_argument("--solver", choices=["pcg", "mg", "pdpcg", "pd"], default="pcg")
+ap.add_argument("--solver", choices=["pcg", "mg", "pdpcg", "pd", "vbd"], default="pcg")
 ap.add_argument("--newton", type=int, default=1)
 ap.add_argument("--tol", type=float, default=1e-2, help="AF_FEM_TOL: |p|∞/(h·EXT) < tol 이면 수렴 (걸음 안 함)")
 ap.add_argument("--pcg_max", type=int, default=10000)
@@ -77,6 +77,8 @@ ap.add_argument("--d3", action="store_true", help="--cuda PCG 곱 노드당 3 �
 ap.add_argument("--near32", action="store_true", help="--cuda: 바닥 후보 헤시안 매핑 대수를 float32 로")
 ap.add_argument("--true_res", action="store_true", help="--cuda: PCG 뒤 실제 잔차 |b-Ax|/|b| (float64) 기록")
 ap.add_argument("--sym", action="store_true", help="--cuda --warp --pcg2 2: 블록 ELL 대칭 반쪽 (자기+양의 오프셋 7 칸) 저장 -- L2 에 들어간다")
+ap.add_argument("--vbd_iters", type=int, default=10, help="--solver vbd: 반복 (8 색 가우스-자이델 한 바퀴 = 1)")
+ap.add_argument("--vbd_rho", type=float, default=0.0, help="--solver vbd: 체비셰프 가속 ρ (0 = 끔)")
 ap.add_argument("--mmax", type=int, default=60000)
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
@@ -159,6 +161,8 @@ for i in range(L):
         CF.warp = a.warp
         CF.near32 = a.near32
         CF.sym = int(a.sym)
+        if a.solver == "vbd":
+            CF.vbd_setup(G)
         tets = G.tets
         rec["n_near"] = CF.nn
     elif a.floor == "node":
@@ -251,6 +255,16 @@ for i in range(L):
             nbl = RT.BEll(G.gi, dtype=torch.float32)
             PC.nb.view(15, Ms)[:, :M_] = (torch.where(nbl.valid, nbl.nb, torch.full_like(nbl.nb, -1)) if a.sym else nbl.nb).t().int()
             tk("asm")
+            if a.solver == "vbd":
+                if i == 0:
+                    _gv = CF.vbd_grad_all(U)
+                    print(f"[검산] VBD 색별 국소 기울기 합 (float32) vs 전체 기울기 (float64) 상대차 {float((_gv - gg.double()).norm() / gg.double().norm()):.2e}", flush=True)
+                U = CF.vbd(U, Dinv, a.vbd_iters, rho=a.vbd_rho)
+                tk("vbd")
+                st.update(E0=Ec, E1=float(fr.energy(U)), vbd_iters=a.vbd_iters)
+                tk("ls")
+                steps.append(st)
+                break
             b = gg.reshape(-1).double()
             xx, it, res, negc = {3: PC.solve_coop32, 2: PC.solve_coop, 1: PC.solve2, 0: PC.solve}[a.pcg2](M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
             if a.true_res:

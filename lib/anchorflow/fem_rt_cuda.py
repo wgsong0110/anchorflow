@@ -1047,6 +1047,93 @@ __global__ void pcg_coop64(int M, int Ms, const double* B, const int* nb, const 
     if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; }
 }
 
+
+// ---------------- VBD (Vertex Block Descent): per-color local gradients (float32) ----------------
+__global__ void vbd_tet_g(int T, const long long* tets, const int* color, int cc, const float* U, const float* gl, const float* FT, const float* VT,
+                          const float* M4, const float* B4, float mu, float lam, float* g) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    long long n[4]; int ii = -1;
+    for (int i=0;i<4;i++){ n[i]=tets[t*4+i]; if (color[n[i]]==cc) ii=i; }
+    if (ii < 0) return;
+    float u[4][3];
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) u[i][c]=U[n[i]*3+c];
+    const float* G = gl + t*12;
+    float gi[3];
+    for (int c=0;c<3;c++){ float s=0; for (int j=0;j<4;j++) s += M4[t*16+ii*4+j]*u[j][c]; gi[c] = s - B4[t*12+ii*3+c]; }
+    float V = VT[t];
+    if (V > 0.f) {
+        float A[9];
+        for (int c=0;c<3;c++) for (int b=0;b<3;b++){ float s=(c==b)?1.f:0.f; for (int i=0;i<4;i++) s += u[i][c]*G[i*3+b]; A[c*3+b]=s; }
+        const float* Fb = FT + t*9;
+        float X[9]; mm3(A, Fb, X);
+        float Q[9], cf[9], P[9], Gm[9];
+        polar(X, Q); cof3(X, cf);
+        float det = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+        float sg = (det>0)?1.f:((det<0)?-1.f:0.f);
+        for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(det-sg)*cf[k];
+        mmt3(P, Fb, Gm);
+        for (int c=0;c<3;c++) for (int b=0;b<3;b++) gi[c] += V*Gm[c*3+b]*G[ii*3+b];
+    }
+    for (int c=0;c<3;c++) atomicAdd(&g[n[ii]*3+c], gi[c]);
+}
+__global__ void vbd_near_g(int nn_, const long long* idx, const float* x, const float* U, const long long* rows, const float* lamb,
+                           const float* glp, const float* Fp, const float* vol, const float* kk, const float* ccv,
+                           double p0, double p1, double p2, double n0, double n1, double n2, double eps_st, double eps_sp, double xn,
+                           float mu, float lam, const int* color, int cc, float* g) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= nn_) return;
+    long long p = idx[q];
+    long long nd[4]; int ii=-1;
+    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; if (color[nd[i]]==cc) ii=i; }
+    if (ii < 0) return;
+    float lm[4], gl[12], u[3]={0,0,0}, G[9]={0,0,0,0,0,0,0,0,0}, xx[3], c[3];
+    for (int i=0;i<4;i++) lm[i]=lamb[p*4+i];
+    for (int k=0;k<12;k++) gl[k]=glp[p*12+k];
+    for (int i=0;i<4;i++) for (int a=0;a<3;a++){ float Ua=U[nd[i]*3+a]; u[a]+=lm[i]*Ua; for (int b=0;b<3;b++) G[a*3+b]+=Ua*gl[i*3+b]; }
+    for (int k=0;k<3;k++){ xx[k]=x[p*3+k]; c[k]=ccv[p*3+k]; }
+    float pt[3]={(float)p0,(float)p1,(float)p2}, nv[3]={(float)n0,(float)n1,(float)n2};
+    NearMapT<float> M; near_map<float>(xx, u, G, c, pt, nv, (float)eps_st, (float)eps_sp, (float)xn, M);
+    float Jf[9]; mm3(M.Mn, M.K1, Jf);
+    float F[9]; for (int k=0;k<9;k++) F[k]=Fp[p*9+k];
+    float X[9]; mm3(Jf, F, X);
+    float Q[9], cf[9], P[9], Pc[9];
+    polar(X, Q); cof3(X, cf);
+    float det = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2]; float sg=(det>0)?1.f:((det<0)?-1.f:0.f);
+    for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(det-sg)*cf[k];
+    float V = vol[p];
+    mmt3(P, F, Pc); for (int k=0;k<9;k++) Pc[k]*=V;
+    float k_ = kk[p];
+    float gy[12];
+    float NK1[9]; mm3(M.Nm, M.K1, NK1);
+    for (int c3=0;c3<3;c3++) {
+        float t=0; for (int i=0;i<3;i++) t += M.Ru[i*3+c3]*M.r[i];
+        float Bc[9], dK[9], MdK[9]; near_Bc(M, c3, Bc); mm3(Bc, M.IG, dK);
+        for (int k=0;k<9;k++) dK[k] -= (float)xn*M.w1*M.n[c3]*M.Pm[k];
+        mm3(M.Mn, dK, MdK);
+        float pj=0; for (int k=0;k<9;k++) pj += Pc[k]*(M.g1*M.n[c3]*NK1[k] + MdK[k]);
+        gy[c3] = k_*t + pj;
+    }
+    float MJ[9]; mm3(M.Mn, M.Jst, MJ);
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++){ float t=0; for (int i=0;i<3;i++) t += MJ[i*3+a]*Pc[i*3+b]; gy[3+a*3+b]=t; }
+    for (int c3=0;c3<3;c3++) {
+        float t = lm[ii]*gy[c3];
+        for (int b=0;b<3;b++) t += gl[ii*3+b]*gy[3+c3*3+b];
+        atomicAdd(&g[nd[ii]*3+c3], t);
+    }
+}
+// node update for color cc: U -= D^-1 g (3x3 block), g reset
+__global__ void vbd_node(int M, const int* color, int cc, const float* Dinv, float* g, float* U, float step) {
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    if (m >= M || color[m] != cc) return;
+    float g0=g[m*3], g1=g[m*3+1], g2=g[m*3+2];
+    const float* D = Dinv + m*9;
+    U[m*3]   -= step*(D[0]*g0 + D[1]*g1 + D[2]*g2);
+    U[m*3+1] -= step*(D[3]*g0 + D[4]*g1 + D[5]*g2);
+    U[m*3+2] -= step*(D[6]*g0 + D[7]*g1 + D[8]*g2);
+    g[m*3]=0; g[m*3+1]=0; g[m*3+2]=0;
+}
+
 // ---------------- PCG (블록 ELL float32 행렬, float64 벡터; 상태 st: 0 rz 1 dAd 2 rr 3 rz2 4 thr 5 alive 6 nit 7 neg 8 alpha 9 beta) ----------------
 __global__ void pcg_spmv(const int* Mp, const float* B, const int* nb, const double* d, double* y, double* st, int Ms) {
     int m = blockIdx.x*blockDim.x + threadIdx.x;
@@ -1703,3 +1790,61 @@ class CudaTetqK(CudaTetq):
                                                      np.float64(P[3]), np.float64(P[4]), np.float64(P[5]), np.float64(self.eps_st), np.float64(self.eps_sp),
                                                      np.float64(self.xn), np.float64(self.h), _cp(x2), _cp(v2), _cp(F2)))
         return x2, v2, F2.view(N, 3, 3)
+
+
+def _vbd_setup(self, G):
+    gi = G.gi
+    self.color = ((gi[:, 0] + 2 * gi[:, 1] + 4 * gi[:, 2]) % 8).int().contiguous()     # 0/1 오프셋 이웃끼리 다른 색 (8 색)
+    self.B44 = self.B48.float().contiguous()
+    self.gvb = torch.zeros(G.M * 3, dtype=torch.float32, device=self.dev)
+    self.Mn = G.M
+
+
+def _vbd_grad_color(self, Uf, cc):
+    md = _mod()
+    gr, bl = _grid(self.T, 128)
+    md.get_function("vbd_tet_g")(gr, bl, (np.int32(self.T), _cp(self.tets), _cp(self.color), np.int32(cc), _cp(Uf), _cp(self.gl4), _cp(self.FT4),
+                                           _cp(self.VT4), _cp(self.M44), _cp(self.B44), np.float32(self.mu), np.float32(self.lam), _cp(self.gvb)))
+    if self.nn:
+        gr, bl = _grid(self.nn, 128)
+        md.get_function("vbd_near_g")(gr, bl, self._near_args(Uf) + (np.float32(self.mu), np.float32(self.lam), _cp(self.color), np.int32(cc),
+                                                                    _cp(self.gvb)))
+
+
+def vbd_grad_all(self, U):
+    """대조용: 8 색 국소 기울기를 갱신 없이 모두 더한 것 (= 전체 기울기, float32 커널)."""
+    Uf = U.float().contiguous()
+    self.gvb.zero_()
+    with _Stream():
+        for cc in range(8):
+            _vbd_grad_color(self, Uf, cc)
+    return self.gvb.view(-1, 3).double().clone()
+
+
+def vbd(self, U, Dinv, iters, rho=0.0, step=1.0):
+    """VBD: 색마다 (그 색 노드의 국소 기울기 -> 3x3 블록 뉴턴 U_n -= D_n⁻¹ g_n), iters 번. D = 걸음 시작 투영 헤시안의 노드 대각 블록.
+    rho > 0 이면 체비셰프 가속 (Chen et al. 2024 식: ω₁ = 1, ω₂ = 2/(2-ρ²), ω_{k+1} = 4/(4-ρ²ω_k))."""
+    Uf = U.float().contiguous().clone()
+    Di = Dinv.float().reshape(-1).contiguous()
+    md = _mod()
+    M = self.Mn
+    gn, bn = _grid(M, 256)
+    prev2 = Uf.clone()
+    om = 1.0
+    with _Stream():
+        for k in range(iters):
+            prev1 = Uf.clone() if rho > 0 else None
+            for cc in range(8):
+                _vbd_grad_color(self, Uf, cc)
+                md.get_function("vbd_node")(gn, bn, (np.int32(M), _cp(self.color), np.int32(cc), _cp(Di), _cp(self.gvb), _cp(Uf), np.float32(step)))
+            if rho > 0:
+                om = 1.0 if k == 0 else (2.0 / (2.0 - rho * rho) if k == 1 else 4.0 / (4.0 - rho * rho * om))
+                if k > 0:
+                    Uf.copy_(om * (Uf - prev2) + prev2)
+                prev2 = prev1
+    return Uf
+
+
+CudaTetq.vbd_setup = _vbd_setup
+CudaTetq.vbd_grad_all = vbd_grad_all
+CudaTetq.vbd = vbd
