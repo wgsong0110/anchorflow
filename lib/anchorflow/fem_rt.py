@@ -51,15 +51,28 @@ class Tick:
 
 
 # ---------------------------------------------------------------- 격자 (스텝 시작 입자 위치)
+def _compact(keys, size):
+    """정렬 없는 unique (값 범위가 작을 때): (오름차순 유일값, 역색인) -- torch.unique(sorted) 와 같은 결과."""
+    mark = torch.zeros(size, dtype=torch.bool, device=keys.device)
+    mark[keys] = True
+    cm = torch.cumsum(mark, 0) - 1
+    return mark.nonzero().squeeze(1), cm[keys]
+
+
 class Grid:
-    def __init__(self, x, node_h):
+    def __init__(self, x, node_h, fast=False):
         lo, lat, nn = SX.grid_for_nodes(x, 32, hz_ratio=SX.HZ_CUBE, h_fix=node_h)
         idx, lam, aux = SX.locate(x, lo, lat, nn)
-        rows, uniq = SX.active_nodes(idx)
+        P = int(nn[0]) * int(nn[1]) * int(nn[2])
+        if fast:
+            uniq, rows = _compact(idx.reshape(-1), P)
+            rows = rows.reshape(idx.shape)
+        else:
+            rows, uniq = SX.active_nodes(idx)
         self.rows, self.lam, self.uniq, self.lat, self.lo, self.nn = rows, lam, uniq, lat, lo, nn
         self.npos = SX.node_pos(lo, lat, nn, uniq)
         tid = SX.tet_id(lo, lat, nn, aux)
-        ut, pinv = torch.unique(tid, return_inverse=True)
+        ut, pinv = _compact(tid, P * 9) if fast else torch.unique(tid, return_inverse=True)
         T = int(ut.numel())
         N = x.shape[0]
         rep = torch.empty(T, dtype=torch.long, device=x.device).scatter_(0, pinv, torch.arange(N, device=x.device))
@@ -111,7 +124,7 @@ def barrier3(d, dhat, eps_r=1e-3):
 
 # ---------------------------------------------------------------- --floor node: 사면체 적분점 + 노드 바닥 항
 class NodeFrame:
-    def __init__(self, G, x, v, F, m, vol, cfg, h, kappa=1.0, dhat=0.01, k_st=0.0, eps_st=0.01, clear="min", m_floor=0.0):
+    def __init__(self, G, x, v, F, m, vol, cfg, h, kappa=1.0, dhat=0.01, k_st=0.0, eps_st=0.01, clear="min", m_floor=0.0, stick_w="min"):
         dev = x.device
         self.G, self.cfg, self.h = G, cfg, float(h)
         self.mu, self.lam_ = PR.lame(cfg["E"], cfg["nu"])
@@ -143,7 +156,14 @@ class NodeFrame:
                 else:
                     sv = s.unsqueeze(1).expand(-1, 4).reshape(-1)
                 cn = torch.full((M,), float("inf"), device=dev, dtype=F8).scatter_reduce_(0, G.rows.reshape(-1), sv, reduce="amin")
-                w = 1.0 - torch.sigmoid(cn / eps_st) if k_st > 0 else torch.zeros_like(cn)
+                if k_st <= 0:
+                    w = torch.zeros_like(cn)
+                elif stick_w == "lam":
+                    # 입자 고착 무게 (1 - σ(s_p/ε)) 를 λ 로 노드에 (최대): 바닥 입자를 강하게 받치는 꼭짓점만 묶인다
+                    wp = (G.lam.double() * (1.0 - torch.sigmoid(s / eps_st)).unsqueeze(1)).reshape(-1)
+                    w = torch.zeros(M, device=dev, dtype=F8).scatter_reduce_(0, G.rows.reshape(-1), wp, reduce="amax")
+                else:
+                    w = 1.0 - torch.sigmoid(cn / eps_st)
                 self.planes.append((nr, cn, w))
         mw = self.mn.clamp_min(float(m_floor))                                  # 장벽·고착 무게 질량 (작은 질량 노드가 탄성에 밀려 뚫리지 않게 하한)
         self.kb = float(kappa) * mw / h2                                       # κ m_n/h²
@@ -167,6 +187,48 @@ class NodeFrame:
                 E = E + 0.5 * (self.ks * w * (Ut_ * Ut_).sum(-1)).sum()
         return E
 
+    def _el_direct(self, Ut, grad):
+        """탄성 ψ 와 dE/dU_T 를 자동미분 없이 (PR._fcr_fwd·_fcr_grad 컴파일 커널 그대로; σ_min ≤ 0.01 사면체의 상수 기울기 처리만 생략)."""
+        A = torch.eye(3, device=Ut.device, dtype=Ut.dtype) + (Ut.unsqueeze(-1) * self.gl.unsqueeze(-2)).sum(1)
+        X = A @ self.FT
+        psi, S = PR._fcr_fwd(X, self.mu, self.lam_, 0.01)
+        if not grad:
+            return psi, None
+        P = PR._fcr_grad(X, S, self.mu, self.lam_)
+        Gm = self.VT[:, None, None] * (P @ self.FT.transpose(1, 2))          # dE/dA
+        return psi, torch.einsum("tcb,tib->tic", Gm, self.gl)
+
+    def energy_fast(self, U):
+        U = U.double()
+        Ut = U[self.G.tets]
+        E = 0.5 * ((self.M4 @ Ut) * Ut).sum() - (self.B4 * Ut).sum() + self.C0 + (self.VT * self._el_direct(Ut, False)[0]).sum()
+        return E + self._floor_eg(U)[0]
+
+    def _floor_eg(self, U):
+        E = torch.zeros((), device=U.device, dtype=F8)
+        g = torch.zeros_like(U)
+        for nr, cn, w in self.planes:
+            d = cn + U @ nr
+            b, b1, _ = barrier3(d, self.dhat)
+            E = E + (self.kb * b).sum()
+            g = g + (self.kb * b1).unsqueeze(-1) * nr
+            if self.k_st > 0:
+                Ut_ = U - (U @ nr).unsqueeze(-1) * nr
+                E = E + 0.5 * (self.ks * w * (Ut_ * Ut_).sum(-1)).sum()
+                g = g + (self.ks * w).unsqueeze(-1) * Ut_
+        return E, g
+
+    def energy_grad_fast(self, U):
+        U = U.double()
+        Ut = U[self.G.tets]
+        MU = self.M4 @ Ut
+        psi, gel = self._el_direct(Ut, True)
+        E = 0.5 * (MU * Ut).sum() - (self.B4 * Ut).sum() + self.C0 + (self.VT * psi).sum()
+        gt = MU - self.B4 + gel
+        g = torch.zeros_like(U).index_add_(0, self.G.tets.reshape(-1), gt.reshape(-1, 3))
+        Ef, gf = self._floor_eg(U)
+        return E + Ef, g + gf
+
     def energy_grad(self, U):
         U = U.double()
         Ut = U[self.G.tets].requires_grad_(True)
@@ -186,7 +248,7 @@ class NodeFrame:
                 g = g + (self.ks * w).unsqueeze(-1) * Ut_
         return E, g
 
-    def hess(self, U, kdt=torch.float32):
+    def hess(self, U, kdt=torch.float32, f32_b=False):
         """(사면체 12x12 [T,12,12] float64 (투영 전), 노드 3x3 [M,3,3] (양반정, 투영 뒤 더한다))."""
         G = self.G
         T = G.T
@@ -195,7 +257,11 @@ class NodeFrame:
         Ut = U.double()[G.tets]
         A0 = I3 + (Ut.unsqueeze(-1) * self.gl.unsqueeze(-2)).sum(1)
         K = FF._k_manual_run(A0.to(kdt), self.FT.to(kdt), self.VT.to(kdt), float(self.mu), float(self.lam_))
-        H = H + torch.einsum("tib,tcbde,tje->ticjd", self.gl, K.reshape(T, 3, 3, 3, 3), self.gl).reshape(T, 12, 12)
+        if f32_b:
+            gl = self.gl.float()
+            H = H + torch.einsum("tib,tcbde,tje->ticjd", gl, K.float().reshape(T, 3, 3, 3, 3), gl).reshape(T, 12, 12).double()
+        else:
+            H = H + torch.einsum("tib,tcbde,tje->ticjd", self.gl, K.reshape(T, 3, 3, 3, 3), self.gl).reshape(T, 12, 12)
         Dn = torch.zeros(G.M, 3, 3, device=U.device, dtype=F8)
         for nr, cn, w in self.planes:
             d = cn + U.double() @ nr
@@ -482,7 +548,7 @@ def galerkin(Af, gc, pidx, w):
 class KuhnMG:
     """기하 멀티그리드 V(ν,ν) 전처리: 블록 야코비 ω 매끄럽게, 가장 성긴 수준은 조밀 Cholesky (float64)."""
 
-    def __init__(self, A0, nu=2, omega=0.6, nmin=400, maxlev=8, dtype=F8, A0csr=None):
+    def __init__(self, A0, nu=2, omega=0.6, nmin=400, maxlev=8, dtype=F8, A0csr=None, bell=False):
         self.levels = []
         A = A0
         self.drop = 0
@@ -503,8 +569,8 @@ class KuhnMG:
             gc, pidx, w = coarsen(A.gi)
             Ac, dr = galerkin(A, gc, pidx, w)
             self.drop += dr
-            Cs = A0csr if (A is A0 and A0csr is not None) else A.to_csr()
-            if Cs.values().dtype != dtype:
+            Cs = None if bell else (A0csr if (A is A0 and A0csr is not None) else A.to_csr())
+            if Cs is not None and Cs.values().dtype != dtype:
                 Cs = torch.sparse_csr_tensor(Cs.crow_indices(), Cs.col_indices(), Cs.values().to(dtype), Cs.shape)
             self.levels.append(dict(A=A, C=Cs, Dinv=Dinv, P=(pidx, w.to(dtype)), Mc=int(gc.shape[0])))
             A = Ac
@@ -519,7 +585,7 @@ class KuhnMG:
         if lv["P"] is None:
             return self.Ki @ r
         C = lv["C"]
-        mv = lambda q: (C @ q.unsqueeze(-1)).squeeze(-1)
+        mv = (lambda q: (C @ q.unsqueeze(-1)).squeeze(-1)) if C is not None else lv["A"].mv
         om = self.omega
         x = om * self._jac(lv, r)
         for _ in range(self.nu - 1):

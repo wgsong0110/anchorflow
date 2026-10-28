@@ -40,6 +40,7 @@ ap.add_argument("--kappa", type=float, default=1.0)
 ap.add_argument("--dhat", type=float, default=0.0, help="0 이면 0.5·grid_lim/n_grid (기존 --bc_dhat 기본)")
 ap.add_argument("--k_st", type=float, default=1000.0, help="노드 고착 세기 (관성 m/h² 배수, 0 = 미끄러짐)")
 ap.add_argument("--nf_clear", choices=["min", "lam"], default="min", help="노드 여유 c_n: min = 받치는 입자 최저 높이, lam = min s_p/λ_pn")
+ap.add_argument("--nf_stick", choices=["min", "lam"], default="min", help="고착 무게 w_n: min = 1-σ(c_n/ε), lam = max_p λ_pn (1-σ(s_p/ε))")
 ap.add_argument("--nf_mfloor", type=float, default=0.0, help="장벽·고착 무게 질량 하한 (꽉 찬 노드 질량 ρ·v_node 의 배수)")
 ap.add_argument("--solver", choices=["pcg", "mg", "pdpcg", "pd"], default="pcg")
 ap.add_argument("--newton", type=int, default=1)
@@ -58,6 +59,8 @@ ap.add_argument("--pd_reuse", type=int, default=1, help="1 = 노드 집합이 �
 ap.add_argument("--pd_floor_diag", type=int, default=1, help="1 = 바닥 장벽·고착 곡률의 등방 대각을 L 에 (분해 때 값)")
 ap.add_argument("--proj_gate", action="store_true", help="배치 Cholesky 로 양정치인 사면체는 고유분해 투영을 건너뛴다")
 ap.add_argument("--graph", action="store_true", help="PCG 반복 한 번을 CUDA 그래프로 잡아 재생")
+ap.add_argument("--fast", action="store_true", help="정렬 없는 격자 압축, 자동미분 없는 E·기울기, 사면체 B 곱 float32")
+ap.add_argument("--bell", action="store_true", help="CSR 대신 블록 ELL (15 점 스텐실) 곱만 (패턴 정렬 없음)")
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--dump_sys", default="", help="쉼표 프레임 목록: 그 프레임 첫 걸음 선형계 (블록 ELL·b) 를 <out>/sys_t###.pt 로")
@@ -100,11 +103,11 @@ recs = []
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
 
 
-def lm_resolve(A, D, MnH, b, mu_):
+def lm_resolve(mvA, D, MnH, b, mu_):
     reg = (mu_ * MnH).unsqueeze(-1).expand(-1, 3).reshape(-1)
     Dm = D + torch.diag_embed((mu_ * MnH).unsqueeze(-1).expand(-1, 3))
     Di = torch.linalg.inv(Dm)
-    xx, it, res, neg = RT.pcg(lambda q: (A @ q.unsqueeze(-1)).squeeze(-1) + reg * q, lambda r: (Di @ r.reshape(-1, 3, 1)).reshape(-1),
+    xx, it, res, neg = RT.pcg(lambda q: mvA(q) + reg * q, lambda r: (Di @ r.reshape(-1, 3, 1)).reshape(-1),
                               b, a.pcg_max, a.rtol, a.ck)
     return xx, it, neg
 
@@ -114,13 +117,15 @@ for i in range(L):
     t_frame0 = time.perf_counter()
     tk = RT.Tick(a.prof)
     rec = dict(t=i)
-    G = RT.Grid(x, a.node_h)
+    G = RT.Grid(x, a.node_h, fast=a.fast)
     U, ws = RT.node_inertial(x, v, m, G, g, h)                                # --ov_init predict
     MnH = ws.double() / (h * h)
     tk("grid")
     if a.floor == "node":
         fr = RT.NodeFrame(G, x, v, F, m, vol, cfg, h, kappa=a.kappa, dhat=dhat, k_st=a.k_st, eps_st=a.eps_st, clear=a.nf_clear,
-                          m_floor=a.nf_mfloor * M_FULL)
+                          m_floor=a.nf_mfloor * M_FULL, stick_w=a.nf_stick)
+        if a.fast:
+            fr.energy, fr.energy_grad = fr.energy_fast, fr.energy_grad_fast
         tets = G.tets
     else:
         fr = FF.FemFrame(x, v, F, m, vol, G.rows, G.lam, G.npos, None, cfg, h, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True, dtype=torch.float32)
@@ -128,7 +133,7 @@ for i in range(L):
         tets = fr.uq
         rec["n_near"] = int(fr.tq["ni"].numel())
     tk("p2g")
-    csr = RT.Csr(tets, G.M)
+    csr = RT.Csr(tets, G.M) if not a.bell else None
     tk("pattern")
     steps = []
     for k in range(a.newton):
@@ -180,26 +185,39 @@ for i in range(L):
         Ec = float(E0)
         tk("eg")
         if a.floor == "node":
-            He, Dn = fr.hess(U)
+            He, Dn = fr.hess(U, f32_b=a.fast)
         else:
             He, _fi = fr.hess_tetq(U)
             Dn = None
         tk("hess")
         He, negf = RT.project(He, a.eig_floor, gate=a.proj_gate)
         tk("proj")
-        A = csr.build(He, Dn)
-        D = RT.block_diag(tets, He, G.M, Dn)
-        Dinv = torch.linalg.inv(D)
-        tk("asm")
-        jac = lambda r: (Dinv @ r.reshape(-1, 3, 1)).reshape(-1)
-        mv = lambda q: (A @ q.unsqueeze(-1)).squeeze(-1)
-        pre = jac
-        if a.solver == "mg":
+        if a.bell:
             Be = RT.BEll(G.gi)
             Be.add_tets(tets, He)
             if Dn is not None:
                 Be.add_diag(Dn)
-            MG = RT.KuhnMG(Be, nu=a.mg_nu, omega=a.mg_omega, nmin=a.mg_nmin, dtype=torch.float32 if a.mg_f32 else torch.float64, A0csr=A)
+            A = Be
+            D = Be.diag().clone()
+            bad = ~(torch.diagonal(D, dim1=1, dim2=2) > 0).all(1)
+            D[bad] = torch.eye(3, device=dev, dtype=D.dtype)
+            mv = Be.mv
+        else:
+            A = csr.build(He, Dn)
+            D = RT.block_diag(tets, He, G.M, Dn)
+            mv = lambda q: (A @ q.unsqueeze(-1)).squeeze(-1)
+        Dinv = torch.linalg.inv(D)
+        tk("asm")
+        jac = lambda r: (Dinv @ r.reshape(-1, 3, 1)).reshape(-1)
+        pre = jac
+        if a.solver == "mg":
+            if not a.bell:
+                Be = RT.BEll(G.gi)
+                Be.add_tets(tets, He)
+                if Dn is not None:
+                    Be.add_diag(Dn)
+            MG = RT.KuhnMG(Be, nu=a.mg_nu, omega=a.mg_omega, nmin=a.mg_nmin, dtype=torch.float32 if a.mg_f32 else torch.float64,
+                           A0csr=(None if a.bell else A), bell=a.bell)
             pre = MG
             st.update(mg_levels=MG.sizes, mg_drop=MG.drop)
         elif a.solver == "pdpcg":
@@ -240,7 +258,7 @@ for i in range(L):
         pd_ = p
         while True:
             if mu_ > 0:
-                xm, itm, _ = lm_resolve(A, D, MnH, b, mu_)
+                xm, itm, _ = lm_resolve(mv, D, MnH, b, mu_)
                 pd_ = xm.reshape(G.M, 3).to(U.dtype)
             gpd = float((gg * pd_).sum())
             al, acc = 1.0, False
@@ -288,7 +306,7 @@ for i in range(L):
         PRED[i] = x2
         VD[i] = v2.half()
         FD[i] = F2.half()
-    rec.update(sec=t_frame, ms=tk.d, steps=steps, err=e, s_min=smin, n_below=nbelow, M=G.M, T=G.T, nnz=csr.nnz)
+    rec.update(sec=t_frame, ms=tk.d, steps=steps, err=e, s_min=smin, n_below=nbelow, M=G.M, T=G.T, nnz=(csr.nnz if csr is not None else None))
     if PDF is not None:
         rec.update(pd_nfact=PDF.n_fact, pd_tfact=PDF.t_fact)
     flog.write(json.dumps(rec, ensure_ascii=False) + "\n")
