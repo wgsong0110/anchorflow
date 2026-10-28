@@ -33,6 +33,7 @@ from anchorflow import deform_model as DM                                       
 from anchorflow import fem_fast as FF                                               # noqa: E402
 from anchorflow import fem_rt as RT                                                 # noqa: E402
 from anchorflow import fem_rt_cuda as RTC                                           # noqa: E402
+from anchorflow import fem_rt_cuda2 as RTC2                                         # noqa: E402
 from anchorflow import phys_resid as PR                                             # noqa: E402
 
 ap = argparse.ArgumentParser()
@@ -106,6 +107,14 @@ ap.add_argument("--vbd_refresh", type=int, default=0, help="--solver vbd: R 반�
 ap.add_argument("--mmax", type=int, default=60000)
 ap.add_argument("--asm_k", action="store_true", help="--cuda --lite: slots·블록 야코비 역·이웃 표를 커널로 (같은 값), LM 용 전체 블록은 필요할 때만")
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
+# ---- 절 J (사용자 10-28 "할 수 있는 거 다 해보고 오차랑 영상이랑 시간 측정") ----
+ap.add_argument("--rawptr", action="store_true", help="J4: 커널 포인터 인자를 장치 주소 값으로 (CuPy 배열 변환 없음), 스트림 객체 재사용")
+ap.add_argument("--gridk2", action="store_true", help="J4: 격자 (GridK) 호스트 동기화 줄인 판 (같은 값)")
+ap.add_argument("--p2gk", action="store_true", help="J4: 입자 바닥 P2G (바닥 후보 분할·사면체 관성·부피 가중 F) 를 커널 하나로 (같은 식)")
+ap.add_argument("--lowsync", action="store_true", help="J4: E0·|p|∞·gᵀp 를 선탐색 직전 한 번에 읽고, 실제 잔차·음 사면체 수 기록은 시간 측정 밖에서")
+ap.add_argument("--th", type=int, default=-1, help="J2: --pcg2 9 의 안쪽 행렬 형식 (0 f32 척도, 1 f16, 2 bf16; 야코비 대칭 척도 S A S)")
+ap.add_argument("--th_dg32", action="store_true", help="J2: 16 비트 행렬에서 대각 블록은 float32")
+ap.add_argument("--t2_kern", default="pcg_t2_r2", help="J2: --pcg2 10 (pcg_t6 혼합과 같은 식, 곱 메모리 병렬도 높인 지속 커널) 의 커널 이름 (pcg_t2_r{1,2,4}[b2])")
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--dump_f32", action="store_true", help="덤프 F 를 float32 로 (ψ 계산용 -- float16 은 작은 변형의 ψ 를 덮는다; 기본 float16)")
 ap.add_argument("--dump_sys", default="", help="쉼표 프레임 목록: 그 프레임 첫 걸음 선형계 (블록 ELL·b) 를 <out>/sys_t###.pt 로")
@@ -155,6 +164,8 @@ print(f"[물리 조건] 중력 {cfg['g']}, 바닥 {'없음 (surface_collider 없
       f"속도 감쇠 {'배율 %.6f/스텝 (%g^(%g/%g))' % (VDAMP, cfg.get('grid_v_damping_scale', 1.0), h, cfg.get('substep_dt', 0)) if a.pg_vdamp else '없음'}, node_h {a.node_h}", flush=True)
 
 PC = RTC.CudaPcg(a.mmax, dev) if a.cuda else None
+RTC.RAWPTR[0] = bool(a.rawptr)
+HM = RTC2.HalfMat(a.mmax, dev) if a.pcg2 == 9 else None
 if PC is not None:
     PC.d3 = a.d3
     PC.sym = int(a.sym)
@@ -197,7 +208,7 @@ for i in range(L):
     t_frame0 = time.perf_counter()
     tk = RT.Tick(a.prof)
     rec = dict(t=i)
-    G = RTC.GridK(x, a.node_h) if a.lite else RT.Grid(x, a.node_h, fast=a.fast)
+    G = (RTC2.GridK2(x, a.node_h) if a.gridk2 else RTC.GridK(x, a.node_h)) if a.lite else RT.Grid(x, a.node_h, fast=a.fast)
     U, ws = RT.node_inertial(x, v, m, G, g, h)                                # --ov_init predict
     fixd = None
     if BC_SEL is not None:
@@ -217,8 +228,13 @@ for i in range(L):
         MnH = MnH.masked_fill(fixd, 0.0)
     tk("grid")
     if a.lite and a.floor in ("particle", "none"):
-        fr = CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, h, U, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True, fixd=fixd,
-                                floor=(a.floor == "particle"))
+        if a.p2gk:
+            if fixd is not None or a.floor != "particle":
+                raise SystemExit("--p2gk 는 입자 바닥·cfg_bc 없음에서만")
+            fr = CF = RTC2.make_tq(G, x, v, F, m, vol, cfg, h, U, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True)
+        else:
+            fr = CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, h, U, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True, fixd=fixd,
+                                    floor=(a.floor == "particle"))
         CF.warp = a.warp
         CF.near32 = a.near32
         CF.sym = int(a.sym)
@@ -300,7 +316,7 @@ for i in range(L):
         gg = gg.to(U.dtype)
         if fixd is not None:
             gg = gg.masked_fill(fixd.unsqueeze(-1), 0.0)                         # 묶인 노드는 변수 밖
-        Ec = float(E0)
+        Ec = None if (a.lowsync and a.cuda) else float(E0)
         tk("eg")
         if a.cuda:
             M_ = G.M
@@ -365,7 +381,15 @@ for i in range(L):
                 steps.append(st)
                 break
             b = gg.reshape(-1).double()
-            if a.pcg2 in (6, 7, 8):
+            if a.pcg2 == 10:
+                xx, it, res, negc = RTC2.solve_t2(PC, M_, b, a.rtol, a.pcg_max, kern=a.t2_kern, delta=a.mix_delta, cap=3)
+                st["mix_upd"] = PC.last_nup
+            elif a.pcg2 == 9:
+                # J2: 안쪽 반복 16 비트 (또는 float32) 척도 행렬 + float64 신뢰 갱신 (멈춤 = float64 실제 잔차 < rtol)
+                HM.build(PC, M_, a.th, dg32=a.th_dg32)
+                xx, it, res, negc = RTC2.solve_th(PC, HM, M_, b, a.rtol, a.pcg_max, mk=a.th, delta=a.mix_delta)
+                st["mix_upd"] = PC.last_nup
+            elif a.pcg2 in (6, 7, 8):
                 # 타일 곱 지속 커널: 6 = float32 + float64 신뢰 갱신 (혼합), 7 = float64, 8 = float32 단독
                 xx, it, res, negc = PC.solve_tile(M_, b, a.rtol, a.pcg_max, prec=(64 if a.pcg2 == 7 else 32), mode=(1 if a.pcg2 == 6 else 0),
                                                   delta=a.mix_delta)
@@ -375,10 +399,14 @@ for i in range(L):
                 st["mix_upd"] = PC.last_nup
             else:
                 xx, it, res, negc = {3: PC.solve_coop32, 2: PC.solve_coop, 1: PC.solve2, 0: PC.solve}[a.pcg2](M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
-            if a.true_res:
-                st["true_res"] = PC.true_res(M_, xx, b)
-            negf = int(CF.cnt[1]) / G.T
-            st["gate"] = int(CF.cnt[0])
+            if a.lowsync:
+                post = (M_, xx, b)                                                  # 실제 잔차·음 사면체 수는 시간 측정 밖에서 (아래)
+                negf = None
+            else:
+                if a.true_res:
+                    st["true_res"] = PC.true_res(M_, xx, b)
+                negf = int(CF.cnt[1]) / G.T
+                st["gate"] = int(CF.cnt[0])
             tk("pcg")
 
             def _mk_mv(Bs=Bs, M_=M_, nbl=nbl):
@@ -477,8 +505,12 @@ for i in range(L):
             xx, it, res, negc = _r if _r is not None else RT.pcg(mv, pre, b, a.pcg_max, a.rtol, (min(a.ck, 2) if a.solver == 'mg' else a.ck))
             tk("pcg")
         p = xx.reshape(G.M, 3).to(U.dtype)
-        pin = float(p.abs().max()) / (h * EXT)
-        gp = float((gg * p).sum())
+        if Ec is None:
+            Ec, pin, gp = torch.stack([E0.reshape(()).double(), p.abs().max().double(), (gg * p).sum().double()]).tolist()   # 동기화 1 번
+            pin = pin / (h * EXT)
+        else:
+            pin = float(p.abs().max()) / (h * EXT)
+            gp = float((gg * p).sum())
         st.update(E0=Ec, cg=it, cg_res=math.sqrt(res), neg_curv=negc, neg_tet=negf, pin=pin, gp=gp)
         if not (math.isfinite(pin) and math.isfinite(gp)):
             st["why"] = "nan"
@@ -540,6 +572,12 @@ for i in range(L):
     torch.cuda.synchronize()
     t_frame = time.perf_counter() - t_frame0
     # ---- 측정 밖: 오차·바닥 높이·덤프 ----
+    if a.lowsync and a.cuda and steps and "post" in dir():
+        if a.true_res:
+            steps[0]["true_res"] = PC.true_res(*post)
+        steps[0]["neg_tet"] = int(CF.cnt[1]) / G.T
+        steps[0]["gate"] = int(CF.cnt[0])
+        del post
     e = float((x2 - GT[i]).norm(dim=-1).mean()) / EXT
     errs.append(e)
     smin, nbelow = None, None

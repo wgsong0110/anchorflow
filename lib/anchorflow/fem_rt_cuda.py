@@ -1682,7 +1682,13 @@ def _mod():
     return _MOD[0]
 
 
+RAWPTR = [False]          # --rawptr (절 J 항목 4): 커널 포인터 인자를 CuPy 배열 변환 없이 장치 주소 값으로 (같은 스트림이라 수명 안전), 스트림 객체 재사용
+_XS = {}
+
+
 def _cp(t):
+    if RAWPTR[0]:
+        return np.uint64(t.data_ptr())
     import cupy as cp
     return cp.asarray(t)
 
@@ -1704,7 +1710,13 @@ class _Stream:
     """torch 지금 스트림에 CuPy 커널을 띄운다."""
     def __enter__(self):
         import cupy as cp
-        self.s = cp.cuda.ExternalStream(torch.cuda.current_stream().cuda_stream)
+        sp = torch.cuda.current_stream().cuda_stream
+        if RAWPTR[0]:
+            if sp not in _XS:
+                _XS[sp] = cp.cuda.ExternalStream(sp)
+            self.s = _XS[sp]
+        else:
+            self.s = cp.cuda.ExternalStream(sp)
         self.s.__enter__()
         return self
 
