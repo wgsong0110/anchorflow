@@ -62,6 +62,7 @@ ap.add_argument("--graph", action="store_true", help="PCG 반복 한 번을 CUDA
 ap.add_argument("--fast", action="store_true", help="정렬 없는 격자 압축, 자동미분 없는 E·기울기, 사면체 B 곱 float32")
 ap.add_argument("--bell", action="store_true", help="CSR 대신 블록 ELL (15 점 스텐실) 곱만 (패턴 정렬 없음)")
 ap.add_argument("--hess", choices=["newton", "gn"], default="newton", help="gn = 가우스-뉴턴 탄성 헤시안 (양반정, 고유분해 투영 없음; --floor node)")
+ap.add_argument("--csr_bell", action="store_true", help="CSR 를 블록 ELL 에서 정렬 없이 (패턴 정렬 생략, 곱은 cuSPARSE)")
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--dump_sys", default="", help="쉼표 프레임 목록: 그 프레임 첫 걸음 선형계 (블록 ELL·b) 를 <out>/sys_t###.pt 로")
@@ -134,7 +135,7 @@ for i in range(L):
         tets = fr.uq
         rec["n_near"] = int(fr.tq["ni"].numel())
     tk("p2g")
-    csr = RT.Csr(tets, G.M) if not a.bell else None
+    csr = RT.Csr(tets, G.M) if not (a.bell or a.csr_bell) else None
     tk("pattern")
     steps = []
     for k in range(a.newton):
@@ -206,6 +207,19 @@ for i in range(L):
             bad = ~(torch.diagonal(D, dim1=1, dim2=2) > 0).all(1)
             D[bad] = torch.eye(3, device=dev, dtype=D.dtype)
             mv = Be.mv
+        elif a.csr_bell:
+            Be = RT.BEll(G.gi)
+            Be.add_tets(tets, He)
+            if Dn is not None:
+                Be.add_diag(Dn)
+            A = Be.to_csr_sorted(G.nn)
+            if i == 0 and k == 0:
+                _v = torch.randn(3 * G.M, device=dev, dtype=torch.float64)
+                print(f"[검산] 정렬 없는 CSR 곱 vs 블록 ELL 곱 상대차 {float(((A @ _v.unsqueeze(-1)).squeeze(-1) - Be.mv(_v)).norm() / Be.mv(_v).norm()):.2e}", flush=True)
+            D = Be.diag().clone()
+            bad = ~(torch.diagonal(D, dim1=1, dim2=2) > 0).all(1)
+            D[bad] = torch.eye(3, device=dev, dtype=D.dtype)
+            mv = lambda q: (A @ q.unsqueeze(-1)).squeeze(-1)
         else:
             A = csr.build(He, Dn)
             D = RT.block_diag(tets, He, G.M, Dn)
@@ -215,7 +229,7 @@ for i in range(L):
         jac = lambda r: (Dinv @ r.reshape(-1, 3, 1)).reshape(-1)
         pre = jac
         if a.solver == "mg":
-            if not a.bell:
+            if not (a.bell or a.csr_bell):
                 Be = RT.BEll(G.gi)
                 Be.add_tets(tets, He)
                 if Dn is not None:

@@ -407,6 +407,9 @@ def pcg(mv, pre, b, ncg, rtol, ck=50):
     return x, int(nit), float((r * r).sum() / b2), bool(negf)
 
 
+_GS = [None]
+
+
 def pcg_graph(mv, pre, b, ncg, rtol, ck=4):
     """pcg 와 같은 식·같은 판정을 CUDA 그래프로: 반복 한 번 (곱 + 전처리 + 갱신) 을 잡아 두고 재생, ck 회 재생마다 수렴 확인.
     커널 띄우기 비용을 없앤다 (멀티그리드 V 사이클은 반복당 커널 수백 개). 잡기 실패하면 None."""
@@ -434,17 +437,21 @@ def pcg_graph(mv, pre, b, ncg, rtol, ck=4):
         S["d"].copy_(zz + beta * S["d"])
         S["rz"].copy_(torch.where(S["alive"], rz2, S["rz"]))
     try:
-        st = torch.cuda.Stream()
+        # torch.cuda.graph(...) 문맥은 들어갈 때 gc.collect()·empty_cache() 를 해서 한 번에 ~95 ms 가 든다 (10-28 실측) -- capture_begin/end 를 직접
+        if _GS[0] is None:
+            _GS[0] = torch.cuda.Stream()
+        st = _GS[0]
         st.wait_stream(torch.cuda.current_stream())
+        gr = torch.cuda.CUDAGraph()
         with torch.cuda.stream(st):
             keep = {k: v.clone() for k, v in S.items()}
             body()
             for k, v in keep.items():
                 S[k].copy_(v)
-        torch.cuda.current_stream().wait_stream(st)
-        gr = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(gr):
+            gr.capture_begin()
             body()
+            gr.capture_end()
+        torch.cuda.current_stream().wait_stream(st)
     except Exception as e:                                                    # noqa: BLE001
         print(f"[pcg_graph] 잡기 실패 -> 그래프 없이: {type(e).__name__}: {str(e)[:200]}", flush=True)
         return None
@@ -518,6 +525,26 @@ class BEll:
     def mv(self, x):
         X = x.reshape(self.M, 3)[self.nb]                                      # [M,15,3]
         return torch.einsum("mkab,mkb->ma", self.B.view(self.M, 15, 3, 3), X.to(self.B.dtype)).reshape(-1).to(x.dtype)
+
+    def to_csr_sorted(self, nn):
+        """정렬 없이 CSR: 노드 번호가 격자 평탄 색인 순서라 이웃 칸을 평탄 오프셋 순으로 놓으면 행 안 열이 오름차순이다."""
+        M = self.M
+        dev = self.B.device
+        off, _ = _tbl(dev)
+        lin = (off[:, 0] * int(nn[1]) + off[:, 1]) * int(nn[2]) + off[:, 2]
+        o = torch.argsort(lin)
+        B = self.B.view(M, 15, 3, 3)[:, o]                                     # [M,15(정렬),3,3]
+        nb = self.nb[:, o]
+        ok = self.valid[:, o]
+        cnt = ok.sum(1) * 3                                                    # 행마다 원소 수 (세 성분 행 같다)
+        crow = torch.zeros(3 * M + 1, device=dev, dtype=torch.long)
+        crow[1:] = cnt.repeat_interleave(3).cumsum(0)
+        # 원소 순서: 행 (m, a) -> 칸 k (유효만) -> b
+        Bt = B.permute(0, 2, 1, 3)                                             # [M,3(a),15,3(b)]
+        okx = ok[:, None, :, None].expand(M, 3, 15, 3)
+        vals = Bt[okx]
+        col = (nb[:, None, :, None] * 3 + torch.arange(3, device=dev)).expand(M, 3, 15, 3)[okx]
+        return torch.sparse_csr_tensor(crow, col, vals, (3 * M, 3 * M))
 
     def to_csr(self):
         M = self.M
