@@ -683,6 +683,7 @@ def solve_th(PC, HM, M, b, rtol, ncg, mk=1, delta=0.1):
         setattr(PC, key, bufs)
     T_ = getattr(PC, key)
     PC.th_info = (T_["nblk"], T_["info"])
+    PC.Mp.fill_(M)
     sc_ = (b * b).sum().clamp_min(1e-300).sqrt()
     bs = b / sc_
     T_["bs"][:n].copy_(bs)
@@ -887,6 +888,7 @@ def solve_t2(PC, M, b, rtol, ncg, kern="pcg_t2_r2", delta=0.1, cap=2, x0=None):
             bufs[nm] = torch.zeros(PC.Mmax * 3, dtype=torch.float32, device=dev)
         PC.t2buf = bufs
     T_ = PC.t2buf
+    PC.Mp.fill_(M)                                                          # true_res (bell_mv) 가 장치 노드 수를 읽는다
     if not hasattr(PC, key):
         setattr(PC, key, coop_blocks2(kern, 512, cap=cap))
     nblk, info = getattr(PC, key)
@@ -940,6 +942,7 @@ def solve_p1(PC, M, b, rtol, ncg, kern="pcg_p1_r2", delta=0.1, cap=2):
             bufs[nm] = torch.zeros(PC.Mmax * 3, dtype=torch.float32, device=dev)
         PC.p1buf = bufs
     T_ = PC.p1buf
+    PC.Mp.fill_(M)
     key = "p1_" + kern
     if not hasattr(PC, key):
         setattr(PC, key, coop_blocks2(kern, 512, cap=cap))
@@ -1006,6 +1009,7 @@ class GraphPcg:
         PC = self.PC
         n = 3 * M
         v = self.v
+        PC.Mp.fill_(M)
         Mcap = ((M + self.bucket - 1) // self.bucket) * self.bucket
         sc_ = (b * b).sum().clamp_min(1e-300).sqrt()
         bs = b / sc_
@@ -1177,12 +1181,80 @@ __global__ void near_eg32(int nn_, const long long* idx, const float* x, const f
 _MOD3 = [None]
 
 
+def _hess_wg_src(src):
+    """fem_rt_cuda tet_hess_w 원문에서 tet_hess_wg 를 만든다: 대칭화 뒤 H − floor·|H|_F·I 의 워프 Cholesky 가 되면 (λ_min > floor·|H|_F ≥ floor·λ_max 라
+    |λ| 투영이 항등) 야코비 고유분해·재구성을 건너뛰고 H 를 그대로 칸에 더한다. 안 되면 원래 경로 그대로."""
+    i0 = src.index("__global__ void tet_hess_w(")
+    i1 = src.index("\n}\n", src.index("atomicAdd(&Bell[", i0)) + 3
+    k = src[i0:i1].replace("__global__ void tet_hess_w(", "__global__ void tet_hess_wg(", 1)
+    k = k.replace("const float* Ht, int Ms, int sym) {", "const float* Ht, int Ms, int sym, int* ngate) {", 1)
+    anchor = "for (int o=16;o>0;o>>=1) fro += __shfl_xor_sync(0xffffffff, fro, o);\n"
+    assert k.count(anchor) == 1
+    gate = r"""
+    {
+        float sh = efloor*sqrtf(fro);
+        for (int e=lane; e<144; e+=32) { int r=e/12, q=e%12; V[r][q] = H[r][q] - ((r==q) ? sh : 0.f); }
+        __syncwarp();
+        int ok = 1;
+        for (int kk=0; kk<12; kk++) {
+            if (lane == 0) { float s_ = V[kk][kk]; for (int j=0;j<kk;j++) s_ -= V[kk][j]*V[kk][j]; sL[w][0] = s_; }
+            __syncwarp();
+            float dkk = sL[w][0];
+            __syncwarp();
+            if (!(dkk > 0.f)) { ok = 0; break; }
+            float lkk = sqrtf(dkk);
+            if (lane > kk && lane < 12) { float s_ = V[lane][kk]; for (int j=0;j<kk;j++) s_ -= V[lane][j]*V[kk][j]; V[lane][kk] = s_/lkk; }
+            __syncwarp();
+            if (lane == 0) V[kk][kk] = lkk;
+            __syncwarp();
+        }
+        if (ok) {
+            if (lane == 0) atomicAdd(ngate, 1);
+            const int* sl = slots + t*16;
+            for (int e=lane; e<144; e+=32) {
+                int r=e/12, q=e%12;
+                int i=r/3, c=r%3, j=q/3, d=q%3;
+                int sv = sl[i*4+j]; long long node = sv/15, cls = sv%15;
+                if (sym && cls >= 8) continue;
+                atomicAdd(&Bell[((long long)cls*9 + c*3+d)*Ms + node], H[r][q]);
+            }
+            return;
+        }
+        for (int e=lane; e<144; e+=32) { int r=e/12, q=e%12; V[r][q] = (r==q) ? 1.f : 0.f; }
+        __syncwarp();
+    }
+"""
+    k = k.replace(anchor, anchor + gate, 1)
+    return 'extern "C" {\n' + k + '\n}\n'
+
+
 def _mod3():
     if _MOD3[0] is None:
         import cupy as cp
         from . import fem_rt_cuda as RTC
-        _MOD3[0] = cp.RawModule(code=(RTC._SRC + _SRC3_EXTRA).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+        _MOD3[0] = cp.RawModule(code=(RTC._SRC + _SRC3_EXTRA + _hess_wg_src(RTC._SRC)).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     return _MOD3[0]
+
+
+def hess_into_gate(CF, U, slots, Bell, efloor, maxsw=10, jtol=1e-12, Ms=None):
+    """CudaTetq.hess_into (warp 판) 과 같은 결과에 양정치 문 (tet_hess_wg). CF.cnt[0] = 문을 통과한 사면체 수."""
+    from . import fem_rt_cuda as RTC
+    Uf = U.float().contiguous()
+    if CF.Ht is None:
+        CF.Ht = torch.zeros(CF.T * 144, dtype=torch.float32, device=CF.dev)
+    else:
+        CF.Ht.zero_()
+    md0, md3 = RTC._mod(), _mod3()
+    with RTC._Stream():
+        if CF.nn:
+            gr, bl = RTC._grid(CF.nn, 64)
+            md0.get_function("near_hess32" if getattr(CF, "near32", False) else "near_hess")(gr, bl, (np.int32(CF.nn), RTC._cp(CF.ni), RTC._cp(CF.tinv)) +
+                                                                                           CF._near_args(Uf)[2:] + (np.float32(CF.mu), np.float32(CF.lam), RTC._cp(CF.Ht)))
+        md3.get_function("tet_hess_wg")(((CF.T + 3) // 4,), (128,), (np.int32(CF.T), RTC._cp(CF.tets), RTC._cp(Uf), RTC._cp(CF.gl4), RTC._cp(CF.FT4),
+                                                                     RTC._cp(CF.VT4), RTC._cp(CF.M44), np.float32(CF.mu), np.float32(CF.lam),
+                                                                     np.float32(efloor), RTC._cp(slots), RTC._cp(Bell), RTC._cp(CF.cnt[1:2]),
+                                                                     np.int32(maxsw), np.float32(jtol), RTC._cp(CF.Ht), np.int32(Ms),
+                                                                     np.int32(getattr(CF, "sym", 0)), RTC._cp(CF.cnt[0:1])))
 
 
 def energy_grad32(CF, U, want_g=True, which="both"):

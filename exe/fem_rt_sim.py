@@ -117,6 +117,7 @@ ap.add_argument("--th_dg32", action="store_true", help="J2: 16 비트 행렬에�
 ap.add_argument("--eg32", choices=["none", "tet", "near", "both"], default="none",
                 help="J4: E·기울기 탄성 대수를 float32 로 (관성·합은 float64; 바닥 후보 헤시안 --near32 와 같은 방식) -- tet / near (바닥 후보) / both")
 ap.add_argument("--warm_pcg", action="store_true", help="J1: PCG 시작 해 = 이전 프레임 뉴턴 방향 (격자 좌표로 대응) x A-노름 최적 배율 (--pcg2 10 만; 멈춤 판정 그대로)")
+ap.add_argument("--hgate", action="store_true", help="J4: 워프 사면체 헤시안에 양정치 문 (H − 바닥·|H|_F·I 가 Cholesky 되면 |λ| 투영 = 항등이라 고유분해 생략)")
 ap.add_argument("--gk", type=int, default=20, help="J2: --pcg2 12 그래프 하나에 담는 반복 수")
 ap.add_argument("--t2_kern", default="pcg_t2_r2", help="J2: --pcg2 10 (pcg_t6 혼합과 같은 식, 곱 메모리 병렬도 높인 지속 커널) 의 커널 이름 (pcg_t2_r{1,2,4}[b2])")
 ap.add_argument("--no_dump", action="store_true")
@@ -336,7 +337,10 @@ for i in range(L):
             Ms = PC.Mmax
             PC.B.zero_()
             CF.cnt.zero_()
-            CF.hess_into(U, slots, PC.B, a.eig_floor, a.jac_sweeps, a.jac_tol, Ms=Ms, gtau=a.gate_tau)
+            if a.hgate and a.lite and a.warp:
+                RTC2.hess_into_gate(CF, U, slots, PC.B, a.eig_floor, a.jac_sweeps, a.jac_tol, Ms=Ms)
+            else:
+                CF.hess_into(U, slots, PC.B, a.eig_floor, a.jac_sweeps, a.jac_tol, Ms=Ms, gtau=a.gate_tau)
             Bs = PC.B.view(15, 9, Ms)
             if a.floor == "node":
                 Dn = fr._floor_hess(U)

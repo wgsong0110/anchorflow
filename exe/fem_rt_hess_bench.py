@@ -75,6 +75,24 @@ for t in a.t:
         RTC.asm_k(G, PC, 1, Ms)
         xx, it, _, _ = PC.solve_tile(M, b, 1e-6, 20000, prec=32, mode=1, delta=0.1)
         print(f"  바퀴 {sw} tol {tol:g}: {tt:.3f} ms, 행렬 상대차 {dB:.2e}, PCG {it} (기준 {it0}), 해 차 {float((xx - x0).norm() / x0.norm()):.2e}", flush=True)
+    from anchorflow import fem_rt_cuda2 as R2
+
+    def hessg():
+        CF.near32 = True
+        PC.B.zero_()
+        CF.cnt.zero_()
+        R2.hess_into_gate(CF, U, slots, PC.B, 1e-6, maxsw=10, jtol=1e-12, Ms=Ms)
+    hessg()
+    ng = int(CF.cnt[0])
+    tg = gtime(hessg)
+    hessg()
+    dB = float((PC.B.view(15, 9, Ms)[:8, :, :M] - B0).norm() / B0.norm())
+    RTC.asm_k(G, PC, 1, Ms)
+    xx, it, _, _ = PC.solve_tile(M, b, 1e-6, 20000, prec=32, mode=1, delta=0.1)
+    hess()
+    dBr = float((PC.B.view(15, 9, Ms)[:8, :, :M] - B0).norm() / B0.norm())
+    print(f"  양정치 문 (tet_hess_wg): {tg:.3f} ms (기준 {tb:.3f}), 문 통과 사면체 {ng} ({ng / G.T:.2f}), 행렬 상대차 {dB:.2e} (같은 설정 두 번 {dBr:.2e}), "
+          f"PCG {it} (기준 {it0}), 해 차 {float((xx - x0).norm() / x0.norm()):.2e}", flush=True)
     t64 = gtime(lambda: hess(near32=False))
     print(f"  바닥 후보 f64 대수 (near32 끔): {t64:.3f} ms (near32 {tb:.3f} ms)", flush=True)
 print("[끝] hess_bench", flush=True)
