@@ -60,12 +60,13 @@ for t in a.t:
     b = CF.energy_grad(U)[1].reshape(-1)
     (x0, it0, _, _), t0 = tm(lambda: PC.solve_coop(M, b, 1e-6, 20000))
     print(f"[t={t} 노드 {M}] float64 지속 (최종 판): {it0} 회 {t0:.2f} ms ({1e3 * t0 / it0:.1f} us/회) 실제 잔차 {PC.true_res(M, x0, b):.2e}", flush=True)
-    for cap in (2, 3, 4):
-        PC.mx_cap = cap
+    for kern, cap, rows in (("pcg_mix", 2, 0), ("pcg_mix", 2, 1), ("pcg_mix_lb2", 2, 0), ("pcg_mix_lb2", 2, 1), ("pcg_mix_lb3", 3, 1),
+                            ("pcg_mix_lb4", 4, 1), ("pcg_mix_lb4", 4, 0)):
+        PC.mx_cap, PC.mx_kern, PC.mx_rows = cap, kern, rows
         if hasattr(PC, "mx_acc"):
             del PC.mx_acc
-        for mode, dl in ((0, 0.0), (1, 0.1), (1, 0.03), (1, 0.01), (1, 1e-3)):
+        for mode, dl in ((0, 0.0), (1, 0.1)):
             (xx, it, rr, neg), tt = tm(lambda: PC.solve_mix(M, b, 1e-6, 20000, mode=mode, delta=dl))
             tr = PC.true_res(M, xx, b)
-            print(f"  cap {cap} 블록 {PC.mx_nblk} {PC.mx_info} {'f32 단독' if mode == 0 else f'혼합 δ {dl:g}'}: {it} 회 갱신 {PC.last_nup} {tt:.2f} ms "
+            print(f"  {kern} 행 {rows} 블록 {PC.mx_nblk} {PC.mx_info} {'f32 단독' if mode == 0 else f'혼합 δ {dl:g}'}: {it} 회 갱신 {PC.last_nup} {tt:.2f} ms "
                   f"({1e3 * tt / max(it, 1):.1f} us/회) 실제 잔차 {tr:.2e} 해 차 {float((xx - x0).norm() / x0.norm()):.2e} 음곡률 {neg}", flush=True)

@@ -69,6 +69,8 @@ ap.add_argument("--pcg2", type=int, default=1, help="--cuda: 2 커널 PCG (1) / 
                 "지속 float32 + float64 신뢰 갱신 = 혼합 정밀도 반복 개선 (4) / 지속 float32 단독 (5)")
 ap.add_argument("--mix_delta", type=float, default=0.1, help="--pcg2 4: 재귀 잔차가 지난 갱신 뒤 최대의 δ 배 아래면 float64 잔차로 갱신")
 ap.add_argument("--mix_cap", type=int, default=2, help="--pcg2 4/5: SM 당 상주 블록 상한")
+ap.add_argument("--mix_kern", default="pcg_mix", help="--pcg2 4/5: 커널 (pcg_mix / pcg_mix_lb2·lb3·lb4 = __launch_bounds__(256, k))")
+ap.add_argument("--mix_rows", type=int, default=0, help="--pcg2 4/5: 1 = 곱을 (행, 노드) 당 스레드로")
 ap.add_argument("--vbd_ls", type=int, default=0, help="--solver vbd: 노드 국소 선탐색 (α = 1, 1/2, ..., 2^-(k-1) 중 국소 에너지가 줄어드는 가장 큰 α; 0 = 끔)")
 ap.add_argument("--vbd_warm", choices=["none", "acc", "adapt"], default="none",
                 help="--solver vbd 시작점: none = h v_n + h² g, acc = 이전 프레임 입자 가속도 (노드 평균) 로 h² a_n, adapt = VBD 논문 적응 초기화 (중력 방향 성분만 [0, |g|] 로 자름)")
@@ -126,6 +128,8 @@ if PC is not None:
     PC.d3 = a.d3
     PC.sym = int(a.sym)
     PC.mx_cap = a.mix_cap
+    PC.mx_kern = a.mix_kern
+    PC.mx_rows = a.mix_rows
 PDF = RT.PdFactor() if a.solver in ("pdpcg", "pd") else None
 PRED = torch.empty(L, N, 3, device=dev) if (not a.no_dump or a.dump_pred) else None
 VD = torch.empty(L, N, 3, device=dev, dtype=torch.float16) if not a.no_dump else None

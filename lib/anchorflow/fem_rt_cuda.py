@@ -1404,9 +1404,9 @@ __global__ void bell_mv_f(int M, const float* B, const int* nb, const float* v, 
 // mode 1: float32 PCG with float64 reliable updates (x_hi += x_lo; r = b - A x_hi in float64) whenever |r|^2 < delta2 * max|r|^2 since
 //         the last update, and always before stopping: the stop test |r|^2 < thr is made on the float64 true residual only.
 // sc in: [0] rz0 [1] dAd0 ; out: [2] nit [3] rr (true when mode 1) [4] neg [5] n_updates.   acc: 6 x 2 parities (+ 2 for update sums)
-__global__ void pcg_mix(int M, int Ms, const float* B, const int* nb, const float* Dinv, const double* bs, double* xh, double* rh,
+__device__ __forceinline__ void pcg_mix_body(int M, int Ms, const float* B, const int* nb, const float* Dinv, const double* bs, double* xh, double* rh,
                         float* x, float* r, float* z, float* d, float* Ad, double* acc, double* sc, unsigned int* bar,
-                        double thr, int maxit, int sym, int mode, double delta2) {
+                        double thr, int maxit, int sym, int mode, double delta2, int rows) {
     unsigned int nblk = gridDim.x;
     int tid = blockIdx.x*blockDim.x + threadIdx.x, nth = gridDim.x*blockDim.x;
     volatile double* va = acc;
@@ -1457,10 +1457,19 @@ __global__ void pcg_mix(int M, int Ms, const float* B, const int* nb, const floa
         double be = rz2/rz; rz = rz2;
         float bef = (float)be;
         float pd = 0.f;
+        if (rows) {
+            // one thread per (row c, node m), c-major so that B reads coalesce across m
+            for (int w2=tid; w2<3*M; w2+=nth) {
+                int c = w2 / M, m = w2 - c*M;
+                float qq = ell_row_f(m, c, Ms, B, nb, z, sym);
+                float dd = z[m*3+c] + bef*d[m*3+c]; float aa = qq + bef*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; pd += dd*aa;
+            }
+        } else {
         for (int m=tid; m<M; m+=nth) {
             float qq[3];
             for (int c=0;c<3;c++) qq[c] = ell_row_f(m, c, Ms, B, nb, z, sym);
             for (int c=0;c<3;c++){ float dd = z[m*3+c] + bef*d[m*3+c]; float aa = qq[c] + bef*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; pd += dd*aa; }
+        }
         }
         double b3 = block_sum((double)pd);
         if (threadIdx.x==0) atomicAdd(&acc[(1-p)*3], b3);
@@ -1470,6 +1479,13 @@ __global__ void pcg_mix(int M, int Ms, const float* B, const int* nb, const floa
     }
     if (tid==0) { sc[2]=nit; sc[3]=rr; sc[4]=neg; sc[5]=nup; }
 }
+#define PCG_MIX_ARGS int M, int Ms, const float* B, const int* nb, const float* Dinv, const double* bs, double* xh, double* rh, \
+    float* x, float* r, float* z, float* d, float* Ad, double* acc, double* sc, unsigned int* bar, double thr, int maxit, int sym, int mode, double delta2, int rows
+#define PCG_MIX_CALL pcg_mix_body(M, Ms, B, nb, Dinv, bs, xh, rh, x, r, z, d, Ad, acc, sc, bar, thr, maxit, sym, mode, delta2, rows)
+__global__ void pcg_mix(PCG_MIX_ARGS) { PCG_MIX_CALL; }
+__global__ void __launch_bounds__(256, 2) pcg_mix_lb2(PCG_MIX_ARGS) { PCG_MIX_CALL; }
+__global__ void __launch_bounds__(256, 3) pcg_mix_lb3(PCG_MIX_ARGS) { PCG_MIX_CALL; }
+__global__ void __launch_bounds__(256, 4) pcg_mix_lb4(PCG_MIX_ARGS) { PCG_MIX_CALL; }
 }
 '''
 
@@ -1764,7 +1780,8 @@ class CudaPcg:
             self.mx_bs, self.mx_xh, self.mx_rh = [torch.zeros(self.Mmax * 3, dtype=torch.float64, device=dev) for _ in range(3)]
             self.mx_x, self.mx_r, self.mx_z, self.mx_d, self.mx_Ad = [torch.zeros(self.Mmax * 3, dtype=f4, device=dev) for _ in range(5)]
             self.mx_Di = torch.zeros(self.Mmax * 9, dtype=f4, device=dev)
-            self.mx_nblk, self.mx_info = coop_blocks("pcg_mix", 256, cap=getattr(self, "mx_cap", 2))
+            self.mx_kern = getattr(self, "mx_kern", "pcg_mix")
+            self.mx_nblk, self.mx_info = coop_blocks(self.mx_kern, 256, cap=getattr(self, "mx_cap", 2))
         sym = int(getattr(self, "sym", 0))
         self.Mp.fill_(M)
         sc_ = (b * b).sum().clamp_min(1e-300).sqrt()
@@ -1786,11 +1803,11 @@ class CudaPcg:
         self.mx_sc[0] = (r32.double() * z32.double()).sum()
         self.mx_sc[1] = (self.mx_d[:n].double() * self.mx_Ad[:n].double()).sum()
         with _Stream():
-            _mod().get_function("pcg_mix")((self.mx_nblk,), (256,), (np.int32(M), np.int32(self.Mmax), _cp(self.B), _cp(self.nb), _cp(self.mx_Di),
+            _mod().get_function(self.mx_kern)((self.mx_nblk,), (256,), (np.int32(M), np.int32(self.Mmax), _cp(self.B), _cp(self.nb), _cp(self.mx_Di),
                                                                      _cp(self.mx_bs), _cp(self.mx_xh), _cp(self.mx_rh), _cp(self.mx_x), _cp(self.mx_r),
                                                                      _cp(self.mx_z), _cp(self.mx_d), _cp(self.mx_Ad), _cp(self.mx_acc), _cp(self.mx_sc),
                                                                      _cp(self.mx_bar), np.float64(rtol * rtol), np.int32(ncg), np.int32(sym),
-                                                                     np.int32(mode), np.float64(delta * delta)))
+                                                                     np.int32(mode), np.float64(delta * delta), np.int32(getattr(self, "mx_rows", 0))))
         out = self.mx_sc[2:6].tolist()
         self.last_nup = int(out[3])
         xx = (self.mx_xh[:n] + self.mx_x[:n].double()) if mode == 1 else self.mx_x[:n].double()
