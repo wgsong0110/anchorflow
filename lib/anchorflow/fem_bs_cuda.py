@@ -12,6 +12,7 @@
         바닥 후보 입자 (프레임 시작 분할, 절 L 과 같은 정의) 는 탄성 적분점에서 빠지고 프레임 단위 바닥 에너지의 기울기를 (w, ∇w) 로 노드에 -- f -= ∂E_fl/∂δU.
   격자  v_n = ((mv)_n / m_n + h_s g) · 감쇠,  --cfg_bc 노드는 v_bc     (PG: grid_normalization_and_gravity -> add_damping_via_grid -> grid BC 와 같은 순서)
   G2P   v_p = Σ w v_n (PIC -- 기존 sub 경로와 같다),  x_p += h_s v_p,  F_p ← (I + h_s Σ v_n ⊗ ∇w_n) F_p
+        (quad cell: 바닥 후보 아닌 입자는 ∇w_n 대신 그 셀의 ḡ_n -- 힘과 같은 연산자, 사면체 판에서 입자 F 를 그 사면체 ∇λ 로 갱신하는 것과 같은 꼴)
 프레임 끝 바닥 후보 매핑은 절 L 의 ex_near_fin (fem_ex_cuda) 그대로.
 커널은 계산 정밀도 R (float/double) 템플릿: 기준 판 = double 따로따로, 최적화 판 = float 융합 (G2P + 다음 P2G 한 커널).
 """
@@ -64,8 +65,10 @@ template <typename R> __device__ __forceinline__ void bs_kirch(const R* X, R mu,
     mmt3(P, X, Gm);
 }
 // G2P (PIC): v = Σ w v_n, x += h_s v, F <- (I + h_s Σ v_n ⊗ ∇w) F
+// gK (선택, 셀 대표 적분점 판): 바닥 후보가 아닌 입자의 F 는 셀 기울기 표 ḡ_n 로 (I + h_s Σ v_n ⊗ ḡ_n) -- 힘 f_n = -V_c τ(F̄_c) ḡ_n 과 같은 연산자
+// (F 를 입자 ∇w 로 갱신하면 힘·변형 연산자가 달라 강성이 비대칭 -> 어떤 N 에서도 첫 프레임 발산: 스윕 1 실측)
 template <typename R, typename G> __device__ __forceinline__ void bs_g2p_body(const R* x, const float* Fp, const G* vg, const R* gpar, const int* ipar, R hs,
-                                                                             R* xn, R* vn, R* Fn, int* szp) {
+                                                                             R* xn, R* vn, R* Fn, int* szp, const R* gK = nullptr) {
     int b[3]; R W[3][3], D[3][3];
     if (bs_base<R>(x, gpar, ipar, b, W, D)) atomicAdd(&szp[3], 1);
     int n1 = ipar[1], n2 = ipar[2];
@@ -73,6 +76,7 @@ template <typename R, typename G> __device__ __forceinline__ void bs_g2p_body(co
     R v[3] = {0,0,0}, Gv[9] = {0,0,0,0,0,0,0,0,0};
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
         R gx[3]; R w = bs_wg<R>(W, D, Ai, i, j, l, gx);
+        if (gK) { int o = (i*3+j)*3+l; gx[0] = gK[o*3]; gx[1] = gK[o*3+1]; gx[2] = gK[o*3+2]; }
         long long n = ((long long)(b[0]+i)*n1 + (b[1]+j))*n2 + (b[2]+l);
         for (int a=0;a<3;a++) { R va = (R)vg[n*3+a]; v[a] += w*va; for (int c=0;c<3;c++) Gv[a*3+c] += va*gx[c]; }
     }
@@ -232,11 +236,11 @@ template <typename R, typename G> __device__ __forceinline__ void bs_split_body(
 extern "C" {
 // ---- 기준 판 (double, 따로따로) ----
 __global__ void bs_g2p_d(int N, const float* xa, const float* Fa, const double* vg, const double* gpar, const int* ipar, double hs,
-                         float* xb, float* vb, float* Fb, int* szp) {
+                         float* xb, float* vb, float* Fb, int* szp, const double* gK, const int* nslot) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     double x[3] = {xa[p*3], xa[p*3+1], xa[p*3+2]}, xn[3], vn[3], Fn[9];
-    bs_g2p_body<double, double>(x, Fa + p*9, vg, gpar, ipar, hs, xn, vn, Fn, szp);
+    bs_g2p_body<double, double>(x, Fa + p*9, vg, gpar, ipar, hs, xn, vn, Fn, szp, (gK && !(nslot && nslot[p] >= 0)) ? gK : nullptr);
     for (int k=0;k<3;k++) { xb[p*3+k] = (float)xn[k]; vb[p*3+k] = (float)vn[k]; }
     for (int k=0;k<9;k++) Fb[p*9+k] = (float)Fn[k];
 }
@@ -279,13 +283,13 @@ __global__ void bs_split_d(int N, const float* x, const double* vg, const double
 __global__ void bs_g2p_p2g_f(int N, const float* xa, const float* va, const float* Fa, const float* vg, const float* gpar, const int* ipar, float hs,
                              int do_g2p, int do_p2g, float* xb, float* vb, float* Fb,
                              const float* m, const float* vol, const int* nslot, int quad, float mu, float lam,
-                             float* gm, float* gmv, float* cV, float* cVF, int* szp) {
+                             float* gm, float* gmv, float* cV, float* cVF, int* szp, const float* gK) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     float x[3], v[3], F[9];
     if (do_g2p) {
         float x0[3] = {xa[p*3], xa[p*3+1], xa[p*3+2]};
-        bs_g2p_body<float, float>(x0, Fa + p*9, vg, gpar, ipar, hs, x, v, F, szp);
+        bs_g2p_body<float, float>(x0, Fa + p*9, vg, gpar, ipar, hs, x, v, F, szp, (gK && !(nslot && nslot[p] >= 0)) ? gK : nullptr);
         for (int k=0;k<3;k++) { xb[p*3+k] = x[k]; vb[p*3+k] = v[k]; }
         for (int k=0;k<9;k++) Fb[p*9+k] = F[k];
     } else {

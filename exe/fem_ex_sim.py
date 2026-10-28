@@ -652,7 +652,7 @@ class BS:
         BSC.launch("bs_g2p_p2g_f", Np, (np.int32(Np), BSC.P(xa), BSC.P(va), BSC.P(Fa), BSC.P(self.vg), BSC.P(self.gpar), BSC.P(self.ipar), np.float32(hs_),
                                         np.int32(do_g2p), np.int32(do_p2g), BSC.P(xb), BSC.P(vb), BSC.P(Fb), BSC.P(m), BSC.P(vol),
                                         BSC.P(self.nslot if FLOOR else None), np.int32(quad), np.float32(mu), np.float32(lam), BSC.P(self.gm), BSC.P(self.gmv),
-                                        BSC.P(self.cV), BSC.P(self.cVF), BSC.P(self.sz)), b=128)
+                                        BSC.P(self.cV), BSC.P(self.cVF), BSC.P(self.sz), BSC.P(self.gK)), b=128)
 
     def _substeps(self):
         """opt: 서브스텝 N 번 (융합 G2P+P2G -> 바닥 후보 -> 셀 -> 격자) + 마지막 G2P. 상태 S[j%2] = 서브스텝 j 시작 상태."""
@@ -726,7 +726,8 @@ class BS:
                     xa_, va_, Fa_ = S(j - 1)
                     xb, vb, Fb = S(j)
                     BSC.launch("bs_g2p_d", Np, (np.int32(Np), BSC.P(xa_), BSC.P(Fa_), BSC.P(self.vg), BSC.P(self.gpar), BSC.P(self.ipar), np.float64(hs),
-                                                BSC.P(xb), BSC.P(vb), BSC.P(Fb), BSC.P(self.sz)), b=128)
+                                                BSC.P(xb), BSC.P(vb), BSC.P(Fb), BSC.P(self.sz), BSC.P(self.gK),
+                                                BSC.P(self.nslot if FLOOR else None)), b=128)
                     self.box(xb, vb, now + j * hs, False)                       # 격자 상자 서브스텝마다 다시
                 xc, vc, Fc = S(j)
                 self._p2g_d(xc, vc, Fc, self.QUAD, hs)
@@ -735,7 +736,8 @@ class BS:
             xa_, va_, Fa_ = S(a.N - 1)
             xb, vb, Fb = S(a.N)
             BSC.launch("bs_g2p_d", Np, (np.int32(Np), BSC.P(xa_), BSC.P(Fa_), BSC.P(self.vg), BSC.P(self.gpar), BSC.P(self.ipar), np.float64(hs),
-                                        BSC.P(xb), BSC.P(vb), BSC.P(Fb), BSC.P(self.sz)), b=128)
+                                        BSC.P(xb), BSC.P(vb), BSC.P(Fb), BSC.P(self.sz), BSC.P(self.gK),
+                                                BSC.P(self.nslot if FLOOR else None)), b=128)
             k = a.N % 2
         x2, v2, F2 = self.X[k], self.V[k], self.FF[k]
         if FLOOR:
