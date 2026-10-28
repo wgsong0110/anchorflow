@@ -64,21 +64,33 @@ template <typename R> __device__ __forceinline__ void bs_kirch(const R* X, R mu,
     for (int k=0;k<9;k++) P[k] = (R)2*mu*(X[k]-Q[k]) + lam*(J-(R)1)*sg*cf[k];
     mmt3(P, X, Gm);
 }
+// APIC (PG p2g_apic_with_stress / g2p 와 같은 식, rpic_damping 0): 정육면체 격자 (간격 dx, 회전 Rot) 는 A = dx² Aiᵀ 라
+//   x_n - x_p = dx² Aiᵀ d,  d_k = (노드 k 칸) - f_k = i - 1 + D[1][k]/2   (D[1][k] = -2(f_k - 1))
+//   G2P  C = (4/dx²) Σ w v_n (x_n - x_p)ᵀ = 4 Σ w v_n (Aiᵀ d)ᵀ   ->  e = Aiᵀ d 를 돌려준다
+//   P2G  (mv)_n += w m (v + C (x_n - x_p)) = w m (v + dx² C e)
+template <typename R> __device__ __forceinline__ void bs_apic_e(const R D[3][3], const R* Ai, int i, int j, int l, R* e) {
+    R d0 = (R)(i-1) + (R)0.5*D[1][0], d1 = (R)(j-1) + (R)0.5*D[1][1], d2 = (R)(l-1) + (R)0.5*D[1][2];
+    for (int c=0;c<3;c++) e[c] = Ai[c]*d0 + Ai[3+c]*d1 + Ai[6+c]*d2;
+}
 // G2P (PIC): v = Σ w v_n, x += h_s v, F <- (I + h_s Σ v_n ⊗ ∇w) F
 // gK (선택, 셀 대표 적분점 판): 바닥 후보가 아닌 입자의 F 는 셀 기울기 표 ḡ_n 로 (I + h_s Σ v_n ⊗ ḡ_n) -- 힘 f_n = -V_c τ(F̄_c) ḡ_n 과 같은 연산자
 // (F 를 입자 ∇w 로 갱신하면 힘·변형 연산자가 달라 강성이 비대칭 -> 어떤 N 에서도 첫 프레임 발산: 스윕 1 실측)
 template <typename R, typename G> __device__ __forceinline__ void bs_g2p_body(const R* x, const float* Fp, const G* vg, const R* gpar, const int* ipar, R hs,
-                                                                             R* xn, R* vn, R* Fn, int* szp, const R* gK = nullptr) {
+                                                                             R* xn, R* vn, R* Fn, int* szp, const R* gK = nullptr, R* Cn = nullptr) {
     int b[3]; R W[3][3], D[3][3];
     if (bs_base<R>(x, gpar, ipar, b, W, D)) atomicAdd(&szp[3], 1);
     int n1 = ipar[1], n2 = ipar[2];
     const R* Ai = gpar + 3;
     R v[3] = {0,0,0}, Gv[9] = {0,0,0,0,0,0,0,0,0};
+    if (Cn) for (int k=0;k<9;k++) Cn[k] = (R)0;
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
         R gx[3]; R w = bs_wg<R>(W, D, Ai, i, j, l, gx);
         if (gK) { int o = (i*3+j)*3+l; gx[0] = gK[o*3]; gx[1] = gK[o*3+1]; gx[2] = gK[o*3+2]; }
         long long n = ((long long)(b[0]+i)*n1 + (b[1]+j))*n2 + (b[2]+l);
-        for (int a=0;a<3;a++) { R va = (R)vg[n*3+a]; v[a] += w*va; for (int c=0;c<3;c++) Gv[a*3+c] += va*gx[c]; }
+        R e[3];
+        if (Cn) bs_apic_e<R>(D, Ai, i, j, l, e);
+        for (int a=0;a<3;a++) { R va = (R)vg[n*3+a]; v[a] += w*va; for (int c=0;c<3;c++) Gv[a*3+c] += va*gx[c];
+                                if (Cn) for (int c=0;c<3;c++) Cn[a*3+c] += (R)4*w*va*e[c]; }
     }
     R A[9], F[9];
     for (int k=0;k<9;k++) { A[k] = hs*Gv[k] + ((k%4==0)?(R)1:(R)0); F[k] = (R)Fp[k]; }
@@ -88,11 +100,12 @@ template <typename R, typename G> __device__ __forceinline__ void bs_g2p_body(co
 // P2G: 질량·운동량 + (quad 0) 입자 적분점 탄성 충격량 h_s f / (quad 1) 셀 V·VF 합 / (quad -1) 운동량만
 template <typename R, typename G> __device__ __forceinline__ void bs_p2g_body(const R* x, const R* v, const R* F, R mp, R Vp, int near, int quad,
                                                                              const R* gpar, const int* ipar, R hs, R mu, R lam,
-                                                                             G* gm, G* gmv, G* cV, G* cVF, int* szp) {
+                                                                             G* gm, G* gmv, G* cV, G* cVF, int* szp, const R* Cp = nullptr) {
     int b[3]; R W[3][3], D[3][3];
     if (bs_base<R>(x, gpar, ipar, b, W, D)) atomicAdd(&szp[3], 1);
     int n1 = ipar[1], n2 = ipar[2];
     const R* Ai = gpar + 3;
+    R dx2 = (R)1/(Ai[0]*Ai[0] + Ai[1]*Ai[1] + Ai[2]*Ai[2]);
     bool fp = (!near) && quad == 0;
     R Gm[9];
     if (fp) { bs_kirch<R>(F, mu, lam, Gm); for (int k=0;k<9;k++) Gm[k] *= -hs*Vp; }
@@ -106,8 +119,10 @@ template <typename R, typename G> __device__ __forceinline__ void bs_p2g_body(co
         long long n = ((long long)(b[0]+i)*n1 + (b[1]+j))*n2 + (b[2]+l);
         R wm = w*mp;
         atomicAdd(&gm[n], (G)wm);
+        R Ce[3] = {0,0,0};
+        if (Cp) { R e[3]; bs_apic_e<R>(D, Ai, i, j, l, e); for (int a=0;a<3;a++) Ce[a] = dx2*(Cp[a*3]*e[0] + Cp[a*3+1]*e[1] + Cp[a*3+2]*e[2]); }
         for (int c=0;c<3;c++) {
-            R t = wm*v[c];
+            R t = wm*(v[c] + Ce[c]);
             if (fp) t += Gm[c*3]*gx[0] + Gm[c*3+1]*gx[1] + Gm[c*3+2]*gx[2];
             atomicAdd(&gmv[n*3+c], (G)t);
         }
@@ -283,21 +298,25 @@ __global__ void bs_split_d(int N, const float* x, const double* vg, const double
 __global__ void bs_g2p_p2g_f(int N, const float* xa, const float* va, const float* Fa, const float* vg, const float* gpar, const int* ipar, float hs,
                              int do_g2p, int do_p2g, float* xb, float* vb, float* Fb,
                              const float* m, const float* vol, const int* nslot, int quad, float mu, float lam,
-                             float* gm, float* gmv, float* cV, float* cVF, int* szp, const float* gK) {
+                             float* gm, float* gmv, float* cV, float* cVF, int* szp, const float* gK, const float* Ca, float* Cb) {
+    // Ca / Cb (선택, --apic): 입자 APIC 행렬 C [N,9] -- do_g2p 이면 G2P 가 Cb 에 새 C 를 쓰고 그 C 로 P2G, 아니면 Ca 의 C 로 P2G
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
-    float x[3], v[3], F[9];
+    float x[3], v[3], F[9], C[9];
+    bool ap = (Ca != nullptr);
     if (do_g2p) {
         float x0[3] = {xa[p*3], xa[p*3+1], xa[p*3+2]};
-        bs_g2p_body<float, float>(x0, Fa + p*9, vg, gpar, ipar, hs, x, v, F, szp, (gK && !(nslot && nslot[p] >= 0)) ? gK : nullptr);
+        bs_g2p_body<float, float>(x0, Fa + p*9, vg, gpar, ipar, hs, x, v, F, szp, (gK && !(nslot && nslot[p] >= 0)) ? gK : nullptr, ap ? C : nullptr);
         for (int k=0;k<3;k++) { xb[p*3+k] = x[k]; vb[p*3+k] = v[k]; }
         for (int k=0;k<9;k++) Fb[p*9+k] = F[k];
+        if (ap) for (int k=0;k<9;k++) Cb[p*9+k] = C[k];
     } else {
         for (int k=0;k<3;k++) { x[k] = xa[p*3+k]; v[k] = va[p*3+k]; }
         for (int k=0;k<9;k++) F[k] = Fa[p*9+k];
+        if (ap) for (int k=0;k<9;k++) C[k] = Ca[p*9+k];
     }
     if (!do_p2g) return;
-    bs_p2g_body<float, float>(x, v, F, m[p], vol[p], nslot ? (nslot[p] >= 0) : 0, quad, gpar, ipar, hs, mu, lam, gm, gmv, cV, cVF, szp);
+    bs_p2g_body<float, float>(x, v, F, m[p], vol[p], nslot ? (nslot[p] >= 0) : 0, quad, gpar, ipar, hs, mu, lam, gm, gmv, cV, cVF, szp, ap ? C : nullptr);
 }
 __global__ void bs_near_f(const int* szp, const long long* nidx, const float* x0c, const float* F0c, const float* cc,
                           const float* xcur, const float* Fcur, const float* F0inv, const float* mp, const float* vol, double h,

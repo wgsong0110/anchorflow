@@ -12,8 +12,10 @@ O=$W/lbours/$EX_ROOT/$TG; R=r2:storage/result/anchorflow/lbours/$EX_ROOT/$TG; mk
 rm -f $O/EX_FAIL
 ( while true; do sleep 120; rclone copy $O $R -q; done ) & SYNC=$!
 trap 'kill $SYNC 2>/dev/null' EXIT
-# 속도 측정은 단독: 노드 7 장 모두 빌 때까지 기다린다
+# 속도 측정은 단독: 노드 7 장 모두 빌 때까지 기다린다 (EX_NOWAIT=1: 오차만 보는 비측정 실행 -- 다른 카드와 병렬, cmd.txt 에 표시)
+if [ -z "${EX_NOWAIT:-}" ]; then
 while [ -n "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk '$1 > 500')" ]; do echo "[대기] GPU 사용 중 $(date +%T)"; sleep 20; done
+else echo "[비측정] 병렬 실행 -- ms 는 쓰지 않는다" > $O/NOT_TIMED; fi
 nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader > $O/gpu_at_start.txt
 echo "[명령] 커밋 $C CUDA_VISIBLE_DEVICES=$G python -u exe/fem_ex_sim.py --out $O $*" | tee $O/cmd.txt
 CUDA_VISIBLE_DEVICES=$G python -u exe/fem_ex_sim.py --out $O "$@" < /dev/null > $O/v_fem.log 2>&1
