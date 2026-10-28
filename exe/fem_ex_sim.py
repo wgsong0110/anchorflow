@@ -50,6 +50,7 @@ ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--dump_f32", action="store_true")
 ap.add_argument("--dump_pred", action="store_true")
+ap.add_argument("--diag", action="store_true", help="첫 프레임: 노드별 국소 안정 걸음 2/ω (ω² = Σ_T V_T (λ+2μ)|∇λ_i|² / m_i) 분포, 서브스텝마다 최대 |v|")
 a = ap.parse_args()
 
 dev = "cuda"
@@ -143,6 +144,19 @@ def frame_base(i, x, v, F):
         nslot[ni] = torch.arange(nn, device=dev, dtype=torch.int32)
         Uc = torch.zeros(G.M, 3, device=dev)
         Vn = vn.clone()
+        if a.diag and i == 0:
+            kd = torch.zeros(G.M, device=dev, dtype=torch.float64).index_add_(
+                0, G.tets.reshape(-1), (CF.VT8[:, None] * (lam + 2 * mu) * (CF.gl8.view(-1, 4, 3) ** 2).sum(-1)).reshape(-1))
+            om = (kd / mn.double().clamp_min(1e-30)).sqrt()
+            dtl = 2.0 / om.clamp_min(1e-30)
+            ok = kd > 0
+            qs = torch.quantile(dtl[ok].float().cpu(), torch.tensor([0.0, 1e-4, 1e-3, 0.01, 0.1, 0.5]))
+            mfull = float(cfg["density"]) * float(torch.linalg.det(SX.lattice(a.node_h, SX.HZ_CUBE * a.node_h, dtype=torch.float64).A).abs())
+            print(f"[진단] 노드 {G.M} (힘 받는 {int(ok.sum())}), 국소 안정 걸음 2/ω 분위 (0, 1e-4, 1e-3, 1e-2, 0.1, 0.5): "
+                  + ", ".join(f"{float(q):.2e}" for q in qs) + f" s -> 필요 N (최소) {h / float(qs[0]):.0f}, (1e-3 분위) {h / float(qs[2]):.0f}; "
+                  f"노드 질량 / 꽉 찬 노드 질량 분위 " + ", ".join(f"{float(q):.2e}" for q in torch.quantile((mn[ok] / mfull).float().cpu(), torch.tensor([0.0, 1e-3, 0.01, 0.1, 0.5]))), flush=True)
+            lo_ = dtl < hs
+            print(f"[진단] h_s {hs:.2e} 보다 국소 안정 걸음이 짧은 노드 {int((lo_ & ok).sum())}", flush=True)
         for j in range(a.N):
             f = torch.zeros(G.M, 3, device=dev)
             EX.launch("ex_tet_force_dd", G.T, (EX.P(None), np.int32(G.T), EX.P(G.tets), EX.P(Uc), EX.P(CF.gl8), EX.P(CF.FT8), EX.P(CF.VT8),
@@ -157,6 +171,9 @@ def frame_base(i, x, v, F):
                                                 np.float64(mu), np.float64(lam), EX.P(gn)))
             EX.launch("ex_node_corr", G.M, (EX.P(None), np.int32(G.M), EX.P(mn), EX.P(gn), EX.P(Vn), EX.P(dU), EX.P(Uc), np.float32(hs), EX.P(fixd),
                                             np.int32(1 if nn else 0)))
+            if a.diag and i == 0 and (j < 8 or j % 8 == 0):
+                print(f"    [진단] 서브스텝 {j}: 최대 |v_n| {float(Vn.norm(dim=-1).max()):.3e}, 최대 |f/m| {float((f.norm(dim=-1) / mn.clamp_min(1e-30)).max()):.3e}, "
+                      f"최대 |바닥 g/m| {float((gn.norm(dim=-1) / mn.clamp_min(1e-30)).max()):.3e}, 비유한 {int((~torch.isfinite(Vn)).sum())}", flush=True)
             if nn:
                 EX.launch("ex_near_upd", nn, (EX.P(None), np.int32(nn), EX.P(ni), EX.P(xs), EX.P(Fn), EX.P(dU), EX.P(G.rows), EX.P(CF.lamb),
                                               EX.P(CF.gl4), EX.P(CF.tinv), *near_args(nn), np.float64(hs), EX.P(vnear)))
