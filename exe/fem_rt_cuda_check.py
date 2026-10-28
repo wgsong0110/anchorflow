@@ -65,6 +65,19 @@ for t in [int(q) for q in a.t.split(",")]:
     gi = G.gi
     slots = (G.tets.unsqueeze(-1) * 15 + RT.off_cls(gi[G.tets].unsqueeze(1) - gi[G.tets].unsqueeze(2))).int().contiguous()
 
+    for sw, jt in ((15, 1e-14), (10, 1e-12), (8, 1e-10), (6, 1e-10)):
+        def ch(sw=sw, jt=jt):
+            PC.B[:M * 135].zero_()
+            CF.hess_into(U, slots, PC.B, 1e-6, sw, jt)
+        _, t_h = tm(ch)
+        Bc = PC.B[:M * 135].view(M, 15, 3, 3).double().clone()
+        Bc[:, 0] += Dn
+        print(f"  야코비 {sw} 회·tol {jt:g}: {t_h:.2f} ms 상대차 {float((Bc - Be.B.view(M, 15, 3, 3)).norm() / Be.B.view(M, 15, 3, 3).norm()):.2e}", flush=True)
+    def ch():
+        PC.B[:M * 135].zero_()
+        CF.hess_into(U, slots, PC.B, 1e-6, 0, 1e-12)
+    _, t_h0 = tm(ch)
+    print(f"  (고유분해 없이 K·조립만: {t_h0:.2f} ms)", flush=True)
     def ch():
         PC.B[:M * 135].zero_()
         CF.hess_into(U, slots, PC.B, 1e-6)
@@ -93,6 +106,7 @@ for t in [int(q) for q in a.t.split(",")]:
     mv = lambda q: torch.einsum("mkab,mkb->ma", Bd, q.reshape(M, 3)[Be.nb]).reshape(-1)
     b = gc.reshape(-1).double()
     (xt, it_t, rt_, _), t_pt = tm(lambda: RT.pcg(mv, lambda r: (Dinv @ r.reshape(-1, 3, 1)).reshape(-1), b, 10000, 1e-6, 1), 1)
-    for ug in (False, True):
-        (xc, it_c, rc_, ng), t_pc = tm(lambda: PC.solve(M, b, 1e-6, 10000, use_graph=ug), 3)
-        print(f"  PCG torch {it_t} 회 {t_pt:.1f} ms | cuda{' 그래프' if ug else ''} {it_c} 회 {t_pc:.2f} ms 잔차 {rc_:.2e} | 해 상대차 {float((xt - xc).norm() / xt.norm()):.2e}", flush=True)
+    for nm, fn in (("5커널", PC.solve), ("2커널", PC.solve2)):
+        for ug in (False, True):
+            (xc, it_c, rc_, ng), t_pc = tm(lambda: fn(M, b, 1e-6, 10000, use_graph=ug), 3)
+            print(f"  PCG torch {it_t} 회 {t_pt:.1f} ms | cuda {nm}{' 그래프' if ug else ''} {it_c} 회 {t_pc:.2f} ms 잔차 {rc_:.2e} | 해 상대차 {float((xt - xc).norm() / xt.norm()):.2e}", flush=True)

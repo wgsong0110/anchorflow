@@ -137,7 +137,7 @@ __global__ void tet_eg(int T, const long long* tets, const float* U, const doubl
 
 // ---------------- 사면체 헤시안 + |λ| 투영 + 블록 ELL 원자 합 ----------------
 __global__ void tet_hess(int T, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
-                         const float* M4, float mu, float lam, float efloor, const int* slots, float* Bell, int* nneg) {
+                         const float* M4, float mu, float lam, float efloor, const int* slots, float* Bell, int* nneg, int maxsw, float jtol) {
     int t = blockIdx.x*blockDim.x + threadIdx.x;
     if (t >= T) return;
     float u[4][3], G[12];
@@ -203,12 +203,13 @@ __global__ void tet_hess(int T, const long long* tets, const float* U, const flo
     for (int p=0;p<12;p++) for (int q=p+1;q<12;q++) { float s=0.5f*(H[p*12+q]+H[q*12+p]); H[p*12+q]=s; H[q*12+p]=s; }
     for (int k=0;k<144;k++) W[k] = (k%13==0) ? 1.f : 0.f;
     float fro=0; for (int k=0;k<144;k++) fro += H[k]*H[k];
-    for (int sw=0; sw<15; sw++) {
+    float skip = sqrtf(jtol*fro)*1e-3f;
+    for (int sw=0; sw<maxsw; sw++) {
         float off=0; for (int p=0;p<12;p++) for (int q=p+1;q<12;q++) off += H[p*12+q]*H[p*12+q];
-        if (off <= 1e-14f*fro) break;
+        if (off <= jtol*fro) break;
         for (int p=0;p<11;p++) for (int q=p+1;q<12;q++) {
             float apq = H[p*12+q];
-            if (fabsf(apq) <= 1e-30f) continue;
+            if (fabsf(apq) <= skip) continue;
             float th = 0.5f*(H[q*12+q]-H[p*12+p])/apq;
             float tt = 1.f/(fabsf(th)+sqrtf(1.f+th*th)); if (th<0) tt=-tt;
             float c = 1.f/sqrtf(1.f+tt*tt), s = tt*c, tau = s/(1.f+c);
@@ -255,6 +256,67 @@ __global__ void pcg_spmv(const int* Mp, const float* B, const int* nb, const dou
         part = d[m*3]*y0 + d[m*3+1]*y1 + d[m*3+2]*y2;
     }
     block_add(part, &st[1]);
+}
+// 2 커널 PCG: scal[2][4] = (rz, alive, nit, neg) 패리티별, acc[2][3] = (dAd, rr, rz2) 패리티별
+__global__ void pcg2_b(int p, const int* Mp, const double* Dinv, double* x, double* r, double* z, const double* d, const double* Ad,
+                       const double* scal, double* acc) {
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    int M = *Mp;
+    const double* S = scal + p*4; double* A = acc + p*3;
+    double dAd = A[0];
+    bool ae = (S[1] > 0.5) && (dAd > 0);
+    double al = ae ? S[0]/dAd : 0.0;
+    double prr=0, prz=0;
+    if (m < M && ae) {
+        double rr[3];
+        for (int c=0;c<3;c++){ x[m*3+c] += al*d[m*3+c]; r[m*3+c] -= al*Ad[m*3+c]; rr[c]=r[m*3+c]; }
+        const double* D = Dinv + m*9;
+        for (int c=0;c<3;c++){ double zz = D[c*3]*rr[0]+D[c*3+1]*rr[1]+D[c*3+2]*rr[2]; z[m*3+c]=zz; prz += rr[c]*zz; prr += rr[c]*rr[c]; }
+    }
+    if (blockIdx.x==0 && threadIdx.x==0) { double* O = acc + (1-p)*3; O[0]=0; O[1]=0; O[2]=0; }
+    block_add(prr, &A[1]);
+    block_add(prz, &A[2]);
+}
+__global__ void pcg2_d(int p, const int* Mp, const float* B, const int* nb, const double* z, double* d, double* Ad,
+                       double* scal, double* acc, double thr) {
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    int M = *Mp;
+    const double* S = scal + p*4; const double* A = acc + p*3;
+    bool alive = S[1] > 0.5;
+    bool ae = alive && (A[0] > 0);
+    bool an = ae && !(A[1] < thr);
+    double be = an ? A[2]/S[0] : 0.0;
+    double part = 0.0;
+    if (m < M && an) {
+        double y0=0,y1=0,y2=0;
+        for (int k=0;k<15;k++) {
+            int j = nb[m*15+k];
+            const float* b = B + ((long long)m*15+k)*9;
+            double x0=z[j*3], x1=z[j*3+1], x2=z[j*3+2];
+            y0 += b[0]*x0 + b[1]*x1 + b[2]*x2;
+            y1 += b[3]*x0 + b[4]*x1 + b[5]*x2;
+            y2 += b[6]*x0 + b[7]*x1 + b[8]*x2;
+        }
+        double q[3] = {y0,y1,y2};
+        for (int c=0;c<3;c++){ double dd = z[m*3+c] + be*d[m*3+c]; double aa = q[c] + be*Ad[m*3+c]; d[m*3+c]=dd; Ad[m*3+c]=aa; part += dd*aa; }
+    }
+    if (blockIdx.x==0 && threadIdx.x==0) {
+        double* O = scal + (1-p)*4;
+        O[0] = an ? A[2] : S[0]; O[1] = an ? 1.0 : 0.0; O[2] = S[2] + (ae ? 1.0 : 0.0); O[3] = (S[3] > 0.5 || (alive && !(A[0] > 0))) ? 1.0 : 0.0;
+    }
+    block_add(part, &acc[(1-p)*3]);
+}
+__global__ void bell_mv(const int* Mp, const float* B, const int* nb, const double* v, double* y) {
+    int m = blockIdx.x*blockDim.x + threadIdx.x;
+    if (m >= *Mp) return;
+    double y0=0,y1=0,y2=0;
+    for (int k=0;k<15;k++) {
+        int j = nb[m*15+k];
+        const float* b = B + ((long long)m*15+k)*9;
+        double x0=v[j*3], x1=v[j*3+1], x2=v[j*3+2];
+        y0 += b[0]*x0 + b[1]*x1 + b[2]*x2; y1 += b[3]*x0 + b[4]*x1 + b[5]*x2; y2 += b[6]*x0 + b[7]*x1 + b[8]*x2;
+    }
+    y[m*3]=y0; y[m*3+1]=y1; y[m*3+2]=y2;
 }
 __global__ void pcg_s1(double* st) {
     if (st[5] > 0.5) {
@@ -356,13 +418,14 @@ class CudaFem:
     def energy(self, U):
         return self.energy_grad(U, want_g=False)[0]
 
-    def hess_into(self, U, slots, Bell, efloor):
+    def hess_into(self, U, slots, Bell, efloor, maxsw=10, jtol=1e-12):
         k = _mod().get_function("tet_hess")
         gr, bl = _grid(self.T, 64)
         Uf = U.float().contiguous()
         with _Stream():
             k(gr, bl, (np.int32(self.T), _cp(self.tets), _cp(Uf), _cp(self.gl4), _cp(self.FT4), _cp(self.VT4), _cp(self.M44),
-                       np.float32(self.mu), np.float32(self.lam), np.float32(efloor), _cp(slots), _cp(Bell), _cp(self.cnt[1:2])))
+                       np.float32(self.mu), np.float32(self.lam), np.float32(efloor), _cp(slots), _cp(Bell), _cp(self.cnt[1:2]),
+                       np.int32(maxsw), np.float32(jtol)))
 
 
 class CudaPcg:
@@ -388,6 +451,81 @@ class CudaPcg:
         md.get_function("pcg_upd")(g1, b1, (self.cMp, self.cDinv, self.cx, self.cr, self.cz, self.cd, self.cy, self.cst))
         md.get_function("pcg_s2")((1,), (1,), (self.cst,))
         md.get_function("pcg_dir")(g3, b3, (self.cMp, self.cd, self.cz, self.cst))
+
+    def solve2(self, M, b, rtol, ncg, use_graph=True):
+        """2 커널 PCG (pcg2_b: x·r·z 갱신 + rr·rz 합, pcg2_d: A z 곱 + 방향 d·Ad 갱신 + dAd 합; 스칼라 판정은 각 스레드가 같은 값으로).
+        같은 식 (Ad = A z + β Ad 로 곱 한 번), 같은 판정 |r|² < rtol²|b|²."""
+        n = 3 * M
+        self.Mp.fill_(M)
+        if not hasattr(self, "Ad"):
+            self.Ad = torch.zeros(self.Mmax * 3, dtype=torch.float64, device=self.dev)
+            self.scal = torch.zeros(8, dtype=torch.float64, device=self.dev)
+            self.acc = torch.zeros(6, dtype=torch.float64, device=self.dev)
+            self.thr = torch.zeros(1, dtype=torch.float64, device=self.dev)
+        if not hasattr(self, "cB"):
+            self.cB, self.cnb, self.cDinv, self.cx, self.cr, self.cz, self.cd, self.cy, self.cst, self.cMp = \
+                [_cp(q) for q in (self.B, self.nb, self.Dinv, self.x, self.r, self.z, self.d, self.y, self.st, self.Mp)]
+        if not hasattr(self, "cAd"):
+            self.cAd, self.cscal, self.cacc = _cp(self.Ad), _cp(self.scal), _cp(self.acc)
+        self.x.zero_()
+        self.r.zero_()
+        self.r[:n].copy_(b)
+        Di = self.Dinv[:M * 9].view(M, 3, 3)
+        z = (Di @ b.view(M, 3, 1)).view(-1)
+        self.z.zero_()
+        self.z[:n].copy_(z)
+        self.d.copy_(self.z)
+        g1, b1 = _grid(self.Mmax)
+        with _Stream():
+            _mod().get_function("bell_mv")(g1, b1, (self.cMp, self.cB, self.cnb, self.cd, self.cAd))
+        bb = (b * b).sum().clamp_min(1e-300)
+        thr = float(bb) * rtol * rtol
+        self.scal.zero_()
+        self.acc.zero_()
+        self.scal[0] = (b * z).sum()
+        self.scal[1] = 1.0
+        self.acc[0] = (self.d[:n] * self.Ad[:n]).sum()
+        md = _mod()
+        kb, kd = md.get_function("pcg2_b"), md.get_function("pcg2_d")
+
+        def it2(p, thr_):
+            kb(g1, b1, (np.int32(p), self.cMp, self.cDinv, self.cx, self.cr, self.cz, self.cd, self.cAd, self.cscal, self.cacc))
+            kd(g1, b1, (np.int32(p), self.cMp, self.cB, self.cnb, self.cz, self.cd, self.cAd, self.cscal, self.cacc, np.float64(thr_)))
+        ck = self.ck - (self.ck % 2)
+        it = 0
+        if use_graph:
+            # 판정 문턱은 프레임마다 다르다 -- 장치 값으로 넘기면 좋지만 커널 인자로 박혀 있어 그래프를 문턱마다 다시 잡지 않으려고
+            # 문턱 대신 b 를 |b| 로 나눠 푼다 (해 x 도 |b| 배로 되돌린다; 같은 판정 rr/|b|² < rtol²)
+            pass
+        sc = float(bb.sqrt())
+        self.r[:n].div_(sc); self.z[:n].div_(sc); self.d[:n].div_(sc); self.Ad[:n].div_(sc)
+        self.scal[0] /= sc * sc
+        self.acc[0] /= sc * sc
+        thr1 = rtol * rtol
+        if use_graph and getattr(self, "graph2", None) is None:
+            s = torch.cuda.Stream()
+            s.wait_stream(torch.cuda.current_stream())
+            gr = torch.cuda.CUDAGraph()
+            with torch.cuda.stream(s), _Stream():
+                gr.capture_begin()
+                for k in range(ck):
+                    it2(k % 2, thr1)
+                gr.capture_end()
+            torch.cuda.current_stream().wait_stream(s)
+            self.graph2 = gr
+        while it < ncg:
+            if use_graph:
+                self.graph2.replay()
+            else:
+                with _Stream():
+                    for k in range(ck):
+                        it2(k % 2, thr1)
+            it += ck
+            if float(self.scal[1]) < 0.5:
+                break
+        x = self.x[:n] * sc
+        rr = float((self.r[:n] * self.r[:n]).sum())
+        return x, int(self.scal[2]), rr ** 0.5, bool(self.scal[3] > 0.5)
 
     def solve(self, M, b, rtol, ncg, use_graph=True):
         """B·nb·Dinv 는 호출 전에 채워 둔다 (앞 M 노드). b [3M] float64. -> (x [3M], 반복, |r|/|b|, 음곡률)."""

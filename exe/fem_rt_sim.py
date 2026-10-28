@@ -65,6 +65,9 @@ ap.add_argument("--bell", action="store_true", help="CSR 대신 블록 ELL (15 �
 ap.add_argument("--hess", choices=["newton", "gn"], default="newton", help="gn = 가우스-뉴턴 탄성 헤시안 (양반정, 고유분해 투영 없음; --floor node)")
 ap.add_argument("--csr_bell", action="store_true", help="CSR 를 블록 ELL 에서 정렬 없이 (패턴 정렬 생략, 곱은 cuSPARSE)")
 ap.add_argument("--cuda", action="store_true", help="손으로 쓴 CUDA 커널 (fem_rt_cuda): E·기울기, 헤시안+|λ| 투영+블록 ELL 합, PCG (--floor node)")
+ap.add_argument("--pcg2", type=int, default=1, help="--cuda: 2 커널 PCG (1) / 5 커널 (0)")
+ap.add_argument("--jac_sweeps", type=int, default=10)
+ap.add_argument("--jac_tol", type=float, default=1e-12)
 ap.add_argument("--mmax", type=int, default=60000)
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
@@ -142,7 +145,7 @@ for i in range(L):
         tets = fr.uq
         rec["n_near"] = int(fr.tq["ni"].numel())
     tk("p2g")
-    csr = RT.Csr(tets, G.M) if not (a.bell or a.csr_bell) else None
+    csr = RT.Csr(tets, G.M) if not (a.bell or a.csr_bell or a.cuda) else None
     tk("pattern")
     steps = []
     for k in range(a.newton):
@@ -199,7 +202,7 @@ for i in range(L):
             slots = (tets.unsqueeze(-1) * 15 + RT.off_cls(gi[tets].unsqueeze(1) - gi[tets].unsqueeze(2))).int().contiguous()
             PC.B[:M_ * 135].zero_()
             CF.cnt.zero_()
-            CF.hess_into(U, slots, PC.B, a.eig_floor)
+            CF.hess_into(U, slots, PC.B, a.eig_floor, a.jac_sweeps, a.jac_tol)
             Dn = fr._floor_hess(U)
             Bv = PC.B[:M_ * 135].view(M_, 15, 9)
             Bv[:, 0] += Dn.reshape(M_, 9).float()
@@ -213,7 +216,7 @@ for i in range(L):
             PC.nb[:M_ * 15].copy_(nbl.nb.reshape(-1).int())
             tk("asm")
             b = gg.reshape(-1).double()
-            xx, it, res, negc = PC.solve(M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
+            xx, it, res, negc = (PC.solve2 if a.pcg2 else PC.solve)(M_, b, a.rtol, a.pcg_max, use_graph=a.graph)
             negf = int(CF.cnt[1]) / G.T
             tk("pcg")
             Bd = Bv.view(M_, 15, 3, 3)
