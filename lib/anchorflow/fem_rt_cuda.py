@@ -795,6 +795,20 @@ __global__ void g2p_part(int N, const float* x, const float* U, const long long*
 
 
 
+// ---------------- G2P without floor maps (--floor none): x2 = x + sum lam U, F2 = (I + sum U_i (x) gl_i) F, float64 inside ----------------
+__global__ void g2p_lin(int N, const float* x, const float* U, const long long* rows, const float* lamb, const float* glT, const long long* tinv,
+                        const float* Fp, double h, float* x2, float* v2, float* F2) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    double u[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1};
+    const float* gl = glT + tinv[p]*12;
+    for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; double lm=lamb[p*4+i]; for (int a=0;a<3;a++){ double Ua=U[nd*3+a]; u[a]+=lm*Ua; for (int b=0;b<3;b++) A[a*3+b]+=Ua*gl[i*3+b]; } }
+    for (int k=0;k<3;k++) { double xk = x[p*3+k]; double qk = xk + u[k]; x2[p*3+k] = (float)qk; v2[p*3+k] = (float)((qk - xk)/h); }
+    double F[9]; for (int k=0;k<9;k++) F[k]=Fp[p*9+k];
+    double F2d[9]; mm3(A, F, F2d);
+    for (int k=0;k<9;k++) F2[p*9+k] = (float)F2d[k];
+}
+
 // 16 lanes per node block-ELL row: lane k<15 does slot k (3x3 f32 block x f64 3-vector), shuffle-reduce to lane 0 of the 16-group
 __device__ __forceinline__ void ell16(int m, int k, bool on, int Ms, const float* B, const int* nb, const double* v, double* y) {
     double y0=0, y1=0, y2=0;
@@ -2271,10 +2285,29 @@ def asm_k(G, PC, sym, Ms):
                                               np.int32(n2), _cp(G.nmark), _cp(G.ncm), _cp(asm_k.offs), np.int32(sym), _cp(PC.nb)))
 
 
+def pin_rows(PC, fixd, M, Ms, sym):
+    """--cfg_bc: 묶인 노드 (fixd [M] bool) 의 행·열을 빼고 자기 블록 = I, 블록 야코비 역 = I -- train_deform _newton_target_asm 과 같은 계
+    (투영 뒤 조립 행렬에서 두 노드가 모두 자유인 칸만 남기고 D[fixd] = I). asm_k (이웃 표 PC.nb 를 만든다) 뒤에 부른다."""
+    B = PC.B.view(15, 9, Ms)
+    K = 8 if sym else 15
+    nb = PC.nb.view(15, Ms)[1:K, :M].long()
+    kill = fixd.unsqueeze(0) | fixd[nb.clamp_min(0)]                        # [K-1, M]
+    B[1:K, :, :M].mul_((~kill).unsqueeze(1).to(B.dtype))
+    fi = fixd.nonzero().squeeze(1)
+    if fi.numel():
+        eye9 = torch.eye(3, device=B.device).reshape(9)
+        B[0, :, fi] = eye9.unsqueeze(1).to(B.dtype)
+        PC.Dinv.view(-1, 9)[fi] = eye9.double()
+        if getattr(PC, "Dinv32", None) is not None:
+            PC.Dinv32.view(-1, 9)[fi] = eye9
+
+
 class CudaTetqK(CudaTetq):
     """fem_fast.FemFrame + tetq_setup 를 거치지 않고 GridK 에서 바로 (같은 식: 분할은 걸음 시작 U 에서 s/ε ≤ 20, 항등 입자만 사면체로 P2G)."""
 
-    def __init__(self, G, x, v, F, m, vol, cfg, h, U, eps_sp=0.01, eps_st=0.01, stick_xn=True):
+    def __init__(self, G, x, v, F, m, vol, cfg, h, U, eps_sp=0.01, eps_st=0.01, stick_xn=True, fixd=None, floor=True):
+        """fixd [M] bool (--cfg_bc, 선택): train_deform FemFrame 과 같이 네 노드가 모두 묶인 입자의 관성 무게 w = 0.
+        floor=False (--floor none, 바닥 없는 씬): 바닥 후보 입자 없음 (모든 입자 사면체 적분점), G2P 는 매핑 없는 g2p_lin."""
         from . import phys_resid as PR
         dev = x.device
         f8 = torch.float64
@@ -2282,19 +2315,25 @@ class CudaTetqK(CudaTetq):
         self.T, self.dev = T, dev
         self.tets = G.tets
         h = float(h)
-        bc = [b for b in (cfg.get("boundary_conditions") or []) if b.get("type") == "surface_collider"][0]
-        pt = torch.as_tensor(bc["point"], device=dev, dtype=torch.float32)
-        nr = torch.as_tensor(bc["normal"], device=dev, dtype=torch.float32)
-        nr = nr / nr.norm()
-        u = (G.lam.unsqueeze(-1) * U.float()[G.rows]).sum(1)
-        s = ((x + u - pt) * nr).sum(-1)
-        near = torch.zeros_like(s, dtype=torch.bool)
-        for e in (eps_sp, eps_st):
-            if e > 0:
-                near |= s / e <= 20.0
+        self.floor = bool(floor)
+        if self.floor:
+            bc = [b for b in (cfg.get("boundary_conditions") or []) if b.get("type") == "surface_collider"][0]
+            pt = torch.as_tensor(bc["point"], device=dev, dtype=torch.float32)
+            nr = torch.as_tensor(bc["normal"], device=dev, dtype=torch.float32)
+            nr = nr / nr.norm()
+            u = (G.lam.unsqueeze(-1) * U.float()[G.rows]).sum(1)
+            s = ((x + u - pt) * nr).sum(-1)
+            near = torch.zeros_like(s, dtype=torch.bool)
+            for e in (eps_sp, eps_st):
+                if e > 0:
+                    near |= s / e <= 20.0
+        else:
+            near = torch.zeros(N, dtype=torch.bool, device=dev)
         far = (~near).to(f8)
         g = torch.as_tensor(cfg["g"], device=dev, dtype=f8)
         k = m.double() / (h * h)
+        if fixd is not None:
+            k = k * (~fixd[G.rows].all(1)).to(f8)                               # FemFrame.w (train_deform 과 같다)
         kf = k * far
         lm = G.lam.double()
         c = h * v.double() + (h * h) * g
@@ -2322,7 +2361,7 @@ class CudaTetqK(CudaTetq):
         self.kk = k.float().contiguous()
         self.cc = c.float().contiguous()
         self.tinv = pinv.contiguous()
-        self.pl = [float(q) for q in pt.tolist()] + [float(q) for q in nr.tolist()]
+        self.pl = ([float(q) for q in pt.tolist()] + [float(q) for q in nr.tolist()]) if self.floor else None
         self.eps_st, self.eps_sp = float(eps_st), float(eps_sp)
         self.xn = 1.0 if (stick_xn and eps_st > 0) else 0.0
         self.cnt = torch.zeros(2, dtype=torch.int32, device=dev)
@@ -2336,6 +2375,11 @@ class CudaTetqK(CudaTetq):
         F2 = torch.empty(N, 9, dtype=torch.float32, device=self.dev)
         P = self.pl
         gr, bl = _grid(N, 256)
+        if not self.floor:
+            with _Stream():
+                _mod().get_function("g2p_lin")(gr, bl, (np.int32(N), _cp(self.x), _cp(U.float().contiguous()), _cp(self.rows), _cp(self.lamb),
+                                                        _cp(self.gl4), _cp(self.tinv), _cp(self.Fp), np.float64(self.h), _cp(x2), _cp(v2), _cp(F2)))
+            return x2, v2, F2.view(N, 3, 3)
         with _Stream():
             _mod().get_function("g2p_part")(gr, bl, (np.int32(N), _cp(self.x), _cp(U.float().contiguous()), _cp(self.rows), _cp(self.lamb), _cp(self.gl4),
                                                      _cp(self.tinv), _cp(self.Fp), np.float64(P[0]), np.float64(P[1]), np.float64(P[2]),

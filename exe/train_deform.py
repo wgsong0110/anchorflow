@@ -5893,6 +5893,19 @@ def _newton_target_asm(_fwd, _NTG, m, nrm, k, t):
             _finfo = {}
         _fsync()
         _t_hess = time.time() - _th
+        if os.environ.get("AF_FEM_TETQ_DUMP") and int(k) == 0 and str(int(t)) in os.environ.get("AF_FEM_TETQ_DUMP_T", "0").split(","):
+            # 실시간 판 대조 덤프 (10-28 ficus, exe/fem_rt_check_ficus.py, 계산 경로에는 영향 없음): 이 걸음 시작 상태·고정 노드·E·기울기·사면체 헤시안 (투영 전)
+            _st = _FEM_STATE[0]
+            os.makedirs(os.environ["AF_FEM_TETQ_DUMP"], exist_ok=True)
+            _dp = os.path.join(os.environ["AF_FEM_TETQ_DUMP"], f"tetq_t{int(t):04d}.pt")
+            torch.save(dict(t=int(t), U0=U0.detach().cpu(), fixd=_fixd.cpu(), rw=_rw.cpu(), lm=_lm.cpu(), npos=_DPN_LIVE[0][0].detach().cpu(),
+                            uq=_fr.uq.cpu(), E=_EJv, g=_gf.detach().double().cpu(), H=(_HT_fast.cpu() if _HT_fast is not None else None),
+                            x=_st["x"].cpu(), v=_st["v"].cpu(), F=_st["F"].cpu(), m=_st["m"].cpu(),
+                            vol=(_st["vol"].cpu() if torch.is_tensor(_st["vol"]) else _st["vol"]), h=h_, nrm=float(_st["nrm"]),
+                            vdamp=float(_pg_vdamp(torch.ones(1, device=dev), {"cfg": _st["cfg"]}, h_)), w=_fr.w.cpu(),
+                            tetq=dict(n_act=int(_fr.tq["act"].numel()), n_near=int(_fr.tq["ni"].numel())) if _fr.tq is not None else None,
+                            cfg=_st["cfg"], args=vars(a)), _dp)
+            print(f"    [FEM 사면체 덤프] t={t} -> {_dp} (자유 노드 {int((~_fixd).sum())}/{M_})", flush=True)
         if _ASM_CHECKED[0] < int(os.environ.get("AF_FEM_FAST_CHECK", "0") or 0) and int(k) == 0:
             # 검산: 같은 U0 에서 기존 파이프라인 (탐침 Z·ZL, 이중 역전파 12 회) 의 E·기울기·사면체 헤시안과 대조
             _ASM_CHECKED[0] += 1

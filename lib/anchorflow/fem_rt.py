@@ -98,6 +98,92 @@ def node_inertial(x, v, m, G, g, h):
     return h * vn + (h * h) * g, ws
 
 
+# ---------------------------------------------------------------- --cfg_bc (train_deform --cfg_bc 와 같은 정의, 10-28 ficus)
+def cfg_bc_sel(cfg, x0):
+    """train_deform._cfg_bc_sel 그대로: 입자 구속의 입자 선택 (0 프레임 위치로 한 번) -> [(bc, mask[N])]."""
+    dev, dt = x0.device, x0.dtype
+    out = []
+    for bc in (cfg.get("boundary_conditions") or []):
+        tp = bc.get("type")
+        if tp == "enforce_particle_translation":
+            q = torch.tensor(bc["point"], device=dev, dtype=dt)
+            sz = torch.tensor(bc["size"], device=dev, dtype=dt)
+            out.append((bc, ((x0 - q).abs() < sz).all(-1)))
+        elif tp == "enforce_particle_velocity_rotation":
+            n = torch.tensor(bc["normal"], device=dev, dtype=dt)
+            n = n / n.norm()
+            q = torch.tensor(bc["point"], device=dev, dtype=dt)
+            off = x0 - q
+            vd = (off @ n).abs()
+            hd = (off - (off @ n).unsqueeze(-1) * n).norm(dim=-1)
+            hh, rr = (float(z) for z in bc["half_height_and_radius"])
+            out.append((bc, (vd < hh) & (hd < rr)))
+    return out
+
+
+def _cfg_bc_rot_v(pos, bc):
+    n = torch.tensor(bc["normal"], device=pos.device, dtype=pos.dtype)
+    n = n / n.norm()
+    q = torch.tensor(bc["point"], device=pos.device, dtype=pos.dtype)
+    off = pos - q
+    rp = off - (off @ n).unsqueeze(-1) * n
+    return float(bc["rotation_scale"]) * torch.cross(rp, n.expand_as(rp), dim=-1) + float(bc["translation_scale"]) * n
+
+
+def cfg_bc_nodes(cfg, sel, npos, rows, lam, mass, now, dt):
+    """train_deform.cfg_bc_nodes (--interp bary) 그대로: 시각 now 에 묶이는 노드와 속도 -> (mask[M] bool, vel[M,3]) 또는 (None, None).
+    입자 구속 = 그 입자의 질량 가중 barycentric 비율이 노드 질량의 절반을 넘는 노드, cuboid = 상자 안 (|npos - q| < size, q 는 v·(now - t0) 로 이동) 노드,
+    cuboid reset = 끝시각 뒤 15 dt 동안 전체 노드 0. 묶인 노드 변위 = τ·vel (train_deform _on_pin, τ = 스텝 h)."""
+    M = npos.shape[0]
+    dev, dt_ = npos.device, npos.dtype
+    msk = torch.zeros(M, dtype=torch.bool, device=dev)
+    vel = torch.zeros(M, 3, device=dev, dtype=dt_)
+    hit = False
+    wl = lam.to(dt_) * mass.to(dt_).unsqueeze(1)
+    den = None
+    for bc, pm in sel:
+        if not (float(bc.get("start_time", 0.0)) <= now < float(bc.get("end_time", 1e3))):
+            continue
+        if den is None:
+            den = torch.zeros(M, device=dev, dtype=dt_).index_add_(0, rows.reshape(-1), wl.reshape(-1))
+        num = torch.zeros(M, device=dev, dtype=dt_).index_add_(0, rows.reshape(-1), (wl * pm.to(dt_).unsqueeze(1)).reshape(-1))
+        nm = num > 0.5 * den.clamp_min(1e-30)
+        vv = (torch.tensor(bc["velocity"], device=dev, dtype=dt_).expand(M, 3) if bc["type"] == "enforce_particle_translation"
+              else _cfg_bc_rot_v(npos, bc))
+        vel = torch.where(nm.unsqueeze(-1), vv, vel)
+        msk = msk | nm
+        hit = True
+    for bc in (cfg.get("boundary_conditions") or []):
+        if bc.get("type") != "cuboid":
+            continue
+        t0_, t1_ = float(bc.get("start_time", 0.0)), float(bc.get("end_time", 1e3))
+        if not (t0_ <= now < t1_):
+            continue
+        vb = torch.tensor(bc["velocity"], device=dev, dtype=dt_)
+        q = torch.tensor(bc["point"], device=dev, dtype=dt_) + (now - t0_) * vb
+        sz = torch.tensor(bc["size"], device=dev, dtype=dt_)
+        nm = ((npos - q).abs() < sz).all(-1)
+        vel = torch.where(nm.unsqueeze(-1), vb.expand(M, 3), vel)
+        msk = msk | nm
+        hit = True
+    for bc in (cfg.get("boundary_conditions") or []):
+        if bc.get("type") == "cuboid" and int(bc.get("reset", 0)) == 1:
+            t1_ = float(bc.get("end_time", 1e3))
+            if t1_ <= now < t1_ + 15.0 * float(dt):
+                msk = torch.ones(M, dtype=torch.bool, device=dev)
+                vel = torch.zeros(M, 3, device=dev, dtype=dt_)
+                hit = True
+    return (msk, vel) if hit else (None, None)
+
+
+def pg_vdamp_scale(cfg, h):
+    """train_deform._pg_vdamp 의 배율: PG grid_v_damping_scale s 를 서브스텝마다 곱한 만큼 -> s^(h/substep_dt) (s ≥ 1 이면 1)."""
+    s_ = float(cfg.get("grid_v_damping_scale", 1.0))
+    if s_ >= 1.0:
+        return 1.0
+    return s_ ** (float(h) / float(cfg["substep_dt"]))
+
+
 # ---------------------------------------------------------------- 장벽 b(d; d̂) (phys_resid._barrier_b quad 연장과 같은 식) 과 도함수
 def barrier3(d, dhat, eps_r=1e-3):
     eps = eps_r * dhat

@@ -6,6 +6,12 @@ LM, K float32, 고유분해 float32) 과 같은 식을 상태를 GPU 에 둔 채
 
   --floor particle : 기존 바닥 정의 (입자 softplus·stick 매핑, fem_fast.FemFrame.tetq_*)
   --floor node     : 노드 단위 장벽 (+ --k_st 고착) (fem_rt.NodeFrame) -- 사용자 승인 정의 변경
+  --floor none     : 바닥 항 없음 (바닥 없는 씬, 예: ficus -- surface_collider 가 없다). 모든 입자 사면체 적분점, G2P 매핑 없음 (--lite --cuda)
+ficus 물리 조건 (train_deform 기존 ficus FEM 실행 fem*_ficus 의 --cfg_bc --pg_region_density --pg_vdamp 와 같은 정의, 10-28):
+  --cfg_bc         : config boundary_conditions (cuboid 등) 를 노드 하드 구속으로 (fem_rt.cfg_bc_nodes = train_deform.cfg_bc_nodes): 묶인 노드 변위 = h·v_bc,
+                     조립 행렬에서 행·열 제거 + 대각 I, 기울기 0, 네 노드가 모두 묶인 입자 관성 무게 0 (FemFrame.w)
+  --region_density : PG additional_material_params 영역별 밀도로 입자 질량 (DM.REGION_DENSITY), 부피 = 질량 / 입자별 밀도
+  --pg_vdamp       : 스텝 뒤 속도에 grid_v_damping_scale^(h/substep_dt) (train_deform._pg_vdamp)
   --solver pcg     : 블록 야코비 PCG (기존)
            mg      : Kuhn 격자 기하 멀티그리드 V(ν,ν) 전처리 PCG
            pdpcg   : PD 행렬 (질량 + w·2μ V_T 라플라시안) 미리 분해 (cholespy) 를 전처리로 쓴 PCG (뉴턴 방향 그대로)
@@ -34,7 +40,11 @@ ap.add_argument("--data", default="/home/dkta/work/one/L000/L000.pt")
 ap.add_argument("--out", required=True)
 ap.add_argument("--frames", type=int, default=80)
 ap.add_argument("--node_h", type=float, default=0.028284)
-ap.add_argument("--floor", choices=["particle", "node"], default=os.environ.get("AF_FEM_FLOOR", "particle"))
+ap.add_argument("--floor", choices=["particle", "node", "none"], default=os.environ.get("AF_FEM_FLOOR", "particle"))
+ap.add_argument("--cfg_bc", action="store_true", help="config boundary_conditions 를 노드 하드 구속으로 (train_deform --cfg_bc 와 같은 정의)")
+ap.add_argument("--region_density", action="store_true", help="PG additional_material_params 영역별 밀도 (train_deform --pg_region_density)")
+ap.add_argument("--pg_vdamp", action="store_true", help="스텝 뒤 속도에 grid_v_damping_scale^(h/substep_dt) (train_deform --pg_vdamp)")
+ap.add_argument("--tag", default="L000", help="궤적 이름 (출력 줄·덤프 tag)")
 ap.add_argument("--eps_sp", type=float, default=0.01)
 ap.add_argument("--eps_st", type=float, default=0.01)
 ap.add_argument("--kappa", type=float, default=1.0)
@@ -94,6 +104,7 @@ ap.add_argument("--mmax", type=int, default=60000)
 ap.add_argument("--asm_k", action="store_true", help="--cuda --lite: slots·블록 야코비 역·이웃 표를 커널로 (같은 값), LM 용 전체 블록은 필요할 때만")
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
+ap.add_argument("--dump_f32", action="store_true", help="덤프 F 를 float32 로 (ψ 계산용 -- float16 은 작은 변형의 ψ 를 덮는다; 기본 float16)")
 ap.add_argument("--dump_sys", default="", help="쉼표 프레임 목록: 그 프레임 첫 걸음 선형계 (블록 ELL·b) 를 <out>/sys_t###.pt 로")
 ap.add_argument("--warm", type=int, default=2, help="시간 통계에서 뺄 앞 프레임 수 (컴파일·데우기)")
 a = ap.parse_args()
@@ -104,9 +115,18 @@ torch.backends.cuda.matmul.allow_tf32 = False
 d = torch.load(a.data, map_location="cpu", weights_only=False)
 cfg = d["cfg"]
 h = float(cfg["frame_dt"])
+DM.REGION_DENSITY[0] = bool(a.region_density)
 m = DM.traj_mass(d, dev).float()
 EXT = float(d["_ext"])
-vol = m / float(cfg["density"])
+vol = (m / d["_rho"].to(dev).float()) if a.region_density else (m / float(cfg["density"]))
+if a.region_density and "_rho" not in d:
+    raise SystemExit("--region_density: config 에 additional_material_params 가 없다")
+if a.cfg_bc and not (a.cuda and a.lite and a.asm_k and a.floor in ("particle", "none")):
+    raise SystemExit("--cfg_bc 는 --cuda --lite --asm_k (입자 바닥·바닥 없음) 경로에서만")
+if a.floor == "none" and not (a.cuda and a.lite):
+    raise SystemExit("--floor none 은 --cuda --lite 경로에서만")
+BC_SEL = RT.cfg_bc_sel(cfg, d["x"][0].to(dev).float()) if a.cfg_bc else None
+VDAMP = RT.pg_vdamp_scale(cfg, h) if a.pg_vdamp else 1.0
 N = int(d["x"].shape[1])
 L = min(int(a.frames), int(d["x"].shape[0]) - 1)
 x = d["x"][0].to(dev).float()
@@ -119,11 +139,17 @@ dhat = a.dhat if a.dhat > 0 else 0.5 * float(cfg.get("grid_lim", 2.0)) / int(cfg
 planes = [(torch.as_tensor(b["point"], device=dev, dtype=torch.float32), torch.as_tensor(b["normal"], device=dev, dtype=torch.float32))
           for b in (cfg.get("boundary_conditions") or []) if b.get("type") == "surface_collider"]
 planes = [(p, n / n.norm()) for p, n in planes]
+if a.floor == "none" and planes:
+    raise SystemExit("--floor none 인데 config 에 surface_collider 가 있다")
 M_FULL = float(cfg["density"]) * float(torch.linalg.det(RT.SX.lattice(a.node_h, RT.SX.HZ_CUBE * a.node_h, dtype=torch.float64).A).abs())
 sys_dump = {int(q) for q in a.dump_sys.split(",") if q.strip()}
 print(f"[실시간 FEM] 입자 {N}, 프레임 {L}, h {h:.6f}, E {cfg['E']:g} ν {cfg['nu']:g} (μ {mu:.4g} λ {lam:.4g}), EXT {EXT:.6f}, 바닥 {a.floor} "
       f"(d̂ {dhat:g}, κ {a.kappa:g}, k_st {a.k_st:g}), 풀이 {a.solver}, 뉴턴 {a.newton}, 계측 {'동기화' if a.prof else '끝만'}", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
+print(f"[물리 조건] 중력 {cfg['g']}, 바닥 {'없음 (surface_collider 없음, 바닥 항 꺼짐)' if not planes else a.floor}, "
+      f"경계 {'cfg_bc ' + str([(b['type'], b.get('point'), b.get('size'), b.get('velocity')) for b in (cfg.get('boundary_conditions') or []) if b.get('type') != 'surface_collider']) if a.cfg_bc else '없음'}, "
+      f"밀도 {'영역별 ' + str({float(r): int((d['_rho'] == r).sum()) for r in torch.unique(d['_rho'])}) if a.region_density else cfg['density']} (질량 합 {float(m.sum()):.5g}), "
+      f"속도 감쇠 {'배율 %.6f/스텝 (%g^(%g/%g))' % (VDAMP, cfg.get('grid_v_damping_scale', 1.0), h, cfg.get('substep_dt', 0)) if a.pg_vdamp else '없음'}, node_h {a.node_h}", flush=True)
 
 PC = RTC.CudaPcg(a.mmax, dev) if a.cuda else None
 if PC is not None:
@@ -135,7 +161,7 @@ if PC is not None:
 PDF = RT.PdFactor() if a.solver in ("pdpcg", "pd") else None
 PRED = torch.empty(L, N, 3, device=dev) if (not a.no_dump or a.dump_pred) else None
 VD = torch.empty(L, N, 3, device=dev, dtype=torch.float16) if not a.no_dump else None
-FD = torch.empty(L, N, 3, 3, device=dev, dtype=torch.float16) if not a.no_dump else None
+FD = torch.empty(L, N, 3, 3, device=dev, dtype=(torch.float32 if a.dump_f32 else torch.float16)) if not a.no_dump else None
 errs = []
 recs = []
 v_prev = None
@@ -170,6 +196,12 @@ for i in range(L):
     rec = dict(t=i)
     G = RTC.GridK(x, a.node_h) if a.lite else RT.Grid(x, a.node_h, fast=a.fast)
     U, ws = RT.node_inertial(x, v, m, G, g, h)                                # --ov_init predict
+    fixd = None
+    if BC_SEL is not None:
+        fixd, vel_bc = RT.cfg_bc_nodes(cfg, BC_SEL, G.npos, G.rows, G.lam, m, i * h, h)
+        if fixd is not None:
+            U = torch.where(fixd.unsqueeze(-1), (h * vel_bc).to(U.dtype), U)       # 묶인 노드 변위 = τ·v_bc (train_deform _on_pin)
+            rec["n_fix"] = int(fixd.sum())
     if a.solver == "vbd" and a.vbd_warm != "none" and v_prev is not None:
         # VBD 시작점: h v_n + h² ã_n (ã = 이전 프레임 입자 가속도의 노드 질량 가중 평균; adapt = 중력 방향 성분만 [0, |g|] 로 자른 것 -- Chen et al. 2024)
         ap_ = (v - v_prev) / h
@@ -178,9 +210,12 @@ for i in range(L):
             ap_ = gh * (ap_ @ gh).clamp(0.0, float(g.norm())).unsqueeze(-1)
         U = U + (h * h) * (RT.node_inertial(x, ap_, m, G, torch.zeros_like(g), 1.0)[0] - g)
     MnH = ws.double() / (h * h)
+    if fixd is not None:
+        MnH = MnH.masked_fill(fixd, 0.0)
     tk("grid")
-    if a.lite and a.floor == "particle":
-        fr = CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, h, U, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True)
+    if a.lite and a.floor in ("particle", "none"):
+        fr = CF = RTC.CudaTetqK(G, x, v, F, m, vol, cfg, h, U, eps_sp=a.eps_sp, eps_st=a.eps_st, stick_xn=True, fixd=fixd,
+                                floor=(a.floor == "particle"))
         CF.warp = a.warp
         CF.near32 = a.near32
         CF.sym = int(a.sym)
@@ -259,6 +294,8 @@ for i in range(L):
             break
         E0, gg = fr.energy_grad(U)[:2]
         gg = gg.to(U.dtype)
+        if fixd is not None:
+            gg = gg.masked_fill(fixd.unsqueeze(-1), 0.0)                         # 묶인 노드는 변수 밖
         Ec = float(E0)
         tk("eg")
         if a.cuda:
@@ -285,6 +322,8 @@ for i in range(L):
                 return D_
             if a.asm_k:
                 RTC.asm_k(G, PC, int(a.sym), Ms)
+                if fixd is not None:
+                    RTC.pin_rows(PC, fixd, M_, Ms, int(a.sym))
                 Dinv = PC.Dinv[:M_ * 9].view(M_, 3, 3)
                 D = None
                 nbl = None
@@ -475,7 +514,7 @@ for i in range(L):
         st.update(alpha=al if acc else 0.0, acc=acc, n_ls=nls, E1=(En if acc else Ec), lm=(tries if len(tries) > 1 else None))
         steps.append(st)
     # G2P
-    if a.lite and a.floor == "particle":
+    if a.lite and a.floor in ("particle", "none"):
         x2, v2k, F2 = CF.g2p(U, F)
     elif a.floor == "node":
         x2, F2 = fr.g2p(x, F, U)
@@ -487,6 +526,8 @@ for i in range(L):
         x2, Jf = fr._maps(x, x + u, torch.eye(3, device=dev) + Gp)
         F2 = Jf @ F
     v2 = (x2 - x) / h
+    if a.pg_vdamp:
+        v2 = v2 * VDAMP                                                       # train_deform._pg_vdamp (스텝 뒤 속도)
     tk("g2p")
     torch.cuda.synchronize()
     t_frame = time.perf_counter() - t_frame0
@@ -501,7 +542,7 @@ for i in range(L):
         PRED[i] = x2
     if VD is not None:
         VD[i] = v2.half()
-        FD[i] = F2.half()
+        FD[i] = F2.to(FD.dtype)
     rec.update(sec=t_frame, ms=tk.d, steps=steps, err=e, s_min=smin, n_below=nbelow, M=G.M, T=G.T, nnz=(csr.nnz if csr is not None else None))
     if PDF is not None:
         rec.update(pd_nfact=PDF.n_fact, pd_tfact=PDF.t_fact)
@@ -510,7 +551,8 @@ for i in range(L):
     recs.append(rec)
     s0 = steps[0] if steps else {}
     print(f"  프레임 {i + 1}/{L} {1e3 * t_frame:.1f} ms 오차 {100 * e:.3f}% (누적 평균 {100 * sum(errs) / len(errs):.3f}%) 노드 {G.M} 사면체 {G.T} "
-          f"PCG {s0.get('cg', '-')} α {s0.get('alpha', '-')} 최저 입자 {smin:+.5f} 아래 {nbelow} "
+          f"PCG {s0.get('cg', '-')} α {s0.get('alpha', '-')} 실제 잔차 {s0.get('true_res', '-')} "
+          + (f"최저 입자 {smin:+.5f} 아래 {nbelow} " if smin is not None else "") + (f"고정 노드 {rec['n_fix']} " if "n_fix" in rec else "")
           + " ".join(f"{k_} {v_:.1f}" for k_, v_ in tk.d.items()), flush=True)
     v_prev = v
     x, v, F = x2.detach(), v2.detach(), F2.detach()
@@ -534,9 +576,10 @@ summ = dict(out=a.out, args=vars(a), frames=L, err_mean=sum(errs) / len(errs), m
             true_res_med=med([r["steps"][0].get("true_res") or 0.0 for r in recs if r["steps"]]),
             mix_upd_mean=(sum(r["steps"][0].get("mix_upd") or 0 for r in recs if r["steps"]) / L),
             vbd_rej_mean=(sum(r["steps"][0].get("vbd_rej") or 0 for r in recs if r["steps"]) / L),
-            gpu=torch.cuda.get_device_name(0))
+            gpu=torch.cuda.get_device_name(0), tag=a.tag, vdamp=VDAMP,
+            n_fix=sorted({r.get("n_fix", 0) for r in recs}), n_node=sorted({r["M"] for r in recs})[::max(1, len(recs) // 4)])
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
-print(f"[롤아웃] L000 t0=  0: {L} 프레임, 평균 {100 * summ['err_mean']:.3f}%  프레임당 {summ['ms_mean']:.1f} ms (중앙 {summ['ms_med']:.1f}, "
+print(f"[롤아웃] {a.tag} t0=  0: {L} 프레임, 평균 {100 * summ['err_mean']:.3f}%  프레임당 {summ['ms_mean']:.1f} ms (중앙 {summ['ms_med']:.1f}, "
       f"{summ['fps']:.2f} fps, 앞 {W} 프레임 제외) PCG 중앙 {summ['cg_med']} 최저 입자 {summ['s_min']} 아래 최대 {summ['n_below_max']} "
       f"실제 잔차 최대 {summ['true_res_max']:.2e} 갱신 평균 {summ['mix_upd_mean']:.2f}", flush=True)
 print("[구간 중앙 ms] " + " ".join(f"{k} {v_:.2f}" for k, v_ in summ["ms_parts_med"].items()), flush=True)
@@ -544,7 +587,7 @@ if a.dump_pred and PRED is not None:
     torch.save({"pred": PRED.half().cpu() if False else PRED.cpu(), "EXT": EXT}, os.path.join(a.out, "pred.pt"))
     PRED = None
 if PRED is not None:
-    torch.save({"pred": PRED.cpu(), "gt": GT.cpu(), "x0": d["x"][0].float(), "EXT": EXT, "t0": 0, "tag": "L000",
+    torch.save({"pred": PRED.cpu(), "gt": GT.cpu(), "x0": d["x"][0].float(), "EXT": EXT, "t0": 0, "tag": a.tag,
                 "F": FD.float().cpu(), "v": VD.float().cpu(), "ctrl_pos": d.get("ctrl_pos"), "ctrl_R": d.get("ctrl_R"), "ctrl_id": d.get("ctrl_id"),
                 "nodes": None, "fscal": None, "gt_fscal": None}, os.path.join(a.out, "roll_fem.pt"))
     print(f"[롤아웃 덤프] {os.path.join(a.out, 'roll_fem.pt')}", flush=True)
