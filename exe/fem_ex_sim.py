@@ -47,6 +47,7 @@ ap.add_argument("--dil", type=int, default=-1, help="--opt --mode sub: 셀 팽�
 ap.add_argument("--mass", choices=["bary", "tet"], default="bary",
                 help="노드 질량: bary = Σ λ m_p (암시적 판 관성 행렬의 행 합, 기본), tet = 사면체 등분 Σ_T m_T/4 (정의 변경: 선형 사면체 표준 질량 집중)")
 ap.add_argument("--near32", action="store_true", help="--opt: 바닥 후보 힘 float32 대수 (암시적 판 --near32 와 같은 방식)")
+ap.add_argument("--tprof", type=int, default=-1, help="이 프레임 하나를 torch.profiler 로 (커널별 GPU 시간 표; --no_graph 와 함께)")
 ap.add_argument("--no_graph", action="store_true", help="--opt 에서 CUDA 그래프 끄기 (대조)")
 ap.add_argument("--div", type=float, default=3.0)
 ap.add_argument("--warm", type=int, default=2)
@@ -473,6 +474,11 @@ errs, recs = [], []
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
 div_at = None
 for i in range(L):
+    _TP = None
+    if i == a.tprof:
+        from torch.profiler import profile, ProfilerActivity
+        _TP = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
+        _TP.__enter__()
     torch.cuda.synchronize()
     t0 = time.perf_counter()
     if OPT is None:
@@ -483,6 +489,9 @@ for i in range(L):
         st = dict(M=OPT.M, T=OPT.T, recap=OPT.n_cap - ncap0)
     torch.cuda.synchronize()
     t_frame = time.perf_counter() - t0
+    if _TP is not None:
+        _TP.__exit__(None, None, None)
+        print(_TP.key_averages().table(sort_by="self_cuda_time_total", row_limit=25), flush=True)
     # ---- 측정 밖 ----
     if OPT is not None:
         szh = OPT.sz.tolist()
