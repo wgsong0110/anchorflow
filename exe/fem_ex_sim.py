@@ -105,8 +105,8 @@ VFL = a.floor == "vel" and bool(planes)                                         
 HASPL = FLOOR or VFL
 if a.floor in ("particle", "vel") and not planes:
     raise SystemExit(f"--floor {a.floor} 인데 surface_collider 가 없다")
-if VFL and not (a.opt and a.mode == "lag" and not a.lagdiag):
-    raise SystemExit("--floor vel 은 --opt --mode lag (--lagdiag 없이) 만")
+if VFL and not (a.opt and a.mode == "lag"):
+    raise SystemExit("--floor vel 은 --opt --mode lag 만")
 if HASPL:
     pt_ = [float(q) for q in planes[0]["point"]]
     nr_ = np.array(planes[0]["normal"], dtype=np.float64)
@@ -514,11 +514,22 @@ class Opt:
         M, T = self.M, self.T
         mn = self.mn[:M]
         z = self.npos[:, 2]
-        zf = float(PL[2]) if FLOOR else float("nan")
+        zf = float(PL[2]) if HASPL else float("nan")
         smp = []
         K = max(1, a.N // 8)
+        first_bad = None
+        acc_s = None
+        if VFL:                                                                     # 절 O 판: 같은 서브스텝 커널 (_step_lag) -- f 는 걸음 안에서 비워져 |f/m| 표본은 0
+            self.f.zero_()
+            self.gn.zero_()
+            self.acc.zero_()
         for j in range(a.N):
-            self._step(self.Uc, None, None)
+            if VFL:
+                self._step_lag()
+                if first_bad is None and not bool(torch.isfinite(self.vn[:M]).all()):
+                    first_bad = j
+            else:
+                self._step(self.Uc, None, None)
             if j % K == 0 or j == a.N - 1:
                 sp = self.vn[:M].norm(dim=-1)
                 k = int(sp.argmax())
@@ -531,16 +542,26 @@ class Opt:
         dA = torch.linalg.det(A)
         occ = self.VTs[:T] > 0
         do = dA[occ]
-        dF = torch.linalg.det(self.FT[:T].view(T, 3, 3)[occ])
+        FTo = self.FT[:T].view(T, 3, 3)[occ]
+        dF = torch.linalg.det(FTo)
+        fin_ = lambda Mx: Mx[torch.isfinite(Mx).all(-1).all(-1)].double()
+        sv_ = lambda Mx: (torch.linalg.svdvals(fin_(Mx)) if fin_(Mx).shape[0] else torch.full((1, 3), float("nan"), device=dev, dtype=torch.float64))
+        sv = sv_(FTo)
+        svA = sv_(A[occ] @ FTo)
+        svP = sv_(self._Fp)                                                         # 프레임 시작 입자 F
         ke = float((mn * (self.vn[:M] ** 2).sum(-1)).sum() * 0.5)
         rec = dict(t=i, samples=smp, detA_min=float(do.min()) if do.numel() else None, detA_lt05=int((do < 0.5).sum()), detA_le0=int((do <= 0).sum()),
                    detFT_min=float(dF.min()) if dF.numel() else None, detFT_le0=int((dF <= 0).sum()), n_occ=int(occ.sum()), ke=ke,
+                   svFT_max=float(sv[:, 0].max()), svFT_min=float(sv[:, -1].min()), svFT_q999=float(torch.quantile(sv[:, 0].float(), 0.999)),
+                   svAF_max=float(svA[:, 0].max()), svAF_min=float(svA[:, -1].min()), first_bad_sub=first_bad,
+                   svFp_max=float(svP[:, 0].max()), svFp_min=float(svP[:, -1].min()), svFp_q999=float(torch.quantile(svP[:, 0].float(), 0.999)),
                    Umax=float(self.Uc[:M].norm(dim=-1).max()))
         with open(os.path.join(a.out, "lagdiag.jsonl"), "a") as fh:
             fh.write(json.dumps(rec) + "\n")
         print(f"    [lag 진단] t {i + 1}: 최대|v_n| 표본 " + " ".join(f"{q[1]:.3g}" for q in smp) + f" (마지막: 노드 높이-바닥 {smp[-1][2]:+.4f}, 질량/중앙 {smp[-1][3]:.3g}), "
               f"최대 |f/m| {smp[-1][4]:.3g}, 최대 |바닥 g/m| {smp[-1][5]:.3g}, det A_T 최소 {rec['detA_min']}, <0.5 {rec['detA_lt05']}, ≤0 {rec['detA_le0']}, "
-              f"det F̄ 최소 {rec['detFT_min']}, KE {ke:.4g}, 최대|U| {rec['Umax']:.4g}", flush=True)
+              f"det F̄ 최소 {rec['detFT_min']}, σ(F̄) 최대 {rec['svFT_max']:.3g} (99.9% {rec['svFT_q999']:.3g}) 최소 {rec['svFT_min']:.3g}, "
+              f"σ(A F̄) 최대 {rec['svAF_max']:.3g} 최소 {rec['svAF_min']:.3g}, 입자 F σ 최대 {rec['svFp_max']:.3g} (99.9% {rec['svFp_q999']:.3g}) 최소 {rec['svFp_min']:.3g}, 첫 비유한 서브스텝 {first_bad}, KE {ke:.4g}, 최대|U| {rec['Umax']:.4g}", flush=True)
 
     def frame(self, i, x, v, F):
         self.grid(x, v, i * h)
@@ -576,6 +597,7 @@ class Opt:
             if VFL:
                 self.ncon.zero_()
         if lagm and a.lagdiag:
+            self._Fp = Fv.view(Np, 3, 3)
             self._lagdiag(i)
         elif a.no_graph:
             self._substeps()
