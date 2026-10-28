@@ -56,9 +56,9 @@ def tm(fn, rep=3):
 sm = torch.cuda.get_device_properties(0).multi_processor_count
 (x0, it0, r0, _), t0 = tm(lambda: PC.solve2(M, b, 1e-6, 20000))
 print(f"[2 커널 그래프] {it0} 회 {t0:.2f} ms ({1e3 * t0 / it0:.1f} us/회) 실제 잔차 {PC.true_res(M, x0, b):.2e}", flush=True)
-for bsz in (128, 256, 512):
-    for mul in (1, 2, 4):
-        PC.bsz, PC.nblk = bsz, mul * sm * (256 // bsz if bsz < 256 else 1)
+# 모든 블록이 동시에 상주해야 한다 (소프트웨어 장벽) -- SM 당 스레드 1024 이하로만
+for bsz, nb_per_sm in ((128, 1), (128, 2), (128, 4), (128, 8), (256, 1), (256, 2), (256, 4), (512, 1), (512, 2)):
+        PC.bsz, PC.nblk = bsz, nb_per_sm * sm
         try:
             (xx, it, rr, _), tt = tm(lambda: PC.solve_coop(M, b, 1e-6, 20000))
             print(f"[지속 블록 {PC.nblk} x {bsz}] {it} 회 {tt:.2f} ms ({1e3 * tt / it:.1f} us/회) 실제 잔차 {PC.true_res(M, xx, b):.2e} 해 차 {float((xx - x0).norm() / x0.norm()):.2e}", flush=True)
