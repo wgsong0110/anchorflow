@@ -1123,14 +1123,15 @@ __global__ void vbd_near_g(int nn_, const long long* idx, const float* x, const 
     }
 }
 // node update for color cc: U -= D^-1 g (3x3 block), g reset
-__global__ void vbd_node(int M, const int* color, int cc, const float* Dinv, float* g, float* U, float step) {
+__global__ void vbd_node(int M, const int* color, int cc, const float* Dinv, float* g, float* U, float step, float maxstep) {
     int m = blockIdx.x*blockDim.x + threadIdx.x;
     if (m >= M || color[m] != cc) return;
     float g0=g[m*3], g1=g[m*3+1], g2=g[m*3+2];
     const float* D = Dinv + m*9;
-    U[m*3]   -= step*(D[0]*g0 + D[1]*g1 + D[2]*g2);
-    U[m*3+1] -= step*(D[3]*g0 + D[4]*g1 + D[5]*g2);
-    U[m*3+2] -= step*(D[6]*g0 + D[7]*g1 + D[8]*g2);
+    float d0 = step*(D[0]*g0 + D[1]*g1 + D[2]*g2), d1 = step*(D[3]*g0 + D[4]*g1 + D[5]*g2), d2 = step*(D[6]*g0 + D[7]*g1 + D[8]*g2);
+    float nd = sqrtf(d0*d0+d1*d1+d2*d2);
+    if (maxstep > 0.f && nd > maxstep) { float sc = maxstep/nd; d0*=sc; d1*=sc; d2*=sc; }
+    if (isfinite(nd)) { U[m*3] -= d0; U[m*3+1] -= d1; U[m*3+2] -= d2; }
     g[m*3]=0; g[m*3+1]=0; g[m*3+2]=0;
 }
 
@@ -1821,7 +1822,7 @@ def vbd_grad_all(self, U):
     return self.gvb.view(-1, 3).double().clone()
 
 
-def vbd(self, U, Dinv, iters, rho=0.0, step=1.0):
+def vbd(self, U, Dinv, iters, rho=0.0, step=1.0, maxstep=0.0, refresh=0, dinv_fn=None):
     """VBD: 색마다 (그 색 노드의 국소 기울기 -> 3x3 블록 뉴턴 U_n -= D_n⁻¹ g_n), iters 번. D = 걸음 시작 투영 헤시안의 노드 대각 블록.
     rho > 0 이면 체비셰프 가속 (Chen et al. 2024 식: ω₁ = 1, ω₂ = 2/(2-ρ²), ω_{k+1} = 4/(4-ρ²ω_k))."""
     Uf = U.float().contiguous().clone()
@@ -1833,10 +1834,12 @@ def vbd(self, U, Dinv, iters, rho=0.0, step=1.0):
     om = 1.0
     with _Stream():
         for k in range(iters):
+            if refresh > 0 and k > 0 and k % refresh == 0 and dinv_fn is not None:
+                Di = dinv_fn(Uf).float().reshape(-1).contiguous()          # 노드 블록 헤시안을 지금 상태에서 다시 (VBD 원래 식)
             prev1 = Uf.clone() if rho > 0 else None
             for cc in range(8):
                 _vbd_grad_color(self, Uf, cc)
-                md.get_function("vbd_node")(gn, bn, (np.int32(M), _cp(self.color), np.int32(cc), _cp(Di), _cp(self.gvb), _cp(Uf), np.float32(step)))
+                md.get_function("vbd_node")(gn, bn, (np.int32(M), _cp(self.color), np.int32(cc), _cp(Di), _cp(self.gvb), _cp(Uf), np.float32(step), np.float32(maxstep)))
             if rho > 0:
                 om = 1.0 if k == 0 else (2.0 / (2.0 - rho * rho) if k == 1 else 4.0 / (4.0 - rho * rho * om))
                 if k > 0:
