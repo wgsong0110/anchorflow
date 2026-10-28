@@ -71,6 +71,10 @@ PC.nb.view(15, PC.Mmax)[:, :M] = torch.where(nbl.valid, nbl.nb, torch.full_like(
 PC.sym = 1
 (xs, it, rr, _), tt = tm(lambda: PC.solve_coop(M, b, 1e-6, 20000))
 print(f"[지속 대칭 반쪽] {it} 회 {tt:.2f} ms ({1e3 * tt / it:.1f} us/회) 실제 잔차 {PC.true_res(M, xs, b):.2e} 해 차 {float((xs - x0).norm() / x0.norm()):.2e}", flush=True)
+PC.b64 = True
+(xs, it, rr, _), tt = tm(lambda: PC.solve_coop(M, b, 1e-6, 20000))
+print(f"[지속 대칭 반쪽 f64 행렬] {it} 회 {tt:.2f} ms ({1e3 * tt / it:.1f} us/회) 실제 잔차 {PC.true_res(M, xs, b):.2e} 해 차 {float((xs - x0).norm() / x0.norm()):.2e}", flush=True)
+PC.b64 = False
 PC.sym = 0
 CF.sym = 0
 PC.B.zero_()
