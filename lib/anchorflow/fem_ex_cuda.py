@@ -511,6 +511,97 @@ __global__ void ex_g2p_p2g(int N, const float* xa, const float* Fa, const float*
     }
 }
 
+// 정렬된 입자 (같은 사면체 연속) 의 워프 구간 합: 같은 키가 이어진 레인끼리 포함 누적합 (5 단계), 구간 끝 레인만 원자 합
+__device__ __forceinline__ float seg_scan(float v, int key, int lane) {
+    for (int d=1; d<32; d<<=1) {
+        float o = __shfl_up_sync(0xffffffff, v, d);
+        int ko = __shfl_up_sync(0xffffffff, key, d);
+        if (lane >= d && ko == key) v += o;
+    }
+    return v;
+}
+// ex_g2p_p2g 와 같은 식, P2G 원자 합만 워프 구간 합으로 (입자는 프레임 시작에 사면체 번호로 정렬) -- 모든 레인이 끝까지 간다
+__global__ void ex_g2p_p2g_seg(int N, const float* xa, const float* Fa, const float* dU, long long* rows, float* lamb, long long* pinv, const float* glT,
+                           float hs, float damp, float* xb, float* vb, float* Fb, int do_p2g,
+                           const float* gpar, const int* ipar, const long long* ncm, const long long* tcm, const unsigned char* tmark,
+                           const float* m, const float* vol, const int* nslot, int tetmass, float* mn, float* mv, float* VTs, float* FTs, int* szp) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    int lane = threadIdx.x & 31;
+    bool on = p < N;
+    float vn_[3] = {0,0,0}, F2[9] = {0,0,0,0,0,0,0,0,0}, xn[3] = {0,0,0};
+    if (on) {
+        float u[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1};
+        const float* gl = glT + pinv[p]*12;
+        for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; float lm=lamb[p*4+i]; for (int a=0;a<3;a++){ float Ua=dU[nd*3+a]; u[a]+=lm*Ua; for (int b=0;b<3;b++) A[a*3+b]+=Ua*gl[i*3+b]; } }
+        float F[9];
+        for (int k=0;k<3;k++) { xn[k] = xa[p*3+k] + u[k]; vn_[k] = u[k]/hs*damp; xb[p*3+k] = xn[k]; vb[p*3+k] = vn_[k]; }
+        for (int k=0;k<9;k++) F[k]=Fa[p*9+k];
+        mm3(A, F, F2);
+        for (int k=0;k<9;k++) Fb[p*9+k] = F2[k];
+    }
+    if (!do_p2g) return;
+    int key = -1 - lane;                                       // 꺼진 레인은 고유 키
+    long long nd4[4] = {0,0,0,0};
+    float wv[4] = {0,0,0,0};
+    float V = 0.f;
+    long long t = 0;
+    if (on) {
+        int n0=ipar[0], n1=ipar[1], n2=ipar[2];
+        float q[3] = {xn[0]-gpar[0], xn[1]-gpar[1], xn[2]-gpar[2]};
+        const float* Ai = gpar + 3;
+        float y[3]; for (int k=0;k<3;k++) y[k] = Ai[k*3]*q[0] + Ai[k*3+1]*q[1] + Ai[k*3+2]*q[2];
+        int nl[3] = {n0, n1, n2};
+        int ci[3]; float fr[3];
+        for (int k=0;k<3;k++){ int c = (int)floorf(y[k]); c = min(max(c, 0), nl[k]-2); ci[k]=c; fr[k] = fminf(fmaxf(y[k]-(float)c, 0.f), 1.f); }
+        int pr[3] = {0,1,2};
+        if (fr[pr[0]] < fr[pr[1]]) { int tt_=pr[0]; pr[0]=pr[1]; pr[1]=tt_; }
+        if (fr[pr[1]] < fr[pr[2]]) { int tt_=pr[1]; pr[1]=pr[2]; pr[2]=tt_; }
+        if (fr[pr[0]] < fr[pr[1]]) { int tt_=pr[0]; pr[0]=pr[1]; pr[1]=tt_; }
+        float s0=fr[pr[0]], s1=fr[pr[1]], s2=fr[pr[2]];
+        float lmb[4] = {1.f-s0, s0-s1, s1-s2, s2};
+        long long cell = ((long long)ci[0]*n1 + ci[1])*n2 + ci[2];
+        long long tt = cell*9 + pr[0]*3 + pr[1];
+        if (!tmark[tt]) atomicAdd(&szp[3], 1);
+        t = tmark[tt] ? tcm[tt] : 0;
+        pinv[p] = t;
+        key = (int)t;
+        int v[3] = {ci[0], ci[1], ci[2]};
+        float mp = m[p];
+        for (int r=0;r<4;r++) {
+            if (r>0) v[pr[r-1]] += 1;
+            long long cm = ncm[((long long)v[0]*n1 + v[1])*n2 + v[2]];
+            nd4[r] = cm >= 0 ? cm : 0;
+            rows[p*4+r] = nd4[r]; lamb[p*4+r] = lmb[r];
+            wv[r] = (tetmass ? 0.25f : lmb[r])*mp;
+        }
+        if (nslot[p] < 0) V = vol[p];
+    }
+    int kn = __shfl_down_sync(0xffffffff, key, 1);
+    bool last = (lane == 31) || (kn != key);
+    // 같은 사면체 = 같은 네 노드 (같은 순서) 이므로 키 하나로 노드 합도 묶는다
+    for (int r=0;r<4;r++) {
+        float sw = seg_scan(wv[r], key, lane);
+        float sx = seg_scan(wv[r]*vn_[0], key, lane), sy = seg_scan(wv[r]*vn_[1], key, lane), sz = seg_scan(wv[r]*vn_[2], key, lane);
+        if (on && last) { long long nd = nd4[r]; atomicAdd(&mn[nd], sw); atomicAdd(&mv[nd*3], sx); atomicAdd(&mv[nd*3+1], sy); atomicAdd(&mv[nd*3+2], sz); }
+    }
+    float sV = seg_scan(V, key, lane);
+    float sF[9]; for (int k=0;k<9;k++) sF[k] = seg_scan(V*F2[k], key, lane);
+    if (on && last && sV > 0.f) { atomicAdd(&VTs[t], sV); for (int k=0;k<9;k++) atomicAdd(&FTs[t*9+k], sF[k]); }
+}
+// 입자 재배열 (프레임 시작): dst[i] = src[perm[i]] (행 길이 k 의 float)
+__global__ void ex_gather_rows(int N, int k, const long long* perm, const float* src, float* dst) {
+    long long i = (long long)blockIdx.x*blockDim.x + threadIdx.x;
+    if (i >= (long long)N*k) return;
+    long long r = i / k; int c = i % k;
+    dst[i] = src[perm[r]*k + c];
+}
+// 되돌리기 (프레임 끝): dst[perm[i]] = src[i]
+__global__ void ex_scatter_rows(int N, int k, const long long* perm, const float* src, float* dst) {
+    long long i = (long long)blockIdx.x*blockDim.x + threadIdx.x;
+    if (i >= (long long)N*k) return;
+    long long r = i / k; int c = i % k;
+    dst[perm[r]*k + c] = src[i];
+}
 }
 '''
 

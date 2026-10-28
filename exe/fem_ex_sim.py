@@ -49,6 +49,7 @@ ap.add_argument("--mass", choices=["bary", "tet"], default="bary",
 ap.add_argument("--near32", action="store_true", help="--opt: 바닥 후보 힘 float32 대수 (암시적 판 --near32 와 같은 방식)")
 ap.add_argument("--tprof", type=int, default=-1, help="이 프레임 하나를 torch.profiler 로 (커널별 GPU 시간 표; --no_graph 와 함께)")
 ap.add_argument("--no_fuse", action="store_true", help="--opt --mode sub: 융합 커널 끄기 (G2P·locate·P2G·분할 따로, F̄ 나누기·채우기 따로, G2P float64) -- 대조")
+ap.add_argument("--no_sort", action="store_true", help="--opt --mode sub 융합 판: 입자 정렬·워프 구간 합 끄기 -- 대조")
 ap.add_argument("--no_graph", action="store_true", help="--opt 에서 CUDA 그래프 끄기 (대조)")
 ap.add_argument("--div", type=float, default=3.0)
 ap.add_argument("--warm", type=int, default=2)
@@ -250,6 +251,12 @@ class Opt:
         self.FF = [z(Np, 9), z(Np, 9)]
         self.graph = None
         self.n_cap = 0
+        self.SORT = (a.mode == "sub" and not a.no_fuse and not a.no_sort)
+        self.mA, self.volA = m, vol
+        if self.SORT:
+            self.perm = torch.zeros(Np, dtype=torch.long, device=dev)
+            self.mA, self.volA = m.clone(), vol.clone()
+            self.OX, self.OV, self.OF = z(Np, 3), z(Np, 3), z(Np, 9)
         self.fixd = None
 
     def _alloc(self, M, T, P):
@@ -369,11 +376,11 @@ class Opt:
             self.sz[2:3].zero_()
         EX.launch("ex_locate", Np, (np.int32(Np), EX.P(x), EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.tcm), EX.P(self.tmark),
                                     EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.sz)), b=256)
-        EX.launch("ex_p2g_mv", Np, (np.int32(Np), EX.P(self.rows), EX.P(self.lamb), EX.P(m), EX.P(v), EX.P(self.mn), EX.P(self.mv), np.int32(1 if a.mass == "tet" else 0)), b=256)
+        EX.launch("ex_p2g_mv", Np, (np.int32(Np), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA), EX.P(v), EX.P(self.mn), EX.P(self.mv), np.int32(1 if a.mass == "tet" else 0)), b=256)
         EX.launch("ex_vfin", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.mv), EX.P(self.vn)), b=256)
         EX.launch("ex_split", Np, (np.int32(Np), EX.P(x), EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.vn), np.float32(H),
                                    np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.int32(1 if FLOOR else 0), *PLf,
-                                   np.float32(a.eps_sp), np.float32(a.eps_st), EX.P(vol), EX.P(F), EX.P(self.VTs), EX.P(self.FTs),
+                                   np.float32(a.eps_sp), np.float32(a.eps_st), EX.P(self.volA), EX.P(F), EX.P(self.VTs), EX.P(self.FTs),
                                    EX.P(self.nslot), EX.P(self.nidx), EX.P(self.sz), np.int32(1 if keep else 0)), b=256)
         EX.launch("ex_ffin", Tc, (EX.P(self.sz), np.int32(0), EX.P(self.VTs), EX.P(self.FTs), EX.P(self.FT)), b=256)
 
@@ -386,8 +393,8 @@ class Opt:
         if FLOOR:
             self.gn.zero_()
             EX.launch("ex_near_force32" if a.near32 else "ex_near_force", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.cc), EX.P(Ucum),
-                                            EX.P(xc), EX.P(Fc), EX.P(self.F0i), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv), EX.P(m),
-                                            EX.P(vol), np.float64(h), *near_args(0), np.float64(mu), np.float64(lam), EX.P(self.gn)), b=64)
+                                            EX.P(xc), EX.P(Fc), EX.P(self.F0i), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv), EX.P(self.mA),
+                                            EX.P(self.volA), np.float64(h), *near_args(0), np.float64(mu), np.float64(lam), EX.P(self.gn)), b=64)
         EX.launch("ex_node_step", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.f), EX.P(self.gn if FLOOR else None), EX.P(self.vn),
                                        EX.P(self.dU), EX.P(Ucum), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs),
                                        np.float32(DAMP if a.mode == "lag" else 1.0), EX.P(self.fx if self.fixd else None), EX.P(self.vbc)), b=256)
@@ -409,14 +416,14 @@ class Opt:
                 if FLOOR:
                     EX.launch("ex_near_force32" if a.near32 else "ex_near_force", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c),
                               EX.P(self.F0c), EX.P(self.cc), EX.P(None), EX.P(xa), EX.P(Fa), EX.P(self.F0i), EX.P(self.rows), EX.P(self.lamb),
-                              EX.P(self.gl), EX.P(self.pinv), EX.P(m), EX.P(vol), np.float64(h), *near_args(0), np.float64(mu), np.float64(lam),
+                              EX.P(self.gl), EX.P(self.pinv), EX.P(self.mA), EX.P(self.volA), np.float64(h), *near_args(0), np.float64(mu), np.float64(lam),
                               EX.P(self.gn)), b=64)
                 EX.launch("ex_node_step_sub", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.mv), EX.P(self.f), EX.P(self.gn if FLOOR else None),
                                                    EX.P(self.dU), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs),
                                                    EX.P(self.fx if self.fixd else None), EX.P(self.vbc)), b=256)
-                EX.launch("ex_g2p_p2g", Np, (np.int32(Np), EX.P(xa), EX.P(Fa), EX.P(self.dU), EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv),
+                EX.launch("ex_g2p_p2g_seg" if self.SORT else "ex_g2p_p2g", Np, (np.int32(Np), EX.P(xa), EX.P(Fa), EX.P(self.dU), EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv),
                                              EX.P(self.gl), np.float32(hs), np.float32(DAMP), EX.P(xb), EX.P(vb), EX.P(Fb), np.int32(1 if j < a.N - 1 else 0),
-                                             EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.tcm), EX.P(self.tmark), EX.P(m), EX.P(vol),
+                                             EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.tcm), EX.P(self.tmark), EX.P(self.mA), EX.P(self.volA),
                                              EX.P(self.nslot), np.int32(1 if a.mass == "tet" else 0), EX.P(self.mn), EX.P(self.mv), EX.P(self.VTs),
                                              EX.P(self.FTs), EX.P(self.sz)), b=256)
         else:
@@ -450,12 +457,23 @@ class Opt:
             xa, va, Fa = x, v, Fv
         else:
             xa, va, Fa = self.X[0], self.V[0], self.FF[0]
-            xa.copy_(x)
-            va.copy_(v)
-            Fa.copy_(Fv)
+            if self.SORT:
+                # 입자를 사면체 번호로 정렬 (프레임마다 한 번) -> 서브스텝 P2G 를 워프 구간 합으로
+                EX.launch("ex_locate", Np, (np.int32(Np), EX.P(x), EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.tcm), EX.P(self.tmark),
+                                            EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.sz)), b=256)
+                self.perm.copy_(torch.sort(self.pinv)[1])
+                torch.index_select(x, 0, self.perm, out=xa)
+                torch.index_select(v, 0, self.perm, out=va)
+                torch.index_select(Fv, 0, self.perm, out=Fa)
+                torch.index_select(m, 0, self.perm, out=self.mA)
+                torch.index_select(vol, 0, self.perm, out=self.volA)
+            else:
+                xa.copy_(x)
+                va.copy_(v)
+                Fa.copy_(Fv)
         self._p2g(xa, va, Fa, h, False)                                             # 프레임 분할 (관성 예측 h v_n + h² g 의 끝 높이)
         if FLOOR:
-            EX.launch("ex_near_init", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(x), EX.P(v), EX.P(Fv), np.float32(h), np.float32(gv[0]),
+            EX.launch("ex_near_init", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(xa), EX.P(va), EX.P(Fa), np.float32(h), np.float32(gv[0]),
                                            np.float32(gv[1]), np.float32(gv[2]), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.F0i), EX.P(self.cc)), b=256)
         if lagm:
             self.Uc.zero_()
@@ -465,13 +483,13 @@ class Opt:
             if self.graph is None:
                 bufs = (self.vn, self.Uc, self.mn, self.mv, self.VTs, self.FTs, self.FT, self.rows, self.lamb, self.pinv)
                 snap = [t.clone() for t in bufs]
+                xs_snap = [t.clone() for t in (xa, va, Fa)]
                 self._substeps()                                                    # 데우기 (NVRTC 컴파일·지연 할당) -- 결과 버림
                 for t, s_ in zip(bufs, snap):
                     t.copy_(s_)
                 if not lagm:
-                    xa.copy_(x)
-                    va.copy_(v)
-                    Fa.copy_(Fv)
+                    for t, s_ in zip((xa, va, Fa), xs_snap):
+                        t.copy_(s_)
                 self.capture()
             self.graph.replay()
         if lagm:
@@ -487,6 +505,11 @@ class Opt:
             EX.launch("ex_near_fin", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(self.x0c), EX.P(self.F0c), EX.P(uc), EX.P(xc_), EX.P(Fc_),
                                           EX.P(self.F0i), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv), *near_args(0), np.float64(h),
                                           EX.P(x2), EX.P(v2), EX.P(F2)), b=128)
+        if self.SORT:
+            self.OX.index_copy_(0, self.perm, x2)
+            self.OV.index_copy_(0, self.perm, v2)
+            self.OF.index_copy_(0, self.perm, F2)
+            x2, v2, F2 = self.OX, self.OV, self.OF
         return x2, v2, F2.view(Np, 3, 3)
 
 
