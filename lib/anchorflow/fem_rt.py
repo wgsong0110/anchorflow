@@ -248,6 +248,36 @@ class NodeFrame:
                 g = g + (self.ks * w).unsqueeze(-1) * Ut_
         return E, g
 
+    def hess_gn(self, U):
+        """가우스-뉴턴 탄성 헤시안 (항상 양반정 -- 고유분해 투영 불필요): ψ = μ|X-R|² + λ/2 (J-1)² (X = A F̄) 에서 R 을 고정하고 (J-1)∂cof 항을 뺀다
+            ∂²E/∂A² ≈ V_T [2μ δ_cd (F̄F̄ᵀ)_be + λ q_cb q_de],  q = cof(X) F̄ᵀ = ∂J/∂A
+        -> 사면체 12x12 = (M4 + 2μ V_T ∇λ F̄F̄ᵀ ∇λᵀ) ⊗ I3 + λ V_T w wᵀ,  w_(i,c) = Σ_b q_cb ∇λ_ib.  방향만 바뀐다 (에너지·선탐색 그대로)."""
+        G = self.G
+        T = G.T
+        I3 = torch.eye(3, device=U.device, dtype=F8)
+        Ut = U.double()[G.tets]
+        A = I3 + (Ut.unsqueeze(-1) * self.gl.unsqueeze(-2)).sum(1)
+        X = A @ self.FT
+        q = PR._cof3(X) @ self.FT.transpose(1, 2)
+        S = self.FT @ self.FT.transpose(1, 2)
+        L4 = self.M4 + (2.0 * self.mu) * self.VT[:, None, None] * (self.gl @ S @ self.gl.transpose(1, 2))
+        H = (L4[:, :, None, :, None] * I3[None, None, :, None, :]).reshape(T, 12, 12)
+        w = torch.einsum("tcb,tib->tic", q, self.gl).reshape(T, 12)
+        H = H + (self.lam_ * self.VT)[:, None, None] * (w.unsqueeze(-1) * w.unsqueeze(-2))
+        return H, self._floor_hess(U)
+
+    def _floor_hess(self, U):
+        I3 = torch.eye(3, device=U.device, dtype=F8)
+        Dn = torch.zeros(self.G.M, 3, 3, device=U.device, dtype=F8)
+        for nr, cn, w in self.planes:
+            d = cn + U.double() @ nr
+            b2 = barrier3(d, self.dhat)[2]
+            N = nr[:, None] * nr[None, :]
+            Dn = Dn + (self.kb * b2)[:, None, None] * N
+            if self.k_st > 0:
+                Dn = Dn + (self.ks * w)[:, None, None] * (I3 - N)
+        return Dn
+
     def hess(self, U, kdt=torch.float32, f32_b=False):
         """(사면체 12x12 [T,12,12] float64 (투영 전), 노드 3x3 [M,3,3] (양반정, 투영 뒤 더한다))."""
         G = self.G
@@ -521,7 +551,15 @@ def coarsen(gi):
     par = torch.stack([c, c + r], 1)                                             # [M,2,3]
     mid = r.any(-1)
     w = torch.stack([torch.where(mid, 0.5, 1.0), torch.where(mid, 0.5, 0.0)], 1).to(F8)
-    gc, inv = torch.unique(par.reshape(-1, 3), dim=0, return_inverse=True)
+    q = par.reshape(-1, 3)
+    q0 = q.min(0).values
+    dims = q.max(0).values - q0 + 1
+    key = ((q[:, 0] - q0[0]) * dims[1] + (q[:, 1] - q0[1])) * dims[2] + (q[:, 2] - q0[2])
+    uk, inv = _compact(key, int(dims.prod()))
+    k2 = uk % dims[2]
+    k1 = (uk // dims[2]) % dims[1]
+    k0 = uk // (dims[1] * dims[2])
+    gc = torch.stack([k0, k1, k2], -1) + q0
     return gc, inv.reshape(-1, 2), w
 
 

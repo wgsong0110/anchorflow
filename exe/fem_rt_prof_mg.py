@@ -84,3 +84,29 @@ for dt in (torch.float64, torch.float32):
         print(pf.key_averages().table(sort_by="cuda_time_total", row_limit=8), flush=True)
 tm("CSR f64 곱 (PCG)", lambda: (A @ b.unsqueeze(-1)).squeeze(-1))
 tm("PCG MG 그래프 rtol1e-6", lambda: RT.pcg_graph(lambda q: (A @ q.unsqueeze(-1)).squeeze(-1), RT.KuhnMG(Be, nu=2, omega=0.6, A0csr=A), b.double(), 10000, 1e-6), 3)
+
+# ---- PCG 경로별: MG 만들기 / 그래프 잡기 / 반복 (같은 계) ----
+bd = b.double()
+mvA = lambda q: (A @ q.unsqueeze(-1)).squeeze(-1)
+for rt in (1e-6, 1e-3):
+    for dt in (torch.float64, torch.float32):
+        torch.cuda.synchronize(); t0 = time.perf_counter()
+        MG = RT.KuhnMG(Be, nu=2, omega=0.6, A0csr=A, dtype=dt)
+        torch.cuda.synchronize(); t1 = time.perf_counter()
+        r1 = RT.pcg(mvA, MG, bd, 10000, rt, 50)
+        torch.cuda.synchronize(); t2 = time.perf_counter()
+        r2 = RT.pcg_graph(mvA, MG, bd, 10000, rt)
+        torch.cuda.synchronize(); t3 = time.perf_counter()
+        r3 = RT.pcg_graph(mvA, MG, bd, 10000, rt)
+        torch.cuda.synchronize(); t4 = time.perf_counter()
+        print(f"[PCG rtol {rt:g} {dt}] MG 만들기 {1e3*(t1-t0):.1f} ms | 그래프 없음 {1e3*(t2-t1):.1f} ms ({r1[1]} 회) | 그래프 {1e3*(t3-t2):.1f} ms ({r2[1]} 회) "
+              f"| 그래프 다시 {1e3*(t4-t3):.1f} ms", flush=True)
+jacD = torch.linalg.inv(RT.block_diag(G.tets, He, G.M, Dn))
+jac = lambda r: (jacD @ r.reshape(-1, 3, 1)).reshape(-1)
+for rt in (1e-6, 1e-4, 1e-3):
+    torch.cuda.synchronize(); t1 = time.perf_counter()
+    r1 = RT.pcg(mvA, jac, bd, 10000, rt, 50)
+    torch.cuda.synchronize(); t2 = time.perf_counter()
+    r2 = RT.pcg_graph(mvA, jac, bd, 10000, rt)
+    torch.cuda.synchronize(); t3 = time.perf_counter()
+    print(f"[야코비 PCG rtol {rt:g}] 그래프 없음 {1e3*(t2-t1):.1f} ms ({r1[1]} 회) | 그래프 {1e3*(t3-t2):.1f} ms ({r2[1]} 회)", flush=True)

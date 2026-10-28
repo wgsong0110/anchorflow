@@ -61,6 +61,7 @@ ap.add_argument("--proj_gate", action="store_true", help="배치 Cholesky 로 �
 ap.add_argument("--graph", action="store_true", help="PCG 반복 한 번을 CUDA 그래프로 잡아 재생")
 ap.add_argument("--fast", action="store_true", help="정렬 없는 격자 압축, 자동미분 없는 E·기울기, 사면체 B 곱 float32")
 ap.add_argument("--bell", action="store_true", help="CSR 대신 블록 ELL (15 점 스텐실) 곱만 (패턴 정렬 없음)")
+ap.add_argument("--hess", choices=["newton", "gn"], default="newton", help="gn = 가우스-뉴턴 탄성 헤시안 (양반정, 고유분해 투영 없음; --floor node)")
 ap.add_argument("--prof", action="store_true", help="구간마다 CUDA 동기화해 정확한 구간 시간")
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--dump_sys", default="", help="쉼표 프레임 목록: 그 프레임 첫 걸음 선형계 (블록 ELL·b) 를 <out>/sys_t###.pt 로")
@@ -185,12 +186,15 @@ for i in range(L):
         Ec = float(E0)
         tk("eg")
         if a.floor == "node":
-            He, Dn = fr.hess(U, f32_b=a.fast)
+            He, Dn = fr.hess_gn(U) if a.hess == "gn" else fr.hess(U, f32_b=a.fast)
         else:
             He, _fi = fr.hess_tetq(U)
             Dn = None
         tk("hess")
-        He, negf = RT.project(He, a.eig_floor, gate=a.proj_gate)
+        if a.hess == "gn":
+            negf = None
+        else:
+            He, negf = RT.project(He, a.eig_floor, gate=a.proj_gate)
         tk("proj")
         if a.bell:
             Be = RT.BEll(G.gi)
