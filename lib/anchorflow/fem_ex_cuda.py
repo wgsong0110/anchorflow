@@ -851,6 +851,167 @@ __global__ void ex_g2p_p2g_seg(int N, const float* xa, const float* Fa, const fl
     float sF[9]; for (int k=0;k<9;k++) sF[k] = seg_scan(V*F2[k], key, lane);
     if (on && last && sV > 0.f) { atomicAdd(&VTs[t], sV); for (int k=0;k<9;k++) atomicAdd(&FTs[t*9+k], sF[k]); }
 }
+// ======== 절 S: lag 판 P2G 를 2 차 B-스플라인으로 (--p2g bs, 사용자 10-29) ========
+// 격자 = 사면체 메시 노드 격자 (Kuhn 정육면체 격자, 지표 좌표 y = Ai (x - lo), 노드 = 정수 y, 셀 c = [c, c+1]³, 셀 중심 = c + ½).
+// 축마다 2 차 B-스플라인 N(t) (|t| < ½: ¾ - t², ½ ≤ |t| < 3/2: ½ (3/2 - |t|)²), 분할 1 (Σ_k N(y - k) = 1, 어떤 정수 격자에서나).
+//   노드:  base = floor(y - ½), f = y - base, 노드 base..base+2 의 w = [½(1.5-f)², ¾-(f-1)², ½(f-½)²]   (fem_bs_cuda 와 같은 식)
+//   셀:   셀 중심 격자는 y_c = y - ½ 의 정수 격자 -> 같은 식을 y - ½ 에 (셀 base_c..base_c+2 = 주변 3³ 셀)
+__device__ __forceinline__ void bsl_w(float y, int& b, float* W, float* D) {
+    b = (int)floorf(y - 0.5f);
+    float f = y - (float)b;
+    W[0] = 0.5f*(1.5f-f)*(1.5f-f); W[1] = 0.75f-(f-1.f)*(f-1.f); W[2] = 0.5f*(f-0.5f)*(f-0.5f);
+    D[0] = f-1.5f; D[1] = -2.f*(f-1.f); D[2] = f-0.5f;
+}
+__device__ __forceinline__ void bsl_y(const float* x, const float* gpar, float* y) {
+    float q[3] = {x[0]-gpar[0], x[1]-gpar[1], x[2]-gpar[2]};
+    const float* Ai = gpar + 3;
+    for (int k=0;k<3;k++) y[k] = Ai[k*3]*q[0] + Ai[k*3+1]*q[1] + Ai[k*3+2]*q[2];
+}
+// 프레임 시작 P2G (입자마다 한 번):
+//   m_n += w(x_n - x_p) m_p,  (mv)_n += w m_p v_p                                  (27 노드, 압축 번호 ncm; 메시 밖 노드면 넘침 szp[3])
+//   cV_c += w(x_c - x_p) V_p,  cVF_c += w(x_c - x_p) V_p F_p                         (27 셀, 밀집 셀 번호; 메시 밖 셀이면 넘침)
+//   바닥 후보 (floor=1): 프레임 끝 예측 높이 (x + H v + H² g - p)·n ≤ margin 이면 nidx 에 (접촉 판정 대상 표시만 -- 판정은 서브스텝마다 정확히)
+__global__ void bsl_p2g(int N, const float* x, const float* v, const float* F, const float* m, const float* vol, const float* gpar, const int* ipar,
+                        const long long* ncm, const unsigned char* cmk, float* mn, float* mv, float* cV, float* cVF, int* szp,
+                        int floor, float H, float g0, float g1, float g2, float p0, float p1, float p2, float q0, float q1, float q2, float margin,
+                        long long* nidx) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    int n0=ipar[0], n1=ipar[1], n2=ipar[2];
+    float xp[3] = {x[p*3], x[p*3+1], x[p*3+2]}, vp[3] = {v[p*3], v[p*3+1], v[p*3+2]};
+    float y[3]; bsl_y(xp, gpar, y);
+    float mp = m[p], Vp = vol[p];
+    int b[3]; float W[3][3], D[3][3];
+    for (int k=0;k<3;k++) bsl_w(y[k], b[k], W[k], D[k]);
+    int ovf = 0;
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
+        int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
+        if (a0<0||a1<0||a2<0||a0>n0-1||a1>n1-1||a2>n2-1) { ovf = 1; continue; }
+        long long nd = ncm[((long long)a0*n1 + a1)*n2 + a2];
+        if (nd < 0) { ovf = 1; continue; }
+        float w = W[0][i]*W[1][j]*W[2][l]*mp;
+        atomicAdd(&mn[nd], w);
+        for (int c=0;c<3;c++) atomicAdd(&mv[nd*3+c], w*vp[c]);
+    }
+    float Fp[9]; for (int k=0;k<9;k++) Fp[k] = F[p*9+k];
+    for (int k=0;k<3;k++) bsl_w(y[k] - 0.5f, b[k], W[k], D[k]);
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
+        int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
+        if (a0<0||a1<0||a2<0||a0>n0-2||a1>n1-2||a2>n2-2) { ovf = 1; continue; }
+        long long c = ((long long)a0*n1 + a1)*n2 + a2;
+        if (!cmk[c]) { ovf = 1; continue; }
+        float w = W[0][i]*W[1][j]*W[2][l]*Vp;
+        atomicAdd(&cV[c], w);
+        for (int k=0;k<9;k++) atomicAdd(&cVF[c*9+k], w*Fp[k]);
+    }
+    if (ovf) atomicAdd(&szp[3], 1);
+    if (floor) {
+        float gg[3] = {g0, g1, g2};
+        float s = 0.f, nn[3] = {q0, q1, q2}, pp[3] = {p0, p1, p2};
+        for (int c=0;c<3;c++) s += (xp[c] + H*vp[c] + H*H*gg[c] - pp[c])*nn[c];
+        if (s <= margin) { int q = atomicAdd(&szp[2], 1); nidx[q] = p; }
+    }
+}
+// 사면체 상태: 셀 (정육면체 = Kuhn 사면체 6 개, 같은 부피) 의 F̄_c = cVF_c / cV_c, V_T = cV_c / 6.
+//   네 노드 중 질량 0 인 노드가 있으면 그 사면체는 힘에서 뺀다 (V_T = 0; 질량 0 노드에 힘을 걸 수 없다) -- 뺀 부피는 bst[0] 에 기록.
+__global__ void bsl_tfin(const int* szp, const long long* tcell, const long long* tets, const float* mn, const float* cV, const float* cVF,
+                         float* VTs, float* FT, float* bst) {
+    int T = szp[1];
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    long long c = tcell[t];
+    float V = cV[c];
+    if (V > 0.f) {
+        bool z = false;
+        for (int i=0;i<4;i++) if (!(mn[tets[t*4+i]] > 0.f)) z = true;
+        if (z) { VTs[t] = 0.f; atomicAdd(&bst[0], V/6.f); atomicAdd(&bst[1], 1.f); for (int k=0;k<9;k++) FT[t*9+k] = (k%4==0)?1.f:0.f; return; }
+        VTs[t] = V/6.f;
+        for (int k=0;k<9;k++) FT[t*9+k] = cVF[c*9+k]/V;
+    } else {
+        VTs[t] = 0.f;
+        for (int k=0;k<9;k++) FT[t*9+k] = (k%4==0)?1.f:0.f;
+    }
+}
+// 사면체 -> 밀집 셀 번호 (격자 만들 때)
+__global__ void ex_tet_cell(const int* ipar, const unsigned char* tmark, const long long* tcm, long long* tcell) {
+    long long s = (long long)blockIdx.x*blockDim.x + threadIdx.x;
+    long long P = (long long)ipar[0]*ipar[1]*ipar[2];
+    if (s >= P*9 || !tmark[s]) return;
+    tcell[tcm[s]] = s / 9;
+}
+// 입자의 프레임 변위 보간: bs = 1 -> u = Σ w(x_n - x_p⁰) U_n (B-스플라인), 0 -> Σλ U (사면체)
+__device__ __forceinline__ void bsl_interp_u(long long p, const float* x, const float* Ucum, const long long* rows, const float* lamb,
+                                             const float* gpar, const int* ipar, const long long* ncm, int bs, float* u) {
+    u[0]=u[1]=u[2]=0.f;
+    if (!bs) {
+        for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; float lm=lamb[p*4+i]; for (int a=0;a<3;a++) u[a] += lm*Ucum[nd*3+a]; }
+        return;
+    }
+    int n0=ipar[0], n1=ipar[1], n2=ipar[2];
+    float y[3]; bsl_y(x + p*3, gpar, y);
+    int b[3]; float W[3][3], D[3][3];
+    for (int k=0;k<3;k++) bsl_w(y[k], b[k], W[k], D[k]);
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
+        int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
+        if (a0<0||a1<0||a2<0||a0>n0-1||a1>n1-1||a2>n2-1) continue;
+        long long nd = ncm[((long long)a0*n1 + a1)*n2 + a2];
+        if (nd < 0) continue;
+        float w = W[0][i]*W[1][j]*W[2][l];
+        for (int a=0;a<3;a++) u[a] += w*Ucum[nd*3+a];
+    }
+}
+// 속도 바닥 접촉 (절 O 와 같은 판정·분배, 질량 가중만 B-스플라인): 바닥 후보 입자의 지금 위치 x_p⁰ + u (G2P 와 같은 보간) 높이 < 0 이면
+//   P2G 와 같은 질량 가중 w m_p 를 27 노드 acc 에 -> ex_node_step_lag 가 frac 고착 (1 - acc/m) + 비관통
+__global__ void bsl_vfl_contact(const int* szp, const long long* nidx, const float* x, const float* Ucum, const long long* rows, const float* lamb,
+                                const float* gpar, const int* ipar, const long long* ncm, const float* m, int g2pbs,
+                                float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon) {
+    int nn_ = szp[2];
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= nn_) return;
+    long long p = nidx[q];
+    float u[3]; bsl_interp_u(p, x, Ucum, rows, lamb, gpar, ipar, ncm, g2pbs, u);
+    float s = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
+    if (!(s < 0.f)) return;
+    int N0=ipar[0], N1=ipar[1], N2=ipar[2];
+    float y[3]; bsl_y(x + p*3, gpar, y);
+    int b[3]; float W[3][3], D[3][3];
+    for (int k=0;k<3;k++) bsl_w(y[k], b[k], W[k], D[k]);
+    float mp = m[p];
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
+        int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
+        if (a0<0||a1<0||a2<0||a0>N0-1||a1>N1-1||a2>N2-1) continue;
+        long long nd = ncm[((long long)a0*N1 + a1)*N2 + a2];
+        if (nd < 0) continue;
+        atomicAdd(&acc[nd], W[0][i]*W[1][j]*W[2][l]*mp);
+    }
+    if (ncon) atomicAdd(ncon, 1);
+}
+// 프레임 끝 B-스플라인 G2P (질량 가중과 같은 w): x = x⁰ + Σ w U_n, v = Σ w v_n, F ← (I + Σ U_n ⊗ ∇w_n(x⁰)) F
+__global__ void bsl_g2p(int N, const float* x, const float* Ucum, const float* Vn, const float* gpar, const int* ipar, const long long* ncm,
+                        const float* Fp, float* x2, float* v2, float* F2) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    int n0=ipar[0], n1=ipar[1], n2=ipar[2];
+    const float* Ai = gpar + 3;
+    float y[3]; bsl_y(x + p*3, gpar, y);
+    int b[3]; float W[3][3], D[3][3];
+    for (int k=0;k<3;k++) bsl_w(y[k], b[k], W[k], D[k]);
+    double u[3]={0,0,0}, vv[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1};
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
+        int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
+        if (a0<0||a1<0||a2<0||a0>n0-1||a1>n1-1||a2>n2-1) continue;
+        long long nd = ncm[((long long)a0*n1 + a1)*n2 + a2];
+        if (nd < 0) continue;
+        float w = W[0][i]*W[1][j]*W[2][l];
+        float gy0 = D[0][i]*W[1][j]*W[2][l], gy1 = W[0][i]*D[1][j]*W[2][l], gy2 = W[0][i]*W[1][j]*D[2][l];
+        float gx[3]; for (int c=0;c<3;c++) gx[c] = gy0*Ai[c] + gy1*Ai[3+c] + gy2*Ai[6+c];
+        for (int a=0;a<3;a++) { double Ua = Ucum[nd*3+a]; u[a] += w*Ua; vv[a] += w*(double)Vn[nd*3+a]; for (int c=0;c<3;c++) A[a*3+c] += Ua*gx[c]; }
+    }
+    for (int k=0;k<3;k++) { x2[p*3+k] = (float)((double)x[p*3+k] + u[k]); v2[p*3+k] = (float)vv[k]; }
+    double F[9]; for (int k=0;k<9;k++) F[k]=Fp[p*9+k];
+    double F2d[9]; mm3(A, F, F2d);
+    for (int k=0;k<9;k++) F2[p*9+k] = (float)F2d[k];
+}
 // 입자 재배열 (프레임 시작): dst[i] = src[perm[i]] (행 길이 k 의 float)
 __global__ void ex_gather_rows(int N, int k, const long long* perm, const float* src, float* dst) {
     long long i = (long long)blockIdx.x*blockDim.x + threadIdx.x;
