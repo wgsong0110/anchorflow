@@ -77,6 +77,9 @@ ap.add_argument("--lagdump", type=int, default=0,
                      "사면체 det A_T, 노드 접촉 질량 비 α (그 서브스텝 ex_vfl_contact 판정과 같은 식), 노드 위치·질량·점유율, 사면체, 입자 x·rows·λ "
                      "-> 실행 끝 (발산 포함) 에 <out>/lagdump.pt (0 = 끔). 10-30 확장: 서브스텝별 노드 내부력 f (걸음 직전), 프레임 F̄_T·∇λ (gl)·셀 입자 질량 m_T·입자 수·격자 Ai·μ·λ "
                      "(질량 vs 힘 진단, exe/fem_dv_stats.py; --p2g bs 판에도)")
+ap.add_argument("--fhist", action="store_true",
+                help="--lagdiag 덤프 (사용자 10-29 '응력이 왜 프레임 시작부터 큰가', 계산 불변): 프레임마다 시작 입자 x·v·F (f32)·입자 -> 사면체 pinv, "
+                     "사면체·노드 위치·∇λ (gl)·셀 F̄_T·V_T, 프레임 끝 노드 U·v -> <out>/fhist/fNNN.pt (exe/fem_fh_stats.py)")
 ap.add_argument("--rep", type=int, default=0,
                 help="절 P (--opt --mode lag 만, 사용자 10-29): K 서브스텝마다 입자에서 다시 평균 (0 = 끔, 기존 lag 판). 바닥·질량·에너지 정의 그대로")
 ap.add_argument("--rep_mode", choices=["full", "vel"], default="full",
@@ -154,6 +157,8 @@ REP = int(a.rep) if (a.rep and a.rep < a.N) else 0                              
 REPF = bool(REP) and a.rep_mode == "full"
 if REP and not (a.opt and a.mode == "lag" and a.interp == "bary"):
     raise SystemExit("--rep 은 --opt --mode lag 만")
+if a.fhist and not (a.lagdiag and a.opt and a.mode == "lag"):
+    raise SystemExit("--fhist 은 --opt --mode lag --lagdiag 와 함께")
 if a.lagdump and not (a.lagdiag and a.opt and a.mode == "lag"):
     raise SystemExit("--lagdump 은 --opt --mode lag --lagdiag 와 함께")
 if REP and (FLOOR or a.lagdiag):
@@ -972,6 +977,17 @@ class Opt:
               f"최대|v| 노드 [j,|v|,m/중앙,점유,r,α] {msmp[-1][:6]} "
               f"σ(A F̄) 최대 {rec['svAF_max']:.3g} 최소 {rec['svAF_min']:.3g}, 입자 F σ 최대 {rec['svFp_max']:.3g} (99.9% {rec['svFp_q999']:.3g}) 최소 {rec['svFp_min']:.3g}, 첫 비유한 서브스텝 {first_bad}, KE {ke:.4g}, 최대|U| {rec['Umax']:.4g}", flush=True)
 
+    def _fhist(self, i, v0):
+        """--fhist (읽기만): 이 프레임 시작 입자 상태·셀 상태·프레임 끝 노드 U (진단 루프 뒤, G2P 앞) -> <out>/fhist/fNNN.pt."""
+        M, T = self.M, self.T
+        cpu = lambda q: q.detach().cpu()
+        od = os.path.join(a.out, "fhist")
+        os.makedirs(od, exist_ok=True)
+        torch.save(dict(t=i, x=cpu(self._xp).float(), v=cpu(v0).float(), F=cpu(self._Fp).float().reshape(Np, 9), pinv=cpu(self.pinv[:Np]).int(),
+                        nidx=cpu(self.nidx[:int(self.sz[2])]).int(), tets=cpu(self.tets[:T]).int(), npos=cpu(self.npos), gl=cpu(self.gl[:T]),
+                        FT=cpu(self.FT[:T]), VT=cpu(self.VTs[:T]), mn=cpu(self.mn[:M]), Uend=cpu(self.Uc[:M]), Vend=cpu(self.vn[:M]), Ai=cpu(self.Ai),
+                        plane=(pt_, nr_) if HASPL else None, mu=float(mu), lam=float(lam)), os.path.join(od, f"f{i:03d}.pt"))
+
     def bsdiag(self, i):
         """절 S 진단 (측정 밖, 이 프레임 P2G 직후 상태 -- mn·VTs·rows·λ 는 서브스텝이 바꾸지 않는다):
         노드 질량 세 정의 (B-스플라인 Σ w m / 셀 집중 m_T/4 (절 R lag 판) / Σλm) 분포, 국소 안정 비 (Gershgorin r_n = h_s ω_n / 2,
@@ -1100,6 +1116,8 @@ class Opt:
             self._Fp = Fv.view(Np, 3, 3)
             self._xp = x
             self._lagdiag(i)
+            if a.fhist:
+                self._fhist(i, va)
         elif a.no_graph:
             self._substeps()
         else:
