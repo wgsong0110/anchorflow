@@ -270,12 +270,14 @@ if a.g2p == "bs" and not BSL:
     raise SystemExit("--g2p bs 는 --p2g bs 와 함께")
 if (SRL or SB) and (NINT or BSL):
     raise SystemExit("--lim_sr/--sb 는 절 R 경로 (--p2g bary, 노드 적분 없음) 만")
-if CC and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP and RNEW and not (NINT or CQ or SB or BSL) and SPM == "none" and LIM and a.lim_mode == "box"):
+if CC and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP and RNEW and not (NINT or CQ or SB or BSL) and not SPG and LIM and a.lim_mode == "box"):
     raise SystemExit("절 C (--cfast 등) 는 --opt --mode lag 상자 판 이동 제한 (--lim_sr 또는 --lim --lim_mode box) 경로만")
 if a.adapt != "none" and not a.cfuse:
     raise SystemExit("--adapt 는 --cfuse 와 함께")
 if a.sr_ef and not (a.sr_fast and (a.cfuse_mode == 2 or not a.cfuse)):
     raise SystemExit("--sr_ef 는 --sr_fast (--cfuse 면 --cfuse_mode 2) 와 함께")
+if a.cfuse and SPM == "mlow" and a.cfuse_mode != 2:
+    raise SystemExit("--sp mlow + --cfuse 는 --cfuse_mode 2 만 (노드 걸음 커널이 따로인 판)")
 if a.cfuse and not (SRL and not FLOOR and not a.cchk):
     raise SystemExit("--cfuse 는 --lim_sr (에너지 바닥·검산 없음) 만")
 if a.vfl_cull and not VFL and HASPL:
@@ -806,6 +808,7 @@ class Opt:
         elif SPM == "stiff":
             w = (occ / a.sp_wocc).clamp(max=1.0)
             self.VF[:T] = torch.where(sp, VT * w, VT)
+            self.VTs[:T] = self.VF[:T]                                                # 응력 부피를 제자리로 (VTs 는 F̄ 나누기 (ex_ffin) 뒤에는 힘 가중·점유 판정 (> 0) 에만 쓰인다 -> 절 C 빠른 경로와 같이 쓸 수 있게)
         elif SPM == "mlow":
             mn = self.mn[:M]
             if not hasattr(self, "mlow_v"):
@@ -874,7 +877,7 @@ class Opt:
                                np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
         hs_, damp_ = self.hscur, self.dampcur
         if a.cfuse_mode == 2:
-            EX.launch("ex_node_step_lag", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(None), EX.P(self.vn), EX.P(self.Uc),
+            EX.launch("ex_node_step_lag", Mc, (EX.P(self.sz), EX.P(self.mI if SPM == "mlow" else self.mn), EX.P(self.f), EX.P(None), EX.P(self.vn), EX.P(self.Uc),
                                                np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs_), np.float32(damp_),
                                                EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
                                                np.int32(1 if a.vfl_mode == "full" else 0), np.int32(a.vfl_np), *PLf[3:], np.int32(1)), b=256)

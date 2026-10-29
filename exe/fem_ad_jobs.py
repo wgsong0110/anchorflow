@@ -14,9 +14,13 @@ V = V1
 if os.environ.get("AD_SET") == "2":
     V = [eval(q) for q in os.environ["AD_V2"].split(";")] if os.environ.get("AD_V2") else []
 CL = [("c5", "--lim_sr 5"), ("c0", "")]
+if os.environ.get("AD_CL") == "c5":
+    CL = CL[:1]
+NS = [int(q) for q in os.environ.get("AD_N", "192 256").split()]
+NR = int(os.environ.get("AD_R", "5"))
 J = []
-for r in range(1, 6):
-    for N in (192, 256):
+for r in range(1, NR + 1):
+    for N in NS:
         for nm, ar in V:
             for cn, ca in CL:
                 J.append(f"fem_ad_lego ad_l_{nm}_{cn}_n{N}_r{r} {LB} {ar} {ca} --N {N}")

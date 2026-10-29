@@ -14,5 +14,5 @@ while read -r ROOT TG ARGS; do
     O=/home/dkta/work/lbours/$ROOT/$TG; echo "$(date +%T) $TG $( [ -f $O/EX_DONE ] && echo 끝 || echo 실패) $(grep -a '롤아웃\]' $O/v_fem.log 2>/dev/null | cut -c1-160)"
   fi
   i=$((i + 1))
-done < <(python $JL)
+done < <(case $JL in cat_*) cat ${JL#cat_};; *) python $JL;; esac)
 echo "[카드 $G 일꾼 $k] 끝 $n 개 $(date +%T)"
