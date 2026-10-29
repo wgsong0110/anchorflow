@@ -874,7 +874,7 @@ __device__ __forceinline__ void bsl_y(const float* x, const float* gpar, float* 
 __global__ void bsl_p2g(int N, const float* x, const float* v, const float* F, const float* m, const float* vol, const float* gpar, const int* ipar,
                         const long long* ncm, const unsigned char* cmk, float* mn, float* mv, float* cV, float* cVF, int* szp,
                         int floor, float H, float g0, float g1, float g2, float p0, float p1, float p2, float q0, float q1, float q2, float margin,
-                        long long* nidx) {
+                        long long* nidx, int nrm, float* bst) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     int n0=ipar[0], n1=ipar[1], n2=ipar[2];
@@ -884,23 +884,47 @@ __global__ void bsl_p2g(int N, const float* x, const float* v, const float* F, c
     int b[3]; float W[3][3], D[3][3];
     for (int k=0;k<3;k++) bsl_w(y[k], b[k], W[k], D[k]);
     int ovf = 0;
+    // 절 T (nrm = 1): 메시에 있는 노드에만 쓰고, 입자마다 메시 안 노드 가중 합 Win 으로 나눠 Σ_n w = 1 (총 질량·운동량 보존). 메시 밖 몫은 넘침이 아니다.
+    float sn = 1.f;
+    if (nrm) {
+        float Win = 0.f;
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
+            int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
+            if (a0<0||a1<0||a2<0||a0>n0-1||a1>n1-1||a2>n2-1) continue;
+            if (ncm[((long long)a0*n1 + a1)*n2 + a2] < 0) continue;
+            Win += W[0][i]*W[1][j]*W[2][l];
+        }
+        if (Win > 0.f) { sn = 1.f/Win; if (bst) atomicAdd(&bst[2], (1.f - Win)*mp); } else ovf = 1;
+    }
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
         int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
-        if (a0<0||a1<0||a2<0||a0>n0-1||a1>n1-1||a2>n2-1) { ovf = 1; continue; }
+        if (a0<0||a1<0||a2<0||a0>n0-1||a1>n1-1||a2>n2-1) { if (!nrm) ovf = 1; continue; }
         long long nd = ncm[((long long)a0*n1 + a1)*n2 + a2];
-        if (nd < 0) { ovf = 1; continue; }
-        float w = W[0][i]*W[1][j]*W[2][l]*mp;
+        if (nd < 0) { if (!nrm) ovf = 1; continue; }
+        float w = W[0][i]*W[1][j]*W[2][l]*sn*mp;
         atomicAdd(&mn[nd], w);
         for (int c=0;c<3;c++) atomicAdd(&mv[nd*3+c], w*vp[c]);
     }
     float Fp[9]; for (int k=0;k<9;k++) Fp[k] = F[p*9+k];
     for (int k=0;k<3;k++) bsl_w(y[k] - 0.5f, b[k], W[k], D[k]);
+    // 절 T (nrm = 1): 셀도 메시에 있는 셀에만, 메시 안 셀 가중 합 Cin 으로 나눠 Σ_c w = 1 (총 부피 보존)
+    float sc = 1.f;
+    if (nrm) {
+        float Cin = 0.f;
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
+            int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
+            if (a0<0||a1<0||a2<0||a0>n0-2||a1>n1-2||a2>n2-2) continue;
+            if (!cmk[((long long)a0*n1 + a1)*n2 + a2]) continue;
+            Cin += W[0][i]*W[1][j]*W[2][l];
+        }
+        if (Cin > 0.f) { sc = 1.f/Cin; if (bst) atomicAdd(&bst[3], (1.f - Cin)*Vp); } else ovf = 1;
+    }
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
         int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
-        if (a0<0||a1<0||a2<0||a0>n0-2||a1>n1-2||a2>n2-2) { ovf = 1; continue; }
+        if (a0<0||a1<0||a2<0||a0>n0-2||a1>n1-2||a2>n2-2) { if (!nrm) ovf = 1; continue; }
         long long c = ((long long)a0*n1 + a1)*n2 + a2;
-        if (!cmk[c]) { ovf = 1; continue; }
-        float w = W[0][i]*W[1][j]*W[2][l]*Vp;
+        if (!cmk[c]) { if (!nrm) ovf = 1; continue; }
+        float w = W[0][i]*W[1][j]*W[2][l]*sc*Vp;
         atomicAdd(&cV[c], w);
         for (int k=0;k<9;k++) atomicAdd(&cVF[c*9+k], w*Fp[k]);
     }
@@ -941,7 +965,7 @@ __global__ void ex_tet_cell(const int* ipar, const unsigned char* tmark, const l
 }
 // 입자의 프레임 변위 보간: bs = 1 -> u = Σ w(x_n - x_p⁰) U_n (B-스플라인), 0 -> Σλ U (사면체)
 __device__ __forceinline__ void bsl_interp_u(long long p, const float* x, const float* Ucum, const long long* rows, const float* lamb,
-                                             const float* gpar, const int* ipar, const long long* ncm, int bs, float* u) {
+                                             const float* gpar, const int* ipar, const long long* ncm, int bs, float* u, int nrm) {
     u[0]=u[1]=u[2]=0.f;
     if (!bs) {
         for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; float lm=lamb[p*4+i]; for (int a=0;a<3;a++) u[a] += lm*Ucum[nd*3+a]; }
@@ -951,25 +975,28 @@ __device__ __forceinline__ void bsl_interp_u(long long p, const float* x, const 
     float y[3]; bsl_y(x + p*3, gpar, y);
     int b[3]; float W[3][3], D[3][3];
     for (int k=0;k<3;k++) bsl_w(y[k], b[k], W[k], D[k]);
+    float Win = 0.f;
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
         int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
         if (a0<0||a1<0||a2<0||a0>n0-1||a1>n1-1||a2>n2-1) continue;
         long long nd = ncm[((long long)a0*n1 + a1)*n2 + a2];
         if (nd < 0) continue;
         float w = W[0][i]*W[1][j]*W[2][l];
+        Win += w;
         for (int a=0;a<3;a++) u[a] += w*Ucum[nd*3+a];
     }
+    if (nrm && Win > 0.f) for (int a=0;a<3;a++) u[a] /= Win;                     // 절 T: P2G 와 같은 정규화 (메시 안 노드 가중 합)
 }
 // 속도 바닥 접촉 (절 O 와 같은 판정·분배, 질량 가중만 B-스플라인): 바닥 후보 입자의 지금 위치 x_p⁰ + u (G2P 와 같은 보간) 높이 < 0 이면
 //   P2G 와 같은 질량 가중 w m_p 를 27 노드 acc 에 -> ex_node_step_lag 가 frac 고착 (1 - acc/m) + 비관통
 __global__ void bsl_vfl_contact(const int* szp, const long long* nidx, const float* x, const float* Ucum, const long long* rows, const float* lamb,
                                 const float* gpar, const int* ipar, const long long* ncm, const float* m, int g2pbs,
-                                float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon) {
+                                float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon, int nrm) {
     int nn_ = szp[2];
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     if (q >= nn_) return;
     long long p = nidx[q];
-    float u[3]; bsl_interp_u(p, x, Ucum, rows, lamb, gpar, ipar, ncm, g2pbs, u);
+    float u[3]; bsl_interp_u(p, x, Ucum, rows, lamb, gpar, ipar, ncm, g2pbs, u, nrm);
     float s = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
     if (!(s < 0.f)) return;
     int N0=ipar[0], N1=ipar[1], N2=ipar[2];
@@ -977,6 +1004,16 @@ __global__ void bsl_vfl_contact(const int* szp, const long long* nidx, const flo
     int b[3]; float W[3][3], D[3][3];
     for (int k=0;k<3;k++) bsl_w(y[k], b[k], W[k], D[k]);
     float mp = m[p];
+    if (nrm) {                                                                   // 절 T: P2G 와 같은 정규화 가중 (메시 안 노드 합 = 1)
+        float Win = 0.f;
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
+            int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
+            if (a0<0||a1<0||a2<0||a0>N0-1||a1>N1-1||a2>N2-1) continue;
+            if (ncm[((long long)a0*N1 + a1)*N2 + a2] < 0) continue;
+            Win += W[0][i]*W[1][j]*W[2][l];
+        }
+        if (Win > 0.f) mp /= Win;
+    }
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
         int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
         if (a0<0||a1<0||a2<0||a0>N0-1||a1>N1-1||a2>N2-1) continue;
@@ -988,7 +1025,7 @@ __global__ void bsl_vfl_contact(const int* szp, const long long* nidx, const flo
 }
 // 프레임 끝 B-스플라인 G2P (질량 가중과 같은 w): x = x⁰ + Σ w U_n, v = Σ w v_n, F ← (I + Σ U_n ⊗ ∇w_n(x⁰)) F
 __global__ void bsl_g2p(int N, const float* x, const float* Ucum, const float* Vn, const float* gpar, const int* ipar, const long long* ncm,
-                        const float* Fp, float* x2, float* v2, float* F2) {
+                        const float* Fp, float* x2, float* v2, float* F2, int nrm) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     int n0=ipar[0], n1=ipar[1], n2=ipar[2];
@@ -996,15 +1033,29 @@ __global__ void bsl_g2p(int N, const float* x, const float* Ucum, const float* V
     float y[3]; bsl_y(x + p*3, gpar, y);
     int b[3]; float W[3][3], D[3][3];
     for (int k=0;k<3;k++) bsl_w(y[k], b[k], W[k], D[k]);
+    // 절 T (nrm = 1): 메시 안 노드만, 정규화 가중 w~ = w / Win, 기울기 ∇w~ = (∇w - w~ ∇Win) / Win (Σ ∇w~ = 0 -- 강체 이동이면 A = I)
+    double Win = 1.0, gW[3] = {0,0,0};
+    if (nrm) {
+        Win = 0.0;
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
+            int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
+            if (a0<0||a1<0||a2<0||a0>n0-1||a1>n1-1||a2>n2-1) continue;
+            if (ncm[((long long)a0*n1 + a1)*n2 + a2] < 0) continue;
+            Win += (double)(W[0][i]*W[1][j]*W[2][l]);
+            float gy0 = D[0][i]*W[1][j]*W[2][l], gy1 = W[0][i]*D[1][j]*W[2][l], gy2 = W[0][i]*W[1][j]*D[2][l];
+            for (int c=0;c<3;c++) gW[c] += gy0*Ai[c] + gy1*Ai[3+c] + gy2*Ai[6+c];
+        }
+        if (!(Win > 0.0)) { Win = 1.0; gW[0]=gW[1]=gW[2]=0.0; }
+    }
     double u[3]={0,0,0}, vv[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1};
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int l=0;l<3;l++) {
         int a0=b[0]+i, a1=b[1]+j, a2=b[2]+l;
         if (a0<0||a1<0||a2<0||a0>n0-1||a1>n1-1||a2>n2-1) continue;
         long long nd = ncm[((long long)a0*n1 + a1)*n2 + a2];
         if (nd < 0) continue;
-        float w = W[0][i]*W[1][j]*W[2][l];
+        double w = (double)(W[0][i]*W[1][j]*W[2][l]) / Win;
         float gy0 = D[0][i]*W[1][j]*W[2][l], gy1 = W[0][i]*D[1][j]*W[2][l], gy2 = W[0][i]*W[1][j]*D[2][l];
-        float gx[3]; for (int c=0;c<3;c++) gx[c] = gy0*Ai[c] + gy1*Ai[3+c] + gy2*Ai[6+c];
+        double gx[3]; for (int c=0;c<3;c++) gx[c] = ((double)(gy0*Ai[c] + gy1*Ai[3+c] + gy2*Ai[6+c]) - w*gW[c]) / Win;
         for (int a=0;a<3;a++) { double Ua = Ucum[nd*3+a]; u[a] += w*Ua; vv[a] += w*(double)Vn[nd*3+a]; for (int c=0;c<3;c++) A[a*3+c] += Ua*gx[c]; }
     }
     for (int k=0;k<3;k++) { x2[p*3+k] = (float)((double)x[p*3+k] + u[k]); v2[p*3+k] = (float)vv[k]; }
