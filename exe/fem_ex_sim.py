@@ -104,6 +104,11 @@ ap.add_argument("--lim_sr_chk", action="store_true", help="절 Z (1) 검산: 이
 ap.add_argument("--sb", type=float, default=0.0, help="절 Z (2) 로그 장벽 강성 κ: 사면체 에너지에 V_T κ μ b(c - σ1/σ3(A_T); d̂) (0 = 끔)")
 ap.add_argument("--sb_c", type=float, default=2.0, help="--sb 의 비율 상한 c")
 ap.add_argument("--sb_dhat", type=float, default=-1.0, help="--sb 의 d̂ (장벽이 켜지는 거리 c - r < d̂; 음수면 0.5 (c - 1))")
+ap.add_argument("--cq", action="store_true",
+                help="절 AA: 셀 에너지 = 셀 안 입자 에너지 평균의 2 차 근사 V_T [ψ(A F̄) + ½<∂²ψ(A F̄), (A⊗I) Σ_F (A⊗I)ᵀ>] (Σ_F = 셀 입자 F 공분산 9x9, P2G 에서 한 번)")
+ap.add_argument("--cq_h", choices=["km", "cf"], default="km", help="--cq 의 헤시안: km = 기존 해석 헤시안 장치 함수 kmanual (기본), cf = 같은 헤시안 닫힌 식 (빠른 판)")
+ap.add_argument("--cqchk", default="", help="--cq 검산 (측정 밖): 이 프레임들 (1 부터, 쉼표) 끝에서 셀 에너지 세 가지 (2 차 근사 / 입자 적분 / ψ(A F̄)) 상대 차, 힘 vs float64 자동 미분·중앙 차분 -> cqchk.jsonl")
+ap.add_argument("--fspread", type=int, default=0, help="측정 밖: K 프레임마다 입자 F 이웃 벌어짐 ‖F_p − 16-NN 평균‖ (우리 / 정답, 전체 표본·입자 1~2 개 셀 표본; 절 Y 지표) -> fem.jsonl (0 = 끔)")
 ap.add_argument("--rstat", action="store_true", help="절 R 통계 (뒤집힌 셀 수 등) -- --fb·--lim 이 없어도 같은 사면체 힘 커널 (ex_tet_force_R, κ 0) 로 (기준 판 비교용)")
 ap.add_argument("--p2g", choices=["bary", "bs"], default="bary",
                 help="절 S (--opt --mode lag, 사용자 10-29): bs = 프레임 시작 P2G 를 2 차 B-스플라인으로 -- 노드 질량 m_n = Σ w(x_n - x_p) m_p·운동량 Σ w m_p v_p (27 노드), "
@@ -188,7 +193,12 @@ if SB and not (a.sb_c > 1.0 and SB_D > 0):
     raise SystemExit("--sb: c > 1, d̂ > 0 이어야")
 if SRL and a.lim_mode != "box":
     raise SystemExit("--lim_sr 은 --lim_mode box (Jacobi 상자 판) 만")
-RNEW = a.fb > 0 or a.lim >= 0 or SRL or SB or a.rstat or a.p2g == "bs" or NINT                                         # 절 R 경로 (사면체 힘 ex_tet_force_R + 통계)
+CQ = bool(a.cq)                                                                     # 절 AA: 2 차 근사 셀 에너지
+if CQ and (NINT or SB or a.fb > 0 or a.p2g != "bary" or a.rep or a.affine or a.mode != "lag" or not a.opt or a.interp != "bary" or a.floor == "particle"):
+    raise SystemExit("--cq 는 --opt --mode lag --p2g bary (노드 적분·장벽·재평균·아핀·에너지 바닥 없음) 만")
+if a.cqchk and not CQ:
+    raise SystemExit("--cqchk 은 --cq 와 함께")
+RNEW = a.fb > 0 or a.lim >= 0 or SRL or SB or a.rstat or a.p2g == "bs" or NINT or CQ                                         # 절 R 경로 (사면체 힘 ex_tet_force_R + 통계)
 LIM = a.lim >= 0 or SRL
 BSL = a.p2g == "bs"                                                                  # 절 S: lag 판 B-스플라인 P2G
 G2PBS = BSL and a.g2p == "bs"
@@ -245,6 +255,7 @@ print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N
       + (f", [절 R] log J 장벽 κ {a.fb:g} Ĵ {a.fb_jhat:g} J=det({'A F̄' if a.fb_on == 'X' else 'A'})" if a.fb > 0 else "")
       + (f", [절 R] 이동 제한 det A_T ≥ {a.lim:g} ({'상자 꼭짓점 Jacobi' if a.lim_mode == 'box' else '8 색 Gauss-Seidel'}, 속도 {a.lim_v})" if a.lim >= 0 else "")
       + (f", [절 Z] 비율 클램프 σ1/σ3(A_T) ≤ {a.lim_sr:g} (상자 꼭짓점 이분 + Weyl, Jacobi, 속도 {a.lim_v}){' + 검산' if a.lim_sr_chk else ''}" if SRL else "")
+      + (f", [절 AA] 셀 에너지 2 차 근사 (F̄ + 공분산 Σ_F 9x9, 헤시안 {'kmanual' if a.cq_h == 'km' else '닫힌 식'})" if CQ else "")
       + (f", [절 Z] 비율 로그 장벽 κ {a.sb:g} c {a.sb_c:g} d̂ {SB_D:g}" if SB else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
 print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), {'격자 간격 dx' if BSP else 'Kuhn 최소 높이'} {lmin:.5f} (node_h {a.node_h}), "
       f"Δt_CFL = {dt_cfl:.3e} s -> N_CFL = h/Δt_CFL = {h / dt_cfl:.1f} (지금 h_s/Δt_CFL = {hs / dt_cfl:.3f})", flush=True)
@@ -442,6 +453,8 @@ class Opt:
             self.gl = torch.zeros(self.Tcap, 12, device=dev)
             self.tets = torch.zeros(self.Tcap, 4, dtype=torch.long, device=dev)
             self.tcell = torch.zeros(self.Tcap, dtype=torch.long, device=dev)
+            if CQ:
+                self.CS = torch.zeros(self.Tcap, 45, device=dev)                     # 절 AA: 셀 입자 F 공분산 (위 삼각 45)
             if NINT:
                 self.XTu = torch.zeros(self.Tcap, 9, device=dev)                     # 절 V: 사면체 (V_T/4) F_T
             new = True
@@ -580,6 +593,11 @@ class Opt:
                                    EX.P(self.VTs), EX.P(self.FTs), EX.P(self.nslot), EX.P(self.nidx), EX.P(self.sz), np.int32(1 if keep else 0),
                                    np.int32(1 if VFL else 0)), b=256)
         EX.launch("ex_ffin", Tc, (EX.P(self.sz), np.int32(0), EX.P(self.VTs), EX.P(self.FTs), EX.P(self.FT)), b=256)
+        if CQ:                                                                       # 절 AA: 두 번째 패스 -- 같은 입자 집합의 F 공분산
+            self.CS.zero_()
+            EX.launch("ex_cov_acc", Np, (np.int32(Np), EX.P(self.pinv), EX.P(self.nslot), np.int32(1 if VFL else 0), EX.P(self.volA), EX.P(F),
+                                         EX.P(self.FT), EX.P(self.CS)), b=256)
+            EX.launch("ex_cov_fin", Tc, (EX.P(self.sz), EX.P(self.VTs), EX.P(self.CS)), b=256)
 
     def _p2g_bs(self, x, v, F):
         """절 S 프레임 시작 P2G (B-스플라인): 노드 질량·운동량 (27 노드), 셀 V·VF (셀 중심 27 셀) -> 사면체 V_T = V_c/6·F̄; 사면체 locate (barycentric G2P·진단용)."""
@@ -631,6 +649,9 @@ class Opt:
         Mc, Tc = self.Mcap, self.Tcap
         if NINT:                                                                    # 절 V: 노드 적분 내부력 (커널 3 개)
             self._nint_force()
+        elif CQ:                                                                    # 절 AA: 2 차 근사 셀 에너지 힘
+            EX.launch("ex_tet_force_CQ", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), EX.P(self.CS),
+                                              np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(0 if a.cq_h == "km" else 1)))
         elif SB:                                                                    # 절 Z (2): ex_tet_force_R + 비율 장벽
             EX.launch("ex_tet_force_SR", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
                                               np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(a.fb), np.float32(a.fb_jhat),
@@ -1462,6 +1483,198 @@ class _Diverge(Exception):
 
 
 OPT = BS(a.opt) if BSP else (Opt() if a.opt else None)
+
+
+# ---------------------------------------------------------------- 절 AA 검산·이웃 벌어짐 (측정 밖)
+def _cof64(Q):
+    a_, b_, c_ = Q[..., 0, 0], Q[..., 0, 1], Q[..., 0, 2]
+    d_, e_, f_ = Q[..., 1, 0], Q[..., 1, 1], Q[..., 1, 2]
+    g_, h_, i_ = Q[..., 2, 0], Q[..., 2, 1], Q[..., 2, 2]
+    return torch.stack([torch.stack([e_ * i_ - f_ * h_, f_ * g_ - d_ * i_, d_ * h_ - e_ * g_], -1),
+                        torch.stack([c_ * h_ - b_ * i_, a_ * i_ - c_ * g_, b_ * g_ - a_ * h_], -1),
+                        torch.stack([b_ * f_ - c_ * e_, c_ * d_ - a_ * f_, a_ * e_ - b_ * d_], -1)], -2)
+
+
+def psi64(X):
+    """커널과 같은 FCR (float64): μ‖X − Q‖² + λ/2 (|det X| − 1)², Q = 크기 조정 뉴턴 극분해 10 회 (polar 장치 함수 그대로)."""
+    Q = X
+    for _ in range(10):
+        dt = _det3(Q)
+        ds = torch.where(dt.abs() > 1e-30, dt, torch.full_like(dt, 1e-30))
+        gm = ds.abs().pow(-1.0 / 3.0)
+        Q = 0.5 * (gm[..., None, None] * Q + _cof64(Q) / (ds * gm)[..., None, None])
+    return mu * ((X - Q) ** 2).sum((-1, -2)) + 0.5 * lam * (_det3(X).abs() - 1.0) ** 2
+
+
+def _psi9(x9):
+    return psi64(x9.view(3, 3))
+
+
+_HESS = torch.func.vmap(torch.func.hessian(_psi9))
+
+
+def cq_energy(A, Fb, CS9):
+    """셀별 [ψ(A F̄), ½<H, S>] (float64). A·Fb [T,3,3], CS9 [T,9,9]."""
+    X = A @ Fb
+    H = _HESS(X.reshape(-1, 9))
+    Sx = torch.einsum("trk,tsl,tkcld->trcsd", A, A, CS9.view(-1, 3, 3, 3, 3)).reshape(-1, 9, 9)
+    return psi64(X), 0.5 * (H * Sx).sum((-1, -2))
+
+
+def _cs_full(CS):
+    iu = torch.triu_indices(9, 9, device=CS.device)
+    M_ = torch.zeros(CS.shape[0], 9, 9, device=CS.device, dtype=torch.float64)
+    M_[:, iu[0], iu[1]] = CS.double()
+    M_[:, iu[1], iu[0]] = CS.double()
+    return M_
+
+
+def _tet_e_U(Uloc, gl4, Fb, CS9, V):
+    """사면체 하나의 2 차 근사 에너지 (자동 미분용, float64): Uloc [4,3]."""
+    A = torch.eye(3, dtype=torch.float64, device=Uloc.device) + torch.einsum("ic,ib->cb", Uloc, gl4)
+    X = A @ Fb
+    H = torch.func.hessian(_psi9)(X.reshape(9))
+    Sx = torch.einsum("rk,sl,kcld->rcsd", A, A, CS9.view(3, 3, 3, 3)).reshape(9, 9)
+    return V * (psi64(X) + 0.5 * (H * Sx).sum())
+
+
+_TET_G = torch.func.vmap(torch.func.grad(_tet_e_U))
+_TET_E = torch.func.vmap(_tet_e_U)
+
+
+def cq_check(i, Fstart):
+    """프레임 i 끝 (G2P 직전 U) 에서: (1) 셀 에너지 세 가지 -- 2 차 근사 / 입자 적분 (1/V_T) Σ V_p ψ(A F_p) / ψ(A F̄) -- 의 상대 차를
+    입자 수 칸·Σ_F 큰 셀 칸별로, A = 프레임 끝 A_T 와 A = I 둘 다; (2) 힘: 커널 (km·cf) vs float64 자동 미분 (∂³ψ 포함) vs 에너지 중앙 차분."""
+    T_ = OPT.T
+    occ = OPT.VTs[:T_] > 0
+    tid = torch.nonzero(occ).squeeze(1)
+    U = OPT.Uc.double()
+    tets = OPT.tets[:T_][tid]
+    gl4 = OPT.gl[:T_][tid].view(-1, 4, 3).double()
+    Fb = OPT.FT[:T_][tid].view(-1, 3, 3).double()
+    VT = OPT.VTs[:T_][tid].double()
+    CS9 = _cs_full(OPT.CS[:T_][tid])
+    trS = CS9.diagonal(dim1=-2, dim2=-1).sum(-1)
+    Aend = torch.eye(3, dtype=torch.float64, device=dev) + torch.einsum("tic,tib->tcb", U[tets.reshape(-1)].view(-1, 4, 3), gl4)
+    # 입자 -> 점유 사면체 순번 (P2G 와 같은 집합: --floor vel·바닥 없음이면 전부)
+    rank = torch.full((T_,), -1, dtype=torch.long, device=dev)
+    rank[tid] = torch.arange(tid.numel(), device=dev)
+    pin = OPT.pinv.clone()
+    inc = (OPT.nslot < 0) | torch.tensor(bool(VFL), device=dev)
+    pr = rank[pin]
+    inc = inc & (pr >= 0)
+    pr = pr[inc]
+    Fp = Fstart.reshape(Np, 3, 3).double()[inc]
+    Vp = vol.double()[inc]
+    cnt = torch.bincount(pr, minlength=tid.numel())
+    out = dict(t=i, T_occ=int(tid.numel()), cnt_q=[int(q) for q in torch.quantile(cnt.float(), torch.tensor([0.1, 0.5, 0.9], device=dev)).tolist()])
+    eps = 1e-6 * mu
+    bins = [("n1", cnt == 1), ("n2", cnt == 2), ("n3_5", (cnt >= 3) & (cnt <= 5)), ("n6_15", (cnt >= 6) & (cnt <= 15)), ("n16+", cnt >= 16)]
+    hi = trS > torch.quantile(trS.float(), 0.9).double()
+    bins += [("trS_top10", hi), ("trS_top1", trS > torch.quantile(trS.float(), 0.99).double()), ("all", torch.ones_like(hi))]
+    for nmA, A in (("A_end", Aend), ("A_I", torch.eye(3, dtype=torch.float64, device=dev).expand_as(Aend).contiguous())):
+        eb, eq = [], []
+        for s0 in range(0, tid.numel(), 8192):
+            e0, e1 = cq_energy(A[s0:s0 + 8192], Fb[s0:s0 + 8192], CS9[s0:s0 + 8192])
+            eb.append(e0)
+            eq.append(e0 + e1)
+        eb, eq = torch.cat(eb), torch.cat(eq)
+        ep = torch.zeros_like(eb).index_add_(0, pr, Vp * psi64(A[pr] @ Fp)) / VT
+        r = {}
+        for nb, mk in bins:
+            if not bool(mk.any()):
+                continue
+            w = VT[mk]
+            den = (w * ep[mk]).sum()
+            rq = ((eq[mk] - ep[mk]).abs() / (ep[mk] + eps))
+            rb = ((eb[mk] - ep[mk]).abs() / (ep[mk] + eps))
+            qs = torch.tensor([0.5, 0.9, 0.99], device=dev, dtype=torch.float64)
+            r[nb] = dict(n=int(mk.sum()), sum_quad=float(((w * eq[mk]).sum() - den) / den), sum_bar=float(((w * eb[mk]).sum() - den) / den),
+                         cell_quad_q=[float(q) for q in torch.quantile(rq.float(), qs.float()).tolist()],
+                         cell_bar_q=[float(q) for q in torch.quantile(rb.float(), qs.float()).tolist()],
+                         e_part_med=float(ep[mk].median()))
+        out[nmA] = r
+    # (2) 힘: 부분 사면체 집합 (Σ_F 큰 1000 + 무작위 1000, 보정이 켜지는 셀) -- 커널은 그 사면체만 V 를 남긴 복사본으로
+    g = torch.Generator(device="cpu").manual_seed(i)
+    act = torch.nonzero((trS > 0)).squeeze(1)
+    if act.numel():
+        top = act[torch.argsort(trS[act], descending=True)[:1000]]
+        rnd = act[torch.randperm(act.numel(), generator=g)[:1000].to(dev)]
+        sub = torch.unique(torch.cat([top, rnd]))
+        Vm = torch.zeros_like(OPT.VTs)
+        Vm[tid[sub]] = OPT.VTs[tid[sub]]
+        fk = {}
+        for hm_, hv in (("km", 0), ("cf", 1), ("base", 0)):
+            fbuf = torch.zeros_like(OPT.f)
+            CSb = OPT.CS if hm_ != "base" else torch.zeros_like(OPT.CS)
+            EX.launch("ex_tet_force_CQ", OPT.Tcap, (EX.P(OPT.sz), EX.P(OPT.tets), EX.P(OPT.Uc), EX.P(OPT.gl), EX.P(OPT.FT), EX.P(Vm), EX.P(CSb),
+                                                    np.float32(mu), np.float32(lam), EX.P(fbuf), EX.P(None), np.int32(hv)))
+            torch.cuda.synchronize()
+            fk[hm_] = fbuf[:OPT.M].double()
+        ts = tets[sub]
+        Ul = U[ts.reshape(-1)].view(-1, 4, 3)
+        gr = _TET_G(Ul, gl4[sub], Fb[sub], CS9[sub], VT[sub])                            # ∂E/∂U_loc (∂³ψ 포함, 자동 미분)
+        fref = torch.zeros_like(fk["km"]).index_add_(0, ts.reshape(-1), -gr.reshape(-1, 3))
+        nz = fref.norm(dim=-1) > 0
+        rel = lambda f_: float((f_ - fref)[nz].norm() / fref[nz].norm())
+        # 중앙 차분 (무작위 방향, 에너지 float64)
+        dU = torch.randn(Ul.shape, generator=torch.Generator(device="cpu").manual_seed(100 + i), dtype=torch.float64).to(dev)
+        dU = dU / dU.norm() * 1e-3 * a.node_h * math.sqrt(Ul.shape[0])
+        Ef = lambda Ux: float(_TET_E(Ux, gl4[sub], Fb[sub], CS9[sub], VT[sub]).sum())
+        cds = {}
+        for ep_ in (1e-1, 1e-2):
+            cds[f"{ep_:g}"] = (Ef(Ul + ep_ * dU) - Ef(Ul - ep_ * dU)) / (2 * ep_)
+        dd_ad = float((gr * dU).sum())
+        out["force"] = dict(n_tets=int(sub.numel()), rel_km_vs_ad=rel(fk["km"]), rel_cf_vs_ad=rel(fk["cf"]), rel_base_vs_ad=rel(fk["base"]),
+                            rel_km_vs_cf=float((fk["km"] - fk["cf"]).norm() / fk["cf"].norm()),
+                            corr_over_base=float((fk["km"] - fk["base"]).norm() / fk["base"].norm()),
+                            dirderiv_ad=dd_ad, dirderiv_cd=cds, rel_cd_vs_ad={k_: abs(v_ - dd_ad) / max(abs(dd_ad), 1e-30) for k_, v_ in cds.items()})
+    with open(os.path.join(a.out, "cqchk.jsonl"), "a") as fo:
+        fo.write(json.dumps(out, ensure_ascii=False) + "\n")
+    fr = out.get("force", {})
+    print(f"  [AA 검산] 프레임 {i + 1}: 셀 에너지 상대 차 (2 차 근사 / ψ(A F̄) vs 입자 적분, 셀 중앙·90 %) "
+          + " ".join(f"{k_} {v_['cell_quad_q'][0]:.2e}/{v_['cell_bar_q'][0]:.2e} {v_['cell_quad_q'][1]:.2e}/{v_['cell_bar_q'][1]:.2e}" for k_, v_ in out["A_end"].items())
+          + (f" | 힘 커널 km vs 자동미분 {fr['rel_km_vs_ad']:.2e} cf {fr['rel_cf_vs_ad']:.2e} 보정 끈 커널 {fr['rel_base_vs_ad']:.2e} 중앙차분 vs 자동미분 {fr['rel_cd_vs_ad']}" if fr else ""), flush=True)
+
+
+FSP = None
+if a.fspread:
+    GTF = DM.traj_F(d, h, "cpu")
+    GTF = GTF[:L + 1].reshape(-1, Np, 9).float() if torch.is_tensor(GTF) else torch.stack([q.reshape(Np, 9).float().cpu() for q in GTF[:L + 1]])
+    _gsp = torch.Generator(device="cpu").manual_seed(7)
+    FSP = torch.randperm(Np, generator=_gsp)[:3000].to(dev)
+
+
+def _knn(q, allx, k=16):
+    out = []
+    for s0 in range(0, q.shape[0], 256):
+        dd_ = torch.cdist(q[s0:s0 + 256].double(), allx.double(), compute_mode="donot_use_mm_for_euclid_dist")
+        out.append(torch.topk(dd_, k + 1, largest=False).indices[:, 1:])
+    return torch.cat(out)
+
+
+def fspread(i, x2, F2):
+    """프레임 i 끝 입자 F 이웃 벌어짐 (절 Y 지표): ‖F_p − mean_16NN F_q‖_F, 우리 (우리 위치로 이웃) / 정답 (정답 위치·정답 F). 표본 = 고정 무작위 3000 + 프레임 시작 입자 1~2 개 셀 입자 3000."""
+    T_ = OPT.T
+    pin = OPT.pinv
+    cnt = torch.bincount(pin, minlength=T_)
+    sp_ = torch.nonzero(cnt[pin] <= 2).squeeze(1)
+    sp_ = sp_[torch.randperm(sp_.numel(), generator=torch.Generator(device="cpu").manual_seed(11 + i))[:3000].to(dev)] if sp_.numel() else sp_
+    Fo = F2.reshape(Np, 9)
+    gx = d["x"][i + 1].to(dev).float()
+    gF = GTF[i + 1].to(dev)
+    r = {}
+    for nm_, ids in (("all", FSP), ("sparse", sp_)):
+        if ids.numel() == 0:
+            continue
+        nb = _knn(x2[ids], x2)
+        mo = (Fo[ids] - Fo[nb].mean(1)).norm(dim=-1)
+        gnb = _knn(gx[ids], gx)
+        mg = (gF[ids] - gF[gnb].mean(1)).norm(dim=-1)
+        qs = torch.tensor([0.5, 0.9], device=dev)
+        r[nm_] = dict(n=int(ids.numel()), ours=[float(q) for q in torch.quantile(mo, qs).tolist()], gt=[float(q) for q in torch.quantile(mg, qs).tolist()])
+    return r
+
 if a.near_diag:
     EX.set_diag([float(q) for q in a.near_diag.split(",")])
     BSC.set_diag([float(q) for q in a.near_diag.split(",")])
@@ -1520,7 +1733,7 @@ for i in range(L):
             st.update(inv_sub=int(rs[0]), inv_end=int((~(dA_ > 0)).sum()), invX_end=int((~(dX_ > 0)).sum()), detA_min=float(dA_.min()) if dA_.numel() else None,
                       detX_min=float(dX_.min()) if dX_.numel() else None, Fp_inv=int((~(dFp > 0)).sum()), Fp_detmin=float(dFp.min()),
                       lim_n=int(rs[1]), lim_dp=[rs[2], rs[3], rs[4]], lim_dke=rs[5], lim_dpabs=rs[6], lim_tets=int(rs[7]), ke_p=ke_p,
-                      sr_viol=int(rs[8]), sr_inv=int(rs[9]), sb_act=int(rs[10]),
+                      sr_viol=int(rs[8]), sr_inv=int(rs[9]), sb_act=int(rs[10]), cq_act=int(rs[11]),
                       srA_max=(float((lambda sv: (sv[:, 0] / sv[:, -1].clamp_min(1e-30)).nan_to_num(float("inf")).max())(torch.linalg.svdvals(A_[occ_].double()))) if bool(occ_.any()) else None),
                       p_tot=[float(q) for q in (m[:, None] * v2).sum(0).tolist()], nt_ovf=int(OPT.novf.item()))
         if NINT and i < a.nint_check:                                               # 절 V 검산 (측정 밖, 프레임 끝 U)
@@ -1540,6 +1753,13 @@ for i in range(L):
         if szh[3]:
             print(f"  [경고] 프레임 {i + 1}: 팽창 영역 밖 입자 {szh[3]} (격자 넘침)", flush=True)
             OPT.sz[3:4].zero_()
+        if CQ and a.cqchk and str(i + 1) in a.cqchk.split(","):                    # 절 AA 검산 (측정 밖, 프레임 끝 U·프레임 시작 입자 F)
+            cq_check(i, F)
+        if FSP is not None and (i == 0 or (i + 1) % a.fspread == 0):
+            try:
+                st.update(fspread=fspread(i, x2, F2))
+            except Exception as ex_:                                               # 발산 직전 비유한 등 -- 기록만
+                st.update(fspread=str(ex_)[:200])
     e = float((x2 - GT[i]).norm(dim=-1).mean()) / EXT
     spread = float((x2.max(0).values - x2.min(0).values).norm()) / EXT
     fin = bool(torch.isfinite(x2).all()) and math.isfinite(e)

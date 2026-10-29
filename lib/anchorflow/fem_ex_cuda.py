@@ -1426,6 +1426,168 @@ __global__ void nint_force(const int* szp, const long long* tets, const float* U
         atomicAdd(&f[n[i]*3+c], -q*s);
     }
 }
+// ======== 절 AA: 셀 에너지 = 셀 안 입자 에너지 평균의 2 차 근사 (사용자 10-30 "셀 평균 ψ 의 근사로") ========
+//   E_T = V_T [ ψ(X̄) + ½ ⟨∂²ψ(X̄), S⟩ ],  X̄ = A_T F̄_T,  S = (A⊗I) Σ_F (A⊗I)ᵀ  (= vec(A F_p) 의 공분산, vec 은 행 우선 9)
+//   Σ_F = Σ_p V_p vec(F_p - F̄) vec(F_p - F̄)ᵀ / V_T  -- 프레임 시작 P2G 에서 한 번 (두 번째 패스, 대칭 9x9 위 삼각 45 개 저장)
+//   -∂E_T/∂x = -V_T [ (P(X̄) + ∂_X q) F̄ᵀ + G_S ] ∇λ_i
+//     G_S[a][b] = Σ_c Σ_m H[(a,c)][m] T[m][(b,c)],  T = (A⊗I) Σ_F   (∂S/∂A 몫, H = ∂²ψ(X̄))
+//     ∂_X q (S 고정, ∂³ψ 몫 -- 근사 없음, 닫힌 식):
+//       λ 몫 q_λ = λ/2 [ cᵀ S c + 2 (det X - sg) X:C_S ]  (c = cof X, C_S = Σ_q cof(s_q) = S 의 2x2 소행렬식 합)
+//            ∂_X q_λ = λ [ coflin(X, Sc) + (X:C_S) cof X + (det X - sg) C_S ]
+//       μ 몫 q_μ = μ [ tr S - h ],  h = tr(M⁻¹ B S Bᵀ),  M = tr(Ŝ) I - Ŝ (X = R Ŝ 극분해), B s = ax(Rᵀ s - sᵀ R)
+//            (s : DR[s] = aᵀ M⁻¹ a 에서 -- FCR 의 μ 헤시안 2μ(I - DR)),  ∂h/∂X_m = -⟨dM_m, M⁻¹KM⁻¹⟩ + 2 Σ_i ax_i(dR_mᵀ y_i - y_iᵀ dR_m)
+//            (dR = R [w]×, w = M⁻¹ B e_m, dŜ = sym(Rᵀ e_m - [w]× Ŝ), K = B S Bᵀ, y_i = (S Bᵀ M⁻¹) 의 i 열)
+//   H: hmode 0 = 기존 해석 헤시안 장치 함수 kmanual (전진 미분 극분해 10 회), 1 = 같은 헤시안의 닫힌 식 (H s = 2μ(s - R[M⁻¹ B s]×) + λ[(c:s) c + (det - sg) coflin(X, s)])
+//   σ_min(X̄) ≤ 0.01 이거나 tr Σ_F = 0 (입자 1 개 셀 등) 이면 보정 0 (= 기존 ψ(X̄)).
+__device__ __forceinline__ int cq_si(int i, int j) { if (i > j) { int t=i; i=j; j=t; } return i*9 - (i*(i-1))/2 + (j-i); }
+__global__ void ex_cov_acc(int N, const long long* pinv, const int* nslot, int nit, const float* vol, const float* Fp, const float* FT, float* CS) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    if (!(nslot[p] < 0 || nit)) return;
+    long long t = pinv[p];
+    float d[9]; for (int k=0;k<9;k++) d[k] = Fp[p*9+k] - FT[t*9+k];
+    float V = vol[p];
+    int s = 0;
+    for (int i=0;i<9;i++) for (int j=i;j<9;j++) { atomicAdd(&CS[t*45+s], V*d[i]*d[j]); s++; }
+}
+__global__ void ex_cov_fin(const int* szp, const float* VT, float* CS) {
+    int T = szp[1];
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    float V = VT[t];
+    float iv = V > 0.f ? 1.f/V : 0.f;
+    for (int k=0;k<45;k++) CS[(long long)t*45+k] *= iv;
+}
+__device__ __forceinline__ void cq_ax(const float* Z, float* a) { a[0] = Z[7]-Z[5]; a[1] = Z[2]-Z[6]; a[2] = Z[3]-Z[1]; }   // ax(Z - Zᵀ)
+__device__ __forceinline__ void cq_Bs(const float* R, const float* s, float* a) {   // a = ax(Rᵀ s - sᵀ R)
+    float Y[9]; for (int i=0;i<3;i++) for (int j=0;j<3;j++) Y[i*3+j] = R[i]*s[j] + R[3+i]*s[3+j] + R[6+i]*s[6+j];
+    cq_ax(Y, a);
+}
+// 보정 응력: dq (∂_X q, 9) 와 G_S (3x3). 반환 0 이면 보정 없음.
+__device__ int cq_corr(const float* A, const float* X, const float* Q, const float* cf, float dt, float sg, float smin, const float* CSt,
+                       float mu, float lam, int hmode, float* dq, float* GS) {
+    float tr = CSt[cq_si(0,0)] + CSt[cq_si(1,1)] + CSt[cq_si(2,2)] + CSt[cq_si(3,3)] + CSt[cq_si(4,4)] + CSt[cq_si(5,5)] + CSt[cq_si(6,6)] + CSt[cq_si(7,7)] + CSt[cq_si(8,8)];
+    if (!(tr > 0.f) || !(smin > 0.01f)) return 0;
+    float W1[81], W2[81];                       // W1 = Σ_F -> S_X,  W2 = T
+    for (int i=0;i<9;i++) for (int j=0;j<9;j++) W1[i*9+j] = CSt[cq_si(i,j)];
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) for (int j=0;j<9;j++)
+        W2[(r*3+c)*9+j] = A[r*3]*W1[c*9+j] + A[r*3+1]*W1[(3+c)*9+j] + A[r*3+2]*W1[(6+c)*9+j];
+    for (int i=0;i<9;i++) for (int r=0;r<3;r++) for (int c=0;c<3;c++)                   // S_X = T Lᵀ (W1 덮어씀 -- Σ_F 는 더 안 쓴다)
+        W1[i*9+r*3+c] = W2[i*9+c]*A[r*3] + W2[i*9+3+c]*A[r*3+1] + W2[i*9+6+c]*A[r*3+2];
+    // 극분해 Ŝ = sym(Qᵀ X), M = tr Ŝ I - Ŝ, M⁻¹
+    float Sh[9];
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) Sh[i*3+j] = Q[i]*X[j] + Q[3+i]*X[3+j] + Q[6+i]*X[6+j];
+    for (int i=0;i<3;i++) for (int j=i+1;j<3;j++) { float m_ = 0.5f*(Sh[i*3+j]+Sh[j*3+i]); Sh[i*3+j] = m_; Sh[j*3+i] = m_; }
+    float tS = Sh[0]+Sh[4]+Sh[8];
+    float Mm[9], Mi[9];
+    for (int k=0;k<9;k++) Mm[k] = -Sh[k];
+    Mm[0] += tS; Mm[4] += tS; Mm[8] += tS;
+    cof3(Mm, Mi); { float dm = Mm[0]*Mi[0]+Mm[1]*Mi[1]+Mm[2]*Mi[2]; float idm = 1.f/dm; for (int k=0;k<9;k++) Mi[k] *= idm; }   // M 대칭 -> cof 대칭 = adj
+    float Bm[27];                               // B (3x9): B[:,m] = ax(Rᵀ e_m - e_mᵀ R)
+    for (int m=0;m<9;m++) { float e[9] = {0,0,0,0,0,0,0,0,0}; e[m] = 1.f; float a3[3]; cq_Bs(Q, e, a3); Bm[m] = a3[0]; Bm[9+m] = a3[1]; Bm[18+m] = a3[2]; }
+    float dd = dt - sg;
+    // ---- G_S = Σ_c (H T)[(a,c),(b,c)] ----
+    for (int k=0;k<9;k++) GS[k] = 0.f;
+    if (hmode == 0) {
+        float H[81]; const float I3[9] = {1,0,0, 0,1,0, 0,0,1};
+        kmanual(X, I3, mu, lam, 1.f, smin, H);
+        for (int i=0;i<9;i++) for (int j=i+1;j<9;j++) { float m_ = 0.5f*(H[i*9+j]+H[j*9+i]); H[i*9+j] = m_; H[j*9+i] = m_; }
+        for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float s = 0.f;
+            for (int c=0;c<3;c++) for (int m=0;m<9;m++) s += H[(a*3+c)*9+m]*W2[m*9+b*3+c];
+            GS[a*3+b] = s; }
+    } else {
+        for (int b=0;b<3;b++) for (int c=0;c<3;c++) {          // T 의 열 (b,c) 에 H 를 곱한다
+            float s9[9]; for (int m=0;m<9;m++) s9[m] = W2[m*9+b*3+c];
+            float a3[3], w[3]; cq_Bs(Q, s9, a3);
+            for (int i=0;i<3;i++) w[i] = Mi[i*3]*a3[0] + Mi[i*3+1]*a3[1] + Mi[i*3+2]*a3[2];
+            float Wx[9] = {0.f,-w[2],w[1], w[2],0.f,-w[0], -w[1],w[0],0.f};
+            float dR[9]; mm3(Q, Wx, dR);
+            float cs = 0.f; for (int k=0;k<9;k++) cs += cf[k]*s9[k];
+            float cl[9]; coflin(X, s9, cl);
+            for (int a=0;a<3;a++) {
+                float hs_ = 0.f;
+                for (int cc=0;cc<3;cc++) if (cc == c) { int k = a*3+cc; hs_ = 2.f*mu*(s9[k]-dR[k]) + lam*(cs*cf[k] + dd*cl[k]); }
+                GS[a*3+b] += hs_;
+            }
+        }
+    }
+    // ---- λ 몫 ∂_X q_λ ----
+    float Sc[9], CSx[9];
+    for (int i=0;i<9;i++) { float s = 0.f; for (int j=0;j<9;j++) s += W1[i*9+j]*cf[j]; Sc[i] = s; }
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) {
+        int i1 = (i+1)%3, i2 = (i+2)%3, j1 = (j+1)%3, j2 = (j+2)%3;
+        CSx[i*3+j] = W1[(i1*3+j1)*9 + i2*3+j2] - W1[(i1*3+j2)*9 + i2*3+j1];
+    }
+    float XC = 0.f; for (int k=0;k<9;k++) XC += X[k]*CSx[k];
+    float cl[9]; coflin(X, Sc, cl);
+    for (int k=0;k<9;k++) dq[k] = lam*(cl[k] + XC*cf[k] + dd*CSx[k]);
+    // ---- μ 몫 -μ ∂h/∂X ----
+    float BS[27];
+    for (int l=0;l<3;l++) for (int m=0;m<9;m++) { float s = 0.f; for (int j=0;j<9;j++) s += Bm[l*9+j]*W1[j*9+m]; BS[l*9+m] = s; }
+    float K[9];
+    for (int l=0;l<3;l++) for (int r=0;r<3;r++) { float s = 0.f; for (int m=0;m<9;m++) s += BS[l*9+m]*Bm[r*9+m]; K[l*3+r] = s; }
+    float T1[9], MKM[9]; mm3(Mi, K, T1); mm3(T1, Mi, MKM);
+    float Yc[27];                               // Yc[i*9+m] = (S Bᵀ M⁻¹)[m][i]
+    for (int i=0;i<3;i++) for (int m=0;m<9;m++) Yc[i*9+m] = BS[m]*Mi[i] + BS[9+m]*Mi[3+i] + BS[18+m]*Mi[6+i];
+    for (int m=0;m<9;m++) {
+        int k = m/3, j = m%3;
+        float a3[3] = {Bm[m], Bm[9+m], Bm[18+m]}, w[3];
+        for (int i=0;i<3;i++) w[i] = Mi[i*3]*a3[0] + Mi[i*3+1]*a3[1] + Mi[i*3+2]*a3[2];
+        float Wx[9] = {0.f,-w[2],w[1], w[2],0.f,-w[0], -w[1],w[0],0.f};
+        float dR[9]; mm3(Q, Wx, dR);
+        float WS[9]; mm3(Wx, Sh, WS);
+        float dS[9];
+        for (int a=0;a<3;a++) for (int b=0;b<3;b++) dS[a*3+b] = ((b==j) ? Q[k*3+a] : 0.f) - WS[a*3+b];
+        for (int a=0;a<3;a++) for (int b=a+1;b<3;b++) { float m_ = 0.5f*(dS[a*3+b]+dS[b*3+a]); dS[a*3+b] = m_; dS[b*3+a] = m_; }
+        float tdS = dS[0]+dS[4]+dS[8];
+        float t1 = 0.f;
+        for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float dM = ((a==b) ? tdS : 0.f) - dS[a*3+b]; t1 += dM*MKM[a*3+b]; }
+        float t2 = 0.f;
+        for (int i=0;i<3;i++) {
+            float Z[9];                         // Z = dRᵀ y_i
+            for (int a=0;a<3;a++) for (int b=0;b<3;b++) Z[a*3+b] = dR[a]*Yc[i*9+b] + dR[3+a]*Yc[i*9+3+b] + dR[6+a]*Yc[i*9+6+b];
+            float az[3]; cq_ax(Z, az);
+            t2 += az[i];
+        }
+        dq[m] += -mu*(-t1 + 2.f*t2);
+    }
+    return 1;
+}
+__global__ void ex_tet_force_CQ(const int* szp, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT, const float* CS,
+                                float mu, float lam, float* f, float* rst, int hmode) {
+    int T = szp[1];
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    long long n[4]; float G[12];
+    for (int i=0;i<4;i++) n[i]=tets[t*4+i];
+    for (int k=0;k<12;k++) G[k]=gl[t*12+k];
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u=U[n[i]*3+c]; for (int b=0;b<3;b++) A[c*3+b] += u*G[i*3+b]; }
+    if (rst) { float dA = det3(A); if (!(dA > 0.f)) atomicAdd(&rst[0], 1.f); }
+    float Fb[9]; for (int k=0;k<9;k++) Fb[k]=FT[t*9+k];
+    float X[9]; mm3(A, Fb, X);
+    float C[9];
+    for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+    float l[3]; symeig3(C, l);
+    float J = 1.f;
+    for (int k=0;k<3;k++){ float s = sqrtf(fmaxf(l[k], 1e-12f)); s = fmaxf(s, 0.01f); J *= s; }
+    float Q[9], cf[9], P[9], Gm[9];
+    polar(X, Q); cof3(X, cf);
+    float dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+    float sg = (dt>0)?1.f:((dt<0)?-1.f:0.f);
+    for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(J-1.f)*sg*cf[k];
+    float dq[9], GS[9];
+    int on = cq_corr(A, X, Q, cf, dt, sg, sqrtf(fmaxf(l[0], 0.f)), CS + (long long)t*45, mu, lam, hmode, dq, GS);
+    if (on) for (int k=0;k<9;k++) P[k] += dq[k];
+    mmt3(P, Fb, Gm);
+    if (on) { for (int k=0;k<9;k++) Gm[k] += GS[k]; if (rst) atomicAdd(&rst[11], 1.f); }
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) {
+        float s = 0.f; for (int b=0;b<3;b++) s += Gm[c*3+b]*G[i*3+b];
+        atomicAdd(&f[n[i]*3+c], -V*s);
+    }
+}
 }
 '''
 
