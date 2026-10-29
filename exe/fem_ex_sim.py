@@ -145,6 +145,8 @@ ap.add_argument("--fupd", choices=["T", "bar", "nbar", "navg", "polar"], default
 ap.add_argument("--fupd_b", type=float, default=1.0, help="--fupd 의 β (0 = 기존과 같음)")
 ap.add_argument("--cfast", action="store_true", help="절 C: 아래 네 가지 (--vfl_cull --sr_fast --tlist --fpolar) 모두")
 ap.add_argument("--cfuse", action="store_true", help="절 C (5): --cfast + 서브스텝 커널 융합 (힘+접촉 / 판정 둘 (속도 그 자리) / 노드 걸음+적용) -- 같은 식, 커널 6 -> 4 개")
+ap.add_argument("--fpolar_off", action="store_true", help="--cfast/--cfuse 에서 (4) 빠른 극분해만 끈다")
+ap.add_argument("--cfuse_mode", type=int, default=1, help="--cfuse: 1 = 커널 4 개 (판정이 속도를 그 자리 계산), 2 = 힘+접촉만 융합 (노드 걸음·판정·적용 따로, 커널 5 개)")
 ap.add_argument("--adapt", choices=["none", "act", "stab"], default="none",
                 help="절 C 적응 서브스텝 (--cfuse 만, 정의 변경 -- 결과 바뀜): act = 직전 프레임 클램프 작동 (제한 노드 x 서브스텝) > --ad_thr 이면 --ad_hi, 아니면 --ad_lo; "
                      "stab = 국소 안정 비 ω_f = max_i sqrt(Σ_T V_T (λ+2μ) |F̄_Tᵀ∇λ_i|² / m_i) 로 N_f = N · ω_f/ω_0 (ω_0 = 첫 프레임), [--ad_lo, --ad_hi] 로 자르고 --ad_q 배수로 올림")
@@ -237,6 +239,8 @@ if a.cfuse:
     a.cfast = True
 if a.cfast:
     a.vfl_cull = a.sr_fast = a.tlist = a.fpolar = True
+if a.fpolar_off:
+    a.fpolar = False
 CC = a.vfl_cull or a.sr_fast or a.tlist or a.fpolar                                  # 절 C 경로
 SPM = a.sp
 SPG = SPM in ("merge", "cube")                                                       # 절 AD: 묶음 힘 (커널 2 개)
@@ -849,10 +853,24 @@ class Opt:
         nbT = (Tc + 127) // 128
         nbP = ((Np + 127) // 128) if VFL else 0
         CCU.launch("c_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
-                               EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1),
+                               EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0),
                                EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
         hs_, damp_ = self.hscur, self.dampcur
+        if a.cfuse_mode == 2:
+            EX.launch("ex_node_step_lag", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(None), EX.P(self.vn), EX.P(self.Uc),
+                                               np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs_), np.float32(damp_),
+                                               EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
+                                               np.int32(1 if a.vfl_mode == "full" else 0), np.int32(a.vfl_np), *PLf[3:], np.int32(1)), b=256)
+            jon = np.int32(1 if a.lim >= 0 else 0)
+            CCU.launch("c_sr_pre", Tc, (EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc),
+                                        np.float32(hs_), np.float32(a.lim_sr), jon, np.float32(a.lim), EX.P(self.clst)), b=128)
+            CCU.launch("c_sr_warp", 0, (EX.P(self.clst), EX.P(self.tets), EX.P(self.gl), EX.P(self.vn), EX.P(self.Uc), np.float32(hs_), np.float32(a.lim_sr),
+                                        jon, np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)), b=128, grid=CCU.NBW)
+            CCU.launch("c_lim_apply", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs_), EX.P(self.alph),
+                                           np.int32(1 if a.lim_v == "keep" else 0), EX.P(self.fx if self.fixd else None), EX.P(self.rst),
+                                           EX.P(self.clst), EX.P(self.cint[1:] if VFL else None), *PLf[3:]), b=256)
+            return
         S = CCU.cvs(self.mn, self.f, None, self.vn, gv, hs_, damp_, self.fx if self.fixd else None, self.vbc, self.acc if VFL else None,
                     1 if a.vfl_mode == "full" else 0, a.vfl_np, PLf[3:])
         jon = np.int32(1 if a.lim >= 0 else 0)
