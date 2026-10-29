@@ -399,8 +399,10 @@ class Opt:
                 self.ncol = torch.zeros(self.Mcap, dtype=torch.uint8, device=dev)   # 절 R (2): Kuhn 격자 지표 홀짝 색 (0..7)
                 self.ntc = torch.zeros(self.Mcap, dtype=torch.int32, device=dev)
                 self.nt = torch.zeros(self.Mcap * 24, dtype=torch.int32, device=dev)
-            if NINT:                                                                 # 절 U: 노드 부피 V_n, 노드 F 합 (쓴 뒤 비움), 노드 응력 P_n
-                self.Vnd, self.Snd, self.Pnd = z(self.Mcap), z(self.Mcap, 9), z(self.Mcap, 9)
+            if NINT:                                                                 # 절 U: 노드 부피 V_n, 노드 응력 P_n, 노드 -> 사면체 목록
+                self.Vnd, self.Pnd = z(self.Mcap), z(self.Mcap, 9)
+                self.ntc_u = torch.zeros(self.Mcap, dtype=torch.int32, device=dev)
+                self.nt_u = torch.zeros(self.Mcap * 24, dtype=torch.int32, device=dev)
             self.nposb = z(self.Mcap, 3)                                             # 노드 위치 상주 버퍼 (절 Q: 그래프 안 APIC P2G 가 주소를 고정해 읽는다)
             new = True
         if T > self.Tcap:
@@ -411,6 +413,8 @@ class Opt:
             self.gl = torch.zeros(self.Tcap, 12, device=dev)
             self.tets = torch.zeros(self.Tcap, 4, dtype=torch.long, device=dev)
             self.tcell = torch.zeros(self.Tcap, dtype=torch.long, device=dev)
+            if NINT:
+                self.XTu = torch.zeros(self.Tcap, 9, device=dev)                     # 절 U: 사면체 (V_T/4) F_T
             new = True
         if P > self.Pcap:
             self.Pcap = int(P * 1.3) + 64
@@ -501,6 +505,9 @@ class Opt:
         self.npos = self.nposb[:M]
         if LIM:
             self.alph.fill_(1065353216)
+        if NINT:                                                                    # 절 U: 노드 -> 사면체 목록 (프레임마다)
+            self.ntc_u[:M].zero_()
+            EX.launch("ex_node_tets", T, (EX.P(self.sz), EX.P(self.tets), EX.P(self.ntc_u), EX.P(self.nt_u), EX.P(self.novf)), b=256)
         if LIM and a.lim_mode == "gs":
             # 색 = 전역 격자 지표 (imin + k) 의 홀짝 -- 한 사면체 네 노드는 지표 차 {0,1}³\0 이라 모두 다른 색
             gk = torch.stack([k0, k1, k2], -1) + imin.to(k0.device).view(1, 3)
@@ -618,14 +625,18 @@ class Opt:
 
     def _nint_force(self):
         Mc, Tc = self.Mcap, self.Tcap
-        EX.launch("nint_cell", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), EX.P(self.Snd), EX.P(self.rst)))
-        EX.launch("nint_node", Mc, (EX.P(self.sz), EX.P(self.Vnd), EX.P(self.Snd), EX.P(self.Pnd), np.float32(mu), np.float32(lam)), b=128)
+        EX.launch("nint_cell", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), EX.P(self.XTu), EX.P(self.rst)))
+        EX.launch("nint_node", Mc, (EX.P(self.sz), EX.P(self.ntc_u), EX.P(self.nt_u), EX.P(self.VTs), EX.P(self.XTu), EX.P(self.Pnd), EX.P(None),
+                                    np.float32(mu), np.float32(lam)), b=128)
         EX.launch("nint_force", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), EX.P(self.Pnd),
                                      np.float32(mu), np.float32(lam), np.float32(a.nint_beta), EX.P(self.f)))
 
-    def nint_check(self, i, U=None):
-        """절 U 검산 (측정 밖, 프레임 끝 상태): 커널 내부력 f(U) 와 float64 노드 에너지 E(U) = (1-β) Σ_n V_n ψ(F_n) + β Σ_T V_T ψ(F_T)
-        (ψ = μ|F - R|² + λ/2 (det F - 1)², R = 극분해) 의 중앙 차분 비교 + 내력 합·모멘트 합."""
+    def nint_check(self, i):
+        """절 U 검산 (측정 밖, 프레임 끝 상태 U 와 그것에 무작위 변위 (0.01 node_h) 를 더한 상태 두 가지):
+        (a) 에너지 일관성: float64 노드 에너지 E(U) = (1-β) Σ_n V_n ψ(F_n) + β Σ_T V_T ψ(F_T) (ψ = μ|F - R|² + λ/2 (det F - 1)², R = 극분해) 의
+            중앙 차분 (무작위 방향·힘 큰 노드 성분) vs 같은 식의 float64 해석 힘 f = -Σ_T (V_T/4) [(1-β) Σ_n P_n + 4β P_T] F̄ᵀ ∇λ
+        (b) 커널 (float32) 힘 vs float64 해석 힘: |f_k - f_64| / |f_64| (전체 노름)
+        (c) 내력 합·모멘트 합 (운동량·각운동량)."""
         M, T = self.M, self.T
         dd = torch.float64
         occ = self.VTs[:T] > 0
@@ -638,63 +649,91 @@ class Opt:
         live = Vn > 0
         I3d = torch.eye(3, device=dev, dtype=dd)
 
-        def psi(X):
+        def polar_R(X):
             Us, S_, Vh = torch.linalg.svd(X)
             dg = torch.ones(X.shape[0], 3, device=dev, dtype=dd)
             dg[:, 2] = torch.sign(torch.linalg.det(Us @ Vh))
-            R_ = Us @ torch.diag_embed(dg) @ Vh
-            return mu * ((X - R_) ** 2).sum((-1, -2)) + 0.5 * lam * (torch.linalg.det(X) - 1) ** 2
+            return Us @ torch.diag_embed(dg) @ Vh
 
-        def energy(U_):
+        def psi(X):
+            return mu * ((X - polar_R(X)) ** 2).sum((-1, -2)) + 0.5 * lam * (torch.linalg.det(X) - 1) ** 2
+
+        def Pf(X):
+            J = torch.linalg.det(X)
+            cof = J[:, None, None] * torch.linalg.inv(X).transpose(-1, -2)
+            return 2 * mu * (X - polar_R(X)) + lam * (J - 1)[:, None, None] * cof
+
+        def state(U_):
             X = (I3d + torch.einsum("tia,tib->tab", U_[tets], gl)) @ FT
             Sn = torch.zeros(M, 9, device=dev, dtype=dd).index_add_(0, tets.reshape(-1), ((VT / 4)[:, None, None] * X).repeat_interleave(4, 0).reshape(-1, 9))
-            Fn = (Sn[live] / Vn[live, None]).view(-1, 3, 3)
-            E = (1 - bt) * (Vn[live] * psi(Fn)).sum()
+            Fn = torch.zeros(M, 3, 3, device=dev, dtype=dd)
+            Fn[live] = (Sn[live] / Vn[live, None]).view(-1, 3, 3)
+            return X, Fn
+
+        def energy(U_):
+            X, Fn = state(U_)
+            E = (1 - bt) * (Vn[live] * psi(Fn[live])).sum()
             if bt > 0:
                 E = E + bt * (VT * psi(X)).sum()
-            return E
-        U0 = (self.Uc[:M].clone() if U is None else U)
-        Uk = self.Uc[:M].clone()
-        self.Uc[:M].copy_(U0)
-        self.f.zero_()
-        self._nint_force()
-        torch.cuda.synchronize()
-        fk = self.f[:M].to(dd).clone()
-        self.f.zero_()
-        self.Uc[:M].copy_(Uk)
-        Ud = U0.to(dd)
+            return float(E)
+
+        def force64(U_):
+            X, Fn = state(U_)
+            Pn = torch.zeros(M, 3, 3, device=dev, dtype=dd)
+            Pn[live] = Pf(Fn[live])
+            S = (1 - bt) * Pn[tets].sum(1)
+            if bt > 0:
+                S = S + 4 * bt * Pf(X)
+            Gm = S @ FT.transpose(-1, -2)                                             # [T,3,3]
+            fT = -(VT / 4)[:, None, None] * torch.einsum("tcb,tib->tic", Gm, gl)      # [T,4,3]
+            return torch.zeros(M, 3, device=dev, dtype=dd).index_add_(0, tets.reshape(-1), fT.reshape(-1, 3))
+
+        def kforce(U_):
+            Uk = self.Uc[:M].clone()
+            self.Uc[:M].copy_(U_.float())
+            self.f.zero_()
+            self._nint_force()
+            torch.cuda.synchronize()
+            fk_ = self.f[:M].to(dd).clone()
+            self.f.zero_()
+            self.Uc[:M].copy_(Uk)
+            return fk_
         g = torch.Generator(device=dev).manual_seed(1234 + i)
-        rec = dict(t=i, M=M, T_occ=int(occ.sum()), beta=bt, E=float(energy(Ud)))
-        dirs = []
-        for k in range(6):                                                           # 무작위 방향 (노드마다 표준 정규, 살아 있는 노드만)
-            dv = torch.randn(M, 3, device=dev, dtype=dd, generator=g) * live[:, None]
-            dv = dv / dv.norm()
-            for eps in (1e-5, 1e-6):
-                fd = (float(energy(Ud + eps * dv)) - float(energy(Ud - eps * dv))) / (2 * eps)
-                an = -float((fk * dv).sum())
-                dirs.append(dict(k=k, eps=eps, fd=fd, kernel=an, rel=abs(fd - an) / max(abs(fd), 1e-30)))
-        rec["dirs"] = dirs
-        fmag = fk.norm(dim=-1)
-        top = torch.argsort(fmag, descending=True)[:4].tolist()                      # 힘이 가장 큰 노드 성분별
-        comp = []
-        for n_ in top:
-            for c in range(3):
-                e_ = torch.zeros(M, 3, device=dev, dtype=dd)
-                e_[n_, c] = 1.0
-                eps = 1e-6
-                fd = (float(energy(Ud + eps * e_)) - float(energy(Ud - eps * e_))) / (2 * eps)
-                comp.append(dict(n=n_, c=c, fd=-fd, kernel=float(fk[n_, c]), rel=abs(-fd - float(fk[n_, c])) / max(abs(fd), 1e-30)))
-        rec["comp"] = comp
-        xc = self.npos[:M].to(dd) + Ud
-        rec.update(f_sum=fk.sum(0).tolist(), f_abs=float(fmag.sum()), torque=torch.cross(xc, fk, dim=-1).sum(0).tolist(),
-                   torque_scale=float((xc.norm(dim=-1) * fmag).sum()), fixd=bool(self.fixd))
+        U0 = self.Uc[:M].to(dd).clone()
+        Up = U0 + 0.01 * float(a.node_h) * torch.randn(M, 3, device=dev, dtype=dd, generator=g) * live[:, None]
+        recs = []
+        for nm, Ud in (("U", U0), ("U+δ", Up)):
+            f64 = force64(Ud)
+            fk = kforce(Ud)
+            sc = float(f64.norm())
+            dirs = []
+            for k in range(4):
+                dv = torch.randn(M, 3, device=dev, dtype=dd, generator=g) * live[:, None]
+                dv = dv / dv.norm()
+                eps = 1e-6 * float(a.node_h)
+                fd = (energy(Ud + eps * dv) - energy(Ud - eps * dv)) / (2 * eps)
+                an = -float((f64 * dv).sum())
+                dirs.append(dict(fd=fd, an=an, rel=abs(fd - an) / max(abs(fd), abs(an), 1e-300)))
+            comp = []
+            for n_ in torch.argsort(f64.norm(dim=-1), descending=True)[:3].tolist():
+                for c in range(3):
+                    e_ = torch.zeros(M, 3, device=dev, dtype=dd)
+                    e_[n_, c] = 1.0
+                    eps = 1e-6 * float(a.node_h)
+                    fd = -(energy(Ud + eps * e_) - energy(Ud - eps * e_)) / (2 * eps)
+                    comp.append(dict(n=n_, c=c, fd=fd, an=float(f64[n_, c]), rel=abs(fd - float(f64[n_, c])) / max(float(f64[n_].norm()), 1e-300)))
+            xc = self.npos[:M].to(dd) + Ud
+            fm_ = f64.norm(dim=-1)
+            recs.append(dict(state=nm, E=energy(Ud), f_norm=sc, fd_dir_rel=max(q["rel"] for q in dirs), fd_comp_rel=max(q["rel"] for q in comp),
+                             kern_rel=float((fk - f64).norm()) / max(sc, 1e-300), mom_rel=float(f64.sum(0).norm()) / max(float(fm_.sum()), 1e-300),
+                             ang_rel=float(torch.cross(xc, f64, dim=-1).sum(0).norm()) / max(float((xc.norm(dim=-1) * fm_).sum()), 1e-300),
+                             kmom_rel=float(fk.sum(0).norm()) / max(float(fk.norm(dim=-1).sum()), 1e-300), dirs=dirs, comp=comp))
+        rec = dict(t=i, M=M, T_occ=int(occ.sum()), beta=bt, fixd=bool(self.fixd), states=recs)
         with open(os.path.join(a.out, "nint_check.jsonl"), "a") as fh:
             fh.write(json.dumps(rec) + "\n")
-        rmax = max(q["rel"] for q in dirs if q["eps"] == 1e-6)
-        cmax = max(q["rel"] for q in comp)
-        print(f"    [U 검산] t {i + 1}: E {rec['E']:.6g}, 방향 미분 상대차 최대 {rmax:.2e} (eps 1e-6), 노드 성분 상대차 최대 {cmax:.2e}, "
-              f"|Σf|/Σ|f| {float(fk.sum(0).norm()) / max(rec['f_abs'], 1e-30):.2e}, |Σx×f|/Σ|x||f| {float(torch.tensor(rec['torque']).norm()) / max(rec['torque_scale'], 1e-30):.2e}"
-              + (" (cfg_bc 묶인 노드 있음 -- 내력만이라 합 0 이어야)" if self.fixd else ""), flush=True)
+        for r in recs:
+            print(f"    [U 검산] t {i + 1} {r['state']}: E {r['E']:.6g} |f| {r['f_norm']:.4g}; 에너지 중앙 차분 vs float64 해석 힘 상대차 방향 {r['fd_dir_rel']:.2e} 성분 {r['fd_comp_rel']:.2e}; "
+                  f"커널 (float32) vs float64 {r['kern_rel']:.2e}; |Σf|/Σ|f| {r['mom_rel']:.2e} |Σx×f|/Σ|x||f| {r['ang_rel']:.2e}", flush=True)
 
     def _substeps(self):
         if a.mode == "lag":
@@ -983,9 +1022,6 @@ class Opt:
             self._p2g_bs(xa, va, Fa)
         else:
             self._p2g(xa, va, Fa, h, False)                                         # 프레임 분할 (관성 예측 h v_n + h² g 의 끝 높이)
-        if NINT:                                                                    # 절 U: 노드 부피 V_n = Σ V_T/4 (프레임마다, 그래프 밖)
-            self.Vnd.zero_()
-            EX.launch("nint_vn", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.VTs), EX.P(self.Vnd)), b=256)
         if FLOOR:
             EX.launch("ex_near_init", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(xa), EX.P(va), EX.P(Fa), np.float32(h), np.float32(gv[0]),
                                            np.float32(gv[1]), np.float32(gv[2]), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.F0i), EX.P(self.cc)), b=256)

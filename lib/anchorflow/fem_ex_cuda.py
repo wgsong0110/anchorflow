@@ -1079,9 +1079,10 @@ __global__ void ex_scatter_rows(int N, int k, const long long* perm, const float
 }
 // ======== 절 U: 노드 적분 FEM (사용자 10-29 "그것도 일단 해 보라고 해") -- 평균 노드 변형 사면체 (Bonet & Burton 1998, Dohrmann et al. 2000) ========
 // 틀·질량·바닥·F̄ 상태·G2P 는 절 R lag 판 그대로. 바뀐 것은 내부력 하나:
-//   노드 부피 V_n = Σ_{T∋n} V_T/4 (프레임마다 P2G 뒤, nint_vn), 서브스텝마다
-//   (1) nint_cell : F_T = A_T(U) F̄_T,  S_n += (V_T/4) F_T                         (V_T > 0 사면체만)
-//   (2) nint_node : F_n = S_n / V_n (= Σ V_T F_T / Σ V_T),  P_n = P_FCR(F_n) (ex_tet_force_R 와 같은 FCR 식),  S_n 비움
+//   서브스텝마다
+//   (1) nint_cell : F_T = A_T(U) F̄_T,  사면체 버퍼 X_T = (V_T/4) F_T                (V_T > 0 사면체만)
+//   (2) nint_node : 노드 -> 사면체 목록으로 S_n = Σ_{T∋n} X_T, V_n = Σ V_T/4, F_n = S_n / V_n (= Σ V_T F_T / Σ V_T),
+//                   P_n = P_FCR(F_n) (ex_tet_force_R 와 같은 FCR 식)
 //   (3) nint_force: f_a -= (V_T/4) [(1-β) Σ_{n∈T} P_n + 4β P_FCR(F_T)] F̄_Tᵀ ∇λ_a
 //   = 에너지 E(U) = (1-β) Σ_n V_n ψ(F_n) + β Σ_T V_T ψ(F_T) 의 -∂E/∂U_a 그대로
 //     (∂F_n/∂U_a·δ = Σ_{T∋n,a} (V_T/4)/V_n δ ⊗ (F̄_Tᵀ ∇λ_a) 이라 V_n 이 상쇄된다). β = 0 이 순수 노드 적분, β > 0 은 셀 적분 혼합 (영에너지 모드 안정화 선택지).
@@ -1098,14 +1099,6 @@ __device__ __forceinline__ void fcr_P(const float* X, float mu, float lam, float
     float sg = (dt>0)?1.f:((dt<0)?-1.f:0.f);
     for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(J-1.f)*sg*cf[k];
 }
-__global__ void nint_vn(const int* szp, const long long* tets, const float* VT, float* Vn) {
-    int T = szp[1];
-    int t = blockIdx.x*blockDim.x + threadIdx.x;
-    if (t >= T) return;
-    float V = VT[t];
-    if (!(V > 0.f)) return;
-    for (int i=0;i<4;i++) atomicAdd(&Vn[tets[t*4+i]], 0.25f*V);
-}
 __device__ __forceinline__ float nint_AX(int t, const long long* tets, const float* U, const float* gl, const float* FT, long long* n, float* G, float* X) {
     for (int i=0;i<4;i++) n[i]=tets[t*4+i];
     for (int k=0;k<12;k++) G[k]=gl[t*12+k];
@@ -1115,7 +1108,8 @@ __device__ __forceinline__ float nint_AX(int t, const long long* tets, const flo
     mm3(A, Fb, X);
     return det3(A);
 }
-__global__ void nint_cell(const int* szp, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT, float* Sn, float* rst) {
+// (1) 사면체마다 (V_T/4) F_T 를 사면체 버퍼에 (원자 합 없음 -- 노드 쪽이 목록으로 모은다; 목록 순서는 ex_node_tets 원자 슬롯이라 합 순서는 실행마다 다를 수 있다)
+__global__ void nint_cell(const int* szp, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT, float* XT, float* rst) {
     int T = szp[1];
     int t = blockIdx.x*blockDim.x + threadIdx.x;
     if (t >= T) return;
@@ -1125,19 +1119,29 @@ __global__ void nint_cell(const int* szp, const long long* tets, const float* U,
     float dA = nint_AX(t, tets, U, gl, FT, n, G, X);
     if (rst && !(dA > 0.f)) atomicAdd(&rst[0], 1.f);
     float q = 0.25f*V;
-    for (int i=0;i<4;i++) for (int k=0;k<9;k++) atomicAdd(&Sn[n[i]*9+k], q*X[k]);
+    for (int k=0;k<9;k++) XT[t*9+k] = q*X[k];
 }
-__global__ void nint_node(const int* szp, const float* Vn, float* Sn, float* Pn, float mu, float lam) {
+// (2) 노드마다 노드 -> 사면체 목록 (ex_node_tets, 프레임마다) 으로 S_n = Σ (V_T/4) F_T, V_n = Σ V_T/4 -> F_n = S_n / V_n, P_n = P_FCR(F_n)
+__global__ void nint_node(const int* szp, const int* ntc, const int* nt, const float* VT, const float* XT, float* Pn, float* Vn, float mu, float lam) {
     int M = szp[0];
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= M) return;
-    float v = Vn[n];
+    int k = min(ntc[n], 24);
+    float S[9] = {0,0,0,0,0,0,0,0,0}, v = 0.f;
+    for (int s=0;s<k;s++) {
+        int t = nt[n*24+s] >> 2;
+        float V = VT[t];
+        if (!(V > 0.f)) continue;
+        v += 0.25f*V;
+        for (int c=0;c<9;c++) S[c] += XT[(long long)t*9+c];
+    }
     float P[9] = {0,0,0,0,0,0,0,0,0};
     if (v > 0.f) {
-        float X[9]; for (int k=0;k<9;k++) X[k] = Sn[n*9+k]/v;
+        float X[9]; for (int c=0;c<9;c++) X[c] = S[c]/v;
         fcr_P(X, mu, lam, P);
     }
-    for (int k=0;k<9;k++) { Pn[n*9+k] = P[k]; Sn[n*9+k] = 0.f; }
+    for (int c=0;c<9;c++) Pn[n*9+c] = P[c];
+    if (Vn) Vn[n] = v;
 }
 __global__ void nint_force(const int* szp, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT, const float* Pn,
                            float mu, float lam, float beta, float* f) {

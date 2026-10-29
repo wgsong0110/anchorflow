@@ -18,20 +18,22 @@ FB="--mode lag --opt --mass tet --no_dump --dump_pred --data $FD --tag F_pg_v0 -
 S="bash exe/fem_ex_run.sh"
 export EX_NOWAIT=1
 SB=$( [ "$BT" = 0 ] && echo "" || echo "_b$BT" )
-( EX_ROOT=fem_u_lego $S u_smoke${SB}_l 0 $LB --nint --nint_beta $BT --nint_check 3 ) > /dev/null 2>&1 &
-( EX_ROOT=fem_u_lego $S u_smoke${SB}_lL 1 $LB --nint --nint_beta $BT --nint_check 3 --lim 0.3 --lim_mode box ) > /dev/null 2>&1 &
-( EX_ROOT=fem_u_lego $S u_smoke${SB}_l_b20 2 $LB --nint --nint_beta 0.2 --nint_check 3 ) > /dev/null 2>&1 &
-( EX_ROOT=fem_u_lego $S u_smoke${SB}_l_ng 3 $LB --nint --nint_beta $BT --no_graph ) > /dev/null 2>&1 &
-( EX_ROOT=fem_u_ficus $S u_smoke${SB}_f 4 $FB --nint --nint_beta $BT --nint_check 3 ) > /dev/null 2>&1 &
-( EX_ROOT=fem_u_lego $S u_smoke${SB}_old 5 $LB ) > /dev/null 2>&1 &
+SM=u_smoke2${SB}                                                                # 1 차 연기 (u_smoke_*) 는 검산 기준이 float32 잡음에 걸려 다시 (해석 float64 힘 대조판)
+( EX_ROOT=fem_u_lego $S ${SM}_l 0 $LB --nint --nint_beta $BT --nint_check 3 ) > /dev/null 2>&1 &
+( EX_ROOT=fem_u_lego $S ${SM}_lL 1 $LB --nint --nint_beta $BT --nint_check 3 --lim 0.3 --lim_mode box ) > /dev/null 2>&1 &
+( EX_ROOT=fem_u_lego $S ${SM}_l_b20 2 $LB --nint --nint_beta 0.2 --nint_check 3 ) > /dev/null 2>&1 &
+( EX_ROOT=fem_u_lego $S ${SM}_l_ng 3 $LB --nint --nint_beta $BT --no_graph ) > /dev/null 2>&1 &
+( EX_ROOT=fem_u_ficus $S ${SM}_f 4 $FB --nint --nint_beta $BT --nint_check 3 ) > /dev/null 2>&1 &
+( EX_ROOT=fem_u_lego $S ${SM}_old 5 $LB ) > /dev/null 2>&1 &
 wait
 unset EX_NOWAIT
 bad=0
-for d in $W/lbours/fem_u_lego/u_smoke${SB}_* $W/lbours/fem_u_ficus/u_smoke${SB}_*; do
+for d in $W/lbours/fem_u_lego/${SM}_* $W/lbours/fem_u_ficus/${SM}_*; do
   if [ -f $d/summary.json ]; then echo "[연기 OK] $(basename $d) $(grep -a '롤아웃\]' $d/v_fem.log | cut -c1-150)"; grep -a "명시적 FEM\]\|프레임 [123]/\|U 검산\|경고" $d/v_fem.log | cut -c1-600; else echo "[연기 실패] $(basename $d)"; tail -25 $d/v_fem.log; bad=1; fi
 done
-# 검산 통과 기준: 방향 미분 (eps 1e-6) 과 노드 성분 상대차 < 1e-2 (커널 float32 vs float64 에너지 중앙 차분)
-python - $W/lbours/fem_u_lego/u_smoke${SB}_l $W/lbours/fem_u_lego/u_smoke${SB}_l_b20 $W/lbours/fem_u_ficus/u_smoke${SB}_f <<'PY' || bad=1
+# 검산 통과 기준: 모든 상태에서 float64 노드 에너지 중앙 차분 vs float64 해석 힘 상대차 < 1e-4 (에너지 일관성),
+#   무작위 변위 상태 (U+δ, 응력이 float32 잡음보다 큰 상태) 에서 커널 (float32) vs float64 해석 힘 < 1e-2
+python - $W/lbours/fem_u_lego/${SM}_l $W/lbours/fem_u_lego/${SM}_l_b20 $W/lbours/fem_u_ficus/${SM}_f <<'PY' || bad=1
 import json, sys
 ok = True
 for d in sys.argv[1:]:
@@ -40,9 +42,9 @@ for d in sys.argv[1:]:
     except Exception as e:
         print("[검산 없음]", d, e); ok = False; continue
     for r in R:
-        rd = max(q["rel"] for q in r["dirs"] if q["eps"] == 1e-6); rc = max(q["rel"] for q in r["comp"])
-        print(f"[검산] {d.split('/')[-1]} t {r['t'] + 1} β {r['beta']}: 방향 {rd:.2e} 성분 {rc:.2e} Σf {r['f_sum']} Σ|f| {r['f_abs']:.4g}")
-        ok = ok and rd < 1e-2 and rc < 1e-2
+        for s in r["states"]:
+            print(f"[검산] {d.split('/')[-1]} t {r['t'] + 1} β {r['beta']} {s['state']}: E {s['E']:.4g} 차분 방향 {s['fd_dir_rel']:.2e} 성분 {s['fd_comp_rel']:.2e} 커널 {s['kern_rel']:.2e} 운동량 {s['mom_rel']:.1e} 각운동량 {s['ang_rel']:.1e}")
+            ok = ok and s["fd_dir_rel"] < 1e-4 and s["fd_comp_rel"] < 1e-4 and (s["state"] == "U" or s["kern_rel"] < 1e-2)
 sys.exit(0 if ok else 1)
 PY
 rclone copy $W/lbours/fem_u_lego r2:storage/result/anchorflow/lbours/fem_u_lego -q
