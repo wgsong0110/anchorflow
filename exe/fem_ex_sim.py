@@ -75,7 +75,8 @@ ap.add_argument("--lagdiag", action="store_true", help="--opt --mode lag 진단 
 ap.add_argument("--lagdump", type=int, default=0,
                 help="--lagdiag 덤프 (사용자 10-29 '날아가는 노드' 그림용, 계산 불변): 마지막 K 프레임의 서브스텝별 노드 U·v (시작 + 매 서브스텝 뒤), "
                      "사면체 det A_T, 노드 접촉 질량 비 α (그 서브스텝 ex_vfl_contact 판정과 같은 식), 노드 위치·질량·점유율, 사면체, 입자 x·rows·λ "
-                     "-> 실행 끝 (발산 포함) 에 <out>/lagdump.pt (0 = 끔)")
+                     "-> 실행 끝 (발산 포함) 에 <out>/lagdump.pt (0 = 끔). 10-30 확장: 서브스텝별 노드 내부력 f (걸음 직전), 프레임 F̄_T·∇λ (gl)·셀 입자 질량 m_T·입자 수·격자 Ai·μ·λ "
+                     "(질량 vs 힘 진단, exe/fem_dv_stats.py; --p2g bs 판에도)")
 ap.add_argument("--rep", type=int, default=0,
                 help="절 P (--opt --mode lag 만, 사용자 10-29): K 서브스텝마다 입자에서 다시 평균 (0 = 끔, 기존 lag 판). 바닥·질량·에너지 정의 그대로")
 ap.add_argument("--rep_mode", choices=["full", "vel"], default="full",
@@ -160,8 +161,10 @@ G2PBS = BSL and a.g2p == "bs"
 BSN = 1 if (BSL and a.bs_mesh == "occ") else 0                                       # 절 T: 팽창 없는 메시 + 메시 안 가중 정규화
 if a.bs_mesh == "occ" and not BSL:
     raise SystemExit("--bs_mesh occ 는 --p2g bs 와 함께")
-if BSL and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP and not a.affine and not FLOOR and not a.lagdiag):
-    raise SystemExit("--p2g bs 는 --opt --mode lag (재평균·아핀·에너지 바닥·lagdiag 없음) 만")
+if BSL and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP and not a.affine and not FLOOR):
+    raise SystemExit("--p2g bs 는 --opt --mode lag (재평균·아핀·에너지 바닥 없음) 만")
+if BSL and a.lagdiag and not VFL:
+    raise SystemExit("--p2g bs --lagdiag 는 --floor vel 만 (진단 루프가 같은 _step_lag 를 부르는 경로)")
 if a.g2p == "bs" and not BSL:
     raise SystemExit("--g2p bs 는 --p2g bs 와 함께")
 if RNEW and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP):
@@ -357,6 +360,7 @@ class Opt:
             self.mA, self.volA = m.clone(), vol.clone()
             self.OX, self.OV, self.OF = z(Np, 3), z(Np, 3), z(Np, 9)
         self.fixd = None
+        self._fhook = None                                                          # --lagdump: 서브스텝 노드 걸음 직전 내부력 f 복사 (진단 루프만, 그래프 판은 None)
         self.ncon = torch.zeros(1, dtype=torch.int32, device=dev)                    # --floor vel: 프레임 동안 접촉 (입자·서브스텝) 수
         self.bst = z(4)                                                              # 절 S: [0] 질량 0 노드 때문에 뺀 사면체 부피, [1] 그 사면체 수; 절 T: [2] 정규화로 메시 안 노드에 옮긴 질량 Σ(1-Win)m_p, [3] 옮긴 부피 Σ(1-Cin)V_p
         self.rst = z(8)                                                              # 절 R 통계 (프레임마다 비움): [0] 뒤집힌 점유 사면체 x 서브스텝, [1] 제한 노드 x 서브스텝, [2:5] 줄인 운동량, [5] 줄인 KE, [6] Σ|줄인 운동량|
@@ -577,6 +581,8 @@ class Opt:
         elif VFL:
             EX.launch("ex_vfl_contact", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf if xcur is None else xcur), EX.P(self.Uc), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                              np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128)
+        if self._fhook is not None:                                                 # 진단 읽기만 (걸음이 f 를 비우기 전)
+            self._fhook()
         EX.launch("ex_node_step_lag", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.gn if FLOOR else None), EX.P(self.vn), EX.P(self.Uc),
                                            np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs), np.float32(DAMP),
                                            EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
@@ -721,6 +727,9 @@ class Opt:
             dV_ = torch.empty(a.N + 1, M, 3, device=dev)
             dD_ = torch.empty(a.N + 1, T, device=dev)
             dAl_ = torch.zeros(a.N, M, device=dev)
+            dF_ = torch.full((a.N, M, 3), float("nan"), device=dev)                # 서브스텝 j 의 내부력 (상태 j 의 U 로 계산된 것, 걸음 직전)
+            self._fj = 0
+            self._fhook = lambda: dF_[self._fj].copy_(self.f[:M])
             dU_[0], dV_[0], dD_[0] = self.Uc[:M], self.vn[:M], detA_now()
         if VFL:                                                                     # 절 O 판: 같은 서브스텝 커널 (_step_lag) -- f 는 걸음 안에서 비워져 |f/m| 표본은 0
             self.f.zero_()
@@ -728,6 +737,7 @@ class Opt:
             self.acc.zero_()
         for j in range(a.N):
             if LD:
+                self._fj = j
                 dAl_[j] = contact_alpha()                                           # 이 서브스텝 접촉 판정 (서브스텝 시작 U 기준) 의 α
             if VFL:
                 self._step_lag()
@@ -745,6 +755,7 @@ class Opt:
                 smp.append([j, float(sp.max()), float(z[k] - zf), float(mn[k] / mn[mn > 0].median()), float(fm), float(gnm), int((~torch.isfinite(sp)).sum())])
                 al = contact_alpha()
                 msmp.append([j, float(sp[k]), float(mn[k] / med), float(occn[k]), float(rn[k]), float(al[k]), int(((al > 0) & light).sum())])
+        self._fhook = None
         tets, gl = self.tets[:T], self.gl[:T].view(T, 4, 3)
         U = self.Uc[tets.reshape(-1)].view(T, 4, 3)
         A = torch.eye(3, device=dev) + torch.einsum("tia,tib->tab", U, gl)
@@ -774,7 +785,12 @@ class Opt:
                                    npos=cpu(self.npos), mn=cpu(mn), occn=cpu(occn), rn=cpu(rn), tets=cpu(tets_).int(), V0=cpu(V0), VT=cpu(VT_),
                                    detFT=cpu(_det3(self.FT[:T].view(T, 3, 3))),
                                    xp=cpu(self._xp), rows=cpu(self.rows).int(), lamb=cpu(self.lamb), nidx=cpu(ni_),
-                                   U=cpu(dU_), V=cpu(dV_), detA=cpu(dD_), alpha=cpu(dAl_)))
+                                   U=cpu(dU_), V=cpu(dV_), detA=cpu(dD_), alpha=cpu(dAl_),
+                                   # 10-30 확장 (질량 vs 힘 진단): 걸음 직전 내부력, 프레임 셀 상태·기준 ∇λ, 셀 안 입자 질량·수, 격자
+                                   f=cpu(dF_), FT=cpu(self.FT[:T]), gl=cpu(self.gl[:T]), Ai=cpu(self.Ai), mu=float(mu), lam=float(lam), node_h=float(a.node_h),
+                                   mT=cpu(torch.zeros(T, device=dev).index_add_(0, self.pinv[:Np], m)),
+                                   npt=cpu(torch.zeros(T, device=dev).index_add_(0, self.pinv[:Np], torch.ones_like(m))),
+                                   mass_def=("bspline" if BSL else a.mass), g2p=(a.g2p if BSL else "bary")))
         with open(os.path.join(a.out, "lagdiag.jsonl"), "a") as fh:
             fh.write(json.dumps(rec) + "\n")
         print(f"    [lag 진단] t {i + 1}: 최대|v_n| 표본 " + " ".join(f"{q[1]:.3g}" for q in smp) + f" (마지막: 노드 높이-바닥 {smp[-1][2]:+.4f}, 질량/중앙 {smp[-1][3]:.3g}), "
