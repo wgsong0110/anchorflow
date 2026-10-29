@@ -129,6 +129,10 @@ ap.add_argument("--nint_beta", type=float, default=0.0,
                 help="--nint 영에너지 모드 안정화 선택지: 에너지 (1-β) Σ_n V_n ψ(F_n) + β Σ_T V_T ψ(F_T) (셀 적분 혼합). 0 = 순수 노드 적분")
 ap.add_argument("--nint_check", type=int, default=0,
                 help="--nint 검산 (측정 밖): 처음 K 프레임 끝 상태에서 커널 힘 vs float64 노드 에너지의 중앙 차분 (방향 미분·노드 성분), 운동량·각운동량 합 -> nint_check.jsonl")
+ap.add_argument("--fupd", choices=["T", "bar", "nbar", "navg", "polar"], default="T",
+                help="절 AB: 프레임 끝 G2P 입자 F 갱신 -- T = F <- A_T F (기존), bar = A_T[(1-β)F + β F̄_T] (셀 균질화·부분 이완), nbar = A_T[(1-β)F + β F̃] (F̃ = 노드 평균 F̄ 의 λ 보간), "
+                     "navg = [(1-β)A_T + β Ã] F (Ã = 노드 평균 A_T 의 λ 보간, 매끈한 속도 기울기), polar = A_T R[(1-β)S + β S̃] (극분해, 신장만 F̃ 쪽으로)")
+ap.add_argument("--fupd_b", type=float, default=1.0, help="--fupd 의 β (0 = 기존과 같음)")
 ap.add_argument("--diag", action="store_true", help="첫 프레임: 노드별 국소 안정 걸음 2/ω (ω² = Σ_T V_T (λ+2μ)|∇λ_i|² / m_i) 분포, 서브스텝마다 최대 |v|")
 a = ap.parse_args()
 
@@ -198,6 +202,10 @@ if CQ and (NINT or SB or a.fb > 0 or a.p2g != "bary" or a.rep or a.affine or a.m
     raise SystemExit("--cq 는 --opt --mode lag --p2g bary (노드 적분·장벽·재평균·아핀·에너지 바닥 없음) 만")
 if a.cqchk and not CQ:
     raise SystemExit("--cqchk 은 --cq 와 함께")
+FUPD = {"T": 0, "bar": 1, "nbar": 2, "navg": 3, "polar": 4}[a.fupd]                    # 절 AB: G2P 입자 F 갱신 방식
+FUPDN = FUPD >= 2                                                                      # 노드 평균 (fa_tet_acc) 필요
+if FUPD and not (a.opt and a.mode == "lag" and a.interp == "bary" and a.p2g == "bary" and not a.rep and not a.affine and a.rep_w == "std"):
+    raise SystemExit("--fupd 는 --opt --mode lag --p2g bary (재평균·아핀 없음) 만")
 RNEW = a.fb > 0 or a.lim >= 0 or SRL or SB or a.rstat or a.p2g == "bs" or NINT or CQ                                         # 절 R 경로 (사면체 힘 ex_tet_force_R + 통계)
 LIM = a.lim >= 0 or SRL
 BSL = a.p2g == "bs"                                                                  # 절 S: lag 판 B-스플라인 P2G
@@ -256,7 +264,8 @@ print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N
       + (f", [절 R] 이동 제한 det A_T ≥ {a.lim:g} ({'상자 꼭짓점 Jacobi' if a.lim_mode == 'box' else '8 색 Gauss-Seidel'}, 속도 {a.lim_v})" if a.lim >= 0 else "")
       + (f", [절 Z] 비율 클램프 σ1/σ3(A_T) ≤ {a.lim_sr:g} (상자 꼭짓점 이분 + Weyl, Jacobi, 속도 {a.lim_v}){' + 검산' if a.lim_sr_chk else ''}" if SRL else "")
       + (f", [절 AA] 셀 에너지 2 차 근사 (F̄ + 공분산 Σ_F 9x9, 헤시안 {'kmanual' if a.cq_h == 'km' else '닫힌 식'})" if CQ else "")
-      + (f", [절 Z] 비율 로그 장벽 κ {a.sb:g} c {a.sb_c:g} d̂ {SB_D:g}" if SB else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
+      + (f", [절 Z] 비율 로그 장벽 κ {a.sb:g} c {a.sb_c:g} d̂ {SB_D:g}" if SB else "")
+      + (f", [절 AB] G2P 입자 F 갱신 {a.fupd} β {a.fupd_b:g}" if FUPD else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
 print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), {'격자 간격 dx' if BSP else 'Kuhn 최소 높이'} {lmin:.5f} (node_h {a.node_h}), "
       f"Δt_CFL = {dt_cfl:.3e} s -> N_CFL = h/Δt_CFL = {h / dt_cfl:.1f} (지금 h_s/Δt_CFL = {hs / dt_cfl:.3f})", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
@@ -443,6 +452,8 @@ class Opt:
                 self.Vnd, self.Pnd = z(self.Mcap), z(self.Mcap, 9)
                 self.ntc_u = torch.zeros(self.Mcap, dtype=torch.int32, device=dev)
                 self.nt_u = torch.zeros(self.Mcap * 24, dtype=torch.int32, device=dev)
+            if FUPDN:                                                                # 절 AB: 노드 V_T 가중 합 (9 + 무게)
+                self.NA = z(self.Mcap, 10)
             self.nposb = z(self.Mcap, 3)                                             # 노드 위치 상주 버퍼 (절 Q: 그래프 안 APIC P2G 가 주소를 고정해 읽는다)
             new = True
         if T > self.Tcap:
@@ -1199,6 +1210,14 @@ class Opt:
             if G2PBS:
                 EX.launch("bsl_g2p", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm),
                                           EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), np.int32(BSN)), b=128)
+            elif FUPD:                                                              # 절 AB: F 갱신 방식만 바뀐 G2P
+                if FUPDN:
+                    self.NA[:self.M].zero_()
+                    EX.launch("fa_tet_acc", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
+                                                        np.int32(0 if FUPD == 3 else 1), EX.P(self.NA)), b=256)
+                EX.launch("ex_g2p_lagF", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
+                                              EX.P(self.pinv), EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(self.FT), EX.P(self.NA if FUPDN else None),
+                                              np.int32(FUPD), np.float32(a.fupd_b)), b=256)
             else:
                 EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
                                              EX.P(self.pinv), EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(self.CL if a.affine else None), np.int32(1 if RW4 else 0)), b=256)
@@ -1838,7 +1857,7 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             lim_n_tot=(sum(r.get("lim_n", 0) for r in recs) if RNEW else None), lim_dke_tot=(sum(r.get("lim_dke", 0.0) for r in recs) if RNEW else None),
             lim_dpabs_tot=(sum(r.get("lim_dpabs", 0.0) for r in recs) if RNEW else None), nt_ovf=(max(r.get("nt_ovf", 0) for r in recs) if RNEW else None),
             p2g=a.p2g, g2p=a.g2p, bs_mesh=(a.bs_mesh if BSL else None), bs_mass=(a.bs_mass if BSL else None), interp=a.interp, rep=REP, rep_mode=(a.rep_mode if REP else None), quad=(a.quad if BSP else None), K=(a.K if BSP and a.quad == "cell" else None), apic=bool(a.apic), rep_w=a.rep_w,
-            nint=NINT, nint_beta=(a.nint_beta if NINT else None))
+            nint=NINT, nint_beta=(a.nint_beta if NINT else None), fupd=a.fupd, fupd_b=(a.fupd_b if FUPD else None))
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
 print(f"[롤아웃] {a.tag} 서브스텝 {a.N} {a.mode}{' 최적화' if a.opt else ''}: {done}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%  "
       f"프레임당 {summ['ms_mean']:.2f} ms (중앙 {summ['ms_med']:.2f}, {summ['fps']:.2f} fps, 앞 {W} 프레임 제외) 퍼짐 {summ['spread_last']:.3f} "

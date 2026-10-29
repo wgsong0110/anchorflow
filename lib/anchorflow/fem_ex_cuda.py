@@ -1591,6 +1591,60 @@ __global__ void ex_tet_force_CQ(const int* szp, const long long* tets, const flo
         atomicAdd(&f[n[i]*3+c], -V*s);
     }
 }
+
+// ======== 절 AB (갈래 A, 사용자 10-30 "해볼 수 있는 거 다"): 프레임 끝 G2P 의 입자 F 갱신 방식 ========
+// 진단 (절 Y·AA): 입자 F 이웃 벌어짐이 정답의 10~20 배 -- 이웃 사면체의 서로 다른 A_T 를 F_p <- A_T F_p 로 각자 누적. 위치·속도 G2P 는 그대로, F 갱신만 바꾼다.
+// fa_tet_acc: 점유 사면체 (V_T > 0) 의 X_T 를 네 노드에 V_T 가중 합 -- NA[n*10+k] += V_T X_T[k], NA[n*10+9] += V_T
+//   which 0: X_T = A_T = I + Σ_i U_i ∇λ_iᵀ (프레임 셀 사상), 1: X_T = F̄_T (프레임 시작 셀 평균 F, P2G 것)
+__global__ void fa_tet_acc(const int* szp, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT, int which, float* NA) {
+    int T = szp[1];
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    long long n[4]; for (int i=0;i<4;i++) n[i] = tets[t*4+i];
+    float X[9];
+    if (which == 0) {
+        for (int k=0;k<9;k++) X[k] = (k%4==0) ? 1.f : 0.f;
+        for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u = U[n[i]*3+c]; for (int b=0;b<3;b++) X[c*3+b] += u*gl[t*12+i*3+b]; }
+    } else {
+        for (int k=0;k<9;k++) X[k] = FT[t*9+k];
+    }
+    for (int i=0;i<4;i++) { for (int k=0;k<9;k++) atomicAdd(&NA[n[i]*10+k], V*X[k]); atomicAdd(&NA[n[i]*10+9], V); }
+}
+// ex_g2p_lagF: 위치·속도는 ex_g2p_lag (vq 0, C 없음) 와 같은 식, F 갱신만 mode 로:
+//   0 기존: F <- A_T F
+//   1 bar  (셀 균질화/부분 이완): F <- A_T [(1-β) F + β F̄_T]          (β 1 = 셀 평균으로 덮어씀)
+//   2 nbar (이웃 이완): F <- A_T [(1-β) F + β F̃],  F̃ = Σ_i λ_i F̄_n (F̄_n = 노드에 닿는 점유 사면체 F̄_T 의 V_T 가중 평균, NA which 1)
+//   3 navg (매끈한 속도 기울기): F <- [(1-β) A_T + β Ã] F,  Ã = Σ_i λ_i Ā_n (Ā_n = 노드에 닿는 점유 사면체 A_T 의 V_T 가중 평균, NA which 0 -- simplex.nodeavg_jac_pre 꼴)
+//   4 polar (회전/신장 분리): F = R S, F̃ = R̃ S̃ (극분해) -> F <- A_T R [(1-β) S + β S̃]  (회전은 입자 것, 신장만 이웃 (노드 평균 F̄) 쪽으로)
+__global__ void ex_g2p_lagF(int N, const float* x, const float* Ucum, const float* Vn, const long long* rows, const float* lamb, const float* glT,
+                            const long long* tinv, const float* Fp, float* x2, float* v2, float* F2, const float* FT, const float* NA, int mode, float beta) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    double u[3]={0,0,0}, vv[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1}, Nt[9]={0,0,0,0,0,0,0,0,0};
+    long long t = tinv[p];
+    const float* gl = glT + t*12;
+    for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; double lm=lamb[p*4+i];
+        for (int a=0;a<3;a++){ double Ua=Ucum[nd*3+a]; double Va=(double)Vn[nd*3+a]; u[a]+=lm*Ua; vv[a]+=lm*Va;
+            for (int b=0;b<3;b++) A[a*3+b]+=Ua*gl[i*3+b]; } 
+        if (mode >= 2) { double W = (double)NA[nd*10+9]; if (W > 0.0) for (int k=0;k<9;k++) Nt[k] += lm*(double)NA[nd*10+k]/W; } }
+    for (int k=0;k<3;k++) { x2[p*3+k] = (float)((double)x[p*3+k] + u[k]); v2[p*3+k] = (float)vv[k]; }
+    double F[9]; for (int k=0;k<9;k++) F[k]=Fp[p*9+k];
+    double B = beta, G[9], F2d[9];
+    if (mode == 1) { for (int k=0;k<9;k++) G[k] = ((double)1-B)*F[k] + B*(double)FT[t*9+k]; mm3(A, G, F2d); }
+    else if (mode == 2) { for (int k=0;k<9;k++) G[k] = ((double)1-B)*F[k] + B*Nt[k]; mm3(A, G, F2d); }
+    else if (mode == 3) { for (int k=0;k<9;k++) G[k] = ((double)1-B)*A[k] + B*Nt[k]; mm3(G, F, F2d); }
+    else if (mode == 4) {
+        double R[9], Rt[9], S[9], St[9], RS[9];
+        polar(F, R); polar(Nt, Rt);
+        for (int r=0;r<3;r++) for (int c=0;c<3;c++) { double s1=0, s2=0; for (int k=0;k<3;k++) { s1 += R[k*3+r]*F[k*3+c]; s2 += Rt[k*3+r]*Nt[k*3+c]; } S[r*3+c]=s1; St[r*3+c]=s2; }
+        for (int k=0;k<9;k++) G[k] = ((double)1-B)*S[k] + B*St[k];
+        mm3(R, G, RS); mm3(A, RS, F2d);
+    }
+    else mm3(A, F, F2d);
+    for (int k=0;k<9;k++) F2[p*9+k] = (float)F2d[k];
+}
 }
 '''
 
