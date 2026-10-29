@@ -1618,17 +1618,19 @@ __global__ void fa_tet_acc(const int* szp, const long long* tets, const float* U
 //   2 nbar (이웃 이완): F <- A_T [(1-β) F + β F̃],  F̃ = Σ_i λ_i F̄_n (F̄_n = 노드에 닿는 점유 사면체 F̄_T 의 V_T 가중 평균, NA which 1)
 //   3 navg (매끈한 속도 기울기): F <- [(1-β) A_T + β Ã] F,  Ã = Σ_i λ_i Ā_n (Ā_n = 노드에 닿는 점유 사면체 A_T 의 V_T 가중 평균, NA which 0 -- simplex.nodeavg_jac_pre 꼴)
 //   4 polar (회전/신장 분리): F = R S, F̃ = R̃ S̃ (극분해) -> F <- A_T R [(1-β) S + β S̃]  (회전은 입자 것, 신장만 이웃 (노드 평균 F̄) 쪽으로)
+//   5 navgbar (3 + 2): F <- [(1-β) A_T + β Ã] [(1-β2) F + β2 F̃]  (NA = A 노드 평균, NB = F̄ 노드 평균)
 __global__ void ex_g2p_lagF(int N, const float* x, const float* Ucum, const float* Vn, const long long* rows, const float* lamb, const float* glT,
-                            const long long* tinv, const float* Fp, float* x2, float* v2, float* F2, const float* FT, const float* NA, int mode, float beta) {
+                            const long long* tinv, const float* Fp, float* x2, float* v2, float* F2, const float* FT, const float* NA, int mode, float beta, const float* NB, float beta2) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
-    double u[3]={0,0,0}, vv[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1}, Nt[9]={0,0,0,0,0,0,0,0,0};
+    double u[3]={0,0,0}, vv[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1}, Nt[9]={0,0,0,0,0,0,0,0,0}, Nb[9]={0,0,0,0,0,0,0,0,0};
     long long t = tinv[p];
     const float* gl = glT + t*12;
     for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; double lm=lamb[p*4+i];
         for (int a=0;a<3;a++){ double Ua=Ucum[nd*3+a]; double Va=(double)Vn[nd*3+a]; u[a]+=lm*Ua; vv[a]+=lm*Va;
             for (int b=0;b<3;b++) A[a*3+b]+=Ua*gl[i*3+b]; } 
-        if (mode >= 2) { double W = (double)NA[nd*10+9]; if (W > 0.0) for (int k=0;k<9;k++) Nt[k] += lm*(double)NA[nd*10+k]/W; } }
+        if (mode >= 2) { double W = (double)NA[nd*10+9]; if (W > 0.0) for (int k=0;k<9;k++) Nt[k] += lm*(double)NA[nd*10+k]/W; }
+        if (mode == 5) { double W = (double)NB[nd*10+9]; if (W > 0.0) for (int k=0;k<9;k++) Nb[k] += lm*(double)NB[nd*10+k]/W; } }
     for (int k=0;k<3;k++) { x2[p*3+k] = (float)((double)x[p*3+k] + u[k]); v2[p*3+k] = (float)vv[k]; }
     double F[9]; for (int k=0;k<9;k++) F[k]=Fp[p*9+k];
     double B = beta, G[9], F2d[9];
@@ -1642,6 +1644,7 @@ __global__ void ex_g2p_lagF(int N, const float* x, const float* Ucum, const floa
         for (int k=0;k<9;k++) G[k] = ((double)1-B)*S[k] + B*St[k];
         mm3(R, G, RS); mm3(A, RS, F2d);
     }
+    else if (mode == 5) { double H[9]; for (int k=0;k<9;k++) { G[k] = ((double)1-B)*A[k] + B*Nt[k]; H[k] = ((double)1-(double)beta2)*F[k] + (double)beta2*Nb[k]; } mm3(G, H, F2d); }
     else mm3(A, F, F2d);
     for (int k=0;k<9;k++) F2[p*9+k] = (float)F2d[k];
 }

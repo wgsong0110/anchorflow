@@ -142,10 +142,11 @@ ap.add_argument("--nint_beta", type=float, default=0.0,
                 help="--nint 영에너지 모드 안정화 선택지: 에너지 (1-β) Σ_n V_n ψ(F_n) + β Σ_T V_T ψ(F_T) (셀 적분 혼합). 0 = 순수 노드 적분")
 ap.add_argument("--nint_check", type=int, default=0,
                 help="--nint 검산 (측정 밖): 처음 K 프레임 끝 상태에서 커널 힘 vs float64 노드 에너지의 중앙 차분 (방향 미분·노드 성분), 운동량·각운동량 합 -> nint_check.jsonl")
-ap.add_argument("--fupd", choices=["T", "bar", "nbar", "navg", "polar"], default="T",
+ap.add_argument("--fupd", choices=["T", "bar", "nbar", "navg", "polar", "navgbar"], default="T",
                 help="절 AB: 프레임 끝 G2P 입자 F 갱신 -- T = F <- A_T F (기존), bar = A_T[(1-β)F + β F̄_T] (셀 균질화·부분 이완), nbar = A_T[(1-β)F + β F̃] (F̃ = 노드 평균 F̄ 의 λ 보간), "
                      "navg = [(1-β)A_T + β Ã] F (Ã = 노드 평균 A_T 의 λ 보간, 매끈한 속도 기울기), polar = A_T R[(1-β)S + β S̃] (극분해, 신장만 F̃ 쪽으로)")
 ap.add_argument("--fupd_b", type=float, default=1.0, help="--fupd 의 β (0 = 기존과 같음)")
+ap.add_argument("--fupd_b2", type=float, default=0.2, help="--fupd navgbar: F <- [(1-β)A_T + βÃ][(1-β2)F + β2 F̃] 의 β2")
 ap.add_argument("--cfast", action="store_true", help="절 C: 아래 네 가지 (--vfl_cull --sr_fast --tlist --fpolar) 모두")
 ap.add_argument("--cfuse", action="store_true", help="절 C (5): --cfast + 서브스텝 커널 융합 (힘+접촉 / 판정 둘 (속도 그 자리) / 노드 걸음+적용) -- 같은 식, 커널 6 -> 4 개")
 ap.add_argument("--sr_ef", action="store_true", help="절 C (6): 힘 커널이 ‖A-I‖_F² 를 남기고 클램프 빠른 판정이 그것을 쓴다 (U 다시 안 읽음, 같은 판정)")
@@ -233,7 +234,7 @@ if CQ and (NINT or SB or a.fb > 0 or a.p2g != "bary" or a.rep or a.affine or a.m
     raise SystemExit("--cq 는 --opt --mode lag --p2g bary (노드 적분·장벽·재평균·아핀·에너지 바닥 없음) 만")
 if a.cqchk and not CQ:
     raise SystemExit("--cqchk 은 --cq 와 함께")
-FUPD = {"T": 0, "bar": 1, "nbar": 2, "navg": 3, "polar": 4}[a.fupd]                    # 절 AB: G2P 입자 F 갱신 방식
+FUPD = {"T": 0, "bar": 1, "nbar": 2, "navg": 3, "polar": 4, "navgbar": 5}[a.fupd]                    # 절 AB: G2P 입자 F 갱신 방식
 FUPDN = FUPD >= 2                                                                      # 노드 평균 (fa_tet_acc) 필요
 if FUPD and not (a.opt and a.mode == "lag" and a.interp == "bary" and a.p2g == "bary" and not a.rep and not a.affine and a.rep_w == "std"):
     raise SystemExit("--fupd 는 --opt --mode lag --p2g bary (재평균·아핀 없음) 만")
@@ -326,7 +327,7 @@ print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N
          + (f", β {a.sp_beta:g}" if SPM == "blend" else "") + (f", w = min(점유율/{a.sp_wocc:g}, 1)" if SPM == "stiff" else "")
          + (f", 관성 질량 하한 {a.sp_mlow:g} x 첫 프레임 중앙" if SPM == "mlow" else "") + ")" if SPM != "none" else "")
       + (f", [절 Z] 비율 로그 장벽 κ {a.sb:g} c {a.sb_c:g} d̂ {SB_D:g}" if SB else "")
-      + (f", [절 AB] G2P 입자 F 갱신 {a.fupd} β {a.fupd_b:g}" if FUPD else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
+      + (f", [절 AB] G2P 입자 F 갱신 {a.fupd} β {a.fupd_b:g}" + (f" β2 {a.fupd_b2:g}" if FUPD == 5 else "") if FUPD else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
 print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), {'격자 간격 dx' if BSP else 'Kuhn 최소 높이'} {lmin:.5f} (node_h {a.node_h}), "
       f"Δt_CFL = {dt_cfl:.3e} s -> N_CFL = h/Δt_CFL = {h / dt_cfl:.1f} (지금 h_s/Δt_CFL = {hs / dt_cfl:.3f})", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
@@ -528,6 +529,7 @@ class Opt:
                                     ("ncon_diff", "ncon_ref", "acc_set_diff", "acc_absdiff", "acc_sum", "alpha_bit_diff", "alpha_lim_nodes", "list_len", "occ_tets")}
             if FUPDN:                                                                # 절 AB: 노드 V_T 가중 합 (9 + 무게)
                 self.NA = z(self.Mcap, 10)
+                self.NB = z(self.Mcap, 10) if FUPD == 5 else None
             if SPM == "mlow":
                 self.mI = z(self.Mcap)                                               # 절 AD mlow: 관성 질량 max(m_n, m_low)
             self.nposb = z(self.Mcap, 3)                                             # 노드 위치 상주 버퍼 (절 Q: 그래프 안 APIC P2G 가 주소를 고정해 읽는다)
@@ -1572,10 +1574,14 @@ class Opt:
                 if FUPDN:
                     self.NA[:self.M].zero_()
                     EX.launch("fa_tet_acc", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
-                                                        np.int32(0 if FUPD == 3 else 1), EX.P(self.NA)), b=256)
+                                                        np.int32(0 if FUPD in (3, 5) else 1), EX.P(self.NA)), b=256)
+                    if FUPD == 5:
+                        self.NB[:self.M].zero_()
+                        EX.launch("fa_tet_acc", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
+                                                            np.int32(1), EX.P(self.NB)), b=256)
                 EX.launch("ex_g2p_lagF", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
                                               EX.P(self.pinv), EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(self.FT), EX.P(self.NA if FUPDN else None),
-                                              np.int32(FUPD), np.float32(a.fupd_b)), b=256)
+                                              np.int32(FUPD), np.float32(a.fupd_b), EX.P(self.NB if FUPD == 5 else None), np.float32(a.fupd_b2)), b=256)
             else:
                 EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
                                              EX.P(self.pinv), EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(self.CL if a.affine else None), np.int32(1 if RW4 else 0)), b=256)
@@ -2233,7 +2239,7 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             lim_n_tot=(sum(r.get("lim_n", 0) for r in recs) if RNEW else None), lim_dke_tot=(sum(r.get("lim_dke", 0.0) for r in recs) if RNEW else None),
             lim_dpabs_tot=(sum(r.get("lim_dpabs", 0.0) for r in recs) if RNEW else None), nt_ovf=(max(r.get("nt_ovf", 0) for r in recs) if RNEW else None),
             p2g=a.p2g, g2p=a.g2p, bs_mesh=(a.bs_mesh if BSL else None), bs_mass=(a.bs_mass if BSL else None), interp=a.interp, rep=REP, rep_mode=(a.rep_mode if REP else None), quad=(a.quad if BSP else None), K=(a.K if BSP and a.quad == "cell" else None), apic=bool(a.apic), rep_w=a.rep_w,
-            nint=NINT, nint_beta=(a.nint_beta if NINT else None), fupd=a.fupd, fupd_b=(a.fupd_b if FUPD else None),
+            nint=NINT, nint_beta=(a.nint_beta if NINT else None), fupd=a.fupd, fupd_b=(a.fupd_b if FUPD else None), fupd_b2=(a.fupd_b2 if FUPD == 5 else None),
             sp=SPM, sp_k=a.sp_k, sp_occ=a.sp_occ, sp_beta=a.sp_beta, sp_wocc=a.sp_wocc, sp_mlow=a.sp_mlow,
             rn_tot=(sum(r.get("rn", 0) for r in recs) if RNEW else None), rn_max=(max((r.get("rn", 0) for r in recs), default=None) if RNEW else None),
             sp_n_med=(med([r.get("sp_n", 0) for r in recs]) if SPM != "none" else None), sp_grouped_med=(med([r.get("sp_grouped", 0) for r in recs]) if SPM in ("merge", "cube") else None), sp_a=a.sp_a, sp_hg=a.sp_hg)
