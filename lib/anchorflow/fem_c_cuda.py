@@ -26,6 +26,7 @@ from . import fem_ex_cuda as EX
 
 _C = r'''
 #define CFULL 0xffffffffu
+extern "C" {
 // ---- (3) 점유 사면체 목록 (프레임마다, tlc 는 미리 0) ----
 __global__ void c_tet_list(const int* szp, const float* VT, int* tl, int* tlc) {
     int T = szp[1];
@@ -235,6 +236,7 @@ __global__ void c_tet_force_R(const int* szp, const int* tl, const int* tlc, con
         atomicAdd(&f[n[i]*3+c], -V*s);
     }
 }
+}  // extern "C" (절 C)
 '''
 
 _MOD = [None]
