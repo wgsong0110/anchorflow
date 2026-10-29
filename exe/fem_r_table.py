@@ -19,7 +19,7 @@ def f3(x, fmt):
     return "-" if x is None else fmt % x
 
 
-print("| 설정 | 장벽 κ / Ĵ / J | 제한 det A ≥ / 속도 | N | 완주 | 발산 프레임 | 오차 (완주 평균; 없으면 발산 전) | ms 평균 (측정) | 뒤집힘 사면체x서브스텝 (회별) | 끝 뒤집힘 최대 | 입자 F 뒤집힘 최대 | det A 최소 | 제한 노드x서브스텝 / 줄인 KE (J) | 최저 입자 (m) / 아래 최대 | 주기 (s) |")
+print("| 설정 | 장벽 κ / Ĵ / J | 제한 det A ≥ / 속도 / 방식 | N | 완주 | 발산 프레임 | 오차 (완주 평균; 없으면 발산 전) | ms 평균 (측정) | 뒤집힘 사면체x서브스텝 (회별) | 끝 뒤집힘 최대 | 입자 F 뒤집힘 최대 | det A 최소 | 제한 노드x서브스텝 / 줄인 KE (J) | 최저 입자 (m) / 아래 최대 | 주기 (s) |")
 print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for k, ds in G.items():
     S = []
@@ -45,7 +45,7 @@ for k, ds in G.items():
     ms = sum(s["ms_mean"] for s in ok) / len(ok)
     tm = "단독" if all(s["_timed"] for s in ok) else "비측정"
     fb = f"{s0.get('fb', 0):g} / {s0.get('fb_jhat', 0.3):g} / {s0.get('fb_on', 'X')}" if s0.get("fb", 0) > 0 else "-"
-    lm = f"{s0.get('lim'):g} / {s0.get('lim_v')}" if (s0.get("lim") is not None and s0.get("lim") >= 0) else "-"
+    lm = f"{s0.get('lim'):g} / {s0.get('lim_v')} / {s0.get('lim_mode', 'gs')}" if (s0.get("lim") is not None and s0.get("lim") >= 0) else "-"
     inv = "/".join(str(s.get("inv_sub_tot")) for s in ok)
     ie = max((s.get("inv_end_max") or 0) for s in ok)
     fpi = max((s.get("Fp_inv_max") or 0) for s in ok)

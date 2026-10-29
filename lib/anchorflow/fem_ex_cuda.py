@@ -331,6 +331,61 @@ __global__ void ex_tet_force_R(const int* szp, const long long* tets, const floa
         atomicAdd(&f[n[i]*3+c], -V*s);
     }
 }
+// (2') 상자 판 (--lim_mode box, 서브스텝당 커널 2 개 -- 색 8 번보다 싸다): det(A0 + Σ α_i d_i ⊗ ∇λ_i) 는 각 α_i 에 대해 아핀 (행렬식 보조정리) 이라
+//   상자 [0,s]⁴ 위 최솟값은 꼭짓점 (부분집합 S 의 노드만 s 배로 움직인 15 + 1 배치) 에서 난다. 사면체마다 꼭짓점 det ≥ thr 를 지키는 최대 s_T 를 찾고
+//   (s = 1 이 되면 끝, 아니면 이분 14 번 -- lo 는 늘 유효), 노드 α_n = min_T s_T (원자 min, 음 아닌 float 비트 순서 = 정수 순서).
+//   모든 노드가 α_n ≤ s_T 이므로 실제 배치는 그 사면체의 상자 안 -> det A_T ≥ thr 보장 (Jacobi, 순서 무관·결정적). thr = min(jmin, 지금 det) (더 줄이지만 않게).
+//   (--cfg_bc 묶인 노드는 α 1 로 움직인다 -- 그 노드가 든 사면체는 보장 밖)
+__device__ __forceinline__ float det_sub(const float* A0, const float* Mo, int S, float s) {
+    float B[9]; for (int k=0;k<9;k++) { float t = 0.f; for (int i=0;i<4;i++) if (S & (1<<i)) t += Mo[i*9+k]; B[k] = A0[k] + s*t; }
+    return det3(B);
+}
+__global__ void ex_lim_box_tet(const int* szp, const long long* tets, const float* gl, const float* VT, const float* vn, const float* Ucum, float hs, float jmin,
+                               unsigned int* alph, float* rst) {
+    int T = szp[1];
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T || !(VT[t] > 0.f)) return;
+    long long n[4]; float G[12];
+    for (int i=0;i<4;i++) n[i]=tets[t*4+i];
+    for (int k=0;k<12;k++) G[k]=gl[t*12+k];
+    float A0[9] = {1,0,0, 0,1,0, 0,0,1};
+    float Mo[36];
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u=Ucum[n[i]*3+c], d=hs*vn[n[i]*3+c]; for (int b=0;b<3;b++) { A0[c*3+b] += u*G[i*3+b]; Mo[i*9+c*3+b] = d*G[i*3+b]; } }
+    float D0 = det3(A0);
+    float thr = fminf(jmin, D0);
+    bool ok = true;
+    for (int S=1; S<16 && ok; S++) if (det_sub(A0, Mo, S, 1.f) < thr) ok = false;
+    if (ok) return;
+    float lo = 0.f, hi = 1.f;
+    for (int it=0; it<14; it++) {
+        float mid = 0.5f*(lo+hi); bool g = true;
+        for (int S=1; S<16 && g; S++) if (det_sub(A0, Mo, S, mid) < thr) g = false;
+        if (g) lo = mid; else hi = mid;
+    }
+    unsigned int bits = __float_as_uint(lo);
+    for (int i=0;i<4;i++) atomicMin(&alph[n[i]], bits);
+    atomicAdd(&rst[7], 1.f);
+}
+__global__ void ex_lim_box_apply(const int* szp, const float* mn, float* vn, float* Ucum, float hs, unsigned int* alph, int vmode, const unsigned char* fixd, float* rst) {
+    int M = szp[0];
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= M) return;
+    float al = __uint_as_float(alph[n]);
+    alph[n] = 0x3f800000u;                                         // 1.0f (다음 서브스텝)
+    if (fixd && fixd[n]) al = 1.f;
+    float v[3] = {vn[n*3], vn[n*3+1], vn[n*3+2]};
+    for (int c=0;c<3;c++) Ucum[n*3+c] += al*hs*v[c];
+    if (al < 1.f) {
+        float m = mn[n], w = 1.f - al;
+        atomicAdd(&rst[1], 1.f);
+        if (vmode == 0) {
+            for (int c=0;c<3;c++) { vn[n*3+c] = al*v[c]; atomicAdd(&rst[2+c], w*m*v[c]); }
+            float v2 = v[0]*v[0]+v[1]*v[1]+v[2]*v[2];
+            atomicAdd(&rst[5], 0.5f*m*v2*(1.f - al*al));
+            atomicAdd(&rst[6], w*m*sqrtf(v2));
+        }
+    }
+}
 // (2) 노드 이동 제한용 노드 -> 사면체 목록 (프레임마다, 격자 만든 뒤): nt[n*24 + s] = t*4 + (n 의 사면체 안 꼭짓점 번호), ntc[n] = 개수 (Kuhn 최대 24)
 __global__ void ex_node_tets(const int* szp, const long long* tets, int* ntc, int* nt, int* ovf) {
     int T = szp[1];

@@ -90,6 +90,9 @@ ap.add_argument("--fb_jhat", type=float, default=0.3, help="--fb 장벽이 켜�
 ap.add_argument("--fb_on", choices=["X", "A"], default="X", help="--fb 의 J: X = det(A_T F̄_T) (셀 변형 전체, 기존 F 장벽 꼴), A = det A_T (프레임 안 셀 사상)")
 ap.add_argument("--lim", type=float, default=-1.0,
                 help="절 R (2) (--opt --mode lag): 서브스텝마다 노드 이동을 줄여 점유 사면체 det A_T ≥ 이 값을 지킨다 (Kuhn 홀짝 8 색 Gauss-Seidel, 닫힌 꼴 α) -- 음수 = 끔")
+ap.add_argument("--lim_mode", choices=["gs", "box"], default="box",
+                help="--lim: gs = Kuhn 홀짝 8 색 Gauss-Seidel (노드별 닫힌 꼴 α, 서브스텝당 커널 8 개), box = 사면체별 상자 꼭짓점 판정 (det 이 α_i 마다 아핀 -> 상자 최소 = 꼭짓점; "
+                     "노드 α = min s_T, 커널 2 개, Jacobi)")
 ap.add_argument("--lim_v", choices=["scale", "keep"], default="scale", help="--lim: scale = 속도도 α 배 (이동과 맞춤, 줄인 운동량·에너지 기록), keep = 속도 그대로")
 ap.add_argument("--rstat", action="store_true", help="절 R 통계 (뒤집힌 셀 수 등) -- --fb·--lim 이 없어도 같은 사면체 힘 커널 (ex_tet_force_R, κ 0) 로 (기준 판 비교용)")
 ap.add_argument("--diag", action="store_true", help="첫 프레임: 노드별 국소 안정 걸음 2/ω (ω² = Σ_T V_T (λ+2μ)|∇λ_i|² / m_i) 분포, 서브스텝마다 최대 |v|")
@@ -178,7 +181,7 @@ print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N
       + (f", 재평균 {a.rep_mode} {REP} 서브스텝마다 (블록 {NB})" if REP else "") + (", 아핀 전달 (APIC)" if a.affine else "")
       + (f", 전달 가중 {a.rep_w}" if a.rep_w != "std" else "")
       + (f", [절 R] log J 장벽 κ {a.fb:g} Ĵ {a.fb_jhat:g} J=det({'A F̄' if a.fb_on == 'X' else 'A'})" if a.fb > 0 else "")
-      + (f", [절 R] 이동 제한 det A_T ≥ {a.lim:g} (8 색, 속도 {a.lim_v})" if LIM else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
+      + (f", [절 R] 이동 제한 det A_T ≥ {a.lim:g} ({'상자 꼭짓점 Jacobi' if a.lim_mode == 'box' else '8 색 Gauss-Seidel'}, 속도 {a.lim_v})" if LIM else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
 print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), {'격자 간격 dx' if BSP else 'Kuhn 최소 높이'} {lmin:.5f} (node_h {a.node_h}), "
       f"Δt_CFL = {dt_cfl:.3e} s -> N_CFL = h/Δt_CFL = {h / dt_cfl:.1f} (지금 h_s/Δt_CFL = {hs / dt_cfl:.3f})", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
@@ -355,6 +358,7 @@ class Opt:
             self.acc = z(self.Mcap)                                                  # --floor vel: 노드별 접촉 입자 질량 (쓴 뒤 비움)
             self.ml = z(self.Mcap) if RWL else None                                  # 절 Q --rep_w lam: 속도 전달 정규화 질량 Σλm
             if LIM:
+                self.alph = torch.full((self.Mcap,), 1065353216, dtype=torch.int32, device=dev)   # box: 노드 α (1.0f 비트)
                 self.ncol = torch.zeros(self.Mcap, dtype=torch.uint8, device=dev)   # 절 R (2): Kuhn 격자 지표 홀짝 색 (0..7)
                 self.ntc = torch.zeros(self.Mcap, dtype=torch.int32, device=dev)
                 self.nt = torch.zeros(self.Mcap * 24, dtype=torch.int32, device=dev)
@@ -449,6 +453,8 @@ class Opt:
         self.nposb[:M].copy_(npos)
         self.npos = self.nposb[:M]
         if LIM:
+            self.alph.fill_(1065353216)
+        if LIM and a.lim_mode == "gs":
             # 색 = 전역 격자 지표 (imin + k) 의 홀짝 -- 한 사면체 네 노드는 지표 차 {0,1}³\0 이라 모두 다른 색
             gk = torch.stack([k0, k1, k2], -1) + imin.to(k0.device).view(1, 3)
             self.ncol[:M] = ((gk[:, 0] & 1) | ((gk[:, 1] & 1) << 1) | ((gk[:, 2] & 1) << 2)).to(torch.uint8)
@@ -525,7 +531,12 @@ class Opt:
                                            np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs), np.float32(DAMP),
                                            EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
                                            np.int32(1 if a.vfl_mode == "full" else 0), np.int32(a.vfl_np), *PLf[3:], np.int32(1 if LIM else 0)), b=256)
-        if LIM:
+        if LIM and a.lim_mode == "box":
+            EX.launch("ex_lim_box_tet", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc), np.float32(hs),
+                                             np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)))
+            EX.launch("ex_lim_box_apply", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs), EX.P(self.alph),
+                                               np.int32(1 if a.lim_v == "keep" else 0), EX.P(self.fx if self.fixd else None), EX.P(self.rst)), b=256)
+        elif LIM:
             for c in range(8):
                 EX.launch("ex_lim_color", Mc, (EX.P(self.sz), np.int32(c), EX.P(self.ncol), EX.P(self.ntc), EX.P(self.nt), EX.P(self.tets), EX.P(self.gl),
                                                EX.P(self.VTs), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs), np.float32(a.lim),
@@ -788,6 +799,8 @@ class Opt:
                         t.copy_(s_)
                 self.ncon.zero_()
                 self.rst.zero_()
+                if LIM:
+                    self.alph.fill_(1065353216)
                 self.capture()
             self.graph.replay()
         if lagm:
@@ -1134,7 +1147,7 @@ for i in range(L):
             ke_p = float(0.5 * (m * (v2 ** 2).sum(-1)).sum())
             st.update(inv_sub=int(rs[0]), inv_end=int((~(dA_ > 0)).sum()), invX_end=int((~(dX_ > 0)).sum()), detA_min=float(dA_.min()) if dA_.numel() else None,
                       detX_min=float(dX_.min()) if dX_.numel() else None, Fp_inv=int((~(dFp > 0)).sum()), Fp_detmin=float(dFp.min()),
-                      lim_n=int(rs[1]), lim_dp=[rs[2], rs[3], rs[4]], lim_dke=rs[5], lim_dpabs=rs[6], ke_p=ke_p,
+                      lim_n=int(rs[1]), lim_dp=[rs[2], rs[3], rs[4]], lim_dke=rs[5], lim_dpabs=rs[6], lim_tets=int(rs[7]), ke_p=ke_p,
                       p_tot=[float(q) for q in (m[:, None] * v2).sum(0).tolist()], nt_ovf=int(OPT.novf.item()))
         if szh[3]:
             print(f"  [경고] 프레임 {i + 1}: 팽창 영역 밖 입자 {szh[3]} (격자 넘침)", flush=True)
@@ -1181,7 +1194,7 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             n_contact_max=(max(r.get("n_contact") or 0 for r in recs) if VFL else None),
             spread_last=recs[-1]["spread"], n_near_med=med([r.get("n_near") or 0 for r in recs]),
             overflow_frames=sum(1 for r in recs if r.get("overflow")), gpu=torch.cuda.get_device_name(0), tag=a.tag, damp_sub=DAMP,
-            fb=a.fb, fb_jhat=a.fb_jhat, fb_on=a.fb_on, lim=a.lim, lim_v=a.lim_v,
+            fb=a.fb, fb_jhat=a.fb_jhat, fb_on=a.fb_on, lim=a.lim, lim_v=a.lim_v, lim_mode=a.lim_mode,
             inv_sub_tot=(sum(r.get("inv_sub", 0) for r in recs) if RNEW else None), inv_frames=(sum(1 for r in recs if r.get("inv_sub", 0) > 0) if RNEW else None),
             inv_end_max=(max(r.get("inv_end", 0) for r in recs) if RNEW else None), Fp_inv_max=(max(r.get("Fp_inv", 0) for r in recs) if RNEW else None),
             detA_min=(min((r["detA_min"] for r in recs if r.get("detA_min") is not None and math.isfinite(r["detA_min"])), default=None) if RNEW else None),
