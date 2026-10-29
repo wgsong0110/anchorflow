@@ -259,7 +259,8 @@ __global__ void ex_vfl_contact(const int* szp, const long long* nidx, const floa
 //     np = 1 (비관통): 그 뒤 v·n < 0 이면 법선 성분 제거 -> 접촉 입자의 보간 속도 Σλ v_n (볼록 결합) 의 법선 성분 ≥ 0
 //   U += h_s v
 __global__ void ex_node_step_lag(const int* szp, const float* mn, float* f, float* gn, float* vn, float* Ucum, float g0, float g1, float g2, float hs, float damp,
-                                 const unsigned char* fixd, const float* vbc, float* acc, int mode, int np_, float n0, float n1, float n2) {
+                                 const unsigned char* fixd, const float* vbc, float* acc, int mode, int np_, float n0, float n1, float n2, int nodisp) {
+    // nodisp = 1 (절 R --lim): 속도만 쓰고 U 갱신은 뒤이은 색칠 이동 제한 커널 (ex_lim_color) 이 한다
     int M = szp[0];
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= M) return;
@@ -281,7 +282,103 @@ __global__ void ex_node_step_lag(const int* szp, const float* mn, float* f, floa
             if (np_) { float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vn_ < 0.f) { v[0] -= vn_*n0; v[1] -= vn_*n1; v[2] -= vn_*n2; } }
         }
     }
-    for (int c=0;c<3;c++) { vn[n*3+c] = v[c]; Ucum[n*3+c] += hs*v[c]; }
+    for (int c=0;c<3;c++) { vn[n*3+c] = v[c]; if (!nodisp) Ucum[n*3+c] += hs*v[c]; }
+}
+// ======== 절 R: lag 판 셀 뒤집힘 방지 (사용자 10-29 "두 가지 다") ========
+// (1) FCR + log J 장벽: 에너지 밀도에 κ μ b(J; Ĵ) (phys_resid._barrier_b, 연장 linear: J < 1e-3 Ĵ 에서 값·기울기 이어 붙임) 를 더한다.
+//     fbon 0: J = det(A_T F̄_T) (셀 변형 전체 = 기존 F 장벽 꼴), 1: J = det A_T (프레임 안 셀 사상 = 기존 셀 장벽 꼴)
+//     b'(J) = -2 (J - Ĵ) ln(J/Ĵ) - (J - Ĵ)² / J  (J < Ĵ), 0 (J ≥ Ĵ)
+__device__ __forceinline__ float bar_db(float d, float jh) {
+    if (!(d < jh)) return 0.f;
+    float eps = 1e-3f*jh;
+    float dc = d < eps ? eps : d;
+    float k = dc - jh, l = logf(dc/jh);
+    return -2.f*k*l - k*k/dc;
+}
+// 사면체 힘 (ex_tet_force_body<float> 와 같은 FCR 식) + 장벽 + 뒤집힘 계수 rst[0] += 1 (점유 사면체, det A_T ≤ 0 인 서브스텝마다)
+__global__ void ex_tet_force_R(const int* szp, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
+                               float mu, float lam, float* f, float fbk, float fbj, int fbon, float* rst) {
+    int T = szp[1];
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    long long n[4]; float G[12];
+    for (int i=0;i<4;i++) n[i]=tets[t*4+i];
+    for (int k=0;k<12;k++) G[k]=gl[t*12+k];
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u=U[n[i]*3+c]; for (int b=0;b<3;b++) A[c*3+b] += u*G[i*3+b]; }
+    float cA[9]; cof3(A, cA);
+    float dA = A[0]*cA[0]+A[1]*cA[1]+A[2]*cA[2];
+    if (rst && !(dA > 0.f)) atomicAdd(&rst[0], 1.f);
+    float Fb[9]; for (int k=0;k<9;k++) Fb[k]=FT[t*9+k];
+    float X[9]; mm3(A, Fb, X);
+    float C[9];
+    for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+    float l[3]; symeig3(C, l);
+    float J = 1.f;
+    for (int k=0;k<3;k++){ float s = sqrtf(fmaxf(l[k], 1e-12f)); s = fmaxf(s, 0.01f); J *= s; }
+    float Q[9], cf[9], P[9], Gm[9];
+    polar(X, Q); cof3(X, cf);
+    float dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+    float sg = (dt>0)?1.f:((dt<0)?-1.f:0.f);
+    for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(J-1.f)*sg*cf[k];
+    if (fbk > 0.f && fbon == 0) { float db = bar_db(dt, fbj); if (db != 0.f) { float s = fbk*mu*db; for (int k=0;k<9;k++) P[k] += s*cf[k]; } }
+    mmt3(P, Fb, Gm);
+    if (fbk > 0.f && fbon == 1) { float db = bar_db(dA, fbj); if (db != 0.f) { float s = fbk*mu*db; for (int k=0;k<9;k++) Gm[k] += s*cA[k]; } }
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) {
+        float s = 0.f; for (int b=0;b<3;b++) s += Gm[c*3+b]*G[i*3+b];
+        atomicAdd(&f[n[i]*3+c], -V*s);
+    }
+}
+// (2) 노드 이동 제한용 노드 -> 사면체 목록 (프레임마다, 격자 만든 뒤): nt[n*24 + s] = t*4 + (n 의 사면체 안 꼭짓점 번호), ntc[n] = 개수 (Kuhn 최대 24)
+__global__ void ex_node_tets(const int* szp, const long long* tets, int* ntc, int* nt, int* ovf) {
+    int T = szp[1];
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    for (int i=0;i<4;i++) { long long n = tets[t*4+i]; int s = atomicAdd(&ntc[n], 1); if (s < 24) nt[n*24+s] = t*4+i; else atomicAdd(ovf, 1); }
+}
+// (2) 색 col 의 노드만 (Kuhn 격자 지표 홀짝 8 색: 한 사면체의 네 노드는 지표 차가 {0,1}³\0 이라 모두 다른 색 -> 같은 색 노드는 사면체를 공유하지 않는다)
+//   이번 서브스텝 변위 d = h_s v_n 을 α ∈ [0,1] 배로 줄여, 이 노드가 든 점유 사면체 (V_T > 0) 마다 det A_T ≥ jmin 을 지킨다.
+//   한 노드만 움직이면 det(A + α d ⊗ ∇λ_i) = det A + α dᵀ cof(A) ∇λ_i (행렬식 보조정리) 로 α 에 선형 -> 닫힌 꼴 최대 α.
+//   다른 색 노드는 그 사이 고정 (앞 색은 이미 갱신, 뒤 색은 아직) -- 색 순서 0..7 로 Gauss-Seidel, 같은 색 안은 병렬·순서 무관 (결정적).
+//   vmode 0: v ← α v (속도도 이동과 맞춘다 -- 운동량 (1-α) m v·운동에너지 ½ m |v|² (1-α²) 를 rst 에 기록), 1: v 그대로 (이동만 줄임)
+//   rst: [1] 제한된 (노드·서브스텝) 수, [2..4] 줄인 운동량 Σ (1-α) m v, [5] 줄인 운동에너지, [6] Σ |(1-α) m v|
+__global__ void ex_lim_color(const int* szp, int col, const unsigned char* ncol, const int* ntc, const int* nt, const long long* tets, const float* gl,
+                             const float* VT, const float* mn, float* vn, float* Ucum, float hs, float jmin, int vmode, const unsigned char* fixd, float* rst) {
+    int M = szp[0];
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= M || ncol[n] != col) return;
+    float v[3] = {vn[n*3], vn[n*3+1], vn[n*3+2]};
+    float d[3] = {hs*v[0], hs*v[1], hs*v[2]};
+    float al = 1.f;
+    if (!(fixd && fixd[n])) {
+        int k = min(ntc[n], 24);
+        for (int s=0;s<k;s++) {
+            int e = nt[n*24+s]; int t = e >> 2, i = e & 3;
+            if (!(VT[t] > 0.f)) continue;
+            const float* G = gl + (long long)t*12;
+            float A[9] = {1,0,0, 0,1,0, 0,0,1};
+            for (int j=0;j<4;j++) { long long q = tets[(long long)t*4+j]; for (int c=0;c<3;c++) { float u=Ucum[q*3+c]; for (int b=0;b<3;b++) A[c*3+b] += u*G[j*3+b]; } }
+            float cA[9]; cof3(A, cA);
+            float D0 = A[0]*cA[0]+A[1]*cA[1]+A[2]*cA[2];
+            float r = 0.f;
+            for (int a=0;a<3;a++) for (int b=0;b<3;b++) r += d[a]*cA[a*3+b]*G[i*3+b];
+            if (r < 0.f) { float am = D0 > jmin ? (D0 - jmin)/(-r) : 0.f; al = fminf(al, am); }
+        }
+        al = fminf(fmaxf(al, 0.f), 1.f);
+    }
+    for (int c=0;c<3;c++) Ucum[n*3+c] += al*d[c];
+    if (al < 1.f) {
+        float m = mn[n], w = 1.f - al;
+        atomicAdd(&rst[1], 1.f);
+        if (vmode == 0) {
+            for (int c=0;c<3;c++) { vn[n*3+c] = al*v[c]; atomicAdd(&rst[2+c], w*m*v[c]); }
+            float v2 = v[0]*v[0]+v[1]*v[1]+v[2]*v[2];
+            atomicAdd(&rst[5], 0.5f*m*v2*(1.f - al*al));
+            atomicAdd(&rst[6], w*m*sqrtf(v2));
+        }
+    }
 }
 // ======== 절 P: lag 판 K 서브스텝마다 재평균 (--rep K --rep_mode vel, 사용자 10-29 "해") ========
 // 속도만 재평균 (입자 이동·재배치 없음, 같은 rows/λ·같은 노드 질량): v_p = Σλ v_n (G2P, PIC) -> (mv)_n = Σ w_pn v_p, v_n = (mv)_n / m_n (P2G)
