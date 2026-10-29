@@ -102,6 +102,9 @@ ap.add_argument("--p2g", choices=["bary", "bs"], default="bary",
 ap.add_argument("--bs_mesh", choices=["dil", "occ"], default="dil",
                 help="--p2g bs 메시: dil = 점유 셀 1 칸 팽창 (절 S), occ = 절 R 판과 같은 메시 (입자가 든 셀과 그 꼭짓점만, 팽창 없음; 사용자 10-29) -- "
                      "B-스플라인 가중은 메시에 있는 노드·셀에만 쓰고 입자마다 메시 안 가중 합으로 나눠 정규화 (Σ_n w = 1, Σ_c w = 1; 절 T). G2P (bs)·바닥 접촉 가중도 같은 정규화")
+ap.add_argument("--bs_mass", choices=["node", "cell"], default="node",
+                help="--p2g bs --bs_mesh occ 의 질량·운동량: node = 노드 커널 B-스플라인 (절 T), cell = 절 W (사용자 10-29): 질량·운동량도 F̄·V 와 같은 셀 중심 커널로 셀에 "
+                     "(m_c = Σ w~ m_p, (mv)_c = Σ w~ m_p v_p), 노드는 일반 FEM 집중 질량 m_n = Σ_{T∋n} m_T/4 (m_T = m_c/6), 운동량도 같은 경로; 바닥 접촉 분배도 같은 경로")
 ap.add_argument("--g2p", choices=["bary", "bs"], default="bary", help="--p2g bs 의 프레임 끝 G2P: bary = 사면체 barycentric (기존 ex_g2p_lag), bs = B-스플라인 (질량 가중과 같은 w)")
 ap.add_argument("--bsdiag", type=int, default=0, help="--p2g bs 진단 (측정 밖): K 프레임마다 노드 질량 분포 (B-스플라인 / 셀 집중 m_T/4 / Σλm), 국소 안정 비 -> bsdiag.jsonl (0 = 첫 프레임만, -1 = 끔)")
 ap.add_argument("--nint", action="store_true",
@@ -172,6 +175,9 @@ LIM = a.lim >= 0
 BSL = a.p2g == "bs"                                                                  # 절 S: lag 판 B-스플라인 P2G
 G2PBS = BSL and a.g2p == "bs"
 BSN = 1 if (BSL and a.bs_mesh == "occ") else 0                                       # 절 T: 팽창 없는 메시 + 메시 안 가중 정규화
+BSCM = BSL and a.bs_mass == "cell"                                                    # 절 W: 질량·운동량도 셀 중심 커널로 셀에, 노드 m_T/4
+if a.bs_mass == "cell" and not BSN:
+    raise SystemExit("--bs_mass cell 은 --p2g bs --bs_mesh occ 와 함께")
 if a.bs_mesh == "occ" and not BSL:
     raise SystemExit("--bs_mesh occ 는 --p2g bs 와 함께")
 if BSL and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP and not a.affine and not FLOOR):
@@ -214,6 +220,7 @@ print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N
       + (f", 재평균 {a.rep_mode} {REP} 서브스텝마다 (블록 {NB})" if REP else "") + (", 아핀 전달 (APIC)" if a.affine else "")
       + (f", 전달 가중 {a.rep_w}" if a.rep_w != "std" else "")
       + (f", [절 S] P2G 2 차 B-스플라인 (노드 질량 Σ w m_p, 셀 F̄·V 셀 중심 w), G2P {'B-스플라인' if G2PBS else '사면체 barycentric'}, 메시 {'절 R 그대로 (팽창 없음, 메시 안 가중 정규화 -- 절 T)' if BSN else '1 칸 팽창'}" if BSL else "")
+      + (", [절 W] 질량·운동량도 셀 중심 커널로 셀에 -> 노드 집중 m_T/4 (가중 일치)" if BSCM else "")
       + (f", [절 V] 노드 적분 FEM (F_n = Σ V_T F_T / Σ V_T, 노드 FCR 응력, β {a.nint_beta:g})" if NINT else "")
       + (f", [절 R] log J 장벽 κ {a.fb:g} Ĵ {a.fb_jhat:g} J=det({'A F̄' if a.fb_on == 'X' else 'A'})" if a.fb > 0 else "")
       + (f", [절 R] 이동 제한 det A_T ≥ {a.lim:g} ({'상자 꼭짓점 Jacobi' if a.lim_mode == 'box' else '8 색 Gauss-Seidel'}, 속도 {a.lim_v})" if LIM else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
@@ -427,6 +434,10 @@ class Opt:
             if BSL:
                 self.cV = torch.zeros(self.Pcap, device=dev)
                 self.cVF = torch.zeros(self.Pcap * 9, device=dev)
+            if BSCM:                                                                  # 절 W: 셀 질량·운동량, 바닥 접촉 셀 질량
+                self.cM = torch.zeros(self.Pcap, device=dev)
+                self.cMV = torch.zeros(self.Pcap * 3, device=dev)
+                self.accC = torch.zeros(self.Pcap, device=dev)
             new = True
         if new:
             self.graph = None
@@ -559,6 +570,17 @@ class Opt:
         self.sz[2:3].zero_()
         EX.launch("ex_locate", Np, (np.int32(Np), EX.P(x), EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.tcm), EX.P(self.tmark),
                                     EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.sz)), b=256)
+        if BSCM:                                                                     # 절 W: 셀 질량·운동량·V·VF (셀 중심 커널) -> 사면체 -> 노드 m_T/4
+            self.cM[:Pn].zero_()
+            self.cMV[:Pn * 3].zero_()
+            EX.launch("bsc_p2g", Np, (np.int32(Np), EX.P(x), EX.P(v), EX.P(F), EX.P(self.mA), EX.P(self.volA), EX.P(self.gpar), EX.P(self.ipar),
+                                      EX.P(self.cmk), EX.P(self.cM), EX.P(self.cMV), EX.P(self.cV), EX.P(self.cVF), EX.P(self.sz), np.int32(1 if VFL else 0),
+                                      np.float32(h), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), *PLf, np.float32(a.vfl_margin), EX.P(self.nidx),
+                                      EX.P(self.bst)), b=128)
+            EX.launch("bsc_tfin", self.Tcap, (EX.P(self.sz), EX.P(self.tcell), EX.P(self.tets), EX.P(self.cM), EX.P(self.cMV), EX.P(self.cV), EX.P(self.cVF),
+                                              EX.P(self.VTs), EX.P(self.FT), EX.P(self.mn), EX.P(self.mv)), b=256)
+            EX.launch("ex_vfin", self.Mcap, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.mv), EX.P(self.vn), EX.P(None)), b=256)
+            return
         EX.launch("bsl_p2g", Np, (np.int32(Np), EX.P(x), EX.P(v), EX.P(F), EX.P(self.mA), EX.P(self.volA), EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm),
                                   EX.P(self.cmk), EX.P(self.mn), EX.P(self.mv), EX.P(self.cV), EX.P(self.cVF), EX.P(self.sz), np.int32(1 if VFL else 0),
                                   np.float32(h), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), *PLf, np.float32(a.vfl_margin), EX.P(self.nidx),
@@ -599,7 +621,13 @@ class Opt:
                                             EX.P(self.cc), EX.P(self.Uc), EX.P(None), EX.P(None), EX.P(self.F0i), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
                                             EX.P(self.pinv), EX.P(self.mA), EX.P(self.volA), np.float64(h), *near_args(0), np.float64(mu), np.float64(lam),
                                             EX.P(self.gn)), b=64)
-        if VFL and BSL:
+        if VFL and BSCM:                                                             # 절 W: 접촉 질량도 셀 -> 사면체 -> 노드 /4 (노드 질량과 같은 경로)
+            EX.launch("bsc_vfl_contact", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf if xcur is None else xcur), EX.P(self.Uc), EX.P(self.rows), EX.P(self.lamb),
+                                              EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.cmk), EX.P(self.mA), np.int32(1 if G2PBS else 0), *PLf,
+                                              EX.P(self.accC), EX.P(self.ncon)), b=128)
+            EX.launch("bsc_acc_tet", Tc, (EX.P(self.sz), EX.P(self.tcell), EX.P(self.tets), EX.P(self.accC), EX.P(self.acc)), b=256)
+            self.accC.zero_()
+        elif VFL and BSL:
             EX.launch("bsl_vfl_contact", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf if xcur is None else xcur), EX.P(self.Uc), EX.P(self.rows), EX.P(self.lamb),
                                               EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.mA), np.int32(1 if G2PBS else 0), *PLf,
                                               EX.P(self.acc), EX.P(self.ncon), np.int32(BSN)), b=128)
@@ -741,6 +769,8 @@ class Opt:
             self.gn.zero_()
             if VFL:
                 self.acc.zero_()
+                if BSCM:
+                    self.accC.zero_()
             if not REP:
                 for j in range(a.N):
                     self._step_lag()
@@ -977,11 +1007,42 @@ class Opt:
                    V_p=float(vol.double().sum()), V_new=float(VTn.sum()), V_drop=float(self.bst[0]), T_drop=int(self.bst[1]),
                    n_zero_mass_nodes=int(zn.sum()), m_redist=float(self.bst[2]), V_redist=float(self.bst[3]),
                    stab_new=stab(VTn, mb), stab_old=stab(VTo, mt4))
+        if BSCM:                                                                    # 절 W: 비교용 절 T 노드 커널 질량 (같은 입자 배치, 같은 메시·정규화, 버리는 버퍼)
+            mT_ = torch.zeros(self.Mcap, device=dev)
+            mvT_ = torch.zeros(self.Mcap, 3, device=dev)
+            cV_, cVF_ = torch.zeros(self.Pn, device=dev), torch.zeros(self.Pn * 9, device=dev)
+            sz_ = self.sz.clone()
+            xs_ = self._xs_diag
+            EX.launch("bsl_p2g", Np, (np.int32(Np), EX.P(xs_[0]), EX.P(xs_[1]), EX.P(xs_[2]), EX.P(self.mA), EX.P(self.volA), EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm),
+                                      EX.P(self.cmk), EX.P(mT_), EX.P(mvT_), EX.P(cV_), EX.P(cVF_), EX.P(sz_), np.int32(0),
+                                      np.float32(h), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), *PLf, np.float32(a.vfl_margin), EX.P(self.nidx),
+                                      np.int32(1), EX.P(None)), b=128)
+            mTd = mT_[:M].double()
+            rec.update(m_bsT=dist(mTd), stab_T=stab(VTn, mTd), m_cell=float(self.cM[:self.Pn].double().sum()),
+                       P_cell=self.cMV[:self.Pn * 3].view(-1, 3).double().sum(0).tolist(),
+                       cV_vs_T=float((cV_.double().sum() - VTn.sum() * 1.0).abs()))
+            # 노드별 질량 비 새 / 절 R (m_T/4), 새 / 절 T
+            both = (mb > 0) & (mt4 > 0)
+            rr = (mb[both] / mt4[both]).float()
+            rec["ratio_new_R_q"] = torch.quantile(rr, torch.tensor([0.0, 0.01, 0.5, 0.99, 1.0], device=dev)).tolist()
+            bt = (mb > 0) & (mTd > 0)
+            rt = (mb[bt] / mTd[bt]).float()
+            rec["ratio_new_T_q"] = torch.quantile(rt, torch.tensor([0.0, 0.01, 0.5, 0.99, 1.0], device=dev)).tolist()
         # 새 정의에서 가장 가벼운 노드들 (상대 질량 < 2.5 %) 의 이웃 셀 부피 / 질량 비 vs 중앙
         with open(os.path.join(a.out, "bsdiag.jsonl"), "a") as fh:
             fh.write(json.dumps(rec) + "\n")
         mbd, mtd, mld, sn, so = rec["m_bs"], rec["m_t4"], rec["m_lam"], rec["stab_new"], rec["stab_old"]
         fq = lambda d_: "/".join(f"{q:.2g}" for q in d_["q_rel"])
+        if BSCM:
+            mT2, sT = rec["m_bsT"], rec["stab_T"]
+            print(f"    [W 진단] t {i + 1}: 노드 질량 /중앙 분위 (0,1e-4,1e-3,.01,.1,.5) 새 (셀 커널 m_T/4) {fq(mbd)} (<2.5% {mbd['n_lt025']}/{mbd['n_live']}) | "
+                  f"절 T (노드 커널) {fq(mT2)} (<2.5% {mT2['n_lt025']}/{mT2['n_live']}) | 절 R m_T/4 {fq(mtd)} (<2.5% {mtd['n_lt025']}/{mtd['n_live']}); "
+                  f"총질량 입자 {rec['m_p']:.7g} 셀 {rec['m_cell']:.7g} 노드 {mbd['tot']:.7g}; 셀 운동량 {[round(q, 4) for q in rec['P_cell']]}; "
+                  f"새/절 R 질량 비 분위 (0,.01,.5,.99,1) {'/'.join(f'{q:.3g}' for q in rec['ratio_new_R_q'])}, 새/절 T {'/'.join(f'{q:.3g}' for q in rec['ratio_new_T_q'])}; "
+                  f"국소 안정 r_n 중앙/99.9%/최대 새 {sn['r_q50']:.3g}/{sn['r_q999']:.3g}/{sn['r_max']:.3g} (필요 N ≈ {sn['N_need']:.0f}, r>1 {sn['n_r_gt1']}) "
+                  f"절 T {sT['r_q50']:.3g}/{sT['r_q999']:.3g}/{sT['r_max']:.3g} (필요 N ≈ {sT['N_need']:.0f}) "
+                  f"절 R {so['r_q50']:.3g}/{so['r_q999']:.3g}/{so['r_max']:.3g} (필요 N ≈ {so['N_need']:.0f})", flush=True)
+            return
         print(f"    [S 진단] t {i + 1}: 노드 질량 /중앙 분위 (0,1e-4,1e-3,.01,.1,.5) B-스플라인 {fq(mbd)} (<2.5% {mbd['n_lt025']}/{mbd['n_live']}) | "
               f"m_T/4 {fq(mtd)} (<2.5% {mtd['n_lt025']}/{mtd['n_live']}) | Σλm {fq(mld)} (<2.5% {mld['n_lt025']}/{mld['n_live']}); "
               f"총질량 입자 {rec['m_p']:.6g} 노드 B {mbd['tot']:.6g} (정규화로 옮긴 질량 {rec['m_redist']:.4g}); 부피 입자 {rec['V_p']:.6g} 사면체 {rec['V_new']:.6g} (뺀 {rec['V_drop']:.3g}, 사면체 {rec['T_drop']}, 정규화로 옮긴 부피 {rec['V_redist']:.4g}); "
@@ -1019,6 +1080,7 @@ class Opt:
                 va.copy_(v)
                 Fa.copy_(Fv)
         if BSL:
+            self._xs_diag = (xa, va, Fa)
             self._p2g_bs(xa, va, Fa)
         else:
             self._p2g(xa, va, Fa, h, False)                                         # 프레임 분할 (관성 예측 h v_n + h² g 의 끝 높이)
@@ -1419,6 +1481,8 @@ for i in range(L):
                       P_p0=(md_[:, None] * v.double()).sum(0).tolist(), P_n0=mvb.sum(0).tolist(), P_n1=(mnb[:, None] * vnb).sum(0).tolist(),
                       P_p1=(md_[:, None] * v2.double()).sum(0).tolist(), V_drop=float(OPT.bst[0]), T_drop=int(OPT.bst[1]),
                       V_T=float(OPT.VTs[:OPT.T].double().sum()), V_pt=float(vol.double().sum()), m_redist=float(OPT.bst[2]), V_redist=float(OPT.bst[3]))
+            if BSCM:                                                                # 절 W: 셀 단계 합 (P2G -> 셀, 셀 -> 노드)
+                st.update(mass_c=float(OPT.cM[:OPT.Pn].double().sum()), P_c=OPT.cMV[:OPT.Pn * 3].view(-1, 3).double().sum(0).tolist())
             if a.bsdiag >= 0 and (i == 0 or (a.bsdiag > 0 and i % a.bsdiag == 0)):
                 OPT.bsdiag(i)
         if szh[3]:
@@ -1472,7 +1536,7 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             detA_min=(min((r["detA_min"] for r in recs if r.get("detA_min") is not None and math.isfinite(r["detA_min"])), default=None) if RNEW else None),
             lim_n_tot=(sum(r.get("lim_n", 0) for r in recs) if RNEW else None), lim_dke_tot=(sum(r.get("lim_dke", 0.0) for r in recs) if RNEW else None),
             lim_dpabs_tot=(sum(r.get("lim_dpabs", 0.0) for r in recs) if RNEW else None), nt_ovf=(max(r.get("nt_ovf", 0) for r in recs) if RNEW else None),
-            p2g=a.p2g, g2p=a.g2p, bs_mesh=(a.bs_mesh if BSL else None), interp=a.interp, rep=REP, rep_mode=(a.rep_mode if REP else None), quad=(a.quad if BSP else None), K=(a.K if BSP and a.quad == "cell" else None), apic=bool(a.apic), rep_w=a.rep_w,
+            p2g=a.p2g, g2p=a.g2p, bs_mesh=(a.bs_mesh if BSL else None), bs_mass=(a.bs_mass if BSL else None), interp=a.interp, rep=REP, rep_mode=(a.rep_mode if REP else None), quad=(a.quad if BSP else None), K=(a.K if BSP and a.quad == "cell" else None), apic=bool(a.apic), rep_w=a.rep_w,
             nint=NINT, nint_beta=(a.nint_beta if NINT else None))
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
 print(f"[롤아웃] {a.tag} 서브스텝 {a.N} {a.mode}{' 최적화' if a.opt else ''}: {done}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%  "
