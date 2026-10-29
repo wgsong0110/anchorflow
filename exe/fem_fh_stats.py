@@ -181,12 +181,13 @@ for run in a.runs:
     hot_keys = comp(ikeys(Zdiv["npos"], Zdiv["Ai"])[Zdiv["tets"]].sum(1))[hotT]
     # ---- 프레임별 추적 ----
     names = ["s0", "s1", "s2", "detF", "mis", "dev_cell", "npt", "PT", "sTmin", "sTmax", "height", "height_end", "cand", "Aerr", "Amis", "umis",
-             "gs0", "gs2", "gdet", "gmis", "xerr", "key_chg", "same_tet_nn"]
+             "gs0", "gs2", "gdet", "gmis", "xerr", "key_chg", "same_tet_nn", "mate_jac", "mate_n_prev"]
     H = {n: torch.full((nA, nF), float("nan"), device=dev) for n in names}
     KEYS = torch.zeros((nA, nF), dtype=torch.long, device=dev)
     cell_hist = []                                                                     # 뜨거운 셀 (발산 프레임 키) 의 프레임별 입자 수·‖P‖·σ_min(F̄)
     g2p_chk = []
     prevF = prevA = None
+    prev_pin = prev_npt = None
     for fi, t in enumerate(frames):
         Z = Zdiv if t == fdiv else load(t)
         T = Z["tets"].shape[0]
@@ -228,6 +229,17 @@ for run in a.runs:
         if fi > 0:
             H["key_chg"][:, fi] = (KEYS[:, fi] != KEYS[:, fi - 1]).float()
         H["same_tet_nn"][:, fi] = (pin[nb] == pin[allp][:, None]).float().mean(1)
+        if prev_pin is not None:
+            # 셀 동료 집합 유지율 (물체가 월드 격자 위로 움직이면 사면체 번호는 매 프레임 바뀐다 -- 같은 셀에 든 입자 집합으로 갈아탐을 본다)
+            # |C_t ∩ C_t-1| = (pin_t, pin_t-1) 둘 다 같은 입자 수, Jaccard = 교 / (npt_t + npt_t-1 − 교)
+            pk = pin * (int(prev_pin.max()) + 1) + prev_pin
+            _, inv, cnt = torch.unique(pk, return_inverse=True, return_counts=True)
+            inter = cnt[inv[allp]].float()
+            a_ = npt[pin[allp]].float()
+            b_ = prev_npt[prev_pin[allp]].float()
+            H["mate_jac"][:, fi] = inter / (a_ + b_ - inter)
+            H["mate_n_prev"][:, fi] = b_
+        prev_pin, prev_npt = pin.clone(), npt.clone()
         if Z["plane"] is not None:
             pt_, nr_ = Z["plane"]
             H["height"][:, fi] = ((q - torch.tensor(pt_, device=dev)) * torch.tensor(nr_, device=dev)).sum(-1)
@@ -279,33 +291,38 @@ for run in a.runs:
         return out
     summ["onset_mis_vs_norm99"] = onset(H["mis"][loc["hot"]], ref99)
     summ["onset_mis_vs_sparse99"] = onset(H["mis"][loc["hot"]], refs99)
-    ch = torch.stack([c["npt"] for c in cell_hist], 1)                                 # [hot, nF]
-    run12 = []
-    for i in range(ch.shape[0]):
-        f = nF - 1
-        while f >= 0 and 0 < float(ch[i, f]) <= 2:
-            f -= 1
-        run12.append(nF - 1 - f)
-    summ["hot_cell_frames_npt_le2_consecutive"] = run12
+    ch = torch.stack([c["npt"] for c in cell_hist], 1)                                 # [hot, nF] (월드 고정 사면체 -- 물체가 움직이면 의미 약함, 참고만)
+    def run_le2(np_):
+        out = []
+        for i in range(np_.shape[0]):
+            f = nF - 1
+            while f >= 0 and 0 < float(np_[i, f]) <= 2:
+                f -= 1
+            out.append(nF - 1 - f)
+        return out
+    run12 = run_le2(H["npt"][loc["hot"]])                                              # 입자마다: 자기 셀 입자 ≤ 2 가 발산 프레임까지 이어진 프레임 수
+    summ["hot_particle_frames_npt_le2_consecutive"] = run12
+    summ["sparse_particle_frames_npt_le2_consecutive_q"] = qtl(torch.tensor(run_le2(H["npt"][loc["sparse"]]), dtype=torch.float64))
+    summ["hot_cell_frames_npt_le2_consecutive_worldkey"] = run_le2(ch)
     summ["hot_cell_npt_hist"] = ch.tolist()
     summ["hot_cell_P_hist"] = torch.stack([c["P"] for c in cell_hist], 1).tolist()
     summ["hot_cell_smin_hist"] = torch.stack([c["smin"] for c in cell_hist], 1).tolist()
     # 셀 갈아탐 때 자기 셀 ‖P‖ 변화 (뜨거운 입자 / 정상)
     for g in ("hot", "norm", "sparse"):
-        kc = H["key_chg"][loc[g]]
+        kc = (H["mate_jac"][loc[g]] < 1).float()                                     # 셀 동료 집합이 바뀜 = 갈아탐
         P_ = H["PT"][loc[g]]
         jr, sr = [], []
         for fi in range(1, nF):
             r_ = torch.log10(P_[:, fi] / P_[:, fi - 1])
             jr += r_[kc[:, fi] > 0].tolist()
             sr += r_[kc[:, fi] == 0].tolist()
-        summ[f"cross_{g}"] = dict(rate=float(torch.nanmean(kc[:, 1:])) if nF > 1 else None, dlogP_cross=qtl(torch.tensor(jr)) if jr else None,
-                                  dlogP_stay=qtl(torch.tensor(sr)) if sr else None)
+        summ[f"cross_{g}"] = dict(rate=float(kc[:, 1:].mean()) if nF > 1 and kc.numel() else None, dlogP_cross=qtl(torch.tensor(jr)) if jr else None,
+                                  dlogP_stay=qtl(torch.tensor(sr)) if sr else None, n_cross=len(jr), n_stay=len(sr))
     json.dump(summ, open(os.path.join(run, "fh_stats.json"), "w"), ensure_ascii=False, indent=1, default=float)
     np.savez(os.path.join(run, "fh_stats.npz"), frames=np.array(frames) + 1, fdiv=fdiv + 1,
              **{f"{g}_{n}": H[n][loc[g]].cpu().numpy() for g in GR for n in names},
              hot_cell_npt=ch.numpy(), hot_cell_P=np.array(summ["hot_cell_P_hist"]), hot_cell_smin=np.array(summ["hot_cell_smin_hist"]))
     print(f"[완료] {run}: G2P 검산 최대 상대차 {max([c[1] for c in g2p_chk], default=float('nan')):.2e}, 뜨거운 입자 벌어짐 시작 (vs 정상 99 %) "
-          f"{summ['onset_mis_vs_norm99']}, 뜨거운 셀 입자 ≤2 연속 프레임 {run12}", flush=True)
+          f"{summ['onset_mis_vs_norm99']}, 뜨거운 입자 자기 셀 ≤2 연속 프레임 {run12}", flush=True)
     for g in ("hot", "norm", "sparse"):
         print(f"   셀 갈아탐 {g}: {summ[f'cross_{g}']}", flush=True)
