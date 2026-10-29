@@ -145,6 +145,13 @@ ap.add_argument("--fupd", choices=["T", "bar", "nbar", "navg", "polar"], default
 ap.add_argument("--fupd_b", type=float, default=1.0, help="--fupd 의 β (0 = 기존과 같음)")
 ap.add_argument("--cfast", action="store_true", help="절 C: 아래 네 가지 (--vfl_cull --sr_fast --tlist --fpolar) 모두")
 ap.add_argument("--cfuse", action="store_true", help="절 C (5): --cfast + 서브스텝 커널 융합 (힘+접촉 / 판정 둘 (속도 그 자리) / 노드 걸음+적용) -- 같은 식, 커널 6 -> 4 개")
+ap.add_argument("--adapt", choices=["none", "act", "stab"], default="none",
+                help="절 C 적응 서브스텝 (--cfuse 만, 정의 변경 -- 결과 바뀜): act = 직전 프레임 클램프 작동 (제한 노드 x 서브스텝) > --ad_thr 이면 --ad_hi, 아니면 --ad_lo; "
+                     "stab = 국소 안정 비 ω_f = max_i sqrt(Σ_T V_T (λ+2μ) |F̄_Tᵀ∇λ_i|² / m_i) 로 N_f = N · ω_f/ω_0 (ω_0 = 첫 프레임), [--ad_lo, --ad_hi] 로 자르고 --ad_q 배수로 올림")
+ap.add_argument("--ad_lo", type=int, default=128)
+ap.add_argument("--ad_hi", type=int, default=384)
+ap.add_argument("--ad_thr", type=float, default=0.0)
+ap.add_argument("--ad_q", type=int, default=32)
 ap.add_argument("--secprof", action="store_true", help="절 C: 프레임 구간 (격자·P2G 준비·서브스텝 그래프·G2P) CUDA 이벤트 시간 -> fem.jsonl sec_* (동기화 추가 없음)")
 ap.add_argument("--vfl_cull", action="store_true", help="절 C (1): 바닥 접촉 판정에서 s0 > D (프레임 안 노드 아래쪽 최대 변위) 인 후보 생략 -- 같은 접촉 집합 (lib/anchorflow/fem_c_cuda.py)")
 ap.add_argument("--sr_fast", action="store_true", help="절 C (2): 클램프 판정을 빠른 보장 (‖A-I‖_F + ρ) + 목록 사면체당 워프 (기존과 같은 식·같은 s_T) 로")
@@ -257,6 +264,8 @@ if (SRL or SB) and (NINT or BSL):
     raise SystemExit("--lim_sr/--sb 는 절 R 경로 (--p2g bary, 노드 적분 없음) 만")
 if CC and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP and RNEW and not (NINT or CQ or SB or BSL) and SPM == "none" and LIM and a.lim_mode == "box"):
     raise SystemExit("절 C (--cfast 등) 는 --opt --mode lag 상자 판 이동 제한 (--lim_sr 또는 --lim --lim_mode box) 경로만")
+if a.adapt != "none" and not a.cfuse:
+    raise SystemExit("--adapt 는 --cfuse 와 함께")
 if a.cfuse and not (SRL and not FLOOR and not a.cchk):
     raise SystemExit("--cfuse 는 --lim_sr (에너지 바닥·검산 없음) 만")
 if a.vfl_cull and not VFL and HASPL:
@@ -455,6 +464,9 @@ class Opt:
         self.V = [z(Np, 3), z(Np, 3)]
         self.FF = [z(Np, 9), z(Np, 9)]
         self.graph = None
+        self.graphs = {}                                                            # 절 C 적응 서브스텝: N 별 그래프
+        self.Ncur, self.hscur, self.dampcur = a.N, hs, DAMP
+        self.om0 = None
         self.n_cap = 0
         self.SORT = (a.mode == "sub" and not a.no_fuse and not a.no_sort)
         self.mA, self.volA = m, vol
@@ -551,6 +563,7 @@ class Opt:
             new = True
         if new:
             self.graph = None
+            self.graphs = {}
 
     def grid(self, x, v, now):
         """셀 점유 격자 (월드 고정 Kuhn 격자, GridK 와 같은 격자점·같은 사면체 꼭짓점 순서). 동기화 2 번 (범위, 개수)."""
@@ -839,7 +852,8 @@ class Opt:
                                EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1),
                                EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
-        S = CCU.cvs(self.mn, self.f, None, self.vn, gv, hs, DAMP, self.fx if self.fixd else None, self.vbc, self.acc if VFL else None,
+        hs_, damp_ = self.hscur, self.dampcur
+        S = CCU.cvs(self.mn, self.f, None, self.vn, gv, hs_, damp_, self.fx if self.fixd else None, self.vbc, self.acc if VFL else None,
                     1 if a.vfl_mode == "full" else 0, a.vfl_np, PLf[3:])
         jon = np.int32(1 if a.lim >= 0 else 0)
         CCU.launch("c_sr_pre2", Tc, (EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.Uc), S,
@@ -1087,7 +1101,7 @@ class Opt:
                 if BSCM:
                     self.accC.zero_()
             if not REP:
-                for j in range(a.N):
+                for j in range(self.Ncur):
                     self._j = j
                     self._step_lag()
                 return
@@ -1155,6 +1169,7 @@ class Opt:
             g.capture_end()
         torch.cuda.current_stream().wait_stream(s)
         self.graph = g
+        self.graphs[self.Ncur] = g
         self.n_cap += 1
 
     def _lagdiag(self, i):
@@ -1380,6 +1395,27 @@ class Opt:
               f"국소 안정 r_n (h_s ω/2) 중앙/99.9%/최대 새 {sn['r_q50']:.3g}/{sn['r_q999']:.3g}/{sn['r_max']:.3g} (필요 N ≈ {sn['N_need']:.0f}, r>1 {sn['n_r_gt1']}) "
               f"절 R 정의 {so['r_q50']:.3g}/{so['r_q999']:.3g}/{so['r_max']:.3g} (필요 N ≈ {so['N_need']:.0f})", flush=True)
 
+    def _choose_N(self, i):
+        """절 C 적응 서브스텝 -- self.Ncur·hscur·dampcur 를 정한다 (동기화 1 번, 측정 안)."""
+        if a.adapt == "act":
+            Nf = a.ad_lo if (i > 0 and float(self.lim_prev) <= a.ad_thr) else a.ad_hi
+        else:
+            T_ = self.T
+            occ = self.VTs[:T_] > 0
+            gl_ = self.gl[:T_].view(T_, 4, 3)
+            FtG = torch.einsum("tba,tib->tia", self.FT[:T_].view(T_, 3, 3), gl_)              # F̄ᵀ ∇λ_i
+            kd = (self.VTs[:T_, None] * (lam + 2 * mu) * (FtG ** 2).sum(-1)) * occ[:, None]
+            K = torch.zeros(self.M, device=dev).index_add_(0, self.tets[:T_].reshape(-1), kd.reshape(-1))
+            om2 = float((K / self.mn[:self.M].clamp_min(1e-30)).max())
+            if self.om0 is None:
+                self.om0 = om2
+            Nf = int(math.ceil(a.N * math.sqrt(om2 / self.om0)))
+        q = max(1, a.ad_q)
+        Nf = int(min(max(int(math.ceil(Nf / q)) * q, a.ad_lo), a.ad_hi))
+        self.Ncur = Nf
+        self.hscur = h / Nf
+        self.dampcur = (VD_S ** (self.hscur / float(cfg["substep_dt"]))) if (a.pg_vdamp and VD_S < 1.0) else 1.0
+
     def _ev(self, k):
         if a.secprof:
             e = torch.cuda.Event(enable_timing=True)
@@ -1441,6 +1477,8 @@ class Opt:
                     CCU.launch("c_tet_list", self.Tcap, (EX.P(self.sz), EX.P(self.VTs), EX.P(self.tl), EX.P(self.cint[2:])), b=256)
                 if VFL and a.vfl_cull:
                     CCU.launch("c_s0", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf), *PLf, EX.P(self.s0c)), b=256)
+        if a.adapt != "none":
+            self._choose_N(i)
         self._ev("p2g")
         if lagm and a.lagdiag:
             self._Fp = Fv.view(Np, 3, 3)
@@ -1451,6 +1489,10 @@ class Opt:
         elif a.no_graph:
             self._substeps()
         else:
+            if a.adapt != "none":
+                self.graph = self.graphs.get(self.Ncur)
+                if self.graph is None and self.graphs:                             # 커널은 이미 컴파일됨 -- 데우기 없이 이 N 그래프만 잡는다
+                    self.capture()
             if self.graph is None:
                 bufs = (self.vn, self.Uc, self.mn, self.mv, self.VTs, self.FTs, self.FT, self.rows, self.lamb, self.pinv)
                 if REP:
@@ -1478,6 +1520,8 @@ class Opt:
                     self.clst[:1].zero_()
                 self.capture()
             self.graph.replay()
+        if a.adapt == "act":
+            self.lim_prev = self.rst[1].item()                                      # 동기화 (측정 안) -- 다음 프레임 N 결정
         self._ev("sub")
         if lagm:
             ci = ((NB - 1) % 2) if REPF else 0                                       # 마지막 블록의 입자 상태 버퍼
@@ -2026,7 +2070,7 @@ for i in range(L):
         else:
             ncap0 = OPT.n_cap
             x2, v2, F2 = OPT.frame(i, x, v, F)
-            st = dict(M=OPT.M, T=OPT.T, recap=OPT.n_cap - ncap0)
+            st = dict(M=OPT.M, T=OPT.T, recap=OPT.n_cap - ncap0, Nf=OPT.Ncur)
             if a.secprof and len(getattr(OPT, "evs", [])) > 1:                      # 절 C 구간 시간 (이벤트, 프레임 끝 동기화 뒤에 읽는다)
                 st["_evs"] = OPT.evs
     except _Diverge as ex_:
@@ -2159,7 +2203,9 @@ if CC and a.cchk:
     ck = {k: float(t_) for k, t_ in OPT.chk.items()}
     json.dump(ck, open(os.path.join(a.out, "cchk.json"), "w"), indent=1)
     print(f"[절 C 검산] {ck}", flush=True)
-summ.update(cfast=dict(vfl_cull=a.vfl_cull, sr_fast=a.sr_fast, tlist=a.tlist, fpolar=a.fpolar) if CC else None)
+summ.update(cfast=dict(vfl_cull=a.vfl_cull, sr_fast=a.sr_fast, tlist=a.tlist, fpolar=a.fpolar, cfuse=a.cfuse) if CC else None,
+            adapt=(dict(rule=a.adapt, lo=a.ad_lo, hi=a.ad_hi, thr=a.ad_thr, q=a.ad_q, N_mean=float(np.mean([r.get("Nf", a.N) for r in recs])),
+                        N_hist={str(k): sum(1 for r in recs if r.get("Nf") == k) for k in sorted(set(r.get("Nf", a.N) for r in recs))}) if a.adapt != "none" else None))
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
 print(f"[롤아웃] {a.tag} 서브스텝 {a.N} {a.mode}{' 최적화' if a.opt else ''}: {done}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%  "
       f"프레임당 {summ['ms_mean']:.2f} ms (중앙 {summ['ms_med']:.2f}, {summ['fps']:.2f} fps, 앞 {W} 프레임 제외) 퍼짐 {summ['spread_last']:.3f} "
