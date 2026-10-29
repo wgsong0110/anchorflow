@@ -570,6 +570,40 @@ class Opt:
         K = max(1, a.N // 8)
         first_bad = None
         acc_s = None
+        # 절 Q 메시 진단 (재평균 없음): 노드 질량 분포, 이웃 셀 점유율, 노드별 국소 안정 비 r_n = h_s ω_n / 2 (Gershgorin: ω² ≤ Σ_T V_T (λ+2μ) |∇λ_i| Σ_j |∇λ_j| / m_n),
+        # 서브스텝 표본마다 최대 |v| 노드의 점유율·r_n·접촉 질량 비 α (= 접촉 입자 ¼ m_p 합 / m_n)
+        tets_, gl_ = self.tets[:T], self.gl[:T].view(T, 4, 3)
+        VT_ = self.VTs[:T]
+        P4 = self.npos[tets_.reshape(-1)].view(T, 4, 3)
+        V0 = torch.linalg.det(P4[:, 1:] - P4[:, :1]).abs() / 6.0
+        gn_ = gl_.norm(dim=-1)                                                      # [T,4]
+        w_ = VT_[:, None] * (lam + 2 * mu) * gn_ * gn_.sum(-1, keepdim=True)
+        om2 = torch.zeros(M, device=dev).index_add_(0, tets_.reshape(-1), w_.reshape(-1)) / mn.clamp_min(1e-30)
+        rn = hs * om2.sqrt() / 2
+        vo = torch.zeros(M, device=dev).index_add_(0, tets_.reshape(-1), VT_[:, None].expand(T, 4).reshape(-1))
+        v0 = torch.zeros(M, device=dev).index_add_(0, tets_.reshape(-1), V0[:, None].expand(T, 4).reshape(-1))
+        occn = vo / v0.clamp_min(1e-30)
+        live = mn > 0
+        med = mn[live].median()
+        light = live & (mn < 0.025 * med)
+        nn_ = int(self.sz[2])
+        ni_ = self.nidx[:nn_]
+
+        def contact_alpha():
+            if not VFL or nn_ == 0:
+                return torch.zeros(M, device=dev)
+            r_ = self.rows[ni_]
+            u_ = (self.lamb[ni_][..., None] * self.Uc[r_]).sum(1)
+            s_ = ((self.Xf[ni_] + u_ - torch.tensor(pt_, device=dev)) * torch.tensor(nr_, device=dev)).sum(-1)
+            c_ = s_ < 0
+            accn = torch.zeros(M, device=dev).index_add_(0, r_[c_].reshape(-1), (0.25 * self.mA[ni_][c_])[:, None].expand(-1, 4).reshape(-1))
+            return accn / mn.clamp_min(1e-30)
+        mstat = dict(m_med=float(med), n_live=int(live.sum()), n_light=int(light.sum()), n_vlight=int((live & (mn < 0.001 * med)).sum()),
+                     occ_light_med=float(occn[light].median()) if light.any() else None, occ_all_med=float(occn[live].median()),
+                     r_max=float(rn[live].max()), r_q999=float(torch.quantile(rn[live], 0.999)), r_light_max=float(rn[light].max()) if light.any() else None)
+        al0 = contact_alpha()
+        mstat.update(n_contact_nodes=int((al0 > 0).sum()), n_contact_light=int(((al0 > 0) & light).sum()))
+        msmp = []
         if VFL:                                                                     # 절 O 판: 같은 서브스텝 커널 (_step_lag) -- f 는 걸음 안에서 비워져 |f/m| 표본은 0
             self.f.zero_()
             self.gn.zero_()
@@ -587,6 +621,8 @@ class Opt:
                 gnm = (self.gn[:M].norm(dim=-1) / mn.clamp_min(1e-30)).max() if FLOOR else torch.zeros(())
                 fm = (self.f[:M].norm(dim=-1) / mn.clamp_min(1e-30)).max()
                 smp.append([j, float(sp.max()), float(z[k] - zf), float(mn[k] / mn[mn > 0].median()), float(fm), float(gnm), int((~torch.isfinite(sp)).sum())])
+                al = contact_alpha()
+                msmp.append([j, float(sp[k]), float(mn[k] / med), float(occn[k]), float(rn[k]), float(al[k]), int(((al > 0) & light).sum())])
         tets, gl = self.tets[:T], self.gl[:T].view(T, 4, 3)
         U = self.Uc[tets.reshape(-1)].view(T, 4, 3)
         A = torch.eye(3, device=dev) + torch.einsum("tia,tib->tab", U, gl)
@@ -606,12 +642,15 @@ class Opt:
                    svFT_max=float(sv[:, 0].max()), svFT_min=float(sv[:, -1].min()), svFT_q999=float(torch.quantile(sv[:, 0].float(), 0.999)),
                    svAF_max=float(svA[:, 0].max()), svAF_min=float(svA[:, -1].min()), first_bad_sub=first_bad,
                    svFp_max=float(svP[:, 0].max()), svFp_min=float(svP[:, -1].min()), svFp_q999=float(torch.quantile(svP[:, 0].float(), 0.999)),
-                   Umax=float(self.Uc[:M].norm(dim=-1).max()))
+                   Umax=float(self.Uc[:M].norm(dim=-1).max()), mesh=mstat, mesh_samples=msmp)
         with open(os.path.join(a.out, "lagdiag.jsonl"), "a") as fh:
             fh.write(json.dumps(rec) + "\n")
         print(f"    [lag 진단] t {i + 1}: 최대|v_n| 표본 " + " ".join(f"{q[1]:.3g}" for q in smp) + f" (마지막: 노드 높이-바닥 {smp[-1][2]:+.4f}, 질량/중앙 {smp[-1][3]:.3g}), "
               f"최대 |f/m| {smp[-1][4]:.3g}, 최대 |바닥 g/m| {smp[-1][5]:.3g}, det A_T 최소 {rec['detA_min']}, <0.5 {rec['detA_lt05']}, ≤0 {rec['detA_le0']}, "
               f"det F̄ 최소 {rec['detFT_min']}, σ(F̄) 최대 {rec['svFT_max']:.3g} (99.9% {rec['svFT_q999']:.3g}) 최소 {rec['svFT_min']:.3g}, "
+              f"[메시] 질량 중앙 {mstat['m_med']:.3g}, 가벼운 (<2.5%) {mstat['n_light']}/{mstat['n_live']} (점유율 중앙 {mstat['occ_light_med']}, 전체 {mstat['occ_all_med']:.3g}), "
+              f"r_n 최대 {mstat['r_max']:.3g} (99.9% {mstat['r_q999']:.3g}, 가벼운 {mstat['r_light_max']}), 접촉 노드 {mstat['n_contact_nodes']} (가벼운 {mstat['n_contact_light']}), "
+              f"최대|v| 노드 [j,|v|,m/중앙,점유,r,α] {msmp[-1][:6]} "
               f"σ(A F̄) 최대 {rec['svAF_max']:.3g} 최소 {rec['svAF_min']:.3g}, 입자 F σ 최대 {rec['svFp_max']:.3g} (99.9% {rec['svFp_q999']:.3g}) 최소 {rec['svFp_min']:.3g}, 첫 비유한 서브스텝 {first_bad}, KE {ke:.4g}, 최대|U| {rec['Umax']:.4g}", flush=True)
 
     def frame(self, i, x, v, F):
