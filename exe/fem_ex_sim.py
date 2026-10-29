@@ -877,7 +877,8 @@ class Opt:
             u_ = (self.lamb[ni_][..., None] * self.Uc[r_]).sum(1)
             s_ = ((self.Xf[ni_] + u_ - torch.tensor(pt_, device=dev)) * torch.tensor(nr_, device=dev)).sum(-1)
             c_ = s_ < 0
-            accn = torch.zeros(M, device=dev).index_add_(0, r_[c_].reshape(-1), (0.25 * self.mA[ni_][c_])[:, None].expand(-1, 4).reshape(-1))
+            wc_ = (torch.full_like(self.lamb[ni_][c_], 0.25) if a.mass == "tet" else self.lamb[ni_][c_]) * self.mA[ni_][c_][:, None]   # 접촉 분배 = P2G 질량 가중 (ex_vfl_contact 와 같은 식)
+            accn = torch.zeros(M, device=dev).index_add_(0, r_[c_].reshape(-1), wc_.reshape(-1))
             return accn / mn.clamp_min(1e-30)
         mstat = dict(m_med=float(med), n_live=int(live.sum()), n_light=int(light.sum()), n_vlight=int((live & (mn < 0.001 * med)).sum()),
                      occ_light_med=float(occn[light].median()) if light.any() else None, occ_all_med=float(occn[live].median()),
@@ -898,15 +899,17 @@ class Opt:
             self._fj = 0
             self._fhook = lambda: dF_[self._fj].copy_(self.f[:M])
             dU_[0], dV_[0], dD_[0] = self.Uc[:M], self.vn[:M], detA_now()
-        if VFL:                                                                     # 절 O 판: 같은 서브스텝 커널 (_step_lag) -- f 는 걸음 안에서 비워져 |f/m| 표본은 0
+        LSTEP = VFL or RNEW                                                         # 절 X: 바닥 없는 절 R 경로 (ficus --rstat) 도 측정 판과 같은 _step_lag 로 (덤프 f 포함)
+        if LSTEP:                                                                   # 절 O 판: 같은 서브스텝 커널 (_step_lag) -- f 는 걸음 안에서 비워져 |f/m| 표본은 0
             self.f.zero_()
             self.gn.zero_()
-            self.acc.zero_()
+            if VFL:
+                self.acc.zero_()
         for j in range(a.N):
             if LD:
                 self._fj = j
                 dAl_[j] = contact_alpha()                                           # 이 서브스텝 접촉 판정 (서브스텝 시작 U 기준) 의 α
-            if VFL:
+            if LSTEP:
                 self._step_lag()
                 if first_bad is None and not bool(torch.isfinite(self.vn[:M]).all()):
                     first_bad = j
@@ -957,7 +960,8 @@ class Opt:
                                    f=cpu(dF_), FT=cpu(self.FT[:T]), gl=cpu(self.gl[:T]), Ai=cpu(self.Ai), mu=float(mu), lam=float(lam), node_h=float(a.node_h),
                                    mT=cpu(torch.zeros(T, device=dev).index_add_(0, self.pinv[:Np], m)),
                                    npt=cpu(torch.zeros(T, device=dev).index_add_(0, self.pinv[:Np], torch.ones_like(m))),
-                                   mass_def=("bspline" if BSL else a.mass), g2p=(a.g2p if BSL else "bary")))
+                                   mass_def=("bspline" if BSL else a.mass), g2p=(a.g2p if BSL else "bary"),
+                                   pinv=cpu(self.pinv[:Np]).int(), mp=cpu(m)))                   # 절 X: 입자 -> 사면체, 입자 질량 (적분점·질량점 검산용)
         with open(os.path.join(a.out, "lagdiag.jsonl"), "a") as fh:
             fh.write(json.dumps(rec) + "\n")
         print(f"    [lag 진단] t {i + 1}: 최대|v_n| 표본 " + " ".join(f"{q[1]:.3g}" for q in smp) + f" (마지막: 노드 높이-바닥 {smp[-1][2]:+.4f}, 질량/중앙 {smp[-1][3]:.3g}), "
