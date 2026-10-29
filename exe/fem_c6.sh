@@ -1,10 +1,10 @@
 #!/bin/bash
-# 절 C 6 차: 최종 판 (F 덤프 f32, 단독 측정 GPU0 flock + 3DGS 렌더 GPU5, 발산하면 최대 3 번) -- /home 여유 30 GB 이상일 때까지 기다린 뒤.
+# 절 C 6 차: 최종 판 (F 덤프 f32, 단독 측정 GPU0 flock + 3DGS 렌더 GPU5, 발산하면 최대 3 번) -- /home 여유 12 GB 이상일 때까지 기다린 뒤.
 cd "$(dirname "$0")/.." || exit 1
 W=/home/dkta/work
 set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; export PATH=$HOME/bin:$PATH
 echo "[커밋] $(git log -1 --oneline) $(date +%T)"
-while [ "$(df --output=avail -B1G /home | tail -1 | tr -d ' ')" -lt 30 ]; do echo "[디스크 대기] $(df -h /home | tail -1) $(date +%T)"; sleep 300; done
+while [ "$(df --output=avail -B1G /home | tail -1 | tr -d ' ')" -lt 12 ]; do echo "[디스크 대기] $(df -h /home | tail -1) $(date +%T)"; sleep 300; done
 echo "[디스크] $(df -h /home | tail -1)"
 LB="--mode lag --opt --mass tet --floor vel --rstat"
 FD=$W/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt
