@@ -651,7 +651,7 @@ class Opt:
             self._nint_force()
         elif CQ:                                                                    # 절 AA: 2 차 근사 셀 에너지 힘
             EX.launch("ex_tet_force_CQ", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), EX.P(self.CS),
-                                              np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(0 if a.cq_h == "km" else 1)))
+                                              np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(0 if a.cq_h == "km" else 1), EX.P(None)))
         elif SB:                                                                    # 절 Z (2): ex_tet_force_R + 비율 장벽
             EX.launch("ex_tet_force_SR", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
                                               np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(a.fb), np.float32(a.fb_jhat),
@@ -1604,11 +1604,12 @@ def cq_check(i, Fstart):
         Vm = torch.zeros_like(OPT.VTs)
         Vm[tid[sub]] = OPT.VTs[tid[sub]]
         fk = {}
+        gdb = torch.zeros(OPT.Tcap, 27, device=dev)
         for hm_, hv in (("km", 0), ("cf", 1), ("base", 0)):
             fbuf = torch.zeros_like(OPT.f)
             CSb = OPT.CS if hm_ != "base" else torch.zeros_like(OPT.CS)
             EX.launch("ex_tet_force_CQ", OPT.Tcap, (EX.P(OPT.sz), EX.P(OPT.tets), EX.P(OPT.Uc), EX.P(OPT.gl), EX.P(OPT.FT), EX.P(Vm), EX.P(CSb),
-                                                    np.float32(mu), np.float32(lam), EX.P(fbuf), EX.P(None), np.int32(hv)))
+                                                    np.float32(mu), np.float32(lam), EX.P(fbuf), EX.P(None), np.int32(hv), EX.P(gdb if hm_ == "km" else None)))
             torch.cuda.synchronize()
             fk[hm_] = fbuf[:OPT.M].double()
         ts = tets[sub]
@@ -1625,6 +1626,28 @@ def cq_check(i, Fstart):
         for ep_ in (1e-1, 1e-2):
             cds[f"{ep_:g}"] = (Ef(Ul + ep_ * dU) - Ef(Ul - ep_ * dU)) / (2 * ep_)
         dd_ad = float((gr * dU).sum())
+        # 사면체별 ∂E/∂A 세 몫 (커널 gdbg) vs float64 자동 미분: ψ 몫, X 경유 q 몫 (S 고정), S 경유 q 몫 (H 고정)
+        Ab = Aend[sub].clone()
+        def _parts(A1, Fb1, CS1, which):
+            X1 = A1 @ Fb1
+            if which == "psi":
+                return psi64(X1)
+            A0 = A1.detach()
+            if which == "qx":
+                H = torch.func.hessian(_psi9)(X1.reshape(9))
+                Sx = torch.einsum("rk,sl,kcld->rcsd", A0, A0, CS1.view(3, 3, 3, 3)).reshape(9, 9)
+            else:
+                H = torch.func.hessian(_psi9)((A0 @ Fb1).reshape(9))
+                Sx = torch.einsum("rk,sl,kcld->rcsd", A1, A1, CS1.view(3, 3, 3, 3)).reshape(9, 9)
+            return 0.5 * (H * Sx).sum()
+        gk = gdb[tid[sub]].double().view(-1, 3, 9)
+        prt = {}
+        for j_, wh in enumerate(("psi", "qx", "qs")):
+            gA = torch.func.vmap(torch.func.grad(lambda A1, F1, C1: _parts(A1, F1, C1, wh)))(Ab, Fb[sub], CS9[sub]).reshape(-1, 9)
+            kk = gk[:, j_]
+            prt[wh] = dict(rel=float((kk - gA).norm() / gA.norm().clamp_min(1e-30)), norm_ad=float(gA.norm()), norm_k=float(kk.norm()),
+                           cos=float((kk * gA).sum() / (kk.norm() * gA.norm()).clamp_min(1e-30)))
+        out["force_parts"] = prt
         out["force"] = dict(n_tets=int(sub.numel()), rel_km_vs_ad=rel(fk["km"]), rel_cf_vs_ad=rel(fk["cf"]), rel_base_vs_ad=rel(fk["base"]),
                             rel_km_vs_cf=float((fk["km"] - fk["cf"]).norm() / fk["cf"].norm()),
                             corr_over_base=float((fk["km"] - fk["base"]).norm() / fk["base"].norm()),

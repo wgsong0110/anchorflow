@@ -1554,7 +1554,8 @@ __device__ int cq_corr(const float* A, const float* X, const float* Q, const flo
     return 1;
 }
 __global__ void ex_tet_force_CQ(const int* szp, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT, const float* CS,
-                                float mu, float lam, float* f, float* rst, int hmode) {
+                                float mu, float lam, float* f, float* rst, int hmode, float* gdbg) {
+    // gdbg (검산 전용, 보통 null): 사면체마다 [P F̄ᵀ (9), ∂_X q F̄ᵀ (9), G_S (9)]
     int T = szp[1];
     int t = blockIdx.x*blockDim.x + threadIdx.x;
     if (t >= T) return;
@@ -1580,6 +1581,8 @@ __global__ void ex_tet_force_CQ(const int* szp, const long long* tets, const flo
     for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(J-1.f)*sg*cf[k];
     float dq[9], GS[9];
     int on = cq_corr(A, X, Q, cf, dt, sg, sqrtf(fmaxf(l[0], 0.f)), CS + (long long)t*45, mu, lam, hmode, dq, GS);
+    if (gdbg) { float g0[9]; mmt3(P, Fb, g0); for (int k=0;k<9;k++) { gdbg[(long long)t*27+k] = g0[k]; gdbg[(long long)t*27+9+k] = 0.f; gdbg[(long long)t*27+18+k] = 0.f; }
+        if (on) { float g1[9]; mmt3(dq, Fb, g1); for (int k=0;k<9;k++) { gdbg[(long long)t*27+9+k] = g1[k]; gdbg[(long long)t*27+18+k] = GS[k]; } } }
     if (on) for (int k=0;k<9;k++) P[k] += dq[k];
     mmt3(P, Fb, Gm);
     if (on) { for (int k=0;k<9;k++) Gm[k] += GS[k]; if (rst) atomicAdd(&rst[11], 1.f); }
