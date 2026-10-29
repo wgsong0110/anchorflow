@@ -148,6 +148,7 @@ ap.add_argument("--fupd", choices=["T", "bar", "nbar", "navg", "polar"], default
 ap.add_argument("--fupd_b", type=float, default=1.0, help="--fupd 의 β (0 = 기존과 같음)")
 ap.add_argument("--cfast", action="store_true", help="절 C: 아래 네 가지 (--vfl_cull --sr_fast --tlist --fpolar) 모두")
 ap.add_argument("--cfuse", action="store_true", help="절 C (5): --cfast + 서브스텝 커널 융합 (힘+접촉 / 판정 둘 (속도 그 자리) / 노드 걸음+적용) -- 같은 식, 커널 6 -> 4 개")
+ap.add_argument("--sr_ef", action="store_true", help="절 C (6): 힘 커널이 ‖A-I‖_F² 를 남기고 클램프 빠른 판정이 그것을 쓴다 (U 다시 안 읽음, 같은 판정)")
 ap.add_argument("--fpolar_off", action="store_true", help="--cfast/--cfuse 에서 (4) 빠른 극분해만 끈다")
 ap.add_argument("--cfuse_mode", type=int, default=1, help="--cfuse: 1 = 커널 4 개 (판정이 속도를 그 자리 계산), 2 = 힘+접촉만 융합 (노드 걸음·판정·적용 따로, 커널 5 개)")
 ap.add_argument("--adapt", choices=["none", "act", "stab"], default="none",
@@ -273,6 +274,8 @@ if CC and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP and 
     raise SystemExit("절 C (--cfast 등) 는 --opt --mode lag 상자 판 이동 제한 (--lim_sr 또는 --lim --lim_mode box) 경로만")
 if a.adapt != "none" and not a.cfuse:
     raise SystemExit("--adapt 는 --cfuse 와 함께")
+if a.sr_ef and not (a.sr_fast and (a.cfuse_mode == 2 or not a.cfuse)):
+    raise SystemExit("--sr_ef 는 --sr_fast (--cfuse 면 --cfuse_mode 2) 와 함께")
 if a.cfuse and not (SRL and not FLOOR and not a.cchk):
     raise SystemExit("--cfuse 는 --lim_sr (에너지 바닥·검산 없음) 만")
 if a.vfl_cull and not VFL and HASPL:
@@ -545,6 +548,7 @@ class Opt:
             if CC:                                                                   # 절 C: 클램프 목록 [개수, 사면체...], 점유 사면체 목록
                 self.clst = torch.zeros(self.Tcap + 1, dtype=torch.int32, device=dev)
                 self.tl = torch.zeros(self.Tcap, dtype=torch.int32, device=dev)
+                self.eF = torch.zeros(self.Tcap, device=dev)                         # (6) ‖A - I‖_F²
             if CQ:
                 self.CS = torch.zeros(self.Tcap, 45, device=dev)                     # 절 AA: 셀 입자 F 공분산 (위 삼각 45)
             if NINT:
@@ -865,7 +869,7 @@ class Opt:
         nbT = (Tc + 127) // 128
         nbP = ((Np + 127) // 128) if VFL else 0
         CCU.launch("c_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
-                               EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0),
+                               EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
                                EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
         hs_, damp_ = self.hscur, self.dampcur
@@ -876,7 +880,7 @@ class Opt:
                                                np.int32(1 if a.vfl_mode == "full" else 0), np.int32(a.vfl_np), *PLf[3:], np.int32(1)), b=256)
             jon = np.int32(1 if a.lim >= 0 else 0)
             CCU.launch("c_sr_pre", Tc, (EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc),
-                                        np.float32(hs_), np.float32(a.lim_sr), jon, np.float32(a.lim), EX.P(self.clst)), b=128)
+                                        np.float32(hs_), np.float32(a.lim_sr), jon, np.float32(a.lim), EX.P(self.clst), EX.P(self.eF if a.sr_ef else None)), b=128)
             CCU.launch("c_sr_warp", 0, (EX.P(self.clst), EX.P(self.tets), EX.P(self.gl), EX.P(self.vn), EX.P(self.Uc), np.float32(hs_), np.float32(a.lim_sr),
                                         jon, np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)), b=128, grid=CCU.NBW)
             CCU.launch("c_lim_apply", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs_), EX.P(self.alph),
@@ -916,7 +920,8 @@ class Opt:
         elif CC:                                                                    # 절 C: 같은 식 (점유 목록·빠른 극분해 선택)
             CCU.launch("c_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tl if a.tlist else None), EX.P(self.cint[2:] if a.tlist else None), EX.P(self.tets),
                                              EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f),
-                                             np.float32(a.fb), np.float32(a.fb_jhat), np.int32(1 if a.fb_on == "A" else 0), EX.P(self.rst), np.int32(1 if a.fpolar else 0)))
+                                             np.float32(a.fb), np.float32(a.fb_jhat), np.int32(1 if a.fb_on == "A" else 0), EX.P(self.rst), np.int32(1 if a.fpolar else 0),
+                                             EX.P(self.eF if a.sr_ef else None)))
         elif RNEW:
             EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if (SPM == "stiff" or (SPM in ("merge", "cube") and not SPG)) else self.VTs),
                                              np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(a.fb), np.float32(a.fb_jhat),
@@ -972,7 +977,7 @@ class Opt:
             if SRL and a.sr_fast:
                 CCU.launch("c_sr_pre", Tc, (EX.P(self.sz), EX.P(self.tl if a.tlist else None), EX.P(self.cint[2:] if a.tlist else None), EX.P(self.tets), EX.P(self.gl),
                                             EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc), np.float32(hs), np.float32(a.lim_sr), np.int32(1 if a.lim >= 0 else 0),
-                                            np.float32(a.lim), EX.P(self.clst)), b=128)
+                                            np.float32(a.lim), EX.P(self.clst), EX.P(self.eF if a.sr_ef else None)), b=128)
                 CCU.launch("c_sr_warp", 0, (EX.P(self.clst), EX.P(self.tets), EX.P(self.gl), EX.P(self.vn), EX.P(self.Uc), np.float32(hs), np.float32(a.lim_sr),
                                             np.int32(1 if a.lim >= 0 else 0), np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)), b=128, grid=CCU.NBW)
                 if a.cchk:

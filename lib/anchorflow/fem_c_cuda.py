@@ -114,11 +114,27 @@ __device__ __forceinline__ void c_sr_load(int t, const long long* tets, const fl
 }
 // 빠른 보장 판정 (사면체당 스레드): 보장되면 아무것도 안 함, 아니면 lst 에 넣는다. tl != null 이면 점유 목록 (i < tlc[0]) 위로.
 __global__ void c_sr_pre(const int* szp, const int* tl, const int* tlc, const long long* tets, const float* gl, const float* VT, const float* vn, const float* Ucum,
-                         float hs, float csr, int jon, float jmin, int* lst) {
+                         float hs, float csr, int jon, float jmin, int* lst, const float* eF) {
     int i = blockIdx.x*blockDim.x + threadIdx.x;
     int t;
     if (tl) { if (i >= tlc[0]) return; t = tl[i]; }
     else { if (i >= szp[1] || !(VT[i] > 0.f)) return; t = i; }
+    if (eF) {   // (6) ‖A0 - I‖_F² 는 같은 서브스텝 힘 커널이 같은 U 로 남긴 값 -- U 를 다시 읽지 않는다 (판정 보수성은 같다)
+        float rho = 0.f;
+        for (int a=0;a<4;a++) {
+            long long na = tets[t*4+a];
+            float dd = 0.f, gg = 0.f;
+            for (int c=0;c<3;c++) { float d=hs*vn[na*3+c]; dd += d*d; float g_=gl[t*12+a*3+c]; gg += g_*g_; }
+            rho += sqrtf(dd*gg);
+        }
+        float del = sqrtf(eF[t]) + rho;
+        bool fast = del < 0.999f*(csr - 1.f)/(csr + 1.f);
+        if (fast && jon) { float s3 = 1.f - del; fast = s3*s3*s3 >= jmin*1.001f; }
+        if (fast) return;
+        int slot = atomicAdd(&lst[0], 1);
+        lst[1 + slot] = t;
+        return;
+    }
     long long n[4]; float G[12];
     for (int k=0;k<4;k++) n[k]=tets[t*4+k];
     for (int k=0;k<12;k++) G[k]=gl[t*12+k];
@@ -201,7 +217,7 @@ __device__ __forceinline__ void c_polar_fast(const float* F, float* Q) {
     }
 }
 __device__ __forceinline__ void c_force_body(int t, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
-                                             float mu, float lam, float* f, float fbk, float fbj, int fbon, float* rst, int fpol) {
+                                             float mu, float lam, float* f, float fbk, float fbj, int fbon, float* rst, int fpol, float* eF) {
     float V = VT[t];
     if (!(V > 0.f)) return;
     long long n[4]; float G[12];
@@ -209,6 +225,7 @@ __device__ __forceinline__ void c_force_body(int t, const long long* tets, const
     for (int k=0;k<12;k++) G[k]=gl[t*12+k];
     float A[9] = {1,0,0, 0,1,0, 0,0,1};
     for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u=U[n[i]*3+c]; for (int b=0;b<3;b++) A[c*3+b] += u*G[i*3+b]; }
+    if (eF) { float e2 = 0.f; for (int k=0;k<9;k++) { float d = A[k] - ((k % 4 == 0) ? 1.f : 0.f); e2 += d*d; } eF[t] = e2; }   // (6) 클램프 빠른 판정용 ‖A - I‖_F²
     float cA[9]; cof3(A, cA);
     float dA = A[0]*cA[0]+A[1]*cA[1]+A[2]*cA[2];
     if (rst && !(dA > 0.f)) atomicAdd(&rst[0], 1.f);
@@ -234,12 +251,12 @@ __device__ __forceinline__ void c_force_body(int t, const long long* tets, const
     }
 }
 __global__ void c_tet_force_R(const int* szp, const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
-                              float mu, float lam, float* f, float fbk, float fbj, int fbon, float* rst, int fpol) {
+                              float mu, float lam, float* f, float fbk, float fbj, int fbon, float* rst, int fpol, float* eF) {
     int i0 = blockIdx.x*blockDim.x + threadIdx.x;
     int t;
     if (tl) { if (i0 >= tlc[0]) return; t = tl[i0]; }
     else { if (i0 >= szp[1]) return; t = i0; }
-    c_force_body(t, tets, U, gl, FT, VT, mu, lam, f, fbk, fbj, fbon, rst, fpol);
+    c_force_body(t, tets, U, gl, FT, VT, mu, lam, f, fbk, fbj, fbon, rst, fpol, eF);
 }
 
 // ======== (5) 융합 판 (--cfuse): 서브스텝 커널 6 개 -> 4 개, 같은 식 ========
@@ -271,7 +288,7 @@ __device__ __forceinline__ void c_vget(const CVS& S, long long n, float* v) {
     c_vnew(n, S.mn, S.f, S.gn, S.vn, S.g0, S.g1, S.g2, S.hs, S.damp, S.fixd, S.vbc, S.acc, S.mode, S.np_, S.n0, S.n1, S.n2, v);
 }
 __global__ void c_fc(int nbT, const int* szp, const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
-                     float mu, float lam, float* f, float* rst, int fpol,
+                     float mu, float lam, float* f, float* rst, int fpol, float* eF,
                      const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb, const float* m, int tetmass,
                      float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon) {
     if ((int)blockIdx.x < nbT) {
@@ -279,7 +296,7 @@ __global__ void c_fc(int nbT, const int* szp, const int* tl, const int* tlc, con
         int t;
         if (tl) { if (i0 >= tlc[0]) return; t = tl[i0]; }
         else { if (i0 >= szp[1]) return; t = i0; }
-        c_force_body(t, tets, U, gl, FT, VT, mu, lam, f, 0.f, 0.f, 0, rst, fpol);
+        c_force_body(t, tets, U, gl, FT, VT, mu, lam, f, 0.f, 0.f, 0, rst, fpol, eF);
         return;
     }
     int q = (blockIdx.x - nbT)*blockDim.x + threadIdx.x;
