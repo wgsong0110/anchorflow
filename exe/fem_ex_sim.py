@@ -76,6 +76,10 @@ ap.add_argument("--rep", type=int, default=0,
                 help="절 P (--opt --mode lag 만, 사용자 10-29): K 서브스텝마다 입자에서 다시 평균 (0 = 끔, 기존 lag 판). 바닥·질량·에너지 정의 그대로")
 ap.add_argument("--rep_mode", choices=["full", "vel"], default="full",
                 help="--rep: full = G2P (입자 x·v·F 갱신) -> 재배치 P2G (노드 질량·속도·셀 F̄, U = 0); vel = 노드 속도만 (v_p = Σλ v_n -> v_n = Σ w v_p / m_n, 이동·F̄ 그대로)")
+ap.add_argument("--rep_w", choices=["std", "tet4", "lam"], default="std",
+                help="절 Q (a) 속도 전달 가중 맞추기 (--mode lag --opt --mass tet): std = P2G m_p/4 · G2P λ (절 P 그대로, 불일치), "
+                     "tet4 = G2P 속도도 ¼ Σ v_n (사면체 등분, 질량 정의 그대로), lam = P2G 속도 가중도 λ m_p (정규화 Σλm, 동역학 노드 질량 m_T/4 그대로) -- "
+                     "재평균·프레임 경계 G2P/P2G 모두")
 ap.add_argument("--diag", action="store_true", help="첫 프레임: 노드별 국소 안정 걸음 2/ω (ω² = Σ_T V_T (λ+2μ)|∇λ_i|² / m_i) 분포, 서브스텝마다 최대 |v|")
 a = ap.parse_args()
 
@@ -115,8 +119,15 @@ REP = int(a.rep) if (a.rep and a.rep < a.N) else 0                              
 REPF = bool(REP) and a.rep_mode == "full"
 if REP and not (a.opt and a.mode == "lag" and a.interp == "bary"):
     raise SystemExit("--rep 은 --opt --mode lag 만")
-if REP and (FLOOR or a.affine or a.lagdiag):
-    raise SystemExit("--rep 은 에너지 바닥 (--floor particle)·--affine·--lagdiag 와 함께 못 쓴다 (프레임 단위 변위 U 를 0 으로 되돌리므로) -- --floor vel 또는 none")
+if REP and (FLOOR or a.lagdiag):
+    raise SystemExit("--rep 은 에너지 바닥 (--floor particle)·--lagdiag 와 함께 못 쓴다 (프레임 단위 변위 U 를 0 으로 되돌리므로) -- --floor vel 또는 none")
+# 절 Q: --affine + --rep = 재평균 APIC (b) -- full: 블록 G2P 가 C 를 남기고 재배치 P2G 가 m_p (v_p + C_p (x_n - x_p)); vel: 커널 안에서 C (항등이 된다)
+RW4 = a.rep_w == "tet4"
+RWL = a.rep_w == "lam"
+if a.rep_w != "std" and not (a.opt and a.mode == "lag" and a.mass == "tet" and a.interp == "bary"):
+    raise SystemExit("--rep_w tet4|lam 은 --opt --mode lag --mass tet 만")
+if RW4 and a.affine:
+    raise SystemExit("--rep_w tet4 + --affine 은 정의가 맞지 않는다 (APIC G2P 는 λ 보간 + C)")
 NB = -(-a.N // REP) if REP else 1                                                   # 프레임당 블록 수 (마지막 블록은 짧을 수 있다)
 if HASPL:
     pt_ = [float(q) for q in planes[0]["point"]]
@@ -146,7 +157,8 @@ print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N
       + (f"보간 2 차 B-스플라인 (적분점 {a.quad}{' K %d' % a.K if a.quad == 'cell' else ''}), 노드 질량 Σ w m (P2G), 전달 {'APIC' if a.apic else 'PIC'}, " if BSP else
          f"노드 질량 {'Σλm (기본)' if a.mass == 'bary' else '사면체 등분 m_T/4 (정의 변경)'}, ") + f"E {cfg['E']:g} ν {cfg['nu']:g} "
       f"(μ {mu:.4g} λ {lam:.4g}), EXT {EXT:.6f}, 바닥 {'입자 (stick·softplus)' if FLOOR else ('속도 단위 (입자 판정, 고착 %s, 비관통 %d, 후보 여유 %g)' % (a.vfl_mode, a.vfl_np, a.vfl_margin) if VFL else '없음')}, 감쇠 {DAMP:.8f}/서브스텝"
-      + (f", 재평균 {a.rep_mode} {REP} 서브스텝마다 (블록 {NB})" if REP else ""), flush=True)
+      + (f", 재평균 {a.rep_mode} {REP} 서브스텝마다 (블록 {NB})" if REP else "") + (", 아핀 전달 (APIC)" if a.affine else "")
+      + (f", 전달 가중 {a.rep_w}" if a.rep_w != "std" else ""), flush=True)
 print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), {'격자 간격 dx' if BSP else 'Kuhn 최소 높이'} {lmin:.5f} (node_h {a.node_h}), "
       f"Δt_CFL = {dt_cfl:.3e} s -> N_CFL = h/Δt_CFL = {h / dt_cfl:.1f} (지금 h_s/Δt_CFL = {hs / dt_cfl:.3f})", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
@@ -236,7 +248,7 @@ def frame_base(i, x, v, F):
                       f"최대 |바닥 g/m| {float((gn.norm(dim=-1) / mn.clamp_min(1e-30)).max()):.3e}, 비유한 {int((~torch.isfinite(Vn)).sum())}", flush=True)
         x2, v2, F2 = torch.empty_like(x), torch.empty_like(x), torch.empty(Np, 9, device=dev)
         EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(x), EX.P(Uc), EX.P(Vn), EX.P(G.rows), EX.P(G.lam), EX.P(G.gl4), EX.P(G.pinv),
-                                     EX.P(Fv), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(None)), b=256)
+                                     EX.P(Fv), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(None), np.int32(0)), b=256)
         if nn:
             EX.launch("ex_near_fin", nn, (EX.P(None), np.int32(nn), EX.P(ni), EX.P(x0c), EX.P(F0c), EX.P(Uc), EX.P(None), EX.P(None), EX.P(F0i),
                                           EX.P(G.rows), EX.P(G.lam), EX.P(G.gl4), EX.P(G.pinv), *near_args(nn), np.float64(h), EX.P(x2), EX.P(v2), EX.P(F2)))
@@ -314,6 +326,8 @@ class Opt:
             self.fx = torch.zeros(self.Mcap, dtype=torch.uint8, device=dev)
             self.vbc = z(self.Mcap, 3)
             self.acc = z(self.Mcap)                                                  # --floor vel: 노드별 접촉 입자 질량 (쓴 뒤 비움)
+            self.ml = z(self.Mcap) if RWL else None                                  # 절 Q --rep_w lam: 속도 전달 정규화 질량 Σλm
+            self.nposb = z(self.Mcap, 3)                                             # 노드 위치 상주 버퍼 (절 Q: 그래프 안 APIC P2G 가 주소를 고정해 읽는다)
             new = True
         if T > self.Tcap:
             self.Tcap = int(T * 1.3) + 64
@@ -401,7 +415,8 @@ class Opt:
         self.sz.copy_(torch.tensor([M, T, 0, 0], dtype=torch.int32), non_blocking=True)
         EX.launch("ex_tet_geo32", T, (EX.P(self.sz), EX.P(self.tets), EX.P(npos), EX.P(self.gl)))
         self.M, self.T = M, T
-        self.npos = npos
+        self.nposb[:M].copy_(npos)
+        self.npos = self.nposb[:M]
         self.fixd = None
         if BC_SEL is not None:
             # cuboid 만 (입자 구속 없음 -- 위에서 막았다): train_deform.cfg_bc_nodes 의 cuboid 판정 그대로 (노드 위치)
@@ -417,6 +432,8 @@ class Opt:
         Mc, Tc = self.Mcap, self.Tcap
         self.mn.zero_()
         self.mv.zero_()
+        if RWL:
+            self.ml.zero_()
         self.VTs.zero_()
         self.FTs.zero_()
         if not keep:
@@ -425,8 +442,8 @@ class Opt:
                                     EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.sz)), b=256)
         aff = self.CL if (a.affine and a.mode == "lag") else None
         EX.launch("ex_p2g_mv", Np, (np.int32(Np), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA), EX.P(v), EX.P(self.mn), EX.P(self.mv), np.int32(1 if a.mass == "tet" else 0),
-                                    EX.P(aff), EX.P(x if aff is not None else None), EX.P(self.npos if aff is not None else None)), b=256)
-        EX.launch("ex_vfin", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.mv), EX.P(self.vn)), b=256)
+                                    EX.P(aff), EX.P(x if aff is not None else None), EX.P(self.npos if aff is not None else None), EX.P(self.ml if RWL else None)), b=256)
+        EX.launch("ex_vfin", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.mv), EX.P(self.vn), EX.P(self.ml if RWL else None)), b=256)
         EX.launch("ex_split", Np, (np.int32(Np), EX.P(x), EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.vn), np.float32(H),
                                    np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.int32(1 if HASPL else 0), *PLf,
                                    np.float32(a.vfl_margin / 20.0 if VFL else a.eps_sp), np.float32(0.0 if VFL else a.eps_st), EX.P(self.volA), EX.P(F),
@@ -487,14 +504,16 @@ class Opt:
                 if REPF:
                     nx = 1 - cur
                     EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(self.X[cur]), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
-                                                 EX.P(self.pinv), EX.P(self.FF[cur]), EX.P(self.X[nx]), EX.P(self.V[nx]), EX.P(self.FF[nx]), EX.P(None)), b=256)
+                                                 EX.P(self.pinv), EX.P(self.FF[cur]), EX.P(self.X[nx]), EX.P(self.V[nx]), EX.P(self.FF[nx]),
+                                                 EX.P(self.CL if a.affine else None), np.int32(1 if RW4 else 0)), b=256)
                     self._p2g(self.X[nx], self.V[nx], self.FF[nx], h, True)          # 재배치 P2G (질량·속도·F̄; 바닥 후보 표시는 프레임 것)
                     self.Uc.zero_()
                 else:
                     self.mv.zero_()
-                    EX.launch("ex_rep_vel_p2g", Np, (np.int32(Np), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA), np.int32(1 if a.mass == "tet" else 0),
-                                                     EX.P(self.vn), EX.P(self.mv)), b=256)
-                    EX.launch("ex_rep_vel_fin", self.Mcap, (EX.P(self.sz), EX.P(self.mn), EX.P(self.mv), EX.P(self.vn)), b=256)
+                    EX.launch("ex_rep_vel_p2g", Np, (np.int32(Np), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA), np.int32(1 if (a.mass == "tet" and not RWL) else 0),
+                                                     EX.P(self.vn), EX.P(self.mv), np.int32(1 if RW4 else 0), EX.P(self.gl if a.affine else None),
+                                                     EX.P(self.pinv), EX.P(self.npos), EX.P(self.X[0])), b=256)
+                    EX.launch("ex_rep_vel_fin", self.Mcap, (EX.P(self.sz), EX.P(self.ml if RWL else self.mn), EX.P(self.mv), EX.P(self.vn)), b=256)
         elif not a.no_fuse:
             # 융합 판: [사면체 힘 (F̄ 나누기 포함, 쓴 뒤 비움)] [바닥 후보 힘] [노드 걸음 (속도 나누기 포함, 쓴 뒤 비움)] [G2P + locate + P2G + 분할]
             Mc, Tc = self.Mcap, self.Tcap
@@ -643,6 +662,10 @@ class Opt:
                 bufs = (self.vn, self.Uc, self.mn, self.mv, self.VTs, self.FTs, self.FT, self.rows, self.lamb, self.pinv)
                 if REP:
                     bufs = bufs + tuple(self.X) + tuple(self.V) + tuple(self.FF) + (self.sz,)
+                if a.affine:
+                    bufs = bufs + (self.CL,)
+                if RWL:
+                    bufs = bufs + (self.ml,)
                 snap = [t.clone() for t in bufs]
                 xs_snap = [t.clone() for t in (xa, va, Fa)]
                 self._substeps()                                                    # 데우기 (NVRTC 컴파일·지연 할당) -- 결과 버림
@@ -659,7 +682,7 @@ class Opt:
             xin, Fin = (self.X[ci], self.FF[ci]) if REP else (x, Fv)
             x2, v2, F2 = self.X[1 - ci], self.V[1 - ci], self.FF[1 - ci]
             EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
-                                         EX.P(self.pinv), EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(self.CL if a.affine else None)), b=256)
+                                         EX.P(self.pinv), EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(self.CL if a.affine else None), np.int32(1 if RW4 else 0)), b=256)
             uc, xc_, Fc_ = self.Uc, None, None
         else:
             k = a.N % 2
@@ -1028,7 +1051,7 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             n_contact_max=(max(r.get("n_contact") or 0 for r in recs) if VFL else None),
             spread_last=recs[-1]["spread"], n_near_med=med([r.get("n_near") or 0 for r in recs]),
             overflow_frames=sum(1 for r in recs if r.get("overflow")), gpu=torch.cuda.get_device_name(0), tag=a.tag, damp_sub=DAMP,
-            interp=a.interp, rep=REP, rep_mode=(a.rep_mode if REP else None), quad=(a.quad if BSP else None), K=(a.K if BSP and a.quad == "cell" else None), apic=bool(a.apic))
+            interp=a.interp, rep=REP, rep_mode=(a.rep_mode if REP else None), quad=(a.quad if BSP else None), K=(a.K if BSP and a.quad == "cell" else None), apic=bool(a.apic), rep_w=a.rep_w)
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
 print(f"[롤아웃] {a.tag} 서브스텝 {a.N} {a.mode}{' 최적화' if a.opt else ''}: {done}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%  "
       f"프레임당 {summ['ms_mean']:.2f} ms (중앙 {summ['ms_med']:.2f}, {summ['fps']:.2f} fps, 앞 {W} 프레임 제외) 퍼짐 {summ['spread_last']:.3f} "

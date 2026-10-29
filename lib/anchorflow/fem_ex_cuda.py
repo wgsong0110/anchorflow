@@ -204,8 +204,11 @@ __global__ void ex_near_fin(const int* szp, int nnarg, const long long* nidx, co
 
 // (lag) 프레임 끝 선형 G2P: x + Σλ U, v = Σλ v_n, F <- (I + Σ U ⊗ ∇λ) F  (바닥 후보는 뒤이어 ex_near_fin 이 덮어쓴다)
 __global__ void ex_g2p_lag(int N, const float* x, const float* Ucum, const float* Vn, const long long* rows, const float* lamb, const float* glT,
-                           const long long* tinv, const float* Fp, float* x2, float* v2, float* F2, float* C2) {
+                           const long long* tinv, const float* Fp, float* x2, float* v2, float* F2, float* C2, int vq) {
     // C2 (선택, --affine): 입자 속도 기울기 C = (Σ v_n ⊗ ∇λ_n) A⁻¹ (사면체 안 선형 속도장의 현재 배치 기울기) -- 다음 프레임 P2G 의 아핀 전달 (APIC 와 같은 꼴)
+    //   (정답 PG 의 APIC C = B D⁻¹, B = Σ w v_i (x_i - x_p)ᵀ, D = Σ w (x_i - x_p)(x_i - x_p)ᵀ 와 같은 값: 선형 사면체 보간은 아핀장에 정확하므로
+    //    B = (Σ v_i ⊗ ∇λ_i) D 이고, D 는 입자가 면·모서리 위면 특이하므로 닫힌 꼴로 쓴다)
+    // vq = 1 (절 Q (a) --rep_w tet4): 입자 속도 v = ¼ Σ v_n (P2G 사면체 등분 가중 m_p/4 와 같은 가중) -- 위치·F 는 그대로 λ·A
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     double u[3]={0,0,0}, vv[3]={0,0,0}, A[9]={1,0,0,0,1,0,0,0,1}, Gv[9]={0,0,0,0,0,0,0,0,0};
@@ -213,6 +216,7 @@ __global__ void ex_g2p_lag(int N, const float* x, const float* Ucum, const float
     for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; double lm=lamb[p*4+i];
         for (int a=0;a<3;a++){ double Ua=Ucum[nd*3+a]; double Va=(double)Vn[nd*3+a]; u[a]+=lm*Ua; vv[a]+=lm*Va;
             for (int b=0;b<3;b++) { A[a*3+b]+=Ua*gl[i*3+b]; Gv[a*3+b]+=Va*gl[i*3+b]; } } }
+    if (vq) { for (int a=0;a<3;a++) { double t=0; for (int i=0;i<4;i++) t += (double)Vn[rows[p*4+i]*3+a]; vv[a] = 0.25*t; } }
     for (int k=0;k<3;k++) { x2[p*3+k] = (float)((double)x[p*3+k] + u[k]); v2[p*3+k] = (float)vv[k]; }
     double F[9]; for (int k=0;k<9;k++) F[k]=Fp[p*9+k];
     double F2d[9]; mm3(A, F, F2d);
@@ -282,13 +286,25 @@ __global__ void ex_node_step_lag(const int* szp, const float* mn, float* f, floa
 // ======== 절 P: lag 판 K 서브스텝마다 재평균 (--rep K --rep_mode vel, 사용자 10-29 "해") ========
 // 속도만 재평균 (입자 이동·재배치 없음, 같은 rows/λ·같은 노드 질량): v_p = Σλ v_n (G2P, PIC) -> (mv)_n = Σ w_pn v_p, v_n = (mv)_n / m_n (P2G)
 //   w_pn = P2G 와 같은 질량 가중 (사면체 등분 0.25 m_p / Σλm 판은 λ m_p). mv 는 호출 전에 비워 둔다.
-__global__ void ex_rep_vel_p2g(int N, const long long* rows, const float* lamb, const float* m, int tetmass, const float* vn, float* mv) {
+// 절 Q 선택지:
+//   g2pq = 1 ((a) --rep_w tet4): G2P 도 P2G 와 같은 사면체 등분 가중 v_p = ¼ Σ v_n
+//   tetmass = 0 + 정규화 질량 ml = Σλ m_p ((a) --rep_w lam): P2G 를 G2P 와 같은 λ m_p 가중 (동역학 노드 질량 m_T/4 는 그대로, 정규화만 Σλm)
+//   glT ((b) --affine, APIC): C_p = Σ v_n ⊗ ∇λ_n (정답 PG 의 C = B D⁻¹ 와 같은 값), P2G 값 v_p + C_p (x_n - x_p) -- 같은 rows 로 되돌리므로 x_n - x_p 는
+//     기준 배치 (npos - x0) 로 계산 (지금 배치의 A_T (X_n - X_p) 와 C A_T = Σ v ⊗ ∇λ 가 상쇄 -- 같은 값). 이 경우 각 기여가 정확히 v_n 이 되어 재평균은 항등이다.
+__global__ void ex_rep_vel_p2g(int N, const long long* rows, const float* lamb, const float* m, int tetmass, const float* vn, float* mv,
+                               int g2pq, const float* glT, const long long* tinv, const float* npos, const float* x0) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     long long nd[4]; float lm[4]; float vp[3] = {0,0,0};
-    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; for (int c=0;c<3;c++) vp[c] += lm[i]*vn[nd[i]*3+c]; }
+    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; float q = g2pq ? 0.25f : lm[i]; for (int c=0;c<3;c++) vp[c] += q*vn[nd[i]*3+c]; }
+    float Gv[9] = {0,0,0,0,0,0,0,0,0};
+    if (glT) { const float* gl = glT + tinv[p]*12;
+        for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float vc = vn[nd[i]*3+c]; for (int b=0;b<3;b++) Gv[c*3+b] += vc*gl[i*3+b]; } }
     float mp = m[p];
-    for (int i=0;i<4;i++){ float w=(tetmass ? 0.25f : lm[i])*mp; for (int c=0;c<3;c++) atomicAdd(&mv[nd[i]*3+c], w*vp[c]); }
+    for (int i=0;i<4;i++){ float w=(tetmass ? 0.25f : lm[i])*mp;
+        float d[3] = {0,0,0};
+        if (glT) for (int b=0;b<3;b++) d[b] = npos[nd[i]*3+b] - x0[p*3+b];
+        for (int c=0;c<3;c++) atomicAdd(&mv[nd[i]*3+c], w*(vp[c] + Gv[c*3]*d[0] + Gv[c*3+1]*d[1] + Gv[c*3+2]*d[2])); }
 }
 __global__ void ex_rep_vel_fin(const int* szp, const float* mn, float* mv, float* vn) {
     int M = szp[0];
@@ -423,22 +439,25 @@ __global__ void ex_locate(int N, const float* x, const float* gpar, const int* i
 // P2G 질량·운동량 (float 원자 합)
 // tetmass = 0: 노드 질량 Σ λ m_p (기본, 암시적 판 관성 행렬의 행 합), 1: 사면체 등분 Σ_T m_T / 4 (정의 변경 -- 선형 사면체 표준 질량 집중)
 __global__ void ex_p2g_mv(int N, const long long* rows, const float* lamb, const float* m, const float* v, float* mn, float* mv, int tetmass,
-                          const float* Cp, const float* xp, const float* npos) {
+                          const float* Cp, const float* xp, const float* npos, float* ml) {
     // Cp (선택, --affine): 운동량에 m w C (x_n - x_p) -- 아핀 속도장은 노드 값이 정확히 v(x_n)
+    // ml (선택, 절 Q (a) --rep_w lam): 속도 전달 가중을 G2P 와 같은 λ m_p 로 (운동량 mv 에 λ m_p v, 정규화 질량 ml = Σ λ m_p), 노드 질량 mn 은 tetmass 정의 그대로
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     float mp = m[p];
     for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; float w=(tetmass ? 0.25f : lamb[p*4+i])*mp; atomicAdd(&mn[nd], w);
+        if (ml) { w = lamb[p*4+i]*mp; atomicAdd(&ml[nd], w); }
         float d[3] = {0,0,0};
         if (Cp) for (int b=0;b<3;b++) d[b] = npos[nd*3+b] - xp[p*3+b];
         for (int c=0;c<3;c++) { float vc = v[p*3+c]; if (Cp) vc += Cp[p*9+c*3]*d[0] + Cp[p*9+c*3+1]*d[1] + Cp[p*9+c*3+2]*d[2];
             atomicAdd(&mv[nd*3+c], w*vc); } }
 }
-__global__ void ex_vfin(const int* szp, int Marg, const float* mn, const float* mv, float* vn) {
+__global__ void ex_vfin(const int* szp, int Marg, const float* mn, const float* mv, float* vn, const float* ml) {
+    // ml (선택, --rep_w lam): 속도 = 운동량 / Σλm (그 값이 0 인 노드 -- 모든 입자의 λ 가 0 -- 는 속도 0)
     int M = szp ? szp[0] : Marg;
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= M) return;
-    float m = mn[n];
+    float m = ml ? ml[n] : mn[n];
     for (int c=0;c<3;c++) vn[n*3+c] = m > 1e-30f ? mv[n*3+c]/m : 0.f;
 }
 // 분할 (CudaTetqK 와 같은 정의: 예측 변위 u0 = Σλ (H v_n + H² g) 의 끝 높이 s/ε ≤ 20 이면 바닥 후보) + 항등 입자만 사면체 V·V F 합
