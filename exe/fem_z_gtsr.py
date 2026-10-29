@@ -33,11 +33,11 @@ def stats(Fm):
 
 rows = []
 for t in range(L + 1):
-    Ft = F[t].to(dev).reshape(-1, 3, 3)
+    Ft = F[t].to(dev).double().reshape(-1, 3, 3)
     rec = dict(t=t, F=stats(Ft))
     if t < L:
-        Fn = F[t + 1].to(dev).reshape(-1, 3, 3)
-        inc = Fn @ torch.linalg.inv(Ft.double()).float()
+        Fn = F[t + 1].to(dev).double().reshape(-1, 3, 3)
+        inc = Fn @ torch.linalg.inv(Ft)
         rec["inc"] = stats(inc)
     rows.append(rec)
     if t % 10 == 0 or t == L:

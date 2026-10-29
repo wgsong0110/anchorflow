@@ -68,8 +68,9 @@ def kforce(U, k):
     tets = torch.arange(M, device=dev, dtype=torch.long).view(T, 4)
     f = torch.zeros(M, 3, device=dev)
     rst = torch.zeros(12, device=dev)
-    EX.launch("ex_tet_force_SR", T, (EX.P(sz), EX.P(tets), EX.P(U.float().reshape(M, 3).contiguous()), EX.P(gl.float().reshape(T, 12).contiguous()),
-                                     EX.P(torch.eye(3, device=dev).reshape(1, 9).repeat(T, 1).contiguous()), EX.P(VT.float().contiguous()),
+    Uf, glf, FTf, VTf = U.float().reshape(M, 3).contiguous(), gl.float().reshape(T, 12).contiguous(), torch.eye(3, device=dev).reshape(1, 9).repeat(T, 1).contiguous(), VT.float().contiguous()
+    EX.launch("ex_tet_force_SR", T, (EX.P(sz), EX.P(tets), EX.P(Uf), EX.P(glf),     # 임시 텐서를 이름에 묶어 둔다 (EX.P 는 주소만 -- 풀린 메모리를 읽지 않게)
+                                     EX.P(FTf), EX.P(VTf),
                                      np.float32(mu), np.float32(lam), EX.P(f), np.float32(0.0), np.float32(0.3), np.int32(0), EX.P(rst),
                                      np.float32(k), np.float32(c), np.float32(dh)))
     torch.cuda.synchronize()
@@ -136,8 +137,8 @@ for jon, jmin in ((0, -1.0), (1, 0.3)):
     tets = torch.arange(M, device=dev, dtype=torch.long).view(T, 4)
     alph = torch.full((M,), 1065353216, dtype=torch.int32, device=dev)
     rst = torch.zeros(12, device=dev)
-    EX.launch("ex_lim_sr_tet", T, (EX.P(sz), EX.P(tets), EX.P(gl.float().reshape(T, 12).contiguous()), EX.P(torch.ones(T, device=dev)),
-                                   EX.P(vn.float().reshape(M, 3).contiguous()), EX.P(U.float().reshape(M, 3).contiguous()), np.float32(hs),
+    glf, VTo, vnf, Uf = gl.float().reshape(T, 12).contiguous(), torch.ones(T, device=dev), vn.float().reshape(M, 3).contiguous(), U.float().reshape(M, 3).contiguous()
+    EX.launch("ex_lim_sr_tet", T, (EX.P(sz), EX.P(tets), EX.P(glf), EX.P(VTo), EX.P(vnf), EX.P(Uf), np.float32(hs),
                                    np.float32(c), np.int32(jon), np.float32(jmin), EX.P(alph), EX.P(rst)))
     torch.cuda.synchronize()
     sT = alph.view(torch.float32).view(T, 4).double().min(1).values
