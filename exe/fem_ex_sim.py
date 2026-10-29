@@ -109,6 +109,15 @@ ap.add_argument("--cq", action="store_true",
 ap.add_argument("--cq_h", choices=["km", "cf"], default="km", help="--cq 의 헤시안: km = 기존 해석 헤시안 장치 함수 kmanual (기본), cf = 같은 헤시안 닫힌 식 (빠른 판)")
 ap.add_argument("--cqchk", default="", help="--cq 검산 (측정 밖): 이 프레임들 (1 부터, 쉼표) 끝에서 셀 에너지 세 가지 (2 차 근사 / 입자 적분 / ψ(A F̄)) 상대 차, 힘 vs float64 자동 미분·중앙 차분 -> cqchk.jsonl")
 ap.add_argument("--fspread", type=int, default=0, help="측정 밖: K 프레임마다 입자 F 이웃 벌어짐 ‖F_p − 16-NN 평균‖ (우리 / 정답, 전체 표본·입자 1~2 개 셀 표본; 절 Y 지표) -> fem.jsonl (0 = 끔)")
+ap.add_argument("--sp", choices=["none", "merge", "cube", "blend", "stiff", "mlow"], default="none",
+                help="절 AD 희소 셀 처리: merge = 희소 사면체를 입자 많은 면 이웃 쪽으로 묶어 한 셀 (F̄·V 합, Ā = 묶음 A 평균) 로 응력, cube = 희소 사면체가 있는 정육면체의 점유 사면체를 한 셀로, "
+                     "blend = 희소 사면체 F̄ 를 면 이웃 F̄ 와 입자 부피 가중으로 섞음, stiff = 희소 사면체 응력에 점유율 가중, mlow = 노드 관성 질량 하한")
+ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
+ap.add_argument("--sp_occ", type=float, default=0.0, help="--sp: 희소 = (입자 수 ≤ k) 또는 점유율 V_T/V_기하 < 이 값 (0 = 입자 수만)")
+ap.add_argument("--sp_beta", type=float, default=1.0, help="--sp blend: 이웃 몫 배율 β (F̄' = (V F̄ + β Σ V_nb F̄_nb)/(V + β Σ V_nb))")
+ap.add_argument("--sp_wocc", type=float, default=1.0, help="--sp stiff: 희소 사면체 응력 가중 w = min(점유율 / 이 값, 1)")
+ap.add_argument("--sp_mlow", type=float, default=0.25, help="--sp mlow: 노드 관성 질량 하한 = 이 값 x 첫 프레임 노드 질량 중앙값 (가속도 f/m' 에만; 운동량 전달·중력 그대로)")
+ap.add_argument("--sp_chk", default="", help="--sp 검산 (측정 밖): 이 프레임들 (1 부터) 끝 상태에서 내부력 합 |Σf|/Σ|f|, 돌림힘 |Σ x×f|/Σ|x-c||f| -> fem.jsonl")
 ap.add_argument("--rstat", action="store_true", help="절 R 통계 (뒤집힌 셀 수 등) -- --fb·--lim 이 없어도 같은 사면체 힘 커널 (ex_tet_force_R, κ 0) 로 (기준 판 비교용)")
 ap.add_argument("--p2g", choices=["bary", "bs"], default="bary",
                 help="절 S (--opt --mode lag, 사용자 10-29): bs = 프레임 시작 P2G 를 2 차 B-스플라인으로 -- 노드 질량 m_n = Σ w(x_n - x_p) m_p·운동량 Σ w m_p v_p (27 노드), "
@@ -206,7 +215,13 @@ FUPD = {"T": 0, "bar": 1, "nbar": 2, "navg": 3, "polar": 4}[a.fupd]             
 FUPDN = FUPD >= 2                                                                      # 노드 평균 (fa_tet_acc) 필요
 if FUPD and not (a.opt and a.mode == "lag" and a.interp == "bary" and a.p2g == "bary" and not a.rep and not a.affine and a.rep_w == "std"):
     raise SystemExit("--fupd 는 --opt --mode lag --p2g bary (재평균·아핀 없음) 만")
-RNEW = a.fb > 0 or a.lim >= 0 or SRL or SB or a.rstat or a.p2g == "bs" or NINT or CQ                                         # 절 R 경로 (사면체 힘 ex_tet_force_R + 통계)
+SPM = a.sp
+SPG = SPM in ("merge", "cube")                                                       # 절 AD: 묶음 힘 (커널 2 개)
+if SPM != "none" and not (a.opt and a.mode == "lag" and a.interp == "bary" and not a.rep and a.p2g == "bary" and not NINT and not CQ and not SB and a.fb <= 0 and not a.affine):
+    raise SystemExit("--sp 는 --opt --mode lag --p2g bary (절 R 경로, 재평균·노드 적분·2 차 근사·장벽·아핀 없음) 만")
+if a.sp_chk and SPM == "none":
+    raise SystemExit("--sp_chk 는 --sp 와 함께")
+RNEW = SPM != "none" or a.fb > 0 or a.lim >= 0 or SRL or SB or a.rstat or a.p2g == "bs" or NINT or CQ                                         # 절 R 경로 (사면체 힘 ex_tet_force_R + 통계)
 LIM = a.lim >= 0 or SRL
 BSL = a.p2g == "bs"                                                                  # 절 S: lag 판 B-스플라인 P2G
 G2PBS = BSL and a.g2p == "bs"
@@ -264,6 +279,9 @@ print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N
       + (f", [절 R] 이동 제한 det A_T ≥ {a.lim:g} ({'상자 꼭짓점 Jacobi' if a.lim_mode == 'box' else '8 색 Gauss-Seidel'}, 속도 {a.lim_v})" if a.lim >= 0 else "")
       + (f", [절 Z] 비율 클램프 σ1/σ3(A_T) ≤ {a.lim_sr:g} (상자 꼭짓점 이분 + Weyl, Jacobi, 속도 {a.lim_v}){' + 검산' if a.lim_sr_chk else ''}" if SRL else "")
       + (f", [절 AA] 셀 에너지 2 차 근사 (F̄ + 공분산 Σ_F 9x9, 헤시안 {'kmanual' if a.cq_h == 'km' else '닫힌 식'})" if CQ else "")
+      + (f", [절 AD] 희소 셀 {SPM} (희소 = 입자 ≤ {a.sp_k}{' 또는 점유율 < %g' % a.sp_occ if a.sp_occ > 0 else ''}"
+         + (f", β {a.sp_beta:g}" if SPM == "blend" else "") + (f", w = min(점유율/{a.sp_wocc:g}, 1)" if SPM == "stiff" else "")
+         + (f", 관성 질량 하한 {a.sp_mlow:g} x 첫 프레임 중앙" if SPM == "mlow" else "") + ")" if SPM != "none" else "")
       + (f", [절 Z] 비율 로그 장벽 κ {a.sb:g} c {a.sb_c:g} d̂ {SB_D:g}" if SB else "")
       + (f", [절 AB] G2P 입자 F 갱신 {a.fupd} β {a.fupd_b:g}" if FUPD else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
 print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), {'격자 간격 dx' if BSP else 'Kuhn 최소 높이'} {lmin:.5f} (node_h {a.node_h}), "
@@ -454,6 +472,8 @@ class Opt:
                 self.nt_u = torch.zeros(self.Mcap * 24, dtype=torch.int32, device=dev)
             if FUPDN:                                                                # 절 AB: 노드 V_T 가중 합 (9 + 무게)
                 self.NA = z(self.Mcap, 10)
+            if SPM == "mlow":
+                self.mI = z(self.Mcap)                                               # 절 AD mlow: 관성 질량 max(m_n, m_low)
             self.nposb = z(self.Mcap, 3)                                             # 노드 위치 상주 버퍼 (절 Q: 그래프 안 APIC P2G 가 주소를 고정해 읽는다)
             new = True
         if T > self.Tcap:
@@ -464,6 +484,13 @@ class Opt:
             self.gl = torch.zeros(self.Tcap, 12, device=dev)
             self.tets = torch.zeros(self.Tcap, 4, dtype=torch.long, device=dev)
             self.tcell = torch.zeros(self.Tcap, dtype=torch.long, device=dev)
+            if SPM != "none":                                                       # 절 AD: 묶음 (루트·A 합 두 벌·F̄·V·구성 수), 섞은 F̄, 응력 가중 부피
+                self.grp = torch.full((self.Tcap,), -1, dtype=torch.int32, device=dev)
+                self.AG = [torch.zeros(self.Tcap, 9, device=dev), torch.zeros(self.Tcap, 9, device=dev)]
+                self.FG = torch.zeros(self.Tcap, 9, device=dev)
+                self.VG = torch.zeros(self.Tcap, device=dev)
+                self.nmem = torch.ones(self.Tcap, device=dev)
+                self.VF = torch.zeros(self.Tcap, device=dev)
             if CQ:
                 self.CS = torch.zeros(self.Tcap, 45, device=dev)                     # 절 AA: 셀 입자 F 공분산 (위 삼각 45)
             if NINT:
@@ -545,6 +572,9 @@ class Opt:
         self.ncm[:Pn] = torch.where(nm.bool(), ncs - 1, torch.full_like(ncs, -1))
         self.tcm[:Pn * 9] = tcs - 1
         EX.launch("ex_build_tets", Pn * 9, (EX.P(self.ipar), EX.P(tm), EX.P(self.tcm), EX.P(self.ncm), EX.P(self.tets)), b=256)
+        if SPM == "cube":
+            EX.launch("ex_tet_cell", Pn * 9, (EX.P(self.ipar), EX.P(tm), EX.P(self.tcm), EX.P(self.tcell)), b=256)
+            self.Pn = Pn
         if BSL:
             self.cmk = cm
             EX.launch("ex_tet_cell", Pn * 9, (EX.P(self.ipar), EX.P(tm), EX.P(self.tcm), EX.P(self.tcell)), b=256)
@@ -640,6 +670,114 @@ class Opt:
         EX.launch("bsl_tfin", self.Tcap, (EX.P(self.sz), EX.P(self.tcell), EX.P(self.tets), EX.P(self.mn), EX.P(self.cV), EX.P(self.cVF),
                                           EX.P(self.VTs), EX.P(self.FT), EX.P(self.bst)), b=256)
 
+    def _sparse(self):
+        """절 AD: 프레임 시작 (P2G 뒤, 서브스텝 전) 희소 사면체 판정과 처리 버퍼 (그래프가 읽는 상주 버퍼에 제자리로). 호스트 동기화 없음."""
+        T, M = self.T, self.M
+        VT = self.VTs[:T]
+        occm = VT > 0
+        occf = occm.float()
+        ar = torch.arange(T, device=dev)
+        cnt = torch.zeros(T, device=dev).index_add_(0, self.pinv[:Np], torch.ones(Np, device=dev))   # 사면체 안 입자 수 (--floor vel/none: 모든 입자가 사면체 F̄ 에)
+        G3 = self.gl[:T].view(T, 4, 3)[:, 1:, :].double()
+        Vg = (1.0 / (6.0 * _det3(G3).abs())).float()                                # 사면체 기하 부피 (Kuhn: 모두 같다)
+        occ = VT / Vg
+        sp = occm & (cnt <= a.sp_k)
+        if a.sp_occ > 0:
+            sp = sp | (occm & (occ < a.sp_occ))
+        self._spst = [occm.sum(), sp.sum(), (sp & (cnt <= 1)).sum()]
+        if SPM in ("merge", "blend"):
+            tt = self.tets[:T]
+            fi = torch.tensor([[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]], device=dev)
+            fn = torch.sort(tt[:, fi], dim=-1).values                               # [T,4,3]
+            key = (fn[..., 0] * M + fn[..., 1]) * M + fn[..., 2]
+            big = M * M * M + 16
+            key = torch.where(occm[:, None], key, big + ar[:, None] * 4 + torch.arange(4, device=dev)[None, :])   # 빈 사면체 면은 짝이 없게
+            sk, order = torch.sort(key.reshape(-1))
+            tid = order // 4
+            eq = sk[1:] == sk[:-1]                                                   # 같은 면을 가진 사면체 짝 (내부 면은 정확히 둘)
+            pa, pb = tid[:-1], tid[1:]
+        if SPM == "merge":
+            score = cnt.long() * (T + 1) + ar                                        # 입자 많은 쪽 (같으면 번호 큰 쪽) -- 점수가 늘기만 해 고리 없음
+            best = torch.full((T,), -1, dtype=torch.long, device=dev)
+            for u_, w_ in ((pa, pb), (pb, pa)):
+                cand = torch.where(eq & sp[u_] & (score[w_] > score[u_]), score[w_], torch.full_like(score[w_], -1))
+                best.scatter_reduce_(0, u_, cand, reduce="amax")
+            root = torch.where(best >= 0, best % (T + 1), ar)
+            for _ in range(14):                                                      # 포인터 건너뛰기 (사슬 깊이 2^14 까지)
+                root = root[root]
+        elif SPM == "cube":
+            cube = self.tcell[:T]
+            Pn = self.Pn
+            hs_ = torch.zeros(Pn, device=dev).index_add_(0, cube, sp.float())
+            mem = occm & (hs_[cube] > 0)
+            cmin = torch.full((Pn,), T, dtype=torch.long, device=dev).scatter_reduce_(0, cube, torch.where(occm, ar, torch.full_like(ar, T)), reduce="amin")
+            root = torch.where(mem, cmin[cube], ar)
+        if SPG:
+            nmem = torch.zeros(T, device=dev).index_add_(0, root, occf)
+            VG = torch.zeros(T, device=dev).index_add_(0, root, VT * occf)
+            FGs = torch.zeros(T, 9, device=dev).index_add_(0, root, self.FTs[:T] * occf[:, None])
+            I9 = torch.eye(3, device=dev).reshape(1, 9)
+            self.FG[:T] = torch.where(VG[:, None] > 0, FGs / VG.clamp_min(1e-30)[:, None], I9)
+            self.VG[:T] = VG
+            self.nmem[:T] = nmem.clamp_min(1.0)
+            ing = occm & (nmem[root] > 1.5)
+            self.grp[:T] = torch.where(ing, root, torch.full_like(root, -1)).int()
+            self.AG[0].zero_()
+            self.AG[1].zero_()
+            self._spst += [ing.sum(), (ing & (root == ar)).sum()]
+        elif SPM == "blend":
+            num = self.FTs[:T].clone()
+            den = VT.clone()
+            for u_, w_ in ((pa, pb), (pb, pa)):
+                wp = (eq & sp[u_]).float() * a.sp_beta
+                num.index_add_(0, u_, wp[:, None] * self.FTs[:T][w_])
+                den.index_add_(0, u_, wp * VT[w_])
+            self.FT[:T] = torch.where(sp[:, None], num / den.clamp_min(1e-30)[:, None], self.FT[:T])
+        elif SPM == "stiff":
+            w = (occ / a.sp_wocc).clamp(max=1.0)
+            self.VF[:T] = torch.where(sp, VT * w, VT)
+        elif SPM == "mlow":
+            mn = self.mn[:M]
+            if not hasattr(self, "mlow_v"):
+                self.mlow_v = float(a.sp_mlow * mn[mn > 0].median())
+                print(f"[절 AD mlow] 관성 질량 하한 {self.mlow_v:.4g} kg (= {a.sp_mlow:g} x 첫 프레임 노드 질량 중앙)", flush=True)
+            self.mI[:M] = torch.where(mn > 0, mn.clamp_min(self.mlow_v), mn)
+        if not hasattr(self, "_spinfo"):
+            self._spinfo = True
+            q = torch.quantile(occ[occm], torch.tensor([0.01, 0.1, 0.5, 0.9], device=dev)).tolist()
+            qs = torch.quantile(occ[sp], torch.tensor([0.1, 0.5, 0.9], device=dev)).tolist() if bool(sp.any()) else []
+            print(f"[절 AD] 첫 프레임: 점유 사면체 {int(occm.sum())}, 희소 {int(sp.sum())} (입자 1 개 {int((sp & (cnt <= 1)).sum())}), 점유율 분위 1·10·50·90 % "
+                  f"{[round(v_, 3) for v_ in q]}, 희소 점유율 10·50·90 % {[round(v_, 3) for v_ in qs]}, 기하 부피 {float(Vg[0]):.4g}"
+                  + (f", 묶인 사면체 {int(self._spst[3])} 묶음 {int(self._spst[4])}" if SPG else ""), flush=True)
+
+    def sp_check(self):
+        """절 AD 검산 (측정 밖, 프레임 끝 U): 내부력 합·돌림힘 (운동량·각운동량 보존), mlow 는 Σ (m/m') f."""
+        M, Tc = self.M, self.Tcap
+        self.f.zero_()
+        if SPG:
+            self.AG[0].zero_()
+            EX.launch("sp_force_g1", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), np.float32(mu), np.float32(lam),
+                                          EX.P(self.f), EX.P(self.grp), EX.P(self.AG[0]), EX.P(None)))
+            EX.launch("sp_force_g2", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.grp),
+                                          EX.P(self.AG[0]), EX.P(None), EX.P(self.FG), EX.P(self.VG), EX.P(self.nmem)))
+            self.AG[0].zero_()
+        else:
+            EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if SPM == "stiff" else self.VTs),
+                                             np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(0), np.float32(0.3), np.int32(0), EX.P(None)))
+        f = self.f[:M].double()
+        xn = (self.npos + self.Uc[:M]).double()
+        c = xn.mean(0)
+        r = xn - c
+        fa = f.norm(dim=-1)
+        out = dict(F_sum=float(f.sum(0).norm() / fa.sum().clamp_min(1e-300)), tq=float(torch.cross(r, f, dim=-1).sum(0).norm() / (r.norm(dim=-1) * fa).sum().clamp_min(1e-300)),
+                   f_abs=float(fa.sum()))
+        if SPM == "mlow":
+            mn, mI = self.mn[:M].double(), self.mI[:M].double()
+            fr = torch.where(mI > 0, mn / mI.clamp_min(1e-30), torch.ones_like(mn))[:, None] * f
+            out.update(P_rate=float(fr.sum(0).norm() / fa.sum().clamp_min(1e-300)), n_low=int((mI > mn).sum()))
+        self.f.zero_()
+        return out
+
     def _step(self, Ucum, xc, Fc):
         """한 서브스텝 힘 + 노드 걸음 (크기는 self.sz 에서)."""
         Mc, Tc = self.Mcap, self.Tcap
@@ -667,8 +805,14 @@ class Opt:
             EX.launch("ex_tet_force_SR", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
                                               np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(a.fb), np.float32(a.fb_jhat),
                                               np.int32(1 if a.fb_on == "A" else 0), EX.P(self.rst), np.float32(a.sb), np.float32(a.sb_c), np.float32(SB_D)))
+        elif SPG:                                                                   # 절 AD merge/cube: 홀로 사면체 힘 + 묶음 A 합 -> 묶음 응력·분배 (+ 다음 벌 비움)
+            j_ = getattr(self, "_j", 0)
+            EX.launch("sp_force_g1", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), np.float32(mu), np.float32(lam),
+                                          EX.P(self.f), EX.P(self.grp), EX.P(self.AG[j_ % 2]), EX.P(self.rst)))
+            EX.launch("sp_force_g2", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.grp),
+                                          EX.P(self.AG[j_ % 2]), EX.P(self.AG[(j_ + 1) % 2]), EX.P(self.FG), EX.P(self.VG), EX.P(self.nmem)))
         elif RNEW:
-            EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
+            EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if SPM == "stiff" else self.VTs),
                                              np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(a.fb), np.float32(a.fb_jhat),
                                              np.int32(1 if a.fb_on == "A" else 0), EX.P(self.rst)))
         else:
@@ -694,7 +838,7 @@ class Opt:
                                              np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128)
         if self._fhook is not None:                                                 # 진단 읽기만 (걸음이 f 를 비우기 전)
             self._fhook()
-        EX.launch("ex_node_step_lag", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.gn if FLOOR else None), EX.P(self.vn), EX.P(self.Uc),
+        EX.launch("ex_node_step_lag", Mc, (EX.P(self.sz), EX.P(self.mI if SPM == "mlow" else self.mn), EX.P(self.f), EX.P(self.gn if FLOOR else None), EX.P(self.vn), EX.P(self.Uc),
                                            np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs), np.float32(DAMP),
                                            EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
                                            np.int32(1 if a.vfl_mode == "full" else 0), np.int32(a.vfl_np), *PLf[3:], np.int32(1 if LIM else 0)), b=256)
@@ -838,6 +982,7 @@ class Opt:
                     self.accC.zero_()
             if not REP:
                 for j in range(a.N):
+                    self._j = j
                     self._step_lag()
                 return
             # 절 P: 블록 b (K 서브스텝) 마다 재평균. 입자 상태는 X/V/FF[b % 2] (프레임 시작 = [0])
@@ -1164,6 +1309,8 @@ class Opt:
             self._p2g_bs(xa, va, Fa)
         else:
             self._p2g(xa, va, Fa, h, False)                                         # 프레임 분할 (관성 예측 h v_n + h² g 의 끝 높이)
+            if SPM != "none":
+                self._sparse()
         if FLOOR:
             EX.launch("ex_near_init", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(xa), EX.P(va), EX.P(Fa), np.float32(h), np.float32(gv[0]),
                                            np.float32(gv[1]), np.float32(gv[2]), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.F0i), EX.P(self.cc)), b=256)
@@ -1189,6 +1336,8 @@ class Opt:
                     bufs = bufs + (self.CL,)
                 if RWL:
                     bufs = bufs + (self.ml,)
+                if SPG:
+                    bufs = bufs + tuple(self.AG)
                 snap = [t.clone() for t in bufs]
                 xs_snap = [t.clone() for t in (xa, va, Fa)]
                 self._substeps()                                                    # 데우기 (NVRTC 컴파일·지연 할당) -- 결과 버림
@@ -1779,6 +1928,16 @@ for i in range(L):
                       sr_viol=int(rs[8]), sr_inv=int(rs[9]), sb_act=int(rs[10]), cq_act=int(rs[11]),
                       srA_max=(float((lambda sv: (sv[:, 0] / sv[:, -1].clamp_min(1e-30)).nan_to_num(float("inf")).max())(torch.linalg.svdvals(A_[occ_].double()))) if bool(occ_.any()) else None),
                       p_tot=[float(q) for q in (m[:, None] * v2).sum(0).tolist()], nt_ovf=int(OPT.novf.item()))
+        if RNEW:                                                                    # 절 AD: 폭주 노드 (프레임 끝 |v_n| > 5 x 90 % 분위, 절 U 규칙) -- 기준 판에도
+            vnn = OPT.vn[:OPT.M].norm(dim=-1)
+            q90 = torch.quantile(vnn[OPT.mn[:OPT.M] > 0].float(), 0.9)
+            st.update(rn=int((vnn > 5.0 * q90).sum()), vn_max=float(vnn.max()), vn_q90=float(q90))
+        if SPM != "none":
+            sps = [int(q_) for q_ in torch.stack(OPT._spst).tolist()]
+            st.update(sp_occ=sps[0], sp_n=sps[1], sp_n1=sps[2], **(dict(sp_grouped=sps[3], sp_groups=sps[4]) if SPG else {}))
+            if a.sp_chk and str(i + 1) in a.sp_chk.split(","):
+                st.update(sp_chk=OPT.sp_check())
+                print(f"  [절 AD 검산] 프레임 {i + 1}: {st['sp_chk']}", flush=True)
         if NINT and i < a.nint_check:                                               # 절 V 검산 (측정 밖, 프레임 끝 U)
             OPT.nint_check(i)
         if BSL:                                                                     # 절 S: 질량·운동량 보존 (P2G 전후, 서브스텝 끝, G2P 뒤)
@@ -1857,7 +2016,10 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             lim_n_tot=(sum(r.get("lim_n", 0) for r in recs) if RNEW else None), lim_dke_tot=(sum(r.get("lim_dke", 0.0) for r in recs) if RNEW else None),
             lim_dpabs_tot=(sum(r.get("lim_dpabs", 0.0) for r in recs) if RNEW else None), nt_ovf=(max(r.get("nt_ovf", 0) for r in recs) if RNEW else None),
             p2g=a.p2g, g2p=a.g2p, bs_mesh=(a.bs_mesh if BSL else None), bs_mass=(a.bs_mass if BSL else None), interp=a.interp, rep=REP, rep_mode=(a.rep_mode if REP else None), quad=(a.quad if BSP else None), K=(a.K if BSP and a.quad == "cell" else None), apic=bool(a.apic), rep_w=a.rep_w,
-            nint=NINT, nint_beta=(a.nint_beta if NINT else None), fupd=a.fupd, fupd_b=(a.fupd_b if FUPD else None))
+            nint=NINT, nint_beta=(a.nint_beta if NINT else None), fupd=a.fupd, fupd_b=(a.fupd_b if FUPD else None),
+            sp=SPM, sp_k=a.sp_k, sp_occ=a.sp_occ, sp_beta=a.sp_beta, sp_wocc=a.sp_wocc, sp_mlow=a.sp_mlow,
+            rn_tot=(sum(r.get("rn", 0) for r in recs) if RNEW else None), rn_max=(max((r.get("rn", 0) for r in recs), default=None) if RNEW else None),
+            sp_n_med=(med([r.get("sp_n", 0) for r in recs]) if SPM != "none" else None), sp_grouped_med=(med([r.get("sp_grouped", 0) for r in recs]) if SPG else None))
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
 print(f"[롤아웃] {a.tag} 서브스텝 {a.N} {a.mode}{' 최적화' if a.opt else ''}: {done}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%  "
       f"프레임당 {summ['ms_mean']:.2f} ms (중앙 {summ['ms_med']:.2f}, {summ['fps']:.2f} fps, 앞 {W} 프레임 제외) 퍼짐 {summ['spread_last']:.3f} "
