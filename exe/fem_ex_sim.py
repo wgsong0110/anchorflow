@@ -144,6 +144,8 @@ ap.add_argument("--fupd", choices=["T", "bar", "nbar", "navg", "polar"], default
                      "navg = [(1-β)A_T + β Ã] F (Ã = 노드 평균 A_T 의 λ 보간, 매끈한 속도 기울기), polar = A_T R[(1-β)S + β S̃] (극분해, 신장만 F̃ 쪽으로)")
 ap.add_argument("--fupd_b", type=float, default=1.0, help="--fupd 의 β (0 = 기존과 같음)")
 ap.add_argument("--cfast", action="store_true", help="절 C: 아래 네 가지 (--vfl_cull --sr_fast --tlist --fpolar) 모두")
+ap.add_argument("--cfuse", action="store_true", help="절 C (5): --cfast + 서브스텝 커널 융합 (힘+접촉 / 판정 둘 (속도 그 자리) / 노드 걸음+적용) -- 같은 식, 커널 6 -> 4 개")
+ap.add_argument("--secprof", action="store_true", help="절 C: 프레임 구간 (격자·P2G 준비·서브스텝 그래프·G2P) CUDA 이벤트 시간 -> fem.jsonl sec_* (동기화 추가 없음)")
 ap.add_argument("--vfl_cull", action="store_true", help="절 C (1): 바닥 접촉 판정에서 s0 > D (프레임 안 노드 아래쪽 최대 변위) 인 후보 생략 -- 같은 접촉 집합 (lib/anchorflow/fem_c_cuda.py)")
 ap.add_argument("--sr_fast", action="store_true", help="절 C (2): 클램프 판정을 빠른 보장 (‖A-I‖_F + ρ) + 목록 사면체당 워프 (기존과 같은 식·같은 s_T) 로")
 ap.add_argument("--tlist", action="store_true", help="절 C (3): 프레임마다 점유 사면체 목록 -> 힘·클램프 판정 커널이 그 목록 위로")
@@ -224,6 +226,8 @@ if FUPD and not (a.opt and a.mode == "lag" and a.interp == "bary" and a.p2g == "
     raise SystemExit("--fupd 는 --opt --mode lag --p2g bary (재평균·아핀 없음) 만")
 if a.cchk and not a.no_graph:
     raise SystemExit("--cchk 는 --no_graph 와 함께")
+if a.cfuse:
+    a.cfast = True
 if a.cfast:
     a.vfl_cull = a.sr_fast = a.tlist = a.fpolar = True
 CC = a.vfl_cull or a.sr_fast or a.tlist or a.fpolar                                  # 절 C 경로
@@ -253,6 +257,8 @@ if (SRL or SB) and (NINT or BSL):
     raise SystemExit("--lim_sr/--sb 는 절 R 경로 (--p2g bary, 노드 적분 없음) 만")
 if CC and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP and RNEW and not (NINT or CQ or SB or BSL) and SPM == "none" and LIM and a.lim_mode == "box"):
     raise SystemExit("절 C (--cfast 등) 는 --opt --mode lag 상자 판 이동 제한 (--lim_sr 또는 --lim --lim_mode box) 경로만")
+if a.cfuse and not (SRL and not FLOOR and not a.cchk):
+    raise SystemExit("--cfuse 는 --lim_sr (에너지 바닥·검산 없음) 만")
 if a.vfl_cull and not VFL and HASPL:
     raise SystemExit("--vfl_cull 은 --floor vel 만")
 if RNEW and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP):
@@ -824,8 +830,29 @@ class Opt:
                                        EX.P(self.dU), EX.P(Ucum), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs),
                                        np.float32(DAMP if a.mode == "lag" else 1.0), EX.P(self.fx if self.fixd else None), EX.P(self.vbc)), b=256)
 
+    def _step_fused(self):
+        """절 C (5): ex_tet_force_R + ex_vfl_contact + ex_node_step_lag + 클램프 판정 + 적용과 같은 식을 커널 4 개로."""
+        Mc, Tc = self.Mcap, self.Tcap
+        nbT = (Tc + 127) // 128
+        nbP = ((Np + 127) // 128) if VFL else 0
+        CCU.launch("c_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
+                               EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1),
+                               EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
+                               np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
+        S = CCU.cvs(self.mn, self.f, None, self.vn, gv, hs, DAMP, self.fx if self.fixd else None, self.vbc, self.acc if VFL else None,
+                    1 if a.vfl_mode == "full" else 0, a.vfl_np, PLf[3:])
+        jon = np.int32(1 if a.lim >= 0 else 0)
+        CCU.launch("c_sr_pre2", Tc, (EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.Uc), S,
+                                     np.float32(a.lim_sr), jon, np.float32(a.lim), EX.P(self.clst)), b=128)
+        CCU.launch("c_sr_warp2", 0, (EX.P(self.clst), EX.P(self.tets), EX.P(self.gl), EX.P(self.Uc), S, np.float32(a.lim_sr), jon, np.float32(a.lim),
+                                     EX.P(self.alph), EX.P(self.rst)), b=128, grid=CCU.NBW)
+        CCU.launch("c_apply2", Mc, (EX.P(self.sz), S, EX.P(self.vn), EX.P(self.f), EX.P(None), EX.P(self.acc if VFL else None), EX.P(self.Uc), EX.P(self.alph),
+                                    np.int32(1 if a.lim_v == "keep" else 0), EX.P(self.rst), EX.P(self.clst), EX.P(self.cint[1:] if VFL else None)), b=256)
+
     def _step_lag(self, xcur=None):
         """lag 한 서브스텝 (절 O 판): 사면체 힘 -> [에너지 바닥 후보 힘] -> [속도 바닥 접촉 판정] -> 노드 걸음 (+ 고착·비관통, f·gn·acc 비움)."""
+        if CC and a.cfuse:
+            return self._step_fused()
         Mc, Tc = self.Mcap, self.Tcap
         if NINT:                                                                    # 절 V: 노드 적분 내부력 (커널 3 개)
             self._nint_force()
@@ -1353,8 +1380,17 @@ class Opt:
               f"국소 안정 r_n (h_s ω/2) 중앙/99.9%/최대 새 {sn['r_q50']:.3g}/{sn['r_q999']:.3g}/{sn['r_max']:.3g} (필요 N ≈ {sn['N_need']:.0f}, r>1 {sn['n_r_gt1']}) "
               f"절 R 정의 {so['r_q50']:.3g}/{so['r_q999']:.3g}/{so['r_max']:.3g} (필요 N ≈ {so['N_need']:.0f})", flush=True)
 
+    def _ev(self, k):
+        if a.secprof:
+            e = torch.cuda.Event(enable_timing=True)
+            e.record()
+            self.evs.append((k, e))
+
     def frame(self, i, x, v, F):
+        self.evs = []
+        self._ev("start")
         self.grid(x, v, i * h)
+        self._ev("grid")
         Fv = F.reshape(Np, 9)
         lagm = a.mode == "lag"
         if lagm:
@@ -1405,6 +1441,7 @@ class Opt:
                     CCU.launch("c_tet_list", self.Tcap, (EX.P(self.sz), EX.P(self.VTs), EX.P(self.tl), EX.P(self.cint[2:])), b=256)
                 if VFL and a.vfl_cull:
                     CCU.launch("c_s0", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf), *PLf, EX.P(self.s0c)), b=256)
+        self._ev("p2g")
         if lagm and a.lagdiag:
             self._Fp = Fv.view(Np, 3, 3)
             self._xp = x
@@ -1441,6 +1478,7 @@ class Opt:
                     self.clst[:1].zero_()
                 self.capture()
             self.graph.replay()
+        self._ev("sub")
         if lagm:
             ci = ((NB - 1) % 2) if REPF else 0                                       # 마지막 블록의 입자 상태 버퍼
             xin, Fin = (self.X[ci], self.FF[ci]) if REP else (x, Fv)
@@ -1476,6 +1514,8 @@ class Opt:
             self.OV.index_copy_(0, self.perm, v2)
             self.OF.index_copy_(0, self.perm, F2)
             x2, v2, F2 = self.OX, self.OV, self.OF
+        if a.secprof:
+            self._ev("g2p")
         return x2, v2, F2.view(Np, 3, 3)
 
 
@@ -1987,12 +2027,18 @@ for i in range(L):
             ncap0 = OPT.n_cap
             x2, v2, F2 = OPT.frame(i, x, v, F)
             st = dict(M=OPT.M, T=OPT.T, recap=OPT.n_cap - ncap0)
+            if a.secprof and len(getattr(OPT, "evs", [])) > 1:                      # 절 C 구간 시간 (이벤트, 프레임 끝 동기화 뒤에 읽는다)
+                st["_evs"] = OPT.evs
     except _Diverge as ex_:
         div_at = i + 1
         print(f"[발산] 프레임 {div_at}: {ex_} -- 멈춤", flush=True)
         break
     torch.cuda.synchronize()
     t_frame = time.perf_counter() - t0
+    if "_evs" in st:
+        evs_ = st.pop("_evs")
+        for (k0, e0), (k1, e1) in zip(evs_[:-1], evs_[1:]):
+            st["sec_" + k1] = e0.elapsed_time(e1)
     if _TP is not None:
         _TP.__exit__(None, None, None)
         print(_TP.key_averages().table(sort_by="self_cuda_time_total", row_limit=25), flush=True)

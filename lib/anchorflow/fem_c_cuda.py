@@ -16,6 +16,7 @@
       꼭짓점 15 개를 레인 15 개에 나눠 (__all_sync) 계산 -> 같은 s_T (비트 단위), 원자 min 은 순서 무관.
 (3) 점유 사면체 목록 (--tlist): 프레임마다 V_T > 0 사면체를 압축 (c_tet_list) -> 힘·클램프 판정 커널이 빈 사면체 레인을 돌지 않는다.
 (4) 극분해 (--fpolar): 힘 커널의 뉴턴 극분해 10 회 (pow) 를 rcbrtf + 수렴 (max|ΔQ| < 1e-7) 조기 종료로 -- 값은 float 반올림 수준만 다르다.
+(5) 융합 (--cfuse): 서브스텝 커널 6 개 (힘·접촉·노드 걸음·판정 둘·적용) -> 4 개 (힘+접촉, 판정 둘 (속도 그 자리 계산), 걸음+적용). 같은 식.
 """
 from __future__ import annotations
 
@@ -199,12 +200,8 @@ __device__ __forceinline__ void c_polar_fast(const float* F, float* Q) {
         if (mx < 1e-7f) break;
     }
 }
-__global__ void c_tet_force_R(const int* szp, const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
-                              float mu, float lam, float* f, float fbk, float fbj, int fbon, float* rst, int fpol) {
-    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
-    int t;
-    if (tl) { if (i0 >= tlc[0]) return; t = tl[i0]; }
-    else { if (i0 >= szp[1]) return; t = i0; }
+__device__ __forceinline__ void c_force_body(int t, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
+                                             float mu, float lam, float* f, float fbk, float fbj, int fbon, float* rst, int fpol) {
     float V = VT[t];
     if (!(V > 0.f)) return;
     long long n[4]; float G[12];
@@ -236,6 +233,175 @@ __global__ void c_tet_force_R(const int* szp, const int* tl, const int* tlc, con
         atomicAdd(&f[n[i]*3+c], -V*s);
     }
 }
+__global__ void c_tet_force_R(const int* szp, const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
+                              float mu, float lam, float* f, float fbk, float fbj, int fbon, float* rst, int fpol) {
+    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+    int t;
+    if (tl) { if (i0 >= tlc[0]) return; t = tl[i0]; }
+    else { if (i0 >= szp[1]) return; t = i0; }
+    c_force_body(t, tets, U, gl, FT, VT, mu, lam, f, fbk, fbj, fbon, rst, fpol);
+}
+
+// ======== (5) 융합 판 (--cfuse): 서브스텝 커널 6 개 -> 4 개, 같은 식 ========
+//   K1 c_fc      : [사면체 블록] c_tet_force_R 와 같은 힘 + [바닥 후보 블록] c_vfl_contact 와 같은 접촉 판정 (둘 다 노드 배열에 원자 합만 -- 서로 독립)
+//   K2 c_sr_pre2 : c_sr_pre 와 같은 판정, 노드 속도는 ex_node_step_lag 와 같은 식으로 그 자리에서 (c_vnew)
+//   K3 c_sr_warp2: c_sr_warp 와 같은 판정, 속도는 c_vnew
+//   K4 c_apply2  : ex_node_step_lag (속도 갱신·바닥 고착·비관통, f·gn·acc 비움) + c_lim_apply (α, U, 기록, 목록 비움, D) 를 한 번에
+// ex_node_step_lag 와 같은 식 (nodisp = 1 판) -- 쓰지 않고 값만
+__device__ __forceinline__ void c_vnew(long long n, const float* mn, const float* f, const float* gn, const float* vn, float g0, float g1, float g2, float hs, float damp,
+                                       const unsigned char* fixd, const float* vbc, const float* acc, int mode, int np_, float n0, float n1, float n2, float* v) {
+    float gg[3] = {g0, g1, g2};
+    float m = mn[n];
+    for (int c=0;c<3;c++) {
+        if (fixd && fixd[n]) v[c] = vbc[n*3+c];
+        else if (m > 0.f) v[c] = (vn[n*3+c] + hs*((f[n*3+c] - (gn ? gn[n*3+c] : 0.f))/m + gg[c]))*damp;
+        else v[c] = 0.f;
+    }
+    if (acc) {
+        float a = acc[n];
+        if (a > 0.f && !(fixd && fixd[n])) {
+            float k = (mode == 1) ? 0.f : fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f);
+            for (int c=0;c<3;c++) v[c] *= k;
+            if (np_) { float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vn_ < 0.f) { v[0] -= vn_*n0; v[1] -= vn_*n1; v[2] -= vn_*n2; } }
+        }
+    }
+}
+struct CVS { const float* mn; const float* f; const float* gn; const float* vn; float g0, g1, g2, hs, damp; const unsigned char* fixd; const float* vbc; const float* acc; int mode, np_; float n0, n1, n2; };
+__device__ __forceinline__ void c_vget(const CVS& S, long long n, float* v) {
+    c_vnew(n, S.mn, S.f, S.gn, S.vn, S.g0, S.g1, S.g2, S.hs, S.damp, S.fixd, S.vbc, S.acc, S.mode, S.np_, S.n0, S.n1, S.n2, v);
+}
+__global__ void c_fc(int nbT, const int* szp, const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
+                     float mu, float lam, float* f, float* rst, int fpol,
+                     const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb, const float* m, int tetmass,
+                     float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon) {
+    if ((int)blockIdx.x < nbT) {
+        int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+        int t;
+        if (tl) { if (i0 >= tlc[0]) return; t = tl[i0]; }
+        else { if (i0 >= szp[1]) return; t = i0; }
+        c_force_body(t, tets, U, gl, FT, VT, mu, lam, f, 0.f, 0.f, 0, rst, fpol);
+        return;
+    }
+    int q = (blockIdx.x - nbT)*blockDim.x + threadIdx.x;
+    if (q >= szp[2]) return;
+    if (s0c[q] > __uint_as_float(*dn) + 1e-5f) return;
+    long long p = nidx[q];
+    float u[3] = {0,0,0};
+    long long nd[4]; float lm[4];
+    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; for (int a=0;a<3;a++) u[a] += lm[i]*U[nd[i]*3+a]; }
+    float s = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
+    if (!(s < 0.f)) return;
+    float mp = m[p];
+    for (int i=0;i<4;i++) atomicAdd(&acc[nd[i]], (tetmass ? 0.25f : lm[i])*mp);
+    if (ncon) atomicAdd(ncon, 1);
+}
+__global__ void c_sr_pre2(const int* szp, const int* tl, const int* tlc, const long long* tets, const float* gl, const float* VT, const float* Ucum, CVS S,
+                          float csr, int jon, float jmin, int* lst) {
+    int i = blockIdx.x*blockDim.x + threadIdx.x;
+    int t;
+    if (tl) { if (i >= tlc[0]) return; t = tl[i]; }
+    else { if (i >= szp[1] || !(VT[i] > 0.f)) return; t = i; }
+    long long n[4]; float G[12];
+    for (int k=0;k<4;k++) n[k]=tets[t*4+k];
+    for (int k=0;k<12;k++) G[k]=gl[t*12+k];
+    float A0[9] = {1,0,0, 0,1,0, 0,0,1};
+    float rho = 0.f;
+    for (int a=0;a<4;a++) {
+        float vv[3]; c_vget(S, n[a], vv);
+        float dd = 0.f, gg = 0.f;
+        for (int c=0;c<3;c++) { float u=Ucum[n[a]*3+c], d=S.hs*vv[c]; dd += d*d; for (int b=0;b<3;b++) A0[c*3+b] += u*G[a*3+b]; }
+        for (int b=0;b<3;b++) gg += G[a*3+b]*G[a*3+b];
+        rho += sqrtf(dd*gg);
+    }
+    float e2 = 0.f;
+    for (int k=0;k<9;k++) { float d = A0[k] - ((k % 4 == 0) ? 1.f : 0.f); e2 += d*d; }
+    float del = sqrtf(e2) + rho;
+    bool fast = del < 0.999f*(csr - 1.f)/(csr + 1.f);
+    if (fast && jon) { float s3 = 1.f - del; fast = s3*s3*s3 >= jmin*1.001f; }
+    if (fast) return;
+    int slot = atomicAdd(&lst[0], 1);
+    lst[1 + slot] = t;
+}
+__global__ void c_sr_warp2(const int* lst, const long long* tets, const float* gl, const float* Ucum, CVS S,
+                           float csr, int jon, float jmin, unsigned int* alph, float* rst) {
+    int cnt = lst[0];
+    int lane = threadIdx.x & 31;
+    int gw = (blockIdx.x*blockDim.x + threadIdx.x) >> 5;
+    int nw = (gridDim.x*blockDim.x) >> 5;
+    float hs = S.hs;
+    for (int q = gw; q < cnt; q += nw) {
+        int t = lst[1 + q];
+        long long n[4]; float A0[9], Mo[36], rho, G[12];
+        for (int i=0;i<4;i++) n[i]=tets[t*4+i];
+        for (int k=0;k<12;k++) G[k]=gl[t*12+k];
+        for (int k=0;k<9;k++) A0[k] = (k % 4 == 0) ? 1.f : 0.f;
+        rho = 0.f;
+        for (int i=0;i<4;i++) {
+            float vv[3]; c_vget(S, n[i], vv);
+            float dd = 0.f, gg = 0.f;
+            for (int c=0;c<3;c++) { float u=Ucum[n[i]*3+c], d=hs*vv[c]; dd += d*d; for (int b=0;b<3;b++) { A0[c*3+b] += u*G[i*3+b]; Mo[i*9+c*3+b] = d*G[i*3+b]; } }
+            for (int b=0;b<3;b++) gg += G[i*3+b]*G[i*3+b];
+            rho += sqrtf(dd*gg);
+        }
+        float D0 = det3(A0);
+        float r0 = sr_ratio(A0);
+        float thrR = fmaxf(csr, r0);
+        float thrJ = fminf(jmin, D0);
+        bool ok = true;
+        if (jon) { bool o = (lane >= 15) || !(det_sub(A0, Mo, lane + 1, 1.f) < thrJ); ok = __all_sync(CFULL, o); }
+        if (ok && D0 > 0.f) {
+            float C[9];
+            for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=A0[i]*A0[k]+A0[3+i]*A0[3+k]+A0[6+i]*A0[6+k];
+            float l[3]; symeig3(C, l);
+            float s1 = sqrtf(fmaxf(l[2], 0.f)), s3 = sqrtf(fmaxf(l[0], 0.f));
+            if (s3 - rho > 0.f && (s1 + rho) <= thrR*(s3 - rho)) continue;
+        }
+        if (c_feasw(lane, A0, Mo, 1.f, thrR, jon, thrJ)) continue;
+        float lo = 0.f, hi = 1.f;
+        for (int it=0; it<14; it++) {
+            float mid = 0.5f*(lo+hi);
+            if (c_feasw(lane, A0, Mo, mid, thrR, jon, thrJ)) lo = mid; else hi = mid;
+        }
+        if (lane == 0) {
+            unsigned int bits = __float_as_uint(lo);
+            for (int i=0;i<4;i++) atomicMin(&alph[n[i]], bits);
+            atomicAdd(&rst[7], 1.f);
+        }
+    }
+}
+__global__ void c_apply2(const int* szp, CVS S, float* vn, float* f, float* gn, float* acc, float* Ucum, unsigned int* alph, int vmode, float* rst,
+                         int* lst, unsigned int* dn) {
+    int M = szp[0];
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (lst && n == 0) lst[0] = 0;
+    float dl = 0.f;
+    if (n < M) {
+        float v[3]; c_vget(S, n, v);
+        for (int c=0;c<3;c++) { f[n*3+c] = 0.f; if (gn) gn[n*3+c] = 0.f; }
+        if (acc) acc[n] = 0.f;
+        float al = __uint_as_float(alph[n]);
+        alph[n] = 0x3f800000u;
+        if (S.fixd && S.fixd[n]) al = 1.f;
+        float U[3];
+        for (int c=0;c<3;c++) { vn[n*3+c] = v[c]; Ucum[n*3+c] += al*S.hs*v[c]; U[c] = Ucum[n*3+c]; }
+        if (al < 1.f) {
+            float m = S.mn[n], w = 1.f - al;
+            atomicAdd(&rst[1], 1.f);
+            if (vmode == 0) {
+                for (int c=0;c<3;c++) { vn[n*3+c] = al*v[c]; atomicAdd(&rst[2+c], w*m*v[c]); }
+                float v2 = v[0]*v[0]+v[1]*v[1]+v[2]*v[2];
+                atomicAdd(&rst[5], 0.5f*m*v2*(1.f - al*al));
+                atomicAdd(&rst[6], w*m*sqrtf(v2));
+            }
+        }
+        dl = fmaxf(-(U[0]*S.n0 + U[1]*S.n1 + U[2]*S.n2), 0.f);
+    }
+    if (dn) {
+        unsigned b = __float_as_uint(dl);
+        for (int o=16; o>0; o>>=1) b = max(b, __shfl_xor_sync(CFULL, b, o));
+        if ((threadIdx.x & 31) == 0 && b) atomicMax(dn, b);
+    }
+}
 }  // extern "C" (절 C)
 '''
 
@@ -257,3 +423,20 @@ def launch(name, n, args, b=128, grid=None):
 
 
 P = EX.P
+
+
+CVS_DT = np.dtype([("mn", np.uint64), ("f", np.uint64), ("gn", np.uint64), ("vn", np.uint64),
+                   ("g0", np.float32), ("g1", np.float32), ("g2", np.float32), ("hs", np.float32), ("damp", np.float32),
+                   ("fixd", np.uint64), ("vbc", np.uint64), ("acc", np.uint64),
+                   ("mode", np.int32), ("np_", np.int32), ("n0", np.float32), ("n1", np.float32), ("n2", np.float32)], align=True)
+
+
+def cvs(mn, f, gn, vn, g, hs, damp, fixd, vbc, acc, mode, np_, nrm):
+    """장치 구조체 CVS (c_vnew 인자 묶음) -- numpy 정렬 구조 스칼라 (C 배치와 같다: 포인터 8 바이트 정렬)."""
+    r = np.zeros(1, dtype=CVS_DT)
+    r["mn"], r["f"], r["gn"], r["vn"] = P(mn), P(f), P(gn), P(vn)
+    r["g0"], r["g1"], r["g2"], r["hs"], r["damp"] = float(g[0]), float(g[1]), float(g[2]), float(hs), float(damp)
+    r["fixd"], r["vbc"], r["acc"] = P(fixd), P(vbc), P(acc)
+    r["mode"], r["np_"] = int(mode), int(np_)
+    r["n0"], r["n1"], r["n2"] = float(nrm[0]), float(nrm[1]), float(nrm[2])
+    return r[0]
