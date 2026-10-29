@@ -20,15 +20,15 @@ def fin(root, tag):
 
 if shape == "lego":
     title = ("lego L000 80 프레임 · A6000 단독 · 명시적 lag (셀 집중 질량 m_T/4, 프레임당 P2G 1 회 → 메시 서브스텝 N → G2P 1 회) · "
-             "셀 에너지: 절 R ψ(A F̄) | 절 AA 입자 에너지 평균의 2 차 근사 ψ(A F̄) + ½⟨∂²ψ, 공분산⟩")
+             "셀 에너지: 절 R ψ(A·셀 평균 F) | 절 AA 셀 안 입자 에너지 평균의 2 차 근사 (셀 평균 F + 공분산)")
     rows = [("정답 (MPM)", None, f"{L}/fem2_lego/gt_lego.mp4"),
-            ("절 R 최고: ψ(A F̄) · det A ≥ 0.3 · N192", f"{L}/fem_r_lego/f_l_b03_n192_F1", None),
+            ("절 R 최고: det A ≥ 0.3 · N192", f"{L}/fem_r_lego/f_l_b03_n192_F1", None),
             (name, fin("fem_aa_lego", tag), None)]
 else:
     title = ("ficus F_pg_v0 125 프레임 · A6000 단독 · 명시적 lag (lego 와 같은 코드, 바닥 없음) · "
-             "셀 에너지: 절 R ψ(A F̄) | 절 AA 입자 에너지 평균의 2 차 근사")
+             "셀 에너지: 절 R ψ(A·셀 평균 F) | 절 AA 셀 안 입자 에너지 평균의 2 차 근사")
     rows = [("정답 (PG)", None, f"{L}/fem3_ficus/gt_ficus.mp4"),
-            ("절 R 최고: ψ(A F̄) · det A ≥ 0.3 · N640", f"{L}/fem_r_ficus/f_f_b03_n640_F1", None),
+            ("절 R 최고: det A ≥ 0.3 · N640", f"{L}/fem_r_ficus/f_f_b03_n640_F1", None),
             (name, fin("fem_aa_ficus", tag), None)]
 cells = [f"{nm}|-|{v}" if d is None else f"{nm}|{d}/summary.json|{d}/vj/fem_{shape}.mp4" for nm, d, v in rows]
 o = f"{OUT}/fem_aa_{shape}_cmp.mp4"
