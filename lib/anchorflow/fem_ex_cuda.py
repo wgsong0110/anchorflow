@@ -279,6 +279,24 @@ __global__ void ex_node_step_lag(const int* szp, const float* mn, float* f, floa
     }
     for (int c=0;c<3;c++) { vn[n*3+c] = v[c]; Ucum[n*3+c] += hs*v[c]; }
 }
+// ======== 절 P: lag 판 K 서브스텝마다 재평균 (--rep K --rep_mode vel, 사용자 10-29 "해") ========
+// 속도만 재평균 (입자 이동·재배치 없음, 같은 rows/λ·같은 노드 질량): v_p = Σλ v_n (G2P, PIC) -> (mv)_n = Σ w_pn v_p, v_n = (mv)_n / m_n (P2G)
+//   w_pn = P2G 와 같은 질량 가중 (사면체 등분 0.25 m_p / Σλm 판은 λ m_p). mv 는 호출 전에 비워 둔다.
+__global__ void ex_rep_vel_p2g(int N, const long long* rows, const float* lamb, const float* m, int tetmass, const float* vn, float* mv) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    long long nd[4]; float lm[4]; float vp[3] = {0,0,0};
+    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; for (int c=0;c<3;c++) vp[c] += lm[i]*vn[nd[i]*3+c]; }
+    float mp = m[p];
+    for (int i=0;i<4;i++){ float w=(tetmass ? 0.25f : lm[i])*mp; for (int c=0;c<3;c++) atomicAdd(&mv[nd[i]*3+c], w*vp[c]); }
+}
+__global__ void ex_rep_vel_fin(const int* szp, const float* mn, float* mv, float* vn) {
+    int M = szp[0];
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= M) return;
+    float m = mn[n];
+    for (int c=0;c<3;c++) { if (m > 1e-30f) vn[n*3+c] = mv[n*3+c]/m; mv[n*3+c] = 0.f; }
+}
 // 프레임 시작 바닥 후보 압축 배열: x0, F0, F0⁻¹, c = h v + h² g
 __global__ void ex_near_init(const int* szp, int nnarg, const long long* nidx, const float* x, const float* v, const float* Fp, float h, float g0, float g1, float g2,
                              float* x0c, float* F0c, float* F0inv, float* cc) {
@@ -432,7 +450,8 @@ __global__ void ex_split(int N, const float* x, const long long* rows, const flo
     if (p >= N) return;
     bool near = false;
     if (keep) {
-        if (nslot[p] < 0) { long long t = pinv[p]; float V = vol[p]; atomicAdd(&VTs[t], V); for (int k=0;k<9;k++) atomicAdd(&FTs[t*9+k], V*Fp[p*9+k]); }
+        // 절 P (--rep full): 프레임 안 재 P2G 는 keep=1 -- 바닥 후보 표시는 프레임 것 그대로, near_in_tet=1 (--floor vel) 이면 후보도 F̄ 에
+        if (nslot[p] < 0 || near_in_tet) { long long t = pinv[p]; float V = vol[p]; atomicAdd(&VTs[t], V); for (int k=0;k<9;k++) atomicAdd(&FTs[t*9+k], V*Fp[p*9+k]); }
         return;
     }
     if (floor) {
