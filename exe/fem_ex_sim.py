@@ -26,6 +26,7 @@ from anchorflow import fem_rt as RT                                             
 from anchorflow import fem_rt_cuda as RTC                                           # noqa: E402
 from anchorflow import fem_ex_cuda as EX                                            # noqa: E402
 from anchorflow import fem_bs_cuda as BSC                                           # noqa: E402
+from anchorflow import fem_c_cuda as CCU                                            # noqa: E402
 from anchorflow import phys_resid as PR                                             # noqa: E402
 from anchorflow import simplex as SX                                                # noqa: E402
 
@@ -142,6 +143,12 @@ ap.add_argument("--fupd", choices=["T", "bar", "nbar", "navg", "polar"], default
                 help="절 AB: 프레임 끝 G2P 입자 F 갱신 -- T = F <- A_T F (기존), bar = A_T[(1-β)F + β F̄_T] (셀 균질화·부분 이완), nbar = A_T[(1-β)F + β F̃] (F̃ = 노드 평균 F̄ 의 λ 보간), "
                      "navg = [(1-β)A_T + β Ã] F (Ã = 노드 평균 A_T 의 λ 보간, 매끈한 속도 기울기), polar = A_T R[(1-β)S + β S̃] (극분해, 신장만 F̃ 쪽으로)")
 ap.add_argument("--fupd_b", type=float, default=1.0, help="--fupd 의 β (0 = 기존과 같음)")
+ap.add_argument("--cfast", action="store_true", help="절 C: 아래 네 가지 (--vfl_cull --sr_fast --tlist --fpolar) 모두")
+ap.add_argument("--vfl_cull", action="store_true", help="절 C (1): 바닥 접촉 판정에서 s0 > D (프레임 안 노드 아래쪽 최대 변위) 인 후보 생략 -- 같은 접촉 집합 (lib/anchorflow/fem_c_cuda.py)")
+ap.add_argument("--sr_fast", action="store_true", help="절 C (2): 클램프 판정을 빠른 보장 (‖A-I‖_F + ρ) + 목록 사면체당 워프 (기존과 같은 식·같은 s_T) 로")
+ap.add_argument("--tlist", action="store_true", help="절 C (3): 프레임마다 점유 사면체 목록 -> 힘·클램프 판정 커널이 그 목록 위로")
+ap.add_argument("--cchk", action="store_true", help="절 C 검산 (--no_graph 와, 측정 밖): 서브스텝마다 기존 커널도 같은 상태에서 돌려 클램프 α (비트)·접촉 수·접촉 질량을 대조 -> cchk.json")
+ap.add_argument("--fpolar", action="store_true", help="절 C (4): 힘 커널 극분해 rcbrtf + 수렴 조기 종료 (float 반올림 수준 차이)")
 ap.add_argument("--diag", action="store_true", help="첫 프레임: 노드별 국소 안정 걸음 2/ω (ω² = Σ_T V_T (λ+2μ)|∇λ_i|² / m_i) 분포, 서브스텝마다 최대 |v|")
 a = ap.parse_args()
 
@@ -215,6 +222,11 @@ FUPD = {"T": 0, "bar": 1, "nbar": 2, "navg": 3, "polar": 4}[a.fupd]             
 FUPDN = FUPD >= 2                                                                      # 노드 평균 (fa_tet_acc) 필요
 if FUPD and not (a.opt and a.mode == "lag" and a.interp == "bary" and a.p2g == "bary" and not a.rep and not a.affine and a.rep_w == "std"):
     raise SystemExit("--fupd 는 --opt --mode lag --p2g bary (재평균·아핀 없음) 만")
+if a.cchk and not a.no_graph:
+    raise SystemExit("--cchk 는 --no_graph 와 함께")
+if a.cfast:
+    a.vfl_cull = a.sr_fast = a.tlist = a.fpolar = True
+CC = a.vfl_cull or a.sr_fast or a.tlist or a.fpolar                                  # 절 C 경로
 SPM = a.sp
 SPG = SPM in ("merge", "cube")                                                       # 절 AD: 묶음 힘 (커널 2 개)
 if SPM != "none" and not (a.opt and a.mode == "lag" and a.interp == "bary" and not a.rep and a.p2g == "bary" and not NINT and not CQ and not SB and a.fb <= 0 and not a.affine):
@@ -239,6 +251,10 @@ if a.g2p == "bs" and not BSL:
     raise SystemExit("--g2p bs 는 --p2g bs 와 함께")
 if (SRL or SB) and (NINT or BSL):
     raise SystemExit("--lim_sr/--sb 는 절 R 경로 (--p2g bary, 노드 적분 없음) 만")
+if CC and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP and RNEW and not (NINT or CQ or SB or BSL) and SPM == "none" and LIM and a.lim_mode == "box"):
+    raise SystemExit("절 C (--cfast 등) 는 --opt --mode lag 상자 판 이동 제한 (--lim_sr 또는 --lim --lim_mode box) 경로만")
+if a.vfl_cull and not VFL and HASPL:
+    raise SystemExit("--vfl_cull 은 --floor vel 만")
 if RNEW and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP):
     raise SystemExit("--fb/--lim/--rstat 은 --opt --mode lag (재평균 없음) 만")
 NB = -(-a.N // REP) if REP else 1                                                   # 프레임당 블록 수 (마지막 블록은 짧을 수 있다)
@@ -470,6 +486,16 @@ class Opt:
                 self.Vnd, self.Pnd = z(self.Mcap), z(self.Mcap, 9)
                 self.ntc_u = torch.zeros(self.Mcap, dtype=torch.int32, device=dev)
                 self.nt_u = torch.zeros(self.Mcap * 24, dtype=torch.int32, device=dev)
+            if CC:                                                                   # 절 C: [0] 클램프 목록 개수, [1] D (float 비트), [2] 점유 사면체 수
+                self.cint = torch.zeros(4, dtype=torch.int32, device=dev)
+                if a.cchk:
+                    self.acc_ref = z(self.Mcap)
+                    self.ncon_ref = torch.zeros(1, dtype=torch.int32, device=dev)
+                    self.alph_ref = torch.full((self.Mcap,), 1065353216, dtype=torch.int32, device=dev)
+                    self.rst_ref = z(12)
+                    if not hasattr(self, "chk"):
+                        self.chk = {k: torch.zeros((), dtype=torch.float64, device=dev) for k in
+                                    ("ncon_diff", "ncon_ref", "acc_set_diff", "acc_absdiff", "acc_sum", "alpha_bit_diff", "alpha_lim_nodes", "list_len", "occ_tets")}
             if FUPDN:                                                                # 절 AB: 노드 V_T 가중 합 (9 + 무게)
                 self.NA = z(self.Mcap, 10)
             if SPM == "mlow":
@@ -491,11 +517,16 @@ class Opt:
                 self.VG = torch.zeros(self.Tcap, device=dev)
                 self.nmem = torch.ones(self.Tcap, device=dev)
                 self.VF = torch.zeros(self.Tcap, device=dev)
+            if CC:                                                                   # 절 C: 클램프 목록 [개수, 사면체...], 점유 사면체 목록
+                self.clst = torch.zeros(self.Tcap + 1, dtype=torch.int32, device=dev)
+                self.tl = torch.zeros(self.Tcap, dtype=torch.int32, device=dev)
             if CQ:
                 self.CS = torch.zeros(self.Tcap, 45, device=dev)                     # 절 AA: 셀 입자 F 공분산 (위 삼각 45)
             if NINT:
                 self.XTu = torch.zeros(self.Tcap, 9, device=dev)                     # 절 V: 사면체 (V_T/4) F_T
             new = True
+        if CC and not hasattr(self, "s0c"):
+            self.s0c = torch.zeros(Np, device=dev)                                   # 절 C (1): 바닥 후보 시작 높이
         if P > self.Pcap:
             self.Pcap = int(P * 1.3) + 64
             self.cm0 = torch.zeros(self.Pcap, dtype=torch.uint8, device=dev)
@@ -811,6 +842,10 @@ class Opt:
                                           EX.P(self.f), EX.P(self.grp), EX.P(self.AG[j_ % 2]), EX.P(self.rst)))
             EX.launch("sp_force_g2", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.grp),
                                           EX.P(self.AG[j_ % 2]), EX.P(self.AG[(j_ + 1) % 2]), EX.P(self.FG), EX.P(self.VG), EX.P(self.nmem)))
+        elif CC:                                                                    # 절 C: 같은 식 (점유 목록·빠른 극분해 선택)
+            CCU.launch("c_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tl if a.tlist else None), EX.P(self.cint[2:] if a.tlist else None), EX.P(self.tets),
+                                             EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f),
+                                             np.float32(a.fb), np.float32(a.fb_jhat), np.int32(1 if a.fb_on == "A" else 0), EX.P(self.rst), np.int32(1 if a.fpolar else 0)))
         elif RNEW:
             EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if SPM == "stiff" else self.VTs),
                                              np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(a.fb), np.float32(a.fb_jhat),
@@ -833,6 +868,22 @@ class Opt:
             EX.launch("bsl_vfl_contact", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf if xcur is None else xcur), EX.P(self.Uc), EX.P(self.rows), EX.P(self.lamb),
                                               EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.mA), np.int32(1 if G2PBS else 0), *PLf,
                                               EX.P(self.acc), EX.P(self.ncon), np.int32(BSN)), b=128)
+        elif VFL and a.vfl_cull:                                                    # 절 C (1): s0 > D 후보 생략
+            if a.cchk:                                                              # 검산: 기존 판정을 따로 (acc_ref·ncon_ref) 돌린다
+                self.acc_ref.zero_()
+                self.ncon_ref.zero_()
+                EX.launch("ex_vfl_contact", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf if xcur is None else xcur), EX.P(self.Uc), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
+                                                 np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc_ref), EX.P(self.ncon_ref)), b=128)
+                n0_ = self.ncon.clone()
+            CCU.launch("c_vfl_contact", Np, (EX.P(self.sz), EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if xcur is None else xcur), EX.P(self.Uc),
+                                             EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA), np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128)
+            if a.cchk:
+                M_ = self.M
+                self.chk["ncon_diff"] += (self.ncon - n0_ - self.ncon_ref).abs().sum()
+                self.chk["ncon_ref"] += self.ncon_ref.sum()
+                self.chk["acc_set_diff"] += ((self.acc[:M_] > 0) != (self.acc_ref[:M_] > 0)).sum()
+                self.chk["acc_absdiff"] += (self.acc[:M_] - self.acc_ref[:M_]).abs().sum()
+                self.chk["acc_sum"] += self.acc_ref[:M_].sum()
         elif VFL:
             EX.launch("ex_vfl_contact", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf if xcur is None else xcur), EX.P(self.Uc), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                              np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128)
@@ -842,7 +893,35 @@ class Opt:
                                            np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs), np.float32(DAMP),
                                            EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
                                            np.int32(1 if a.vfl_mode == "full" else 0), np.int32(a.vfl_np), *PLf[3:], np.int32(1 if LIM else 0)), b=256)
-        if SRL:                                                                     # 절 Z (1): 비율 (+ det) 클램프 -> 같은 상자 판 적용 커널
+        if CC:                                                                      # 절 C: 판정 (빠른 보장 + 목록 워프 / 기존 커널) -> 적용 (목록 비움, D 갱신)
+            if SRL and a.sr_fast and a.cchk:                                        # 검산: 기존 커널 α 를 따로
+                self.alph_ref.fill_(1065353216)
+                EX.launch("ex_lim_sr_tet", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc), np.float32(hs),
+                                                np.float32(a.lim_sr), np.int32(1 if a.lim >= 0 else 0), np.float32(a.lim), EX.P(self.alph_ref), EX.P(self.rst_ref)))
+            if SRL and a.sr_fast:
+                CCU.launch("c_sr_pre", Tc, (EX.P(self.sz), EX.P(self.tl if a.tlist else None), EX.P(self.cint[2:] if a.tlist else None), EX.P(self.tets), EX.P(self.gl),
+                                            EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc), np.float32(hs), np.float32(a.lim_sr), np.int32(1 if a.lim >= 0 else 0),
+                                            np.float32(a.lim), EX.P(self.clst)), b=128)
+                CCU.launch("c_sr_warp", 0, (EX.P(self.clst), EX.P(self.tets), EX.P(self.gl), EX.P(self.vn), EX.P(self.Uc), np.float32(hs), np.float32(a.lim_sr),
+                                            np.int32(1 if a.lim >= 0 else 0), np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)), b=128, grid=CCU.NBW)
+                if a.cchk:
+                    M_ = self.M
+                    self.chk["alpha_bit_diff"] += (self.alph[:M_] != self.alph_ref[:M_]).sum()
+                    self.chk["alpha_lim_nodes"] += (self.alph_ref[:M_] != 1065353216).sum()
+                    self.chk["list_len"] += self.clst[0]
+                    self.chk["occ_tets"] += (self.VTs[:self.T] > 0).sum()
+            elif SRL:
+                EX.launch("ex_lim_sr_tet", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc), np.float32(hs),
+                                                np.float32(a.lim_sr), np.int32(1 if a.lim >= 0 else 0), np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)))
+            else:
+                EX.launch("ex_lim_box_tet", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc), np.float32(hs),
+                                                 np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)))
+            CCU.launch("c_lim_apply", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs), EX.P(self.alph),
+                                           np.int32(1 if a.lim_v == "keep" else 0), EX.P(self.fx if self.fixd else None), EX.P(self.rst),
+                                           EX.P(self.clst if (SRL and a.sr_fast) else None), EX.P(self.cint[1:] if (VFL and a.vfl_cull) else None), *PLf[3:]), b=256)
+            if a.lim_sr_chk:
+                EX.launch("ex_sr_viol", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.Uc), np.float32(a.lim_sr), EX.P(self.rst)))
+        elif SRL:                                                                   # 절 Z (1): 비율 (+ det) 클램프 -> 같은 상자 판 적용 커널
             EX.launch("ex_lim_sr_tet", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc), np.float32(hs),
                                             np.float32(a.lim_sr), np.int32(1 if a.lim >= 0 else 0), np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)))
             EX.launch("ex_lim_box_apply", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs), EX.P(self.alph),
@@ -1319,6 +1398,13 @@ class Opt:
             if VFL:
                 self.ncon.zero_()
             self.rst.zero_()
+            if CC:                                                                  # 절 C: 목록 개수·D 비움, 점유 사면체 목록, 바닥 후보 시작 높이
+                self.cint.zero_()
+                self.clst[:1].zero_()
+                if a.tlist:
+                    CCU.launch("c_tet_list", self.Tcap, (EX.P(self.sz), EX.P(self.VTs), EX.P(self.tl), EX.P(self.cint[2:])), b=256)
+                if VFL and a.vfl_cull:
+                    CCU.launch("c_s0", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf), *PLf, EX.P(self.s0c)), b=256)
         if lagm and a.lagdiag:
             self._Fp = Fv.view(Np, 3, 3)
             self._xp = x
@@ -1350,6 +1436,9 @@ class Opt:
                 self.rst.zero_()
                 if LIM:
                     self.alph.fill_(1065353216)
+                if CC:                                                              # 절 C: 데우기가 남긴 목록 개수·D 비움 (점유 목록 tl·cint[2] 는 그대로)
+                    self.cint[:2].zero_()
+                    self.clst[:1].zero_()
                 self.capture()
             self.graph.replay()
         if lagm:
@@ -2020,6 +2109,11 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             sp=SPM, sp_k=a.sp_k, sp_occ=a.sp_occ, sp_beta=a.sp_beta, sp_wocc=a.sp_wocc, sp_mlow=a.sp_mlow,
             rn_tot=(sum(r.get("rn", 0) for r in recs) if RNEW else None), rn_max=(max((r.get("rn", 0) for r in recs), default=None) if RNEW else None),
             sp_n_med=(med([r.get("sp_n", 0) for r in recs]) if SPM != "none" else None), sp_grouped_med=(med([r.get("sp_grouped", 0) for r in recs]) if SPG else None))
+if CC and a.cchk:
+    ck = {k: float(t_) for k, t_ in OPT.chk.items()}
+    json.dump(ck, open(os.path.join(a.out, "cchk.json"), "w"), indent=1)
+    print(f"[절 C 검산] {ck}", flush=True)
+summ.update(cfast=dict(vfl_cull=a.vfl_cull, sr_fast=a.sr_fast, tlist=a.tlist, fpolar=a.fpolar) if CC else None)
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
 print(f"[롤아웃] {a.tag} 서브스텝 {a.N} {a.mode}{' 최적화' if a.opt else ''}: {done}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%  "
       f"프레임당 {summ['ms_mean']:.2f} ms (중앙 {summ['ms_med']:.2f}, {summ['fps']:.2f} fps, 앞 {W} 프레임 제외) 퍼짐 {summ['spread_last']:.3f} "
