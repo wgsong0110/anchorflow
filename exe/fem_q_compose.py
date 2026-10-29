@@ -8,8 +8,8 @@ import os
 import subprocess
 import sys
 
+import h5py
 import numpy as np
-import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -54,8 +54,7 @@ if shape == "ficus":
     ax.plot(t, ug, color="#0b0b0b", lw=2.6, label=f"정답 (PG MPM): 주기 {Tg:.2f} s")
     cols = ["#e04a1f", "#1f6fe0", "#1baf7a", "#a33fbf", "#c9a400"]
     for k, (nm, tg) in enumerate(cells):
-        P = torch.load(f"{R}/{tg}/pred.pt", map_location="cpu", weights_only=False)["pred"][:, sel].float().numpy()
-        Xs = np.concatenate([x0[sel][None], P], 0)[:126]
+        Xs = np.stack([h5py.File(f"{R}/{tg}/h5_fem/sim_{i:010d}.h5", "r")["x"][:][sel] for i in range(126)])   # 렌더 입력 (프레임 0 = 정답 시작)
         u = (Xs.mean(1) - x0[sel].mean(0)) @ d
         T, A = ana(u)
         ax.plot(t[:len(u)], u, color=cols[k % len(cols)], lw=1.8, label=f"{nm}: 주기 {T:.2f} s (정답 대비 {T / Tg:.2f}), 진폭 비 {A / Ag:.2f}")
