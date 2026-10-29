@@ -129,10 +129,15 @@ for run in sys.argv[1:]:
     # (2) 질량: Σ_p λ m_p vs Σ_T m_T λ(x_q) vs 덤프
     m_lam = torch.zeros(M, device=dev, dtype=dd).index_add_(0, rows.reshape(-1), (lamb * mp[:, None]).reshape(-1))
     m_q = torch.zeros(M, device=dev, dtype=dd).index_add_(0, tets[to].reshape(-1), (mT[to][:, None] * lq).reshape(-1))
+    lp64 = bary(P4[pinv], xp)                                                       # 입자 λ 를 float64 로 다시 (커널 λ 는 float32)
+    m_lam64 = torch.zeros(M, device=dev, dtype=dd).index_add_(0, tets[pinv].reshape(-1), (lp64 * mp[:, None]).reshape(-1))
     m_dump = r["mn"].to(dev, dd)
     live = m_lam > 0
     out["mass_identity"] = dict(sum_lam_vs_mT_lam_xq_max_rel=float(((m_lam - m_q).abs() / m_lam.clamp_min(1e-300))[live].max()),
                                 sum_lam_vs_mT_lam_xq_med_rel=float(((m_lam - m_q).abs() / m_lam.clamp_min(1e-300))[live].median()),
+                                f64_sum_lam_vs_mT_lam_xq_max_rel=float(((m_lam64 - m_q).abs() / m_lam64.clamp_min(1e-300))[m_lam64 > 0].max()),
+                                f64_sum_lam_vs_mT_lam_xq_med_rel=float(((m_lam64 - m_q).abs() / m_lam64.clamp_min(1e-300))[m_lam64 > 0].median()),
+                                lam32_vs_lam64_max_abs=float((lp64 - lamb).abs().max()),
                                 dump_vs_sum_lam_max_rel=float(((m_dump - m_lam).abs() / m_lam.clamp_min(1e-300))[live].max()),
                                 total_particles=float(mp.sum()), total_nodes=float(m_lam.sum()))
     # (3) 분포·국소 안정 비: Σλm vs m_T/4
@@ -156,7 +161,8 @@ for run in sys.argv[1:]:
         print(f"   상태 {q['state']}: ∇λ 차 {q['grad_lambda_rel']:.2e}, ∇u 차 {q['grad_u_rel']:.2e}, 힘 차 (전체 {q['force_rel_global']:.2e}, 셀 중앙 {q['force_rel_cell_med']:.2e} 최대 {q['force_rel_cell_max']:.2e}), "
               f"커널 식 vs 중심 {q['kernel_formula_vs_center_rel']:.2e}", flush=True)
     mi = out["mass_identity"]
-    print(f"   질량: Σλm vs Σ m_T λ(x_q) 최대 {mi['sum_lam_vs_mT_lam_xq_max_rel']:.2e} (중앙 {mi['sum_lam_vs_mT_lam_xq_med_rel']:.2e}), 덤프 vs Σλm 최대 {mi['dump_vs_sum_lam_max_rel']:.2e}, "
+    print(f"   질량 (float64 λ): Σλm vs Σ m_T λ(x_q) 최대 {mi['f64_sum_lam_vs_mT_lam_xq_max_rel']:.2e} (중앙 {mi['f64_sum_lam_vs_mT_lam_xq_med_rel']:.2e}), 커널 λ (float32) 와 차 최대 {mi['lam32_vs_lam64_max_abs']:.2e}", flush=True)
+    print(f"   질량 (커널 λ): Σλm vs Σ m_T λ(x_q) 최대 {mi['sum_lam_vs_mT_lam_xq_max_rel']:.2e} (중앙 {mi['sum_lam_vs_mT_lam_xq_med_rel']:.2e}), 덤프 vs Σλm 최대 {mi['dump_vs_sum_lam_max_rel']:.2e}, "
           f"합 {mi['total_particles']:.6g} / {mi['total_nodes']:.6g}", flush=True)
     for nm in ("sum_lambda_m", "tet_mT_over_4"):
         q = res[nm]
