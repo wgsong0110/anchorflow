@@ -104,6 +104,14 @@ ap.add_argument("--bs_mesh", choices=["dil", "occ"], default="dil",
                      "B-스플라인 가중은 메시에 있는 노드·셀에만 쓰고 입자마다 메시 안 가중 합으로 나눠 정규화 (Σ_n w = 1, Σ_c w = 1; 절 T). G2P (bs)·바닥 접촉 가중도 같은 정규화")
 ap.add_argument("--g2p", choices=["bary", "bs"], default="bary", help="--p2g bs 의 프레임 끝 G2P: bary = 사면체 barycentric (기존 ex_g2p_lag), bs = B-스플라인 (질량 가중과 같은 w)")
 ap.add_argument("--bsdiag", type=int, default=0, help="--p2g bs 진단 (측정 밖): K 프레임마다 노드 질량 분포 (B-스플라인 / 셀 집중 m_T/4 / Σλm), 국소 안정 비 -> bsdiag.jsonl (0 = 첫 프레임만, -1 = 끔)")
+ap.add_argument("--nint", action="store_true",
+                help="절 U (--opt --mode lag, 사용자 10-29): 노드 적분 FEM (평균 노드 변형 사면체, Bonet & Burton 1998 / Dohrmann et al. 2000) -- "
+                     "서브스텝마다 F_n = Σ_{T∋n} V_T F_T / Σ V_T, P_n = P_FCR(F_n), f_a = -Σ_T (V_T/4) Σ_{n∈T} P_n F̄_Tᵀ ∇λ_a (= -∂/∂U Σ_n V_n ψ(F_n), V_n = Σ V_T/4). "
+                     "질량·바닥·F̄·G2P 는 절 R 판 그대로")
+ap.add_argument("--nint_beta", type=float, default=0.0,
+                help="--nint 영에너지 모드 안정화 선택지: 에너지 (1-β) Σ_n V_n ψ(F_n) + β Σ_T V_T ψ(F_T) (셀 적분 혼합). 0 = 순수 노드 적분")
+ap.add_argument("--nint_check", type=int, default=0,
+                help="--nint 검산 (측정 밖): 처음 K 프레임 끝 상태에서 커널 힘 vs float64 노드 에너지의 중앙 차분 (방향 미분·노드 성분), 운동량·각운동량 합 -> nint_check.jsonl")
 ap.add_argument("--diag", action="store_true", help="첫 프레임: 노드별 국소 안정 걸음 2/ω (ω² = Σ_T V_T (λ+2μ)|∇λ_i|² / m_i) 분포, 서브스텝마다 최대 |v|")
 a = ap.parse_args()
 
@@ -154,7 +162,12 @@ if a.rep_w != "std" and not (a.opt and a.mode == "lag" and a.mass == "tet" and a
     raise SystemExit("--rep_w tet4|lam 은 --opt --mode lag --mass tet 만")
 if RW4 and a.affine:
     raise SystemExit("--rep_w tet4 + --affine 은 정의가 맞지 않는다 (APIC G2P 는 λ 보간 + C)")
-RNEW = a.fb > 0 or a.lim >= 0 or a.rstat or a.p2g == "bs"                                         # 절 R 경로 (사면체 힘 ex_tet_force_R + 통계)
+NINT = bool(a.nint)                                                                  # 절 U: 노드 적분
+if NINT and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP and a.p2g == "bary" and a.fb <= 0 and not a.affine):
+    raise SystemExit("--nint 은 --opt --mode lag (재평균·B-스플라인 P2G·장벽·아핀 없음) 만")
+if a.nint_check and not NINT:
+    raise SystemExit("--nint_check 은 --nint 와 함께")
+RNEW = a.fb > 0 or a.lim >= 0 or a.rstat or a.p2g == "bs" or NINT                                         # 절 R 경로 (사면체 힘 ex_tet_force_R + 통계)
 LIM = a.lim >= 0
 BSL = a.p2g == "bs"                                                                  # 절 S: lag 판 B-스플라인 P2G
 G2PBS = BSL and a.g2p == "bs"
@@ -201,6 +214,7 @@ print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N
       + (f", 재평균 {a.rep_mode} {REP} 서브스텝마다 (블록 {NB})" if REP else "") + (", 아핀 전달 (APIC)" if a.affine else "")
       + (f", 전달 가중 {a.rep_w}" if a.rep_w != "std" else "")
       + (f", [절 S] P2G 2 차 B-스플라인 (노드 질량 Σ w m_p, 셀 F̄·V 셀 중심 w), G2P {'B-스플라인' if G2PBS else '사면체 barycentric'}, 메시 {'절 R 그대로 (팽창 없음, 메시 안 가중 정규화 -- 절 T)' if BSN else '1 칸 팽창'}" if BSL else "")
+      + (f", [절 U] 노드 적분 FEM (F_n = Σ V_T F_T / Σ V_T, 노드 FCR 응력, β {a.nint_beta:g})" if NINT else "")
       + (f", [절 R] log J 장벽 κ {a.fb:g} Ĵ {a.fb_jhat:g} J=det({'A F̄' if a.fb_on == 'X' else 'A'})" if a.fb > 0 else "")
       + (f", [절 R] 이동 제한 det A_T ≥ {a.lim:g} ({'상자 꼭짓점 Jacobi' if a.lim_mode == 'box' else '8 색 Gauss-Seidel'}, 속도 {a.lim_v})" if LIM else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
 print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), {'격자 간격 dx' if BSP else 'Kuhn 최소 높이'} {lmin:.5f} (node_h {a.node_h}), "
@@ -385,6 +399,8 @@ class Opt:
                 self.ncol = torch.zeros(self.Mcap, dtype=torch.uint8, device=dev)   # 절 R (2): Kuhn 격자 지표 홀짝 색 (0..7)
                 self.ntc = torch.zeros(self.Mcap, dtype=torch.int32, device=dev)
                 self.nt = torch.zeros(self.Mcap * 24, dtype=torch.int32, device=dev)
+            if NINT:                                                                 # 절 U: 노드 부피 V_n, 노드 F 합 (쓴 뒤 비움), 노드 응력 P_n
+                self.Vnd, self.Snd, self.Pnd = z(self.Mcap), z(self.Mcap, 9), z(self.Mcap, 9)
             self.nposb = z(self.Mcap, 3)                                             # 노드 위치 상주 버퍼 (절 Q: 그래프 안 APIC P2G 가 주소를 고정해 읽는다)
             new = True
         if T > self.Tcap:
@@ -562,7 +578,9 @@ class Opt:
     def _step_lag(self, xcur=None):
         """lag 한 서브스텝 (절 O 판): 사면체 힘 -> [에너지 바닥 후보 힘] -> [속도 바닥 접촉 판정] -> 노드 걸음 (+ 고착·비관통, f·gn·acc 비움)."""
         Mc, Tc = self.Mcap, self.Tcap
-        if RNEW:
+        if NINT:                                                                    # 절 U: 노드 적분 내부력 (커널 3 개)
+            self._nint_force()
+        elif RNEW:
             EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
                                              np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(a.fb), np.float32(a.fb_jhat),
                                              np.int32(1 if a.fb_on == "A" else 0), EX.P(self.rst)))
@@ -597,6 +615,86 @@ class Opt:
                 EX.launch("ex_lim_color", Mc, (EX.P(self.sz), np.int32(c), EX.P(self.ncol), EX.P(self.ntc), EX.P(self.nt), EX.P(self.tets), EX.P(self.gl),
                                                EX.P(self.VTs), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs), np.float32(a.lim),
                                                np.int32(1 if a.lim_v == "keep" else 0), EX.P(self.fx if self.fixd else None), EX.P(self.rst)), b=256)
+
+    def _nint_force(self):
+        Mc, Tc = self.Mcap, self.Tcap
+        EX.launch("nint_cell", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), EX.P(self.Snd), EX.P(self.rst)))
+        EX.launch("nint_node", Mc, (EX.P(self.sz), EX.P(self.Vnd), EX.P(self.Snd), EX.P(self.Pnd), np.float32(mu), np.float32(lam)), b=128)
+        EX.launch("nint_force", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), EX.P(self.Pnd),
+                                     np.float32(mu), np.float32(lam), np.float32(a.nint_beta), EX.P(self.f)))
+
+    def nint_check(self, i, U=None):
+        """절 U 검산 (측정 밖, 프레임 끝 상태): 커널 내부력 f(U) 와 float64 노드 에너지 E(U) = (1-β) Σ_n V_n ψ(F_n) + β Σ_T V_T ψ(F_T)
+        (ψ = μ|F - R|² + λ/2 (det F - 1)², R = 극분해) 의 중앙 차분 비교 + 내력 합·모멘트 합."""
+        M, T = self.M, self.T
+        dd = torch.float64
+        occ = self.VTs[:T] > 0
+        tets = self.tets[:T][occ]
+        gl = self.gl[:T].view(T, 4, 3)[occ].to(dd)
+        FT = self.FT[:T].view(T, 3, 3)[occ].to(dd)
+        VT = self.VTs[:T][occ].to(dd)
+        bt = float(a.nint_beta)
+        Vn = torch.zeros(M, device=dev, dtype=dd).index_add_(0, tets.reshape(-1), (VT / 4).repeat_interleave(4))
+        live = Vn > 0
+        I3d = torch.eye(3, device=dev, dtype=dd)
+
+        def psi(X):
+            Us, S_, Vh = torch.linalg.svd(X)
+            dg = torch.ones(X.shape[0], 3, device=dev, dtype=dd)
+            dg[:, 2] = torch.sign(torch.linalg.det(Us @ Vh))
+            R_ = Us @ torch.diag_embed(dg) @ Vh
+            return mu * ((X - R_) ** 2).sum((-1, -2)) + 0.5 * lam * (torch.linalg.det(X) - 1) ** 2
+
+        def energy(U_):
+            X = (I3d + torch.einsum("tia,tib->tab", U_[tets], gl)) @ FT
+            Sn = torch.zeros(M, 9, device=dev, dtype=dd).index_add_(0, tets.reshape(-1), ((VT / 4)[:, None, None] * X).repeat_interleave(4, 0).reshape(-1, 9))
+            Fn = (Sn[live] / Vn[live, None]).view(-1, 3, 3)
+            E = (1 - bt) * (Vn[live] * psi(Fn)).sum()
+            if bt > 0:
+                E = E + bt * (VT * psi(X)).sum()
+            return E
+        U0 = (self.Uc[:M].clone() if U is None else U)
+        Uk = self.Uc[:M].clone()
+        self.Uc[:M].copy_(U0)
+        self.f.zero_()
+        self._nint_force()
+        torch.cuda.synchronize()
+        fk = self.f[:M].to(dd).clone()
+        self.f.zero_()
+        self.Uc[:M].copy_(Uk)
+        Ud = U0.to(dd)
+        g = torch.Generator(device=dev).manual_seed(1234 + i)
+        rec = dict(t=i, M=M, T_occ=int(occ.sum()), beta=bt, E=float(energy(Ud)))
+        dirs = []
+        for k in range(6):                                                           # 무작위 방향 (노드마다 표준 정규, 살아 있는 노드만)
+            dv = torch.randn(M, 3, device=dev, dtype=dd, generator=g) * live[:, None]
+            dv = dv / dv.norm()
+            for eps in (1e-5, 1e-6):
+                fd = (float(energy(Ud + eps * dv)) - float(energy(Ud - eps * dv))) / (2 * eps)
+                an = -float((fk * dv).sum())
+                dirs.append(dict(k=k, eps=eps, fd=fd, kernel=an, rel=abs(fd - an) / max(abs(fd), 1e-30)))
+        rec["dirs"] = dirs
+        fmag = fk.norm(dim=-1)
+        top = torch.argsort(fmag, descending=True)[:4].tolist()                      # 힘이 가장 큰 노드 성분별
+        comp = []
+        for n_ in top:
+            for c in range(3):
+                e_ = torch.zeros(M, 3, device=dev, dtype=dd)
+                e_[n_, c] = 1.0
+                eps = 1e-6
+                fd = (float(energy(Ud + eps * e_)) - float(energy(Ud - eps * e_))) / (2 * eps)
+                comp.append(dict(n=n_, c=c, fd=-fd, kernel=float(fk[n_, c]), rel=abs(-fd - float(fk[n_, c])) / max(abs(fd), 1e-30)))
+        rec["comp"] = comp
+        xc = self.npos[:M].to(dd) + Ud
+        rec.update(f_sum=fk.sum(0).tolist(), f_abs=float(fmag.sum()), torque=torch.cross(xc, fk, dim=-1).sum(0).tolist(),
+                   torque_scale=float((xc.norm(dim=-1) * fmag).sum()), fixd=bool(self.fixd))
+        with open(os.path.join(a.out, "nint_check.jsonl"), "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+        rmax = max(q["rel"] for q in dirs if q["eps"] == 1e-6)
+        cmax = max(q["rel"] for q in comp)
+        print(f"    [U 검산] t {i + 1}: E {rec['E']:.6g}, 방향 미분 상대차 최대 {rmax:.2e} (eps 1e-6), 노드 성분 상대차 최대 {cmax:.2e}, "
+              f"|Σf|/Σ|f| {float(fk.sum(0).norm()) / max(rec['f_abs'], 1e-30):.2e}, |Σx×f|/Σ|x||f| {float(torch.tensor(rec['torque']).norm()) / max(rec['torque_scale'], 1e-30):.2e}"
+              + (" (cfg_bc 묶인 노드 있음 -- 내력만이라 합 0 이어야)" if self.fixd else ""), flush=True)
 
     def _substeps(self):
         if a.mode == "lag":
@@ -885,6 +983,9 @@ class Opt:
             self._p2g_bs(xa, va, Fa)
         else:
             self._p2g(xa, va, Fa, h, False)                                         # 프레임 분할 (관성 예측 h v_n + h² g 의 끝 높이)
+        if NINT:                                                                    # 절 U: 노드 부피 V_n = Σ V_T/4 (프레임마다, 그래프 밖)
+            self.Vnd.zero_()
+            EX.launch("nint_vn", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.VTs), EX.P(self.Vnd)), b=256)
         if FLOOR:
             EX.launch("ex_near_init", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(xa), EX.P(va), EX.P(Fa), np.float32(h), np.float32(gv[0]),
                                            np.float32(gv[1]), np.float32(gv[2]), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.F0i), EX.P(self.cc)), b=256)
@@ -1272,6 +1373,8 @@ for i in range(L):
                       detX_min=float(dX_.min()) if dX_.numel() else None, Fp_inv=int((~(dFp > 0)).sum()), Fp_detmin=float(dFp.min()),
                       lim_n=int(rs[1]), lim_dp=[rs[2], rs[3], rs[4]], lim_dke=rs[5], lim_dpabs=rs[6], lim_tets=int(rs[7]), ke_p=ke_p,
                       p_tot=[float(q) for q in (m[:, None] * v2).sum(0).tolist()], nt_ovf=int(OPT.novf.item()))
+        if NINT and i < a.nint_check:                                               # 절 U 검산 (측정 밖, 프레임 끝 U)
+            OPT.nint_check(i)
         if BSL:                                                                     # 절 S: 질량·운동량 보존 (P2G 전후, 서브스텝 끝, G2P 뒤)
             M_ = OPT.M
             mnb, mvb, vnb = OPT.mn[:M_].double(), OPT.mv[:M_].double(), OPT.vn[:M_].double()
@@ -1333,7 +1436,8 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             detA_min=(min((r["detA_min"] for r in recs if r.get("detA_min") is not None and math.isfinite(r["detA_min"])), default=None) if RNEW else None),
             lim_n_tot=(sum(r.get("lim_n", 0) for r in recs) if RNEW else None), lim_dke_tot=(sum(r.get("lim_dke", 0.0) for r in recs) if RNEW else None),
             lim_dpabs_tot=(sum(r.get("lim_dpabs", 0.0) for r in recs) if RNEW else None), nt_ovf=(max(r.get("nt_ovf", 0) for r in recs) if RNEW else None),
-            p2g=a.p2g, g2p=a.g2p, bs_mesh=(a.bs_mesh if BSL else None), interp=a.interp, rep=REP, rep_mode=(a.rep_mode if REP else None), quad=(a.quad if BSP else None), K=(a.K if BSP and a.quad == "cell" else None), apic=bool(a.apic), rep_w=a.rep_w)
+            p2g=a.p2g, g2p=a.g2p, bs_mesh=(a.bs_mesh if BSL else None), interp=a.interp, rep=REP, rep_mode=(a.rep_mode if REP else None), quad=(a.quad if BSP else None), K=(a.K if BSP and a.quad == "cell" else None), apic=bool(a.apic), rep_w=a.rep_w,
+            nint=NINT, nint_beta=(a.nint_beta if NINT else None))
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
 print(f"[롤아웃] {a.tag} 서브스텝 {a.N} {a.mode}{' 최적화' if a.opt else ''}: {done}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%  "
       f"프레임당 {summ['ms_mean']:.2f} ms (중앙 {summ['ms_med']:.2f}, {summ['fps']:.2f} fps, 앞 {W} 프레임 제외) 퍼짐 {summ['spread_last']:.3f} "
