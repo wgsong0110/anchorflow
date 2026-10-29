@@ -1648,8 +1648,9 @@ __global__ void ex_g2p_lagF(int N, const float* x, const float* Ucum, const floa
 }
 extern "C" {
 // ======== 절 AD: 희소 셀 병합 (사용자 10-30 "해볼 수 있는 거 다", 갈래 B) ========
-// 묶음 g (사면체 집합, 루트 r) 의 셀 에너지 E_g = V_g ψ(Ā_g F̄_g),  Ā_g = (1/n_g) Σ_{t∈g} A_t (Kuhn 사면체 기하 부피가 모두 같아 부피 가중 = 산술 평균),
-//   F̄_g = Σ V_t F̄_t / V_g,  V_g = Σ V_t (입자 부피).  힘 f_{t,i} = -(V_g/n_g) P(Ā F̄) F̄ᵀ ∇λ_{t,i}  (= -∂E_g/∂x, 묶인 사면체마다 같은 몫 -> 기하 부피 비례 분배).
+// 묶음 g (사면체 집합, 루트 r) 의 셀 에너지 E_g = V_g ψ(Ā_g F̄_g),  Ā_g = Σ_{t∈g} V_t A_t / V_g (입자 부피 가중),
+//   F̄_g = Σ V_t F̄_t / V_g,  V_g = Σ V_t (입자 부피).  힘 f_{t,i} = -V_t P(Ā F̄) F̄ᵀ ∇λ_{t,i}  (= -∂E_g/∂x, 묶인 사면체마다 입자 부피 V_t 비례 분배 -- 노드 질량 m_T/4 와 같은 비라 강성/질량 비 유지).
+//   (처음 판은 기하 부피 = 같은 몫 (V_g/n) 이었는데 입자 1 개 사면체의 가벼운 노드에 큰 강성이 걸려 프레임 2 에 발산 -- 연기 시험)
 //   Σ_i ∇λ_{t,i} = 0 -> 운동량 보존, ψ 회전 불변 + Ā 가 강체 회전과 같이 돈다 -> 각운동량 보존 (에너지의 기울기이므로).
 // grp[t] = 루트 (묶음 크기 ≥ 2) 또는 -1 (홀로: ex_tet_force_R 과 같은 식). AG = 서브스텝 홀짝 두 벌 (G1 이 이번 벌에 쌓고, G2 가 읽은 뒤 다음 벌을 비운다).
 __device__ __forceinline__ void sp_fcr_P(const float* X, float mu, float lam, float* P) {
@@ -1678,7 +1679,7 @@ __global__ void sp_force_g1(const int* szp, const long long* tets, const float* 
     for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u=U[n[i]*3+c]; for (int b=0;b<3;b++) A[c*3+b] += u*G[i*3+b]; }
     if (rst && !(det3(A) > 0.f)) atomicAdd(&rst[0], 1.f);
     int r = grp[t];
-    if (r >= 0) { for (int k=0;k<9;k++) atomicAdd(&AG[(long long)r*9+k], A[k]); return; }
+    if (r >= 0) { for (int k=0;k<9;k++) atomicAdd(&AG[(long long)r*9+k], V*A[k]); return; }
     float Fb[9]; for (int k=0;k<9;k++) Fb[k]=FT[t*9+k];
     float X[9]; mm3(A, Fb, X);
     float P[9], Gm[9]; sp_fcr_P(X, mu, lam, P);
@@ -1689,20 +1690,20 @@ __global__ void sp_force_g1(const int* szp, const long long* tets, const float* 
     }
 }
 __global__ void sp_force_g2(const int* szp, const long long* tets, const float* gl, float mu, float lam, float* f, const int* grp, const float* AG, float* AGz,
-                            const float* FG, const float* VG, const float* nmem, const float* U, float hg) {
-    // hg > 0: 모래시계 억제 (V_g/n) γ μ Σ_t |A_t - Ā|²  ->  사면체 t 힘에 -(V_g/n) 2 γ μ (A_t - Ā) ∇λ_{t,i} 더함 (Σ_t (A_t - Ā) = 0 이라 Ā 경유 몫 없음)
+                            const float* FG, const float* VG, const float* VT, const float* U, float hg) {
+    // hg > 0: 모래시계 억제 γ μ Σ_t V_t |A_t - Ā|²  ->  사면체 t 힘에 -V_t 2 γ μ (A_t - Ā) ∇λ_{t,i} 더함 (Σ_t V_t (A_t - Ā) = 0 이라 Ā 경유 몫 없음)
     int T = szp[1];
     int t = blockIdx.x*blockDim.x + threadIdx.x;
     if (t >= T) return;
     int r = grp[t];
     if (r < 0) return;
-    float nm = nmem[r];
-    float A[9]; for (int k=0;k<9;k++) A[k] = AG[(long long)r*9+k]/nm;
+    float vg = VG[r];
+    float A[9]; for (int k=0;k<9;k++) A[k] = AG[(long long)r*9+k]/vg;
     float Fb[9]; for (int k=0;k<9;k++) Fb[k]=FG[(long long)r*9+k];
     float X[9]; mm3(A, Fb, X);
     float P[9], Gm[9]; sp_fcr_P(X, mu, lam, P);
     mmt3(P, Fb, Gm);
-    float w = VG[r]/nm;
+    float w = VT[t];
     long long n[4]; float G[12];
     for (int i=0;i<4;i++) n[i]=tets[t*4+i];
     for (int k=0;k<12;k++) G[k]=gl[t*12+k];

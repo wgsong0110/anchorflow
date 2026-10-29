@@ -114,8 +114,8 @@ ap.add_argument("--sp", choices=["none", "merge", "cube", "blend", "stiff", "mlo
                 help="절 AD 희소 셀 처리: merge = 희소 사면체를 입자 많은 면 이웃 쪽으로 묶어 한 셀 (F̄·V 합, Ā = 묶음 A 평균) 로 응력, cube = 희소 사면체가 있는 정육면체의 점유 사면체를 한 셀로, "
                      "blend = 희소 사면체 F̄ 를 면 이웃 F̄ 와 입자 부피 가중으로 섞음, stiff = 희소 사면체 응력에 점유율 가중, mlow = 노드 관성 질량 하한")
 ap.add_argument("--sp_a", choices=["avg", "tet"], default="avg",
-                help="--sp merge/cube 묶음의 셀 사상: avg = 묶음 하나의 Ā (구성 사면체 A 평균 -- 묶음 안 반대 변형은 에너지 0), tet = 구성 사면체마다 자기 A_t 에 묶음 F̄·V/n (묶음 상태, 사면체별 변형)")
-ap.add_argument("--sp_hg", type=float, default=0.0, help="--sp_a avg 의 모래시계 억제: 묶음 에너지에 (V_g/n) γ μ Σ_t |A_t - Ā|² (0 = 끔)")
+                help="--sp merge/cube 묶음의 셀 사상: avg = 묶음 하나의 Ā (구성 사면체 A 의 V_t 가중 평균 -- 묶음 안 반대 변형은 에너지 0), tet = 구성 사면체마다 자기 A_t 에 묶음 F̄ (부피 V_t 그대로)")
+ap.add_argument("--sp_hg", type=float, default=0.0, help="--sp_a avg 의 모래시계 억제: 묶음 에너지에 γ μ Σ_t V_t |A_t - Ā|² (0 = 끔)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
 ap.add_argument("--sp_occ", type=float, default=0.0, help="--sp: 희소 = (입자 수 ≤ k) 또는 점유율 V_T/V_기하 < 이 값 (0 = 입자 수만)")
 ap.add_argument("--sp_beta", type=float, default=1.0, help="--sp blend: 이웃 몫 배율 β (F̄' = (V F̄ + β Σ V_nb F̄_nb)/(V + β Σ V_nb))")
@@ -776,7 +776,7 @@ class Opt:
             ing = occm & (nmem[root] > 1.5)
             FGr = FGs[root] / VG[root].clamp_min(1e-30)[:, None]
             self.FT[:T] = torch.where(ing[:, None], FGr, self.FT[:T])
-            self.VF[:T] = torch.where(ing, VG[root] / nmem[root].clamp_min(1.0), VT)
+            self.VF[:T] = VT                                                          # V_t 그대로 (처음 판 V_g/n 은 가벼운 노드에 강성이 몰려 발산)
             self._spst += [ing.sum(), (ing & (root == ar)).sum()]
         if SPG:
             nmem = torch.zeros(T, device=dev).index_add_(0, root, occf)
@@ -825,7 +825,7 @@ class Opt:
             EX.launch("sp_force_g1", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), np.float32(mu), np.float32(lam),
                                           EX.P(self.f), EX.P(self.grp), EX.P(self.AG[0]), EX.P(None)))
             EX.launch("sp_force_g2", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.grp),
-                                          EX.P(self.AG[0]), EX.P(None), EX.P(self.FG), EX.P(self.VG), EX.P(self.nmem), EX.P(self.Uc), np.float32(a.sp_hg)))
+                                          EX.P(self.AG[0]), EX.P(None), EX.P(self.FG), EX.P(self.VG), EX.P(self.VTs), EX.P(self.Uc), np.float32(a.sp_hg)))
             self.AG[0].zero_()
         else:
             EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if (SPM == "stiff" or (SPM in ("merge", "cube") and not SPG)) else self.VTs),
@@ -912,7 +912,7 @@ class Opt:
             EX.launch("sp_force_g1", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), np.float32(mu), np.float32(lam),
                                           EX.P(self.f), EX.P(self.grp), EX.P(self.AG[j_ % 2]), EX.P(self.rst)))
             EX.launch("sp_force_g2", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.grp),
-                                          EX.P(self.AG[j_ % 2]), EX.P(self.AG[(j_ + 1) % 2]), EX.P(self.FG), EX.P(self.VG), EX.P(self.nmem), EX.P(self.Uc), np.float32(a.sp_hg)))
+                                          EX.P(self.AG[j_ % 2]), EX.P(self.AG[(j_ + 1) % 2]), EX.P(self.FG), EX.P(self.VG), EX.P(self.VTs), EX.P(self.Uc), np.float32(a.sp_hg)))
         elif CC:                                                                    # 절 C: 같은 식 (점유 목록·빠른 극분해 선택)
             CCU.launch("c_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tl if a.tlist else None), EX.P(self.cint[2:] if a.tlist else None), EX.P(self.tets),
                                              EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f),
