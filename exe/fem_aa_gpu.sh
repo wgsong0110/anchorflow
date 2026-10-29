@@ -16,4 +16,4 @@ while read -r ROOT TG ARGS; do
   i=$((i + 1))
 done < <(python $JL)
 echo "[카드 $G] 끝 $n 개 $(date +%T)"
-touch /home/dkta/work/lbours/fem_aa_lego/GPU${G}_DONE_$(basename $JL .py)
+mkdir -p /home/dkta/work/lbours/fem_aa_lego; touch /home/dkta/work/lbours/fem_aa_lego/GPU${G}_DONE_$(basename $JL .py)

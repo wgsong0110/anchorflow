@@ -1657,7 +1657,8 @@ def cq_check(i, Fstart):
     fr = out.get("force", {})
     print(f"  [AA 검산] 프레임 {i + 1}: 셀 에너지 상대 차 (2 차 근사 / ψ(A F̄) vs 입자 적분, 셀 중앙·90 %) "
           + " ".join(f"{k_} {v_['cell_quad_q'][0]:.2e}/{v_['cell_bar_q'][0]:.2e} {v_['cell_quad_q'][1]:.2e}/{v_['cell_bar_q'][1]:.2e}" for k_, v_ in out["A_end"].items())
-          + (f" | 힘 커널 km vs 자동미분 {fr['rel_km_vs_ad']:.2e} cf {fr['rel_cf_vs_ad']:.2e} 보정 끈 커널 {fr['rel_base_vs_ad']:.2e} 중앙차분 vs 자동미분 {fr['rel_cd_vs_ad']}" if fr else ""), flush=True)
+          + (f" | 힘 커널 km vs 자동미분 {fr['rel_km_vs_ad']:.2e} cf {fr['rel_cf_vs_ad']:.2e} 보정 끈 커널 {fr['rel_base_vs_ad']:.2e} 중앙차분 vs 자동미분 {fr['rel_cd_vs_ad']}" if fr else "")
+          + (" | 몫별 " + json.dumps(out["force_parts"], ensure_ascii=False) if out.get("force_parts") else ""), flush=True)
 
 
 FSP = None
