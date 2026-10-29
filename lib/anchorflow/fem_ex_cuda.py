@@ -435,6 +435,161 @@ __global__ void ex_lim_color(const int* szp, int col, const unsigned char* ncol,
         }
     }
 }
+// ======== 절 Z: A_T 특이값 비율 σ1/σ3 (사용자 10-29 "특이값 비율로 두 방식 각각") ========
+// r(A) = σ1(A)/σ3(A) (AᵀA 고윳값 l0 ≤ l1 ≤ l2 -> sqrt(l2/l0)). 클램프 판정에서는 det A ≤ 0 이면 r = +inf (뒤집힌 배치는 비율 무한대로 본다).
+__device__ __forceinline__ float sr_ratio(const float* A) {
+    float d = det3(A);
+    if (!(d > 0.f)) return __int_as_float(0x7f800000);
+    float C[9];
+    for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=A[i]*A[k]+A[3+i]*A[3+k]+A[6+i]*A[6+k];
+    float l[3]; symeig3(C, l);
+    return sqrtf(fmaxf(l[2], 0.f)/fmaxf(l[0], 1e-30f));
+}
+// (1) 클램프 (--lim_sr c, 절 R 상자 판과 같은 Jacobi 틀: 사면체별 s_T -> 노드 α_n = min_T s_T (원자 min) -> ex_lim_box_apply 가 이동·속도 α 배):
+//   판정 feas(s): 상자 [0,s]⁴ 의 꼭짓점 15 개 (부분집합 S 의 노드만 s 배 이동) 모두 r ≤ thrR (= max(c, 지금 r)) [+ jon 이면 det ≥ thrJ (= min(Ĵ, 지금 det)), 기존 상자 판 그대로].
+//   빠른 통과: ‖Σ α_i d_i ∇λ_iᵀ‖₂ ≤ ρ = Σ |d_i||∇λ_i| (모든 α ∈ [0,1]⁴) -> Weyl 로 σ1 ≤ σ1⁰ + ρ, σ3 ≥ σ3⁰ - ρ; (σ1⁰+ρ) ≤ thrR (σ3⁰-ρ) 이면 비율은 상자 전체에서 보장 (꼭짓점 검사 생략).
+//   아니면 s = 1 꼭짓점 검사, 실패하면 이분 14 번. 비율은 α 에 아핀이 아니라 꼭짓점 판정은 상자 내부를 보장하지 않는다 -> 이동 뒤 실제 비율 위반을 ex_sr_viol 로 센다 (rst[8]).
+__device__ __forceinline__ bool sr_feas(const float* A0, const float* Mo, float s, float thrR, int jon, float thrJ) {
+    for (int S=1; S<16; S++) {
+        float B[9]; for (int k=0;k<9;k++) { float t = 0.f; for (int i=0;i<4;i++) if (S & (1<<i)) t += Mo[i*9+k]; B[k] = A0[k] + s*t; }
+        if (jon && det3(B) < thrJ) return false;
+        if (sr_ratio(B) > thrR) return false;
+    }
+    return true;
+}
+__global__ void ex_lim_sr_tet(const int* szp, const long long* tets, const float* gl, const float* VT, const float* vn, const float* Ucum, float hs,
+                              float csr, int jon, float jmin, unsigned int* alph, float* rst) {
+    int T = szp[1];
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T || !(VT[t] > 0.f)) return;
+    long long n[4]; float G[12];
+    for (int i=0;i<4;i++) n[i]=tets[t*4+i];
+    for (int k=0;k<12;k++) G[k]=gl[t*12+k];
+    float A0[9] = {1,0,0, 0,1,0, 0,0,1};
+    float Mo[36];
+    float rho = 0.f;
+    for (int i=0;i<4;i++) {
+        float dd = 0.f, gg = 0.f;
+        for (int c=0;c<3;c++) { float u=Ucum[n[i]*3+c], d=hs*vn[n[i]*3+c]; dd += d*d; for (int b=0;b<3;b++) { A0[c*3+b] += u*G[i*3+b]; Mo[i*9+c*3+b] = d*G[i*3+b]; } }
+        for (int b=0;b<3;b++) gg += G[i*3+b]*G[i*3+b];
+        rho += sqrtf(dd*gg);
+    }
+    float D0 = det3(A0);
+    float r0 = sr_ratio(A0);
+    float thrR = fmaxf(csr, r0);
+    float thrJ = fminf(jmin, D0);
+    bool ok = true;
+    if (jon) { for (int S=1; S<16 && ok; S++) if (det_sub(A0, Mo, S, 1.f) < thrJ) ok = false; }
+    if (ok && D0 > 0.f) {
+        float C[9];
+        for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=A0[i]*A0[k]+A0[3+i]*A0[3+k]+A0[6+i]*A0[6+k];
+        float l[3]; symeig3(C, l);
+        float s1 = sqrtf(fmaxf(l[2], 0.f)), s3 = sqrtf(fmaxf(l[0], 0.f));
+        if (s3 - rho > 0.f && (s1 + rho) <= thrR*(s3 - rho)) return;          // Weyl: 상자 전체 보장
+    }
+    if (sr_feas(A0, Mo, 1.f, thrR, jon, thrJ)) return;
+    float lo = 0.f, hi = 1.f;
+    for (int it=0; it<14; it++) {
+        float mid = 0.5f*(lo+hi);
+        if (sr_feas(A0, Mo, mid, thrR, jon, thrJ)) lo = mid; else hi = mid;
+    }
+    unsigned int bits = __float_as_uint(lo);
+    for (int i=0;i<4;i++) atomicMin(&alph[n[i]], bits);
+    atomicAdd(&rst[7], 1.f);
+}
+// 클램프 검산 (--lim_sr_chk, 측정 판에는 끔): 이동 뒤 점유 사면체의 실제 r > c (1 + 1e-3) 인 (사면체 x 서브스텝) 수 -> rst[8], det ≤ 0 수 -> rst[9]
+__global__ void ex_sr_viol(const int* szp, const long long* tets, const float* gl, const float* VT, const float* Ucum, float csr, float* rst) {
+    int T = szp[1];
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T || !(VT[t] > 0.f)) return;
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int i=0;i<4;i++) { long long q = tets[t*4+i]; for (int c=0;c<3;c++) { float u=Ucum[q*3+c]; for (int b=0;b<3;b++) A[c*3+b] += u*gl[t*12+i*3+b]; } }
+    float r = sr_ratio(A);
+    if (!(det3(A) > 0.f)) atomicAdd(&rst[9], 1.f);
+    else if (r > csr*1.001f) atomicAdd(&rst[8], 1.f);
+}
+// (2) 로그 장벽 (--sb κ --sb_c c --sb_dhat d̂): 사면체 에너지에 V_T κ μ b(c - r(A_T); d̂) (b 는 기존 bar_db 꼴 -(d-d̂)² ln(d/d̂), d < 1e-3 d̂ 선형 연장).
+//   ∂r/∂A = A (P_max/(σ1σ3) - σ1 P_min/σ3³),  P_k = AᵀA 의 고유 사영 (단순 고윳값: Π_{j≠k}(C - l_j I)/(l_k - l_j), 겹친 고윳값: 두 차원 사영의 1/2 -- 대칭 부분기울기)
+//   ∂E/∂A = -κ μ b'(d) ∂r/∂A  (b' < 0 이라 r 을 줄이는 쪽), 사면체 힘 f_i = -V (∂E/∂A) ∇λ_i. 장벽 부분은 double.
+//   나머지 (FCR 탄성·뒤집힘 계수·det 장벽 fbk) 는 ex_tet_force_R 와 같다.
+__device__ __forceinline__ double bar_db_d(double d, double jh) {
+    if (!(d < jh)) return 0.0;
+    double eps = 1e-3*jh;
+    double dc = d < eps ? eps : d;
+    double k = dc - jh, l = log(dc/jh);
+    return -2.0*k*l - k*k/dc;
+}
+__device__ __forceinline__ void sr_grad(const float* Af, double* Gr, double* rr) {   // Gr = ∂r/∂A, rr = r
+    double A[9]; for (int k=0;k<9;k++) A[k] = (double)Af[k];
+    double C[9];
+    for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=A[i]*A[k]+A[3+i]*A[3+k]+A[6+i]*A[6+k];
+    double l[3]; symeig3(C, l);
+    double l0 = fmax(l[0], 1e-30), l1 = l[1], l2 = l[2];
+    double s1 = sqrt(l2), s3 = sqrt(l0);
+    *rr = s1/s3;
+    double tol = 1e-6*l2;
+    double Pmax[9], Pmin[9], I3[9] = {1,0,0, 0,1,0, 0,0,1};
+    double X0[9], X1[9], X2[9];
+    for (int k=0;k<9;k++) { X0[k] = C[k] - l0*I3[k]; X1[k] = C[k] - l1*I3[k]; X2[k] = C[k] - l2*I3[k]; }
+    if (l2 - l1 > tol) { double Q[9]; mm3(X1, X0, Q); double s = 1.0/((l2-l1)*(l2-l0)); for (int k=0;k<9;k++) Pmax[k] = Q[k]*s; }
+    else { double s = 0.5/(l2-l0); for (int k=0;k<9;k++) Pmax[k] = X0[k]*s; }
+    if (l1 - l0 > tol) { double Q[9]; mm3(X2, X1, Q); double s = 1.0/((l0-l2)*(l0-l1)); for (int k=0;k<9;k++) Pmin[k] = Q[k]*s; }
+    else { double s = 0.5/(l0-l2); for (int k=0;k<9;k++) Pmin[k] = X2[k]*s; }
+    double W[9]; double a = 1.0/(s1*s3), b = s1/(s3*s3*s3);
+    for (int k=0;k<9;k++) W[k] = a*Pmax[k] - b*Pmin[k];
+    mm3(A, W, Gr);
+}
+__global__ void ex_tet_force_SR(const int* szp, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
+                                float mu, float lam, float* f, float fbk, float fbj, int fbon, float* rst, float srk, float src, float srd) {
+    int T = szp[1];
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    long long n[4]; float G[12];
+    for (int i=0;i<4;i++) n[i]=tets[t*4+i];
+    for (int k=0;k<12;k++) G[k]=gl[t*12+k];
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u=U[n[i]*3+c]; for (int b=0;b<3;b++) A[c*3+b] += u*G[i*3+b]; }
+    float cA[9]; cof3(A, cA);
+    float dA = A[0]*cA[0]+A[1]*cA[1]+A[2]*cA[2];
+    if (rst && !(dA > 0.f)) atomicAdd(&rst[0], 1.f);
+    float Fb[9]; for (int k=0;k<9;k++) Fb[k]=FT[t*9+k];
+    float X[9]; mm3(A, Fb, X);
+    float C[9];
+    for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+    float l[3]; symeig3(C, l);
+    float J = 1.f;
+    for (int k=0;k<3;k++){ float s = sqrtf(fmaxf(l[k], 1e-12f)); s = fmaxf(s, 0.01f); J *= s; }
+    float Q[9], cf[9], P[9], Gm[9];
+    polar(X, Q); cof3(X, cf);
+    float dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+    float sg = (dt>0)?1.f:((dt<0)?-1.f:0.f);
+    for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(J-1.f)*sg*cf[k];
+    if (fbk > 0.f && fbon == 0) { float db = bar_db(dt, fbj); if (db != 0.f) { float s = fbk*mu*db; for (int k=0;k<9;k++) P[k] += s*cf[k]; } }
+    mmt3(P, Fb, Gm);
+    if (fbk > 0.f && fbon == 1) { float db = bar_db(dA, fbj); if (db != 0.f) { float s = fbk*mu*db; for (int k=0;k<9;k++) Gm[k] += s*cA[k]; } }
+    if (srk > 0.f) {
+        float CA[9];
+        for (int i=0;i<3;i++) for (int k=0;k<3;k++) CA[i*3+k]=A[i]*A[k]+A[3+i]*A[3+k]+A[6+i]*A[6+k];
+        float la[3]; symeig3(CA, la);
+        float rq = sqrtf(fmaxf(la[2], 0.f)/fmaxf(la[0], 1e-30f));
+        if ((float)src - rq < 1.01f*srd) {                                     // 활성 근처만 double 로 다시
+            double Gr[9], r;
+            sr_grad(A, Gr, &r);
+            double db = bar_db_d((double)src - r, (double)srd);
+            if (db != 0.0) {
+                double s = -(double)srk*(double)mu*db;
+                for (int k=0;k<9;k++) Gm[k] += (float)(s*Gr[k]);
+                if (rst) atomicAdd(&rst[10], 1.f);
+            }
+        }
+    }
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) {
+        float s = 0.f; for (int b=0;b<3;b++) s += Gm[c*3+b]*G[i*3+b];
+        atomicAdd(&f[n[i]*3+c], -V*s);
+    }
+}
 // ======== 절 P: lag 판 K 서브스텝마다 재평균 (--rep K --rep_mode vel, 사용자 10-29 "해") ========
 // 속도만 재평균 (입자 이동·재배치 없음, 같은 rows/λ·같은 노드 질량): v_p = Σλ v_n (G2P, PIC) -> (mv)_n = Σ w_pn v_p, v_n = (mv)_n / m_n (P2G)
 //   w_pn = P2G 와 같은 질량 가중 (사면체 등분 0.25 m_p / Σλm 판은 λ m_p). mv 는 호출 전에 비워 둔다.

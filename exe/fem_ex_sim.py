@@ -98,6 +98,12 @@ ap.add_argument("--lim_mode", choices=["gs", "box"], default="box",
                 help="--lim: gs = Kuhn 홀짝 8 색 Gauss-Seidel (노드별 닫힌 꼴 α, 서브스텝당 커널 8 개), box = 사면체별 상자 꼭짓점 판정 (det 이 α_i 마다 아핀 -> 상자 최소 = 꼭짓점; "
                      "노드 α = min s_T, 커널 2 개, Jacobi)")
 ap.add_argument("--lim_v", choices=["scale", "keep"], default="scale", help="--lim: scale = 속도도 α 배 (이동과 맞춤, 줄인 운동량·에너지 기록), keep = 속도 그대로")
+ap.add_argument("--lim_sr", type=float, default=-1.0,
+                help="절 Z (1) 클램프: 서브스텝 노드 이동 비율 α 로 점유 사면체 σ1(A_T)/σ3(A_T) ≤ c (상자 꼭짓점 이분 + Weyl 빠른 통과, Jacobi 노드 min). --lim Ĵ 를 같이 주면 det 하한도 (기존 상자 판), 안 주면 비율만")
+ap.add_argument("--lim_sr_chk", action="store_true", help="절 Z (1) 검산: 이동 뒤 실제 비율 위반 (r > 1.001 c)·det ≤ 0 사면체 x 서브스텝 수 (커널 1 개 더 -- 측정 판에는 끔)")
+ap.add_argument("--sb", type=float, default=0.0, help="절 Z (2) 로그 장벽 강성 κ: 사면체 에너지에 V_T κ μ b(c - σ1/σ3(A_T); d̂) (0 = 끔)")
+ap.add_argument("--sb_c", type=float, default=2.0, help="--sb 의 비율 상한 c")
+ap.add_argument("--sb_dhat", type=float, default=-1.0, help="--sb 의 d̂ (장벽이 켜지는 거리 c - r < d̂; 음수면 0.5 (c - 1))")
 ap.add_argument("--rstat", action="store_true", help="절 R 통계 (뒤집힌 셀 수 등) -- --fb·--lim 이 없어도 같은 사면체 힘 커널 (ex_tet_force_R, κ 0) 로 (기준 판 비교용)")
 ap.add_argument("--p2g", choices=["bary", "bs"], default="bary",
                 help="절 S (--opt --mode lag, 사용자 10-29): bs = 프레임 시작 P2G 를 2 차 B-스플라인으로 -- 노드 질량 m_n = Σ w(x_n - x_p) m_p·운동량 Σ w m_p v_p (27 노드), "
@@ -175,8 +181,15 @@ if NINT and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP an
     raise SystemExit("--nint 은 --opt --mode lag (재평균·B-스플라인 P2G·장벽·아핀 없음) 만")
 if a.nint_check and not NINT:
     raise SystemExit("--nint_check 은 --nint 와 함께")
-RNEW = a.fb > 0 or a.lim >= 0 or a.rstat or a.p2g == "bs" or NINT                                         # 절 R 경로 (사면체 힘 ex_tet_force_R + 통계)
-LIM = a.lim >= 0
+SRL = a.lim_sr > 0                                                                  # 절 Z (1) 비율 클램프
+SB = a.sb > 0                                                                       # 절 Z (2) 비율 로그 장벽
+SB_D = (a.sb_dhat if a.sb_dhat > 0 else 0.5 * (a.sb_c - 1.0)) if SB else 0.0
+if SB and not (a.sb_c > 1.0 and SB_D > 0):
+    raise SystemExit("--sb: c > 1, d̂ > 0 이어야")
+if SRL and a.lim_mode != "box":
+    raise SystemExit("--lim_sr 은 --lim_mode box (Jacobi 상자 판) 만")
+RNEW = a.fb > 0 or a.lim >= 0 or SRL or SB or a.rstat or a.p2g == "bs" or NINT                                         # 절 R 경로 (사면체 힘 ex_tet_force_R + 통계)
+LIM = a.lim >= 0 or SRL
 BSL = a.p2g == "bs"                                                                  # 절 S: lag 판 B-스플라인 P2G
 G2PBS = BSL and a.g2p == "bs"
 BSN = 1 if (BSL and a.bs_mesh == "occ") else 0                                       # 절 T: 팽창 없는 메시 + 메시 안 가중 정규화
@@ -191,6 +204,8 @@ if BSL and a.lagdiag and not VFL:
     raise SystemExit("--p2g bs --lagdiag 는 --floor vel 만 (진단 루프가 같은 _step_lag 를 부르는 경로)")
 if a.g2p == "bs" and not BSL:
     raise SystemExit("--g2p bs 는 --p2g bs 와 함께")
+if (SRL or SB) and (NINT or BSL):
+    raise SystemExit("--lim_sr/--sb 는 절 R 경로 (--p2g bary, 노드 적분 없음) 만")
 if RNEW and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP):
     raise SystemExit("--fb/--lim/--rstat 은 --opt --mode lag (재평균 없음) 만")
 NB = -(-a.N // REP) if REP else 1                                                   # 프레임당 블록 수 (마지막 블록은 짧을 수 있다)
@@ -228,7 +243,9 @@ print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N
       + (", [절 W] 질량·운동량도 셀 중심 커널로 셀에 -> 노드 집중 m_T/4 (가중 일치)" if BSCM else "")
       + (f", [절 V] 노드 적분 FEM (F_n = Σ V_T F_T / Σ V_T, 노드 FCR 응력, β {a.nint_beta:g})" if NINT else "")
       + (f", [절 R] log J 장벽 κ {a.fb:g} Ĵ {a.fb_jhat:g} J=det({'A F̄' if a.fb_on == 'X' else 'A'})" if a.fb > 0 else "")
-      + (f", [절 R] 이동 제한 det A_T ≥ {a.lim:g} ({'상자 꼭짓점 Jacobi' if a.lim_mode == 'box' else '8 색 Gauss-Seidel'}, 속도 {a.lim_v})" if LIM else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
+      + (f", [절 R] 이동 제한 det A_T ≥ {a.lim:g} ({'상자 꼭짓점 Jacobi' if a.lim_mode == 'box' else '8 색 Gauss-Seidel'}, 속도 {a.lim_v})" if a.lim >= 0 else "")
+      + (f", [절 Z] 비율 클램프 σ1/σ3(A_T) ≤ {a.lim_sr:g} (상자 꼭짓점 이분 + Weyl, Jacobi, 속도 {a.lim_v}){' + 검산' if a.lim_sr_chk else ''}" if SRL else "")
+      + (f", [절 Z] 비율 로그 장벽 κ {a.sb:g} c {a.sb_c:g} d̂ {SB_D:g}" if SB else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
 print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), {'격자 간격 dx' if BSP else 'Kuhn 최소 높이'} {lmin:.5f} (node_h {a.node_h}), "
       f"Δt_CFL = {dt_cfl:.3e} s -> N_CFL = h/Δt_CFL = {h / dt_cfl:.1f} (지금 h_s/Δt_CFL = {hs / dt_cfl:.3f})", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
@@ -389,7 +406,7 @@ class Opt:
         self._fhook = None                                                          # --lagdump: 서브스텝 노드 걸음 직전 내부력 f 복사 (진단 루프만, 그래프 판은 None)
         self.ncon = torch.zeros(1, dtype=torch.int32, device=dev)                    # --floor vel: 프레임 동안 접촉 (입자·서브스텝) 수
         self.bst = z(4)                                                              # 절 S: [0] 질량 0 노드 때문에 뺀 사면체 부피, [1] 그 사면체 수; 절 T: [2] 정규화로 메시 안 노드에 옮긴 질량 Σ(1-Win)m_p, [3] 옮긴 부피 Σ(1-Cin)V_p
-        self.rst = z(8)                                                              # 절 R 통계 (프레임마다 비움): [0] 뒤집힌 점유 사면체 x 서브스텝, [1] 제한 노드 x 서브스텝, [2:5] 줄인 운동량, [5] 줄인 KE, [6] Σ|줄인 운동량|
+        self.rst = z(12)                                                             # 절 R 통계 (프레임마다 비움): [0] 뒤집힌 점유 사면체 x 서브스텝, [1] 제한 노드 x 서브스텝, [2:5] 줄인 운동량, [5] 줄인 KE, [6] Σ|줄인 운동량|
         self.novf = torch.zeros(1, dtype=torch.int32, device=dev)                    # 노드 -> 사면체 목록 넘침 (24 초과 -- 없어야 한다)
         self.CL = z(Np, 9) if a.affine else None                                     # --affine: 입자 속도 기울기 (프레임 사이)
         if a.affine and (a.mode != "lag" or self.SORT):
@@ -614,6 +631,10 @@ class Opt:
         Mc, Tc = self.Mcap, self.Tcap
         if NINT:                                                                    # 절 V: 노드 적분 내부력 (커널 3 개)
             self._nint_force()
+        elif SB:                                                                    # 절 Z (2): ex_tet_force_R + 비율 장벽
+            EX.launch("ex_tet_force_SR", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
+                                              np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(a.fb), np.float32(a.fb_jhat),
+                                              np.int32(1 if a.fb_on == "A" else 0), EX.P(self.rst), np.float32(a.sb), np.float32(a.sb_c), np.float32(SB_D)))
         elif RNEW:
             EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
                                              np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(a.fb), np.float32(a.fb_jhat),
@@ -645,7 +666,14 @@ class Opt:
                                            np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs), np.float32(DAMP),
                                            EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
                                            np.int32(1 if a.vfl_mode == "full" else 0), np.int32(a.vfl_np), *PLf[3:], np.int32(1 if LIM else 0)), b=256)
-        if LIM and a.lim_mode == "box":
+        if SRL:                                                                     # 절 Z (1): 비율 (+ det) 클램프 -> 같은 상자 판 적용 커널
+            EX.launch("ex_lim_sr_tet", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc), np.float32(hs),
+                                            np.float32(a.lim_sr), np.int32(1 if a.lim >= 0 else 0), np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)))
+            EX.launch("ex_lim_box_apply", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs), EX.P(self.alph),
+                                               np.int32(1 if a.lim_v == "keep" else 0), EX.P(self.fx if self.fixd else None), EX.P(self.rst)), b=256)
+            if a.lim_sr_chk:
+                EX.launch("ex_sr_viol", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.Uc), np.float32(a.lim_sr), EX.P(self.rst)))
+        elif LIM and a.lim_mode == "box":
             EX.launch("ex_lim_box_tet", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc), np.float32(hs),
                                              np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)))
             EX.launch("ex_lim_box_apply", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs), EX.P(self.alph),
@@ -1492,6 +1520,8 @@ for i in range(L):
             st.update(inv_sub=int(rs[0]), inv_end=int((~(dA_ > 0)).sum()), invX_end=int((~(dX_ > 0)).sum()), detA_min=float(dA_.min()) if dA_.numel() else None,
                       detX_min=float(dX_.min()) if dX_.numel() else None, Fp_inv=int((~(dFp > 0)).sum()), Fp_detmin=float(dFp.min()),
                       lim_n=int(rs[1]), lim_dp=[rs[2], rs[3], rs[4]], lim_dke=rs[5], lim_dpabs=rs[6], lim_tets=int(rs[7]), ke_p=ke_p,
+                      sr_viol=int(rs[8]), sr_inv=int(rs[9]), sb_act=int(rs[10]),
+                      srA_max=(float((lambda sv: (sv[:, 0] / sv[:, -1].clamp_min(1e-30)).nan_to_num(float("inf")).max())(torch.linalg.svdvals(A_[occ_].double()))) if bool(occ_.any()) else None),
                       p_tot=[float(q) for q in (m[:, None] * v2).sum(0).tolist()], nt_ovf=int(OPT.novf.item()))
         if NINT and i < a.nint_check:                                               # 절 V 검산 (측정 밖, 프레임 끝 U)
             OPT.nint_check(i)
@@ -1524,7 +1554,8 @@ for i in range(L):
     recs.append(rec)
     print(f"  프레임 {i + 1}/{L} {1e3 * t_frame:.2f} ms 오차 {100 * e:.3f}% (누적 평균 {100 * np.nanmean(errs):.3f}%) 퍼짐 {spread:.3f} "
           f"노드 {st.get('M')} 사면체 {st.get('T')} 바닥 후보 {st.get('n_near')}" + (f" 최저 입자 {smin:+.5f} 아래 {nbelow}" if HASPL else "") + (f" 접촉 {st.get('n_contact')}" if VFL else "")
-          + (f" [R] 뒤집힘 (사면체x서브스텝) {st['inv_sub']} 끝 {st['inv_end']} det A 최소 {(st['detA_min'] if st['detA_min'] is not None else float('nan')):.3g} 입자 F 뒤집힘 {st['Fp_inv']} 제한 {st['lim_n']} 줄인 KE {st['lim_dke']:.3g} KE {st['ke_p']:.4g}" if RNEW else ""), flush=True)
+          + (f" [R] 뒤집힘 (사면체x서브스텝) {st['inv_sub']} 끝 {st['inv_end']} det A 최소 {(st['detA_min'] if st['detA_min'] is not None else float('nan')):.3g} 입자 F 뒤집힘 {st['Fp_inv']} 제한 {st['lim_n']} 줄인 KE {st['lim_dke']:.3g} KE {st['ke_p']:.4g} 끝 σ1/σ3(A) 최대 {(st['srA_max'] if st['srA_max'] is not None else float('nan')):.4g}"
+             + (f" 비율 위반 {st['sr_viol']} det≤0 {st['sr_inv']}" if a.lim_sr_chk else "") + (f" 장벽 활성 {st['sb_act']}" if SB else "") if RNEW else ""), flush=True)
     if PRED is not None:
         PRED[i] = x2
     if VD is not None:
@@ -1553,6 +1584,10 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             spread_last=recs[-1]["spread"], n_near_med=med([r.get("n_near") or 0 for r in recs]),
             overflow_frames=sum(1 for r in recs if r.get("overflow")), gpu=torch.cuda.get_device_name(0), tag=a.tag, damp_sub=DAMP,
             fb=a.fb, fb_jhat=a.fb_jhat, fb_on=a.fb_on, lim=a.lim, lim_v=a.lim_v, lim_mode=a.lim_mode,
+            lim_sr=(a.lim_sr if SRL else None), sb=(a.sb if SB else None), sb_c=(a.sb_c if SB else None), sb_dhat=(SB_D if SB else None),
+            sr_viol_tot=(sum(r.get("sr_viol", 0) for r in recs) if RNEW else None), sr_inv_tot=(sum(r.get("sr_inv", 0) for r in recs) if RNEW else None),
+            sb_act_tot=(sum(r.get("sb_act", 0) for r in recs) if RNEW else None), lim_frames=(sum(1 for r in recs if r.get("lim_n", 0) > 0) if RNEW else None),
+            srA_max=(max((r["srA_max"] for r in recs if r.get("srA_max") is not None), default=None) if RNEW else None),
             inv_sub_tot=(sum(r.get("inv_sub", 0) for r in recs) if RNEW else None), inv_frames=(sum(1 for r in recs if r.get("inv_sub", 0) > 0) if RNEW else None),
             inv_end_max=(max(r.get("inv_end", 0) for r in recs) if RNEW else None), Fp_inv_max=(max(r.get("Fp_inv", 0) for r in recs) if RNEW else None),
             detA_min=(min((r["detA_min"] for r in recs if r.get("detA_min") is not None and math.isfinite(r["detA_min"])), default=None) if RNEW else None),
