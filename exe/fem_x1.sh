@@ -13,7 +13,8 @@ sync_r2() { rclone copy $XL r2:storage/result/anchorflow/lbours/fem_x_lego -q; r
 trap 'kill $SY 2>/dev/null' EXIT
 nvidia-smi --query-gpu=index,uuid,memory.used --format=csv,noheader
 FD=$W/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt
-smoke() {  # smoke <G> <루트> <태그> <인자...>
+smoke() {  # smoke <G> <루트> <태그> <인자...> (이미 EX_DONE·qpt 있으면 건너뜀)
+  [ -f $W/lbours/$2/$3/EX_DONE ] && [ -s $W/lbours/$2/$3/qpt.log ] && return 0
   G=$1; RT=$2; TG=$3; shift 3
   until mkdir $W/gpulock_w/$G 2>/dev/null; do sleep 20; done
   while [ "$(nvidia-smi -i $G --query-gpu=memory.used --format=csv,noheader,nounits)" -gt 500 ]; do sleep 30; done
@@ -21,10 +22,10 @@ smoke() {  # smoke <G> <루트> <태그> <인자...>
   CUDA_VISIBLE_DEVICES=$G python -u exe/fem_x_qpt.py $W/lbours/$RT/$TG > $W/lbours/$RT/$TG/qpt.log 2>&1
   rmdir $W/gpulock_w/$G
 }
-smoke 0 fem_x_lego x_smoke_l --mode lag --opt --mass bary --no_dump --floor vel --rstat --lagdiag --lagdump 1 --frames 3 --N 192 &
-smoke 1 fem_x_ficus x_smoke_f --mode lag --opt --mass bary --no_dump --dump_pred --data $FD --tag F_pg_v0 --frames 3 --node_h 0.056569 --floor none --cfg_bc --region_density --pg_vdamp --rstat --lagdiag --lagdump 1 --N 640 &
-smoke 2 fem_x_lego x_smoke_lg --mode lag --opt --mass bary --no_dump --floor vel --rstat --frames 3 --N 192 &
-wait
+smoke 0 fem_x_lego x_smoke_l --mode lag --opt --mass bary --no_dump --floor vel --rstat --lagdiag --lagdump 1 --frames 3 --N 192 & P1=$!
+smoke 1 fem_x_ficus x_smoke_f --mode lag --opt --mass bary --no_dump --dump_pred --data $FD --tag F_pg_v0 --frames 3 --node_h 0.056569 --floor none --cfg_bc --region_density --pg_vdamp --rstat --lagdiag --lagdump 1 --N 640 & P2=$!
+smoke 2 fem_x_lego x_smoke_lg --mode lag --opt --mass bary --no_dump --floor vel --rstat --frames 3 --N 192 & P3=$!
+wait $P1 $P2 $P3   # 동기화 루프 (SY) 는 기다리지 않는다
 bad=0
 for d in $XL/x_smoke_l $XF/x_smoke_f $XL/x_smoke_lg; do
   if [ -f $d/summary.json ]; then echo "[연기 OK] $(basename $d)"; else echo "[연기 실패] $(basename $d)"; tail -20 $d/v_fem.log; bad=1; fi
@@ -35,8 +36,9 @@ grep -q "상태" $XL/x_smoke_l/qpt.log || bad=1
 sync_r2
 [ $bad -eq 0 ] || { echo X1_SMOKE_FAIL; exit 1; }
 echo X1_SMOKE_OK $(date +%T)
-for G in 0 1 2 3 4 5 6; do bash exe/fem_w_gpu.sh $G exe/fem_x_jobs.py $XL < /dev/null > $W/fem_x1_g$G.out 2>&1 & done
-wait
+GP=""
+for G in 0 1 2 3 4 5 6; do bash exe/fem_w_gpu.sh $G exe/fem_x_jobs.py $XL < /dev/null > $W/fem_x1_g$G.out 2>&1 & GP="$GP $!"; done
+wait $GP
 sleep 10
 echo X1_SWEEP_DONE $(date +%T)
 # 진단: 절 U 그대로 (폭주 vs 정상), 적분점·질량 검산
