@@ -43,7 +43,7 @@ LEGO and outs.append(o1)
 # 2
 o2 = f"{OUT}/fem_p_ficus_cmp.mp4"
 subprocess.run([sys.executable, f"{here}/fem_ex_compose.py", o2,
-                f"ficus F_pg_v0 125 프레임 · A6000 단독 · 정답 | 암시적 최종 (실시간 + 수정 판정) | 명시적 새 판 (lego 와 같은 코드 경로, {VN(SF)}, 바닥 없음)",
+                f"ficus F_pg_v0 125 프레임 · A6000 단독 · 정답 | 암시적 최종 (실시간 + 수정 판정) | 명시적 새 판 (lego 와 같은 lag + 재평균 코드, {VN(SF)}, 바닥 없음 -- lego 최종은 노드 속도만 재평균)",
                 f"정답 (PG)|-|{L}/fem3_ficus/gt_ficus.mp4",
                 f"암시적 실시간 + 수정 판정|{L}/fem_rt_ficus/rt_tmix_fix/summary.json|{L}/fem_rt_ficus/rt_tmix_fix/v/fem_ficus.mp4",
                 f"명시적 새 판 (N {SF['N']}, K {SF.get('rep') or '-'})|{FO}/summary.json|{FO}/vj/fem_ficus.mp4"], check=True)
