@@ -1077,7 +1077,7 @@ __global__ void ex_scatter_rows(int N, int k, const long long* perm, const float
     long long r = i / k; int c = i % k;
     dst[perm[r]*k + c] = src[i];
 }
-// ======== 절 U: 노드 적분 FEM (사용자 10-29 "그것도 일단 해 보라고 해") -- 평균 노드 변형 사면체 (Bonet & Burton 1998, Dohrmann et al. 2000) ========
+// ======== 절 V: 노드 적분 FEM (사용자 10-29 "그것도 일단 해 보라고 해") -- 평균 노드 변형 사면체 (Bonet & Burton 1998, Dohrmann et al. 2000) ========
 // 틀·질량·바닥·F̄ 상태·G2P 는 절 R lag 판 그대로. 바뀐 것은 내부력 하나:
 //   서브스텝마다
 //   (1) nint_cell : F_T = A_T(U) F̄_T,  사면체 버퍼 X_T = (V_T/4) F_T                (V_T > 0 사면체만)

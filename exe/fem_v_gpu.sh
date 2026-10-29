@@ -1,7 +1,7 @@
 #!/bin/bash
-# 절 U 한 카드 담당: 작업 목록 (python <목록> [β]) 에서 (줄 번호 % 7 == G) 인 실행만 이 카드에서 차례로 -- 비측정 (EX_NOWAIT=1, NOT_TIMED 표식).
+# 절 V 한 카드 담당: 작업 목록 (python <목록> [β]) 에서 (줄 번호 % 7 == G) 인 실행만 이 카드에서 차례로 -- 비측정 (EX_NOWAIT=1, NOT_TIMED 표식).
 # 실행마다 그 카드가 비어 있는지 (500 MiB 아래) 확인하고 기다린다 (같은 잡의 다른 작업과 겹치지 않게).
-# 사용: bash exe/fem_u_gpu.sh <G> <작업 목록 .py> [β]
+# 사용: bash exe/fem_v_gpu.sh <G> <작업 목록 .py> [β]
 G=${1:?GPU}; JL=${2:?작업 목록}; BT=${3:-0}
 cd "$(dirname "$0")/.." || exit 1
 set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; export PATH=$HOME/bin:$PATH
@@ -17,4 +17,4 @@ while read -r ROOT TG ARGS; do
   i=$((i + 1))
 done < <(python $JL $BT)
 echo "[카드 $G] 끝 $n 개 $(date +%T)"
-touch /home/dkta/work/lbours/fem_u_lego/GPU${G}_DONE_$(basename $JL .py)_b$BT
+touch /home/dkta/work/lbours/fem_v_lego/GPU${G}_DONE_$(basename $JL .py)_b$BT

@@ -1,7 +1,7 @@
-"""절 U 영상·그림 합성 (로컬 ffmpeg + matplotlib; % 는 fem_ex_compose.py 의 textfile + expansion=none).
+"""절 V 영상·그림 합성 (로컬 ffmpeg + matplotlib; % 는 fem_ex_compose.py 의 textfile + expansion=none).
   lego/ficus 3DGS: 정답 | 절 R 최고 | 절 T 최고 | 노드 적분 판 (칸마다 ms·fps·오차)
   ficus 잎·가지 끝 변위 시계열·진동 주기 (z 상위 5 % 입자, exe/fem_p_period.py 와 같은 분석, 렌더 입력 h5 에서)
-사용: python exe/fem_u_compose.py lego|ficus "<칸 이름>|<lbours 아래 상대 경로>" ...   (각 경로에 summary.json, vj/fem_<형상>.mp4, h5_fem/)"""
+사용: python exe/fem_v_compose.py lego|ficus "<칸 이름>|<lbours 아래 상대 경로>" ...   (각 경로에 summary.json, vj/fem_<형상>.mp4, h5_fem/)"""
 import os
 import subprocess
 import sys
@@ -20,12 +20,12 @@ shape = sys.argv[1]
 cells = [c.split("|") for c in sys.argv[2:]]
 if shape == "lego":
     base = [f"정답 (MPM)|-|{L}/fem2_lego/gt_lego.mp4"]
-    title = "lego L000 80 프레임 · A6000 단독 · 정답 | 셀 적분 (절 R·T 최고) | 노드 적분 FEM (절 U) -- 명시적 lag (프레임당 P2G 1 회 → 메시 서브스텝 N → G2P 1 회)"
+    title = "lego L000 80 프레임 · A6000 단독 · 정답 | 셀 적분 (절 R·T 최고) | 노드 적분 FEM (절 V) -- 명시적 lag (프레임당 P2G 1 회 → 메시 서브스텝 N → G2P 1 회)"
 else:
     base = [f"정답 (PG)|-|{L}/fem3_ficus/gt_ficus.mp4"]
-    title = "ficus F_pg_v0 125 프레임 · A6000 단독 · 정답 | 셀 적분 (절 R·T 최고) | 노드 적분 FEM (절 U) -- lego 와 같은 코드 경로, 바닥 없음"
+    title = "ficus F_pg_v0 125 프레임 · A6000 단독 · 정답 | 셀 적분 (절 R·T 최고) | 노드 적분 FEM (절 V) -- lego 와 같은 코드 경로, 바닥 없음"
 args = base + [f"{nm}|{L}/{p}/summary.json|{L}/{p}/vj/fem_{shape}.mp4" for nm, p in cells]
-o1 = f"{OUT}/fem_u_{shape}_cmp.mp4"
+o1 = f"{OUT}/fem_v_{shape}_cmp.mp4"
 subprocess.run([sys.executable, f"{here}/fem_ex_compose.py", o1, title, *args], check=True)
 if shape == "ficus":
     F_ = os.path.expanduser("~/.fonts/NotoSerifCJKkr-Bold.otf")
@@ -57,11 +57,11 @@ if shape == "ficus":
     ax.axhline(0, color="#bbb", lw=0.8)
     ax.set_xlabel("시간 (s)")
     ax.set_ylabel("주 진동 방향 변위 (z 상위 5 % 입자 평균, m)")
-    ax.set_title(f"ficus 잎·가지 끝 변위 시계열 · 정답 주기 {Tg:.2f} s · 셀 적분 (절 R·T) vs 노드 적분 (절 U)")
+    ax.set_title(f"ficus 잎·가지 끝 변위 시계열 · 정답 주기 {Tg:.2f} s · 셀 적분 (절 R·T) vs 노드 적분 (절 V)")
     ax.legend(fontsize=8.5, frameon=False, loc="lower right")
     ax.grid(alpha=.25)
     fig.tight_layout()
-    o2 = f"{OUT}/fem_u_ficus_period.png"
+    o2 = f"{OUT}/fem_v_ficus_period.png"
     fig.savefig(o2, dpi=130)
     print("[저장]", o2)
 print("[저장]", o1)

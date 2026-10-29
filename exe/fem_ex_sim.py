@@ -105,7 +105,7 @@ ap.add_argument("--bs_mesh", choices=["dil", "occ"], default="dil",
 ap.add_argument("--g2p", choices=["bary", "bs"], default="bary", help="--p2g bs 의 프레임 끝 G2P: bary = 사면체 barycentric (기존 ex_g2p_lag), bs = B-스플라인 (질량 가중과 같은 w)")
 ap.add_argument("--bsdiag", type=int, default=0, help="--p2g bs 진단 (측정 밖): K 프레임마다 노드 질량 분포 (B-스플라인 / 셀 집중 m_T/4 / Σλm), 국소 안정 비 -> bsdiag.jsonl (0 = 첫 프레임만, -1 = 끔)")
 ap.add_argument("--nint", action="store_true",
-                help="절 U (--opt --mode lag, 사용자 10-29): 노드 적분 FEM (평균 노드 변형 사면체, Bonet & Burton 1998 / Dohrmann et al. 2000) -- "
+                help="절 V (--opt --mode lag, 사용자 10-29): 노드 적분 FEM (평균 노드 변형 사면체, Bonet & Burton 1998 / Dohrmann et al. 2000) -- "
                      "서브스텝마다 F_n = Σ_{T∋n} V_T F_T / Σ V_T, P_n = P_FCR(F_n), f_a = -Σ_T (V_T/4) Σ_{n∈T} P_n F̄_Tᵀ ∇λ_a (= -∂/∂U Σ_n V_n ψ(F_n), V_n = Σ V_T/4). "
                      "질량·바닥·F̄·G2P 는 절 R 판 그대로")
 ap.add_argument("--nint_beta", type=float, default=0.0,
@@ -162,7 +162,7 @@ if a.rep_w != "std" and not (a.opt and a.mode == "lag" and a.mass == "tet" and a
     raise SystemExit("--rep_w tet4|lam 은 --opt --mode lag --mass tet 만")
 if RW4 and a.affine:
     raise SystemExit("--rep_w tet4 + --affine 은 정의가 맞지 않는다 (APIC G2P 는 λ 보간 + C)")
-NINT = bool(a.nint)                                                                  # 절 U: 노드 적분
+NINT = bool(a.nint)                                                                  # 절 V: 노드 적분
 if NINT and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP and a.p2g == "bary" and a.fb <= 0 and not a.affine):
     raise SystemExit("--nint 은 --opt --mode lag (재평균·B-스플라인 P2G·장벽·아핀 없음) 만")
 if a.nint_check and not NINT:
@@ -214,7 +214,7 @@ print(f"[명시적 FEM] 입자 {Np}, 프레임 {L}, h {h:.6f}, 서브스텝 {a.N
       + (f", 재평균 {a.rep_mode} {REP} 서브스텝마다 (블록 {NB})" if REP else "") + (", 아핀 전달 (APIC)" if a.affine else "")
       + (f", 전달 가중 {a.rep_w}" if a.rep_w != "std" else "")
       + (f", [절 S] P2G 2 차 B-스플라인 (노드 질량 Σ w m_p, 셀 F̄·V 셀 중심 w), G2P {'B-스플라인' if G2PBS else '사면체 barycentric'}, 메시 {'절 R 그대로 (팽창 없음, 메시 안 가중 정규화 -- 절 T)' if BSN else '1 칸 팽창'}" if BSL else "")
-      + (f", [절 U] 노드 적분 FEM (F_n = Σ V_T F_T / Σ V_T, 노드 FCR 응력, β {a.nint_beta:g})" if NINT else "")
+      + (f", [절 V] 노드 적분 FEM (F_n = Σ V_T F_T / Σ V_T, 노드 FCR 응력, β {a.nint_beta:g})" if NINT else "")
       + (f", [절 R] log J 장벽 κ {a.fb:g} Ĵ {a.fb_jhat:g} J=det({'A F̄' if a.fb_on == 'X' else 'A'})" if a.fb > 0 else "")
       + (f", [절 R] 이동 제한 det A_T ≥ {a.lim:g} ({'상자 꼭짓점 Jacobi' if a.lim_mode == 'box' else '8 색 Gauss-Seidel'}, 속도 {a.lim_v})" if LIM else "") + (", [절 R] 통계" if RNEW else ""), flush=True)
 print(f"[CFL] 파속 √((λ+2μ)/ρ_min) = {cwave:.2f} m/s (ρ_min {rho_min:g}), {'격자 간격 dx' if BSP else 'Kuhn 최소 높이'} {lmin:.5f} (node_h {a.node_h}), "
@@ -399,7 +399,7 @@ class Opt:
                 self.ncol = torch.zeros(self.Mcap, dtype=torch.uint8, device=dev)   # 절 R (2): Kuhn 격자 지표 홀짝 색 (0..7)
                 self.ntc = torch.zeros(self.Mcap, dtype=torch.int32, device=dev)
                 self.nt = torch.zeros(self.Mcap * 24, dtype=torch.int32, device=dev)
-            if NINT:                                                                 # 절 U: 노드 부피 V_n, 노드 응력 P_n, 노드 -> 사면체 목록
+            if NINT:                                                                 # 절 V: 노드 부피 V_n, 노드 응력 P_n, 노드 -> 사면체 목록
                 self.Vnd, self.Pnd = z(self.Mcap), z(self.Mcap, 9)
                 self.ntc_u = torch.zeros(self.Mcap, dtype=torch.int32, device=dev)
                 self.nt_u = torch.zeros(self.Mcap * 24, dtype=torch.int32, device=dev)
@@ -414,7 +414,7 @@ class Opt:
             self.tets = torch.zeros(self.Tcap, 4, dtype=torch.long, device=dev)
             self.tcell = torch.zeros(self.Tcap, dtype=torch.long, device=dev)
             if NINT:
-                self.XTu = torch.zeros(self.Tcap, 9, device=dev)                     # 절 U: 사면체 (V_T/4) F_T
+                self.XTu = torch.zeros(self.Tcap, 9, device=dev)                     # 절 V: 사면체 (V_T/4) F_T
             new = True
         if P > self.Pcap:
             self.Pcap = int(P * 1.3) + 64
@@ -505,7 +505,7 @@ class Opt:
         self.npos = self.nposb[:M]
         if LIM:
             self.alph.fill_(1065353216)
-        if NINT:                                                                    # 절 U: 노드 -> 사면체 목록 (프레임마다)
+        if NINT:                                                                    # 절 V: 노드 -> 사면체 목록 (프레임마다)
             self.ntc_u[:M].zero_()
             EX.launch("ex_node_tets", T, (EX.P(self.sz), EX.P(self.tets), EX.P(self.ntc_u), EX.P(self.nt_u), EX.P(self.novf)), b=256)
         if LIM and a.lim_mode == "gs":
@@ -585,7 +585,7 @@ class Opt:
     def _step_lag(self, xcur=None):
         """lag 한 서브스텝 (절 O 판): 사면체 힘 -> [에너지 바닥 후보 힘] -> [속도 바닥 접촉 판정] -> 노드 걸음 (+ 고착·비관통, f·gn·acc 비움)."""
         Mc, Tc = self.Mcap, self.Tcap
-        if NINT:                                                                    # 절 U: 노드 적분 내부력 (커널 3 개)
+        if NINT:                                                                    # 절 V: 노드 적분 내부력 (커널 3 개)
             self._nint_force()
         elif RNEW:
             EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs),
@@ -632,7 +632,7 @@ class Opt:
                                      np.float32(mu), np.float32(lam), np.float32(a.nint_beta), EX.P(self.f)))
 
     def nint_check(self, i):
-        """절 U 검산 (측정 밖, 프레임 끝 상태 U 와 그것에 무작위 변위 (0.01 node_h) 를 더한 상태 두 가지):
+        """절 V 검산 (측정 밖, 프레임 끝 상태 U 와 그것에 무작위 변위 (0.01 node_h) 를 더한 상태 두 가지):
         (a) 에너지 일관성: float64 노드 에너지 E(U) = (1-β) Σ_n V_n ψ(F_n) + β Σ_T V_T ψ(F_T) (ψ = μ|F - R|² + λ/2 (det F - 1)², R = 극분해) 의
             중앙 차분 (무작위 방향·힘 큰 노드 성분) vs 같은 식의 float64 해석 힘 f = -Σ_T (V_T/4) [(1-β) Σ_n P_n + 4β P_T] F̄ᵀ ∇λ
         (b) 커널 (float32) 힘 vs float64 해석 힘: |f_k - f_64| / |f_64| (전체 노름)
@@ -732,7 +732,7 @@ class Opt:
         with open(os.path.join(a.out, "nint_check.jsonl"), "a") as fh:
             fh.write(json.dumps(rec) + "\n")
         for r in recs:
-            print(f"    [U 검산] t {i + 1} {r['state']}: E {r['E']:.6g} |f| {r['f_norm']:.4g}; 에너지 중앙 차분 vs float64 해석 힘 상대차 방향 {r['fd_dir_rel']:.2e} 성분 {r['fd_comp_rel']:.2e}; "
+            print(f"    [V 검산] t {i + 1} {r['state']}: E {r['E']:.6g} |f| {r['f_norm']:.4g}; 에너지 중앙 차분 vs float64 해석 힘 상대차 방향 {r['fd_dir_rel']:.2e} 성분 {r['fd_comp_rel']:.2e}; "
                   f"커널 (float32) vs float64 {r['kern_rel']:.2e}; |Σf|/Σ|f| {r['mom_rel']:.2e} |Σx×f|/Σ|x||f| {r['ang_rel']:.2e}", flush=True)
 
     def _substeps(self):
@@ -1409,7 +1409,7 @@ for i in range(L):
                       detX_min=float(dX_.min()) if dX_.numel() else None, Fp_inv=int((~(dFp > 0)).sum()), Fp_detmin=float(dFp.min()),
                       lim_n=int(rs[1]), lim_dp=[rs[2], rs[3], rs[4]], lim_dke=rs[5], lim_dpabs=rs[6], lim_tets=int(rs[7]), ke_p=ke_p,
                       p_tot=[float(q) for q in (m[:, None] * v2).sum(0).tolist()], nt_ovf=int(OPT.novf.item()))
-        if NINT and i < a.nint_check:                                               # 절 U 검산 (측정 밖, 프레임 끝 U)
+        if NINT and i < a.nint_check:                                               # 절 V 검산 (측정 밖, 프레임 끝 U)
             OPT.nint_check(i)
         if BSL:                                                                     # 절 S: 질량·운동량 보존 (P2G 전후, 서브스텝 끝, G2P 뒤)
             M_ = OPT.M
