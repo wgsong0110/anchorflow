@@ -72,6 +72,10 @@ ap.add_argument("--affine", action="store_true", help="--opt --mode lag: 프레�
 ap.add_argument("--near_c0", action="store_true", help="--apic/--affine: 프레임 끝 바닥 후보 입자 (매핑으로 위치·속도가 바뀐 입자) 의 C 를 0 으로 (PIC 로 되돌림, 절 N.3)")
 ap.add_argument("--near_diag", default="", help="진단 전용 (절 N.2): 바닥 후보 힘 항 배율 '관성,변위탄성,기울기탄성' (예 0,1,1) -- 원래 식은 1,1,1")
 ap.add_argument("--lagdiag", action="store_true", help="--opt --mode lag 진단 (절 N.2): 그래프 없이 서브스텝마다 최대 |v_n| (8 표본·노드 높이·질량), 프레임 끝 사면체 det A_T 분포, 바닥 힘 크기 -> lagdiag.jsonl")
+ap.add_argument("--lagdump", type=int, default=0,
+                help="--lagdiag 덤프 (사용자 10-29 '날아가는 노드' 그림용, 계산 불변): 마지막 K 프레임의 서브스텝별 노드 U·v (시작 + 매 서브스텝 뒤), "
+                     "사면체 det A_T, 노드 접촉 질량 비 α (그 서브스텝 ex_vfl_contact 판정과 같은 식), 노드 위치·질량·점유율, 사면체, 입자 x·rows·λ "
+                     "-> 실행 끝 (발산 포함) 에 <out>/lagdump.pt (0 = 끔)")
 ap.add_argument("--rep", type=int, default=0,
                 help="절 P (--opt --mode lag 만, 사용자 10-29): K 서브스텝마다 입자에서 다시 평균 (0 = 끔, 기존 lag 판). 바닥·질량·에너지 정의 그대로")
 ap.add_argument("--rep_mode", choices=["full", "vel"], default="full",
@@ -119,6 +123,8 @@ REP = int(a.rep) if (a.rep and a.rep < a.N) else 0                              
 REPF = bool(REP) and a.rep_mode == "full"
 if REP and not (a.opt and a.mode == "lag" and a.interp == "bary"):
     raise SystemExit("--rep 은 --opt --mode lag 만")
+if a.lagdump and not (a.lagdiag and a.opt and a.mode == "lag"):
+    raise SystemExit("--lagdump 은 --opt --mode lag --lagdiag 와 함께")
 if REP and (FLOOR or a.lagdiag):
     raise SystemExit("--rep 은 에너지 바닥 (--floor particle)·--lagdiag 와 함께 못 쓴다 (프레임 단위 변위 U 를 0 으로 되돌리므로) -- --floor vel 또는 none")
 # 절 Q: --affine + --rep = 재평균 APIC (b) -- full: 블록 G2P 가 C 를 남기고 재배치 P2G 가 m_p (v_p + C_p (x_n - x_p)); vel: 커널 안에서 C (항등이 된다)
@@ -281,6 +287,11 @@ def frame_base(i, x, v, F):
     st.update(M=G.M, T=G.T, n_near=nn)
     return xc, vc, Fc.view(Np, 3, 3), st
 
+
+
+def _det3(Q):
+    """[.., 3, 3] 행렬식 (삼중곱 -- 비유한 값에도 예외 없이; --lagdump 전용)."""
+    return (Q[..., 0, :] * torch.cross(Q[..., 1, :], Q[..., 2, :], dim=-1)).sum(-1)
 
 
 # ---------------------------------------------------------------- 최적화 판
@@ -604,17 +615,31 @@ class Opt:
         al0 = contact_alpha()
         mstat.update(n_contact_nodes=int((al0 > 0).sum()), n_contact_light=int(((al0 > 0) & light).sum()))
         msmp = []
+        LD = a.lagdump > 0
+        if LD:                                                                      # 덤프 (읽기만 -- 계산 경로 불변)
+            def detA_now():
+                Q = torch.eye(3, device=dev) + torch.einsum("tia,tib->tab", self.Uc[tets_.reshape(-1)].view(T, 4, 3), gl_)
+                return _det3(Q)
+            dU_ = torch.empty(a.N + 1, M, 3, device=dev)
+            dV_ = torch.empty(a.N + 1, M, 3, device=dev)
+            dD_ = torch.empty(a.N + 1, T, device=dev)
+            dAl_ = torch.zeros(a.N, M, device=dev)
+            dU_[0], dV_[0], dD_[0] = self.Uc[:M], self.vn[:M], detA_now()
         if VFL:                                                                     # 절 O 판: 같은 서브스텝 커널 (_step_lag) -- f 는 걸음 안에서 비워져 |f/m| 표본은 0
             self.f.zero_()
             self.gn.zero_()
             self.acc.zero_()
         for j in range(a.N):
+            if LD:
+                dAl_[j] = contact_alpha()                                           # 이 서브스텝 접촉 판정 (서브스텝 시작 U 기준) 의 α
             if VFL:
                 self._step_lag()
                 if first_bad is None and not bool(torch.isfinite(self.vn[:M]).all()):
                     first_bad = j
             else:
                 self._step(self.Uc, None, None)
+            if LD:
+                dU_[j + 1], dV_[j + 1], dD_[j + 1] = self.Uc[:M], self.vn[:M], detA_now()
             if j % K == 0 or j == a.N - 1:
                 sp = self.vn[:M].norm(dim=-1)
                 k = int(sp.argmax())
@@ -643,6 +668,16 @@ class Opt:
                    svAF_max=float(svA[:, 0].max()), svAF_min=float(svA[:, -1].min()), first_bad_sub=first_bad,
                    svFp_max=float(svP[:, 0].max()), svFp_min=float(svP[:, -1].min()), svFp_q999=float(torch.quantile(svP[:, 0].float(), 0.999)),
                    Umax=float(self.Uc[:M].norm(dim=-1).max()), mesh=mstat, mesh_samples=msmp)
+        if LD:
+            if not hasattr(self, "_ring"):
+                import collections
+                self._ring = collections.deque(maxlen=int(a.lagdump))
+            cpu = lambda q: q.detach().cpu()
+            self._ring.append(dict(t=i, N=a.N, h=h, hs=hs, plane=(pt_, nr_) if HASPL else None, m_med=float(med), first_bad_sub=first_bad,
+                                   npos=cpu(self.npos), mn=cpu(mn), occn=cpu(occn), rn=cpu(rn), tets=cpu(tets_).int(), V0=cpu(V0), VT=cpu(VT_),
+                                   detFT=cpu(_det3(self.FT[:T].view(T, 3, 3))),
+                                   xp=cpu(self._xp), rows=cpu(self.rows).int(), lamb=cpu(self.lamb), nidx=cpu(ni_),
+                                   U=cpu(dU_), V=cpu(dV_), detA=cpu(dD_), alpha=cpu(dAl_)))
         with open(os.path.join(a.out, "lagdiag.jsonl"), "a") as fh:
             fh.write(json.dumps(rec) + "\n")
         print(f"    [lag 진단] t {i + 1}: 최대|v_n| 표본 " + " ".join(f"{q[1]:.3g}" for q in smp) + f" (마지막: 노드 높이-바닥 {smp[-1][2]:+.4f}, 질량/중앙 {smp[-1][3]:.3g}), "
@@ -693,6 +728,7 @@ class Opt:
                 self.ncon.zero_()
         if lagm and a.lagdiag:
             self._Fp = Fv.view(Np, 3, 3)
+            self._xp = x
             self._lagdiag(i)
         elif a.no_graph:
             self._substeps()
@@ -1078,6 +1114,9 @@ for i in range(L):
         break
 
 flog.close()
+if a.lagdump and getattr(OPT, "_ring", None):
+    torch.save(list(OPT._ring), os.path.join(a.out, "lagdump.pt"))
+    print(f"[lag 덤프] {os.path.join(a.out, 'lagdump.pt')} 프레임 {[r['t'] + 1 for r in OPT._ring]}", flush=True)
 W = a.warm
 sec = [r["sec"] for r in recs[W:]]
 med = lambda xs: sorted(xs)[len(xs) // 2] if xs else float("nan")
