@@ -1689,7 +1689,8 @@ __global__ void sp_force_g1(const int* szp, const long long* tets, const float* 
     }
 }
 __global__ void sp_force_g2(const int* szp, const long long* tets, const float* gl, float mu, float lam, float* f, const int* grp, const float* AG, float* AGz,
-                            const float* FG, const float* VG, const float* nmem) {
+                            const float* FG, const float* VG, const float* nmem, const float* U, float hg) {
+    // hg > 0: 모래시계 억제 (V_g/n) γ μ Σ_t |A_t - Ā|²  ->  사면체 t 힘에 -(V_g/n) 2 γ μ (A_t - Ā) ∇λ_{t,i} 더함 (Σ_t (A_t - Ā) = 0 이라 Ā 경유 몫 없음)
     int T = szp[1];
     int t = blockIdx.x*blockDim.x + threadIdx.x;
     if (t >= T) return;
@@ -1705,6 +1706,11 @@ __global__ void sp_force_g2(const int* szp, const long long* tets, const float* 
     long long n[4]; float G[12];
     for (int i=0;i<4;i++) n[i]=tets[t*4+i];
     for (int k=0;k<12;k++) G[k]=gl[t*12+k];
+    if (hg > 0.f) {
+        float At[9] = {1,0,0, 0,1,0, 0,0,1};
+        for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u=U[n[i]*3+c]; for (int b=0;b<3;b++) At[c*3+b] += u*G[i*3+b]; }
+        for (int k=0;k<9;k++) Gm[k] += 2.f*hg*mu*(At[k]-A[k]);
+    }
     for (int i=0;i<4;i++) for (int c=0;c<3;c++) {
         float s = 0.f; for (int b=0;b<3;b++) s += Gm[c*3+b]*G[i*3+b];
         atomicAdd(&f[n[i]*3+c], -w*s);

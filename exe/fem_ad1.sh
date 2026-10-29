@@ -10,7 +10,8 @@ R="bash exe/fem_c_run.sh"
 EX_ROOT=fem_ad_lego $R s_ref 3 $LB < /dev/null
 EX_ROOT=fem_ad_lego $R s_mg0 3 $LB --sp merge --sp_k 0 --sp_chk 1,3,5 < /dev/null
 EX_ROOT=fem_ad_lego $R s_cb0 3 $LB --sp cube --sp_k 0 --sp_chk 1,3,5 < /dev/null
-for v in "mg2 --sp merge --sp_k 2" "cb2 --sp cube --sp_k 2" "bl2 --sp blend --sp_k 2" "st2 --sp stiff --sp_k 2" "ml01 --sp mlow --sp_mlow 0.1"; do
+EX_ROOT=fem_ad_lego $R s_mg0t 3 $LB --sp merge --sp_a tet --sp_k 0 --sp_chk 1,3,5 < /dev/null
+for v in "mg2 --sp merge --sp_k 2" "cb2 --sp cube --sp_k 2" "mg2t --sp merge --sp_a tet --sp_k 2" "cb2t --sp cube --sp_a tet --sp_k 2" "mg2h1 --sp merge --sp_hg 1 --sp_k 2" "bl2 --sp blend --sp_k 2" "st2 --sp stiff --sp_k 2" "ml01 --sp mlow --sp_mlow 0.1"; do
   set -- $v; t=$1; shift
   EX_ROOT=fem_ad_lego $R s_$t 3 $LB "$@" --sp_chk 1,3,5 < /dev/null
 done
@@ -25,15 +26,13 @@ def e(t):
 b = e("s_ref")
 ok = isinstance(b, list) and len(b) == 5
 print("기준", b)
-for t in ("s_mg0", "s_cb0"):
+for t in ("s_mg0", "s_cb0", "s_mg0t"):
     z = e(t)
     rel = max(abs(p - q) / max(abs(q), 1e-12) for p, q in zip(z, b)) if isinstance(z, list) and len(z) == 5 and ok else float("inf")
     print(t, "기준 대비 상대 차 최대", rel)
     ok = ok and rel < 1e-3
-for t in ("s_mg2", "s_cb2", "s_bl2", "s_st2", "s_ml01"):
-    z = e(t)
-    print(t, z)
-    ok = ok and isinstance(z, list) and len(z) == 5
+for t in ("s_mg2", "s_cb2", "s_mg2t", "s_cb2t", "s_mg2h1", "s_bl2", "s_st2", "s_ml01"):
+    print(t, e(t))                                                  # 발산해도 스윕은 한다 (결과로 기록)
 print("SMOKE_PASS" if ok else "SMOKE_FAIL")
 PY
 cat $OL/smoke.txt

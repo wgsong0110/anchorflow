@@ -113,6 +113,9 @@ ap.add_argument("--fspread", type=int, default=0, help="측정 밖: K 프레임�
 ap.add_argument("--sp", choices=["none", "merge", "cube", "blend", "stiff", "mlow"], default="none",
                 help="절 AD 희소 셀 처리: merge = 희소 사면체를 입자 많은 면 이웃 쪽으로 묶어 한 셀 (F̄·V 합, Ā = 묶음 A 평균) 로 응력, cube = 희소 사면체가 있는 정육면체의 점유 사면체를 한 셀로, "
                      "blend = 희소 사면체 F̄ 를 면 이웃 F̄ 와 입자 부피 가중으로 섞음, stiff = 희소 사면체 응력에 점유율 가중, mlow = 노드 관성 질량 하한")
+ap.add_argument("--sp_a", choices=["avg", "tet"], default="avg",
+                help="--sp merge/cube 묶음의 셀 사상: avg = 묶음 하나의 Ā (구성 사면체 A 평균 -- 묶음 안 반대 변형은 에너지 0), tet = 구성 사면체마다 자기 A_t 에 묶음 F̄·V/n (묶음 상태, 사면체별 변형)")
+ap.add_argument("--sp_hg", type=float, default=0.0, help="--sp_a avg 의 모래시계 억제: 묶음 에너지에 (V_g/n) γ μ Σ_t |A_t - Ā|² (0 = 끔)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
 ap.add_argument("--sp_occ", type=float, default=0.0, help="--sp: 희소 = (입자 수 ≤ k) 또는 점유율 V_T/V_기하 < 이 값 (0 = 입자 수만)")
 ap.add_argument("--sp_beta", type=float, default=1.0, help="--sp blend: 이웃 몫 배율 β (F̄' = (V F̄ + β Σ V_nb F̄_nb)/(V + β Σ V_nb))")
@@ -243,7 +246,7 @@ if a.fpolar_off:
     a.fpolar = False
 CC = a.vfl_cull or a.sr_fast or a.tlist or a.fpolar                                  # 절 C 경로
 SPM = a.sp
-SPG = SPM in ("merge", "cube")                                                       # 절 AD: 묶음 힘 (커널 2 개)
+SPG = SPM in ("merge", "cube") and a.sp_a == "avg"                                                       # 절 AD: 묶음 힘 (커널 2 개)
 if SPM != "none" and not (a.opt and a.mode == "lag" and a.interp == "bary" and not a.rep and a.p2g == "bary" and not NINT and not CQ and not SB and a.fb <= 0 and not a.affine):
     raise SystemExit("--sp 는 --opt --mode lag --p2g bary (절 R 경로, 재평균·노드 적분·2 차 근사·장벽·아핀 없음) 만")
 if a.sp_chk and SPM == "none":
@@ -766,6 +769,15 @@ class Opt:
             mem = occm & (hs_[cube] > 0)
             cmin = torch.full((Pn,), T, dtype=torch.long, device=dev).scatter_reduce_(0, cube, torch.where(occm, ar, torch.full_like(ar, T)), reduce="amin")
             root = torch.where(mem, cmin[cube], ar)
+        if SPM in ("merge", "cube") and not SPG:                                     # --sp_a tet: 묶음 F̄·V/n 을 구성 사면체마다 (자기 A_t) -- 기존 힘 커널, F̄ 는 FT 에·V 는 VF 에
+            nmem = torch.zeros(T, device=dev).index_add_(0, root, occf)
+            VG = torch.zeros(T, device=dev).index_add_(0, root, VT * occf)
+            FGs = torch.zeros(T, 9, device=dev).index_add_(0, root, self.FTs[:T] * occf[:, None])
+            ing = occm & (nmem[root] > 1.5)
+            FGr = FGs[root] / VG[root].clamp_min(1e-30)[:, None]
+            self.FT[:T] = torch.where(ing[:, None], FGr, self.FT[:T])
+            self.VF[:T] = torch.where(ing, VG[root] / nmem[root].clamp_min(1.0), VT)
+            self._spst += [ing.sum(), (ing & (root == ar)).sum()]
         if SPG:
             nmem = torch.zeros(T, device=dev).index_add_(0, root, occf)
             VG = torch.zeros(T, device=dev).index_add_(0, root, VT * occf)
@@ -802,7 +814,7 @@ class Opt:
             qs = torch.quantile(occ[sp], torch.tensor([0.1, 0.5, 0.9], device=dev)).tolist() if bool(sp.any()) else []
             print(f"[절 AD] 첫 프레임: 점유 사면체 {int(occm.sum())}, 희소 {int(sp.sum())} (입자 1 개 {int((sp & (cnt <= 1)).sum())}), 점유율 분위 1·10·50·90 % "
                   f"{[round(v_, 3) for v_ in q]}, 희소 점유율 10·50·90 % {[round(v_, 3) for v_ in qs]}, 기하 부피 {float(Vg[0]):.4g}"
-                  + (f", 묶인 사면체 {int(self._spst[3])} 묶음 {int(self._spst[4])}" if SPG else ""), flush=True)
+                  + (f", 묶인 사면체 {int(self._spst[3])} 묶음 {int(self._spst[4])}" if len(self._spst) > 3 else ""), flush=True)
 
     def sp_check(self):
         """절 AD 검산 (측정 밖, 프레임 끝 U): 내부력 합·돌림힘 (운동량·각운동량 보존), mlow 는 Σ (m/m') f."""
@@ -813,10 +825,10 @@ class Opt:
             EX.launch("sp_force_g1", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), np.float32(mu), np.float32(lam),
                                           EX.P(self.f), EX.P(self.grp), EX.P(self.AG[0]), EX.P(None)))
             EX.launch("sp_force_g2", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.grp),
-                                          EX.P(self.AG[0]), EX.P(None), EX.P(self.FG), EX.P(self.VG), EX.P(self.nmem)))
+                                          EX.P(self.AG[0]), EX.P(None), EX.P(self.FG), EX.P(self.VG), EX.P(self.nmem), EX.P(self.Uc), np.float32(a.sp_hg)))
             self.AG[0].zero_()
         else:
-            EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if SPM == "stiff" else self.VTs),
+            EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if (SPM == "stiff" or (SPM in ("merge", "cube") and not SPG)) else self.VTs),
                                              np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(0), np.float32(0.3), np.int32(0), EX.P(None)))
         f = self.f[:M].double()
         xn = (self.npos + self.Uc[:M]).double()
@@ -900,13 +912,13 @@ class Opt:
             EX.launch("sp_force_g1", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), np.float32(mu), np.float32(lam),
                                           EX.P(self.f), EX.P(self.grp), EX.P(self.AG[j_ % 2]), EX.P(self.rst)))
             EX.launch("sp_force_g2", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.grp),
-                                          EX.P(self.AG[j_ % 2]), EX.P(self.AG[(j_ + 1) % 2]), EX.P(self.FG), EX.P(self.VG), EX.P(self.nmem)))
+                                          EX.P(self.AG[j_ % 2]), EX.P(self.AG[(j_ + 1) % 2]), EX.P(self.FG), EX.P(self.VG), EX.P(self.nmem), EX.P(self.Uc), np.float32(a.sp_hg)))
         elif CC:                                                                    # 절 C: 같은 식 (점유 목록·빠른 극분해 선택)
             CCU.launch("c_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tl if a.tlist else None), EX.P(self.cint[2:] if a.tlist else None), EX.P(self.tets),
                                              EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f),
                                              np.float32(a.fb), np.float32(a.fb_jhat), np.int32(1 if a.fb_on == "A" else 0), EX.P(self.rst), np.int32(1 if a.fpolar else 0)))
         elif RNEW:
-            EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if SPM == "stiff" else self.VTs),
+            EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if (SPM == "stiff" or (SPM in ("merge", "cube") and not SPG)) else self.VTs),
                                              np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(a.fb), np.float32(a.fb_jhat),
                                              np.int32(1 if a.fb_on == "A" else 0), EX.P(self.rst)))
         else:
@@ -2131,7 +2143,7 @@ for i in range(L):
             st.update(rn=int((vnn > 5.0 * q90).sum()), vn_max=float(vnn.max()), vn_q90=float(q90))
         if SPM != "none":
             sps = [int(q_) for q_ in torch.stack(OPT._spst).tolist()]
-            st.update(sp_occ=sps[0], sp_n=sps[1], sp_n1=sps[2], **(dict(sp_grouped=sps[3], sp_groups=sps[4]) if SPG else {}))
+            st.update(sp_occ=sps[0], sp_n=sps[1], sp_n1=sps[2], **(dict(sp_grouped=sps[3], sp_groups=sps[4]) if len(sps) > 3 else {}))
             if a.sp_chk and str(i + 1) in a.sp_chk.split(","):
                 st.update(sp_chk=OPT.sp_check())
                 print(f"  [절 AD 검산] 프레임 {i + 1}: {st['sp_chk']}", flush=True)
@@ -2216,7 +2228,7 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             nint=NINT, nint_beta=(a.nint_beta if NINT else None), fupd=a.fupd, fupd_b=(a.fupd_b if FUPD else None),
             sp=SPM, sp_k=a.sp_k, sp_occ=a.sp_occ, sp_beta=a.sp_beta, sp_wocc=a.sp_wocc, sp_mlow=a.sp_mlow,
             rn_tot=(sum(r.get("rn", 0) for r in recs) if RNEW else None), rn_max=(max((r.get("rn", 0) for r in recs), default=None) if RNEW else None),
-            sp_n_med=(med([r.get("sp_n", 0) for r in recs]) if SPM != "none" else None), sp_grouped_med=(med([r.get("sp_grouped", 0) for r in recs]) if SPG else None))
+            sp_n_med=(med([r.get("sp_n", 0) for r in recs]) if SPM != "none" else None), sp_grouped_med=(med([r.get("sp_grouped", 0) for r in recs]) if SPM in ("merge", "cube") else None), sp_a=a.sp_a, sp_hg=a.sp_hg)
 if CC and a.cchk:
     ck = {k: float(t_) for k, t_ in OPT.chk.items()}
     json.dump(ck, open(os.path.join(a.out, "cchk.json"), "w"), indent=1)
