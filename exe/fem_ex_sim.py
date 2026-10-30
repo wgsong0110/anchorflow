@@ -136,6 +136,8 @@ ap.add_argument("--vfl_rate", action="store_true",
                 help="절 AH (--floor vel): 서브스텝 고착 몫을 단위 시간당으로 -- (1 - a/m)^(h_s/h_ref), h_ref = 정답 substep_dt (기존은 서브스텝마다 (1 - a/m))")
 ap.add_argument("--vfl_npd", type=float, default=0.0,
                 help="절 AH (--floor vel): 비관통을 평면 아래 이 깊이 (m) 보다 깊은 입자가 걸린 노드에만 (정답 MPM 은 고착 격자 노드가 잡기 전 ~0.5 dx_g 관통; 0 = 기존)")
+ap.add_argument("--vfl_agg", action="store_true",
+                help="절 AH.7 결과 불변 가속 (--vfl_w gtk 경로): 프레임마다 바닥 후보를 입자 사면체 첫 노드 번호로 정렬 + 접촉 원자 합을 워프 집계 (같은 식, 합 순서만 다름)")
 ap.add_argument("--rbdiag", action="store_true", help="절 AH 진단 (측정 밖): 프레임마다 강체 지표 (질량 중심·속도, 운동 에너지, 질량 중심 각운동량, Kabsch 회전, 최저 높이) 우리 / 정답 -> fem.jsonl rb")
 ap.add_argument("--vp_h5", default="", help="절 AE: 입자 부피·질량을 정답 0 프레임 h5 (float32 위치) 로 정답 생성기와 같은 식으로 (.pt 위치는 float16 반올림이라 칸 판정이 갈림)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
@@ -456,6 +458,8 @@ AH_BAND = 0.5 * AH_DXG if AH_GTK else 0.0                                       
 AH_KEX = (hs / float(cfg["substep_dt"])) if (VFL and a.vfl_rate) else 1.0           # (1 - a/m)^(h_s/h_ref)
 if a.lim_v == "mom" and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and SRL):
     raise SystemExit("--lim_v mom 은 확정 경로 (--cfuse --cfuse_mode 2 --lim_sr) 만")
+if a.vfl_agg and not (AH_GTK and a.cfast or AH_GTK and a.cfuse):
+    raise SystemExit("--vfl_agg 는 --vfl_w gtk + --cfuse 경로만")
 if AHF:
     if not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2) or PLAST or VISC or PBC:
         raise SystemExit("절 AH 바닥 (--vfl_w gtk / --vfl_rate) 은 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, 탄성) 만")
@@ -926,6 +930,13 @@ class Opt:
         EX.launch("bsl_tfin", self.Tcap, (EX.P(self.sz), EX.P(self.tcell), EX.P(self.tets), EX.P(self.mn), EX.P(self.cV), EX.P(self.cVF),
                                           EX.P(self.VTs), EX.P(self.FT), EX.P(self.bst)), b=256)
 
+    def _agg_sort(self):
+        """절 AH.7: nidx[:n_near] 를 rows[p, 0] (사면체 첫 노드) 순으로 -- 호스트 동기화 없이 전체 길이 정렬 (n 뒤는 큰 키로 뒤에)."""
+        if getattr(self, "_ar", None) is None:
+            self._ar = torch.arange(Np, device=dev)
+        key = torch.where(self._ar < self.sz[2].long(), self.rows.view(-1, 4)[self.nidx, 0], torch.iinfo(torch.long).max)
+        self.nidx.copy_(self.nidx[torch.argsort(key)])
+
     def _sparse(self):
         """절 AD: 프레임 시작 (P2G 뒤, 서브스텝 전) 희소 사면체 판정과 처리 버퍼 (그래프가 읽는 상주 버퍼에 제자리로). 호스트 동기화 없음."""
         T, M = self.T, self.M
@@ -1137,7 +1148,7 @@ class Opt:
                                     EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                     np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
         elif AHF:                                                                   # 절 AH: 같은 힘 + 바닥 접촉 가중 (gtk) / 실제 접촉 표시
-            AHC.launch("ah_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
+            AHC.launch("ah_fc_agg" if a.vfl_agg else "ah_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                     EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
                                     EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                     np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon),
@@ -1867,6 +1878,8 @@ class Opt:
                 self.clst[:1].zero_()
                 if a.tlist:
                     CCU.launch("c_tet_list", self.Tcap, (EX.P(self.sz), EX.P(self.VTs), EX.P(self.tl), EX.P(self.cint[2:])), b=256)
+                if VFL and a.vfl_cull and a.vfl_agg:                                # 절 AH.7: 후보를 사면체 첫 노드 번호로 정렬 (c_s0 앞 -- s0c 는 정렬된 순서로)
+                    self._agg_sort()
                 if VFL and a.vfl_cull:
                     CCU.launch("c_s0", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf), *PLf, EX.P(self.s0c)), b=256)
         if a.adapt != "none":

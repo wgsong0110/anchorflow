@@ -80,7 +80,12 @@ V5 = {
 }
 # 6 차: 비교 -- 절 AF 공통 설정 그대로의 서브스텝 로버스트성 (AH_N 0.5,2)
 V6 = {"af": (REC, True)}
-SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6}
+# 7 차: 결과 불변 가속 (--vfl_agg) 판 -- 최종 판 (θ 0.75) 과 θ 0.5 로 되돌린 판
+V7 = {
+    "fa": (rep(GKR, sp_vcap=0.75) + " --vfl_npd 0.005 --vfl_agg", True),
+    "fa5": (GKR + " --vfl_npd 0.005 --vfl_agg", True),
+}
+SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]

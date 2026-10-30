@@ -137,6 +137,48 @@ __global__ void ah_mom(const int* szp, const float* mn, const unsigned char* fix
     float im = 1.f / mt[0];
     for (int c=0;c<3;c++) vn[n*3+c] += dP[c]*im;
 }
+// ---- 절 AH.7 결과 불변 가속 (--vfl_agg): ah_fc 와 같은 식, 접촉 블록만 워프 집계 -- 후보를 프레임마다 입자 사면체 첫 노드 번호로 정렬해 두면
+//      한 워프 안 입자들이 노드를 공유하므로, 노드 슬롯 i 마다 __match_any_sync 로 같은 노드 레인을 묶어 대표 레인 하나만 원자 합 (합 순서만 다름).
+__global__ void ah_fc_agg(int nbT, const int* szp, const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
+                          float mu, float lam, float* f, float* rst, int fpol, float* eF,
+                          const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb, const float* m, int tetmass,
+                          float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon, int gtk, float band, float pn, float dxg, float* accN, float npd) {
+    if ((int)blockIdx.x < nbT) {
+        int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+        int t;
+        if (tl) { if (i0 >= tlc[0]) return; t = tl[i0]; }
+        else { if (i0 >= szp[1]) return; t = i0; }
+        c_force_body(t, tets, U, gl, FT, VT, mu, lam, f, 0.f, 0.f, 0, rst, fpol, eF);
+        return;
+    }
+    int q = (blockIdx.x - nbT)*blockDim.x + threadIdx.x;
+    int lane = threadIdx.x & 31;
+    bool ok = q < szp[2];
+    if (ok) ok = !(s0c[q] > __uint_as_float(*dn) + 1e-5f + band);
+    if (!__any_sync(0xffffffffu, ok)) return;                                    // 워프 전체가 후보 아님 (블록은 32 의 배수, 레인 모두 여기 도달)
+    long long nd[4] = {-1, -1, -1, -1}; float lm[4] = {0, 0, 0, 0};
+    float w = 0.f, mp = 0.f; bool real = false;
+    if (ok) {
+        long long p = nidx[q];
+        float u[3] = {0,0,0};
+        for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; for (int a=0;a<3;a++) u[a] += lm[i]*U[nd[i]*3+a]; }
+        float s = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
+        if (gtk) { if (s < band) { w = ah_wstk(s, pn, dxg); if (!(w > 0.f) && !(s < 0.f)) w = 0.f; } }
+        else if (s < 0.f) w = 1.f;
+        if (gtk ? (s < band && (w > 0.f || s < 0.f)) : (s < 0.f)) { mp = m[p]; real = s < -npd; if (ncon && s < 0.f) atomicAdd(ncon, 1); }
+        else ok = false;
+    }
+    if (!__any_sync(0xffffffffu, ok)) return;
+    for (int i=0;i<4;i++) {
+        long long key = ok ? nd[i] : -(long long)(lane + 1);
+        unsigned msk = __match_any_sync(0xffffffffu, key);
+        float va = ok && w > 0.f ? (tetmass ? 0.25f : lm[i])*mp*w : 0.f;
+        float vc = (ok && real) ? 1.f : 0.f;
+        float sa = 0.f, sc = 0.f;
+        for (int j=0;j<32;j++) { float oa = __shfl_sync(0xffffffffu, va, j), oc = __shfl_sync(0xffffffffu, vc, j); if ((msk >> j) & 1u) { sa += oa; sc += oc; } }
+        if (ok && lane == __ffs(msk) - 1) { if (sa > 0.f) atomicAdd(&acc[nd[i]], sa); if (accN && sc > 0.f) atomicAdd(&accN[nd[i]], sc); }
+    }
+}
 __global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
 '''
