@@ -42,11 +42,22 @@ elif st.startswith("t:") or st.startswith("F:"):                                
     kind, combos, nr = st.split(":")
     for sc in scs:
         for cmb in combos.split(","):
-            ab, vk = cmb.split("_")[:2]
-            ck = cmb.split("_")[2] if cmb.count("_") >= 2 else "free"
+            pp = cmb.split("_")
+            gfl = pp[-1] == "g"                                                      # 끝 _g = 절 AH 새 바닥 (ficus 는 바닥 없음 -> 건너뜀)
+            if gfl:
+                pp = pp[:-1]
+                if sc == "ficus":
+                    continue
+            ab, vk = pp[:2]
+            ck = pp[2] if len(pp) >= 3 else "free"
             ak, bk = ab[:ab.index("b")], ab[ab.index("b"):]
             for r in range(1, int(nr) + 1):
-                out.append(line(sc, ak, bk, vk, ck, r, kind))
+                ln = line(sc, ak, bk, vk, ck, r, kind)
+                if gfl:
+                    root, tag, rest = ln.split(" ", 2)
+                    tag = tag.replace(f"_{kind}{r}", f"_{kind}g{r}")
+                    ln = f"{root} {tag} {rest} --vfl_w gtk --vfl_rate --vfl_npd 0.005"
+                out.append(ln)
 elif st.startswith("rep:"):                                                          # rep:<판,...>:<회 수> -- 판 = a12b3_v 꼴
     _, combos, nr = st.split(":")
     for sc in scs:
