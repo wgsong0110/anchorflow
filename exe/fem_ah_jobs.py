@@ -78,7 +78,9 @@ V5 = {
     "gkr_d025_vc6": (rep(GKR, sp_vcap=0.6) + " --vfl_npd 0.005", True),
     "gkr_d05_vc6": (rep(GKR, sp_vcap=0.6) + " --vfl_npd 0.01", True),
 }
-SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5}
+# 6 차: 비교 -- 절 AF 공통 설정 그대로의 서브스텝 로버스트성 (AH_N 0.5,2)
+V6 = {"af": (REC, True)}
+SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]
