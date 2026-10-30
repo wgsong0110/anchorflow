@@ -47,7 +47,15 @@ V1 = {
     "h5": (REC + " --vp_h5 H5", False),                  # 정답 float32 위치로 V_p·m_p (버그 수정)
     "nb25": (REC + " --fupd navg --fupd_b 0.25", True),  # 절 AB 매끈한 F 갱신
 }
-SETS = {"1": V1}
+# 2 차: 바닥 정의 정리 (fem_ah_cuda) -- 정답 sticky 격자 가중 (gtk) / 단위 시간당 고착 몫 (rate)
+V2 = {
+    "gtk": (REC + " --vfl_w gtk", False),
+    "rate": (REC + " --vfl_rate", False),
+    "gtkr": (REC + " --vfl_w gtk --vfl_rate", False),
+    "gtkr_np0": (REC + " --vfl_w gtk --vfl_rate --vfl_np 0", False),
+    "gtk_full": (REC + " --vfl_w gtk --vfl_mode full", False),
+}
+SETS = {"1": V1, "2": V2}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]

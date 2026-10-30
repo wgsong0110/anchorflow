@@ -26,6 +26,7 @@ from anchorflow import fem_rt as RT                                             
 from anchorflow import fem_rt_cuda as RTC                                           # noqa: E402
 from anchorflow import fem_ex_cuda as EX                                            # noqa: E402
 from anchorflow import fem_bs_cuda as BSC                                           # noqa: E402
+from anchorflow import fem_ah_cuda as AHC                                           # noqa: E402  (절 AH 바닥 정의)
 from anchorflow import fem_c_cuda as CCU                                            # noqa: E402
 from anchorflow import fem_pl_cuda as PLC                                           # noqa: E402  (절 AG 소성·점성·파괴)
 from anchorflow import phys_resid as PR                                             # noqa: E402
@@ -122,6 +123,10 @@ ap.add_argument("--sp_a", choices=["avg", "tet"], default="avg",
 ap.add_argument("--sp_hg", type=float, default=0.0, help="--sp_a avg 의 모래시계 억제: 묶음 에너지에 γ μ Σ_t V_t |A_t - Ā|² (0 = 끔)")
 ap.add_argument("--sp_vcap", type=float, default=1.0, help="--sp vcap: 모든 점유 사면체의 탄성 부피 V_T' = min(V_T, θ V_기하) (입자 부피 합이 사면체 기하 부피를 넘지 않게; 질량 그대로)")
 ap.add_argument("--sp_vpm_mass", action="store_true", help="--sp vpmesh: 질량도 같은 정의로 m_p' = ρ_p V_p' (PG 규칙 '칸 부피/칸 입자 수, 질량 = ρ V' 를 메시 칸에 그대로 -- 총질량이 정답과 달라진다)")
+ap.add_argument("--vfl_w", choices=["part", "gtk"], default="part",
+                help="절 AH (--floor vel): 접촉 가중. part = 평면 아래 입자 질량 전부 (기존), gtk = 정답 MPM sticky 격자 노드의 2 차 B-스플라인 가중 합 w(s) (평면 위 0.5 dx_g 안도 일부; lib/anchorflow/fem_ah_cuda.py)")
+ap.add_argument("--vfl_rate", action="store_true",
+                help="절 AH (--floor vel): 서브스텝 고착 몫을 단위 시간당으로 -- (1 - a/m)^(h_s/h_ref), h_ref = 정답 substep_dt (기존은 서브스텝마다 (1 - a/m))")
 ap.add_argument("--rbdiag", action="store_true", help="절 AH 진단 (측정 밖): 프레임마다 강체 지표 (질량 중심·속도, 운동 에너지, 질량 중심 각운동량, Kabsch 회전, 최저 높이) 우리 / 정답 -> fem.jsonl rb")
 ap.add_argument("--vp_h5", default="", help="절 AE: 입자 부피·질량을 정답 0 프레임 h5 (float32 위치) 로 정답 생성기와 같은 식으로 (.pt 위치는 float16 반올림이라 칸 판정이 갈림)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
@@ -417,6 +422,19 @@ if HASPL:
 else:
     PL = [np.float64(0)] * 6
     PLf = [np.float32(0)] * 6
+AHF = VFL and (a.vfl_w == "gtk" or a.vfl_rate)                                     # 절 AH 바닥 정의 (fem_ah_cuda)
+AH_GTK = 1 if (VFL and a.vfl_w == "gtk") else 0
+AH_DXG = float(cfg.get("grid_lim", 2.0)) / int(cfg.get("n_grid", 100))                # 정답 MPM 격자 dx_g
+AH_PN = float(np.dot(pt_, nr_)) if HASPL else 0.0                                   # p·n (정답 격자 노드 법선 좌표와 비교)
+AH_BAND = 0.5 * AH_DXG if AH_GTK else 0.0                                           # gtk: 평면 위 0.5 dx_g 까지 가중 > 0
+AH_KEX = (hs / float(cfg["substep_dt"])) if (VFL and a.vfl_rate) else 1.0           # (1 - a/m)^(h_s/h_ref)
+if AHF:
+    if not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2) or PLAST or VISC or PBC:
+        raise SystemExit("절 AH 바닥 (--vfl_w gtk / --vfl_rate) 은 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, 탄성) 만")
+    if abs(sum(abs(q) for q in nr_) - 1.0) > 1e-6:
+        raise SystemExit("--vfl_w gtk 는 축 정렬 평면만 (정답 격자 노드 좌표 비교)")
+    print(f"[절 AH 바닥] 가중 {a.vfl_w} (정답 격자 dx_g {AH_DXG:g}, p·n {AH_PN:g}, 고착 격자 노드 최대 지표 {AHC.gt_floor_k0(AH_DXG, AH_PN) if AH_GTK else '-'}, 띠 {AH_BAND:g} m), "
+          f"고착 몫 {'(1 - a/m)^(h_s/h_ref), h_s/h_ref = %.4g' % AH_KEX if a.vfl_rate else '(1 - a/m) 서브스텝마다 (기존)'}", flush=True)
 XN = 1.0 if a.eps_st > 0 else 0.0
 # CFL: 파속 √((λ+2μ)/ρ) (가장 가벼운 밀도), 길이 = Kuhn 사면체 최소 높이 (첫 격자에서)
 rho_min = float(rho.min()) if rho is not None else float(cfg["density"])
@@ -632,6 +650,7 @@ class Opt:
             self.fx = torch.zeros(self.Mcap, dtype=torch.uint8, device=dev)
             self.vbc = z(self.Mcap, 3)
             self.acc = z(self.Mcap)                                                  # --floor vel: 노드별 접촉 입자 질량 (쓴 뒤 비움)
+            self.accN = z(self.Mcap)                                                 # 절 AH: 노드별 실제 접촉 (평면 아래) 입자 수 (비관통 판정, 쓴 뒤 비움)
             self.ml = z(self.Mcap) if RWL else None                                  # 절 Q --rep_w lam: 속도 전달 정규화 질량 Σλm
             if LIM:
                 self.alph = torch.full((self.Mcap,), 1065353216, dtype=torch.int32, device=dev)   # box: 노드 α (1.0f 비트)
@@ -1070,12 +1089,22 @@ class Opt:
                                     EX.P(self.FeC if PLINC else None), EX.P(self.XpC if PLINC else None), EX.P(self.ysC if PLINC else None), EX.P(self.ljC if PLINC else None),
                                     EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                     np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
+        elif AHF:                                                                   # 절 AH: 같은 힘 + 바닥 접촉 가중 (gtk) / 실제 접촉 표시
+            AHC.launch("ah_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
+                                    EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
+                                    EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
+                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon),
+                                    np.int32(AH_GTK), np.float32(AH_BAND), np.float32(AH_PN), np.float32(AH_DXG), EX.P(self.accN if AH_GTK else None)), b=128, grid=nbT + nbP)
         else:
             CCU.launch("c_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                    EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
                                    EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
-        if a.cfuse_mode == 2:
+        if a.cfuse_mode == 2 and AHF:
+            AHC.launch("ah_node_step", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
+                                            np.float32(hs_), np.float32(damp_), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc),
+                                            EX.P(self.accN if AH_GTK else None), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * hs_ / hs)), b=256)
+        elif a.cfuse_mode == 2:
             EX.launch("ex_node_step_lag", Mc, (EX.P(self.sz), EX.P(self.mI if SPM == "mlow" else self.mn), EX.P(self.f), EX.P(None), EX.P(self.vn), EX.P(self.Uc),
                                                np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs_), np.float32(damp_),
                                                EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
