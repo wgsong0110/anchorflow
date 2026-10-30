@@ -1,4 +1,4 @@
-"""사용자 10-30 발산 셀 입자 영상 합치기: 위 줄 = 정답 | 우리 롤아웃 (전체, 표시 입자 빨강), 아래 줄 = 같은 두 칸의 투시 렌더 (나머지 불투명도를 낮춘 것) 를
+"""사용자 10-30 발산 셀 입자 영상 합치기: 위 줄 = 정답 | 우리 롤아웃 (전체, 표시 입자 자홍), 아래 줄 = 같은 두 칸의 투시 렌더 (나머지 불투명도를 낮춘 것) 를
 표시 입자 화면 위치 중심으로 잘라 확대. 프레임 번호·한국어 라벨. 색은 렌더 그대로 (칸별 색 범위 조정 없음).
 
   python exe/fem_dc_compose.py --gt A.mp4 --ours B.mp4 --gt_fade C.mp4 --ours_fade D.mp4 --gt_px C.json --ours_px D.json --title "..." --out X.mp4
@@ -15,7 +15,7 @@ for k in ("gt", "ours", "gt_fade", "ours_fade", "gt_px", "ours_px", "out"):
     ap.add_argument("--" + k, required=True)
 ap.add_argument("--title", required=True)
 ap.add_argument("--sub", default="", help="제목 아래 둘째 줄")
-ap.add_argument("--label_gt", default="정답 (같은 입자 빨강)")
+ap.add_argument("--label_gt", default="정답 (같은 입자 자홍)")
 ap.add_argument("--label_ours", default="우리 롤아웃 (발산 전까지)")
 ap.add_argument("--fps", type=float, default=4)
 ap.add_argument("--hold", type=float, default=2.0, help="마지막 프레임을 이 초만큼 더")
