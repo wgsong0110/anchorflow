@@ -18,10 +18,13 @@ VV = {"v": "--sp vcap --sp_vcap 0.5", "n": "--sp none"}
 CL = {"off": "--lim_sr 1e30", "free": "--lim_sr 1e30", "c5": "--lim_sr 5"}   # off = 커밋 f37da7d 판 (1e30 이어도 뒤집힘은 막힘 = 반전만 막는 판), free = 완전 끔 (SR_OFF 뒤)
 
 
-def line(sc, ak, bk, vk, ck="free", r=1):
-    tag = f"{sc}_{ak}{bk}_{vk}_{ck}_r{r}"
+def line(sc, ak, bk, vk, ck="free", r=1, kind=""):
+    tag = f"{sc}_{ak}{bk}_{vk}_{ck}_" + ({"t": "t", "F": "F"}.get(kind, "r")) + str(r)
     root = {"ficus": "fem_ai_ficus", "wm": "fem_ai_wm"}.get(sc, "fem_ai_lego")
     ex = " --ai_stat 0 --ai_stat_frames 1,2,3,4,5,6,7,8,10,15,20,30,40,60,80,100" if sc == "wm" else ""   # 수박: 착지 (프레임 4~5) 앞뒤 매 프레임
+    if kind:                                                                         # t = 단독 측정 (진단 없음, 덤프 없음), F = 최종 (f32 덤프, 진단 없음)
+        base = BASE.split(" --no_dump")[0] + (" --no_dump" if kind == "t" else " --dump_f32")
+        return f"{root} {tag} {SC[sc]} {base} {AA[ak]} {BB[bk]} {VV[vk]} {CL[ck]}".replace("  ", " ")
     return f"{root} {tag} {SC[sc]} {BASE} {AA[ak]} {BB[bk]} {VV[vk]} {CL[ck]}{ex}".replace("  ", " ")
 
 
@@ -35,6 +38,15 @@ if st == "s1":                                                                  
             for ak in AA:
                 for bk in BB:
                     out.append(line(sc, ak, bk, vk))
+elif st.startswith("t:") or st.startswith("F:"):                                    # t:<판,...>:<회 수> / F:<판,...>:1
+    kind, combos, nr = st.split(":")
+    for sc in scs:
+        for cmb in combos.split(","):
+            ab, vk = cmb.split("_")[:2]
+            ck = cmb.split("_")[2] if cmb.count("_") >= 2 else "free"
+            ak, bk = ab[:ab.index("b")], ab[ab.index("b"):]
+            for r in range(1, int(nr) + 1):
+                out.append(line(sc, ak, bk, vk, ck, r, kind))
 elif st.startswith("rep:"):                                                          # rep:<판,...>:<회 수> -- 판 = a12b3_v 꼴
     _, combos, nr = st.split(":")
     for sc in scs:
