@@ -24,17 +24,47 @@ __global__ void ak_pq_force(const int* tl, const int* tlc, const long long* tets
     for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u = U[n[i]*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*G[i*3+q]; }
     float Gm[9] = {0,0,0,0,0,0,0,0,0};
     for (int k=a;k<b;k++) {
-        int p = ord[k];
-        float F[9]; for (int j=0;j<9;j++) F[j] = Fp[(long long)p*9+j];
+        float F[9]; for (int j=0;j<9;j++) F[j] = Fp[(long long)k*9+j];       // Fp·wp 는 사면체 정렬 순서로 담았다
         float X[9]; mm3(A, F, X);
         float P[9]; sp_fcr_P(X, mu, lam, P);
-        float w = wp[p];
+        float w = wp[k];
         for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; Gm[r*3+c] += w*s; }
     }
     for (int i=0;i<4;i++) for (int c=0;c<3;c++) {
         float s = 0.f; for (int q=0;q<3;q++) s += Gm[c*3+q]*G[i*3+q];
         atomicAdd(&f[n[i]*3+c], -s);
     }
+}
+// 입자 스레드 판 (같은 식, 합 순서만 다름): 입자를 사면체 번호로 정렬 (ord, tt = 정렬된 사면체 번호) -> 워프 안 연속 구간 합 -> 구간 머리 레인이 노드 원자 합 12 개
+__global__ void ak_pq_force_p(int N, const int* ord, const int* tt, const long long* tets, const float* U, const float* gl,
+                              const float* Fp, const float* wp, float mu, float lam, float* f) {
+    int k = blockIdx.x*blockDim.x + threadIdx.x;
+    int lane = threadIdx.x & 31;
+    bool on = k < N;
+    int t = on ? tt[k] : -1 - lane;
+    float Gm[9] = {0,0,0,0,0,0,0,0,0};
+    float G[12];
+    if (on) {
+        long long n[4];
+        for (int i=0;i<4;i++) n[i] = tets[(long long)t*4+i];
+        for (int q=0;q<12;q++) G[q] = gl[(long long)t*12+q];
+        float A[9] = {1,0,0, 0,1,0, 0,0,1};
+        for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u = U[n[i]*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*G[i*3+q]; }
+        float F[9]; for (int j=0;j<9;j++) F[j] = Fp[(long long)k*9+j];
+        float X[9]; mm3(A, F, X);
+        float P[9]; sp_fcr_P(X, mu, lam, P);
+        float w = wp[k];
+        for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s; }
+    }
+    for (int off=1; off<32; off<<=1) {
+        int to = __shfl_down_sync(0xffffffffu, t, off);
+        bool same = (lane + off < 32) && (to == t);
+        for (int j=0;j<9;j++) { float o = __shfl_down_sync(0xffffffffu, Gm[j], off); if (same) Gm[j] += o; }
+    }
+    int tp = __shfl_up_sync(0xffffffffu, t, 1);
+    if (!on || (lane > 0 && tp == t)) return;
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += Gm[c*3+q]*G[i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
 }
 }
 '''
