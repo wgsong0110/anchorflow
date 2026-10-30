@@ -10,14 +10,14 @@ G = collections.OrderedDict()
 for d in sorted(sys.argv[1:]):
     if os.path.isdir(d):
         G.setdefault(re.sub(r"_r\d+$", "", os.path.basename(d)), []).append(d)
-NM = {"none": "기준", "merge": "묶음 (면 이웃)", "cube": "묶음 (정육면체)", "blend": "F̄ 이웃 섞기", "stiff": "점유율 응력 가중", "mlow": "노드 관성 질량 하한"}
+NM = {"vcap": "탄성 부피 상한", "none": "기준", "merge": "묶음 (면 이웃)", "cube": "묶음 (정육면체)", "blend": "F̄ 이웃 섞기", "stiff": "점유율 응력 가중", "mlow": "노드 관성 질량 하한"}
 
 
 def how(s):
     a = s["args"]
     sp = a.get("sp", "none")
     p = [NM[sp] + ({"merge": f" k≤{a['sp_k']}", "cube": f" k≤{a['sp_k']}", "blend": f" k≤{a['sp_k']} β {a['sp_beta']:g}",
-                    "stiff": f" k≤{a['sp_k']} w=min(점유율/{a['sp_wocc']:g},1)", "mlow": f" {a['sp_mlow']:g}x중앙"}.get(sp, ""))
+                    "stiff": f" k≤{a['sp_k']} w=min(점유율/{a['sp_wocc']:g},1)", "mlow": f" {a['sp_mlow']:g}x중앙", "vcap": f" min(V_T, {a.get('sp_vcap', 1):g} V_기하)"}.get(sp, ""))
          + (f" 점유율<{a['sp_occ']:g}" if a.get("sp_occ", 0) > 0 and sp in ("merge", "cube", "blend", "stiff") else "")]
     p.append(f"클램프 {s['lim_sr']:g}" if s.get("lim_sr") is not None else "클램프 끔")
     if a.get("fupd", "T") != "T":

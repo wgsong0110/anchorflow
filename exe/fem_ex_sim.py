@@ -110,12 +110,13 @@ ap.add_argument("--cq", action="store_true",
 ap.add_argument("--cq_h", choices=["km", "cf"], default="km", help="--cq 의 헤시안: km = 기존 해석 헤시안 장치 함수 kmanual (기본), cf = 같은 헤시안 닫힌 식 (빠른 판)")
 ap.add_argument("--cqchk", default="", help="--cq 검산 (측정 밖): 이 프레임들 (1 부터, 쉼표) 끝에서 셀 에너지 세 가지 (2 차 근사 / 입자 적분 / ψ(A F̄)) 상대 차, 힘 vs float64 자동 미분·중앙 차분 -> cqchk.jsonl")
 ap.add_argument("--fspread", type=int, default=0, help="측정 밖: K 프레임마다 입자 F 이웃 벌어짐 ‖F_p − 16-NN 평균‖ (우리 / 정답, 전체 표본·입자 1~2 개 셀 표본; 절 Y 지표) -> fem.jsonl (0 = 끔)")
-ap.add_argument("--sp", choices=["none", "merge", "cube", "blend", "stiff", "mlow"], default="none",
+ap.add_argument("--sp", choices=["none", "merge", "cube", "blend", "stiff", "mlow", "vcap"], default="none",
                 help="절 AD 희소 셀 처리: merge = 희소 사면체를 입자 많은 면 이웃 쪽으로 묶어 한 셀 (F̄·V 합, Ā = 묶음 A 평균) 로 응력, cube = 희소 사면체가 있는 정육면체의 점유 사면체를 한 셀로, "
                      "blend = 희소 사면체 F̄ 를 면 이웃 F̄ 와 입자 부피 가중으로 섞음, stiff = 희소 사면체 응력에 점유율 가중, mlow = 노드 관성 질량 하한")
 ap.add_argument("--sp_a", choices=["avg", "tet"], default="avg",
                 help="--sp merge/cube 묶음의 셀 사상: avg = 묶음 하나의 Ā (구성 사면체 A 의 V_t 가중 평균 -- 묶음 안 반대 변형은 에너지 0), tet = 구성 사면체마다 자기 A_t 에 묶음 F̄ (부피 V_t 그대로)")
 ap.add_argument("--sp_hg", type=float, default=0.0, help="--sp_a avg 의 모래시계 억제: 묶음 에너지에 γ μ Σ_t V_t |A_t - Ā|² (0 = 끔)")
+ap.add_argument("--sp_vcap", type=float, default=1.0, help="--sp vcap: 모든 점유 사면체의 탄성 부피 V_T' = min(V_T, θ V_기하) (입자 부피 합이 사면체 기하 부피를 넘지 않게; 질량 그대로)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
 ap.add_argument("--sp_occ", type=float, default=0.0, help="--sp: 희소 = (입자 수 ≤ k) 또는 점유율 V_T/V_기하 < 이 값 (0 = 입자 수만)")
 ap.add_argument("--sp_beta", type=float, default=1.0, help="--sp blend: 이웃 몫 배율 β (F̄' = (V F̄ + β Σ V_nb F̄_nb)/(V + β Σ V_nb))")
@@ -811,6 +812,9 @@ class Opt:
             w = (occ / a.sp_wocc).clamp(max=1.0)
             self.VF[:T] = torch.where(sp, VT * w, VT)
             self.VTs[:T] = self.VF[:T]                                                # 응력 부피를 제자리로 (VTs 는 F̄ 나누기 (ex_ffin) 뒤에는 힘 가중·점유 판정 (> 0) 에만 쓰인다 -> 절 C 빠른 경로와 같이 쓸 수 있게)
+        elif SPM == "vcap":
+            self.VF[:T] = torch.where(occm, torch.minimum(VT, a.sp_vcap * Vg), VT)
+            self.VTs[:T] = self.VF[:T]                                                # stiff 와 같이 제자리 (절 C 빠른 경로 겸용)
         elif SPM == "mlow":
             mn = self.mn[:M]
             if not hasattr(self, "mlow_v"):
@@ -837,7 +841,7 @@ class Opt:
                                           EX.P(self.AG[0]), EX.P(None), EX.P(self.FG), EX.P(self.VG), EX.P(self.VTs), EX.P(self.Uc), np.float32(a.sp_hg)))
             self.AG[0].zero_()
         else:
-            EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if (SPM == "stiff" or (SPM in ("merge", "cube") and not SPG)) else self.VTs),
+            EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if (SPM in ("stiff", "vcap") or (SPM in ("merge", "cube") and not SPG)) else self.VTs),
                                              np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(0), np.float32(0.3), np.int32(0), EX.P(None)))
         f = self.f[:M].double()
         xn = (self.npos + self.Uc[:M]).double()
@@ -928,7 +932,7 @@ class Opt:
                                              np.float32(a.fb), np.float32(a.fb_jhat), np.int32(1 if a.fb_on == "A" else 0), EX.P(self.rst), np.int32(1 if a.fpolar else 0),
                                              EX.P(self.eF if a.sr_ef else None)))
         elif RNEW:
-            EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if (SPM == "stiff" or (SPM in ("merge", "cube") and not SPG)) else self.VTs),
+            EX.launch("ex_tet_force_R", Tc, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.VF if (SPM in ("stiff", "vcap") or (SPM in ("merge", "cube") and not SPG)) else self.VTs),
                                              np.float32(mu), np.float32(lam), EX.P(self.f), np.float32(a.fb), np.float32(a.fb_jhat),
                                              np.int32(1 if a.fb_on == "A" else 0), EX.P(self.rst)))
         else:
