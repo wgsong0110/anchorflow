@@ -3,9 +3,9 @@ fem_ex_sim.py --lagdiag --divtrack 의 divtrack/fNNN.pt (계산 불변 진단) �
 덤프만 읽는다 (계산 경로 불변).
 
 정의 (프레임 번호 t 는 0 부터 = 롤아웃 루프 i; 영상의 상태 번호 k 는 k 프레임 뒤 상태, 상태 t = 프레임 t 시작):
-  발산 프레임 td = divtrack.jsonl 에서 처음으로 노드 |v| 가 비유한 또는 발산 판정 속도 (0.25 EXT / h, 롤아웃 루프 판정과 같은 값) 를 넘은 프레임.
-  발산 서브스텝 s_div = 그 프레임에서 처음 넘은 서브스텝 (0 부터).
-  처음 터진 노드 = s_div ~ s_div + W 서브스텝에 처음 넘은 노드 (W = --win, 기본 2).
+  발산 프레임 td = divtrack.jsonl 에서 처음 노드 |v| 비유한이 나온 프레임, 없으면 마지막으로 돈 프레임 (수박: 위치는 유한, 프레임 끝 속도로 멈춤).
+  처음 터진 노드: 비유한이 있으면 처음 비유한 서브스텝 s_div ~ s_div + W 에 비유한이 된 노드 (W = --win, 기본 2);
+    없으면 프레임 끝 |v| > 발산 판정 속도 (0.25 EXT / h, 롤아웃 루프 판정과 같은 값) 인 노드 전부, s_div = 그중 처음 넘은 서브스텝.
   처음 뒤집힌 셀 = 처음 뒤집힘 서브스텝 s_flip ~ s_flip + W 에 det A_T ≤ 0 (또는 비유한) 이 된 점유 사면체 (s_flip ≤ s_div 일 때만 -- 발산 뒤 뒤집힘은 결과).
   발산 셀 = (처음 터진 노드를 꼭짓점으로 갖는 점유 사면체) ∪ (처음 뒤집힌 셀). 입자 = 그 프레임 pinv (P2G 때 입자 -> 사면체) 가 그 셀인 입자.
   폭주 시작 = 처음 터진 노드들의 '5 x q90 연속 구간' 시작 서브스텝 (절 U 규칙; 프레임 안에서만).
@@ -47,17 +47,16 @@ N, W = int(D["N"]), a.win
 tets, occ = D["tets"].long(), D["occ"]
 flip, nf, ab, rs, rf = D["flip"].long(), D["nf"].long(), D["abs"].long(), D["run_start"].long(), D["run_first"].long()
 BIG = 10 ** 9
-nodev = torch.where(ab >= 0, ab, torch.full_like(ab, BIG))
-nodev = torch.minimum(nodev, torch.where(nf >= 0, nf, torch.full_like(nf, BIG)))
-nodev_k = torch.where(rs >= 0, nodev, torch.full_like(nodev, BIG))                 # 프레임 끝까지 폭주 (5 x q90 연속) 가 이어진 노드만 -- 잠깐 넘었다 돌아온 노드 제외
-RULE = "끝까지 폭주가 이어진 노드"
-if bool((nodev_k < BIG).any()):
-    nodev = nodev_k
-else:                                                                               # 수박: 프레임 끝에 5 x q90 위 노드가 없다 (넓은 영역이 함께 빨라짐) -> 발산 판정 속도·비유한만
-    RULE = "발산 판정 속도를 넘은 노드 (끝까지 5 x q90 폭주인 노드 없음)"
+sp_end = D["Vend"].float().norm(dim=-1)
+if bool((nf >= 0).any()):                                                           # lego: 비유한이 나온 프레임 -- 처음 비유한이 된 노드 (그 앞 서브스텝 0 의 발산 판정 넘음은 앞 프레임 끝 속도라 쓰지 않는다)
+    RULE = "처음 비유한이 된 노드 (비유한 서브스텝 ~ +W)"
+    nodev = torch.where(nf >= 0, nf, torch.full_like(nf, BIG))
+else:                                                                               # 수박: 위치는 유한, 프레임 끝 노드 속도가 발산 판정 속도를 넘어 멈춘 판 -- 끝에 넘어 있는 노드 전부 (처음 넘은 서브스텝 순)
+    RULE = "프레임 끝 |v| > 발산 판정 속도인 노드 전부 (순서 = 처음 넘은 서브스텝)"
+    nodev = torch.where((ab >= 0) & ~(sp_end <= float(D["vthr"])), ab, torch.full_like(ab, BIG))
 s_div = int(nodev.min())
 s_nf = int(nf[nf >= 0].min()) if bool((nf >= 0).any()) else None
-first_nodes = torch.nonzero(nodev <= s_div + W).squeeze(1)
+first_nodes = torch.nonzero(nodev <= (s_div + W if s_nf is not None else BIG - 1)).squeeze(1)
 T = tets.shape[0]
 tnode = nodev[tets].min(1).values                                                   # 사면체 꼭짓점 노드 사건
 tflip = torch.where(flip >= 0, flip, torch.full_like(flip, BIG))
@@ -88,6 +87,15 @@ open(os.path.join(OD, "events.txt"), "w").write("\n".join(lines) + "\n")
 # 폭주 시작 (처음 터진 노드의 연속 구간 시작)
 rs_f = rs[first_nodes]
 run_on = int(rs_f[rs_f >= 0].min()) if bool((rs_f >= 0).any()) else None
+# 앞 프레임 끝에 발산 판정 속도를 넘어 있던 노드의 셀 입자와 겹침 (lego: 폭주가 앞 프레임부터 이어졌는지)
+prev = None
+pf = os.path.join(a.run, "divtrack", f"f{td - 1:03d}.pt")
+if os.path.exists(pf):
+    Dp = torch.load(pf, map_location="cpu", weights_only=False)
+    hn = torch.nonzero(~(Dp["Vend"].float().norm(dim=-1) <= float(Dp["vthr"]))).squeeze(1)
+    pc = torch.nonzero(Dp["occ"] & torch.isin(Dp["tets"].long(), hn).any(1)).squeeze(1)
+    pp = torch.nonzero(torch.isin(Dp["pinv"].long(), pc)).squeeze(1)
+    prev = dict(frame=td - 1, n_nodes_fast_end=int(hn.numel()), n_particles=int(pp.numel()), overlap=int(torch.isin(pp, mark).sum()))
 # 위치
 x = D["xp"].float()
 mk = mark
@@ -177,7 +185,7 @@ for kk in range(max(0, td - a.pre), td + 2):
 # 같은 상태의 전체 입자 F 특이값 (비교)
 allF = svs(FP[td - 1].reshape(-1, 3, 3)) if td >= 1 else None
 ser = D["series"]
-out = dict(run=a.run, td=td, early_abs_frames=early, node_rule=RULE, n_abs_frame=int((ab >= 0).sum()), frame_1based=td + 1, s_div=s_div, s_nf=s_nf, s_flip=s_flip, first_flip_frame=fl_first, run_onset=run_on, N=N, win=W,
+out = dict(run=a.run, td=td, prev_frame_fast=prev, early_abs_frames=early, node_rule=RULE, n_abs_frame=int((ab >= 0).sum()), frame_1based=td + 1, s_div=s_div, s_nf=s_nf, s_flip=s_flip, first_flip_frame=fl_first, run_onset=run_on, N=N, win=W,
            vthr=float(D["vthr"]), loc=loc, hist=hist, all_F_state_td=allF,
            frames=[dict(t=r["t"], n_flip=r["n_flip"], first_flip=r["first_flip"], n_nf=r["n_nf"], first_nf=r["first_nf"], n_abs=r["n_abs"], first_abs=r["first_abs"],
                         n_run_end=r["n_run_end"]) for r in J],
@@ -191,4 +199,5 @@ print(f"[위치] 바닥 접촉 {loc['floor_contact']} · 표면 {loc['surface']}
 for hh in hist:
     print(f"[이력] 상태 {hh['state']}: {json.dumps(hh, ensure_ascii=False)}", flush=True)
 print(f"[전체 입자 F 상태 {td}] {allF}", flush=True)
+print(f"[규칙] {RULE}; 앞 프레임 끝 빠른 노드 셀 입자와 겹침 {prev}; 앞 프레임들 발산 판정 넘음 {early}", flush=True)
 print("\n".join(lines[:15]), flush=True)
