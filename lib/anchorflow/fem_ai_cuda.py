@@ -26,7 +26,6 @@ from . import fem_c_cuda as CCU
 
 _AI = r'''
 __device__ float OFFMIN = 0.f;     // A2 응력 차 몫을 건너뛸 문턱 (Pa) -- set_offmin
-extern "C" {
 // ---- 대칭 3x3 고유분해 (순환 야코비, double) : A (9, 대칭) -> l (대각), V (열 = 고유벡터) ----
 template <typename R> __device__ __forceinline__ void ai_rot(R* A, R* V, int p, int q) {
     R apq = A[p*3+q];
@@ -82,6 +81,7 @@ template <typename R> __device__ __forceinline__ void ai_tau(const R* F, R mu, R
     t6[3] = mu*(T[1] + T[3]); t6[4] = mu*(T[2] + T[6]); t6[5] = mu*(T[5] + T[7]);
 }
 
+extern "C" {
 // ---- A1: 회전·신장 분리 평균 (P2G, 입자당 스레드; 모든 입자가 사면체 F̄ 에 들어가는 경로 -- --floor vel / none) ----
 __global__ void ai_rs_acc(int N, const long long* pinv, const float* vol, const float* Fp, float* RS, float* LS, float* cnt) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
