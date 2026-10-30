@@ -1,0 +1,5 @@
+ab_c3|--fupd navg --fupd_b 1 --lim_sr 3|--fupd navg --fupd_b 1 --lim_sr 3
+ad_vc05_c5|--sp vcap --sp_vcap 0.5 --lim_sr 5|--sp vcap --sp_vcap 0.5 --lim_sr 5
+nb025vc05_c5|--fupd navg --fupd_b 0.25 --sp vcap --sp_vcap 0.5 --lim_sr 5|--fupd navg --fupd_b 0.25 --sp vcap --sp_vcap 0.5 --lim_sr 5
+nb05vc05_c3|--fupd navg --fupd_b 0.5 --sp vcap --sp_vcap 0.5 --lim_sr 3|--fupd navg --fupd_b 0.5 --sp vcap --sp_vcap 0.5 --lim_sr 3
+nb05vc075_c5|--fupd navg --fupd_b 0.5 --sp vcap --sp_vcap 0.75 --lim_sr 5|--fupd navg --fupd_b 0.5 --sp vcap --sp_vcap 0.75 --lim_sr 5
