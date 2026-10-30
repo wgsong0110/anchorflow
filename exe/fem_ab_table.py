@@ -16,6 +16,15 @@ def how(s):
     f = s.get("fupd") or s["args"].get("fupd", "T")
     nmf = {"T": "기존 A_T F", "bar": "셀 평균 이완", "nbar": "노드 평균 F̄ 이완", "navg": "노드 평균 A", "polar": "극분해 신장 이완", "navgbar": "노드 평균 A + 노드 평균 F̄ 이완"}[f]
     p = [nmf + ("" if f == "T" else f" β {s['args'].get('fupd_b', 1.0):g}") + (f" β2 {s['args'].get('fupd_b2'):g}" if f == "navgbar" else "")]
+    sp = s["args"].get("sp", "none")
+    if sp == "vcap":
+        p.append(f"탄성 부피 상한 θ {s['args'].get('sp_vcap'):g}")
+    elif sp == "vpmesh":
+        p.append("V_p 메시 칸 정의")
+    elif sp != "none":
+        p.append(f"희소 {sp}")
+    if s.get("sp_vratio_med") is not None:
+        p.append(f"(탄성 부피 합 비 {s['sp_vratio_med']:.3f})")
     if s.get("lim_sr") is not None:
         p.append(f"클램프 σ1/σ3 ≤ {s['lim_sr']:g}")
     if s.get("lim") is not None and s["lim"] >= 0:

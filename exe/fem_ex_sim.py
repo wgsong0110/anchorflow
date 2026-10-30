@@ -110,9 +110,10 @@ ap.add_argument("--cq", action="store_true",
 ap.add_argument("--cq_h", choices=["km", "cf"], default="km", help="--cq 의 헤시안: km = 기존 해석 헤시안 장치 함수 kmanual (기본), cf = 같은 헤시안 닫힌 식 (빠른 판)")
 ap.add_argument("--cqchk", default="", help="--cq 검산 (측정 밖): 이 프레임들 (1 부터, 쉼표) 끝에서 셀 에너지 세 가지 (2 차 근사 / 입자 적분 / ψ(A F̄)) 상대 차, 힘 vs float64 자동 미분·중앙 차분 -> cqchk.jsonl")
 ap.add_argument("--fspread", type=int, default=0, help="측정 밖: K 프레임마다 입자 F 이웃 벌어짐 ‖F_p − 16-NN 평균‖ (우리 / 정답, 전체 표본·입자 1~2 개 셀 표본; 절 Y 지표) -> fem.jsonl (0 = 끔)")
-ap.add_argument("--sp", choices=["none", "merge", "cube", "blend", "stiff", "mlow", "vcap"], default="none",
+ap.add_argument("--sp", choices=["none", "merge", "cube", "blend", "stiff", "mlow", "vcap", "vpmesh"], default="none",
                 help="절 AD 희소 셀 처리: merge = 희소 사면체를 입자 많은 면 이웃 쪽으로 묶어 한 셀 (F̄·V 합, Ā = 묶음 A 평균) 로 응력, cube = 희소 사면체가 있는 정육면체의 점유 사면체를 한 셀로, "
-                     "blend = 희소 사면체 F̄ 를 면 이웃 F̄ 와 입자 부피 가중으로 섞음, stiff = 희소 사면체 응력에 점유율 가중, mlow = 노드 관성 질량 하한")
+                     "blend = 희소 사면체 F̄ 를 면 이웃 F̄ 와 입자 부피 가중으로 섞음, stiff = 희소 사면체 응력에 점유율 가중, mlow = 노드 관성 질량 하한, "
+                     "vpmesh (절 AE) = 입자 부피를 PG/정답 MPM 정의 (MPM 격자 칸 dx³ / 칸 안 입자 수) 대신 같은 정의를 우리 메시 칸에: 첫 프레임 V_p' = V_기하(T_p) / (T_p 안 입자 수) -- 이후 고정, 질량 (정답과 같은 ρ·V_p^MPM) 그대로, 상한 없음")
 ap.add_argument("--sp_a", choices=["avg", "tet"], default="avg",
                 help="--sp merge/cube 묶음의 셀 사상: avg = 묶음 하나의 Ā (구성 사면체 A 의 V_t 가중 평균 -- 묶음 안 반대 변형은 에너지 0), tet = 구성 사면체마다 자기 A_t 에 묶음 F̄ (부피 V_t 그대로)")
 ap.add_argument("--sp_hg", type=float, default=0.0, help="--sp_a avg 의 모래시계 억제: 묶음 에너지에 γ μ Σ_t V_t |A_t - Ā|² (0 = 끔)")
@@ -816,6 +817,18 @@ class Opt:
         elif SPM == "vcap":
             self.VF[:T] = torch.where(occm, torch.minimum(VT, a.sp_vcap * Vg), VT)
             self.VTs[:T] = self.VF[:T]                                                # stiff 와 같이 제자리 (절 C 빠른 경로 겸용)
+        elif SPM == "vpmesh":                                                        # 절 AE: 첫 프레임에 입자 부피를 메시 칸 기준으로 다시 정의 (이후 프레임은 그 V_p 로 P2G -- 매 프레임 바꾸지 않는다)
+            if not hasattr(self, "_vp_orig"):
+                assert self.volA.data_ptr() == vol.data_ptr(), "vpmesh: lag 판 (입자 정렬 없음) 만"
+                pv = self.pinv[:Np]
+                vnew = (Vg[pv] / cnt[pv].clamp_min(1.0)).to(vol.dtype)
+                self._vp_orig = vol.double().sum()
+                print(f"[절 AE vpmesh] 입자 부피 다시 정의: Σ V_p (MPM 칸) {float(self._vp_orig):.6g} -> Σ V_p' (메시 칸) {float(vnew.double().sum()):.6g} "
+                      f"(비 {float(vnew.double().sum() / self._vp_orig):.4f}), V_p'/V_p 분위 10·50·90 % "
+                      f"{[round(q_, 3) for q_ in torch.quantile((vnew / vol).float()[:min(Np, 10_000_000)], torch.tensor([0.1, 0.5, 0.9], device=dev)).tolist()]}", flush=True)
+                vol.copy_(vnew)
+                self.VTs[:T] = torch.where(occm, Vg, VT)                                  # 첫 프레임: 점유 사면체마다 Σ V_p' = V_기하 (F̄ 는 같은 사면체 안 같은 가중이라 첫 프레임 F 에서 거의 같다)
+            self._vt0 = self._vp_orig
         elif SPM == "mlow":
             mn = self.mn[:M]
             if not hasattr(self, "mlow_v"):
@@ -2163,7 +2176,7 @@ for i in range(L):
         if SPM != "none":
             sps = [int(q_) for q_ in torch.stack(OPT._spst).tolist()]
             st.update(sp_occ=sps[0], sp_n=sps[1], sp_n1=sps[2], **(dict(sp_grouped=sps[3], sp_groups=sps[4]) if len(sps) > 3 else {}))
-            if SPM in ("stiff", "vcap"):
+            if SPM in ("stiff", "vcap", "vpmesh"):
                 st.update(sp_vratio=float(OPT.VTs[:OPT.T].sum() / OPT._vt0))           # 탄성 부피 합 비 (바꾼 뒤 / 입자 부피 합)
             if a.sp_chk and str(i + 1) in a.sp_chk.split(","):
                 st.update(sp_chk=OPT.sp_check())
@@ -2249,7 +2262,7 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             nint=NINT, nint_beta=(a.nint_beta if NINT else None), fupd=a.fupd, fupd_b=(a.fupd_b if FUPD else None), fupd_b2=(a.fupd_b2 if FUPD == 5 else None),
             sp=SPM, sp_k=a.sp_k, sp_occ=a.sp_occ, sp_beta=a.sp_beta, sp_wocc=a.sp_wocc, sp_mlow=a.sp_mlow,
             rn_tot=(sum(r.get("rn", 0) for r in recs) if RNEW else None), rn_max=(max((r.get("rn", 0) for r in recs), default=None) if RNEW else None),
-            sp_n_med=(med([r.get("sp_n", 0) for r in recs]) if SPM != "none" else None), sp_grouped_med=(med([r.get("sp_grouped", 0) for r in recs]) if SPM in ("merge", "cube") else None), sp_a=a.sp_a, sp_hg=a.sp_hg, sp_vcap=a.sp_vcap, sp_vratio_med=(med([r.get("sp_vratio", 1.0) for r in recs]) if SPM in ("stiff", "vcap") else None))
+            sp_n_med=(med([r.get("sp_n", 0) for r in recs]) if SPM != "none" else None), sp_grouped_med=(med([r.get("sp_grouped", 0) for r in recs]) if SPM in ("merge", "cube") else None), sp_a=a.sp_a, sp_hg=a.sp_hg, sp_vcap=a.sp_vcap, sp_vratio_med=(med([r.get("sp_vratio", 1.0) for r in recs]) if SPM in ("stiff", "vcap", "vpmesh") else None))
 if CC and a.cchk:
     ck = {k: float(t_) for k, t_ in OPT.chk.items()}
     json.dump(ck, open(os.path.join(a.out, "cchk.json"), "w"), indent=1)
