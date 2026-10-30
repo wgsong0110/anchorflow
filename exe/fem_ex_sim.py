@@ -210,6 +210,7 @@ ap.add_argument("--ai_stress", action="store_true", help="절 AI A2: 셀 기준 
 ap.add_argument("--ai_g2p", choices=["T", "bs", "dev", "devnavg", "devbs"], default="T",
                 help="절 AI B: 입자 F 갱신 -- T 기존 A_T F / bs (B2) 2 차 B-스플라인 기울기 / dev (B3) A F̄ + R_A (F − F̄) / devnavg (B3+B1) / devbs (B3+B2). B1 = --fupd navg --fupd_b 1")
 ap.add_argument("--ai_stat", type=int, default=0, help="절 AI 진단 (측정 밖): K 프레임마다 (와 프레임 1) 프레임 시작 셀 응력 분위 (입자 수 별), 유클리드 vs 분리 평균 F̄ 특이값, 정답 입자 응력 -> fem.jsonl ai")
+ap.add_argument("--ai_offmin", type=float, default=1.0, help="절 AI A2: 사면체 응력 차 D₀ 의 최대 성분이 이 값 (Pa) 아래면 그 몫을 건너뜀 (입자 1 개 셀은 D₀ ≈ 0 -- 속도용; 1 Pa x 셀 부피 1e-6 m³ x |∇λ| 35 /m ≈ 4e-5 N)")
 ap.add_argument("--ai_rigid", type=int, default=0, help="절 AI (측정 밖, 절 AH.8 fem_ah_rigid.py 와 같은 식): K 프레임마다 0 프레임 대비 Kabsch 맞춤 잔차 RMS/EXT 와 몸 좌표 높이 -- 우리 / 정답")
 ap.add_argument("--ai_stat_frames", default="", help="--ai_stat 에 더해 이 프레임들 (1 부터, 쉼표) 에도")
 a = ap.parse_args()
@@ -389,6 +390,8 @@ if (PLAST or VISC or PBC) and not (a.opt and a.mode == "lag" and a.cfuse and a.c
                                    and FUPD in (0, 3) and not REP and (not a.lagdiag or a.divtrack) and a.adapt == "none" and not a.affine and a.p2g == "bary"):
     raise SystemExit("절 AG (--plast/--visc/--pbc) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, F 갱신·P2G 기본, 진단·적응 없음 -- 단 --lagdiag --divtrack 진단 루프는 허용: 같은 _step_lag + 셀 증분 RM 초기화) 만")
 AI1, AI2 = a.ai_p2g == "rs", bool(a.ai_stress)                                       # 절 AI
+if AI2:
+    AIC.set_offmin(a.ai_offmin)
 AIG = {"T": 0, "bs": 2, "dev": 3, "devnavg": 4, "devbs": 5}[a.ai_g2p]
 if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and not REP and not a.affine and a.p2g == "bary"
                                   and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (AI2 and (PLAST or VISC or PBC)) and (VFL or not HASPL)):

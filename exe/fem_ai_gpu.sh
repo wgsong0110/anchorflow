@@ -14,5 +14,5 @@ while read -r ROOT TG ARGS; do
     echo "$(date +%T) $TG $( [ -f $O/EX_DONE ] && echo 끝 || echo 실패) $(grep -a '롤아웃\]\|\[발산\]' $O/v_fem.log 2>/dev/null | tail -2 | cut -c1-170 | tr '\n' ' ')"
   fi
   i=$((i + 1))
-done < <(python exe/fem_ai_jobs.py $ST $SCS)
+done < <(python exe/fem_ai_jobs.py "$ST" $SCS)
 echo "[일꾼 카드 $G ($k/$K)] 끝 $(date +%T)"

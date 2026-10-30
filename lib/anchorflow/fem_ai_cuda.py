@@ -25,58 +25,60 @@ from . import fem_ex_cuda as EX
 from . import fem_c_cuda as CCU
 
 _AI = r'''
+__device__ float OFFMIN = 0.f;     // A2 응력 차 몫을 건너뛸 문턱 (Pa) -- set_offmin
 extern "C" {
 // ---- 대칭 3x3 고유분해 (순환 야코비, double) : A (9, 대칭) -> l (대각), V (열 = 고유벡터) ----
-__device__ __forceinline__ void ai_rot(double* A, double* V, int p, int q) {
-    double apq = A[p*3+q];
-    if (fabs(apq) < 1e-300) return;
-    double th = (A[q*3+q] - A[p*3+p]) / (2.0*apq);
-    double t = (th >= 0.0 ? 1.0 : -1.0) / (fabs(th) + sqrt(th*th + 1.0));
-    double c = 1.0/sqrt(t*t + 1.0), s = t*c;
-    for (int k=0;k<3;k++) { double akp=A[k*3+p], akq=A[k*3+q]; A[k*3+p]=c*akp - s*akq; A[k*3+q]=s*akp + c*akq; }
-    for (int k=0;k<3;k++) { double apk=A[p*3+k], aqk=A[q*3+k]; A[p*3+k]=c*apk - s*aqk; A[q*3+k]=s*apk + c*aqk; }
-    for (int k=0;k<3;k++) { double vkp=V[k*3+p], vkq=V[k*3+q]; V[k*3+p]=c*vkp - s*vkq; V[k*3+q]=s*vkp + c*vkq; }
+template <typename R> __device__ __forceinline__ void ai_rot(R* A, R* V, int p, int q) {
+    R apq = A[p*3+q];
+    if (fabs(apq) < (R)1e-37) return;
+    R th = (A[q*3+q] - A[p*3+p]) / ((R)2*apq);
+    R t = (th >= (R)0 ? (R)1 : (R)-1) / (fabs(th) + sqrt(th*th + (R)1));
+    R c = (R)1/sqrt(t*t + (R)1), s = t*c;
+    for (int k=0;k<3;k++) { R akp=A[k*3+p], akq=A[k*3+q]; A[k*3+p]=c*akp - s*akq; A[k*3+q]=s*akp + c*akq; }
+    for (int k=0;k<3;k++) { R apk=A[p*3+k], aqk=A[q*3+k]; A[p*3+k]=c*apk - s*aqk; A[q*3+k]=s*apk + c*aqk; }
+    for (int k=0;k<3;k++) { R vkp=V[k*3+p], vkq=V[k*3+q]; V[k*3+p]=c*vkp - s*vkq; V[k*3+q]=s*vkp + c*vkq; }
 }
-__device__ __forceinline__ void ai_eig(const double* S, double* l, double* V) {
-    double A[9]; for (int k=0;k<9;k++) { A[k]=S[k]; V[k]=(k%4==0)?1.0:0.0; }
-    double sc = fabs(A[0]) + fabs(A[4]) + fabs(A[8]) + 1e-300;
+template <typename R> __device__ __forceinline__ void ai_eig(const R* S, R* l, R* V) {
+    R A[9]; for (int k=0;k<9;k++) { A[k]=S[k]; V[k]=(k%4==0)?(R)1:(R)0; }
+    R sc = fabs(A[0]) + fabs(A[4]) + fabs(A[8]) + (R)1e-30;
+    const R tol = sizeof(R) == 8 ? (R)1e-30 : (R)1e-14;
     for (int sw=0; sw<10; sw++) {
-        double off = A[1]*A[1] + A[2]*A[2] + A[5]*A[5];
-        if (off < 1e-30*sc*sc) break;
+        R off = A[1]*A[1] + A[2]*A[2] + A[5]*A[5];
+        if (off < tol*sc*sc) break;
         ai_rot(A, V, 0, 1); ai_rot(A, V, 0, 2); ai_rot(A, V, 1, 2);
     }
     l[0]=A[0]; l[1]=A[4]; l[2]=A[8];
 }
 // V diag(d) Vᵀ
-__device__ __forceinline__ void ai_vdv(const double* V, const double* d, double* M) {
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) { double s=0.0; for (int k=0;k<3;k++) s += V[r*3+k]*d[k]*V[c*3+k]; M[r*3+c]=s; }
+template <typename R> __device__ __forceinline__ void ai_vdv(const R* V, const R* d, R* M) {
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) { R s=(R)0; for (int k=0;k<3;k++) s += V[r*3+k]*d[k]*V[c*3+k]; M[r*3+c]=s; }
 }
 // F (9) -> 회전 R (det +1; det F < 0 이면 가장 작은 특이값 방향 반전, inv = 1), log S (9 대칭, |σ| 의 로그), Q = F (FᵀF)^{-1/2} (반전 없음), J = Π max(σ,0.01)
-__device__ __forceinline__ void ai_polar(const double* F, double* R, double* Lg, double* Q, double& J, int& inv) {
-    double C[9];
+template <typename T> __device__ __forceinline__ void ai_polar(const T* F, T* R, T* Lg, T* Q, T& J, int& inv) {
+    T C[9];
     for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k] = F[i]*F[k] + F[3+i]*F[3+k] + F[6+i]*F[6+k];
-    double l[3], V[9]; ai_eig(C, l, V);
-    double s[3]; int imin = 0;
-    for (int k=0;k<3;k++) { s[k] = sqrt(fmax(l[k], 1e-24)); if (s[k] < s[imin]) imin = k; }
-    double dt = det3(F);
-    inv = dt < 0.0 ? 1 : 0;
-    double di[3], dq[3], dl[3];
-    J = 1.0;
-    for (int k=0;k<3;k++) { dq[k] = 1.0/s[k]; di[k] = (inv && k == imin) ? -dq[k] : dq[k]; dl[k] = log(fmax(s[k], 1e-12)); J *= fmax(s[k], 0.01); }
-    double Wi[9], Wq[9];
+    T l[3], V[9]; ai_eig(C, l, V);
+    T s[3]; int imin = 0;
+    for (int k=0;k<3;k++) { s[k] = sqrt(fmax(l[k], (T)1e-24)); if (s[k] < s[imin]) imin = k; }
+    T dt = det3(F);
+    inv = dt < (T)0 ? 1 : 0;
+    T di[3], dq[3], dl[3];
+    J = (T)1;
+    for (int k=0;k<3;k++) { dq[k] = (T)1/s[k]; di[k] = (inv && k == imin) ? -dq[k] : dq[k]; dl[k] = log(fmax(s[k], (T)1e-12)); J *= fmax(s[k], (T)0.01); }
+    T Wi[9], Wq[9];
     ai_vdv(V, di, Wi); ai_vdv(V, dq, Wq);
     if (R) mm3(F, Wi, R);
     if (Q) mm3(F, Wq, Q);
     if (Lg) ai_vdv(V, dl, Lg);
 }
 // τ(F) = 2μ (F − Q) Fᵀ + λ (J − 1) |det F| I  -> 대칭 6 (xx, yy, zz, xy, xz, yz)
-__device__ __forceinline__ void ai_tau(const double* F, double mu, double lam, double* t6) {
-    double Q[9], J; int inv;
-    ai_polar(F, nullptr, nullptr, Q, J, inv);
-    double D[9]; for (int k=0;k<9;k++) D[k] = F[k] - Q[k];
-    double T[9]; mmt3(D, F, T);
-    double pr = lam*(J - 1.0)*fabs(det3(F));
-    t6[0] = 2.0*mu*T[0] + pr; t6[1] = 2.0*mu*T[4] + pr; t6[2] = 2.0*mu*T[8] + pr;
+template <typename R> __device__ __forceinline__ void ai_tau(const R* F, R mu, R lam, R* t6) {
+    R Q[9], J; int inv;
+    ai_polar(F, (R*)nullptr, (R*)nullptr, Q, J, inv);
+    R D[9]; for (int k=0;k<9;k++) D[k] = F[k] - Q[k];
+    R T[9]; mmt3(D, F, T);
+    R pr = lam*(J - (R)1)*fabs(det3(F));
+    t6[0] = (R)2*mu*T[0] + pr; t6[1] = (R)2*mu*T[4] + pr; t6[2] = (R)2*mu*T[8] + pr;
     t6[3] = mu*(T[1] + T[3]); t6[4] = mu*(T[2] + T[6]); t6[5] = mu*(T[5] + T[7]);
 }
 
@@ -85,9 +87,9 @@ __global__ void ai_rs_acc(int N, const long long* pinv, const float* vol, const 
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     long long t = pinv[p];
-    double F[9]; for (int k=0;k<9;k++) F[k] = Fp[p*9+k];
-    double R[9], Lg[9], J; int inv;
-    ai_polar(F, R, Lg, nullptr, J, inv);
+    float F[9]; for (int k=0;k<9;k++) F[k] = Fp[p*9+k];                    // 입자 극분해는 float (A6000 FP64 가 느리다 -- 절 AI 속도)
+    float R[9], Lg[9], J; int inv;
+    ai_polar(F, R, Lg, (float*)nullptr, J, inv);
     float V = vol[p];
     for (int k=0;k<9;k++) atomicAdd(&RS[t*9+k], (float)(V*R[k]));
     atomicAdd(&LS[t*6+0], (float)(V*Lg[0])); atomicAdd(&LS[t*6+1], (float)(V*Lg[4])); atomicAdd(&LS[t*6+2], (float)(V*Lg[8]));
@@ -102,7 +104,7 @@ __global__ void ai_rs_fin(const int* szp, const float* VTs, const float* RS, con
     if (!(V > 0.f)) return;
     double M[9]; for (int k=0;k<9;k++) M[k] = (double)RS[t*9+k] / (double)V;
     double Rb[9], J; int inv;
-    ai_polar(M, Rb, nullptr, nullptr, J, inv);
+    ai_polar(M, Rb, (double*)nullptr, (double*)nullptr, J, inv);
     if (inv) atomicAdd(&cnt[1], 1.f);
     double L[9];
     L[0] = LS[t*6+0]/(double)V; L[4] = LS[t*6+1]/(double)V; L[8] = LS[t*6+2]/(double)V;
@@ -118,8 +120,8 @@ __global__ void ai_tau_acc(int N, const long long* pinv, const float* vol, const
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
     long long t = pinv[p];
-    double F[9]; for (int k=0;k<9;k++) F[k] = Fp[p*9+k];
-    double t6[6]; ai_tau(F, mu, lam, t6);
+    float F[9]; for (int k=0;k<9;k++) F[k] = Fp[p*9+k];
+    float t6[6]; ai_tau(F, mu, lam, t6);
     float V = vol[p];
     for (int k=0;k<6;k++) atomicAdd(&TS[t*6+k], (float)(V*t6[k]));
 }
@@ -131,7 +133,7 @@ __global__ void ai_tau_fin(const int* szp, const float* VTs, const float* TS, co
     float V = VTs[t];
     if (!(V > 0.f)) { for (int k=0;k<6;k++) { TB[t*6+k] = 0.f; D0[t*6+k] = 0.f; } return; }
     double Fb[9]; for (int k=0;k<9;k++) Fb[k] = FT[t*9+k];
-    double tf[6]; ai_tau(Fb, mu, lam, tf);
+    double tf[6]; ai_tau(Fb, (double)mu, (double)lam, tf);
     for (int k=0;k<6;k++) { double tb = (double)TS[t*6+k]/(double)V; TB[t*6+k] = (float)tb; D0[t*6+k] = (float)(tb - tf[k]); }
 }
 // ---- A2 힘: c_fc (절 C 융합 판: 힘 + 바닥 접촉 판정) 와 같고, 사면체 블록에 응력 차 몫 −V R_A D₀ R_Aᵀ A⁻ᵀ ∇λ 를 더한다 ----
@@ -143,6 +145,8 @@ __device__ __forceinline__ void ai_off_body(int t, const long long* tets, const 
     for (int k=0;k<12;k++) G[k]=gl[t*12+k];
     float A[9] = {1,0,0, 0,1,0, 0,0,1};
     for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u=U[n[i]*3+c]; for (int b=0;b<3;b++) A[c*3+b] += u*G[i*3+b]; }
+    float dm = 0.f; for (int k=0;k<6;k++) dm = fmaxf(dm, fabsf(D0[t*6+k]));
+    if (dm < OFFMIN) return;                                                       // 응력 차가 사실상 0 (입자 1 개 셀 등) -- 건너뜀
     float D[9] = {D0[t*6+0], D0[t*6+3], D0[t*6+4], D0[t*6+3], D0[t*6+1], D0[t*6+5], D0[t*6+4], D0[t*6+5], D0[t*6+2]};
     float Q[9]; c_polar_fast(A, Q);
     float QD[9], T1[9]; mm3(Q, D, QD); mmt3(QD, Q, T1);
@@ -250,7 +254,7 @@ __global__ void ai_g2p(int N, const float* x, const float* Ucum, const float* Vn
     if (mode == 3 || mode == 4 || mode == 5) {
         double Fb[9]; for (int k=0;k<9;k++) Fb[k] = FT[t*9+k];
         double R[9], J; int inv;
-        ai_polar(M, R, nullptr, nullptr, J, inv);
+        ai_polar(M, R, (double*)nullptr, (double*)nullptr, J, inv);
         double dF[9]; for (int k=0;k<9;k++) dF[k] = F[k] - Fb[k];
         double P1[9], P2[9]; mm3(M, Fb, P1); mm3(R, dF, P2);
         for (int k=0;k<9;k++) F2d[k] = P1[k] + P2[k];
@@ -279,3 +283,9 @@ def launch(name, n, args, b=128, grid=None):
 
 
 P = EX.P
+
+
+def set_offmin(v):
+    import cupy as cp
+    import numpy as np
+    cp.ndarray((1,), cp.float32, mod().get_global("OFFMIN"))[:] = cp.asarray(np.asarray([v], dtype=np.float32))

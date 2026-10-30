@@ -21,6 +21,7 @@ CL = {"off": "--lim_sr 1e30", "free": "--lim_sr 1e30", "c5": "--lim_sr 5"}   # o
 def line(sc, ak, bk, vk, ck="free", r=1, kind=""):
     tag = f"{sc}_{ak}{bk}_{vk}_{ck}_" + ({"t": "t", "F": "F"}.get(kind, "r")) + str(r)
     root = {"ficus": "fem_ai_ficus", "wm": "fem_ai_wm"}.get(sc, "fem_ai_lego")
+    root += __import__("os").environ.get("AI_SFX", "")                               # 코드 판 구분 (예 2 = float 입자 극분해·응력 차 건너뜀 판)
     ex = " --ai_stat 0 --ai_stat_frames 1,2,3,4,5,6,7,8,10,15,20,30,40,60,80,100" if sc == "wm" else ""   # 수박: 착지 (프레임 4~5) 앞뒤 매 프레임
     if kind:                                                                         # t = 단독 측정 (진단 없음, 덤프 없음), F = 최종 (f32 덤프, 진단 없음)
         base = BASE.split(" --no_dump")[0] + (" --no_dump" if kind == "t" else " --dump_f32")
