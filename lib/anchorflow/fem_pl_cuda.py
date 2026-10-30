@@ -237,7 +237,8 @@ __device__ __forceinline__ void pl_nhb_tau(const float* Fe, float mu, float kap,
 // ---------------- 사면체 힘 (c_force_body 틀 + 재질) ----------------
 __device__ __forceinline__ void ag_force_body(int t, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
                                               float mu, float lam, float* f, float* rst, int fpol,
-                                              int mat, const float* prm, const float* ysT, const float* ljT, float dtc, const float* vn, float visc) {
+                                              int mat, const float* prm, const float* ysT, const float* ljT, float dtc, const float* vn, float visc, int cflag) {
+    // cflag (진단 전용): 1 = 셀 투영 끔 (재질 응력만, return mapping 은 프레임 끝 입자에만), 2 = 응력을 FCR 로 (투영은 그대로)
     if (mat == 0 && !(visc > 0.f)) { c_force_body(t, tets, U, gl, FT, VT, mu, lam, f, 0.f, 0.f, 0, rst, fpol, (float*)0); return; }
     float V = VT[t];
     if (!(V > 0.f)) return;
@@ -269,8 +270,8 @@ __device__ __forceinline__ void ag_force_body(int t, const long long* tets, cons
         float Uu[9], s[3], Vv[9];
         pl_svd(X, Uu, s, Vv);
         float ys = ysT ? ysT[t] : 0.f, lj = ljT ? ljT[t] : 0.f, al = 1.f;
-        pl_rm(mat, s, prm, ys, lj, al, dtc);                       // 셀 투영 (상태는 지역 사본 -- 입자 상태는 프레임 끝 ag_rm 만 바꾼다)
-        if (mat == 7) {                                             // τ 를 F_e 에서 바로: Gm = τ F_e⁻ᵀ F̄ᵀ = τ (F̄ F_e⁻¹)ᵀ
+        if (!(cflag & 1)) pl_rm(mat, s, prm, ys, lj, al, dtc);    // 셀 투영 (상태는 지역 사본 -- 입자 상태는 프레임 끝 ag_rm 만 바꾼다)
+        if (mat == 7 && !(cflag & 2)) {                             // τ 를 F_e 에서 바로: Gm = τ F_e⁻ᵀ F̄ᵀ = τ (F̄ F_e⁻¹)ᵀ
             float Fe[9]; pl_usv(Uu, s, Vv, Fe);
             float tau[9]; pl_nhb_tau(Fe, prm[0], prm[2], tau);
             float cF[9]; cof3(Fe, cF);
@@ -279,7 +280,7 @@ __device__ __forceinline__ void ag_force_body(int t, const long long* tets, cons
             float M_[9]; mm3(Fb, Fi, M_);                            // F̄ F_e⁻¹
             mmt3(tau, M_, Gm);
         } else {
-            float Pi[3]; pl_pi(mat, s, prm, al, Pi);
+            float Pi[3]; pl_pi((cflag & 2) ? 5 : mat, s, prm, al, Pi);
             float P[9]; pl_usv(Uu, Pi, Vv, P);
             mmt3(P, Fb, Gm);
         }
@@ -303,7 +304,7 @@ __device__ __forceinline__ void ag_force_body(int t, const long long* tets, cons
 // c_fc 와 같은 틀 (사면체 블록 nbT 개 + 바닥 후보 블록) -- 사면체 블록만 ag_force_body
 __global__ void ag_fc(int nbT, const int* szp, const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
                       float mu, float lam, float* f, float* rst, int fpol,
-                      int mat, const float* prm, const float* ysT, const float* ljT, float dtc, const float* vn, float visc,
+                      int mat, const float* prm, const float* ysT, const float* ljT, float dtc, const float* vn, float visc, int cflag,
                       const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb, const float* m, int tetmass,
                       float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon) {
     if ((int)blockIdx.x < nbT) {
@@ -311,7 +312,7 @@ __global__ void ag_fc(int nbT, const int* szp, const int* tl, const int* tlc, co
         int t;
         if (tl) { if (i0 >= tlc[0]) return; t = tl[i0]; }
         else { if (i0 >= szp[1]) return; t = i0; }
-        ag_force_body(t, tets, U, gl, FT, VT, mu, lam, f, rst, fpol, mat, prm, ysT, ljT, dtc, vn, visc);
+        ag_force_body(t, tets, U, gl, FT, VT, mu, lam, f, rst, fpol, mat, prm, ysT, ljT, dtc, vn, visc, cflag);
         return;
     }
     int q = (blockIdx.x - nbT)*blockDim.x + threadIdx.x;

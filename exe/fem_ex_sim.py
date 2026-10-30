@@ -176,6 +176,7 @@ ap.add_argument("--plast", action="store_true",
                 help="절 AG: 정답 config 의 material 로 정답 솔버 (PG/GF) 재질 식 -- 프레임 끝 G2P 뒤 입자별 return mapping (F_e·ys·logJp·손상 갱신) + 서브스텝마다 셀 응력을 "
                      "셀 소성 상태 (입자 부피 가중 평균) 로 항복면 안에 투영, 응력 모델도 정답 것 (metal·foam: PG StVK, sand: PG Drucker-Prager, plasticine: FCR + 손상, watermelon: GF NACC + neo-Hookean Boarden). "
                      "plasticine 손상 입자 (ys ≤ 0 -> 정답 μ = λ = 0) 는 셀 F̄·탄성 부피에서 빠진다 (질량은 그대로). lib/anchorflow/fem_pl_cuda.py")
+ap.add_argument("--pl_diag", type=int, default=0, help="절 AG 진단 전용: 1 = 셀 투영 끔 (셀 응력은 재질 응력 모델만, return mapping 은 프레임 끝 입자에만), 2 = 셀 응력을 FCR 로 (투영은 그대로), 3 = 둘 다")
 ap.add_argument("--visc", type=float, default=0.0, help="절 AG: 셀 점성 응력 τ_v = 2 η J sym(∇v) (Pa·s, 서브스텝마다 셀 속도 기울기) -- 정답 솔버 (PG/GF) 에는 없는 항, 구현만")
 ap.add_argument("--pbc", action="store_true", help="절 AG: 정답 config 의 입자 속도 구속 (enforce_particle_translation, release_particles_sequentially -- PG 와 같은 50 구역) 을 "
                 "노드 몫 섞기로: 프레임 가운데 시각에 걸린 입자의 P2G 질량 몫 α 로 서브스텝마다 노드 걸음 뒤 v <- (1 - α) v + α v̄_bc (선택은 0 프레임 위치, PG 와 같다)")
@@ -1027,7 +1028,7 @@ class Opt:
             PLC.launch("ag_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                     EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0),
                                     np.int32(MATN), EX.P(PRM), EX.P(self.ysT if PLAST else None), EX.P(self.ljT if PLAST else None),
-                                    np.float32((getattr(self, "_j", 0) + 1) * hs_), EX.P(self.vn if VISC else None), np.float32(a.visc),
+                                    np.float32((getattr(self, "_j", 0) + 1) * hs_), EX.P(self.vn if VISC else None), np.float32(a.visc), np.int32(a.pl_diag),
                                     EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                     np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
         else:

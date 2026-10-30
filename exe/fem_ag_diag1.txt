@@ -1,0 +1,11 @@
+0 h_el hotdog 256 60 --noplast
+0 h_pl hotdog 256 60
+1 h_nocell hotdog 256 60 --pl_diag 1
+1 h_fcr hotdog 256 60 --pl_diag 2
+2 h_both hotdog 256 60 --pl_diag 3
+2 b_el bread 8 300 --noplast
+3 b_nocell bread 8 300 --pl_diag 1
+4 w_el wolf 1024 25 --noplast
+5 w_nocell wolf 1024 25 --pl_diag 1
+6 m_el wm 512 10 --noplast
+6 m_nocell wm 512 10 --pl_diag 1
