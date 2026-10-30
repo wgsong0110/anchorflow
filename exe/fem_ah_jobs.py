@@ -96,7 +96,12 @@ V8 = {
     "bf5": (FIN5 + " --vfl_bf", True),
     "bw25_5": (FIN5 + " --vfl_band 0.25", False),
 }
-SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8}
+# 9 차: 띠 더 좁게 -- 0.05 dx_g (1 mm), 0 (평면 아래 입자만, 가중은 정답 sticky 식 그대로)
+V9 = {
+    "bw05": (FINF + " --vfl_band 0.05", False),
+    "bw0": (FINF + " --vfl_band 0", False),
+}
+SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]
