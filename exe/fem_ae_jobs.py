@@ -16,6 +16,10 @@ V = [("ab_c3", f"{NV} --lim_sr 3"),                    # 절 AB 최고 (기준)
      ("nvc1_c3", f"{NV} {VC(1)} --lim_sr 3"), ("nvc1_c5", f"{NV} {VC(1)} --lim_sr 5"),
      ("nvpm_c3", f"{NV} {VP} --lim_sr 3"), ("nvpm_c5", f"{NV} {VP} --lim_sr 5")]
 V0 = [("vpm_c0", VP), ("nvpm_c0", f"{NV} {VP}"), ("nvc05_c0", f"{NV} {VC(0.5)}")]   # 클램프 끔 (lego 3 회)
+if os.environ.get("AE_SET") == "2":                                                  # 2 차: vpmesh 질량도 같은 정의 (m_p' = ρ V_p') -- 부피만 바꾼 판은 프레임 2 발산
+    VM = f"{VP} --sp_vpm_mass"
+    V = [("vpmm_c5", f"{VM} --lim_sr 5"), ("vpmm_c3", f"{VM} --lim_sr 3"), ("nvpmm_c3", f"{NV} {VM} --lim_sr 3"), ("nvpmm_c5", f"{NV} {VM} --lim_sr 5")]
+    V0 = [("vpmm_c0", VM), ("nvpmm_c0", f"{NV} {VM}")]
 NR = int(os.environ.get("AE_R", "12"))
 J = []
 for r in range(1, NR + 1):

@@ -118,6 +118,7 @@ ap.add_argument("--sp_a", choices=["avg", "tet"], default="avg",
                 help="--sp merge/cube 묶음의 셀 사상: avg = 묶음 하나의 Ā (구성 사면체 A 의 V_t 가중 평균 -- 묶음 안 반대 변형은 에너지 0), tet = 구성 사면체마다 자기 A_t 에 묶음 F̄ (부피 V_t 그대로)")
 ap.add_argument("--sp_hg", type=float, default=0.0, help="--sp_a avg 의 모래시계 억제: 묶음 에너지에 γ μ Σ_t V_t |A_t - Ā|² (0 = 끔)")
 ap.add_argument("--sp_vcap", type=float, default=1.0, help="--sp vcap: 모든 점유 사면체의 탄성 부피 V_T' = min(V_T, θ V_기하) (입자 부피 합이 사면체 기하 부피를 넘지 않게; 질량 그대로)")
+ap.add_argument("--sp_vpm_mass", action="store_true", help="--sp vpmesh: 질량도 같은 정의로 m_p' = ρ_p V_p' (PG 규칙 '칸 부피/칸 입자 수, 질량 = ρ V' 를 메시 칸에 그대로 -- 총질량이 정답과 달라진다)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
 ap.add_argument("--sp_occ", type=float, default=0.0, help="--sp: 희소 = (입자 수 ≤ k) 또는 점유율 V_T/V_기하 < 이 값 (0 = 입자 수만)")
 ap.add_argument("--sp_beta", type=float, default=1.0, help="--sp blend: 이웃 몫 배율 β (F̄' = (V F̄ + β Σ V_nb F̄_nb)/(V + β Σ V_nb))")
@@ -826,8 +827,14 @@ class Opt:
                 print(f"[절 AE vpmesh] 입자 부피 다시 정의: Σ V_p (MPM 칸) {float(self._vp_orig):.6g} -> Σ V_p' (메시 칸) {float(vnew.double().sum()):.6g} "
                       f"(비 {float(vnew.double().sum() / self._vp_orig):.4f}), V_p'/V_p 분위 10·50·90 % "
                       f"{[round(q_, 3) for q_ in torch.quantile((vnew / vol).float()[:min(Np, 10_000_000)], torch.tensor([0.1, 0.5, 0.9], device=dev)).tolist()]}", flush=True)
+                if a.sp_vpm_mass:
+                    assert self.mA.data_ptr() == m.data_ptr()
+                    m0 = m.double().sum()
+                    m.mul_(vnew / vol)                                                    # m_p' = ρ_p V_p' (ρ_p = m_p / V_p, 영역 밀도 그대로)
+                    print(f"[절 AE vpmesh] 질량도 m_p' = ρ_p V_p': Σ m {float(m0):.6g} -> {float(m.double().sum()):.6g} kg", flush=True)
                 vol.copy_(vnew)
-                self.VTs[:T] = torch.where(occm, Vg, VT)                                  # 첫 프레임: 점유 사면체마다 Σ V_p' = V_기하 (F̄ 는 같은 사면체 안 같은 가중이라 첫 프레임 F 에서 거의 같다)
+                self._vt0 = self._vp_orig
+                return True                                                               # 첫 프레임 P2G 를 새 V_p (·m_p) 로 다시 (부르는 쪽)
             self._vt0 = self._vp_orig
         elif SPM == "mlow":
             mn = self.mn[:M]
@@ -1519,7 +1526,9 @@ class Opt:
         else:
             self._p2g(xa, va, Fa, h, False)                                         # 프레임 분할 (관성 예측 h v_n + h² g 의 끝 높이)
             if SPM != "none":
-                self._sparse()
+                if self._sparse():                                                  # 절 AE vpmesh: 첫 프레임에 V_p (·m_p) 를 바꿨다 -> 같은 상태로 P2G 다시
+                    self._p2g(xa, va, Fa, h, False)
+                    self._sparse()
         if FLOOR:
             EX.launch("ex_near_init", Np, (EX.P(self.sz), np.int32(0), EX.P(self.nidx), EX.P(xa), EX.P(va), EX.P(Fa), np.float32(h), np.float32(gv[0]),
                                            np.float32(gv[1]), np.float32(gv[2]), EX.P(self.x0c), EX.P(self.F0c), EX.P(self.F0i), EX.P(self.cc)), b=256)
