@@ -2532,3 +2532,31 @@ exe/fem_ad{1..6}.sh, fem_ad_jobs.py, fem_ad_gpu.sh, fem_ad_table.py, fem_ad_fina
 - **A+B 조합**: 둘 다 무르게 하는 쪽이라 β1 과 합치면 ficus 가 지나치게 무르다 (주기 2.3 배). β 0.25 와 합친 최종 판 (navg 0.25 + θ 0.5 + 클램프 5) 은 lego 9.49 % 14.92 ms·ficus 1.11 % 11.54 ms (주기 1.12 배), 끝 폭주 시작 0/16 (바로잡은 V_p 로도 0/10).
   다만 절 AD 판 혼자도 이번에 0/17 이었고 lego 9.35 %·ficus 0.59 %·주기 1.04 배로 조합과 같거나 낫다 -- **두 형상 모두를 보면 절 AD 판이 여전히 가장 균형이 좋고, 조합은 lego 오차를 0.1~0.3 %p 더 낮추는 대신 ficus 주기를 1.1~1.3 배로 늘린다.** 절 AB 판 (β1) 의 끝 폭주 시작 (이번 4/16, 단독 2/5) 은 조합에서 β 를 줄이면 사라진다.
 - 바꾼 정의 (보고): 최종 판 = (1) G2P 입자 F 갱신 F ← [(1−β) A_T + β Ã] F, β 0.25 (절 AB 식, β 만 다름) (2) 셀 탄성 부피 V_T' = min(V_T, 0.5 V_기하) (절 AD 식 그대로) (3) 클램프 σ1/σ3 ≤ 5. 질량·바닥·P2G·메시는 그대로, 노드 바닥 안 씀. `--vp_h5` 는 정답과 맞추는 버그 수정 (정의 변경 아님) 이지만 최종 판 단독 측정·영상에는 아직 쓰지 않았다.
+
+## AF. 확정 설정 (절 AD) 을 다른 씬에 (사용자 10-30 "다른 씬에 대해서도 돌려서 기준 만족하는지 확인해 봐") -- 커밋 (이 절 첫 커밋)~
+기준: 60 fps (≤ 16.7 ms/프레임, A6000 단독 GPU0) + 롤아웃 평균 오차 |x − x_gt|/EXT < 10 %. 플래그는 절 AD 그대로
+`--mode lag --opt --mass tet --rstat --lim_sr 5 --cfuse --cfuse_mode 2 --sp vcap --sp_vcap 0.5`, 씬마다 다른 것은 데이터·node_h·N·물리 조건 (바닥/고정 상자/감쇠) 뿐.
+정답 궤적은 새로 만들지 않았다 (있는 것만).
+
+### AF.1 쓸 수 있는 씬 목록 (클러스터 /home/dkta/work 조사, 10-30)
+FEM 은 탄성 (FCR) 만 다루므로 탄성 재질 + **전체 입자 정답 궤적이 있는 것** 만 대상. fem_ex_sim.py 는 정답 .pt (x·v·F·cfg) 를 읽고, --opt --cfg_bc 는 cuboid 고정 상자만 지원한다 (입자 구속·충격 BC 는 SystemExit 또는 무시).
+| 씬 | 정답 궤적 | 3DGS | 대상 | 근거·이유 |
+|---|---|---|---|---|
+| lego jelly L000 (기준) | lbpt/test_low/L000.pt (lbdata/test_low/L000) | pgmodel/lego_whitebg-trained | 절 AD 측정 (이 절 표에 참고로) | |
+| **lego jelly 홀드아웃 0000~0019 (20 개)** | lbpt/test/<t>.pt (= one/0000~0004 링크), 원본 lbdata/test/<t> h5 81 프레임 (lb_gen 21bc4e2, 시드 100+, 들어올림 0.05~0.3 m·속도 0~1.5 m/s 무작위, 80 프레임) | lego_whitebg-trained | **실행** | 정답 생성 config 가 L000 과 같은 lbdata/config.json (jelly E 1e6 ν 0.3 ρ 1000, g −9.8, 바닥 surface_collider z 0.48 sticky, n_grid 100 grid_lim 2 → dx 0.02, frame_dt 1/60, 감쇠 항목 없음) → 물리 인자는 L000 과 같다: `--floor vel`, 고정 상자·감쇠 없음 (--cfg_bc·--pg_vdamp 안 씀). node_h 0.028284 = dx (2√2)^(1/3) (기본 조합 규칙, L000 과 같음). 프레임 80. |
+| ficus 탄성 F_pg_v0 (기준) | lbours/ficus_v0/data/F_pg_v0 | ficus_whitebg-trained | 절 AD 측정 (참고) | |
+| ficus 탄성 공식 충격 F_pg | one/F_pg/F_pg.pt (topo/pg_ficus_elastic) | ficus | 제외 | 같은 형상·물성의 정답은 F_pg_v0 이 대표 (이미 측정). 공식 config 는 particle_impulse (0 프레임 v = 0, 첫 서브스텝 충격) 인데 fem_ex_sim 의 cfg_bc 가 이것을 다루지 않아 물체가 안 움직인다 -- 넣으려면 코드 추가 (구조 변경, 후보로만 보고). F_pg_v0 이 바로 이 충격을 같은 운동량의 초기 속도로 바꾼 판 (110ce74). |
+| ficus_i1~i4 | one/ficus_i*/ | | 제외 | 정답 MPM 궤적이 아니다 (0 프레임 되풀이 자리 채움, outputs.md 10-21). |
+| pillow2sofa jelly (PG 공식) | stab/pillow2sofa (gen) | pillow2sofa_whitebg-trained | 제외 | 소파 고정에 enforce_particle_translation (입자 구속) -- --opt --cfg_bc 미지원 (SystemExit). 넣으려면 코드 추가 (후보). |
+| vasedeck jelly (PG 공식) | | vasedeck_whitebg-trained | 제외 | enforce_particle_velocity_rotation·translation (입자 구속) -- 미지원. 전체 입자 정답 궤적도 찾지 못함. |
+| mic jelly (stab/mic, lego 와 같은 config) | stab/mic/res/pg_N1024.npz 는 **부분표본 위치만** | mic_whitebg-trained | 제외 | 전체 입자 정답 궤적 없음 -- 만들면 새 정답 (금지). |
+| hotdog·lego·mic·wolf elD (jelly E 2e6 ν 0.4 ρ 200) | traj_all12 / traj_hold12 는 끊긴 링크, R2 traj_pg2 사본은 **2 만 개 부분표본** (172,017 중) | | 제외 | 전체 입자 궤적 없음 (부분표본 금지). |
+| 깃발 천 (flag), 로프 (rope) | | flag_gs_clean | 제외 | 얇은 천·손잡이 구동 -- fem_ex_sim 형식 (.pt cfg) 의 전체 입자 정답 없음. |
+| plane (metal), bread·hotdog·wolf visco/plastic/clay, wolf sand, 수박 (GF 파괴) | | | 제외 | 소성·점소성·모래·파괴 (FCR 탄성 아님). |
+→ **새로 돌릴 수 있는 다른 씬은 lego 홀드아웃 정답 20 개뿐**이다 (다른 형상의 탄성 정답은 BC 미지원 또는 전체 입자 궤적이 없다).
+
+### AF.2 실행 계획
+- N 스윕 (비측정, 카드 0~6 x 일꾼 3): 궤적 20 x N {64, 96, 128, 160, 192, 224, 256} x 3 회. N* = 그 N 과 그보다 큰 모든 스윕 N 이 3/3 완주하는 가장 작은 N (안정 경계 이상 최소). N* 오차가 10 % 이상이면 "안정 + 오차 < 10 %" 최소 N 도 후보로 같이 잰다 (보고용).
+- 단독 측정: 스윕이 끝나 카드 1~6 이 빈 뒤 GPU0 + gpu0.lock 으로 궤적마다 N* 3 회 (회차 1 은 F 덤프 f32, 저장은 측정 밖). 회마다 시작·끝 7 장 상태 기록.
+- 영상: 회차 1 덤프 → lb_roll_to_h5 → lb_render (3DGS 알파블렌딩) 카드 0~6 동시, 정답도 같은 렌더러로. 덤프·h5 는 노드 /tmp → R2 크기 확인 뒤 /tmp 쪽만 지움.
+- 코드: exe/fem_af_jobs.py, fem_af_gpu.sh, fem_af_pick.py, fem_af_table.py, fem_af_all.sh, fem_af_boot.sh, fem_af_compose.py. 결과 lbours/fem_af_lego/ (R2 같은 경로).
