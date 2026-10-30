@@ -2664,7 +2664,7 @@ for i in range(L):
         s = ((x2 - torch.tensor(pt_, device=dev)) * torch.tensor(nr_, device=dev)).sum(-1)
         smin, nbelow = float(s.min()), int((s < 0).sum())
     errs.append(e if fin else float("nan"))
-    rec = dict(t=i, sec=t_frame, err=e, spread=spread, s_min=smin, n_below=nbelow, **st)
+    rec = dict(t=i, sec=t_frame, wall=time.time(), post=time.time() - t0 - t_frame, err=e, spread=spread, s_min=smin, n_below=nbelow, **st)
     flog.write(json.dumps(rec, ensure_ascii=False) + "\n")
     flog.flush()
     recs.append(rec)
