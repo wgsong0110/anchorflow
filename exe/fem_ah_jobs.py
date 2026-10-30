@@ -47,13 +47,13 @@ V1 = {
     "h5": (REC + " --vp_h5 H5", False),                  # 정답 float32 위치로 V_p·m_p (버그 수정)
     "nb25": (REC + " --fupd navg --fupd_b 0.25", True),  # 절 AB 매끈한 F 갱신
 }
-# 2 차: 바닥 정의 정리 (fem_ah_cuda) -- 정답 sticky 격자 가중 (gtk) / 단위 시간당 고착 몫 (rate)
+# 2 차: 바닥 정의 정리 (fem_ah_cuda; 0bdde28 의 gtk·rate·gtkr* 태그는 노드 걸음 이중 적분 버그 판 -- 무효, 이름 바꿔 다시) -- 정답 sticky 격자 가중 (gtk) / 단위 시간당 고착 몫 (rate)
 V2 = {
-    "gtk": (REC + " --vfl_w gtk", False),
-    "rate": (REC + " --vfl_rate", False),
-    "gtkr": (REC + " --vfl_w gtk --vfl_rate", False),
-    "gtkr_np0": (REC + " --vfl_w gtk --vfl_rate --vfl_np 0", False),
-    "gtk_full": (REC + " --vfl_w gtk --vfl_mode full", False),
+    "gk": (REC + " --vfl_w gtk", False),
+    "rt": (REC + " --vfl_rate", False),
+    "gkr": (REC + " --vfl_w gtk --vfl_rate", False),
+    "gkr_np0": (REC + " --vfl_w gtk --vfl_rate --vfl_np 0", False),
+    "gk_full": (REC + " --vfl_w gtk --vfl_mode full", False),
 }
 SETS = {"1": V1, "2": V2}
 S = SETS[os.environ.get("AH_SET", "1")]

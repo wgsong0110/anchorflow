@@ -1100,26 +1100,27 @@ class Opt:
                                    EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
                                    EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
-        if a.cfuse_mode == 2 and AHF:
+        if a.cfuse_mode == 2:
+          if AHF:
             AHC.launch("ah_node_step", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
                                             np.float32(hs_), np.float32(damp_), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc),
                                             EX.P(self.accN if AH_GTK else None), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * hs_ / hs)), b=256)
-        elif a.cfuse_mode == 2:
+          else:
             EX.launch("ex_node_step_lag", Mc, (EX.P(self.sz), EX.P(self.mI if SPM == "mlow" else self.mn), EX.P(self.f), EX.P(None), EX.P(self.vn), EX.P(self.Uc),
                                                np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs_), np.float32(damp_),
                                                EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
                                                np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.int32(1)), b=256)
-            if PBC:                                                                 # 절 AG: 입자 속도 구속의 노드 몫 (노드 걸음 뒤, 클램프·이동 앞)
-                PLC.launch("ag_pbc", Mc, (EX.P(self.sz), EX.P(self.vn), EX.P(self.pa), EX.P(self.pv)), b=256)
-            jon = np.int32(1 if a.lim >= 0 else 0)
-            CCU.launch("c_sr_pre", Tc, (EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc),
-                                        np.float32(hs_), np.float32(a.lim_sr), jon, np.float32(a.lim), EX.P(self.clst), EX.P(self.eF if a.sr_ef else None)), b=128)
-            CCU.launch("c_sr_warp", 0, (EX.P(self.clst), EX.P(self.tets), EX.P(self.gl), EX.P(self.vn), EX.P(self.Uc), np.float32(hs_), np.float32(a.lim_sr),
-                                        jon, np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)), b=128, grid=CCU.NBW)
-            CCU.launch("c_lim_apply", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs_), EX.P(self.alph),
-                                           np.int32(1 if a.lim_v == "keep" else 0), EX.P(self.fx if self.fixd else None), EX.P(self.rst),
-                                           EX.P(self.clst), EX.P(self.cint[1:] if VFL else None), *PLf[3:]), b=256)
-            return
+          if PBC:                                                                 # 절 AG: 입자 속도 구속의 노드 몫 (노드 걸음 뒤, 클램프·이동 앞)
+              PLC.launch("ag_pbc", Mc, (EX.P(self.sz), EX.P(self.vn), EX.P(self.pa), EX.P(self.pv)), b=256)
+          jon = np.int32(1 if a.lim >= 0 else 0)
+          CCU.launch("c_sr_pre", Tc, (EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc),
+                                      np.float32(hs_), np.float32(a.lim_sr), jon, np.float32(a.lim), EX.P(self.clst), EX.P(self.eF if a.sr_ef else None)), b=128)
+          CCU.launch("c_sr_warp", 0, (EX.P(self.clst), EX.P(self.tets), EX.P(self.gl), EX.P(self.vn), EX.P(self.Uc), np.float32(hs_), np.float32(a.lim_sr),
+                                      jon, np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)), b=128, grid=CCU.NBW)
+          CCU.launch("c_lim_apply", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs_), EX.P(self.alph),
+                                         np.int32(1 if a.lim_v == "keep" else 0), EX.P(self.fx if self.fixd else None), EX.P(self.rst),
+                                         EX.P(self.clst), EX.P(self.cint[1:] if VFL else None), *PLf[3:]), b=256)
+          return
         S = CCU.cvs(self.mn, self.f, None, self.vn, gv, hs_, damp_, self.fx if self.fixd else None, self.vbc, self.acc if VFL else None,
                     VFM, a.vfl_np, PLf[3:])
         jon = np.int32(1 if a.lim >= 0 else 0)
