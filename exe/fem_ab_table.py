@@ -43,8 +43,8 @@ def cqa(d):
     return sum(v) / max(len(v), 1)
 
 
-print("| 설정 | 방식 | N | 완주 | 발산 프레임 | 오차 (완주 평균; 회별, 발산이면 발산 전) | ms (참고/측정) | 입자 F 뒤집힘 최대 | 제한 작동 프레임 / 노드x서브스텝 | 지운 KE 합 (J) | 이웃 벌어짐 중앙 우리/정답 (전체 · 1~2 개 셀, 마지막 기록 프레임) | 주기 (s) |")
-print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+print("| 설정 | 방식 | N | 완주 | 발산 프레임 | 오차 (완주 평균; 회별, 발산이면 발산 전) | ms (참고/측정) | 입자 F 뒤집힘 최대 | 제한 작동 프레임 / 노드x서브스텝 | 지운 KE 합 (J) | 이웃 벌어짐 중앙 우리/정답 (전체 · 1~2 개 셀, 마지막 기록 프레임) | 주기 (s) | 끝 퍼짐 (상자 대각/EXT, 회별; > 1.2 = 끝 무렵 폭주 시작) |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for k, ds in G.items():
     S = []
     for d in ds:
@@ -80,4 +80,4 @@ for k, ds in G.items():
     per = ", ".join(f"{s['_per']:.3f}" for s in S if s["_per"] is not None) or "-"
     print(f"| {k} | {how(s0)} | {s0['N']} | {len(fin)}/{len(S)} | {', '.join(map(str, sorted(divs))) or '-'} | "
           f"{('%.2f %%' % (100 * err)) if err is not None else '-'} ({errs}) | {ms:.2f} ({tm}) | {max((s.get('Fp_inv_max') or 0) for s in S)} | "
-          f"{av('lim_frames'):.1f} / {av('lim_n_tot'):.0f} | {av('lim_dke_tot'):.3g} | {'; '.join(sp) or '-'} | {per} |")
+          f"{av('lim_frames'):.1f} / {av('lim_n_tot'):.0f} | {av('lim_dke_tot'):.3g} | {'; '.join(sp) or '-'} | {per} | {', '.join('%.2f' % s['spread_last'] for s in S)} |")
