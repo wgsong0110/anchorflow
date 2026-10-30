@@ -20,6 +20,10 @@ if os.environ.get("AE_SET") == "2":                                             
     VM = f"{VP} --sp_vpm_mass"
     V = [("vpmm_c5", f"{VM} --lim_sr 5"), ("vpmm_c3", f"{VM} --lim_sr 3"), ("nvpmm_c3", f"{NV} {VM} --lim_sr 3"), ("nvpmm_c5", f"{NV} {VM} --lim_sr 5")]
     V0 = [("vpmm_c0", VM), ("nvpmm_c0", f"{NV} {VM}")]
+if os.environ.get("AE_SET") == "3":                                                  # 3 차: navg β < 1 (ficus 주기를 덜 늘림) x 상한 θ -- 1 차에서 navg1 + θ 는 ficus 주기 2.4~3.2 s (정답 1.4)
+    V = [(f"nb{str(b).replace('.', '')}vc{str(t).replace('.', '')}_c{c}", f"--fupd navg --fupd_b {b} {VC(t)} --lim_sr {c}")
+         for b, t, c in ((0.5, 0.5, 5), (0.5, 1, 5), (0.25, 0.5, 5), (0.25, 1, 5), (0.5, 0.5, 3), (0.5, 0.75, 5))]
+    V0 = []
 NR = int(os.environ.get("AE_R", "12"))
 J = []
 for r in range(1, NR + 1):

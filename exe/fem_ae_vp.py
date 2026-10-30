@@ -52,6 +52,16 @@ if a.gt_h5:
     R["gt_h5_N"] = int(xg.shape[0])
     if xg.shape[0] == N:
         R["gt_h5_x0_maxdiff"] = float(np.abs(xg.astype(np.float64) - x0.numpy()).max())
+        Xg = torch.as_tensor(xg, dtype=torch.float32)                      # 정답 생성기가 실제로 본 위치 (h5 float32) 로 같은 식
+        cg = (Xg / dx).floor().long()
+        kg = (cg[:, 0] * ng + cg[:, 1]) * ng + cg[:, 2]
+        _, ig, ng_ = torch.unique(kg, return_inverse=True, return_counts=True)
+        Vh5 = (dx ** 3 / ng_[ig].float()).double()
+        rel = (vol - Vh5).abs() / Vh5
+        R["V_h5_sum"] = float(Vh5.sum())
+        R["V_vs_h5_maxrel"] = float(rel.max())
+        R["V_vs_h5_frac_diff_gt_1e-4"] = float((rel > 1e-4).double().mean())
+        R["V_vs_h5_mean_absrel"] = float(rel.mean())
 
 # (b) 더 잘게 점유
 lo = x0.min(0).values.numpy() - 1e-9
