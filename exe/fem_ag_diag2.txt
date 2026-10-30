@@ -1,0 +1,8 @@
+0 i_hotdog hotdog 267 180
+1 i_bread bread 160 300
+2 i_wolf wolf 640 50
+3 i_wm wm 480 100
+4 n_hotdog hotdog 267 180 --pl_cell none
+5 t_hotdog hotdog 267 180 --pl_cell total
+5 n_bread bread 160 300 --pl_cell none
+6 n_wolf wolf 640 50 --pl_cell none

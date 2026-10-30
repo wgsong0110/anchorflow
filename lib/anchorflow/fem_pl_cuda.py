@@ -237,7 +237,8 @@ __device__ __forceinline__ void pl_nhb_tau(const float* Fe, float mu, float kap,
 // ---------------- 사면체 힘 (c_force_body 틀 + 재질) ----------------
 __device__ __forceinline__ void ag_force_body(int t, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
                                               float mu, float lam, float* f, float* rst, int fpol,
-                                              int mat, const float* prm, const float* ysT, const float* ljT, float dtc, const float* vn, float visc, int cflag) {
+                                              int mat, const float* prm, const float* ysT, const float* ljT, float dtc, const float* vn, float visc, int cflag,
+                                              float* FeC, float* XpC, float* ysC, float* ljC) {
     // cflag (진단 전용): 1 = 셀 투영 끔 (재질 응력만, return mapping 은 프레임 끝 입자에만), 2 = 응력을 FCR 로 (투영은 그대로)
     if (mat == 0 && !(visc > 0.f)) { c_force_body(t, tets, U, gl, FT, VT, mu, lam, f, 0.f, 0.f, 0, rst, fpol, (float*)0); return; }
     float V = VT[t];
@@ -268,8 +269,31 @@ __device__ __forceinline__ void ag_force_body(int t, const long long* tets, cons
         mmt3(P, Fb, Gm);
     } else {
         float Uu[9], s[3], Vv[9];
-        pl_svd(X, Uu, s, Vv);
         float ys = ysT ? ysT[t] : 0.f, lj = ljT ? ljT[t] : 0.f, al = 1.f;
+        if (FeC) {                                                  // 셀 증분 return mapping (정답처럼 서브스텝마다): F_trial = X X_prev⁻¹ F_e,prev, 셀 상태 갱신
+            float Xp[9], Fp[9]; for (int k=0;k<9;k++) { Xp[k] = XpC[t*9+k]; Fp[k] = FeC[t*9+k]; }
+            float cX[9]; cof3(Xp, cX); float dX = det3(Xp); float id = (fabsf(dX) > 1e-20f) ? 1.f/dX : 0.f;
+            float Xi[9]; for (int i=0;i<3;i++) for (int j=0;j<3;j++) Xi[i*3+j] = cX[j*3+i]*id;
+            float D[9]; mm3(X, Xi, D);
+            float Ft[9]; mm3(D, Fp, Ft);
+            ys = ysC[t]; lj = ljC[t];
+            pl_svd(Ft, Uu, s, Vv);
+            bool ch = pl_rm(mat, s, prm, ys, lj, al, dtc);
+            float Fe[9]; if (ch) pl_usv(Uu, s, Vv, Fe); else for (int k=0;k<9;k++) Fe[k] = Ft[k];
+            for (int k=0;k<9;k++) { FeC[t*9+k] = Fe[k]; XpC[t*9+k] = X[k]; }
+            ysC[t] = ys; ljC[t] = lj;
+            // 응력은 F_e 에서, 힘은 Gm = P(F_e) F_e⁻ᵀ ... 대신 τ X⁻ᵀ F̄ᵀ: P_X = τ X⁻ᵀ (현재 배치 응력은 τ/J 로 같다)
+            float tau[9];
+            if (mat == 7 && !(cflag & 2)) pl_nhb_tau(Fe, prm[0], prm[2], tau);
+            else { float U2[9], s2[3], V2[9]; pl_svd(Fe, U2, s2, V2); float Pi[3]; pl_pi((cflag & 2) ? 5 : mat, s2, prm, al, Pi);
+                   float P_[9]; pl_usv(U2, Pi, V2, P_); mmt3(P_, Fe, tau); }
+            float cXX[9]; cof3(X, cXX); float dXX = det3(X); float idd = (fabsf(dXX) > 1e-20f) ? 1.f/dXX : 0.f;
+            float XiT[9]; for (int k=0;k<9;k++) XiT[k] = cXX[k]*idd;                       // X⁻ᵀ = cof(X)/det
+            float PX[9]; mm3(tau, XiT, PX);
+            mmt3(PX, Fb, Gm);
+            goto visc_part;
+        }
+        pl_svd(X, Uu, s, Vv);
         if (!(cflag & 1)) pl_rm(mat, s, prm, ys, lj, al, dtc);    // 셀 투영 (상태는 지역 사본 -- 입자 상태는 프레임 끝 ag_rm 만 바꾼다)
         if (mat == 7 && !(cflag & 2)) {                             // τ 를 F_e 에서 바로: Gm = τ F_e⁻ᵀ F̄ᵀ = τ (F̄ F_e⁻¹)ᵀ
             float Fe[9]; pl_usv(Uu, s, Vv, Fe);
@@ -285,6 +309,7 @@ __device__ __forceinline__ void ag_force_body(int t, const long long* tets, cons
             mmt3(P, Fb, Gm);
         }
     }
+visc_part:
     if (visc > 0.f && vn) {                                         // 점성 (정답 솔버에는 없음): τ_v = 2 η J sym(L), L = (Σ v_n ⊗ ∇λ_n) A⁻¹, 힘 -V τ_v A⁻ᵀ ∇λ
         float Gv[9] = {0,0,0,0,0,0,0,0,0};
         for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float vv = vn[n[i]*3+c]; for (int b=0;b<3;b++) Gv[c*3+b] += vv*G[i*3+b]; }
@@ -305,6 +330,7 @@ __device__ __forceinline__ void ag_force_body(int t, const long long* tets, cons
 __global__ void ag_fc(int nbT, const int* szp, const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
                       float mu, float lam, float* f, float* rst, int fpol,
                       int mat, const float* prm, const float* ysT, const float* ljT, float dtc, const float* vn, float visc, int cflag,
+                      float* FeC, float* XpC, float* ysC, float* ljC,
                       const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb, const float* m, int tetmass,
                       float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon) {
     if ((int)blockIdx.x < nbT) {
@@ -312,7 +338,7 @@ __global__ void ag_fc(int nbT, const int* szp, const int* tl, const int* tlc, co
         int t;
         if (tl) { if (i0 >= tlc[0]) return; t = tl[i0]; }
         else { if (i0 >= szp[1]) return; t = i0; }
-        ag_force_body(t, tets, U, gl, FT, VT, mu, lam, f, rst, fpol, mat, prm, ysT, ljT, dtc, vn, visc, cflag);
+        ag_force_body(t, tets, U, gl, FT, VT, mu, lam, f, rst, fpol, mat, prm, ysT, ljT, dtc, vn, visc, cflag, FeC, XpC, ysC, ljC);
         return;
     }
     int q = (blockIdx.x - nbT)*blockDim.x + threadIdx.x;
@@ -327,6 +353,13 @@ __global__ void ag_fc(int nbT, const int* szp, const int* tl, const int* tlc, co
     float mp = m[p];
     for (int i=0;i<4;i++) atomicAdd(&acc[nd[i]], (tetmass ? 0.25f : lm[i])*mp);
     if (ncon) atomicAdd(ncon, 1);
+}
+// 셀 증분 상태 초기화 (서브스텝 그래프 첫 커널): F_e = X_prev = F̄, 상태 = 입자 평균
+__global__ void ag_cinit(const int* szp, const float* FT, const float* ysT, const float* ljT, float* FeC, float* XpC, float* ysC, float* ljC) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= szp[1]) return;
+    for (int k=0;k<9;k++) { FeC[t*9+k] = FT[t*9+k]; XpC[t*9+k] = FT[t*9+k]; }
+    ysC[t] = ysT ? ysT[t] : 0.f; ljC[t] = ljT ? ljT[t] : 0.f;
 }
 // 프레임 끝 입자 return mapping (상태 갱신) -- rmc[0] += 투영된 입자 수, rmc[1] += 새로 손상된 입자 수
 __global__ void ag_rm(int N, float* F, float* ys, float* lj, float* al, int mat, const float* prm, float dt, float* rmc) {
