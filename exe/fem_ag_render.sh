@@ -9,7 +9,7 @@ RR=r2:storage/result/anchorflow/lbours; CARDS=(${AG_CARDS:-1})
 WMM=${AG_WM_MODEL:-$W/gfmodel/watermelon}
 rend() {
   local S=$1 N=$2 G=$3; ag_scene $S
-  local O=/tmp/dkta/lbours/fem_ag_$S/ag_${S}_n${N}_t1 GD=/tmp/dkta/lbours/fem_ag_$S/gt
+  local O=/tmp/dkta/lbours/fem_ag_$S/ag_${S}_n${N}${AG_SFX:-}_t1 GD=/tmp/dkta/lbours/fem_ag_$S/gt
   [ -f $O/roll_fem.pt ] || { echo "[덤프 없음] $S"; return; }
   mkdir -p $O/vj $GD
   [ -f $O/h5_fem/meta.json ] || python -u exe/lb_roll_to_h5.py --dump $O/roll_fem.pt --traj $AGD/gt_$S --out $O/h5_fem > $O/h5_fem.log 2>&1
@@ -24,18 +24,18 @@ rend() {
   fi
   [ -f $O/vj/fem_$SHAPE.mp4 ] && touch $O/vj/RENDER_DONE || tail -5 $O/vj/r_fem.log
   tail -2 $GD/r_gt.log
-  rclone copy $O $RR/fem_ag_$S/ag_${S}_n${N}_t1 -q; rclone copy $GD $RR/fem_ag_$S/gt -q
-  if [ -f $O/vj/RENDER_DONE ] && rclone check $O $RR/fem_ag_$S/ag_${S}_n${N}_t1 --one-way --size-only -q 2>/dev/null; then
+  rclone copy $O $RR/fem_ag_$S/ag_${S}_n${N}${AG_SFX:-}_t1 -q; rclone copy $GD $RR/fem_ag_$S/gt -q
+  if [ -f $O/vj/RENDER_DONE ] && rclone check $O $RR/fem_ag_$S/ag_${S}_n${N}${AG_SFX:-}_t1 --one-way --size-only -q 2>/dev/null; then
     rm -rf $O/roll_fem.pt $O/h5_fem; echo "[R2 확인·/tmp 정리] $S"
   else echo "[R2 확인 실패 또는 렌더 실패 -- /tmp 유지] $S"; fi
 }
 i=0
 for SN in ${AG_TIMED:?}; do
   S=${SN%%:*}; N=${SN#*:}; G=${CARDS[$((i % ${#CARDS[@]}))]}
-  rend $S $N $G > /tmp/dkta/lbours/fem_ag_sum/rend_$S.log 2>&1 &
+  rend $S $N $G > /tmp/dkta/lbours/fem_ag_sum/rend_$S${AG_SFX:-}.log 2>&1 &
   i=$((i + 1))
 done
 wait
-cat /tmp/dkta/lbours/fem_ag_sum/rend_*.log
+cat /tmp/dkta/lbours/fem_ag_sum/rend_*${AG_SFX:-}.log
 rclone copy /tmp/dkta/lbours/fem_ag_sum $RR/fem_ag_sum -q
 echo "AG_RENDER_DONE $(date +%T)"

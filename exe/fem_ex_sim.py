@@ -65,6 +65,7 @@ ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--dump_f32", action="store_true")
 ap.add_argument("--dump_pred", action="store_true")
+ap.add_argument("--dump_div", action="store_true", help="절 AG: 발산해도 끝난 프레임까지 roll_fem.pt 를 저장 (진단 영상용)")
 ap.add_argument("--interp", choices=["bary", "bspline2"], default="bary",
                 help="bspline2: MPM 표준 2 차 B-스플라인 (절 M, lib/anchorflow/fem_bs_cuda.py) -- 질량 Σ w m (P2G), G2P PIC, --mode sub 만")
 ap.add_argument("--quad", choices=["particle", "cell"], default="particle", help="--interp bspline2 탄성 적분점: 입자 (MPM 식) / 셀 대표 F̄ (K 점)")
@@ -2448,7 +2449,9 @@ json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=Fal
 print(f"[롤아웃] {a.tag} 서브스텝 {a.N} {a.mode}{' 최적화' if a.opt else ''}: {done}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%  "
       f"프레임당 {summ['ms_mean']:.2f} ms (중앙 {summ['ms_med']:.2f}, {summ['fps']:.2f} fps, 앞 {W} 프레임 제외) 퍼짐 {summ['spread_last']:.3f} "
       f"최저 입자 {summ['s_min']} 아래 최대 {summ['n_below_max']}", flush=True)
-if PRED is not None and div_at is None:
+if PRED is not None and (div_at is None or (a.dump_div and done > 0)):
+    if div_at is not None:                                                          # 절 AG --dump_div: 끝난 프레임까지만
+        PRED, GT, FD, VD = PRED[:done], GT[:done], FD[:done], VD[:done]
     if a.dump_pred:
         torch.save({"pred": PRED.cpu(), "EXT": EXT}, os.path.join(a.out, "pred.pt"))
     if not a.no_dump:

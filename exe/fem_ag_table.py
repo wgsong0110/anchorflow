@@ -21,19 +21,19 @@ def other_mib(dd):
     return max(v) if v else None
 
 
-print("| 씬 | N | 완주 | 오차 (완주 평균; 회별) | ms/프레임 (평균; 회별) | fps | 기준 (≤ 16.7 ms · < 10 %) | 소성 (마지막 회: 손상 입자 / logJp>0 입자) | 다른 카드 최대 MiB |")
+print("| 씬 | N (갈래) | 완주 | 오차 (완주 평균; 회별 -- 발산 회는 끝난 프레임까지) | ms/프레임 (평균; 회별) | fps | 기준 (≤ 16.7 ms · < 10 %) | 소성 (마지막 회: 손상 입자 / logJp>0 입자) | 다른 카드 최대 MiB |")
 print("|---|---|---|---|---|---|---|---|---|")
 for sc in scenes:
     d0 = os.path.join(root, f"fem_ag_{sc}")
     G = collections.OrderedDict()
     for d in (sorted(os.listdir(d0)) if os.path.isdir(d0) else []):
-        m = re.fullmatch(rf"ag_{sc}_n(\d+)_t(\d+)", d)
+        m = re.fullmatch(rf"ag_{sc}_n(\d+)([a-z_]*)_t(\d+)", d)
         if m:
-            G.setdefault(int(m.group(1)), []).append(os.path.join(d0, d))
+            G.setdefault((int(m.group(1)), m.group(2)), []).append(os.path.join(d0, d))
     for n, ds in G.items():
         S = [json.load(open(os.path.join(d, "summary.json"))) for d in ds if os.path.exists(os.path.join(d, "summary.json"))]
         if not S:
-            print(f"| {sc} | {n} | 요약 없음 |")
+            print(f"| {sc} | {n[0]}{n[1]} | 요약 없음 |")
             continue
         fin = [s for s in S if not s["diverged"]]
         err = sum(s["err_mean"] for s in fin) / len(fin) if fin else None
@@ -41,6 +41,6 @@ for sc in scenes:
         ok = err is not None and len(fin) == len(S) and ms <= 1000 / 60 and err < 0.10
         pl = S[-1].get("plast") or {}
         om = max((other_mib(d) or 0) for d in ds)
-        print(f"| {sc} | {n} | {len(fin)}/{len(S)} | " + (f"{100 * err:.2f} % (" + ", ".join(f"{100 * s['err_mean_done']:.2f}" for s in S) + ")" if err is not None else "-")
+        print(f"| {sc} | {n[0]}{n[1]} | {len(fin)}/{len(S)} | " + (f"{100 * err:.2f} % (" + ", ".join(f"{100 * s['err_mean_done']:.2f}" for s in S) + ")" if err is not None else "-")
               + f" | {ms:.2f} (" + ", ".join(f"{s['ms_mean']:.2f}" for s in S) + f") | {1000 / ms:.1f} | {'만족' if ok else '미달'} | "
               + f"{pl.get('dmg_final', '-')} / {pl.get('lj_pos_final', '-')} | {om} |")
