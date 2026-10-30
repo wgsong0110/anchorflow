@@ -19,6 +19,8 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--n", type=int, default=20000)
 ap.add_argument("--steps", type=int, default=4)
 ap.add_argument("--seed", type=int, default=0)
+ap.add_argument("--dump", default="", help="걸음 1 의 입력·출력 표본 (앞 2000 개) 을 이 접두로 npz 저장 (불일치 분석용)")
+ap.add_argument("--only", default="", help="이 사례만 (쉼표)")
 a = ap.parse_args()
 ROOT = {"pg": "/home/dkta/work/PhysGaussian", "gf": "/home/dkta/work/GaussianFluent"}[a.solver]
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
@@ -71,6 +73,8 @@ CASES = {
 res = {}
 N = a.n
 for name, prm_, sd, vsd, dt in CASES[a.solver]:
+    if a.only and name not in a.only.split(","):
+        continue
     sim = MPM_Simulator_WARP(N, n_grid=10, grid_lim=2.0)
     x0 = torch.rand(N, 3, generator=g).to(dev) * 0.5 + 0.75
     sim.load_initial_data_from_torch(x0, torch.full((N,), 1e-6, device=dev), n_grid=10, grid_lim=2.0)
@@ -135,6 +139,9 @@ for name, prm_, sd, vsd, dt in CASES[a.solver]:
             rec.update(dlogJp_max=float(dl[ok].max()), dlogJp_q99=float(torch.quantile(dl[ok], 0.99)), n_dlogJp_gt_1e4=int((dl[ok] > 1e-4).sum()),
                        logJp_gt_pos=int((lj_g > 0).sum()), logJp_ours_pos=int((lj > 0).sum()))
         recs.append(rec)
+        if a.dump and k == 0:
+            np.savez(f"{a.dump}_{name}.npz", Ft=Ft_g[:2000].cpu().numpy(), Fe_g=Fe_g[:2000].cpu().numpy(), tau_g=tau_g[:2000].cpu().numpy(),
+                     Fe_o=Fo[:2000].cpu().numpy(), tau_o=to[:2000].cpu().numpy(), lj0=lj0[:2000].numpy(), mu=mu, lam=lam, kap=float(PP["kappa"]))
         print(f"[{name}] 걸음 {k + 1}: 정답 투영 {rec['n_projected_gt']}/{N}, |ΔF_e| 최대 {rec['dF_max']:.2e} (99 % {rec['dF_q99']:.2e}, >1e-3 {rec['n_dF_gt_1e3']}), "
               f"τ 상대 차 최대 {rec['dtau_rel_max']:.2e} (99 % {rec['dtau_rel_q99']:.2e}, >1e-3 {rec['n_dtau_gt_1e3']})"
               + (f", ys 상대 차 최대 {rec['dys_rel_max']:.2e}" if ys_g is not None else "")
