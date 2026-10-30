@@ -5,6 +5,7 @@ import os
 import sys
 
 root, V, FN = sys.argv[1], sys.argv[2], sys.argv[3]
+TS = sys.argv[4] if len(sys.argv) > 4 else "t"                                 # 단독 측정 태그 접미 (t: AH.3, c: AH.10 경합 없는 측정)
 
 
 def ld(sub, tag):
@@ -28,7 +29,7 @@ ng = nt = 0
 for t in [f"{i:04d}" for i in range(20)] + ["L000", "F"]:
     sub = "fem_ah_ficus" if t == "F" else "fem_ah_lego"
     A = [ld(sub, f"ah_{V}_{t}_r{r}") for r in (1, 2, 3)]
-    B = [ld(sub, f"ah_{FN}_{t}_t{r}") for r in (1, 2, 3)]
+    B = [ld(sub, f"ah_{FN}_{t}_{TS}{r}") for r in (1, 2, 3)]
     X = [ld(sub, f"ah_{V}_x{k}_{t}_r1") for k in ("2", "0.5")]                      # x2 = h_s 2 배 = N 0.5 배 (lego 133), x0.5 = N 2 배 (534)
     S = [s for s in A + B if s]
     fin = [s for s in S if not s["diverged"]]
@@ -44,7 +45,7 @@ for t in [f"{i:04d}" for i in range(20)] + ["L000", "F"]:
     else:
         fa = os.path.join(root, "fem_af_lego", f"af_{t}_c267_r1", "summary.json")
         af = e_(json.load(open(fa))) if os.path.exists(fa) else "-"
-    om = max((oth(sub, f"ah_{FN}_{t}_t{r}") or 0) for r in (1, 2, 3))
+    om = max((oth(sub, f"ah_{FN}_{t}_{TS}{r}") or 0) for r in (1, 2, 3))
     nm = {"F": "ficus F_pg_v0", "L000": "lego L000"}.get(t, f"lego {t}")
     print(f"| {nm} | {len(fin)}/{len(S)} ({sum(1 for s in A if s and not s['diverged'])}+{sum(1 for s in BT if not s['diverged'])}) | "
           + (f"{100 * err:.2f} % " if err is not None else "- ") + "(" + ", ".join(e_(s) for s in A) + " / " + ", ".join(e_(s) for s in B) + ")"
