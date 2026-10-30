@@ -138,6 +138,8 @@ ap.add_argument("--vfl_npd", type=float, default=0.0,
                 help="절 AH (--floor vel): 비관통을 평면 아래 이 깊이 (m) 보다 깊은 입자가 걸린 노드에만 (정답 MPM 은 고착 격자 노드가 잡기 전 ~0.5 dx_g 관통; 0 = 기존)")
 ap.add_argument("--vfl_agg", action="store_true",
                 help="절 AH.7 결과 불변 가속 (--vfl_w gtk 경로): 프레임마다 바닥 후보를 입자 사면체 첫 노드 번호로 정렬 + 접촉 원자 합을 워프 집계 (같은 식, 합 순서만 다름)")
+ap.add_argument("--vfl_tacc", action="store_true",
+                help="절 AH.11 결과 불변 가속 (--vfl_w gtk --mass tet): 띠 접촉 질량을 입자 사면체에 먼저 모은 뒤 (원자 1 개) 목록 사면체만 네 노드로 (같은 식, 합 순서만 다름)")
 ap.add_argument("--rbdiag", action="store_true", help="절 AH 진단 (측정 밖): 프레임마다 강체 지표 (질량 중심·속도, 운동 에너지, 질량 중심 각운동량, Kabsch 회전, 최저 높이) 우리 / 정답 -> fem.jsonl rb")
 ap.add_argument("--vp_h5", default="", help="절 AE: 입자 부피·질량을 정답 0 프레임 h5 (float32 위치) 로 정답 생성기와 같은 식으로 (.pt 위치는 float16 반올림이라 칸 판정이 갈림)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
@@ -459,6 +461,8 @@ AH_BAND = 0.5 * AH_DXG if AH_GTK else 0.0                                       
 AH_KEX = (hs / float(cfg["substep_dt"])) if (VFL and a.vfl_rate) else 1.0           # (1 - a/m)^(h_s/h_ref)
 if a.lim_v == "mom" and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and SRL):
     raise SystemExit("--lim_v mom 은 확정 경로 (--cfuse --cfuse_mode 2 --lim_sr) 만")
+if a.vfl_tacc and not (AH_GTK and a.cfuse and a.mass == "tet" and not a.vfl_agg):
+    raise SystemExit("--vfl_tacc 는 --vfl_w gtk + --cfuse + --mass tet 경로만")
 if a.vfl_agg and not (AH_GTK and a.cfast or AH_GTK and a.cfuse):
     raise SystemExit("--vfl_agg 는 --vfl_w gtk + --cfuse 경로만")
 if AHF:
@@ -721,6 +725,10 @@ class Opt:
             self.FT = torch.zeros(self.Tcap, 9, device=dev)
             self.gl = torch.zeros(self.Tcap, 12, device=dev)
             self.tets = torch.zeros(self.Tcap, 4, dtype=torch.long, device=dev)
+            if a.vfl_tacc:                                                          # 절 AH.11 사면체 접촉 누적·표시·목록
+                self.accT = torch.zeros(self.Tcap, device=dev)
+                self.rT = torch.zeros(self.Tcap, dtype=torch.int32, device=dev)
+                self.clT = torch.zeros(self.Tcap + 1, dtype=torch.int32, device=dev)
             self.tcell = torch.zeros(self.Tcap, dtype=torch.long, device=dev)
             if SPM != "none":                                                       # 절 AD: 묶음 (루트·A 합 두 벌·F̄·V·구성 수), 섞은 F̄, 응력 가중 부피
                 self.grp = torch.full((self.Tcap,), -1, dtype=torch.int32, device=dev)
@@ -1148,6 +1156,14 @@ class Opt:
                                     EX.P(self.FeC if PLINC else None), EX.P(self.XpC if PLINC else None), EX.P(self.ysC if PLINC else None), EX.P(self.ljC if PLINC else None),
                                     EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                     np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
+        elif AHF and a.vfl_tacc:                                                    # 절 AH.11: 사면체 먼저 모은 뒤 노드로
+            AHC.launch("ah_fc_tacc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
+                                         EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
+                                         EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf), EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.mA),
+                                         *PLf, EX.P(self.ncon), np.float32(AH_BAND), np.float32(AH_PN), np.float32(AH_DXG), np.float32(a.vfl_npd),
+                                         EX.P(self.accT), EX.P(self.rT), EX.P(self.clT)), b=128, grid=nbT + nbP)
+            AHC.launch("ah_tdist", 0, (EX.P(self.clT), EX.P(self.tets), EX.P(self.accT), EX.P(self.rT), EX.P(self.acc), EX.P(self.accN)), b=128, grid=84)
+            AHC.launch("ah_clr1", 0, (EX.P(self.clT),), b=32, grid=1)
         elif AHF:                                                                   # 절 AH: 같은 힘 + 바닥 접촉 가중 (gtk) / 실제 접촉 표시
             AHC.launch("ah_fc_agg" if a.vfl_agg else "ah_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                     EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),

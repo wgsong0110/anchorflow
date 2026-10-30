@@ -179,6 +179,48 @@ __global__ void ah_fc_agg(int nbT, const int* szp, const int* tl, const int* tlc
         if (ok && lane == __ffs(msk) - 1) { if (sa > 0.f) atomicAdd(&acc[nd[i]], sa); if (accN && sc > 0.f) atomicAdd(&accN[nd[i]], sc); }
     }
 }
+// ---- 절 AH.11 결과 불변 가속 (--vfl_tacc, 사면체 등분 질량만): 띠 입자의 접촉 질량을 먼저 입자 사면체 accT 에 (원자 1 개), 처음 받은 사면체를 목록에;
+//      ah_tdist 가 목록 사면체마다 0.25 accT 를 네 노드 acc 에 (+ 실제 접촉 표시). a_n = Σ_{T∋n} 0.25 Σ_{p∈T} m_p w -- ah_fc 와 같은 식, 합 순서만 다름.
+__global__ void ah_fc_tacc(int nbT, const int* szp, const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
+                           float mu, float lam, float* f, float* rst, int fpol, float* eF,
+                           const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb, const long long* pinv,
+                           const float* m, float p0, float p1, float p2, float n0, float n1, float n2, int* ncon, float band, float pn, float dxg, float npd,
+                           float* accT, int* rT, int* clT) {
+    if ((int)blockIdx.x < nbT) {
+        int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+        int t;
+        if (tl) { if (i0 >= tlc[0]) return; t = tl[i0]; }
+        else { if (i0 >= szp[1]) return; t = i0; }
+        c_force_body(t, tets, U, gl, FT, VT, mu, lam, f, 0.f, 0.f, 0, rst, fpol, eF);
+        return;
+    }
+    int q = (blockIdx.x - nbT)*blockDim.x + threadIdx.x;
+    if (q >= szp[2]) return;
+    if (s0c[q] > __uint_as_float(*dn) + 1e-5f + band) return;
+    long long p = nidx[q];
+    float u[3] = {0,0,0};
+    for (int i=0;i<4;i++){ long long nd=rows[p*4+i]; float lm=lamb[p*4+i]; for (int a=0;a<3;a++) u[a] += lm*U[nd*3+a]; }
+    float s = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
+    if (!(s < band)) return;
+    float w = ah_wstk(s, pn, dxg);
+    if (!(w > 0.f)) return;                                                     // s < 0 이면 w ≥ 0.125 > 0
+    long long t = pinv[p];
+    float old = atomicAdd(&accT[t], m[p]*w);
+    if (old == 0.f) { int sl = atomicAdd(&clT[0], 1); clT[1 + sl] = (int)t; }
+    if (s < -npd) rT[t] = 1;
+    if (ncon && s < 0.f) atomicAdd(ncon, 1);
+}
+// 목록 사면체 -> 노드 (격자 크기 고정, 반복). 목록 개수는 ah_node_step2 가 비운다.
+__global__ void ah_tdist(const int* clT, const long long* tets, float* accT, int* rT, float* acc, float* accN) {
+    int cnt = clT[0];
+    for (int k = blockIdx.x*blockDim.x + threadIdx.x; k < cnt; k += gridDim.x*blockDim.x) {
+        int t = clT[1 + k];
+        float a = 0.25f*accT[t]; int r = rT[t];
+        accT[t] = 0.f; rT[t] = 0;
+        for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i]; atomicAdd(&acc[nd], a); if (r) atomicAdd(&accN[nd], 1.f); }
+    }
+}
+__global__ void ah_clr1(int* c) { if (threadIdx.x == 0) c[0] = 0; }
 __global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
 '''
