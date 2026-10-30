@@ -751,6 +751,7 @@ class Opt:
         if a.sp_occ > 0:
             sp = sp | (occm & (occ < a.sp_occ))
         self._spst = [occm.sum(), sp.sum(), (sp & (cnt <= 1)).sum()]
+        self._vt0 = VT.sum()                                                          # 바꾸기 전 탄성 부피 합 (stiff/vcap 비 기록용)
         if SPM in ("merge", "blend"):
             tt = self.tets[:T]
             fi = torch.tensor([[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]], device=dev)
@@ -2162,6 +2163,8 @@ for i in range(L):
         if SPM != "none":
             sps = [int(q_) for q_ in torch.stack(OPT._spst).tolist()]
             st.update(sp_occ=sps[0], sp_n=sps[1], sp_n1=sps[2], **(dict(sp_grouped=sps[3], sp_groups=sps[4]) if len(sps) > 3 else {}))
+            if SPM in ("stiff", "vcap"):
+                st.update(sp_vratio=float(OPT.VTs[:OPT.T].sum() / OPT._vt0))           # 탄성 부피 합 비 (바꾼 뒤 / 입자 부피 합)
             if a.sp_chk and str(i + 1) in a.sp_chk.split(","):
                 st.update(sp_chk=OPT.sp_check())
                 print(f"  [절 AD 검산] 프레임 {i + 1}: {st['sp_chk']}", flush=True)
@@ -2246,7 +2249,7 @@ summ = dict(out=a.out, args=vars(a), frames=L, frames_done=done, diverged=div_at
             nint=NINT, nint_beta=(a.nint_beta if NINT else None), fupd=a.fupd, fupd_b=(a.fupd_b if FUPD else None), fupd_b2=(a.fupd_b2 if FUPD == 5 else None),
             sp=SPM, sp_k=a.sp_k, sp_occ=a.sp_occ, sp_beta=a.sp_beta, sp_wocc=a.sp_wocc, sp_mlow=a.sp_mlow,
             rn_tot=(sum(r.get("rn", 0) for r in recs) if RNEW else None), rn_max=(max((r.get("rn", 0) for r in recs), default=None) if RNEW else None),
-            sp_n_med=(med([r.get("sp_n", 0) for r in recs]) if SPM != "none" else None), sp_grouped_med=(med([r.get("sp_grouped", 0) for r in recs]) if SPM in ("merge", "cube") else None), sp_a=a.sp_a, sp_hg=a.sp_hg)
+            sp_n_med=(med([r.get("sp_n", 0) for r in recs]) if SPM != "none" else None), sp_grouped_med=(med([r.get("sp_grouped", 0) for r in recs]) if SPM in ("merge", "cube") else None), sp_a=a.sp_a, sp_hg=a.sp_hg, sp_vcap=a.sp_vcap, sp_vratio_med=(med([r.get("sp_vratio", 1.0) for r in recs]) if SPM in ("stiff", "vcap") else None))
 if CC and a.cchk:
     ck = {k: float(t_) for k, t_ in OPT.chk.items()}
     json.dump(ck, open(os.path.join(a.out, "cchk.json"), "w"), indent=1)
