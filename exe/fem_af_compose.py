@@ -32,8 +32,7 @@ sj = f"{SRC}/af_{t}_c{N}_avg.json"
 json.dump(s1, open(sj, "w"))
 gt = get(f"gt_{t}", "gt_lego.mp4")
 ours = get(f"af_{t}_c{N}_r1", "vj/fem_lego.mp4")
-title = (f"lego 홀드아웃 정답 궤적 {t} · 80 프레임 · A6000 단독 · 확정 설정 (절 AD: 명시적 lag, 탄성 부피 상한 θ0.5, 클램프 σ1/σ3 ≤ 5) · 공통 h_s 6.25e-5 s (N {N}) · "
-         f"ms·fps 는 단독 3 회 평균, 오차는 완주 회 평균 ({len(fin)}/6 완주)")
+title = f"lego 홀드아웃 {t} · 80 프레임 · A6000 단독 · 공통 설정 (절 AD 플래그, h_s 6.25e-5 s, N {N}) · ms 단독 3 회 평균 · 오차 완주 {len(fin)}/6 평균"
 o = f"{OUT}/fem_af_lego{t}_cmp.mp4"
 subprocess.run([sys.executable, f"{here}/fem_ex_compose.py", o, title, f"정답 (MPM)|-|{gt}", f"공통 설정 N{N}|{sj}|{ours}"], check=True)
 print("[저장]", o)
