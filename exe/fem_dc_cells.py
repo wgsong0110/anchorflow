@@ -49,7 +49,12 @@ flip, nf, ab, rs, rf = D["flip"].long(), D["nf"].long(), D["abs"].long(), D["run
 BIG = 10 ** 9
 nodev = torch.where(ab >= 0, ab, torch.full_like(ab, BIG))
 nodev = torch.minimum(nodev, torch.where(nf >= 0, nf, torch.full_like(nf, BIG)))
-nodev = torch.where(rs >= 0, nodev, torch.full_like(nodev, BIG))                   # 프레임 끝까지 폭주 (5 x q90 연속) 가 이어진 노드만 -- 잠깐 넘었다 돌아온 노드 제외
+nodev_k = torch.where(rs >= 0, nodev, torch.full_like(nodev, BIG))                 # 프레임 끝까지 폭주 (5 x q90 연속) 가 이어진 노드만 -- 잠깐 넘었다 돌아온 노드 제외
+RULE = "끝까지 폭주가 이어진 노드"
+if bool((nodev_k < BIG).any()):
+    nodev = nodev_k
+else:                                                                               # 수박: 프레임 끝에 5 x q90 위 노드가 없다 (넓은 영역이 함께 빨라짐) -> 발산 판정 속도·비유한만
+    RULE = "발산 판정 속도를 넘은 노드 (끝까지 5 x q90 폭주인 노드 없음)"
 s_div = int(nodev.min())
 s_nf = int(nf[nf >= 0].min()) if bool((nf >= 0).any()) else None
 first_nodes = torch.nonzero(nodev <= s_div + W).squeeze(1)
@@ -172,7 +177,7 @@ for kk in range(max(0, td - a.pre), td + 2):
 # 같은 상태의 전체 입자 F 특이값 (비교)
 allF = svs(FP[td - 1].reshape(-1, 3, 3)) if td >= 1 else None
 ser = D["series"]
-out = dict(run=a.run, td=td, early_abs_frames=early, frame_1based=td + 1, s_div=s_div, s_nf=s_nf, s_flip=s_flip, first_flip_frame=fl_first, run_onset=run_on, N=N, win=W,
+out = dict(run=a.run, td=td, early_abs_frames=early, node_rule=RULE, n_abs_frame=int((ab >= 0).sum()), frame_1based=td + 1, s_div=s_div, s_nf=s_nf, s_flip=s_flip, first_flip_frame=fl_first, run_onset=run_on, N=N, win=W,
            vthr=float(D["vthr"]), loc=loc, hist=hist, all_F_state_td=allF,
            frames=[dict(t=r["t"], n_flip=r["n_flip"], first_flip=r["first_flip"], n_nf=r["n_nf"], first_nf=r["first_nf"], n_abs=r["n_abs"], first_abs=r["first_abs"],
                         n_run_end=r["n_run_end"]) for r in J],
