@@ -313,6 +313,7 @@ if NINT and not (a.opt and a.mode == "lag" and a.interp == "bary" and not REP an
     raise SystemExit("--nint 은 --opt --mode lag (재평균·B-스플라인 P2G·장벽·아핀 없음) 만")
 if a.nint_check and not NINT:
     raise SystemExit("--nint_check 은 --nint 와 함께")
+SR_OFF = a.lim_sr >= 1e20 and a.lim < 0                                             # 절 AI: 클램프 완전 끔 (이동 적용 커널은 그대로, α 는 늘 1)
 SRL = a.lim_sr > 0                                                                  # 절 Z (1) 비율 클램프
 SB = a.sb > 0                                                                       # 절 Z (2) 비율 로그 장벽
 SB_D = (a.sb_dhat if a.sb_dhat > 0 else 0.5 * (a.sb_c - 1.0)) if SB else 0.0
@@ -1164,10 +1165,11 @@ class Opt:
           if PBC:                                                                 # 절 AG: 입자 속도 구속의 노드 몫 (노드 걸음 뒤, 클램프·이동 앞)
               PLC.launch("ag_pbc", Mc, (EX.P(self.sz), EX.P(self.vn), EX.P(self.pa), EX.P(self.pv)), b=256)
           jon = np.int32(1 if a.lim >= 0 else 0)
-          CCU.launch("c_sr_pre", Tc, (EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc),
-                                      np.float32(hs_), np.float32(a.lim_sr), jon, np.float32(a.lim), EX.P(self.clst), EX.P(self.eF if a.sr_ef else None)), b=128)
-          CCU.launch("c_sr_warp", 0, (EX.P(self.clst), EX.P(self.tets), EX.P(self.gl), EX.P(self.vn), EX.P(self.Uc), np.float32(hs_), np.float32(a.lim_sr),
-                                      jon, np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)), b=128, grid=CCU.NBW)
+          if not SR_OFF:                                                          # 절 AI: --lim_sr ≥ 1e20 = 클램프 완전 끔 (판정 커널을 돌리지 않는다 -- 1e30 만으로는 sr_ratio 가 det ≤ 0 을 무한대로 보아 뒤집힘을 막았다)
+           CCU.launch("c_sr_pre", Tc, (EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.vn), EX.P(self.Uc),
+                                       np.float32(hs_), np.float32(a.lim_sr), jon, np.float32(a.lim), EX.P(self.clst), EX.P(self.eF if a.sr_ef else None)), b=128)
+           CCU.launch("c_sr_warp", 0, (EX.P(self.clst), EX.P(self.tets), EX.P(self.gl), EX.P(self.vn), EX.P(self.Uc), np.float32(hs_), np.float32(a.lim_sr),
+                                       jon, np.float32(a.lim), EX.P(self.alph), EX.P(self.rst)), b=128, grid=CCU.NBW)
           if a.lim_v == "mom":                                                      # 절 AH: 운동량 보존 클램프
               AHC.launch("ah_lim_apply", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.vn), EX.P(self.Uc), np.float32(hs_), EX.P(self.alph),
                                               EX.P(self.fx if self.fixd else None), EX.P(self.rst), EX.P(self.clst), EX.P(self.cint[1:] if VFL else None), *PLf[3:],

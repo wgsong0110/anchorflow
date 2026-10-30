@@ -1,6 +1,7 @@
 #!/bin/bash
 # 절 AI 스윕 드라이버: 카드 AI_CARDS (기본 1~6) x 일꾼 AI_W (기본 2) 동시. 사용: bash exe/fem_ai_sweep.sh <단계> [씬,...]
 cd "$(dirname "$0")/.." || exit 1
+set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; export PATH=$HOME/bin:$PATH
 ST=${1:?단계}; SCS=${2:-}
 CARDS=${AI_CARDS:-1 2 3 4 5 6}; WK=${AI_W:-2}
 set -- $CARDS; NC=$#; K=$((NC * WK))

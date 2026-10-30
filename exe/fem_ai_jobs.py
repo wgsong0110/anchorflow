@@ -15,10 +15,10 @@ BASE = "--mode lag --opt --mass tet --rstat --cfuse --cfuse_mode 2 --no_dump --a
 AA = {"a0": "", "a1": "--ai_p2g rs", "a2": "--ai_stress", "a12": "--ai_p2g rs --ai_stress"}
 BB = {"b0": "", "b1": "--fupd navg --fupd_b 1", "b2": "--ai_g2p bs", "b3": "--ai_g2p dev"}
 VV = {"v": "--sp vcap --sp_vcap 0.5", "n": "--sp none"}
-CL = {"off": "--lim_sr 1e30", "c5": "--lim_sr 5"}
+CL = {"off": "--lim_sr 1e30", "free": "--lim_sr 1e30", "c5": "--lim_sr 5"}   # off = 커밋 f37da7d 판 (1e30 이어도 뒤집힘은 막힘 = 반전만 막는 판), free = 완전 끔 (SR_OFF 뒤)
 
 
-def line(sc, ak, bk, vk, ck="off", r=1):
+def line(sc, ak, bk, vk, ck="free", r=1):
     tag = f"{sc}_{ak}{bk}_{vk}_{ck}_r{r}"
     root = {"ficus": "fem_ai_ficus", "wm": "fem_ai_wm"}.get(sc, "fem_ai_lego")
     ex = " --ai_stat 0 --ai_stat_frames 1,2,3,4,5,6,7,8,10,15,20,30,40,60,80,100" if sc == "wm" else ""   # 수박: 착지 (프레임 4~5) 앞뒤 매 프레임
@@ -40,12 +40,12 @@ elif st.startswith("rep:"):                                                     
     for sc in scs:
         for cmb in combos.split(","):
             ab, vk = cmb.split("_")[:2]
-            ck = cmb.split("_")[2] if cmb.count("_") >= 2 else "off"
+            ck = cmb.split("_")[2] if cmb.count("_") >= 2 else "free"
             ak, bk = ab[:ab.index("b")], ab[ab.index("b"):]
             for r in range(1, int(nr) + 1):
                 out.append(line(sc, ak, bk, vk, ck, r))
 if st == "wm":                                                                       # 수박: A2 는 FCR 전용이라 제외 -- A0/A1 x B0~B3 x 클램프 끔/5, θ 0.5 (절 AG 판 그대로)
-    for ck in ("c5", "off"):
+    for ck in ("c5", "free"):
         for ak in ("a0", "a1"):
             for bk in BB:
                 out.append(line("wm", ak, bk, "v", ck))
