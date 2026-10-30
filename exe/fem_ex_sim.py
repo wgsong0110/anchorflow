@@ -273,6 +273,20 @@ gv = [float(q) for q in cfg["g"]]
 mu, lam = PR.lame(cfg["E"], cfg["nu"])
 
 
+GPROF = bool(os.environ.get("AH_GPROF"))                                            # 절 AH.14 진단 (측정 아님): 격자 준비 소구간 CPU 벽시계 (동기화 넣음)
+GPT = {}
+
+
+def _gp(k, _st=[None]):
+    if not GPROF:
+        return
+    torch.cuda.synchronize()
+    t_ = time.perf_counter()
+    if k != "_begin" and _st[0] is not None:
+        GPT[k] = GPT.get(k, 0.0) + (t_ - _st[0])
+    _st[0] = t_
+
+
 def rb_stats(xa, va, xb, vb):
     """절 AH --rbdiag: 우리 (xa, va) / 정답 (xb, vb) 의 강체 지표. 질량 m (정답 V_p 질량), 0 프레임 기준 Kabsch 회전."""
     out = {}
@@ -798,6 +812,7 @@ class Opt:
     def grid(self, x, v, now):
         """셀 점유 격자 (월드 고정 Kuhn 격자, GridK 와 같은 격자점·같은 사면체 꼭짓점 순서). 동기화 2 번 (범위, 개수)."""
         lat = self.lat
+        _gp("_begin")
         lo_ = x.min(0).values
         hi_ = x.max(0).values
         vmax = v.norm(dim=-1).max()
@@ -812,6 +827,7 @@ class Opt:
         imin = torch.floor(y.min(0).values).long() - 1
         imax = torch.ceil(y.max(0).values).long() + 1
         ii = torch.cat([imin, imax, (vmax * h / lmin).ceil().long().view(1)]).tolist()                       # 동기화 1
+        _gp("g1_범위")
         if float(ii[6]) * lmin > 0.25 * EXT:
             raise _Diverge(f"프레임 이동 max|v|·h > 0.25 EXT ({ii[6]} 셀)")
         nnl = [max(ii[3 + k] - ii[k] + 1, 2) for k in range(3)]
@@ -846,6 +862,7 @@ class Opt:
         ncs = torch.cumsum(nm, 0, dtype=torch.int64)
         tcs = torch.cumsum(tm, 0, dtype=torch.int64)
         MT = torch.stack([ncs[-1], tcs[-1]]).tolist()                                 # 동기화 2
+        _gp("g2_표시·누적합")
         M, T = int(MT[0]), int(MT[1])
         self._alloc(M, T, Pn)
         nm, tm = self.nmark[:Pn], self.tmark[:Pn * 9]
@@ -859,6 +876,7 @@ class Opt:
             self.cmk = cm
             EX.launch("ex_tet_cell", Pn * 9, (EX.P(self.ipar), EX.P(tm), EX.P(self.tcm), EX.P(self.tcell)), b=256)
             self.Pn = Pn
+        _gp("g3_번호·사면체")
         ar = torch.arange(Pn, device=dev)
         uniq = torch.empty(M + 1, dtype=torch.long, device=dev).scatter_(0, torch.where(nm.bool(), ncs - 1, torch.full_like(ncs, M)), ar)[:M]
         k2 = uniq % n2
@@ -866,6 +884,7 @@ class Opt:
         k0 = uniq // (n1 * n2)
         npos = (torch.stack([k0, k1, k2], -1).to(lat.A.dtype) @ lat.A.T + lo).float().contiguous()
         self.sz.copy_(torch.tensor([M, T, 0, 0], dtype=torch.int32), non_blocking=True)
+        _gp("g4_노드위치")
         EX.launch("ex_tet_geo32", T, (EX.P(self.sz), EX.P(self.tets), EX.P(npos), EX.P(self.gl)))
         self.M, self.T = M, T
         self.nposb[:M].copy_(npos)
@@ -889,6 +908,7 @@ class Opt:
                 self.fx[:M] = fx.to(torch.uint8)
                 self.vbc[:M] = vb.float()
                 self.fixd = True
+        _gp("g5_기하·나머지")
         return M, T
 
     # ---- 커널 묶음 (그래프에 들어가는 부분은 크기를 self.sz 에서 읽는다) ----
@@ -1937,6 +1957,7 @@ class Opt:
         if a.adapt != "none":
             self._choose_N(i)
         self._ev("p2g")
+        _gp("f1_p2g")
         if lagm and a.lagdiag:
             self._Fp = Fv.view(Np, 3, 3)
             self._xp = x
@@ -1980,6 +2001,7 @@ class Opt:
         if a.adapt == "act":
             self.lim_prev = self.rst[1].item()                                      # 동기화 (측정 안) -- 다음 프레임 N 결정
         self._ev("sub")
+        _gp("f2_sub")
         if lagm:
             ci = ((NB - 1) % 2) if REPF else 0                                       # 마지막 블록의 입자 상태 버퍼
             xin, Fin = (self.X[ci], self.FF[ci]) if REP else (x, Fv)
@@ -2032,6 +2054,7 @@ class Opt:
             x2, v2, F2 = self.OX, self.OV, self.OF
         if a.secprof:
             self._ev("g2p")
+            _gp("f3_g2p")
         return x2, v2, F2.view(Np, 3, 3)
 
 
@@ -2890,6 +2913,9 @@ summ.update(cfast=dict(vfl_cull=a.vfl_cull, sr_fast=a.sr_fast, tlist=a.tlist, fp
                         N_hist={str(k): sum(1 for r in recs if r.get("Nf") == k) for k in sorted(set(r.get("Nf", a.N) for r in recs))}) if a.adapt != "none" else None))
 summ.update(plast=(dict(material=cfg.get("material"), mat=MATN, **PLP, dmg_final=int((PL_AL <= 0).sum()), lj_pos_final=int((PL_LJ > 0).sum())) if PLAST else None),
             visc=a.visc, pbc=PBC, floor_plane=a.floor_plane or None, gt_nonfinite_last=int((~GTOK[-1]).sum()))
+if GPROF:
+    summ["gprof_ms"] = {k_: 1e3 * v_ / max(len(recs), 1) for k_, v_ in sorted(GPT.items())}
+    print("[절 AH.14 소구간 ms/프레임 (동기화 넣은 진단)] " + " ".join(f"{k_} {v_:.3f}" for k_, v_ in summ["gprof_ms"].items()), flush=True)
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
 print(f"[롤아웃] {a.tag} 서브스텝 {a.N} {a.mode}{' 최적화' if a.opt else ''}: {done}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%  "
       f"프레임당 {summ['ms_mean']:.2f} ms (중앙 {summ['ms_med']:.2f}, {summ['fps']:.2f} fps, 앞 {W} 프레임 제외) 퍼짐 {summ['spread_last']:.3f} "
