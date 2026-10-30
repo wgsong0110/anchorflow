@@ -122,6 +122,7 @@ ap.add_argument("--sp_a", choices=["avg", "tet"], default="avg",
 ap.add_argument("--sp_hg", type=float, default=0.0, help="--sp_a avg 의 모래시계 억제: 묶음 에너지에 γ μ Σ_t V_t |A_t - Ā|² (0 = 끔)")
 ap.add_argument("--sp_vcap", type=float, default=1.0, help="--sp vcap: 모든 점유 사면체의 탄성 부피 V_T' = min(V_T, θ V_기하) (입자 부피 합이 사면체 기하 부피를 넘지 않게; 질량 그대로)")
 ap.add_argument("--sp_vpm_mass", action="store_true", help="--sp vpmesh: 질량도 같은 정의로 m_p' = ρ_p V_p' (PG 규칙 '칸 부피/칸 입자 수, 질량 = ρ V' 를 메시 칸에 그대로 -- 총질량이 정답과 달라진다)")
+ap.add_argument("--rbdiag", action="store_true", help="절 AH 진단 (측정 밖): 프레임마다 강체 지표 (질량 중심·속도, 운동 에너지, 질량 중심 각운동량, Kabsch 회전, 최저 높이) 우리 / 정답 -> fem.jsonl rb")
 ap.add_argument("--vp_h5", default="", help="절 AE: 입자 부피·질량을 정답 0 프레임 h5 (float32 위치) 로 정답 생성기와 같은 식으로 (.pt 위치는 float16 반올림이라 칸 판정이 갈림)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
 ap.add_argument("--sp_occ", type=float, default=0.0, help="--sp: 희소 = (입자 수 ≤ k) 또는 점유율 V_T/V_기하 < 이 값 (0 = 입자 수만)")
@@ -230,6 +231,32 @@ if not GT_ALLOK:
     print(f"[정답] 비유한 입자 (프레임 1 / 마지막): {int((~GTOK[0]).sum())} / {int((~GTOK[-1]).sum())} -- 오차는 정답이 유한한 입자만", flush=True)
 gv = [float(q) for q in cfg["g"]]
 mu, lam = PR.lame(cfg["E"], cfg["nu"])
+
+
+def rb_stats(xa, va, xb, vb):
+    """절 AH --rbdiag: 우리 (xa, va) / 정답 (xb, vb) 의 강체 지표. 질량 m (정답 V_p 질량), 0 프레임 기준 Kabsch 회전."""
+    out = {}
+    md_ = m.double()
+    x0d = d["x"][0].to(dev).double()
+    c0 = (md_[:, None] * x0d).sum(0) / md_.sum()
+    Rs = []
+    for k_, (xx, vv) in (("o", (xa, va)), ("g", (xb, vb))):
+        xx, vv = xx.double(), vv.double()
+        c = (md_[:, None] * xx).sum(0) / md_.sum()
+        vc = (md_[:, None] * vv).sum(0) / md_.sum()
+        r_ = xx - c
+        Lc = (md_[:, None] * torch.cross(r_, vv - vc, dim=-1)).sum(0)
+        H_ = ((x0d - c0) * md_[:, None]).T @ r_
+        U_, S_, Vh_ = torch.linalg.svd(H_)
+        D_ = torch.diag(torch.tensor([1.0, 1.0, float(torch.sign(torch.det(Vh_.T @ U_.T)))], device=dev, dtype=torch.float64))
+        R_ = Vh_.T @ D_ @ U_.T
+        Rs.append(R_)
+        out[k_] = dict(c=c.tolist(), vc=vc.tolist(), ke=float(0.5 * (md_ * (vv ** 2).sum(-1)).sum()), ke_c=float(0.5 * md_.sum() * (vc ** 2).sum()),
+                       L=Lc.tolist(), zmin=float(xx[:, 2].min()), up=R_[:, 2].tolist())
+    cs = float(((Rs[0] @ Rs[1].T).trace() - 1) / 2)
+    out["ang"] = float(math.degrees(math.acos(max(-1.0, min(1.0, cs)))))
+    out["dc"] = float((torch.tensor(out["o"]["c"]) - torch.tensor(out["g"]["c"])).norm())
+    return out
 planes = [b for b in (cfg.get("boundary_conditions") or []) if b.get("type") == "surface_collider"]
 if a.floor_plane:                                                                   # 절 AG: 바닥 평면 직접 (GF bounding_box 바닥)
     _fp = [float(q) for q in a.floor_plane.split(",")]
@@ -2380,6 +2407,8 @@ for i in range(L):
     else:
         e = float((x2[GTOK[i]] - GT[i][GTOK[i]]).norm(dim=-1).mean()) / EXT
     spread = float((x2.max(0).values - x2.min(0).values).norm()) / EXT
+    if a.rbdiag and GT_ALLOK:                                                       # 절 AH 진단 (측정 밖): 강체 지표 우리 / 정답
+        st.update(rb=rb_stats(x2, v2, GT[i], d["v"][i + 1].to(dev).float()))
     fin = bool(torch.isfinite(x2).all()) and math.isfinite(e)
     smin = nbelow = None
     if HASPL:
