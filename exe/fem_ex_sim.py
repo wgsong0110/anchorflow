@@ -217,6 +217,9 @@ ap.add_argument("--ai_stat", type=int, default=0, help="절 AI 진단 (측정 �
 ap.add_argument("--ai_offmin", type=float, default=1.0, help="절 AI A2: 사면체 응력 차 D₀ 의 최대 성분이 이 값 (Pa) 아래면 그 몫을 건너뜀 (입자 1 개 셀은 D₀ ≈ 0 -- 속도용; 1 Pa x 셀 부피 1e-6 m³ x |∇λ| 35 /m ≈ 4e-5 N)")
 ap.add_argument("--ai_rigid", type=int, default=0, help="절 AI (측정 밖, 절 AH.8 fem_ah_rigid.py 와 같은 식): K 프레임마다 0 프레임 대비 Kabsch 맞춤 잔차 RMS/EXT 와 몸 좌표 높이 -- 우리 / 정답")
 ap.add_argument("--ai_stat_frames", default="", help="--ai_stat 에 더해 이 프레임들 (1 부터, 쉼표) 에도")
+ap.add_argument("--ak_en", type=int, default=0, help="절 AK 진단 (측정 밖): K 프레임마다 (와 프레임 1) 에너지 수지 -- 전달 (P2G/G2P) 운동 에너지 손실, 서브스텝 동안 노드 운동+셀 탄성+중력 에너지 변화, "
+                "입자 탄성 Σ V_p ψ(F_p) 우리 (쓰는 F / 그림자 호환 F_c = Π A_T, 위치 사상의 실제 야코비안) / 정답 (같은 V_p·ψ), 압축 분위 -> fem.jsonl ak")
+ap.add_argument("--ak_t0", type=int, default=0, help="절 AK 진단: 정답 프레임 k 의 상태 (x, v, F) 에서 시작 (충격 뒤 회복만 따로 보기; 오차·몸 높이는 정답 k+1 프레임부터, 몸 기준은 원래 0 프레임)")
 a = ap.parse_args()
 
 dev = "cuda"
@@ -245,6 +248,13 @@ if a.vp_h5:                                                                     
     m = (v_ * rr_).float().contiguous()
     vol = v_.float().contiguous()
 BC_SEL = RT.cfg_bc_sel(cfg, d["x"][0].to(dev).float()) if a.cfg_bc else None
+X0_ORIG = d["x"][0]                                                                  # 절 AK --ak_t0: 몸 기준·질량 (traj_mass 는 위에서 원래 0 프레임으로) 은 원래 0 프레임
+if a.ak_t0 > 0:
+    _Ff = DM.traj_F(d, float(cfg["frame_dt"]), "cpu")
+    d["F"] = (_Ff if torch.is_tensor(_Ff) else torch.stack(list(_Ff)))[a.ak_t0:]
+    d["_Fok"] = True
+    d["x"], d["v"] = d["x"][a.ak_t0:], d["v"][a.ak_t0:]
+    print(f"[절 AK] 정답 프레임 {a.ak_t0} 상태에서 시작 (남은 정답 프레임 {int(d['x'].shape[0]) - 1})", flush=True)
 if a.cfg_bc and any(bc.get("type") in ("enforce_particle_translation", "enforce_particle_velocity_rotation") for bc, _ in BC_SEL) and a.opt:
     raise SystemExit("--opt --cfg_bc: 입자 구속은 아직 (cuboid 만)")
 VD_S = float(cfg.get("grid_v_damping_scale", 1.0))
@@ -267,7 +277,7 @@ def rb_stats(xa, va, xb, vb):
     """절 AH --rbdiag: 우리 (xa, va) / 정답 (xb, vb) 의 강체 지표. 질량 m (정답 V_p 질량), 0 프레임 기준 Kabsch 회전."""
     out = {}
     md_ = m.double()
-    x0d = d["x"][0].to(dev).double()
+    x0d = X0_ORIG.to(dev).double()
     c0 = (md_[:, None] * x0d).sum(0) / md_.sum()
     Rs = []
     for k_, (xx, vv) in (("o", (xa, va)), ("g", (xb, vb))):
@@ -338,7 +348,7 @@ if a.cqchk and not CQ:
     raise SystemExit("--cqchk 은 --cq 와 함께")
 FUPD = {"T": 0, "bar": 1, "nbar": 2, "navg": 3, "polar": 4, "navgbar": 5}[a.fupd]                    # 절 AB: G2P 입자 F 갱신 방식
 FUPDN = FUPD >= 2                                                                      # 노드 평균 (fa_tet_acc) 필요
-if FUPD and not (a.opt and a.mode == "lag" and a.interp == "bary" and a.p2g == "bary" and not a.rep and not a.affine and a.rep_w == "std"):
+if FUPD and not (a.opt and a.mode == "lag" and a.interp == "bary" and a.p2g == "bary" and not a.rep and a.rep_w == "std"):   # 절 AK: 아핀 전달 허용 (ex_g2p_lagF 가 C 를 남김)
     raise SystemExit("--fupd 는 --opt --mode lag --p2g bary (재평균·아핀 없음) 만")
 if a.cchk and not a.no_graph:
     raise SystemExit("--cchk 는 --no_graph 와 함께")
@@ -397,7 +407,7 @@ AI1, AI2 = a.ai_p2g == "rs", bool(a.ai_stress)                                  
 if AI2:
     AIC.set_offmin(a.ai_offmin)
 AIG = {"T": 0, "bs": 2, "dev": 3, "devnavg": 4, "devbs": 5}[a.ai_g2p]
-if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and not REP and not a.affine and a.p2g == "bary"
+if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and not REP and not (a.affine and AIG) and a.p2g == "bary"
                                   and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (AI2 and (PLAST or VISC or PBC)) and (VFL or not HASPL)):
     raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀 없음) 만; --ai_stress 는 FCR 탄성만 (소성 씬 제외)")
 if AIG and FUPD:
@@ -1996,7 +2006,8 @@ class Opt:
                                                             np.int32(1), EX.P(self.NB)), b=256)
                 EX.launch("ex_g2p_lagF", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
                                               EX.P(self.pinv), EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(self.FT), EX.P(self.NA if FUPDN else None),
-                                              np.int32(FUPD), np.float32(a.fupd_b), EX.P(self.NB if FUPD == 5 else None), np.float32(a.fupd_b2)), b=256)
+                                              np.int32(FUPD), np.float32(a.fupd_b), EX.P(self.NB if FUPD == 5 else None), np.float32(a.fupd_b2),
+                                              EX.P(self.CL if a.affine else None)), b=256)
             else:
                 EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
                                              EX.P(self.pinv), EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(self.CL if a.affine else None), np.int32(1 if RW4 else 0)), b=256)
@@ -2464,7 +2475,7 @@ def cq_check(i, Fstart):
 
 
 FSP = None
-if a.fspread or a.ai_stat or a.ai_stat_frames:
+if a.fspread or a.ai_stat or a.ai_stat_frames or a.ak_en:
     GTF = DM.traj_F(d, h, "cpu")
     GTF = GTF[:L + 1].reshape(-1, Np, 9).float() if torch.is_tensor(GTF) else torch.stack([q.reshape(Np, 9).float().cpu() for q in GTF[:L + 1]])
 if a.fspread:
@@ -2598,7 +2609,7 @@ def ai_stats(i, Fs):
     return r
 
 
-_RX0 = d["x"][0].to(dev).float()
+_RX0 = X0_ORIG.to(dev).float()
 _RQ0 = _RX0 - _RX0.mean(0)
 
 
@@ -2617,6 +2628,71 @@ def ai_rigid(xo, xg):
         b = (xx - c) @ Rm
         out.append([100 * float(res.pow(2).mean().sqrt()) / EXT, float(b[:, 2].max() - b[:, 2].min()), float(c[2])])
     return out
+
+
+def _ak_psi(Fm):
+    """FCR ψ = μ Σ(σ−1)² + λ/2 (det F − 1)² (힘 커널과 같은 고정 공회전 식, det > 0 범위) -- [n,3,3] float64 -> [n], σ_min, det."""
+    S_ = torch.linalg.svdvals(Fm)
+    J_ = torch.linalg.det(Fm)
+    return mu * ((S_ - 1.0) ** 2).sum(-1) + 0.5 * lam * (J_ - 1.0) ** 2, S_[:, 2], J_
+
+
+AK_FC = None                                                                         # 절 AK 그림자 호환 F_c (프레임마다 F_c <- A_T F_c, 위치 사상의 실제 야코비안)
+
+
+def ak_energy(i, x, v, F, x2, v2, F2):
+    """절 AK 에너지 수지 (측정 밖, 프레임 i: 시작 x,v,F -> 끝 x2,v2,F2, OPT 버퍼는 이번 프레임 것). 단위 J. 셀 탄성은 풀이가 쓰는 부피 (상한 뒤 V_T') 와 F̄ (A1 이면 분리 평균) 로,
+    입자 탄성은 정답과 같은 V_p·ψ 로 (우리 쓰는 F / 그림자 호환 F_c / 정답 F)."""
+    global AK_FC
+    md = m.double()
+    gg = torch.tensor(gv, device=dev, dtype=torch.float64)
+    M_, T_ = OPT.M, OPT.T
+    mn_, mv_, vn_ = OPT.mn[:M_].double(), OPT.mv[:M_].double(), OPT.vn[:M_].double()
+    U_ = OPT.Uc[:M_].double()
+    np_ = OPT.npos.double()
+    ok = mn_ > 0
+    r = {}
+    r["ke_p0"] = float(0.5 * (md * (v.double() ** 2).sum(-1)).sum())
+    r["ke_n0"] = float(0.5 * ((mv_[ok] ** 2).sum(-1) / mn_[ok]).sum())
+    r["ke_n1"] = float(0.5 * (mn_ * (vn_ ** 2).sum(-1)).sum())
+    r["ke_p1"] = float(0.5 * (md * (v2.double() ** 2).sum(-1)).sum())
+    r["pe_n0"] = float(-(mn_ * (np_ @ gg)).sum())
+    r["pe_n1"] = float(-(mn_ * ((np_ + U_) @ gg)).sum())
+    r["pe_p0"] = float(-(md * (x.double() @ gg)).sum())
+    r["pe_p1"] = float(-(md * (x2.double() @ gg)).sum())
+    VT = OPT.VTs[:T_].double()
+    occ = VT > 0
+    FT = OPT.FT[:T_].view(T_, 3, 3).double()[occ]
+    A_ = (torch.eye(3, device=dev, dtype=torch.float64) + torch.einsum("tia,tib->tab", U_[OPT.tets[:T_].reshape(-1)].view(T_, 4, 3), OPT.gl[:T_].view(T_, 4, 3).double()))[occ]
+    r["ec0"] = float((VT[occ] * _ak_psi(FT)[0]).sum())
+    r["ec1"] = float((VT[occ] * _ak_psi(A_ @ FT)[0]).sum())
+    Vp = vol.double()
+    Fd0 = F.reshape(Np, 3, 3).double()
+    Fd = F2.reshape(Np, 3, 3).double()
+    Ap = torch.eye(3, device=dev, dtype=torch.float64) + torch.einsum("pia,pib->pab", OPT.Uc[OPT.rows[:Np].reshape(-1)].view(Np, 4, 3).double(),
+                                                                     OPT.gl[OPT.pinv[:Np]].view(Np, 4, 3).double())
+    if AK_FC is None:
+        AK_FC = Fd0.clone()
+    AK_FC = Ap @ AK_FC
+    pa, sa, ja = _ak_psi(Fd0)
+    pu, su, ju = _ak_psi(Fd)
+    pc, sc, jc = _ak_psi(AK_FC)
+    pt, st_, jt = _ak_psi(Ap @ Fd0)                                                   # 이번 프레임 B0 갱신 (A_T F) -- 쓰는 F 와의 차 = 이번 프레임 F 갱신이 지운 몫
+    r["ep0"], r["ep1"], r["ep_c"], r["ep_b0"] = float((Vp * pa).sum()), float((Vp * pu).sum()), float((Vp * pc).sum()), float((Vp * pt).sum())
+    gF = GTF[i + 1].to(dev).double().reshape(Np, 3, 3)
+    gok = torch.isfinite(gF.reshape(Np, 9)).all(-1)
+    pg, sg, jg = _ak_psi(gF[gok])
+    r["ep_gt"] = float((Vp[gok] * pg).sum())
+    gx = GT[i].double()
+    r["pe_gt"] = float(-(md * (gx @ gg)).sum())
+    r["ke_gt"] = float(0.5 * (md * (d["v"][i + 1].to(dev).double() ** 2).sum(-1)).sum())
+    q3 = torch.tensor([0.01, 0.1, 0.5], device=dev, dtype=torch.float64)
+    qq = lambda t_: [round(float(q_), 4) for q_ in torch.quantile(t_[:2_000_000], q3).tolist()]
+    r["smin"] = dict(used=qq(su), compat=qq(sc), gt=qq(sg))
+    r["J"] = dict(used=qq(ju), compat=qq(jc), gt=qq(jg))
+    dFc = (Fd - AK_FC).reshape(Np, 9).norm(dim=-1)
+    r["dF_used_compat"] = qq(dFc) + [float(dFc.max())]
+    return r
 
 
 AI_SF = set(int(q_) for q_ in a.ai_stat_frames.split(",") if q_.strip())
@@ -2730,6 +2806,13 @@ for i in range(L):
                 st.update(ai=str(ex_)[:300])
         if a.ai_rigid and ((i + 1) % a.ai_rigid == 0 or i == 0):                    # 절 AI: 잔류 변형·몸 높이 (fem_ah_rigid.py 식)
             st.update(rigid=ai_rigid(x2, GT[i]))
+        if a.ak_en:                                                                  # 절 AK 에너지 수지 (그림자 F_c 는 매 프레임 갱신, 기록은 K 프레임마다)
+            try:
+                _ak = ak_energy(i, x, v, F, x2, v2, F2)
+                if i == 0 or (i + 1) % a.ak_en == 0:
+                    st.update(ak=_ak)
+            except Exception as ex_:
+                st.update(ak=str(ex_)[:300])
         if FSP is not None and (i == 0 or (i + 1) % a.fspread == 0):
             try:
                 st.update(fspread=fspread(i, x2, F2))
@@ -2817,7 +2900,7 @@ if PRED is not None and (div_at is None or (a.dump_div and done > 0)):
     if a.dump_pred:
         torch.save({"pred": PRED.cpu(), "EXT": EXT}, os.path.join(a.out, "pred.pt"))
     if not a.no_dump:
-        torch.save({"pred": PRED.cpu(), "gt": GT.cpu(), "x0": d["x"][0].float(), "EXT": EXT, "t0": 0, "tag": a.tag,
+        torch.save({"pred": PRED.cpu(), "gt": GT.cpu(), "x0": X0_ORIG.float(), "EXT": EXT, "t0": 0, "tag": a.tag,
                     "F": FD.float().cpu(), "v": VD.float().cpu(), "ctrl_pos": d.get("ctrl_pos"), "ctrl_R": d.get("ctrl_R"), "ctrl_id": d.get("ctrl_id"),
                     "nodes": None, "fscal": None, "gt_fscal": None}, os.path.join(a.out, "roll_fem.pt"))
         print(f"[롤아웃 덤프] {os.path.join(a.out, 'roll_fem.pt')}", flush=True)
