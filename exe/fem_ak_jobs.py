@@ -17,6 +17,7 @@ PATH = "--mode lag --opt --mass tet --rstat --cfuse --cfuse_mode 2"
 AI = "--ai_p2g rs --ai_stress --fupd navg --fupd_b 1 --sp vcap --sp_vcap 0.5 --lim_sr 1e30"
 CFM = "--sp vcap --sp_vcap 0.5 --lim_sr 5"
 GFL = "--vfl_w gtk --vfl_rate --vfl_npd 0.005"
+GFL0 = GFL + " --vfl_band 0"                                                       # 절 AH.12-13 띠 0 바닥 (최종 바닥 후보)
 DIAG = "--no_dump --ak_en 1 --ai_rigid 8"
 VAR = {
     "base": AI,
@@ -26,10 +27,16 @@ VAR = {
     "a0": AI.replace("--ai_p2g rs --ai_stress ", ""),
     "a1": AI.replace("--ai_stress ", ""),
     "th1": AI.replace("--sp_vcap 0.5", "--sp_vcap 1.0"),
+    "th75": AI.replace("--sp_vcap 0.5", "--sp_vcap 0.75"),
+    "cz": CFM.replace("--sp_vcap 0.5", "--sp_vcap 0.75"),                            # 절 AH.13 띠 0 판 (클램프 5, θ 0.75)
     "thn": AI.replace("--sp vcap --sp_vcap 0.5", "--sp none"),
     "slip": AI + " --vfl_mode slip",
     "cfm": CFM,
     "cfaff": CFM + " --affine",
+    "pq": AI.replace("--ai_stress ", "") + " --ak_pq",                                # 입자 적분점 셀 탄성 (A2 는 그 근사라 끔)
+    "pqb0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "") + " --ak_pq",
+    "pq1": AI.replace("--ai_stress ", "").replace("--sp_vcap 0.5", "--sp_vcap 1.0") + " --ak_pq",
+    "pqn": AI.replace("--ai_stress ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq",
 }
 
 
@@ -39,7 +46,7 @@ def line(sc, vk, fk="", r=1, extra="", kind="r", tagx=""):
         return None
     tag = f"{sc}_{vk}{('_' + fk) if fk else ''}{tagx}_{kind}{r}"
     diag = {"r": DIAG, "t": "--no_dump", "F": "--dump_f32"}[kind]
-    args = f"{SC[sc]} {PATH} {VAR[vk]} {GFL if fk == 'g' else ''} {diag} {extra}"
+    args = f"{SC[sc]} {PATH} {VAR[vk]} { {'g': GFL, 'z': GFL0}.get(fk, '') } {diag} {extra}"
     return f"{root} {tag} " + " ".join(args.split())
 
 
@@ -65,4 +72,8 @@ elif st.startswith("v:"):                                                       
             for vk in vks.split(","):
                 for r in range(1, int(nr) + 1):
                     out.append(line(sc, vk, fk, r, extra=ex.replace("@", " "), tagx=tx))
+elif st == "s2":                                                                     # 2 차: 띠 0 바닥 위 강성 (θ) 축, lego 21 + ficus
+    for sc in ["L000"] + ["%04d" % k for k in range(20)] + ["ficus"]:
+        for vk in ("pq", "pqb0", "pq1", "pqn", "base", "th75", "th1", "thn", "cz"):
+            out.append(line(sc, vk, "z" if sc != "ficus" else ""))
 print("\n".join(q for q in out if q))
