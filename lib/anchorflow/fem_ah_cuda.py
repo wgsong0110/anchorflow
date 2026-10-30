@@ -89,6 +89,55 @@ __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* v
     }
     for (int c=0;c<3;c++) vn[n*3+c] = v[c];
 }
+// ---- 운동량 보존 클램프 (--lim_v mom): c_lim_apply 와 같은 α 이동 + 속도 α 배, 줄인 운동량 Σ (1-α) m v 를 dP 에 모아 다음 커널이 몸 전체 (고정 아닌 질량 노드) 에 균일 속도로 되돌린다.
+//      선운동량 보존 (클램프는 내부 구속이라 외력 아님). 줄인 KE 중 강체 병진 몫만 돌아오고 상대 운동 몫은 그대로 지워진다.
+__global__ void ah_lim_apply(const int* szp, const float* mn, float* vn, float* Ucum, float hs, unsigned int* alph, const unsigned char* fixd, float* rst,
+                             int* lst, unsigned int* dn, float n0, float n1, float n2, float* dP) {
+    int M = szp[0];
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (lst && n == 0) lst[0] = 0;
+    float dl = 0.f;
+    if (n < M) {
+        float al = __uint_as_float(alph[n]);
+        alph[n] = 0x3f800000u;
+        if (fixd && fixd[n]) al = 1.f;
+        float v[3] = {vn[n*3], vn[n*3+1], vn[n*3+2]};
+        float U[3];
+        for (int c=0;c<3;c++) { Ucum[n*3+c] += al*hs*v[c]; U[c] = Ucum[n*3+c]; }
+        if (al < 1.f) {
+            float m = mn[n], w = 1.f - al;
+            atomicAdd(&rst[1], 1.f);
+            for (int c=0;c<3;c++) { vn[n*3+c] = al*v[c]; atomicAdd(&rst[2+c], w*m*v[c]); atomicAdd(&dP[c], w*m*v[c]); }
+            float v2 = v[0]*v[0]+v[1]*v[1]+v[2]*v[2];
+            atomicAdd(&rst[5], 0.5f*m*v2*(1.f - al*al));
+            atomicAdd(&rst[6], w*m*sqrtf(v2));
+        }
+        dl = fmaxf(-(U[0]*n0 + U[1]*n1 + U[2]*n2), 0.f);
+    }
+    if (dn) {
+        unsigned b = __float_as_uint(dl);
+        for (int o=16; o>0; o>>=1) b = max(b, __shfl_xor_sync(0xffffffffu, b, o));
+        if ((threadIdx.x & 31) == 0 && b) atomicMax(dn, b);
+    }
+}
+// 프레임마다 한 번: 고정 아닌 노드 질량 합 -> mt[0] (dP 도 비움)
+__global__ void ah_mtot(const int* szp, const float* mn, const unsigned char* fixd, float* mt, float* dP) {
+    __shared__ float sh[1024];
+    int M = szp[0];
+    float s = 0.f;
+    for (int n = threadIdx.x; n < M; n += blockDim.x) if (!(fixd && fixd[n])) s += mn[n];
+    sh[threadIdx.x] = s; __syncthreads();
+    for (int o = blockDim.x/2; o > 0; o >>= 1) { if ((int)threadIdx.x < o) sh[threadIdx.x] += sh[threadIdx.x + o]; __syncthreads(); }
+    if (threadIdx.x == 0) { mt[0] = sh[0]; dP[0] = dP[1] = dP[2] = 0.f; }
+}
+// 서브스텝 끝: v += dP / M (고정 아닌 질량 노드). dP 는 다음 서브스텝 ah_fc 첫 스레드가 비운다.
+__global__ void ah_mom(const int* szp, const float* mn, const unsigned char* fixd, float* vn, const float* mt, const float* dP) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= szp[0] || !(mn[n] > 0.f) || (fixd && fixd[n])) return;
+    float im = 1.f / mt[0];
+    for (int c=0;c<3;c++) vn[n*3+c] += dP[c]*im;
+}
+__global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
 '''
 _MOD = [None]

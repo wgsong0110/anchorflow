@@ -66,7 +66,13 @@ V3 = {
     "gkr_d05_vc75": (rep(GKR, sp_vcap=0.75) + " --vfl_npd 0.01", False),
     "gkr_h5": (GKR + " --vp_h5 H5", False),
 }
-SETS = {"1": V1, "2": V2, "3": V3}
+# 4 차: 운동량 보존 클램프 (--lim_v mom)
+V4 = {
+    "mom": (REC + " --lim_v mom", True),
+    "gkr_mom": (GKR + " --lim_v mom", False),
+    "gkr_d05_mom": (GKR + " --vfl_npd 0.01 --lim_v mom", False),
+}
+SETS = {"1": V1, "2": V2, "3": V3, "4": V4}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]
