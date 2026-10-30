@@ -256,6 +256,7 @@ __global__ void ex_vfl_contact(const int* szp, const long long* nidx, const floa
 //   acc_n > 0 (접촉 입자가 걸린 노드):
 //     mode 0 (질량 비율 고착): v <- (1 - α) v,  α = min(acc_n / m_n, 1)  -- 접촉 입자 몫의 운동량을 0 으로 (정답 sticky 의 v = 0 을 접촉 입자 질량에만)
 //     mode 1 (노드 전체 고착): v <- 0  -- 정답 sticky 와 같은 노드 속도 0 (판정만 입자)
+//     mode 2 (절 AG 미끄럼, --vfl_mode slip): 접선 성분 그대로 (np = 1 이면 안쪽 법선 성분만 제거 -- GF/PG bounding_box 의 한쪽 방향 속도 0)
 //     np = 1 (비관통): 그 뒤 v·n < 0 이면 법선 성분 제거 -> 접촉 입자의 보간 속도 Σλ v_n (볼록 결합) 의 법선 성분 ≥ 0
 //   U += h_s v
 __global__ void ex_node_step_lag(const int* szp, const float* mn, float* f, float* gn, float* vn, float* Ucum, float g0, float g1, float g2, float hs, float damp,
@@ -277,7 +278,7 @@ __global__ void ex_node_step_lag(const int* szp, const float* mn, float* f, floa
         float a = acc[n];
         acc[n] = 0.f;
         if (a > 0.f && !(fixd && fixd[n])) {
-            float k = (mode == 1) ? 0.f : fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f);
+            float k = (mode == 1) ? 0.f : ((mode == 2) ? 1.f : fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f));   // mode 2 (절 AG slip): 접선 그대로, 아래 비관통만 (정답 bounding_box: 바깥 법선 성분만 0)
             for (int c=0;c<3;c++) v[c] *= k;
             if (np_) { float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vn_ < 0.f) { v[0] -= vn_*n0; v[1] -= vn_*n1; v[2] -= vn_*n2; } }
         }

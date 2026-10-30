@@ -27,6 +27,9 @@ ap.add_argument("--v0_from_bc", action="store_true",
                      "박는 PG 공식 초기 속도 지정)을 0 프레임 v 로 옮긴다. PG 는 0 프레임 h5 를 첫 서브스텝 전에 써서 v[0]=0 으로 "
                      "남는다. 그 경계조건은 저장 cfg 에서 빼고 cfg['init_velocity_bc'] 에 적는다 (--cfg_bc 가 첫 스텝 노드를 "
                      "박지 않게 -- 우리 한 스텝은 PG 400 서브스텝)")
+ap.add_argument("--allow_nonfinite", action="store_true",
+                help="절 AG (GF 수박): GF 는 진행 중 발산 입자를 비유한값으로 떨군다 (quarantine) -- x 는 그대로 두고 (지표에서 거른다) F 의 비유한 값만 항등으로")
+ap.add_argument("--out_dir_n", type=int, default=0, help="--out_dir 에 앞 K 프레임만 (0 = 전부; 절 AG 수박: 렌더 대응용 0 프레임만)")
 ap.add_argument("--out_dir", default="", help="lb_render·lb_roll_to_h5 용 궤적 디렉토리 (x (N,3), F (N,9), meta.json R=I)")
 a = ap.parse_args()
 fs = sorted(glob.glob(os.path.join(a.h5_dir, "**", "sim_*.h5"), recursive=True),
@@ -67,7 +70,13 @@ if a.v0_from_bc:
     assert moved, "--v0_from_bc: 시작 0·끝 <= substep_dt 인 enforce_particle_translation 이 없다"
     cfg["boundary_conditions"] = keep
     cfg["init_velocity_bc"] = moved
-assert torch.isfinite(X).all() and torch.isfinite(F.float()).all()
+if a.allow_nonfinite:
+    _bad = ~torch.isfinite(F.float()).reshape(F.shape[0], F.shape[1], 9).all(-1)
+    F[_bad] = torch.eye(3).half()
+    print(f"[비유한] x 비유한 입자 (프레임별 최대) {int((~torch.isfinite(X).all(-1)).sum(-1).max())}, F 비유한 -> 항등 {int(_bad.sum())} (입자 x 프레임)", flush=True)
+    assert torch.isfinite(X[0]).all(), "0 프레임 위치가 비유한"
+else:
+    assert torch.isfinite(X).all() and torch.isfinite(F.float()).all()
 err0 = float((F[0].float() - torch.eye(3)).abs().max())
 os.makedirs(os.path.dirname(a.out_pt), exist_ok=True)
 meta = {"h5": fs[0], "config": os.path.abspath(a.config), "R": np.eye(3).tolist(), "src": "PhysGaussian gs_simulation",
@@ -82,7 +91,7 @@ if a.out_dir:
     json.dump(cfg, open(f"{a.out_dir}/config.json", "w"), indent=1)
     meta["config"] = f"{a.out_dir}/config.json"
     json.dump(meta, open(f"{a.out_dir}/meta.json", "w"), indent=1)
-    for i in range(X.shape[0]):
+    for i in range(X.shape[0] if a.out_dir_n <= 0 else min(a.out_dir_n, X.shape[0])):
         with h5py.File(f"{a.out_dir}/sim_{i:010d}.h5", "w") as o:
             o.create_dataset("x", data=X[i].numpy().astype(np.float32))
             o.create_dataset("F", data=F[i].float().reshape(-1, 9).numpy().astype(np.float32))

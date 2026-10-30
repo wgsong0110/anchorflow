@@ -277,7 +277,7 @@ __device__ __forceinline__ void c_vnew(long long n, const float* mn, const float
     if (acc) {
         float a = acc[n];
         if (a > 0.f && !(fixd && fixd[n])) {
-            float k = (mode == 1) ? 0.f : fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f);
+            float k = (mode == 1) ? 0.f : ((mode == 2) ? 1.f : fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f));
             for (int c=0;c<3;c++) v[c] *= k;
             if (np_) { float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vn_ < 0.f) { v[0] -= vn_*n0; v[1] -= vn_*n1; v[2] -= vn_*n2; } }
         }

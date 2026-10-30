@@ -14,7 +14,8 @@ import os
 import sys
 
 W = "/home/dkta/work"
-MODEL = {"lego": "lego_whitebg-trained", "mic": "mic_whitebg-trained", "ficus": "ficus_whitebg-trained"}
+MODEL = {"lego": "lego_whitebg-trained", "mic": "mic_whitebg-trained", "ficus": "ficus_whitebg-trained",
+         "hotdog": "hotdog_whitebg-trained", "wolf": "wolf_whitebg-trained", "bread": "bread-trained"}          # 절 AG: PG 소성 씬
 ap = argparse.ArgumentParser()
 ap.add_argument("--sim", required=True)
 ap.add_argument("--config", required=True)
@@ -26,6 +27,7 @@ ap.add_argument("--colors", default="", help="가우시안 색 덮어쓰기 .npy
                 "주면 SH 대신 colors_precomp 로 래스터화한다 (불투명도·공분산은 그대로)")
 ap.add_argument("--iso", type=float, default=0.0, help="공분산을 등방형 (iso × 가우시안 축 길이 중앙값)² I 로 (F 무시). 0 이면 FΣFᵀ")
 ap.add_argument("--frame_label", type=int, default=None, help="주면 프레임 번호 (이 값 + 영상 프레임 순번) 를 크게 빨간색으로 찍는다")
+ap.add_argument("--cam_back", type=float, default=1.6, help="카메라를 물체 중심에서 이 배로 뒤로 (기본 1.6, 기존 그대로)")
 ap.add_argument("--caption", default="", help="--frame_label 과 함께 왼쪽 위에 찍을 설명 (한국어 가능)")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
@@ -49,7 +51,14 @@ _it = a.iter if a.iter >= 0 else max(int(q.split("_")[-1]) for q in os.listdir(f
 print(f"[3DGS] {mp} iteration_{_it}", flush=True)
 gs.load_ply(f"{mp}/point_cloud/iteration_{_it}/point_cloud.ply")
 KIDX = torch.nonzero(gs.get_opacity[:, 0] > float(cfg.get("opacity_threshold", 0.02))).squeeze(1)
-TP, SO, MEAN = transform2origin(gs.get_xyz[KIDX], float(cfg.get("scale", 1.0)))
+# 절 AG: PG 전처리 회전 (config rotation_degree/axis -- PG generate_rotation_matrix 와 같은 식, apply_rotations 순서대로) -- 없으면 항등 (기존과 같다)
+_RT = torch.eye(3, device=dev)
+for _dg, _ax in zip(cfg.get("rotation_degree") or [], cfg.get("rotation_axis") or []):
+    _c, _s = math.cos(_dg / 180.0 * 3.1415926), math.sin(_dg / 180.0 * 3.1415926)
+    _R = {0: [[1, 0, 0], [0, _c, -_s], [0, _s, _c]], 1: [[_c, 0, _s], [0, 1, 0], [-_s, 0, _c]], 2: [[_c, -_s, 0], [_s, _c, 0], [0, 0, 1]]}[int(_ax)]
+    _RT = torch.tensor(_R, device=dev, dtype=torch.float32) @ _RT
+ROT = bool((_RT - torch.eye(3, device=dev)).abs().max() > 0)
+TP, SO, MEAN = transform2origin(gs.get_xyz[KIDX] @ _RT.T if ROT else gs.get_xyz[KIDX], float(cfg.get("scale", 1.0)))
 TP = shift2center111(TP)
 NG = KIDX.numel()
 with h5py.File(meta["h5"]) as h:
@@ -62,11 +71,13 @@ C0 = torch.zeros(NG, 3, 3, device=dev)
 C0[:, 0, 0], C0[:, 0, 1], C0[:, 0, 2] = c6[:, 0], c6[:, 1], c6[:, 2]
 C0[:, 1, 1], C0[:, 1, 2], C0[:, 2, 2] = c6[:, 3], c6[:, 4], c6[:, 5]
 C0[:, 1, 0], C0[:, 2, 0], C0[:, 2, 1] = c6[:, 1], c6[:, 2], c6[:, 4]
+if ROT:
+    C0 = _RT @ C0 @ _RT.T                                            # 시뮬 공간 (회전 뒤) 공분산
 SHS, OPA = gs.get_features[KIDX], gs.get_opacity[KIDX]
 cam = json.load(open(f"{mp}/cameras.json"))[0]
 Rw, pos = np.array(cam["rotation"]), np.array(cam["position"])
-_ctr = MEAN.cpu().numpy().astype(np.float64)
-pos = _ctr + 1.6 * (pos - _ctr)                                     # 회전·낙하·이동이 다 들어오게 뒤로
+_ctr = ((MEAN @ _RT) if ROT else MEAN).cpu().numpy().astype(np.float64)
+pos = _ctr + a.cam_back * (pos - _ctr)                                     # 회전·낙하·이동이 다 들어오게 뒤로
 W2C = np.linalg.inv(np.block([[Rw, pos[:, None]], [np.zeros((1, 3)), np.ones((1, 1))]]))
 fx_ = 2 * math.atan(cam["width"] / (2 * cam["fx"])); fy_ = 2 * math.atan(cam["height"] / (2 * cam["fy"]))
 wv = torch.tensor(getWorld2View2(W2C[:3, :3].T, W2C[:3, 3])).transpose(0, 1).to(dev).float()
@@ -111,8 +122,12 @@ for fi, p in enumerate(files):
         cov = torch.eye(3, device=dev).expand(NG, 3, 3) * (a.iso * float(gs.get_scaling[KIDX].median())) ** 2
     else:
         cov = F @ C0 @ F.transpose(1, 2)
+        if ROT:
+            cov = _RT.T @ cov @ _RT
     cc = torch.stack([cov[:, 0, 0], cov[:, 0, 1], cov[:, 0, 2], cov[:, 1, 1], cov[:, 1, 2], cov[:, 2, 2]], 1)
     Pm = (x - 1.0) / SO + MEAN
+    if ROT:
+        Pm = Pm @ _RT
     _cp = torch.as_tensor(np.asarray(COL[fi][:NG], dtype=np.float32), device=dev) if COL is not None else None
     img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=(SHS if _cp is None else None), colors_precomp=_cp, opacities=OPA, scales=None,
                rotations=None, cov3D_precomp=cc)[0]
