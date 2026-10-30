@@ -51,13 +51,17 @@ __global__ void ah_fc(int nbT, const int* szp, const int* tl, const int* tlc, co
     long long nd[4]; float lm[4];
     for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; for (int a=0;a<3;a++) u[a] += lm[i]*U[nd[i]*3+a]; }
     float s = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
+    if (ncon) {                                                                 // 절 AH.11: 접촉 수 (통계) 워프 집계 -- 전역 카운터 하나에 서브스텝마다 수천 원자 합이 몰리던 것 (같은 정수)
+        unsigned am = __activemask();
+        unsigned bb = __ballot_sync(am, s < 0.f);
+        if ((threadIdx.x & 31) == __ffs(am) - 1 && bb) atomicAdd(ncon, __popc(bb));
+    }
     float w = 1.f;
     if (gtk) { if (!(s < band)) return; w = ah_wstk(s, pn, dxg); if (!(w > 0.f) && !(s < 0.f)) return; }
     else if (!(s < 0.f)) return;
     float mp = m[p];
     bool real = s < -npd;
     for (int i=0;i<4;i++) { if (w > 0.f) atomicAdd(&acc[nd[i]], (tetmass ? 0.25f : lm[i])*mp*w); if (real && accN) atomicAdd(&accN[nd[i]], 1.f); }
-    if (ncon && s < 0.f) atomicAdd(ncon, 1);
 }
 // ex_node_step_lag 와 같은 걸음 (nodisp 1 판 = 속도만, U 는 c_lim_apply 가) + 고착 몫 (1 - a/m)^kex, 비관통은 accN > 0 (실제 접촉) 노드만 (accN null 이면 a > 0 노드 -- 기존과 같음)
 __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* vn, float g0, float g1, float g2, float hs, float damp,
