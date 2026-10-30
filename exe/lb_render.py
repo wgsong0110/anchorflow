@@ -29,6 +29,12 @@ ap.add_argument("--iso", type=float, default=0.0, help="공분산을 등방형 (
 ap.add_argument("--frame_label", type=int, default=None, help="주면 프레임 번호 (이 값 + 영상 프레임 순번) 를 크게 빨간색으로 찍는다")
 ap.add_argument("--cam_back", type=float, default=1.6, help="카메라를 물체 중심에서 이 배로 뒤로 (기본 1.6, 기존 그대로)")
 ap.add_argument("--caption", default="", help="--frame_label 과 함께 왼쪽 위에 찍을 설명 (한국어 가능)")
+ap.add_argument("--frames", type=int, default=0, help="앞 이 상태 번호까지만 (0 = 전부; sim_*.h5 정렬 순 0..frames)")
+ap.add_argument("--mark", default="", help="사용자 10-30 발산 셀 입자 표시: 입자 번호 .npy -- 그 입자를 빨강으로 (가우시안 < NG 는 색만, 채움 입자 ≥ NG 는 "
+                "등방 가우시안 (축 = 가우시안 축 길이 중앙값 x --mark_size, 공분산 F s² Fᵀ) 을 더해 그린다). 나머지는 SH 그대로 (래스터라이저와 같은 식으로 colors_precomp)")
+ap.add_argument("--mark_fade", type=float, default=1.0, help="--mark: 표시 안 한 가우시안 불투명도 배율 (투시 칸, 1 = 그대로)")
+ap.add_argument("--mark_size", type=float, default=1.0)
+ap.add_argument("--mark_px", default="", help="--mark: 프레임마다 표시 입자 화면 위치 (중앙·범위 픽셀) -> json (확대 칸 중심)")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
 import imageio.v2 as imageio                                     # noqa: E402
@@ -114,10 +120,29 @@ if a.colors:
     COL = np.load(a.colors, mmap_mode="r")
     assert COL.shape[0] == len(files) and COL.shape[1] >= NG and COL.shape[2] == 3, (COL.shape, len(files), NG)
     print(f"[색 덮어쓰기] {a.colors} {tuple(COL.shape)}", flush=True)
+if a.frames:
+    files = files[:a.frames + 1]
+MK = None
+if a.mark:
+    import dc_mark as DCM                                                               # 색칠만 (exe/dc_mark.py)
+    MG, MF = DCM.load_mark(a.mark, NG, dev)
+    MK = torch.zeros(NG, dtype=torch.bool, device=dev)
+    MK[MG] = True
+    S_EX = float(gs.get_scaling[KIDX].median()) * a.mark_size
+    CAMPOS = wv.inverse()[3, :3]
+    FPROJ = (wv[None] @ pj[None])[0]
+    print(f"[표시] {a.mark}: 가우시안 {MG.numel()} + 채움 입자 {MF.numel()} (등방 축 {S_EX:.4g}), 나머지 불투명도 x {a.mark_fade}", flush=True)
+    PXL = []
 for fi, p in enumerate(files):
     with h5py.File(p) as h:
         x = torch.as_tensor(np.array(h["x"][:NG]), device=dev).float()
         F = torch.as_tensor(np.array(h["F"][:NG]), device=dev).float().reshape(-1, 3, 3)
+        if MK is not None and MF.numel():
+            _xa = np.array(h["x"]); _xa = _xa.T if _xa.shape[0] == 3 else _xa
+            _Fa = np.array(h["F"]); _Fa = _Fa.T if _Fa.shape[0] == 9 else _Fa
+            _sel = MF.cpu().numpy()
+            xe = torch.as_tensor(_xa[_sel], device=dev).float()
+            Fe = torch.as_tensor(_Fa.reshape(-1, 9)[_sel], device=dev).float().reshape(-1, 3, 3)
     if a.iso > 0:
         cov = torch.eye(3, device=dev).expand(NG, 3, 3) * (a.iso * float(gs.get_scaling[KIDX].median())) ** 2
     else:
@@ -129,11 +154,42 @@ for fi, p in enumerate(files):
     if ROT:
         Pm = Pm @ _RT
     _cp = torch.as_tensor(np.asarray(COL[fi][:NG], dtype=np.float32), device=dev) if COL is not None else None
-    img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=(SHS if _cp is None else None), colors_precomp=_cp, opacities=OPA, scales=None,
+    _op = OPA
+    if MK is not None:                                                                  # --mark: 색·불투명도만 (위치·공분산 그대로)
+        if _cp is None:
+            _cp = DCM.sh_rgb(SHS, Pm, CAMPOS)
+        _cp = _cp.clone()
+        _cp[MK] = torch.tensor(DCM.RED, device=dev)
+        _op = OPA.clone()
+        if a.mark_fade != 1.0:
+            _op[~MK] = _op[~MK] * a.mark_fade
+        _mp = [Pm[MK]]
+        if MF.numel():
+            _ok = torch.isfinite(xe).all(1) & torch.isfinite(Fe).all(2).all(1)
+            Pe = (xe[_ok] - 1.0) / SO + MEAN
+            ce, cove = DCM.extra_cov(Fe[_ok], S_EX)
+            if ROT:
+                Pe = Pe @ _RT
+                cove = _RT.T @ cove @ _RT
+                ce = torch.stack([cove[:, 0, 0], cove[:, 0, 1], cove[:, 0, 2], cove[:, 1, 1], cove[:, 1, 2], cove[:, 2, 2]], 1)
+            Pm = torch.cat([Pm, Pe]); cc = torch.cat([cc, ce])
+            _cp = torch.cat([_cp, torch.tensor(DCM.RED, device=dev).expand(Pe.shape[0], 3)])
+            _op = torch.cat([_op, torch.ones(Pe.shape[0], 1, device=dev)])
+            _mp.append(Pe)
+        _mp = torch.cat(_mp)
+        _mp = _mp[torch.isfinite(_mp).all(1)]
+        if _mp.shape[0]:
+            _px = DCM.project_px(_mp, FPROJ, int(cam["width"]), int(cam["height"]))
+            PXL.append(dict(fi=fi, med=_px.median(0).values.tolist(), lo=_px.min(0).values.tolist(), hi=_px.max(0).values.tolist(), n=int(_mp.shape[0])))
+        else:
+            PXL.append(dict(fi=fi, med=None))
+    img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=(SHS if _cp is None else None), colors_precomp=_cp, opacities=_op, scales=None,
                rotations=None, cov3D_precomp=cc)[0]
     _fr = (img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
     if a.frame_label is not None:
         _fr = _label(_fr, a.frame_label + fi)
     WR.append_data(_fr)
 WR.close()
+if MK is not None and a.mark_px:
+    json.dump(dict(W=int(cam["width"]), H=int(cam["height"]), frames=PXL, n_gauss=int(MG.numel()), n_fill=int(MF.numel())), open(a.mark_px, "w"))
 print(f"[영상] {a.out} ({len(files)} 프레임)", flush=True)

@@ -24,6 +24,11 @@ ap.add_argument("--fps", type=int, default=32)
 ap.add_argument("--frames", type=int, default=0)
 ap.add_argument("--meta", default="", help="여러 벌 장면 (wm_pair_init.py 의 meta.json): 벌마다 시뮬 이동량")
 ap.add_argument("--radius_scale", type=float, default=1.0, help="카메라 반경 배수 (여러 벌이 다 들어오게)")
+ap.add_argument("--mark", default="", help="사용자 10-30 발산 셀 입자 표시: 입자 번호 .npy -- 가우시안 (< gs_num) 은 색만 빨강, 채움 입자는 등방 가우시안 "
+                "(축 = 가우시안 축 길이 중앙값 x --mark_size, 공분산 F s² Fᵀ) 을 더해 빨강으로. 나머지 색은 GF convert_SH 그대로")
+ap.add_argument("--mark_fade", type=float, default=1.0, help="--mark: 표시 안 한 가우시안 불투명도 배율 (투시 칸)")
+ap.add_argument("--mark_size", type=float, default=1.0)
+ap.add_argument("--mark_px", default="", help="--mark: 프레임마다 표시 입자 화면 위치 -> json")
 a = ap.parse_args()
 sys.path.insert(0, a.gf); sys.path.insert(1, os.path.join(a.gf, "gaussian-splatting"))
 os.chdir(a.gf)
@@ -105,6 +110,17 @@ for k in range(K):
     print(f"[대응] 벌 {k}: 가우시안 {gs_num}, 입자 {NP1}, 0 프레임 가우시안 위치 차이 최대 {d0:.2e}", flush=True)
 init_shs = init_shs.repeat(K, 1, 1) if init_shs.dim() == 3 else init_shs.repeat(K, 1)
 init_opacity = init_opacity.repeat(K, 1); C0 = C0.repeat(K, 1, 1)
+MK = None
+if a.mark:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import dc_mark as DCM                                                               # 색칠만 (exe/dc_mark.py)
+    assert K == 1, "--mark 는 한 벌 장면만"
+    MG, MF = DCM.load_mark(a.mark, gs_num, dev)
+    MK = torch.zeros(gs_num, dtype=torch.bool, device=dev)
+    MK[MG] = True
+    S_EX = float(torch.sqrt(torch.diagonal(C0, dim1=1, dim2=2).mean(1).clamp_min(0)).median()) * a.mark_size    # 시뮬 공간 축 길이
+    print(f"[표시] {a.mark}: 가우시안 {MG.numel()} + 채움 입자 {MF.numel()} (등방 축 {S_EX:.4g}), 나머지 불투명도 x {a.mark_fade}", flush=True)
+    PXL = []
 WR = imageio.get_writer(a.out, fps=a.fps, codec="libx264", quality=8)
 fr_dir = os.path.splitext(a.out)[0] + "_frames"; os.makedirs(fr_dir, exist_ok=True)
 for t, fp in enumerate(fs):
@@ -128,12 +144,42 @@ for t, fp in enumerate(fs):
                           delta_r=camera_params["delta_r"], width=600, height=600)
     rast = initialize_resterize(cam, gaussians, pipeline, background)          # noqa: F405
     col = convert_SH(init_shs[ok], cam, gaussians, pos[ok], rot[ok])           # noqa: F405
-    out = rast(means3D=pos[ok], means2D=torch.zeros_like(pos[ok]), shs=None, colors_precomp=col.float(),
-               opacities=init_opacity[ok], scales=None, rotations=None, cov3D_precomp=c6[ok])
+    P_, C_, O_, col = pos[ok], c6[ok], init_opacity[ok], col.float()
+    if MK is not None:                                                         # --mark: 색·불투명도만 (위치·공분산 그대로)
+        mk_ = MK[ok]
+        col = col.clone(); col[mk_] = torch.tensor(DCM.RED, device=dev)
+        O_ = O_.clone()
+        if a.mark_fade != 1.0:
+            O_[~mk_] = O_[~mk_] * a.mark_fade
+        mp_ = [P_[mk_]]
+        if MF.numel():
+            sel_ = MF.cpu().numpy()
+            xe = torch.as_tensor(x[sel_] - SC, device=dev).float(); Fe = torch.as_tensor(F[sel_], device=dev).float()
+            oke = torch.isfinite(xe).all(1) & torch.isfinite(Fe).all(2).all(1)
+            pe = apply_inverse_rotations(undotransform2origin(undoshift2center111(xe[oke]), scale_origin, mean_pos), R)   # noqa: F405
+            ce, _ = DCM.extra_cov(Fe[oke], S_EX)
+            ce = apply_inverse_cov_rotations(ce / (scale_origin * scale_origin), R)                                        # noqa: F405
+            P_ = torch.cat([P_, pe]); C_ = torch.cat([C_, ce]); O_ = torch.cat([O_, torch.ones(pe.shape[0], 1, device=dev)])
+            col = torch.cat([col, torch.tensor(DCM.RED, device=dev).expand(pe.shape[0], 3)])
+            mp_.append(pe)
+        mp_ = torch.cat(mp_)
+        mp_ = mp_[torch.isfinite(mp_).all(1)]
+        fpj = getattr(cam, "full_proj_transform", None)
+        if fpj is None:
+            fpj = (cam.world_view_transform[None] @ cam.projection_matrix[None])[0]
+        if mp_.shape[0]:
+            px_ = DCM.project_px(mp_, fpj.to(dev).float(), 600, 600)
+            PXL.append(dict(fi=t, med=px_.median(0).values.tolist(), lo=px_.min(0).values.tolist(), hi=px_.max(0).values.tolist(), n=int(mp_.shape[0])))
+        else:
+            PXL.append(dict(fi=t, med=None))
+    out = rast(means3D=P_, means2D=torch.zeros_like(P_), shs=None, colors_precomp=col,
+               opacities=O_, scales=None, rotations=None, cov3D_precomp=C_)
     img = out[0]
     im = (img.clamp(0, 1).permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
     WR.append_data(im)
     if t % 10 == 0:
         imageio.imwrite(f"{fr_dir}/{t:03d}.png", im)
 WR.close()
+if MK is not None and a.mark_px:
+    _js.dump(dict(W=600, H=600, frames=PXL, n_gauss=int(MG.numel()), n_fill=int(MF.numel())), open(a.mark_px, "w"))
 print(f"[영상] {a.out} ({len(fs)} 프레임)", flush=True)

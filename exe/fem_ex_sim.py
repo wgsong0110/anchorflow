@@ -83,6 +83,11 @@ ap.add_argument("--lagdump", type=int, default=0,
                      "사면체 det A_T, 노드 접촉 질량 비 α (그 서브스텝 ex_vfl_contact 판정과 같은 식), 노드 위치·질량·점유율, 사면체, 입자 x·rows·λ "
                      "-> 실행 끝 (발산 포함) 에 <out>/lagdump.pt (0 = 끔). 10-30 확장: 서브스텝별 노드 내부력 f (걸음 직전), 프레임 F̄_T·∇λ (gl)·셀 입자 질량 m_T·입자 수·격자 Ai·μ·λ "
                      "(질량 vs 힘 진단, exe/fem_dv_stats.py; --p2g bs 판에도)")
+ap.add_argument("--divtrack", action="store_true",
+                help="--lagdiag 덤프 (사용자 10-30 '발산한 셀에 들어 있던 입자 표시', 계산 불변): 서브스텝마다 점유 사면체 det A_T ≤ 0 이 처음 된 서브스텝, "
+                     "노드가 처음 비유한·|v| > 발산 판정 속도 (0.25 EXT / h) 가 된 서브스텝, |v| > 5 x 90 % 분위 (절 U 폭주 규칙) 마지막 연속 구간 시작 -> "
+                     "사건이 있는 프레임마다 <out>/divtrack/fNNN.pt (사면체·노드 위치·입자 -> 사면체 pinv·프레임 시작 입자 x 포함), 서브스텝 요약은 divtrack.jsonl. "
+                     "--lagdump 와 달리 서브스텝별 전체 배열을 두지 않아 큰 씬 (수박 사면체 436 만) 에도 쓴다")
 ap.add_argument("--fhist", action="store_true",
                 help="--lagdiag 덤프 (사용자 10-29 '응력이 왜 프레임 시작부터 큰가', 계산 불변): 프레임마다 시작 입자 x·v·F (f32)·입자 -> 사면체 pinv, "
                      "사면체·노드 위치·∇λ (gl)·셀 F̄_T·V_T, 프레임 끝 노드 U·v -> <out>/fhist/fNNN.pt (exe/fem_fh_stats.py)")
@@ -290,6 +295,8 @@ if REP and not (a.opt and a.mode == "lag" and a.interp == "bary"):
     raise SystemExit("--rep 은 --opt --mode lag 만")
 if a.fhist and not (a.lagdiag and a.opt and a.mode == "lag"):
     raise SystemExit("--fhist 은 --opt --mode lag --lagdiag 와 함께")
+if a.divtrack and not (a.lagdiag and a.opt and a.mode == "lag"):
+    raise SystemExit("--divtrack 은 --opt --mode lag --lagdiag 와 함께")
 if a.lagdump and not (a.lagdiag and a.opt and a.mode == "lag"):
     raise SystemExit("--lagdump 은 --opt --mode lag --lagdiag 와 함께")
 if REP and (FLOOR or a.lagdiag):
@@ -1555,17 +1562,49 @@ class Opt:
             self._fj = 0
             self._fhook = lambda: dF_[self._fj].copy_(self.f[:M])
             dU_[0], dV_[0], dD_[0] = self.Uc[:M], self.vn[:M], detA_now()
+        DT_ = bool(a.divtrack)
+        if DT_:                                                                     # --divtrack (읽기만 -- 계산 경로 불변)
+            occT_ = VT_ > 0
+            vthr_ = 0.25 * EXT / h                                                  # 롤아웃 루프 발산 판정 (max|v|·h > 0.25 EXT) 과 같은 속도
+            dtF_ = torch.full((T,), -1, dtype=torch.int32, device=dev)              # 점유 사면체 det A_T ≤ 0 (또는 비유한) 이 처음 된 서브스텝
+            dtNF_ = torch.full((M,), -1, dtype=torch.int32, device=dev)             # 노드 |v| 처음 비유한
+            dtAB_ = torch.full((M,), -1, dtype=torch.int32, device=dev)             # 노드 |v| > vthr_ 처음
+            dtRS_ = torch.full((M,), -1, dtype=torch.int32, device=dev)             # |v| > 5 x q90 연속 구간 시작 (구간이 끊기면 -1)
+            dtRF_ = torch.full((M,), -1, dtype=torch.int32, device=dev)             # |v| > 5 x q90 처음
+            dser_ = []
+
+            def dt_update(j):
+                Q_ = torch.eye(3, device=dev) + torch.einsum("tia,tib->tab", self.Uc[tets_.reshape(-1)].view(T, 4, 3), gl_)
+                bad_ = occT_ & ~(_det3(Q_) > 0)
+                dtF_.masked_fill_(bad_ & (dtF_ < 0), j)
+                sp_ = self.vn[:M].norm(dim=-1)
+                fin_s = torch.isfinite(sp_)
+                okq = live & fin_s
+                q90_ = torch.quantile(sp_[okq].float(), 0.9) if bool(okq.any()) else torch.zeros((), device=dev)
+                nf_ = live & ~fin_s
+                ab_ = live & (nf_ | (sp_ > vthr_))
+                rl_ = live & (nf_ | (sp_ > 5.0 * q90_))
+                dtNF_.masked_fill_(nf_ & (dtNF_ < 0), j)
+                dtAB_.masked_fill_(ab_ & (dtAB_ < 0), j)
+                dtRF_.masked_fill_(rl_ & (dtRF_ < 0), j)
+                dtRS_.masked_fill_(rl_ & (dtRS_ < 0), j)
+                dtRS_.masked_fill_(~rl_, -1)
+                dser_.append([j, int(bad_.sum()), float(sp_[fin_s].max()) if bool(fin_s.any()) else float("nan"), float(q90_), int(nf_.sum()), int(ab_.sum()), int(rl_.sum())])
         LSTEP = VFL or RNEW                                                         # 절 X: 바닥 없는 절 R 경로 (ficus --rstat) 도 측정 판과 같은 _step_lag 로 (덤프 f 포함)
         if LSTEP:                                                                   # 절 O 판: 같은 서브스텝 커널 (_step_lag) -- f 는 걸음 안에서 비워져 |f/m| 표본은 0
             self.f.zero_()
             self.gn.zero_()
             if VFL:
                 self.acc.zero_()
+            if PLINC:                                                               # 측정 판 (_substeps) 과 같게: 셀 증분 상태를 프레임 시작 값으로 (10-30 --divtrack 때 추가 -- 전에는 진단 루프가 빠뜨림)
+                PLC.launch("ag_cinit", self.Tcap, (EX.P(self.sz), EX.P(self.FT), EX.P(self.ysT), EX.P(self.ljT), EX.P(self.FeC), EX.P(self.XpC),
+                                                   EX.P(self.ysC), EX.P(self.ljC)), b=256)
         for j in range(a.N):
             if LD:
                 self._fj = j
                 dAl_[j] = contact_alpha()                                           # 이 서브스텝 접촉 판정 (서브스텝 시작 U 기준) 의 α
             if LSTEP:
+                self._j = j                                                         # 측정 판 (_substeps) 과 같게
                 self._step_lag()
                 if first_bad is None and not bool(torch.isfinite(self.vn[:M]).all()):
                     first_bad = j
@@ -1573,6 +1612,8 @@ class Opt:
                 self._step(self.Uc, None, None)
             if LD:
                 dU_[j + 1], dV_[j + 1], dD_[j + 1] = self.Uc[:M], self.vn[:M], detA_now()
+            if DT_:
+                dt_update(j)
             if j % K == 0 or j == a.N - 1:
                 sp = self.vn[:M].norm(dim=-1)
                 k = int(sp.argmax())
@@ -1618,6 +1659,24 @@ class Opt:
                                    npt=cpu(torch.zeros(T, device=dev).index_add_(0, self.pinv[:Np], torch.ones_like(m))),
                                    mass_def=("bspline" if BSL else a.mass), g2p=(a.g2p if BSL else "bary"),
                                    pinv=cpu(self.pinv[:Np]).int(), mp=cpu(m)))                   # 절 X: 입자 -> 사면체, 입자 질량 (적분점·질량점 검산용)
+        if DT_:
+            ev_ = dict(t=i, N=a.N, vthr=vthr_, n_flip=int((dtF_ >= 0).sum()), n_nf=int((dtNF_ >= 0).sum()), n_abs=int((dtAB_ >= 0).sum()),
+                       n_run_end=int((dtRS_ >= 0).sum()), n_run_any=int((dtRF_ >= 0).sum()), first_flip=(int(dtF_[dtF_ >= 0].min()) if bool((dtF_ >= 0).any()) else None),
+                       first_nf=(int(dtNF_[dtNF_ >= 0].min()) if bool((dtNF_ >= 0).any()) else None),
+                       first_abs=(int(dtAB_[dtAB_ >= 0].min()) if bool((dtAB_ >= 0).any()) else None), series=dser_)
+            with open(os.path.join(a.out, "divtrack.jsonl"), "a") as fh:
+                fh.write(json.dumps(ev_) + "\n")
+            if ev_["n_flip"] or ev_["n_nf"] or ev_["n_abs"]:
+                od_ = os.path.join(a.out, "divtrack")
+                os.makedirs(od_, exist_ok=True)
+                cpu = lambda q: q.detach().cpu()
+                torch.save(dict(t=i, N=a.N, h=h, hs=hs, vthr=vthr_, EXT=EXT, node_h=float(a.node_h), plane=(pt_, nr_) if HASPL else None,
+                                flip=cpu(dtF_), nf=cpu(dtNF_), abs=cpu(dtAB_), run_start=cpu(dtRS_), run_first=cpu(dtRF_), series=dser_,
+                                tets=cpu(tets_).int(), npos=cpu(self.npos[:M]), mn=cpu(mn), VT=cpu(VT_), occ=cpu(occT_),
+                                Uend=cpu(self.Uc[:M]), Vend=cpu(self.vn[:M]), pinv=cpu(self.pinv[:Np]).int(), xp=cpu(self._xp).float(),
+                                Fp=cpu(self._Fp).float().reshape(Np, 9), mp=cpu(m)), os.path.join(od_, f"f{i:03d}.pt"))
+            print(f"    [발산 추적] t {i + 1}: 뒤집힌 점유 사면체 {ev_['n_flip']} (처음 서브스텝 {ev_['first_flip']}), 비유한 노드 {ev_['n_nf']} ({ev_['first_nf']}), "
+                  f"|v|>{vthr_:.3g} 노드 {ev_['n_abs']} ({ev_['first_abs']}), 5xq90 노드 끝까지 {ev_['n_run_end']} / 한 번이라도 {ev_['n_run_any']}", flush=True)
         with open(os.path.join(a.out, "lagdiag.jsonl"), "a") as fh:
             fh.write(json.dumps(rec) + "\n")
         print(f"    [lag 진단] t {i + 1}: 최대|v_n| 표본 " + " ".join(f"{q[1]:.3g}" for q in smp) + f" (마지막: 노드 높이-바닥 {smp[-1][2]:+.4f}, 질량/중앙 {smp[-1][3]:.3g}), "
