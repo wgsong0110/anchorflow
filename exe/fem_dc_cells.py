@@ -37,8 +37,10 @@ dev = "cuda" if torch.cuda.is_available() else "cpu"
 OD = os.path.join(a.run, "dc")
 os.makedirs(OD, exist_ok=True)
 J = [json.loads(q) for q in open(os.path.join(a.run, "divtrack.jsonl"))]
-td = next((r["t"] for r in J if r["n_nf"] or r["n_abs"]), None)
-assert td is not None, "발산 (비유한·발산 판정 속도 넘음) 프레임이 없다"
+# 발산 프레임 = 처음 비유한이 나온 프레임, 없으면 (위치는 유한한데 속도로 멈춘 판, 수박) 마지막으로 돈 프레임 -- 그 앞 프레임의 일시적 넘음 (가벼운 노드 한 개 등) 은 발산이 아니다
+td = next((r["t"] for r in J if r["n_nf"]), J[-1]["t"])
+assert J[-1]["n_nf"] or J[-1]["n_abs"], "마지막 프레임에 발산 (비유한·발산 판정 속도 넘음) 이 없다"
+early = [dict(t=r["t"], n_abs=r["n_abs"], first_abs=r["first_abs"]) for r in J if r["t"] < td and r["n_abs"]]
 fl_first = next((r["t"] for r in J if r["n_flip"]), None)
 D = torch.load(os.path.join(a.run, "divtrack", f"f{td:03d}.pt"), map_location="cpu", weights_only=False)
 N, W = int(D["N"]), a.win
@@ -47,6 +49,7 @@ flip, nf, ab, rs, rf = D["flip"].long(), D["nf"].long(), D["abs"].long(), D["run
 BIG = 10 ** 9
 nodev = torch.where(ab >= 0, ab, torch.full_like(ab, BIG))
 nodev = torch.minimum(nodev, torch.where(nf >= 0, nf, torch.full_like(nf, BIG)))
+nodev = torch.where(rs >= 0, nodev, torch.full_like(nodev, BIG))                   # 프레임 끝까지 폭주 (5 x q90 연속) 가 이어진 노드만 -- 잠깐 넘었다 돌아온 노드 제외
 s_div = int(nodev.min())
 s_nf = int(nf[nf >= 0].min()) if bool((nf >= 0).any()) else None
 first_nodes = torch.nonzero(nodev <= s_div + W).squeeze(1)
@@ -169,7 +172,7 @@ for kk in range(max(0, td - a.pre), td + 2):
 # 같은 상태의 전체 입자 F 특이값 (비교)
 allF = svs(FP[td - 1].reshape(-1, 3, 3)) if td >= 1 else None
 ser = D["series"]
-out = dict(run=a.run, td=td, frame_1based=td + 1, s_div=s_div, s_nf=s_nf, s_flip=s_flip, first_flip_frame=fl_first, run_onset=run_on, N=N, win=W,
+out = dict(run=a.run, td=td, early_abs_frames=early, frame_1based=td + 1, s_div=s_div, s_nf=s_nf, s_flip=s_flip, first_flip_frame=fl_first, run_onset=run_on, N=N, win=W,
            vthr=float(D["vthr"]), loc=loc, hist=hist, all_F_state_td=allF,
            frames=[dict(t=r["t"], n_flip=r["n_flip"], first_flip=r["first_flip"], n_nf=r["n_nf"], first_nf=r["first_nf"], n_abs=r["n_abs"], first_abs=r["first_abs"],
                         n_run_end=r["n_run_end"]) for r in J],

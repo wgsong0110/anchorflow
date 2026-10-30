@@ -380,8 +380,8 @@ NB = -(-a.N // REP) if REP else 1                                               
 # ---- 절 AG: 소성·점성·파괴 (정답 솔버 재질 식), 입자 속도 구속 ----
 PLAST, VISC, PBC = bool(a.plast), a.visc > 0, bool(a.pbc)
 if (PLAST or VISC or PBC) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and not a.sr_ef and SPM in ("none", "vcap")
-                                   and FUPD in (0, 3) and not REP and not a.lagdiag and a.adapt == "none" and not a.affine and a.p2g == "bary"):
-    raise SystemExit("절 AG (--plast/--visc/--pbc) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, F 갱신·P2G 기본, 진단·적응 없음) 만")
+                                   and FUPD in (0, 3) and not REP and (not a.lagdiag or a.divtrack) and a.adapt == "none" and not a.affine and a.p2g == "bary"):
+    raise SystemExit("절 AG (--plast/--visc/--pbc) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, F 갱신·P2G 기본, 진단·적응 없음 -- 단 --lagdiag --divtrack 진단 루프는 허용: 같은 _step_lag + 셀 증분 RM 초기화) 만")
 AI1, AI2 = a.ai_p2g == "rs", bool(a.ai_stress)                                       # 절 AI
 AIG = {"T": 0, "bs": 2, "dev": 3, "devnavg": 4, "devbs": 5}[a.ai_g2p]
 if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and not REP and not a.affine and a.p2g == "bary"
