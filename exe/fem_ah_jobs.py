@@ -55,7 +55,18 @@ V2 = {
     "gkr_np0": (REC + " --vfl_w gtk --vfl_rate --vfl_np 0", False),
     "gk_full": (REC + " --vfl_w gtk --vfl_mode full", False),
 }
-SETS = {"1": V1, "2": V2}
+# 3 차: 비관통 깊이 (정답처럼 얕은 관통 허용) + 조합 ((d) F 갱신은 다른 에이전트 몫이라 뺌)
+GKR = REC + " --vfl_w gtk --vfl_rate"
+V3 = {
+    "gkr_d05": (GKR + " --vfl_npd 0.01", False),
+    "gkr_d025": (GKR + " --vfl_npd 0.005", False),
+    "gkr_d10": (GKR + " --vfl_npd 0.02", False),
+    "rt_d05": (REC + " --vfl_rate --vfl_npd 0.01", False),
+    "gkr_vc75": (rep(GKR, sp_vcap=0.75), True),
+    "gkr_d05_vc75": (rep(GKR, sp_vcap=0.75) + " --vfl_npd 0.01", False),
+    "gkr_h5": (GKR + " --vp_h5 H5", False),
+}
+SETS = {"1": V1, "2": V2, "3": V3}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]

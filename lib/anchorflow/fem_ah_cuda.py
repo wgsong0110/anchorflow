@@ -7,7 +7,7 @@
      정답 격자 노드 k 의 법선 좌표 k dx_g, 고착 = k dx_g - p·n < 0 (정답 collide 커널과 같은 float32 비교). 입자 법선 좌표 u = (s + p·n)/dx_g,
      base = floor(u - 0.5), fx = u - base, w = Σ_{i: base+i 고착} {0.5(1.5-fx)², 0.75-(fx-1)², 0.5(fx-0.5)²}_i.
      -> 평면 위 0.5 dx_g 안의 입자도 일부 고착 (정답처럼), 평면 아래 1.5 dx_g 보다 깊으면 1. a_n = Σ 0.25 m_p w(s_p).
-     비관통은 실제로 평면 아래 (s < 0) 입자가 걸린 노드에만 (정답 비고착 노드는 법선 구속이 없지만, 우리 노드는 정답 격자 노드가 아니라 남긴다).
+     비관통은 실제로 평면 아래 (s < -npd, --vfl_npd: 정답처럼 얕은 관통 허용) 입자가 걸린 노드에만 (정답 비고착 노드는 법선 구속이 없지만, 우리 노드는 정답 격자 노드가 아니라 남긴다).
  (2) --vfl_rate: 서브스텝 고착 몫을 시간 단위로 -- v_n <- (1 - a_n/m_n)^(h_s/h_ref) v_n, h_ref = 정답 substep_dt (정답 sticky 가 서브스텝마다 지우는 속도와 같은 단위 시간당 감쇠;
      기존은 서브스텝마다 (1 - a/m) 라 N 을 바꾸면 접촉 감쇠율이 N 에 비례해 바뀐다).
 커널: ah_fc (c_fc 와 같은 힘 + 위 접촉), ah_node_step (ex_node_step_lag 와 같은 걸음 + 위 고착). 기존 커널은 손대지 않는다.
@@ -34,7 +34,7 @@ __device__ __forceinline__ float ah_wstk(float s, float pn, float dxg) {
 __global__ void ah_fc(int nbT, const int* szp, const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
                       float mu, float lam, float* f, float* rst, int fpol, float* eF,
                       const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb, const float* m, int tetmass,
-                      float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon, int gtk, float band, float pn, float dxg, float* accN) {
+                      float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon, int gtk, float band, float pn, float dxg, float* accN, float npd) {
     if ((int)blockIdx.x < nbT) {
         int i0 = blockIdx.x*blockDim.x + threadIdx.x;
         int t;
@@ -55,9 +55,9 @@ __global__ void ah_fc(int nbT, const int* szp, const int* tl, const int* tlc, co
     if (gtk) { if (!(s < band)) return; w = ah_wstk(s, pn, dxg); if (!(w > 0.f) && !(s < 0.f)) return; }
     else if (!(s < 0.f)) return;
     float mp = m[p];
-    bool real = s < 0.f;
+    bool real = s < -npd;
     for (int i=0;i<4;i++) { if (w > 0.f) atomicAdd(&acc[nd[i]], (tetmass ? 0.25f : lm[i])*mp*w); if (real && accN) atomicAdd(&accN[nd[i]], 1.f); }
-    if (ncon && real) atomicAdd(ncon, 1);
+    if (ncon && s < 0.f) atomicAdd(ncon, 1);
 }
 // ex_node_step_lag 와 같은 걸음 (nodisp 1 판 = 속도만, U 는 c_lim_apply 가) + 고착 몫 (1 - a/m)^kex, 비관통은 accN > 0 (실제 접촉) 노드만 (accN null 이면 a > 0 노드 -- 기존과 같음)
 __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* vn, float g0, float g1, float g2, float hs, float damp,
