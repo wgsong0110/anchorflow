@@ -120,13 +120,15 @@ for name, prm_, sd, vsd, dt in CASES[a.solver]:
         sc_tau = float(tau_g.abs().amax(dim=(1, 2)).median()) + 1e-30
         dF = (Fo - Fe_g).abs().amax(dim=(1, 2))
         dtau = (to - tau_g).abs().amax(dim=(1, 2)) / (tau_g.abs().amax(dim=(1, 2)) + 1e-3 * sc_tau)
+        dtau_mu = (to - tau_g).abs().amax(dim=(1, 2)) / mu                          # 절대 차 / μ (모래·수박처럼 응력이 거의 0 인 입자가 많으면 상대 차가 부푼다)
         ok = torch.isfinite(Fe_g.reshape(N, -1)).all(-1) & torch.isfinite(tau_g.reshape(N, -1)).all(-1)
         rec = dict(step=k + 1, n=N, n_gt_finite=int(ok.sum()), n_ours_finite=int(torch.isfinite(to.reshape(N, -1)).all(-1).sum()),
                    n_projected_gt=int(((Fe_g - Ft_g).abs().amax(dim=(1, 2)) > 1e-6).sum()),
                    dF_max=float(dF[ok].max()), dF_q99=float(torch.quantile(dF[ok], 0.99)), dF_med=float(dF[ok].median()),
                    n_dF_gt_1e3=int((dF[ok] > 1e-3).sum()),
                    dtau_rel_max=float(dtau[ok].max()), dtau_rel_q99=float(torch.quantile(dtau[ok], 0.99)), dtau_rel_med=float(dtau[ok].median()),
-                   n_dtau_gt_1e3=int((dtau[ok] > 1e-3).sum()), tau_scale_med=sc_tau)
+                   n_dtau_gt_1e3=int((dtau[ok] > 1e-3).sum()), tau_scale_med=sc_tau,
+                   dtau_mu_max=float(dtau_mu[ok].max()), dtau_mu_q99=float(torch.quantile(dtau_mu[ok], 0.99)), tau_over_mu_med=float((tau_g.abs().amax(dim=(1, 2)) / mu)[ok].median()))
         if ys_g is not None:
             dy = (ys - ys_g).abs() / (ys_g.abs() + 1e-6 * max(float(prm_.get("yield_stress", 1.0)), 1.0))
             rec.update(dys_rel_max=float(dy[ok].max()), dys_rel_q99=float(torch.quantile(dy[ok], 0.99)), n_dys_gt_1e3=int((dy[ok] > 1e-3).sum()))
@@ -143,7 +145,7 @@ for name, prm_, sd, vsd, dt in CASES[a.solver]:
             np.savez(f"{a.dump}_{name}.npz", Ft=Ft_g[:2000].cpu().numpy(), Fe_g=Fe_g[:2000].cpu().numpy(), tau_g=tau_g[:2000].cpu().numpy(),
                      Fe_o=Fo[:2000].cpu().numpy(), tau_o=to[:2000].cpu().numpy(), lj0=lj0[:2000].numpy(), mu=mu, lam=lam, kap=float(PP["kappa"]))
         print(f"[{name}] 걸음 {k + 1}: 정답 투영 {rec['n_projected_gt']}/{N}, |ΔF_e| 최대 {rec['dF_max']:.2e} (99 % {rec['dF_q99']:.2e}, >1e-3 {rec['n_dF_gt_1e3']}), "
-              f"τ 상대 차 최대 {rec['dtau_rel_max']:.2e} (99 % {rec['dtau_rel_q99']:.2e}, >1e-3 {rec['n_dtau_gt_1e3']})"
+              f"τ 상대 차 최대 {rec['dtau_rel_max']:.2e} (99 % {rec['dtau_rel_q99']:.2e}, >1e-3 {rec['n_dtau_gt_1e3']}), |Δτ|/μ 최대 {rec['dtau_mu_max']:.2e} (99 % {rec['dtau_mu_q99']:.2e}; |τ|/μ 중앙 {rec['tau_over_mu_med']:.2e})"
               + (f", ys 상대 차 최대 {rec['dys_rel_max']:.2e}" if ys_g is not None else "")
               + (f", 손상 정답 {rec['dmg_gt']} 우리 {rec['dmg_ours']} 불일치 {rec['dmg_mismatch']}" if mat == 5 else "")
               + (f", logJp 차 최대 {rec['dlogJp_max']:.2e} (>1e-4 {rec['n_dlogJp_gt_1e4']}), logJp>0 정답 {rec['logJp_gt_pos']} 우리 {rec['logJp_ours_pos']}" if mat == 7 else ""),

@@ -226,6 +226,14 @@ __device__ __forceinline__ void pl_pi(int mat, const float* s, const float* prm,
         for (int i=0;i<3;i++) Pi[i] = al*(2.f*mu*(s[i] - 1.f) + lam*(J - 1.f)*co[i]);
     }
 }
+// GF kirchoff_stress_neoHookeanBoarden 를 F_e 에서 바로 (GF 와 같은 식: B = F Fᵀ, J = det F -- SVD 거치지 않아 float 오차가 정답 수준)
+__device__ __forceinline__ void pl_nhb_tau(const float* Fe, float mu, float kap, float* tau) {
+    float B[9]; mmt3(Fe, Fe, B);
+    float J = det3(Fe);
+    float tb = (B[0] + B[4] + B[8])/3.f;
+    float sd = mu*powf(J, -2.f/3.f), sv = 0.5f*kap*(J*J - 1.f);
+    for (int k=0;k<9;k++) tau[k] = sd*(B[k] - ((k%4==0) ? tb : 0.f)) + ((k%4==0) ? sv : 0.f);
+}
 // ---------------- 사면체 힘 (c_force_body 틀 + 재질) ----------------
 __device__ __forceinline__ void ag_force_body(int t, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
                                               float mu, float lam, float* f, float* rst, int fpol,
@@ -262,9 +270,19 @@ __device__ __forceinline__ void ag_force_body(int t, const long long* tets, cons
         pl_svd(X, Uu, s, Vv);
         float ys = ysT ? ysT[t] : 0.f, lj = ljT ? ljT[t] : 0.f, al = 1.f;
         pl_rm(mat, s, prm, ys, lj, al, dtc);                       // 셀 투영 (상태는 지역 사본 -- 입자 상태는 프레임 끝 ag_rm 만 바꾼다)
-        float Pi[3]; pl_pi(mat, s, prm, al, Pi);
-        float P[9]; pl_usv(Uu, Pi, Vv, P);
-        mmt3(P, Fb, Gm);
+        if (mat == 7) {                                             // τ 를 F_e 에서 바로: Gm = τ F_e⁻ᵀ F̄ᵀ = τ (F̄ F_e⁻¹)ᵀ
+            float Fe[9]; pl_usv(Uu, s, Vv, Fe);
+            float tau[9]; pl_nhb_tau(Fe, prm[0], prm[2], tau);
+            float cF[9]; cof3(Fe, cF);
+            float dF = det3(Fe); float id = (fabsf(dF) > 1e-20f) ? 1.f/dF : 0.f;
+            float Fi[9]; for (int i=0;i<3;i++) for (int j=0;j<3;j++) Fi[i*3+j] = cF[j*3+i]*id;     // F_e⁻¹
+            float M_[9]; mm3(Fb, Fi, M_);                            // F̄ F_e⁻¹
+            mmt3(tau, M_, Gm);
+        } else {
+            float Pi[3]; pl_pi(mat, s, prm, al, Pi);
+            float P[9]; pl_usv(Uu, Pi, Vv, P);
+            mmt3(P, Fb, Gm);
+        }
     }
     if (visc > 0.f && vn) {                                         // 점성 (정답 솔버에는 없음): τ_v = 2 η J sym(L), L = (Σ v_n ⊗ ∇λ_n) A⁻¹, 힘 -V τ_v A⁻ᵀ ∇λ
         float Gv[9] = {0,0,0,0,0,0,0,0,0};
@@ -347,10 +365,14 @@ __global__ void ag_test(int N, const float* Fin, float* ys, float* lj, float* al
     float Fe[9];
     if (ch) pl_usv(Uu, s, Vv, Fe); else for (int k=0;k<9;k++) Fe[k] = X[k];
     for (int k=0;k<9;k++) Fout[p*9+k] = Fe[k];
-    float U2[9], s2[3], V2[9]; pl_svd(Fe, U2, s2, V2);
-    float Pi[3]; pl_pi(mat, s2, prm, a_, Pi);
-    float P[9]; pl_usv(U2, Pi, V2, P);
-    float T[9]; mmt3(P, Fe, T);
+    float T[9];
+    if (mat == 7) pl_nhb_tau(Fe, prm[0], prm[2], T);
+    else {
+        float U2[9], s2[3], V2[9]; pl_svd(Fe, U2, s2, V2);
+        float Pi[3]; pl_pi(mat, s2, prm, a_, Pi);
+        float P[9]; pl_usv(U2, Pi, V2, P);
+        mmt3(P, Fe, T);
+    }
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) tau[p*9+i*3+j] = 0.5f*(T[i*3+j] + T[j*3+i]);
 }
 }
