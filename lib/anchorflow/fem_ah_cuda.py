@@ -306,6 +306,14 @@ __global__ void ah_vcap(const int* szp, const float* gl, float th, float* VTs, f
     }
     VF[t] = o; VTs[t] = o;
 }
+// ---- 절 AH.14 --ah_fast: 격자 노드 위치 (uniq scatter·나눗셈·stack·matmul 등 torch 연산 10 여 개) 를 커널 하나로 -- 같은 식 (float32: Σ_j k_j A_ij + lo_i)
+__global__ void ah_npos(int Pn, int n1, int n2, const unsigned char* nm, const long long* ncm, const float* A, const float* lo, float* npos) {
+    int c = blockIdx.x*blockDim.x + threadIdx.x;
+    if (c >= Pn || !nm[c]) return;
+    long long q = ncm[c];
+    float k[3] = {(float)(c / (n1*n2)), (float)((c / n2) % n1), (float)(c % n2)};
+    for (int i=0;i<3;i++) npos[q*3+i] = (k[0]*A[i*3] + k[1]*A[i*3+1] + k[2]*A[i*3+2]) + lo[i];
+}
 __global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
 '''

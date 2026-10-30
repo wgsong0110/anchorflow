@@ -830,8 +830,13 @@ class Opt:
         """셀 점유 격자 (월드 고정 Kuhn 격자, GridK 와 같은 격자점·같은 사면체 꼭짓점 순서). 동기화 2 번 (범위, 개수)."""
         lat = self.lat
         _gp("_begin")
-        lo_ = x.min(0).values
-        hi_ = x.max(0).values
+        if a.ah_fast:                                                               # 절 AH.14: 최소·최대 한 번에 (같은 값)
+            lo_, hi_ = torch.aminmax(x, dim=0)
+            if not hasattr(self, "_Af"):
+                self._Af = lat.A.float().contiguous().reshape(-1).clone()
+        else:
+            lo_ = x.min(0).values
+            hi_ = x.max(0).values
         vmax = v.norm(dim=-1).max()
         ext = (hi_ - lo_).max().clamp_min(1e-12)
         dil = a.dil
@@ -894,6 +899,14 @@ class Opt:
             EX.launch("ex_tet_cell", Pn * 9, (EX.P(self.ipar), EX.P(tm), EX.P(self.tcm), EX.P(self.tcell)), b=256)
             self.Pn = Pn
         _gp("g3_번호·사면체")
+        if a.ah_fast and not (LIM and a.lim_mode == "gs"):                          # 절 AH.14: 노드 위치 커널 하나 (k0·k1·k2 는 gs 색칠에만 쓰인다)
+            AHC.launch("ah_npos", Pn, (np.int32(Pn), np.int32(n1), np.int32(n2), EX.P(nm), EX.P(self.ncm), EX.P(self._Af), EX.P(lo.float().contiguous()), EX.P(self.nposb)), b=256)
+            self.sz.copy_(torch.tensor([M, T, 0, 0], dtype=torch.int32), non_blocking=True)
+            _gp("g4_노드위치")
+            EX.launch("ex_tet_geo32", T, (EX.P(self.sz), EX.P(self.tets), EX.P(self.nposb), EX.P(self.gl)))
+            self.M, self.T = M, T
+            self.npos = self.nposb[:M]
+            return self._grid_tail(M, T, now)
         ar = torch.arange(Pn, device=dev)
         uniq = torch.empty(M + 1, dtype=torch.long, device=dev).scatter_(0, torch.where(nm.bool(), ncs - 1, torch.full_like(ncs, M)), ar)[:M]
         k2 = uniq % n2
@@ -906,6 +919,10 @@ class Opt:
         self.M, self.T = M, T
         self.nposb[:M].copy_(npos)
         self.npos = self.nposb[:M]
+        return self._grid_tail(M, T, now, (k0, k1, k2, imin))
+
+    def _grid_tail(self, M, T, now, kk=None):
+        npos = self.npos
         if LIM:
             self.alph.fill_(1065353216)
         if NINT:                                                                    # 절 V: 노드 -> 사면체 목록 (프레임마다)
@@ -913,6 +930,7 @@ class Opt:
             EX.launch("ex_node_tets", T, (EX.P(self.sz), EX.P(self.tets), EX.P(self.ntc_u), EX.P(self.nt_u), EX.P(self.novf)), b=256)
         if LIM and a.lim_mode == "gs":
             # 색 = 전역 격자 지표 (imin + k) 의 홀짝 -- 한 사면체 네 노드는 지표 차 {0,1}³\0 이라 모두 다른 색
+            k0, k1, k2, imin = kk
             gk = torch.stack([k0, k1, k2], -1) + imin.to(k0.device).view(1, 3)
             self.ncol[:M] = ((gk[:, 0] & 1) | ((gk[:, 1] & 1) << 1) | ((gk[:, 2] & 1) << 2)).to(torch.uint8)
             self.ntc[:M].zero_()
