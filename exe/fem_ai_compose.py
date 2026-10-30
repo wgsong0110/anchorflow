@@ -1,0 +1,34 @@
+"""절 AI 영상 합성 (로컬, R2 마운트): 정답 | 확정 설정 (절 AD/AF, 클램프 σ1/σ3 ≤ 5) | 절 AI 새 판 (A1+A2+B1, 클램프 끔) -- exe/fem_ex_compose.py (칸마다 ms·fps·오차, % 는 textfile + expansion=none).
+확정 칸 ms·오차: L000·ficus 는 절 AD 최종 판 summary, 홀드아웃은 같은 확정 설정 이번 단독 측정 (fem_ai_lego/<t>_a0b0_v_c5_t1) summary (영상은 절 AF 회차 1 렌더 -- 같은 설정).
+새 판 칸: fem_ai_<형상>/<씬>_a12b1_v_free_F1 (단독 GPU0 측정 + f32 덤프 렌더). 사용: python exe/fem_ai_compose.py L000|0003|0015|0019|ficus"""
+import os
+import subprocess
+import sys
+
+L = os.path.expanduser("~/r2/result/anchorflow/lbours")
+OUT = os.path.expanduser("~/workspace/result/anchorflow/v20261009")
+here = os.path.dirname(os.path.abspath(__file__))
+sc = sys.argv[1]
+NEW = "절 AI 새 판: 회전·신장 분리 평균 + 응력 평균 + 매끈한 F 갱신 · 클램프 끔"
+if sc == "ficus":
+    title = "ficus F_pg_v0 125 프레임 · A6000 단독 · 명시적 lag · 공통 h_s 6.25e-5 (N640) · 확정 설정 | 절 AI (클램프 없이)"
+    rows = [("정답 (PG)", "-", f"{L}/fem3_ficus/gt_ficus.mp4"),
+            ("확정 설정 (절 AD): 클램프 σ1/σ3 ≤ 5", f"{L}/fem_ad_ficus/f_f_vc05_n640_F1/summary.json", f"{L}/fem_ad_ficus/f_f_vc05_n640_F1/vj/fem_ficus.mp4"),
+            (NEW, f"{L}/fem_ai_ficus/ficus_a12b1_v_free_F1/summary.json", f"{L}/fem_ai_ficus/ficus_a12b1_v_free_F1/vj/fem_ficus.mp4")]
+    shape = "ficus"
+elif sc == "L000":
+    title = "lego L000 80 프레임 · A6000 단독 · 명시적 lag · 확정 설정 (절 AD, N256) | 절 AI (공통 h_s, N267, 클램프 없이)"
+    rows = [("정답 (MPM)", "-", f"{L}/fem2_lego/gt_lego.mp4"),
+            ("확정 설정 (절 AD): 클램프 σ1/σ3 ≤ 5", f"{L}/fem_ad_lego/f_l_vc05_n256_F1/summary.json", f"{L}/fem_ad_lego/f_l_vc05_n256_F1/vj/fem_lego.mp4"),
+            (NEW, f"{L}/fem_ai_lego/L000_a12b1_v_free_F1/summary.json", f"{L}/fem_ai_lego/L000_a12b1_v_free_F1/vj/fem_lego.mp4")]
+    shape = "lego"
+else:
+    title = f"lego 홀드아웃 {sc} 80 프레임 · A6000 단독 · 명시적 lag · 공통 h_s 6.25e-5 (N267) · 확정 설정 | 절 AI (클램프 없이)"
+    rows = [("정답 (MPM)", "-", f"{L}/fem_af_lego/gt_{sc}/gt_lego.mp4"),
+            ("확정 설정 (절 AF): 클램프 σ1/σ3 ≤ 5", f"{L}/fem_ai_lego/{sc}_a0b0_v_c5_t1/summary.json", f"{L}/fem_af_lego/af_{sc}_c267_r1/vj/fem_lego.mp4"),
+            (NEW, f"{L}/fem_ai_lego/{sc}_a12b1_v_free_F1/summary.json", f"{L}/fem_ai_lego/{sc}_a12b1_v_free_F1/vj/fem_lego.mp4")]
+    shape = "lego"
+cells = [f"{nm}|{sj}|{v}" for nm, sj, v in rows]
+o = f"{OUT}/fem_ai_{'lego' + sc if shape == 'lego' else 'ficus'}_cmp.mp4"
+subprocess.run([sys.executable, f"{here}/fem_ex_compose.py", o, title, *cells], check=True)
+print("[저장]", o)
