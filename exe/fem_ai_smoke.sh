@@ -1,10 +1,10 @@
 #!/bin/bash
-# 절 AI 연기 시험 (비측정): lego L000 5 프레임 x 판 8 개, 빈 카드 하나 (1~6 중 10 MiB 이하 첫 카드) 에서 차례로. 출력 /tmp/dkta/lbours/fem_ai_smoke (R2 같은 경로).
+# 절 AI 연기 시험 (비측정): lego L000 5 프레임 x 판 8 개, 카드 1~6 중 가장 덜 쓰는 카드 하나 에서 차례로. 출력 /tmp/dkta/lbours/fem_ai_smoke (R2 같은 경로).
 cd "$(dirname "$0")/.." || exit 1
 export PYTHONUTF8=1; set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; export PATH=$HOME/bin:$PATH
 OD=/tmp/dkta/lbours/fem_ai_smoke
-G=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | awk -F, '$1>=1 && $2+0<=10 {print $1; exit}')
-[ -z "$G" ] && { echo "[빈 카드 없음]"; nvidia-smi --query-gpu=index,memory.used --format=csv,noheader; exit 1; }
+# 카드 1~6 중 메모리 가장 적게 쓰는 카드 (비측정이라 다른 비측정 실행과 나눠 써도 된다)
+G=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | awk -F, '$1>=1 && $1<=6' | sort -t, -k2 -n | head -1 | cut -d, -f1)
 echo "[커밋] $(git log -1 --oneline) 카드 $G $(date +%T)"
 REC="--mode lag --opt --mass tet --rstat --cfuse --cfuse_mode 2 --sp vcap --sp_vcap 0.5 --floor vel --N 267 --frames ${FR:-5} --no_dump --ai_stat 1"
 while read -r TG ARGS; do
