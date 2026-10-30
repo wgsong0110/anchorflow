@@ -24,10 +24,15 @@ if os.environ.get("AE_SET") == "3":                                             
     V = [(f"nb{str(b).replace('.', '')}vc{str(t).replace('.', '')}_c{c}", f"--fupd navg --fupd_b {b} {VC(t)} --lim_sr {c}")
          for b, t, c in ((0.5, 0.5, 5), (0.5, 1, 5), (0.25, 0.5, 5), (0.25, 1, 5), (0.5, 0.5, 3), (0.5, 0.75, 5))]
     V0 = []
+if os.environ.get("AE_SET") == "4":                                                  # 4 차: 정답 float32 위치로 잡은 V_p·m_p (--vp_h5) -- 상한 없는 판 포함
+    H = "--vp_h5 /home/dkta/work/lbdata/test_low/L000/sim_0000000000.h5"
+    V = [("h5T_c5", f"{H} --lim_sr 5"), ("h5ab_c3", f"{H} {NV} --lim_sr 3"), ("h5vc05_c5", f"{H} {VC(0.5)} --lim_sr 5"),
+         ("h5nb025vc05_c5", f"{H} --fupd navg --fupd_b 0.25 {VC(0.5)} --lim_sr 5")]
+    V0 = []
 NR = int(os.environ.get("AE_R", "12"))
 J = []
 for r in range(1, NR + 1):
-    if r <= 2:
+    if r <= 2 and os.environ.get("AE_SET") != "4":
         for nm, ar in V:
             J.append(f"fem_ae_ficus ae_f_{nm}_n640_r{r} {FB} {ar}")
     for nm, ar in V:

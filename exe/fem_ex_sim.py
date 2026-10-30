@@ -119,6 +119,7 @@ ap.add_argument("--sp_a", choices=["avg", "tet"], default="avg",
 ap.add_argument("--sp_hg", type=float, default=0.0, help="--sp_a avg 의 모래시계 억제: 묶음 에너지에 γ μ Σ_t V_t |A_t - Ā|² (0 = 끔)")
 ap.add_argument("--sp_vcap", type=float, default=1.0, help="--sp vcap: 모든 점유 사면체의 탄성 부피 V_T' = min(V_T, θ V_기하) (입자 부피 합이 사면체 기하 부피를 넘지 않게; 질량 그대로)")
 ap.add_argument("--sp_vpm_mass", action="store_true", help="--sp vpmesh: 질량도 같은 정의로 m_p' = ρ_p V_p' (PG 규칙 '칸 부피/칸 입자 수, 질량 = ρ V' 를 메시 칸에 그대로 -- 총질량이 정답과 달라진다)")
+ap.add_argument("--vp_h5", default="", help="절 AE: 입자 부피·질량을 정답 0 프레임 h5 (float32 위치) 로 정답 생성기와 같은 식으로 (.pt 위치는 float16 반올림이라 칸 판정이 갈림)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
 ap.add_argument("--sp_occ", type=float, default=0.0, help="--sp: 희소 = (입자 수 ≤ k) 또는 점유율 V_T/V_기하 < 이 값 (0 = 입자 수만)")
 ap.add_argument("--sp_beta", type=float, default=1.0, help="--sp blend: 이웃 몫 배율 β (F̄' = (V F̄ + β Σ V_nb F̄_nb)/(V + β Σ V_nb))")
@@ -182,6 +183,20 @@ m = DM.traj_mass(d, dev).float().contiguous()
 EXT = float(d["_ext"])
 rho = (d["_rho"].to(dev).float()) if a.region_density else None
 vol = ((m / rho) if a.region_density else (m / float(cfg["density"]))).contiguous()
+if a.vp_h5:                                                                          # 절 AE: .pt 의 0 프레임 위치는 float16 반올림 (최대 0.49 mm) -> 칸 판정이 정답 생성기와 갈린다.
+    import h5py                                                                      # 정답 생성기 (lb_gen.py) 가 실제로 본 float32 위치로 같은 식 V_p = dx³ / 칸 입자 수, m_p = ρ V_p
+    with h5py.File(a.vp_h5) as h_:
+        xg_ = np.array(h_["x"])
+    xg_ = torch.as_tensor(xg_.T if xg_.shape[0] == 3 else xg_, dtype=torch.float32, device=dev)
+    assert xg_.shape[0] == m.shape[0] and float((xg_ - d["x"][0].to(dev).float()).abs().max()) < 1e-3, "vp_h5: 입자 수·순서가 다르다"
+    ng_, dx_ = int(cfg.get("n_grid", 100)), float(cfg.get("grid_lim", 2.0)) / int(cfg.get("n_grid", 100))
+    c_ = (xg_ / dx_).floor().long()
+    _, i_, n_ = torch.unique((c_[:, 0] * ng_ + c_[:, 1]) * ng_ + c_[:, 2], return_inverse=True, return_counts=True)
+    v_ = (dx_ ** 3 / n_[i_].float())
+    print(f"[절 AE vp_h5] V_p 를 정답 float32 위치로: 다른 입자 {float(((v_ - vol).abs() / v_ > 1e-4).float().mean()):.3f}, Σ V_p {float(vol.double().sum()):.6g} -> {float(v_.double().sum()):.6g}", flush=True)
+    rr_ = (rho if rho is not None else float(cfg["density"]))
+    m = (v_ * rr_).float().contiguous()
+    vol = v_.float().contiguous()
 BC_SEL = RT.cfg_bc_sel(cfg, d["x"][0].to(dev).float()) if a.cfg_bc else None
 if a.cfg_bc and any(bc.get("type") in ("enforce_particle_translation", "enforce_particle_velocity_rotation") for bc, _ in BC_SEL) and a.opt:
     raise SystemExit("--opt --cfg_bc: 입자 구속은 아직 (cuboid 만)")
