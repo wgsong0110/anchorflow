@@ -2604,3 +2604,68 @@ FEM 은 탄성 (FCR) 만 다루므로 탄성 재질 + **전체 입자 정답 궤
 - 스윕 (비측정, 20 궤적 x N 64~256 x 3 회) 은 끝났고, 궤적별 N* 단독 측정 (21 조합 x 3 회) 도 끝난 뒤 렌더 도중 사용자 고침으로 드라이버를 멈췄다 (진행 중이던 렌더 7 개는 끝까지 돌아 R2 에 있음).
 - N* 판 단독 측정에서 기준 만족 7/21 (0004 N128, 0006·0007·0008·0011·0012 N96, 0013 N64). **주의: 단독 측정 중 일부 회 (0000·0001·0002·0003 t2, 0014 t1, 0015 t1, 0016 t1 등) 에 카드 1~6 에 2~15 GB 를 쓰는 남의 실행이 있었다** (gpu_at_start/end.txt; 우리 스윕은 이미 끝난 뒤라 이 절 실행이 아니다) -- 그 회 ms 는 경합 수치라 쓰지 않는다 (예 0014 t1 27.3 ms vs t2·t3 7.0 ms). 공통 설정 판 (AF.3) 은 회마다 카드 1~6 이 빌 때까지 기다리도록 고쳤다.
 - 스윕 결론 (N 과 무관한 부분): 대부분 궤적의 오차는 N 64→256 에서 1~2 %p 만 줄고 (0019 34 → 27 %, 0003 21 % 그대로), 10 % 위 궤적은 N 을 올려도 10 % 아래로 안 내려온다 -- 오차는 서브스텝 크기가 아니라 접촉 뒤 동역학에서 온다 (AF.3 진단).
+
+## AG. 소성·점성·파괴 (정답 솔버 재질 식) -- 공통 설정 하나 (사용자 10-30) -- 커밋 4e0f370~
+**씬별 기준 (60 fps = 16.7 ms 이하 · 롤아웃 평균 오차 < 10 %) 만족 여부 (단독 GPU0, 3 회):**
+| 씬 (재질) | N (= frame_dt / 6.25e-5) | 셀 증분 RM (정답처럼 서브스텝마다, 기본) | 셀 RM 없음 (프레임 끝 입자만, 갈래) |
+|---|---|---|---|
+| hotdog (PG foam 점소성) | 267 | **미달** -- 0/3 완주 (발산 106·147·145), 끝난 프레임까지 2.8~3.4 % · 99.6 ms | **만족** -- 3/3, **1.55 % · 14.93 ms (67.0 fps)** |
+| bread (PG plasticine 소성·손상) | 160 | **미달** -- 3/3, 15.47 % · 40.33 ms (24.8 fps) | **미달** -- 3/3, 15.28 % · 27.13 ms (36.9 fps) |
+| wolf (PG 모래 Drucker-Prager) | 640 | **미달** -- 0/3 (발산 9~11), 322.9 ms | (안 돎) |
+| 수박 (GF NACC 파괴) | 480 | **미달** -- 0/3 (발산 5, 셋 다), 1762 ms | (안 돎) |
+- 공통 설정 = 절 AD 확정 플래그 `--mode lag --opt --mass tet --rstat --lim_sr 5 --cfuse --cfuse_mode 2 --sp vcap --sp_vcap 0.5` + `--plast` (+ 씬 물리 조건) + **h_s 6.25e-5 s 고정** (N = round(frame_dt/h_s); lego 267·ficus 640 과 같은 h_s). 씬마다 N 을 찾지 않았다 (처음 판의 N 스윕은 사용자 지시로 버림 -- AG.6 에 기록만).
+- 다른 카드: 단독 측정 30 회 모두 시작·끝 카드 1~6 이 1 MiB (gpu0.lock + 빈 카드 기다림).
+
+### AG.1 씬 (클러스터에 이미 있는 전체 입자 정답 궤적만; 새 정답 없음) · 물리 조건 출처
+| 씬 | 정답 궤적 (h5) | 정답 config | 물리 조건 (config 그대로) | node_h (= 정답 dx·√2) | 3DGS |
+|---|---|---|---|---|---|
+| hotdog | topo/pg_hotdog_visco (PG gs_simulation, 181 프레임, 172,017 입자) | wmats/hotdog_viscoplastic.json (프로젝트 벤치 설정 -- PG 에 공식 foam config 없음) | foam E 1e6 ν 0.3 ρ 1000 항복 2000 점성 100, g -9.8, 바닥 sticky z 0.48, frame 1/60, 격자 100 | 0.028284 | pgmodel/hotdog_whitebg-trained |
+| wolf | topo/pg_wolf_sand (51 프레임, 189,117) | PhysGaussian/config/wolf_config.json (공식) | sand E 5e7 ν 0.3 ρ 2000 φ 30°, g -9.8, 바닥 sticky z 0.48, release_particles_sequentially (50 구역), frame 0.04, 격자 200 | 0.014142 | wolf_whitebg-trained |
+| bread | topo/pg_bread_plastic (301 프레임, 182,959) | topo/bread_plastic_config.json (공식 tear_bread 에서 재질만 plasticine 항복 200 -- 10-13 정답 생성 때 정함) | E 2000 ν 0.3 ρ 200 softening 0.1 (기본), g 0, 입자 속도 구속 ±0.2 m/s 두 판 (하나는 2.2 s 까지), 격자 감쇠 0.9995/1e-4 s, frame 0.01, 격자 150 (회전 25°) | 0.018856 | bread-trained |
+| 수박 | wm2/gf (GF 공식 러너, 101 프레임, 1,379,914) | wm2/gf/config.json (GF 공식) | NACC E 2000 ν 0.38 ρ 1 φ 45° β 1 ξ 3 경화 1, logJp 초기 -0.04 (GF 기본), g -15, v0 -6 (GF 하드코딩), frame 0.03, 격자 300; 바닥 = bounding_box padding 3 칸 한쪽 방향 (config 의 z=0 sticky 는 GF 에서 작동 안 함) -> `--floor_plane 1,1,0.02,0,0,1 --vfl_mode slip` | 0.0094281 | gfmodel/model/watermelon |
+- 제외: plane (metal, PG 공식) -- 클러스터에 전체 입자 정답 궤적 없음 (stab/plane 은 부분표본). bread·wolf visco (topo/pg_*_visco) -- 정답 생성이 12~13 프레임에서 끊겨 있다. 점성 (속도 기울기 응력) 정답 씬은 없다 (PG·GF 둘 다 그런 항이 없고 foam 의 plastic_viscosity 는 return mapping 안의 점소성).
+- .pt 는 h5 형식 변환만 (exe/pg_h5_to_pt.py; 수박은 --allow_nonfinite -- GF quarantine 입자 (마지막 프레임 0 개) 는 지표에서 거르게). 노드 /tmp/dkta/ag_data, R2 lbours/fem_ag_data.
+
+### AG.2 구현 (lib/anchorflow/fem_pl_cuda.py, exe/fem_ex_sim.py `--plast --pl_cell --pbc --floor_plane --vfl_mode slip --visc`)
+- **재질 식은 정답 원본 그대로** (PG/GF mpm_utils.py): metal = von_mises_return_mapping + PG StVK 응력 (PG 는 P = U diag(τ_i) Vᵀ -- 1/σ 가 없다, 그대로), sand = sand_return_mapping + drucker_prager 응력 (Hencky), foam = viscoplasticity_return_mapping_with_StVK + PG StVK, plasticine = von_mises_return_mapping_with_damage (ys -= softening |Δε|, ys ≤ 0 이면 μ = λ = 0 영구 손상) + FCR, watermelon = GF NonAssociativeCamClay_return_mapping (logJp 경화 갈래 포함) + neoHookeanBoarden (τ 를 F_e 에서 바로). 물성·기본값은 정답 config/솔버 기본 (E 1e7 배율 메모는 DreamPhysics 만 해당 -- 이 넷은 물리 단위).
+- 입자: 프레임 끝 G2P (F_trial = A_T F_e) 뒤 입자별 return mapping (`ag_rm`, 걸음 dt = h) -- F_e·ys·logJp·손상 갱신, 다음 프레임 P2G 의 F̄ 는 F_e 평균.
+- **서브스텝 안 셀 return mapping (기본 `--pl_cell inc`)** -- 이유: 정답은 서브스텝마다 return mapping 하므로 프레임 동안 응력이 항복면 안에 있다; 프레임 끝에만 하면 한 프레임 동안 셀이 탄성으로 버틴다 (모래 인장·foam 흐름). 셀 F_e·상태 (입자 부피 가중 평균) 를 프레임 시작에 F̄ 로 두고 서브스텝마다 F_trial = X_j X_{j-1}⁻¹ F_e (X = A_T F̄), 정답 return mapping (걸음 h_s), 응력 τ(F_e), 힘 -V τ X⁻ᵀ F̄ᵀ ∇λ. 첫 판 `total` (프레임 누적 X 를 프레임 시작 상태로 한 번에 투영) 은 hotdog 가 프레임 44 에 발산해 증분으로 고쳤다.
+- **파괴**: 정답 기제 그대로 입자에 (plasticine 손상 = ys ≤ 0, 수박 = NACC logJp 경화로 p0 → 0). 메시 쪽: 손상 입자는 셀 F̄·탄성 부피에서 빠진다 (질량 그대로; 모든 입자가 손상된 셀은 응력 0), NACC 는 셀 상태 logJp 평균으로 셀 항복면이 줄어든다.
+- 입자 속도 구속 (`--pbc`, PG enforce_particle_translation / release_particles_sequentially 50 구역 그대로, 선택은 0 프레임 위치): 프레임 가운데 시각에 걸린 입자의 P2G 질량 몫 α 로 서브스텝마다 노드 걸음 뒤 v <- (1-α) v + α v̄_bc (정답의 '입자 v 를 매 서브스텝 P2G 전에 박는다' 를 노드에서; 시각 판정은 프레임 단위 -- 정답과 다른 점).
+- 미끄럼 바닥 (`--vfl_mode slip`, ex_node_step_lag mode 2): 접선 그대로, 안쪽 법선 성분만 제거 (GF bounding_box). 기존 모드 0·1 결과 불변.
+- 점성 (`--visc η`): 셀 응력 τ_v = 2 η J sym(L), L = (Σ v_n ⊗ ∇λ_n) A⁻¹ -- 구현만 (시험 씬 없음).
+- 탄성 판 불변: lego L000 5 프레임 `--plast` 유무 (jelly -> 같은 c_force_body) 프레임별 오차 최대 차 2.4e-9 (float 합 순서).
+
+### AG.3 단위 대조 (exe/fem_ag_unit.py -- 정답 원본 warp 커널 compute_stress_from_F_trial vs 우리 ag_test, 같은 F_trial·상태, 2 만 입자 x 4 연속 걸음; lbours/fem_ag_prep/unit_{pg,gf}.json)
+| 사례 (정답 config 물성) | 정답 투영 입자 | |ΔF_e| 최대 (99 %) | |Δτ|/μ 최대 (99 %) | 상태 |
+|---|---|---|---|---|
+| metal plane (E 1e5, ys 100) / 경화 ξ 0.5 | 1.3~2.0 만 | 8.0e-4 (4.6e-6) / 4.6e-4 | 2.4e-5 (8.1e-6) / 6.9e-4 | ys 상대 차 ≤ 7.5e-5 |
+| sand wolf (E 5e7, φ 30°) | 0.8~1.3 만 | 6.0e-5 (1.1e-6) | 1.1e-4 (5.9e-6) | -- (응력이 거의 0 인 입자가 많아 상대 차는 커 보임) |
+| foam hotdog (dt 2e-5 / 1/60) | 2 만 | 2.3e-4 (1.4e-6) | 5.3e-4 (8.7e-6) | ys 같음 |
+| plasticine bread (ys 0~240 흩뜨림) | 1.8~1.9 만 | 2.7e-3 (9.2e-6) | 1.5e-3 (1.0e-4) | 손상 입자 수 정답 = 우리 (2·3·4·6), 불일치 0 |
+| watermelon GF NACC (logJp -0.3~0.2) | 0.86~1.03 만 | 4.3e-4 (3.5e-6) | 5.3e-4 (1.3e-5) | logJp 차 ≤ 3.0e-6, logJp > 0 입자 수 같음 |
+- 모두 float32 반올림 수준 (|τ|/μ 중앙 0.07~0.75). 정답 쪽 f32 자체 오차 (f64 대비) 는 5e-7 μ, 우리 SVD (C = XᵀX Jacobi) 가 그보다 한 자릿수 크다.
+
+### AG.4 결과 (단독 측정 GPU0, 3 회; lbours/fem_ag_sum/table_timed.md·table_timed_nocell.md)
+| 씬 | 갈래 | 완주 | 오차 (회별) | ms (회별) | fps | 비고 |
+|---|---|---|---|---|---|---|
+| hotdog | 셀 증분 RM | 0/3 (106·147·145) | 끝난 프레임까지 2.85·3.45·3.44 % | 71.3·115.7·111.9 | 10.0 | 착지 (프레임 17) 부터 클램프 84 프레임·1.4 억 노드x서브스텝 |
+| hotdog | 셀 RM 없음 | **3/3** | **1.55·1.55·1.55 %** | **14.96·14.91·14.92** | **67.0** | 클램프 1 프레임 4 번 |
+| bread | 셀 증분 RM | 3/3 | 15.48·15.45·15.47 % | 40.1·40.4·40.5 | 24.8 | 손상 입자 0 |
+| bread | 셀 RM 없음 | 3/3 | 15.29·15.27·15.28 % | 26.9·27.3·27.2 | 36.9 | |
+| wolf | 셀 증분 RM | 0/3 (11·9·9) | 0.04·0.01·0.01 % | 341·286·342 | 3.1 | h_s / Δt_CFL = 1.62 |
+| 수박 | 셀 증분 RM | 0/3 (5·5·5) | 0.24 % | 1759·1764·1763 | 0.6 | 사면체 436 만, 착지 프레임 4 |
+영상 (3DGS 알파블렌딩, 칸마다 ms·fps·오차): v20261009/fem_ag_{hotdog,bread,wolf,wm}_cmp.mp4 (정답 | 셀 증분 RM [| 셀 RM 없음]; 발산 판은 끝난 프레임까지 --dump_div). 렌더 원본 lbours/fem_ag_<씬>/ag_*_t1/vj, 정답 lbours/fem_ag_<씬>/gt.
+
+### AG.5 원인 진단 (설정은 바꾸지 않음)
+- **wolf (모래)**: 공통 h_s 6.25e-5 가 이 씬의 파속 CFL Δt = 3.85e-5 s (E 5e7, ρ 2000, Kuhn 최소 높이 7.1 mm) 의 1.62 배다 -- 탄성으로 돌려도 (`--noplast`, N1024 = 0.98 배) 프레임 8 에 발산 (fem_ag_diag/w_el), 순차 방출 중 반쯤 묶인 노드 경계에서. 60 fps 도 불가: N1024 에서 프레임당 227~290 ms (사면체 49 만 x 서브스텝 1024).
+- **수박 (파괴)**: 프레임 0.03 s 동안 6 m/s 착지 = 18 cm 이동, 셀 (정육면체 변 = GF dx 6.7 mm) 의 27 배 -- 프레임 시작 메시로 담을 수 없는 변형이 착지 프레임 (4) 에 한꺼번에 생겨 클램프 (σ1/σ3 ≤ 5) 가 노드 1,677 만 x 서브스텝을 잡고 다음 프레임 발산. 탄성 (`--noplast`)·셀 RM 없음도 같은 프레임 5 에 발산 (fem_ag_diag/m_el·m_nocell) -- 재질이 아니라 lag 메시 + 낙하 속도. 속도도 불가: 사면체 436 만, N480 에 프레임당 1.76 s.
+  - **고정 격자가 갈라진 양쪽을 잇는가** (exe/fem_ag_crack.py, 정답 위치에 우리 격자를 깔아 0 프레임 16-NN 짝 2 만 x 16): 정답에서 2 배 넘게 벌어진 짝은 프레임 10 6.4 % → 100 8.4 %; 그중 두 입자가 같은 정육면체 0.1 %, 같은·이웃 정육면체 (그 프레임 메시가 잇는 짝) 4.3~5.0 % (착지 직후 프레임 5 는 12.9 %, 1.5 배 문턱 31 %). → 정착된 균열의 95 % 는 빈 셀 한 칸 이상으로 갈라져 프레임 단위 재메시로 표현 가능, 벌어지는 중인 프레임 (5) 에는 1/8~1/3 을 메시가 이어 붙든다. 실제 시험은 위 발산 때문에 못 했다.
+- **hotdog (점소성)**: 셀 RM 없음은 기준 만족, 셀 증분 RM 은 착지 뒤 발산. foam 은 항복 변형률 0.2 % 라 착지 뒤 모든 입자가 매 프레임 항복 (투영 172,017/172,017); 셀 RM 이 응력을 항복면에 묶으면 셀이 프레임 안에서 거의 저항 없이 흐르고, lag 메시 (프레임 시작 사면체) 의 찌그러짐이 클램프 한계 (σ1/σ3 5) 를 넘어 클램프가 KE 를 계속 지운다 (84 프레임·1.4 억) -- 결국 폭주 노드가 늘어 발산 (프레임 106~147). 셀 RM 없이 (프레임 안 탄성, 프레임 끝 입자 RM) 는 셀이 버텨 클램프 4 번. 프레임 누적 투영 (`total`) 은 더 일찍 (44) 발산. → 흐르는 재질은 '프레임 안 고정 메시' 와 정답의 서브스텝 RM 이 맞지 않는다.
+- **bread (소성)**: 구속 판 두 곳은 정답과 같이 움직인다 (영역 오차 0.4~0.8 %, 평균 이동 0.600 vs 0.597 m) -- 오차는 **나머지 (가운데) 영역** 에서 (300 프레임 43 %): 정답은 가운데가 판을 따라 끌려가며 (평균 dy -0.040, dz -0.028) 늘어나는데 우리는 가운데가 거의 제자리 (dy -0.014, dz -0.004) -- 판 경계 셀에서 먼저 늘어난다 (영상의 흰 점 = 판 경계에서 벌어진 가우시안). 손상은 정답·우리 모두 사실상 없다 (softening 0.1 x 소성 변형률 ~1 = 0.1 Pa, 항복 200 Pa) -- 이 씬의 '찢어짐' 은 손상이 아니라 소성 흐름. 탄성 (`--noplast`) 은 프레임 212 발산 전 9.7 %. 속도: N160 x 사면체 21~23 만 = 27~40 ms (h_s 고정이라 N 이 frame_dt 0.01 로 정해짐; 파속 CFL 은 N 4 면 충분).
+  (lbours/fem_ag_sum/region_bread{,_nocell}.json, exe/fem_ag_region.py)
+- 정리: 기준을 만족한 것은 hotdog (셀 RM 없음) 하나. 셀 증분 RM (정답과 같은 서브스텝 RM) 은 흐르는 재질에서 lag 메시 클램프와 충돌해 발산; wolf 는 h_s 가 CFL 밖, 수박은 프레임당 변형이 셀의 27 배, bread 는 판 경계 셀에 변형이 몰려 가운데가 안 끌려온다.
+
+### AG.6 (버린 앞 판, 기록) 씬별 N 스윕 -- 사용자 고침 전 (exe/fem_ag_sweep.sh, `--pl_cell total`; lbours/fem_ag_sum/table_s1.md)
+hotdog N48~256 0/3 전부 발산 (5~57), bread N8~64 3/3 15.4~15.6 %, wolf N256~1024 0/3 (7~16), 수박 N128~512 0/3 (2~5). 진단 (lbours/fem_ag_diag): hotdog 탄성 60 프레임 4.56 %, 셀 투영 끔 1.51 %, 투영 + FCR 응력 발산 55 -> 셀 투영이 원인.
+코드: exe/fem_ag_{scene,prep,unit,jobs,gpu,sweep,pick,timed,table,render,final,diag,crack,region,compose}.{sh,py}, exe/fem_ag_diag{1,2}.txt. 실행: ece-a6gpu10 잡 129982, 출력 노드 /tmp/dkta/lbours/fem_ag_* -> R2 lbours/fem_ag_*.
