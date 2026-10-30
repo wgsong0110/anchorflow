@@ -373,13 +373,13 @@ NB = -(-a.N // REP) if REP else 1                                               
 # ---- 절 AG: 소성·점성·파괴 (정답 솔버 재질 식), 입자 속도 구속 ----
 PLAST, VISC, PBC = bool(a.plast), a.visc > 0, bool(a.pbc)
 if (PLAST or VISC or PBC) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and not a.sr_ef and SPM in ("none", "vcap")
-                                   and not FUPD and not REP and not a.lagdiag and a.adapt == "none" and not a.affine and a.p2g == "bary"):
+                                   and FUPD in (0, 3) and not REP and not a.lagdiag and a.adapt == "none" and not a.affine and a.p2g == "bary"):
     raise SystemExit("절 AG (--plast/--visc/--pbc) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, F 갱신·P2G 기본, 진단·적응 없음) 만")
 AI1, AI2 = a.ai_p2g == "rs", bool(a.ai_stress)                                       # 절 AI
 AIG = {"T": 0, "bs": 2, "dev": 3, "devnavg": 4, "devbs": 5}[a.ai_g2p]
 if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and not REP and not a.affine and a.p2g == "bary"
-                                  and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (PLAST or VISC or PBC) and (VFL or not HASPL)):
-    raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀·소성 없음) 만")
+                                  and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (AI2 and (PLAST or VISC or PBC)) and (VFL or not HASPL)):
+    raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀 없음) 만; --ai_stress 는 FCR 탄성만 (소성 씬 제외)")
 if AIG and FUPD:
     raise SystemExit("--ai_g2p 와 --fupd 는 함께 못 쓴다 (B1 = --fupd navg --fupd_b 1)")
 MATN, PL_DMG = 0, False
@@ -2450,6 +2450,7 @@ def ai_stats(i, Fs):
                for gk, g in groups.items() if gk != "all"}
     r["tau_p"] = qd(nrm(tp))
     gF = GTF[i].to(dev).double().reshape(Np, 3, 3)
+    gF = gF[torch.isfinite(gF).reshape(Np, 9).all(-1)]                             # GF 정답은 격리 입자가 비유한
     r["tau_p_gt"] = qd(nrm(_ai_tau(gF)))
     r["smin_p"] = qd(S_[:, 2])
     r["smin_p_gt"] = [float(q_) for q_ in torch.quantile(torch.linalg.svdvals(gF)[:, 2][:2_000_000], torch.tensor([0.001, 0.01, 0.1, 0.5], device=dev, dtype=torch.float64)).tolist()]
@@ -2464,6 +2465,14 @@ def ai_stats(i, Fs):
         tb9 = torch.stack([tb[:, 0], tb[:, 3], tb[:, 4], tb[:, 3], tb[:, 1], tb[:, 5], tb[:, 4], tb[:, 5], tb[:, 2]], -1).view(-1, 3, 3)
         r["chk_tau"] = float((tb9 - tavg).abs().max() / (nrm(tavg).max() + 1e-30))
     r["aic"] = [float(q_) for q_ in OPT.aic.tolist()]
+    # 프레임 끝 (서브스텝 뒤) 메시 누적 변형: 점유 사면체 A_T 의 det·σ_min, 셀 변형 A_T F̄_T 의 σ_min·det (분위 0.1·1·10·50 %), det A < 0.5 / ≤ 0 비율
+    A_ = (torch.eye(3, device=dev) + torch.einsum("tia,tib->tab", OPT.Uc[OPT.tets[:T_].reshape(-1)].view(T_, 4, 3), OPT.gl[:T_].view(T_, 4, 3)))[occ].double()
+    X_ = A_ @ Fused
+    q4 = torch.tensor([0.001, 0.01, 0.1, 0.5], device=dev, dtype=torch.float64)
+    qq = lambda v_: [float(q_) for q_ in torch.quantile(v_.nan_to_num(-1e9)[:2_000_000], q4).tolist()]
+    dA = torch.linalg.det(A_)
+    r["mesh_end"] = dict(detA=qq(dA), sminA=qq(torch.linalg.svdvals(A_)[:, 2]), sminX=qq(torch.linalg.svdvals(X_)[:, 2]), detX=qq(torch.linalg.det(X_)),
+                         f_detA_lt05=float((dA < 0.5).double().mean()), n_detA_le0=int((dA <= 0).sum()))
     return r
 
 
