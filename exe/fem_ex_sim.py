@@ -2418,10 +2418,16 @@ if a.fspread:
 
 
 def _knn(q, allx, k=16):
+    """자기 자신 빼고 최근접 k (정확한 float64 거리로 순위). 절 AI: 후보는 float32 행렬곱 cdist 상위 k+16 -> 후보 안에서 float64 직접 거리로 다시 순위
+    (예전 donot_use_mm float64 전수는 3000 표본 x 31 만 점에 호출당 ~60 s; 행렬곱 거리 오차 ~3e-7 m² 는 후보 여유 16 으로 덮는다 -- torch-cdist-mm-precision)."""
     out = []
-    for s0 in range(0, q.shape[0], 256):
-        dd_ = torch.cdist(q[s0:s0 + 256].double(), allx.double(), compute_mode="donot_use_mm_for_euclid_dist")
-        out.append(torch.topk(dd_, k + 1, largest=False).indices[:, 1:])
+    xd = allx.double()
+    for s0 in range(0, q.shape[0], 1024):
+        qq = q[s0:s0 + 1024]
+        cand = torch.topk(torch.cdist(qq.float(), allx.float()), k + 17, largest=False).indices
+        ex = ((qq.double()[:, None, :] - xd[cand]) ** 2).sum(-1)
+        o = torch.argsort(ex, dim=1)
+        out.append(torch.gather(cand, 1, o)[:, 1:k + 1])
     return torch.cat(out)
 
 
@@ -2664,7 +2670,7 @@ for i in range(L):
         s = ((x2 - torch.tensor(pt_, device=dev)) * torch.tensor(nr_, device=dev)).sum(-1)
         smin, nbelow = float(s.min()), int((s < 0).sum())
     errs.append(e if fin else float("nan"))
-    rec = dict(t=i, sec=t_frame, wall=time.time(), post=time.time() - t0 - t_frame, err=e, spread=spread, s_min=smin, n_below=nbelow, **st)
+    rec = dict(t=i, sec=t_frame, wall=time.time(), post=time.perf_counter() - t0 - t_frame, err=e, spread=spread, s_min=smin, n_below=nbelow, **st)
     flog.write(json.dumps(rec, ensure_ascii=False) + "\n")
     flog.flush()
     recs.append(rec)
