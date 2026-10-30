@@ -140,6 +140,10 @@ ap.add_argument("--vfl_agg", action="store_true",
                 help="절 AH.7 결과 불변 가속 (--vfl_w gtk 경로): 프레임마다 바닥 후보를 입자 사면체 첫 노드 번호로 정렬 + 접촉 원자 합을 워프 집계 (같은 식, 합 순서만 다름)")
 ap.add_argument("--vfl_tacc", action="store_true",
                 help="절 AH.11 결과 불변 가속 (--vfl_w gtk --mass tet): 띠 접촉 질량을 입자 사면체에 먼저 모은 뒤 (원자 1 개) 목록 사면체만 네 노드로 (같은 식, 합 순서만 다름)")
+ap.add_argument("--vfl_bf", action="store_true",
+                help="절 AH.12 정의 변경 (--vfl_w gtk): 띠 고착 가중을 프레임 시작 높이로 프레임당 한 번 (서브스텝은 평면 아래 후보만 비관통·접촉 수)")
+ap.add_argument("--vfl_band", type=float, default=0.5,
+                help="절 AH.12 (--vfl_w gtk): 띠 폭 (dx_g 배수; 정답 sticky 가중이 0 이 되는 0.5 가 기본, 작으면 그 위 입자의 가중을 0 으로 자름)")
 ap.add_argument("--rbdiag", action="store_true", help="절 AH 진단 (측정 밖): 프레임마다 강체 지표 (질량 중심·속도, 운동 에너지, 질량 중심 각운동량, Kabsch 회전, 최저 높이) 우리 / 정답 -> fem.jsonl rb")
 ap.add_argument("--vp_h5", default="", help="절 AE: 입자 부피·질량을 정답 0 프레임 h5 (float32 위치) 로 정답 생성기와 같은 식으로 (.pt 위치는 float16 반올림이라 칸 판정이 갈림)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
@@ -460,10 +464,12 @@ AH_GTK = 1 if (VFL and a.vfl_w == "gtk") else 0
 AH_ACCN = AH_GTK or a.vfl_npd > 0                                                   # 비관통 판정을 따로 (실제 접촉 / 깊이)
 AH_DXG = float(cfg.get("grid_lim", 2.0)) / int(cfg.get("n_grid", 100))                # 정답 MPM 격자 dx_g
 AH_PN = float(np.dot(pt_, nr_)) if HASPL else 0.0                                   # p·n (정답 격자 노드 법선 좌표와 비교)
-AH_BAND = 0.5 * AH_DXG if AH_GTK else 0.0                                           # gtk: 평면 위 0.5 dx_g 까지 가중 > 0
+AH_BAND = a.vfl_band * AH_DXG if AH_GTK else 0.0                                           # gtk: 평면 위 0.5 dx_g 까지 가중 > 0
 AH_KEX = (hs / float(cfg["substep_dt"])) if (VFL and a.vfl_rate) else 1.0           # (1 - a/m)^(h_s/h_ref)
 if a.lim_v == "mom" and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and SRL):
     raise SystemExit("--lim_v mom 은 확정 경로 (--cfuse --cfuse_mode 2 --lim_sr) 만")
+if a.vfl_bf and not (AH_GTK and a.cfuse and a.cfuse_mode == 2 and not a.vfl_tacc and not a.vfl_agg):
+    raise SystemExit("--vfl_bf 는 --vfl_w gtk + --cfuse_mode 2 경로만")
 if a.vfl_tacc and not (AH_GTK and a.cfuse and a.mass == "tet" and not a.vfl_agg):
     raise SystemExit("--vfl_tacc 는 --vfl_w gtk + --cfuse + --mass tet 경로만")
 if a.vfl_agg and not (AH_GTK and a.cfast or AH_GTK and a.cfuse):
@@ -693,7 +699,8 @@ class Opt:
             self.fx = torch.zeros(self.Mcap, dtype=torch.uint8, device=dev)
             self.vbc = z(self.Mcap, 3)
             self.acc = z(self.Mcap)                                                  # --floor vel: 노드별 접촉 입자 질량 (쓴 뒤 비움)
-            self.accN = z(self.Mcap)                                                 # 절 AH: 노드별 실제 접촉 (평면 아래) 입자 수 (비관통 판정, 쓴 뒤 비움)
+            self.accN = z(self.Mcap) 
+            self.accB = z(self.Mcap)                                                 # 절 AH.12 --vfl_bf: 프레임 상수 띠 고착 질량                                                # 절 AH: 노드별 실제 접촉 (평면 아래) 입자 수 (비관통 판정, 쓴 뒤 비움)
             self.ml = z(self.Mcap) if RWL else None                                  # 절 Q --rep_w lam: 속도 전달 정규화 질량 Σλm
             if LIM:
                 self.alph = torch.full((self.Mcap,), 1065353216, dtype=torch.int32, device=dev)   # box: 노드 α (1.0f 비트)
@@ -1159,6 +1166,11 @@ class Opt:
                                     EX.P(self.FeC if PLINC else None), EX.P(self.XpC if PLINC else None), EX.P(self.ysC if PLINC else None), EX.P(self.ljC if PLINC else None),
                                     EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                     np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
+        elif AHF and a.vfl_bf:                                                      # 절 AH.12: 띠 가중은 프레임 시작에 (_bf0), 서브스텝은 평면 아래 후보만
+            AHC.launch("ah_fc_bf", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
+                                       EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
+                                       EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf), EX.P(self.rows), EX.P(self.lamb),
+                                       *PLf, EX.P(self.ncon), np.float32(a.vfl_npd), EX.P(self.accN)), b=128, grid=nbT + nbP)
         elif AHF and a.vfl_tacc:                                                    # 절 AH.11: 사면체 먼저 모은 뒤 노드로
             AHC.launch("ah_fc_tacc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                          EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
@@ -1186,7 +1198,11 @@ class Opt:
                                    EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
         if a.cfuse_mode == 2:
-          if AHF:
+          if AHF and a.vfl_bf:
+            AHC.launch("ah_node_step_bf", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
+                                               np.float32(hs_), np.float32(damp_), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.accB),
+                                               EX.P(self.accN), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * hs_ / hs)), b=256)
+          elif AHF:
             AHC.launch("ah_node_step", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
                                             np.float32(hs_), np.float32(damp_), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc),
                                             EX.P(self.accN if AH_ACCN else None), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * hs_ / hs)), b=256)
@@ -1904,6 +1920,10 @@ class Opt:
                     self._agg_sort()
                 if VFL and a.vfl_cull:
                     CCU.launch("c_s0", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf), *PLf, EX.P(self.s0c)), b=256)
+                    if a.vfl_bf:                                                    # 절 AH.12: 프레임 시작 높이로 띠 고착 질량 (프레임 상수)
+                        self.accB.zero_()
+                        AHC.launch("ah_band0", Np, (EX.P(self.sz), EX.P(self.s0c), EX.P(self.nidx), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
+                                                    np.int32(1 if a.mass == "tet" else 0), np.float32(AH_BAND), np.float32(AH_PN), np.float32(AH_DXG), EX.P(self.accB)), b=256)
         if a.adapt != "none":
             self._choose_N(i)
         self._ev("p2g")

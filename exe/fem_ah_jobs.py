@@ -85,7 +85,18 @@ V7 = {
     "fa": (rep(GKR, sp_vcap=0.75) + " --vfl_npd 0.005 --vfl_agg", True),
     "fa5": (GKR + " --vfl_npd 0.005 --vfl_agg", True),
 }
-SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7}
+# 8 차 (조정자 10-31, 정의 변경): 띠 가중 프레임당 한 번 (bf) / 띠 폭 좁게 (bw) / 조합 -- 최종 판 (θ 0.75) 과 θ 0.5 위에서
+FINF = rep(GKR, sp_vcap=0.75) + " --vfl_npd 0.005"
+FIN5 = GKR + " --vfl_npd 0.005"
+V8 = {
+    "bf": (FINF + " --vfl_bf", True),
+    "bw25": (FINF + " --vfl_band 0.25", False),
+    "bw10": (FINF + " --vfl_band 0.1", False),
+    "bf_bw25": (FINF + " --vfl_bf --vfl_band 0.25", False),
+    "bf5": (FIN5 + " --vfl_bf", True),
+    "bw25_5": (FIN5 + " --vfl_band 0.25", False),
+}
+SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]

@@ -225,6 +225,70 @@ __global__ void ah_tdist(const int* clT, const long long* tets, float* accT, int
     }
 }
 __global__ void ah_clr1(int* c) { if (threadIdx.x == 0) c[0] = 0; }
+// ---- 절 AH.12 정의 변경 (--vfl_bf: 띠 가중을 프레임당 한 번) -- 프레임 시작 높이 s0 로 띠 입자의 고착 질량 accB_n = Σ 0.25 m_p w(s0_p) (s0_p < 띠) 를 한 번 모으고,
+//      서브스텝은 그 값을 고착 몫으로 쓴다. 서브스텝마다 다시 보는 것은 평면 아래로 들어갔을 수 있는 입자 (s0 ≤ D + 1e-5, 기존 판과 같은 컬링) 뿐 -- 비관통 (s < -npd) 표시와 접촉 수.
+__global__ void ah_band0(const int* szp, const float* s0c, const long long* nidx, const long long* rows, const float* lamb, const float* m, int tetmass,
+                         float band, float pn, float dxg, float* accB) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= szp[2]) return;
+    float s = s0c[q];
+    if (!(s < band)) return;
+    float w = ah_wstk(s, pn, dxg);
+    if (!(w > 0.f)) return;
+    long long p = nidx[q];
+    float mp = m[p];
+    for (int i=0;i<4;i++) atomicAdd(&accB[rows[p*4+i]], (tetmass ? 0.25f : lamb[p*4+i])*mp*w);
+}
+__global__ void ah_fc_bf(int nbT, const int* szp, const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* FT, const float* VT,
+                         float mu, float lam, float* f, float* rst, int fpol, float* eF,
+                         const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb,
+                         float p0, float p1, float p2, float n0, float n1, float n2, int* ncon, float npd, float* accN) {
+    if ((int)blockIdx.x < nbT) {
+        int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+        int t;
+        if (tl) { if (i0 >= tlc[0]) return; t = tl[i0]; }
+        else { if (i0 >= szp[1]) return; t = i0; }
+        c_force_body(t, tets, U, gl, FT, VT, mu, lam, f, 0.f, 0.f, 0, rst, fpol, eF);
+        return;
+    }
+    int q = (blockIdx.x - nbT)*blockDim.x + threadIdx.x;
+    if (q >= szp[2]) return;
+    if (s0c[q] > __uint_as_float(*dn) + 1e-5f) return;
+    long long p = nidx[q];
+    float u[3] = {0,0,0};
+    long long nd[4];
+    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; float lm=lamb[p*4+i]; for (int a=0;a<3;a++) u[a] += lm*U[nd[i]*3+a]; }
+    float s = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
+    if (!(s < 0.f)) return;
+    if (ncon) atomicAdd(ncon, 1);
+    if (s < -npd) for (int i=0;i<4;i++) atomicAdd(&accN[nd[i]], 1.f);
+}
+// ah_node_step 과 같은 걸음, 고착 질량은 프레임 상수 accB (비우지 않음), 비관통은 accN (비움)
+__global__ void ah_node_step_bf(const int* szp, const float* mn, float* f, float* vn, float g0, float g1, float g2, float hs, float damp,
+                                const unsigned char* fixd, const float* vbc, const float* accB, float* accN, int mode, int np_, float n0, float n1, float n2, float kex) {
+    int M = szp[0];
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= M) return;
+    float gg[3] = {g0, g1, g2};
+    float m = mn[n];
+    float v[3];
+    for (int c=0;c<3;c++) {
+        if (fixd && fixd[n]) v[c] = vbc[n*3+c];
+        else if (m > 0.f) v[c] = (vn[n*3+c] + hs*(f[n*3+c]/m + gg[c]))*damp;
+        else v[c] = 0.f;
+        f[n*3+c] = 0.f;
+    }
+    float a = accB[n];
+    float cn = accN[n]; accN[n] = 0.f;
+    if (!(fixd && fixd[n])) {
+        if (a > 0.f) {
+            float k = (mode == 1) ? 0.f : ((mode == 2) ? 1.f : powf(fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f), kex));
+            for (int c=0;c<3;c++) v[c] *= k;
+        }
+        if (np_ && cn > 0.f) { float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vn_ < 0.f) { v[0] -= vn_*n0; v[1] -= vn_*n1; v[2] -= vn_*n2; } }
+    }
+    for (int c=0;c<3;c++) vn[n*3+c] = v[c];
+}
 __global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
 '''
