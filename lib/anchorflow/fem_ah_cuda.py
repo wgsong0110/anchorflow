@@ -289,6 +289,23 @@ __global__ void ah_node_step_bf(const int* szp, const float* mn, float* f, float
     }
     for (int c=0;c<3;c++) vn[n*3+c] = v[c];
 }
+// ---- 절 AH.14 결과 불변 가속 (--ah_fast): _sparse 의 vcap 처리 (torch 연산 여럿) 를 커널 하나로 -- 같은 식
+//      Vg = float(1 / (6 |det G3|)) (G3 = ∇λ 의 1~3 행, double 삼중곱), VF = VT > 0 ? min(VT, θ Vg) : VT, VTs 도 VF 로.
+__global__ void ah_vcap(const int* szp, const float* gl, float th, float* VTs, float* VF) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= szp[1]) return;
+    float V = VTs[t];
+    float o = V;
+    if (V > 0.f) {
+        double q[9];
+        for (int k=0;k<9;k++) q[k] = (double)gl[t*12+3+k];
+        double c0 = q[4]*q[8] - q[5]*q[7], c1 = q[5]*q[6] - q[3]*q[8], c2 = q[3]*q[7] - q[4]*q[6];
+        double d = q[0]*c0 + q[1]*c1 + q[2]*c2;
+        float Vg = (float)(1.0 / (6.0 * fabs(d)));
+        o = fminf(V, th*Vg);
+    }
+    VF[t] = o; VTs[t] = o;
+}
 __global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
 '''

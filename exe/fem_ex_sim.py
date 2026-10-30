@@ -145,6 +145,8 @@ ap.add_argument("--vfl_bf", action="store_true",
                 help="절 AH.12 정의 변경 (--vfl_w gtk): 띠 고착 가중을 프레임 시작 높이로 프레임당 한 번 (서브스텝은 평면 아래 후보만 비관통·접촉 수)")
 ap.add_argument("--vfl_band", type=float, default=0.5,
                 help="절 AH.12 (--vfl_w gtk): 띠 폭 (dx_g 배수; 정답 sticky 가중이 0 이 되는 0.5 가 기본, 작으면 그 위 입자의 가중을 0 으로 자름)")
+ap.add_argument("--ah_fast", action="store_true",
+                help="절 AH.14 결과 불변 가속: --sp vcap 의 프레임 처리 (탄성 부피 상한) 를 커널 하나로, 희소 통계는 측정 뒤에 같은 식으로")
 ap.add_argument("--rbdiag", action="store_true", help="절 AH 진단 (측정 밖): 프레임마다 강체 지표 (질량 중심·속도, 운동 에너지, 질량 중심 각운동량, Kabsch 회전, 최저 높이) 우리 / 정답 -> fem.jsonl rb")
 ap.add_argument("--vp_h5", default="", help="절 AE: 입자 부피·질량을 정답 0 프레임 h5 (float32 위치) 로 정답 생성기와 같은 식으로 (.pt 위치는 float16 반올림이라 칸 판정이 갈림)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
@@ -498,6 +500,8 @@ AH_BAND = a.vfl_band * AH_DXG if AH_GTK else 0.0                                
 AH_KEX = (hs / float(cfg["substep_dt"])) if (VFL and a.vfl_rate) else 1.0           # (1 - a/m)^(h_s/h_ref)
 if a.lim_v == "mom" and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and SRL):
     raise SystemExit("--lim_v mom 은 확정 경로 (--cfuse --cfuse_mode 2 --lim_sr) 만")
+if a.ah_fast and (SPM != "vcap" or a.sp_occ > 0 or a.sp_chk):
+    raise SystemExit("--ah_fast 는 --sp vcap (sp_occ 0, 검산 없음) 만")
 if a.vfl_bf and not (AH_GTK and a.cfuse and a.cfuse_mode == 2 and not a.vfl_tacc and not a.vfl_agg):
     raise SystemExit("--vfl_bf 는 --vfl_w gtk + --cfuse_mode 2 경로만")
 if a.vfl_tacc and not (AH_GTK and a.cfuse and a.mass == "tet" and not a.vfl_agg):
@@ -1000,6 +1004,22 @@ class Opt:
         self.nidx.copy_(self.nidx[torch.argsort(key)])
 
     def _sparse(self):
+        if a.ah_fast and SPM == "vcap":                                             # 절 AH.14: 상한만 커널로 (통계는 _sparse_stats 로 측정 뒤)
+            self._vt0 = self.VTs[:self.T].sum()
+            AHC.launch("ah_vcap", self.T, (EX.P(self.sz), EX.P(self.gl), np.float32(a.sp_vcap), EX.P(self.VTs), EX.P(self.VF)), b=256)
+            self._spst = None
+            return False
+        return self._sparse_full()
+
+    def _sparse_stats(self):
+        """절 AH.14: --ah_fast 판의 희소 통계 (측정 밖) -- _sparse 와 같은 식 (pinv·점유는 프레임 끝까지 그대로)."""
+        T = self.T
+        occm = self.VTs[:T] > 0
+        cnt = torch.zeros(T, device=dev).index_add_(0, self.pinv[:Np], torch.ones(Np, device=dev))
+        sp = occm & (cnt <= a.sp_k)
+        self._spst = [occm.sum(), sp.sum(), (sp & (cnt <= 1)).sum()]
+
+    def _sparse_full(self):
         """절 AD: 프레임 시작 (P2G 뒤, 서브스텝 전) 희소 사면체 판정과 처리 버퍼 (그래프가 읽는 상주 버퍼에 제자리로). 호스트 동기화 없음."""
         T, M = self.T, self.M
         VT = self.VTs[:T]
@@ -2825,6 +2845,8 @@ for i in range(L):
             st.update(pl_rm=int(rmc_[0]), pl_newdmg=int(rmc_[1]), pl_dmg=int((PL_AL <= 0).sum()), pl_ys_mean=float(PL_YS.mean()),
                       pl_lj=[float(PL_LJ.min()), float(PL_LJ.mean()), float(PL_LJ.max())], pl_lj_pos=int((PL_LJ > 0).sum()))
         if SPM != "none":
+            if OPT._spst is None:
+                OPT._sparse_stats()
             sps = [int(q_) for q_ in torch.stack(OPT._spst).tolist()]
             st.update(sp_occ=sps[0], sp_n=sps[1], sp_n1=sps[2], **(dict(sp_grouped=sps[3], sp_groups=sps[4]) if len(sps) > 3 else {}))
             if SPM in ("stiff", "vcap", "vpmesh"):
