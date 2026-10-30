@@ -29,6 +29,7 @@ VAR = {
     "thn": AI.replace("--sp vcap --sp_vcap 0.5", "--sp none"),
     "slip": AI + " --vfl_mode slip",
     "cfm": CFM,
+    "cfaff": CFM + " --affine",
 }
 
 

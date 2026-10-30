@@ -361,7 +361,7 @@ if a.fpolar_off:
 CC = a.vfl_cull or a.sr_fast or a.tlist or a.fpolar                                  # 절 C 경로
 SPM = a.sp
 SPG = SPM in ("merge", "cube") and a.sp_a == "avg"                                                       # 절 AD: 묶음 힘 (커널 2 개)
-if SPM != "none" and not (a.opt and a.mode == "lag" and a.interp == "bary" and not a.rep and a.p2g == "bary" and not NINT and not CQ and not SB and a.fb <= 0 and not a.affine):
+if SPM != "none" and not (a.opt and a.mode == "lag" and a.interp == "bary" and not a.rep and a.p2g == "bary" and not NINT and not CQ and not SB and a.fb <= 0 and not (a.affine and SPM != "vcap")):
     raise SystemExit("--sp 는 --opt --mode lag --p2g bary (절 R 경로, 재평균·노드 적분·2 차 근사·장벽·아핀 없음) 만")
 if a.sp_chk and SPM == "none":
     raise SystemExit("--sp_chk 는 --sp 와 함께")
