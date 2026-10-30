@@ -208,6 +208,7 @@ ap.add_argument("--ai_stress", action="store_true", help="절 AI A2: 셀 기준 
 ap.add_argument("--ai_g2p", choices=["T", "bs", "dev", "devnavg", "devbs"], default="T",
                 help="절 AI B: 입자 F 갱신 -- T 기존 A_T F / bs (B2) 2 차 B-스플라인 기울기 / dev (B3) A F̄ + R_A (F − F̄) / devnavg (B3+B1) / devbs (B3+B2). B1 = --fupd navg --fupd_b 1")
 ap.add_argument("--ai_stat", type=int, default=0, help="절 AI 진단 (측정 밖): K 프레임마다 (와 프레임 1) 프레임 시작 셀 응력 분위 (입자 수 별), 유클리드 vs 분리 평균 F̄ 특이값, 정답 입자 응력 -> fem.jsonl ai")
+ap.add_argument("--ai_rigid", type=int, default=0, help="절 AI (측정 밖, 절 AH.8 fem_ah_rigid.py 와 같은 식): K 프레임마다 0 프레임 대비 Kabsch 맞춤 잔차 RMS/EXT 와 몸 좌표 높이 -- 우리 / 정답")
 ap.add_argument("--ai_stat_frames", default="", help="--ai_stat 에 더해 이 프레임들 (1 부터, 쉼표) 에도")
 a = ap.parse_args()
 
@@ -1153,6 +1154,8 @@ class Opt:
                                     EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                     np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon),
                                     np.int32(AH_GTK), np.float32(AH_BAND), np.float32(AH_PN), np.float32(AH_DXG), EX.P(self.accN if AH_ACCN else None), np.float32(a.vfl_npd)), b=128, grid=nbT + nbP)
+            if AI2:                                                                 # 절 AI A2 + 절 AH 바닥: 응력 차 몫은 따로 (같은 식, 사면체당 스레드)
+                AIC.launch("ai_off", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs), EX.P(self.aD0), EX.P(self.f)), b=128)
         elif AI2:                                                                   # 절 AI A2: c_fc + 응력 차 몫
             AIC.launch("ai_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                     EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
@@ -2556,6 +2559,27 @@ def ai_stats(i, Fs):
     return r
 
 
+_RX0 = d["x"][0].to(dev).float()
+_RQ0 = _RX0 - _RX0.mean(0)
+
+
+def ai_rigid(xo, xg):
+    """0 프레임 대비 질량 무가중 Kabsch 맞춤 잔차 RMS / EXT (%) 와 몸 좌표 높이 (회전 되돌린 z 범위) -- exe/fem_ah_rigid.py 와 같은 식. [우리, 정답]."""
+    out = []
+    for x in (xo.float(), xg.float()):
+        ok = torch.isfinite(x).all(-1)
+        q0, xx = _RQ0[ok], x[ok]
+        c = xx.mean(0)
+        U_, S_, Vh_ = torch.linalg.svd(q0.T @ (xx - c))
+        Dg = torch.eye(3, device=dev)
+        Dg[2, 2] = torch.sign(torch.det(Vh_.T @ U_.T))
+        Rm = Vh_.T @ Dg @ U_.T
+        res = ((xx - c) - q0 @ Rm.T).norm(dim=-1)
+        b = (xx - c) @ Rm
+        out.append([100 * float(res.pow(2).mean().sqrt()) / EXT, float(b[:, 2].max() - b[:, 2].min()), float(c[2])])
+    return out
+
+
 AI_SF = set(int(q_) for q_ in a.ai_stat_frames.split(",") if q_.strip())
 if a.near_diag:
     EX.set_diag([float(q) for q in a.near_diag.split(",")])
@@ -2665,6 +2689,8 @@ for i in range(L):
                 st.update(ai=ai_stats(i, F))
             except Exception as ex_:
                 st.update(ai=str(ex_)[:300])
+        if a.ai_rigid and ((i + 1) % a.ai_rigid == 0 or i == 0):                    # 절 AI: 잔류 변형·몸 높이 (fem_ah_rigid.py 식)
+            st.update(rigid=ai_rigid(x2, GT[i]))
         if FSP is not None and (i == 0 or (i + 1) % a.fspread == 0):
             try:
                 st.update(fspread=fspread(i, x2, F2))

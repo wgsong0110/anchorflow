@@ -61,4 +61,17 @@ if st == "wm":                                                                  
         for ak in ("a0", "a1"):
             for bk in BB:
                 out.append(line("wm", ak, bk, "v", ck))
+if st.startswith("rb:"):                                                             # rb:<판,...>:<회 수> -- 절 AH.8 잔류 변형·몸 높이 (--ai_rigid 8) x 바닥 (옛 / 새 = 절 AH --vfl_w gtk --vfl_rate --vfl_npd 0.005)
+    _, combos, nr = st.split(":")
+    for sc in scs:
+        for fk, fa in (("", ""), ("g", " --vfl_w gtk --vfl_rate --vfl_npd 0.005")):
+            for cmb in combos.split(","):
+                ab, vk = cmb.split("_")[:2]
+                ck = cmb.split("_")[2] if cmb.count("_") >= 2 else "free"
+                ak, bk = ab[:ab.index("b")], ab[ab.index("b"):]
+                for r in range(1, int(nr) + 1):
+                    ln = line(sc, ak, bk, vk, ck, r)
+                    root, tag, rest = ln.split(" ", 2)
+                    tag = tag.replace(f"_r{r}", f"_rb{fk}{r}")
+                    out.append(f"{root} {tag} {rest}{fa} --ai_rigid 8")
 print("\n".join(out))
