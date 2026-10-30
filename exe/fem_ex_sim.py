@@ -1897,7 +1897,7 @@ class Opt:
                 self.clst[:1].zero_()
                 if a.tlist:
                     CCU.launch("c_tet_list", self.Tcap, (EX.P(self.sz), EX.P(self.VTs), EX.P(self.tl), EX.P(self.cint[2:])), b=256)
-                if VFL and a.vfl_cull and a.vfl_agg:                                # 절 AH.7: 후보를 사면체 첫 노드 번호로 정렬 (c_s0 앞 -- s0c 는 정렬된 순서로)
+                if VFL and a.vfl_cull and a.vfl_agg and not os.environ.get("AH_NOSORT"):   # AH_NOSORT=1: 정렬 없이 워프 집계만 (비용 분해용)                                # 절 AH.7: 후보를 사면체 첫 노드 번호로 정렬 (c_s0 앞 -- s0c 는 정렬된 순서로)
                     self._agg_sort()
                 if VFL and a.vfl_cull:
                     CCU.launch("c_s0", Np, (EX.P(self.sz), EX.P(self.nidx), EX.P(self.Xf), *PLf, EX.P(self.s0c)), b=256)
