@@ -240,6 +240,8 @@ ap.add_argument("--ak_fuse", action="store_true", help="--ak_pq4 + 절 AH 바닥
 ap.add_argument("--ak_pq_plast", choices=["none", "inc", "frame"], default="none",
                 help="절 AG.8: --ak_pq 입자 적분점 판에 재질 return mapping (--plast) -- inc = 서브스텝 증분 RM (입자 상태), frame = 투영 없는 재질 응력 + 프레임 끝 입자 RM (lib/anchorflow/fem_akpl_cuda.py)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
+ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
+ap.add_argument("--akpl_k", type=int, default=6, help="절 AG.10 --akpl_dbg: 첫 터짐 뒤 몇 서브스텝을 더 기록하고 멈출지")
 ap.add_argument("--akpl_dbg", action="store_true", help="절 AG.9 진단 (--no_graph, 측정 아님): 서브스텝마다 노드 속도·입자 소성 상태의 첫 비유한을 찾아 그 입자·셀·노드 정보를 akpl_dbg.json 에 쓰고 멈춤")
 ap.add_argument("--ak_pq4", action="store_true", help="--ak_pq 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차로 반정밀도 저장)")
 ap.add_argument("--ak_pq3", action="store_true", help="--ak_pq 3 판 (구간 머리 레인만 A_T 계산 -> 셔플; 같은 식)")
@@ -1124,10 +1126,83 @@ class Opt:
         key = torch.where(self._ar < self.sz[2].long(), self.rows.view(-1, 4)[self.nidx, 0], torch.iinfo(torch.long).max)
         self.nidx.copy_(self.nidx[torch.argsort(key)])
 
+    def _akpl_event(self, j, bad):
+        """절 AG.10: 터진 노드 집합 B 의 덩어리 (사면체로 이어진 연결 성분), 붙은 사면체 성질 비율, 붙은 입자 상태."""
+        M, T = self.M, self.T
+        B = bad.nonzero().flatten()
+        tt = self.tets[:T]
+        occ = self.VTs[:T] > 0
+        cnt = torch.bincount(self.pinv[:Np], minlength=T)[:T]
+        G = self.gl[:T].view(T, 4, 3)
+        Up = getattr(self, "_Uprev", self.Uc[:M])
+        A = torch.eye(3, device=dev) + torch.einsum("tic,tib->tcb", Up[tt], G)
+        dA = torch.det(A.double())
+        inv_ = occ & ~(dA > 0)
+        one_ = occ & (cnt == 1)
+        def node_flag(tm):
+            fl = torch.zeros(M, dtype=torch.bool, device=dev)
+            fl[tt[tm].flatten()] = True
+            return fl
+        fi1, fi, f1 = node_flag(inv_ & one_), node_flag(inv_), node_flag(one_)
+        nb = int(B.numel())
+        ev = dict(substep=j, n=nb, frac_inv_one=float(fi1[B].float().mean()) if nb else None, frac_inv=float(fi[B].float().mean()) if nb else None,
+                  frac_one=float(f1[B].float().mean()) if nb else None, all_frac_one=float(f1[self.mn[:M] > 0].float().mean()),
+                  n_inv_tets=int(inv_.sum()), n_inv_one_tets=int((inv_ & one_).sum()))
+        mn = self.mn[:M]
+        med = float(mn[mn > 0].median())
+        ev["m_ratio"] = [round(float(mn[q]) / med, 3) for q in B[:30].tolist()]
+        # 연결 성분 (B 안의 노드가 같은 점유 사면체에 함께 있으면 인접)
+        if 0 < nb <= 2000:
+            inB = torch.isin(tt, B) & occ[:, None]
+            tts = tt[inB.sum(1) >= 2]
+            par = {int(q): int(q) for q in B.tolist()}
+            def fnd(x):
+                while par[x] != x:
+                    par[x] = par[par[x]]; x = par[x]
+                return x
+            Bs = set(par)
+            for row in tts.tolist():
+                r = [q for q in row if q in Bs]
+                for q in r[1:]:
+                    a_, b_ = fnd(r[0]), fnd(q)
+                    if a_ != b_:
+                        par[a_] = b_
+            comp = {}
+            for q in Bs:
+                comp.setdefault(fnd(q), []).append(q)
+            sz = sorted((len(v) for v in comp.values()), reverse=True)
+            ev["components"] = len(sz); ev["comp_sizes"] = sz[:10]
+            pos = (self.npos[:M] + Up)[B]
+            ev["spread_m"] = float((pos.max(0).values - pos.min(0).values).norm())
+        # 붙은 입자 (터진 노드를 지나는 사면체의 입자) 상태
+        if PQPL:
+            tch = (torch.isin(tt, B).any(1))
+            kk = tch[self.aktt.long()]
+            if bool(kk.any()):
+                X = A[self.aktt.long()[kk]] @ self.akF[kk].view(-1, 3, 3)
+                ev["att"] = dict(n=int(kk.sum()), cnt_le2=float((cnt[self.aktt.long()[kk]] <= 2).float().mean()), detX_min=float(torch.det(X.double()).min()),
+                                 lj=[float(self.pllj[kk].min()), float(self.pllj[kk].max())], ys=[float(self.plys[kk].min()), float(self.plys[kk].max())],
+                                 al_min=float(self.plal[kk].min()))
+                ev["all_lj"] = [float(self.pllj.min()), float(self.pllj.max())]
+        return ev
+
     def _akpl_check(self, j):
         """절 AG.9: 서브스텝 j 뒤 비유한 검사 -> 첫 발생 정보."""
         M, T = self.M, self.T
+        if getattr(self, "_akev", None) is not None:                               # 절 AG.10: 첫 터짐 뒤 몇 서브스텝 더 기록
+            vb = ~torch.isfinite(self.vn[:M]).all(-1)
+            if a.akpl_vthr > 0:
+                vb = vb | (self.vn[:M].norm(dim=-1) > a.akpl_vthr)
+            self._akev.append(self._akpl_event(j, vb))
+            if len(self._akev) > a.akpl_k:
+                d_ = json.load(open(os.path.join(a.out, "akpl_dbg.json")))
+                d_["events"] = self._akev
+                json.dump(d_, open(os.path.join(a.out, "akpl_dbg.json"), "w"), ensure_ascii=False, indent=1)
+                raise _Diverge(f"akpl_dbg 서브스텝 {j}")
+            return
         vn_bad = ~torch.isfinite(self.vn[:M]).all(-1)
+        if a.akpl_vthr > 0:
+            vn_bad = vn_bad | (self.vn[:M].norm(dim=-1) > a.akpl_vthr)
         U_bad = ~torch.isfinite(self.Uc[:M]).all(-1)
         fe_bad = ~torch.isfinite(self.plFe).all(-1) if PQPL else torch.zeros(Np, dtype=torch.bool, device=dev)
         st_bad = (~torch.isfinite(self.pllj) | ~torch.isfinite(self.plys)) if PQPL else fe_bad
@@ -1174,7 +1249,9 @@ class Opt:
         out["all_lj0_q"] = [float(torch.quantile(PL_LJ.float(), q_)) for q_ in (0.0, 0.5, 1.0)]
         json.dump(out, open(os.path.join(a.out, "akpl_dbg.json"), "w"), ensure_ascii=False, indent=1)
         print(f"[절 AG.9 첫 비유한] 프레임 {out['frame']} 서브스텝 {j}: 노드 v {out['n_vn_bad']} U {out['n_U_bad']} 입자 Fe {out['n_Fe_bad']} 상태 {out['n_state_bad']}", flush=True)
-        raise _Diverge(f"akpl_dbg 서브스텝 {j}")
+        self._akev = [self._akpl_event(j, vn_bad | U_bad)]
+        if a.akpl_k <= 0:
+            raise _Diverge(f"akpl_dbg 서브스텝 {j}")
 
     def _sparse(self):
         if a.ah_fast and SPM == "vcap":                                             # 절 AH.14: 상한만 커널로 (통계는 _sparse_stats 로 측정 뒤)
