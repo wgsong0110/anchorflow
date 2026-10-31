@@ -6,11 +6,12 @@ import sys
 
 L = os.path.expanduser("~/r2/result/anchorflow/lbours")
 V = sys.argv[1] if len(sys.argv) > 1 else "pqf3"
+TX = sys.argv[2] if len(sys.argv) > 2 else ""                                       # lego 태그 접미 (예 _np10: 바닥 인자만 바꾼 판; ficus 는 바닥이 없어 기본 판 그대로)
 SC = ["L000"] + ["%04d" % k for k in range(20)] + ["ficus"]
 
 
 def sj(sc, kind, r, sx=""):
-    root, fk = ("fem_ak_ficus", "") if sc == "ficus" else ("fem_ak_lego", "_z")
+    root, fk = ("fem_ak_ficus", "") if sc == "ficus" else ("fem_ak_lego", "_z" + TX)
     p = f"{L}/{root}/{sc}_{V}{fk}{sx}_{kind}{r}/summary.json"
     return json.load(open(p)) if os.path.exists(p) else None
 
@@ -23,12 +24,15 @@ def cell(s):
     return 100 * s["err_mean"], f"{100 * s['err_mean']:.2f}"
 
 
+print(f"판 {V}{TX}")
 print(f"| 장면 | 완주 (비측정 + 단독) | 오차 % (비측정 3 회 / 단독 3 회) | 단독 ms 평균 (회별) | fps | h_s 2 배 / 0.5 배 오차 | 기준 |")
 print("|---|---|---|---|---|---|---|")
 ok_n = 0
 done_all = 0
 for sc in SC:
     rr = [sj(sc, "r", r) for r in (1, 2, 3)]
+    if TX and sc != "ficus":                                                         # 비측정 3 회 = _np10_r1 + _np10b_r1·r2
+        rr = [sj(sc, "r", 1), sj(sc, "r", 1, "b"), sj(sc, "r", 2, "b")]
     tt = [sj(sc, "t", r) for r in (1, 2, 3)]
     es, txt, nd, nt = [], [], 0, 0
     for s in rr + tt:
