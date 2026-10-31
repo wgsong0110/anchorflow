@@ -68,6 +68,8 @@ VAR = {
     "cm06": "PQF3 --sp_vcap 0.6 --ak_capmu",
     "cms": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr",
     "cmsl": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ak_acclam",                  # 절 AK.19: 고착 질량 λ 몫                                # 절 AK.18: 기본 판 + 표준 FCR
+    "cmsB": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr @NOFAST",                         # 절 AG.18: 기본 판에서 묶음과 안 맞는 빠른 경로 (pq4·prep·fuse) 만 뺀 대조
+    "cmsG": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --akg_k 1 --akg_empty --akg_hg 1 @NOFAST",   # 절 AG.18: + 빈 사면체 포함 칸 묶음 (γ 1)
     "cm05m": "PQF3 --sp_vcap 0.5 --ak_capmu --ah_mlow 0.1",
     "pqfl9": "PQF3 --ak_flip 0.9",
     "pqfl1": "PQF3 --ak_flip 1.0",
@@ -81,6 +83,8 @@ VAR = {
 for _k in list(VAR):
     if VAR[_k].startswith("PQF3"):
         VAR[_k] = VAR["pqf3"] + VAR[_k][4:]
+    if "@NOFAST" in VAR[_k]:
+        VAR[_k] = VAR[_k].replace("@NOFAST", "").replace(" --ak_pq4", "").replace(" --ak_prep", "").replace(" --ak_fuse", "")
 
 
 def line(sc, vk, fk="", r=1, extra="", kind="r", tagx=""):
