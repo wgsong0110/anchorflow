@@ -60,6 +60,9 @@ VAR = {
     "pqf3a5": "PQF3 --affine --ak_cfac 0.5",
     "pqf3a25": "PQF3 --affine --ak_cfac 0.25",
     "pqf3m": "PQF3 --ah_mlow 0.1",
+    "pqfl5": "PQF3 --ak_flip 0.5",
+    "pqfl9": "PQF3 --ak_flip 0.9",
+    "pqfl1": "PQF3 --ak_flip 1.0",
     "pqs05": "PQF3 --fupd bar --fupd_b 0.05",                                       # 절 AK.10: 셀 아래 몫 이완 F <- A_T [F̄ + (1-β)(F - F̄)] (셀 평균은 그대로)
     "pqs10": "PQF3 --fupd bar --fupd_b 0.1",
     "pqs25": "PQF3 --fupd bar --fupd_b 0.25",

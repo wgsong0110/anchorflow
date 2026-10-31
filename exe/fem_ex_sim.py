@@ -235,6 +235,7 @@ ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 
 ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적분점 (정의 변경): 셀 안 max‖F_p − F̄_T‖_F ≤ ε 이거나 입자 1 개인 사면체는 한 점 적분 (F̄, V = Σ w) -- 음수 = 끔 (모두 입자 적분점)")
 ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
+ap.add_argument("--ak_flip", type=float, default=0.0, help="절 AK: 프레임 끝 입자 속도를 FLIP 섞기로 v = Σλ v_n + α (v_p − Σλ v_n0) (v_n0 = 이번 프레임 P2G 직후 노드 속도; α 0 = PIC, 정의 변경)")
 ap.add_argument("--ak_cfac", type=float, default=1.0, help="절 AK --affine: 다음 프레임 P2G 에 쓰는 입자 속도 기울기 C 의 배율 (1 = APIC, 0 = PIC; 정의 변경)")
 ap.add_argument("--ak_fuse", action="store_true", help="--ak_pq4 + 절 AH 바닥: 입자 적분점 힘과 바닥 접촉을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_pq_plast", choices=["none", "inc", "frame"], default="none",
@@ -2493,6 +2494,11 @@ class Opt:
                 EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
                                              EX.P(self.pinv), EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(self.CL if a.affine else None), np.int32(1 if RW4 else 0)), b=256)
             uc, xc_, Fc_ = self.Uc, None, None
+            if a.ak_flip > 0:                                                       # 절 AK: FLIP 섞기 (그래프 밖, torch) -- 위치·F 는 그대로
+                M_ = self.M
+                vn0 = torch.where(self.mn[:M_, None] > 1e-30, self.mv[:M_] / self.mn[:M_, None].clamp_min(1e-30), torch.zeros_like(self.mv[:M_]))
+                ip0 = (self.lamb[:Np, :, None] * vn0[self.rows[:Np]]).sum(1)
+                v2.add_(a.ak_flip * (va.reshape(Np, 3) - ip0))
             if PQPL and a.ak_pq_plast == "inc":                                    # 절 AG.8: 마지막 U 로 증분 RM 한 번 더 -> 입자 F·상태
                 AKPLC.launch("akpl_fin", Np, (np.int32(Np), EX.P(self.akord), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF),
                                               EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal), np.int32(MATN), EX.P(PRM), np.float32(self.hscur),
