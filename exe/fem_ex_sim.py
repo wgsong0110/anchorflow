@@ -223,6 +223,7 @@ ap.add_argument("--ai_stat_frames", default="", help="--ai_stat 에 더해 이 �
 ap.add_argument("--ak_en", type=int, default=0, help="절 AK 진단 (측정 밖): K 프레임마다 (와 프레임 1) 에너지 수지 -- 전달 (P2G/G2P) 운동 에너지 손실, 서브스텝 동안 노드 운동+셀 탄성+중력 에너지 변화, "
                 "입자 탄성 Σ V_p ψ(F_p) 우리 (쓰는 F / 그림자 호환 F_c = Π A_T, 위치 사상의 실제 야코비안) / 정답 (같은 V_p·ψ), 압축 분위 -> fem.jsonl ak")
 ap.add_argument("--ak_pq", action="store_true", help="절 AK: 셀 탄성을 입자 적분점으로 -- E_T = Σ_p w_p ψ(A_T F_p), w_p = V_p V_T'/V_T (셀 평균 F̄ 의 ψ 대신; 재평균 에너지 손실 없음, lib/anchorflow/fem_ak_cuda.py)")
+ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 수 고정 (0 = 수렴 판정 1e-7, 최대 10)")
 ap.add_argument("--ak_pq2", action="store_true", help="--ak_pq 2 단 판 (사면체 A_T 버퍼 -> 입자 스레드; 같은 식)")
 ap.add_argument("--ak_pqt", action="store_true", help="--ak_pq 를 사면체 스레드 판으로 (느림, 대조용; 기본은 입자 스레드 + 워프 구간 합)")
 ap.add_argument("--ak_t0", type=int, default=0, help="절 AK 진단: 정답 프레임 k 의 상태 (x, v, F) 에서 시작 (충격 뒤 회복만 따로 보기; 오차·몸 높이는 정답 k+1 프레임부터, 몸 기준은 원래 0 프레임)")
@@ -431,6 +432,8 @@ if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfus
                                   and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (AI2 and (PLAST or VISC or PBC)) and (VFL or not HASPL)):
     raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀 없음) 만; --ai_stress 는 FCR 탄성만 (소성 씬 제외)")
 AKPQ = bool(a.ak_pq)
+if AKPQ and a.ak_pit > 0:
+    AKC.set_pit(a.ak_pit)
 if AKPQ and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and a.tlist and not AI2 and not (PLAST or VISC or PBC) and not SPG
                  and not a.vfl_bf and not a.vfl_tacc and not a.vfl_agg and not a.lagdiag):
     raise SystemExit("--ak_pq 는 확정 경로 (--cfuse --cfuse_mode 2, 점유 목록) 만, A2 (--ai_stress)·소성·묶음·띠 변형 판·진단 루프 없이")

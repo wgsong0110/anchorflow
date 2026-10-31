@@ -12,9 +12,22 @@ from . import fem_rt_cuda as RTC
 _AK = r'''
 extern "C" {
 // 빠른 FCR P (입자 스레드 판): Q = 빠른 극분해 (절 C c_polar_fast), J = |det X| (sp_fcr_P 의 Π max(σ, 0.01) 와 σ ≥ 0.01 에서 같다)
+__device__ int AKPIT;                                                                // 극분해 반복 상한 (0 = c_polar_fast 그대로 -- 수렴 1e-7 까지 최대 10 회)
+__device__ __forceinline__ void ak_polar_n(const float* F, float* Q, int nit) {
+    for (int k=0;k<9;k++) Q[k]=F[k];
+    float C[9];
+    for (int it=0; it<nit; it++) {
+        float dt = det3(Q);
+        float ds = (fabsf(dt) > 1e-30f) ? dt : 1e-30f;
+        float gm = rcbrtf(fabsf(ds));
+        cof3(Q, C);
+        for (int k=0;k<9;k++) Q[k] = 0.5f*(gm*Q[k] + C[k]/(ds*gm));
+    }
+}
 __device__ __forceinline__ void ak_fcr_P(const float* X, float mu, float lam, float* P) {
     float Q[9], cf[9];
-    c_polar_fast(X, Q); cof3(X, cf);
+    if (AKPIT > 0) ak_polar_n(X, Q, AKPIT); else c_polar_fast(X, Q);
+    cof3(X, cf);
     float dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
     float sg = (dt>0)?1.f:((dt<0)?-1.f:0.f);
     float J = fabsf(dt);
@@ -114,6 +127,13 @@ __global__ void __launch_bounds__(128) ak_pq_force_p2(int N, const int* tt, cons
 }
 '''
 _MOD = [None]
+
+
+def set_pit(n):
+    """극분해 반복 상한 (장치 전역 AKPIT)."""
+    if _MOD[0] is None:
+        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+    cp.ndarray((1,), cp.int32, _MOD[0].get_global("AKPIT"))[:] = int(n)
 
 
 def launch(name, n, args, b=128, grid=None):

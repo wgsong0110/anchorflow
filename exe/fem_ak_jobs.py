@@ -44,6 +44,8 @@ VAR = {
     "a2b01": AI.replace("--fupd navg --fupd_b 1 ", "").replace("--sp_vcap 0.5", "--sp_vcap 1.0"),
     "a2b1n": AI.replace("--sp vcap --sp_vcap 0.5", "--sp none"),
     "pqnb02": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq --ak_pq2",
+    "pqnb0i2": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq --ak_pit 2",
+    "pqnb0i3": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq --ak_pit 3",
     "pqn": AI.replace("--ai_stress ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq",
 }
 
