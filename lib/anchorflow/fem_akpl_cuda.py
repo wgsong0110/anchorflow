@@ -19,6 +19,14 @@ __device__ __forceinline__ void akpl_inv(const float* X, float* Xi) {          /
     float c[9]; cof3(X, c); float d = det3(X); float id = (fabsf(d) > 1e-20f) ? 1.f/d : 0.f;
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) Xi[i*3+j] = c[j*3+i]*id;
 }
+// GF neo-Hookean Boarden τ (pl_nhb_tau 와 같은 식) + J 하한 jfl (> 0 이면 J = max(det F, jfl): 뒤집힌 셀에서 J^(-2/3) 가 비유한이 되는 것을 막는 정의 변경)
+__device__ __forceinline__ void akpl_nhb_tau(const float* Fe, float mu, float kap, float jfl, float* tau) {
+    float B[9]; mmt3(Fe, Fe, B);
+    float J = det3(Fe); if (jfl > 0.f) J = fmaxf(J, jfl);
+    float tb = (B[0] + B[4] + B[8])/3.f;
+    float sd = mu*powf(J, -2.f/3.f), sv = 0.5f*kap*(J*J - 1.f);
+    for (int k=0;k<9;k++) tau[k] = sd*(B[k] - ((k%4==0) ? tb : 0.f)) + ((k%4==0) ? sv : 0.f);
+}
 // 그래프 첫 커널: 정렬 순서 입자 상태 = 프레임 시작 (F_e = X_prev = F_p, 상태 = 입자 것)
 __global__ void akpl_init(int N, const int* ord, const float* akF, const float* ys, const float* lj, const float* al,
                           float* Fe, float* Xp, float* ysP, float* ljP, float* alP) {
@@ -30,7 +38,7 @@ __global__ void akpl_init(int N, const int* ord, const float* akF, const float* 
 }
 __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* ord, const int* tt, const long long* tets, const float* U, const float* gl,
                                const float* akF, const float* wp, int mat, const float* prm, float dt, const float* alPart,
-                               float* Fe, float* Xp, float* ysP, float* ljP, float* alP, float* f) {
+                               float* Fe, float* Xp, float* ysP, float* ljP, float* alP, float* f, float jfl) {
     int k = blockIdx.x*blockDim.x + threadIdx.x;
     int lane = threadIdx.x & 31;
     bool on = k < N;
@@ -59,11 +67,11 @@ __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* or
             float Fn[9]; if (ch) pl_usv(Uu, s, Vv, Fn); else for (int j=0;j<9;j++) Fn[j] = Ft[j];
             for (int j=0;j<9;j++) { Fe[(long long)k*9+j] = Fn[j]; Xp[(long long)k*9+j] = X[j]; }
             ysP[k] = ys; ljP[k] = lj; alP[k] = al;
-            if (mat == 7) pl_nhb_tau(Fn, prm[0], prm[2], tau);
+            if (mat == 7) akpl_nhb_tau(Fn, prm[0], prm[2], jfl, tau);
             else { float U2[9], s2[3], V2[9]; pl_svd(Fn, U2, s2, V2); float Pi[3]; pl_pi(mat, s2, prm, al, Pi); float P_[9]; pl_usv(U2, Pi, V2, P_); mmt3(P_, Fn, tau); }
         } else {                                                                // 투영 없는 재질 응력 (프레임 끝 입자 RM 만)
             float al = alPart ? alPart[ord[k]] : 1.f;
-            if (mat == 7) pl_nhb_tau(X, prm[0], prm[2], tau);
+            if (mat == 7) akpl_nhb_tau(X, prm[0], prm[2], jfl, tau);
             else { float U2[9], s2[3], V2[9]; pl_svd(X, U2, s2, V2); float Pi[3]; pl_pi(mat, s2, prm, al, Pi); float P_[9]; pl_usv(U2, Pi, V2, P_); mmt3(P_, X, tau); }
         }
         float XiT[9]; { float Xi[9]; akpl_inv(X, Xi); for (int i=0;i<3;i++) for (int j=0;j<3;j++) XiT[i*3+j] = Xi[j*3+i]; }

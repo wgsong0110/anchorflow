@@ -239,6 +239,7 @@ ap.add_argument("--ak_cfac", type=float, default=1.0, help="절 AK --affine: 다
 ap.add_argument("--ak_fuse", action="store_true", help="--ak_pq4 + 절 AH 바닥: 입자 적분점 힘과 바닥 접촉을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_pq_plast", choices=["none", "inc", "frame"], default="none",
                 help="절 AG.8: --ak_pq 입자 적분점 판에 재질 return mapping (--plast) -- inc = 서브스텝 증분 RM (입자 상태), frame = 투영 없는 재질 응력 + 프레임 끝 입자 RM (lib/anchorflow/fem_akpl_cuda.py)")
+ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_dbg", action="store_true", help="절 AG.9 진단 (--no_graph, 측정 아님): 서브스텝마다 노드 속도·입자 소성 상태의 첫 비유한을 찾아 그 입자·셀·노드 정보를 akpl_dbg.json 에 쓰고 멈춤")
 ap.add_argument("--ak_pq4", action="store_true", help="--ak_pq 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차로 반정밀도 저장)")
 ap.add_argument("--ak_pq3", action="store_true", help="--ak_pq 3 판 (구간 머리 레인만 A_T 계산 -> 셔플; 같은 식)")
@@ -1444,7 +1445,8 @@ class Opt:
             if PQPL:                                                                # 절 AG.8: 재질 식 입자 적분점
                 AKPLC.launch("akpl_force", Np, (np.int32(Np), np.int32(1 if a.ak_pq_plast == "inc" else 0), EX.P(self.akord), EX.P(self.aktt), EX.P(self.tets),
                                                 EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akw), np.int32(MATN), EX.P(PRM), np.float32(hs_),
-                                                EX.P(PL_AL), EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal), EX.P(self.f)), b=128)
+                                                EX.P(PL_AL), EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal), EX.P(self.f),
+                                                np.float32(a.akpl_jfl)), b=128)
             elif a.ak_eps >= 0:
                 AKC.launch("ak_pq_force_p5", Np, (EX.P(self.akN), EX.P(self.aktt2), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                                   EX.P(self.akdF2), EX.P(self.akw2), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)
