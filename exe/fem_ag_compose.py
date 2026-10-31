@@ -42,7 +42,7 @@ for sfx, vname in VAR:
     cells.append(f"{vname} {len(fin)}/3 완주{dv}|{sj}|{ours}")
     nfin.append(len(fin))
 gt = get("gt", f"gt_{SHAPE}.mp4")
-title = (f"{DESC} · A6000 단독 · 확정 설정 (절 AD) + 정답 솔버 재질 식 (절 AG) · 공통 h_s 6.25e-5 → N {N} · ms·fps 단독 3 회 평균, 오차 완주 회 평균 (발산 판은 끝난 프레임까지)")
-o = f"{OUT}/fem_ag_{sc}_cmp.mp4"
+title = (f"{DESC} · A6000 단독 · {os.environ.get('AG_TITLE', '확정 설정 (절 AD) + 정답 솔버 재질 식 (절 AG)')} · 공통 h_s 6.25e-5 → N {N} · ms·fps 단독 3 회 평균, 오차 완주 회 평균 (발산 판은 끝난 프레임까지)")
+o = f"{OUT}/fem_ag_{sc}{os.environ.get('AG_OUT_SFX', '')}_cmp.mp4"                        # 절 AG.8: AG_OUT_SFX 로 기존 영상 덮어쓰지 않기
 subprocess.run([sys.executable, f"{here}/fem_ex_compose.py", o, title, f"정답 ({'GF' if sc == 'wm' else 'PG'} MPM)|-|{gt}", *cells], check=True)
 print("[저장]", o)
