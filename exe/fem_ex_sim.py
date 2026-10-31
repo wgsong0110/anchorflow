@@ -239,6 +239,7 @@ ap.add_argument("--ak_cfac", type=float, default=1.0, help="절 AK --affine: 다
 ap.add_argument("--ak_fuse", action="store_true", help="--ak_pq4 + 절 AH 바닥: 입자 적분점 힘과 바닥 접촉을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_pq_plast", choices=["none", "inc", "frame"], default="none",
                 help="절 AG.8: --ak_pq 입자 적분점 판에 재질 return mapping (--plast) -- inc = 서브스텝 증분 RM (입자 상태), frame = 투영 없는 재질 응력 + 프레임 끝 입자 RM (lib/anchorflow/fem_akpl_cuda.py)")
+ap.add_argument("--akpl_dbg", action="store_true", help="절 AG.9 진단 (--no_graph, 측정 아님): 서브스텝마다 노드 속도·입자 소성 상태의 첫 비유한을 찾아 그 입자·셀·노드 정보를 akpl_dbg.json 에 쓰고 멈춤")
 ap.add_argument("--ak_pq4", action="store_true", help="--ak_pq 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차로 반정밀도 저장)")
 ap.add_argument("--ak_pq3", action="store_true", help="--ak_pq 3 판 (구간 머리 레인만 A_T 계산 -> 셔플; 같은 식)")
 ap.add_argument("--ak_pq2", action="store_true", help="--ak_pq 2 단 판 (사면체 A_T 버퍼 -> 입자 스레드; 같은 식)")
@@ -1122,6 +1123,42 @@ class Opt:
         key = torch.where(self._ar < self.sz[2].long(), self.rows.view(-1, 4)[self.nidx, 0], torch.iinfo(torch.long).max)
         self.nidx.copy_(self.nidx[torch.argsort(key)])
 
+    def _akpl_check(self, j):
+        """절 AG.9: 서브스텝 j 뒤 비유한 검사 -> 첫 발생 정보."""
+        M, T = self.M, self.T
+        vn_bad = ~torch.isfinite(self.vn[:M]).all(-1)
+        U_bad = ~torch.isfinite(self.Uc[:M]).all(-1)
+        fe_bad = ~torch.isfinite(self.plFe).all(-1) if PQPL else torch.zeros(Np, dtype=torch.bool, device=dev)
+        st_bad = (~torch.isfinite(self.pllj) | ~torch.isfinite(self.plys)) if PQPL else fe_bad
+        if not bool(vn_bad.any() | U_bad.any() | fe_bad.any() | st_bad.any()):
+            return
+        out = dict(frame=getattr(self, "_fi", None), substep=j, n_vn_bad=int(vn_bad.sum()), n_U_bad=int(U_bad.sum()), n_Fe_bad=int(fe_bad.sum()), n_state_bad=int(st_bad.sum()))
+        mn = self.mn[:M]
+        out["mn_med"] = float(mn[mn > 0].median())
+        cnt = torch.bincount(self.pinv[:Np], minlength=T)[:T]
+        ks = (fe_bad | st_bad).nonzero().flatten()[:20] if PQPL else torch.zeros(0, dtype=torch.long, device=dev)
+        rows = []
+        for k in ks.tolist():
+            t = int(self.aktt[k]); p = int(self.akord[k])
+            F0 = self.akF[k].view(3, 3).double()
+            nd = self.tets[t]
+            rows.append(dict(k=k, p=p, t=t, cell_cnt=int(cnt[t]), F0_sv=torch.linalg.svdvals(F0).tolist(), F0_det=float(torch.det(F0)),
+                             Fe=self.plFe[k].tolist(), Xp=self.plXp[k].tolist(), ys=float(self.plys[k]), lj=float(self.pllj[k]), al=float(self.plal[k]),
+                             ys0=float(PL_YS[p]), lj0=float(PL_LJ[p]), w=float(self.akw[k]), node_m=[float(self.mn[q]) for q in nd.tolist()],
+                             VT=float(self.VTs[t]), U=[self.Uc[q].tolist() for q in nd.tolist()]))
+        out["particles"] = rows
+        nb = (vn_bad | U_bad).nonzero().flatten()[:20]
+        out["nodes"] = [dict(n=int(q), m=float(mn[q]), v=self.vn[q].tolist(), U=self.Uc[q].tolist()) for q in nb.tolist()]
+        # 정상 입자 분포 비교 (초기 F 특이값·logJp)
+        sv0 = torch.linalg.svdvals(self.akF.view(-1, 3, 3).double())
+        out["all_F0_sv_min_q"] = [float(torch.quantile(sv0[:, 2].float(), q_)) for q_ in (0.0, 0.01, 0.5)]
+        out["all_F0_sv_max_q"] = [float(torch.quantile(sv0[:, 0].float(), q_)) for q_ in (0.5, 0.99, 1.0)]
+        out["all_F0_det_nonpos"] = int((torch.det(self.akF.view(-1, 3, 3).double()) <= 0).sum())
+        out["all_lj0_q"] = [float(torch.quantile(PL_LJ.float(), q_)) for q_ in (0.0, 0.5, 1.0)]
+        json.dump(out, open(os.path.join(a.out, "akpl_dbg.json"), "w"), ensure_ascii=False, indent=1)
+        print(f"[절 AG.9 첫 비유한] 프레임 {out['frame']} 서브스텝 {j}: 노드 v {out['n_vn_bad']} U {out['n_U_bad']} 입자 Fe {out['n_Fe_bad']} 상태 {out['n_state_bad']}", flush=True)
+        raise _Diverge(f"akpl_dbg 서브스텝 {j}")
+
     def _sparse(self):
         if a.ah_fast and SPM == "vcap":                                             # 절 AH.14: 상한만 커널로 (통계는 _sparse_stats 로 측정 뒤)
             self._vt0 = self.VTs[:self.T].sum()
@@ -1715,6 +1752,8 @@ class Opt:
                 for j in range(self.Ncur):
                     self._j = j
                     self._step_lag()
+                    if a.akpl_dbg:                                                  # 절 AG.9 진단 (--no_graph 만): 서브스텝마다 첫 비유한 찾기
+                        self._akpl_check(j)
                 return
             # 절 P: 블록 b (K 서브스텝) 마다 재평균. 입자 상태는 X/V/FF[b % 2] (프레임 시작 = [0])
             for b in range(NB):
@@ -2158,6 +2197,7 @@ class Opt:
             self.evs.append((k, e))
 
     def frame(self, i, x, v, F):
+        self._fi = i
         self.evs = []
         self._ev("start")
         self.grid(x, v, i * h)
