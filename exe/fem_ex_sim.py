@@ -248,6 +248,9 @@ ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
 ap.add_argument("--akpl_k", type=int, default=6, help="절 AG.10 --akpl_dbg: 첫 터짐 뒤 몇 서브스텝을 더 기록하고 멈출지")
+ap.add_argument("--akpl_cause", action="store_true",
+                help="절 AG.12 진단 (--no_graph, 측정 아님): 서브스텝마다 전 노드 속도 유한 여부·전 사면체 det A·입자 J 최소·커널 단계별 비유한 개수를 기록, 첫 비유한 뒤 --akpl_k 서브스텝까지 보고 인과 분석 -> akpl_cause.json")
+ap.add_argument("--akpl_invm", type=int, default=0, help="절 AG.12 개입 시험 (진단 전용): 1 = det X ≤ 0 인 입자 응력 몫 0")
 ap.add_argument("--akpl_dbg", action="store_true", help="절 AG.9 진단 (--no_graph, 측정 아님): 서브스텝마다 노드 속도·입자 소성 상태의 첫 비유한을 찾아 그 입자·셀·노드 정보를 akpl_dbg.json 에 쓰고 멈춤")
 ap.add_argument("--ak_pq4", action="store_true", help="--ak_pq 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차로 반정밀도 저장)")
 ap.add_argument("--ak_pq3", action="store_true", help="--ak_pq 3 판 (구간 머리 레인만 A_T 계산 -> 셔플; 같은 식)")
@@ -816,6 +819,8 @@ class Opt:
         self.fixd = None
         self._vhook = None                                                          # --divhist: 노드 걸음 직후 (클램프 앞) 속도 읽기
         self._fhook = None                                                          # --lagdump: 서브스텝 노드 걸음 직전 내부력 f 복사 (진단 루프만, 그래프 판은 None)
+        if a.akpl_cause:                                                            # 절 AG.12: 노드 걸음 직전 힘 (비유한 직전 값 기록용)
+            self._fhook = lambda: setattr(self, "_fsnap", self.f[:self.M].clone())
         self.ncon = torch.zeros(1, dtype=torch.int32, device=dev)                    # --floor vel: 프레임 동안 접촉 (입자·서브스텝) 수
         self.bst = z(4)                                                              # 절 S: [0] 질량 0 노드 때문에 뺀 사면체 부피, [1] 그 사면체 수; 절 T: [2] 정규화로 메시 안 노드에 옮긴 질량 Σ(1-Win)m_p, [3] 옮긴 부피 Σ(1-Cin)V_p
         self.ahdP = z(3)                                                             # 절 AH --lim_v mom: 서브스텝 클램프가 줄인 운동량
@@ -839,6 +844,7 @@ class Opt:
                 self.akrough = []
             self.akz = torch.zeros(1, dtype=torch.int32, device=dev)
             self.akoffs = None
+            self._nanc = torch.zeros(16, dtype=torch.int32, device=dev)
             if PQPL or AKG:                                                          # 절 AG.8: 정렬 순서 입자 소성 상태 (묶음 탄성 판도 같은 커널이라 버퍼만)
                 self.plFe, self.plXp = z(Np, 9), z(Np, 9)
                 self.plys, self.pllj, self.plal = z(Np), z(Np), z(Np)
@@ -1198,6 +1204,75 @@ class Opt:
             self._ar = torch.arange(Np, device=dev)
         key = torch.where(self._ar < self.sz[2].long(), self.rows.view(-1, 4)[self.nidx, 0], torch.iinfo(torch.long).max)
         self.nidx.copy_(self.nidx[torch.argsort(key)])
+
+    def _akpl_cause(self, j):
+        """절 AG.12: 노드 속도 비유한 vs 셀 뒤집힘 (det A_T ≤ 0, 입자 J = det(A F_p) ≤ 0) 서브스텝 기록과 인과 분석 (프레임 안 -- 메시는 프레임마다 다시 짠다)."""
+        M, T = self.M, self.T
+        BIG = 1 << 30
+        if j == 0:
+            self._cz = dict(nan_at=torch.full((M,), -1, dtype=torch.long, device=dev), inv_at=torch.full((T,), -1, dtype=torch.long, device=dev),
+                            pinv_at=torch.full((T,), -1, dtype=torch.long, device=dev), hist=[], first=None, nanc_tot=[0] * 16)
+        z = self._cz
+        nc = self._nanc.tolist(); self._nanc.zero_()
+        z["nanc_tot"] = [x + y for x, y in zip(z["nanc_tot"], nc)]
+        vb = ~torch.isfinite(self.vn[:M]).all(-1)
+        tt = self.tets[:T]
+        G = self.gl[:T].view(T, 4, 3)
+        occ = self.VTs[:T] > 0
+        A = torch.eye(3, device=dev) + torch.einsum("tic,tib->tcb", self.Uc[:M][tt], G)
+        dA = torch.det(A.double())
+        inv = occ & (dA <= 0)
+        ttp = self.aktt.long()
+        dX = torch.det((A[ttp] @ self.akF.view(-1, 3, 3)).double())
+        pmin = torch.full((T,), float("inf"), device=dev, dtype=torch.float64).scatter_reduce(0, ttp, dX, "amin", include_self=True)
+        pinv = occ & (pmin <= 0)
+        z["nan_at"][vb & (z["nan_at"] < 0)] = j
+        z["inv_at"][inv & (z["inv_at"] < 0)] = j
+        z["pinv_at"][pinv & (z["pinv_at"] < 0)] = j
+        z["hist"].append(dict(j=j, nan_nodes=int(vb.sum()), inv_tets=int(inv.sum()), pinv_tets=int(pinv.sum()), detA_min=float(dA[occ & torch.isfinite(dA)].min()) if bool((occ & torch.isfinite(dA)).any()) else None,
+                              pJ_min=float(dX[torch.isfinite(dX)].min()) if bool(torch.isfinite(dX).any()) else None, nanc=nc[:9]))
+        if len(z["hist"]) > 400:
+            z["hist"] = z["hist"][-400:]
+        if z["first"] is None and bool(vb.any()):
+            nb = vb.nonzero().flatten()
+            fs = getattr(self, "_fsnap", None)
+            incT = torch.isin(tt, nb).any(1) & occ
+            z["first"] = dict(frame=self._fi, j=j, n=int(nb.numel()),
+                              nodes=[dict(n=int(q), m_ratio=float(self.mn[q] / self.mn[:M][self.mn[:M] > 0].median()), v_prev=float(self._Vprev[q].norm()),
+                                          f=(float(fs[q].norm()) if fs is not None else None)) for q in nb[:20].tolist()],
+                              inc_tets=dict(n=int(incT.sum()), detA_prev=[float(q) for q in torch.det((torch.eye(3, device=dev) + torch.einsum("tic,tib->tcb", self._Uprev[tt[incT]], G[incT])).double()).tolist()[:20]],
+                                            cnt=[int(q) for q in torch.bincount(self.pinv[:Np], minlength=T)[:T][incT].tolist()[:20]]))
+        if z["first"] is not None and (j - z["first"]["j"] >= a.akpl_k or j == self.Ncur - 1):
+            self._akpl_cause_fin()
+
+    def _akpl_cause_fin(self):
+        M, T = self.M, self.T
+        z = self._cz
+        BIG = 1 << 30
+        tt = self.tets[:T]
+        na, ia, pa = z["nan_at"], z["inv_at"], z["pinv_at"]
+        first_bad = torch.where((ia >= 0) & (pa >= 0), torch.minimum(ia, pa), torch.where(ia >= 0, ia, pa))   # 셀 첫 뒤집힘 (det A 또는 입자 J)
+        fb = torch.where(first_bad >= 0, first_bad, torch.full_like(first_bad, BIG))
+        node_inv = torch.full((M,), BIG, dtype=torch.long, device=dev).scatter_reduce(0, tt.flatten(), fb.repeat_interleave(4), "amin", include_self=True)
+        nn = (na >= 0).nonzero().flatten()
+        d1 = (na[nn] - node_inv[nn])
+        has = node_inv[nn] < BIG
+        out = dict(first=z["first"], nanc_tot=dict(zip(["X", "Xprev역", "F_trial", "SVD", "RM", "tau", "X역", "힘", "detX≤0"], z["nanc_tot"][:9])),
+                   q1=dict(nan_nodes=int(nn.numel()), without_inverted_cell=int((~has).sum()),
+                           diff_hist={str(k): int(v) for k, v in zip(*torch.unique(d1[has], return_counts=True))} if bool(has.any()) else {}),
+                   hist=z["hist"][-(a.akpl_k + 6):])
+        nm = torch.where(na >= 0, na, torch.full_like(na, BIG))
+        tet_nan = nm[tt].min(1).values
+        it = (first_bad >= 0).nonzero().flatten()
+        d2 = tet_nan[it] - first_bad[it]
+        hn = tet_nan[it] < BIG
+        out["q2"] = dict(inverted_cells=int(it.numel()), never_nan=int((~hn).sum()), frac_never_nan=float((~hn).float().mean()) if it.numel() else None,
+                         diff_hist={str(k): int(v) for k, v in zip(*torch.unique(d2[hn], return_counts=True))} if bool(hn.any()) else {})
+        out["q2"]["diff_hist"] = dict(sorted(out["q2"]["diff_hist"].items(), key=lambda kv: int(kv[0]))[:40])
+        out["q1"]["diff_hist"] = dict(sorted(out["q1"]["diff_hist"].items(), key=lambda kv: int(kv[0]))[:40])
+        json.dump(out, open(os.path.join(a.out, "akpl_cause.json"), "w"), ensure_ascii=False, indent=1)
+        print(f"[절 AG.12 인과] {json.dumps({k: out[k] for k in ('q1', 'q2', 'nanc_tot')}, ensure_ascii=False)[:1500]}", flush=True)
+        raise _Diverge("akpl_cause 끝")
 
     def _akpl_event(self, j, bad):
         """절 AG.10: 터진 노드 집합 B 의 덩어리 (사면체로 이어진 연결 성분), 붙은 사면체 성질 비율, 붙은 입자 상태."""
@@ -1613,7 +1688,8 @@ class Opt:
                                                 EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akw), np.int32(MATN), EX.P(PRM), np.float32(hs_),
                                                 EX.P(PL_AL if PLAST else None), EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal), EX.P(self.f),
                                                 np.float32(a.akpl_jfl), EX.P(self.akg_gpb if AKG else None), EX.P(self.akg_AG if AKG else None), EX.P(self.akg_VG if AKG else None),
-                                                EX.P(self.akg_GmG if AKG else None), np.float32(mu), np.float32(lam)), b=128)
+                                                EX.P(self.akg_GmG if AKG else None), np.float32(mu), np.float32(lam), np.int32(a.akpl_invm),
+                                                EX.P(self._nanc if a.akpl_cause else None)), b=128)
                 if AKG:
                     AKPLC.launch("akg_dist", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs),
                                                          EX.P(self.akg_AG), EX.P(self.akg_VG), EX.P(self.akg_GmG), np.float32(a.akg_hg * mu), EX.P(self.f)), b=128)
@@ -1939,10 +2015,13 @@ class Opt:
             if not REP:
                 for j in range(self.Ncur):
                     self._j = j
-                    if a.akpl_dbg:
+                    if a.akpl_dbg or a.akpl_cause:
                         self._Uprev = self.Uc[:self.M].clone()
+                        self._Vprev = self.vn[:self.M].clone()
                     self._step_lag()
-                    if a.akpl_dbg:                                                  # 절 AG.9 진단 (--no_graph 만): 서브스텝마다 첫 비유한 찾기
+                    if a.akpl_cause:                                                # 절 AG.12 인과 진단
+                        self._akpl_cause(j)
+                    elif a.akpl_dbg:                                                # 절 AG.9 진단 (--no_graph 만): 서브스텝마다 첫 비유한 찾기
                         self._akpl_check(j)
                 return
             # 절 P: 블록 b (K 서브스텝) 마다 재평균. 입자 상태는 X/V/FF[b % 2] (프레임 시작 = [0])
