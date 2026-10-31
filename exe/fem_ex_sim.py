@@ -2734,10 +2734,16 @@ def _ak_psi(Fm):
 AK_FC = None                                                                         # 절 AK 그림자 호환 F_c (프레임마다 F_c <- A_T F_c, 위치 사상의 실제 야코비안)
 
 
-def ak_energy(i, x, v, F, x2, v2, F2):
+def ak_energy(i, x, v, F, x2, v2, F2, full=True):
     """절 AK 에너지 수지 (측정 밖, 프레임 i: 시작 x,v,F -> 끝 x2,v2,F2, OPT 버퍼는 이번 프레임 것). 단위 J. 셀 탄성은 풀이가 쓰는 부피 (상한 뒤 V_T') 와 F̄ (A1 이면 분리 평균) 로,
     입자 탄성은 정답과 같은 V_p·ψ 로 (우리 쓰는 F / 그림자 호환 F_c / 정답 F)."""
     global AK_FC
+    if not full:                                                                     # 기록 안 하는 프레임: 그림자 호환 F_c 만 갱신 (특이값 계산 없음)
+        Ap = torch.eye(3, device=dev, dtype=torch.float64) + torch.einsum("pia,pib->pab", OPT.Uc[OPT.rows[:Np].reshape(-1)].view(Np, 4, 3).double(),
+                                                                         OPT.gl[OPT.pinv[:Np]].view(Np, 4, 3).double())
+        AK_FC = (F.reshape(Np, 3, 3).double().clone() if AK_FC is None else AK_FC)
+        AK_FC = Ap @ AK_FC
+        return None
     md = m.double()
     gg = torch.tensor(gv, device=dev, dtype=torch.float64)
     M_, T_ = OPT.M, OPT.T
@@ -2908,8 +2914,9 @@ for i in range(L):
             st.update(rigid=ai_rigid(x2, GT[i]))
         if a.ak_en:                                                                  # 절 AK 에너지 수지 (그림자 F_c 는 매 프레임 갱신, 기록은 K 프레임마다)
             try:
-                _ak = ak_energy(i, x, v, F, x2, v2, F2)
-                if i == 0 or (i + 1) % a.ak_en == 0:
+                _rec = i == 0 or (i + 1) % a.ak_en == 0
+                _ak = ak_energy(i, x, v, F, x2, v2, F2, full=_rec)
+                if _rec:
                     st.update(ak=_ak)
             except Exception as ex_:
                 st.update(ak=str(ex_)[:300])

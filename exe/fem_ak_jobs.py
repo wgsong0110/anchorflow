@@ -18,7 +18,7 @@ AI = "--ai_p2g rs --ai_stress --fupd navg --fupd_b 1 --sp vcap --sp_vcap 0.5 --l
 CFM = "--sp vcap --sp_vcap 0.5 --lim_sr 5"
 GFL = "--vfl_w gtk --vfl_rate --vfl_npd 0.005"
 GFL0 = GFL + " --vfl_band 0"                                                       # 절 AH.12-13 띠 0 바닥 (최종 바닥 후보)
-DIAG = "--no_dump --ak_en 1 --ai_rigid 8"
+DIAG = "--no_dump --ak_en " + os.environ.get("AK_EN", "1") + " --ai_rigid 8"
 VAR = {
     "base": AI,
     "aff": AI + " --affine",
