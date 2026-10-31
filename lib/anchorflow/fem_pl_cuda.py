@@ -36,6 +36,11 @@ MAT = {"jelly": 0, "metal": 1, "sand": 2, "foam": 3, "plasticine": 5, "watermelo
 
 _PL = r'''
 extern "C" {
+#ifndef AF_VN_DEF
+#define AF_VN_DEF
+__device__ const float* AFVN;                                                       // 절 AG.18 --vfl_pred: 노드 속도 (null = 끔) -- 비관통 판정을 서브스텝 끝 예측 입자 위치 s + h_s (Σλ v)·n 로
+__device__ float AFHS;
+#endif
 // ---------------- 3x3 SVD (C = XᵀX 순환 Jacobi) ----------------
 __device__ __forceinline__ void pl_svd(const float* X, float* U, float* s, float* V) {
     float A[9];
@@ -343,12 +348,13 @@ __global__ void ag_fc(int nbT, const int* szp, const int* tl, const int* tlc, co
     }
     int q = (blockIdx.x - nbT)*blockDim.x + threadIdx.x;
     if (q >= szp[2]) return;
-    if (s0c[q] > __uint_as_float(*dn) + 1e-5f) return;
+    if (!AFVN && s0c[q] > __uint_as_float(*dn) + 1e-5f) return;
     long long p = nidx[q];
     float u[3] = {0,0,0};
     long long nd[4]; float lm[4];
     for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; for (int a=0;a<3;a++) u[a] += lm[i]*U[nd[i]*3+a]; }
     float sd = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
+    if (AFVN) { float vp = 0.f; for (int i=0;i<4;i++) vp += lm[i]*(AFVN[nd[i]*3]*n0 + AFVN[nd[i]*3+1]*n1 + AFVN[nd[i]*3+2]*n2); sd += AFHS*vp; }   // 절 AG.18 --vfl_pred
     if (!(sd < 0.f)) return;
     float mp = m[p];
     for (int i=0;i<4;i++) atomicAdd(&acc[nd[i]], (tetmass ? 0.25f : lm[i])*mp);
@@ -420,6 +426,13 @@ def mod():
         import cupy as cp
         _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + _PL).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     return _MOD[0]
+
+
+def set_vpred(vn, hs):
+    """절 AG.18 --vfl_pred: 비관통 판정 예측용 노드 속도 주소·h_s (vn None = 끔)."""
+    import cupy as cp
+    cp.ndarray((1,), cp.uint64, mod().get_global("AFVN"))[:] = 0 if vn is None else vn.data_ptr()
+    cp.ndarray((1,), cp.float32, mod().get_global("AFHS"))[:] = float(hs)
 
 
 def launch(name, n, args, b=128, grid=None):

@@ -16,10 +16,10 @@ one() { local S=$1 N=$2 SF=$3 X=$4 G=$5; ag_scene $S
 for R in ${AHAG_RUNS:?}; do
   IFS=: read -r S N SF X <<< "$R"; X=${X//,/ }
   G=${GS[$((i % ${#GS[@]}))]}
-  one $S $N $SF "$X" $G > /tmp/dkta/ahag_$i.log 2>&1 &
+  one $S $N $SF "$X" $G > /tmp/dkta/ahag_${AHAG_ID:-x}_$i.log 2>&1 &
   i=$((i + 1)); [ $((i % ${#GS[@]})) -eq 0 ] && wait
 done
 wait
-cat /tmp/dkta/ahag_*.log; rm -f /tmp/dkta/ahag_*.log
+cat /tmp/dkta/ahag_${AHAG_ID:-x}_*.log; rm -f /tmp/dkta/ahag_${AHAG_ID:-x}_*.log
 echo "AHAG_DONE ${AHAG_ID:-} $(date +%T)"; mkdir -p /tmp/dkta/lbours/fem_ag_sum; touch /tmp/dkta/lbours/fem_ag_sum/AHAG_${AHAG_ID:-x}_DONE
 rclone copy /tmp/dkta/lbours/fem_ag_sum/AHAG_${AHAG_ID:-x}_DONE r2:storage/result/anchorflow/lbours/fem_ag_sum -q

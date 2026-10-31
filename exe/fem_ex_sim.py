@@ -45,6 +45,7 @@ ap.add_argument("--floor", choices=["particle", "none", "vel"], default="particl
 ap.add_argument("--vfl_mode", choices=["frac", "full", "slip"], default="frac",
                 help="--floor vel 고착 분배: frac = 노드 속도 x (1 - 접촉 입자 질량 몫) (접촉 입자 운동량만 0), full = 접촉 입자가 걸린 노드 속도 0 (정답 노드 sticky 와 같은 꼴), "
                      "slip (절 AG) = 접선 그대로 + 안쪽 법선 성분만 제거 (정답 bounding_box 의 한쪽 방향 속도 0)")
+ap.add_argument("--vfl_pred", action="store_true", help="절 AG.18 (정의 변경): 바닥 비관통·고착 입자 판정을 서브스텝 시작 위치 대신 서브스텝 끝 예측 위치 s + h_s (Σλ_i v_i)·n 로 (입자 판정 그대로, 노드 속도를 G2P 와 같은 가중으로 보간; ah_fc·ag_fc 경로만)")
 ap.add_argument("--vfl_np", type=int, default=1, help="--floor vel: 1 = 고착 뒤 접촉 노드 속도의 안쪽 법선 성분 제거 (비관통), 0 = 끔, "
                      "2 (절 AG.18, 정의 변경) = 안쪽 법선 성분을 노드가 진 관통 입자 질량 몫 a/m 만큼만 제거 (관통 입자의 안쪽 운동량을 P2G 와 같은 가중으로 지움; 노드 걸음 커널 ah_node_step 판만)")
 ap.add_argument("--vfl_margin", type=float, default=0.2, help="--floor vel: 바닥 후보 = 프레임 관성 예측 끝 높이 ≤ 이 값 (m) -- 기존 분할 s/ε ≤ 20, ε 0.01 과 같은 0.2")
@@ -642,6 +643,8 @@ else:
     PLf = [np.float32(0)] * 6
 AHF = (VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0)) or a.ah_mlow > 0 or a.ah_mcfl > 0   # 절 AH.18: 질량 하한은 바닥 없는 씬도 같은 노드 걸음 커널로                                     # 절 AH 바닥 정의 (fem_ah_cuda)
 AH_GTK = 1 if (VFL and a.vfl_w == "gtk") else 0
+if a.vfl_pred:
+    assert VFL and a.cfuse and a.cfuse_mode == 2 and not a.vfl_bf and not a.vfl_tacc and not a.vfl_agg and (AHF or PLAST or VISC), "--vfl_pred 는 ah_fc·ag_fc 경로에서만"
 if VFL and a.vfl_np == 2:
     assert AHF and a.cfuse and a.cfuse_mode == 2 and not a.ak_fstep and not a.vfl_bf and not a.vfl_tacc and not a.vfl_agg and a.vfl_w == "part", "--vfl_np 2 는 ah_node_step 경로 (--cfuse --cfuse_mode 2, 입자 가중, --ah_mcfl 등) 에서만"
 AH_ACCN = AH_GTK or a.vfl_npd > 0                                                   # 비관통 판정을 따로 (실제 접촉 / 깊이)
@@ -2591,6 +2594,10 @@ class Opt:
         Nf = int(min(max(int(math.ceil(Nf / q)) * q, a.ad_lo), a.ad_hi))
         self.Ncur = Nf
         self.hscur = h / Nf
+        if a.vfl_pred:                                                              # 절 AG.18: 예측 판정용 노드 속도 주소·h_s (상주 버퍼라 그래프에서도 그대로)
+            AHC.set_vpred(self.vn, self.hscur)
+            if PLAST or VISC:
+                PLC.set_vpred(self.vn, self.hscur)
         self.dampcur = (VD_S ** (self.hscur / float(cfg["substep_dt"]))) if (a.pg_vdamp and VD_S < 1.0) else 1.0
 
     def _ev(self, k):

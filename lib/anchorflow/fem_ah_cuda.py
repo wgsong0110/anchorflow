@@ -22,6 +22,11 @@ from . import fem_c_cuda as CCU
 
 _AH = r'''
 extern "C" {
+#ifndef AF_VN_DEF
+#define AF_VN_DEF
+__device__ const float* AFVN;                                                       // 절 AG.18 --vfl_pred: 노드 속도 (null = 끔) -- 비관통 판정을 서브스텝 끝 예측 입자 위치 s + h_s (Σλ v)·n 로
+__device__ float AFHS;
+#endif
 __device__ __forceinline__ float ah_wstk(float s, float pn, float dxg) {
     float u = (s + pn) / dxg;
     float bf = floorf(u - 0.5f);
@@ -45,12 +50,13 @@ __global__ void ah_fc(int nbT, const int* szp, const int* tl, const int* tlc, co
     }
     int q = (blockIdx.x - nbT)*blockDim.x + threadIdx.x;
     if (q >= szp[2]) return;
-    if (s0c[q] > __uint_as_float(*dn) + 1e-5f + band) return;
+    if (!AFVN && s0c[q] > __uint_as_float(*dn) + 1e-5f + band) return;          // --vfl_pred 판은 후보 생략 없이 (예측 이동만큼 앞서 닿을 수 있다)
     long long p = nidx[q];
     float u[3] = {0,0,0};
     long long nd[4]; float lm[4];
     for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; for (int a=0;a<3;a++) u[a] += lm[i]*U[nd[i]*3+a]; }
     float s = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
+    if (AFVN) { float vp = 0.f; for (int i=0;i<4;i++) vp += lm[i]*(AFVN[nd[i]*3]*n0 + AFVN[nd[i]*3+1]*n1 + AFVN[nd[i]*3+2]*n2); s += AFHS*vp; }
     if (ncon) {                                                                 // 절 AH.11: 접촉 수 (통계) 워프 집계 -- 전역 카운터 하나에 서브스텝마다 수천 원자 합이 몰리던 것 (같은 정수)
         unsigned am = __activemask();
         unsigned bb = __ballot_sync(am, s < 0.f);
@@ -386,6 +392,13 @@ def mod():
         import cupy as cp
         _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + _AH).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     return _MOD[0]
+
+
+def set_vpred(vn, hs):
+    """절 AG.18 --vfl_pred: 비관통 판정 예측용 노드 속도 주소·h_s (vn None = 끔)."""
+    import cupy as cp
+    cp.ndarray((1,), cp.uint64, mod().get_global("AFVN"))[:] = 0 if vn is None else vn.data_ptr()
+    cp.ndarray((1,), cp.float32, mod().get_global("AFHS"))[:] = float(hs)
 
 
 def launch(name, n, args, b=128, grid=None):
