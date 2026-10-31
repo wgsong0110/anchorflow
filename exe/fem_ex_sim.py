@@ -230,6 +230,7 @@ ap.add_argument("--ak_pq", action="store_true", help="절 AK: 셀 탄성을 입�
 ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 수 고정 (0 = 수렴 판정 1e-7, 최대 10)")
 ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적분점 (정의 변경): 셀 안 max‖F_p − F̄_T‖_F ≤ ε 이거나 입자 1 개인 사면체는 한 점 적분 (F̄, V = Σ w) -- 음수 = 끔 (모두 입자 적분점)")
 ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
+ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
 ap.add_argument("--ak_pq4", action="store_true", help="--ak_pq 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차로 반정밀도 저장)")
 ap.add_argument("--ak_pq3", action="store_true", help="--ak_pq 3 판 (구간 머리 레인만 A_T 계산 -> 셔플; 같은 식)")
 ap.add_argument("--ak_pq2", action="store_true", help="--ak_pq 2 단 판 (사면체 A_T 버퍼 -> 입자 스레드; 같은 식)")
@@ -485,6 +486,8 @@ if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfus
                                   and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (AI2 and (PLAST or VISC or PBC)) and (VFL or not HASPL)):
     raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀 없음) 만; --ai_stress 는 FCR 탄성만 (소성 씬 제외)")
 AKPQ = bool(a.ak_pq)
+if a.ak_prep and not (AKPQ and a.ak_pq4 and a.ak_eps < 0):
+    raise SystemExit("--ak_prep 는 --ak_pq --ak_pq4 (혼합 없음) 만")
 if AKPQ and a.ak_pit > 0:
     AKC.set_pit(a.ak_pit)
 if AKPQ and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and a.tlist and not AI2 and not (PLAST or VISC or PBC) and not SPG
@@ -784,6 +787,7 @@ class Opt:
             self.akord = torch.zeros(Np, dtype=torch.int32, device=dev)
             self.aktt = torch.zeros(Np, dtype=torch.int32, device=dev)
             self.akdF = torch.zeros(Np, 9, device=dev, dtype=torch.float16)
+            self.akcnt = self.akcur = self.akvs = None
             if a.ak_eps >= 0:                                                         # 혼합: 거친 사면체 입자 목록 (정렬 순서), 개수, 한 점 사면체 목록
                 self.akN = torch.zeros(1, dtype=torch.int32, device=dev)
                 self.aktt2 = torch.zeros(Np, dtype=torch.int32, device=dev)
@@ -2103,7 +2107,19 @@ class Opt:
                         self.accB.zero_()
                         AHC.launch("ah_band0", Np, (EX.P(self.sz), EX.P(self.s0c), EX.P(self.nidx), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                                     np.int32(1 if a.mass == "tet" else 0), np.float32(AH_BAND), np.float32(AH_PN), np.float32(AH_DXG), EX.P(self.accB)), b=256)
-        if AKPQ:                                                                    # 절 AK: 입자 -> 사면체 정렬 목록, 가중 w_p = V_p V_T'/V_T, 프레임 시작 F (그래프 밖, 동기화 없음)
+        if AKPQ and a.ak_prep:                                                      # 절 AK: 계수 정렬 준비 (4 판)
+            T_ = self.T
+            if self.akcnt is None or self.akcnt.numel() < self.Tcap:
+                self.akcnt = torch.zeros(self.Tcap, dtype=torch.int32, device=dev)
+                self.akcur = torch.zeros(self.Tcap, dtype=torch.int32, device=dev)
+                self.akvs = torch.zeros(self.Tcap, device=dev)
+            self.akcnt.zero_(); self.akcur.zero_(); self.akvs.zero_()
+            AKC.launch("ak_prep_cnt", Np, (np.int32(Np), EX.P(self.pinv), EX.P(self.volA), EX.P(self.akcnt), EX.P(self.akvs)), b=256)
+            self.akoffs[1:T_ + 1].copy_(torch.cumsum(self.akcnt[:T_], 0, dtype=torch.int32))
+            self.akoffs[0] = 0
+            AKC.launch("ak_prep_scatter", Np, (np.int32(Np), EX.P(self.pinv), EX.P(self.volA), EX.P(self.VTs), EX.P(self.akvs), EX.P(self.akoffs), EX.P(self.akcur),
+                                               EX.P(Fa), EX.P(self.FT), EX.P(self.aktt), EX.P(self.akw), EX.P(self.akdF)), b=256)
+        elif AKPQ:                                                                  # 절 AK: 입자 -> 사면체 정렬 목록, 가중 w_p = V_p V_T'/V_T, 프레임 시작 F (그래프 밖, 동기화 없음)
             T_ = self.T
             pin = self.pinv[:Np]
             o_ = torch.argsort(pin)

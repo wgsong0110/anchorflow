@@ -275,6 +275,24 @@ __global__ void ak_node_step_mv(const int* szp, const float* mn, float* f, float
         if ((threadIdx.x & 31) == 0 && b) atomicMax(dn, b);
     }
 }
+// 프레임 시작 준비 (4 판용, 계수 정렬): (1) 사면체별 입자 수·입자 부피 합, (2) 입자를 사면체 구간 자리에 흩어 쓴다 (구간 안 순서는 원자 합 순서 -- 합 순서만 다름)
+__global__ void ak_prep_cnt(int N, const long long* pinv, const float* vol, int* cnt, float* vs) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    long long t = pinv[p];
+    atomicAdd(&cnt[t], 1); atomicAdd(&vs[t], vol[p]);
+}
+__global__ void ak_prep_scatter(int N, const long long* pinv, const float* vol, const float* VT, const float* vs, const int* offs, int* cur,
+                                const float* Fp, const float* FT, int* tt, float* w, __half* dF) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    long long t = pinv[p];
+    int k = offs[t] + atomicAdd(&cur[t], 1);
+    tt[k] = (int)t;
+    float v = vs[t];
+    w[k] = vol[p] * VT[t] / (v > 1e-30f ? v : 1e-30f);
+    for (int j=0;j<9;j++) dF[(long long)k*9+j] = __float2half(Fp[(long long)p*9+j] - FT[t*9+j]);
+}
 }
 '''
 _MOD = [None]

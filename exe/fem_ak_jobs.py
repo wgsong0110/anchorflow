@@ -53,6 +53,8 @@ VAR = {
     "pqe5": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq --ak_eps 5e-2",
     "pqf": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_pq4 --ak_eps 1e-2 --ak_fstep --ah_fast",                 # 같은 판 (θ 1e9 = 상한 없음) + 빠른 경로들
     "pqf0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_pq4 --ak_fstep --ah_fast",
+    "pqf1": AI.replace("--ai_p2g rs --ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_pq4 --ak_fstep --ah_fast",                                                                   # A1 끔 (입자 적분점에서는 F̄ 가 δ 기준뿐)
+    "pqf2": AI.replace("--ai_p2g rs --ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_pq4 --ak_fstep --ah_fast --ak_prep",
     "pqn": AI.replace("--ai_stress ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq",
 }
 
