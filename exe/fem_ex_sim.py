@@ -3722,7 +3722,8 @@ print(f"[롤아웃] {a.tag} 서브스텝 {a.N} {a.mode}{' 최적화' if a.opt el
       f"최저 입자 {summ['s_min']} 아래 최대 {summ['n_below_max']}", flush=True)
 if PRED is not None and (div_at is None or (a.dump_div and done > 0)):
     if div_at is not None:                                                          # 절 AG --dump_div: 끝난 프레임까지만
-        PRED, GT, FD, VD = PRED[:done], GT[:done], FD[:done], VD[:done]
+        PRED, GT = PRED[:done], GT[:done]
+        FD, VD = (FD[:done] if FD is not None else None), (VD[:done] if VD is not None else None)   # --no_dump --dump_pred: F·v 덤프 없음
     if a.dump_pred:
         torch.save({"pred": PRED.cpu(), "EXT": EXT}, os.path.join(a.out, "pred.pt"))
     if not a.no_dump:
