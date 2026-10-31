@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<title>__TITLE__</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#f4f4f4;font-family:sans-serif}
+#panel{position:absolute;top:10px;left:10px;background:rgba(255,255,255,.93);padding:10px 12px;border-radius:6px;font-size:13px;width:350px;box-shadow:0 1px 4px rgba(0,0,0,.25);line-height:1.5;max-height:95vh;overflow:auto}
+#panel h3{margin:0 0 4px;font-size:14px}
+#panel label{display:block;margin-top:5px}
+#panel input[type=range]{width:100%}
+.sw button{margin:2px 4px 2px 0;padding:4px 8px}
+.sw button.on{background:#d00;color:#fff;border:1px solid #900}
+#tip{position:absolute;pointer-events:none;background:rgba(20,20,20,.88);color:#fff;padding:5px 8px;border-radius:4px;font-size:12px;display:none;white-space:nowrap}
+#help{position:absolute;bottom:10px;left:10px;font-size:12px;color:#444;background:rgba(255,255,255,.8);padding:4px 8px;border-radius:4px}
+</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+</head><body>
+<div id="panel">
+<h3>__TITLE__</h3>
+<div class="sw" id="sw"></div>
+<div id="stat"></div>
+<div id="far" style="color:#a40"></div>
+<label>본체 불투명도 <span id="vo"></span><input id="op" type="range" min="0" max="1" step="0.01" value="0.15"></label>
+<label>본체 점 크기 (mm) <span id="vbs"></span><input id="bs" type="range" min="0.5" max="20" step="0.25" value="5"></label>
+<label><input id="bshow" type="checkbox" checked> 본체 보이기</label>
+<label>날아간 입자 점 크기 (화면 px) <span id="vms"></span><input id="ms" type="range" min="2" max="30" step="1" value="10"></label>
+<label><input id="mdt" type="checkbox" checked> 날아간 입자 항상 앞에 (깊이 검사 끔)</label>
+<label>처음 이상해진 때 하한 <span id="vlo"></span><input id="slo" type="range" step="1"></label>
+<label>처음 이상해진 때 상한 <span id="vhi"></span><input id="shi" type="range" step="1"></label>
+<label>고른 기준 <select id="crit"><option value="all">전부</option><option value="box">상자 밖 (가)</option><option value="disp">직전 변위 (나)</option></select></label>
+<div id="cnt"></div>
+<label><input id="fshow" type="checkbox" checked> 바닥 평면 보이기</label>
+<label><input id="ashow" type="checkbox" checked> 축 보이기</label>
+<button id="reset" style="margin-top:6px">시점 초기화</button>
+<button id="focus" style="margin-top:6px">날아간 입자로 맞추기</button>
+</div>
+<div id="tip"></div>
+<div id="help">왼쪽 끌기: 회전 · 휠: 확대 · 오른쪽 끌기(또는 Shift + 왼쪽): 이동 · 빨간 점에 마우스를 올리면 정보 표시</div>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+const META = __META__;
+function dec(s){const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return new Float32Array(u.buffer);}
+const BODY=__BODYS__.map(dec), MARK=__MARKS__.map(dec);
+const $=id=>document.getElementById(id);
+const M=META.mark;
+$('stat').innerHTML=`전체 입자 ${META.n_all.toLocaleString()} 개 중 본체 표시 ${META.n_body.toLocaleString()} 개 (표시용 부분표본)<br>날아간 입자 <b style="color:#d00">${META.n_mark} 개</b> (빨강): (가) 상자 밖 ${META.n_box}, (나) 직전 변위 ${META.n_disp} (겹침 ${META.n_both})<br>기준: ${META.rule}<br>멈춘 프레임 ${META.stop_frame} (격자 상자 한도), 형상은 프레임 ${META.stop_frame} 시작 (= 프레임 ${META.stop_frame-1} 끝)<br>서브스텝 ${META.N}, 이상 판정 속력 ${META.vthr.toFixed(3)} m/s (정답 최대 속력)`;
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(window.devicePixelRatio);renderer.setSize(innerWidth,innerHeight);renderer.setClearColor(0xf4f4f4);document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene();
+const up=META.up;
+const camera=new THREE.PerspectiveCamera(40,innerWidth/innerHeight,0.001,1e4);camera.up.set(up[0],up[1],up[2]);
+const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.screenSpacePanning=true;
+let S=0;
+function view(){const lo=META.lo[S],hi=META.hi[S];return {ctr:new THREE.Vector3((lo[0]+hi[0])/2,(lo[1]+hi[1])/2,(lo[2]+hi[2])/2),ext:Math.max(hi[0]-lo[0],hi[1]-lo[1],hi[2]-lo[2])};}
+function resetView(){const {ctr,ext}=view();const u=new THREE.Vector3(...up);const side=Math.abs(u.z)>0.5?new THREE.Vector3(1.3,-1.6,0):new THREE.Vector3(1.3,0,1.6);
+ camera.position.copy(ctr).addScaledVector(side,ext).addScaledVector(u,ext*0.9);camera.near=ext*0.002;camera.far=ext*200;camera.updateProjectionMatrix();controls.target.copy(ctr);controls.update();}
+function disc(){const c=document.createElement('canvas');c.width=c.height=64;const g=c.getContext('2d');g.beginPath();g.arc(32,32,30,0,Math.PI*2);g.fillStyle='#fff';g.fill();return new THREE.CanvasTexture(c);}
+const tex=disc();
+const bg=new THREE.BufferGeometry();bg.setAttribute('position',new THREE.BufferAttribute(BODY[0],3));
+const bm=new THREE.PointsMaterial({color:0x777777,size:0.005,sizeAttenuation:true,transparent:true,opacity:0.15,depthWrite:false,map:tex,alphaTest:0.01});
+const bodyPts=new THREE.Points(bg,bm);scene.add(bodyPts);
+const mg=new THREE.BufferGeometry();const mpos=new Float32Array(MARK[0].length);mg.setAttribute('position',new THREE.BufferAttribute(mpos,3));
+const mm=new THREE.PointsMaterial({color:0xff0000,size:10,sizeAttenuation:false,transparent:true,opacity:1,depthTest:false,depthWrite:false,map:tex,alphaTest:0.5});
+const markPts=new THREE.Points(mg,mm);markPts.renderOrder=10;scene.add(markPts);
+const hg=new THREE.BufferGeometry();hg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));
+const hm=new THREE.PointsMaterial({color:0xffd400,size:16,sizeAttenuation:false,depthTest:false,transparent:true,map:tex,alphaTest:0.5});
+const hiPt=new THREE.Points(hg,hm);hiPt.renderOrder=11;hiPt.visible=false;scene.add(hiPt);
+// 멈춘 프레임에서 몸에서 너무 먼 입자는 몸 둘레 구 위에 방향만 맞춰 표시 (실제 거리는 정보 창)
+function mp(k){const P=MARK[S];return new THREE.Vector3(P[3*k],P[3*k+1],P[3*k+2]);}
+function shownPos(k){const p=mp(k);if(!META.clip[S])return p;const {ctr,ext}=view();const d=p.clone().sub(ctr);const R=META.clip_r*ext;if(d.length()>R){d.setLength(R);return ctr.clone().add(d);}return p;}
+let shown=[];
+function applyFilter(){let a=+$('slo').value,b=+$('shi').value;if(a>b){[a,b]=[b,a];}const c=$('crit').value;
+ shown=[];for(let i=0;i<M.length;i++){const f=M[i].t;if(f<a||f>b)continue;if(c==='box'&&!M[i].box)continue;if(c==='disp'&&!M[i].disp)continue;shown.push(i);}
+ let nfar=0;shown.forEach((k,j)=>{const q=shownPos(k);if(q.distanceTo(mp(k))>1e-9)nfar++;mpos[3*j]=q.x;mpos[3*j+1]=q.y;mpos[3*j+2]=q.z;});
+ mg.attributes.position.needsUpdate=true;mg.setDrawRange(0,shown.length);mg.computeBoundingSphere();
+ $('far').textContent=nfar?`멀리 간 ${nfar} 개는 몸 둘레 구 (반지름 = 몸 크기 x ${META.clip_r}) 위에 방향만 맞춰 그림`:'';
+ $('vlo').textContent=fs(a);$('vhi').textContent=fs(b);$('cnt').innerHTML=`표시 중인 날아간 입자 <b>${shown.length}</b> / ${M.length} 개`;hiPt.visible=false;$('tip').style.display='none';}
+const fs=t=>`프레임 ${Math.floor(t/META.N)+1} 서브스텝 ${t%META.N}`;
+const fr=M.map(m=>m.t);let fmin=Infinity,fmax=-Infinity;for(const t of fr){if(t<fmin)fmin=t;if(t>fmax)fmax=t;}
+for(const id of ['slo','shi']){$(id).min=fmin;$(id).max=fmax;}$('slo').value=fmin;$('shi').value=fmax;
+// 바닥
+const floorG=new THREE.Group();scene.add(floorG);
+function mkFloor(){floorG.clear();const {ctr,ext}=view();const fs=ext*1.6;const n=new THREE.Vector3(...up);const p0=new THREE.Vector3(...META.plane_pt);
+ const c=ctr.clone().sub(n.clone().multiplyScalar(ctr.clone().sub(p0).dot(n)));
+ const fl=new THREE.Mesh(new THREE.PlaneGeometry(fs,fs),new THREE.MeshBasicMaterial({color:0x4a90d9,transparent:true,opacity:0.18,side:THREE.DoubleSide,depthWrite:false}));
+ const gr=new THREE.GridHelper(fs,16,0x4a6fa0,0x9fb4cf);gr.material.transparent=true;gr.material.opacity=0.45;
+ const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1),n);fl.quaternion.copy(q);fl.position.copy(c);
+ gr.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),n));gr.position.copy(c).addScaledVector(n,1e-4);floorG.add(fl);floorG.add(gr);}
+// 축
+const axes=new THREE.Group();scene.add(axes);
+function lbl(t,col,sc){const c=document.createElement('canvas');c.width=128;c.height=64;const g=c.getContext('2d');g.fillStyle=col;g.font='bold 40px sans-serif';g.textAlign='center';g.textBaseline='middle';g.fillText(t,64,32);const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false}));s.scale.set(0.4*sc,0.2*sc,1);return s;}
+function mkAxes(){axes.clear();const lo=META.lo[S];const {ext}=view();const AL=META.axis_len[S];const ao=new THREE.Vector3(lo[0]-0.05*ext,lo[1]-0.05*ext,lo[2]-0.05*ext);
+ const nm=['x','y','z'];[[1,0,0,'#d03030'],[0,1,0,'#20a020'],[0,0,1,'#2050d0']].forEach(([a,b,c,col],i)=>{const d=new THREE.Vector3(a,b,c);axes.add(new THREE.ArrowHelper(d,ao,AL,new THREE.Color(col).getHex(),AL*0.13,AL*0.07));
+  const s=lbl(nm[i]+(Math.abs(up[i])>0.5?' (위)':''),col,AL);s.position.copy(ao).addScaledVector(d,AL*1.2);axes.add(s);});
+ const s0=lbl(META.axis_lbl[S],'#333',AL);s0.position.copy(ao).add(new THREE.Vector3(-0.2*AL,-0.2*AL,0));axes.add(s0);}
+function upd(){bm.opacity=+$('op').value;bm.size=+$('bs').value/1000*META.bsize_mul[S];bm.needsUpdate=true;mm.size=+$('ms').value;hm.size=mm.size*1.6;
+ mm.depthTest=!$('mdt').checked;hm.depthTest=mm.depthTest;mm.needsUpdate=true;hm.needsUpdate=true;bodyPts.visible=$('bshow').checked;
+ floorG.visible=$('fshow').checked;axes.visible=$('ashow').checked;
+ $('vo').textContent=(+$('op').value).toFixed(2);$('vbs').textContent=$('bs').value;$('vms').textContent=$('ms').value;}
+function setShape(s){S=s;META.shapes.forEach((_,k)=>{$('b'+k).className=k===s?'on':'';});bg.setAttribute('position',new THREE.BufferAttribute(BODY[s],3));bg.computeBoundingSphere();mkFloor();mkAxes();upd();applyFilter();resetView();}
+META.shapes.forEach((nm,k)=>{const b=document.createElement('button');b.id='b'+k;b.textContent=nm;b.onclick=()=>setShape(k);$('sw').appendChild(b);});
+['op','bs','ms','mdt','bshow','fshow','ashow'].forEach(id=>$(id).addEventListener('input',upd));
+['slo','shi','crit'].forEach(id=>$(id).addEventListener('input',applyFilter));
+$('reset').onclick=resetView;
+$('focus').onclick=()=>{if(!shown.length)return;const c=new THREE.Vector3();shown.forEach(k=>c.add(shownPos(k)));c.multiplyScalar(1/shown.length);const off=camera.position.clone().sub(controls.target);controls.target.copy(c);camera.position.copy(c).add(off.multiplyScalar(0.6));controls.update();};
+setShape(0);
+const fmt=(x,d)=>x===null||x===undefined?'없음':(Math.abs(x)>=1e4||(Math.abs(x)<1e-3&&x!==0)?x.toExponential(2):x.toFixed(d));
+const tip=$('tip');const v=new THREE.Vector3();
+renderer.domElement.addEventListener('pointermove',e=>{let best=-1,bd=1e9,bq=null;const r=Math.max(8,mm.size*0.8);
+ for(const k of shown){const q=shownPos(k);v.copy(q).project(camera);if(v.z>1)continue;const sx=(v.x+1)/2*innerWidth,sy=(1-v.y)/2*innerHeight;const d=Math.hypot(sx-e.clientX,sy-e.clientY);if(d<r&&d<bd){bd=d;best=k;bq=q;}}
+ if(best<0){tip.style.display='none';hiPt.visible=false;return;}
+ const m=M[best];
+ tip.innerHTML=`입자 번호 ${m.i} · 고른 기준 ${m.box&&m.disp?'(가)(나)':m.box?'(가) 상자 밖':'(나) 직전 변위'}<br>`+
+  `처음 이상해진 곳: 프레임 ${m.f1} 서브스텝 ${m.s1} / ${META.N} (${m.s_how})<br>`+
+  `그 프레임: 셀 입자 수 ${m.c1}, 노드 질량 비 최소 ${fmt(m.mr1,3)} (합 ${fmt(m.ms1,2)}), 바닥 위 ${(m.h1*100).toFixed(2)} cm, 셀 det A 최소 (그 프레임 서브스텝 전체) ${fmt(m.d1,3)}<br>정답에서 처음 움직인 프레임 (순차 방출로 풀린 때) ${m.tr<0?'없음':m.tr}<br>`+
+  `첫 프레임: 바닥 위 ${(m.h0*100).toFixed(2)} cm, 셀 입자 수 ${m.c0}, 노드 질량 비 최소 ${fmt(m.mr0,3)}<br>`+
+  `멈춘 프레임 직전 (프레임 ${META.stop_frame-1}): 셀 입자 수 ${m.cL}, 노드 질량 비 최소 ${fmt(m.mrL,3)}, 셀 det A 최소 (그 프레임 전체) ${fmt(m.dL,3)}<br>`+
+  `멈춘 형상: 처음 상자 밖 거리 ${fmt(m.dout,3)} m, 직전 프레임 변위 ${fmt(m.disp_m,3)} m, 바닥 위 ${fmt(m.hL,3)} m`;
+ tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY+12)+'px';tip.style.display='block';
+ hg.attributes.position.array.set([bq.x,bq.y,bq.z]);hg.attributes.position.needsUpdate=true;hiPt.visible=true;});
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+(function loop(){requestAnimationFrame(loop);controls.update();renderer.render(scene,camera);})();
+</script></body></html>
