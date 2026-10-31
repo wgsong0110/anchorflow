@@ -2434,6 +2434,15 @@ class Opt:
                     self._sparse()
             if P2:
                 self._p2_p2g(va)
+                if os.environ.get("AK_DBG"):
+                    NN_ = self.M
+                    self.f[:NN_].zero_()
+                    AKC.launch("ak_p2_f", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.t10), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akl),
+                                               EX.P(self.akw), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)
+                    print(f"[AK_DBG p2g] vn 유한 {bool(torch.isfinite(self.vn[:NN_]).all())} mv 유한 {bool(torch.isfinite(self.mv[:NN_]).all())} "
+                          f"fx {int(self.fx[:NN_].sum()) if self.fixd else 0} vbc 유한 {bool(torch.isfinite(self.vbc[:NN_]).all())} sz {self.sz.tolist()} "
+                          f"(정렬 전 akF 라 힘은 참고) f 유한 {bool(torch.isfinite(self.f[:NN_]).all())}", flush=True)
+                    self.f[:NN_].zero_()
         if PLAST or PBC:
             self._ag_frame(i)
         if FLOOR:
