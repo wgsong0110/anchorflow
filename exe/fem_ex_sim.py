@@ -985,7 +985,7 @@ class Opt:
         imax = torch.ceil(y.max(0).values).long() + 1
         ii = torch.cat([imin, imax, (vmax * h / lmin).ceil().long().view(1)]).tolist()                       # 동기화 1
         _gp("g1_범위")
-        if float(ii[6]) * lmin > 0.25 * EXT:
+        if float(ii[6]) * lmin > 0.25 * EXT and not a.akpl_cause:
             raise _Diverge(f"프레임 이동 max|v|·h > 0.25 EXT ({ii[6]} 셀)")
         nnl = [max(ii[3 + k] - ii[k] + 1, 2) for k in range(3)]
         if (a.mode == "sub" or REPF) and dil < 0:
@@ -1259,7 +1259,7 @@ class Opt:
         has = node_inv[nn] < BIG
         out = dict(first=z["first"], nanc_tot=dict(zip(["X", "Xprev역", "F_trial", "SVD", "RM", "tau", "X역", "힘", "detX≤0"], z["nanc_tot"][:9])),
                    q1=dict(nan_nodes=int(nn.numel()), without_inverted_cell=int((~has).sum()),
-                           diff_hist={str(k): int(v) for k, v in zip(*torch.unique(d1[has], return_counts=True))} if bool(has.any()) else {}),
+                           diff_hist={str(int(k)): int(v) for k, v in zip(*torch.unique(d1[has], return_counts=True))} if bool(has.any()) else {}),
                    hist=z["hist"][-(a.akpl_k + 6):])
         nm = torch.where(na >= 0, na, torch.full_like(na, BIG))
         tet_nan = nm[tt].min(1).values
@@ -1267,7 +1267,7 @@ class Opt:
         d2 = tet_nan[it] - first_bad[it]
         hn = tet_nan[it] < BIG
         out["q2"] = dict(inverted_cells=int(it.numel()), never_nan=int((~hn).sum()), frac_never_nan=float((~hn).float().mean()) if it.numel() else None,
-                         diff_hist={str(k): int(v) for k, v in zip(*torch.unique(d2[hn], return_counts=True))} if bool(hn.any()) else {})
+                         diff_hist={str(int(k)): int(v) for k, v in zip(*torch.unique(d2[hn], return_counts=True))} if bool(hn.any()) else {})
         out["q2"]["diff_hist"] = dict(sorted(out["q2"]["diff_hist"].items(), key=lambda kv: int(kv[0]))[:40])
         out["q1"]["diff_hist"] = dict(sorted(out["q1"]["diff_hist"].items(), key=lambda kv: int(kv[0]))[:40])
         json.dump(out, open(os.path.join(a.out, "akpl_cause.json"), "w"), ensure_ascii=False, indent=1)
@@ -3443,7 +3443,7 @@ for i in range(L):
         from torch.profiler import profile, ProfilerActivity
         _TP = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
         _TP.__enter__()
-    if float(v.norm(dim=-1).max()) * h > 0.25 * EXT:                              # 측정 밖 기준과 같은 판정 (기준 판 격자 폭증 방지)
+    if float(v.norm(dim=-1).max()) * h > 0.25 * EXT and not (a.akpl_cause and torch.isfinite(v).all()):   # 측정 밖 기준과 같은 판정 (절 AG.12 인과 진단은 비유한이 나올 때까지 계속)
         div_at = i + 1
         print(f"[발산] 프레임 {div_at}: 이전 프레임 속도 max|v|·h > 0.25 EXT -- 멈춤", flush=True)
         break
