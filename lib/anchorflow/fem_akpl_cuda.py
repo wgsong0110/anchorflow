@@ -29,7 +29,7 @@ __device__ __forceinline__ void akpl_nhb_tau(const float* Fe, float mu, float ka
     float sd = mu*powf(J, -2.f/3.f), sv = 0.5f*kap*(J*J - 1.f);
     for (int k=0;k<9;k++) tau[k] = sd*(B[k] - ((k%4==0) ? tb : 0.f)) + ((k%4==0) ? sv : 0.f);
 }
-__device__ __forceinline__ bool akpl_fin(const float* a, int n) { for (int i=0;i<n;i++) if (!isfinite(a[i])) return false; return true; }
+__device__ __forceinline__ bool akpl_isf(const float* a, int n) { for (int i=0;i<n;i++) if (!isfinite(a[i])) return false; return true; }
 // 절 AG.12 진단: 단계별 첫 비유한 개수 nanc[stage] (0 X, 1 X_prev 역, 2 F_trial, 3 SVD, 4 RM 결과, 5 응력 τ, 6 X 역 (나눗셈), 7 힘 몫, 8 det X ≤ 0 (비유한 아님, 개수))
 #define AKNC(st, cond) do { if (nanc && !(cond)) { atomicAdd(&nanc[st], 1); bad = true; } } while (0)
 // 그래프 첫 커널: 정렬 순서 입자 상태 = 프레임 시작 (F_e = X_prev = F_p, 상태 = 입자 것)
@@ -68,22 +68,22 @@ __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* or
         bool bad = false;
         float dX = det3(X);
         if (nanc && !(dX > 0.f)) atomicAdd(&nanc[8], 1);
-        AKNC(0, akpl_fin(X, 9));
+        AKNC(0, akpl_isf(X, 9));
         if (invm == 1 && !(dX > 0.f)) goto akpl_red;
         if (mode == 1) {                                                        // 증분 RM
             float Xpi[9], Fpe[9], Xin[9];
             for (int j=0;j<9;j++) { Xpi[j] = Xp[(long long)k*9+j]; Fpe[j] = Fe[(long long)k*9+j]; }
             akpl_inv(Xpi, Xin);
-            if (!bad) AKNC(1, akpl_fin(Xin, 9));
+            if (!bad) AKNC(1, akpl_isf(Xin, 9));
             float D[9]; mm3(X, Xin, D);
             float Ft[9]; mm3(D, Fpe, Ft);
-            if (!bad) AKNC(2, akpl_fin(Ft, 9));
+            if (!bad) AKNC(2, akpl_isf(Ft, 9));
             float ys = ysP[k], lj = ljP[k], al = alP[k];
             float Uu[9], s[3], Vv[9]; pl_svd(Ft, Uu, s, Vv);
-            if (!bad) AKNC(3, akpl_fin(s, 3) && akpl_fin(Uu, 9) && akpl_fin(Vv, 9));
+            if (!bad) AKNC(3, akpl_isf(s, 3) && akpl_isf(Uu, 9) && akpl_isf(Vv, 9));
             bool ch = pl_rm(mat, s, prm, ys, lj, al, dt);
             float Fn[9]; if (ch) pl_usv(Uu, s, Vv, Fn); else for (int j=0;j<9;j++) Fn[j] = Ft[j];
-            if (!bad) AKNC(4, akpl_fin(Fn, 9) && isfinite(lj) && isfinite(ys));
+            if (!bad) AKNC(4, akpl_isf(Fn, 9) && isfinite(lj) && isfinite(ys));
             for (int j=0;j<9;j++) { Fe[(long long)k*9+j] = Fn[j]; Xp[(long long)k*9+j] = X[j]; }
             ysP[k] = ys; ljP[k] = lj; alP[k] = al;
             if (mat == 7) akpl_nhb_tau(Fn, prm[0], prm[2], jfl, tau);
@@ -97,12 +97,12 @@ __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* or
             if (mat == 7) akpl_nhb_tau(X, prm[0], prm[2], jfl, tau);
             else { float U2[9], s2[3], V2[9]; pl_svd(X, U2, s2, V2); float Pi[3]; pl_pi(mat, s2, prm, al, Pi); float P_[9]; pl_usv(U2, Pi, V2, P_); mmt3(P_, X, tau); }
         }
-        if (!bad) AKNC(5, akpl_fin(tau, 9));
+        if (!bad) AKNC(5, akpl_isf(tau, 9));
         float XiT[9]; { float Xi[9]; akpl_inv(X, Xi); for (int i=0;i<3;i++) for (int j=0;j<3;j++) XiT[i*3+j] = Xi[j*3+i]; }
-        if (!bad) AKNC(6, akpl_fin(XiT, 9));
+        if (!bad) AKNC(6, akpl_isf(XiT, 9));
         float PX[9]; mm3(tau, XiT, PX);                                          // P_X = τ X⁻ᵀ
         for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s_ = 0.f; for (int j=0;j<3;j++) s_ += PX[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s_; }
-        if (!bad) AKNC(7, akpl_fin(Gm, 9));
+        if (!bad) AKNC(7, akpl_isf(Gm, 9));
     }
 akpl_red:
     if (g >= 0) {                                                               // 묶음 몫: 원자 합으로 GmG, 사면체 구간 합에서는 뺀다
