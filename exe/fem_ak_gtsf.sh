@@ -10,6 +10,7 @@ gt(){ local vk=$1 g=$2; shift 2; local o=$GO/ficus_$vk
   echo "커밋 $C $*" > $o/cmd.txt
   (cd $W/i-physgaussian && CUDA_VISIBLE_DEVICES=$g python -u $AF/exe/gt_sens.py --out $o $FA "$@" < /dev/null > $o/log.txt 2>&1)
   echo "$(date +%T) ficus_$vk $(tail -1 $o/log.txt | cut -c1-140)"; rclone copy $o r2:storage/result/anchorflow/lbours/fem_ak_gt/ficus_$vk -q; }
-( gt rep 1 ) & ( gt rep2 2 ) & ( gt ns200 3 --nsub 200 ) & ( gt ng71 4 --n_grid 71; gt ng35 4 --n_grid 35 ) &
+# warp 가 경계조건 지역 커널을 카드별 캐시에서 동시에 처음 만들면 못 찾는다 (실측) -- 한 카드에서 차례로
+( gt ng35 ${AK_G:-4} --n_grid 35; gt rep ${AK_G:-4}; gt rep2 ${AK_G:-4}; gt ns200 ${AK_G:-4} --nsub 200; gt ng71 ${AK_G:-4} --n_grid 71 ) &
 wait
 touch $GO/GTSF_DONE; echo "[끝] $(date +%T)"
