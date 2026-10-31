@@ -40,6 +40,9 @@ VAR = {
     "pq1b0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp_vcap 0.5", "--sp_vcap 1.0") + " --ak_pq",
     "pqnb0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq",
     "pqnb0a": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq --affine",
+    "a2b0n": AI.replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none"),       # A2 (입자 적분점의 1 차 근사) + B0, 상한 없음
+    "a2b01": AI.replace("--fupd navg --fupd_b 1 ", "").replace("--sp_vcap 0.5", "--sp_vcap 1.0"),
+    "a2b1n": AI.replace("--sp vcap --sp_vcap 0.5", "--sp none"),
     "pqn": AI.replace("--ai_stress ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq",
 }
 
