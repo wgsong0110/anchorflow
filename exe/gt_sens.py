@@ -77,7 +77,7 @@ if v0.shape[0] == 3 and x0.shape[0] != 3:
 if x0.shape[0] == 3 and x0.shape[1] != 3:
     x0, v0 = x0.T.copy(), (v0.T.copy() if v0.shape[0] == 3 else v0)
 N = x0.shape[0]
-L = min(a.frames, int(meta["frames"]))
+L = min(a.frames, int(meta.get("frames", cfg.get("frame_num", a.frames))))
 X = torch.as_tensor(x0).cuda().contiguous()
 cell = (X / dx0).floor().long()
 key = (cell[:, 0] * n_grid0 + cell[:, 1]) * n_grid0 + cell[:, 2]
