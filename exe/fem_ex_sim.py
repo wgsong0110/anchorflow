@@ -2837,7 +2837,13 @@ class Opt:
                 VG_ = self.akg_VG[g_].clamp_min(1e-30)
                 wr_ = self.akg_W[:T_][ing_] / VG_                                    # W_t / V_g (Ā 에서 이 사면체의 몫)
                 Sg = torch.zeros(self.Pcap, device=dev).index_add_(0, g_, wr_ * gn_.sum(1))   # Σ_t (W_t/V_g) Σ_j |∇λ_j|
-                kg_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2 * (lam + 2.0 * mu)) * (VG_ * wr_ * Sg[g_])[:, None] * gn_
+                gp_ = self.akg_gpb.long()                                            # 묶음 Ā 를 쓰는 입자 (정렬 순서) 의 실제 계수 합 Σ w_p (λ r_p + 2μ) (r_p = --ak_capmu λ 배율)
+                lr_ = self.aklr if a.ak_capmu else torch.ones_like(self.akw)
+                okp = gp_ >= 0
+                MG = torch.zeros(self.Pcap, device=dev).index_add_(0, gp_[okp], self.akw[okp] * (lam * lr_[okp] + 2.0 * mu))
+                kg_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2) * (MG[g_] * wr_ * Sg[g_])[:, None] * gn_
+                if a.akg_hg > 0:                                                    # 모래시계 억제 2γμ W_t (A_t − Ā) 의 Ā 쪽 결합 몫 (행 합 2γμ W_t |∇λ_n| S_g)
+                    kg_ = kg_ + (a.ah_mcfl * (self.hscur / 2.0) ** 2 * 2.0 * a.akg_hg * mu) * (self.akg_W[:T_][ing_] * Sg[g_])[:, None] * gn_
                 self.mcfl.index_add_(0, self.tets[:T_][ing_].reshape(-1), kg_.reshape(-1))
             if a.akg_m0fix:
                 self.mcfl[:self.M][self.mn[:self.M] <= 0] = 0.0
