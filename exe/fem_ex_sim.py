@@ -3641,7 +3641,7 @@ for i in range(L):
             st.update(rn=int((vnn > 5.0 * q90).sum()), vn_max=float(vnn.max()), vn_q90=float(q90))
             if a.ah_rn:
                 st.update(rnd=rn_diag(OPT, vnn, q90))
-        if a.mesh_cc and str(i + 1) in a.mesh_cc.split(","):                       # 절 AG.18: 메시 연결 성분 (라벨 전파)
+        if a.mesh_cc and str(i + 1) in a.mesh_cc.replace(":", ",").replace("_", ",").split(","):                       # 절 AG.18: 메시 연결 성분 (라벨 전파)
             T_, M_ = OPT.T, OPT.M
             tt_ = OPT.tets[:T_][OPT.VTs[:T_] > 0]
             lab = torch.arange(M_, device=dev)
