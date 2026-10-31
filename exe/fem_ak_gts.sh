@@ -4,10 +4,10 @@
 cd "$(dirname "$0")/.." || exit 1
 W=/home/dkta/work; AF=$(pwd); C=$(git rev-parse --short HEAD)
 export PYTHONUTF8=1; set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; export PATH=$HOME/bin:$PATH
-GO=/tmp/dkta/lbours/fem_ak_gt; mkdir -p $GO
+GO=/tmp/dkta/lbours/fem_ak_gt; mkdir -p $GO; rm -f $GO/GTS_DONE
 TS=${AK_TS:-"0001 0003 0015 0016 0017 0018 0005 0013"}
 gt(){ local t=$1 vk=$2 g=$3; shift 3; local o=$GO/${t}_$vk
-  [ -f $o/err.json ] && return; mkdir -p $o; echo "커밋 $C $*" > $o/cmd.txt
+  [ -f $o/err.json ] && return; mkdir -p $o; export WARP_CACHE_PATH=/tmp/dkta/warp_cache_$g; mkdir -p $WARP_CACHE_PATH   # /home 이 가득 -- warp 커널 캐시를 노드 /tmp 에 (카드별, 동시 컴파일 충돌 방지) echo "커밋 $C $*" > $o/cmd.txt
   (cd $W/i-physgaussian && CUDA_VISIBLE_DEVICES=$g python -u $AF/exe/gt_sens.py --out $o --gt $W/lbdata/test/$t --pt /tmp/dkta/af_data/$t.pt --no_dump "$@" < /dev/null > $o/log.txt 2>&1)
   echo "$(date +%T) ${t}_$vk $(tail -1 $o/log.txt | cut -c1-160)"; rclone copy $o r2:storage/result/anchorflow/lbours/fem_ak_gt/${t}_$vk -q; }
 JOBS=()
