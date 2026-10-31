@@ -90,7 +90,12 @@ __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* v
                 float k = (mode == 1) ? 0.f : ((mode == 2) ? 1.f : powf(fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f), kex));
                 for (int c=0;c<3;c++) v[c] *= k;
             }
-            if (np_ && cn > 0.f) { float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vn_ < 0.f) { v[0] -= vn_*n0; v[1] -= vn_*n1; v[2] -= vn_*n2; } }
+            if (np_ == 2) {                                                     // 절 AG.18 --vfl_np 2: 관통 입자가 가진 안쪽 법선 운동량만 지운다 -- 노드가 진 관통 입자 질량 몫 a/m (P2G 와 같은 가중) 만큼
+                float fr = (m > 0.f) ? fminf(a/m, 1.f) : 1.f;
+                float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2;
+                if (a > 0.f && vn_ < 0.f) { v[0] -= fr*vn_*n0; v[1] -= fr*vn_*n1; v[2] -= fr*vn_*n2; }
+            }
+            else if (np_ && cn > 0.f) { float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vn_ < 0.f) { v[0] -= vn_*n0; v[1] -= vn_*n1; v[2] -= vn_*n2; } }
         }
     }
     for (int c=0;c<3;c++) vn[n*3+c] = v[c];
