@@ -26,6 +26,7 @@ from anchorflow import fem_rt as RT                                             
 from anchorflow import fem_rt_cuda as RTC                                           # noqa: E402
 from anchorflow import fem_ex_cuda as EX                                            # noqa: E402
 from anchorflow import fem_bs_cuda as BSC                                           # noqa: E402
+from anchorflow import fem_akpl_cuda as AKPLC                                       # noqa: E402  (절 AG.8 소성 입자 적분점)
 from anchorflow import fem_ah_cuda as AHC                                           # noqa: E402  (절 AH 바닥 정의)
 from anchorflow import fem_c_cuda as CCU                                            # noqa: E402
 from anchorflow import fem_pl_cuda as PLC                                           # noqa: E402  (절 AG 소성·점성·파괴)
@@ -236,6 +237,8 @@ ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 �
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
 ap.add_argument("--ak_cfac", type=float, default=1.0, help="절 AK --affine: 다음 프레임 P2G 에 쓰는 입자 속도 기울기 C 의 배율 (1 = APIC, 0 = PIC; 정의 변경)")
 ap.add_argument("--ak_fuse", action="store_true", help="--ak_pq4 + 절 AH 바닥: 입자 적분점 힘과 바닥 접촉을 커널 하나로 (같은 식)")
+ap.add_argument("--ak_pq_plast", choices=["none", "inc", "frame"], default="none",
+                help="절 AG.8: --ak_pq 입자 적분점 판에 재질 return mapping (--plast) -- inc = 서브스텝 증분 RM (입자 상태), frame = 투영 없는 재질 응력 + 프레임 끝 입자 RM (lib/anchorflow/fem_akpl_cuda.py)")
 ap.add_argument("--ak_pq4", action="store_true", help="--ak_pq 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차로 반정밀도 저장)")
 ap.add_argument("--ak_pq3", action="store_true", help="--ak_pq 3 판 (구간 머리 레인만 A_T 계산 -> 셔플; 같은 식)")
 ap.add_argument("--ak_pq2", action="store_true", help="--ak_pq 2 단 판 (사면체 A_T 버퍼 -> 입자 스레드; 같은 식)")
@@ -493,6 +496,9 @@ if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfus
                                   and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (AI2 and (PLAST or VISC or PBC)) and (VFL or not HASPL)):
     raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀 없음) 만; --ai_stress 는 FCR 탄성만 (소성 씬 제외)")
 AKPQ = bool(a.ak_pq)
+PQPL = AKPQ and a.ak_pq_plast != "none"                                             # 절 AG.8 소성 입자 적분점
+if PQPL and not (a.plast and not (a.ak_pq4 or a.ak_pq2 or a.ak_pq3 or a.ak_pqt or a.ak_eps >= 0 or a.ak_fuse or a.ak_prep) and a.visc <= 0):
+    raise SystemExit("--ak_pq_plast 는 --ak_pq (기본 입자 스레드 판) + --plast 만 (4·2·3·사면체 판·혼합·융합·계수 준비·점성 없이)")
 if a.ak_fuse and a.floor != "vel":                                                  # 공통 설정: 바닥 없는 씬은 융합할 접촉이 없다 -> 끈 것과 같다
     a.ak_fuse = False
 if a.ak_fuse and not (AKPQ and a.ak_pq4 and a.ak_eps < 0 and a.floor == "vel" and not (a.vfl_agg or a.vfl_bf or a.vfl_tacc) and not PLAST):
@@ -501,7 +507,7 @@ if a.ak_prep and not (AKPQ and a.ak_pq4 and a.ak_eps < 0):
     raise SystemExit("--ak_prep 는 --ak_pq --ak_pq4 (혼합 없음) 만")
 if AKPQ and a.ak_pit > 0:
     AKC.set_pit(a.ak_pit)
-if AKPQ and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and a.tlist and not AI2 and not (PLAST or VISC or PBC) and not SPG
+if AKPQ and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and a.tlist and not AI2 and (PQPL or not (PLAST or VISC or PBC)) and not SPG
                  and not a.vfl_bf and not a.vfl_tacc and not a.vfl_agg and not a.lagdiag):
     raise SystemExit("--ak_pq 는 확정 경로 (--cfuse --cfuse_mode 2, 점유 목록) 만, A2 (--ai_stress)·소성·묶음·띠 변형 판·진단 루프 없이")
 if AIG and FUPD:
@@ -812,6 +818,9 @@ class Opt:
                 self.akrough = []
             self.akz = torch.zeros(1, dtype=torch.int32, device=dev)
             self.akoffs = None
+            if PQPL:                                                                 # 절 AG.8: 정렬 순서 입자 소성 상태
+                self.plFe, self.plXp = z(Np, 9), z(Np, 9)
+                self.plys, self.pllj, self.plal = z(Np), z(Np), z(Np)
         self.aic = z(4)                                                              # 절 AI: [0] 뒤집힌 입자 (A1 반전), [1] Σ w R_p 가 반사인 셀, [2] B2 정규화 Σw < 1 입자, [3] 그 1 − Σw 합
         if a.affine and (a.mode != "lag" or self.SORT):
             raise SystemExit("--affine 은 --opt --mode lag 만")
@@ -1331,7 +1340,7 @@ class Opt:
         nbP = ((Np + 127) // 128) if VFL else 0
         hs_, damp_ = self.hscur, self.dampcur
         if PLAST or VISC:                                                           # 절 AG: 같은 틀, 사면체 블록만 재질 식 (셀 투영) + 점성
-            PLC.launch("ag_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
+            PLC.launch("ag_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.akz if PQPL else self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                     EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0),
                                     np.int32(MATN), EX.P(PRM), EX.P(self.ysT if PLAST else None), EX.P(self.ljT if PLAST else None),
                                     np.float32(hs_ if PLINC else (getattr(self, "_j", 0) + 1) * hs_), EX.P(self.vn if VISC else None), np.float32(a.visc),
@@ -1379,7 +1388,11 @@ class Opt:
                                    EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
         if AKPQ and not a.ak_fuse:                                                  # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
-            if a.ak_eps >= 0:
+            if PQPL:                                                                # 절 AG.8: 재질 식 입자 적분점
+                AKPLC.launch("akpl_force", Np, (np.int32(Np), np.int32(1 if a.ak_pq_plast == "inc" else 0), EX.P(self.akord), EX.P(self.aktt), EX.P(self.tets),
+                                                EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akw), np.int32(MATN), EX.P(PRM), np.float32(hs_),
+                                                EX.P(PL_AL), EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal), EX.P(self.f)), b=128)
+            elif a.ak_eps >= 0:
                 AKC.launch("ak_pq_force_p5", Np, (EX.P(self.akN), EX.P(self.aktt2), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                                   EX.P(self.akdF2), EX.P(self.akw2), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)
             elif a.ak_pq4:
@@ -1692,6 +1705,9 @@ class Opt:
                 self.acc.zero_()
                 if BSCM:
                     self.accC.zero_()
+            if PQPL:                                                                # 절 AG.8: 입자 소성 상태를 프레임 시작 값으로 (그래프 안 -- 데우기가 바꾼 것도 되돌린다)
+                AKPLC.launch("akpl_init", Np, (np.int32(Np), EX.P(self.akord), EX.P(self.akF), EX.P(PL_YS), EX.P(PL_LJ), EX.P(PL_AL),
+                                               EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal)), b=256)
             if PLINC:                                                               # 절 AG: 셀 증분 상태를 프레임 시작 값으로 (그래프 안 -- 데우기가 바꾼 것도 되돌린다)
                 PLC.launch("ag_cinit", self.Tcap, (EX.P(self.sz), EX.P(self.FT), EX.P(self.ysT), EX.P(self.ljT), EX.P(self.FeC), EX.P(self.XpC),
                                                    EX.P(self.ysC), EX.P(self.ljC)), b=256)
@@ -2340,7 +2356,11 @@ class Opt:
                 EX.launch("ex_g2p_lag", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.rows), EX.P(self.lamb), EX.P(self.gl),
                                              EX.P(self.pinv), EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), EX.P(self.CL if a.affine else None), np.int32(1 if RW4 else 0)), b=256)
             uc, xc_, Fc_ = self.Uc, None, None
-            if PLAST:                                                               # 절 AG: 프레임 끝 입자별 정답 return mapping (F_e·상태 갱신, 걸음 dt = h)
+            if PQPL and a.ak_pq_plast == "inc":                                    # 절 AG.8: 마지막 U 로 증분 RM 한 번 더 -> 입자 F·상태
+                AKPLC.launch("akpl_fin", Np, (np.int32(Np), EX.P(self.akord), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF),
+                                              EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal), np.int32(MATN), EX.P(PRM), np.float32(self.hscur),
+                                              EX.P(F2), EX.P(PL_YS), EX.P(PL_LJ), EX.P(PL_AL), EX.P(PL_RMC)), b=128)
+            elif PLAST:                                                             # 절 AG: 프레임 끝 입자별 정답 return mapping (F_e·상태 갱신, 걸음 dt = h)
                 PLC.launch("ag_rm", Np, (np.int32(Np), EX.P(F2), EX.P(PL_YS), EX.P(PL_LJ), EX.P(PL_AL), np.int32(MATN), EX.P(PRM), np.float32(h), EX.P(PL_RMC)), b=128)
         else:
             k = a.N % 2
