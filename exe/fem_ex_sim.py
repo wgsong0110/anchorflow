@@ -255,6 +255,12 @@ ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_d
 ap.add_argument("--akpl_k", type=int, default=6, help="절 AG.10 --akpl_dbg: 첫 터짐 뒤 몇 서브스텝을 더 기록하고 멈출지")
 ap.add_argument("--ah_mcfl", type=float, default=0.0,
                 help="절 AG.15 정의 변경: 노드 가속도용 관성 질량 하한 = s · (h_s/2)² k_n (k_n = 노드 강성 Gershgorin 상계 Σ V_T (λ+2μ)|∇λ_i|Σ|∇λ_j|) -- 국소 명시적 안정 조건 m ≥ (h_s/2)² k 를 만족하게 (s = 안전 계수, 1 = 조건 그대로; 0 = 끔)")
+ap.add_argument("--ag_nhb_ext", action="store_true",
+                help="절 AG.16 (b) 정의 변경: 입자 적분점 판 수박 GF 응력을 주값으로, 작은 특이값 σ < σ_e 는 값·기울기 연속 선형 연장 (σ_e = 단축 압축 접선 강성 |dP/dσ| 가 λ+2μ 가 되는 σ -- 국소 CFL 질량이 감당하는 강성에서 역산)")
+ap.add_argument("--ah_mcfl_tan", action="store_true",
+                help="절 AG.16 (a): --ah_mcfl 의 강성 계수를 사면체마다 현재 (프레임 시작) 접선 강성으로 -- 셀 입자 F 최소 특이값에서 단축 압축 |dP/dσ| (수박 GF 응력, 연장 판이면 σ_e 에서 상한), λ+2μ 아래면 λ+2μ")
+ap.add_argument("--ag_pbcp", action="store_true",
+                help="절 AG.16 bread: 입자 속도 구속을 PG 처럼 입자에 직접 -- 프레임 시작 구속 입자 속도 = v_bc (P2G 에 들어감), 프레임 끝 구속 입자 x ← x0 + h v_bc, v ← v_bc (노드 섞기 --pbc 는 그대로)")
 ap.add_argument("--akb_kappa", type=float, default=0.0,
                 help="절 AG.13 정의 변경 (사용자 10-31): 입자 적분점 판 셀 에너지에 입자마다 뒤집힘 장벽 κ μ w b(det(A_T F_p)) (0 = 끔; 입자 스레드 커널 경로)")
 ap.add_argument("--akb_jhat", type=float, default=0.3, help="--akb_kappa: 장벽이 켜지는 J (Ĵ)")
@@ -540,6 +546,7 @@ P2W = torch.tensor([1.0 / 36] * 4 + [4.0 / 27] * 6, device=dev)                 
 PQPL = AKPQ and a.ak_pq_plast != "none"                                             # 절 AG.8 소성 입자 적분점
 AKG = AKPQ and a.akg_k > 0                                                          # 절 AG.11 희소 사면체 묶음
 AKBAR = AKPQ and a.akb_kappa > 0                                                    # 절 AG.13 뒤집힘 장벽
+NSE = 0.0
 if AKBAR and (a.ak_pq4 or a.ak_pq2 or a.ak_pq3 or a.ak_pqt or a.ak_eps >= 0 or a.ak_fuse or a.ak_prep):
     raise SystemExit("--akb_kappa 는 --ak_pq 기본 입자 스레드 판만")
 if AKG and (a.ak_pq4 or a.ak_pq2 or a.ak_pq3 or a.ak_pqt or a.ak_eps >= 0 or a.ak_fuse or a.ak_prep or (PLAST and not PQPL)):
@@ -567,6 +574,15 @@ PRM = torch.zeros(16, device=dev)
 PRM[0], PRM[1] = mu, lam
 if PLAST:
     MATN, PRM, PLP = PLC.params(cfg, mu, lam, dev)
+    if a.ag_nhb_ext and MATN == 7:                                                  # 절 AG.16 (b): σ_e = 단축 압축 |dP/dσ| = λ+2μ 인 σ (1 아래 가장 큰 근)
+        _mu7, _ka7 = float(PRM[0]), float(PRM[2])
+        _P = lambda sg: (_mu7 * sg ** (-2.0 / 3.0) * (sg * sg - (sg * sg + 2.0) / 3.0) + 0.5 * _ka7 * (sg * sg - 1.0)) / sg
+        _dP = lambda sg: (_P(sg + 1e-6) - _P(sg - 1e-6)) / 2e-6
+        _M = lam + 2.0 * mu
+        _g = np.linspace(0.999, 0.01, 9990)
+        _ok = [sg for sg in _g if abs(_dP(sg)) > _M]
+        NSE = float(_ok[0]) if _ok else 0.01
+        print(f"[절 AG.16 GF 응력 연장] σ_e = {NSE:.4f} (|dP/dσ|(σ_e) = λ+2μ = {_M:.4g}; μ {_mu7:.4g} κ {_ka7:.4g})", flush=True)
     PL_YS = torch.full((Np,), PLP["yield_stress"], device=dev)                      # 입자 항복 응력 (PG model.yield_stress, 시작 = config)
     PL_LJ = torch.full((Np,), PLP["logJp0"], device=dev)                            # 입자 log Jp (GF particle_Jp, 시작 -0.04)
     PL_AL = torch.ones(Np, device=dev)                                               # 1 = 살아 있음, 0 = 손상 (PG plasticine ys ≤ 0 -> μ = λ = 0)
@@ -1765,7 +1781,8 @@ class Opt:
                                                 np.float32(a.akpl_jfl), EX.P(self.akg_gpb if AKG else None), EX.P(self.akg_AG if AKG else None), EX.P(self.akg_VG if AKG else None),
                                                 EX.P(self.akg_GmG if AKG else None), np.float32(mu), np.float32(lam), np.int32(a.akpl_invm),
                                                 EX.P(self._nanc if a.akpl_cause else None),
-                                                np.float32(a.akb_kappa), np.float32(a.akb_jhat), np.float32(a.akb_je), EX.P(self._nbar if AKBAR else None)), b=128)
+                                                np.float32(a.akb_kappa), np.float32(a.akb_jhat), np.float32(a.akb_je), EX.P(self._nbar if AKBAR else None),
+                                                np.float32(NSE)), b=128)
                 if AKG:
                     AKPLC.launch("akg_dist", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs),
                                                          EX.P(self.akg_AG), EX.P(self.akg_VG), EX.P(self.akg_GmG), np.float32(a.akg_hg * mu), EX.P(self.f)), b=128)
@@ -2585,6 +2602,12 @@ class Opt:
             self._xs_diag = (xa, va, Fa)
             self._p2g_bs(xa, va, Fa)
         else:
+            if a.ag_pbcp and PBC:                                                   # 절 AG.16 bread: 구속 입자 속도 = v_bc (PG 처럼 P2G 전에)
+                k_ = PBC_K[i].long()
+                self._pbm = k_ >= 0
+                self._pbv = PBC_V[k_.clamp_min(0)]
+                va[self._pbm] = self._pbv[self._pbm]
+                self._pbx0 = xa[self._pbm].clone()
             self._p2g(xa, va, Fa, h, False)                                         # 프레임 분할 (관성 예측 h v_n + h² g 의 끝 높이)
             if SPM != "none":
                 if self._sparse():                                                  # 절 AE vpmesh: 첫 프레임에 V_p (·m_p) 를 바꿨다 -> 같은 상태로 P2G 다시
@@ -2706,7 +2729,25 @@ class Opt:
                 self.tl[:tls_.numel()].copy_(tls_)                                    # (호스트 크기 -- nonzero 가 동기화 1 번)
                 self.aktlc.copy_(torch.tensor([tls_.numel()], dtype=torch.int32, device=dev))
                 self.akrough.append((float(rp.float().mean()), float(rough_t.float().sum() / occ_.float().sum().clamp_min(1))))
-        if a.ah_mcfl > 0:                                                         # 절 AG.15: 프레임마다 노드 강성 상계 -> 국소 CFL 관성 질량 (그래프 밖, 동기화 없음)
+        if a.ah_mcfl > 0 and a.ah_mcfl_tan and AKPQ:                              # 절 AG.16 (a): 사면체별 현재 접선 강성 계수
+            self.mcfl.zero_()
+            T_ = self.T
+            Mw = lam + 2.0 * mu
+            smin = torch.linalg.svdvals(self.akF.view(-1, 3, 3)).min(-1).values
+            if MATN == 7:
+                sg = smin.clamp(min=NSE if NSE > 0 else 1e-3, max=1.0).double()
+                mu7, ka7 = float(PRM[0]), float(PRM[2])
+                Pf = lambda q: (mu7 * q ** (-2.0 / 3.0) * (q * q - (q * q + 2.0) / 3.0) + 0.5 * ka7 * (q * q - 1.0)) / q
+                kp = ((Pf(sg + 1e-6) - Pf(sg - 1e-6)) / 2e-6).abs().float()
+            else:
+                kp = torch.full_like(smin, Mw)
+            if getattr(self, "_mtT", None) is None or self._mtT.numel() < self.Tcap:
+                self._mtT = torch.zeros(self.Tcap, device=dev)
+            self._mtT.fill_(Mw)
+            self._mtT[:T_] = torch.full((T_,), Mw, device=dev).scatter_reduce(0, self.aktt.long(), kp.clamp_min(Mw), "amax", include_self=True)
+            AHC.launch("ah_kn2", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self._mtT),
+                                             np.float32(a.ah_mcfl * (self.hscur / 2.0) ** 2), EX.P(self.mcfl)), b=128)
+        elif a.ah_mcfl > 0:                                                       # 절 AG.15: 프레임마다 노드 강성 상계 -> 국소 CFL 관성 질량 (그래프 밖, 동기화 없음)
             self.mcfl.zero_()
             AHC.launch("ah_kn", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs),
                                             np.float32(a.ah_mcfl * (self.hscur / 2.0) ** 2 * (lam + 2.0 * mu)), EX.P(self.mcfl)), b=128)
@@ -2814,6 +2855,9 @@ class Opt:
                                               EX.P(F2), EX.P(PL_YS), EX.P(PL_LJ), EX.P(PL_AL), EX.P(PL_RMC)), b=128)
             elif PLAST:                                                             # 절 AG: 프레임 끝 입자별 정답 return mapping (F_e·상태 갱신, 걸음 dt = h)
                 PLC.launch("ag_rm", Np, (np.int32(Np), EX.P(F2), EX.P(PL_YS), EX.P(PL_LJ), EX.P(PL_AL), np.int32(MATN), EX.P(PRM), np.float32(h), EX.P(PL_RMC)), b=128)
+            if a.ag_pbcp and PBC:                                                   # 절 AG.16 bread: 구속 입자는 강체 이동 그대로 (PG 처럼 위치·속도 구속)
+                x2[self._pbm] = self._pbx0 + h * self._pbv[self._pbm]
+                v2[self._pbm] = self._pbv[self._pbm]
         else:
             k = a.N % 2
             x2, v2, F2 = self.X[k], self.V[k], self.FF[k]

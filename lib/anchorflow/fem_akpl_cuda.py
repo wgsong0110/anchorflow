@@ -47,6 +47,29 @@ __device__ __forceinline__ void akpl_bar(const float* X, const float* F, float w
     for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float a_ = 0.f; for (int j=0;j<3;j++) a_ += cf[r*3+j]*F[c*3+j]; Gm[r*3+c] += s*a_; }
     if (nbar) atomicAdd(nbar, 1);
 }
+// 절 AG.16 (b) GF neo-Hookean Boarden 주값 응력 P_i (P = U diag(P_i) Vᵀ, τ = P Fᵀ 와 같은 식) + 작은 특이값 선형 연장:
+//   P_i(σ) = (μ J^(-2/3) (σ_i² − Σσ²/3) + κ/2 (J² − 1)) / σ_i,  J = σ0 σ1 σ2.  σ_i < σ_e 이면 P_i(σ_i=σ_e) + ∂P_i/∂σ_i(σ_e) (σ_i − σ_e) (값·기울기 연속, 뒤집힘 (σ ≤ 0) 에도 정의, 접선 강성 상한)
+__device__ __forceinline__ float akpl_nhbPi(const float* s, int i, float mu, float kap) {
+    float J = s[0]*s[1]*s[2];
+    float Jp = (J > 0.f) ? powf(J, -2.f/3.f) : 0.f;
+    float b = (s[0]*s[0] + s[1]*s[1] + s[2]*s[2])/3.f;
+    return (mu*Jp*(s[i]*s[i] - b) + 0.5f*kap*(J*J - 1.f))/s[i];
+}
+__device__ __forceinline__ void akpl_nhbP_ext(const float* s0, float mu, float kap, float se, float* Pi) {
+    float s[3] = {s0[0], s0[1], s0[2]};
+    bool ext[3];
+    for (int i=0;i<3;i++) { ext[i] = s[i] < se; if (ext[i]) s[i] = se; }               // 연장점: 작은 특이값을 σ_e 로
+    for (int i=0;i<3;i++) {
+        Pi[i] = akpl_nhbPi(s, i, mu, kap);
+        if (ext[i]) {
+            float d = 1e-3f*se, sv = s[i];
+            s[i] = sv + d; float a_ = akpl_nhbPi(s, i, mu, kap);
+            s[i] = sv - d; float b_ = akpl_nhbPi(s, i, mu, kap);
+            s[i] = sv;
+            Pi[i] += (a_ - b_)/(2.f*d)*(s0[i] - se);
+        }
+    }
+}
 // 그래프 첫 커널: 정렬 순서 입자 상태 = 프레임 시작 (F_e = X_prev = F_p, 상태 = 입자 것)
 __global__ void akpl_init(int N, const int* ord, const float* akF, const float* ys, const float* lj, const float* al,
                           float* Fe, float* Xp, float* ysP, float* ljP, float* alP) {
@@ -60,7 +83,8 @@ __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* or
                                const float* akF, const float* wp, int mat, const float* prm, float dt, const float* alPart,
                                float* Fe, float* Xp, float* ysP, float* ljP, float* alP, float* f, float jfl,
                                const int* gp, const float* AG, const float* VG, float* GmG, float mu0, float lam0, int invm, int* nanc,
-                               float bk, float bjh, float bje, int* nbar) {
+                               float bk, float bjh, float bje, int* nbar, float nse) {
+    // 절 AG.16: nse > 0 이면 수박 (mat 7) 응력을 주값 + 작은 특이값 선형 연장 (akpl_nhbP_ext), 힘은 P 에서 바로 (X⁻ᵀ 안 씀)
     // 절 AG.12 진단: invm 1 = det X ≤ 0 인 입자의 응력 몫을 0 으로 (개입 시험), nanc != null 이면 단계별 비유한 개수
     // 절 AG.11 묶음 (gp != null): 희소 사면체 입자 (gp[k] ≥ 0) 는 묶음 평균 사상 Ā_g = AG[g]/VG[g] 로 X = Ā F, 응력 몫 w P Fᵀ 는 GmG[g] 에 (akg_dist 가 묶음 사면체로 나눔)
     int k = blockIdx.x*blockDim.x + threadIdx.x;
@@ -102,6 +126,15 @@ __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* or
             if (!bad) AKNC(4, akpl_isf(Fn, 9) && isfinite(lj) && isfinite(ys));
             for (int j=0;j<9;j++) { Fe[(long long)k*9+j] = Fn[j]; Xp[(long long)k*9+j] = X[j]; }
             ysP[k] = ys; ljP[k] = lj; alP[k] = al;
+            if (mat == 7 && nse > 0.f) {                                        // P(F_e) Gᵀ Fᵀ, G = X_prev⁻¹ F_e,prev (F_trial = X G)
+                float U2[9], s2[3], V2[9]; pl_svd(Fn, U2, s2, V2); float Pi[3]; akpl_nhbP_ext(s2, prm[0], prm[2], nse, Pi);
+                float P_[9]; pl_usv(U2, Pi, V2, P_);
+                float Gt[9]; mm3(Xin, Fpe, Gt);
+                float PG[9]; mmt3(P_, Gt, PG);
+                for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s_ = 0.f; for (int j=0;j<3;j++) s_ += PG[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s_; }
+                akpl_bar(X, F, w, bk*prm[0], bjh, bje, Gm, nbar);
+                goto akpl_red;
+            }
             if (mat == 7) akpl_nhb_tau(Fn, prm[0], prm[2], jfl, tau);
             else { float U2[9], s2[3], V2[9]; pl_svd(Fn, U2, s2, V2); float Pi[3]; pl_pi(mat, s2, prm, al, Pi); float P_[9]; pl_usv(U2, Pi, V2, P_); mmt3(P_, Fn, tau); }
         } else if (mat == 0) {                                                 // 탄성 (절 AK 와 같은 FCR, 빠른 극분해): P 를 바로
@@ -111,6 +144,13 @@ __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* or
             goto akpl_red;
         } else {                                                                // 투영 없는 재질 응력 (프레임 끝 입자 RM 만)
             float al = alPart ? alPart[ord[k]] : 1.f;
+            if (mat == 7 && nse > 0.f) {                                        // P(X) Fᵀ 바로
+                float U2[9], s2[3], V2[9]; pl_svd(X, U2, s2, V2); float Pi[3]; akpl_nhbP_ext(s2, prm[0], prm[2], nse, Pi);
+                float P_[9]; pl_usv(U2, Pi, V2, P_);
+                for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s_ = 0.f; for (int j=0;j<3;j++) s_ += P_[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s_; }
+                akpl_bar(X, F, w, bk*prm[0], bjh, bje, Gm, nbar);
+                goto akpl_red;
+            }
             if (mat == 7) akpl_nhb_tau(X, prm[0], prm[2], jfl, tau);
             else { float U2[9], s2[3], V2[9]; pl_svd(X, U2, s2, V2); float Pi[3]; pl_pi(mat, s2, prm, al, Pi); float P_[9]; pl_usv(U2, Pi, V2, P_); mmt3(P_, X, tau); }
         }

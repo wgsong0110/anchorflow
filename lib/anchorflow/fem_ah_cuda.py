@@ -328,6 +328,17 @@ __global__ void ah_kn(const int* tl, const int* tlc, const long long* tets, cons
     for (int i=0;i<4;i++) { float a_=0.f; for (int q=0;q<3;q++) { float g_ = gl[(long long)t*12+i*3+q]; a_ += g_*g_; } gn[i] = sqrtf(a_); sg += gn[i]; }
     for (int i=0;i<4;i++) atomicAdd(&mfa[tets[(long long)t*4+i]], cmw*V*gn[i]*sg);
 }
+// 절 AG.16 (a) 사면체별 계수 MT[t] (현재 접선 강성 기반) 로 국소 CFL 질량: mfa[n] += c V_T MT[t] |∇λ_i| Σ|∇λ_j|
+__global__ void ah_kn2(const int* tl, const int* tlc, const long long* tets, const float* gl, const float* VT, const float* MT, float c, float* mfa) {
+    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i0 >= tlc[0]) return;
+    int t = tl[i0];
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    float gn[4], sg = 0.f;
+    for (int i=0;i<4;i++) { float a_=0.f; for (int q=0;q<3;q++) { float g_ = gl[(long long)t*12+i*3+q]; a_ += g_*g_; } gn[i] = sqrtf(a_); sg += gn[i]; }
+    for (int i=0;i<4;i++) atomicAdd(&mfa[tets[(long long)t*4+i]], c*V*MT[t]*gn[i]*sg);
+}
 __global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
 '''
