@@ -90,7 +90,7 @@ __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* v
     if (AHKD && AHKF && !(fixd && fixd[n])) {
         const float* K = AHKD + (long long)n*6;
         float Cm[9] = {K[0], K[3], K[5], K[3], K[1], K[4], K[5], K[4], K[2]}; float l_[3]; symeig3(Cm, l_);
-        imp = 0.25f*hs*hs*l_[2] > m;
+        imp = (AHKF == 2) ? true : (0.25f*hs*hs*l_[2] > m);                       // AHKF 2 = 모든 노드 (단위 시험 전용)
     }                                    // 절 AG.15: 노드별 국소 CFL 관성 질량 하한 (mfa != null)                                                   // 절 AH.18 --ah_mlow: 가속도에만 쓰는 관성 질량 하한 (0 이면 기존)
     float v[3];
     if (imp) {                                                                  // 절 AG.18: (m I + h² K_nn) Δv = h (f + m g − h K_nn v), 이웃은 명시적 값 고정 (VBD 노드 블록과 같은 꼴, 선형화 후퇴 오일러 한 걸음)
@@ -541,7 +541,7 @@ def set_nb(t):
 def set_kf(on):
     """절 AG.18 --ah_imex_flag diag."""
     import cupy as cp
-    cp.ndarray((1,), cp.int32, mod().get_global("AHKF"))[:] = 1 if on else 0
+    cp.ndarray((1,), cp.int32, mod().get_global("AHKF"))[:] = int(on)
 
 
 def set_vpred(vn, hs):
