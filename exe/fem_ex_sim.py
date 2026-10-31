@@ -235,6 +235,8 @@ ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 
 ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적분점 (정의 변경): 셀 안 max‖F_p − F̄_T‖_F ≤ ε 이거나 입자 1 개인 사면체는 한 점 적분 (F̄, V = Σ w) -- 음수 = 끔 (모두 입자 적분점)")
 ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
+ap.add_argument("--ak_lamfac", type=float, default=1.0, help="절 AK.16 진단 전용: λ (부피 강성) 배율 -- 재질을 바꾸는 것이라 판정용으로만")
+ap.add_argument("--ak_mufac", type=float, default=1.0, help="절 AK.16 진단 전용: μ (전단 강성) 배율")
 ap.add_argument("--ak_p2", action="store_true", help="절 AK.13 (구조 변경, 사용자 10-31 허락): 2 차 사면체 10 노드 (같은 Kuhn 격자 + 변 중점 노드), HRZ 집중 질량 (꼭짓점 m_T/36, 변 4 m_T/27), 입자 적분점 셀 탄성, 2 차 G2P")
 ap.add_argument("--ak_flip", type=float, default=0.0, help="절 AK: 프레임 끝 입자 속도를 FLIP 섞기로 v = Σλ v_n + α (v_p − Σλ v_n0) (v_n0 = 이번 프레임 P2G 직후 노드 속도; α 0 = PIC, 정의 변경)")
 ap.add_argument("--ak_cfac", type=float, default=1.0, help="절 AK --affine: 다음 프레임 P2G 에 쓰는 입자 속도 기울기 C 의 배율 (1 = APIC, 0 = PIC; 정의 변경)")
@@ -312,6 +314,9 @@ if not GT_ALLOK:
     print(f"[정답] 비유한 입자 (프레임 1 / 마지막): {int((~GTOK[0]).sum())} / {int((~GTOK[-1]).sum())} -- 오차는 정답이 유한한 입자만", flush=True)
 gv = [float(q) for q in cfg["g"]]
 mu, lam = PR.lame(cfg["E"], cfg["nu"])
+if a.ak_lamfac != 1.0 or a.ak_mufac != 1.0:                                          # 절 AK.16 진단 전용 (재질 변경)
+    mu, lam = mu * a.ak_mufac, lam * a.ak_lamfac
+    print(f"[절 AK.16 진단] μ x {a.ak_mufac:g}, λ x {a.ak_lamfac:g} (재질 변경 -- 판정용)", flush=True)
 
 
 GPROF = bool(os.environ.get("AH_GPROF"))                                            # 절 AH.14 진단 (측정 아님): 격자 준비 소구간 CPU 벽시계 (동기화 넣음)
