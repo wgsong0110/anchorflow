@@ -78,6 +78,8 @@ VAR = {
     "cmsPd": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --akpl_el --ah_mcfl 1 --ah_imex --ah_imex_flag diag @NOFAST",
     "cmsGd": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --akg_k 1 --akg_empty --akg_hg 1 --ah_imex --ah_imex_flag diag @NOFAST",
     "cmsGdg": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --akg_k 1 --akg_empty --akg_hg 1 --ah_imex --ah_imex_flag diag --ah_imex_k gersh @NOFAST",
+    "cmsPr": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --akpl_el --ah_mcfl 1 --ah_imex --ah_imex_rel @NOFAST",   # 절 AG.18: Gershgorin 판정 + 이웃 결합 상대 꼴
+    "cmsGr": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --akg_k 1 --akg_empty --akg_hg 1 --ah_imex --ah_imex_rel @NOFAST",
     "cm05m": "PQF3 --sp_vcap 0.5 --ak_capmu --ah_mlow 0.1",
     "pqfl9": "PQF3 --ak_flip 0.9",
     "pqfl1": "PQF3 --ak_flip 1.0",

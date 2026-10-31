@@ -260,6 +260,7 @@ ap.add_argument("--ah_imex", action="store_true", help="절 AG.18 정의 변경:
                      "그 노드 3x3 접선 강성 (프레임 시작 선형 탄성 접선) 으로 선형화 후퇴 오일러 한 걸음 (이웃은 명시적 값 고정); 질량 하한은 쓰지 않는다")
 ap.add_argument("--ah_imex_k", choices=["tan", "gersh"], default="tan", help="--ah_imex 의 노드 강성: tan = 선형 탄성 접선 대각 블록, gersh = Gershgorin 상계 k_n I (대각 우세)")
 ap.add_argument("--ah_imex_flag", choices=["gersh", "diag"], default="gersh", help="--ah_imex 대상 판정: gersh = Gershgorin 상계 (h_s/2)² k_n > m (과대 -- 거의 모든 노드), diag = 노드 대각 블록 (h_s/2)² λ_max(K_nn) > m")
+ap.add_argument("--ah_imex_rel", action="store_true", help="절 AG.18 --ah_imex: 후퇴 오일러 블록을 이웃 결합 상대 꼴로 -- K_nn (v_n − v̄) − K_nn Δv̄ (v̄·Δv̄ = 이웃 속도·명시적 Δv 의 c_ij 가중 평균, Σ_j c_ij = K 대각; 병진에 영 강성)")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
@@ -940,6 +941,8 @@ class Opt:
             self.mcfl = z(self.Mcap)                                                 # 절 AG.15 노드별 국소 CFL 관성 질량
             if a.ah_imex:
                 self.ahkd = z(self.Mcap * 6)                                         # 절 AG.18 노드 접선 대각 블록
+                if a.ah_imex_rel:
+                    self.ahnb = z(self.Mcap * 7)
             self.accB = z(self.Mcap)                                                 # 절 AH.12 --vfl_bf: 프레임 상수 띠 고착 질량                                                # 절 AH: 노드별 실제 접촉 (평면 아래) 입자 수 (비관통 판정, 쓴 뒤 비움)
             self.ml = z(self.Mcap) if RWL else None                                  # 절 Q --rep_w lam: 속도 전달 정규화 질량 Σλm
             if LIM:
@@ -1884,6 +1887,10 @@ class Opt:
                 AHC.launch("akg_kns2", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs), EX.P(self.FT),
                                                    EX.P(self.akg_W), EX.P(self.akg_VG), EX.P(self.akg_MG), EX.P(self.akg_Sg), EX.P(self.akg_Fm),
                                                    np.float32(a.ah_mcfl * (hs_ / 2.0) ** 2), np.float32(2.0 * a.akg_hg * mu), EX.P(self.mcfl)), b=128)
+        if a.ah_imex and a.ah_imex_rel:                                            # 절 AG.18: 이웃 결합 (힘 뒤·노드 걸음 앞)
+            AHC.launch("ah_imx_nb", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.akg_W if (AKG and a.akg_empty) else None),
+                                                EX.P(self.vn), EX.P(self.f), EX.P(self.mn), EX.P(self.mcfl), np.float32(hs_), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
+                                                EX.P(self.ahnb)), b=128)
         if a.cfuse_mode == 2:
           if AHF and a.vfl_bf:
             AHC.launch("ah_node_step_bf", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
@@ -2875,6 +2882,7 @@ class Opt:
                     AHC.launch("akg_kd", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.gl), EX.P(self.akg_W), EX.P(self.akg_VG),
                                                      EX.P(self.akg_MG), np.float32(2.0 * a.akg_hg * mu), EX.P(self.ahkd)), b=128)
                 AHC.set_kd(self.ahkd)
+                AHC.set_nb(self.ahnb if a.ah_imex_rel else None)
                 AHC.set_kg(a.ah_imex_k == "gersh")
                 AHC.set_kf(a.ah_imex_flag == "diag")
                 if not hasattr(self, "_imx_n"):

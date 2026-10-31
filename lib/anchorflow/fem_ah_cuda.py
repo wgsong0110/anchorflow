@@ -24,6 +24,7 @@ _AH = r'''
 extern "C" {
 #ifndef AF_KD_DEF
 #define AF_KD_DEF
+__device__ float* AHNB;                                                             // 절 AG.18 --ah_imex_rel: 노드별 [Σc v_j (3), Σc Δv_j (3), Σc] (7 성분) -- 이웃 결합 상대 꼴 (null = 이웃 고정 판)
 __device__ int AHKF;                                                                // 1 = 대상 판정을 노드 대각 블록 최대 고윳값으로: (h_s/2)² λ_max(K_nn) > m (그 노드 자기 진동수 -- 이웃 고정)
 __device__ int AHKG;                                                                // 1 = K_nn 대신 Gershgorin 상계 k_n I (k_n = 4 mfa / h_s², 대각 우세라 이웃 고정 한 걸음이 안정)
 __device__ const float* AHKD;                                                       // 절 AG.18 --ah_imex: 노드 3x3 접선 강성 대각 블록 (6 성분, null = 끔). 켜면 국소 CFL 비 > 1 노드만 국소 후퇴 오일러
@@ -98,7 +99,18 @@ __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* v
         if (AHKG) { float kn = 4.f*mfa[n]/(hs*hs); for (int k_=0;k_<9;k_++) Km[k_] = 0.f; Km[0] = Km[4] = Km[8] = kn; }
         float v0[3] = {vn[n*3], vn[n*3+1], vn[n*3+2]};
         float r[3], Mx[9];
-        for (int a_=0;a_<3;a_++) { float kv = Km[a_*3]*v0[0] + Km[a_*3+1]*v0[1] + Km[a_*3+2]*v0[2]; r[a_] = hs*(f[n*3+a_] + m*gg[a_] - hs*kv); }
+        float vb[3] = {v0[0], v0[1], v0[2]}, dvb[3] = {hs*gg[0], hs*gg[1], hs*gg[2]};
+        if (AHNB) {                                                             // 상대 꼴: K_nn (v_n − v̄) − K_nn Δv̄ -- 병진에 영 강성 (Σ c = K 행 합의 대각 몫)
+            float* B = AHNB + (long long)n*7;
+            if (B[6] > 1e-30f) for (int a_=0;a_<3;a_++) { vb[a_] = B[a_]/B[6]; dvb[a_] = B[3+a_]/B[6]; }
+            for (int q_=0;q_<7;q_++) B[q_] = 0.f;
+        }
+        for (int a_=0;a_<3;a_++) {
+            float d0 = AHNB ? (v0[0]-vb[0]) : v0[0], d1 = AHNB ? (v0[1]-vb[1]) : v0[1], d2 = AHNB ? (v0[2]-vb[2]) : v0[2];
+            float kv = Km[a_*3]*d0 + Km[a_*3+1]*d1 + Km[a_*3+2]*d2;
+            float kd = AHNB ? (Km[a_*3]*dvb[0] + Km[a_*3+1]*dvb[1] + Km[a_*3+2]*dvb[2]) : 0.f;
+            r[a_] = hs*(f[n*3+a_] + m*gg[a_] - hs*kv + hs*kd);
+        }
         for (int k_=0;k_<9;k_++) Mx[k_] = hs*hs*Km[k_]; Mx[0] += m; Mx[4] += m; Mx[8] += m;
         float cM[9]; cof3(Mx, cM); float dM = Mx[0]*cM[0]+Mx[1]*cM[1]+Mx[2]*cM[2];
         if (dM > 1e-30f) { for (int a_=0;a_<3;a_++) { float dv = (cM[a_]*r[0] + cM[3+a_]*r[1] + cM[6+a_]*r[2])/dM; v[a_] = (v0[a_] + dv)*damp; } }   // 대칭이라 cofᵀ = cof
@@ -447,6 +459,26 @@ __global__ void akg_kns2(const int* szp, const int* tg, const long long* tets, c
     float k = MG[g]*fm*wr*S + hg2mu*W[t]*(sx + S);                            // Ā 결합 (입자 실제 계수 x 압축 계수) + 모래시계 (자기 + Ā 결합)
     for (int i=0;i<4;i++) atomicAdd(&mfa[tets[(long long)t*4+i]], c*k*gx[i]);
 }
+// 절 AG.18 --ah_imex_rel: 이웃 결합 (서브스텝마다, 힘 뒤·노드 걸음 앞). c_ij = −w_t ∇λ_i·∇λ_j (Σ_j≠i c_ij = w_t |∇λ_i|², 병진 정확), 이웃 Δv = 명시적 h(f/m + g) (대상·질량 0 이웃은 h g)
+__global__ void ah_imx_nb(const int* szp, const long long* tets, const float* gl, const float* VT, const float* W, const float* vn, const float* f, const float* mn,
+                          const float* mfa, float hs, float g0, float g1, float g2, float* B) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= szp[1]) return;
+    float w = VT[t] + (W ? W[t] : 0.f);
+    if (!(w > 0.f)) return;
+    long long nd[4]; float G[12];
+    for (int i=0;i<4;i++) nd[i] = tets[(long long)t*4+i];
+    for (int q=0;q<12;q++) G[q] = gl[(long long)t*12+q];
+    float gg[3] = {g0, g1, g2};
+    float dv[4][3];
+    for (int j=0;j<4;j++) { long long m_ = nd[j]; float mm = mn[m_]; bool fl = mfa && (mfa[m_] > mm);
+        for (int c=0;c<3;c++) dv[j][c] = (!fl && mm > 0.f) ? hs*(f[m_*3+c]/mm + gg[c]) : hs*gg[c]; }
+    for (int i=0;i<4;i++) for (int j=0;j<4;j++) { if (i == j) continue;
+        float c_ = -w*(G[i*3]*G[j*3] + G[i*3+1]*G[j*3+1] + G[i*3+2]*G[j*3+2]);
+        float* Bn = B + nd[i]*7;
+        for (int c=0;c<3;c++) { atomicAdd(&Bn[c], c_*vn[nd[j]*3+c]); atomicAdd(&Bn[3+c], c_*dv[j][c]); }
+        atomicAdd(&Bn[6], c_); }
+}
 // 절 AG.18 --ah_imex: 노드 대각 블록 K_nn (프레임 시작 기준 선형 탄성 접선) -- 입자 적분점 w (μ|g|² I + (μ + λ r) g gᵀ), g = F_pᵀ ∇λ_n (r = --ak_capmu λ 배율)
 __global__ void ah_kd_pq(int N, const int* tt, const long long* tets, const float* gl, const float* akF, const float* wp, const float* lr, const int* gp,
                          float mu, float lam, float* Kd) {
@@ -498,6 +530,12 @@ def set_kg(on):
     """절 AG.18 --ah_imex_k gersh."""
     import cupy as cp
     cp.ndarray((1,), cp.int32, mod().get_global("AHKG"))[:] = 1 if on else 0
+
+
+def set_nb(t):
+    """절 AG.18 --ah_imex_rel: AHNB 포인터."""
+    import cupy as cp
+    cp.ndarray((1,), cp.uint64, mod().get_global("AHNB"))[:] = 0 if t is None else t.data_ptr()
 
 
 def set_kf(on):
