@@ -580,8 +580,9 @@ if a.vfl_tacc and not (AH_GTK and a.cfuse and a.mass == "tet" and not a.vfl_agg)
 if a.vfl_agg and not (AH_GTK and a.cfast or AH_GTK and a.cfuse):
     raise SystemExit("--vfl_agg 는 --vfl_w gtk + --cfuse 경로만")
 if AHF:
-    if not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2) or PLAST or VISC or PBC:
-        raise SystemExit("절 AH 바닥 (--vfl_w gtk / --vfl_rate) 은 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, 탄성) 만")
+    _ahfl = VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0)
+    if not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2) or (_ahfl and (PLAST or VISC or PBC)):
+        raise SystemExit("절 AH 바닥 (--vfl_w gtk / --vfl_rate) 은 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, 탄성) 만 (--ah_mlow 만은 절 AG 재질 판에도)")
     if AH_GTK and abs(sum(abs(q) for q in nr_) - 1.0) > 1e-6:
         raise SystemExit("--vfl_w gtk 는 축 정렬 평면만 (정답 격자 노드 좌표 비교)")
     print(f"[절 AH 바닥] 가중 {a.vfl_w} (정답 격자 dx_g {AH_DXG:g}, p·n {AH_PN:g}, 고착 격자 노드 최대 지표 {AHC.gt_floor_k0(AH_DXG, AH_PN) if AH_GTK else '-'}, 띠 {AH_BAND:g} m), "
