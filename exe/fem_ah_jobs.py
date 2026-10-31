@@ -101,7 +101,13 @@ V9 = {
     "bw05": (FINF + " --vfl_band 0.05", False),
     "bw0": (FINF + " --vfl_band 0", False),
 }
-SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9}
+# 10 차 (조정자 10-31): 절 AI 클램프 없는 판 (A1+A2+B1, --lim_sr 1e30 = 판정 커널 건너뜀) 위에 띠 0 바닥 -- 늦은 발산이 사라지는지
+AIF = " --ai_p2g rs --ai_stress --fupd navg --fupd_b 1"
+V10 = {
+    "ai_bw0": (rep(FINF + " --vfl_band 0", lim_sr="1e30") + AIF, True),
+    "ai_bw0_5": (rep(FIN5 + " --vfl_band 0", lim_sr="1e30") + AIF, True),
+}
+SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]
