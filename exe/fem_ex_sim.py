@@ -262,6 +262,7 @@ ap.add_argument("--ah_mcfl_tan", action="store_true",
 ap.add_argument("--ah_mcfl_sub", action="store_true",
                 help="절 AG.17: --ah_mcfl 국소 CFL 질량을 서브스텝마다 현재 셀 기하 (A⁻ᵀ∇λ) 와 현재 변형 접선 계수로 다시 (그래프 안 커널, 진단 우선 -- 비용 큼)")
 ap.add_argument("--dump_pl", action="store_true", help="절 AG.17 진단: 프레임마다 입자 항복 응력·logJp·손상 (float16) -> pl_dump.pt (측정 밖)")
+ap.add_argument("--mesh_cc", default="", help="절 AG.18 진단 (측정 밖): 이 프레임들 (1 부터, 쉼표) 끝에서 점유 사면체 메시의 연결 성분 (노드 공유) 수·크기, 입자 구속 영역과 몸통이 같은 성분인지 -> fem.jsonl cc")
 ap.add_argument("--ag_pbcp", action="store_true",
                 help="절 AG.16 bread: 입자 속도 구속을 PG 처럼 입자에 직접 -- 프레임 시작 구속 입자 속도 = v_bc (P2G 에 들어감), 프레임 끝 구속 입자 x ← x0 + h v_bc, v ← v_bc (노드 섞기 --pbc 는 그대로)")
 ap.add_argument("--akb_kappa", type=float, default=0.0,
@@ -3640,6 +3641,34 @@ for i in range(L):
             st.update(rn=int((vnn > 5.0 * q90).sum()), vn_max=float(vnn.max()), vn_q90=float(q90))
             if a.ah_rn:
                 st.update(rnd=rn_diag(OPT, vnn, q90))
+        if a.mesh_cc and str(i + 1) in a.mesh_cc.split(","):                       # 절 AG.18: 메시 연결 성분 (라벨 전파)
+            T_, M_ = OPT.T, OPT.M
+            tt_ = OPT.tets[:T_][OPT.VTs[:T_] > 0]
+            lab = torch.arange(M_, device=dev)
+            for _ in range(10000):
+                tl_ = lab[tt_].min(1).values
+                nl = lab.clone().scatter_reduce(0, tt_.flatten(), tl_.repeat_interleave(4), "amin", include_self=True)
+                nl = nl[nl]
+                if bool((nl == lab).all()):
+                    break
+                lab = nl
+            used = torch.zeros(M_, dtype=torch.bool, device=dev); used[tt_.flatten()] = True
+            cu, cc_ = torch.unique(lab[used], return_counts=True)
+            pl_ = lab[OPT.rows.view(-1, 4)[:, 0]]                                      # 입자의 성분 (사면체 첫 노드)
+            ccd = dict(n_comp=int(cu.numel()), sizes=sorted(cc_.tolist(), reverse=True)[:8])
+            pc_ = torch.unique(pl_, return_counts=True)
+            ccd["particles_per_comp"] = sorted(pc_[1].tolist(), reverse=True)[:8]
+            if PBC:
+                k_ = PBC_K[i].long()
+                for kk in range(int(k_.max()) + 1):
+                    mk = k_ == kk
+                    if bool(mk.any()):
+                        ccd[f"bc{kk}_comps"] = int(torch.unique(pl_[mk]).numel())
+                        ccd[f"bc{kk}_main_comp_particles"] = int((pl_ == torch.mode(pl_[mk]).values).sum())
+                free_ = k_ < 0
+                ccd["free_main_comp_particles"] = int((pl_ == torch.mode(pl_[free_]).values).sum()) if bool(free_.any()) else None
+            st.update(cc=ccd)
+            print(f"  [절 AG.18 메시 연결] 프레임 {i + 1}: {ccd}", flush=True)
         if AKPQ and (AKBAR or PQPL or AKG):                                         # 절 AG.13: 장벽 작동 (입자 x 서브스텝), 프레임 끝 뒤집힌 입자 적분점 (det(A_T F_p) ≤ 0) 수
             T_ = OPT.T
             A_ = torch.eye(3, device=dev) + torch.einsum("tic,tib->tcb", OPT.Uc[:OPT.M][OPT.tets[:T_]], OPT.gl[:T_].view(T_, 4, 3))
