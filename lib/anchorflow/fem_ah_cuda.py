@@ -381,6 +381,47 @@ __global__ void ah_kn_sub(const int* tl, const int* tlc, const long long* tets, 
     if (!(dA > 0.f)) { for (int i=0;i<4;i++) { float a_=0.f; for (int q=0;q<3;q++) { float g_ = gl[(long long)t*12+i*3+q]; a_ += g_*g_; } gn[i] = sqrtf(a_)/0.01f; } sg = gn[0]+gn[1]+gn[2]+gn[3]; }   // 뒤집힌 셀: 현재 기울기 정의 안 됨 -> σ_min 하한 0.01 과 같은 1/σ 배
     for (int i=0;i<4;i++) atomicAdd(&mfa[tets[(long long)t*4+i]], c*V*M*gn[i]*sg);
 }
+// 절 AG.18: 빈 사면체 포함 칸 묶음의 서브스텝 국소 CFL 상계 (ah_kn_sub 와 같은 현재 기하·변형 계수). 빈 사면체는 F̄ = I 로
+__device__ __forceinline__ void akg_cur(int t, const long long* tets, const float* U, const float* gl, const float* VT, const float* FT, float* gx, float* Mf) {
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i]; for (int cc=0;cc<3;cc++) { float u = U[nd*3+cc]; for (int q=0;q<3;q++) A[cc*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+    float cA[9]; cof3(A, cA); float dA = A[0]*cA[0]+A[1]*cA[1]+A[2]*cA[2];
+    float Fb[9] = {1,0,0, 0,1,0, 0,0,1};
+    if (VT[t] > 0.f) for (int k=0;k<9;k++) Fb[k] = FT[(long long)t*9+k];
+    float X[9]; mm3(A, Fb, X);
+    float C[9]; for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+    float l[3]; symeig3(C, l);
+    float sm = sqrtf(fmaxf(l[0], 0.f));
+    if (!(dA > 0.f) || !(det3(X) > 0.f)) sm = 0.01f;
+    sm = fmaxf(sm, 0.01f);
+    *Mf = fmaxf(1.f, 0.5f*(1.f + 1.f/(sm*sm)));
+    float id = (dA > 0.f) ? 1.f/dA : 0.f;
+    for (int i=0;i<4;i++) {
+        float a_ = 0.f;
+        if (dA > 0.f) { for (int r=0;r<3;r++) { float v_ = 0.f; for (int q=0;q<3;q++) v_ += cA[r*3+q]*gl[(long long)t*12+i*3+q]; v_ *= id; a_ += v_*v_; } gx[i] = sqrtf(a_); }
+        else { for (int q=0;q<3;q++) { float g_ = gl[(long long)t*12+i*3+q]; a_ += g_*g_; } gx[i] = sqrtf(a_)/0.01f; }
+    }
+}
+__global__ void akg_kns1(const int* szp, const int* tg, const long long* tets, const float* U, const float* gl, const float* VT, const float* FT,
+                         const float* W, const float* VG, float* Sg, float* Fm) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= szp[1]) return;
+    int g = tg[t]; if (g < 0) return;
+    float gx[4], Mf; akg_cur(t, tets, U, gl, VT, FT, gx, &Mf);
+    atomicAdd(&Sg[g], W[t]/fmaxf(VG[g], 1e-30f)*(gx[0]+gx[1]+gx[2]+gx[3]));
+    if (VT[t] > 0.f) atomicMax((int*)&Fm[g], __float_as_int(Mf));            // 양수 float 는 int 비교 순서가 같다
+}
+__global__ void akg_kns2(const int* szp, const int* tg, const long long* tets, const float* U, const float* gl, const float* VT, const float* FT,
+                         const float* W, const float* VG, const float* MG, const float* Sg, const float* Fm, float c, float hg2mu, float* mfa) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= szp[1]) return;
+    int g = tg[t]; if (g < 0) return;
+    float gx[4], Mf; akg_cur(t, tets, U, gl, VT, FT, gx, &Mf);
+    float S = Sg[g], wr = W[t]/fmaxf(VG[g], 1e-30f), sx = gx[0]+gx[1]+gx[2]+gx[3];
+    float fm = fmaxf(Fm[g], 1.f);
+    float k = MG[g]*fm*wr*S + hg2mu*W[t]*(sx + S);                            // Ā 결합 (입자 실제 계수 x 압축 계수) + 모래시계 (자기 + Ā 결합)
+    for (int i=0;i<4;i++) atomicAdd(&mfa[tets[(long long)t*4+i]], c*k*gx[i]);
+}
 __global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
 '''

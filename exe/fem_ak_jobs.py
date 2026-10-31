@@ -70,6 +70,7 @@ VAR = {
     "cmsl": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ak_acclam",                  # 절 AK.19: 고착 질량 λ 몫                                # 절 AK.18: 기본 판 + 표준 FCR
     "cmsP": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --akpl_el --ah_mcfl 1 @NOFAST",   # 절 AG.18 대조: 묶음과 같은 akpl 힘 경로 + 국소 CFL 질량 (질량 0 노드 관성), 묶음 없음
     "cmsG": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --akg_k 1 --akg_empty --akg_hg 1 @NOFAST",   # 절 AG.18: + 빈 사면체 포함 칸 묶음 (γ 1)
+    "cmsGs": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --ah_mcfl_sub --akg_k 1 --akg_empty --akg_hg 1 @NOFAST",   # 절 AG.18: 묶음 몫을 넣은 서브스텝 국소 CFL 질량
     "cm05m": "PQF3 --sp_vcap 0.5 --ak_capmu --ah_mlow 0.1",
     "pqfl9": "PQF3 --ak_flip 0.9",
     "pqfl1": "PQF3 --ak_flip 1.0",

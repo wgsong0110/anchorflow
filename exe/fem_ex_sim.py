@@ -1016,6 +1016,9 @@ class Opt:
                 self.akg_VG = torch.zeros(self.Pcap, device=dev)
                 self.akg_AG = torch.zeros(self.Pcap * 9, device=dev)
                 self.akg_GmG = torch.zeros(self.Pcap * 9, device=dev)
+                self.akg_MG = torch.zeros(self.Pcap, device=dev)
+                self.akg_Sg = torch.zeros(self.Pcap, device=dev)
+                self.akg_Fm = torch.zeros(self.Pcap, device=dev)
             if BSL:
                 self.cV = torch.zeros(self.Pcap, device=dev)
                 self.cVF = torch.zeros(self.Pcap * 9, device=dev)
@@ -1865,6 +1868,13 @@ class Opt:
             self.mcfl.zero_()
             AHC.launch("ah_kn_sub", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs), EX.P(self.FT),
                                                 np.float32(lam + 2.0 * mu), np.float32(a.ah_mcfl * (hs_ / 2.0) ** 2), EX.P(self.mcfl)), b=128)
+            if AKG and a.akg_empty:                                                 # 절 AG.18: 묶음 몫 (빈 사면체·Ā 결합·모래시계·λ 배율) 도 서브스텝마다 현재 기하로
+                self.akg_Sg.zero_(); self.akg_Fm.zero_()
+                AHC.launch("akg_kns1", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs), EX.P(self.FT),
+                                                   EX.P(self.akg_W), EX.P(self.akg_VG), EX.P(self.akg_Sg), EX.P(self.akg_Fm)), b=128)
+                AHC.launch("akg_kns2", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs), EX.P(self.FT),
+                                                   EX.P(self.akg_W), EX.P(self.akg_VG), EX.P(self.akg_MG), EX.P(self.akg_Sg), EX.P(self.akg_Fm),
+                                                   np.float32(a.ah_mcfl * (hs_ / 2.0) ** 2), np.float32(2.0 * a.akg_hg * mu), EX.P(self.mcfl)), b=128)
         if a.cfuse_mode == 2:
           if AHF and a.vfl_bf:
             AHC.launch("ah_node_step_bf", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
@@ -2841,6 +2851,7 @@ class Opt:
                 lr_ = self.aklr if a.ak_capmu else torch.ones_like(self.akw)
                 okp = gp_ >= 0
                 MG = torch.zeros(self.Pcap, device=dev).index_add_(0, gp_[okp], self.akw[okp] * (lam * lr_[okp] + 2.0 * mu))
+                self.akg_MG[:MG.numel()].copy_(MG)                                    # 절 AG.18: 서브스텝 상계 (--ah_mcfl_sub) 가 쓰는 프레임 상수
                 kg_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2) * (MG[g_] * wr_ * Sg[g_])[:, None] * gn_
                 if a.akg_hg > 0:                                                    # 모래시계 억제 2γμ W_t (A_t − Ā) 의 Ā 쪽 결합 몫 (행 합 2γμ W_t |∇λ_n| S_g)
                     kg_ = kg_ + (a.ah_mcfl * (self.hscur / 2.0) ** 2 * 2.0 * a.akg_hg * mu) * (self.akg_W[:T_][ing_] * Sg[g_])[:, None] * gn_
