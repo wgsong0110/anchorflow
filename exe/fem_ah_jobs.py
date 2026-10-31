@@ -125,7 +125,13 @@ V12 = {
     "akg2": (AKB + " --akg_k 2", True),
     "akg2h": (AKB + " --akg_k 2 --akg_hg 1", True),
 }
-SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11, "12": V12}
+# 13 차 (절 AG.13, 사용자 10-31): 입자 적분점 판 + 뒤집힘 장벽 κ
+V13 = {
+    "akb01": (AKB + " --akb_kappa 0.1", True),
+    "akb1": (AKB + " --akb_kappa 1", True),
+    "akb10": (AKB + " --akb_kappa 10", True),
+}
+SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11, "12": V12, "13": V13}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]
