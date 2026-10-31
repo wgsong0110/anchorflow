@@ -52,7 +52,13 @@ ap.add_argument("--flow", required=True)
 ap.add_argument("--aux", required=True)
 ap.add_argument("--fill", default="", help="(쓰지 않는다 -- 내부 채움 없는 3DGS 만)")
 ap.add_argument("--method", required=True,
-                choices=["ours", "tet", "phystwin", "gaussim", "simplicits", "vrgs", "tetmesh", "grid"])
+                choices=["ours", "tet", "fem", "phystwin", "gaussim", "simplicits", "vrgs", "tetmesh", "grid"])
+ap.add_argument("--mpm_dx", type=float, default=0.0,
+                help="fem: 그 씬 MPM 격자 간격 dx (시뮬 좌표, grid_lim/n_grid). node_h = dx·(2√2)^(1/3) "
+                     "(명시적 FEM fem_ex_sim 의 --node_h 와 같은 규칙), 격자 원점은 시뮬 좌표 원점 (세계 고정)")
+ap.add_argument("--feas", action="store_true",
+                help="riem: Armijo 되돌림에 가능성 검사를 넣는다 -- 입자 누적 det F > 0 (--riem_partF 필요) 과 표현 고유 제약 "
+                     "(셀 det > 0 / grid CFL |u|<cfl·dx) 을 모두 만족하는 보폭만 받는다. 끝까지 못 찾으면 그 반복은 걷지 않는다")
 ap.add_argument("--out", required=True)
 ap.add_argument("--video", default="")
 ap.add_argument("--simp", default="", help="simplicits: 학습된 가중치 함수 (.pt)")
@@ -331,15 +337,26 @@ class Lattice(torch.nn.Module):
     """ours / tet: 매 프레임 직전 위치에 격자를 새로 깔고 증분 변위로 스키닝."""
     rebind_each_frame = True
 
-    def __init__(self, gregory):
+    def __init__(self, gregory, mpm_dx=0.0):
         super().__init__()
         self.greg = gregory
         # 원래 조합: node_h = MPM dx·(2√2)^(1/3). PG 채우기 격자 dx = 2/100 (시뮬)
         self.h = (2.0 / 100.0) * (2.0 * math.sqrt(2.0)) ** (1.0 / 3.0) / S_NORM
+        self.c0 = None
+        if mpm_dx > 0:
+            # fem: 명시적 FEM (fem_ex_sim, fem_rt.GridK) 과 같은 격자 -- node_h = 그 씬 MPM dx·(2√2)^(1/3) (시뮬 좌표),
+            # 격자 정수점이 **시뮬 좌표 원점** 기준 (세계 고정). 정규화 좌표 P = (시뮬 - lo)/s + off 라 시뮬 원점 = off - lo/s
+            self.h = mpm_dx * (2.0 * math.sqrt(2.0)) ** (1.0 / 3.0) / S_NORM
+            self.c0 = torch.as_tensor(np.asarray(OFF, dtype=np.float64) - np.asarray(LO, dtype=np.float64) / S_NORM,
+                                      device=dev, dtype=DT)
         self.a = 0.5
 
     def rebind(self, Pall):
-        lo, lat, nn = sx.grid_for_nodes(Pall, 1.0, h_fix=self.h)
+        if self.c0 is not None:
+            lo, lat, nn = sx.grid_for_nodes(Pall - self.c0, 1.0, h_fix=self.h)
+            lo = lo + self.c0
+        else:
+            lo, lat, nn = sx.grid_for_nodes(Pall, 1.0, h_fix=self.h)
         idx, lam, _ = sx.locate(Pall, lo, lat, nn)
         rows, uniq = sx.active_nodes(idx)
         self.rows = rows
@@ -844,6 +861,11 @@ class VRGS(torch.nn.Module):
 
 if a.method in ("ours", "tet"):
     rep = Lattice(gregory=(a.method == "ours"))
+elif a.method == "fem":
+    assert a.mpm_dx > 0, "fem: --mpm_dx (그 씬 MPM dx, 시뮬 좌표) 필요"
+    rep = Lattice(gregory=False, mpm_dx=a.mpm_dx)
+    print(f"[fem] node_h {a.mpm_dx * (2.0 * math.sqrt(2.0)) ** (1.0 / 3.0):.6f} (시뮬, MPM dx {a.mpm_dx:.6f}) "
+          f"= {rep.h:.6f} (정규화), 격자 원점 = 시뮬 원점 {rep.c0.tolist()}", flush=True)
 elif a.method == "phystwin":
     rep = PhysTwin()
 elif a.method == "tetmesh":
@@ -1050,6 +1072,7 @@ if RENDER:
 rows, CURVE, DOFS, STOP, EMDP = [], [], [], [], []
 DETC = [torch.ones(FI.numel(), device=dev, dtype=torch.float64)]   # ipmF: 입자 누적 det (정지 대비)
 SPRING_CAP, SPRING_LOG, CFL_LOG = [float("inf")], [], []
+NFEAS = [0]                                           # --feas: 마지막 시도까지 제약을 어겨 걷지 않은 반복 수
 PHYS, TRAJS, YPREV = [], [], [G0[FI].clone()]
 FSAVE = []
 PST, CONSLOG = {}, []                                 # proj·alm 상태 (ρ, μ0, ε, 쌍대 Λ / 승수 λ -- 프레임을 넘어 이어진다) / 프레임별 제약 기록
@@ -1070,7 +1093,7 @@ if a.resume and os.path.exists(CKPT):
         "rows", "CURVE", "DOFS", "STOP", "EMDP", "PHYS", "TRAJS", "YPREV", "FSAVE", "DETC", "SPRING_CAP",
         "SPRING_LOG", "CFL_LOG", "RIEMLOG", "LMAX_LOG", "TETLOG", "NODES")]
     LMST = _ck["LMST"]; OPT = None
-    PST.update(_ck.get("PST", {})); CONSLOG = _ck["L"].get("CONSLOG", [])
+    PST.update(_ck.get("PST", {})); CONSLOG = _ck["L"].get("CONSLOG", []); NFEAS = _ck["L"].get("NFEAS", [0])
     torch.set_rng_state(_ck["rng"].cpu()); torch.cuda.set_rng_state(_ck["cuda_rng"].cpu())   # 거듭제곱법 시작 벡터까지 같게
     T_START = _ck["t"] + 1
     t0 -= _ck["elapsed"]
@@ -1440,7 +1463,7 @@ for t in range(T_START, T + 1):
             return torch.cat([q.reshape(-1) for q in ts])
         theta = flat([q.detach() for q in PL])
         X_ = Pref[FI]
-        if a.method in ("ours", "tet", "tetmesh") and a.riem_energy == "logbarrier":
+        if a.method in ("ours", "tet", "fem", "tetmesh") and a.riem_energy == "logbarrier":
             def make_res(th):
                 return lambda x: rep.logbarrier_residual(*unflat(x))
         elif a.method == "grid":
@@ -1536,7 +1559,7 @@ for t in range(T_START, T + 1):
             Jfun = None
 
         PURE = None                                         # (순수 잔차, 인자) -- 컴파일 경로
-        if a.riem_energy == "logbarrier" and a.method in ("ours", "tet", "tetmesh"):
+        if a.riem_energy == "logbarrier" and a.method in ("ours", "tet", "fem", "tetmesh"):
             PURE = (res_lattice_lb, (rep.Xn, rep.cells, rep.cD0i))
         elif a.riem_energy == "logbarrier" and a.method == "vrgs":
             PURE = (res_tri_lb, (rep.f, rep.n0, rep.A0))
@@ -1661,6 +1684,20 @@ for t in range(T_START, T + 1):
         if a.riem_damp != "rel":
             assert a.riem_eps0 > 0 and Jfun is not None, "riem_damp fix/lm: riem_eps0 > 0, 셀 det 가 있는 방법만"
         LMAX_LOG.append((t, lmax))
+        if a.feas:
+            assert a.opt == "riem" and a.riem_partF, "--feas: riem + --riem_partF 전용"
+
+            def FEAS(Jt):
+                """시도 보폭의 가능성: 입자 누적 det F > 0 (보고 지표와 같은 float64 스칼라 곱) + 표현 고유 제약."""
+                with torch.no_grad():
+                    cp = det3(Jt).double() * DETC[0] if REB else det3(Jt).double()
+                    if not bool((cp > 0).all()):
+                        return False
+                    if a.method == "grid":
+                        return bool(((rep.u * rep.u).sum(1) < rep.c * rep.c).all())
+                    if hasattr(rep, "cellJ"):
+                        return bool((rep.cellJ(*[q.detach() for q in PL])[0] > 0).all())
+                    return True
         if a.opt == "ipm":
             # 내부점법 (장벽법): 매 단계 min L2 + μ·B, B = -Σ w² log J (J>0 영역 안에서만),
             # μ 는 단계마다 1/10. 방향은 같은 계량의 Δ = -G⁻¹∇f, 보폭은 가능성(J>0) + Armijo 되돌림
@@ -1778,15 +1815,22 @@ for t in range(T_START, T + 1):
                     if a.ls_max == 0:
                         for q, dq in zip(PL, unflat(x)):
                             q -= stp * dq
+                    _fz = True
                     for _bt in range(a.ls_max):
                         for q, q0, dq in zip(PL, unflat(theta), unflat(x)):
                             q.copy_(q0 - stp * dq)
-                        dyt, _ = YJ(X_, FI)
+                        dyt, _Jt = YJ(X_, FI)
                         ft = float(((RES0 + dyt) ** 2).sum(1).mean())
-                        if ft == ft and ft <= f0 - 1e-4 * stp * sl:
+                        _fz = FEAS(_Jt) if a.feas else True
+                        if _fz and ft == ft and ft <= f0 - 1e-4 * stp * sl:
                             break
                         stp *= 0.5; nbt += 1
                     # 다 실패해도 원래 값으로 되돌리지 않는다 (사용자 지시 10-13): 마지막으로 시도한 보폭을 그대로 둔다
+                    # --feas: 단 마지막 시도가 제약을 어기면 그 반복은 걷지 않는다 (가능 영역 밖으로 나가지 않는다)
+                    if a.feas and not _fz:
+                        for q, dq in zip(PL, unflat(theta)):
+                            q.copy_(dq)
+                        stp = 0.0; NFEAS[0] += 1
                 else:
                     # fix·lm: 가능성 검사(장벽 셀 det 모두 > 0) + Armijo 되돌림. 뒤집힘은 여기서만 막는다
                     def _trial(s_):
@@ -1796,7 +1840,9 @@ for t in range(T_START, T + 1):
                             q.copy_(dq)
                         if not jm_ > 0:
                             return float("inf"), jm_
-                        dyt_, _ = YJ(X_, FI)
+                        dyt_, Jt_ = YJ(X_, FI)
+                        if a.feas and not FEAS(Jt_):                  # 입자 누적 det F ≤ 0 도 불가능으로
+                            return float("inf"), -1.0
                         ft_ = float(((RES0 + dyt_) ** 2).sum(1).mean())
                         return (ft_ if ft_ == ft_ else float("inf")), jm_
                     ft, jm = _trial(stp)
@@ -1820,7 +1866,7 @@ for t in range(T_START, T + 1):
                     if not ok and not jm > 0:                        # 마지막 시도도 뒤집히면 이 반복은 걷지 않는다
                         for q, dq in zip(PL, unflat(theta)):
                             q.copy_(dq)
-                        stp = 0.0
+                        stp = 0.0; NFEAS[0] += 1
                     if a.riem_damp == "lm":
                         eps = LMST["eps"]                            # 다음 반복의 ε
             CURVE.append((t, it_, float(l2), stp, nbt))
@@ -1921,7 +1967,8 @@ for t in range(T_START, T + 1):
         e = float("nan")                            # EMD 는 저장한 위치로 rep_emd.py 가 따로 잰다
         if t % a.emd_every == 0 or t == T:
             EMDP.append((t, y.float().cpu().numpy(), tgt.float().cpu().numpy()))
-        rows.append((t, rmse, cd, e, float(J.min()), float((J <= 0).float().mean())))
+        mae = float((y - tgt).norm(dim=1).mean()) / L          # 명시적 FEM 과 같은 지표: 입자 평균 |x - x_gt| / EXT (EXT = 정지 경계상자 대각선 = L)
+        rows.append((t, rmse, cd, e, float(J.min()), float((J <= 0).float().mean()), mae))
         # 물리 지표 (같은 질량 1/N 입자): 운동에너지·선운동량·각운동량 (프레임 차분 속도), 부피비 Σ det F / N
         vel = (y - YPREV[0]) * 30.0
         com = y.mean(0)
@@ -1966,13 +2013,13 @@ for t in range(T_START, T + 1):
     if a.ckpt_every > 0 and (t % a.ckpt_every == 0) and t < T:
         _L = dict(rows=rows, CURVE=CURVE, DOFS=DOFS, STOP=STOP, EMDP=EMDP, PHYS=PHYS, TRAJS=TRAJS, YPREV=YPREV,
                   FSAVE=FSAVE, DETC=DETC, SPRING_CAP=SPRING_CAP, SPRING_LOG=SPRING_LOG, CFL_LOG=CFL_LOG,
-                  RIEMLOG=RIEMLOG, LMAX_LOG=LMAX_LOG, TETLOG=TETLOG, NODES=NODES, CONSLOG=CONSLOG)
+                  RIEMLOG=RIEMLOG, LMAX_LOG=LMAX_LOG, TETLOG=TETLOG, NODES=NODES, CONSLOG=CONSLOG, NFEAS=NFEAS)
         torch.save(dict(t=t, rep=rep.state_dict(), Pref=Pref, Fcum=Fcum, Rcum=Rcum, L=_L, LMST=LMST, PST=PST,
                         elapsed=time.time() - t0, rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state()),
                    CKPT + ".tmp")
         os.replace(CKPT + ".tmp", CKPT)
     if t % 10 == 0 or t == 1:
-        print(f"  [t={t:3d}] RMSE {100*rmse:.3f}%  CD {100*cd:.3f}%  "
+        print(f"  [t={t:3d}] RMSE {100*rmse:.3f}%  CD {100*cd:.3f}%  평균|x-x_gt|/EXT {100*mae:.3f}%  "
               + (f"EMD {100*e:.3f}%  " if e == e else "")
               + f"det 최소 {rows[-1][4]:.3f} (≤0 {100*rows[-1][5]:.2f}%)  자유도 {rep.dof}  "
               + (f"이웃 det 최소 {STOP[-1][3]:.3f}  되돌림 {int(STOP[-1][4])}  "
@@ -1985,7 +2032,8 @@ if RENDER:
 R = np.array(rows)
 print(f"[요약] {a.method}  자유도 {np.mean(DOFS):.0f}  RMSE {100*R[:,1].mean():.3f}%  "
       f"CD {100*R[:,2].mean():.3f}%  det 최소 {R[:,4].min():.4f}  "
-      f"뒤집힘 최대 {100*R[:,5].max():.2f}%", flush=True)
+      f"뒤집힘 최대 {100*R[:,5].max():.2f}%  평균|x-x_gt|/EXT {100*R[:,6].mean():.3f}%"
+      + (f"  가능성으로 멈춘 반복 {NFEAS[0]}" if a.feas else ""), flush=True)
 np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
                     curve=np.array(CURVE, dtype=np.float64),
                     stop=np.array([q[:5] for q in STOP], dtype=np.float64),
@@ -2001,6 +2049,7 @@ np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
                     lmax_log=np.array(LMAX_LOG, dtype=np.float64).reshape(-1, 2),
                     tet_log=np.array(TETLOG, dtype=np.float64).reshape(-1, 6),     # t, 셀 det 최소, J<0.5 수, J≤0 수, 셀 수, ε(끝)
                     riem_damp=a.riem_damp, riem_eps0=a.riem_eps0,
+                    feas=a.feas, nfeas=NFEAS[0], mpm_dx=a.mpm_dx, node_h_norm=float(getattr(rep, "h", float("nan"))),
                     # proj·alm: t, 셀 det 최소, 부호 σ_min 최소, σ<δ 수, det<δ 수, det≤0 수, ρ 또는 끝 μ, 끝 반복 제약 잔차
                     cons_log=np.array(CONSLOG, dtype=np.float64).reshape(-1, 8),
                     **({"cons_par": np.array([PST[k] for k in ("lmH", "lmA", "eps", "rho", "mu0")])} if "lmH" in PST else {}),
