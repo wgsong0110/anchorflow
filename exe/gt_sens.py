@@ -27,6 +27,7 @@ ap.add_argument("--n_grid", type=int, default=0, help="0 = config 그대로 (100
 ap.add_argument("--floor_z", type=float, default=None, help="바닥 평면 높이 (정답 0.48)")
 ap.add_argument("--surface", default=None, help="바닥 종류 (정답 sticky)")
 ap.add_argument("--no_dump", action="store_true")
+ap.add_argument("--pg_cfg", action="store_true", help="절 AK.15: PhysGaussian gs_simulation 형식 정답 (ficus): config 재질 (additional_material_params 포함)·감쇠·경계조건 (decode_param.set_boundary_conditions) 그대로, 바닥 충돌 없음")
 ap.add_argument("--flip", type=float, default=0.0, help="절 AK.14 진단: 서브스텝마다 FLIP 섞기 v = v_PIC + α (v_old − v_s), v_s = 같은 서브스텝 시작 상태의 운동량만 P2G (APIC 같은 식, 힘·중력·경계 없음) -> G2P 속도 (0 = 원래 정답 솔버)")
 ap.add_argument("--diag", action="store_true", help="절 AK.14: 프레임마다 몸 좌표 높이 (0 프레임 대비 Kabsch)·운동 에너지·입자 탄성 Σ V ψ(F) -> err.json diag")
 a = ap.parse_args()
@@ -48,10 +49,11 @@ frame_dt = float(cfg["frame_dt"])
 nsub = a.nsub or int(round(frame_dt / float(cfg["substep_dt"])))
 dt = frame_dt / nsub
 G = [float(q) for q in cfg["g"]]
-floor = dict([b for b in cfg["boundary_conditions"] if b["type"] == "surface_collider"][0])
-if a.floor_z is not None:
+_fl = [b for b in cfg["boundary_conditions"] if b["type"] == "surface_collider"]
+floor = dict(_fl[0]) if _fl else None
+if a.floor_z is not None and floor is not None:
     floor["point"] = [floor["point"][0], floor["point"][1], float(a.floor_z)]
-if a.surface is not None:
+if a.surface is not None and floor is not None:
     floor["surface"] = a.surface
 d = torch.load(a.pt, map_location="cpu", weights_only=False, mmap=True)
 x0d = d["x"][0].float()
@@ -61,11 +63,19 @@ del d, x0d
 
 def h5x(t, key="x"):
     with h5py.File(os.path.join(a.gt, f"sim_{t:010d}.h5")) as h:
-        return np.array(h[key])
+        r = np.array(h[key])
+    return r.T.copy() if (r.ndim == 2 and r.shape[0] == 3 and r.shape[1] != 3) else r
 
 
 x0 = h5x(0).astype(np.float32)
-v0 = h5x(0, "v").astype(np.float32)
+try:
+    v0 = h5x(0, "v").astype(np.float32)
+except KeyError:                                                                      # PG gs_simulation h5 는 속도가 없다 (초기 속도는 경계조건으로)
+    v0 = np.zeros_like(x0)
+if v0.shape[0] == 3 and x0.shape[0] != 3:
+    v0 = v0.T.copy()
+if x0.shape[0] == 3 and x0.shape[1] != 3:
+    x0, v0 = x0.T.copy(), (v0.T.copy() if v0.shape[0] == 3 else v0)
 N = x0.shape[0]
 L = min(a.frames, int(meta["frames"]))
 X = torch.as_tensor(x0).cuda().contiguous()
@@ -127,11 +137,21 @@ def ak_g2p_v(x: wp.array(dtype=wp.vec3), sel: wp.array(dtype=int), inv_dx: float
 
 sol = MPM_Simulator_WARP(10)
 sol.load_initial_data_from_torch(X, VOL, None, n_grid=n_grid, grid_lim=GL)
-sol.set_parameters_dict({"material": "jelly", "E": float(cfg["E"]), "nu": float(cfg["nu"]), "density": float(cfg["density"]),
-                         "g": G, "n_grid": n_grid, "grid_lim": GL, "grid_v_damping_scale": 1.1, "rpic_damping": float(a.rpic)})
-sol.add_bounding_box()
-sol.add_surface_collider(tuple(floor["point"]), tuple(floor["normal"]), floor["surface"], float(floor.get("friction", 0.0)))
-sol.finalize_mu_lam()
+if a.pg_cfg:                                                                         # 절 AK.15: gs_simulation 과 같은 순서 (재질 -> 경계조건 -> mu·lam)
+    from utils.decode_param import set_boundary_conditions                           # noqa: E402
+    _mp = {k: cfg[k] for k in ("material", "E", "nu", "density", "g", "grid_v_damping_scale", "additional_material_params") if k in cfg}
+    _mp.update({"n_grid": n_grid, "grid_lim": GL, "rpic_damping": float(a.rpic)})
+    sol.set_parameters_dict(_mp)
+    set_boundary_conditions(sol, cfg.get("boundary_conditions", []), {"substep_dt": dt, "frame_dt": frame_dt, "frame_num": L})
+    if not np.any(v0) and cfg.get("init_velocity_bc"):
+        set_boundary_conditions(sol, cfg["init_velocity_bc"], {"substep_dt": dt, "frame_dt": frame_dt, "frame_num": L})
+    sol.finalize_mu_lam()
+else:
+    sol.set_parameters_dict({"material": "jelly", "E": float(cfg["E"]), "nu": float(cfg["nu"]), "density": float(cfg["density"]),
+                             "g": G, "n_grid": n_grid, "grid_lim": GL, "grid_v_damping_scale": 1.1, "rpic_damping": float(a.rpic)})
+    sol.add_bounding_box()
+    sol.add_surface_collider(tuple(floor["point"]), tuple(floor["normal"]), floor["surface"], float(floor.get("friction", 0.0)))
+    sol.finalize_mu_lam()
 sol.import_particle_v_from_torch(torch.as_tensor(v0).cuda().contiguous())
 os.makedirs(a.out, exist_ok=True)
 XD = None if a.no_dump else torch.empty(L, N, 3, dtype=torch.float32)
