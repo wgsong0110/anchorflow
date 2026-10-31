@@ -116,7 +116,16 @@ V11 = {
     "ml10": (BWG + " --ah_mlow 0.1", True),
     "ml25": (BWG + " --ah_mlow 0.25", True),
 }
-SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11}
+# 12 차 (절 AG.11, 사용자 10-31 '해봐'): 절 AK 입자 적분점 (클램프 끔·상한 없음) 위 희소 사면체 묶음 -- 기준은 같은 기본 입자 스레드 판 (4 판·융합 없이)
+AKB = rep(BWG, lim_sr="1e30", sp_vcap="1e9") + " --ak_pq"
+V12 = {
+    "akb": (AKB, True),
+    "akg1": (AKB + " --akg_k 1", True),
+    "akg1h": (AKB + " --akg_k 1 --akg_hg 1", True),
+    "akg2": (AKB + " --akg_k 2", True),
+    "akg2h": (AKB + " --akg_k 2 --akg_hg 1", True),
+}
+SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11, "12": V12}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]

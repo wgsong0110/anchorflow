@@ -240,6 +240,9 @@ ap.add_argument("--ak_cfac", type=float, default=1.0, help="절 AK --affine: 다
 ap.add_argument("--ak_fuse", action="store_true", help="--ak_pq4 + 절 AH 바닥: 입자 적분점 힘과 바닥 접촉을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_pq_plast", choices=["none", "inc", "frame"], default="none",
                 help="절 AG.8: --ak_pq 입자 적분점 판에 재질 return mapping (--plast) -- inc = 서브스텝 증분 RM (입자 상태), frame = 투영 없는 재질 응력 + 프레임 끝 입자 RM (lib/anchorflow/fem_akpl_cuda.py)")
+ap.add_argument("--akg_k", type=int, default=0,
+                help="절 AG.11 정의 변경 (사용자 10-31 '해봐'): --ak_pq 입자 적분점 판에서 입자 수 ≤ k 인 (희소) 사면체 입자는 같은 칸 (Kuhn 평행육면체) 의 점유 사면체 묶음 평균 사상 Ā = Σ V_t A_t / Σ V_t 로 X = Ā F_p (0 = 끔)")
+ap.add_argument("--akg_hg", type=float, default=0.0, help="--akg_k: 묶음 안 사면체 사상이 Ā 를 따르게 하는 모래시계 억제 에너지 γ μ Σ V_t |A_t − Ā|² 의 γ (0 = 묶음 에너지만 공유, 노드 자유)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
 ap.add_argument("--akpl_k", type=int, default=6, help="절 AG.10 --akpl_dbg: 첫 터짐 뒤 몇 서브스텝을 더 기록하고 멈출지")
@@ -502,6 +505,9 @@ if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfus
     raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀 없음) 만; --ai_stress 는 FCR 탄성만 (소성 씬 제외)")
 AKPQ = bool(a.ak_pq)
 PQPL = AKPQ and a.ak_pq_plast != "none"                                             # 절 AG.8 소성 입자 적분점
+AKG = AKPQ and a.akg_k > 0                                                          # 절 AG.11 희소 사면체 묶음
+if AKG and (a.ak_pq4 or a.ak_pq2 or a.ak_pq3 or a.ak_pqt or a.ak_eps >= 0 or a.ak_fuse or a.ak_prep or (PLAST and not PQPL)):
+    raise SystemExit("--akg_k 는 --ak_pq 기본 입자 스레드 판 (4·2·3·사면체 판·혼합·융합·계수 준비 없이; 소성이면 --ak_pq_plast) 만")
 if PQPL and not (a.plast and not (a.ak_pq4 or a.ak_pq2 or a.ak_pq3 or a.ak_pqt or a.ak_eps >= 0 or a.ak_fuse or a.ak_prep) and a.visc <= 0):
     raise SystemExit("--ak_pq_plast 는 --ak_pq (기본 입자 스레드 판) + --plast 만 (4·2·3·사면체 판·혼합·융합·계수 준비·점성 없이)")
 if a.ak_fuse and a.floor != "vel":                                                  # 공통 설정: 바닥 없는 씬은 융합할 접촉이 없다 -> 끈 것과 같다
@@ -823,7 +829,7 @@ class Opt:
                 self.akrough = []
             self.akz = torch.zeros(1, dtype=torch.int32, device=dev)
             self.akoffs = None
-            if PQPL:                                                                 # 절 AG.8: 정렬 순서 입자 소성 상태
+            if PQPL or AKG:                                                          # 절 AG.8: 정렬 순서 입자 소성 상태 (묶음 탄성 판도 같은 커널이라 버퍼만)
                 self.plFe, self.plXp = z(Np, 9), z(Np, 9)
                 self.plys, self.pllj, self.plal = z(Np), z(Np), z(Np)
         self.aic = z(4)                                                              # 절 AI: [0] 뒤집힌 입자 (A1 반전), [1] Σ w R_p 가 반사인 셀, [2] B2 정규화 Σw < 1 입자, [3] 그 1 − Σw 합
@@ -881,6 +887,8 @@ class Opt:
                 self.rT = torch.zeros(self.Tcap, dtype=torch.int32, device=dev)
                 self.clT = torch.zeros(self.Tcap + 1, dtype=torch.int32, device=dev)
             self.tcell = torch.zeros(self.Tcap, dtype=torch.long, device=dev)
+            if AKG:
+                self.akg_tg = torch.full((self.Tcap,), -1, dtype=torch.int32, device=dev)
             if AKPQ:
                 self.akoffs = torch.zeros(self.Tcap + 1, dtype=torch.int32, device=dev)
                 self.akA = torch.zeros(self.Tcap, 9, device=dev)
@@ -917,6 +925,10 @@ class Opt:
             self.tmark = torch.zeros(self.Pcap * 9, dtype=torch.uint8, device=dev)
             self.ncm = torch.zeros(self.Pcap, dtype=torch.long, device=dev)
             self.tcm = torch.zeros(self.Pcap * 9, dtype=torch.long, device=dev)
+            if AKG:                                                                   # 절 AG.11 묶음 (칸) 버퍼
+                self.akg_VG = torch.zeros(self.Pcap, device=dev)
+                self.akg_AG = torch.zeros(self.Pcap * 9, device=dev)
+                self.akg_GmG = torch.zeros(self.Pcap * 9, device=dev)
             if BSL:
                 self.cV = torch.zeros(self.Pcap, device=dev)
                 self.cVF = torch.zeros(self.Pcap * 9, device=dev)
@@ -924,7 +936,7 @@ class Opt:
                 self.cM = torch.zeros(self.Pcap, device=dev)
                 self.cMV = torch.zeros(self.Pcap * 3, device=dev)
                 self.accC = torch.zeros(self.Pcap, device=dev)
-            if not (a.ah_fast and a.mode == "lag" and not (BSL or BSCM or REP)):     # 절 AH.16: lag 판 서브스텝 그래프는 격자 상자 버퍼를 읽지 않는다 -> 상자만 커지면 다시 잡지 않음
+            if not (a.ah_fast and a.mode == "lag" and not (BSL or BSCM or REP or AKG)):     # 절 AH.16: lag 판 서브스텝 그래프는 격자 상자 버퍼를 읽지 않는다 -> 상자만 커지면 다시 잡지 않음
                 new = True
         if new:
             self.graph = None
@@ -995,6 +1007,9 @@ class Opt:
         self.ncm[:Pn] = torch.where(nm.bool(), ncs - 1, torch.full_like(ncs, -1))
         self.tcm[:Pn * 9] = tcs - 1
         EX.launch("ex_build_tets", Pn * 9, (EX.P(self.ipar), EX.P(tm), EX.P(self.tcm), EX.P(self.ncm), EX.P(self.tets)), b=256)
+        if AKG:                                                                     # 절 AG.11: 사면체 -> 칸
+            EX.launch("ex_tet_cell", Pn * 9, (EX.P(self.ipar), EX.P(tm), EX.P(self.tcm), EX.P(self.tcell)), b=256)
+            self.Pn = Pn
         if SPM == "cube":
             EX.launch("ex_tet_cell", Pn * 9, (EX.P(self.ipar), EX.P(tm), EX.P(self.tcm), EX.P(self.tcell)), b=256)
             self.Pn = Pn
@@ -1520,11 +1535,20 @@ class Opt:
                                    EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
         if AKPQ and not a.ak_fuse:                                                  # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
-            if PQPL:                                                                # 절 AG.8: 재질 식 입자 적분점
+            if AKG:                                                                 # 절 AG.11: 묶음 사상 합 (서브스텝마다 비우고)
+                self.akg_AG.zero_()
+                self.akg_GmG.zero_()
+                AKPLC.launch("akg_A", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs),
+                                                  EX.P(self.akg_AG)), b=128)
+            if PQPL or AKG:                                                         # 절 AG.8: 재질 식 입자 적분점 (AG.11 묶음 탄성 판은 mat 0)
                 AKPLC.launch("akpl_force", Np, (np.int32(Np), np.int32(1 if a.ak_pq_plast == "inc" else 0), EX.P(self.akord), EX.P(self.aktt), EX.P(self.tets),
                                                 EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akw), np.int32(MATN), EX.P(PRM), np.float32(hs_),
-                                                EX.P(PL_AL), EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal), EX.P(self.f),
-                                                np.float32(a.akpl_jfl)), b=128)
+                                                EX.P(PL_AL if PLAST else None), EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal), EX.P(self.f),
+                                                np.float32(a.akpl_jfl), EX.P(self.akg_gpb if AKG else None), EX.P(self.akg_AG if AKG else None), EX.P(self.akg_VG if AKG else None),
+                                                EX.P(self.akg_GmG if AKG else None), np.float32(mu), np.float32(lam)), b=128)
+                if AKG:
+                    AKPLC.launch("akg_dist", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs),
+                                                         EX.P(self.akg_AG), EX.P(self.akg_VG), EX.P(self.akg_GmG), np.float32(a.akg_hg * mu), EX.P(self.f)), b=128)
             elif a.ak_eps >= 0:
                 AKC.launch("ak_pq_force_p5", Np, (EX.P(self.akN), EX.P(self.aktt2), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                                   EX.P(self.akdF2), EX.P(self.akw2), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)
@@ -2385,6 +2409,25 @@ class Opt:
             vs_ = torch.zeros(T_, device=dev).index_add_(0, pin, self.volA)
             self.akw.copy_((self.volA * self.VTs[:T_][pin] / vs_[pin].clamp_min(1e-30))[o_])   # 사면체 정렬 순서로 (읽기 병합)
             self.akF.copy_(Fa[o_])
+            if AKG:                                                                 # 절 AG.11: 희소 사면체가 있는 칸 = 묶음, 묶음 부피, 정렬 입자의 묶음 번호
+                cnt_ = torch.bincount(pin, minlength=T_)[:T_]
+                VT_ = self.VTs[:T_]
+                occ_ = VT_ > 0
+                cel = self.tcell[:T_]
+                spt = occ_ & (cnt_ <= a.akg_k)
+                act = torch.zeros(self.Pcap, dtype=torch.bool, device=dev)
+                act[cel[spt]] = True
+                ing = occ_ & act[cel]
+                self.akg_tg[:T_] = torch.where(ing, cel, torch.full_like(cel, -1)).to(torch.int32)
+                self.akg_VG.zero_()
+                self.akg_VG.index_add_(0, cel[ing], VT_[ing])
+                tts = self.aktt.long()
+                self.akg_gp = torch.where(spt[tts], cel[tts], torch.full_like(tts, -1)).to(torch.int32).contiguous() if not hasattr(self, "akg_gpb") else self.akg_gpb
+                if not hasattr(self, "akg_gpb"):
+                    self.akg_gpb = self.akg_gp
+                else:
+                    self.akg_gpb.copy_(torch.where(spt[tts], cel[tts], torch.full_like(tts, -1)).to(torch.int32))
+                self._akg_st = [spt.sum(), occ_.sum(), ing.sum()]
             if a.ak_pq4 or a.ak_eps >= 0:
                 self.akdF.copy_(self.akF - self.FT[:T_][self.aktt.long()])
             if a.ak_eps >= 0:                                                       # 혼합: 거친 사면체 판정 (동기화 없이 torch 로)
