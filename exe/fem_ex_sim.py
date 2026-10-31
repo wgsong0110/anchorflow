@@ -259,6 +259,8 @@ ap.add_argument("--ag_nhb_ext", action="store_true",
                 help="절 AG.16 (b) 정의 변경: 입자 적분점 판 수박 GF 응력을 주값으로, 작은 특이값 σ < σ_e 는 값·기울기 연속 선형 연장 (σ_e = 단축 압축 접선 강성 |dP/dσ| 가 λ+2μ 가 되는 σ -- 국소 CFL 질량이 감당하는 강성에서 역산)")
 ap.add_argument("--ah_mcfl_tan", action="store_true",
                 help="절 AG.16 (a): --ah_mcfl 의 강성 계수를 사면체마다 현재 (프레임 시작) 접선 강성으로 -- 셀 입자 F 최소 특이값에서 단축 압축 |dP/dσ| (수박 GF 응력, 연장 판이면 σ_e 에서 상한), λ+2μ 아래면 λ+2μ")
+ap.add_argument("--ah_mcfl_sub", action="store_true",
+                help="절 AG.17: --ah_mcfl 국소 CFL 질량을 서브스텝마다 현재 셀 기하 (A⁻ᵀ∇λ) 와 현재 변형 접선 계수로 다시 (그래프 안 커널, 진단 우선 -- 비용 큼)")
 ap.add_argument("--ag_pbcp", action="store_true",
                 help="절 AG.16 bread: 입자 속도 구속을 PG 처럼 입자에 직접 -- 프레임 시작 구속 입자 속도 = v_bc (P2G 에 들어감), 프레임 끝 구속 입자 x ← x0 + h v_bc, v ← v_bc (노드 섞기 --pbc 는 그대로)")
 ap.add_argument("--akb_kappa", type=float, default=0.0,
@@ -1807,6 +1809,10 @@ class Opt:
                                                   EX.P(self.akF), EX.P(self.akw), np.float32(mu), np.float32(lam), EX.P(self.f)), b=64)
         if self._fhook is not None:                                                 # 진단 읽기만 (--lagdump / --divhist, 노드 걸음이 f 를 비우기 전)
             self._fhook()
+        if a.ah_mcfl > 0 and a.ah_mcfl_sub:                                         # 절 AG.17: 서브스텝마다 현재 셀로 국소 CFL 질량
+            self.mcfl.zero_()
+            AHC.launch("ah_kn_sub", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs), EX.P(self.FT),
+                                                np.float32(lam + 2.0 * mu), np.float32(a.ah_mcfl * (hs_ / 2.0) ** 2), EX.P(self.mcfl)), b=128)
         if a.cfuse_mode == 2:
           if AHF and a.vfl_bf:
             AHC.launch("ah_node_step_bf", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),

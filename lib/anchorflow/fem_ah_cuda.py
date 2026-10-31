@@ -339,6 +339,37 @@ __global__ void ah_kn2(const int* tl, const int* tlc, const long long* tets, con
     for (int i=0;i<4;i++) { float a_=0.f; for (int q=0;q<3;q++) { float g_ = gl[(long long)t*12+i*3+q]; a_ += g_*g_; } gn[i] = sqrtf(a_); sg += gn[i]; }
     for (int i=0;i<4;i++) atomicAdd(&mfa[tets[(long long)t*4+i]], c*V*MT[t]*gn[i]*sg);
 }
+// 절 AG.17 서브스텝마다 국소 CFL 질량: 현재 셀 기하 (∇ₓλ_i = A⁻ᵀ ∇λ_i) 와 현재 변형 (σ_min(A F̄)) 의 접선 계수로
+//   k_n = Σ V_T M (σ) |A⁻ᵀg_i| Σ_j |A⁻ᵀg_j|,  M(σ) = (λ+2μ) max(1, (1 + σ⁻²)/2)  (neo-Hookean 단축 압축 접선의 σ 의존 꼴 κ/2 (1 + σ⁻²) 을 λ+2μ 로 맞춘 것)
+//   뒤집힌 (det ≤ 0) 셀은 σ_min 을 0.01 로 (강성 상한). mfa[n] += c k_n (c = s (h_s/2)²)
+__global__ void ah_kn_sub(const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* VT, const float* FT,
+                          float mw, float c, float* mfa) {
+    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i0 >= tlc[0]) return;
+    int t = tl[i0];
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i]; for (int cc=0;cc<3;cc++) { float u = U[nd*3+cc]; for (int q=0;q<3;q++) A[cc*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+    float cA[9]; cof3(A, cA); float dA = A[0]*cA[0]+A[1]*cA[1]+A[2]*cA[2];
+    float Fb[9]; for (int k=0;k<9;k++) Fb[k] = FT[(long long)t*9+k];
+    float X[9]; mm3(A, Fb, X);
+    float C[9]; for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+    float l[3]; symeig3(C, l);
+    float sm = sqrtf(fmaxf(l[0], 0.f));
+    if (!(dA > 0.f) || !(det3(X) > 0.f)) sm = 0.01f;
+    sm = fmaxf(sm, 0.01f);
+    float M = mw*fmaxf(1.f, 0.5f*(1.f + 1.f/(sm*sm)));
+    float id = (fabsf(dA) > 1e-12f) ? 1.f/dA : 0.f;
+    float gn[4], sg = 0.f;
+    for (int i=0;i<4;i++) {                                                     // A⁻ᵀ g = cof(A) g / det
+        float a_ = 0.f;
+        for (int r=0;r<3;r++) { float v_ = 0.f; for (int q=0;q<3;q++) v_ += cA[r*3+q]*gl[(long long)t*12+i*3+q]; v_ *= id; a_ += v_*v_; }
+        gn[i] = (dA > 0.f) ? sqrtf(a_) : 0.f; sg += gn[i];
+    }
+    if (!(dA > 0.f)) { for (int i=0;i<4;i++) { float a_=0.f; for (int q=0;q<3;q++) { float g_ = gl[(long long)t*12+i*3+q]; a_ += g_*g_; } gn[i] = sqrtf(a_)/0.01f; } sg = gn[0]+gn[1]+gn[2]+gn[3]; }   // 뒤집힌 셀: 현재 기울기 정의 안 됨 -> σ_min 하한 0.01 과 같은 1/σ 배
+    for (int i=0;i<4;i++) atomicAdd(&mfa[tets[(long long)t*4+i]], c*V*M*gn[i]*sg);
+}
 __global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
 '''
