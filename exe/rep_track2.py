@@ -1085,9 +1085,10 @@ if a.resume and os.path.exists(CKPT):
     assert not RENDER and TBW is None, "이어 돌리기는 --video·TB 없이만"
     _ck = torch.load(CKPT, map_location=dev, weights_only=False)
     Pref, Fcum, Rcum = _ck["Pref"], _ck["Fcum"], _ck["Rcum"]
-    if REB:
-        rep.rebind(Pref); rep.to(dev)
-    rep.load_state_dict(_ck["rep"])
+    if not REB:
+        # 프레임마다 다시 까는 표현(fem·tet·ours·grid)은 다음 프레임 시작에 Pref 로 다시 깔고 u = 0 에서 시작하므로
+        # 저장된 u 가 필요 없다 (저장 u 는 직전 프레임 격자 크기라 Pref 로 깐 격자와 크기가 다르다)
+        rep.load_state_dict(_ck["rep"])
     (rows, CURVE, DOFS, STOP, EMDP, PHYS, TRAJS, YPREV, FSAVE, DETC, SPRING_CAP, SPRING_LOG, CFL_LOG,
      RIEMLOG, LMAX_LOG, TETLOG, NODES) = [_ck["L"][k] for k in (
         "rows", "CURVE", "DOFS", "STOP", "EMDP", "PHYS", "TRAJS", "YPREV", "FSAVE", "DETC", "SPRING_CAP",
