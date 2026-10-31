@@ -33,13 +33,23 @@ def prof(x):
 yc0, lat0, n0 = prof(x0)
 out = dict(edges=ed.tolist(), n=n0, bc_hi_bins=sorted(set(b[bc_hi].tolist())), bc_lo_bins=sorted(set(b[bc_lo].tolist())), lat0=lat0, frames=[])
 T = xo.shape[0]
-for t in list(range(19, T, 20)) + [T - 1]:
+for t in [19, 59, 119, 199, T - 1]:
     r = dict(frame=t + 1)
     for nm, x in (("gt", xg[t + 1]), ("ours", xo[t])):
         yc, lat, _ = prof(x)
         st = [((yc[k + 1] - yc[k]) / (yc0[k + 1] - yc0[k])) if (yc0[k + 1] - yc0[k]) > 0 else float("nan") for k in range(NB - 1)]
         r[nm + "_stretch"] = [round(v, 3) for v in st]
         r[nm + "_lat"] = [round(l / l0, 3) if l0 > 0 else float("nan") for l, l0 in zip(lat, lat0)]
+    Fo = R.get("F")
+    if Fo is not None:                                                          # 우리 입자 F 의 det (실제 야코비안) 구간 중앙값 -- 구간 부피 비 (늘어남 x 옆^2) 와 대조
+        dF = torch.det(Fo[t].float().view(-1, 3, 3).double()).float()
+        r["ours_detF_med"] = [round(float(dF[b == k].median()), 3) if int((b == k).sum()) else float("nan") for k in range(NB)]
+        sv = torch.linalg.svdvals(Fo[t].float().view(-1, 3, 3))
+        r["ours_smaxF_med"] = [round(float(sv[b == k, 0].median()), 3) if int((b == k).sum()) else float("nan") for k in range(NB)]
+        print(f" 우리 det F {r['ours_detF_med']}\n 우리 σmax F {r['ours_smaxF_med']}", flush=True)
+    for nm in ("gt", "ours"):
+        r[nm + "_vol"] = [round(r[nm + "_stretch"][k] * ((r[nm + "_lat"][k] + r[nm + "_lat"][k + 1]) / 2) ** 2, 3) for k in range(NB - 1)]
+    print(f" 정답 구간 부피 비 {r['gt_vol']}\n 우리 구간 부피 비 {r['ours_vol']}", flush=True)
     out["frames"].append(r)
     print(f"프레임 {t + 1}\n 정답 늘어남 {r['gt_stretch']}\n 우리 늘어남 {r['ours_stretch']}\n 정답 옆 {r['gt_lat']}\n 우리 옆 {r['ours_lat']}", flush=True)
 json.dump(out, open(sys.argv[3], "w"), indent=1)
