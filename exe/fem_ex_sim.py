@@ -825,7 +825,8 @@ class Opt:
                 self.cM = torch.zeros(self.Pcap, device=dev)
                 self.cMV = torch.zeros(self.Pcap * 3, device=dev)
                 self.accC = torch.zeros(self.Pcap, device=dev)
-            new = True
+            if not (a.ah_fast and a.mode == "lag" and not (BSL or BSCM or REP)):     # 절 AH.16: lag 판 서브스텝 그래프는 격자 상자 버퍼를 읽지 않는다 -> 상자만 커지면 다시 잡지 않음
+                new = True
         if new:
             self.graph = None
             self.graphs = {}
