@@ -548,7 +548,7 @@ if HASPL:
 else:
     PL = [np.float64(0)] * 6
     PLf = [np.float32(0)] * 6
-AHF = VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0)                                     # 절 AH 바닥 정의 (fem_ah_cuda)
+AHF = (VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0)) or a.ah_mlow > 0   # 절 AH.18: 질량 하한은 바닥 없는 씬도 같은 노드 걸음 커널로                                     # 절 AH 바닥 정의 (fem_ah_cuda)
 AH_GTK = 1 if (VFL and a.vfl_w == "gtk") else 0
 AH_ACCN = AH_GTK or a.vfl_npd > 0                                                   # 비관통 판정을 따로 (실제 접촉 / 깊이)
 AH_DXG = float(cfg.get("grid_lim", 2.0)) / int(cfg.get("n_grid", 100))                # 정답 MPM 격자 dx_g
@@ -557,8 +557,6 @@ AH_BAND = a.vfl_band * AH_DXG if AH_GTK else 0.0                                
 AH_KEX = (hs / float(cfg["substep_dt"])) if (VFL and a.vfl_rate) else 1.0           # (1 - a/m)^(h_s/h_ref)
 if a.lim_v == "mom" and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and SRL):
     raise SystemExit("--lim_v mom 은 확정 경로 (--cfuse --cfuse_mode 2 --lim_sr) 만")
-if a.ah_mlow > 0 and not AHF:
-    raise SystemExit("--ah_mlow 는 AH 바닥 경로 (--vfl_w gtk 등) 만")
 if a.ah_fast and (SPM != "vcap" or a.sp_occ > 0 or a.sp_chk):
     raise SystemExit("--ah_fast 는 --sp vcap (sp_occ 0, 검산 없음) 만")
 if a.vfl_bf and not (AH_GTK and a.cfuse and a.cfuse_mode == 2 and not a.vfl_tacc and not a.vfl_agg):
@@ -570,7 +568,7 @@ if a.vfl_agg and not (AH_GTK and a.cfast or AH_GTK and a.cfuse):
 if AHF:
     if not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2) or PLAST or VISC or PBC:
         raise SystemExit("절 AH 바닥 (--vfl_w gtk / --vfl_rate) 은 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, 탄성) 만")
-    if abs(sum(abs(q) for q in nr_) - 1.0) > 1e-6:
+    if AH_GTK and abs(sum(abs(q) for q in nr_) - 1.0) > 1e-6:
         raise SystemExit("--vfl_w gtk 는 축 정렬 평면만 (정답 격자 노드 좌표 비교)")
     print(f"[절 AH 바닥] 가중 {a.vfl_w} (정답 격자 dx_g {AH_DXG:g}, p·n {AH_PN:g}, 고착 격자 노드 최대 지표 {AHC.gt_floor_k0(AH_DXG, AH_PN) if AH_GTK else '-'}, 띠 {AH_BAND:g} m), "
           f"비관통 깊이 {a.vfl_npd:g} m, 고착 몫 {'(1 - a/m)^(h_s/h_ref), h_s/h_ref = %.4g' % AH_KEX if a.vfl_rate else '(1 - a/m) 서브스텝마다 (기존)'}", flush=True)
@@ -1375,7 +1373,7 @@ class Opt:
                                                EX.P(self.accN), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * hs_ / hs)), b=256)
           elif AHF:
             AHC.launch("ah_node_step", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
-                                            np.float32(hs_), np.float32(damp_), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc),
+                                            np.float32(hs_), np.float32(damp_), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
                                             EX.P(self.accN if AH_ACCN else None), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * hs_ / hs),
                                             np.float32(getattr(self, "_mfl", 0.0))), b=256)
           else:
