@@ -1332,6 +1332,29 @@ class Opt:
                               pJ_min=float(dX[torch.isfinite(dX)].min()) if bool(torch.isfinite(dX).any()) else None, nanc=nc[:9]))
         if len(z["hist"]) > 400:
             z["hist"] = z["hist"][-400:]
+        if z.get("first_inv") is None and bool(inv.any()) and HASPL:              # 절 AG.18: 첫 뒤집힌 셀이 바닥에 대해 어디 있고 그 노드가 비관통에 걸렸는지
+            Np_ = self.Xf.shape[0] if self.Xf.dim() == 2 else self.Xf.numel() // 3
+            pp0, nn0 = torch.tensor(PLf[:3], device=dev), torch.tensor(PLf[3:], device=dev)
+            xp_ = self.Xf.view(-1, 3)[:Np_] + (self.lamb[:Np_].view(-1, 4)[:, :, None] * self.Uc[:M][self.rows[:Np_].view(-1, 4)]).sum(1)
+            sp_ = (xp_ - pp0) @ nn0
+            pen = sp_ < 0
+            nflag = torch.zeros(M, dtype=torch.bool, device=dev)
+            nflag[self.rows[:Np_].view(-1, 4)[pen].flatten()] = True                  # 이 서브스텝 위치로 본 비관통 노드
+            hn_ = ((self.npos[:M] + self.Uc[:M]) - pp0) @ nn0
+            h0_ = (self.npos[:M] - pp0) @ nn0
+            med_ = self.mn[:M][self.mn[:M] > 0].median()
+            ti_ = inv.nonzero().flatten()[:10]
+            ptt = self.pinv[:Np_].long()
+            rec = []
+            for t_ in ti_.tolist():
+                nd_ = tt[t_]
+                pm_ = (ptt == t_)
+                rec.append(dict(t=t_, detA=float(dA[t_]), n_part=int(pm_.sum()), part_s=[float(q) for q in sp_[pm_].tolist()[:8]],
+                                node_h=[float(q) for q in hn_[nd_].tolist()], node_h0=[float(q) for q in h0_[nd_].tolist()],
+                                node_np=[bool(q) for q in nflag[nd_].tolist()], node_m_ratio=[float(q) for q in (self.mn[nd_] / med_).tolist()],
+                                node_v=[[round(float(c), 3) for c in self.vn[q].tolist()] for q in nd_.tolist()]))
+            z["first_inv"] = dict(frame=self._fi, j=j, n=int(inv.sum()), n_np_nodes=int(nflag.sum()), n_pen=int(pen.sum()), tets=rec)
+            print(f"  [절 AG.18 첫 뒤집힘] {json.dumps(z['first_inv'], ensure_ascii=False)[:1500]}", flush=True)
         if z["first"] is None and bool(vb.any()):
             nb = vb.nonzero().flatten()
             fs = getattr(self, "_fsnap", None)
@@ -1360,7 +1383,7 @@ class Opt:
         nn = (na >= 0).nonzero().flatten()
         d1 = (na[nn] - node_inv[nn])
         has = node_inv[nn] < BIG
-        out = dict(first=z["first"], nanc_tot=dict(zip(["X", "Xprev역", "F_trial", "SVD", "RM", "tau", "X역", "힘", "detX≤0"], z["nanc_tot"][:9])),
+        out = dict(first=z["first"], first_inv=z.get("first_inv"), nanc_tot=dict(zip(["X", "Xprev역", "F_trial", "SVD", "RM", "tau", "X역", "힘", "detX≤0"], z["nanc_tot"][:9])),
                    q1=dict(nan_nodes=int(nn.numel()), without_inverted_cell=int((~has).sum()),
                            diff_hist={str(int(k)): int(v) for k, v in zip(*torch.unique(d1[has], return_counts=True))} if bool(has.any()) else {}),
                    hist=z["hist"][-(a.akpl_k + 6):])
