@@ -138,7 +138,7 @@ __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* or
             if (mat == 7) akpl_nhb_tau(Fn, prm[0], prm[2], jfl, tau);
             else { float U2[9], s2[3], V2[9]; pl_svd(Fn, U2, s2, V2); float Pi[3]; pl_pi(mat, s2, prm, al, Pi); float P_[9]; pl_usv(U2, Pi, V2, P_); mmt3(P_, Fn, tau); }
         } else if (mat == 0) {                                                 // 탄성 (절 AK 와 같은 FCR, 빠른 극분해): P 를 바로
-            float P[9]; ak_fcr_P(X, mu0, lam0, P);
+            float P[9]; ak_fcr_P(X, mu0, lam0 * (AKLR ? AKLR[k] : 1.f), P);       // 절 AG.18: --ak_capmu λ 몫 배율 (절 AK.16 과 같은 정렬 순서 배열)
             for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s_ = 0.f; for (int j=0;j<3;j++) s_ += P[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s_; }
             akpl_bar(X, F, w, bk*mu0, bjh, bje, Gm, nbar);
             goto akpl_red;
@@ -262,6 +262,25 @@ __global__ void akpl_fin(int N, const int* ord, const int* tt, const long long* 
 }
 '''
 _MOD = [None]
+
+
+def _mod():
+    import cupy as cp
+    if _MOD[0] is None:
+        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + AKC._AK + PLC._PL + _AKPL).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+    return _MOD[0]
+
+
+def set_sfcr(on):
+    """절 AG.18: 이 모듈의 AKSFCR (표준 FCR) -- fem_ak_cuda 의 것과 따로 있는 전역."""
+    import cupy as cp
+    cp.ndarray((1,), cp.int32, _mod().get_global("AKSFCR"))[:] = 1 if on else 0
+
+
+def set_lr(t):
+    """절 AG.18: 이 모듈의 AKLR (--ak_capmu λ 몫 배율, 정렬 순서)."""
+    import cupy as cp
+    cp.ndarray((1,), cp.uint64, _mod().get_global("AKLR"))[:] = 0 if t is None else t.data_ptr()
 
 
 def launch(name, n, args, b=128, grid=None):

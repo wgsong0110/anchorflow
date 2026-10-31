@@ -82,7 +82,7 @@ __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* v
     float v[3];
     for (int c=0;c<3;c++) {
         if (fixd && fixd[n]) v[c] = vbc[n*3+c];
-        else if (m > 0.f) v[c] = (vn[n*3+c] + hs*(f[n*3+c]/mi + gg[c]))*damp;
+        else if (m > 0.f || (mfa && mi > 0.f)) v[c] = (vn[n*3+c] + hs*(f[n*3+c]/mi + gg[c]))*damp;   // 절 AG.18: 질량 0 노드 (빈 사면체만 붙음) 도 국소 CFL 관성 질량이 있으면 움직인다
         else v[c] = 0.f;
         f[n*3+c] = 0.f;
     }

@@ -253,6 +253,7 @@ ap.add_argument("--akg_k", type=int, default=0,
 ap.add_argument("--akg_hg", type=float, default=0.0, help="--akg_k: 묶음 안 사면체 사상이 Ā 를 따르게 하는 모래시계 억제 에너지 γ μ Σ V_t |A_t − Ā|² 의 γ (0 = 묶음 에너지만 공유, 노드 자유)")
 ap.add_argument("--akg_empty", action="store_true", help="절 AG.18 정의 변경 (사용자 10-31 묶음 허락 범위): --akg_k 칸 묶음에 입자 없는 사면체까지 넣는다 -- 빈 사면체가 있는 칸도 묶음, "
                      "Ā = 칸 사면체 사상의 고른 평균 (가중 W_t = V_g / 칸 사면체 수), 모래시계 억제도 같은 가중으로 빈 사면체에 (빈 사면체 영 에너지 기구 막기)")
+ap.add_argument("--akpl_el", action="store_true", help="절 AG.18 대조: 탄성 입자 적분점 힘을 akpl_force (mat 0) 경로로 (묶음 판과 같은 커널, 묶음 없이)")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
@@ -545,6 +546,8 @@ if a.ak_sfcr:
     if not AKPQ:
         raise SystemExit("--ak_sfcr 는 --ak_pq 와 함께")
     AKC.set_sfcr(True)
+    if a.akg_k > 0 or a.akb_kappa > 0 or a.akpl_el:                                 # 절 AG.18: akpl 경로 (묶음·장벽) 에도 같은 FCR
+        AKPLC.set_sfcr(True)
 P2 = bool(a.ak_p2)
 if P2 and not (AKPQ and not a.ak_pq4 and not a.ak_prep and not a.ak_fuse and a.ak_eps < 0 and not a.affine and a.fupd == "T" and not AI2 and a.ai_g2p == "T"
                and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and not PLAST and a.lim_sr >= 1e20 and not a.lagdiag):
@@ -566,7 +569,7 @@ if a.ak_fuse and a.floor != "vel":                                              
     a.ak_fuse = False
 if a.ak_fuse and not (AKPQ and a.ak_pq4 and a.ak_eps < 0 and a.floor == "vel" and not (a.vfl_agg or a.vfl_bf or a.vfl_tacc) and not PLAST):
     raise SystemExit("--ak_fuse 는 --ak_pq --ak_pq4 + 절 AH 바닥 (--floor vel) 만")
-if a.ak_capmu and not (a.ak_prep and a.ak_pq4 and SPM == "vcap"):
+if a.ak_capmu and not ((a.ak_prep and a.ak_pq4 and SPM == "vcap") or ((a.akg_k > 0 or a.akpl_el) and a.ak_pq and SPM == "vcap")):   # 절 AG.18: 묶음 판 (akpl 경로) 도 -- λ 배율을 torch 로
     raise SystemExit("--ak_capmu 는 --ak_pq --ak_pq4 --ak_prep --sp vcap 만")
 if a.ak_prep and not (AKPQ and a.ak_pq4 and a.ak_eps < 0):
     raise SystemExit("--ak_prep 는 --ak_pq --ak_pq4 (혼합 없음) 만")
@@ -892,6 +895,8 @@ class Opt:
             if a.ak_capmu:
                 self.aklr = torch.ones(Np, device=dev)
                 AKC.set_lr(self.aklr)
+                if a.akg_k > 0 or a.akpl_el:
+                    AKPLC.set_lr(self.aklr)
             self.akl = torch.zeros(Np, 4, device=dev)                                    # 절 AK.13: 정렬 순서 barycentric
             if a.ak_eps >= 0:                                                         # 혼합: 거친 사면체 입자 목록 (정렬 순서), 개수, 한 점 사면체 목록
                 self.akN = torch.zeros(1, dtype=torch.int32, device=dev)
@@ -904,7 +909,7 @@ class Opt:
             self.akoffs = None
             self._nanc = torch.zeros(16, dtype=torch.int32, device=dev)
             self._nbar = torch.zeros(1, dtype=torch.int32, device=dev)
-            if PQPL or AKG or AKBAR:                                                 # 절 AG.8: 정렬 순서 입자 소성 상태 (묶음·장벽 탄성 판도 같은 커널이라 버퍼만)
+            if PQPL or AKG or AKBAR or a.akpl_el:                                                 # 절 AG.8: 정렬 순서 입자 소성 상태 (묶음·장벽 탄성 판도 같은 커널이라 버퍼만)
                 self.plFe, self.plXp = z(Np, 9), z(Np, 9)
                 self.plys, self.pllj, self.plal = z(Np), z(Np), z(Np)
         self.t10 = None
@@ -1818,7 +1823,7 @@ class Opt:
                 else:
                     AKPLC.launch("akg_A", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs),
                                                   EX.P(self.akg_AG)), b=128)
-            if PQPL or AKG or AKBAR:                                                # 절 AG.8: 재질 식 입자 적분점 (AG.11 묶음·AG.13 장벽 탄성 판은 mat 0)
+            if PQPL or AKG or AKBAR or a.akpl_el:                                   # 절 AG.8: 재질 식 입자 적분점 (AG.11 묶음·AG.13 장벽 탄성 판은 mat 0)
                 AKPLC.launch("akpl_force", Np, (np.int32(Np), np.int32(1 if a.ak_pq_plast == "inc" else 0), EX.P(self.akord), EX.P(self.aktt), EX.P(self.tets),
                                                 EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akw), np.int32(MATN), EX.P(PRM), np.float32(hs_),
                                                 EX.P(PL_AL if PLAST else None), EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal), EX.P(self.f),
@@ -2733,6 +2738,8 @@ class Opt:
             self.akoffs[0] = 0
             vs_ = torch.zeros(T_, device=dev).index_add_(0, pin, self.volA)
             self.akw.copy_((self.volA * self.VTs[:T_][pin] / vs_[pin].clamp_min(1e-30))[o_])   # 사면체 정렬 순서로 (읽기 병합)
+            if a.ak_capmu and (AKG or a.akpl_el):                                                  # 절 AG.18: λ 몫은 입자 부피 그대로 (= Σ 입자 부피 / V_T, 절 AK.16 prep 커널과 같은 값)
+                self.aklr.copy_(torch.where(self.VTs[:T_][pin] > 1e-30, vs_[pin] / self.VTs[:T_][pin].clamp_min(1e-30), torch.ones_like(vs_[pin]))[o_])
             self.akF.copy_(Fa[o_])
             if AKG:                                                                 # 절 AG.11: 희소 사면체가 있는 칸 = 묶음, 묶음 부피, 정렬 입자의 묶음 번호
                 cnt_ = torch.bincount(pin, minlength=T_)[:T_]
