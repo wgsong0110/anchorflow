@@ -93,7 +93,7 @@ def cof(X):
 def fcr_parts(X):
     U_, S_, Vh_ = torch.linalg.svd(X)
     dsg = torch.sign(torch.linalg.det(U_ @ Vh_))
-    D = torch.ones(X.shape[0], 3, device=dev, dtype=X.dtype)
+    D = torch.ones(X.shape[0], 3, device=X.device, dtype=X.dtype)
     D[:, 2] = dsg
     R = U_ @ torch.diag_embed(D) @ Vh_
     J = torch.linalg.det(X)
@@ -167,25 +167,27 @@ for fi in range(L):
         if fx_ is not None:
             fixd, vbc = fx_.bool(), vb_.double()
     U = torch.zeros(M, 3, device=dev, dtype=torch.float64)
+    GWf, Ff, Wf = GW.float(), F.float(), W.float()                                   # 서브스텝은 float32 (속도; 누적 U·v 는 float64)
+    volf, wmuf = vol.float(), wmu.float()
     if FLOOR:
         s0 = (x - pt) @ nr
         cand = torch.nonzero(s0 < (v.norm(dim=-1).max() * h + 0.05)).flatten()
     # ---- 서브스텝 ----
     try:
         for si in range(a.N):
-            Up = U[nid]                                                               # [Np,27,3]
-            Ap = torch.eye(3, device=dev, dtype=torch.float64) + torch.einsum("pka,pkb->pab", Up, GW)
-            X = Ap @ F
+            Up = U.float()[nid]                                                       # [Np,27,3]
+            Ap = torch.eye(3, device=dev) + torch.einsum("pka,pkb->pab", Up, GWf)
+            X = Ap @ Ff
             R, J, C = fcr_parts(X)
-            P = 2 * mu * (X - R) * (wmu / vol)[:, None, None] + lam * (J - 1)[:, None, None] * C
-            G = (vol[:, None, None] * P) @ F.transpose(1, 2)                           # [Np,3,3]
-            fp = -torch.einsum("pab,pkb->pka", G, GW)                                 # [Np,27,3]
-            f = torch.zeros(M, 3, device=dev, dtype=torch.float64).index_add_(0, nid.reshape(-1), fp.reshape(-1, 3))
+            P = 2 * mu * (X - R) * (wmuf / volf)[:, None, None] + lam * (J - 1)[:, None, None] * C
+            G = (volf[:, None, None] * P) @ Ff.transpose(1, 2)                         # [Np,3,3]
+            fp = -torch.einsum("pab,pkb->pka", G, GWf)                                # [Np,27,3]
+            f = torch.zeros(M, 3, device=dev, dtype=torch.float64).index_add_(0, nid.reshape(-1), fp.reshape(-1, 3).double())
             vn = torch.where(mn[:, None] > 0, (vn + hs * (f / mI.clamp_min(1e-30)[:, None] + g)) * DAMP, torch.zeros_like(vn))
             if fixd is not None:
                 vn[fixd] = vbc[fixd]
             if FLOOR and cand.numel():
-                xc = x[cand] + (W[cand, :, None] * Up[cand]).sum(1)
+                xc = x[cand] + (W[cand, :, None] * Up[cand].double()).sum(1)
                 s = (xc - pt) @ nr
                 inn = s < 0
                 if bool(inn.any()):
