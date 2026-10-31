@@ -25,6 +25,12 @@ V = m / float(cfg["density"])
 mu, lam = PR.lame(cfg["E"], cfg["nu"])
 GF = DM.traj_F(d, h, "cpu")
 dx = float(cfg.get("grid_lim", 2.0)) / int(cfg.get("n_grid", 100))
+_pl = [b for b in cfg["boundary_conditions"] if b.get("type") == "surface_collider"][0]
+PTt = torch.tensor([float(q) for q in _pl["point"]], device=dev, dtype=torch.float64)
+NRt = torch.tensor([float(q) for q in _pl["normal"]], device=dev, dtype=torch.float64)
+NRt = NRt / NRt.norm()
+q0 = d["x"][0].to(dev).double()
+q0 = q0 - q0.mean(0)
 OFF = torch.stack(torch.meshgrid(torch.arange(3), torch.arange(3), torch.arange(3), indexing="ij"), -1).reshape(27, 3).to(dev)
 
 
@@ -62,7 +68,31 @@ def stats(x, F):
     Pi = float(((f[ok] ** 2).sum(-1) / mn[ok]).sum())
     fsum = float(f.norm(dim=-1).sum())
     ub = float((V * tau.reshape(-1, 9).norm(dim=-1) * GW.norm(dim=-1).sum(1)).sum())   # 노드 힘 크기 상계 (모든 입자 힘이 같은 방향일 때)
-    return dict(E=E, fsum=fsum, Pi=Pi, eff=Pi / max(E, 1e-30), selfeq=fsum / max(ub, 1e-30))
+    # 절 AK.23: 바닥 접촉 노드 (평면 위 1 cm 안 입자가 가중을 주는 노드) 의 힘·일률 몫
+    near = ((x - PTt) @ NRt) < 0.01
+    cn = torch.zeros(M, dtype=torch.bool, device=dev)
+    cn[nid.view(-1, 27)[near].reshape(-1)] = True
+    fs_c = float(f[cn].norm(dim=-1).sum()) / max(fsum, 1e-30)
+    Pi_c = float(((f[ok & cn] ** 2).sum(-1) / mn[ok & cn]).sum()) / max(Pi, 1e-30)
+    # 절 AK.23: 몸 좌표 변위의 다항식 모드 몫 (0 프레임 대비 Kabsch 를 뺀 변위를 상수·1 차·2 차 기저에 사영 -- 전체 사영, 이웃 추정 아님)
+    c = x.mean(0)
+    U2, S2, Vh2 = torch.linalg.svd(q0.T @ (x - c))
+    Dg = torch.eye(3, device=dev, dtype=torch.float64)
+    Dg[2, 2] = torch.sign(torch.det(Vh2.T @ U2.T))
+    Rm = Vh2.T @ Dg @ U2.T
+    dd = (x - c) @ Rm - q0
+    qs = q0 / q0.abs().max()
+    B1 = torch.cat([torch.ones_like(qs[:, :1]), qs], 1)
+    B2 = torch.cat([B1, qs[:, [0]] * qs[:, [0]], qs[:, [1]] * qs[:, [1]], qs[:, [2]] * qs[:, [2]], qs[:, [0]] * qs[:, [1]], qs[:, [0]] * qs[:, [2]], qs[:, [1]] * qs[:, [2]]], 1)
+    tot = float((dd ** 2).sum())
+    r1 = dd - B1 @ torch.linalg.lstsq(B1, dd).solution
+    r2 = dd - B2 @ torch.linalg.lstsq(B2, dd).solution
+    lin = tot - float((r1 ** 2).sum())
+    quad = float((r1 ** 2).sum()) - float((r2 ** 2).sum())
+    rest = float((r2 ** 2).sum())
+    rms = lambda q_: (q_ / x.shape[0]) ** 0.5
+    return dict(E=E, fsum=fsum, Pi=Pi, eff=Pi / max(E, 1e-30), selfeq=fsum / max(ub, 1e-30), fs_c=fs_c, Pi_c=Pi_c,
+                d_lin=rms(lin), d_quad=rms(quad), d_rest=rms(rest))
 
 
 out = []
@@ -70,5 +100,6 @@ for f in range(f0, f0 + W):
     o = stats(R["pred"][f - 1].to(dev).double(), R["F"][f - 1].to(dev).double().reshape(-1, 3, 3))
     g = stats(d["x"][f].to(dev).double(), GF[f].to(dev).double().reshape(-1, 3, 3))
     out.append(dict(f=f, ours=o, gt=g))
+    print(f"f{f}: 접촉 노드 힘 몫 {o['fs_c']:.3f}/{g['fs_c']:.3f} 일률 몫 {o['Pi_c']:.3f}/{g['Pi_c']:.3f}  변위 RMS (mm) 1 차 {1e3 * o['d_lin']:.1f}/{1e3 * g['d_lin']:.1f} 2 차 {1e3 * o['d_quad']:.1f}/{1e3 * g['d_quad']:.1f} 나머지 {1e3 * o['d_rest']:.1f}/{1e3 * g['d_rest']:.1f}", flush=True)
     print(f"f{f}: 탄성 {o['E']:.0f}/{g['E']:.0f} J  노드 힘 합 {o['fsum']:.0f}/{g['fsum']:.0f} N  힘 일률 Π {o['Pi']:.3g}/{g['Pi']:.3g}  Π/E {o['eff']:.3g}/{g['eff']:.3g}  힘 크기 ÷ 상계 {o['selfeq']:.3f}/{g['selfeq']:.3f}", flush=True)
 json.dump(out, open(os.path.join(os.path.dirname(rp), "force.json"), "w"), indent=1)
