@@ -261,6 +261,9 @@ ap.add_argument("--ah_imex", action="store_true", help="절 AG.18 정의 변경:
 ap.add_argument("--ah_imex_k", choices=["tan", "gersh"], default="tan", help="--ah_imex 의 노드 강성: tan = 선형 탄성 접선 대각 블록, gersh = Gershgorin 상계 k_n I (대각 우세)")
 ap.add_argument("--ah_imex_flag", choices=["gersh", "diag", "all"], default="gersh", help="--ah_imex 대상 판정: gersh = Gershgorin 상계 (h_s/2)² k_n > m (과대 -- 거의 모든 노드), diag = 노드 대각 블록 (h_s/2)² λ_max(K_nn) > m")
 ap.add_argument("--ah_imex_rel", action="store_true", help="절 AG.18 --ah_imex: 후퇴 오일러 블록을 이웃 결합 상대 꼴로 -- K_nn (v_n − v̄) − K_nn Δv̄ (v̄·Δv̄ = 이웃 속도·명시적 Δv 의 c_ij 가중 평균, Σ_j c_ij = K 대각; 병진에 영 강성)")
+ap.add_argument("--ah_imex_cl", type=float, default=0.0, help="절 AG.18 --ah_imex_rel: 대상 노드 무리를 함께 풂 (야코비 반복, 대상 밖 이웃은 명시적 값) -- 값 = 상대 잔차 허용치 "
+                     "(max|Δv^(k+1) − Δv^k| ≤ tol · max|Δv^(k+1)|), 0 = 끔; --no_graph 만 (반복마다 잔차 동기화)")
+ap.add_argument("--ah_imex_maxit", type=int, default=100, help="--ah_imex_cl 최대 반복")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
@@ -658,6 +661,8 @@ AH_GTK = 1 if (VFL and a.vfl_w == "gtk") else 0
 if a.ah_imex:
     assert AKPQ and a.ah_mcfl == 1.0 and not a.ah_mcfl_sub and not a.ah_mcfl_tan and not a.ak_fstep and a.cfuse and a.cfuse_mode == 2 and not a.ak_pq4 and not a.ak_prep, \
         "--ah_imex 는 --ak_pq (기본 입자 스레드 판) + --ah_mcfl 1 (프레임 단위, 판정용) + ah_node_step 경로에서만"
+if a.ah_imex_cl > 0:
+    assert a.ah_imex and a.ah_imex_rel and a.no_graph, "--ah_imex_cl 은 --ah_imex --ah_imex_rel --no_graph 와"
 if a.vfl_pred:
     assert VFL and a.cfuse and a.cfuse_mode == 2 and not a.vfl_bf and not a.vfl_tacc and not a.vfl_agg and (AHF or PLAST or VISC), "--vfl_pred 는 ah_fc·ag_fc 경로에서만"
 if VFL and a.vfl_np == 2:
@@ -943,6 +948,9 @@ class Opt:
                 self.ahkd = z(self.Mcap * 6)                                         # 절 AG.18 노드 접선 대각 블록
                 if a.ah_imex_rel:
                     self.ahnb = z(self.Mcap * 7)
+                if a.ah_imex_cl > 0:
+                    self.ahS2, self.ahdvc, self.ahdvn = z(self.Mcap * 3), z(self.Mcap * 3), z(self.Mcap * 3)
+                    self.ahres = torch.zeros(2, dtype=torch.int32, device=dev)
             self.accB = z(self.Mcap)                                                 # 절 AH.12 --vfl_bf: 프레임 상수 띠 고착 질량                                                # 절 AH: 노드별 실제 접촉 (평면 아래) 입자 수 (비관통 판정, 쓴 뒤 비움)
             self.ml = z(self.Mcap) if RWL else None                                  # 절 Q --rep_w lam: 속도 전달 정규화 질량 Σλm
             if LIM:
@@ -1890,7 +1898,23 @@ class Opt:
         if a.ah_imex and a.ah_imex_rel:                                            # 절 AG.18: 이웃 결합 (힘 뒤·노드 걸음 앞)
             AHC.launch("ah_imx_nb", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.akg_W if (AKG and a.akg_empty) else None),
                                                 EX.P(self.vn), EX.P(self.f), EX.P(self.mn), EX.P(self.mcfl), np.float32(hs_), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
-                                                EX.P(self.ahnb)), b=128)
+                                                EX.P(self.ahnb), np.int32(1 if a.ah_imex_cl > 0 else 0)), b=128)
+            if a.ah_imex_cl > 0:                                                    # 절 AG.18: 대상 무리 야코비 반복 (잔차로 멈춤)
+                self.ahdvc.view(-1, 3)[:] = torch.tensor([hs_ * q for q in gv], device=dev)
+                self.ahS2.zero_()
+                for it_ in range(a.ah_imex_maxit):
+                    AHC.launch("ah_imx_cl_t", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.akg_W if (AKG and a.akg_empty) else None),
+                                                          EX.P(self.mn), EX.P(self.mcfl), EX.P(self.ahdvc), EX.P(self.ahS2)), b=128)
+                    self.ahres.zero_()
+                    self.ahdvn.copy_(self.ahdvc)
+                    AHC.launch("ah_imx_cl_n", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.mcfl), EX.P(self.fx if self.fixd else None), EX.P(self.f), EX.P(self.vn),
+                                                   np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs_), EX.P(self.ahkd), EX.P(self.ahnb),
+                                                   EX.P(self.ahS2), EX.P(self.ahdvc), EX.P(self.ahdvn), EX.P(self.ahres)), b=256)
+                    self.ahdvc.copy_(self.ahdvn)
+                    r_ = self.ahres.view(torch.float32).tolist()
+                    if r_[0] <= a.ah_imex_cl * r_[1]:
+                        break
+                self._imx_it = getattr(self, "_imx_it", []) + [it_ + 1]
         if a.cfuse_mode == 2:
           if AHF and a.vfl_bf:
             AHC.launch("ah_node_step_bf", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
@@ -2883,6 +2907,7 @@ class Opt:
                                                      EX.P(self.akg_MG), np.float32(2.0 * a.akg_hg * mu), EX.P(self.ahkd)), b=128)
                 AHC.set_kd(self.ahkd)
                 AHC.set_nb(self.ahnb if a.ah_imex_rel else None)
+                AHC.set_dv(self.ahdvc if a.ah_imex_cl > 0 else None)
                 AHC.set_kg(a.ah_imex_k == "gersh")
                 AHC.set_kf({"gersh": 0, "diag": 1, "all": 2}[a.ah_imex_flag])
                 if not hasattr(self, "_imx_n"):
@@ -3772,7 +3797,9 @@ for i in range(L):
             if a.ah_rn:
                 st.update(rnd=rn_diag(OPT, vnn, q90))
         if a.ah_imex and getattr(OPT, "_imx_n", None):
-            st.update(imx_n=OPT._imx_n[-1])                                         # 절 AG.18: 국소 후퇴 오일러 노드 수 (국소 CFL 비 > 1)
+            st.update(imx_n=OPT._imx_n[-1])
+            if getattr(OPT, "_imx_it", None):
+                st.update(imx_it_max=max(OPT._imx_it), imx_it_mean=sum(OPT._imx_it) / len(OPT._imx_it)); OPT._imx_it = []                                         # 절 AG.18: 국소 후퇴 오일러 노드 수 (국소 CFL 비 > 1)
         if a.mesh_cc and str(i + 1) in a.mesh_cc.replace(":", ",").replace("_", ",").split(","):                       # 절 AG.18: 메시 연결 성분 (라벨 전파)
             T_, M_ = OPT.T, OPT.M
             tt_ = OPT.tets[:T_][OPT.VTs[:T_] > 0]

@@ -24,6 +24,7 @@ _AH = r'''
 extern "C" {
 #ifndef AF_KD_DEF
 #define AF_KD_DEF
+__device__ const float* AHDV;                                                      // 절 AG.18 --ah_imex_cl: 대상 무리 가우스-자이델 (야코비) 으로 푼 Δv (null = 노드 걸음에서 직접 풂)
 __device__ float* AHNB;                                                             // 절 AG.18 --ah_imex_rel: 노드별 [Σc v_j (3), Σc Δv_j (3), Σc] (7 성분) -- 이웃 결합 상대 꼴 (null = 이웃 고정 판)
 __device__ int AHKF;                                                                // 1 = 대상 판정을 노드 대각 블록 최대 고윳값으로: (h_s/2)² λ_max(K_nn) > m (그 노드 자기 진동수 -- 이웃 고정)
 __device__ int AHKG;                                                                // 1 = K_nn 대신 Gershgorin 상계 k_n I (k_n = 4 mfa / h_s², 대각 우세라 이웃 고정 한 걸음이 안정)
@@ -98,6 +99,11 @@ __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* v
         float Km[9] = {K[0], K[3], K[5], K[3], K[1], K[4], K[5], K[4], K[2]};
         if (AHKG) { float kn = 4.f*mfa[n]/(hs*hs); for (int k_=0;k_<9;k_++) Km[k_] = 0.f; Km[0] = Km[4] = Km[8] = kn; }
         float v0[3] = {vn[n*3], vn[n*3+1], vn[n*3+2]};
+        if (AHDV) {                                                             // 무리 풀이 결과 그대로
+            if (AHNB) { float* B = AHNB + (long long)n*7; for (int q_=0;q_<7;q_++) B[q_] = 0.f; }
+            for (int a_=0;a_<3;a_++) v[a_] = (v0[a_] + AHDV[n*3+a_])*damp;
+            for (int c=0;c<3;c++) f[n*3+c] = 0.f;
+        } else {
         float r[3], Mx[9];
         float vb[3] = {v0[0], v0[1], v0[2]}, dvb[3] = {hs*gg[0], hs*gg[1], hs*gg[2]};
         if (AHNB) {                                                             // 상대 꼴: K_nn (v_n − v̄) − K_nn Δv̄ -- 병진에 영 강성 (Σ c = K 행 합의 대각 몫)
@@ -116,6 +122,7 @@ __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* v
         if (dM > 1e-30f) { for (int a_=0;a_<3;a_++) { float dv = (cM[a_]*r[0] + cM[3+a_]*r[1] + cM[6+a_]*r[2])/dM; v[a_] = (v0[a_] + dv)*damp; } }   // 대칭이라 cofᵀ = cof
         else for (int a_=0;a_<3;a_++) v[a_] = (m > 0.f) ? (v0[a_] + hs*(f[n*3+a_]/m + gg[a_]))*damp : 0.f;
         for (int c=0;c<3;c++) f[n*3+c] = 0.f;
+        }
     } else
     for (int c=0;c<3;c++) {
         if (fixd && fixd[n]) v[c] = vbc[n*3+c];
@@ -461,7 +468,7 @@ __global__ void akg_kns2(const int* szp, const int* tg, const long long* tets, c
 }
 // 절 AG.18 --ah_imex_rel: 이웃 결합 (서브스텝마다, 힘 뒤·노드 걸음 앞). c_ij = −w_t ∇λ_i·∇λ_j (Σ_j≠i c_ij = w_t |∇λ_i|², 병진 정확), 이웃 Δv = 명시적 h(f/m + g) (대상·질량 0 이웃은 h g)
 __global__ void ah_imx_nb(const int* szp, const long long* tets, const float* gl, const float* VT, const float* W, const float* vn, const float* f, const float* mn,
-                          const float* mfa, float hs, float g0, float g1, float g2, float* B) {
+                          const float* mfa, float hs, float g0, float g1, float g2, float* B, int clus) {
     int t = blockIdx.x*blockDim.x + threadIdx.x;
     if (t >= szp[1]) return;
     float w = VT[t] + (W ? W[t] : 0.f);
@@ -472,12 +479,56 @@ __global__ void ah_imx_nb(const int* szp, const long long* tets, const float* gl
     float gg[3] = {g0, g1, g2};
     float dv[4][3];
     for (int j=0;j<4;j++) { long long m_ = nd[j]; float mm = mn[m_]; bool fl = mfa && (mfa[m_] > mm);
-        for (int c=0;c<3;c++) dv[j][c] = (!fl && mm > 0.f) ? hs*(f[m_*3+c]/mm + gg[c]) : hs*gg[c]; }
+        for (int c=0;c<3;c++) dv[j][c] = (!fl && mm > 0.f) ? hs*(f[m_*3+c]/mm + gg[c]) : ((fl && clus) ? 0.f : hs*gg[c]); }   // 무리 판: 대상 이웃 몫은 반복에서
     for (int i=0;i<4;i++) for (int j=0;j<4;j++) { if (i == j) continue;
         float c_ = -w*(G[i*3]*G[j*3] + G[i*3+1]*G[j*3+1] + G[i*3+2]*G[j*3+2]);
         float* Bn = B + nd[i]*7;
         for (int c=0;c<3;c++) { atomicAdd(&Bn[c], c_*vn[nd[j]*3+c]); atomicAdd(&Bn[3+c], c_*dv[j][c]); }
         atomicAdd(&Bn[6], c_); }
+}
+// 절 AG.18 --ah_imex_cl: 무리 반복 -- (1) 사면체: 대상 이웃 Δv 의 c 가중 합, (2) 대상 노드: 같은 3x3 풀이로 새 Δv, 잔차 (최대 변화·최대 크기)
+__global__ void ah_imx_cl_t(const int* szp, const long long* tets, const float* gl, const float* VT, const float* W, const float* mn, const float* mfa,
+                            const float* dvc, float* S2) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= szp[1]) return;
+    float w = VT[t] + (W ? W[t] : 0.f);
+    if (!(w > 0.f)) return;
+    long long nd[4]; float G[12];
+    for (int i=0;i<4;i++) nd[i] = tets[(long long)t*4+i];
+    for (int q=0;q<12;q++) G[q] = gl[(long long)t*12+q];
+    bool fl[4]; for (int j=0;j<4;j++) fl[j] = mfa[nd[j]] > mn[nd[j]];
+    for (int i=0;i<4;i++) { if (!fl[i]) continue; for (int j=0;j<4;j++) { if (i == j || !fl[j]) continue;
+        float c_ = -w*(G[i*3]*G[j*3] + G[i*3+1]*G[j*3+1] + G[i*3+2]*G[j*3+2]);
+        for (int c=0;c<3;c++) atomicAdd(&S2[nd[i]*3+c], c_*dvc[nd[j]*3+c]); } }
+}
+__global__ void ah_imx_cl_n(const int* szp, const float* mn, const float* mfa, const unsigned char* fixd, const float* f, const float* vn, float g0, float g1, float g2,
+                            float hs, const float* Kd, const float* B, float* S2, const float* dvc, float* dvn, unsigned int* res) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= szp[0]) return;
+    float m = mn[n];
+    if (!(mfa[n] > m) || (fixd && fixd[n])) { S2[n*3] = S2[n*3+1] = S2[n*3+2] = 0.f; return; }
+    float gg[3] = {g0, g1, g2};
+    const float* K = Kd + (long long)n*6;
+    float Km[9] = {K[0], K[3], K[5], K[3], K[1], K[4], K[5], K[4], K[2]};
+    if (AHKG) { float kn = 4.f*mfa[n]/(hs*hs); for (int k_=0;k_<9;k_++) Km[k_] = 0.f; Km[0] = Km[4] = Km[8] = kn; }
+    const float* Bn = B + (long long)n*7;
+    float v0[3] = {vn[n*3], vn[n*3+1], vn[n*3+2]}, vb[3] = {v0[0], v0[1], v0[2]}, dvb[3] = {0.f, 0.f, 0.f};
+    if (Bn[6] > 1e-30f) for (int a_=0;a_<3;a_++) { vb[a_] = Bn[a_]/Bn[6]; dvb[a_] = (Bn[3+a_] + S2[n*3+a_])/Bn[6]; }
+    else for (int a_=0;a_<3;a_++) dvb[a_] = hs*gg[a_];
+    S2[n*3] = S2[n*3+1] = S2[n*3+2] = 0.f;
+    float r[3], Mx[9];
+    for (int a_=0;a_<3;a_++) {
+        float kv = Km[a_*3]*(v0[0]-vb[0]) + Km[a_*3+1]*(v0[1]-vb[1]) + Km[a_*3+2]*(v0[2]-vb[2]);
+        float kd = Km[a_*3]*dvb[0] + Km[a_*3+1]*dvb[1] + Km[a_*3+2]*dvb[2];
+        r[a_] = hs*(f[n*3+a_] + m*gg[a_] - hs*kv + hs*kd);
+    }
+    for (int k_=0;k_<9;k_++) Mx[k_] = hs*hs*Km[k_]; Mx[0] += m; Mx[4] += m; Mx[8] += m;
+    float cM[9]; cof3(Mx, cM); float dM = Mx[0]*cM[0]+Mx[1]*cM[1]+Mx[2]*cM[2];
+    float d[3] = {hs*gg[0], hs*gg[1], hs*gg[2]};
+    if (dM > 1e-30f) for (int a_=0;a_<3;a_++) d[a_] = (cM[a_]*r[0] + cM[3+a_]*r[1] + cM[6+a_]*r[2])/dM;
+    float ch = 0.f, mg = 0.f;
+    for (int a_=0;a_<3;a_++) { dvn[n*3+a_] = d[a_]; ch = fmaxf(ch, fabsf(d[a_] - dvc[n*3+a_])); mg = fmaxf(mg, fabsf(d[a_])); }
+    if (isfinite(ch)) { atomicMax(&res[0], __float_as_uint(ch)); atomicMax(&res[1], __float_as_uint(mg)); } else atomicMax(&res[0], 0x7f7fffffu);
 }
 // 절 AG.18 --ah_imex: 노드 대각 블록 K_nn (프레임 시작 기준 선형 탄성 접선) -- 입자 적분점 w (μ|g|² I + (μ + λ r) g gᵀ), g = F_pᵀ ∇λ_n (r = --ak_capmu λ 배율)
 __global__ void ah_kd_pq(int N, const int* tt, const long long* tets, const float* gl, const float* akF, const float* wp, const float* lr, const int* gp,
@@ -530,6 +581,12 @@ def set_kg(on):
     """절 AG.18 --ah_imex_k gersh."""
     import cupy as cp
     cp.ndarray((1,), cp.int32, mod().get_global("AHKG"))[:] = 1 if on else 0
+
+
+def set_dv(t):
+    """절 AG.18 --ah_imex_cl: AHDV 포인터."""
+    import cupy as cp
+    cp.ndarray((1,), cp.uint64, mod().get_global("AHDV"))[:] = 0 if t is None else t.data_ptr()
 
 
 def set_nb(t):
