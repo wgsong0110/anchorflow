@@ -11,7 +11,7 @@ gt(){ local t=$1 vk=$2 g=$3; shift 3; local o=$GO/${t}_$vk
   (cd $W/i-physgaussian && CUDA_VISIBLE_DEVICES=$g python -u $AF/exe/gt_sens.py --out $o --gt $W/lbdata/test/$t --pt /tmp/dkta/af_data/$t.pt --no_dump "$@" < /dev/null > $o/log.txt 2>&1)
   echo "$(date +%T) ${t}_$vk $(tail -1 $o/log.txt | cut -c1-160)"; rclone copy $o r2:storage/result/anchorflow/lbours/fem_ak_gt/${t}_$vk -q; }
 JOBS=()
-for t in $TS; do JOBS+=("$t rep" "$t ns416 --nsub 416" "$t ng141 --n_grid 141" "$t fz049 --floor_z 0.49"); done
+for t in $TS; do JOBS+=("$t rep" "$t ns416 --nsub 416" "$t ng141 --n_grid 141" "$t fz049 --floor_z 0.49" "$t ng71 --n_grid 71" "$t pic --rpic -1"); done
 i=0; for g in 1 2 3 4 5 6; do
   ( k=0; for j in "${JOBS[@]}"; do if [ $((k % 6)) -eq $((g - 1)) ]; then set -- $j; t=$1; vk=$2; shift 2; gt $t $vk $g "$@"; fi; k=$((k + 1)); done ) &
 done
