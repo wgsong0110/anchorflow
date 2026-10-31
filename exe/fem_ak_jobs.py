@@ -80,6 +80,7 @@ VAR = {
     "cmsGdg": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --akg_k 1 --akg_empty --akg_hg 1 --ah_imex --ah_imex_flag diag --ah_imex_k gersh @NOFAST",
     "cmsPr": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --akpl_el --ah_mcfl 1 --ah_imex --ah_imex_rel @NOFAST",   # 절 AG.18: Gershgorin 판정 + 이웃 결합 상대 꼴
     "cmsGr": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --akg_k 1 --akg_empty --akg_hg 1 --ah_imex --ah_imex_rel @NOFAST",
+    "cmsU": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 @NOFSTEP",           # 절 AG.18 공통 설정: 기본 판 + 프레임 단위 국소 CFL 질량 (절 AG.15) -- 노드 걸음 커널이 ah_node_step 이라 --ak_fstep 만 뺀다
     "cm05m": "PQF3 --sp_vcap 0.5 --ak_capmu --ah_mlow 0.1",
     "pqfl9": "PQF3 --ak_flip 0.9",
     "pqfl1": "PQF3 --ak_flip 1.0",
@@ -93,6 +94,8 @@ VAR = {
 for _k in list(VAR):
     if VAR[_k].startswith("PQF3"):
         VAR[_k] = VAR["pqf3"] + VAR[_k][4:]
+    if "@NOFSTEP" in VAR[_k]:
+        VAR[_k] = VAR[_k].replace("@NOFSTEP", "").replace(" --ak_fstep", "")
     if "@NOFAST" in VAR[_k]:
         VAR[_k] = VAR[_k].replace("@NOFAST", "").replace(" --ak_pq4", "").replace(" --ak_prep", "").replace(" --ak_fuse", "").replace(" --ak_fstep", "")
 

@@ -683,9 +683,10 @@ if a.vfl_tacc and not (AH_GTK and a.cfuse and a.mass == "tet" and not a.vfl_agg)
     raise SystemExit("--vfl_tacc 는 --vfl_w gtk + --cfuse + --mass tet 경로만")
 if a.vfl_agg and not (AH_GTK and a.cfast or AH_GTK and a.cfuse):
     raise SystemExit("--vfl_agg 는 --vfl_w gtk + --cfuse 경로만")
+AG_GTKC = bool(VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0) and (PLAST or VISC) and AKPQ)   # 절 AG.18: 재질 판 + 띠 0 바닥
 if AHF:
     _ahfl = VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0)
-    if not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2) or (_ahfl and (PLAST or VISC or PBC)):
+    if not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2) or (_ahfl and (PLAST or VISC or PBC) and not AKPQ):   # 절 AG.18: 입자 적분점 재질 판은 접촉을 ah_fc 로 따로
         raise SystemExit("절 AH 바닥 (--vfl_w gtk / --vfl_rate) 은 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, 탄성) 만 (--ah_mlow 만은 절 AG 재질 판에도)")
     if AH_GTK and abs(sum(abs(q) for q in nr_) - 1.0) > 1e-6:
         raise SystemExit("--vfl_w gtk 는 축 정렬 평면만 (정답 격자 노드 좌표 비교)")
@@ -1796,6 +1797,7 @@ class Opt:
                 AKC.launch("ak_p2_f", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.t10), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akl),
                                            EX.P(self.akw), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)
         elif PLAST or VISC:                                                         # 절 AG: 같은 틀, 사면체 블록만 재질 식 (셀 투영) + 점성
+          if not (AG_GTKC and nbT == 0):                                            # 절 AG.18: 입자 적분점 + 띠 0 바닥이면 ag_fc 는 할 일이 없다 (힘은 akpl, 접촉은 ah_fc)
             PLC.launch("ag_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.akz if PQPL else self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                     EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0),
                                     np.int32(MATN), EX.P(PRM), EX.P(self.ysT if PLAST else None), EX.P(self.ljT if PLAST else None),
@@ -1803,7 +1805,13 @@ class Opt:
                                     np.int32(a.pl_diag | (1 if a.pl_cell == "none" else 0)),
                                     EX.P(self.FeC if PLINC else None), EX.P(self.XpC if PLINC else None), EX.P(self.ysC if PLINC else None), EX.P(self.ljC if PLINC else None),
                                     EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
-                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
+                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + (0 if AG_GTKC else nbP))
+          if AG_GTKC:                                                               # 절 AG.18: 재질 판의 띠 0 바닥 -- 접촉만 ah_fc (사면체 블록 0 개)
+                AHC.launch("ah_fc", 0, (np.int32(0), EX.P(self.sz), EX.P(self.tl), EX.P(self.akz), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
+                                        EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(None),
+                                        EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
+                                        np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon),
+                                        np.int32(AH_GTK), np.float32(AH_BAND), np.float32(AH_PN), np.float32(AH_DXG), EX.P(self.accN if AH_ACCN else None), np.float32(a.vfl_npd)), b=128, grid=nbP)
         elif AHF and a.vfl_bf:                                                      # 절 AH.12: 띠 가중은 프레임 시작에 (_bf0), 서브스텝은 평면 아래 후보만
             AHC.launch("ah_fc_bf", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                        EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
