@@ -24,6 +24,7 @@ _AH = r'''
 extern "C" {
 #ifndef AF_KD_DEF
 #define AF_KD_DEF
+__device__ int AHKF;                                                                // 1 = 대상 판정을 노드 대각 블록 최대 고윳값으로: (h_s/2)² λ_max(K_nn) > m (그 노드 자기 진동수 -- 이웃 고정)
 __device__ int AHKG;                                                                // 1 = K_nn 대신 Gershgorin 상계 k_n I (k_n = 4 mfa / h_s², 대각 우세라 이웃 고정 한 걸음이 안정)
 __device__ const float* AHKD;                                                       // 절 AG.18 --ah_imex: 노드 3x3 접선 강성 대각 블록 (6 성분, null = 끔). 켜면 국소 CFL 비 > 1 노드만 국소 후퇴 오일러
 #endif
@@ -84,7 +85,12 @@ __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* v
     float gg[3] = {g0, g1, g2};
     float m = mn[n];
     float mi = AHKD ? fmaxf(m, mfl) : fmaxf(m, mfa ? mfa[n] : mfl);            // --ah_imex: 질량 하한 대신 (mfa = 국소 CFL 질량 (h_s/2)² k_n 은 판정에만)
-    bool imp = AHKD && mfa && !(fixd && fixd[n]) && (mfa[n] > m);             // 국소 CFL 비 (h_s/2)² k_n / m_n > 1                                    // 절 AG.15: 노드별 국소 CFL 관성 질량 하한 (mfa != null)                                                   // 절 AH.18 --ah_mlow: 가속도에만 쓰는 관성 질량 하한 (0 이면 기존)
+    bool imp = AHKD && mfa && !(fixd && fixd[n]) && (mfa[n] > m);             // 국소 CFL 비 (h_s/2)² k_n / m_n > 1
+    if (AHKD && AHKF && !(fixd && fixd[n])) {
+        const float* K = AHKD + (long long)n*6;
+        float Cm[9] = {K[0], K[3], K[5], K[3], K[1], K[4], K[5], K[4], K[2]}; float l_[3]; symeig3(Cm, l_);
+        imp = 0.25f*hs*hs*l_[2] > m;
+    }                                    // 절 AG.15: 노드별 국소 CFL 관성 질량 하한 (mfa != null)                                                   // 절 AH.18 --ah_mlow: 가속도에만 쓰는 관성 질량 하한 (0 이면 기존)
     float v[3];
     if (imp) {                                                                  // 절 AG.18: (m I + h² K_nn) Δv = h (f + m g − h K_nn v), 이웃은 명시적 값 고정 (VBD 노드 블록과 같은 꼴, 선형화 후퇴 오일러 한 걸음)
         const float* K = AHKD + (long long)n*6;                                  // xx yy zz xy yz xz
@@ -492,6 +498,12 @@ def set_kg(on):
     """절 AG.18 --ah_imex_k gersh."""
     import cupy as cp
     cp.ndarray((1,), cp.int32, mod().get_global("AHKG"))[:] = 1 if on else 0
+
+
+def set_kf(on):
+    """절 AG.18 --ah_imex_flag diag."""
+    import cupy as cp
+    cp.ndarray((1,), cp.int32, mod().get_global("AHKF"))[:] = 1 if on else 0
 
 
 def set_vpred(vn, hs):

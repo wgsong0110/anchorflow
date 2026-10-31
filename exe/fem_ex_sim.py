@@ -259,6 +259,7 @@ ap.add_argument("--akg_nocpl", action="store_true", help="절 AG.18 진단: 빈 
 ap.add_argument("--ah_imex", action="store_true", help="절 AG.18 정의 변경: 국소 CFL 비 (h_s/2)² k_n / m_n > 1 (k_n = 노드 강성 Gershgorin 상계, --ah_mcfl 1 이 계산) 인 노드만 "
                      "그 노드 3x3 접선 강성 (프레임 시작 선형 탄성 접선) 으로 선형화 후퇴 오일러 한 걸음 (이웃은 명시적 값 고정); 질량 하한은 쓰지 않는다")
 ap.add_argument("--ah_imex_k", choices=["tan", "gersh"], default="tan", help="--ah_imex 의 노드 강성: tan = 선형 탄성 접선 대각 블록, gersh = Gershgorin 상계 k_n I (대각 우세)")
+ap.add_argument("--ah_imex_flag", choices=["gersh", "diag"], default="gersh", help="--ah_imex 대상 판정: gersh = Gershgorin 상계 (h_s/2)² k_n > m (과대 -- 거의 모든 노드), diag = 노드 대각 블록 (h_s/2)² λ_max(K_nn) > m")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
@@ -2875,9 +2876,15 @@ class Opt:
                                                      EX.P(self.akg_MG), np.float32(2.0 * a.akg_hg * mu), EX.P(self.ahkd)), b=128)
                 AHC.set_kd(self.ahkd)
                 AHC.set_kg(a.ah_imex_k == "gersh")
+                AHC.set_kf(a.ah_imex_flag == "diag")
                 if not hasattr(self, "_imx_n"):
                     self._imx_n = []
-                self._imx_n.append(int((self.mcfl[:self.M] > self.mn[:self.M]).sum()))
+                if a.ah_imex_flag == "diag":
+                    K6 = self.ahkd[:self.M * 6].view(-1, 6)
+                    Km = torch.stack([K6[:, 0], K6[:, 3], K6[:, 5], K6[:, 3], K6[:, 1], K6[:, 4], K6[:, 5], K6[:, 4], K6[:, 2]], 1).view(-1, 3, 3)
+                    self._imx_n.append(int((0.25 * self.hscur ** 2 * torch.linalg.eigvalsh(Km)[:, 2] > self.mn[:self.M]).sum()))
+                else:
+                    self._imx_n.append(int((self.mcfl[:self.M] > self.mn[:self.M]).sum()))
         if a.ah_mlow > 0 and not hasattr(self, "_mfl"):                          # 절 AH.18: 첫 프레임 (데우기 프레임, 측정 밖) 에 한 번
             mn_ = self.mn[:self.M]
             self._mfl = float(a.ah_mlow * mn_[mn_ > 0].median())
