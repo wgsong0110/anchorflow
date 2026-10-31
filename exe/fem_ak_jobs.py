@@ -65,6 +65,8 @@ VAR = {
     "cm05": "PQF3 --sp_vcap 0.5 --ak_capmu",                                       # 절 AK.16: 상한 θ 를 전단 몫에만
     "cm03": "PQF3 --sp_vcap 0.3 --ak_capmu",
     "cm075": "PQF3 --sp_vcap 0.75 --ak_capmu",
+    "cm06": "PQF3 --sp_vcap 0.6 --ak_capmu",
+    "cm05m": "PQF3 --sp_vcap 0.5 --ak_capmu --ah_mlow 0.1",
     "pqfl9": "PQF3 --ak_flip 0.9",
     "pqfl1": "PQF3 --ak_flip 1.0",
     "pqs05": "PQF3 --fupd bar --fupd_b 0.05",                                       # 절 AK.10: 셀 아래 몫 이완 F <- A_T [F̄ + (1-β)(F - F̄)] (셀 평균은 그대로)
