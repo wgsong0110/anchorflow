@@ -228,6 +228,7 @@ ap.add_argument("--ak_en", type=int, default=0, help="절 AK 진단 (측정 밖)
                 "입자 탄성 Σ V_p ψ(F_p) 우리 (쓰는 F / 그림자 호환 F_c = Π A_T, 위치 사상의 실제 야코비안) / 정답 (같은 V_p·ψ), 압축 분위 -> fem.jsonl ak")
 ap.add_argument("--ak_pq", action="store_true", help="절 AK: 셀 탄성을 입자 적분점으로 -- E_T = Σ_p w_p ψ(A_T F_p), w_p = V_p V_T'/V_T (셀 평균 F̄ 의 ψ 대신; 재평균 에너지 손실 없음, lib/anchorflow/fem_ak_cuda.py)")
 ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 수 고정 (0 = 수렴 판정 1e-7, 최대 10)")
+ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적분점 (정의 변경): 셀 안 max‖F_p − F̄_T‖_F ≤ ε 이거나 입자 1 개인 사면체는 한 점 적분 (F̄, V = Σ w) -- 음수 = 끔 (모두 입자 적분점)")
 ap.add_argument("--ak_pq4", action="store_true", help="--ak_pq 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차로 반정밀도 저장)")
 ap.add_argument("--ak_pq3", action="store_true", help="--ak_pq 3 판 (구간 머리 레인만 A_T 계산 -> 셔플; 같은 식)")
 ap.add_argument("--ak_pq2", action="store_true", help="--ak_pq 2 단 판 (사면체 A_T 버퍼 -> 입자 스레드; 같은 식)")
@@ -782,6 +783,13 @@ class Opt:
             self.akord = torch.zeros(Np, dtype=torch.int32, device=dev)
             self.aktt = torch.zeros(Np, dtype=torch.int32, device=dev)
             self.akdF = torch.zeros(Np, 9, device=dev, dtype=torch.float16)
+            if a.ak_eps >= 0:                                                         # 혼합: 거친 사면체 입자 목록 (정렬 순서), 개수, 한 점 사면체 목록
+                self.akN = torch.zeros(1, dtype=torch.int32, device=dev)
+                self.aktt2 = torch.zeros(Np, dtype=torch.int32, device=dev)
+                self.akdF2 = torch.zeros(Np, 9, device=dev, dtype=torch.float16)
+                self.akw2 = torch.zeros(Np, device=dev)
+                self.aktlc = torch.zeros(1, dtype=torch.int32, device=dev)
+                self.akrough = []
             self.akz = torch.zeros(1, dtype=torch.int32, device=dev)
             self.akoffs = None
         self.aic = z(4)                                                              # 절 AI: [0] 뒤집힌 입자 (A1 반전), [1] Σ w R_p 가 반사인 셀, [2] B2 정규화 Σw < 1 입자, [3] 그 1 − Σw 합
@@ -1297,7 +1305,7 @@ class Opt:
     def _step_fused(self):
         """절 C (5): ex_tet_force_R + ex_vfl_contact + ex_node_step_lag + 클램프 판정 + 적용과 같은 식을 커널 4 개로."""
         Mc, Tc = self.Mcap, self.Tcap
-        nbT = 0 if (AKPQ and VFL) else (Tc + 127) // 128                               # 절 AK: 입자 적분점 + 바닥이면 융합 커널은 접촉 블록만 (바닥 없으면 목록 개수 0 으로 빈 블록)
+        nbT = 0 if (AKPQ and VFL and a.ak_eps < 0) else (Tc + 127) // 128                               # 절 AK: 입자 적분점 + 바닥이면 융합 커널은 접촉 블록만 (바닥 없으면 목록 개수 0 으로 빈 블록)
         nbP = ((Np + 127) // 128) if VFL else 0
         hs_, damp_ = self.hscur, self.dampcur
         if PLAST or VISC:                                                           # 절 AG: 같은 틀, 사면체 블록만 재질 식 (셀 투영) + 점성
@@ -1323,7 +1331,7 @@ class Opt:
             AHC.launch("ah_tdist", 0, (EX.P(self.clT), EX.P(self.tets), EX.P(self.accT), EX.P(self.rT), EX.P(self.acc), EX.P(self.accN)), b=128, grid=84)
             AHC.launch("ah_clr1", 0, (EX.P(self.clT),), b=32, grid=1)
         elif AHF:                                                                   # 절 AH: 같은 힘 + 바닥 접촉 가중 (gtk) / 실제 접촉 표시
-            AHC.launch("ah_fc_agg" if a.vfl_agg else "ah_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.akz if AKPQ else self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
+            AHC.launch("ah_fc_agg" if a.vfl_agg else "ah_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P((self.aktlc if a.ak_eps >= 0 else self.akz) if AKPQ else self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                     EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
                                     EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                     np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon),
@@ -1336,12 +1344,15 @@ class Opt:
                                     EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                     np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon), EX.P(self.aD0)), b=128, grid=nbT + nbP)
         else:
-            CCU.launch("c_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.akz if AKPQ else self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
+            CCU.launch("c_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P((self.aktlc if a.ak_eps >= 0 else self.akz) if AKPQ else self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                    EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
                                    EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
         if AKPQ:                                                                    # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
-            if a.ak_pq4:
+            if a.ak_eps >= 0:
+                AKC.launch("ak_pq_force_p5", Np, (EX.P(self.akN), EX.P(self.aktt2), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
+                                                  EX.P(self.akdF2), EX.P(self.akw2), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)
+            elif a.ak_pq4:
                 AKC.launch("ak_pq_force_p4", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                                   EX.P(self.akdF), EX.P(self.akw), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)
             elif a.ak_pq3:
@@ -2096,8 +2107,31 @@ class Opt:
             vs_ = torch.zeros(T_, device=dev).index_add_(0, pin, self.volA)
             self.akw.copy_((self.volA * self.VTs[:T_][pin] / vs_[pin].clamp_min(1e-30))[o_])   # 사면체 정렬 순서로 (읽기 병합)
             self.akF.copy_(Fa[o_])
-            if a.ak_pq4:
+            if a.ak_pq4 or a.ak_eps >= 0:
                 self.akdF.copy_(self.akF - self.FT[:T_][self.aktt.long()])
+            if a.ak_eps >= 0:                                                       # 혼합: 거친 사면체 판정 (동기화 없이 torch 로)
+                dn_ = self.akdF.float().norm(dim=-1)
+                tt_ = self.aktt.long()
+                dmx = torch.zeros(T_, device=dev).scatter_reduce_(0, tt_, dn_, "amax", include_self=True)
+                cnt_ = torch.bincount(tt_, minlength=T_)[:T_]
+                rough_t = (cnt_ >= 2) & (dmx > a.ak_eps)
+                rp = rough_t[tt_]                                                     # 입자별 (정렬 순서)
+                pos = torch.cumsum(rp.int(), 0) - 1
+                idx = torch.where(rp, pos, torch.full_like(pos, Np - 1)).long()       # 거친 입자를 앞으로 모은다 (나머지는 마지막 칸에 덮어쓰기 -- 아래 개수 밖이라 안 읽힘)
+                n_ = rp.sum().int()
+                keep = torch.arange(Np, device=dev) < n_
+                self.aktt2.zero_(); self.akw2.zero_(); self.akdF2.zero_()
+                self.aktt2.index_copy_(0, torch.where(rp, pos, torch.zeros_like(pos)).long()[rp], self.aktt[rp])
+                self.akw2.index_copy_(0, pos[rp].long(), self.akw[rp])
+                self.akdF2.index_copy_(0, pos[rp].long(), self.akdF[rp])
+                self.akN.copy_(n_.view(1))
+                occ_ = self.VTs[:T_] > 0
+                sm_ = occ_ & ~rough_t                                                 # 한 점 적분 사면체
+                tls_ = torch.nonzero(sm_).flatten().int()
+                self.tl[:T_].zero_()
+                self.tl[:tls_.numel()].copy_(tls_)                                    # (호스트 크기 -- nonzero 가 동기화 1 번)
+                self.aktlc.copy_(torch.tensor([tls_.numel()], dtype=torch.int32, device=dev))
+                self.akrough.append((float(rp.float().mean()), float(rough_t.float().sum() / occ_.float().sum().clamp_min(1))))
         if a.ah_mlow > 0 and not hasattr(self, "_mfl"):                          # 절 AH.18: 첫 프레임 (데우기 프레임, 측정 밖) 에 한 번
             mn_ = self.mn[:self.M]
             self._mfl = float(a.ah_mlow * mn_[mn_ > 0].median())
@@ -3074,6 +3108,9 @@ if CC and a.cchk:
 summ.update(cfast=dict(vfl_cull=a.vfl_cull, sr_fast=a.sr_fast, tlist=a.tlist, fpolar=a.fpolar, cfuse=a.cfuse) if CC else None,
             adapt=(dict(rule=a.adapt, lo=a.ad_lo, hi=a.ad_hi, thr=a.ad_thr, q=a.ad_q, N_mean=float(np.mean([r.get("Nf", a.N) for r in recs])),
                         N_hist={str(k): sum(1 for r in recs if r.get("Nf") == k) for k in sorted(set(r.get("Nf", a.N) for r in recs))}) if a.adapt != "none" else None))
+if AKPQ and getattr(OPT, "akrough", None):                                        # 절 AK 혼합 적분점: 거친 (입자 적분점) 입자·사면체 비율 프레임 평균·최대
+    _r = np.array(OPT.akrough)
+    summ.update(ak_rough_p=[float(_r[:, 0].mean()), float(_r[:, 0].max())], ak_rough_t=[float(_r[:, 1].mean()), float(_r[:, 1].max())])
 summ.update(plast=(dict(material=cfg.get("material"), mat=MATN, **PLP, dmg_final=int((PL_AL <= 0).sum()), lj_pos_final=int((PL_LJ > 0).sum())) if PLAST else None),
             visc=a.visc, pbc=PBC, floor_plane=a.floor_plane or None, gt_nonfinite_last=int((~GTOK[-1]).sum()))
 if GPROF:
