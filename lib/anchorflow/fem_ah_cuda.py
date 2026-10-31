@@ -22,6 +22,10 @@ from . import fem_c_cuda as CCU
 
 _AH = r'''
 extern "C" {
+#ifndef AF_KD_DEF
+#define AF_KD_DEF
+__device__ const float* AHKD;                                                       // 절 AG.18 --ah_imex: 노드 3x3 접선 강성 대각 블록 (6 성분, null = 끔). 켜면 국소 CFL 비 > 1 노드만 국소 후퇴 오일러
+#endif
 #ifndef AF_VN_DEF
 #define AF_VN_DEF
 __device__ const float* AFVN;                                                       // 절 AG.18 --vfl_pred: 노드 속도 (null = 끔) -- 비관통 판정을 서브스텝 끝 예측 입자 위치 s + h_s (Σλ v)·n 로
@@ -78,8 +82,21 @@ __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* v
     if (n >= M) return;
     float gg[3] = {g0, g1, g2};
     float m = mn[n];
-    float mi = fmaxf(m, mfa ? mfa[n] : mfl);                                    // 절 AG.15: 노드별 국소 CFL 관성 질량 하한 (mfa != null)                                                   // 절 AH.18 --ah_mlow: 가속도에만 쓰는 관성 질량 하한 (0 이면 기존)
+    float mi = AHKD ? fmaxf(m, mfl) : fmaxf(m, mfa ? mfa[n] : mfl);            // --ah_imex: 질량 하한 대신 (mfa = 국소 CFL 질량 (h_s/2)² k_n 은 판정에만)
+    bool imp = AHKD && mfa && !(fixd && fixd[n]) && (mfa[n] > m);             // 국소 CFL 비 (h_s/2)² k_n / m_n > 1                                    // 절 AG.15: 노드별 국소 CFL 관성 질량 하한 (mfa != null)                                                   // 절 AH.18 --ah_mlow: 가속도에만 쓰는 관성 질량 하한 (0 이면 기존)
     float v[3];
+    if (imp) {                                                                  // 절 AG.18: (m I + h² K_nn) Δv = h (f + m g − h K_nn v), 이웃은 명시적 값 고정 (VBD 노드 블록과 같은 꼴, 선형화 후퇴 오일러 한 걸음)
+        const float* K = AHKD + (long long)n*6;                                  // xx yy zz xy yz xz
+        float Km[9] = {K[0], K[3], K[5], K[3], K[1], K[4], K[5], K[4], K[2]};
+        float v0[3] = {vn[n*3], vn[n*3+1], vn[n*3+2]};
+        float r[3], Mx[9];
+        for (int a_=0;a_<3;a_++) { float kv = Km[a_*3]*v0[0] + Km[a_*3+1]*v0[1] + Km[a_*3+2]*v0[2]; r[a_] = hs*(f[n*3+a_] + m*gg[a_] - hs*kv); }
+        for (int k_=0;k_<9;k_++) Mx[k_] = hs*hs*Km[k_]; Mx[0] += m; Mx[4] += m; Mx[8] += m;
+        float cM[9]; cof3(Mx, cM); float dM = Mx[0]*cM[0]+Mx[1]*cM[1]+Mx[2]*cM[2];
+        if (dM > 1e-30f) { for (int a_=0;a_<3;a_++) { float dv = (cM[a_]*r[0] + cM[3+a_]*r[1] + cM[6+a_]*r[2])/dM; v[a_] = (v0[a_] + dv)*damp; } }   // 대칭이라 cofᵀ = cof
+        else for (int a_=0;a_<3;a_++) v[a_] = (m > 0.f) ? (v0[a_] + hs*(f[n*3+a_]/m + gg[a_]))*damp : 0.f;
+        for (int c=0;c<3;c++) f[n*3+c] = 0.f;
+    } else
     for (int c=0;c<3;c++) {
         if (fixd && fixd[n]) v[c] = vbc[n*3+c];
         else if (m > 0.f || (mfa && mi > 0.f)) v[c] = (vn[n*3+c] + hs*(f[n*3+c]/mi + gg[c]))*damp;   // 절 AG.18: 질량 0 노드 (빈 사면체만 붙음) 도 국소 CFL 관성 질량이 있으면 움직인다
@@ -422,6 +439,34 @@ __global__ void akg_kns2(const int* szp, const int* tg, const long long* tets, c
     float k = MG[g]*fm*wr*S + hg2mu*W[t]*(sx + S);                            // Ā 결합 (입자 실제 계수 x 압축 계수) + 모래시계 (자기 + Ā 결합)
     for (int i=0;i<4;i++) atomicAdd(&mfa[tets[(long long)t*4+i]], c*k*gx[i]);
 }
+// 절 AG.18 --ah_imex: 노드 대각 블록 K_nn (프레임 시작 기준 선형 탄성 접선) -- 입자 적분점 w (μ|g|² I + (μ + λ r) g gᵀ), g = F_pᵀ ∇λ_n (r = --ak_capmu λ 배율)
+__global__ void ah_kd_pq(int N, const int* tt, const long long* tets, const float* gl, const float* akF, const float* wp, const float* lr, const int* gp,
+                         float mu, float lam, float* Kd) {
+    int k = blockIdx.x*blockDim.x + threadIdx.x;
+    if (k >= N) return;
+    if (gp && gp[k] >= 0) return;                                               // 묶음 Ā 를 쓰는 입자는 akg_kd 에서
+    int t = tt[k];
+    float F[9]; for (int j=0;j<9;j++) F[j] = akF[(long long)k*9+j];
+    float w = wp[k], la = lam*(lr ? lr[k] : 1.f);
+    for (int i=0;i<4;i++) {
+        float G[3] = {gl[(long long)t*12+i*3], gl[(long long)t*12+i*3+1], gl[(long long)t*12+i*3+2]};
+        float g[3]; for (int b=0;b<3;b++) g[b] = G[0]*F[b] + G[1]*F[3+b] + G[2]*F[6+b];   // g_b = Σ_q G_q F_qb
+        float gg_ = g[0]*g[0]+g[1]*g[1]+g[2]*g[2], c2 = mu + la;
+        long long nd = tets[(long long)t*4+i];
+        atomicAdd(&Kd[nd*6+0], w*(mu*gg_ + c2*g[0]*g[0])); atomicAdd(&Kd[nd*6+1], w*(mu*gg_ + c2*g[1]*g[1])); atomicAdd(&Kd[nd*6+2], w*(mu*gg_ + c2*g[2]*g[2]));
+        atomicAdd(&Kd[nd*6+3], w*c2*g[0]*g[1]); atomicAdd(&Kd[nd*6+4], w*c2*g[1]*g[2]); atomicAdd(&Kd[nd*6+5], w*c2*g[0]*g[2]);
+    }
+}
+// 묶음 몫 (빈 사면체 포함): Ā 를 쓰는 입자 계수 합 MG (W_t/V_g)² |∇λ_n|² + 모래시계 2γμ W_t |∇λ_n|² (등방 근사, 같은 칸 다른 사면체와의 교차 항 생략)
+__global__ void akg_kd(const int* szp, const int* tg, const long long* tets, const float* gl, const float* W, const float* VG, const float* MG, float hg2mu, float* Kd) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= szp[1]) return;
+    int g = tg[t]; if (g < 0) return;
+    float wr = W[t]/fmaxf(VG[g], 1e-30f);
+    float c = MG[g]*wr*wr + hg2mu*W[t];
+    for (int i=0;i<4;i++) { float a_=0.f; for (int q=0;q<3;q++) { float g_ = gl[(long long)t*12+i*3+q]; a_ += g_*g_; }
+        long long nd = tets[(long long)t*4+i]; atomicAdd(&Kd[nd*6+0], c*a_); atomicAdd(&Kd[nd*6+1], c*a_); atomicAdd(&Kd[nd*6+2], c*a_); }
+}
 __global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
 '''
@@ -433,6 +478,12 @@ def mod():
         import cupy as cp
         _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + _AH).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     return _MOD[0]
+
+
+def set_kd(t):
+    """절 AG.18 --ah_imex: AHKD 장치 포인터 (torch float32 [Mcap*6] 또는 None)."""
+    import cupy as cp
+    cp.ndarray((1,), cp.uint64, mod().get_global("AHKD"))[:] = 0 if t is None else t.data_ptr()
 
 
 def set_vpred(vn, hs):

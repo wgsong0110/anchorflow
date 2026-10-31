@@ -256,6 +256,8 @@ ap.add_argument("--akg_empty", action="store_true", help="절 AG.18 정의 변�
 ap.add_argument("--akpl_el", action="store_true", help="절 AG.18 대조: 탄성 입자 적분점 힘을 akpl_force (mat 0) 경로로 (묶음 판과 같은 커널, 묶음 없이)")
 ap.add_argument("--akg_m0fix", action="store_true", help="절 AG.18 진단: 질량 0 노드의 국소 CFL 관성 질량을 0 으로 (예전처럼 속도 0 고정)")
 ap.add_argument("--akg_nocpl", action="store_true", help="절 AG.18 진단: 빈 사면체 묶음 판에서 Ā 결합 강성 상계를 국소 CFL 질량에서 뺀다")
+ap.add_argument("--ah_imex", action="store_true", help="절 AG.18 정의 변경: 국소 CFL 비 (h_s/2)² k_n / m_n > 1 (k_n = 노드 강성 Gershgorin 상계, --ah_mcfl 1 이 계산) 인 노드만 "
+                     "그 노드 3x3 접선 강성 (프레임 시작 선형 탄성 접선) 으로 선형화 후퇴 오일러 한 걸음 (이웃은 명시적 값 고정); 질량 하한은 쓰지 않는다")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
@@ -650,6 +652,9 @@ else:
     PLf = [np.float32(0)] * 6
 AHF = (VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0)) or a.ah_mlow > 0 or a.ah_mcfl > 0   # 절 AH.18: 질량 하한은 바닥 없는 씬도 같은 노드 걸음 커널로                                     # 절 AH 바닥 정의 (fem_ah_cuda)
 AH_GTK = 1 if (VFL and a.vfl_w == "gtk") else 0
+if a.ah_imex:
+    assert AKPQ and a.ah_mcfl == 1.0 and not a.ah_mcfl_sub and not a.ah_mcfl_tan and not a.ak_fstep and a.cfuse and a.cfuse_mode == 2 and not a.ak_pq4 and not a.ak_prep, \
+        "--ah_imex 는 --ak_pq (기본 입자 스레드 판) + --ah_mcfl 1 (프레임 단위, 판정용) + ah_node_step 경로에서만"
 if a.vfl_pred:
     assert VFL and a.cfuse and a.cfuse_mode == 2 and not a.vfl_bf and not a.vfl_tacc and not a.vfl_agg and (AHF or PLAST or VISC), "--vfl_pred 는 ah_fc·ag_fc 경로에서만"
 if VFL and a.vfl_np == 2:
@@ -931,6 +936,8 @@ class Opt:
             self.acc = z(self.Mcap)                                                  # --floor vel: 노드별 접촉 입자 질량 (쓴 뒤 비움)
             self.accN = z(self.Mcap) 
             self.mcfl = z(self.Mcap)                                                 # 절 AG.15 노드별 국소 CFL 관성 질량
+            if a.ah_imex:
+                self.ahkd = z(self.Mcap * 6)                                         # 절 AG.18 노드 접선 대각 블록
             self.accB = z(self.Mcap)                                                 # 절 AH.12 --vfl_bf: 프레임 상수 띠 고착 질량                                                # 절 AH: 노드별 실제 접촉 (평면 아래) 입자 수 (비관통 판정, 쓴 뒤 비움)
             self.ml = z(self.Mcap) if RWL else None                                  # 절 Q --rep_w lam: 속도 전달 정규화 질량 Σλm
             if LIM:
@@ -2858,6 +2865,17 @@ class Opt:
                 self.mcfl.index_add_(0, self.tets[:T_][ing_].reshape(-1), kg_.reshape(-1))
             if a.akg_m0fix:
                 self.mcfl[:self.M][self.mn[:self.M] <= 0] = 0.0
+            if a.ah_imex:                                                           # 절 AG.18: 노드 대각 블록 K_nn (프레임 상수) -- 국소 CFL 비 > 1 노드의 국소 후퇴 오일러용
+                self.ahkd.zero_()
+                AHC.launch("ah_kd_pq", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.gl), EX.P(self.akF), EX.P(self.akw),
+                                            EX.P(self.aklr if a.ak_capmu else None), EX.P(self.akg_gpb if AKG else None), np.float32(mu), np.float32(lam), EX.P(self.ahkd)), b=128)
+                if AKG and a.akg_empty:
+                    AHC.launch("akg_kd", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.gl), EX.P(self.akg_W), EX.P(self.akg_VG),
+                                                     EX.P(self.akg_MG), np.float32(2.0 * a.akg_hg * mu), EX.P(self.ahkd)), b=128)
+                AHC.set_kd(self.ahkd)
+                if not hasattr(self, "_imx_n"):
+                    self._imx_n = []
+                self._imx_n.append(int((self.mcfl[:self.M] > self.mn[:self.M]).sum()))
         if a.ah_mlow > 0 and not hasattr(self, "_mfl"):                          # 절 AH.18: 첫 프레임 (데우기 프레임, 측정 밖) 에 한 번
             mn_ = self.mn[:self.M]
             self._mfl = float(a.ah_mlow * mn_[mn_ > 0].median())
@@ -3736,6 +3754,8 @@ for i in range(L):
             st.update(rn=int((vnn > 5.0 * q90).sum()), vn_max=float(vnn.max()), vn_q90=float(q90))
             if a.ah_rn:
                 st.update(rnd=rn_diag(OPT, vnn, q90))
+        if a.ah_imex and getattr(OPT, "_imx_n", None):
+            st.update(imx_n=OPT._imx_n[-1])                                         # 절 AG.18: 국소 후퇴 오일러 노드 수 (국소 CFL 비 > 1)
         if a.mesh_cc and str(i + 1) in a.mesh_cc.replace(":", ",").replace("_", ",").split(","):                       # 절 AG.18: 메시 연결 성분 (라벨 전파)
             T_, M_ = OPT.T, OPT.M
             tt_ = OPT.tets[:T_][OPT.VTs[:T_] > 0]
