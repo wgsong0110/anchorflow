@@ -107,7 +107,16 @@ V10 = {
     "ai_bw0": (rep(FINF + " --vfl_band 0", lim_sr="1e30") + AIF, True),
     "ai_bw0_5": (rep(FIN5 + " --vfl_band 0", lim_sr="1e30") + AIF, True),
 }
-SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10}
+# 11 차 (절 AH.18): 최종 판 (bwg) + 관성 질량 하한 -- 폭주 노드는 질량이 중앙값의 0.5 % 인 희소 노드
+BWG = FINF + " --vfl_band 0 --ah_fast"
+V11 = {
+    "bwg": (BWG, True),
+    "ml02": (BWG + " --ah_mlow 0.02", True),
+    "ml05": (BWG + " --ah_mlow 0.05", True),
+    "ml10": (BWG + " --ah_mlow 0.1", True),
+    "ml25": (BWG + " --ah_mlow 0.25", True),
+}
+SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]

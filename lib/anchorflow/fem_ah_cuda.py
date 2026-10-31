@@ -65,16 +65,17 @@ __global__ void ah_fc(int nbT, const int* szp, const int* tl, const int* tlc, co
 }
 // ex_node_step_lag 와 같은 걸음 (nodisp 1 판 = 속도만, U 는 c_lim_apply 가) + 고착 몫 (1 - a/m)^kex, 비관통은 accN > 0 (실제 접촉) 노드만 (accN null 이면 a > 0 노드 -- 기존과 같음)
 __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* vn, float g0, float g1, float g2, float hs, float damp,
-                             const unsigned char* fixd, const float* vbc, float* acc, float* accN, int mode, int np_, float n0, float n1, float n2, float kex) {
+                             const unsigned char* fixd, const float* vbc, float* acc, float* accN, int mode, int np_, float n0, float n1, float n2, float kex, float mfl) {
     int M = szp[0];
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= M) return;
     float gg[3] = {g0, g1, g2};
     float m = mn[n];
+    float mi = fmaxf(m, mfl);                                                   // 절 AH.18 --ah_mlow: 가속도에만 쓰는 관성 질량 하한 (0 이면 기존)
     float v[3];
     for (int c=0;c<3;c++) {
         if (fixd && fixd[n]) v[c] = vbc[n*3+c];
-        else if (m > 0.f) v[c] = (vn[n*3+c] + hs*(f[n*3+c]/m + gg[c]))*damp;
+        else if (m > 0.f) v[c] = (vn[n*3+c] + hs*(f[n*3+c]/mi + gg[c]))*damp;
         else v[c] = 0.f;
         f[n*3+c] = 0.f;
     }

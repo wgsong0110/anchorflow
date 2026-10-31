@@ -147,6 +147,8 @@ ap.add_argument("--vfl_band", type=float, default=0.5,
                 help="절 AH.12 (--vfl_w gtk): 띠 폭 (dx_g 배수; 정답 sticky 가중이 0 이 되는 0.5 가 기본, 작으면 그 위 입자의 가중을 0 으로 자름)")
 ap.add_argument("--ah_fast", action="store_true",
                 help="절 AH.14 결과 불변 가속: --sp vcap 의 프레임 처리 (탄성 부피 상한) 를 커널 하나로, 희소 통계는 측정 뒤에 같은 식으로")
+ap.add_argument("--ah_mlow", type=float, default=0.0,
+                help="절 AH.18 정의 변경 (AH 바닥 경로): 노드 가속도에만 쓰는 관성 질량 하한 = 이 값 x 첫 프레임 노드 질량 중앙값 (중력·운동량 전달·고착 몫은 실제 질량; 0 = 끔)")
 ap.add_argument("--ah_rn", action="store_true",
                 help="절 AH.18 진단 (측정 밖): 프레임 끝 폭주 노드 (|v_n| > 5 x 90 % 분위) 의 높이·질량·이웃 사면체 (입자 수·점유율·A F̄ 특이값) 와 전체 분포, 앞 프레임과 같은 격자점인지 -> fem.jsonl rnd")
 ap.add_argument("--rbdiag", action="store_true", help="절 AH 진단 (측정 밖): 프레임마다 강체 지표 (질량 중심·속도, 운동 에너지, 질량 중심 각운동량, Kabsch 회전, 최저 높이) 우리 / 정답 -> fem.jsonl rb")
@@ -554,6 +556,8 @@ AH_BAND = a.vfl_band * AH_DXG if AH_GTK else 0.0                                
 AH_KEX = (hs / float(cfg["substep_dt"])) if (VFL and a.vfl_rate) else 1.0           # (1 - a/m)^(h_s/h_ref)
 if a.lim_v == "mom" and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and SRL):
     raise SystemExit("--lim_v mom 은 확정 경로 (--cfuse --cfuse_mode 2 --lim_sr) 만")
+if a.ah_mlow > 0 and not AHF:
+    raise SystemExit("--ah_mlow 는 AH 바닥 경로 (--vfl_w gtk 등) 만")
 if a.ah_fast and (SPM != "vcap" or a.sp_occ > 0 or a.sp_chk):
     raise SystemExit("--ah_fast 는 --sp vcap (sp_occ 0, 검산 없음) 만")
 if a.vfl_bf and not (AH_GTK and a.cfuse and a.cfuse_mode == 2 and not a.vfl_tacc and not a.vfl_agg):
@@ -1361,7 +1365,8 @@ class Opt:
           elif AHF:
             AHC.launch("ah_node_step", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
                                             np.float32(hs_), np.float32(damp_), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc),
-                                            EX.P(self.accN if AH_ACCN else None), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * hs_ / hs)), b=256)
+                                            EX.P(self.accN if AH_ACCN else None), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * hs_ / hs),
+                                            np.float32(getattr(self, "_mfl", 0.0))), b=256)
           else:
             EX.launch("ex_node_step_lag", Mc, (EX.P(self.sz), EX.P(self.mI if SPM == "mlow" else self.mn), EX.P(self.f), EX.P(None), EX.P(self.vn), EX.P(self.Uc),
                                                np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs_), np.float32(damp_),
@@ -2093,6 +2098,10 @@ class Opt:
             self.akF.copy_(Fa[o_])
             if a.ak_pq4:
                 self.akdF.copy_(self.akF - self.FT[:T_][self.aktt.long()])
+        if a.ah_mlow > 0 and not hasattr(self, "_mfl"):                          # 절 AH.18: 첫 프레임 (데우기 프레임, 측정 밖) 에 한 번
+            mn_ = self.mn[:self.M]
+            self._mfl = float(a.ah_mlow * mn_[mn_ > 0].median())
+            print(f"[절 AH.18 관성 질량 하한] {self._mfl:.4g} kg (= {a.ah_mlow:g} x 첫 프레임 노드 질량 중앙값)", flush=True)
         if a.adapt != "none":
             self._choose_N(i)
         self._ev("p2g")
