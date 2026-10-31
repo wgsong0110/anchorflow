@@ -30,6 +30,18 @@ N, vthr, mmed = int(Z["N"]), float(Z["vthr"]), float(Z["m_med"])
 E, R, selE, selR = Z["E"], Z["R"], Z["selE"], Z["selR"]
 vE, fE, mE, sE = Z["vE"], Z["fE"], Z["mE"], Z["sE"]
 vR, fR, mR, sR = Z["vR"], Z["fR"], Z["mR"], Z["sR"]
+def vpick(idx, sv, n):                                                           # 발산 서브스텝 값이 고르게 퍼지도록: 최소..최대를 n 등분한 목표에 가장 가까운 노드 (중복 없이)
+    out = []
+    for tg in np.linspace(sv.min(), sv.max(), n):
+        o = np.argsort(np.abs(sv - tg), kind="stable")
+        for q in o:
+            if int(idx[q]) not in out:
+                out.append(int(idx[q])); break
+    return np.array(out)
+
+
+selE = vpick(E, sE, len(selE))
+selR = vpick(R, sR, len(selR))
 posE = {int(n): k for k, n in enumerate(E)}
 posR = {int(n): k for k, n in enumerate(R)}
 sub = np.arange(1, N + 1)
@@ -129,8 +141,8 @@ for j, (key, ttl, yl) in enumerate([("f", "걸음 직전 내부력 |f|", "|f| (N
         ax.plot(sub, y, color=c, lw=0.9, ls="-" if kind == "E" else "--", label=lab(kind, n, sd, m))
         ax.plot([sd], [y[sd - 1]], "o", color=c, ms=5, mec="k", mew=0.5)
     qm, qs = (Z["fQm"], Z["fQs"]) if key == "f" else (Z["aQm"], Z["aQs"])
-    ax.fill_between(sub, np.maximum(qm - qs, 1e-30), qm + qs, color="0.5", alpha=0.3)
-    ax.plot(sub, qm, color="0.3", lw=1.6, label="한 번도 안 넘은 점유 노드 평균 ± 표준편차")
+    ax.fill_between(sub, np.maximum(qm - qs, qm * 1e-2), qm + qs, color="0.5", alpha=0.3)
+    ax.plot(sub, qm, color="0.3", lw=1.6, label="한 번도 안 넘은 점유 노드 평균 ± 표준편차 (로그 축이라 아래 끝은 평균의 1 % 에서 자름)")
     if key == "a":
         ax.axhline(vthr / float(Z["hs"]) / 1.0, color="k", ls="-.", lw=0.8, label="한 서브스텝에 발산 판정 속도만큼 바꾸는 가속도")
     ax.set_yscale("log"); ax.set_xlim(1, N)
@@ -213,7 +225,7 @@ def qtriple(prefix, specs, ttl):
         ax = axs[r, 0]
         if Yn:
             Yn = np.array(Yn); mY, sY = np.nanmean(Yn, 0), np.nanstd(Yn, 0)
-            ax.fill_between(xg, np.maximum(mY - sY, 1e-12) if lg else mY - sY, mY + sY, color="C0", alpha=0.25, label="평균 ± 표준편차")
+            ax.fill_between(xg, np.maximum(mY - sY, mY * 1e-2) if lg else mY - sY, mY + sY, color="C0", alpha=0.25, label="평균 ± 표준편차")
             ax.plot(xg, mY, color="C0", lw=2, label=f"끝까지 넘은 {len(Yn)} 개 평균" + (f" (발산 값 0 인 {nz} 개 뺌)" if nz else ""))
         ax.plot([0.5], [0.5], "k*", ms=11, zorder=5, label="발산 지점 (0.5, 0.5)")
         ax.axvline(0.5, color="k", ls=":", lw=0.8); ax.axhline(0.5, color="k", ls=":", lw=0.8)
@@ -223,9 +235,9 @@ def qtriple(prefix, specs, ttl):
         ax = axs[r, 1]
         for X_, c, nm2, al in [(XE, "C3", f"끝까지 넘은 {len(E)} 개", 0.25), (XR, "C1", f"넘었다 돌아온 {len(R):,} 개", 0.15)]:
             m_, s_ = np.nanmean(X_, 0), np.nanstd(X_, 0)
-            ax.fill_between(sub, np.maximum(m_ - s_, 1e-12) if lg else m_ - s_, m_ + s_, color=c, alpha=al)
+            ax.fill_between(sub, np.maximum(m_ - s_, m_ * 1e-2) if lg else m_ - s_, m_ + s_, color=c, alpha=al)
             ax.plot(sub, m_, color=c, lw=1.8, label=nm2 + " 평균 ± 표준편차")
-        ax.fill_between(sub, np.maximum(qm - qs, 1e-12) if lg else qm - qs, qm + qs, color="0.5", alpha=0.3)
+        ax.fill_between(sub, np.maximum(qm - qs, qm * 1e-2) if lg else qm - qs, qm + qs, color="0.5", alpha=0.3)
         ax.plot(sub, qm, color="0.3", lw=1.6, label=f"한 번도 안 넘은 점유 노드 {int(Z['nQ']):,} 개 평균 ± 표준편차")
         if lg: ax.set_yscale("log")
         ax.set_xlim(1, N); ax.set_xlabel(f"서브스텝 (1 에서 {N})"); ax.set_ylabel(f"{nm} ({un})")
