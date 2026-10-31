@@ -487,6 +487,8 @@ if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfus
                                   and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (AI2 and (PLAST or VISC or PBC)) and (VFL or not HASPL)):
     raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀 없음) 만; --ai_stress 는 FCR 탄성만 (소성 씬 제외)")
 AKPQ = bool(a.ak_pq)
+if a.ak_fuse and a.floor != "vel":                                                  # 공통 설정: 바닥 없는 씬은 융합할 접촉이 없다 -> 끈 것과 같다
+    a.ak_fuse = False
 if a.ak_fuse and not (AKPQ and a.ak_pq4 and a.ak_eps < 0 and a.floor == "vel" and not (a.vfl_agg or a.vfl_bf or a.vfl_tacc) and not PLAST):
     raise SystemExit("--ak_fuse 는 --ak_pq --ak_pq4 + 절 AH 바닥 (--floor vel) 만")
 if a.ak_prep and not (AKPQ and a.ak_pq4 and a.ak_eps < 0):
@@ -579,6 +581,8 @@ if AHF:
         raise SystemExit("--vfl_w gtk 는 축 정렬 평면만 (정답 격자 노드 좌표 비교)")
     print(f"[절 AH 바닥] 가중 {a.vfl_w} (정답 격자 dx_g {AH_DXG:g}, p·n {AH_PN:g}, 고착 격자 노드 최대 지표 {AHC.gt_floor_k0(AH_DXG, AH_PN) if AH_GTK else '-'}, 띠 {AH_BAND:g} m), "
           f"비관통 깊이 {a.vfl_npd:g} m, 고착 몫 {'(1 - a/m)^(h_s/h_ref), h_s/h_ref = %.4g' % AH_KEX if a.vfl_rate else '(1 - a/m) 서브스텝마다 (기존)'}", flush=True)
+if a.ak_fstep and not AHF:                                                          # 공통 설정: 절 AH 노드 걸음이 없는 씬 (바닥 없음) 은 기존 걸음 + 이동
+    a.ak_fstep = False
 if a.ak_fstep and not (SR_OFF and AHF and not a.vfl_bf and a.lim_v != "mom" and not PBC and a.cfuse and a.cfuse_mode == 2):
     raise SystemExit("--ak_fstep 는 클램프 끈 절 AH 바닥 확정 경로만")
 XN = 1.0 if a.eps_st > 0 else 0.0
