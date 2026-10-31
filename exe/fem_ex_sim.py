@@ -258,6 +258,9 @@ ap.add_argument("--akb_je", type=float, default=0.1, help="--akb_kappa: 이 J �
 ap.add_argument("--akpl_cause", action="store_true",
                 help="절 AG.12 진단 (--no_graph, 측정 아님): 서브스텝마다 전 노드 속도 유한 여부·전 사면체 det A·입자 J 최소·커널 단계별 비유한 개수를 기록, 첫 비유한 뒤 --akpl_k 서브스텝까지 보고 인과 분석 -> akpl_cause.json")
 ap.add_argument("--akpl_invm", type=int, default=0, help="절 AG.12 개입 시험 (진단 전용): 1 = det X ≤ 0 인 입자 응력 몫 0")
+ap.add_argument("--akpl_track", action="store_true",
+                help="절 AG.14 진단 (--no_graph, 측정 아님): 입자마다 서브스텝 위치 증분 |Δu| (프레임별 최대·그 서브스텝·속력 단계별 첫 넘음), 셀 입자 수, 노드 질량 비, 셀 det A 최소를 기록 -> akpl_track.pt (발산해도 저장)")
+ap.add_argument("--akpl_track_ring", type=int, default=3, help="--akpl_track: 마지막 몇 프레임의 서브스텝별 log10|Δu| (float16) 를 통째 저장할지")
 ap.add_argument("--akpl_dbg", action="store_true", help="절 AG.9 진단 (--no_graph, 측정 아님): 서브스텝마다 노드 속도·입자 소성 상태의 첫 비유한을 찾아 그 입자·셀·노드 정보를 akpl_dbg.json 에 쓰고 멈춤")
 ap.add_argument("--ak_pq4", action="store_true", help="--ak_pq 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차로 반정밀도 저장)")
 ap.add_argument("--ak_pq3", action="store_true", help="--ak_pq 3 판 (구간 머리 레인만 A_T 계산 -> 셔플; 같은 식)")
@@ -1224,6 +1227,50 @@ class Opt:
         key = torch.where(self._ar < self.sz[2].long(), self.rows.view(-1, 4)[self.nidx, 0], torch.iinfo(torch.long).max)
         self.nidx.copy_(self.nidx[torch.argsort(key)])
 
+    def _akpl_trk(self, j):
+        """절 AG.14: 입자별 서브스텝 위치 증분 |Δu_p| (u_p = Σ λ U_c, 프레임 시작 0) 와 셀 상태를 기록 (프레임 안 -- 메시는 프레임마다 다시 짠다)."""
+        M, T = self.M, self.T
+        LV = TRK_LV
+        if j == 0:
+            rw, lm, pv = self.rows[:Np], self.lamb[:Np], self.pinv[:Np]
+            mnM = self.mn[:M]
+            med = mnM[mnM > 0].median()
+            cnt = torch.bincount(pv, minlength=T)[:T]
+            self._tk = dict(up=torch.zeros(Np, 3, device=dev), mx=torch.zeros(Np, device=dev), am=torch.zeros(Np, dtype=torch.int16, device=dev),
+                            cr=torch.full((len(LV), Np), -1, dtype=torch.int16, device=dev), dmin=torch.full((Np,), float("inf"), device=dev),
+                            dfirst=torch.full((Np,), -1, dtype=torch.int16, device=dev),
+                            ring=(torch.empty(self.Ncur, Np, dtype=torch.float16, device=dev) if a.akpl_track_ring > 0 else None),
+                            cnt=cnt[pv].to(torch.int16), mr=(mnM[rw].min(1).values / med).float(), mrs=(mnM[rw].sum(1) / med).float(), med=float(med))
+        z = self._tk
+        rw, lm, pv = self.rows[:Np], self.lamb[:Np], self.pinv[:Np]
+        u = (lm[:, :, None] * self.Uc[:M][rw]).sum(1)
+        st = (u - z["up"]).norm(dim=-1)
+        z["up"] = u
+        big = st > z["mx"]
+        z["mx"] = torch.where(big, st, z["mx"])
+        z["am"] = torch.where(big, torch.full_like(z["am"], j), z["am"])
+        for k, lv in enumerate(LV):
+            nw = (st > lv * hs) & (z["cr"][k] < 0)
+            z["cr"][k] = torch.where(nw, torch.full_like(z["cr"][k], j), z["cr"][k])
+        tt = self.tets[:T]
+        G = self.gl[:T].view(T, 4, 3)
+        dA = torch.det(torch.eye(3, device=dev) + torch.einsum("tic,tib->tcb", self.Uc[:M][tt], G)).float()[pv]
+        z["dmin"] = torch.minimum(z["dmin"], dA.nan_to_num(-3e38))
+        nw = (dA <= 0) & (z["dfirst"] < 0)
+        z["dfirst"] = torch.where(nw, torch.full_like(z["dfirst"], j), z["dfirst"])
+        if z["ring"] is not None:
+            z["ring"][j] = torch.log10(st.double().clamp_min(1e-30)).clamp(-30, 60).half()
+        if j == self.Ncur - 1:
+            R = TRK
+            R["frame"].append(self._fi)
+            R["mx"].append(z["mx"].cpu()); R["am"].append(z["am"].cpu()); R["cr"].append(z["cr"].cpu())
+            R["dmin"].append(z["dmin"].cpu()); R["dfirst"].append(z["dfirst"].cpu())
+            R["cnt"].append(z["cnt"].cpu()); R["mr"].append(z["mr"].cpu()); R["mrs"].append(z["mrs"].cpu()); R["med"].append(z["med"])
+            R["uend"].append(u.cpu())
+            if z["ring"] is not None:
+                R["ring"].append((self._fi, z["ring"].cpu()))
+                R["ring"] = R["ring"][-a.akpl_track_ring:]
+
     def _akpl_cause(self, j):
         """절 AG.12: 노드 속도 비유한 vs 셀 뒤집힘 (det A_T ≤ 0, 입자 J = det(A F_p) ≤ 0) 서브스텝 기록과 인과 분석 (프레임 안 -- 메시는 프레임마다 다시 짠다)."""
         M, T = self.M, self.T
@@ -2039,6 +2086,8 @@ class Opt:
                         self._Uprev = self.Uc[:self.M].clone()
                         self._Vprev = self.vn[:self.M].clone()
                     self._step_lag()
+                    if a.akpl_track:                                                # 절 AG.14 입자 추적 (인과 진단보다 먼저 -- 그쪽이 멈춰도 이 서브스텝까지 남게)
+                        self._akpl_trk(j)
                     if a.akpl_cause:                                                # 절 AG.12 인과 진단
                         self._akpl_cause(j)
                     elif a.akpl_dbg:                                                # 절 AG.9 진단 (--no_graph 만): 서브스텝마다 첫 비유한 찾기
@@ -3444,6 +3493,10 @@ def ak_energy(i, x, v, F, x2, v2, F2, full=True):
     return r
 
 
+TRK_LV = [1.0, 3.0, 10.0, 30.0, 100.0, 1000.0]                                       # 절 AG.14 --akpl_track: 속력 단계 (m/s) -- 서브스텝 증분 > lv·h_s 를 처음 넘은 서브스텝
+TRK = dict(frame=[], mx=[], am=[], cr=[], dmin=[], dfirst=[], cnt=[], mr=[], mrs=[], med=[], uend=[], ring=[])
+if a.akpl_track and not a.no_graph:
+    raise SystemExit("--akpl_track 은 --no_graph 와 함께")
 AI_SF = set(int(q_) for q_ in a.ai_stat_frames.split(",") if q_.strip())
 if a.near_diag:
     EX.set_diag([float(q) for q in a.near_diag.split(",")])
@@ -3611,6 +3664,13 @@ for i in range(L):
         break
 
 flog.close()
+if a.akpl_track:                                                                    # 절 AG.14: 끝난 (서브스텝 마지막까지 간) 프레임 전부
+    _st = lambda k_: torch.stack(TRK[k_]) if TRK[k_] else None
+    torch.save(dict(frame=TRK["frame"], mx=_st("mx"), am=_st("am"), cr=_st("cr"), dmin=_st("dmin"), dfirst=_st("dfirst"), cnt=_st("cnt"), mr=_st("mr"),
+                    mrs=_st("mrs"), med=TRK["med"], uend=_st("uend"), ring_frames=[r_[0] for r_ in TRK["ring"]], ring=(torch.stack([r_[1] for r_ in TRK["ring"]]) if TRK["ring"] else None),
+                    lv=TRK_LV, hs=hs, h=h, N=a.N, EXT=EXT, Np=Np, x0=X0_ORIG.float().cpu(), plane_pt=(pt_ if HASPL else None), plane_n=(nr_ if HASPL else None),
+                    div_at=div_at, done=len(recs)), os.path.join(a.out, "akpl_track.pt"))
+    print(f"[절 AG.14 추적] {os.path.join(a.out, 'akpl_track.pt')} 프레임 {len(TRK['frame'])} 개, 서브스텝 통째 {[r_[0] + 1 for r_ in TRK['ring']]}", flush=True)
 if a.lagdump and getattr(OPT, "_ring", None):
     torch.save(list(OPT._ring), os.path.join(a.out, "lagdump.pt"))
     print(f"[lag 덤프] {os.path.join(a.out, 'lagdump.pt')} 프레임 {[r['t'] + 1 for r in OPT._ring]}", flush=True)
