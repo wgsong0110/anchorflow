@@ -2589,6 +2589,12 @@ class Opt:
             ci = ((NB - 1) % 2) if REPF else 0                                       # 마지막 블록의 입자 상태 버퍼
             xin, Fin = (self.X[ci], self.FF[ci]) if REP else (x, Fv)
             x2, v2, F2 = self.X[1 - ci], self.V[1 - ci], self.FF[1 - ci]
+            if P2 and os.environ.get("AK_DBG"):                                       # 진단: 2 차 판 비유한 위치
+                NN_ = self.M
+                print(f"[AK_DBG] 프레임 {i + 1}: NN {NN_} 꼭짓점 {self.Mc} T {self.T} mn 유한 {bool(torch.isfinite(self.mn[:NN_]).all())} mn0 {int((self.mn[:NN_] <= 0).sum())} "
+                      f"vn 유한 {bool(torch.isfinite(self.vn[:NN_]).all())} |vn| 최대 {float(self.vn[:NN_].norm(dim=-1).max()):.3g} U 최대 {float(self.Uc[:NN_].norm(dim=-1).max()):.3g} "
+                      f"t10 범위 {int(self.t10[:self.T].min())}..{int(self.t10[:self.T].max())} rows==tets {bool((self.rows[:Np] == self.tets[self.pinv[:Np]]).all())} "
+                      f"akF 유한 {bool(torch.isfinite(self.akF).all())} akw 범위 {float(self.akw.min()):.3g}..{float(self.akw.max()):.3g} λ 합 {float((self.akl.sum(-1) - 1).abs().max()):.2e}", flush=True)
             if P2:                                                                  # 절 AK.13: 2 차 G2P
                 AKC.launch("ak_p2_g2p", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.t10), EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv),
                                              EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2)), b=128)
