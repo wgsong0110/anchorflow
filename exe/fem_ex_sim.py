@@ -264,6 +264,7 @@ ap.add_argument("--ah_imex_rel", action="store_true", help="절 AG.18 --ah_imex:
 ap.add_argument("--ah_imex_cl", type=float, default=0.0, help="절 AG.18 --ah_imex_rel: 대상 노드 무리를 함께 풂 (야코비 반복, 대상 밖 이웃은 명시적 값) -- 값 = 상대 잔차 허용치 "
                      "(max|Δv^(k+1) − Δv^k| ≤ tol · max|Δv^(k+1)|), 0 = 끔; --no_graph 만 (반복마다 잔차 동기화)")
 ap.add_argument("--ah_imex_maxit", type=int, default=100, help="--ah_imex_cl 최대 반복")
+ap.add_argument("--akpl_trial", action="store_true", help="절 AG.18: 증분 RM 소성 상태를 시험 버퍼에 쓰고 서브스텝 끝에 커밋 (서브사이클링 준비; 결과는 같아야 한다)")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
@@ -927,6 +928,9 @@ class Opt:
             if PQPL or AKG or AKBAR or a.akpl_el:                                                 # 절 AG.8: 정렬 순서 입자 소성 상태 (묶음·장벽 탄성 판도 같은 커널이라 버퍼만)
                 self.plFe, self.plXp = z(Np, 9), z(Np, 9)
                 self.plys, self.pllj, self.plal = z(Np), z(Np), z(Np)
+                if a.akpl_trial:                                                    # 절 AG.18: 소성 상태 시험 버퍼 (서브사이클링 준비)
+                    self.plT = [z(Np, 9), z(Np, 9), z(Np), z(Np), z(Np)]
+                    AKPLC.set_trial(self.plT)
         self.t10 = None
         self.aic = z(4)                                                              # 절 AI: [0] 뒤집힌 입자 (A1 반전), [1] Σ w R_p 가 반사인 셀, [2] B2 정규화 Σw < 1 입자, [3] 그 1 − Σw 합
         if a.affine and (a.mode != "lag" or self.SORT):
@@ -1857,6 +1861,8 @@ class Opt:
                                                 EX.P(self._nanc if a.akpl_cause else None),
                                                 np.float32(a.akb_kappa), np.float32(a.akb_jhat), np.float32(a.akb_je), EX.P(self._nbar if AKBAR else None),
                                                 np.float32(NSE)), b=128)
+                if a.akpl_trial and a.ak_pq_plast == "inc":                         # 절 AG.18: 시험 -> 상태 커밋 (힘 계산 바로 뒤, 같은 서브스텝)
+                    AKPLC.launch("akpl_commit", Np, (np.int32(Np), EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal)), b=256)
                 if AKG and a.akg_empty:
                     AKPLC.launch("akg_dist2", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akg_W),
                                                           EX.P(self.akg_AG), EX.P(self.akg_VG), EX.P(self.akg_GmG), np.float32(a.akg_hg * mu), EX.P(self.f)), b=128)

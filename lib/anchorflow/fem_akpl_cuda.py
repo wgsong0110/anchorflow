@@ -79,6 +79,13 @@ __global__ void akpl_init(int N, const int* ord, const float* akF, const float* 
     for (int j=0;j<9;j++) { float v = akF[(long long)k*9+j]; Fe[(long long)k*9+j] = v; Xp[(long long)k*9+j] = v; }
     ysP[k] = ys ? ys[p] : 0.f; ljP[k] = lj ? lj[p] : 0.f; alP[k] = al ? al[p] : 1.f;
 }
+__device__ float* AKPT[5];                                                          // 절 AG.18 소성 상태 시험 버퍼 (Fe, Xp, ys, lj, al; null = 상태에 바로 씀) -- 서브사이클링 준비: 힘 계산은 시험에, 걸음 끝에 akpl_commit
+__global__ void akpl_commit(int N, float* Fe, float* Xp, float* ysP, float* ljP, float* alP) {
+    int k = blockIdx.x*blockDim.x + threadIdx.x;
+    if (k >= N || !AKPT[0]) return;
+    for (int j=0;j<9;j++) { Fe[(long long)k*9+j] = AKPT[0][(long long)k*9+j]; Xp[(long long)k*9+j] = AKPT[1][(long long)k*9+j]; }
+    ysP[k] = AKPT[2][k]; ljP[k] = AKPT[3][k]; alP[k] = AKPT[4][k];
+}
 __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* ord, const int* tt, const long long* tets, const float* U, const float* gl,
                                const float* akF, const float* wp, int mat, const float* prm, float dt, const float* alPart,
                                float* Fe, float* Xp, float* ysP, float* ljP, float* alP, float* f, float jfl,
@@ -124,8 +131,9 @@ __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* or
             bool ch = pl_rm(mat, s, prm, ys, lj, al, dt);
             float Fn[9]; if (ch) pl_usv(Uu, s, Vv, Fn); else for (int j=0;j<9;j++) Fn[j] = Ft[j];
             if (!bad) AKNC(4, akpl_isf(Fn, 9) && isfinite(lj) && isfinite(ys));
-            for (int j=0;j<9;j++) { Fe[(long long)k*9+j] = Fn[j]; Xp[(long long)k*9+j] = X[j]; }
-            ysP[k] = ys; ljP[k] = lj; alP[k] = al;
+            if (AKPT[0]) { for (int j=0;j<9;j++) { AKPT[0][(long long)k*9+j] = Fn[j]; AKPT[1][(long long)k*9+j] = X[j]; } AKPT[2][k] = ys; AKPT[3][k] = lj; AKPT[4][k] = al; }
+            else { for (int j=0;j<9;j++) { Fe[(long long)k*9+j] = Fn[j]; Xp[(long long)k*9+j] = X[j]; }
+            ysP[k] = ys; ljP[k] = lj; alP[k] = al; }
             if (mat == 7 && nse > 0.f) {                                        // P(F_e) Gᵀ Fᵀ, G = X_prev⁻¹ F_e,prev (F_trial = X G)
                 float U2[9], s2[3], V2[9]; pl_svd(Fn, U2, s2, V2); float Pi[3]; akpl_nhbP_ext(s2, prm[0], prm[2], nse, Pi);
                 float P_[9]; pl_usv(U2, Pi, V2, P_);
@@ -269,6 +277,12 @@ def _mod():
     if _MOD[0] is None:
         _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + AKC._AK + PLC._PL + _AKPL).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     return _MOD[0]
+
+
+def set_trial(bufs):
+    """절 AG.18: 소성 상태 시험 버퍼 5 개 (torch) 또는 None."""
+    import cupy as cp
+    cp.ndarray((5,), cp.uint64, _mod().get_global("AKPT"))[:] = 0 if bufs is None else [b.data_ptr() for b in bufs]
 
 
 def set_sfcr(on):
