@@ -251,6 +251,8 @@ ap.add_argument("--ak_pq_plast", choices=["none", "inc", "frame"], default="none
 ap.add_argument("--akg_k", type=int, default=0,
                 help="절 AG.11 정의 변경 (사용자 10-31 '해봐'): --ak_pq 입자 적분점 판에서 입자 수 ≤ k 인 (희소) 사면체 입자는 같은 칸 (Kuhn 평행육면체) 의 점유 사면체 묶음 평균 사상 Ā = Σ V_t A_t / Σ V_t 로 X = Ā F_p (0 = 끔)")
 ap.add_argument("--akg_hg", type=float, default=0.0, help="--akg_k: 묶음 안 사면체 사상이 Ā 를 따르게 하는 모래시계 억제 에너지 γ μ Σ V_t |A_t − Ā|² 의 γ (0 = 묶음 에너지만 공유, 노드 자유)")
+ap.add_argument("--akg_empty", action="store_true", help="절 AG.18 정의 변경 (사용자 10-31 묶음 허락 범위): --akg_k 칸 묶음에 입자 없는 사면체까지 넣는다 -- 빈 사면체가 있는 칸도 묶음, "
+                     "Ā = 칸 사면체 사상의 고른 평균 (가중 W_t = V_g / 칸 사면체 수), 모래시계 억제도 같은 가중으로 빈 사면체에 (빈 사면체 영 에너지 기구 막기)")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
@@ -964,6 +966,7 @@ class Opt:
             self.tcell = torch.zeros(self.Tcap, dtype=torch.long, device=dev)
             if AKG:
                 self.akg_tg = torch.full((self.Tcap,), -1, dtype=torch.int32, device=dev)
+                self.akg_W = torch.zeros(self.Tcap, device=dev)
             if P2:
                 self.t10 = torch.zeros(self.Tcap, 10, dtype=torch.long, device=dev)
             if AKPQ:
@@ -1810,7 +1813,10 @@ class Opt:
             if AKG:                                                                 # 절 AG.11: 묶음 사상 합 (서브스텝마다 비우고)
                 self.akg_AG.zero_()
                 self.akg_GmG.zero_()
-                AKPLC.launch("akg_A", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs),
+                if a.akg_empty:
+                    AKPLC.launch("akg_A2", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akg_W), EX.P(self.akg_AG)), b=128)
+                else:
+                    AKPLC.launch("akg_A", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs),
                                                   EX.P(self.akg_AG)), b=128)
             if PQPL or AKG or AKBAR:                                                # 절 AG.8: 재질 식 입자 적분점 (AG.11 묶음·AG.13 장벽 탄성 판은 mat 0)
                 AKPLC.launch("akpl_force", Np, (np.int32(Np), np.int32(1 if a.ak_pq_plast == "inc" else 0), EX.P(self.akord), EX.P(self.aktt), EX.P(self.tets),
@@ -1821,7 +1827,10 @@ class Opt:
                                                 EX.P(self._nanc if a.akpl_cause else None),
                                                 np.float32(a.akb_kappa), np.float32(a.akb_jhat), np.float32(a.akb_je), EX.P(self._nbar if AKBAR else None),
                                                 np.float32(NSE)), b=128)
-                if AKG:
+                if AKG and a.akg_empty:
+                    AKPLC.launch("akg_dist2", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akg_W),
+                                                          EX.P(self.akg_AG), EX.P(self.akg_VG), EX.P(self.akg_GmG), np.float32(a.akg_hg * mu), EX.P(self.f)), b=128)
+                elif AKG:
                     AKPLC.launch("akg_dist", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs),
                                                          EX.P(self.akg_AG), EX.P(self.akg_VG), EX.P(self.akg_GmG), np.float32(a.akg_hg * mu), EX.P(self.f)), b=128)
             elif a.ak_eps >= 0:
@@ -2739,10 +2748,18 @@ class Opt:
                 spt = occ_ & (cnt_ <= a.akg_k)
                 act = torch.zeros(self.Pcap, dtype=torch.bool, device=dev)
                 act[cel[spt]] = True
-                ing = occ_ & act[cel]
+                if a.akg_empty:                                                     # 절 AG.18: 빈 사면체가 있는 칸도 묶음, 묶음 = 칸의 모든 사면체
+                    act[cel[~occ_]] = True
+                    ing = act[cel]
+                else:
+                    ing = occ_ & act[cel]
                 self.akg_tg[:T_] = torch.where(ing, cel, torch.full_like(cel, -1)).to(torch.int32)
                 self.akg_VG.zero_()
                 self.akg_VG.index_add_(0, cel[ing], VT_[ing])
+                if a.akg_empty:
+                    nbx_ = torch.zeros(self.Pcap, device=dev).index_add_(0, cel[ing], torch.ones_like(VT_[ing]))
+                    self.akg_W.zero_()
+                    self.akg_W[:T_] = torch.where(ing, self.akg_VG[cel] / nbx_[cel].clamp_min(1), torch.zeros_like(VT_))
                 tts = self.aktt.long()
                 self.akg_gp = torch.where(spt[tts], cel[tts], torch.full_like(tts, -1)).to(torch.int32).contiguous() if not hasattr(self, "akg_gpb") else self.akg_gpb
                 if not hasattr(self, "akg_gpb"):
@@ -2797,6 +2814,12 @@ class Opt:
             self.mcfl.zero_()
             AHC.launch("ah_kn", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs),
                                             np.float32(a.ah_mcfl * (self.hscur / 2.0) ** 2 * (lam + 2.0 * mu)), EX.P(self.mcfl)), b=128)
+            if AKG and a.akg_empty and a.akg_hg > 0:                                # 절 AG.18: 모래시계 억제 강성 2 γ μ W_t 도 같은 Gershgorin 상계로 (빈 사면체 포함)
+                T_ = self.T
+                ing_ = self.akg_tg[:T_] >= 0
+                gn_ = self.gl[:T_][ing_].view(-1, 4, 3).norm(dim=-1)
+                kt_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2 * 2.0 * a.akg_hg * mu) * self.akg_W[:T_][ing_][:, None] * gn_ * gn_.sum(1, keepdim=True)
+                self.mcfl.index_add_(0, self.tets[:T_][ing_].reshape(-1), kt_.reshape(-1))
         if a.ah_mlow > 0 and not hasattr(self, "_mfl"):                          # 절 AH.18: 첫 프레임 (데우기 프레임, 측정 밖) 에 한 번
             mn_ = self.mn[:self.M]
             self._mfl = float(a.ah_mlow * mn_[mn_ > 0].median())

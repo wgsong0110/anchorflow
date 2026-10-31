@@ -188,6 +188,33 @@ __global__ void akg_A(const int* tl, const int* tlc, const int* tg, const long l
     float V = VT[t];
     for (int j=0;j<9;j++) atomicAdd(&AG[(long long)g*9+j], V*A[j]);
 }
+// 절 AG.18 --akg_empty: 칸 묶음에 입자 없는 사면체까지 -- 가중 W_t = V_g / (칸 사면체 수) (칸 탄성 부피를 칸의 사면체에 고르게), 모든 사면체 (t < T) 를 돈다
+__global__ void akg_A2(const int* szp, const int* tg, const long long* tets, const float* U, const float* gl, const float* W, float* AG) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= szp[1]) return;
+    int g = tg[t];
+    if (g < 0) return;
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i]; for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+    float V = W[t];
+    for (int j=0;j<9;j++) atomicAdd(&AG[(long long)g*9+j], V*A[j]);
+}
+__global__ void akg_dist2(const int* szp, const int* tg, const long long* tets, const float* U, const float* gl, const float* W,
+                          const float* AG, const float* VG, const float* GmG, float hg, float* f) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= szp[1]) return;
+    int g = tg[t];
+    if (g < 0) return;
+    float V = W[t], iv = 1.f/VG[g], c = V*iv;
+    float Gm[9]; for (int j=0;j<9;j++) Gm[j] = c*GmG[(long long)g*9+j];
+    if (hg > 0.f) {
+        float A[9] = {1,0,0, 0,1,0, 0,0,1};
+        for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i]; for (int cc=0;cc<3;cc++) { float u = U[nd*3+cc]; for (int q=0;q<3;q++) A[cc*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+        for (int j=0;j<9;j++) Gm[j] += 2.f*hg*V*(A[j] - AG[(long long)g*9+j]*iv);
+    }
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int cc=0;cc<3;cc++) { float s_ = 0.f; for (int q=0;q<3;q++) s_ += Gm[cc*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+cc], -s_); } }
+}
 // 묶음 몫 나누기: 사면체 t ∈ g 에 (V_t/V_g) GmG[g] + 모래시계 억제 2 γ μ V_t (A_t − Ā_g) -> 노드 힘 −Gm ∇λ_i
 __global__ void akg_dist(const int* tl, const int* tlc, const int* tg, const long long* tets, const float* U, const float* gl, const float* VT,
                          const float* AG, const float* VG, const float* GmG, float hg, float* f) {
