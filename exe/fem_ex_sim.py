@@ -3714,7 +3714,7 @@ for i in range(L):
             grp = [("p0", npt == 0), ("p1", npt == 1), ("p2", npt == 2), ("p3_7", (npt >= 3) & (npt <= 7)), ("p8+", npt >= 8)]
             tsd = dict(T=int(T_), occ=int(occ_.sum()))
             for gn, gm in grp:
-                gm = gm & occ_
+                gm = gm if gn == "p0" else (gm & occ_)                                     # p0 = 입자 없는 사면체 (탄성 부피 0, 에너지 없음) 도 따로
                 if bool(gm.any()):
                     e_ = (smx[gm] - 1).clamp_min(0)
                     tsd[gn] = dict(n=int(gm.sum()), smax_q50=float(smx[gm].median()), smax_q99=float(torch.quantile(smx[gm].float(), 0.99)), smax_max=float(smx[gm].max()),
@@ -3725,7 +3725,9 @@ for i in range(L):
                 bm = occ_ & (cy >= ed[k]) & (cy < ed[k + 1])
                 if bool(bm.any()):
                     e_ = (smx[bm] - 1).clamp_min(0)
+                    em_ = (npt == 0) & (cy >= ed[k]) & (cy < ed[k + 1])
                     yb.append(dict(y0=float(ed[k]), n=int(bm.sum()), smax_q50=float(smx[bm].median()), stretch_sum=float(e_.sum()),
+                                   n_p0=int(em_.sum()), stretch_sum_p0=float((smx[em_] - 1).clamp_min(0).sum()), p0_gt1p5=int((smx[em_] > 1.5).sum()),
                                    stretch_sum_p01=float(e_[(npt[bm] <= 1)].sum()), n_p01=int((npt[bm] <= 1).sum()), n_gt1p1=int((smx[bm] > 1.1).sum())))
             tsd["ybins"] = yb
             Fp_ = A_[OPT.aktt.long()]                                                       # 입자가 받은 프레임 늘어남 (입자 가중)
