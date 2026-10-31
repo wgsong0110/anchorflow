@@ -244,6 +244,7 @@ ap.add_argument("--ak_pq_plast", choices=["none", "inc", "frame"], default="none
 ap.add_argument("--akg_k", type=int, default=0,
                 help="절 AG.11 정의 변경 (사용자 10-31 '해봐'): --ak_pq 입자 적분점 판에서 입자 수 ≤ k 인 (희소) 사면체 입자는 같은 칸 (Kuhn 평행육면체) 의 점유 사면체 묶음 평균 사상 Ā = Σ V_t A_t / Σ V_t 로 X = Ā F_p (0 = 끔)")
 ap.add_argument("--akg_hg", type=float, default=0.0, help="--akg_k: 묶음 안 사면체 사상이 Ā 를 따르게 하는 모래시계 억제 에너지 γ μ Σ V_t |A_t − Ā|² 의 γ (0 = 묶음 에너지만 공유, 노드 자유)")
+ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
 ap.add_argument("--akpl_k", type=int, default=6, help="절 AG.10 --akpl_dbg: 첫 터짐 뒤 몇 서브스텝을 더 기록하고 멈출지")
@@ -2503,6 +2504,12 @@ class Opt:
                 VT_ = self.VTs[:T_]
                 occ_ = VT_ > 0
                 cel = self.tcell[:T_]
+                if a.akg_c > 1:                                                     # c x c x c 칸 묶음: 칸 지표를 c 로 나눈 거친 칸 번호 (Pn 범위 안)
+                    n0_, n1_, n2_ = self.dims
+                    c_ = a.akg_c
+                    i_, j_, k_ = cel // (n1_ * n2_), (cel // n2_) % n1_, cel % n2_
+                    m1_, m2_ = (n1_ + c_ - 1) // c_, (n2_ + c_ - 1) // c_
+                    cel = ((i_ // c_) * m1_ + (j_ // c_)) * m2_ + (k_ // c_)
                 spt = occ_ & (cnt_ <= a.akg_k)
                 act = torch.zeros(self.Pcap, dtype=torch.bool, device=dev)
                 act[cel[spt]] = True
