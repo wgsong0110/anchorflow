@@ -282,7 +282,7 @@ def _mod():
 def set_trial(bufs):
     """절 AG.18: 소성 상태 시험 버퍼 5 개 (torch) 또는 None."""
     import cupy as cp
-    cp.ndarray((5,), cp.uint64, _mod().get_global("AKPT"))[:] = 0 if bufs is None else [b.data_ptr() for b in bufs]
+    cp.ndarray((5,), cp.uint64, _mod().get_global("AKPT"))[:] = 0 if bufs is None else cp.asarray([b.data_ptr() for b in bufs], dtype=cp.uint64)
 
 
 def set_sfcr(on):
