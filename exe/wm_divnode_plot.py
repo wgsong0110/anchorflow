@@ -153,3 +153,90 @@ ax.legend(fontsize=8); ax.grid(alpha=0.3)
 fig.suptitle("수박 발산 프레임 4: 같은 대표 노드의 내부력과 질량 (점 = 발산 서브스텝)")
 fig.tight_layout(); fig.savefig(a.out + "_force_mass.png", dpi=130); plt.close(fig)
 print("저장", a.out + "_{raw,norm,meanstd,force_mass}.png")
+
+# ======== 10-31 추가: 셀 응력·힘 성분을 속도와 같은 세 그림으로 ========
+EXTRA = [str(k) for k in Z["extra"]] if "extra" in Z.files else []
+
+
+def qget(k):
+    """(E 배열 [nE, N], R 배열, Q 평균, Q 표준편차)"""
+    if k == "f_int":
+        return fE, fR, Z["fQm"], Z["fQs"]
+    return Z[k + "_E"], Z[k + "_R"], Z[k + "_Qm"], Z[k + "_Qs"]
+
+
+def qtriple(prefix, specs, ttl):
+    nr = len(specs)
+    # 1 원래 축
+    fig, axs = plt.subplots(nr, 1, figsize=(13, 4.6 * nr), squeeze=False)
+    for r, (k, nm, un, lg) in enumerate(specs):
+        ax = axs[r, 0]; XE, XR, qm, qs = qget(k)
+        for kind, n, kk, c in rows:
+            y = (XE if kind == "E" else XR)[kk]; sd = get(kind, kk)[3]
+            ax.plot(sub, y, color=c, lw=1.0, ls="-" if kind == "E" else "--", label=lab(kind, n, sd, get(kind, kk)[2]))
+            ax.axvline(sd, color=c, ls=":", lw=0.8)
+            ax.plot([sd], [y[sd - 1]], "o", color=c, ms=5, mec="k", mew=0.5)
+        ax.plot(sub, qm, color="0.4", lw=1.6, label=f"한 번도 안 넘은 점유 노드 {int(Z['nQ']):,} 개 평균")
+        if lg: ax.set_yscale("log")
+        ax.set_xlim(1, N); ax.set_xlabel(f"서브스텝 (프레임 4 안, 1 에서 {N})"); ax.set_ylabel(f"{nm} ({un})")
+        ax.set_title(f"{nm}: 대표 노드 (점 · 세로 점선 = 그 노드의 발산 서브스텝)"); ax.grid(alpha=0.3, which="both")
+        if r == 0: ax.legend(fontsize=7, loc="upper left", ncol=2)
+    fig.suptitle(f"수박 발산 프레임 4: {ttl} (원래 축)"); fig.tight_layout(); fig.savefig(prefix + "_raw.png", dpi=120); plt.close(fig)
+    # 2 정규화: 가로 s / (2 s_div), 세로 y / (2 y(s_div))
+    fig, axs = plt.subplots(nr, 1, figsize=(11, 4.6 * nr), squeeze=False)
+    for r, (k, nm, un, lg) in enumerate(specs):
+        ax = axs[r, 0]; XE, XR, qm, qs = qget(k); skip = []
+        for kind, n, kk, c in rows:
+            y = (XE if kind == "E" else XR)[kk]; sd = get(kind, kk)[3]; y0 = y[sd - 1]
+            if not (np.isfinite(y0) and y0 > 0):
+                skip.append(str(n)); continue
+            ax.plot(sub / (2 * sd), y / (2 * y0), color=c, lw=1.0, ls="-" if kind == "E" else "--", label=lab(kind, n, sd, get(kind, kk)[2]))
+        ax.plot([0.5], [0.5], "k*", ms=11, zorder=5)
+        ax.axvline(0.5, color="k", ls=":", lw=0.8); ax.axhline(0.5, color="k", ls=":", lw=0.8)
+        if lg: ax.set_yscale("log")
+        ax.set_xlim(0, 1)
+        ax.set_xlabel("서브스텝 / (2 x 그 노드의 발산 서브스텝)"); ax.set_ylabel(f"{nm} / (2 x 발산 서브스텝 값)")
+        ax.set_title(f"{nm}: 정규화 (발산 지점 (0.5, 0.5))" + (f" -- 발산 서브스텝 값이 0 이라 뺀 노드: {', '.join(skip)}" if skip else ""), fontsize=10)
+        ax.grid(alpha=0.3, which="both")
+        if r == 0: ax.legend(fontsize=7, loc="upper left")
+    fig.suptitle(f"수박 발산 프레임 4: {ttl} (정규화 축)"); fig.tight_layout(); fig.savefig(prefix + "_norm.png", dpi=120); plt.close(fig)
+    # 3 평균 ± 표준편차
+    fig, axs = plt.subplots(nr, 2, figsize=(16, 4.8 * nr), squeeze=False)
+    for r, (k, nm, un, lg) in enumerate(specs):
+        XE, XR, qm, qs = qget(k)
+        Yn, nz = [], 0
+        for q in range(len(E)):
+            sd = int(sE[q]) + 1; y0 = XE[q][sd - 1]
+            if not (np.isfinite(y0) and y0 > 0):
+                nz += 1; continue
+            Yn.append(np.interp(xg, sub / (2 * sd), XE[q] / (2 * y0), left=np.nan, right=np.nan))
+        ax = axs[r, 0]
+        if Yn:
+            Yn = np.array(Yn); mY, sY = np.nanmean(Yn, 0), np.nanstd(Yn, 0)
+            ax.fill_between(xg, np.maximum(mY - sY, 1e-12) if lg else mY - sY, mY + sY, color="C0", alpha=0.25, label="평균 ± 표준편차")
+            ax.plot(xg, mY, color="C0", lw=2, label=f"끝까지 넘은 {len(Yn)} 개 평균" + (f" (발산 값 0 인 {nz} 개 뺌)" if nz else ""))
+        ax.plot([0.5], [0.5], "k*", ms=11, zorder=5, label="발산 지점 (0.5, 0.5)")
+        ax.axvline(0.5, color="k", ls=":", lw=0.8); ax.axhline(0.5, color="k", ls=":", lw=0.8)
+        if lg: ax.set_yscale("log")
+        ax.set_xlim(0, 1); ax.set_xlabel("서브스텝 / (2 x 발산 서브스텝)"); ax.set_ylabel(f"{nm} / (2 x 발산 서브스텝 값)")
+        ax.set_title(f"(가) {nm}: 정규화 축 (가로 {a.bins} 칸 보간)", fontsize=10); ax.legend(fontsize=8, loc="upper left"); ax.grid(alpha=0.3, which="both")
+        ax = axs[r, 1]
+        for X_, c, nm2, al in [(XE, "C3", f"끝까지 넘은 {len(E)} 개", 0.25), (XR, "C1", f"넘었다 돌아온 {len(R):,} 개", 0.15)]:
+            m_, s_ = np.nanmean(X_, 0), np.nanstd(X_, 0)
+            ax.fill_between(sub, np.maximum(m_ - s_, 1e-12) if lg else m_ - s_, m_ + s_, color=c, alpha=al)
+            ax.plot(sub, m_, color=c, lw=1.8, label=nm2 + " 평균 ± 표준편차")
+        ax.fill_between(sub, np.maximum(qm - qs, 1e-12) if lg else qm - qs, qm + qs, color="0.5", alpha=0.3)
+        ax.plot(sub, qm, color="0.3", lw=1.6, label=f"한 번도 안 넘은 점유 노드 {int(Z['nQ']):,} 개 평균 ± 표준편차")
+        if lg: ax.set_yscale("log")
+        ax.set_xlim(1, N); ax.set_xlabel(f"서브스텝 (1 에서 {N})"); ax.set_ylabel(f"{nm} ({un})")
+        ax.set_title(f"(나) {nm}: 원래 축, 발산 노드 vs 발산 안 한 점유 노드", fontsize=10); ax.legend(fontsize=8, loc="upper left"); ax.grid(alpha=0.3, which="both")
+    fig.suptitle(f"수박 발산 프레임 4: {ttl} (평균 ± 표준편차)"); fig.tight_layout(); fig.savefig(prefix + "_meanstd.png", dpi=120); plt.close(fig)
+    print("저장", prefix + "_{raw,norm,meanstd}.png")
+
+
+if "tau_max" in EXTRA:
+    qtriple(a.out + "_stress", [("tau_max", "셀 응력 ‖τ‖_F 최대", "Pa", True), ("tau_mean", "셀 응력 ‖τ‖_F 평균", "Pa", True)],
+            "노드가 속한 점유 셀의 Kirchhoff 응력 크기 (셀들 최대·평균)")
+if "f_total" in EXTRA:
+    qtriple(a.out + "_force", [("f_int", "내부력 |f_int|", "N", True), ("f_floor", "바닥 힘 |f_바닥|", "N", True), ("f_total", "합력 |f_int + m g + f_바닥|", "N", True)],
+            "노드에 주어지는 힘")

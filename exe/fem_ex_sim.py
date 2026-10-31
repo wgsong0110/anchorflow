@@ -786,6 +786,7 @@ class Opt:
             self.mA, self.volA = m.clone(), vol.clone()
             self.OX, self.OV, self.OF = z(Np, 3), z(Np, 3), z(Np, 9)
         self.fixd = None
+        self._vhook = None                                                          # --divhist: 노드 걸음 직후 (클램프 앞) 속도 읽기
         self._fhook = None                                                          # --lagdump: 서브스텝 노드 걸음 직전 내부력 f 복사 (진단 루프만, 그래프 판은 None)
         self.ncon = torch.zeros(1, dtype=torch.int32, device=dev)                    # --floor vel: 프레임 동안 접촉 (입자·서브스텝) 수
         self.bst = z(4)                                                              # 절 S: [0] 질량 0 노드 때문에 뺀 사면체 부피, [1] 그 사면체 수; 절 T: [2] 정규화로 메시 안 노드에 옮긴 질량 Σ(1-Win)m_p, [3] 옮긴 부피 Σ(1-Cin)V_p
@@ -1416,6 +1417,8 @@ class Opt:
                                                np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs_), np.float32(damp_),
                                                EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
                                                np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.int32(1)), b=256)
+          if self._vhook is not None:                                             # 진단 읽기만 (--divhist: 걸음 뒤·클램프 앞 속도)
+              self._vhook()
           if PBC:                                                                 # 절 AG: 입자 속도 구속의 노드 몫 (노드 걸음 뒤, 클램프·이동 앞)
               PLC.launch("ag_pbc", Mc, (EX.P(self.sz), EX.P(self.vn), EX.P(self.pa), EX.P(self.pv)), b=256)
           jon = np.int32(1 if a.lim >= 0 else 0)
@@ -1829,16 +1832,58 @@ class Opt:
             dtRF_ = torch.full((M,), -1, dtype=torch.int32, device=dev)             # |v| > 5 x q90 처음
             dser_ = []
             DH_ = a.divhist == i + 1                                                # --divhist: 이 프레임만 서브스텝별 전 노드 기록 (읽기만)
-            if DH_:
-                dhV_ = torch.empty(a.N, M, device=dev)                              # 서브스텝 j 걸음 뒤 |v|
-                dhF_ = torch.full((a.N, M), float("nan"), device=dev)               # 서브스텝 j 걸음 직전 내부력 |f|
-                dhC_ = torch.zeros(a.N, M, dtype=torch.uint8, device=dev)           # 서브스텝 j 바닥 접촉 (acc > 0)
+            if DH_:                                                                 # 기록은 CPU 에 (서브스텝마다 한 줄씩 복사 -- 카드 메모리 안 씀)
+                dhV_ = torch.empty(a.N, M)                                          # 서브스텝 j 걸음 뒤 (클램프 뒤) |v|
+                dhF_ = torch.full((a.N, M), float("nan"))                           # 서브스텝 j 걸음 직전 내부력 |f_int|
+                dhG_ = torch.full((a.N, M), float("nan"))                           # 바닥 힘 |m (v_걸음뒤 - v_자유) / h_s| (속도 바닥 투영의 등가 힘)
+                dhT_ = torch.full((a.N, M), float("nan"))                           # 합력 |f_int + m g + 바닥| (= m (v_걸음뒤 - v_시작 damp) / h_s 와 같은 식)
+                dhL_ = torch.full((a.N, M), float("nan"))                           # 클램프 등가 힘 |m (v_클램프뒤 - v_걸음뒤) / h_s| (참고)
+                dhSx_ = torch.full((a.N, M), float("nan"))                          # 노드가 속한 점유 셀 Kirchhoff 응력 ‖τ‖_F 최대
+                dhSm_ = torch.full((a.N, M), float("nan"))                          # 같은 셀들 평균
+                dhC_ = torch.zeros(a.N, M, dtype=torch.uint8)                       # 서브스텝 j 바닥 접촉 (acc > 0)
                 self._fj = 0
+                gvt_ = torch.tensor(gv, device=dev)
+                DSTR_ = PLINC and MATN == 7 and not (a.pl_diag & 2)                 # 셀 τ = GF neoHookeanBoarden(F_e 셀) -- ag_force_body 와 같은 식
+                if DSTR_:
+                    tO_ = occT_.nonzero().flatten()
+                    nO_ = tets_[tO_].reshape(-1).long()
+                    cntO_ = torch.zeros(M, device=dev).index_add_(0, nO_, torch.ones_like(nO_, dtype=torch.float32))
+                    mu7_, ka7_ = float(PRM[0]), float(PRM[2])
+                dh_ = {}
 
                 def _dh_hook():
-                    dhF_[self._fj].copy_(self.f[:M].norm(dim=-1))
+                    j_ = self._fj
+                    fv_ = self.f[:M].clone()
+                    dh_["f"], dh_["v0"] = fv_, self.vn[:M].clone()
+                    dhF_[j_].copy_(fv_.norm(dim=-1).cpu())
                     if VFL:
-                        dhC_[self._fj].copy_((self.acc[:M] > 0).to(torch.uint8))
+                        dhC_[j_].copy_((self.acc[:M] > 0).to(torch.uint8).cpu())
+                    if DSTR_:                                                       # ag_fc 가 이번 서브스텝 셀 F_e 를 막 썼다 (셀 증분 RM)
+                        Fe_ = self.FeC[tO_].view(-1, 3, 3).double()
+                        B_ = Fe_ @ Fe_.transpose(1, 2)
+                        J_ = torch.linalg.det(Fe_)
+                        tb_ = B_.diagonal(dim1=1, dim2=2).sum(-1) / 3.0
+                        I3_ = torch.eye(3, device=dev, dtype=torch.float64)
+                        tau_ = (mu7_ * J_.pow(-2.0 / 3.0))[:, None, None] * (B_ - tb_[:, None, None] * I3_) + (0.5 * ka7_ * (J_ * J_ - 1.0))[:, None, None] * I3_
+                        tn_ = tau_.flatten(1).norm(dim=-1).float()
+                        tn4_ = tn_[:, None].expand(-1, 4).reshape(-1)
+                        mx_ = torch.full((M,), float("nan"), device=dev).scatter_reduce(0, nO_, tn4_, reduce="amax", include_self=False)
+                        sm_ = torch.zeros(M, device=dev).index_add_(0, nO_, tn4_)
+                        dhSx_[j_].copy_(mx_.cpu())
+                        dhSm_[j_].copy_(torch.where(cntO_ > 0, sm_ / cntO_.clamp_min(1), torch.full_like(sm_, float("nan"))).cpu())
+
+                def _dh_vhook():
+                    j_ = self._fj
+                    mm_ = mn[:, None]
+                    v1_ = self.vn[:M]
+                    hh_ = float(self.hscur)
+                    vfree_ = (dh_["v0"] + hh_ * (dh_["f"] / mn.clamp_min(1e-30)[:, None] + gvt_)) * float(self.dampcur)
+                    fg_ = mm_ * (v1_ - vfree_) / hh_
+                    tot_ = dh_["f"] + mm_ * gvt_ + fg_
+                    dhG_[j_].copy_(torch.where(mn > 0, fg_.norm(dim=-1), torch.zeros_like(mn)).cpu())
+                    dhT_[j_].copy_(torch.where(mn > 0, tot_.norm(dim=-1), torch.zeros_like(mn)).cpu())
+                    dh_["v1"] = v1_.clone()
+                self._vhook = _dh_vhook
                 self._fhook = _dh_hook
 
             def dt_update(j):
@@ -1858,7 +1903,9 @@ class Opt:
                 dtRS_.masked_fill_(rl_ & (dtRS_ < 0), j)
                 dtRS_.masked_fill_(~rl_, -1)
                 if DH_:
-                    dhV_[j].copy_(sp_)
+                    dhV_[j].copy_(sp_.cpu())
+                    if "v1" in dh_:
+                        dhL_[j].copy_((mn[:, None] * (self.vn[:M] - dh_["v1"]) / float(self.hscur)).norm(dim=-1).cpu())
                 dser_.append([j, int(bad_.sum()), float(sp_[fin_s].max()) if bool(fin_s.any()) else float("nan"), float(q90_), int(nf_.sum()), int(ab_.sum()), int(rl_.sum())])
         LSTEP = VFL or RNEW                                                         # 절 X: 바닥 없는 절 R 경로 (ficus --rstat) 도 측정 판과 같은 _step_lag 로 (덤프 f 포함)
         if LSTEP:                                                                   # 절 O 판: 같은 서브스텝 커널 (_step_lag) -- f 는 걸음 안에서 비워져 |f/m| 표본은 0
@@ -1894,6 +1941,7 @@ class Opt:
                 al = contact_alpha()
                 msmp.append([j, float(sp[k]), float(mn[k] / med), float(occn[k]), float(rn[k]), float(al[k]), int(((al > 0) & light).sum())])
         self._fhook = None
+        self._vhook = None
         tets, gl = self.tets[:T], self.gl[:T].view(T, 4, 3)
         U = self.Uc[tets.reshape(-1)].view(T, 4, 3)
         A = torch.eye(3, device=dev) + torch.einsum("tia,tib->tab", U, gl)
@@ -1951,8 +1999,11 @@ class Opt:
                 os.makedirs(od_, exist_ok=True)
                 cpu = lambda q: q.detach().cpu()
                 torch.save(dict(t=i, N=a.N, h=h, hs=hs, vthr=vthr_, mn=cpu(mn), live=cpu(live), occ_node=cpu(occn), npos=cpu(self.npos[:M]),
-                                abs=cpu(dtAB_), speed=cpu(dhV_), force=cpu(dhF_), contact=cpu(dhC_), floor=bool(VFL),
-                                note="speed[j] = 서브스텝 j (0 부터) 걸음 뒤 |v|, force[j] = 걸음 직전 내부력 |f|, contact[j] = 그 서브스텝 바닥 접촉, abs = 처음 |v| > vthr 서브스텝 (0 부터)"),
+                                abs=cpu(dtAB_), speed=dhV_, force=dhF_, contact=dhC_, floor=bool(VFL),
+                                f_floor=dhG_, f_total=dhT_, f_clamp=dhL_, tau_max=dhSx_, tau_mean=dhSm_, g=list(gv), damp=float(self.dampcur),
+                                tau_def="셀 Kirchhoff τ = μ J^(-2/3) dev(F_e F_eᵀ) + κ/2 (J² - 1) I (GF neoHookeanBoarden, 셀 증분 F_e, ag_force_body 와 같은 식), ‖τ‖_F, 노드가 꼭짓점인 점유 사면체의 최대·평균",
+                                force_def="f_int = 걸음 직전 self.f; 바닥 = m (v_걸음뒤 - (v_시작 + h_s (f_int/m + g)) damp) / h_s; 합력 = f_int + m g + 바닥; 클램프 = m (v_클램프뒤 - v_걸음뒤) / h_s",
+                                note="speed[j] = 서브스텝 j (0 부터) 걸음·클램프 뒤 |v|, force[j] = 걸음 직전 내부력 |f|, contact[j] = 그 서브스텝 바닥 접촉, abs = 처음 |v| > vthr 서브스텝 (0 부터)"),
                            os.path.join(od_, f"f{i:03d}.pt"))
                 print(f"    [발산 기록] t {i + 1}: 서브스텝 {a.N} x 노드 {M} |v|·|f|·접촉 -> divhist/f{i:03d}.pt", flush=True)
             print(f"    [발산 추적] t {i + 1}: 뒤집힌 점유 사면체 {ev_['n_flip']} (처음 서브스텝 {ev_['first_flip']}), 비유한 노드 {ev_['n_nf']} ({ev_['first_nf']}), "

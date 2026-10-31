@@ -58,6 +58,19 @@ def ms(X):
 vQm, vQs = ms(V[:, Q])
 fQm, fQs = ms(Fo[:, Q])
 aQm, aQs = ms(Fo[:, Q] / mn[Q])
+EXTRA = [k for k in ("f_floor", "f_total", "f_clamp", "tau_max", "tau_mean") if k in D]   # 10-31 추가 기록 (셀 응력·힘 성분)
+xo = {}
+for k in EXTRA:
+    X = D[k].float()
+    xo[k + "_E"] = X[:, E].numpy().T
+    xo[k + "_R"] = X[:, R].numpy().T
+    XQ = X[:, Q]
+    ok = torch.isfinite(XQ)
+    n_ = ok.sum(1).clamp_min(1)
+    mu_ = torch.where(ok, XQ, torch.zeros_like(XQ)).sum(1) / n_
+    sd_ = (torch.where(ok, (XQ - mu_[:, None]) ** 2, torch.zeros_like(XQ)).sum(1) / n_).sqrt()
+    xo[k + "_Qm"], xo[k + "_Qs"] = mu_.numpy(), sd_.numpy()
+    del X, XQ, ok
 dq = np.quantile(mn[Q].numpy(), [0.01, 0.1, 0.5, 0.9, 0.99])
 out = dict(N=N, vthr=vthr, h=float(D["h"]), hs=float(D["hs"]), t=int(D["t"]), m_med=mmed,
            E=E.numpy(), R=R.numpy(), selE=selE.numpy(), selR=selR.numpy(),
@@ -66,7 +79,7 @@ out = dict(N=N, vthr=vthr, h=float(D["h"]), hs=float(D["hs"]), t=int(D["t"]), m_
            vQm=vQm, vQs=vQs, fQm=fQm, fQs=fQs, aQm=aQm, aQs=aQs, mQ_q=dq, nQ=len(Q),
            mQ_hist=np.histogram(np.log10(mn[Q].numpy() / mmed), bins=np.linspace(-3, 1.5, 91)),
            occE=D["occ_node"][E].numpy(), occR=D["occ_node"][R].numpy(), occQ_q=np.quantile(D["occ_node"][Q].numpy(), [0.1, 0.5, 0.9]),
-           zE=D["npos"][E, 2].numpy(), zR=D["npos"][R, 2].numpy())
+           zE=D["npos"][E, 2].numpy(), zR=D["npos"][R, 2].numpy(), extra=np.array(EXTRA), **xo)
 np.savez_compressed(a.out, **{k: (np.asarray(v, dtype=object) if k == "mQ_hist" else v) for k, v in out.items()})
 s = dict(N=N, vthr=vthr, M=M, n_live=int(live.sum()), n_E=len(E), n_R=len(R), n_Q=len(Q), first_any=int(ab[ever].min()) if bool(ever.any()) else None,
          first_E=int(ab[E].min()) if len(E) else None, first_mismatch=mism, selE=selE.tolist(), selR=selR.tolist(),
@@ -74,6 +87,7 @@ s = dict(N=N, vthr=vthr, M=M, n_live=int(live.sum()), n_E=len(E), n_R=len(R), n_
          mE_rel_q=np.quantile(mn[E].numpy() / mmed, [0.0, 0.1, 0.5, 0.9, 1.0]).tolist() if len(E) else None,
          mR_rel_q=np.quantile(mn[R].numpy() / mmed, [0.0, 0.1, 0.5, 0.9, 1.0]).tolist() if len(R) else None,
          mQ_rel_q=(dq / mmed).tolist(), contact_E_any=int(C[:, E].any(0).sum()), contact_R_any=int(C[:, R].any(0).sum()),
-         force_nan=int(torch.isnan(Fo[:, live]).sum()))
+         force_nan=int(torch.isnan(Fo[:, live]).sum()), extra=EXTRA,
+         **{f"{k}_at_div_E_med": float(np.median([xo[k + "_E"][q, int(ab[E][q])] for q in range(len(E))])) for k in EXTRA if len(E)})
 print(json.dumps(s, ensure_ascii=False))
 json.dump(s, open(a.out.replace(".npz", ".json"), "w"), ensure_ascii=False, indent=1)
