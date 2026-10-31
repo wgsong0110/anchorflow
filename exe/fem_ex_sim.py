@@ -235,6 +235,7 @@ ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 
 ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적분점 (정의 변경): 셀 안 max‖F_p − F̄_T‖_F ≤ ε 이거나 입자 1 개인 사면체는 한 점 적분 (F̄, V = Σ w) -- 음수 = 끔 (모두 입자 적분점)")
 ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
+ap.add_argument("--ak_acclam", action="store_true", help="절 AK.19 (정의 변경): 바닥 접촉 입자의 고착 질량을 사면체 네 노드에 같은 몫 (m_p/4) 대신 barycentric λ 몫으로 (입자 판정 그대로; 고착이 입자 가까운 노드에 몰려 위쪽 노드로 덜 번짐)")
 ap.add_argument("--ak_sfcr", action="store_true", help="절 AK.18: 입자 적분점 FCR 을 표준 식으로 (Stomakhin 2012: 진 회전 R, 부피 항 λ (J − 1) cof F, J = det F 부호 그대로) -- 기존 커널은 J = |det|·부호, 반사 Q")
 ap.add_argument("--ak_capmu", action="store_true", help="절 AK.16 (정의 변경): 탄성 부피 상한 (--sp vcap θ) 을 전단 (μ) 몫에만 -- λ 몫은 입자 부피 그대로 (--ak_pq4 --ak_prep 경로)")
 ap.add_argument("--ak_lamfac", type=float, default=1.0, help="절 AK.16 진단 전용: λ (부피 강성) 배율 -- 재질을 바꾸는 것이라 판정용으로만")
@@ -1730,7 +1731,7 @@ class Opt:
             AKC.launch("ak_fc_pq", 0, (np.int32(nbQ), np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                        EX.P(self.akdF), EX.P(self.akw), np.float32(mu), np.float32(lam), EX.P(self.f),
                                        EX.P(self.sz), EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
-                                       np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon),
+                                       np.int32(1 if (a.mass == "tet" and not a.ak_acclam) else 0), *PLf, EX.P(self.acc), EX.P(self.ncon),
                                        np.int32(AH_GTK), np.float32(AH_BAND), np.float32(AH_PN), np.float32(AH_DXG), EX.P(self.accN if AH_ACCN else None), np.float32(a.vfl_npd)),
                        b=128, grid=nbQ + nbP)
         elif AHF:                                                                   # 절 AH: 같은 힘 + 바닥 접촉 가중 (gtk) / 실제 접촉 표시
