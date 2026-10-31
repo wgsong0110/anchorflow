@@ -24,6 +24,7 @@ _AH = r'''
 extern "C" {
 #ifndef AF_KD_DEF
 #define AF_KD_DEF
+__device__ int AHKG;                                                                // 1 = K_nn 대신 Gershgorin 상계 k_n I (k_n = 4 mfa / h_s², 대각 우세라 이웃 고정 한 걸음이 안정)
 __device__ const float* AHKD;                                                       // 절 AG.18 --ah_imex: 노드 3x3 접선 강성 대각 블록 (6 성분, null = 끔). 켜면 국소 CFL 비 > 1 노드만 국소 후퇴 오일러
 #endif
 #ifndef AF_VN_DEF
@@ -88,6 +89,7 @@ __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* v
     if (imp) {                                                                  // 절 AG.18: (m I + h² K_nn) Δv = h (f + m g − h K_nn v), 이웃은 명시적 값 고정 (VBD 노드 블록과 같은 꼴, 선형화 후퇴 오일러 한 걸음)
         const float* K = AHKD + (long long)n*6;                                  // xx yy zz xy yz xz
         float Km[9] = {K[0], K[3], K[5], K[3], K[1], K[4], K[5], K[4], K[2]};
+        if (AHKG) { float kn = 4.f*mfa[n]/(hs*hs); for (int k_=0;k_<9;k_++) Km[k_] = 0.f; Km[0] = Km[4] = Km[8] = kn; }
         float v0[3] = {vn[n*3], vn[n*3+1], vn[n*3+2]};
         float r[3], Mx[9];
         for (int a_=0;a_<3;a_++) { float kv = Km[a_*3]*v0[0] + Km[a_*3+1]*v0[1] + Km[a_*3+2]*v0[2]; r[a_] = hs*(f[n*3+a_] + m*gg[a_] - hs*kv); }
@@ -484,6 +486,12 @@ def set_kd(t):
     """절 AG.18 --ah_imex: AHKD 장치 포인터 (torch float32 [Mcap*6] 또는 None)."""
     import cupy as cp
     cp.ndarray((1,), cp.uint64, mod().get_global("AHKD"))[:] = 0 if t is None else t.data_ptr()
+
+
+def set_kg(on):
+    """절 AG.18 --ah_imex_k gersh."""
+    import cupy as cp
+    cp.ndarray((1,), cp.int32, mod().get_global("AHKG"))[:] = 1 if on else 0
 
 
 def set_vpred(vn, hs):

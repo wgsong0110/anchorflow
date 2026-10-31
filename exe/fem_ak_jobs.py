@@ -73,6 +73,8 @@ VAR = {
     "cmsGs": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --ah_mcfl_sub --akg_k 1 --akg_empty --akg_hg 1 @NOFAST",   # 절 AG.18: 묶음 몫을 넣은 서브스텝 국소 CFL 질량
     "cmsPi": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --akpl_el --ah_mcfl 1 --ah_imex @NOFAST",   # 절 AG.18: 기본 판 (묶음 없음) + 국소 CFL 비 > 1 노드만 국소 후퇴 오일러
     "cmsGi": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --akg_k 1 --akg_empty --akg_hg 1 --ah_imex @NOFAST",   # 절 AG.18: 빈 사면체 묶음 + 국소 후퇴 오일러
+    "cmsPg": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --akpl_el --ah_mcfl 1 --ah_imex --ah_imex_k gersh @NOFAST",
+    "cmsGg": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --akg_k 1 --akg_empty --akg_hg 1 --ah_imex --ah_imex_k gersh @NOFAST",
     "cm05m": "PQF3 --sp_vcap 0.5 --ak_capmu --ah_mlow 0.1",
     "pqfl9": "PQF3 --ak_flip 0.9",
     "pqfl1": "PQF3 --ak_flip 1.0",
