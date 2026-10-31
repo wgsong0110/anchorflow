@@ -235,6 +235,7 @@ ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 
 ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적분점 (정의 변경): 셀 안 max‖F_p − F̄_T‖_F ≤ ε 이거나 입자 1 개인 사면체는 한 점 적분 (F̄, V = Σ w) -- 음수 = 끔 (모두 입자 적분점)")
 ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
+ap.add_argument("--ak_sfcr", action="store_true", help="절 AK.18: 입자 적분점 FCR 을 표준 식으로 (Stomakhin 2012: 진 회전 R, 부피 항 λ (J − 1) cof F, J = det F 부호 그대로) -- 기존 커널은 J = |det|·부호, 반사 Q")
 ap.add_argument("--ak_capmu", action="store_true", help="절 AK.16 (정의 변경): 탄성 부피 상한 (--sp vcap θ) 을 전단 (μ) 몫에만 -- λ 몫은 입자 부피 그대로 (--ak_pq4 --ak_prep 경로)")
 ap.add_argument("--ak_lamfac", type=float, default=1.0, help="절 AK.16 진단 전용: λ (부피 강성) 배율 -- 재질을 바꾸는 것이라 판정용으로만")
 ap.add_argument("--ak_mufac", type=float, default=1.0, help="절 AK.16 진단 전용: μ (전단 강성) 배율")
@@ -524,6 +525,10 @@ if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfus
                                   and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (AI2 and (PLAST or VISC or PBC)) and (VFL or not HASPL)):
     raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀 없음) 만; --ai_stress 는 FCR 탄성만 (소성 씬 제외)")
 AKPQ = bool(a.ak_pq)
+if a.ak_sfcr:
+    if not AKPQ:
+        raise SystemExit("--ak_sfcr 는 --ak_pq 와 함께")
+    AKC.set_sfcr(True)
 P2 = bool(a.ak_p2)
 if P2 and not (AKPQ and not a.ak_pq4 and not a.ak_prep and not a.ak_fuse and a.ak_eps < 0 and not a.affine and a.fupd == "T" and not AI2 and a.ai_g2p == "T"
                and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and not PLAST and a.lim_sr >= 1e20 and not a.lagdiag):

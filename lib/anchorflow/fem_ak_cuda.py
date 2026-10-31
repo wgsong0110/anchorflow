@@ -27,11 +27,41 @@ __device__ __forceinline__ void ak_polar_n(const float* F, float* Q, int nit) {
         for (int k=0;k<9;k++) Q[k] = 0.5f*(gm*Q[k] + C[k]/(ds*gm));
     }
 }
+__device__ int AKSFCR;                                                              // 절 AK.18: 1 = 표준 FCR (Stomakhin 2012: R = 진 회전, J = det F 부호 그대로)
+// 3x3 대칭 행렬의 가장 작은 고윳값 고유벡터 (순환 Jacobi, 뒤집힌 입자에서만 -- 드문 갈래)
+__device__ __forceinline__ void ak_sym_minvec(const float* S0, float* vmin) {
+    float a[3][3], v[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) a[i][j] = 0.5f*(S0[i*3+j] + S0[j*3+i]);
+    for (int sw=0; sw<8; sw++) {
+        for (int p=0;p<2;p++) for (int q=p+1;q<3;q++) {
+            if (fabsf(a[p][q]) < 1e-12f) continue;
+            float th = 0.5f*(a[q][q]-a[p][p])/a[p][q];
+            float t = (th >= 0.f ? 1.f : -1.f)/(fabsf(th) + sqrtf(th*th + 1.f));
+            float c = rsqrtf(t*t + 1.f), sn = t*c;
+            for (int k=0;k<3;k++) { float akp = a[k][p], akq = a[k][q]; a[k][p] = c*akp - sn*akq; a[k][q] = sn*akp + c*akq; }
+            for (int k=0;k<3;k++) { float apk = a[p][k], aqk = a[q][k]; a[p][k] = c*apk - sn*aqk; a[q][k] = sn*apk + c*aqk; }
+            for (int k=0;k<3;k++) { float vkp = v[k][p], vkq = v[k][q]; v[k][p] = c*vkp - sn*vkq; v[k][q] = sn*vkp + c*vkq; }
+        }
+    }
+    int im = 0; if (a[1][1] < a[im][im]) im = 1; if (a[2][2] < a[im][im]) im = 2;
+    for (int k=0;k<3;k++) vmin[k] = v[k][im];
+}
 __device__ __forceinline__ void ak_fcr_P(const float* X, float mu, float lam, float* P) {
     float Q[9], cf[9];
     if (AKPIT > 0) ak_polar_n(X, Q, AKPIT); else c_polar_fast(X, Q);
     cof3(X, cf);
     float dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+    if (AKSFCR) {                                                                      // 표준 FCR: det < 0 이면 Q (반사) 를 가장 작은 특이값 축으로 뒤집어 진 회전 R, 부피 항 λ (J − 1) cof F, J 부호 그대로
+        if (dt < 0.f) {
+            float S[9];                                                                    // S = Qᵀ X = V Σ Vᵀ
+            for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float t = 0.f; for (int k=0;k<3;k++) t += Q[k*3+r]*X[k*3+c]; S[r*3+c] = t; }
+            float v3[3]; ak_sym_minvec(S, v3);
+            float u3[3]; for (int r=0;r<3;r++) u3[r] = Q[r*3]*v3[0] + Q[r*3+1]*v3[1] + Q[r*3+2]*v3[2];
+            for (int r=0;r<3;r++) for (int c=0;c<3;c++) Q[r*3+c] -= 2.f*u3[r]*v3[c];
+        }
+        for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(dt-1.f)*cf[k];
+        return;
+    }
     float sg = (dt>0)?1.f:((dt<0)?-1.f:0.f);
     float J = fabsf(dt);
     for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(J-1.f)*sg*cf[k];
@@ -497,6 +527,13 @@ def set_pit(n):
     if _MOD[0] is None:
         _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     cp.ndarray((1,), cp.int32, _MOD[0].get_global("AKPIT"))[:] = int(n)
+
+
+def set_sfcr(on):
+    """AKSFCR (표준 FCR) 켬/끔."""
+    if _MOD[0] is None:
+        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+    cp.ndarray((1,), cp.int32, _MOD[0].get_global("AKSFCR"))[:] = 1 if on else 0
 
 
 def set_lr(t):

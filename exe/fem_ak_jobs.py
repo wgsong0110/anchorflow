@@ -66,6 +66,7 @@ VAR = {
     "cm03": "PQF3 --sp_vcap 0.3 --ak_capmu",
     "cm075": "PQF3 --sp_vcap 0.75 --ak_capmu",
     "cm06": "PQF3 --sp_vcap 0.6 --ak_capmu",
+    "cms": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr",                                # 절 AK.18: 기본 판 + 표준 FCR
     "cm05m": "PQF3 --sp_vcap 0.5 --ak_capmu --ah_mlow 0.1",
     "pqfl9": "PQF3 --ak_flip 0.9",
     "pqfl1": "PQF3 --ak_flip 1.0",
