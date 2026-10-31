@@ -7,6 +7,7 @@ source exe/fem_ag_scene.sh
 GS=(${AHAG_G:-1 2 3 4 5 6}); i=0
 echo "[커밋] $(git log -1 --oneline) $(date '+%F %T')"
 one() { local S=$1 N=$2 SF=$3 X=$4 G=$5; ag_scene $S
+  case " $X " in *" --drop_plast "*) SARGS=${SARGS/ --plast/}; X=${X/--drop_plast/} ;; esac   # 절 AG.18 대조: 재질 없이 탄성으로 (씬 인자의 --plast 를 뺀다)
   local TG=ag_${S}_n${N}${SF}_r1 D="--no_dump"; [ -n "${AHAG_DUMP:-}" ] && D="--dump_f32 --dump_div"
   # 씬 인자의 node_h 를 바꾸는 판: X 안에 --node_h 가 있으면 그것이 뒤에 와서 우선 (argparse 마지막 값)
   EX_ROOT=fem_ag_$S bash exe/fem_ab_run.sh $TG $G $SARGS $REC $D --N $N $X < /dev/null > /dev/null 2>&1
