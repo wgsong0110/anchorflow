@@ -232,6 +232,49 @@ __global__ void __launch_bounds__(128) ak_pq_force_p5(const int* Nd, const int* 
     for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
         for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += Gm[c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
 }
+// 클램프 끈 판 노드 걸음 + 이동 한 커널 (ah_node_step 과 c_lim_apply (α = 1) 를 이어 붙인 같은 식): 속도 갱신 (힘·중력·감쇠, 고착·비관통) -> U += h v -> 바닥 컬링 D 최대
+__global__ void ak_node_step_mv(const int* szp, const float* mn, float* f, float* vn, float* Ucum, float g0, float g1, float g2, float hs, float damp,
+                                const unsigned char* fixd, const float* vbc, float* acc, float* accN, int mode, int np_, float n0, float n1, float n2, float kex, float mfl,
+                                unsigned int* alph, int* lst, unsigned int* dn) {
+    int M = szp[0];
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (lst && n == 0) lst[0] = 0;
+    float dl = 0.f;
+    if (n < M) {
+        float gg[3] = {g0, g1, g2};
+        float m = mn[n];
+        float mi = fmaxf(m, mfl);
+        float v[3];
+        for (int c=0;c<3;c++) {
+            if (fixd && fixd[n]) v[c] = vbc[n*3+c];
+            else if (m > 0.f) v[c] = (vn[n*3+c] + hs*(f[n*3+c]/mi + gg[c]))*damp;
+            else v[c] = 0.f;
+            f[n*3+c] = 0.f;
+        }
+        if (acc) {
+            float a = acc[n];
+            acc[n] = 0.f;
+            float cn = a;
+            if (accN) { cn = accN[n]; accN[n] = 0.f; }
+            if (!(fixd && fixd[n])) {
+                if (a > 0.f) {
+                    float k = (mode == 1) ? 0.f : ((mode == 2) ? 1.f : powf(fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f), kex));
+                    for (int c=0;c<3;c++) v[c] *= k;
+                }
+                if (np_ && cn > 0.f) { float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vn_ < 0.f) { v[0] -= vn_*n0; v[1] -= vn_*n1; v[2] -= vn_*n2; } }
+            }
+        }
+        float U[3];
+        if (alph) alph[n] = 0x3f800000u;
+        for (int c=0;c<3;c++) { vn[n*3+c] = v[c]; Ucum[n*3+c] += hs*v[c]; U[c] = Ucum[n*3+c]; }
+        dl = fmaxf(-(U[0]*n0 + U[1]*n1 + U[2]*n2), 0.f);
+    }
+    if (dn) {
+        unsigned b = __float_as_uint(dl);
+        for (int o=16; o>0; o>>=1) b = max(b, __shfl_xor_sync(0xffffffffu, b, o));
+        if ((threadIdx.x & 31) == 0 && b) atomicMax(dn, b);
+    }
+}
 }
 '''
 _MOD = [None]

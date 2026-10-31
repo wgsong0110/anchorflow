@@ -229,6 +229,7 @@ ap.add_argument("--ak_en", type=int, default=0, help="절 AK 진단 (측정 밖)
 ap.add_argument("--ak_pq", action="store_true", help="절 AK: 셀 탄성을 입자 적분점으로 -- E_T = Σ_p w_p ψ(A_T F_p), w_p = V_p V_T'/V_T (셀 평균 F̄ 의 ψ 대신; 재평균 에너지 손실 없음, lib/anchorflow/fem_ak_cuda.py)")
 ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 수 고정 (0 = 수렴 판정 1e-7, 최대 10)")
 ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적분점 (정의 변경): 셀 안 max‖F_p − F̄_T‖_F ≤ ε 이거나 입자 1 개인 사면체는 한 점 적분 (F̄, V = Σ w) -- 음수 = 끔 (모두 입자 적분점)")
+ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_pq4", action="store_true", help="--ak_pq 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차로 반정밀도 저장)")
 ap.add_argument("--ak_pq3", action="store_true", help="--ak_pq 3 판 (구간 머리 레인만 A_T 계산 -> 셔플; 같은 식)")
 ap.add_argument("--ak_pq2", action="store_true", help="--ak_pq 2 단 판 (사면체 A_T 버퍼 -> 입자 스레드; 같은 식)")
@@ -572,6 +573,8 @@ if AHF:
         raise SystemExit("--vfl_w gtk 는 축 정렬 평면만 (정답 격자 노드 좌표 비교)")
     print(f"[절 AH 바닥] 가중 {a.vfl_w} (정답 격자 dx_g {AH_DXG:g}, p·n {AH_PN:g}, 고착 격자 노드 최대 지표 {AHC.gt_floor_k0(AH_DXG, AH_PN) if AH_GTK else '-'}, 띠 {AH_BAND:g} m), "
           f"비관통 깊이 {a.vfl_npd:g} m, 고착 몫 {'(1 - a/m)^(h_s/h_ref), h_s/h_ref = %.4g' % AH_KEX if a.vfl_rate else '(1 - a/m) 서브스텝마다 (기존)'}", flush=True)
+if a.ak_fstep and not (SR_OFF and AHF and not a.vfl_bf and a.lim_v != "mom" and not PBC and a.cfuse and a.cfuse_mode == 2):
+    raise SystemExit("--ak_fstep 는 클램프 끈 절 AH 바닥 확정 경로만")
 XN = 1.0 if a.eps_st > 0 else 0.0
 # CFL: 파속 √((λ+2μ)/ρ) (가장 가벼운 밀도), 길이 = Kuhn 사면체 최소 높이 (첫 격자에서)
 rho_min = float(rho.min()) if rho is not None else float(cfg["density"])
@@ -1371,6 +1374,12 @@ class Opt:
             AHC.launch("ah_node_step_bf", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
                                                np.float32(hs_), np.float32(damp_), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.accB),
                                                EX.P(self.accN), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * hs_ / hs)), b=256)
+          elif AHF and a.ak_fstep:                                                   # 절 AK: 걸음 + 이동 한 커널 (아래 c_lim_apply 건너뜀)
+            AKC.launch("ak_node_step_mv", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), EX.P(self.Uc), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
+                                               np.float32(hs_), np.float32(damp_), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
+                                               EX.P(self.accN if AH_ACCN else None), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * hs_ / hs),
+                                               np.float32(getattr(self, "_mfl", 0.0)), EX.P(self.alph), EX.P(self.clst), EX.P(self.cint[1:] if VFL else None)), b=256)
+            return
           elif AHF:
             AHC.launch("ah_node_step", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
                                             np.float32(hs_), np.float32(damp_), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
