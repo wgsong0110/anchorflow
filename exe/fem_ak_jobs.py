@@ -60,6 +60,7 @@ VAR = {
     "pqf3a5": "PQF3 --affine --ak_cfac 0.5",
     "pqf3a25": "PQF3 --affine --ak_cfac 0.25",
     "pqf3m": "PQF3 --ah_mlow 0.1",
+    "p2": AI.replace("--ai_p2g rs --ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_fstep --ah_fast --ak_p2",   # 절 AK.13 2 차 사면체
     "pqfl5": "PQF3 --ak_flip 0.5",
     "pqfl9": "PQF3 --ak_flip 0.9",
     "pqfl1": "PQF3 --ak_flip 1.0",

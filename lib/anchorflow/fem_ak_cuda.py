@@ -353,6 +353,138 @@ __global__ void ak_prep_scatter(int N, const long long* pinv, const float* vol, 
     w[k] = vol[p] * VT[t] / (v > 1e-30f ? v : 1e-30f);
     for (int j=0;j<9;j++) dF[(long long)k*9+j] = __float2half(Fp[(long long)p*9+j] - FT[t*9+j]);
 }
+// ======== 절 AK.13: 2 차 사면체 (10 노드: 꼭짓점 4 + 변 중점 6, 같은 Kuhn 격자) ========
+// 형상 함수 (λ = 사면체 barycentric): 꼭짓점 N_i = λ_i (2 λ_i − 1), 변 (i,j) N_e = 4 λ_i λ_j; 기울기 ∇N_i = (4 λ_i − 1) g_i, ∇N_e = 4 (λ_j g_i + λ_i g_j), g_i = ∇λ_i (사면체 상수).
+// 변 순서 (0,1),(0,2),(0,3),(1,2),(1,3),(2,3). 노드 번호 tets10[t*10 + 0..3] 꼭짓점, [4..9] 변.
+// 셀 탄성 = 입자 적분점 Σ_p w_p ψ(A_p F_p), A_p = I + Σ_n U_n ⊗ ∇N_n(λ_p) (입자마다 다른 A -- 2 차 요소라 사면체 안 변형 기울기가 선형으로 변함).
+// 힘 f_n = −Σ_p G_p ∇N_n(λ_p), G_p = w_p P(A_p F_p) F_pᵀ -> 사면체마다 S = Σ G_p, S_k = Σ λ_{p,k} G_p 만 모으면
+//   꼭짓점 i: f −= (4 S_i − S) g_i,  변 (i,j): f −= 4 (S_j g_i + S_i g_j)   (같은 식, 합 순서만)
+__device__ __constant__ int AKE[6][2] = {{0,1},{0,2},{0,3},{1,2},{1,3},{2,3}};
+__device__ __forceinline__ void ak_p2_A(const long long* n, const float* U, const float* g, const float* lm, float* A) {
+    for (int k=0;k<9;k++) A[k] = (k%4==0) ? 1.f : 0.f;
+    for (int i=0;i<4;i++) { float c = 4.f*lm[i] - 1.f;
+        for (int a=0;a<3;a++) { float u = U[n[i]*3+a]; for (int b=0;b<3;b++) A[a*3+b] += u*c*g[i*3+b]; } }
+    for (int e=0;e<6;e++) { int i = AKE[e][0], j = AKE[e][1];
+        float gr[3]; for (int b=0;b<3;b++) gr[b] = 4.f*(lm[j]*g[i*3+b] + lm[i]*g[j*3+b]);
+        for (int a=0;a<3;a++) { float u = U[n[4+e]*3+a]; for (int b=0;b<3;b++) A[a*3+b] += u*gr[b]; } }
+}
+__device__ __forceinline__ void ak_p2_N(const float* lm, float* N) {
+    for (int i=0;i<4;i++) N[i] = lm[i]*(2.f*lm[i] - 1.f);
+    for (int e=0;e<6;e++) N[4+e] = 4.f*lm[AKE[e][0]]*lm[AKE[e][1]];
+}
+// 힘 (입자 스레드, 사면체 정렬 순서; Fp·wp·lp 정렬 순서) + 바닥 접촉 (2 차 위치 x + Σ N U, 10 노드에 HRZ 몫 1/36·4/27) 한 커널
+__global__ void __launch_bounds__(128) ak_p2_fc(int nbQ, int N, const int* tt, const long long* t10, const float* U, const float* gl,
+                               const float* Fp, const float* lp, const float* wp, float mu, float lam, float* f,
+                               const int* szp, const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* tinv, const float* lamb,
+                               const float* m, float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon, int gtk, float band, float pn, float dxg,
+                               float* accN, float npd) {
+    if ((int)blockIdx.x < nbQ) {
+        int k = blockIdx.x*blockDim.x + threadIdx.x;
+        int lane = threadIdx.x & 31;
+        bool on = k < N;
+        int t = on ? tt[k] : -1 - lane;
+        float S[45];
+        for (int q=0;q<45;q++) S[q] = 0.f;
+        float g[12];
+        long long n[10];
+        if (on) {
+            for (int q=0;q<10;q++) n[q] = t10[(long long)t*10+q];
+            for (int q=0;q<12;q++) g[q] = gl[(long long)t*12+q];
+            float lm[4]; for (int q=0;q<4;q++) lm[q] = lp[(long long)k*4+q];
+            float A[9]; ak_p2_A(n, U, g, lm, A);
+            float F[9]; for (int j=0;j<9;j++) F[j] = Fp[(long long)k*9+j];
+            float X[9]; mm3(A, F, X);
+            float P[9]; ak_fcr_P(X, mu, lam, P);
+            float w = wp[k];
+            for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; S[r*3+c] = w*s; }
+            for (int q=0;q<4;q++) for (int j=0;j<9;j++) S[9+q*9+j] = lm[q]*S[j];
+        }
+        for (int off=1; off<32; off<<=1) {
+            int to = __shfl_down_sync(0xffffffffu, t, off);
+            bool same = (lane + off < 32) && (to == t);
+            for (int j=0;j<45;j++) { float o = __shfl_down_sync(0xffffffffu, S[j], off); if (same) S[j] += o; }
+        }
+        int tp = __shfl_up_sync(0xffffffffu, t, 1);
+        if (!on || (lane > 0 && tp == t)) return;
+        for (int i=0;i<4;i++) for (int a=0;a<3;a++) { float s = 0.f; for (int b=0;b<3;b++) s += (4.f*S[9+i*9+a*3+b] - S[a*3+b])*g[i*3+b]; atomicAdd(&f[n[i]*3+a], -s); }
+        for (int e=0;e<6;e++) { int i = AKE[e][0], j = AKE[e][1];
+            for (int a=0;a<3;a++) { float s = 0.f; for (int b=0;b<3;b++) s += 4.f*(S[9+j*9+a*3+b]*g[i*3+b] + S[9+i*9+a*3+b]*g[j*3+b]); atomicAdd(&f[n[4+e]*3+a], -s); } }
+        return;
+    }
+    int q = (blockIdx.x - nbQ)*blockDim.x + threadIdx.x;
+    if (q >= szp[2]) return;
+    if (s0c[q] > 2.f*__uint_as_float(*dn) + 1e-5f + band) return;                // 2 차 보간 |Σ N U| ≤ Σ|N| max|U| ≤ 2 D
+    long long p = nidx[q];
+    long long t = tinv[p];
+    long long n[10]; for (int i=0;i<10;i++) n[i] = t10[t*10+i];
+    float lm[4]; for (int i=0;i<4;i++) lm[i] = lamb[p*4+i];
+    float Nn[10]; ak_p2_N(lm, Nn);
+    float u[3] = {0,0,0};
+    for (int i=0;i<10;i++) for (int a=0;a<3;a++) u[a] += Nn[i]*U[n[i]*3+a];
+    float s = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
+    if (ncon) {
+        unsigned am = __activemask();
+        unsigned bb = __ballot_sync(am, s < 0.f);
+        if ((threadIdx.x & 31) == __ffs(am) - 1 && bb) atomicAdd(ncon, __popc(bb));
+    }
+    float w = 1.f;
+    if (gtk) { if (!(s < band)) return; w = ah_wstk(s, pn, dxg); if (!(w > 0.f) && !(s < 0.f)) return; }
+    else if (!(s < 0.f)) return;
+    float mp = m[p];
+    bool real = s < -npd;
+    for (int i=0;i<10;i++) { if (w > 0.f) atomicAdd(&acc[n[i]], (i < 4 ? (1.f/36.f) : (4.f/27.f))*mp*w); if (real && accN) atomicAdd(&accN[n[i]], 1.f); }
+}
+// 바닥 없는 씬 (ficus): 힘만
+__global__ void __launch_bounds__(128) ak_p2_f(int N, const int* tt, const long long* t10, const float* U, const float* gl,
+                               const float* Fp, const float* lp, const float* wp, float mu, float lam, float* f) {
+    // ak_p2_fc 의 힘 블록과 같은 식 (nbQ = 격자 전체)
+    int k = blockIdx.x*blockDim.x + threadIdx.x;
+    int lane = threadIdx.x & 31;
+    bool on = k < N;
+    int t = on ? tt[k] : -1 - lane;
+    float S[45];
+    for (int q=0;q<45;q++) S[q] = 0.f;
+    float g[12];
+    long long n[10];
+    if (on) {
+        for (int q=0;q<10;q++) n[q] = t10[(long long)t*10+q];
+        for (int q=0;q<12;q++) g[q] = gl[(long long)t*12+q];
+        float lm[4]; for (int q=0;q<4;q++) lm[q] = lp[(long long)k*4+q];
+        float A[9]; ak_p2_A(n, U, g, lm, A);
+        float F[9]; for (int j=0;j<9;j++) F[j] = Fp[(long long)k*9+j];
+        float X[9]; mm3(A, F, X);
+        float P[9]; ak_fcr_P(X, mu, lam, P);
+        float w = wp[k];
+        for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; S[r*3+c] = w*s; }
+        for (int q=0;q<4;q++) for (int j=0;j<9;j++) S[9+q*9+j] = lm[q]*S[j];
+    }
+    for (int off=1; off<32; off<<=1) {
+        int to = __shfl_down_sync(0xffffffffu, t, off);
+        bool same = (lane + off < 32) && (to == t);
+        for (int j=0;j<45;j++) { float o = __shfl_down_sync(0xffffffffu, S[j], off); if (same) S[j] += o; }
+    }
+    int tp = __shfl_up_sync(0xffffffffu, t, 1);
+    if (!on || (lane > 0 && tp == t)) return;
+    for (int i=0;i<4;i++) for (int a=0;a<3;a++) { float s = 0.f; for (int b=0;b<3;b++) s += (4.f*S[9+i*9+a*3+b] - S[a*3+b])*g[i*3+b]; atomicAdd(&f[n[i]*3+a], -s); }
+    for (int e=0;e<6;e++) { int i = AKE[e][0], j = AKE[e][1];
+        for (int a=0;a<3;a++) { float s = 0.f; for (int b=0;b<3;b++) s += 4.f*(S[9+j*9+a*3+b]*g[i*3+b] + S[9+i*9+a*3+b]*g[j*3+b]); atomicAdd(&f[n[4+e]*3+a], -s); } }
+}
+// 프레임 끝 G2P (2 차): x += Σ N U, v = Σ N v_n, F <- A_p F (A_p = I + Σ U ⊗ ∇N(λ_p))
+__global__ void ak_p2_g2p(int Np_, const float* x, const float* U, const float* vn, const long long* t10, const float* lamb, const float* gl, const long long* tinv,
+                          const float* Fp, float* x2, float* v2, float* F2) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= Np_) return;
+    long long t = tinv[p];
+    long long n[10]; for (int i=0;i<10;i++) n[i] = t10[t*10+i];
+    float lm[4]; for (int i=0;i<4;i++) lm[i] = lamb[(long long)p*4+i];
+    float g[12]; for (int q=0;q<12;q++) g[q] = gl[t*12+q];
+    float Nn[10]; ak_p2_N(lm, Nn);
+    double u[3] = {0,0,0}, vv[3] = {0,0,0};
+    for (int i=0;i<10;i++) for (int a=0;a<3;a++) { u[a] += (double)Nn[i]*U[n[i]*3+a]; vv[a] += (double)Nn[i]*vn[n[i]*3+a]; }
+    float A[9]; ak_p2_A(n, U, g, lm, A);
+    for (int a=0;a<3;a++) { x2[(long long)p*3+a] = (float)((double)x[(long long)p*3+a] + u[a]); v2[(long long)p*3+a] = (float)vv[a]; }
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) { double s = 0; for (int k=0;k<3;k++) s += (double)A[r*3+k]*Fp[(long long)p*9+k*3+c]; F2[(long long)p*9+r*3+c] = (float)s; }
+}
 }
 '''
 _MOD = [None]

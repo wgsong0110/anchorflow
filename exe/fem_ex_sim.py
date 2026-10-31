@@ -235,6 +235,7 @@ ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 
 ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적분점 (정의 변경): 셀 안 max‖F_p − F̄_T‖_F ≤ ε 이거나 입자 1 개인 사면체는 한 점 적분 (F̄, V = Σ w) -- 음수 = 끔 (모두 입자 적분점)")
 ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
+ap.add_argument("--ak_p2", action="store_true", help="절 AK.13 (구조 변경, 사용자 10-31 허락): 2 차 사면체 10 노드 (같은 Kuhn 격자 + 변 중점 노드), HRZ 집중 질량 (꼭짓점 m_T/36, 변 4 m_T/27), 입자 적분점 셀 탄성, 2 차 G2P")
 ap.add_argument("--ak_flip", type=float, default=0.0, help="절 AK: 프레임 끝 입자 속도를 FLIP 섞기로 v = Σλ v_n + α (v_p − Σλ v_n0) (v_n0 = 이번 프레임 P2G 직후 노드 속도; α 0 = PIC, 정의 변경)")
 ap.add_argument("--ak_cfac", type=float, default=1.0, help="절 AK --affine: 다음 프레임 P2G 에 쓰는 입자 속도 기울기 C 의 배율 (1 = APIC, 0 = PIC; 정의 변경)")
 ap.add_argument("--ak_fuse", action="store_true", help="--ak_pq4 + 절 AH 바닥: 입자 적분점 힘과 바닥 접촉을 커널 하나로 (같은 식)")
@@ -504,6 +505,13 @@ if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfus
                                   and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (AI2 and (PLAST or VISC or PBC)) and (VFL or not HASPL)):
     raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀 없음) 만; --ai_stress 는 FCR 탄성만 (소성 씬 제외)")
 AKPQ = bool(a.ak_pq)
+P2 = bool(a.ak_p2)
+if P2 and not (AKPQ and not a.ak_pq4 and not a.ak_prep and not a.ak_fuse and a.ak_eps < 0 and not a.affine and a.fupd == "T" and not AI2 and a.ai_g2p == "T"
+               and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and not PLAST and a.lim_sr >= 1e20 and not a.lagdiag):
+    raise SystemExit("--ak_p2 는 --ak_pq (4 판·준비·융합·혼합 없이), 원래 F 갱신, 아핀·A2 없음, 클램프 끔, 확정 경로만")
+if P2 and a.ak_en:
+    raise SystemExit("--ak_p2 에는 --ak_en 진단이 없다 (선형 사면체 식)")
+P2W = torch.tensor([1.0 / 36] * 4 + [4.0 / 27] * 6, device=dev)                     # HRZ 집중 질량 몫 (합 1)
 PQPL = AKPQ and a.ak_pq_plast != "none"                                             # 절 AG.8 소성 입자 적분점
 AKG = AKPQ and a.akg_k > 0                                                          # 절 AG.11 희소 사면체 묶음
 if AKG and (a.ak_pq4 or a.ak_pq2 or a.ak_pq3 or a.ak_pqt or a.ak_eps >= 0 or a.ak_fuse or a.ak_prep or (PLAST and not PQPL)):
@@ -820,6 +828,7 @@ class Opt:
             self.aktt = torch.zeros(Np, dtype=torch.int32, device=dev)
             self.akdF = torch.zeros(Np, 9, device=dev, dtype=torch.float16)
             self.akcnt = self.akcur = self.akvs = None
+            self.akl = torch.zeros(Np, 4, device=dev)                                    # 절 AK.13: 정렬 순서 barycentric
             if a.ak_eps >= 0:                                                         # 혼합: 거친 사면체 입자 목록 (정렬 순서), 개수, 한 점 사면체 목록
                 self.akN = torch.zeros(1, dtype=torch.int32, device=dev)
                 self.aktt2 = torch.zeros(Np, dtype=torch.int32, device=dev)
@@ -832,6 +841,7 @@ class Opt:
             if PQPL or AKG:                                                          # 절 AG.8: 정렬 순서 입자 소성 상태 (묶음 탄성 판도 같은 커널이라 버퍼만)
                 self.plFe, self.plXp = z(Np, 9), z(Np, 9)
                 self.plys, self.pllj, self.plal = z(Np), z(Np), z(Np)
+        self.t10 = None
         self.aic = z(4)                                                              # 절 AI: [0] 뒤집힌 입자 (A1 반전), [1] Σ w R_p 가 반사인 셀, [2] B2 정규화 Σw < 1 입자, [3] 그 1 − Σw 합
         if a.affine and (a.mode != "lag" or self.SORT):
             raise SystemExit("--affine 은 --opt --mode lag 만")
@@ -889,6 +899,8 @@ class Opt:
             self.tcell = torch.zeros(self.Tcap, dtype=torch.long, device=dev)
             if AKG:
                 self.akg_tg = torch.full((self.Tcap,), -1, dtype=torch.int32, device=dev)
+            if P2:
+                self.t10 = torch.zeros(self.Tcap, 10, dtype=torch.long, device=dev)
             if AKPQ:
                 self.akoffs = torch.zeros(self.Tcap + 1, dtype=torch.int32, device=dev)
                 self.akA = torch.zeros(self.Tcap, 9, device=dev)
@@ -1066,6 +1078,50 @@ class Opt:
         return M, T
 
     # ---- 커널 묶음 (그래프에 들어가는 부분은 크기를 self.sz 에서 읽는다) ----
+    def _p2_build(self, now):
+        """절 AK.13: 꼭짓점 메시 (grid) 에 변 중점 노드를 붙여 10 노드 사면체로. 노드 수 M -> M + E (동기화 1 번)."""
+        T, M = self.T, self.M
+        tt = self.tets[:T]
+        pr = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+        lo = torch.stack([torch.minimum(tt[:, i], tt[:, j]) for i, j in pr], 1)
+        hi = torch.stack([torch.maximum(tt[:, i], tt[:, j]) for i, j in pr], 1)
+        u_, inv = torch.unique(lo * M + hi, return_inverse=True)
+        E = int(u_.numel())
+        NN = M + E
+        npc = self.npos.clone()
+        fxc, vbc_ = (self.fx[:M].clone(), self.vbc[:M].clone()) if self.fixd else (None, None)
+        self._alloc(NN, T, 0)
+        if self.t10 is None or self.t10.shape[0] < self.Tcap:
+            self.t10 = torch.zeros(self.Tcap, 10, dtype=torch.long, device=dev)
+        self.nposb[:M].copy_(npc)
+        self.nposb[M:NN].copy_(0.5 * (npc[u_ // M] + npc[u_ % M]))
+        self.npos = self.nposb[:NN]
+        self.t10[:T, :4] = tt
+        self.t10[:T, 4:] = M + inv.view(T, 6)
+        self.Mc, self.M = M, NN
+        self.sz[0:1].fill_(NN)
+        if LIM:
+            self.alph.fill_(1065353216)
+        if self.fixd:
+            fx, vb = RT.cfg_bc_nodes(cfg, [], self.npos, torch.zeros(1, 4, dtype=torch.long, device=dev), torch.zeros(1, 4, device=dev), m[:1], now, h)
+            self.fx[:NN] = fx.to(torch.uint8)
+            self.vbc[:NN] = vb.float()
+
+    def _p2_p2g(self, v):
+        """절 AK.13: 노드 질량·운동량 = 사면체 질량·운동량의 HRZ 몫 (꼭짓점 1/36, 변 4/27) -- 선형 판 m_T/4 의 2 차 판."""
+        T, NN = self.T, self.M
+        pin = self.pinv[:Np]
+        mT = torch.zeros(T, device=dev).index_add_(0, pin, self.mA)
+        mvT = torch.zeros(T, 3, device=dev).index_add_(0, pin, self.mA[:, None] * v.reshape(Np, 3))
+        idx = self.t10[:T].reshape(-1)
+        self.mn[:NN].zero_()
+        self.mv[:NN].zero_()
+        self.mn.index_add_(0, idx, (mT[:, None] * P2W).reshape(-1))
+        self.mv.index_add_(0, idx, (mvT[:, None, :] * P2W[None, :, None]).reshape(-1, 3))
+        mn_ = self.mn[:NN]
+        self.vn[:NN] = torch.where(mn_[:, None] > 0, self.mv[:NN] / mn_.clamp_min(1e-30)[:, None], torch.zeros_like(self.mv[:NN]))
+        self.sz[0:1].fill_(NN)
+
     def _p2g(self, x, v, F, H, keep):
         Mc, Tc = self.Mcap, self.Tcap
         self.mn.zero_()
@@ -1486,7 +1542,18 @@ class Opt:
         nbT = 0 if (AKPQ and VFL and a.ak_eps < 0) else (Tc + 127) // 128                               # 절 AK: 입자 적분점 + 바닥이면 융합 커널은 접촉 블록만 (바닥 없으면 목록 개수 0 으로 빈 블록)
         nbP = ((Np + 127) // 128) if VFL else 0
         hs_, damp_ = self.hscur, self.dampcur
-        if PLAST or VISC:                                                           # 절 AG: 같은 틀, 사면체 블록만 재질 식 (셀 투영) + 점성
+        if P2:                                                                      # 절 AK.13: 2 차 사면체 입자 적분점 힘 (+ 바닥 접촉)
+            nbQ = (Np + 127) // 128
+            if VFL:
+                AKC.launch("ak_p2_fc", 0, (np.int32(nbQ), np.int32(Np), EX.P(self.aktt), EX.P(self.t10), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akl),
+                                           EX.P(self.akw), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.sz), EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx),
+                                           EX.P(self.Xf), EX.P(self.pinv), EX.P(self.lamb), EX.P(self.mA), *PLf, EX.P(self.acc), EX.P(self.ncon),
+                                           np.int32(AH_GTK), np.float32(AH_BAND), np.float32(AH_PN), np.float32(AH_DXG), EX.P(self.accN if AH_ACCN else None), np.float32(a.vfl_npd)),
+                           b=128, grid=nbQ + nbP)
+            else:
+                AKC.launch("ak_p2_f", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.t10), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akl),
+                                           EX.P(self.akw), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)
+        elif PLAST or VISC:                                                         # 절 AG: 같은 틀, 사면체 블록만 재질 식 (셀 투영) + 점성
             PLC.launch("ag_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P(self.akz if PQPL else self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                     EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0),
                                     np.int32(MATN), EX.P(PRM), EX.P(self.ysT if PLAST else None), EX.P(self.ljT if PLAST else None),
@@ -1534,7 +1601,7 @@ class Opt:
                                    EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
                                    EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
-        if AKPQ and not a.ak_fuse:                                                  # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
+        if AKPQ and not a.ak_fuse and not P2:                                                  # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
             if AKG:                                                                 # 절 AG.11: 묶음 사상 합 (서브스텝마다 비우고)
                 self.akg_AG.zero_()
                 self.akg_GmG.zero_()
@@ -2323,6 +2390,8 @@ class Opt:
         self.evs = []
         self._ev("start")
         self.grid(x, v, i * h)
+        if P2:
+            self._p2_build(i * h)
         self._ev("grid")
         Fv = F.reshape(Np, 9)
         lagm = a.mode == "lag"
@@ -2363,6 +2432,8 @@ class Opt:
                 if self._sparse():                                                  # 절 AE vpmesh: 첫 프레임에 V_p (·m_p) 를 바꿨다 -> 같은 상태로 P2G 다시
                     self._p2g(xa, va, Fa, h, False)
                     self._sparse()
+            if P2:
+                self._p2_p2g(va)
         if PLAST or PBC:
             self._ag_frame(i)
         if FLOOR:
@@ -2398,6 +2469,15 @@ class Opt:
             self.akoffs[0] = 0
             AKC.launch("ak_prep_scatter", Np, (np.int32(Np), EX.P(self.pinv), EX.P(self.volA), EX.P(self.VTs), EX.P(self.akvs), EX.P(self.akoffs), EX.P(self.akcur),
                                                EX.P(Fa), EX.P(self.FT), EX.P(self.aktt), EX.P(self.akw), EX.P(self.akdF)), b=256)
+        elif AKPQ and P2:                                                           # 절 AK.13: 2 차 판 정렬 목록 (F·λ·가중 정렬 순서)
+            T_ = self.T
+            pin = self.pinv[:Np]
+            o_ = torch.argsort(pin)
+            self.aktt.copy_(pin[o_].to(torch.int32))
+            vs_ = torch.zeros(T_, device=dev).index_add_(0, pin, self.volA)
+            self.akw.copy_((self.volA * self.VTs[:T_][pin] / vs_[pin].clamp_min(1e-30))[o_])
+            self.akF.copy_(Fa[o_])
+            self.akl.copy_(self.lamb[:Np][o_])
         elif AKPQ:                                                                  # 절 AK: 입자 -> 사면체 정렬 목록, 가중 w_p = V_p V_T'/V_T, 프레임 시작 F (그래프 밖, 동기화 없음)
             T_ = self.T
             pin = self.pinv[:Np]
@@ -2509,7 +2589,10 @@ class Opt:
             ci = ((NB - 1) % 2) if REPF else 0                                       # 마지막 블록의 입자 상태 버퍼
             xin, Fin = (self.X[ci], self.FF[ci]) if REP else (x, Fv)
             x2, v2, F2 = self.X[1 - ci], self.V[1 - ci], self.FF[1 - ci]
-            if G2PBS:
+            if P2:                                                                  # 절 AK.13: 2 차 G2P
+                AKC.launch("ak_p2_g2p", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.t10), EX.P(self.lamb), EX.P(self.gl), EX.P(self.pinv),
+                                             EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2)), b=128)
+            elif G2PBS:
                 EX.launch("bsl_g2p", Np, (np.int32(Np), EX.P(xin), EX.P(self.Uc), EX.P(self.vn), EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm),
                                           EX.P(Fin), EX.P(x2), EX.P(v2), EX.P(F2), np.int32(BSN)), b=128)
             elif AIG:                                                               # 절 AI B: F 갱신만 바뀐 G2P (위치·속도 barycentric 그대로)
