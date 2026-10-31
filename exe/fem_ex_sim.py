@@ -261,6 +261,7 @@ ap.add_argument("--ah_mcfl_tan", action="store_true",
                 help="절 AG.16 (a): --ah_mcfl 의 강성 계수를 사면체마다 현재 (프레임 시작) 접선 강성으로 -- 셀 입자 F 최소 특이값에서 단축 압축 |dP/dσ| (수박 GF 응력, 연장 판이면 σ_e 에서 상한), λ+2μ 아래면 λ+2μ")
 ap.add_argument("--ah_mcfl_sub", action="store_true",
                 help="절 AG.17: --ah_mcfl 국소 CFL 질량을 서브스텝마다 현재 셀 기하 (A⁻ᵀ∇λ) 와 현재 변형 접선 계수로 다시 (그래프 안 커널, 진단 우선 -- 비용 큼)")
+ap.add_argument("--dump_pl", action="store_true", help="절 AG.17 진단: 프레임마다 입자 항복 응력·logJp·손상 (float16) -> pl_dump.pt (측정 밖)")
 ap.add_argument("--ag_pbcp", action="store_true",
                 help="절 AG.16 bread: 입자 속도 구속을 PG 처럼 입자에 직접 -- 프레임 시작 구속 입자 속도 = v_bc (P2G 에 들어감), 프레임 끝 구속 입자 x ← x0 + h v_bc, v ← v_bc (노드 섞기 --pbc 는 그대로)")
 ap.add_argument("--akb_kappa", type=float, default=0.0,
@@ -3569,6 +3570,7 @@ if OPT is not None:
     RTC.RAWPTR[0] = True
 PRED = torch.empty(L, Np, 3, device=dev) if (not a.no_dump or a.dump_pred) else None
 VD = torch.empty(L, Np, 3, device=dev, dtype=torch.float16) if not a.no_dump else None
+PLDUMP = torch.empty(L, 3, Np, device="cpu", dtype=torch.float16) if (a.dump_pl and PLAST) else None
 FD = torch.empty(L, Np, 3, 3, device=dev, dtype=(torch.float32 if a.dump_f32 else torch.float16)) if not a.no_dump else None
 errs, recs = [], []
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
@@ -3717,6 +3719,8 @@ for i in range(L):
              + (f" 비율 위반 {st['sr_viol']} det≤0 {st['sr_inv']}" if a.lim_sr_chk else "") + (f" 장벽 활성 {st['sb_act']}" if SB else "") if RNEW else ""), flush=True)
     if PRED is not None:
         PRED[i] = x2
+    if PLDUMP is not None:
+        PLDUMP[i, 0], PLDUMP[i, 1], PLDUMP[i, 2] = PL_YS.half().cpu(), PL_LJ.half().cpu(), PL_AL.half().cpu()
     if VD is not None:
         VD[i] = v2.half()
         FD[i] = F2.to(FD.dtype)
@@ -3727,6 +3731,8 @@ for i in range(L):
         break
 
 flog.close()
+if PLDUMP is not None:
+    torch.save({"ys_lj_al": PLDUMP[:len(recs)]}, os.path.join(a.out, "pl_dump.pt"))
 if a.akpl_track:                                                                    # 절 AG.14: 끝난 (서브스텝 마지막까지 간) 프레임 전부
     _st = lambda k_: torch.stack(TRK[k_]) if TRK[k_] else None
     torch.save(dict(frame=TRK["frame"], mx=_st("mx"), am=_st("am"), cr=_st("cr"), dmin=_st("dmin"), dfirst=_st("dfirst"), cnt=_st("cnt"), mr=_st("mr"),
