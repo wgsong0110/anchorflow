@@ -71,7 +71,7 @@ elif st.startswith("v:"):                                                       
         for fk in fks.split(","):
             for vk in vks.split(","):
                 for r in range(1, int(nr) + 1):
-                    out.append(line(sc, vk, fk, r, extra=ex.replace("@", " "), tagx=tx))
+                    out.append(line(sc, vk, fk, r, extra=ex.replace("@", " "), tagx=tx, kind=os.environ.get("AK_KIND", "r")))
 elif st == "s2":                                                                     # 2 차: 띠 0 바닥 위 강성 (θ) 축, lego 21 + ficus
     for sc in ["L000"] + ["%04d" % k for k in range(20)] + ["ficus"]:
         for vk in ("pq", "pqb0", "pq1", "pqn", "base", "th75", "th1", "thn", "cz"):
