@@ -1333,7 +1333,11 @@ class Opt:
             incT = torch.isin(tt, nb).any(1) & occ
             z["first"] = dict(frame=self._fi, j=j, n=int(nb.numel()),
                               nodes=[dict(n=int(q), m_ratio=float(self.mn[q] / self.mn[:M][self.mn[:M] > 0].median()), v_prev=float(self._Vprev[q].norm()),
-                                          f=(float(fs[q].norm()) if fs is not None else None)) for q in nb[:20].tolist()],
+                                          f=(float(fs[q].norm()) if fs is not None else None),
+                                          h_floor=(float(((self.npos[q] + self._Uprev[q]) - torch.tensor(PLf[:3], device=dev)) @ torch.tensor(PLf[3:], device=dev)) if HASPL else None),
+                                          v_prev_vec=[float(x_) for x_ in self._Vprev[q].tolist()]) for q in nb[:20].tolist()],
+                              floor_h_all_q=([float(torch.quantile(((self.npos[:M] + self._Uprev) - torch.tensor(PLf[:3], device=dev)) @ torch.tensor(PLf[3:], device=dev), q_)) for q_ in (0.0, 0.01, 0.5)] if HASPL else None),
+                              n_contact_nodes=int((self.acc[:M] > 0).sum()) if VFL else None,
                               inc_tets=dict(n=int(incT.sum()), detA_prev=[float(q) for q in torch.det((torch.eye(3, device=dev) + torch.einsum("tic,tib->tcb", self._Uprev[tt[incT]], G[incT])).double()).tolist()[:20]],
                                             cnt=[int(q) for q in torch.bincount(self.pinv[:Np], minlength=T)[:T][incT].tolist()[:20]]))
         if z["first"] is not None and (j - z["first"]["j"] >= a.akpl_k or j == self.Ncur - 1):
