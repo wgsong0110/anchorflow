@@ -223,6 +223,7 @@ ap.add_argument("--ai_stat_frames", default="", help="--ai_stat 에 더해 이 �
 ap.add_argument("--ak_en", type=int, default=0, help="절 AK 진단 (측정 밖): K 프레임마다 (와 프레임 1) 에너지 수지 -- 전달 (P2G/G2P) 운동 에너지 손실, 서브스텝 동안 노드 운동+셀 탄성+중력 에너지 변화, "
                 "입자 탄성 Σ V_p ψ(F_p) 우리 (쓰는 F / 그림자 호환 F_c = Π A_T, 위치 사상의 실제 야코비안) / 정답 (같은 V_p·ψ), 압축 분위 -> fem.jsonl ak")
 ap.add_argument("--ak_pq", action="store_true", help="절 AK: 셀 탄성을 입자 적분점으로 -- E_T = Σ_p w_p ψ(A_T F_p), w_p = V_p V_T'/V_T (셀 평균 F̄ 의 ψ 대신; 재평균 에너지 손실 없음, lib/anchorflow/fem_ak_cuda.py)")
+ap.add_argument("--ak_pq2", action="store_true", help="--ak_pq 2 단 판 (사면체 A_T 버퍼 -> 입자 스레드; 같은 식)")
 ap.add_argument("--ak_pqt", action="store_true", help="--ak_pq 를 사면체 스레드 판으로 (느림, 대조용; 기본은 입자 스레드 + 워프 구간 합)")
 ap.add_argument("--ak_t0", type=int, default=0, help="절 AK 진단: 정답 프레임 k 의 상태 (x, v, F) 에서 시작 (충격 뒤 회복만 따로 보기; 오차·몸 높이는 정답 k+1 프레임부터, 몸 기준은 원래 0 프레임)")
 a = ap.parse_args()
@@ -783,6 +784,7 @@ class Opt:
             self.tcell = torch.zeros(self.Tcap, dtype=torch.long, device=dev)
             if AKPQ:
                 self.akoffs = torch.zeros(self.Tcap + 1, dtype=torch.int32, device=dev)
+                self.akA = torch.zeros(self.Tcap, 9, device=dev)
             if SPM != "none":                                                       # 절 AD: 묶음 (루트·A 합 두 벌·F̄·V·구성 수), 섞은 F̄, 응력 가중 부피
                 self.grp = torch.full((self.Tcap,), -1, dtype=torch.int32, device=dev)
                 self.AG = [torch.zeros(self.Tcap, 9, device=dev), torch.zeros(self.Tcap, 9, device=dev)]
@@ -1281,7 +1283,11 @@ class Opt:
                                    EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
         if AKPQ:                                                                    # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
-            if not a.ak_pqt:
+            if a.ak_pq2:
+                AKC.launch("ak_tetA", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akA)), b=128)
+                AKC.launch("ak_pq_force_p2", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.gl), EX.P(self.akA),
+                                                  EX.P(self.akF), EX.P(self.akw), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)
+            elif not a.ak_pqt:
                 AKC.launch("ak_pq_force_p", Np, (np.int32(Np), EX.P(self.akord), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl),
                                                  EX.P(self.akF), EX.P(self.akw), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)
             else:

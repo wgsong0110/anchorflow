@@ -76,6 +76,41 @@ __global__ void ak_pq_force_p(int N, const int* ord, const int* tt, const long l
     for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
         for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += Gm[c*3+q]*G[i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
 }
+// 2 단 판 (같은 식): (1) 사면체 스레드가 A_T 를 버퍼에 (점유 목록 위), (2) 입자 스레드가 A 를 읽어 P(A F_p) F_pᵀ -> 워프 구간 합 -> 머리 레인이 노드 원자 합
+__global__ void ak_tetA(const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, float* AT) {
+    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i0 >= tlc[0]) return;
+    int t = tl[i0];
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+    for (int k=0;k<9;k++) AT[(long long)t*9+k] = A[k];
+}
+__global__ void __launch_bounds__(128) ak_pq_force_p2(int N, const int* tt, const long long* tets, const float* gl, const float* AT,
+                               const float* Fp, const float* wp, float mu, float lam, float* f) {
+    int k = blockIdx.x*blockDim.x + threadIdx.x;
+    int lane = threadIdx.x & 31;
+    bool on = k < N;
+    int t = on ? tt[k] : -1 - lane;
+    float Gm[9] = {0,0,0,0,0,0,0,0,0};
+    if (on) {
+        float A[9], F[9];
+        for (int j=0;j<9;j++) { A[j] = AT[(long long)t*9+j]; F[j] = Fp[(long long)k*9+j]; }
+        float X[9]; mm3(A, F, X);
+        float P[9]; ak_fcr_P(X, mu, lam, P);
+        float w = wp[k];
+        for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s; }
+    }
+    for (int off=1; off<32; off<<=1) {
+        int to = __shfl_down_sync(0xffffffffu, t, off);
+        bool same = (lane + off < 32) && (to == t);
+        for (int j=0;j<9;j++) { float o = __shfl_down_sync(0xffffffffu, Gm[j], off); if (same) Gm[j] += o; }
+    }
+    int tp = __shfl_up_sync(0xffffffffu, t, 1);
+    if (!on || (lane > 0 && tp == t)) return;
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += Gm[c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
+}
 }
 '''
 _MOD = [None]
