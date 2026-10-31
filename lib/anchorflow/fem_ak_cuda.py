@@ -5,6 +5,7 @@
 import cupy as cp
 import numpy as np  # noqa: F401
 
+from . import fem_ah_cuda as AHC
 from . import fem_c_cuda as CCU
 from . import fem_ex_cuda as EX
 from . import fem_rt_cuda as RTC
@@ -195,6 +196,65 @@ __global__ void __launch_bounds__(128) ak_pq_force_p4(int N, const int* tt, cons
     for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
         for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += Gm[c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
 }
+__device__ __forceinline__ void ak_pq_body4(int k, int N, const int* tt, const long long* tets, const float* U, const float* gl, const float* FT,
+                               const __half* dF, const float* wp, float mu, float lam, float* f) {
+    int lane = threadIdx.x & 31;
+    bool on = k < N;
+    int t = on ? tt[k] : -1 - lane;
+    int tp = __shfl_up_sync(0xffffffffu, t, 1);
+    bool head = (lane == 0) || (tp != t);
+    unsigned hm = __ballot_sync(0xffffffffu, head);
+    int hl = 31 - __clz(hm & (0xffffffffu >> (31 - lane)));
+    float A[9] = {1,0,0, 0,1,0, 0,0,1}, Fb[9] = {1,0,0, 0,1,0, 0,0,1};
+    if (head && on) {
+        for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+            for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+        for (int j=0;j<9;j++) Fb[j] = FT[(long long)t*9+j];
+    }
+    for (int j=0;j<9;j++) { A[j] = __shfl_sync(0xffffffffu, A[j], hl); Fb[j] = __shfl_sync(0xffffffffu, Fb[j], hl); }
+    float Gm[9] = {0,0,0,0,0,0,0,0,0};
+    if (on) {
+        float F[9]; for (int j=0;j<9;j++) F[j] = Fb[j] + __half2float(dF[(long long)k*9+j]);
+        float X[9]; mm3(A, F, X);
+        float P[9]; ak_fcr_P(X, mu, lam, P);
+        float w = wp[k];
+        for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s; }
+    }
+    for (int off=1; off<32; off<<=1) {
+        int to = __shfl_down_sync(0xffffffffu, t, off);
+        bool same = (lane + off < 32) && (to == t);
+        for (int j=0;j<9;j++) { float o = __shfl_down_sync(0xffffffffu, Gm[j], off); if (same) Gm[j] += o; }
+    }
+    if (!on || !head) return;
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += Gm[c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
+}
+// 융합 판: 블록 [0, nbQ) = 4 판 입자 적분점 힘, [nbQ, nbQ + nbP) = 절 AH ah_fc 의 접촉 몫 (같은 식) -- 커널 하나 줄임
+__global__ void __launch_bounds__(128) ak_fc_pq(int nbQ, int N, const int* tt, const long long* tets, const float* U, const float* gl, const float* FT,
+                               const __half* dF, const float* wp, float mu, float lam, float* f,
+                               const int* szp, const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb, const float* m, int tetmass,
+                               float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon, int gtk, float band, float pn, float dxg, float* accN, float npd) {
+    if ((int)blockIdx.x < nbQ) { ak_pq_body4(blockIdx.x*blockDim.x + threadIdx.x, N, tt, tets, U, gl, FT, dF, wp, mu, lam, f); return; }
+    int q = (blockIdx.x - nbQ)*blockDim.x + threadIdx.x;
+    if (q >= szp[2]) return;
+    if (s0c[q] > __uint_as_float(*dn) + 1e-5f + band) return;
+    long long p = nidx[q];
+    float u[3] = {0,0,0};
+    long long nd[4]; float lm[4];
+    for (int i=0;i<4;i++){ nd[i]=rows[p*4+i]; lm[i]=lamb[p*4+i]; for (int a=0;a<3;a++) u[a] += lm[i]*U[nd[i]*3+a]; }
+    float s = (x[p*3]+u[0]-p0)*n0 + (x[p*3+1]+u[1]-p1)*n1 + (x[p*3+2]+u[2]-p2)*n2;
+    if (ncon) {
+        unsigned am = __activemask();
+        unsigned bb = __ballot_sync(am, s < 0.f);
+        if ((threadIdx.x & 31) == __ffs(am) - 1 && bb) atomicAdd(ncon, __popc(bb));
+    }
+    float w = 1.f;
+    if (gtk) { if (!(s < band)) return; w = ah_wstk(s, pn, dxg); if (!(w > 0.f) && !(s < 0.f)) return; }
+    else if (!(s < 0.f)) return;
+    float mp = m[p];
+    bool real = s < -npd;
+    for (int i=0;i<4;i++) { if (w > 0.f) atomicAdd(&acc[nd[i]], (tetmass ? 0.25f : lm[i])*mp*w); if (real && accN) atomicAdd(&accN[nd[i]], 1.f); }
+}
 // 5 판 (혼합 적분점): 4 판과 같은 식을 '거친 사면체' (입자 2 개 이상 + 셀 안 max‖F_p − F̄‖ > ε) 의 입자 목록만 (개수는 장치에서), 나머지 사면체는 한 점 (F̄, Σw) 사면체 힘
 __global__ void __launch_bounds__(128) ak_pq_force_p5(const int* Nd, const int* tt, const long long* tets, const float* U, const float* gl, const float* FT,
                                const __half* dF, const float* wp, float mu, float lam, float* f) {
@@ -301,13 +361,13 @@ _MOD = [None]
 def set_pit(n):
     """극분해 반복 상한 (장치 전역 AKPIT)."""
     if _MOD[0] is None:
-        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     cp.ndarray((1,), cp.int32, _MOD[0].get_global("AKPIT"))[:] = int(n)
 
 
 def launch(name, n, args, b=128, grid=None):
     if _MOD[0] is None:
-        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     with RTC._Stream():
         g = grid if grid is not None else (int(n) + b - 1) // b
         _MOD[0].get_function(name)((g,), (b,), args)

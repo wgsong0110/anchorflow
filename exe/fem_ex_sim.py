@@ -231,6 +231,7 @@ ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 
 ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적분점 (정의 변경): 셀 안 max‖F_p − F̄_T‖_F ≤ ε 이거나 입자 1 개인 사면체는 한 점 적분 (F̄, V = Σ w) -- 음수 = 끔 (모두 입자 적분점)")
 ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
+ap.add_argument("--ak_fuse", action="store_true", help="--ak_pq4 + 절 AH 바닥: 입자 적분점 힘과 바닥 접촉을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_pq4", action="store_true", help="--ak_pq 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차로 반정밀도 저장)")
 ap.add_argument("--ak_pq3", action="store_true", help="--ak_pq 3 판 (구간 머리 레인만 A_T 계산 -> 셔플; 같은 식)")
 ap.add_argument("--ak_pq2", action="store_true", help="--ak_pq 2 단 판 (사면체 A_T 버퍼 -> 입자 스레드; 같은 식)")
@@ -486,6 +487,8 @@ if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfus
                                   and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (AI2 and (PLAST or VISC or PBC)) and (VFL or not HASPL)):
     raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀 없음) 만; --ai_stress 는 FCR 탄성만 (소성 씬 제외)")
 AKPQ = bool(a.ak_pq)
+if a.ak_fuse and not (AKPQ and a.ak_pq4 and a.ak_eps < 0 and a.floor == "vel" and not (a.vfl_agg or a.vfl_bf or a.vfl_tacc) and not PLAST):
+    raise SystemExit("--ak_fuse 는 --ak_pq --ak_pq4 + 절 AH 바닥 (--floor vel) 만")
 if a.ak_prep and not (AKPQ and a.ak_pq4 and a.ak_eps < 0):
     raise SystemExit("--ak_prep 는 --ak_pq --ak_pq4 (혼합 없음) 만")
 if AKPQ and a.ak_pit > 0:
@@ -1335,6 +1338,14 @@ class Opt:
                                          EX.P(self.accT), EX.P(self.rT), EX.P(self.clT)), b=128, grid=nbT + nbP)
             AHC.launch("ah_tdist", 0, (EX.P(self.clT), EX.P(self.tets), EX.P(self.accT), EX.P(self.rT), EX.P(self.acc), EX.P(self.accN)), b=128, grid=84)
             AHC.launch("ah_clr1", 0, (EX.P(self.clT),), b=32, grid=1)
+        elif AHF and a.ak_fuse:                                                     # 절 AK: 입자 적분점 힘 + 접촉 한 커널
+            nbQ = (Np + 127) // 128
+            AKC.launch("ak_fc_pq", 0, (np.int32(nbQ), np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
+                                       EX.P(self.akdF), EX.P(self.akw), np.float32(mu), np.float32(lam), EX.P(self.f),
+                                       EX.P(self.sz), EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
+                                       np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon),
+                                       np.int32(AH_GTK), np.float32(AH_BAND), np.float32(AH_PN), np.float32(AH_DXG), EX.P(self.accN if AH_ACCN else None), np.float32(a.vfl_npd)),
+                       b=128, grid=nbQ + nbP)
         elif AHF:                                                                   # 절 AH: 같은 힘 + 바닥 접촉 가중 (gtk) / 실제 접촉 표시
             AHC.launch("ah_fc_agg" if a.vfl_agg else "ah_fc", 0, (np.int32(nbT), EX.P(self.sz), EX.P(self.tl), EX.P((self.aktlc if a.ak_eps >= 0 else self.akz) if AKPQ else self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                     EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
@@ -1353,7 +1364,7 @@ class Opt:
                                    EX.P(self.VTs), np.float32(mu), np.float32(lam), EX.P(self.f), EX.P(self.rst), np.int32(1 if a.fpolar else 0), EX.P(self.eF if a.sr_ef else None),
                                    EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf if VFL else None), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon)), b=128, grid=nbT + nbP)
-        if AKPQ:                                                                    # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
+        if AKPQ and not a.ak_fuse:                                                  # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
             if a.ak_eps >= 0:
                 AKC.launch("ak_pq_force_p5", Np, (EX.P(self.akN), EX.P(self.aktt2), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT),
                                                   EX.P(self.akdF2), EX.P(self.akw2), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)

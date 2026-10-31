@@ -55,6 +55,7 @@ VAR = {
     "pqf0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_pq4 --ak_fstep --ah_fast",
     "pqf1": AI.replace("--ai_p2g rs --ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_pq4 --ak_fstep --ah_fast",                                                                   # A1 끔 (입자 적분점에서는 F̄ 가 δ 기준뿐)
     "pqf2": AI.replace("--ai_p2g rs --ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_pq4 --ak_fstep --ah_fast --ak_prep",
+    "pqf3": AI.replace("--ai_p2g rs --ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_pq4 --ak_fstep --ah_fast --ak_prep --ak_fuse",
     "pqn": AI.replace("--ai_stress ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq",
 }
 
