@@ -240,3 +240,34 @@ if "tau_max" in EXTRA:
 if "f_total" in EXTRA:
     qtriple(a.out + "_force", [("f_int", "내부력 |f_int|", "N", True), ("f_floor", "바닥 힘 |f_바닥|", "N", True), ("f_total", "합력 |f_int + m g + f_바닥|", "N", True)],
             "노드에 주어지는 힘")
+
+# ======== 10-31 추가: 노드별 프레임 안 최고 속력 분포 ========
+if "vmax_Q" in Z.files:
+    grp = [(Z["vmax_Q"], "0.55", f"한 번도 안 넘은 점유 노드 {len(Z['vmax_Q']):,} 개"),
+           (Z["vmax_R"], "C1", f"넘었다 돌아온 노드 {len(Z['vmax_R']):,} 개"),
+           (Z["vmax_E"], "C3", f"프레임 끝까지 넘은 노드 {len(Z['vmax_E'])} 개")]
+    allv = np.concatenate([g[0] for g in grp])
+    bins = np.linspace(0, float(allv.max()) * 1.02, 121)
+    fig, ax = plt.subplots(figsize=(12, 6.5))
+    for (v_, c, nm), al in zip(grp, (0.6, 0.6, 0.85)):                       # 겹쳐 그림 (쌓지 않음) -- 무리마다 같은 칸
+        ax.hist(v_, bins=bins, color=c, alpha=al, label=nm, histtype="stepfilled", edgecolor=c, lw=1.0)
+    ax.axvline(vthr, color="k", lw=1.4, ls="--")
+    ax.text(vthr, 0.97, f" 발산 판정 속도 {vthr:.2f} m/s (0.25 EXT / h)", transform=ax.get_xaxis_transform(), va="top", fontsize=10)
+    ax.set_yscale("log"); ax.set_xlim(0, bins[-1])
+    ax.set_xlabel("노드별 최고 속력 (프레임 4 의 서브스텝 480 개 중 |v| 최대, m/s)"); ax.set_ylabel("노드 수 (로그, 무리마다 겹쳐 그림)")
+    ax.set_title(f"수박 발산 프레임 4: 점유 노드 {len(allv):,} 개의 프레임 안 최고 속력 분포")
+    ax.legend(fontsize=9, loc="upper right"); ax.grid(alpha=0.3, which="both")
+    fig.tight_layout(); fig.savefig(os.path.join(os.path.dirname(a.out), "wm_divnode_vmax_hist.png"), dpi=130); plt.close(fig)
+    fig, ax = plt.subplots(figsize=(12, 6.5))
+    xs = np.sort(allv); ax.plot(xs, np.arange(1, len(xs) + 1) / len(xs), color="k", lw=2, label=f"점유 노드 전체 {len(xs):,} 개")
+    for v_, c, nm in grp:
+        xs_ = np.sort(v_); ax.plot(xs_, np.arange(1, len(xs_) + 1) / len(xs_), color=c, lw=1.5, label=nm)
+    fr = float((allv > vthr).mean())
+    ax.axvline(vthr, color="k", lw=1.4, ls="--")
+    ax.text(vthr, 0.05, f" 발산 판정 속도 {vthr:.2f} m/s\n 넘은 노드 비율 {fr * 100:.3f} %", transform=ax.get_xaxis_transform(), fontsize=10)
+    ax.set_xlim(0, bins[-1]); ax.set_ylim(0, 1.01)
+    ax.set_xlabel("노드별 최고 속력 (m/s)"); ax.set_ylabel("누적 비율 (무리마다 따로)")
+    ax.set_title("수박 발산 프레임 4: 노드별 최고 속력 누적 분포")
+    ax.legend(fontsize=9, loc="center right"); ax.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(os.path.join(os.path.dirname(a.out), "wm_divnode_vmax_cdf.png"), dpi=130); plt.close(fig)
+    print("저장 wm_divnode_vmax_{hist,cdf}.png")

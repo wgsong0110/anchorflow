@@ -58,6 +58,8 @@ def ms(X):
 vQm, vQs = ms(V[:, Q])
 fQm, fQs = ms(Fo[:, Q])
 aQm, aQs = ms(Fo[:, Q] / mn[Q])
+vmx = V.max(0).values                                                           # 10-31: 노드별 프레임 안 최고 속력 (서브스텝 N 개 중 |v| 최대)
+vmax_E, vmax_R, vmax_Q = vmx[E].numpy(), vmx[R].numpy(), vmx[Q].numpy()
 EXTRA = [k for k in ("f_floor", "f_total", "f_clamp", "tau_max", "tau_mean") if k in D]   # 10-31 추가 기록 (셀 응력·힘 성분)
 xo = {}
 for k in EXTRA:
@@ -79,7 +81,7 @@ out = dict(N=N, vthr=vthr, h=float(D["h"]), hs=float(D["hs"]), t=int(D["t"]), m_
            vQm=vQm, vQs=vQs, fQm=fQm, fQs=fQs, aQm=aQm, aQs=aQs, mQ_q=dq, nQ=len(Q),
            mQ_hist=np.histogram(np.log10(mn[Q].numpy() / mmed), bins=np.linspace(-3, 1.5, 91)),
            occE=D["occ_node"][E].numpy(), occR=D["occ_node"][R].numpy(), occQ_q=np.quantile(D["occ_node"][Q].numpy(), [0.1, 0.5, 0.9]),
-           zE=D["npos"][E, 2].numpy(), zR=D["npos"][R, 2].numpy(), extra=np.array(EXTRA), **xo)
+           zE=D["npos"][E, 2].numpy(), zR=D["npos"][R, 2].numpy(), extra=np.array(EXTRA), vmax_E=vmax_E, vmax_R=vmax_R, vmax_Q=vmax_Q, **xo)
 np.savez_compressed(a.out, **{k: (np.asarray(v, dtype=object) if k == "mQ_hist" else v) for k, v in out.items()})
 s = dict(N=N, vthr=vthr, M=M, n_live=int(live.sum()), n_E=len(E), n_R=len(R), n_Q=len(Q), first_any=int(ab[ever].min()) if bool(ever.any()) else None,
          first_E=int(ab[E].min()) if len(E) else None, first_mismatch=mism, selE=selE.tolist(), selR=selR.tolist(),
@@ -88,6 +90,7 @@ s = dict(N=N, vthr=vthr, M=M, n_live=int(live.sum()), n_E=len(E), n_R=len(R), n_
          mR_rel_q=np.quantile(mn[R].numpy() / mmed, [0.0, 0.1, 0.5, 0.9, 1.0]).tolist() if len(R) else None,
          mQ_rel_q=(dq / mmed).tolist(), contact_E_any=int(C[:, E].any(0).sum()), contact_R_any=int(C[:, R].any(0).sum()),
          force_nan=int(torch.isnan(Fo[:, live]).sum()), extra=EXTRA,
+         vmax_q={nm: np.quantile(x, [0.0, 0.5, 0.9, 0.99, 1.0]).tolist() for nm, x in (("E", vmax_E), ("R", vmax_R), ("Q", vmax_Q)) if len(x)},
          **{f"{k}_at_div_E_med": float(np.median([xo[k + "_E"][q, int(ab[E][q])] for q in range(len(E))])) for k in EXTRA if len(E)})
 print(json.dumps(s, ensure_ascii=False))
 json.dump(s, open(a.out.replace(".npz", ".json"), "w"), ensure_ascii=False, indent=1)
