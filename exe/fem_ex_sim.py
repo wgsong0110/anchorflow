@@ -89,6 +89,9 @@ ap.add_argument("--divtrack", action="store_true",
                      "노드가 처음 비유한·|v| > 발산 판정 속도 (0.25 EXT / h) 가 된 서브스텝, |v| > 5 x 90 % 분위 (절 U 폭주 규칙) 마지막 연속 구간 시작 -> "
                      "사건이 있는 프레임마다 <out>/divtrack/fNNN.pt (사면체·노드 위치·입자 -> 사면체 pinv·프레임 시작 입자 x 포함), 서브스텝 요약은 divtrack.jsonl. "
                      "--lagdump 와 달리 서브스텝별 전체 배열을 두지 않아 큰 씬 (수박 사면체 436 만) 에도 쓴다")
+ap.add_argument("--divhist", type=int, default=0,
+                help="--divtrack 덤프 (사용자 10-31 '발산 노드 서브스텝별 속도 그래프', 계산 불변): 이 프레임 (1 부터, 0 = 끔) 의 서브스텝마다 전 노드 |v| (걸음 뒤), "
+                     "|f| (걸음 직전 내부력, 융합 경로 포함), 바닥 접촉 (acc > 0) 과 노드 질량 -> <out>/divhist/fNNN.pt")
 ap.add_argument("--fhist", action="store_true",
                 help="--lagdiag 덤프 (사용자 10-29 '응력이 왜 프레임 시작부터 큰가', 계산 불변): 프레임마다 시작 입자 x·v·F (f32)·입자 -> 사면체 pinv, "
                      "사면체·노드 위치·∇λ (gl)·셀 F̄_T·V_T, 프레임 끝 노드 U·v -> <out>/fhist/fNNN.pt (exe/fem_fh_stats.py)")
@@ -391,6 +394,8 @@ if REP and not (a.opt and a.mode == "lag" and a.interp == "bary"):
     raise SystemExit("--rep 은 --opt --mode lag 만")
 if a.fhist and not (a.lagdiag and a.opt and a.mode == "lag"):
     raise SystemExit("--fhist 은 --opt --mode lag --lagdiag 와 함께")
+if a.divhist and not a.divtrack:
+    raise SystemExit("--divhist 는 --divtrack 과 함께")
 if a.divtrack and not (a.lagdiag and a.opt and a.mode == "lag"):
     raise SystemExit("--divtrack 은 --opt --mode lag --lagdiag 와 함께")
 if a.lagdump and not (a.lagdiag and a.opt and a.mode == "lag"):
@@ -1388,6 +1393,8 @@ class Opt:
             else:
               AKC.launch("ak_pq_force", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akoffs), EX.P(self.akord),
                                                   EX.P(self.akF), EX.P(self.akw), np.float32(mu), np.float32(lam), EX.P(self.f)), b=64)
+        if self._fhook is not None:                                                 # 진단 읽기만 (--lagdump / --divhist, 노드 걸음이 f 를 비우기 전)
+            self._fhook()
         if a.cfuse_mode == 2:
           if AHF and a.vfl_bf:
             AHC.launch("ah_node_step_bf", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
@@ -1821,6 +1828,18 @@ class Opt:
             dtRS_ = torch.full((M,), -1, dtype=torch.int32, device=dev)             # |v| > 5 x q90 연속 구간 시작 (구간이 끊기면 -1)
             dtRF_ = torch.full((M,), -1, dtype=torch.int32, device=dev)             # |v| > 5 x q90 처음
             dser_ = []
+            DH_ = a.divhist == i + 1                                                # --divhist: 이 프레임만 서브스텝별 전 노드 기록 (읽기만)
+            if DH_:
+                dhV_ = torch.empty(a.N, M, device=dev)                              # 서브스텝 j 걸음 뒤 |v|
+                dhF_ = torch.full((a.N, M), float("nan"), device=dev)               # 서브스텝 j 걸음 직전 내부력 |f|
+                dhC_ = torch.zeros(a.N, M, dtype=torch.uint8, device=dev)           # 서브스텝 j 바닥 접촉 (acc > 0)
+                self._fj = 0
+
+                def _dh_hook():
+                    dhF_[self._fj].copy_(self.f[:M].norm(dim=-1))
+                    if VFL:
+                        dhC_[self._fj].copy_((self.acc[:M] > 0).to(torch.uint8))
+                self._fhook = _dh_hook
 
             def dt_update(j):
                 Q_ = torch.eye(3, device=dev) + torch.einsum("tia,tib->tab", self.Uc[tets_.reshape(-1)].view(T, 4, 3), gl_)
@@ -1838,6 +1857,8 @@ class Opt:
                 dtRF_.masked_fill_(rl_ & (dtRF_ < 0), j)
                 dtRS_.masked_fill_(rl_ & (dtRS_ < 0), j)
                 dtRS_.masked_fill_(~rl_, -1)
+                if DH_:
+                    dhV_[j].copy_(sp_)
                 dser_.append([j, int(bad_.sum()), float(sp_[fin_s].max()) if bool(fin_s.any()) else float("nan"), float(q90_), int(nf_.sum()), int(ab_.sum()), int(rl_.sum())])
         LSTEP = VFL or RNEW                                                         # 절 X: 바닥 없는 절 R 경로 (ficus --rstat) 도 측정 판과 같은 _step_lag 로 (덤프 f 포함)
         if LSTEP:                                                                   # 절 O 판: 같은 서브스텝 커널 (_step_lag) -- f 는 걸음 안에서 비워져 |f/m| 표본은 0
@@ -1849,8 +1870,9 @@ class Opt:
                 PLC.launch("ag_cinit", self.Tcap, (EX.P(self.sz), EX.P(self.FT), EX.P(self.ysT), EX.P(self.ljT), EX.P(self.FeC), EX.P(self.XpC),
                                                    EX.P(self.ysC), EX.P(self.ljC)), b=256)
         for j in range(a.N):
-            if LD:
+            if LD or (DT_ and DH_):
                 self._fj = j
+            if LD:
                 dAl_[j] = contact_alpha()                                           # 이 서브스텝 접촉 판정 (서브스텝 시작 U 기준) 의 α
             if LSTEP:
                 self._j = j                                                         # 측정 판 (_substeps) 과 같게
@@ -1924,6 +1946,15 @@ class Opt:
                                 tets=cpu(tets_).int(), npos=cpu(self.npos[:M]), mn=cpu(mn), VT=cpu(VT_), occ=cpu(occT_),
                                 Uend=cpu(self.Uc[:M]), Vend=cpu(self.vn[:M]), pinv=cpu(self.pinv[:Np]).int(), xp=cpu(self._xp).float(),
                                 Fp=cpu(self._Fp).float().reshape(Np, 9), mp=cpu(m)), os.path.join(od_, f"f{i:03d}.pt"))
+            if DH_:
+                od_ = os.path.join(a.out, "divhist")
+                os.makedirs(od_, exist_ok=True)
+                cpu = lambda q: q.detach().cpu()
+                torch.save(dict(t=i, N=a.N, h=h, hs=hs, vthr=vthr_, mn=cpu(mn), live=cpu(live), occ_node=cpu(occn), npos=cpu(self.npos[:M]),
+                                abs=cpu(dtAB_), speed=cpu(dhV_), force=cpu(dhF_), contact=cpu(dhC_), floor=bool(VFL),
+                                note="speed[j] = 서브스텝 j (0 부터) 걸음 뒤 |v|, force[j] = 걸음 직전 내부력 |f|, contact[j] = 그 서브스텝 바닥 접촉, abs = 처음 |v| > vthr 서브스텝 (0 부터)"),
+                           os.path.join(od_, f"f{i:03d}.pt"))
+                print(f"    [발산 기록] t {i + 1}: 서브스텝 {a.N} x 노드 {M} |v|·|f|·접촉 -> divhist/f{i:03d}.pt", flush=True)
             print(f"    [발산 추적] t {i + 1}: 뒤집힌 점유 사면체 {ev_['n_flip']} (처음 서브스텝 {ev_['first_flip']}), 비유한 노드 {ev_['n_nf']} ({ev_['first_nf']}), "
                   f"|v|>{vthr_:.3g} 노드 {ev_['n_abs']} ({ev_['first_abs']}), 5xq90 노드 끝까지 {ev_['n_run_end']} / 한 번이라도 {ev_['n_run_any']}", flush=True)
         with open(os.path.join(a.out, "lagdiag.jsonl"), "a") as fh:
