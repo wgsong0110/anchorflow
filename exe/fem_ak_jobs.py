@@ -39,6 +39,7 @@ VAR = {
     "pq75b0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp_vcap 0.5", "--sp_vcap 0.75") + " --ak_pq",
     "pq1b0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp_vcap 0.5", "--sp_vcap 1.0") + " --ak_pq",
     "pqnb0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq",
+    "pqnb0a": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq --affine",
     "pqn": AI.replace("--ai_stress ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq",
 }
 
