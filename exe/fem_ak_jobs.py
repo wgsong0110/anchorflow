@@ -62,6 +62,9 @@ VAR = {
     "pqf3m": "PQF3 --ah_mlow 0.1",
     "p2": AI.replace("--ai_p2g rs --ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_fstep --ah_fast --ak_p2",   # 절 AK.13 2 차 사면체
     "pqfl5": "PQF3 --ak_flip 0.5",
+    "cm05": "PQF3 --sp_vcap 0.5 --ak_capmu",                                       # 절 AK.16: 상한 θ 를 전단 몫에만
+    "cm03": "PQF3 --sp_vcap 0.3 --ak_capmu",
+    "cm075": "PQF3 --sp_vcap 0.75 --ak_capmu",
     "pqfl9": "PQF3 --ak_flip 0.9",
     "pqfl1": "PQF3 --ak_flip 1.0",
     "pqs05": "PQF3 --fupd bar --fupd_b 0.05",                                       # 절 AK.10: 셀 아래 몫 이완 F <- A_T [F̄ + (1-β)(F - F̄)] (셀 평균은 그대로)

@@ -235,6 +235,7 @@ ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 
 ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적분점 (정의 변경): 셀 안 max‖F_p − F̄_T‖_F ≤ ε 이거나 입자 1 개인 사면체는 한 점 적분 (F̄, V = Σ w) -- 음수 = 끔 (모두 입자 적분점)")
 ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
+ap.add_argument("--ak_capmu", action="store_true", help="절 AK.16 (정의 변경): 탄성 부피 상한 (--sp vcap θ) 을 전단 (μ) 몫에만 -- λ 몫은 입자 부피 그대로 (--ak_pq4 --ak_prep 경로)")
 ap.add_argument("--ak_lamfac", type=float, default=1.0, help="절 AK.16 진단 전용: λ (부피 강성) 배율 -- 재질을 바꾸는 것이라 판정용으로만")
 ap.add_argument("--ak_mufac", type=float, default=1.0, help="절 AK.16 진단 전용: μ (전단 강성) 배율")
 ap.add_argument("--ak_p2", action="store_true", help="절 AK.13 (구조 변경, 사용자 10-31 허락): 2 차 사면체 10 노드 (같은 Kuhn 격자 + 변 중점 노드), HRZ 집중 질량 (꼭짓점 m_T/36, 변 4 m_T/27), 입자 적분점 셀 탄성, 2 차 G2P")
@@ -538,6 +539,8 @@ if a.ak_fuse and a.floor != "vel":                                              
     a.ak_fuse = False
 if a.ak_fuse and not (AKPQ and a.ak_pq4 and a.ak_eps < 0 and a.floor == "vel" and not (a.vfl_agg or a.vfl_bf or a.vfl_tacc) and not PLAST):
     raise SystemExit("--ak_fuse 는 --ak_pq --ak_pq4 + 절 AH 바닥 (--floor vel) 만")
+if a.ak_capmu and not (a.ak_prep and a.ak_pq4 and SPM == "vcap"):
+    raise SystemExit("--ak_capmu 는 --ak_pq --ak_pq4 --ak_prep --sp vcap 만")
 if a.ak_prep and not (AKPQ and a.ak_pq4 and a.ak_eps < 0):
     raise SystemExit("--ak_prep 는 --ak_pq --ak_pq4 (혼합 없음) 만")
 if AKPQ and a.ak_pit > 0:
@@ -846,6 +849,9 @@ class Opt:
             self.aktt = torch.zeros(Np, dtype=torch.int32, device=dev)
             self.akdF = torch.zeros(Np, 9, device=dev, dtype=torch.float16)
             self.akcnt = self.akcur = self.akvs = None
+            if a.ak_capmu:
+                self.aklr = torch.ones(Np, device=dev)
+                AKC.set_lr(self.aklr)
             self.akl = torch.zeros(Np, 4, device=dev)                                    # 절 AK.13: 정렬 순서 barycentric
             if a.ak_eps >= 0:                                                         # 혼합: 거친 사면체 입자 목록 (정렬 순서), 개수, 한 점 사면체 목록
                 self.akN = torch.zeros(1, dtype=torch.int32, device=dev)

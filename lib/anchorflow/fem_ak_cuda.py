@@ -14,6 +14,7 @@ _AK = r'''
 #include <cuda_fp16.h>
 extern "C" {
 // 빠른 FCR P (입자 스레드 판): Q = 빠른 극분해 (절 C c_polar_fast), J = |det X| (sp_fcr_P 의 Π max(σ, 0.01) 와 σ ≥ 0.01 에서 같다)
+__device__ float* AKLR;                                                             // 절 AK.16: 입자별 λ 몫 배율 (정렬 순서; null = 1) -- 탄성 부피 상한을 전단 몫에만 쓸 때 λ 몫을 입자 부피 그대로로 되돌림
 __device__ int AKPIT;                                                                // 극분해 반복 상한 (0 = c_polar_fast 그대로 -- 수렴 1e-7 까지 최대 10 회)
 __device__ __forceinline__ void ak_polar_n(const float* F, float* Q, int nit) {
     for (int k=0;k<9;k++) Q[k]=F[k];
@@ -216,7 +217,7 @@ __device__ __forceinline__ void ak_pq_body4(int k, int N, const int* tt, const l
     if (on) {
         float F[9]; for (int j=0;j<9;j++) F[j] = Fb[j] + __half2float(dF[(long long)k*9+j]);
         float X[9]; mm3(A, F, X);
-        float P[9]; ak_fcr_P(X, mu, lam, P);
+        float P[9]; ak_fcr_P(X, mu, lam * (AKLR ? AKLR[k] : 1.f), P);
         float w = wp[k];
         for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s; }
     }
@@ -351,6 +352,7 @@ __global__ void ak_prep_scatter(int N, const long long* pinv, const float* vol, 
     tt[k] = (int)t;
     float v = vs[t];
     w[k] = vol[p] * VT[t] / (v > 1e-30f ? v : 1e-30f);
+    if (AKLR) AKLR[k] = (VT[t] > 1e-30f) ? v / VT[t] : 1.f;
     for (int j=0;j<9;j++) dF[(long long)k*9+j] = __float2half(Fp[(long long)p*9+j] - FT[t*9+j]);
 }
 // ======== 절 AK.13: 2 차 사면체 (10 노드: 꼭짓점 4 + 변 중점 6, 같은 Kuhn 격자) ========
@@ -495,6 +497,13 @@ def set_pit(n):
     if _MOD[0] is None:
         _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     cp.ndarray((1,), cp.int32, _MOD[0].get_global("AKPIT"))[:] = int(n)
+
+
+def set_lr(t):
+    """AKLR 장치 포인터 (torch float32 [Np] 또는 None)."""
+    if _MOD[0] is None:
+        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+    cp.ndarray((1,), cp.uint64, _MOD[0].get_global("AKLR"))[:] = 0 if t is None else t.data_ptr()
 
 
 def launch(name, n, args, b=128, grid=None):
