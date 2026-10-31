@@ -254,6 +254,8 @@ ap.add_argument("--akg_hg", type=float, default=0.0, help="--akg_k: 묶음 안 �
 ap.add_argument("--akg_empty", action="store_true", help="절 AG.18 정의 변경 (사용자 10-31 묶음 허락 범위): --akg_k 칸 묶음에 입자 없는 사면체까지 넣는다 -- 빈 사면체가 있는 칸도 묶음, "
                      "Ā = 칸 사면체 사상의 고른 평균 (가중 W_t = V_g / 칸 사면체 수), 모래시계 억제도 같은 가중으로 빈 사면체에 (빈 사면체 영 에너지 기구 막기)")
 ap.add_argument("--akpl_el", action="store_true", help="절 AG.18 대조: 탄성 입자 적분점 힘을 akpl_force (mat 0) 경로로 (묶음 판과 같은 커널, 묶음 없이)")
+ap.add_argument("--akg_m0fix", action="store_true", help="절 AG.18 진단: 질량 0 노드의 국소 CFL 관성 질량을 0 으로 (예전처럼 속도 0 고정)")
+ap.add_argument("--akg_nocpl", action="store_true", help="절 AG.18 진단: 빈 사면체 묶음 판에서 Ā 결합 강성 상계를 국소 CFL 질량에서 뺀다")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
@@ -2827,7 +2829,7 @@ class Opt:
                 gn_ = self.gl[:T_][ing_].view(-1, 4, 3).norm(dim=-1)
                 kt_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2 * 2.0 * a.akg_hg * mu) * self.akg_W[:T_][ing_][:, None] * gn_ * gn_.sum(1, keepdim=True)
                 self.mcfl.index_add_(0, self.tets[:T_][ing_].reshape(-1), kt_.reshape(-1))
-            if AKG and a.akg_empty:                                                 # 절 AG.18: 묶음 사상 Ā 를 통한 결합 강성의 Gershgorin 상계 (칸 안 모든 노드가 묶인다)
+            if AKG and a.akg_empty and not a.akg_nocpl:                             # 절 AG.18: 묶음 사상 Ā 를 통한 결합 강성의 Gershgorin 상계 (칸 안 모든 노드가 묶인다)
                 T_ = self.T
                 ing_ = self.akg_tg[:T_] >= 0
                 g_ = self.akg_tg[:T_][ing_].long()
@@ -2837,6 +2839,8 @@ class Opt:
                 Sg = torch.zeros(self.Pcap, device=dev).index_add_(0, g_, wr_ * gn_.sum(1))   # Σ_t (W_t/V_g) Σ_j |∇λ_j|
                 kg_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2 * (lam + 2.0 * mu)) * (VG_ * wr_ * Sg[g_])[:, None] * gn_
                 self.mcfl.index_add_(0, self.tets[:T_][ing_].reshape(-1), kg_.reshape(-1))
+            if a.akg_m0fix:
+                self.mcfl[:self.M][self.mn[:self.M] <= 0] = 0.0
         if a.ah_mlow > 0 and not hasattr(self, "_mfl"):                          # 절 AH.18: 첫 프레임 (데우기 프레임, 측정 밖) 에 한 번
             mn_ = self.mn[:self.M]
             self._mfl = float(a.ah_mlow * mn_[mn_ > 0].median())
