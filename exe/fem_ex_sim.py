@@ -147,6 +147,8 @@ ap.add_argument("--vfl_band", type=float, default=0.5,
                 help="절 AH.12 (--vfl_w gtk): 띠 폭 (dx_g 배수; 정답 sticky 가중이 0 이 되는 0.5 가 기본, 작으면 그 위 입자의 가중을 0 으로 자름)")
 ap.add_argument("--ah_fast", action="store_true",
                 help="절 AH.14 결과 불변 가속: --sp vcap 의 프레임 처리 (탄성 부피 상한) 를 커널 하나로, 희소 통계는 측정 뒤에 같은 식으로")
+ap.add_argument("--ah_rn", action="store_true",
+                help="절 AH.18 진단 (측정 밖): 프레임 끝 폭주 노드 (|v_n| > 5 x 90 % 분위) 의 높이·질량·이웃 사면체 (입자 수·점유율·A F̄ 특이값) 와 전체 분포, 앞 프레임과 같은 격자점인지 -> fem.jsonl rnd")
 ap.add_argument("--rbdiag", action="store_true", help="절 AH 진단 (측정 밖): 프레임마다 강체 지표 (질량 중심·속도, 운동 에너지, 질량 중심 각운동량, Kabsch 회전, 최저 높이) 우리 / 정답 -> fem.jsonl rb")
 ap.add_argument("--vp_h5", default="", help="절 AE: 입자 부피·질량을 정답 0 프레임 h5 (float32 위치) 로 정답 생성기와 같은 식으로 (.pt 위치는 float16 반올림이라 칸 판정이 갈림)")
 ap.add_argument("--sp_k", type=int, default=2, help="--sp: 희소 = 사면체 안 입자 수 ≤ k")
@@ -293,6 +295,51 @@ def _gp(k, _st=[None]):
     if k != "_begin" and _st[0] is not None:
         GPT[k] = GPT.get(k, 0.0) + (t_ - _st[0])
     _st[0] = t_
+
+
+_RN_PREV = [None]
+
+
+def rn_diag(O, vnn, q90):
+    """절 AH.18: 폭주 노드 진단 (측정 밖)."""
+    M, T = O.M, O.T
+    mn = O.mn[:M]
+    rn = (vnn > 5.0 * q90).nonzero().flatten()
+    zp = float(PL[2]) if HASPL else 0.0
+    pos = O.npos[:M] + O.Uc[:M]
+    hgt = pos[:, 2] - zp
+    key = torch.round(O.npos[:M] / a.node_h).long()
+    kk = (key[:, 0] * 100003 + key[:, 1]) * 100019 + key[:, 2]
+    tt = O.tets[:T]
+    VT = O.VTs[:T]
+    occ = VT > 0
+    cnt = torch.zeros(T, device=dev).index_add_(0, O.pinv[:Np], torch.ones(Np, device=dev))
+    G = O.gl[:T].view(T, 4, 3)
+    U4 = O.Uc[:M][tt]                                                               # [T,4,3]
+    A = torch.eye(3, device=dev) + torch.einsum("tic,tib->tcb", U4, G)
+    X = A @ O.FT[:T].view(T, 3, 3)
+    sv = torch.linalg.svdvals(X.double()).float()
+    G3 = G[:, 1:, :].double()
+    Vg = (1.0 / (6.0 * _det3(G3).abs())).float()
+    out = dict(n=int(rn.numel()), vq90=float(q90), mn_med=float(mn[mn > 0].median()))
+    if rn.numel() == 0:
+        _RN_PREV[0] = None
+        return out
+    inc = torch.isin(tt, rn).any(-1) & occ
+    allo = occ
+    q = lambda t_, p_: float(torch.quantile(t_.float(), p_)) if t_.numel() else None
+    out.update(h_med=q(hgt[rn], 0.5), h_frac_low=float((hgt[rn] < 0.03).float().mean()),
+               mn_ratio_med=q(mn[rn] / out["mn_med"], 0.5), mn_ratio_10=q(mn[rn] / out["mn_med"], 0.1),
+               v_med=q(vnn[rn], 0.5),
+               inc_tets=int(inc.sum()), inc_cnt_le2=float((cnt[inc] <= 2).float().mean()), all_cnt_le2=float((cnt[allo] <= 2).float().mean()),
+               inc_occ_med=q(VT[inc] / Vg[inc], 0.5), all_occ_med=q(VT[allo] / Vg[allo], 0.5),
+               inc_smin_10=q(sv[inc][:, 2], 0.1), all_smin_10=q(sv[allo][:, 2], 0.1),
+               inc_smax_90=q(sv[inc][:, 0], 0.9), all_smax_90=q(sv[allo][:, 0], 0.9))
+    ks = set(kk[rn].tolist())
+    if _RN_PREV[0] is not None:
+        out["same_as_prev"] = len(ks & _RN_PREV[0]) / max(len(ks), 1)
+    _RN_PREV[0] = ks
+    return out
 
 
 def rb_stats(xa, va, xb, vb):
@@ -2885,6 +2932,8 @@ for i in range(L):
             vnn = OPT.vn[:OPT.M].norm(dim=-1)
             q90 = torch.quantile(vnn[OPT.mn[:OPT.M] > 0].float(), 0.9)
             st.update(rn=int((vnn > 5.0 * q90).sum()), vn_max=float(vnn.max()), vn_q90=float(q90))
+            if a.ah_rn:
+                st.update(rnd=rn_diag(OPT, vnn, q90))
         if PLAST:                                                                   # 절 AG 소성 통계 (측정 밖)
             rmc_ = PL_RMC.tolist()
             PL_RMC.zero_()
