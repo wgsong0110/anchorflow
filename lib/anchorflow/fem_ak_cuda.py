@@ -5,11 +5,21 @@
 import cupy as cp
 import numpy as np  # noqa: F401
 
+from . import fem_c_cuda as CCU
 from . import fem_ex_cuda as EX
 from . import fem_rt_cuda as RTC
 
 _AK = r'''
 extern "C" {
+// 빠른 FCR P (입자 스레드 판): Q = 빠른 극분해 (절 C c_polar_fast), J = |det X| (sp_fcr_P 의 Π max(σ, 0.01) 와 σ ≥ 0.01 에서 같다)
+__device__ __forceinline__ void ak_fcr_P(const float* X, float mu, float lam, float* P) {
+    float Q[9], cf[9];
+    c_polar_fast(X, Q); cof3(X, cf);
+    float dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+    float sg = (dt>0)?1.f:((dt<0)?-1.f:0.f);
+    float J = fabsf(dt);
+    for (int k=0;k<9;k++) P[k] = 2.f*mu*(X[k]-Q[k]) + lam*(J-1.f)*sg*cf[k];
+}
 __global__ void ak_pq_force(const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const int* offs, const int* ord,
                             const float* Fp, const float* wp, float mu, float lam, float* f) {
     int i0 = blockIdx.x*blockDim.x + threadIdx.x;
@@ -52,7 +62,7 @@ __global__ void ak_pq_force_p(int N, const int* ord, const int* tt, const long l
         for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u = U[n[i]*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*G[i*3+q]; }
         float F[9]; for (int j=0;j<9;j++) F[j] = Fp[(long long)k*9+j];
         float X[9]; mm3(A, F, X);
-        float P[9]; sp_fcr_P(X, mu, lam, P);
+        float P[9]; ak_fcr_P(X, mu, lam, P);
         float w = wp[k];
         for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s; }
     }
@@ -73,7 +83,7 @@ _MOD = [None]
 
 def launch(name, n, args, b=128, grid=None):
     if _MOD[0] is None:
-        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     with RTC._Stream():
         g = grid if grid is not None else (int(n) + b - 1) // b
         _MOD[0].get_function(name)((g,), (b,), args)
