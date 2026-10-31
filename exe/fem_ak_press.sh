@@ -7,6 +7,8 @@ i=0
 for tc in 0001:16 0003:12 0016:7 0017:17 0018:19 0005:15 0013:12; do
   t=${tc%%:*}; c=${tc##*:}; O=/tmp/dkta/lbours/fem_ak_lego/${t}_pqf3_z_F1
   G=$((1 + i % 6)); i=$((i + 1))
+  [ -f $O/roll_fem.pt ] || rclone copy r2:storage/result/anchorflow/lbours/fem_ak_lego/${t}_pqf3_z_F1/roll_fem.pt $O -q   # 렌더 판이 R2 확인 뒤 /tmp 덤프를 지운 궤적
+  [ -f $O/press.json ] && continue
   ( CUDA_VISIBLE_DEVICES=$G python -u exe/fem_ak_press.py $O/roll_fem.pt /tmp/dkta/af_data/$t.pt $c > $O/press.log 2>&1
     rclone copy $O r2:storage/result/anchorflow/lbours/fem_ak_lego/${t}_pqf3_z_F1 -q ) &
 done
