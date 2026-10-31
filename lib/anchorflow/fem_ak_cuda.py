@@ -10,6 +10,7 @@ from . import fem_ex_cuda as EX
 from . import fem_rt_cuda as RTC
 
 _AK = r'''
+#include <cuda_fp16.h>
 extern "C" {
 // 빠른 FCR P (입자 스레드 판): Q = 빠른 극분해 (절 C c_polar_fast), J = |det X| (sp_fcr_P 의 Π max(σ, 0.01) 와 σ ≥ 0.01 에서 같다)
 __device__ int AKPIT;                                                                // 극분해 반복 상한 (0 = c_polar_fast 그대로 -- 수렴 1e-7 까지 최대 10 회)
@@ -145,6 +146,41 @@ __global__ void __launch_bounds__(128) ak_pq_force_p3(int N, const int* tt, cons
     float Gm[9] = {0,0,0,0,0,0,0,0,0};
     if (on) {
         float F[9]; for (int j=0;j<9;j++) F[j] = Fp[(long long)k*9+j];
+        float X[9]; mm3(A, F, X);
+        float P[9]; ak_fcr_P(X, mu, lam, P);
+        float w = wp[k];
+        for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s; }
+    }
+    for (int off=1; off<32; off<<=1) {
+        int to = __shfl_down_sync(0xffffffffu, t, off);
+        bool same = (lane + off < 32) && (to == t);
+        for (int j=0;j<9;j++) { float o = __shfl_down_sync(0xffffffffu, Gm[j], off); if (same) Gm[j] += o; }
+    }
+    if (!on || !head) return;
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += Gm[c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
+}
+// 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차 δ = F_p − F̄_T 로 반정밀도 저장 -- 읽는 양 36 -> 18 B; F = F̄ + δ, δ 반올림 오차 ~|δ| 5e-4)
+__global__ void __launch_bounds__(128) ak_pq_force_p4(int N, const int* tt, const long long* tets, const float* U, const float* gl, const float* FT,
+                               const __half* dF, const float* wp, float mu, float lam, float* f) {
+    int k = blockIdx.x*blockDim.x + threadIdx.x;
+    int lane = threadIdx.x & 31;
+    bool on = k < N;
+    int t = on ? tt[k] : -1 - lane;
+    int tp = __shfl_up_sync(0xffffffffu, t, 1);
+    bool head = (lane == 0) || (tp != t);
+    unsigned hm = __ballot_sync(0xffffffffu, head);
+    int hl = 31 - __clz(hm & (0xffffffffu >> (31 - lane)));
+    float A[9] = {1,0,0, 0,1,0, 0,0,1}, Fb[9] = {1,0,0, 0,1,0, 0,0,1};
+    if (head && on) {
+        for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+            for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+        for (int j=0;j<9;j++) Fb[j] = FT[(long long)t*9+j];
+    }
+    for (int j=0;j<9;j++) { A[j] = __shfl_sync(0xffffffffu, A[j], hl); Fb[j] = __shfl_sync(0xffffffffu, Fb[j], hl); }
+    float Gm[9] = {0,0,0,0,0,0,0,0,0};
+    if (on) {
+        float F[9]; for (int j=0;j<9;j++) F[j] = Fb[j] + __half2float(dF[(long long)k*9+j]);
         float X[9]; mm3(A, F, X);
         float P[9]; ak_fcr_P(X, mu, lam, P);
         float w = wp[k];
