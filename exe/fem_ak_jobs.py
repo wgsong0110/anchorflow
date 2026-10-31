@@ -36,6 +36,9 @@ VAR = {
     "pq": AI.replace("--ai_stress ", "") + " --ak_pq",                                # 입자 적분점 셀 탄성 (A2 는 그 근사라 끔)
     "pqb0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "") + " --ak_pq",
     "pq1": AI.replace("--ai_stress ", "").replace("--sp_vcap 0.5", "--sp_vcap 1.0") + " --ak_pq",
+    "pq75b0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp_vcap 0.5", "--sp_vcap 0.75") + " --ak_pq",
+    "pq1b0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp_vcap 0.5", "--sp_vcap 1.0") + " --ak_pq",
+    "pqnb0": AI.replace("--ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq",
     "pqn": AI.replace("--ai_stress ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq",
 }
 
