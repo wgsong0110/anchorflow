@@ -234,6 +234,7 @@ ap.add_argument("--ak_pit", type=int, default=0, help="--ak_pq 극분해 반복 
 ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적분점 (정의 변경): 셀 안 max‖F_p − F̄_T‖_F ≤ ε 이거나 입자 1 개인 사면체는 한 점 적분 (F̄, V = Σ w) -- 음수 = 끔 (모두 입자 적분점)")
 ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
+ap.add_argument("--ak_cfac", type=float, default=1.0, help="절 AK --affine: 다음 프레임 P2G 에 쓰는 입자 속도 기울기 C 의 배율 (1 = APIC, 0 = PIC; 정의 변경)")
 ap.add_argument("--ak_fuse", action="store_true", help="--ak_pq4 + 절 AH 바닥: 입자 적분점 힘과 바닥 접촉을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_pq4", action="store_true", help="--ak_pq 4 판 (3 판 + 입자 F 를 셀 F̄ 와의 차로 반정밀도 저장)")
 ap.add_argument("--ak_pq3", action="store_true", help="--ak_pq 3 판 (구간 머리 레인만 A_T 계산 -> 셔플; 같은 식)")
@@ -1049,6 +1050,8 @@ class Opt:
         EX.launch("ex_locate", Np, (np.int32(Np), EX.P(x), EX.P(self.gpar), EX.P(self.ipar), EX.P(self.ncm), EX.P(self.tcm), EX.P(self.tmark),
                                     EX.P(self.rows), EX.P(self.lamb), EX.P(self.pinv), EX.P(self.sz)), b=256)
         aff = self.CL if (a.affine and a.mode == "lag") else None
+        if aff is not None and a.ak_cfac != 1.0:                                      # 절 AK: 부분 아핀 전달
+            aff.mul_(a.ak_cfac)
         EX.launch("ex_p2g_mv", Np, (np.int32(Np), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA), EX.P(v), EX.P(self.mn), EX.P(self.mv), np.int32(1 if a.mass == "tet" else 0),
                                     EX.P(aff), EX.P(x if aff is not None else None), EX.P(self.npos if aff is not None else None), EX.P(self.ml if RWL else None)), b=256)
         EX.launch("ex_vfin", Mc, (EX.P(self.sz), np.int32(0), EX.P(self.mn), EX.P(self.mv), EX.P(self.vn), EX.P(self.ml if RWL else None)), b=256)

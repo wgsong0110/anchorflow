@@ -18,7 +18,7 @@ AI = "--ai_p2g rs --ai_stress --fupd navg --fupd_b 1 --sp vcap --sp_vcap 0.5 --l
 CFM = "--sp vcap --sp_vcap 0.5 --lim_sr 5"
 GFL = "--vfl_w gtk --vfl_rate --vfl_npd 0.005"
 GFL0 = GFL + " --vfl_band 0"                                                       # 절 AH.12-13 띠 0 바닥 (최종 바닥 후보)
-DIAG = "--no_dump --ak_en " + os.environ.get("AK_EN", "1") + " --ai_rigid 8"
+DIAG = "--no_dump --ak_en " + os.environ.get("AK_EN", "1") + " --ai_rigid " + os.environ.get("AK_RG", "8") + (" --rbdiag" if os.environ.get("AK_RB") else "")
 VAR = {
     "base": AI,
     "aff": AI + " --affine",
@@ -56,8 +56,17 @@ VAR = {
     "pqf1": AI.replace("--ai_p2g rs --ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_pq4 --ak_fstep --ah_fast",                                                                   # A1 끔 (입자 적분점에서는 F̄ 가 δ 기준뿐)
     "pqf2": AI.replace("--ai_p2g rs --ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_pq4 --ak_fstep --ah_fast --ak_prep",
     "pqf3": AI.replace("--ai_p2g rs --ai_stress ", "").replace("--fupd navg --fupd_b 1 ", "").replace("--sp vcap --sp_vcap 0.5", "--sp vcap --sp_vcap 1e9") + " --ak_pq --ak_pq4 --ak_fstep --ah_fast --ak_prep --ak_fuse",
+    "pqf3a": "PQF3 --affine",
+    "pqf3a5": "PQF3 --affine --ak_cfac 0.5",
+    "pqf3a25": "PQF3 --affine --ak_cfac 0.25",
+    "pqf3m": "PQF3 --ah_mlow 0.1",
     "pqn": AI.replace("--ai_stress ", "").replace("--sp vcap --sp_vcap 0.5", "--sp none") + " --ak_pq",
 }
+
+
+for _k in list(VAR):
+    if VAR[_k].startswith("PQF3"):
+        VAR[_k] = VAR["pqf3"] + VAR[_k][4:]
 
 
 def line(sc, vk, fk="", r=1, extra="", kind="r", tagx=""):
