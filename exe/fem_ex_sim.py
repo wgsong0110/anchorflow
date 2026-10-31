@@ -262,6 +262,7 @@ ap.add_argument("--ah_mcfl_tan", action="store_true",
 ap.add_argument("--ah_mcfl_sub", action="store_true",
                 help="절 AG.17: --ah_mcfl 국소 CFL 질량을 서브스텝마다 현재 셀 기하 (A⁻ᵀ∇λ) 와 현재 변형 접선 계수로 다시 (그래프 안 커널, 진단 우선 -- 비용 큼)")
 ap.add_argument("--dump_pl", action="store_true", help="절 AG.17 진단: 프레임마다 입자 항복 응력·logJp·손상 (float16) -> pl_dump.pt (측정 밖)")
+ap.add_argument("--tet_strain", default="", help="절 AG.18 진단 (측정 밖, --ak_pq): 이 프레임들 (1 부터, 쉼표·_) 끝에서 사면체별 프레임 늘어남 σ_max(I+∇U) 를 사면체 안 입자 수별·y 구간별로 -> fem.jsonl ts")
 ap.add_argument("--mesh_cc", default="", help="절 AG.18 진단 (측정 밖): 이 프레임들 (1 부터, 쉼표) 끝에서 점유 사면체 메시의 연결 성분 (노드 공유) 수·크기, 입자 구속 영역과 몸통이 같은 성분인지 -> fem.jsonl cc")
 ap.add_argument("--ag_pbcp", action="store_true",
                 help="절 AG.16 bread: 입자 속도 구속을 PG 처럼 입자에 직접 -- 프레임 시작 구속 입자 속도 = v_bc (P2G 에 들어감), 프레임 끝 구속 입자 x ← x0 + h v_bc, v ← v_bc (노드 섞기 --pbc 는 그대로)")
@@ -3669,6 +3670,36 @@ for i in range(L):
                 ccd["free_main_comp_particles"] = int((pl_ == torch.mode(pl_[free_]).values).sum()) if bool(free_.any()) else None
             st.update(cc=ccd)
             print(f"  [절 AG.18 메시 연결] 프레임 {i + 1}: {ccd}", flush=True)
+        if a.tet_strain and AKPQ and str(i + 1) in a.tet_strain.replace(":", ",").replace("_", ",").split(","):     # 절 AG.18: 당김이 어느 사면체에서 늘어나는가
+            T_, M_ = OPT.T, OPT.M
+            A_ = torch.eye(3, device=dev) + torch.einsum("tic,tib->tcb", OPT.Uc[:M_][OPT.tets[:T_]], OPT.gl[:T_].view(T_, 4, 3))
+            sv_ = torch.linalg.svdvals(A_.double())
+            smx, smn = sv_[:, 0], sv_[:, -1]
+            npt = torch.bincount(OPT.aktt.long(), minlength=T_)[:T_]
+            occ_ = OPT.VTs[:T_] > 0
+            cy = OPT.npos[:M_][OPT.tets[:T_]][:, :, 1].mean(1)
+            grp = [("p0", npt == 0), ("p1", npt == 1), ("p2", npt == 2), ("p3_7", (npt >= 3) & (npt <= 7)), ("p8+", npt >= 8)]
+            tsd = dict(T=int(T_), occ=int(occ_.sum()))
+            for gn, gm in grp:
+                gm = gm & occ_
+                if bool(gm.any()):
+                    e_ = (smx[gm] - 1).clamp_min(0)
+                    tsd[gn] = dict(n=int(gm.sum()), smax_q50=float(smx[gm].median()), smax_q99=float(torch.quantile(smx[gm].float(), 0.99)), smax_max=float(smx[gm].max()),
+                                   smin_min=float(smn[gm].min()), stretch_sum=float(e_.sum()), n_gt1p1=int((smx[gm] > 1.1).sum()), n_gt1p5=int((smx[gm] > 1.5).sum()))
+            ed = torch.linspace(float(cy[occ_].min()), float(cy[occ_].max()) + 1e-6, 11, device=dev)
+            yb = []
+            for k in range(10):
+                bm = occ_ & (cy >= ed[k]) & (cy < ed[k + 1])
+                if bool(bm.any()):
+                    e_ = (smx[bm] - 1).clamp_min(0)
+                    yb.append(dict(y0=float(ed[k]), n=int(bm.sum()), smax_q50=float(smx[bm].median()), stretch_sum=float(e_.sum()),
+                                   stretch_sum_p01=float(e_[(npt[bm] <= 1)].sum()), n_p01=int((npt[bm] <= 1).sum()), n_gt1p1=int((smx[bm] > 1.1).sum())))
+            tsd["ybins"] = yb
+            Fp_ = A_[OPT.aktt.long()]                                                       # 입자가 받은 프레임 늘어남 (입자 가중)
+            svp = torch.linalg.svdvals(Fp_.double())[:, 0]
+            tsd["particle_smax_q50"], tsd["particle_smax_q99"] = float(svp.median()), float(torch.quantile(svp.float(), 0.99))
+            st.update(ts=tsd)
+            print(f"  [절 AG.18 사면체 늘어남] 프레임 {i + 1}: {tsd}", flush=True)
         if AKPQ and (AKBAR or PQPL or AKG):                                         # 절 AG.13: 장벽 작동 (입자 x 서브스텝), 프레임 끝 뒤집힌 입자 적분점 (det(A_T F_p) ≤ 0) 수
             T_ = OPT.T
             A_ = torch.eye(3, device=dev) + torch.einsum("tic,tib->tcb", OPT.Uc[:OPT.M][OPT.tets[:T_]], OPT.gl[:T_].view(T_, 4, 3))
