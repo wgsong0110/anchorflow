@@ -251,6 +251,8 @@ ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
 ap.add_argument("--akpl_k", type=int, default=6, help="절 AG.10 --akpl_dbg: 첫 터짐 뒤 몇 서브스텝을 더 기록하고 멈출지")
+ap.add_argument("--ah_mcfl", type=float, default=0.0,
+                help="절 AG.15 정의 변경: 노드 가속도용 관성 질량 하한 = s · (h_s/2)² k_n (k_n = 노드 강성 Gershgorin 상계 Σ V_T (λ+2μ)|∇λ_i|Σ|∇λ_j|) -- 국소 명시적 안정 조건 m ≥ (h_s/2)² k 를 만족하게 (s = 안전 계수, 1 = 조건 그대로; 0 = 끔)")
 ap.add_argument("--akb_kappa", type=float, default=0.0,
                 help="절 AG.13 정의 변경 (사용자 10-31): 입자 적분점 판 셀 에너지에 입자마다 뒤집힘 장벽 κ μ w b(det(A_T F_p)) (0 = 끔; 입자 스레드 커널 경로)")
 ap.add_argument("--akb_jhat", type=float, default=0.3, help="--akb_kappa: 장벽이 켜지는 J (Ĵ)")
@@ -610,7 +612,7 @@ if HASPL:
 else:
     PL = [np.float64(0)] * 6
     PLf = [np.float32(0)] * 6
-AHF = (VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0)) or a.ah_mlow > 0   # 절 AH.18: 질량 하한은 바닥 없는 씬도 같은 노드 걸음 커널로                                     # 절 AH 바닥 정의 (fem_ah_cuda)
+AHF = (VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0)) or a.ah_mlow > 0 or a.ah_mcfl > 0   # 절 AH.18: 질량 하한은 바닥 없는 씬도 같은 노드 걸음 커널로                                     # 절 AH 바닥 정의 (fem_ah_cuda)
 AH_GTK = 1 if (VFL and a.vfl_w == "gtk") else 0
 AH_ACCN = AH_GTK or a.vfl_npd > 0                                                   # 비관통 판정을 따로 (실제 접촉 / 깊이)
 AH_DXG = float(cfg.get("grid_lim", 2.0)) / int(cfg.get("n_grid", 100))                # 정답 MPM 격자 dx_g
@@ -886,6 +888,7 @@ class Opt:
             self.vbc = z(self.Mcap, 3)
             self.acc = z(self.Mcap)                                                  # --floor vel: 노드별 접촉 입자 질량 (쓴 뒤 비움)
             self.accN = z(self.Mcap) 
+            self.mcfl = z(self.Mcap)                                                 # 절 AG.15 노드별 국소 CFL 관성 질량
             self.accB = z(self.Mcap)                                                 # 절 AH.12 --vfl_bf: 프레임 상수 띠 고착 질량                                                # 절 AH: 노드별 실제 접촉 (평면 아래) 입자 수 (비관통 판정, 쓴 뒤 비움)
             self.ml = z(self.Mcap) if RWL else None                                  # 절 Q --rep_w lam: 속도 전달 정규화 질량 Σλm
             if LIM:
@@ -1796,7 +1799,7 @@ class Opt:
             AHC.launch("ah_node_step", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
                                             np.float32(hs_), np.float32(damp_), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc if VFL else None),
                                             EX.P(self.accN if AH_ACCN else None), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * hs_ / hs),
-                                            np.float32(getattr(self, "_mfl", 0.0))), b=256)
+                                            np.float32(getattr(self, "_mfl", 0.0)), EX.P(self.mcfl if a.ah_mcfl > 0 else None)), b=256)
           else:
             EX.launch("ex_node_step_lag", Mc, (EX.P(self.sz), EX.P(self.mI if SPM == "mlow" else self.mn), EX.P(self.f), EX.P(None), EX.P(self.vn), EX.P(self.Uc),
                                                np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]), np.float32(hs_), np.float32(damp_),
@@ -2697,6 +2700,10 @@ class Opt:
                 self.tl[:tls_.numel()].copy_(tls_)                                    # (호스트 크기 -- nonzero 가 동기화 1 번)
                 self.aktlc.copy_(torch.tensor([tls_.numel()], dtype=torch.int32, device=dev))
                 self.akrough.append((float(rp.float().mean()), float(rough_t.float().sum() / occ_.float().sum().clamp_min(1))))
+        if a.ah_mcfl > 0:                                                         # 절 AG.15: 프레임마다 노드 강성 상계 -> 국소 CFL 관성 질량 (그래프 밖, 동기화 없음)
+            self.mcfl.zero_()
+            AHC.launch("ah_kn", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs),
+                                            np.float32(a.ah_mcfl * (self.hscur / 2.0) ** 2 * (lam + 2.0 * mu)), EX.P(self.mcfl)), b=128)
         if a.ah_mlow > 0 and not hasattr(self, "_mfl"):                          # 절 AH.18: 첫 프레임 (데우기 프레임, 측정 밖) 에 한 번
             mn_ = self.mn[:self.M]
             self._mfl = float(a.ah_mlow * mn_[mn_ > 0].median())

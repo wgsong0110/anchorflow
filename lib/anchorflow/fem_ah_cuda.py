@@ -65,13 +65,14 @@ __global__ void ah_fc(int nbT, const int* szp, const int* tl, const int* tlc, co
 }
 // ex_node_step_lag 와 같은 걸음 (nodisp 1 판 = 속도만, U 는 c_lim_apply 가) + 고착 몫 (1 - a/m)^kex, 비관통은 accN > 0 (실제 접촉) 노드만 (accN null 이면 a > 0 노드 -- 기존과 같음)
 __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* vn, float g0, float g1, float g2, float hs, float damp,
-                             const unsigned char* fixd, const float* vbc, float* acc, float* accN, int mode, int np_, float n0, float n1, float n2, float kex, float mfl) {
+                             const unsigned char* fixd, const float* vbc, float* acc, float* accN, int mode, int np_, float n0, float n1, float n2, float kex, float mfl,
+                             const float* mfa) {
     int M = szp[0];
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= M) return;
     float gg[3] = {g0, g1, g2};
     float m = mn[n];
-    float mi = fmaxf(m, mfl);                                                   // 절 AH.18 --ah_mlow: 가속도에만 쓰는 관성 질량 하한 (0 이면 기존)
+    float mi = fmaxf(m, mfa ? mfa[n] : mfl);                                    // 절 AG.15: 노드별 국소 CFL 관성 질량 하한 (mfa != null)                                                   // 절 AH.18 --ah_mlow: 가속도에만 쓰는 관성 질량 하한 (0 이면 기존)
     float v[3];
     for (int c=0;c<3;c++) {
         if (fixd && fixd[n]) v[c] = vbc[n*3+c];
@@ -314,6 +315,18 @@ __global__ void ah_npos(int Pn, int n1, int n2, const unsigned char* nm, const l
     long long q = ncm[c];
     float k[3] = {(float)(c / (n1*n2)), (float)((c / n2) % n1), (float)(c % n2)};
     for (int i=0;i<3;i++) npos[q*3+i] = (k[0]*A[i*3] + k[1]*A[i*3+1] + k[2]*A[i*3+2]) + lo[i];
+}
+// 절 AG.15 국소 CFL 관성 질량: 노드 강성 상계 (Gershgorin) k_n = Σ_{T∋n} V_T M_w |∇λ_i| Σ_j |∇λ_j| (M_w = λ + 2μ 파동 계수, V_T = 셀 탄성 부피),
+// 명시적 중앙차분 안정 조건 h_s ≤ 2/ω, ω² ≤ k_n/m_n -> m_n ≥ (h_s/2)² k_n.  mfa[n] = (h_s/2)² k_n (사면체 스레드가 원자 합)
+__global__ void ah_kn(const int* tl, const int* tlc, const long long* tets, const float* gl, const float* VT, float cmw, float* mfa) {
+    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i0 >= tlc[0]) return;
+    int t = tl[i0];
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    float gn[4], sg = 0.f;
+    for (int i=0;i<4;i++) { float a_=0.f; for (int q=0;q<3;q++) { float g_ = gl[(long long)t*12+i*3+q]; a_ += g_*g_; } gn[i] = sqrtf(a_); sg += gn[i]; }
+    for (int i=0;i<4;i++) atomicAdd(&mfa[tets[(long long)t*4+i]], cmw*V*gn[i]*sg);
 }
 __global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
