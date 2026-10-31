@@ -1147,6 +1147,22 @@ class Opt:
                              ys0=float(PL_YS[p]), lj0=float(PL_LJ[p]), w=float(self.akw[k]), node_m=[float(self.mn[q]) for q in nd.tolist()],
                              VT=float(self.VTs[t]), U=[self.Uc[q].tolist() for q in nd.tolist()]))
         out["particles"] = rows
+        if PQPL and hasattr(self, "_Uprev"):                                         # 실패한 서브스텝 직전 U 로 입자 X = A_T F_p, 응력 입력
+            tt = self.aktt.long()
+            G = self.gl[:T].view(T, 4, 3)
+            U4 = self._Uprev[self.tets[:T]]
+            A = torch.eye(3, device=dev) + torch.einsum("tic,tib->tcb", U4, G)
+            X = A[tt] @ self.akF.view(-1, 3, 3)
+            dX = torch.det(X.double())
+            bad_nodes = set((vn_bad | U_bad).nonzero().flatten().tolist())
+            inc = torch.tensor([any(int(q) in bad_nodes for q in self.tets[t].tolist()) for t in tt.tolist()], device=dev) if len(bad_nodes) < 200 else None
+            out["X_det_min"] = float(dX.min()); out["X_det_nonpos"] = int((dX <= 0).sum()); out["X_det_q01"] = float(torch.quantile(dX.float(), 0.01))
+            out["A_det_min"] = float(torch.det(A.double()).min())
+            if inc is not None and bool(inc.any()):
+                d_ = dX[inc]
+                out["bad_node_particles"] = dict(n=int(inc.sum()), det_min=float(d_.min()), det_max=float(d_.max()), w=[float(q) for q in self.akw[inc][:5]],
+                                                 cnt=[int(cnt[t]) for t in tt[inc][:5].tolist()], VT=[float(self.VTs[t]) for t in tt[inc][:5].tolist()])
+            out["Uprev_absmax"] = float(self._Uprev.abs().max())
         nb = (vn_bad | U_bad).nonzero().flatten()[:20]
         out["nodes"] = [dict(n=int(q), m=float(mn[q]), v=self.vn[q].tolist(), U=self.Uc[q].tolist()) for q in nb.tolist()]
         # 정상 입자 분포 비교 (초기 F 특이값·logJp)
@@ -1751,6 +1767,8 @@ class Opt:
             if not REP:
                 for j in range(self.Ncur):
                     self._j = j
+                    if a.akpl_dbg:
+                        self._Uprev = self.Uc[:self.M].clone()
                     self._step_lag()
                     if a.akpl_dbg:                                                  # 절 AG.9 진단 (--no_graph 만): 서브스텝마다 첫 비유한 찾기
                         self._akpl_check(j)
