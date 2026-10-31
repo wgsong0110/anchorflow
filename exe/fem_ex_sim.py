@@ -248,6 +248,10 @@ ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
 ap.add_argument("--akpl_k", type=int, default=6, help="절 AG.10 --akpl_dbg: 첫 터짐 뒤 몇 서브스텝을 더 기록하고 멈출지")
+ap.add_argument("--akb_kappa", type=float, default=0.0,
+                help="절 AG.13 정의 변경 (사용자 10-31): 입자 적분점 판 셀 에너지에 입자마다 뒤집힘 장벽 κ μ w b(det(A_T F_p)) (0 = 끔; 입자 스레드 커널 경로)")
+ap.add_argument("--akb_jhat", type=float, default=0.3, help="--akb_kappa: 장벽이 켜지는 J (Ĵ)")
+ap.add_argument("--akb_je", type=float, default=0.1, help="--akb_kappa: 이 J 아래는 선형 연장 (강성 상한)")
 ap.add_argument("--akpl_cause", action="store_true",
                 help="절 AG.12 진단 (--no_graph, 측정 아님): 서브스텝마다 전 노드 속도 유한 여부·전 사면체 det A·입자 J 최소·커널 단계별 비유한 개수를 기록, 첫 비유한 뒤 --akpl_k 서브스텝까지 보고 인과 분석 -> akpl_cause.json")
 ap.add_argument("--akpl_invm", type=int, default=0, help="절 AG.12 개입 시험 (진단 전용): 1 = det X ≤ 0 인 입자 응력 몫 0")
@@ -518,6 +522,9 @@ if P2 and a.ak_en:
 P2W = torch.tensor([1.0 / 36] * 4 + [4.0 / 27] * 6, device=dev)                     # HRZ 집중 질량 몫 (합 1)
 PQPL = AKPQ and a.ak_pq_plast != "none"                                             # 절 AG.8 소성 입자 적분점
 AKG = AKPQ and a.akg_k > 0                                                          # 절 AG.11 희소 사면체 묶음
+AKBAR = AKPQ and a.akb_kappa > 0                                                    # 절 AG.13 뒤집힘 장벽
+if AKBAR and (a.ak_pq4 or a.ak_pq2 or a.ak_pq3 or a.ak_pqt or a.ak_eps >= 0 or a.ak_fuse or a.ak_prep):
+    raise SystemExit("--akb_kappa 는 --ak_pq 기본 입자 스레드 판만")
 if AKG and (a.ak_pq4 or a.ak_pq2 or a.ak_pq3 or a.ak_pqt or a.ak_eps >= 0 or a.ak_fuse or a.ak_prep or (PLAST and not PQPL)):
     raise SystemExit("--akg_k 는 --ak_pq 기본 입자 스레드 판 (4·2·3·사면체 판·혼합·융합·계수 준비 없이; 소성이면 --ak_pq_plast) 만")
 if PQPL and not (a.plast and not (a.ak_pq4 or a.ak_pq2 or a.ak_pq3 or a.ak_pqt or a.ak_eps >= 0 or a.ak_fuse or a.ak_prep) and a.visc <= 0):
@@ -845,7 +852,8 @@ class Opt:
             self.akz = torch.zeros(1, dtype=torch.int32, device=dev)
             self.akoffs = None
             self._nanc = torch.zeros(16, dtype=torch.int32, device=dev)
-            if PQPL or AKG:                                                          # 절 AG.8: 정렬 순서 입자 소성 상태 (묶음 탄성 판도 같은 커널이라 버퍼만)
+            self._nbar = torch.zeros(1, dtype=torch.int32, device=dev)
+            if PQPL or AKG or AKBAR:                                                 # 절 AG.8: 정렬 순서 입자 소성 상태 (묶음·장벽 탄성 판도 같은 커널이라 버퍼만)
                 self.plFe, self.plXp = z(Np, 9), z(Np, 9)
                 self.plys, self.pllj, self.plal = z(Np), z(Np), z(Np)
         self.t10 = None
@@ -1683,13 +1691,14 @@ class Opt:
                 self.akg_GmG.zero_()
                 AKPLC.launch("akg_A", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs),
                                                   EX.P(self.akg_AG)), b=128)
-            if PQPL or AKG:                                                         # 절 AG.8: 재질 식 입자 적분점 (AG.11 묶음 탄성 판은 mat 0)
+            if PQPL or AKG or AKBAR:                                                # 절 AG.8: 재질 식 입자 적분점 (AG.11 묶음·AG.13 장벽 탄성 판은 mat 0)
                 AKPLC.launch("akpl_force", Np, (np.int32(Np), np.int32(1 if a.ak_pq_plast == "inc" else 0), EX.P(self.akord), EX.P(self.aktt), EX.P(self.tets),
                                                 EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akw), np.int32(MATN), EX.P(PRM), np.float32(hs_),
                                                 EX.P(PL_AL if PLAST else None), EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal), EX.P(self.f),
                                                 np.float32(a.akpl_jfl), EX.P(self.akg_gpb if AKG else None), EX.P(self.akg_AG if AKG else None), EX.P(self.akg_VG if AKG else None),
                                                 EX.P(self.akg_GmG if AKG else None), np.float32(mu), np.float32(lam), np.int32(a.akpl_invm),
-                                                EX.P(self._nanc if a.akpl_cause else None)), b=128)
+                                                EX.P(self._nanc if a.akpl_cause else None),
+                                                np.float32(a.akb_kappa), np.float32(a.akb_jhat), np.float32(a.akb_je), EX.P(self._nbar if AKBAR else None)), b=128)
                 if AKG:
                     AKPLC.launch("akg_dist", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs),
                                                          EX.P(self.akg_AG), EX.P(self.akg_VG), EX.P(self.akg_GmG), np.float32(a.akg_hg * mu), EX.P(self.f)), b=128)
@@ -3498,6 +3507,12 @@ for i in range(L):
             st.update(rn=int((vnn > 5.0 * q90).sum()), vn_max=float(vnn.max()), vn_q90=float(q90))
             if a.ah_rn:
                 st.update(rnd=rn_diag(OPT, vnn, q90))
+        if AKPQ and (AKBAR or PQPL or AKG):                                         # 절 AG.13: 장벽 작동 (입자 x 서브스텝), 프레임 끝 뒤집힌 입자 적분점 (det(A_T F_p) ≤ 0) 수
+            T_ = OPT.T
+            A_ = torch.eye(3, device=dev) + torch.einsum("tic,tib->tcb", OPT.Uc[:OPT.M][OPT.tets[:T_]], OPT.gl[:T_].view(T_, 4, 3))
+            dXe = torch.det((A_[OPT.aktt.long()] @ OPT.akF.view(-1, 3, 3)).double())
+            st.update(nbar=int(OPT._nbar.item()), pinv_end=int((~(dXe > 0)).sum()), tinv_end=int((~(torch.det(A_.double()) > 0) & (OPT.VTs[:T_] > 0)).sum()))
+            OPT._nbar.zero_()
         if PLAST:                                                                   # 절 AG 소성 통계 (측정 밖)
             rmc_ = PL_RMC.tolist()
             PL_RMC.zero_()

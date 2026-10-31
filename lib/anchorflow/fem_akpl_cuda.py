@@ -32,6 +32,21 @@ __device__ __forceinline__ void akpl_nhb_tau(const float* Fe, float mu, float ka
 __device__ __forceinline__ bool akpl_isf(const float* a, int n) { for (int i=0;i<n;i++) if (!isfinite(a[i])) return false; return true; }
 // 절 AG.12 진단: 단계별 첫 비유한 개수 nanc[stage] (0 X, 1 X_prev 역, 2 F_trial, 3 SVD, 4 RM 결과, 5 응력 τ, 6 X 역 (나눗셈), 7 힘 몫, 8 det X ≤ 0 (비유한 아님, 개수))
 #define AKNC(st, cond) do { if (nanc && !(cond)) { atomicAdd(&nanc[st], 1); bad = true; } } while (0)
+// 절 AG.13 뒤집힘 장벽 (정의 변경): 입자 적분점마다 E_b = κ μ w b(J), J = det X (X = A F_p), Ĵ 아래에서만
+//   b(J) = −(J − Ĵ)² log(J/Ĵ) (J_e ≤ J < Ĵ), J < J_e 는 값·기울기 연속 선형 연장 (기울기 b'(J_e) 상수 -- 강성 상한, J ≤ 0 에서도 계속 밀어냄)
+//   ∂E_b/∂A = κ μ w b'(J) cof(X) F_pᵀ  (dJ/dX = cof X) -> Gm 에 더한다
+__device__ __forceinline__ void akpl_bar(const float* X, const float* F, float w, float kmu, float jh, float je, float* Gm, int* nbar) {
+    if (!(kmu > 0.f)) return;
+    float J = det3(X);
+    if (!(J < jh)) return;
+    float Jc = (J > je) ? J : je;
+    float d = Jc - jh;
+    float db = -2.f*d*logf(Jc/jh) - d*d/Jc;                                     // b'(max(J, J_e))
+    float cf[9]; cof3(X, cf);
+    float s = kmu*w*db;
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float a_ = 0.f; for (int j=0;j<3;j++) a_ += cf[r*3+j]*F[c*3+j]; Gm[r*3+c] += s*a_; }
+    if (nbar) atomicAdd(nbar, 1);
+}
 // 그래프 첫 커널: 정렬 순서 입자 상태 = 프레임 시작 (F_e = X_prev = F_p, 상태 = 입자 것)
 __global__ void akpl_init(int N, const int* ord, const float* akF, const float* ys, const float* lj, const float* al,
                           float* Fe, float* Xp, float* ysP, float* ljP, float* alP) {
@@ -44,7 +59,8 @@ __global__ void akpl_init(int N, const int* ord, const float* akF, const float* 
 __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* ord, const int* tt, const long long* tets, const float* U, const float* gl,
                                const float* akF, const float* wp, int mat, const float* prm, float dt, const float* alPart,
                                float* Fe, float* Xp, float* ysP, float* ljP, float* alP, float* f, float jfl,
-                               const int* gp, const float* AG, const float* VG, float* GmG, float mu0, float lam0, int invm, int* nanc) {
+                               const int* gp, const float* AG, const float* VG, float* GmG, float mu0, float lam0, int invm, int* nanc,
+                               float bk, float bjh, float bje, int* nbar) {
     // 절 AG.12 진단: invm 1 = det X ≤ 0 인 입자의 응력 몫을 0 으로 (개입 시험), nanc != null 이면 단계별 비유한 개수
     // 절 AG.11 묶음 (gp != null): 희소 사면체 입자 (gp[k] ≥ 0) 는 묶음 평균 사상 Ā_g = AG[g]/VG[g] 로 X = Ā F, 응력 몫 w P Fᵀ 는 GmG[g] 에 (akg_dist 가 묶음 사면체로 나눔)
     int k = blockIdx.x*blockDim.x + threadIdx.x;
@@ -91,6 +107,7 @@ __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* or
         } else if (mat == 0) {                                                 // 탄성 (절 AK 와 같은 FCR, 빠른 극분해): P 를 바로
             float P[9]; ak_fcr_P(X, mu0, lam0, P);
             for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s_ = 0.f; for (int j=0;j<3;j++) s_ += P[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s_; }
+            akpl_bar(X, F, w, bk*mu0, bjh, bje, Gm, nbar);
             goto akpl_red;
         } else {                                                                // 투영 없는 재질 응력 (프레임 끝 입자 RM 만)
             float al = alPart ? alPart[ord[k]] : 1.f;
@@ -103,6 +120,7 @@ __global__ void __launch_bounds__(128) akpl_force(int N, int mode, const int* or
         float PX[9]; mm3(tau, XiT, PX);                                          // P_X = τ X⁻ᵀ
         for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s_ = 0.f; for (int j=0;j<3;j++) s_ += PX[r*3+j]*F[c*3+j]; Gm[r*3+c] = w*s_; }
         if (!bad) AKNC(7, akpl_isf(Gm, 9));
+        akpl_bar(X, F, w, bk*prm[0], bjh, bje, Gm, nbar);
     }
 akpl_red:
     if (g >= 0) {                                                               // 묶음 몫: 원자 합으로 GmG, 사면체 구간 합에서는 뺀다
