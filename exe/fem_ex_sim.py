@@ -2827,6 +2827,16 @@ class Opt:
                 gn_ = self.gl[:T_][ing_].view(-1, 4, 3).norm(dim=-1)
                 kt_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2 * 2.0 * a.akg_hg * mu) * self.akg_W[:T_][ing_][:, None] * gn_ * gn_.sum(1, keepdim=True)
                 self.mcfl.index_add_(0, self.tets[:T_][ing_].reshape(-1), kt_.reshape(-1))
+            if AKG and a.akg_empty:                                                 # 절 AG.18: 묶음 사상 Ā 를 통한 결합 강성의 Gershgorin 상계 (칸 안 모든 노드가 묶인다)
+                T_ = self.T
+                ing_ = self.akg_tg[:T_] >= 0
+                g_ = self.akg_tg[:T_][ing_].long()
+                gn_ = self.gl[:T_][ing_].view(-1, 4, 3).norm(dim=-1)
+                VG_ = self.akg_VG[g_].clamp_min(1e-30)
+                wr_ = self.akg_W[:T_][ing_] / VG_                                    # W_t / V_g (Ā 에서 이 사면체의 몫)
+                Sg = torch.zeros(self.Pcap, device=dev).index_add_(0, g_, wr_ * gn_.sum(1))   # Σ_t (W_t/V_g) Σ_j |∇λ_j|
+                kg_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2 * (lam + 2.0 * mu)) * (VG_ * wr_ * Sg[g_])[:, None] * gn_
+                self.mcfl.index_add_(0, self.tets[:T_][ing_].reshape(-1), kg_.reshape(-1))
         if a.ah_mlow > 0 and not hasattr(self, "_mfl"):                          # 절 AH.18: 첫 프레임 (데우기 프레임, 측정 밖) 에 한 번
             mn_ = self.mn[:self.M]
             self._mfl = float(a.ah_mlow * mn_[mn_ > 0].median())
