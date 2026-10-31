@@ -131,7 +131,12 @@ V13 = {
     "akb1": (AKB + " --akb_kappa 1", True),
     "akb10": (AKB + " --akb_kappa 10", True),
 }
-SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11, "12": V12, "13": V13}
+# 14 차 (절 AG.15): 국소 CFL 관성 질량 -- 탄성 씬에서 나빠지지 않는지 (절 AH.19 확정 판 = 클램프 판, 절 AK 기본 입자 적분점 판 각각에)
+V14 = {
+    "ml10mc": (BWG + " --ah_mlow 0.1 --ah_mcfl 1", True),
+    "akbmc": (AKB + " --ah_mcfl 1", True),
+}
+SETS = {"1": V1, "2": V2, "3": V3, "4": V4, "5": V5, "6": V6, "7": V7, "8": V8, "9": V9, "10": V10, "11": V11, "12": V12, "13": V13, "14": V14}
 S = SETS[os.environ.get("AH_SET", "1")]
 pick = [q for q in os.environ.get("AH_V", "").split(",") if q] or list(S)
 NM = [float(q) for q in os.environ.get("AH_N", "1").split(",")]
