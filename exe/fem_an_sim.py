@@ -828,16 +828,30 @@ def frame(fi, x, v, F):
     nbt = nb[0] * nb[1] * nb[2]
     cid = (bb[:, 0] * nb[1] + bb[:, 1]) * nb[2] + bb[:, 2]
     fx = y - base
-    W, GW = bsw(fx)
-    nid = ((bb[:, None, 0] + OFF[None, :, 0]) * nb[1] + bb[:, None, 1] + OFF[None, :, 1]) * nb[2] + bb[:, None, 2] + OFF[None, :, 2]
-    mnd = torch.zeros(nbt, device=dev, dtype=D64).index_add_(0, nid.reshape(-1), (W * m64[:, None]).reshape(-1))
-    act = torch.nonzero(mnd > 0).flatten()
-    na = act.numel()
-    cmp_ = torch.full((nbt,), -1, device=dev, dtype=torch.long)
-    cmp_[act] = torch.arange(na, device=dev)
-    nidc = cmp_[nid]
-    mn = mnd[act]
-    mv = torch.zeros(na, 3, device=dev, dtype=D64).index_add_(0, nidc.reshape(-1), (W[..., None] * (m64[:, None] * v)[:, None, :]).reshape(-1, 3))
+    if a.fast:                                                                         # P2G 커널 (기저를 커널 안에서; 상자 질량 -> 활성 노드 -> 압축 질량·운동량)
+        nbT = torch.tensor(nb, device=dev, dtype=torch.int32)
+        yc = y.contiguous()
+        AiT = Ai64.contiguous()
+        mnd = torch.zeros(nbt, device=dev, dtype=D64)
+        AK.launch("an_p2g", Np, (np.int32(Np), AK.P(yc), AK.P(v), AK.P(m64), AK.P(AiT), AK.P(bmin), AK.P(nbT), AK.P(None), AK.P(mnd), AK.P(None)))
+        act = torch.nonzero(mnd > 0).flatten()
+        na = act.numel()
+        cmp_ = torch.full((nbt,), -1, device=dev, dtype=torch.long)
+        cmp_[act] = torch.arange(na, device=dev)
+        mn = torch.zeros(na, device=dev, dtype=D64)
+        mv = torch.zeros(na, 3, device=dev, dtype=D64)
+        AK.launch("an_p2g", Np, (np.int32(Np), AK.P(yc), AK.P(v), AK.P(m64), AK.P(AiT), AK.P(bmin), AK.P(nbT), AK.P(cmp_), AK.P(mn), AK.P(mv)))
+    else:
+        W, GW = bsw(fx)
+        nid = ((bb[:, None, 0] + OFF[None, :, 0]) * nb[1] + bb[:, None, 1] + OFF[None, :, 1]) * nb[2] + bb[:, None, 2] + OFF[None, :, 2]
+        mnd = torch.zeros(nbt, device=dev, dtype=D64).index_add_(0, nid.reshape(-1), (W * m64[:, None]).reshape(-1))
+        act = torch.nonzero(mnd > 0).flatten()
+        na = act.numel()
+        cmp_ = torch.full((nbt,), -1, device=dev, dtype=torch.long)
+        cmp_[act] = torch.arange(na, device=dev)
+        nidc = cmp_[nid]
+        mn = mnd[act]
+        mv = torch.zeros(na, 3, device=dev, dtype=D64).index_add_(0, nidc.reshape(-1), (W[..., None] * (m64[:, None] * v)[:, None, :]).reshape(-1, 3))
     vn = mv / mn[:, None]
     # 가우스 점 (칸마다 8 점, 같은 가중 = 칸 입자 부피 / 8, 질량 = 칸 입자 질량 / 8)
     uc, cinv = torch.unique(cid, return_inverse=True)
@@ -906,11 +920,16 @@ def frame(fi, x, v, F):
     STAT["nmv"] = el.nmv
     # G2P (프레임 끝 한 번)
     tg = tsec("G2P"); tg.__enter__()
-    Ug = U[nidc]
-    x2 = x + (W[..., None] * Ug).sum(1)
-    v2 = (W[..., None] * vn[nidc]).sum(1)
-    Am = I3 + torch.einsum("pna,pnb->pab", Ug, GW)
-    F2 = (Am @ F.reshape(Np, 3, 3)).reshape(Np, 9)
+    if a.fast:
+        x2 = torch.empty_like(x); v2 = torch.empty_like(v); F2 = torch.empty_like(F)
+        AK.launch("an_g2p", Np, (np.int32(Np), AK.P(yc), AK.P(x), AK.P(F.contiguous()), AK.P(AiT), AK.P(bmin), AK.P(nbT), AK.P(cmp_), AK.P(U.contiguous()), AK.P(vn.contiguous()),
+                                 AK.P(x2), AK.P(v2), AK.P(F2)))
+    else:
+        Ug = U[nidc]
+        x2 = x + (W[..., None] * Ug).sum(1)
+        v2 = (W[..., None] * vn[nidc]).sum(1)
+        Am = I3 + torch.einsum("pna,pnb->pab", Ug, GW)
+        F2 = (Am @ F.reshape(Np, 3, 3)).reshape(Np, 9)
     tg.__exit__()
     return x2, v2, F2
 

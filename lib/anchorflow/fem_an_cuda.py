@@ -273,10 +273,51 @@ __global__ void an_b3(int n, const float* D, const float* r, float* z, float w) 
     z[i*3+1] = w*(d[3]*r0 + d[4]*r1 + d[5]*r2);
     z[i*3+2] = w*(d[6]*r0 + d[7]*r1 + d[8]*r2);
 }
+// P2G / G2P 공통: 입자 격자 좌표 y = Ai x (torch 에서 구한 값을 그대로 받아 칸 판정이 torch 쪽과 같게), base = floor(y − ½) − bmin (상자 안), fx = y − floor(y − ½), 27 노드 (상자 번호 → 압축 번호 cmp)
+__device__ __forceinline__ void bw64(double f, double* w, double* d) {
+    w[0] = 0.5*(1.5-f)*(1.5-f); w[1] = 0.75-(f-1.0)*(f-1.0); w[2] = 0.5*(f-0.5)*(f-0.5);
+    d[0] = f-1.5; d[1] = -2.0*(f-1.0); d[2] = f-0.5;
+}
+__global__ void an_p2g(int N, const double* Y, const double* v, const double* m, const double* Ai, const long long* bmin, const int* nb, const long long* cmp,
+                       double* mn, double* mv) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    double y[3]; int b[3]; double w[3][3], dw[3][3];
+    for (int a=0;a<3;a++) { y[a] = Y[p*3+a]; double fb = floor(y[a] - 0.5); b[a] = (int)(fb - (double)bmin[a]); bw64(y[a] - fb, w[a], dw[a]); }
+    double mp = m[p];
+    for (int o=0;o<27;o++) {
+        int i = o / 9, j = (o / 3) % 3, k = o % 3;
+        long long nid = ((long long)(b[0]+i)*nb[1] + (b[1]+j))*nb[2] + (b[2]+k);
+        long long c = cmp ? cmp[nid] : nid;
+        double ww = w[0][i]*w[1][j]*w[2][k]*mp;
+        atomicAdd(&mn[c], ww);
+        if (mv) for (int a=0;a<3;a++) atomicAdd(&mv[c*3+a], ww*v[p*3+a]);
+    }
+}
+__global__ void an_g2p(int N, const double* Y, const double* x, const double* F, const double* Ai, const long long* bmin, const int* nb, const long long* cmp,
+                       const double* U, const double* vn, double* x2, double* v2, double* F2) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    double y[3]; int b[3]; double w[3][3], dw[3][3];
+    for (int a=0;a<3;a++) { y[a] = Y[p*3+a]; double fb = floor(y[a] - 0.5); b[a] = (int)(fb - (double)bmin[a]); bw64(y[a] - fb, w[a], dw[a]); }
+    double u[3] = {0,0,0}, vv[3] = {0,0,0};
+    double A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int o=0;o<27;o++) {
+        int i = o / 9, j = (o / 3) % 3, k = o % 3;
+        long long nid = ((long long)(b[0]+i)*nb[1] + (b[1]+j))*nb[2] + (b[2]+k);
+        long long c = cmp[nid];
+        double ww = w[0][i]*w[1][j]*w[2][k];
+        double gy[3] = {dw[0][i]*w[1][j]*w[2][k], w[0][i]*dw[1][j]*w[2][k], w[0][i]*w[1][j]*dw[2][k]};
+        double gx[3]; for (int bb=0;bb<3;bb++) gx[bb] = Ai[0*3+bb]*gy[0] + Ai[1*3+bb]*gy[1] + Ai[2*3+bb]*gy[2];
+        for (int a=0;a<3;a++) { double uu = U[c*3+a]; u[a] += ww*uu; vv[a] += ww*vn[c*3+a]; for (int bb=0;bb<3;bb++) A[a*3+bb] += uu*gx[bb]; }
+    }
+    for (int a=0;a<3;a++) { x2[p*3+a] = x[p*3+a] + u[a]; v2[p*3+a] = vv[a]; }
+    for (int a=0;a<3;a++) for (int bb=0;bb<3;bb++) { double t = 0.0; for (int kk=0;kk<3;kk++) t += A[a*3+kk]*F[(size_t)p*9+kk*3+bb]; F2[(size_t)p*9+a*3+bb] = t; }
+}
 }
 '''
 _MOD = [None]
-NAMES = ("an_elem", "an_mv", "an_bd", "an_rsp", "an_rsf", "an_mv32", "an_bd32", "an_b3")
+NAMES = ("an_elem", "an_mv", "an_bd", "an_rsp", "an_rsf", "an_mv32", "an_bd32", "an_b3", "an_p2g", "an_g2p")
 
 
 def P(t):
