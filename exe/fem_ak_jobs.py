@@ -101,6 +101,8 @@ for _k in list(VAR):
     if "@NOFAST" in VAR[_k]:
         VAR[_k] = VAR[_k].replace("@NOFAST", "").replace(" --ak_pq4", "").replace(" --ak_prep", "").replace(" --ak_fuse", "").replace(" --ak_fstep", "")
 VAR["sel"] = VAR["pqf3"].replace(" --ak_fuse", "") + " --ak_sfcr --ak_sel"           # 절 AK.25 선택 적분 (θ 없음, 융합 없이)
+for _a in ("0.1", "0.25", "0.5"):
+    VAR["sel" + _a.replace("0.", "")] = VAR["sel"] + " --ak_sela " + _a
 
 
 def line(sc, vk, fk="", r=1, extra="", kind="r", tagx=""):

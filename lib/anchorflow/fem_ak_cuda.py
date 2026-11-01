@@ -14,6 +14,7 @@ _AK = r'''
 #include <cuda_fp16.h>
 extern "C" {
 // 빠른 FCR P (입자 스레드 판): Q = 빠른 극분해 (절 C c_polar_fast), J = |det X| (sp_fcr_P 의 Π max(σ, 0.01) 와 σ ≥ 0.01 에서 같다)
+__device__ float AKSELA;                                                            // 절 AK.25: 선택 적분 섞기 α (전단 사상 = (1 − α) 칸 평균 + α 자기 사면체; 모래시계 억제)
 __device__ float* AKLR;                                                             // 절 AK.16: 입자별 λ 몫 배율 (정렬 순서; null = 1) -- 탄성 부피 상한을 전단 몫에만 쓸 때 λ 몫을 입자 부피 그대로로 되돌림
 __device__ int AKPIT;                                                                // 극분해 반복 상한 (0 = c_polar_fast 그대로 -- 수렴 1e-7 까지 최대 10 회)
 __device__ __forceinline__ void ak_polar_n(const float* F, float* Q, int nit) {
@@ -551,7 +552,7 @@ __global__ void __launch_bounds__(128) ak_sel_p(int N, const int* tt, const long
             for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
         long long cc = tcell[t];
         float v = cV[cc];
-        if (v > 0.f) for (int j=0;j<9;j++) Ab[j] = cA[cc*9+j]/v; else for (int j=0;j<9;j++) Ab[j] = A[j];
+        if (v > 0.f) for (int j=0;j<9;j++) Ab[j] = (1.f - AKSELA)*cA[cc*9+j]/v + AKSELA*A[j]; else for (int j=0;j<9;j++) Ab[j] = A[j];
         for (int j=0;j<9;j++) Fb[j] = FT[(long long)t*9+j];
     }
     for (int j=0;j<9;j++) { A[j] = __shfl_sync(0xffffffffu, A[j], hl); Ab[j] = __shfl_sync(0xffffffffu, Ab[j], hl); Fb[j] = __shfl_sync(0xffffffffu, Fb[j], hl); }
@@ -575,9 +576,9 @@ __global__ void __launch_bounds__(128) ak_sel_p(int N, const int* tt, const long
     }
     if (!on || !head) return;
     for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
-        for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += Gl[c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
+        for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += (Gl[c*3+q] + AKSELA*Gm[c*3+q])*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
     long long cc = tcell[t];
-    for (int j=0;j<9;j++) atomicAdd(&cG[cc*9+j], Gm[j]);
+    for (int j=0;j<9;j++) atomicAdd(&cG[cc*9+j], (1.f - AKSELA)*Gm[j]);
 }
 // μ 몫 칸 합을 칸 안 점유 사면체에 V_t/V_c 로 나눠 노드 힘 (사면체 스레드)
 __global__ void ak_selF(const int* tl, const int* tlc, const long long* tets, const float* gl, const float* VT, const long long* tcell, const float* cG, const float* cV, float* f) {
@@ -614,6 +615,13 @@ def set_sfcr(on):
     if _MOD[0] is None:
         _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     cp.ndarray((1,), cp.int32, _MOD[0].get_global("AKSFCR"))[:] = 1 if on else 0
+
+
+def set_sela(al):
+    """AKSELA (선택 적분 섞기 α)."""
+    if _MOD[0] is None:
+        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+    cp.ndarray((1,), cp.float32, _MOD[0].get_global("AKSELA"))[:] = float(al)
 
 
 def set_lr(t):

@@ -238,6 +238,7 @@ ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적�
 ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
 ap.add_argument("--ak_acclam", action="store_true", help="절 AK.19 (정의 변경): 바닥 접촉 입자의 고착 질량을 사면체 네 노드에 같은 몫 (m_p/4) 대신 barycentric λ 몫으로 (입자 판정 그대로; 고착이 입자 가까운 노드에 몰려 위쪽 노드로 덜 번짐)")
+ap.add_argument("--ak_sela", type=float, default=0.0, help="--ak_sel 섞기 α: 전단 사상 = (1 − α) 칸 평균 + α 자기 사면체 (모래시계 억제; 0 = 순수 선택 적분)")
 ap.add_argument("--ak_sel", action="store_true", help="절 AK.25 (정의 변경): 선택 적분 -- 전단 (μ) 몫은 칸 (Kuhn 정육면체 6 사면체) 점유 가중 평균 사상, 부피 몫은 사면체 자기 사상 (굽힘 잠김만 풀고 균일 변형 강성은 그대로; --ak_pq --ak_pq4 --ak_prep, 융합 없이)")
 ap.add_argument("--ak_sfcr", action="store_true", help="절 AK.18: 입자 적분점 FCR 을 표준 식으로 (Stomakhin 2012: 진 회전 R, 부피 항 λ (J − 1) cof F, J = det F 부호 그대로) -- 기존 커널은 J = |det|·부호, 반사 Q")
 ap.add_argument("--ak_capmu", action="store_true", help="절 AK.16 (정의 변경): 탄성 부피 상한 (--sp vcap θ) 을 전단 (μ) 몫에만 -- λ 몫은 입자 부피 그대로 (--ak_pq4 --ak_prep 경로)")
@@ -563,6 +564,8 @@ if a.ak_sfcr:
         AKPLC.set_sfcr(True)
 P2 = bool(a.ak_p2)
 AKSEL = bool(a.ak_sel)
+if AKSEL:
+    AKC.set_sela(a.ak_sela)
 if AKSEL and not (AKPQ and a.ak_pq4 and a.ak_prep and not a.ak_fuse and not P2):
     raise SystemExit("--ak_sel 은 --ak_pq --ak_pq4 --ak_prep (융합·2 차 없이) 만")
 if P2 and not (AKPQ and not a.ak_pq4 and not a.ak_prep and not a.ak_fuse and a.ak_eps < 0 and not a.affine and a.fupd == "T" and not AI2 and a.ai_g2p == "T"
