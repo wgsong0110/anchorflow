@@ -1148,6 +1148,7 @@ flog = open(os.path.join(a.out, "fem.jsonl"), "w")
 errs, secs = [], []
 div_at = None
 PRED = torch.empty(L, Np, 3) if a.dump else None
+FDMP = torch.empty(L, Np, 3, 3) if a.dump else None                                # 절 AO: 렌더용 입자 F (lb_roll_to_h5 형식)
 AK.mod()
 AK.PROF["on"] = bool(a.prof)
 for fi in range(L):
@@ -1174,8 +1175,9 @@ for fi in range(L):
           f"소성 점 (꼬리, 꼭짓점) {STAT.get('q_plast')} 입자 {STAT.get('p_plast')} 구속 입자 {STAT.get('pbc_p')} 고정 노드 {STAT.get('pbc_fix')}", flush=True)
     if PRED is not None:
         PRED[fi] = x2.float().cpu()
+        FDMP[fi] = F2.reshape(Np, 3, 3).float().cpu()
         if a.save_every > 0 and (fi + 1) % a.save_every == 0:
-            torch.save({"pred": PRED[:fi + 1].clone(), "frames_done": fi + 1}, os.path.join(a.out, "pred_part.pt"))
+            torch.save({"pred": PRED[:fi + 1].clone(), "F": FDMP[:fi + 1].clone(), "frames_done": fi + 1}, os.path.join(a.out, "pred_part.pt"))
     x, v, F = x2, v2, F2
     if not fin or e > 2.0:
         div_at = fi + 1
@@ -1186,6 +1188,6 @@ summ = dict(args=vars(a), frames=L, frames_done=len(errs), diverged=div_at, err_
             err_mean_done=float(np.nanmean(errs)), s_mean=float(np.mean(sc)) if sc else None, dt=DT, cell=dxl)
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), indent=1, ensure_ascii=False)
 if PRED is not None:
-    torch.save({"pred": PRED[:len(errs)]}, os.path.join(a.out, "pred.pt"))             # 절 AO: 발산해도 끝난 프레임까지 저장
+    torch.save({"pred": PRED[:len(errs)], "F": FDMP[:len(errs)]}, os.path.join(a.out, "pred.pt"))             # 절 AO: 발산해도 끝난 프레임까지 저장
 print(f"[롤아웃] {a.tag} 절 AO 암시적 B-스플라인{' 모래' if SAND else ''} {a.integ} K {a.K} 셀 {a.cell}: {len(errs)}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%, "
       f"프레임당 {summ['s_mean']} s (검증판)", flush=True)
