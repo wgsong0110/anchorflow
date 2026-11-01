@@ -274,6 +274,7 @@ ap.add_argument("--akg_mass_sp", action="store_true", help="--akg_mass: 칸으�
 ap.add_argument("--ah_mcfl_F", action="store_true", help="절 AG.19: 국소 CFL 상계의 계수에 입자 F 의 늘어남·눌림 몫 max(1, (1+σ_min⁻²)/2, σ_max²) (프레임 시작 F)")
 ap.add_argument("--akg_fd_n", type=int, default=0, help="절 AG.19 진단: 뒤집힌 셀 수가 늘 때마다 K 번까지 유한 차분 실제 강성 대 상계")
 ap.add_argument("--ah_mcfl_Fs", action="store_true", help="절 AG.19 (--ah_mcfl_F 와): 입자 계수를 FCR 접선 강성 해석 상계 (|σ|) 로, 서브스텝마다 현재 A_T F_p 로 다시 잡아 국소 CFL 상계를 프레임 안 단조 증가 (프레임마다 초기화)")
+ap.add_argument("--ah_imex_pl", action="store_true", help="절 AG.19: --ah_imex 노드 블록을 서브스텝마다 소성 RM 뒤 탄성 F_e 기준 선형 접선으로 (증분 RM 판, --akpl_trial 로 상태는 서브스텝마다 한 번 커밋)")
 ap.add_argument("--akg_fd", action="store_true", help="절 AG.18 진단 (--akpl_cause, 탄성): 첫 뒤집힌 셀 노드의 실제 접선 강성 (유한 차분) 대 국소 CFL 상계")
 ap.add_argument("--akg_mass_dbg", action="store_true", help="--akg_mass 진단: 프레임마다 질량 분배 통계")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
@@ -2071,6 +2072,13 @@ class Opt:
                                              np.float32(a.ah_mcfl * (hs_ / 2.0) ** 2 * (lam + 2.0 * mu)), np.float32(a.ah_mcfl * (hs_ / 2.0) ** 2), EX.P(self.mcfl)), b=128)
             if AKG:
                 AHC.launch("akfs_g", self.Pcap, (np.int32(self.Pcap), EX.P(self._fsGu), EX.P(self._fsGn)), b=256)
+        if a.ah_imex and a.ah_imex_pl and PQPL:                                    # 절 AG.19: 재질 씬 -- 노드 블록을 서브스텝마다 소성 RM 뒤 탄성 F_e (커밋된 이 서브스텝 상태) 의 선형 접선으로
+            self.ahkd.zero_()
+            AHC.launch("ah_kd_pq", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.gl), EX.P(self.plFe), EX.P(self.akw),
+                                        EX.P(self.aklr if a.ak_capmu else None), EX.P(self.akg_gpb if AKG else None), np.float32(mu), np.float32(lam), EX.P(self.ahkd)), b=128)
+            if AKG and a.akg_empty:
+                AHC.launch("akg_kd", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.gl), EX.P(self.akg_W), EX.P(self.akg_VG),
+                                                 EX.P(self.akg_MG), np.float32(2.0 * a.akg_hg * mu), EX.P(self.ahkd)), b=128)
         if a.ah_imex and a.ah_imex_rel:                                            # 절 AG.18: 이웃 결합 (힘 뒤·노드 걸음 앞)
             AHC.launch("ah_imx_nb", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.akg_W if (AKG and a.akg_empty) else None),
                                                 EX.P(self.vn), EX.P(self.f), EX.P(self.mn), EX.P(self.mcfl), np.float32(hs_), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
