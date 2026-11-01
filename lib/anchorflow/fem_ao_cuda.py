@@ -53,12 +53,14 @@ __global__ void ao_elem(int nq, const int* qn, const double* G, const double* Fq
     int st = ao_dp(S, cdp, sgn, sg, ep, e, tr, rho, s);
     if (pst && on) pst[qq] = (unsigned char)st;
     double K3 = lam + 2.0*mu/3.0;
-    double tau[3], ss[3], p[3];
+    double tau[3], ss[3], p[3], pe[3];
     for (int i=0;i<3;i++) {
         tau[i] = (st == 2) ? 0.0 : ((st == 1) ? (K3*tr + 2.0*mu*s*e[i]) : (2.0*mu*ep[i] + lam*tr));
         ss[i] = sgn[i]*sg[i];
         p[i] = tau[i]/ss[i];
+        pe[i] = (2.0*mu*ep[i] + lam*tr)/ss[i];                                  // 시험 상태 탄성 (Hencky) 응력 주값 -- mode 64 접선용
     }
+    const bool elt = (mode & 64) != 0;                                          // mode 64: 탄성 접선 (초기 강성법) = 시험 X 의 Hencky 헤시안 (투영), 응력은 RM 그대로
     double vq = on ? Vq[qq] : 0.0;
     if (mode & 1) {
         double P[9];
@@ -77,12 +79,13 @@ __global__ void ao_elem(int nq, const int* qn, const double* G, const double* Fq
         if (st == 1 && rho > 0.0) for (int i=0;i<3;i++) eh[i] = e[i]/rho;
         for (int i=0;i<3;i++) for (int j=0;j<3;j++) {
             double c;
-            if (st == 0) c = ((i==j) ? 2.0*mu : 0.0) + lam;
+            if (st == 0 || elt) c = ((i==j) ? 2.0*mu : 0.0) + lam;
             else if (st == 1) c = K3 + 2.0*mu*s*(((i==j) ? 1.0 : 0.0) - 1.0/3.0 - eh[i]*eh[j]) - ((mode & 32) ? 2.0*mu*cdp*eh[i] : 0.0);   // mode 32: 일관 접선 (비대칭 결합 항 −2μc ê_i 포함)
             else c = 0.0;
             C[i][j] = c;
         }
-        for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = C[i][j]/(ss[i]*ss[j]) - ((i==j) ? p[i]/ss[i] : 0.0);
+        const double* pp_ = elt ? pe : p;
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = C[i][j]/(ss[i]*ss[j]) - ((i==j) ? pp_[i]/ss[i] : 0.0);
         double Dk[3][3]; for (int i=0;i<3;i++) for (int j=0;j<3;j++) Dk[i][j] = D[i][j];
         double h[81];
         for (int k=0;k<81;k++) h[k] = 0.0;
@@ -106,9 +109,9 @@ __global__ void ao_elem(int nq, const int* qn, const double* G, const double* Fq
         for (int pp=0; pp<3; pp++) {
             int i = PI[pp], j = PJ[pp];
             double den = ss[i] + ss[j];
-            double lt = (fabs(den) > 1e-12) ? (p[i] + p[j])/den : 0.0;
+            double lt = (fabs(den) > 1e-12) ? (pp_[i] + pp_[j])/den : 0.0;
             double dd = ss[i] - ss[j];
-            double lf = (fabs(dd) > 1e-9*(fabs(ss[i]) + fabs(ss[j]))) ? (p[i] - p[j])/dd : (Dk[i][i] - Dk[i][j]);
+            double lf = (fabs(dd) > 1e-9*(fabs(ss[i]) + fabs(ss[j]))) ? (pp_[i] - pp_[j])/dd : (Dk[i][i] - Dk[i][j]);
             if (mode & 32) { lt = isfinite(lt) ? lt : 0.0; lf = isfinite(lf) ? lf : 0.0; }
             else { lt = isfinite(lt) ? fmax(lt, 0.0) : 0.0; lf = isfinite(lf) ? fmax(lf, 0.0) : 0.0; }
             double et[9], ef[9];

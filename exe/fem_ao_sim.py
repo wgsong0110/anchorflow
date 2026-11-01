@@ -68,7 +68,7 @@ ap.add_argument("--pbc_ns", type=int, default=4, help="구속 노드 몫 α 를 
 ap.add_argument("--no_pbc_pv", action="store_true", help="프레임 시작 구속 입자 v = 0 덮어쓰기 끔")
 ap.add_argument("--ls_mode", choices=["work", "res"], default="res", help="모래 선탐색 기준: work = 방향을 따른 일 W(c) = ∫₀ᶜ g(η + s δ)·δ ds (사다리꼴; 퍼텐셜이 있으면 에너지 차) 에 아르미호, "
                 "res = 잔차 노름 |g|² (PCG 를 덜 돌린 방향은 잔차 노름을 줄인다는 보장이 없어 가속 판에서 모두 거부됨)")
-ap.add_argument("--tan", choices=["sym", "cons"], default="sym", help="모래 접선: sym = 결합 항을 뺀 대칭 반양정치 (PCG 용), cons = 일관 접선 그대로 (비대칭·투영 없음, --lin gmres 와 함께)")
+ap.add_argument("--tan", choices=["sym", "cons", "el"], default="sym", help="모래 접선: sym = 결합 항을 뺀 대칭 반양정치 (PCG 용), cons = 일관 접선 그대로 (비대칭·투영 없음, --lin gmres 와 함께)")
 ap.add_argument("--lin", choices=["pcg", "gmres"], default="pcg", help="뉴턴 선형 풀이: PCG (대칭 필요) 또는 오른쪽 전처리 GMRES (재시작 --gm_m, 총 곱 수 --cg, 허용치 --cg_tol)")
 ap.add_argument("--gm_m", type=int, default=30)
 ap.add_argument("--mlow", type=float, default=0.0, help="절 AO: 노드 질량 < mlow x 중앙값 인 노드 (B-스플라인 가장자리, 질량 1e-50 대) 를 풀이에서 빼 관성 예측 ŷ 에 둠 (0 = 끔). "
@@ -77,6 +77,7 @@ ap.add_argument("--vdiv", type=float, default=200.0, help="입자 속력이 이 
 ap.add_argument("--vdiag", type=float, default=0.0, help="진단: 프레임 끝 노드 속력이 이 값을 넘으면 가장 빠른 노드 10 개의 질량 비·구속 인자·붙은 가우스 점 상태 수를 vdiag.jsonl 에")
 ap.add_argument("--merit", choices=["pres", "res"], default="pres", help="모래 잔차 선탐색 기준: pres = |P g|² (P = 노드 블록 야코비 (m/τ² + TᵀK_nnT)⁻¹, 변위 단위 -- 가벼운 노드의 잔차 m η 가 작아 |g|² 에서 무시되는 문제), res = |g|²")
 ap.add_argument("--gm_left", type=int, default=1, help="GMRES 왼쪽 전처리 (1) / 오른쪽 (0)")
+ap.add_argument("--sand_ls", type=int, default=1, help="모래 정밀 판 선탐색 (0 = 늘 온 걸음; 탄성 접선 초기 강성법은 축약 사상이라 선탐색 없이도 됨)")
 ap.add_argument("--ls_c", default="0.03125,0.0625,0.125,0.25,0.5,1.0", help="가속 판 모래 선탐색 후보 보폭 (작은 것부터; 받아들여지는 가장 큰 것). 절 AN 의 ¼·½·1 은 모래에서 모두 거부됨 (정밀 판은 ⅛ 이하를 받아들였다)")
 ap.add_argument("--ls_fb", type=float, default=0.0, help="가속 판 잔차 선탐색에서 후보가 모두 거부되면 쓸 보폭 (0 = 움직이지 않음, 절 AN 과 같음)")
 ap.add_argument("--save_every", type=int, default=10, help="pred 를 이 프레임마다 중간 저장 (발산해도 덤프 남김)")
@@ -274,7 +275,7 @@ class Elem:
             if not hasattr(s, "pst"):
                 s.pst = torch.zeros(s.nq, device=dev, dtype=torch.uint8)
             AO.launch("ao_elem", s.nq, (np.int32(s.nq), AK.P(s.qn), AK.P(s.G), AK.P(s.Fq), AK.P(s.Vq), AK.P(y.contiguous()), np.float64(mu), np.float64(lam), np.float64(CDP),
-                                        np.int32(mode | (32 if (a.tan == "cons" and (mode & 2) and s.na == STAT.get("na", -1)) else 0)), AK.P(f), AK.P(s.H), AK.P(getattr(s, "H32", None)), AK.P(s.pst)))
+                                        np.int32(mode | (32 if (a.tan == "cons" and (mode & 2) and s.na == STAT.get("na", -1)) else 0) | (64 if a.tan == "el" else 0)), AK.P(f), AK.P(s.H), AK.P(getattr(s, "H32", None)), AK.P(s.pst)))
             return None, f
         AK.launch("an_elem", s.nq, (np.int32(s.nq), AK.P(s.qn), AK.P(s.G), AK.P(s.Fq), AK.P(s.Vq), AK.P(y.contiguous()), np.float64(mu), np.float64(lam),
                                     np.int32(mode), AK.P(s.E), AK.P(f), AK.P(s.H), AK.P(getattr(s, "H32", None))))
@@ -995,8 +996,8 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
         tls = tsec("선탐색"); tls.__enter__()
         gd = float((g * dl).sum())
         st = 1.0
-        ok = False
-        for li in range(12):
+        ok = SAND and not a.sand_ls                                                    # 선탐색 끔: 온 걸음
+        for li in range(0 if ok else 12):
             et = eta + st * dl
             if SAND and a.ls_mode == "work":                                           # 일 W(st) ≈ st/2 (g(0)·δ + g(st)·δ)
                 _, ft = el.eval(yfun(et), 1)
