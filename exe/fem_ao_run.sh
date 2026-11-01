@@ -31,7 +31,7 @@ for e in "$@"; do
     echo "카드 $G $(cat .done) $(date '+%F %T') 인자 $A" > $O/run_info.txt
     nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader > $O/apps_at_start.txt
     UU=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader | awk -F', ' -v g=$G '$1==g{print $2}')
-    CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_ao_sim.py --data $DATA --out $O --tag wolf --frames ${AO_FR:-10} --floor vel --pbc ${AO_DUMP---dump} $A < /dev/null > $O/log.txt 2>&1 &
+    CUDA_VISIBLE_DEVICES=$G $PY -u exe/${AO_SIM:-fem_ao_sim.py} --data $DATA --out $O --tag wolf --frames ${AO_FR:-10} --floor vel --pbc ${AO_DUMP---dump} $A < /dev/null > $O/log.txt 2>&1 &
     PP=$!
     while kill -0 $PP 2>/dev/null; do nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader | awk -F', ' -v u=$UU -v t=$(date +%s) '$1==u{print t, $2}' >> $O/apps_during.txt; sleep 5; done
     wait $PP; RC=$?
