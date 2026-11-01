@@ -15,6 +15,10 @@ _AK = r'''
 extern "C" {
 // 빠른 FCR P (입자 스레드 판): Q = 빠른 극분해 (절 C c_polar_fast), J = |det X| (sp_fcr_P 의 Π max(σ, 0.01) 와 σ ≥ 0.01 에서 같다)
 __device__ float AKSELA;                                                            // 절 AK.25: 선택 적분 섞기 α (전단 사상 = (1 − α) 칸 평균 + α 자기 사면체; 모래시계 억제)
+__device__ int* AKPE;                                                              // 절 AK.27 ES-FEM: 입자 (정렬 순서) 의 사면체 안 변 번호 0..5 (null = 끔)
+__device__ const float* AKLM;                                                      //   입자 barycentric (원래 순서, [N,4])
+__device__ const long long* AKROWS;                                                //   입자 사면체 노드 (원래 순서, [N,4])
+__device__ const long long* AKTETS;                                                //   사면체 노드 [T,4]
 __device__ float* AKLR;                                                             // 절 AK.16: 입자별 λ 몫 배율 (정렬 순서; null = 1) -- 탄성 부피 상한을 전단 몫에만 쓸 때 λ 몫을 입자 부피 그대로로 되돌림
 __device__ int AKPIT;                                                                // 극분해 반복 상한 (0 = c_polar_fast 그대로 -- 수렴 1e-7 까지 최대 10 회)
 __device__ __forceinline__ void ak_polar_n(const float* F, float* Q, int nit) {
@@ -384,6 +388,19 @@ __global__ void ak_prep_scatter(int N, const long long* pinv, const float* vol, 
     float v = vs[t];
     w[k] = vol[p] * VT[t] / (v > 1e-30f ? v : 1e-30f);
     if (AKLR) AKLR[k] = (VT[t] > 1e-30f) ? v / VT[t] : 1.f;
+    if (AKPE) {                                                                     // 절 AK.27: 변 부분 영역 = barycentric 가장 큰 둘의 변 (ES-FEM-T4 부분 영역과 같은 분할)
+        int a0 = 0, b0 = 1;
+        float la = AKLM[p*4+0], lb = AKLM[p*4+1];
+        if (lb > la) { int q = a0; a0 = b0; b0 = q; float r = la; la = lb; lb = r; }
+        for (int i=2;i<4;i++) { float l = AKLM[p*4+i];
+            if (l > la) { b0 = a0; lb = la; a0 = i; la = l; } else if (l > lb) { b0 = i; lb = l; } }
+        long long na = AKROWS[p*4+a0], nb = AKROWS[p*4+b0];
+        int ia = -1, ib = -1;
+        for (int i=0;i<4;i++) { long long n = AKTETS[t*4+i]; if (n == na) ia = i; if (n == nb) ib = i; }
+        if (ia < 0 || ib < 0 || ia == ib) { ia = a0; ib = b0; }                    // rows 가 사면체 노드 순서와 같으면 그대로 (못 찾을 때 대비)
+        if (ia > ib) { int q = ia; ia = ib; ib = q; }
+        AKPE[k] = (ia == 0) ? ib - 1 : ((ia == 1) ? ib + 1 : 5);
+    }
     for (int j=0;j<9;j++) dF[(long long)k*9+j] = __float2half(Fp[(long long)p*9+j] - FT[t*9+j]);
 }
 // ======== 절 AK.13: 2 차 사면체 (10 노드: 꼭짓점 4 + 변 중점 6, 같은 Kuhn 격자) ========
@@ -592,6 +609,57 @@ __global__ void ak_selF(const int* tl, const int* tlc, const long long* tets, co
     for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
         for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += cG[cc*9+c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -r*s); } }
 }
+// ======== 절 AK.27: 변 기반 평활 FEM (ES-FEM-T4) + 입자 적분점 ========
+// 변 e 의 평활 사상 A_e = Σ_{T∋e} V_T A_T / Σ_{T∋e} V_T (실제 사면체 야코비안의 부피 가중 평균; 이웃 최소제곱 아님).
+// 사면체 T 를 변 6 개의 부분 영역 (barycentric 가장 큰 둘) 으로 나누고, 입자 p 는 자기 부분 영역 변 e(p) 의 A_e 로:
+//   E = Σ_p w_p ψ(A_{e(p)} F_p)   (ψ 는 원래 FCR + λ 몫 배율 그대로).  힘: G_e = Σ_{p∈e} w_p P_p F_pᵀ, 사면체 T 의 몫 Σ_{e∈T} (V_T/V_e) G_e 를 ∇λ 로.
+__device__ __constant__ int AKE2[6][2] = {{0,1},{0,2},{0,3},{1,2},{1,3},{2,3}};
+__global__ void ak_esA(const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* VT, const int* te,
+                       float* eA, float* eV) {
+    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i0 >= tlc[0]) return;
+    int t = tl[i0];
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+    for (int j=0;j<6;j++) { int e = te[t*6+j];
+        for (int k=0;k<9;k++) atomicAdd(&eA[(long long)e*9+k], V*A[k]);
+        atomicAdd(&eV[e], V); }
+}
+__global__ void __launch_bounds__(128) ak_es_p(int N, const int* tt, const float* FT, const __half* dF, const float* wp, const int* te, const int* pe,
+                              const float* eA, const float* eV, float mu, float lam, float* eG) {
+    int k = blockIdx.x*blockDim.x + threadIdx.x;
+    if (k >= N) return;
+    int t = tt[k];
+    int e = te[t*6 + pe[k]];
+    float v = eV[e];
+    if (!(v > 0.f)) return;
+    float Ab[9], F[9], X[9], P[9];
+    for (int j=0;j<9;j++) { Ab[j] = eA[(long long)e*9+j]/v; F[j] = FT[(long long)t*9+j] + __half2float(dF[(long long)k*9+j]); }
+    mm3(Ab, F, X);
+    ak_fcr_P(X, mu, lam * (AKLR ? AKLR[k] : 1.f), P);
+    float w = wp[k];
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; atomicAdd(&eG[(long long)e*9+r*3+c], w*s); }
+}
+__global__ void ak_esF(const int* tl, const int* tlc, const long long* tets, const float* gl, const float* VT, const int* te, const float* eG, const float* eV, float* f) {
+    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i0 >= tlc[0]) return;
+    int t = tl[i0];
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    float G[9] = {0,0,0,0,0,0,0,0,0};
+    for (int j=0;j<6;j++) { int e = te[t*6+j]; float r = V / eV[e]; for (int k=0;k<9;k++) G[k] += r*eG[(long long)e*9+k]; }
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += G[c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
+}
+__global__ void ak_esZ(int n, float* eA, float* eV, float* eG) {
+    int i = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    eV[i] = 0.f;
+    for (int k=0;k<9;k++) { eA[(long long)i*9+k] = 0.f; eG[(long long)i*9+k] = 0.f; }
+}
 __global__ void ak_selZ(int n, float* cA, float* cV, float* cG) {
     int i = blockIdx.x*blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -615,6 +683,14 @@ def set_sfcr(on):
     if _MOD[0] is None:
         _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     cp.ndarray((1,), cp.int32, _MOD[0].get_global("AKSFCR"))[:] = 1 if on else 0
+
+
+def set_es(pe, lm, rows, tets):
+    """절 AK.27 ES-FEM 전역 포인터 (pe None = 끔)."""
+    if _MOD[0] is None:
+        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+    for nm, t in (("AKPE", pe), ("AKLM", lm), ("AKROWS", rows), ("AKTETS", tets)):
+        cp.ndarray((1,), cp.uint64, _MOD[0].get_global(nm))[:] = 0 if t is None else t.data_ptr()
 
 
 def set_sela(al):

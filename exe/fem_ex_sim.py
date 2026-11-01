@@ -238,6 +238,7 @@ ap.add_argument("--ak_eps", type=float, default=-1.0, help="--ak_pq 혼합 적�
 ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 판 (--lim_sr ≥ 1e20) 노드 걸음 + 이동을 커널 하나로 (같은 식)")
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
 ap.add_argument("--ak_acclam", action="store_true", help="절 AK.19 (정의 변경): 바닥 접촉 입자의 고착 질량을 사면체 네 노드에 같은 몫 (m_p/4) 대신 barycentric λ 몫으로 (입자 판정 그대로; 고착이 입자 가까운 노드에 몰려 위쪽 노드로 덜 번짐)")
+ap.add_argument("--ak_es", action="store_true", help="절 AK.27 (정의 변경): 변 기반 평활 FEM (ES-FEM-T4) -- 입자 응력은 자기 사면체 A_T 대신 자기 부분 영역 변 (barycentric 가장 큰 둘) 의 평활 사상 A_e = Σ_{T∋e} V_T A_T / Σ V_T (실제 사면체 야코비안의 부피 가중 평균); 입자 F 갱신은 그대로 (--ak_pq --ak_pq4 --ak_prep, 융합 없이)")
 ap.add_argument("--ak_sela", type=float, default=0.0, help="--ak_sel 섞기 α: 전단 사상 = (1 − α) 칸 평균 + α 자기 사면체 (모래시계 억제; 0 = 순수 선택 적분)")
 ap.add_argument("--ak_sel", action="store_true", help="절 AK.25 (정의 변경): 선택 적분 -- 전단 (μ) 몫은 칸 (Kuhn 정육면체 6 사면체) 점유 가중 평균 사상, 부피 몫은 사면체 자기 사상 (굽힘 잠김만 풀고 균일 변형 강성은 그대로; --ak_pq --ak_pq4 --ak_prep, 융합 없이)")
 ap.add_argument("--ak_sfcr", action="store_true", help="절 AK.18: 입자 적분점 FCR 을 표준 식으로 (Stomakhin 2012: 진 회전 R, 부피 항 λ (J − 1) cof F, J = det F 부호 그대로) -- 기존 커널은 J = |det|·부호, 반사 Q")
@@ -568,6 +569,9 @@ P2 = bool(a.ak_p2)
 AKSEL = bool(a.ak_sel)
 if AKSEL:
     AKC.set_sela(a.ak_sela)
+AKES = bool(a.ak_es)
+if AKES and not (AKPQ and a.ak_pq4 and a.ak_prep and not a.ak_fuse and not P2 and not AKSEL):
+    raise SystemExit("--ak_es 는 --ak_pq --ak_pq4 --ak_prep (융합·2 차·선택 적분 없이) 만")
 if AKSEL and not (AKPQ and a.ak_pq4 and a.ak_prep and not a.ak_fuse and not P2):
     raise SystemExit("--ak_sel 은 --ak_pq --ak_pq4 --ak_prep (융합·2 차 없이) 만")
 if P2 and not (AKPQ and not a.ak_pq4 and not a.ak_prep and not a.ak_fuse and a.ak_eps < 0 and not a.affine and a.fupd == "T" and not AI2 and a.ai_g2p == "T"
@@ -924,6 +928,8 @@ class Opt:
                 AKC.set_lr(self.aklr)
                 if a.akg_k > 0 or a.akpl_el:
                     AKPLC.set_lr(self.aklr)
+            if AKES:
+                self.es_pe = torch.zeros(Np, dtype=torch.int32, device=dev)
             self.akl = torch.zeros(Np, 4, device=dev)                                    # 절 AK.13: 정렬 순서 barycentric
             if a.ak_eps >= 0:                                                         # 혼합: 거친 사면체 입자 목록 (정렬 순서), 개수, 한 점 사면체 목록
                 self.akN = torch.zeros(1, dtype=torch.int32, device=dev)
@@ -1006,6 +1012,11 @@ class Opt:
                 self.rT = torch.zeros(self.Tcap, dtype=torch.int32, device=dev)
                 self.clT = torch.zeros(self.Tcap + 1, dtype=torch.int32, device=dev)
             self.tcell = torch.zeros(self.Tcap, dtype=torch.long, device=dev)
+            if AKES:                                                                # 절 AK.27 변 버퍼 (변 수 ≤ 6 T)
+                self.es_te = torch.zeros(self.Tcap * 6, dtype=torch.int32, device=dev)
+                self.es_A = torch.zeros(self.Tcap * 6, 9, device=dev)
+                self.es_V = torch.zeros(self.Tcap * 6, device=dev)
+                self.es_G = torch.zeros(self.Tcap * 6, 9, device=dev)
             if AKG:
                 self.akg_tg = torch.full((self.Tcap,), -1, dtype=torch.int32, device=dev)
                 self.akg_W = torch.zeros(self.Tcap, device=dev)
@@ -1923,7 +1934,15 @@ class Opt:
             AKC.launch("ak_selF", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.tcell), EX.P(self.skG),
                                               EX.P(self.skV), EX.P(self.f)), b=128)
             AKC.launch("ak_selZ", self.Pcap, (np.int32(self.Pcap), EX.P(self.skA), EX.P(self.skV), EX.P(self.skG)), b=256)
-        if AKPQ and not a.ak_fuse and not P2 and not AKSEL:                                    # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
+        if AKPQ and AKES:                                                           # 절 AK.27: 변 기반 평활 (ES-FEM-T4)
+            AKC.launch("ak_esA", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs), EX.P(self.es_te),
+                                             EX.P(self.es_A), EX.P(self.es_V)), b=128)
+            AKC.launch("ak_es_p", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.FT), EX.P(self.akdF), EX.P(self.akw), EX.P(self.es_te), EX.P(self.es_pe),
+                                       EX.P(self.es_A), EX.P(self.es_V), np.float32(mu), np.float32(lam), EX.P(self.es_G)), b=128)
+            AKC.launch("ak_esF", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.es_te), EX.P(self.es_G),
+                                             EX.P(self.es_V), EX.P(self.f)), b=128)
+            AKC.launch("ak_esZ", self.Tcap * 6, (np.int32(self.Tcap * 6), EX.P(self.es_A), EX.P(self.es_V), EX.P(self.es_G)), b=256)
+        if AKPQ and not a.ak_fuse and not P2 and not AKSEL and not AKES:                                    # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
             if AKG:                                                                 # 절 AG.11: 묶음 사상 합 (서브스텝마다 비우고)
                 self.akg_AG.zero_()
                 self.akg_GmG.zero_()
@@ -2854,6 +2873,12 @@ class Opt:
                 self.akcur = torch.zeros(self.Tcap, dtype=torch.int32, device=dev)
                 self.akvs = torch.zeros(self.Tcap, device=dev)
             self.akcnt.zero_(); self.akcur.zero_(); self.akvs.zero_()
+            if AKES:                                                                # 절 AK.27: 사면체 -> 변 번호 (점유 여부와 무관하게 사면체 목록 전체; 그래프 밖)
+                tt_ = self.tets[:T_]
+                e0 = tt_[:, [0, 0, 0, 1, 1, 2]]; e1 = tt_[:, [1, 2, 3, 2, 3, 3]]
+                key = torch.minimum(e0, e1) * (1 << 32) + torch.maximum(e0, e1)
+                self.es_te[:T_ * 6].copy_(torch.unique(key.reshape(-1), return_inverse=True)[1].to(torch.int32))
+                AKC.set_es(self.es_pe, self.lamb, self.rows, self.tets)
             AKC.launch("ak_prep_cnt", Np, (np.int32(Np), EX.P(self.pinv), EX.P(self.volA), EX.P(self.akcnt), EX.P(self.akvs)), b=256)
             self.akoffs[1:T_ + 1].copy_(torch.cumsum(self.akcnt[:T_], 0, dtype=torch.int32))
             self.akoffs[0] = 0
