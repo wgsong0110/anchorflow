@@ -41,6 +41,11 @@ ap.add_argument("--cg", type=int, default=100)
 ap.add_argument("--cg_tol", type=float, default=1e-4, help="PCG 상대 잔차 (전처리 노름) 조기 종료")
 ap.add_argument("--nt_tol", type=float, default=1e-6, help="뉴턴 조기 종료: |g_η| / |g_η 첫 반복| (고정 예산 안에서)")
 ap.add_argument("--no_vfl_out", action="store_true")
+ap.add_argument("--pc", choices=["jacobi", "mg"], default="jacobi", help="PCG 전처리: 노드 블록 야코비 또는 기하 멀티그리드 (세계 고정 격자, 간격 2 배씩)")
+ap.add_argument("--mg_levels", type=int, default=5)
+ap.add_argument("--mg_min", type=int, default=300, help="가장 거친 층 노드 수가 이 아래면 멈춤")
+ap.add_argument("--mg_omega", type=float, default=0.6, help="감쇠 블록 야코비 평활 계수")
+ap.add_argument("--mg_nc", type=int, default=10, help="가장 거친 층 평활 횟수")
 ap.add_argument("--dump", action="store_true")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
@@ -92,12 +97,13 @@ GG = 0.5 / math.sqrt(3.0)
 I3 = torch.eye(3, device=dev, dtype=D64)
 
 
-def bsw(fx):
+def bsw(fx, Ai_=None):
+    Ai_ = Ai64 if Ai_ is None else Ai_
     w = torch.stack([0.5 * (1.5 - fx) ** 2, 0.75 - (fx - 1) ** 2, 0.5 * (fx - 0.5) ** 2], 1)
     dw = torch.stack([fx - 1.5, -2 * (fx - 1), fx - 0.5], 1)
     wi, wj, wk = w[:, OFF[:, 0], 0], w[:, OFF[:, 1], 1], w[:, OFF[:, 2], 2]
     W = wi * wj * wk
-    GW = torch.stack([dw[:, OFF[:, 0], 0] * wj * wk, wi * dw[:, OFF[:, 1], 1] * wk, wi * wj * dw[:, OFF[:, 2], 2]], -1) @ Ai64     # ∇_x = Aiᵀ ∇_y
+    GW = torch.stack([dw[:, OFF[:, 0], 0] * wj * wk, wi * dw[:, OFF[:, 1], 1] * wk, wi * wj * dw[:, OFF[:, 2], 2]], -1) @ Ai_     # ∇_x = Aiᵀ ∇_y
     return W, GW
 
 
@@ -160,10 +166,131 @@ class Elem:
         return B.reshape(s.na, 3, 3)
 
 
+_CK = {}
+
+
+def ckern(ch):
+    """2 차 B-스플라인 두 배 관계 계수 (1, 3, 3, 1)/4 의 텐서곱 (groups = ch)."""
+    if ch not in _CK:
+        c = torch.tensor([1.0, 3.0, 3.0, 1.0], device=dev, dtype=D64) / 4
+        k3 = c[:, None, None] * c[None, :, None] * c[None, None, :]
+        _CK[ch] = k3[None, None].repeat(ch, 1, 1, 1, 1).contiguous()
+    return _CK[ch]
+
+
+def restrict_dense(xd, nbf, Nc):
+    """조밀 배열 (nx, ny, nz, ch) -> 거친 층 (Nc..., ch): r_c = Pᵀ r. 거친 노드 J 는 고운 층 노드 번호 2J − 3/2 자리, 고운 노드 2J − 3 + k (k = 0..3)."""
+    ch = xd.shape[-1]
+    t = xd.permute(3, 0, 1, 2)[None]
+    npad = [2 * n - 4 for n in Nc]
+    t = torch.nn.functional.pad(t, (0, npad[2] - nbf[2], 0, npad[1] - nbf[1], 0, npad[0] - nbf[0]))
+    o = torch.nn.functional.conv3d(t, ckern(ch), stride=2, padding=3, groups=ch)
+    return o[0].permute(1, 2, 3, 0)
+
+
+def prolong_dense(xc, nbf):
+    ch = xc.shape[-1]
+    o = torch.nn.functional.conv_transpose3d(xc.permute(3, 0, 1, 2)[None], ckern(ch), stride=2, padding=3, groups=ch)
+    return o[0, :, :nbf[0], :nbf[1], :nbf[2]].permute(1, 2, 3, 0)
+
+
+class MG:
+    """기하 멀티그리드 전처리 (대칭 V 순환). 층 ℓ+1 = 간격 2 배 세계 고정 격자의 2 차 B-스플라인 (두 배 관계로 고운 층 기저의 정확한 선형 결합 = 연장 P),
+    거친 층 연산자 = 다시 이산화: 거친 칸 2x2x2 가우스 점, F = 그 팔분 영역 고운 점의 지금 X 의 회전·신장 분리 평균 (절 AI A1, 같은 rs_mean), 부피 = 칸 합 / 8, 투영 헤시안 (같은 커널);
+    질량 = Pᵀ m (집중). 0 층 연산자 = Mi + T K T 그대로, 0 -> 1 전달은 T 를 끼운 Pᵀ T / T P. 평활 = 감쇠 블록 야코비 (ω), 가장 거친 층 = 평활 mg_nc 번."""
+
+    def __init__(s, ctx, y, el, Mi, T, Bd):
+        s.T = T
+        s.L = [dict(el=el, Mi=Mi, D=torch.linalg.inv(Mi[..., None] * I3 + T @ Bd @ T), nb=ctx["nb"], act=ctx["act"])]
+        X = el.Fq + torch.einsum("qna,qnb->qab", y[el.qn.long()], el.G).reshape(-1, 9)
+        tq, V, nbf, mdn = ctx["tq"], el.Vq, ctx["nb"], ctx["mnd"].reshape(*ctx["nb"], 1)
+        Ai_ = Ai64
+        for lv in range(1, a.mg_levels):
+            Nc = [n // 2 + 3 for n in nbf]
+            tc = (tq + 1.5) / 2
+            base = torch.floor(tc - 0.5).long()
+            fx = tc - base
+            cid = (base[:, 0] * Nc[1] + base[:, 1]) * Nc[2] + base[:, 2]
+            uc, cinv = torch.unique(cid, return_inverse=True)
+            nc = uc.numel()
+            oi = ((fx >= 1.0).long() * torch.tensor([4, 2, 1], device=dev)).sum(1)
+            qinv = cinv * 8 + oi
+            nq = nc * 8
+            Fc, _ = rs_mean(X, V, qinv, nq)
+            cF, _ = rs_mean(X, V, cinv, nc)
+            has = torch.zeros(nq, device=dev, dtype=torch.bool).index_put_((qinv,), torch.tensor(True, device=dev))
+            Fc = torch.where(has[:, None], Fc, cF.repeat_interleave(8, 0)).contiguous()
+            Vc = (torch.zeros(nc, device=dev, dtype=D64).index_add_(0, cinv, V).repeat_interleave(8) / 8.0).contiguous()
+            o8 = torch.arange(8, device=dev)
+            qfx = (1.0 + GG * (2 * torch.stack([o8 // 4, (o8 % 4) // 2, o8 % 2], 1).double() - 1)).repeat(nc, 1)
+            Ai_ = Ai_ / 2
+            _, QGW = bsw(qfx, Ai_)
+            cb = torch.stack([uc // (Nc[1] * Nc[2]), (uc // Nc[2]) % Nc[1], uc % Nc[2]], 1).repeat_interleave(8, 0)
+            qnid = ((cb[:, None, 0] + OFF[None, :, 0]) * Nc[1] + cb[:, None, 1] + OFF[None, :, 1]) * Nc[2] + cb[:, None, 2] + OFF[None, :, 2]
+            mdc = restrict_dense(mdn, nbf, Nc)
+            mflat = mdc.reshape(-1)
+            act = torch.nonzero(mflat > 0).flatten()
+            na = act.numel()
+            cmp_ = torch.full((mflat.numel(),), -1, device=dev, dtype=torch.long)
+            cmp_[act] = torch.arange(na, device=dev)
+            qn = cmp_[qnid]
+            assert bool((qn >= 0).all())
+            G = torch.einsum("qab,qna->qnb", Fc.reshape(nq, 3, 3), QGW).contiguous()
+            elc = Elem(qn.int().contiguous(), G, Fc, Vc, na)
+            elc.eval(torch.zeros(na, 3, device=dev, dtype=D64), 2)
+            Mic = (mflat[act] / (TAU * TAU))[:, None]
+            s.L.append(dict(el=elc, Mi=Mic, D=torch.linalg.inv(Mic[..., None] * I3 + elc.bd()), nb=Nc, act=act))
+            tq, X, V, nbf, mdn = (cb.double() + qfx), Fc, Vc, Nc, mdc
+            if na < a.mg_min:
+                break
+        s.nl = len(s.L)
+
+    def op(s, l, z):
+        lv = s.L[l]
+        if l == 0:
+            return lv["Mi"] * z + (s.T @ lv["el"].mv((s.T @ z[..., None]).squeeze(-1))[..., None]).squeeze(-1)
+        return lv["Mi"] * z + lv["el"].mv(z)
+
+    def sm(s, l, r):
+        return (s.L[l]["D"] @ r[..., None]).squeeze(-1)
+
+    def tr(s, l, r):
+        """층 l 의 압축 벡터 -> 층 l+1 (Pᵀ, 0 층은 Tᵀ 먼저)."""
+        A_, B_ = s.L[l], s.L[l + 1]
+        if l == 0:
+            r = (s.T @ r[..., None]).squeeze(-1)
+        dn = torch.zeros(int(np.prod(A_["nb"])), 3, device=dev, dtype=D64)
+        dn[A_["act"]] = r
+        o = restrict_dense(dn.reshape(*A_["nb"], 3), A_["nb"], B_["nb"]).reshape(-1, 3)
+        return o[B_["act"]]
+
+    def pr(s, l, zc):
+        A_, B_ = s.L[l], s.L[l + 1]
+        dn = torch.zeros(int(np.prod(B_["nb"])), 3, device=dev, dtype=D64)
+        dn[B_["act"]] = zc
+        z = prolong_dense(dn.reshape(*B_["nb"], 3), A_["nb"]).reshape(-1, 3)[A_["act"]]
+        if l == 0:
+            z = (s.T @ z[..., None]).squeeze(-1)
+        return z
+
+    def vc(s, l, r):
+        w = a.mg_omega
+        z = w * s.sm(l, r)
+        if l == s.nl - 1:
+            for _ in range(a.mg_nc - 1):
+                z = z + w * s.sm(l, r - s.op(l, z))
+            return z
+        z = z + s.pr(l, s.vc(l + 1, s.tr(l, r - s.op(l, z))))
+        return z + w * s.sm(l, r - s.op(l, z))
+
+    def __call__(s, r):
+        return s.vc(0, r)
+
+
 STAT = {}
 
 
-def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq):
+def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
     """한 걸음: y 를 구해 (U_{k+1}, v_{k+1}) 를 돌려준다. 입자 배열은 쓰지 않는다."""
     na = mn.shape[0]
     Ut = Uk + TAU * vk + TAU * TAU * gv
@@ -220,11 +347,17 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq):
             break
         # PCG: (Mi + Tᵀ K T) δ = −g, 블록 야코비 전처리
         Bd = el.bd()
-        Pc = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
+        if a.pc == "mg":
+            mg_ = MG(ctx, y, el, Mi, Tc, Bd)
+            nst["lv"] = mg_.nl
+            prec = mg_
+        else:
+            Pc = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
+            prec = lambda r_: (Pc @ r_[..., None]).squeeze(-1)
         Aop = lambda p_: Mi * p_ + (Tc @ el.mv((Tc @ p_[..., None]).squeeze(-1))[..., None]).squeeze(-1)
         dl = torch.zeros_like(g)
         rr = -g
-        zz = (Pc @ rr[..., None]).squeeze(-1)
+        zz = prec(rr)
         pp = zz.clone()
         rz = float((rr * zz).sum())
         rz0 = rz
@@ -236,12 +369,13 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq):
             alp = rz / pAp
             dl = dl + alp * pp
             rr = rr - alp * Ap
-            zz = (Pc @ rr[..., None]).squeeze(-1)
+            zo = zz
+            zz = prec(rr)
             rzn = float((rr * zz).sum())
             nst["cg"] += 1
             if rzn <= (a.cg_tol ** 2) * rz0:
                 break
-            pp = zz + (rzn / rz) * pp
+            pp = zz + (float((rr * (zz - zo)).sum()) / rz) * pp                      # 유연 PCG (폴라크-리비에르)
             rz = rzn
         # 되돌이 선탐색 (아르미호)
         gd = float((g * dl).sum())
@@ -276,6 +410,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq):
         STAT[kk_] = STAT.get(kk_, 0) + nst[kk_]
     STAT["gr"] = max(STAT.get("gr", 0.0), nst["gr"] or 0.0)
     STAT["stuck"] = nst["stuck"]
+    STAT["lv"] = nst.get("lv", 1)
     return U1, v1
 
 
@@ -352,9 +487,10 @@ def frame(fi, x, v, F):
             fixd, vbc = fx_.bool(), vb_.double()
     STAT.clear()
     STAT.update(nq=nq, na=na, nbad=nbad)
+    ctx = dict(nb=nb, act=act, mnd=mnd, tq=cb.double() + qfx)
     U = torch.zeros(na, 3, device=dev, dtype=D64)
     for _ in range(a.K):
-        U, vn = solve_step(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq)
+        U, vn = solve_step(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx)
     STAT["nmv"] = el.nmv
     # G2P (프레임 끝 한 번)
     Ug = U[nidc]
@@ -384,7 +520,7 @@ for fi in range(L):
     rec = dict(t=fi, err=e, sec=dt_, **{k_: v_ for k_, v_ in STAT.items()})
     flog.write(json.dumps(rec) + "\n")
     flog.flush()
-    print(f"  프레임 {fi + 1}/{L} {dt_:.2f} s 오차 {100 * e:.3f}% 뉴턴 {STAT.get('nt')} PCG {STAT.get('cg')} 선탐색 {STAT.get('ls')} 최대 |g|/|g0| {STAT.get('gr', 0):.1e} "
+    print(f"  프레임 {fi + 1}/{L} {dt_:.2f} s 오차 {100 * e:.3f}% 뉴턴 {STAT.get('nt')} PCG {STAT.get('cg')} 선탐색 {STAT.get('ls')} 층 {STAT.get('lv')} 헤시안 곱 {STAT.get('nmv')} 최대 |g|/|g0| {STAT.get('gr', 0):.1e} "
           f"고착 노드 {STAT.get('stuck')} 점 {STAT.get('nq')} 노드 {STAT.get('na')} 뒤집힌 점 {STAT.get('nbad')} max|v| {float(v2.norm(dim=-1).max()):.3g}", flush=True)
     if PRED is not None:
         PRED[fi] = x2.float().cpu()
