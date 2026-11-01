@@ -31,7 +31,8 @@ run_one() {   # 카드 판 궤적 인자...
   esac
   echo "카드 $G $(cat .done) $(date '+%F %T') 인자 $DA $*" > $O/run_info.txt
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/apps_at_start.txt
-  CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_anerr_sim.py --out $O --tag $t $DA --frames ${ERR_FR:-80} --fast --gfin "$@" < /dev/null > $O/log.txt 2>&1
+  FA=--fast; case " $* " in *" --slow "*) FA="";; esac
+  CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_anerr_sim.py --out $O --tag $t $DA --frames ${ERR_FR:-80} $FA --gfin $(echo " $* " | sed "s/ --slow / /") < /dev/null > $O/log.txt 2>&1
   echo "rc=$? $(date '+%F %T')" >> $O/run_info.txt
   if [ $t = drop1 ] && [ -f $O/pred.pt ]; then
     $PY exe/fem_ak_drop_ana.py /tmp/dkta/ak_drop2/init.pt mpm:/tmp/dkta/ak_drop2/mpm/x240.pt:0.0041666667 $V:$O/pred.pt:0.0166666667 > $O/drop_ana.txt 2>&1
