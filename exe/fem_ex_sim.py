@@ -217,6 +217,7 @@ ap.add_argument("--pl_cell", choices=["inc", "total", "none"], default="inc",
                 help="절 AG 서브스텝 안 셀 return mapping: inc = 정답처럼 서브스텝마다 증분 (셀 F_e·상태를 서브스텝마다 갱신, F_trial = X_j X_(j-1)⁻¹ F_e, 걸음 h_s; 프레임 시작 F_e = F̄, 상태 = 입자 평균), "
                      "total = 프레임 누적 X = A F̄ 를 프레임 시작 상태로 한 번에 투영 (첫 구현 -- 발산), none = 셀 투영 없음 (프레임 끝 입자만)")
 ap.add_argument("--pl_diag", type=int, default=0, help="절 AG 진단 전용: 1 = 셀 투영 끔 (셀 응력은 재질 응력 모델만, return mapping 은 프레임 끝 입자에만), 2 = 셀 응력을 FCR 로 (투영은 그대로), 3 = 둘 다")
+ap.add_argument("--visc_rpic", action="store_true", help="절 AG.19 정의 변경: 정답 config 의 rpic_damping r 을 등가 점성으로 -- η = ρ r (2 − r) Δx_gt² / (16 Δt_gt) (정답 PG 가 서브스텝마다 C 대칭부를 (1 − r) 배, 2 차 B-스플라인 D_p = Δx²/4 의 손실을 2η|D|² 와 맞춤); 입자 적분점 판 사면체 점성 (rpic_damping 이 없으면 0)")
 ap.add_argument("--visc", type=float, default=0.0, help="절 AG: 셀 점성 응력 τ_v = 2 η J sym(∇v) (Pa·s, 서브스텝마다 셀 속도 기울기) -- 정답 솔버 (PG/GF) 에는 없는 항, 구현만")
 ap.add_argument("--pbc", action="store_true", help="절 AG: 정답 config 의 입자 속도 구속 (enforce_particle_translation, release_particles_sequentially -- PG 와 같은 50 구역) 을 "
                 "노드 몫 섞기로: 프레임 가운데 시각에 걸린 입자의 P2G 질량 몫 α 로 서브스텝마다 노드 걸음 뒤 v <- (1 - α) v + α v̄_bc (선택은 0 프레임 위치, PG 와 같다)")
@@ -565,6 +566,12 @@ AIG = {"T": 0, "bs": 2, "dev": 3, "devnavg": 4, "devbs": 5}[a.ai_g2p]
 if (AI1 or AI2 or AIG) and not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2 and not REP and not (a.affine and AIG) and a.p2g == "bary"
                                   and not CQ and not NINT and not SPG and SPM in ("none", "vcap") and not (AI2 and (PLAST or VISC or PBC)) and (VFL or not HASPL)):
     raise SystemExit("절 AI (--ai_*) 는 확정 경로 (--opt --mode lag --cfuse --cfuse_mode 2, --sp none|vcap, --floor vel|none, 재평균·아핀 없음) 만; --ai_stress 는 FCR 탄성만 (소성 씬 제외)")
+RPIC_ETA = 0.0
+if a.visc_rpic:
+    _r = float(cfg.get("rpic_damping", 0.0))
+    _dxg = float(cfg.get("grid_lim", 2.0)) / int(cfg.get("n_grid", 100))
+    RPIC_ETA = float(cfg.get("density", 1000.0)) * _r * (2.0 - _r) * _dxg ** 2 / (16.0 * float(cfg["substep_dt"]))
+    print(f"[절 AG.19 rpic 등가 점성] r {_r:g}, ρ {cfg.get('density')}, Δx_gt {_dxg:.5g}, Δt_gt {cfg['substep_dt']} -> η {RPIC_ETA:.5g} Pa·s", flush=True)
 AKPQ = bool(a.ak_pq)
 if a.ak_sfcr:
     if not AKPQ:
@@ -2109,6 +2116,8 @@ class Opt:
                 AHC.launch("akg_kns2", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs), EX.P(self.FT),
                                                    EX.P(self.akg_W), EX.P(self.akg_VG), EX.P(self.akg_MG), EX.P(self.akg_Sg), EX.P(self.akg_Fm),
                                                    np.float32(a.ah_mcfl * (hs_ / 2.0) ** 2), np.float32(2.0 * a.akg_hg * mu), EX.P(self.mcfl)), b=128)
+        if RPIC_ETA > 0 and AKPQ:                                                  # 절 AG.19: rpic 등가 점성 (힘 뒤·노드 걸음 앞)
+            AHC.launch("ah_visc", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self._vpT), EX.P(self.vn), np.float32(RPIC_ETA), EX.P(self.f)), b=128)
         if a.ah_mcfl_Fs and a.ah_mcfl > 0 and not a.ah_mcfl_sub:                   # 절 AG.19: 현재 A_T F_p 로 입자 계수 -> 국소 CFL 상계를 프레임 안 단조 증가
             AHC.launch("akfs_p", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akg_gpb if AKG else None),
                                       EX.P(self.akg_AG if AKG else None), EX.P(self.akg_VG if AKG else None), np.float32(mu), np.float32(lam),
@@ -3030,6 +3039,10 @@ class Opt:
             self.akoffs[0] = 0
             vs_ = torch.zeros(T_, device=dev).index_add_(0, pin, self.volA)
             self.akw.copy_((self.volA * self.VTs[:T_][pin] / vs_[pin].clamp_min(1e-30))[o_])   # 사면체 정렬 순서로 (읽기 병합)
+            if RPIC_ETA > 0:                                                        # 절 AG.19: 점성 부피 = 사면체 입자 부피 합
+                if getattr(self, "_vpT", None) is None or self._vpT.numel() < self.Tcap:
+                    self._vpT = torch.zeros(self.Tcap, device=dev)
+                self._vpT.zero_(); self._vpT[:T_] = vs_
             if a.ak_capmu and (AKG or a.akpl_el):                                                  # 절 AG.18: λ 몫은 입자 부피 그대로 (= Σ 입자 부피 / V_T, 절 AK.16 prep 커널과 같은 값)
                 self.aklr.copy_(torch.where(self.VTs[:T_][pin] > 1e-30, vs_[pin] / self.VTs[:T_][pin].clamp_min(1e-30), torch.ones_like(vs_[pin]))[o_])
             self.akF.copy_(Fa[o_])

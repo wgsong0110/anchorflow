@@ -596,6 +596,20 @@ __global__ void akg_kd(const int* szp, const int* tg, const long long* tets, con
     for (int i=0;i<4;i++) { float a_=0.f; for (int q=0;q<3;q++) { float g_ = gl[(long long)t*12+i*3+q]; a_ += g_*g_; }
         long long nd = tets[(long long)t*4+i]; atomicAdd(&Kd[nd*6+0], c*a_); atomicAdd(&Kd[nd*6+1], c*a_); atomicAdd(&Kd[nd*6+2], c*a_); }
 }
+// 절 AG.19 --visc_rpic: 사면체 점성 응력 τ_v = 2 η sym(L), L = Σ v_i ⊗ ∇λ_i (프레임 시작 기하), 힘 f_i -= V_p τ_v ∇λ_i (V_p = 사면체 안 입자 부피 합)
+__global__ void ah_visc(const int* szp, const long long* tets, const float* gl, const float* VP, const float* vn, float eta, float* f) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= szp[1]) return;
+    float V = VP[t];
+    if (!(V > 0.f)) return;
+    long long nd[4]; float G[12];
+    for (int i=0;i<4;i++) nd[i] = tets[(long long)t*4+i];
+    for (int q=0;q<12;q++) G[q] = gl[(long long)t*12+q];
+    float L[9] = {0,0,0,0,0,0,0,0,0};
+    for (int i=0;i<4;i++) for (int a_=0;a_<3;a_++) for (int b=0;b<3;b++) L[a_*3+b] += vn[nd[i]*3+a_]*G[i*3+b];
+    float tv[9]; for (int a_=0;a_<3;a_++) for (int b=0;b<3;b++) tv[a_*3+b] = eta*(L[a_*3+b] + L[b*3+a_]);
+    for (int i=0;i<4;i++) for (int a_=0;a_<3;a_++) { float s_ = 0.f; for (int b=0;b<3;b++) s_ += tv[a_*3+b]*G[i*3+b]; atomicAdd(&f[nd[i]*3+a_], -V*s_); }
+}
 __global__ void ah_zero3(float* dP) { if (threadIdx.x < 3) dP[threadIdx.x] = 0.f; }
 }
 '''
