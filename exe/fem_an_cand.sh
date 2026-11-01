@@ -1,12 +1,12 @@
 #!/bin/bash
 # 절 AN 후보 판정 (비측정, 전체 프레임): 판 목록 x (lego L000 + 홀드아웃 20, 80 프레임 + ficus 125 프레임 덤프).
 # GPU0 를 뺀 빈 카드 (계산 프로세스 0) 마다 일꾼 하나 -- 한 카드에 한 실행씩 순서대로. 끝에 표 (10 % 미만 개수·평균·ficus 주기 비).
-# 사용: bash exe/fem_an_cand.sh <이름> "판:플래그(_ 는 빈칸) ..."
+# 사용: bash exe/fem_an_cand.sh <이름> "판:플래그(+ 는 빈칸) ..."
 cd "$(dirname "$0")/.." || exit 1
 export PYTHONUTF8=1; set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; export PATH=$HOME/bin:$PATH
 NM=$1; VS="$2"; R=/tmp/dkta/lbours/fem_an; M=$R/marks; Q=$R/$NM.queue; mkdir -p $M; df -h /tmp | tail -1
 SC="L000 $(seq -f %04g 0 19 | tr '\n' ' ')"
-: > $Q; for e in $VS; do v=${e%%:*}; for t in ficus $SC; do echo "$t $v $(echo ${e#*:} | tr '_' ' ')" >> $Q; done; done
+: > $Q; for e in $VS; do v=${e%%:*}; for t in ficus $SC; do echo "$t $v $(echo ${e#*:} | tr '+' ' ')" >> $Q; done; done
 free_cards() { for i in 1 2 3 4 5 6; do u=$(nvidia-smi -i $i --query-gpu=uuid --format=csv,noheader); n=$(nvidia-smi --query-compute-apps=gpu_uuid --format=csv,noheader | grep -c "$u"); [ $n -eq 0 ] && echo $i; done; }
 for k in $(seq 10); do GS=($(free_cards)); [ ${#GS[@]} -gt 0 ] && break; sleep 60; done
 if [ ${#GS[@]} -gt 0 ]; then echo "빈 카드 ${GS[*]} $(date +%T)" | tee $M/${NM}_cards.txt
