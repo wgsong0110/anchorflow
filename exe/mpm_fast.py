@@ -31,6 +31,7 @@ ap.add_argument("--sort", action="store_true", help="프레임 시작마다 입�
 ap.add_argument("--fuse", action="store_true", help="G2P(s-1) + 응력 + P2G(s) 를 입자 커널 하나로, 정규화·중력·경계·비우기를 격자 커널 하나로 (서브스텝당 2 회 실행)")
 ap.add_argument("--sparse", action="store_true", help="격자 커널을 입자가 닿은 4x4x4 블록만 (--fuse 필요)")
 ap.add_argument("--wred", action="store_true", help="P2G 를 워프 안 같은 칸 입자끼리 셔플로 먼저 합친 뒤 칸 대표만 원자 합 (--fuse 필요)")
+ap.add_argument("--shared", action="store_true", help="P2G 를 블록 공유 메모리 타일 (블록 입자 칸 상자 + 2, 최대 1536 노드) 에 먼저 모은 뒤 0 아닌 값만 전역 원자 합 (--fuse --sparse 필요)")
 ap.add_argument("--graph", action="store_true", help="프레임 하나 (커널 1,667 개) 를 CUDA 그래프로")
 ap.add_argument("--prof", default="10,40,70", help="구간별 시간을 잴 프레임 (CUDA 이벤트, 그래프 없이). 이 프레임들은 프레임 시간 통계에서 뺀다")
 ap.add_argument("--block", type=int, default=128)
@@ -207,6 +208,7 @@ __device__ __forceinline__ void g2p_body(float* x, float* v, float* C, float* F,
   for (int k=0;k<9;k++) F[k] = T[k];
 }
 
+#define SHCAP 1536
 // 워프 안 구간 합 (입자가 칸 순서로 정렬돼 있을 때 같은 칸 = 같은 27 노드). stride = 다음 구간 머리까지 거리
 __device__ __forceinline__ float seg_sum(float val, int stride) {
   for (int s=1; s<32; s<<=1) { float t = __shfl_down_sync(0xffffffffu, val, s); if (s < stride) val += t; }
@@ -214,9 +216,10 @@ __device__ __forceinline__ float seg_sum(float val, int stride) {
 }
 
 // P2G (p2g_apic_with_stress 와 같은 식, rpic 0 -> C 그대로)
-template <int RED, int MARK>
+template <int RED, int MARK, int SH = 0>
 __device__ __forceinline__ void p2g_body(bool act, const float* x, const float* v, const float* C, const float* S, float mass, float vol,
-                                         float* vin, float* gm, int* flags, int n, int nb, float dx, float inv_dx, float dt) {
+                                         float* vin, float* gm, int* flags, int n, int nb, float dx, float inv_dx, float dt,
+                                         float* sh = nullptr, bool useSh = false, int ox = 0, int oy = 0, int oz = 0, int ey = 0, int ez = 0) {
   int b[3] = {0,0,0}; float fx[3] = {0.f,0.f,0.f}, w[3][3], dw[3][3];
   if (act) bspline(x, inv_dx, b, fx, w, dw);
   else { for (int q=0;q<3;q++) for (int r=0;r<3;r++) { w[q][r] = 0.f; dw[q][r] = 0.f; } }
@@ -253,9 +256,14 @@ __device__ __forceinline__ void p2g_body(bool act, const float* x, const float* 
     add[3] = wm;
     if (RED) { for (int r=0;r<4;r++) add[r] = seg_sum(add[r], stride); }
     if (head) {
-      long long id = ((long long)(b[0]+i)*n + (b[1]+j))*n + (b[2]+k);
-      atomicAdd(&vin[id*3], add[0]); atomicAdd(&vin[id*3+1], add[1]); atomicAdd(&vin[id*3+2], add[2]);
-      atomicAdd(&gm[id], add[3]);
+      if (SH && useSh) {                                                  // 블록 공유 메모리 타일에 먼저 (블록 끝에 한 번에 전역으로)
+        int li = ((b[0]+i-ox)*ey + (b[1]+j-oy))*ez + (b[2]+k-oz);
+        atomicAdd(&sh[li], add[0]); atomicAdd(&sh[SHCAP+li], add[1]); atomicAdd(&sh[2*SHCAP+li], add[2]); atomicAdd(&sh[3*SHCAP+li], add[3]);
+      } else {
+        long long id = ((long long)(b[0]+i)*n + (b[1]+j))*n + (b[2]+k);
+        atomicAdd(&vin[id*3], add[0]); atomicAdd(&vin[id*3+1], add[1]); atomicAdd(&vin[id*3+2], add[2]);
+        atomicAdd(&gm[id], add[3]);
+      }
     }
   }
 }
@@ -266,7 +274,7 @@ __device__ __forceinline__ void p2g_body(bool act, const float* x, const float* 
 #define ST9(P,p,o) { for (int _k=0;_k<9;_k++) P[(p)*9+_k]=o[_k]; }
 
 // 융합 입자 커널: [G2P (지난 서브스텝 격자)] + 응력 + P2G (이번 서브스텝 격자)
-template <int G2P, int RED, int MARK>
+template <int G2P, int RED, int MARK, int SH = 0>
 __device__ void fused(int N, int n, int nb, float dx, float inv_dx, float dt, float mu, float lam,
                       float* X, float* Vv, float* Cc, float* Ff, const float* __restrict__ mass, const float* __restrict__ vol,
                       const float* __restrict__ vout, float* vin, float* gm, int* flags) {
@@ -280,7 +288,34 @@ __device__ void fused(int N, int n, int nb, float dx, float inv_dx, float dt, fl
     if (G2P) g2p_body(x, v, C, F, vout, n, inv_dx, dt);
     stress_fcr(F, mu, lam, S);
   }
-  p2g_body<RED, MARK>(act, x, v, C, S, m, vl, vin, gm, flags, n, nb, dx, inv_dx, dt);
+  if (SH) {
+    // 블록 입자들의 칸 상자 (정렬돼 있으면 작다) -> 상자 + 2 노드가 SHCAP 이하이면 공유 메모리 타일에 모은 뒤 0 아닌 값만 전역 원자 합
+    __shared__ int bb[6];
+    __shared__ float sh[4*SHCAP];
+    if (threadIdx.x == 0) { bb[0] = bb[1] = bb[2] = 0x7fffffff; bb[3] = bb[4] = bb[5] = -0x7fffffff; }
+    __syncthreads();
+    if (act) for (int q=0;q<3;q++) { int bq = (int)(x[q]*inv_dx - 0.5f); atomicMin(&bb[q], bq); atomicMax(&bb[3+q], bq); }
+    __syncthreads();
+    int ox = bb[0], oy = bb[1], oz = bb[2];
+    int ex = bb[3]-ox+3, ey = bb[4]-oy+3, ez = bb[5]-oz+3;
+    bool useSh = (bb[3] >= bb[0]) && (ex*ey*ez <= SHCAP);
+    int sz = useSh ? ex*ey*ez : 0;
+    for (int q = threadIdx.x; q < sz; q += blockDim.x) { sh[q] = 0.f; sh[SHCAP+q] = 0.f; sh[2*SHCAP+q] = 0.f; sh[3*SHCAP+q] = 0.f; }
+    __syncthreads();
+    p2g_body<RED, MARK, 1>(act, x, v, C, S, m, vl, vin, gm, flags, n, nb, dx, inv_dx, dt, sh, useSh, ox, oy, oz, ey, ez);
+    __syncthreads();
+    for (int q = threadIdx.x; q < sz; q += blockDim.x) {
+      int lz = q % ez, ly = (q / ez) % ey, lx = q / (ez*ey);
+      long long id = ((long long)(ox+lx)*n + (oy+ly))*n + (oz+lz);
+      float a0 = sh[q], a1 = sh[SHCAP+q], a2 = sh[2*SHCAP+q], a3 = sh[3*SHCAP+q];
+      if (a0 != 0.f) atomicAdd(&vin[id*3], a0);
+      if (a1 != 0.f) atomicAdd(&vin[id*3+1], a1);
+      if (a2 != 0.f) atomicAdd(&vin[id*3+2], a2);
+      if (a3 != 0.f) atomicAdd(&gm[id], a3);
+    }
+  } else {
+    p2g_body<RED, MARK>(act, x, v, C, S, m, vl, vin, gm, flags, n, nb, dx, inv_dx, dt);
+  }
   if (act && G2P) { ST3(X,p,x); ST3(Vv,p,v); ST9(Cc,p,C); ST9(Ff,p,F); }
 }
 
@@ -312,13 +347,16 @@ __device__ __forceinline__ void grid_node(int gx, int gy, int gz, int n, float d
 #define GRID_PASS n, dx, dt, gxa, gya, gza, px, py, pz, nx, ny, nz
 
 extern "C" {
-#define FUSED(NM, G, R, M) __global__ void NM(int N, int n, int nb, float dx, float inv_dx, float dt, float mu, float lam, float* X, float* Vv, float* Cc, float* Ff, \
+#define FUSED(NM, G, R, M) FUSEDS(NM, G, R, M, 0)
+#define FUSEDS(NM, G, R, M, SHV) __global__ void NM(int N, int n, int nb, float dx, float inv_dx, float dt, float mu, float lam, float* X, float* Vv, float* Cc, float* Ff, \
    const float* __restrict__ mass, const float* __restrict__ vol, const float* __restrict__ vout, float* vin, float* gm, int* flags) \
-   { fused<G, R, M>(N, n, nb, dx, inv_dx, dt, mu, lam, X, Vv, Cc, Ff, mass, vol, vout, vin, gm, flags); }
+   { fused<G, R, M, SHV>(N, n, nb, dx, inv_dx, dt, mu, lam, X, Vv, Cc, Ff, mass, vol, vout, vin, gm, flags); }
 FUSED(k_fused_000, 0, 0, 0) FUSED(k_fused_100, 1, 0, 0)
 FUSED(k_fused_001, 0, 0, 1) FUSED(k_fused_101, 1, 0, 1)
 FUSED(k_fused_011, 0, 1, 1) FUSED(k_fused_111, 1, 1, 1)
 FUSED(k_fused_010, 0, 1, 0) FUSED(k_fused_110, 1, 1, 0)
+FUSEDS(k_fused_001s, 0, 0, 1, 1) FUSEDS(k_fused_101s, 1, 0, 1, 1)
+FUSEDS(k_fused_011s, 0, 1, 1, 1) FUSEDS(k_fused_111s, 1, 1, 1, 1)
 
 // 원래 솔버와 같은 나눔 (비교판): 비우기 / 응력 / P2G / 정규화 / 상자 / 바닥 / G2P 따로
 __global__ void k_zero(int G3, float* gm, float* vin, float* vout) {
@@ -417,8 +455,8 @@ __global__ void k_floor(int N, float* X, float* Vv, float* Cc, float* Ff, const 
     flags = torch.zeros(NB ** 3, dtype=torch.int32, device="cuda")
     Ss = torch.zeros(N, 9, device="cuda")
     order = torch.arange(N, device="cuda")
-    print(f"[손 커널] dx {DX} inv_dx {IDX} mu {MU} lam {LAM} g {GXA},{GYA},{GZA} 바닥 {PX},{PY},{PZ} n {NX},{NY},{NZ} dt {DT}; 정렬 {a.sort} 융합 {a.fuse} 희소 {a.sparse} 워프합 {a.wred} 그래프 {a.graph}", flush=True)
-    for nm in ("k_fused_111", "k_fused_011", "k_fused_101", "k_g2p", "k_p2g", "k_stress"):
+    print(f"[손 커널] dx {DX} inv_dx {IDX} mu {MU} lam {LAM} g {GXA},{GYA},{GZA} 바닥 {PX},{PY},{PZ} n {NX},{NY},{NZ} dt {DT}; 정렬 {a.sort} 융합 {a.fuse} 희소 {a.sparse} 워프합 {a.wred} 공유타일 {a.shared} 블록 {a.block} 그래프 {a.graph}", flush=True)
+    for nm in ("k_fused_111s", "k_fused_111", "k_fused_011", "k_fused_101", "k_g2p", "k_p2g", "k_stress"):
         fn = mod.get_function(nm)
         print(f"  {nm}: 레지스터 {fn.num_regs}, 국소 메모리 {fn.local_size_bytes} B", flush=True)
     U64 = lambda t: np.uint64(t.data_ptr())                                          # noqa: E731
@@ -435,7 +473,8 @@ __global__ void k_floor(int N, float* X, float* Vv, float* Cc, float* Ff, const 
     gG = ((G3 + 255) // 256,)
     PA = lambda: (U64(Xt), U64(Vt), U64(Ct), U64(Ft), U64(Mt), U64(Vo))              # noqa: E731
     GA = (np.int32(n), DX, DT, GXA, GYA, GZA, PX, PY, PZ, NX, NY, NZ)
-    fz = {k: mod.get_function(k) for k in ("k_fused_000", "k_fused_100", "k_fused_001", "k_fused_101", "k_fused_011", "k_fused_111", "k_fused_010", "k_fused_110")}
+    fz = {k: mod.get_function(k) for k in ("k_fused_000", "k_fused_100", "k_fused_001", "k_fused_101", "k_fused_011", "k_fused_111", "k_fused_010", "k_fused_110",
+                                           "k_fused_001s", "k_fused_101s", "k_fused_011s", "k_fused_111s")}
     kz, ks, kp, kn, kb, kg = (mod.get_function(k) for k in ("k_zero", "k_stress", "k_p2g", "k_gnorm", "k_gbc", "k_g2p"))
     kgd, kgs, kfl = mod.get_function("k_grid_dense"), mod.get_function("k_grid_sparse"), mod.get_function("k_floor")
     EV = {}
@@ -454,7 +493,7 @@ __global__ void k_floor(int N, float* X, float* Vv, float* Cc, float* Ff, const 
     PROFILING = [False]
 
     def fused_launch(g2p):
-        k = fz[f"k_fused_{int(g2p)}{int(a.wred)}{int(a.sparse)}"]
+        k = fz[f"k_fused_{int(g2p)}{int(a.wred)}{int(a.sparse)}" + ("s" if a.shared else "")]
         fn = lambda: k(gP, (B,), (np.int32(N), np.int32(n), np.int32(NB), DX, IDX, DT, MU, LAM, *PA(), U64(vout), U64(vin), U64(gm), U64(flags)))  # noqa: E731
         ev("입자 (G2P+응력+P2G 융합)" if g2p else "입자 (응력+P2G, 프레임 첫 서브스텝)", fn)
 
