@@ -31,6 +31,9 @@ ap.add_argument("--newton", type=int, default=2)
 ap.add_argument("--cg", type=int, default=5)
 ap.add_argument("--ls", type=int, default=1)
 ap.add_argument("--no_vfl_out", action="store_true")
+ap.add_argument("--mg_levels", type=int, default=1, help="1 = 블록 야코비, 2 이상 = 그 층 수의 기하 멀티그리드 (거친 층 조밀 상자)")
+ap.add_argument("--mg_nc", type=int, default=8)
+ap.add_argument("--mg_pow", type=int, default=6)
 ap.add_argument("--dump", action="store_true")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
@@ -76,8 +79,8 @@ if a.cfg_bc:
     BC = BC or None
 F0 = DM.traj_F(d, h, dev)[0].to(dev).double().reshape(Np, 9)
 S = ART.RTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC)
-print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, "
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow)
+print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
 errs, ms = [], []

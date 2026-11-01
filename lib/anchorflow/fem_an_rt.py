@@ -606,6 +606,231 @@ __global__ void rt_g2p_end(int N, const int* IP, const float* Ai, const int* pb,
     for (int a=0;a<3;a++) { x[p*3+a] += u[a]; v[p*3+a] = vv[a]; }
     for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = 0.f; for (int k=0;k<3;k++) t += A[a*3+k]*Fp[k*3+b]; F[(size_t)p*9+a*3+b] = t; }
 }
+// ================= 멀티그리드 (거친 층 = 조밀 상자, 프레임당 한 번 구성) =================
+// LM[l*8 + ..]: 0..2 노드 상자 차원, 3 노드 수, 4..6 칸 상자 차원, 7 가우스 점 수 (= 칸 x 8). 층 0 = 고운 층 (IP).
+__global__ void rt_mg_dims(int* IP, int* LM, int nl, const int* capn, const int* capq) {
+    int n0 = IP[6], n1 = IP[7], n2 = IP[8];
+    LM[0] = n0; LM[1] = n1; LM[2] = n2; LM[3] = IP[9];
+    for (int l=1; l<nl; l++) {
+        n0 = n0/2 + 3; n1 = n1/2 + 3; n2 = n2/2 + 3;
+        int* o = LM + l*8; o[0] = n0; o[1] = n1; o[2] = n2; o[3] = n0*n1*n2; o[4] = n0-2; o[5] = n1-2; o[6] = n2-2; o[7] = (n0-2)*(n1-2)*(n2-2)*8;
+        if (o[3] > capn[l] || o[7] > capq[l]) { o[3] = 0; o[7] = 0; atomicOr(&IP[13], 2); }
+    }
+}
+// 거친 층 l 가우스 점 누적: 출처 = 층 l−1 의 가우스 점 (위치 tq = 칸 좌표 + 팔분 위치, X = F, 가중 V)
+__global__ void rt_mg_acc(int l, const int* IP, const int* LM, const int* cbF, const float* Fsrc, const float* Vsrc, float* A, float* C, int* badq, int* badc) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    int nsrc = (l == 1) ? IP[12] : LM[(l-1)*8+7];
+    if (q >= nsrc) return;
+    float w = Vsrc[q]; if (!(w > 0.f)) return;
+    int c = q >> 3, oc = q & 7;
+    const float GG = 0.28867513459481287f;
+    int cx, cy, cz;
+    if (l == 1) { cx = cbF[c*3]; cy = cbF[c*3+1]; cz = cbF[c*3+2]; }
+    else { const int* pl = LM + (l-1)*8; cz = c % pl[6]; cy = (c / pl[6]) % pl[5]; cx = c / (pl[5]*pl[6]); }
+    float tq[3] = {cx + 1.f + ((oc & 4) ? GG : -GG), cy + 1.f + ((oc & 2) ? GG : -GG), cz + 1.f + ((oc & 1) ? GG : -GG)};
+    const int* L = LM + l*8;
+    int b[3]; float fx[3];
+    for (int a=0;a<3;a++) { float t = 0.5f*(tq[a] + 1.5f); float fb = floorf(t - 0.5f); b[a] = (int)fb; fx[a] = t - fb; }
+    int cc = (b[0]*L[5] + b[1])*L[6] + b[2];
+    int qc = cc*8 + (fx[0] >= 1.f ? 4 : 0) + (fx[1] >= 1.f ? 2 : 0) + (fx[2] >= 1.f ? 1 : 0);
+    float X[9]; for (int k=0;k<9;k++) X[k] = Fsrc[(size_t)q*9+k];
+    float U[9], S[3], V[9]; ssvdf(X, U, S, V);
+    bool ng = !(S[2] > 0.f);
+    float R[9], Lg[9]; float lg[3]; for (int i=0;i<3;i++) lg[i] = ng ? 0.f : logf(S[i]);
+    for (int a=0;a<3;a++) for (int bb=0;bb<3;bb++) { R[a*3+bb] = U[a*3]*V[bb*3] + U[a*3+1]*V[bb*3+1] + U[a*3+2]*V[bb*3+2];
+        Lg[a*3+bb] = V[a*3]*lg[0]*V[bb*3] + V[a*3+1]*lg[1]*V[bb*3+1] + V[a*3+2]*lg[2]*V[bb*3+2]; }
+    float* aq = A + (size_t)qc*28; float* ac = C + (size_t)cc*30;
+    for (int k=0;k<9;k++) { atomicAdd(&aq[k], w*R[k]); atomicAdd(&aq[9+k], w*Lg[k]); atomicAdd(&aq[18+k], w*X[k]);
+                            atomicAdd(&ac[k], w*R[k]); atomicAdd(&ac[9+k], w*Lg[k]); atomicAdd(&ac[18+k], w*X[k]); }
+    atomicAdd(&aq[27], w); atomicAdd(&ac[27], w); atomicAdd(&ac[28], w);
+    if (ng) { atomicOr(&badq[qc], 1); atomicOr(&badc[cc], 1); }
+}
+__global__ void rt_mg_fin(int l, const int* LM, const float* A, const float* C, const int* badq, const int* badc, float* Fq, float* Vq) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= LM[l*8+7]) return;
+    int c = q >> 3;
+    const float* aq = A + (size_t)q*28; const float* ac = C + (size_t)c*30;
+    float out[9]; bool bad = false;
+    if (!(ac[27] > 0.f)) { for (int k=0;k<9;k++) out[k] = (k % 4 == 0) ? 1.f : 0.f; Vq[q] = 0.f; }
+    else {
+        if (aq[27] > 0.f) { rs_fin(aq, aq + 9, aq[27], out, &bad); if (bad || badq[q]) for (int k=0;k<9;k++) out[k] = aq[18+k]/aq[27]; }
+        else { rs_fin(ac, ac + 9, ac[27], out, &bad); if (bad || badc[c]) for (int k=0;k<9;k++) out[k] = ac[18+k]/ac[27]; }
+        Vq[q] = ac[28]*0.125f;
+    }
+    for (int k=0;k<9;k++) Fq[(size_t)q*9+k] = out[k];
+}
+__device__ __forceinline__ void qnodes_d(int q, const int* L, int* ids) {
+    int c = q >> 3; int cz = c % L[6], cy = (c / L[6]) % L[5], cx = c / (L[5]*L[6]);
+    for (int o=0;o<27;o++) { int i = o/9, j = (o/3)%3, k = o%3; ids[o] = ((cx+i)*L[1] + (cy+j))*L[2] + (cz+k); }
+}
+// 거친 층 헤시안 (y = 0 -> X = F_q) 성분 우선 저장 + 노드 대각 융합. BG 기울기에 sc = 2^-l
+__global__ void __launch_bounds__(128) rt_mg_elem(int l, const int* LM, const float* BG, float sc, const float* Fq, const float* Vq, float mu, float lam, float* H, int capQ, float* B) {
+    const int* L = LM + l*8;
+    if (blockIdx.x*blockDim.x >= L[7]) return;
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < L[7]; int qq = on ? q : 0; bool head = (threadIdx.x & 7) == 0; int oc = qq & 7;
+    int ids[27]; qnodes_d(qq, L, ids);
+    float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)qq*9+k];
+    float vq = on ? Vq[qq] : 0.f;
+    float h[81]; for (int k=0;k<81;k++) h[k] = 0.f;
+    if (on && vq > 0.f) {
+        float U[9], S[3], V[9]; ssvdf(F, U, S, V);
+        float J = S[0]*S[1]*S[2]; float gJ[3] = {S[1]*S[2], S[0]*S[2], S[0]*S[1]};
+        float D[3][3], Ev[3][3];
+        float Sg[3][3] = {{0.f, S[2], S[1]}, {S[2], 0.f, S[0]}, {S[1], S[0], 0.f}};
+        for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = ((i==j) ? 2.f*mu : 0.f) + lam*gJ[i]*gJ[j] + lam*(J-1.f)*Sg[i][j];
+        jac3f(D, Ev);
+        for (int m=0;m<3;m++) { float dm = fmaxf(D[m][m], 0.f); if (!(dm > 0.f)) continue;
+            float e[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) e[a*3+b] = Ev[0][m]*U[a*3]*V[b*3] + Ev[1][m]*U[a*3+1]*V[b*3+1] + Ev[2][m]*U[a*3+2]*V[b*3+2];
+            for (int r=0;r<9;r++) for (int c=0;c<9;c++) h[r*9+c] += dm*e[r]*e[c]; }
+        const int PI[3] = {0,0,1}, PJ[3] = {1,2,2}, PK[3] = {2,1,0};
+        const float r2 = 0.70710678f;
+        for (int pp=0; pp<3; pp++) { int i = PI[pp], j = PJ[pp], k = PK[pp];
+            float lt = 2.f*mu*(1.f - 2.f/(S[i]+S[j])) + lam*(J-1.f)*S[k]; float lf = 2.f*mu - lam*(J-1.f)*S[k];
+            lt = isfinite(lt) ? fmaxf(lt, 0.f) : 0.f; lf = fmaxf(lf, 0.f);
+            float et[9], ef[9];
+            for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float x1 = U[a*3+i]*V[b*3+j], x2 = U[a*3+j]*V[b*3+i]; et[a*3+b] = r2*(x1-x2); ef[a*3+b] = r2*(x1+x2); }
+            for (int r=0;r<9;r++) for (int c=0;c<9;c++) h[r*9+c] += lt*et[r]*et[c] + lf*ef[r]*ef[c]; }
+    }
+    if (on) for (int k=0;k<81;k++) H[(size_t)k*capQ + qq] = h[k];
+    for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; float bs[3] = {sc*bg[0], sc*bg[1], sc*bg[2]}; float g[3]; gqn(F, bs, g);
+        float m[9];
+        for (int a=0;a<3;a++) for (int c=0;c<3;c++) { float t = 0.f;
+            for (int b=0;b<3;b++) { float hg = h[(a*3+b)*9 + c*3]*g[0] + h[(a*3+b)*9 + c*3+1]*g[1] + h[(a*3+b)*9 + c*3+2]*g[2]; t += g[b]*hg; }
+            m[a*3+c] = vq*t; }
+        for (int k=0;k<9;k++) m[k] = seg8f(m[k]);
+        if (on && head) for (int k=0;k<9;k++) atomicAdd(&B[ids[o]*9+k], m[k]); }
+}
+// 거친 층 헤시안 곱 (조밀)
+__global__ void __launch_bounds__(128) rt_mg_mv(int l, const int* LM, const float* BG, float sc, const float* Fq, const float* Vq, const float* H, int capQ, const float* dy, float* out) {
+    const int* L = LM + l*8;
+    if (blockIdx.x*blockDim.x >= L[7]) return;
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < L[7]; int qq = on ? q : 0; bool head = (threadIdx.x & 7) == 0; int oc = qq & 7;
+    int ids[27]; qnodes_d(qq, L, ids);
+    float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)qq*9+k];
+    float vq = on ? Vq[qq] : 0.f;
+    float dX[9] = {0,0,0,0,0,0,0,0,0};
+    float gs[27][3];
+    for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; float bs[3] = {sc*bg[0], sc*bg[1], sc*bg[2]}; gqn(F, bs, gs[o]); int id = ids[o];
+        for (int a=0;a<3;a++) { float ya = dy[id*3+a]; dX[a*3] += ya*gs[o][0]; dX[a*3+1] += ya*gs[o][1]; dX[a*3+2] += ya*gs[o][2]; } }
+    float dP[9]; for (int r=0;r<9;r++) { float t = 0.f; if (vq > 0.f) for (int c=0;c<9;c++) t += H[(size_t)(r*9+c)*capQ + qq]*dX[c]; dP[r] = vq*t; }
+    for (int o=0;o<27;o++) for (int a=0;a<3;a++) { float s = seg8f(dP[a*3]*gs[o][0] + dP[a*3+1]*gs[o][1] + dP[a*3+2]*gs[o][2]); if (on && head) atomicAdd(&out[ids[o]*3+a], s); }
+}
+// 제한 out[J] = Σ c_k c_l c_m in[2J − 3 + (k,l,m)] (c = 1,3,3,1 / 4), 고운 층 차원 nf (LM 층 lf), 거친 층 차원 (LM 층 lf+1). ch = 1 또는 3
+__global__ void rt_mg_restrict(int lf, const int* LM, const float* in, float* out, int ch) {
+    const int* A = LM + lf*8; const int* B = LM + (lf+1)*8;
+    int J = blockIdx.x*blockDim.x + threadIdx.x;
+    if (J >= B[3]) return;
+    int jz = J % B[2], jy = (J / B[2]) % B[1], jx = J / (B[1]*B[2]);
+    const float cw[4] = {0.25f, 0.75f, 0.75f, 0.25f};
+    float acc[3] = {0.f, 0.f, 0.f};
+    for (int k=0;k<4;k++) { int ix = 2*jx - 3 + k; if (ix < 0 || ix >= A[0]) continue;
+      for (int m=0;m<4;m++) { int iy = 2*jy - 3 + m; if (iy < 0 || iy >= A[1]) continue;
+        for (int n=0;n<4;n++) { int iz = 2*jz - 3 + n; if (iz < 0 || iz >= A[2]) continue;
+          float w = cw[k]*cw[m]*cw[n]; int i = (ix*A[1] + iy)*A[2] + iz;
+          for (int c=0;c<ch;c++) acc[c] += w*in[i*ch+c]; } } }
+    for (int c=0;c<ch;c++) out[J*ch+c] = acc[c];
+}
+// 연장 out[i] (+)= Σ_J c_{i−2J+3} in[J]
+__global__ void rt_mg_prolong(int lf, const int* LM, const float* in, float* out, int add) {
+    const int* A = LM + lf*8; const int* B = LM + (lf+1)*8;
+    int I = blockIdx.x*blockDim.x + threadIdx.x;
+    if (I >= A[3]) return;
+    int iz = I % A[2], iy = (I / A[2]) % A[1], ix = I / (A[1]*A[2]);
+    const float cw[4] = {0.25f, 0.75f, 0.75f, 0.25f};
+    int ii[3] = {ix, iy, iz};
+    int Jc[3][2]; float Wc[3][2];
+    for (int a=0;a<3;a++) { int j0 = (ii[a] + 3) >> 1; int k0 = ii[a] + 3 - 2*j0; Jc[a][0] = j0; Wc[a][0] = cw[k0]; Jc[a][1] = j0 - 1; Wc[a][1] = cw[k0 + 2]; }
+    float acc[3] = {0.f, 0.f, 0.f};
+    for (int p=0;p<2;p++) { int jx = Jc[0][p]; if (jx < 0 || jx >= B[0]) continue;
+      for (int q=0;q<2;q++) { int jy = Jc[1][q]; if (jy < 0 || jy >= B[1]) continue;
+        for (int r=0;r<2;r++) { int jz = Jc[2][r]; if (jz < 0 || jz >= B[2]) continue;
+          float w = Wc[0][p]*Wc[1][q]*Wc[2][r]; int J = (jx*B[1] + jy)*B[2] + jz;
+          for (int c=0;c<3;c++) acc[c] += w*in[J*3+c]; } } }
+    for (int c=0;c<3;c++) out[I*3+c] = (add ? out[I*3+c] : 0.f) + acc[c];
+}
+// 거친 층 노드: D = (Mi I + B)⁻¹ (질량·대각 0 이면 0)
+__global__ void rt_mg_D(int l, const int* LM, const float* mc, float itau2, const float* B, float* D) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= LM[l*8+3]) return;
+    float M[9]; float Mi = mc[n]*itau2;
+    for (int k=0;k<9;k++) M[k] = B[n*9+k] + ((k % 4 == 0) ? Mi : 0.f);
+    float Di[9]; inv3(M, Di); for (int k=0;k<9;k++) D[n*9+k] = Di[k];
+}
+// 층 노드 연산: (0) z = w D r; (1) z += w D (r − Az); (2) res = r − Az;  Az = Mi z + KTz 마무리 (층 0 은 T 끼움)
+// 층 0: Az = Mi z + T (K (T z)); 여기서 KTz 는 이미 계산된 K(Tz) 또는 K z. 모드 3: Tz = T z (층 0), 모드 4: out = T v
+__global__ void rt_mg_node(int l, const int* LM, int mode, const float* mn, float itau2, const float* sk, const int* pm, float n0, float n1, float n2,
+                           const float* D, const double* W, const float* r, const float* KTz, float* z, float* res) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= LM[l*8+3]) return;
+    float w = (float)W[l];
+    const float* d = D + n*9;
+    float rr[3], az[3];
+    for (int a=0;a<3;a++) rr[a] = r ? r[n*3+a] : 0.f;
+    if (mode == 0) { for (int a=0;a<3;a++) z[n*3+a] = w*(d[a*3]*rr[0] + d[a*3+1]*rr[1] + d[a*3+2]*rr[2]); return; }
+    if (mode == 3 || mode == 4) { const float* v = (mode == 3) ? z : r; float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, v + n*3, t); for (int a=0;a<3;a++) res[n*3+a] = t[a]; return; }
+    if (mode == 5) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, r + n*3, t); for (int a=0;a<3;a++) z[n*3+a] += t[a]; return; }
+    float Mi = mn[n]*itau2;
+    float kt[3] = {KTz[n*3], KTz[n*3+1], KTz[n*3+2]};
+    if (l == 0) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, kt, t); for (int a=0;a<3;a++) kt[a] = t[a]; }
+    for (int a=0;a<3;a++) az[a] = Mi*z[n*3+a] + kt[a];
+    float e[3]; for (int a=0;a<3;a++) e[a] = rr[a] - az[a];
+    if (mode == 2) { for (int a=0;a<3;a++) res[n*3+a] = e[a]; return; }
+    for (int a=0;a<3;a++) z[n*3+a] += w*(d[a*3]*e[0] + d[a*3+1]*e[1] + d[a*3+2]*e[2]);
+}
+// 거듭제곱법 한 걸음: z ← D A z / |D A z|, λ = (z·DAz)/(z·z) -> SCM[l]; 마지막에 W[l] = ω/λ
+__global__ void rt_mg_pw1(int l, const int* LM, const float* mn, float itau2, const float* sk, const int* pm, float n0, float n1, float n2, const float* D, const float* z, const float* KTz,
+                          float* y, double* SCM) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    double s1 = 0.0, s2 = 0.0, s3 = 0.0;
+    int nn = LM[l*8+3];
+    if (blockIdx.x*blockDim.x >= nn) return;
+    if (n < nn) {
+        float Mi = mn[n]*itau2;
+        float kt[3] = {KTz[n*3], KTz[n*3+1], KTz[n*3+2]};
+        if (l == 0) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, kt, t); for (int a=0;a<3;a++) kt[a] = t[a]; }
+        float az[3]; for (int a=0;a<3;a++) az[a] = Mi*z[n*3+a] + kt[a];
+        const float* d = D + n*9;
+        for (int a=0;a<3;a++) { float v = d[a*3]*az[0] + d[a*3+1]*az[1] + d[a*3+2]*az[2]; y[n*3+a] = v; s1 += (double)z[n*3+a]*v; s2 += (double)z[n*3+a]*z[n*3+a]; s3 += (double)v*v; }
+    }
+    blocksum_add(s1, &SCM[l*4]); blocksum_add(s2, &SCM[l*4+1]); blocksum_add(s3, &SCM[l*4+2]);
+}
+__global__ void rt_mg_pw2(int l, const int* LM, const float* y, float* z, double* SCM, double* W, float omega, int last) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n == 0 && last) { double lm = SCM[l*4] / fmax(SCM[l*4+1], 1e-300); W[l] = omega / fmax(lm, 1e-30); }
+    if (n >= LM[l*8+3]) return;
+    double nr = sqrt(fmax(SCM[l*4+2], 1e-300));
+    for (int a=0;a<3;a++) z[n*3+a] = (float)(y[n*3+a] / nr);
+}
+__global__ void rt_mg_pw0(int l, double* SCM) { SCM[l*4] = 0.0; SCM[l*4+1] = 0.0; SCM[l*4+2] = 0.0; }
+__global__ void rt_fill_rand(int l, const int* LM, float* z) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= LM[l*8+3]) return;
+    unsigned int h = (unsigned int)n*2654435761u + 12345u*(l+1);
+    for (int a=0;a<3;a++) { h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15; z[n*3+a] = ((float)(h & 0xffffff) / 16777216.f) - 0.5f; }
+}
+// PCG + MG: α 갱신만 (z 는 V 순환이 따로); 그다음 내적 r·z, r·(z − zo) 와 zo ← z
+__global__ void rt_cg1m(const int* IP, const double* SC, const float* p, const float* Ap, float* dl, float* r) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    double pAp = SC[2]; float al = (pAp > 0.0) ? (float)(SC[0]/pAp) : 0.f;
+    for (int a=0;a<3;a++) { dl[n*3+a] += al*p[n*3+a]; r[n*3+a] -= al*Ap[n*3+a]; }
+}
+__global__ void rt_dotz(const int* IP, const float* r, const float* z, float* zo, double* SC, int first) {
+    if (blockIdx.x*blockDim.x >= IP[9]) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    double s3 = 0.0, s4 = 0.0;
+    if (n < IP[9]) for (int a=0;a<3;a++) { float zn = z[n*3+a]; s3 += (double)r[n*3+a]*zn; s4 += (double)r[n*3+a]*(zn - zo[n*3+a]); zo[n*3+a] = zn; }
+    blocksum_add(s3, first ? &SC[0] : &SC[3]); if (!first) blocksum_add(s4, &SC[4]);
+}
+__global__ void rt_pinit(const int* IP, const float* z, const float* sk, const int* pm, float n0, float n1, float n2, float* p, float* Tp) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, z + n*3, t);
+    for (int a=0;a<3;a++) { p[n*3+a] = z[n*3+a]; Tp[n*3+a] = t[a]; }
+}
 }
 '''
 
@@ -617,7 +842,7 @@ def P(t):
 class RTSolver:
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda"):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0):
         s.dev = dev
         f32 = torch.float32
         s.N = int(x.shape[0])
@@ -637,6 +862,7 @@ class RTSolver:
         s.nt, s.cg, s.ls = int(newton), int(cg), int(ls)
         s.floor = floor                                                                # dict(PT, NR, PN, DXG, KEX_per_step, vout) 또는 None
         s.damp = float(damp)
+        s.nl, s.mg_nc, s.mg_pow, s.mg_omega = int(mg_levels), int(mg_nc), int(mg_pow), float(mg_omega)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
         s.mod = cp.RawModule(code=SRC, options=("--std=c++14",))
         s.fn = {}
@@ -704,6 +930,9 @@ class RTSolver:
             ncb = (nb[0] - 2) * (nb[1] - 2) * (nb[2] - 2)
             uc = torch.unique(((b - b.min(0).values).long() * torch.tensor([(nb[1] - 2) * (nb[2] - 2), nb[2] - 2, 1], device=dev)).sum(1)).numel()
             need = (nn, ncb, uc)
+            s.nb0 = nb
+        if not hasattr(s, "nb0"):
+            s.nb0 = [round(need[0] ** (1 / 3))] * 3
         s.capN, s.capC, s.capQc = [int(q * s.cap_mul) + 1024 for q in need]
         capQ = s.capQc * 8
         Z = lambda *sh: torch.zeros(*sh, device=dev, dtype=f32)
@@ -722,7 +951,113 @@ class RTSolver:
         s.fixd = torch.zeros(s.capN, device=dev, dtype=torch.uint8) if s.bc else None
         s.vbc = Z(s.capN, 3) if s.bc else None
         s.g0buf = Z(s.capN, 3)
+        # 멀티그리드 층 (1 .. nl−1): 첫 프레임 상자에서 차원을 내려 잡고 cap_mul 배
+        s.ML = []
+        if s.nl > 1:
+            nbh = list(s.nb0)
+            capn, capq = [0], [0]
+            for l in range(1, s.nl):
+                nbh = [q // 2 + 3 for q in nbh]
+                cn = int(nbh[0] * nbh[1] * nbh[2] * s.cap_mul) + 1024
+                cq = int((nbh[0] - 2) * (nbh[1] - 2) * (nbh[2] - 2) * 8 * s.cap_mul) + 1024
+                cq = (cq + 7) // 8 * 8
+                capn.append(cn); capq.append(cq)
+                L = dict(capn=cn, capq=cq, Fq=Z(cq, 9), Vq=Z(cq), H=Z(81, cq), B=Z(cn, 9), D=Z(cn, 9), mc=Z(cn), A=Z(cq, 28), C=Z(cq // 8, 30),
+                         badq=torch.zeros(cq, device=dev, dtype=torch.int32), badc=torch.zeros(cq // 8, device=dev, dtype=torch.int32),
+                         r=Z(cn, 3), z=Z(cn, 3), t=Z(cn, 3), KT=Z(cn, 3), y=Z(cn, 3))
+                s.ML.append(L)
+            s.capn_d = torch.tensor(capn, device=dev, dtype=torch.int32); s.capq_d = torch.tensor(capq, device=dev, dtype=torch.int32)
+            s.LM = torch.zeros(s.nl * 8, device=dev, dtype=torch.int32)
+            s.W = torch.zeros(s.nl, device=dev, dtype=torch.float64); s.SCM = torch.zeros(s.nl * 4, device=dev, dtype=torch.float64)
+            s.m0t = Z(s.capN, 3); s.m0u = Z(s.capN, 3); s.m0KT = Z(s.capN, 3); s.zo = Z(s.capN, 3); s.mnd = s.mn
         s.graph = None
+
+
+    # ---------- 멀티그리드 (그래프 안) ----------
+    def mg_build(s):
+        i32, f = np.int32, np.float32
+        it2 = f(1.0 / (s.tau * s.tau))
+        s.k("rt_mg_dims", 1, (P(s.IP), P(s.LM), i32(s.nl), P(s.capn_d), P(s.capq_d)), b=1)
+        for l in range(1, s.nl):
+            L = s.ML[l - 1]
+            for t_ in (L["A"], L["C"], L["B"], L["mc"]):
+                s.zf(t_)
+            s.zf(L["badq"]); s.zf(L["badc"])
+            src_cap = (s.capQc * 8) if l == 1 else s.ML[l - 2]["capq"]
+            Fs = s.Fq if l == 1 else s.ML[l - 2]["Fq"]
+            Vs = s.Vq if l == 1 else s.ML[l - 2]["Vq"]
+            s.k("rt_mg_acc", src_cap, (i32(l), P(s.IP), P(s.LM), P(s.cb), P(Fs), P(Vs), P(L["A"]), P(L["C"]), P(L["badq"]), P(L["badc"])))
+            s.k("rt_mg_fin", L["capq"], (i32(l), P(s.LM), P(L["A"]), P(L["C"]), P(L["badq"]), P(L["badc"]), P(L["Fq"]), P(L["Vq"])))
+            mprev = s.mn if l == 1 else s.ML[l - 2]["mc"]
+            s.k("rt_mg_restrict", L["capn"], (i32(l - 1), P(s.LM), P(mprev), P(L["mc"]), i32(1)), b=256)
+            s.k("rt_mg_elem", L["capq"], (i32(l), P(s.LM), P(s.BG), f(0.5 ** l), P(L["Fq"]), P(L["Vq"]), f(s.mu), f(s.lam), P(L["H"]), i32(L["capq"]), P(L["B"])))
+            s.k("rt_mg_D", L["capn"], (i32(l), P(s.LM), P(L["mc"]), it2, P(L["B"]), P(L["D"])), b=256)
+        for l in range(1, s.nl):
+            s.mg_power(l)
+
+    def mg_Az(s, l, z, KT):
+        """KT = K (T z) (층 0) 또는 K z (거친 층)."""
+        i32, f = np.int32, np.float32
+        nr = s.floor["NR"] if s.floor else [0.0, 0.0, 1.0]
+        if l == 0:
+            s.k("rt_mg_node", s.capN, (i32(0), P(s.LM), i32(3), P(s.mn), f(0), P(s.sk), P(s.pm), *[f(q) for q in nr], P(None), P(s.W), P(None), P(None), P(z), P(s.m0u)), b=256)
+            s.zf(KT, 9, 3)
+            s.k("rt_mv", s.capQc * 8, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.m0u), P(KT), i32(s.capQc * 8)))
+        else:
+            L = s.ML[l - 1]
+            s.zf(KT)
+            s.k("rt_mg_mv", L["capq"], (i32(l), P(s.LM), P(s.BG), f(0.5 ** l), P(L["Fq"]), P(L["Vq"]), P(L["H"]), i32(L["capq"]), P(z), P(KT)))
+
+    def mg_lv(s, l):
+        if l == 0:
+            return dict(mn=s.mn, D=s.Dinv, cap=s.capN)
+        L = s.ML[l - 1]
+        return dict(mn=L["mc"], D=L["D"], cap=L["capn"])
+
+    def mg_power(s, l):
+        i32, f = np.int32, np.float32
+        it2 = f(1.0 / (s.tau * s.tau))
+        nr = s.floor["NR"] if s.floor else [0.0, 0.0, 1.0]
+        V = s.mg_lv(l)
+        z = s.m0t if l == 0 else s.ML[l - 1]["z"]
+        y = s.zo if l == 0 else s.ML[l - 1]["y"]
+        KT = s.m0KT if l == 0 else s.ML[l - 1]["KT"]
+        s.k("rt_fill_rand", V["cap"], (i32(l), P(s.LM), P(z)), b=256)
+        for it in range(s.mg_pow):
+            s.k("rt_mg_pw0", 1, (i32(l), P(s.SCM)), b=1)
+            s.mg_Az(l, z, KT)
+            s.k("rt_mg_pw1", V["cap"], (i32(l), P(s.LM), P(V["mn"]), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(V["D"]), P(z), P(KT), P(y), P(s.SCM)), b=256)
+            s.k("rt_mg_pw2", V["cap"], (i32(l), P(s.LM), P(y), P(z), P(s.SCM), P(s.W), f(s.mg_omega), i32(1 if it == s.mg_pow - 1 else 0)), b=256)
+
+    def mg_vc(s, l, r, z):
+        """z = V 순환 (r). 층 0 의 r·z 는 고운 노드 배열 (조밀 상자)."""
+        i32, f = np.int32, np.float32
+        it2 = f(1.0 / (s.tau * s.tau))
+        nr = s.floor["NR"] if s.floor else [0.0, 0.0, 1.0]
+        V = s.mg_lv(l)
+        KT = s.m0KT if l == 0 else s.ML[l - 1]["KT"]
+        res = s.m0t if l == 0 else s.ML[l - 1]["t"]
+        node = lambda mode, rr, kt, zz, rs: s.k("rt_mg_node", V["cap"], (i32(l), P(s.LM), i32(mode), P(V["mn"]), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(V["D"]), P(s.W),
+                                                                         P(rr), P(kt), P(zz), P(rs)), b=256)
+        node(0, r, None, z, None)
+        if l == s.nl - 1:
+            for _ in range(s.mg_nc - 1):
+                s.mg_Az(l, z, KT); node(1, r, KT, z, None)
+            return
+        s.mg_Az(l, z, KT); node(2, r, KT, z, res)
+        Lc = s.ML[l]
+        if l == 0:
+            node(4, res, None, None, s.m0u)                                            # T res
+            s.k("rt_mg_restrict", Lc["capn"], (i32(0), P(s.LM), P(s.m0u), P(Lc["r"]), i32(3)), b=256)
+        else:
+            s.k("rt_mg_restrict", Lc["capn"], (i32(l), P(s.LM), P(res), P(Lc["r"]), i32(3)), b=256)
+        s.mg_vc(l + 1, Lc["r"], Lc["z"])
+        if l == 0:
+            s.k("rt_mg_prolong", V["cap"], (i32(0), P(s.LM), P(Lc["z"]), P(s.m0u), i32(0)), b=256)
+            node(5, s.m0u, None, z, None)                                              # z += T P z_c
+        else:
+            s.k("rt_mg_prolong", V["cap"], (i32(l), P(s.LM), P(Lc["z"]), P(z), i32(1)), b=256)
+        s.mg_Az(l, z, KT); node(1, r, KT, z, None)
 
     def zf(s, t, cnt_idx=None, mul=1):
         n = t.numel()
@@ -750,6 +1085,8 @@ class RTSolver:
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv)))
         s.k("rt_gauss", capQ, (P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.cb), P(s.A), P(s.BW), P(s.Fq), P(s.Vq), P(s.mq), P(s.xq0), P(s.mqn), P(s.nbad)))
         s.k("rt_vn", capN, (P(IP), P(s.mn), P(s.mv), P(s.vk), P(s.U)), b=256)
+        if s.nl > 1:
+            s.mg_build()
         if s.bc:
             s.fixd.zero_()
             for ib in range(len(s.bc)):
@@ -771,11 +1108,24 @@ class RTSolver:
                 s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8 | (4 if s.ls else 0)), P(s.SC[10:]), P(s.f), P(s.H),
                                       i32(capQ), P(s.B)))
                 s.k("rt_grad", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
+                if s.nl > 1:                                                           # MG 전처리: z = V(r) 로 바꿔 시작
+                    if kstep == 0 and it == 0:
+                        s.mg_power(0)
+                    s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(1)), b=1)
+                    s.mg_vc(0, s.r, s.z)
+                    s.zf(s.zo, 9, 3)
+                    s.k("rt_dotz", capN, (P(IP), P(s.r), P(s.z), P(s.zo), P(s.SC), i32(1)), b=256)
+                    s.k("rt_pinit", capN, (P(IP), P(s.z), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.Tp)), b=256)
                 for ci in range(s.cg):
                     s.zf(s.KTp, 9, 3)
                     s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
                     s.k("rt_ap", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
-                    s.k("rt_cg1", capN, (P(IP), P(s.SC), P(s.Dinv), P(s.p), P(s.Ap), P(s.dl), P(s.r), P(s.z), P(s.SC)), b=256)
+                    if s.nl > 1:
+                        s.k("rt_cg1m", capN, (P(IP), P(s.SC), P(s.p), P(s.Ap), P(s.dl), P(s.r)), b=256)
+                        s.mg_vc(0, s.r, s.z)
+                        s.k("rt_dotz", capN, (P(IP), P(s.r), P(s.z), P(s.zo), P(s.SC), i32(0)), b=256)
+                    else:
+                        s.k("rt_cg1", capN, (P(IP), P(s.SC), P(s.Dinv), P(s.p), P(s.Ap), P(s.dl), P(s.r), P(s.z), P(s.SC)), b=256)
                     s.k("rt_cg2", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.z), P(s.p), P(s.Tp)), b=256)
                     s.k("rt_sc_roll", 1, (P(s.SC),), b=1)
                 # 선탐색: 기울기 곱 g·δ = −r0·δ (r0 = rt_grad 가 남긴 처음 잔차)
