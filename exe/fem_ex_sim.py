@@ -3174,6 +3174,11 @@ class Opt:
                         self._fsTu, self._fsTn, self._fsvb = (torch.zeros(self.Tcap, device=dev) for _ in range(3))
                     self._fsTu.fill_(1.0); self._fsTu[:T_] = fT; self._fsTn.copy_(self._fsTu)
                     self._fsvb.zero_(); self._fsvb[:T_] = vb_
+            if RPIC_ETA > 0 and AKPQ and getattr(self, "_vpT", None) is not None:  # 절 AG.19: 점성 감쇠의 명시적 안정 조건 h c / m ≤ 2 -> m ≥ (h/2) c, c_n = Σ 2η V_p |∇λ_i| Σ|∇λ_j| (Gershgorin)
+                T_ = self.T
+                gn_ = self.gl[:T_].view(-1, 4, 3).norm(dim=-1)
+                kv_ = (a.ah_mcfl * (self.hscur / 2.0) * 2.0 * RPIC_ETA) * self._vpT[:T_][:, None] * gn_ * gn_.sum(1, keepdim=True)
+                self.mcfl.index_add_(0, self.tets[:T_].reshape(-1), kv_.reshape(-1))
             if a.ak_capmu and AKPQ:                                                 # 절 AG.19: --ak_capmu 는 λ 몫을 입자 부피 그대로 쓰므로 상계에 λ (Σ V_p − V_T) |∇λ_i| Σ|∇λ_j| 를 더한다 (상한 부피로만 잡으면 과소)
                 T_ = self.T
                 occ_ = self.VTs[:T_] > 0
