@@ -53,6 +53,7 @@ ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--fast", action="store_true", help="가속 판: 헤시안 float32 저장·곱 (기울기·잔차 float64), MG 계층 프레임당 한 번 (뉴턴마다 0 층 대각만 갱신), "
                 "고정 예산 (조기 종료 없음), 호스트 동기화 없음 (스칼라는 장치에), 장치 쪽 선탐색 후보 1·½·¼ (--fast_ls 0 이면 온 걸음)")
 ap.add_argument("--fast_ls", type=int, default=1)
+ap.add_argument("--fl_iter", action="store_true", help="(옛 판) 고착 상태를 뉴턴 반복마다 다시 잼 -- 풀이 문제가 반복마다 바뀌어 뉴턴이 수렴하지 않음 (절 AN 진단). 기본은 걸음당 한 번 (관성 예측 y = Ũ 의 걸음 끝 위치) 정하고 고정")
 ap.add_argument("--no_proj", action="store_true", help="진단: 가우스 점 헤시안 고유값 투영 끔 (원래 헤시안)")
 ap.add_argument("--diag", action="store_true", help="진단: 뉴턴 반복마다 |g|/|g0|, 보폭, PCG 반복·최종 상대 잔차, 란초스 고유값 추정 (전처리 계 λmin·λmax) 을 fem.jsonl 에")
 ap.add_argument("--gfin", action="store_true", help="걸음 끝 y 에서 기울기를 한 번 더 재 |g|/|g0| 기록 (구간 '검사', 풀이 비용 아님)")
@@ -461,6 +462,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh):
     g0n = None
     for it in range(a.newton):
         with tsec("바닥"):
+          if it == 0 or a.fl_iter:
             if FLOOR:
                 Ue = (2 * y - Uk) if a.integ == "mid" else y
                 xq = xq0 + (QW[..., None] * Ue[qn]).sum(1)
@@ -574,7 +576,9 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
     for it in range(a.newton):
         # 고착 몫 (이 반복의 y 로) -> 변수 바꿈 y = ŷ + T η
         tfl = tsec("바닥"); tfl.__enter__()
-        if FLOOR:
+        if it > 0 and not a.fl_iter:
+            pass                                                                       # 걸음당 한 번 정한 고착 상태 (T, ŷ) 와 η 를 그대로
+        elif FLOOR:
             Ue = (2 * y - Uk) if a.integ == "mid" else y
             xq = xq0 + (QW[..., None] * Ue[qn]).sum(1)
             sq = (xq - PT) @ NR
@@ -598,7 +602,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
             T = I3.expand(na, 3, 3)
             yh = Ut
             eta = y - Ut
-        if fixd is not None:
+        if fixd is not None and (it == 0 or a.fl_iter):
             T = torch.where(fixd[:, None, None], torch.zeros_like(T), T)
             yh = torch.where(fixd[:, None], Uk + TAU * vbc, yh)
             eta = torch.where(fixd[:, None], torch.zeros_like(eta), eta)
