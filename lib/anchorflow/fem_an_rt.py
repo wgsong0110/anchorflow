@@ -1182,7 +1182,7 @@ class RTSolver:
                 return False
             tries += 1
             s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])
-            s.cap_mul *= 2.0
+            s.cap_mul = 1.5 + 0.5 * tries                                              # 필요량은 지금 상태에서 다시 재므로 배수는 작게 (두 배씩 키우면 메모리가 넘친다)
             s.alloc(None)
             s.capture()
             s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])

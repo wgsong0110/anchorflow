@@ -16,8 +16,9 @@ for t in $TS; do
   ( echo "gpu $G $(git log -1 --oneline) $(date +%T)" > $O/run_info.txt
     CUDA_VISIBLE_DEVICES=$G python -u ${AN_SIM:-exe/fem_an_sim.py} --out $O --tag $t $DA $EXTRA < /dev/null > $O/log.txt 2>&1
     rclone copy $O r2:storage/result/anchorflow/lbours/fem_an/${t}_$VK -q ) &
-  # 같은 카드에 여러 개를 얹을 때 순서대로 시작 (컴파일 경합 방지)
+  # 같은 카드에 여러 개를 얹을 때 순서대로 시작 (컴파일 경합 방지); 동시 실행 수 AN_PAR (기본 제한 없음)
   sleep 5
+  if [ -n "${AN_PAR:-}" ]; then while [ $(jobs -rp | wc -l) -ge $AN_PAR ]; do wait -n; done; fi
 done
 wait
 for t in $TS; do O=/tmp/dkta/lbours/fem_an/${t}_$VK; echo "${t}_$VK $(grep -a '롤아웃\|Error\|error\|대조' $O/log.txt | tail -2 | cut -c1-220 | tr '\n' ' ')"; done
