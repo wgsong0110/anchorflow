@@ -1972,7 +1972,10 @@ for t in range(T_START, T + 1):
         if t % a.emd_every == 0 or t == T:
             EMDP.append((t, y.float().cpu().numpy(), tgt.float().cpu().numpy()))
         mae = float((y - tgt).norm(dim=1).mean()) / L          # 명시적 FEM 과 같은 지표: 입자 평균 |x - x_gt| / EXT (EXT = 정지 경계상자 대각선 = L)
-        rows.append((t, rmse, cd, e, float(J.min()), float((J <= 0).float().mean()), mae))
+        _er = (y - tgt).norm(dim=1) / L
+        _lo = J < 1e-3                                         # 장벽 가까운 입자 (누적 det F < 1e-3): 비율과 그 입자들의 평균 오차
+        rows.append((t, rmse, cd, e, float(J.min()), float((J <= 0).float().mean()), mae,
+                     float(_lo.float().mean()), float(_er[_lo].mean()) if bool(_lo.any()) else float("nan")))
         # 물리 지표 (같은 질량 1/N 입자): 운동에너지·선운동량·각운동량 (프레임 차분 속도), 부피비 Σ det F / N
         vel = (y - YPREV[0]) * 30.0
         com = y.mean(0)
