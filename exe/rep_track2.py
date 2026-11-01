@@ -1785,7 +1785,7 @@ for t in range(T_START, T + 1):
             STOP.append((t, ntot, ntot, float(Jfun(flat([q.detach() for q in PL]))[0].min()), eps, "ipm"))
         _L2H = []                                             # riem_tol: 이 프레임 반복별 L2
         _G0N = [None]; _MINV = [None]; CGN = []                 # riem_gtol: 첫 기울기 노름 / riem_pcg: 대각 역 / 반복별 CG 횟수
-        for it_ in range(0 if a.opt == "ipm" else (a.riem_maxit if a.riem_tol > 0 else (a.iters0 if t == 1 else a.iters))):
+        for it_ in range(0 if a.opt == "ipm" else (a.riem_maxit if (a.riem_tol > 0 or a.riem_gtol > 0) else (a.iters0 if t == 1 else a.iters))):
             if a.profile and it_ == WARM:
                 TM.clear(); NCG[0] = 0
                 prof.__enter__()
