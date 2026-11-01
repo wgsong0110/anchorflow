@@ -1064,11 +1064,14 @@ for fi in range(L):
     secs.append(dt_)
     rec = dict(t=fi, err=e, sec=dt_, **{k_: v_ for k_, v_ in STAT.items()})
     if a.en and fin:
-        vg = d["v"][fi + 1].to(dev).double()
         hc, hr = hstat(x2)
         hcg, hrg = hstat(gt)
-        rec["en"] = dict(psi=psi_sum(F2), psi_gt=psi_sum(FGT[fi + 1].to(dev)), ke=float(0.5 * (m64 * (v2 * v2).sum(1)).sum()), ke_gt=float(0.5 * (m64 * (vg * vg).sum(1)).sum()),
-                         hc=hc, hc_gt=hcg, hr=hr, hr_gt=hrg)
+        rec["en"] = dict(psi=psi_sum(F2), ke=float(0.5 * (m64 * (v2 * v2).sum(1)).sum()), hc=hc, hc_gt=hcg, hr=hr, hr_gt=hrg)
+        if FGT.shape[0] > fi + 1:
+            rec["en"]["psi_gt"] = psi_sum(FGT[fi + 1].to(dev))
+        if d["v"].shape[0] > fi + 1:
+            vg = d["v"][fi + 1].to(dev).double()
+            rec["en"]["ke_gt"] = float(0.5 * (m64 * (vg * vg).sum(1)).sum())
     if a.prof:
         rec["kernel_ms"] = AK.prof_take()
     if a.sec:
