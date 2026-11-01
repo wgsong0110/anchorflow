@@ -58,6 +58,14 @@ ap.add_argument("--mpm_dx", type=float, default=0.0,
                      "(명시적 FEM fem_ex_sim 의 --node_h 와 같은 규칙), 격자 원점은 시뮬 좌표 원점 (세계 고정)")
 ap.add_argument("--lat_origin", default="sim", choices=["sim", "norm"],
                 help="fem: 격자 원점 -- sim = 시뮬 좌표 원점 (명시적 FEM 과 같음, 기본), norm = 정규화 좌표 원점 (기존 tet 과 같음; 원인 가르기용)")
+ap.add_argument("--riem_eps_ref", default="G", choices=["G", "l2"],
+                help="riem rel 감쇠 기준: G = ε = riem_eps·λmax(G) (기존, 장벽 계량 포함), "
+                     "l2 = ε = riem_eps·λmax(H_L2) (입자 L2 가우스-뉴턴 몫만, 장벽 몫 제외; 계량 G 자체는 그대로)")
+ap.add_argument("--riem_tol", type=float, default=0.0,
+                help="riem: >0 이면 반복 수 고정 대신 수렴 기준 -- 최근 10 반복의 상대 L2 감소 (L2[k-10]-L2[k])/L2[k-10] 가 "
+                     "이 값 이하가 되면 그 프레임을 멈춘다 (최소 --riem_tmin, 최대 --riem_maxit)")
+ap.add_argument("--riem_tmin", type=int, default=20, help="riem_tol: 프레임당 최소 반복")
+ap.add_argument("--riem_maxit", type=int, default=3000, help="riem_tol: 프레임당 최대 반복")
 ap.add_argument("--feas", action="store_true",
                 help="riem: Armijo 되돌림에 가능성 검사를 넣는다 -- 입자 누적 det F > 0 (--riem_partF 필요) 과 표현 고유 제약 "
                      "(셀 det > 0 / grid CFL |u|<cfl·dx) 을 모두 만족하는 보폭만 받는다. 끝까지 못 찾으면 그 반복은 걷지 않는다")
@@ -1655,7 +1663,7 @@ for t in range(T_START, T + 1):
             prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
                                                       torch.profiler.ProfilerActivity.CUDA])
         GSC = 1.0                                             # 계량 전체 크기 배수 (--riem_norm)
-        if a.riem_norm:
+        if a.riem_norm or a.riem_eps_ref == "l2":
             from torch.func import functional_call as _fc, jvp as _jvp, vjp as _vjp
             _nm = {id(q): n for n, q in rep.named_parameters()}
             _ks = [_nm[id(q)] for q in PL]
@@ -1676,11 +1684,16 @@ for t in range(T_START, T + 1):
                 u = torch.randn_like(_th)
                 for _ in range(20):
                     u = _HL(u); lmaxL = float(u.norm()); u = u / max(lmaxL, 1e-30)
-            GSC = lmaxL / max(lmax, 1e-30)
-            if t % 10 == 0 or t == 1:
-                print(f"  [계량 정규화] t={t} λmax(G) {lmax:.3e}  λmax(H_L2) {lmaxL:.3e}  배수 {GSC:.3e}", flush=True)
-            lmax = lmaxL
+            if a.riem_norm:
+                GSC = lmaxL / max(lmax, 1e-30)
+                if t % 10 == 0 or t == 1:
+                    print(f"  [계량 정규화] t={t} λmax(G) {lmax:.3e}  λmax(H_L2) {lmaxL:.3e}  배수 {GSC:.3e}", flush=True)
+                lmax = lmaxL
         eps = a.riem_eps_abs if a.riem_eps_abs > 0 else a.riem_eps * max(lmax, 1e-12)   # k=1 기준 -> k 를 키우면 계량이 더 딱딱해진다
+        if a.riem_eps_ref == "l2" and not a.riem_norm:
+            eps = a.riem_eps * max(lmaxL, 1e-12)             # 감쇠는 L2 몫 λmax 로만 (장벽·자유도 크기에 끌려가지 않게)
+            if t % 10 == 0 or t == 1:
+                print(f"  [감쇠 L2 기준] t={t} λmax(G) {lmax:.3e}  λmax(H_L2) {lmaxL:.3e}  ε {eps:.3e}", flush=True)
         if a.riem_damp == "fix":
             eps = a.riem_eps0
         elif a.riem_damp == "lm":
@@ -1761,7 +1774,8 @@ for t in range(T_START, T + 1):
                 CURVE.append((t, it_, float(l2), mu, step if ok else 0.0))
             it[0] = ntot
             STOP.append((t, ntot, ntot, float(Jfun(flat([q.detach() for q in PL]))[0].min()), eps, "ipm"))
-        for it_ in range(0 if a.opt == "ipm" else (a.iters0 if t == 1 else a.iters)):
+        _L2H = []                                             # riem_tol: 이 프레임 반복별 L2
+        for it_ in range(0 if a.opt == "ipm" else (a.riem_maxit if a.riem_tol > 0 else (a.iters0 if t == 1 else a.iters))):
             if a.profile and it_ == WARM:
                 TM.clear(); NCG[0] = 0
                 prof.__enter__()
@@ -1874,10 +1888,17 @@ for t in range(T_START, T + 1):
                     if a.riem_damp == "lm":
                         eps = LMST["eps"]                            # 다음 반복의 ε
             CURVE.append((t, it_, float(l2), stp, nbt))
+            _stop_tol = False
+            if a.riem_tol > 0:
+                _L2H.append(float(l2))
+                if it_ + 1 >= a.riem_tmin and len(_L2H) > 10 and (_L2H[-11] - _L2H[-1]) <= a.riem_tol * _L2H[-11]:
+                    _stop_tol = True
             if a.opt == "riem":
                 with torch.no_grad():
                     _jm = float(Jfun(flat([q.detach() for q in PL]))[0].min()) if Jfun is not None else float("nan")
                 RIEMLOG.append((t, it_, eps_used, stp * float(x.norm()), stp, nbt, rho, _jm))
+            if _stop_tol:
+                break
         if a.opt == "riem":
             it[0] = it_ + 1
             if a.riem_partF and REB:
