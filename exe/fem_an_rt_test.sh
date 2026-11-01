@@ -8,7 +8,7 @@ echo "카드 $G $(cat .done) $(date +%T)" > $R/info.txt
 nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader >> $R/info.txt
 for c in 1 1.5 2; do for b in "1 5" "2 5" "2 10"; do set -- $b
   V=c$(echo $c | tr . p)_n$1_cg$2; O=$R/$V; mkdir -p $O
-  CUDA_VISIBLE_DEVICES=$G python -u exe/fem_an_rt_sim.py --data /home/dkta/work/one/L000/L000.pt --out $O --tag L000 --frames 10 --cell $c --newton $1 --cg $2 < /dev/null > $O/log.txt 2>&1
+  CUDA_VISIBLE_DEVICES=$G python -u exe/fem_an_rt_sim.py --data /home/dkta/work/one/L000/L000.pt --out $O --tag L000 --frames 10 --cell $c --newton $1 --cg $2 ${AN_RTX:-} < /dev/null > $O/log.txt 2>&1
   echo "$V $(grep -a '롤아웃\|rror' $O/log.txt | tail -1 | cut -c1-170)"
 done; done > $R/run.out 2>&1
 O=$R/ficus; mkdir -p $O

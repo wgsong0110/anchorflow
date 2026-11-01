@@ -87,14 +87,15 @@ for fi in range(L):
     kp = S.profile(fi * h) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None
     redo = S.step(fi * h)
     gt = d["x"][fi + 1].to(dev).float()
-    e = float((S.x - gt).norm(dim=-1).mean()) / EXT
-    fin = bool(torch.isfinite(S.x).all()) and math.isfinite(e)
+    xo = S.x_orig()
+    e = float((xo - gt).norm(dim=-1).mean()) / EXT
+    fin = bool(torch.isfinite(xo).all()) and math.isfinite(e)
     errs.append(e if fin else float("nan")); ms.append(S.last_ms)
     c = S.counts()
     flog.write(json.dumps(dict(t=fi, err=e, ms=S.last_ms, redo=redo, **c, **({"kernel_ms": kp} if kp else {}))) + "\n"); flog.flush()
     print(f"  프레임 {fi + 1}/{L} {S.last_ms:.2f} ms 오차 {100 * e:.3f}%{' (용량 늘려 다시)' if redo else ''} 점 {c['nq']} 노드 상자 {c['nn']} 유클리드 평균 점 {c['nbad']}", flush=True)
     if PRED is not None:
-        PRED[fi] = S.x.cpu()
+        PRED[fi] = xo.cpu()
     if not fin or e > 2.0:
         div_at = fi + 1
         print(f"[발산] 프레임 {div_at}", flush=True)

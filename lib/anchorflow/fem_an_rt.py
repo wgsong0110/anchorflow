@@ -303,7 +303,7 @@ __global__ void rt_floor_n(const int* IP, const float* an, const float* mqn, flo
 }
 // 요소: mode 1 기울기 (f64 원자, 8 레인 구간 합), 2 헤시안 (f32 저장), 4 에너지 (f64 블록 합)
 __global__ void __launch_bounds__(128) rt_elem(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* y, float mu, float lam, int mode,
-                        double* E, double* f, float* H) {
+                        double* E, double* f, float* H, int capQ, float* B) {
     if (blockIdx.x*blockDim.x >= IP[12]) return;
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     int nq = IP[12];
@@ -333,12 +333,13 @@ __global__ void __launch_bounds__(128) rt_elem(const int* IP, const int* cb, con
             for (int a=0;a<3;a++) { double s = seg8d((double)(vq*(P[a*3]*g[0] + P[a*3+1]*g[1] + P[a*3+2]*g[2])));
                 if (on && head) atomicAdd(&f[ids[o]*3+a], s); } }
     }
-    if ((mode & 2) && on) {
+    if (mode & 2) {                                                             // 헤시안 (모든 레인이 들어옴: 대각 구간 합 때문에; 밖 레인은 0)
+        float h[81]; for (int k=0;k<81;k++) h[k] = 0.f;
+        if (on) {
         float D[3][3], Ev[3][3];
         float Sg[3][3] = {{0.f, S[2], S[1]}, {S[2], 0.f, S[0]}, {S[1], S[0], 0.f}};
         for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = ((i==j) ? 2.f*mu : 0.f) + lam*gJ[i]*gJ[j] + lam*(J-1.f)*Sg[i][j];
         jac3f(D, Ev);
-        float h[81]; for (int k=0;k<81;k++) h[k] = 0.f;
         for (int m=0;m<3;m++) { float dm = fmaxf(D[m][m], 0.f); if (!(dm > 0.f)) continue;
             float e[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) e[a*3+b] = Ev[0][m]*U[a*3]*V[b*3] + Ev[1][m]*U[a*3+1]*V[b*3+1] + Ev[2][m]*U[a*3+2]*V[b*3+2];
             for (int r=0;r<9;r++) for (int c=0;c<9;c++) h[r*9+c] += dm*e[r]*e[c]; }
@@ -350,7 +351,17 @@ __global__ void __launch_bounds__(128) rt_elem(const int* IP, const int* cb, con
             float et[9], ef[9];
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float x1 = U[a*3+i]*V[b*3+j], x2 = U[a*3+j]*V[b*3+i]; et[a*3+b] = r2*(x1-x2); ef[a*3+b] = r2*(x1+x2); }
             for (int r=0;r<9;r++) for (int c=0;c<9;c++) h[r*9+c] += lt*et[r]*et[c] + lf*ef[r]*ef[c]; }
-        for (int k=0;k<81;k++) H[(size_t)qq*81+k] = h[k];
+        for (int k=0;k<81;k++) H[(size_t)k*capQ + qq] = h[k];                     // 성분 우선 배치 (곱 커널 읽기가 합쳐지게)
+        }
+        if (mode & 8) {                                                           // 노드 블록 대각 (융합): m_ac = V Σ_b g_b Σ_d H[(ab),(cd)] g_d
+            for (int o=0;o<27;o++) { float g[3]; gqn(F, BG + (oc*27+o)*3, g);
+                float m[9];
+                for (int a=0;a<3;a++) for (int c=0;c<3;c++) { float t = 0.f;
+                    for (int b=0;b<3;b++) { float hg = h[(a*3+b)*9 + c*3]*g[0] + h[(a*3+b)*9 + c*3+1]*g[1] + h[(a*3+b)*9 + c*3+2]*g[2]; t += g[b]*hg; }
+                    m[a*3+c] = vq*t; }
+                for (int k=0;k<9;k++) m[k] = seg8f(m[k]);
+                if (on && head) for (int k=0;k<9;k++) atomicAdd(&B[ids[o]*9+k], m[k]); }
+        }
     }
 }
 // 노드 블록 대각 Σ V Σ_bd H[(ab),(cd)] g_b g_d (f32, 8 레인 구간 합)
@@ -371,7 +382,7 @@ __global__ void __launch_bounds__(128) rt_bd(const int* IP, const int* cb, const
         if (on && head) for (int k=0;k<9;k++) atomicAdd(&B[ids[o]*9+k], m[k]); }
 }
 // 헤시안 곱 out += Σ V (H δX) g, δX = Σ dy ⊗ g (f32)
-__global__ void __launch_bounds__(128) rt_mv(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* H, const float* dy, float* out) {
+__global__ void __launch_bounds__(128) rt_mv(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* H, const float* dy, float* out, int capQ) {
     if (blockIdx.x*blockDim.x >= IP[12]) return;
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     bool on = q < IP[12]; int qq = on ? q : 0; bool head = (threadIdx.x & 7) == 0; int oc = qq & 7;
@@ -381,8 +392,7 @@ __global__ void __launch_bounds__(128) rt_mv(const int* IP, const int* cb, const
     for (int o=0;o<27;o++) { float g[3]; gqn(F, BG + (oc*27+o)*3, g); int id = ids[o];
         for (int a=0;a<3;a++) { float ya = dy[id*3+a]; dX[a*3] += ya*g[0]; dX[a*3+1] += ya*g[1]; dX[a*3+2] += ya*g[2]; } }
     float vq = on ? Vq[qq] : 0.f;
-    const float* h = H + (size_t)qq*81;
-    float dP[9]; for (int r=0;r<9;r++) { float t = 0.f; for (int c=0;c<9;c++) t += h[r*9+c]*dX[c]; dP[r] = vq*t; }
+    float dP[9]; for (int r=0;r<9;r++) { float t = 0.f; for (int c=0;c<9;c++) t += H[(size_t)(r*9+c)*capQ + qq]*dX[c]; dP[r] = vq*t; }
     for (int o=0;o<27;o++) { float g[3]; gqn(F, BG + (oc*27+o)*3, g);
         for (int a=0;a<3;a++) { float s = seg8f(dP[a*3]*g[0] + dP[a*3+1]*g[1] + dP[a*3+2]*g[2]); if (on && head) atomicAdd(&out[ids[o]*3+a], s); } }
 }
@@ -537,6 +547,65 @@ __global__ void rt_bc_box(const int* IP, const float* Am, const float* BP, int i
     bool in = fabsf(xp[0]-c0) < s0 && fabsf(xp[1]-c1) < s1 && fabsf(xp[2]-c2) < s2;
     if (in) { fixd[n] = 1; vbc[n*3] = v0; vbc[n*3+1] = v1; vbc[n*3+2] = v2; }
 }
+// 선탐색 (융합): 후보 c = ¼, ½, 1 의 탄성 에너지를 한 순회로 (y_c = ŷ + T (η + c δ) 를 모으며 계산) -> SC[11..13]
+__global__ void __launch_bounds__(128) rt_elem_ls(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* yh, const float* eta, const float* dl,
+                        const float* sk, const int* pm, float n0, float n1, float n2, float mu, float lam, double* SC) {
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < IP[12]; int qq = on ? q : 0; int oc = qq & 7;
+    int ids[27]; qnodes(qq, IP, cb, ids);
+    float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)qq*9+k];
+    const float cs[3] = {0.25f, 0.5f, 1.f};
+    float X[3][9]; for (int c=0;c<3;c++) for (int k=0;k<9;k++) X[c][k] = F[k];
+    for (int o=0;o<27;o++) { float g[3]; gqn(F, BG + (oc*27+o)*3, g); int id = ids[o];
+        for (int c=0;c<3;c++) {
+            float e[3]; for (int a=0;a<3;a++) e[a] = eta[id*3+a] + cs[c]*dl[id*3+a];
+            float t[3]; Tapply(sk[id], pm[id], n0, n1, n2, e, t);
+            for (int a=0;a<3;a++) { float ya = yh[id*3+a] + t[a]; X[c][a*3] += ya*g[0]; X[c][a*3+1] += ya*g[1]; X[c][a*3+2] += ya*g[2]; } } }
+    float vq = on ? Vq[qq] : 0.f;
+    for (int c=0;c<3;c++) {
+        float U[9], S[3], V[9]; ssvdf(X[c], U, S, V);
+        double J = (double)S[0]*S[1]*S[2];
+        double e = on ? (double)vq*((double)mu*(((double)S[0]-1.0)*((double)S[0]-1.0) + ((double)S[1]-1.0)*((double)S[1]-1.0) + ((double)S[2]-1.0)*((double)S[2]-1.0)) + 0.5*(double)lam*(J-1.0)*(J-1.0)) : 0.0;
+        blocksum_add(e, &SC[11+c]);
+    }
+}
+__global__ void rt_lsy4(const int* IP, const float* mn, float itau2, const float* eta, const float* dl, const float* r0, double* SC) {
+    if (blockIdx.x*blockDim.x >= IP[9]) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    double s[4] = {0,0,0,0}, gd = 0.0;
+    const float cs[4] = {0.f, 0.25f, 0.5f, 1.f};
+    if (n < IP[9]) { float Mi = mn[n]*itau2;
+        for (int a=0;a<3;a++) { float e0 = eta[n*3+a], d = dl[n*3+a]; for (int c=0;c<4;c++) { float e = e0 + cs[c]*d; s[c] += 0.5*(double)Mi*e*e; } gd += -(double)r0[n*3+a]*d; } }
+    for (int c=0;c<4;c++) blocksum_add(s[c], &SC[5+c]);
+    blocksum_add(gd, &SC[9]);
+}
+// G2P + 마지막 걸음 노드 갱신 (융합): 노드의 U_1 = 2y − U (중점) 또는 y, v_1 = α (y − z0) 또는 (y − U)/τ, 고정 노드 v = vbc, 감쇠
+__global__ void rt_g2p_end(int N, const int* IP, const float* Ai, const int* pb, const float* fx, const float* y, const float* z0, const float* U, int mid, float tau, float al,
+                           const unsigned char* fixd, const float* vbc, float damp, float* x, float* v, float* F) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N || IP[13]) return;
+    float w[3][3], dw[3][3];
+    for (int a=0;a<3;a++) bwf(fx[p*3+a], w[a], dw[a]);
+    int nb1 = IP[7], nb2 = IP[8];
+    float u[3] = {0,0,0}, vv[3] = {0,0,0}, A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int o=0;o<27;o++) {
+        int i = o/9, j = (o/3)%3, k = o%3;
+        int nid = ((pb[p*3]+i)*nb1 + (pb[p*3+1]+j))*nb2 + (pb[p*3+2]+k);
+        float ww = w[0][i]*w[1][j]*w[2][k];
+        float gy[3] = {dw[0][i]*w[1][j]*w[2][k], w[0][i]*dw[1][j]*w[2][k], w[0][i]*w[1][j]*dw[2][k]};
+        float gx[3]; for (int b=0;b<3;b++) gx[b] = Ai[0*3+b]*gy[0] + Ai[1*3+b]*gy[1] + Ai[2*3+b]*gy[2];
+        bool fx_ = fixd && fixd[nid];
+        for (int a=0;a<3;a++) {
+            float yy = y[nid*3+a], uk = U[nid*3+a];
+            float uu = mid ? 2.f*yy - uk : yy;
+            float v1 = fx_ ? vbc[nid*3+a] : (mid ? al*(yy - z0[nid*3+a]) : (yy - uk)/tau);
+            u[a] += ww*uu; vv[a] += ww*v1*damp; for (int b=0;b<3;b++) A[a*3+b] += uu*gx[b]; }
+    }
+    float Fp[9]; for (int k=0;k<9;k++) Fp[k] = F[(size_t)p*9+k];
+    for (int a=0;a<3;a++) { x[p*3+a] += u[a]; v[p*3+a] = vv[a]; }
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = 0.f; for (int k=0;k<3;k++) t += A[a*3+k]*Fp[k*3+b]; F[(size_t)p*9+a*3+b] = t; }
+}
 }
 '''
 
@@ -552,8 +621,13 @@ class RTSolver:
         s.dev = dev
         f32 = torch.float32
         s.N = int(x.shape[0])
-        s.x = x.float().contiguous().clone(); s.v = v.float().contiguous().clone(); s.F = F.float().reshape(-1, 9).contiguous().clone()
-        s.m = m.float().contiguous(); s.vol = vol.float().contiguous()
+        # 입자를 첫 프레임 칸 순서로 정렬 (P2G·G2P 모으기·원자 합 지역성; 결과 정의는 같음). 원래 순서 = s.perm 의 역
+        yy = x.double() @ Ai.double().T
+        bb = torch.floor(yy - 0.5).long(); bb = bb - bb.min(0).values; mx = bb.max(0).values + 1
+        s.perm = torch.argsort((bb[:, 0] * mx[1] + bb[:, 1]) * mx[2] + bb[:, 2])
+        pr = s.perm
+        s.x = x[pr].float().contiguous().clone(); s.v = v[pr].float().contiguous().clone(); s.F = F.reshape(-1, 9)[pr].float().contiguous().clone()
+        s.m = m[pr].float().contiguous(); s.vol = vol[pr].float().contiguous()
         s.A = A.float().contiguous(); s.Ai = Ai.float().contiguous()
         s.mu, s.lam, s.g = float(mu), float(lam), [float(q) for q in g]
         s.h = float(frame_dt); s.K = int(K); s.mid = integ == "mid"
@@ -683,7 +757,7 @@ class RTSolver:
         FL = s.floor
         nr = FL["NR"] if FL else [0.0, 0.0, 1.0]
         it2 = f(1.0 / (s.tau * s.tau))
-        for _ in range(s.K):
+        for kstep in range(s.K):
             s.k("rt_step0", capN, (P(IP), P(s.U), P(s.vk), f(s.tau), f(s.beta), *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.Ut), P(s.z0), P(s.y)), b=256)
             if FL:
                 s.zf(s.an, 9, 1)
@@ -694,27 +768,26 @@ class RTSolver:
             for it in range(s.nt):
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(16)), b=1)
-                s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | (4 if s.ls else 0)), P(s.SC[10:]), P(s.f), P(s.H)))
-                s.k("rt_bd", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.B)))
+                s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8 | (4 if s.ls else 0)), P(s.SC[10:]), P(s.f), P(s.H),
+                                      i32(capQ), P(s.B)))
                 s.k("rt_grad", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 for ci in range(s.cg):
                     s.zf(s.KTp, 9, 3)
-                    s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp)))
+                    s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
                     s.k("rt_ap", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
                     s.k("rt_cg1", capN, (P(IP), P(s.SC), P(s.Dinv), P(s.p), P(s.Ap), P(s.dl), P(s.r), P(s.z), P(s.SC)), b=256)
                     s.k("rt_cg2", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.z), P(s.p), P(s.Tp)), b=256)
                     s.k("rt_sc_roll", 1, (P(s.SC),), b=1)
                 # 선탐색: 기울기 곱 g·δ = −r0·δ (r0 = rt_grad 가 남긴 처음 잔차)
                 if s.ls:
-                    for slot, c_ in ((5, 0.0), (6, 0.25), (7, 0.5), (8, 1.0)):
-                        s.k("rt_lsy", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), f(c_), P(s.yc), P(s.SC), i32(slot),
-                                             P(s.g0buf) if c_ == 0.0 else P(None)), b=256)
-                        if c_ > 0.0:
-                            s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yc), f(s.mu), f(s.lam), i32(4), P(s.SC[10 + slot - 5:]), P(None), P(None)))
+                    s.k("rt_lsy4", capN, (P(IP), P(s.mn), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC)), b=256)
+                    s.k("rt_elem_ls", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC)))
                     s.k("rt_lspick", 1, (P(s.SC),), b=1)
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if s.ls else 1)), b=256)
-            s.k("rt_stepend", capN, (P(IP), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
-        s.k("rt_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.U), P(s.vk), P(s.x), P(s.v), P(s.F)))
+            if kstep < s.K - 1:
+                s.k("rt_stepend", capN, (P(IP), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
+        s.k("rt_g2p_end", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.y), P(s.z0), P(s.U), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.fixd), P(s.vbc), f(s.damp),
+                               P(s.x), P(s.v), P(s.F)))
 
     def set_bc(s, t):
         """구속 매개변수 (중심 = point + v (t − t0), 반 크기, 속도, 켜짐) 를 장치 버퍼에 (그래프 밖, 재생 전)."""
@@ -769,3 +842,8 @@ class RTSolver:
     def counts(s):
         ip = s.IP.cpu().tolist()
         return dict(nn=ip[9], nc=ip[11], nq=ip[12], nb=ip[6:9], nbad=int(s.nbad))
+
+    def x_orig(s):
+        o = torch.empty_like(s.x)
+        o[s.perm] = s.x
+        return o
