@@ -824,7 +824,13 @@ class RTSolver:
         s.graph.replay()
         e1.record()
         redo = False
+        tries = 0
         while int(s.IP[13]) != 0:
+            if not bool(torch.isfinite(bk[0]).all()) or tries >= 3:                    # 비유한 상태 (발산) 면 상자가 정의되지 않아 매번 넘친다 -> 늘리지 않고 멈춤
+                s.x.fill_(float("nan"))
+                s.last_ms = float("nan")
+                return False
+            tries += 1
             s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])
             s.cap_mul *= 2.0
             s.alloc(None)
