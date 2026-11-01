@@ -78,6 +78,7 @@ ap.add_argument("--vdiag", type=float, default=0.0, help="진단: 프레임 끝 
 ap.add_argument("--merit", choices=["pres", "res"], default="pres", help="모래 잔차 선탐색 기준: pres = |P g|² (P = 노드 블록 야코비 (m/τ² + TᵀK_nnT)⁻¹, 변위 단위 -- 가벼운 노드의 잔차 m η 가 작아 |g|² 에서 무시되는 문제), res = |g|²")
 ap.add_argument("--gm_left", type=int, default=1, help="GMRES 왼쪽 전처리 (1) / 오른쪽 (0)")
 ap.add_argument("--sand_ls", type=int, default=1, help="모래 정밀 판 선탐색 (0 = 늘 온 걸음; 탄성 접선 초기 강성법은 축약 사상이라 선탐색 없이도 됨)")
+ap.add_argument("--h32", action="store_true", help="정밀 판 가속 (같은 허용치·조기 종료): 헤시안 저장·곱·대각 float32 (벡터·잔차·질량 float64, 절 AN 가속 판과 같은 분리)")
 ap.add_argument("--ls_c", default="0.03125,0.0625,0.125,0.25,0.5,1.0", help="가속 판 모래 선탐색 후보 보폭 (작은 것부터; 받아들여지는 가장 큰 것). 절 AN 의 ¼·½·1 은 모래에서 모두 거부됨 (정밀 판은 ⅛ 이하를 받아들였다)")
 ap.add_argument("--ls_fb", type=float, default=0.0, help="가속 판 잔차 선탐색에서 후보가 모두 거부되면 쓸 보폭 (0 = 움직이지 않음, 절 AN 과 같음)")
 ap.add_argument("--save_every", type=int, default=10, help="pred 를 이 프레임마다 중간 저장 (발산해도 덤프 남김)")
@@ -269,6 +270,8 @@ class Elem:
 
     def eval(s, y, mode, dev_e=False):
         f = torch.zeros(s.na, 3, device=dev, dtype=D64)
+        if a.h32 and (mode & 2) and not a.check:
+            mode = mode | 8
         if (mode & 8) and not hasattr(s, "H32"):
             s.H32 = torch.empty(s.nq, 81, device=dev, dtype=torch.float32)
         if SAND:                                                                      # 절 AO: 모래 (에너지 없음 -- mode&4 는 무시, 선탐색은 잔차)
@@ -314,6 +317,9 @@ class Elem:
         return B.reshape(s.na, 3, 3)
 
     def mv(s, dy):
+        if a.h32 and hasattr(s, "H32"):
+            s.f32()
+            return s.mv32(dy.float()).double()
         with tsec("헤시안곱" if s.na == STAT.get("na") else "헤시안곱_거친층"):
             return s._mv(dy)
 
@@ -324,6 +330,9 @@ class Elem:
         return o
 
     def bd(s):
+        if a.h32 and hasattr(s, "H32"):
+            s.f32()
+            return s.bd32().double()
         B = torch.zeros(s.na, 9, device=dev, dtype=D64)
         AK.launch("an_bd", s.nq, (np.int32(s.nq), AK.P(s.qn), AK.P(s.G), AK.P(s.H), AK.P(s.Vq), AK.P(B)))
         return B.reshape(s.na, 3, 3)
