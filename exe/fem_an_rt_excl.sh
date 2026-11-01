@@ -10,14 +10,15 @@ others0() { nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader |
 exec 9>/home/dkta/work/gpu0.lock; flock 9
 while [ "$(others0)" -gt 0 ]; do sleep 10; done
 echo "카드 0 $(cat .done) $(date +%T)" > $R/info.txt; nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader >> $R/info.txt
-for rep in 1 2; do for c in 1 1.5 2; do for pc in ${AN_PCS:-jac mg}; do for nt in 1 2; do for cg in 5 10 20; do
+LIST=${AN_LIST:-$(for c in 1 1.5 2; do for pc in ${AN_PCS:-jac mg}; do for nt in 1 2; do for cg in 5 10 20; do echo "$c:$pc:$nt:$cg"; done; done; done; done)}
+for rep in 1 2; do for e in $LIST; do IFS=: read c pc nt cg <<< "$e"
   MGL=1; [ $pc = mg ] && MGL=5
   V=c$(echo $c | tr . p)_${pc}_n${nt}_cg${cg}_r$rep; O=$R/$V; mkdir -p $O
   while [ "$(others0)" -gt 0 ]; do sleep 5; done
   echo "시작 때 카드 0 의 다른 프로세스 $(others0) 개" > $O/card.txt
   nvidia-smi -i 0 --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits -l 1 > $O/smi.csv 2>/dev/null 9>&- & SM=$!
-  CUDA_VISIBLE_DEVICES=0 python -u exe/fem_an_rt_sim.py --data /home/dkta/work/one/L000/L000.pt --out $O --tag L000 --frames 10 --cell $c --newton $nt --cg $cg --mg_levels $MGL --prof 4 < /dev/null > $O/log.txt 2>&1
+  CUDA_VISIBLE_DEVICES=0 python -u exe/fem_an_rt_sim.py --data /home/dkta/work/one/L000/L000.pt --out $O --tag L000 --frames 10 --cell $c --newton $nt --cg $cg --mg_levels $MGL --prof 4 ${AN_X:-} < /dev/null > $O/log.txt 2>&1
   kill $SM; echo "$V $(grep -a '롤아웃\|rror' $O/log.txt | tail -1 | cut -c1-170)"
-done; done; done; done; done > $R/run.out 2>&1
+done; done > $R/run.out 2>&1
 cp $R/run.out $M/${NM}.out
 rclone copy $R r2:storage/result/anchorflow/lbours/fem_an/$NM -q; rclone copy $M r2:storage/result/anchorflow/lbours/fem_an/marks -q
