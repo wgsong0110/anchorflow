@@ -5,7 +5,7 @@ set +u; source /tools/anaconda3/etc/profile.d/conda.sh; conda activate af; expor
 PS=()
 for rel in "$@"; do
   O=/tmp/dkta/lbours/$rel
-  if [ ! -f $O/roll_fem.pt ] && [ ! -f $O/pred.pt ]; then mkdir -p $O; rclone copy r2:storage/result/anchorflow/lbours/$rel/roll_fem.pt $O -q; fi
+  if [ ! -f $O/roll_fem.pt ] && [ ! -f $O/pred.pt ]; then mkdir -p $O; rclone copy r2:storage/result/anchorflow/lbours/$rel $O -q --include "roll_fem.pt" --include "pred.pt"; fi
   [ -f $O/pred.pt ] && PS+=($O/pred.pt) || PS+=($O/roll_fem.pt)
 done
 python -u exe/fem_p_period.py --data /home/dkta/work/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt --pred "${PS[@]}"

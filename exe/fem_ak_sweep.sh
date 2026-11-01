@@ -11,7 +11,9 @@ if [ "$1" = "--w" ]; then
   while read -r ROOT TG ARGS; do
     if [ $((i % K)) -eq "$k" ]; then
       O=/tmp/dkta/lbours/$ROOT/$TG
+      while [ "$(df --output=avail -B1G /tmp | tail -1 | tr -d ' ')" -lt "${AK_MINFREE:-40}" ]; do echo "$(date +%T) /tmp 여유 부족 -- 기다림"; sleep 120; done   # 노드 /tmp 공유 (10-01 가득 참 사고)
       EX_ROOT=$ROOT bash exe/fem_ab_run.sh "$TG" "$G" $ARGS < /dev/null > /dev/null 2>&1
+      rclone copy $O r2:storage/result/anchorflow/lbours/$ROOT/$TG -q                    # 쓰는 즉시 R2 (덤프 포함)
       echo "$(date +%T) $TG $( [ -f $O/EX_DONE ] && echo 끝 || echo 실패) $(grep -a '롤아웃\]\|\[발산\]' $O/v_fem.log 2>/dev/null | tail -2 | cut -c1-170 | tr '\n' ' ')"
     fi
     i=$((i + 1))
