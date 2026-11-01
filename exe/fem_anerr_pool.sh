@@ -7,7 +7,7 @@ PY=/home/dkta/.conda/envs/af/bin/python
 export PYTHONUTF8=1 OMP_NUM_THREADS=8 PATH=$HOME/bin:/home/dkta/.conda/envs/af/bin:$PATH
 export CUPY_CACHE_DIR=/tmp/dkta/cache/cupy XDG_CACHE_HOME=/tmp/dkta/cache TORCH_EXTENSIONS_DIR=/tmp/dkta/cache/torch_ext
 NM=$1; LST=$2
-R=/tmp/dkta/lbours/fem_anerr/$NM; RR=r2:storage/result/anchorflow/lbours/fem_anerr/$NM; CL=/tmp/dkta/anerr_claim
+R=${ERR_ROOT:-/dev/shm/dkta/lbours/fem_anerr}/$NM; RR=r2:storage/result/anchorflow/lbours/fem_anerr/$NM; CL=/tmp/dkta/anerr_claim
 mkdir -p $R $CL $CUPY_CACHE_DIR /tmp/dkta/anerr_data
 [ -s /tmp/dkta/anerr_data/L000.pt ] || cp /home/dkta/work/one/L000/L000.pt /tmp/dkta/anerr_data/L000.pt
 echo "[묶음 $NM] $(cat .done) $(date '+%F %T')"; df -h /tmp | tail -1
