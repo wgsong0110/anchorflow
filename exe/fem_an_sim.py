@@ -50,6 +50,7 @@ ap.add_argument("--mg_nc", type=int, default=10, help="가장 거친 층 평활 
 ap.add_argument("--dump", action="store_true")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
+ap.add_argument("--gfin", action="store_true", help="걸음 끝 y 에서 기울기를 한 번 더 재 |g|/|g0| 기록 (구간 '검사', 풀이 비용 아님)")
 ap.add_argument("--sec", action="store_true", help="구간별 시간 (구간 경계마다 동기화 -- 합이 동기화 없는 프레임 시간보다 조금 크다): p2g·바닥·요소 (기울기+헤시안)·대각·멀티그리드 구성·PCG (헤시안 곱·사이클)·선탐색·G2P")
 ap.add_argument("--prof", action="store_true", help="커널별 GPU 시간 (CUDA 이벤트) 을 fem.jsonl 에 -- 단독 카드에서만 의미")
 ap.add_argument("--check", action="store_true", help="프레임 0 에서 기울기·헤시안 곱을 유한 차분과 대조하고 끝")
@@ -454,6 +455,10 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
         nst["nt"] += 1
         if st == 0.0:
             break
+    if a.gfin and g0n is not None:
+        with tsec("검사"):
+            _, fe_ = el.eval(y, 1)                                                     # 마지막 반복의 변수 바꿈 (T, ŷ) 그대로의 η 기울기
+            nst["grf"] = float((Mi * eta + (Tc @ fe_[..., None]).squeeze(-1)).norm()) / g0n
     if a.integ == "mid":
         U1 = 2 * y - Uk
         v1 = al * (y - z0)
@@ -465,7 +470,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
     v1 = v1 * DAMP
     for kk_ in ("nt", "cg", "ls"):
         STAT[kk_] = STAT.get(kk_, 0) + nst[kk_]
-    STAT["gr"] = max(STAT.get("gr", 0.0), nst["gr"] or 0.0)
+    STAT["gr"] = max(STAT.get("gr", 0.0), nst.get("grf", nst["gr"]) or 0.0)
     STAT["stuck"] = nst["stuck"]
     STAT["lv"] = nst.get("lv", 1)
     STAT.setdefault("nts", []).append(nst["nt"])
