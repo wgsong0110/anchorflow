@@ -262,6 +262,7 @@ ap.add_argument("--akg_hg", type=float, default=0.0, help="--akg_k: 묶음 안 �
 ap.add_argument("--akg_empty", action="store_true", help="절 AG.18 정의 변경 (사용자 10-31 묶음 허락 범위): --akg_k 칸 묶음에 입자 없는 사면체까지 넣는다 -- 빈 사면체가 있는 칸도 묶음, "
                      "Ā = 칸 사면체 사상의 고른 평균 (가중 W_t = V_g / 칸 사면체 수), 모래시계 억제도 같은 가중으로 빈 사면체에 (빈 사면체 영 에너지 기구 막기)")
 ap.add_argument("--al_fuse", action="store_true", help="절 AL: 재질 판 (모래, 증분 RM, 띠 0 바닥, 클램프 끔) 서브스텝을 커널 2 개로 (al_fc = 입자 적분점 RM·힘 (SVD 한 번) + 접촉, al_step = 노드 걸음 + 입자 구속 + 이동) -- 같은 식, lib/anchorflow/fem_al_cuda.py")
+ap.add_argument("--al_svd", type=int, default=10, help="절 AL --al_fuse: 모래 RM SVD 의 Jacobi 순회 상한 (기준 pl_svd 10)")
 ap.add_argument("--akpl_el", action="store_true", help="절 AG.18 대조: 탄성 입자 적분점 힘을 akpl_force (mat 0) 경로로 (묶음 판과 같은 커널, 묶음 없이)")
 ap.add_argument("--akg_m0fix", action="store_true", help="절 AG.18 진단: 질량 0 노드의 국소 CFL 관성 질량을 0 으로 (예전처럼 속도 0 고정)")
 ap.add_argument("--akg_nocpl", action="store_true", help="절 AG.18 진단: 빈 사면체 묶음 판에서 Ā 결합 강성 상계를 국소 CFL 질량에서 뺀다")
@@ -736,6 +737,7 @@ if AL_FUSE:
     assert AG_GTKC and a.cfuse and a.cfuse_mode == 2 and AHF and a.ak_pq_plast == "inc" and not (a.akg_k > 0 or a.akb_kappa > 0 or a.akpl_trial or a.akpl_cause or a.akpl_dbg
            or a.akpl_track or a.akpl_invm or a.vfl_pred or a.vfl_out or a.vfl_bf or a.vfl_tacc or a.vfl_agg or a.ak_fuse or a.ak_fstep or a.ah_imex or a.ah_mcfl_sub or a.ah_mcfl_Fs
            or a.ak_sel or a.ak_es or a.ak_cs != 0 or a.ak_p2 or a.lagdump or a.divhist or a.lim_v == "mom") and a.ak_eps < 0 and a.lim_sr >= 1e20 and a.lim < 0 and MATN == 2 and RPIC_ETA == 0, "--al_fuse: 절 AG.19 재질 판 갈래만"
+    ALC.set_global("ALNSW", a.al_svd, "int32")
 if AHF:
     _ahfl = VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0)
     if not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2) or (_ahfl and (PLAST or VISC or PBC) and not AKPQ):   # 절 AG.18: 입자 적분점 재질 판은 접촉을 ah_fc 로 따로

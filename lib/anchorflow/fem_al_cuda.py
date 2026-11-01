@@ -26,6 +26,57 @@ from . import fem_rt_cuda as RTC
 
 _AL = r'''
 extern "C" {
+__device__ int ALNSW = 10;                                                         // --al_svd: Jacobi 순회 상한 (pl_svd 는 10; 수렴 판정 off ≤ 1e-14 dg 는 그대로)
+__device__ __forceinline__ void al_svd(const float* X, float* U, float* s, float* V) {
+    float A[9];
+    for (int i=0;i<3;i++) for (int k=0;k<3;k++) A[i*3+k] = X[i]*X[k] + X[3+i]*X[3+k] + X[6+i]*X[6+k];
+    for (int k=0;k<9;k++) V[k] = (k%4==0) ? 1.f : 0.f;
+    for (int sw=0; sw<ALNSW; sw++) {
+        float off = A[1]*A[1] + A[2]*A[2] + A[5]*A[5];
+        float dg = A[0]*A[0] + A[4]*A[4] + A[8]*A[8];
+        if (off <= 1e-14f*dg || off < 1e-36f) break;
+        for (int r=0;r<3;r++) {
+            int p = (r==2) ? 1 : 0, q = (r==0) ? 1 : 2;
+            float apq = A[p*3+q];
+            if (fabsf(apq) < 1e-30f) continue;
+            float th = (A[q*3+q] - A[p*3+p]) / (2.f*apq);
+            float t = (th >= 0.f ? 1.f : -1.f) / (fabsf(th) + sqrtf(th*th + 1.f));
+            float c = rsqrtf(t*t + 1.f), sn = t*c;
+            for (int k=0;k<3;k++) { float akp=A[k*3+p], akq=A[k*3+q]; A[k*3+p]=c*akp - sn*akq; A[k*3+q]=sn*akp + c*akq; }
+            for (int k=0;k<3;k++) { float apk=A[p*3+k], aqk=A[q*3+k]; A[p*3+k]=c*apk - sn*aqk; A[q*3+k]=sn*apk + c*aqk; }
+            for (int k=0;k<3;k++) { float vkp=V[k*3+p], vkq=V[k*3+q]; V[k*3+p]=c*vkp - sn*vkq; V[k*3+q]=sn*vkp + c*vkq; }
+        }
+    }
+    // 내림차순 정렬 (열 교환)
+    float l[3] = {A[0], A[4], A[8]};
+    for (int i=0;i<2;i++) for (int j=0;j<2-i;j++) if (l[j] < l[j+1]) {
+        float tl=l[j]; l[j]=l[j+1]; l[j+1]=tl;
+        for (int k=0;k<3;k++) { float tv=V[k*3+j]; V[k*3+j]=V[k*3+j+1]; V[k*3+j+1]=tv; }
+    }
+    // V 를 회전으로 (det +1)
+    float dv = V[0]*(V[4]*V[8]-V[5]*V[7]) - V[1]*(V[3]*V[8]-V[5]*V[6]) + V[2]*(V[3]*V[7]-V[4]*V[6]);
+    if (dv < 0.f) { V[2] = -V[2]; V[5] = -V[5]; V[8] = -V[8]; }
+    float xv[3][3];
+    for (int j=0;j<3;j++) for (int r=0;r<3;r++) xv[j][r] = X[r*3]*V[j] + X[r*3+1]*V[3+j] + X[r*3+2]*V[6+j];
+    float s0 = sqrtf(fmaxf(l[0], 0.f));
+    float u0[3], u1[3], u2[3];
+    float n0 = sqrtf(xv[0][0]*xv[0][0] + xv[0][1]*xv[0][1] + xv[0][2]*xv[0][2]);
+    if (n0 > 1e-20f) { for (int r=0;r<3;r++) u0[r] = xv[0][r]/n0; } else { u0[0]=1.f; u0[1]=0.f; u0[2]=0.f; }
+    float d01 = u0[0]*xv[1][0] + u0[1]*xv[1][1] + u0[2]*xv[1][2];
+    for (int r=0;r<3;r++) u1[r] = xv[1][r] - d01*u0[r];
+    float n1 = sqrtf(u1[0]*u1[0] + u1[1]*u1[1] + u1[2]*u1[2]);
+    if (n1 > 1e-20f) { for (int r=0;r<3;r++) u1[r] /= n1; }
+    else {   // u0 에 수직인 아무 단위 벡터
+        float e[3] = {0.f, 0.f, 0.f}; int k = (fabsf(u0[0]) < 0.6f) ? 0 : ((fabsf(u0[1]) < 0.6f) ? 1 : 2); e[k] = 1.f;
+        float d = u0[k]; for (int r=0;r<3;r++) u1[r] = e[r] - d*u0[r];
+        float nn = sqrtf(u1[0]*u1[0] + u1[1]*u1[1] + u1[2]*u1[2]); for (int r=0;r<3;r++) u1[r] /= nn;
+    }
+    u2[0] = u0[1]*u1[2] - u0[2]*u1[1]; u2[1] = u0[2]*u1[0] - u0[0]*u1[2]; u2[2] = u0[0]*u1[1] - u0[1]*u1[0];
+    s[0] = n0 > 1e-20f ? n0 : s0;
+    s[1] = u1[0]*xv[1][0] + u1[1]*xv[1][1] + u1[2]*xv[1][2];
+    s[2] = u2[0]*xv[2][0] + u2[1]*xv[2][1] + u2[2]*xv[2][2];
+    for (int r=0;r<3;r++) { U[r*3] = u0[r]; U[r*3+1] = u1[r]; U[r*3+2] = u2[r]; }
+}
 // 입자 적분점 증분 RM + 힘 (모래): akpl_force (mode 1, mat 2, 묶음·장벽·진단·시험 버퍼 없음) 과 같은 식
 __device__ __forceinline__ void al_pq_sand(int k, int N, const int* tt, const long long* tets, const float* U, const float* gl,
                                            const float* akF, const float* wp, const float* prm, float* Fe, float* Xp, float* f) {
@@ -48,7 +99,7 @@ __device__ __forceinline__ void al_pq_sand(int k, int N, const int* tt, const lo
         akpl_inv(Xpi, Xin);
         float D[9]; mm3(X, Xin, D);
         float Ft[9]; mm3(D, Fpe, Ft);
-        float Uu[9], s[3], Vv[9]; pl_svd(Ft, Uu, s, Vv);
+        float Uu[9], s[3], Vv[9]; al_svd(Ft, Uu, s, Vv);
         float mu = prm[0], lam = prm[1];
         // pl_rm mat 2 (PG sand_return_mapping) 그대로 + 응력 주값 τ_i (위 머리말 (1))
         float ep[3]; for (int i=0;i<3;i++) ep[i] = logf(fmaxf(fabsf(s[i]), 1e-14f));
