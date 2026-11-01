@@ -517,6 +517,86 @@ __global__ void ak_p2_g2p(int Np_, const float* x, const float* U, const float* 
     for (int a=0;a<3;a++) { x2[(long long)p*3+a] = (float)((double)x[(long long)p*3+a] + u[a]); v2[(long long)p*3+a] = (float)vv[a]; }
     for (int r=0;r<3;r++) for (int c=0;c<3;c++) { double s = 0; for (int k=0;k<3;k++) s += (double)A[r*3+k]*Fp[(long long)p*9+k*3+c]; F2[(long long)p*9+r*3+c] = (float)s; }
 }
+// ======== 절 AK.25: 선택 적분 (칸 6 사면체 편차 평균) ========
+// 전단 (μ) 몫은 칸 (Kuhn 정육면체 = 사면체 6 개) 의 점유 가중 평균 사상 Ā_c = Σ_t V_t A_t / Σ_t V_t 로, 부피 (λ) 몫은 사면체 자기 A_T 로:
+//   E = Σ_p [ w_p μ |Ā_c F_p − R|² + V_p λ/2 (det(A_T F_p) − 1)² ]  (균일 변형이면 Ā_c = A_T 라 강성 그대로; 칸 안 사면체끼리 엇갈린 전단 (굽힘 잠김 원인) 은 평균에서 풀림)
+// 힘: λ 몫 = 사면체마다 G_λ ∇λ (구간 합), μ 몫 = 칸 합 G_μ,c 를 칸 안 사면체에 V_t/V_c 비로 나눠 ∇λ_t.
+__global__ void ak_selA(const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* VT, const long long* tcell,
+                        float* cA, float* cV) {
+    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i0 >= tlc[0]) return;
+    int t = tl[i0];
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+    long long cc = tcell[t];
+    for (int k=0;k<9;k++) atomicAdd(&cA[cc*9+k], V*A[k]);
+    atomicAdd(&cV[cc], V);
+}
+__global__ void __launch_bounds__(128) ak_sel_p(int N, const int* tt, const long long* tets, const float* U, const float* gl, const float* FT,
+                               const __half* dF, const float* wp, const long long* tcell, const float* cA, const float* cV, float mu, float lam, float* f, float* cG) {
+    int k = blockIdx.x*blockDim.x + threadIdx.x;
+    int lane = threadIdx.x & 31;
+    bool on = k < N;
+    int t = on ? tt[k] : -1 - lane;
+    int tp = __shfl_up_sync(0xffffffffu, t, 1);
+    bool head = (lane == 0) || (tp != t);
+    unsigned hm = __ballot_sync(0xffffffffu, head);
+    int hl = 31 - __clz(hm & (0xffffffffu >> (31 - lane)));
+    float A[9] = {1,0,0, 0,1,0, 0,0,1}, Ab[9] = {1,0,0, 0,1,0, 0,0,1}, Fb[9] = {1,0,0, 0,1,0, 0,0,1};
+    if (head && on) {
+        for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+            for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+        long long cc = tcell[t];
+        float v = cV[cc];
+        if (v > 0.f) for (int j=0;j<9;j++) Ab[j] = cA[cc*9+j]/v; else for (int j=0;j<9;j++) Ab[j] = A[j];
+        for (int j=0;j<9;j++) Fb[j] = FT[(long long)t*9+j];
+    }
+    for (int j=0;j<9;j++) { A[j] = __shfl_sync(0xffffffffu, A[j], hl); Ab[j] = __shfl_sync(0xffffffffu, Ab[j], hl); Fb[j] = __shfl_sync(0xffffffffu, Fb[j], hl); }
+    float Gl[9] = {0,0,0,0,0,0,0,0,0}, Gm[9] = {0,0,0,0,0,0,0,0,0};
+    if (on) {
+        float F[9]; for (int j=0;j<9;j++) F[j] = Fb[j] + __half2float(dF[(long long)k*9+j]);
+        float X[9], Xd[9]; mm3(A, F, X); mm3(Ab, F, Xd);
+        float Pd[9], Pv[9];
+        ak_fcr_P(Xd, mu, 0.f, Pd);                                                   // 전단 몫 (λ 0)
+        float cf[9]; cof3(X, cf);
+        float dt = X[0]*cf[0]+X[1]*cf[1]+X[2]*cf[2];
+        float lr = AKLR ? AKLR[k] : 1.f;
+        for (int j=0;j<9;j++) Pv[j] = lam*lr*(dt-1.f)*cf[j];                       // 부피 몫 (표준 식, J 부호 그대로)
+        float w = wp[k];
+        for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s1 = 0.f, s2 = 0.f; for (int j=0;j<3;j++) { s1 += Pv[r*3+j]*F[c*3+j]; s2 += Pd[r*3+j]*F[c*3+j]; } Gl[r*3+c] = w*s1; Gm[r*3+c] = w*s2; }
+    }
+    for (int off=1; off<32; off<<=1) {
+        int to = __shfl_down_sync(0xffffffffu, t, off);
+        bool same = (lane + off < 32) && (to == t);
+        for (int j=0;j<9;j++) { float o1 = __shfl_down_sync(0xffffffffu, Gl[j], off); float o2 = __shfl_down_sync(0xffffffffu, Gm[j], off); if (same) { Gl[j] += o1; Gm[j] += o2; } }
+    }
+    if (!on || !head) return;
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += Gl[c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
+    long long cc = tcell[t];
+    for (int j=0;j<9;j++) atomicAdd(&cG[cc*9+j], Gm[j]);
+}
+// μ 몫 칸 합을 칸 안 점유 사면체에 V_t/V_c 로 나눠 노드 힘 (사면체 스레드)
+__global__ void ak_selF(const int* tl, const int* tlc, const long long* tets, const float* gl, const float* VT, const long long* tcell, const float* cG, const float* cV, float* f) {
+    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i0 >= tlc[0]) return;
+    int t = tl[i0];
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    long long cc = tcell[t];
+    float r = V / cV[cc];
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += cG[cc*9+c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -r*s); } }
+}
+__global__ void ak_selZ(int n, float* cA, float* cV, float* cG) {
+    int i = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    cV[i] = 0.f;
+    for (int k=0;k<9;k++) { cA[i*9+k] = 0.f; cG[i*9+k] = 0.f; }
+}
 }
 '''
 _MOD = [None]
