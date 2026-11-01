@@ -272,6 +272,7 @@ ap.add_argument("--akpl_trial", action="store_true", help="절 AG.18: 증분 RM 
 ap.add_argument("--akg_mass", action="store_true", help="절 AG.18 정의 변경: --akg_empty 묶음 칸의 P2G 질량·운동량을 칸 사면체에 기하 부피 비로 나눈 뒤 사면체 몫 1/4 씩 노드로 (빈 사면체 노드도 질량을 가진다)")
 ap.add_argument("--akg_mass_sp", action="store_true", help="--akg_mass: 칸으로 나누는 입자를 묶음 Ā 를 쓰는 입자 (희소 사면체) 로만")
 ap.add_argument("--ah_mcfl_F", action="store_true", help="절 AG.19: 국소 CFL 상계의 계수에 입자 F 의 늘어남·눌림 몫 max(1, (1+σ_min⁻²)/2, σ_max²) (프레임 시작 F)")
+ap.add_argument("--akg_fd_n", type=int, default=0, help="절 AG.19 진단: 뒤집힌 셀 수가 늘 때마다 K 번까지 유한 차분 실제 강성 대 상계")
 ap.add_argument("--akg_fd", action="store_true", help="절 AG.18 진단 (--akpl_cause, 탄성): 첫 뒤집힌 셀 노드의 실제 접선 강성 (유한 차분) 대 국소 CFL 상계")
 ap.add_argument("--akg_mass_dbg", action="store_true", help="--akg_mass 진단: 프레임마다 질량 분배 통계")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
@@ -1492,6 +1493,14 @@ class Opt:
                               pJ_min=float(dX[torch.isfinite(dX)].min()) if bool(torch.isfinite(dX).any()) else None, nanc=nc[:9]))
         if len(z["hist"]) > 400:
             z["hist"] = z["hist"][-400:]
+        if a.akg_fd_n > 0 and not PLAST and bool(inv.any()) and len(z.setdefault("fd_ev", [])) < a.akg_fd_n and int(inv.sum()) > z.get("fd_last", 0):   # 절 AG.19: 뒤집힘이 늘 때마다 (K 번까지) 그 셀 노드의 실제 강성 대 상계
+            z["fd_last"] = int(inv.sum())
+            ti2 = inv.nonzero().flatten()[:2]
+            nds2 = sorted(set(int(q) for t_ in ti2.tolist() for q in tt[t_].tolist()))
+            Ub_ = self.Uc.clone(); Ub_[:M] = self._Uprev
+            ev_ = dict(frame=self._fi, j=j, n_inv=int(inv.sum()), fd=self._fd_check(nds2, Ub_))
+            z["fd_ev"].append(ev_)
+            print(f"  [절 AG.19 실제 강성 대 상계] {json.dumps(ev_, ensure_ascii=False)[:1500]}", flush=True)
         if z.get("first_inv") is None and bool(inv.any()) and HASPL:              # 절 AG.18: 첫 뒤집힌 셀이 바닥에 대해 어디 있고 그 노드가 비관통에 걸렸는지
             Np_ = self.Xf.shape[0] if self.Xf.dim() == 2 else self.Xf.numel() // 3
             pp0, nn0 = torch.tensor(PLf[:3], device=dev), torch.tensor(PLf[3:], device=dev)
@@ -1547,7 +1556,7 @@ class Opt:
         nn = (na >= 0).nonzero().flatten()
         d1 = (na[nn] - node_inv[nn])
         has = node_inv[nn] < BIG
-        out = dict(first=z["first"], first_inv=z.get("first_inv"), nanc_tot=dict(zip(["X", "Xprev역", "F_trial", "SVD", "RM", "tau", "X역", "힘", "detX≤0"], z["nanc_tot"][:9])),
+        out = dict(first=z["first"], first_inv=z.get("first_inv"), fd_ev=z.get("fd_ev"), nanc_tot=dict(zip(["X", "Xprev역", "F_trial", "SVD", "RM", "tau", "X역", "힘", "detX≤0"], z["nanc_tot"][:9])),
                    q1=dict(nan_nodes=int(nn.numel()), without_inverted_cell=int((~has).sum()),
                            diff_hist={str(int(k)): int(v) for k, v in zip(*torch.unique(d1[has], return_counts=True))} if bool(has.any()) else {}),
                    hist=z["hist"][-(a.akpl_k + 6):])
