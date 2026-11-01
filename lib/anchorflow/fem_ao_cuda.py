@@ -12,7 +12,7 @@
   비틀림 (p_i + p_j)/(σ_i + σ_j), 뒤집기 (p_i − p_j)/(σ_i − σ_j) (같은 σ 면 D_ii − D_ij) -- 절 AN 과 같은 해석 고유계, 음의 고유값은 0.
   퍼텐셜이 없으므로 (비결합) 선탐색은 에너지 대신 잔차 노름 |g|² 로 한다 (fem_ao_sim.py).
 커널:
-  ao_elem : (mode 1) 힘 f_n += V_q P_q G_qn, (mode 2) 헤시안 H_q (mode 8 이면 float32 H32), pst 가 있으면 점마다 상태 0 탄성 / 1 꼬리 투영 / 2 꼭짓점.
+  ao_elem : (mode 1) 힘 f_n += V_q P_q G_qn, (mode 2) 헤시안 H_q (mode 8 이면 float32 H32; mode 32 = 일관 접선, 비대칭·투영 없음 -- GMRES 용), pst 가 있으면 점마다 상태 0 탄성 / 1 꼬리 투영 / 2 꼭짓점.
   ao_rm   : 3x3 묶음에 정답 return mapping (G2P 입자 상태 갱신, 걸음 끝 가우스 점 상태 커밋) -- 탄성이면 F 그대로 (정답과 같음).
 """
 import cupy as cp
@@ -78,21 +78,28 @@ __global__ void ao_elem(int nq, const int* qn, const double* G, const double* Fq
         for (int i=0;i<3;i++) for (int j=0;j<3;j++) {
             double c;
             if (st == 0) c = ((i==j) ? 2.0*mu : 0.0) + lam;
-            else if (st == 1) c = K3 + 2.0*mu*s*(((i==j) ? 1.0 : 0.0) - 1.0/3.0 - eh[i]*eh[j]);
+            else if (st == 1) c = K3 + 2.0*mu*s*(((i==j) ? 1.0 : 0.0) - 1.0/3.0 - eh[i]*eh[j]) - ((mode & 32) ? 2.0*mu*cdp*eh[i] : 0.0);   // mode 32: 일관 접선 (비대칭 결합 항 −2μc ê_i 포함)
             else c = 0.0;
             C[i][j] = c;
         }
         for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = C[i][j]/(ss[i]*ss[j]) - ((i==j) ? p[i]/ss[i] : 0.0);
         double Dk[3][3]; for (int i=0;i<3;i++) for (int j=0;j<3;j++) Dk[i][j] = D[i][j];
-        jac3(D, Ev);
         double h[81];
         for (int k=0;k<81;k++) h[k] = 0.0;
+        if (mode & 32) {                                                        // 일관 접선: D 그대로 (투영·대칭 없음) h = Σ_mn D_mn e_m ⊗ e_n, e_m = U_m V_mᵀ
+            double em[3][9];
+            for (int m=0;m<3;m++) for (int a=0;a<3;a++) for (int b=0;b<3;b++) em[m][a*3+b] = U[a*3+m]*V[b*3+m];
+            for (int m=0;m<3;m++) for (int n=0;n<3;n++) { double dmn = Dk[m][n]; if (!isfinite(dmn)) continue;
+                for (int r=0;r<9;r++) for (int c=0;c<9;c++) h[r*9+c] += dmn*em[m][r]*em[n][c]; }
+        } else {
+        jac3(D, Ev);
         for (int m=0;m<3;m++) {
             double dm = fmax(D[m][m], 0.0);
             if (!(dm > 0.0) || !isfinite(dm)) continue;
             double ee[9];
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) ee[a*3+b] = Ev[0][m]*U[a*3]*V[b*3] + Ev[1][m]*U[a*3+1]*V[b*3+1] + Ev[2][m]*U[a*3+2]*V[b*3+2];
             for (int r=0;r<9;r++) for (int c=0;c<9;c++) h[r*9+c] += dm*ee[r]*ee[c];
+        }
         }
         const int PI[3] = {0, 0, 1}, PJ[3] = {1, 2, 2};
         const double r2 = 0.70710678118654752440;
@@ -102,8 +109,8 @@ __global__ void ao_elem(int nq, const int* qn, const double* G, const double* Fq
             double lt = (fabs(den) > 1e-12) ? (p[i] + p[j])/den : 0.0;
             double dd = ss[i] - ss[j];
             double lf = (fabs(dd) > 1e-9*(fabs(ss[i]) + fabs(ss[j]))) ? (p[i] - p[j])/dd : (Dk[i][i] - Dk[i][j]);
-            lt = isfinite(lt) ? fmax(lt, 0.0) : 0.0;
-            lf = isfinite(lf) ? fmax(lf, 0.0) : 0.0;
+            if (mode & 32) { lt = isfinite(lt) ? lt : 0.0; lf = isfinite(lf) ? lf : 0.0; }
+            else { lt = isfinite(lt) ? fmax(lt, 0.0) : 0.0; lf = isfinite(lf) ? fmax(lf, 0.0) : 0.0; }
             double et[9], ef[9];
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) {
                 double x1 = U[a*3+i]*V[b*3+j], x2 = U[a*3+j]*V[b*3+i];

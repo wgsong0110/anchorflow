@@ -68,6 +68,9 @@ ap.add_argument("--pbc_ns", type=int, default=4, help="구속 노드 몫 α 를 
 ap.add_argument("--no_pbc_pv", action="store_true", help="프레임 시작 구속 입자 v = 0 덮어쓰기 끔")
 ap.add_argument("--ls_mode", choices=["work", "res"], default="res", help="모래 선탐색 기준: work = 방향을 따른 일 W(c) = ∫₀ᶜ g(η + s δ)·δ ds (사다리꼴; 퍼텐셜이 있으면 에너지 차) 에 아르미호, "
                 "res = 잔차 노름 |g|² (PCG 를 덜 돌린 방향은 잔차 노름을 줄인다는 보장이 없어 가속 판에서 모두 거부됨)")
+ap.add_argument("--tan", choices=["sym", "cons"], default="sym", help="모래 접선: sym = 결합 항을 뺀 대칭 반양정치 (PCG 용), cons = 일관 접선 그대로 (비대칭·투영 없음, --lin gmres 와 함께)")
+ap.add_argument("--lin", choices=["pcg", "gmres"], default="pcg", help="뉴턴 선형 풀이: PCG (대칭 필요) 또는 오른쪽 전처리 GMRES (재시작 --gm_m, 총 곱 수 --cg, 허용치 --cg_tol)")
+ap.add_argument("--gm_m", type=int, default=30)
 ap.add_argument("--ls_c", default="0.03125,0.0625,0.125,0.25,0.5,1.0", help="가속 판 모래 선탐색 후보 보폭 (작은 것부터; 받아들여지는 가장 큰 것). 절 AN 의 ¼·½·1 은 모래에서 모두 거부됨 (정밀 판은 ⅛ 이하를 받아들였다)")
 ap.add_argument("--ls_fb", type=float, default=0.0, help="가속 판 잔차 선탐색에서 후보가 모두 거부되면 쓸 보폭 (0 = 움직이지 않음, 절 AN 과 같음)")
 ap.add_argument("--save_every", type=int, default=10, help="pred 를 이 프레임마다 중간 저장 (발산해도 덤프 남김)")
@@ -265,7 +268,7 @@ class Elem:
             if not hasattr(s, "pst"):
                 s.pst = torch.zeros(s.nq, device=dev, dtype=torch.uint8)
             AO.launch("ao_elem", s.nq, (np.int32(s.nq), AK.P(s.qn), AK.P(s.G), AK.P(s.Fq), AK.P(s.Vq), AK.P(y.contiguous()), np.float64(mu), np.float64(lam), np.float64(CDP),
-                                        np.int32(mode), AK.P(f), AK.P(s.H), AK.P(getattr(s, "H32", None)), AK.P(s.pst)))
+                                        np.int32(mode | (32 if (a.tan == "cons" and (mode & 2) and s.na == STAT.get("na", -1)) else 0)), AK.P(f), AK.P(s.H), AK.P(getattr(s, "H32", None)), AK.P(s.pst)))
             return None, f
         AK.launch("an_elem", s.nq, (np.int32(s.nq), AK.P(s.qn), AK.P(s.G), AK.P(s.Fq), AK.P(s.Vq), AK.P(y.contiguous()), np.float64(mu), np.float64(lam),
                                     np.int32(mode), AK.P(s.E), AK.P(f), AK.P(s.H), AK.P(getattr(s, "H32", None))))
@@ -650,6 +653,60 @@ class MGD(MG32):
         return z
 
 
+def gmres(Aop, prec, b, maxit, m, tol):
+    """오른쪽 전처리 재시작 GMRES (행렬 없는, float64): A M⁻¹ u = b, x = M⁻¹ u. 기븐스 회전으로 잔차 추적, 상대 잔차 tol 이면 멈춤 (tol ≤ 0 이면 예산 끝까지).
+    돌려줌: x, 곱 횟수, 마지막 상대 잔차. 첫 추정 0 이라 (b 가 −g 면) 결과 x 는 |A x − b| < |b| 이다 (뉴턴 방향이 |g|² 하강 방향인 근거)."""
+    x = torch.zeros_like(b)
+    bn = float(b.norm())
+    if not (bn > 0):
+        return x, 0, 0.0
+    it = 0
+    rel = 1.0
+    r = b.clone()
+    while it < maxit:
+        beta = float(r.norm())
+        if not (beta > 0):
+            break
+        mm = min(m, maxit - it)
+        Vs = [r / beta]
+        Zs = []
+        H = np.zeros((mm + 1, mm))
+        cs, sn = np.zeros(mm), np.zeros(mm)
+        e = np.zeros(mm + 1); e[0] = beta
+        k_ = 0
+        for j in range(mm):
+            z = prec(Vs[j]); Zs.append(z)
+            w = Aop(z); it += 1
+            for i in range(j + 1):
+                H[i, j] = float((w * Vs[i]).sum())
+                w = w - H[i, j] * Vs[i]
+            H[j + 1, j] = float(w.norm())
+            for i in range(j):
+                t_ = cs[i] * H[i, j] + sn[i] * H[i + 1, j]
+                H[i + 1, j] = -sn[i] * H[i, j] + cs[i] * H[i + 1, j]
+                H[i, j] = t_
+            dn = math.hypot(H[j, j], H[j + 1, j])
+            cs[j], sn[j] = (H[j, j] / dn, H[j + 1, j] / dn) if dn > 0 else (1.0, 0.0)
+            H[j, j] = cs[j] * H[j, j] + sn[j] * H[j + 1, j]; H[j + 1, j] = 0.0
+            e[j + 1] = -sn[j] * e[j]; e[j] = cs[j] * e[j]
+            k_ = j + 1
+            rel = abs(e[j + 1]) / bn
+            if rel <= tol or not math.isfinite(rel):
+                break
+            if j + 1 < mm:
+                hn = float(w.norm())
+                if not (hn > 0):
+                    break
+                Vs.append(w / hn)
+        yv = np.linalg.solve(np.triu(H[:k_, :k_]) + 1e-300 * np.eye(k_), e[:k_]) if k_ > 0 else np.zeros(0)
+        for i in range(k_):
+            x = x + float(yv[i]) * Zs[i]
+        if rel <= tol or not math.isfinite(rel):
+            break
+        r = b - Aop(x); it += 1
+    return x, it, rel
+
+
 def stick_vc(y, Uk, Ut, z0, al, QW, qn, xq0, mq, mq_n, kpb, na):
     """걸음 고착 변수 바꿈 (절 AN 바닥 + 절 AO 입자 구속): K = a P + b (I − P), a = k_바닥 k_구속, b = k_구속, T = √K, ŷ = Ũ + (I − K)(z0 − Ũ), η = T (y − ŷ)
     (구속 없으면 절 AN 식과 같다: T = √k P + (I − P), ŷ = Ũ + (1 − k) P (z0 − Ũ), η = (I − P)(y − Ũ) + √k P (y − ŷ))."""
@@ -855,10 +912,24 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
             prec = lambda r_: (Pc @ r_[..., None]).squeeze(-1)
         Aop = lambda p_: Mi * p_ + (Tc @ el.mv((Tc @ p_[..., None]).squeeze(-1))[..., None]).squeeze(-1)
         dl = torch.zeros_like(g)
+        if a.lin == "gmres":                                                           # 절 AO: 비대칭 일관 접선 -> GMRES (블록 야코비 오른쪽 전처리)
+            if a.pc == "mg":
+                Pc = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
+                prec = lambda r_: (Pc @ r_[..., None]).squeeze(-1)
+            tpc = tsec("GMRES"); tpc.__enter__()
+            dl, nmv_, rel_ = gmres(Aop, prec, -g, a.cg, a.gm_m, a.cg_tol)
+            tpc.__exit__()
+            nst["cg"] += nmv_
+            nst.setdefault("cgs", []).append(nmv_)
+            nst.setdefault("gmrel", []).append(round(rel_, 4))
+            ci = nmv_ - 1
+            lz_a = []
+            rzn = 0.0
+            rz0 = 1.0
         rr = -g
-        zz = prec(rr)
+        zz = prec(rr) if a.lin != "gmres" else rr
         rz = float((rr * zz).sum())
-        if a.pc == "mg" and not (rz > 0):                                              # 전처리가 양의 정부호가 아니면 이 풀이는 블록 야코비로 (횟수 기록)
+        if a.lin != "gmres" and a.pc == "mg" and not (rz > 0):                                              # 전처리가 양의 정부호가 아니면 이 풀이는 블록 야코비로 (횟수 기록)
             Pc = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
             prec = lambda r_: (Pc @ r_[..., None]).squeeze(-1)
             zz = prec(rr)
@@ -868,7 +939,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
         rz0 = rz
         tpc = tsec("PCG"); tpc.__enter__()
         lz_a, lz_b = [], []
-        for ci in range(a.cg):
+        for ci in range(a.cg if a.lin != "gmres" else 0):
             Ap = Aop(pp)
             pAp = float((pp * Ap).sum())
             if not (pAp > 0):
@@ -889,7 +960,8 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
             pp = zz + bet_ * pp                                                       # 유연 PCG (폴라크-리비에르)
             rz = rzn
         tpc.__exit__()
-        nst.setdefault("cgs", []).append(ci + 1)
+        if a.lin != "gmres":
+            nst.setdefault("cgs", []).append(ci + 1)
         if a.diag and lz_a:                                                            # 란초스 삼중대각 (CG 계수) -> 전처리 계 고유값 추정
             n_ = len(lz_a)
             Tl = np.zeros((n_, n_))
@@ -959,6 +1031,8 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
     STAT.setdefault("nts", []).append(nst["nt"])
     STAT.setdefault("cgs", []).append(nst.get("cgs", []))
     STAT["mglam"] = nst.get("mglam")
+    if "gmrel" in nst:
+        STAT.setdefault("gmrel", []).append(nst["gmrel"])
     STAT["mgfb"] = STAT.get("mgfb", 0) + nst.get("mgfb", 0)
     return U1, v1
 
@@ -1033,6 +1107,7 @@ def frame(fi, x, v, F):
     el = Elem(qn.int().contiguous(), G, qF.contiguous(), qV.contiguous(), na)
     if a.check and SAND:                                                               # 절 AO: 커널 대 torch 기준 구현 (정답 식) + 헤시안 곱 대 유한 차분 (상태별)
         torch.manual_seed(0)
+        STAT["na"] = na                                                                # --tan cons 면 일관 접선으로 대조
         Fq_ = qF.reshape(nq, 3, 3)
         for sc_, comp in ((1e-3, 0.0), (1e-2, 0.0), (1e-3, -3e-3), (3e-2, -1e-2)):
             y0 = sc_ * dxl * torch.randn(na, 3, device=dev, dtype=D64) + comp * (act_pos(act, nb, bmin) - act_pos(act, nb, bmin).mean(0))
@@ -1050,7 +1125,7 @@ def frame(fi, x, v, F):
             kst = el.pst.clone()
             print(f"[대조 AO] 변위 {sc_} 칸 + 압축 {comp}: 점 상태 탄성/꼬리/꼭짓점 {int((kst == 0).sum())}/{int((kst == 1).sum())}/{int((kst == 2).sum())} (기준 구현 {int((stt == 0).sum())}/{int((stt == 1).sum())}/{int((stt == 2).sum())}); "
                   f"|f 커널 − f 기준| / |f 기준| {float((fk - fr).norm() / fr.norm().clamp_min(1e-300)):.3e}; |Hd − 유한 차분| / |유한 차분| {float((Hd - fd).norm() / fd.norm().clamp_min(1e-300)):.3e} "
-                  f"(꼬리 투영 점은 결합 항을 뺀 접선이라 차이가 정상)", flush=True)
+                  f"(접선 {a.tan}: sym 이면 꼬리 투영 점은 결합 항을 뺀 접선이라 차이가 정상, cons 면 일치해야 함)", flush=True)
             el.eval(y0, 2)
             Xr = torch.empty(nq, 9, device=dev, dtype=D64)
             AO.launch("ao_rm", nq, (np.int32(nq), AK.P(X.reshape(nq, 9).contiguous()), np.float64(CDP), AK.P(Xr), AK.P(None)))
