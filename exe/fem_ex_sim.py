@@ -263,6 +263,7 @@ ap.add_argument("--akg_empty", action="store_true", help="절 AG.18 정의 변�
                      "Ā = 칸 사면체 사상의 고른 평균 (가중 W_t = V_g / 칸 사면체 수), 모래시계 억제도 같은 가중으로 빈 사면체에 (빈 사면체 영 에너지 기구 막기)")
 ap.add_argument("--al_fuse", action="store_true", help="절 AL: 재질 판 (모래, 증분 RM, 띠 0 바닥, 클램프 끔) 서브스텝을 커널 2 개로 (al_fc = 입자 적분점 RM·힘 (SVD 한 번) + 접촉, al_step = 노드 걸음 + 입자 구속 + 이동) -- 같은 식, lib/anchorflow/fem_al_cuda.py")
 ap.add_argument("--al_noxp", action="store_true", help="절 AL --al_fuse: 증분 RM 의 X X_prev⁻¹ 를 A A_prev⁻¹ = I + ΔA A_prev⁻¹ 로 (같은 식, 입자별 X_prev·F_p 읽기·쓰기 없음; fem_al_cuda 머리말 (4))")
+ap.add_argument("--al_b", type=int, default=128, choices=[64, 128, 256], help="절 AL --al_fuse: al_fc 블록 크기")
 ap.add_argument("--al_svd", type=int, default=10, help="절 AL --al_fuse: 모래 RM SVD 의 Jacobi 순회 상한 (기준 pl_svd 10)")
 ap.add_argument("--akpl_el", action="store_true", help="절 AG.18 대조: 탄성 입자 적분점 힘을 akpl_force (mat 0) 경로로 (묶음 판과 같은 커널, 묶음 없이)")
 ap.add_argument("--akg_m0fix", action="store_true", help="절 AG.18 진단: 질량 0 노드의 국소 CFL 관성 질량을 0 으로 (예전처럼 속도 0 고정)")
@@ -2033,14 +2034,15 @@ class Opt:
         """절 C (5): ex_tet_force_R + ex_vfl_contact + ex_node_step_lag + 클램프 판정 + 적용과 같은 식을 커널 4 개로."""
         Mc, Tc = self.Mcap, self.Tcap
         if AL_FUSE:                                                                 # 절 AL: 커널 2 개 (같은 식)
-            nbQ, nbP = (Np + 127) // 128, (Np + 127) // 128
-            ALC.launch("al_fc", 0, (np.int32(nbQ), np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akw), EX.P(PRM),
+            B_ = a.al_b
+            nbQ, nbP = (Np + B_ - 1) // B_, (Np + B_ - 1) // B_
+            ALC.launch("al_fc" if B_ == 128 else f"al_fc_b{B_}", 0, (np.int32(nbQ), np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akw), EX.P(PRM),
                                     EX.P(self.plFe), EX.P(self.plXp), EX.P(self.f),
                                     EX.P(self.sz), EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
                                     np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon),
                                     np.int32(AH_GTK), np.float32(AH_BAND), np.float32(AH_PN), np.float32(AH_DXG), EX.P(self.accN if AH_ACCN else None), np.float32(a.vfl_npd),
                                     np.int32(1 if a.al_noxp else 0), EX.P(self.vn), np.float32(self.hscur), np.int32(1 if getattr(self, "_j", 0) == 0 else 0)),
-                       b=128, grid=nbQ + nbP)
+                       b=B_, grid=nbQ + nbP)
             ALC.launch("al_step", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), EX.P(self.Uc), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
                                        np.float32(self.hscur), np.float32(self.dampcur), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc),
                                        EX.P(self.accN if AH_ACCN else None), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * self.hscur / hs),

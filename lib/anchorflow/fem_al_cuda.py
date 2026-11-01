@@ -190,6 +190,23 @@ __global__ void __launch_bounds__(128) al_fc(int nbQ, int N, const int* tt, cons
     if ((int)blockIdx.x < nbQ) { al_pq_sand(blockIdx.x*blockDim.x + threadIdx.x, N, tt, tets, U, gl, akF, wp, prm, Fe, Xp, f, nx, vn, hs, j0); return; }
     al_contact((blockIdx.x - nbQ)*blockDim.x + threadIdx.x, szp, s0c, dn, nidx, x, U, rows, lamb, m, tetmass, p0, p1, p2, n0, n1, n2, acc, ncon, gtk, band, pn, dxg, accN, npd);
 }
+// --al_b: 같은 커널, 블록 크기만 다름 (워프 구간 합이라 결과 식은 같다)
+__global__ void __launch_bounds__(64) al_fc_b64(int nbQ, int N, const int* tt, const long long* tets, const float* U, const float* gl,
+                               const float* akF, const float* wp, const float* prm, float* Fe, float* Xp, float* f,
+                               const int* szp, const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb,
+                               const float* m, int tetmass, float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon,
+                               int gtk, float band, float pn, float dxg, float* accN, float npd, int nx, const float* vn, float hs, int j0) {
+    if ((int)blockIdx.x < nbQ) { al_pq_sand(blockIdx.x*blockDim.x + threadIdx.x, N, tt, tets, U, gl, akF, wp, prm, Fe, Xp, f, nx, vn, hs, j0); return; }
+    al_contact((blockIdx.x - nbQ)*blockDim.x + threadIdx.x, szp, s0c, dn, nidx, x, U, rows, lamb, m, tetmass, p0, p1, p2, n0, n1, n2, acc, ncon, gtk, band, pn, dxg, accN, npd);
+}
+__global__ void __launch_bounds__(256) al_fc_b256(int nbQ, int N, const int* tt, const long long* tets, const float* U, const float* gl,
+                               const float* akF, const float* wp, const float* prm, float* Fe, float* Xp, float* f,
+                               const int* szp, const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb,
+                               const float* m, int tetmass, float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon,
+                               int gtk, float band, float pn, float dxg, float* accN, float npd, int nx, const float* vn, float hs, int j0) {
+    if ((int)blockIdx.x < nbQ) { al_pq_sand(blockIdx.x*blockDim.x + threadIdx.x, N, tt, tets, U, gl, akF, wp, prm, Fe, Xp, f, nx, vn, hs, j0); return; }
+    al_contact((blockIdx.x - nbQ)*blockDim.x + threadIdx.x, szp, s0c, dn, nidx, x, U, rows, lamb, m, tetmass, p0, p1, p2, n0, n1, n2, acc, ncon, gtk, band, pn, dxg, accN, npd);
+}
 // --al_noxp 프레임 끝 (akpl_fin 과 같은 식, D 만 위 (4) 로): 마지막 U 로 증분 RM 한 번 더 -> 입자 F (원래 번호), 모래는 상태 그대로 (ys·logJp·손상 복사)
 __global__ void al_fin(int N, const int* ord, const int* tt, const long long* tets, const float* U, const float* vn, float hs, const float* gl,
                        const float* Fe, const float* prm, float* Fout, float* rmc) {
