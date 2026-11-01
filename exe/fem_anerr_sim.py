@@ -43,6 +43,7 @@ ap.add_argument("--quad", choices=["gauss", "part"], default="gauss", help="탄�
 ap.add_argument("--fl_src", choices=["q", "part"], default="q", help="바닥 고착 판정 점: 적분점 (원본) 또는 입자 (명시적 판 정의)")
 ap.add_argument("--fl_npd", type=float, default=0.0, help=">0 이면 명시적 판 비관통: 판정 점 하나라도 s < −δ 인 노드는 예측 속도가 안쪽이면 법선 속도 0 (걸음당 한 번 정함)")
 ap.add_argument("--ls_diff", action="store_true", help="가속 판 선탐색을 점별 에너지 차 Σ_q (ψ_q(후보) − ψ_q(지금)) + 관성 차 ½ Σ Mi c δ (2η + c δ) 로 판정 (총 에너지끼리 빼면 τ 가 작을 때 f64 반올림에 묻혀 걸음 0 만 고름)")
+ap.add_argument("--mfl", type=float, default=0.0, help=">0 이면 관성 질량 하한 m' = max(m, β (Δt/2)² k_n), k_n = Σ_q V_q (λ+2μ) |∇w_qn| Σ_n' |∇w_qn'| (명시적 판 국소 CFL 관성 질량과 같은 식, β 1 = 같은 값) -- 거의 0 질량 가장자리 노드의 특이에 가까운 뉴턴 계 처치 (정의 변경)")
 ap.add_argument("--en", action="store_true", help="프레임마다 에너지·높이 진단 (우리 / 정답)")
 ap.add_argument("--newton", type=int, default=6)
 ap.add_argument("--cg", type=int, default=100)
@@ -593,11 +594,11 @@ def floor_state(y, Uk, z0, Ut, al, na, FS):
     return T, yh, eta, (r > 0).sum()
 
 
-def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, hist=None, FS=None):
+def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, hist=None, FS=None, mI=None):
     """가속 판 한 걸음: 고정 예산 뉴턴 a.newton x PCG a.cg, 호스트 동기화 없음 (스칼라 장치), 헤시안 float32, MG 계층은 프레임당 한 번 (mgh[0])."""
     na = mn.shape[0]
     Ut, z0, al = coefs(Uk, vk, hist)
-    Mi = (mn / (TAU * TAU))[:, None]
+    Mi = ((mn if mI is None else mI) / (TAU * TAU))[:, None]
     y = Ut.clone()
     if fixd is not None:
         y[fixd] = Uk[fixd] + TAU * vbc[fixd]
@@ -991,6 +992,13 @@ def frame(fi, x, v, F):
             FS = (W, nidc, x, m64, mn)
         else:
             FS = (QW, qn, xq0, mq, torch.zeros(na, device=dev, dtype=D64).index_add_(0, qn.reshape(-1), (QW * mq[:, None]).reshape(-1)))
+    mI = None
+    if a.mfl > 0:
+        gq_ = torch.einsum("qna,qna->qn", el.G, el.G).sqrt()                            # |F_qᵀ ∇w| -- 프레임 시작 적분점 기울기
+        kn = torch.zeros(na, device=dev, dtype=D64).index_add_(0, qn.reshape(-1), (qV[:, None] * (lam + 2 * mu) * gq_ * gq_.sum(1, keepdim=True)).reshape(-1))
+        mI = torch.maximum(mn, a.mfl * (DT / 2) ** 2 * kn)
+        STAT["mfl_n"] = int((mI > mn).sum())
+        STAT["mfl_add"] = float((mI - mn).sum() / mn.sum())
     hist = None
     if a.integ == "bdf2":                                                              # 입자 이력 (앞 걸음 위치 − 프레임 시작 위치, 앞 걸음 속도) -> 노드 (질량 가중)
         hd = HIST[0] if HIST[0] is not None else (-DT * v, v)
@@ -1003,7 +1011,7 @@ def frame(fi, x, v, F):
     for _ in range(a.K):
         Up, vp = U, vn
         if a.fast:
-            U, vn = solve_step_fast(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, hist=hist, FS=FS)
+            U, vn = solve_step_fast(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, hist=hist, FS=FS, mI=mI)
         else:
             assert a.integ != "bdf2" and a.fl_src == "q" and a.fl_npd == 0, "새 플래그는 --fast 경로에만"
             U, vn = solve_step(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx)
