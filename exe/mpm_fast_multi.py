@@ -2,7 +2,8 @@
 runpy 로 같은 스크립트를 판마다 다시 실행한다 (import 된 torch·warp·cupy 는 그대로, 솔버·상태는 판마다 새로).
 
   python exe/mpm_fast_multi.py --out DIR --vars "pg c0_port ..." [--extra "--frames 3"] [--timed] [--r2 r2:.../DIR]
---timed: 판마다 카드 1~6 이 모두 10 MiB 이하가 될 때까지 기다린 뒤 /home/dkta/work/gpu0.lock (flock) 을 잡고 GPU0 이 빌 때까지 기다려 실행, TIMED 표식.
+--timed --gpu G (물리 번호, CUDA_VISIBLE_DEVICES 와 같은 카드): 판마다 /home/dkta/work/gpu<G>.lock (flock) 을 잡고 **그 카드에 우리 말고 다른 계산 프로세스가 없을 때까지** 기다려 실행
+  (11-02 정정: 다른 카드가 비어 있을 필요는 없다). 실행 중 5 초마다 그 카드의 계산 프로세스를 표본으로 남겨, 다른 프로세스가 한 번이라도 보이면 TIMED 대신 TIMED_CONTAMINATED.
 아니면 NOT_TIMED 표식 (카드는 바깥 스크립트가 정함).
 """
 import argparse
@@ -14,6 +15,7 @@ import runpy
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 V = {
@@ -39,7 +41,7 @@ ap.add_argument("--vars", default=" ".join(V))
 ap.add_argument("--extra", default="")
 ap.add_argument("--timed", action="store_true")
 ap.add_argument("--r2", default="")
-ap.add_argument("--lock", default="/home/dkta/work/gpu0.lock")
+ap.add_argument("--gpu", type=int, default=0, help="--timed 측정 카드 (물리 번호)")
 a = ap.parse_args()
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "mpm_fast.py")
@@ -51,12 +53,26 @@ def smi():
     return subprocess.run(["nvidia-smi", "--query-gpu=index,memory.used,utilization.gpu", "--format=csv,noheader"], capture_output=True, text=True).stdout
 
 
-def idle():
-    for ln in smi().strip().splitlines():
-        i, m = ln.split(",")[:2]
-        if int(i) >= 1 and int(m.split()[0]) > 10:
-            return False
-    return True
+def others():
+    """측정 카드 위의 계산 프로세스 중 이 프로세스가 아닌 것 (pid, MiB)."""
+    q = subprocess.run(["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"], capture_output=True, text=True).stdout
+    uu = [ln.split(",")[1].strip() for ln in q.strip().splitlines() if int(ln.split(",")[0]) == a.gpu][0]
+    q = subprocess.run(["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,used_memory", "--format=csv,noheader"], capture_output=True, text=True).stdout
+    return [ln.strip() for ln in q.strip().splitlines() if ln.strip() and ln.split(",")[0].strip() == uu and int(ln.split(",")[1]) != os.getpid()]
+
+
+class Watch(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.seen, self.n, self.stop = [], 0, False
+
+    def run(self):
+        while not self.stop:
+            o_ = others()
+            self.n += 1
+            if o_:
+                self.seen.append(f"{time.strftime('%T')} {o_}")
+            time.sleep(5)
 
 
 for v in a.vars.split():
@@ -66,16 +82,17 @@ for v in a.vars.split():
         continue
     os.makedirs(o, exist_ok=True)
     lk = None
+    wt = None
     if a.timed:
-        w = 0
-        while not idle():
-            time.sleep(20)
-            w += 20
-        lk = open(a.lock, "w")
+        lk = open(f"/home/dkta/work/gpu{a.gpu}.lock", "w")
         fcntl.flock(lk, fcntl.LOCK_EX)
-        while int(smi().splitlines()[0].split(",")[1].split()[0]) >= 500:
+        w = 0
+        while others():
             time.sleep(10)
-        open(os.path.join(o, "TIMED"), "w").write(f"gpu0.lock {time.strftime('%T')} 대기 {w} s\n")
+            w += 10
+        open(os.path.join(o, "TIMED_START"), "w").write(f"gpu{a.gpu}.lock {time.strftime('%T')} 다른 프로세스 없어질 때까지 대기 {w} s\n")
+        wt = Watch()
+        wt.start()
     else:
         open(os.path.join(o, "NOT_TIMED"), "w").write("NOT_TIMED (경합 상태 값, 비율만)\n")
     open(os.path.join(o, "gpu_at_start.txt"), "w").write(smi())
@@ -91,6 +108,11 @@ for v in a.vars.split():
             traceback.print_exc()
             print(f"[실패] {v}: {e!r}", flush=True)
     open(os.path.join(o, "gpu_at_end.txt"), "w").write(smi())
+    if wt is not None:
+        wt.stop = True
+        wt.join()
+        nm = "TIMED_CONTAMINATED" if wt.seen else "TIMED"
+        open(os.path.join(o, nm), "w").write(f"카드 {a.gpu}, 표본 {wt.n} 번 (5 s), 다른 계산 프로세스 {len(wt.seen)} 번\n" + "\n".join(wt.seen) + "\n")
     if lk is not None:
         fcntl.flock(lk, fcntl.LOCK_UN)
         lk.close()
