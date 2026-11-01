@@ -672,6 +672,67 @@ __global__ void ak_esZ(int n, float* eA, float* eV, float* eG) {
     eV[i] = 0.f;
     for (int k=0;k<9;k++) { eA[(long long)i*9+k] = 0.f; eG[(long long)i*9+k] = 0.f; }
 }
+// ======== 절 AK.30: 칸 평균 + 칸 안 분산 분리 에너지 (Kuhn 정육면체 = 사면체 6 개) ========
+//   E = Σ_c V_c ψ(X̄_c) + γ Σ_p w_p [ μ |X_p − X̄_c|² + λ/2 (J_p − J̄_c)² ],  X_p = A_T F_p,  X̄_c = Σ_p w_p X_p / V_c = Σ_T V_T A_T F̄_T / V_c,  J = det.
+//   (γ = 1 이면 상한 없는 판과 2 차까지 같다; λ 몫도 칸 평균 ψ 에 -- 입자별 λ 는 ν 0.4 굽힘에서 그것만으로 연속 에너지를 넘는다, doc 절 AK.30)
+//   힘: 사면체 T 에 G_T = Σ_{p∈T} γ w_p [2μ D_p + λ ΔJ_p cof X_p] F_pᵀ + V_T (P(X̄_c) − S_c / V_c) F̄_Tᵀ,  S_c = Σ_{p∈c} γ w_p [2μ D_p + λ ΔJ_p cof X̄_c].
+__global__ void ak_csA(const int* tl, const int* tlc, const long long* tets, const float* U, const float* gl, const float* VT, const float* FT, const long long* tcell,
+                       float* cX, float* cV) {
+    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i0 >= tlc[0]) return;
+    int t = tl[i0];
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    float A[9] = {1,0,0, 0,1,0, 0,0,1}, X[9];
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+    mm3(A, FT + (long long)t*9, X);
+    long long cc = tcell[t];
+    for (int k=0;k<9;k++) atomicAdd(&cX[cc*9+k], V*X[k]);
+    atomicAdd(&cV[cc], V);
+}
+__global__ void __launch_bounds__(128) ak_cs_p(int N, const int* tt, const long long* tets, const float* U, const float* gl, const float* FT, const __half* dF,
+                              const float* wp, const long long* tcell, const float* cX, const float* cV, float mu, float lam, float gam, float* f, float* cS) {
+    int k = blockIdx.x*blockDim.x + threadIdx.x;
+    if (k >= N) return;
+    int t = tt[k];
+    long long cc = tcell[t];
+    float v = cV[cc];
+    if (!(v > 0.f)) return;
+    float A[9] = {1,0,0, 0,1,0, 0,0,1}, F[9], X[9], Xb[9], D[9], cp[9], cb[9];
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+    for (int j=0;j<9;j++) { F[j] = FT[(long long)t*9+j] + __half2float(dF[(long long)k*9+j]); Xb[j] = cX[cc*9+j]/v; }
+    mm3(A, F, X);
+    cof3(X, cp); cof3(Xb, cb);
+    float J = X[0]*cp[0]+X[1]*cp[1]+X[2]*cp[2], Jb = Xb[0]*cb[0]+Xb[1]*cb[1]+Xb[2]*cb[2];
+    float w = wp[k], dJ = J - Jb;
+    float Q[9], Qb[9];
+    for (int j=0;j<9;j++) { D[j] = X[j] - Xb[j]; Q[j] = gam*w*(2.f*mu*D[j] + lam*dJ*cp[j]); Qb[j] = gam*w*(2.f*mu*D[j] + lam*dJ*cb[j]); }
+    float G[9];
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s_ = 0.f; for (int j=0;j<3;j++) s_ += Q[r*3+j]*F[c*3+j]; G[r*3+c] = s_; }
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float s_ = 0.f; for (int q=0;q<3;q++) s_ += G[c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s_); } }
+    for (int j=0;j<9;j++) atomicAdd(&cS[cc*9+j], Qb[j]);
+}
+__global__ void ak_csF(const int* tl, const int* tlc, const long long* tets, const float* gl, const float* VT, const float* FT, const long long* tcell,
+                       const float* cX, const float* cV, const float* cS, float mu, float lam, float* f) {
+    int i0 = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i0 >= tlc[0]) return;
+    int t = tl[i0];
+    float V = VT[t];
+    if (!(V > 0.f)) return;
+    long long cc = tcell[t];
+    float v = cV[cc];
+    float Xb[9], P[9], M[9], G[9];
+    for (int j=0;j<9;j++) Xb[j] = cX[cc*9+j]/v;
+    ak_fcr_P(Xb, mu, lam, P);
+    for (int j=0;j<9;j++) M[j] = V*(P[j] - cS[cc*9+j]/v);
+    const float* Fb = FT + (long long)t*9;
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s_ = 0.f; for (int j=0;j<3;j++) s_ += M[r*3+j]*Fb[c*3+j]; G[r*3+c] = s_; }
+    for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+        for (int c=0;c<3;c++) { float s_ = 0.f; for (int q=0;q<3;q++) s_ += G[c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s_); } }
+}
 __global__ void ak_selZ(int n, float* cA, float* cV, float* cG) {
     int i = blockIdx.x*blockDim.x + threadIdx.x;
     if (i >= n) return;

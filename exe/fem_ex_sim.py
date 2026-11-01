@@ -241,6 +241,7 @@ ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시�
 ap.add_argument("--ak_acclam", action="store_true", help="절 AK.19 (정의 변경): 바닥 접촉 입자의 고착 질량을 사면체 네 노드에 같은 몫 (m_p/4) 대신 barycentric λ 몫으로 (입자 판정 그대로; 고착이 입자 가까운 노드에 몰려 위쪽 노드로 덜 번짐)")
 ap.add_argument("--ak_es", action="store_true", help="절 AK.27 (정의 변경): 변 기반 평활 FEM (ES-FEM-T4) -- 입자 응력은 자기 사면체 A_T 대신 자기 부분 영역 변 (barycentric 가장 큰 둘) 의 평활 사상 A_e = Σ_{T∋e} V_T A_T / Σ V_T (실제 사면체 야코비안의 부피 가중 평균); 입자 F 갱신은 그대로 (--ak_pq --ak_pq4 --ak_prep, 융합 없이)")
 ap.add_argument("--ak_eshg", type=float, default=0.0, help="절 AK.28: --ak_es 모래시계 억제 γ -- 에너지 γ μ Σ_p w_p |A_T − A_e|² (절 AG.11 --akg_hg 와 같은 정의; 0 = 끔)")
+ap.add_argument("--ak_cs", type=float, default=0.0, help="절 AK.30 (정의 변경): 칸 평균 + 칸 안 분산 분리 에너지 E = Σ_c V_c ψ(X̄_c) + γ Σ_p w_p [μ|X_p − X̄_c|² + λ/2 (J_p − J̄_c)²] 의 γ (0 = 끔, 음수 = Kuhn 칸 순수 굽힘 패치 시험 γ*(ν), exe/fem_ak_gstar.py; --ak_pq --ak_pq4 --ak_prep, 융합·상한 없이)")
 ap.add_argument("--ak_sela", type=float, default=0.0, help="--ak_sel 섞기 α: 전단 사상 = (1 − α) 칸 평균 + α 자기 사면체 (모래시계 억제; 0 = 순수 선택 적분)")
 ap.add_argument("--ak_sel", action="store_true", help="절 AK.25 (정의 변경): 선택 적분 -- 전단 (μ) 몫은 칸 (Kuhn 정육면체 6 사면체) 점유 가중 평균 사상, 부피 몫은 사면체 자기 사상 (굽힘 잠김만 풀고 균일 변형 강성은 그대로; --ak_pq --ak_pq4 --ak_prep, 융합 없이)")
 ap.add_argument("--ak_sfcr", action="store_true", help="절 AK.18: 입자 적분점 FCR 을 표준 식으로 (Stomakhin 2012: 진 회전 R, 부피 항 λ (J − 1) cof F, J = det F 부호 그대로) -- 기존 커널은 J = |det|·부호, 반사 Q")
@@ -581,6 +582,15 @@ if a.ak_sfcr:
         AKPLC.set_sfcr(True)
 P2 = bool(a.ak_p2)
 AKSEL = bool(a.ak_sel)
+AKCS = a.ak_cs != 0.0
+if AKCS:
+    if not (AKPQ and a.ak_pq4 and a.ak_prep and not a.ak_fuse and not P2 and not a.ak_sel and not a.ak_es and not a.ak_capmu):
+        raise SystemExit("--ak_cs 는 --ak_pq --ak_pq4 --ak_prep (융합·2 차·선택 적분·ES·전단 상한 없이) 만")
+    if a.ak_cs < 0:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from fem_ak_gstar import gstar as _gstar                                    # noqa: E402
+        a.ak_cs = float(_gstar(float(cfg["nu"])))
+    print(f"[절 AK.30] 칸 평균 + 칸 안 분산 에너지 γ {a.ak_cs:.4f} (ν {float(cfg['nu'])})", flush=True)
 if AKSEL:
     AKC.set_sela(a.ak_sela)
 AKES = bool(a.ak_es)
@@ -1082,7 +1092,7 @@ class Opt:
                 self.akg_MG = torch.zeros(self.Pcap, device=dev)
                 self.akg_Sg = torch.zeros(self.Pcap, device=dev)
                 self.akg_Fm = torch.zeros(self.Pcap, device=dev)
-            if AKSEL:                                                                # 절 AK.25 칸 사상 합·부피·μ 응력 합
+            if AKSEL or AKCS:                                                        # 절 AK.25 칸 사상 합·부피·μ 응력 합 (AK.30 도 같은 버퍼: X̄ 합·부피·S_c)
                 self.skA = torch.zeros(self.Pcap, 9, device=dev)
                 self.skV = torch.zeros(self.Pcap, device=dev)
                 self.skG = torch.zeros(self.Pcap, 9, device=dev)
@@ -1167,7 +1177,7 @@ class Opt:
         if AKG:                                                                     # 절 AG.11: 사면체 -> 칸
             EX.launch("ex_tet_cell", Pn * 9, (EX.P(self.ipar), EX.P(tm), EX.P(self.tcm), EX.P(self.tcell)), b=256)
             self.Pn = Pn
-        if AKSEL:                                                                   # 절 AK.25: 사면체 -> 칸
+        if AKSEL or AKCS:                                                           # 절 AK.25: 사면체 -> 칸
             EX.launch("ex_tet_cell", Pn * 9, (EX.P(self.ipar), EX.P(tm), EX.P(self.tcm), EX.P(self.tcell)), b=256)
             self.Pn = Pn
         if SPM == "cube":
@@ -2058,7 +2068,15 @@ class Opt:
             AKC.launch("ak_esF", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.es_te), EX.P(self.es_G),
                                              EX.P(self.es_V), EX.P(self.f)), b=128)
             AKC.launch("ak_esZ", self.Tcap * 6, (np.int32(self.Tcap * 6), EX.P(self.es_A), EX.P(self.es_V), EX.P(self.es_G)), b=256)
-        if AKPQ and not a.ak_fuse and not P2 and not AKSEL and not AKES:                                    # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
+        if AKPQ and AKCS:                                                           # 절 AK.30: 칸 평균 + 칸 안 분산
+            AKC.launch("ak_csA", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs), EX.P(self.FT), EX.P(self.tcell),
+                                             EX.P(self.skA), EX.P(self.skV)), b=128)
+            AKC.launch("ak_cs_p", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.FT), EX.P(self.akdF), EX.P(self.akw),
+                                       EX.P(self.tcell), EX.P(self.skA), EX.P(self.skV), np.float32(mu), np.float32(lam), np.float32(a.ak_cs), EX.P(self.f), EX.P(self.skG)), b=128)
+            AKC.launch("ak_csF", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.FT), EX.P(self.tcell),
+                                             EX.P(self.skA), EX.P(self.skV), EX.P(self.skG), np.float32(mu), np.float32(lam), EX.P(self.f)), b=128)
+            AKC.launch("ak_selZ", self.Pcap, (np.int32(self.Pcap), EX.P(self.skA), EX.P(self.skV), EX.P(self.skG)), b=256)
+        if AKPQ and not a.ak_fuse and not P2 and not AKSEL and not AKES and not AKCS:                                    # 절 AK: 셀 탄성 = 입자 적분점 (위 융합 커널은 접촉만 -- 사면체 목록 개수 0 을 주었다)
             if AKG:                                                                 # 절 AG.11: 묶음 사상 합 (서브스텝마다 비우고)
                 self.akg_AG.zero_()
                 self.akg_GmG.zero_()
