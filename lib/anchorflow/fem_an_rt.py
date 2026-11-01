@@ -673,6 +673,7 @@ __global__ void __launch_bounds__(128) rt_mg_elem(int l, const int* LM, const fl
     int ids[27]; qnodes_d(qq, L, ids);
     float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)qq*9+k];
     float vq = on ? Vq[qq] : 0.f;
+    if (__all_sync(0xffffffffu, !(vq > 0.f))) return;
     float h[81]; for (int k=0;k<81;k++) h[k] = 0.f;
     if (on && vq > 0.f) {
         float U[9], S[3], V[9]; ssvdf(F, U, S, V);
@@ -711,6 +712,7 @@ __global__ void __launch_bounds__(128) rt_mg_mv(int l, const int* LM, const floa
     int ids[27]; qnodes_d(qq, L, ids);
     float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)qq*9+k];
     float vq = on ? Vq[qq] : 0.f;
+    if (__all_sync(0xffffffffu, !(vq > 0.f))) return;                           // 빈 칸 (부피 0) 만 든 워프는 기여 0
     float dX[9] = {0,0,0,0,0,0,0,0,0};
     float gs[27][3];
     for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; float bs[3] = {sc*bg[0], sc*bg[1], sc*bg[2]}; gqn(F, bs, gs[o]); int id = ids[o];
@@ -751,6 +753,13 @@ __global__ void rt_mg_prolong(int lf, const int* LM, const float* in, float* out
           for (int c=0;c<3;c++) acc[c] += w*in[J*3+c]; } } }
     for (int c=0;c<3;c++) out[I*3+c] = (add ? out[I*3+c] : 0.f) + acc[c];
 }
+// 층 l 배열 0 채우기 (실제 크기만): which 0 = 노드 수, 1 = 가우스 점 수, 2 = 칸 수
+__global__ void rt_zero_lm(int l, const int* LM, int which, int mul, float* a, int* ai) {
+    int i = blockIdx.x*blockDim.x + threadIdx.x;
+    int n = (which == 0) ? LM[l*8+3] : ((which == 1) ? LM[l*8+7] : LM[l*8+7]/8);
+    if (i >= n*mul) return;
+    if (a) a[i] = 0.f; else ai[i] = 0;
+}
 // 거친 층 노드: D = (Mi I + B)⁻¹ (질량·대각 0 이면 0)
 __global__ void rt_mg_D(int l, const int* LM, const float* mc, float itau2, const float* B, float* D) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
@@ -762,26 +771,30 @@ __global__ void rt_mg_D(int l, const int* LM, const float* mc, float itau2, cons
 // 층 노드 연산: (0) z = w D r; (1) z += w D (r − Az); (2) res = r − Az;  Az = Mi z + KTz 마무리 (층 0 은 T 끼움)
 // 층 0: Az = Mi z + T (K (T z)); 여기서 KTz 는 이미 계산된 K(Tz) 또는 K z. 모드 3: Tz = T z (층 0), 모드 4: out = T v
 __global__ void rt_mg_node(int l, const int* LM, int mode, const float* mn, float itau2, const float* sk, const int* pm, float n0, float n1, float n2,
-                           const float* D, const double* W, const float* r, const float* KTz, float* z, float* res) {
+                           const float* D, const double* W, const float* r, float* KTz, float* z, float* res) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= LM[l*8+3]) return;
     float w = (float)W[l];
     const float* d = D + n*9;
     float rr[3], az[3];
     for (int a=0;a<3;a++) rr[a] = r ? r[n*3+a] : 0.f;
-    if (mode == 0) { for (int a=0;a<3;a++) z[n*3+a] = w*(d[a*3]*rr[0] + d[a*3+1]*rr[1] + d[a*3+2]*rr[2]); return; }
+    if (mode == 0 || mode == 6) { float zz[3]; for (int a=0;a<3;a++) { zz[a] = w*(d[a*3]*rr[0] + d[a*3+1]*rr[1] + d[a*3+2]*rr[2]); z[n*3+a] = zz[a]; }
+        if (mode == 6) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, zz, t); for (int a=0;a<3;a++) res[n*3+a] = t[a]; }       // 층 0: 다음 Az 의 T z 를 함께 (융합)
+        return; }
     if (mode == 3 || mode == 4) { const float* v = (mode == 3) ? z : r; float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, v + n*3, t); for (int a=0;a<3;a++) res[n*3+a] = t[a]; return; }
     if (mode == 5) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, r + n*3, t); for (int a=0;a<3;a++) z[n*3+a] += t[a]; return; }
     float Mi = mn[n]*itau2;
     float kt[3] = {KTz[n*3], KTz[n*3+1], KTz[n*3+2]};
+    KTz[n*3] = 0.f; KTz[n*3+1] = 0.f; KTz[n*3+2] = 0.f;                         // 읽은 뒤 비움 (다음 곱의 원자 합 바탕; 0 채우기 커널 없앰)
     if (l == 0) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, kt, t); for (int a=0;a<3;a++) kt[a] = t[a]; }
     for (int a=0;a<3;a++) az[a] = Mi*z[n*3+a] + kt[a];
     float e[3]; for (int a=0;a<3;a++) e[a] = rr[a] - az[a];
     if (mode == 2) { for (int a=0;a<3;a++) res[n*3+a] = e[a]; return; }
+    if (mode == 7) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, e, t); for (int a=0;a<3;a++) res[n*3+a] = t[a]; return; }   // 층 0: T (r − Az) (제한 입력, 융합)
     for (int a=0;a<3;a++) z[n*3+a] += w*(d[a*3]*e[0] + d[a*3+1]*e[1] + d[a*3+2]*e[2]);
 }
 // 거듭제곱법 한 걸음: z ← D A z / |D A z|, λ = (z·DAz)/(z·z) -> SCM[l]; 마지막에 W[l] = ω/λ
-__global__ void rt_mg_pw1(int l, const int* LM, const float* mn, float itau2, const float* sk, const int* pm, float n0, float n1, float n2, const float* D, const float* z, const float* KTz,
+__global__ void rt_mg_pw1(int l, const int* LM, const float* mn, float itau2, const float* sk, const int* pm, float n0, float n1, float n2, const float* D, const float* z, float* KTz,
                           float* y, double* SCM) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     double s1 = 0.0, s2 = 0.0, s3 = 0.0;
@@ -790,6 +803,7 @@ __global__ void rt_mg_pw1(int l, const int* LM, const float* mn, float itau2, co
     if (n < nn) {
         float Mi = mn[n]*itau2;
         float kt[3] = {KTz[n*3], KTz[n*3+1], KTz[n*3+2]};
+        KTz[n*3] = 0.f; KTz[n*3+1] = 0.f; KTz[n*3+2] = 0.f;
         if (l == 0) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, kt, t); for (int a=0;a<3;a++) kt[a] = t[a]; }
         float az[3]; for (int a=0;a<3;a++) az[a] = Mi*z[n*3+a] + kt[a];
         const float* d = D + n*9;
@@ -980,9 +994,10 @@ class RTSolver:
         s.k("rt_mg_dims", 1, (P(s.IP), P(s.LM), i32(s.nl), P(s.capn_d), P(s.capq_d)), b=1)
         for l in range(1, s.nl):
             L = s.ML[l - 1]
-            for t_ in (L["A"], L["C"], L["B"], L["mc"]):
-                s.zf(t_)
-            s.zf(L["badq"]); s.zf(L["badc"])
+            for t_, wh, mul in ((L["A"], 1, 28), (L["C"], 2, 30), (L["B"], 0, 9), (L["mc"], 0, 1)):
+                s.k("rt_zero_lm", t_.numel(), (i32(l), P(s.LM), i32(wh), i32(mul), P(t_), P(None)), b=256)
+            s.k("rt_zero_lm", L["badq"].numel(), (i32(l), P(s.LM), i32(1), i32(1), P(None), P(L["badq"])), b=256)
+            s.k("rt_zero_lm", L["badc"].numel(), (i32(l), P(s.LM), i32(2), i32(1), P(None), P(L["badc"])), b=256)
             src_cap = (s.capQc * 8) if l == 1 else s.ML[l - 2]["capq"]
             Fs = s.Fq if l == 1 else s.ML[l - 2]["Fq"]
             Vs = s.Vq if l == 1 else s.ML[l - 2]["Vq"]
@@ -995,17 +1010,16 @@ class RTSolver:
         for l in range(1, s.nl):
             s.mg_power(l)
 
-    def mg_Az(s, l, z, KT):
-        """KT = K (T z) (층 0) 또는 K z (거친 층)."""
+    def mg_Az(s, l, z, KT, tz_ready=False):
+        """KT += K (T z) (층 0) 또는 K z (거친 층). KT 는 앞 소비 커널이 비워 둔다. tz_ready: 층 0 의 T z 가 이미 m0u 에 (융합 노드 연산)."""
         i32, f = np.int32, np.float32
         nr = s.floor["NR"] if s.floor else [0.0, 0.0, 1.0]
         if l == 0:
-            s.k("rt_mg_node", s.capN, (i32(0), P(s.LM), i32(3), P(s.mn), f(0), P(s.sk), P(s.pm), *[f(q) for q in nr], P(None), P(s.W), P(None), P(None), P(z), P(s.m0u)), b=256)
-            s.zf(KT, 9, 3)
+            if not tz_ready:
+                s.k("rt_mg_node", s.capN, (i32(0), P(s.LM), i32(3), P(s.mn), f(0), P(s.sk), P(s.pm), *[f(q) for q in nr], P(None), P(s.W), P(None), P(None), P(z), P(s.m0u)), b=256)
             s.k("rt_mv", s.capQc * 8, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.m0u), P(KT), i32(s.capQc * 8)))
         else:
             L = s.ML[l - 1]
-            s.zf(KT)
             s.k("rt_mg_mv", L["capq"], (i32(l), P(s.LM), P(s.BG), f(0.5 ** l), P(L["Fq"]), P(L["Vq"]), P(L["H"]), i32(L["capq"]), P(z), P(KT)))
 
     def mg_lv(s, l):
@@ -1039,17 +1053,20 @@ class RTSolver:
         res = s.m0t if l == 0 else s.ML[l - 1]["t"]
         node = lambda mode, rr, kt, zz, rs: s.k("rt_mg_node", V["cap"], (i32(l), P(s.LM), i32(mode), P(V["mn"]), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(V["D"]), P(s.W),
                                                                          P(rr), P(kt), P(zz), P(rs)), b=256)
-        node(0, r, None, z, None)
+        if l == 0:
+            node(6, r, None, z, s.m0u)                                                 # z = ω D r, m0u = T z (융합)
+        else:
+            node(0, r, None, z, None)
         if l == s.nl - 1:
             for _ in range(s.mg_nc - 1):
                 s.mg_Az(l, z, KT); node(1, r, KT, z, None)
             return
-        s.mg_Az(l, z, KT); node(2, r, KT, z, res)
         Lc = s.ML[l]
         if l == 0:
-            node(4, res, None, None, s.m0u)                                            # T res
+            s.mg_Az(0, z, KT, tz_ready=True); node(7, r, KT, z, s.m0u)                 # m0u = T (r − A z) (융합)
             s.k("rt_mg_restrict", Lc["capn"], (i32(0), P(s.LM), P(s.m0u), P(Lc["r"]), i32(3)), b=256)
         else:
+            s.mg_Az(l, z, KT); node(2, r, KT, z, res)
             s.k("rt_mg_restrict", Lc["capn"], (i32(l), P(s.LM), P(res), P(Lc["r"]), i32(3)), b=256)
         s.mg_vc(l + 1, Lc["r"], Lc["z"])
         if l == 0:
