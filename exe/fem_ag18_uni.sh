@@ -3,6 +3,6 @@
 cd "$(dirname "$0")/.." || exit 1
 export AK_EN=0 AK_CARDS="${AK_CARDS:-4 5}" AK_W=${AK_W:-3}
 L=L000; for k in $(seq 0 19); do L="$L,$(printf %04d $k)"; done
-bash exe/fem_ak_sweep.sh "v:cmsU:z:1::_u" "$L"
-bash exe/fem_ak_sweep.sh "v:cmsU::1::_u" ficus
+bash exe/fem_ak_sweep.sh "v:cmsGm:z:1::_gm" "$L"
+bash exe/fem_ak_sweep.sh "v:cmsGm::1::_gm" ficus
 echo UNI_DONE
