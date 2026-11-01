@@ -42,6 +42,7 @@ ap.add_argument("--integ", choices=["mid", "be", "bdf2"], default="mid")
 ap.add_argument("--quad", choices=["gauss", "part"], default="gauss", help="탄성 적분점: 칸 2x2x2 가우스 (원본) 또는 입자 (명시적 bnv 와 같은 적분점)")
 ap.add_argument("--fl_src", choices=["q", "part"], default="q", help="바닥 고착 판정 점: 적분점 (원본) 또는 입자 (명시적 판 정의)")
 ap.add_argument("--fl_npd", type=float, default=0.0, help=">0 이면 명시적 판 비관통: 판정 점 하나라도 s < −δ 인 노드는 예측 속도가 안쪽이면 법선 속도 0 (걸음당 한 번 정함)")
+ap.add_argument("--ls_diff", action="store_true", help="가속 판 선탐색을 점별 에너지 차 Σ_q (ψ_q(후보) − ψ_q(지금)) + 관성 차 ½ Σ Mi c δ (2η + c δ) 로 판정 (총 에너지끼리 빼면 τ 가 작을 때 f64 반올림에 묻혀 걸음 0 만 고름)")
 ap.add_argument("--en", action="store_true", help="프레임마다 에너지·높이 진단 (우리 / 정답)")
 ap.add_argument("--newton", type=int, default=6)
 ap.add_argument("--cg", type=int, default=100)
@@ -620,6 +621,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, hist=N
         y = yfun(eta)
         with tsec("요소"):
             Ee, fe = el.eval(y, 1 | 2 | 8 | (4 if a.fast_ls else 0), dev_e=True)
+            E0q = el.E.clone() if (a.fast_ls and a.ls_diff) else None
             g = Mi * eta + (Tc @ fe[..., None]).squeeze(-1)
             if it == 0:
                 g0t = g.norm()
@@ -661,10 +663,15 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, hist=N
                 for c_ in (0.25, 0.5, 1.0):                                            # 큰 후보가 받아들여지면 덮어쓴다 = 받아들여지는 가장 큰 걸음
                     et = eta + c_ * dl
                     Et, _ = el.eval(yfun(et), 4, dev_e=True)
+                    if E0q is not None:
+                        dE = (el.E - E0q).sum() + 0.5 * (Mi * (c_ * dl) * (2 * eta + c_ * dl)).sum()
+                        st = torch.where(torch.isfinite(dE) & (dE <= 1e-4 * c_ * gd), torch.full_like(st, c_), st)
+                        continue
                     E1 = 0.5 * (Mi * et * et).sum() + Et
                     st = torch.where(torch.isfinite(E1) & (E1 <= E0 + 1e-4 * c_ * gd), torch.full_like(st, c_), st)
             else:
                 st = 1.0
+            STAT["st0"] = STAT.get("st0", 0) + (st == 0)
             eta = eta + st * dl
             y = yfun(eta)
     if a.gfin:
@@ -1004,6 +1011,8 @@ def frame(fi, x, v, F):
     if a.integ == "bdf2":
         HIST[0] = ((W[..., None] * (hist[0] - U)[nidc]).sum(1), (W[..., None] * hist[1][nidc]).sum(1))
     STAT["nmv"] = el.nmv
+    if "st0" in STAT:
+        STAT["st0"] = int(STAT["st0"])
     if "stuck_t" in STAT:
         STAT["stuck"] = int(STAT.pop("stuck_t"))
     STAT["nbad"] = int(STAT["nbad"])
