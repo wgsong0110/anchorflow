@@ -19,6 +19,7 @@ run() {
   nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader > $O/gpu_at_start.txt
   echo "[명령] 커밋 $C CUDA_VISIBLE_DEVICES=$G python -u exe/fem_ex_sim.py --out $O $*" | tee $O/cmd.txt
   CUDA_VISIBLE_DEVICES=$G python -u exe/fem_ex_sim.py --out $O "$@" < /dev/null > $O/v_fem.log 2>&1
+  echo "rc=$? $(date '+%F %T')" > $O/rc.txt                                   # 절 AG.19: 끝난 까닭 (137 = SIGKILL, 143 = SIGTERM -- 밖에서 끝났는지 가리기)
   nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader > $O/gpu_at_end.txt
 }
 if [ -n "${EX_TIMED:-}" ]; then
