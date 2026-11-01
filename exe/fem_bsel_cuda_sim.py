@@ -36,7 +36,7 @@ ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--vfl_out", action="store_true", help="절 AK.31: 바닥 고착을 접선·안쪽 법선에만")
 ap.add_argument("--gq", action="store_true", help="절 AK.33 (정의 변경): 탄성 적분점을 입자 대신 칸 (B-스플라인 칸 [base+½, base+3/2]³) 고정 2x2x2 가우스 점으로 -- "
-                "점 q = 입자가 든 칸의 팔분 영역, 가중 = 그 영역 입자 부피 합, F_q = 그 영역 입자 F 의 회전·신장 분리 평균 (절 AI A1: R̄ = polar(Σ V R), S̄ = exp(Σ V log S / Σ V)), "
+                "점 q = 입자가 든 칸마다 8 점 (같은 가중 = 칸 입자 부피 합 / 8), F_q = 그 영역 입자 F 의 회전·신장 분리 평균 (절 AI A1: R̄ = polar(Σ V R), S̄ = exp(Σ V log S / Σ V)), "
                 "서브스텝 X_q = A(x_q) F_q (B-스플라인 사상 기울기), G2P 입자마다 F_p ← A(x_p) F_p 그대로")
 a = ap.parse_args()
 dev = "cuda"
@@ -112,9 +112,10 @@ def rs_mean(Fp, w, inv, nq):
     Ur, _, Vr = torch.linalg.svd(sR)
     Dg = torch.ones(nq, 3, device=dev, dtype=torch.float64); Dg[:, 2] = torch.sign(torch.det(Ur @ Vr))
     Rb = Ur @ torch.diag_embed(Dg) @ Vr
-    ev, EV = torch.linalg.eigh(0.5 * (sL + sL.transpose(1, 2)) / sw)
+    ev, EV = torch.linalg.eigh(0.5 * (sL + sL.transpose(1, 2)) / sw.clamp_min(1e-300))
     Sb = EV @ torch.diag_embed(torch.exp(ev)) @ EV.transpose(1, 2)
-    Fq = torch.where(bad[:, None, None], sF / sw, Rb @ Sb)
+    swc = sw.clamp_min(1e-300)
+    Fq = torch.where(bad[:, None, None], sF / swc, Rb @ Sb)
     return Fq.reshape(nq, 9).float(), int(bad.sum())
 
 
@@ -198,13 +199,20 @@ def frame(fi, x, v, F):
     if a.gq:                                                                           # 절 AK.33: 입자 -> 칸 팔분 영역 가우스 점
         cso = cid[o].long()
         oi = ((fxo >= 1.0).long() * torch.tensor([4, 2, 1], device=dev)).sum(1)
-        uq, qinv = torch.unique(cso * 8 + oi, return_inverse=True)
+        uc, cinv_ = torch.unique(cso, return_inverse=True)                            # 점유 칸 -> 8 점 모두 (가우스 규칙 그대로: 같은 가중 V_c / 8)
+        nc_ = uc.numel()
+        uq = (uc[:, None] * 8 + torch.arange(8, device=dev)[None]).reshape(-1)
         nq = uq.numel()
         grew = gq_alloc(nq) or grew
         qb = torch.stack([(uq % 8) // 4, (uq % 4) // 2, uq % 2], 1).double()
         qfx = 1.0 + GG * (2 * qb - 1)
-        qV = torch.zeros(nq, device=dev, dtype=torch.float64).index_add_(0, qinv, vo)
+        Vc = torch.zeros(nc_, device=dev, dtype=torch.float64).index_add_(0, cinv_, vo)
+        qV = Vc.repeat_interleave(8) / 8.0
+        qinv = cinv_ * 8 + oi                                                          # 팔분 영역 입자 F 의 회전·신장 분리 평균; 입자 없는 팔분 영역은 칸 전체 평균
         qF, nbad = rs_mean(F[o], vo, qinv, nq)
+        cF, _ = rs_mean(F[o], vo, cinv_, nc_)
+        has = torch.zeros(nq, device=dev, dtype=torch.bool).index_put_((qinv,), torch.ones_like(qinv, dtype=torch.bool))
+        qF = torch.where(has[:, None], qF, cF.repeat_interleave(8, 0))
         cap = GQ["cap"]
         GQ["cid"][:nq].copy_((uq // 8).int()); GQ["cid"][nq:].fill_(int(uq[-1] // 8))
         GQ["fx"][:nq].copy_(qfx.float()); GQ["fx"][nq:].fill_(1.0)

@@ -6,7 +6,7 @@ VK=$1; TS=$(echo $2 | tr ',' ' '); shift 2; EXTRA="$*"
 i=0
 for t in $TS; do
   O=/tmp/dkta/lbours/fem_ak_bselc/${t}_$VK; mkdir -p $O
-  if [ $t = ficus ]; then DA="--data /home/dkta/work/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt --frames 125 --node_h 0.056569 --floor none --cfg_bc --region_density --pg_vdamp --N 640"
+  if [ $t = ficus ]; then DA="--data /home/dkta/work/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt --frames 125 --node_h 0.056569 --floor none --cfg_bc --region_density --pg_vdamp --N 640 --dump"
   elif [ $t = stretch ] || [ $t = shear ]; then DA="--data /tmp/dkta/ak_block/$t.pt --frames 80 --node_h 0.028284 --floor none --N 267 --dump"
   elif [ $t = drop1 ]; then DA="--data /tmp/dkta/ak_drop2/drop_f1.pt --frames 80 --node_h 0.028284 --floor vel --N 267 --dump"
   elif [ $t = L000 ]; then DA="--data /home/dkta/work/one/L000/L000.pt --frames 80 --node_h 0.028284 --floor vel --N 267"
