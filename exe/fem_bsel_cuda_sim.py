@@ -34,6 +34,10 @@ ap.add_argument("--no_graph", action="store_true")
 ap.add_argument("--dump", action="store_true")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
+ap.add_argument("--vfl_out", action="store_true", help="절 AK.31: 바닥 고착을 접선·안쪽 법선에만")
+ap.add_argument("--gq", action="store_true", help="절 AK.33 (정의 변경): 탄성 적분점을 입자 대신 칸 (B-스플라인 칸 [base+½, base+3/2]³) 고정 2x2x2 가우스 점으로 -- "
+                "점 q = 입자가 든 칸의 팔분 영역, 가중 = 그 영역 입자 부피 합, F_q = 그 영역 입자 F 의 회전·신장 분리 평균 (절 AI A1: R̄ = polar(Σ V R), S̄ = exp(Σ V log S / Σ V)), "
+                "서브스텝 X_q = A(x_q) F_q (B-스플라인 사상 기울기), G2P 입자마다 F_p ← A(x_p) F_p 그대로")
 a = ap.parse_args()
 dev = "cuda"
 RTC.RAWPTR[0] = True
@@ -80,6 +84,38 @@ S = dict(cid=torch.zeros(Np, dtype=torch.int32, device=dev), fx=f32(Np, 3), F=f3
          cand=torch.zeros(Np, dtype=torch.int32, device=dev), nc=torch.zeros(1, dtype=torch.int32, device=dev), nb=torch.zeros(3, dtype=torch.int32, device=dev),
          nbt=torch.zeros(1, dtype=torch.int32, device=dev), x2=f32(Np, 3), v2=f32(Np, 3), F2=f32(Np, 9))
 NODE = dict(cap=0)
+GQ = dict(cap=0)
+GG = 0.5 / math.sqrt(3.0)                                                              # 칸 [½, 3/2] 의 2 점 가우스 = 1 ± ½/√3
+
+
+def gq_alloc(q):
+    if q <= GQ["cap"]:
+        return False
+    c = int(q * 1.3) + 1024
+    GQ.update(cap=c, cid=torch.zeros(c, dtype=torch.int32, device=dev), fx=f32(c, 3), F=f32(c, 9), V=f32(c), r=torch.ones(c, device=dev))
+    return True
+
+
+def rs_mean(Fp, w, inv, nq):
+    """절 AI A1 회전·신장 분리 평균 (float64): R̄ = polar(Σ w R_p), S̄ = exp(Σ w log S_p / Σ w); 뒤집힌 입자가 든 점은 유클리드 평균."""
+    Fm = Fp.double().reshape(-1, 3, 3)
+    U_, Sg, Vh = torch.linalg.svd(Fm)
+    R = U_ @ Vh
+    neg = torch.det(Fm) <= 0
+    LS = Vh.transpose(1, 2) @ torch.diag_embed(torch.log(Sg.clamp_min(1e-12))) @ Vh
+    W = w.double()[:, None, None]
+    sR = torch.zeros(nq, 3, 3, device=dev, dtype=torch.float64).index_add_(0, inv, W * R)
+    sL = torch.zeros(nq, 3, 3, device=dev, dtype=torch.float64).index_add_(0, inv, W * LS)
+    sF = torch.zeros(nq, 3, 3, device=dev, dtype=torch.float64).index_add_(0, inv, W * Fm)
+    sw = torch.zeros(nq, device=dev, dtype=torch.float64).index_add_(0, inv, w.double())[:, None, None]
+    bad = torch.zeros(nq, device=dev, dtype=torch.bool).index_put_((inv[neg],), torch.ones(int(neg.sum()), device=dev, dtype=torch.bool))
+    Ur, _, Vr = torch.linalg.svd(sR)
+    Dg = torch.ones(nq, 3, device=dev, dtype=torch.float64); Dg[:, 2] = torch.sign(torch.det(Ur @ Vr))
+    Rb = Ur @ torch.diag_embed(Dg) @ Vr
+    ev, EV = torch.linalg.eigh(0.5 * (sL + sL.transpose(1, 2)) / sw)
+    Sb = EV @ torch.diag_embed(torch.exp(ev)) @ EV.transpose(1, 2)
+    Fq = torch.where(bad[:, None, None], sF / sw, Rb @ Sb)
+    return Fq.reshape(nq, 9).float(), int(bad.sum())
 
 
 def node_alloc(nbt):
@@ -91,21 +127,27 @@ def node_alloc(nbt):
 
 
 GRAPH = [None]
+STAT = {}
 FIXD = [False]
 
 
 def substeps():
     nbP = Np
     for _ in range(a.N):
-        BK.launch("bs_force", Np, (np.int32(Np), BK.P(S["cid"]), BK.P(S["fx"]), BK.P(S["F"]), BK.P(S["V"]), BK.P(S["r"]), BK.P(Aif), BK.P(S["nb"]),
-                                   BK.P(NODE["U"]), np.float32(mu), np.float32(lam), BK.P(NODE["f"])), b=128)
+        if a.gq:                                                                       # 절 AK.33: 칸 가우스 점 (용량 GQ cap, 남는 칸은 부피 0)
+            BK.launch("bs_force", GQ["cap"], (np.int32(GQ["cap"]), BK.P(GQ["cid"]), BK.P(GQ["fx"]), BK.P(GQ["F"]), BK.P(GQ["V"]), BK.P(GQ["r"]), BK.P(Aif), BK.P(S["nb"]),
+                                              BK.P(NODE["U"]), np.float32(mu), np.float32(lam), BK.P(NODE["f"])), b=128)
+        else:
+            BK.launch("bs_force", Np, (np.int32(Np), BK.P(S["cid"]), BK.P(S["fx"]), BK.P(S["F"]), BK.P(S["V"]), BK.P(S["r"]), BK.P(Aif), BK.P(S["nb"]),
+                                       BK.P(NODE["U"]), np.float32(mu), np.float32(lam), BK.P(NODE["f"])), b=128)
         if FLOOR:
             BK.launch("bs_contact", nbP, (BK.P(S["nc"]), BK.P(S["cand"]), BK.P(S["cid"]), BK.P(S["fx"]), BK.P(S["x"]), BK.P(S["m"]), BK.P(S["nb"]), BK.P(NODE["U"]),
                                           *[np.float32(q) for q in PT], *[np.float32(q) for q in NR], np.float32(PN), np.float32(DXG), np.float32(a.npd),
                                           BK.P(NODE["acc"]), BK.P(NODE["accN"])), b=128)
         BK.launch("bs_node", NODE["cap"], (BK.P(S["nbt"]), BK.P(NODE["mn"]), BK.P(NODE["mI"]), BK.P(NODE["f"]), BK.P(NODE["vn"]), BK.P(NODE["U"]),
                                            *[np.float32(q) for q in gv], np.float32(hs), np.float32(DAMP), BK.P(NODE["fx"] if FIXD[0] else None), BK.P(NODE["vbc"]),
-                                           BK.P(NODE["acc"]), BK.P(NODE["accN"]), np.int32(1 if FLOOR else 0), np.float32(KEX), *[np.float32(q) for q in NR]), b=256)
+                                           BK.P(NODE["acc"]), BK.P(NODE["accN"]), np.int32(1 if FLOOR else 0), np.float32(KEX), *[np.float32(q) for q in NR],
+                                           np.int32(1 if a.vfl_out else 0)), b=256)
 
 
 def capture():
@@ -153,8 +195,34 @@ def frame(fi, x, v, F):
     nid = ((bo[:, None, 0] + OFF[None, :, 0]) * nbl[1] + bo[:, None, 1] + OFF[None, :, 1]) * nbl[2] + bo[:, None, 2] + OFF[None, :, 2]
     mn = torch.zeros(nbt, device=dev, dtype=torch.float64).index_add_(0, nid.reshape(-1), (W * mo[:, None]).reshape(-1))
     mv = torch.zeros(nbt, 3, device=dev, dtype=torch.float64).index_add_(0, nid.reshape(-1), (W[..., None] * (mo[:, None] * v[o].double())[:, None, :]).reshape(-1, 3))
-    gn = GW.norm(dim=-1)
-    kn = torch.zeros(nbt, device=dev, dtype=torch.float64).index_add_(0, nid.reshape(-1), (vo[:, None] * (lam + 2 * mu) * gn * gn.sum(1, keepdim=True)).reshape(-1))
+    if a.gq:                                                                           # 절 AK.33: 입자 -> 칸 팔분 영역 가우스 점
+        cso = cid[o].long()
+        oi = ((fxo >= 1.0).long() * torch.tensor([4, 2, 1], device=dev)).sum(1)
+        uq, qinv = torch.unique(cso * 8 + oi, return_inverse=True)
+        nq = uq.numel()
+        grew = gq_alloc(nq) or grew
+        qb = torch.stack([(uq % 8) // 4, (uq % 4) // 2, uq % 2], 1).double()
+        qfx = 1.0 + GG * (2 * qb - 1)
+        qV = torch.zeros(nq, device=dev, dtype=torch.float64).index_add_(0, qinv, vo)
+        qF, nbad = rs_mean(F[o], vo, qinv, nq)
+        cap = GQ["cap"]
+        GQ["cid"][:nq].copy_((uq // 8).int()); GQ["cid"][nq:].fill_(int(uq[-1] // 8))
+        GQ["fx"][:nq].copy_(qfx.float()); GQ["fx"][nq:].fill_(1.0)
+        GQ["F"][:nq].copy_(qF); GQ["F"][nq:].zero_()
+        GQ["V"][:nq].copy_(qV.float()); GQ["V"][nq:].zero_()
+        STAT.update(nq=nq, nbad=nbad)
+        qw = torch.stack([0.5 * (1.5 - qfx) ** 2, 0.75 - (qfx - 1) ** 2, 0.5 * (qfx - 0.5) ** 2], 1)
+        qd = torch.stack([qfx - 1.5, -2 * (qfx - 1), qfx - 0.5], 1)
+        qi, qj, qk = qw[:, OFF[:, 0], 0], qw[:, OFF[:, 1], 1], qw[:, OFF[:, 2], 2]
+        QGW = torch.stack([qd[:, OFF[:, 0], 0] * qj * qk, qi * qd[:, OFF[:, 1], 1] * qk, qi * qj * qd[:, OFF[:, 2], 2]], -1) @ Ai64
+        qc = (uq // 8)
+        qbz = qc % nbl[2]; qby = (qc // nbl[2]) % nbl[1]; qbx = qc // (nbl[1] * nbl[2])
+        qnid = ((qbx[:, None] + OFF[None, :, 0]) * nbl[1] + qby[:, None] + OFF[None, :, 1]) * nbl[2] + qbz[:, None] + OFF[None, :, 2]
+        gq_ = QGW.norm(dim=-1)
+        kn = torch.zeros(nbt, device=dev, dtype=torch.float64).index_add_(0, qnid.reshape(-1), (qV[:, None] * (lam + 2 * mu) * gq_ * gq_.sum(1, keepdim=True)).reshape(-1))
+    else:
+        gn = GW.norm(dim=-1)
+        kn = torch.zeros(nbt, device=dev, dtype=torch.float64).index_add_(0, nid.reshape(-1), (vo[:, None] * (lam + 2 * mu) * gn * gn.sum(1, keepdim=True)).reshape(-1))
     NODE["mn"][:nbt].copy_(mn.float())
     NODE["mI"][:nbt].copy_(torch.maximum(mn, (hs / 2) ** 2 * kn).float().clamp_min(1e-30))
     NODE["vn"][:nbt].copy_(torch.where(mn[:, None] > 0, mv / mn.clamp_min(1e-30)[:, None], torch.zeros_like(mv)).float())
@@ -213,7 +281,7 @@ for fi in range(L):
     secs.append(dt_)
     flog.write(json.dumps(dict(t=fi, err=e, sec=dt_)) + "\n")
     flog.flush()
-    print(f"  프레임 {fi + 1}/{L} {1e3 * dt_:.2f} ms 오차 {100 * e:.3f}%", flush=True)
+    print(f"  프레임 {fi + 1}/{L} {1e3 * dt_:.2f} ms 오차 {100 * e:.3f}%" + (f" 가우스 점 {STAT.get('nq')} (입자 {Np}, 뒤집힌 입자 든 점 {STAT.get('nbad')})" if a.gq else ""), flush=True)
     if PRED is not None:
         PRED[fi] = x2.cpu()
     x, v, F = x2, v2, F2

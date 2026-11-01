@@ -142,7 +142,7 @@ __global__ void bs_contact(const int* nc, const int* cand, const int* cid, const
 }
 // (3) 노드 걸음 + 이동
 __global__ void bs_node(const int* nbt, const float* mn, const float* mI, float* f, float* vn, float* U, float g0, float g1, float g2, float hs, float damp,
-                        const unsigned char* fixd, const float* vbc, float* acc, float* accN, int floor_, float kex, float n0, float n1, float n2) {
+                        const unsigned char* fixd, const float* vbc, float* acc, float* accN, int floor_, float kex, float n0, float n1, float n2, int vout) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= nbt[0]) return;
     float m = mn[n];
@@ -153,7 +153,10 @@ __global__ void bs_node(const int* nbt, const float* mn, const float* mI, float*
     if (floor_) {
         float ac = acc[n]; acc[n] = 0.f; float cn = accN[n]; accN[n] = 0.f;
         if (!(fixd && fixd[n])) {
-            if (ac > 0.f && m > 0.f) { float k = powf(fmaxf(1.f - ac/m, 0.f), kex); for (int a=0;a<3;a++) v[a] *= k; }
+            if (ac > 0.f && m > 0.f) { float k = powf(fmaxf(1.f - ac/m, 0.f), kex);
+                float vv = v[0]*n0 + v[1]*n1 + v[2]*n2;                            // 절 AK.31 vout: 바깥 법선 (이탈) 성분은 고착하지 않음
+                if (vout && vv > 0.f) for (int a=0;a<3;a++) { float nn = (a == 0) ? n0 : ((a == 1) ? n1 : n2); v[a] = k*(v[a] - vv*nn) + vv*nn; }
+                else for (int a=0;a<3;a++) v[a] *= k; }
             if (cn > 0.f) { float vv = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vv < 0.f) { v[0] -= vv*n0; v[1] -= vv*n1; v[2] -= vv*n2; } }
         }
     }
