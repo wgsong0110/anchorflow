@@ -268,6 +268,7 @@ ap.add_argument("--ah_imex_cl", type=float, default=0.0, help="절 AG.18 --ah_im
 ap.add_argument("--ah_imex_maxit", type=int, default=100, help="--ah_imex_cl 최대 반복")
 ap.add_argument("--akpl_trial", action="store_true", help="절 AG.18: 증분 RM 소성 상태를 시험 버퍼에 쓰고 서브스텝 끝에 커밋 (서브사이클링 준비; 결과는 같아야 한다)")
 ap.add_argument("--akg_mass", action="store_true", help="절 AG.18 정의 변경: --akg_empty 묶음 칸의 P2G 질량·운동량을 칸 사면체에 기하 부피 비로 나눈 뒤 사면체 몫 1/4 씩 노드로 (빈 사면체 노드도 질량을 가진다)")
+ap.add_argument("--akg_mass_dbg", action="store_true", help="--akg_mass 진단: 프레임마다 질량 분배 통계")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
@@ -1298,6 +1299,7 @@ class Opt:
         va = va.reshape(-1, 3)
         mq = (W4 * (mA_ * pa_)[:, None])                                            # 뺄 몫 (묶음 칸 입자)
         m0 = float(self.mn[:M_].sum())
+        mn0_ = self.mn[:M_].clone()
         self.mn.index_add_(0, self.rows[:Np].reshape(-1), -mq.reshape(-1))
         self.mv.index_add_(0, self.rows[:Np].reshape(-1), -(mq[..., None] * va[:Np][:, None, :]).reshape(-1, 3))
         cp_ = cel[tp][pa_]
@@ -1314,9 +1316,14 @@ class Opt:
         self.mn[:M_].clamp_(min=0.0)
         mn_ = self.mn[:M_]
         self.vn[:M_] = torch.where(mn_[:, None] > 1e-30, self.mv[:M_] / mn_.clamp_min(1e-30)[:, None], torch.zeros_like(self.mv[:M_]))
-        if not hasattr(self, "_akgm_chk"):
+        if not hasattr(self, "_akgm_chk") or a.akg_mass_dbg:
+            md_ = float(mn0_[mn0_ > 0].median())
             self._akgm_chk = (m0, float(self.mn[:M_].sum()), int((mn_ <= 0).sum()))
-            print(f"[절 AG.18 묶음 질량] 총 질량 {m0:.6g} -> {self._akgm_chk[1]:.6g}, 질량 0 노드 {self._akgm_chk[2]}", flush=True)
+            used_ = torch.zeros(M_, dtype=torch.bool, device=dev); used_[self.tets[:T_][occ_].reshape(-1)] = True
+            fx_ = self.fx[:M_].bool() if self.fixd else torch.zeros(M_, dtype=torch.bool, device=dev)
+            print(f"[절 AG.18 묶음 질량] 총 질량 {m0:.6g} -> {self._akgm_chk[1]:.6g}, 질량 0 노드 {self._akgm_chk[2]}, "
+                  f"질량 < 1e-3 중앙값 노드 전 {int(((mn0_ < 1e-3 * md_) & used_).sum())} 뒤 {int(((mn_ < 1e-3 * md_) & used_).sum())}, "
+                  f"줄어든 노드 {int((mn_ < mn0_ * 0.5).sum())} (고정 노드 중 {int(((mn_ < mn0_ * 0.5) & fx_).sum())}), 최소 비 {float((mn_[used_] / md_).min()):.3g}", flush=True)
 
     def _p2g_bs(self, x, v, F):
         """절 S 프레임 시작 P2G (B-스플라인): 노드 질량·운동량 (27 노드), 셀 V·VF (셀 중심 27 셀) -> 사면체 V_T = V_c/6·F̄; 사면체 locate (barycentric G2P·진단용)."""
