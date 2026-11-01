@@ -74,6 +74,7 @@ ap.add_argument("--gm_m", type=int, default=30)
 ap.add_argument("--mlow", type=float, default=0.0, help="절 AO: 노드 질량 < mlow x 중앙값 인 노드 (B-스플라인 가장자리, 질량 1e-50 대) 를 풀이에서 빼 관성 예측 ŷ 에 둠 (0 = 끔). "
                 "그 노드의 입자 가중 w·기울기 ∇w 는 √질량 비 이하라 G2P·요소 결합에 거의 안 들어가는데, 꼭짓점 (강성 0) 점에만 붙으면 질량 항만 남아 조건수 1e50 으로 선형 풀이가 깨진다")
 ap.add_argument("--vdiv", type=float, default=200.0, help="입자 속력이 이 값 (m/s) 을 넘으면 발산으로 멈춤 (정답 wolf 최대 속력은 수 m/s; 날아간 입자가 격자 상자를 키워 메모리가 터지기 전에)")
+ap.add_argument("--vdiag", type=float, default=0.0, help="진단: 프레임 끝 노드 속력이 이 값을 넘으면 가장 빠른 노드 10 개의 질량 비·구속 인자·붙은 가우스 점 상태 수를 vdiag.jsonl 에")
 ap.add_argument("--ls_c", default="0.03125,0.0625,0.125,0.25,0.5,1.0", help="가속 판 모래 선탐색 후보 보폭 (작은 것부터; 받아들여지는 가장 큰 것). 절 AN 의 ¼·½·1 은 모래에서 모두 거부됨 (정밀 판은 ⅛ 이하를 받아들였다)")
 ap.add_argument("--ls_fb", type=float, default=0.0, help="가속 판 잔차 선탐색에서 후보가 모두 거부되면 쓸 보폭 (0 = 움직이지 않음, 절 AN 과 같음)")
 ap.add_argument("--save_every", type=int, default=10, help="pred 를 이 프레임마다 중간 저장 (발산해도 덤프 남김)")
@@ -1208,6 +1209,19 @@ def frame(fi, x, v, F):
                 with tsec("소성커밋"):
                     el.rebase(U, QGW)
     STAT["nmv"] = el.nmv
+    if a.vdiag > 0 and float(vn.norm(dim=-1).max()) > a.vdiag:                       # 절 AO 진단: 빠른 노드
+        sp_ = vn.norm(dim=-1)
+        top = torch.topk(sp_, min(10, na)).indices
+        qnl = qn.long()
+        rows = []
+        for n_ in top.tolist():
+            hit = (qnl == n_).any(1)
+            stq = el.pst[hit] if SAND else torch.zeros(0)
+            rows.append(dict(node=n_, v=float(sp_[n_]), m_rel=float(mn[n_] / mn.median()), kpb=(float(kpbs[-1][n_]) if kpbs[-1] is not None else None),
+                             nq=int(hit.sum()), q_el=int((stq == 0).sum()), q_tail=int((stq == 1).sum()), q_apex=int((stq == 2).sum()),
+                             lowm=(bool(LOWM[0][n_]) if LOWM[0] is not None else None), U=[round(float(q), 4) for q in U[n_]]))
+        with open(os.path.join(a.out, "vdiag.jsonl"), "a") as fh_:
+            fh_.write(json.dumps(dict(t=fi, vmax=float(sp_.max()), n_fast=int((sp_ > a.vdiag).sum()), nodes=rows)) + "\n")
     if "stuck_t" in STAT:
         STAT["stuck"] = int(STAT.pop("stuck_t"))
     # G2P (프레임 끝 한 번)
