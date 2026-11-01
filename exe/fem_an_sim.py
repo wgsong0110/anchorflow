@@ -53,6 +53,8 @@ ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--fast", action="store_true", help="가속 판: 헤시안 float32 저장·곱 (기울기·잔차 float64), MG 계층 프레임당 한 번 (뉴턴마다 0 층 대각만 갱신), "
                 "고정 예산 (조기 종료 없음), 호스트 동기화 없음 (스칼라는 장치에), 장치 쪽 선탐색 후보 1·½·¼ (--fast_ls 0 이면 온 걸음)")
 ap.add_argument("--fast_ls", type=int, default=1)
+ap.add_argument("--no_proj", action="store_true", help="진단: 가우스 점 헤시안 고유값 투영 끔 (원래 헤시안)")
+ap.add_argument("--diag", action="store_true", help="진단: 뉴턴 반복마다 |g|/|g0|, 보폭, PCG 반복·최종 상대 잔차, 란초스 고유값 추정 (전처리 계 λmin·λmax) 을 fem.jsonl 에")
 ap.add_argument("--gfin", action="store_true", help="걸음 끝 y 에서 기울기를 한 번 더 재 |g|/|g0| 기록 (구간 '검사', 풀이 비용 아님)")
 ap.add_argument("--sec", action="store_true", help="구간별 시간 (구간 경계마다 동기화 -- 합이 동기화 없는 프레임 시간보다 조금 크다): p2g·바닥·요소 (기울기+헤시안)·대각·멀티그리드 구성·PCG (헤시안 곱·사이클)·선탐색·G2P")
 ap.add_argument("--prof", action="store_true", help="커널별 GPU 시간 (CUDA 이벤트) 을 fem.jsonl 에 -- 단독 카드에서만 의미")
@@ -625,7 +627,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
         yfun = lambda e_: yh + (Tc @ e_[..., None]).squeeze(-1)
         y = yfun(eta)
         with tsec("요소"):
-            Ee, fe = el.eval(y, 1 | 2 | 4)
+            Ee, fe = el.eval(y, 1 | 2 | 4 | (16 if a.no_proj else 0))
         E0 = 0.5 * float((Mi * eta * eta).sum()) + Ee
         g = Mi * eta + (Tc @ fe[..., None]).squeeze(-1)
         gn = float(g.norm())
@@ -660,12 +662,15 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
         pp = zz.clone()
         rz0 = rz
         tpc = tsec("PCG"); tpc.__enter__()
+        lz_a, lz_b = [], []
         for ci in range(a.cg):
             Ap = Aop(pp)
             pAp = float((pp * Ap).sum())
             if not (pAp > 0):
+                nst["negc"] = nst.get("negc", 0) + 1
                 break
             alp = rz / pAp
+            lz_a.append(alp)
             dl = dl + alp * pp
             rr = rr - alp * Ap
             zo = zz
@@ -674,10 +679,21 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
             nst["cg"] += 1
             if rzn <= (a.cg_tol ** 2) * rz0:
                 break
-            pp = zz + (float((rr * (zz - zo)).sum()) / rz) * pp                      # 유연 PCG (폴라크-리비에르)
+            bet_ = float((rr * (zz - zo)).sum()) / rz
+            lz_b.append(bet_)
+            pp = zz + bet_ * pp                                                       # 유연 PCG (폴라크-리비에르)
             rz = rzn
         tpc.__exit__()
         nst.setdefault("cgs", []).append(ci + 1)
+        if a.diag and lz_a:                                                            # 란초스 삼중대각 (CG 계수) -> 전처리 계 고유값 추정
+            n_ = len(lz_a)
+            Tl = np.zeros((n_, n_))
+            for i_ in range(n_):
+                Tl[i_, i_] = 1.0 / lz_a[i_] + (lz_b[i_ - 1] / lz_a[i_ - 1] if i_ > 0 else 0.0)
+                if i_ + 1 < n_ and i_ < len(lz_b):
+                    Tl[i_, i_ + 1] = Tl[i_ + 1, i_] = math.sqrt(max(lz_b[i_], 0.0)) / lz_a[i_]
+            ev_ = np.linalg.eigvalsh(Tl)
+            nst.setdefault("diag", []).append(dict(g=gn / g0n, cg=ci + 1, res=math.sqrt(max(rzn, 0.0) / max(rz0, 1e-300)) if lz_a else None, lmin=float(ev_[0]), lmax=float(ev_[-1])))
         # 되돌이 선탐색 (아르미호)
         tls = tsec("선탐색"); tls.__enter__()
         gd = float((g * dl).sum())
@@ -697,6 +713,9 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
         eta = eta + st * dl
         y = yfun(eta)
         tls.__exit__()
+        if a.diag and nst.get("diag"):
+            nst["diag"][-1]["st"] = st
+            nst["diag"][-1]["dE"] = (E1 - E0) if ok else None
         nst["nt"] += 1
         if st == 0.0:
             break
@@ -718,6 +737,8 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
     STAT["gr"] = max(STAT.get("gr", 0.0), nst.get("grf", nst["gr"]) or 0.0)
     STAT["stuck"] = nst["stuck"]
     STAT["lv"] = nst.get("lv", 1)
+    if a.diag:
+        STAT.setdefault("diag", []).append(dict(it=nst.get("diag", []), grf=nst.get("grf"), negc=nst.get("negc", 0)))
     STAT.setdefault("nts", []).append(nst["nt"])
     STAT.setdefault("cgs", []).append(nst.get("cgs", []))
     STAT["mglam"] = nst.get("mglam")

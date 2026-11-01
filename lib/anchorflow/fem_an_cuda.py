@@ -109,8 +109,8 @@ __global__ void an_elem(int nq, const int* qn, const double* G, const double* Fq
         double h[81];
         for (int k=0;k<81;k++) h[k] = 0.0;
         for (int m=0;m<3;m++) {
-            double dm = fmax(D[m][m], 0.0);
-            if (!(dm > 0.0)) continue;
+            double dm = (mode & 16) ? D[m][m] : fmax(D[m][m], 0.0);                  // mode&16: 투영 없음 (진단)
+            if (dm == 0.0) continue;
             double e[9];
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) e[a*3+b] = Ev[0][m]*U[a*3]*V[b*3] + Ev[1][m]*U[a*3+1]*V[b*3+1] + Ev[2][m]*U[a*3+2]*V[b*3+2];
             for (int r=0;r<9;r++) for (int c=0;c<9;c++) h[r*9+c] += dm*e[r]*e[c];
@@ -121,8 +121,8 @@ __global__ void an_elem(int nq, const int* qn, const double* G, const double* Fq
             int i = PI[pp], j = PJ[pp], k = PK[pp];
             double lt = 2.0*mu*(1.0 - 2.0/(S[i]+S[j])) + lam*(J-1.0)*S[k];
             double lf = 2.0*mu - lam*(J-1.0)*S[k];
-            lt = isfinite(lt) ? fmax(lt, 0.0) : 0.0;
-            lf = fmax(lf, 0.0);
+            if (mode & 16) { if (!isfinite(lt)) lt = 0.0; }
+            else { lt = isfinite(lt) ? fmax(lt, 0.0) : 0.0; lf = fmax(lf, 0.0); }
             double et[9], ef[9];
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) {
                 double x1 = U[a*3+i]*V[b*3+j], x2 = U[a*3+j]*V[b*3+i];
