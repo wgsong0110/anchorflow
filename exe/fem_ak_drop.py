@@ -1,7 +1,7 @@
 """절 AK.29 단위 시험 자료: 바닥에 떨어지는 균일 정육면체 블록 (lego 재질·바닥 정의 그대로, config.json).
 - 충격 속력: lego 미달 5 궤적 (0001·0003·0016·0017·0018) 의 정답 첫 착지 직전 질량 중심 연직 속력의 평균 (첫 착지 = 최저 입자가 처음 바닥 + 0.5 dx_g 아래로 내려간 프레임).
 - 입자 밀도: 같은 다섯 궤적 0 프레임의 점유 정답 칸 (dx_g 0.02) 당 입자 수 평균 -> 입자 간격 = dx_g / (칸당 수)^(1/3).
-- 크기: 같은 다섯 궤적 0 프레임 바운딩 박스 세 변의 기하 평균을 한 변으로.
+- 크기: 같은 다섯 궤적과 같은 입자 수·밀도 (= 같은 질량) 의 정육면체 -- 한 변 = dx_g (점유 칸 수)^(1/3) 의 평균 (바운딩 박스 기하 평균 0.93 m 는 속이 빈 lego 보다 8 배 무거워 버림).
 - 처음 상태: 바닥 위 간격 g0 = 0.05 m 에 정지 회전 없이, 연직 속도 v0 = −sqrt(v_imp² − 2 g g0) (착지 순간 속력 v_imp), F = I.
 출력 <out>/init.pt (fem_ex_sim 형식, x 는 0 프레임만) + info.json. 사용: python exe/fem_ak_drop.py <out>"""
 import json
@@ -29,9 +29,8 @@ for t in ("0001", "0003", "0016", "0017", "0018"):
     c = (x[0] / dxg).floor().long()
     _, cnt = torch.unique((c[:, 0] * 1000 + c[:, 1]) * 1000 + c[:, 2], return_counts=True)
     dens.append(float(cnt.float().mean()))
-    bb = x[0].max(0).values - x[0].min(0).values
-    ext.append(float(bb.prod() ** (1 / 3)))
-    print(t, "착지 프레임", k, "속력", round(vi[-1], 3), "칸당 입자", round(dens[-1], 2), "크기", round(ext[-1], 3), flush=True)
+    ext.append(dxg * float(cnt.numel()) ** (1 / 3))
+    print(t, "착지 프레임", k, "속력", round(vi[-1], 3), "칸당 입자", round(dens[-1], 2), "크기", round(ext[-1], 3), "입자", x.shape[1], flush=True)
 v_imp = sum(vi) / len(vi)
 nc = sum(dens) / len(dens)
 sp = dxg / nc ** (1 / 3)
