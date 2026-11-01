@@ -8,5 +8,6 @@ export AK_EN=0 AK_CARDS="${AK_CARDS:-4 5}" AK_W=${AK_W:-3} AK_SFX=_fdg
 
 
 
-bash exe/fem_ak_sweep.sh "v:cmsGm::1:--akg_mass_dbg@--frames@4:_md" ficus
+bash exe/fem_ak_sweep.sh "v:cmsGm::1:--akg_mass_sp:_sp" ficus
+bash exe/fem_ak_sweep.sh "v:cmsGm:z:1:--akg_mass_sp:_sp" 0000,0016,0018,L000,0003
 echo FDG_DONE

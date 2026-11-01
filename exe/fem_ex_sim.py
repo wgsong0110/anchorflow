@@ -268,6 +268,7 @@ ap.add_argument("--ah_imex_cl", type=float, default=0.0, help="절 AG.18 --ah_im
 ap.add_argument("--ah_imex_maxit", type=int, default=100, help="--ah_imex_cl 최대 반복")
 ap.add_argument("--akpl_trial", action="store_true", help="절 AG.18: 증분 RM 소성 상태를 시험 버퍼에 쓰고 서브스텝 끝에 커밋 (서브사이클링 준비; 결과는 같아야 한다)")
 ap.add_argument("--akg_mass", action="store_true", help="절 AG.18 정의 변경: --akg_empty 묶음 칸의 P2G 질량·운동량을 칸 사면체에 기하 부피 비로 나눈 뒤 사면체 몫 1/4 씩 노드로 (빈 사면체 노드도 질량을 가진다)")
+ap.add_argument("--akg_mass_sp", action="store_true", help="--akg_mass: 칸으로 나누는 입자를 묶음 Ā 를 쓰는 입자 (희소 사면체) 로만")
 ap.add_argument("--akg_mass_dbg", action="store_true", help="--akg_mass 진단: 프레임마다 질량 분배 통계")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
@@ -1294,6 +1295,8 @@ class Opt:
         act[cel[~occ_]] = True
         ing = act[cel]
         pa_ = ing[tp]
+        if a.akg_mass_sp:                                                           # 묶음 Ā 를 쓰는 입자 (희소 사면체) 만 칸으로 -- 힘 구조 (Ā 가 칸 전체로 퍼짐) 와 같은 범위
+            pa_ = pa_ & (cnt_[tp] <= a.akg_k)
         mA_ = self.mA[:Np] if self.mA.dim() == 1 else self.mA.view(-1)[:Np]
         W4 = torch.full_like(self.lamb[:Np], 0.25) if a.mass == "tet" else self.lamb[:Np]
         va = va.reshape(-1, 3)
