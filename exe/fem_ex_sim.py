@@ -277,6 +277,7 @@ ap.add_argument("--ah_mcfl_F", action="store_true", help="절 AG.19: 국소 CFL 
 ap.add_argument("--akg_fd_n", type=int, default=0, help="절 AG.19 진단: 뒤집힌 셀 수가 늘 때마다 K 번까지 유한 차분 실제 강성 대 상계")
 ap.add_argument("--ah_mcfl_Fs", action="store_true", help="절 AG.19 (--ah_mcfl_F 와): 입자 계수를 FCR 접선 강성 해석 상계 (|σ|) 로, 서브스텝마다 현재 A_T F_p 로 다시 잡아 국소 CFL 상계를 프레임 안 단조 증가 (프레임마다 초기화)")
 ap.add_argument("--ah_imex_pl", action="store_true", help="절 AG.19: --ah_imex 노드 블록을 서브스텝마다 소성 RM 뒤 탄성 F_e 기준 선형 접선으로 (증분 RM 판, --akpl_trial 로 상태는 서브스텝마다 한 번 커밋)")
+ap.add_argument("--akg_diag3", type=int, default=0, help="절 AG.19 진단 (--akpl_cause, 묶음 판): 첫 뒤집힘 직전 K 서브스텝의 |A_T − Ā|/|Ā|, Ā 대 A_T 힘 차, 모래시계 대 탄성 크기 (K = 값)")
 ap.add_argument("--akg_diag2", action="store_true", help="절 AG.19 진단 (--akpl_cause): 첫 뒤집힘·첫 비유한 셀 자리 (입자 수, 묶음·경계, 구속 거리, 소성 상태, IMEX 대상, 국소 CFL 비)")
 ap.add_argument("--akg_fd", action="store_true", help="절 AG.18 진단 (--akpl_cause, 탄성): 첫 뒤집힌 셀 노드의 실제 접선 강성 (유한 차분) 대 국소 CFL 상계")
 ap.add_argument("--akg_mass_dbg", action="store_true", help="--akg_mass 진단: 프레임마다 질량 분배 통계")
@@ -1560,6 +1561,41 @@ class Opt:
             ev_ = dict(frame=self._fi, j=j, n_inv=int(inv.sum()), fd=self._fd_check(nds2, Ub_))
             z["fd_ev"].append(ev_)
             print(f"  [절 AG.19 실제 강성 대 상계] {json.dumps(ev_, ensure_ascii=False)[:1500]}", flush=True)
+        if a.akg_diag3 and AKG and a.akg_empty:                                   # 절 AG.19: 묶음 Ā 와 칸 사면체 A_T 어긋남 이력 (서브스텝마다, 마지막 K 개)
+            tg_ = self.akg_tg[:T].long(); ing_ = tg_ >= 0
+            W_ = self.akg_W[:T]
+            AG2 = torch.zeros(self.Pcap, 9, device=dev).index_add_(0, tg_[ing_], (W_[ing_][:, None] * A.reshape(T, 9)[ing_]))
+            Ab = AG2 / self.akg_VG[:, None].clamp_min(1e-30)
+            mis = torch.zeros(T, device=dev)
+            mis[ing_] = (A.reshape(T, 9)[ing_] - Ab[tg_[ing_]]).norm(dim=1) / Ab[tg_[ing_]].norm(dim=1).clamp_min(1e-30)
+            if j == 0 or z.get("mis_ring") is None or z["mis_ring"].shape[1] != T:
+                z["mis_ring"] = torch.zeros(a.akg_diag3, T, device=dev)
+            z["mis_ring"][j % a.akg_diag3] = mis
+            z["mis_j"] = j
+            if z.get("inv3") is None and bool(inv.any()):
+                ti3 = inv.nonzero().flatten()[:4]
+                K3 = a.akg_diag3
+                order = [(j - q) % K3 for q in range(min(K3, j + 1))][::-1]
+                rec3 = []
+                cntT_ = torch.bincount(self.aktt.long(), minlength=T)[:T]
+                for t_ in ti3.tolist():
+                    km = (self.aktt.long() == t_).nonzero().flatten()
+                    r3 = dict(t=t_, n_part=int(cntT_[t_]), in_group=bool(ing_[t_]), mis_hist=[round(float(z["mis_ring"][o_, t_]), 3) for o_ in order])
+                    if km.numel() and bool(ing_[t_]):
+                        Fk = self.akF[km[0]].view(3, 3)
+                        X1 = Ab[tg_[t_]].view(3, 3) @ Fk; X2 = A[t_].float() @ Fk
+                        def fcrP(X):
+                            U_, S_, Vh_ = torch.linalg.svd(X.double()); R_ = U_ @ Vh_
+                            J_ = torch.det(X.double()); cof = J_ * torch.linalg.inv(X.double()).T if abs(float(J_)) > 1e-12 else torch.zeros(3, 3, dtype=torch.float64, device=dev)
+                            return 2 * mu * (X.double() - R_) + lam * (J_ - 1) * cof
+                        P1, P2 = fcrP(X1), fcrP(X2)
+                        wv = float(self.akw[km[0]])
+                        hg = 2.0 * a.akg_hg * mu * float(W_[t_]) * float((A[t_].reshape(9) - Ab[tg_[t_]]).norm())
+                        r3.update(force_diff_rel=float((P1 - P2).norm() / P2.norm().clamp_min(1e-30)), detA_T=float(torch.det(A[t_].double())), detAbar=float(torch.det(Ab[tg_[t_]].view(3, 3).double())),
+                                  hg_over_elastic=hg / max(wv * float(P2.norm()), 1e-30), W_t=float(W_[t_]), w_p=wv)
+                    rec3.append(r3)
+                z["inv3"] = dict(frame=self._fi, j=j, tets=rec3)
+                print(f"  [절 AG.19 Ā 어긋남] {json.dumps(z['inv3'], ensure_ascii=False)[:2500]}", flush=True)
         if a.akg_diag2 and z.get("inv2") is None and bool(inv.any()):              # 절 AG.19: 첫 뒤집힘 셀의 자리 (바닥 없는 씬도) -- 입자 수, 묶음·경계, 구속까지 거리, 소성 상태, IMEX 대상, 국소 CFL 비
             z["inv2"] = dict(frame=self._fi, j=j, n=int(inv.sum()), tets=self._diag2_tets(inv.nonzero().flatten()[:6]))
             print(f"  [절 AG.19 첫 뒤집힘 자리] {json.dumps(z['inv2'], ensure_ascii=False)[:2500]}", flush=True)
