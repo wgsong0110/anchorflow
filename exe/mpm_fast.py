@@ -148,9 +148,9 @@ __device__ __forceinline__ float max(float a, float b) { return a > b ? a : b; }
 }
 // 3x3 행렬은 warp mat33 과 같은 행 우선 data[i][j] = M[i*3+j]. 곱의 합 순서도 warp mat.h 와 같게 (0 에서 시작해 k 순서로 더함).
 __device__ __forceinline__ void mm(const float* A, const float* B, float* T) {
-  for (int i=0;i<3;i++) for (int j=0;j<3;j++) { float t = 0.f; for (int k=0;k<3;k++) t += A[i*3+k]*B[k*3+j]; T[i*3+j] = t; } }
+  _Pragma("unroll") for (int i=0;i<3;i++) _Pragma("unroll") for (int j=0;j<3;j++) { float t = 0.f; _Pragma("unroll") for (int k=0;k<3;k++) t += A[i*3+k]*B[k*3+j]; T[i*3+j] = t; } }
 __device__ __forceinline__ void mmT(const float* A, const float* B, float* T) {           // A * B^T
-  for (int i=0;i<3;i++) for (int j=0;j<3;j++) { float t = 0.f; for (int k=0;k<3;k++) t += A[i*3+k]*B[j*3+k]; T[i*3+j] = t; } }
+  _Pragma("unroll") for (int i=0;i<3;i++) _Pragma("unroll") for (int j=0;j<3;j++) { float t = 0.f; _Pragma("unroll") for (int k=0;k<3;k++) t += A[i*3+k]*B[j*3+k]; T[i*3+j] = t; } }
 
 // 응력 (compute_stress_from_F_trial, jelly = 재질 0): F = F_trial, J = det, svd3, FCR, 대칭화
 __device__ __forceinline__ void stress_fcr(const float* F, float mu, float lam, float* S) {
@@ -164,17 +164,17 @@ __device__ __forceinline__ void stress_fcr(const float* F, float mu, float lam, 
              V[0],V[1],V[2],V[3],V[4],V[5],V[6],V[7],V[8]);
   float R[9]; mmT(U, V, R);
   float tmu = 2.0f*mu, A[9];
-  for (int k=0;k<9;k++) A[k] = tmu*(F[k]-R[k]);
+  _Pragma("unroll") for (int k=0;k<9;k++) A[k] = tmu*(F[k]-R[k]);
   float T[9]; mmT(A, F, T);
   float dg = lam*J*(J-1.0f);
   float st[9];
-  for (int i=0;i<3;i++) for (int j=0;j<3;j++) st[i*3+j] = T[i*3+j] + (i==j ? dg : 0.f*lam*J*(J-1.0f));
-  for (int i=0;i<3;i++) for (int j=0;j<3;j++) S[i*3+j] = (st[i*3+j] + st[j*3+i]) / 2.0f;
+  _Pragma("unroll") for (int i=0;i<3;i++) _Pragma("unroll") for (int j=0;j<3;j++) st[i*3+j] = T[i*3+j] + (i==j ? dg : 0.f*lam*J*(J-1.0f));
+  _Pragma("unroll") for (int i=0;i<3;i++) _Pragma("unroll") for (int j=0;j<3;j++) S[i*3+j] = (st[i*3+j] + st[j*3+i]) / 2.0f;
 }
 
 // 2 차 B-스플라인 가중 (p2g_apic_with_stress / g2p 와 같은 식). w[a][i] = 축 a, 스텐실 i (warp mat33(c0,c1,c2) 는 열 생성자)
 __device__ __forceinline__ void bspline(const float* xp, float inv_dx, int* b, float* fx, float w[3][3], float dw[3][3]) {
-  for (int a=0;a<3;a++) {
+  _Pragma("unroll") _Pragma("unroll") for (int a=0;a<3;a++) {
     float gp = xp[a]*inv_dx;
     b[a] = (int)(gp - 0.5f);
     fx[a] = gp - (float)b[a];
@@ -189,29 +189,29 @@ __device__ __forceinline__ void g2p_body(float* x, float* v, float* C, float* F,
   int b[3]; float fx[3], w[3][3], dw[3][3];
   bspline(x, inv_dx, b, fx, w, dw);
   float nv[3] = {0.f,0.f,0.f}, nC[9], nF[9];
-  for (int k=0;k<9;k++) { nC[k] = 0.f; nF[k] = 0.f; }
-  for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int k=0;k<3;k++) {
+  _Pragma("unroll") _Pragma("unroll") for (int k=0;k<9;k++) { nC[k] = 0.f; nF[k] = 0.f; }
+  _Pragma("unroll") _Pragma("unroll") for (int i=0;i<3;i++) _Pragma("unroll") for (int j=0;j<3;j++) _Pragma("unroll") for (int k=0;k<3;k++) {
     long long id = ((long long)(b[0]+i)*n + (b[1]+j))*n + (b[2]+k);
     float dp[3] = {(float)i - fx[0], (float)j - fx[1], (float)k - fx[2]};
     float wt = w[0][i]*w[1][j]*w[2][k];
     float g[3] = {vout[id*3], vout[id*3+1], vout[id*3+2]};
-    for (int r=0;r<3;r++) nv[r] = nv[r] + g[r]*wt;
+    _Pragma("unroll") _Pragma("unroll") for (int r=0;r<3;r++) nv[r] = nv[r] + g[r]*wt;
     float cf = wt*inv_dx*4.0f;
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) nC[r*3+c] = nC[r*3+c] + (g[r]*dp[c])*cf;
+    _Pragma("unroll") _Pragma("unroll") for (int r=0;r<3;r++) _Pragma("unroll") for (int c=0;c<3;c++) nC[r*3+c] = nC[r*3+c] + (g[r]*dp[c])*cf;
     float dwt[3] = {dw[0][i]*w[1][j]*w[2][k]*inv_dx, w[0][i]*dw[1][j]*w[2][k]*inv_dx, w[0][i]*w[1][j]*dw[2][k]*inv_dx};
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) nF[r*3+c] = nF[r*3+c] + g[r]*dwt[c];
+    _Pragma("unroll") _Pragma("unroll") for (int r=0;r<3;r++) _Pragma("unroll") for (int c=0;c<3;c++) nF[r*3+c] = nF[r*3+c] + g[r]*dwt[c];
   }
-  for (int r=0;r<3;r++) { v[r] = nv[r]; x[r] = x[r] + dt*nv[r]; }
-  for (int k=0;k<9;k++) C[k] = nC[k];
+  _Pragma("unroll") _Pragma("unroll") for (int r=0;r<3;r++) { v[r] = nv[r]; x[r] = x[r] + dt*nv[r]; }
+  _Pragma("unroll") _Pragma("unroll") for (int k=0;k<9;k++) C[k] = nC[k];
   float A[9]; for (int k=0;k<9;k++) A[k] = (k%4==0 ? 1.0f : 0.0f) + nF[k]*dt;
   float T[9]; mm(A, F, T);
-  for (int k=0;k<9;k++) F[k] = T[k];
+  _Pragma("unroll") _Pragma("unroll") for (int k=0;k<9;k++) F[k] = T[k];
 }
 
 #define SHCAP 1536
 // 워프 안 구간 합 (입자가 칸 순서로 정렬돼 있을 때 같은 칸 = 같은 27 노드). stride = 다음 구간 머리까지 거리
 __device__ __forceinline__ float seg_sum(float val, int stride) {
-  for (int s=1; s<32; s<<=1) { float t = __shfl_down_sync(0xffffffffu, val, s); if (s < stride) val += t; }
+  _Pragma("unroll") _Pragma("unroll") for (int s=1; s<32; s<<=1) { float t = __shfl_down_sync(0xffffffffu, val, s); if (s < stride) val += t; }
   return val;
 }
 
@@ -222,7 +222,7 @@ __device__ __forceinline__ void p2g_body(bool act, const float* x, const float* 
                                          float* sh = nullptr, bool useSh = false, int ox = 0, int oy = 0, int oz = 0, int ey = 0, int ez = 0) {
   int b[3] = {0,0,0}; float fx[3] = {0.f,0.f,0.f}, w[3][3], dw[3][3];
   if (act) bspline(x, inv_dx, b, fx, w, dw);
-  else { for (int q=0;q<3;q++) for (int r=0;r<3;r++) { w[q][r] = 0.f; dw[q][r] = 0.f; } }
+  else { for (int q=0;q<3;q++) _Pragma("unroll") for (int r=0;r<3;r++) { w[q][r] = 0.f; dw[q][r] = 0.f; } }
   long long key = act ? (((long long)b[0]*n + b[1])*n + b[2]) : -1 - (long long)(threadIdx.x & 31);
   int stride = 1; bool head = act;
   if (RED) {
@@ -236,19 +236,19 @@ __device__ __forceinline__ void p2g_body(bool act, const float* x, const float* 
     head = head && act;
   }
   if (MARK && head) {
-    for (int q=0;q<8;q++) {
+    _Pragma("unroll") _Pragma("unroll") for (int q=0;q<8;q++) {
       int bx = (b[0] + ((q>>2)&1)*2) >> 2, by = (b[1] + ((q>>1)&1)*2) >> 2, bz = (b[2] + (q&1)*2) >> 2;
       flags[(bx*nb + by)*nb + bz] = 1;
     }
   }
   float M[9]; for (int k=0;k<9;k++) M[k] = (-vol)*S[k];
-  for (int i=0;i<3;i++) for (int j=0;j<3;j++) for (int k=0;k<3;k++) {
+  _Pragma("unroll") _Pragma("unroll") for (int i=0;i<3;i++) _Pragma("unroll") for (int j=0;j<3;j++) _Pragma("unroll") for (int k=0;k<3;k++) {
     float dp[3] = {((float)i - fx[0])*dx, ((float)j - fx[1])*dx, ((float)k - fx[2])*dx};
     float wt = w[0][i]*w[1][j]*w[2][k];
     float dwt[3] = {dw[0][i]*w[1][j]*w[2][k]*inv_dx, w[0][i]*dw[1][j]*w[2][k]*inv_dx, w[0][i]*w[1][j]*dw[2][k]*inv_dx};
     float add[4];
     float wm = wt*mass;
-    for (int r=0;r<3;r++) {
+    _Pragma("unroll") _Pragma("unroll") for (int r=0;r<3;r++) {
       float cd = C[r*3]*dp[0]; cd = cd + C[r*3+1]*dp[1]; cd = cd + C[r*3+2]*dp[2];
       float ef = M[r*3]*dwt[0]; ef = ef + M[r*3+1]*dwt[1]; ef = ef + M[r*3+2]*dwt[2];
       add[r] = wm*(v[r] + cd) + dt*ef;

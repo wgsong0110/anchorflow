@@ -13,7 +13,9 @@ D = sys.argv[1]
 ref = sys.argv[2] if len(sys.argv) > 2 else "pg"
 R = json.load(open(os.path.join(D, ref, "res.json")))
 EXT = R["EXT"]
-xr = torch.load(os.path.join(D, ref, "x.pt")).cuda()
+xr = torch.load(os.path.join(sys.argv[3] if len(sys.argv) > 3 else os.path.join(D, ref), "x.pt")).cuda()
+if len(sys.argv) > 3:
+    R = json.load(open(os.path.join(sys.argv[3], "res.json")))
 out = {}
 names = sorted(v for v in os.listdir(D) if os.path.isfile(os.path.join(D, v, "res.json")))
 print(f"| 판 | 프레임 중앙값 ms | 서브스텝 us | 배수 (pg 대비) | 정답 h5 대비 % | pg 대비 평균 % (80 평균 / 최대 프레임) | pg 대비 최대 |dx| mm |")
