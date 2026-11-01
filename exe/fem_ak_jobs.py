@@ -12,6 +12,8 @@ SC = {
 }
 for t in ["%04d" % k for k in range(20)]:
     SC[t] = f"--data /tmp/dkta/af_data/{t}.pt --tag T{t} --floor vel --node_h 0.028284 --frames 80 --N 267"
+for _k, _n in ((1, 267), (2, 133), (4, 67)):                                         # 절 AK.29 떨어지는 블록 (프레임 1/60·1/120·1/240, h_s 거의 같음)
+    SC[f"drop{_k}"] = f"--data /tmp/dkta/ak_drop/drop_f{_k}.pt --tag drop{_k} --floor vel --node_h 0.028284 --frames {80 * _k} --N {_n}"
 NX = {"L000": 267, "ficus": 640}
 PATH = "--mode lag --opt --mass tet --rstat --cfuse --cfuse_mode 2"
 AI = "--ai_p2g rs --ai_stress --fupd navg --fupd_b 1 --sp vcap --sp_vcap 0.5 --lim_sr 1e30"
