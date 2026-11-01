@@ -357,7 +357,7 @@ __global__ void ak_node_step_mv(const int* szp, const float* mn, float* f, float
             if (!(fixd && fixd[n])) {
                 if (a > 0.f) {
                     float k = (mode == 1) ? 0.f : ((mode == 2) ? 1.f : powf(fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f), kex));
-                    for (int c=0;c<3;c++) v[c] *= k;
+                    ah_stick(v, k, n0, n1, n2);
                 }
                 if (np_ && cn > 0.f) { float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vn_ < 0.f) { v[0] -= vn_*n0; v[1] -= vn_*n1; v[2] -= vn_*n2; } }
             }
@@ -756,6 +756,13 @@ def set_sfcr(on):
     if _MOD[0] is None:
         _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     cp.ndarray((1,), cp.int32, _MOD[0].get_global("AKSFCR"))[:] = 1 if on else 0
+
+
+def set_vout(on):
+    """절 AK.31 AHVOUT (이 모듈 사본)."""
+    if _MOD[0] is None:
+        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+    cp.ndarray((1,), cp.int32, _MOD[0].get_global("AHVOUT"))[:] = 1 if on else 0
 
 
 def set_eshg(g, tg):

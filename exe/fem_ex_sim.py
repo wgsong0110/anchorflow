@@ -242,6 +242,7 @@ ap.add_argument("--ak_acclam", action="store_true", help="절 AK.19 (정의 변�
 ap.add_argument("--ak_es", action="store_true", help="절 AK.27 (정의 변경): 변 기반 평활 FEM (ES-FEM-T4) -- 입자 응력은 자기 사면체 A_T 대신 자기 부분 영역 변 (barycentric 가장 큰 둘) 의 평활 사상 A_e = Σ_{T∋e} V_T A_T / Σ V_T (실제 사면체 야코비안의 부피 가중 평균); 입자 F 갱신은 그대로 (--ak_pq --ak_pq4 --ak_prep, 융합 없이)")
 ap.add_argument("--ak_eshg", type=float, default=0.0, help="절 AK.28: --ak_es 모래시계 억제 γ -- 에너지 γ μ Σ_p w_p |A_T − A_e|² (절 AG.11 --akg_hg 와 같은 정의; 0 = 끔)")
 ap.add_argument("--ak_cs", type=float, default=0.0, help="절 AK.30 (정의 변경): 칸 평균 + 칸 안 분산 분리 에너지 E = Σ_c V_c ψ(X̄_c) + γ Σ_p w_p [μ|X_p − X̄_c|² + λ/2 (J_p − J̄_c)²] 의 γ (0 = 끔, 음수 = Kuhn 칸 순수 굽힘 패치 시험 γ*(ν), exe/fem_ak_gstar.py; --ak_pq --ak_pq4 --ak_prep, 융합·상한 없이)")
+ap.add_argument("--vfl_out", action="store_true", help="절 AK.31 (정의 변경): 바닥 고착 몫을 노드 속도의 접선·안쪽 법선 성분에만 -- 바깥 법선 (이탈) 성분은 고착하지 않는다 (정답 MPM 고착은 공간 고정 격자 노드라 몸이 뜨면 풀린다; 우리 노드는 몸에 붙어 이탈 속도를 계속 깎아 반동을 막는다, 절 AK.29). 입자 판정 그대로")
 ap.add_argument("--ak_sela", type=float, default=0.0, help="--ak_sel 섞기 α: 전단 사상 = (1 − α) 칸 평균 + α 자기 사면체 (모래시계 억제; 0 = 순수 선택 적분)")
 ap.add_argument("--ak_sel", action="store_true", help="절 AK.25 (정의 변경): 선택 적분 -- 전단 (μ) 몫은 칸 (Kuhn 정육면체 6 사면체) 점유 가중 평균 사상, 부피 몫은 사면체 자기 사상 (굽힘 잠김만 풀고 균일 변형 강성은 그대로; --ak_pq --ak_pq4 --ak_prep, 융합 없이)")
 ap.add_argument("--ak_sfcr", action="store_true", help="절 AK.18: 입자 적분점 FCR 을 표준 식으로 (Stomakhin 2012: 진 회전 R, 부피 항 λ (J − 1) cof F, J = det F 부호 그대로) -- 기존 커널은 J = |det|·부호, 반사 Q")
@@ -583,6 +584,9 @@ if a.ak_sfcr:
         AKPLC.set_sfcr(True)
 P2 = bool(a.ak_p2)
 AKSEL = bool(a.ak_sel)
+if a.vfl_out:
+    AHC.set_vout(True)
+    AKC.set_vout(True)
 AKCS = a.ak_cs != 0.0
 if AKCS:
     if not (AKPQ and a.ak_pq4 and a.ak_prep and not a.ak_fuse and not P2 and not a.ak_sel and not a.ak_es and not a.ak_capmu):

@@ -31,6 +31,15 @@ __device__ int AHKF;                                                            
 __device__ int AHKG;                                                                // 1 = K_nn 대신 Gershgorin 상계 k_n I (k_n = 4 mfa / h_s², 대각 우세라 이웃 고정 한 걸음이 안정)
 __device__ const float* AHKD;                                                       // 절 AG.18 --ah_imex: 노드 3x3 접선 강성 대각 블록 (6 성분, null = 끔). 켜면 국소 CFL 비 > 1 노드만 국소 후퇴 오일러
 #endif
+#ifndef AF_VOUT_DEF
+#define AF_VOUT_DEF
+__device__ int AHVOUT;                                                             // 절 AK.31: 1 = 고착 몫을 접선·안쪽 법선 성분에만 (바깥 법선 = 이탈 속도는 그대로)
+__device__ __forceinline__ void ah_stick(float* v, float k, float n0, float n1, float n2) {
+    float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2;
+    if (AHVOUT && vn_ > 0.f) { v[0] = k*(v[0] - vn_*n0) + vn_*n0; v[1] = k*(v[1] - vn_*n1) + vn_*n1; v[2] = k*(v[2] - vn_*n2) + vn_*n2; }
+    else for (int c=0;c<3;c++) v[c] *= k;
+}
+#endif
 #ifndef AF_VN_DEF
 #define AF_VN_DEF
 __device__ const float* AFVN;                                                       // 절 AG.18 --vfl_pred: 노드 속도 (null = 끔) -- 비관통 판정을 서브스텝 끝 예측 입자 위치 s + h_s (Σλ v)·n 로
@@ -139,7 +148,7 @@ __global__ void ah_node_step(const int* szp, const float* mn, float* f, float* v
         if (!(fixd && fixd[n])) {
             if (a > 0.f) {
                 float k = (mode == 1) ? 0.f : ((mode == 2) ? 1.f : powf(fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f), kex));
-                for (int c=0;c<3;c++) v[c] *= k;
+                ah_stick(v, k, n0, n1, n2);
             }
             if (np_ == 2) {                                                     // 절 AG.18 --vfl_np 2: 관통 입자가 가진 안쪽 법선 운동량만 지운다 -- 노드가 진 관통 입자 질량 몫 a/m (P2G 와 같은 가중) 만큼
                 float fr = (m > 0.f) ? fminf(a/m, 1.f) : 1.f;
@@ -341,7 +350,7 @@ __global__ void ah_node_step_bf(const int* szp, const float* mn, float* f, float
     if (!(fixd && fixd[n])) {
         if (a > 0.f) {
             float k = (mode == 1) ? 0.f : ((mode == 2) ? 1.f : powf(fmaxf(1.f - (m > 0.f ? a/m : 1.f), 0.f), kex));
-            for (int c=0;c<3;c++) v[c] *= k;
+            ah_stick(v, k, n0, n1, n2);
         }
         if (np_ && cn > 0.f) { float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2; if (vn_ < 0.f) { v[0] -= vn_*n0; v[1] -= vn_*n1; v[2] -= vn_*n2; } }
     }
@@ -625,6 +634,12 @@ def mod():
         import cupy as cp
         _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + _AH).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     return _MOD[0]
+
+
+def set_vout(on):
+    """절 AK.31 AHVOUT."""
+    import cupy as cp
+    cp.ndarray((1,), cp.int32, mod().get_global("AHVOUT"))[:] = 1 if on else 0
 
 
 def set_kd(t):
