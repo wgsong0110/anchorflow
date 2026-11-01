@@ -24,6 +24,7 @@ _AH = r'''
 extern "C" {
 #ifndef AF_KD_DEF
 #define AF_KD_DEF
+__device__ const float* AHCD;                                                      // 절 AG.19: 노드 점성 대각 블록 C_nn (6 성분, null = 없음) -- IMEX 에 점성 감쇠를 후퇴 오일러로
 __device__ const float* AHDV;                                                      // 절 AG.18 --ah_imex_cl: 대상 무리 가우스-자이델 (야코비) 으로 푼 Δv (null = 노드 걸음에서 직접 풂)
 __device__ float* AHNB;                                                             // 절 AG.18 --ah_imex_rel: 노드별 [Σc v_j (3), Σc Δv_j (3), Σc] (7 성분) -- 이웃 결합 상대 꼴 (null = 이웃 고정 판)
 __device__ int AHKF;                                                                // 1 = 대상 판정을 노드 대각 블록 최대 고윳값으로: (h_s/2)² λ_max(K_nn) > m (그 노드 자기 진동수 -- 이웃 고정)
@@ -516,13 +517,16 @@ __global__ void ah_imx_cl_n(const int* szp, const float* mn, const float* mfa, c
     if (Bn[6] > 1e-30f) for (int a_=0;a_<3;a_++) { vb[a_] = Bn[a_]/Bn[6]; dvb[a_] = (Bn[3+a_] + S2[n*3+a_])/Bn[6]; }
     else for (int a_=0;a_<3;a_++) dvb[a_] = hs*gg[a_];
     S2[n*3] = S2[n*3+1] = S2[n*3+2] = 0.f;
+    float Cm[9] = {0,0,0,0,0,0,0,0,0};
+    if (AHCD) { const float* Cc = AHCD + (long long)n*6; Cm[0]=Cc[0]; Cm[4]=Cc[1]; Cm[8]=Cc[2]; Cm[1]=Cm[3]=Cc[3]; Cm[5]=Cm[7]=Cc[4]; Cm[2]=Cm[6]=Cc[5]; }
     float r[3], Mx[9];
     for (int a_=0;a_<3;a_++) {
         float kv = Km[a_*3]*(v0[0]-vb[0]) + Km[a_*3+1]*(v0[1]-vb[1]) + Km[a_*3+2]*(v0[2]-vb[2]);
         float kd = Km[a_*3]*dvb[0] + Km[a_*3+1]*dvb[1] + Km[a_*3+2]*dvb[2];
-        r[a_] = hs*(f[n*3+a_] + m*gg[a_] - hs*kv + hs*kd);
+        float cd = Cm[a_*3]*dvb[0] + Cm[a_*3+1]*dvb[1] + Cm[a_*3+2]*dvb[2];      // 점성 (힘 f 에 −C v 가 이미 있다): 후퇴 오일러 몫 h C (Δv_n − Δv̄)
+        r[a_] = hs*(f[n*3+a_] + m*gg[a_] - hs*kv + hs*kd + cd);
     }
-    for (int k_=0;k_<9;k_++) Mx[k_] = hs*hs*Km[k_]; Mx[0] += m; Mx[4] += m; Mx[8] += m;
+    for (int k_=0;k_<9;k_++) Mx[k_] = hs*hs*Km[k_] + hs*Cm[k_]; Mx[0] += m; Mx[4] += m; Mx[8] += m;
     float cM[9]; cof3(Mx, cM); float dM = Mx[0]*cM[0]+Mx[1]*cM[1]+Mx[2]*cM[2];
     float d[3] = {hs*gg[0], hs*gg[1], hs*gg[2]};
     if (dM > 1e-30f) for (int a_=0;a_<3;a_++) d[a_] = (cM[a_]*r[0] + cM[3+a_]*r[1] + cM[6+a_]*r[2])/dM;
@@ -633,6 +637,12 @@ def set_kg(on):
     """절 AG.18 --ah_imex_k gersh."""
     import cupy as cp
     cp.ndarray((1,), cp.int32, mod().get_global("AHKG"))[:] = 1 if on else 0
+
+
+def set_cd(t):
+    """절 AG.19: AHCD 포인터."""
+    import cupy as cp
+    cp.ndarray((1,), cp.uint64, mod().get_global("AHCD"))[:] = 0 if t is None else t.data_ptr()
 
 
 def set_dv(t):

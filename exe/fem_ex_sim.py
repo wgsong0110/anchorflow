@@ -3233,6 +3233,18 @@ class Opt:
                     AHC.launch("akg_kd", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.gl), EX.P(self.akg_W), EX.P(self.akg_VG),
                                                      EX.P(self.akg_MG), np.float32(2.0 * a.akg_hg * mu), EX.P(self.ahkd)), b=128)
                 AHC.set_kd(self.ahkd)
+                if RPIC_ETA > 0 and getattr(self, "_vpT", None) is not None:        # 절 AG.19: 점성 대각 블록 C_nn = η V_p (|g|² I + g gᵀ), g = ∇λ_n (IMEX 무리 풀이에 후퇴 오일러로)
+                    T_ = self.T
+                    g_ = self.gl[:T_].view(-1, 4, 3)
+                    w_ = RPIC_ETA * self._vpT[:T_][:, None]
+                    gg2 = (g_ ** 2).sum(-1)
+                    c6 = torch.stack([w_ * (gg2 + g_[..., 0] ** 2), w_ * (gg2 + g_[..., 1] ** 2), w_ * (gg2 + g_[..., 2] ** 2),
+                                      w_ * g_[..., 0] * g_[..., 1], w_ * g_[..., 1] * g_[..., 2], w_ * g_[..., 0] * g_[..., 2]], -1)
+                    if getattr(self, "_ahcd", None) is None or self._ahcd.numel() < self.Mcap * 6:
+                        self._ahcd = torch.zeros(self.Mcap * 6, device=dev)
+                    self._ahcd.zero_()
+                    self._ahcd.view(-1, 6).index_add_(0, self.tets[:T_].reshape(-1), c6.reshape(-1, 6))
+                    AHC.set_cd(self._ahcd)
                 AHC.set_nb(self.ahnb if a.ah_imex_rel else None)
                 AHC.set_dv(self.ahdvc if a.ah_imex_cl > 0 else None)
                 AHC.set_kg(a.ah_imex_k == "gersh")
