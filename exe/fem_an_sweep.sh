@@ -7,19 +7,23 @@ export PYTHONUTF8=1; set +u; source /tools/anaconda3/etc/profile.d/conda.sh; con
 NM=${1:-sweep}; shift; EXTRA="$*"
 M=/tmp/dkta/lbours/fem_an/marks; mkdir -p $M
 NC=${AN_NCARD:-3}
-GS=($(for i in $(seq 10); do nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader,nounits; sleep 1; done | awk -F', ' '$1>0{s[$1]+=$2} END{for (k in s) print s[k], k}' | sort -n | head -$NC | awk '{print $2}'))
+if [ -n "${AN_EXCL:-}" ]; then GS=(0); else GS=($(for i in $(seq 10); do nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader,nounits; sleep 1; done | awk -F', ' '$1>0{s[$1]+=$2} END{for (k in s) print s[k], k}' | sort -n | head -$NC | awk '{print $2}')); fi
 VL=()
 for c in ${AN_CELLS:-1 1.5 2}; do for pc in ${AN_PCS:-jacobi mg}; do for k in ${AN_KS:-1}; do for nt in 1 2; do for cg in 5 10 20; do
   VL+=("c$(echo $c | tr . p)_${pc}_K${k}_n${nt}_cg${cg}:--cell $c --pc $pc --K $k --newton $nt --cg $cg"); done; done; done; done; done
-for MODE in sec ${AN_NS:+ns}; do
+U0=$(nvidia-smi -i 0 --query-gpu=uuid --format=csv,noheader)
+others0() { nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader | grep -c "$U0"; }
+[ -n "${AN_EXCL:-}" ] && exec 9>/home/dkta/work/gpu0.lock && flock 9 && while [ "$(others0)" -gt 0 ]; do sleep 10; done
+MODES="sec ${AN_NS:+ns}"; [ -n "${AN_REP:-}" ] && MODES="sec ns sec2 ns2"
+for MODE in $MODES; do
   R=/tmp/dkta/lbours/fem_an/${NM}_$MODE; mkdir -p $R
   echo "카드 ${GS[*]} $(cat .done) $(date +%T)" > $R/info.txt
-  SF="--sec --gfin"; [ $MODE = ns ] && SF=""
+  SF="--sec --gfin"; case $MODE in ns*) SF="--prof";; esac
   for j in $(seq 0 $((${#GS[@]} - 1))); do
     ( G=${GS[$j]}; i=0
       for e in "${VL[@]}"; do
         if [ $((i % ${#GS[@]})) -eq $j ]; then
-          V=${e%%:*}; A=${e#*:}; O=$R/$V; mkdir -p $O; echo "카드 $G" > $O/card.txt
+          V=${e%%:*}; A=${e#*:}; O=$R/$V; mkdir -p $O; echo "카드 $G 시작 때 카드 0 의 다른 프로세스 $(others0) 개" > $O/card.txt
           nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits -l 1 > $O/smi.csv 2>/dev/null & SM=$!
           CUDA_VISIBLE_DEVICES=$G python -u exe/fem_an_sim.py --data /home/dkta/work/one/L000/L000.pt --out $O --tag L000 --floor vel --frames ${AN_FR:-10} \
             --integ mid --cg_tol 0 --nt_tol 0 $A $SF $EXTRA < /dev/null > $O/log.txt 2>&1

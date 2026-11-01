@@ -558,6 +558,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh):
                 an = torch.zeros(na, device=dev, dtype=D64).index_add_(0, qn.reshape(-1), (QW * (mq * wst)[:, None]).reshape(-1))
                 r = torch.where(mq_n > 0, an / mq_n.clamp_min(1e-300), torch.zeros_like(an)).clamp(0.0, 1.0)
                 k = torch.exp(KEX * torch.log1p(-r))
+                STAT["stuck_t"] = (r > 0).sum()
                 vn1 = al * (y - z0)
                 Pm = torch.where(((vn1 @ NR) > 0)[:, None, None], I3 - NR[:, None] * NR[None, :], I3.expand(na, 3, 3)) if VOUT else I3.expand(na, 3, 3)
                 sk = torch.sqrt(k)[:, None, None]
@@ -918,6 +919,8 @@ def frame(fi, x, v, F):
         else:
             U, vn = solve_step(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx)
     STAT["nmv"] = el.nmv
+    if "stuck_t" in STAT:
+        STAT["stuck"] = int(STAT.pop("stuck_t"))
     # G2P (프레임 끝 한 번)
     tg = tsec("G2P"); tg.__enter__()
     if a.fast:
