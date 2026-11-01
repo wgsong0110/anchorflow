@@ -9,9 +9,10 @@ import os
 ap = argparse.ArgumentParser()
 ap.add_argument("--dir", required=True)
 ap.add_argument("--tex", required=True)
+ap.add_argument("--missing", default="(실행 중)")
 a = ap.parse_args()
 out = subprocess.run([sys.executable, "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "topo_fem31_table.py"),
-                      "--dir", a.dir], capture_output=True, text=True, check=True).stdout
+                      "--dir", a.dir, "--missing", a.missing], capture_output=True, text=True, check=True).stdout
 summ, fr = out.split("%% 프레임별 RMSE")
 summ = summ.replace("%% 요약 행\n", "")
 COLS = [1, 10, 20, 30, 40, 50, 60, 80, 100, 125, 150, 180]

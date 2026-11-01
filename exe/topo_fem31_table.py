@@ -10,6 +10,7 @@ import numpy as np
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--dir", required=True)
+ap.add_argument("--missing", default="(실행 중)")
 a = ap.parse_args()
 SC = ["wolf", "bread", "watermelon", "ficus", "hotdog"]
 ME = [("fem", "Ours (FEM 표현)"), ("tetmesh", "사면체 메쉬"), ("grid", "그리드")]
@@ -29,7 +30,7 @@ for s in SC:
     for m, name in ME:
         p = os.path.join(a.dir, f"{s}_{m}.npz")
         if not os.path.exists(p):
-            rows.append(f"{s} & {name} & \\multicolumn{{7}}{{l}}{{(실행 중)}} \\\\")
+            rows.append(f"{s} & {name} & \\multicolumn{{7}}{{l}}{{{a.missing}}} \\\\")
             continue
         D = np.load(p, allow_pickle=True)
         R = D["metrics"]
