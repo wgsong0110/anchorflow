@@ -78,8 +78,11 @@ __device__ __forceinline__ void al_svd(const float* X, float* U, float* s, float
     for (int r=0;r<3;r++) { U[r*3] = u0[r]; U[r*3+1] = u1[r]; U[r*3+2] = u2[r]; }
 }
 // 입자 적분점 증분 RM + 힘 (모래): akpl_force (mode 1, mat 2, 묶음·장벽·진단·시험 버퍼 없음) 과 같은 식
+// nx = 1 (--al_noxp, 머리말 (4)): D = X X_prev⁻¹ = A A_prev⁻¹ = I + ΔA A_prev⁻¹ (X = A F_p 라 F_p 가 지워진다), ΔA = h_s Σ v_i ⊗ ∇λ_i (지난 서브스텝 이동 U += h_s v 그대로),
+//   A_prev = A − ΔA; 첫 서브스텝 (j0) 은 X_prev = F_p, U = 0 이라 D = I. 힘은 τ A⁻ᵀ 라 F_p 도 X_prev 도 읽지 않는다.
 __device__ __forceinline__ void al_pq_sand(int k, int N, const int* tt, const long long* tets, const float* U, const float* gl,
-                                           const float* akF, const float* wp, const float* prm, float* Fe, float* Xp, float* f) {
+                                           const float* akF, const float* wp, const float* prm, float* Fe, float* Xp, float* f,
+                                           int nx, const float* vn, float hs, int j0) {
     int lane = threadIdx.x & 31;
     bool on = k < N;
     int t = on ? tt[k] : -1 - lane;
@@ -91,14 +94,28 @@ __device__ __forceinline__ void al_pq_sand(int k, int N, const int* tt, const lo
         for (int q=0;q<12;q++) G[q] = gl[(long long)t*12+q];
         float A[9] = {1,0,0, 0,1,0, 0,0,1};
         for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u = U[n[i]*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*G[i*3+q]; }
-        float F[9]; for (int j=0;j<9;j++) F[j] = akF[(long long)k*9+j];
-        float X[9]; mm3(A, F, X);
         float w = wp[k];
-        float Xpi[9], Fpe[9], Xin[9];
-        for (int j=0;j<9;j++) { Xpi[j] = Xp[(long long)k*9+j]; Fpe[j] = Fe[(long long)k*9+j]; }
-        akpl_inv(Xpi, Xin);
-        float D[9]; mm3(X, Xin, D);
-        float Ft[9]; mm3(D, Fpe, Ft);
+        float Fpe[9]; for (int j=0;j<9;j++) Fpe[j] = Fe[(long long)k*9+j];
+        float Ft[9], X[9];
+        if (nx) {
+            if (j0) { for (int j=0;j<9;j++) Ft[j] = Fpe[j]; }
+            else {
+                float dA[9] = {0,0,0,0,0,0,0,0,0};
+                for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float v_ = hs*vn[n[i]*3+c]; for (int q=0;q<3;q++) dA[c*3+q] += v_*G[i*3+q]; }
+                float Ap[9]; for (int j=0;j<9;j++) Ap[j] = A[j] - dA[j];
+                float Api[9]; akpl_inv(Ap, Api);
+                float D[9]; mm3(dA, Api, D); D[0] += 1.f; D[4] += 1.f; D[8] += 1.f;
+                mm3(D, Fpe, Ft);
+            }
+        } else {
+            float F[9]; for (int j=0;j<9;j++) F[j] = akF[(long long)k*9+j];
+            mm3(A, F, X);
+            float Xpi[9], Xin[9];
+            for (int j=0;j<9;j++) Xpi[j] = Xp[(long long)k*9+j];
+            akpl_inv(Xpi, Xin);
+            float D[9]; mm3(X, Xin, D);
+            mm3(D, Fpe, Ft);
+        }
         float Uu[9], s[3], Vv[9]; al_svd(Ft, Uu, s, Vv);
         float mu = prm[0], lam = prm[1];
         // pl_rm mat 2 (PG sand_return_mapping) 그대로 + 응력 주값 τ_i (위 머리말 (1))
@@ -122,7 +139,8 @@ __device__ __forceinline__ void al_pq_sand(int k, int N, const int* tt, const lo
             float tr2 = e2[0] + e2[1] + e2[2];
             for (int i=0;i<3;i++) ti[i] = 2.f*mu*e2[i] + lam*tr2;
         }
-        for (int j=0;j<9;j++) { Fe[(long long)k*9+j] = Fn[j]; Xp[(long long)k*9+j] = X[j]; }
+        for (int j=0;j<9;j++) Fe[(long long)k*9+j] = Fn[j];
+        if (!nx) for (int j=0;j<9;j++) Xp[(long long)k*9+j] = X[j];
         float tau[9]; pl_usv(Uu, ti, Uu, tau);                                  // τ = U diag(τ_i) Uᵀ
         float cA[9]; cof3(A, cA);
         float dA = A[0]*cA[0] + A[1]*cA[1] + A[2]*cA[2];
@@ -168,9 +186,32 @@ __global__ void __launch_bounds__(128) al_fc(int nbQ, int N, const int* tt, cons
                                const float* akF, const float* wp, const float* prm, float* Fe, float* Xp, float* f,
                                const int* szp, const float* s0c, const unsigned int* dn, const long long* nidx, const float* x, const long long* rows, const float* lamb,
                                const float* m, int tetmass, float p0, float p1, float p2, float n0, float n1, float n2, float* acc, int* ncon,
-                               int gtk, float band, float pn, float dxg, float* accN, float npd) {
-    if ((int)blockIdx.x < nbQ) { al_pq_sand(blockIdx.x*blockDim.x + threadIdx.x, N, tt, tets, U, gl, akF, wp, prm, Fe, Xp, f); return; }
+                               int gtk, float band, float pn, float dxg, float* accN, float npd, int nx, const float* vn, float hs, int j0) {
+    if ((int)blockIdx.x < nbQ) { al_pq_sand(blockIdx.x*blockDim.x + threadIdx.x, N, tt, tets, U, gl, akF, wp, prm, Fe, Xp, f, nx, vn, hs, j0); return; }
     al_contact((blockIdx.x - nbQ)*blockDim.x + threadIdx.x, szp, s0c, dn, nidx, x, U, rows, lamb, m, tetmass, p0, p1, p2, n0, n1, n2, acc, ncon, gtk, band, pn, dxg, accN, npd);
+}
+// --al_noxp 프레임 끝 (akpl_fin 과 같은 식, D 만 위 (4) 로): 마지막 U 로 증분 RM 한 번 더 -> 입자 F (원래 번호), 모래는 상태 그대로 (ys·logJp·손상 복사)
+__global__ void al_fin(int N, const int* ord, const int* tt, const long long* tets, const float* U, const float* vn, float hs, const float* gl,
+                       const float* Fe, const float* prm, float* Fout, float* rmc) {
+    int k = blockIdx.x*blockDim.x + threadIdx.x;
+    if (k >= N) return;
+    int t = tt[k], p = ord[k];
+    long long n[4]; float G[12];
+    for (int i=0;i<4;i++) n[i] = tets[(long long)t*4+i];
+    for (int q=0;q<12;q++) G[q] = gl[(long long)t*12+q];
+    float A[9] = {1,0,0, 0,1,0, 0,0,1}, dA[9] = {0,0,0,0,0,0,0,0,0};
+    for (int i=0;i<4;i++) for (int c=0;c<3;c++) { float u = U[n[i]*3+c], v_ = hs*vn[n[i]*3+c]; for (int q=0;q<3;q++) { A[c*3+q] += u*G[i*3+q]; dA[c*3+q] += v_*G[i*3+q]; } }
+    float Ap[9]; for (int j=0;j<9;j++) Ap[j] = A[j] - dA[j];
+    float Api[9]; akpl_inv(Ap, Api);
+    float D[9]; mm3(dA, Api, D); D[0] += 1.f; D[4] += 1.f; D[8] += 1.f;
+    float Fpe[9]; for (int j=0;j<9;j++) Fpe[j] = Fe[(long long)k*9+j];
+    float Ft[9]; mm3(D, Fpe, Ft);
+    float Uu[9], s[3], Vv[9]; pl_svd(Ft, Uu, s, Vv);
+    float y_ = 0.f, l_ = 0.f, a_ = 1.f;
+    bool ch = pl_rm(2, s, prm, y_, l_, a_, hs);
+    float Fn[9]; if (ch) pl_usv(Uu, s, Vv, Fn); else for (int j=0;j<9;j++) Fn[j] = Ft[j];
+    for (int j=0;j<9;j++) Fout[(long long)p*9+j] = Fn[j];
+    if (rmc && ch) atomicAdd(&rmc[0], 1.f);
 }
 // 노드 걸음 (ah_node_step, AHKD 없는 갈래) + 입자 구속 섞기 (ag_pbc) + 이동 (c_lim_apply, α = 1) + 컬링 D -- 같은 식, 한 커널
 __global__ void al_step(const int* szp, const float* mn, float* f, float* vn, float* Ucum, float g0, float g1, float g2, float hs, float damp,
