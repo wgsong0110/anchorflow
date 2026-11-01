@@ -14,7 +14,7 @@ for t in $TS; do
   else DA="--data /tmp/dkta/af_data/$t.pt --frames 80 --floor vel --dump"; fi
   G=${GS[$((i % ${#GS[@]}))]}; i=$((i + 1))
   ( echo "gpu $G $(git log -1 --oneline) $(date +%T)" > $O/run_info.txt
-    CUDA_VISIBLE_DEVICES=$G python -u exe/fem_an_sim.py --out $O --tag $t $DA $EXTRA < /dev/null > $O/log.txt 2>&1
+    CUDA_VISIBLE_DEVICES=$G python -u ${AN_SIM:-exe/fem_an_sim.py} --out $O --tag $t $DA $EXTRA < /dev/null > $O/log.txt 2>&1
     rclone copy $O r2:storage/result/anchorflow/lbours/fem_an/${t}_$VK -q ) &
   # 같은 카드에 여러 개를 얹을 때 순서대로 시작 (컴파일 경합 방지)
   sleep 5

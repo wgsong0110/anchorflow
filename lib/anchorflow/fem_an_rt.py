@@ -595,8 +595,29 @@ class RTSolver:
     def k(s, name, n, args, b=128):
         if name not in s.fn:
             s.fn[name] = s.mod.get_function(name)
+        if getattr(s, "prof", None) is not None:
+            e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            e0.record()
         with RTC._Stream():
             s.fn[name](((int(n) + b - 1) // b,), (b,), args)
+        if getattr(s, "prof", None) is not None:
+            e1.record()
+            s.prof.append((name, e0, e1))
+
+    def profile(s, t):
+        """커널별 GPU 시간 (그래프 밖에서 같은 순서로 한 프레임; 상태는 되돌림). -> {이름: [ms 합, 호출 수]}"""
+        bk = (s.x.clone(), s.v.clone(), s.F.clone())
+        s.set_bc(t)
+        s.prof = []
+        s.record(t)
+        torch.cuda.synchronize()
+        o = {}
+        for nm, e0, e1 in s.prof:
+            a_, c_ = o.get(nm, (0.0, 0))
+            o[nm] = (a_ + e0.elapsed_time(e1), c_ + 1)
+        s.prof = None
+        s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])
+        return {k_: [round(a_, 4), c_] for k_, (a_, c_) in o.items()}
 
     def alloc(s, need):
         """용량: 첫 프레임 상자에서 cap_mul 배 (need 가 주어지면 그 cap_mul 배)."""
