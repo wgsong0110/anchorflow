@@ -53,6 +53,7 @@ ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--fast", action="store_true", help="가속 판: 헤시안 float32 저장·곱 (기울기·잔차 float64), MG 계층 프레임당 한 번 (뉴턴마다 0 층 대각만 갱신), "
                 "고정 예산 (조기 종료 없음), 호스트 동기화 없음 (스칼라는 장치에), 장치 쪽 선탐색 후보 1·½·¼ (--fast_ls 0 이면 온 걸음)")
 ap.add_argument("--fast_ls", type=int, default=1)
+ap.add_argument("--mg_dense", type=int, default=1, help="가속 판 MG 거친 층을 압축 없는 조밀 상자로 (호스트 동기화 없음), λ 는 앞 프레임 값")
 ap.add_argument("--fl_iter", action="store_true", help="(옛 판) 고착 상태를 뉴턴 반복마다 다시 잼 -- 풀이 문제가 반복마다 바뀌어 뉴턴이 수렴하지 않음 (절 AN 진단). 기본은 걸음당 한 번 (관성 예측 y = Ũ 의 걸음 끝 위치) 정하고 고정")
 ap.add_argument("--no_proj", action="store_true", help="진단: 가우스 점 헤시안 고유값 투영 끔 (원래 헤시안)")
 ap.add_argument("--diag", action="store_true", help="진단: 뉴턴 반복마다 |g|/|g0|, 보폭, PCG 반복·최종 상대 잔차, 란초스 고유값 추정 (전처리 계 λmin·λmax) 을 fem.jsonl 에")
@@ -117,7 +118,7 @@ def bsw(fx, Ai_=None):
     return W, GW
 
 
-def rs_mean(Fp, w, inv, nq):
+def rs_mean(Fp, w, inv, nq, count=True):
     """절 AI A1 회전·신장 분리 평균 (float64, CUDA 커널): 뒤집힌 입자가 든 점·비유한 점은 유클리드 평균 (절 AK.33 과 같은 정의)."""
     n = Fp.shape[0]
     Fc = Fp.contiguous()
@@ -136,7 +137,7 @@ def rs_mean(Fp, w, inv, nq):
     AK.launch("an_rsf", nq, (np.int32(nq), AK.P(sR), AK.P(sL), AK.P(sw), AK.P(RS), AK.P(nf)))
     bad = bad | nf.bool()
     rs_mean.last_bad = bad
-    return torch.where(bad[:, None], sF / sw.clamp_min(1e-300)[:, None], RS), int(bad.sum())
+    return torch.where(bad[:, None], sF / sw.clamp_min(1e-300)[:, None], RS), (int(bad.sum()) if count else None)
 
 
 def wstk(s):
@@ -447,6 +448,93 @@ class MG32(MG):
         return lv["Mi"] * z + lv["el"].mv32(z.float()).double()
 
 
+LAMC = {}                                                                              # 층별 λ_max(D⁻¹A) -- 앞 프레임 값을 이어 씀 (첫 프레임만 거듭제곱법)
+
+
+class MGD(MG32):
+    """가속 판 멀티그리드 (호스트 동기화 없음): 거친 층 = 압축 없는 조밀 상자 (세계 고정 격자, 간격 2 배씩). 거친 칸 전부에 가우스 점 8 개 (빈 칸은 부피 0, F = I),
+    노드도 상자 전부 (질량 0 노드는 대각 역행렬 0). 계층은 프레임당 한 번 (프레임 시작 X = F_q), 뉴턴마다 0 층 T·대각만 갱신. λ 는 앞 프레임 값."""
+
+    def __init__(s, ctx, el, Mi, T, D0):
+        s.T = T
+        s.L = [dict(el=el, Mi=Mi, D=D0, nb=ctx["nb"], act=ctx["act"], dense=False)]
+        X, tq, V, nbf = el.Fq, ctx["tq"], el.Vq, ctx["nb"]
+        mdn = ctx["mnd"].reshape(*ctx["nb"], 1)
+        Ai_ = Ai64
+        I9 = torch.eye(3, device=dev, dtype=D64).reshape(9)
+        o8 = torch.arange(8, device=dev)
+        qb8 = (1.0 + GG * (2 * torch.stack([o8 // 4, (o8 % 4) // 2, o8 % 2], 1).double() - 1))
+        for lv in range(1, a.mg_levels):
+            Nc = [n // 2 + 3 for n in nbf]
+            Cc = [n - 2 for n in Nc]
+            ncell = Cc[0] * Cc[1] * Cc[2]
+            tc = (tq + 1.5) / 2
+            base = torch.floor(tc - 0.5).long()
+            fx = tc - base
+            cid = (base[:, 0] * Cc[1] + base[:, 1]) * Cc[2] + base[:, 2]
+            oi = ((fx >= 1.0).long() * torch.tensor([4, 2, 1], device=dev)).sum(1)
+            qinv = cid * 8 + oi
+            nq = ncell * 8
+            Fc, _ = rs_mean(X, V, qinv, nq, count=False)
+            cF, _ = rs_mean(X, V, cid, ncell, count=False)
+            has = torch.zeros(nq, device=dev, dtype=torch.bool).index_put_((qinv,), torch.tensor(True, device=dev))
+            hasc = torch.zeros(ncell, device=dev, dtype=torch.bool).index_put_((cid,), torch.tensor(True, device=dev))
+            cF = torch.where(hasc[:, None], cF, I9)
+            Fc = torch.where(has[:, None], Fc, cF.repeat_interleave(8, 0)).contiguous()
+            Vc = (torch.zeros(ncell, device=dev, dtype=D64).index_add_(0, cid, V).repeat_interleave(8) / 8.0).contiguous()
+            qfx = qb8.repeat(ncell, 1)
+            Ai_ = Ai_ / 2
+            _, QGW = bsw(qfx, Ai_)
+            uc = torch.arange(ncell, device=dev)
+            cb = torch.stack([uc // (Cc[1] * Cc[2]), (uc // Cc[2]) % Cc[1], uc % Cc[2]], 1).repeat_interleave(8, 0)
+            qn = ((cb[:, None, 0] + OFF[None, :, 0]) * Nc[1] + cb[:, None, 1] + OFF[None, :, 1]) * Nc[2] + cb[:, None, 2] + OFF[None, :, 2]
+            mdc = restrict_dense(mdn, nbf, Nc)
+            mflat = mdc.reshape(-1)
+            na = mflat.numel()
+            G = torch.einsum("qab,qna->qnb", Fc.reshape(nq, 3, 3), QGW).contiguous()
+            elc = Elem(qn.int().contiguous(), G, Fc, Vc, na)
+            elc.eval(torch.zeros(na, 3, device=dev, dtype=D64), 2 | 8)
+            elc.f32()
+            Mic = (mflat / (TAU * TAU))[:, None]
+            z0m = (mflat == 0).double()[:, None, None]
+            Dc = torch.linalg.inv(Mic[..., None] * I3 + elc.bd32().double() + z0m * I3) * (1 - z0m)
+            s.L.append(dict(el=elc, Mi=Mic, D=Dc, nb=Nc, act=None, dense=True))
+            tq, X, V, nbf, mdn = (cb.double() + qfx), Fc, Vc, Nc, mdc
+            if na < a.mg_min:
+                break
+        s.nl = len(s.L)
+        for l in range(s.nl):
+            if (l, s.nl) in LAMC:
+                s.L[l]["w"] = LAMC[(l, s.nl)]
+                continue
+            na_ = s.L[l]["Mi"].shape[0]
+            z = torch.randn(na_, 3, device=dev, dtype=D64, generator=torch.Generator(device=dev).manual_seed(l))
+            for _ in range(a.mg_pow):
+                w_ = s.sm(l, s.op(l, z))
+                lm = (z * w_).sum() / (z * z).sum()
+                z = w_ / w_.norm()
+            s.L[l]["w"] = a.mg_omega / lm.clamp_min(1e-300)
+            LAMC[(l, s.nl)] = s.L[l]["w"]
+        s.lam = None
+
+    def tr(s, l, r):
+        A_, B_ = s.L[l], s.L[l + 1]
+        if l == 0:
+            r = (s.T @ r[..., None]).squeeze(-1)
+            dn = torch.zeros(int(np.prod(A_["nb"])), 3, device=dev, dtype=D64)
+            dn[A_["act"]] = r
+        else:
+            dn = r
+        return restrict_dense(dn.reshape(*A_["nb"], 3), A_["nb"], B_["nb"]).reshape(-1, 3)
+
+    def pr(s, l, zc):
+        A_, B_ = s.L[l], s.L[l + 1]
+        z = prolong_dense(zc.reshape(*B_["nb"], 3), A_["nb"]).reshape(-1, 3)
+        if l == 0:
+            z = (s.T @ z[A_["act"]][..., None]).squeeze(-1)
+        return z
+
+
 def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh):
     """가속 판 한 걸음: 고정 예산 뉴턴 a.newton x PCG a.cg, 호스트 동기화 없음 (스칼라 장치), 헤시안 float32, MG 계층은 프레임당 한 번 (mgh[0])."""
     na = mn.shape[0]
@@ -498,7 +586,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh):
         if a.pc == "mg":
             if mgh[0] is None:
                 with tsec("MG구성"):
-                    mgh[0] = MG32(ctx, el, Mi, Tc, D0)
+                    mgh[0] = (MGD if a.mg_dense else MG32)(ctx, el, Mi, Tc, D0)
             else:
                 mgh[0].set_fine(D0, Tc)
             prec = mgh[0]
