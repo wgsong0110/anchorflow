@@ -11,10 +11,13 @@ R=/tmp/dkta/lbours/fem_ao/$NM; mkdir -p $R /tmp/dkta/ag_data $CUPY_CACHE_DIR
 DATA=/tmp/dkta/ag_data/wolf.pt
 [ -s $DATA ] || rclone copyto r2:storage/result/anchorflow/lbours/fem_ag_data/wolf.pt $DATA -q
 echo "[묶음 $NM] $(cat .done) $(date +%T) 데이터 $(ls -la $DATA | awk '{print $5}')"; df -h /tmp | tail -1
-nvidia-smi --query-gpu=index,uuid,memory.used,utilization.gpu --format=csv,noheader > $R/smi0.txt
-nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $R/apps0.txt
-GS=($(awk -F', ' 'FILENAME ~ /apps0/ {busy[$1]=1; next} {m=$3; sub(/ MiB/, "", m); if (!($2 in busy) && $1 != 0 && m + 0 < 2000) print $1}' $R/apps0.txt $R/smi0.txt))
-if [ -n "${AO_CARDS:-}" ]; then GS=($(for g in ${GS[@]}; do for c in $AO_CARDS; do [ $g = $c ] && echo $g; done; done)); fi
+for w in $(seq 0 ${AO_WAIT:-0}); do                                                 # AO_WAIT=n: 빈 카드가 없으면 30 초씩 n 번까지 기다림
+  nvidia-smi --query-gpu=index,uuid,memory.used,utilization.gpu --format=csv,noheader > $R/smi0.txt
+  nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $R/apps0.txt
+  GS=($(awk -F', ' 'FILENAME ~ /apps0/ {busy[$1]=1; next} {m=$3; sub(/ MiB/, "", m); if (!($2 in busy) && $1 != 0 && m + 0 < 2000) print $1}' $R/apps0.txt $R/smi0.txt))
+  if [ -n "${AO_CARDS:-}" ]; then GS=($(for g in ${GS[@]}; do for c in $AO_CARDS; do [ $g = $c ] && echo $g; done; done)); fi
+  [ ${#GS[@]} -gt 0 ] && break; sleep 30
+done
 echo "빈 카드 ${GS[*]}"; cat $R/smi0.txt
 [ ${#GS[@]} -eq 0 ] && { echo "[오류] 빈 카드 없음"; exit 1; }
 NV=$#; VL=("$@")
