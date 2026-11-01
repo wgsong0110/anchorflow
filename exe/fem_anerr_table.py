@@ -15,7 +15,14 @@ for D in sys.argv[1:]:
             continue
         nm = os.path.basename(p)
         v, t = nm.rsplit("_", 1)
-        R = [json.loads(l) for l in open(os.path.join(p, "fem.jsonl"))]
+        R = []
+        for l in open(os.path.join(p, "fem.jsonl")):
+            try:
+                R.append(json.loads(l))
+            except json.JSONDecodeError:                                               # 끊긴 줄 (노드 디스크 가득 참 때)
+                pass
+        if not R:
+            continue
         s = json.load(open(os.path.join(p, "summary.json"))) if os.path.exists(os.path.join(p, "summary.json")) else {}
         e = [r["err"] for r in R]
         grc = [r.get("gr", 0) for r in R if (r.get("stuck") or 0) > 0]
@@ -26,9 +33,11 @@ for D in sys.argv[1:]:
             hc = np.array([q["hc"] for q in en]); hg = np.array([q["hc_gt"] for q in en])
             ps = np.array([q["psi"] for q in en]); pg = np.array([q["psi_gt"] for q in en])
             hr = np.array([q["hr"] for q in en]); hrg = np.array([q["hr_gt"] for q in en])
-            i0 = int(np.argmin(hrg))                                                   # 정답 최대 압축 (몸 법선 높이 범위 최소)
+            ke = np.array([q["ke"] for q in en]); kg = np.array([q.get("ke_gt", np.nan) for q in en])
+            i0 = int(np.argmax(pg))                                                    # 정답 입자 탄성 최대 프레임 (첫 충격 최대 압축)
             w = slice(i0, min(i0 + 15, len(en)))
-            o.update(i0=i0, dhr=100 * float(np.mean(hr[w] - hrg[w])), dhc=100 * float(np.mean(hc[w] - hg[w])), psr=float(np.mean(ps[w]) / max(np.mean(pg[w]), 1e-9)),
+            o.update(i0=i0, dhr=100 * float(np.mean(hr[w] - hrg[w])), dhc=100 * float(np.mean(hc[w] - hg[w])), psr=float(np.mean(ps[w]) / max(np.mean(pg[w]), 1e-9)), ker=float(np.mean(ke[w]) / max(np.nanmean(kg[w]), 1e-9)),
+                     ps_end=float(np.mean(ps[-10:])), pg_end=float(np.mean(pg[-10:])), ke_end=float(np.mean(ke[-10:])), kg_end=float(np.nanmean(kg[-10:])),
                      dhc_end=100 * float(hc[-1] - hg[-1]))
         da = os.path.join(p, "drop_ana.txt")
         if os.path.exists(da):
@@ -58,9 +67,9 @@ for v in vs:
             le.append(o["err"])
     print(f"| {v} | " + " | ".join(c) + f" | {np.mean(le) if le else float('nan'):.2f} | {sum(x < 10 for x in le)}/{len(le)} |")
 print()
-print("충격 창 (정답 최대 압축부터 15 프레임): 몸 법선 높이 범위 차 (cm, 우리 − 정답) / 중심 높이 차 (cm) / 입자 탄성 비 (우리 ÷ 정답) / 끝 프레임 중심 높이 차 (cm); 접촉 프레임 최대 |g|/|g0|, 걸음 0 횟수")
+print("충격 창 (정답 입자 탄성 최대 프레임부터 15 프레임): 몸 법선 높이 범위 차 (cm, 우리 − 정답) / 중심 높이 차 (cm) / 입자 탄성 비 / 운동 에너지 비 (우리 ÷ 정답); 끝 10 프레임 탄성·운동 J 우리 / 정답; 끝 중심 높이 차 (cm); 접촉 프레임 최대 |g|/|g0|, 걸음 0 횟수")
 for (v, t), o in sorted(rows.items(), key=lambda kv: (kv[0][1], kv[0][0])):
     if "dhr" in o:
-        print(f"{t} {v}: {o['dhr']:+.1f} / {o['dhc']:+.1f} / {o['psr']:.2f} / {o['dhc_end']:+.1f}; gr {o['gr'] if o['gr'] is None else '%.1e' % o['gr']}, st0 {o['st0']}")
+        print(f"{t} {v} (창 f{o['i0']}): {o['dhr']:+.1f} / {o['dhc']:+.1f} / {o['psr']:.2f} / {o['ker']:.2f}; 끝 {o['ps_end']:.0f}/{o['pg_end']:.0f} J, {o['ke_end']:.1f}/{o['kg_end']:.1f} J; {o['dhc_end']:+.1f} cm; 오차 {o['err']:.2f}; gr {o['gr'] if o['gr'] is None else '%.1e' % o['gr']}, st0 {o['st0']}")
     elif t == "drop1":
         print(f"{t} {v}: 오차 {o['err']:.2f} 프레임 {o['n']} 발산 {o['div']} gr {o['gr'] if o['gr'] is None else '%.1e' % o['gr']} st0 {o['st0']} " + (f"e {o.get('e_rest')} 튀어오름 {o.get('bounce')} ε {o.get('ezz')} 복원 {o.get('trec')}" if "e_rest" in o else ""))
