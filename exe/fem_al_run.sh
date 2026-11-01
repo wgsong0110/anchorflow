@@ -11,5 +11,19 @@ exec 9>$W/gpu0.lock
 flock 9
 echo "[잠금] $(date '+%F %T') $TG"
 while [ "$(nvidia-smi -i 0 --query-gpu=memory.used --format=csv,noheader,nounits)" -gt 500 ]; do sleep 10; done
-EX_ROOT=fem_al_wolf bash exe/fem_ab_run.sh "$TG" 0 $BASE "$@" < /dev/null
+# fem_ab_run.sh 와 같은 기록 (cmd.txt·rc.txt·gpu_at_*·err_fem.txt·EX_DONE, R2 2 분 동기화) -- 단 conda activate 대신 env 경로를 바로, CuPy 커널 캐시·바이트코드는 노드 로컬
+#   (11-01 NFS /home 100 % 로 conda activate·첫 컴파일 캐시 쓰기가 수십 분 D 상태로 멈췄다)
+export PYTHONUTF8=1 OMP_NUM_THREADS=4 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True PYTHONDONTWRITEBYTECODE=1 CUPY_CACHE_DIR=/tmp/dkta/cupy_cache_al
+export PATH=/home/dkta/.conda/envs/af/bin:$HOME/bin:$PATH
+C=$(git rev-parse --short HEAD); O=/tmp/dkta/lbours/fem_al_wolf/$TG; R=r2:storage/result/anchorflow/lbours/fem_al_wolf/$TG; mkdir -p $O
+( while true; do sleep 120; rclone copy $O $R -q; done ) & SYNC=$!
+echo "[비측정] 카드 1~6 상태는 gpu_at_start.txt -- ms 는 구간 비율로만" > $O/NOT_TIMED
+nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader > $O/gpu_at_start.txt
+echo "[명령] 커밋 $C CUDA_VISIBLE_DEVICES=0 python -u exe/fem_ex_sim.py --out $O $BASE $*" | tee $O/cmd.txt
+CUDA_VISIBLE_DEVICES=0 python -u exe/fem_ex_sim.py --out $O $BASE "$@" < /dev/null > $O/v_fem.log 2>&1
+echo "rc=$? $(date '+%F %T')" > $O/rc.txt
+nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader > $O/gpu_at_end.txt
+grep -a "롤아웃\]\|\[CFL\]\|\[발산\]" $O/v_fem.log | tail -3 > $O/err_fem.txt
+if [ -f $O/summary.json ]; then touch $O/EX_DONE; else grep -a "Traceback\|Error\|error" $O/v_fem.log | tail -5 > $O/EX_FAIL; fi
+kill $SYNC 2>/dev/null; rclone copy $O $R -q
 flock -u 9; exec 9>&-
