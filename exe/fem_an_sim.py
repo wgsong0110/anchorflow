@@ -576,7 +576,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh):
         yfun = lambda e_: yh + (Tc @ e_[..., None]).squeeze(-1)
         y = yfun(eta)
         with tsec("요소"):
-            Ee, fe = el.eval(y, 1 | 8 | (4 if a.fast_ls else 0), dev_e=True)
+            Ee, fe = el.eval(y, 1 | 2 | 8 | (4 if a.fast_ls else 0), dev_e=True)
             g = Mi * eta + (Tc @ fe[..., None]).squeeze(-1)
             if it == 0:
                 g0t = g.norm()
