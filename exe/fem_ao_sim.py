@@ -68,6 +68,7 @@ ap.add_argument("--pbc_ns", type=int, default=4, help="구속 노드 몫 α 를 
 ap.add_argument("--no_pbc_pv", action="store_true", help="프레임 시작 구속 입자 v = 0 덮어쓰기 끔")
 ap.add_argument("--ls_mode", choices=["work", "res"], default="res", help="모래 선탐색 기준: work = 방향을 따른 일 W(c) = ∫₀ᶜ g(η + s δ)·δ ds (사다리꼴; 퍼텐셜이 있으면 에너지 차) 에 아르미호, "
                 "res = 잔차 노름 |g|² (PCG 를 덜 돌린 방향은 잔차 노름을 줄인다는 보장이 없어 가속 판에서 모두 거부됨)")
+ap.add_argument("--ls_c", default="0.03125,0.0625,0.125,0.25,0.5,1.0", help="가속 판 모래 선탐색 후보 보폭 (작은 것부터; 받아들여지는 가장 큰 것). 절 AN 의 ¼·½·1 은 모래에서 모두 거부됨 (정밀 판은 ⅛ 이하를 받아들였다)")
 ap.add_argument("--ls_fb", type=float, default=0.0, help="가속 판 잔차 선탐색에서 후보가 모두 거부되면 쓸 보폭 (0 = 움직이지 않음, 절 AN 과 같음)")
 ap.add_argument("--save_every", type=int, default=10, help="pred 를 이 프레임마다 중간 저장 (발산해도 덤프 남김)")
 a = ap.parse_args()
@@ -753,7 +754,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, kpb=No
             elif a.fast_ls and SAND:                                                     # 잔차 노름 선탐색
                 ph0 = (g * g).sum()
                 st = torch.full((), float(a.ls_fb), device=dev, dtype=D64)
-                for c_ in (0.25, 0.5, 1.0):
+                for c_ in [float(q) for q in a.ls_c.split(",")]:
                     et = eta + c_ * dl
                     _, ft = el.eval(yfun(et), 1)
                     gt_ = Mi * et + (Tc @ ft[..., None]).squeeze(-1)
