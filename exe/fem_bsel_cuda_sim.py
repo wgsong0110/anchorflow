@@ -115,7 +115,10 @@ def rs_mean(Fp, w, inv, nq):
     ev, EV = torch.linalg.eigh(0.5 * (sL + sL.transpose(1, 2)) / sw.clamp_min(1e-300))
     Sb = EV @ torch.diag_embed(torch.exp(ev)) @ EV.transpose(1, 2)
     swc = sw.clamp_min(1e-300)
-    Fq = torch.where(bad[:, None, None], sF / swc, Rb @ Sb)
+    RS = Rb @ Sb
+    nf = ~torch.isfinite(RS).all(-1).all(-1)                                         # 배치 SVD·eigh 가 드물게 비유한을 낸다 -> 그 점은 유클리드 평균 (뒤집힌 입자 점과 같은 처리)
+    bad = bad | nf
+    Fq = torch.where(bad[:, None, None], sF / swc, RS)
     return Fq.reshape(nq, 9).float(), int(bad.sum())
 
 
