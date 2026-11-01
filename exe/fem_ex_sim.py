@@ -27,6 +27,7 @@ from anchorflow import fem_rt_cuda as RTC                                       
 from anchorflow import fem_ex_cuda as EX                                            # noqa: E402
 from anchorflow import fem_bs_cuda as BSC                                           # noqa: E402
 from anchorflow import fem_akpl_cuda as AKPLC                                       # noqa: E402  (절 AG.8 소성 입자 적분점)
+from anchorflow import fem_al_cuda as ALC                                           # noqa: E402  (절 AL wolf 재질 판 서브스텝 융합)
 from anchorflow import fem_ah_cuda as AHC                                           # noqa: E402  (절 AH 바닥 정의)
 from anchorflow import fem_c_cuda as CCU                                            # noqa: E402
 from anchorflow import fem_pl_cuda as PLC                                           # noqa: E402  (절 AG 소성·점성·파괴)
@@ -260,6 +261,7 @@ ap.add_argument("--akg_k", type=int, default=0,
 ap.add_argument("--akg_hg", type=float, default=0.0, help="--akg_k: 묶음 안 사면체 사상이 Ā 를 따르게 하는 모래시계 억제 에너지 γ μ Σ V_t |A_t − Ā|² 의 γ (0 = 묶음 에너지만 공유, 노드 자유)")
 ap.add_argument("--akg_empty", action="store_true", help="절 AG.18 정의 변경 (사용자 10-31 묶음 허락 범위): --akg_k 칸 묶음에 입자 없는 사면체까지 넣는다 -- 빈 사면체가 있는 칸도 묶음, "
                      "Ā = 칸 사면체 사상의 고른 평균 (가중 W_t = V_g / 칸 사면체 수), 모래시계 억제도 같은 가중으로 빈 사면체에 (빈 사면체 영 에너지 기구 막기)")
+ap.add_argument("--al_fuse", action="store_true", help="절 AL: 재질 판 (모래, 증분 RM, 띠 0 바닥, 클램프 끔) 서브스텝을 커널 2 개로 (al_fc = 입자 적분점 RM·힘 (SVD 한 번) + 접촉, al_step = 노드 걸음 + 입자 구속 + 이동) -- 같은 식, lib/anchorflow/fem_al_cuda.py")
 ap.add_argument("--akpl_el", action="store_true", help="절 AG.18 대조: 탄성 입자 적분점 힘을 akpl_force (mat 0) 경로로 (묶음 판과 같은 커널, 묶음 없이)")
 ap.add_argument("--akg_m0fix", action="store_true", help="절 AG.18 진단: 질량 0 노드의 국소 CFL 관성 질량을 0 으로 (예전처럼 속도 0 고정)")
 ap.add_argument("--akg_nocpl", action="store_true", help="절 AG.18 진단: 빈 사면체 묶음 판에서 Ā 결합 강성 상계를 국소 CFL 질량에서 뺀다")
@@ -729,6 +731,11 @@ if a.vfl_tacc and not (AH_GTK and a.cfuse and a.mass == "tet" and not a.vfl_agg)
 if a.vfl_agg and not (AH_GTK and a.cfast or AH_GTK and a.cfuse):
     raise SystemExit("--vfl_agg 는 --vfl_w gtk + --cfuse 경로만")
 AG_GTKC = bool(VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0) and (PLAST or VISC) and AKPQ)   # 절 AG.18: 재질 판 + 띠 0 바닥
+AL_FUSE = bool(a.al_fuse)                                                           # 절 AL: 이 판이 쓰는 갈래만 (아니면 멈춤 -- 몰래 다른 식으로 돌지 않게)
+if AL_FUSE:
+    assert AG_GTKC and a.cfuse and a.cfuse_mode == 2 and AHF and a.ak_pq_plast == "inc" and not (a.akg_k > 0 or a.akb_kappa > 0 or a.akpl_trial or a.akpl_cause or a.akpl_dbg
+           or a.akpl_track or a.akpl_invm or a.vfl_pred or a.vfl_out or a.vfl_bf or a.vfl_tacc or a.vfl_agg or a.ak_fuse or a.ak_fstep or a.ah_imex or a.ah_mcfl_sub or a.ah_mcfl_Fs
+           or a.ak_sel or a.ak_es or a.ak_cs != 0 or a.ak_p2 or a.lagdump or a.divhist or a.lim_v == "mom") and a.ak_eps < 0 and a.lim_sr >= 1e20 and a.lim < 0 and MATN == 2 and RPIC_ETA == 0, "--al_fuse: 절 AG.19 재질 판 갈래만"
 if AHF:
     _ahfl = VFL and (a.vfl_w == "gtk" or a.vfl_rate or a.vfl_npd > 0)
     if not (a.opt and a.mode == "lag" and a.cfuse and a.cfuse_mode == 2) or (_ahfl and (PLAST or VISC or PBC) and not AKPQ):   # 절 AG.18: 입자 적분점 재질 판은 접촉을 ah_fc 로 따로
@@ -2022,6 +2029,20 @@ class Opt:
     def _step_fused(self):
         """절 C (5): ex_tet_force_R + ex_vfl_contact + ex_node_step_lag + 클램프 판정 + 적용과 같은 식을 커널 4 개로."""
         Mc, Tc = self.Mcap, self.Tcap
+        if AL_FUSE:                                                                 # 절 AL: 커널 2 개 (같은 식)
+            nbQ, nbP = (Np + 127) // 128, (Np + 127) // 128
+            ALC.launch("al_fc", 0, (np.int32(nbQ), np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akw), EX.P(PRM),
+                                    EX.P(self.plFe), EX.P(self.plXp), EX.P(self.f),
+                                    EX.P(self.sz), EX.P(self.s0c), EX.P(self.cint[1:]), EX.P(self.nidx), EX.P(self.Xf), EX.P(self.rows), EX.P(self.lamb), EX.P(self.mA),
+                                    np.int32(1 if a.mass == "tet" else 0), *PLf, EX.P(self.acc), EX.P(self.ncon),
+                                    np.int32(AH_GTK), np.float32(AH_BAND), np.float32(AH_PN), np.float32(AH_DXG), EX.P(self.accN if AH_ACCN else None), np.float32(a.vfl_npd)),
+                       b=128, grid=nbQ + nbP)
+            ALC.launch("al_step", Mc, (EX.P(self.sz), EX.P(self.mn), EX.P(self.f), EX.P(self.vn), EX.P(self.Uc), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
+                                       np.float32(self.hscur), np.float32(self.dampcur), EX.P(self.fx if self.fixd else None), EX.P(self.vbc), EX.P(self.acc),
+                                       EX.P(self.accN if AH_ACCN else None), np.int32(VFM), np.int32(a.vfl_np), *PLf[3:], np.float32(AH_KEX * self.hscur / hs),
+                                       np.float32(getattr(self, "_mfl", 0.0)), EX.P(self.mcfl if a.ah_mcfl > 0 else None),
+                                       EX.P(self.pa if PBC else None), EX.P(self.pv if PBC else None), EX.P(self.alph), EX.P(self.clst), EX.P(self.cint[1:])), b=256)
+            return
         nbT = 0 if (AKPQ and VFL and a.ak_eps < 0) else (Tc + 127) // 128                               # 절 AK: 입자 적분점 + 바닥이면 융합 커널은 접촉 블록만 (바닥 없으면 목록 개수 0 으로 빈 블록)
         nbP = ((Np + 127) // 128) if VFL else 0
         hs_, damp_ = self.hscur, self.dampcur
