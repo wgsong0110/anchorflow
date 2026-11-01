@@ -118,14 +118,19 @@ def bsw(fx, Ai_=None):
     return W, GW
 
 
-def rs_mean(Fp, w, inv, nq, count=True):
-    """절 AI A1 회전·신장 분리 평균 (float64, CUDA 커널): 뒤집힌 입자가 든 점·비유한 점은 유클리드 평균 (절 AK.33 과 같은 정의)."""
+def rs_prep(Fp):
     n = Fp.shape[0]
     Fc = Fp.contiguous()
     R = torch.empty(n, 9, device=dev, dtype=D64)
     LS = torch.empty(n, 9, device=dev, dtype=D64)
     neg = torch.empty(n, device=dev, dtype=torch.uint8)
     AK.launch("an_rsp", n, (np.int32(n), AK.P(Fc), AK.P(R), AK.P(LS), AK.P(neg)))
+    return Fc, R, LS, neg
+
+
+def rs_mean(Fp, w, inv, nq, count=True, prep=None):
+    """절 AI A1 회전·신장 분리 평균 (float64, CUDA 커널): 뒤집힌 입자가 든 점·비유한 점은 유클리드 평균 (절 AK.33 과 같은 정의). prep = rs_prep(Fp) 을 넘기면 입자 준비를 다시 하지 않는다."""
+    Fc, R, LS, neg = prep if prep is not None else rs_prep(Fp)
     W = w[:, None]
     sR = torch.zeros(nq, 9, device=dev, dtype=D64).index_add_(0, inv, W * R)
     sL = torch.zeros(nq, 9, device=dev, dtype=D64).index_add_(0, inv, W * LS)
@@ -484,14 +489,14 @@ class MGD(MG32):
             Vc = (torch.zeros(ncell, device=dev, dtype=D64).index_add_(0, cid, V).repeat_interleave(8) / 8.0).contiguous()
             qfx = qb8.repeat(ncell, 1)
             Ai_ = Ai_ / 2
-            _, QGW = bsw(qfx, Ai_)
+            _, QGW8 = bsw(qb8, Ai_)
             uc = torch.arange(ncell, device=dev)
             cb = torch.stack([uc // (Cc[1] * Cc[2]), (uc // Cc[2]) % Cc[1], uc % Cc[2]], 1).repeat_interleave(8, 0)
             qn = ((cb[:, None, 0] + OFF[None, :, 0]) * Nc[1] + cb[:, None, 1] + OFF[None, :, 1]) * Nc[2] + cb[:, None, 2] + OFF[None, :, 2]
             mdc = restrict_dense(mdn, nbf, Nc)
             mflat = mdc.reshape(-1)
             na = mflat.numel()
-            G = torch.einsum("qab,qna->qnb", Fc.reshape(nq, 3, 3), QGW).contiguous()
+            G = torch.einsum("cqab,qna->cqnb", Fc.reshape(ncell, 8, 3, 3), QGW8).reshape(nq, 27, 3).contiguous()
             elc = Elem(qn.int().contiguous(), G, Fc, Vc, na)
             elc.eval(torch.zeros(na, 3, device=dev, dtype=D64), 2 | 8)
             elc.f32()
@@ -864,25 +869,29 @@ def frame(fi, x, v, F):
     Mc = torch.zeros(nc, device=dev, dtype=D64).index_add_(0, cinv, m64)
     qV = Vc.repeat_interleave(8) / 8.0
     mq = Mc.repeat_interleave(8) / 8.0
-    qF, nbad = rs_mean(F, vol64, qinv, nq)
+    prep = rs_prep(F)
+    qF, nbad = rs_mean(F, vol64, qinv, nq, count=False, prep=prep)
     qbad = rs_mean.last_bad
-    cF, _ = rs_mean(F, vol64, cinv, nc)
+    cF, _ = rs_mean(F, vol64, cinv, nc, count=False, prep=prep)
     has = torch.zeros(nq, device=dev, dtype=torch.bool).index_put_((qinv,), torch.tensor(True, device=dev))
     qF = torch.where(has[:, None], qF, cF.repeat_interleave(8, 0))
-    nbad = int(qbad[has].sum())
+    nbad = qbad[has].sum()                                                             # 장치 값 (프레임 끝에 정수로)
     o8 = torch.arange(8, device=dev)
     qb = torch.stack([o8 // 4, (o8 % 4) // 2, o8 % 2], 1).double()
-    qfx = (1.0 + GG * (2 * qb - 1)).repeat(nc, 1)
-    QW, QGW = bsw(qfx)
+    qfx8 = 1.0 + GG * (2 * qb - 1)
+    qfx = qfx8.repeat(nc, 1)
+    QW8, QGW8 = bsw(qfx8)                                                              # 팔분 위치 8 가지뿐 -> 8 개만 계산해 넓혀 씀
+    QW = QW8.repeat(nc, 1)
     cz = uc % nb[2]
     cy = (uc // nb[2]) % nb[1]
     cx = uc // (nb[1] * nb[2])
     cb = torch.stack([cx, cy, cz], 1).repeat_interleave(8, 0)
     qnid = ((cb[:, None, 0] + OFF[None, :, 0]) * nb[1] + cb[:, None, 1] + OFF[None, :, 1]) * nb[2] + cb[:, None, 2] + OFF[None, :, 2]
     qn = cmp_[qnid]
-    assert bool((qn >= 0).all())
+    if not a.fast:
+        assert bool((qn >= 0).all())
     Fq3 = qF.reshape(nq, 3, 3)
-    G = torch.einsum("qab,qna->qnb", Fq3, QGW).contiguous()                           # G_qn = F_qᵀ ∇w_qn
+    G = torch.einsum("cqab,qna->cqnb", Fq3.reshape(nc, 8, 3, 3), QGW8).reshape(nq, 27, 3).contiguous()   # G_qn = F_qᵀ ∇w_qn
     xq0 = ((cb + bmin).double() + qfx) @ A64.T
     el = Elem(qn.int().contiguous(), G, qF.contiguous(), qV.contiguous(), na)
     if a.check:
@@ -921,6 +930,7 @@ def frame(fi, x, v, F):
     STAT["nmv"] = el.nmv
     if "stuck_t" in STAT:
         STAT["stuck"] = int(STAT.pop("stuck_t"))
+    STAT["nbad"] = int(STAT["nbad"])
     # G2P (프레임 끝 한 번)
     tg = tsec("G2P"); tg.__enter__()
     if a.fast:
