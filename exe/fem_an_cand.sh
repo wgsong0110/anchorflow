@@ -8,8 +8,14 @@ NM=$1; VS="$2"; R=/tmp/dkta/lbours/fem_an; M=$R/marks; Q=$R/$NM.queue; mkdir -p 
 SC="L000 $(seq -f %04g 0 19 | tr '\n' ' ')"
 : > $Q; for e in $VS; do v=${e%%:*}; for t in ficus $SC; do echo "$t $v $(echo ${e#*:} | tr '_' ' ')" >> $Q; done; done
 free_cards() { for i in 1 2 3 4 5 6; do u=$(nvidia-smi -i $i --query-gpu=uuid --format=csv,noheader); n=$(nvidia-smi --query-compute-apps=gpu_uuid --format=csv,noheader | grep -c "$u"); [ $n -eq 0 ] && echo $i; done; }
-GS=($(free_cards)); echo "빈 카드 ${GS[*]} $(date +%T)" | tee $M/${NM}_cards.txt
-[ ${#GS[@]} -eq 0 ] && { echo "빈 카드 없음"; exit 1; }
+for k in $(seq 10); do GS=($(free_cards)); [ ${#GS[@]} -gt 0 ] && break; sleep 60; done
+if [ ${#GS[@]} -gt 0 ]; then echo "빈 카드 ${GS[*]} $(date +%T)" | tee $M/${NM}_cards.txt
+else                                                                                  # 빈 카드가 10 분 동안 없으면 사용률 낮은 카드 넷에 일꾼 하나씩 (내 실행은 카드당 하나)
+  GS=($(for i in $(seq 10); do nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader,nounits; sleep 1; done | awk -F', ' '$1>0{s[$1]+=$2} END{for (k in s) print s[k], k}' | sort -n | head -${AN_NW:-4} | awk '{print $2}'))
+  echo "빈 카드 없음 -> 사용률 낮은 카드 ${GS[*]} (다른 실행과 함께, 내 실행은 카드당 하나) $(date +%T)" | tee $M/${NM}_cards.txt
+  nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader >> $M/${NM}_cards.txt
+fi
+rclone copy $M r2:storage/result/anchorflow/lbours/fem_an/marks -q
 worker() { G=$1
   while true; do
     L=$(flock $Q.lock bash -c "head -1 $Q; sed -i 1d $Q"); [ -z "$L" ] && break
