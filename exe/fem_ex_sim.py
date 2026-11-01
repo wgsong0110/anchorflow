@@ -2948,6 +2948,16 @@ class Opt:
             self.mcfl.zero_()
             AHC.launch("ah_kn", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs),
                                             np.float32(a.ah_mcfl * (self.hscur / 2.0) ** 2 * (lam + 2.0 * mu)), EX.P(self.mcfl)), b=128)
+            if a.ak_capmu and AKPQ:                                                 # 절 AG.19: --ak_capmu 는 λ 몫을 입자 부피 그대로 쓰므로 상계에 λ (Σ V_p − V_T) |∇λ_i| Σ|∇λ_j| 를 더한다 (상한 부피로만 잡으면 과소)
+                T_ = self.T
+                occ_ = self.VTs[:T_] > 0
+                vsT = torch.zeros(T_, device=dev).index_add_(0, self.pinv[:Np].long(), self.volA)
+                ex_ = (vsT - self.VTs[:T_]).clamp_min(0) * occ_
+                if AKG:                                                             # 묶음 Ā 를 쓰는 입자 몫은 아래 MG 에 이미 들어간다
+                    ex_ = ex_ * (self.akg_tg[:T_] < 0)
+                gn_ = self.gl[:T_].view(-1, 4, 3).norm(dim=-1)
+                kc_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2 * lam) * ex_[:, None] * gn_ * gn_.sum(1, keepdim=True)
+                self.mcfl.index_add_(0, self.tets[:T_].reshape(-1), kc_.reshape(-1))
             if AKG and a.akg_empty and a.akg_hg > 0:                                # 절 AG.18: 모래시계 억제 강성 2 γ μ W_t 도 같은 Gershgorin 상계로 (빈 사면체 포함)
                 T_ = self.T
                 ing_ = self.akg_tg[:T_] >= 0
