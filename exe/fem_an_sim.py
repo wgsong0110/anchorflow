@@ -50,6 +50,7 @@ ap.add_argument("--mg_nc", type=int, default=10, help="가장 거친 층 평활 
 ap.add_argument("--dump", action="store_true")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
+ap.add_argument("--sec", action="store_true", help="구간별 시간 (구간 경계마다 동기화 -- 합이 동기화 없는 프레임 시간보다 조금 크다): p2g·바닥·요소 (기울기+헤시안)·대각·멀티그리드 구성·PCG (헤시안 곱·사이클)·선탐색·G2P")
 ap.add_argument("--prof", action="store_true", help="커널별 GPU 시간 (CUDA 이벤트) 을 fem.jsonl 에 -- 단독 카드에서만 의미")
 ap.add_argument("--check", action="store_true", help="프레임 0 에서 기울기·헤시안 곱을 유한 차분과 대조하고 끝")
 a = ap.parse_args()
@@ -158,6 +159,10 @@ class Elem:
         return (float(s.E.sum()) if mode & 4 else None), f
 
     def mv(s, dy):
+        with tsec("헤시안곱" if s.na == STAT.get("na") else "헤시안곱_거친층"):
+            return s._mv(dy)
+
+    def _mv(s, dy):
         o = torch.zeros(s.na, 3, device=dev, dtype=D64)
         AK.launch("an_mv", s.nq, (np.int32(s.nq), AK.P(s.qn), AK.P(s.G), AK.P(s.H), AK.P(s.Vq), AK.P(dy.contiguous()), AK.P(o)))
         s.nmv += 1
@@ -167,6 +172,27 @@ class Elem:
         B = torch.zeros(s.na, 9, device=dev, dtype=D64)
         AK.launch("an_bd", s.nq, (np.int32(s.nq), AK.P(s.qn), AK.P(s.G), AK.P(s.H), AK.P(s.Vq), AK.P(B)))
         return B.reshape(s.na, 3, 3)
+
+
+SEC = {}
+
+
+class tsec:
+    """구간 시간 (ms) 누적: --sec 일 때만 경계에서 동기화."""
+
+    def __init__(s, nm):
+        s.nm = nm
+
+    def __enter__(s):
+        if a.sec:
+            torch.cuda.synchronize()
+            s.t = time.perf_counter()
+
+    def __exit__(s, *e):
+        if a.sec:
+            torch.cuda.synchronize()
+            t, c = SEC.get(s.nm, (0.0, 0))
+            SEC[s.nm] = (t + 1e3 * (time.perf_counter() - s.t), c + 1)
 
 
 _CK = {}
@@ -297,7 +323,8 @@ class MG:
         return z + w * s.sm(l, r - s.op(l, z))
 
     def __call__(s, r):
-        return s.vc(0, r)
+        with tsec("MG사이클"):
+            return s.vc(0, r)
 
 
 STAT = {}
@@ -318,6 +345,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
     nst = dict(nt=0, cg=0, ls=0, gr=None, stuck=0)
     for it in range(a.newton):
         # 고착 몫 (이 반복의 y 로) -> 변수 바꿈 y = ŷ + T η
+        tfl = tsec("바닥"); tfl.__enter__()
         if FLOOR:
             Ue = (2 * y - Uk) if a.integ == "mid" else y
             xq = xq0 + (QW[..., None] * Ue[qn]).sum(1)
@@ -347,9 +375,11 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
             yh = torch.where(fixd[:, None], Uk + TAU * vbc, yh)
             eta = torch.where(fixd[:, None], torch.zeros_like(eta), eta)
         Tc = T.contiguous()
+        tfl.__exit__()
         yfun = lambda e_: yh + (Tc @ e_[..., None]).squeeze(-1)
         y = yfun(eta)
-        Ee, fe = el.eval(y, 1 | 2 | 4)
+        with tsec("요소"):
+            Ee, fe = el.eval(y, 1 | 2 | 4)
         E0 = 0.5 * float((Mi * eta * eta).sum()) + Ee
         g = Mi * eta + (Tc @ fe[..., None]).squeeze(-1)
         gn = float(g.norm())
@@ -359,9 +389,11 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
         if gn / g0n < a.nt_tol and it > 0:
             break
         # PCG: (Mi + Tᵀ K T) δ = −g, 블록 야코비 전처리
-        Bd = el.bd()
+        with tsec("대각"):
+            Bd = el.bd()
         if a.pc == "mg":
-            mg_ = MG(ctx, y, el, Mi, Tc, Bd)
+            with tsec("MG구성"):
+                mg_ = MG(ctx, y, el, Mi, Tc, Bd)
             nst["lv"] = mg_.nl
             nst["mglam"] = mg_.lam
             prec = mg_
@@ -381,6 +413,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
             nst["mgfb"] = nst.get("mgfb", 0) + 1
         pp = zz.clone()
         rz0 = rz
+        tpc = tsec("PCG"); tpc.__enter__()
         for ci in range(a.cg):
             Ap = Aop(pp)
             pAp = float((pp * Ap).sum())
@@ -397,7 +430,10 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
                 break
             pp = zz + (float((rr * (zz - zo)).sum()) / rz) * pp                      # 유연 PCG (폴라크-리비에르)
             rz = rzn
+        tpc.__exit__()
+        nst.setdefault("cgs", []).append(ci + 1)
         # 되돌이 선탐색 (아르미호)
+        tls = tsec("선탐색"); tls.__enter__()
         gd = float((g * dl).sum())
         st = 1.0
         ok = False
@@ -414,6 +450,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
             st = 0.0
         eta = eta + st * dl
         y = yfun(eta)
+        tls.__exit__()
         nst["nt"] += 1
         if st == 0.0:
             break
@@ -431,12 +468,15 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
     STAT["gr"] = max(STAT.get("gr", 0.0), nst["gr"] or 0.0)
     STAT["stuck"] = nst["stuck"]
     STAT["lv"] = nst.get("lv", 1)
+    STAT.setdefault("nts", []).append(nst["nt"])
+    STAT.setdefault("cgs", []).append(nst.get("cgs", []))
     STAT["mglam"] = nst.get("mglam")
     STAT["mgfb"] = STAT.get("mgfb", 0) + nst.get("mgfb", 0)
     return U1, v1
 
 
 def frame(fi, x, v, F):
+    tp = tsec("P2G"); tp.__enter__()
     y = x @ Ai64.T
     base = torch.floor(y - 0.5).long()
     bmin = base.min(0).values
@@ -513,15 +553,18 @@ def frame(fi, x, v, F):
     STAT.update(nq=nq, na=na, nbad=nbad)
     ctx = dict(nb=nb, act=act, mnd=mnd, tq=cb.double() + qfx)
     U = torch.zeros(na, 3, device=dev, dtype=D64)
+    tp.__exit__()
     for _ in range(a.K):
         U, vn = solve_step(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx)
     STAT["nmv"] = el.nmv
     # G2P (프레임 끝 한 번)
+    tg = tsec("G2P"); tg.__enter__()
     Ug = U[nidc]
     x2 = x + (W[..., None] * Ug).sum(1)
     v2 = (W[..., None] * vn[nidc]).sum(1)
     Am = I3 + torch.einsum("pna,pnb->pab", Ug, GW)
     F2 = (Am @ F.reshape(Np, 3, 3)).reshape(Np, 9)
+    tg.__exit__()
     return x2, v2, F2
 
 
@@ -545,6 +588,9 @@ for fi in range(L):
     rec = dict(t=fi, err=e, sec=dt_, **{k_: v_ for k_, v_ in STAT.items()})
     if a.prof:
         rec["kernel_ms"] = AK.prof_take()
+    if a.sec:
+        rec["sec_ms"] = {k_: [round(t_, 3), c_] for k_, (t_, c_) in SEC.items()}
+        SEC.clear()
     flog.write(json.dumps(rec) + "\n")
     flog.flush()
     print(f"  프레임 {fi + 1}/{L} {dt_:.2f} s 오차 {100 * e:.3f}% 뉴턴 {STAT.get('nt')} PCG {STAT.get('cg')} 선탐색 {STAT.get('ls')} 층 {STAT.get('lv')} λ {STAT.get('mglam')} 대체 {STAT.get('mgfb')} 헤시안 곱 {STAT.get('nmv')} 최대 |g|/|g0| {STAT.get('gr', 0):.1e} "
