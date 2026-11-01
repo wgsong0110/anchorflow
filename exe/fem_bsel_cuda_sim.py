@@ -221,7 +221,9 @@ def frame(fi, x, v, F):
         GQ["fx"][:nq].copy_(qfx.float()); GQ["fx"][nq:].fill_(1.0)
         GQ["F"][:nq].copy_(qF); GQ["F"][nq:].zero_()
         GQ["V"][:nq].copy_(qV.float()); GQ["V"][nq:].zero_()
-        STAT.update(nq=nq, nbad=nbad)
+        _dq = torch.det(qF.double().reshape(-1, 3, 3))
+        _dp = torch.det(F[o].double().reshape(-1, 3, 3))
+        STAT.update(nq=nq, nbad=nbad, dq=(float(_dq.min()), float(_dq.max())), dp=(float(_dp.min()), float(_dp.max())), fqn=float(qF.abs().max()))
         qw = torch.stack([0.5 * (1.5 - qfx) ** 2, 0.75 - (qfx - 1) ** 2, 0.5 * (qfx - 0.5) ** 2], 1)
         qd = torch.stack([qfx - 1.5, -2 * (qfx - 1), qfx - 0.5], 1)
         qi, qj, qk = qw[:, OFF[:, 0], 0], qw[:, OFF[:, 1], 1], qw[:, OFF[:, 2], 2]
@@ -292,7 +294,7 @@ for fi in range(L):
     secs.append(dt_)
     flog.write(json.dumps(dict(t=fi, err=e, sec=dt_)) + "\n")
     flog.flush()
-    print(f"  프레임 {fi + 1}/{L} {1e3 * dt_:.2f} ms 오차 {100 * e:.3f}%" + (f" 가우스 점 {STAT.get('nq')} (입자 {Np}, 뒤집힌 입자 든 점 {STAT.get('nbad')})" if a.gq else ""), flush=True)
+    print(f"  프레임 {fi + 1}/{L} {1e3 * dt_:.2f} ms 오차 {100 * e:.3f}%" + (f" 가우스 점 {STAT.get('nq')} (입자 {Np}, 뒤집힌 입자 든 점 {STAT.get('nbad')}) det F_q {STAT.get('dq')} det F_p {STAT.get('dp')} max|F_q| {STAT.get('fqn')} max|v| {float(v2.norm(dim=-1).max()):.3g}" if a.gq else ""), flush=True)
     if PRED is not None:
         PRED[fi] = x2.cpu()
     x, v, F = x2, v2, F2
