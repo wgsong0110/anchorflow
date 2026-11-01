@@ -271,6 +271,7 @@ ap.add_argument("--ah_imex_maxit", type=int, default=100, help="--ah_imex_cl 최
 ap.add_argument("--akpl_trial", action="store_true", help="절 AG.18: 증분 RM 소성 상태를 시험 버퍼에 쓰고 서브스텝 끝에 커밋 (서브사이클링 준비; 결과는 같아야 한다)")
 ap.add_argument("--akg_mass", action="store_true", help="절 AG.18 정의 변경: --akg_empty 묶음 칸의 P2G 질량·운동량을 칸 사면체에 기하 부피 비로 나눈 뒤 사면체 몫 1/4 씩 노드로 (빈 사면체 노드도 질량을 가진다)")
 ap.add_argument("--akg_mass_sp", action="store_true", help="--akg_mass: 칸으로 나누는 입자를 묶음 Ā 를 쓰는 입자 (희소 사면체) 로만")
+ap.add_argument("--ah_mcfl_F", action="store_true", help="절 AG.19: 국소 CFL 상계의 계수에 입자 F 의 늘어남·눌림 몫 max(1, (1+σ_min⁻²)/2, σ_max²) (프레임 시작 F)")
 ap.add_argument("--akg_fd", action="store_true", help="절 AG.18 진단 (--akpl_cause, 탄성): 첫 뒤집힌 셀 노드의 실제 접선 강성 (유한 차분) 대 국소 CFL 상계")
 ap.add_argument("--akg_mass_dbg", action="store_true", help="--akg_mass 진단: 프레임마다 질량 분배 통계")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
@@ -3035,6 +3036,18 @@ class Opt:
             self.mcfl.zero_()
             AHC.launch("ah_kn", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs),
                                             np.float32(a.ah_mcfl * (self.hscur / 2.0) ** 2 * (lam + 2.0 * mu)), EX.P(self.mcfl)), b=128)
+            if a.ah_mcfl_F and AKPQ:                                                # 절 AG.19: 입자 F 의 늘어남·눌림으로 접선 계수가 커지는 몫 (실제 강성이 상계의 2 배까지 -- 유한 차분 진단)
+                svF = torch.linalg.svdvals(self.akF.view(-1, 3, 3).float())
+                fp_ = torch.maximum(torch.maximum(0.5 * (1.0 + svF[:, 2].clamp_min(0.01) ** -2), svF[:, 0] ** 2), torch.ones_like(svF[:, 0]))
+                self._mcfl_fp = fp_
+                T_ = self.T
+                fT = torch.ones(T_, device=dev).scatter_reduce(0, self.aktt.long(), fp_, "amax", include_self=True)
+                vsT_ = torch.zeros(T_, device=dev).index_add_(0, self.pinv[:Np].long(), self.volA)
+                occ_ = self.VTs[:T_] > 0
+                gn_ = self.gl[:T_].view(-1, 4, 3).norm(dim=-1)
+                vb_ = torch.maximum(self.VTs[:T_], vsT_) * occ_
+                kf_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2 * (lam + 2.0 * mu)) * ((fT - 1.0) * vb_)[:, None] * gn_ * gn_.sum(1, keepdim=True)
+                self.mcfl.index_add_(0, self.tets[:T_].reshape(-1), kf_.reshape(-1))
             if a.ak_capmu and AKPQ:                                                 # 절 AG.19: --ak_capmu 는 λ 몫을 입자 부피 그대로 쓰므로 상계에 λ (Σ V_p − V_T) |∇λ_i| Σ|∇λ_j| 를 더한다 (상한 부피로만 잡으면 과소)
                 T_ = self.T
                 occ_ = self.VTs[:T_] > 0
@@ -3062,7 +3075,8 @@ class Opt:
                 gp_ = self.akg_gpb.long()                                            # 묶음 Ā 를 쓰는 입자 (정렬 순서) 의 실제 계수 합 Σ w_p (λ r_p + 2μ) (r_p = --ak_capmu λ 배율)
                 lr_ = self.aklr if a.ak_capmu else torch.ones_like(self.akw)
                 okp = gp_ >= 0
-                MG = torch.zeros(self.Pcap, device=dev).index_add_(0, gp_[okp], self.akw[okp] * (lam * lr_[okp] + 2.0 * mu))
+                fpg_ = self._mcfl_fp[okp] if (a.ah_mcfl_F and getattr(self, "_mcfl_fp", None) is not None) else 1.0
+                MG = torch.zeros(self.Pcap, device=dev).index_add_(0, gp_[okp], self.akw[okp] * (lam * lr_[okp] + 2.0 * mu) * fpg_)
                 self.akg_MG[:MG.numel()].copy_(MG)                                    # 절 AG.18: 서브스텝 상계 (--ah_mcfl_sub) 가 쓰는 프레임 상수
                 kg_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2) * (MG[g_] * wr_ * Sg[g_])[:, None] * gn_
                 if a.akg_hg > 0:                                                    # 모래시계 억제 2γμ W_t (A_t − Ā) 의 Ā 쪽 결합 몫 (행 합 2γμ W_t |∇λ_n| S_g)
