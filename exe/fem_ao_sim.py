@@ -75,6 +75,8 @@ ap.add_argument("--mlow", type=float, default=0.0, help="절 AO: 노드 질량 <
                 "그 노드의 입자 가중 w·기울기 ∇w 는 √질량 비 이하라 G2P·요소 결합에 거의 안 들어가는데, 꼭짓점 (강성 0) 점에만 붙으면 질량 항만 남아 조건수 1e50 으로 선형 풀이가 깨진다")
 ap.add_argument("--vdiv", type=float, default=200.0, help="입자 속력이 이 값 (m/s) 을 넘으면 발산으로 멈춤 (정답 wolf 최대 속력은 수 m/s; 날아간 입자가 격자 상자를 키워 메모리가 터지기 전에)")
 ap.add_argument("--vdiag", type=float, default=0.0, help="진단: 프레임 끝 노드 속력이 이 값을 넘으면 가장 빠른 노드 10 개의 질량 비·구속 인자·붙은 가우스 점 상태 수를 vdiag.jsonl 에")
+ap.add_argument("--merit", choices=["pres", "res"], default="pres", help="모래 잔차 선탐색 기준: pres = |P g|² (P = 노드 블록 야코비 (m/τ² + TᵀK_nnT)⁻¹, 변위 단위 -- 가벼운 노드의 잔차 m η 가 작아 |g|² 에서 무시되는 문제), res = |g|²")
+ap.add_argument("--gm_left", type=int, default=1, help="GMRES 왼쪽 전처리 (1) / 오른쪽 (0)")
 ap.add_argument("--ls_c", default="0.03125,0.0625,0.125,0.25,0.5,1.0", help="가속 판 모래 선탐색 후보 보폭 (작은 것부터; 받아들여지는 가장 큰 것). 절 AN 의 ¼·½·1 은 모래에서 모두 거부됨 (정밀 판은 ⅛ 이하를 받아들였다)")
 ap.add_argument("--ls_fb", type=float, default=0.0, help="가속 판 잔차 선탐색에서 후보가 모두 거부되면 쓸 보폭 (0 = 움직이지 않음, 절 AN 과 같음)")
 ap.add_argument("--save_every", type=int, default=10, help="pred 를 이 프레임마다 중간 저장 (발산해도 덤프 남김)")
@@ -912,6 +914,10 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
         # PCG: (Mi + Tᵀ K T) δ = −g, 블록 야코비 전처리
         with tsec("대각"):
             Bd = el.bd()
+            PcM = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc) if (SAND and a.merit == "pres") else None
+        mer = (lambda g_: float(((PcM @ g_[..., None]).squeeze(-1) ** 2).sum())) if PcM is not None else (lambda g_: float((g_ * g_).sum()))
+        if SAND:
+            E0 = mer(g)                                                                # 절 AO: 선탐색 기준 (pres = 블록 야코비 전처리 잔차, 변위 단위)
         if a.pc == "mg":
             with tsec("MG구성"):
                 mg_ = MG(ctx, y, el, Mi, Tc, Bd)
@@ -928,7 +934,10 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
                 Pc = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
                 prec = lambda r_: (Pc @ r_[..., None]).squeeze(-1)
             tpc = tsec("GMRES"); tpc.__enter__()
-            dl, nmv_, rel_ = gmres(Aop, prec, -g, a.cg, a.gm_m, a.cg_tol)
+            if a.gm_left:                                                               # 왼쪽 전처리: |P (A δ + g)| 최소 (가벼운 노드도 변위 단위로)
+                dl, nmv_, rel_ = gmres(lambda z_: prec(Aop(z_)), lambda r_: r_, prec(-g), a.cg, a.gm_m, a.cg_tol)
+            else:
+                dl, nmv_, rel_ = gmres(Aop, prec, -g, a.cg, a.gm_m, a.cg_tol)
             tpc.__exit__()
             nst["cg"] += nmv_
             nst.setdefault("cgs", []).append(nmv_)
@@ -997,7 +1006,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
             elif SAND:
                 _, ft = el.eval(yfun(et), 1)
                 gt_ = Mi * et + (Tc @ ft[..., None]).squeeze(-1)
-                E1 = float((gt_ * gt_).sum())
+                E1 = mer(gt_)
                 okc = math.isfinite(E1) and E1 <= (1.0 - 1e-4 * st) * E0
             else:
                 Et, _ = el.eval(yfun(et), 4)
