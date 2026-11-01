@@ -681,6 +681,8 @@ AH_GTK = 1 if (VFL and a.vfl_w == "gtk") else 0
 if a.ah_imex:
     assert AKPQ and a.ah_mcfl == 1.0 and not a.ah_mcfl_sub and not a.ah_mcfl_tan and not a.ak_fstep and a.cfuse and a.cfuse_mode == 2 and not a.ak_pq4 and not a.ak_prep, \
         "--ah_imex 는 --ak_pq (기본 입자 스레드 판) + --ah_mcfl 1 (프레임 단위, 판정용) + ah_node_step 경로에서만"
+if a.ah_mcfl_Fs:
+    assert a.ah_mcfl_F and a.ah_mcfl > 0 and not a.ah_mcfl_sub and AKPQ, "--ah_mcfl_Fs 는 --ah_mcfl_F --ah_mcfl (프레임 단위) --ak_pq 와"
 if a.ah_imex_cl > 0:
     assert a.ah_imex and a.ah_imex_rel and a.no_graph, "--ah_imex_cl 은 --ah_imex --ah_imex_rel --no_graph 와"
 if a.vfl_pred:
