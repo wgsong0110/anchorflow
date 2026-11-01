@@ -71,7 +71,7 @@ __device__ __forceinline__ double seg8(double s) {                              
 }
 // mode: 1 기울기, 2 헤시안, 4 에너지
 __global__ void an_elem(int nq, const int* qn, const double* G, const double* Fq, const double* Vq, const double* y,
-                        double mu, double lam, int mode, double* E, double* f, double* H) {
+                        double mu, double lam, int mode, double* E, double* f, double* H, float* H32) {
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     bool on = q < nq;
     int qq = on ? q : 0;
@@ -130,7 +130,8 @@ __global__ void an_elem(int nq, const int* qn, const double* G, const double* Fq
             }
             for (int r=0;r<9;r++) for (int c=0;c<9;c++) h[r*9+c] += lt*et[r]*et[c] + lf*ef[r]*ef[c];
         }
-        for (int k=0;k<81;k++) H[(size_t)qq*81+k] = h[k];
+        if (mode & 8) { for (int k=0;k<81;k++) H32[(size_t)qq*81+k] = (float)h[k]; }
+        else { for (int k=0;k<81;k++) H[(size_t)qq*81+k] = h[k]; }
     }
 }
 __global__ void an_mv(int nq, const int* qn, const double* G, const double* H, const double* Vq, const double* dy, double* out) {
@@ -210,10 +211,72 @@ __global__ void an_rsf(int nq, const double* sR, const double* sL, const double*
     }
     nf[q] = bad ? 1 : 0;
 }
+
+__device__ __forceinline__ float seg8f(float s) {
+    s += __shfl_xor_sync(0xffffffffu, s, 1);
+    s += __shfl_xor_sync(0xffffffffu, s, 2);
+    s += __shfl_xor_sync(0xffffffffu, s, 4);
+    return s;
+}
+// float32 헤시안 곱 (H32·G32·V32, dy·out float32)
+__global__ void an_mv32(int nq, const int* qn, const float* G, const float* H, const float* Vq, const float* dy, float* out) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < nq;
+    int qq = on ? q : 0;
+    bool head = (threadIdx.x & 7) == 0;
+    float dX[9] = {0,0,0,0,0,0,0,0,0};
+    int ids[27];
+    for (int n=0;n<27;n++) {
+        int id = qn[(size_t)qq*27+n]; ids[n] = id;
+        const float* g = G + ((size_t)qq*27+n)*3;
+        float g0 = g[0], g1 = g[1], g2 = g[2];
+        for (int a=0;a<3;a++) { float ya = dy[id*3+a]; dX[a*3] += ya*g0; dX[a*3+1] += ya*g1; dX[a*3+2] += ya*g2; }
+    }
+    float vq = on ? Vq[qq] : 0.f;
+    float dP[9];
+    const float* h = H + (size_t)qq*81;
+    for (int r=0;r<9;r++) { float t = 0.f; for (int c=0;c<9;c++) t += h[r*9+c]*dX[c]; dP[r] = vq*t; }
+    for (int n=0;n<27;n++) {
+        const float* g = G + ((size_t)qq*27+n)*3;
+        float g0 = g[0], g1 = g[1], g2 = g[2];
+        float s[3];
+        for (int a=0;a<3;a++) s[a] = seg8f(dP[a*3]*g0 + dP[a*3+1]*g1 + dP[a*3+2]*g2);
+        if (on && head) { int id = ids[n]; for (int a=0;a<3;a++) atomicAdd(&out[id*3+a], s[a]); }
+    }
+}
+__global__ void an_bd32(int nq, const int* qn, const float* G, const float* H, const float* Vq, float* B) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < nq;
+    int qq = on ? q : 0;
+    bool head = (threadIdx.x & 7) == 0;
+    float vq = on ? Vq[qq] : 0.f;
+    const float* h = H + (size_t)qq*81;
+    for (int n=0;n<27;n++) {
+        const float* g = G + ((size_t)qq*27+n)*3;
+        float m[9];
+        for (int a=0;a<3;a++) for (int c=0;c<3;c++) {
+            float t = 0.f;
+            for (int b=0;b<3;b++) for (int d=0;d<3;d++) t += h[(a*3+b)*9 + c*3+d]*g[b]*g[d];
+            m[a*3+c] = vq*t;
+        }
+        for (int k=0;k<9;k++) m[k] = seg8f(m[k]);
+        if (on && head) { int id = qn[(size_t)qq*27+n]; for (int k=0;k<9;k++) atomicAdd(&B[id*9+k], m[k]); }
+    }
+}
+// 노드 3x3 블록 곱 z = D r (float32), 블록 대각 평활·전처리용
+__global__ void an_b3(int n, const float* D, const float* r, float* z, float w) {
+    int i = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float* d = D + (size_t)i*9;
+    float r0 = r[i*3], r1 = r[i*3+1], r2 = r[i*3+2];
+    z[i*3]   = w*(d[0]*r0 + d[1]*r1 + d[2]*r2);
+    z[i*3+1] = w*(d[3]*r0 + d[4]*r1 + d[5]*r2);
+    z[i*3+2] = w*(d[6]*r0 + d[7]*r1 + d[8]*r2);
+}
 }
 '''
 _MOD = [None]
-NAMES = ("an_elem", "an_mv", "an_bd", "an_rsp", "an_rsf")
+NAMES = ("an_elem", "an_mv", "an_bd", "an_rsp", "an_rsf", "an_mv32", "an_bd32", "an_b3")
 
 
 def P(t):

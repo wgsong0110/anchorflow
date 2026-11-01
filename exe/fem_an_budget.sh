@@ -16,7 +16,7 @@ for k in 1 2; do
       nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits -l 1 > $O/smi.csv 2>/dev/null & SM=$!
       echo "카드 $G" > $O/card.txt
       CUDA_VISIBLE_DEVICES=$G python -u exe/fem_an_sim.py --data /home/dkta/work/one/L000/L000.pt --out $O --tag L000 --floor vel --frames 10 \
-        --cell $C --pc mg --K $k --integ mid --newton $nt --cg $cg --cg_tol 0 --nt_tol 0 --sec --gfin $EXTRA < /dev/null > $O/log.txt 2>&1
+        --cell $C --pc mg --K $k --integ mid --newton $nt --cg $cg --cg_tol 0 --nt_tol 0 ${AN_SECF---sec --gfin} $EXTRA < /dev/null > $O/log.txt 2>&1
       kill $SM; echo "$V $(grep -a '롤아웃\|rror' $O/log.txt | tail -1 | cut -c1-160)"
       rclone copy $O r2:storage/result/anchorflow/lbours/fem_an/$NM/$V -q
     done; done ) &

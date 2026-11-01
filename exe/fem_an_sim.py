@@ -50,6 +50,9 @@ ap.add_argument("--mg_nc", type=int, default=10, help="가장 거친 층 평활 
 ap.add_argument("--dump", action="store_true")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
+ap.add_argument("--fast", action="store_true", help="가속 판: 헤시안 float32 저장·곱 (기울기·잔차 float64), MG 계층 프레임당 한 번 (뉴턴마다 0 층 대각만 갱신), "
+                "고정 예산 (조기 종료 없음), 호스트 동기화 없음 (스칼라는 장치에), 장치 쪽 선탐색 후보 1·½·¼ (--fast_ls 0 이면 온 걸음)")
+ap.add_argument("--fast_ls", type=int, default=1)
 ap.add_argument("--gfin", action="store_true", help="걸음 끝 y 에서 기울기를 한 번 더 재 |g|/|g0| 기록 (구간 '검사', 풀이 비용 아님)")
 ap.add_argument("--sec", action="store_true", help="구간별 시간 (구간 경계마다 동기화 -- 합이 동기화 없는 프레임 시간보다 조금 크다): p2g·바닥·요소 (기울기+헤시안)·대각·멀티그리드 구성·PCG (헤시안 곱·사이클)·선탐색·G2P")
 ap.add_argument("--prof", action="store_true", help="커널별 GPU 시간 (CUDA 이벤트) 을 fem.jsonl 에 -- 단독 카드에서만 의미")
@@ -153,11 +156,33 @@ class Elem:
         s.H = torch.empty(s.nq, 81, device=dev, dtype=D64)
         s.nmv = 0
 
-    def eval(s, y, mode):
+    def eval(s, y, mode, dev_e=False):
         f = torch.zeros(s.na, 3, device=dev, dtype=D64)
+        if (mode & 8) and not hasattr(s, "H32"):
+            s.H32 = torch.empty(s.nq, 81, device=dev, dtype=torch.float32)
         AK.launch("an_elem", s.nq, (np.int32(s.nq), AK.P(s.qn), AK.P(s.G), AK.P(s.Fq), AK.P(s.Vq), AK.P(y.contiguous()), np.float64(mu), np.float64(lam),
-                                    np.int32(mode), AK.P(s.E), AK.P(f), AK.P(s.H)))
-        return (float(s.E.sum()) if mode & 4 else None), f
+                                    np.int32(mode), AK.P(s.E), AK.P(f), AK.P(s.H), AK.P(getattr(s, "H32", None))))
+        if not (mode & 4):
+            return None, f
+        return (s.E.sum() if dev_e else float(s.E.sum())), f
+
+    def f32(s):
+        if not hasattr(s, "G32"):
+            s.G32 = s.G.float().contiguous()
+            s.V32 = s.Vq.float().contiguous()
+        return s
+
+    def mv32(s, dy):
+        with tsec("헤시안곱" if s.na == STAT.get("na") else "헤시안곱_거친층"):
+            o = torch.zeros(s.na, 3, device=dev, dtype=torch.float32)
+            AK.launch("an_mv32", s.nq, (np.int32(s.nq), AK.P(s.qn), AK.P(s.G32), AK.P(s.H32), AK.P(s.V32), AK.P(dy.contiguous()), AK.P(o)))
+            s.nmv += 1
+            return o
+
+    def bd32(s):
+        B = torch.zeros(s.na, 9, device=dev, dtype=torch.float32)
+        AK.launch("an_bd32", s.nq, (np.int32(s.nq), AK.P(s.qn), AK.P(s.G32), AK.P(s.H32), AK.P(s.V32), AK.P(B)))
+        return B.reshape(s.na, 3, 3)
 
     def mv(s, dy):
         with tsec("헤시안곱" if s.na == STAT.get("na") else "헤시안곱_거친층"):
@@ -326,6 +351,226 @@ class MG:
     def __call__(s, r):
         with tsec("MG사이클"):
             return s.vc(0, r)
+
+
+def ckern32(ch):
+    k = ("f", ch)
+    if k not in _CK:
+        _CK[k] = ckern(ch).float().contiguous()
+    return _CK[k]
+
+
+def restrict32(xd, nbf, Nc):
+    ch = xd.shape[-1]
+    t = xd.permute(3, 0, 1, 2)[None]
+    npad = [2 * n - 4 for n in Nc]
+    t = torch.nn.functional.pad(t, (0, npad[2] - nbf[2], 0, npad[1] - nbf[1], 0, npad[0] - nbf[0]))
+    return torch.nn.functional.conv3d(t, ckern32(ch), stride=2, padding=3, groups=ch)[0].permute(1, 2, 3, 0)
+
+
+def prolong32(xc, nbf):
+    ch = xc.shape[-1]
+    o = torch.nn.functional.conv_transpose3d(xc.permute(3, 0, 1, 2)[None], ckern32(ch), stride=2, padding=3, groups=ch)
+    return o[0, :, :nbf[0], :nbf[1], :nbf[2]].permute(1, 2, 3, 0)
+
+
+class MG32(MG):
+    """가속 판 멀티그리드: 계층 (거친 층 가우스 점·헤시안·대각·ω) 을 프레임 시작 (y = 0, X = F_q) 에서 한 번 만들고, 뉴턴마다 0 층의 T·대각만 바꾼다. 연산 float32."""
+
+    def __init__(s, ctx, el, Mi32, T32, D0):
+        s.T = T32
+        s.L = [dict(el=el, Mi=Mi32, D=D0, nb=ctx["nb"], act=ctx["act"])]
+        X, tq, V, nbf = el.Fq, ctx["tq"], el.Vq, ctx["nb"]
+        mdn = ctx["mnd"].reshape(*ctx["nb"], 1)
+        Ai_ = Ai64
+        for lv in range(1, a.mg_levels):
+            Nc = [n // 2 + 3 for n in nbf]
+            tc = (tq + 1.5) / 2
+            base = torch.floor(tc - 0.5).long()
+            fx = tc - base
+            cid = (base[:, 0] * Nc[1] + base[:, 1]) * Nc[2] + base[:, 2]
+            uc, cinv = torch.unique(cid, return_inverse=True)
+            nc = uc.numel()
+            oi = ((fx >= 1.0).long() * torch.tensor([4, 2, 1], device=dev)).sum(1)
+            qinv = cinv * 8 + oi
+            nq = nc * 8
+            Fc, _ = rs_mean(X, V, qinv, nq)
+            cF, _ = rs_mean(X, V, cinv, nc)
+            has = torch.zeros(nq, device=dev, dtype=torch.bool).index_put_((qinv,), torch.tensor(True, device=dev))
+            Fc = torch.where(has[:, None], Fc, cF.repeat_interleave(8, 0)).contiguous()
+            Vc = (torch.zeros(nc, device=dev, dtype=D64).index_add_(0, cinv, V).repeat_interleave(8) / 8.0).contiguous()
+            o8 = torch.arange(8, device=dev)
+            qfx = (1.0 + GG * (2 * torch.stack([o8 // 4, (o8 % 4) // 2, o8 % 2], 1).double() - 1)).repeat(nc, 1)
+            Ai_ = Ai_ / 2
+            _, QGW = bsw(qfx, Ai_)
+            cb = torch.stack([uc // (Nc[1] * Nc[2]), (uc // Nc[2]) % Nc[1], uc % Nc[2]], 1).repeat_interleave(8, 0)
+            qnid = ((cb[:, None, 0] + OFF[None, :, 0]) * Nc[1] + cb[:, None, 1] + OFF[None, :, 1]) * Nc[2] + cb[:, None, 2] + OFF[None, :, 2]
+            mdc = restrict_dense(mdn, nbf, Nc)
+            mflat = mdc.reshape(-1)
+            act = torch.nonzero(mflat > 0).flatten()
+            na = act.numel()
+            cmp_ = torch.full((mflat.numel(),), -1, device=dev, dtype=torch.long)
+            cmp_[act] = torch.arange(na, device=dev)
+            qn = cmp_[qnid]
+            G = torch.einsum("qab,qna->qnb", Fc.reshape(nq, 3, 3), QGW).contiguous()
+            elc = Elem(qn.int().contiguous(), G, Fc, Vc, na)
+            elc.eval(torch.zeros(na, 3, device=dev, dtype=D64), 2 | 8)
+            elc.f32()
+            Mic = (mflat[act] / (TAU * TAU)).float()[:, None]
+            s.L.append(dict(el=elc, Mi=Mic, D=torch.linalg.inv(Mic[..., None] * I3.float() + elc.bd32()), nb=Nc, act=act))
+            tq, X, V, nbf, mdn = (cb.double() + qfx), Fc, Vc, Nc, mdc
+            if na < a.mg_min:
+                break
+        s.nl = len(s.L)
+        for l in range(s.nl):
+            na_ = s.L[l]["Mi"].shape[0]
+            z = torch.randn(na_, 3, device=dev, dtype=torch.float32, generator=torch.Generator(device=dev).manual_seed(l))
+            for _ in range(a.mg_pow):
+                w_ = s.sm(l, s.op(l, z))
+                lm = (z * w_).sum() / (z * z).sum()
+                z = w_ / w_.norm()
+            s.L[l]["w"] = a.mg_omega / lm.clamp_min(1e-30)                             # 장치 스칼라 (동기화 없음)
+        s.lam = None
+
+    def set_fine(s, D0, T32):
+        s.L[0]["D"] = D0
+        s.T = T32
+
+    def op(s, l, z):
+        lv = s.L[l]
+        if l == 0:
+            return lv["Mi"] * z + (s.T @ lv["el"].mv32((s.T @ z[..., None]).squeeze(-1))[..., None]).squeeze(-1)
+        return lv["Mi"] * z + lv["el"].mv32(z)
+
+    def tr(s, l, r):
+        A_, B_ = s.L[l], s.L[l + 1]
+        if l == 0:
+            r = (s.T @ r[..., None]).squeeze(-1)
+        dn = torch.zeros(int(np.prod(A_["nb"])), 3, device=dev, dtype=torch.float32)
+        dn[A_["act"]] = r
+        return restrict32(dn.reshape(*A_["nb"], 3), A_["nb"], B_["nb"]).reshape(-1, 3)[B_["act"]]
+
+    def pr(s, l, zc):
+        A_, B_ = s.L[l], s.L[l + 1]
+        dn = torch.zeros(int(np.prod(B_["nb"])), 3, device=dev, dtype=torch.float32)
+        dn[B_["act"]] = zc
+        z = prolong32(dn.reshape(*B_["nb"], 3), A_["nb"]).reshape(-1, 3)[A_["act"]]
+        if l == 0:
+            z = (s.T @ z[..., None]).squeeze(-1)
+        return z
+
+
+def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh):
+    """가속 판 한 걸음: 고정 예산 뉴턴 a.newton x PCG a.cg, 호스트 동기화 없음 (스칼라 장치), 헤시안 float32, MG 계층은 프레임당 한 번 (mgh[0])."""
+    na = mn.shape[0]
+    Ut = Uk + TAU * vk + TAU * TAU * gv
+    z0 = Uk + (0.5 * TAU * vk if a.integ == "mid" else 0.0)
+    al = (2.0 / TAU) if a.integ == "mid" else (1.0 / TAU)
+    Mi = (mn / (TAU * TAU))[:, None]
+    Mi32 = Mi.float()
+    I32 = I3.float()
+    mq_n = torch.zeros(na, device=dev, dtype=D64).index_add_(0, qn.reshape(-1), (QW * mq[:, None]).reshape(-1)) if FLOOR else None
+    y = Ut.clone()
+    if fixd is not None:
+        y[fixd] = Uk[fixd] + TAU * vbc[fixd]
+    el.f32()
+    g0n = None
+    for it in range(a.newton):
+        with tsec("바닥"):
+            if FLOOR:
+                Ue = (2 * y - Uk) if a.integ == "mid" else y
+                xq = xq0 + (QW[..., None] * Ue[qn]).sum(1)
+                wst = wstk((xq - PT) @ NR)
+                an = torch.zeros(na, device=dev, dtype=D64).index_add_(0, qn.reshape(-1), (QW * (mq * wst)[:, None]).reshape(-1))
+                r = torch.where(mq_n > 0, an / mq_n.clamp_min(1e-300), torch.zeros_like(an)).clamp(0.0, 1.0)
+                k = torch.exp(KEX * torch.log1p(-r))
+                vn1 = al * (y - z0)
+                Pm = torch.where(((vn1 @ NR) > 0)[:, None, None], I3 - NR[:, None] * NR[None, :], I3.expand(na, 3, 3)) if VOUT else I3.expand(na, 3, 3)
+                sk = torch.sqrt(k)[:, None, None]
+                T = sk * Pm + (I3 - Pm)
+                yh = Ut + ((1 - k)[:, None, None] * Pm @ (z0 - Ut)[..., None]).squeeze(-1)
+                eta = ((I3 - Pm) @ (y - Ut)[..., None]).squeeze(-1) + sk.squeeze(-1) * (Pm @ (y - yh)[..., None]).squeeze(-1)
+            else:
+                T = I3.expand(na, 3, 3)
+                yh = Ut
+                eta = y - Ut
+            if fixd is not None:
+                T = torch.where(fixd[:, None, None], torch.zeros_like(T), T)
+                yh = torch.where(fixd[:, None], Uk + TAU * vbc, yh)
+                eta = torch.where(fixd[:, None], torch.zeros_like(eta), eta)
+            Tc = T.contiguous()
+            T32 = Tc.float()
+        yfun = lambda e_: yh + (Tc @ e_[..., None]).squeeze(-1)
+        y = yfun(eta)
+        with tsec("요소"):
+            Ee, fe = el.eval(y, 1 | 8 | (4 if a.fast_ls else 0), dev_e=True)
+            g = Mi * eta + (Tc @ fe[..., None]).squeeze(-1)
+            if it == 0:
+                g0t = g.norm()
+        with tsec("대각"):
+            Bd = el.bd32()
+            D0 = torch.linalg.inv(Mi32[..., None] * I32 + T32 @ Bd @ T32)
+        if a.pc == "mg":
+            if mgh[0] is None:
+                with tsec("MG구성"):
+                    mgh[0] = MG32(ctx, el, Mi32, T32, D0)
+            else:
+                mgh[0].set_fine(D0, T32)
+            prec = mgh[0]
+        else:
+            prec = lambda r_: (D0 @ r_[..., None]).squeeze(-1)
+        Aop = lambda p_: Mi32 * p_ + (T32 @ el.mv32((T32 @ p_[..., None]).squeeze(-1))[..., None]).squeeze(-1)
+        with tsec("PCG"):
+            rr = (-g).float()
+            zz = prec(rr)
+            rz = (rr * zz).sum()
+            pp = zz.clone()
+            dl = torch.zeros_like(rr)
+            for ci in range(a.cg):
+                Ap = Aop(pp)
+                pAp = (pp * Ap).sum()
+                alp = torch.where(pAp > 0, rz / pAp, torch.zeros_like(pAp))
+                dl = dl + alp * pp
+                rr = rr - alp * Ap
+                zo = zz
+                zz = prec(rr)
+                bet = torch.where(rz > 0, (rr * (zz - zo)).sum() / rz, torch.zeros_like(rz))
+                rz = (rr * zz).sum()
+                pp = zz + bet * pp
+            dl = dl.double()
+        with tsec("선탐색"):
+            if a.fast_ls:
+                E0 = 0.5 * (Mi * eta * eta).sum() + Ee
+                gd = (g * dl).sum()
+                st = torch.zeros((), device=dev, dtype=D64)
+                for c_ in (0.25, 0.5, 1.0):                                            # 큰 후보가 받아들여지면 덮어쓴다 = 받아들여지는 가장 큰 걸음
+                    et = eta + c_ * dl
+                    Et, _ = el.eval(yfun(et), 4, dev_e=True)
+                    E1 = 0.5 * (Mi * et * et).sum() + Et
+                    st = torch.where(torch.isfinite(E1) & (E1 <= E0 + 1e-4 * c_ * gd), torch.full_like(st, c_), st)
+            else:
+                st = 1.0
+            eta = eta + st * dl
+            y = yfun(eta)
+    if a.gfin:
+        with tsec("검사"):
+            _, fe_ = el.eval(y, 1)
+            STAT["gr"] = max(STAT.get("gr", 0.0), float((Mi * eta + (Tc @ fe_[..., None]).squeeze(-1)).norm() / g0t.clamp_min(1e-300)))
+    if a.integ == "mid":
+        U1 = 2 * y - Uk
+        v1 = al * (y - z0)
+    else:
+        U1 = y
+        v1 = (y - Uk) / TAU
+    if fixd is not None:
+        v1 = torch.where(fixd[:, None], vbc, v1)
+    v1 = v1 * DAMP
+    STAT["nt"] = STAT.get("nt", 0) + a.newton
+    STAT["cg"] = STAT.get("cg", 0) + a.newton * a.cg
+    STAT.setdefault("nts", []).append(a.newton)
+    STAT.setdefault("cgs", []).append([a.cg] * a.newton)
+    STAT["lv"] = mgh[0].nl if mgh[0] is not None else 1
+    return U1, v1
 
 
 STAT = {}
@@ -559,8 +804,12 @@ def frame(fi, x, v, F):
     ctx = dict(nb=nb, act=act, mnd=mnd, tq=cb.double() + qfx)
     U = torch.zeros(na, 3, device=dev, dtype=D64)
     tp.__exit__()
+    mgh = [None]
     for _ in range(a.K):
-        U, vn = solve_step(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx)
+        if a.fast:
+            U, vn = solve_step_fast(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx, mgh)
+        else:
+            U, vn = solve_step(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx)
     STAT["nmv"] = el.nmv
     # G2P (프레임 끝 한 번)
     tg = tsec("G2P"); tg.__enter__()
