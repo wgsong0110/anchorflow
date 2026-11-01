@@ -66,7 +66,7 @@ ap.add_argument("--sand", type=int, default=-1, help="모래 재질 (1 켬, 0 �
 ap.add_argument("--pbc", action="store_true", help="정답 config 의 입자 속도 구속 (release_particles_sequentially·enforce_particle_translation, 속도 0 만)")
 ap.add_argument("--pbc_ns", type=int, default=4, help="구속 노드 몫 α 를 재는 걸음 안 표본 시각 수")
 ap.add_argument("--no_pbc_pv", action="store_true", help="프레임 시작 구속 입자 v = 0 덮어쓰기 끔")
-ap.add_argument("--ls_mode", choices=["work", "res"], default="work", help="모래 선탐색 기준: work = 방향을 따른 일 W(c) = ∫₀ᶜ g(η + s δ)·δ ds (사다리꼴; 퍼텐셜이 있으면 에너지 차) 에 아르미호, "
+ap.add_argument("--ls_mode", choices=["work", "res"], default="res", help="모래 선탐색 기준: work = 방향을 따른 일 W(c) = ∫₀ᶜ g(η + s δ)·δ ds (사다리꼴; 퍼텐셜이 있으면 에너지 차) 에 아르미호, "
                 "res = 잔차 노름 |g|² (PCG 를 덜 돌린 방향은 잔차 노름을 줄인다는 보장이 없어 가속 판에서 모두 거부됨)")
 ap.add_argument("--ls_fb", type=float, default=0.0, help="가속 판 잔차 선탐색에서 후보가 모두 거부되면 쓸 보폭 (0 = 움직이지 않음, 절 AN 과 같음)")
 ap.add_argument("--save_every", type=int, default=10, help="pred 를 이 프레임마다 중간 저장 (발산해도 덤프 남김)")
