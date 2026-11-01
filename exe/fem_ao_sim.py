@@ -66,6 +66,8 @@ ap.add_argument("--sand", type=int, default=-1, help="모래 재질 (1 켬, 0 �
 ap.add_argument("--pbc", action="store_true", help="정답 config 의 입자 속도 구속 (release_particles_sequentially·enforce_particle_translation, 속도 0 만)")
 ap.add_argument("--pbc_ns", type=int, default=4, help="구속 노드 몫 α 를 재는 걸음 안 표본 시각 수")
 ap.add_argument("--no_pbc_pv", action="store_true", help="프레임 시작 구속 입자 v = 0 덮어쓰기 끔")
+ap.add_argument("--ls_mode", choices=["work", "res"], default="work", help="모래 선탐색 기준: work = 방향을 따른 일 W(c) = ∫₀ᶜ g(η + s δ)·δ ds (사다리꼴; 퍼텐셜이 있으면 에너지 차) 에 아르미호, "
+                "res = 잔차 노름 |g|² (PCG 를 덜 돌린 방향은 잔차 노름을 줄인다는 보장이 없어 가속 판에서 모두 거부됨)")
 ap.add_argument("--ls_fb", type=float, default=0.0, help="가속 판 잔차 선탐색에서 후보가 모두 거부되면 쓸 보폭 (0 = 움직이지 않음, 절 AN 과 같음)")
 ap.add_argument("--save_every", type=int, default=10, help="pred 를 이 프레임마다 중간 저장 (발산해도 덤프 남김)")
 a = ap.parse_args()
@@ -737,7 +739,18 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, kpb=No
                 rz = (rr * zz).sum()
                 pp = zz + bet * pp
         with tsec("선탐색"):
-            if a.fast_ls and SAND:                                                       # 절 AO: 잔차 노름 선탐색 (퍼텐셜 없음), 받아들여지는 가장 큰 후보
+            if a.fast_ls and SAND and a.ls_mode == "work":                               # 절 AO: 일 기준 선탐색 (사다리꼴 0·¼·½·1), 받아들여지는 가장 큰 후보
+                d0 = (g * dl).sum()
+                st = torch.full((), float(a.ls_fb), device=dev, dtype=D64)
+                Wc, cp_, dp_ = torch.zeros((), device=dev, dtype=D64), 0.0, d0
+                for c_ in (0.25, 0.5, 1.0):
+                    et = eta + c_ * dl
+                    _, ft = el.eval(yfun(et), 1)
+                    dc = ((Mi * et + (Tc @ ft[..., None]).squeeze(-1)) * dl).sum()
+                    Wc = Wc + 0.5 * (c_ - cp_) * (dp_ + dc)
+                    cp_, dp_ = c_, dc
+                    st = torch.where(torch.isfinite(Wc) & (Wc <= 1e-4 * c_ * d0) & (d0 < 0), torch.full_like(st, c_), st)
+            elif a.fast_ls and SAND:                                                     # 잔차 노름 선탐색
                 ph0 = (g * g).sum()
                 st = torch.full((), float(a.ls_fb), device=dev, dtype=D64)
                 for c_ in (0.25, 0.5, 1.0):
@@ -759,6 +772,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, kpb=No
                 st = 1.0
             eta = eta + st * dl
             y = yfun(eta)
+            STAT.setdefault("st_dev", []).append(st if torch.is_tensor(st) else torch.tensor(float(st), device=dev))
     if a.gfin:
         with tsec("검사"):
             _, fe_ = el.eval(y, 1)
@@ -891,7 +905,12 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
         ok = False
         for li in range(12):
             et = eta + st * dl
-            if SAND:
+            if SAND and a.ls_mode == "work":                                           # 일 W(st) ≈ st/2 (g(0)·δ + g(st)·δ)
+                _, ft = el.eval(yfun(et), 1)
+                gt_ = Mi * et + (Tc @ ft[..., None]).squeeze(-1)
+                E1 = 0.5 * st * (gd + float((gt_ * dl).sum()))
+                okc = math.isfinite(E1) and gd < 0 and E1 <= 1e-4 * st * gd
+            elif SAND:
                 _, ft = el.eval(yfun(et), 1)
                 gt_ = Mi * et + (Tc @ ft[..., None]).squeeze(-1)
                 E1 = float((gt_ * gt_).sum())
@@ -1157,6 +1176,8 @@ for fi in range(L):
     x2, v2, F2 = frame(fi, x, v, F)
     torch.cuda.synchronize()
     dt_ = time.perf_counter() - t0
+    if "st_dev" in STAT:                                                               # 가속 판 받아들인 보폭 (프레임 시간 잰 뒤에 읽음)
+        STAT["ls_st"] = [round(float(q), 3) for q in STAT.pop("st_dev")]
     gt = d["x"][fi + 1].to(dev).double()
     e = float((x2 - gt).norm(dim=-1).mean()) / EXT
     fin = bool(torch.isfinite(x2).all()) and math.isfinite(e)
@@ -1170,7 +1191,7 @@ for fi in range(L):
         SEC.clear()
     flog.write(json.dumps(rec) + "\n")
     flog.flush()
-    print(f"  프레임 {fi + 1}/{L} {dt_:.2f} s 오차 {100 * e:.3f}% 뉴턴 {STAT.get('nt')} PCG {STAT.get('cg')} 선탐색 {STAT.get('ls')} 층 {STAT.get('lv')} λ {STAT.get('mglam')} 대체 {STAT.get('mgfb')} 헤시안 곱 {STAT.get('nmv')} 최대 |g|/|g0| {STAT.get('gr', 0):.1e} "
+    print(f"  프레임 {fi + 1}/{L} {dt_:.2f} s 오차 {100 * e:.3f}% 뉴턴 {STAT.get('nt')} PCG {STAT.get('cg')} 선탐색 {STAT.get('ls', STAT.get('ls_st'))} 층 {STAT.get('lv')} λ {STAT.get('mglam')} 대체 {STAT.get('mgfb')} 헤시안 곱 {STAT.get('nmv')} 최대 |g|/|g0| {STAT.get('gr', 0):.1e} "
           f"고착 노드 {STAT.get('stuck')} 점 {STAT.get('nq')} 노드 {STAT.get('na')} 유클리드 평균 점 {STAT.get('nbad')} max|v| {float(v2.norm(dim=-1).max()):.3g} "
           f"소성 점 (꼬리, 꼭짓점) {STAT.get('q_plast')} 입자 {STAT.get('p_plast')} 구속 입자 {STAT.get('pbc_p')} 고정 노드 {STAT.get('pbc_fix')}", flush=True)
     if PRED is not None:
