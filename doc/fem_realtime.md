@@ -4009,3 +4009,17 @@ ficus 정답 민감도 (gt_sens.py 를 PG gs_simulation 형식으로 읽게 고�
   - gqw 15/21 + 발산 3 (0006 프레임 62·0013 프레임 22·0019 프레임 21, 앞 프레임 오차가 낮다가 한 프레임에 비유한 -- 배치 분해 비유한으로 보고 대비를 넣어 다시 도는 중). 완주 궤적: 0001 7.31·0016 9.58·0018 8.90 은 모든 이전 판보다 낮고, 0002 11.13·0014 10.75·0017 11.79 미달.
 - 가우스 점 수: lego 약 10.0 만 (입자 31.4 만의 0.32 배), ficus 8952 (입자 17.2 만의 0.052 배), 블록 103 만 (입자 51.2 만 -- 칸당 입자 4 개라 오히려 많음). 서브스텝 비용은 적분점 수에 비례하므로 lego 에서 약 1/3, ficus 에서 약 1/19. 지금 판의 프레임 시간 (lego 12 에서 17 s) 은 프레임 시작 회전·신장 평균을 torch 배치 SVD 로 하는 비용이라 측정 의미 없음 -- 실시간 판은 이 준비를 CUDA 커널로 옮겨야 한다.
 - ficus 가 0.84 배로 떨어지는 것: 가는 가지가 칸을 일부만 채우는데 가우스 점은 칸 전체에 고르게 놓여 굽힘 단면 2 차 모멘트가 커진다 (재료가 없는 곳의 점이 굽힘 강성을 늘림). 입자 적분점 (bnv) 은 재료 위치에만 점이 있어 1.03 배.
+
+### AK.34 새 판 (절 AN, 암시적) 이 쓸 수 있는 B-스플라인 요소·칸 가우스 코드와 검증 스크립트 (색인)
+- **B-스플라인 요소 CUDA 판** `exe/fem_bsel_cuda_sim.py` + 커널 `lib/anchorflow/fem_bsel_cuda.py`
+  - 격자: `simplex.lattice(node_h, HZ_CUBE node_h)` 회전 정육면체, 격자 좌표 y = Ai x; 칸 base = floor(y − ½), fx = y − base ∈ [½, 3/2) (칸 = B-스플라인 다항식 조각 [base+½, base+3/2]³, 27 노드).
+  - 커널: `bs_force` (점마다 A = I + Σ_27 U ⊗ ∇w, X = A F, 표준 FCR `fcrP`, f_n −= V P Fᵀ ∇w_n; 점 배열이 칸 번호로 정렬돼 있으면 워프 구간 합), `bs_contact` (바닥 후보 입자 고착 질량·실제 접촉), `bs_node` (노드 걸음, 고착 (1 − a/m)^kex, `vout` = 바깥 법선 제외, 비관통), `bs_g2p` (입자 x·v·F ← A(x_p) F_p).
+  - 플래그: `--theta` (전단 몫 상한, 0 = 없음), `--vfl_out` (절 AK.31), `--gq` (절 AK.33 칸 2x2x2 가우스 적분점), `--dump` (pred.pt), `--no_graph`, `--N`, `--node_h`, `--floor vel|none`, ficus 는 `--cfg_bc --region_density --pg_vdamp`.
+  - 칸 가우스 (`--gq`): 프레임 시작 torch (`frame()` 안): 점유 칸마다 8 점 (fx = 1 ± ½/√3), 가중 = 칸 입자 부피 / 8, F_q = 팔분 영역 입자 F 의 회전·신장 분리 평균 `rs_mean()` (빈 팔분 영역은 칸 평균, 뒤집힌 입자·비유한은 유클리드 평균), 국소 CFL 질량을 가우스 점 기울기로; 서브스텝은 같은 `bs_force` 를 점 배열 (GQ) 에. 준비가 torch 배치 SVD 라 느림 (lego 프레임 12 에서 17 s) -- CUDA 로 옮길 곳.
+  - 실행: `exe/fem_bsel_cuda_run.sh <판 이름> <궤적,...> [추가 인자]` (출력 /tmp/dkta/lbours/fem_ak_bselc/<궤적>_<판> + R2; 궤적 이름 stretch·shear·drop1·ficus·L000·0000 에서 0019). torch 검증판 `exe/fem_bsel_sim.py` (`fem_bsel_run.sh`).
+- **검증 스크립트와 정답**
+  - 블록 아핀 (절 AK.24): 자료 `exe/fem_ak_block.py` (/tmp/dkta/ak_block/{stretch,shear}.pt), 정답 MPM `exe/fem_ak_block_mpm.py` (mpm_{stretch,shear}/x.pt), 분석 `exe/fem_ak_block_ana.py <block.pt> 이름:경로 ...` (주기 영점·FFT). 정답 신축 74.4 ms·전단 87.2 ms.
+  - 떨어지는 블록 (절 AK.29): 자료 `exe/fem_ak_drop.py` (lego 미달 5 궤적과 같은 밀도·질량·착지 속력), 정답 `exe/fem_ak_drop_mpm.py` (1/240 s 기록), 1/60·1/120·1/240 자료 `exe/fem_ak_drop_mk.py`, 분석 `exe/fem_ak_drop_ana.py <init.pt> 이름:경로:프레임dt ...` (반발 계수·튀어 오름·최대 압축·복원 시간). 정답 0.750·83.4 mm·−0.052·18.2 ms. R2: lbours/ak_drop2 (init.pt, mpm/x240.pt, drop_f{1,2,4}.pt).
+  - ficus 잎 끝 주기 (절 AK.16): `exe/fem_p_period.py --data <F_pg_v0.pt> --pred <pred.pt> ...` 또는 `exe/fem_ak_period.sh <lbours 상대 경로>`. 정답 1.398 s.
+  - 굽힘 패치 γ* (절 AK.30): `exe/fem_ak_gstar.py [ν]`.
+- **기준 결과 (비측정)**: B-스플라인 입자 적분점 + 상한 없음 + vfl_out (bnv): 블록 1.01·1.03 배, ficus 1.03 배 0.271%, 낙하 0.571 / 69.9 mm, lego 16/21. 칸 가우스 (gqw): 블록 1.00·0.98 배, ficus 0.84 배 1.037%, 낙하 0.571 / 69.8 mm, lego 15/21 + 발산 3 (절 AK.33).
