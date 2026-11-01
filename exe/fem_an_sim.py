@@ -418,20 +418,20 @@ class MG32(MG):
             elc = Elem(qn.int().contiguous(), G, Fc, Vc, na)
             elc.eval(torch.zeros(na, 3, device=dev, dtype=D64), 2 | 8)
             elc.f32()
-            Mic = (mflat[act] / (TAU * TAU)).float()[:, None]
-            s.L.append(dict(el=elc, Mi=Mic, D=torch.linalg.inv(Mic[..., None] * I3.float() + elc.bd32()), nb=Nc, act=act))
+            Mic = (mflat[act] / (TAU * TAU))[:, None]
+            s.L.append(dict(el=elc, Mi=Mic, D=torch.linalg.inv(Mic[..., None] * I3 + elc.bd32().double()), nb=Nc, act=act))
             tq, X, V, nbf, mdn = (cb.double() + qfx), Fc, Vc, Nc, mdc
             if na < a.mg_min:
                 break
         s.nl = len(s.L)
         for l in range(s.nl):
             na_ = s.L[l]["Mi"].shape[0]
-            z = torch.randn(na_, 3, device=dev, dtype=torch.float32, generator=torch.Generator(device=dev).manual_seed(l))
+            z = torch.randn(na_, 3, device=dev, dtype=D64, generator=torch.Generator(device=dev).manual_seed(l))
             for _ in range(a.mg_pow):
                 w_ = s.sm(l, s.op(l, z))
                 lm = (z * w_).sum() / (z * z).sum()
                 z = w_ / w_.norm()
-            s.L[l]["w"] = a.mg_omega / lm.clamp_min(1e-30)                             # 장치 스칼라 (동기화 없음)
+            s.L[l]["w"] = a.mg_omega / lm.clamp_min(1e-300)                             # 장치 스칼라 (동기화 없음)
         s.lam = None
 
     def set_fine(s, D0, T32):
@@ -439,27 +439,11 @@ class MG32(MG):
         s.T = T32
 
     def op(s, l, z):
+        """벡터 float64, 헤시안 곱만 float32 (질량 1e-50 대 가장자리 노드가 float32 에서 0 이 되지 않게)."""
         lv = s.L[l]
         if l == 0:
-            return lv["Mi"] * z + (s.T @ lv["el"].mv32((s.T @ z[..., None]).squeeze(-1))[..., None]).squeeze(-1)
-        return lv["Mi"] * z + lv["el"].mv32(z)
-
-    def tr(s, l, r):
-        A_, B_ = s.L[l], s.L[l + 1]
-        if l == 0:
-            r = (s.T @ r[..., None]).squeeze(-1)
-        dn = torch.zeros(int(np.prod(A_["nb"])), 3, device=dev, dtype=torch.float32)
-        dn[A_["act"]] = r
-        return restrict32(dn.reshape(*A_["nb"], 3), A_["nb"], B_["nb"]).reshape(-1, 3)[B_["act"]]
-
-    def pr(s, l, zc):
-        A_, B_ = s.L[l], s.L[l + 1]
-        dn = torch.zeros(int(np.prod(B_["nb"])), 3, device=dev, dtype=torch.float32)
-        dn[B_["act"]] = zc
-        z = prolong32(dn.reshape(*B_["nb"], 3), A_["nb"]).reshape(-1, 3)[A_["act"]]
-        if l == 0:
-            z = (s.T @ z[..., None]).squeeze(-1)
-        return z
+            return lv["Mi"] * z + (s.T @ lv["el"].mv32((s.T @ z[..., None]).squeeze(-1).float()).double()[..., None]).squeeze(-1)
+        return lv["Mi"] * z + lv["el"].mv32(z.float()).double()
 
 
 def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh):
@@ -469,8 +453,6 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh):
     z0 = Uk + (0.5 * TAU * vk if a.integ == "mid" else 0.0)
     al = (2.0 / TAU) if a.integ == "mid" else (1.0 / TAU)
     Mi = (mn / (TAU * TAU))[:, None]
-    Mi32 = Mi.float()
-    I32 = I3.float()
     mq_n = torch.zeros(na, device=dev, dtype=D64).index_add_(0, qn.reshape(-1), (QW * mq[:, None]).reshape(-1)) if FLOOR else None
     y = Ut.clone()
     if fixd is not None:
@@ -501,7 +483,6 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh):
                 yh = torch.where(fixd[:, None], Uk + TAU * vbc, yh)
                 eta = torch.where(fixd[:, None], torch.zeros_like(eta), eta)
             Tc = T.contiguous()
-            T32 = Tc.float()
         yfun = lambda e_: yh + (Tc @ e_[..., None]).squeeze(-1)
         y = yfun(eta)
         with tsec("요소"):
@@ -510,20 +491,20 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh):
             if it == 0:
                 g0t = g.norm()
         with tsec("대각"):
-            Bd = el.bd32()
-            D0 = torch.linalg.inv(Mi32[..., None] * I32 + T32 @ Bd @ T32)
+            Bd = el.bd32().double()
+            D0 = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
         if a.pc == "mg":
             if mgh[0] is None:
                 with tsec("MG구성"):
-                    mgh[0] = MG32(ctx, el, Mi32, T32, D0)
+                    mgh[0] = MG32(ctx, el, Mi, Tc, D0)
             else:
-                mgh[0].set_fine(D0, T32)
+                mgh[0].set_fine(D0, Tc)
             prec = mgh[0]
         else:
             prec = lambda r_: (D0 @ r_[..., None]).squeeze(-1)
-        Aop = lambda p_: Mi32 * p_ + (T32 @ el.mv32((T32 @ p_[..., None]).squeeze(-1))[..., None]).squeeze(-1)
+        Aop = lambda p_: Mi * p_ + (Tc @ el.mv32((Tc @ p_[..., None]).squeeze(-1).float()).double()[..., None]).squeeze(-1)
         with tsec("PCG"):
-            rr = (-g).float()
+            rr = -g
             zz = prec(rr)
             rz = (rr * zz).sum()
             pp = zz.clone()
@@ -539,7 +520,6 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh):
                 bet = torch.where(rz > 0, (rr * (zz - zo)).sum() / rz, torch.zeros_like(rz))
                 rz = (rr * zz).sum()
                 pp = zz + bet * pp
-            dl = dl.double()
         with tsec("선탐색"):
             if a.fast_ls:
                 E0 = 0.5 * (Mi * eta * eta).sum() + Ee
