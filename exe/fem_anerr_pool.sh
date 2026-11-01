@@ -1,13 +1,13 @@
 #!/bin/bash
 # 절 AN.err 실행 풀 (잡 안, 비측정): 할 일 목록 파일의 줄 "<판> <궤적> [인자...]" 을 차례로, 빈 카드 (카드 1 에서 6 중 계산 프로세스 0 이고 내가 잡지 않은 카드) 하나에 하나씩 띄운다. 카드 0 은 쓰지 않는다.
-# 궤적: L000 (NFS -> 노드 /tmp 복사), 0000 에서 0019 (/tmp/dkta/af_data), drop1 (/tmp/dkta/ak_drop2/drop_f1.pt). 출력 /tmp/dkta/lbours/fem_anerr/<묶음>/<판>_<궤적> -> 끝나면 바로 R2 같은 경로.
+# 궤적: L000 (NFS -> 노드 /tmp 복사), 0000 에서 0019 (/tmp/dkta/af_data), drop1 (/tmp/dkta/ak_drop2/drop_f1.pt). 출력 /dev/shm/dkta/lbours/fem_anerr/<묶음> (노드 /tmp 가득 참)/<판>_<궤적> -> 끝나면 바로 R2 같은 경로.
 # 사용: bash exe/fem_anerr_pool.sh <묶음> <목록 파일 (작업 사본 상대)> ; 동시 실행 상한 ERR_PAR (기본 6), 후보 카드 ERR_CARDS (기본 "1 2 3 4 5 6")
 cd "$(dirname "$0")/.." || exit 1
 PY=/home/dkta/.conda/envs/af/bin/python
 export PYTHONUTF8=1 OMP_NUM_THREADS=8 PATH=$HOME/bin:/home/dkta/.conda/envs/af/bin:$PATH
-export CUPY_CACHE_DIR=/tmp/dkta/cache/cupy XDG_CACHE_HOME=/tmp/dkta/cache TORCH_EXTENSIONS_DIR=/tmp/dkta/cache/torch_ext
+export CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy XDG_CACHE_HOME=/dev/shm/dkta/cache TORCH_EXTENSIONS_DIR=/dev/shm/dkta/cache/torch_ext
 NM=$1; LST=$2
-R=${ERR_ROOT:-/dev/shm/dkta/lbours/fem_anerr}/$NM; RR=r2:storage/result/anchorflow/lbours/fem_anerr/$NM; CL=/tmp/dkta/anerr_claim
+R=${ERR_ROOT:-/dev/shm/dkta/lbours/fem_anerr}/$NM; RR=r2:storage/result/anchorflow/lbours/fem_anerr/$NM; CL=/dev/shm/dkta/anerr_claim
 mkdir -p $R $CL $CUPY_CACHE_DIR /tmp/dkta/anerr_data
 [ -s /tmp/dkta/anerr_data/L000.pt ] || cp /home/dkta/work/one/L000/L000.pt /tmp/dkta/anerr_data/L000.pt
 echo "[묶음 $NM] $(cat .done) $(date '+%F %T')"; df -h /tmp | tail -1
