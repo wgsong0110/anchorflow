@@ -64,7 +64,16 @@ ap.add_argument("--riem_eps_ref", default="G", choices=["G", "l2"],
 ap.add_argument("--riem_tol", type=float, default=0.0,
                 help="riem: >0 이면 반복 수 고정 대신 수렴 기준 -- 최근 10 반복의 상대 L2 감소 (L2[k-10]-L2[k])/L2[k-10] 가 "
                      "이 값 이하가 되면 그 프레임을 멈춘다 (최소 --riem_tmin, 최대 --riem_maxit)")
-ap.add_argument("--riem_tmin", type=int, default=20, help="riem_tol: 프레임당 최소 반복")
+ap.add_argument("--riem_tmin", type=int, default=20, help="riem_tol·riem_gtol: 프레임당 최소 반복")
+ap.add_argument("--riem_gtol", type=float, default=0.0,
+                help="riem: >0 이면 수렴 기준 = 기울기 노름 상대 감소 |g|/|g0| ≤ 이 값 (g0 = 그 프레임 첫 반복 기울기) 또는 L2 ≤ 1e-16 "
+                     "(최소 --riem_tmin, 최대 --riem_maxit). --riem_tol 대신 쓴다")
+ap.add_argument("--riem_cgtol", type=float, default=0.0,
+                help="riem: >0 이면 CG 를 상대 잔차 |r|/|g| ≤ 이 값까지 (상한 --riem_cgmax), 0 이면 기존 (riem_cg 회, 1e-4)")
+ap.add_argument("--riem_cgmax", type=int, default=500, help="riem_cgtol: CG 상한")
+ap.add_argument("--riem_pcg", action="store_true",
+                help="riem: CG 전처리 = 계량 대각 (야코비). 대각은 프레임마다 첫 반복에 Hutchinson 추정 (Rademacher --pcg_probes 개)")
+ap.add_argument("--pcg_probes", type=int, default=32)
 ap.add_argument("--riem_maxit", type=int, default=3000, help="riem_tol: 프레임당 최대 반복")
 ap.add_argument("--feas", action="store_true",
                 help="riem: Armijo 되돌림에 가능성 검사를 넣는다 -- 입자 누적 det F > 0 (--riem_partF 필요) 과 표현 고유 제약 "
@@ -1775,6 +1784,7 @@ for t in range(T_START, T + 1):
             it[0] = ntot
             STOP.append((t, ntot, ntot, float(Jfun(flat([q.detach() for q in PL]))[0].min()), eps, "ipm"))
         _L2H = []                                             # riem_tol: 이 프레임 반복별 L2
+        _G0N = [None]; _MINV = [None]; CGN = []                 # riem_gtol: 첫 기울기 노름 / riem_pcg: 대각 역 / 반복별 CG 횟수
         for it_ in range(0 if a.opt == "ipm" else (a.riem_maxit if a.riem_tol > 0 else (a.iters0 if t == 1 else a.iters))):
             if a.profile and it_ == WARM:
                 TM.clear(); NCG[0] = 0
@@ -1798,6 +1808,12 @@ for t in range(T_START, T + 1):
             l2.backward()
             gk = flat([q.grad if q.grad is not None else torch.zeros_like(q) for q in PL]).detach()
             theta = flat([q.detach() for q in PL])
+            if a.riem_gtol > 0:
+                _gn_ = float(gk.norm())
+                if _G0N[0] is None:
+                    _G0N[0] = _gn_
+                if it_ >= a.riem_tmin and (_gn_ <= a.riem_gtol * _G0N[0] or float(l2) <= 1e-16):
+                    break                                     # 수렴: 이 반복은 걷지 않는다
             if a.profile:
                 t2_ = tic(); TM["손실 앞·뒤 (L2 기울기)"] += t2_ - t_; t_ = t2_
             with torch.no_grad():
@@ -1809,8 +1825,26 @@ for t in range(T_START, T + 1):
                     _gn = float(gk.norm()); _u = gk / max(_gn, 1e-30)
                     _ray = float((_u * Hv(_u)).sum())             # 기울기 방향의 계량 강성 gᵀHg/|g|² (감쇠 제외)
                     _DIAG = (_gn, _ray)
-                x = torch.zeros_like(gk); r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
-                for _ in range(a.riem_cg):                    # CG: G x = g
+                if a.riem_pcg and _MINV[0] is None:            # 계량 대각 (Hutchinson), 프레임마다 한 번
+                    _dg = torch.zeros_like(gk)
+                    for _ in range(a.pcg_probes):
+                        _z = torch.randint(0, 2, gk.shape, device=gk.device).to(gk.dtype) * 2 - 1
+                        _dg += _z * Hv(_z)
+                    _MINV[0] = 1.0 / (GSC * a.riem_k * (_dg / a.pcg_probes).clamp_min(0.0) + eps)
+                x = torch.zeros_like(gk)
+                if a.riem_cgtol > 0:                           # (전처리) CG 를 상대 잔차까지
+                    r = gk.clone(); z = r * _MINV[0] if a.riem_pcg else r.clone(); pdir = z.clone()
+                    rz = (r * z).sum(); gn0 = gk.norm(); ncg = 0
+                    for _ in range(a.riem_cgmax):
+                        Gp = Gv(pdir); al = rz / (pdir * Gp).sum().clamp_min(1e-30)
+                        x += al * pdir; r -= al * Gp; ncg += 1
+                        if r.norm() <= a.riem_cgtol * gn0:
+                            break
+                        z = r * _MINV[0] if a.riem_pcg else r
+                        rz_new = (r * z).sum(); pdir = z + (rz_new / rz) * pdir; rz = rz_new
+                    CGN.append(ncg)
+                r = gk.clone(); pdir = r.clone(); rr = (r * r).sum()
+                for _ in range(0 if a.riem_cgtol > 0 else a.riem_cg):                    # CG: G x = g
                     Gp = Gv(pdir); al = rr / (pdir * Gp).sum().clamp_min(1e-30)
                     x += al * pdir; r -= al * Gp
                     rr_new = (r * r).sum()
@@ -1904,7 +1938,7 @@ for t in range(T_START, T + 1):
             if a.riem_partF and REB:
                 with torch.no_grad():
                     DETC[0] = DETC[0] * det3(YJ(X_, FI)[1]).double()
-            STOP.append((t, it_ + 1, it_ + 1, float("nan"), eps, "riem"))
+            STOP.append((t, it_ + 1, it_ + 1, float(np.mean(CGN)) if CGN else float("nan"), eps, "riem"))
             if a.method == "grid":
                 CFL_LOG.append((t, rep.cfl_max()))                    # 노드 이동 최대 / (cfl·dx) -- 1 넘으면 제약 위반
             if a.method == "phystwin" and a.riem_energy == "spring10":
