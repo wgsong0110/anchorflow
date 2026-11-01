@@ -270,6 +270,7 @@ ap.add_argument("--ah_imex_maxit", type=int, default=100, help="--ah_imex_cl 최
 ap.add_argument("--akpl_trial", action="store_true", help="절 AG.18: 증분 RM 소성 상태를 시험 버퍼에 쓰고 서브스텝 끝에 커밋 (서브사이클링 준비; 결과는 같아야 한다)")
 ap.add_argument("--akg_mass", action="store_true", help="절 AG.18 정의 변경: --akg_empty 묶음 칸의 P2G 질량·운동량을 칸 사면체에 기하 부피 비로 나눈 뒤 사면체 몫 1/4 씩 노드로 (빈 사면체 노드도 질량을 가진다)")
 ap.add_argument("--akg_mass_sp", action="store_true", help="--akg_mass: 칸으로 나누는 입자를 묶음 Ā 를 쓰는 입자 (희소 사면체) 로만")
+ap.add_argument("--akg_fd", action="store_true", help="절 AG.18 진단 (--akpl_cause, 탄성): 첫 뒤집힌 셀 노드의 실제 접선 강성 (유한 차분) 대 국소 CFL 상계")
 ap.add_argument("--akg_mass_dbg", action="store_true", help="--akg_mass 진단: 프레임마다 질량 분배 통계")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
@@ -1420,6 +1421,46 @@ class Opt:
                 R["ring"].append((self._fi, z["ring"].cpu()))
                 R["ring"] = R["ring"][-a.akpl_track_ring:]
 
+    def _fd_force(self, U, fout):
+        """절 AG.18 진단: 입자 적분점 (akpl, 탄성 mat 0) + 묶음 힘을 주어진 U 로 fout 에 (상태 안 바꿈 -- 탄성 판 전용)."""
+        fout.zero_()
+        if AKG:
+            self.akg_AG.zero_(); self.akg_GmG.zero_()
+            AKPLC.launch("akg_A2", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(U), EX.P(self.gl), EX.P(self.akg_W), EX.P(self.akg_AG)), b=128)
+        AKPLC.launch("akpl_force", Np, (np.int32(Np), np.int32(0), EX.P(self.akord), EX.P(self.aktt), EX.P(self.tets),
+                                        EX.P(U), EX.P(self.gl), EX.P(self.akF), EX.P(self.akw), np.int32(0), EX.P(PRM), np.float32(self.hscur),
+                                        EX.P(None), EX.P(self.plFe), EX.P(self.plXp), EX.P(self.plys), EX.P(self.pllj), EX.P(self.plal), EX.P(fout),
+                                        np.float32(a.akpl_jfl), EX.P(self.akg_gpb if AKG else None), EX.P(self.akg_AG if AKG else None), EX.P(self.akg_VG if AKG else None),
+                                        EX.P(self.akg_GmG if AKG else None), np.float32(mu), np.float32(lam), np.int32(0), EX.P(None),
+                                        np.float32(0.0), np.float32(a.akb_jhat), np.float32(a.akb_je), EX.P(None), np.float32(NSE)), b=128)
+        if AKG:
+            AKPLC.launch("akg_dist2", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(U), EX.P(self.gl), EX.P(self.akg_W),
+                                                  EX.P(self.akg_AG), EX.P(self.akg_VG), EX.P(self.akg_GmG), np.float32(a.akg_hg * mu), EX.P(fout)), b=128)
+        torch.cuda.synchronize()
+
+    def _fd_check(self, nodes, Ub):
+        """절 AG.18: 노드별 실제 접선 강성 (유한 차분, 그 서브스텝 U) 대 국소 CFL 상계 k_n = mcfl / (h_s/2)²."""
+        M = self.M
+        f0 = torch.zeros_like(self.f); f1 = torch.zeros_like(self.f)
+        self._fd_force(Ub, f0)
+        eps = 1e-4 * a.node_h
+        out = []
+        med = float(self.mn[:M][self.mn[:M] > 0].median())
+        for q in nodes:
+            rs, Kd = 0.0, torch.zeros(3, 3, device=dev)
+            cols = []
+            for c in range(3):
+                U2 = Ub.clone(); U2[q, c] += eps
+                self._fd_force(U2, f1)
+                col = -(f1[:M] - f0[:M]) / eps                                      # K 의 (·, q c) 열 = 대칭이라 행
+                cols.append(col.abs().sum())
+                Kd[:, c] = col[q]
+            kb = float(self.mcfl[q]) / (0.25 * self.hscur ** 2) if hasattr(self, "mcfl") else None
+            ev = torch.linalg.eigvalsh(0.5 * (Kd + Kd.T)).tolist()
+            out.append(dict(n=int(q), m_ratio=float(self.mn[q]) / med, k_bound=kb, k_row_actual=float(max(cols)), k_diag_eig=[float(e) for e in ev],
+                            cfl_ratio_actual=(0.25 * self.hscur ** 2 * float(max(cols)) / max(float(self.mn[q]), kb * 0.25 * self.hscur ** 2 if kb else 1e-30))))
+        return out
+
     def _akpl_cause(self, j):
         """절 AG.12: 노드 속도 비유한 vs 셀 뒤집힘 (det A_T ≤ 0, 입자 J = det(A F_p) ≤ 0) 서브스텝 기록과 인과 분석 (프레임 안 -- 메시는 프레임마다 다시 짠다)."""
         M, T = self.M, self.T
@@ -1470,6 +1511,10 @@ class Opt:
                                 node_np=[bool(q) for q in nflag[nd_].tolist()], node_m_ratio=[float(q) for q in (self.mn[nd_] / med_).tolist()],
                                 node_v=[[round(float(c), 3) for c in self.vn[q].tolist()] for q in nd_.tolist()]))
             z["first_inv"] = dict(frame=self._fi, j=j, n=int(inv.sum()), n_np_nodes=int(nflag.sum()), n_pen=int(pen.sum()), tets=rec)
+            if a.akg_fd and not PLAST:                                              # 절 AG.18: 뒤집힌 셀 노드의 실제 접선 강성 대 상계 (직전 서브스텝 U 로)
+                nds_ = sorted(set(int(q) for t_ in ti_[:3].tolist() for q in tt[t_].tolist()))
+                z["first_inv"]["fd"] = self._fd_check(nds_, (lambda U_: (U_.__setitem__(slice(0, self.M), self._Uprev), U_)[1])(self.Uc.clone()))
+                print(f"  [절 AG.18 실제 강성 대 상계] {json.dumps(z['first_inv']['fd'], ensure_ascii=False)[:2000]}", flush=True)
             print(f"  [절 AG.18 첫 뒤집힘] {json.dumps(z['first_inv'], ensure_ascii=False)[:1500]}", flush=True)
         if z["first"] is None and bool(vb.any()):
             nb = vb.nonzero().flatten()
