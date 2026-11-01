@@ -82,6 +82,7 @@ VAR = {
     "cmsGr": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --akg_k 1 --akg_empty --akg_hg 1 --ah_imex --ah_imex_rel @NOFAST",
     "cmsU": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 @NOFSTEP",           # 절 AG.18 공통 설정: 기본 판 + 프레임 단위 국소 CFL 질량 (절 AG.15) -- 노드 걸음 커널이 ah_node_step 이라 --ak_fstep 만 뺀다
     "cmsGc": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --akg_k 1 --akg_empty --akg_hg 1 --ah_imex --ah_imex_rel --ah_imex_cl 1e-3 --no_graph @NOFAST",   # 절 AG.18: 묶음 + IMEX 무리 반복
+    "cmsGm": "PQF3 --sp_vcap 0.5 --ak_capmu --ak_sfcr --ah_mcfl 1 --akg_k 1 --akg_empty --akg_hg 1 --akg_mass @NOFAST",   # 절 AG.18: 묶음 + 칸 질량 분배
     "cm05m": "PQF3 --sp_vcap 0.5 --ak_capmu --ah_mlow 0.1",
     "pqfl9": "PQF3 --ak_flip 0.9",
     "pqfl1": "PQF3 --ak_flip 1.0",

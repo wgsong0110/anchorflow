@@ -265,6 +265,7 @@ ap.add_argument("--ah_imex_cl", type=float, default=0.0, help="절 AG.18 --ah_im
                      "(max|Δv^(k+1) − Δv^k| ≤ tol · max|Δv^(k+1)|), 0 = 끔; --no_graph 만 (반복마다 잔차 동기화)")
 ap.add_argument("--ah_imex_maxit", type=int, default=100, help="--ah_imex_cl 최대 반복")
 ap.add_argument("--akpl_trial", action="store_true", help="절 AG.18: 증분 RM 소성 상태를 시험 버퍼에 쓰고 서브스텝 끝에 커밋 (서브사이클링 준비; 결과는 같아야 한다)")
+ap.add_argument("--akg_mass", action="store_true", help="절 AG.18 정의 변경: --akg_empty 묶음 칸의 P2G 질량·운동량을 칸 사면체에 기하 부피 비로 나눈 뒤 사면체 몫 1/4 씩 노드로 (빈 사면체 노드도 질량을 가진다)")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
 ap.add_argument("--akpl_jfl", type=float, default=0.0, help="절 AG.9 정의 변경 (--ak_pq_plast, 수박 NHB 응력): J 하한 (0 = 끔)")
 ap.add_argument("--akpl_vthr", type=float, default=0.0, help="절 AG.10 --akpl_dbg: 비유한 말고도 노드 속력 > 이 값 (m/s) 을 '터짐' 으로 (0 = 비유한만)")
@@ -1263,6 +1264,45 @@ class Opt:
             EX.launch("ex_cov_acc", Np, (np.int32(Np), EX.P(self.pinv), EX.P(self.nslot), np.int32(1 if VFL else 0), EX.P(self.volA), EX.P(F),
                                          EX.P(self.FT), EX.P(self.CS)), b=256)
             EX.launch("ex_cov_fin", Tc, (EX.P(self.sz), EX.P(self.VTs), EX.P(self.CS)), b=256)
+
+    def _akg_mass(self, va):
+        """절 AG.18 --akg_mass: 묶음 칸 (빈 사면체·희소 사면체가 있는 칸) 의 P2G 질량·운동량을 칸 사면체에 기하 부피 비로 (Kuhn 칸은 6 사면체 같은 부피 -> 1/칸 사면체 수), 사면체 몫의 1/4 씩 노드로.
+        묶음 밖 입자는 그대로 (무게중심/사면체 몫). 총 질량·운동량 보존 (빼고 더한 양이 같다)."""
+        T_, M_ = self.T, self.M
+        VT_ = self.VTs[:T_]
+        occ_ = VT_ > 0
+        tp = self.pinv[:Np].long()
+        cnt_ = torch.bincount(tp, minlength=T_)[:T_]
+        cel = self.tcell[:T_]
+        act = torch.zeros(self.Pcap, dtype=torch.bool, device=dev)
+        act[cel[occ_ & (cnt_ <= a.akg_k)]] = True
+        act[cel[~occ_]] = True
+        ing = act[cel]
+        pa_ = ing[tp]
+        mA_ = self.mA[:Np] if self.mA.dim() == 1 else self.mA.view(-1)[:Np]
+        W4 = torch.full_like(self.lamb[:Np], 0.25) if a.mass == "tet" else self.lamb[:Np]
+        va = va.reshape(-1, 3)
+        mq = (W4 * (mA_ * pa_)[:, None])                                            # 뺄 몫 (묶음 칸 입자)
+        m0 = float(self.mn[:M_].sum())
+        self.mn.index_add_(0, self.rows[:Np].reshape(-1), -mq.reshape(-1))
+        self.mv.index_add_(0, self.rows[:Np].reshape(-1), -(mq[..., None] * va[:Np][:, None, :]).reshape(-1, 3))
+        cp_ = cel[tp][pa_]
+        Mg = torch.zeros(self.Pcap, device=dev).index_add_(0, cp_, mA_[pa_])
+        Pg = torch.zeros(self.Pcap, 3, device=dev).index_add_(0, cp_, mA_[pa_][:, None] * va[:Np][pa_])
+        tI = ing.nonzero().flatten()
+        nbx = torch.zeros(self.Pcap, device=dev).index_add_(0, cel[tI], torch.ones(tI.numel(), device=dev))
+        c_ = cel[tI]
+        mt = (Mg[c_] / nbx[c_].clamp_min(1) / 4.0)
+        pt = (Pg[c_] / nbx[c_].clamp_min(1)[:, None] / 4.0)
+        nd_ = self.tets[:T_][tI]
+        self.mn.index_add_(0, nd_.reshape(-1), mt.repeat_interleave(4))
+        self.mv.index_add_(0, nd_.reshape(-1), pt.repeat_interleave(4, dim=0))
+        self.mn[:M_].clamp_(min=0.0)
+        mn_ = self.mn[:M_]
+        self.vn[:M_] = torch.where(mn_[:, None] > 1e-30, self.mv[:M_] / mn_.clamp_min(1e-30)[:, None], torch.zeros_like(self.mv[:M_]))
+        if not hasattr(self, "_akgm_chk"):
+            self._akgm_chk = (m0, float(self.mn[:M_].sum()), int((mn_ <= 0).sum()))
+            print(f"[절 AG.18 묶음 질량] 총 질량 {m0:.6g} -> {self._akgm_chk[1]:.6g}, 질량 0 노드 {self._akgm_chk[2]}", flush=True)
 
     def _p2g_bs(self, x, v, F):
         """절 S 프레임 시작 P2G (B-스플라인): 노드 질량·운동량 (27 노드), 셀 V·VF (셀 중심 27 셀) -> 사면체 V_T = V_c/6·F̄; 사면체 locate (barycentric G2P·진단용)."""
@@ -2739,6 +2779,8 @@ class Opt:
                 if self._sparse():                                                  # 절 AE vpmesh: 첫 프레임에 V_p (·m_p) 를 바꿨다 -> 같은 상태로 P2G 다시
                     self._p2g(xa, va, Fa, h, False)
                     self._sparse()
+            if a.akg_mass:                                                          # 절 AG.18: 묶음 칸 질량을 칸 사면체로 고르게 (질량 0 노드 없애기)
+                self._akg_mass(va)
             if P2:
                 self._p2_p2g(va)
                 if os.environ.get("AK_DBG"):
