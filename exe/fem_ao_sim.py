@@ -799,7 +799,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, kpb=No
                 g0t = g.norm()
         with tsec("대각"):
             Bd = el.bd32().double()
-            D0 = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
+            D0 = INV3(Mi[..., None] * I3 + Tc @ Bd @ Tc)
         if a.pc == "mg":
             if mgh[0] is None:
                 with tsec("MG구성"):
