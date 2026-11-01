@@ -22,6 +22,7 @@ if [ ! -f $GTD/meta.json ]; then
 fi
 for V in "$@"; do
   O=/tmp/dkta/lbours/fem_ao/$NM/$V
+  [ -f $O/pred.pt ] || { mkdir -p $O; rclone copyto $RR/$NM/$V/pred.pt $O/pred.pt -q; }                   # 노드에서 지웠으면 R2 에서
   [ -f $O/pred.pt ] || { echo "[덤프 없음] $V"; continue; }
   mkdir -p $O/vj
   [ -f $O/h5_fem/meta.json ] || $PY -u exe/lb_roll_to_h5.py --dump $O/pred.pt --traj $GTD --out $O/h5_fem > $O/h5_fem.log 2>&1
