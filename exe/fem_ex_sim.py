@@ -1485,7 +1485,8 @@ class Opt:
         if PBC:
             k_ = PBC_K[self._fi].long()
             Np_ = k_.numel()
-            xp_ = self.Xf.view(-1, 3)[:Np_] + (self.lamb[:Np_].view(-1, 4)[:, :, None] * self.Uc[:M][self.rows[:Np_].view(-1, 4)]).sum(1)
+            X0_ = self.Xf if hasattr(self, "Xf") else self.X[0]
+            xp_ = X0_.view(-1, 3)[:Np_] + (self.lamb[:Np_].view(-1, 4)[:, :, None] * self.Uc[:M][self.rows[:Np_].view(-1, 4)]).sum(1)
             pc = xp_[k_ >= 0]
             if pc.shape[0] > 20000:
                 pc = pc[torch.randperm(pc.shape[0], device=dev)[:20000]]
@@ -1548,7 +1549,8 @@ class Opt:
         if z.get("first_inv") is None and bool(inv.any()) and HASPL:              # 절 AG.18: 첫 뒤집힌 셀이 바닥에 대해 어디 있고 그 노드가 비관통에 걸렸는지
             Np_ = self.Xf.shape[0] if self.Xf.dim() == 2 else self.Xf.numel() // 3
             pp0, nn0 = torch.tensor(PLf[:3], device=dev), torch.tensor(PLf[3:], device=dev)
-            xp_ = self.Xf.view(-1, 3)[:Np_] + (self.lamb[:Np_].view(-1, 4)[:, :, None] * self.Uc[:M][self.rows[:Np_].view(-1, 4)]).sum(1)
+            X0_ = self.Xf if hasattr(self, "Xf") else self.X[0]
+            xp_ = X0_.view(-1, 3)[:Np_] + (self.lamb[:Np_].view(-1, 4)[:, :, None] * self.Uc[:M][self.rows[:Np_].view(-1, 4)]).sum(1)
             sp_ = (xp_ - pp0) @ nn0
             pen = sp_ < 0
             nflag = torch.zeros(M, dtype=torch.bool, device=dev)
