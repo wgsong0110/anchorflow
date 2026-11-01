@@ -56,6 +56,8 @@ ap.add_argument("--method", required=True,
 ap.add_argument("--mpm_dx", type=float, default=0.0,
                 help="fem: 그 씬 MPM 격자 간격 dx (시뮬 좌표, grid_lim/n_grid). node_h = dx·(2√2)^(1/3) "
                      "(명시적 FEM fem_ex_sim 의 --node_h 와 같은 규칙), 격자 원점은 시뮬 좌표 원점 (세계 고정)")
+ap.add_argument("--lat_origin", default="sim", choices=["sim", "norm"],
+                help="fem: 격자 원점 -- sim = 시뮬 좌표 원점 (명시적 FEM 과 같음, 기본), norm = 정규화 좌표 원점 (기존 tet 과 같음; 원인 가르기용)")
 ap.add_argument("--feas", action="store_true",
                 help="riem: Armijo 되돌림에 가능성 검사를 넣는다 -- 입자 누적 det F > 0 (--riem_partF 필요) 과 표현 고유 제약 "
                      "(셀 det > 0 / grid CFL |u|<cfl·dx) 을 모두 만족하는 보폭만 받는다. 끝까지 못 찾으면 그 반복은 걷지 않는다")
@@ -347,8 +349,9 @@ class Lattice(torch.nn.Module):
             # fem: 명시적 FEM (fem_ex_sim, fem_rt.GridK) 과 같은 격자 -- node_h = 그 씬 MPM dx·(2√2)^(1/3) (시뮬 좌표),
             # 격자 정수점이 **시뮬 좌표 원점** 기준 (세계 고정). 정규화 좌표 P = (시뮬 - lo)/s + off 라 시뮬 원점 = off - lo/s
             self.h = mpm_dx * (2.0 * math.sqrt(2.0)) ** (1.0 / 3.0) / S_NORM
-            self.c0 = torch.as_tensor(np.asarray(OFF, dtype=np.float64) - np.asarray(LO, dtype=np.float64) / S_NORM,
-                                      device=dev, dtype=DT)
+            if a.lat_origin == "sim":
+                self.c0 = torch.as_tensor(np.asarray(OFF, dtype=np.float64) - np.asarray(LO, dtype=np.float64) / S_NORM,
+                                          device=dev, dtype=DT)
         self.a = 0.5
 
     def rebind(self, Pall):
@@ -865,7 +868,7 @@ elif a.method == "fem":
     assert a.mpm_dx > 0, "fem: --mpm_dx (그 씬 MPM dx, 시뮬 좌표) 필요"
     rep = Lattice(gregory=False, mpm_dx=a.mpm_dx)
     print(f"[fem] node_h {a.mpm_dx * (2.0 * math.sqrt(2.0)) ** (1.0 / 3.0):.6f} (시뮬, MPM dx {a.mpm_dx:.6f}) "
-          f"= {rep.h:.6f} (정규화), 격자 원점 = 시뮬 원점 {rep.c0.tolist()}", flush=True)
+          f"= {rep.h:.6f} (정규화), 격자 원점 = " + (f"시뮬 원점 {rep.c0.tolist()}" if rep.c0 is not None else "정규화 원점"), flush=True)
 elif a.method == "phystwin":
     rep = PhysTwin()
 elif a.method == "tetmesh":
