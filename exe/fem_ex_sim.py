@@ -273,6 +273,7 @@ ap.add_argument("--akg_mass", action="store_true", help="절 AG.18 정의 변경
 ap.add_argument("--akg_mass_sp", action="store_true", help="--akg_mass: 칸으로 나누는 입자를 묶음 Ā 를 쓰는 입자 (희소 사면체) 로만")
 ap.add_argument("--ah_mcfl_F", action="store_true", help="절 AG.19: 국소 CFL 상계의 계수에 입자 F 의 늘어남·눌림 몫 max(1, (1+σ_min⁻²)/2, σ_max²) (프레임 시작 F)")
 ap.add_argument("--akg_fd_n", type=int, default=0, help="절 AG.19 진단: 뒤집힌 셀 수가 늘 때마다 K 번까지 유한 차분 실제 강성 대 상계")
+ap.add_argument("--ah_mcfl_Fs", action="store_true", help="절 AG.19 (--ah_mcfl_F 와): 입자 계수를 FCR 접선 강성 해석 상계 (|σ|) 로, 서브스텝마다 현재 A_T F_p 로 다시 잡아 국소 CFL 상계를 프레임 안 단조 증가 (프레임마다 초기화)")
 ap.add_argument("--akg_fd", action="store_true", help="절 AG.18 진단 (--akpl_cause, 탄성): 첫 뒤집힌 셀 노드의 실제 접선 강성 (유한 차분) 대 국소 CFL 상계")
 ap.add_argument("--akg_mass_dbg", action="store_true", help="--akg_mass 진단: 프레임마다 질량 분배 통계")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
@@ -2058,6 +2059,16 @@ class Opt:
                 AHC.launch("akg_kns2", self.Tcap, (EX.P(self.sz), EX.P(self.akg_tg), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs), EX.P(self.FT),
                                                    EX.P(self.akg_W), EX.P(self.akg_VG), EX.P(self.akg_MG), EX.P(self.akg_Sg), EX.P(self.akg_Fm),
                                                    np.float32(a.ah_mcfl * (hs_ / 2.0) ** 2), np.float32(2.0 * a.akg_hg * mu), EX.P(self.mcfl)), b=128)
+        if a.ah_mcfl_Fs and a.ah_mcfl > 0 and not a.ah_mcfl_sub:                   # 절 AG.19: 현재 A_T F_p 로 입자 계수 -> 국소 CFL 상계를 프레임 안 단조 증가
+            AHC.launch("akfs_p", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.akF), EX.P(self.akg_gpb if AKG else None),
+                                      EX.P(self.akg_AG if AKG else None), EX.P(self.akg_VG if AKG else None), np.float32(mu), np.float32(lam),
+                                      EX.P(self._fsTn), EX.P(self._fsGn if AKG else None)), b=128)
+            AHC.launch("akfs_t", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.akg_tg if (AKG and a.akg_empty) else None), EX.P(self._fsvb),
+                                             EX.P(self._fsTu), EX.P(self._fsTn), EX.P(self.akg_W if AKG else None), EX.P(self.akg_VG if AKG else None),
+                                             EX.P(self._fsMG0 if AKG else None), EX.P(self._fsSg if AKG else None), EX.P(self._fsGu if AKG else None), EX.P(self._fsGn if AKG else None),
+                                             np.float32(a.ah_mcfl * (hs_ / 2.0) ** 2 * (lam + 2.0 * mu)), np.float32(a.ah_mcfl * (hs_ / 2.0) ** 2), EX.P(self.mcfl)), b=128)
+            if AKG:
+                AHC.launch("akfs_g", self.Pcap, (np.int32(self.Pcap), EX.P(self._fsGu), EX.P(self._fsGn)), b=256)
         if a.ah_imex and a.ah_imex_rel:                                            # 절 AG.18: 이웃 결합 (힘 뒤·노드 걸음 앞)
             AHC.launch("ah_imx_nb", self.Tcap, (EX.P(self.sz), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.akg_W if (AKG and a.akg_empty) else None),
                                                 EX.P(self.vn), EX.P(self.f), EX.P(self.mn), EX.P(self.mcfl), np.float32(hs_), np.float32(gv[0]), np.float32(gv[1]), np.float32(gv[2]),
@@ -3047,7 +3058,20 @@ class Opt:
                                             np.float32(a.ah_mcfl * (self.hscur / 2.0) ** 2 * (lam + 2.0 * mu)), EX.P(self.mcfl)), b=128)
             if a.ah_mcfl_F and AKPQ:                                                # 절 AG.19: 입자 F 의 늘어남·눌림으로 접선 계수가 커지는 몫 (실제 강성이 상계의 2 배까지 -- 유한 차분 진단)
                 svF = torch.linalg.svdvals(self.akF.view(-1, 3, 3).float())
-                fp_ = torch.maximum(torch.maximum(0.5 * (1.0 + svF[:, 2].clamp_min(0.01) ** -2), svF[:, 0] ** 2), torch.ones_like(svF[:, 0]))
+                if a.ah_mcfl_Fs:                                                    # 절 AG.19: FCR 접선 강성 해석 상계 (|σ|, 주 늘림 헤세 행 합, 비틀림 2μ)
+                    s_ = svF; J_ = s_.prod(1)
+                    P_ = torch.stack([s_[:, 1] * s_[:, 2], s_[:, 0] * s_[:, 2], s_[:, 0] * s_[:, 1]], 1)
+                    km_ = torch.full_like(J_, 2.0 * mu)
+                    for i_ in range(3):
+                        r_ = 2.0 * mu + lam * P_[:, i_] ** 2
+                        for j_ in range(3):
+                            if j_ != i_:
+                                k_ = 3 - i_ - j_
+                                r_ = r_ + (lam * (P_[:, i_] * P_[:, j_] + (J_ - 1.0) * s_[:, k_])).abs()
+                        km_ = torch.maximum(km_, r_)
+                    fp_ = (km_ / (lam + 2.0 * mu)).clamp_min(1.0)
+                else:
+                    fp_ = torch.maximum(torch.maximum(0.5 * (1.0 + svF[:, 2].clamp_min(0.01) ** -2), svF[:, 0] ** 2), torch.ones_like(svF[:, 0]))
                 self._mcfl_fp = fp_
                 T_ = self.T
                 fT = torch.ones(T_, device=dev).scatter_reduce(0, self.aktt.long(), fp_, "amax", include_self=True)
@@ -3057,6 +3081,11 @@ class Opt:
                 vb_ = torch.maximum(self.VTs[:T_], vsT_) * occ_
                 kf_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2 * (lam + 2.0 * mu)) * ((fT - 1.0) * vb_)[:, None] * gn_ * gn_.sum(1, keepdim=True)
                 self.mcfl.index_add_(0, self.tets[:T_].reshape(-1), kf_.reshape(-1))
+                if a.ah_mcfl_Fs:                                                    # 서브스텝 단조 증가용 프레임 값
+                    if getattr(self, "_fsTu", None) is None or self._fsTu.numel() < self.Tcap:
+                        self._fsTu, self._fsTn, self._fsvb = (torch.zeros(self.Tcap, device=dev) for _ in range(3))
+                    self._fsTu.fill_(1.0); self._fsTu[:T_] = fT; self._fsTn.copy_(self._fsTu)
+                    self._fsvb.zero_(); self._fsvb[:T_] = vb_
             if a.ak_capmu and AKPQ:                                                 # 절 AG.19: --ak_capmu 는 λ 몫을 입자 부피 그대로 쓰므로 상계에 λ (Σ V_p − V_T) |∇λ_i| Σ|∇λ_j| 를 더한다 (상한 부피로만 잡으면 과소)
                 T_ = self.T
                 occ_ = self.VTs[:T_] > 0
@@ -3085,8 +3114,18 @@ class Opt:
                 lr_ = self.aklr if a.ak_capmu else torch.ones_like(self.akw)
                 okp = gp_ >= 0
                 fpg_ = self._mcfl_fp[okp] if (a.ah_mcfl_F and getattr(self, "_mcfl_fp", None) is not None) else 1.0
-                MG = torch.zeros(self.Pcap, device=dev).index_add_(0, gp_[okp], self.akw[okp] * (lam * lr_[okp] + 2.0 * mu) * fpg_)
-                self.akg_MG[:MG.numel()].copy_(MG)                                    # 절 AG.18: 서브스텝 상계 (--ah_mcfl_sub) 가 쓰는 프레임 상수
+                if a.ah_mcfl_Fs:                                                    # 절 AG.19: 묶음 계수 = MG0 x (묶음 입자 계수 최댓값) -- 서브스텝에 묶음 단위로 단조 증가
+                    MG0 = torch.zeros(self.Pcap, device=dev).index_add_(0, gp_[okp], self.akw[okp] * (lam * lr_[okp] + 2.0 * mu))
+                    Fg = torch.ones(self.Pcap, device=dev).scatter_reduce(0, gp_[okp], self._mcfl_fp[okp], "amax", include_self=True)
+                    MG = MG0 * Fg
+                    if getattr(self, "_fsGu", None) is None or self._fsGu.numel() < self.Pcap:
+                        self._fsGu, self._fsGn, self._fsMG0, self._fsSg = (torch.zeros(self.Pcap, device=dev) for _ in range(4))
+                    self._fsGu.copy_(Fg); self._fsGn.copy_(Fg); self._fsMG0.copy_(MG0)
+                else:
+                    MG = torch.zeros(self.Pcap, device=dev).index_add_(0, gp_[okp], self.akw[okp] * (lam * lr_[okp] + 2.0 * mu) * fpg_)
+                self.akg_MG[:MG.numel()].copy_(MG)
+                if a.ah_mcfl_Fs:
+                    self._fsSg.copy_(Sg)                                    # 절 AG.18: 서브스텝 상계 (--ah_mcfl_sub) 가 쓰는 프레임 상수
                 kg_ = (a.ah_mcfl * (self.hscur / 2.0) ** 2) * (MG[g_] * wr_ * Sg[g_])[:, None] * gn_
                 if a.akg_hg > 0:                                                    # 모래시계 억제 2γμ W_t (A_t − Ā) 의 Ā 쪽 결합 몫 (행 합 2γμ W_t |∇λ_n| S_g)
                     kg_ = kg_ + (a.ah_mcfl * (self.hscur / 2.0) ** 2 * 2.0 * a.akg_hg * mu) * (self.akg_W[:T_][ing_] * Sg[g_])[:, None] * gn_

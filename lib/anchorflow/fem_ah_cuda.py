@@ -530,6 +530,44 @@ __global__ void ah_imx_cl_n(const int* szp, const float* mn, const float* mfa, c
     for (int a_=0;a_<3;a_++) { dvn[n*3+a_] = d[a_]; ch = fmaxf(ch, fabsf(d[a_] - dvc[n*3+a_])); mg = fmaxf(mg, fabsf(d[a_])); }
     if (isfinite(ch)) { atomicMax(&res[0], __float_as_uint(ch)); atomicMax(&res[1], __float_as_uint(mg)); } else atomicMax(&res[0], 0x7f7fffffu);
 }
+// 절 AG.19 --ah_mcfl_Fs: FCR 접선 강성 해석 상계 (주 늘림 공간 헤세 행 합, 비틀림 몫 2μ) / (λ+2μ) -- |σ| 라 σ -> 0 에서도 유한
+__device__ __forceinline__ float fcr_kfac(const float* X, float mu, float lam) {
+    float C[9]; for (int i=0;i<3;i++) for (int k=0;k<3;k++) C[i*3+k]=X[i]*X[k]+X[3+i]*X[3+k]+X[6+i]*X[6+k];
+    float l[3]; symeig3(C, l);
+    float s[3] = {sqrtf(fmaxf(l[0],0.f)), sqrtf(fmaxf(l[1],0.f)), sqrtf(fmaxf(l[2],0.f))};
+    float J = s[0]*s[1]*s[2];
+    float P[3] = {s[1]*s[2], s[0]*s[2], s[0]*s[1]};
+    float km = 2.f*mu;
+    for (int i=0;i<3;i++) { float r = 2.f*mu + lam*P[i]*P[i];
+        for (int j=0;j<3;j++) { if (j == i) continue; int k = 3 - i - j; r += fabsf(lam*(P[i]*P[j] + (J - 1.f)*s[k])); }
+        km = fmaxf(km, r); }
+    return fmaxf(1.f, km/(lam + 2.f*mu));
+}
+__global__ void akfs_p(int N, const int* tt, const long long* tets, const float* U, const float* gl, const float* akF, const int* gp, const float* AG, const float* VG,
+                       float mu, float lam, unsigned int* fTn, unsigned int* Fgn) {
+    int k = blockIdx.x*blockDim.x + threadIdx.x;
+    if (k >= N) return;
+    int t = tt[k]; int g = gp ? gp[k] : -1;
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    if (g >= 0) { float iv = 1.f/fmaxf(VG[g], 1e-30f); for (int j=0;j<9;j++) A[j] = AG[(long long)g*9+j]*iv; }
+    else for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i]; for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+    float F[9]; for (int j=0;j<9;j++) F[j] = akF[(long long)k*9+j];
+    float X[9]; mm3(A, F, X);
+    float f = fcr_kfac(X, mu, lam);
+    if (!isfinite(f)) return;
+    if (g >= 0) atomicMax(&Fgn[g], __float_as_uint(f)); else atomicMax(&fTn[t], __float_as_uint(f));
+}
+__global__ void akfs_t(const int* szp, const long long* tets, const float* gl, const int* tg, const float* vb, float* fTu, const float* fTn,
+                       const float* W, const float* VG, const float* MG0, const float* Sg, const float* Fgu, const float* Fgn, float clp, float c, float* mfa) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= szp[1]) return;
+    float gn[4], sg = 0.f;
+    for (int i=0;i<4;i++) { float a_=0.f; for (int q=0;q<3;q++) { float g_ = gl[(long long)t*12+i*3+q]; a_ += g_*g_; } gn[i] = sqrtf(a_); sg += gn[i]; }
+    if (fTn[t] > fTu[t]) { float d = (fTn[t] - fTu[t])*clp*vb[t]; for (int i=0;i<4;i++) atomicAdd(&mfa[tets[(long long)t*4+i]], d*gn[i]*sg); fTu[t] = fTn[t]; }
+    int g = tg ? tg[t] : -1;
+    if (g >= 0 && Fgn[g] > Fgu[g]) { float d = c*MG0[g]*(Fgn[g] - Fgu[g])*(W[t]/fmaxf(VG[g], 1e-30f))*Sg[g]; for (int i=0;i<4;i++) atomicAdd(&mfa[tets[(long long)t*4+i]], d*gn[i]); }
+}
+__global__ void akfs_g(int G, float* Fgu, const float* Fgn) { int g = blockIdx.x*blockDim.x + threadIdx.x; if (g < G) Fgu[g] = fmaxf(Fgu[g], Fgn[g]); }
 // 절 AG.18 --ah_imex: 노드 대각 블록 K_nn (프레임 시작 기준 선형 탄성 접선) -- 입자 적분점 w (μ|g|² I + (μ + λ r) g gᵀ), g = F_pᵀ ∇λ_n (r = --ak_capmu λ 배율)
 __global__ void ah_kd_pq(int N, const int* tt, const long long* tets, const float* gl, const float* akF, const float* wp, const float* lr, const int* gp,
                          float mu, float lam, float* Kd) {
