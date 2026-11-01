@@ -4,7 +4,8 @@
 # 사용: bash exe/fem_al_run.sh <태그> [추가 인자...]   (출력 /tmp/dkta/lbours/fem_al_wolf/<태그>, R2 같은 경로)
 cd "$(dirname "$0")/.." || exit 1
 W=/home/dkta/work; TG=${1:?태그}; shift
-[ $(date +%s) -ge $(TZ=Asia/Seoul date -d "2026-11-02 10:00" +%s) ] && { echo "[중단] 10:00 KST 뒤 새 실행 금지"; exit 1; }
+NA=${AL_NOT_AFTER-2026-11-02 10:00}                                                  # 잡 129982 규칙 (11-02 10:00 KST 뒤 새 실행 금지); 다음 잡의 단독 측정은 fem_al_timed.sh 가 비운다
+[ -n "$NA" ] && [ $(date +%s) -ge $(TZ=Asia/Seoul date -d "$NA" +%s) ] && { echo "[중단] $NA KST 뒤 새 실행 금지"; exit 1; }
 BASE="--data /tmp/dkta/ag_data/wolf.pt --tag wolf --frames 50 --node_h 0.014142 --floor vel --pbc --plast --mode lag --opt --mass tet --rstat --lim_sr 5 --cfuse --cfuse_mode 2 --sp vcap --sp_vcap 0.5 --no_dump --N 640 --lim_sr 1e30 --sp_vcap 0.5 --ak_pq --ak_capmu --akpl_el --ak_sfcr --ah_mcfl 1 --ak_pq_plast inc --vfl_w gtk --vfl_rate --vfl_npd 0.005 --vfl_band 0 --node_h 0.028284"
 df -h /tmp | tail -1
 exec 9>$W/gpu0.lock
@@ -17,7 +18,10 @@ export PYTHONUTF8=1 OMP_NUM_THREADS=4 PYTORCH_CUDA_ALLOC_CONF=expandable_segment
 export PATH=/home/dkta/.conda/envs/af/bin:$HOME/bin:$PATH
 C=$(git rev-parse --short HEAD); O=/tmp/dkta/lbours/fem_al_wolf/$TG; R=r2:storage/result/anchorflow/lbours/fem_al_wolf/$TG; mkdir -p $O
 ( while true; do sleep 120; rclone copy $O $R -q; done ) & SYNC=$!
-echo "[비측정] 카드 1~6 상태는 gpu_at_start.txt -- ms 는 구간 비율로만" > $O/NOT_TIMED
+if [ -n "${AL_TIMED:-}" ]; then                                                     # 단독 측정: 잠금을 쥔 뒤 카드 1~6 이 모두 500 MiB 이하일 때만 시작
+  while [ "$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | awk -F', ' '$1>=1 && $1<=6 && $2>500' | wc -l)" -gt 0 ]; do sleep 30; done
+  echo "[단독] gpu0.lock + 카드 1~6 빔 $(date +%T)" > $O/TIMED
+else echo "[비측정] 카드 1~6 상태는 gpu_at_start.txt -- ms 는 구간 비율로만" > $O/NOT_TIMED; fi
 nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader > $O/gpu_at_start.txt
 echo "[명령] 커밋 $C CUDA_VISIBLE_DEVICES=0 python -u exe/fem_ex_sim.py --out $O $BASE $*" | tee $O/cmd.txt
 CUDA_VISIBLE_DEVICES=0 python -u exe/fem_ex_sim.py --out $O $BASE "$@" < /dev/null > $O/v_fem.log 2>&1
