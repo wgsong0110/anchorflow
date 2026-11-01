@@ -79,6 +79,7 @@ ap.add_argument("--merit", choices=["pres", "res"], default="pres", help="모래
 ap.add_argument("--gm_left", type=int, default=1, help="GMRES 왼쪽 전처리 (1) / 오른쪽 (0)")
 ap.add_argument("--sand_ls", type=int, default=1, help="모래 정밀 판 선탐색 (0 = 늘 온 걸음; 탄성 접선 초기 강성법은 축약 사상이라 선탐색 없이도 됨)")
 ap.add_argument("--h32", action="store_true", help="정밀 판 가속 (같은 허용치·조기 종료): 헤시안 저장·곱·대각 float32 (벡터·잔차·질량 float64, 절 AN 가속 판과 같은 분리)")
+ap.add_argument("--inv3", type=int, default=1, help="3x3 역행렬을 여인수 닫힌 식으로 (1) / torch.linalg (0)")
 ap.add_argument("--ls_c", default="0.03125,0.0625,0.125,0.25,0.5,1.0", help="가속 판 모래 선탐색 후보 보폭 (작은 것부터; 받아들여지는 가장 큰 것). 절 AN 의 ¼·½·1 은 모래에서 모두 거부됨 (정밀 판은 ⅛ 이하를 받아들였다)")
 ap.add_argument("--ls_fb", type=float, default=0.0, help="가속 판 잔차 선탐색에서 후보가 모두 거부되면 쓸 보폭 (0 = 움직이지 않음, 절 AN 과 같음)")
 ap.add_argument("--save_every", type=int, default=10, help="pred 를 이 프레임마다 중간 저장 (발산해도 덤프 남김)")
@@ -177,6 +178,17 @@ def bsw(fx, Ai_=None):
     W = wi * wj * wk
     GW = torch.stack([dw[:, OFF[:, 0], 0] * wj * wk, wi * dw[:, OFF[:, 1], 1] * wk, wi * wj * dw[:, OFF[:, 2], 2]], -1) @ Ai_     # ∇_x = Aiᵀ ∇_y
     return W, GW
+
+
+def inv3(M):
+    """3x3 묶음 역행렬 (여인수 닫힌 식, torch.linalg.inv 보다 빠름; 같은 수학, 반올림만 다름)."""
+    a, b, c = M[..., 0, 0], M[..., 0, 1], M[..., 0, 2]
+    d, e, f = M[..., 1, 0], M[..., 1, 1], M[..., 1, 2]
+    g, h_, i = M[..., 2, 0], M[..., 2, 1], M[..., 2, 2]
+    A_, B_, C_ = e * i - f * h_, f * g - d * i, d * h_ - e * g
+    det = a * A_ + b * B_ + c * C_
+    adj = torch.stack([A_, c * h_ - b * i, b * f - c * e, B_, a * i - c * g, c * d - a * f, C_, b * g - a * h_, a * e - b * d], -1).reshape(M.shape)
+    return adj / det[..., None, None]
 
 
 def rs_mean(Fp, w, inv, nq, count=True):
@@ -291,7 +303,7 @@ class Elem:
         X = (s.Fq + torch.einsum("qna,qnb->qab", y[s.qn.long()], s.G).reshape(-1, 9)).contiguous()
         Xr = torch.empty_like(X)
         AO.launch("ao_rm", s.nq, (np.int32(s.nq), AK.P(X), np.float64(CDP), AK.P(Xr), AK.P(None)))
-        B = s.Fq.reshape(-1, 3, 3) @ torch.linalg.solve(X.reshape(-1, 3, 3), Xr.reshape(-1, 3, 3))
+        B = s.Fq.reshape(-1, 3, 3) @ (INV3(X.reshape(-1, 3, 3)) @ Xr.reshape(-1, 3, 3))
         s.Fq = B.reshape(-1, 9).contiguous()
         s.G = torch.einsum("qab,qna->qnb", B, QGW).contiguous()
         for k_ in ("G32", "V32"):
@@ -873,6 +885,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, kpb=No
 
 STAT = {}
 LOWM = [None]
+INV3 = inv3 if a.inv3 else torch.linalg.inv
 
 
 def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
@@ -924,7 +937,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
         # PCG: (Mi + Tᵀ K T) δ = −g, 블록 야코비 전처리
         with tsec("대각"):
             Bd = el.bd()
-            PcM = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc) if (SAND and a.merit == "pres") else None
+            PcM = INV3(Mi[..., None] * I3 + Tc @ Bd @ Tc) if (SAND and a.merit == "pres") else None
         mer = (lambda g_: float(((PcM @ g_[..., None]).squeeze(-1) ** 2).sum())) if PcM is not None else (lambda g_: float((g_ * g_).sum()))
         if SAND:
             E0 = mer(g)                                                                # 절 AO: 선탐색 기준 (pres = 블록 야코비 전처리 잔차, 변위 단위)
@@ -935,13 +948,13 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
             nst["mglam"] = mg_.lam
             prec = mg_
         else:
-            Pc = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
+            Pc = INV3(Mi[..., None] * I3 + Tc @ Bd @ Tc)
             prec = lambda r_: (Pc @ r_[..., None]).squeeze(-1)
         Aop = lambda p_: Mi * p_ + (Tc @ el.mv((Tc @ p_[..., None]).squeeze(-1))[..., None]).squeeze(-1)
         dl = torch.zeros_like(g)
         if a.lin == "gmres":                                                           # 절 AO: 비대칭 일관 접선 -> GMRES (블록 야코비 오른쪽 전처리)
             if a.pc == "mg":
-                Pc = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
+                Pc = INV3(Mi[..., None] * I3 + Tc @ Bd @ Tc)
                 prec = lambda r_: (Pc @ r_[..., None]).squeeze(-1)
             tpc = tsec("GMRES"); tpc.__enter__()
             if a.gm_left:                                                               # 왼쪽 전처리: |P (A δ + g)| 최소 (가벼운 노드도 변위 단위로)
@@ -960,7 +973,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, kpb=None):
         zz = prec(rr) if a.lin != "gmres" else rr
         rz = float((rr * zz).sum())
         if a.lin != "gmres" and a.pc == "mg" and not (rz > 0):                                              # 전처리가 양의 정부호가 아니면 이 풀이는 블록 야코비로 (횟수 기록)
-            Pc = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
+            Pc = INV3(Mi[..., None] * I3 + Tc @ Bd @ Tc)
             prec = lambda r_: (Pc @ r_[..., None]).squeeze(-1)
             zz = prec(rr)
             rz = float((rr * zz).sum())
@@ -1276,7 +1289,7 @@ def frame(fi, x, v, F):
                 Fo = F.contiguous()
                 Ap = I3.expand(Np, 3, 3)
                 for Ak_ in Aks:
-                    Ft = ((Ak_ @ torch.linalg.inv(Ap)) @ Fo.reshape(Np, 3, 3)).reshape(Np, 9).contiguous()
+                    Ft = ((Ak_ @ INV3(Ap)) @ Fo.reshape(Np, 3, 3)).reshape(Np, 9).contiguous()
                     Fo = torch.empty_like(Ft)
                     AO.launch("ao_rm", Np, (np.int32(Np), AK.P(Ft), np.float64(CDP), AK.P(Fo), AK.P(pst)))
                     Ap = Ak_
