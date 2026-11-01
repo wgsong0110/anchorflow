@@ -228,7 +228,27 @@ def mod():
     return _MOD[0]
 
 
+PROF = dict(on=False, ev=[])                                                     # --prof: 커널마다 CUDA 이벤트 (프레임 끝에 합)
+
+
 def launch(name, n, args, b=128):
     m = mod()
+    if PROF["on"]:
+        import torch
+        e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        e0.record()
     with RTC._Stream():
         m.get_function(name)(((int(n) + b - 1) // b,), (b,), args)
+    if PROF["on"]:
+        e1.record()
+        PROF["ev"].append((name, e0, e1))
+
+
+def prof_take():
+    """지금까지 기록한 커널 시간 (ms) 이름별 합과 호출 수 -> 비움 (동기화 뒤 부를 것)."""
+    o = {}
+    for nm, e0, e1 in PROF["ev"]:
+        t, c = o.get(nm, (0.0, 0))
+        o[nm] = (t + e0.elapsed_time(e1), c + 1)
+    PROF["ev"].clear()
+    return {k: [round(t, 3), c] for k, (t, c) in o.items()}

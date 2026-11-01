@@ -49,6 +49,7 @@ ap.add_argument("--mg_nc", type=int, default=10, help="가장 거친 층 평활 
 ap.add_argument("--dump", action="store_true")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
+ap.add_argument("--prof", action="store_true", help="커널별 GPU 시간 (CUDA 이벤트) 을 fem.jsonl 에 -- 단독 카드에서만 의미")
 ap.add_argument("--check", action="store_true", help="프레임 0 에서 기울기·헤시안 곱을 유한 차분과 대조하고 끝")
 a = ap.parse_args()
 dev = "cuda"
@@ -506,6 +507,7 @@ errs, secs = [], []
 div_at = None
 PRED = torch.empty(L, Np, 3) if a.dump else None
 AK.mod()
+AK.PROF["on"] = bool(a.prof)
 for fi in range(L):
     torch.cuda.synchronize()
     t0 = time.perf_counter()
@@ -518,6 +520,8 @@ for fi in range(L):
     errs.append(e if fin else float("nan"))
     secs.append(dt_)
     rec = dict(t=fi, err=e, sec=dt_, **{k_: v_ for k_, v_ in STAT.items()})
+    if a.prof:
+        rec["kernel_ms"] = AK.prof_take()
     flog.write(json.dumps(rec) + "\n")
     flog.flush()
     print(f"  프레임 {fi + 1}/{L} {dt_:.2f} s 오차 {100 * e:.3f}% 뉴턴 {STAT.get('nt')} PCG {STAT.get('cg')} 선탐색 {STAT.get('ls')} 층 {STAT.get('lv')} 헤시안 곱 {STAT.get('nmv')} 최대 |g|/|g0| {STAT.get('gr', 0):.1e} "
