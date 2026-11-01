@@ -30,8 +30,13 @@ for e in "$@"; do
   ( V=${e%%:*}; A=${e#*:}; O=$R/$V; mkdir -p $O
     echo "카드 $G $(cat .done) $(date '+%F %T') 인자 $A" > $O/run_info.txt
     nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader > $O/apps_at_start.txt
-    CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_ao_sim.py --data $DATA --out $O --tag wolf --frames ${AO_FR:-10} --floor vel --pbc --dump $A < /dev/null > $O/log.txt 2>&1
-    echo "rc=$? $(date '+%F %T')" >> $O/run_info.txt
+    UU=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader | awk -F', ' -v g=$G '$1==g{print $2}')
+    CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_ao_sim.py --data $DATA --out $O --tag wolf --frames ${AO_FR:-10} --floor vel --pbc --dump $A < /dev/null > $O/log.txt 2>&1 &
+    PP=$!
+    while kill -0 $PP 2>/dev/null; do nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader | awk -F', ' -v u=$UU -v t=$(date +%s) '$1==u{print t, $2}' >> $O/apps_during.txt; sleep 5; done
+    wait $PP; RC=$?
+    NF=$(awk -v p=$PP '$2!=p{print $2}' $O/apps_during.txt | sort -u | wc -l)
+    echo "rc=$RC $(date '+%F %T') 실행 중 이 카드의 다른 계산 프로세스 $NF 개 ($(awk -v p=$PP '$2!=p{print $2}' $O/apps_during.txt | sort -u | tr '\n' ' '))" >> $O/run_info.txt
     echo "$V (카드 $G) $(grep -a '롤아웃\|rror\|대조\|발산' $O/log.txt | tail -3 | cut -c1-260 | tr '\n' ' ')"
     rclone copy $O $RR/$NM/$V -q
     rm -f $R/.hold_$G ) &
