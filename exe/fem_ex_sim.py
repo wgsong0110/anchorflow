@@ -275,6 +275,7 @@ ap.add_argument("--ah_mcfl_F", action="store_true", help="절 AG.19: 국소 CFL 
 ap.add_argument("--akg_fd_n", type=int, default=0, help="절 AG.19 진단: 뒤집힌 셀 수가 늘 때마다 K 번까지 유한 차분 실제 강성 대 상계")
 ap.add_argument("--ah_mcfl_Fs", action="store_true", help="절 AG.19 (--ah_mcfl_F 와): 입자 계수를 FCR 접선 강성 해석 상계 (|σ|) 로, 서브스텝마다 현재 A_T F_p 로 다시 잡아 국소 CFL 상계를 프레임 안 단조 증가 (프레임마다 초기화)")
 ap.add_argument("--ah_imex_pl", action="store_true", help="절 AG.19: --ah_imex 노드 블록을 서브스텝마다 소성 RM 뒤 탄성 F_e 기준 선형 접선으로 (증분 RM 판, --akpl_trial 로 상태는 서브스텝마다 한 번 커밋)")
+ap.add_argument("--akg_diag2", action="store_true", help="절 AG.19 진단 (--akpl_cause): 첫 뒤집힘·첫 비유한 셀 자리 (입자 수, 묶음·경계, 구속 거리, 소성 상태, IMEX 대상, 국소 CFL 비)")
 ap.add_argument("--akg_fd", action="store_true", help="절 AG.18 진단 (--akpl_cause, 탄성): 첫 뒤집힌 셀 노드의 실제 접선 강성 (유한 차분) 대 국소 CFL 상계")
 ap.add_argument("--akg_mass_dbg", action="store_true", help="--akg_mass 진단: 프레임마다 질량 분배 통계")
 ap.add_argument("--akg_c", type=int, default=1, help="--akg_k: 묶음 크기 = c x c x c 칸 (1 = 같은 칸의 6 사면체)")
@@ -1469,6 +1470,42 @@ class Opt:
                             cfl_ratio_actual=(0.25 * self.hscur ** 2 * float(max(cols)) / max(float(self.mn[q]), kb * 0.25 * self.hscur ** 2 if kb else 1e-30))))
         return out
 
+    def _diag2_tets(self, ti):
+        """절 AG.19: 사면체 목록의 자리 정보."""
+        M, T = self.M, self.T
+        tt = self.tets[:T]
+        occ = self.VTs[:T] > 0
+        cntT = torch.bincount(self.aktt.long(), minlength=T)[:T]
+        med = float(self.mn[:M][self.mn[:M] > 0].median())
+        ing = (self.akg_tg[:T] >= 0) if AKG else torch.zeros(T, dtype=torch.bool, device=dev)
+        nodeG = torch.zeros(M, dtype=torch.bool, device=dev); nodeN = torch.zeros(M, dtype=torch.bool, device=dev)
+        nodeG[tt[ing].reshape(-1)] = True; nodeN[tt[occ & ~ing].reshape(-1)] = True
+        npos_ = self.npos[:M] + self.Uc[:M]
+        pc = None
+        if PBC:
+            k_ = PBC_K[self._fi].long()
+            Np_ = k_.numel()
+            xp_ = self.Xf.view(-1, 3)[:Np_] + (self.lamb[:Np_].view(-1, 4)[:, :, None] * self.Uc[:M][self.rows[:Np_].view(-1, 4)]).sum(1)
+            pc = xp_[k_ >= 0]
+            if pc.shape[0] > 20000:
+                pc = pc[torch.randperm(pc.shape[0], device=dev)[:20000]]
+        out = []
+        for t_ in ti.tolist():
+            nd_ = tt[t_]
+            ctr = npos_[nd_].mean(0)
+            km = (self.aktt.long() == t_).nonzero().flatten()
+            r = dict(t=t_, n_part=int(cntT[t_]), in_group=bool(ing[t_]), group_boundary=bool((nodeG[nd_] & nodeN[nd_]).any()),
+                     node_m_ratio=[round(float(self.mn[q]) / med, 4) for q in nd_.tolist()],
+                     node_imex=[bool(self.mcfl[q] > self.mn[q]) for q in nd_.tolist()] if hasattr(self, "mcfl") else None,
+                     node_cfl_bound_ratio=[round(float(self.mcfl[q]) / max(float(self.mn[q]), 1e-30), 3) for q in nd_.tolist()] if hasattr(self, "mcfl") else None,
+                     dist_bc=(float(torch.cdist(ctr[None], pc).min()) if pc is not None and pc.shape[0] else None))
+            if PQPL and km.numel():
+                r.update(ys=[round(float(q), 2) for q in self.plys[km][:4].tolist()], logJp=[round(float(q), 4) for q in self.pllj[km][:4].tolist()],
+                         alpha=[round(float(q), 3) for q in self.plal[km][:4].tolist()],
+                         Fe_svd=[[round(float(c), 3) for c in torch.linalg.svdvals(self.plFe[k].view(3, 3)).tolist()] for k in km[:2].tolist()])
+            out.append(r)
+        return out
+
     def _akpl_cause(self, j):
         """절 AG.12: 노드 속도 비유한 vs 셀 뒤집힘 (det A_T ≤ 0, 입자 J = det(A F_p) ≤ 0) 서브스텝 기록과 인과 분석 (프레임 안 -- 메시는 프레임마다 다시 짠다)."""
         M, T = self.M, self.T
@@ -1505,6 +1542,9 @@ class Opt:
             ev_ = dict(frame=self._fi, j=j, n_inv=int(inv.sum()), fd=self._fd_check(nds2, Ub_))
             z["fd_ev"].append(ev_)
             print(f"  [절 AG.19 실제 강성 대 상계] {json.dumps(ev_, ensure_ascii=False)[:1500]}", flush=True)
+        if a.akg_diag2 and z.get("inv2") is None and bool(inv.any()):              # 절 AG.19: 첫 뒤집힘 셀의 자리 (바닥 없는 씬도) -- 입자 수, 묶음·경계, 구속까지 거리, 소성 상태, IMEX 대상, 국소 CFL 비
+            z["inv2"] = dict(frame=self._fi, j=j, n=int(inv.sum()), tets=self._diag2_tets(inv.nonzero().flatten()[:6]))
+            print(f"  [절 AG.19 첫 뒤집힘 자리] {json.dumps(z['inv2'], ensure_ascii=False)[:2500]}", flush=True)
         if z.get("first_inv") is None and bool(inv.any()) and HASPL:              # 절 AG.18: 첫 뒤집힌 셀이 바닥에 대해 어디 있고 그 노드가 비관통에 걸렸는지
             Np_ = self.Xf.shape[0] if self.Xf.dim() == 2 else self.Xf.numel() // 3
             pp0, nn0 = torch.tensor(PLf[:3], device=dev), torch.tensor(PLf[3:], device=dev)
@@ -1532,6 +1572,11 @@ class Opt:
                 z["first_inv"]["fd"] = self._fd_check(nds_, (lambda U_: (U_.__setitem__(slice(0, self.M), self._Uprev), U_)[1])(self.Uc.clone()))
                 print(f"  [절 AG.18 실제 강성 대 상계] {json.dumps(z['first_inv']['fd'], ensure_ascii=False)[:2000]}", flush=True)
             print(f"  [절 AG.18 첫 뒤집힘] {json.dumps(z['first_inv'], ensure_ascii=False)[:1500]}", flush=True)
+        if a.akg_diag2 and z["first"] is None and bool(vb.any()):
+            nb2 = vb.nonzero().flatten()
+            t2 = (torch.isin(tt, nb2[:8]).any(1) & occ).nonzero().flatten()[:6]
+            z["nan2"] = dict(frame=self._fi, j=j, n=int(nb2.numel()), tets=self._diag2_tets(t2))
+            print(f"  [절 AG.19 첫 비유한 자리] {json.dumps(z['nan2'], ensure_ascii=False)[:2500]}", flush=True)
         if z["first"] is None and bool(vb.any()):
             nb = vb.nonzero().flatten()
             fs = getattr(self, "_fsnap", None)
@@ -1560,7 +1605,7 @@ class Opt:
         nn = (na >= 0).nonzero().flatten()
         d1 = (na[nn] - node_inv[nn])
         has = node_inv[nn] < BIG
-        out = dict(first=z["first"], first_inv=z.get("first_inv"), fd_ev=z.get("fd_ev"), nanc_tot=dict(zip(["X", "Xprev역", "F_trial", "SVD", "RM", "tau", "X역", "힘", "detX≤0"], z["nanc_tot"][:9])),
+        out = dict(first=z["first"], first_inv=z.get("first_inv"), fd_ev=z.get("fd_ev"), inv2=z.get("inv2"), nan2=z.get("nan2"), nanc_tot=dict(zip(["X", "Xprev역", "F_trial", "SVD", "RM", "tau", "X역", "힘", "detX≤0"], z["nanc_tot"][:9])),
                    q1=dict(nan_nodes=int(nn.numel()), without_inverted_cell=int((~has).sum()),
                            diff_hist={str(int(k)): int(v) for k, v in zip(*torch.unique(d1[has], return_counts=True))} if bool(has.any()) else {}),
                    hist=z["hist"][-(a.akpl_k + 6):])
