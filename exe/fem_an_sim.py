@@ -44,7 +44,8 @@ ap.add_argument("--no_vfl_out", action="store_true")
 ap.add_argument("--pc", choices=["jacobi", "mg"], default="jacobi", help="PCG 전처리: 노드 블록 야코비 또는 기하 멀티그리드 (세계 고정 격자, 간격 2 배씩)")
 ap.add_argument("--mg_levels", type=int, default=5)
 ap.add_argument("--mg_min", type=int, default=300, help="가장 거친 층 노드 수가 이 아래면 멈춤")
-ap.add_argument("--mg_omega", type=float, default=0.6, help="감쇠 블록 야코비 평활 계수")
+ap.add_argument("--mg_omega", type=float, default=1.0, help="감쇠 블록 야코비 평활 계수 = mg_omega / λ_max(D⁻¹A) (층마다 거듭제곱법 mg_pow 번으로 잼)")
+ap.add_argument("--mg_pow", type=int, default=10)
 ap.add_argument("--mg_nc", type=int, default=10, help="가장 거친 층 평활 횟수")
 ap.add_argument("--dump", action="store_true")
 ap.add_argument("--tag", default="")
@@ -126,6 +127,7 @@ def rs_mean(Fp, w, inv, nq):
     nf = torch.empty(nq, device=dev, dtype=torch.uint8)
     AK.launch("an_rsf", nq, (np.int32(nq), AK.P(sR), AK.P(sL), AK.P(sw), AK.P(RS), AK.P(nf)))
     bad = bad | nf.bool()
+    rs_mean.last_bad = bad
     return torch.where(bad[:, None], sF / sw.clamp_min(1e-300)[:, None], RS), int(bad.sum())
 
 
@@ -245,6 +247,16 @@ class MG:
             if na < a.mg_min:
                 break
         s.nl = len(s.L)
+        for l in range(s.nl):                                                          # 층마다 λ_max(D⁻¹A) 거듭제곱법 -> ω_l = mg_omega / λ
+            na_ = s.L[l]["Mi"].shape[0]
+            z = torch.randn(na_, 3, device=dev, dtype=D64, generator=torch.Generator(device=dev).manual_seed(l))
+            lm = 1.0
+            for _ in range(a.mg_pow):
+                w_ = s.sm(l, s.op(l, z))
+                lm = float((z * w_).sum() / (z * z).sum())                             # 레일리 몫 (D 노름 아님, 추정)
+                z = w_ / w_.norm()
+            s.L[l]["w"] = a.mg_omega / max(lm, 1e-300)
+        s.lam = [round(1.0 / L_["w"], 2) for L_ in s.L]
 
     def op(s, l, z):
         lv = s.L[l]
@@ -275,7 +287,7 @@ class MG:
         return z
 
     def vc(s, l, r):
-        w = a.mg_omega
+        w = s.L[l]["w"]
         z = w * s.sm(l, r)
         if l == s.nl - 1:
             for _ in range(a.mg_nc - 1):
@@ -323,8 +335,8 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
             sk = torch.sqrt(k)[:, None, None]
             T = sk * Pm + (I3 - Pm)
             yh = Ut + ((1 - k)[:, None, None] * Pm @ (z0 - Ut)[..., None]).squeeze(-1)
-            eta = ((I3 - Pm) @ (y - Ut)[..., None]).squeeze(-1) + torch.where(  # η_P = P (y − ŷ) / √k
-                sk.squeeze(-1) > 0, (Pm @ (y - yh)[..., None]).squeeze(-1) / sk.squeeze(-1).clamp_min(1e-300), torch.zeros_like(y))
+            # 반복 시작점: 고착 성분은 y_P ← ŷ + k P (y − ŷ) (η_P = √k P (y − ŷ)) -- 새 부분 문제의 출발점 (k 가 바뀐 반복에서 1/√k 넘침 없음; k = 1 이면 y 그대로, k = 0 이면 ŷ)
+            eta = ((I3 - Pm) @ (y - Ut)[..., None]).squeeze(-1) + sk.squeeze(-1) * (Pm @ (y - yh)[..., None]).squeeze(-1)
             nst["stuck"] = int((r > 0).sum())
         else:
             T = I3.expand(na, 3, 3)
@@ -351,6 +363,7 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
         if a.pc == "mg":
             mg_ = MG(ctx, y, el, Mi, Tc, Bd)
             nst["lv"] = mg_.nl
+            nst["mglam"] = mg_.lam
             prec = mg_
         else:
             Pc = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
@@ -359,8 +372,14 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
         dl = torch.zeros_like(g)
         rr = -g
         zz = prec(rr)
-        pp = zz.clone()
         rz = float((rr * zz).sum())
+        if a.pc == "mg" and not (rz > 0):                                              # 전처리가 양의 정부호가 아니면 이 풀이는 블록 야코비로 (횟수 기록)
+            Pc = torch.linalg.inv(Mi[..., None] * I3 + Tc @ Bd @ Tc)
+            prec = lambda r_: (Pc @ r_[..., None]).squeeze(-1)
+            zz = prec(rr)
+            rz = float((rr * zz).sum())
+            nst["mgfb"] = nst.get("mgfb", 0) + 1
+        pp = zz.clone()
         rz0 = rz
         for ci in range(a.cg):
             Ap = Aop(pp)
@@ -412,6 +431,8 @@ def solve_step(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx):
     STAT["gr"] = max(STAT.get("gr", 0.0), nst["gr"] or 0.0)
     STAT["stuck"] = nst["stuck"]
     STAT["lv"] = nst.get("lv", 1)
+    STAT["mglam"] = nst.get("mglam")
+    STAT["mgfb"] = STAT.get("mgfb", 0) + nst.get("mgfb", 0)
     return U1, v1
 
 
@@ -446,9 +467,11 @@ def frame(fi, x, v, F):
     qV = Vc.repeat_interleave(8) / 8.0
     mq = Mc.repeat_interleave(8) / 8.0
     qF, nbad = rs_mean(F, vol64, qinv, nq)
+    qbad = rs_mean.last_bad
     cF, _ = rs_mean(F, vol64, cinv, nc)
     has = torch.zeros(nq, device=dev, dtype=torch.bool).index_put_((qinv,), torch.tensor(True, device=dev))
     qF = torch.where(has[:, None], qF, cF.repeat_interleave(8, 0))
+    nbad = int(qbad[has].sum())
     o8 = torch.arange(8, device=dev)
     qb = torch.stack([o8 // 4, (o8 % 4) // 2, o8 % 2], 1).double()
     qfx = (1.0 + GG * (2 * qb - 1)).repeat(nc, 1)
@@ -524,8 +547,8 @@ for fi in range(L):
         rec["kernel_ms"] = AK.prof_take()
     flog.write(json.dumps(rec) + "\n")
     flog.flush()
-    print(f"  프레임 {fi + 1}/{L} {dt_:.2f} s 오차 {100 * e:.3f}% 뉴턴 {STAT.get('nt')} PCG {STAT.get('cg')} 선탐색 {STAT.get('ls')} 층 {STAT.get('lv')} 헤시안 곱 {STAT.get('nmv')} 최대 |g|/|g0| {STAT.get('gr', 0):.1e} "
-          f"고착 노드 {STAT.get('stuck')} 점 {STAT.get('nq')} 노드 {STAT.get('na')} 뒤집힌 점 {STAT.get('nbad')} max|v| {float(v2.norm(dim=-1).max()):.3g}", flush=True)
+    print(f"  프레임 {fi + 1}/{L} {dt_:.2f} s 오차 {100 * e:.3f}% 뉴턴 {STAT.get('nt')} PCG {STAT.get('cg')} 선탐색 {STAT.get('ls')} 층 {STAT.get('lv')} λ {STAT.get('mglam')} 대체 {STAT.get('mgfb')} 헤시안 곱 {STAT.get('nmv')} 최대 |g|/|g0| {STAT.get('gr', 0):.1e} "
+          f"고착 노드 {STAT.get('stuck')} 점 {STAT.get('nq')} 노드 {STAT.get('na')} 유클리드 평균 점 {STAT.get('nbad')} max|v| {float(v2.norm(dim=-1).max()):.3g}", flush=True)
     if PRED is not None:
         PRED[fi] = x2.float().cpu()
     x, v, F = x2, v2, F2
