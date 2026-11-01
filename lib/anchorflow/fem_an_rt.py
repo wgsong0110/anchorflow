@@ -896,7 +896,7 @@ class RTSolver:
         s.BW = torch.tensor(BW, device=dev, dtype=f32).reshape(-1).contiguous()
         s.BG = torch.tensor(BG, device=dev, dtype=f32).reshape(-1).contiguous()
         s.IP = torch.zeros(16, device=dev, dtype=torch.int32)
-        s.SC = torch.zeros(16, device=dev, dtype=torch.float64)
+        s.SC = torch.zeros(32, device=dev, dtype=torch.float64)
         s.Np = torch.zeros(s.N, 3, device=dev, dtype=torch.int32)
         s.fx = torch.zeros(s.N, 3, device=dev, dtype=f32)
         s.pcd = torch.zeros(s.N, device=dev, dtype=torch.int32)
@@ -965,6 +965,8 @@ class RTSolver:
         s.fixd = torch.zeros(s.capN, device=dev, dtype=torch.uint8) if s.bc else None
         s.vbc = Z(s.capN, 3) if s.bc else None
         s.g0buf = Z(s.capN, 3)
+        s.an2 = Z(s.capN)
+        s.DG = torch.zeros(s.K * s.nt * 2, 32, device=dev, dtype=torch.float64)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
         # 멀티그리드 층 (1 .. nl−1): 첫 프레임 상자에서 차원을 내려 잡고 cap_mul 배
         s.ML = []
         if s.nl > 1:
@@ -1133,6 +1135,7 @@ class RTSolver:
                     s.zf(s.zo, 9, 3)
                     s.k("rt_dotz", capN, (P(IP), P(s.r), P(s.z), P(s.zo), P(s.SC), i32(1)), b=256)
                     s.k("rt_pinit", capN, (P(IP), P(s.z), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.Tp)), b=256)
+                s.DG[2 * (kstep * s.nt + it)].copy_(s.SC)                                  # 진단: SC0 = r·z 처음, SC1 = |g|²
                 for ci in range(s.cg):
                     s.zf(s.KTp, 9, 3)
                     s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
@@ -1150,7 +1153,12 @@ class RTSolver:
                     s.k("rt_lsy4", capN, (P(IP), P(s.mn), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC)), b=256)
                     s.k("rt_elem_ls", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC)))
                     s.k("rt_lspick", 1, (P(s.SC),), b=1)
+                s.DG[2 * (kstep * s.nt + it) + 1].copy_(s.SC)                              # 진단: SC0 = r·z 끝, 5..8 관성, 9 g·δ, 10..13 탄성 E, 14 보폭
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if s.ls else 1)), b=256)
+            if FL:                                                                     # 진단: 걸음 끝 위치의 고착 몫 an2 (걸음 시작 an 과 비교)
+                s.zf(s.an2, 9, 1)
+                s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), i32(1 if s.mid else 0), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
+                                         f(FL["PN"]), f(FL["DXG"]), P(s.an2)))
             if kstep < s.K - 1:
                 s.k("rt_stepend", capN, (P(IP), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
         s.k("rt_g2p_end", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.y), P(s.z0), P(s.U), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.fixd), P(s.vbc), f(s.damp),
@@ -1220,3 +1228,15 @@ class RTSolver:
         o = torch.empty_like(s.x)
         o[s.perm] = s.x
         return o
+
+    def diag(s):
+        """마지막 프레임 진단: 뉴턴 반복별 [|g|², r·z 처음, r·z 끝, g·δ, E0, E(¼), E(½), E(1), 보폭] + 고착 불일치 (걸음 끝 몫 > 0 과 시작 몫 > 0 이 다른 노드 수, 몫 차 합)."""
+        D = s.DG.cpu().numpy()
+        out = []
+        for k in range(s.K * s.nt):
+            a, b = D[2 * k], D[2 * k + 1]
+            out.append(dict(g2=a[1], rz0=a[0], rz1=b[0], gd=b[9], E0=b[5] + b[10], Ec=[b[6] + b[11], b[7] + b[12], b[8] + b[13]], st=b[14]))
+        nn = int(s.IP[9])
+        r0 = torch.where(s.mqn[:nn] > 0, s.an[:nn] / s.mqn[:nn].clamp_min(1e-30), torch.zeros_like(s.an[:nn]))
+        r1 = torch.where(s.mqn[:nn] > 0, s.an2[:nn] / s.mqn[:nn].clamp_min(1e-30), torch.zeros_like(s.an2[:nn]))
+        return dict(it=out, stick_flip=int(((r0 > 0) != (r1 > 0)).sum()), stick_n0=int((r0 > 0).sum()), stick_n1=int((r1 > 0).sum()), stick_dr=float((r1 - r0).abs().sum()))
