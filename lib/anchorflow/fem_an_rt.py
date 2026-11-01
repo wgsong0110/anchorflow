@@ -845,6 +845,16 @@ __global__ void rt_pinit(const int* IP, const float* z, const float* sk, const i
     float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, z + n*3, t);
     for (int a=0;a<3;a++) { p[n*3+a] = z[n*3+a]; Tp[n*3+a] = t[a]; }
 }
+// 하강 방향 보장 (--descent): PCG 결과 δ 가 g·δ ≥ 0 이면 δ ← α0 p0 (p0 = 첫 방향 = M r0, α0 = r0·M r0 / p0·A p0). SC[16] = r0·Mr0, SC[17] = p0·Ap0, SC[18] 바꾼 횟수
+__global__ void rt_fixdir(const int* IP, double* SC, const float* p0, float* dl) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    bool bad = !(SC[9] < 0.0);
+    if (n == 0 && bad) SC[18] += 1.0;
+    if (n >= IP[9] || !bad) return;
+    float a0 = (SC[17] > 0.0) ? (float)(SC[16]/SC[17]) : 0.f;
+    for (int a=0;a<3;a++) dl[n*3+a] = a0*p0[n*3+a];
+}
+__global__ void rt_sc_copy(double* SC, int dst, int src) { SC[dst] = SC[src]; }
 }
 '''
 
@@ -856,7 +866,7 @@ def P(t):
 class RTSolver:
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False):
         s.dev = dev
         f32 = torch.float32
         s.N = int(x.shape[0])
@@ -877,6 +887,7 @@ class RTSolver:
         s.floor = floor                                                                # dict(PT, NR, PN, DXG, KEX_per_step, vout) 또는 None
         s.damp = float(damp)
         s.nl, s.mg_nc, s.mg_pow, s.mg_omega = int(mg_levels), int(mg_nc), int(mg_pow), float(mg_omega)
+        s.descent = bool(descent)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
         s.mod = cp.RawModule(code=SRC, options=("--std=c++14",))
         s.fn = {}
@@ -966,6 +977,7 @@ class RTSolver:
         s.vbc = Z(s.capN, 3) if s.bc else None
         s.g0buf = Z(s.capN, 3)
         s.an2 = Z(s.capN)
+        s.p0 = Z(s.capN, 3)
         s.DG = torch.zeros(s.K * s.nt * 2, 32, device=dev, dtype=torch.float64)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
         # 멀티그리드 층 (1 .. nl−1): 첫 프레임 상자에서 차원을 내려 잡고 cap_mul 배
         s.ML = []
@@ -1136,10 +1148,14 @@ class RTSolver:
                     s.k("rt_dotz", capN, (P(IP), P(s.r), P(s.z), P(s.zo), P(s.SC), i32(1)), b=256)
                     s.k("rt_pinit", capN, (P(IP), P(s.z), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.Tp)), b=256)
                 s.DG[2 * (kstep * s.nt + it)].copy_(s.SC)                                  # 진단: SC0 = r·z 처음, SC1 = |g|²
+                if s.descent:
+                    s.p0.copy_(s.p); s.k("rt_sc_copy", 1, (P(s.SC), i32(16), i32(0)), b=1)
                 for ci in range(s.cg):
                     s.zf(s.KTp, 9, 3)
                     s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
                     s.k("rt_ap", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
+                    if s.descent and ci == 0:
+                        s.k("rt_sc_copy", 1, (P(s.SC), i32(17), i32(2)), b=1)
                     if s.nl > 1:
                         s.k("rt_cg1m", capN, (P(IP), P(s.SC), P(s.p), P(s.Ap), P(s.dl), P(s.r)), b=256)
                         s.mg_vc(0, s.r, s.z)
@@ -1151,6 +1167,10 @@ class RTSolver:
                 # 선탐색: 기울기 곱 g·δ = −r0·δ (r0 = rt_grad 가 남긴 처음 잔차)
                 if s.ls:
                     s.k("rt_lsy4", capN, (P(IP), P(s.mn), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC)), b=256)
+                    if s.descent:                                                      # g·δ ≥ 0 이면 전처리 기울기 방향으로 바꾸고 관성 몫·g·δ 를 다시
+                        s.k("rt_fixdir", capN, (P(IP), P(s.SC), P(s.p0), P(s.dl)), b=256)
+                        s.k("rt_sc_clear", 1, (P(s.SC), i32(5), i32(10)), b=1)
+                        s.k("rt_lsy4", capN, (P(IP), P(s.mn), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC)), b=256)
                     s.k("rt_elem_ls", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC)))
                     s.k("rt_lspick", 1, (P(s.SC),), b=1)
                 s.DG[2 * (kstep * s.nt + it) + 1].copy_(s.SC)                              # 진단: SC0 = r·z 끝, 5..8 관성, 9 g·δ, 10..13 탄성 E, 14 보폭
@@ -1235,7 +1255,7 @@ class RTSolver:
         out = []
         for k in range(s.K * s.nt):
             a, b = D[2 * k], D[2 * k + 1]
-            out.append(dict(g2=a[1], rz0=a[0], rz1=b[0], gd=b[9], E0=b[5] + b[10], Ec=[b[6] + b[11], b[7] + b[12], b[8] + b[13]], st=b[14]))
+            out.append(dict(g2=a[1], rz0=a[0], rz1=b[0], gd=b[9], E0=b[5] + b[10], Ec=[b[6] + b[11], b[7] + b[12], b[8] + b[13]], st=b[14], fix=b[18]))
         nn = int(s.IP[9])
         r0 = torch.where(s.mqn[:nn] > 0, s.an[:nn] / s.mqn[:nn].clamp_min(1e-30), torch.zeros_like(s.an[:nn]))
         r1 = torch.where(s.mqn[:nn] > 0, s.an2[:nn] / s.mqn[:nn].clamp_min(1e-30), torch.zeros_like(s.an2[:nn]))
