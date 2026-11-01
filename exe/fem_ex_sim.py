@@ -239,6 +239,7 @@ ap.add_argument("--ak_fstep", action="store_true", help="절 AK: 클램프 끈 �
 ap.add_argument("--ak_prep", action="store_true", help="--ak_pq4: 프레임 시작 준비를 계수 정렬 커널 둘로 (argsort·모으기 대신; 같은 식, 구간 안 합 순서만 다름)")
 ap.add_argument("--ak_acclam", action="store_true", help="절 AK.19 (정의 변경): 바닥 접촉 입자의 고착 질량을 사면체 네 노드에 같은 몫 (m_p/4) 대신 barycentric λ 몫으로 (입자 판정 그대로; 고착이 입자 가까운 노드에 몰려 위쪽 노드로 덜 번짐)")
 ap.add_argument("--ak_es", action="store_true", help="절 AK.27 (정의 변경): 변 기반 평활 FEM (ES-FEM-T4) -- 입자 응력은 자기 사면체 A_T 대신 자기 부분 영역 변 (barycentric 가장 큰 둘) 의 평활 사상 A_e = Σ_{T∋e} V_T A_T / Σ V_T (실제 사면체 야코비안의 부피 가중 평균); 입자 F 갱신은 그대로 (--ak_pq --ak_pq4 --ak_prep, 융합 없이)")
+ap.add_argument("--ak_eshg", type=float, default=0.0, help="절 AK.28: --ak_es 모래시계 억제 γ -- 에너지 γ μ Σ_p w_p |A_T − A_e|² (절 AG.11 --akg_hg 와 같은 정의; 0 = 끔)")
 ap.add_argument("--ak_sela", type=float, default=0.0, help="--ak_sel 섞기 α: 전단 사상 = (1 − α) 칸 평균 + α 자기 사면체 (모래시계 억제; 0 = 순수 선택 적분)")
 ap.add_argument("--ak_sel", action="store_true", help="절 AK.25 (정의 변경): 선택 적분 -- 전단 (μ) 몫은 칸 (Kuhn 정육면체 6 사면체) 점유 가중 평균 사상, 부피 몫은 사면체 자기 사상 (굽힘 잠김만 풀고 균일 변형 강성은 그대로; --ak_pq --ak_pq4 --ak_prep, 융합 없이)")
 ap.add_argument("--ak_sfcr", action="store_true", help="절 AK.18: 입자 적분점 FCR 을 표준 식으로 (Stomakhin 2012: 진 회전 R, 부피 항 λ (J − 1) cof F, J = det F 부호 그대로) -- 기존 커널은 J = |det|·부호, 반사 Q")
@@ -1018,6 +1019,7 @@ class Opt:
                 self.es_A = torch.zeros(self.Tcap * 6, 9, device=dev)
                 self.es_V = torch.zeros(self.Tcap * 6, device=dev)
                 self.es_G = torch.zeros(self.Tcap * 6, 9, device=dev)
+                self.es_TG = torch.zeros(self.Tcap, 9, device=dev)                   # 절 AK.28 자기 사면체 몫 (ak_esF 가 읽고 비움)
             if AKG:
                 self.akg_tg = torch.full((self.Tcap,), -1, dtype=torch.int32, device=dev)
                 self.akg_W = torch.zeros(self.Tcap, device=dev)
@@ -1983,7 +1985,8 @@ class Opt:
             AKC.launch("ak_esA", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl), EX.P(self.VTs), EX.P(self.es_te),
                                              EX.P(self.es_A), EX.P(self.es_V)), b=128)
             AKC.launch("ak_es_p", Np, (np.int32(Np), EX.P(self.aktt), EX.P(self.FT), EX.P(self.akdF), EX.P(self.akw), EX.P(self.es_te), EX.P(self.es_pe),
-                                       EX.P(self.es_A), EX.P(self.es_V), np.float32(mu), np.float32(lam), EX.P(self.es_G)), b=128)
+                                       EX.P(self.es_A), EX.P(self.es_V), np.float32(mu), np.float32(lam), EX.P(self.es_G),
+                                       EX.P(self.tets), EX.P(self.Uc), EX.P(self.gl)), b=128)
             AKC.launch("ak_esF", self.Tcap, (EX.P(self.tl), EX.P(self.cint[2:]), EX.P(self.tets), EX.P(self.gl), EX.P(self.VTs), EX.P(self.es_te), EX.P(self.es_G),
                                              EX.P(self.es_V), EX.P(self.f)), b=128)
             AKC.launch("ak_esZ", self.Tcap * 6, (np.int32(self.Tcap * 6), EX.P(self.es_A), EX.P(self.es_V), EX.P(self.es_G)), b=256)
@@ -2924,6 +2927,7 @@ class Opt:
                 key = torch.minimum(e0, e1) * (1 << 32) + torch.maximum(e0, e1)
                 self.es_te[:T_ * 6].copy_(torch.unique(key.reshape(-1), return_inverse=True)[1].to(torch.int32))
                 AKC.set_es(self.es_pe, self.lamb, self.rows, self.tets)
+                AKC.set_eshg(a.ak_eshg, self.es_TG)
             AKC.launch("ak_prep_cnt", Np, (np.int32(Np), EX.P(self.pinv), EX.P(self.volA), EX.P(self.akcnt), EX.P(self.akvs)), b=256)
             self.akoffs[1:T_ + 1].copy_(torch.cumsum(self.akcnt[:T_], 0, dtype=torch.int32))
             self.akoffs[0] = 0

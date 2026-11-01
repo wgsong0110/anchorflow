@@ -15,6 +15,8 @@ _AK = r'''
 extern "C" {
 // 빠른 FCR P (입자 스레드 판): Q = 빠른 극분해 (절 C c_polar_fast), J = |det X| (sp_fcr_P 의 Π max(σ, 0.01) 와 σ ≥ 0.01 에서 같다)
 __device__ float AKSELA;                                                            // 절 AK.25: 선택 적분 섞기 α (전단 사상 = (1 − α) 칸 평균 + α 자기 사면체; 모래시계 억제)
+__device__ float AKESHG;                                                           // 절 AK.28: ES-FEM 모래시계 억제 γ (에너지 γ μ Σ_p w_p |A_T − A_e|², 0 = 끔)
+__device__ float* AKESTG;                                                          //   자기 사면체 몫 dE/dA_T 버퍼 [T,9]
 __device__ int* AKPE;                                                              // 절 AK.27 ES-FEM: 입자 (정렬 순서) 의 사면체 안 변 번호 0..5 (null = 끔)
 __device__ const float* AKLM;                                                      //   입자 barycentric (원래 순서, [N,4])
 __device__ const long long* AKROWS;                                                //   입자 사면체 노드 (원래 순서, [N,4])
@@ -629,7 +631,7 @@ __global__ void ak_esA(const int* tl, const int* tlc, const long long* tets, con
         atomicAdd(&eV[e], V); }
 }
 __global__ void __launch_bounds__(128) ak_es_p(int N, const int* tt, const float* FT, const __half* dF, const float* wp, const int* te, const int* pe,
-                              const float* eA, const float* eV, float mu, float lam, float* eG) {
+                              const float* eA, const float* eV, float mu, float lam, float* eG, const long long* tets, const float* U, const float* gl) {
     int k = blockIdx.x*blockDim.x + threadIdx.x;
     if (k >= N) return;
     int t = tt[k];
@@ -641,7 +643,16 @@ __global__ void __launch_bounds__(128) ak_es_p(int N, const int* tt, const float
     mm3(Ab, F, X);
     ak_fcr_P(X, mu, lam * (AKLR ? AKLR[k] : 1.f), P);
     float w = wp[k];
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; atomicAdd(&eG[(long long)e*9+r*3+c], w*s); }
+    float Gs[9];
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) { float s = 0.f; for (int j=0;j<3;j++) s += P[r*3+j]*F[c*3+j]; Gs[r*3+c] = w*s; }
+    if (AKESHG > 0.f) {                                                             // 절 AK.28: γ μ w |A_T − A_e|² -- dE/dA_T = 2γμw D, dE/dA_e = −2γμw D
+        float A[9] = {1,0,0, 0,1,0, 0,0,1};
+        for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
+            for (int c=0;c<3;c++) { float u = U[nd*3+c]; for (int q=0;q<3;q++) A[c*3+q] += u*gl[(long long)t*12+i*3+q]; } }
+        float cf = 2.f*AKESHG*mu*w;
+        for (int j=0;j<9;j++) { float d = cf*(A[j] - Ab[j]); Gs[j] -= d; atomicAdd(&AKESTG[(long long)t*9+j], d); }
+    }
+    for (int j=0;j<9;j++) atomicAdd(&eG[(long long)e*9+j], Gs[j]);
 }
 __global__ void ak_esF(const int* tl, const int* tlc, const long long* tets, const float* gl, const float* VT, const int* te, const float* eG, const float* eV, float* f) {
     int i0 = blockIdx.x*blockDim.x + threadIdx.x;
@@ -651,6 +662,7 @@ __global__ void ak_esF(const int* tl, const int* tlc, const long long* tets, con
     if (!(V > 0.f)) return;
     float G[9] = {0,0,0,0,0,0,0,0,0};
     for (int j=0;j<6;j++) { int e = te[t*6+j]; float r = V / eV[e]; for (int k=0;k<9;k++) G[k] += r*eG[(long long)e*9+k]; }
+    if (AKESHG > 0.f) for (int k=0;k<9;k++) { G[k] += AKESTG[(long long)t*9+k]; AKESTG[(long long)t*9+k] = 0.f; }
     for (int i=0;i<4;i++) { long long nd = tets[(long long)t*4+i];
         for (int c=0;c<3;c++) { float s = 0.f; for (int q=0;q<3;q++) s += G[c*3+q]*gl[(long long)t*12+i*3+q]; atomicAdd(&f[nd*3+c], -s); } }
 }
@@ -683,6 +695,14 @@ def set_sfcr(on):
     if _MOD[0] is None:
         _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
     cp.ndarray((1,), cp.int32, _MOD[0].get_global("AKSFCR"))[:] = 1 if on else 0
+
+
+def set_eshg(g, tg):
+    """절 AK.28 ES-FEM 모래시계 억제 γ 와 자기 사면체 몫 버퍼."""
+    if _MOD[0] is None:
+        _MOD[0] = cp.RawModule(code=(RTC._SRC + EX._EX + CCU._C + AHC._AH + _AK).encode("ascii", "ignore").decode(), options=("--std=c++14",))
+    cp.ndarray((1,), cp.float32, _MOD[0].get_global("AKESHG"))[:] = float(g)
+    cp.ndarray((1,), cp.uint64, _MOD[0].get_global("AKESTG"))[:] = 0 if tg is None else tg.data_ptr()
 
 
 def set_es(pe, lm, rows, tets):
