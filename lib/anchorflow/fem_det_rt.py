@@ -29,6 +29,7 @@ __device__ double* AO_CF;                                                       
 __device__ float* AO_CB;                                                          // 칸 x 27 x 9 (노드 대각)
 __device__ float* AO_CV;                                                          // 칸 x 27 x 3 (헤시안 곱)
 __device__ float* AO_MW;                                                          // 점별 고착 질량
+__device__ int* AO_NCUT;                                                          // 입자별 구속 끊는 표본 수
 __device__ __forceinline__ void ao_bs_out(double* out, double v) {
     long long sl = out - AO_SCB;
     if (AO_DET && sl >= 0 && sl < 32) { AO_PART[sl*16384 + blockIdx.x] = v; atomicMax(&AO_BMAX[sl], (int)blockIdx.x + 1); }
@@ -152,6 +153,13 @@ __global__ void ao_gath_mv(const int* IP, const int* cidx, const float* cbuf, fl
     for (int o=0;o<27;o++) { int c = ao_ncell(IP, cidx, n, o); if (c < 0) continue; for (int a=0;a<4;a++) s[a] += cbuf[((size_t)c*27+o)*4+a]; }
     mn[n] += s[0]; for (int a=0;a<3;a++) mv[n*3+a] += s[1+a];
 }
+__global__ void ao_ncut(int N, const float* Trel, const float* tbuf, int K, int S, float dt) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    float t0 = tbuf[0], tr = Trel[p]; int KS = K*S, ncut = 0;
+    if (tr > t0) for (int ks=0; ks<KS; ks++) { int kk = ks / S, ss = ks % S; float ts = t0 + ((float)kk + ((float)ss + 0.5f)/(float)S)*dt; if (tr > ts) ncut = ks + 1; }
+    AO_NCUT[p] = ncut;
+}
 // P2G 노드 몫: 노드 하나가 이웃 27 칸의 입자를 차례로 (질량·운동량), 구속 질량 (KS > 0 이면, ao_pbc_acc 와 같은 끊는 표본)
 __global__ void ao_p2g_n(const int* IP, const int* cidx, const int* st, const float* fx, const float* m, const float* v, float* mn, float* mv,
                          const float* Trel, const float* tbuf, int K, int S, float dt, float* acc) {
@@ -164,16 +172,13 @@ __global__ void ao_p2g_n(const int* IP, const int* cidx, const int* st, const fl
         int c = ao_ncell(IP, cidx, n, o); if (c < 0) continue;
         int i = o/9, j = (o/3)%3, k = o%3;
         for (int p = st[c]; p < st[c+1]; p++) {
-            if (!mn && !(Trel[p] > t0)) continue;                               // 구속 질량만: 풀린 입자는 기저 계산 전에 건너뜀
+            int ncut = 0;
+            if (!mn) { ncut = AO_NCUT[p]; if (ncut == 0) continue; }            // 구속 질량만: 입자별 끊는 표본 (미리 계산), 풀린 입자 건너뜀
             float wx[3][3], dw[3][3];
             bwf(fx[p*3], wx[0], dw[0]); bwf(fx[p*3+1], wx[1], dw[1]); bwf(fx[p*3+2], wx[2], dw[2]);
             float ww = wx[0][i]*wx[1][j]*wx[2][k]*m[p];
             if (mn) { sm += ww; for (int a=0;a<3;a++) sv[a] += ww*v[p*3+a]; }
-            if (acc && Trel[p] > t0) {
-                int ncut = 0;
-                for (int ks=0; ks<KS; ks++) { int kk = ks / S, ss = ks % S; float ts = t0 + ((float)kk + ((float)ss + 0.5f)/(float)S)*dt; if (Trel[p] > ts) ncut = ks + 1; }
-                if (ncut > 0) acc[(size_t)n*KS + ncut - 1] += ww;
-            }
+            if (acc && ncut > 0) acc[(size_t)n*KS + ncut - 1] += ww;
         }
     }
     if (mn) { mn[n] += sm; for (int a=0;a<3;a++) mv[n*3+a] += sv[a]; }
@@ -237,13 +242,14 @@ class DetMixin(ART.RTSolver):
         s.d_cv = Z(s.capQc * 27 * 3)
         s.d_mw = Z(s.capQc * 8)
         s.d_st = torch.zeros(s.capQc + 1, device=s.dev, dtype=torch.int32)
+        s.d_ncut = torch.zeros(s.N, device=s.dev, dtype=torch.int32)
 
     def det_bind(s):
         def setp(nm, t, dt):
             g = s.mod.get_global(nm)
             ART.cp.ndarray((1,), dtype=dt, memptr=g)[0] = int(t.data_ptr()) if t is not None else 0
         setp("AO_SCB", s.SC, ART.cp.uint64); setp("AO_PART", s.d_part, ART.cp.uint64); setp("AO_BMAX", s.d_bmax, ART.cp.uint64)
-        setp("AO_CF", s.d_cf, ART.cp.uint64); setp("AO_CB", s.d_cb, ART.cp.uint64); setp("AO_CV", s.d_cv, ART.cp.uint64); setp("AO_MW", s.d_mw, ART.cp.uint64)
+        setp("AO_CF", s.d_cf, ART.cp.uint64); setp("AO_CB", s.d_cb, ART.cp.uint64); setp("AO_CV", s.d_cv, ART.cp.uint64); setp("AO_MW", s.d_mw, ART.cp.uint64); setp("AO_NCUT", s.d_ncut, ART.cp.uint64)
         import os
         setp("AO_ACTL", s.act if (getattr(s, "compact", False) and os.environ.get("AO_DET_ACTG", "1") == "1") else None, ART.cp.uint64)
         g = s.mod.get_global("AO_DET")
@@ -275,6 +281,7 @@ class DetMixin(ART.RTSolver):
             return
         if name == "ao_pbc_acc":                                                 # 구속 질량 (노드가 모음)
             # args: N, IP, Np, fx, m, trel, tbuf, K, S, dt, acc
+            super().k("ao_ncut", s.N, (np.int32(s.N), P(s.trel), P(s.tbuf), args[7], args[8], args[9]), 256)
             super().k("ao_p2g_n", s.capN, (P(IP), P(s.cidx), P(s.d_st), P(s.fx), P(s.m), P(None), P(None), P(None), P(s.trel), P(s.tbuf), args[7], args[8], args[9], args[10]), 128)
             return
         if name == "ao_act":
