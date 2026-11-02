@@ -218,6 +218,36 @@ __global__ void ao_g2p(int N, const int* IP, const float* Ai, const int* pb, con
     for (int k=0;k<9;k++) F[(size_t)p*9+k] = Fp[k];
     if (cnt && nrm) atomicAdd(&cnt[2], 1);
 }
+__global__ void ao_act_reset(int* IP) { IP[14] = 0; }
+__global__ void ao_act(int* IP, const float* mn) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    if (mn[n] > 0.f) { int k = atomicAdd(&IP[14], 1); AO_ACT[k] = n; }
+}
+// PCG 첫 추정 (앞 걸음 첫 뉴턴의 δ): rt_grad 뒤에 dl = d0, r = −g − A d0, z = D r, p = z, Tp = T p, SC0 = r·z
+__global__ void ao_tvec(const int* IP, const float* sk, const int* pm, float n0, float n1, float n2, const float* v, float* o) {
+    int ii_ = blockIdx.x*blockDim.x + threadIdx.x;
+    if (ii_ >= IP[14]) return;
+    int n = AO_ACT[ii_];
+    float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, v + n*3, t); for (int a=0;a<3;a++) o[n*3+a] = t[a];
+}
+__global__ void ao_warm(const int* IP, const float* mn, float itau2, const float* sk, const int* pm, float n0, float n1, float n2, const float* d0, const float* KTd,
+                        const float* Dinv, float* dl, float* r, float* z, float* p, float* Tp, double* SC) {
+    if (blockIdx.x*blockDim.x >= IP[14]) return;
+    int ii_ = blockIdx.x*blockDim.x + threadIdx.x;
+    double rz = 0.0;
+    if (ii_ < IP[14]) {
+        int n = AO_ACT[ii_];
+        float Mi = mn[n]*itau2;
+        float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, KTd + n*3, t);
+        float rr[3];
+        for (int a=0;a<3;a++) { float d = d0[n*3+a]; dl[n*3+a] = d; rr[a] = r[n*3+a] - (Mi*d + t[a]); r[n*3+a] = rr[a]; }
+        const float* D = Dinv + n*9;
+        float zz[3]; for (int a=0;a<3;a++) { zz[a] = D[a*3]*rr[0] + D[a*3+1]*rr[1] + D[a*3+2]*rr[2]; z[n*3+a] = zz[a]; p[n*3+a] = zz[a]; rz += (double)rr[a]*zz[a]; }
+        float tp[3]; Tapply(sk[n], pm[n], n0, n1, n2, zz, tp); for (int a=0;a<3;a++) Tp[n*3+a] = tp[a];
+    }
+    blocksum_add(rz, &SC[0]);
+}
 '''
 
 
