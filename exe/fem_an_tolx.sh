@@ -12,7 +12,7 @@ others0() { nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader |
 exec 9>/home/dkta/work/gpu0.lock; flock 9
 echo "잠금 $(date +%T) $(cat .done)" > $R/info.txt
 for rep in 1 2; do for e in $AN_LIST; do IFS=: read v t fr A <<< "$e"; A=$(echo "$A" | tr '+' ' ')
-  case $t in L000) DA="--data $SD/L000.pt --floor vel";; ficus) DA="--data $SD/F_pg_v0.pt --floor none --cfg_bc --region_density --pg_vdamp";; *) DA="--data $LD/$t.pt --floor vel";; esac
+  case $t in L000) DA="--data $SD/L000.pt --floor vel";; ficus) DA="--data $SD/F_pg_v0.pt --floor none --cfg_bc --region_density --pg_vdamp";; drop1) DD=/tmp/dkta/ak_drop2; [ -s $DD/drop_f1.pt ] || DD=$SD/ak_drop2; DA="--data $DD/drop_f1.pt --floor vel";; stretch|shear) DA="--data /tmp/dkta/ak_block/$t.pt --floor none";; *) DA="--data $LD/$t.pt --floor vel";; esac
   O=$R/${v}_r$rep; mkdir -p $O
   while [ "$(others0)" -gt 0 ]; do sleep 5; done
   echo "시작 때 카드 0 의 다른 프로세스 $(others0) 개 $(date +%T)" > $O/card.txt

@@ -57,7 +57,7 @@ while read -r V t A; do
   run_one $G $V $t $A &
   echo $! > $CL/$G
   echo "띄움 $V $t 카드 $G $(date +%T)"
-  sleep 40
+  sleep ${AN_GAP:-10}
 done < $LST
 wait
 echo "[묶음 끝 $NM] $(date '+%F %T')" | tee $R/END; rclone copy $R/END $RR -q
