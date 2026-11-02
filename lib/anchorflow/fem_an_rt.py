@@ -1050,7 +1050,7 @@ class RTSolver:
 
     def profile(s, t):
         """커널별 GPU 시간 (그래프 밖에서 같은 순서로 한 프레임; 상태는 되돌림). -> {이름: [ms 합, 호출 수]}"""
-        bk = (s.x.clone(), s.v.clone(), s.F.clone())
+        bk = s._bk()
         s.set_bc(t)
         s.prof = []
         s.record(t)
@@ -1060,7 +1060,7 @@ class RTSolver:
             a_, c_ = o.get(nm, (0.0, 0))
             o[nm] = (a_ + e0.elapsed_time(e1), c_ + 1)
         s.prof = None
-        s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])
+        s._rs(bk)
         return {k_: [round(a_, 4), c_] for k_, (a_, c_) in o.items()}
 
     def alloc(s, need):
@@ -1347,6 +1347,14 @@ class RTSolver:
                                P(s.x), P(s.v), P(s.F)))
 
 
+    def _bk(s):
+        """프레임 시작 입자 상태 백업: x·v·F 와 함께 m·vol·perm (결정적 판은 P2G 에서 입자를 정렬하며 이 배열들도 재배열한다 -- 데움 실행·넘침 다시 하기 뒤 같이 되돌려야 질량·부피가 제 입자에 붙는다)."""
+        return tuple(getattr(s, nm).clone() for nm in ("x", "v", "F", "m", "vol", "perm"))
+
+    def _rs(s, bk):
+        for nm, t in zip(("x", "v", "F", "m", "vol", "perm"), bk):
+            getattr(s, nm).copy_(t)
+
     def set_bc(s, t):
         """구속 매개변수 (중심 = point + v (t − t0), 반 크기, 속도, 켜짐) 를 장치 버퍼에 (그래프 밖, 재생 전)."""
         if not s.bc:
@@ -1374,14 +1382,14 @@ class RTSolver:
 
     def step(s, t):
         """한 프레임. 넘치면 상태를 되돌리고 용량 2 배로 다시 할당·캡처해 그 프레임을 다시 한다. 돌려주는 것: 다시 했는지. s.last_ms = 그래프 재생 GPU 시간 (CUDA 이벤트)."""
-        bk = (s.x.clone(), s.v.clone(), s.F.clone())
+        bk = s._bk()
         Kw = s.Kc if (s.Kc and getattr(s, "contact_prev", False)) else s.K               # 접촉 적응: 앞 프레임 고착 노드가 있으면 K_c
         if Kw != s.Kcur:
             s.Kcur = Kw
             s.graph = s.graphs.get(Kw)
         if s.graph is None:
             s.capture()
-            s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])                      # 데움 실행이 상태를 바꿨으므로 되돌림
+            s._rs(bk)                      # 데움 실행이 상태를 바꿨으므로 되돌림
         s.set_bc(t)
         e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         e0.record()
@@ -1395,11 +1403,11 @@ class RTSolver:
                 s.last_ms = float("nan")
                 return False
             tries += 1
-            s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])
+            s._rs(bk)
             s.cap_mul = 1.5 + 0.5 * tries                                              # 필요량은 지금 상태에서 다시 재므로 배수는 작게 (두 배씩 키우면 메모리가 넘친다)
             s.alloc(None)
             s.capture()
-            s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])
+            s._rs(bk)
             s.set_bc(t)
             e0.record()
             s.graph.replay()
