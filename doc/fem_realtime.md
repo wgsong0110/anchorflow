@@ -4412,3 +4412,16 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
   같은 판정 기준에서 안정한 가장 빠른 판은 PCG 7 (37.1 ms). `--mvc` 없는 `--hpack --bdsh` PCG 5 (35.7 ms) 는 결정적 2 회 + 비결정 1 회만 확인 (다음에 비결정 2 회 더).
 - **f16 헤시안 대조 (`--h16`, 위 삼각을 2μ+λ 로 나눠 f16 저장 -- 나누지 않으면 성분 2e7 대가 f16 범위를 넘어 첫 프레임 비유한)**: 거의 수렴한 K 8 x 3 x 30 에서 3.1268 % (f32 3.1271 %), 139.5 대 155.8 ms (-10 %). K 8 x 2 x 7 은 비결정 3 회 50/50 (2.567 %, 34.6 ms) 이나 결정적 2 회 모두 프레임 39 발산 -> 경계 판정이라 쓰지 않음.
 - 요소 커널 칸 8 점 한 워프 묶기 (특이값 분해·접선을 칸 단위로) 는 아직 안 함.
+
+### AO.15 인계 (wolf 암시적 판 상태 요약, 11-02)
+**어디에**: 가지 implicit-wolf (작업 사본 /home/wgsong/workspace/execute/anchorflow/impwolf_wt), 묶음 R2 lbours/fem_ao/code/implicit-wolf_<커밋>.bundle. 잡 안 실행은 exe/ao_launch.sh <이름> '<명령>' (git archive -> R2 -> 노드 /tmp 에 풀어 실행, 로그 R2 lbours/fem_ao/marks/<이름>.log), 단독 측정 exe/fem_ao_excl.sh (GPU0 + gpu0.lock, 실행 중 카드 0 프로세스 기록), 여러 씬 exe/fem_ao_common.sh, 렌더 exe/fem_ao_render.sh, 노드 /tmp 정리 exe/ao_clean.sh (R2 같은 크기 확인 뒤만; /tmp 가 100 % 면 NFS 에서 직접 실행).
+**코드**: 실시간 판 lib/anchorflow/fem_ao_rt.py (AORTSolver = 모래, RTAdapt = 탄성; 절 AN RTSolver 상속), 결정적 합산 lib/anchorflow/fem_det_rt.py (DetMixin), 실행 exe/fem_ao_rt_sim.py; 검증판 (torch) exe/fem_ao_sim.py·lib/anchorflow/fem_ao_cuda.py.
+**정의 (AO.0·AO.4·AO.8)**: 셀 = max(1, c) x 정답 dx (c = 점유 칸 중 입자 1 개 이하 비율 ≤ 15 % 인 가장 작은 배수: wolf 2, lego 1, ficus 1), 암시적 중점, 탄성 접선 (초기 강성법; 응력은 정답 PG Drucker-Prager RM), 선탐색 없음, 걸음 끝 소성 커밋, G2P 걸음별 입자 RM, 순차 방출 = 노드 구속 인자, 바닥 = 가우스 점 고착, 질량 1e-8 x 중앙값 아래 노드는 관성 예측 (실측상 결과 불변).
+**최선 설정 (GPU0 단독, 50 프레임)**:
+- 정확도 기준: `--cell 2 --integ mid --floor vel --pbc --mlow 1e-8 --K 8 --newton 3 --cg 30` 3.03 에서 3.13 %, 241 ms (+ `--hpack --bdsh --mvc` 156 ms).
+- 안정 판정 (결정적 2 회 + 비결정 3 회) 통과한 가장 빠른 판: `... --K 8 --newton 2 --cg 7 --hpack --bdsh --mvc` 2.57 %, **37.1 ms** (결정적 `--det` 51.1 ms). `--hpack --bdsh` PCG 5 (35.7 ms) 는 판정 중 (아래).
+- 실행 예: `bash exe/fem_ao_rt_sim.py` 를 직접 쓰지 말고 `AO_FR=50 bash exe/fem_ao_excl.sh <묶음> "<판>:<인자>"` (데이터 /tmp/dkta/ag_data/wolf.pt, 없으면 R2 lbours/fem_ag_data/wolf.pt).
+**남은 병목 (K 8 x 2 x 5 `--mvc` 판 26 ms)**: 헤시안 곱 11.7 ms (87 회 x 0.135), 모래 요소 커널 8.4 ms (16 회 x 0.52; 특이값 분해·헤시안 조립·노드 대각), rt_cg1_c 1.35, 0 채우기 0.9, P2G 0.8 ms. 반복 수 (걸음 8 x 뉴턴 2 x (PCG + 첫 추정 1)) 가 곱 횟수를 정한다.
+**실패·버린 시도 (근거는 AO.2·AO.3·AO.5·AO.9·AO.10)**: 대칭·일관 접선 뉴턴 (자연 상태가 원뿔 꼭짓점이라 선탐색이 2^-12 까지 거부), 일 기준·잔차 선탐색, 셀 1·1.5 배 (빈 칸 많아 뒤집힘), K 1·2 (오차·안정), MG 전처리 (같은 오차에서 이득 없음), 반복 예산을 너무 줄인 판 (K 4·3, PCG 3·4, f16 PCG 7 은 결정적 판 발산 = 경계), 적응 걸음 수 (wolf 는 됨 3.9 %, lego·ficus 는 고정 예산 풀이가 걸음 수에 약해 판정 보류).
+**결정적 판**: `--det` (같은 명령 두 번 비트 동일, summary.json 의 x_sha1). 쓰는 법은 AO.13 첫 줄. 주의: MG 와 함께 쓰지 말 것, 정렬이 재배열하는 배열 (x·v·F·m·vol·perm·trel) 은 step 백업에 모두 넣을 것 (DetMixin._bk), 비용 +24 에서 +40 %.
+**다음 후보**: (1) 요소 커널을 칸 단위로 (칸 8 점의 특이값 분해·RM·접선을 한 워프가 나눠, 공유 메모리), (2) 헤시안 곱의 노드 입력 공유 메모리 판에 f16 (정확도는 같고 -10 %, 단 PCG 7 에서 결정적 판 경계) 을 예산 8 과 함께, (3) 걸음 수를 줄이는 적분기 (오차 원인 에이전트의 적분기 교체 결과 대기), (4) PCG 첫 추정을 앞 프레임 마지막 걸음까지 넓히기.
