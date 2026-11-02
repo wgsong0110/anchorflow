@@ -146,7 +146,7 @@ __global__ void rt_scan(int* IP, const int* occ, int* cidx, int* cb, int capQc) 
 // 입자 -> 가우스 점 누적 (회전 R, log S, F, 가중) + 칸 누적 + 칸 부피·질량 + 노드 질량·운동량
 // A: [q*28]: 0..8 R, 9..17 LS, 18..26 F, 27 w;  C: [c*30]: 0..27 같은 것, 28 V, 29 M;  bad: q 와 c (int, 뒤집힌 입자)
 __global__ void rt_p2g(int N, const float* x, const float* v, const float* F, const float* m, const float* vol, const int* pb, const float* fx, const int* pcd,
-                       const int* cidx, const int* IP, float* A, float* C, int* badq, int* badc, float* mn, float* mv) {
+                       const int* cidx, const int* IP, float* A, float* C, int* badq, int* badc, float* mn, float* mv, const float* pa, float* ma) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N || IP[13]) return;
     int c = cidx[pcd[p]];
@@ -176,6 +176,7 @@ __global__ void rt_p2g(int N, const float* x, const float* v, const float* F, co
         float ww = wx[0][i]*wx[1][j]*wx[2][k]*mp;
         atomicAdd(&mn[nid], ww);
         for (int a=0;a<3;a++) atomicAdd(&mv[nid*3+a], ww*v[p*3+a]);
+        if (ma) for (int a=0;a<3;a++) atomicAdd(&ma[nid*3+a], ww*pa[p*3+a]);   // generalized-α: 입자 가속도 -> 노드 (질량 가중)
     }
 }
 __device__ void rs_fin(const float* sR, const float* sL, float w, float* out, bool* bad) {
@@ -1000,6 +1001,72 @@ __global__ void __launch_bounds__(1024) rt_mg_csolve(int l, const int* LM, const
         __syncthreads();
     }
 }
+// ---- generalized-α / HHT (implicit-err 절 AN.err3 증분 포텐셜 꼴) ----
+// 노드 가속도 a = ma / m (질량 0 이면 0, 고정 노드 0)
+__global__ void rt_ga_anode(const int* IP, const float* mn, const float* ma, const unsigned char* fixd, float* ak) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float m = mn[n];
+    for (int a=0;a<3;a++) ak[n*3+a] = (m > 0.f && !(fixd && fixd[n])) ? ma[n*3+a]/m : 0.f;
+}
+// 걸음 시작: xp = U + dt v + dt²(½−β) a, ys = αf U + (1−αf) xp, Ũ = ys + τ² (g − αm a), z0 = ys − (v + dt (1−γ) a)/α, y = U (시작점 = 걸음 시작 위치; 고정 노드 U + (1−αf) dt vbc)
+__global__ void rt_ga_step0(const int* IP, const float* U, const float* vk, const float* ak, float dt, float am, float af, float gm, float be, float tau, float al,
+                            float g0, float g1, float g2, const unsigned char* fixd, const float* vbc, float* Ut, float* z0, float* y) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float gg[3] = {g0, g1, g2};
+    for (int a=0;a<3;a++) {
+        float u = U[n*3+a], v = vk[n*3+a], ac = ak[n*3+a];
+        float xp = u + dt*v + dt*dt*(0.5f - be)*ac;
+        float ys = af*u + (1.f - af)*xp;
+        Ut[n*3+a] = ys + tau*tau*(gg[a] - am*ac);
+        z0[n*3+a] = ys - (v + dt*(1.f - gm)*ac)/al;
+        y[n*3+a] = (fixd && fixd[n]) ? u + (1.f - af)*dt*vbc[n*3+a] : u;
+    }
+}
+// 걸음 끝: v1 = α (y − z0) (고정 노드 vbc), a1 = (v1 − v − dt (1−γ) a)/(γ dt), U1 = U + dt v + dt² ((½−β) a + β a1) (Newmark 위치 식), 고착 노드 (an > 0) 의 a1 = 0 (areset), 고정 노드 a1 = 0, 감쇠
+__global__ void rt_ga_end(const int* IP, float dt, float gm, float be, float al, const float* y, const float* z0, float* U, float* vk, float* ak,
+                          const float* an, int areset, const unsigned char* fixd, const float* vbc, float damp) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    bool fx_ = fixd && fixd[n];
+    bool stk = areset && an && an[n] > 0.f;
+    for (int a=0;a<3;a++) {
+        float u = U[n*3+a], v = vk[n*3+a], ac = ak[n*3+a];
+        float v1 = fx_ ? vbc[n*3+a] : al*(y[n*3+a] - z0[n*3+a]);
+        float a1 = (v1 - v - dt*(1.f - gm)*ac)/(gm*dt);
+        U[n*3+a] = u + dt*v + dt*dt*((0.5f - be)*ac + be*a1);
+        vk[n*3+a] = v1*damp;
+        ak[n*3+a] = (fx_ || stk) ? 0.f : a1;
+    }
+}
+// 첫 프레임 가속도 a0 = g − f(0)/m', m' = max(m, mlow) (고정 노드 0)
+__global__ void rt_ga_a0(const int* IP, const float* mn, const double* f, float mlow, float g0, float g1, float g2, const unsigned char* fixd, float* ak) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float me = fmaxf(mn[n], mlow); float gg[3] = {g0, g1, g2};
+    for (int a=0;a<3;a++) ak[n*3+a] = (fixd && fixd[n]) ? 0.f : (gg[a] - (float)f[n*3+a]/me);
+}
+// G2P (generalized-α): x += Σ w U, v = Σ w v, a_p = Σ w a, F ← (I + Σ U ⊗ ∇w) F
+__global__ void rt_g2p_ga(int N, const int* IP, const float* Ai, const int* pb, const float* fx, const float* U, const float* vk, const float* ak, float* x, float* v, float* pa, float* F) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N || IP[13]) return;
+    float w[3][3], dw[3][3];
+    for (int a=0;a<3;a++) bwf(fx[p*3+a], w[a], dw[a]);
+    int nb1 = IP[7], nb2 = IP[8];
+    float u[3] = {0,0,0}, vv[3] = {0,0,0}, aa[3] = {0,0,0}, A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int o=0;o<27;o++) {
+        int i = o/9, j = (o/3)%3, k = o%3;
+        int nid = ((pb[p*3]+i)*nb1 + (pb[p*3+1]+j))*nb2 + (pb[p*3+2]+k);
+        float ww = w[0][i]*w[1][j]*w[2][k];
+        float gy[3] = {dw[0][i]*w[1][j]*w[2][k], w[0][i]*dw[1][j]*w[2][k], w[0][i]*w[1][j]*dw[2][k]};
+        float gx[3]; for (int b=0;b<3;b++) gx[b] = Ai[0*3+b]*gy[0] + Ai[1*3+b]*gy[1] + Ai[2*3+b]*gy[2];
+        for (int a=0;a<3;a++) { float uu = U[nid*3+a]; u[a] += ww*uu; vv[a] += ww*vk[nid*3+a]; aa[a] += ww*ak[nid*3+a]; for (int b=0;b<3;b++) A[a*3+b] += uu*gx[b]; }
+    }
+    float Fp[9]; for (int k=0;k<9;k++) Fp[k] = F[(size_t)p*9+k];
+    for (int a=0;a<3;a++) { x[p*3+a] += u[a]; v[p*3+a] = vv[a]; pa[p*3+a] = aa[a]; }
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = 0.f; for (int k=0;k<3;k++) t += A[a*3+k]*Fp[k*3+b]; F[(size_t)p*9+a*3+b] = t; }
+}
 }
 '''
 
@@ -1011,7 +1078,7 @@ def P(t):
 class RTSolver:
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True):
         s.dev = dev
         f32 = torch.float32
         s.N = int(x.shape[0])
@@ -1042,7 +1109,15 @@ class RTSolver:
         s.fuse2 = bool(fuse2)                                                          # 결과 불변 융합 2 판 (가장 거친 층 한 블록, 층 0 연장 보정 + T z, KTp 0 채우기를 cg2 에)
         s.mg_wreuse = bool(mg_wreuse)
         s.mg_lreuse = bool(mg_lreuse)
-        s.mg_csolve = bool(mg_csolve)                                                  # 가장 거친 층 한 블록 커널 (결과 불변이나 이 층 크기에서 더 느림 -- 기본 끔)                                                  # 정의 변경: 거친 층 ω 를 첫 프레임 (또는 다시 할당 뒤 첫) 값으로 재사용 (거친 층 거듭제곱법 생략)                                                  # 정의 변경: 한 프레임 안 단계 τ 가 같으면 층 0 ω 를 다시 재지 않음                                                            # 걸음 끝 |g| 를 한 번 더 잼 (진단; 시간 측정 판에서는 끔)                                                       # 관성 질량 하한 계수 c (0 = 없음)
+        s.mg_csolve = bool(mg_csolve)
+        # generalized-α / HHT (ga = "ga" 또는 "hht"): 증분 포텐셜 꼴, 노드 가속도 상태 (입자 가속도로 프레임 사이 전달)
+        s.ga = ga
+        if ga:
+            r = float(rho)
+            am, af = ((0.0, (1.0 - r) / (1.0 + r)) if ga == "hht" else ((2 * r - 1) / (r + 1), r / (r + 1)))
+            s.ga_c = dict(am=am, af=af, gm=0.5 - am + af, be=0.25 * (1 - am + af) ** 2)
+            s.areset = bool(areset)
+            s.ga_first = True                                                  # 가장 거친 층 한 블록 커널 (결과 불변이나 이 층 크기에서 더 느림 -- 기본 끔)                                                  # 정의 변경: 거친 층 ω 를 첫 프레임 (또는 다시 할당 뒤 첫) 값으로 재사용 (거친 층 거듭제곱법 생략)                                                  # 정의 변경: 한 프레임 안 단계 τ 가 같으면 층 0 ω 를 다시 재지 않음                                                            # 걸음 끝 |g| 를 한 번 더 잼 (진단; 시간 측정 판에서는 끔)                                                       # 관성 질량 하한 계수 c (0 = 없음)
         s.Kc = int(K_contact) if K_contact else None                                   # 접촉 적응: 앞 프레임에 고착 노드가 있으면 이 걸음 수
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
@@ -1138,6 +1213,9 @@ class RTSolver:
         s._wdone = False
         s.an2 = Z(s.capN)
         s.p0 = Z(s.capN, 3)
+        s.ma = Z(s.capN, 3); s.ak = Z(s.capN, 3)
+        if not hasattr(s, "pa"):
+            s.pa = torch.zeros(s.N, 3, device=dev, dtype=torch.float32)
         s.meff = Z(s.capN); s.U0 = Z(s.capN, 3); s.v0 = Z(s.capN, 3); s.wb = Z(s.capN, 3); s.wvb = Z(s.capN, 3)
         s.DG = torch.zeros(4 * max(s.K, s.Kc or 0) * s.nt, 64, device=dev, dtype=torch.float64)
         s.DGF = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)    # 걸음 끝 SC (gfin: SC1 = |g_끝|²)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
@@ -1277,6 +1355,12 @@ class RTSolver:
         dt = s.h / K
         out = []
         for _ in range(K):
+            if s.ga:
+                c = s.ga_c
+                tau = math.sqrt((1 - c["af"]) * c["be"] * dt * dt / (1 - c["am"]))
+                al = c["gm"] * dt / ((1 - c["af"]) * c["be"] * dt * dt)
+                out.append(dict(kind="ga", tau=tau, al=al, beta=0.0, thinv=1.0 / (1 - c["af"]), dtf=(1 - c["af"]) * dt, frac=1.0, last=True, dt=dt, **c))
+                continue
             if s.scheme == "trbdf2":
                 ga = 2.0 - math.sqrt(2.0)
                 t1 = 0.5 * ga * dt
@@ -1299,10 +1383,11 @@ class RTSolver:
         s.zf(s.occ)
         s.k("rt_mark", N, (i32(N), P(s.Np), P(s.fx), P(IP), P(s.pcd), P(s.occ)))
         s.k("rt_scan", 1024, (P(IP), P(s.occ), P(s.cidx), P(s.cb), i32(s.capQc)), b=1024)
-        for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3), (s.mqn, 9, 1)):
+        for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3), (s.mqn, 9, 1)) + (((s.ma, 9, 3),) if s.ga else ()):
             s.zf(t_, ci, mul)
         s.zf(s.badq); s.zf(s.badc); s.zf(s.nbad)
-        s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv)))
+        s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv),
+                              P(s.pa if s.ga else None), P(s.ma if s.ga else None)))
         s.k("rt_gauss", capQ, (P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.cb), P(s.A), P(s.BW), P(s.Fq), P(s.Vq), P(s.mq), P(s.xq0), P(s.mqn), P(s.nbad)))
         s.k("rt_vn", capN, (P(IP), P(s.mn), P(s.mv), P(s.vk), P(s.U)), b=256)
         if s.nl > 1:
@@ -1319,12 +1404,25 @@ class RTSolver:
             it2 = f(1.0 / (sg["tau"] * sg["tau"]))
             if sg.get("save0"):
                 s.U0.copy_(s.U); s.v0.copy_(s.vk)
-            if sg["kind"] == "bdf2":
+            if sg["kind"] == "ga":
+                if kstep == 0:
+                    if s.ga_first:                                                     # 첫 프레임 (그래프 밖에서만): a0 = g − ∇Ψ(0)/m', m' = max(m, 1e-3 x 질량 중앙값)
+                        s.zf(s.f, 9, 3); s.zf(s.y, 9, 3)
+                        s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1), P(s.SC[10:]), P(s.f), P(s.H), i32(capQ), P(s.B)))
+                        mm = s.mn[:int(s.IP[9])]; mlow = 1e-3 * float(mm[mm > 0].median())
+                        s.k("rt_ga_a0", capN, (P(IP), P(s.mn), P(s.f), f(mlow), *[f(q) for q in s.g], P(s.fixd), P(s.ak)), b=256)
+                    else:
+                        s.k("rt_ga_anode", capN, (P(IP), P(s.mn), P(s.ma), P(s.fixd), P(s.ak)), b=256)
+                s.k("rt_ga_step0", capN, (P(IP), P(s.U), P(s.vk), P(s.ak), f(sg["dt"]), f(sg["am"]), f(sg["af"]), f(sg["gm"]), f(sg["be"]), f(sg["tau"]), f(sg["al"]),
+                                          *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.Ut), P(s.z0), P(s.y)), b=256)
+                Ub = vb = None
+            elif sg["kind"] == "bdf2":
                 s.k("rt_bdf_base", capN, (P(IP), f(sg["c1"]), f(sg["c0"]), P(s.U), P(s.vk), P(s.U0), P(s.v0), P(s.wb), P(s.wvb)), b=256)
                 Ub, vb = s.wb, s.wvb
             else:
                 Ub, vb = s.U, s.vk
-            s.k("rt_step0g", capN, (P(IP), P(Ub), P(vb), f(sg["tau"]), f(sg["beta"]), *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y)), b=256)
+            if sg["kind"] != "ga":
+                s.k("rt_step0g", capN, (P(IP), P(Ub), P(vb), f(sg["tau"]), f(sg["beta"]), *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y)), b=256)
             if FL:
                 s.zf(s.an, 9, 1)
                 s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
@@ -1399,19 +1497,25 @@ class RTSolver:
             if FL and kstep == 0:
                 s.k("rt_count_stuck", capN, (P(IP), P(s.an), P(IP)), b=256)
             dmp = f(s.damp ** ((s.h / (K or s.K)) / (s.h / s.K)) if (s.damp != 1.0 and sg["last"]) else 1.0)       # 감쇠는 걸음 끝 단계에서만 (걸음 길이 비례)
-            if kstep < len(ST) - 1:
+            if sg["kind"] == "ga":
+                s.k("rt_ga_end", capN, (P(IP), f(sg["dt"]), f(sg["gm"]), f(sg["be"]), f(sg["al"]), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.ak),
+                                        P(s.an if FL else None), i32(1 if s.areset else 0), P(s.fixd), P(s.vbc), dmp), b=256)
+            elif kstep < len(ST) - 1:
                 s.k("rt_stepend_g", capN, (P(IP), f(sg["thinv"]), f(sg["al"]), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), dmp), b=256)
         sl = ST[-1]
+        if sl["kind"] == "ga":
+            s.k("rt_g2p_ga", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.U), P(s.vk), P(s.ak), P(s.x), P(s.v), P(s.pa), P(s.F)))
+            return
         s.k("rt_g2p_endg", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.y), P(s.z0), P(s.U), f(sl["thinv"]), f(sl["al"]), P(s.fixd), P(s.vbc), dmp,
                                P(s.x), P(s.v), P(s.F)))
 
 
     def _bk(s):
         """프레임 시작 입자 상태 백업: x·v·F 와 함께 m·vol·perm (결정적 판은 P2G 에서 입자를 정렬하며 이 배열들도 재배열한다 -- 데움 실행·넘침 다시 하기 뒤 같이 되돌려야 질량·부피가 제 입자에 붙는다)."""
-        return tuple(getattr(s, nm).clone() for nm in ("x", "v", "F", "m", "vol", "perm"))
+        return tuple(getattr(s, nm).clone() for nm in ("x", "v", "F", "m", "vol", "perm", "pa"))
 
     def _rs(s, bk):
-        for nm, t in zip(("x", "v", "F", "m", "vol", "perm"), bk):
+        for nm, t in zip(("x", "v", "F", "m", "vol", "perm", "pa"), bk):
             getattr(s, nm).copy_(t)
 
     def set_bc(s, t):
@@ -1442,6 +1546,18 @@ class RTSolver:
     def step(s, t):
         """한 프레임. 넘치면 상태를 되돌리고 용량 2 배로 다시 할당·캡처해 그 프레임을 다시 한다. 돌려주는 것: 다시 했는지. s.last_ms = 그래프 재생 GPU 시간 (CUDA 이벤트)."""
         bk = s._bk()
+        if s.ga and s.ga_first:                                                        # generalized-α 첫 프레임 (a0 에 질량 중앙값이 필요해 그래프 밖에서 한 번)
+            for tries in range(4):
+                s.set_bc(t)
+                e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+                e0.record(); s.record(t, s.Kcur); e1.record()
+                torch.cuda.synchronize()
+                if int(s.IP[13]) == 0:
+                    break
+                s._rs(bk); s.cap_mul = 1.5 + 0.5 * (tries + 1); s.alloc(None); s._rs(bk)
+            s.ga_first = False
+            s.last_ms = e0.elapsed_time(e1); s.contact_prev = int(s.IP[14]) > 0; s.last_K = s.Kcur
+            return False
         Kw = s.Kc if (s.Kc and getattr(s, "contact_prev", False)) else s.K               # 접촉 적응: 앞 프레임 고착 노드가 있으면 K_c
         if Kw != s.Kcur:
             s.Kcur = Kw

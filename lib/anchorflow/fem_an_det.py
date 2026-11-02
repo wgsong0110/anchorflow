@@ -324,6 +324,7 @@ class DetMixin(ART.RTSolver):
         s.d_st = torch.zeros(s.capQc + 1, device=s.dev, dtype=torch.int32)
         mgc = max([L["capq"] // 8 for L in getattr(s, "ML", [])] or [1])
         s.d_mgb = Z(mgc * 27 * 9); s.d_mgv = Z(mgc * 27 * 3)
+        s.d_mscr = Z(s.capN)
 
     def det_bind(s):
         def setp(nm, t, dt):
@@ -340,7 +341,7 @@ class DetMixin(ART.RTSolver):
     def det_sort(s):
         """입자를 칸 번호 (pcd) 로 안정 정렬, 입자 배열과 원래 순번 perm 을 같이 재배열 (그래프 안에서 torch 연산)."""
         o = torch.sort(s.pcd, stable=True).indices
-        for nm in ("x", "v", "F", "m", "vol", "fx", "Np", "pcd", "perm") + (("trel",) if getattr(s, "trel", None) is not None else ()):
+        for nm in ("x", "v", "F", "m", "vol", "fx", "Np", "pcd", "perm") + (("trel",) if getattr(s, "trel", None) is not None else ()) + (("pa",) if getattr(s, "ga", None) else ()):
             t = getattr(s, nm)
             t.copy_(t[o])
 
@@ -360,6 +361,9 @@ class DetMixin(ART.RTSolver):
                 super().k("ao_gath_mv", s.capN, (P(IP), P(s.cidx), P(s.d_cb), P(s.mn), P(s.mv)), 256)
             else:
                 super().k("ao_p2g_n", s.capN, (P(IP), P(s.cidx), P(s.d_st), P(s.fx), P(s.m), P(s.v), P(s.mn), P(s.mv), P(None), P(None), i32(1), i32(1), np.float32(0), P(None)), 128)
+            if getattr(s, "ga", None):                                            # generalized-α: 입자 가속도 -> 노드 ma (같은 노드 모으기, 질량은 버림 칸에)
+                s.zf(s.d_mscr)
+                super().k("ao_p2g_n", s.capN, (P(IP), P(s.cidx), P(s.d_st), P(s.fx), P(s.m), P(s.pa), P(s.d_mscr), P(s.ma), P(None), P(None), i32(1), i32(1), np.float32(0), P(None)), 128)
             return
         if name == "ao_pbc_acc":                                                 # 구속 질량 (노드가 모음)
             # args: N, IP, Np, fx, m, trel, tbuf, K, S, dt, acc

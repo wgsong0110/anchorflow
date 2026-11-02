@@ -7,7 +7,7 @@ G=$(for i in $(seq 5); do nvidia-smi --query-gpu=index,utilization.gpu --format=
 for e in $AN_LIST; do IFS=: read c pc nt cg <<< "$e"; MGL=1; [ $pc = mg ] && MGL=5
   for vv in $AN_VARS; do vn=${vv%%:*}; VA=$(echo ${vv#*:} | tr '+' ' ')
     V=c$(echo $c | tr . p)_${pc}_n${nt}_cg${cg}_$vn; O=$R/$V; mkdir -p $O
-    CUDA_VISIBLE_DEVICES=$G python -u exe/fem_an_rt_sim.py --data /home/dkta/work/one/L000/L000.pt --out $O --tag L000 --frames 10 --cell $c --newton $nt --cg $cg --mg_levels $MGL ${AN_X:-} $VA < /dev/null > $O/log.txt 2>&1
+    CUDA_VISIBLE_DEVICES=$G python -u exe/fem_an_rt_sim.py --data ${AN_DATA:-/home/dkta/work/one/L000/L000.pt} --out $O --tag ${AN_T:-L000} --frames 10 --cell $c --newton $nt --cg $cg --mg_levels $MGL ${AN_X:-} $VA < /dev/null > $O/log.txt 2>&1
     echo "$V $(grep -a '롤아웃\|rror' $O/log.txt | tail -1 | cut -c1-170)"
   done; done > $M/${NM}.md 2>&1
 echo "카드 $G $(cat .done)" >> $M/${NM}.md
