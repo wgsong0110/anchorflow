@@ -33,7 +33,7 @@ VL=$(for e in $VS; do echo -n "${e%%:*},"; done); VL=${VL%,}
   for e in $VS; do v=${e%%:*}; echo "## ficus $v $(grep -a '롤아웃' $R/ficus_$v/log.txt | tail -1 | cut -c1-160)"
     [ -f $R/ficus_$v/pred.pt ] && python -u exe/fem_p_period.py --data /home/dkta/work/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt --pred $R/ficus_$v/pred.pt 2>&1 | grep -v Warning; done
   if [ -n "$UT" ]; then B=/tmp/dkta/ak_block; D=/tmp/dkta/ak_drop2
-    for k in stretch shear; do python exe/fem_ak_block_ana.py $B/$k.pt mpm:$B/mpm_$k/x.pt $(for e in $VS; do v=${e%%:*}; [ -f $R/${k}_$v/pred.pt ] && echo "$v:$R/${k}_$v/pred.pt"; done) 2>&1 | grep -v "^ \|Traceback\|Warning\|처음 10"; done
+    for k in stretch shear; do python exe/fem_ak_block_ana.py $B/$k.pt mpm:$B/mpm_$k/x.pt $(for e in $VS; do v=${e%%:*}; [ -f $R/${k}_$v/pred.pt ] && echo "$v:$R/${k}_$v/pred.pt"; done) 2>&1 | grep -v "^ \|Traceback\|Warning" | sed 's/, 처음 10 프레임.*//'; done
     python exe/fem_ak_drop_ana.py $D/init.pt mpm:$D/mpm/x240.pt:0.0041666667 $(for e in $VS; do v=${e%%:*}; [ -f $R/drop1_$v/pred.pt ] && echo "$v:$R/drop1_$v/pred.pt:0.0166666667"; done) 2>&1 | grep -v Warning | cut -c1-220
     for e in $VS; do v=${e%%:*}; for t in $UT; do echo "${t}_$v $(grep -a '롤아웃\|rror' $R/${t}_$v/log.txt | tail -1 | cut -c1-160)"; done; done; fi
   for e in $VS; do v=${e%%:*}; python - <<PY

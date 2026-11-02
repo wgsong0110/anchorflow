@@ -977,7 +977,7 @@ def P(t):
 class RTSolver:
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False):
         s.dev = dev
         f32 = torch.float32
         s.N = int(x.shape[0])
@@ -1003,7 +1003,8 @@ class RTSolver:
         # 단계 방식: "theta" (θ; ½ = 중점, 1 = 후퇴 오일러) 또는 "trbdf2" (γ = 2 − √2). 기본은 integ 에서 (mid -> θ ½, be -> θ 1) -- 옛 판과 같은 식
         s.scheme = scheme or "theta"
         s.theta = float(theta) if scheme else (0.5 if s.mid else 1.0)
-        s.mfloor = float(mfloor)                                                       # 관성 질량 하한 계수 c (0 = 없음)
+        s.mfloor = float(mfloor)
+        s.gfin = bool(gfin)                                                            # 걸음 끝 |g| 를 한 번 더 잼 (진단; 시간 측정 판에서는 끔)                                                       # 관성 질량 하한 계수 c (0 = 없음)
         s.Kc = int(K_contact) if K_contact else None                                   # 접촉 적응: 앞 프레임에 고착 노드가 있으면 이 걸음 수
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
@@ -1099,7 +1100,8 @@ class RTSolver:
         s.an2 = Z(s.capN)
         s.p0 = Z(s.capN, 3)
         s.meff = Z(s.capN); s.U0 = Z(s.capN, 3); s.v0 = Z(s.capN, 3); s.wb = Z(s.capN, 3); s.wvb = Z(s.capN, 3)
-        s.DG = torch.zeros(4 * max(s.K, s.Kc or 0) * s.nt, 64, device=dev, dtype=torch.float64)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
+        s.DG = torch.zeros(4 * max(s.K, s.Kc or 0) * s.nt, 64, device=dev, dtype=torch.float64)
+        s.DGF = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)    # 걸음 끝 SC (gfin: SC1 = |g_끝|²)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
         # 멀티그리드 층 (1 .. nl−1): 첫 프레임 상자에서 차원을 내려 잡고 cap_mul 배
         s.ML = []
         if s.nl > 1:
@@ -1333,6 +1335,12 @@ class RTSolver:
                     s.k("rt_lspick", 1, (P(s.SC),), b=1)
                 s.DG[2 * (kstep * s.nt + it) + 1].copy_(s.SC)                              # 진단: SC0 = r·z 끝, 5..8 관성, 9 g·δ, 10..13 탄성 E, 14 보폭
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if s.ls else 1)), b=256)
+            if s.gfin:                                                                 # 걸음 끝 y 에서 기울기 (같은 변수 바꿈) -> |g_끝|²
+                s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
+                s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
+                s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8), P(s.SC[10:]), P(s.f), P(s.H), i32(capQ), P(s.B)))
+                s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
+                s.DGF[kstep].copy_(s.SC)
             if FL:                                                                     # 진단: 걸음 끝 위치의 고착 몫 an2 (걸음 시작 an 과 비교)
                 s.zf(s.an2, 9, 1)
                 s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
@@ -1442,3 +1450,8 @@ class RTSolver:
         r0 = torch.where(s.mqn[:nn] > 0, s.an[:nn] / s.mqn[:nn].clamp_min(1e-30), torch.zeros_like(s.an[:nn]))
         r1 = torch.where(s.mqn[:nn] > 0, s.an2[:nn] / s.mqn[:nn].clamp_min(1e-30), torch.zeros_like(s.an2[:nn]))
         return dict(it=out, stick_flip=int(((r0 > 0) != (r1 > 0)).sum()), stick_n0=int((r0 > 0).sum()), stick_n1=int((r1 > 0).sum()), stick_dr=float((r1 - r0).abs().sum()))
+
+    def grel(s):
+        """마지막 프레임 걸음별 |g_끝| / |g_처음| (gfin 일 때)."""
+        D, F = s.DG.cpu().numpy(), s.DGF.cpu().numpy()
+        return [float(np.sqrt(max(F[k][1], 0.0) / max(D[2 * (k * s.nt)][1], 1e-300))) for k in range(getattr(s, "nstage", s.K))]
