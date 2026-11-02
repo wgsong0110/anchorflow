@@ -274,6 +274,29 @@ __global__ void ao_warm(const int* IP, const float* mn, float itau2, const float
     }
     blocksum_add(rz, &SC[0]);
 }
+
+// 헤시안 곱 (칸 공유 메모리 판, 위 삼각 45 저장): 칸 27 노드 입력을 공유 메모리에 한 번, 레인마다 노드 o = 레인 + 8k 를 맡아 8 점의 V (H δX)·g 를 직접 합
+__global__ void __launch_bounds__(128) ao_mv_c(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* H, const float* dy, float* out, int capQ) {
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    __shared__ float sY[16][27][3]; __shared__ float sP[128][9]; __shared__ float sF[128][9];
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < IP[12]; int qq = on ? q : 0; int tl = threadIdx.x, l8 = tl & 7, b8 = tl & ~7, cl = tl >> 3; int oc = qq & 7;
+    int ids[27]; qnodes(qq, IP, cb, ids);
+    for (int o = l8; o < 27; o += 8) { int id = ids[o]; for (int a=0;a<3;a++) sY[cl][o][a] = dy[id*3+a]; }
+    float F[9]; for (int k=0;k<9;k++) { F[k] = Fq[(size_t)qq*9+k]; sF[tl][k] = F[k]; }
+    __syncwarp();
+    float dX[9] = {0,0,0,0,0,0,0,0,0};
+    for (int o=0;o<27;o++) { float g[3]; gqn(F, BG + (oc*27+o)*3, g); for (int a=0;a<3;a++) { float ya = sY[cl][o][a]; dX[a*3] += ya*g[0]; dX[a*3+1] += ya*g[1]; dX[a*3+2] += ya*g[2]; } }
+    float vq = on ? Vq[qq] : 0.f;
+    for (int r=0;r<9;r++) { float t = 0.f; for (int c=0;c<9;c++) { int a_ = r < c ? r : c, b_ = r < c ? c : r; t += H[(size_t)(a_*9 - a_*(a_-1)/2 + (b_ - a_))*capQ + qq]*dX[c]; } sP[tl][r] = vq*t; }
+    __syncwarp();
+    for (int o = l8; o < 27; o += 8) {
+        float sv[3] = {0.f, 0.f, 0.f};
+        for (int j=0;j<8;j++) { float g[3]; gqn(sF[b8+j], BG + (j*27+o)*3, g); const float* dP = sP[b8+j];
+            for (int a=0;a<3;a++) sv[a] += dP[a*3]*g[0] + dP[a*3+1]*g[1] + dP[a*3+2]*g[2]; }
+        if (on) for (int a=0;a<3;a++) { if (AO_DET) AO_CV[((size_t)(qq>>3)*27+o)*3+a] = sv[a]; else atomicAdd(&out[ids[o]*3+a], sv[a]); }
+    }
+}
 '''
 
 
@@ -316,11 +339,12 @@ def _src():
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, **kw):
         s.cdp, s.pbc_ns, s.dt_gt, s.mthr = float(cdp), int(pbc_ns), float(dt_gt), float(mthr)
         s.det = bool(det)
         s.hpack = bool(hpack)
         s.bdsh = bool(bdsh)
+        s.mvc = bool(mvc)
         s.has_pbc = trel is not None
         s.compact, s.warm = bool(compact), bool(warm)
         super().__init__(*args, **kw)
@@ -418,7 +442,7 @@ class AORTSolver(DET.DetMixin):
                     s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(1)), b=1)
                     s.k("ao_tvec", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.td)), b=256)
                     s.zf(s.KTd, 9, 3)
-                    s.k("ao_mv_s" if s.hpack else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.td), P(s.KTd), i32(capQ)))
+                    s.k(("ao_mv_c" if s.mvc else "ao_mv_s") if s.hpack else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.td), P(s.KTd), i32(capQ)))
                     s.k("ao_warm", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.KTd), P(s.Dinv), P(s.dl), P(s.r), P(s.z), P(s.p), P(s.Tp), P(s.SC)), b=256)
                 if s.nl > 1:
                     if kstep == 0 and it == 0:
@@ -430,7 +454,7 @@ class AORTSolver(DET.DetMixin):
                     s.k("rt_pinit", capN, (P(IP), P(s.z), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.Tp)), b=256)
                 for ci in range(s.cg):
                     s.zf(s.KTp, 9, 3)
-                    s.k("ao_mv_s" if s.hpack else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
+                    s.k(("ao_mv_c" if s.mvc else "ao_mv_s") if s.hpack else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
                     s.k("rt_ap" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
                     if s.nl > 1:
                         s.k("rt_cg1m", capN, (P(IP), P(s.SC), P(s.p), P(s.Ap), P(s.dl), P(s.r)), b=256)
