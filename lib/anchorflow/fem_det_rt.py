@@ -262,6 +262,15 @@ class DetMixin(ART.RTSolver):
             t = getattr(s, nm)
             t.copy_(t[o])
 
+    def _bk(s):
+        """프레임 시작 입자 상태 백업 (절 AN step·profile 이 데움 실행·넘침 다시 하기 뒤 되돌림): 결정적 판 정렬이 재배열하는 배열 전부 (x·v·F·m·vol·perm + 모래 판 trel)."""
+        nm = ("x", "v", "F", "m", "vol", "perm") + (("trel",) if getattr(s, "trel", None) is not None else ())
+        return tuple((n_, getattr(s, n_).clone()) for n_ in nm)
+
+    def _rs(s, bk):
+        for n_, t in bk:
+            getattr(s, n_).copy_(t)
+
     def k(s, name, n, args, b=128):
         if not getattr(s, "det", False):
             return super().k(name, n, args, b)

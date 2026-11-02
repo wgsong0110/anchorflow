@@ -89,7 +89,7 @@ __device__ __forceinline__ void bwf(float f, float* w, float* d) {
 }
 // IP (int): 0..2 bmin, 3..5 bmax, 6..8 nb (노드 상자), 9 노드 수, 10 칸 상자 수, 11 압축 칸 수 nc, 12 가우스 점 수 nq, 13 넘침
 // ---- P2G ----
-__global__ void rt_reset(int* IP) { IP[0] = IP[1] = IP[2] = 2147483647; IP[3] = IP[4] = IP[5] = -2147483647; IP[13] = 0; }
+__global__ void rt_reset(int* IP) { IP[0] = IP[1] = IP[2] = 2147483647; IP[3] = IP[4] = IP[5] = -2147483647; IP[13] = 0; IP[14] = 0; }
 __global__ void rt_coord(int N, const float* x, const float* Ai, int* pb, float* fx, int* IP) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
     if (p >= N) return;
@@ -248,14 +248,14 @@ __global__ void rt_step0(const int* IP, const float* U, const float* vk, float t
     }
 }
 // 바닥: 가우스 점 걸음 끝 위치 -> 정답 sticky 가중 (s < 0 만) -> 노드 몫 an (원자 합)
-__global__ void rt_floor_q(const int* IP, const int* cb, const float* BW, const float* xq0, const float* mq, const float* y, const float* U, int mid,
+__global__ void rt_floor_q(const int* IP, const int* cb, const float* BW, const float* xq0, const float* mq, const float* y, const float* U, float thinv,
                            float p0, float p1, float p2, float n0, float n1, float n2, float pn, float dxg, float* an) {
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     if (q >= IP[12]) return;
     int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
     float xq[3] = {xq0[q*3], xq0[q*3+1], xq0[q*3+2]};
     for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
-        for (int a=0;a<3;a++) { float ye = mid ? 2.f*y[id*3+a] - U[id*3+a] : y[id*3+a]; xq[a] += w*ye; } }
+        for (int a=0;a<3;a++) { float ye = U[id*3+a] + thinv*(y[id*3+a] - U[id*3+a]); xq[a] += w*ye; } }
     float s = (xq[0]-p0)*n0 + (xq[1]-p1)*n1 + (xq[2]-p2)*n2;
     if (!(s < 0.f)) return;
     float u = (s + pn)/dxg; float bf = floorf(u - 0.5f); float f = u - bf;
@@ -849,12 +849,123 @@ __global__ void rt_pinit(const int* IP, const float* z, const float* sk, const i
 __global__ void rt_fixdir(const int* IP, double* SC, const float* p0, float* dl) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     bool bad = !(SC[9] < 0.0);
-    if (n == 0 && bad) SC[18] += 1.0;
+    if (n == 0 && bad) SC[62] += 1.0;
     if (n >= IP[9] || !bad) return;
-    float a0 = (SC[17] > 0.0) ? (float)(SC[16]/SC[17]) : 0.f;
+    float a0 = (SC[61] > 0.0) ? (float)(SC[60]/SC[61]) : 0.f;
     for (int a=0;a<3;a++) dl[n*3+a] = a0*p0[n*3+a];
 }
 __global__ void rt_sc_copy(double* SC, int dst, int src) { SC[dst] = SC[src]; }
+// 선탐색 넓힘 (--ls_n NC): 후보 c_i = 2^-i (i = 0..NC−1). 관성 몫 SC[20] (c = 0), SC[21+i]; 탄성 SC[40+i]; g·δ SC[9]; 보폭 SC[14]
+__global__ void rt_lsyN(const int* IP, const float* mn, float itau2, const float* eta, const float* dl, const float* r0, double* SC, int NC) {
+    if (blockIdx.x*blockDim.x >= IP[9]) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    double s0 = 0.0, gd = 0.0, sc[12];
+    for (int i=0;i<12;i++) sc[i] = 0.0;
+    if (n < IP[9]) { float Mi = mn[n]*itau2;
+        for (int a=0;a<3;a++) { float e0 = eta[n*3+a], d = dl[n*3+a]; s0 += 0.5*(double)Mi*e0*e0; gd += -(double)r0[n*3+a]*d;
+            float c = 1.f; for (int i=0;i<NC;i++) { float e = e0 + c*d; sc[i] += 0.5*(double)Mi*e*e; c *= 0.5f; } } }
+    blocksum_add(s0, &SC[20]); blocksum_add(gd, &SC[9]);
+    for (int i=0;i<NC;i++) blocksum_add(sc[i], &SC[21+i]);
+}
+__global__ void __launch_bounds__(128) rt_elem_lsN(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* yh, const float* eta, const float* dl,
+                        const float* sk, const int* pm, float n0, float n1, float n2, float mu, float lam, double* SC, int NC) {
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < IP[12]; int qq = on ? q : 0; int oc = qq & 7;
+    int ids[27]; qnodes(qq, IP, cb, ids);
+    float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)qq*9+k];
+    float vq = on ? Vq[qq] : 0.f;
+    float c = 1.f;
+    for (int i=0;i<NC;i++) {
+        float X[9]; for (int k=0;k<9;k++) X[k] = F[k];
+        for (int o=0;o<27;o++) { float g[3]; gqn(F, BG + (oc*27+o)*3, g); int id = ids[o];
+            float e[3]; for (int a=0;a<3;a++) e[a] = eta[id*3+a] + c*dl[id*3+a];
+            float t[3]; Tapply(sk[id], pm[id], n0, n1, n2, e, t);
+            for (int a=0;a<3;a++) { float ya = yh[id*3+a] + t[a]; X[a*3] += ya*g[0]; X[a*3+1] += ya*g[1]; X[a*3+2] += ya*g[2]; } }
+        float U[9], S[3], V[9]; ssvdf(X, U, S, V);
+        double J = (double)S[0]*S[1]*S[2];
+        double en = on ? (double)vq*((double)mu*(((double)S[0]-1.0)*((double)S[0]-1.0) + ((double)S[1]-1.0)*((double)S[1]-1.0) + ((double)S[2]-1.0)*((double)S[2]-1.0)) + 0.5*(double)lam*(J-1.0)*(J-1.0)) : 0.0;
+        blocksum_add(en, &SC[40+i]);
+        c *= 0.5f;
+    }
+}
+__global__ void rt_lspickN(double* SC, int NC) {
+    double E0 = SC[20] + SC[10]; double gd = SC[9];
+    double st = 0.0, c = 1.0;
+    for (int i=0;i<NC;i++) { double E1 = SC[21+i] + SC[40+i]; if (st == 0.0 && isfinite(E1) && E1 <= E0 + 1e-4*c*gd) st = c; c *= 0.5; }
+    SC[14] = st;
+}
+// ---- 단계 일반화 (θ 법·TR-BDF2) ----
+// 단계 시작: Ut = Ub + τ vb + τ² g, z0 = Ub + β τ vb, y = Ut (고정 노드 y = Uf + dtf vbc). θ 단계: Ub = U, vb = v, β = 1 − θ; BDF2 단계: Ub = w, vb = ŵ, β = 0.
+__global__ void rt_step0g(const int* IP, const float* Ub, const float* vb, float tau, float beta, float g0, float g1, float g2, const unsigned char* fixd, const float* vbc,
+                          const float* Uf, float dtf, float* Ut, float* z0, float* y) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float gg[3] = {g0, g1, g2};
+    for (int a=0;a<3;a++) {
+        float u = Ub[n*3+a], vv = vb[n*3+a];
+        float ut = u + tau*vv + tau*tau*gg[a];
+        Ut[n*3+a] = ut; z0[n*3+a] = u + beta*tau*vv;
+        y[n*3+a] = (fixd && fixd[n]) ? Uf[n*3+a] + dtf*vbc[n*3+a] : ut;
+    }
+}
+// 단계 끝: U ← U + thinv (y − U) (θ 단계 thinv = 1/θ, BDF2 1), v ← α (y − z0) (고정 노드 vbc), 감쇠
+__global__ void rt_stepend_g(const int* IP, float thinv, float al, const float* y, const float* z0, float* U, float* vk, const unsigned char* fixd, const float* vbc, float damp) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    for (int a=0;a<3;a++) {
+        float yy = y[n*3+a], u = U[n*3+a];
+        float v1 = al*(yy - z0[n*3+a]);
+        if (fixd && fixd[n]) v1 = vbc[n*3+a];
+        U[n*3+a] = u + thinv*(yy - u);
+        vk[n*3+a] = v1*damp;
+    }
+}
+// BDF2 기저: w = c1 Uγ − c0 U0, ŵ = c1 vγ − c0 v0
+__global__ void rt_bdf_base(const int* IP, float c1, float c0, const float* Ug, const float* vg, const float* U0, const float* v0, float* w, float* wv) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    for (int a=0;a<3;a++) { w[n*3+a] = c1*Ug[n*3+a] - c0*U0[n*3+a]; wv[n*3+a] = c1*vg[n*3+a] - c0*v0[n*3+a]; }
+}
+// 관성 질량 하한: m' = max(m, cs tr(B)/3) (cs = c τ², B = 걸음 첫 뉴턴의 노드 탄성 대각 블록), cs = 0 이면 m 그대로
+__global__ void rt_meff(const int* IP, const float* mn, const float* B, float cs, float* meff) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float m = mn[n];
+    meff[n] = (cs > 0.f) ? fmaxf(m, cs*(B[n*9] + B[n*9+4] + B[n*9+8])*(1.f/3.f)) : m;
+}
+// G2P + 마지막 단계 끝 (일반): uu = U + thinv (y − U), v1 = α (y − z0) 또는 vbc
+__global__ void rt_g2p_endg(int N, const int* IP, const float* Ai, const int* pb, const float* fx, const float* y, const float* z0, const float* U, float thinv, float al,
+                           const unsigned char* fixd, const float* vbc, float damp, float* x, float* v, float* F) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N || IP[13]) return;
+    float w[3][3], dw[3][3];
+    for (int a=0;a<3;a++) bwf(fx[p*3+a], w[a], dw[a]);
+    int nb1 = IP[7], nb2 = IP[8];
+    float u[3] = {0,0,0}, vv[3] = {0,0,0}, A[9] = {1,0,0, 0,1,0, 0,0,1};
+    for (int o=0;o<27;o++) {
+        int i = o/9, j = (o/3)%3, k = o%3;
+        int nid = ((pb[p*3]+i)*nb1 + (pb[p*3+1]+j))*nb2 + (pb[p*3+2]+k);
+        float ww = w[0][i]*w[1][j]*w[2][k];
+        float gy[3] = {dw[0][i]*w[1][j]*w[2][k], w[0][i]*dw[1][j]*w[2][k], w[0][i]*w[1][j]*dw[2][k]};
+        float gx[3]; for (int b=0;b<3;b++) gx[b] = Ai[0*3+b]*gy[0] + Ai[1*3+b]*gy[1] + Ai[2*3+b]*gy[2];
+        bool fx_ = fixd && fixd[nid];
+        for (int a=0;a<3;a++) {
+            float yy = y[nid*3+a], uk = U[nid*3+a];
+            float uu = uk + thinv*(yy - uk);
+            float v1 = fx_ ? vbc[nid*3+a] : al*(yy - z0[nid*3+a]);
+            u[a] += ww*uu; vv[a] += ww*v1*damp; for (int b=0;b<3;b++) A[a*3+b] += uu*gx[b]; }
+    }
+    float Fp[9]; for (int k=0;k<9;k++) Fp[k] = F[(size_t)p*9+k];
+    for (int a=0;a<3;a++) { x[p*3+a] += u[a]; v[p*3+a] = vv[a]; }
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = 0.f; for (int k=0;k<3;k++) t += A[a*3+k]*Fp[k*3+b]; F[(size_t)p*9+a*3+b] = t; }
+}
+// 접촉 적응: 고착 노드 수 -> IP[14] (rt_reset 이 비움)
+__global__ void rt_count_stuck(const int* IP, const float* an, int* IPw) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    if (an[n] > 0.f) atomicAdd(&IPw[14], 1);
+}
 }
 '''
 
@@ -866,7 +977,7 @@ def P(t):
 class RTSolver:
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None):
         s.dev = dev
         f32 = torch.float32
         s.N = int(x.shape[0])
@@ -888,6 +999,14 @@ class RTSolver:
         s.damp = float(damp)
         s.nl, s.mg_nc, s.mg_pow, s.mg_omega = int(mg_levels), int(mg_nc), int(mg_pow), float(mg_omega)
         s.descent = bool(descent)
+        s.ls_n = int(ls_n)                                                             # 0 = 옛 후보 1·½·¼, 그 밖 = 후보 2^0 .. 2^-(ls_n−1)
+        # 단계 방식: "theta" (θ; ½ = 중점, 1 = 후퇴 오일러) 또는 "trbdf2" (γ = 2 − √2). 기본은 integ 에서 (mid -> θ ½, be -> θ 1) -- 옛 판과 같은 식
+        s.scheme = scheme or "theta"
+        s.theta = float(theta) if scheme else (0.5 if s.mid else 1.0)
+        s.mfloor = float(mfloor)                                                       # 관성 질량 하한 계수 c (0 = 없음)
+        s.Kc = int(K_contact) if K_contact else None                                   # 접촉 적응: 앞 프레임에 고착 노드가 있으면 이 걸음 수
+        s.Kcur = s.K
+        s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
         s.mod = cp.RawModule(code=SRC, options=("--std=c++14",))
         s.fn = {}
@@ -907,7 +1026,7 @@ class RTSolver:
         s.BW = torch.tensor(BW, device=dev, dtype=f32).reshape(-1).contiguous()
         s.BG = torch.tensor(BG, device=dev, dtype=f32).reshape(-1).contiguous()
         s.IP = torch.zeros(16, device=dev, dtype=torch.int32)
-        s.SC = torch.zeros(32, device=dev, dtype=torch.float64)
+        s.SC = torch.zeros(64, device=dev, dtype=torch.float64)
         s.Np = torch.zeros(s.N, 3, device=dev, dtype=torch.int32)
         s.fx = torch.zeros(s.N, 3, device=dev, dtype=f32)
         s.pcd = torch.zeros(s.N, device=dev, dtype=torch.int32)
@@ -931,7 +1050,7 @@ class RTSolver:
 
     def profile(s, t):
         """커널별 GPU 시간 (그래프 밖에서 같은 순서로 한 프레임; 상태는 되돌림). -> {이름: [ms 합, 호출 수]}"""
-        bk = (s.x.clone(), s.v.clone(), s.F.clone())
+        bk = s._bk()
         s.set_bc(t)
         s.prof = []
         s.record(t)
@@ -941,7 +1060,7 @@ class RTSolver:
             a_, c_ = o.get(nm, (0.0, 0))
             o[nm] = (a_ + e0.elapsed_time(e1), c_ + 1)
         s.prof = None
-        s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])
+        s._rs(bk)
         return {k_: [round(a_, 4), c_] for k_, (a_, c_) in o.items()}
 
     def alloc(s, need):
@@ -976,9 +1095,11 @@ class RTSolver:
         s.fixd = torch.zeros(s.capN, device=dev, dtype=torch.uint8) if s.bc else None
         s.vbc = Z(s.capN, 3) if s.bc else None
         s.g0buf = Z(s.capN, 3)
+        s.graphs = {}
         s.an2 = Z(s.capN)
         s.p0 = Z(s.capN, 3)
-        s.DG = torch.zeros(s.K * s.nt * 2, 32, device=dev, dtype=torch.float64)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
+        s.meff = Z(s.capN); s.U0 = Z(s.capN, 3); s.v0 = Z(s.capN, 3); s.wb = Z(s.capN, 3); s.wvb = Z(s.capN, 3)
+        s.DG = torch.zeros(4 * max(s.K, s.Kc or 0) * s.nt, 64, device=dev, dtype=torch.float64)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
         # 멀티그리드 층 (1 .. nl−1): 첫 프레임 상자에서 차원을 내려 잡고 cap_mul 배
         s.ML = []
         if s.nl > 1:
@@ -1004,7 +1125,7 @@ class RTSolver:
     # ---------- 멀티그리드 (그래프 안) ----------
     def mg_build(s):
         i32, f = np.int32, np.float32
-        it2 = f(1.0 / (s.tau * s.tau))
+        it2 = f(1.0 / (getattr(s, 'mg_tau', s.tau) ** 2))
         s.k("rt_mg_dims", 1, (P(s.IP), P(s.LM), i32(s.nl), P(s.capn_d), P(s.capq_d)), b=1)
         for l in range(1, s.nl):
             L = s.ML[l - 1]
@@ -1038,13 +1159,13 @@ class RTSolver:
 
     def mg_lv(s, l):
         if l == 0:
-            return dict(mn=s.mn, D=s.Dinv, cap=s.capN)
+            return dict(mn=s.meff, D=s.Dinv, cap=s.capN)
         L = s.ML[l - 1]
         return dict(mn=L["mc"], D=L["D"], cap=L["capn"])
 
     def mg_power(s, l):
         i32, f = np.int32, np.float32
-        it2 = f(1.0 / (s.tau * s.tau))
+        it2 = f(1.0 / (getattr(s, 'mg_tau', s.tau) ** 2))
         nr = s.floor["NR"] if s.floor else [0.0, 0.0, 1.0]
         V = s.mg_lv(l)
         z = s.m0t if l == 0 else s.ML[l - 1]["z"]
@@ -1060,7 +1181,7 @@ class RTSolver:
     def mg_vc(s, l, r, z):
         """z = V 순환 (r). 층 0 의 r·z 는 고운 노드 배열 (조밀 상자)."""
         i32, f = np.int32, np.float32
-        it2 = f(1.0 / (s.tau * s.tau))
+        it2 = f(1.0 / (getattr(s, 'mg_tau', s.tau) ** 2))
         nr = s.floor["NR"] if s.floor else [0.0, 0.0, 1.0]
         V = s.mg_lv(l)
         KT = s.m0KT if l == 0 else s.ML[l - 1]["KT"]
@@ -1099,7 +1220,23 @@ class RTSolver:
         else:
             s.k("rt_zero_f", n, (np.int32(n), P(s.IP if cnt_idx is not None else None), np.int32(cnt_idx or 0), np.int32(mul), P(t)), b=256)
 
-    def record(s, t_frame):
+    def stages(s, K):
+        """한 프레임 단계 목록. 단계 = dict(tau, al, beta, thinv, kind (theta|bdf2), dtf (고정 노드 변위 시간))."""
+        dt = s.h / K
+        out = []
+        for _ in range(K):
+            if s.scheme == "trbdf2":
+                ga = 2.0 - math.sqrt(2.0)
+                t1 = 0.5 * ga * dt
+                out.append(dict(kind="theta", tau=t1, al=1.0 / (0.25 * ga * dt), beta=0.5, thinv=2.0, dtf=ga * dt, save0=True, frac=ga, last=False))
+                c2 = (1.0 - ga) / (2.0 - ga); c1 = 1.0 / (ga * (2.0 - ga)); c0 = (1.0 - ga) ** 2 / (ga * (2.0 - ga))
+                out.append(dict(kind="bdf2", tau=c2 * dt, al=1.0 / (c2 * dt), beta=0.0, thinv=1.0, dtf=(1.0 - ga) * dt, c1=c1, c0=c0, frac=1.0 - ga, last=True))
+            else:
+                th = s.theta
+                out.append(dict(kind="theta", tau=th * dt, al=1.0 / (th * th * dt), beta=1.0 - th, thinv=1.0 / th, dtf=th * dt, frac=1.0, last=True))
+        return out
+
+    def record(s, t_frame, K=None):
         """한 프레임 커널 순서 (그래프 캡처 대상). t_frame = 구속 시각 (고정값; 시각이 바뀌는 구속은 프레임마다 다시 캡처)."""
         N, IP = s.N, s.IP
         i32, f = np.int32, np.float32
@@ -1124,23 +1261,35 @@ class RTSolver:
                 s.k("rt_bc_box", capN, (P(IP), P(s.A), P(s.BP), i32(ib), P(s.fixd), P(s.vbc)), b=256)
         FL = s.floor
         nr = FL["NR"] if FL else [0.0, 0.0, 1.0]
-        it2 = f(1.0 / (s.tau * s.tau))
-        for kstep in range(s.K):
-            s.k("rt_step0", capN, (P(IP), P(s.U), P(s.vk), f(s.tau), f(s.beta), *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.Ut), P(s.z0), P(s.y)), b=256)
+        ST = s.stages(K or s.K)
+        s.nstage = len(ST)
+        for kstep, sg in enumerate(ST):
+            it2 = f(1.0 / (sg["tau"] * sg["tau"]))
+            if sg.get("save0"):
+                s.U0.copy_(s.U); s.v0.copy_(s.vk)
+            if sg["kind"] == "bdf2":
+                s.k("rt_bdf_base", capN, (P(IP), f(sg["c1"]), f(sg["c0"]), P(s.U), P(s.vk), P(s.U0), P(s.v0), P(s.wb), P(s.wvb)), b=256)
+                Ub, vb = s.wb, s.wvb
+            else:
+                Ub, vb = s.U, s.vk
+            s.k("rt_step0g", capN, (P(IP), P(Ub), P(vb), f(sg["tau"]), f(sg["beta"]), *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y)), b=256)
             if FL:
                 s.zf(s.an, 9, 1)
-                s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), i32(1 if s.mid else 0), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
+                s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
                                          f(FL["PN"]), f(FL["DXG"]), P(s.an)))
-            s.k("rt_floor_n", capN, (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(s.al), *[f(q) for q in nr],
-                                     P(s.fixd), P(s.vbc), P(s.U), f(s.tau), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta)), b=256)
+            s.k("rt_floor_n", capN, (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] * (s.K / (K or s.K)) * sg["frac"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(sg["al"]), *[f(q) for q in nr],
+                                     P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta)), b=256)
             for it in range(s.nt):
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
-                s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(16)), b=1)
+                s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
                 s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8 | (4 if s.ls else 0)), P(s.SC[10:]), P(s.f), P(s.H),
                                       i32(capQ), P(s.B)))
-                s.k("rt_grad", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
+                if it == 0:
+                    s.k("rt_meff", capN, (P(IP), P(s.mn), P(s.B), f(s.mfloor * sg["tau"] ** 2), P(s.meff)), b=256)
+                s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 if s.nl > 1:                                                           # MG 전처리: z = V(r) 로 바꿔 시작
-                    if kstep == 0 and it == 0:
+                    if it == 0:
+                        s.mg_tau = sg["tau"]
                         s.mg_power(0)
                     s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(1)), b=1)
                     s.mg_vc(0, s.r, s.z)
@@ -1149,13 +1298,13 @@ class RTSolver:
                     s.k("rt_pinit", capN, (P(IP), P(s.z), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.Tp)), b=256)
                 s.DG[2 * (kstep * s.nt + it)].copy_(s.SC)                                  # 진단: SC0 = r·z 처음, SC1 = |g|²
                 if s.descent:
-                    s.p0.copy_(s.p); s.k("rt_sc_copy", 1, (P(s.SC), i32(16), i32(0)), b=1)
+                    s.p0.copy_(s.p); s.k("rt_sc_copy", 1, (P(s.SC), i32(60), i32(0)), b=1)
                 for ci in range(s.cg):
                     s.zf(s.KTp, 9, 3)
                     s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
-                    s.k("rt_ap", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
+                    s.k("rt_ap", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
                     if s.descent and ci == 0:
-                        s.k("rt_sc_copy", 1, (P(s.SC), i32(17), i32(2)), b=1)
+                        s.k("rt_sc_copy", 1, (P(s.SC), i32(61), i32(2)), b=1)
                     if s.nl > 1:
                         s.k("rt_cg1m", capN, (P(IP), P(s.SC), P(s.p), P(s.Ap), P(s.dl), P(s.r)), b=256)
                         s.mg_vc(0, s.r, s.z)
@@ -1165,24 +1314,46 @@ class RTSolver:
                     s.k("rt_cg2", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.z), P(s.p), P(s.Tp)), b=256)
                     s.k("rt_sc_roll", 1, (P(s.SC),), b=1)
                 # 선탐색: 기울기 곱 g·δ = −r0·δ (r0 = rt_grad 가 남긴 처음 잔차)
-                if s.ls:
-                    s.k("rt_lsy4", capN, (P(IP), P(s.mn), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC)), b=256)
+                if s.ls and s.ls_n:
+                    NC = i32(s.ls_n)
+                    s.k("rt_lsyN", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC), b=256)
+                    if s.descent:
+                        s.k("rt_fixdir", capN, (P(IP), P(s.SC), P(s.p0), P(s.dl)), b=256)
+                        s.k("rt_sc_clear", 1, (P(s.SC), i32(9), i32(10)), b=1); s.k("rt_sc_clear", 1, (P(s.SC), i32(20), i32(40)), b=1)
+                        s.k("rt_lsyN", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC), b=256)
+                    s.k("rt_elem_lsN", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC), NC))
+                    s.k("rt_lspickN", 1, (P(s.SC), NC), b=1)
+                elif s.ls:
+                    s.k("rt_lsy4", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC)), b=256)
                     if s.descent:                                                      # g·δ ≥ 0 이면 전처리 기울기 방향으로 바꾸고 관성 몫·g·δ 를 다시
                         s.k("rt_fixdir", capN, (P(IP), P(s.SC), P(s.p0), P(s.dl)), b=256)
                         s.k("rt_sc_clear", 1, (P(s.SC), i32(5), i32(10)), b=1)
-                        s.k("rt_lsy4", capN, (P(IP), P(s.mn), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC)), b=256)
+                        s.k("rt_lsy4", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC)), b=256)
                     s.k("rt_elem_ls", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC)))
                     s.k("rt_lspick", 1, (P(s.SC),), b=1)
                 s.DG[2 * (kstep * s.nt + it) + 1].copy_(s.SC)                              # 진단: SC0 = r·z 끝, 5..8 관성, 9 g·δ, 10..13 탄성 E, 14 보폭
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if s.ls else 1)), b=256)
             if FL:                                                                     # 진단: 걸음 끝 위치의 고착 몫 an2 (걸음 시작 an 과 비교)
                 s.zf(s.an2, 9, 1)
-                s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), i32(1 if s.mid else 0), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
+                s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
                                          f(FL["PN"]), f(FL["DXG"]), P(s.an2)))
-            if kstep < s.K - 1:
-                s.k("rt_stepend", capN, (P(IP), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
-        s.k("rt_g2p_end", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.y), P(s.z0), P(s.U), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.fixd), P(s.vbc), f(s.damp),
+            if FL and kstep == 0:
+                s.k("rt_count_stuck", capN, (P(IP), P(s.an), P(IP)), b=256)
+            dmp = f(s.damp ** ((s.h / (K or s.K)) / (s.h / s.K)) if (s.damp != 1.0 and sg["last"]) else 1.0)       # 감쇠는 걸음 끝 단계에서만 (걸음 길이 비례)
+            if kstep < len(ST) - 1:
+                s.k("rt_stepend_g", capN, (P(IP), f(sg["thinv"]), f(sg["al"]), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), dmp), b=256)
+        sl = ST[-1]
+        s.k("rt_g2p_endg", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.y), P(s.z0), P(s.U), f(sl["thinv"]), f(sl["al"]), P(s.fixd), P(s.vbc), dmp,
                                P(s.x), P(s.v), P(s.F)))
+
+
+    def _bk(s):
+        """프레임 시작 입자 상태 백업: x·v·F 와 함께 m·vol·perm (결정적 판은 P2G 에서 입자를 정렬하며 이 배열들도 재배열한다 -- 데움 실행·넘침 다시 하기 뒤 같이 되돌려야 질량·부피가 제 입자에 붙는다)."""
+        return tuple(getattr(s, nm).clone() for nm in ("x", "v", "F", "m", "vol", "perm"))
+
+    def _rs(s, bk):
+        for nm, t in zip(("x", "v", "F", "m", "vol", "perm"), bk):
+            getattr(s, nm).copy_(t)
 
     def set_bc(s, t):
         """구속 매개변수 (중심 = point + v (t − t0), 반 크기, 속도, 켜짐) 를 장치 버퍼에 (그래프 밖, 재생 전)."""
@@ -1196,23 +1367,29 @@ class RTSolver:
 
     def capture(s):
         s.mod.get_function("rt_reset")
+        K = s.Kcur
         st = torch.cuda.Stream()
         st.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(st):
-            s.record(0.0)                                                              # 데움 (함수 적재)
+            s.record(0.0, K)                                                           # 데움 (함수 적재)
         torch.cuda.current_stream().wait_stream(st)
         torch.cuda.synchronize()
         g = torch.cuda.CUDAGraph()
         with torch.cuda.graph(g):
-            s.record(0.0)
+            s.record(0.0, K)
         s.graph = g
+        s.graphs[K] = g
 
     def step(s, t):
         """한 프레임. 넘치면 상태를 되돌리고 용량 2 배로 다시 할당·캡처해 그 프레임을 다시 한다. 돌려주는 것: 다시 했는지. s.last_ms = 그래프 재생 GPU 시간 (CUDA 이벤트)."""
-        bk = (s.x.clone(), s.v.clone(), s.F.clone())
+        bk = s._bk()
+        Kw = s.Kc if (s.Kc and getattr(s, "contact_prev", False)) else s.K               # 접촉 적응: 앞 프레임 고착 노드가 있으면 K_c
+        if Kw != s.Kcur:
+            s.Kcur = Kw
+            s.graph = s.graphs.get(Kw)
         if s.graph is None:
             s.capture()
-            s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])                      # 데움 실행이 상태를 바꿨으므로 되돌림
+            s._rs(bk)                      # 데움 실행이 상태를 바꿨으므로 되돌림
         s.set_bc(t)
         e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         e0.record()
@@ -1226,11 +1403,11 @@ class RTSolver:
                 s.last_ms = float("nan")
                 return False
             tries += 1
-            s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])
+            s._rs(bk)
             s.cap_mul = 1.5 + 0.5 * tries                                              # 필요량은 지금 상태에서 다시 재므로 배수는 작게 (두 배씩 키우면 메모리가 넘친다)
             s.alloc(None)
             s.capture()
-            s.x.copy_(bk[0]); s.v.copy_(bk[1]); s.F.copy_(bk[2])
+            s._rs(bk)
             s.set_bc(t)
             e0.record()
             s.graph.replay()
@@ -1238,6 +1415,8 @@ class RTSolver:
             redo = True
         torch.cuda.synchronize()
         s.last_ms = e0.elapsed_time(e1)
+        s.contact_prev = int(s.IP[14]) > 0
+        s.last_K = s.Kcur
         return redo
 
     def counts(s):
@@ -1255,7 +1434,10 @@ class RTSolver:
         out = []
         for k in range(s.K * s.nt):
             a, b = D[2 * k], D[2 * k + 1]
-            out.append(dict(g2=a[1], rz0=a[0], rz1=b[0], gd=b[9], E0=b[5] + b[10], Ec=[b[6] + b[11], b[7] + b[12], b[8] + b[13]], st=b[14], fix=b[18]))
+            if s.ls_n:
+                out.append(dict(g2=a[1], rz0=a[0], rz1=b[0], gd=b[9], E0=b[20] + b[10], Ec=[b[21 + i] + b[40 + i] for i in range(s.ls_n)], st=b[14], fix=b[62]))
+            else:
+                out.append(dict(g2=a[1], rz0=a[0], rz1=b[0], gd=b[9], E0=b[5] + b[10], Ec=[b[6] + b[11], b[7] + b[12], b[8] + b[13]], st=b[14], fix=b[62]))
         nn = int(s.IP[9])
         r0 = torch.where(s.mqn[:nn] > 0, s.an[:nn] / s.mqn[:nn].clamp_min(1e-30), torch.zeros_like(s.an[:nn]))
         r1 = torch.where(s.mqn[:nn] > 0, s.an2[:nn] / s.mqn[:nn].clamp_min(1e-30), torch.zeros_like(s.an2[:nn]))
