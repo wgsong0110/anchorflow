@@ -151,7 +151,26 @@ __global__ void __launch_bounds__(128) ao_elem(const int* IP, const int* cb, con
         if (mode & 128) { int k = 0; for (int r=0;r<9;r++) for (int c=r;c<9;c++) H[(size_t)(k++)*capQ + qq] = h[r*9+c]; }   // 위 삼각 45 개 (h 는 비트 대칭)
         else for (int k=0;k<81;k++) H[(size_t)k*capQ + qq] = h[k];
         }
-        if (mode & 8) {
+        if ((mode & 8) && (mode & 256)) {                                        // 노드 대각 (공유 메모리 판): 칸 8 점의 헤시안·F·V 를 공유 메모리에, 레인마다 노드 o = 레인, 레인+8, ... 을 맡아 8 점을 직접 합 (셔플 없음)
+            __shared__ float shH[128][45]; __shared__ float shF[128][9]; __shared__ float shV[128];
+            int tl = threadIdx.x;
+            { int k = 0; for (int r=0;r<9;r++) for (int c=r;c<9;c++) shH[tl][k++] = h[r*9+c]; }
+            for (int k=0;k<9;k++) shF[tl][k] = F[k];
+            shV[tl] = vq;
+            __syncwarp();
+            int l8 = tl & 7, b8 = tl & ~7;
+            for (int o = l8; o < 27; o += 8) {
+                float mm[9] = {0,0,0,0,0,0,0,0,0};
+                for (int j=0;j<8;j++) {
+                    const float* hj = shH[b8+j]; float g[3]; gqn(shF[b8+j], BG + (j*27+o)*3, g); float vj = shV[b8+j];
+                    for (int a=0;a<3;a++) for (int c=0;c<3;c++) { float t = 0.f;
+                        for (int b=0;b<3;b++) for (int dd=0;dd<3;dd++) { int r_ = a*3+b, c_ = c*3+dd; int lo = r_ < c_ ? r_ : c_, hi = r_ < c_ ? c_ : r_;
+                            t += hj[lo*9 - lo*(lo-1)/2 + (hi - lo)]*g[b]*g[dd]; }
+                        mm[a*3+c] += vj*t; }
+                }
+                if (on) for (int k=0;k<9;k++) { if (AO_DET) AO_CB[((size_t)(qq>>3)*27+o)*9+k] = mm[k]; else atomicAdd(&B[ids[o]*9+k], mm[k]); }
+            }
+        } else if (mode & 8) {
             for (int o=0;o<27;o++) { float g[3]; gqn(F, BG + (oc*27+o)*3, g);
                 float mm[9];
                 for (int a=0;a<3;a++) for (int c=0;c<3;c++) { float t = 0.f;
@@ -297,10 +316,11 @@ def _src():
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, **kw):
         s.cdp, s.pbc_ns, s.dt_gt, s.mthr = float(cdp), int(pbc_ns), float(dt_gt), float(mthr)
         s.det = bool(det)
         s.hpack = bool(hpack)
+        s.bdsh = bool(bdsh)
         s.has_pbc = trel is not None
         s.compact, s.warm = bool(compact), bool(warm)
         super().__init__(*args, **kw)
@@ -391,7 +411,7 @@ class AORTSolver(DET.DetMixin):
             for it in range(s.nt):
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(16)), b=1)
-                s.k("ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8 | (128 if s.hpack else 0)), P(s.f), P(s.H), i32(capQ), P(s.B),
+                s.k("ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8 | (128 if s.hpack else 0) | (256 if s.bdsh else 0)), P(s.f), P(s.H), i32(capQ), P(s.B),
                                       P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None)))
                 s.k("rt_grad" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 if s.warm and it == 0 and kstep > 0 and s.nl <= 1:                                      # PCG 첫 추정 = 앞 걸음 첫 뉴턴의 δ (프레임 첫 걸음은 0)
