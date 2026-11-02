@@ -59,6 +59,9 @@ ap.add_argument("--hpack", action="store_true", help="모래 판 헤시안 위 �
 ap.add_argument("--det", action="store_true", help="결정적 합산 (lib/anchorflow/fem_det_rt.py): 같은 명령 두 번이 비트 단위로 같게")
 ap.add_argument("--ao_fast", action="store_true", help="탄성 씬에도 노드 압축·PCG 첫 추정 (절 AO.11; 기본은 절 AN 그대로)")
 ap.add_argument("--no_warm", action="store_true")
+ap.add_argument("--visc_rpic", action="store_true", help="정답 config rpic_damping r -> 등가 점성 η = ρ r (2−r) Δx_gt² / (16 Δt_gt) (절 AG.20)")
+ap.add_argument("--floor_plane", type=str, default="", help="바닥 평면 px,py,pz,nx,ny,nz (주면 config surface_collider 대신; 수박 = GF bounding_box)")
+ap.add_argument("--floor_slip", action="store_true", help="미끄럼 바닥 (들어가는 법선 성분만 고착 몫)")
 ap.add_argument("--ga", choices=["hht", "ga"], default=None, help="HHT-α 또는 generalized-α (절 AN.err3 정의 + 처치 셋: 시작점 걸음 시작 위치, 끝 위치 Newmark 식, 고착·구속 노드 가속도 0)")
 ap.add_argument("--rho", type=float, default=0.7)
 ap.add_argument("--ga_y0ut", action="store_true", help="처치 (a) 끔: 뉴턴 시작점 관성 예측")
@@ -94,6 +97,9 @@ if a.floor == "vel":
     pl = [b for b in cfg["boundary_conditions"] if b.get("type") == "surface_collider"][0]
     NR = np.array(pl["normal"], dtype=np.float64); NR = NR / np.linalg.norm(NR)
     PT = [float(q) for q in pl["point"]]
+    if a.floor_plane:
+        _fp = [float(q) for q in a.floor_plane.split(",")]
+        PT = _fp[:3]; NR = np.array(_fp[3:], dtype=np.float64); NR = NR / np.linalg.norm(NR)
     FL = dict(PT=PT, NR=NR.tolist(), PN=float(np.dot(PT, NR)), DXG=DXG, KEX=dt / float(cfg["substep_dt"]), vout=not a.no_vfl_out)
 BC = None
 if a.cfg_bc:
@@ -110,6 +116,7 @@ if a.cfg_bc:
 F0 = DM.traj_F(d, h, dev)[0].to(dev).double().reshape(Np, 9)
 SAND = cfg.get("material") == "sand"
 TREL = None
+PVB = None
 if a.pbc:                                                                              # exe/fem_ao_sim.py 와 같은 구속 입자·끝 시각
     _x0b = d["x"][0].to(dev).double(); _bcs = []
     for _bc in (cfg.get("boundary_conditions") or []):
@@ -126,12 +133,17 @@ if a.pbc:                                                                       
                 _s2 = list(_sz); _s2[_ax] = _hl * (_nl - _k)
                 _bcs.append((list(_pt), _s2, float(_bc["end_time"]) / _nl * (_k + 1)))
         elif _ty == "enforce_particle_translation":
-            assert all(float(q) == 0.0 for q in _bc["velocity"]) and float(_bc["start_time"]) <= 0.0
-            _bcs.append((_bc["point"], _bc["size"], float(_bc["end_time"])))
+            assert float(_bc["start_time"]) <= 0.0
+            _bcs.append((_bc["point"], _bc["size"], float(_bc["end_time"]), [float(q) for q in _bc["velocity"]]))
     TREL = torch.full((Np,), -1e30, device=dev, dtype=torch.float64)
+    PVB = torch.zeros(Np, 3, device=dev, dtype=torch.float64)
     for b_ in _bcs:
         m_ = ((_x0b - torch.tensor(b_[0], device=dev, dtype=torch.float64)).abs() < torch.tensor(b_[1], device=dev, dtype=torch.float64)).all(-1)
         TREL = torch.where(m_, torch.maximum(TREL, torch.tensor(b_[2], device=dev, dtype=torch.float64)), TREL)
+        if len(b_) > 3:
+            PVB[m_] = torch.tensor(b_[3], device=dev, dtype=torch.float64)
+    if not bool((PVB != 0).any()):
+        PVB = None
 # 거의 빈 노드 문턱: 첫 프레임 노드 질량 (2 차 B-스플라인 P2G) 중앙값 x mlow
 _y = d["x"][0].to(dev).double() @ lat.Ai.T
 _b = torch.floor(_y - 0.5).long(); _fx = _y - _b; _b = _b - _b.min(0).values; _nb = (_b.max(0).values + 3).tolist()
@@ -143,7 +155,21 @@ for _i in range(3):
             _mn.index_add_(0, ((_b[:, 0] + _i) * _nb[1] + _b[:, 1] + _j) * _nb[2] + _b[:, 2] + _k, _w[:, _i, 0] * _w[:, _j, 1] * _w[:, _k, 2] * m64)
 MTHR = float(a.mlow * _mn[_mn > 0].median()) if a.mlow > 0 else 0.0
 del _y, _b, _fx, _w, _mn
-if SAND:
+MATK = {"foam": 3, "plasticine": 5, "watermelon": 7}.get(cfg.get("material"))
+if MATK is not None:                                                                    # 절 AQ: 재질 판 (정답 pl_rm·pl_pi)
+    from anchorflow import fem_pl_cuda as PLC
+    _mat, PRM, PRD = PLC.params(cfg, float(mu), float(lam), dev)
+    assert _mat == MATK
+    VISC = 0.0
+    if a.visc_rpic and float(cfg.get("rpic_damping", 0.0)) > 0:
+        _r = float(cfg["rpic_damping"])
+        VISC = float(cfg["density"]) * _r * (2 - _r) * DXG ** 2 / (16.0 * float(cfg["substep_dt"]))
+    print(f"[절 AQ 재질 판] 재질 {cfg.get('material')} ({MATK}) 항복 {PRD['yield_stress']} logJp0 {PRD['logJp0']} 등가 점성 {VISC:.4g} 미끄럼 {a.floor_slip} 구속 속도 {PVB is not None}", flush=True)
+    S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
+                        floor=FL, damp=DAMP, bc=BC, cdp=1.0, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det,
+                        hspec=True, theta=a.theta, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None),
+                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip)
+elif SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
                         floor=FL, damp=DAMP, bc=BC, cdp=CDP, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det, hpack=a.hpack, bdsh=a.bdsh, mvc=a.mvc, h16=a.h16, theta=a.theta, hspec=a.hspec, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None), mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow)
@@ -174,7 +200,8 @@ for fi in range(L):
     torch.cuda.synchronize(); WALL = 1e3 * (time.perf_counter() - _t0)
     gt = d["x"][fi + 1].to(dev).float()
     xo = S.x_orig()
-    e = float((xo - gt).norm(dim=-1).mean()) / EXT
+    _ok = torch.isfinite(gt).all(-1)                                                   # 정답 비유한 입자 (GF quarantine) 는 지표에서 거름
+    e = float((xo[_ok] - gt[_ok]).norm(dim=-1).mean()) / EXT
     fin = bool(torch.isfinite(xo).all()) and math.isfinite(e)
     errs.append(e if fin else float("nan")); ms.append(WALL if a.adaptK > 0 else S.last_ms)
     c = S.counts()

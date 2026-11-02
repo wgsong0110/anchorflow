@@ -8,8 +8,8 @@ export CUPY_CACHE_DIR=/tmp/dkta/cache/cupy XDG_CACHE_HOME=/tmp/dkta/cache TORCH_
 RR=r2:storage/result/anchorflow/lbours/fem_ao
 NM=$1; shift
 R=/tmp/dkta/lbours/fem_ao/$NM; mkdir -p $R /tmp/dkta/ag_data $CUPY_CACHE_DIR
-DATA=/tmp/dkta/ag_data/wolf.pt
-[ -s $DATA ] || rclone copyto r2:storage/result/anchorflow/lbours/fem_ag_data/wolf.pt $DATA -q
+SCN=${AO_SCN:-wolf}; DATA=/tmp/dkta/ag_data/$SCN.pt
+[ -s $DATA ] || rclone copyto r2:storage/result/anchorflow/lbours/fem_ag_data/$SCN.pt $DATA -q
 echo "[묶음 $NM] $(cat .done) $(date +%T) 데이터 $(ls -la $DATA | awk '{print $5}')"; df -h /tmp | tail -1
 # 판마다 그 시점의 빈 카드 하나 (계산 프로세스 없음·메모리 < 2 GB·GPU0 제외·AO_CARDS 안·이 묶음이 이미 잡은 카드 제외), 없으면 30 초씩 기다림
 free_card() {
@@ -31,7 +31,7 @@ for e in "$@"; do
     echo "카드 $G $(cat .done) $(date '+%F %T') 인자 $A" > $O/run_info.txt
     nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader > $O/apps_at_start.txt
     UU=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader | awk -F', ' -v g=$G '$1==g{print $2}')
-    CUDA_VISIBLE_DEVICES=$G $PY -u exe/${AO_SIM:-fem_ao_sim.py} --data $DATA --out $O --tag wolf --frames ${AO_FR:-10} --floor vel --pbc ${AO_DUMP---dump} $A < /dev/null > $O/log.txt 2>&1 &
+    CUDA_VISIBLE_DEVICES=$G $PY -u exe/${AO_SIM:-fem_ao_sim.py} --data $DATA --out $O --tag $SCN --frames ${AO_FR:-10} ${AO_FIX---floor vel --pbc} ${AO_DUMP---dump} $A < /dev/null > $O/log.txt 2>&1 &
     PP=$!
     while kill -0 $PP 2>/dev/null; do nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader | awk -F', ' -v u=$UU -v t=$(date +%s) '$1==u{print t, $2}' >> $O/apps_during.txt; sleep 5; done
     wait $PP; RC=$?

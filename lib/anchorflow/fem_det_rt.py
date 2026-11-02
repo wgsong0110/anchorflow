@@ -258,12 +258,12 @@ class DetMixin(ART.RTSolver):
     def det_sort(s):
         """입자를 칸 번호 (pcd) 로 안정 정렬, 입자 배열과 원래 순번 perm 을 같이 재배열 (그래프 안에서 torch 연산)."""
         o = torch.sort(s.pcd, stable=True).indices
-        for nm in ("x", "v", "F", "m", "vol", "fx", "Np", "pcd", "perm") + (("trel",) if getattr(s, "trel", None) is not None else ()) + (("pa",) if getattr(s, "pa", None) is not None else ()):
+        for nm in ("x", "v", "F", "m", "vol", "fx", "Np", "pcd", "perm") + (("trel",) if getattr(s, "trel", None) is not None else ()) + (("pa",) if getattr(s, "pa", None) is not None else ()) + tuple(getattr(s, "extra_p", ())):
             t = getattr(s, nm)
             t.copy_(t[o])
 
     def _bk_names(s):
-        return ("x", "v", "F", "m", "vol", "perm") + (("trel",) if getattr(s, "trel", None) is not None else ()) + (("pa",) if getattr(s, "pa", None) is not None else ())
+        return ("x", "v", "F", "m", "vol", "perm") + (("trel",) if getattr(s, "trel", None) is not None else ()) + (("pa",) if getattr(s, "pa", None) is not None else ()) + tuple(getattr(s, "extra_p", ()))
 
     def _bk(s):
         """프레임 시작 입자 상태 백업 (절 AN step·profile 이 데움 실행·넘침 다시 하기 뒤 되돌림): 결정적 판 정렬이 재배열하는 배열 전부 (x·v·F·m·vol·perm + 모래 판 trel). bk[0] = x (절 AN step 이 비유한 판정에 씀)."""
@@ -303,8 +303,8 @@ class DetMixin(ART.RTSolver):
         super().k(name, n, args, b)
         if name in BS_KERNELS:
             super().k("ao_bsfin", NSL * 256, (), 256)
-        if name in ("rt_elem", "ao_elem", "ao_elem_s"):
-            mode = int(args[8]) if name == "rt_elem" else int(args[9])
+        if name in ("rt_elem", "ao_elem", "ao_elem_s", "aq_elem"):
+            mode = int(args[8]) if name == "rt_elem" else (11 if name == "aq_elem" else int(args[9]))
             fptr = args[10] if name == "rt_elem" else args[10]
             bptr = args[13] if name == "rt_elem" else args[13]
             if mode & 1:
