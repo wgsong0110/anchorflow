@@ -242,12 +242,15 @@ class AORTSolver(ART.RTSolver):
         s.graph = None
 
     def alloc(s, need):
+        K0 = s.K
+        s.K = max(K0, getattr(s, "kcap", K0))                                           # 적응 걸음 수: 버퍼는 걸음 수 상한으로
         super().alloc(need)
         Z = lambda *sh: torch.zeros(*sh, device=s.dev, dtype=torch.float32)
         s.Ust = Z(s.K, s.capN, 3)
         if getattr(s, "has_pbc", False):
             s.pacc = Z(s.capN * s.K * s.pbc_ns)
             s.kb = Z(s.capN)
+        s.K = K0
         s.graph = None
 
     def set_bc(s, t):
@@ -321,3 +324,65 @@ class AORTSolver(ART.RTSolver):
         cc = s.cnt.cpu().tolist()
         c.update(q_tail=cc[0], q_apex=cc[1], p_rm=cc[2])
         return c
+
+
+# ---------------- 적응 걸음 수 (조정자 11-02 규칙): K = ceil(v_max · frame_dt / (c · 칸)), 최소 1, v_max = 그 프레임 시작 노드 속도 최대 (실행 중 값) ----------------
+def frame_vmax(s, t):
+    """그래프 밖 앞 계산: 상자·칸 압축·P2G (구속 v = 0 포함) -> 노드 속도 -> 최대 |v| (호스트로 하나 읽음). 넘침이면 입자 속도 최대로 (노드 속도 ≤ 입자 속도 최대)."""
+    N, IP = s.N, s.IP
+    i32 = np.int32
+    capN = s.capN
+    if hasattr(s, "tbuf"):
+        s.tbuf.fill_(float(t))
+    s.k("rt_reset", 1, (P(IP),), b=1)
+    s.k("rt_coord", N, (i32(N), P(s.x), P(s.Ai), P(s.Np), P(s.fx), P(IP)))
+    s.k("rt_box", 1, (P(IP), i32(capN), i32(s.capC)), b=1)
+    s.zf(s.occ)
+    s.k("rt_mark", N, (i32(N), P(s.Np), P(s.fx), P(IP), P(s.pcd), P(s.occ)))
+    s.k("rt_scan", 1024, (P(IP), P(s.occ), P(s.cidx), P(s.cb), i32(s.capQc)), b=1024)
+    for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3)):
+        s.zf(t_, ci, mul)
+    s.zf(s.badq); s.zf(s.badc)
+    if getattr(s, "has_pbc", False):
+        s.k("ao_vzero", N, (i32(N), P(IP), P(s.trel), P(s.tbuf), P(s.v)))
+    s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv)))
+    s.k("rt_vn", capN, (P(IP), P(s.mn), P(s.mv), P(s.vk), P(s.U)), b=256)
+    ip = s.IP[[9, 13]].tolist()
+    if ip[1] != 0 or ip[0] <= 0:
+        return float(s.v.norm(dim=-1).max())
+    return float(s.vk[:ip[0]].norm(dim=-1).max())
+
+
+def set_K(s, K, h, sub_dt):
+    s.K = int(K)
+    s.dt = h / s.K
+    s.tau = s.dt / 2 if s.mid else s.dt
+    s.al = (2.0 / s.tau) if s.mid else (1.0 / s.tau)
+    if s.floor:
+        s.floor["KEX"] = s.dt / sub_dt
+
+
+def adapt_step(s, t, h, cell, sub_dt, kmax, c=1.0):
+    """한 프레임 (적응 걸음 수). 돌려줌: (다시 했는지, K, v_max). 그래프는 K 마다 캐시 (용량이 바뀌면 비움)."""
+    import math
+    if not hasattr(s, "gK"):
+        s.gK, s.gcap = {}, s.capN
+    vmax = frame_vmax(s, t)
+    K = max(1, min(int(kmax), int(math.ceil(vmax * h / (c * cell) - 1e-9))))
+    set_K(s, K, h, sub_dt)
+    s.graph = s.gK.get(K)
+    redo = s.step(t)
+    if s.capN != s.gcap:
+        s.gK, s.gcap = {}, s.capN
+    s.gK[K] = s.graph
+    return redo, K, vmax
+
+
+class RTAdapt(ART.RTSolver):
+    """탄성 씬 (절 AN RTSolver 그대로) 의 적응 걸음 수용: 버퍼를 걸음 수 상한 kcap 으로 잡는 것만 다름."""
+
+    def alloc(s, need):
+        K0 = s.K
+        s.K = max(K0, getattr(s, "kcap", K0))
+        super().alloc(need)
+        s.K = K0

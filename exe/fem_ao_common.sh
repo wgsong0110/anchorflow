@@ -20,13 +20,15 @@ done
 [ -z "$G" ] && { echo "[오류] 빈 카드 없음"; exit 1; }
 UU=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader | awk -F', ' -v g=$G '$1==g{print $2}')
 echo "카드 $G $(cat .done) $(date '+%F %T') dt ${AO_DT:-0.01} 셀 ${AO_CELL:-1} 인자 $EXTRA" > $R/info.txt
-for t in L000 $(seq -f %04g 0 19) ficus; do
+for t in ${AO_SCENES:-L000 $(seq -f %04g 0 19) ficus}; do
   O=$R/$t; mkdir -p $O
   if [ $t = ficus ]; then DA="--data /home/dkta/work/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt --frames 125 --floor none --cfg_bc --region_density --pg_vdamp --dump"
   elif [ $t = L000 ]; then DA="--data /home/dkta/work/one/L000/L000.pt --frames 80 --floor vel"
+  elif [ $t = wolf ]; then DA="--data /tmp/dkta/ag_data/wolf.pt --frames 50 --floor vel --pbc --dump"
   else DA="--data /tmp/dkta/af_data/$t.pt --frames 80 --floor vel"; fi
+  WX=""; CL=${AO_CELL:-1}; ML=0; [ $t = wolf ] && { WX="${AO_WOLF_EXTRA:-}"; CL=2; ML=1e-8; }                     # 셀 규칙 (절 AO.8): wolf 2, lego·ficus 1
   if [ -n "${AO_GPU0:-}" ]; then while [ "$(nvidia-smi --query-compute-apps=gpu_uuid --format=csv,noheader 9>&- | grep -c "$UU")" -gt 0 ]; do sleep 5; done; fi
-  CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_ao_rt_sim.py --out $O --tag $t $DA --cell ${AO_CELL:-1} --dt_step ${AO_DT:-0.01} --mlow 0 $EXTRA < /dev/null > $O/log.txt 2>&1 9>&- &
+  CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_ao_rt_sim.py --out $O --tag $t $DA --cell $CL --dt_step ${AO_DT:-0} --mlow $ML $EXTRA $WX < /dev/null > $O/log.txt 2>&1 9>&- &
   PP=$!
   while kill -0 $PP 2>/dev/null; do nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader 9>&- | awk -F', ' -v u=$UU -v t=$(date +%s) '$1==u{print t, $2}' >> $O/apps_during.txt; sleep 5; done
   wait $PP

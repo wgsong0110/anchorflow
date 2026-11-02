@@ -46,7 +46,11 @@ ap.add_argument("--pbc", action="store_true", help="정답 config 입자 속도 
 ap.add_argument("--pbc_ns", type=int, default=4)
 ap.add_argument("--mlow", type=float, default=1e-8, help="거의 빈 노드 문턱 = mlow x 첫 프레임 노드 질량 중앙값 (관성 예측 고정)")
 ap.add_argument("--dt_step", type=float, default=0.0, help="공통 걸음 간격 (s): 주면 K = ceil(frame_dt / dt_step) (K 인자 무시)")
+ap.add_argument("--adaptK", type=float, default=0.0, help="적응 걸음 수: K = ceil(v_max · frame_dt / (c · 칸)), c = 이 값 (0 = 끔), v_max = 프레임 시작 노드 속도 최대")
+ap.add_argument("--kmax", type=int, default=16)
 a = ap.parse_args()
+if a.adaptK > 0:
+    a.K = a.kmax                                                                       # 버퍼·첫 캡처는 상한으로, 프레임마다 다시 정함
 dev = "cuda"
 RTC.RAWPTR[0] = True
 os.makedirs(a.out, exist_ok=True)
@@ -128,8 +132,11 @@ if SAND:
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
                         floor=FL, damp=DAMP, bc=BC, cdp=CDP, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR)
 else:
-  S = ART.RTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
+  S = AORT.RTAdapt(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent)
+S.kcap = a.K
+CELL = float(lat.A[:, 0].norm())
+print(f"[절 AO 실시간 판] 적응 걸음 수 c {a.adaptK} 상한 {a.kmax}, 칸 {CELL:.4f} m")
 print(f"[절 AO 실시간 판] 모래 {SAND} 구속 {a.pbc} 빈 노드 문턱 {MTHR:.3e} (mlow {a.mlow})", flush=True)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
@@ -140,17 +147,22 @@ PRED = torch.empty(L, Np, 3) if a.dump else None
 FDMP = torch.empty(L, Np, 3, 3) if a.dump else None
 for fi in range(L):
     kp = S.profile(fi * h) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None
-    redo = S.step(fi * h)
+    torch.cuda.synchronize(); _t0 = time.perf_counter()
+    if a.adaptK > 0:
+        redo, KF, VMX = AORT.adapt_step(S, fi * h, h, CELL, float(cfg["substep_dt"]), a.kmax, a.adaptK)
+    else:
+        redo, KF, VMX = S.step(fi * h), a.K, None
+    torch.cuda.synchronize(); WALL = 1e3 * (time.perf_counter() - _t0)
     gt = d["x"][fi + 1].to(dev).float()
     xo = S.x_orig()
     e = float((xo - gt).norm(dim=-1).mean()) / EXT
     fin = bool(torch.isfinite(xo).all()) and math.isfinite(e)
-    errs.append(e if fin else float("nan")); ms.append(S.last_ms)
+    errs.append(e if fin else float("nan")); ms.append(WALL if a.adaptK > 0 else S.last_ms)
     c = S.counts()
     if a.diag:
         c["diag"] = S.diag()
-    flog.write(json.dumps(dict(t=fi, err=e, ms=S.last_ms, redo=redo, **c, **({"kernel_ms": kp} if kp else {}))) + "\n"); flog.flush()
-    print(f"  프레임 {fi + 1}/{L} {S.last_ms:.2f} ms 오차 {100 * e:.3f}%{' (용량 늘려 다시)' if redo else ''} 점 {c['nq']} 노드 상자 {c['nn']} 유클리드 평균 점 {c['nbad']} 꼬리·꼭짓점 점 {c.get('q_tail')}·{c.get('q_apex')} 입자 RM {c.get('p_rm')}", flush=True)
+    flog.write(json.dumps(dict(t=fi, err=e, ms=S.last_ms, wall_ms=WALL, K=KF, vmax=VMX, redo=redo, **c, **({"kernel_ms": kp} if kp else {}))) + "\n"); flog.flush()
+    print(f"  프레임 {fi + 1}/{L} K {KF} v_max {VMX if VMX is None else round(VMX, 3)} 벽시계 {WALL:.1f} ms 재생 {S.last_ms:.2f} ms 오차 {100 * e:.3f}%{' (용량 늘려 다시)' if redo else ''} 점 {c['nq']} 노드 상자 {c['nn']} 유클리드 평균 점 {c['nbad']} 꼬리·꼭짓점 점 {c.get('q_tail')}·{c.get('q_apex')} 입자 RM {c.get('p_rm')}", flush=True)
     if PRED is not None:
         PRED[fi] = xo.cpu()
         _Fo = torch.empty_like(S.F); _Fo[S.perm] = S.F
