@@ -6,5 +6,5 @@ M=/tmp/dkta/lbours/fem_an/marks; mkdir -p $M
 G=$(for i in $(seq 5); do nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader,nounits; sleep 1; done | awk -F', ' '$1>0{s[$1]+=$2} END{for (k in s) print s[k], k}' | sort -n | head -1 | awk '{print $2}')
 { echo "카드 $G $(cat .done)"
   CUDA_VISIBLE_DEVICES=$G python -u exe/fem_an_dettest.py /home/dkta/work/one/L000/L000.pt 1 5 2 5 0,20,40 2>&1 | grep -v Warning
-  CUDA_VISIBLE_DEVICES=$G python -u exe/fem_an_dettest.py /home/dkta/work/one/L000/L000.pt 1 1 2 5 0,20,40 2>&1 | grep -v Warning; } > $M/dettest.md
+  CUDA_VISIBLE_DEVICES=$G python -u exe/fem_an_dettest.py /home/dkta/work/one/L000/L000.pt 1 1 2 5 0,20,40 2>&1 | grep -v Warning; } > $M/${AN_NM:-dettest}.md
 rclone copy $M r2:storage/result/anchorflow/lbours/fem_an/marks -q
