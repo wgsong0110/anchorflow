@@ -517,6 +517,8 @@ class RTAdapt(ART.RTSolver):
         nm = name + "_c" if (s.compact and name in s.CN) else name
         super().k(nm, n, args, b)
         if name == "rt_vn":
+            if s.compact:                                                              # 압축 판은 빈 노드의 δ·처음 잔차를 0 으로 두지 않으므로 (상자 전체를 도는 선탐색 rt_lsy4 가 읽음) 프레임마다 비움
+                s.zf(s.dl); s.zf(s.g0buf)
             super().k("ao_act_reset", 1, (P(s.IP),), 1)
             super().k("ao_act", s.capN, (P(s.IP), P(s.mn)), 256)
             if warm:
