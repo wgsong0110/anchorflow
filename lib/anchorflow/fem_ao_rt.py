@@ -43,18 +43,23 @@ __global__ void ao_pbc_acc(int N, const int* IP, const int* pb, const float* fx,
     for (int a=0;a<3;a++) bwf(fx[p*3+a], w[a], dw[a]);
     int nb1 = IP[7], nb2 = IP[8], KS = K*S;
     float mp = m[p];
+    int ncut = 0;
+    for (int ks=0; ks<KS; ks++) { int kk = ks / S, ss = ks % S; float ts = t0 + ((float)kk + ((float)ss + 0.5f)/(float)S)*dt; if (tr > ts) ncut = ks + 1; }
     for (int o=0;o<27;o++) {
         int i = o/9, j = (o/3)%3, k = o%3;
         int nid = ((pb[p*3]+i)*nb1 + (pb[p*3+1]+j))*nb2 + (pb[p*3+2]+k);
         float ww = w[0][i]*w[1][j]*w[2][k]*mp;
-        for (int ks=0; ks<KS; ks++) { int kk = ks / S, ss = ks % S; float ts = t0 + ((float)kk + ((float)ss + 0.5f)/(float)S)*dt; if (tr > ts) atomicAdd(&acc[(size_t)nid*KS + ks], ww); }
+        if (ncut > 0) atomicAdd(&acc[(size_t)nid*KS + ncut - 1], ww);       // 표본 시각은 커지는 순서 -> 구속된 표본은 앞쪽 ncut 개 (끝 자리에만 더하고 노드에서 뒤쪽 누적합)
     }
 }
 __global__ void ao_pbc_k(const int* IP, const float* mn, const float* acc, int K, int S, int k, float expo, float* kb) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
     float m = mn[n], lk = 0.f; int KS = K*S;
-    if (m > 0.f) for (int ss=0; ss<S; ss++) { float al = fminf(acc[(size_t)n*KS + k*S + ss]/m, 1.f); lk += log1pf(-al); }
+    if (m > 0.f) {
+        float suf = 0.f;                                                        // 표본 ks 의 구속 질량 = Σ_{j ≥ ks} acc[j]
+        for (int j=KS-1; j>=k*S; j--) { suf += acc[(size_t)n*KS + j]; if (j < (k+1)*S) { float al = fminf(suf/m, 1.f); lk += log1pf(-al); } }
+    }
     kb[n] = expf(lk*expo);
 }
 __global__ void ao_floor_n(const int* IP, const float* an, const float* mqn, float kex, int floor_, int vout, float al, float n0, float n1, float n2,
