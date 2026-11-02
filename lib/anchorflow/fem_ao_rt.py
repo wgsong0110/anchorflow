@@ -148,7 +148,7 @@ __global__ void __launch_bounds__(128) ao_elem(const int* IP, const int* cb, con
             float et[9], ef[9];
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float x1 = U[a*3+i]*V[b*3+j], x2 = U[a*3+j]*V[b*3+i]; et[a*3+b] = r2*(x1-x2); ef[a*3+b] = r2*(x1+x2); }
             for (int r=0;r<9;r++) for (int c=0;c<9;c++) h[r*9+c] += lt*et[r]*et[c] + lf*ef[r]*ef[c]; }
-        if (mode & 512) { int k = 0; for (int r=0;r<9;r++) for (int c=r;c<9;c++) ((__half*)H)[(size_t)(k++)*capQ + qq] = __float2half(h[r*9+c]); }   // f16 위 삼각
+        if (mode & 512) { int k = 0; for (int r=0;r<9;r++) for (int c=r;c<9;c++) ((__half*)H)[(size_t)(k++)*capQ + qq] = __float2half(h[r*9+c]/(2.f*mu + lam)); }   // f16 위 삼각
         else if (mode & 128) { int k = 0; for (int r=0;r<9;r++) for (int c=r;c<9;c++) H[(size_t)(k++)*capQ + qq] = h[r*9+c]; }   // 위 삼각 45 개 (h 는 비트 대칭)
         else for (int k=0;k<81;k++) H[(size_t)k*capQ + qq] = h[k];
         }
@@ -337,7 +337,11 @@ def _mv_half(ao):
     body = ao[i:j].replace("ao_mv_c(", "ao_mv_h(", 1)
     old = "t += H[(size_t)(a_*9 - a_*(a_-1)/2 + (b_ - a_))*capQ + qq]*dX[c];"
     assert old in body
-    return body.replace(old, "t += __half2float(((const __half*)H)[(size_t)(a_*9 - a_*(a_-1)/2 + (b_ - a_))*capQ + qq])*dX[c];", 1)
+    body = body.replace(old, "t += __half2float(((const __half*)H)[(size_t)(a_*9 - a_*(a_-1)/2 + (b_ - a_))*capQ + qq])*dX[c];", 1)
+    body = body.replace("float* out, int capQ) {", "float* out, int capQ, float hsc) {", 1)
+    old2 = "sP[tl][r] = vq*t; }"
+    assert old2 in body
+    return body.replace(old2, "sP[tl][r] = vq*hsc*t; }", 1)                  # f16 은 2μ+λ 로 나눠 저장 (범위), 곱에서 되돌림
 
 
 def _src():
@@ -455,7 +459,7 @@ class AORTSolver(DET.DetMixin):
                     s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(1)), b=1)
                     s.k("ao_tvec", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.td)), b=256)
                     s.zf(s.KTd, 9, 3)
-                    s.k(("ao_mv_h" if s.h16 else ("ao_mv_c" if s.mvc else "ao_mv_s")) if s.hpack else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.td), P(s.KTd), i32(capQ)))
+                    s.k(("ao_mv_h" if s.h16 else ("ao_mv_c" if s.mvc else "ao_mv_s")) if s.hpack else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.td), P(s.KTd), i32(capQ)) + ((f(2.0 * s.mu + s.lam),) if s.h16 else ()))
                     s.k("ao_warm", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.KTd), P(s.Dinv), P(s.dl), P(s.r), P(s.z), P(s.p), P(s.Tp), P(s.SC)), b=256)
                 if s.nl > 1:
                     if kstep == 0 and it == 0:
@@ -467,7 +471,7 @@ class AORTSolver(DET.DetMixin):
                     s.k("rt_pinit", capN, (P(IP), P(s.z), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.Tp)), b=256)
                 for ci in range(s.cg):
                     s.zf(s.KTp, 9, 3)
-                    s.k(("ao_mv_h" if s.h16 else ("ao_mv_c" if s.mvc else "ao_mv_s")) if s.hpack else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
+                    s.k(("ao_mv_h" if s.h16 else ("ao_mv_c" if s.mvc else "ao_mv_s")) if s.hpack else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)) + ((f(2.0 * s.mu + s.lam),) if s.h16 else ()))
                     s.k("rt_ap" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
                     if s.nl > 1:
                         s.k("rt_cg1m", capN, (P(IP), P(s.SC), P(s.p), P(s.Ap), P(s.dl), P(s.r)), b=256)
