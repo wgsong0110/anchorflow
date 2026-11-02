@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 from . import fem_an_rt as ART
+from . import fem_det_rt as DET
 
 P = ART.P
 
@@ -277,15 +278,16 @@ def _compact(src):
 def _src():
     s = ART.SRC.rstrip()
     i = s.rfind("}")
-    head = s[:i]
-    return head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;", 1) + AO_SRC + _compact(head) + "\n}\n"
+    head = DET.det_src(s[:i])
+    return head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;", 1) + DET.det_ao(AO_SRC) + _compact(head) + DET.DET_SRC + "\n}\n"
 
 
-class AORTSolver(ART.RTSolver):
+class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, **kw):
         s.cdp, s.pbc_ns, s.dt_gt, s.mthr = float(cdp), int(pbc_ns), float(dt_gt), float(mthr)
+        s.det = bool(det)
         s.has_pbc = trel is not None
         s.compact, s.warm = bool(compact), bool(warm)
         super().__init__(*args, **kw)
@@ -308,6 +310,7 @@ class AORTSolver(ART.RTSolver):
             s.pacc = Z(s.capN * s.K * s.pbc_ns)
             s.kb = Z(s.capN)
         s.act = torch.zeros(s.capN, device=s.dev, dtype=torch.int32)
+        s.det_alloc()
         s.d0 = Z(s.capN, 3); s.td = Z(s.capN, 3); s.KTd = Z(s.capN, 3)
         s.kalloc = s.K
         s.K = K0
@@ -318,6 +321,7 @@ class AORTSolver(ART.RTSolver):
     def bind_act(s):
         g = s.mod.get_global("AO_ACT")
         ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(s.act.data_ptr())
+        s.det_bind()
 
     def set_bc(s, t):
         super().set_bc(t)
@@ -475,15 +479,15 @@ def adapt_step(s, t, h, cell, sub_dt, kmax, c=1.0):
     return redo, K, vmax
 
 
-class RTAdapt(ART.RTSolver):
+class RTAdapt(DET.DetMixin):
     """탄성 씬 (절 AN RTSolver 의 record 그대로) + 적응 걸음 수 버퍼 + 노드 압축·PCG 첫 추정 (절 AO.11 과 같은 커널).
     절 AN 코드는 고치지 않고 커널 실행 함수 k() 에서: rt_grad·rt_ap·rt_cg1·rt_cg2·rt_lsup -> 압축 판 (_c), rt_vn 뒤 노드 목록, 걸음 첫 뉴턴 rt_grad 뒤 첫 추정, rt_lsup 앞 δ 저장."""
     CN = ("rt_grad", "rt_ap", "rt_cg1", "rt_cg2", "rt_lsup")
 
-    def __init__(s, *args, compact=False, warm=False, **kw):
-        s.compact, s.warm = bool(compact), bool(warm)
+    def __init__(s, *args, compact=False, warm=False, det=False, **kw):
+        s.compact, s.warm, s.det = bool(compact), bool(warm), bool(det)
         super().__init__(*args, **kw)
-        if s.compact or s.warm:
+        if s.compact or s.warm or s.det:
             s.mod = ART.cp.RawModule(code=_src(), options=("--std=c++14",))
             s.fn = {}
             s.ao_ready = True
@@ -498,6 +502,7 @@ class RTAdapt(ART.RTSolver):
         s.K = K0
         Z = lambda *sh: torch.zeros(*sh, device=s.dev, dtype=torch.float32)
         s.act = torch.zeros(s.capN, device=s.dev, dtype=torch.int32)
+        s.det_alloc()
         s.d0 = Z(s.capN, 3); s.td = Z(s.capN, 3); s.KTd = Z(s.capN, 3)
         if getattr(s, "ao_ready", False):
             s.bind_act()
@@ -505,6 +510,7 @@ class RTAdapt(ART.RTSolver):
     def bind_act(s):
         g = s.mod.get_global("AO_ACT")
         ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(s.act.data_ptr())
+        s.det_bind()
 
     def k(s, name, n, args, b=128):
         if not getattr(s, "ao_ready", False):
