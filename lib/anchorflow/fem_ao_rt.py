@@ -221,21 +221,43 @@ __global__ void ao_g2p(int N, const int* IP, const float* Ai, const int* pb, con
 '''
 
 
+HB = "    if (blockIdx.x*blockDim.x >= IP[9]) return;\n    int n = blockIdx.x*blockDim.x + threadIdx.x;\n"
+HB2 = "    if (blockIdx.x*blockDim.x >= IP[14]) return;\n    int ii_ = blockIdx.x*blockDim.x + threadIdx.x;\n    int n = (ii_ < IP[14]) ? AO_ACT[ii_] : IP[9];\n"
+HS = "    int n = blockIdx.x*blockDim.x + threadIdx.x;\n    if (n >= IP[9]) return;\n"
+HS2 = "    int ii_ = blockIdx.x*blockDim.x + threadIdx.x;\n    if (ii_ >= IP[14]) return;\n    int n = AO_ACT[ii_];\n"
+
+
+def _compact(src):
+    """노드 압축 판: rt_grad·rt_ap·rt_cg1 (블록 합) 과 rt_cg2·rt_lsup 를 질량 있는 노드 목록 AO_ACT[0..IP[14]) 만 돌게 (이름 뒤 _c). 원본 커널은 그대로 둔다."""
+    out = []
+    for nm, h0, h1 in (("rt_grad", HB, HB2), ("rt_ap", HB, HB2), ("rt_cg1", HB, HB2), ("rt_cg2", HS, HS2), ("rt_lsup", HS, HS2)):
+        i = src.index("__global__ void " + nm + "(")
+        j = src.index("\n}\n", i) + 3
+        body = src[i:j].replace("void " + nm + "(", "void " + nm + "_c(", 1)
+        assert h0 in body, nm
+        out.append(body.replace(h0, h1, 1))
+    return "\n".join(out)
+
+
 def _src():
     s = ART.SRC.rstrip()
     i = s.rfind("}")
-    return s[:i] + AO_SRC + "\n}\n"
+    head = s[:i]
+    return head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;", 1) + AO_SRC + _compact(head) + "\n}\n"
 
 
 class AORTSolver(ART.RTSolver):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, **kw):
         s.cdp, s.pbc_ns, s.dt_gt, s.mthr = float(cdp), int(pbc_ns), float(dt_gt), float(mthr)
         s.has_pbc = trel is not None
+        s.compact, s.warm = bool(compact), bool(warm)
         super().__init__(*args, **kw)
         s.mod = ART.cp.RawModule(code=_src(), options=("--std=c++14",))
         s.fn = {}
+        s.ao_ready = True
+        s.bind_act()
         s.tbuf = torch.zeros(1, device=s.dev, dtype=torch.float32)
         s.cnt = torch.zeros(4, device=s.dev, dtype=torch.int32)
         s.trel = (trel[s.perm].float().contiguous() if s.has_pbc else None)
@@ -250,8 +272,17 @@ class AORTSolver(ART.RTSolver):
         if getattr(s, "has_pbc", False):
             s.pacc = Z(s.capN * s.K * s.pbc_ns)
             s.kb = Z(s.capN)
+        s.act = torch.zeros(s.capN, device=s.dev, dtype=torch.int32)
+        s.d0 = Z(s.capN, 3); s.td = Z(s.capN, 3); s.KTd = Z(s.capN, 3)
+        s.kalloc = s.K
         s.K = K0
         s.graph = None
+        if getattr(s, "ao_ready", False):
+            s.bind_act()
+
+    def bind_act(s):
+        g = s.mod.get_global("AO_ACT")
+        ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(s.act.data_ptr())
 
     def set_bc(s, t):
         super().set_bc(t)
@@ -276,6 +307,10 @@ class AORTSolver(ART.RTSolver):
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv)))
         s.k("rt_gauss", capQ, (P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.cb), P(s.A), P(s.BW), P(s.Fq), P(s.Vq), P(s.mq), P(s.xq0), P(s.mqn), P(s.nbad)))
         s.k("rt_vn", capN, (P(IP), P(s.mn), P(s.mv), P(s.vk), P(s.U)), b=256)
+        s.k("ao_act_reset", 1, (P(IP),), b=1)
+        s.k("ao_act", capN, (P(IP), P(s.mn)), b=256)
+        if s.warm:
+            s.zf(s.d0, 9, 3)
         if s.nl > 1:                                                                   # 절 AN 실시간 판 MG (거친 층 = 프레임 시작 F 의 FCR 연산자 -- 전처리로만)
             s.mg_build()
         KS = s.K * s.pbc_ns
@@ -306,7 +341,13 @@ class AORTSolver(ART.RTSolver):
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(16)), b=1)
                 s.k("ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8), P(s.f), P(s.H), i32(capQ), P(s.B),
                                       P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None)))
-                s.k("rt_grad", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
+                s.k("rt_grad" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
+                if s.warm and it == 0 and kstep > 0 and s.nl <= 1:                                      # PCG 첫 추정 = 앞 걸음 첫 뉴턴의 δ (프레임 첫 걸음은 0)
+                    s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(1)), b=1)
+                    s.k("ao_tvec", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.td)), b=256)
+                    s.zf(s.KTd, 9, 3)
+                    s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.td), P(s.KTd), i32(capQ)))
+                    s.k("ao_warm", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.KTd), P(s.Dinv), P(s.dl), P(s.r), P(s.z), P(s.p), P(s.Tp), P(s.SC)), b=256)
                 if s.nl > 1:
                     if kstep == 0 and it == 0:
                         s.mg_power(0)
@@ -318,16 +359,18 @@ class AORTSolver(ART.RTSolver):
                 for ci in range(s.cg):
                     s.zf(s.KTp, 9, 3)
                     s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
-                    s.k("rt_ap", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
+                    s.k("rt_ap" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
                     if s.nl > 1:
                         s.k("rt_cg1m", capN, (P(IP), P(s.SC), P(s.p), P(s.Ap), P(s.dl), P(s.r)), b=256)
                         s.mg_vc(0, s.r, s.z)
                         s.k("rt_dotz", capN, (P(IP), P(s.r), P(s.z), P(s.zo), P(s.SC), i32(0)), b=256)
                     else:
-                        s.k("rt_cg1", capN, (P(IP), P(s.SC), P(s.Dinv), P(s.p), P(s.Ap), P(s.dl), P(s.r), P(s.z), P(s.SC)), b=256)
-                    s.k("rt_cg2", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.z), P(s.p), P(s.Tp)), b=256)
+                        s.k("rt_cg1" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.Dinv), P(s.p), P(s.Ap), P(s.dl), P(s.r), P(s.z), P(s.SC)), b=256)
+                    s.k("rt_cg2" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.z), P(s.p), P(s.Tp)), b=256)
                     s.k("rt_sc_roll", 1, (P(s.SC),), b=1)
-                s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(1)), b=256)
+                if s.warm and it == 0:
+                    s.d0.copy_(s.dl)
+                s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(1)), b=256)
             s.k("rt_stepend", capN, (P(IP), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
             s.Ust[kstep].copy_(s.U)
             if kstep < s.K - 1:
@@ -384,6 +427,10 @@ def adapt_step(s, t, h, cell, sub_dt, kmax, c=1.0):
         s.gK, s.gcap = {}, s.capN
     vmax = frame_vmax(s, t)
     K = max(1, min(int(kmax), int(math.ceil(vmax * h / (c * cell) - 1e-9))))
+    if K > getattr(s, "kalloc", s.K):                                                  # 버퍼는 실제 필요한 걸음 수까지만 키움
+        s.kcap = K
+        s.alloc(None)
+        s.gK, s.gcap = {}, s.capN
     set_K(s, K, h, sub_dt)
     s.graph = s.gK.get(K)
     redo = s.step(t)
@@ -400,4 +447,5 @@ class RTAdapt(ART.RTSolver):
         K0 = s.K
         s.K = max(K0, getattr(s, "kcap", K0))
         super().alloc(need)
+        s.kalloc = s.K
         s.K = K0

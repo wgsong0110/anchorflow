@@ -47,10 +47,12 @@ ap.add_argument("--pbc_ns", type=int, default=4)
 ap.add_argument("--mlow", type=float, default=1e-8, help="거의 빈 노드 문턱 = mlow x 첫 프레임 노드 질량 중앙값 (관성 예측 고정)")
 ap.add_argument("--dt_step", type=float, default=0.0, help="공통 걸음 간격 (s): 주면 K = ceil(frame_dt / dt_step) (K 인자 무시)")
 ap.add_argument("--adaptK", type=float, default=0.0, help="적응 걸음 수: K = ceil(v_max · frame_dt / (c · 칸)), c = 이 값 (0 = 끔), v_max = 프레임 시작 노드 속도 최대")
-ap.add_argument("--kmax", type=int, default=16)
+ap.add_argument("--kmax", type=int, default=0, help="걸음 수 상한 (0 = 정답 MPM 프레임당 서브스텝 수 frame_dt / substep_dt; 발산 판정과 따로)")
+ap.add_argument("--no_compact", action="store_true")
+ap.add_argument("--no_warm", action="store_true")
 a = ap.parse_args()
 if a.adaptK > 0:
-    a.K = a.kmax                                                                       # 버퍼·첫 캡처는 상한으로, 프레임마다 다시 정함
+    a.K = 8                                                                       # 버퍼·첫 캡처는 상한으로, 프레임마다 다시 정함
 dev = "cuda"
 RTC.RAWPTR[0] = True
 os.makedirs(a.out, exist_ok=True)
@@ -130,10 +132,12 @@ del _y, _b, _fx, _w, _mn
 if SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
-                        floor=FL, damp=DAMP, bc=BC, cdp=CDP, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow)
+                        floor=FL, damp=DAMP, bc=BC, cdp=CDP, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow)
 else:
   S = AORT.RTAdapt(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent)
+if a.kmax <= 0:
+    a.kmax = int(math.ceil(h / float(cfg["substep_dt"]) - 1e-9))
 S.kcap = a.K
 CELL = float(lat.A[:, 0].norm())
 print(f"[절 AO 실시간 판] 적응 걸음 수 c {a.adaptK} 상한 {a.kmax}, 칸 {CELL:.4f} m")
