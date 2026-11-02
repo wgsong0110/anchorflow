@@ -327,7 +327,7 @@ class AORTSolver(DET.DetMixin):
         super().set_bc(t)
         s.tbuf.fill_(float(t))
 
-    def record(s, t_frame):
+    def record(s, t_frame, K=None):
         N, IP = s.N, s.IP
         i32, f = np.int32, np.float32
         capN, capQ = s.capN, s.capQc * 8
@@ -471,11 +471,7 @@ def adapt_step(s, t, h, cell, sub_dt, kmax, c=1.0):
         s.alloc(None)
         s.gK, s.gcap = {}, s.capN
     set_K(s, K, h, sub_dt)
-    s.graph = s.gK.get(K)
-    redo = s.step(t)
-    if s.capN != s.gcap:
-        s.gK, s.gcap = {}, s.capN
-    s.gK[K] = s.graph
+    redo = s.step(t)                                                                   # 그래프는 절 AN step 의 걸음 수별 캐시 (s.graphs) 를 씀
     return redo, K, vmax
 
 
@@ -517,8 +513,8 @@ class RTAdapt(DET.DetMixin):
             return super().k(name, n, args, b)
         i32, f = np.int32, np.float32
         if name == "rt_reset":
-            s._ks = -1
-        elif name == "rt_step0":
+            s._ks = -1; s._it = -1
+        elif name in ("rt_step0", "rt_step0g"):
             s._ks += 1; s._it = -1
         elif name == "rt_grad":
             s._it += 1
