@@ -1102,6 +1102,7 @@ DETC = [torch.ones(FI.numel(), device=dev, dtype=torch.float64)]   # ipmF: 입�
 SPRING_CAP, SPRING_LOG, CFL_LOG = [float("inf")], [], []
 NFEAS = [0]                                           # --feas: 마지막 시도까지 제약을 어겨 걷지 않은 반복 수
 WARMLOG = []                                          # --warm_rigid: (t, 적용 비율, 회전 rad, 이동, L2 전, L2 후)
+GRLOG = []                                            # riem: 프레임별 (t, 반복 수, 상한에 걸림, 마지막 |g|/|g0|)
 PHYS, TRAJS, YPREV = [], [], [G0[FI].clone()]
 FSAVE = []
 PST, CONSLOG = {}, []                                 # proj·alm 상태 (ρ, μ0, ε, 쌍대 Λ / 승수 λ -- 프레임을 넘어 이어진다) / 프레임별 제약 기록
@@ -1123,7 +1124,7 @@ if a.resume and os.path.exists(CKPT):
         "rows", "CURVE", "DOFS", "STOP", "EMDP", "PHYS", "TRAJS", "YPREV", "FSAVE", "DETC", "SPRING_CAP",
         "SPRING_LOG", "CFL_LOG", "RIEMLOG", "LMAX_LOG", "TETLOG", "NODES")]
     LMST = _ck["LMST"]; OPT = None
-    PST.update(_ck.get("PST", {})); CONSLOG = _ck["L"].get("CONSLOG", []); NFEAS = _ck["L"].get("NFEAS", [0]); WARMLOG = _ck["L"].get("WARMLOG", [])
+    PST.update(_ck.get("PST", {})); CONSLOG = _ck["L"].get("CONSLOG", []); NFEAS = _ck["L"].get("NFEAS", [0]); WARMLOG = _ck["L"].get("WARMLOG", []); GRLOG = _ck["L"].get("GRLOG", [])
     torch.set_rng_state(_ck["rng"].cpu()); torch.cuda.set_rng_state(_ck["cuda_rng"].cpu())   # 거듭제곱법 시작 벡터까지 같게
     T_START = _ck["t"] + 1
     t0 -= _ck["elapsed"]
@@ -1853,8 +1854,9 @@ for t in range(T_START, T + 1):
             l2.backward()
             gk = flat([q.grad if q.grad is not None else torch.zeros_like(q) for q in PL]).detach()
             theta = flat([q.detach() for q in PL])
+            _GLAST = float(gk.norm())
             if a.riem_gtol > 0:
-                _gn_ = float(gk.norm())
+                _gn_ = _GLAST
                 if _G0N[0] is None:
                     _G0N[0] = _gn_
                 if it_ >= a.riem_tmin and (_gn_ <= a.riem_gtol * _G0N[0] or float(l2) <= 1e-16):
@@ -1991,6 +1993,8 @@ for t in range(T_START, T + 1):
                 with torch.no_grad():
                     DETC[0] = DETC[0] * det3(YJ(X_, FI)[1]).double()
             STOP.append((t, it_ + 1, it_ + 1, float(np.mean(CGN)) if CGN else float("nan"), eps, "riem"))
+            _cap = (a.riem_maxit if (a.riem_tol > 0 or a.riem_gtol > 0) else (a.iters0 if t == 1 else a.iters))
+            GRLOG.append((t, it_ + 1, float(it_ + 1 >= _cap), _GLAST / max(_G0N[0] or _GLAST, 1e-30)))
             if a.method == "grid":
                 CFL_LOG.append((t, rep.cfl_max()))                    # 노드 이동 최대 / (cfl·dx) -- 1 넘으면 제약 위반
             if a.method == "phystwin" and a.riem_energy == "spring10":
@@ -2127,7 +2131,7 @@ for t in range(T_START, T + 1):
     if a.ckpt_every > 0 and (t % a.ckpt_every == 0) and t < T:
         _L = dict(rows=rows, CURVE=CURVE, DOFS=DOFS, STOP=STOP, EMDP=EMDP, PHYS=PHYS, TRAJS=TRAJS, YPREV=YPREV,
                   FSAVE=FSAVE, DETC=DETC, SPRING_CAP=SPRING_CAP, SPRING_LOG=SPRING_LOG, CFL_LOG=CFL_LOG,
-                  RIEMLOG=RIEMLOG, LMAX_LOG=LMAX_LOG, TETLOG=TETLOG, NODES=NODES, CONSLOG=CONSLOG, NFEAS=NFEAS, WARMLOG=WARMLOG)
+                  RIEMLOG=RIEMLOG, LMAX_LOG=LMAX_LOG, TETLOG=TETLOG, NODES=NODES, CONSLOG=CONSLOG, NFEAS=NFEAS, WARMLOG=WARMLOG, GRLOG=GRLOG)
         torch.save(dict(t=t, rep=rep.state_dict(), Pref=Pref, Fcum=Fcum, Rcum=Rcum, L=_L, LMST=LMST, PST=PST,
                         elapsed=time.time() - t0, rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state()),
                    CKPT + ".tmp")
@@ -2163,7 +2167,8 @@ np.savez_compressed(a.out, metrics=R, dof=np.array(DOFS), L=L,
                     lmax_log=np.array(LMAX_LOG, dtype=np.float64).reshape(-1, 2),
                     tet_log=np.array(TETLOG, dtype=np.float64).reshape(-1, 6),     # t, 셀 det 최소, J<0.5 수, J≤0 수, 셀 수, ε(끝)
                     riem_damp=a.riem_damp, riem_eps0=a.riem_eps0,
-                    feas=a.feas, nfeas=NFEAS[0], warm_log=np.array(WARMLOG, dtype=np.float64).reshape(-1, 6), mpm_dx=a.mpm_dx, node_h_norm=float(getattr(rep, "h", float("nan"))),
+                    feas=a.feas, nfeas=NFEAS[0], warm_log=np.array(WARMLOG, dtype=np.float64).reshape(-1, 6),
+                    gr_log=np.array(GRLOG, dtype=np.float64).reshape(-1, 4), mpm_dx=a.mpm_dx, node_h_norm=float(getattr(rep, "h", float("nan"))),
                     # proj·alm: t, 셀 det 최소, 부호 σ_min 최소, σ<δ 수, det<δ 수, det≤0 수, ρ 또는 끝 μ, 끝 반복 제약 잔차
                     cons_log=np.array(CONSLOG, dtype=np.float64).reshape(-1, 8),
                     **({"cons_par": np.array([PST[k] for k in ("lmH", "lmA", "eps", "rho", "mu0")])} if "lmH" in PST else {}),
