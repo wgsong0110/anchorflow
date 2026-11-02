@@ -614,6 +614,8 @@ def floor_state(y, Uk, z0, Ut, al, na, FS, vk=None):
             sj = (j + 0.5) / a.fl_avg
             ls = ls + torch.log1p(-((1 - sj) * r0 + sj * r).clamp(0.0, 1.0)) / a.fl_avg
         k = torch.exp(KEX * ls)
+        STAT["stuck0"] = int((r0 > 0).sum())                                           # 진단: 걸음 시작 위치로 이미 몫이 있는 노드
+        STAT["stuck1"] = int((r > 0).sum())                                            # 걸음 끝 예측 위치로 몫이 있는 노드
         r = torch.maximum(r, r0)
     else:
         k = torch.exp(KEX * torch.log1p(-r))

@@ -8,8 +8,12 @@ export PYTHONUTF8=1 OMP_NUM_THREADS=8 PATH=$HOME/bin:/home/dkta/.conda/envs/af/b
 export CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy XDG_CACHE_HOME=/dev/shm/dkta/cache TORCH_EXTENSIONS_DIR=/dev/shm/dkta/cache/torch_ext
 NM=$1; LST=$2
 R=${ERR_ROOT:-/dev/shm/dkta/lbours/fem_anerr}/$NM; RR=r2:storage/result/anchorflow/lbours/fem_anerr/$NM; CL=/dev/shm/dkta/anerr_claim
-mkdir -p $R $CL $CUPY_CACHE_DIR /tmp/dkta/anerr_data
-[ -s /tmp/dkta/anerr_data/L000.pt ] || cp /home/dkta/work/one/L000/L000.pt /tmp/dkta/anerr_data/L000.pt
+mkdir -p $R $CL $CUPY_CACHE_DIR
+# 자료: 노드에 없으면 /dev/shm/dkta/anerr_data 로 (다음 잡이 다른 노드일 때) -- lego NFS /home/dkta/work/lbpt/test, L000 NFS, 낙하 블록 R2 lbours/ak_drop2
+SD=/dev/shm/dkta/anerr_data; mkdir -p $SD
+LD=/tmp/dkta/af_data; [ -f $LD/0019.pt ] || LD=$SD
+L0=/tmp/dkta/anerr_data/L000.pt; [ -s $L0 ] || { L0=$SD/L000.pt; [ -s $L0 ] || cp /home/dkta/work/one/L000/L000.pt $L0; }
+DD=/tmp/dkta/ak_drop2; [ -s $DD/drop_f1.pt ] && [ -s $DD/mpm/x240.pt ] || { DD=$SD/ak_drop2; [ -s $DD/mpm/x240.pt ] || rclone copy r2:storage/result/anchorflow/lbours/ak_drop2 $DD -q --include "drop_f1.pt" --include "init.pt" --include "mpm/x240.pt"; }
 echo "[묶음 $NM] $(cat .done) $(date '+%F %T')"; df -h /tmp | tail -1
 free_card() {   # 빈 카드 하나 (없으면 빈 문자열)
   local apps; apps=$(nvidia-smi --query-compute-apps=gpu_uuid --format=csv,noheader 2>/dev/null) || return
@@ -25,11 +29,11 @@ run_one() {   # 카드 판 궤적 인자...
   local G=$1 V=$2 t=$3; shift 3
   local O=$R/${V}_$t; mkdir -p $O
   case $t in
-    L000) DA="--data /tmp/dkta/anerr_data/L000.pt --floor vel";;
-    drop1) DA="--data /tmp/dkta/ak_drop2/drop_f1.pt --floor vel --dump";;
+    L000) DA="--data $L0 --floor vel";;
+    drop1) DA="--data $DD/drop_f1.pt --floor vel --dump";;
     ficus) [ -s /dev/shm/dkta/anerr_data/F_pg_v0.pt ] || { mkdir -p /dev/shm/dkta/anerr_data; cp /home/dkta/work/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt /dev/shm/dkta/anerr_data/; }
            DA="--data /dev/shm/dkta/anerr_data/F_pg_v0.pt --frames 125 --floor none --cfg_bc --region_density --pg_vdamp --dump";;
-    *) DA="--data /tmp/dkta/af_data/$t.pt --floor vel";;
+    *) [ -s $LD/$t.pt ] || { cp /home/dkta/work/lbpt/test/$t.pt $LD/$t.pt.$BASHPID && mv $LD/$t.pt.$BASHPID $LD/$t.pt; }; DA="--data $LD/$t.pt --floor vel";;
   esac
   echo "카드 $G $(cat .done) $(date '+%F %T') 인자 $DA $*" > $O/run_info.txt
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/apps_at_start.txt
@@ -38,7 +42,7 @@ run_one() {   # 카드 판 궤적 인자...
   CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_anerr_sim.py --out $O --tag $t $DA --frames $FR $FA --gfin $(echo " $* " | sed "s/ --slow / /") < /dev/null > $O/log.txt 2>&1
   echo "rc=$? $(date '+%F %T')" >> $O/run_info.txt
   if [ $t = drop1 ] && [ -f $O/pred.pt ]; then
-    $PY exe/fem_ak_drop_ana.py /tmp/dkta/ak_drop2/init.pt mpm:/tmp/dkta/ak_drop2/mpm/x240.pt:0.0041666667 $V:$O/pred.pt:0.0166666667 > $O/drop_ana.txt 2>&1
+    $PY exe/fem_ak_drop_ana.py $DD/init.pt mpm:$DD/mpm/x240.pt:0.0041666667 $V:$O/pred.pt:0.0166666667 > $O/drop_ana.txt 2>&1
   fi
   if [ $t = ficus ] && [ -f $O/pred.pt ]; then
     $PY exe/fem_p_period.py --data /dev/shm/dkta/anerr_data/F_pg_v0.pt --pred $O/pred.pt > $O/period.txt 2>&1
