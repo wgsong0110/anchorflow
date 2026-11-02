@@ -471,7 +471,19 @@ def adapt_step(s, t, h, cell, sub_dt, kmax, c=1.0):
 
 
 class RTAdapt(ART.RTSolver):
-    """탄성 씬 (절 AN RTSolver 그대로) 의 적응 걸음 수용: 버퍼를 걸음 수 상한 kcap 으로 잡는 것만 다름."""
+    """탄성 씬 (절 AN RTSolver 의 record 그대로) + 적응 걸음 수 버퍼 + 노드 압축·PCG 첫 추정 (절 AO.11 과 같은 커널).
+    절 AN 코드는 고치지 않고 커널 실행 함수 k() 에서: rt_grad·rt_ap·rt_cg1·rt_cg2·rt_lsup -> 압축 판 (_c), rt_vn 뒤 노드 목록, 걸음 첫 뉴턴 rt_grad 뒤 첫 추정, rt_lsup 앞 δ 저장."""
+    CN = ("rt_grad", "rt_ap", "rt_cg1", "rt_cg2", "rt_lsup")
+
+    def __init__(s, *args, compact=False, warm=False, **kw):
+        s.compact, s.warm = bool(compact), bool(warm)
+        super().__init__(*args, **kw)
+        if s.compact or s.warm:
+            s.mod = ART.cp.RawModule(code=_src(), options=("--std=c++14",))
+            s.fn = {}
+            s.ao_ready = True
+            s.bind_act()
+            s.graph = None
 
     def alloc(s, need):
         K0 = s.K
@@ -479,3 +491,42 @@ class RTAdapt(ART.RTSolver):
         super().alloc(need)
         s.kalloc = s.K
         s.K = K0
+        Z = lambda *sh: torch.zeros(*sh, device=s.dev, dtype=torch.float32)
+        s.act = torch.zeros(s.capN, device=s.dev, dtype=torch.int32)
+        s.d0 = Z(s.capN, 3); s.td = Z(s.capN, 3); s.KTd = Z(s.capN, 3)
+        if getattr(s, "ao_ready", False):
+            s.bind_act()
+
+    def bind_act(s):
+        g = s.mod.get_global("AO_ACT")
+        ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(s.act.data_ptr())
+
+    def k(s, name, n, args, b=128):
+        if not getattr(s, "ao_ready", False):
+            return super().k(name, n, args, b)
+        i32, f = np.int32, np.float32
+        if name == "rt_reset":
+            s._ks = -1
+        elif name == "rt_step0":
+            s._ks += 1; s._it = -1
+        elif name == "rt_grad":
+            s._it += 1
+        warm = s.warm and s.nl <= 1
+        if name == "rt_lsup" and warm and s._it == 0:
+            s.d0.copy_(s.dl)
+        nm = name + "_c" if (s.compact and name in s.CN) else name
+        super().k(nm, n, args, b)
+        if name == "rt_vn":
+            super().k("ao_act_reset", 1, (P(s.IP),), 1)
+            super().k("ao_act", s.capN, (P(s.IP), P(s.mn)), 256)
+            if warm:
+                s.zf(s.d0, 9, 3)
+        elif name == "rt_grad" and warm and s._it == 0 and s._ks > 0:
+            nr = s.floor["NR"] if s.floor else [0.0, 0.0, 1.0]
+            it2 = f(1.0 / (s.tau * s.tau))
+            capQ = s.capQc * 8
+            super().k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(1)), 1)
+            super().k("ao_tvec", s.capN, (P(s.IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.td)), 256)
+            s.zf(s.KTd, 9, 3)
+            super().k("rt_mv", capQ, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.td), P(s.KTd), i32(capQ)), 128)
+            super().k("ao_warm", s.capN, (P(s.IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.KTd), P(s.Dinv), P(s.dl), P(s.r), P(s.z), P(s.p), P(s.Tp), P(s.SC)), 256)
