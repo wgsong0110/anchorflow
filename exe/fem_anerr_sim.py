@@ -1129,7 +1129,9 @@ def frame(fi, x, v, F):
             set_stage("ga", DTf)
             GA_A[0] = an_
             U, vn = solve_step_fast(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx, MGH.setdefault(TAU, [None]), FS=FS, mI=mI)
-            an_ = (vn - vp - DTf * (1 - SG["gm"]) * an_) / (SG["gm"] * DTf)             # Newmark 속도 식으로 (고착 뒤 속도와 맞게)
+            an1 = (vn - vp - DTf * (1 - SG["gm"]) * an_) / (SG["gm"] * DTf)              # Newmark 속도 식으로 (고착 뒤 속도와 맞게)
+            U = Up + DTf * vp + DTf * DTf * ((0.5 - SG["be"]) * an_ + SG["be"] * an1)     # 끝 위치도 Newmark 위치 식 (고착 없으면 (y − αf U_n)/(1−αf) 와 같음; 고착이 속도만 깎아 위치가 바닥 밑으로 외삽되던 것 고침)
+            an_ = an1
             if fixd is not None:
                 an_ = torch.where(fixd[:, None], torch.zeros_like(an_), an_)
         elif a.fast:
