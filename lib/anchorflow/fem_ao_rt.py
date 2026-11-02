@@ -468,12 +468,27 @@ def _mv_half(ao):
     return body.replace(old2, "sP[tl][r] = vq*hsc*t; }", 1)                  # f16 은 2μ+λ 로 나눠 저장 (범위), 곱에서 되돌림
 
 
+def _bench_variants(ao):
+    """시간 가르기용 ao_mv_q 변형 (결과는 틀림 -- 벤치에서만): _na 원자 합 없음, _ng 노드 입력 모으기 없음, _nh 헤시안 읽기 없음."""
+    i = ao.index("__global__ void __launch_bounds__(128) ao_mv_q(")
+    j = ao.index("\n}\n", i) + 3
+    b = ao[i:j]
+    at = "if (on) for (int a=0;a<3;a++) { if (AO_DET) AO_CV[((size_t)(qq>>3)*27+o)*3+a] = sv[a]; else atomicAdd(&out[ids[o]*3+a], sv[a]); }"
+    ga = "for (int o = l8; o < 27; o += 8) { int id = ids[o]; for (int a=0;a<3;a++) sY[cl][o][a] = dy[id*3+a]; }"
+    hl = "for (int k=0;k<9;k++) { U[k] = H[(size_t)k*capQ + qq]; M[k] = H[(size_t)(9+k)*capQ + qq]; }\n    for (int k=0;k<12;k++) C[k] = on ? H[(size_t)(18+k)*capQ + qq] : 0.f;"
+    assert at in b and ga in b and hl in b
+    na = b.replace("ao_mv_q(", "ao_mv_q_na(", 1).replace(at, "if (on && sv[0] == 1234.5f) out[qq] = sv[1];", 1)
+    ng = b.replace("ao_mv_q(", "ao_mv_q_ng(", 1).replace(ga, "for (int o = l8; o < 27; o += 8) { for (int a=0;a<3;a++) sY[cl][o][a] = (float)(o + a + qq); }", 1)
+    nh = b.replace("ao_mv_q(", "ao_mv_q_nh(", 1).replace(hl, "for (int k=0;k<9;k++) { U[k] = (float)(k + qq); M[k] = (float)(k - qq); }\n    for (int k=0;k<12;k++) C[k] = (float)k;", 1)
+    return na + ng + nh
+
+
 def _src():
     s = ART.SRC.rstrip()
     i = s.rfind("}")
     head = DET.det_src(s[:i])
     head = "#include <cuda_fp16.h>\n" + head
-    return head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;", 1) + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + "\n}\n"
+    return head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;", 1) + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + "\n}\n"
 
 
 class AORTSolver(DET.DetMixin):
@@ -628,6 +643,34 @@ class AORTSolver(DET.DetMixin):
             if kstep < s.K - 1:
                 s.k("ao_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), f(s.cdp)))
         s.k("ao_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.Ust), i32(s.K), i32(capN), P(s.vk), f(s.cdp), P(s.x), P(s.v), P(s.F), P(s.cnt)))
+
+    def bench(s, names, reps=200):
+        """현재 상태에서 곱 커널 (이름 목록) 을 reps 번씩 실행해 회당 ms (CUDA 이벤트)."""
+        i32 = np.int32
+        capQ = s.capQc * 8
+        Hs = torch.zeros(capQ * 81, device=s.dev, dtype=torch.float32)
+        f = np.float32
+        s.k("ao_elem_s", capQ, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(11), P(s.f), P(Hs), i32(capQ), P(s.B), P(None)))
+        s.k("ao_elem", capQ, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(11 | 128 | 256), P(s.f), P(s.H), i32(capQ), P(s.B), P(None)))
+        dv = torch.randn(s.capN, 3, device=s.dev) * 1e-3
+        o = torch.zeros(s.capN, 3, device=s.dev)
+        res = {}
+        for nm in names:
+            if nm.startswith("ao_elem"):
+                md = 11 if nm == "ao_elem_s" else (11 | 128 | 256)
+                args = (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(md), P(s.f), P(Hs if nm == "ao_elem_s" else s.H), i32(capQ), P(s.B), P(None))
+            else:
+                args = (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H if nm in ("ao_mv_c", "ao_mv_s") else Hs), P(dv), P(o), i32(capQ))
+            for _ in range(10):
+                s.k(nm, capQ, args)
+            torch.cuda.synchronize()
+            e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            e0.record()
+            for _ in range(reps):
+                s.k(nm, capQ, args)
+            e1.record(); torch.cuda.synchronize()
+            res[nm] = e0.elapsed_time(e1) / reps
+        return res
 
     def check_hspec(s, seed=0):
         """같은 상태 (프레임 끝 y, Fq) 에서 기존 판 (ao_elem 위 삼각 + ao_mv_s) 과 주값 분해 판 (ao_elem_s + ao_mv_q) 의 힘·노드 대각·무작위 곱 상대 차 (비결정 모드에서만)."""

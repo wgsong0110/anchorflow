@@ -54,6 +54,7 @@ ap.add_argument("--mvc", action="store_true", help="헤시안 곱 칸 공유 메
 ap.add_argument("--bdsh", action="store_true", help="모래 요소 커널 노드 대각을 공유 메모리 판으로 (합 순서 바뀜 -- 반올림 수준)")
 ap.add_argument("--hspec", action="store_true", help="헤시안을 주값 분해 (U, F V, 계수 12) 30 개로 저장, 곱·노드 대각·힘을 칸 공유 메모리로 (ao_elem_s·ao_mv_q; 합 순서 바뀜 -- 반올림 수준)")
 ap.add_argument("--check_hspec", type=str, default="", help="이 프레임들 (쉼표) 뒤 기존 판과 주값 분해 판의 힘·대각·곱 상대 차를 출력")
+ap.add_argument("--bench_at", type=str, default="", help="이 프레임들 (쉼표) 뒤 곱·요소 커널 변형 벤치 (회당 ms)")
 ap.add_argument("--hpack", action="store_true", help="모래 판 헤시안 위 삼각 45 개 저장·곱 (결과 불변)")
 ap.add_argument("--det", action="store_true", help="결정적 합산 (lib/anchorflow/fem_det_rt.py): 같은 명령 두 번이 비트 단위로 같게")
 ap.add_argument("--ao_fast", action="store_true", help="탄성 씬에도 노드 압축·PCG 첫 추정 (절 AO.11; 기본은 절 AN 그대로)")
@@ -181,6 +182,8 @@ for fi in range(L):
         c["diag"] = S.diag()
     flog.write(json.dumps(dict(t=fi, err=e, ms=S.last_ms, wall_ms=WALL, K=KF, vmax=VMX, redo=redo, **c, **({"kernel_ms": kp} if kp else {}))) + "\n"); flog.flush()
     print(f"  프레임 {fi + 1}/{L} K {KF} v_max {VMX if VMX is None else round(VMX, 3)} 벽시계 {WALL:.1f} ms 재생 {S.last_ms:.2f} ms 오차 {100 * e:.3f}%{' (용량 늘려 다시)' if redo else ''} 점 {c['nq']} 노드 상자 {c['nn']} 유클리드 평균 점 {c['nbad']} 꼬리·꼭짓점 점 {c.get('q_tail')}·{c.get('q_apex')} 입자 RM {c.get('p_rm')}", flush=True)
+    if a.bench_at and str(fi + 1) in a.bench_at.split(","):
+        print(f"  [벤치] 프레임 {fi + 1} 점 {int(S.IP[12])} {json.dumps(S.bench(['ao_mv_c', 'ao_mv_q', 'ao_mv_q_na', 'ao_mv_q_ng', 'ao_mv_q_nh', 'ao_elem', 'ao_elem_s']))}", flush=True)
     if a.check_hspec and str(fi + 1) in a.check_hspec.split(","):
         print(f"  [대조 hspec] 프레임 {fi + 1} {json.dumps(S.check_hspec(fi))}", flush=True)
     if PRED is not None:
