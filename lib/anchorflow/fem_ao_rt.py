@@ -310,6 +310,118 @@ __global__ void __launch_bounds__(128) ao_mv_c(const int* IP, const int* cb, con
         if (on) for (int a=0;a<3;a++) { if (AO_DET) AO_CV[((size_t)(qq>>3)*27+o)*3+a] = sv[a]; else atomicAdd(&out[ids[o]*3+a], sv[a]); }
     }
 }
+// ---- 주값 분해 저장 판 (--hspec): 탄성 접선 헤시안 = Σ_m dm e_m e_mᵀ + Σ_쌍 (lt e_t e_tᵀ + lf e_f e_fᵀ), e = U Ê Vᵀ (순위 1 항 9 개).
+// 점마다 H[k*capQ + q] (k = 0..29): U (9), M = F V (9), D⁺ = Ev diag(dm) Evᵀ 위 삼각 (00 11 22 01 02 12) x V_q, c1 = (lt+lf)/2 x V_q (쌍 01 02 12), c2 = (lf−lt)/2 x V_q.
+// 곱: dX = dA F (dA = Σ_o y_o ⊗ ∇w_o), X̂ = Uᵀ dA M, P̂_ii = (D⁺ diag X̂)_i, P̂_ij = c1 X̂_ij + c2 X̂_ji, 노드 o 몫 = (U P̂ Mᵀ) ∇w_o.
+// 노드 대각: h = Mᵀ ∇w_o, S = diag(h) D⁺ diag(h) + 쌍 ((i,i) += c1 h_j², (j,j) += c1 h_i², (i,j) += c2 h_i h_j), 블록 = U S Uᵀ.
+__device__ __forceinline__ void ao_pairs(int pp, int& i, int& j) { i = (pp == 2) ? 1 : 0; j = (pp == 0) ? 1 : 2; }
+__global__ void __launch_bounds__(128) ao_elem_s(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* y, float mu, float lam, float cdp, int mode,
+                        double* f, float* H, int capQ, float* B, int* cnt) {
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    __shared__ float sY[16][27][3]; __shared__ float sQ[128][9]; __shared__ float sU[128][9]; __shared__ float sM[128][9]; __shared__ float sC[128][12];
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    int nq = IP[12];
+    bool on = q < nq;
+    int qq = on ? q : 0;
+    int tl = threadIdx.x, l8 = tl & 7, b8 = tl & ~7, cl = tl >> 3, oc = qq & 7;
+    int ids[27]; qnodes(qq, IP, cb, ids);
+    for (int o = l8; o < 27; o += 8) { int id = ids[o]; for (int a=0;a<3;a++) sY[cl][o][a] = y[id*3+a]; }
+    float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)qq*9+k];
+    __syncwarp();
+    float A[9] = {0,0,0,0,0,0,0,0,0};
+    for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; for (int a=0;a<3;a++) { float ya = sY[cl][o][a]; A[a*3] += ya*bg[0]; A[a*3+1] += ya*bg[1]; A[a*3+2] += ya*bg[2]; } }
+    float X[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) X[a*3+b] = F[a*3+b] + A[a*3]*F[b] + A[a*3+1]*F[3+b] + A[a*3+2]*F[6+b];
+    float U[9], S[3], V[9];
+    ssvdf(X, U, S, V);
+    float sgn[3], sg[3], ep[3], e[3], tr, rho, s;
+    int st = ao_dpf(S, cdp, sgn, sg, ep, e, tr, rho, s);
+    if (cnt && on && st > 0) atomicAdd(&cnt[st-1], 1);
+    float K3 = lam + 2.f*mu/3.f;
+    float ss[3], p[3], pe[3];
+    for (int i=0;i<3;i++) {
+        float tau = (st == 2) ? 0.f : ((st == 1) ? (K3*tr + 2.f*mu*s*e[i]) : (2.f*mu*ep[i] + lam*tr));
+        ss[i] = sgn[i]*sg[i]; p[i] = tau/ss[i]; pe[i] = (2.f*mu*ep[i] + lam*tr)/ss[i];
+    }
+    float vq = on ? Vq[qq] : 0.f;
+    // 힘: Qf = V_q P Fᵀ (P = U diag(p) Vᵀ), 노드 o 몫 = Qf ∇w_o
+    { float Pm[9];
+      for (int a=0;a<3;a++) for (int b=0;b<3;b++) Pm[a*3+b] = vq*(U[a*3]*p[0]*V[b*3] + U[a*3+1]*p[1]*V[b*3+1] + U[a*3+2]*p[2]*V[b*3+2]);
+      for (int a=0;a<3;a++) for (int c=0;c<3;c++) sQ[tl][a*3+c] = Pm[a*3]*F[c*3] + Pm[a*3+1]*F[c*3+1] + Pm[a*3+2]*F[c*3+2]; }
+    // 헤시안 주값 계수
+    float M[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) M[a*3+b] = F[a*3]*V[b] + F[a*3+1]*V[3+b] + F[a*3+2]*V[6+b];
+    float C[12];
+    { float D[3][3], Ev[3][3], Dk[3][3];
+      for (int i=0;i<3;i++) for (int j=0;j<3;j++) { D[i][j] = (((i==j) ? 2.f*mu : 0.f) + lam)/(ss[i]*ss[j]) - ((i==j) ? pe[i]/ss[i] : 0.f); Dk[i][j] = D[i][j]; }
+      jac3f(D, Ev);
+      float dm[3]; for (int m=0;m<3;m++) { float d_ = fmaxf(D[m][m], 0.f); dm[m] = (d_ > 0.f && isfinite(d_)) ? d_ : 0.f; }
+      const int RI[6] = {0,1,2,0,0,1}, RJ[6] = {0,1,2,1,2,2};
+      for (int k=0;k<6;k++) C[k] = vq*(dm[0]*Ev[RI[k]][0]*Ev[RJ[k]][0] + dm[1]*Ev[RI[k]][1]*Ev[RJ[k]][1] + dm[2]*Ev[RI[k]][2]*Ev[RJ[k]][2]);
+      for (int pp=0; pp<3; pp++) { int i, j; ao_pairs(pp, i, j);
+          float den = ss[i] + ss[j]; float lt = (fabsf(den) > 1e-12f) ? (pe[i] + pe[j])/den : 0.f;
+          float dd = ss[i] - ss[j]; float lf = (fabsf(dd) > 1e-6f*(fabsf(ss[i]) + fabsf(ss[j]))) ? (pe[i] - pe[j])/dd : (Dk[i][i] - Dk[i][j]);
+          lt = isfinite(lt) ? fmaxf(lt, 0.f) : 0.f; lf = isfinite(lf) ? fmaxf(lf, 0.f) : 0.f;
+          C[6+pp] = vq*0.5f*(lt + lf); C[9+pp] = vq*0.5f*(lf - lt); } }
+    if (on) { for (int k=0;k<9;k++) { H[(size_t)k*capQ + qq] = U[k]; H[(size_t)(9+k)*capQ + qq] = M[k]; } for (int k=0;k<12;k++) H[(size_t)(18+k)*capQ + qq] = C[k]; }
+    for (int k=0;k<9;k++) { sU[tl][k] = U[k]; sM[tl][k] = M[k]; }
+    for (int k=0;k<12;k++) sC[tl][k] = C[k];
+    __syncwarp();
+    for (int o = l8; o < 27; o += 8) {
+        double fs[3] = {0.0, 0.0, 0.0};
+        float bb[6] = {0,0,0,0,0,0};
+        for (int j=0;j<8;j++) {
+            const float* bg = BG + (j*27+o)*3;
+            const float* Qj = sQ[b8+j];
+            for (int a=0;a<3;a++) fs[a] += (double)(Qj[a*3]*bg[0] + Qj[a*3+1]*bg[1] + Qj[a*3+2]*bg[2]);
+            const float* Mj = sM[b8+j]; const float* Cj = sC[b8+j]; const float* Uj = sU[b8+j];
+            float h[3]; for (int b=0;b<3;b++) h[b] = Mj[b]*bg[0] + Mj[3+b]*bg[1] + Mj[6+b]*bg[2];
+            float S6[6] = {Cj[0]*h[0]*h[0] + Cj[6]*h[1]*h[1] + Cj[7]*h[2]*h[2],
+                           Cj[1]*h[1]*h[1] + Cj[6]*h[0]*h[0] + Cj[8]*h[2]*h[2],
+                           Cj[2]*h[2]*h[2] + Cj[7]*h[0]*h[0] + Cj[8]*h[1]*h[1],
+                           (Cj[3] + Cj[9])*h[0]*h[1], (Cj[4] + Cj[10])*h[0]*h[2], (Cj[5] + Cj[11])*h[1]*h[2]};
+            float Sm[9] = {S6[0], S6[3], S6[4], S6[3], S6[1], S6[5], S6[4], S6[5], S6[2]};
+            float T[9]; for (int a=0;a<3;a++) for (int c=0;c<3;c++) T[a*3+c] = Uj[a*3]*Sm[c] + Uj[a*3+1]*Sm[3+c] + Uj[a*3+2]*Sm[6+c];
+            const int RI[6] = {0,1,2,0,0,1}, RJ[6] = {0,1,2,1,2,2};
+            for (int k=0;k<6;k++) bb[k] += T[RI[k]*3]*Uj[RJ[k]*3] + T[RI[k]*3+1]*Uj[RJ[k]*3+1] + T[RI[k]*3+2]*Uj[RJ[k]*3+2];
+        }
+        float mm[9] = {bb[0], bb[3], bb[4], bb[3], bb[1], bb[5], bb[4], bb[5], bb[2]};
+        if (on) {
+            for (int a=0;a<3;a++) { if (AO_DET) AO_CF[((size_t)(qq>>3)*27+o)*3+a] = fs[a]; else atomicAdd(&f[ids[o]*3+a], fs[a]); }
+            for (int k=0;k<9;k++) { if (AO_DET) AO_CB[((size_t)(qq>>3)*27+o)*9+k] = mm[k]; else atomicAdd(&B[ids[o]*9+k], mm[k]); }
+        }
+    }
+}
+__global__ void __launch_bounds__(128) ao_mv_q(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* H, const float* dy, float* out, int capQ) {
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    __shared__ float sY[16][27][3]; __shared__ float sP[128][9];
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < IP[12]; int qq = on ? q : 0; int tl = threadIdx.x, l8 = tl & 7, b8 = tl & ~7, cl = tl >> 3; int oc = qq & 7;
+    int ids[27]; qnodes(qq, IP, cb, ids);
+    for (int o = l8; o < 27; o += 8) { int id = ids[o]; for (int a=0;a<3;a++) sY[cl][o][a] = dy[id*3+a]; }
+    __syncwarp();
+    float A[9] = {0,0,0,0,0,0,0,0,0};
+    for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; for (int a=0;a<3;a++) { float ya = sY[cl][o][a]; A[a*3] += ya*bg[0]; A[a*3+1] += ya*bg[1]; A[a*3+2] += ya*bg[2]; } }
+    float U[9], M[9], C[12];
+    for (int k=0;k<9;k++) { U[k] = H[(size_t)k*capQ + qq]; M[k] = H[(size_t)(9+k)*capQ + qq]; }
+    for (int k=0;k<12;k++) C[k] = on ? H[(size_t)(18+k)*capQ + qq] : 0.f;
+    float T[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) T[a*3+b] = A[a*3]*M[b] + A[a*3+1]*M[3+b] + A[a*3+2]*M[6+b];
+    float Xh[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) Xh[a*3+b] = U[a]*T[b] + U[3+a]*T[3+b] + U[6+a]*T[6+b];
+    float Ph[9];
+    Ph[0] = C[0]*Xh[0] + C[3]*Xh[4] + C[4]*Xh[8];
+    Ph[4] = C[3]*Xh[0] + C[1]*Xh[4] + C[5]*Xh[8];
+    Ph[8] = C[4]*Xh[0] + C[5]*Xh[4] + C[2]*Xh[8];
+    Ph[1] = C[6]*Xh[1] + C[9]*Xh[3];  Ph[3] = C[9]*Xh[1] + C[6]*Xh[3];
+    Ph[2] = C[7]*Xh[2] + C[10]*Xh[6]; Ph[6] = C[10]*Xh[2] + C[7]*Xh[6];
+    Ph[5] = C[8]*Xh[5] + C[11]*Xh[7]; Ph[7] = C[11]*Xh[5] + C[8]*Xh[7];
+    float W[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) W[a*3+b] = U[a*3]*Ph[b] + U[a*3+1]*Ph[3+b] + U[a*3+2]*Ph[6+b];
+    for (int a=0;a<3;a++) for (int c=0;c<3;c++) sP[tl][a*3+c] = W[a*3]*M[c*3] + W[a*3+1]*M[c*3+1] + W[a*3+2]*M[c*3+2];
+    __syncwarp();
+    for (int o = l8; o < 27; o += 8) {
+        float sv[3] = {0.f, 0.f, 0.f};
+        for (int j=0;j<8;j++) { const float* bg = BG + (j*27+o)*3; const float* Q = sP[b8+j];
+            for (int a=0;a<3;a++) sv[a] += Q[a*3]*bg[0] + Q[a*3+1]*bg[1] + Q[a*3+2]*bg[2]; }
+        if (on) for (int a=0;a<3;a++) { if (AO_DET) AO_CV[((size_t)(qq>>3)*27+o)*3+a] = sv[a]; else atomicAdd(&out[ids[o]*3+a], sv[a]); }
+    }
+}
 '''
 
 
@@ -367,13 +479,14 @@ def _src():
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, **kw):
         s.cdp, s.pbc_ns, s.dt_gt, s.mthr = float(cdp), int(pbc_ns), float(dt_gt), float(mthr)
         s.det = bool(det)
         s.hpack = bool(hpack)
         s.bdsh = bool(bdsh)
         s.mvc = bool(mvc)
         s.h16 = bool(h16)
+        s.hspec = bool(hspec)
         s.has_pbc = trel is not None
         s.compact, s.warm = bool(compact), bool(warm)
         super().__init__(*args, **kw)
@@ -388,6 +501,11 @@ class AORTSolver(DET.DetMixin):
         s.cnt = torch.zeros(4, device=s.dev, dtype=torch.int32)
         s.trel = (trel[s.perm].float().contiguous() if s.has_pbc else None)
         s.graph = None
+
+    def mvname(s):
+        if s.hspec:
+            return "ao_mv_q"
+        return ("ao_mv_h" if s.h16 else ("ao_mv_c" if s.mvc else "ao_mv_s")) if s.hpack else "rt_mv"
 
     def set_th(s):
         s.tau = s.th * s.dt; s.beta = 1.0 - s.th; s.al = 1.0 / (s.th * s.tau)
@@ -470,14 +588,14 @@ class AORTSolver(DET.DetMixin):
             for it in range(s.nt):
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(16)), b=1)
-                s.k("ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8 | (128 if s.hpack else 0) | (256 if s.bdsh else 0) | (512 if s.h16 else 0)), P(s.f), P(s.H), i32(capQ), P(s.B),
+                s.k("ao_elem_s" if s.hspec else "ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8 | (128 if s.hpack else 0) | (256 if s.bdsh else 0) | (512 if s.h16 else 0)), P(s.f), P(s.H), i32(capQ), P(s.B),
                                       P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None)))
                 s.k("rt_grad" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 if s.warm and it == 0 and kstep > 0 and s.nl <= 1:                                      # PCG 첫 추정 = 앞 걸음 첫 뉴턴의 δ (프레임 첫 걸음은 0)
                     s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(1)), b=1)
                     s.k("ao_tvec", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.td)), b=256)
                     s.zf(s.KTd, 9, 3)
-                    s.k(("ao_mv_h" if s.h16 else ("ao_mv_c" if s.mvc else "ao_mv_s")) if s.hpack else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.td), P(s.KTd), i32(capQ)) + ((f(2.0 * s.mu + s.lam),) if s.h16 else ()))
+                    s.k(s.mvname(), capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.td), P(s.KTd), i32(capQ)) + ((f(2.0 * s.mu + s.lam),) if s.h16 else ()))
                     s.k("ao_warm", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.KTd), P(s.Dinv), P(s.dl), P(s.r), P(s.z), P(s.p), P(s.Tp), P(s.SC)), b=256)
                 if s.nl > 1:
                     if kstep == 0 and it == 0:
@@ -489,7 +607,7 @@ class AORTSolver(DET.DetMixin):
                     s.k("rt_pinit", capN, (P(IP), P(s.z), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.Tp)), b=256)
                 for ci in range(s.cg):
                     s.zf(s.KTp, 9, 3)
-                    s.k(("ao_mv_h" if s.h16 else ("ao_mv_c" if s.mvc else "ao_mv_s")) if s.hpack else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)) + ((f(2.0 * s.mu + s.lam),) if s.h16 else ()))
+                    s.k(s.mvname(), capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)) + ((f(2.0 * s.mu + s.lam),) if s.h16 else ()))
                     s.k("rt_ap" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
                     if s.nl > 1:
                         s.k("rt_cg1m", capN, (P(IP), P(s.SC), P(s.p), P(s.Ap), P(s.dl), P(s.r)), b=256)
@@ -510,6 +628,27 @@ class AORTSolver(DET.DetMixin):
             if kstep < s.K - 1:
                 s.k("ao_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), f(s.cdp)))
         s.k("ao_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.Ust), i32(s.K), i32(capN), P(s.vk), f(s.cdp), P(s.x), P(s.v), P(s.F), P(s.cnt)))
+
+    def check_hspec(s, seed=0):
+        """같은 상태 (프레임 끝 y, Fq) 에서 기존 판 (ao_elem 위 삼각 + ao_mv_s) 과 주값 분해 판 (ao_elem_s + ao_mv_q) 의 힘·노드 대각·무작위 곱 상대 차 (비결정 모드에서만)."""
+        i32, f = np.int32, np.float32
+        IP, capQ = s.IP, s.capQc * 8
+        nn = int(s.IP[9]); nq = int(s.IP[12])
+        g = torch.Generator(device=s.dev).manual_seed(seed)
+        dv = (torch.randn(s.capN, 3, device=s.dev, generator=g) * 1e-3).contiguous()
+        Hs = torch.zeros(capQ * 81, device=s.dev, dtype=torch.float32)
+        out = {}
+        for tag, en, mn, md in (("old", "ao_elem", "ao_mv_s", 1 | 2 | 8 | 128), ("spec", "ao_elem_s", "ao_mv_q", 1 | 2 | 8)):
+            s.f.zero_(); s.B.zero_(); Hs.zero_()
+            s.k(en, capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(md), P(s.f), P(Hs), i32(capQ), P(s.B), P(None)))
+            o = torch.zeros(s.capN, 3, device=s.dev, dtype=torch.float32)
+            s.k(mn, capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(Hs), P(dv), P(o), i32(capQ)))
+            torch.cuda.synchronize()
+            out[tag] = (s.f[:nn].clone(), s.B[:nn].clone(), o[:nn].clone())
+        rel = lambda a, b: float((a.double() - b.double()).norm() / max(float(b.double().norm()), 1e-300))
+        r = dict(nq=nq, nn=nn, f=rel(out["spec"][0], out["old"][0]), B=rel(out["spec"][1], out["old"][1]), mv=rel(out["spec"][2], out["old"][2]),
+                 mv_dot=float((dv[:nn].double() * out["spec"][2].double()).sum() / (dv[:nn].double() * out["old"][2].double()).sum()))
+        return r
 
     def counts(s):
         c = super().counts()

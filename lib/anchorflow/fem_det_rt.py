@@ -303,7 +303,7 @@ class DetMixin(ART.RTSolver):
         super().k(name, n, args, b)
         if name in BS_KERNELS:
             super().k("ao_bsfin", NSL * 256, (), 256)
-        if name in ("rt_elem", "ao_elem"):
+        if name in ("rt_elem", "ao_elem", "ao_elem_s"):
             mode = int(args[8]) if name == "rt_elem" else int(args[9])
             fptr = args[10] if name == "rt_elem" else args[10]
             bptr = args[13] if name == "rt_elem" else args[13]
@@ -311,7 +311,7 @@ class DetMixin(ART.RTSolver):
                 super().k("ao_gath_d3", s.capN, (P(IP), P(s.cidx), fptr), 256)
             if (mode & 2) and (mode & 8):
                 super().k("ao_gath_f", s.capN, (P(IP), P(s.cidx), i32(9), P(s.d_cb), bptr), 256)
-        elif name in ("rt_mv", "ao_mv_s", "ao_mv_c", "ao_mv_h"):
+        elif name in ("rt_mv", "ao_mv_s", "ao_mv_c", "ao_mv_h", "ao_mv_q"):
             super().k("ao_gath_f", s.capN, (P(IP), P(s.cidx), i32(3), P(s.d_cv), args[7]), 256)
         elif name == "rt_gauss":
             super().k("ao_gath_q", s.capN, (P(IP), P(s.cidx), P(s.BW), P(s.mq), P(s.mqn)), 256)
