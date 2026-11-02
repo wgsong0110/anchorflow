@@ -74,6 +74,7 @@ ap.add_argument("--riem_cgmax", type=int, default=500, help="riem_cgtol: CG 상�
 ap.add_argument("--riem_pcg", action="store_true",
                 help="riem: CG 전처리 = 계량 대각 (야코비). 대각은 프레임마다 첫 반복에 Hutchinson 추정 (Rademacher --pcg_probes 개)")
 ap.add_argument("--pcg_probes", type=int, default=32)
+ap.add_argument("--riem_prog", type=int, default=0, help="riem: k 반복마다 진행 출력 (0 끔)")
 ap.add_argument("--riem_maxit", type=int, default=3000, help="riem_tol: 프레임당 최대 반복")
 ap.add_argument("--feas", action="store_true",
                 help="riem: Armijo 되돌림에 가능성 검사를 넣는다 -- 입자 누적 det F > 0 (--riem_partF 필요) 과 표현 고유 제약 "
@@ -1931,6 +1932,9 @@ for t in range(T_START, T + 1):
                 with torch.no_grad():
                     _jm = float(Jfun(flat([q.detach() for q in PL]))[0].min()) if Jfun is not None else float("nan")
                 RIEMLOG.append((t, it_, eps_used, stp * float(x.norm()), stp, nbt, rho, _jm))
+            if a.riem_prog and it_ % a.riem_prog == 0:
+                print(f"    [반복] t={t} it={it_} L2 {float(l2):.4e} |g|/|g0| {float(gk.norm()) / max(_G0N[0] or float(gk.norm()), 1e-30):.3e} "
+                      f"CG {CGN[-1] if CGN else -1} 보폭 {stp:.3g} 되돌림 {nbt}", flush=True)
             if _stop_tol:
                 break
         if a.opt == "riem":
