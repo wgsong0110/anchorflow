@@ -311,7 +311,7 @@ class DetMixin(ART.RTSolver):
                 super().k("ao_gath_d3", s.capN, (P(IP), P(s.cidx), fptr), 256)
             if (mode & 2) and (mode & 8):
                 super().k("ao_gath_f", s.capN, (P(IP), P(s.cidx), i32(9), P(s.d_cb), bptr), 256)
-        elif name in ("rt_mv", "ao_mv_s", "ao_mv_c"):
+        elif name in ("rt_mv", "ao_mv_s", "ao_mv_c", "ao_mv_h"):
             super().k("ao_gath_f", s.capN, (P(IP), P(s.cidx), i32(3), P(s.d_cv), args[7]), 256)
         elif name == "rt_gauss":
             super().k("ao_gath_q", s.capN, (P(IP), P(s.cidx), P(s.BW), P(s.mq), P(s.mqn)), 256)
