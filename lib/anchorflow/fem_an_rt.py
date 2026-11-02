@@ -165,6 +165,9 @@ __global__ void rt_p2g(int N, const float* x, const float* v, const float* F, co
     for (int k=0;k<9;k++) { atomicAdd(&aq[k], w*R[k]); atomicAdd(&aq[9+k], w*L[k]); atomicAdd(&aq[18+k], w*Fp[k]);
                             atomicAdd(&ac[k], w*R[k]); atomicAdd(&ac[9+k], w*L[k]); atomicAdd(&ac[18+k], w*Fp[k]); }
     atomicAdd(&aq[27], w); atomicAdd(&ac[27], w); atomicAdd(&ac[28], w); atomicAdd(&ac[29], m[p]);
+#ifdef AF_OCT
+    atomicAdd(&AF_MO[q], m[p]);                                                     // 팔분 칸 실제 입자 질량 (점유 가중, 절 AN.err4 정의)
+#endif
     if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }
     float wx[3][3], dw[3][3];
     for (int a=0;a<3;a++) bwf(fx[p*3+a], wx[a], dw[a]);
@@ -207,7 +210,11 @@ __global__ void rt_gauss(const int* IP, const float* A, const float* C, const in
         if (bad || badc[c]) for (int k=0;k<9;k++) out[k] = ac[18+k]/ac[27];
     }
     for (int k=0;k<9;k++) Fq[(size_t)q*9+k] = out[k];
-    Vq[q] = ac[28]*0.125f; float mm = ac[29]*0.125f; mq[q] = mm;
+    Vq[q] = ac[28]*0.125f; float mm = ac[29]*0.125f;
+#ifdef AF_OCT
+    Vq[q] = (1.f - AF_GOCT)*aq[27] + AF_GOCT*Vq[q]; mm = (1.f - AF_GOCT)*AF_MO[q] + AF_GOCT*mm;   // 점유 가중: (1 − κ) 팔분 칸 실제 부피·질량 + κ 칸 합 / 8
+#endif
+    mq[q] = mm;
     const float GG = 0.28867513459481287f;
     float yq[3] = {(float)(IP[0] + cb[c*3]) + 1.f + ((oc & 4) ? GG : -GG), (float)(IP[1] + cb[c*3+1]) + 1.f + ((oc & 2) ? GG : -GG), (float)(IP[2] + cb[c*3+2]) + 1.f + ((oc & 1) ? GG : -GG)};
     for (int a=0;a<3;a++) xq0[q*3+a] = Am[a*3]*yq[0] + Am[a*3+1]*yq[1] + Am[a*3+2]*yq[2];
@@ -1125,6 +1132,17 @@ def skipify(src):
     return "".join(out)
 
 
+def octify(src):
+    """점유 가중 가우스 점 판 (절 AN.err4 의 --gq_oct κ 정의를 실시간 판에): AF_OCT 를 켜고 팔분 질량 버퍼 AF_MO·κ AF_GOCT 장치 전역을 선언."""
+    return src.replace('extern "C" {', 'extern "C" {\n#define AF_OCT 1\n__device__ float* AF_MO;\n__device__ float AF_GOCT;', 1)
+
+
+def build_src(src, adapt, goct):
+    if goct is not None and goct >= 0:
+        src = octify(src)
+    return skipify(src) if adapt else src
+
+
 def P(t):
     return np.uint64(0) if t is None else np.uint64(t.data_ptr())
 
@@ -1132,11 +1150,12 @@ def P(t):
 class RTSolver:
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0):
         s.dev = dev
         # 허용치 조기 종료 (절 AN.14): 뉴턴 |g|/|g0| <= tolN, PCG sqrt(r·z / r0·z0) <= tolP (음수 = 그 판정 없음). 뉴턴·PCG 수는 상한 (그래프에 펼친 수)
         s.tolN, s.tolP = float(tolN), float(tolP)
         s.adapt = s.tolN >= 0 or s.tolP >= 0
+        s.goct = float(goct)                                                           # >= 0 이면 점유 가중 가우스 점 (정의 변경, 절 AN.err4)
         f32 = torch.float32
         s.N = int(x.shape[0])
         # 입자를 첫 프레임 칸 순서로 정렬 (P2G·G2P 모으기·원자 합 지역성; 결과 정의는 같음). 원래 순서 = s.perm 의 역
@@ -1179,7 +1198,7 @@ class RTSolver:
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=(skipify(SRC) if s.adapt else SRC), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(SRC, s.adapt, s.goct), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
@@ -1257,6 +1276,7 @@ class RTSolver:
         s.cb = torch.zeros(s.capQc, 3, device=dev, dtype=torch.int32)
         s.Aacc = Z(capQ, 28); s.Cacc = Z(s.capQc, 30)
         s.badq = torch.zeros(capQ, device=dev, dtype=torch.int32); s.badc = torch.zeros(s.capQc, device=dev, dtype=torch.int32)
+        s.Mo = Z(capQ) if s.goct >= 0 else None
         s.Fq = Z(capQ, 9); s.Vq = Z(capQ); s.mq = Z(capQ); s.xq0 = Z(capQ, 3); s.H = Z(capQ, 81)
         s.mn = Z(s.capN); s.mv = Z(s.capN, 3); s.mqn = Z(s.capN); s.an = Z(s.capN)
         s.U = Z(s.capN, 3); s.vk = Z(s.capN, 3); s.Ut = Z(s.capN, 3); s.z0 = Z(s.capN, 3); s.y = Z(s.capN, 3); s.yh = Z(s.capN, 3); s.eta = Z(s.capN, 3)
@@ -1297,6 +1317,14 @@ class RTSolver:
             s.W = torch.zeros(s.nl, device=dev, dtype=torch.float64); s.SCM = torch.zeros(s.nl * 4, device=dev, dtype=torch.float64)
             s.m0t = Z(s.capN, 3); s.m0u = Z(s.capN, 3); s.m0KT = Z(s.capN, 3); s.zo = Z(s.capN, 3); s.mnd = s.mn
         s.graph = None
+        s.oct_bind()
+
+    def oct_bind(s):
+        """점유 가중 판: 장치 전역 AF_MO (팔분 질량 버퍼)·AF_GOCT (κ) 를 지금 모듈에 (다시 할당·모듈 바꿈 뒤마다)."""
+        if s.goct < 0:
+            return
+        g = s.mod.get_global("AF_MO"); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(s.Mo.data_ptr())
+        g = s.mod.get_global("AF_GOCT"); cp.ndarray((1,), dtype=cp.float32, memptr=g)[0] = s.goct
 
 
     # ---------- 멀티그리드 (그래프 안) ----------
@@ -1442,7 +1470,7 @@ class RTSolver:
         s.zf(s.occ)
         s.k("rt_mark", N, (i32(N), P(s.Np), P(s.fx), P(IP), P(s.pcd), P(s.occ)))
         s.k("rt_scan", 1024, (P(IP), P(s.occ), P(s.cidx), P(s.cb), i32(s.capQc)), b=1024)
-        for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3), (s.mqn, 9, 1)) + (((s.ma, 9, 3),) if s.ga else ()):
+        for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3), (s.mqn, 9, 1)) + (((s.ma, 9, 3),) if s.ga else ()) + (((s.Mo, 12, 1),) if s.goct >= 0 else ()):
             s.zf(t_, ci, mul)
         s.zf(s.badq); s.zf(s.badc); s.zf(s.nbad)
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv),

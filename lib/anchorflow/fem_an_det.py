@@ -135,6 +135,9 @@ __global__ void ao_p2g_q(int N, const float* F, const float* m, const float* vol
         float* aq = A + (size_t)q*28; float* ac = C + (size_t)c*30;
         for (int k=0;k<9;k++) { aq[k] += w*R[k]; aq[9+k] += w*L[k]; aq[18+k] += w*Fp[k]; ac[k] += w*R[k]; ac[9+k] += w*L[k]; ac[18+k] += w*Fp[k]; }
         aq[27] += w; ac[27] += w; ac[28] += w; ac[29] += m[p];
+#ifdef AF_OCT
+        AF_MO[q] += m[p];
+#endif
         if (ng) { badq[q] = 1; badc[c] = 1; }
     }
 }
@@ -419,10 +422,11 @@ class DetRT(DetMixin):
         s.ao_ready = False
         super().__init__(*args, **kw)
         src = det_module_src()
-        s.mod = ART.cp.RawModule(code=(ART.skipify(src) if s.adapt else src), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct), options=("--std=c++14",))
         s.fn = {}
         s.ao_ready = True
         s.det_bind()
+        s.oct_bind()
         s.graph = None
         s.graphs = {}
 
