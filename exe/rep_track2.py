@@ -75,6 +75,9 @@ ap.add_argument("--riem_pcg", action="store_true",
                 help="riem: CG 전처리 = 계량 대각 (야코비). 대각은 프레임마다 첫 반복에 Hutchinson 추정 (Rademacher --pcg_probes 개)")
 ap.add_argument("--pcg_probes", type=int, default=32)
 ap.add_argument("--riem_prog", type=int, default=0, help="riem: k 반복마다 진행 출력 (0 끔)")
+ap.add_argument("--riem_addl2", action="store_true",
+                help="riem: 계량 = k·G + H_L2 + ε (입자 L2 가우스-뉴턴 몫을 계량에 더한다; --riem_eps_ref l2 필요). "
+                     "강체 병진처럼 장벽 계량의 영공간 방향을 H_L2 가 잡는다")
 ap.add_argument("--riem_maxit", type=int, default=3000, help="riem_tol: 프레임당 최대 반복")
 ap.add_argument("--feas", action="store_true",
                 help="riem: Armijo 되돌림에 가능성 검사를 넣는다 -- 입자 누적 det F > 0 (--riem_partF 필요) 과 표현 고유 제약 "
@@ -1821,7 +1824,11 @@ for t in range(T_START, T + 1):
                 Hv = GN(theta)
                 if a.profile:
                     t2_ = tic(); TM["계량 선형화 (make_res+vjp)"] += t2_ - t_; t_ = t2_
-                Gv = lambda u: GSC * a.riem_k * Hv(u) + eps * u
+                if a.riem_addl2:
+                    assert a.riem_eps_ref == "l2", "--riem_addl2 는 --riem_eps_ref l2 와 함께"
+                    Gv = lambda u: GSC * a.riem_k * Hv(u) + _HL(u) + eps * u
+                else:
+                    Gv = lambda u: GSC * a.riem_k * Hv(u) + eps * u
                 if os.environ.get("AF_RIEM_DIAG") and it_ in (0, 1, 50, (a.iters0 if t == 1 else a.iters) - 1):
                     _gn = float(gk.norm()); _u = gk / max(_gn, 1e-30)
                     _ray = float((_u * Hv(_u)).sum())             # 기울기 방향의 계량 강성 gᵀHg/|g|² (감쇠 제외)
@@ -1830,8 +1837,8 @@ for t in range(T_START, T + 1):
                     _dg = torch.zeros_like(gk)
                     for _ in range(a.pcg_probes):
                         _z = torch.randint(0, 2, gk.shape, device=gk.device).to(gk.dtype) * 2 - 1
-                        _dg += _z * Hv(_z)
-                    _MINV[0] = 1.0 / (GSC * a.riem_k * (_dg / a.pcg_probes).clamp_min(0.0) + eps)
+                        _dg += _z * (Gv(_z) - eps * _z)
+                    _MINV[0] = 1.0 / ((_dg / a.pcg_probes).clamp_min(0.0) + eps)
                 x = torch.zeros_like(gk)
                 if a.riem_cgtol > 0:                           # (전처리) CG 를 상대 잔차까지
                     r = gk.clone(); z = r * _MINV[0] if a.riem_pcg else r.clone(); pdir = z.clone()
