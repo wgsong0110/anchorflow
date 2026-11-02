@@ -18,7 +18,7 @@ from . import fem_an_rt as ART
 
 P = ART.P
 MAXB = 16384                                                                      # 블록 부분합 칸당 최대 블록 수
-NSL = 32                                                                          # SC 칸 수 (fem_an_rt: SC = zeros(32))
+NSL = 64                                                                          # SC 칸 수 (fem_an_rt: SC = zeros(64))
 
 DET_DECL = r'''
 __device__ int AO_DET;
@@ -32,7 +32,7 @@ __device__ float* AO_MW;                                                        
 __device__ int* AO_NCUT;                                                          // 입자별 구속 끊는 표본 수
 __device__ __forceinline__ void ao_bs_out(double* out, double v) {
     long long sl = out - AO_SCB;
-    if (AO_DET && sl >= 0 && sl < 32) { AO_PART[sl*16384 + blockIdx.x] = v; atomicMax(&AO_BMAX[sl], (int)blockIdx.x + 1); }
+    if (AO_DET && sl >= 0 && sl < 64) { AO_PART[sl*16384 + blockIdx.x] = v; atomicMax(&AO_BMAX[sl], (int)blockIdx.x + 1); }
     else atomicAdd(out, v);
 }
 '''
