@@ -54,6 +54,7 @@ ap.add_argument("--fl_src", choices=["q", "part"], default="q", help="바닥 고
 ap.add_argument("--fl_npd", type=float, default=0.0, help=">0 이면 명시적 판 비관통: 판정 점 하나라도 s < −δ 인 노드는 예측 속도가 안쪽이면 법선 속도 0 (걸음당 한 번 정함)")
 ap.add_argument("--ls_diff", action="store_true", help="가속 판 선탐색을 점별 에너지 차 Σ_q (ψ_q(후보) − ψ_q(지금)) + 관성 차 ½ Σ Mi c δ (2η + c δ) 로 판정 (총 에너지끼리 빼면 τ 가 작을 때 f64 반올림에 묻혀 걸음 0 만 고름)")
 ap.add_argument("--mfl", type=float, default=0.0, help=">0 이면 관성 질량 하한 m' = max(m, β (Δt/2)² k_n), k_n = Σ_q V_q (λ+2μ) |∇w_qn| Σ_n' |∇w_qn'| (명시적 판 국소 CFL 관성 질량과 같은 식, β 1 = 같은 값) -- 거의 0 질량 가장자리 노드의 특이에 가까운 뉴턴 계 처치 (정의 변경)")
+ap.add_argument("--gq_oct", type=float, default=-1.0, help="정의 변경 (조정자 11-03): >= 0 이면 칸 가우스 점 가중 (부피·판정 질량) = (1 − κ) x 그 점 팔분 칸에 실제로 든 입자 부피 (질량) 합 + κ x 칸 합 / 8 (κ = 이 값; 0 이면 빈 팔분 칸 점 가중 0, κ > 0 은 모래시계 억제용 몫, 칸 합 보존). P2G 에서 계산, 풀이에 입자 관여 없음. < 0 (기본) 이면 원본 (칸 합 / 8)")
 ap.add_argument("--en", action="store_true", help="프레임마다 에너지·높이 진단 (우리 / 정답)")
 ap.add_argument("--newton", type=int, default=6)
 ap.add_argument("--cg", type=int, default=100)
@@ -991,6 +992,11 @@ def frame(fi, x, v, F):
     Mc = torch.zeros(nc, device=dev, dtype=D64).index_add_(0, cinv, m64)
     qV = Vc.repeat_interleave(8) / 8.0
     mq = Mc.repeat_interleave(8) / 8.0
+    if a.gq_oct >= 0:                                                                  # 팔분 칸 실제 입자 부피·질량 (정의 변경)
+        Vo = torch.zeros(nq, device=dev, dtype=D64).index_add_(0, qinv, vol64)
+        Mo = torch.zeros(nq, device=dev, dtype=D64).index_add_(0, qinv, m64)
+        qV = (1 - a.gq_oct) * Vo + a.gq_oct * qV
+        mq = (1 - a.gq_oct) * Mo + a.gq_oct * mq
     prep = rs_prep(F)
     qF, nbad = rs_mean(F, vol64, qinv, nq, count=False, prep=prep)
     qbad = rs_mean.last_bad
