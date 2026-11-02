@@ -37,6 +37,10 @@ ap.add_argument("--mg_pow", type=int, default=6)
 ap.add_argument("--dump", action="store_true")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
+ap.add_argument("--scheme", choices=["theta", "trbdf2"], default=None, help="단계 방식 (안 주면 --integ: mid = θ ½, be = θ 1)")
+ap.add_argument("--theta", type=float, default=0.5)
+ap.add_argument("--mfloor", type=float, default=0.0, help="관성 질량 하한 계수 c: m' = max(m, c τ² tr(B)/3) (0 = 없음)")
+ap.add_argument("--K_contact", type=int, default=0, help="접촉 적응 걸음: 앞 프레임에 고착 노드가 있으면 이 걸음 수 (0 = 없음)")
 ap.add_argument("--ls_n", type=int, default=0, help="선탐색 후보 2^0 .. 2^-(ls_n−1) (0 = 옛 1·½·¼)")
 ap.add_argument("--descent", action="store_true", help="하강 방향 보장: g·δ ≥ 0 이면 δ ← α0 M r0 (PCG 첫 방향)")
 ap.add_argument("--diag", action="store_true", help="프레임마다 뉴턴 반복별 진단 (에너지·|g|·g·δ·보폭·PCG 잔차·고착 불일치) 을 fem.jsonl 에")
@@ -82,7 +86,7 @@ if a.cfg_bc:
     BC = BC or None
 F0 = DM.traj_F(d, h, dev)[0].to(dev).double().reshape(Np, 9)
 S = ART.RTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n)
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
@@ -100,6 +104,7 @@ for fi in range(L):
     c = S.counts()
     if a.diag:
         c["diag"] = S.diag()
+    c["K"] = S.last_K
     flog.write(json.dumps(dict(t=fi, err=e, ms=S.last_ms, redo=redo, **c, **({"kernel_ms": kp} if kp else {}))) + "\n"); flog.flush()
     print(f"  프레임 {fi + 1}/{L} {S.last_ms:.2f} ms 오차 {100 * e:.3f}%{' (용량 늘려 다시)' if redo else ''} 점 {c['nq']} 노드 상자 {c['nn']} 유클리드 평균 점 {c['nbad']}", flush=True)
     if PRED is not None:
