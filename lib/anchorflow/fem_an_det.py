@@ -11,7 +11,7 @@
   칸 구간 시작 st[c] -> 칸 하나가 자기 입자를 차례로 (A·C·bad), 노드 하나가 이웃 27 칸 입자를 차례로 (질량·운동량·구속 질량).
 - 블록 합 (blocksum_add, 내적·에너지): 대상이 SC 배열이면 블록 부분합을 AO_PART[칸][블록] 에 쓰고 ao_bsfin 이 고정 순서 (스레드별 보폭 합 + 공유 메모리 트리) 로 더한다.
 - 노드 목록 (ao_act, 압축 판): 원자 카운터 대신 한 블록 스캔 (ao_act_scan) 으로 번호 순서 그대로.
-남은 원자 연산은 정수 (상자 최소·최대, 칸 점유, 뒤집힘 표시, 진단 수) 뿐이라 순서와 무관하다. MG 커널은 바꾸지 않았다 (결정적 모드에서는 MG 를 쓰지 말 것).
+남은 원자 연산은 정수 (상자 최소·최대, 칸 점유, 뒤집힘 표시, 진단 수) 뿐이라 순서와 무관하다. MG 커널: 이 가지에서 결정적으로 바꿈 (ao_mg_*).
 """
 import numpy as np
 import torch
@@ -20,7 +20,7 @@ from . import fem_an_rt as ART
 
 P = ART.P
 MAXB = 65536                                                                      # 블록 부분합 칸당 최대 블록 수
-NSL = 64                                                                          # SC 칸 수 (이 가지 fem_an_rt: SC = zeros(64))
+NSL = 96                                                                          # 부분합 칸: SC 64 칸 + MG 거듭제곱법 SCM 32 칸 (64 이후)
 
 DET_DECL = r'''
 __device__ int AO_DET;
@@ -31,10 +31,15 @@ __device__ double* AO_CF;                                                       
 __device__ float* AO_CB;                                                          // 칸 x 27 x 9 (노드 대각)
 __device__ float* AO_CV;                                                          // 칸 x 27 x 3 (헤시안 곱)
 __device__ float* AO_MW;                                                          // 점별 고착 질량
+__device__ double* AO_SCM;                                                        // MG 거듭제곱법 스칼라 (부분합 칸 64 이후)
+__device__ float* AO_MGB;                                                         // 거친 층 칸 x 27 x 9 (노드 대각)
+__device__ float* AO_MGV;                                                         // 거친 층 칸 x 27 x 3 (헤시안 곱)
 __device__ __forceinline__ void ao_bs_out(double* out, double v) {
     long long sl = out - AO_SCB;
-    if (AO_DET && sl >= 0 && sl < 64) { AO_PART[sl*65536 + blockIdx.x] = v; atomicMax(&AO_BMAX[sl], (int)blockIdx.x + 1); }
-    else atomicAdd(out, v);
+    if (AO_DET && sl >= 0 && sl < 64) { AO_PART[sl*65536 + blockIdx.x] = v; atomicMax(&AO_BMAX[sl], (int)blockIdx.x + 1); return; }
+    long long sm = AO_SCM ? (out - AO_SCM) : -1;
+    if (AO_DET && AO_SCM && sm >= 0 && sm < 32) { AO_PART[(64+sm)*65536 + blockIdx.x] = v; atomicMax(&AO_BMAX[64+sm], (int)blockIdx.x + 1); return; }
+    atomicAdd(out, v);
 }
 '''
 
@@ -49,7 +54,7 @@ __global__ void ao_bsfin() {
     sh[threadIdx.x] = s;
     __syncthreads();
     for (int o = 128; o > 0; o >>= 1) { if (threadIdx.x < o) sh[threadIdx.x] += sh[threadIdx.x + o]; __syncthreads(); }
-    if (threadIdx.x == 0) { AO_SCB[sl] += sh[0]; AO_BMAX[sl] = 0; }
+    if (threadIdx.x == 0) { if (sl < 64) AO_SCB[sl] += sh[0]; else AO_SCM[sl-64] += sh[0]; AO_BMAX[sl] = 0; }
 }
 // 노드 -> (이웃 칸 c, 그 칸에서 이 노드의 자리 o) 를 고정 순서로: o = (i,j,k), 칸 좌표 = 노드 좌표 − (i,j,k)
 __device__ __forceinline__ int ao_ncell(const int* IP, const int* cidx, int n, int o) {
@@ -179,6 +184,81 @@ __global__ void ao_p2g_n(const int* IP, const int* cidx, const int* st, const fl
     }
     if (mn) { mn[n] += sm; for (int a=0;a<3;a++) mv[n*3+a] += sv[a]; }
 }
+
+// ---- MG 결정적 판 ----
+// 거친 층 노드가 이웃 27 칸 (조밀 상자) 의 칸 버퍼를 고정 순서로 모음; 빈 칸 (부피 0) 은 건너뜀 (그 칸 워프가 일찍 끝나 버퍼를 안 썼을 수 있음)
+__global__ void ao_mg_gath(int l, const int* LM, int D, const float* buf, const float* Vq, float* out) {
+    const int* L = LM + l*8;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= L[3]) return;
+    int ni = n / (L[1]*L[2]), nj = (n / L[2]) % L[1], nk = n % L[2];
+    float s[9] = {0,0,0,0,0,0,0,0,0};
+    for (int o=0;o<27;o++) {
+        int ci = ni - o/9, cj = nj - (o/3)%3, ck = nk - o%3;
+        if (ci < 0 || cj < 0 || ck < 0 || ci >= L[4] || cj >= L[5] || ck >= L[6]) continue;
+        int c = (ci*L[5] + cj)*L[6] + ck;
+        if (!(Vq[(size_t)c*8] > 0.f)) continue;
+        for (int a=0;a<D;a++) s[a] += buf[((size_t)c*27+o)*D+a];
+    }
+    for (int a=0;a<D;a++) out[n*D+a] += s[a];
+}
+// 거친 점 하나가 자기에게 사상되는 출처 점 (출처 칸 i ∈ {2b−1, 2b} 각 축, 칸 안 팔분 0..7) 을 고정 순서로 모아 R·LS·F·가중 (rt_mg_acc 와 같은 식)
+__global__ void ao_mg_acc_det(int l, const int* IP, const int* LM, const int* cidx, const float* Fsrc, const float* Vsrc, float* A, int* badq) {
+    const int* L = LM + l*8;
+    int qc = blockIdx.x*blockDim.x + threadIdx.x;
+    if (qc >= L[7]) return;
+    int cc = qc >> 3, occ = qc & 7;
+    int bz = cc % L[6], by = (cc / L[6]) % L[5], bx = cc / (L[5]*L[6]);
+    int bb[3] = {bx, by, bz};
+    const float GG = 0.28867513459481287f;
+    int S0, S1, S2;                                                               // 출처 칸 상자 차원
+    if (l == 1) { S0 = IP[6]-2; S1 = IP[7]-2; S2 = IP[8]-2; } else { const int* pl = LM + (l-1)*8; S0 = pl[4]; S1 = pl[5]; S2 = pl[6]; }
+    float acc[28]; for (int k=0;k<28;k++) acc[k] = 0.f;
+    int bad = 0;
+    for (int di=0; di<2; di++) for (int dj=0; dj<2; dj++) for (int dk=0; dk<2; dk++) {
+        int ii[3] = {2*bx - 1 + di, 2*by - 1 + dj, 2*bz - 1 + dk};
+        if (ii[0] < 0 || ii[1] < 0 || ii[2] < 0 || ii[0] >= S0 || ii[1] >= S1 || ii[2] >= S2) continue;
+        int cs = (ii[0]*S1 + ii[1])*S2 + ii[2];
+        if (l == 1) { cs = cidx[cs]; if (cs < 0) continue; }
+        for (int os=0; os<8; os++) {
+            int q = cs*8 + os;
+            float w = Vsrc[q]; if (!(w > 0.f)) continue;
+            int ok = 1, oc = 0;
+            for (int a=0;a<3;a++) {
+                int bit = (a == 0) ? (os & 4) : ((a == 1) ? (os & 2) : (os & 1));
+                float tq = (float)ii[a] + 1.f + (bit ? GG : -GG);
+                float t = 0.5f*(tq + 1.5f); float fb = floorf(t - 0.5f);
+                if ((int)fb != bb[a]) ok = 0;
+                if (t - fb >= 1.f) oc |= (a == 0) ? 4 : ((a == 1) ? 2 : 1);
+            }
+            if (!ok || oc != occ) continue;
+            float X[9]; for (int k=0;k<9;k++) X[k] = Fsrc[(size_t)q*9+k];
+            float U[9], S[3], V[9]; ssvdf(X, U, S, V);
+            bool ng = !(S[2] > 0.f);
+            float lg[3]; for (int i=0;i<3;i++) lg[i] = ng ? 0.f : logf(S[i]);
+            for (int a=0;a<3;a++) for (int b2=0;b2<3;b2++) {
+                acc[a*3+b2] += w*(U[a*3]*V[b2*3] + U[a*3+1]*V[b2*3+1] + U[a*3+2]*V[b2*3+2]);
+                acc[9+a*3+b2] += w*(V[a*3]*lg[0]*V[b2*3] + V[a*3+1]*lg[1]*V[b2*3+1] + V[a*3+2]*lg[2]*V[b2*3+2]);
+                acc[18+a*3+b2] += w*X[a*3+b2]; }
+            acc[27] += w;
+            if (ng) bad = 1;
+        }
+    }
+    for (int k=0;k<28;k++) A[(size_t)qc*28+k] = acc[k];
+    badq[qc] = bad;
+}
+// 거친 칸 합 = 그 칸 8 점 합 (고정 순서), V 합 = 가중 합
+__global__ void ao_mg_cell(int l, const int* LM, const float* A, const int* badq, float* C, int* badc) {
+    const int* L = LM + l*8;
+    int c = blockIdx.x*blockDim.x + threadIdx.x;
+    if (c >= L[7]/8) return;
+    float s[28]; for (int k=0;k<28;k++) s[k] = 0.f;
+    int bd = 0;
+    for (int oc=0; oc<8; oc++) { const float* a = A + ((size_t)c*8+oc)*28; for (int k=0;k<28;k++) s[k] += a[k]; bd |= badq[c*8+oc]; }
+    for (int k=0;k<28;k++) C[(size_t)c*30+k] = s[k];
+    C[(size_t)c*30+28] = s[27];
+    badc[c] = bd;
+}
 '''
 
 
@@ -211,6 +291,10 @@ def det_src(head):
     s = _sub_in(s, "rt_floor_q", "if (!(s < 0.f)) return;", "if (!(s < 0.f)) { if (AO_DET) AO_MW[q] = 0.f; return; }")
     s = _sub_in(s, "rt_floor_q", "if (mw > 0.f) for (int o=0;o<27;o++) atomicAdd(&an[ids[o]], BW[oc*27+o]*mw);",
                 "if (AO_DET) AO_MW[q] = mw; else if (mw > 0.f) for (int o=0;o<27;o++) atomicAdd(&an[ids[o]], BW[oc*27+o]*mw);")
+    s = _sub_in(s, "rt_mg_elem", "if (on && head) for (int k=0;k<9;k++) atomicAdd(&B[ids[o]*9+k], m[k]); }",
+                "if (on && head) for (int k=0;k<9;k++) { if (AO_DET) AO_MGB[((size_t)(qq>>3)*27+o)*9+k] = m[k]; else atomicAdd(&B[ids[o]*9+k], m[k]); } }")
+    s = _sub_in(s, "rt_mg_mv", "if (on && head) atomicAdd(&out[ids[o]*3+a], s); }",
+                "if (on && head) { if (AO_DET) AO_MGV[((size_t)(qq>>3)*27+o)*3+a] = s; else atomicAdd(&out[ids[o]*3+a], s); } }")
     return s
 
 
@@ -223,7 +307,7 @@ def det_ao(ao_src):
     return s
 
 
-BS_KERNELS = {"rt_elem", "rt_grad", "rt_grad_c", "rt_ap", "rt_ap_c", "rt_cg1", "rt_cg1_c", "rt_lsy", "rt_lsy4", "rt_elem_ls", "ao_warm", "rt_fixdir", "rt_lsyN", "rt_elem_lsN"}
+BS_KERNELS = {"rt_elem", "rt_grad", "rt_grad_c", "rt_ap", "rt_ap_c", "rt_cg1", "rt_cg1_c", "rt_lsy", "rt_lsy4", "rt_elem_ls", "ao_warm", "rt_fixdir", "rt_lsyN", "rt_elem_lsN", "rt_dotz", "rt_mg_pw1"}
 
 
 class DetMixin(ART.RTSolver):
@@ -238,12 +322,15 @@ class DetMixin(ART.RTSolver):
         s.d_cv = Z(s.capQc * 27 * 3)
         s.d_mw = Z(s.capQc * 8)
         s.d_st = torch.zeros(s.capQc + 1, device=s.dev, dtype=torch.int32)
+        mgc = max([L["capq"] // 8 for L in getattr(s, "ML", [])] or [1])
+        s.d_mgb = Z(mgc * 27 * 9); s.d_mgv = Z(mgc * 27 * 3)
 
     def det_bind(s):
         def setp(nm, t, dt):
             g = s.mod.get_global(nm)
             ART.cp.ndarray((1,), dtype=dt, memptr=g)[0] = int(t.data_ptr()) if t is not None else 0
         setp("AO_SCB", s.SC, ART.cp.uint64); setp("AO_PART", s.d_part, ART.cp.uint64); setp("AO_BMAX", s.d_bmax, ART.cp.uint64)
+        setp("AO_SCM", getattr(s, "SCM", None), ART.cp.uint64); setp("AO_MGB", s.d_mgb, ART.cp.uint64); setp("AO_MGV", s.d_mgv, ART.cp.uint64)
         setp("AO_CF", s.d_cf, ART.cp.uint64); setp("AO_CB", s.d_cb, ART.cp.uint64); setp("AO_CV", s.d_cv, ART.cp.uint64); setp("AO_MW", s.d_mw, ART.cp.uint64)
         import os
         setp("AO_ACTL", s.act if (getattr(s, "compact", False) and os.environ.get("AO_DET_ACTG", "1") == "1") else None, ART.cp.uint64)
@@ -283,6 +370,11 @@ class DetMixin(ART.RTSolver):
             return
         if name == "ao_act_reset":
             return
+        if name == "rt_mg_acc":                                                  # 거친 점이 자기 출처 점을 고정 순서로
+            l = int(args[0]); L = s.ML[l - 1]
+            super().k("ao_mg_acc_det", L["capq"], (args[0], P(IP), P(s.LM), P(s.cidx), args[4], args[5], args[6], args[8]), 128)
+            super().k("ao_mg_cell", L["capq"] // 8, (args[0], P(s.LM), args[6], args[8], args[7], args[9]), 128)
+            return
         super().k(name, n, args, b)
         if name in BS_KERNELS:
             super().k("ao_bsfin", NSL * 256, (), 256)
@@ -294,6 +386,12 @@ class DetMixin(ART.RTSolver):
                 super().k("ao_gath_d3", s.capN, (P(IP), P(s.cidx), fptr), 256)
             if (mode & 2) and (mode & 8):
                 super().k("ao_gath_f", s.capN, (P(IP), P(s.cidx), i32(9), P(s.d_cb), bptr), 256)
+        elif name == "rt_mg_mv":
+            l = int(args[0])
+            super().k("ao_mg_gath", s.ML[l - 1]["capn"], (args[0], P(s.LM), i32(3), P(s.d_mgv), args[5], args[9]), 256)
+        elif name == "rt_mg_elem":
+            l = int(args[0])
+            super().k("ao_mg_gath", s.ML[l - 1]["capn"], (args[0], P(s.LM), i32(9), P(s.d_mgb), args[5], args[10]), 256)
         elif name == "rt_mv":
             super().k("ao_gath_f", s.capN, (P(IP), P(s.cidx), i32(3), P(s.d_cv), args[7]), 256)
         elif name == "rt_gauss":
@@ -310,13 +408,12 @@ def det_module_src():
 
 
 class DetRT(DetMixin):
-    """탄성 실시간 판의 결정적 모드 (det = True 면 원자 합을 고정 순서 모으기로). MG (mg_levels > 1) 와 함께 쓰지 않는다 (MG 커널은 그대로 원자 합)."""
+    """탄성 실시간 판의 결정적 모드 (det = True 면 원자 합을 고정 순서 모으기로). MG 도 결정적 (거친 층 칸 버퍼 모으기, 거친 점 누적 고정 순서, 거듭제곱법 부분합)."""
 
     def __init__(s, *args, det=True, **kw):
         s.det = bool(det)
         s.ao_ready = False
         super().__init__(*args, **kw)
-        assert not (s.det and s.nl > 1), "결정적 모드는 MG 와 함께 쓸 수 없다 (MG 커널은 원자 합)"
         s.mod = ART.cp.RawModule(code=det_module_src(), options=("--std=c++14",))
         s.fn = {}
         s.ao_ready = True
