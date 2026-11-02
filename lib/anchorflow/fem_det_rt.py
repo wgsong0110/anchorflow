@@ -266,7 +266,7 @@ class DetMixin(ART.RTSolver):
             super().k("ao_seg", s.N + 1, (i32(s.N), P(IP), P(s.pcd), P(s.cidx), P(s.d_st)), 256)
             super().k("ao_p2g_q", s.capQc, (i32(s.N), P(s.F), P(s.m), P(s.vol), P(s.fx), P(s.d_st), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc)), 128)
             import os
-            if os.environ.get("AO_DET_P2GC", "1") == "1":
+            if os.environ.get("AO_DET_P2GC", "0") == "1":
                 super().k("ao_p2g_c", s.capQc, (P(IP), P(s.d_st), P(s.fx), P(s.m), P(s.v), P(s.d_cb)), 64)
                 super().k("ao_gath_mv", s.capN, (P(IP), P(s.cidx), P(s.d_cb), P(s.mn), P(s.mv)), 256)
             else:
