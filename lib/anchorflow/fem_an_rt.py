@@ -1021,8 +1021,23 @@ __global__ void rt_ga_step0(const int* IP, const float* U, const float* vk, cons
         float ys = af*u + (1.f - af)*xp;
         Ut[n*3+a] = ys + tau*tau*(gg[a] - am*ac);
         z0[n*3+a] = ys - (v + dt*(1.f - gm)*ac)/al;
-        y[n*3+a] = (fixd && fixd[n]) ? u + (1.f - af)*dt*vbc[n*3+a] : u;
+        y[n*3+a] = (fixd && fixd[n]) ? u + (1.f - af)*dt*vbc[n*3+a] : Ut[n*3+a];    // 고착 판정은 관성 예측 Ũ 에서 (implicit-err 와 같게); 시작점은 rt_ga_y0 가 U 로
     }
+}
+// 뉴턴 시작점 = 걸음 시작 위치 U (고착 판정 뒤, implicit-err floor_state --y0 uk 와 같은 식): dd = U − ŷ, η = (I − P) dd + (1/√k) P dd (√k ≤ 1e-6 이면 그 성분 0), y = ŷ + T η
+__global__ void rt_ga_y0(const int* IP, const float* U, const float* yh, const float* sk, const int* pm, float n0, float n1, float n2, float* eta, float* y) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    int p = pm[n];
+    if (p == 2) return;                                                                // 고정 노드: rt_floor_n 이 정한 그대로
+    float s = sk[n];
+    float isk = (s > 1e-6f) ? 1.f/s : 0.f;
+    float dd[3]; for (int a=0;a<3;a++) dd[a] = U[n*3+a] - yh[n*3+a];
+    float e[3];
+    if (p == 0) { for (int a=0;a<3;a++) e[a] = isk*dd[a]; }
+    else { float dn = dd[0]*n0 + dd[1]*n1 + dd[2]*n2; float nn[3] = {n0, n1, n2}; for (int a=0;a<3;a++) e[a] = dn*nn[a] + isk*(dd[a] - dn*nn[a]); }
+    float t[3]; Tapply(s, p, n0, n1, n2, e, t);
+    for (int a=0;a<3;a++) { eta[n*3+a] = e[a]; y[n*3+a] = yh[n*3+a] + t[a]; }
 }
 // 걸음 끝: v1 = α (y − z0) (고정 노드 vbc), a1 = (v1 − v − dt (1−γ) a)/(γ dt), U1 = U + dt v + dt² ((½−β) a + β a1) (Newmark 위치 식), 고착 노드 (an > 0) 의 a1 = 0 (areset), 고정 노드 a1 = 0, 감쇠
 __global__ void rt_ga_end(const int* IP, float dt, float gm, float be, float al, const float* y, const float* z0, float* U, float* vk, float* ak,
@@ -1429,6 +1444,8 @@ class RTSolver:
                                          f(FL["PN"]), f(FL["DXG"]), P(s.an)))
             s.k("rt_floor_n", capN, (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] * (s.K / (K or s.K)) * sg["frac"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(sg["al"]), *[f(q) for q in nr],
                                      P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta)), b=256)
+            if sg["kind"] == "ga":
+                s.k("rt_ga_y0", capN, (P(IP), P(s.U), P(s.yh), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.y)), b=256)
             for it in range(s.nt):
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
