@@ -710,7 +710,7 @@ class AORTSolver(DET.DetMixin):
                 s.k("ao_pbc_k", capN, (P(IP), P(s.mn), P(s.pacc), i32(s.K), i32(s.pbc_ns), i32(kstep), expo, P(s.kb)), b=256)
             s.k("ao_floor_n", capN, (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(s.al), *[f(q) for q in nr],
                                      P(s.fixd), P(s.vbc), P(s.U), f(s.tau), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta),
-                                     P(s.kb if s.has_pbc else None), P(s.mn), f(s.mthr), i32(1 if s.ga is not None else 0)), b=256)
+                                     P(s.kb if s.has_pbc else None), P(s.mn), f(s.mthr), i32(1 if (s.ga is not None and s.ga.get("y0uk", True)) else 0)), b=256)
             for it in range(s.nt):
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(16)), b=1)
@@ -748,7 +748,7 @@ class AORTSolver(DET.DetMixin):
                 s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(1)), b=256)
             if s.ga is not None:
                 c = s.ga_c
-                s.k("ao_stepend_ga", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if FL else None), P(s.mqn), P(s.kb if s.has_pbc else None), f(s.damp)), b=256)
+                s.k("ao_stepend_ga", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp)), b=256)
             elif s.th is not None:
                 s.k("ao_stepend_th", capN, (P(IP), f(1.0 / s.th), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
             else:
