@@ -243,7 +243,8 @@ class DetMixin(ART.RTSolver):
             ART.cp.ndarray((1,), dtype=dt, memptr=g)[0] = int(t.data_ptr()) if t is not None else 0
         setp("AO_SCB", s.SC, ART.cp.uint64); setp("AO_PART", s.d_part, ART.cp.uint64); setp("AO_BMAX", s.d_bmax, ART.cp.uint64)
         setp("AO_CF", s.d_cf, ART.cp.uint64); setp("AO_CB", s.d_cb, ART.cp.uint64); setp("AO_CV", s.d_cv, ART.cp.uint64); setp("AO_MW", s.d_mw, ART.cp.uint64)
-        setp("AO_ACTL", s.act if getattr(s, "compact", False) else None, ART.cp.uint64)
+        import os
+        setp("AO_ACTL", s.act if (getattr(s, "compact", False) and os.environ.get("AO_DET_ACTG", "1") == "1") else None, ART.cp.uint64)
         g = s.mod.get_global("AO_DET")
         ART.cp.ndarray((1,), dtype=ART.cp.int32, memptr=g)[0] = 1 if s.det else 0
 
@@ -264,8 +265,12 @@ class DetMixin(ART.RTSolver):
             s.zf(s.d_st)
             super().k("ao_seg", s.N + 1, (i32(s.N), P(IP), P(s.pcd), P(s.cidx), P(s.d_st)), 256)
             super().k("ao_p2g_q", s.capQc, (i32(s.N), P(s.F), P(s.m), P(s.vol), P(s.fx), P(s.d_st), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc)), 128)
-            super().k("ao_p2g_c", s.capQc, (P(IP), P(s.d_st), P(s.fx), P(s.m), P(s.v), P(s.d_cb)), 64)
-            super().k("ao_gath_mv", s.capN, (P(IP), P(s.cidx), P(s.d_cb), P(s.mn), P(s.mv)), 256)
+            import os
+            if os.environ.get("AO_DET_P2GC", "1") == "1":
+                super().k("ao_p2g_c", s.capQc, (P(IP), P(s.d_st), P(s.fx), P(s.m), P(s.v), P(s.d_cb)), 64)
+                super().k("ao_gath_mv", s.capN, (P(IP), P(s.cidx), P(s.d_cb), P(s.mn), P(s.mv)), 256)
+            else:
+                super().k("ao_p2g_n", s.capN, (P(IP), P(s.cidx), P(s.d_st), P(s.fx), P(s.m), P(s.v), P(s.mn), P(s.mv), P(None), P(None), i32(1), i32(1), np.float32(0), P(None)), 128)
             return
         if name == "ao_pbc_acc":                                                 # 구속 질량 (노드가 모음)
             # args: N, IP, Np, fx, m, trel, tbuf, K, S, dt, acc
