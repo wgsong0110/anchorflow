@@ -425,12 +425,15 @@ __global__ void rt_grad(const int* IP, const float* mn, float itau2, const float
                         const float* B, float* Dinv, float* r, float* z, float* p, float* dl, float* Tp, double* SC, float* r0) {
     if (blockIdx.x*blockDim.x >= IP[9]) return;
     int n = blockIdx.x*blockDim.x + threadIdx.x;
-    double rz = 0.0, gg = 0.0;
+    double rz = 0.0, gg = 0.0, ff = 0.0;
     if (n < IP[9]) {
         float T[9]; Tmat(sk[n], pm[n], n0, n1, n2, T);
         float Mi = mn[n]*itau2;
         double g[3];
         for (int a=0;a<3;a++) g[a] = (double)Mi*eta[n*3+a] + (double)T[a*3]*f[n*3] + (double)T[a*3+1]*f[n*3+1] + (double)T[a*3+2]*f[n*3+2];
+#ifdef AF_ADAPT
+        for (int a=0;a<3;a++) { double tf = g[a] - (double)Mi*eta[n*3+a]; ff += tf*tf; }      // 탄성·접촉 힘 몫 |T f|² (절 AN.14 기준 척도)
+#endif
         float M[9], TB[9];
         for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = 0.f; for (int k=0;k<3;k++) t += T[a*3+k]*B[n*9+k*3+b]; TB[a*3+b] = t; }
         for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = (a==b) ? Mi : 0.f; for (int k=0;k<3;k++) t += TB[a*3+k]*T[k*3+b]; M[a*3+b] = t; }
@@ -441,6 +444,9 @@ __global__ void rt_grad(const int* IP, const float* mn, float itau2, const float
         float tp[3]; Tapply(sk[n], pm[n], n0, n1, n2, zz, tp); for (int a=0;a<3;a++) Tp[n*3+a] = tp[a];
     }
     blocksum_add(rz, &SC[0]); blocksum_add(gg, &SC[1]);
+#ifdef AF_ADAPT
+    blocksum_add(ff, &SC[56]);
+#endif
 }
 // Ap = Mi p + T (K T p) 의 노드 마무리 + p·Ap (SC[2])
 __global__ void rt_ap(const int* IP, const float* mn, float itau2, const float* sk, const int* pm, float n0, float n1, float n2, const float* p, const float* KTp, float* Ap, double* SC) {
@@ -458,15 +464,18 @@ __global__ void rt_ap(const int* IP, const float* mn, float itau2, const float* 
 __global__ void rt_cg1(const int* IP, const double* SC, const float* Dinv, const float* p, const float* Ap, float* dl, float* r, float* z, double* SC2) {
     if (blockIdx.x*blockDim.x >= IP[9]) return;
     int n = blockIdx.x*blockDim.x + threadIdx.x;
-    double s3 = 0.0, s4 = 0.0;
+    double s3 = 0.0, s4 = 0.0, s5 = 0.0;
     if (n < IP[9]) {
         double pAp = SC[2]; float al = (pAp > 0.0) ? (float)(SC[0]/pAp) : 0.f;
         float rr[3];
         for (int a=0;a<3;a++) { dl[n*3+a] += al*p[n*3+a]; rr[a] = r[n*3+a] - al*Ap[n*3+a]; r[n*3+a] = rr[a]; }
         const float* D = Dinv + n*9;
-        for (int a=0;a<3;a++) { float zn = D[a*3]*rr[0] + D[a*3+1]*rr[1] + D[a*3+2]*rr[2]; float zo = z[n*3+a]; z[n*3+a] = zn; s3 += (double)rr[a]*zn; s4 += (double)rr[a]*(zn - zo); }
+        for (int a=0;a<3;a++) { float zn = D[a*3]*rr[0] + D[a*3+1]*rr[1] + D[a*3+2]*rr[2]; float zo = z[n*3+a]; z[n*3+a] = zn; s3 += (double)rr[a]*zn; s4 += (double)rr[a]*(zn - zo); s5 += (double)rr[a]*rr[a]; }
     }
     blocksum_add(s3, &SC2[3]); blocksum_add(s4, &SC2[4]);
+#ifdef AF_ADAPT
+    blocksum_add(s5, &SC2[57]);
+#endif
 }
 // β = SC4/SC0 (폴라크-리비에르); p = z + β p; Tp = T p; 다음을 위해 SC0 ← SC3 (단일 스레드 쪽에서)
 __global__ void rt_cg2(const int* IP, const double* SC, const float* sk, const int* pm, float n0, float n1, float n2, const float* z, float* p, float* Tp, float* KTz) {
@@ -846,9 +855,12 @@ __global__ void rt_cg1m(const int* IP, const double* SC, const float* p, const f
 __global__ void rt_dotz(const int* IP, const float* r, const float* z, float* zo, double* SC, int first) {
     if (blockIdx.x*blockDim.x >= IP[9]) return;
     int n = blockIdx.x*blockDim.x + threadIdx.x;
-    double s3 = 0.0, s4 = 0.0;
-    if (n < IP[9]) for (int a=0;a<3;a++) { float zn = z[n*3+a]; s3 += (double)r[n*3+a]*zn; s4 += (double)r[n*3+a]*(zn - zo[n*3+a]); zo[n*3+a] = zn; }
+    double s3 = 0.0, s4 = 0.0, s5 = 0.0;
+    if (n < IP[9]) for (int a=0;a<3;a++) { float zn = z[n*3+a]; s3 += (double)r[n*3+a]*zn; s4 += (double)r[n*3+a]*(zn - zo[n*3+a]); s5 += (double)r[n*3+a]*r[n*3+a]; zo[n*3+a] = zn; }
     blocksum_add(s3, first ? &SC[0] : &SC[3]); if (!first) blocksum_add(s4, &SC[4]);
+#ifdef AF_ADAPT
+    if (!first) blocksum_add(s5, &SC[57]);                                         // PCG 잔차 |r|² (절 AN.14 판정)
+#endif
 }
 __global__ void rt_pinit(const int* IP, const float* z, const float* sk, const int* pm, float n0, float n1, float n2, float* p, float* Tp) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
@@ -1091,22 +1103,24 @@ __global__ void rt_g2p_ga(int N, const int* IP, const float* Ai, const int* pb, 
 }
 // 허용치 조기 종료 제어 (절 AN.14, 단일 스레드). skipify() 가 AF_SKIP 선언과 다른 모든 커널 머리의 "AF_SKIP 이면 바로 돌아감" 을 넣는다 (그 판에서만 컴파일).
 // CT (int): 0 ND (이 걸음 뉴턴 끝), 1 PD (이 풀이 PCG 끝), 2 뉴턴 반복 수, 3 PCG 반복 수, 4 뉴턴 상한까지 간 걸음 수, 5 PCG 상한까지 간 풀이 수, 6 걸음 수, 7 풀이 수 (프레임 합)
-// CD (double): 0 걸음 첫 |g|², 1 풀이 첫 r·z. eN2 = 뉴턴 허용치², eP2 = PCG 허용치² (음수면 그 판정 없음)
+// CD (double): 0 걸음 첫 |g|², 1 이 풀이의 PCG 목표 |r|², 2 기준 척도 F² = |T f(y0)|² (걸음 시작점의 탄성·접촉 힘 몫, rt_grad 의 SC[56]). eN2 = εN², eP2 = εP² (음수면 그 판정 없음)
+// 규칙 (두 적분기 공통): 뉴턴은 |g_k| <= εN F 이면 끝 (k >= 1), PCG 는 |r_i| <= εP min(|g_k|, F) 이면 끝 (|r|² = rt_dotz·rt_cg1 의 SC[57]).
+// 후퇴 오일러는 시작점 = 관성 예측 Ũ 라 |g0| = F (바닥 변수 바꿈 몫 빼고); HHT 는 시작점 = 걸음 시작 위치 U 라 |g0| 가 관성 불일치로 부풀어 있어 F 를 따로 둔다.
 #ifdef AF_ADAPT
-__global__ void rt_ctl(int op, int it, const double* SC, int* CT, double* CD, double eN2, double eP2) {
+__global__ void rt_ctl(int op, int it, double* SC, int* CT, double* CD, double eN2, double eP2) {
     if (op == 0) { for (int i=0;i<16;i++) CT[i] = 0; AF_SKIP = 0; return; }                         // 프레임 시작
     if (op == 1) { CT[0] = 0; CT[1] = 0; CT[6]++; AF_SKIP = 0; return; }                              // 걸음 시작
     if (op == 2) { CT[1] = 0; AF_SKIP = CT[0]; return; }                                              // 뉴턴 반복 시작
-    if (op == 3) {                                                                                     // rt_grad 뒤: |g|² = SC[1]
+    if (op == 3) {                                                                                     // rt_grad 뒤: |g|² = SC[1], |T f|² = SC[56]
         if (CT[0]) return;
         double g2 = SC[1];
-        if (it == 0) { CD[0] = g2; if (!(g2 > 0.0)) { CT[0] = 1; AF_SKIP = 1; return; } }
-        else if (eN2 >= 0.0 && g2 <= eN2*CD[0]) { CT[0] = 1; AF_SKIP = 1; return; }
+        if (it == 0) { CD[0] = g2; CD[2] = SC[56]; if (!(g2 > 0.0)) { CT[0] = 1; AF_SKIP = 1; return; } }
+        else if (eN2 >= 0.0 && g2 <= eN2*CD[2]) { CT[0] = 1; AF_SKIP = 1; return; }
         CT[2]++; return;
     }
-    if (op == 4) { if (CT[0]) return; CD[1] = SC[0]; CT[1] = (SC[0] > 0.0) ? 0 : 1; CT[7]++; return; }   // PCG 시작 (첫 r·z = SC[0])
+    if (op == 4) { if (CT[0]) return; double rf = fmin(SC[1], CD[2]); CD[1] = (eP2 >= 0.0) ? eP2*rf : -1.0; CT[1] = 0; CT[7]++; SC[57] = 0.0; return; }   // PCG 시작: 목표 |r|²
     if (op == 5) { AF_SKIP = CT[0] | CT[1]; return; }                                                 // PCG 반복 시작
-    if (op == 6) { if (CT[0] | CT[1]) return; CT[3]++; if (eP2 >= 0.0 && SC[0] <= eP2*CD[1]) CT[1] = 1; return; }   // PCG 반복 끝 (롤 뒤 SC[0] = 새 r·z)
+    if (op == 6) { double r2 = SC[57]; SC[57] = 0.0; if (CT[0] | CT[1]) return; CT[3]++; if (CD[1] >= 0.0 && r2 <= CD[1]) CT[1] = 1; return; }   // PCG 반복 끝
     if (op == 7) { if (!CT[0] && !CT[1]) CT[5]++; AF_SKIP = CT[0]; return; }                          // PCG 끝 -> 선탐색·갱신
     if (op == 8) { if (!CT[0]) CT[4]++; AF_SKIP = 0; return; }                                        // 걸음 끝 (뉴턴 고리 밖)
 }
