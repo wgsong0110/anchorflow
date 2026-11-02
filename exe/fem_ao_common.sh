@@ -8,7 +8,11 @@ export PYTHONUTF8=1 OMP_NUM_THREADS=8 PATH=$HOME/bin:/home/dkta/.conda/envs/af/b
 export CUPY_CACHE_DIR=/tmp/dkta/cache/cupy XDG_CACHE_HOME=/tmp/dkta/cache TORCH_EXTENSIONS_DIR=/tmp/dkta/cache/torch_ext
 NM=$1; EXTRA=$2; R=/tmp/dkta/lbours/fem_ao/$NM; RR=r2:storage/result/anchorflow/lbours/fem_ao/$NM; mkdir -p $R
 G=""
+if [ -n "${AO_GPU0:-}" ]; then                                                        # GPU0 단독 (gpu0.lock, 판마다 카드 0 의 다른 프로세스 0 일 때 시작)
+  exec 9>/home/dkta/work/gpu0.lock; flock 9; G=0
+fi
 for w in $(seq 480); do
+  [ -n "$G" ] && break
   nvidia-smi --query-gpu=index,uuid,memory.used --format=csv,noheader > $R/smi.txt; nvidia-smi --query-compute-apps=gpu_uuid --format=csv,noheader > $R/apps.txt
   G=$(awk -F', ' 'FILENAME ~ /apps/ {b[$1]=1; next} {m=$3; sub(/ MiB/, "", m); if (!($2 in b) && ($1 == 4 || $1 == 5 || $1 == 6) && m + 0 < 2000) {print $1; exit}}' $R/apps.txt $R/smi.txt)
   [ -n "$G" ] && break; sleep 30
@@ -21,9 +25,10 @@ for t in L000 $(seq -f %04g 0 19) ficus; do
   if [ $t = ficus ]; then DA="--data /home/dkta/work/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt --frames 125 --floor none --cfg_bc --region_density --pg_vdamp --dump"
   elif [ $t = L000 ]; then DA="--data /home/dkta/work/one/L000/L000.pt --frames 80 --floor vel"
   else DA="--data /tmp/dkta/af_data/$t.pt --frames 80 --floor vel"; fi
-  CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_ao_rt_sim.py --out $O --tag $t $DA --cell ${AO_CELL:-1} --dt_step ${AO_DT:-0.01} --mlow 0 $EXTRA < /dev/null > $O/log.txt 2>&1 &
+  if [ -n "${AO_GPU0:-}" ]; then while [ "$(nvidia-smi --query-compute-apps=gpu_uuid --format=csv,noheader 9>&- | grep -c "$UU")" -gt 0 ]; do sleep 5; done; fi
+  CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_ao_rt_sim.py --out $O --tag $t $DA --cell ${AO_CELL:-1} --dt_step ${AO_DT:-0.01} --mlow 0 $EXTRA < /dev/null > $O/log.txt 2>&1 9>&- &
   PP=$!
-  while kill -0 $PP 2>/dev/null; do nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader | awk -F', ' -v u=$UU -v t=$(date +%s) '$1==u{print t, $2}' >> $O/apps_during.txt; sleep 5; done
+  while kill -0 $PP 2>/dev/null; do nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader 9>&- | awk -F', ' -v u=$UU -v t=$(date +%s) '$1==u{print t, $2}' >> $O/apps_during.txt; sleep 5; done
   wait $PP
   NF=$(awk -v p=$PP '$2!=p{print $2}' $O/apps_during.txt | sort -u | wc -l)
   echo "$t 다른프로세스 $NF $(grep -a '롤아웃\|rror\|발산' $O/log.txt | tail -1 | cut -c1-200)" | tee -a $R/run.out
