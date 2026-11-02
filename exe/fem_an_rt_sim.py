@@ -38,6 +38,7 @@ ap.add_argument("--dump", action="store_true")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--no_fuse2", action="store_true", help="결과 불변 융합 2 판 끔 (비교용)")
+ap.add_argument("--mg_lreuse", action="store_true", help="정의 변경: 거친 층 ω 를 첫 프레임 값으로 재사용")
 ap.add_argument("--mg_wreuse", action="store_true", help="정의 변경: 프레임 안 단계 τ 가 같으면 층 0 ω 재사용")
 ap.add_argument("--gfin", action="store_true", help="걸음 끝 |g|/|g0| 를 fem.jsonl 에 (기울기 한 번 더 -- 시간 측정 판에서는 끌 것)")
 ap.add_argument("--det", action="store_true", help="결정적 합산 (같은 명령 두 번이 비트 단위로 같게; lib/anchorflow/fem_an_det.py, MG 와 함께 못 씀) -- 판정용, 속도는 비결정 판으로")
@@ -93,7 +94,7 @@ if a.det:
     from anchorflow import fem_an_det as ADET
 SOLVER = ADET.DetRT if a.det else ART.RTSolver
 S = SOLVER(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse)
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
