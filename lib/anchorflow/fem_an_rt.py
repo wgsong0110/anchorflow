@@ -1082,8 +1082,47 @@ __global__ void rt_g2p_ga(int N, const int* IP, const float* Ai, const int* pb, 
     for (int a=0;a<3;a++) { x[p*3+a] += u[a]; v[p*3+a] = vv[a]; pa[p*3+a] = aa[a]; }
     for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = 0.f; for (int k=0;k<3;k++) t += A[a*3+k]*Fp[k*3+b]; F[(size_t)p*9+a*3+b] = t; }
 }
+// 허용치 조기 종료 제어 (절 AN.14, 단일 스레드). skipify() 가 AF_SKIP 선언과 다른 모든 커널 머리의 "AF_SKIP 이면 바로 돌아감" 을 넣는다 (그 판에서만 컴파일).
+// CT (int): 0 ND (이 걸음 뉴턴 끝), 1 PD (이 풀이 PCG 끝), 2 뉴턴 반복 수, 3 PCG 반복 수, 4 뉴턴 상한까지 간 걸음 수, 5 PCG 상한까지 간 풀이 수, 6 걸음 수, 7 풀이 수 (프레임 합)
+// CD (double): 0 걸음 첫 |g|², 1 풀이 첫 r·z. eN2 = 뉴턴 허용치², eP2 = PCG 허용치² (음수면 그 판정 없음)
+#ifdef AF_ADAPT
+__global__ void rt_ctl(int op, int it, const double* SC, int* CT, double* CD, double eN2, double eP2) {
+    if (op == 0) { for (int i=0;i<16;i++) CT[i] = 0; AF_SKIP = 0; return; }                         // 프레임 시작
+    if (op == 1) { CT[0] = 0; CT[1] = 0; CT[6]++; AF_SKIP = 0; return; }                              // 걸음 시작
+    if (op == 2) { CT[1] = 0; AF_SKIP = CT[0]; return; }                                              // 뉴턴 반복 시작
+    if (op == 3) {                                                                                     // rt_grad 뒤: |g|² = SC[1]
+        if (CT[0]) return;
+        double g2 = SC[1];
+        if (it == 0) { CD[0] = g2; if (!(g2 > 0.0)) { CT[0] = 1; AF_SKIP = 1; return; } }
+        else if (eN2 >= 0.0 && g2 <= eN2*CD[0]) { CT[0] = 1; AF_SKIP = 1; return; }
+        CT[2]++; return;
+    }
+    if (op == 4) { if (CT[0]) return; CD[1] = SC[0]; CT[1] = (SC[0] > 0.0) ? 0 : 1; CT[7]++; return; }   // PCG 시작 (첫 r·z = SC[0])
+    if (op == 5) { AF_SKIP = CT[0] | CT[1]; return; }                                                 // PCG 반복 시작
+    if (op == 6) { if (CT[0] | CT[1]) return; CT[3]++; if (eP2 >= 0.0 && SC[0] <= eP2*CD[1]) CT[1] = 1; return; }   // PCG 반복 끝 (롤 뒤 SC[0] = 새 r·z)
+    if (op == 7) { if (!CT[0] && !CT[1]) CT[5]++; AF_SKIP = CT[0]; return; }                          // PCG 끝 -> 선탐색·갱신
+    if (op == 8) { if (!CT[0]) CT[4]++; AF_SKIP = 0; return; }                                        // 걸음 끝 (뉴턴 고리 밖)
+}
+#endif
 }
 '''
+
+SKIP_EXEMPT = ("rt_reset", "rt_ctl")
+
+
+def skipify(src):
+    """허용치 조기 종료 판 (절 AN.14): AF_SKIP 선언·rt_ctl 을 켜고, 제어 커널 (rt_reset·rt_ctl) 을 뺀 모든 커널 몸 첫머리에 AF_SKIP 이면 바로 돌아가는 줄 (블록 전체가 같은 값을 읽으므로 __syncthreads 와 충돌 없음)."""
+    import re
+    src = src.replace('extern "C" {', 'extern "C" {\n__device__ int AF_SKIP;\n#define AF_ADAPT 1', 1)
+    out, pos = [], 0
+    for m in re.finditer(r"__global__\s+void\s+(?:__launch_bounds__\(\d+\)\s+)?(\w+)\s*\(", src):
+        b = src.index("{", m.end())
+        out.append(src[pos:b + 1])
+        if m.group(1) not in SKIP_EXEMPT:
+            out.append(" if (AF_SKIP) return;")
+        pos = b + 1
+    out.append(src[pos:])
+    return "".join(out)
 
 
 def P(t):
@@ -1093,8 +1132,11 @@ def P(t):
 class RTSolver:
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0):
         s.dev = dev
+        # 허용치 조기 종료 (절 AN.14): 뉴턴 |g|/|g0| <= tolN, PCG sqrt(r·z / r0·z0) <= tolP (음수 = 그 판정 없음). 뉴턴·PCG 수는 상한 (그래프에 펼친 수)
+        s.tolN, s.tolP = float(tolN), float(tolP)
+        s.adapt = s.tolN >= 0 or s.tolP >= 0
         f32 = torch.float32
         s.N = int(x.shape[0])
         # 입자를 첫 프레임 칸 순서로 정렬 (P2G·G2P 모으기·원자 합 지역성; 결과 정의는 같음). 원래 순서 = s.perm 의 역
@@ -1137,7 +1179,8 @@ class RTSolver:
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=SRC, options=("--std=c++14",))
+        s.mod = cp.RawModule(code=(skipify(SRC) if s.adapt else SRC), options=("--std=c++14",))
+        s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
         GG = 0.5 / math.sqrt(3.0)
@@ -1393,6 +1436,7 @@ class RTSolver:
         i32, f = np.int32, np.float32
         capN, capQ = s.capN, s.capQc * 8
         s.k("rt_reset", 1, (P(IP),), b=1)
+        s.ctl(0)
         s.k("rt_coord", N, (i32(N), P(s.x), P(s.Ai), P(s.Np), P(s.fx), P(IP)))
         s.k("rt_box", 1, (P(IP), i32(capN), i32(s.capC)), b=1)
         s.zf(s.occ)
@@ -1446,7 +1490,9 @@ class RTSolver:
                                      P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta)), b=256)
             if sg["kind"] == "ga":
                 s.k("rt_ga_y0", capN, (P(IP), P(s.U), P(s.yh), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.y)), b=256)
+            s.ctl(1)
             for it in range(s.nt):
+                s.ctl(2, it)
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
                 s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8 | (4 if s.ls else 0)), P(s.SC[10:]), P(s.f), P(s.H),
@@ -1454,6 +1500,7 @@ class RTSolver:
                 if it == 0:
                     s.k("rt_meff", capN, (P(IP), P(s.mn), P(s.B), f(s.mfloor * sg["tau"] ** 2), P(s.meff)), b=256)
                 s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
+                s.ctl(3, it)
                 if s.nl > 1:                                                           # MG 전처리: z = V(r) 로 바꿔 시작
                     if it == 0 and not (s.mg_wreuse and kstep > 0 and abs(getattr(s, "mg_tau", -1.0) - sg["tau"]) == 0.0):
                         s.mg_tau = sg["tau"]
@@ -1464,9 +1511,11 @@ class RTSolver:
                     s.k("rt_dotz", capN, (P(IP), P(s.r), P(s.z), P(s.zo), P(s.SC), i32(1)), b=256)
                     s.k("rt_pinit", capN, (P(IP), P(s.z), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.Tp)), b=256)
                 s.DG[2 * (kstep * s.nt + it)].copy_(s.SC)                                  # 진단: SC0 = r·z 처음, SC1 = |g|²
+                s.ctl(4, it)
                 if s.descent:
                     s.p0.copy_(s.p); s.k("rt_sc_copy", 1, (P(s.SC), i32(60), i32(0)), b=1)
                 for ci in range(s.cg):
+                    s.ctl(5, ci)
                     if ci == 0 or not s.fuse2:
                         s.zf(s.KTp, 9, 3)
                     s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
@@ -1481,6 +1530,8 @@ class RTSolver:
                         s.k("rt_cg1", capN, (P(IP), P(s.SC), P(s.Dinv), P(s.p), P(s.Ap), P(s.dl), P(s.r), P(s.z), P(s.SC)), b=256)
                     s.k("rt_cg2", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.z), P(s.p), P(s.Tp), P(s.KTp if s.fuse2 else None)), b=256)
                     s.k("rt_sc_roll", 1, (P(s.SC),), b=1)
+                    s.ctl(6, ci)
+                s.ctl(7, it)
                 # 선탐색: 기울기 곱 g·δ = −r0·δ (r0 = rt_grad 가 남긴 처음 잔차)
                 if s.ls and s.ls_n:
                     NC = i32(s.ls_n)
@@ -1501,6 +1552,7 @@ class RTSolver:
                     s.k("rt_lspick", 1, (P(s.SC),), b=1)
                 s.DG[2 * (kstep * s.nt + it) + 1].copy_(s.SC)                              # 진단: SC0 = r·z 끝, 5..8 관성, 9 g·δ, 10..13 탄성 E, 14 보폭
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if s.ls else 1)), b=256)
+            s.ctl(8)
             if s.gfin:                                                                 # 걸음 끝 y 에서 기울기 (같은 변수 바꿈) -> |g_끝|²
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
@@ -1526,6 +1578,14 @@ class RTSolver:
         s.k("rt_g2p_endg", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.y), P(s.z0), P(s.U), f(sl["thinv"]), f(sl["al"]), P(s.fixd), P(s.vbc), dmp,
                                P(s.x), P(s.v), P(s.F)))
 
+
+    def ctl(s, op, it=0):
+        """허용치 조기 종료 제어 커널 (adapt 판만; 아니면 아무것도 안 넣음 -- 원래 그래프 그대로)."""
+        if not s.adapt:
+            return
+        eN2 = s.tolN * s.tolN if s.tolN >= 0 else -1.0
+        eP2 = s.tolP * s.tolP if s.tolP >= 0 else -1.0
+        s.k("rt_ctl", 1, (np.int32(op), np.int32(it), P(s.SC), P(s.CT), P(s.CD), np.float64(eN2), np.float64(eP2)), b=1)
 
     def _bk(s):
         """프레임 시작 입자 상태 백업: x·v·F 와 함께 m·vol·perm (결정적 판은 P2G 에서 입자를 정렬하며 이 배열들도 재배열한다 -- 데움 실행·넘침 다시 하기 뒤 같이 되돌려야 질량·부피가 제 입자에 붙는다)."""
@@ -1613,7 +1673,11 @@ class RTSolver:
 
     def counts(s):
         ip = s.IP.cpu().tolist()
-        return dict(nn=ip[9], nc=ip[11], nq=ip[12], nb=ip[6:9], nbad=int(s.nbad))
+        o = dict(nn=ip[9], nc=ip[11], nq=ip[12], nb=ip[6:9], nbad=int(s.nbad))
+        if s.adapt:                                                                    # 마지막 프레임 반복 수 (뉴턴 합, PCG 합, 뉴턴 상한 걸음, PCG 상한 풀이, 걸음, 풀이)
+            ct = s.CT.cpu().tolist()
+            o["it"] = dict(nN=ct[2], nP=ct[3], capN=ct[4], capP=ct[5], steps=ct[6], solves=ct[7])
+        return o
 
     def x_orig(s):
         o = torch.empty_like(s.x)

@@ -418,7 +418,8 @@ class DetRT(DetMixin):
         s.det = bool(det)
         s.ao_ready = False
         super().__init__(*args, **kw)
-        s.mod = ART.cp.RawModule(code=det_module_src(), options=("--std=c++14",))
+        src = det_module_src()
+        s.mod = ART.cp.RawModule(code=(ART.skipify(src) if s.adapt else src), options=("--std=c++14",))
         s.fn = {}
         s.ao_ready = True
         s.det_bind()
