@@ -39,6 +39,7 @@ ap.add_argument("--region_density", action="store_true")
 ap.add_argument("--pg_vdamp", action="store_true")
 ap.add_argument("--K", type=int, default=2, help="프레임당 암시적 걸음 수")
 ap.add_argument("--integ", choices=["mid", "be", "bdf2", "theta", "trbdf2", "ga", "hht"], default="mid")
+ap.add_argument("--y0", choices=["ut", "uk"], default="ut", help="뉴턴 시작점: 관성 예측 Ũ (원본) 또는 걸음 시작 위치 (같은 최소화, 시작점만 -- 큰 a_n 으로 예측이 요소를 뒤집을 때). 고착 판정은 그대로 관성 예측으로")
 ap.add_argument("--rho", type=float, default=0.7, help="--integ ga (Chung-Hulbert generalized-α) / hht (HHT-α) 의 고주파 극한 스펙트럼 반경 ρ∞ (1 = 감쇠 없음, ga 0 에서 1, hht 0.5 에서 1)")
 ap.add_argument("--theta", type=float, default=0.55, help="--integ theta 의 θ: 힘을 y = U_k + θ (U_{k+1} − U_k) 점에서 (0.5 = 중점, 1 = 후퇴 오일러); v_{k+1} = v_k + Δt a(y), U_{k+1} = U_k + Δt ((1−θ) v_k + θ v_{k+1})")
 ap.add_argument("--mlow", type=float, default=0.0, help=">0 이면 절 AH.18 관성 질량 하한 m' = max(m, κ x 첫 프레임 노드 질량 중앙값) (관성에만; 중력은 실제 질량)")
@@ -654,6 +655,10 @@ def floor_state(y, Uk, z0, Ut, al, na, FS, vk=None):
     T = sk * Pm + (I3 - Pm)
     yh = Ut + ((1 - k)[:, None, None] * Pm @ (z0 - Ut)[..., None]).squeeze(-1)
     eta = ((I3 - Pm) @ (y - Ut)[..., None]).squeeze(-1) + sk.squeeze(-1) * (Pm @ (y - yh)[..., None]).squeeze(-1)
+    if a.y0 == "uk":                                                                   # 시작점 = 걸음 시작 위치 (T 의 역: 자유 성분 그대로, 고착 성분 /√k, k = 0 이면 고정)
+        dd = Uk - yh
+        isk = torch.where(sk > 1e-6, 1.0 / sk.clamp_min(1e-6), torch.zeros_like(sk))
+        eta = ((I3 - Pm) @ dd[..., None]).squeeze(-1) + (isk * Pm @ dd[..., None]).squeeze(-1)
     if a.fl_npd > 0:                                                                   # 명시적 판 비관통 (실제 접촉 노드, 안쪽 예측 속도 -> 법선 속도 0)
         real = (sq < -a.fl_npd) & (Fm > 0)
         cn = torch.zeros(na, device=dev, dtype=D64).index_add_(0, Fqn.reshape(-1), ((FW > 0) & real[:, None]).double().reshape(-1))
@@ -685,7 +690,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, hist=N
             else:
                 T = I3.expand(na, 3, 3)
                 yh = Ut
-                eta = y - Ut
+                eta = (Uk - Ut) if a.y0 == "uk" else (y - Ut)
             if fixd is not None:
                 T = torch.where(fixd[:, None, None], torch.zeros_like(T), T)
                 yh = torch.where(fixd[:, None], Uk + TAU * vbc, yh)
