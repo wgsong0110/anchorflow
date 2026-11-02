@@ -155,8 +155,8 @@ __global__ void ao_gath_mv(const int* IP, const int* cidx, const float* cbuf, fl
 // P2G 노드 몫: 노드 하나가 이웃 27 칸의 입자를 차례로 (질량·운동량), 구속 질량 (KS > 0 이면, ao_pbc_acc 와 같은 끊는 표본)
 __global__ void ao_p2g_n(const int* IP, const int* cidx, const int* st, const float* fx, const float* m, const float* v, float* mn, float* mv,
                          const float* Trel, const float* tbuf, int K, int S, float dt, float* acc) {
-    int n = blockIdx.x*blockDim.x + threadIdx.x;
-    if (IP[13] || n >= IP[9]) return;
+    int n = mn ? (blockIdx.x*blockDim.x + threadIdx.x) : ao_node(IP, blockIdx.x*blockDim.x + threadIdx.x);   // 구속 질량만이면 질량 있는 노드 목록 (압축 판)
+    if (IP[13] || n < 0 || n >= IP[9]) return;
     float sm = 0.f, sv[3] = {0.f, 0.f, 0.f};
     int KS = K*S;
     float t0 = tbuf ? tbuf[0] : 0.f;
@@ -164,6 +164,7 @@ __global__ void ao_p2g_n(const int* IP, const int* cidx, const int* st, const fl
         int c = ao_ncell(IP, cidx, n, o); if (c < 0) continue;
         int i = o/9, j = (o/3)%3, k = o%3;
         for (int p = st[c]; p < st[c+1]; p++) {
+            if (!mn && !(Trel[p] > t0)) continue;                               // 구속 질량만: 풀린 입자는 기저 계산 전에 건너뜀
             float wx[3][3], dw[3][3];
             bwf(fx[p*3], wx[0], dw[0]); bwf(fx[p*3+1], wx[1], dw[1]); bwf(fx[p*3+2], wx[2], dw[2]);
             float ww = wx[0][i]*wx[1][j]*wx[2][k]*m[p];
