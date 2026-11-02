@@ -4188,3 +4188,14 @@ ficus 정답 민감도 (gt_sens.py 를 PG gs_simulation 형식으로 읽게 고�
 | 블록 전단 주기 / 진폭 | **88.6 ms (1.02) / 0.333** | 153 ms / 0.000 | 87.2 ms / 0.074 |
 | 낙하 반발 / 튀어 오름 | 0.452 / 19.9 mm | 0.115 / 11.9 mm | 0.750 / 83.4 mm |
 - 판정: HHT 는 블록 주기·진동을 정답 가까이 살리고 반발도 4 배 낫지만 lego 는 후퇴 오일러보다 나쁘다 (15/21 vs 20/21, implicit-err 의 수렴 판 결론과 같은 방향). ficus 는 둘 다 1x5 예산에서 잎 끝 진동이 사라져 주기를 잴 수 없다 (수렴 판은 0.83 / 0.75, 절 AN.err3) -- 1x5 예산 몫.
+
+### AN.13 인계 (11-03, 가지 implicit-bspline, 작업 사본 execute/anchorflow/imp_wt, 마지막 커밋 이 절)
+- **코드**: 실시간 판 lib/anchorflow/fem_an_rt.py (RTSolver: 프레임 전체 손으로 쓴 CUDA 커널 + 고정 용량 버퍼 + 프레임 CUDA 그래프) + exe/fem_an_rt_sim.py; 결정적 판 lib/anchorflow/fem_an_det.py (DetRT); torch 검증판 exe/fem_an_sim.py (`--fast`).
+- **채택 판 명령줄** (셀 1 MG 층 4·평활 4, 뉴턴 1 x PCG 5, 단독 15.8 ms (후퇴) / 15.9 ms (HHT)):
+  `python exe/fem_an_rt_sim.py --data <궤적.pt> --out <dir> --floor vel --cell 1 --mg_levels 4 --mg_nc 4 --newton 1 --cg 5 --ls_n 10 --descent --K 2 --mg_wreuse --mg_lreuse` + `--integ be` (후퇴 오일러) 또는 `--ga hht --rho 0.7` (HHT); ficus 는 `--floor none --cfg_bc --region_density --pg_vdamp --frames 125`; 판정은 `--det`, 덤프 `--dump`.
+  그 밖 플래그: `--scheme theta|trbdf2 --theta`, `--mfloor c` (관성 질량 하한), `--K_contact` (접촉 적응), `--gfin` (걸음 끝 |g|/|g0|, 시간 측정 판에서는 끔), `--diag` (뉴턴 반복별 기록), `--prof N` (커널별 시간), `--no_fuse2`·`--mg_csolve` (비교용).
+- **단독 측정**: exe/fem_an_rt_excl.sh <이름> (gpu0.lock 을 잡고 판마다 카드 0 의 다른 계산 프로세스 0 확인, 2 회, `--prof 4`), 판 목록 `AN_LIST="셀:jac|mg:뉴턴:PCG ..."`, 추가 인자 `AN_X`; 표 exe/fem_an_rtx_table.py. 사용률 기록 nvidia-smi 는 잠금 기술자를 물려받으니 스크립트를 중간에 끌 때 그것도 확인할 것 (rtx1 사고).
+- **결정적 판 (`--det`)**: 같은 명령 두 번이 비트 단위로 같음 (summary.json x_sha1). 비용 1.6 에서 2.1 배. MG·generalized-α 포함. 고친 버그: step() 의 데움 실행·넘침 다시 하기 뒤 m·vol·perm·pa 도 되돌려야 함 (안 그러면 질량·부피가 다른 입자에 붙음; implicit-wolf RTAdapt·AORTSolver 도 같은 구조 -- 알림 필요). 확인 도구 exe/fem_an_dettest.py (노드별 대조), exe/fem_an_det_chk.sh (두 번 해시).
+- **후보 판정**: exe/fem_an_cand.sh <이름> "판:플래그(빈칸은 +) ..." with `AN_X='--det --ls_n 10 --descent ...'` `AN_UNIT='stretch shear drop1'` (빈 카드마다 일꾼 하나, 없으면 사용률 낮은 넷에 카드당 하나; 끝에 lego 21 표·ficus 주기·블록 주기·낙하 반발). 결과 R2 lbours/fem_an/<궤적>_<판>/, 표 lbours/fem_an/marks/<이름>_table.md -- cand5 (셀 1.5 MG 1x5 후퇴 K 2), cand6 (채택 판 후퇴 K 2), cand7 (채택 판 HHT ρ 0.7 K 2). 고정 예산 탐색 exe/fem_an_inv.sh, 걸음 끝 기울기 exe/fem_an_gfin.sh.
+- **남은 문제**: (1) 후퇴 K 2 채택 판 lego 0016 11.30 % (20/21); (2) HHT lego 15/21 (후퇴보다 나쁨); (3) ficus 가 1x5 예산에서 잎 끝 진동이 없음 (수렴 예산은 0.83 / 0.75); (4) 낙하 반발 부족 (최선 HHT 0.452 / 19.9 mm vs 0.750 / 83.4 mm) -- 적분기 몫 아님 (절 AN.err3); (5) 후퇴 오일러는 블록 진동을 지움.
+- **다음 후보**: 고정 반복 수 대신 공통 허용치 규칙 (걸음 끝 |g|/|g0| 기준 + 시간 상한 -- 그래프 안 장치 스칼라로 PCG·뉴턴 조기 종료, k 회마다 판정); 점유 가중 가우스 적분점 (오차 원인 에이전트가 시험 중). 남은 시간 (채택 판): 고운 층 헤시안 곱 5.1, 거친 층 곱 2.6, 거친 층 노드 1.9, P2G 1.6 (HHT 2.1), 선탐색 1.0 ms.
