@@ -27,15 +27,21 @@ run_one() {   # 카드 판 궤적 인자...
   case $t in
     L000) DA="--data /tmp/dkta/anerr_data/L000.pt --floor vel";;
     drop1) DA="--data /tmp/dkta/ak_drop2/drop_f1.pt --floor vel --dump";;
+    ficus) [ -s /dev/shm/dkta/anerr_data/F_pg_v0.pt ] || { mkdir -p /dev/shm/dkta/anerr_data; cp /home/dkta/work/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt /dev/shm/dkta/anerr_data/; }
+           DA="--data /dev/shm/dkta/anerr_data/F_pg_v0.pt --frames 125 --floor none --cfg_bc --region_density --pg_vdamp --dump";;
     *) DA="--data /tmp/dkta/af_data/$t.pt --floor vel";;
   esac
   echo "카드 $G $(cat .done) $(date '+%F %T') 인자 $DA $*" > $O/run_info.txt
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/apps_at_start.txt
   FA=--fast; case " $* " in *" --slow "*) FA="";; esac
-  CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_anerr_sim.py --out $O --tag $t $DA --frames ${ERR_FR:-80} $FA --gfin $(echo " $* " | sed "s/ --slow / /") < /dev/null > $O/log.txt 2>&1
+  FR=${ERR_FR:-80}; [ $t = ficus ] && FR=${ERR_FR:-125}
+  CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_anerr_sim.py --out $O --tag $t $DA --frames $FR $FA --gfin $(echo " $* " | sed "s/ --slow / /") < /dev/null > $O/log.txt 2>&1
   echo "rc=$? $(date '+%F %T')" >> $O/run_info.txt
   if [ $t = drop1 ] && [ -f $O/pred.pt ]; then
     $PY exe/fem_ak_drop_ana.py /tmp/dkta/ak_drop2/init.pt mpm:/tmp/dkta/ak_drop2/mpm/x240.pt:0.0041666667 $V:$O/pred.pt:0.0166666667 > $O/drop_ana.txt 2>&1
+  fi
+  if [ $t = ficus ] && [ -f $O/pred.pt ]; then
+    $PY exe/fem_p_period.py --data /dev/shm/dkta/anerr_data/F_pg_v0.pt --pred $O/pred.pt > $O/period.txt 2>&1
   fi
   echo "$V $t (카드 $G) $(grep -a '롤아웃\|rror\|발산' $O/log.txt | tail -2 | cut -c1-200 | tr '\n' ' ')" >> $R/done.txt
   rclone copy $O $RR/${V}_$t -q; rclone copy $R/done.txt $RR -q

@@ -38,7 +38,14 @@ ap.add_argument("--cfg_bc", action="store_true")
 ap.add_argument("--region_density", action="store_true")
 ap.add_argument("--pg_vdamp", action="store_true")
 ap.add_argument("--K", type=int, default=2, help="프레임당 암시적 걸음 수")
-ap.add_argument("--integ", choices=["mid", "be", "bdf2"], default="mid")
+ap.add_argument("--integ", choices=["mid", "be", "bdf2", "theta", "trbdf2"], default="mid")
+ap.add_argument("--theta", type=float, default=0.55, help="--integ theta 의 θ: 힘을 y = U_k + θ (U_{k+1} − U_k) 점에서 (0.5 = 중점, 1 = 후퇴 오일러); v_{k+1} = v_k + Δt a(y), U_{k+1} = U_k + Δt ((1−θ) v_k + θ v_{k+1})")
+ap.add_argument("--mlow", type=float, default=0.0, help=">0 이면 절 AH.18 관성 질량 하한 m' = max(m, κ x 첫 프레임 노드 질량 중앙값) (관성에만; 중력은 실제 질량)")
+ap.add_argument("--mfl_n", type=int, default=0, help=">0 이면 절 AG.15 국소 CFL 관성 질량을 명시적 N 서브스텝 기준으로: m' = max(m, (h/(2N))² k_n) (K 와 무관한 고정 하한; 관성에만)")
+ap.add_argument("--fl_avg", type=int, default=0, help=">0 이면 (정의 변경, 제안 3) 고착 인자를 걸음 안에서 평균: k = exp(Δt/dt_정답 · mean_s log(1 − r_s)), r_s = 걸음 시작 위치의 몫 r0 와 걸음 끝 예측 위치의 몫 r1 의 선형 보간, s 중점 n 개")
+ap.add_argument("--kad", type=int, default=0, help=">0 이면 (제안 2) 적응 걸음: 프레임 시작 입자 중 바닥 법선 거리 < --kad_d 이고 안쪽 법선 속력 또는 바깥 법선 속력이 --kad_v 를 넘는 입자가 있으면 그 프레임 K = kad, 아니면 --K (실행 중 값만)")
+ap.add_argument("--kad_d", type=float, default=0.04, help="적응 걸음 바닥 근접 거리 (m) + 이번 프레임 이동 거리 |v·n| h")
+ap.add_argument("--kad_v", type=float, default=0.1, help="적응 걸음 법선 속력 문턱 (m/s): 근접 입자의 |v·n| 최대가 이보다 크면 충격·반동 중으로 봄")
 ap.add_argument("--quad", choices=["gauss", "part"], default="gauss", help="탄성 적분점: 칸 2x2x2 가우스 (원본) 또는 입자 (명시적 bnv 와 같은 적분점)")
 ap.add_argument("--fl_src", choices=["q", "part"], default="q", help="바닥 고착 판정 점: 적분점 (원본) 또는 입자 (명시적 판 정의)")
 ap.add_argument("--fl_npd", type=float, default=0.0, help=">0 이면 명시적 판 비관통: 판정 점 하나라도 s < −δ 인 노드는 예측 속도가 안쪽이면 법선 속도 0 (걸음당 한 번 정함)")
@@ -79,6 +86,22 @@ d = torch.load(a.data, map_location="cpu", weights_only=False)
 cfg = d["cfg"]
 h = float(cfg["frame_dt"])
 DT = h / a.K
+TH0 = {"be": 1.0, "mid": 0.5, "theta": a.theta}.get(a.integ)
+GAM = 2.0 - math.sqrt(2.0)                                                             # TR-BDF2 첫 단계 몫
+SG = {}
+GS = [None]                                                                            # 노드별 중력 몫 m / m' (관성 질량 하한일 때)
+
+
+def set_stage(kind, dt, th=None, c1=None, c0=None, tau=None):
+    """한 풀이 단계의 계수 (실시간 판에서는 커널 인자 몇 개): θ 단계 (τ = θ dt) 또는 2 걸음 BDF 단계 (Ub = c1 U_a − c0 U_n, τ)."""
+    global TAU, KEX, DAMP
+    SG.clear()
+    SG.update(kind=kind, dt=dt, th=th, c1=c1, c0=c0)
+    TAU = th * dt if kind == "th" else tau
+    KEX = dt / float(cfg["substep_dt"])
+    DAMP = (VD_S ** (dt / float(cfg["substep_dt"]))) if (a.pg_vdamp and VD_S < 1.0) else 1.0
+
+
 TAU = DT if a.integ == "be" else (0.5 * DT if a.integ == "mid" else 2.0 * DT / 3.0)
 DM.REGION_DENSITY[0] = bool(a.region_density)
 m64 = DM.traj_mass(d, dev).double()
@@ -518,8 +541,8 @@ class MGD(MG32):
                 break
         s.nl = len(s.L)
         for l in range(s.nl):
-            if (l, s.nl) in LAMC:
-                s.L[l]["w"] = LAMC[(l, s.nl)]
+            if (l, s.nl, TAU) in LAMC:
+                s.L[l]["w"] = LAMC[(l, s.nl, TAU)]
                 continue
             na_ = s.L[l]["Mi"].shape[0]
             z = torch.randn(na_, 3, device=dev, dtype=D64, generator=torch.Generator(device=dev).manual_seed(l))
@@ -528,7 +551,7 @@ class MGD(MG32):
                 lm = (z * w_).sum() / (z * z).sum()
                 z = w_ / w_.norm()
             s.L[l]["w"] = a.mg_omega / lm.clamp_min(1e-300)
-            LAMC[(l, s.nl)] = s.L[l]["w"]
+            LAMC[(l, s.nl, TAU)] = s.L[l]["w"]
         s.lam = None
 
     def tr(s, l, r):
@@ -550,31 +573,50 @@ class MGD(MG32):
 
 
 def coefs(Uk, vk, hist):
-    """적분기 계수: 최소화 E(y) = Σ m/(2τ²)|y − Ũ|² + Ψ(y) 의 Ũ, 속도 v_{k+1} = α (y − z0) 의 z0·α."""
-    if a.integ == "bdf2":
+    """적분기 계수: 최소화 E(y) = Σ m'/(2τ²)|y − Ũ|² + Ψ(y) 의 Ũ, 속도 v_{k+1} = α (y − z0) 의 z0·α. 단계 SG (set_stage) 로 정함; 중력은 실제 질량 (GS = m/m')."""
+    g_ = gv if GS[0] is None else gv * GS[0]
+    if SG["kind"] == "bdf":
         Um, vm = hist
-        Ub = (4.0 * Uk - Um) / 3.0
-        vb = (4.0 * vk - vm) / 3.0
-        return Ub + TAU * vb + TAU * TAU * gv, Ub, 1.0 / TAU
-    if a.integ == "mid":
-        return Uk + TAU * vk + TAU * TAU * gv, Uk + 0.5 * TAU * vk, 2.0 / TAU
-    return Uk + TAU * vk + TAU * TAU * gv, Uk, 1.0 / TAU
+        Ub = SG["c1"] * Uk - SG["c0"] * Um
+        vb = SG["c1"] * vk - SG["c0"] * vm
+        return Ub + TAU * vb + TAU * TAU * g_, Ub, 1.0 / TAU
+    th = SG["th"]
+    return Uk + TAU * vk + TAU * TAU * g_, Uk + (1.0 - th) * TAU * vk, 1.0 / (th * TAU)
 
 
-def endpos(y, Uk):
-    return (2 * y - Uk) if a.integ == "mid" else y
+def endpos(y, Uk, vk=None, z0=None, al=None):
+    """걸음 끝 변위: BDF 단계 y, θ 단계 U_k + dt ((1−θ) v_k + θ v_{k+1}) (θ 0.5 이면 2y − U_k, 1 이면 y)."""
+    if SG["kind"] == "bdf" or SG["th"] == 1.0:
+        return y
+    if SG["th"] == 0.5:
+        return 2 * y - Uk
+    return Uk + SG["dt"] * ((1.0 - SG["th"]) * vk + SG["th"] * al * (y - z0))
 
 
-def floor_state(y, Uk, z0, Ut, al, na, FS):
-    """걸음 고착 상태 (T, ŷ, η 시작값). FS = (가중 [n,27], 노드 [n,27], 시작 위치, 질량, 노드 분모)."""
+def floor_frac(Ue, FS, na):
     FW, Fqn, Fx0, Fm, Fden = FS
-    Ue = endpos(y, Uk)
     xs = Fx0 + (FW[..., None] * Ue[Fqn]).sum(1)
     sq = (xs - PT) @ NR
     wst = wstk(sq)
     an = torch.zeros(na, device=dev, dtype=D64).index_add_(0, Fqn.reshape(-1), (FW * (Fm * wst)[:, None]).reshape(-1))
-    r = torch.where(Fden > 0, an / Fden.clamp_min(1e-300), torch.zeros_like(an)).clamp(0.0, 1.0)
-    k = torch.exp(KEX * torch.log1p(-r))
+    return torch.where(Fden > 0, an / Fden.clamp_min(1e-300), torch.zeros_like(an)).clamp(0.0, 1.0), sq
+
+
+def floor_state(y, Uk, z0, Ut, al, na, FS, vk=None):
+    """걸음 고착 상태 (T, ŷ, η 시작값). FS = (가중 [n,27], 노드 [n,27], 시작 위치, 질량, 노드 분모)."""
+    FW, Fqn, Fx0, Fm, Fden = FS
+    Ue = endpos(y, Uk, vk, z0, al)
+    r, sq = floor_frac(Ue, FS, na)
+    if a.fl_avg > 0:                                                                   # 제안 3: 걸음 안 평균 (시작 r0 -> 끝 r1 선형, 중점 규칙)
+        r0, _ = floor_frac(Uk, FS, na)
+        ls = torch.zeros_like(r)
+        for j in range(a.fl_avg):
+            sj = (j + 0.5) / a.fl_avg
+            ls = ls + torch.log1p(-((1 - sj) * r0 + sj * r).clamp(0.0, 1.0)) / a.fl_avg
+        k = torch.exp(KEX * ls)
+        r = torch.maximum(r, r0)
+    else:
+        k = torch.exp(KEX * torch.log1p(-r))
     vn1 = al * (y - z0)
     Pm = torch.where(((vn1 @ NR) > 0)[:, None, None], I3 - NR[:, None] * NR[None, :], I3.expand(na, 3, 3)) if VOUT else I3.expand(na, 3, 3)
     sk = torch.sqrt(k)[:, None, None]
@@ -608,7 +650,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, hist=N
         with tsec("바닥"):
           if it == 0 or a.fl_iter:
             if FLOOR:
-                T, yh, eta, STAT["stuck_t"] = floor_state(y, Uk, z0, Ut, al, na, FS)
+                T, yh, eta, STAT["stuck_t"] = floor_state(y, Uk, z0, Ut, al, na, FS, vk)
             else:
                 T = I3.expand(na, 3, 3)
                 yh = Ut
@@ -679,7 +721,7 @@ def solve_step_fast(el, mn, Uk, vk, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, hist=N
         with tsec("검사"):
             _, fe_ = el.eval(y, 1)
             STAT["gr"] = max(STAT.get("gr", 0.0), float((Mi * eta + (Tc @ fe_[..., None]).squeeze(-1)).norm() / g0t.clamp_min(1e-300)))
-    U1 = endpos(y, Uk)
+    U1 = endpos(y, Uk, vk, z0, al)
     v1 = al * (y - z0)
     if fixd is not None:
         v1 = torch.where(fixd[:, None], vbc, v1)
@@ -992,26 +1034,56 @@ def frame(fi, x, v, F):
             FS = (W, nidc, x, m64, mn)
         else:
             FS = (QW, qn, xq0, mq, torch.zeros(na, device=dev, dtype=D64).index_add_(0, qn.reshape(-1), (QW * mq[:, None]).reshape(-1)))
+    Kf = a.K
+    if a.kad > 0 and FLOOR:                                                            # 제안 2: 적응 걸음 (프레임 시작 입자 위치·속도만)
+        sn = (x - PT) @ NR
+        vnn = v @ NR
+        near = sn < a.kad_d + vnn.clamp(max=0).abs() * h
+        if bool(near.any()) and float(vnn[near].abs().max()) > a.kad_v:
+            Kf = a.kad
+    STAT["Kf"] = Kf
+    DTf = h / Kf
+    MED0[0] = float(mn.median()) if MED0[0] is None else MED0[0]
     mI = None
+    if a.mlow > 0:
+        mI = torch.maximum(mn, torch.full_like(mn, a.mlow * MED0[0]))
+    if a.mfl_n > 0:
+        gq_ = torch.einsum("qna,qna->qn", el.G, el.G).sqrt()
+        kn = torch.zeros(na, device=dev, dtype=D64).index_add_(0, qn.reshape(-1), (qV[:, None] * (lam + 2 * mu) * gq_ * gq_.sum(1, keepdim=True)).reshape(-1))
+        mI = torch.maximum(mn if mI is None else mI, (h / (2 * a.mfl_n)) ** 2 * kn)
+    if mI is not None:
+        STAT["mI_n"] = int((mI > mn).sum())
+        STAT["mI_add"] = float((mI - mn).sum() / mn.sum())
     if a.mfl > 0:
         gq_ = torch.einsum("qna,qna->qn", el.G, el.G).sqrt()                            # |F_qᵀ ∇w| -- 프레임 시작 적분점 기울기
         kn = torch.zeros(na, device=dev, dtype=D64).index_add_(0, qn.reshape(-1), (qV[:, None] * (lam + 2 * mu) * gq_ * gq_.sum(1, keepdim=True)).reshape(-1))
-        mI = torch.maximum(mn, a.mfl * (DT / 2) ** 2 * kn)
+        mI = torch.maximum(mn if mI is None else mI, a.mfl * (DTf / 2) ** 2 * kn)
         STAT["mfl_n"] = int((mI > mn).sum())
         STAT["mfl_add"] = float((mI - mn).sum() / mn.sum())
     hist = None
     if a.integ == "bdf2":                                                              # 입자 이력 (앞 걸음 위치 − 프레임 시작 위치, 앞 걸음 속도) -> 노드 (질량 가중)
-        hd = HIST[0] if HIST[0] is not None else (-DT * v, v)
+        hd = HIST[0] if HIST[0] is not None else (-DTf * v, v)
         mW = W * m64[:, None]
         Um = torch.zeros(na, 3, device=dev, dtype=D64).index_add_(0, nidc.reshape(-1), (mW[..., None] * hd[0][:, None, :]).reshape(-1, 3)) / mn[:, None]
         vm = torch.zeros(na, 3, device=dev, dtype=D64).index_add_(0, nidc.reshape(-1), (mW[..., None] * hd[1][:, None, :]).reshape(-1, 3)) / mn[:, None]
         hist = (Um, vm)
     tp.__exit__()
-    mgh = [None]
-    for _ in range(a.K):
+    GS[0] = None if mI is None else (mn / mI)[:, None]
+    MGH = {}
+    for _ in range(Kf):
         Up, vp = U, vn
-        if a.fast:
-            U, vn = solve_step_fast(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx, mgh, hist=hist, FS=FS, mI=mI)
+        if a.fast and a.integ == "trbdf2":                                             # 단계 1: 중점 γΔt, 단계 2: BDF2 (U_n, U_γ -> U_{n+1})
+            set_stage("th", GAM * DTf, th=0.5)
+            Ua, va = solve_step_fast(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx, MGH.setdefault(TAU, [None]), FS=FS, mI=mI)
+            dd = GAM * (2 - GAM)
+            set_stage("bdf", (1 - GAM) * DTf, c1=1.0 / dd, c0=(1 - GAM) ** 2 / dd, tau=(1 - GAM) / (2 - GAM) * DTf)
+            U, vn = solve_step_fast(el, mn, Ua, va, fixd, vbc, QW, qn, xq0, mq, ctx, MGH.setdefault(TAU, [None]), hist=(U, vn), FS=FS, mI=mI)
+        elif a.fast:
+            if a.integ == "bdf2":
+                set_stage("bdf", DTf, c1=4.0 / 3.0, c0=1.0 / 3.0, tau=2.0 * DTf / 3.0)
+            else:
+                set_stage("th", DTf, th=TH0)
+            U, vn = solve_step_fast(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx, MGH.setdefault(TAU, [None]), hist=hist, FS=FS, mI=mI)
         else:
             assert a.integ != "bdf2" and a.fl_src == "q" and a.fl_npd == 0, "새 플래그는 --fast 경로에만"
             U, vn = solve_step(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx)
@@ -1041,6 +1113,7 @@ def frame(fi, x, v, F):
 
 
 HIST = [None]
+MED0 = [None]
 
 
 def psi_sum(Fp):
