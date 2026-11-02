@@ -461,9 +461,10 @@ __global__ void rt_cg1(const int* IP, const double* SC, const float* Dinv, const
     blocksum_add(s3, &SC2[3]); blocksum_add(s4, &SC2[4]);
 }
 // β = SC4/SC0 (폴라크-리비에르); p = z + β p; Tp = T p; 다음을 위해 SC0 ← SC3 (단일 스레드 쪽에서)
-__global__ void rt_cg2(const int* IP, const double* SC, const float* sk, const int* pm, float n0, float n1, float n2, const float* z, float* p, float* Tp) {
+__global__ void rt_cg2(const int* IP, const double* SC, const float* sk, const int* pm, float n0, float n1, float n2, const float* z, float* p, float* Tp, float* KTz) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
+    if (KTz) { KTz[n*3] = 0.f; KTz[n*3+1] = 0.f; KTz[n*3+2] = 0.f; }                // 다음 헤시안 곱의 원자 합 바탕 (0 채우기 커널 융합)
     float be = (SC[0] > 0.0) ? (float)(SC[4]/SC[0]) : 0.f;
     float pp[3]; for (int a=0;a<3;a++) { pp[a] = z[n*3+a] + be*p[n*3+a]; p[n*3+a] = pp[a]; }
     float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, pp, t); for (int a=0;a<3;a++) Tp[n*3+a] = t[a];
@@ -782,7 +783,9 @@ __global__ void rt_mg_node(int l, const int* LM, int mode, const float* mn, floa
         if (mode == 6) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, zz, t); for (int a=0;a<3;a++) res[n*3+a] = t[a]; }       // 층 0: 다음 Az 의 T z 를 함께 (융합)
         return; }
     if (mode == 3 || mode == 4) { const float* v = (mode == 3) ? z : r; float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, v + n*3, t); for (int a=0;a<3;a++) res[n*3+a] = t[a]; return; }
-    if (mode == 5) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, r + n*3, t); for (int a=0;a<3;a++) z[n*3+a] += t[a]; return; }
+    if (mode == 5 || mode == 9) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, r + n*3, t); for (int a=0;a<3;a++) z[n*3+a] += t[a];
+        if (mode == 9) { float u[3] = {z[n*3], z[n*3+1], z[n*3+2]}; Tapply(sk[n], pm[n], n0, n1, n2, u, t); for (int a=0;a<3;a++) res[n*3+a] = t[a]; }   // 층 0: 다음 Az 의 T z (융합)
+        return; }
     float Mi = mn[n]*itau2;
     float kt[3] = {KTz[n*3], KTz[n*3+1], KTz[n*3+2]};
     KTz[n*3] = 0.f; KTz[n*3+1] = 0.f; KTz[n*3+2] = 0.f;                         // 읽은 뒤 비움 (다음 곱의 원자 합 바탕; 0 채우기 커널 없앰)
@@ -966,6 +969,41 @@ __global__ void rt_count_stuck(const int* IP, const float* an, int* IPw) {
     if (n >= IP[9]) return;
     if (an[n] > 0.f) atomicAdd(&IPw[14], 1);
 }
+// 가장 거친 층 평활 (융합, 한 블록): z = ω D r 뒤 nc−1 번 z += ω D (r − (Mi z + K z)). 곱은 공유 메모리 원자 합 (노드 NMAX 개까지), 반복 사이 블록 동기화.
+#define CS_NMAX 1536
+__global__ void __launch_bounds__(1024) rt_mg_csolve(int l, const int* LM, const float* BG, float sc, const float* Fq, const float* Vq, const float* H, int capQ,
+                                                     const float* mc, float itau2, const float* D, const double* W, const float* r, float* z, int nc) {
+    __shared__ float zs[CS_NMAX*3];
+    __shared__ float ks[CS_NMAX*3];
+    const int* L = LM + l*8;
+    int nn = L[3], nq = L[7];
+    float w = (float)W[l];
+    for (int n = threadIdx.x; n < nn; n += blockDim.x) {
+        const float* d = D + n*9; float r0 = r[n*3], r1 = r[n*3+1], r2 = r[n*3+2];
+        for (int a=0;a<3;a++) { zs[n*3+a] = w*(d[a*3]*r0 + d[a*3+1]*r1 + d[a*3+2]*r2); ks[n*3+a] = 0.f; }
+    }
+    __syncthreads();
+    for (int it = 1; it < nc; it++) {
+        for (int q = threadIdx.x; q < nq; q += blockDim.x) {
+            float vq = Vq[q]; if (!(vq > 0.f)) continue;
+            int oc = q & 7; int ids[27]; qnodes_d(q, L, ids);
+            float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)q*9+k];
+            float gs[27][3]; float dX[9] = {0,0,0,0,0,0,0,0,0};
+            for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; float bs[3] = {sc*bg[0], sc*bg[1], sc*bg[2]}; gqn(F, bs, gs[o]); int id = ids[o];
+                for (int a=0;a<3;a++) { float ya = zs[id*3+a]; dX[a*3] += ya*gs[o][0]; dX[a*3+1] += ya*gs[o][1]; dX[a*3+2] += ya*gs[o][2]; } }
+            float dP[9]; for (int rr=0;rr<9;rr++) { float t = 0.f; for (int c=0;c<9;c++) t += H[(size_t)(rr*9+c)*capQ + q]*dX[c]; dP[rr] = vq*t; }
+            for (int o=0;o<27;o++) for (int a=0;a<3;a++) atomicAdd(&ks[ids[o]*3+a], dP[a*3]*gs[o][0] + dP[a*3+1]*gs[o][1] + dP[a*3+2]*gs[o][2]);
+        }
+        __syncthreads();
+        for (int n = threadIdx.x; n < nn; n += blockDim.x) {
+            float Mi = mc[n]*itau2; const float* d = D + n*9;
+            float e[3]; for (int a=0;a<3;a++) { e[a] = r[n*3+a] - (Mi*zs[n*3+a] + ks[n*3+a]); ks[n*3+a] = 0.f; }
+            for (int a=0;a<3;a++) zs[n*3+a] += w*(d[a*3]*e[0] + d[a*3+1]*e[1] + d[a*3+2]*e[2]);
+        }
+        __syncthreads();
+    }
+    for (int n = threadIdx.x; n < nn; n += blockDim.x) for (int a=0;a<3;a++) z[n*3+a] = zs[n*3+a];
+}
 }
 '''
 
@@ -977,7 +1015,7 @@ def P(t):
 class RTSolver:
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False):
         s.dev = dev
         f32 = torch.float32
         s.N = int(x.shape[0])
@@ -1004,7 +1042,9 @@ class RTSolver:
         s.scheme = scheme or "theta"
         s.theta = float(theta) if scheme else (0.5 if s.mid else 1.0)
         s.mfloor = float(mfloor)
-        s.gfin = bool(gfin)                                                            # 걸음 끝 |g| 를 한 번 더 잼 (진단; 시간 측정 판에서는 끔)                                                       # 관성 질량 하한 계수 c (0 = 없음)
+        s.gfin = bool(gfin)
+        s.fuse2 = bool(fuse2)                                                          # 결과 불변 융합 2 판 (가장 거친 층 한 블록, 층 0 연장 보정 + T z, KTp 0 채우기를 cg2 에)
+        s.mg_wreuse = bool(mg_wreuse)                                                  # 정의 변경: 한 프레임 안 단계 τ 가 같으면 층 0 ω 를 다시 재지 않음                                                            # 걸음 끝 |g| 를 한 번 더 잼 (진단; 시간 측정 판에서는 끔)                                                       # 관성 질량 하한 계수 c (0 = 없음)
         s.Kc = int(K_contact) if K_contact else None                                   # 접촉 적응: 앞 프레임에 고착 노드가 있으면 이 걸음 수
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
@@ -1190,11 +1230,17 @@ class RTSolver:
         res = s.m0t if l == 0 else s.ML[l - 1]["t"]
         node = lambda mode, rr, kt, zz, rs: s.k("rt_mg_node", V["cap"], (i32(l), P(s.LM), i32(mode), P(V["mn"]), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(V["D"]), P(s.W),
                                                                          P(rr), P(kt), P(zz), P(rs)), b=256)
+        csolve = (l == s.nl - 1 and s.fuse2 and l > 0 and s.ML[l - 1]["capn"] <= 1536 and not getattr(s, "det", False))
         if l == 0:
             node(6, r, None, z, s.m0u)                                                 # z = ω D r, m0u = T z (융합)
-        else:
+        elif not csolve:
             node(0, r, None, z, None)
         if l == s.nl - 1:
+            if s.fuse2 and l > 0 and s.ML[l - 1]["capn"] <= 1536 and not getattr(s, "det", False):
+                L = s.ML[l - 1]                                                          # 가장 거친 층 평활을 한 블록 커널로 (z = ω D r 부터 다시)
+                s.k("rt_mg_csolve", 1024, (i32(l), P(s.LM), P(s.BG), f(0.5 ** l), P(L["Fq"]), P(L["Vq"]), P(L["H"]), i32(L["capq"]), P(V["mn"]), it2, P(V["D"]), P(s.W),
+                                           P(r), P(z), i32(s.mg_nc)), b=1024)
+                return
             for _ in range(s.mg_nc - 1):
                 s.mg_Az(l, z, KT); node(1, r, KT, z, None)
             return
@@ -1208,10 +1254,13 @@ class RTSolver:
         s.mg_vc(l + 1, Lc["r"], Lc["z"])
         if l == 0:
             s.k("rt_mg_prolong", V["cap"], (i32(0), P(s.LM), P(Lc["z"]), P(s.m0u), i32(0)), b=256)
-            node(5, s.m0u, None, z, None)                                              # z += T P z_c
+            if s.fuse2:
+                node(9, s.m0u, None, z, s.m0u)                                         # z += T P z_c, m0u = T z (융합; 다음 Az 의 T z)
+            else:
+                node(5, s.m0u, None, z, None)                                          # z += T P z_c
         else:
             s.k("rt_mg_prolong", V["cap"], (i32(l), P(s.LM), P(Lc["z"]), P(z), i32(1)), b=256)
-        s.mg_Az(l, z, KT); node(1, r, KT, z, None)
+        s.mg_Az(l, z, KT, tz_ready=(l == 0 and s.fuse2)); node(1, r, KT, z, None)
 
     def zf(s, t, cnt_idx=None, mul=1):
         n = t.numel()
@@ -1290,7 +1339,7 @@ class RTSolver:
                     s.k("rt_meff", capN, (P(IP), P(s.mn), P(s.B), f(s.mfloor * sg["tau"] ** 2), P(s.meff)), b=256)
                 s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 if s.nl > 1:                                                           # MG 전처리: z = V(r) 로 바꿔 시작
-                    if it == 0:
+                    if it == 0 and not (s.mg_wreuse and kstep > 0 and abs(getattr(s, "mg_tau", -1.0) - sg["tau"]) == 0.0):
                         s.mg_tau = sg["tau"]
                         s.mg_power(0)
                     s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(1)), b=1)
@@ -1302,7 +1351,8 @@ class RTSolver:
                 if s.descent:
                     s.p0.copy_(s.p); s.k("rt_sc_copy", 1, (P(s.SC), i32(60), i32(0)), b=1)
                 for ci in range(s.cg):
-                    s.zf(s.KTp, 9, 3)
+                    if ci == 0 or not s.fuse2:
+                        s.zf(s.KTp, 9, 3)
                     s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
                     s.k("rt_ap", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
                     if s.descent and ci == 0:
@@ -1313,7 +1363,7 @@ class RTSolver:
                         s.k("rt_dotz", capN, (P(IP), P(s.r), P(s.z), P(s.zo), P(s.SC), i32(0)), b=256)
                     else:
                         s.k("rt_cg1", capN, (P(IP), P(s.SC), P(s.Dinv), P(s.p), P(s.Ap), P(s.dl), P(s.r), P(s.z), P(s.SC)), b=256)
-                    s.k("rt_cg2", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.z), P(s.p), P(s.Tp)), b=256)
+                    s.k("rt_cg2", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.z), P(s.p), P(s.Tp), P(s.KTp if s.fuse2 else None)), b=256)
                     s.k("rt_sc_roll", 1, (P(s.SC),), b=1)
                 # 선탐색: 기울기 곱 g·δ = −r0·δ (r0 = rt_grad 가 남긴 처음 잔차)
                 if s.ls and s.ls_n:
