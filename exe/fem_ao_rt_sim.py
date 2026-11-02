@@ -49,6 +49,7 @@ ap.add_argument("--dt_step", type=float, default=0.0, help="공통 걸음 간격
 ap.add_argument("--adaptK", type=float, default=0.0, help="적응 걸음 수: K = ceil(v_max · frame_dt / (c · 칸)), c = 이 값 (0 = 끔), v_max = 프레임 시작 노드 속도 최대")
 ap.add_argument("--kmax", type=int, default=0, help="걸음 수 상한 (0 = 정답 MPM 프레임당 서브스텝 수 frame_dt / substep_dt; 발산 판정과 따로)")
 ap.add_argument("--no_compact", action="store_true")
+ap.add_argument("--hpack", action="store_true", help="모래 판 헤시안 위 삼각 45 개 저장·곱 (결과 불변)")
 ap.add_argument("--det", action="store_true", help="결정적 합산 (lib/anchorflow/fem_det_rt.py): 같은 명령 두 번이 비트 단위로 같게")
 ap.add_argument("--ao_fast", action="store_true", help="탄성 씬에도 노드 압축·PCG 첫 추정 (절 AO.11; 기본은 절 AN 그대로)")
 ap.add_argument("--no_warm", action="store_true")
@@ -134,7 +135,7 @@ del _y, _b, _fx, _w, _mn
 if SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
-                        floor=FL, damp=DAMP, bc=BC, cdp=CDP, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow)
+                        floor=FL, damp=DAMP, bc=BC, cdp=CDP, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det, hpack=a.hpack, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow)
 else:
   S = AORT.RTAdapt(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent,
