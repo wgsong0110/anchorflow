@@ -245,6 +245,18 @@ __global__ void ao_g2p(int N, const int* IP, const float* Ai, const int* pb, con
     for (int k=0;k<9;k++) F[(size_t)p*9+k] = Fp[k];
     if (cnt && nrm) atomicAdd(&cnt[2], 1);
 }
+// θ 방식 걸음 끝 (절 AN.err2 정의): y = U_k + θ (U_{k+1} − U_k), v_{k+1} = (y − z0)/(θτ), U_{k+1} = U_k + (y − U_k)/θ
+__global__ void ao_stepend_th(const int* IP, float ith, float al, const float* y, const float* z0, float* U, float* vk, const unsigned char* fixd, const float* vbc, float damp) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    for (int a=0;a<3;a++) {
+        float yy = y[n*3+a], u = U[n*3+a];
+        float v1 = al*(yy - z0[n*3+a]);
+        if (fixd && fixd[n]) v1 = vbc[n*3+a];
+        U[n*3+a] = u + (yy - u)*ith;
+        vk[n*3+a] = v1*damp;
+    }
+}
 __global__ void ao_act_reset(int* IP) { IP[14] = 0; }
 __global__ void ao_act(int* IP, const float* mn) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
@@ -355,7 +367,7 @@ def _src():
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, **kw):
         s.cdp, s.pbc_ns, s.dt_gt, s.mthr = float(cdp), int(pbc_ns), float(dt_gt), float(mthr)
         s.det = bool(det)
         s.hpack = bool(hpack)
@@ -365,6 +377,9 @@ class AORTSolver(DET.DetMixin):
         s.has_pbc = trel is not None
         s.compact, s.warm = bool(compact), bool(warm)
         super().__init__(*args, **kw)
+        s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
+        if s.th is not None:
+            s.set_th()
         s.mod = ART.cp.RawModule(code=_src(), options=("--std=c++14",))
         s.fn = {}
         s.ao_ready = True
@@ -373,6 +388,9 @@ class AORTSolver(DET.DetMixin):
         s.cnt = torch.zeros(4, device=s.dev, dtype=torch.int32)
         s.trel = (trel[s.perm].float().contiguous() if s.has_pbc else None)
         s.graph = None
+
+    def set_th(s):
+        s.tau = s.th * s.dt; s.beta = 1.0 - s.th; s.al = 1.0 / (s.th * s.tau)
 
     def alloc(s, need):
         K0 = s.K
@@ -442,7 +460,7 @@ class AORTSolver(DET.DetMixin):
             s.k("rt_step0", capN, (P(IP), P(s.U), P(s.vk), f(s.tau), f(s.beta), *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.Ut), P(s.z0), P(s.y)), b=256)
             if FL:
                 s.zf(s.an, 9, 1)
-                s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f(2.0 if s.mid else 1.0), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
+                s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f((1.0 / s.th) if s.th is not None else (2.0 if s.mid else 1.0)), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
                                          f(FL["PN"]), f(FL["DXG"]), P(s.an)))
             if s.has_pbc:
                 s.k("ao_pbc_k", capN, (P(IP), P(s.mn), P(s.pacc), i32(s.K), i32(s.pbc_ns), i32(kstep), expo, P(s.kb)), b=256)
@@ -484,7 +502,10 @@ class AORTSolver(DET.DetMixin):
                 if s.warm and it == 0:
                     s.d0.copy_(s.dl)
                 s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(1)), b=256)
-            s.k("rt_stepend", capN, (P(IP), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
+            if s.th is not None:
+                s.k("ao_stepend_th", capN, (P(IP), f(1.0 / s.th), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
+            else:
+                s.k("rt_stepend", capN, (P(IP), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
             s.Ust[kstep].copy_(s.U)
             if kstep < s.K - 1:
                 s.k("ao_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), f(s.cdp)))
@@ -529,6 +550,8 @@ def set_K(s, K, h, sub_dt):
     s.dt = h / s.K
     s.tau = s.dt / 2 if s.mid else s.dt
     s.al = (2.0 / s.tau) if s.mid else (1.0 / s.tau)
+    if getattr(s, "th", None) is not None:
+        s.set_th()
     if s.floor:
         s.floor["KEX"] = s.dt / sub_dt
 
