@@ -38,7 +38,8 @@ ap.add_argument("--cfg_bc", action="store_true")
 ap.add_argument("--region_density", action="store_true")
 ap.add_argument("--pg_vdamp", action="store_true")
 ap.add_argument("--K", type=int, default=2, help="프레임당 암시적 걸음 수")
-ap.add_argument("--integ", choices=["mid", "be", "bdf2", "theta", "trbdf2"], default="mid")
+ap.add_argument("--integ", choices=["mid", "be", "bdf2", "theta", "trbdf2", "ga", "hht"], default="mid")
+ap.add_argument("--rho", type=float, default=0.7, help="--integ ga (Chung-Hulbert generalized-α) / hht (HHT-α) 의 고주파 극한 스펙트럼 반경 ρ∞ (1 = 감쇠 없음, ga 0 에서 1, hht 0.5 에서 1)")
 ap.add_argument("--theta", type=float, default=0.55, help="--integ theta 의 θ: 힘을 y = U_k + θ (U_{k+1} − U_k) 점에서 (0.5 = 중점, 1 = 후퇴 오일러); v_{k+1} = v_k + Δt a(y), U_{k+1} = U_k + Δt ((1−θ) v_k + θ v_{k+1})")
 ap.add_argument("--mlow", type=float, default=0.0, help=">0 이면 절 AH.18 관성 질량 하한 m' = max(m, κ x 첫 프레임 노드 질량 중앙값) (관성에만; 중력은 실제 질량)")
 ap.add_argument("--mfl_n", type=int, default=0, help=">0 이면 절 AG.15 국소 CFL 관성 질량을 명시적 N 서브스텝 기준으로: m' = max(m, (h/(2N))² k_n) (K 와 무관한 고정 하한; 관성에만)")
@@ -92,11 +93,28 @@ SG = {}
 GS = [None]                                                                            # 노드별 중력 몫 m / m' (관성 질량 하한일 때)
 
 
+def ga_par():
+    """generalized-α 계수 (x_{n+1−αf} 형): Chung-Hulbert αm = (2ρ−1)/(ρ+1), αf = ρ/(ρ+1); HHT αm = 0, αf = (1−ρ)/(1+ρ); γ = ½ − αm + αf, β = ¼ (1 − αm + αf)²."""
+    r = a.rho
+    if a.integ == "hht":
+        am, af = 0.0, (1.0 - r) / (1.0 + r)
+    else:
+        am, af = (2 * r - 1) / (r + 1), r / (r + 1)
+    return am, af, 0.5 - am + af, 0.25 * (1 - am + af) ** 2
+
+
+GA_A = [None]                                                                          # 이번 걸음 시작 노드 가속도 a_n
+
+
 def set_stage(kind, dt, th=None, c1=None, c0=None, tau=None):
     """한 풀이 단계의 계수 (실시간 판에서는 커널 인자 몇 개): θ 단계 (τ = θ dt) 또는 2 걸음 BDF 단계 (Ub = c1 U_a − c0 U_n, τ)."""
     global TAU, KEX, DAMP
     SG.clear()
     SG.update(kind=kind, dt=dt, th=th, c1=c1, c0=c0)
+    if kind == "ga":
+        am, af, gm, be = ga_par()
+        SG.update(am=am, af=af, gm=gm, be=be)
+        tau = math.sqrt((1 - af) * be * dt * dt / (1 - am))
     TAU = th * dt if kind == "th" else tau
     KEX = dt / float(cfg["substep_dt"])
     DAMP = (VD_S ** (dt / float(cfg["substep_dt"]))) if (a.pg_vdamp and VD_S < 1.0) else 1.0
@@ -575,6 +593,15 @@ class MGD(MG32):
 def coefs(Uk, vk, hist):
     """적분기 계수: 최소화 E(y) = Σ m'/(2τ²)|y − Ũ|² + Ψ(y) 의 Ũ, 속도 v_{k+1} = α (y − z0) 의 z0·α. 단계 SG (set_stage) 로 정함; 중력은 실제 질량 (GS = m/m')."""
     g_ = gv if GS[0] is None else gv * GS[0]
+    if SG["kind"] == "ga":                                                             # 힘을 y = (1−αf) U_{n+1} + αf U_n 에서; m (y − Ũ)/τ² + ∇Ψ(y) = 0
+        am, af, gm, be, dt = SG["am"], SG["af"], SG["gm"], SG["be"], SG["dt"]
+        an = GA_A[0]
+        xp = Uk + dt * vk + dt * dt * (0.5 - be) * an
+        ys = af * Uk + (1 - af) * xp
+        c1 = (1 - af) * be * dt * dt                                                    # a_{n+1} = (y − ys) / c1
+        al = gm * dt / c1                                                              # v_{n+1} = v_n + dt (1−γ) a_n + γ dt a_{n+1} = α (y − z0)
+        z0 = ys - (vk + dt * (1 - gm) * an) / al
+        return ys + TAU * TAU * (g_ - am * an), z0, al
     if SG["kind"] == "bdf":
         Um, vm = hist
         Ub = SG["c1"] * Uk - SG["c0"] * Um
@@ -586,6 +613,8 @@ def coefs(Uk, vk, hist):
 
 def endpos(y, Uk, vk=None, z0=None, al=None):
     """걸음 끝 변위: BDF 단계 y, θ 단계 U_k + dt ((1−θ) v_k + θ v_{k+1}) (θ 0.5 이면 2y − U_k, 1 이면 y)."""
+    if SG["kind"] == "ga":
+        return (y - SG["af"] * Uk) / (1 - SG["af"])
     if SG["kind"] == "bdf" or SG["th"] == 1.0:
         return y
     if SG["th"] == 0.5:
@@ -1072,6 +1101,17 @@ def frame(fi, x, v, F):
     tp.__exit__()
     GS[0] = None if mI is None else (mn / mI)[:, None]
     MGH = {}
+    an_ = None
+    if a.integ in ("ga", "hht"):                                                       # 노드 가속도 상태: 앞 프레임 입자 가속도 P2G, 첫 프레임은 a0 = g − ∇Ψ(0)/m (평형식)
+        if HISTA[0] is not None:
+            mW = W * m64[:, None]
+            an_ = torch.zeros(na, 3, device=dev, dtype=D64).index_add_(0, nidc.reshape(-1), (mW[..., None] * HISTA[0][:, None, :]).reshape(-1, 3)) / mn[:, None]
+        else:
+            _, f0 = el.eval(torch.zeros(na, 3, device=dev, dtype=D64), 1)
+            me = torch.maximum(mn if mI is None else mI, 1e-3 * mn.median())
+            an_ = gv[None, :] - f0 / me[:, None]
+        if fixd is not None:
+            an_ = torch.where(fixd[:, None], torch.zeros_like(an_), an_)
     for _ in range(Kf):
         Up, vp = U, vn
         if a.fast and a.integ == "trbdf2":                                             # 단계 1: 중점 γΔt, 단계 2: BDF2 (U_n, U_γ -> U_{n+1})
@@ -1080,6 +1120,13 @@ def frame(fi, x, v, F):
             dd = GAM * (2 - GAM)
             set_stage("bdf", (1 - GAM) * DTf, c1=1.0 / dd, c0=(1 - GAM) ** 2 / dd, tau=(1 - GAM) / (2 - GAM) * DTf)
             U, vn = solve_step_fast(el, mn, Ua, va, fixd, vbc, QW, qn, xq0, mq, ctx, MGH.setdefault(TAU, [None]), hist=(U, vn), FS=FS, mI=mI)
+        elif a.fast and a.integ in ("ga", "hht"):
+            set_stage("ga", DTf)
+            GA_A[0] = an_
+            U, vn = solve_step_fast(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx, MGH.setdefault(TAU, [None]), FS=FS, mI=mI)
+            an_ = (vn - vp - DTf * (1 - SG["gm"]) * an_) / (SG["gm"] * DTf)             # Newmark 속도 식으로 (고착 뒤 속도와 맞게)
+            if fixd is not None:
+                an_ = torch.where(fixd[:, None], torch.zeros_like(an_), an_)
         elif a.fast:
             if a.integ == "bdf2":
                 set_stage("bdf", DTf, c1=4.0 / 3.0, c0=1.0 / 3.0, tau=2.0 * DTf / 3.0)
@@ -1090,6 +1137,8 @@ def frame(fi, x, v, F):
             assert a.integ != "bdf2" and a.fl_src == "q" and a.fl_npd == 0, "새 플래그는 --fast 경로에만"
             U, vn = solve_step(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx)
         hist = (Up, vp)
+    if an_ is not None:
+        HISTA[0] = (W[..., None] * an_[nidc]).sum(1)
     if a.integ == "bdf2":
         HIST[0] = ((W[..., None] * (hist[0] - U)[nidc]).sum(1), (W[..., None] * hist[1][nidc]).sum(1))
     STAT["nmv"] = el.nmv
@@ -1115,6 +1164,7 @@ def frame(fi, x, v, F):
 
 
 HIST = [None]
+HISTA = [None]
 MED0 = [None]
 
 

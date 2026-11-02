@@ -31,6 +31,8 @@ run_one() {   # 카드 판 궤적 인자...
   case $t in
     L000) DA="--data $L0 --floor vel";;
     drop1) DA="--data $DD/drop_f1.pt --floor vel --dump";;
+    stretch|shear) BK=/tmp/dkta/ak_block; [ -s $BK/$t.pt ] || { BK=$SD/ak_block; [ -s $BK/$t.pt ] || { mkdir -p $BK; $PY exe/fem_ak_block.py $BK.tmp$BASHPID 1.0 0.03 0.0125 > /dev/null 2>&1 && mv -n $BK.tmp$BASHPID/*.pt $BK/; }; }
+           DA="--data $BK/$t.pt --frames 80 --floor none --dump";;
     ficus) [ -s /dev/shm/dkta/anerr_data/F_pg_v0.pt ] || { mkdir -p /dev/shm/dkta/anerr_data; cp /home/dkta/work/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt /dev/shm/dkta/anerr_data/; }
            DA="--data /dev/shm/dkta/anerr_data/F_pg_v0.pt --frames 125 --floor none --cfg_bc --region_density --pg_vdamp --dump";;
     *) [ -s $LD/$t.pt ] || { cp /home/dkta/work/lbpt/test/$t.pt $LD/$t.pt.$BASHPID && mv $LD/$t.pt.$BASHPID $LD/$t.pt; }; DA="--data $LD/$t.pt --floor vel";;
@@ -43,6 +45,9 @@ run_one() {   # 카드 판 궤적 인자...
   echo "rc=$? $(date '+%F %T')" >> $O/run_info.txt
   if [ $t = drop1 ] && [ -f $O/pred.pt ]; then
     $PY exe/fem_ak_drop_ana.py $DD/init.pt mpm:$DD/mpm/x240.pt:0.0041666667 $V:$O/pred.pt:0.0166666667 > $O/drop_ana.txt 2>&1
+  fi
+  if { [ $t = stretch ] || [ $t = shear ]; } && [ -f $O/pred.pt ]; then
+    $PY exe/fem_ak_block_ana.py $BK/$t.pt $V:$O/pred.pt > $O/block_ana.txt 2>&1
   fi
   if [ $t = ficus ] && [ -f $O/pred.pt ]; then
     $PY exe/fem_p_period.py --data /dev/shm/dkta/anerr_data/F_pg_v0.pt --pred $O/pred.pt > $O/period.txt 2>&1
