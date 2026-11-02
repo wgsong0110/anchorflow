@@ -173,6 +173,10 @@ for fi in range(L):
     fin = bool(torch.isfinite(xo).all()) and math.isfinite(e)
     errs.append(e if fin else float("nan")); ms.append(WALL if a.adaptK > 0 else S.last_ms)
     c = S.counts()
+    _nn = int(S.IP[9])
+    if _nn > 0 and int(S.IP[13]) == 0:                                                 # 발산 진단: 노드 최대 변위 (칸 단위) 와 그 노드 질량 / 중앙값, 입자 최대 속력
+        _ua = S.U[:_nn].norm(dim=-1); _ui = int(_ua.argmax()); _mm = S.mn[:_nn]; _md = float(_mm[_mm > 0].median())
+        c.update(umax_cell=float(_ua[_ui]) / CELL, umax_mrel=float(_mm[_ui]) / _md, vpmax=float(S.v.norm(dim=-1).max()), mrel_min=float(_mm[_mm > 0].min()) / _md)
     if a.diag:
         c["diag"] = S.diag()
     flog.write(json.dumps(dict(t=fi, err=e, ms=S.last_ms, wall_ms=WALL, K=KF, vmax=VMX, redo=redo, **c, **({"kernel_ms": kp} if kp else {}))) + "\n"); flog.flush()
