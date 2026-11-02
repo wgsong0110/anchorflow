@@ -58,16 +58,21 @@ __device__ __forceinline__ int ao_ncell(const int* IP, const int* cidx, int n, i
     if (ci < 0 || cj < 0 || ck < 0 || ci >= IP[6]-2 || cj >= c1 || ck >= c2) return -1;
     return cidx[(ci*c1 + cj)*c2 + ck];
 }
+__device__ int* AO_ACTL;                                                          // 압축 판이면 질량 있는 노드 목록 (IP[14] 개), 아니면 null
+__device__ __forceinline__ int ao_node(const int* IP, int i) {
+    if (AO_ACTL) return (i < IP[14]) ? AO_ACTL[i] : -1;
+    return (i < IP[9]) ? i : -1;
+}
 __global__ void ao_gath_d3(const int* IP, const int* cidx, double* out) {
-    int n = blockIdx.x*blockDim.x + threadIdx.x;
-    if (n >= IP[9]) return;
+    int n = ao_node(IP, blockIdx.x*blockDim.x + threadIdx.x);
+    if (n < 0) return;
     double s[3] = {0.0, 0.0, 0.0};
     for (int o=0;o<27;o++) { int c = ao_ncell(IP, cidx, n, o); if (c < 0) continue; for (int a=0;a<3;a++) s[a] += AO_CF[((size_t)c*27+o)*3+a]; }
     for (int a=0;a<3;a++) out[n*3+a] += s[a];
 }
 __global__ void ao_gath_f(const int* IP, const int* cidx, int D, const float* buf, float* out) {
-    int n = blockIdx.x*blockDim.x + threadIdx.x;
-    if (n >= IP[9]) return;
+    int n = ao_node(IP, blockIdx.x*blockDim.x + threadIdx.x);
+    if (n < 0) return;
     float s[9] = {0,0,0,0,0,0,0,0,0};
     for (int o=0;o<27;o++) { int c = ao_ncell(IP, cidx, n, o); if (c < 0) continue; for (int a=0;a<D;a++) s[a] += buf[((size_t)c*27+o)*D+a]; }
     for (int a=0;a<D;a++) out[n*D+a] += s[a];
@@ -125,6 +130,27 @@ __global__ void ao_p2g_q(int N, const float* F, const float* m, const float* vol
         aq[27] += w; ac[27] += w; ac[28] += w; ac[29] += m[p];
         if (ng) { badq[q] = 1; badc[c] = 1; }
     }
+}
+// P2G 노드 몫 (빠른 판): 칸 하나가 자기 입자의 27 노드 몫 (질량, 운동량 3) 을 고정 순서로 더해 칸 버퍼 [칸 x 27 x 4] 에 -> ao_gath_mv 가 노드마다 모음
+__global__ void ao_p2g_c(const int* IP, const int* st, const float* fx, const float* m, const float* v, float* cbuf) {
+    int c = blockIdx.x*blockDim.x + threadIdx.x;
+    if (IP[13] || c >= IP[11]) return;
+    float acc[27][4];
+    for (int o=0;o<27;o++) for (int a=0;a<4;a++) acc[o][a] = 0.f;
+    for (int p = st[c]; p < st[c+1]; p++) {
+        float wx[3][3], dw[3][3];
+        bwf(fx[p*3], wx[0], dw[0]); bwf(fx[p*3+1], wx[1], dw[1]); bwf(fx[p*3+2], wx[2], dw[2]);
+        float mp = m[p], v0 = v[p*3], v1 = v[p*3+1], v2 = v[p*3+2];
+        for (int o=0;o<27;o++) { float ww = wx[0][o/9]*wx[1][(o/3)%3]*wx[2][o%3]*mp; acc[o][0] += ww; acc[o][1] += ww*v0; acc[o][2] += ww*v1; acc[o][3] += ww*v2; }
+    }
+    for (int o=0;o<27;o++) for (int a=0;a<4;a++) cbuf[((size_t)c*27+o)*4+a] = acc[o][a];
+}
+__global__ void ao_gath_mv(const int* IP, const int* cidx, const float* cbuf, float* mn, float* mv) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (IP[13] || n >= IP[9]) return;
+    float s[4] = {0.f, 0.f, 0.f, 0.f};
+    for (int o=0;o<27;o++) { int c = ao_ncell(IP, cidx, n, o); if (c < 0) continue; for (int a=0;a<4;a++) s[a] += cbuf[((size_t)c*27+o)*4+a]; }
+    mn[n] += s[0]; for (int a=0;a<3;a++) mv[n*3+a] += s[1+a];
 }
 // P2G 노드 몫: 노드 하나가 이웃 27 칸의 입자를 차례로 (질량·운동량), 구속 질량 (KS > 0 이면, ao_pbc_acc 와 같은 끊는 표본)
 __global__ void ao_p2g_n(const int* IP, const int* cidx, const int* st, const float* fx, const float* m, const float* v, float* mn, float* mv,
@@ -217,6 +243,7 @@ class DetMixin(ART.RTSolver):
             ART.cp.ndarray((1,), dtype=dt, memptr=g)[0] = int(t.data_ptr()) if t is not None else 0
         setp("AO_SCB", s.SC, ART.cp.uint64); setp("AO_PART", s.d_part, ART.cp.uint64); setp("AO_BMAX", s.d_bmax, ART.cp.uint64)
         setp("AO_CF", s.d_cf, ART.cp.uint64); setp("AO_CB", s.d_cb, ART.cp.uint64); setp("AO_CV", s.d_cv, ART.cp.uint64); setp("AO_MW", s.d_mw, ART.cp.uint64)
+        setp("AO_ACTL", s.act if getattr(s, "compact", False) else None, ART.cp.uint64)
         g = s.mod.get_global("AO_DET")
         ART.cp.ndarray((1,), dtype=ART.cp.int32, memptr=g)[0] = 1 if s.det else 0
 
@@ -237,7 +264,8 @@ class DetMixin(ART.RTSolver):
             s.zf(s.d_st)
             super().k("ao_seg", s.N + 1, (i32(s.N), P(IP), P(s.pcd), P(s.cidx), P(s.d_st)), 256)
             super().k("ao_p2g_q", s.capQc, (i32(s.N), P(s.F), P(s.m), P(s.vol), P(s.fx), P(s.d_st), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc)), 128)
-            super().k("ao_p2g_n", s.capN, (P(IP), P(s.cidx), P(s.d_st), P(s.fx), P(s.m), P(s.v), P(s.mn), P(s.mv), P(None), P(None), i32(1), i32(1), np.float32(0), P(None)), 128)
+            super().k("ao_p2g_c", s.capQc, (P(IP), P(s.d_st), P(s.fx), P(s.m), P(s.v), P(s.d_cb)), 64)
+            super().k("ao_gath_mv", s.capN, (P(IP), P(s.cidx), P(s.d_cb), P(s.mn), P(s.mv)), 256)
             return
         if name == "ao_pbc_acc":                                                 # 구속 질량 (노드가 모음)
             # args: N, IP, Np, fx, m, trel, tbuf, K, S, dt, acc
