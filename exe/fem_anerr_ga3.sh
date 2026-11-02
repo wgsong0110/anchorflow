@@ -12,5 +12,10 @@ for k in 1 2; do for t in 0001 0003 0015 0016 0017 0018 0005 0013 L000; do
   echo "hht7_K$k $t --K $k --integ hht --rho 0.7 $S" >> $L
   echo "ga7m_K$k $t --K $k --integ ga --rho 0.7 $FL $S" >> $L
 done; done
-wc -l $L
+# 1 단계의 낙하 generalized-α·HHT 판 (옛 끝 위치 식) 을 고친 식으로 다시 (ga2b)
+L2=/dev/shm/dkta/anerr_ga2b.txt; : > $L2
+for k in 1 2; do for r in 0.5 0.7 0.9; do echo "ga${r#0.}_K$k drop1 --K $k --integ ga --rho $r $S" >> $L2; done
+  for r in 0.7 0.9; do echo "hht${r#0.}_K$k drop1 --K $k --integ hht --rho $r $S" >> $L2; done; done
+wc -l $L $L2
+ERR_CARDS="3 5" ERR_PAR=2 bash exe/fem_anerr_pool.sh ga2b $L2
 ERR_CARDS="3 5" ERR_PAR=2 bash exe/fem_anerr_pool.sh ga3 $L
