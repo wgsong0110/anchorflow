@@ -9,7 +9,7 @@ B = sys.argv[1]
 T = ["0001", "0003", "0015", "0016", "0017", "0018", "0005", "0013", "L000"]
 V = [("명시적 bnv", ["fem_ak_bselc/{t}_bnv"]), ("실시간 판 중점 K1", ["fem_an/{t}_rl1n2c20"]),
      ("후퇴 K1", ["fem_anerr/k1fac/g_be_K1_{t}", "fem_anerr/ga3/be_K1_{t}", "fem_anerr/r2b/g_be_K1_{t}"]),
-     ("후퇴 K2", ["fem_anerr/r2/g_be_K2_{t}", "fem_anerr/ga3/be_K2_{t}"])]
+     ("후퇴 K2", ["fem_anerr/r2/g_be_K2_{t}", "fem_anerr/ga3/be_K2_{t}", "fem_anerr/ga6b/be_K2_{t}"])]
 for nm, tag in [("GA ρ0.5", "ga5"), ("GA ρ0.7", "ga7"), ("GA ρ0.9", "ga9"), ("HHT ρ0.7", "hht7"), ("GA ρ0.7 + 하한", "ga7m")]:
     for k in (1, 2):
         V.append((f"{nm} K{k}", [f"fem_anerr/ga6/{tag}_K{k}_{{t}}", f"fem_anerr/ga6b/{tag}_K{k}_{{t}}"]))
