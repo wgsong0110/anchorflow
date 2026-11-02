@@ -40,6 +40,7 @@ ap.add_argument("--pg_vdamp", action="store_true")
 ap.add_argument("--K", type=int, default=2, help="프레임당 암시적 걸음 수")
 ap.add_argument("--integ", choices=["mid", "be", "bdf2", "theta", "trbdf2", "ga", "hht"], default="mid")
 ap.add_argument("--y0", choices=["ut", "uk"], default="ut", help="뉴턴 시작점: 관성 예측 Ũ (원본) 또는 걸음 시작 위치 (같은 최소화, 시작점만 -- 큰 a_n 으로 예측이 요소를 뒤집을 때). 고착 판정은 그대로 관성 예측으로")
+ap.add_argument("--ga_areset", action="store_true", help="generalized-α·HHT: 바닥 고착 몫이 있는 노드 (r > 0) 의 가속도 상태를 걸음 끝에 0 으로 (충격 속도 급변이 다음 걸음 예측 αm a_n·(½−β)Δt² a_n 으로 넘어가지 않게)")
 ap.add_argument("--rho", type=float, default=0.7, help="--integ ga (Chung-Hulbert generalized-α) / hht (HHT-α) 의 고주파 극한 스펙트럼 반경 ρ∞ (1 = 감쇠 없음, ga 0 에서 1, hht 0.5 에서 1)")
 ap.add_argument("--theta", type=float, default=0.55, help="--integ theta 의 θ: 힘을 y = U_k + θ (U_{k+1} − U_k) 점에서 (0.5 = 중점, 1 = 후퇴 오일러); v_{k+1} = v_k + Δt a(y), U_{k+1} = U_k + Δt ((1−θ) v_k + θ v_{k+1})")
 ap.add_argument("--mlow", type=float, default=0.0, help=">0 이면 절 AH.18 관성 질량 하한 m' = max(m, κ x 첫 프레임 노드 질량 중앙값) (관성에만; 중력은 실제 질량)")
@@ -669,6 +670,7 @@ def floor_state(y, Uk, z0, Ut, al, na, FS, vk=None):
         yh = yh + torch.where(npm[:, None], ((z0 - yh) @ NR)[:, None] * NR, torch.zeros_like(yh))
         eta = (Q @ eta[..., None]).squeeze(-1)
         STAT["npd"] = int(npm.sum())
+    LASTR[0] = r > 0
     return T, yh, eta, (r > 0).sum()
 
 
@@ -1131,6 +1133,8 @@ def frame(fi, x, v, F):
             U, vn = solve_step_fast(el, mn, U, vn, fixd, vbc, QW, qn, xq0, mq, ctx, MGH.setdefault(TAU, [None]), FS=FS, mI=mI)
             an1 = (vn - vp - DTf * (1 - SG["gm"]) * an_) / (SG["gm"] * DTf)              # Newmark 속도 식으로 (고착 뒤 속도와 맞게)
             U = Up + DTf * vp + DTf * DTf * ((0.5 - SG["be"]) * an_ + SG["be"] * an1)     # 끝 위치도 Newmark 위치 식 (고착 없으면 (y − αf U_n)/(1−αf) 와 같음; 고착이 속도만 깎아 위치가 바닥 밑으로 외삽되던 것 고침)
+            if a.ga_areset and LASTR[0] is not None:
+                an1 = torch.where(LASTR[0][:, None], torch.zeros_like(an1), an1)
             an_ = an1
             if fixd is not None:
                 an_ = torch.where(fixd[:, None], torch.zeros_like(an_), an_)
@@ -1172,6 +1176,7 @@ def frame(fi, x, v, F):
 
 HIST = [None]
 HISTA = [None]
+LASTR = [None]
 MED0 = [None]
 
 
