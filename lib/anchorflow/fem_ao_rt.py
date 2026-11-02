@@ -65,7 +65,7 @@ __global__ void ao_pbc_k(const int* IP, const float* mn, const float* acc, int K
 }
 __global__ void ao_floor_n(const int* IP, const float* an, const float* mqn, float kex, int floor_, int vout, float al, float n0, float n1, float n2,
                            const unsigned char* fixd, const float* vbc, const float* U, float tau, const float* Ut, const float* z0, float* y, float* sk, int* pm, float* yh, float* eta,
-                           const float* kb, const float* mn, float mthr) {
+                           const float* kb, const float* mn, float mthr, int y0uk) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
     float k = 1.f; int p = 0;
@@ -92,6 +92,12 @@ __global__ void ao_floor_n(const int* IP, const float* an, const float* mqn, flo
     if (p == 0) { for (int a=0;a<3;a++) et[a] = s*e2[a]; }
     else { float c1 = e1[0]*n0 + e1[1]*n1 + e1[2]*n2; float c2 = e2[0]*n0 + e2[1]*n1 + e2[2]*n2;
            for (int a=0;a<3;a++) { float nn_ = (a==0) ? n0 : ((a==1) ? n1 : n2); et[a] = c1*nn_ + s*(e2[a] - c2*nn_); } }
+    if (y0uk) {                                                                  // 뉴턴 시작점 = 걸음 시작 위치 U (T 의 역: 법선 성분 그대로, 나머지 /√k, k = 0 이면 0; 절 AN.err3 처치 (a))
+        float isk = (s > 1e-6f) ? 1.f/s : 0.f;
+        float dd[3]; for (int a=0;a<3;a++) dd[a] = U[n*3+a] - h[a];
+        if (p == 0) { for (int a=0;a<3;a++) et[a] = isk*dd[a]; }
+        else { float dn = dd[0]*n0 + dd[1]*n1 + dd[2]*n2; float nv[3] = {n0, n1, n2}; for (int a=0;a<3;a++) et[a] = dn*nv[a] + isk*(dd[a] - dn*nv[a]); }
+    }
     float ty[3]; Tapply(s, p, n0, n1, n2, et, ty);
     for (int a=0;a<3;a++) { yh[n*3+a] = h[a]; eta[n*3+a] = et[a]; y[n*3+a] = h[a] + ty[a]; }
     sk[n] = s; pm[n] = p;
@@ -422,6 +428,79 @@ __global__ void __launch_bounds__(128) ao_mv_q(const int* IP, const int* cb, con
         if (on) for (int a=0;a<3;a++) { if (AO_DET) AO_CV[((size_t)(qq>>3)*27+o)*3+a] = sv[a]; else atomicAdd(&out[ids[o]*3+a], sv[a]); }
     }
 }
+// ---- generalized-α / HHT (절 AN.err3 증분 포텐셜 꼴): 힘을 y = (1−αf) U_{n+1} + αf U_n 에서, 노드 가속도 상태 ga (3 x 노드)
+__global__ void ao_step0_ga(const int* IP, const float* U, const float* vk, const float* ga, float dt, float am, float af, float gm, float be, float tau, float g0, float g1, float g2,
+                            float* Ut, float* z0, float* y) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float gg[3] = {g0, g1, g2};
+    float c1 = (1.f - af)*be*dt*dt, al = gm*dt/c1;
+    for (int a=0;a<3;a++) {
+        float u = U[n*3+a], v = vk[n*3+a], an = ga[n*3+a];
+        float xp = u + dt*v + dt*dt*(0.5f - be)*an;
+        float ys = af*u + (1.f - af)*xp;
+        z0[n*3+a] = ys - (v + dt*(1.f - gm)*an)/al;
+        float ut = ys + tau*tau*(gg[a] - am*an);
+        Ut[n*3+a] = ut; y[n*3+a] = ut;                                       // 고착 판정·바깥 법선 판정은 관성 예측으로 (시작점은 ao_floor_n y0uk)
+    }
+}
+// 걸음 끝: v = α (y − z0), a_{n+1} = (v − v_n − dt (1−γ) a_n)/(γ dt) (Newmark 속도 식, 고착 뒤 속도와 맞게), U = U_n + dt v_n + dt² ((½−β) a_n + β a_{n+1}) (처치 (c)),
+// 고착 몫 있는 노드 (an/mqn > 0) 와 구속 노드 (k_구속 < 1) 는 a_{n+1} = 0 (처치 (b); 구속은 같은 이유로 덧붙임)
+__global__ void ao_stepend_ga(const int* IP, float dt, float gm, float be, float al, const float* y, const float* z0, float* U, float* vk, float* ga,
+                              const float* anf, const float* mqn, const float* kb, float damp) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    bool st = (anf && mqn[n] > 0.f && anf[n] > 0.f) || (kb && kb[n] < 1.f);
+    for (int a=0;a<3;a++) {
+        float u = U[n*3+a], v = vk[n*3+a], an = ga[n*3+a];
+        float v1 = al*(y[n*3+a] - z0[n*3+a]);
+        float a1 = (v1 - v - dt*(1.f - gm)*an)/(gm*dt);
+        U[n*3+a] = u + dt*v + dt*dt*((0.5f - be)*an + be*a1);
+        vk[n*3+a] = v1*damp;
+        ga[n*3+a] = st ? 0.f : a1;
+    }
+}
+__global__ void ao_p2g_a(int N, const int* IP, const int* pb, const float* fx, const float* m, const float* pa, float* acc) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N || IP[13]) return;
+    float w[3][3], dw[3][3];
+    for (int a=0;a<3;a++) bwf(fx[p*3+a], w[a], dw[a]);
+    int nb1 = IP[7], nb2 = IP[8];
+    float mp = m[p];
+    for (int o=0;o<27;o++) {
+        int i = o/9, j = (o/3)%3, k = o%3;
+        int nid = ((pb[p*3]+i)*nb1 + (pb[p*3+1]+j))*nb2 + (pb[p*3+2]+k);
+        float ww = w[0][i]*w[1][j]*w[2][k]*mp;
+        for (int a=0;a<3;a++) atomicAdd(&acc[nid*3+a], ww*pa[p*3+a]);
+    }
+}
+__global__ void ao_adiv(const int* IP, const float* mn, float* ga) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float m = mn[n];
+    for (int a=0;a<3;a++) ga[n*3+a] = (m > 0.f) ? ga[n*3+a]/m : 0.f;
+}
+__global__ void ao_azero(int N, const float* Trel, const float* tbuf, float* pa) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N) return;
+    if (Trel[p] > tbuf[0]) { pa[p*3] = 0.f; pa[p*3+1] = 0.f; pa[p*3+2] = 0.f; }
+}
+// 입자 가속도 = Σ w a_K (마지막 걸음 노드 가속도), 다음 프레임 P2G 로 노드에
+__global__ void ao_g2p_a(int N, const int* IP, const int* pb, const float* fx, const float* ga, float* pa) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N || IP[13]) return;
+    float w[3][3], dw[3][3];
+    for (int a=0;a<3;a++) bwf(fx[p*3+a], w[a], dw[a]);
+    int nb1 = IP[7], nb2 = IP[8];
+    float s[3] = {0.f, 0.f, 0.f};
+    for (int o=0;o<27;o++) {
+        int i = o/9, j = (o/3)%3, k = o%3;
+        int nid = ((pb[p*3]+i)*nb1 + (pb[p*3+1]+j))*nb2 + (pb[p*3+2]+k);
+        float ww = w[0][i]*w[1][j]*w[2][k];
+        for (int a=0;a<3;a++) s[a] += ww*ga[nid*3+a];
+    }
+    for (int a=0;a<3;a++) pa[p*3+a] = s[a];
+}
 '''
 
 
@@ -494,7 +573,7 @@ def _src():
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, **kw):
         s.cdp, s.pbc_ns, s.dt_gt, s.mthr = float(cdp), int(pbc_ns), float(dt_gt), float(mthr)
         s.det = bool(det)
         s.hpack = bool(hpack)
@@ -505,6 +584,17 @@ class AORTSolver(DET.DetMixin):
         s.has_pbc = trel is not None
         s.compact, s.warm = bool(compact), bool(warm)
         super().__init__(*args, **kw)
+        s.ga = ga                                                                      # None 또는 dict(kind="hht"|"ga", rho)
+        if s.ga is not None:
+            assert not s.bc, "GA 판은 고정 노드 없는 씬만"
+            r = float(s.ga["rho"])
+            am, af = ((0.0, (1 - r) / (1 + r)) if s.ga["kind"] == "hht" else ((2 * r - 1) / (r + 1), r / (r + 1)))
+            s.ga_c = dict(am=am, af=af, gm=0.5 - am + af, be=0.25 * (1 - am + af) ** 2)
+            s.set_ga()
+            g_ = torch.tensor([float(q) for q in s.g], device=s.dev, dtype=torch.float32)
+            s.pa = g_.expand(s.N, 3).clone().contiguous()                            # 첫 프레임 입자 가속도 = g (정지 모래는 응력 0; 구속 입자는 프레임마다 0)
+        else:
+            s.pa = None
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
@@ -522,6 +612,12 @@ class AORTSolver(DET.DetMixin):
             return "ao_mv_q"
         return ("ao_mv_h" if s.h16 else ("ao_mv_c" if s.mvc else "ao_mv_s")) if s.hpack else "rt_mv"
 
+    def set_ga(s):
+        c = s.ga_c
+        s.tau = float(np.sqrt((1 - c["af"]) * c["be"] * s.dt * s.dt / (1 - c["am"])))
+        s.al = c["gm"] * s.dt / ((1 - c["af"]) * c["be"] * s.dt * s.dt)
+        s.beta = 0.0
+
     def set_th(s):
         s.tau = s.th * s.dt; s.beta = 1.0 - s.th; s.al = 1.0 / (s.th * s.tau)
 
@@ -537,6 +633,7 @@ class AORTSolver(DET.DetMixin):
         s.act = torch.zeros(s.capN, device=s.dev, dtype=torch.int32)
         s.det_alloc()
         s.d0 = Z(s.capN, 3); s.td = Z(s.capN, 3); s.KTd = Z(s.capN, 3)
+        s.gaA = Z(s.capN, 3); s.gaM = Z(s.capN)
         s.kalloc = s.K
         s.K = K0
         s.graph = None
@@ -568,9 +665,19 @@ class AORTSolver(DET.DetMixin):
         s.zf(s.badq); s.zf(s.badc); s.zf(s.nbad)
         if s.has_pbc:
             s.k("ao_vzero", N, (i32(N), P(IP), P(s.trel), P(s.tbuf), P(s.v)))
+            if s.ga is not None:
+                s.k("ao_azero", N, (i32(N), P(s.trel), P(s.tbuf), P(s.pa)))
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv)))
         s.k("rt_gauss", capQ, (P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.cb), P(s.A), P(s.BW), P(s.Fq), P(s.Vq), P(s.mq), P(s.xq0), P(s.mqn), P(s.nbad)))
         s.k("rt_vn", capN, (P(IP), P(s.mn), P(s.mv), P(s.vk), P(s.U)), b=256)
+        if s.ga is not None:                                                           # 노드 가속도 = 입자 가속도 P2G (결정적 판은 노드가 이웃 칸 입자를 고정 순서로)
+            s.zf(s.gaA, 9, 3)
+            if s.det:
+                s.zf(s.gaM, 9, 1)
+                s.k("ao_p2g_n", capN, (P(IP), P(s.cidx), P(s.d_st), P(s.fx), P(s.m), P(s.pa), P(s.gaM), P(s.gaA), P(None), P(None), i32(1), i32(1), f(0.0), P(None)), b=128)
+            else:
+                s.k("ao_p2g_a", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.m), P(s.pa), P(s.gaA)))
+            s.k("ao_adiv", capN, (P(IP), P(s.mn), P(s.gaA)), b=256)
         s.k("ao_act_reset", 1, (P(IP),), b=1)
         s.k("ao_act", capN, (P(IP), P(s.mn)), b=256)
         if s.warm:
@@ -590,16 +697,20 @@ class AORTSolver(DET.DetMixin):
         it2 = f(1.0 / (s.tau * s.tau))
         expo = f(s.dt / s.pbc_ns / s.dt_gt)
         for kstep in range(s.K):
-            s.k("rt_step0", capN, (P(IP), P(s.U), P(s.vk), f(s.tau), f(s.beta), *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.Ut), P(s.z0), P(s.y)), b=256)
+            if s.ga is not None:
+                c = s.ga_c
+                s.k("ao_step0_ga", capN, (P(IP), P(s.U), P(s.vk), P(s.gaA), f(s.dt), f(c["am"]), f(c["af"]), f(c["gm"]), f(c["be"]), f(s.tau), *[f(q) for q in s.g], P(s.Ut), P(s.z0), P(s.y)), b=256)
+            else:
+                s.k("rt_step0", capN, (P(IP), P(s.U), P(s.vk), f(s.tau), f(s.beta), *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.Ut), P(s.z0), P(s.y)), b=256)
             if FL:
                 s.zf(s.an, 9, 1)
-                s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f((1.0 / s.th) if s.th is not None else (2.0 if s.mid else 1.0)), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
+                s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f((1.0 / (1.0 - s.ga_c["af"])) if s.ga is not None else ((1.0 / s.th) if s.th is not None else (2.0 if s.mid else 1.0))), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
                                          f(FL["PN"]), f(FL["DXG"]), P(s.an)))
             if s.has_pbc:
                 s.k("ao_pbc_k", capN, (P(IP), P(s.mn), P(s.pacc), i32(s.K), i32(s.pbc_ns), i32(kstep), expo, P(s.kb)), b=256)
             s.k("ao_floor_n", capN, (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(s.al), *[f(q) for q in nr],
                                      P(s.fixd), P(s.vbc), P(s.U), f(s.tau), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta),
-                                     P(s.kb if s.has_pbc else None), P(s.mn), f(s.mthr)), b=256)
+                                     P(s.kb if s.has_pbc else None), P(s.mn), f(s.mthr), i32(1 if s.ga is not None else 0)), b=256)
             for it in range(s.nt):
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(16)), b=1)
@@ -635,13 +746,18 @@ class AORTSolver(DET.DetMixin):
                 if s.warm and it == 0:
                     s.d0.copy_(s.dl)
                 s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(1)), b=256)
-            if s.th is not None:
+            if s.ga is not None:
+                c = s.ga_c
+                s.k("ao_stepend_ga", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if FL else None), P(s.mqn), P(s.kb if s.has_pbc else None), f(s.damp)), b=256)
+            elif s.th is not None:
                 s.k("ao_stepend_th", capN, (P(IP), f(1.0 / s.th), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
             else:
                 s.k("rt_stepend", capN, (P(IP), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
             s.Ust[kstep].copy_(s.U)
             if kstep < s.K - 1:
                 s.k("ao_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), f(s.cdp)))
+        if s.ga is not None:
+            s.k("ao_g2p_a", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.gaA), P(s.pa)))
         s.k("ao_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.Ust), i32(s.K), i32(capN), P(s.vk), f(s.cdp), P(s.x), P(s.v), P(s.F), P(s.cnt)))
 
     def bench(s, names, reps=200):
