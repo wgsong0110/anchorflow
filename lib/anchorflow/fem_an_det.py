@@ -402,13 +402,13 @@ class DetMixin(ART.RTSolver):
                 super().k("ao_gath_d3", s.capN, (P(IP), P(s.cidx), fptr), 256)
             if (mode & 2) and (mode & 8):
                 super().k("ao_gath_f", s.capN, (P(IP), P(s.cidx), i32(9), P(s.d_cb), bptr), 256)
-        elif name == "rt_mg_mv":
+        elif name in ("rt_mg_mv", "rt_mg_mv2"):
             l = int(args[0])
             super().k("ao_mg_gath", s.ML[l - 1]["capn"], (args[0], P(s.LM), i32(3), P(s.d_mgv), args[5], args[9]), 256)
         elif name == "rt_mg_elem":
             l = int(args[0])
             super().k("ao_mg_gath", s.ML[l - 1]["capn"], (args[0], P(s.LM), i32(9), P(s.d_mgb), args[5], args[10]), 256)
-        elif name == "rt_mv":
+        elif name in ("rt_mv", "rt_mv2"):
             super().k("ao_gath_f", s.capN, (P(IP), P(s.cidx), i32(3), P(s.d_cv), args[7]), 256)
         elif name == "rt_gauss":
             super().k("ao_gath_q", s.capN, (P(IP), P(s.cidx), P(s.BW), P(s.mq), P(s.mqn)), 256)
@@ -416,11 +416,14 @@ class DetMixin(ART.RTSolver):
             super().k("ao_gath_q", s.capN, (P(IP), P(s.cidx), P(s.BW), P(s.d_mw), args[-1]), 256)
 
 
-def det_module_src():
-    """이 가지 fem_an_rt.SRC 에 결정적 분기 + DET_SRC (AO_ACT 선언 포함: DET_SRC 의 노드 목록 커널이 쓰지 않아도 선언만)."""
-    src = ART.SRC.rstrip()
+def det_module_src(mg2=False):
+    """이 가지 fem_an_rt.SRC 에 결정적 분기 + DET_SRC (AO_ACT 선언 포함: DET_SRC 의 노드 목록 커널이 쓰지 않아도 선언만). mg2: 절 AN.20 커널 포함 (칸 협동 곱의 원자 합도 칸 버퍼로)."""
+    src = (ART.MG2.mg2_src(ART.SRC) if mg2 else ART.SRC).rstrip()
     i = src.rfind("}")
-    return det_src(src[:i]) + DET_SRC + "\n}\n"
+    s = det_src(src[:i])
+    if mg2:
+        s = ART.MG2.det_mg2(s)
+    return s + DET_SRC + "\n}\n"
 
 
 class DetRT(DetMixin):
@@ -430,7 +433,7 @@ class DetRT(DetMixin):
         s.det = bool(det)
         s.ao_ready = False
         super().__init__(*args, **kw)
-        src = det_module_src()
+        src = det_module_src(getattr(s, "mg2", False))
         s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor), options=("--std=c++14",))
         s._src0 = src
         s.fn = {}

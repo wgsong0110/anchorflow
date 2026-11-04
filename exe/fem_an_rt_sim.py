@@ -63,6 +63,10 @@ ap.add_argument("--pk", action="store_true", help="절 AN.18 지속형 커널 �
 ap.add_argument("--pk_loc", type=int, default=2, help="지속형 판: 이 MG 층 이상은 블록 0 하나가 (격자 장벽 줄이기; 99 = 끔)")
 ap.add_argument("--pkb", type=int, default=256, help="지속형 판 물리 블록 크기")
 ap.add_argument("--pkminb", type=int, default=1, help="지속형 판 __launch_bounds__ 최소 블록 수 (레지스터 상한)")
+ap.add_argument("--mv2", action="store_true", help="절 AN.20: 칸 협동 헤시안 곱 (고운·거친 층; 결과 정의 같음, 반올림 순서만 다름)")
+ap.add_argument("--mg_occ", action="store_true", help="절 AN.20: 거친 층 곱을 점유 칸 목록만 (빈 칸은 부피 0 이라 연산자 같음; --mv2 포함)")
+ap.add_argument("--mg_fuse", type=int, default=0, help="절 AN.20: 이 MG 층 이상 V 순환을 한 블록 커널 하나로 (0 = 끔; 결정적 판과 같은 비트)")
+ap.add_argument("--kbench", type=int, default=0, help="절 AN.20: 이 프레임 수를 돈 뒤 커널별 그래프 재생 시간 (µs/회) 을 kbench.json 에 쓰고 끝냄")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
 a = ap.parse_args()
 dev = "cuda"
@@ -108,7 +112,7 @@ if a.det:
     from anchorflow import fem_an_det as ADET
 SOLVER = ADET.DetRT if a.det else ART.RTSolver
 S = SOLVER(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb)
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, 적분기 {a.ga + ' ρ ' + str(a.rho) if a.ga else a.integ}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
@@ -137,6 +141,14 @@ for fi in range(L):
         if PREDF is not None:
             _fo = torch.empty_like(S.F); _fo[S.perm] = S.F
             PREDF[fi] = _fo.reshape(-1, 3, 3).cpu()
+    if a.kbench and fi + 1 == a.kbench:
+        kb = S.kbench()
+        kb["_frame_ms"] = S.last_ms; kb["_counts"] = c; kb["_mg_cnt"] = S.mg_cnt.cpu().tolist() if hasattr(S, "mg_cnt") else None
+        kb["_LM"] = S.LM.cpu().tolist() if hasattr(S, "LM") else None
+        json.dump(kb, open(os.path.join(a.out, "kbench.json"), "w"), indent=1, ensure_ascii=False)
+        print("[kbench]", json.dumps(kb, ensure_ascii=False), flush=True)
+        L = fi + 1
+        break
     if not fin or e > 2.0:
         div_at = fi + 1
         print(f"[발산] 프레임 {div_at}", flush=True)

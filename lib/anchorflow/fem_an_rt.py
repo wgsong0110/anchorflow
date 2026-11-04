@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from . import fem_rt_cuda as RTC
+from . import fem_an_mg2 as MG2
 
 SRC = r'''
 #define NQ8 8
@@ -1291,15 +1292,21 @@ def P(t):
     return np.uint64(0) if t is None else np.uint64(t.data_ptr())
 
 
-class RTSolver:
+class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0):
         s.dev = dev
+        # 절 AN.20 (lib/anchorflow/fem_an_mg2.py): 칸 협동 곱 (mv2), 거친 층 점유 칸 목록 (mg_occ, mv2 포함), 층 mg_fuse 이상 V 순환 한 블록 (mg_fuse >= 1)
+        s.mg_occ, s.mg_fuse = bool(mg_occ), int(mg_fuse or 0)
+        s.mv2 = bool(mv2) or s.mg_occ
+        s.mg2 = s.mv2 or s.mg_fuse > 0
+        assert not (s.mg2 and pk), "절 AN.20 판은 그래프 판만"
+        assert s.mg_fuse == 0 or 1 <= s.mg_fuse <= int(mg_levels) - 1, "--mg_fuse 는 1 .. 층 수 − 1"
         # 지속형 커널 판 (절 AN.18, lib/anchorflow/fem_an_pk.py): 프레임 하나 = 협동 실행 커널 한 번 (명령 목록을 격자 장벽으로 차례로). pk_loc = 블록 0 하나가 도는 MG 층 (이 층 이상)
         s.pk, s.pk_loc_l, s.pkb, s.pkminb = bool(pk), int(pk_loc), int(pkb), int(pkminb)
         s._pkc, s._pk_loc, s.pkmod = None, 0, None
-        s._src0 = SRC
+        s._src0 = MG2.mg2_src(SRC) if s.mg2 else SRC
         # 허용치 조기 종료 (절 AN.14): 뉴턴 |g|/|g0| <= tolN, PCG sqrt(r·z / r0·z0) <= tolP (음수 = 그 판정 없음). 뉴턴·PCG 수는 상한 (그래프에 펼친 수)
         s.tolN, s.tolP = float(tolN), float(tolP)
         s.adapt = s.tolN >= 0 or s.tolP >= 0
@@ -1346,7 +1353,7 @@ class RTSolver:
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(SRC, s.adapt, s.goct, s.floor), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
@@ -1477,6 +1484,9 @@ class RTSolver:
             s.LM = torch.zeros(s.nl * 8, device=dev, dtype=torch.int32)
             s.W = torch.zeros(s.nl, device=dev, dtype=torch.float64); s.SCM = torch.zeros(s.nl * 4, device=dev, dtype=torch.float64)
             s.m0t = Z(s.capN, 3); s.m0u = Z(s.capN, 3); s.m0KT = Z(s.capN, 3); s.zo = Z(s.capN, 3); s.mnd = s.mn
+            if s.mg2:                                                                  # 절 AN.20: 점유 칸 목록 용량 (지금 입자 상자에서 센 점유 칸 x cap_mul)
+                yb = torch.floor(s.x.double() @ s.Ai.double().T - 0.5)
+                s.mg2_alloc(torch.unique((yb - yb.min(0).values).long(), dim=0))
         if s.pk:                                                                       # 지속형 판 보조 버퍼: 칸 스캔 덩어리 합, 결정적 판 정렬 (칸 개수·시작·자리, 순번, 모으기 임시)
             s.pk_capB = (s.capC + 255) // 256
             s.pk_bs = torch.zeros(s.pk_capB + 1, device=dev, dtype=torch.int32)
@@ -1520,6 +1530,8 @@ class RTSolver:
             Vs = s.Vq if l == 1 else s.ML[l - 2]["Vq"]
             s.k("rt_mg_acc", src_cap, (i32(l), P(s.IP), P(s.LM), P(s.cb), P(Fs), P(Vs), P(L["A"]), P(L["C"]), P(L["badq"]), P(L["badc"])))
             s.k("rt_mg_fin", L["capq"], (i32(l), P(s.LM), P(L["A"]), P(L["C"]), P(L["badq"]), P(L["badc"]), P(L["Fq"]), P(L["Vq"])))
+            if s.mg2:
+                s.mg2_occ(l)
             mprev = s.mn if l == 1 else s.ML[l - 2]["mc"]
             s.k("rt_mg_restrict", L["capn"], (i32(l - 1), P(s.LM), P(mprev), P(L["mc"]), i32(1)), b=256)
             s.k("rt_mg_elem", L["capq"], (i32(l), P(s.LM), P(s.BG), f(0.5 ** l), P(L["Fq"]), P(L["Vq"]), f(s.mu), f(s.lam), P(L["H"]), i32(L["capq"]), P(L["B"])))
@@ -1536,8 +1548,14 @@ class RTSolver:
         if l == 0:
             if not tz_ready:
                 s.k("rt_mg_node", s.capN, (i32(0), P(s.LM), i32(3), P(s.mn), f(0), P(s.sk), P(s.pm), *[f(q) for q in nr], P(None), P(s.W), P(None), P(None), P(z), P(s.m0u)), b=256)
+            if s.mv2:
+                s.mg2_mv(0, s.m0u, KT)
+                return
             s.k("rt_mv", s.capQc * 8, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.m0u), P(KT), i32(s.capQc * 8)))
         else:
+            if s.mv2:
+                s.mg2_mv(l, z, KT)
+                return
             L = s.ML[l - 1]
             s.k("rt_mg_mv", L["capq"], (i32(l), P(s.LM), P(s.BG), f(0.5 ** l), P(L["Fq"]), P(L["Vq"]), P(L["H"]), i32(L["capq"]), P(z), P(KT)))
 
@@ -1618,7 +1636,10 @@ class RTSolver:
                 s.k("rt_mg_restrict", Lc["capn"], (i32(l), P(s.LM), P(res), P(Lc["r"]), i32(3)), b=256)
             if not (l + 1 >= s.pk_loc_l) and not (s.nl - 1 == l + 1 and s.mg_csolve):
                 s.pk_chain("rt_mg_restrict", "rt_mg_node")
-        s.mg_vc(l + 1, Lc["r"], Lc["z"])
+        if s.mg_fuse and l + 1 == s.mg_fuse:                                           # 절 AN.20: 층 mg_fuse 이상 V 순환 한 블록
+            s.mg2_cvc(Lc["r"], Lc["z"])
+        else:
+            s.mg_vc(l + 1, Lc["r"], Lc["z"])
         if l == 0:
             s.k("rt_mg_prolong", V["cap"], (i32(0), P(s.LM), P(Lc["z"]), P(s.m0u), i32(0)), b=256)
             s.pk_chain("rt_mg_prolong", "rt_mg_node")                                  # 다음 = z += T P z_c (같은 노드)
@@ -1761,7 +1782,7 @@ class RTSolver:
                     s.ctl(5, ci)
                     if ci == 0 or not s.fuse2:
                         s.zf(s.KTp, 9, 3)
-                    s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
+                    s.k("rt_mv2" if s.mv2 else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
                     if s.bar:
                         s.k("rt_bar_mv", capN, (P(IP), P(s.bKn), *[f(q) for q in nr], P(s.Tp), P(s.KTp)), b=256)
                     s.k("rt_ap", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
