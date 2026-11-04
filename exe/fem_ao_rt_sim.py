@@ -60,6 +60,7 @@ ap.add_argument("--det", action="store_true", help="결정적 합산 (lib/anchor
 ap.add_argument("--ao_fast", action="store_true", help="탄성 씬에도 노드 압축·PCG 첫 추정 (절 AO.11; 기본은 절 AN 그대로)")
 ap.add_argument("--no_warm", action="store_true")
 ap.add_argument("--F0_eye", action="store_true", help="초기 탄성 F = I (정답 MPM 시작 상태; 자료 F 가 항등이라 위치에서 되살린 F 대신)")
+ap.add_argument("--no_rm", action="store_true", help="진단: 재질 판 RM 끔 (탄성 응력만, prm[15])")
 ap.add_argument("--ys_big", action="store_true", help="진단: 항복 응력을 아주 크게 (소성 없이 탄성만)")
 ap.add_argument("--visc_rpic", action="store_true", help="정답 config rpic_damping r -> 등가 점성 η = ρ r (2−r) Δx_gt² / (16 Δt_gt) (절 AG.20)")
 ap.add_argument("--floor_plane", type=str, default="", help="바닥 평면 px,py,pz,nx,ny,nz (주면 config surface_collider 대신; 수박 = GF bounding_box)")
@@ -164,6 +165,8 @@ if MATK is not None:                                                            
     assert _mat == MATK
     if a.ys_big:
         PRD["yield_stress"] = 1e30
+    if a.no_rm:
+        PRM[15] = 1.0
     VISC = 0.0
     if a.visc_rpic and float(cfg.get("rpic_damping", 0.0)) > 0:
         _r = float(cfg["rpic_damping"])
@@ -227,6 +230,12 @@ for fi in range(L):
         FDMP[fi] = _Fo.reshape(Np, 3, 3).cpu()
     if not fin or e > 2.0 or float(S.v.norm(dim=-1).max()) > 200.0:
         div_at = fi + 1
+        _nf = {}
+        for _nm in ("x", "v", "F", "U", "y", "f", "Fq", "Sq", "H", "B", "mn", "ljp", "ysp", "alp", "pa", "gaA"):
+            _t = getattr(S, _nm, None)
+            if torch.is_tensor(_t) and _t.is_floating_point():
+                _nf[_nm] = [int((~torch.isfinite(_t)).sum()), int(_t.numel())]
+        print(f"[비유한 배열] {json.dumps(_nf)}", flush=True)
         print(f"[발산] 프레임 {div_at}", flush=True)
         break
 sc = [q for i, q in enumerate(ms) if i >= a.warm]

@@ -582,7 +582,7 @@ __global__ void __launch_bounds__(128) aq_elem(const int* IP, const int* cb, con
     ssvdf(X, U, S, V);
     float ys = Sq[(size_t)qq*4], lj = Sq[(size_t)qq*4+1], al = Sq[(size_t)qq*4+2];
     float se[3] = {S[0], S[1], S[2]};
-    bool ch = pl_rm(mat, se, prm, ys, lj, al, dt);
+    bool ch = (prm[15] > 0.5f) ? false : pl_rm(mat, se, prm, ys, lj, al, dt);
     if (cnt && on && ch && mat != 7) atomicAdd(&cnt[0], 1);
     float Pe[3]; pl_pi(mat, se, prm, al, Pe);
     float ss[3], p[3];
@@ -659,7 +659,7 @@ __global__ void aq_commit(const int* IP, const int* cb, const float* BG, float* 
     float X[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) X[a*3+b] = F[a*3+b] + A[a*3]*F[b] + A[a*3+1]*F[3+b] + A[a*3+2]*F[6+b];
     float Uu[9], s[3], Vv[9]; ssvdf(X, Uu, s, Vv);
     float ys = Sq[(size_t)q*4], lj = Sq[(size_t)q*4+1], al = Sq[(size_t)q*4+2];
-    bool ch = pl_rm(mat, s, prm, ys, lj, al, dt);
+    bool ch = (prm[15] > 0.5f) ? false : pl_rm(mat, s, prm, ys, lj, al, dt);
     Sq[(size_t)q*4] = ys; Sq[(size_t)q*4+1] = lj; Sq[(size_t)q*4+2] = al;
     if (!ch) return;
     float Y[9]; pl_usv(Uu, s, Vv, Y);
@@ -696,7 +696,7 @@ __global__ void aq_g2p(int N, const int* IP, const float* Ai, const int* pb, con
         float Api[9]; inv3(Ap, Api);
         float Ainc[9], Ft[9]; ao_mm3(A, Api, Ainc); ao_mm3(Ainc, Fp, Ft);
         float Uu[9], s[3], Vv[9]; ssvdf(Ft, Uu, s, Vv);
-        if (pl_rm(mat, s, prm, ys, lj, al, dt)) { pl_usv(Uu, s, Vv, Fp); nrm++; } else for (int k=0;k<9;k++) Fp[k] = Ft[k];
+        if (!(prm[15] > 0.5f) && pl_rm(mat, s, prm, ys, lj, al, dt)) { pl_usv(Uu, s, Vv, Fp); nrm++; } else for (int k=0;k<9;k++) Fp[k] = Ft[k];
         for (int k=0;k<9;k++) Ap[k] = A[k];
     }
     for (int a=0;a<3;a++) { x[p*3+a] += u[a]; v[p*3+a] = vv[a]; }
