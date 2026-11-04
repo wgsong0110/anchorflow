@@ -851,7 +851,7 @@ __global__ void rt_ctl(int op, int it, double* SC, int* CT, double* CD, double e
     if (op == 3) {
         if (CT[0]) return;
         double g2 = SC[1];
-        if (it == 0) { CD[0] = g2; CD[2] = SC[56]; if (!(g2 > 0.0)) { CT[0] = 1; AF_SKIP = 1; return; } }
+        if (it == 0) { CD[0] = g2; CD[2] = SC[56]; if (g2 == 0.0) { CT[0] = 1; AF_SKIP = 1; return; } }      // 비유한 |g| 는 건너뛰지 않음 (발산을 숨기지 않게)
         else if (eN2 >= 0.0 && g2 <= eN2*CD[2]) { CT[0] = 1; AF_SKIP = 1; return; }
         CT[2]++; return;
     }

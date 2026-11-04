@@ -65,6 +65,7 @@ ap.add_argument("--tolP", type=float, default=-1.0, help="PCG |r| <= εP min(|g_
 ap.add_argument("--nanchk", type=int, default=0, help="진단: 이 프레임 (1 부터) 을 그래프 밖에서 커널마다 비유한 검사 (그 프레임은 재생 대신)")
 ap.add_argument("--nhb_eps", type=float, default=0.0, help="수박 (NHB): 뒤집힌 시험 상태 바닥 -- 주값 σ̂ = max(σ, ε) 에서 RM·응력·접선, 커밋·G2P 도 (0 = 끔, 정답 식 그대로)")
 ap.add_argument("--no_vfill", action="store_true", help="질량 0 노드 속도·가속도 이웃 평균 끔 (예전 판: 0)")
+ap.add_argument("--mat_as", type=str, default="", help="진단: config 재질 이름을 바꿔 돌림 (jelly = 절 AN 탄성 판 RTAdapt, plasticine 등)")
 ap.add_argument("--no_rm", action="store_true", help="진단: 재질 판 RM 끔 (탄성 응력만, prm[15])")
 ap.add_argument("--ys_big", action="store_true", help="진단: 항복 응력을 아주 크게 (소성 없이 탄성만)")
 ap.add_argument("--visc_rpic", action="store_true", help="정답 config rpic_damping r -> 등가 점성 η = ρ r (2−r) Δx_gt² / (16 Δt_gt) (절 AG.20)")
@@ -83,6 +84,8 @@ RTC.RAWPTR[0] = True
 os.makedirs(a.out, exist_ok=True)
 d = torch.load(a.data, map_location="cpu", weights_only=False)
 cfg = d["cfg"]
+if a.mat_as:
+    cfg = dict(cfg, material=a.mat_as)
 h = float(cfg["frame_dt"])
 DM.REGION_DENSITY[0] = bool(a.region_density)
 m64 = DM.traj_mass(d, dev).double()
