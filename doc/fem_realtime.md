@@ -5037,6 +5037,15 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
   후퇴 오일러 K 8 0005: 재현 x73, 허용치 0 완주 4.32 %, ω 재사용 끔 완주 4.24 %, 블록 야코비 완주 3.88 % (나머지·0013 은 표에서). bigdt2m 띄우기는 로컬 tmux bigdt2m_launch 가 07:57 KST 에 (출력 /tmp/bigdt2m_launch.out; 확인은 R2 bigdt2m/bigdt2m.log).
 - 이어서 할 지점 (잡 만료 뒤): bigdt2.END 가 없거나 표에 "미완" 이면 같은 커밋으로 `bash exe/fem_an_bigdt2.sh f34463e` 를 다시 띄움 (풀은 rc= 가 있는 판을 건너뜀 -- 단 /dev/shm 은 잡과 함께 사라지므로 R2 bigdt2/ 를 /dev/shm/dkta/lbours/fem_an/bigdt2/ 로 먼저 내려받을 것; 마감 날짜 AN_UNTIL·HARD 는 스크립트에서 고칠 것).
   결과 정리 (BD.1 원래 dt 확인 수치, BD.2 원인 결론, 표) 는 아직 -- 결과 받은 뒤 이 절에 채움.
+- 상태 (11-05 08:45 KST): bigdt2 본 묶음은 07:52 에 끝남 (bigdt2.END "안 띄운 판 0"). bigdt2m (f605f25) 은 07:59~08:02 에 **실패** -- wolf·bread 정답 MPM 10 판 모두 FileNotFoundError (`topo/pg_wolf_sand/sim_0000000000.h5` 없음).
+### BD.4 보충 둘째 bigdt2m2 (커밋 63fb06d, 잡 130567 job_run.sh 로 11-05 08:5x KST 띄움)
+- 정답 MPM 실패 원인: PG gs_simulation 은 h5 를 `<output_path>/simulation_ply/sim_*.h5` 에 쓴다 (`topo/pg_wolf_sand/simulation_ply/`, `topo/pg_bread_plastic/simulation_ply/`; exe/pg_h5_to_pt.py 는 재귀 glob 이라 읽혔음). gt_sens 가 그 하위 폴더를 찾게 고침.
+- 같이 고친 것 (원래 서브스텝 0.00 % 재현에 필요, 정답 솔버·설정은 그대로): (가) 정답은 i-physgaussian gs_simulation 이 `int(frame_dt/substep_dt)` 걸음 x substep_dt 로 만들었다 -- wolf 0.04/2e-5 = 1999.99.. -> **1999 걸음** (round 의 2000 이 아님). --pg_cfg 원래 서브스텝은 이 식 그대로. (나) PG `get_particle_volume(unifrom=material == "sand")` -- 모래는 입자 부피를 평균값으로 균일. (다) config 재질 매개 (wolf friction_angle 30, plasticine 항목) 를 키가 있으면 그대로 set_parameters_dict 에 (전에는 E·ν·밀도·g·감쇠만 넘겨 마찰각이 PG 기본 25° 였음).
+  K 1·2·4·8 은 원래 서브스텝 mpmK0 이 평균 오차 < 0.005 % 로 완주한 씬만 자동으로 띄움 (실패면 bigdt2m2.log 에 수치만).
+- wolf K 8 우리 판 중단: 'NoneType object is not callable' 은 cupy 모듈 해제 때 찍힌 뒷소리이고 실제 오류는 프레임 40 의 **CUDA 불법 접근** (fem_an_rt.py step 의 IP[13] 읽기에서 보고, 비동기). 프레임 39 노드 상자 280,800 이 용량 (첫 프레임 149,940 x 2 + 1024 = 300,904) 에 닿음 -> 프레임 40 에서 넘침 다시 할당 (alloc + 다시 캡처) 이 처음 일어난 직후. wolf 재질 판 (모래 + 순차 방출 구속) 에서는 다시 할당이 그전 어느 판에서도 일어난 적이 없다 (bread 는 K 1..8 모두 다시 할당하고 정상).
+  처리: `--cap_mul` (exe/fem_an_rt_sim.py, 기본 2.0 그대로) 로 같은 명령을 용량 4 배에서 -- 결정적 판이라 결과 불변 (프레임 1..39 오차를 첫 시도와 비트 대조해 로그에). 다시 할당 경로 결함 자체는 진단만: dgK1c1 (K 1 + 용량 1 배 -> 이른 프레임 다시 할당; 죽으면 결함 확정), sanK1c1 (같은 것 compute-sanitizer memcheck, 20 프레임 -> 불법 접근 커널 이름). **결함 커널을 고치는 것은 그 결과 뒤** (아직 안 함).
+- 출력: R2 lbours/fem_an/bigdt2m2/ (판별 dir, bigdt2m2.log = 재현 판정·대조·진단 요약, pool_{a,b,c}.log), 끝나면 bigdt2/ 로 덮어씀 (있던 같은 이름 -> `<이름>.fail1`), 표 bigdt2/bigdt2_table.md (끝에 bigdt2m2 기록), 끝 표식 **bigdt2/bigdt2m.END 새로** (첫 실패 표식은 bigdt2m_fail1.END 로 이름 바꿈). 12:09 KST 뒤 새 판 안 띄움, 12:20 KST 에 표·끝 표식.
+- 이어서 할 지점 (bigdt2m.END 가 없거나 표에 "미완"/"마감"이면, 잡 만료 뒤): R2 bigdt2m2/ 를 /dev/shm/dkta/lbours/fem_an/bigdt2m2/ 로, R2 bigdt2/ 를 /dev/shm/dkta/lbours/fem_an/bigdt2/ 로 내려받고 exe/fem_an_bigdt2m2.sh 의 마감 날짜 (UNTIL·HARD) 를 고쳐 같은 커밋으로 다시 (풀은 rc= 있는 판을 건너뜀). sanitizer 결과로 다시 할당 결함을 고친 뒤 wolf K 8 을 기본 용량으로 다시 돌려 같은 값인지 확인.
 
 ## CM4. 절 CM3 채택 공통 설정 그대로 lego 21 궤적 전체 판정 + 낙하 + 영상 (조정자 11-05, 정의 변경 없음) -- 가지 implicit-bspline, 묶음 cm4 (잡 130567, 11-05 07:5x KST 띄움, 잡 안 일꾼 w2 과제 cm4.sh)
 ### CM4.0 설정 (exe/fem_cm4.sh)
