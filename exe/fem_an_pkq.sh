@@ -17,8 +17,9 @@ while read -r v A; do [ -z "$v" ] && continue
   O=$R/$v; mkdir -p $O
   while [ "$(others0)" -gt 0 ]; do sleep 5; done
   echo "시작 때 카드 0 의 다른 프로세스 $(others0) 개 $(date +%T)" > $O/card.txt
-  CUDA_VISIBLE_DEVICES=0 $PY -u exe/fem_an_rt_sim.py --out $O $B $A 9>&- < /dev/null > $O/log.txt 2>&1
-  echo "$v $(grep -a '롤아웃\|rror\|발산\|지속형 판\]' $O/log.txt | tail -3 | cut -c1-260 | tr '\n' ' ') $($PY -c "import json;d=json.load(open('$O/summary.json'));print('sha',d['x_sha1'],'max',round(d.get('ms_max') or -1,2),'nP',(d.get('it_nP') or {}).get('mean'))" 2>/dev/null)" | tee -a $R/run.out
+  EV=""; AA=""; for w in $A; do case $w in E:*) EV="$EV ${w#E:}";; *) AA="$AA $w";; esac; done; A=$AA
+  env $EV CUDA_VISIBLE_DEVICES=0 timeout ${PK_TMO:-900} $PY -u exe/fem_an_rt_sim.py --out $O $B $A 9>&- < /dev/null > $O/log.txt 2>&1
+  echo "$v [$EV] $(grep -a '롤아웃\|rror\|발산\|지속형 판\]' $O/log.txt | tail -3 | cut -c1-260 | tr '\n' ' ') $($PY -c "import json;d=json.load(open('$O/summary.json'));print('sha',d['x_sha1'],'max',round(d.get('ms_max') or -1,2),'nP',(d.get('it_nP') or {}).get('mean'))" 2>/dev/null)" | tee -a $R/run.out
   grep -q Error $O/log.txt && tail -25 $O/log.txt
   rclone copy $O $RR/$v -q
 done < $LST

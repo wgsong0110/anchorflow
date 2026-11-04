@@ -23,7 +23,7 @@ FI="--data $FD --floor none --cfg_bc --region_density --pg_vdamp --tag ficus"
 run() { local v=$1; shift; local O=$R/$v; mkdir -p $O
   while [ "$(others0)" -gt 0 ]; do sleep 5; done
   echo "시작 때 카드 0 의 다른 프로세스 $(others0) 개 $(date +%T)" > $O/card.txt
-  CUDA_VISIBLE_DEVICES=0 $PY -u exe/fem_an_rt_sim.py --out $O $B "$@" 9>&- < /dev/null > $O/log.txt 2>&1
+  CUDA_VISIBLE_DEVICES=0 timeout ${PK_TMO:-1800} $PY -u exe/fem_an_rt_sim.py --out $O $B "$@" 9>&- < /dev/null > $O/log.txt 2>&1
   echo "끝 때 카드 0 의 다른 프로세스 $(others0) 개 $(date +%T)" >> $O/card.txt
   [ -f $O/pred.pt ] && [ "$(grep -c ficus <<< "$*")" -gt 0 ] && $PY exe/fem_p_period.py --data $FD --pred $O/pred.pt > $O/period.txt 2>&1
   echo "$v $(date +%T) $(grep -a '롤아웃\|rror\|발산' $O/log.txt | tail -2 | cut -c1-200 | tr '\n' ' ') $($PY -c "import json;d=json.load(open('$O/summary.json'));print('max',round(d.get('ms_max') or -1,2),'p90',round(d.get('ms_p90') or -1,2),'nP',(d.get('it_nP') or {}).get('mean'),'nN',(d.get('it_nN') or {}).get('mean'))" 2>/dev/null) $(grep -a '대비' $O/period.txt 2>/dev/null | cut -c1-120)" | tee -a $R/run.out

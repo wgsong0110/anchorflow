@@ -27,6 +27,14 @@ PK_HEAD = r'''
 #ifndef PKMINB
 #define PKMINB 1
 #endif
+#ifdef PK_INLINE
+#define PK_FNATTR __forceinline__
+#else
+#define PK_FNATTR __noinline__
+#endif
+#ifndef PK_EXATTR
+#define PK_EXATTR
+#endif
 #define PK_VSYNC() asm volatile("bar.sync %0, %1;" :: "r"(VS_ + 1), "r"(VD_) : "memory")
 #ifdef AF_ADAPT
 #define PK_SKIPV (*(volatile int*)&AF_SKIP)
@@ -171,11 +179,11 @@ __device__ __forceinline__ void pk_gsync(int* ep, int* skip, int c) {
 __device__ __forceinline__ void pk_cmd(const int* cm, const unsigned long long* A0, int local) {
     int kid = cm[0], nvb = cm[1], vbd = cm[2];
     const unsigned long long* A = A0 + cm[4];
-    if (vbd == 1) { if (blockIdx.x == 0 && threadIdx.x == 0) for (int vb = 0; vb < nvb; vb++) pk_exec(kid, A, vb, 0, 1, 0); return; }
+    if (vbd == 1) { if (blockIdx.x == 0 && threadIdx.x == 0) pk_exec(kid, A, 0, 1, nvb, 0, 1, 0); return; }
     int nsub = PKB / vbd; int vs = threadIdx.x / vbd; int vt = threadIdx.x - vs*vbd;
     if (vs >= nsub) return;
     int start = (local ? 0 : (int)blockIdx.x)*nsub + vs, stride = (local ? 1 : (int)gridDim.x)*nsub;
-    for (int vb = start; vb < nvb; vb += stride) pk_exec(kid, A, vb, vt, vbd, vs);
+    if (start < nvb) pk_exec(kid, A, start, stride, nvb, vt, vbd, vs);
 }
 __global__ void __launch_bounds__(PKB, PKMINB) pk_run(const int* CMD, int ncmd, const unsigned long long* ARGS) {
     int ep = 0, skip = 0;
@@ -289,14 +297,15 @@ def pk_src(src, adapt, goct, det):
             decl.append((mm.group(1), mm.group(2)))
         kid = len(meta)
         meta[name] = (kid, kinds)
-        hdr = "__device__ __noinline__ void pkd_%s(const int VB_, const int VT_, const int VD_, const int VS_%s)" % (name, "".join(", " + q for q in plist))
+        hdr = "__device__ PK_FNATTR void pkd_%s(const int VB_, const int VT_, const int VD_, const int VS_%s)" % (name, "".join(", " + q for q in plist))
         out.append(hdr + " " + body)
-        call = "pkd_%s(VB_, VT_, VD_, VS_%s)" % (name, "".join(", " + _cast(t, kd, ii) for ii, ((t, _), kd) in enumerate(zip(decl, kinds))))
+        ld = "".join("        %s a%d = %s;\n" % (t.strip(), ii, _cast(t, kd, ii)) for ii, ((t, _), kd) in enumerate(zip(decl, kinds)))
+        call = "pkd_%s(vb, VT_, VD_, VS_%s)" % (name, "".join(", a%d" % ii for ii in range(len(decl))))
         guard = name == "rt_ctl"                                                     # 소스에서 #ifdef AF_ADAPT 안
-        cases.append(("#ifdef AF_ADAPT\n" if guard else "") + "    case %d: %s; break;\n" % (kid, call) + ("#endif\n" if guard else ""))
+        cases.append(("#ifdef AF_ADAPT\n" if guard else "") + "    case %d: {\n%s        for (int vb = v0; vb < nvb; vb += vst) %s;\n    } break;\n" % (kid, ld, call) + ("#endif\n" if guard else ""))
     out.append(s[pos:])
     s = "".join(out)
-    disp = ("__device__ void pk_exec(int kid, const unsigned long long* A, int VB_, int VT_, int VD_, int VS_) {\n    switch (kid) {\n" + "".join(cases) + "    default: break;\n    }\n}\n")
+    disp = ("__device__ PK_EXATTR void pk_exec(int kid, const unsigned long long* A, int v0, int vst, int nvb, int VT_, int VD_, int VS_) {\n    switch (kid) {\n" + "".join(cases) + "    default: break;\n    }\n}\n")
     k = s.rstrip().rfind("}")
     s = s[:k] + disp + PK_RUN + "\n" + s[k:]
     return PKSrc(s, meta)

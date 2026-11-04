@@ -93,12 +93,17 @@ __device__ __forceinline__ void bwf(float f, float* w, float* d) {
 __global__ void rt_reset(int* IP) { IP[0] = IP[1] = IP[2] = 2147483647; IP[3] = IP[4] = IP[5] = -2147483647; IP[13] = 0; IP[14] = 0; }
 __global__ void rt_coord(int N, const float* x, const float* Ai, int* pb, float* fx, int* IP) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
-    if (p >= N) return;
-    for (int a=0;a<3;a++) {
-        float y = Ai[a*3]*x[p*3] + Ai[a*3+1]*x[p*3+1] + Ai[a*3+2]*x[p*3+2];
-        float fb = floorf(y - 0.5f);
-        int b = (int)fb; pb[p*3+a] = b; fx[p*3+a] = y - fb;
-        atomicMin(&IP[a], b); atomicMax(&IP[3+a], b);
+    bool on = p < N;
+    if (__all_sync(0xffffffffu, !on)) return;
+    for (int a=0;a<3;a++) {                                                    // 상자 최소·최대: 워프 안에서 먼저 줄인 뒤 원자 연산 하나 (정수라 결과 같음, 경합만 줄임)
+        int b0 = 2147483647, b1 = -2147483647;
+        if (on) {
+            float y = Ai[a*3]*x[p*3] + Ai[a*3+1]*x[p*3+1] + Ai[a*3+2]*x[p*3+2];
+            float fb = floorf(y - 0.5f);
+            int b = (int)fb; pb[p*3+a] = b; fx[p*3+a] = y - fb; b0 = b; b1 = b;
+        }
+        b0 = __reduce_min_sync(0xffffffffu, b0); b1 = __reduce_max_sync(0xffffffffu, b1);
+        if ((threadIdx.x & 31) == 0) { atomicMin(&IP[a], b0); atomicMax(&IP[3+a], b1); }
     }
 }
 __global__ void rt_box(int* IP, int capN, int capC) {
@@ -1718,7 +1723,7 @@ class RTSolver:
         from . import fem_an_pk as PKM
         src = PKM.pk_src(s._src0, s.adapt, s.goct, "AO_DET" in s._src0)
         s.pk_meta = src.meta
-        s.pkmod = cp.RawModule(code=src.code, options=("--std=c++14", "-DPKB=%d" % s.pkb, "-DPKMINB=%d" % s.pkminb), enable_cooperative_groups=True)
+        s.pkmod = cp.RawModule(code=src.code, options=("--std=c++14", "-DPKB=%d" % s.pkb, "-DPKMINB=%d" % s.pkminb) + tuple(os.environ.get("AF_PK_OPT", "").split()), enable_cooperative_groups=True)
         s.pkfn = s.pkmod.get_function("pk_run")
         nsm = torch.cuda.get_device_properties(torch.device(s.dev)).multi_processor_count
         fptr = s.pkfn.kernel.ptr if hasattr(s.pkfn, "kernel") else s.pkfn.ptr            # RawKernel (cupy 새 판) 또는 Function
@@ -1762,7 +1767,7 @@ class RTSolver:
                     fn((grid,), (blk,), (P(CMD), np.int32(Cn.shape[0]), P(ARG)))                 # 협동 실행 (모듈을 enable_cooperative_groups 로 만듦)
         g = _PK()
         g.CMD, g.ARG = CMD, ARG
-        g.names = [c[0] + ("@L" if (Cn[i, 3] & 1) else "") for i, c in enumerate(cmds)]
+        g.names = [c[0] + (":%d" % int(c[3][0]) if (c[0].startswith("rt_mg_") and isinstance(c[3][0], np.int32)) else "") + ("@L" if (Cn[i, 3] & 1) else "") for i, c in enumerate(cmds)]
         g.ncmd = Cn.shape[0]
         return g
 
