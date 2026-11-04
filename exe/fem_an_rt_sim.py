@@ -35,6 +35,7 @@ ap.add_argument("--mg_levels", type=int, default=1, help="1 = 블록 야코비, 
 ap.add_argument("--mg_nc", type=int, default=8)
 ap.add_argument("--mg_pow", type=int, default=6)
 ap.add_argument("--dump", action="store_true")
+ap.add_argument("--dump_F", action="store_true", help="--dump 와 함께: 입자 변형 기울기 F 도 pred.pt 에 (영상 렌더용; 풀이 결과 불변)")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--no_fuse2", action="store_true", help="결과 불변 융합 2 판 끔 (비교용)")
@@ -112,6 +113,7 @@ flog = open(os.path.join(a.out, "fem.jsonl"), "w")
 errs, ms = [], []
 div_at = None
 PRED = torch.empty(L, Np, 3) if a.dump else None
+PREDF = torch.empty(L, Np, 3, 3) if (a.dump and a.dump_F) else None
 for fi in range(L):
     kp = S.profile(fi * h) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None
     redo = S.step(fi * h)
@@ -130,6 +132,9 @@ for fi in range(L):
     print(f"  프레임 {fi + 1}/{L} {S.last_ms:.2f} ms 오차 {100 * e:.3f}%{' (용량 늘려 다시)' if redo else ''} 점 {c['nq']} 노드 상자 {c['nn']} 유클리드 평균 점 {c['nbad']}{(' 반복 ' + str(c['it'])) if 'it' in c else ''}", flush=True)
     if PRED is not None:
         PRED[fi] = xo.cpu()
+        if PREDF is not None:
+            _fo = torch.empty_like(S.F); _fo[S.perm] = S.F
+            PREDF[fi] = _fo.reshape(-1, 3, 3).cpu()
     if not fin or e > 2.0:
         div_at = fi + 1
         print(f"[발산] 프레임 {div_at}", flush=True)
@@ -151,6 +156,6 @@ import hashlib                                                                  
 summ["x_sha1"] = hashlib.sha1(S.x_orig().cpu().numpy().tobytes()).hexdigest()[:10]     # 끝 상태 해시 (결정성 확인)
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), indent=1, ensure_ascii=False)
 if PRED is not None and div_at is None:
-    torch.save({"pred": PRED}, os.path.join(a.out, "pred.pt"))
+    torch.save({"pred": PRED, **({"F": PREDF} if PREDF is not None else {})}, os.path.join(a.out, "pred.pt"))
 print(f"[롤아웃] {a.tag} 실시간 판 셀 {a.cell} K {a.K} 뉴턴 {a.newton} PCG {a.cg}: {len(errs)}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%, "
       f"프레임당 {summ['ms_mean']} ms (재생 GPU 시간)", flush=True)
