@@ -123,9 +123,29 @@ class Diag:
                 Ap = Ak
             dFo[sl] = torch.linalg.det(Fo); dFn[sl] = torch.linalg.det(Fn); dAK[sl] = torch.linalg.det(Ap)
             dRM[sl] = dFn[sl] / (dAK[sl] * dFo[sl])
+        # 마지막 걸음: 고착 노드 끝 변위를 풀이의 끝 위치 U_y = (y − αf U_n)/(1 − αf) 로 바꾸면 (처치 (b)·(c) 의 Newmark 끝 위치 대신)
+        kl = K - 1
+        Un_l = A_["U_n"][kl]; Uy_l = (A_["y_end"][kl] - af * Un_l) / (1 - af)
+        stk_l = ((A_["mqn"][kl] > 0) & (A_["an"][kl] > 0))
+        U_alt = torch.where(stk_l[:, None], Uy_l, A_["U_e"][kl])
+        dAalt = torch.empty_like(dFo)
+        for i0 in range(0, Np, 200000):
+            sl = slice(i0, min(Np, i0 + 200000))
+            nid, ww, gx = part_nodes(A_["pb"][sl], A_["fx"][sl], nb1a, nb2a, S.Ai)
+            Apv = grad_at(A_["Ust"][kl - 1], nid, gx) if kl > 0 else None
+            Aal = grad_at(U_alt, nid, gx)
+            dAalt[sl] = torch.linalg.det(Aal) / (torch.linalg.det(Apv) if Apv is not None else 1.0)
+        nna_ = nna
+        dUe = (A_["U_e"][kl] - Un_l)[:nna_]; dUy = (Uy_l - Un_l)[:nna_]; sk_ = stk_l[:nna_]
+        o["last_stuck"] = dict(n_stuck=int(sk_.sum()), Ue_minus_Uy_cell_max=float((dUe - dUy)[sk_].norm(dim=-1).max()) / cell if bool(sk_.any()) else None,
+                               Ue_minus_Uy_cell_med=float((dUe - dUy)[sk_].norm(dim=-1).median()) / cell if bool(sk_.any()) else None,
+                               nonstuck_Ue_minus_Uy_cell_max=float((dUe - dUy)[~sk_ & (mnA[:nna_] > 0)].norm(dim=-1).max()) / cell)
+        s._dAalt = dAalt
+        s._Ualt = (U_alt, Uy_l, Un_l, stk_l)
         def cnt(x):
             return dict(n_le0=int((x <= 0).sum()), n_lt1e_3=int((x < 1e-3).sum()), n_lt1e_6=int((x < 1e-6).sum()), min=float(x.min()), p001=float(x.quantile(1e-3)) if x.numel() < 16000000 else None, med=float(x.median()))
         o["all"] = dict(det_F_old=cnt(dFo), det_A_K=cnt(dAK), det_F_new=cnt(dFn), det_Ainc=[cnt(dAinc[kk]) for kk in range(K)], det_Aa=[cnt(dAa[kk]) for kk in range(K)])
+        o["all"]["det_Ainc_last_stuckUy"] = cnt(dAalt)
         bad = dFn < 1e-3
         o["all"]["new_lt1e_3"] = dict(n=int(bad.sum()), old_lt1e_3=int((bad & (dFo < 1e-3)).sum()), AK_lt1e_3=int((bad & (dAK < 1e-3)).sum()),
                                      rm_changed=int((bad & ((dRM - 1).abs() > 1e-3)).sum()))
@@ -206,6 +226,13 @@ class Diag:
                                             a_cell_max=float((ca_pred * A_["a_n"][kk][nds]).norm(dim=-1).max()) / cell,
                                             dU_cell_max=float((A_["U_e"][kk][nds] - (A_["U_e"][kk - 1][nds] if kk > 0 else 0)).norm(dim=-1).max()) / cell,
                                             dU_spread_cell=float((A_["U_e"][kk][nds] - (A_["U_e"][kk - 1][nds] if kk > 0 else 0)).std(0).norm()) / cell) for kk in range(K)]))
+                U_alt, Uy_l, Un_l, stk_l = s._Ualt
+                nl_ = []
+                for nd in nds:
+                    nl_.append(dict(stuck=int(stk_l[nd]), light=int(mnA[nd] < S.mthr), m=float(mnA[nd]), Ue_cell=[round(float(q) / cell, 3) for q in (A_["U_e"][K - 1][nd] - Un_l[nd])],
+                                    Uy_cell=[round(float(q) / cell, 3) for q in (Uy_l[nd] - Un_l[nd])], v_e=[round(float(q), 3) for q in A_["v_e"][K - 1][nd]], a_e=[round(float(q), 1) for q in A_["a_e"][K - 1][nd]]))
+                P[-1]["nodes_last"] = nl_
+                P[-1]["detAinc_last_stuckUy"] = float(s._dAalt[p])
             rec["particles"] = P
             # F_q 구성 다시: 팔분 영역 (없으면 칸) 입자의 기하 평균 det (회전·로그) 와 유클리드 평균 det
             for qr in rec["qs"]:
