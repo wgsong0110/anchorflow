@@ -287,6 +287,10 @@ __global__ void rt_floor_q(const int* IP, const int* cb, const float* BW, const 
     float u = (sw_ + pn)/dxg; float bf = floorf(u - 0.5f); float f = u - bf;
     float w3[3] = {0.5f*(1.5f-f)*(1.5f-f), 0.75f-(f-1.f)*(f-1.f), 0.5f*(f-0.5f)*(f-0.5f)};
     float wst = 0.f; for (int i=0;i<3;i++) if ((bf + (float)i)*dxg - pn < 0.f) wst += w3[i];
+#ifdef AF_BST
+    if (sw_ < AF_BDHC) wst = 1.f;                                               // 띠 고착 (--fl_bst, 절 AN.21): 장벽 띠 안 (d < d̂, 평면 아래 포함) 표본점은 완전 고착 (정답 sticky 노드 v = 0 과 같은 몫 1)
+    else if (AF_BST == 1) wst = 0.f;                                            //   1 = 띠 밖은 고착 없음, 2 = 띠 밖은 정답 sticky 가중 그대로
+#endif
     float mw = mq[q]*wst;
 #ifdef AF_FLJ
     mw = mq[q]*(1.f - expf(AF_KEXQ*log1pf(-fminf(wst, 1.f))));                            // 점별 고착 (--fl_pt, 절 AN.17): 점 질량 x (1 − (1 − w_st)^(Δt/dt_정답)) -- 거듭제곱을 점에서 한 뒤 노드로 평균
@@ -1216,6 +1220,9 @@ __global__ void __launch_bounds__(128) rt_bar_q(const int* IP, const int* cb, co
     }
     if (mode == 1) {
         if (on && AF_BDET) { AF_BPG[qq] = c; AF_BPH[qq] = h; }
+#ifdef AF_BFULL
+        if (on) AF_BPH[qq] = h;                                                 // 비덩어리 헤시안 곱 (rt_bar_mvq) 이 쓰는 점 스칼라
+#endif
         blocksum_add(e, E);
     }
 }
@@ -1233,6 +1240,26 @@ __global__ void rt_bar_mv(const int* IP, const float* Kn, float n0, float n1, fl
     if (n >= IP[9]) return;
     float K = Kn[n]; if (K == 0.f) return;
     float t = K*(Tp[n*3]*n0 + Tp[n*3+1]*n1 + Tp[n*3+2]*n2);
+    KTp[n*3] += t*n0; KTp[n*3+1] += t*n1; KTp[n*3+2] += t*n2;
+}
+// 비덩어리 헤시안 곱 (--bar_full, 절 AN.21): (H Tp)_i += n Σ_q w_qi h_q Σ_j w_qj (n·Tp_j) -- 점 스칼라 t_q = h_q Σ_j w_qj (n·Tp_j) 를 노드 스칼라 bS 로 모은 뒤 rt_bar_mvn 이 n 방향으로 더함
+// (덩어리 판 rt_bar_mv 는 diag(Σ_q h_q w_q) 라 상대 변위 몫까지 강성을 줌; 블록 대각 전처리 B 에는 덩어리 값을 그대로 씀 -- 전처리만)
+__global__ void __launch_bounds__(128) rt_bar_mvq(const int* IP, const int* cb, const float* BW, float n0, float n1, float n2, const float* Tp, float* bS, float* tq) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    float h = AF_BPH[q];
+    if (h == 0.f) { if (AF_BDET) tq[q] = 0.f; return; }
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float t = 0.f;
+    for (int o=0;o<27;o++) { int id = ids[o]; t += BW[oc*27+o]*(Tp[id*3]*n0 + Tp[id*3+1]*n1 + Tp[id*3+2]*n2); }
+    t *= h;
+    if (AF_BDET) { tq[q] = t; return; }
+    for (int o=0;o<27;o++) atomicAdd(&bS[ids[o]], BW[oc*27+o]*t);
+}
+__global__ void rt_bar_mvn(const int* IP, const float* bS, float n0, float n1, float n2, float* KTp) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float t = bS[n]; if (t == 0.f) return;
     KTp[n*3] += t*n0; KTp[n*3+1] += t*n1; KTp[n*3+2] += t*n2;
 }
 // 선탐색 후보 NC 개의 장벽 에너지 -> SC[40+i] (rt_elem_lsN 과 같은 후보 y = ŷ + T (η + c δ), c = 2^-i)
@@ -1278,6 +1305,16 @@ def barify(src):
     return src[:i] + BAR_SRC + "\n}\n"
 
 
+def bstify(src, mode, dh, full):
+    """절 AN.21 (장벽 판 위): mode 1·2 = 띠 고착 (AF_BST; d < d̂ 표본점 고착 몫 1, 띠 밖 1 = 0 / 2 = 정답 sticky 가중), full = 비덩어리 헤시안 곱 (AF_BFULL)."""
+    add = ""
+    if mode:
+        add += "\n#define AF_BST %d\n#define AF_BDHC %.9ef" % (int(mode), float(dh))
+    if full:
+        add += "\n#define AF_BFULL 1"
+    return src.replace('extern "C" {', 'extern "C" {' + add, 1) if add else src
+
+
 def build_src(src, adapt, goct, floor=None):
     if goct is not None and goct >= 0:
         src = octify(src)
@@ -1285,6 +1322,7 @@ def build_src(src, adapt, goct, floor=None):
         src = flptify(src, floor["KEX"])
     if floor and floor.get("bar"):
         src = barify(src)
+        src = bstify(src, floor.get("bst", 0), floor["DH"], floor.get("bfull", False))
     return skipify(src) if adapt else src
 
 
@@ -1445,6 +1483,9 @@ class RTSolver(MG2.MG2Mixin):
         s.bar = bool(s.floor and s.floor.get("bar"))                                  # 장벽 판 (절 AN.19): 표본점 누적·점별 스칼라·노드 스칼라
         if s.bar:
             s.bx = Z(capQ * 4); s.bpg = Z(capQ); s.bph = Z(capQ); s.bact = torch.zeros(capQ, device=dev, dtype=torch.int32); s.bGn = Z(s.capN); s.bKn = Z(s.capN)
+            s.bfull = bool(s.floor.get("bfull", False))                               # 비덩어리 헤시안 곱 (절 AN.21)
+            if s.bfull:
+                s.bS = Z(s.capN); s.btq = Z(capQ)
         s.Fq = Z(capQ, 9); s.Vq = Z(capQ); s.mq = Z(capQ); s.xq0 = Z(capQ, 3); s.H = Z(capQ, 81)
         s.mn = Z(s.capN); s.mv = Z(s.capN, 3); s.mqn = Z(s.capN); s.an = Z(s.capN)
         s.U = Z(s.capN, 3); s.vk = Z(s.capN, 3); s.Ut = Z(s.capN, 3); s.z0 = Z(s.capN, 3); s.y = Z(s.capN, 3); s.yh = Z(s.capN, 3); s.eta = Z(s.capN, 3)
@@ -1783,7 +1824,13 @@ class RTSolver(MG2.MG2Mixin):
                     if ci == 0 or not s.fuse2:
                         s.zf(s.KTp, 9, 3)
                     s.k("rt_mv2" if s.mv2 else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
-                    if s.bar:
+                    if s.bar and s.bfull:
+                        s.zf(s.bS, 9, 1)
+                        s.k("rt_bar_mvq", capQ, (P(IP), P(s.cb), P(s.BW), *[f(q) for q in nr], P(s.Tp), P(s.bS), P(s.btq)))
+                        if getattr(s, "det", False):
+                            s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.btq), P(s.bS)), b=256)
+                        s.k("rt_bar_mvn", capN, (P(IP), P(s.bS), *[f(q) for q in nr], P(s.KTp)), b=256)
+                    elif s.bar:
                         s.k("rt_bar_mv", capN, (P(IP), P(s.bKn), *[f(q) for q in nr], P(s.Tp), P(s.KTp)), b=256)
                     s.k("rt_ap", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
                     if s.descent and ci == 0:
