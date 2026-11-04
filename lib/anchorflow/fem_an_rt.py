@@ -272,7 +272,7 @@ __global__ void rt_floor_q(const int* IP, const int* cb, const float* BW, const 
     float wst = 0.f; for (int i=0;i<3;i++) if ((bf + (float)i)*dxg - pn < 0.f) wst += w3[i];
     float mw = mq[q]*wst;
 #ifdef AF_FLJ
-    mw = mq[q]*(1.f - expf(AF_KEXQ*log1pf(-wst)));                            // 점별 고착 (--fl_pt, 절 AN.17): 점 질량 x (1 − (1 − w_st)^(Δt/dt_정답)) -- 거듭제곱을 점에서 한 뒤 노드로 평균
+    mw = mq[q]*(1.f - expf(AF_KEXQ*log1pf(-fminf(wst, 1.f))));                            // 점별 고착 (--fl_pt, 절 AN.17): 점 질량 x (1 − (1 − w_st)^(Δt/dt_정답)) -- 거듭제곱을 점에서 한 뒤 노드로 평균
 #endif
     if (mw > 0.f) for (int o=0;o<27;o++) atomicAdd(&an[ids[o]], BW[oc*27+o]*mw);
 }
