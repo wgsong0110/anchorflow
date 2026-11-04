@@ -1198,8 +1198,9 @@ class AORTSolver(DET.DetMixin):
         if bad:
             s._nck_hit = dict(kernel=name, call=len(L), kstep=s._nck_ks, it=s._nck_it, bad=bad, qb=s.qb.cpu().tolist() if hasattr(s, "qb") else None,
                               prev=[q[0] for q in L[-6:-1]], SC=s.SC[:8].cpu().tolist(), st=s._nck_stats())
-        elif name in ("aq_elem", "ao_stepend_ga", "rt_stepend", "ao_stepend_th"):
+        elif name in ("aq_elem", "ao_stepend_ga", "rt_stepend", "ao_stepend_th", "rt_lsup", "rt_lsup_c"):
             s._nck_last = s._nck_stats()
+            s._nck_tr.append(dict(k=name, ks=s._nck_ks, it=s._nck_it, **{q: s._nck_last.get(q) for q in ("fmax", "y_minus_Ut", "gaA", "vk", "qb")}))
 
     def _nck_stats(s):
         """진단 통계: 노드 질량비·관성 예측에서 벗어난 정도·속도/가속도의 강체 운동에서 벗어난 정도."""
@@ -1219,6 +1220,9 @@ class AORTSolver(DET.DetMixin):
             t_ = getattr(s, nm)[:nn]; ut = s.Ut[:nn]
             d_ = (t_ - ut).norm(dim=-1); fin = torch.isfinite(d_); d_[~fin] = 0; d_[~act] = 0
             i = int(d_.argmax()); o[nm + "_minus_Ut"] = dict(max_cell=float(d_[i]) / float(s.A[:, 0].norm()), mrel=float(mn[i]) / md, nonfin=int((~fin).sum()))
+        fa = s.f[:nn].norm(dim=-1); fa[~torch.isfinite(fa)] = 0; acc = fa / mn.clamp_min(1e-30).double(); acc[~act] = 0
+        i = int(fa.argmax()); j = int(acc.argmax())
+        o["fmax"] = dict(f=float(fa[i]), mrel=float(mn[i]) / md, acc_max=float(acc[j]), acc_mrel=float(mn[j]) / md, n_acc_gt100=int((acc > 100).sum()))
         ff = ~torch.isfinite(s.f[:nn]).all(-1)
         if ff.any():
             mr = mn[ff] / md; o["f_nonfin_nodes"] = dict(n=int(ff.sum()), mrel_min=float(mr.min()), mrel_med=float(mr.median()), active=int((ff & act).sum()))
@@ -1232,12 +1236,13 @@ class AORTSolver(DET.DetMixin):
             t_ = getattr(s, nm, None)
             if torch.is_tensor(t_):
                 t_.zero_()
-        s._nck, s._nck_hit, s._nck_ks, s._nck_it, s._nck_last = [], None, -1, -1, None
+        s._nck, s._nck_hit, s._nck_ks, s._nck_it, s._nck_last, s._nck_tr = [], None, -1, -1, None, []
         s.record(t)
         torch.cuda.synchronize()
         o = s._nck_hit or {}
         o["last_ok"] = s._nck_last
         o["end"] = s._nck_stats()
+        o["trace"] = s._nck_tr
         s._nck = None
         return o
 
