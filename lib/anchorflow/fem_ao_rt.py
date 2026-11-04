@@ -480,6 +480,23 @@ __global__ void ao_p2g_a(int N, const int* IP, const int* pb, const float* fx, c
         for (int a=0;a<3;a++) atomicAdd(&acc[nid*3+a], ww*pa[p*3+a]);
     }
 }
+// 질량 0 노드 (가우스 점 이웃 27 노드 안인데 입자 B-스플라인 가중이 정확히 0 -- 격자 정렬 채움 입자에서 생김) 의 속도·가속도:
+// 이웃 26 노드 중 질량 있는 노드의 질량 가중 평균 (없으면 그대로 0). 질량 있는 노드만 읽으므로 제자리 갱신해도 경합 없음. 절 AQ.
+__global__ void aq_vfill(const int* IP, const float* mn, float* vk, float* ga) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9] || mn[n] > 0.f) return;
+    int nb1 = IP[7], nb2 = IP[8], nb0 = IP[6];
+    int i0 = n / (nb1*nb2), j0 = (n / nb2) % nb1, k0 = n % nb2;
+    float sw = 0.f, sv[3] = {0.f, 0.f, 0.f}, sa[3] = {0.f, 0.f, 0.f};
+    for (int di=-1; di<=1; di++) for (int dj=-1; dj<=1; dj++) for (int dk=-1; dk<=1; dk++) {
+        int i = i0+di, j = j0+dj, k = k0+dk;
+        if (i < 0 || j < 0 || k < 0 || i >= nb0 || j >= nb1 || k >= nb2) continue;
+        int m_ = (i*nb1 + j)*nb2 + k; float w = mn[m_];
+        if (!(w > 0.f)) continue;
+        sw += w; for (int a=0;a<3;a++) { sv[a] += w*vk[m_*3+a]; if (ga) sa[a] += w*ga[m_*3+a]; }
+    }
+    if (sw > 0.f) for (int a=0;a<3;a++) { vk[n*3+a] = sv[a]/sw; if (ga) ga[n*3+a] = sa[a]/sw; }
+}
 __global__ void ao_adiv(const int* IP, const float* mn, float* ga) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
@@ -882,7 +899,8 @@ def _src(tol=False):
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, **kw):
+        s.vfill = bool(vfill)
         s.tolN, s.tolP = float(tolN), float(tolP)                                          # 공통 허용치 (절 AN.14 규칙; 음수 = 그 판정 없음)
         s.adapt = s.tolN >= 0 or s.tolP >= 0
         s.cdp, s.pbc_ns, s.dt_gt, s.mthr = float(cdp), int(pbc_ns), float(dt_gt), float(mthr)
@@ -1017,6 +1035,8 @@ class AORTSolver(DET.DetMixin):
             else:
                 s.k("ao_p2g_a", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.m), P(s.pa), P(s.gaA)))
             s.k("ao_adiv", capN, (P(IP), P(s.mn), P(s.gaA)), b=256)
+        if s.mat != 2 and s.vfill:                                                     # 질량 0 노드 속도·가속도 = 이웃 질량 가중 평균 (절 AQ)
+            s.k("aq_vfill", capN, (P(IP), P(s.mn), P(s.vk), P(s.gaA if s.ga is not None else None)), b=256)
         if s.pvb is not None:                                                          # 노드 구속 목표 속도
             s.zf(s.vm, 9, 3); s.zf(s.cm, 9, 3)
             if s.det:
