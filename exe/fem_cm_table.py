@@ -78,7 +78,7 @@ def judge(R):
 
 
 def timing(R):
-    print("| 이름 | 평균 ms | 최대 ms | 오차 % | 반복 | 해시 | 카드 0 다른 프로세스 |")
+    print("| 이름 | 평균 ms | 최대 ms | 오차 % | 반복 | 해시 | 카드 0 다른 프로세스 (시작 / 실행 중) |")
     print("|---|---|---|---|---|---|---|")
     for v in sorted(os.listdir(R)):
         d = os.path.join(R, v)
@@ -87,9 +87,12 @@ def timing(R):
         s, fr = load(d)
         mm, mx = ms_of(fr)
         ct = open(os.path.join(d, "card.txt")).read() if os.path.exists(os.path.join(d, "card.txt")) else ""
-        m = re.search(r"다른 계산 프로세스 (\d+)", ct)
+        m0 = re.search(r"시작 때 카드 0 의 다른 프로세스 (\d+)", ct)
+        ad = os.path.join(d, "apps_during.txt")                                     # 실행 중 카드 0 pid (5 초마다); 하나는 이 실행 자신 (timeout 의 자식이라 기록 pid 가 다름)
+        pids = {l.split()[1] for l in open(ad) if len(l.split()) > 1} if os.path.exists(ad) else set()
+        oth = "%s / %d" % (m0.group(1) if m0 else "?", max(0, len(pids) - 1))
         e = "" if s is None else (("x%d " % s["diverged"]) if s.get("diverged") else "") + "%.2f" % (100 * s["err_mean_done"])
-        print("| %s | %s | %s | %s | %s | %s | %s |" % (v, "" if mm is None else "%.2f" % mm, "" if mx is None else "%.2f" % mx, e, it_of(fr), (s or {}).get("x_sha1", "")[:10], m.group(1) if m else "?"))
+        print("| %s | %s | %s | %s | %s | %s | %s |" % (v, "" if mm is None else "%.2f" % mm, "" if mx is None else "%.2f" % mx, e, it_of(fr), (s or {}).get("x_sha1", "")[:10], oth))
 
 
 if __name__ == "__main__":

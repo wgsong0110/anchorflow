@@ -21,7 +21,7 @@ while read -r v t A; do [ -z "$v" ] && continue; [ "${v:0:1}" = "#" ] && continu
   PP=$!
   while kill -0 $PP 2>/dev/null; do nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader 9>&- | awk -F', ' -v u=$U0 -v t=$(date +%s) '$1==u{print t, $2}' >> $O/apps_during.txt; sleep 5; done
   wait $PP; RC=$?
-  NF=$(awk -v p=$PP '$2!=p{print $2}' $O/apps_during.txt 2>/dev/null | sort -u | wc -l)
+  NF=$(( $(awk '{print $2}' $O/apps_during.txt 2>/dev/null | sort -u | wc -l) - 1 )); [ $NF -lt 0 ] && NF=0              # 기록 pid 하나는 이 실행 자신 (timeout 의 자식)
   echo "rc=$RC 끝 $(date +%T) 실행 중 카드 0 의 다른 계산 프로세스 $NF 개" >> $O/card.txt
   echo "$v $t | $(grep -a '롤아웃\|rror\|발산' $O/log.txt | tail -2 | cut -c1-200 | tr '\n' ' ') | 다른 $NF" | tee -a $R/run.out
   rclone copy $O $RR/$v -q --exclude pred.pt
