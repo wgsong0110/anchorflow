@@ -1007,7 +1007,7 @@ AW_DET9 = "__device__ __forceinline__ float aw_det9(const float* M) { return M[0
 def _src(tol=False, fqrl=False):
     s = ART.SRC.rstrip()
     if fqrl:                                                                         # 절 AS --fq_rl: 뒤집힌 입자가 있는 점의 F_q 를 유클리드 평균으로 바꾸는 것은 그 평균이 뒤집히지 않을 때만 (뒤집히면 회전·로그 평균 그대로)
-        assert s.count(GQ_OLD) == 1 and s.count(GC_OLD) >= 1 and s.index(GC_OLD) < s.index("__global__ void rt_mg_fin(")   # 첫 번째 = rt_gauss (둘째는 MG 거친 층 rt_mg_fin, 안 바꿈)
+        assert s.count(GQ_OLD) == 1 and s.count(GC_OLD) >= 1 and (s.find("__global__ void rt_mg_fin(") < 0 or s.index(GC_OLD) < s.find("__global__ void rt_mg_fin("))   # 첫 번째 = rt_gauss (둘째는 MG 거친 층 rt_mg_fin, 안 바꿈)
         s = s.replace(GQ_OLD, GQ_NEW, 1).replace(GC_OLD, GC_NEW, 1)
         i0 = s.index("__device__ void rs_fin(")
         s = s[:i0] + AW_DET9 + s[i0:]
