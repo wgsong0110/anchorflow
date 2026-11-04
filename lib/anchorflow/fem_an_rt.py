@@ -1360,9 +1360,10 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False):
         s.dev = dev
         s.lsfast = bool(lsfast)                                                        # 절 AN.22: 선탐색 조기 판정 (결과 같음)
+        s.mgbar = bool(mgbar)                                                          # 절 AN.22: MG 전처리 고운 층 연산자에 장벽 헤시안
         s.y0ls = bool(y0ls)                                                            # 절 AN.22: 뉴턴 시작점을 U 와 관성 예측 Ũ 사이 후보 중 전체 에너지 최소로 (ga·장벽 판, --ls_n 필요)
         # 절 AN.20 (lib/anchorflow/fem_an_mg2.py): 칸 협동 곱 (mv2), 거친 층 점유 칸 목록 (mg_occ, mv2 포함), 층 mg_fuse 이상 V 순환 한 블록 (mg_fuse >= 1)
         s.mg_occ, s.mg_fuse = bool(mg_occ), int(mg_fuse or 0)
@@ -1621,8 +1622,11 @@ class RTSolver(MG2.MG2Mixin):
                 s.k("rt_mg_node", s.capN, (i32(0), P(s.LM), i32(3), P(s.mn), f(0), P(s.sk), P(s.pm), *[f(q) for q in nr], P(None), P(s.W), P(None), P(None), P(z), P(s.m0u)), b=256)
             if s.mv2:
                 s.mg2_mv(0, s.m0u, KT)
-                return
-            s.k("rt_mv", s.capQc * 8, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.m0u), P(KT), i32(s.capQc * 8)))
+            else:
+                s.k("rt_mv", s.capQc * 8, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.m0u), P(KT), i32(s.capQc * 8)))
+            if s.mgbar and getattr(s, "bar", False):                                   # 절 AN.22 (전처리만, 풀리는 방정식 같음): 고운 층 V 순환 연산자에 장벽 덩어리 헤시안 K n nᵀ (블록 대각 D 에는 원래 들어 있음)
+                s.k("rt_bar_mv", s.capN, (P(s.IP), P(s.bKn), *[f(q) for q in nr], P(s.m0u), P(KT)), b=256)
+            return
         else:
             if s.mv2:
                 s.mg2_mv(l, z, KT)
