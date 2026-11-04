@@ -880,10 +880,16 @@ def _skipify(src):
     return "".join(out)
 
 
+TMAT_OLD = "if (pm == 2) T[a*3+b] = 0.f; else if (pm == 0) T[a*3+b] = sk*I; else {"
+TMAT_NEW = "if (pm == 2) T[a*3+b] = 0.f; else if (pm == 0) T[a*3+b] = sk*I; else if (pm == 3) T[a*3+b] = I - (1.f - sk)*nn[a]*nn[b]; else {"   # 미끄럼 바닥: Tapply pm 3 과 같은 T (법선만 √k; 절 AQ 고침)
+
+
 def _src(tol=False):
     s = ART.SRC.rstrip()
     assert TAP_OLD in s
     s = s.replace(TAP_OLD, TAP_NEW, 1)
+    assert s.count(TMAT_OLD) == 1
+    s = s.replace(TMAT_OLD, TMAT_NEW, 1)
     if tol:
         for o_, n_ in ((TOL_GRAD_OLD, TOL_GRAD_NEW), (TOL_G1_OLD, TOL_G1_NEW), (TOL_CG_OLD, TOL_CG_NEW)):
             assert s.count(o_) == 1, o_
