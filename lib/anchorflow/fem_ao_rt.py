@@ -809,20 +809,74 @@ TAP_OLD = "    if (pm == 0) { o[0] = sk*v[0]; o[1] = sk*v[1]; o[2] = sk*v[2]; re
 TAP_NEW = TAP_OLD + "\n    if (pm == 3) { float vn3 = v[0]*n0 + v[1]*n1 + v[2]*n2; o[0] = v[0] - (1.f-sk)*vn3*n0; o[1] = v[1] - (1.f-sk)*vn3*n1; o[2] = v[2] - (1.f-sk)*vn3*n2; return; }   // 미끄럼 바닥: 법선만 √k"
 
 
-def _src():
+# 공통 허용치 조기 종료 (절 AN.14 규칙을 이 판으로 옮김, 가지 implicit-bspline 029f15b 와 같은 식): 뉴턴 k >= 1 에서 |g_k| <= εN F 이면 걸음 끝,
+# PCG 는 |r_i| <= εP min(|g_k|, F) 이면 풀이 끝, F = |T f(y0)| (걸음 시작점 탄성·접촉 힘). 그래프에 펼친 뉴턴·PCG 수는 상한, 장치 플래그 AF_SKIP 로 남은 반복 건너뜀.
+TOL_GRAD_OLD = "    blocksum_add(rz, &SC[0]); blocksum_add(gg, &SC[1]);\n}"
+TOL_GRAD_NEW = "    blocksum_add(rz, &SC[0]); blocksum_add(gg, &SC[1]);\n#ifdef AF_ADAPT\n    blocksum_add(ff, &SC[56]);\n#endif\n}"
+TOL_G1_OLD = "        for (int a=0;a<3;a++) g[a] = (double)Mi*eta[n*3+a] + (double)T[a*3]*f[n*3] + (double)T[a*3+1]*f[n*3+1] + (double)T[a*3+2]*f[n*3+2];\n"
+TOL_G1_NEW = TOL_G1_OLD + "#ifdef AF_ADAPT\n        for (int a=0;a<3;a++) { double tf = g[a] - (double)Mi*eta[n*3+a]; ff += tf*tf; }\n#endif\n"
+TOL_CG_OLD = "s3 += (double)rr[a]*zn; s4 += (double)rr[a]*(zn - zo); }\n    }\n    blocksum_add(s3, &SC2[3]); blocksum_add(s4, &SC2[4]);\n}"
+TOL_CG_NEW = "s3 += (double)rr[a]*zn; s4 += (double)rr[a]*(zn - zo); s5 += (double)rr[a]*rr[a]; }\n    }\n    blocksum_add(s3, &SC2[3]); blocksum_add(s4, &SC2[4]);\n#ifdef AF_ADAPT\n    blocksum_add(s5, &SC2[57]);\n#endif\n}"
+TOL_CTL = r'''
+#ifdef AF_ADAPT
+__global__ void rt_ctl(int op, int it, double* SC, int* CT, double* CD, double eN2, double eP2) {
+    if (op == 0) { for (int i=0;i<16;i++) CT[i] = 0; AF_SKIP = 0; return; }
+    if (op == 1) { CT[0] = 0; CT[1] = 0; CT[6]++; AF_SKIP = 0; return; }
+    if (op == 2) { CT[1] = 0; AF_SKIP = CT[0]; return; }
+    if (op == 3) {
+        if (CT[0]) return;
+        double g2 = SC[1];
+        if (it == 0) { CD[0] = g2; CD[2] = SC[56]; if (!(g2 > 0.0)) { CT[0] = 1; AF_SKIP = 1; return; } }
+        else if (eN2 >= 0.0 && g2 <= eN2*CD[2]) { CT[0] = 1; AF_SKIP = 1; return; }
+        CT[2]++; return;
+    }
+    if (op == 4) { if (CT[0]) return; double rf = fmin(SC[1], CD[2]); CD[1] = (eP2 >= 0.0) ? eP2*rf : -1.0; CT[1] = 0; CT[7]++; SC[57] = 0.0; return; }
+    if (op == 5) { AF_SKIP = CT[0] | CT[1]; return; }
+    if (op == 6) { double r2 = SC[57]; SC[57] = 0.0; if (CT[0] | CT[1]) return; CT[3]++; if (CD[1] >= 0.0 && r2 <= CD[1]) CT[1] = 1; return; }
+    if (op == 7) { if (!CT[0] && !CT[1]) CT[5]++; AF_SKIP = CT[0]; return; }
+    if (op == 8) { if (!CT[0]) CT[4]++; AF_SKIP = 0; return; }
+}
+#endif
+'''
+
+
+def _skipify(src):
+    """implicit-bspline fem_an_rt.skipify 와 같음: AF_SKIP·AF_ADAPT 를 켜고 제어 커널 (rt_reset·rt_ctl) 을 뺀 모든 커널 첫머리에 'AF_SKIP 이면 돌아감'."""
+    import re
+    src = src.replace('extern "C" {', 'extern "C" {\n__device__ int AF_SKIP;\n#define AF_ADAPT 1', 1)
+    out, pos = [], 0
+    for m in re.finditer(r"__global__\s+void\s+(?:__launch_bounds__\(\d+\)\s+)?(\w+)\s*\(", src):
+        b = src.index("{", m.end())
+        out.append(src[pos:b + 1])
+        if m.group(1) not in ("rt_reset", "rt_ctl"):
+            out.append(" if (AF_SKIP) return;")
+        pos = b + 1
+    out.append(src[pos:])
+    return "".join(out)
+
+
+def _src(tol=False):
     s = ART.SRC.rstrip()
     assert TAP_OLD in s
     s = s.replace(TAP_OLD, TAP_NEW, 1)
+    if tol:
+        for o_, n_ in ((TOL_GRAD_OLD, TOL_GRAD_NEW), (TOL_G1_OLD, TOL_G1_NEW), (TOL_CG_OLD, TOL_CG_NEW)):
+            assert s.count(o_) == 1, o_
+            s = s.replace(o_, n_, 1)
+        s = s.replace("    double rz = 0.0, gg = 0.0;\n", "    double rz = 0.0, gg = 0.0, ff = 0.0;\n", 1).replace("    double s3 = 0.0, s4 = 0.0;\n    if (n < IP[9]) {\n        double pAp", "    double s3 = 0.0, s4 = 0.0, s5 = 0.0;\n    if (n < IP[9]) {\n        double pAp", 1)
     i = s.rfind("}")
     head = DET.det_src(s[:i])
     head = "#include <cuda_fp16.h>\n" + head
-    return head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;", 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + "\n}\n"
+    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;", 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + (TOL_CTL if tol else "") + "\n}\n"
+    return _skipify(r) if tol else r
 
 
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, **kw):
+        s.tolN, s.tolP = float(tolN), float(tolP)                                          # 공통 허용치 (절 AN.14 규칙; 음수 = 그 판정 없음)
+        s.adapt = s.tolN >= 0 or s.tolP >= 0
         s.cdp, s.pbc_ns, s.dt_gt, s.mthr = float(cdp), int(pbc_ns), float(dt_gt), float(mthr)
         s.det = bool(det)
         s.hpack = bool(hpack)
@@ -858,7 +912,8 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt), options=("--std=c++14",))
+        s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
         s.ao_ready = True
         s.bind_act()
@@ -916,6 +971,7 @@ class AORTSolver(DET.DetMixin):
         i32, f = np.int32, np.float32
         capN, capQ = s.capN, s.capQc * 8
         s.k("rt_reset", 1, (P(IP),), b=1)
+        s.ctl(0)
         s.zf(s.cnt)
         s.k("rt_coord", N, (i32(N), P(s.x), P(s.Ai), P(s.Np), P(s.fx), P(IP)))
         s.k("rt_box", 1, (P(IP), i32(capN), i32(s.capC)), b=1)
@@ -993,9 +1049,13 @@ class AORTSolver(DET.DetMixin):
             s.k("ao_floor_n", capN, (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(s.al), *[f(q) for q in nr],
                                      P(s.fixd), P(s.vbc), P(s.U), f(s.tau), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta),
                                      P(s.kb if s.has_pbc else None), P(s.mn), f(s.mthr), i32(1 if (s.ga is not None and s.ga.get("y0uk", True)) else 0), P(s.vm if s.pvb is not None else None), i32(1 if s.slip else 0)), b=256)
+            s.ctl(1)
             for it in range(s.nt):
+                s.ctl(2, it)
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(16)), b=1)
+                if s.adapt:
+                    s.k("rt_sc_clear", 1, (P(s.SC), i32(56), i32(58)), b=1)
                 if s.mat != 2:
                     s.k("aq_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt), P(s.f), P(s.H), i32(capQ), P(s.B),
                                           P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None), P(s.z0), f(s.al), f(s.visc)))
@@ -1003,6 +1063,7 @@ class AORTSolver(DET.DetMixin):
                     s.k("ao_elem_s" if s.hspec else "ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8 | (128 if s.hpack else 0) | (256 if s.bdsh else 0) | (512 if s.h16 else 0)), P(s.f), P(s.H), i32(capQ), P(s.B),
                                           P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None)))
                 s.k("rt_grad" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
+                s.ctl(3, it)
                 if s.warm and it == 0 and kstep > 0 and s.nl <= 1:                                      # PCG 첫 추정 = 앞 걸음 첫 뉴턴의 δ (프레임 첫 걸음은 0)
                     s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(1)), b=1)
                     s.k("ao_tvec", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.td)), b=256)
@@ -1017,7 +1078,9 @@ class AORTSolver(DET.DetMixin):
                     s.zf(s.zo, 9, 3)
                     s.k("rt_dotz", capN, (P(IP), P(s.r), P(s.z), P(s.zo), P(s.SC), i32(1)), b=256)
                     s.k("rt_pinit", capN, (P(IP), P(s.z), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.Tp)), b=256)
+                s.ctl(4, it)
                 for ci in range(s.cg):
+                    s.ctl(5, ci)
                     s.zf(s.KTp, 9, 3)
                     s.k(s.mvname(), capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)) + ((f(2.0 * s.mu + s.lam),) if s.h16 else ()))
                     s.k("rt_ap" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
@@ -1029,9 +1092,12 @@ class AORTSolver(DET.DetMixin):
                         s.k("rt_cg1" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.Dinv), P(s.p), P(s.Ap), P(s.dl), P(s.r), P(s.z), P(s.SC)), b=256)
                     s.k("rt_cg2" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.z), P(s.p), P(s.Tp)), b=256)
                     s.k("rt_sc_roll", 1, (P(s.SC),), b=1)
+                    s.ctl(6, ci)
+                s.ctl(7, it)
                 if s.warm and it == 0:
                     s.d0.copy_(s.dl)
                 s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(1)), b=256)
+            s.ctl(8)
             if s.ga is not None:
                 c = s.ga_c
                 s.k("ao_stepend_ga", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp)), b=256)
@@ -1100,10 +1166,21 @@ class AORTSolver(DET.DetMixin):
                  mv_dot=float((dv[:nn].double() * out["spec"][2].double()).sum() / (dv[:nn].double() * out["old"][2].double()).sum()))
         return r
 
+    def ctl(s, op, it=0):
+        """허용치 조기 종료 제어 커널 (adapt 판만; 아니면 아무것도 안 넣음)."""
+        if not getattr(s, "adapt", False) or not getattr(s, "ao_ready", False):
+            return
+        eN2 = s.tolN * s.tolN if s.tolN >= 0 else -1.0
+        eP2 = s.tolP * s.tolP if s.tolP >= 0 else -1.0
+        s.k("rt_ctl", 1, (np.int32(op), np.int32(it), P(s.SC), P(s.CT), P(s.CD), np.float64(eN2), np.float64(eP2)), b=1)
+
     def counts(s):
         c = super().counts()
         cc = s.cnt.cpu().tolist()
         c.update(q_tail=cc[0], q_apex=cc[1], p_rm=cc[2])
+        if getattr(s, "adapt", False):                                                 # 마지막 프레임 반복 수 (뉴턴 합, PCG 합, 뉴턴 상한 걸음, PCG 상한 풀이, 걸음, 풀이)
+            ct = s.CT.cpu().tolist()
+            c["it"] = dict(nN=ct[2], nP=ct[3], capN=ct[4], capP=ct[5], steps=ct[6], solves=ct[7])
         return c
 
 
