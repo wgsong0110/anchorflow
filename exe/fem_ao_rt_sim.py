@@ -77,6 +77,8 @@ ap.add_argument("--ga_y0ut", action="store_true", help="처치 (a) 끔: 뉴턴 �
 ap.add_argument("--ga_noar", action="store_true", help="처치 (b) 끔: 고착·구속 노드 가속도 0 안 함")
 ap.add_argument("--aq_sand", action="store_true", help="진단 (절 AR): 모래 씬을 재질 커널 (aq_elem·aq_commit·aq_g2p, 차분 접선) 로 -- 해석 접선 모래 커널과 대조")
 ap.add_argument("--check_aq", type=int, default=0, help="진단 (절 AR): 이 프레임 (1 부터) 을 그래프 밖에서 돌리며 요소 커널 호출마다 접선 곱 대 힘 중심 차분·대칭·(모래면) 해석 커널 대조")
+ap.add_argument("--ls_inv", action="store_true", help="절 AS: 뉴턴 보폭 = 모든 가우스 점 (부피 > 0) 의 J > 0 이 [0, 보폭] 에서 유지되는 최대 2^-k (IPC 식 뒤집힘 없는 선탐색 필터; 풀리는 식은 그대로)")
+ap.add_argument("--y0z", action="store_true", help="절 AS: 뉴턴 시작점 = 영속도 위치 y_z (z0) 에서 지금 시작점 (관성 예측·고착) 쪽으로 뒤집힘 없는 최대 2^-k 만큼 (뒤집힘 없으면 그대로)")
 ap.add_argument("--theta", type=float, default=None, help="θ 방식 (절 AN.err2 정의; 0.5 = 중점, 1 = 후퇴 오일러). 안 주면 --integ 그대로 (비트 동일)")
 a = ap.parse_args()
 if a.adaptK > 0:
@@ -187,7 +189,7 @@ if MATK is not None:                                                            
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
                         floor=FL, damp=DAMP, bc=BC, cdp=1.0, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det,
                         hspec=True, theta=a.theta, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None),
-                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow)
+                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow)
 elif SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
     _sk = {}
@@ -198,7 +200,7 @@ elif SAND:
         _sk = dict(mat=2, prm=_prm2, aqk=True, vfill=not a.no_vfill)
         print(f"[절 AR] 모래를 재질 커널로 (cdp {CDP:.5f}, prm α {float(_prm2[3]):.5f} -> (3λ+2μ)α/(2μ) {float((3 * lam + 2 * mu) / (2 * mu) * float(_prm2[3])):.5f})", flush=True)
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
-                        floor=FL, damp=DAMP, bc=BC, cdp=CDP, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det, hpack=a.hpack, bdsh=a.bdsh, mvc=a.mvc, h16=a.h16, theta=a.theta, hspec=a.hspec, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None), mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, tolN=a.tolN, tolP=a.tolP, **_sk)
+                        floor=FL, damp=DAMP, bc=BC, cdp=CDP, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det, hpack=a.hpack, bdsh=a.bdsh, mvc=a.mvc, h16=a.h16, theta=a.theta, hspec=a.hspec, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None), mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, tolN=a.tolN, tolP=a.tolP, lsinv=a.ls_inv, y0z=a.y0z, **_sk)
 else:
   S = AORT.RTAdapt(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent,
@@ -257,7 +259,7 @@ for fi in range(L):
     if "it" in c:
         ITS.append(c["it"])
     flog.write(json.dumps(dict(t=fi, err=e, ms=S.last_ms, wall_ms=WALL, K=KF, vmax=VMX, redo=redo, **c, **({"kernel_ms": kp} if kp else {}))) + "\n"); flog.flush()
-    print(f"  프레임 {fi + 1}/{L} K {KF} v_max {VMX if VMX is None else round(VMX, 3)} 벽시계 {WALL:.1f} ms 재생 {S.last_ms:.2f} ms 오차 {100 * e:.3f}%{' (용량 늘려 다시)' if redo else ''} 점 {c['nq']} 노드 상자 {c['nn']} 유클리드 평균 점 {c['nbad']} 꼬리·꼭짓점 점 {c.get('q_tail')}·{c.get('q_apex')} 입자 RM {c.get('p_rm')}", flush=True)
+    print(f"  프레임 {fi + 1}/{L} K {KF} v_max {VMX if VMX is None else round(VMX, 3)} 벽시계 {WALL:.1f} ms 재생 {S.last_ms:.2f} ms 오차 {100 * e:.3f}%{' (용량 늘려 다시)' if redo else ''} 점 {c['nq']} 노드 상자 {c['nn']} 유클리드 평균 점 {c['nbad']} 꼬리·꼭짓점 점 {c.get('q_tail')}·{c.get('q_apex')} 입자 RM {c.get('p_rm')}{(' 보폭(줄임·최대k·뒤집힌점·호출) ' + str(c.get('ls_inv')) + ' 시작 ' + str(c.get('y0z'))) if 'ls_inv' in c else ''}", flush=True)
     if a.bench_at and str(fi + 1) in a.bench_at.split(","):
         print(f"  [벤치] 프레임 {fi + 1} 점 {int(S.IP[12])} {json.dumps(S.bench(['ao_mv_c', 'ao_mv_q', 'ao_mv_q_na', 'ao_mv_q_ng', 'ao_mv_q_nh', 'ao_elem', 'ao_elem_s']))}", flush=True)
     if a.check_hspec and str(fi + 1) in a.check_hspec.split(","):

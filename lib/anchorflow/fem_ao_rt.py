@@ -884,6 +884,88 @@ __global__ void rt_ctl(int op, int it, double* SC, int* CT, double* CD, double e
 '''
 
 
+# 절 AS: 뒤집힘 없는 보폭 (IPC 식 inversion-free 선탐색 필터). 풀리는 방정식은 그대로, 걸음 길이만 정한다.
+# 가우스 점 (부피 > 0) 마다 X(α) = X(y_b + α d) = (I + A(y_b) + α A(d)) F_q, J(α) = det X(α) 는 α 의 3 차식 c0 + c1 α + c2 α² + c3 α³.
+# 점마다 J > 0 가 [0, 2^-k] 전체에서 성립하는 가장 작은 k (후보 1, ½, ¼, ... -- 절 AN 선탐색과 같은 반감) 를 구하고, 모든 점의 최대 k 로 보폭 2^-k.
+# 시작에서 이미 J <= 0 인 점은 제약에 넣지 않고 셈만 한다 (kk[1]).
+AW_SRC = r"""
+__device__ __forceinline__ double aw_p3(double c0, double c1, double c2, double c3, double a) { return c0 + a*(c1 + a*(c2 + a*c3)); }
+__device__ bool aw_pos(double c0, double c1, double c2, double c3, double a) {
+    if (!(aw_p3(c0, c1, c2, c3, a) > 0.0)) return false;
+    double A = 3.0*c3, B = 2.0*c2, C = c1, t[2]; int nt = 0;                  // 극점 (p'(t) = 0) 이 (0, a) 안에 있으면 그 값도 양수여야
+    if (A == 0.0) { if (B != 0.0) t[nt++] = -C/B; }
+    else { double D = B*B - 4.0*A*C; if (D >= 0.0) { double q = -0.5*(B + copysign(sqrt(D), B)); if (q != 0.0) { t[nt++] = q/A; t[nt++] = C/q; } else t[nt++] = 0.0; } }
+    for (int i=0;i<nt;i++) if (t[i] > 0.0 && t[i] < a && !(aw_p3(c0, c1, c2, c3, t[i]) > 0.0)) return false;
+    return true;
+}
+__device__ __forceinline__ void aw_X(const int* ids, int oc, const float* BG, const float* F, const float* v, int withF, float* X) {
+    float A[9] = {0,0,0,0,0,0,0,0,0};
+    for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; int id = ids[o]; for (int a=0;a<3;a++) { float va = v[id*3+a]; A[a*3] += va*bg[0]; A[a*3+1] += va*bg[1]; A[a*3+2] += va*bg[2]; } }
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++) X[a*3+b] = (withF ? F[a*3+b] : 0.f) + A[a*3]*F[b] + A[a*3+1]*F[3+b] + A[a*3+2]*F[6+b];
+}
+__device__ __forceinline__ void aw_cof(const double* M, double* C) {
+    C[0] = M[4]*M[8]-M[5]*M[7]; C[1] = M[5]*M[6]-M[3]*M[8]; C[2] = M[3]*M[7]-M[4]*M[6];
+    C[3] = M[2]*M[7]-M[1]*M[8]; C[4] = M[0]*M[8]-M[2]*M[6]; C[5] = M[1]*M[6]-M[0]*M[7];
+    C[6] = M[1]*M[5]-M[2]*M[4]; C[7] = M[2]*M[3]-M[0]*M[5]; C[8] = M[0]*M[4]-M[1]*M[3];
+}
+__global__ void aw_inv_q(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* yb, const float* d, int* kk) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    if (!(Vq[q] > 0.f)) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)q*9+k];
+    float X0f[9], Dxf[9]; aw_X(ids, oc, BG, F, yb, 1, X0f); aw_X(ids, oc, BG, F, d, 0, Dxf);
+    double X0[9], Dx[9]; for (int k=0;k<9;k++) { X0[k] = (double)X0f[k]; Dx[k] = (double)Dxf[k]; }
+    double C0[9], CD[9]; aw_cof(X0, C0); aw_cof(Dx, CD);
+    double c0 = X0[0]*C0[0] + X0[1]*C0[1] + X0[2]*C0[2], c3 = Dx[0]*CD[0] + Dx[1]*CD[1] + Dx[2]*CD[2], c1 = 0.0, c2 = 0.0;
+    for (int k=0;k<9;k++) { c1 += C0[k]*Dx[k]; c2 += CD[k]*X0[k]; }
+    if (!(c0 > 0.0)) { atomicAdd(&kk[1], 1); return; }
+    int k = 0; while (k < 1074 && !aw_pos(c0, c1, c2, c3, ldexp(1.0, -k))) k++;
+    if (k > 0) atomicMax(&kk[0], k);
+}
+// 보폭 2^-k 를 out[0] 에, 통계 st[0] 줄어든 횟수, st[1] 최대 k, st[2] 시작에서 뒤집힌 점-회, st[3] 호출 수; kk 비움
+__global__ void aw_pick(int* kk, double* out, int* st) {
+    int k = kk[0]; out[0] = ldexp(1.0, -k);
+    st[0] += (k > 0) ? 1 : 0; st[1] = max(st[1], k); st[2] += kk[1]; st[3] += 1;
+    kk[0] = 0; kk[1] = 0;
+}
+// 비압축 판 방향 T dl (모든 노드)
+__global__ void aw_tdir(const int* IP, const float* sk, const int* pm, float n0, float n1, float n2, const float* v, float* o) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, v + n*3, t); for (int a=0;a<3;a++) o[n*3+a] = t[a];
+}
+// 시작점 (--y0z): 기준 y_z = ŷ + T η_z, η_z = T 의 역으로 z0 (영속도 위치) 에 맞춘 값 (k = 0 방향은 ŷ 그대로); 방향 dy = y_시작 − y_z
+__global__ void aw_y0z_a(const int* IP, const float* sk, const int* pm, float n0, float n1, float n2, const float* yh, const float* z0, const float* y, float* ez, float* yb, float* dy) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float s = sk[n]; int p = pm[n];
+    if (p == 2) { for (int a=0;a<3;a++) { ez[n*3+a] = 0.f; yb[n*3+a] = y[n*3+a]; dy[n*3+a] = 0.f; } return; }
+    float isk = (s > 0.f) ? 1.f/s : 0.f;
+    float dd[3]; for (int a=0;a<3;a++) dd[a] = z0[n*3+a] - yh[n*3+a];
+    float nv[3] = {n0, n1, n2}, et[3];
+    float dn = dd[0]*n0 + dd[1]*n1 + dd[2]*n2;
+    if (p == 0) { for (int a=0;a<3;a++) et[a] = isk*dd[a]; }
+    else if (p == 3) { for (int a=0;a<3;a++) et[a] = (dd[a] - dn*nv[a]) + isk*dn*nv[a]; }
+    else { for (int a=0;a<3;a++) et[a] = dn*nv[a] + isk*(dd[a] - dn*nv[a]); }
+    float t[3]; Tapply(s, p, n0, n1, n2, et, t);
+    for (int a=0;a<3;a++) { ez[n*3+a] = et[a]; float b = yh[n*3+a] + t[a]; yb[n*3+a] = b; dy[n*3+a] = y[n*3+a] - b; }
+}
+// 보폭 β = 1 이면 손대지 않음 (비트 그대로), 아니면 η = η_z + β (η − η_z), y = ŷ + T η
+__global__ void aw_y0z_b(const int* IP, const double* bt, const float* sk, const int* pm, float n0, float n1, float n2, const float* yh, const float* ez, float* eta, float* y) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    double b = bt[0];
+    if (b == 1.0) return;
+    if (pm[n] == 2) return;
+    float bf = (float)b, e[3];
+    for (int a=0;a<3;a++) { e[a] = ez[n*3+a] + bf*(eta[n*3+a] - ez[n*3+a]); eta[n*3+a] = e[a]; }
+    float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, e, t);
+    for (int a=0;a<3;a++) y[n*3+a] = yh[n*3+a] + t[a];
+}
+"""
+
+
 def _skipify(src):
     """implicit-bspline fem_an_rt.skipify 와 같음: AF_SKIP·AF_ADAPT 를 켜고 제어 커널 (rt_reset·rt_ctl) 을 뺀 모든 커널 첫머리에 'AF_SKIP 이면 돌아감'."""
     import re
@@ -917,15 +999,16 @@ def _src(tol=False):
     i = s.rfind("}")
     head = DET.det_src(s[:i])
     head = "#include <cuda_fp16.h>\n" + head
-    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;", 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + (TOL_CTL if tol else "") + "\n}\n"
+    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;", 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + "\n}\n"
     return _skipify(r) if tol else r
 
 
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, **kw):
         s.vfill = bool(vfill)
+        s.lsinv, s.y0z = bool(lsinv), bool(y0z)                                           # 절 AS: 뉴턴 보폭 뒤집힘 없는 필터, 시작점 z0 쪽에서 뒤집힘 없게
         s.tolN, s.tolP = float(tolN), float(tolP)                                          # 공통 허용치 (절 AN.14 규칙; 음수 = 그 판정 없음)
         s.adapt = s.tolN >= 0 or s.tolP >= 0
         s.cdp, s.pbc_ns, s.dt_gt, s.mthr = float(cdp), int(pbc_ns), float(dt_gt), float(mthr)
@@ -971,7 +1054,8 @@ class AORTSolver(DET.DetMixin):
         s.bind_act()
         s.tbuf = torch.zeros(1, device=s.dev, dtype=torch.float32)
         s.cnt = torch.zeros(4, device=s.dev, dtype=torch.int32)
-        s.qb = torch.zeros(4, device=s.dev, dtype=torch.int32)                       # 진단: 프레임 동안 뒤집힌 시험 X 점-회, 비유한 응력 점-회
+        s.qb = torch.zeros(4, device=s.dev, dtype=torch.int32)
+        s.awk = torch.zeros(2, device=s.dev, dtype=torch.int32); s.awst = torch.zeros(8, device=s.dev, dtype=torch.int32); s.awb = torch.zeros(2, device=s.dev, dtype=torch.float64)   # 절 AS                       # 진단: 프레임 동안 뒤집힌 시험 X 점-회, 비유한 응력 점-회
         s.trel = (trel[s.perm].float().contiguous() if s.has_pbc else None)
         s.graph = None
 
@@ -1004,6 +1088,7 @@ class AORTSolver(DET.DetMixin):
         s.gaA = Z(s.capN, 3); s.gaM = Z(s.capN)
         s.Sa = Z(s.capQc * 32); s.Sc = Z(s.capQc * 4); s.Sq = Z(s.capQc * 32)
         s.vm = Z(s.capN, 3); s.cm = Z(s.capN, 3)
+        s.awez = Z(s.capN, 3); s.awyb = Z(s.capN, 3); s.awdy = Z(s.capN, 3)                     # 절 AS 시작점 (--y0z)
         s.kalloc = s.K
         s.K = K0
         s.graph = None
@@ -1036,6 +1121,8 @@ class AORTSolver(DET.DetMixin):
         for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3), (s.mqn, 9, 1)):
             s.zf(t_, ci, mul)
         s.zf(s.badq); s.zf(s.badc); s.zf(s.nbad)
+        if s.lsinv or s.y0z:
+            s.zf(s.awst)
         if s.has_pbc:
             if s.pvb is not None:
                 s.k("aq_vset", N, (i32(N), P(s.trel), P(s.tbuf), P(s.pvb), P(s.v), P(s.pvc), P(s.pmk)))
@@ -1106,6 +1193,11 @@ class AORTSolver(DET.DetMixin):
             s.k("ao_floor_n", capN, (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(s.al), *[f(q) for q in nr],
                                      P(s.fixd), P(s.vbc), P(s.U), f(s.tau), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta),
                                      P(s.kb if s.has_pbc else None), P(s.mn), f(s.mthr), i32(1 if (s.ga is not None and s.ga.get("y0uk", True)) else 0), P(s.vm if s.pvb is not None else None), i32(1 if s.slip else 0)), b=256)
+            if s.y0z:                                                                  # 절 AS 시작점: y_z (영속도 위치) 에서 관성 시작점 쪽으로 뒤집힘 없는 최대 2^-k
+                s.k("aw_y0z_a", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.z0), P(s.y), P(s.awez), P(s.awyb), P(s.awdy)), b=256)
+                s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.awyb), P(s.awdy), P(s.awk)))
+                s.k("aw_pick", 1, (P(s.awk), P(s.awb), P(s.awst[4:])), b=1)
+                s.k("aw_y0z_b", capN, (P(IP), P(s.awb), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.awez), P(s.eta), P(s.y)), b=256)
             s.ctl(1)
             for it in range(s.nt):
                 s.ctl(2, it)
@@ -1153,7 +1245,15 @@ class AORTSolver(DET.DetMixin):
                 s.ctl(7, it)
                 if s.warm and it == 0:
                     s.d0.copy_(s.dl)
-                s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(1)), b=256)
+                if s.lsinv:                                                            # 절 AS: 보폭 = 모든 가우스 점 J > 0 인 최대 2^-k (SC[14])
+                    if s.compact:
+                        s.zf(s.td, 9, 3)
+                        s.k("ao_tvec", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.dl), P(s.td)), b=256)
+                    else:
+                        s.k("aw_tdir", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.dl), P(s.td)), b=256)
+                    s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), P(s.td), P(s.awk)))
+                    s.k("aw_pick", 1, (P(s.awk), P(s.SC[14:]), P(s.awst)), b=1)
+                s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if s.lsinv else 1)), b=256)
             s.ctl(8)
             if s.ga is not None:
                 c = s.ga_c
@@ -1420,6 +1520,8 @@ class AORTSolver(DET.DetMixin):
         c.update(q_tail=cc[0], q_apex=cc[1], p_rm=cc[2])
         if s.aq:
             qb = s.qb.cpu().tolist(); c.update(q_inv=qb[0], q_nf=qb[1])
+        if s.lsinv or s.y0z:                                                           # 절 AS: (줄어든 횟수, 최대 k, 시작에서 뒤집힌 점-회, 호출 수) 뉴턴·시작점
+            w = s.awst.cpu().tolist(); c.update(ls_inv=w[:4], y0z=w[4:])
         if getattr(s, "adapt", False):                                                 # 마지막 프레임 반복 수 (뉴턴 합, PCG 합, 뉴턴 상한 걸음, PCG 상한 풀이, 걸음, 풀이)
             ct = s.CT.cpu().tolist()
             c["it"] = dict(nN=ct[2], nP=ct[3], capN=ct[4], capP=ct[5], steps=ct[6], solves=ct[7])
