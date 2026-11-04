@@ -1512,6 +1512,31 @@ class AORTSolver(DET.DetMixin):
         if ff.any():
             mr = mn[ff] / md; o["f_nonfin_nodes"] = dict(n=int(ff.sum()), mrel_min=float(mr.min()), mrel_med=float(mr.median()), active=int((ff & act).sum()))
         o["qb"] = s.qb.cpu().tolist() if hasattr(s, "qb") else None
+        if getattr(s, "_nck_X", False) and (s.lsinv or s.y0z):                        # 절 AS 진단: 지금 y 에서 뒤집힌 점 (부피 > 0) 이 기준 y_b·F_q 에서도 뒤집혔는지, 이웃 노드 종류
+            try:
+                ip = s.IP.cpu().tolist(); nq = ip[12]; nb1, nb2 = ip[7], ip[8]
+                q = torch.arange(nq, device=s.dev); c = q >> 3; oc = q & 7; cb = s.cb[c].long()
+                BG = s.BG.reshape(8, 27, 3); Fq = s.Fq[:nq].reshape(nq, 3, 3)
+                nids = []
+                for o_ in range(27):
+                    i_, j_, k_ = o_ // 9, (o_ // 3) % 3, o_ % 3
+                    nids.append(((cb[:, 0] + i_) * nb1 + (cb[:, 1] + j_)) * nb2 + (cb[:, 2] + k_))
+                def Xof(v):
+                    A = torch.zeros(nq, 3, 3, device=s.dev)
+                    for o_ in range(27):
+                        A += v[nids[o_]][:, :, None] * BG[oc, o_][:, None, :]
+                    return Fq + A @ Fq
+                Jy = torch.linalg.det(Xof(s.y)); Jb = torch.linalg.det(Xof(s.awyb)); Ju = torch.linalg.det(Xof(s.U)); JF = torch.linalg.det(Fq)
+                vq = s.Vq[:nq]; bad = (~(Jy > 0)) & (vq > 0)
+                L_ = []
+                for qi in torch.nonzero(bad).flatten()[:12].tolist():
+                    ns = torch.stack([nids[o_][qi] for o_ in range(27)])
+                    L_.append(dict(q=qi, vq_rel=float(vq[qi]) / float(vq[vq > 0].median()), Jy=float(Jy[qi]), Jbase=float(Jb[qi]), JU=float(Ju[qi]), JF=float(JF[qi]),
+                                   pm=[int((s.pm[ns] == k_).sum()) for k_ in range(4)], stuck=int((s.sk[ns] < 1e-3).sum()), light=int((s.mn[ns] < s.mthr).sum()), m0=int((s.mn[ns] <= 0).sum()),
+                                   ymU_cell=float((s.y[ns] - s.U[ns]).norm(dim=-1).max()) / float(s.A[:, 0].norm())))
+                o["as_inv"] = dict(n=int(bad.sum()), n_base=int(((~(Jb > 0)) & (vq > 0)).sum()), n_U=int(((~(Ju > 0)) & (vq > 0)).sum()), n_F=int(((~(JF > 0)) & (vq > 0)).sum()), pts=L_)
+            except Exception as ex_:
+                o["as_inv"] = repr(ex_)
         if getattr(s, "_nck_X", False):                                               # 시험 X = F_q + dA F_q 의 I 에서 벗어남 (torch 로 다시 계산)
             ip = s.IP.cpu().tolist(); nq = ip[12]; nb1, nb2 = ip[7], ip[8]
             q = torch.arange(nq, device=s.dev); c = q >> 3; oc = q & 7; cb = s.cb[c].long()
