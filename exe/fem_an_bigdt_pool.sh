@@ -2,6 +2,7 @@
 # 절 AN.16 큰 dt 실험용 풀 (fem_an_pool.sh 복사 + 명시적 B-스플라인 기준선 ex*·정답 MPM mpm* 분기). 원본 설명: 절 AN.14 이후 실행 풀 (잡 안, 비측정): 목록 파일의 줄 "<판> <궤적> [인자...]" 을 빈 카드 (계산 프로세스 0 이고 아무도 잡지 않은 카드; 카드 0 은 단독 측정 몫이라 안 씀) 하나에 하나씩.
 # 카드 잡기는 오차 원인 에이전트 (exe/fem_anerr_pool.sh, 가지 implicit-err) 와 같은 규약: /dev/shm/dkta/anerr_claim/<카드> = 일꾼 pid.
 # 궤적: L000, 0000 에서 0019, ficus (125 프레임 덤프 + 주기), stretch·shear (블록 80 프레임 덤프 + 주기), drop1 (낙하 덤프 + 반발). 출력 /dev/shm/dkta/lbours/fem_an/<묶음>/<판>_<궤적> -> 끝나면 바로 R2 같은 경로.
+# 절 BD (bigdt2): 재질 씬 wolf·bread (우리 = 절 CM3 씬 인자, 정답 MPM = PG 원본 h5 + config), 마감 AN_UNTIL (epoch, 지나면 새 판 안 띄움).
 # 사용: bash exe/fem_an_pool.sh <묶음> <목록 파일>; 후보 카드 AN_CARDS (기본 "1 2 4 6"), 동시 상한 AN_PAR (기본 4)
 cd "$(dirname "$0")/.." || exit 1
 PY=/home/dkta/.conda/envs/af/bin/python
@@ -35,8 +36,10 @@ run_one() {
     ficus) DA="--data $FI --frames 125 --floor none --cfg_bc --region_density --pg_vdamp --dump";;
     stretch|shear) DA="--data $BK/$t.pt --frames 80 --floor none --dump";;
     drop1) DA="--data $DD/drop_f1.pt --frames 80 --floor vel --dump";;
+    wolf|bread) source exe/fem_cm3_scn.sh; cm_scene $t;;                                 # 절 BD: 재질 씬은 절 CM3 씬 인자 그대로 (DA 에 공통 묶음 BA 포함)
     *) [ -s $LD/$t.pt ] || { cp /home/dkta/work/lbpt/test/$t.pt $LD/$t.pt.$BASHPID && mv $LD/$t.pt.$BASHPID $LD/$t.pt; }; DA="--data $LD/$t.pt --frames 80 --floor vel";;
   esac
+  case $t in wolf|bread) source exe/fem_cm3_scn.sh; cm_data $t;; esac
   echo "카드 $G $(cat .done) $(date '+%F %T') 인자 $DA $*" > $O/run_info.txt
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/apps_at_start.txt
   case $V in
@@ -45,7 +48,13 @@ run_one() {
       CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_bsel_cuda_sim.py --out $O --tag $t $DA $EA --theta 0 --vfl_out "$@" < /dev/null > $O/log.txt 2>&1;;
     mpm*) # 정답 MPM (PG warp 솔버), 서브스텝 수만 바꿈. 인자 "--nsub k"
       export WARP_CACHE_PATH=/dev/shm/dkta/warp_cache_$G; mkdir -p $WARP_CACHE_PATH
-      if [ $t = ficus ]; then GA="--gt /home/dkta/work/lbours/ficus_v0/gt --config /home/dkta/work/lbours/ficus_v0/gt/config.json --pt /home/dkta/work/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt --frames 125 --pg_cfg --no_dump"; else GA="--frames 80 --no_dump"; fi
+      W=/home/dkta/work
+      case $t in
+        ficus) GA="--gt $W/lbours/ficus_v0/gt --config $W/lbours/ficus_v0/gt/config.json --pt $W/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt --frames 125 --pg_cfg --no_dump";;
+        wolf)  GA="--gt $W/topo/pg_wolf_sand --config $W/PhysGaussian/config/wolf_config.json --pt $AG/wolf.pt --frames 50 --pg_cfg --no_dump";;     # 절 BD: PG 원본 h5 (절 AG.1)
+        bread) GA="--gt $W/topo/pg_bread_plastic --config $W/topo/bread_plastic_config.json --pt $AG/bread.pt --frames 300 --pg_cfg --no_dump";;
+        *)     GA="--frames 80 --no_dump";;
+      esac
       ( cd /home/dkta/work/i-physgaussian && CUDA_VISIBLE_DEVICES=$G $PY -u $OLDPWD/exe/gt_sens.py --out $O $GA "$@" < /dev/null > $O/log.txt 2>&1 );;
     *) CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_an_rt_sim.py --out $O --tag $t $DA "$@" < /dev/null > $O/log.txt 2>&1;;
   esac
@@ -59,6 +68,7 @@ run_one() {
 while read -r V t A; do
   [ -z "$V" ] && continue; case $V in \#*) continue;; esac
   [ -f $R/${V}_$t/run_info.txt ] && grep -q rc= $R/${V}_$t/run_info.txt && continue
+  if [ -n "${AN_UNTIL:-}" ] && [ "$(date +%s)" -ge "$AN_UNTIL" ]; then echo "마감 -- 안 띄움 $V $t" | tee -a $R/skipped.txt; continue; fi
   while true; do
     while [ $(jobs -rp | wc -l) -ge ${AN_PAR:-4} ]; do sleep 20; done
     G=$(free_card); [ -n "$G" ] && break; sleep 30

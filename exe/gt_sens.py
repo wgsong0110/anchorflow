@@ -29,6 +29,8 @@ ap.add_argument("--surface", default=None, help="바닥 종류 (정답 sticky)")
 ap.add_argument("--no_dump", action="store_true")
 ap.add_argument("--pg_cfg", action="store_true", help="절 AK.15: PhysGaussian gs_simulation 형식 정답 (ficus): config 재질 (additional_material_params 포함)·감쇠·경계조건 (decode_param.set_boundary_conditions) 그대로, 바닥 충돌 없음")
 ap.add_argument("--flip", type=float, default=0.0, help="절 AK.14 진단: 서브스텝마다 FLIP 섞기 v = v_PIC + α (v_old − v_s), v_s = 같은 서브스텝 시작 상태의 운동량만 P2G (APIC 같은 식, 힘·중력·경계 없음) -> G2P 속도 (0 = 원래 정답 솔버)")
+ap.add_argument("--sub_chk", action="store_true", help="큰 dt 실험 (절 BD): 서브스텝마다 입자 위치가 유한하고 격자 배열 안 (P2G 기저 노드 0 .. n_grid−1, x/dx ∈ (−0.5, n_grid−1.5)) 인지 확인 -- 벗어나면 그 프레임을 발산으로 적고 멈춤 (벗어난 채 다음 P2G 를 돌면 warp 커널이 배열 밖을 써서 CUDA 700/717 로 죽음). 프레임 오차 > 2 도 발산 (우리 실행기와 같은 규칙)")
+ap.add_argument("--rpic_cfg", action="store_true", help="rpic_damping 을 config 값 그대로 (공식 설정; 키가 없으면 0)")
 ap.add_argument("--diag", action="store_true", help="절 AK.14: 프레임마다 몸 좌표 높이 (0 프레임 대비 Kabsch)·운동 에너지·입자 탄성 Σ V ψ(F) -> err.json diag")
 a = ap.parse_args()
 sys.path.insert(0, a.pg)
@@ -40,7 +42,9 @@ import warp as wp                                                # noqa: E402
 from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP   # noqa: E402
 
 cfg = json.load(open(a.config))
-meta = json.load(open(os.path.join(a.gt, "meta.json")))
+meta = json.load(open(os.path.join(a.gt, "meta.json"))) if os.path.exists(os.path.join(a.gt, "meta.json")) else {}   # PG 원본 h5 폴더는 meta 없음
+if a.rpic_cfg:
+    a.rpic = float(cfg.get("rpic_damping", 0.0))
 GL = float(cfg["grid_lim"])
 n_grid0 = int(cfg["n_grid"])
 dx0 = GL / n_grid0
@@ -189,6 +193,20 @@ if a.diag:
         psi = _mu * ((sv - 1) ** 2).sum(-1) + 0.5 * _lam * (J - 1) ** 2
         DIAG.append(dict(f=f, height=float(b[:, 2].max() - b[:, 2].min()), res=100 * float(res.pow(2).mean().sqrt()) / EXT, comz=float(c[2]),
                          ke=float(0.5 * (_mass * (vv ** 2).sum(-1)).sum()), ep=float((VOL.double() * psi).sum())))
+DIV = None
+_gsz = GL / n_grid
+
+
+def _out_of_grid():
+    xx = wp.to_torch(sol.mpm_state.particle_x)
+    if not bool(torch.isfinite(xx).all()):
+        return "비유한"
+    lo, hi = torch.aminmax(xx / _gsz)
+    if float(lo) <= -0.5 or float(hi) >= n_grid - 1.5:
+        return f"격자 밖 (x/dx 범위 {float(lo):.3g} .. {float(hi):.3g}, 배열 0..{n_grid - 1})"
+    return None
+
+
 for f in range(1, L + 1):
     for s in range(nsub):
         if a.flip > 0:                                                                # v_s: 서브스텝 시작 상태의 운동량만 왕복
@@ -204,6 +222,15 @@ for f in range(1, L + 1):
             vt = wp.to_torch(_st.particle_v)
             vt.add_(a.flip * (v_old - v_s))
         step += 1
+        if a.sub_chk:
+            _r = _out_of_grid()
+            if _r:
+                DIV = dict(frame=f, substep=s + 1, reason=_r)
+                break
+    if DIV is not None:
+        errs.append(float("nan"))
+        print(f"[발산] 프레임 {f} 서브스텝 {DIV['substep']}/{nsub}: {DIV['reason']}", flush=True)
+        break
     if a.diag:
         _diag(f)
     xt = sol.export_particle_x_to_torch()
@@ -215,10 +242,11 @@ for f in range(1, L + 1):
     if XD is not None:
         XD[f - 1] = xt.cpu()
     print(f"  프레임 {f}/{L} 오차 {100 * e:.3f}% (누적 평균 {100 * np.nanmean(errs):.3f}%) 최저 {float(xt[:, 2].min()):.5f} {time.time() - t0:.0f}s", flush=True)
-    if not np.isfinite(e):
+    if not np.isfinite(e) or (a.sub_chk and e > 2.0):
+        DIV = dict(frame=f, substep=nsub, reason="비유한" if not np.isfinite(e) else f"오차 {100 * e:.1f}% > 200%")
         print(f"[발산] 프레임 {f}", flush=True)
         break
-summ = dict(args=vars(a), nsub=nsub, dt=dt, n_grid=n_grid, floor=floor, EXT=EXT, frames_done=len(errs), err_mean=float(np.mean(errs)),
+summ = dict(args=vars(a), nsub=nsub, dt=dt, n_grid=n_grid, floor=floor, EXT=EXT, frames_done=len(errs), err_mean=float(np.mean(errs)), div=DIV, err_mean_done=float(np.nanmean(errs)) if np.isfinite(errs).any() else None,
             err=errs, sec=time.time() - t0, diag=DIAG)
 json.dump(summ, open(os.path.join(a.out, "err.json"), "w"), ensure_ascii=False, indent=1)
 if XD is not None:
