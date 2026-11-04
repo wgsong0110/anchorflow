@@ -1,5 +1,5 @@
 #!/bin/bash
-# 절 AN.15 잡 안 일꾼 (job_run.sh 로 한 번 띄움; 이후 SSH 없이): R2 lbours/fem_an/pkw/tasks/<이름>.sh 를 1 분마다 보고, 새 것을 차례로 돈다.
+# 절 AN.18 잡 안 일꾼 (job_run.sh 로 한 번 띄움; 이후 SSH 없이): R2 lbours/fem_an/pkw/tasks/<이름>.sh 를 1 분마다 보고, 새 것을 차례로 돈다.
 # 과제 출력은 노드 /dev/shm/dkta/pkw/<이름>.log -> 1 분마다·끝에 R2 pkw/out/<이름>.log, 끝 표식 pkw/out/<이름>.END. R2 pkw/STOP 이 있거나 마감 (AF_PKW_UNTIL, 초) 이면 끝.
 export PATH=$HOME/bin:$PATH
 RR=r2:storage/result/anchorflow/lbours/fem_an/pkw; W=/dev/shm/dkta/pkw; mkdir -p $W/tasks

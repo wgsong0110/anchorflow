@@ -333,7 +333,7 @@ class DetMixin(ART.RTSolver):
         s.d_mscr = Z(s.capN)
 
     def det_bind(s):
-        for mod in s._mods():                                                     # 보통 모듈 + 지속형 판 모듈 (절 AN.15) 의 장치 전역 둘 다
+        for mod in s._mods():                                                     # 보통 모듈 + 지속형 판 모듈 (절 AN.18) 의 장치 전역 둘 다
             s._det_bind1(mod)
 
     def _det_bind1(s, mod):

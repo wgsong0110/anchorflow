@@ -1296,7 +1296,7 @@ class RTSolver:
 
     def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1):
         s.dev = dev
-        # 지속형 커널 판 (절 AN.15, lib/anchorflow/fem_an_pk.py): 프레임 하나 = 협동 실행 커널 한 번 (명령 목록을 격자 장벽으로 차례로). pk_loc = 블록 0 하나가 도는 MG 층 (이 층 이상)
+        # 지속형 커널 판 (절 AN.18, lib/anchorflow/fem_an_pk.py): 프레임 하나 = 협동 실행 커널 한 번 (명령 목록을 격자 장벽으로 차례로). pk_loc = 블록 0 하나가 도는 MG 층 (이 층 이상)
         s.pk, s.pk_loc_l, s.pkb, s.pkminb = bool(pk), int(pk_loc), int(pkb), int(pkminb)
         s._pkc, s._pk_loc, s.pkmod = None, 0, None
         s._src0 = SRC

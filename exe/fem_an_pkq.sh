@@ -1,5 +1,5 @@
 #!/bin/bash
-# 절 AN.15 짧은 시험 (카드 0 단독, gpu0.lock, 판마다 카드 0 의 다른 계산 프로세스 0 확인): 목록 파일 $2 의 줄 "<이름> <인자...>" (공통 앞 인자 B 뒤에 붙음; 궤적 줄임 @LG @FI).
+# 절 AN.18 짧은 시험 (카드 0 단독, gpu0.lock, 판마다 카드 0 의 다른 계산 프로세스 0 확인): 목록 파일 $2 의 줄 "<이름> <인자...>" (공통 앞 인자 B 뒤에 붙음; 궤적 줄임 @LG @FI).
 # 출력 /dev/shm/dkta/lbours/fem_an/<묶음>/<이름> -> R2, 줄 요약 run.out (+ 커널·명령별 시간 kernel_ms 는 fem.jsonl)
 cd "$(dirname "$0")/.." || exit 1
 PY=/home/dkta/.conda/envs/af/bin/python

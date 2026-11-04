@@ -1,5 +1,5 @@
 #!/bin/bash
-# 절 AN.15 지속형 커널 판 1 차: 결과 불변 대조 (그래프 판 vs 지속형 판, 같은 입력, 10 프레임; 결정적·비결정, 허용치 판·고정 판) + 짧은 시간 비교 (pk_loc 별).
+# 절 AN.18 지속형 커널 판 1 차: 결과 불변 대조 (그래프 판 vs 지속형 판, 같은 입력, 10 프레임; 결정적·비결정, 허용치 판·고정 판) + 짧은 시간 비교 (pk_loc 별).
 # 카드 0 (gpu0.lock, 판마다 카드 0 의 다른 계산 프로세스 0 확인). 출력 /dev/shm/dkta/lbours/fem_an/<묶음> -> R2 같은 경로, 표 marks/<묶음>.md, 끝 표식 marks/<묶음>.END
 cd "$(dirname "$0")/.." || exit 1
 PY=/home/dkta/.conda/envs/af/bin/python

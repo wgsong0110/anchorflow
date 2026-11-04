@@ -1,4 +1,4 @@
-"""절 AN.15 지속형 커널 판 (`--pk`): 프레임 하나 = 커널 호출 한 번.
+"""절 AN.18 지속형 커널 판 (`--pk`): 프레임 하나 = 커널 호출 한 번.
 RTSolver.record() 가 내는 커널 순서 (그래프 판과 같은 것) 를 명령 목록으로 모으고 (RTSolver.k 의 모으기 모드), 지속형 커널 pk_run 하나가 그 목록을 차례로 돈다.
 - 소스 변환 (pk_src): 모듈 소스 (결정적 판이면 det_src 를 거친 것) 의 모든 __global__ 커널을 __device__ 함수 pkd_<이름>(VB_, VT_, VD_, VS_, 원래 인자) 로 바꾼다.
   몸 안의 blockIdx.x -> VB_ (가상 블록 번호 = 원래 실행의 블록 번호), threadIdx.x -> VT_, blockDim.x -> VD_ (원래 블록 크기), __syncthreads() -> 가상 블록 이름 붙은 장벽 (bar.sync 1+VS_, VD_).

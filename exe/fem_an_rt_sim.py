@@ -59,7 +59,7 @@ ap.add_argument("--diag", action="store_true", help="프레임마다 뉴턴 반�
 ap.add_argument("--tolN", type=float, default=-1.0, help="절 AN.14 허용치 조기 종료: 걸음마다 뉴턴을 |g|/|g0| <= tolN 이면 멈춤 (--newton 은 상한; 음수 = 고정 반복)")
 ap.add_argument("--tolP", type=float, default=-1.0, help="절 AN.14: PCG 를 sqrt(r·z / r0·z0) <= tolP 이면 멈춤 (--cg 는 상한; 음수 = 고정 반복)")
 ap.add_argument("--gq_oct", type=float, default=-1.0, help="정의 변경 (절 AN.err4): >= 0 이면 칸 가우스 점 가중 (부피·판정 질량) = (1 − κ) x 팔분 칸 실제 입자 부피 (질량) + κ x 칸 합 / 8. 음수 = 원래 (칸 합 / 8)")
-ap.add_argument("--pk", action="store_true", help="절 AN.15 지속형 커널 판: 프레임 하나 = 협동 실행 커널 한 번 (결과 정의 같음)")
+ap.add_argument("--pk", action="store_true", help="절 AN.18 지속형 커널 판: 프레임 하나 = 협동 실행 커널 한 번 (결과 정의 같음)")
 ap.add_argument("--pk_loc", type=int, default=2, help="지속형 판: 이 MG 층 이상은 블록 0 하나가 (격자 장벽 줄이기; 99 = 끔)")
 ap.add_argument("--pkb", type=int, default=256, help="지속형 판 물리 블록 크기")
 ap.add_argument("--pkminb", type=int, default=1, help="지속형 판 __launch_bounds__ 최소 블록 수 (레지스터 상한)")
