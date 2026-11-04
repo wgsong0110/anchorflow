@@ -1200,7 +1200,7 @@ class AORTSolver(DET.DetMixin):
                               prev=[q[0] for q in L[-6:-1]], SC=s.SC[:8].cpu().tolist(), st=s._nck_stats())
         elif name in ("aq_elem", "ao_stepend_ga", "rt_stepend", "ao_stepend_th", "rt_lsup", "rt_lsup_c"):
             s._nck_last = s._nck_stats()
-            s._nck_tr.append(dict(k=name, ks=s._nck_ks, it=s._nck_it, **{q: s._nck_last.get(q) for q in ("fmax", "y_minus_Ut", "gaA", "vk", "qb")}))
+            s._nck_tr.append(dict(k=name, ks=s._nck_ks, it=s._nck_it, **{q: s._nck_last.get(q) for q in ("fmax", "y_minus_Ut", "gaA", "vk", "qb", "X")}))
 
     def _nck_stats(s):
         """진단 통계: 노드 질량비·관성 예측에서 벗어난 정도·속도/가속도의 강체 운동에서 벗어난 정도."""
@@ -1227,6 +1227,19 @@ class AORTSolver(DET.DetMixin):
         if ff.any():
             mr = mn[ff] / md; o["f_nonfin_nodes"] = dict(n=int(ff.sum()), mrel_min=float(mr.min()), mrel_med=float(mr.median()), active=int((ff & act).sum()))
         o["qb"] = s.qb.cpu().tolist() if hasattr(s, "qb") else None
+        if getattr(s, "_nck_X", False):                                               # 시험 X = F_q + dA F_q 의 I 에서 벗어남 (torch 로 다시 계산)
+            ip = s.IP.cpu().tolist(); nq = ip[12]; nb1, nb2 = ip[7], ip[8]
+            q = torch.arange(nq, device=s.dev); c = q >> 3; oc = q & 7; cb = s.cb[c].long()
+            BG = s.BG.reshape(8, 27, 3); A = torch.zeros(nq, 3, 3, device=s.dev)
+            for o_ in range(27):
+                i_, j_, k_ = o_ // 9, (o_ // 3) % 3, o_ % 3
+                nid = ((cb[:, 0] + i_) * nb1 + (cb[:, 1] + j_)) * nb2 + (cb[:, 2] + k_)
+                A += s.y[nid][:, :, None] * BG[oc, o_][:, None, :]
+            Fq = s.Fq[:nq].reshape(nq, 3, 3); X = Fq + A @ Fq; I3 = torch.eye(3, device=s.dev)
+            dX = (X - I3).flatten(1).abs().max(1).values; dF = (Fq - I3).flatten(1).abs().max(1).values; dA = A.flatten(1).abs().max(1).values
+            vq = s.Vq[:nq]; i = int(dX.argmax())
+            o["X"] = dict(dX_max=float(dX.max()), dX_p99=float(dX.quantile(0.99)) if nq < 16000000 else None, n_dX_gt1e3=int((dX > 1e-3).sum()), dF_max=float(dF.max()), dA_max=float(dA.max()),
+                          at=dict(vq=float(vq[i]), vq_med=float(vq[vq > 0].median()), cell=int(c[i]), oc=int(oc[i])), vq0=int((vq <= 0).sum()))
         return o
 
     def nanchk(s, t):
@@ -1237,6 +1250,7 @@ class AORTSolver(DET.DetMixin):
             if torch.is_tensor(t_):
                 t_.zero_()
         s._nck, s._nck_hit, s._nck_ks, s._nck_it, s._nck_last, s._nck_tr = [], None, -1, -1, None, []
+        s._nck_X = True
         s.record(t)
         torch.cuda.synchronize()
         o = s._nck_hit or {}
