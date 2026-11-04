@@ -5031,7 +5031,7 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 비교: 명시적 B-스플라인 bnv (L000·ficus, 서브스텝 N = K; 재질 씬은 이 실행기에 재질이 없어 안 함), 정답 MPM (L000·ficus·wolf·bread, 서브스텝 = frame_dt/K, --sub_chk --rpic_cfg).
 - 실행: exe/fem_an_bigdt2.sh (풀 exe/fem_an_bigdt_pool.sh 에 wolf·bread·마감 추가, 표 exe/fem_an_bigdt2_table.py); 12:09 KST 뒤 새 판 안 띄움, 12:20 KST 에 돌던 판이 있어도 표·끝 표식.
 - 결과: R2 lbours/fem_an/bigdt2/ (판별 log·summary.json·fem.jsonl·err.json, ficus period.txt), 표 bigdt2_table.md (10 분마다 갱신), 끝 표식 bigdt2.END, 로그 pool.log·bigdt2.log·bigdt2_main.log; 코드 lbours/fem_an/code/imp_f34463e.bundle.
-- 보충 bigdt2m (커밋 다음 줄): 첫 시도의 정답 MPM wolf·bread 가 PG 원본 config 에 grid_lim (·n_grid) 키가 없어 KeyError 로 바로 멈춤 -> exe/gt_sens.py 에 PG decode_param 기본값 (n_grid 50, grid_lim 2.0; exe/pg_h5_to_pt.py 와 같음 -- 공식 실행 때 PG 가 쓴 값) 을 넣고
+- 보충 bigdt2m (커밋 f605f25): 첫 시도의 정답 MPM wolf·bread 가 PG 원본 config 에 grid_lim (·n_grid) 키가 없어 KeyError 로 바로 멈춤 -> exe/gt_sens.py 에 PG decode_param 기본값 (n_grid 50, grid_lim 2.0; exe/pg_h5_to_pt.py 와 같음 -- 공식 실행 때 PG 가 쓴 값) 을 넣고
   exe/fem_an_bigdt2m.sh 로 wolf·bread 정답 MPM (K0·1·2·4·8) 만 R2 bigdt2m/ 에 다시 돌려, bigdt2 풀이 마지막 줄까지 띄운 뒤 bigdt2/ 로 덮어씀 (첫 시도는 <이름>.first). 끝 표식 bigdt2/bigdt2m.END -- **전체 끝 = bigdt2.END 와 bigdt2m.END 둘 다**.
 - 이어서 할 지점 (잡 만료 뒤): bigdt2.END 가 없거나 표에 "미완" 이면 같은 커밋으로 `bash exe/fem_an_bigdt2.sh f34463e` 를 다시 띄움 (풀은 rc= 가 있는 판을 건너뜀 -- 단 /dev/shm 은 잡과 함께 사라지므로 R2 bigdt2/ 를 /dev/shm/dkta/lbours/fem_an/bigdt2/ 로 먼저 내려받을 것; 마감 날짜 AN_UNTIL·HARD 는 스크립트에서 고칠 것).
   결과 정리 (BD.1 원래 dt 확인 수치, BD.2 원인 결론, 표) 는 아직 -- 결과 받은 뒤 이 절에 채움.
