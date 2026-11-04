@@ -12,6 +12,8 @@ V = [("명시적 bnv", ["fem_ak_bselc/{t}_bnv"]), ("실시간 판 중점 K1", ["
      ("후퇴 K2 팔분 가중 κ0.1", ["fem_anerr/oc1/be_K2_{t}", "fem_anerr/oc1b/be_K2_{t}"]),
      ("HHT ρ0.7 K2 칸 가우스 (원본)", ["fem_anerr/ga6/hht7_K2_{t}", "fem_anerr/ga6b/hht7_K2_{t}"]),
      ("HHT ρ0.7 K2 팔분 가중 κ0.1", ["fem_anerr/oc1/hht7_K2_{t}", "fem_anerr/oc1b/hht7_K2_{t}"]),
+     ("HHT ρ0.7 K2 팔분 가중 κ0.25", ["fem_anerr/oc2/hk25_K2_{t}"]),
+     ("HHT ρ0.7 K2 팔분 가중 κ0.5", ["fem_anerr/oc2/hk5_K2_{t}"]),
      ("HHT ρ0.7 K2 팔분 가중 κ0 (1 차 시험)", ["fem_anerr/oc0/hk0_{t}"])]
 
 
