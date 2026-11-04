@@ -904,33 +904,47 @@ __global__ void rt_fixdir(const int* IP, double* SC, const float* p0, float* dl)
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     bool bad = !(SC[9] < 0.0);
     if (n == 0 && bad) SC[62] += 1.0;
+    if (n == 0) SC[59] = bad ? 0.0 : 1.0;                                       // 절 AN.22: 방향을 안 바꾸면 1 (두 번째 관성 몫 계산 생략 문)
     if (n >= IP[9] || !bad) return;
     float a0 = (SC[61] > 0.0) ? (float)(SC[60]/SC[61]) : 0.f;
     for (int a=0;a<3;a++) dl[n*3+a] = a0*p0[n*3+a];
 }
 __global__ void rt_sc_copy(double* SC, int dst, int src) { SC[dst] = SC[src]; }
 // 선탐색 넓힘 (--ls_n NC): 후보 c_i = 2^-i (i = 0..NC−1). 관성 몫 SC[20] (c = 0), SC[21+i]; 탄성 SC[40+i]; g·δ SC[9]; 보폭 SC[14]
-__global__ void rt_lsyN(const int* IP, const float* mn, float itau2, const float* eta, const float* dl, const float* r0, double* SC, int NC) {
+// 절 AN.22: 후보 고리를 컴파일 시 12 로 펼쳐 sc[] 를 레지스터에 (원래는 실행 시 NC 고리라 지역 메모리 -- 같은 연산·같은 순서, 결과 비트 같음). gate != 0 이고 *gate != 0 이면 아무것도 안 함 (하강 방향을 안 바꾼 반복의 두 번째 계산 생략)
+__global__ void rt_lsyN(const int* IP, const float* mn, float itau2, const float* eta, const float* dl, const float* r0, double* SC, int NC, const double* gate) {
+    if (gate && *gate != 0.0) return;
     if (blockIdx.x*blockDim.x >= IP[9]) return;
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     double s0 = 0.0, gd = 0.0, sc[12];
+#pragma unroll
     for (int i=0;i<12;i++) sc[i] = 0.0;
     if (n < IP[9]) { float Mi = mn[n]*itau2;
         for (int a=0;a<3;a++) { float e0 = eta[n*3+a], d = dl[n*3+a]; s0 += 0.5*(double)Mi*e0*e0; gd += -(double)r0[n*3+a]*d;
-            float c = 1.f; for (int i=0;i<NC;i++) { float e = e0 + c*d; sc[i] += 0.5*(double)Mi*e*e; c *= 0.5f; } } }
+            float c = 1.f;
+#pragma unroll
+            for (int i=0;i<12;i++) { if (i < NC) { float e = e0 + c*d; sc[i] += 0.5*(double)Mi*e*e; } c *= 0.5f; } } }
     blocksum_add(s0, &SC[20]); blocksum_add(gd, &SC[9]);
-    for (int i=0;i<NC;i++) blocksum_add(sc[i], &SC[21+i]);
+#pragma unroll
+    for (int i=0;i<12;i++) if (i < NC) blocksum_add(sc[i], &SC[21+i]);
 }
+// 절 AN.22 선탐색 조기 판정 (결과 같음): 후보 c = 1 이 아르미호를 만족하면 SC[63] = 1 -> 나머지 후보 커널 (gate = SC+63) 생략. rt_lspickN 은 첫 만족 후보를 고르므로 결과가 같다.
+__global__ void rt_lsgate(double* SC) {
+    double E0 = SC[20] + SC[10]; double gd = SC[9]; double E1 = SC[21] + SC[40];
+    SC[63] = (isfinite(E1) && E1 <= E0 + 1e-4*gd) ? 1.0 : 0.0;
+}
+__global__ void rt_sc_clear_g(double* SC, int a, int b, const double* gate) { if (*gate != 0.0) return; for (int i=a;i<b;i++) SC[i] = 0.0; }
 __global__ void __launch_bounds__(128) rt_elem_lsN(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* yh, const float* eta, const float* dl,
-                        const float* sk, const int* pm, float n0, float n1, float n2, float mu, float lam, double* SC, int NC) {
+                        const float* sk, const int* pm, float n0, float n1, float n2, float mu, float lam, double* SC, int NC, int i0, const double* gate) {
+    if (gate && *gate != 0.0) return;                                           // 절 AN.22: 후보 c = 1 이 받아들여졌으면 나머지 후보 생략
     if (blockIdx.x*blockDim.x >= IP[12]) return;
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     bool on = q < IP[12]; int qq = on ? q : 0; int oc = qq & 7;
     int ids[27]; qnodes(qq, IP, cb, ids);
     float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)qq*9+k];
     float vq = on ? Vq[qq] : 0.f;
-    float c = 1.f;
-    for (int i=0;i<NC;i++) {
+    float c = 1.f; for (int i=0;i<i0;i++) c *= 0.5f;
+    for (int i=i0;i<NC;i++) {
         float X[9]; for (int k=0;k<9;k++) X[k] = F[k];
         for (int o=0;o<27;o++) { float g[3]; gqn(F, BG + (oc*27+o)*3, g); int id = ids[o];
             float e[3]; for (int a=0;a<3;a++) e[a] = eta[id*3+a] + c*dl[id*3+a];
@@ -947,6 +961,18 @@ __global__ void rt_lspickN(double* SC, int NC) {
     double E0 = SC[20] + SC[10]; double gd = SC[9];
     double st = 0.0, c = 1.0;
     for (int i=0;i<NC;i++) { double E1 = SC[21+i] + SC[40+i]; if (st == 0.0 && isfinite(E1) && E1 <= E0 + 1e-4*c*gd) st = c; c *= 0.5; }
+    SC[14] = st;
+}
+// 절 AN.22 시작점 탐색 (--y0ls, 결과 정의 같음 -- 풀리는 증분 포텐셜·장벽 활성 판정 (걸음 시작 U) 그대로, 뉴턴 시작점만):
+// rt_floor_n 뒤 η = η(Ũ) (관성 예측) 를 dl 에 둔 뒤 rt_ga_y0 가 η = η(U) 로 바꾸면 dl ← η(Ũ) − η(U). 선탐색과 같은 후보 커널로 c = 2^-i (i = 0..NC−1) 의 전체 에너지 (관성 + 탄성 + 장벽) -> 유한한 것 중 가장 작은 c -> SC[14].
+__global__ void rt_y0dir(const int* IP, const float* eta, float* dl) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    for (int a=0;a<3;a++) dl[n*3+a] -= eta[n*3+a];
+}
+__global__ void rt_y0pick(double* SC, int NC) {
+    double best = 0.0, st = 0.0, c = 1.0; bool have = false;
+    for (int i=0;i<NC;i++) { double E1 = SC[21+i] + SC[40+i]; if (isfinite(E1) && E1 < 1e29 && (!have || E1 < best)) { best = E1; st = c; have = true; } c *= 0.5; }
     SC[14] = st;
 }
 // ---- 단계 일반화 (θ 법·TR-BDF2) ----
@@ -1264,7 +1290,8 @@ __global__ void rt_bar_mvn(const int* IP, const float* bS, float n0, float n1, f
 }
 // 선탐색 후보 NC 개의 장벽 에너지 -> SC[40+i] (rt_elem_lsN 과 같은 후보 y = ŷ + T (η + c δ), c = 2^-i)
 __global__ void __launch_bounds__(128) rt_bar_lsN(const int* IP, const int* cb, const float* BW, const float* Vq, const float* yh, const float* eta, const float* dl,
-                         const float* sk, const int* pm, const float* U, float thinv, float n0, float n1, float n2, float pn, float dh, float ks, double* SC, int NC) {
+                         const float* sk, const int* pm, const float* U, float thinv, float n0, float n1, float n2, float pn, float dh, float ks, double* SC, int NC, int i0, const double* gate) {
+    if (gate && *gate != 0.0) return;                                           // 절 AN.22: 후보 c = 1 이 받아들여졌으면 나머지 후보 생략
     if (blockIdx.x*blockDim.x >= IP[12]) return;
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     bool on = q < IP[12]; int qq = on ? q : 0; int oc = qq & 7;
@@ -1274,8 +1301,8 @@ __global__ void __launch_bounds__(128) rt_bar_lsN(const int* IP, const int* cb, 
     float x0[3] = {0.f, 0.f, 0.f};
     if (act) for (int a=0;a<3;a++) x0[a] = AF_BX[qq*4+a]/bm;
     double kap = act ? (double)ks*(double)Vq[qq] : 0.0;
-    float c = 1.f;
-    for (int i=0;i<NC;i++) {
+    float c = 1.f; for (int i=0;i<i0;i++) c *= 0.5f;
+    for (int i=i0;i<NC;i++) {
         double e = 0.0;
         if (act) {
             float xq[3] = {x0[0], x0[1], x0[2]};
@@ -1333,8 +1360,10 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False):
         s.dev = dev
+        s.lsfast = bool(lsfast)                                                        # 절 AN.22: 선탐색 조기 판정 (결과 같음)
+        s.y0ls = bool(y0ls)                                                            # 절 AN.22: 뉴턴 시작점을 U 와 관성 예측 Ũ 사이 후보 중 전체 에너지 최소로 (ga·장벽 판, --ls_n 필요)
         # 절 AN.20 (lib/anchorflow/fem_an_mg2.py): 칸 협동 곱 (mv2), 거친 층 점유 칸 목록 (mg_occ, mv2 포함), 층 mg_fuse 이상 V 순환 한 블록 (mg_fuse >= 1)
         s.mg_occ, s.mg_fuse = bool(mg_occ), int(mg_fuse or 0)
         s.mv2 = bool(mv2) or s.mg_occ
@@ -1505,6 +1534,7 @@ class RTSolver(MG2.MG2Mixin):
             s.pa = torch.zeros(s.N, 3, device=dev, dtype=torch.float32)
         s.meff = Z(s.capN); s.U0 = Z(s.capN, 3); s.v0 = Z(s.capN, 3); s.wb = Z(s.capN, 3); s.wvb = Z(s.capN, 3)
         s.DG = torch.zeros(4 * max(s.K, s.Kc or 0) * s.nt, 64, device=dev, dtype=torch.float64)
+        s.Y0S = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)       # 절 AN.22 시작점 탐색 진단 (걸음마다 SC: 14 = 고른 c, 21+i·40+i = 후보 에너지)
         s.DGF = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)    # 걸음 끝 SC (gfin: SC1 = |g_끝|²)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
         # 멀티그리드 층 (1 .. nl−1): 첫 프레임 상자에서 차원을 내려 잡고 cap_mul 배
         s.ML = []
@@ -1783,11 +1813,25 @@ class RTSolver(MG2.MG2Mixin):
                                          f(FL["PN"]), f(FL["DXG"]), P(s.an)))
             s.k("rt_floor_n", capN, (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] * (s.K / (K or s.K)) * sg["frac"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(sg["al"]), *[f(q) for q in nr],
                                      P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta)), b=256)
+            y0s = s.y0ls and (sg["kind"] == "ga" or s.bar)
+            if y0s:
+                s.dcopy(s.dl, s.eta)                                                   # 절 AN.22: η(Ũ) 보관
             if sg["kind"] == "ga" or s.bar:                                            # 장벽 판: 모든 적분기 시작점 = 걸음 시작 위치 (장벽 실현 가능)
                 s.k("rt_ga_y0", capN, (P(IP), P(s.U), P(s.yh), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.y)), b=256)
             if s.bar:
                 BA = (*[f(q) for q in nr], f(FL["PN"]), f(FL["DH"]), f(FL["KS"]))
                 s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), f(sg["thinv"]), *BA, i32(0), P(s.bGn), P(s.bKn), P(s.SC[10:])))
+            if y0s:                                                                    # 절 AN.22 시작점 탐색: U 에서 Ũ 쪽 후보 2^-i 중 전체 에너지 최소 (장벽 활성 판정은 위 U 에서 그대로)
+                NC0 = i32(s.ls_n)
+                s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
+                s.k("rt_y0dir", capN, (P(IP), P(s.eta), P(s.dl)), b=256)
+                s.k("rt_lsyN", capN, (P(IP), P(s.mn), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC0, P(None)), b=256)
+                s.k("rt_elem_lsN", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC), NC0, i32(0), P(None)))
+                if s.bar:
+                    s.k("rt_bar_lsN", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BA[:4], BA[4], BA[5], P(s.SC), NC0, i32(0), P(None)))
+                s.k("rt_y0pick", 1, (P(s.SC), NC0), b=1)
+                s.dcopy(s.Y0S[kstep], s.SC)                                            # 진단: 고른 c = SC14
+                s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0)), b=256)
             s.ctl(1)
             for it in range(s.nt):
                 s.ctl(2, it)
@@ -1850,14 +1894,31 @@ class RTSolver(MG2.MG2Mixin):
                 # 선탐색: 기울기 곱 g·δ = −r0·δ (r0 = rt_grad 가 남긴 처음 잔차)
                 if s.ls and s.ls_n:
                     NC = i32(s.ls_n)
-                    s.k("rt_lsyN", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC), b=256)
+                    s.k("rt_lsyN", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC, P(None)), b=256)
                     if s.descent:
                         s.k("rt_fixdir", capN, (P(IP), P(s.SC), P(s.p0), P(s.dl)), b=256)
-                        s.k("rt_sc_clear", 1, (P(s.SC), i32(9), i32(10)), b=1); s.k("rt_sc_clear", 1, (P(s.SC), i32(20), i32(40)), b=1)
-                        s.k("rt_lsyN", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC), b=256)
-                    s.k("rt_elem_lsN", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC), NC))
-                    if s.bar:
-                        s.k("rt_bar_lsN", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BA[:4], BA[4], BA[5], P(s.SC), NC))
+                        if s.lsfast:                                                   # 절 AN.22: 방향을 안 바꿨으면 (SC59 = 1) 지우기·다시 계산 생략 (값 같음)
+                            G59 = P(s.SC[59:])
+                            s.k("rt_sc_clear_g", 1, (P(s.SC), i32(9), i32(10), G59), b=1); s.k("rt_sc_clear_g", 1, (P(s.SC), i32(20), i32(40), G59), b=1)
+                            s.k("rt_lsyN", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC, G59), b=256)
+                        else:
+                            s.k("rt_sc_clear", 1, (P(s.SC), i32(9), i32(10)), b=1); s.k("rt_sc_clear", 1, (P(s.SC), i32(20), i32(40)), b=1)
+                            s.k("rt_lsyN", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC, P(None)), b=256)
+                    EA = (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC), NC)
+                    BB = (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BA[:4], BA[4], BA[5], P(s.SC), NC) if s.bar else None
+                    if s.lsfast:                                                       # 절 AN.22: 후보 c = 1 먼저, 받아들여지면 (SC63 = 1) 나머지 후보 커널 생략 -- 고르는 보폭 같음
+                        G63 = P(s.SC[63:])
+                        s.k("rt_elem_lsN", capQ, EA[:-1] + (i32(1), i32(0), P(None)))
+                        if s.bar:
+                            s.k("rt_bar_lsN", capQ, BB[:-1] + (i32(1), i32(0), P(None)))
+                        s.k("rt_lsgate", 1, (P(s.SC),), b=1)
+                        s.k("rt_elem_lsN", capQ, EA + (i32(1), G63))
+                        if s.bar:
+                            s.k("rt_bar_lsN", capQ, BB + (i32(1), G63))
+                    else:
+                        s.k("rt_elem_lsN", capQ, EA + (i32(0), P(None)))
+                        if s.bar:
+                            s.k("rt_bar_lsN", capQ, BB + (i32(0), P(None)))
                     s.k("rt_lspickN", 1, (P(s.SC), NC), b=1)
                 elif s.ls:
                     assert not s.bar, "장벽 판은 --ls_n 선탐색만"
@@ -2139,7 +2200,11 @@ class RTSolver(MG2.MG2Mixin):
         nn = int(s.IP[9])
         r0 = torch.where(s.mqn[:nn] > 0, s.an[:nn] / s.mqn[:nn].clamp_min(1e-30), torch.zeros_like(s.an[:nn]))
         r1 = torch.where(s.mqn[:nn] > 0, s.an2[:nn] / s.mqn[:nn].clamp_min(1e-30), torch.zeros_like(s.an2[:nn]))
-        return dict(it=out, stick_flip=int(((r0 > 0) != (r1 > 0)).sum()), stick_n0=int((r0 > 0).sum()), stick_n1=int((r1 > 0).sum()), stick_dr=float((r1 - r0).abs().sum()))
+        y0 = None
+        if getattr(s, "y0ls", False):
+            Y = s.Y0S.cpu().numpy()
+            y0 = [dict(c=float(Y[k][14]), E=[float(Y[k][21 + i] + Y[k][40 + i]) for i in range(s.ls_n)]) for k in range(getattr(s, "nstage", s.K))]
+        return dict(it=out, y0=y0, stick_flip=int(((r0 > 0) != (r1 > 0)).sum()), stick_n0=int((r0 > 0).sum()), stick_n1=int((r1 > 0).sum()), stick_dr=float((r1 - r0).abs().sum()))
 
     def grel(s):
         """마지막 프레임 걸음별 |g_끝| / |g_처음| (gfin 일 때)."""
