@@ -147,8 +147,12 @@ __global__ void pk_gather(int N, const int* IP, const int* idx, int nw, const un
 PK_RUN = r'''
 __device__ unsigned int PK_BAR;
 __device__ int PK_SNAP[2];
+__device__ unsigned long long* PK_TP;                                             // 시간 기록 (null = 끔): [장벽 번호] = (전역 시계 ns, 명령 번호)
+__device__ __forceinline__ void pk_tstamp(int e, int c) {
+    if (PK_TP && blockIdx.x == 0 && threadIdx.x == 0) { unsigned long long t; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t)); PK_TP[2*e] = t; PK_TP[2*e+1] = (unsigned long long)c; }
+}
 // 격자 장벽 (cooperative_groups grid.sync 와 같은 식) + 건너뛰기 판정 공유 (블록 0 대표가 도착 직전 AF_SKIP 를 홀짝 칸에, 모두 지난 직후 읽음)
-__device__ __forceinline__ void pk_gsync(int* ep, int* skip) {
+__device__ __forceinline__ void pk_gsync(int* ep, int* skip, int c) {
     __syncthreads();
     if (threadIdx.x == 0) {
         if (blockIdx.x == 0) PK_SNAP[*ep & 1] = PK_SKIPV;
@@ -160,6 +164,7 @@ __device__ __forceinline__ void pk_gsync(int* ep, int* skip) {
     }
     __syncthreads();
     *skip = *(volatile int*)&PK_SNAP[*ep & 1];
+    pk_tstamp(*ep + 1, c);
     *ep += 1;
 }
 // 명령 하나: CMD[8] = 커널 번호, 가상 블록 수, 가상 블록 크기, 표시 (1 블록 0 전용 묶음, 2 건너뛰기 무관, 4 묶음에 무관 명령 있음), 인자 위치, 묶음 끝, -, -
@@ -174,6 +179,7 @@ __device__ __forceinline__ void pk_cmd(const int* cm, const unsigned long long* 
 }
 __global__ void __launch_bounds__(PKB, PKMINB) pk_run(const int* CMD, int ncmd, const unsigned long long* ARGS) {
     int ep = 0, skip = 0;
+    pk_tstamp(0, -1);
     for (int c = 0; c < ncmd; ) {
         const int* cm = CMD + c*8;
         int fl = cm[3];
@@ -187,10 +193,10 @@ __global__ void __launch_bounds__(PKB, PKMINB) pk_run(const int* CMD, int ncmd, 
                     if (!sk || (cj[3] & 2)) { pk_cmd(cj, ARGS, 1); __syncthreads(); sk = PK_SKIPV; }
                 }
             }
-            pk_gsync(&ep, &skip);
+            pk_gsync(&ep, &skip, c);
             c = re + 1;
         } else {
-            if (!skip || (fl & 2)) { pk_cmd(cm, ARGS, 0); pk_gsync(&ep, &skip); }
+            if (!skip || (fl & 2)) { pk_cmd(cm, ARGS, 0); pk_gsync(&ep, &skip, c); }
             c++;
         }
     }

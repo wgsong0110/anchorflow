@@ -1749,7 +1749,36 @@ class RTSolver:
                     fn((grid,), (blk,), (P(CMD), np.int32(Cn.shape[0]), P(ARG)))                 # 협동 실행 (모듈을 enable_cooperative_groups 로 만듦)
         g = _PK()
         g.CMD, g.ARG = CMD, ARG
+        g.names = [c[0] + ("@L" if (Cn[i, 3] & 1) else "") for i, c in enumerate(cmds)]
+        g.ncmd = Cn.shape[0]
         return g
+
+    def pk_profile(s, t):
+        """지속형 판 한 프레임을 장치 시계로 (블록 0 이 장벽마다 시각 기록; 상태는 되돌림). -> {명령 이름 (블록 0 묶음은 첫 명령@L): [ms 합, 장벽 수]}, 합계."""
+        g = s.graph
+        if g is None or not hasattr(g, "names"):
+            return None
+        bk = s._bk()
+        s.set_bc(t)
+        buf = torch.zeros(2 * (g.ncmd + 2), device=s.dev, dtype=torch.int64)
+        gp = s.pkmod.get_global("PK_TP")
+        cp.ndarray((1,), dtype=cp.uint64, memptr=gp)[0] = int(buf.data_ptr())
+        g.replay(); torch.cuda.synchronize()
+        cp.ndarray((1,), dtype=cp.uint64, memptr=gp)[0] = 0
+        s._rs(bk)
+        b = buf.view(-1, 2).cpu().numpy()
+        o, tot, ns = {}, 0.0, 0
+        for e in range(1, b.shape[0]):
+            if b[e, 0] == 0:
+                break
+            dtm = (b[e, 0] - b[e - 1, 0]) * 1e-6
+            nm = g.names[int(b[e, 1])]
+            a_, c_ = o.get(nm, (0.0, 0))
+            o[nm] = (a_ + dtm, c_ + 1)
+            tot += dtm; ns += 1
+        o = {k_: [round(a_, 4), c_] for k_, (a_, c_) in sorted(o.items(), key=lambda kv: -kv[1][0])}
+        o["_total_ms"] = round(tot, 4); o["_syncs"] = ns
+        return o
 
     def ctl(s, op, it=0):
         """허용치 조기 종료 제어 커널 (adapt 판만; 아니면 아무것도 안 넣음 -- 원래 그래프 그대로)."""

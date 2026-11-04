@@ -115,7 +115,7 @@ div_at = None
 PRED = torch.empty(L, Np, 3) if a.dump else None
 PREDF = torch.empty(L, Np, 3, 3) if (a.dump and a.dump_F) else None
 for fi in range(L):
-    kp = S.profile(fi * h) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None
+    kp = ((S.pk_profile(fi * h) if a.pk else S.profile(fi * h)) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None)
     redo = S.step(fi * h)
     gt = d["x"][fi + 1].to(dev).float()
     xo = S.x_orig()
