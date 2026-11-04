@@ -1627,13 +1627,13 @@ class RTSolver(MG2.MG2Mixin):
         if l == 0:
             s.mg_Az(0, z, KT, tz_ready=True); node(7, r, KT, z, s.m0u)                 # m0u = T (r − A z) (융합)
             with s._pkl(s._pkc is not None and 1 >= s.pk_loc_l):
-                s.k("rt_mg_restrict2" if s.mv2 else "rt_mg_restrict", Lc["capn"], (i32(0), P(s.LM), P(s.m0u), P(Lc["r"]), i32(3)), b=256)
+                s.k(*(("rt_mg_restrict3", Lc["capn"] * 16) if s.mv2 else ("rt_mg_restrict", Lc["capn"])), (i32(0), P(s.LM), P(s.m0u), P(Lc["r"]), i32(3)), b=256)
             if not (1 >= s.pk_loc_l) and not (s.nl - 1 == 1 and s.mg_csolve):
                 s.pk_chain("rt_mg_restrict", "rt_mg_node")                             # 다음 = 거친 층 첫 노드 연산 (같은 거친 노드)
         else:
             s.mg_Az(l, z, KT); node(2, r, KT, z, res)
             with s._pkl(s._pkc is not None and l + 1 >= s.pk_loc_l):
-                s.k("rt_mg_restrict2" if s.mv2 else "rt_mg_restrict", Lc["capn"], (i32(l), P(s.LM), P(res), P(Lc["r"]), i32(3)), b=256)
+                s.k(*(("rt_mg_restrict3", Lc["capn"] * 16) if s.mv2 else ("rt_mg_restrict", Lc["capn"])), (i32(l), P(s.LM), P(res), P(Lc["r"]), i32(3)), b=256)
             if not (l + 1 >= s.pk_loc_l) and not (s.nl - 1 == l + 1 and s.mg_csolve):
                 s.pk_chain("rt_mg_restrict", "rt_mg_node")
         if s.mg_fuse and l + 1 == s.mg_fuse:                                           # 절 AN.20: 층 mg_fuse 이상 V 순환 한 블록

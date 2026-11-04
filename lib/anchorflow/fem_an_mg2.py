@@ -98,6 +98,29 @@ __global__ void rt_mg_restrict2(int lf, const int* LM, const float* in, float* o
             if (ch == 3) { acc[0] += w*__ldg(in + i*3); acc[1] += w*__ldg(in + i*3+1); acc[2] += w*__ldg(in + i*3+2); } else acc[0] += w*__ldg(in + i); } } } }
     for (int c=0;c<ch;c++) out[J*ch+c] = acc[c];
 }
+// 제한 3 (같은 식, 더하는 순서만 다름): 거친 노드 하나 = 연속 16 레인, 레인 (k, m) 이 n = 0..3 네 탭을 더한 뒤 16 레인 나비 합 (고정 순서 -> 결정적).
+__global__ void rt_mg_restrict3(int lf, const int* LM, const float* in, float* out, int ch) {
+    const int* A = LM + lf*8; const int* B = LM + (lf+1)*8;
+    int g = blockIdx.x*blockDim.x + threadIdx.x;
+    int J = g >> 4, t = threadIdx.x & 15;
+    if ((blockIdx.x*blockDim.x >> 4) >= B[3]) return;                               // 블록 전체가 밖이면 (워프 단위 나비 합 앞이라 블록 단위로만)
+    bool on = J < B[3];
+    int JJ = on ? J : 0;
+    int jz = JJ % B[2], jy = (JJ / B[2]) % B[1], jx = JJ / (B[1]*B[2]);
+    const float cw[4] = {0.25f, 0.75f, 0.75f, 0.25f};
+    int k = t >> 2, m = t & 3;
+    int ix = 2*jx - 3 + k, iy = 2*jy - 3 + m;
+    bool oxy = on && ix >= 0 && ix < A[0] && iy >= 0 && iy < A[1];
+    float a0 = 0.f, a1 = 0.f, a2 = 0.f;
+    #pragma unroll
+    for (int n=0;n<4;n++) { int iz = 2*jz - 3 + n; bool ok = oxy && iz >= 0 && iz < A[2];
+        int i = ok ? (ix*A[1] + iy)*A[2] + iz : 0; float w = ok ? cw[k]*cw[m]*cw[n] : 0.f;
+        if (ch == 3) { float v0 = ok ? __ldg(in + i*3) : 0.f, v1 = ok ? __ldg(in + i*3+1) : 0.f, v2 = ok ? __ldg(in + i*3+2) : 0.f; a0 += w*v0; a1 += w*v1; a2 += w*v2; }
+        else { float v0 = ok ? __ldg(in + i) : 0.f; a0 += w*v0; } }
+    #pragma unroll
+    for (int o=1;o<16;o<<=1) { a0 += __shfl_xor_sync(0xffffffffu, a0, o); a1 += __shfl_xor_sync(0xffffffffu, a1, o); a2 += __shfl_xor_sync(0xffffffffu, a2, o); }
+    if (on && t == 0) { out[J*ch] = a0; if (ch == 3) { out[J*3+1] = a1; out[J*3+2] = a2; } }
+}
 // 점유 칸 목록 (한 블록 1024, 칸 번호 오름차순): list[i] = 칸, pos[칸] = 자리 또는 −1, cnt[l] = 수. 용량 넘치면 넘침 표시 (IP[13] |= 4).
 __global__ void __launch_bounds__(1024) rt_mg_occ(int l, const int* LM, const float* Vq, int* list, int* pos, int* cnt, int cap, int* IP) {
     __shared__ int sh[1024];
@@ -341,6 +364,7 @@ class MG2Mixin:
             cases.append((f"node:{l}", lambda l=l, L=L: s.k("rt_mg_node", L["capn"], (i32(l), P(s.LM), i32(1), P(L["mc"]), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(L["D"]), P(s.W), P(L["r"]), P(L["KT"]), P(L["y"]), P(None)), b=256)))
             cases.append((f"restrict:{l - 1}", lambda l=l, L=L: s.k("rt_mg_restrict", L["capn"], (i32(l - 1), P(s.LM), P(s.m0t if l == 1 else s.ML[l - 2]["t"]), P(L["t"]), i32(3)), b=256)))
             cases.append((f"restrict2:{l - 1}", lambda l=l, L=L: s.k("rt_mg_restrict2", L["capn"], (i32(l - 1), P(s.LM), P(s.m0t if l == 1 else s.ML[l - 2]["t"]), P(L["t"]), i32(3)), b=256)))
+            cases.append((f"restrict3:{l - 1}", lambda l=l, L=L: s.k("rt_mg_restrict3", L["capn"] * 16, (i32(l - 1), P(s.LM), P(s.m0t if l == 1 else s.ML[l - 2]["t"]), P(L["t"]), i32(3)), b=256)))
             cases.append((f"prolong:{l - 1}", lambda l=l, L=L: s.k("rt_mg_prolong", (s.capN if l == 1 else s.ML[l - 2]["capn"]), (i32(l - 1), P(s.LM), P(L["y"]), P(s.zo if l == 1 else s.ML[l - 2]["y"]), i32(0)), b=256)))
         if s.mg_fuse:
             def cvc():
