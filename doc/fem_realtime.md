@@ -5011,3 +5011,25 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 실행기 묶음 exe/fem_cm2.sh (시간표 -> 고르기 -> 판정·실제 시간 -> 기준 -> lego 18), exe/fem_cm2b.sh, 시험 exe/fem_cm2_t1.sh·fem_cm2_t2.sh, 고르기 exe/fem_cm2_sel.py, 씬 exe/fem_cm2_scn.sh (exe/fem_cm_pool.sh·fem_cm_q.sh 는 CM_SCN 으로 씬 파일 고름), 일꾼 exe/fem_cm_w.sh (CMW=w2).
 - 결과: R2 lbours/fem_cm/cm2z (시간표)·cm2 (판정, b·b1·b3)·cm2t (실제 시간)·cm2bt (wolf·bread 실제 시간, 커널별 p3)·cm2t1·cm2t2 (시험·진단), 표 marks/cm2_table.md (cm2b_table.md, cm2_sel.txt), 끝 표식 marks/cm2.END, 로그 marks/cm2.log·cm2b.log; 코드 묶음 lbours/fem_cm/code/imp_<커밋>.bundle (4f6c524·b5ab2b1·f54bb6f).
 - 잡 130567 일꾼 (R2 lbours/fem_cm/w2/tasks 를 1 분마다) 은 12:24 KST 에 스스로 끝남 (R2 w2/STOP 이면 바로 끝).
+
+## BD. 큰 dt (프레임당 걸음 수 K) 실험 둘째 판 -- 논문 표 마무리 (조정자 11-05; 첫 판은 묶음 bigdt = 절 AN.16 설정, R2 lbours/fem_an/bigdt/bigdt_table.md) -- 가지 implicit-bspline, 커밋 f34463e, 묶음 bigdt2 (잡 130567, 11-05 07:45 KST 띄움)
+### BD.1 정답 MPM 이 모든 K 에서 CUDA 717/700 으로 죽던 것 -- 물리적 발산이 먼저, 죽음은 그 결과
+- 첫 판 로그 (bigdt/mpmK*_*/log.txt): L000 K 1 (서브스텝 1/60 s, 공식 2.0008e-5 s 의 833 배) 은 프레임 1·2 오차 0.087·0.231 % 로 돌다가 **프레임 3 에서 입자 최저 z = −4.68e7** (몸이 날아감), 그다음 torch 호출 (`h5x(f)).cuda()`) 에서 CUDA 717 로 멈춤.
+  ficus K 8 (5e-3 s) 은 프레임 1 을 못 끝내고 700. 원인 경로: 명시적 MPM 이 CFL 밖 dt 에서 폭주 -> 입자가 격자 배열 밖·비유한 -> 다음 P2G 에서 warp 커널이 `int(x/dx − 0.5)` 기저로 배열 밖 원자적 쓰기 -> 717 (주소 공간 밖 원자 연산)·700 (불법 접근), 오류는 비동기라 뒤 torch 호출에서 보고됨.
+  컴파일·메모리·환경 오류의 흔적 (모듈 적재 실패, 메모리 부족) 은 없음 -- 모듈 적재 정상, 오류 직전까지 프레임이 진행됨.
+- 고친 것 (정답 솔버 설정·풀이는 그대로): exe/gt_sens.py `--sub_chk` -- 서브스텝마다 입자가 유한하고 격자 배열 안 (x/dx ∈ (−0.5, n_grid − 1.5), P2G 기저 노드 셋이 배열 안인 조건 그대로 -- 임의 임계값 아님) 인지 보고, 벗어나면 그 프레임을 발산으로 적고 멈춤 (다음 P2G 전이라 죽지 않음). 프레임 오차 > 2 도 발산 (우리 실행기와 같은 규칙).
+  `--rpic_cfg`: rpic_damping 을 config 값 그대로 (공식 설정; lego config 는 키 없음 = 0 으로 예전과 같음). PG 원본 h5 폴더 (meta.json 없음) 도 읽게 (wolf·bread).
+- 확인 (묶음 bigdt2 의 mpmK0_*): 같은 실행기를 config 서브스텝 (L000 833·ficus·wolf·bread config substep_dt) 으로 -- 정상 완주하고 정답과의 오차가 작으면 실행기 정상, 위 K 1..8 의 발산은 dt 탓.
+### BD.2 후퇴 오일러 K 8 발산 (첫 판 bej 설정: 0005 x73, 0013 x15)
+- 첫 판 기록: 두 궤적 모두 **프레임 첫 걸음** 의 첫 PCG 풀이 (뉴턴 1, PCG 5 회 상한까지) 뒤 비유한, 그 앞 프레임까지 오차 5.3 % · 0.19 % 로 멀쩡함 (점진적 폭주가 아니라 한 걸음에서 NaN). 풀이당 PCG 는 보통 3 회 (εP 로 일찍 끝남).
+  허용치는 절 AN.14 고친 규칙이라 상대 (|g| ≤ εN F, F = 걸음 시작 탄성·접촉 힘; PCG |r| ≤ εP min(|g|, F)) -- 기억 'Newton 허용치는 dt 비례' 의 절대 길이 허용치 문제와 같은 꼴은 아님 (확인은 dq1).
+  프레임 첫 걸음에만 있는 것: 새 격자 (P2G)·MG ω 거듭제곱법 (--mg_wreuse 는 프레임 안 같은 τ 면 재사용, --mg_lreuse 는 거친 층 ω 를 첫 프레임 값으로 계속 씀).
+- 진단 묶음 (bigdt2 dq0..dq6, K 8, --diag 로 발산 프레임 반복별 |g|²·r·z·g·δ·에너지·보폭): dq0 재현, dq1 허용치 0, dq2 ω 재사용 끔, dq3 블록 야코비, dq4 뉴턴 2, dq5 PCG 10, dq6 비결정 판. 결과는 표 bigdt2_table.md 아래 절.
+### BD.3 표 (묶음 bigdt2, 결정적, 카드 1-6 빈 카드, 비측정)
+- 우리 채택 판: lego L000·0005·0013·0016·ficus = 절 AN.22 최종 (HHT ρ 0.8, `--fl_bar --fl_bst 1 --gq_oct 0.1 --mv2 --mgbar 2 --lsfast --fk`, εN 1e-2 · εP 1e-1, 걸음당 상한 lego 2x3 · ficus 2x20 -- K 와 무관하게 그대로), 같은 플래그 적분기만 후퇴 오일러 행도.
+  wolf·bread = 절 CM3 공통 묶음 (exe/fem_cm3_scn.sh: cm2 BA + --hspec --ncomp, 시작점 ŷ, HHT ρ 0.8, 상한 wolf 2x4 · bread 2x1 = cm3 판정 상한). 수박 제외.
+- 비교: 명시적 B-스플라인 bnv (L000·ficus, 서브스텝 N = K; 재질 씬은 이 실행기에 재질이 없어 안 함), 정답 MPM (L000·ficus·wolf·bread, 서브스텝 = frame_dt/K, --sub_chk --rpic_cfg).
+- 실행: exe/fem_an_bigdt2.sh (풀 exe/fem_an_bigdt_pool.sh 에 wolf·bread·마감 추가, 표 exe/fem_an_bigdt2_table.py); 12:09 KST 뒤 새 판 안 띄움, 12:20 KST 에 돌던 판이 있어도 표·끝 표식.
+- 결과: R2 lbours/fem_an/bigdt2/ (판별 log·summary.json·fem.jsonl·err.json, ficus period.txt), 표 bigdt2_table.md (10 분마다 갱신), 끝 표식 bigdt2.END, 로그 pool.log·bigdt2.log·bigdt2_main.log; 코드 lbours/fem_an/code/imp_f34463e.bundle.
+- 이어서 할 지점 (잡 만료 뒤): bigdt2.END 가 없거나 표에 "미완" 이면 같은 커밋으로 `bash exe/fem_an_bigdt2.sh f34463e` 를 다시 띄움 (풀은 rc= 가 있는 판을 건너뜀 -- 단 /dev/shm 은 잡과 함께 사라지므로 R2 bigdt2/ 를 /dev/shm/dkta/lbours/fem_an/bigdt2/ 로 먼저 내려받을 것; 마감 날짜 AN_UNTIL·HARD 는 스크립트에서 고칠 것).
+  결과 정리 (BD.1 원래 dt 확인 수치, BD.2 원인 결론, 표) 는 아직 -- 결과 받은 뒤 이 절에 채움.
