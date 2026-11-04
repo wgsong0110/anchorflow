@@ -59,6 +59,7 @@ ap.add_argument("--hpack", action="store_true", help="모래 판 헤시안 위 �
 ap.add_argument("--det", action="store_true", help="결정적 합산 (lib/anchorflow/fem_det_rt.py): 같은 명령 두 번이 비트 단위로 같게")
 ap.add_argument("--ao_fast", action="store_true", help="탄성 씬에도 노드 압축·PCG 첫 추정 (절 AO.11; 기본은 절 AN 그대로)")
 ap.add_argument("--no_warm", action="store_true")
+ap.add_argument("--ys_big", action="store_true", help="진단: 항복 응력을 아주 크게 (소성 없이 탄성만)")
 ap.add_argument("--visc_rpic", action="store_true", help="정답 config rpic_damping r -> 등가 점성 η = ρ r (2−r) Δx_gt² / (16 Δt_gt) (절 AG.20)")
 ap.add_argument("--floor_plane", type=str, default="", help="바닥 평면 px,py,pz,nx,ny,nz (주면 config surface_collider 대신; 수박 = GF bounding_box)")
 ap.add_argument("--floor_slip", action="store_true", help="미끄럼 바닥 (들어가는 법선 성분만 고착 몫)")
@@ -160,6 +161,8 @@ if MATK is not None:                                                            
     from anchorflow import fem_pl_cuda as PLC
     _mat, PRM, PRD = PLC.params(cfg, float(mu), float(lam), dev)
     assert _mat == MATK
+    if a.ys_big:
+        PRD["yield_stress"] = 1e30
     VISC = 0.0
     if a.visc_rpic and float(cfg.get("rpic_damping", 0.0)) > 0:
         _r = float(cfg["rpic_damping"])
