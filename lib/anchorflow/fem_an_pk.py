@@ -4,7 +4,7 @@ RTSolver.record() 가 내는 커널 순서 (그래프 판과 같은 것) 를 명
   몸 안의 blockIdx.x -> VB_ (가상 블록 번호 = 원래 실행의 블록 번호), threadIdx.x -> VT_, blockDim.x -> VD_ (원래 블록 크기), __syncthreads() -> 가상 블록 이름 붙은 장벽 (bar.sync 1+VS_, VD_).
   물리 블록 (PKB 스레드) 하나가 원래 블록 크기 VD_ 의 가상 블록 PKB/VD_ 개를 동시에 (VS_ = 그 안 번호), 격자 단위 반복으로 nvb 개 모두를 돈다.
   블록 합 blocksum_add 는 가상 블록마다 같은 순서 (워프 합 -> 워프 0 이 합) 로: 원래 블록 번호·블록 크기가 그대로라 결정적 판의 블록 부분합 AO_PART[칸][블록] 도 같은 자리·같은 값.
-- 명령 사이: 격자 장벽 (cooperative_groups grid.sync 와 같은 식: 블록 대표가 원자 더하기 하나로 최상위 비트를 뒤집고 기다림, 앞뒤 __threadfence). 협동 실행 (cudaLaunchCooperativeKernel) 이라 모든 블록이 동시 상주.
+- 명령 사이: 격자 장벽 (cooperative_groups grid.sync 와 같은 식: 블록 대표가 원자 더하기 하나로 최상위 비트를 뒤집고 기다림). 기본은 내보내기 원자 더하기 + 받기 읽기 (-DPK_FENCE 면 grid.sync 처럼 앞뒤 __threadfence; 결정적 판 비트 대조 둘 다 통과, 내보내기·받기가 3 % 빠름). 협동 실행 (cudaLaunchCooperativeKernel) 이라 모든 블록이 동시 상주.
   블록 수 = cudaOccupancyMaxActiveBlocksPerMultiprocessor x SM 수.
 - 작은 명령 (가상 블록 1 개: 스칼라 커널 rt_ctl·rt_sc_* 등) 과 MG 작은 층 (층 >= pk_loc) 명령은 블록 0 하나가 차례로 돌고 사이는 블록 장벽만; 이어진 묶음 끝에 격자 장벽 하나.
 - 허용치 조기 종료 (절 AN.14): rt_ctl 이 켜는 AF_SKIP 를 커널 안 분기로 -- 건너뛰는 명령은 장벽도 없이 넘어감 (펼친 상한 목록을 비용 거의 0 으로 건너뜀).
@@ -165,7 +165,7 @@ __device__ __forceinline__ void pk_gsync(int* ep, int* skip, int c) {
     if (threadIdx.x == 0) {
         if (blockIdx.x == 0) PK_SNAP[*ep & 1] = PK_SKIPV;
         unsigned int nb = (blockIdx.x == 0) ? (0x80000000u - (gridDim.x - 1u)) : 1u;
-#ifdef PK_RELACQ
+#ifndef PK_FENCE
         unsigned int old, cur;                                                     // 내보내기·받기 의미 원자 연산 (전체 울타리 대신)
         asm volatile("atom.add.release.gpu.u32 %0, [%1], %2;" : "=r"(old) : "l"(&PK_BAR), "r"(nb) : "memory");
         do { asm volatile("ld.acquire.gpu.u32 %0, [%1];" : "=r"(cur) : "l"(&PK_BAR) : "memory"); } while (((old ^ cur) & 0x80000000u) == 0u);

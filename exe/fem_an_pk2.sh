@@ -16,7 +16,7 @@ others0() { nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader |
 exec 9>/home/dkta/work/gpu0.lock; flock 9
 echo "잠금 $(date +%T) $(cat .done)"
 B="--cell 1 --mg_levels 4 --mg_nc 4 --ls_n 10 --descent --K 2 --mg_wreuse --mg_lreuse --integ be"
-PKX="--pk --pk_loc ${PK_LOC:-2} ${PK_X:-}"
+PKX="--pk --pk_loc ${PK_LOC:-99} ${PK_X:-}"
 T="--tolN 1e-2 --tolP 1e-1"; T0="--tolN 0 --tolP 0"
 LG="--data $SD/L000.pt --floor vel --tag L000"
 FI="--data $FD --floor none --cfg_bc --region_density --pg_vdamp --tag ficus"
@@ -40,10 +40,10 @@ for rep in 1 2; do
   run fiw_pk_r$rep $FI --frames 20 $T0 --newton 2 --cg 10 $PKX
 done
 fi
-for cap in ${PK_CAPS:-2x10 2x20 3x20 4x20 4x30 6x30 8x40}; do n=${cap%x*}; c=${cap#*x}
+for cap in ${PK_CAPS:-1x10 2x5 1x20 2x10 3x10 2x20 3x20 4x20}; do n=${cap%x*}; c=${cap#*x}
   run fiw_pk_$cap $FI --frames 20 $T0 --newton $n --cg $c $PKX
 done
-SEL=$($PY - $R ${PK_CAPS:-2x10 2x20 3x20 4x20 4x30 6x30 8x40} <<'PYE'
+SEL=$($PY - $R ${PK_CAPS:-1x10 2x5 1x20 2x10 3x10 2x20 3x20 4x20} <<'PYE'
 import json, sys
 R = sys.argv[1]; best = None
 for cap in sys.argv[2:]:
@@ -51,7 +51,7 @@ for cap in sys.argv[2:]:
     except Exception: continue
     n, c = map(int, cap.split("x"))
     if d.get("ms_max") and d["ms_max"] <= 16.7 and (best is None or n * c > best[0]): best = (n * c, cap)
-print(best[1] if best else "2x10")
+print(best[1] if best else "1x10")
 PYE
 )
 echo "고른 ficus 상한 (최악 최대 16.7 ms 안 가장 큰 뉴턴 x PCG) = $SEL"
