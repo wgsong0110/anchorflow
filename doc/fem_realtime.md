@@ -5037,3 +5037,18 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
   후퇴 오일러 K 8 0005: 재현 x73, 허용치 0 완주 4.32 %, ω 재사용 끔 완주 4.24 %, 블록 야코비 완주 3.88 % (나머지·0013 은 표에서). bigdt2m 띄우기는 로컬 tmux bigdt2m_launch 가 07:57 KST 에 (출력 /tmp/bigdt2m_launch.out; 확인은 R2 bigdt2m/bigdt2m.log).
 - 이어서 할 지점 (잡 만료 뒤): bigdt2.END 가 없거나 표에 "미완" 이면 같은 커밋으로 `bash exe/fem_an_bigdt2.sh f34463e` 를 다시 띄움 (풀은 rc= 가 있는 판을 건너뜀 -- 단 /dev/shm 은 잡과 함께 사라지므로 R2 bigdt2/ 를 /dev/shm/dkta/lbours/fem_an/bigdt2/ 로 먼저 내려받을 것; 마감 날짜 AN_UNTIL·HARD 는 스크립트에서 고칠 것).
   결과 정리 (BD.1 원래 dt 확인 수치, BD.2 원인 결론, 표) 는 아직 -- 결과 받은 뒤 이 절에 채움.
+
+## CM4. 절 CM3 채택 공통 설정 그대로 lego 21 궤적 전체 판정 + 낙하 + 영상 (조정자 11-05, 정의 변경 없음) -- 가지 implicit-bspline, 묶음 cm4 (잡 130567, 11-05 07:5x KST 띄움, 잡 안 일꾼 w2 과제 cm4.sh)
+### CM4.0 설정 (exe/fem_cm4.sh)
+- 공통 = HHT ρ 0.8, K 2, 뉴턴 2, εN 1e-2 · εP 1e-1, 묶음 BA = exe/fem_cm3_scn.sh (cm2 BA + `--hspec --ncomp`: 시작점 관성 예측 `--ga_y0ut`, 장벽 바닥 띠 고착 `--floor vel --fl_bar --fl_bst 1`, 점유 가중 `--gq_oct 0.1`, `--mgbar 2 --mv2 --lsfast --fk`, MG 층 4).
+- PCG 상한 = 묶음 cm3b (커밋 65b1744, 지금 코드와 같은 --hspec 거친 층 판) 의 예산 규칙 고른 값 marks/cm3b_sel.txt: **lego 2x6 · ficus 2x24 · wolf 2x5 · bread 2x2**. 낙하 drop1 은 lego 값 6.
+  주의: cm3b 시간표는 L000 만 쟀다 (예산 규칙의 "L000·0016·0019 중 작은 c" 와 drop1 의 c 는 cm3b 판에서 다시 재지 않음 -- cm2 에서는 넷 모두 3 으로 같았음). 절 BD 는 cm3 (ac8f8cc) 상한 wolf 4 · bread 1 을 썼다.
+- 판정: j_<궤적> (결정적, 빈 카드 1-6, exe/fem_cm_pool.sh) L000 + 0000..0019 + drop1 (반발은 exe/fem_ak_drop_ana.py, 정답 MPM 0.750 / 83.4 mm).
+- 영상 덤프: v_<씬> (같은 명령 + `--dump --dump_F`, 결정적 -> L000·0016 은 j_ 와 해시 같아야 함) L000·0016·ficus·wolf·bread -> exe/lb_roll_to_h5.py -> exe/lb_render.py (3DGS 알파블렌딩, 절 AQ·AN.14 렌더와 같은 렌더러·정답 궤적 디렉토리). 덤프 pred.pt·h5 는 지우지 않고 R2.
+### CM4.1 결과 -- (아직; 받은 뒤 채움)
+- R2 lbours/fem_cm/cm4/ (j_*·v_*; v_* 는 pred.pt·h5·vj/fem_<형상>.mp4), 표 marks/cm4_table.md, 끝 표식 marks/cm4.END, 로그 marks/cm4.log·cm4_pool.log, 일꾼 출력 w2/out/cm4.log.
+### CM4.2 남은 할 일 (로컬)
+- marks/cm4_table.md 를 이 절 CM4.1 에 옮기고 outputs.md 에 append.
+- 영상 합성 (로컬 ffmpeg, exe/fem_aq_compose.sh·fem_an_j1vid_compose.py 방식: 정답 | 우리, 위에 글자·오차) -> ~/workspace/result/anchorflow/v20261009/fem_cm_<씬>_cmp.mp4 (씬 lego_L000·lego_0016·ficus·wolf·bread).
+  정답 영상: L000 = R2 lbours/fem2_lego/gt_lego.mp4 (lbdata/test_low/L000 렌더), 0016 = lbours/fem_af_lego/gt_0016/gt_lego.mp4, ficus = lbours/fem3_ficus/gt_ficus.mp4, wolf·bread = lbours/fem_ag_<씬>/gt/gt_<씬>.mp4; 우리 = R2 lbours/fem_cm/cm4/v_<씬>/vj/fem_<형상>.mp4.
+- 이어서 할 지점 (잡 만료 12:34 KST 전에 cm4.END 가 없으면): 같은 커밋으로 `bash exe/fem_cm4.sh <커밋>` 을 다시 (풀은 rc= 있는 판을 건너뜀 -- /dev/shm 은 잡과 함께 사라지므로 R2 cm4/ 를 /dev/shm/dkta/lbours/fem_cm/cm4/ 로 먼저 내려받을 것). 일꾼 w2 는 12:24 KST 에 끝나므로 그 뒤에는 job_run.sh 로 띄움.
