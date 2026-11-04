@@ -313,7 +313,7 @@ def det_ao(ao_src):
     return s
 
 
-BS_KERNELS = {"rt_elem", "rt_grad", "rt_grad_c", "rt_ap", "rt_ap_c", "rt_cg1", "rt_cg1_c", "rt_lsy", "rt_lsy4", "rt_elem_ls", "ao_warm", "rt_fixdir", "rt_lsyN", "rt_elem_lsN", "rt_dotz", "rt_mg_pw1", "rt_bar_q", "rt_bar_lsN"}
+BS_KERNELS = {"rt_elem", "rt_grad", "rt_grad_c", "rt_ap", "rt_ap_c", "rt_cg1", "rt_cg1_c", "rt_lsy", "rt_lsy4", "rt_elem_ls", "ao_warm", "rt_fixdir", "rt_lsyN", "rt_elem_lsN", "rt_dotz", "rt_mg_pw1", "rt_bar_q", "rt_bar_lsN", "rt_lsyQ"}
 
 
 class DetMixin(ART.RTSolver):
@@ -434,7 +434,7 @@ class DetRT(DetMixin):
         s.ao_ready = False
         super().__init__(*args, **kw)
         src = det_module_src(getattr(s, "mg2", False))
-        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False)), options=("--std=c++14",))
         s._src0 = src
         s.fn = {}
         s.ao_ready = True

@@ -875,7 +875,11 @@ __global__ void rt_mg_pw2(int l, const int* LM, const float* y, float* z, double
     if (n == 0 && last) { double lm = SCM[l*4] / fmax(SCM[l*4+1], 1e-300); W[l] = omega / fmax(lm, 1e-30); }
     if (n >= LM[l*8+3]) return;
     double nr = sqrt(fmax(SCM[l*4+2], 1e-300));
+#ifdef AF_FK
+    double inr = 1.0/nr; for (int a=0;a<3;a++) z[n*3+a] = (float)(y[n*3+a]*inr);    // 절 AN.22 --fk: f64 나눗셈 셋 -> 하나
+#else
     for (int a=0;a<3;a++) z[n*3+a] = (float)(y[n*3+a] / nr);
+#endif
 }
 __global__ void rt_mg_pw0(int l, double* SCM) { SCM[l*4] = 0.0; SCM[l*4+1] = 0.0; SCM[l*4+2] = 0.0; }
 __global__ void rt_fill_rand(int l, const int* LM, float* z) {
@@ -935,6 +939,21 @@ __global__ void rt_lsyN(const int* IP, const float* mn, float itau2, const float
     blocksum_add(s0, &SC[20]); blocksum_add(gd, &SC[9]);
 #pragma unroll
     for (int i=0;i<12;i++) if (i < NC) blocksum_add(sc[i], &SC[21+i]);
+}
+// 절 AN.22 --fk (같은 식, 반올림만 다름): 관성 몫 후보를 이차식으로 -- ½ Σ Mi |η + c δ|² = S0 + c S1 + c² S2 (S0 = SC20, S1 = Σ Mi η·δ -> SC33, S2 = ½ Σ Mi |δ|² -> SC34),
+// 후보마다 블록 합 12 번 대신 4 번 (f64 처리량이 낮은 A6000 에서 rt_lsyN 이 노드 커널 중 가장 비쌌음). rt_lsyfin 이 SC[21+i] 를 채움.
+__global__ void rt_lsyQ(const int* IP, const float* mn, float itau2, const float* eta, const float* dl, const float* r0, double* SC, const double* gate) {
+    if (gate && *gate != 0.0) return;
+    if (blockIdx.x*blockDim.x >= IP[9]) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    double s0 = 0.0, gd = 0.0, s1 = 0.0, s2 = 0.0;
+    if (n < IP[9]) { double Mi = (double)(mn[n]*itau2);
+        for (int a=0;a<3;a++) { double e0 = eta[n*3+a], d = dl[n*3+a]; s0 += 0.5*Mi*e0*e0; gd += -(double)r0[n*3+a]*d; s1 += Mi*e0*d; s2 += 0.5*Mi*d*d; } }
+    blocksum_add(s0, &SC[20]); blocksum_add(gd, &SC[9]); blocksum_add(s1, &SC[33]); blocksum_add(s2, &SC[34]);
+}
+__global__ void rt_lsyfin(double* SC, int NC, const double* gate) {
+    if (gate && *gate != 0.0) return;
+    double c = 1.0; for (int i=0;i<NC;i++) { SC[21+i] = SC[20] + c*SC[33] + c*c*SC[34]; c *= 0.5; }
 }
 // 절 AN.22 선탐색 조기 판정 (결과 같음): 후보 c = 1 이 아르미호를 만족하면 SC[63] = 1 -> 나머지 후보 커널 (gate = SC+63) 생략. rt_lspickN 은 첫 만족 후보를 고르므로 결과가 같다.
 __global__ void rt_lsgate(double* SC) {
@@ -1368,7 +1387,9 @@ def bstify(src, mode, dh, full):
     return src.replace('extern "C" {', 'extern "C" {' + add, 1) if add else src
 
 
-def build_src(src, adapt, goct, floor=None):
+def build_src(src, adapt, goct, floor=None, fk=False):
+    if fk:
+        src = src.replace('extern "C" {', 'extern "C" {\n#define AF_FK 1', 1)
     if goct is not None and goct >= 0:
         src = octify(src)
     if floor and floor.get("pt"):
@@ -1386,11 +1407,12 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False):
         s.dev = dev
         s.lsfast = bool(lsfast)                                                        # 절 AN.22: 선탐색 조기 판정 (결과 같음)
         s.cg_list = [int(q) for q in cg_list.split(",")] if cg_list else None          # 절 AN.22: 뉴턴 반복별 PCG 상한 (길이 = newton)
         assert s.cg_list is None or len(s.cg_list) == int(newton), "--cg_list 길이는 --newton"
+        s.fk = bool(fk)                                                                # 절 AN.22: 같은 식·반올림만 다른 커널 가속 (관성 후보 이차식, 거듭제곱법 나눗셈)
         s.mgbar = int(mgbar)                                                          # 절 AN.22: MG 전처리 고운 층 연산자에 장벽 헤시안
         s.y0ls = bool(y0ls)                                                            # 절 AN.22: 뉴턴 시작점을 U 와 관성 예측 Ũ 사이 후보 중 전체 에너지 최소로 (ga·장벽 판, --ls_n 필요)
         # 절 AN.20 (lib/anchorflow/fem_an_mg2.py): 칸 협동 곱 (mv2), 거친 층 점유 칸 목록 (mg_occ, mv2 포함), 층 mg_fuse 이상 V 순환 한 블록 (mg_fuse >= 1)
@@ -1449,7 +1471,7 @@ class RTSolver(MG2.MG2Mixin):
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
@@ -1938,16 +1960,16 @@ class RTSolver(MG2.MG2Mixin):
                 # 선탐색: 기울기 곱 g·δ = −r0·δ (r0 = rt_grad 가 남긴 처음 잔차)
                 if s.ls and s.ls_n:
                     NC = i32(s.ls_n)
-                    s.k("rt_lsyN", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC, P(None)), b=256)
+                    s.lsy(capN, it2, NC, None)
                     if s.descent:
                         s.k("rt_fixdir", capN, (P(IP), P(s.SC), P(s.p0), P(s.dl)), b=256)
                         if s.lsfast:                                                   # 절 AN.22: 방향을 안 바꿨으면 (SC59 = 1) 지우기·다시 계산 생략 (값 같음)
                             G59 = P(s.SC[59:])
                             s.k("rt_sc_clear_g", 1, (P(s.SC), i32(9), i32(10), G59), b=1); s.k("rt_sc_clear_g", 1, (P(s.SC), i32(20), i32(40), G59), b=1)
-                            s.k("rt_lsyN", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC, G59), b=256)
+                            s.lsy(capN, it2, NC, s.SC[59:])
                         else:
                             s.k("rt_sc_clear", 1, (P(s.SC), i32(9), i32(10)), b=1); s.k("rt_sc_clear", 1, (P(s.SC), i32(20), i32(40)), b=1)
-                            s.k("rt_lsyN", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC, P(None)), b=256)
+                            s.lsy(capN, it2, NC, None)
                     EA = (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC), NC)
                     BB = (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BA[:4], BA[4], BA[5], P(s.SC), NC) if s.bar else None
                     if s.lsfast:                                                       # 절 AN.22: 후보 c = 1 먼저, 받아들여지면 (SC63 = 1) 나머지 후보 커널 생략 -- 고르는 보폭 같음
@@ -2001,6 +2023,15 @@ class RTSolver(MG2.MG2Mixin):
         s.k("rt_g2p_endg", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.y), P(s.z0), P(s.U), f(sl["thinv"]), f(sl["al"]), P(s.fixd), P(s.vbc), dmp,
                                P(s.x), P(s.v), P(s.F)))
 
+
+    def lsy(s, capN, it2, NC, gate):
+        """선탐색 관성 몫 후보 (SC20·SC9·SC[21+i]). --fk 면 이차식 판 (rt_lsyQ + rt_lsyfin)."""
+        G = P(gate) if gate is not None else P(None)
+        if s.fk:
+            s.k("rt_lsyQ", capN, (P(s.IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), G), b=256)
+            s.k("rt_lsyfin", 1, (P(s.SC), NC, G), b=1)
+        else:
+            s.k("rt_lsyN", capN, (P(s.IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC, G), b=256)
 
     def dcopy(s, dst, src):
         """그래프 판의 torch 복사 (지속형 판에서는 같은 일의 장치 명령)."""

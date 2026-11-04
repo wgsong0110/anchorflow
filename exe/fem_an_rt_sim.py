@@ -73,6 +73,7 @@ ap.add_argument("--y0ls", action="store_true", help="절 AN.22 (결과 정의 �
 ap.add_argument("--lsfast", action="store_true", help="절 AN.22 (결과 같음): 선탐색 후보 c = 1 먼저 -- 받아들여지면 나머지 후보 에너지 커널 생략, 하강 방향을 안 바꾼 반복의 관성 몫 다시 계산 생략")
 ap.add_argument("--mgbar", nargs="?", const=1, default=0, type=int, help="절 AN.22 (전처리만, 풀리는 방정식 같음): MG V 순환 고운 층 연산자에 장벽 덩어리 헤시안 (원래는 블록 대각에만 있고 잔차 갱신 곱에는 없어 V 순환이 장벽 없는 계를 풀었음); 2 = 거친 층에도 (제한한 덩어리 강성, 블록 대각 셔먼-모리슨)")
 ap.add_argument("--cg_list", default=None, help="절 AN.22 (풀이기 설정만): 뉴턴 반복별 PCG 상한 'a,b,..' (길이 = --newton; --cg 대신)")
+ap.add_argument("--fk", action="store_true", help="절 AN.22 (같은 식, 반올림만 다름): 선탐색 관성 몫 후보를 이차식 합 넷으로, MG 거듭제곱법 f64 나눗셈 줄임")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
 a = ap.parse_args()
 dev = "cuda"
@@ -118,7 +119,7 @@ if a.det:
     from anchorflow import fem_an_det as ADET
 SOLVER = ADET.DetRT if a.det else ART.RTSolver
 S = SOLVER(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list)
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, 적분기 {a.ga + ' ρ ' + str(a.rho) if a.ga else a.integ}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
