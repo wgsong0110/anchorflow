@@ -1260,8 +1260,15 @@ class AORTSolver(DET.DetMixin):
                     eJd = float(e[:nn].double().mul(jd).sum()); dJe = float(d[:nn].double().mul(je).sum())
                     r["sym"] = dict(eJd=eJd, dJe=dJe, rel=abs(eJd - dJe) / max(abs(eJd) + abs(dJe), 1e-300), eKd=float(e[:nn].double().mul(Kd.double()).sum()), dKe=float(d[:nn].double().mul(Ke.double()).sum()))
             if s.aq and s.mat == 2:                                                    # 같은 재질 (PG 모래) 의 해석 접선 커널과 직접
+                nq = int(s.IP[12]); capQ = s.capQc * 8
+                s._elem_at(yb, "aq"); Ha = s.H[:30 * capQ].reshape(30, capQ)[:, :nq].clone()
                 f1, B1 = s._elem_at(yb, "s"); Kd1 = s._mv_at(d)
-                r["vs_s"] = dict(f=rel(f0, f1), B=rel(B0, B1), Kd=rel(Kd, Kd1), Kd_cos=cos(Kd, Kd1))
+                Hs = s.H[:30 * capQ].reshape(30, capQ)[:, :nq].clone()
+                dH = (Ha - Hs).abs(); sc = Hs.abs().amax(1, keepdim=True).clamp_min(1e-30)
+                rk = (dH / sc).amax(1)                                                 # 성분별 최대 차 / 그 성분 최대 크기
+                kq = int(rk[18:].argmax()) + 18; qw = int(dH[kq].argmax())
+                r["vs_s"] = dict(f=rel(f0, f1), B=rel(B0, B1), Kd=rel(Kd, Kd1), Kd_cos=cos(Kd, Kd1), H_rows=[round(float(q), 5) for q in rk],
+                                 n_C_bad=int(((dH[18:] / sc[18:]) > 1e-3).any(0).sum()), worst=dict(k=kq, q=qw, aq=[float(q) for q in Ha[:, qw]], s=[float(q) for q in Hs[:, qw]], Sq=[float(q) for q in s.Sq[qw * 4:qw * 4 + 4]]))
             out[tag] = r
         s.f.copy_(bk[0]); s.B.copy_(bk[1]); s.H.copy_(bk[2])
         return out
