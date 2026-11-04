@@ -581,12 +581,13 @@ __global__ void __launch_bounds__(128) aq_elem(const int* IP, const int* cb, con
     float U[9], S[3], V[9];
     ssvdf(X, U, S, V);
     float ys = Sq[(size_t)qq*4], lj = Sq[(size_t)qq*4+1], al = Sq[(size_t)qq*4+2];
-    float se[3] = {S[0], S[1], S[2]};
+    float sev = (mat == 7) ? prm[14] : 0.f;                                      // 뒤집힌 시험 바닥 (--nhb_eps; 0 = 끔): 주값 σ̂ = max(σ, ε) 에서 RM·응력·접선
+    float se[3]; for (int i=0;i<3;i++) se[i] = (sev > 0.f) ? fmaxf(S[i], sev) : S[i];
     bool ch = (prm[15] > 0.5f) ? false : pl_rm(mat, se, prm, ys, lj, al, dt);
     if (cnt && on && ch && mat != 7) atomicAdd(&cnt[0], 1);
     float Pe[3]; pl_pi(mat, se, prm, al, Pe);
     float ss[3], p[3];
-    for (int i=0;i<3;i++) { ss[i] = (fabsf(S[i]) > 1e-6f) ? S[i] : ((S[i] < 0.f) ? -1e-6f : 1e-6f); p[i] = Pe[i]*se[i]/ss[i]; }
+    for (int i=0;i<3;i++) { ss[i] = (sev > 0.f) ? fmaxf(S[i], sev) : ((fabsf(S[i]) > 1e-6f) ? S[i] : ((S[i] < 0.f) ? -1e-6f : 1e-6f)); p[i] = Pe[i]*se[i]/ss[i]; }
     float vq = on ? Vq[qq] : 0.f;
     float Pm[9];
     for (int a=0;a<3;a++) for (int b=0;b<3;b++) Pm[a*3+b] = U[a*3]*p[0]*V[b*3] + U[a*3+1]*p[1]*V[b*3+1] + U[a*3+2]*p[2]*V[b*3+2];
@@ -663,6 +664,7 @@ __global__ void aq_commit(const int* IP, const int* cb, const float* BG, float* 
     for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; int id = ids[o]; for (int a=0;a<3;a++) { float ua = U[id*3+a]; A[a*3] += ua*bg[0]; A[a*3+1] += ua*bg[1]; A[a*3+2] += ua*bg[2]; } }
     float X[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) X[a*3+b] = F[a*3+b] + A[a*3]*F[b] + A[a*3+1]*F[3+b] + A[a*3+2]*F[6+b];
     float Uu[9], s[3], Vv[9]; ssvdf(X, Uu, s, Vv);
+    if (mat == 7 && prm[14] > 0.f) for (int i=0;i<3;i++) s[i] = fmaxf(s[i], prm[14]);
     float ys = Sq[(size_t)q*4], lj = Sq[(size_t)q*4+1], al = Sq[(size_t)q*4+2];
     bool ch = (prm[15] > 0.5f) ? false : pl_rm(mat, s, prm, ys, lj, al, dt);
     Sq[(size_t)q*4] = ys; Sq[(size_t)q*4+1] = lj; Sq[(size_t)q*4+2] = al;
@@ -701,6 +703,7 @@ __global__ void aq_g2p(int N, const int* IP, const float* Ai, const int* pb, con
         float Api[9]; inv3(Ap, Api);
         float Ainc[9], Ft[9]; ao_mm3(A, Api, Ainc); ao_mm3(Ainc, Fp, Ft);
         float Uu[9], s[3], Vv[9]; ssvdf(Ft, Uu, s, Vv);
+        if (mat == 7 && prm[14] > 0.f) for (int i=0;i<3;i++) s[i] = fmaxf(s[i], prm[14]);
         if (!(prm[15] > 0.5f) && pl_rm(mat, s, prm, ys, lj, al, dt)) { pl_usv(Uu, s, Vv, Fp); nrm++; } else for (int k=0;k<9;k++) Fp[k] = Ft[k];
         for (int k=0;k<9;k++) Ap[k] = A[k];
     }
