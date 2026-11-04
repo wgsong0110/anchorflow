@@ -7,7 +7,7 @@ import sys
 
 import numpy as np
 
-SC = ["L000", "0016", "0019", "ficus", "wolf", "bread"] + ["%04d" % i for i in range(20) if i not in (16, 19)]
+SC = ["L000", "0016", "0019", "drop1", "ficus", "wolf", "bread"] + ["%04d" % i for i in range(20) if i not in (16, 19)]
 
 
 def load(d):
@@ -61,7 +61,7 @@ def judge(R):
         for t in sc:
             d = os.path.join(R, v + "_" + t)
             cs.append(cell(d) if os.path.isdir(d) else "")
-            if os.path.isdir(d) and t not in ("ficus", "wolf", "bread"):
+            if os.path.isdir(d) and t not in ("drop1", "ficus", "wolf", "bread"):
                 s, _ = load(d)
                 if s is not None:
                     n += 1; ok += int(not s.get("diverged") and s["err_mean"] is not None and 100 * s["err_mean"] < 10)
