@@ -905,7 +905,7 @@ def _src(tol=False):
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, **kw):
         s.vfill = bool(vfill)
         s.tolN, s.tolP = float(tolN), float(tolP)                                          # 공통 허용치 (절 AN.14 규칙; 음수 = 그 판정 없음)
         s.adapt = s.tolN >= 0 or s.tolP >= 0
@@ -920,7 +920,8 @@ class AORTSolver(DET.DetMixin):
         s.compact, s.warm = bool(compact), bool(warm)
         super().__init__(*args, **kw)
         s.mat, s.prm, s.visc, s.slip = int(mat), prm, float(eta), bool(slip)              # 절 AQ: 재질 번호 (2 = 모래 기존 경로), 정답 매개 prm[16], 등가 점성, 미끄럼 바닥
-        if s.mat != 2:
+        s.aq = s.mat != 2 or bool(aqk)                                                  # 재질 커널 경로 (aq_elem·aq_commit·aq_g2p); aqk = 모래도 재질 커널로 (진단, 절 AR)
+        if s.aq:
             assert s.hspec, "재질 판은 --hspec 경로만"
             Np_ = s.N
             s.ysp = torch.full((Np_,), float(ys0), device=s.dev, dtype=torch.float32)
@@ -929,7 +930,7 @@ class AORTSolver(DET.DetMixin):
         s.pvb = None if pvb is None else pvb[s.perm].float().contiguous()                 # 입자 구속 속도 (0 아닌 구속)
         if s.pvb is not None:
             s.pvc = torch.zeros(s.N, 3, device=s.dev, dtype=torch.float32); s.pmk = torch.zeros(s.N, 3, device=s.dev, dtype=torch.float32)
-        s.extra_p = (("ysp", "ljp", "alp") if s.mat != 2 else ()) + (("pvb", "pvc", "pmk") if s.pvb is not None else ())          # pvc·pmk 는 aq_vset 이 정렬 전에 채우므로 같이 재배열 (결정적 판)
+        s.extra_p = (("ysp", "ljp", "alp") if s.aq else ()) + (("pvb", "pvc", "pmk") if s.pvb is not None else ())          # pvc·pmk 는 aq_vset 이 정렬 전에 채우므로 같이 재배열 (결정적 판)
         s.ga = ga                                                                      # None 또는 dict(kind="hht"|"ga", rho)
         if s.ga is not None:
             assert not s.bc, "GA 판은 고정 노드 없는 씬만"
@@ -1006,7 +1007,7 @@ class AORTSolver(DET.DetMixin):
         s.k("rt_reset", 1, (P(IP),), b=1)
         s.ctl(0)
         s.zf(s.cnt)
-        if s.mat != 2:
+        if s.aq:
             s.zf(s.qb)
         s.k("rt_coord", N, (i32(N), P(s.x), P(s.Ai), P(s.Np), P(s.fx), P(IP)))
         s.k("rt_box", 1, (P(IP), i32(capN), i32(s.capC)), b=1)
@@ -1025,7 +1026,7 @@ class AORTSolver(DET.DetMixin):
                 s.k("ao_azero", N, (i32(N), P(s.trel), P(s.tbuf), P(s.pa)))
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv)))
         s.k("rt_gauss", capQ, (P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.cb), P(s.A), P(s.BW), P(s.Fq), P(s.Vq), P(s.mq), P(s.xq0), P(s.mqn), P(s.nbad)))
-        if s.mat != 2:                                                                 # 가우스 점 소성 상태 (입자 부피 가중 평균)
+        if s.aq:                                                                       # 가우스 점 소성 상태 (입자 부피 가중 평균)
             s.zf(s.Sa); s.zf(s.Sc)
             if s.det:
                 s.k("aq_p2g_sd", s.capQc, (P(IP), P(s.d_st), P(s.fx), P(s.vol), P(s.ysp), P(s.ljp), P(s.alp), P(s.Sa), P(s.Sc)), b=128)
@@ -1041,7 +1042,7 @@ class AORTSolver(DET.DetMixin):
             else:
                 s.k("ao_p2g_a", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.m), P(s.pa), P(s.gaA)))
             s.k("ao_adiv", capN, (P(IP), P(s.mn), P(s.gaA)), b=256)
-        if s.mat != 2 and s.vfill:                                                     # 질량 0 노드 속도·가속도 = 이웃 질량 가중 평균 (절 AQ)
+        if s.aq and s.vfill:                                                     # 질량 0 노드 속도·가속도 = 이웃 질량 가중 평균 (절 AQ)
             s.k("aq_vfill", capN, (P(IP), P(s.mn), P(s.vk), P(s.gaA if s.ga is not None else None)), b=256)
         if s.pvb is not None:                                                          # 노드 구속 목표 속도
             s.zf(s.vm, 9, 3); s.zf(s.cm, 9, 3)
@@ -1093,7 +1094,7 @@ class AORTSolver(DET.DetMixin):
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(16)), b=1)
                 if s.adapt:
                     s.k("rt_sc_clear", 1, (P(s.SC), i32(56), i32(58)), b=1)
-                if s.mat != 2:
+                if s.aq:
                     s.k("aq_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt), P(s.f), P(s.H), i32(capQ), P(s.B),
                                           P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None), P(s.z0), f(s.al), f(s.visc), P(s.qb)))
                 else:
@@ -1143,13 +1144,13 @@ class AORTSolver(DET.DetMixin):
             else:
                 s.k("rt_stepend", capN, (P(IP), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
             s.Ust[kstep].copy_(s.U)
-            if kstep < s.K - 1 and s.mat != 2:
+            if kstep < s.K - 1 and s.aq:
                 s.k("aq_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt)))
             elif kstep < s.K - 1:
                 s.k("ao_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), f(s.cdp)))
         if s.ga is not None:
             s.k("ao_g2p_a", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.gaA), P(s.pa)))
-        if s.mat != 2:
+        if s.aq:
             s.k("aq_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.Ust), i32(s.K), i32(capN), P(s.vk), i32(s.mat), P(s.prm), f(s.dt), P(s.x), P(s.v), P(s.F), P(s.ysp), P(s.ljp), P(s.alp), P(s.cnt)))
         else:
             s.k("ao_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.Ust), i32(s.K), i32(capN), P(s.vk), f(s.cdp), P(s.x), P(s.v), P(s.F), P(s.cnt)))
@@ -1203,8 +1204,95 @@ class AORTSolver(DET.DetMixin):
                  mv_dot=float((dv[:nn].double() * out["spec"][2].double()).sum() / (dv[:nn].double() * out["old"][2].double()).sum()))
         return r
 
+    def _elem_at(s, y, which):
+        """요소 커널 한 번 (힘 s.f·노드 대각 s.B·헤시안 s.H 를 덮어씀) -> (힘 f64, 대각) 앞 nn 노드."""
+        i32, f = np.int32, np.float32
+        IP, capQ, nn = s.IP, s.capQc * 8, int(s.IP[9])
+        s.f.zero_(); s.B.zero_()
+        if which == "aq":
+            s.k("aq_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(y), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt), P(s.f), P(s.H), i32(capQ), P(s.B),
+                                  P(None), P(s.z0), f(s.al), f(s.visc), P(None)))
+        else:
+            s.k("ao_elem_s", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8), P(s.f), P(s.H), i32(capQ), P(s.B), P(None)))
+        torch.cuda.synchronize()
+        return s.f[:nn].clone(), s.B[:nn].clone()
+
+    def _mv_at(s, d):
+        capQ, nn = s.capQc * 8, int(s.IP[9])
+        o = torch.zeros(s.capN, 3, device=s.dev, dtype=torch.float32)
+        s.k("ao_mv_q", capQ, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(d), P(o), np.int32(capQ)))
+        torch.cuda.synchronize()
+        return o[:nn].clone()
+
+    def check_aq(s, seed=0, eps=(1e-2, 1e-3, 1e-4)):
+        """절 AR: 지금 시험 상태 (y, Fq, Sq) 에서 요소 커널의 접선 곱 K d (ao_mv_q, 투영 접선) 를 힘의 중심 차분 −(f(y+εd) − f(y−εd))/2ε 과 대조,
+        차분 야코비안 대칭 (e·Jd − d·Je), 모래 재질 (mat 2) 을 재질 커널로 돌린 판이면 해석 접선 커널 ao_elem_s 와 힘·대각·곱 직접 대조.
+        d = 활성 노드 (질량 > 문턱) 무작위 방향, 최대 크기 1 칸. 상태 (f·B·H) 는 되돌린다. 비결정 판만."""
+        nn = int(s.IP[9])
+        if nn <= 0 or s.det:
+            return {}
+        bk = (s.f.clone(), s.B.clone(), s.H.clone())
+        cell = float(s.A[:, 0].norm())
+        act = (s.mn[:nn] > s.mthr)
+        g = torch.Generator(device=s.dev).manual_seed(1234 + seed)
+        def rdir():
+            d = torch.zeros(s.capN, 3, device=s.dev, dtype=torch.float32)
+            r = torch.randn(nn, 3, device=s.dev, generator=g); r[~act] = 0
+            d[:nn] = r * (cell / float(r.norm(dim=-1).max().clamp_min(1e-30)))
+            return d.contiguous()
+        rel = lambda a, b: float((a.double() - b.double()).norm() / max(float(b.double().norm()), 1e-300))
+        cos = lambda a, b: float((a.double() * b.double()).sum() / max(float(a.double().norm() * b.double().norm()), 1e-300))
+        which = "aq" if s.aq else "s"
+        y0 = s.y.clone()
+        out = dict(kern=which, nn=nn, nact=int(act.sum()))
+        for tag, yb in (("y", y0), ("y0", torch.zeros_like(y0))):
+            f0, B0 = s._elem_at(yb, which)
+            d, e = rdir(), rdir()
+            Kd = s._mv_at(d); Ke = s._mv_at(e)
+            r = dict(fmax=float(f0.norm(dim=-1).max()), Kd=float(Kd.double().norm()))
+            for ep in eps:
+                fp, _ = s._elem_at((yb + ep * d).contiguous(), which); fm, _ = s._elem_at((yb - ep * d).contiguous(), which)
+                jd = -(fp - fm) / (2 * ep)
+                r[f"e{ep:g}"] = dict(rel=rel(Kd, jd), cos=cos(Kd, jd), fd=float(jd.norm()), dK=float(d[:nn].double().mul(Kd.double()).sum()), dJ=float(d[:nn].double().mul(jd).sum()))
+                if ep == 1e-3:
+                    fp2, _ = s._elem_at((yb + ep * e).contiguous(), which); fm2, _ = s._elem_at((yb - ep * e).contiguous(), which)
+                    je = -(fp2 - fm2) / (2 * ep)
+                    eJd = float(e[:nn].double().mul(jd).sum()); dJe = float(d[:nn].double().mul(je).sum())
+                    r["sym"] = dict(eJd=eJd, dJe=dJe, rel=abs(eJd - dJe) / max(abs(eJd) + abs(dJe), 1e-300), eKd=float(e[:nn].double().mul(Kd.double()).sum()), dKe=float(d[:nn].double().mul(Ke.double()).sum()))
+            if s.aq and s.mat == 2:                                                    # 같은 재질 (PG 모래) 의 해석 접선 커널과 직접
+                f1, B1 = s._elem_at(yb, "s"); Kd1 = s._mv_at(d)
+                r["vs_s"] = dict(f=rel(f0, f1), B=rel(B0, B1), Kd=rel(Kd, Kd1), Kd_cos=cos(Kd, Kd1))
+            out[tag] = r
+        s.f.copy_(bk[0]); s.B.copy_(bk[1]); s.H.copy_(bk[2])
+        return out
+
+    def chkframe(s, t):
+        """절 AR: 한 프레임을 그래프 밖에서 돌리며 요소 커널 호출마다 check_aq (nanchk 와 같은 방식, 상태는 진행)."""
+        s.set_bc(t)
+        for nm in ("y", "U", "f", "r", "z", "p", "dl", "vk", "gaA", "B", "Ap", "KTp", "Tp", "yh", "eta", "Ut", "z0"):
+            t_ = getattr(s, nm, None)
+            if torch.is_tensor(t_):
+                t_.zero_()
+        s._chk, s._chk_in, s._chk_ks, s._chk_it = [], False, -1, -1
+        s.record(t)
+        torch.cuda.synchronize()
+        o = s._chk
+        s._chk = None
+        return o
+
     def k(s, name, n, args, b=128):
         super().k(name, n, args, b)
+        if getattr(s, "_chk", None) is not None and not s._chk_in:                       # 절 AR 대조: 그래프 밖 한 프레임, 요소 커널 부를 때마다 그 시험 상태에서
+            if name in ("ao_step0_ga", "rt_step0", "ao_step0_th"):
+                s._chk_ks += 1; s._chk_it = -1
+            if name in ("aq_elem", "ao_elem_s"):
+                s._chk_it += 1
+                s._chk_in = True
+                try:
+                    s._chk.append(dict(ks=s._chk_ks, it=s._chk_it, **s.check_aq(seed=len(s._chk))))
+                finally:
+                    s._chk_in = False
+            return
         L = getattr(s, "_nck", None)
         if L is None or s._nck_hit:
             return
@@ -1298,7 +1386,7 @@ class AORTSolver(DET.DetMixin):
         c = super().counts()
         cc = s.cnt.cpu().tolist()
         c.update(q_tail=cc[0], q_apex=cc[1], p_rm=cc[2])
-        if s.mat != 2:
+        if s.aq:
             qb = s.qb.cpu().tolist(); c.update(q_inv=qb[0], q_nf=qb[1])
         if getattr(s, "adapt", False):                                                 # 마지막 프레임 반복 수 (뉴턴 합, PCG 합, 뉴턴 상한 걸음, PCG 상한 풀이, 걸음, 풀이)
             ct = s.CT.cpu().tolist()

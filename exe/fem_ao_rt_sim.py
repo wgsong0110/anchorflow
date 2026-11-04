@@ -75,6 +75,8 @@ ap.add_argument("--ga", choices=["hht", "ga"], default=None, help="HHT-α 또는
 ap.add_argument("--rho", type=float, default=0.7)
 ap.add_argument("--ga_y0ut", action="store_true", help="처치 (a) 끔: 뉴턴 시작점 관성 예측")
 ap.add_argument("--ga_noar", action="store_true", help="처치 (b) 끔: 고착·구속 노드 가속도 0 안 함")
+ap.add_argument("--aq_sand", action="store_true", help="진단 (절 AR): 모래 씬을 재질 커널 (aq_elem·aq_commit·aq_g2p, 차분 접선) 로 -- 해석 접선 모래 커널과 대조")
+ap.add_argument("--check_aq", type=int, default=0, help="진단 (절 AR): 이 프레임 (1 부터) 을 그래프 밖에서 돌리며 요소 커널 호출마다 접선 곱 대 힘 중심 차분·대칭·(모래면) 해석 커널 대조")
 ap.add_argument("--theta", type=float, default=None, help="θ 방식 (절 AN.err2 정의; 0.5 = 중점, 1 = 후퇴 오일러). 안 주면 --integ 그대로 (비트 동일)")
 a = ap.parse_args()
 if a.adaptK > 0:
@@ -188,8 +190,15 @@ if MATK is not None:                                                            
                         mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill)
 elif SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
+    _sk = {}
+    if a.aq_sand:                                                                      # 절 AR 진단: 같은 PG 모래를 재질 커널로
+        from anchorflow import fem_pl_cuda as PLC
+        _m2, _prm2, _ = PLC.params(cfg, float(mu), float(lam), dev)
+        assert _m2 == 2
+        _sk = dict(mat=2, prm=_prm2, aqk=True, vfill=not a.no_vfill)
+        print(f"[절 AR] 모래를 재질 커널로 (cdp {CDP:.5f}, prm α {float(_prm2[3]):.5f} -> (3λ+2μ)α/(2μ) {float((3 * lam + 2 * mu) / (2 * mu) * float(_prm2[3])):.5f})", flush=True)
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
-                        floor=FL, damp=DAMP, bc=BC, cdp=CDP, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det, hpack=a.hpack, bdsh=a.bdsh, mvc=a.mvc, h16=a.h16, theta=a.theta, hspec=a.hspec, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None), mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, tolN=a.tolN, tolP=a.tolP)
+                        floor=FL, damp=DAMP, bc=BC, cdp=CDP, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det, hpack=a.hpack, bdsh=a.bdsh, mvc=a.mvc, h16=a.h16, theta=a.theta, hspec=a.hspec, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None), mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, tolN=a.tolN, tolP=a.tolP, **_sk)
 else:
   S = AORT.RTAdapt(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent,
@@ -216,7 +225,14 @@ for fi in range(L):
     if a.adaptK > 0:
         redo, KF, VMX = AORT.adapt_step(S, fi * h, h, CELL, float(cfg["substep_dt"]), a.kmax, a.adaptK)
     else:
-        if a.nanchk and fi + 1 == a.nanchk:
+        if a.check_aq and fi + 1 == a.check_aq:
+            if S.graph is None:
+                _bk0 = S._bk(); S.capture(); S._rs(_bk0)
+            _ck = S.chkframe(fi * h); S.last_ms = float("nan")
+            for _c in _ck:
+                print(f"[대조 aq] 프레임 {fi + 1} {json.dumps(_c)}", flush=True)
+            redo, KF, VMX = False, a.K, None
+        elif a.nanchk and fi + 1 == a.nanchk:
             if S.graph is None:
                 _bk0 = S._bk(); S.capture(); S._rs(_bk0)
             _hit = S.nanchk(fi * h); S.last_ms = float("nan")
