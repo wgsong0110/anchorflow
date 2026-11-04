@@ -6,7 +6,7 @@ PY=/home/dkta/.conda/envs/af/bin/python
 export PYTHONUTF8=1 OMP_NUM_THREADS=8 PATH=$HOME/bin:/home/dkta/.conda/envs/af/bin:$PATH
 export CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_cmq XDG_CACHE_HOME=/dev/shm/dkta/cache
 NM=$1; LST=$2; R=/dev/shm/dkta/lbours/fem_cm/$NM; mkdir -p $R $CUPY_CACHE_DIR; RR=r2:storage/result/anchorflow/lbours/fem_cm/$NM
-source exe/fem_cm_scn.sh
+source ${CM_SCN:-exe/fem_cm_scn.sh}
 U0=$(nvidia-smi -i 0 --query-gpu=uuid --format=csv,noheader)
 others0() { nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader 9>&- | grep -c "$U0"; }
 while read -r v t A; do [ -z "$v" ] && continue; [ "${v:0:1}" = "#" ] && continue; cm_data $t; done < $LST          # 자료 먼저 (잠금 밖)

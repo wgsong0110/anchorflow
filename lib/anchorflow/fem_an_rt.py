@@ -1191,6 +1191,26 @@ __global__ void rt_g2p_ga(int N, const int* IP, const float* Ai, const int* pb, 
     for (int a=0;a<3;a++) { x[p*3+a] += u[a]; v[p*3+a] = vv[a]; pa[p*3+a] = aa[a]; }
     for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = 0.f; for (int k=0;k<3;k++) t += A[a*3+k]*Fp[k*3+b]; F[(size_t)p*9+a*3+b] = t; }
 }
+// 절 CM2 시작점 섞기: η = (1 − β) η_U + β η_ŷ (β = 2^-kk[0]), y = ŷ + T η (kk[0] = 0 이면 η_ŷ 그대로 -> y = 관성 예측 ŷ 와 비트 같음)
+__global__ void rt_y0mix(const int* IP, const int* kk, const float* sk, const int* pm, float n0, float n1, float n2, const float* yh, const float* eS, float* eta, float* y) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    if (pm[n] == 2) return;
+    float be = ldexpf(1.f, -kk[0]);
+    float e[3]; for (int a=0;a<3;a++) { e[a] = (1.f - be)*eta[n*3+a] + be*eS[n*3+a]; eta[n*3+a] = e[a]; }
+    float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, e, t);
+    for (int a=0;a<3;a++) y[n*3+a] = yh[n*3+a] + t[a];
+}
+// 절 CM2 재질 판 (선탐색 없음) 장벽 걸음: 온 걸음 후보 y1 = ŷ + T (η + δ)
+__global__ void rt_ytry(const int* IP, const float* sk, const int* pm, float n0, float n1, float n2, const float* yh, const float* eta, const float* dl, float* y1) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float e[3]; for (int a=0;a<3;a++) e[a] = eta[n*3+a] + dl[n*3+a];
+    float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, e, t);
+    for (int a=0;a<3;a++) y1[n*3+a] = yh[n*3+a] + t[a];
+}
+// 보폭 SC[14] = 2^-kk[0] (rt_lsup full = 0 이 씀)
+__global__ void rt_kstep(const int* kk, double* SC) { SC[14] = (double)ldexpf(1.f, -kk[0]); }
 // 허용치 조기 종료 제어 (절 AN.14, 단일 스레드). skipify() 가 AF_SKIP 선언과 다른 모든 커널 머리의 "AF_SKIP 이면 바로 돌아감" 을 넣는다 (그 판에서만 컴파일).
 // CT (int): 0 ND (이 걸음 뉴턴 끝), 1 PD (이 풀이 PCG 끝), 2 뉴턴 반복 수, 3 PCG 반복 수, 4 뉴턴 상한까지 간 걸음 수, 5 PCG 상한까지 간 풀이 수, 6 걸음 수, 7 풀이 수 (프레임 합)
 // CD (double): 0 걸음 첫 |g|², 1 이 풀이의 PCG 목표 |r|², 2 기준 척도 F² = |T f(y0)|² (걸음 시작점의 탄성·접촉 힘 몫, rt_grad 의 SC[56]). eN2 = εN², eP2 = εP² (음수면 그 판정 없음)
@@ -1353,6 +1373,25 @@ __global__ void rt_bar_mvl(int l, const int* LM, const float* Kc, float n0, floa
     float t = K*(z[n*3]*n0 + z[n*3+1]*n1 + z[n*3+2]*n2);
     KT[n*3] += t*n0; KT[n*3+1] += t*n1; KT[n*3+2] += t*n2;
 }
+// 절 CM2 (정의 변경 셋째 --y0ut, 둘째 재질 판 장벽): 장벽 실현 가능 보폭. 활성 표본점 (AF_BACT) 의 d 는 y 에 선형이라 y0 -> y1 의 β = 2^-k 에서 d(β) = d0 + β (d1 − d0);
+// d(β) > 0 인 가장 작은 k 를 점마다 구해 최대를 kk 에 (정수 원자 최대 -- 순서 무관). k 상한 없음 (β 가 f32 에서 0 이 되면 멈춤 -- 표현 한계).
+__global__ void __launch_bounds__(128) rt_bar_kfe(const int* IP, const int* cb, const float* BW, const float* y0, const float* y1, const float* U, float thinv,
+                         float n0, float n1, float n2, float pn, int* kk) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    float bm = AF_BX[q*4+3];
+    if (!(bm > 0.f) || !AF_BACT[q]) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float xa[3], xb[3];
+    for (int a=0;a<3;a++) { xa[a] = AF_BX[q*4+a]/bm; xb[a] = xa[a]; }
+    for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+        for (int a=0;a<3;a++) { xa[a] += w*(U[id*3+a] + thinv*(y0[id*3+a] - U[id*3+a])); xb[a] += w*(U[id*3+a] + thinv*(y1[id*3+a] - U[id*3+a])); } }
+    float d0 = xa[0]*n0 + xa[1]*n1 + xa[2]*n2 - pn, d1 = xb[0]*n0 + xb[1]*n1 + xb[2]*n2 - pn;
+    if (d1 > 0.f) return;
+    int k = 0; float c = 1.f;
+    while (true) { c *= 0.5f; k++; if (c == 0.f) break; if (d0 + c*(d1 - d0) > 0.f) break; }
+    atomicMax(kk, k);
+}
 __global__ void rt_mg_dbar(int l, const int* LM, const float* D, const float* Kc, float n0, float n1, float n2, float* Db) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= LM[l*8+3]) return;
@@ -1407,8 +1446,10 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False):
         s.dev = dev
+        s.y0ut = bool(y0ut)                                                            # 절 CM2 정의 변경 셋째: 뉴턴 시작점 = 관성 예측 ŷ (장벽 판은 걸음 시작 U 에서 ŷ 쪽 실현 가능한 최대 2^-k)
+        s.matk = None                                                                  # 절 CM2: 재질 판 (lib/anchorflow/fem_mat_rt.py MatRT 가 채움)
         s.lsfast = bool(lsfast)                                                        # 절 AN.22: 선탐색 조기 판정 (결과 같음)
         s.cg_list = [int(q) for q in cg_list.split(",")] if cg_list else None          # 절 AN.22: 뉴턴 반복별 PCG 상한 (길이 = newton)
         assert s.cg_list is None or len(s.cg_list) == int(newton), "--cg_list 길이는 --newton"
@@ -1581,10 +1622,12 @@ class RTSolver(MG2.MG2Mixin):
         s.an2 = Z(s.capN)
         s.p0 = Z(s.capN, 3)
         s.ma = Z(s.capN, 3); s.ak = Z(s.capN, 3)
+        s.eS = Z(s.capN, 3); s.ySv = Z(s.capN, 3); s.kk = torch.zeros(4, device=dev, dtype=torch.int32)        # 절 CM2 시작점·장벽 걸음
         if not hasattr(s, "pa"):
             s.pa = torch.zeros(s.N, 3, device=dev, dtype=torch.float32)
         s.meff = Z(s.capN); s.U0 = Z(s.capN, 3); s.v0 = Z(s.capN, 3); s.wb = Z(s.capN, 3); s.wvb = Z(s.capN, 3)
         s.DG = torch.zeros(4 * max(s.K, s.Kc or 0) * s.nt, 64, device=dev, dtype=torch.float64)
+        s.Y0K = torch.zeros(4 * max(s.K, s.Kc or 0), 4, device=dev, dtype=torch.int32)          # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k)
         s.Y0S = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)       # 절 AN.22 시작점 탐색 진단 (걸음마다 SC: 14 = 고른 c, 21+i·40+i = 후보 에너지)
         s.DGF = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)    # 걸음 끝 SC (gfin: SC1 = |g_끝|²)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
         # 멀티그리드 층 (1 .. nl−1): 첫 프레임 상자에서 차원을 내려 잡고 cap_mul 배
@@ -1830,10 +1873,14 @@ class RTSolver(MG2.MG2Mixin):
         s.zf(s.badq); s.zf(s.badc); s.zf(s.nbad)
         if getattr(s, "bar", False):
             s.zf(s.bx)
+        if s.matk:
+            s.mat_pre_p2g()                                                            # 절 CM2 재질 판: 구속 입자 v·a (순차 방출)
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv),
                               P(s.pa if s.ga else None), P(s.ma if s.ga else None)))
         s.k("rt_gauss", capQ, (P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.cb), P(s.A), P(s.BW), P(s.Fq), P(s.Vq), P(s.mq), P(s.xq0), P(s.mqn), P(s.nbad)))
         s.k("rt_vn", capN, (P(IP), P(s.mn), P(s.mv), P(s.vk), P(s.U)), b=256)
+        if s.matk:
+            s.mat_post_vn()                                                            # 절 CM2 재질 판: 가우스 점 소성 상태, 노드 구속 목표, 구속 질량
         if s.nl > 1:
             s.mg_build()
         if s.bc:
@@ -1850,13 +1897,15 @@ class RTSolver(MG2.MG2Mixin):
                 s.dcopy(s.U0, s.U); s.dcopy(s.v0, s.vk)
             if sg["kind"] == "ga":
                 if kstep == 0:
-                    if s.ga_first:                                                     # 첫 프레임 (그래프 밖에서만): a0 = g − ∇Ψ(0)/m', m' = max(m, 1e-3 x 질량 중앙값)
+                    if s.ga_first and not s.matk:                                      # 첫 프레임 (그래프 밖에서만): a0 = g − ∇Ψ(0)/m', m' = max(m, 1e-3 x 질량 중앙값)
                         s.zf(s.f, 9, 3); s.zf(s.y, 9, 3)
                         s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1), P(s.SC[10:]), P(s.f), P(s.H), i32(capQ), P(s.B)))
                         mm = s.mn[:int(s.IP[9])]; mlow = 1e-3 * float(mm[mm > 0].median())
                         s.k("rt_ga_a0", capN, (P(IP), P(s.mn), P(s.f), f(mlow), *[f(q) for q in s.g], P(s.fixd), P(s.ak)), b=256)
                     else:
                         s.k("rt_ga_anode", capN, (P(IP), P(s.mn), P(s.ma), P(s.fixd), P(s.ak)), b=256)
+                    if s.matk:
+                        s.mat_post_anode()                                             # 절 CM2 재질 판: 질량 0 노드 속도·가속도 이웃 평균
                 s.k("rt_ga_step0", capN, (P(IP), P(s.U), P(s.vk), P(s.ak), f(sg["dt"]), f(sg["am"]), f(sg["af"]), f(sg["gm"]), f(sg["be"]), f(sg["tau"]), f(sg["al"]),
                                           *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.Ut), P(s.z0), P(s.y)), b=256)
                 Ub = vb = None
@@ -1871,16 +1920,28 @@ class RTSolver(MG2.MG2Mixin):
                 s.zf(s.an, 9, 1)
                 s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
                                          f(FL["PN"]), f(FL["DXG"]), P(s.an)))
-            s.k("rt_floor_n", capN, (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] * (s.K / (K or s.K)) * sg["frac"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(sg["al"]), *[f(q) for q in nr],
-                                     P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta)), b=256)
+            FA = (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] * (s.K / (K or s.K)) * sg["frac"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(sg["al"]), *[f(q) for q in nr],
+                  P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta))
+            if s.matk:
+                s.mat_floor_n(FA, kstep, capN)                                         # 절 CM2 재질 판: 구속 인자 k_구속 곱, 거의 빈 노드 관성 예측 고정
+            else:
+                s.k("rt_floor_n", capN, FA, b=256)
             y0s = s.y0ls and (sg["kind"] == "ga" or s.bar)
             if y0s:
                 s.dcopy(s.dl, s.eta)                                                   # 절 AN.22: η(Ũ) 보관
-            if sg["kind"] == "ga" or s.bar:                                            # 장벽 판: 모든 적분기 시작점 = 걸음 시작 위치 (장벽 실현 가능)
+            y0u_ = (sg["kind"] == "ga" or s.bar) and not (s.y0ut and not s.bar)       # 절 CM2 --y0ut: 장벽 없는 판은 시작점 = ŷ 그대로 (rt_floor_n 결과)
+            if y0u_ and s.y0ut:                                                        # 장벽 판: ŷ·η_ŷ 보관 -> U 에서 장벽 활성 판정 -> U 에서 ŷ 쪽 실현 가능한 최대 2^-k
+                s.dcopy(s.ySv, s.y); s.dcopy(s.eS, s.eta)
+            if y0u_:                                                                   # 장벽 판: 모든 적분기 시작점 = 걸음 시작 위치 (장벽 실현 가능)
                 s.k("rt_ga_y0", capN, (P(IP), P(s.U), P(s.yh), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.y)), b=256)
             if s.bar:
                 BA = (*[f(q) for q in nr], f(FL["PN"]), f(FL["DH"]), f(FL["KS"]))
                 s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), f(sg["thinv"]), *BA, i32(0), P(s.bGn), P(s.bKn), P(s.SC[10:])))
+                if s.y0ut:
+                    s.zf(s.kk)
+                    s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)))
+                    s.dcopy(s.Y0K[kstep], s.kk)                                        # 진단: 걸음별 시작점 k
+                    s.k("rt_y0mix", capN, (P(IP), P(s.kk), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eS), P(s.eta), P(s.y)), b=256)
             if y0s:                                                                    # 절 AN.22 시작점 탐색: U 에서 Ũ 쪽 후보 2^-i 중 전체 에너지 최소 (장벽 활성 판정은 위 U 에서 그대로)
                 NC0 = i32(s.ls_n)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
@@ -1897,8 +1958,11 @@ class RTSolver(MG2.MG2Mixin):
                 s.ctl(2, it)
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
-                s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8 | (4 if s.ls else 0)), P(s.SC[10:]), P(s.f), P(s.H),
-                                      i32(capQ), P(s.B)))
+                if s.matk:
+                    s.mat_elem(kstep, it, len(ST), capQ)                               # 절 CM2 재질 판 요소 (같은 81 성분 헤시안 꼴 -> rt_mv·rt_mv2·MG 공유)
+                else:
+                    s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8 | (4 if s.ls else 0)), P(s.SC[10:]), P(s.f), P(s.H),
+                                          i32(capQ), P(s.B)))
                 if s.bar:
                     s.zf(s.bGn); s.zf(s.bKn)
                     s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), f(sg["thinv"]), *BA, i32(1), P(s.bGn), P(s.bKn), P(s.SC[10:])))
@@ -1996,7 +2060,13 @@ class RTSolver(MG2.MG2Mixin):
                     s.k("rt_elem_ls", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC)))
                     s.k("rt_lspick", 1, (P(s.SC),), b=1)
                 s.dcopy(s.DG[2 * (kstep * s.nt + it) + 1], s.SC)                              # 진단: SC0 = r·z 끝, 5..8 관성, 9 g·δ, 10..13 탄성 E, 14 보폭
-                s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if s.ls else 1)), b=256)
+                fbar = (not s.ls) and s.bar                                            # 절 CM2: 선탐색 없는 판 (재질) 의 장벽 -- 보폭 = 활성 표본점 d > 0 인 최대 2^-k
+                if fbar:
+                    s.k("rt_ytry", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.yc)), b=256)
+                    s.zf(s.kk)
+                    s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.yc), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)))
+                    s.k("rt_kstep", 1, (P(s.kk), P(s.SC)), b=1)
+                s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.ls or fbar) else 1)), b=256)
             s.ctl(8)
             if s.gfin:                                                                 # 걸음 끝 y 에서 기울기 (같은 변수 바꿈) -> |g_끝|²
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
@@ -2015,8 +2085,14 @@ class RTSolver(MG2.MG2Mixin):
                 s.k("rt_ga_end", capN, (P(IP), f(sg["dt"]), f(sg["gm"]), f(sg["be"]), f(sg["al"]), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.ak),
                                         P(s.an if FL else None), i32(1 if s.areset else 0), P(s.fixd), P(s.vbc), dmp), b=256)
             elif kstep < len(ST) - 1:
+                assert not s.matk, "재질 판은 ga 만"
                 s.k("rt_stepend_g", capN, (P(IP), f(sg["thinv"]), f(sg["al"]), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), dmp), b=256)
+            if s.matk:
+                s.mat_step_end(kstep, len(ST), capN, capQ)                             # 절 CM2 재질 판: 구속 노드 가속도 0, 걸음 변위 보관, 걸음 사이 소성 커밋
         sl = ST[-1]
+        if s.matk:
+            s.mat_g2p()                                                                # 절 CM2 재질 판 G2P (입자 F 걸음별 RM, a_p)
+            return
         if sl["kind"] == "ga":
             s.k("rt_g2p_ga", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.U), P(s.vk), P(s.ak), P(s.x), P(s.v), P(s.pa), P(s.F)))
             return

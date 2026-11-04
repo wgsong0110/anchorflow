@@ -9,7 +9,7 @@ export CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_cm XDG_CACHE_HOME=/dev/shm/dkta/c
 NM=$1; LST=$2
 R=/dev/shm/dkta/lbours/fem_cm/$NM; RR=r2:storage/result/anchorflow/lbours/fem_cm/$NM; CL=/dev/shm/dkta/anerr_claim
 mkdir -p $R $CL $CUPY_CACHE_DIR
-source exe/fem_cm_scn.sh
+source ${CM_SCN:-exe/fem_cm_scn.sh}
 echo "[묶음 $NM] $(cat .done) $(date '+%F %T')"
 free_card() {
   local apps; apps=$(nvidia-smi --query-compute-apps=gpu_uuid --format=csv,noheader 2>/dev/null) || return
@@ -30,6 +30,7 @@ run_one() {
   CUDA_VISIBLE_DEVICES=$G timeout ${CM_TMO:-2400} $PY -u $SIM --out $O --tag $t $DA $XA < /dev/null > $O/log.txt 2>&1
   echo "rc=$? $(date '+%F %T')" >> $O/run_info.txt
   if [ $t = ficus ] && [ -f $O/pred.pt ]; then $PY exe/fem_p_period.py --data $FI --pred $O/pred.pt > $O/period.txt 2>&1; fi
+  if [ $t = drop1 ] && [ -f $O/pred.pt ]; then $PY exe/fem_ak_drop_ana.py $DD/init.pt mpm:$DD/mpm/x240.pt:0.0041666667 $V:$O/pred.pt:0.0166666667 > $O/drop_ana.txt 2>&1; fi
   echo "$V $t (카드 $G) $(grep -a '롤아웃\|rror\|발산' $O/log.txt | tail -2 | cut -c1-220 | tr '\n' ' ')" >> $R/done.txt
   rclone copy $O $RR/${V}_$t -q --exclude pred.pt; rclone copy $R/done.txt $RR -q
 }

@@ -74,6 +74,12 @@ ap.add_argument("--lsfast", action="store_true", help="절 AN.22 (결과 같음)
 ap.add_argument("--mgbar", nargs="?", const=1, default=0, type=int, help="절 AN.22 (전처리만, 풀리는 방정식 같음): MG V 순환 고운 층 연산자에 장벽 덩어리 헤시안 (원래는 블록 대각에만 있고 잔차 갱신 곱에는 없어 V 순환이 장벽 없는 계를 풀었음); 2 = 거친 층에도 (제한한 덩어리 강성, 블록 대각 셔먼-모리슨)")
 ap.add_argument("--cg_list", default=None, help="절 AN.22 (풀이기 설정만): 뉴턴 반복별 PCG 상한 'a,b,..' (길이 = --newton; --cg 대신)")
 ap.add_argument("--fk", action="store_true", help="절 AN.22 (같은 식, 반올림만 다름): 선탐색 관성 몫 후보를 이차식 합 넷으로, MG 거듭제곱법 f64 나눗셈 줄임")
+ap.add_argument("--ga_y0ut", action="store_true", help="절 CM2 정의 변경 셋째: 뉴턴 시작점 = 관성 예측 ŷ (고착 반영; 장벽 판은 걸음 시작 U 에서 ŷ 쪽으로 활성 표본점 d > 0 인 최대 2^-k)")
+ap.add_argument("--pbc", action="store_true", help="절 CM2 재질 판: 정답 config 입자 속도 구속 (순차 방출·병진, exe/fem_ao_rt_sim.py 와 같음)")
+ap.add_argument("--pbc_ns", type=int, default=4)
+ap.add_argument("--mlow", type=float, default=0.0, help="절 CM2 재질 판: 거의 빈 노드 문턱 = mlow x 첫 프레임 노드 질량 중앙값 (관성 예측 고정; 0 = 없음)")
+ap.add_argument("--visc_rpic", action="store_true", help="절 CM2 재질 판: 정답 rpic_damping -> 등가 점성 (절 AG.20)")
+ap.add_argument("--no_vfill", action="store_true")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
 a = ap.parse_args()
 dev = "cuda"
@@ -118,8 +124,67 @@ F0 = DM.traj_F(d, h, dev)[0].to(dev).double().reshape(Np, 9)
 if a.det:
     from anchorflow import fem_an_det as ADET
 SOLVER = ADET.DetRT if a.det else ART.RTSolver
+MATX = {}
+MATNAME = cfg.get("material")
+if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                            # 절 CM2: 재질 판 (lib/anchorflow/fem_mat_rt.py) -- 같은 실행기·같은 인자
+    from anchorflow import fem_mat_rt as MRT
+    from anchorflow import fem_ao_cuda as AO
+    from anchorflow import fem_pl_cuda as PLC
+    TREL = PVB = None
+    if a.pbc:                                                                          # exe/fem_ao_rt_sim.py 와 같은 구속 입자·끝 시각
+        _x0b = d["x"][0].to(dev).double(); _bcs = []
+        for _bc in (cfg.get("boundary_conditions") or []):
+            _ty = _bc.get("type")
+            if _ty == "release_particles_sequentially":
+                _nl, _nv = 50, _bc["normal"]; _pt, _sz, _ax = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], -1
+                for _k in range(3):
+                    if _nv[_k] == 0:
+                        _pt[_k], _sz[_k] = 1.0, 1.0
+                    else:
+                        _ax, _pt[_k] = _k, float(_bc["end_position"])
+                _hl = abs(float(_bc["start_position"]) - float(_bc["end_position"])) / _nl
+                for _k in range(_nl):
+                    _s2 = list(_sz); _s2[_ax] = _hl * (_nl - _k)
+                    _bcs.append((list(_pt), _s2, float(_bc["end_time"]) / _nl * (_k + 1)))
+            elif _ty == "enforce_particle_translation":
+                assert float(_bc["start_time"]) <= 0.0
+                _bcs.append((_bc["point"], _bc["size"], float(_bc["end_time"]), [float(q) for q in _bc["velocity"]]))
+        TREL = torch.full((Np,), -1e30, device=dev, dtype=torch.float64)
+        PVB = torch.zeros(Np, 3, device=dev, dtype=torch.float64)
+        for b_ in _bcs:
+            m_ = ((_x0b - torch.tensor(b_[0], device=dev, dtype=torch.float64)).abs() < torch.tensor(b_[1], device=dev, dtype=torch.float64)).all(-1)
+            TREL = torch.where(m_, torch.maximum(TREL, torch.tensor(b_[2], device=dev, dtype=torch.float64)), TREL)
+            if len(b_) > 3:
+                PVB[m_] = torch.tensor(b_[3], device=dev, dtype=torch.float64)
+        if not bool((PVB != 0).any()):
+            PVB = None
+    MTHR = 0.0
+    if a.mlow > 0:                                                                     # 첫 프레임 노드 질량 중앙값 (exe/fem_ao_rt_sim.py 와 같은 식)
+        _y = d["x"][0].to(dev).double() @ lat.Ai.T
+        _b = torch.floor(_y - 0.5).long(); _fx = _y - _b; _b = _b - _b.min(0).values; _nb = (_b.max(0).values + 3).tolist()
+        _w = torch.stack([0.5 * (1.5 - _fx) ** 2, 0.75 - (_fx - 1) ** 2, 0.5 * (_fx - 0.5) ** 2], 1)
+        _mn = torch.zeros(_nb[0] * _nb[1] * _nb[2], device=dev, dtype=torch.float64)
+        for _i in range(3):
+            for _j in range(3):
+                for _k in range(3):
+                    _mn.index_add_(0, ((_b[:, 0] + _i) * _nb[1] + _b[:, 1] + _j) * _nb[2] + _b[:, 2] + _k, _w[:, _i, 0] * _w[:, _j, 1] * _w[:, _k, 2] * m64)
+        MTHR = float(a.mlow * _mn[_mn > 0].median())
+        del _y, _b, _fx, _w, _mn
+    if MATNAME == "sand":
+        MATX = dict(mat=2, cdp=AO.cdp_of(cfg, float(mu), float(lam))[0])
+    else:
+        _mat, PRM, PRD = PLC.params(cfg, float(mu), float(lam), dev)
+        VISC = 0.0
+        if a.visc_rpic and float(cfg.get("rpic_damping", 0.0)) > 0:
+            _r = float(cfg["rpic_damping"])
+            VISC = float(cfg["density"]) * _r * (2 - _r) * DXG ** 2 / (16.0 * float(cfg["substep_dt"]))
+        MATX = dict(mat=_mat, prm=PRM, visc=VISC, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if _mat == 7 else 0.0))
+    MATX.update(trel=TREL, pvb=PVB, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, vfill=not a.no_vfill, det=a.det)
+    SOLVER = MRT.MatRT
+    a.ls = 0                                                                           # 재질 판: 퍼텐셜 없음 -> 에너지 선탐색 없음 (절 AO.0; 장벽이면 실현 가능 보폭만)
+    print(f"[절 CM2 재질 판] {MATNAME} {MATX.get('mat')} 구속 {TREL is not None} 구속 속도 {PVB is not None} 빈 노드 문턱 {MTHR:.3e} 점성 {MATX.get('visc', 0.0)}", flush=True)
 S = SOLVER(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk)
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, **MATX)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, 적분기 {a.ga + ' ρ ' + str(a.rho) if a.ga else a.integ}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
@@ -132,13 +197,16 @@ for fi in range(L):
     redo = S.step(fi * h)
     gt = d["x"][fi + 1].to(dev).float()
     xo = S.x_orig()
-    e = float((xo - gt).norm(dim=-1).mean()) / EXT
+    _ok = torch.isfinite(gt).all(-1)                                                   # 정답 비유한 입자 (GF) 는 지표에서 거름 (탄성 씬은 모두 유한 -> 같은 값)
+    e = float((xo[_ok] - gt[_ok]).norm(dim=-1).mean()) / EXT
     fin = bool(torch.isfinite(xo).all()) and math.isfinite(e)
     errs.append(e if fin else float("nan")); ms.append(S.last_ms)
     c = S.counts()
     if a.diag:
         c["diag"] = S.diag()
     c["K"] = S.last_K
+    if S.y0ut and getattr(S, "bar", False):                                            # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k, 0 = ŷ 그대로)
+        c["y0k"] = S.Y0K[:S.nstage, 0].cpu().tolist()
     if a.gfin:
         c["grel"] = S.grel()
     flog.write(json.dumps(dict(t=fi, err=e, ms=S.last_ms, redo=redo, **c, **({"kernel_ms": kp} if kp else {}))) + "\n"); flog.flush()
@@ -156,7 +224,7 @@ for fi in range(L):
         print("[kbench]", json.dumps(kb, ensure_ascii=False), flush=True)
         L = fi + 1
         break
-    if not fin or e > 2.0:
+    if not fin or e > 2.0 or (MATX and float(S.v.norm(dim=-1).max()) > 200.0):
         div_at = fi + 1
         print(f"[발산] 프레임 {div_at}", flush=True)
         break

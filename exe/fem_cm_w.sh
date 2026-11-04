@@ -1,8 +1,9 @@
 #!/bin/bash
 # 절 CM 잡 안 일꾼 (job_run.sh 로 한 번 띄움; 이후 SSH 없이): R2 lbours/fem_cm/w/tasks/<이름>.sh 를 1 분마다 보고 새 것을 띄움 (동시 여럿).
-# 과제 출력 /dev/shm/dkta/cmw/<이름>.log -> 1 분마다·끝에 R2 w/out/<이름>.log, 끝 표식 w/out/<이름>.END. R2 w/STOP 이 있거나 마감 (잡 만료 10 분 전) 이면 끝.
+# 과제 출력 /dev/shm/dkta/cm<칸>/<이름>.log -> 1 분마다·끝에 R2 w/out/<이름>.log, 끝 표식 w/out/<이름>.END. R2 w/STOP 이 있거나 마감 (잡 만료 10 분 전) 이면 끝.
 export PATH=$HOME/bin:$PATH
-RR=r2:storage/result/anchorflow/lbours/fem_cm/w; W=/dev/shm/dkta/cmw; mkdir -p $W/tasks
+CW=${CMW:-w}; RR=r2:storage/result/anchorflow/lbours/fem_cm/$CW; W=/dev/shm/dkta/cm$CW;   # CMW = 일꾼 칸 (cm2 는 w2)
+ mkdir -p $W/tasks
 UNTIL=$(date -d '2026-11-05 03:24 UTC' +%s)
 { echo "[일꾼 시작] $(date '+%F %T') $(hostname) 마감 $(date -d @$UNTIL '+%F %T')"; df -h /dev/shm /tmp | tail -2; nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader; nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv,noheader; } > $W/worker.log 2>&1
 rclone copyto $W/worker.log $RR/out/worker.log -q
