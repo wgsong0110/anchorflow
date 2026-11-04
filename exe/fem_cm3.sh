@@ -9,7 +9,7 @@
 export PATH=$HOME/bin:/home/dkta/.conda/envs/af/bin:$PATH PYTHONUTF8=1 OMP_NUM_THREADS=8
 C=$1; X=${2:-}; D=/dev/shm/dkta/impwt/$C; cd $D || exit 1                      # X = 다시 돌릴 때 묶음 이름 꼬리 (앞 시도 출력과 섞이지 않게)
 PY=/home/dkta/.conda/envs/af/bin/python
-B=/dev/shm/dkta/lbours/fem_cm; M=$B/marks; MR=r2:storage/result/anchorflow/lbours/fem_cm/marks; mkdir -p $M /dev/shm/dkta/cm_lists; L=/dev/shm/dkta/cm_lists
+B=/dev/shm/dkta/lbours/fem_cm; M=$B/marks; MR=r2:storage/result/anchorflow/lbours/fem_cm/marks; L=/dev/shm/dkta/cm_lists/cm3${X}; mkdir -p $M $L                                 # 목록 칸도 묶음별 (동시 묶음이 서로 덮지 않게)
 LOG=$M/cm3$X.log; say() { echo "$*" | tee -a $LOG; rclone copy $LOG $MR -q; }
 say "[cm3 시작] $C $(date '+%F %T')"; nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader >> $LOG
 export CM_SCN=exe/fem_cm3_scn.sh
