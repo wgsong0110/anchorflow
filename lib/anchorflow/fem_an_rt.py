@@ -1360,9 +1360,11 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None):
         s.dev = dev
         s.lsfast = bool(lsfast)                                                        # 절 AN.22: 선탐색 조기 판정 (결과 같음)
+        s.cg_list = [int(q) for q in cg_list.split(",")] if cg_list else None          # 절 AN.22: 뉴턴 반복별 PCG 상한 (길이 = newton)
+        assert s.cg_list is None or len(s.cg_list) == int(newton), "--cg_list 길이는 --newton"
         s.mgbar = bool(mgbar)                                                          # 절 AN.22: MG 전처리 고운 층 연산자에 장벽 헤시안
         s.y0ls = bool(y0ls)                                                            # 절 AN.22: 뉴턴 시작점을 U 와 관성 예측 Ũ 사이 후보 중 전체 에너지 최소로 (ga·장벽 판, --ls_n 필요)
         # 절 AN.20 (lib/anchorflow/fem_an_mg2.py): 칸 협동 곱 (mv2), 거친 층 점유 칸 목록 (mg_occ, mv2 포함), 층 mg_fuse 이상 V 순환 한 블록 (mg_fuse >= 1)
@@ -1867,7 +1869,7 @@ class RTSolver(MG2.MG2Mixin):
                 s.ctl(4, it)
                 if s.descent:
                     s.dcopy(s.p0, s.p); s.k("rt_sc_copy", 1, (P(s.SC), i32(60), i32(0)), b=1)
-                for ci in range(s.cg):
+                for ci in range(s.cg_list[it] if s.cg_list else s.cg):                   # 절 AN.22 --cg_list: 뉴턴 반복별 PCG 상한 (풀이기 설정만)
                     s.ctl(5, ci)
                     if ci == 0 or not s.fuse2:
                         s.zf(s.KTp, 9, 3)
