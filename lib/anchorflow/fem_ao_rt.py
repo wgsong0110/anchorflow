@@ -908,7 +908,7 @@ __device__ __forceinline__ void aw_cof(const double* M, double* C) {
     C[3] = M[2]*M[7]-M[1]*M[8]; C[4] = M[0]*M[8]-M[2]*M[6]; C[5] = M[1]*M[6]-M[0]*M[7];
     C[6] = M[1]*M[5]-M[2]*M[4]; C[7] = M[2]*M[3]-M[0]*M[5]; C[8] = M[0]*M[4]-M[1]*M[3];
 }
-__global__ void aw_inv_q(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* yb, const float* d, int* kk) {
+__global__ void aw_inv_q(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* yb, const float* d, int* kk, const float* Ue, float e1, float e0) {
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     if (q >= IP[12]) return;
     if (!(Vq[q] > 0.f)) return;
@@ -921,6 +921,17 @@ __global__ void aw_inv_q(const int* IP, const int* cb, const float* BG, const fl
     for (int k=0;k<9;k++) { c1 += C0[k]*Dx[k]; c2 += CD[k]*X0[k]; }
     if (!(c0 > 0.0)) { atomicAdd(&kk[1], 1); return; }
     int k = 0; while (k < 1074 && !aw_pos(c0, c1, c2, c3, ldexp(1.0, -k))) k++;
+    if (Ue) {                                                                  // --ls_end: 걸음 끝 변위 U_e = e1 y + e0 U (HHT 1/(1−αf), −αf/(1−αf)) 의 X 도 J > 0
+        float A[9] = {0,0,0,0,0,0,0,0,0};
+        for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; int id = ids[o]; for (int a=0;a<3;a++) { float va = e1*yb[id*3+a] + e0*Ue[id*3+a]; A[a*3] += va*bg[0]; A[a*3+1] += va*bg[1]; A[a*3+2] += va*bg[2]; } }
+        double Xe[9], De[9], Ce[9], Cd[9];
+        for (int a=0;a<3;a++) for (int b=0;b<3;b++) { Xe[a*3+b] = (double)(F[a*3+b] + A[a*3]*F[b] + A[a*3+1]*F[3+b] + A[a*3+2]*F[6+b]); De[a*3+b] = (double)e1*Dx[a*3+b]; }
+        aw_cof(Xe, Ce); aw_cof(De, Cd);
+        double f0 = Xe[0]*Ce[0] + Xe[1]*Ce[1] + Xe[2]*Ce[2], f3 = De[0]*Cd[0] + De[1]*Cd[1] + De[2]*Cd[2], f1 = 0.0, f2 = 0.0;
+        for (int j=0;j<9;j++) { f1 += Ce[j]*De[j]; f2 += Cd[j]*Xe[j]; }
+        if (!(f0 > 0.0)) atomicAdd(&kk[1], 1);
+        else { int k2 = 0; while (k2 < 1074 && !aw_pos(f0, f1, f2, f3, ldexp(1.0, -k2))) k2++; k = max(k, k2); }
+    }
     if (k > 0) atomicMax(&kk[0], k);
 }
 // 보폭 2^-k 를 out[0] 에, 통계 st[0] 줄어든 횟수, st[1] 최대 k, st[2] 시작에서 뒤집힌 점-회, st[3] 호출 수; kk 비움
@@ -986,8 +997,20 @@ TMAT_OLD = "if (pm == 2) T[a*3+b] = 0.f; else if (pm == 0) T[a*3+b] = sk*I; else
 TMAT_NEW = "if (pm == 2) T[a*3+b] = 0.f; else if (pm == 0) T[a*3+b] = sk*I; else if (pm == 3) T[a*3+b] = I - (1.f - sk)*nn[a]*nn[b]; else {"   # 미끄럼 바닥: Tapply pm 3 과 같은 T (법선만 √k; 절 AQ 고침)
 
 
-def _src(tol=False):
+GQ_OLD = "if (bad || badq[q]) { for (int k=0;k<9;k++) out[k] = aq[18+k]/aq[27]; atomicAdd(nbad, 1); }"
+GQ_NEW = "if (bad || badq[q]) { float eu[9]; for (int k=0;k<9;k++) eu[k] = aq[18+k]/aq[27]; if (bad || !(aw_det9(eu) > 0.f)) ; else for (int k=0;k<9;k++) out[k] = eu[k]; if (bad) for (int k=0;k<9;k++) out[k] = eu[k]; atomicAdd(nbad, 1); }"
+GC_OLD = "if (bad || badc[c]) for (int k=0;k<9;k++) out[k] = ac[18+k]/ac[27];"
+GC_NEW = "if (bad || badc[c]) { float eu[9]; for (int k=0;k<9;k++) eu[k] = ac[18+k]/ac[27]; if (bad || aw_det9(eu) > 0.f) for (int k=0;k<9;k++) out[k] = eu[k]; }"
+AW_DET9 = "__device__ __forceinline__ float aw_det9(const float* M) { return M[0]*(M[4]*M[8]-M[5]*M[7]) - M[1]*(M[3]*M[8]-M[5]*M[6]) + M[2]*(M[3]*M[7]-M[4]*M[6]); }\n"
+
+
+def _src(tol=False, fqrl=False):
     s = ART.SRC.rstrip()
+    if fqrl:                                                                         # 절 AS --fq_rl: 뒤집힌 입자가 있는 점의 F_q 를 유클리드 평균으로 바꾸는 것은 그 평균이 뒤집히지 않을 때만 (뒤집히면 회전·로그 평균 그대로)
+        assert s.count(GQ_OLD) == 1 and s.count(GC_OLD) == 1
+        s = s.replace(GQ_OLD, GQ_NEW, 1).replace(GC_OLD, GC_NEW, 1)
+        i0 = s.index("__device__ void rs_fin(")
+        s = s[:i0] + AW_DET9 + s[i0:]
     assert TAP_OLD in s
     s = s.replace(TAP_OLD, TAP_NEW, 1)
     assert s.count(TMAT_OLD) == 1
@@ -1007,7 +1030,8 @@ def _src(tol=False):
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, **kw):
+        s.fqrl, s.lsend = bool(fqrl), bool(lsend)                                        # 절 AS: F_q 유클리드 대체 조건, 걸음 끝 변위 U_{n+1} 에서도 J > 0
         s.vfill = bool(vfill)
         s.y0l = bool(y0l)                                                               # 절 AS: 거의 빈 노드 (질량 < 문턱, 관성 예측 고정) 의 고정 위치도 시작점 보간을 따름 (보폭 1 이면 그대로)
         s.y0u = bool(y0u)                                                               # 절 AS: 시작점 기준을 z0 대신 걸음 시작 위치 U (y = U 는 변위 0 -> X = 커밋된 F_q)
@@ -1050,7 +1074,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
         s.ao_ready = True
@@ -1061,6 +1085,18 @@ class AORTSolver(DET.DetMixin):
         s.awk = torch.zeros(2, device=s.dev, dtype=torch.int32); s.awst = torch.zeros(8, device=s.dev, dtype=torch.int32); s.awb = torch.zeros(2, device=s.dev, dtype=torch.float64)   # 절 AS                       # 진단: 프레임 동안 뒤집힌 시험 X 점-회, 비유한 응력 점-회
         s.trel = (trel[s.perm].float().contiguous() if s.has_pbc else None)
         s.graph = None
+
+    def _aw_end(s):
+        """절 AS --ls_end: 걸음 끝 변위 U_{n+1} = e1 y + e0 U_n 계수 (HHT: y = (1−αf) U_{n+1} + αf U_n; 중점: U_{n+1} = 2y − U_n; 그 밖 y)."""
+        if not s.lsend:
+            return (P(None), np.float32(0), np.float32(0))
+        if s.ga is not None:
+            af = s.ga_c["af"]; e1, e0 = 1.0 / (1.0 - af), -af / (1.0 - af)
+        elif s.th is not None:
+            e1, e0 = 1.0 / s.th, 1.0 - 1.0 / s.th
+        else:
+            e1, e0 = (2.0, -1.0) if s.mid else (1.0, 0.0)
+        return (P(s.U), np.float32(e1), np.float32(e0))
 
     def mvname(s):
         if s.hspec:
@@ -1198,7 +1234,7 @@ class AORTSolver(DET.DetMixin):
                                      P(s.kb if s.has_pbc else None), P(s.mn), f(s.mthr), i32(1 if (s.ga is not None and s.ga.get("y0uk", True)) else 0), P(s.vm if s.pvb is not None else None), i32(1 if s.slip else 0)), b=256)
             if s.y0z:                                                                  # 절 AS 시작점: y_z (영속도 위치) 에서 관성 시작점 쪽으로 뒤집힘 없는 최대 2^-k
                 s.k("aw_y0z_a", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.U if s.y0u else s.z0), P(s.y), P(s.awez), P(s.awyb), P(s.awdy), P(s.mn), f(s.mthr), i32(1 if s.y0l else 0)), b=256)
-                s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.awyb), P(s.awdy), P(s.awk)))
+                s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.awyb), P(s.awdy), P(s.awk)) + s._aw_end())
                 s.k("aw_pick", 1, (P(s.awk), P(s.awb), P(s.awst[4:])), b=1)
                 s.k("aw_y0z_b", capN, (P(IP), P(s.awb), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.awez), P(s.eta), P(s.y), P(s.mn), f(s.mthr), i32(1 if s.y0l else 0), P(s.awyb), P(s.awdy)), b=256)
             s.ctl(1)
@@ -1254,7 +1290,7 @@ class AORTSolver(DET.DetMixin):
                         s.k("ao_tvec", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.dl), P(s.awtd)), b=256)
                     else:
                         s.k("aw_tdir", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.dl), P(s.awtd)), b=256)
-                    s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), P(s.awtd), P(s.awk)))
+                    s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), P(s.awtd), P(s.awk)) + s._aw_end())
                     s.k("aw_pick", 1, (P(s.awk), P(s.SC[14:]), P(s.awst)), b=1)
                 s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if s.lsinv else 1)), b=256)
             s.ctl(8)
