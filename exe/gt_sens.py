@@ -42,6 +42,8 @@ import warp as wp                                                # noqa: E402
 from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP   # noqa: E402
 
 cfg = json.load(open(a.config))
+cfg.setdefault("n_grid", 50)                                                         # PG decode_param 기본값 (PG 원본 config 는 키가 없을 수 있음; exe/pg_h5_to_pt.py 와 같음)
+cfg.setdefault("grid_lim", 2.0)
 meta = json.load(open(os.path.join(a.gt, "meta.json"))) if os.path.exists(os.path.join(a.gt, "meta.json")) else {}   # PG 원본 h5 폴더는 meta 없음
 if a.rpic_cfg:
     a.rpic = float(cfg.get("rpic_damping", 0.0))
