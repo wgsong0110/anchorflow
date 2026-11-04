@@ -24,6 +24,28 @@ extern "C" __global__ void ar_tan_test(int n, const float* S, int mat, const flo
         for (int j=0;j<3;j++) o[15+i*3+j] = (((i==j) ? 2.f*mu : 0.f) + lam)/(ss[i]*ss[j]) - ((i==j) ? pa/ss[i] : 0.f); }
 }
 '''
+_t = open("lib/anchorflow/fem_ao_rt.py", encoding="utf-8").read()
+def cblock(name):
+    i = _t.index("__global__ void __launch_bounds__(128) " + name + "(")
+    a = _t.index("    float C[12];", i); b = _t.index("    if (on) {", a)
+    return _t[a:b]
+TEST += r'''
+extern "C" __global__ void ar_c_test(int n, const float* S, int mat, const float* prm, const float* Sq, float* out) {
+    int t = blockIdx.x*blockDim.x + threadIdx.x;
+    if (t >= n) return;
+    float mu = prm[0], lam = prm[1], vq = 1.f, eta = 0.f, alI = 0.f;
+    int qq = t;
+    float ss[3] = {S[t*3], S[t*3+1], S[t*3+2]};
+    float Jx = ss[0]*ss[1]*ss[2];
+    float* o = out + t*24;
+    { float pe[3]; for (int i=0;i<3;i++) pe[i] = (2.f*mu*logf(fabsf(ss[i])) + lam*(logf(fabsf(ss[0]))+logf(fabsf(ss[1]))+logf(fabsf(ss[2]))))/ss[i];
+@SAND@
+      for (int k=0;k<12;k++) o[12+k] = C[k]; }
+    {
+@AQ@
+      for (int k=0;k<12;k++) o[k] = C[k]; }
+}
+'''.replace("@SAND@", cblock("ao_elem_s")).replace("@AQ@", cblock("aq_elem"))
 src = AORT._src(tol=False)
 i = src.rfind("}")
 mod = cp.RawModule(code=src[:i] + "}\n" + TEST, options=("--std=c++14",))
@@ -42,3 +64,13 @@ for mat in (2, 5):
         print("  D(aq)\n", np.round(o[t, 3:12].reshape(3, 3), 2))
         if mat == 2:
             print("  D(해석)\n", np.round(o[t, 15:24].reshape(3, 3), 2))
+
+fc = mod.get_function("ar_c_test")
+Sq = cp.zeros(n * 4, dtype=cp.float32); Sq[2::4] = 1.0
+out = cp.zeros(n * 24, dtype=cp.float32)
+fc((1,), (32,), (np.int32(n), S, np.int32(2), prm, Sq, out))
+o = out.get().reshape(n, 24)
+for t in range(n):
+    print(f"계수 C (D+ 위 삼각 6, c1 3, c2 3) σ {S[t].get().tolist()}")
+    print("  aq_elem  ", np.round(o[t, :12], 2).tolist())
+    print("  ao_elem_s", np.round(o[t, 12:], 2).tolist())
