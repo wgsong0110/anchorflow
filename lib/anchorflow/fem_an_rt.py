@@ -1705,7 +1705,7 @@ class RTSolver:
         from . import fem_an_pk as PKM
         src = PKM.pk_src(s._src0, s.adapt, s.goct, "AO_DET" in s._src0)
         s.pk_meta = src.meta
-        s.pkmod = cp.RawModule(code=src.code, options=("--std=c++14", "-DPKB=%d" % s.pkb, "-DPKMINB=%d" % s.pkminb))
+        s.pkmod = cp.RawModule(code=src.code, options=("--std=c++14", "-DPKB=%d" % s.pkb, "-DPKMINB=%d" % s.pkminb), enable_cooperative_groups=True)
         s.pkfn = s.pkmod.get_function("pk_run")
         nsm = torch.cuda.get_device_properties(torch.device(s.dev)).multi_processor_count
         fptr = s.pkfn.kernel.ptr if hasattr(s.pkfn, "kernel") else s.pkfn.ptr            # RawKernel (cupy 새 판) 또는 Function
@@ -1746,7 +1746,7 @@ class RTSolver:
         class _PK:
             def replay(self_):
                 with RTC._Stream():
-                    fn((grid,), (blk,), (P(CMD), np.int32(Cn.shape[0]), P(ARG)), enable_cooperative_groups=True)
+                    fn((grid,), (blk,), (P(CMD), np.int32(Cn.shape[0]), P(ARG)))                 # 협동 실행 (모듈을 enable_cooperative_groups 로 만듦)
         g = _PK()
         g.CMD, g.ARG = CMD, ARG
         return g
