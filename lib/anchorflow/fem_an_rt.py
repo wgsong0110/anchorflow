@@ -4,6 +4,7 @@
 - 가우스 점 q = 압축 칸 c x 8 + 팔분 o; 기저·기울기는 팔분 8 가지 상수 표 (BW, BG) 에서, G_qn = F_qᵀ ∇w 는 커널 안에서 계산 (저장 안 함).
 - 입자 -> 가우스 점 F (절 AI A1 회전·신장 분리 평균), 노드 질량·운동량: 입자마다 원자 합 (f32)."""
 import math
+import os
 
 import cupy as cp
 import numpy as np
@@ -1164,8 +1165,12 @@ def P(t):
 class RTSolver:
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1):
         s.dev = dev
+        # 지속형 커널 판 (절 AN.15, lib/anchorflow/fem_an_pk.py): 프레임 하나 = 협동 실행 커널 한 번 (명령 목록을 격자 장벽으로 차례로). pk_loc = 블록 0 하나가 도는 MG 층 (이 층 이상)
+        s.pk, s.pk_loc_l, s.pkb, s.pkminb = bool(pk), int(pk_loc), int(pkb), int(pkminb)
+        s._pkc, s._pk_loc, s.pkmod = None, 0, None
+        s._src0 = SRC
         # 허용치 조기 종료 (절 AN.14): 뉴턴 |g|/|g0| <= tolN, PCG sqrt(r·z / r0·z0) <= tolP (음수 = 그 판정 없음). 뉴턴·PCG 수는 상한 (그래프에 펼친 수)
         s.tolN, s.tolP = float(tolN), float(tolP)
         s.adapt = s.tolN >= 0 or s.tolP >= 0
@@ -1242,6 +1247,16 @@ class RTSolver:
         s.alloc(None)
 
     def k(s, name, n, args, b=128):
+        if s._pkc is not None:                                                        # 지속형 판: 명령 목록에 모으기 (실행 안 함)
+            i32 = np.int32
+            if name == "rt_scan":                                                     # 한 블록 1024 스캔 -> 같은 출력의 격자 3 단계 스캔
+                s._pkc.append(("pk_scan_a", s.capC, 256, (args[0], args[1], P(s.pk_bs)), s._pk_loc > 0))
+                s._pkc.append(("pk_scan_b", 256, 256, (args[0], P(s.pk_bs), args[4], i32(s.pk_capB)), True))
+                s._pkc.append(("pk_scan_c", s.capC, 256, (args[0], args[1], P(s.pk_bs), args[2], args[3], args[4], i32(s.pk_capB)), s._pk_loc > 0))
+                return
+            assert name not in ("rt_mg_csolve", "ao_act_scan"), name
+            s._pkc.append((name, int(n), int(b), tuple(args), s._pk_loc > 0))
+            return
         if name not in s.fn:
             s.fn[name] = s.mod.get_function(name)
         if getattr(s, "prof", None) is not None:
@@ -1330,15 +1345,25 @@ class RTSolver:
             s.LM = torch.zeros(s.nl * 8, device=dev, dtype=torch.int32)
             s.W = torch.zeros(s.nl, device=dev, dtype=torch.float64); s.SCM = torch.zeros(s.nl * 4, device=dev, dtype=torch.float64)
             s.m0t = Z(s.capN, 3); s.m0u = Z(s.capN, 3); s.m0KT = Z(s.capN, 3); s.zo = Z(s.capN, 3); s.mnd = s.mn
+        if s.pk:                                                                       # 지속형 판 보조 버퍼: 칸 스캔 덩어리 합, 결정적 판 정렬 (칸 개수·시작·자리, 순번, 모으기 임시)
+            s.pk_capB = (s.capC + 255) // 256
+            s.pk_bs = torch.zeros(s.pk_capB + 1, device=dev, dtype=torch.int32)
+            s.pk_cnt = torch.zeros(s.capQc + 1, device=dev, dtype=torch.int32); s.pk_st = torch.zeros(s.capQc + 1, device=dev, dtype=torch.int32)
+            s.pk_cur = torch.zeros(s.capQc + 1, device=dev, dtype=torch.int32); s.pk_idx = torch.zeros(s.N, device=dev, dtype=torch.int32)
+            s.pk_scr = torch.zeros(s.N * 9, device=dev, dtype=torch.float32)
         s.graph = None
         s.oct_bind()
+
+    def _mods(s):
+        return [s.mod] + ([s.pkmod] if s.pkmod is not None else [])
 
     def oct_bind(s):
         """점유 가중 판: 장치 전역 AF_MO (팔분 질량 버퍼)·AF_GOCT (κ) 를 지금 모듈에 (다시 할당·모듈 바꿈 뒤마다)."""
         if s.goct < 0:
             return
-        g = s.mod.get_global("AF_MO"); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(s.Mo.data_ptr())
-        g = s.mod.get_global("AF_GOCT"); cp.ndarray((1,), dtype=cp.float32, memptr=g)[0] = s.goct
+        for mod in s._mods():
+            g = mod.get_global("AF_MO"); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(s.Mo.data_ptr())
+            g = mod.get_global("AF_GOCT"); cp.ndarray((1,), dtype=cp.float32, memptr=g)[0] = s.goct
 
 
     # ---------- 멀티그리드 (그래프 안) ----------
@@ -1399,7 +1424,26 @@ class RTSolver:
             s.k("rt_mg_pw1", V["cap"], (i32(l), P(s.LM), P(V["mn"]), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(V["D"]), P(z), P(KT), P(y), P(s.SCM)), b=256)
             s.k("rt_mg_pw2", V["cap"], (i32(l), P(s.LM), P(y), P(z), P(s.SCM), P(s.W), f(s.mg_omega), i32(1 if it == s.mg_pow - 1 else 0)), b=256)
 
+    def _pkl(s, on):
+        """지속형 판: on 이면 그 안에서 모은 명령을 블록 0 전용 묶음으로 (MG 작은 층)."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def cm():
+            if on:
+                s._pk_loc += 1
+            try:
+                yield
+            finally:
+                if on:
+                    s._pk_loc -= 1
+        return cm()
+
     def mg_vc(s, l, r, z):
+        with s._pkl(s._pkc is not None and l >= 1 and l >= s.pk_loc_l):
+            s._mg_vc(l, r, z)
+
+    def _mg_vc(s, l, r, z):
         """z = V 순환 (r). 층 0 의 r·z 는 고운 노드 배열 (조밀 상자)."""
         i32, f = np.int32, np.float32
         it2 = f(1.0 / (getattr(s, 'mg_tau', s.tau) ** 2))
@@ -1426,10 +1470,12 @@ class RTSolver:
         Lc = s.ML[l]
         if l == 0:
             s.mg_Az(0, z, KT, tz_ready=True); node(7, r, KT, z, s.m0u)                 # m0u = T (r − A z) (융합)
-            s.k("rt_mg_restrict", Lc["capn"], (i32(0), P(s.LM), P(s.m0u), P(Lc["r"]), i32(3)), b=256)
+            with s._pkl(s._pkc is not None and 1 >= s.pk_loc_l):
+                s.k("rt_mg_restrict", Lc["capn"], (i32(0), P(s.LM), P(s.m0u), P(Lc["r"]), i32(3)), b=256)
         else:
             s.mg_Az(l, z, KT); node(2, r, KT, z, res)
-            s.k("rt_mg_restrict", Lc["capn"], (i32(l), P(s.LM), P(res), P(Lc["r"]), i32(3)), b=256)
+            with s._pkl(s._pkc is not None and l + 1 >= s.pk_loc_l):
+                s.k("rt_mg_restrict", Lc["capn"], (i32(l), P(s.LM), P(res), P(Lc["r"]), i32(3)), b=256)
         s.mg_vc(l + 1, Lc["r"], Lc["z"])
         if l == 0:
             s.k("rt_mg_prolong", V["cap"], (i32(0), P(s.LM), P(Lc["z"]), P(s.m0u), i32(0)), b=256)
@@ -1494,7 +1540,7 @@ class RTSolver:
         if s.nl > 1:
             s.mg_build()
         if s.bc:
-            s.fixd.zero_()
+            s.bzero(s.fixd)
             for ib in range(len(s.bc)):
                 s.k("rt_bc_box", capN, (P(IP), P(s.A), P(s.BP), i32(ib), P(s.fixd), P(s.vbc)), b=256)
         FL = s.floor
@@ -1504,7 +1550,7 @@ class RTSolver:
         for kstep, sg in enumerate(ST):
             it2 = f(1.0 / (sg["tau"] * sg["tau"]))
             if sg.get("save0"):
-                s.U0.copy_(s.U); s.v0.copy_(s.vk)
+                s.dcopy(s.U0, s.U); s.dcopy(s.v0, s.vk)
             if sg["kind"] == "ga":
                 if kstep == 0:
                     if s.ga_first:                                                     # 첫 프레임 (그래프 밖에서만): a0 = g − ∇Ψ(0)/m', m' = max(m, 1e-3 x 질량 중앙값)
@@ -1552,10 +1598,10 @@ class RTSolver:
                     s.zf(s.zo, 9, 3)
                     s.k("rt_dotz", capN, (P(IP), P(s.r), P(s.z), P(s.zo), P(s.SC), i32(1)), b=256)
                     s.k("rt_pinit", capN, (P(IP), P(s.z), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.Tp)), b=256)
-                s.DG[2 * (kstep * s.nt + it)].copy_(s.SC)                                  # 진단: SC0 = r·z 처음, SC1 = |g|²
+                s.dcopy(s.DG[2 * (kstep * s.nt + it)], s.SC)                                  # 진단: SC0 = r·z 처음, SC1 = |g|²
                 s.ctl(4, it)
                 if s.descent:
-                    s.p0.copy_(s.p); s.k("rt_sc_copy", 1, (P(s.SC), i32(60), i32(0)), b=1)
+                    s.dcopy(s.p0, s.p); s.k("rt_sc_copy", 1, (P(s.SC), i32(60), i32(0)), b=1)
                 for ci in range(s.cg):
                     s.ctl(5, ci)
                     if ci == 0 or not s.fuse2:
@@ -1592,7 +1638,7 @@ class RTSolver:
                         s.k("rt_lsy4", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC)), b=256)
                     s.k("rt_elem_ls", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC)))
                     s.k("rt_lspick", 1, (P(s.SC),), b=1)
-                s.DG[2 * (kstep * s.nt + it) + 1].copy_(s.SC)                              # 진단: SC0 = r·z 끝, 5..8 관성, 9 g·δ, 10..13 탄성 E, 14 보폭
+                s.dcopy(s.DG[2 * (kstep * s.nt + it) + 1], s.SC)                              # 진단: SC0 = r·z 끝, 5..8 관성, 9 g·δ, 10..13 탄성 E, 14 보폭
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if s.ls else 1)), b=256)
             s.ctl(8)
             if s.gfin:                                                                 # 걸음 끝 y 에서 기울기 (같은 변수 바꿈) -> |g_끝|²
@@ -1600,7 +1646,7 @@ class RTSolver:
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
                 s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8), P(s.SC[10:]), P(s.f), P(s.H), i32(capQ), P(s.B)))
                 s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
-                s.DGF[kstep].copy_(s.SC)
+                s.dcopy(s.DGF[kstep], s.SC)
             if FL:                                                                     # 진단: 걸음 끝 위치의 고착 몫 an2 (걸음 시작 an 과 비교)
                 s.zf(s.an2, 9, 1)
                 s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
@@ -1620,6 +1666,89 @@ class RTSolver:
         s.k("rt_g2p_endg", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.y), P(s.z0), P(s.U), f(sl["thinv"]), f(sl["al"]), P(s.fixd), P(s.vbc), dmp,
                                P(s.x), P(s.v), P(s.F)))
 
+
+    def dcopy(s, dst, src):
+        """그래프 판의 torch 복사 (지속형 판에서는 같은 일의 장치 명령)."""
+        if s._pkc is None:
+            dst.copy_(src)
+            return
+        nw = dst.numel() * dst.element_size() // 4
+        assert src.numel() * src.element_size() // 4 == nw and dst.is_contiguous() and src.is_contiguous()
+        s.k("pk_copy32", nw, (np.int32(nw), P(dst), P(src)), b=256)
+
+    def bzero(s, t):
+        if s._pkc is None:
+            t.zero_()
+            return
+        s.k("pk_zero_b", t.numel(), (np.int32(t.numel()), P(t)), b=256)
+
+    def pk_sort(s):
+        """결정적 판 입자 정렬 (DetMixin.det_sort 의 torch.sort(pcd, stable=True) + 재배열과 같은 결과) 을 장치 명령으로."""
+        i32, IP = np.int32, s.IP
+        s.zf(s.pk_cnt)
+        s.k("pk_sort_cnt", s.N, (i32(s.N), P(IP), P(s.pcd), P(s.cidx), P(s.pk_cnt)), b=256)
+        s.k("pk_sort_scan", 256, (i32(s.N), P(IP), P(s.pk_cnt), P(s.pk_st), P(s.pk_cur)), b=256)
+        s.k("pk_sort_put", s.N, (i32(s.N), P(IP), P(s.pcd), P(s.cidx), P(s.pk_st), P(s.pk_cur), P(s.pk_idx)), b=256)
+        s.k("pk_sort_cell", s.capQc, (P(IP), P(s.pk_st), P(s.pk_idx)), b=128)
+        for nm in ("x", "v", "F", "m", "vol", "fx", "Np", "pcd", "perm") + (("trel",) if getattr(s, "trel", None) is not None else ()) + (("pa",) if getattr(s, "ga", None) else ()):
+            t = getattr(s, nm)
+            assert t.is_contiguous() and t.shape[0] == s.N
+            nw = t.numel() * t.element_size() // 4 // s.N
+            assert nw <= 9
+            s.k("pk_gather", s.N * nw, (i32(s.N), P(IP), P(s.pk_idx), i32(nw), P(t), P(s.pk_scr)), b=256)
+            s.k("pk_copy32", s.N * nw, (i32(s.N * nw), P(t), P(s.pk_scr)), b=256)
+
+    def pk_prepare(s):
+        """지속형 판 모듈 (한 번): 소스 변환·컴파일, 블록 수 = 동시 상주 수 x SM 수, 장치 전역 묶기."""
+        if s.pkmod is not None:
+            return
+        from . import fem_an_pk as PKM
+        src = PKM.pk_src(s._src0, s.adapt, s.goct, "AO_DET" in s._src0)
+        s.pk_meta = src.meta
+        s.pkmod = cp.RawModule(code=src.code, options=("--std=c++14", "-DPKB=%d" % s.pkb, "-DPKMINB=%d" % s.pkminb))
+        s.pkfn = s.pkmod.get_function("pk_run")
+        nsm = torch.cuda.get_device_properties(torch.device(s.dev)).multi_processor_count
+        fa = lambda at: int(cp.cuda.driver.funcGetAttribute(at, s.pkfn.ptr))             # CU_FUNC_ATTRIBUTE_: 1 공유, 3 지역, 4 레지스터
+        regs, smem, lmem = fa(4), fa(1), fa(3)
+        try:
+            occ = int(cp.cuda.driver.occupancyMaxActiveBlocksPerMultiprocessor(s.pkfn.ptr, s.pkb, 0))
+            how = "api"
+        except Exception as ex:                                                         # 없으면 레지스터·스레드 상한으로 (A6000: SM 당 65536 레지스터, 1536 스레드)
+            occ = min(65536 // (((regs + 7) // 8 * 8) * s.pkb), 1536 // s.pkb)
+            how = "regs (%s)" % type(ex).__name__
+        if os.environ.get("AF_PK_OCC"):
+            occ = min(occ, int(os.environ["AF_PK_OCC"]))
+        assert occ >= 1, "지속형 커널이 SM 에 한 블록도 못 올라감"
+        s.pk_grid = occ * nsm
+        s.pk_info = dict(grid=s.pk_grid, occ=occ, occ_how=how, nsm=nsm, pkb=s.pkb, regs=regs, lmem=lmem, smem=smem, loc=s.pk_loc_l)
+        print("[지속형 판]", s.pk_info, flush=True)
+        s.oct_bind()
+        if hasattr(s, "d_part"):
+            s.det_bind()
+
+    def pk_capture(s, t_frame, K):
+        """record() 를 모으기 모드로 돌려 명령 목록 -> 장치 배열. 돌려주는 것: replay() 가 지속형 커널 한 번을 띄우는 객체."""
+        from . import fem_an_pk as PKM
+        s.pk_prepare()
+        s._pkc, s._pk_loc = [], 0
+        try:
+            s.record(t_frame, K)
+            cmds = s._pkc
+        finally:
+            s._pkc = None
+        Cn, An, st = PKM.build_cmds(cmds, s.pk_meta)
+        CMD = torch.from_numpy(Cn.copy()).to(s.dev)
+        ARG = torch.from_numpy(An.view(np.int64).copy()).to(s.dev)
+        s.pk_info.update(st)
+        fn, grid, blk = s.pkfn, s.pk_grid, s.pkb
+
+        class _PK:
+            def replay(self_):
+                with RTC._Stream():
+                    fn((grid,), (blk,), (P(CMD), np.int32(Cn.shape[0]), P(ARG)), enable_cooperative_groups=True)
+        g = _PK()
+        g.CMD, g.ARG = CMD, ARG
+        return g
 
     def ctl(s, op, it=0):
         """허용치 조기 종료 제어 커널 (adapt 판만; 아니면 아무것도 안 넣음 -- 원래 그래프 그대로)."""
@@ -1656,9 +1785,12 @@ class RTSolver:
             s.record(0.0, K)                                                           # 데움 (함수 적재)
         torch.cuda.current_stream().wait_stream(st)
         torch.cuda.synchronize()
-        g = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(g):
-            s.record(0.0, K)
+        if s.pk:                                                                       # 지속형 판: 그래프 대신 명령 목록 (같은 순서)
+            g = s.pk_capture(0.0, K)
+        else:
+            g = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(g):
+                s.record(0.0, K)
         s.graph = g
         s.graphs[K] = g
 

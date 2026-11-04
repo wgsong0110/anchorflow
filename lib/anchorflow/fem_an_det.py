@@ -330,19 +330,25 @@ class DetMixin(ART.RTSolver):
         s.d_mscr = Z(s.capN)
 
     def det_bind(s):
+        for mod in s._mods():                                                     # 보통 모듈 + 지속형 판 모듈 (절 AN.15) 의 장치 전역 둘 다
+            s._det_bind1(mod)
+
+    def _det_bind1(s, mod):
         def setp(nm, t, dt):
-            g = s.mod.get_global(nm)
+            g = mod.get_global(nm)
             ART.cp.ndarray((1,), dtype=dt, memptr=g)[0] = int(t.data_ptr()) if t is not None else 0
         setp("AO_SCB", s.SC, ART.cp.uint64); setp("AO_PART", s.d_part, ART.cp.uint64); setp("AO_BMAX", s.d_bmax, ART.cp.uint64)
         setp("AO_SCM", getattr(s, "SCM", None), ART.cp.uint64); setp("AO_MGB", s.d_mgb, ART.cp.uint64); setp("AO_MGV", s.d_mgv, ART.cp.uint64)
         setp("AO_CF", s.d_cf, ART.cp.uint64); setp("AO_CB", s.d_cb, ART.cp.uint64); setp("AO_CV", s.d_cv, ART.cp.uint64); setp("AO_MW", s.d_mw, ART.cp.uint64)
         import os
         setp("AO_ACTL", s.act if (getattr(s, "compact", False) and os.environ.get("AO_DET_ACTG", "1") == "1") else None, ART.cp.uint64)
-        g = s.mod.get_global("AO_DET")
+        g = mod.get_global("AO_DET")
         ART.cp.ndarray((1,), dtype=ART.cp.int32, memptr=g)[0] = 1 if s.det else 0
 
     def det_sort(s):
         """입자를 칸 번호 (pcd) 로 안정 정렬, 입자 배열과 원래 순번 perm 을 같이 재배열 (그래프 안에서 torch 연산)."""
+        if getattr(s, "_pkc", None) is not None:                                  # 지속형 판: 같은 순서의 장치 정렬 명령
+            return s.pk_sort()
         o = torch.sort(s.pcd, stable=True).indices
         for nm in ("x", "v", "F", "m", "vol", "fx", "Np", "pcd", "perm") + (("trel",) if getattr(s, "trel", None) is not None else ()) + (("pa",) if getattr(s, "ga", None) else ()):
             t = getattr(s, nm)
@@ -423,6 +429,7 @@ class DetRT(DetMixin):
         super().__init__(*args, **kw)
         src = det_module_src()
         s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct), options=("--std=c++14",))
+        s._src0 = src
         s.fn = {}
         s.ao_ready = True
         s.det_bind()
