@@ -352,7 +352,7 @@ class MG2Mixin:
         cases.append(("empty", lambda: s.k("rt_sc_copy", 1, (P(s.SC), i32(63), i32(63)), b=1)))
         cases.append(("rt_mv", lambda: s.k("rt_mv", capQ, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.m0u), P(s.m0KT), i32(capQ)))))
         cases.append(("rt_mv2", lambda: s.k("rt_mv2", capQ, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.m0u), P(s.m0KT), i32(capQ)))))
-        cases.append(("node0", lambda: s.k("rt_mg_node", s.capN, (i32(0), P(s.LM), i32(1), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.Dinv), P(s.W), P(s.r), P(s.m0KT), P(s.m0t), P(None)), b=256)))
+        cases.append(("node0", lambda: s.k("rt_mg_node", s.capN, (i32(0), P(s.LM), i32(1), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.Dinv), P(s.W), P(s.r), P(s.m0KT), P(s.m0t), P(None), P(None)), b=256)))
         cases.append(("rt_cg2", lambda: s.k("rt_cg2", s.capN, (P(s.IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.zo), P(s.p0), P(s.yc), P(None)), b=256)))
         cases.append(("rt_dotz", lambda: s.k("rt_dotz", s.capN, (P(s.IP), P(s.r), P(s.m0t), P(s.zo), P(s.SC), i32(0)), b=256)))
         for l in range(1, s.nl):
@@ -361,7 +361,7 @@ class MG2Mixin:
             cases.append((f"mg_mv2d:{l}", lambda l=l, L=L: s.k("rt_mg_mv2", L["capq"], (i32(l), P(s.LM), P(s.BG), f(0.5 ** l), P(L["Fq"]), P(L["Vq"]), P(L["H"]), i32(L["capq"]), P(L["y"]), P(L["KT"]), P(None), P(None)))))
             if s.mg_occ or s.mg_fuse:
                 cases.append((f"mg_mv2o:{l}", lambda l=l, L=L: s.k("rt_mg_mv2", L["lcap"] * 8, (i32(l), P(s.LM), P(s.BG), f(0.5 ** l), P(L["Fq"]), P(L["Vq"]), P(L["H"]), i32(L["capq"]), P(L["y"]), P(L["KT"]), P(L["list"]), P(s.mg_cnt)))))
-            cases.append((f"node:{l}", lambda l=l, L=L: s.k("rt_mg_node", L["capn"], (i32(l), P(s.LM), i32(1), P(L["mc"]), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(L["D"]), P(s.W), P(L["r"]), P(L["KT"]), P(L["y"]), P(None)), b=256)))
+            cases.append((f"node:{l}", lambda l=l, L=L: s.k("rt_mg_node", L["capn"], (i32(l), P(s.LM), i32(1), P(L["mc"]), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(L["D"]), P(s.W), P(L["r"]), P(L["KT"]), P(L["y"]), P(None), P(None)), b=256)))
             cases.append((f"restrict:{l - 1}", lambda l=l, L=L: s.k("rt_mg_restrict", L["capn"], (i32(l - 1), P(s.LM), P(s.m0t if l == 1 else s.ML[l - 2]["t"]), P(L["t"]), i32(3)), b=256)))
             cases.append((f"restrict2:{l - 1}", lambda l=l, L=L: s.k("rt_mg_restrict2", L["capn"], (i32(l - 1), P(s.LM), P(s.m0t if l == 1 else s.ML[l - 2]["t"]), P(L["t"]), i32(3)), b=256)))
             cases.append((f"restrict3:{l - 1}", lambda l=l, L=L: s.k("rt_mg_restrict3", L["capn"] * 16, (i32(l - 1), P(s.LM), P(s.m0t if l == 1 else s.ML[l - 2]["t"]), P(L["t"]), i32(3)), b=256)))

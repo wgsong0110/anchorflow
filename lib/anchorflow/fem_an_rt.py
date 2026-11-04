@@ -480,12 +480,15 @@ __global__ void rt_grad(const int* IP, const float* mn, float itau2, const float
 #endif
 }
 // Ap = Mi p + T (K T p) 의 노드 마무리 + p·Ap (SC[2])
-__global__ void rt_ap(const int* IP, const float* mn, float itau2, const float* sk, const int* pm, float n0, float n1, float n2, const float* p, const float* KTp, float* Ap, double* SC) {
+__global__ void rt_ap(const int* IP, const float* mn, float itau2, const float* sk, const int* pm, float n0, float n1, float n2, const float* p, const float* KTp, float* Ap, double* SC, const float* Kb) {
     if (blockIdx.x*blockDim.x >= IP[9]) return;
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     double s = 0.0;
     if (n < IP[9]) {
-        float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, KTp + n*3, t);
+        float kt[3] = {KTp[n*3], KTp[n*3+1], KTp[n*3+2]};
+        if (Kb) { float K = Kb[n];                                                // 절 AN.22 --mgbar: 장벽 덩어리 곱 K n (n·T p) 융합 (rt_bar_mv 와 같은 식)
+            if (K != 0.f) { float pp[3] = {p[n*3], p[n*3+1], p[n*3+2]}, tp[3]; Tapply(sk[n], pm[n], n0, n1, n2, pp, tp); float c = K*(tp[0]*n0 + tp[1]*n1 + tp[2]*n2); kt[0] += c*n0; kt[1] += c*n1; kt[2] += c*n2; } }
+        float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, kt, t);
         float Mi = mn[n]*itau2;
         for (int a=0;a<3;a++) { float v = Mi*p[n*3+a] + t[a]; Ap[n*3+a] = v; s += (double)p[n*3+a]*v; }
     }
@@ -820,7 +823,7 @@ __global__ void rt_mg_D(int l, const int* LM, const float* mc, float itau2, cons
 // 층 노드 연산: (0) z = w D r; (1) z += w D (r − Az); (2) res = r − Az;  Az = Mi z + KTz 마무리 (층 0 은 T 끼움)
 // 층 0: Az = Mi z + T (K (T z)); 여기서 KTz 는 이미 계산된 K(Tz) 또는 K z. 모드 3: Tz = T z (층 0), 모드 4: out = T v
 __global__ void rt_mg_node(int l, const int* LM, int mode, const float* mn, float itau2, const float* sk, const int* pm, float n0, float n1, float n2,
-                           const float* D, const double* W, const float* r, float* KTz, float* z, float* res) {
+                           const float* D, const double* W, const float* r, float* KTz, float* z, float* res, const float* Kb) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= LM[l*8+3]) return;
     float w = (float)W[l];
@@ -839,6 +842,11 @@ __global__ void rt_mg_node(int l, const int* LM, int mode, const float* mn, floa
     KTz[n*3] = 0.f; KTz[n*3+1] = 0.f; KTz[n*3+2] = 0.f;                         // 읽은 뒤 비움 (다음 곱의 원자 합 바탕; 0 채우기 커널 없앰)
     if (l == 0) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, kt, t); for (int a=0;a<3;a++) kt[a] = t[a]; }
     for (int a=0;a<3;a++) az[a] = Mi*z[n*3+a] + kt[a];
+    if (Kb) { float K = Kb[n];                                                   // 절 AN.22 --mgbar: 장벽 덩어리 헤시안을 노드 연산에 융합 (층 0: T (K n nᵀ) T z, 거친 층: K n nᵀ z)
+        if (K != 0.f) { float zz[3] = {z[n*3], z[n*3+1], z[n*3+2]}, tz[3]; if (l == 0) Tapply(sk[n], pm[n], n0, n1, n2, zz, tz); else { tz[0] = zz[0]; tz[1] = zz[1]; tz[2] = zz[2]; }
+            float c = K*(tz[0]*n0 + tz[1]*n1 + tz[2]*n2); float bv[3] = {c*n0, c*n1, c*n2}, tb[3];
+            if (l == 0) Tapply(sk[n], pm[n], n0, n1, n2, bv, tb); else { tb[0] = bv[0]; tb[1] = bv[1]; tb[2] = bv[2]; }
+            for (int a=0;a<3;a++) az[a] += tb[a]; } }
     float e[3]; for (int a=0;a<3;a++) e[a] = rr[a] - az[a];
     if (mode == 2) { for (int a=0;a<3;a++) res[n*3+a] = e[a]; return; }
     if (mode == 7) { float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, e, t); for (int a=0;a<3;a++) res[n*3+a] = t[a]; return; }   // 층 0: T (r − Az) (제한 입력, 융합)
@@ -1633,24 +1641,24 @@ class RTSolver(MG2.MG2Mixin):
                 s.mg_power(l)
         s._wdone = True
 
-    def mg_Az(s, l, z, KT, tz_ready=False):
+    def mg_Az(s, l, z, KT, tz_ready=False, bar=False):
         """KT += K (T z) (층 0) 또는 K z (거친 층). KT 는 앞 소비 커널이 비워 둔다. tz_ready: 층 0 의 T z 가 이미 m0u 에 (융합 노드 연산)."""
         i32, f = np.int32, np.float32
         nr = s.floor["NR"] if s.floor else [0.0, 0.0, 1.0]
         if l == 0:
             if not tz_ready:
-                s.k("rt_mg_node", s.capN, (i32(0), P(s.LM), i32(3), P(s.mn), f(0), P(s.sk), P(s.pm), *[f(q) for q in nr], P(None), P(s.W), P(None), P(None), P(z), P(s.m0u)), b=256)
+                s.k("rt_mg_node", s.capN, (i32(0), P(s.LM), i32(3), P(s.mn), f(0), P(s.sk), P(s.pm), *[f(q) for q in nr], P(None), P(s.W), P(None), P(None), P(z), P(s.m0u), P(None)), b=256)
             if s.mv2:
                 s.mg2_mv(0, s.m0u, KT)
             else:
                 s.k("rt_mv", s.capQc * 8, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.m0u), P(KT), i32(s.capQc * 8)))
-            if s.mgbar and getattr(s, "bar", False):                                   # 절 AN.22 (전처리만, 풀리는 방정식 같음): 고운 층 V 순환 연산자에 장벽 덩어리 헤시안 K n nᵀ (블록 대각 D 에는 원래 들어 있음)
+            if bar and s.mgbar and getattr(s, "bar", False):                           # 절 AN.22 (거듭제곱법만; V 순환은 노드 연산에 융합) (전처리만, 풀리는 방정식 같음): 고운 층 V 순환 연산자에 장벽 덩어리 헤시안 K n nᵀ (블록 대각 D 에는 원래 들어 있음)
                 s.k("rt_bar_mv", s.capN, (P(s.IP), P(s.bKn), *[f(q) for q in nr], P(s.m0u), P(KT)), b=256)
             return
         else:
             if s.mv2:
                 s.mg2_mv(l, z, KT)
-                if getattr(s, "_mgb_on", False):                                       # 절 AN.22 --mgbar 2: 거친 층 장벽 덩어리 헤시안
+                if bar and getattr(s, "_mgb_on", False):                               # 절 AN.22 --mgbar 2: 거친 층 장벽 덩어리 헤시안 (거듭제곱법만; V 순환은 노드 연산에 융합)
                     s.k("rt_bar_mvl", s.ML[l - 1]["capn"], (i32(l), P(s.LM), P(s.ML[l - 1]["Kb"]), *[f(q) for q in nr], P(z), P(KT)), b=256)
                 return
             L = s.ML[l - 1]
@@ -1673,7 +1681,7 @@ class RTSolver(MG2.MG2Mixin):
         s.k("rt_fill_rand", V["cap"], (i32(l), P(s.LM), P(z)), b=256)
         for it in range(s.mg_pow):
             s.k("rt_mg_pw0", 1, (i32(l), P(s.SCM)), b=1)
-            s.mg_Az(l, z, KT)
+            s.mg_Az(l, z, KT, bar=True)
             s.k("rt_mg_pw1", V["cap"], (i32(l), P(s.LM), P(V["mn"]), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(V["D"]), P(z), P(KT), P(y), P(s.SCM)), b=256)
             s.k("rt_mg_pw2", V["cap"], (i32(l), P(s.LM), P(y), P(z), P(s.SCM), P(s.W), f(s.mg_omega), i32(1 if it == s.mg_pow - 1 else 0)), b=256)
 
@@ -1704,8 +1712,11 @@ class RTSolver(MG2.MG2Mixin):
         V = s.mg_lv(l)
         KT = s.m0KT if l == 0 else s.ML[l - 1]["KT"]
         res = s.m0t if l == 0 else s.ML[l - 1]["t"]
+        KB = None                                                                      # 절 AN.22 --mgbar: 이 층 장벽 덩어리 강성 (노드 연산 융합)
+        if getattr(s, "bar", False) and s.mgbar and not getattr(s, "_pkc", None):
+            KB = s.bKn if l == 0 else (s.ML[l - 1]["Kb"] if getattr(s, "_mgb_on", False) else None)
         node = lambda mode, rr, kt, zz, rs: s.k("rt_mg_node", V["cap"], (i32(l), P(s.LM), i32(mode), P(V["mn"]), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(V["D"]), P(s.W),
-                                                                         P(rr), P(kt), P(zz), P(rs)), b=256)
+                                                                         P(rr), P(kt), P(zz), P(rs), P(KB)), b=256)
         csolve = (l == s.nl - 1 and s.mg_csolve and l > 0 and not getattr(s, "det", False))
         if l == 0:
             node(6, r, None, z, s.m0u)                                                 # z = ω D r, m0u = T z (융합)
@@ -1907,9 +1918,9 @@ class RTSolver(MG2.MG2Mixin):
                         if getattr(s, "det", False):
                             s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.btq), P(s.bS)), b=256)
                         s.k("rt_bar_mvn", capN, (P(IP), P(s.bS), *[f(q) for q in nr], P(s.KTp)), b=256)
-                    elif s.bar:
+                    elif s.bar and not s.mgbar:
                         s.k("rt_bar_mv", capN, (P(IP), P(s.bKn), *[f(q) for q in nr], P(s.Tp), P(s.KTp)), b=256)
-                    s.k("rt_ap", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
+                    s.k("rt_ap", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC), P(s.bKn if (s.bar and s.mgbar and not s.bfull) else None)), b=256)
                     if s.descent and ci == 0:
                         s.k("rt_sc_copy", 1, (P(s.SC), i32(61), i32(2)), b=1)
                     if s.nl > 1:
