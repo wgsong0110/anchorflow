@@ -1490,13 +1490,18 @@ class RTSolver:
             s.mg_Az(0, z, KT, tz_ready=True); node(7, r, KT, z, s.m0u)                 # m0u = T (r − A z) (융합)
             with s._pkl(s._pkc is not None and 1 >= s.pk_loc_l):
                 s.k("rt_mg_restrict", Lc["capn"], (i32(0), P(s.LM), P(s.m0u), P(Lc["r"]), i32(3)), b=256)
+            if not (1 >= s.pk_loc_l) and not (s.nl - 1 == 1 and s.mg_csolve):
+                s.pk_chain("rt_mg_restrict", "rt_mg_node")                             # 다음 = 거친 층 첫 노드 연산 (같은 거친 노드)
         else:
             s.mg_Az(l, z, KT); node(2, r, KT, z, res)
             with s._pkl(s._pkc is not None and l + 1 >= s.pk_loc_l):
                 s.k("rt_mg_restrict", Lc["capn"], (i32(l), P(s.LM), P(res), P(Lc["r"]), i32(3)), b=256)
+            if not (l + 1 >= s.pk_loc_l) and not (s.nl - 1 == l + 1 and s.mg_csolve):
+                s.pk_chain("rt_mg_restrict", "rt_mg_node")
         s.mg_vc(l + 1, Lc["r"], Lc["z"])
         if l == 0:
             s.k("rt_mg_prolong", V["cap"], (i32(0), P(s.LM), P(Lc["z"]), P(s.m0u), i32(0)), b=256)
+            s.pk_chain("rt_mg_prolong", "rt_mg_node")                                  # 다음 = z += T P z_c (같은 노드)
             if s.fuse2:
                 node(9, s.m0u, None, z, s.m0u)                                         # z += T P z_c, m0u = T z (융합; 다음 Az 의 T z)
             else:
@@ -1630,7 +1635,9 @@ class RTSolver:
                         s.k("rt_sc_copy", 1, (P(s.SC), i32(61), i32(2)), b=1)
                     if s.nl > 1:
                         s.k("rt_cg1m", capN, (P(IP), P(s.SC), P(s.p), P(s.Ap), P(s.dl), P(s.r)), b=256)
+                        s.pk_chain("rt_cg1m", "rt_mg_node")                            # 다음 = V 순환 첫 노드 연산 (z = ω D r, 같은 노드)
                         s.mg_vc(0, s.r, s.z)
+                        s.pk_chain("rt_mg_node", "rt_dotz")                            # V 순환 끝 노드 연산 -> 내적 (같은 노드)
                         s.k("rt_dotz", capN, (P(IP), P(s.r), P(s.z), P(s.zo), P(s.SC), i32(0)), b=256)
                     else:
                         s.k("rt_cg1", capN, (P(IP), P(s.SC), P(s.Dinv), P(s.p), P(s.Ap), P(s.dl), P(s.r), P(s.z), P(s.SC)), b=256)
@@ -1716,6 +1723,14 @@ class RTSolver:
             s.k("pk_gather", s.N * nw, (i32(s.N), P(IP), P(s.pk_idx), i32(nw), P(t), P(s.pk_scr)), b=256)
             s.k("pk_copy32", s.N * nw, (i32(s.N * nw), P(t), P(s.pk_scr)), b=256)
 
+    def pk_chain(s, prod, cons):
+        """지속형 판: 방금 모은 명령 (prod) 과 다음 명령 (cons) 이 같은 자리 (스레드 n 이 노드 n) 만 주고받으면 사이 격자 장벽을 뺀다 (AF_PK_CHAIN=0 이면 안 함)."""
+        if s._pkc is None or os.environ.get("AF_PK_CHAIN", "1") != "1":
+            return
+        assert s._pkc[-1][0] == prod, (s._pkc[-1][0], prod)
+        s._pk_chain_set.add(len(s._pkc) - 1)
+        s._pk_chain_next = cons
+
     def pk_prepare(s):
         """지속형 판 모듈 (한 번): 소스 변환·컴파일, 블록 수 = 동시 상주 수 x SM 수, 장치 전역 묶기."""
         if s.pkmod is not None:
@@ -1749,13 +1764,13 @@ class RTSolver:
         """record() 를 모으기 모드로 돌려 명령 목록 -> 장치 배열. 돌려주는 것: replay() 가 지속형 커널 한 번을 띄우는 객체."""
         from . import fem_an_pk as PKM
         s.pk_prepare()
-        s._pkc, s._pk_loc = [], 0
+        s._pkc, s._pk_loc, s._pk_chain_set = [], 0, set()
         try:
             s.record(t_frame, K)
             cmds = s._pkc
         finally:
             s._pkc = None
-        Cn, An, st = PKM.build_cmds(cmds, s.pk_meta)
+        Cn, An, st = PKM.build_cmds(cmds, s.pk_meta, s._pk_chain_set)
         CMD = torch.from_numpy(Cn.copy()).to(s.dev)
         ARG = torch.from_numpy(An.view(np.int64).copy()).to(s.dev)
         s.pk_info.update(st)

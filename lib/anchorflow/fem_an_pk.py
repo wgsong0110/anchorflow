@@ -165,10 +165,16 @@ __device__ __forceinline__ void pk_gsync(int* ep, int* skip, int c) {
     if (threadIdx.x == 0) {
         if (blockIdx.x == 0) PK_SNAP[*ep & 1] = PK_SKIPV;
         unsigned int nb = (blockIdx.x == 0) ? (0x80000000u - (gridDim.x - 1u)) : 1u;
+#ifdef PK_RELACQ
+        unsigned int old, cur;                                                     // 내보내기·받기 의미 원자 연산 (전체 울타리 대신)
+        asm volatile("atom.add.release.gpu.u32 %0, [%1], %2;" : "=r"(old) : "l"(&PK_BAR), "r"(nb) : "memory");
+        do { asm volatile("ld.acquire.gpu.u32 %0, [%1];" : "=r"(cur) : "l"(&PK_BAR) : "memory"); } while (((old ^ cur) & 0x80000000u) == 0u);
+#else
         __threadfence();
         unsigned int old = atomicAdd(&PK_BAR, nb);
         while (((old ^ *(volatile unsigned int*)&PK_BAR) & 0x80000000u) == 0u) { }
         __threadfence();
+#endif
     }
     __syncthreads();
     *skip = *(volatile int*)&PK_SNAP[*ep & 1];
@@ -182,7 +188,8 @@ __device__ __forceinline__ void pk_cmd(const int* cm, const unsigned long long* 
     if (vbd == 1) { if (blockIdx.x == 0 && threadIdx.x == 0) pk_exec(kid, A, 0, 1, nvb, 0, 1, 0); return; }
     int nsub = PKB / vbd; int vs = threadIdx.x / vbd; int vt = threadIdx.x - vs*vbd;
     if (vs >= nsub) return;
-    int start = (local ? 0 : (int)blockIdx.x)*nsub + vs, stride = (local ? 1 : (int)gridDim.x)*nsub;
+    // 격자 명령: 가상 블록을 블록 (= SM) 먼저 퍼뜨림 (vb = vs x 격자 + 블록) -- 작은 명령이 SM 하나에 몰리지 않게. 같은 vb 는 늘 같은 스레드 (이음 생략 조건)
+    int start = local ? vs : (vs*(int)gridDim.x + (int)blockIdx.x), stride = (local ? 1 : (int)gridDim.x)*nsub;
     if (start < nvb) pk_exec(kid, A, start, stride, nvb, vt, vbd, vs);
 }
 __global__ void __launch_bounds__(PKB, PKMINB) pk_run(const int* CMD, int ncmd, const unsigned long long* ARGS) {
@@ -204,7 +211,7 @@ __global__ void __launch_bounds__(PKB, PKMINB) pk_run(const int* CMD, int ncmd, 
             pk_gsync(&ep, &skip, c);
             c = re + 1;
         } else {
-            if (!skip || (fl & 2)) { pk_cmd(cm, ARGS, 0); pk_gsync(&ep, &skip, c); }
+            if (!skip || (fl & 2)) { pk_cmd(cm, ARGS, 0); if (!(fl & 8)) pk_gsync(&ep, &skip, c); }   // 8: 다음 명령과 같은 자리끼리만 이어져 장벽 생략
             c++;
         }
     }
@@ -326,7 +333,7 @@ def pack(a, kd):
     return int(np.float64(a).view(np.uint64))
 
 
-def build_cmds(cmds, meta):
+def build_cmds(cmds, meta, chain=None):
     """모은 명령 [(이름, 스레드 수, 블록 크기, 인자, 블록 0 전용)] -> (CMD int32 [n x 8], ARGS uint64, 통계). 가상 블록 1 개 명령은 블록 0 전용으로."""
     import numpy as np
     C, A = [], []
@@ -338,6 +345,10 @@ def build_cmds(cmds, meta):
         nvb = (int(n) + int(b) - 1) // int(b)
         local = bool(loc) or nvb <= 1
         C.append([kid, nvb, int(b), (1 if local else 0) | (2 if name in EXEMPT else 0), off, 0, 0, 0])
+    for i, (name, n, b, args, loc) in enumerate(cmds):                                # 이음 표시 (RTSolver.pk_chain): 같은 크기 가상 블록·둘 다 격자 명령일 때만
+        if chain is not None and i in chain:
+            assert i + 1 < len(C) and not (C[i][3] & 1) and not (C[i + 1][3] & 1) and C[i][2] == C[i + 1][2] and C[i][1] == C[i + 1][1] and not (C[i][3] & 2) and not (C[i + 1][3] & 2), (name, cmds[i + 1][0])
+            C[i][3] |= 8
     i, nrun = 0, 0
     while i < len(C):
         if C[i][3] & 1:
@@ -354,7 +365,8 @@ def build_cmds(cmds, meta):
         else:
             i += 1
     nglob = sum(1 for c in C if not (c[3] & 1))
-    st = dict(ncmd=len(C), nargs=len(A), grid_cmds=nglob, local_runs=nrun, syncs_max=nglob + nrun)
+    nch = sum(1 for c in C if c[3] & 8)
+    st = dict(ncmd=len(C), nargs=len(A), grid_cmds=nglob, local_runs=nrun, chained=nch, syncs_max=nglob + nrun - nch)
     Cn = np.array(C, dtype=np.int32).reshape(-1, 8)
     An = np.array(A or [0], dtype=np.uint64)
     return Cn, An, st
