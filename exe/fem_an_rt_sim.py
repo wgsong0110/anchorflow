@@ -82,6 +82,8 @@ ap.add_argument("--visc_rpic", action="store_true", help="절 CM2 재질 판: �
 ap.add_argument("--no_vfill", action="store_true")
 ap.add_argument("--hspec", action="store_true", help="절 CM3 (결과 정의 같음, 반올림 순서만 다름): 고운 층 헤시안을 주값 분해 30 성분 (U, M = F V, 계수 12) 으로 저장·곱 (rt_mv2s; 모래는 ao_elem_s, plasticine 은 aq_elem 30 성분 그대로); --mv2 필요")
 ap.add_argument("--ncomp", action="store_true", help="절 CM3 (결과 정의 같음): PCG·층 0 V 순환 노드 커널을 점유 칸 이웃 노드 목록만 (그 밖 노드는 질량·대각·힘·곱이 모두 0)")
+ap.add_argument("--fl_nost", action="store_true", help="절 CM6 진단 전용 (채택 후보 아님): 바닥 고착 끔 (고착 지수 KEX 0 -> 노드 고착 인자 1; 장벽·법선은 그대로)")
+ap.add_argument("--hgt", action="store_true", help="절 CM6 진단 (결과 불변): 프레임마다 정답·우리 높이 (질량 중심·최대·99 백분위, 바닥 법선 방향) 를 fem.jsonl hg·hp 에")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
 a = ap.parse_args()
 dev = "cuda"
@@ -110,6 +112,8 @@ if a.floor == "vel":
     NR = np.array(pl["normal"], dtype=np.float64); NR = NR / np.linalg.norm(NR)
     PT = [float(q) for q in pl["point"]]
     FL = dict(PT=PT, NR=NR.tolist(), PN=float(np.dot(PT, NR)), DXG=DXG, KEX=dt / float(cfg["substep_dt"]), vout=not a.no_vfl_out, pt=a.fl_pt, bar=a.fl_bar, bst=a.fl_bst, bfull=a.bar_full, DH=0.5 * DXG, KS=(lam + 2.0 * mu) / (0.5 * DXG) ** 2)
+    if a.fl_nost:
+        FL["KEX"] = 0.0
 BC = None
 if a.cfg_bc:
     BC = []
@@ -209,8 +213,16 @@ for fi in range(L):
     c["K"] = S.last_K
     if S.y0ut and getattr(S, "bar", False):                                            # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k, 0 = ŷ 그대로)
         c["y0k"] = S.Y0K[:S.nstage, 0].cpu().tolist()
+        if not S.ls:                                                                   # 절 CM6 진단: 선탐색 없는 장벽 판 (재질) 뉴턴 반복별 보폭 k (상한까지 펼친 자리; 허용치로 건너뛴 반복은 앞 값)
+            c["bk"] = S.BSK[:S.nstage * S.nt, 0].cpu().tolist()
     if a.gfin:
         c["grel"] = S.grel()
+    if a.hgt and fin:                                                                  # 절 CM6 진단: 높이 (바닥 법선 방향, 바닥 없으면 z) -- 질량 중심·최대·99 백분위, 정답과 우리
+        _nh = torch.tensor(FL["NR"] if FL else [0.0, 0.0, 1.0], device=dev, dtype=torch.float32)
+        _mw = m64.float() / float(m64.sum())
+        for _nm, _xx in (("g", gt[_ok]), ("p", xo[_ok])):
+            _z = _xx @ _nh
+            c["h" + _nm] = [float((_z * _mw[_ok]).sum() / _mw[_ok].sum()), float(_z.max()), float(torch.quantile(_z[::7], 0.99))]
     flog.write(json.dumps(dict(t=fi, err=e, ms=S.last_ms, redo=redo, **c, **({"kernel_ms": kp} if kp else {}))) + "\n"); flog.flush()
     print(f"  프레임 {fi + 1}/{L} {S.last_ms:.2f} ms 오차 {100 * e:.3f}%{' (용량 늘려 다시)' if redo else ''} 점 {c['nq']} 노드 상자 {c['nn']} 유클리드 평균 점 {c['nbad']}{(' 반복 ' + str(c['it'])) if 'it' in c else ''}", flush=True)
     if PRED is not None:

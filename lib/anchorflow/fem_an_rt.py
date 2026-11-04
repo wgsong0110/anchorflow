@@ -1798,6 +1798,7 @@ class RTSolver(MG2.MG2Mixin):
         s.meff = Z(s.capN); s.U0 = Z(s.capN, 3); s.v0 = Z(s.capN, 3); s.wb = Z(s.capN, 3); s.wvb = Z(s.capN, 3)
         s.DG = torch.zeros(4 * max(s.K, s.Kc or 0) * s.nt, 64, device=dev, dtype=torch.float64)
         s.Y0K = torch.zeros(4 * max(s.K, s.Kc or 0), 4, device=dev, dtype=torch.int32)          # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k)
+        s.BSK = torch.zeros(4 * max(s.K, s.Kc or 0) * s.nt, 4, device=dev, dtype=torch.int32)   # 절 CM6 진단: 선탐색 없는 장벽 판 뉴턴 반복별 보폭 k (보폭 2^-k; 결과 불변)
         s.Y0S = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)       # 절 AN.22 시작점 탐색 진단 (걸음마다 SC: 14 = 고른 c, 21+i·40+i = 후보 에너지)
         s.DGF = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)    # 걸음 끝 SC (gfin: SC1 = |g_끝|²)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
         # 멀티그리드 층 (1 .. nl−1): 첫 프레임 상자에서 차원을 내려 잡고 cap_mul 배
@@ -2107,6 +2108,7 @@ class RTSolver(MG2.MG2Mixin):
                 s.k("rt_step0g", capN, (P(IP), P(Ub), P(vb), f(sg["tau"]), f(sg["beta"]), *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y)), b=256)
             if FL:
                 s.zf(s.an, 9, 1)
+            if FL and FL["KEX"] > 0:                                                   # 절 CM6 진단 --fl_nost: KEX 0 이면 고착 몫 0 (노드 고착 인자 1)
                 s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
                                          f(FL["PN"]), f(FL["DXG"]), P(s.an)))
             FA = (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] * (s.K / (K or s.K)) * sg["frac"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(sg["al"]), *[f(q) for q in nr],
@@ -2255,6 +2257,7 @@ class RTSolver(MG2.MG2Mixin):
                     s.zf(s.kk)
                     s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.yc), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)))
                     s.k("rt_kstep", 1, (P(s.kk), P(s.SC)), b=1)
+                    s.dcopy(s.BSK[kstep * s.nt + it], s.kk)                           # 절 CM6 진단: 반복별 보폭 k
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.ls or fbar) else 1)), b=256)
             s.ctl(8)
             if s.gfin:                                                                 # 걸음 끝 y 에서 기울기 (같은 변수 바꿈) -> |g_끝|²
