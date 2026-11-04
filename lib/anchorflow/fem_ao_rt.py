@@ -640,7 +640,13 @@ __global__ void __launch_bounds__(128) aq_elem(const int* IP, const int* cb, con
           lt = isfinite(lt) ? fmaxf(lt, 0.f) : 0.f; lf = isfinite(lf) ? fmaxf(lf, 0.f) : 0.f;
           float c1 = 0.5f*(lt + lf), c2 = 0.5f*(lf - lt);
           if (eta > 0.f) { float cv = alI*eta*fabsf(Jx); c1 += cv*0.5f*(1.f/(ss[i]*ss[i]) + 1.f/(ss[j]*ss[j])); c2 += cv/(ss[i]*ss[j]); }
-          C[6+pp] = vq*c1; C[9+pp] = vq*c2; } }
+          C[6+pp] = vq*c1; C[9+pp] = vq*c2; }
+      if (AQ_DBG && on && qq == AQ_DBGQ) {                                     // 진단 (절 AR): 한 점의 중간값
+          float* o = AQ_DBG;
+          for (int k=0;k<9;k++) { o[k] = X[k]; o[9+k] = Dk[k/3][k%3]; o[18+k] = Ev[k/3][k%3]; }
+          for (int i=0;i<3;i++) { o[27+i] = S[i]; o[30+i] = ss[i]; o[33+i] = pe[i]; o[36+i] = dm[i]; o[39+i] = D[i][i]; o[42+i] = se[i]; }
+          o[45] = vq; o[46] = al0; o[47] = (float)mat; for (int k=0;k<12;k++) o[48+k] = C[k]; }
+    }
     if (on) { for (int k=0;k<9;k++) { H[(size_t)k*capQ + qq] = U[k]; H[(size_t)(9+k)*capQ + qq] = M[k]; } for (int k=0;k<12;k++) H[(size_t)(18+k)*capQ + qq] = C[k]; }
     for (int k=0;k<9;k++) { sU[tl][k] = U[k]; sM[tl][k] = M[k]; }
     for (int k=0;k<12;k++) sC[tl][k] = C[k];
@@ -898,7 +904,7 @@ def _src(tol=False):
     i = s.rfind("}")
     head = DET.det_src(s[:i])
     head = "#include <cuda_fp16.h>\n" + head
-    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;", 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + (TOL_CTL if tol else "") + "\n}\n"
+    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;", 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + (TOL_CTL if tol else "") + "\n}\n"
     return _skipify(r) if tol else r
 
 
@@ -1267,6 +1273,12 @@ class AORTSolver(DET.DetMixin):
                 dH = (Ha - Hs).abs(); sc = Hs.abs().amax(1, keepdim=True).clamp_min(1e-30)
                 rk = (dH / sc).amax(1)                                                 # 성분별 최대 차 / 그 성분 최대 크기
                 kq = int(rk[18:].argmax()) + 18; qw = int(dH[kq].argmax())
+                dbg = torch.zeros(64, device=s.dev, dtype=torch.float32)
+                gp = s.mod.get_global("AQ_DBG"); gq = s.mod.get_global("AQ_DBGQ")
+                ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=gp)[0] = int(dbg.data_ptr()); ART.cp.ndarray((1,), dtype=ART.cp.int32, memptr=gq)[0] = qw
+                s._elem_at(yb, "aq")
+                ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=gp)[0] = 0
+                r["dbg"] = [round(float(q), 6) for q in dbg[:60]]
                 r["vs_s"] = dict(f=rel(f0, f1), B=rel(B0, B1), Kd=rel(Kd, Kd1), Kd_cos=cos(Kd, Kd1), H_rows=[round(float(q), 5) for q in rk],
                                  n_C_bad=int(((dH[18:] / sc[18:]) > 1e-3).any(0).sum()), worst=dict(k=kq, q=qw, aq=[float(q) for q in Ha[:, qw]], s=[float(q) for q in Hs[:, qw]], Sq=[float(q) for q in s.Sq[qw * 4:qw * 4 + 4]]))
             out[tag] = r
