@@ -1708,10 +1708,11 @@ class RTSolver:
         s.pkmod = cp.RawModule(code=src.code, options=("--std=c++14", "-DPKB=%d" % s.pkb, "-DPKMINB=%d" % s.pkminb))
         s.pkfn = s.pkmod.get_function("pk_run")
         nsm = torch.cuda.get_device_properties(torch.device(s.dev)).multi_processor_count
-        fa = lambda at: int(cp.cuda.driver.funcGetAttribute(at, s.pkfn.ptr))             # CU_FUNC_ATTRIBUTE_: 1 공유, 3 지역, 4 레지스터
+        fptr = s.pkfn.kernel.ptr if hasattr(s.pkfn, "kernel") else s.pkfn.ptr            # RawKernel (cupy 새 판) 또는 Function
+        fa = lambda at: int(cp.cuda.driver.funcGetAttribute(at, fptr))                   # CU_FUNC_ATTRIBUTE_: 1 공유, 3 지역, 4 레지스터
         regs, smem, lmem = fa(4), fa(1), fa(3)
         try:
-            occ = int(cp.cuda.driver.occupancyMaxActiveBlocksPerMultiprocessor(s.pkfn.ptr, s.pkb, 0))
+            occ = int(cp.cuda.driver.occupancyMaxActiveBlocksPerMultiprocessor(fptr, s.pkb, 0))
             how = "api"
         except Exception as ex:                                                         # 없으면 레지스터·스레드 상한으로 (A6000: SM 당 65536 레지스터, 1536 스레드)
             occ = min(65536 // (((regs + 7) // 8 * 8) * s.pkb), 1536 // s.pkb)
