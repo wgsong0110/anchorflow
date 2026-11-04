@@ -150,6 +150,48 @@ __global__ void rt_scan(int* IP, const int* occ, int* cidx, int* cb, int capQc) 
     }
     if (threadIdx.x == 0) { IP[11] = carry; IP[12] = carry*8; if (carry > capQc) { IP[13] = 1; IP[11] = 0; IP[12] = 0; } }
 }
+// 절 CM3 (--ncomp): rt_scan 과 같은 출력 (정수, 비트 같음) 을 격자 3 단계로 -- 칸 상자 수십만 칸을 한 블록이 1024 씩 도는 rt_scan (0.7 ms) 대신.
+__global__ void rt_scan_a(const int* IP, const int* occ, int* bc) {                 // 블록 256 고정: 블록별 점유 칸 수
+    int n = IP[13] ? 0 : IP[10];
+    if (blockIdx.x*blockDim.x >= n) return;
+    int i = blockIdx.x*blockDim.x + threadIdx.x;
+    int c = __syncthreads_count(i < n && occ[i]);
+    if (threadIdx.x == 0) bc[blockIdx.x] = c;
+}
+__global__ void rt_scan_b(int* IP, const int* bc, int* bo, int capQc) {               // 한 블록 1024: 블록 수 배타 스캔 -> nc·nq (넘치면 표시)
+    __shared__ int sh[1024];
+    int nb = ((IP[13] ? 0 : IP[10]) + 255) / 256, carry = 0;
+    for (int base = 0; base < nb; base += 1024) {
+        int i = base + threadIdx.x;
+        int v = (i < nb) ? bc[i] : 0;
+        sh[threadIdx.x] = v;
+        __syncthreads();
+        for (int o=1; o<1024; o<<=1) { int t = (threadIdx.x >= o) ? sh[threadIdx.x - o] : 0; __syncthreads(); sh[threadIdx.x] += t; __syncthreads(); }
+        if (i < nb) bo[i] = carry + sh[threadIdx.x] - v;
+        int tot = sh[1023];
+        __syncthreads();
+        carry += tot;
+    }
+    if (threadIdx.x == 0) { IP[11] = carry; IP[12] = carry*8; if (carry > capQc) { IP[13] = 1; IP[11] = 0; IP[12] = 0; } }
+}
+__global__ void rt_scan_c(const int* IP, const int* occ, const int* bo, int* cidx, int* cb, int capQc) {   // 블록 256 고정: 자리 = 블록 시작 + 블록 안 순번
+    __shared__ int ws[8];
+    int n = IP[10];
+    if (blockIdx.x*blockDim.x >= n) return;
+    int i = blockIdx.x*blockDim.x + threadIdx.x;
+    int v = (i < n) ? occ[i] : 0;
+    unsigned int m = __ballot_sync(0xffffffffu, v);
+    int lane = threadIdx.x & 31, w = threadIdx.x >> 5;
+    if (lane == 0) ws[w] = __popc(m);
+    __syncthreads();
+    if (i >= n) return;
+    int id = bo[blockIdx.x];
+    for (int k=0;k<w;k++) id += ws[k];
+    id += __popc(m & ((1u << lane) - 1u));
+    int n1 = IP[7]-2, n2 = IP[8]-2;
+    if (v) { if (id < capQc) { cidx[i] = id; cb[id*3] = i / (n1*n2); cb[id*3+1] = (i / n2) % n1; cb[id*3+2] = i % n2; } }
+    else cidx[i] = -1;
+}
 // 입자 -> 가우스 점 누적 (회전 R, log S, F, 가중) + 칸 누적 + 칸 부피·질량 + 노드 질량·운동량
 // A: [q*28]: 0..8 R, 9..17 LS, 18..26 F, 27 w;  C: [c*30]: 0..27 같은 것, 28 V, 29 M;  bad: q 와 c (int, 뒤집힌 입자)
 __global__ void rt_p2g(int N, const float* x, const float* v, const float* F, const float* m, const float* vol, const int* pb, const float* fx, const int* pcd,
@@ -760,8 +802,24 @@ __global__ void __launch_bounds__(128) rt_mg_elem(int l, const int* LM, const fl
             float et[9], ef[9];
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float x1 = U[a*3+i]*V[b*3+j], x2 = U[a*3+j]*V[b*3+i]; et[a*3+b] = r2*(x1-x2); ef[a*3+b] = r2*(x1+x2); }
             for (int r=0;r<9;r++) for (int c=0;c<9;c++) h[r*9+c] += lt*et[r]*et[c] + lf*ef[r]*ef[c]; }
+#ifdef AF_HSPEC
+        {                                                                         // 절 CM3 --hspec: 거친 층도 주값 분해 30 성분 (U, M = F V, C x V_q) -- rt_mg_mv2 (mv2_core) 가 읽음
+            float Cs[12];
+            const int RI[6] = {0,1,2,0,0,1}, RJ[6] = {0,1,2,1,2,2};
+            for (int k=0;k<6;k++) { float t = 0.f; for (int m=0;m<3;m++) { float dm = fmaxf(D[m][m], 0.f); if (dm > 0.f) t += dm*Ev[RI[k]][m]*Ev[RJ[k]][m]; } Cs[k] = vq*t; }
+            for (int pp=0; pp<3; pp++) { int i = PI[pp], j = PJ[pp], k = PK[pp];
+                float lt = 2.f*mu*(1.f - 2.f/(S[i]+S[j])) + lam*(J-1.f)*S[k]; float lf = 2.f*mu - lam*(J-1.f)*S[k];
+                lt = isfinite(lt) ? fmaxf(lt, 0.f) : 0.f; lf = fmaxf(lf, 0.f);
+                Cs[6+pp] = vq*0.5f*(lt + lf); Cs[9+pp] = vq*0.5f*(lf - lt); }
+            for (int a=0;a<3;a++) for (int b=0;b<3;b++) H[(size_t)(9 + a*3+b)*capQ + qq] = F[a*3]*V[b] + F[a*3+1]*V[3+b] + F[a*3+2]*V[6+b];
+            for (int k=0;k<9;k++) H[(size_t)k*capQ + qq] = U[k];
+            for (int k=0;k<12;k++) H[(size_t)(18+k)*capQ + qq] = Cs[k];
+        }
+#endif
     }
+#ifndef AF_HSPEC
     if (on) for (int k=0;k<81;k++) H[(size_t)k*capQ + qq] = h[k];
+#endif
     for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; float bs[3] = {sc*bg[0], sc*bg[1], sc*bg[2]}; float g[3]; gqn(F, bs, g);
         float m[9];
         for (int a=0;a<3;a++) for (int c=0;c<3;c++) { float t = 0.f;
@@ -1550,6 +1608,7 @@ class RTSolver(MG2.MG2Mixin):
         s.ncomp = bool(ncomp)                                                          # 절 CM3 (결과 정의 같음): PCG·층 0 V 순환 노드 커널을 점유 칸 이웃 노드 목록만
         assert not s.hspec or bool(mv2) or bool(mg_occ), "--hspec 은 --mv2 판만"
         assert not (s.ncomp and pk), "--ncomp 는 그래프 판만"
+        assert not (s.hspec and (mg_fuse or mg_csolve)), "--hspec 은 거친 층 한 블록 판 (mg_fuse·mg_csolve) 과 함께 못 씀 (81 성분 읽음)"
         s.y0ut = bool(y0ut)                                                            # 절 CM2 정의 변경 셋째: 뉴턴 시작점 = 관성 예측 ŷ (장벽 판은 걸음 시작 U 에서 ŷ 쪽 실현 가능한 최대 2^-k)
         s.matk = None                                                                  # 절 CM2: 재질 판 (lib/anchorflow/fem_mat_rt.py MatRT 가 채움)
         s.lsfast = bool(lsfast)                                                        # 절 AN.22: 선탐색 조기 판정 (결과 같음)
@@ -1717,6 +1776,8 @@ class RTSolver(MG2.MG2Mixin):
             nbk = (s.capN + 255) // 256 + 1
             s.actl = torch.zeros(s.capN + 1, device=dev, dtype=torch.int32)
             s.actb = torch.zeros(nbk, device=dev, dtype=torch.int32); s.acto = torch.zeros(nbk, device=dev, dtype=torch.int32)
+            nbc = (s.capC + 255) // 256 + 1
+            s.scb = torch.zeros(nbc, device=dev, dtype=torch.int32); s.sco = torch.zeros(nbc, device=dev, dtype=torch.int32)
         s.mn = Z(s.capN); s.mv = Z(s.capN, 3); s.mqn = Z(s.capN); s.an = Z(s.capN)
         s.U = Z(s.capN, 3); s.vk = Z(s.capN, 3); s.Ut = Z(s.capN, 3); s.z0 = Z(s.capN, 3); s.y = Z(s.capN, 3); s.yh = Z(s.capN, 3); s.eta = Z(s.capN, 3)
         s.sk = Z(s.capN); s.pm = torch.zeros(s.capN, device=dev, dtype=torch.int32)
@@ -1984,7 +2045,12 @@ class RTSolver(MG2.MG2Mixin):
         s.k("rt_box", 1, (P(IP), i32(capN), i32(s.capC)), b=1)
         s.zf(s.occ)
         s.k("rt_mark", N, (i32(N), P(s.Np), P(s.fx), P(IP), P(s.pcd), P(s.occ)))
-        s.k("rt_scan", 1024, (P(IP), P(s.occ), P(s.cidx), P(s.cb), i32(s.capQc)), b=1024)
+        if s.ncomp:                                                                    # 절 CM3: 같은 스캔을 격자 3 단계로 (정수, 같은 출력)
+            s.k("rt_scan_a", s.capC, (P(IP), P(s.occ), P(s.scb)), b=256)
+            s.k("rt_scan_b", 1024, (P(IP), P(s.scb), P(s.sco), i32(s.capQc)), b=1024)
+            s.k("rt_scan_c", s.capC, (P(IP), P(s.occ), P(s.sco), P(s.cidx), P(s.cb), i32(s.capQc)), b=256)
+        else:
+            s.k("rt_scan", 1024, (P(IP), P(s.occ), P(s.cidx), P(s.cb), i32(s.capQc)), b=1024)
         if s.ncomp:                                                                    # 절 CM3: 점유 칸 이웃 노드 목록 (결정적 스캔), 층 0 제한 입력 m0u 의 목록 밖 0
             s.k("rt_act_cnt", capN, (P(IP), P(s.occ), P(s.actb)), b=256)
             s.k("rt_act_scan", 1024, (P(IP), P(s.actb), P(s.acto), P(s.actl)), b=1024)

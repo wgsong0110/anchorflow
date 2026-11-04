@@ -32,10 +32,28 @@ __device__ __forceinline__ void mv2_core(int j, bool on, size_t q, const int* ni
     float Qv[9] = {0,0,0,0,0,0,0,0,0};
     float vq = on ? Vq[q] : 0.f;
     if (on && vq > 0.f) {
+#ifdef AF_HSPEC
+        // 절 CM3 --hspec (거친 층 rt_mg_mv2): 주값 분해 30 성분 -- Q = U P̂ Mᵀ, P̂ = C(Uᵀ (sc Y) M) (rt_mv2s 와 같은 식)
+        float U[9], M[9], C[12];
+        for (int k=0;k<9;k++) { U[k] = H[(size_t)k*capQ + q]; M[k] = H[(size_t)(9+k)*capQ + q]; }
+        for (int k=0;k<12;k++) C[k] = H[(size_t)(18+k)*capQ + q];
+        float T[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) T[a*3+b] = sc*(Y[a*3]*M[b] + Y[a*3+1]*M[3+b] + Y[a*3+2]*M[6+b]);
+        float Xh[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) Xh[a*3+b] = U[a]*T[b] + U[3+a]*T[3+b] + U[6+a]*T[6+b];
+        float Ph[9];
+        Ph[0] = C[0]*Xh[0] + C[3]*Xh[4] + C[4]*Xh[8];
+        Ph[4] = C[3]*Xh[0] + C[1]*Xh[4] + C[5]*Xh[8];
+        Ph[8] = C[4]*Xh[0] + C[5]*Xh[4] + C[2]*Xh[8];
+        Ph[1] = C[6]*Xh[1] + C[9]*Xh[3];  Ph[3] = C[9]*Xh[1] + C[6]*Xh[3];
+        Ph[2] = C[7]*Xh[2] + C[10]*Xh[6]; Ph[6] = C[10]*Xh[2] + C[7]*Xh[6];
+        Ph[5] = C[8]*Xh[5] + C[11]*Xh[7]; Ph[7] = C[11]*Xh[5] + C[8]*Xh[7];
+        float W[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) W[a*3+b] = U[a*3]*Ph[b] + U[a*3+1]*Ph[3+b] + U[a*3+2]*Ph[6+b];
+        for (int a=0;a<3;a++) for (int k=0;k<3;k++) Qv[a*3+k] = W[a*3]*M[k*3] + W[a*3+1]*M[k*3+1] + W[a*3+2]*M[k*3+2];
+#else
         float F[9]; for (int k=0;k<9;k++) F[k] = Fq[q*9+k];
         float dX[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) dX[a*3+b] = sc*(Y[a*3]*F[b] + Y[a*3+1]*F[3+b] + Y[a*3+2]*F[6+b]);
         float dP[9]; for (int r=0;r<9;r++) { float t = 0.f; for (int c=0;c<9;c++) t += H[(size_t)(r*9+c)*capQ + q]*dX[c]; dP[r] = vq*t; }
         for (int a=0;a<3;a++) for (int k=0;k<3;k++) Qv[a*3+k] = dP[a*3]*F[k*3] + dP[a*3+1]*F[k*3+1] + dP[a*3+2]*F[k*3+2];
+#endif
     }
     __syncwarp();                                                                   // dy 읽기 끝 -> 같은 칸에 Q 쓰기
     for (int k=0;k<9;k++) sW[j*9+k] = Qv[k];

@@ -10,7 +10,7 @@ export PATH=$HOME/bin:/home/dkta/.conda/envs/af/bin:$PATH PYTHONUTF8=1 OMP_NUM_T
 C=$1; X=${2:-}; D=/dev/shm/dkta/impwt/$C; cd $D || exit 1                      # X = 다시 돌릴 때 묶음 이름 꼬리 (앞 시도 출력과 섞이지 않게)
 PY=/home/dkta/.conda/envs/af/bin/python
 B=/dev/shm/dkta/lbours/fem_cm; M=$B/marks; MR=r2:storage/result/anchorflow/lbours/fem_cm/marks; mkdir -p $M /dev/shm/dkta/cm_lists; L=/dev/shm/dkta/cm_lists
-LOG=$M/cm3.log; say() { echo "$*" | tee -a $LOG; rclone copy $LOG $MR -q; }
+LOG=$M/cm3$X.log; say() { echo "$*" | tee -a $LOG; rclone copy $LOG $MR -q; }
 say "[cm3 시작] $C $(date '+%F %T')"; nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader >> $LOG
 export CM_SCN=exe/fem_cm3_scn.sh
 source exe/fem_cm3_scn.sh
@@ -20,7 +20,7 @@ G="--ga hht --rho 0.8 --K 2 --newton 2"; Z="--tolN 0 --tolP 0"; T="--tolN 1e-2 -
 cc0() { case $1 in L000) echo 3;; ficus) echo 20;; *) echo 1;; esac; }                    # cm2 판정 상한
 # 0
 : > $L/cm3s.txt; for t in $SC; do echo "s $t $G --cg $(cc0 $t) $T --det --frames 10" >> $L/cm3s.txt; done
-CM_CARDS="1 2 3 4 5 6" CM_PAR=4 bash exe/fem_cm_pool.sh cm3s$X $L/cm3s.txt > $M/cm3s_pool.log 2>&1
+CM_CARDS="1 2 3 4 5 6" CM_PAR=4 bash exe/fem_cm_pool.sh cm3s$X $L/cm3s.txt > $M/cm3${X}s_pool.log 2>&1
 BAD=$($PY - $B/cm3s$X $SC <<'PYE'
 import json, os, sys
 R = sys.argv[1]; bad = []
@@ -34,30 +34,30 @@ PYE
 say "[연기 시험] 실패: '${BAD}' $(date '+%T')"
 for t in $SC; do say "  $t: $(grep -a '롤아웃\|rror\|발산' $B/cm3s$X/s_$t/log.txt 2>/dev/null | tail -2 | cut -c1-200 | tr '\n' ' ')"; done
 if [ -n "$BAD" ]; then for t in $BAD; do tail -30 $B/cm3s$X/s_$t/log.txt >> $LOG; done; rclone copy $LOG $MR -q
-  echo "[cm3 멈춤 -- 연기 시험 실패] $(date '+%F %T')" > $M/cm3.END; rclone copy $M/cm3.END $MR -q; exit 1; fi
+  echo "[cm3 멈춤 -- 연기 시험 실패] $(date '+%F %T')" > $M/cm3$X.END; rclone copy $M/cm3$X.END $MR -q; exit 1; fi
 # V (빈 카드) 와 A (카드 0) 동시
 : > $L/cm3v.txt
 for t in $SC; do c=$(cc0 $t); echo "vh $t $G --cg $c $T --det --hspec" >> $L/cm3v.txt; echo "vn $t $G --cg $c $T --det --ncomp" >> $L/cm3v.txt; echo "vb $t $G --cg $c $T --det --hspec --ncomp" >> $L/cm3v.txt; done
-( CM_SCN=exe/fem_cm2_scn.sh CM_CARDS="1 2 3 4 5 6" CM_PAR=6 bash exe/fem_cm_pool.sh cm3v$X $L/cm3v.txt > $M/cm3v_pool.log 2>&1; say "[같음 확인 끝] $(date '+%T')" ) &
+( CM_SCN=exe/fem_cm2_scn.sh CM_CARDS="1 2 3 4 5 6" CM_PAR=6 bash exe/fem_cm_pool.sh cm3v$X $L/cm3v.txt > $M/cm3${X}v_pool.log 2>&1; say "[같음 확인 끝] $(date '+%T')" ) &
 PV=$!
 : > $L/cm3z1.txt; for c in 3 6 12 24; do for t in $SC; do echo "z${c}_$t $t $G --cg $c $Z" >> $L/cm3z1.txt; done; done
-bash exe/fem_cm_q.sh cm3z$X $L/cm3z1.txt > $M/cm3z_q1.log 2>&1; say "[시간표 1] $(date '+%T')"
+bash exe/fem_cm_q.sh cm3z$X $L/cm3z1.txt > $M/cm3${X}z_q1.log 2>&1; say "[시간표 1] $(date '+%T')"
 for r in 2 3; do
   $PY exe/fem_cm2_sel.py next $B/cm3z$X $SC | awk -v g="$G" -v z="$Z" '{print "z"$1"_"$2, $2, g, "--cg", $1, z}' > $L/cm3z$r.txt
   [ -s $L/cm3z$r.txt ] || break
-  bash exe/fem_cm_q.sh cm3z$X $L/cm3z$r.txt > $M/cm3z_q$r.log 2>&1; say "[시간표 $r] $(wc -l < $L/cm3z$r.txt) 판 $(date '+%T')"
+  bash exe/fem_cm_q.sh cm3z$X $L/cm3z$r.txt > $M/cm3z${X}_q$r.log 2>&1; say "[시간표 $r] $(wc -l < $L/cm3z$r.txt) 판 $(date '+%T')"
 done
-$PY exe/fem_cm2_sel.py pick $B/cm3z$X $SC > $M/cm3_sel.txt 2>&1; cat $M/cm3_sel.txt >> $LOG; rclone copy $M/cm3_sel.txt $MR -q
-cap() { awk -v t=$1 '$1==t{print $2}' $M/cm3_sel.txt; }
+$PY exe/fem_cm2_sel.py pick $B/cm3z$X $SC > $M/cm3${X}_sel.txt 2>&1; cat $M/cm3${X}_sel.txt >> $LOG; rclone copy $M/cm3${X}_sel.txt $MR -q
+cap() { awk -v t=$1 '$1==t{print $2}' $M/cm3${X}_sel.txt; }
 say "[상한] bread $(cap bread) wolf $(cap wolf) L000 $(cap L000) ficus $(cap ficus)"
 # B
 : > $L/cm3j.txt; : > $L/cm3t.txt
 for t in bread wolf; do c=$(cap $t); [ -z "$c" ] || [ "$c" = 0 ] && { say "[판정] $t 예산 안 상한 없음 -- 판정 안 함"; continue; }
   echo "b $t $G --cg $c $T --det" >> $L/cm3j.txt; echo "a_$t $t $G --cg $c $T" >> $L/cm3t.txt; done
 if [ -s $L/cm3j.txt ]; then
-  ( CM_CARDS="1 2 3 4 5 6" CM_PAR=6 bash exe/fem_cm_pool.sh cm3$X $L/cm3j.txt > $M/cm3_pool.log 2>&1; say "[판정 끝] $(date '+%T')" ) &
+  ( CM_CARDS="1 2 3 4 5 6" CM_PAR=6 bash exe/fem_cm_pool.sh cm3$X $L/cm3j.txt > $M/cm3${X}_pool.log 2>&1; say "[판정 끝] $(date '+%T')" ) &
   PJ=$!
-  bash exe/fem_cm_q.sh cm3t$X $L/cm3t.txt > $M/cm3t_q.log 2>&1; say "[실제 시간 끝] $(date '+%T')"
+  bash exe/fem_cm_q.sh cm3t$X $L/cm3t.txt > $M/cm3${X}t_q.log 2>&1; say "[실제 시간 끝] $(date '+%T')"
   wait $PJ
 fi
 wait $PV
@@ -85,10 +85,10 @@ for t in sys.argv[3:]:
     r = ref[t]
     print("| %s | %s | %s | %s | %s |" % (t, one(os.path.join(B, r[0], r[1])), one(os.path.join(B, "cm3v" + X, "vh_" + t)), one(os.path.join(B, "cm3v" + X, "vn_" + t)), one(os.path.join(B, "cm3v" + X, "vb_" + t))))
 PYE
-  echo; echo "## 예산 규칙 시간표 (허용치 0 = 펼친 반복 전부, 카드 0 단독; c 최대 (평균) ms, x = 발산)"; cat $M/cm3_sel.txt; echo
+  echo; echo "## 예산 규칙 시간표 (허용치 0 = 펼친 반복 전부, 카드 0 단독; c 최대 (평균) ms, x = 발산)"; cat $M/cm3${X}_sel.txt; echo
   echo "## 판정 (결정적, 바뀐 상한)"; [ -d $B/cm3$X ] && $PY exe/fem_cm_table.py judge $B/cm3$X
   echo; echo "## 실제 시간 (공통 허용치, 카드 0 단독, 비결정)"; [ -d $B/cm3t$X ] && $PY exe/fem_cm_table.py time $B/cm3t$X
-  echo; echo "## 연기 시험 (결정적 10 프레임)"; $PY exe/fem_cm_table.py judge $B/cm3s$X; } > $M/cm3_table.md 2>&1
-rclone copy $M $MR -q --include "cm3*"
-echo "[cm3 끝] $(date '+%F %T')" > $M/cm3.END; rclone copy $M/cm3.END $MR -q
+  echo; echo "## 연기 시험 (결정적 10 프레임)"; $PY exe/fem_cm_table.py judge $B/cm3s$X; } > $M/cm3${X}_table.md 2>&1
+rclone copy $M $MR -q --include "cm3$X*"
+echo "[cm3 끝] $(date '+%F %T')" > $M/cm3$X.END; rclone copy $M/cm3$X.END $MR -q
 say "[cm3 끝] $(date '+%F %T')"
