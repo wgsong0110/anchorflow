@@ -558,18 +558,31 @@ __global__ void aq_gauss_s(const int* IP, const float* Sa, const float* Sc, floa
     Sq[(size_t)q*4] = a[0]/w; Sq[(size_t)q*4+1] = a[1]/w; Sq[(size_t)q*4+2] = a[2]/w; Sq[(size_t)q*4+3] = 0.f;
 }
 // 탄성 주값 1 차 PK (시험 σ, RM 없음) 와 주값 공간 대칭 접선 (중심 차분)
-__device__ __forceinline__ void aq_tan(int mat, const float* ss0, const float* prm, float al, float* pe, float D[3][3]) {
-    float ss[3]; for (int i=0;i<3;i++) ss[i] = (mat == 7) ? fabsf(ss0[i]) : ss0[i];      // neo-Hookean 은 J^{-2/3} 라 뒤집힌 시험 σ 에서 nan -> 크기로 (접선만)
-    pl_pi(mat, ss, prm, al, pe);
+__device__ __noinline__ void aq_tan9(int mat, float s0, float s1, float s2, const float* prm, float al, float* pe, float* D9) {
+    // 절 AR 고침: 예전 판 (2 차원 배열 인자·동적 첨자 sp[j], forceinline) 은 aq_elem 안에서 D[0][0]·D[0][1] 이 (1, 0) 으로 덮여 접선이 틀렸다
+    // (단위 시험에서는 맞고 커널 안에서만 -- 대조 --check_aq: 모래를 재질 커널로 돌리면 해석 커널과 계수 35 % 차). 열마다 따로 펼쳐 평탄 배열로.
+    float a0 = (mat == 7) ? fabsf(s0) : s0, a1 = (mat == 7) ? fabsf(s1) : s1, a2 = (mat == 7) ? fabsf(s2) : s2;   // neo-Hookean 은 J^{-2/3} 라 뒤집힌 시험 σ 에서 nan -> 크기로 (접선만)
+    float c[3] = {a0, a1, a2};
+    pl_pi(mat, c, prm, al, pe);
+    float Dt[9];
+    #pragma unroll
     for (int j=0;j<3;j++) {
-        float h = fmaxf(1e-3f*fabsf(ss[j]), 1e-4f);
-        float sp[3] = {ss[0], ss[1], ss[2]}, sm[3] = {ss[0], ss[1], ss[2]};
-        sp[j] += h; sm[j] -= h;
+        float sj = (j == 0) ? a0 : ((j == 1) ? a1 : a2);
+        float h = fmaxf(1e-3f*fabsf(sj), 1e-4f);
+        float sp[3] = {a0 + ((j == 0) ? h : 0.f), a1 + ((j == 1) ? h : 0.f), a2 + ((j == 2) ? h : 0.f)};
+        float sm[3] = {a0 - ((j == 0) ? h : 0.f), a1 - ((j == 1) ? h : 0.f), a2 - ((j == 2) ? h : 0.f)};
         float pp[3], pm[3]; pl_pi(mat, sp, prm, al, pp); pl_pi(mat, sm, prm, al, pm);
-        for (int i=0;i<3;i++) D[i][j] = (pp[i] - pm[i])/(2.f*h);
+        float ih = 0.5f/h;
+        Dt[j] = (pp[0] - pm[0])*ih; Dt[3+j] = (pp[1] - pm[1])*ih; Dt[6+j] = (pp[2] - pm[2])*ih;
     }
-    for (int i=0;i<3;i++) for (int j=i+1;j<3;j++) { float t = 0.5f*(D[i][j] + D[j][i]); D[i][j] = t; D[j][i] = t; }
-    for (int i=0;i<3;i++) { if (!isfinite(pe[i])) pe[i] = 0.f; for (int j=0;j<3;j++) if (!isfinite(D[i][j])) D[i][j] = 0.f; }
+    D9[0] = Dt[0]; D9[4] = Dt[4]; D9[8] = Dt[8];
+    D9[1] = D9[3] = 0.5f*(Dt[1] + Dt[3]); D9[2] = D9[6] = 0.5f*(Dt[2] + Dt[6]); D9[5] = D9[7] = 0.5f*(Dt[5] + Dt[7]);
+    for (int k=0;k<9;k++) if (!isfinite(D9[k])) D9[k] = 0.f;
+    for (int k=0;k<3;k++) if (!isfinite(pe[k])) pe[k] = 0.f;
+}
+__device__ __forceinline__ void aq_tan(int mat, const float* ss0, const float* prm, float al, float* pe, float D[3][3]) {
+    float D9[9]; aq_tan9(mat, ss0[0], ss0[1], ss0[2], prm, al, pe, D9);
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = D9[i*3+j];
 }
 // 재질 요소 (주값 분해 저장, ao_elem_s 와 같은 틀): 응력 = 시험 X 에 정답 RM (상태 지역 사본) -> τ̂ = pl_pi(σ̂) σ̂, P = U diag(τ̂_i/σ_i) Vᵀ;
 // 헤시안 = 시험 X 의 탄성 접선 (초기 강성법, 투영). 등가 점성 (eta > 0): 노드 속도 v = α (y − z0) 로 Ẋ, τ_v = 2 η J sym(Ẋ X⁻¹), P += τ_v X⁻ᵀ, 접선에 α η 몫.
