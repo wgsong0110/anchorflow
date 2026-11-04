@@ -271,6 +271,9 @@ __global__ void rt_floor_q(const int* IP, const int* cb, const float* BW, const 
     float w3[3] = {0.5f*(1.5f-f)*(1.5f-f), 0.75f-(f-1.f)*(f-1.f), 0.5f*(f-0.5f)*(f-0.5f)};
     float wst = 0.f; for (int i=0;i<3;i++) if ((bf + (float)i)*dxg - pn < 0.f) wst += w3[i];
     float mw = mq[q]*wst;
+#ifdef AF_FLJ
+    mw = mq[q]*(1.f - expf(AF_KEXQ*log1pf(-wst)));                            // 점별 고착 (--fl_pt, 절 AN.17): 점 질량 x (1 − (1 − w_st)^(Δt/dt_정답)) -- 거듭제곱을 점에서 한 뒤 노드로 평균
+#endif
     if (mw > 0.f) for (int o=0;o<27;o++) atomicAdd(&an[ids[o]], BW[oc*27+o]*mw);
 }
 // 노드: 고착 인자 k, 변수 바꿈 (sk, pm), ŷ, η, y = ŷ + T η. pm 0 = P I, 1 = P (I − nnᵀ) (바깥 법선 이탈), 2 = 고정 (T 0)
@@ -288,6 +291,9 @@ __global__ void rt_floor_n(const int* IP, const float* an, const float* mqn, flo
     if (floor_) {
         float r = (mqn[n] > 0.f) ? fminf(an[n]/mqn[n], 1.f) : 0.f;
         k = expf(kex*log1pf(-r));
+#ifdef AF_FLJ
+        k = 1.f - r;                                                             // 점별 고착: an 이 이미 거듭제곱한 몫의 질량 합
+#endif
         float vv = al*((y[n*3]-z0[n*3])*n0 + (y[n*3+1]-z0[n*3+1])*n1 + (y[n*3+2]-z0[n*3+2])*n2);
         p = (vout && vv > 0.f) ? 1 : 0;
     }
@@ -1152,9 +1158,16 @@ def octify(src):
     return src.replace('extern "C" {', 'extern "C" {\n#define AF_OCT 1\n__device__ float* AF_MO;\n__device__ float AF_GOCT;', 1)
 
 
-def build_src(src, adapt, goct):
+def flptify(src, kex):
+    """점별 고착 판 (--fl_pt, 절 AN.17): 노드 몫 평균 뒤 거듭제곱 (1 − r̄)^κ 대신 점마다 1 − (1 − w_st)^κ 를 질량 가중 평균 (κ = Δt/dt_정답, 단계 frac 1 판만)."""
+    return src.replace('extern "C" {', 'extern "C" {\n#define AF_FLJ 1\n#define AF_KEXQ %.9ef' % float(kex), 1)
+
+
+def build_src(src, adapt, goct, floor=None):
     if goct is not None and goct >= 0:
         src = octify(src)
+    if floor and floor.get("pt"):
+        src = flptify(src, floor["KEX"])
     return skipify(src) if adapt else src
 
 
@@ -1217,7 +1230,7 @@ class RTSolver:
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(SRC, s.adapt, s.goct), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(SRC, s.adapt, s.goct, s.floor), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
