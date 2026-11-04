@@ -47,6 +47,7 @@ ap.add_argument("--mg_csolve", action="store_true", help="가장 거친 층 한 
 ap.add_argument("--mg_lreuse", action="store_true", help="정의 변경: 거친 층 ω 를 첫 프레임 값으로 재사용")
 ap.add_argument("--mg_wreuse", action="store_true", help="정의 변경: 프레임 안 단계 τ 가 같으면 층 0 ω 재사용")
 ap.add_argument("--gfin", action="store_true", help="걸음 끝 |g|/|g0| 를 fem.jsonl 에 (기울기 한 번 더 -- 시간 측정 판에서는 끌 것)")
+ap.add_argument("--cap_mul", type=float, default=2.0, help="절 BD: 고정 용량 버퍼 = 첫 프레임 상자 x 이 배수 (기본 2.0 그대로). 결정적 판에서 결과 불변 (넘침 다시 할당만 덜 일어남)")
 ap.add_argument("--det", action="store_true", help="결정적 합산 (같은 명령 두 번이 비트 단위로 같게; lib/anchorflow/fem_an_det.py, MG 와 함께 못 씀) -- 판정용, 속도는 비결정 판으로")
 ap.add_argument("--ga", choices=["ga", "hht"], default=None, help="generalized-α (Chung-Hulbert) 또는 HHT-α (implicit-err 절 AN.err3 증분 포텐셜 꼴, 시작점 = 걸음 시작 위치, 끝 = Newmark 위치 식)")
 ap.add_argument("--rho", type=float, default=0.7)
@@ -83,6 +84,7 @@ ap.add_argument("--no_vfill", action="store_true")
 ap.add_argument("--hspec", action="store_true", help="절 CM3 (결과 정의 같음, 반올림 순서만 다름): 고운 층 헤시안을 주값 분해 30 성분 (U, M = F V, 계수 12) 으로 저장·곱 (rt_mv2s; 모래는 ao_elem_s, plasticine 은 aq_elem 30 성분 그대로); --mv2 필요")
 ap.add_argument("--ncomp", action="store_true", help="절 CM3 (결과 정의 같음): PCG·층 0 V 순환 노드 커널을 점유 칸 이웃 노드 목록만 (그 밖 노드는 질량·대각·힘·곱이 모두 0)")
 ap.add_argument("--fl_nost", action="store_true", help="절 CM6 진단 전용 (채택 후보 아님): 바닥 고착 끔 (고착 지수 KEX 0 -> 노드 고착 인자 1; 장벽·법선은 그대로)")
+ap.add_argument("--fl_dhm", type=float, default=1.0, help="절 CM6 진단 전용 (채택 후보 아님): 장벽 두께 d̂ = 이 값 x ½ dx_정답 (κ 도 같은 식 (λ+2μ) V_q / d̂²)")
 ap.add_argument("--hgt", action="store_true", help="절 CM6 진단 (결과 불변): 프레임마다 정답·우리 높이 (질량 중심·최대·99 백분위, 바닥 법선 방향) 를 fem.jsonl hg·hp 에")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
 a = ap.parse_args()
@@ -114,6 +116,8 @@ if a.floor == "vel":
     FL = dict(PT=PT, NR=NR.tolist(), PN=float(np.dot(PT, NR)), DXG=DXG, KEX=dt / float(cfg["substep_dt"]), vout=not a.no_vfl_out, pt=a.fl_pt, bar=a.fl_bar, bst=a.fl_bst, bfull=a.bar_full, DH=0.5 * DXG, KS=(lam + 2.0 * mu) / (0.5 * DXG) ** 2)
     if a.fl_nost:
         FL["KEX"] = 0.0
+    if a.fl_dhm != 1.0:
+        FL["DH"] = a.fl_dhm * 0.5 * DXG; FL["KS"] = (lam + 2.0 * mu) / FL["DH"] ** 2
 BC = None
 if a.cfg_bc:
     BC = []
@@ -190,7 +194,7 @@ if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                     
     a.ls = 0                                                                           # 재질 판: 퍼텐셜 없음 -> 에너지 선탐색 없음 (절 AO.0; 장벽이면 실현 가능 보폭만)
     print(f"[절 CM2 재질 판] {MATNAME} {MATX.get('mat')} 구속 {TREL is not None} 구속 속도 {PVB is not None} 빈 노드 문턱 {MTHR:.3e} 점성 {MATX.get('visc', 0.0)}", flush=True)
 S = SOLVER(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, hspec=a.hspec, ncomp=a.ncomp, **MATX)
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, **MATX)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, 적분기 {a.ga + ' ρ ' + str(a.rho) if a.ga else a.integ}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")

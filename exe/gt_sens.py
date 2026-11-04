@@ -41,6 +41,8 @@ import torch                                                     # noqa: E402
 import warp as wp                                                # noqa: E402
 from mpm_solver_warp.mpm_solver_warp import MPM_Simulator_WARP   # noqa: E402
 
+if not os.path.exists(os.path.join(a.gt, "sim_0000000000.h5")) and os.path.exists(os.path.join(a.gt, "simulation_ply", "sim_0000000000.h5")):
+    a.gt = os.path.join(a.gt, "simulation_ply")                                      # PG gs_simulation 출력은 <output_path>/simulation_ply/sim_*.h5 (wolf·bread 원본 정답)
 cfg = json.load(open(a.config))
 cfg.setdefault("n_grid", 50)                                                         # PG decode_param 기본값 (PG 원본 config 는 키가 없을 수 있음; exe/pg_h5_to_pt.py 와 같음)
 cfg.setdefault("grid_lim", 2.0)
@@ -52,8 +54,12 @@ n_grid0 = int(cfg["n_grid"])
 dx0 = GL / n_grid0
 n_grid = a.n_grid or n_grid0
 frame_dt = float(cfg["frame_dt"])
-nsub = a.nsub or int(round(frame_dt / float(cfg["substep_dt"])))
-dt = frame_dt / nsub
+if a.pg_cfg and not a.nsub:                                                          # 원래 서브스텝: PG gs_simulation 과 똑같이 int(frame_dt / substep_dt) 걸음 x substep_dt
+    nsub = int(frame_dt / float(cfg["substep_dt"]))                                   # (wolf 0.04 / 2e-5 = 1999.99.. -> 1999 걸음; round 로 2000 을 돌리면 정답과 어긋남)
+    dt = float(cfg["substep_dt"])
+else:
+    nsub = a.nsub or int(round(frame_dt / float(cfg["substep_dt"])))
+    dt = frame_dt / nsub
 G = [float(q) for q in cfg["g"]]
 _fl = [b for b in cfg["boundary_conditions"] if b["type"] == "surface_collider"]
 floor = dict(_fl[0]) if _fl else None
@@ -89,6 +95,8 @@ cell = (X / dx0).floor().long()
 key = (cell[:, 0] * n_grid0 + cell[:, 1]) * n_grid0 + cell[:, 2]
 _, inv, cnt = torch.unique(key, return_inverse=True, return_counts=True)
 VOL = (dx0 ** 3 / cnt[inv].float()).contiguous()
+if a.pg_cfg and cfg.get("material") == "sand":                                       # PG get_particle_volume(unifrom=material == "sand"): 모래는 평균 부피 균일
+    VOL = VOL.mean().repeat(N).contiguous()
 print(f"[정답 민감도] 입자 {N}, n_grid {n_grid} (dx {GL / n_grid:.5f}), 서브스텝 {dt:.4e} x {nsub}, rpic {a.rpic}, 바닥 {floor}, EXT {EXT:.6f}", flush=True)
 print(f"[명령] {' '.join(sys.argv)}", flush=True)
 wp.init()
@@ -146,6 +154,9 @@ sol.load_initial_data_from_torch(X, VOL, None, n_grid=n_grid, grid_lim=GL)
 if a.pg_cfg:                                                                         # 절 AK.15: gs_simulation 과 같은 순서 (재질 -> 경계조건 -> mu·lam)
     from utils.decode_param import set_boundary_conditions                           # noqa: E402
     _mp = {k: cfg[k] for k in ("material", "E", "nu", "density", "g", "grid_v_damping_scale", "additional_material_params") if k in cfg}
+    for k in ("yield_stress", "hardening", "xi", "plastic_viscosity", "softening", "friction_angle", "bulk_modulus"):   # PG 재질 매개 (wolf friction_angle 30 · bread plasticine 항목) -- 키가 있으면 config 그대로
+        if k in cfg:
+            _mp[k] = cfg[k]
     _mp.update({"n_grid": n_grid, "grid_lim": GL, "rpic_damping": float(a.rpic)})
     sol.set_parameters_dict(_mp)
     set_boundary_conditions(sol, cfg.get("boundary_conditions", []), {"substep_dt": dt, "frame_dt": frame_dt, "frame_num": L})

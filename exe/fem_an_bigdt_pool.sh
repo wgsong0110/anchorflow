@@ -56,6 +56,10 @@ run_one() {
         *)     GA="--frames 80 --no_dump";;
       esac
       ( cd /home/dkta/work/i-physgaussian && CUDA_VISIBLE_DEVICES=$G $PY -u $OLDPWD/exe/gt_sens.py --out $O $GA "$@" < /dev/null > $O/log.txt 2>&1 );;
+    san*) # 절 BD 진단: 같은 실행기를 compute-sanitizer memcheck 아래 (불법 접근 커널 이름·주소), 50 분 상한
+      CS=$(command -v compute-sanitizer || ls /usr/local/cuda*/bin/compute-sanitizer /home/dkta/.conda/envs/af/bin/compute-sanitizer 2>/dev/null | head -1)
+      if [ -z "$CS" ]; then echo "compute-sanitizer 없음" > $O/log.txt; false
+      else CUDA_VISIBLE_DEVICES=$G timeout 3000 $CS --tool memcheck --print-limit 20 $PY -u exe/fem_an_rt_sim.py --out $O --tag $t $DA "$@" < /dev/null > $O/log.txt 2>&1; fi;;
     *) CUDA_VISIBLE_DEVICES=$G $PY -u exe/fem_an_rt_sim.py --out $O --tag $t $DA "$@" < /dev/null > $O/log.txt 2>&1;;
   esac
   echo "rc=$? $(date '+%F %T')" >> $O/run_info.txt
