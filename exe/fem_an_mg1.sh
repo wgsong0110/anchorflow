@@ -2,7 +2,7 @@
 # 절 AN.20 묶음 (카드 0 단독, gpu0.lock, 판마다 카드 0 의 다른 계산 프로세스 0 확인; 비결정 = 시간, 결정적 = 판정):
 #  A. 결과 확인 (결정적 ficus 10 프레임 해시) + 커널별 그래프 시간 (kbench)
 #  B. 최악 (허용치 0 = 상한까지) 시간: 원래 판 / --mv2 / --mg_occ -- ficus 20 프레임 2x10, lego 10 프레임 1x5 (2 회)
-#  C. ficus 상한 훑기 (최악 20 프레임, 판 MGV): 최대 시간 16.7 ms 안 가장 큰 뉴턴 x PCG (같으면 뉴턴 큰 것) 둘
+#  C. ficus 상한 훑기 (최악 20 프레임, 판 MGV + SWX (기본 --gq_oct 0.1)): 최대 시간 16.7 ms 안 가장 큰 뉴턴 x PCG (같으면 뉴턴 큰 것) 둘
 #  D. 고른 상한 + 공통 허용치 (εN 1e-2, εP 1e-1) ficus 125 프레임: 비결정 시간 + 결정적 bej·bejo (κ 0.1) 주기; lego L000 80 프레임 1x5 (시간 + 결정적 오차)
 cd "$(dirname "$0")/.." || exit 1
 PY=/home/dkta/.conda/envs/af/bin/python
@@ -17,6 +17,7 @@ exec 9>/home/dkta/work/gpu0.lock; flock 9
 echo "잠금 $(date +%T) $(cat .done)" | tee -a $R/run.out
 B="--cell 1 --mg_levels 4 --mg_nc 4 --ls_n 10 --descent --K 2 --mg_wreuse --mg_lreuse --integ be"
 MGV=${MGV:---mv2}
+SWX=${SWX---gq_oct 0.1}                                                   # 상한 훑기·시간 판 추가 인자 (기본 = 판정 판 bejo 의 점유 가중 κ 0.1)
 T="--tolN 1e-2 --tolP 1e-1"; T0="--tolN 0 --tolP 0"
 LG="--data $SD/L000.pt --floor vel --tag L000"
 FI="--data $FD --floor none --cfg_bc --region_density --pg_vdamp --tag ficus"
@@ -45,7 +46,7 @@ done
 fi
 CAPS=${MG_CAPS:-2x10 2x14 2x16 2x18 2x20 2x24 3x10 3x12 3x14 3x16 4x10 4x12 1x30 1x40}
 for cap in $CAPS; do n=${cap%x*}; c=${cap#*x}
-  run fwc_$cap $FI --frames 20 $T0 --newton $n --cg $c $MGV
+  run fwc_$cap $FI --frames 20 $T0 --newton $n --cg $c $MGV $SWX
 done
 SEL=$($PY - $R $CAPS <<'PYE'
 import json, sys
@@ -62,6 +63,8 @@ PYE
 echo "고른 ficus 상한 (최악 최대 16.7 ms 안, 뉴턴 x PCG 큰 순 둘) = $SEL" | tee -a $R/run.out
 for cap in $SEL; do n=${cap%x*}; c=${cap#*x}
   run fic_$cap $FI --frames 125 $T --newton $n --cg $c $MGV --dump
+  run fico_$cap $FI --frames 125 $T --newton $n --cg $c $MGV --gq_oct 0.1 --dump
+  run fico2_$cap $FI --frames 125 $T --newton $n --cg $c $MGV --gq_oct 0.1
   run ficd_bej_$cap $FI --frames 125 $T --newton $n --cg $c $MGV --det --dump
   run ficd_bejo_$cap $FI --frames 125 $T --newton $n --cg $c $MGV --det --gq_oct 0.1 --dump
 done
