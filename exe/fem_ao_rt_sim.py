@@ -83,6 +83,7 @@ ap.add_argument("--y0l", action="store_true", help="절 AS: 시작점 보간에 
 ap.add_argument("--fq_rl", action="store_true", help="절 AS: 뒤집힌 입자가 있는 가우스 점 F_q 의 유클리드 평균 대체를 그 평균이 뒤집히지 않을 때만 (뒤집히면 회전·로그 평균)")
 ap.add_argument("--ls_end", action="store_true", help="절 AS: 보폭·시작점 필터가 걸음 끝 변위 U_{n+1} (HHT 외삽) 의 X 도 J > 0 로 유지")
 ap.add_argument("--y0z", action="store_true", help="절 AS: 뉴턴 시작점 = 영속도 위치 y_z (z0) 에서 지금 시작점 (관성 예측·고착) 쪽으로 뒤집힘 없는 최대 2^-k 만큼 (뒤집힘 없으면 그대로)")
+ap.add_argument("--at_diag", type=int, default=0, help="절 AT 진단: 이 프레임 (1 부터, 충돌 프레임) 을 그래프 밖에서 돌리며 G2P 앞뒤 입자 F·걸음별 가속도 상태를 복사하고, 다음 프레임은 --nanchk 와 함께 F_q·칸 입자를 대조해 at_diag.json")
 ap.add_argument("--theta", type=float, default=None, help="θ 방식 (절 AN.err2 정의; 0.5 = 중점, 1 = 후퇴 오일러). 안 주면 --integ 그대로 (비트 동일)")
 a = ap.parse_args()
 if a.adaptK > 0:
@@ -209,6 +210,10 @@ else:
   S = AORT.RTAdapt(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent,
                  compact=a.ao_fast, warm=a.ao_fast and not a.no_warm, det=a.det)
+ATDG = None
+if a.at_diag:
+    from anchorflow import fem_at_diag as ATD
+    ATDG = ATD.Diag(S)
 if a.kmax <= 0:
     a.kmax = int(math.ceil(h / float(cfg["substep_dt"]) - 1e-9))
 S.kcap = a.K
@@ -238,10 +243,35 @@ for fi in range(L):
             for _c in _ck:
                 print(f"[대조 aq] 프레임 {fi + 1} {json.dumps(_c)}", flush=True)
             redo, KF, VMX = False, a.K, None
+        elif a.at_diag and fi + 1 == a.at_diag:
+            if S.graph is None:
+                _bk0 = S._bk(); S.capture(); S._rs(_bk0)
+            S.set_bc(fi * h)
+            for _nm in ("y", "U", "f", "r", "z", "p", "dl", "vk", "gaA", "B", "Ap", "KTp", "Tp", "yh", "eta", "Ut", "z0"):
+                _t = getattr(S, _nm, None)
+                if torch.is_tensor(_t):
+                    _t.zero_()
+            ATDG.phase = "a"; S.record(fi * h); torch.cuda.synchronize(); ATDG.phase = None; S.last_ms = float("nan")
+            redo, KF, VMX = False, a.K, None
         elif a.nanchk and fi + 1 == a.nanchk:
             if S.graph is None:
                 _bk0 = S._bk(); S.capture(); S._rs(_bk0)
+            if a.at_diag:
+                ATDG.phase = "b"
             _hit = S.nanchk(fi * h); S.last_ms = float("nan")
+            if a.at_diag:
+                ATDG.phase = None
+                try:
+                    _ad = ATDG.analyze(_hit, os.path.join(a.out, "at_diag.json"))
+                    print(f"[절 AT 진단] {json.dumps(dict(all=_ad['all'], steps_a=_ad['steps_a'], start_b=_ad['start_b'], Fq_b=_ad['Fq_b'], as_inv_q=_ad['as_inv_q']))}", flush=True)
+                except Exception:
+                    import traceback; traceback.print_exc()
+                    _nn3 = int(ATDG.a["IP"][9]); _nn4 = int(ATDG.b["IP_g"][9])
+                    _raw = dict(hit=_hit, a={k_: ([t_[:_nn3].cpu() for t_ in v_] if isinstance(v_, list) else (v_.cpu() if torch.is_tensor(v_) else v_)) for k_, v_ in ATDG.a.items() if k_ in ("a_n", "U_e", "a_e", "v_e", "an", "mqn", "Ust", "F_old", "F_new", "pb", "fx", "IP", "mn")},
+                                b={k_: ([t_[:_nn4].cpu() for t_ in v_] if isinstance(v_, list) else (v_.cpu() if torch.is_tensor(v_) else v_)) for k_, v_ in ATDG.b.items() if k_ in ("Fq_g", "Vq_g", "badq_g", "cidx_g", "pcd_g", "fx_g", "IP_g", "cb_g", "Aacc_g", "a_n", "Ut", "y0", "y_s", "an", "mqn")},
+                                S=dict(vol=S.vol.cpu(), mn=S.mn.cpu(), Ai=S.Ai.cpu(), A=S.A.cpu(), BG=S.BG.cpu(), mthr=S.mthr, dt=S.dt, ga_c=S.ga_c))
+                    torch.save(_raw, os.path.join(a.out, "at_raw.pt"))
+                    print("[절 AT 진단] 분석 실패 -- 원자료 at_raw.pt", flush=True)
             print(f"[비유한 검사] 프레임 {fi + 1}: {json.dumps(_hit)}", flush=True)
             redo, KF, VMX = False, a.K, None
         else:
