@@ -135,6 +135,9 @@ __global__ void ao_p2g_q(int N, const float* F, const float* m, const float* vol
         float* aq = A + (size_t)q*28; float* ac = C + (size_t)c*30;
         for (int k=0;k<9;k++) { aq[k] += w*R[k]; aq[9+k] += w*L[k]; aq[18+k] += w*Fp[k]; ac[k] += w*R[k]; ac[9+k] += w*L[k]; ac[18+k] += w*Fp[k]; }
         aq[27] += w; ac[27] += w; ac[28] += w; ac[29] += m[p];
+#ifdef AF_BAR
+        for (int a=0;a<3;a++) AF_BX[q*4+a] += m[p]*AF_XP[p*3+a]; AF_BX[q*4+3] += m[p];   // 장벽 판 표본점 (절 AN.19)
+#endif
 #ifdef AF_OCT
         AF_MO[q] += m[p];
 #endif
@@ -310,7 +313,7 @@ def det_ao(ao_src):
     return s
 
 
-BS_KERNELS = {"rt_elem", "rt_grad", "rt_grad_c", "rt_ap", "rt_ap_c", "rt_cg1", "rt_cg1_c", "rt_lsy", "rt_lsy4", "rt_elem_ls", "ao_warm", "rt_fixdir", "rt_lsyN", "rt_elem_lsN", "rt_dotz", "rt_mg_pw1"}
+BS_KERNELS = {"rt_elem", "rt_grad", "rt_grad_c", "rt_ap", "rt_ap_c", "rt_cg1", "rt_cg1_c", "rt_lsy", "rt_lsy4", "rt_elem_ls", "ao_warm", "rt_fixdir", "rt_lsyN", "rt_elem_lsN", "rt_dotz", "rt_mg_pw1", "rt_bar_q", "rt_bar_lsN"}
 
 
 class DetMixin(ART.RTSolver):

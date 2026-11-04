@@ -171,6 +171,9 @@ __global__ void rt_p2g(int N, const float* x, const float* v, const float* F, co
     for (int k=0;k<9;k++) { atomicAdd(&aq[k], w*R[k]); atomicAdd(&aq[9+k], w*L[k]); atomicAdd(&aq[18+k], w*Fp[k]);
                             atomicAdd(&ac[k], w*R[k]); atomicAdd(&ac[9+k], w*L[k]); atomicAdd(&ac[18+k], w*Fp[k]); }
     atomicAdd(&aq[27], w); atomicAdd(&ac[27], w); atomicAdd(&ac[28], w); atomicAdd(&ac[29], m[p]);
+#ifdef AF_BAR
+    for (int a=0;a<3;a++) atomicAdd(&AF_BX[q*4+a], m[p]*x[p*3+a]); atomicAdd(&AF_BX[q*4+3], m[p]);   // 장벽 판: 팔분 점 입자 질량 중심 (표본점)
+#endif
 #ifdef AF_OCT
     atomicAdd(&AF_MO[q], m[p]);                                                     // 팔분 칸 실제 입자 질량 (점유 가중, 절 AN.err4 정의)
 #endif
@@ -268,11 +271,19 @@ __global__ void rt_floor_q(const int* IP, const int* cb, const float* BW, const 
     if (q >= IP[12]) return;
     int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
     float xq[3] = {xq0[q*3], xq0[q*3+1], xq0[q*3+2]};
+#ifdef AF_BAR
+    float bm_ = AF_BX[q*4+3]; if (bm_ > 0.f) for (int a=0;a<3;a++) xq[a] = AF_BX[q*4+a]/bm_;   // 장벽 판: 고착 판정도 표본점 (팔분 입자 질량 중심) 에서
+#endif
     for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
         for (int a=0;a<3;a++) { float ye = U[id*3+a] + thinv*(y[id*3+a] - U[id*3+a]); xq[a] += w*ye; } }
     float s = (xq[0]-p0)*n0 + (xq[1]-p1)*n1 + (xq[2]-p2)*n2;
+#ifdef AF_BAR
+    float sw_ = s; s = (bm_ > 0.f) ? -1.f : 1.f;                                 // 장벽 판: 정답 sticky 가중 전체 (평면 위 띠 포함), 빈 팔분 점 없음
+#else
+    float sw_ = s;
+#endif
     if (!(s < 0.f)) return;
-    float u = (s + pn)/dxg; float bf = floorf(u - 0.5f); float f = u - bf;
+    float u = (sw_ + pn)/dxg; float bf = floorf(u - 0.5f); float f = u - bf;
     float w3[3] = {0.5f*(1.5f-f)*(1.5f-f), 0.75f-(f-1.f)*(f-1.f), 0.5f*(f-0.5f)*(f-0.5f)};
     float wst = 0.f; for (int i=0;i<3;i++) if ((bf + (float)i)*dxg - pn < 0.f) wst += w3[i];
     float mw = mq[q]*wst;
@@ -301,6 +312,9 @@ __global__ void rt_floor_n(const int* IP, const float* an, const float* mqn, flo
 #endif
         float vv = al*((y[n*3]-z0[n*3])*n0 + (y[n*3+1]-z0[n*3+1])*n1 + (y[n*3+2]-z0[n*3+2])*n2);
         p = (vout && vv > 0.f) ? 1 : 0;
+#ifdef AF_BAR
+        p = 1;                                                                   // 장벽 판: 법선은 장벽, 고착은 접선에만
+#endif
     }
     if (fixd && fixd[n]) p = 2;
     float s = sqrtf(k);
@@ -1077,6 +1091,9 @@ __global__ void rt_ga_end(const int* IP, float dt, float gm, float be, float al,
     if (n >= IP[9]) return;
     bool fx_ = fixd && fixd[n];
     bool stk = areset && an && an[n] > 0.f;
+#ifdef AF_BAR
+    bool stkb = stk; stk = false;                                               // 장벽 판: 고착은 접선뿐이라 가속도 0 도 접선 성분만 (법선 반동은 장벽 몫)
+#endif
     for (int a=0;a<3;a++) {
         float u = U[n*3+a], v = vk[n*3+a], ac = ak[n*3+a];
         float v1 = fx_ ? vbc[n*3+a] : al*(y[n*3+a] - z0[n*3+a]);
@@ -1085,6 +1102,9 @@ __global__ void rt_ga_end(const int* IP, float dt, float gm, float be, float al,
         vk[n*3+a] = v1*damp;
         ak[n*3+a] = (fx_ || stk) ? 0.f : a1;
     }
+#ifdef AF_BAR
+    if (stkb && !fx_) { float an_ = ak[n*3]*AF_BNRM[0] + ak[n*3+1]*AF_BNRM[1] + ak[n*3+2]*AF_BNRM[2]; for (int a=0;a<3;a++) ak[n*3+a] = an_*AF_BNRM[a]; }
+#endif
 }
 // 첫 프레임 가속도 a0 = g − f(0)/m', m' = max(m, mlow) (고정 노드 0)
 __global__ void rt_ga_a0(const int* IP, const float* mn, const double* f, float mlow, float g0, float g1, float g2, const unsigned char* fixd, float* ak) {
@@ -1163,9 +1183,98 @@ def octify(src):
     return src.replace('extern "C" {', 'extern "C" {\n#define AF_OCT 1\n__device__ float* AF_MO;\n__device__ float AF_GOCT;', 1)
 
 
+BAR_SRC = r'''
+// ---- 장벽 판 (--fl_bar, 절 AN.19): 바닥 법선 = 표본점 IPC 거리 장벽, 고착 = 접선만 ----
+// 표본점 q = 팔분 칸 입자 질량 중심 (프레임 시작, P2G), 걸음 안 이동 = Σ_o BW (U + thinv (y − U)) (가우스 점 기저); d = (x − p)·n.
+// b(d) = −κ (d − d̂)² ln(d/d̂) (0 < d < d̂), κ = ks V_q (ks = (λ + 2μ)/d̂², d̂ = ½ dx_정답). 걸음 시작 d ≤ 0 인 점은 그 걸음 장벽에서 뺌 (AF_BACT 0).
+// mode 0: 걸음 시작 (y = 시작점) 판정; mode 1: 기울기 스칼라 c = b' thinv, 덩어리 헤시안 스칼라 h = b'' thinv², 에너지 -> E.
+__global__ void __launch_bounds__(128) rt_bar_q(const int* IP, const int* cb, const float* BW, const float* Vq, const float* y, const float* U, float thinv,
+                         float n0, float n1, float n2, float pn, float dh, float ks, int mode, float* Gn, float* Kn, double* E) {
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < IP[12]; int qq = on ? q : 0; int oc = qq & 7;
+    double e = 0.0; float c = 0.f, h = 0.f;
+    float bm = on ? AF_BX[qq*4+3] : 0.f;
+    if (bm > 0.f) {
+        int ids[27]; qnodes(qq, IP, cb, ids);
+        float xq[3] = {AF_BX[qq*4]/bm, AF_BX[qq*4+1]/bm, AF_BX[qq*4+2]/bm};
+        for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+            for (int a=0;a<3;a++) xq[a] += w*(U[id*3+a] + thinv*(y[id*3+a] - U[id*3+a])); }
+        float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;
+        if (mode == 0) AF_BACT[qq] = (d > 0.f) ? 1 : 0;
+        else if (AF_BACT[qq] && d < dh) {
+            double kap = (double)ks*(double)Vq[qq];
+            if (d > 0.f) {
+                double dd = (double)d - dh, L = log((double)d/dh);
+                e = -kap*dd*dd*L;
+                c = (float)(-kap*(2.0*dd*L + dd*dd/d))*thinv;
+                h = (float)(-kap*(2.0*L + 4.0*dd/d - dd*dd/((double)d*d)))*thinv*thinv;
+            } else e = 1e30;
+        }
+        if (mode == 1 && !AF_BDET && (c != 0.f || h != 0.f)) for (int o=0;o<27;o++) { float w = BW[oc*27+o]; atomicAdd(&Gn[ids[o]], w*c); atomicAdd(&Kn[ids[o]], w*h); }
+    }
+    if (mode == 1) {
+        if (on && AF_BDET) { AF_BPG[qq] = c; AF_BPH[qq] = h; }
+        blocksum_add(e, E);
+    }
+}
+// 노드: f += G n, B += K n nᵀ (덩어리 헤시안: 행 합이라 참 헤시안보다 크다 -> 하강 방향 유지)
+__global__ void rt_bar_n(const int* IP, const float* Gn, const float* Kn, float n0, float n1, float n2, double* f, float* B) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float G = Gn[n], K = Kn[n]; if (G == 0.f && K == 0.f) return;
+    float nn[3] = {n0, n1, n2};
+    for (int a=0;a<3;a++) { f[n*3+a] += (double)(G*nn[a]); for (int b=0;b<3;b++) B[n*9+a*3+b] += K*nn[a]*nn[b]; }
+}
+// 헤시안 곱 몫: KTp += K n (n·Tp)
+__global__ void rt_bar_mv(const int* IP, const float* Kn, float n0, float n1, float n2, const float* Tp, float* KTp) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float K = Kn[n]; if (K == 0.f) return;
+    float t = K*(Tp[n*3]*n0 + Tp[n*3+1]*n1 + Tp[n*3+2]*n2);
+    KTp[n*3] += t*n0; KTp[n*3+1] += t*n1; KTp[n*3+2] += t*n2;
+}
+// 선탐색 후보 NC 개의 장벽 에너지 -> SC[40+i] (rt_elem_lsN 과 같은 후보 y = ŷ + T (η + c δ), c = 2^-i)
+__global__ void __launch_bounds__(128) rt_bar_lsN(const int* IP, const int* cb, const float* BW, const float* Vq, const float* yh, const float* eta, const float* dl,
+                         const float* sk, const int* pm, const float* U, float thinv, float n0, float n1, float n2, float pn, float dh, float ks, double* SC, int NC) {
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < IP[12]; int qq = on ? q : 0; int oc = qq & 7;
+    float bm = on ? AF_BX[qq*4+3] : 0.f;
+    bool act = bm > 0.f && AF_BACT[qq];
+    int ids[27]; qnodes(qq, IP, cb, ids);
+    float x0[3] = {0.f, 0.f, 0.f};
+    if (act) for (int a=0;a<3;a++) x0[a] = AF_BX[qq*4+a]/bm;
+    double kap = act ? (double)ks*(double)Vq[qq] : 0.0;
+    float c = 1.f;
+    for (int i=0;i<NC;i++) {
+        double e = 0.0;
+        if (act) {
+            float xq[3] = {x0[0], x0[1], x0[2]};
+            for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+                float ee[3]; for (int a=0;a<3;a++) ee[a] = eta[id*3+a] + c*dl[id*3+a];
+                float t[3]; Tapply(sk[id], pm[id], n0, n1, n2, ee, t);
+                for (int a=0;a<3;a++) { float ya = yh[id*3+a] + t[a]; xq[a] += w*(U[id*3+a] + thinv*(ya - U[id*3+a])); } }
+            float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;
+            if (d < dh) { if (d > 0.f) { double dd = (double)d - dh; e = -kap*dd*dd*log((double)d/dh); } else e = 1e30; }
+        }
+        blocksum_add(e, &SC[40+i]);
+        c *= 0.5f;
+    }
+}
+'''
+
+
 def flptify(src, kex):
     """점별 고착 판 (--fl_pt, 절 AN.17): 노드 몫 평균 뒤 거듭제곱 (1 − r̄)^κ 대신 점마다 1 − (1 − w_st)^κ 를 질량 가중 평균 (κ = Δt/dt_정답, 단계 frac 1 판만)."""
     return src.replace('extern "C" {', 'extern "C" {\n#define AF_FLJ 1\n#define AF_KEXQ %.9ef' % float(kex), 1)
+
+
+def barify(src):
+    """장벽 판 (--fl_bar, 절 AN.19): AF_BAR 를 켜고 표본점 버퍼 전역을 선언, 장벽 커널을 모듈 끝 (extern 닫기 앞) 에."""
+    src = src.replace('extern "C" {', 'extern "C" {\n#define AF_BAR 1\n__device__ float* AF_BX;\n__device__ float* AF_BPG;\n__device__ float* AF_BPH;\n__device__ int* AF_BACT;\n__device__ int AF_BDET;\n__device__ const float* AF_XP;\n__device__ float AF_BNRM[3];', 1)
+    i = src.rstrip().rfind("}")
+    return src[:i] + BAR_SRC + "\n}\n"
 
 
 def build_src(src, adapt, goct, floor=None):
@@ -1173,6 +1282,8 @@ def build_src(src, adapt, goct, floor=None):
         src = octify(src)
     if floor and floor.get("pt"):
         src = flptify(src, floor["KEX"])
+    if floor and floor.get("bar"):
+        src = barify(src)
     return skipify(src) if adapt else src
 
 
@@ -1324,6 +1435,9 @@ class RTSolver:
         s.Aacc = Z(capQ, 28); s.Cacc = Z(s.capQc, 30)
         s.badq = torch.zeros(capQ, device=dev, dtype=torch.int32); s.badc = torch.zeros(s.capQc, device=dev, dtype=torch.int32)
         s.Mo = Z(capQ) if s.goct >= 0 else None
+        s.bar = bool(s.floor and s.floor.get("bar"))                                  # 장벽 판 (절 AN.19): 표본점 누적·점별 스칼라·노드 스칼라
+        if s.bar:
+            s.bx = Z(capQ * 4); s.bpg = Z(capQ); s.bph = Z(capQ); s.bact = torch.zeros(capQ, device=dev, dtype=torch.int32); s.bGn = Z(s.capN); s.bKn = Z(s.capN)
         s.Fq = Z(capQ, 9); s.Vq = Z(capQ); s.mq = Z(capQ); s.xq0 = Z(capQ, 3); s.H = Z(capQ, 81)
         s.mn = Z(s.capN); s.mv = Z(s.capN, 3); s.mqn = Z(s.capN); s.an = Z(s.capN)
         s.U = Z(s.capN, 3); s.vk = Z(s.capN, 3); s.Ut = Z(s.capN, 3); s.z0 = Z(s.capN, 3); s.y = Z(s.capN, 3); s.yh = Z(s.capN, 3); s.eta = Z(s.capN, 3)
@@ -1376,7 +1490,13 @@ class RTSolver:
         return [s.mod] + ([s.pkmod] if s.pkmod is not None else [])
 
     def oct_bind(s):
-        """점유 가중 판: 장치 전역 AF_MO (팔분 질량 버퍼)·AF_GOCT (κ) 를 지금 모듈에 (다시 할당·모듈 바꿈 뒤마다)."""
+        """점유 가중 판: 장치 전역 AF_MO (팔분 질량 버퍼)·AF_GOCT (κ) 를 지금 모듈에 (다시 할당·모듈 바꿈 뒤마다). 장벽 판 전역도 여기서."""
+        if getattr(s, "bar", False):
+            for mod in s._mods():
+                for nm, t in (("AF_BX", s.bx), ("AF_BPG", s.bpg), ("AF_BPH", s.bph), ("AF_BACT", s.bact), ("AF_XP", s.x)):
+                    g = mod.get_global(nm); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(t.data_ptr())
+                g = mod.get_global("AF_BDET"); cp.ndarray((1,), dtype=cp.int32, memptr=g)[0] = 1 if getattr(s, "det", False) else 0
+                g = mod.get_global("AF_BNRM"); cp.ndarray((3,), dtype=cp.float32, memptr=g)[:] = cp.asarray(np.array(s.floor["NR"], dtype=np.float32))
         if s.goct < 0:
             return
         for mod in s._mods():
@@ -1556,6 +1676,8 @@ class RTSolver:
         for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3), (s.mqn, 9, 1)) + (((s.ma, 9, 3),) if s.ga else ()) + (((s.Mo, 12, 1),) if s.goct >= 0 else ()):
             s.zf(t_, ci, mul)
         s.zf(s.badq); s.zf(s.badc); s.zf(s.nbad)
+        if getattr(s, "bar", False):
+            s.zf(s.bx)
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv),
                               P(s.pa if s.ga else None), P(s.ma if s.ga else None)))
         s.k("rt_gauss", capQ, (P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.cb), P(s.A), P(s.BW), P(s.Fq), P(s.Vq), P(s.mq), P(s.xq0), P(s.mqn), P(s.nbad)))
@@ -1599,8 +1721,11 @@ class RTSolver:
                                          f(FL["PN"]), f(FL["DXG"]), P(s.an)))
             s.k("rt_floor_n", capN, (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] * (s.K / (K or s.K)) * sg["frac"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(sg["al"]), *[f(q) for q in nr],
                                      P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta)), b=256)
-            if sg["kind"] == "ga":
+            if sg["kind"] == "ga" or s.bar:                                            # 장벽 판: 모든 적분기 시작점 = 걸음 시작 위치 (장벽 실현 가능)
                 s.k("rt_ga_y0", capN, (P(IP), P(s.U), P(s.yh), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.y)), b=256)
+            if s.bar:
+                BA = (*[f(q) for q in nr], f(FL["PN"]), f(FL["DH"]), f(FL["KS"]))
+                s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), f(sg["thinv"]), *BA, i32(0), P(s.bGn), P(s.bKn), P(s.SC[10:])))
             s.ctl(1)
             for it in range(s.nt):
                 s.ctl(2, it)
@@ -1608,6 +1733,13 @@ class RTSolver:
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
                 s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8 | (4 if s.ls else 0)), P(s.SC[10:]), P(s.f), P(s.H),
                                       i32(capQ), P(s.B)))
+                if s.bar:
+                    s.zf(s.bGn); s.zf(s.bKn)
+                    s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), f(sg["thinv"]), *BA, i32(1), P(s.bGn), P(s.bKn), P(s.SC[10:])))
+                    if getattr(s, "det", False):
+                        s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.bpg), P(s.bGn)), b=256)
+                        s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.bph), P(s.bKn)), b=256)
+                    s.k("rt_bar_n", capN, (P(IP), P(s.bGn), P(s.bKn), *[f(q) for q in nr], P(s.f), P(s.B)), b=256)
                 if it == 0:
                     s.k("rt_meff", capN, (P(IP), P(s.mn), P(s.B), f(s.mfloor * sg["tau"] ** 2), P(s.meff)), b=256)
                 s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
@@ -1630,6 +1762,8 @@ class RTSolver:
                     if ci == 0 or not s.fuse2:
                         s.zf(s.KTp, 9, 3)
                     s.k("rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
+                    if s.bar:
+                        s.k("rt_bar_mv", capN, (P(IP), P(s.bKn), *[f(q) for q in nr], P(s.Tp), P(s.KTp)), b=256)
                     s.k("rt_ap", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
                     if s.descent and ci == 0:
                         s.k("rt_sc_copy", 1, (P(s.SC), i32(61), i32(2)), b=1)
@@ -1654,8 +1788,11 @@ class RTSolver:
                         s.k("rt_sc_clear", 1, (P(s.SC), i32(9), i32(10)), b=1); s.k("rt_sc_clear", 1, (P(s.SC), i32(20), i32(40)), b=1)
                         s.k("rt_lsyN", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC), b=256)
                     s.k("rt_elem_lsN", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC), NC))
+                    if s.bar:
+                        s.k("rt_bar_lsN", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BA[:4], BA[4], BA[5], P(s.SC), NC))
                     s.k("rt_lspickN", 1, (P(s.SC), NC), b=1)
                 elif s.ls:
+                    assert not s.bar, "장벽 판은 --ls_n 선탐색만"
                     s.k("rt_lsy4", capN, (P(IP), P(s.meff), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC)), b=256)
                     if s.descent:                                                      # g·δ ≥ 0 이면 전처리 기울기 방향으로 바꾸고 관성 몫·g·δ 를 다시
                         s.k("rt_fixdir", capN, (P(IP), P(s.SC), P(s.p0), P(s.dl)), b=256)
