@@ -541,7 +541,8 @@ __global__ void aq_gauss_s(const int* IP, const float* Sa, const float* Sc, floa
     Sq[(size_t)q*4] = a[0]/w; Sq[(size_t)q*4+1] = a[1]/w; Sq[(size_t)q*4+2] = a[2]/w; Sq[(size_t)q*4+3] = 0.f;
 }
 // 탄성 주값 1 차 PK (시험 σ, RM 없음) 와 주값 공간 대칭 접선 (중심 차분)
-__device__ __forceinline__ void aq_tan(int mat, const float* ss, const float* prm, float al, float* pe, float D[3][3]) {
+__device__ __forceinline__ void aq_tan(int mat, const float* ss0, const float* prm, float al, float* pe, float D[3][3]) {
+    float ss[3]; for (int i=0;i<3;i++) ss[i] = (mat == 7) ? fabsf(ss0[i]) : ss0[i];      // neo-Hookean 은 J^{-2/3} 라 뒤집힌 시험 σ 에서 nan -> 크기로 (접선만)
     pl_pi(mat, ss, prm, al, pe);
     for (int j=0;j<3;j++) {
         float h = fmaxf(1e-3f*fabsf(ss[j]), 1e-4f);
@@ -551,6 +552,7 @@ __device__ __forceinline__ void aq_tan(int mat, const float* ss, const float* pr
         for (int i=0;i<3;i++) D[i][j] = (pp[i] - pm[i])/(2.f*h);
     }
     for (int i=0;i<3;i++) for (int j=i+1;j<3;j++) { float t = 0.5f*(D[i][j] + D[j][i]); D[i][j] = t; D[j][i] = t; }
+    for (int i=0;i<3;i++) { if (!isfinite(pe[i])) pe[i] = 0.f; for (int j=0;j<3;j++) if (!isfinite(D[i][j])) D[i][j] = 0.f; }
 }
 // 재질 요소 (주값 분해 저장, ao_elem_s 와 같은 틀): 응력 = 시험 X 에 정답 RM (상태 지역 사본) -> τ̂ = pl_pi(σ̂) σ̂, P = U diag(τ̂_i/σ_i) Vᵀ;
 // 헤시안 = 시험 X 의 탄성 접선 (초기 강성법, 투영). 등가 점성 (eta > 0): 노드 속도 v = α (y − z0) 로 Ẋ, τ_v = 2 η J sym(Ẋ X⁻¹), P += τ_v X⁻ᵀ, 접선에 α η 몫.
