@@ -59,6 +59,7 @@ ap.add_argument("--hpack", action="store_true", help="모래 판 헤시안 위 �
 ap.add_argument("--det", action="store_true", help="결정적 합산 (lib/anchorflow/fem_det_rt.py): 같은 명령 두 번이 비트 단위로 같게")
 ap.add_argument("--ao_fast", action="store_true", help="탄성 씬에도 노드 압축·PCG 첫 추정 (절 AO.11; 기본은 절 AN 그대로)")
 ap.add_argument("--no_warm", action="store_true")
+ap.add_argument("--F0_eye", action="store_true", help="초기 탄성 F = I (정답 MPM 시작 상태; 자료 F 가 항등이라 위치에서 되살린 F 대신)")
 ap.add_argument("--ys_big", action="store_true", help="진단: 항복 응력을 아주 크게 (소성 없이 탄성만)")
 ap.add_argument("--visc_rpic", action="store_true", help="정답 config rpic_damping r -> 등가 점성 η = ρ r (2−r) Δx_gt² / (16 Δt_gt) (절 AG.20)")
 ap.add_argument("--floor_plane", type=str, default="", help="바닥 평면 px,py,pz,nx,ny,nz (주면 config surface_collider 대신; 수박 = GF bounding_box)")
@@ -114,7 +115,7 @@ if a.cfg_bc:
             t1 = float(bc.get("end_time", 1e3))
             BC.append(([0.0, 0.0, 0.0], [1e9, 1e9, 1e9], [0.0, 0.0, 0.0], t1, t1 + 15.0 * h))
     BC = BC or None
-F0 = DM.traj_F(d, h, dev)[0].to(dev).double().reshape(Np, 9)
+F0 = (torch.eye(3, device=dev, dtype=torch.float64).reshape(1, 9).repeat(Np, 1) if a.F0_eye else DM.traj_F(d, h, dev)[0].to(dev).double().reshape(Np, 9))
 SAND = cfg.get("material") == "sand"
 TREL = None
 PVB = None
