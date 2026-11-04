@@ -1317,6 +1317,24 @@ __global__ void __launch_bounds__(128) rt_bar_lsN(const int* IP, const int* cb, 
         c *= 0.5f;
     }
 }
+// 절 AN.22 (--mgbar 2, 전처리만): 거친 층 장벽 덩어리 헤시안. Kc_l = R Kc_{l−1} (제한 = 연장의 전치, 1 의 분할이라 Pᵀ diag(K) P 의 행 합 덩어리와 같음 -- 거친 질량 mc = R m 과 같은 꼴),
+// 곱 KT += Kc n (n·z), 블록 대각 역 D_b = (D⁻¹ + Kc n nᵀ)⁻¹ = D − Kc (D n)(D n)ᵀ / (1 + Kc nᵀ D n) (셔먼-모리슨, D 대칭)
+__global__ void rt_bar_mvl(int l, const int* LM, const float* Kc, float n0, float n1, float n2, const float* z, float* KT) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= LM[l*8+3]) return;
+    float K = Kc[n]; if (K == 0.f) return;
+    float t = K*(z[n*3]*n0 + z[n*3+1]*n1 + z[n*3+2]*n2);
+    KT[n*3] += t*n0; KT[n*3+1] += t*n1; KT[n*3+2] += t*n2;
+}
+__global__ void rt_mg_dbar(int l, const int* LM, const float* D, const float* Kc, float n0, float n1, float n2, float* Db) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= LM[l*8+3]) return;
+    const float* d = D + n*9; float K = Kc[n];
+    float u[3]; for (int a=0;a<3;a++) u[a] = d[a*3]*n0 + d[a*3+1]*n1 + d[a*3+2]*n2;
+    float den = 1.f + K*(u[0]*n0 + u[1]*n1 + u[2]*n2);
+    float c = (K != 0.f && den > 0.f) ? K/den : 0.f;
+    for (int a=0;a<3;a++) for (int b=0;b<3;b++) Db[n*9+a*3+b] = d[a*3+b] - c*u[a]*u[b];
+}
 '''
 
 
@@ -1365,7 +1383,7 @@ class RTSolver(MG2.MG2Mixin):
         s.lsfast = bool(lsfast)                                                        # 절 AN.22: 선탐색 조기 판정 (결과 같음)
         s.cg_list = [int(q) for q in cg_list.split(",")] if cg_list else None          # 절 AN.22: 뉴턴 반복별 PCG 상한 (길이 = newton)
         assert s.cg_list is None or len(s.cg_list) == int(newton), "--cg_list 길이는 --newton"
-        s.mgbar = bool(mgbar)                                                          # 절 AN.22: MG 전처리 고운 층 연산자에 장벽 헤시안
+        s.mgbar = int(mgbar)                                                          # 절 AN.22: MG 전처리 고운 층 연산자에 장벽 헤시안
         s.y0ls = bool(y0ls)                                                            # 절 AN.22: 뉴턴 시작점을 U 와 관성 예측 Ũ 사이 후보 중 전체 에너지 최소로 (ga·장벽 판, --ls_n 필요)
         # 절 AN.20 (lib/anchorflow/fem_an_mg2.py): 칸 협동 곱 (mv2), 거친 층 점유 칸 목록 (mg_occ, mv2 포함), 층 mg_fuse 이상 V 순환 한 블록 (mg_fuse >= 1)
         s.mg_occ, s.mg_fuse = bool(mg_occ), int(mg_fuse or 0)
@@ -1552,7 +1570,7 @@ class RTSolver(MG2.MG2Mixin):
                 capn.append(cn); capq.append(cq)
                 L = dict(capn=cn, capq=cq, Fq=Z(cq, 9), Vq=Z(cq), H=Z(81, cq), B=Z(cn, 9), D=Z(cn, 9), mc=Z(cn), A=Z(cq, 28), C=Z(cq // 8, 30),
                          badq=torch.zeros(cq, device=dev, dtype=torch.int32), badc=torch.zeros(cq // 8, device=dev, dtype=torch.int32),
-                         r=Z(cn, 3), z=Z(cn, 3), t=Z(cn, 3), KT=Z(cn, 3), y=Z(cn, 3))
+                         r=Z(cn, 3), z=Z(cn, 3), t=Z(cn, 3), KT=Z(cn, 3), y=Z(cn, 3), Kb=Z(cn), Db=Z(cn, 9))
                 s.ML.append(L)
             s.capn_d = torch.tensor(capn, device=dev, dtype=torch.int32); s.capq_d = torch.tensor(capq, device=dev, dtype=torch.int32)
             s.LM = torch.zeros(s.nl * 8, device=dev, dtype=torch.int32)
@@ -1632,6 +1650,8 @@ class RTSolver(MG2.MG2Mixin):
         else:
             if s.mv2:
                 s.mg2_mv(l, z, KT)
+                if getattr(s, "_mgb_on", False):                                       # 절 AN.22 --mgbar 2: 거친 층 장벽 덩어리 헤시안
+                    s.k("rt_bar_mvl", s.ML[l - 1]["capn"], (i32(l), P(s.LM), P(s.ML[l - 1]["Kb"]), *[f(q) for q in nr], P(z), P(KT)), b=256)
                 return
             L = s.ML[l - 1]
             s.k("rt_mg_mv", L["capq"], (i32(l), P(s.LM), P(s.BG), f(0.5 ** l), P(L["Fq"]), P(L["Vq"]), P(L["H"]), i32(L["capq"]), P(z), P(KT)))
@@ -1640,7 +1660,7 @@ class RTSolver(MG2.MG2Mixin):
         if l == 0:
             return dict(mn=s.meff, D=s.Dinv, cap=s.capN)
         L = s.ML[l - 1]
-        return dict(mn=L["mc"], D=L["D"], cap=L["capn"])
+        return dict(mn=L["mc"], D=(L["Db"] if getattr(s, "_mgb_on", False) else L["D"]), cap=L["capn"])
 
     def mg_power(s, l):
         i32, f = np.int32, np.float32
@@ -1764,6 +1784,7 @@ class RTSolver(MG2.MG2Mixin):
         N, IP = s.N, s.IP
         i32, f = np.int32, np.float32
         capN, capQ = s.capN, s.capQc * 8
+        s._mgb_on = False
         s.k("rt_reset", 1, (P(IP),), b=1)
         s.ctl(0)
         s.k("rt_coord", N, (i32(N), P(s.x), P(s.Ai), P(s.Np), P(s.fx), P(IP)))
@@ -1852,6 +1873,12 @@ class RTSolver(MG2.MG2Mixin):
                         s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.bpg), P(s.bGn)), b=256)
                         s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.bph), P(s.bKn)), b=256)
                     s.k("rt_bar_n", capN, (P(IP), P(s.bGn), P(s.bKn), *[f(q) for q in nr], P(s.f), P(s.B)), b=256)
+                    if s.mgbar >= 2 and s.nl > 1 and s.mv2:                            # 절 AN.22: 거친 층 장벽 (Kc = R Kc_{l−1}, D_b 셔먼-모리슨)
+                        for l_ in range(1, s.nl):
+                            Lc_ = s.ML[l_ - 1]
+                            s.k("rt_mg_restrict3", Lc_["capn"] * 16, (i32(l_ - 1), P(s.LM), P(s.bKn if l_ == 1 else s.ML[l_ - 2]["Kb"]), P(Lc_["Kb"]), i32(1)), b=256)
+                            s.k("rt_mg_dbar", Lc_["capn"], (i32(l_), P(s.LM), P(Lc_["D"]), P(Lc_["Kb"]), *[f(q) for q in nr], P(Lc_["Db"])), b=256)
+                        s._mgb_on = True
                 if it == 0:
                     s.k("rt_meff", capN, (P(IP), P(s.mn), P(s.B), f(s.mfloor * sg["tau"] ** 2), P(s.meff)), b=256)
                 s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)

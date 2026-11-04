@@ -71,7 +71,7 @@ ap.add_argument("--mg_fuse", type=int, default=0, help="절 AN.20: 이 MG 층 �
 ap.add_argument("--kbench", type=int, default=0, help="절 AN.20: 이 프레임 수를 돈 뒤 커널별 그래프 재생 시간 (µs/회) 을 kbench.json 에 쓰고 끝냄")
 ap.add_argument("--y0ls", action="store_true", help="절 AN.22 (결과 정의 같음): ga·장벽 판 뉴턴 시작점을 걸음 시작 U 와 관성 예측 Ũ 사이 후보 2^-i 중 전체 에너지 (관성 + 탄성 + 장벽) 최소로 (--ls_n 필요)")
 ap.add_argument("--lsfast", action="store_true", help="절 AN.22 (결과 같음): 선탐색 후보 c = 1 먼저 -- 받아들여지면 나머지 후보 에너지 커널 생략, 하강 방향을 안 바꾼 반복의 관성 몫 다시 계산 생략")
-ap.add_argument("--mgbar", action="store_true", help="절 AN.22 (전처리만, 풀리는 방정식 같음): MG V 순환 고운 층 연산자에 장벽 덩어리 헤시안 (원래는 블록 대각에만 있고 잔차 갱신 곱에는 없어 V 순환이 장벽 없는 계를 풀었음)")
+ap.add_argument("--mgbar", nargs="?", const=1, default=0, type=int, help="절 AN.22 (전처리만, 풀리는 방정식 같음): MG V 순환 고운 층 연산자에 장벽 덩어리 헤시안 (원래는 블록 대각에만 있고 잔차 갱신 곱에는 없어 V 순환이 장벽 없는 계를 풀었음); 2 = 거친 층에도 (제한한 덩어리 강성, 블록 대각 셔먼-모리슨)")
 ap.add_argument("--cg_list", default=None, help="절 AN.22 (풀이기 설정만): 뉴턴 반복별 PCG 상한 'a,b,..' (길이 = --newton; --cg 대신)")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
 a = ap.parse_args()
