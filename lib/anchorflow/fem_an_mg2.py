@@ -80,6 +80,24 @@ __global__ void __launch_bounds__(128) rt_mg_mv2(int l, const int* LM, const flo
     mv2_core(j, on, (size_t)c*8 + j, nid, dy, BG, sc, sW + (threadIdx.x >> 3)*81, Fq, Vq, H, capQ, res);
     if (on) for (int r=0;r<4;r++) { int o = j + 8*r; if (o < 27) for (int a=0;a<3;a++) atomicAdd(&out[nid[r]*3+a], res[r][a]); }
 }
+// 제한 (rt_mg_restrict 와 같은 식·같은 더하는 순서; 고리를 펼쳐 64 x 3 읽기를 한꺼번에 띄움 -- 원래 판은 continue 고리라 읽기 지연이 줄줄이 쌓임)
+__global__ void rt_mg_restrict2(int lf, const int* LM, const float* in, float* out, int ch) {
+    const int* A = LM + lf*8; const int* B = LM + (lf+1)*8;
+    int J = blockIdx.x*blockDim.x + threadIdx.x;
+    if (J >= B[3]) return;
+    int jz = J % B[2], jy = (J / B[2]) % B[1], jx = J / (B[1]*B[2]);
+    const float cw[4] = {0.25f, 0.75f, 0.75f, 0.25f};
+    float acc[3] = {0.f, 0.f, 0.f};
+    #pragma unroll
+    for (int k=0;k<4;k++) { int ix = 2*jx - 3 + k; bool okx = ix >= 0 && ix < A[0];
+      #pragma unroll
+      for (int m=0;m<4;m++) { int iy = 2*jy - 3 + m; bool oky = okx && iy >= 0 && iy < A[1];
+        #pragma unroll
+        for (int n=0;n<4;n++) { int iz = 2*jz - 3 + n; bool ok = oky && iz >= 0 && iz < A[2];
+          if (ok) { float w = cw[k]*cw[m]*cw[n]; int i = (ix*A[1] + iy)*A[2] + iz;
+            if (ch == 3) { acc[0] += w*__ldg(in + i*3); acc[1] += w*__ldg(in + i*3+1); acc[2] += w*__ldg(in + i*3+2); } else acc[0] += w*__ldg(in + i); } } } }
+    for (int c=0;c<ch;c++) out[J*ch+c] = acc[c];
+}
 // 점유 칸 목록 (한 블록 1024, 칸 번호 오름차순): list[i] = 칸, pos[칸] = 자리 또는 −1, cnt[l] = 수. 용량 넘치면 넘침 표시 (IP[13] |= 4).
 __global__ void __launch_bounds__(1024) rt_mg_occ(int l, const int* LM, const float* Vq, int* list, int* pos, int* cnt, int cap, int* IP) {
     __shared__ int sh[1024];
@@ -123,11 +141,16 @@ __device__ void cvc_Kz(int l, const int* L, const unsigned long long* MP, const 
     for (int n = threadIdx.x; n < L[3]; n += blockDim.x) {                           // 노드가 이웃 27 칸을 고정 순서로
         int ni = n / (L[1]*L[2]), nj = (n / L[2]) % L[1], nk = n % L[2];
         float s0 = 0.f, s1 = 0.f, s2 = 0.f;
-        for (int o=0;o<27;o++) {
+        int pp[27];
+        #pragma unroll
+        for (int o=0;o<27;o++) {                                                     // 자리 읽기를 먼저 한꺼번에 (지연 겹침), 더하는 순서는 o 순서 그대로
             int ci = ni - o/9, cj = nj - (o/3)%3, ck = nk - o%3;
-            if (ci < 0 || cj < 0 || ck < 0 || ci >= L[4] || cj >= L[5] || ck >= L[6]) continue;
-            int p = pos[(ci*L[5] + cj)*L[6] + ck]; if (p < 0) continue;
-            const float* cv = cbuf + ((size_t)p*27+o)*3; s0 += cv[0]; s1 += cv[1]; s2 += cv[2];
+            bool ok = !(ci < 0 || cj < 0 || ck < 0 || ci >= L[4] || cj >= L[5] || ck >= L[6]);
+            pp[o] = ok ? pos[(ci*L[5] + cj)*L[6] + ck] : -1;
+        }
+        #pragma unroll
+        for (int o=0;o<27;o++) { if (pp[o] < 0) continue;
+            const float* cv = cbuf + ((size_t)pp[o]*27+o)*3; s0 += cv[0]; s1 += cv[1]; s2 += cv[2];
         }
         KT[n*3] = s0; KT[n*3+1] = s1; KT[n*3+2] = s2;
     }
@@ -137,11 +160,14 @@ __device__ __forceinline__ void cvc_restrict(const int* A, const int* B, int J, 
     int jz = J % B[2], jy = (J / B[2]) % B[1], jx = J / (B[1]*B[2]);
     const float cw[4] = {0.25f, 0.75f, 0.75f, 0.25f};
     float acc[3] = {0.f, 0.f, 0.f};
-    for (int k=0;k<4;k++) { int ix = 2*jx - 3 + k; if (ix < 0 || ix >= A[0]) continue;
-      for (int m=0;m<4;m++) { int iy = 2*jy - 3 + m; if (iy < 0 || iy >= A[1]) continue;
-        for (int n=0;n<4;n++) { int iz = 2*jz - 3 + n; if (iz < 0 || iz >= A[2]) continue;
+    #pragma unroll
+    for (int k=0;k<4;k++) { int ix = 2*jx - 3 + k; bool okx = ix >= 0 && ix < A[0];
+      #pragma unroll
+      for (int m=0;m<4;m++) { int iy = 2*jy - 3 + m; bool oky = okx && iy >= 0 && iy < A[1];
+        #pragma unroll
+        for (int n=0;n<4;n++) { int iz = 2*jz - 3 + n; if (oky && iz >= 0 && iz < A[2]) {
           float w = cw[k]*cw[m]*cw[n]; int i = (ix*A[1] + iy)*A[2] + iz;
-          for (int c=0;c<3;c++) acc[c] += w*in[i*3+c]; } } }
+          for (int c=0;c<3;c++) acc[c] += w*in[i*3+c]; } } } }
     for (int c=0;c<3;c++) out[J*3+c] = acc[c];
 }
 __device__ __forceinline__ void cvc_prolong_add(const int* A, const int* B, int I, const float* in, float* out) {
@@ -314,6 +340,7 @@ class MG2Mixin:
                 cases.append((f"mg_mv2o:{l}", lambda l=l, L=L: s.k("rt_mg_mv2", L["lcap"] * 8, (i32(l), P(s.LM), P(s.BG), f(0.5 ** l), P(L["Fq"]), P(L["Vq"]), P(L["H"]), i32(L["capq"]), P(L["y"]), P(L["KT"]), P(L["list"]), P(s.mg_cnt)))))
             cases.append((f"node:{l}", lambda l=l, L=L: s.k("rt_mg_node", L["capn"], (i32(l), P(s.LM), i32(1), P(L["mc"]), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(L["D"]), P(s.W), P(L["r"]), P(L["KT"]), P(L["y"]), P(None)), b=256)))
             cases.append((f"restrict:{l - 1}", lambda l=l, L=L: s.k("rt_mg_restrict", L["capn"], (i32(l - 1), P(s.LM), P(s.m0t if l == 1 else s.ML[l - 2]["t"]), P(L["t"]), i32(3)), b=256)))
+            cases.append((f"restrict2:{l - 1}", lambda l=l, L=L: s.k("rt_mg_restrict2", L["capn"], (i32(l - 1), P(s.LM), P(s.m0t if l == 1 else s.ML[l - 2]["t"]), P(L["t"]), i32(3)), b=256)))
             cases.append((f"prolong:{l - 1}", lambda l=l, L=L: s.k("rt_mg_prolong", (s.capN if l == 1 else s.ML[l - 2]["capn"]), (i32(l - 1), P(s.LM), P(L["y"]), P(s.zo if l == 1 else s.ML[l - 2]["y"]), i32(0)), b=256)))
         if s.mg_fuse:
             def cvc():
