@@ -557,7 +557,7 @@ __device__ __forceinline__ void aq_tan(int mat, const float* ss0, const float* p
 // 재질 요소 (주값 분해 저장, ao_elem_s 와 같은 틀): 응력 = 시험 X 에 정답 RM (상태 지역 사본) -> τ̂ = pl_pi(σ̂) σ̂, P = U diag(τ̂_i/σ_i) Vᵀ;
 // 헤시안 = 시험 X 의 탄성 접선 (초기 강성법, 투영). 등가 점성 (eta > 0): 노드 속도 v = α (y − z0) 로 Ẋ, τ_v = 2 η J sym(Ẋ X⁻¹), P += τ_v X⁻ᵀ, 접선에 α η 몫.
 __global__ void __launch_bounds__(128) aq_elem(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* y, int mat, const float* prm, const float* Sq, float dt,
-                        double* f, float* H, int capQ, float* B, int* cnt, const float* z0, float alI, float eta) {
+                        double* f, float* H, int capQ, float* B, int* cnt, const float* z0, float alI, float eta, int* qb) {
     if (blockIdx.x*blockDim.x >= IP[12]) return;
     __shared__ float sY[16][27][3]; __shared__ float sQ[128][9]; __shared__ float sU[128][9]; __shared__ float sM[128][9]; __shared__ float sC[128][12];
     int q = blockIdx.x*blockDim.x + threadIdx.x;
@@ -597,6 +597,11 @@ __global__ void __launch_bounds__(128) aq_elem(const int* IP, const int* cb, con
         float L[9]; ao_mm3(Xd, Xi, L);
         float T[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) T[a*3+b] = eta*Jx*(L[a*3+b] + L[b*3+a]);
         for (int a=0;a<3;a++) for (int b=0;b<3;b++) Pm[a*3+b] += T[a*3]*Xi[b*3] + T[a*3+1]*Xi[b*3+1] + T[a*3+2]*Xi[b*3+2];   // T X⁻ᵀ
+    }
+    if (qb && on && vq > 0.f) {                                                // 진단: 뒤집힌 시험 X, 비유한 응력
+        if (!(S[0]*S[1]*S[2] > 0.f)) atomicAdd(&qb[0], 1);
+        bool nf = false; for (int k=0;k<9;k++) if (!isfinite(Pm[k])) nf = true;
+        if (nf) atomicAdd(&qb[1], 1);
     }
     for (int k=0;k<9;k++) Pm[k] *= vq;
     for (int a=0;a<3;a++) for (int c=0;c<3;c++) sQ[tl][a*3+c] = Pm[a*3]*F[c*3] + Pm[a*3+1]*F[c*3+1] + Pm[a*3+2]*F[c*3+2];
@@ -919,6 +924,7 @@ class AORTSolver(DET.DetMixin):
         s.bind_act()
         s.tbuf = torch.zeros(1, device=s.dev, dtype=torch.float32)
         s.cnt = torch.zeros(4, device=s.dev, dtype=torch.int32)
+        s.qb = torch.zeros(4, device=s.dev, dtype=torch.int32)                       # 진단: 프레임 동안 뒤집힌 시험 X 점-회, 비유한 응력 점-회
         s.trel = (trel[s.perm].float().contiguous() if s.has_pbc else None)
         s.graph = None
 
@@ -973,6 +979,8 @@ class AORTSolver(DET.DetMixin):
         s.k("rt_reset", 1, (P(IP),), b=1)
         s.ctl(0)
         s.zf(s.cnt)
+        if s.mat != 2:
+            s.zf(s.qb)
         s.k("rt_coord", N, (i32(N), P(s.x), P(s.Ai), P(s.Np), P(s.fx), P(IP)))
         s.k("rt_box", 1, (P(IP), i32(capN), i32(s.capC)), b=1)
         s.zf(s.occ)
@@ -1058,7 +1066,7 @@ class AORTSolver(DET.DetMixin):
                     s.k("rt_sc_clear", 1, (P(s.SC), i32(56), i32(58)), b=1)
                 if s.mat != 2:
                     s.k("aq_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt), P(s.f), P(s.H), i32(capQ), P(s.B),
-                                          P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None), P(s.z0), f(s.al), f(s.visc)))
+                                          P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None), P(s.z0), f(s.al), f(s.visc), P(s.qb)))
                 else:
                     s.k("ao_elem_s" if s.hspec else "ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8 | (128 if s.hpack else 0) | (256 if s.bdsh else 0) | (512 if s.h16 else 0)), P(s.f), P(s.H), i32(capQ), P(s.B),
                                           P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None)))
@@ -1166,6 +1174,38 @@ class AORTSolver(DET.DetMixin):
                  mv_dot=float((dv[:nn].double() * out["spec"][2].double()).sum() / (dv[:nn].double() * out["old"][2].double()).sum()))
         return r
 
+    def k(s, name, n, args, b=128):
+        super().k(name, n, args, b)
+        L = getattr(s, "_nck", None)
+        if L is None or s._nck_hit:
+            return
+        if name in ("ao_step0_ga", "rt_step0", "ao_step0_th"):
+            s._nck_ks += 1; s._nck_it = -1
+        if name in ("aq_elem", "ao_elem_s", "ao_elem"):
+            s._nck_it += 1
+        torch.cuda.synchronize()
+        bad = {}
+        for nm in ("y", "U", "f", "B", "r", "z", "p", "dl", "Fq", "Sq", "x", "v", "F", "vk", "gaA", "H"):
+            t_ = getattr(s, nm, None)
+            if torch.is_tensor(t_) and t_.is_floating_point():
+                c_ = int((~torch.isfinite(t_)).sum())
+                if c_:
+                    bad[nm] = c_
+        L.append((name, s._nck_ks, s._nck_it))
+        if bad:
+            s._nck_hit = dict(kernel=name, call=len(L), kstep=s._nck_ks, it=s._nck_it, bad=bad, qb=s.qb.cpu().tolist() if hasattr(s, "qb") else None,
+                              prev=[q[0] for q in L[-6:-1]], SC=s.SC[:8].cpu().tolist())
+
+    def nanchk(s, t):
+        """진단: 그래프 밖에서 한 프레임을 커널마다 동기화하며 처음 비유한이 생긴 커널·걸음·뉴턴 반복을 찾는다 (상태는 진행 -- 그래프 재생 대신)."""
+        s.set_bc(t)
+        s._nck, s._nck_hit, s._nck_ks, s._nck_it = [], None, -1, -1
+        s.record(t)
+        torch.cuda.synchronize()
+        o = s._nck_hit
+        s._nck = None
+        return o
+
     def ctl(s, op, it=0):
         """허용치 조기 종료 제어 커널 (adapt 판만; 아니면 아무것도 안 넣음)."""
         if not getattr(s, "adapt", False) or not getattr(s, "ao_ready", False):
@@ -1178,6 +1218,8 @@ class AORTSolver(DET.DetMixin):
         c = super().counts()
         cc = s.cnt.cpu().tolist()
         c.update(q_tail=cc[0], q_apex=cc[1], p_rm=cc[2])
+        if s.mat != 2:
+            qb = s.qb.cpu().tolist(); c.update(q_inv=qb[0], q_nf=qb[1])
         if getattr(s, "adapt", False):                                                 # 마지막 프레임 반복 수 (뉴턴 합, PCG 합, 뉴턴 상한 걸음, PCG 상한 풀이, 걸음, 풀이)
             ct = s.CT.cpu().tolist()
             c["it"] = dict(nN=ct[2], nP=ct[3], capN=ct[4], capP=ct[5], steps=ct[6], solves=ct[7])

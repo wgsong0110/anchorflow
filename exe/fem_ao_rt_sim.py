@@ -62,6 +62,7 @@ ap.add_argument("--no_warm", action="store_true")
 ap.add_argument("--F0_eye", action="store_true", help="초기 탄성 F = I (정답 MPM 시작 상태; 자료 F 가 항등이라 위치에서 되살린 F 대신)")
 ap.add_argument("--tolN", type=float, default=-1.0, help="공통 허용치 (절 AN.14 규칙): 뉴턴 |g_k| <= εN |T f(y0)| 이면 걸음 끝 (--newton 은 상한, 음수 = 끔)")
 ap.add_argument("--tolP", type=float, default=-1.0, help="PCG |r| <= εP min(|g_k|, |T f(y0)|) 이면 풀이 끝 (--cg 는 상한)")
+ap.add_argument("--nanchk", type=int, default=0, help="진단: 이 프레임 (1 부터) 을 그래프 밖에서 커널마다 비유한 검사 (그 프레임은 재생 대신)")
 ap.add_argument("--no_rm", action="store_true", help="진단: 재질 판 RM 끔 (탄성 응력만, prm[15])")
 ap.add_argument("--ys_big", action="store_true", help="진단: 항복 응력을 아주 크게 (소성 없이 탄성만)")
 ap.add_argument("--visc_rpic", action="store_true", help="정답 config rpic_damping r -> 등가 점성 η = ρ r (2−r) Δx_gt² / (16 Δt_gt) (절 AG.20)")
@@ -206,7 +207,14 @@ for fi in range(L):
     if a.adaptK > 0:
         redo, KF, VMX = AORT.adapt_step(S, fi * h, h, CELL, float(cfg["substep_dt"]), a.kmax, a.adaptK)
     else:
-        redo, KF, VMX = S.step(fi * h), a.K, None
+        if a.nanchk and fi + 1 == a.nanchk:
+            if S.graph is None:
+                _bk0 = S._bk(); S.capture(); S._rs(_bk0)
+            _hit = S.nanchk(fi * h); S.last_ms = float("nan")
+            print(f"[비유한 검사] 프레임 {fi + 1}: {json.dumps(_hit)}", flush=True)
+            redo, KF, VMX = False, a.K, None
+        else:
+            redo, KF, VMX = S.step(fi * h), a.K, None
     torch.cuda.synchronize(); WALL = 1e3 * (time.perf_counter() - _t0)
     gt = d["x"][fi + 1].to(dev).float()
     xo = S.x_orig()
