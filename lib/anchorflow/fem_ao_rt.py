@@ -902,7 +902,7 @@ class AORTSolver(DET.DetMixin):
         s.pvb = None if pvb is None else pvb[s.perm].float().contiguous()                 # 입자 구속 속도 (0 아닌 구속)
         if s.pvb is not None:
             s.pvc = torch.zeros(s.N, 3, device=s.dev, dtype=torch.float32); s.pmk = torch.zeros(s.N, 3, device=s.dev, dtype=torch.float32)
-        s.extra_p = (("ysp", "ljp", "alp") if s.mat != 2 else ()) + (("pvb",) if s.pvb is not None else ())
+        s.extra_p = (("ysp", "ljp", "alp") if s.mat != 2 else ()) + (("pvb", "pvc", "pmk") if s.pvb is not None else ())          # pvc·pmk 는 aq_vset 이 정렬 전에 채우므로 같이 재배열 (결정적 판)
         s.ga = ga                                                                      # None 또는 dict(kind="hht"|"ga", rho)
         if s.ga is not None:
             assert not s.bc, "GA 판은 고정 노드 없는 씬만"
@@ -1194,15 +1194,47 @@ class AORTSolver(DET.DetMixin):
         L.append((name, s._nck_ks, s._nck_it))
         if bad:
             s._nck_hit = dict(kernel=name, call=len(L), kstep=s._nck_ks, it=s._nck_it, bad=bad, qb=s.qb.cpu().tolist() if hasattr(s, "qb") else None,
-                              prev=[q[0] for q in L[-6:-1]], SC=s.SC[:8].cpu().tolist())
+                              prev=[q[0] for q in L[-6:-1]], SC=s.SC[:8].cpu().tolist(), st=s._nck_stats())
+        elif name in ("aq_elem", "ao_stepend_ga", "rt_stepend", "ao_stepend_th"):
+            s._nck_last = s._nck_stats()
+
+    def _nck_stats(s):
+        """진단 통계: 노드 질량비·관성 예측에서 벗어난 정도·속도/가속도의 강체 운동에서 벗어난 정도."""
+        nn = int(s.IP[9]); o = {}
+        if nn <= 0:
+            return o
+        mn = s.mn[:nn]; md = float(mn[mn > 0].median()); act = mn > s.mthr
+        o["n_act"] = int(act.sum()); o["n_light"] = int(((mn > 0) & ~act).sum())
+        for nm in ("vk", "gaA"):
+            t_ = getattr(s, nm, None)
+            if torch.is_tensor(t_):
+                t_ = t_[:nn]; ok = act & torch.isfinite(t_).all(-1)
+                if ok.any():
+                    med = t_[ok].median(0).values; dv = (t_ - med).norm(dim=-1); dv[~ok] = 0
+                    i = int(dv.argmax()); o[nm] = dict(med=[round(float(q), 4) for q in med], dmax=float(dv[i]), mrel=float(mn[i]) / md, n_gt1=int((dv > 1).sum()))
+        for nm in ("y", "U"):
+            t_ = getattr(s, nm)[:nn]; ut = s.Ut[:nn]
+            d_ = (t_ - ut).norm(dim=-1); fin = torch.isfinite(d_); d_[~fin] = 0; d_[~act] = 0
+            i = int(d_.argmax()); o[nm + "_minus_Ut"] = dict(max_cell=float(d_[i]) / float(s.A[:, 0].norm()), mrel=float(mn[i]) / md, nonfin=int((~fin).sum()))
+        ff = ~torch.isfinite(s.f[:nn]).all(-1)
+        if ff.any():
+            mr = mn[ff] / md; o["f_nonfin_nodes"] = dict(n=int(ff.sum()), mrel_min=float(mr.min()), mrel_med=float(mr.median()), active=int((ff & act).sum()))
+        o["qb"] = s.qb.cpu().tolist() if hasattr(s, "qb") else None
+        return o
 
     def nanchk(s, t):
         """진단: 그래프 밖에서 한 프레임을 커널마다 동기화하며 처음 비유한이 생긴 커널·걸음·뉴턴 반복을 찾는다 (상태는 진행 -- 그래프 재생 대신)."""
         s.set_bc(t)
-        s._nck, s._nck_hit, s._nck_ks, s._nck_it = [], None, -1, -1
+        for nm in ("y", "U", "f", "r", "z", "p", "dl", "vk", "gaA", "B", "Ap", "KTp", "Tp", "yh", "eta", "Ut", "z0"):   # 데움 실행이 남긴 값 비우기 (상태 아님)
+            t_ = getattr(s, nm, None)
+            if torch.is_tensor(t_):
+                t_.zero_()
+        s._nck, s._nck_hit, s._nck_ks, s._nck_it, s._nck_last = [], None, -1, -1, None
         s.record(t)
         torch.cuda.synchronize()
-        o = s._nck_hit
+        o = s._nck_hit or {}
+        o["last_ok"] = s._nck_last
+        o["end"] = s._nck_stats()
         s._nck = None
         return o
 
