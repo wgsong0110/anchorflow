@@ -5033,5 +5033,7 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 결과: R2 lbours/fem_an/bigdt2/ (판별 log·summary.json·fem.jsonl·err.json, ficus period.txt), 표 bigdt2_table.md (10 분마다 갱신), 끝 표식 bigdt2.END, 로그 pool.log·bigdt2.log·bigdt2_main.log; 코드 lbours/fem_an/code/imp_f34463e.bundle.
 - 보충 bigdt2m (커밋 f605f25): 첫 시도의 정답 MPM wolf·bread 가 PG 원본 config 에 grid_lim (·n_grid) 키가 없어 KeyError 로 바로 멈춤 -> exe/gt_sens.py 에 PG decode_param 기본값 (n_grid 50, grid_lim 2.0; exe/pg_h5_to_pt.py 와 같음 -- 공식 실행 때 PG 가 쓴 값) 을 넣고
   exe/fem_an_bigdt2m.sh 로 wolf·bread 정답 MPM (K0·1·2·4·8) 만 R2 bigdt2m/ 에 다시 돌려, bigdt2 풀이 마지막 줄까지 띄운 뒤 bigdt2/ 로 덮어씀 (첫 시도는 <이름>.first). 끝 표식 bigdt2/bigdt2m.END -- **전체 끝 = bigdt2.END 와 bigdt2m.END 둘 다**.
+- 진행 (11-05 07:51 KST, 세션 재시작 뒤): bigdt2 는 07:43 시작해 K 8 까지 띄움. 이른 결과 -- **원래 dt 확인 mpmK0 L000 0.000 % (80/80, 833 서브스텝)·ficus 0.000 % (125/125)** = 실행기 정상, K 1 L000 은 프레임 3 서브스텝 1 에서 격자 밖, K 4 ficus 는 프레임 1 서브스텝 3 에서 격자 밖 -> BD.1 결론 (dt 탓 물리적 발산) 확인.
+  후퇴 오일러 K 8 0005: 재현 x73, 허용치 0 완주 4.32 %, ω 재사용 끔 완주 4.24 %, 블록 야코비 완주 3.88 % (나머지·0013 은 표에서). bigdt2m 띄우기는 로컬 tmux bigdt2m_launch 가 07:57 KST 에 (출력 /tmp/bigdt2m_launch.out; 확인은 R2 bigdt2m/bigdt2m.log).
 - 이어서 할 지점 (잡 만료 뒤): bigdt2.END 가 없거나 표에 "미완" 이면 같은 커밋으로 `bash exe/fem_an_bigdt2.sh f34463e` 를 다시 띄움 (풀은 rc= 가 있는 판을 건너뜀 -- 단 /dev/shm 은 잡과 함께 사라지므로 R2 bigdt2/ 를 /dev/shm/dkta/lbours/fem_an/bigdt2/ 로 먼저 내려받을 것; 마감 날짜 AN_UNTIL·HARD 는 스크립트에서 고칠 것).
   결과 정리 (BD.1 원래 dt 확인 수치, BD.2 원인 결론, 표) 는 아직 -- 결과 받은 뒤 이 절에 채움.
