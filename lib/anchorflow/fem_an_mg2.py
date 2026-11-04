@@ -62,6 +62,59 @@ __global__ void __launch_bounds__(128) rt_mv2(const int* IP, const int* cb, cons
     mv2_core(j, on, (size_t)qq, nid, dy, BG, 1.f, sW + (threadIdx.x >> 3)*81, Fq, Vq, H, capQ, res);
     if (on) for (int r=0;r<4;r++) { int o = j + 8*r; if (o < 27) for (int a=0;a<3;a++) atomicAdd(&out[nid[r]*3+a], res[r][a]); }
 }
+// 절 CM3 --hspec: 고운 층 곱의 주값 분해 판 (rt_mv2 와 같은 칸 협동 틀). 점마다 H[k*capQ+q]: U 9, M = F V 9, C 12 (V_q 곱해 둠; 절 AO.16 ao_mv_q 와 같은 꼴).
+// rt_mv2 의 Q = V_q (H (Y F)) Fᵀ 를 Q = U P̂ Mᵀ, P̂ = C(Uᵀ Y M) 로 (같은 선형 사상 -- 헤시안 = Σ 순위 1 항 9 개, e = U Ê Vᵀ; 반올림 순서만 다름). 읽기 30 개 (rt_mv2 90 개).
+__global__ void __launch_bounds__(128) rt_mv2s(const int* IP, const int* cb, const float* BG, const float* Fq, const float* Vq, const float* H, const float* dy, float* out, int capQ) {
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    __shared__ float sW[16*81];
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < IP[12]; int qq = on ? q : 0; int j = threadIdx.x & 7, c = qq >> 3;
+    int nb1 = IP[7], nb2 = IP[8];
+    int cx = cb[c*3], cy = cb[c*3+1], cz = cb[c*3+2];
+    int nid[4];
+    for (int r=0;r<4;r++) { int o = j + 8*r; if (o > 26) o = 26; nid[r] = ((cx + o/9)*nb1 + (cy + (o/3)%3))*nb2 + (cz + o%3); }
+    float* sw = sW + (threadIdx.x >> 3)*81;
+    #pragma unroll
+    for (int r=0;r<4;r++) { int o = j + 8*r; if (o < 27) { float a0 = 0.f, a1 = 0.f, a2 = 0.f;
+        if (on) { int n = nid[r]; a0 = dy[n*3]; a1 = dy[n*3+1]; a2 = dy[n*3+2]; } sw[o*3] = a0; sw[o*3+1] = a1; sw[o*3+2] = a2; } }
+    __syncwarp();
+    float Y[9] = {0,0,0,0,0,0,0,0,0};
+    const float* bq = BG + j*81;
+    if (on) {
+        #pragma unroll 3
+        for (int o=0;o<27;o++) { float y0 = sw[o*3], y1 = sw[o*3+1], y2 = sw[o*3+2]; float b0 = __ldg(bq + o*3), b1 = __ldg(bq + o*3+1), b2 = __ldg(bq + o*3+2);
+            Y[0] += y0*b0; Y[1] += y0*b1; Y[2] += y0*b2; Y[3] += y1*b0; Y[4] += y1*b1; Y[5] += y1*b2; Y[6] += y2*b0; Y[7] += y2*b1; Y[8] += y2*b2; }
+    }
+    float Qv[9] = {0,0,0,0,0,0,0,0,0};
+    float vq = on ? Vq[qq] : 0.f;
+    if (on && vq > 0.f) {
+        float U[9], M[9], C[12];
+        for (int k=0;k<9;k++) { U[k] = H[(size_t)k*capQ + qq]; M[k] = H[(size_t)(9+k)*capQ + qq]; }
+        for (int k=0;k<12;k++) C[k] = H[(size_t)(18+k)*capQ + qq];
+        float T[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) T[a*3+b] = Y[a*3]*M[b] + Y[a*3+1]*M[3+b] + Y[a*3+2]*M[6+b];
+        float Xh[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) Xh[a*3+b] = U[a]*T[b] + U[3+a]*T[3+b] + U[6+a]*T[6+b];
+        float Ph[9];
+        Ph[0] = C[0]*Xh[0] + C[3]*Xh[4] + C[4]*Xh[8];
+        Ph[4] = C[3]*Xh[0] + C[1]*Xh[4] + C[5]*Xh[8];
+        Ph[8] = C[4]*Xh[0] + C[5]*Xh[4] + C[2]*Xh[8];
+        Ph[1] = C[6]*Xh[1] + C[9]*Xh[3];  Ph[3] = C[9]*Xh[1] + C[6]*Xh[3];
+        Ph[2] = C[7]*Xh[2] + C[10]*Xh[6]; Ph[6] = C[10]*Xh[2] + C[7]*Xh[6];
+        Ph[5] = C[8]*Xh[5] + C[11]*Xh[7]; Ph[7] = C[11]*Xh[5] + C[8]*Xh[7];
+        float W[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) W[a*3+b] = U[a*3]*Ph[b] + U[a*3+1]*Ph[3+b] + U[a*3+2]*Ph[6+b];
+        for (int a=0;a<3;a++) for (int k=0;k<3;k++) Qv[a*3+k] = W[a*3]*M[k*3] + W[a*3+1]*M[k*3+1] + W[a*3+2]*M[k*3+2];
+    }
+    __syncwarp();
+    for (int k=0;k<9;k++) sw[j*9+k] = Qv[k];
+    __syncwarp();
+    float res[4][3];
+    #pragma unroll
+    for (int r=0;r<4;r++) { int o = j + 8*r; res[r][0] = res[r][1] = res[r][2] = 0.f; if (o >= 27) continue;
+        float s0 = 0.f, s1 = 0.f, s2 = 0.f;
+        for (int oc=0; oc<8; oc++) { const float* Qo = sw + oc*9; const float* bg = BG + oc*81 + o*3; float b0 = __ldg(bg), b1 = __ldg(bg+1), b2 = __ldg(bg+2);
+            s0 += Qo[0]*b0 + Qo[1]*b1 + Qo[2]*b2; s1 += Qo[3]*b0 + Qo[4]*b1 + Qo[5]*b2; s2 += Qo[6]*b0 + Qo[7]*b1 + Qo[8]*b2; }
+        res[r][0] = s0; res[r][1] = s1; res[r][2] = s2; }
+    if (on) for (int r=0;r<4;r++) { int o = j + 8*r; if (o < 27) for (int a=0;a<3;a++) atomicAdd(&out[nid[r]*3+a], res[r][a]); }
+}
 // 거친 층 곱 (조밀 상자 칸 번호; list 가 있으면 점유 칸 목록만)
 __global__ void __launch_bounds__(128) rt_mg_mv2(int l, const int* LM, const float* BG, float sc, const float* Fq, const float* Vq, const float* H, int capQ, const float* dy, float* out,
                                                  const int* list, const int* cnt) {
@@ -262,6 +315,8 @@ def det_mg2(s):
     from .fem_an_det import _sub_in
     s = _sub_in(s, "rt_mv2", "if (on) for (int r=0;r<4;r++) { int o = j + 8*r; if (o < 27) for (int a=0;a<3;a++) atomicAdd(&out[nid[r]*3+a], res[r][a]); }",
                 "if (on) for (int r=0;r<4;r++) { int o = j + 8*r; if (o < 27) for (int a=0;a<3;a++) { if (AO_DET) AO_CV[((size_t)c*27+o)*3+a] = res[r][a]; else atomicAdd(&out[nid[r]*3+a], res[r][a]); } }")
+    s = _sub_in(s, "rt_mv2s", "if (on) for (int r=0;r<4;r++) { int o = j + 8*r; if (o < 27) for (int a=0;a<3;a++) atomicAdd(&out[nid[r]*3+a], res[r][a]); }",
+                "if (on) for (int r=0;r<4;r++) { int o = j + 8*r; if (o < 27) for (int a=0;a<3;a++) { if (AO_DET) AO_CV[((size_t)c*27+o)*3+a] = res[r][a]; else atomicAdd(&out[nid[r]*3+a], res[r][a]); } }")
     s = _sub_in(s, "rt_mg_mv2", "if (on) for (int r=0;r<4;r++) { int o = j + 8*r; if (o < 27) for (int a=0;a<3;a++) atomicAdd(&out[nid[r]*3+a], res[r][a]); }",
                 "if (on) for (int r=0;r<4;r++) { int o = j + 8*r; if (o < 27) for (int a=0;a<3;a++) { if (AO_DET) AO_MGV[((size_t)c*27+o)*3+a] = res[r][a]; else atomicAdd(&out[nid[r]*3+a], res[r][a]); } }")
     return s
@@ -320,7 +375,7 @@ class MG2Mixin:
     def mg2_mv(s, l, z, KT):
         i32, f = np.int32, np.float32
         if l == 0:
-            s.k("rt_mv2", s.capQc * 8, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(z), P(KT), i32(s.capQc * 8)))
+            s.k(s.fmv_name(), s.capQc * 8, (P(s.IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.fmv_H()), P(z), P(KT), i32(s.capQc * 8)))
             return
         L = s.ML[l - 1]
         use = s.mg_occ

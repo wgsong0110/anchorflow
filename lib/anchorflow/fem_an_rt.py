@@ -390,7 +390,22 @@ __global__ void __launch_bounds__(128) rt_elem(const int* IP, const int* cb, con
             float et[9], ef[9];
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float x1 = U[a*3+i]*V[b*3+j], x2 = U[a*3+j]*V[b*3+i]; et[a*3+b] = r2*(x1-x2); ef[a*3+b] = r2*(x1+x2); }
             for (int r=0;r<9;r++) for (int c=0;c<9;c++) h[r*9+c] += lt*et[r]*et[c] + lf*ef[r]*ef[c]; }
+#ifdef AF_HSPEC
+        {                                                                         // 절 CM3 --hspec: 같은 헤시안의 주값 분해 30 성분 (U 9, M = F V 9, C 12 x V_q) -- rt_mv2s 가 읽음
+            float vq_ = vq, Cs[12];
+            const int RI[6] = {0,1,2,0,0,1}, RJ[6] = {0,1,2,1,2,2};
+            for (int k=0;k<6;k++) { float t = 0.f; for (int m=0;m<3;m++) { float dm = fmaxf(D[m][m], 0.f); if (dm > 0.f) t += dm*Ev[RI[k]][m]*Ev[RJ[k]][m]; } Cs[k] = vq_*t; }
+            for (int pp=0; pp<3; pp++) { int i = PI[pp], j = PJ[pp], k = PK[pp];
+                float lt = 2.f*mu*(1.f - 2.f/(S[i]+S[j])) + lam*(J-1.f)*S[k]; float lf = 2.f*mu - lam*(J-1.f)*S[k];
+                lt = isfinite(lt) ? fmaxf(lt, 0.f) : 0.f; lf = fmaxf(lf, 0.f);
+                Cs[6+pp] = vq_*0.5f*(lt + lf); Cs[9+pp] = vq_*0.5f*(lf - lt); }
+            for (int a=0;a<3;a++) for (int b=0;b<3;b++) H[(size_t)(9 + a*3+b)*capQ + qq] = F[a*3]*V[b] + F[a*3+1]*V[3+b] + F[a*3+2]*V[6+b];
+            for (int k=0;k<9;k++) H[(size_t)k*capQ + qq] = U[k];
+            for (int k=0;k<12;k++) H[(size_t)(18+k)*capQ + qq] = Cs[k];
+        }
+#else
         for (int k=0;k<81;k++) H[(size_t)k*capQ + qq] = h[k];                     // 성분 우선 배치 (곱 커널 읽기가 합쳐지게)
+#endif
         }
         if (mode & 8) {                                                           // 노드 블록 대각 (융합): m_ac = V Σ_b g_b Σ_d H[(ab),(cd)] g_d
             for (int o=0;o<27;o++) { float g[3]; gqn(F, BG + (oc*27+o)*3, g);
@@ -922,6 +937,54 @@ __global__ void rt_fixdir(const int* IP, double* SC, const float* p0, float* dl)
     for (int a=0;a<3;a++) dl[n*3+a] = a0*p0[n*3+a];
 }
 __global__ void rt_sc_copy(double* SC, int dst, int src) { SC[dst] = SC[src]; }
+// 절 CM3 노드 압축 (--ncomp): 점유 칸 27 개 중 하나라도 이웃인 노드 (가우스 점 곱·질량·대각이 닿는 노드 전부) 목록 ACT[1..ACT[0]] (노드 번호 오름차순, 결정적).
+// 그 밖 노드는 질량·대각·힘·곱이 모두 0 이라 PCG·V 순환 값이 목록 노드에 주는 몫이 0 -- 목록만 돌아도 목록 노드 값은 같다 (블록 합 순서만 다름).
+__device__ __forceinline__ int rt_act_on(const int* IP, const int* occ, int n) {
+    if (n >= IP[9]) return 0;
+    int nb1 = IP[7], nb2 = IP[8];
+    int ni = n / (nb1*nb2), nj = (n / nb2) % nb1, nk = n % nb2;
+    int c0 = IP[6]-2, c1 = nb1-2, c2 = nb2-2;
+    for (int i=0;i<3;i++) { int ci = ni - i; if (ci < 0 || ci >= c0) continue;
+      for (int j=0;j<3;j++) { int cj = nj - j; if (cj < 0 || cj >= c1) continue;
+        for (int k=0;k<3;k++) { int ck = nk - k; if (ck < 0 || ck >= c2) continue;
+          if (occ[(ci*c1 + cj)*c2 + ck]) return 1; } } }
+    return 0;
+}
+__global__ void rt_act_cnt(const int* IP, const int* occ, int* bc) {                // 블록 256 고정
+    if (blockIdx.x*blockDim.x >= IP[9]) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    int c = __syncthreads_count(rt_act_on(IP, occ, n));
+    if (threadIdx.x == 0) bc[blockIdx.x] = c;
+}
+__global__ void rt_act_scan(const int* IP, const int* bc, int* bo, int* ACT) {       // 한 블록 1024: 블록 수 배타 스캔
+    __shared__ int sh[1024];
+    int nb = (IP[9] + 255) / 256, carry = 0;
+    for (int base = 0; base < nb; base += 1024) {
+        int i = base + threadIdx.x;
+        int v = (i < nb) ? bc[i] : 0;
+        sh[threadIdx.x] = v;
+        __syncthreads();
+        for (int o=1; o<1024; o<<=1) { int t = (threadIdx.x >= o) ? sh[threadIdx.x - o] : 0; __syncthreads(); sh[threadIdx.x] += t; __syncthreads(); }
+        if (i < nb) bo[i] = carry + sh[threadIdx.x] - v;
+        int tot = sh[1023];
+        __syncthreads();
+        carry += tot;
+    }
+    if (threadIdx.x == 0) ACT[0] = carry;
+}
+__global__ void rt_act_wr(const int* IP, const int* occ, const int* bo, int* ACT) {  // 블록 256 고정
+    __shared__ int ws[8];
+    if (blockIdx.x*blockDim.x >= IP[9]) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    int v = rt_act_on(IP, occ, n);
+    unsigned int m = __ballot_sync(0xffffffffu, v);
+    int lane = threadIdx.x & 31, w = threadIdx.x >> 5;
+    if (lane == 0) ws[w] = __popc(m);
+    __syncthreads();
+    int off = bo[blockIdx.x];
+    for (int k=0;k<w;k++) off += ws[k];
+    if (v) ACT[1 + off + __popc(m & ((1u << lane) - 1u))] = n;
+}
 // 선탐색 넓힘 (--ls_n NC): 후보 c_i = 2^-i (i = 0..NC−1). 관성 몫 SC[20] (c = 0), SC[21+i]; 탄성 SC[40+i]; g·δ SC[9]; 보폭 SC[14]
 // 절 AN.22: 후보 고리를 컴파일 시 12 로 펼쳐 sc[] 를 레지스터에 (원래는 실행 시 NC 고리라 지역 메모리 -- 같은 연산·같은 순서, 결과 비트 같음). gate != 0 이고 *gate != 0 이면 아무것도 안 함 (하강 방향을 안 바꾼 반복의 두 번째 계산 생략)
 __global__ void rt_lsyN(const int* IP, const float* mn, float itau2, const float* eta, const float* dl, const float* r0, double* SC, int NC, const double* gate) {
@@ -1426,7 +1489,42 @@ def bstify(src, mode, dh, full):
     return src.replace('extern "C" {', 'extern "C" {' + add, 1) if add else src
 
 
-def build_src(src, adapt, goct, floor=None, fk=False):
+# 절 CM3 노드 압축 판 커널 (--ncomp): 원본 본문에서 머리만 바꿔 이름 뒤 _c, 마지막 인자 ACT (목록). LM 커널은 층 0 에서만 _c 를 부른다 (RTSolver.k).
+HB_ = "    if (blockIdx.x*blockDim.x >= IP[9]) return;\n    int n = blockIdx.x*blockDim.x + threadIdx.x;\n"
+HS_ = "    int n = blockIdx.x*blockDim.x + threadIdx.x;\n    if (n >= IP[9]) return;\n"
+CN_SUB = (("rt_ap", HB_, "    if (blockIdx.x*blockDim.x >= ACT[0]) return;\n    int ii_ = blockIdx.x*blockDim.x + threadIdx.x;\n    int n = (ii_ < ACT[0]) ? ACT[1+ii_] : IP[9];\n"),
+          ("rt_dotz", HB_, "    if (blockIdx.x*blockDim.x >= ACT[0]) return;\n    int ii_ = blockIdx.x*blockDim.x + threadIdx.x;\n    int n = (ii_ < ACT[0]) ? ACT[1+ii_] : IP[9];\n"),
+          ("rt_cg1m", HS_, "    int ii_ = blockIdx.x*blockDim.x + threadIdx.x;\n    if (ii_ >= ACT[0]) return;\n    int n = ACT[1+ii_];\n"),
+          ("rt_cg2", HS_, "    int ii_ = blockIdx.x*blockDim.x + threadIdx.x;\n    if (ii_ >= ACT[0]) return;\n    int n = ACT[1+ii_];\n"),
+          ("rt_pinit", HS_, "    int ii_ = blockIdx.x*blockDim.x + threadIdx.x;\n    if (ii_ >= ACT[0]) return;\n    int n = ACT[1+ii_];\n"),
+          ("rt_mg_node", "    int n = blockIdx.x*blockDim.x + threadIdx.x;\n    if (n >= LM[l*8+3]) return;\n", "    int ii_ = blockIdx.x*blockDim.x + threadIdx.x;\n    if (ii_ >= ACT[0]) return;\n    int n = ACT[1+ii_];\n"),
+          ("rt_mg_pw1", "    int nn = LM[l*8+3];\n    if (blockIdx.x*blockDim.x >= nn) return;\n    if (n < nn) {\n", "    int nn = ACT[0];\n    if (blockIdx.x*blockDim.x >= nn) return;\n    if (n < nn) { n = ACT[1+n];\n"),
+          ("rt_mg_pw2", "    if (n >= LM[l*8+3]) return;\n", "    if (n >= ACT[0]) return;\n    n = ACT[1+n];\n"),
+          ("rt_mg_prolong", "    if (I >= A[3]) return;\n", "    if (I >= ACT[0]) return;\n    I = ACT[1+I];\n"))
+CN_ALL = frozenset(q[0] for q in CN_SUB)
+CN_LM = frozenset(("rt_mg_node", "rt_mg_pw1", "rt_mg_pw2", "rt_mg_prolong"))
+
+
+def compactify(src):
+    out = []
+    for nm, old, new in CN_SUB:
+        i = src.index("__global__ void " + nm + "(")
+        j = src.index("\n}\n", i) + 3
+        body = src[i:j].replace("void " + nm + "(", "void " + nm + "_c(", 1)
+        k = body.index(") {")
+        body = body[:k] + ", const int* ACT" + body[k:]
+        assert body.count(old) == 1, nm
+        out.append(body.replace(old, new, 1))
+    s = src.rstrip()
+    i = s.rfind("}")
+    return s[:i] + "\n".join(out) + "\n}\n"
+
+
+def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False):
+    if ncomp:
+        src = compactify(src)
+    if hspec:
+        src = src.replace('extern "C" {', 'extern "C" {\n#define AF_HSPEC 1', 1)
     if fk:
         src = src.replace('extern "C" {', 'extern "C" {\n#define AF_FK 1', 1)
     if goct is not None and goct >= 0:
@@ -1446,8 +1544,12 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False):
         s.dev = dev
+        s.hspec = bool(hspec)                                                          # 절 CM3 (결과 정의 같음): 고운 층 헤시안 주값 분해 30 성분 저장·곱 (rt_mv2s; --mv2 필요)
+        s.ncomp = bool(ncomp)                                                          # 절 CM3 (결과 정의 같음): PCG·층 0 V 순환 노드 커널을 점유 칸 이웃 노드 목록만
+        assert not s.hspec or bool(mv2) or bool(mg_occ), "--hspec 은 --mv2 판만"
+        assert not (s.ncomp and pk), "--ncomp 는 그래프 판만"
         s.y0ut = bool(y0ut)                                                            # 절 CM2 정의 변경 셋째: 뉴턴 시작점 = 관성 예측 ŷ (장벽 판은 걸음 시작 U 에서 ŷ 쪽 실현 가능한 최대 2^-k)
         s.matk = None                                                                  # 절 CM2: 재질 판 (lib/anchorflow/fem_mat_rt.py MatRT 가 채움)
         s.lsfast = bool(lsfast)                                                        # 절 AN.22: 선탐색 조기 판정 (결과 같음)
@@ -1512,7 +1614,7 @@ class RTSolver(MG2.MG2Mixin):
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
@@ -1552,6 +1654,9 @@ class RTSolver(MG2.MG2Mixin):
             assert name not in ("rt_mg_csolve", "ao_act_scan"), name
             s._pkc.append((name, int(n), int(b), tuple(args), s._pk_loc > 0))
             return
+        if s.ncomp and name in CN_ALL and (name not in CN_LM or int(args[0]) == 0):  # 절 CM3: 노드 압축 판 (LM 커널은 층 0 만)
+            name = name + "_c"
+            args = tuple(args) + (P(s.actl),)
         if name not in s.fn:
             s.fn[name] = s.mod.get_function(name)
         if getattr(s, "prof", None) is not None:
@@ -1608,6 +1713,10 @@ class RTSolver(MG2.MG2Mixin):
             if s.bfull:
                 s.bS = Z(s.capN); s.btq = Z(capQ)
         s.Fq = Z(capQ, 9); s.Vq = Z(capQ); s.mq = Z(capQ); s.xq0 = Z(capQ, 3); s.H = Z(capQ, 81)
+        if s.ncomp:                                                                    # 절 CM3: 노드 목록 (ACT[0] = 수), 블록별 수·자리
+            nbk = (s.capN + 255) // 256 + 1
+            s.actl = torch.zeros(s.capN + 1, device=dev, dtype=torch.int32)
+            s.actb = torch.zeros(nbk, device=dev, dtype=torch.int32); s.acto = torch.zeros(nbk, device=dev, dtype=torch.int32)
         s.mn = Z(s.capN); s.mv = Z(s.capN, 3); s.mqn = Z(s.capN); s.an = Z(s.capN)
         s.U = Z(s.capN, 3); s.vk = Z(s.capN, 3); s.Ut = Z(s.capN, 3); s.z0 = Z(s.capN, 3); s.y = Z(s.capN, 3); s.yh = Z(s.capN, 3); s.eta = Z(s.capN, 3)
         s.sk = Z(s.capN); s.pm = torch.zeros(s.capN, device=dev, dtype=torch.int32)
@@ -1728,6 +1837,14 @@ class RTSolver(MG2.MG2Mixin):
                 return
             L = s.ML[l - 1]
             s.k("rt_mg_mv", L["capq"], (i32(l), P(s.LM), P(s.BG), f(0.5 ** l), P(L["Fq"]), P(L["Vq"]), P(L["H"]), i32(L["capq"]), P(z), P(KT)))
+
+    def fmv_name(s):
+        return "rt_mv2s" if s.hspec else ("rt_mv2" if s.mv2 else "rt_mv")
+
+    def fmv_H(s):
+        """고운 층 곱이 읽는 헤시안 (--hspec: 주값 분해 30 성분 -- 재질 plasticine 판은 H30, 그 밖은 H 앞 30 x capQ)."""
+        h = getattr(s, "Hs", None)
+        return s.H if h is None else h
 
     def mg_lv(s, l):
         if l == 0:
@@ -1868,6 +1985,12 @@ class RTSolver(MG2.MG2Mixin):
         s.zf(s.occ)
         s.k("rt_mark", N, (i32(N), P(s.Np), P(s.fx), P(IP), P(s.pcd), P(s.occ)))
         s.k("rt_scan", 1024, (P(IP), P(s.occ), P(s.cidx), P(s.cb), i32(s.capQc)), b=1024)
+        if s.ncomp:                                                                    # 절 CM3: 점유 칸 이웃 노드 목록 (결정적 스캔), 층 0 제한 입력 m0u 의 목록 밖 0
+            s.k("rt_act_cnt", capN, (P(IP), P(s.occ), P(s.actb)), b=256)
+            s.k("rt_act_scan", 1024, (P(IP), P(s.actb), P(s.acto), P(s.actl)), b=1024)
+            s.k("rt_act_wr", capN, (P(IP), P(s.occ), P(s.acto), P(s.actl)), b=256)
+            if s.nl > 1:
+                s.zf(s.m0u, 9, 3)
         for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3), (s.mqn, 9, 1)) + (((s.ma, 9, 3),) if s.ga else ()) + (((s.Mo, 12, 1),) if s.goct >= 0 else ()):
             s.zf(t_, ci, mul)
         s.zf(s.badq); s.zf(s.badc); s.zf(s.nbad)
@@ -1997,7 +2120,7 @@ class RTSolver(MG2.MG2Mixin):
                     s.ctl(5, ci)
                     if ci == 0 or not s.fuse2:
                         s.zf(s.KTp, 9, 3)
-                    s.k("rt_mv2" if s.mv2 else "rt_mv", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)))
+                    s.k(s.fmv_name(), capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.fmv_H()), P(s.Tp), P(s.KTp), i32(capQ)))
                     if s.bar and s.bfull:
                         s.zf(s.bS, 9, 1)
                         s.k("rt_bar_mvq", capQ, (P(IP), P(s.cb), P(s.BW), *[f(q) for q in nr], P(s.Tp), P(s.bS), P(s.btq)))

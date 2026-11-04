@@ -133,7 +133,7 @@ class MatRT(ADET.DetMixin):
         s.extra_p = (("ysp", "ljp", "alp") if s.aq else ()) + (("pvb", "pvc", "pmk") if s.pvb is not None else ())
         s.tbuf = torch.zeros(1, device=s.dev, dtype=torch.float32)
         src = mat_module_src(getattr(s, "mg2", False))
-        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False)), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False)), options=("--std=c++14",))
         s._src0 = src
         s.fn = {}
         s.ao_ready = True
@@ -151,6 +151,7 @@ class MatRT(ADET.DetMixin):
         capQ = s.capQc * 8
         s.Ust = Z(s.K, s.capN, 3)
         s.H30 = Z(capQ * 30) if s.aq else None
+        s.Hs = s.H30 if (s.aq and s.hspec) else None                                   # 절 CM3 --hspec: plasticine 은 aq_elem 의 30 성분을 곱이 바로 (mt_h81 펼침 없음); 모래는 ao_elem_s 가 H 앞 30 성분에
         s.cnt = I(4); s.qb = I(4); s.act = I(s.capN)
         s.Sa = Z(s.capQc * 32); s.Sc = Z(s.capQc * 4); s.Sq = Z(s.capQc * 32)
         s.gaM = Z(s.capN)
@@ -190,7 +191,7 @@ class MatRT(ADET.DetMixin):
 
     def k(s, name, n, args, b=128):
         super().k(name, n, args, b)
-        if getattr(s, "det", False) and name == "aq_elem":                            # 재질 커널 칸 버퍼 -> 노드 (고정 순서; 절 AQ 결정적 판과 같음)
+        if getattr(s, "det", False) and name in ("aq_elem", "ao_elem_s"):                            # 재질 커널 칸 버퍼 -> 노드 (고정 순서; 절 AQ 결정적 판과 같음)
             ART.RTSolver.k(s, "ao_gath_d3", s.capN, (P(s.IP), P(s.cidx), args[10]), 256)
             ART.RTSolver.k(s, "ao_gath_f", s.capN, (P(s.IP), P(s.cidx), np.int32(9), P(s.d_cb), args[13]), 256)
 
@@ -249,9 +250,10 @@ class MatRT(ADET.DetMixin):
             al = s.ga_c["gm"] * s.dt / ((1 - s.ga_c["af"]) * s.ga_c["be"] * s.dt * s.dt)
             s.k("aq_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), i32(s._mat), P(s.prm), P(s.Sq), f(s.dt), P(s.f), P(s.H30), i32(capQ), P(s.B),
                                   P(s.cnt if last else None), P(s.z0), f(al), f(s.visc), P(s.qb)))
-            s.k("mt_h81", capQ, (P(IP), P(s.Fq), P(s.Vq), P(s.H30), P(s.H), i32(capQ)))
+            if not s.hspec:
+                s.k("mt_h81", capQ, (P(IP), P(s.Fq), P(s.Vq), P(s.H30), P(s.H), i32(capQ)))
         else:
-            s.k("ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8), P(s.f), P(s.H), i32(capQ), P(s.B),
+            s.k("ao_elem_s" if s.hspec else "ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8), P(s.f), P(s.H), i32(capQ), P(s.B),
                                   P(s.cnt if last else None)))
 
     def mat_step_end(s, kstep, nst, capN, capQ):

@@ -408,7 +408,7 @@ class DetMixin(ART.RTSolver):
         elif name == "rt_mg_elem":
             l = int(args[0])
             super().k("ao_mg_gath", s.ML[l - 1]["capn"], (args[0], P(s.LM), i32(9), P(s.d_mgb), args[5], args[10]), 256)
-        elif name in ("rt_mv", "rt_mv2"):
+        elif name in ("rt_mv", "rt_mv2", "rt_mv2s"):
             super().k("ao_gath_f", s.capN, (P(IP), P(s.cidx), i32(3), P(s.d_cv), args[7]), 256)
         elif name == "rt_gauss":
             super().k("ao_gath_q", s.capN, (P(IP), P(s.cidx), P(s.BW), P(s.mq), P(s.mqn)), 256)
@@ -434,7 +434,7 @@ class DetRT(DetMixin):
         s.ao_ready = False
         super().__init__(*args, **kw)
         src = det_module_src(getattr(s, "mg2", False))
-        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False)), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False)), options=("--std=c++14",))
         s._src0 = src
         s.fn = {}
         s.ao_ready = True
