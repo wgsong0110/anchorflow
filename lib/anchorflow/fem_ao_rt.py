@@ -1006,9 +1006,10 @@ def _src(tol=False):
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, **kw):
         s.vfill = bool(vfill)
-        s.lsinv, s.y0z = bool(lsinv), bool(y0z)                                           # 절 AS: 뉴턴 보폭 뒤집힘 없는 필터, 시작점 z0 쪽에서 뒤집힘 없게
+        s.y0u = bool(y0u)                                                               # 절 AS: 시작점 기준을 z0 대신 걸음 시작 위치 U (y = U 는 변위 0 -> X = 커밋된 F_q)
+        s.lsinv, s.y0z = bool(lsinv), bool(y0z) or bool(y0u)                                           # 절 AS: 뉴턴 보폭 뒤집힘 없는 필터, 시작점 z0 쪽에서 뒤집힘 없게
         s.tolN, s.tolP = float(tolN), float(tolP)                                          # 공통 허용치 (절 AN.14 규칙; 음수 = 그 판정 없음)
         s.adapt = s.tolN >= 0 or s.tolP >= 0
         s.cdp, s.pbc_ns, s.dt_gt, s.mthr = float(cdp), int(pbc_ns), float(dt_gt), float(mthr)
@@ -1194,7 +1195,7 @@ class AORTSolver(DET.DetMixin):
                                      P(s.fixd), P(s.vbc), P(s.U), f(s.tau), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta),
                                      P(s.kb if s.has_pbc else None), P(s.mn), f(s.mthr), i32(1 if (s.ga is not None and s.ga.get("y0uk", True)) else 0), P(s.vm if s.pvb is not None else None), i32(1 if s.slip else 0)), b=256)
             if s.y0z:                                                                  # 절 AS 시작점: y_z (영속도 위치) 에서 관성 시작점 쪽으로 뒤집힘 없는 최대 2^-k
-                s.k("aw_y0z_a", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.z0), P(s.y), P(s.awez), P(s.awyb), P(s.awdy)), b=256)
+                s.k("aw_y0z_a", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.U if s.y0u else s.z0), P(s.y), P(s.awez), P(s.awyb), P(s.awdy)), b=256)
                 s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.awyb), P(s.awdy), P(s.awk)))
                 s.k("aw_pick", 1, (P(s.awk), P(s.awb), P(s.awst[4:])), b=1)
                 s.k("aw_y0z_b", capN, (P(IP), P(s.awb), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.awez), P(s.eta), P(s.y)), b=256)
