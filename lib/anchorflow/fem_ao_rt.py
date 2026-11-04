@@ -1261,9 +1261,9 @@ class AORTSolver(DET.DetMixin):
                     r["sym"] = dict(eJd=eJd, dJe=dJe, rel=abs(eJd - dJe) / max(abs(eJd) + abs(dJe), 1e-300), eKd=float(e[:nn].double().mul(Kd.double()).sum()), dKe=float(d[:nn].double().mul(Ke.double()).sum()))
             if s.aq and s.mat == 2:                                                    # 같은 재질 (PG 모래) 의 해석 접선 커널과 직접
                 nq = int(s.IP[12]); capQ = s.capQc * 8
-                s._elem_at(yb, "aq"); Ha = s.H[:30 * capQ].reshape(30, capQ)[:, :nq].clone()
+                s._elem_at(yb, "aq"); Ha = s.H.reshape(-1)[:30 * capQ].reshape(30, capQ)[:, :nq].clone()
                 f1, B1 = s._elem_at(yb, "s"); Kd1 = s._mv_at(d)
-                Hs = s.H[:30 * capQ].reshape(30, capQ)[:, :nq].clone()
+                Hs = s.H.reshape(-1)[:30 * capQ].reshape(30, capQ)[:, :nq].clone()
                 dH = (Ha - Hs).abs(); sc = Hs.abs().amax(1, keepdim=True).clamp_min(1e-30)
                 rk = (dH / sc).amax(1)                                                 # 성분별 최대 차 / 그 성분 최대 크기
                 kq = int(rk[18:].argmax()) + 18; qw = int(dH[kq].argmax())
