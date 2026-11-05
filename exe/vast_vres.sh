@@ -91,6 +91,17 @@ run_one() { local V=$1 t=$2; shift 2
   rclone copy $O $RR/${V}_$t -q
   table; }
 DW="--det --hgt --pen --dump --dump_F --dump_part"
+# ---- 보충 판 (env VR_ONLY="판:씬 ...", 절 CM15.3): 본 묶음 결과를 R2 에서 받고 지정 판만 카드 단독으로 다시 -> 표 -> 확인 -> destroy (연기·영상 생략)
+if [ -n "${VR_ONLY:-}" ]; then
+  rclone copy $RR $B -q --transfers 8 --exclude "h5/**" --exclude "vid/**" --exclude "smoke_*/**"
+  say "[보충] $VR_ONLY (받은 판 $(ls $B | tr '\n' ' '))"
+  for vt in $VR_ONLY; do V=${vt%%:*}; t=${vt#*:}; rm -rf $B/${V}_$t
+    case $t in wolf|L000) run_one $V $t $G --cg $([ $t = wolf ] && echo 5 || echo 4) $T $DW;; *) run_one $V $t $G --cg 4 $T --det --pen;; esac; done
+  table; echo "[vres 끝 (보충 $VR_ONLY)] $(date '+%F %T')" > $M/vres.END; rclone copy $M/vres.END $MR -q
+  if rclone check $B $RR --one-way --size-only -q 2>/root/vr/check.txt; then say "[R2 확인 차이 0] -> destroy"; vastai destroy instance ${CONTAINER_ID:-0} -y --api-key ${CONTAINER_API_KEY:-x} 2>&1 | tee -a $LOG
+  else say "[R2 확인 차이 있음] destroy 안 함: $(tail -3 /root/vr/check.txt | tr '\n' ' ')"; echo "$(date) 차이 있음" | rclone rcat $MR/vres_CHECK_FAIL; fi
+  exit 0
+fi
 # ---- 연기 (3 프레임): 새 커널 컴파일·실행 확인 (결정적 강 L000·약 wolf, 비결정 강 L000). 실패하면 기록 올리고 destroy
 smk() { local V=$1 t=$2; shift 2; local O=$B/smoke_${V}_$t$2; mkdir -p $O
   ( source exe/fem_cm8_scn.sh && cm_scene $t $1 ${NV[$V]} ${FV[$V]} && echo "$SIM $DA $XA" > $O/cmd.txt && CUDA_VISIBLE_DEVICES=0 timeout 900 $PY -u $SIM --out $O --tag $t $DA $XA --frames 3 < /dev/null > $O/log.txt 2>&1; echo "rc=$?" > $O/rc.txt )
