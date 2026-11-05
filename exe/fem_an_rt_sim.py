@@ -40,6 +40,7 @@ ap.add_argument("--mg_nc", type=int, default=8)
 ap.add_argument("--mg_pow", type=int, default=6)
 ap.add_argument("--dump", action="store_true")
 ap.add_argument("--dump_F", action="store_true", help="--dump 와 함께: 입자 변형 기울기 F 도 pred.pt 에 (영상 렌더용; 풀이 결과 불변)")
+ap.add_argument("--dump_part", action="store_true", help="--dump 와 함께: 발산·GPU 메모리 부족으로 멈춰도 그때까지 프레임을 pred.pt 에 (영상용, 풀이 불변; 절 CM8 (A) 영상)")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--no_fuse2", action="store_true", help="결과 불변 융합 2 판 끔 (비교용)")
@@ -203,13 +204,22 @@ print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
 errs, ms = [], []
 div_at = None
+OOM = None
 PRED = torch.empty(L, Np, 3) if a.dump else None
 PREDF = torch.empty(L, Np, 3, 3) if (a.dump and a.dump_F) else None
 for fi in range(L):
     kp = ((S.pk_profile(fi * h) if a.pk else S.profile(fi * h)) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None)
     if a.gq_chk:                                                                       # 절 CM9: 프레임 시작 입자 합 (f64)
         _m = S.m.double(); _ps = [float(_m.sum()), (_m[:, None] * S.v.double()).sum(0), (_m[:, None] * S.pa.double()).sum(0), float((_m * S.v.double().norm(dim=-1)).sum()), float((_m * S.pa.double().norm(dim=-1)).sum())]
-    redo = S.step(fi * h)
+    if a.dump_part:                                                                    # 메모리 부족 = 그 프레임에서 멈춤 (발산 쪽으로 기록, 덤프는 앞 프레임까지)
+        try:
+            redo = S.step(fi * h)
+        except torch.OutOfMemoryError as _ex:
+            div_at, OOM = fi + 1, str(_ex)[:200]
+            print(f"[발산] 프레임 {div_at} (GPU 메모리 부족 -- 용량 늘려 다시 중)", flush=True)
+            break
+    else:
+        redo = S.step(fi * h)
     gt = d["x"][fi + 1].to(dev).float()
     xo = S.x_orig()
     _ok = torch.isfinite(gt).all(-1)                                                   # 정답 비유한 입자 (GF) 는 지표에서 거름 (탄성 씬은 모두 유한 -> 같은 값)
@@ -266,12 +276,17 @@ if S.adapt:                                                                     
             arr = np.array([q[kk] for q in its], dtype=float)
             summ["it_" + kk] = dict(mean=float(arr.mean()), p50=float(np.median(arr)), p90=float(np.percentile(arr, 90)), max=float(arr.max()), min=float(arr.min()))
 summ["pk"] = getattr(S, "pk_info", None)
+if OOM:
+    summ["oom"] = OOM
 summ["ms_max"] = float(np.max(sc)) if sc else None
 summ["ms_p90"] = float(np.percentile(sc, 90)) if sc else None
 import hashlib                                                                        # noqa: E402
-summ["x_sha1"] = hashlib.sha1(S.x_orig().cpu().numpy().tobytes()).hexdigest()[:10]     # 끝 상태 해시 (결정성 확인)
+summ["x_sha1"] = None if OOM else hashlib.sha1(S.x_orig().cpu().numpy().tobytes()).hexdigest()[:10]     # 끝 상태 해시 (결정성 확인)
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), indent=1, ensure_ascii=False)
 if PRED is not None and div_at is None:
     torch.save({"pred": PRED, **({"F": PREDF} if PREDF is not None else {})}, os.path.join(a.out, "pred.pt"))
+elif PRED is not None and a.dump_part and len(errs):
+    _n = len(errs)
+    torch.save({"pred": PRED[:_n], **({"F": PREDF[:_n]} if PREDF is not None else {}), "part": True, "diverged": div_at}, os.path.join(a.out, "pred.pt"))
 print(f"[롤아웃] {a.tag} 실시간 판 셀 {a.cell} K {a.K} 뉴턴 {a.newton} PCG {a.cg}: {len(errs)}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%, "
       f"프레임당 {summ['ms_mean']} ms (재생 GPU 시간)", flush=True)
