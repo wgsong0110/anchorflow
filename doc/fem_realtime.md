@@ -5248,8 +5248,9 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 | bread b1c4 · b1c2 · b1c1 · b1f (강제 50·150) · b1c2cp | 1 | 4 · 2 · 1 · 4 · 2 | 없음 · 124 · 1,128 · 50,150 · 124 | 2.425 | 96d9cf6d32 | 모두 비트 같음 |
 | bread b8c4 · b8c2 | 8 | 4 · 2 | 없음 · 125 | 4.310 | e4da1d78a7 | 비트 같음 |
 | s8old (옛 차원, memcheck, 41 프레임) | 8 | 2 | (39 에서 죽음) | -- | -- | ao_mg_acc_det 용량 밖 읽기 2168 건 |
+| s8new (고친 판, memcheck) | 8 | 2 | 39 | 4.409 (50/50) | 1fabd0bec8 | memcheck 오류 0 |
 - 기존 수치에 미치는 영향: 다시 할당이 있었던 판만 바뀜 -- bigdt2 bread hhK1 2.449 -> **2.425 %** (해시 1e70f7a865 -> 96d9cf6d32), hhK8 4.312 -> **4.310 %** (250acef724 -> e4da1d78a7); bread K 2·4 와 그 밖 다시 할당 판 (fem.jsonl redo) 은 다시 안 돌림. wolf K 1·2·4 와 lego·ficus (다시 할당 없음) 는 그대로.
   CM6.6 의 dh4·s0p0·cvs 끝 프레임 죽음은 같은 경로로 보이나 다시 돌려 확인하지 않음 (cvs 는 입자 F 뒤집힘·상자 폭증 동반).
 ### CM7.4 결과·이어서 할 지점
-- R2 lbours/fem_cm/cm7/ (판별 log·summary·fem.jsonl·run_info, list.txt, done.txt), 표 marks/cm7_table.md, 끝 표식 marks/cm7.END, 일꾼 출력 w2/out/cm7.log. memcheck 고친 판 s8new (wolf K 8 기본 용량 50 프레임) 는 표에 그 결과 (오류 수) 가 들어감.
+- R2 lbours/fem_cm/cm7/ (판별 log·summary·fem.jsonl·run_info, list.txt, done.txt), 표 marks/cm7_table.md, 끝 표식 marks/cm7.END, 일꾼 출력 w2/out/cm7.log. 묶음 끝 11-05 09:51 KST (마감 전 모두 완주).
 - 이어서 (필요하면): bigdt2 표의 bread K 1·2·4·8 칸을 커밋 2080051 로 다시 (exe/fem_an_bigdt2m2.sh 꼴, hhK* bread 줄 그대로) -- 위 K 1·8 값이 새 값.
