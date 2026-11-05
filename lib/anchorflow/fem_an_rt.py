@@ -1950,9 +1950,9 @@ __global__ void __launch_bounds__(128) rt_vres_q(const int* IP, const int* cb, c
         blocksum_add(e, E);
     }
 }
-// 선탐색 후보 NC 개 (rt_bar_lsN 과 같은 후보 y = ŷ + T (η + c δ), c = 2^-i) 의 벌점 에너지 -> SC[40+i]
+// 선탐색 후보 NC 개 (rt_bar_lsN 과 같은 후보 y = ŷ + T (η + c δ), c = 2^-i) 의 벌점 에너지 -> SC[40+i] (pn 은 rt_vres_q 와 같은 인자 묶음을 받으려고 둠, 안 씀)
 __global__ void __launch_bounds__(128) rt_vres_lsN(const int* IP, const int* cb, const float* BW, const float* yh, const float* eta, const float* dl,
-                         const float* sk, const int* pm, const float* U, float thinv, float n0, float n1, float n2, float cv, double* SC, int NC, int i0, const double* gate) {
+                         const float* sk, const int* pm, const float* U, float thinv, float n0, float n1, float n2, float pn, float cv, double* SC, int NC, int i0, const double* gate) {
     if (gate && *gate != 0.0) return;
     if (blockIdx.x*blockDim.x >= IP[12]) return;
     int q = blockIdx.x*blockDim.x + threadIdx.x;
