@@ -91,7 +91,7 @@ rend1() { local V=$1 t=$2 O=$B/$1_$2 sh F=${3:-0}
   else sh=lego; $PY -u exe/lb_roll_to_h5.py --dump $O/pred.pt --traj $W/lbdata/test_low/L000 --out $O/h5 > $O/h5.log 2>&1; CF=$W/lbdata/config.json; fi
   mkdir -p $O/vj
   CUDA_VISIBLE_DEVICES=0 $PY -u exe/lb_render.py --sim $O/h5 --config $CF --shape $sh --out $O/vj/fem_${sh}_e.mp4 --frame_label 0 --caption " " --frames $F \
-    --cells $O/bener.pt --erange $ER --cell_key em < /dev/null > $O/vj/r.log 2>&1
+    --cells $O/bener.pt --erange=$ER --cell_key em < /dev/null > $O/vj/r.log 2>&1
   local rc=$?
   say "  [렌더] ${V}_$t rc=$rc $(ls -la $O/vj/fem_${sh}_e.mp4 2>&1 | awk '{print $5}') $(grep -a '칸 겹치기\|rror' $O/vj/r.log | tail -2 | cut -c1-200 | tr '\n' ' ')"
   rclone copy $O $RR/${V}_$t -q --exclude pred.pt --exclude "h5/**"; return $rc; }
