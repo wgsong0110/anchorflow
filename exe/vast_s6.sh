@@ -8,10 +8,12 @@
 # 모두 끝나면 rclone check 차이 0 일 때 스스로 destroy (CONTAINER_API_KEY).
 set -u
 C=${AF_COMMIT:?}
+PART=${S6_PART:-}   # 빈 값 = 전부, cm = (a)(c) 만, stab = (b) 만 (2 장짜리 인스턴스 둘로 나눌 때; 표식·로그 이름에 붙음)
+SFX=${PART:+_$PART}
 MK=r2:storage/result/anchorflow/lbours/vast_s6/marks
 mkdir -p /workspace/shm /workspace/tmpd /root/s6
-LOG=/root/s6/s6.log
-say() { echo "[s6 $(date '+%F %T')] $*" | tee -a $LOG; command -v rclone >/dev/null && rclone copyto $LOG $MK/s6.log -q 2>/dev/null; }
+LOG=/root/s6/s6$SFX.log
+say() { echo "[s6$SFX $(date '+%F %T')] $*" | tee -a $LOG; command -v rclone >/dev/null && rclone copyto $LOG $MK/s6$SFX.log -q 2>/dev/null; }
 # ---- rclone
 if ! command -v rclone >/dev/null; then
   (apt-get update -qq && apt-get install -y -qq curl unzip git ffmpeg tmux) >/dev/null 2>&1
@@ -71,20 +73,22 @@ export S6_WM_MARK=/root/s6/wm.done
 git -C /root/af fetch -q origin implicit-bspline && git -C /root/af pull -q origin implicit-bspline 2>/dev/null; git -C /root/af checkout -q $C || { say "[코드 실패] $C"; exit 1; }
 D=/dev/shm/dkta/impwt/$C
 [ -f $D/.done ] || { rm -rf $D; git clone -q /root/af $D && git -C $D checkout -q $C && echo $C > $D/.done; }
-echo "[ok] $(date)" | rclone rcat $MK/setup.done
+echo "[ok] $(date)" | rclone rcat $MK/setup$SFX.done
 say "[세팅 끝] $(git -C $D log --oneline -1)"
 # ---- 결과 동기화 (필터 없음)
 ( while true; do sleep 600; rclone copy /dev/shm/dkta/lbours $R/lbours -q --transfers 8; done ) & SY=$!
 cd $D
 # ---- (a) cm9
-( if [ -n "$(rclone lsf $MK/cm9.done 2>/dev/null)" ]; then say "[cm9] 이미 끝 (표식)"; else
+PA=""
+[ "$PART" = stab ] || { ( if [ -n "$(rclone lsf $MK/cm9.done 2>/dev/null)" ]; then say "[cm9] 이미 끝 (표식)"; else
     say "[cm9 띄움]"; bash exe/fem_cm9.sh $C > /root/s6/cm9.out 2>&1; say "[cm9 끝] rc=$?"; rclone copy /dev/shm/dkta/lbours/fem_cm $R/lbours/fem_cm -q
     echo "$(date)" | rclone rcat $MK/cm9.done; fi
   # ---- (c) A 판 lego 영상 (cm9 뒤)
   if [ -z "$(rclone lsf $MK/cm8av.done 2>/dev/null)" ]; then say "[cm8a 영상 띄움]"; bash exe/fem_cm8a_vid.sh $C > /root/s6/cm8av.out 2>&1; say "[cm8a 영상 끝] rc=$?"
     echo "$(date)" | rclone rcat $MK/cm8av.done; fi ) &
-PA=$!
+PA=$!; }
 # ---- (b) stab 연기 -> 본 묶음
+if [ "$PART" != cm ]; then
 export ST_NO_BUILD=1
 MS="mpm,vrgs,bnv,ours,phystwin,simplicits"; SC="L000,ficus"
 if [ -z "$(rclone lsf $MK/stab_smoke.done 2>/dev/null)" ]; then
@@ -146,13 +150,14 @@ if [ -n "$OK" ]; then
   say "[stab1 끝] $(cat /dev/shm/dkta/lbours/stab/stab.END 2>/dev/null)"
   echo "$(date) 방법 $OK" | rclone rcat $MK/stab1.done
 fi
-wait $PA
+fi
+[ -n "$PA" ] && wait $PA
 # ---- 끝: 전부 R2 로, 차이 0 이면 destroy
 kill $SY 2>/dev/null
 rclone copy /dev/shm/dkta/lbours $R/lbours -q --transfers 8
 if rclone check /dev/shm/dkta/lbours $R/lbours --one-way --size-only -q 2>/root/s6/check.txt; then
-  say "[R2 확인 차이 0] 모두 끝 -> destroy"; echo "$(date)" | rclone rcat $MK/ALL_DONE
+  say "[R2 확인 차이 0] 모두 끝 -> destroy"; echo "$(date)" | rclone rcat $MK/ALL_DONE$SFX
   vastai destroy instance ${CONTAINER_ID:-0} -y --api-key ${CONTAINER_API_KEY:-x} 2>&1 | tee -a $LOG || vastai stop instance ${CONTAINER_ID:-0} --api-key ${CONTAINER_API_KEY:-x}
 else
-  say "[R2 확인 차이 있음] destroy 안 함: $(tail -3 /root/s6/check.txt | tr '\n' ' ')"; echo "$(date) 차이 있음" | rclone rcat $MK/ALL_DONE_CHECK_FAIL
+  say "[R2 확인 차이 있음] destroy 안 함: $(tail -3 /root/s6/check.txt | tr '\n' ' ')"; echo "$(date) 차이 있음" | rclone rcat $MK/ALL_DONE_CHECK_FAIL$SFX
 fi
