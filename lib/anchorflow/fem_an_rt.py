@@ -1454,6 +1454,27 @@ BAR_SRC = r'''
 // 표본점 q = 팔분 칸 입자 질량 중심 (프레임 시작, P2G), 걸음 안 이동 = Σ_o BW (U + thinv (y − U)) (가우스 점 기저); d = (x − p)·n.
 // b(d) = −κ (d − d̂)² ln(d/d̂) (0 < d < d̂), κ = ks V_q (ks = (λ + 2μ)/d̂², d̂ = ½ dx_정답). 걸음 시작 d ≤ 0 인 점은 그 걸음 장벽에서 뺌 (AF_BACT 0).
 // mode 0: 걸음 시작 (y = 시작점) 판정; mode 1: 기울기 스칼라 c = b' thinv, 덩어리 헤시안 스칼라 h = b'' thinv², 에너지 -> E.
+#if defined(AF_BCROSS) || defined(AF_BCNT)
+// 절 CM10 (--bar_cross, 사용자 승인 정의 변경; --bar_cnt 진단도 같은 판정): 표본점이 속한 B-스플라인 칸이 바닥 평면을 관통하는가.
+// 칸 범위 = 코드의 칸 정의 그대로 (rt_coord: 격자 좌표 L = Ai x 에서 base b = floor(L − ½), 칸 = L ∈ [b+½, b+1½)³ -- 입자 배정 범위, 노드 b..b+2 의 27 개).
+// 판정 위치 = 걸음 시작 위치 (rt_bar_q mode 0 과 같은 y): 칸 꼭짓점 8 개 (L = b + ½ + {0,1}³) 의 기준 위치 A L 에 같은 이차 B-스플라인 기저로 노드 이동 U + thinv (y − U) 를 더한 점의
+// 평면 부호 거리 d 의 최소 < 0 < 최대 이면 관통 칸 (꼭짓점 축별 기저: f = ½ -> (½, ½, 0), f = 1½ -> (0, ½, ½)).
+__device__ __forceinline__ bool bar_cross(int qq, const int* IP, const int* cb, const int* ids, const float* y, const float* U, float thinv, float n0, float n1, float n2, float pn) {
+    int c = qq >> 3; float dmin = 3.0e38f, dmax = -3.0e38f;
+    for (int cn=0; cn<8; cn++) {
+        int ci[3] = {(cn>>2)&1, (cn>>1)&1, cn&1};
+        float L[3], w[3][3];
+        for (int a=0;a<3;a++) { L[a] = (float)(IP[a] + cb[c*3+a]) + 0.5f + (float)ci[a];
+            w[a][0] = ci[a] ? 0.f : 0.5f; w[a][1] = 0.5f; w[a][2] = ci[a] ? 0.5f : 0.f; }
+        float x[3]; for (int a=0;a<3;a++) x[a] = AF_BAM[a*3]*L[0] + AF_BAM[a*3+1]*L[1] + AF_BAM[a*3+2]*L[2];
+        for (int o=0;o<27;o++) { float ww = w[0][o/9]*w[1][(o/3)%3]*w[2][o%3]; if (ww == 0.f) continue; int id = ids[o];
+            for (int a=0;a<3;a++) x[a] += ww*(U[id*3+a] + thinv*(y[id*3+a] - U[id*3+a])); }
+        float d = x[0]*n0 + x[1]*n1 + x[2]*n2 - pn;
+        dmin = fminf(dmin, d); dmax = fmaxf(dmax, d);
+    }
+    return dmin < 0.f && dmax > 0.f;
+}
+#endif
 __global__ void __launch_bounds__(128) rt_bar_q(const int* IP, const int* cb, const float* BW, const float* Vq, const float* y, const float* U, float thinv,
                          float n0, float n1, float n2, float pn, float dh, float ks, int mode, float* Gn, float* Kn, double* E) {
     if (blockIdx.x*blockDim.x >= IP[12]) return;
@@ -1468,8 +1489,21 @@ __global__ void __launch_bounds__(128) rt_bar_q(const int* IP, const int* cb, co
             for (int a=0;a<3;a++) xq[a] += w*(U[id*3+a] + thinv*(y[id*3+a] - U[id*3+a])); }
         float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;
         if (mode == 0) AF_BACT[qq] = (d > 0.f) ? 1 : 0;
+#if defined(AF_BCROSS) || defined(AF_BCNT)
+        if (mode == 0) { bool cr_ = bar_cross(qq, IP, cb, ids, y, U, thinv, n0, n1, n2, pn);
+#ifdef AF_BCNT
+            if (cr_) AF_BCF[qq] |= 2;                                           // 진단: 이 프레임 어느 걸음 시작에서든 관통 칸
+#endif
+#ifdef AF_BCROSS
+            if (!cr_) AF_BACT[qq] = 0;                                          // 절 CM10: 관통 칸이 아닌 칸의 표본점은 이 걸음 장벽에서 뺌 (걸음 시작 d ≤ 0 인 점과 같은 처리)
+#endif
+        }
+#endif
         else if (AF_BACT[qq] && d < dh) {
             double kap = (double)ks*(double)Vq[qq];
+#ifdef AF_BCNT
+            AF_BCF[qq] |= 1;                                                    // 진단: 이 프레임 어느 뉴턴 반복에서든 장벽이 걸림 (활성이고 d < d̂)
+#endif
             if (d > 0.f) {
                 double dd = (double)d - dh, L = log((double)d/dh);
                 e = -kap*dd*dd*L;
@@ -1652,6 +1686,18 @@ def bstify(src, mode, dh, full):
     return src.replace('extern "C" {', 'extern "C" {' + add, 1) if add else src
 
 
+def bcrossify(src, cross, cnt):
+    """절 CM10 (장벽 판 위): cross = 관통 칸 표본점에만 장벽 (AF_BCROSS, --bar_cross), cnt = 진단 표본점 플래그 (AF_BCNT, --bar_cnt; 결과 불변). 둘 다 끄면 소스 그대로."""
+    add = ""
+    if cross:
+        add += "\n#define AF_BCROSS 1"
+    if cnt:
+        add += "\n#define AF_BCNT 1\n__device__ int* AF_BCF;"
+    if cross or cnt:
+        add += "\n__device__ const float* AF_BAM;"
+    return src.replace('extern "C" {', 'extern "C" {' + add, 1) if add else src
+
+
 # 절 CM3 노드 압축 판 커널 (--ncomp): 원본 본문에서 머리만 바꿔 이름 뒤 _c, 마지막 인자 ACT (목록). LM 커널은 층 0 에서만 _c 를 부른다 (RTSolver.k).
 HB_ = "    if (blockIdx.x*blockDim.x >= IP[9]) return;\n    int n = blockIdx.x*blockDim.x + threadIdx.x;\n"
 HS_ = "    int n = blockIdx.x*blockDim.x + threadIdx.x;\n    if (n >= IP[9]) return;\n"
@@ -1701,6 +1747,7 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, 
     if floor and floor.get("bar"):
         src = barify(src)
         src = bstify(src, floor.get("bst", 0), floor["DH"], floor.get("bfull", False))
+        src = bcrossify(src, floor.get("bcross", False), floor.get("bcnt", False))
     return skipify(src) if adapt else src
 
 
@@ -1892,6 +1939,9 @@ class RTSolver(MG2.MG2Mixin):
         if s.bar:
             s.bx = Z(capQ * 4); s.bpg = Z(capQ); s.bph = Z(capQ); s.bact = torch.zeros(capQ, device=dev, dtype=torch.int32); s.bGn = Z(s.capN); s.bKn = Z(s.capN)
             s.bfull = bool(s.floor.get("bfull", False))                               # 비덩어리 헤시안 곱 (절 AN.21)
+            s.bcross = bool(s.floor.get("bcross", False)); s.bcnt = bool(s.floor.get("bcnt", False))   # 절 CM10: 관통 칸 장벽 / 진단 표본점 플래그
+            if s.bcnt:
+                s.bcf = torch.zeros(capQ, device=dev, dtype=torch.int32)
             if s.bfull:
                 s.bS = Z(s.capN); s.btq = Z(capQ)
         s.Fq = Z(capQ, 9); s.Vq = Z(capQ); s.mq = Z(capQ); s.xq0 = Z(capQ, 3); s.H = Z(capQ, 81)
@@ -1969,6 +2019,10 @@ class RTSolver(MG2.MG2Mixin):
                     g = mod.get_global(nm); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(t.data_ptr())
                 g = mod.get_global("AF_BDET"); cp.ndarray((1,), dtype=cp.int32, memptr=g)[0] = 1 if getattr(s, "det", False) else 0
                 g = mod.get_global("AF_BNRM"); cp.ndarray((3,), dtype=cp.float32, memptr=g)[:] = cp.asarray(np.array(s.floor["NR"], dtype=np.float32))
+                if s.bcross or s.bcnt:                                                 # 절 CM10: 격자 행렬 A (x = A L, 칸 꼭짓점 기준 위치), 진단 플래그 버퍼
+                    g = mod.get_global("AF_BAM"); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(s.A.data_ptr())
+                if s.bcnt:
+                    g = mod.get_global("AF_BCF"); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(s.bcf.data_ptr())
         if s.goct < 0:
             return
         for mod in s._mods():
@@ -2189,6 +2243,8 @@ class RTSolver(MG2.MG2Mixin):
         s.zf(s.badq); s.zf(s.badc); s.zf(s.nbad)
         if getattr(s, "bar", False):
             s.zf(s.bx)
+            if s.bcnt:
+                s.zf(s.bcf)                                                            # 절 CM10 진단: 프레임마다 표본점 플래그 비움
         if s.matk:
             s.mat_pre_p2g()                                                            # 절 CM2 재질 판: 구속 입자 v·a (순차 방출)
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv),
@@ -2709,6 +2765,16 @@ class RTSolver(MG2.MG2Mixin):
             ct = s.CT.cpu().tolist()
             o["it"] = dict(nN=ct[2], nP=ct[3], capN=ct[4], capP=ct[5], steps=ct[6], solves=ct[7])
         return o
+
+    def bar_counts(s):
+        """절 CM10 진단 (--bar_cnt, 결과 불변): 이 프레임 장벽이 걸린 표본점 (어느 뉴턴 반복에서든 활성이고 d < d̂) 수·전체 표본점 (입자 있는 팔분 점) 대비·그 점들이 속한 칸 수,
+        관통 칸 (어느 걸음 시작에서든) 수와 그 칸의 표본점 수, 장벽 걸린 점 중 관통 칸에 속한 점 수."""
+        nq = int(s.IP[12])
+        fl = s.bcf[:nq]; occ = s.bx[:nq * 4].view(-1, 4)[:, 3] > 0
+        eng = (fl & 1) > 0; cr = ((fl & 2) > 0) & occ
+        cid = torch.arange(nq, device=fl.device) >> 3
+        return dict(neng=int(eng.sum()), nocc=int(occ.sum()), ceng=int(torch.unique(cid[eng]).numel()), nc=nq // 8,
+                    ccr=int(torch.unique(cid[cr]).numel()), ncr=int(cr.sum()), engcr=int((eng & cr).sum()))
 
     def x_orig(s):
         o = torch.empty_like(s.x)

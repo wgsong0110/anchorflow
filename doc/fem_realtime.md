@@ -5302,3 +5302,23 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 띄우는 법 (잡이 돌고 있을 때): cm9_go.sh 의 `__UNTIL__` 을 잡 만료 epoch 로 바꿔 /home/dkta/work/ao/go_cm9.sh 로 scp 한 뒤 로그인 노드에서
   `AF_DETACH=1 AF_JOB=<id>.ECE-util1 AF_NODE=<노드> bash /home/dkta/work/anchorflow/exe/job_run.sh /home/dkta/work/ao/go_cm9.sh /home/dkta/work/ao/go_cm9.out` (exe/ao_launch.sh 와 같은 꼴). 표·끝 표식은 잡 안 스크립트가 알아서 씀.
 - 처음 몇 분 안에 볼 것 (marks/cm9.log·cm9w_pool.log): 새 커널 컴파일 오류, /dev/shm 여유 (w1a 덤프 약 7 GB), wm.pt 5 GB 내려받기.
+
+## CM10. 관통 칸 장벽 (--bar_cross, 사용자 승인 11-05 정의 변경) + 장벽 걸리는 표본점 진단 (--bar_cnt) -- 가지 implicit-bspline, 묶음 barx (vast.ai A6000 1 장, exe/vast_barx.sh)
+### CM10.0 정의 (나머지는 채택 판 (B) 그대로 = 절 CM8 b 판 명령: 장벽 + --y0eb, HHT ρ 0.8, K 2, 뉴턴 2, εN 1e-2 · εP 1e-1, PCG 상한 lego·낙하 4 · wolf 5, BA = exe/fem_cm3_scn.sh)
+- **--bar_cross**: 장벽 (절 AN.19 IPC 거리 장벽, d̂ = ½ dx_정답, κ_q 그대로) 을 **바닥 평면을 관통하는 B-스플라인 칸에 속한 표본점에만** 건다.
+  - 칸 범위 = 코드의 칸 정의 그대로: 격자 좌표 L = A⁻¹ x 에서 base b = floor(L − ½) (rt_coord), 칸 = L ∈ [b+½, b+1½)³ (입자를 그 칸에 배정하는 범위; 노드 b..b+2 의 27 개). 월드에서는 x = A L 인 평행육면체 (능면체 격자).
+  - **판정은 걸음 시작 위치 기준**: 걸음마다 장벽 활성 판정 (rt_bar_q mode 0, 걸음 시작 d ≤ 0 인 점을 빼는 그 자리, 같은 y) 에서 칸 꼭짓점 8 개 (L = b + ½ + {0,1}³) 의 기준 위치 A L 에
+    같은 이차 B-스플라인 기저로 노드 이동 U + thinv (y − U) 를 더한 점 (꼭짓점 축별 기저: f = ½ -> (½, ½, 0), f = 1½ -> (0, ½, ½)) 의 평면 부호 거리 d 를 재어 **최소 < 0 < 최대** 이면 관통 칸.
+    관통 칸이 아닌 칸의 표본점은 그 걸음 장벽에서 뺀다 (AF_BACT = 0 -- 걸음 시작 d ≤ 0 인 점과 같은 처리라 기울기·헤시안·선탐색 후보·실현 가능 보폭 rt_bar_kfe·시작점 섞기 rt_bar_y0e 모두에서 빠짐).
+    꼭짓점 판정이라 칸의 이차 변형 상 안쪽 극값은 보지 않는다.
+  - 바꾸지 않은 것: 띠 고착 (--fl_bst 1, rt_floor_q 의 d < d̂ 표본점 고착 몫 1) 은 장벽 활성과 무관하게 그대로 (관통 칸이 아닌 칸의 띠 안 점도 접선 고착). 장벽에서 빠진 점은 법선 구속이 없으므로 걸음 안에 평면을 넘을 수 있고, 넘으면 다음 걸음부터 d ≤ 0 이라 계속 빠진다 (정의 그대로의 성질).
+  - 끄면 같은 기계어: 새 코드는 모두 `#if defined(AF_BCROSS) || defined(AF_BCNT)` 안 -- 플래그 없는 생성 CUDA 소스를 전처리하면 원래 커밋 (e98a51e) 과 글자까지 같음 (로컬 cpp 대조). 실행 대조는 묶음의 o_ (플래그 없음) 끝 해시 대 절 CM8 cm8j 해시.
+- **--bar_cnt** (진단, 결과 불변 -- 별도 정수 버퍼에 플래그만 씀): 프레임마다 (a) 장벽이 실제로 걸린 표본점 = 그 프레임 어느 걸음·어느 뉴턴 반복에서든 활성이고 d < d̂ 인 점의 수, 전체 표본점 (입자 있는 팔분 점) 대비, 그 점들이 속한 칸 수,
+  (b) 어느 걸음 시작에서든 관통 칸인 칸 수·그 칸의 표본점 수, (c) 장벽 걸린 점 중 관통 칸 점 수 -> fem.jsonl `bc` (neng·nocc·ceng·nc·ccr·ncr·engcr). 결과 불변 확인 = d_ 끝 해시가 o_ 와 같음.
+- 구현: lib/anchorflow/fem_an_rt.py (bar_cross 장치 함수, rt_bar_q mode 0·1 의 #if 블록, bcrossify, RTSolver.bar_counts, 버퍼 bcf·전역 AF_BCF·AF_BAM = 격자 행렬 A), exe/fem_an_rt_sim.py (--bar_cross·--bar_cnt). 재질 판 (wolf, MatRT) 도 같은 build_src·rt_bar_q 경로.
+### CM10.1 묶음 barx (exe/vast_barx.sh, 표 exe/fem_barx_table.py, 합성 exe/fem_barx_compose.py)
+- vast.ai: 원래 쓰라던 59214581 (af_s6_stab) 은 07:01 UTC idle 워치독으로 exited (stab1 미러 대기 중, 절 S.7) -> 지시대로 RTX A6000 1 장 새 인스턴스 (onstart tmux barx, 끝나면 rclone check 차이 0 일 때 스스로 destroy -y).
+- 판 (모두 결정적 --det, 카드 0 하나에 차례로): d_wolf·d_L000 (= (B) + --bar_cnt, 1 번 수치), x_wolf (+ --bar_cross --bar_cnt --hgt --dump --dump_F)·x_L000·x_drop1 (+ --bar_cross --bar_cnt), o_wolf·o_L000·o_drop1 ((B) 그대로, 같은 인스턴스 해시·오차 대조).
+- 영상: x_wolf 덤프 -> h5 (exe/lb_roll_to_h5.py, 정답 궤적 디렉토리 = exe/pg_h5_to_pt.py 로 R2 _vastmirror/topo/pg_wolf_sand (절 S.7, pull.log rc=0) 에서) -> 3DGS 알파블렌딩 (exe/lb_render.py --shape wolf) -> 정답 (R2 lbours/fem_ag_wolf/gt/gt_wolf.mp4) | 우리, fem_cm_wolf_cmp.mp4 와 같은 형식 -> result/anchorflow/v20261009/fem_barx_wolf_cmp.mp4.
+- 출력: R2 lbours/fem_cm/barx/<판>_<씬> (log·summary·fem.jsonl, x_wolf 는 pred.pt·h5·vj), 표 lbours/fem_cm/marks/barx_table.md (판마다 다시 씀: 1 장벽 걸린 표본점 프레임별 표, 2 해시 대조, 3 판정, 4 wolf 높이 곡선 정답 대비, 5 반복), 로그 marks/barx.log, 끝 표식 marks/barx.END.
+### CM10.2 결과 (띄운 시점에는 결과 전 -- 표 marks/barx_table.md 를 받으면 여기에 옮긴다)

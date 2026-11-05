@@ -33,6 +33,8 @@ ap.add_argument("--ls", type=int, default=1)
 ap.add_argument("--no_vfl_out", action="store_true")
 ap.add_argument("--fl_bar", action="store_true", help="장벽 바닥 (절 AN.19, 정의 변경): 법선 = 팔분 표본점 IPC 거리 장벽 (d̂ = ½ dx_정답, κ = (λ+2μ) V_q / d̂²), 고착 = 정답 sticky 가중 (띠 제한 없음) 을 접선에만; --ls_n 선탐색 필요")
 ap.add_argument("--fl_bst", type=int, default=0, choices=[0, 1, 2], help="절 AN.21 (--fl_bar 위, 정의 변경): 띠 고착 -- 장벽 띠 안 (d < d̂) 표본점의 고착 몫 = 1 (정답 sticky 노드 v = 0 처럼 완전 고착, 접선); 띠 밖 1 = 0, 2 = 정답 sticky 가중 그대로")
+ap.add_argument("--bar_cross", action="store_true", help="절 CM10 (--fl_bar 위, 사용자 승인 정의 변경): 장벽을 바닥 평면을 관통하는 B-스플라인 칸 (칸 범위 = 코드의 칸 정의, 걸음 시작 위치에서 판정) 에 속한 표본점에만")
+ap.add_argument("--bar_cnt", action="store_true", help="절 CM10 진단 (결과 불변, --fl_bar 위): 프레임마다 장벽이 걸린 표본점 수·전체 대비·칸 수, 관통 칸 수를 fem.jsonl bc 에")
 ap.add_argument("--bar_full", action="store_true", help="절 AN.21: 장벽 헤시안 곱을 덩어리 대신 점별 w wᵀ 참 꼴로 (블록 대각 전처리에는 덩어리 값)")
 ap.add_argument("--fl_pt", action="store_true", help="점별 고착 (절 AN.17, 정의 변경): 고착 거듭제곱을 가우스 점에서 한 뒤 노드로 질량 평균 (be·HHT·GA 처럼 단계 frac 1 판만, --pk·--K_contact 와 함께 쓰지 않음)")
 ap.add_argument("--mg_levels", type=int, default=1, help="1 = 블록 야코비, 2 이상 = 그 층 수의 기하 멀티그리드 (거친 층 조밀 상자)")
@@ -117,7 +119,7 @@ if a.floor == "vel":
     pl = [b for b in cfg["boundary_conditions"] if b.get("type") == "surface_collider"][0]
     NR = np.array(pl["normal"], dtype=np.float64); NR = NR / np.linalg.norm(NR)
     PT = [float(q) for q in pl["point"]]
-    FL = dict(PT=PT, NR=NR.tolist(), PN=float(np.dot(PT, NR)), DXG=DXG, KEX=dt / float(cfg["substep_dt"]), vout=not a.no_vfl_out, pt=a.fl_pt, bar=a.fl_bar, bst=a.fl_bst, bfull=a.bar_full, DH=0.5 * DXG, KS=(lam + 2.0 * mu) / (0.5 * DXG) ** 2)
+    FL = dict(PT=PT, NR=NR.tolist(), PN=float(np.dot(PT, NR)), DXG=DXG, KEX=dt / float(cfg["substep_dt"]), vout=not a.no_vfl_out, pt=a.fl_pt, bar=a.fl_bar, bst=a.fl_bst, bfull=a.bar_full, bcross=a.bar_cross, bcnt=a.bar_cnt, DH=0.5 * DXG, KS=(lam + 2.0 * mu) / (0.5 * DXG) ** 2)
     if a.fl_nost:
         FL["KEX"] = 0.0
     if a.fl_dhm != 1.0:
@@ -234,6 +236,8 @@ for fi in range(L):
         _nn = int(S.IP[9]); _mn = S.mn[:_nn].double()
         c["gqchk"] = [abs(float(_mn.sum()) - _ps[0]) / _ps[0], float((S.mv[:_nn].double().sum(0) - _ps[1]).norm()) / max(_ps[3], 1e-30),
                       float((S.ma[:_nn].double().sum(0) - _ps[2]).norm()) / max(_ps[4], 1e-30) if S.ga else None]
+    if a.bar_cnt and getattr(S, "bar", False):                                         # 절 CM10 진단: 장벽 걸린 표본점·칸, 관통 칸
+        c["bc"] = S.bar_counts()
     if S.y0ut and getattr(S, "bar", False):                                            # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k, 0 = ŷ 그대로)
         c["y0k"] = S.Y0K[:S.nstage, 0].cpu().tolist()
         if not S.ls:                                                                   # 절 CM6 진단: 선탐색 없는 장벽 판 (재질) 뉴턴 반복별 보폭 k (상한까지 펼친 자리; 허용치로 건너뛴 반복은 앞 값)
