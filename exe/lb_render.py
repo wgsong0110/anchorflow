@@ -141,13 +141,13 @@ if a.mark:
     PXL = []
 CEL = None
 if a.cells:                                                                         # 절 CM14.3: 칸 겹치기 준비
-    import cv2
     import matplotlib
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from cell_overlay import draw_cells
     CEL = torch.load(a.cells, weights_only=False)["frames"]
     _ELO, _EHI = [float(q) for q in a.erange.split(",")]
     _CMAP = matplotlib.colormaps["inferno"]
     _CPROJ = (wv[None] @ pj[None])[0]
-    _FACES = [(0, 1, 3, 2), (4, 5, 7, 6), (0, 1, 5, 4), (2, 3, 7, 6), (0, 2, 6, 4), (1, 3, 7, 5)]    # 꼭짓점 번호 cn = 4 i + 2 j + k
     print(f"[칸 겹치기] {a.cells} {len(CEL)} 프레임, 색 log10 범위 {_ELO}~{_EHI} ({a.cell_key})", flush=True)
 
     def ecol(e):
@@ -167,24 +167,7 @@ if a.cells:                                                                     
         ph = torch.cat([Pc, torch.ones_like(Pc[:, :1])], 1)
         dep = (ph @ wv)[:, 2].reshape(-1, 8).cpu().numpy()
         px = DCM_project(Pc, _CPROJ, fr.shape[1], fr.shape[0]).reshape(-1, 8, 2).cpu().numpy()
-        cols = ecol(e[keep])
-        out = fr.astype(np.float32)
-        Hh, Ww = fr.shape[:2]
-        for ci in np.argsort(-dep.mean(1)):                                          # 먼 칸부터 (화가 순서)
-            P8, d8 = px[ci], dep[ci]
-            for fc in sorted(_FACES, key=lambda q: -d8[list(q)].mean()):
-                poly = P8[list(fc)]
-                x0, y0 = np.floor(poly.min(0)).astype(int); x1, y1 = np.ceil(poly.max(0)).astype(int)
-                x0, y0 = max(x0, 0), max(y0, 0); x1, y1 = min(x1, Ww - 1), min(y1, Hh - 1)
-                if x1 < x0 or y1 < y0 or not np.isfinite(poly).all():
-                    continue
-                m = np.zeros((y1 - y0 + 1, x1 - x0 + 1), np.uint8)
-                cv2.fillPoly(m, [np.round(poly - [x0, y0]).astype(np.int32)], 1)
-                sub = out[y0:y1 + 1, x0:x1 + 1]
-                mk = m.astype(bool)
-                sub[mk] = sub[mk] * (1 - a.cell_alpha) + cols[ci] * a.cell_alpha
-                cv2.polylines(out, [np.round(poly).astype(np.int32)], True, [float(q) * 0.7 for q in cols[ci]], 1, cv2.LINE_AA)
-        return np.clip(out, 0, 255).astype(np.uint8)
+        return draw_cells(fr, px, dep, ecol(e[keep]), a.cell_alpha)
 
     def DCM_project(pos, full_proj, W_, H_):
         ph_ = torch.cat([pos, torch.ones_like(pos[:, :1])], 1) @ full_proj

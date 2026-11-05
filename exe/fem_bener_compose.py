@@ -6,7 +6,7 @@ import json
 import os
 import sys
 
-import imageio.v2 as imageio
+import subprocess
 import matplotlib
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -29,13 +29,21 @@ def er(p):
     return f"오차 {100 * e:.2f}%" + (f" · 프레임 {dv} 에서 발산 (뒤는 정지)" if dv else ""), dv
 
 
+def read_video(v):
+    """ffmpeg 로 RGB 프레임 목록."""
+    w, h = [int(q) for q in subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", v]).decode().strip().split(",")[:2]]
+    raw = subprocess.check_output(["ffmpeg", "-v", "error", "-i", v, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+    a_ = np.frombuffer(raw, np.uint8).reshape(-1, h, w, 3)
+    return list(a_)
+
+
 cells = []
 for i in range(0, len(rest), 3):
     nm, v, s = rest[i:i + 3]
     if not os.path.exists(v):
         print("[칸 빠짐: 영상 없음]", nm, v)
         continue
-    fr = [np.asarray(f)[..., :3] for f in imageio.get_reader(v)]
+    fr = read_video(v)
     cells.append((nm, er(s)[0], fr))
 n = len(cells)
 nrow = (n + NCOL - 1) // NCOL
@@ -75,11 +83,12 @@ for k_ in range(int(np.ceil(ELO)), int(np.floor(EHI)) + 1):
     dr.text((cx + cw + 16, yy - 13), f"1e{k_}", fill=(0, 0, 0), font=fr_(22))
 yl = cy + ch + 30
 for line in LEG.split("|"):
-    dr.text((rw + 14, yl), line, fill=(40, 40, 40), font=fr_(18))
-    yl += 26
+    dr.text((rw + 14, yl), line, fill=(40, 40, 40), font=fr_(21))
+    yl += 30
 base = np.asarray(base)
 L = max(len(c[2]) for c in cells)
-W = imageio.get_writer(out, fps=30, codec="libx264", pixelformat="yuv420p", macro_block_size=1, ffmpeg_params=["-crf", "20", "-movflags", "+faststart"])
+W = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{Wt}x{Ht}", "-r", "30", "-i", "-",
+                      "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out], stdin=subprocess.PIPE)
 for fi in range(L):
     im = base.copy()
     for (nm, e_, frs), (x, y, w) in zip(cells, pos):
@@ -87,6 +96,7 @@ for fi in range(L):
         if f.shape[0] != HP or f.shape[1] != w:
             f = np.asarray(Image.fromarray(f).resize((w, HP), Image.LANCZOS))
         im[y:y + HP, x:x + w] = f
-    W.append_data(im)
-W.close()
+    W.stdin.write(np.ascontiguousarray(im).tobytes())
+W.stdin.close()
+assert W.wait() == 0
 print("[저장]", out, n, "칸", f"{Wt}x{Ht}", L, "프레임", "칸 높이", HP)
