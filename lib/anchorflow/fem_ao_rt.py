@@ -1004,8 +1004,15 @@ GC_NEW = "if (bad || badc[c]) { float eu[9]; for (int k=0;k<9;k++) eu[k] = ac[18
 AW_DET9 = "__device__ __forceinline__ float aw_det9(const float* M) { return M[0]*(M[4]*M[8]-M[5]*M[7]) - M[1]*(M[3]*M[8]-M[5]*M[6]) + M[2]*(M[3]*M[7]-M[4]*M[6]); }\n"
 
 
-def _src(tol=False, fqrl=False):
+GQ_P2G_OLD = "    if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }\n    float wx[3][3], dw[3][3];"
+GQ_P2G_NEW = "    if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }\n    return;                                                                 // 절 CM9 --gq_mass: 노드 몫은 gq_q2n\n    float wx[3][3], dw[3][3];"
+
+
+def _src(tol=False, fqrl=False, gqm=False):
     s = ART.SRC.rstrip()
+    if gqm:                                                                          # 절 CM9 --gq_mass: rt_p2g 노드 몫 빼고 (가우스 점 경로 커널은 끝에 덧붙임)
+        from .fem_an_det import _sub_in
+        s = _sub_in(s, "rt_p2g", GQ_P2G_OLD, GQ_P2G_NEW)
     if fqrl:                                                                         # 절 AS --fq_rl: 뒤집힌 입자가 있는 점의 F_q 를 유클리드 평균으로 바꾸는 것은 그 평균이 뒤집히지 않을 때만 (뒤집히면 회전·로그 평균 그대로)
         assert s.count(GQ_OLD) == 1 and s.count(GC_OLD) >= 1 and (s.find("__global__ void rt_mg_fin(") < 0 or s.index(GC_OLD) < s.find("__global__ void rt_mg_fin("))   # 첫 번째 = rt_gauss (둘째는 MG 거친 층 rt_mg_fin, 안 바꿈)
         s = s.replace(GQ_OLD, GQ_NEW, 1).replace(GC_OLD, GC_NEW, 1)
@@ -1023,14 +1030,21 @@ def _src(tol=False, fqrl=False):
     i = s.rfind("}")
     head = DET.det_src(s[:i])
     head = "#include <cuda_fp16.h>\n" + head
-    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;", 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + "\n}\n"
+    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;", 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + "\n}\n"
     return _skipify(r) if tol else r
+
+
+def _gq_src():
+    from . import fem_an_rt as ARTN                                                  # 절 CM9: 가우스 점 질량·운동량 커널 (이 가지 fem_an_rt.GQ_SRC 글자 그대로)
+    return ARTN.GQ_SRC
 
 
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, **kw):
+        s.gqm = bool(gqm)                                                               # 절 CM9 (정의 변경): 노드 질량·운동량·가속도 몫을 가우스 점에서
+        assert not (s.gqm and det), "--gq_mass 는 이 실행기에서 비결정 판만"
         s.fqrl, s.lsend = bool(fqrl), bool(lsend)                                        # 절 AS: F_q 유클리드 대체 조건, 걸음 끝 변위 U_{n+1} 에서도 J > 0
         s.vfill = bool(vfill)
         s.y0l = bool(y0l)                                                               # 절 AS: 거의 빈 노드 (질량 < 문턱, 관성 예측 고정) 의 고정 위치도 시작점 보간을 따름 (보폭 1 이면 그대로)
@@ -1074,7 +1088,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
         s.ao_ready = True
@@ -1127,6 +1141,8 @@ class AORTSolver(DET.DetMixin):
         s.gaA = Z(s.capN, 3); s.gaM = Z(s.capN)
         s.Sa = Z(s.capQc * 32); s.Sc = Z(s.capQc * 4); s.Sq = Z(s.capQc * 32)
         s.vm = Z(s.capN, 3); s.cm = Z(s.capN, 3)
+        if getattr(s, "gqm", False):                                                   # 절 CM9: 팔분 점·칸 질량 가중 속도·가속도 합
+            s.gqP = Z(s.capQc * 8 * 6); s.gqC = Z(s.capQc * 6)
         s.awez = Z(s.capN, 3); s.awyb = Z(s.capN, 3); s.awdy = Z(s.capN, 3); s.awtd = Z(s.capN, 3)                     # 절 AS 시작점 (--y0z)
         s.kalloc = s.K
         s.K = K0
@@ -1157,7 +1173,7 @@ class AORTSolver(DET.DetMixin):
         s.zf(s.occ)
         s.k("rt_mark", N, (i32(N), P(s.Np), P(s.fx), P(IP), P(s.pcd), P(s.occ)))
         s.k("rt_scan", 1024, (P(IP), P(s.occ), P(s.cidx), P(s.cb), i32(s.capQc)), b=1024)
-        for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3), (s.mqn, 9, 1)):
+        for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3), (s.mqn, 9, 1)) + (((s.gqP, 12, 6), (s.gqC, 11, 6)) if s.gqm else ()):
             s.zf(t_, ci, mul)
         s.zf(s.badq); s.zf(s.badc); s.zf(s.nbad)
         if s.lsinv or s.y0z:
@@ -1170,7 +1186,13 @@ class AORTSolver(DET.DetMixin):
             if s.ga is not None:
                 s.k("ao_azero", N, (i32(N), P(s.trel), P(s.tbuf), P(s.pa)))
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv)))
+        if s.gqm:                                                                      # 절 CM9: 입자 -> 팔분 점·칸 운동량 (가속도) 합
+            s.k("gq_p2q", N, (i32(N), P(s.v), P(s.m), P(s.pa if s.ga is not None else None), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.gqP), P(s.gqC)))
         s.k("rt_gauss", capQ, (P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.cb), P(s.A), P(s.BW), P(s.Fq), P(s.Vq), P(s.mq), P(s.xq0), P(s.mqn), P(s.nbad)))
+        if s.gqm:                                                                      # 절 CM9: 노드 질량·운동량·가속도 몫 = Σ_q (m_q, p_q) w_n(x_q) (이 판 m_q·V_q = 칸 합 / 8)
+            if s.ga is not None:
+                s.zf(s.gaA, 9, 3)
+            s.k("gq_q2n", capQ, (P(IP), P(s.cb), P(s.BW), P(s.mq), P(s.gqP), P(s.gqC), f(0.0), i32(0), P(s.mn), P(s.mv), P(s.gaA if s.ga is not None else None)))
         if s.aq:                                                                       # 가우스 점 소성 상태 (입자 부피 가중 평균)
             s.zf(s.Sa); s.zf(s.Sc)
             if s.det:
@@ -1179,13 +1201,14 @@ class AORTSolver(DET.DetMixin):
                 s.k("aq_p2g_s", N, (i32(N), P(IP), P(s.fx), P(s.pcd), P(s.cidx), P(s.vol), P(s.ysp), P(s.ljp), P(s.alp), P(s.Sa), P(s.Sc)))
             s.k("aq_gauss_s", capQ, (P(IP), P(s.Sa), P(s.Sc), P(s.Sq)))
         s.k("rt_vn", capN, (P(IP), P(s.mn), P(s.mv), P(s.vk), P(s.U)), b=256)
-        if s.ga is not None:                                                           # 노드 가속도 = 입자 가속도 P2G (결정적 판은 노드가 이웃 칸 입자를 고정 순서로)
-            s.zf(s.gaA, 9, 3)
-            if s.det:
-                s.zf(s.gaM, 9, 1)
-                s.k("ao_p2g_n", capN, (P(IP), P(s.cidx), P(s.d_st), P(s.fx), P(s.m), P(s.pa), P(s.gaM), P(s.gaA), P(None), P(None), i32(1), i32(1), f(0.0), P(None)), b=128)
-            else:
-                s.k("ao_p2g_a", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.m), P(s.pa), P(s.gaA)))
+        if s.ga is not None:                                                           # 노드 가속도 = 입자 가속도 P2G (결정적 판은 노드가 이웃 칸 입자를 고정 순서로; 절 CM9 판은 위 gq_q2n 이 채움)
+            if not s.gqm:
+                s.zf(s.gaA, 9, 3)
+                if s.det:
+                    s.zf(s.gaM, 9, 1)
+                    s.k("ao_p2g_n", capN, (P(IP), P(s.cidx), P(s.d_st), P(s.fx), P(s.m), P(s.pa), P(s.gaM), P(s.gaA), P(None), P(None), i32(1), i32(1), f(0.0), P(None)), b=128)
+                else:
+                    s.k("ao_p2g_a", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.m), P(s.pa), P(s.gaA)))
             s.k("ao_adiv", capN, (P(IP), P(s.mn), P(s.gaA)), b=256)
         if s.aq and s.vfill:                                                     # 질량 0 노드 속도·가속도 = 이웃 질량 가중 평균 (절 AQ)
             s.k("aq_vfill", capN, (P(IP), P(s.mn), P(s.vk), P(s.gaA if s.ga is not None else None)), b=256)
@@ -1584,6 +1607,9 @@ class AORTSolver(DET.DetMixin):
         c.update(q_tail=cc[0], q_apex=cc[1], p_rm=cc[2])
         if s.aq:
             qb = s.qb.cpu().tolist(); c.update(q_inv=qb[0], q_nf=qb[1])
+        if s.mthr > 0 and c["nn"] > 0:                                                 # 절 CM9 진단 (결과 불변): 거의 빈 노드 (0 < 질량 < 문턱) 수, 질량 있는 노드 수
+            mn = s.mn[:c["nn"]]
+            c.update(nlow=int(((mn > 0) & (mn < s.mthr)).sum()), nact=int((mn > 0).sum()))
         if s.lsinv or s.y0z:                                                           # 절 AS: (줄어든 횟수, 최대 k, 시작에서 뒤집힌 점-회, 호출 수) 뉴턴·시작점
             w = s.awst.cpu().tolist(); c.update(ls_inv=w[:4], y0z=w[4:])
         if getattr(s, "adapt", False):                                                 # 마지막 프레임 반복 수 (뉴턴 합, PCG 합, 뉴턴 상한 걸음, PCG 상한 풀이, 걸음, 풀이)

@@ -133,7 +133,7 @@ class MatRT(ADET.DetMixin):
         s.extra_p = (("ysp", "ljp", "alp") if s.aq else ()) + (("pvb", "pvc", "pmk") if s.pvb is not None else ())
         s.tbuf = torch.zeros(1, device=s.dev, dtype=torch.float32)
         src = mat_module_src(getattr(s, "mg2", False))
-        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False)), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False), gqm=getattr(s, "gqm", False)), options=("--std=c++14",))
         s._src0 = src
         s.fn = {}
         s.ao_ready = True
@@ -281,4 +281,7 @@ class MatRT(ADET.DetMixin):
         o = super().counts()
         c = s.cnt.cpu().tolist()
         o.update(q_tail=c[0], q_apex=c[1], p_rm=c[2])
+        if s.mthr > 0 and o["nn"] > 0:                                                 # 절 CM9 진단 (결과 불변): 거의 빈 노드 (0 < 질량 < 문턱) 수, 질량 있는 노드 수
+            mn = s.mn[:o["nn"]]
+            o.update(nlow=int(((mn > 0) & (mn < s.mthr)).sum()), nact=int((mn > 0).sum()))
         return o

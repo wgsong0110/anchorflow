@@ -87,6 +87,8 @@ ap.add_argument("--ncomp", action="store_true", help="절 CM3 (결과 정의 같
 ap.add_argument("--fl_nost", action="store_true", help="절 CM6 진단 전용 (채택 후보 아님): 바닥 고착 끔 (고착 지수 KEX 0 -> 노드 고착 인자 1; 장벽·법선은 그대로)")
 ap.add_argument("--fl_dhm", type=float, default=1.0, help="절 CM6 진단 전용 (채택 후보 아님): 장벽 두께 d̂ = 이 값 x ½ dx_정답 (κ 도 같은 식 (λ+2μ) V_q / d̂²)")
 ap.add_argument("--hgt", action="store_true", help="절 CM6 진단 (결과 불변): 프레임마다 정답·우리 높이 (질량 중심·최대·99 백분위, 바닥 법선 방향) 를 fem.jsonl hg·hp 에")
+ap.add_argument("--gq_mass", action="store_true", help="절 CM9 (사용자 승인 정의 변경): 노드 질량·운동량 (HHT 입자 가속도 몫도) 을 입자 -> 자기 팔분 가우스 점 -> 노드 (힘과 같은 점 x_q·같은 가중·같은 기저 w_n(x_q)) 로. 끄면 예전과 비트 같음")
+ap.add_argument("--gq_chk", action="store_true", help="절 CM9 진단 (결과 불변): 프레임마다 노드 질량·운동량·가속도 몫 합 대 입자 합 상대 차를 fem.jsonl gqchk 에 (구속 입자 속도를 바꾸는 --pbc 씬은 뜻 없음)")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
 a = ap.parse_args()
 dev = "cuda"
@@ -195,7 +197,7 @@ if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                     
     a.ls = 0                                                                           # 재질 판: 퍼텐셜 없음 -> 에너지 선탐색 없음 (절 AO.0; 장벽이면 실현 가능 보폭만)
     print(f"[절 CM2 재질 판] {MATNAME} {MATX.get('mat')} 구속 {TREL is not None} 구속 속도 {PVB is not None} 빈 노드 문턱 {MTHR:.3e} 점성 {MATX.get('visc', 0.0)}", flush=True)
 S = SOLVER(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, **MATX)
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, gqm=a.gq_mass, **MATX)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, 적분기 {a.ga + ' ρ ' + str(a.rho) if a.ga else a.integ}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
@@ -205,6 +207,8 @@ PRED = torch.empty(L, Np, 3) if a.dump else None
 PREDF = torch.empty(L, Np, 3, 3) if (a.dump and a.dump_F) else None
 for fi in range(L):
     kp = ((S.pk_profile(fi * h) if a.pk else S.profile(fi * h)) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None)
+    if a.gq_chk:                                                                       # 절 CM9: 프레임 시작 입자 합 (f64)
+        _m = S.m.double(); _ps = [float(_m.sum()), (_m[:, None] * S.v.double()).sum(0), (_m[:, None] * S.pa.double()).sum(0), float((_m * S.v.double().norm(dim=-1)).sum()), float((_m * S.pa.double().norm(dim=-1)).sum())]
     redo = S.step(fi * h)
     gt = d["x"][fi + 1].to(dev).float()
     xo = S.x_orig()
@@ -216,6 +220,10 @@ for fi in range(L):
     if a.diag:
         c["diag"] = S.diag()
     c["K"] = S.last_K
+    if a.gq_chk:                                                                       # 노드 합 (이 프레임 P2G 결과, 풀이 중 안 바뀜)
+        _nn = int(S.IP[9]); _mn = S.mn[:_nn].double()
+        c["gqchk"] = [abs(float(_mn.sum()) - _ps[0]) / _ps[0], float((S.mv[:_nn].double().sum(0) - _ps[1]).norm()) / max(_ps[3], 1e-30),
+                      float((S.ma[:_nn].double().sum(0) - _ps[2]).norm()) / max(_ps[4], 1e-30) if S.ga else None]
     if S.y0ut and getattr(S, "bar", False):                                            # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k, 0 = ŷ 그대로)
         c["y0k"] = S.Y0K[:S.nstage, 0].cpu().tolist()
         if not S.ls:                                                                   # 절 CM6 진단: 선탐색 없는 장벽 판 (재질) 뉴턴 반복별 보폭 k (상한까지 펼친 자리; 허용치로 건너뛴 반복은 앞 값)

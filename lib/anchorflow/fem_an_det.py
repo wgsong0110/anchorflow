@@ -92,6 +92,18 @@ __global__ void ao_gath_q(const int* IP, const int* cidx, const float* BW, const
     for (int o=0;o<27;o++) { int c = ao_ncell(IP, cidx, n, o); if (c < 0) continue; for (int oc=0;oc<8;oc++) s += BW[oc*27+o]*qv[(size_t)c*8+oc]; }
     out[n] += s;
 }
+// 절 CM9 --gq_mass 결정적 판: 노드가 이웃 27 칸 x 8 점의 (m_q, p_q) x 기저를 고정 순서로 (gq_q2n 과 같은 식)
+__global__ void gq_gath(const int* IP, const int* cidx, const float* BW, const float* mq, const float* PQ, const float* PC, float kap, int oct, float* mn, float* mv, float* ma) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    int na = ma ? 6 : 3;
+    float sm = 0.f, sp[6] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+    for (int o=0;o<27;o++) { int c = ao_ncell(IP, cidx, n, o); if (c < 0) continue;
+        for (int oc=0;oc<8;oc++) { int q = c*8 + oc; float w = BW[oc*27+o]; float pq[6]; gq_pq(q, PQ, PC, kap, oct, na, pq);
+            sm += w*mq[q]; for (int a=0;a<na;a++) sp[a] += w*pq[a]; } }
+    mn[n] += sm; for (int a=0;a<3;a++) mv[n*3+a] += sp[a];
+    if (ma) for (int a=0;a<3;a++) ma[n*3+a] += sp[3+a];
+}
 // 노드 목록 (번호 순서, 한 블록 스캔)
 __global__ void ao_act_scan(int* IP, const float* mn, int* act) {
     __shared__ int sh[1024];
@@ -368,6 +380,8 @@ class DetMixin(ART.RTSolver):
             super().k("ao_seg", s.N + 1, (i32(s.N), P(IP), P(s.pcd), P(s.cidx), P(s.d_st)), 256)
             super().k("ao_p2g_q", s.capQc, (i32(s.N), P(s.F), P(s.m), P(s.vol), P(s.fx), P(s.d_st), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc)), 128)
             import os
+            if getattr(s, "gqm", False):                                          # 절 CM9: 노드 질량·운동량·가속도는 가우스 점에서 (gq_p2q_d -> gq_gath)
+                return
             if os.environ.get("AO_DET_P2GC", "0") == "1":
                 super().k("ao_p2g_c", s.capQc, (P(IP), P(s.d_st), P(s.fx), P(s.m), P(s.v), P(s.d_cb)), 64)
                 super().k("ao_gath_mv", s.capN, (P(IP), P(s.cidx), P(s.d_cb), P(s.mn), P(s.mv)), 256)
@@ -380,6 +394,14 @@ class DetMixin(ART.RTSolver):
         if name == "ao_pbc_acc":                                                 # 구속 질량 (노드가 모음)
             # args: N, IP, Np, fx, m, trel, tbuf, K, S, dt, acc
             super().k("ao_p2g_n", s.capN, (P(IP), P(s.cidx), P(s.d_st), P(s.fx), P(s.m), P(None), P(None), P(None), P(s.trel), P(s.tbuf), args[7], args[8], args[9], args[10]), 128)
+            return
+        if name == "gq_p2q":                                                    # 절 CM9: 칸 하나가 정렬된 자기 입자를 차례로
+            # args: N, v, m, pa, fx, pcd, cidx, IP, PQ, PC
+            super().k("gq_p2q_d", s.capQc, (P(IP), P(s.d_st), args[1], args[2], args[3], args[4], args[8], args[9]), 128)
+            return
+        if name == "gq_q2n":                                                    # 절 CM9: 노드가 이웃 점을 고정 순서로
+            # args: IP, cb, BW, mq, PQ, PC, kap, oct, mn, mv, ma
+            super().k("gq_gath", s.capN, (P(IP), P(s.cidx), args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10]), 256)
             return
         if name == "ao_act":
             super().k("ao_act_scan", 1024, (P(IP), P(s.mn), P(s.act)), 1024)
@@ -434,7 +456,7 @@ class DetRT(DetMixin):
         s.ao_ready = False
         super().__init__(*args, **kw)
         src = det_module_src(getattr(s, "mg2", False))
-        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False)), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False), gqm=getattr(s, "gqm", False)), options=("--std=c++14",))
         s._src0 = src
         s.fn = {}
         s.ao_ready = True

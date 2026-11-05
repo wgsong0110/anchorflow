@@ -221,6 +221,7 @@ __global__ void rt_p2g(int N, const float* x, const float* v, const float* F, co
     atomicAdd(&AF_MO[q], m[p]);                                                     // 팔분 칸 실제 입자 질량 (점유 가중, 절 AN.err4 정의)
 #endif
     if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }
+#ifndef AF_GQM
     float wx[3][3], dw[3][3];
     for (int a=0;a<3;a++) bwf(fx[p*3+a], wx[a], dw[a]);
     int nb1 = IP[7], nb2 = IP[8];
@@ -233,6 +234,7 @@ __global__ void rt_p2g(int N, const float* x, const float* v, const float* F, co
         for (int a=0;a<3;a++) atomicAdd(&mv[nid*3+a], ww*v[p*3+a]);
         if (ma) for (int a=0;a<3;a++) atomicAdd(&ma[nid*3+a], ww*pa[p*3+a]);   // generalized-α: 입자 가속도 -> 노드 (질량 가중)
     }
+#endif
 }
 __device__ void rs_fin(const float* sR, const float* sL, float w, float* out, bool* bad) {
     float U[9], S[3], V[9];
@@ -1372,6 +1374,58 @@ __global__ void rt_ctl(int op, int it, double* SC, int* CT, double* CD, double e
 }
 '''
 
+# 절 CM9 (--gq_mass, 사용자 승인 11-05 정의 변경): 질량·운동량 (HHT 판은 입자 가속도의 질량 가중 몫도) 을 힘과 같은 가우스 점·같은 가중·같은 기저로 노드에.
+# 입자 -> (자기 팔분) 가우스 점: P_q = Σ_{p∈q} m_p (v_p, a_p), 칸 합 P_c = Σ_{p∈c} m_p (v_p, a_p);
+# 점 몫 p_q = 점유 가중이면 (1 − κ) P_q + κ P_c / 8, 아니면 P_c / 8 -- rt_gauss 의 m_q·V_q 와 같은 가중 (질량 m_q 는 rt_gauss 값 그대로);
+# 노드: m_n = Σ_q m_q w_n(x_q), (mv)_n = Σ_q p_q w_n(x_q) (w_n(x_q) = BW, 힘 ∇w_n(x_q) 와 같은 점 x_q). Σ_n w_n(x_q) = 1 이라 질량·운동량 합 보존.
+# 끄면 이 커널들은 불리지 않고 rt_p2g 노드 몫 (AF_GQM 정의 안 됨) 도 그대로 -- 예전과 같은 기계어.
+GQ_SRC = r'''
+__global__ void gq_p2q(int N, const float* v, const float* m, const float* pa, const float* fx, const int* pcd, const int* cidx, const int* IP, float* PQ, float* PC) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N || IP[13]) return;
+    int c = cidx[pcd[p]];
+    int oc = (fx[p*3] >= 1.f ? 4 : 0) + (fx[p*3+1] >= 1.f ? 2 : 0) + (fx[p*3+2] >= 1.f ? 1 : 0);
+    int q = c*8 + oc;
+    float mp = m[p];
+    for (int a=0;a<3;a++) { float t = mp*v[p*3+a]; atomicAdd(&PQ[(size_t)q*6+a], t); atomicAdd(&PC[(size_t)c*6+a], t); }
+    if (pa) for (int a=0;a<3;a++) { float t = mp*pa[p*3+a]; atomicAdd(&PQ[(size_t)q*6+3+a], t); atomicAdd(&PC[(size_t)c*6+3+a], t); }
+}
+// 결정적 판: 정렬된 입자의 칸 구간 (st) 을 칸 하나가 차례로
+__global__ void gq_p2q_d(const int* IP, const int* st, const float* v, const float* m, const float* pa, const float* fx, float* PQ, float* PC) {
+    int c = blockIdx.x*blockDim.x + threadIdx.x;
+    if (IP[13] || c >= IP[11]) return;
+    for (int p = st[c]; p < st[c+1]; p++) {
+        int oc = (fx[p*3] >= 1.f ? 4 : 0) + (fx[p*3+1] >= 1.f ? 2 : 0) + (fx[p*3+2] >= 1.f ? 1 : 0);
+        int q = c*8 + oc;
+        float mp = m[p];
+        for (int a=0;a<3;a++) { float t = mp*v[p*3+a]; PQ[(size_t)q*6+a] += t; PC[(size_t)c*6+a] += t; }
+        if (pa) for (int a=0;a<3;a++) { float t = mp*pa[p*3+a]; PQ[(size_t)q*6+3+a] += t; PC[(size_t)c*6+3+a] += t; }
+    }
+}
+__device__ __forceinline__ void gq_pq(int q, const float* PQ, const float* PC, float kap, int oct, int na, float* pq) {
+    int c = q >> 3;
+    for (int a=0;a<na;a++) { float pc = PC[(size_t)c*6+a]*0.125f; pq[a] = oct ? ((1.f - kap)*PQ[(size_t)q*6+a] + kap*pc) : pc; }
+}
+// 점 -> 노드 (원자 합)
+__global__ void gq_q2n(const int* IP, const int* cb, const float* BW, const float* mq, const float* PQ, const float* PC, float kap, int oct, float* mn, float* mv, float* ma) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    int c = q >> 3, oc = q & 7;
+    float pq[6]; gq_pq(q, PQ, PC, kap, oct, ma ? 6 : 3, pq);
+    float mm = mq[q];
+    int nb1 = IP[7], nb2 = IP[8];
+    for (int o=0;o<27;o++) {
+        int i = o/9, j = (o/3)%3, k = o%3;
+        int nid = ((cb[c*3]+i)*nb1 + (cb[c*3+1]+j))*nb2 + (cb[c*3+2]+k);
+        float w = BW[oc*27+o];
+        atomicAdd(&mn[nid], w*mm);
+        for (int a=0;a<3;a++) atomicAdd(&mv[nid*3+a], w*pq[a]);
+        if (ma) for (int a=0;a<3;a++) atomicAdd(&ma[nid*3+a], w*pq[3+a]);
+    }
+}
+'''
+SRC = SRC.rstrip()[:-1].rstrip() + "\n" + GQ_SRC + "}\n"
+
 SKIP_EXEMPT = ("rt_reset", "rt_ctl")
 
 
@@ -1629,7 +1683,9 @@ def compactify(src):
     return s[:i] + "\n".join(out) + "\n}\n"
 
 
-def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False):
+def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False):
+    if gqm:                                                                            # 절 CM9 --gq_mass: rt_p2g 노드 몫 빼기 (노드 질량·운동량은 gq_q2n 이 가우스 점에서)
+        src = src.replace('extern "C" {', 'extern "C" {\n#define AF_GQM 1', 1)
     if ncomp:
         src = compactify(src)
     if os.environ.get("AF_MGDIMS_OLD", "0") == "1":                                   # 절 CM7 진단 대조 전용: 넘친 프레임 MG 층 차원 옛 판 (불법 접근 재현)
@@ -1661,8 +1717,10 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False, gqm=False):
         s.dev = dev
+        s.gqm = bool(gqm)                                                              # 절 CM9 (정의 변경): 노드 질량·운동량을 가우스 점에서 (힘과 같은 점·가중·기저)
+        assert not (s.gqm and pk), "--gq_mass 는 그래프 판만"
         s.hspec = bool(hspec)                                                          # 절 CM3 (결과 정의 같음): 고운 층 헤시안 주값 분해 30 성분 저장·곱 (rt_mv2s; --mv2 필요)
         s.ncomp = bool(ncomp)                                                          # 절 CM3 (결과 정의 같음): PCG·층 0 V 순환 노드 커널을 점유 칸 이웃 노드 목록만
         assert not s.hspec or bool(mv2) or bool(mg_occ), "--hspec 은 --mv2 판만"
@@ -1733,7 +1791,7 @@ class RTSolver(MG2.MG2Mixin):
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
@@ -1828,6 +1886,8 @@ class RTSolver(MG2.MG2Mixin):
         s.Aacc = Z(capQ, 28); s.Cacc = Z(s.capQc, 30)
         s.badq = torch.zeros(capQ, device=dev, dtype=torch.int32); s.badc = torch.zeros(s.capQc, device=dev, dtype=torch.int32)
         s.Mo = Z(capQ) if s.goct >= 0 else None
+        s.gqP = Z(capQ * 6) if getattr(s, "gqm", False) else None                     # 절 CM9: 팔분 점·칸 질량 가중 속도·가속도 합
+        s.gqC = Z(s.capQc * 6) if getattr(s, "gqm", False) else None
         s.bar = bool(s.floor and s.floor.get("bar"))                                  # 장벽 판 (절 AN.19): 표본점 누적·점별 스칼라·노드 스칼라
         if s.bar:
             s.bx = Z(capQ * 4); s.bpg = Z(capQ); s.bph = Z(capQ); s.bact = torch.zeros(capQ, device=dev, dtype=torch.int32); s.bGn = Z(s.capN); s.bKn = Z(s.capN)
@@ -2124,7 +2184,7 @@ class RTSolver(MG2.MG2Mixin):
             s.k("rt_act_wr", capN, (P(IP), P(s.occ), P(s.acto), P(s.actl)), b=256)
             if s.nl > 1:
                 s.zf(s.m0u, 9, 3)
-        for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3), (s.mqn, 9, 1)) + (((s.ma, 9, 3),) if s.ga else ()) + (((s.Mo, 12, 1),) if s.goct >= 0 else ()):
+        for t_, ci, mul in ((s.Aacc, 12, 28), (s.Cacc, 11, 30), (s.mn, 9, 1), (s.mv, 9, 3), (s.mqn, 9, 1)) + (((s.ma, 9, 3),) if s.ga else ()) + (((s.Mo, 12, 1),) if s.goct >= 0 else ()) + (((s.gqP, 12, 6), (s.gqC, 11, 6)) if s.gqm else ()):
             s.zf(t_, ci, mul)
         s.zf(s.badq); s.zf(s.badc); s.zf(s.nbad)
         if getattr(s, "bar", False):
@@ -2133,7 +2193,11 @@ class RTSolver(MG2.MG2Mixin):
             s.mat_pre_p2g()                                                            # 절 CM2 재질 판: 구속 입자 v·a (순차 방출)
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv),
                               P(s.pa if s.ga else None), P(s.ma if s.ga else None)))
+        if s.gqm:                                                                      # 절 CM9: 입자 -> 팔분 점·칸 운동량 (가속도) 합
+            s.k("gq_p2q", N, (i32(N), P(s.v), P(s.m), P(s.pa if s.ga else None), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.gqP), P(s.gqC)))
         s.k("rt_gauss", capQ, (P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.cb), P(s.A), P(s.BW), P(s.Fq), P(s.Vq), P(s.mq), P(s.xq0), P(s.mqn), P(s.nbad)))
+        if s.gqm:                                                                      # 절 CM9: 노드 질량·운동량 (가속도) = Σ_q (m_q, p_q) w_n(x_q)
+            s.k("gq_q2n", capQ, (P(IP), P(s.cb), P(s.BW), P(s.mq), P(s.gqP), P(s.gqC), f(max(s.goct, 0.0)), i32(1 if s.goct >= 0 else 0), P(s.mn), P(s.mv), P(s.ma if s.ga else None)))
         s.k("rt_vn", capN, (P(IP), P(s.mn), P(s.mv), P(s.vk), P(s.U)), b=256)
         if s.matk:
             s.mat_post_vn()                                                            # 절 CM2 재질 판: 가우스 점 소성 상태, 노드 구속 목표, 구속 질량
