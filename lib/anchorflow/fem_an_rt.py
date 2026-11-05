@@ -1916,6 +1916,78 @@ def becellify(src, on):
     return src[:i] + BARE_SRC + "\n}\n"
 
 
+VRES_SRC = r'''
+// ---- 절 CM15 −z 저항 바닥 (--fl_vres k, 사용자 승인 11-05 정의 변경): 장벽·고착 대신 바닥 밑 표본점의 법선 반대 방향 속도에 한쪽 이차 벌점 ----
+// 표본점 q = 장벽과 같은 팔분 칸 입자 질량 중심 x̄_q (AF_BX, 프레임 시작 P2G), 질량 m_q = AF_BX[4q+3]. 걸음 시작 위치 x(U) = x̄ + Σ_o w_qo U_o 의 평면 부호 거리 d0 < 0 인 점만 (mode 0 에서 AF_BACT 1).
+// 걸음 이동 법선 성분 s = (x(y) − x(U))·n = thinv Σ_o w_qo (y_o − U_o)·n (= h v_n). E_q = ½ c m_q s² (s < 0), 0 (s ≥ 0)  [= ½ c m_q h² min(0, v_n)²].
+// 기울기 (정확): dE/dy_o = c m_q s thinv w_qo n -> 점 스칼라 c_q = c m_q s thinv (장벽과 같은 노드 모으기 f += G n);
+// 헤시안: 점 스칼라 h_q = c m_q thinv² (s < 0) 를 장벽처럼 행 합 덩어리 (노드 K n nᵀ, 참 헤시안 c m thinv² w wᵀ ⊗ n nᵀ 보다 크다 -- 블록 대각·PCG 곱·거친 층 같은 경로).
+__global__ void __launch_bounds__(128) rt_vres_q(const int* IP, const int* cb, const float* BW, const float* y, const float* U, float thinv,
+                         float n0, float n1, float n2, float pn, float cv, int mode, float* Gn, float* Kn, double* E) {
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < IP[12]; int qq = on ? q : 0; int oc = qq & 7;
+    double e = 0.0; float c = 0.f, h = 0.f;
+    float bm = on ? AF_BX[qq*4+3] : 0.f;
+    if (bm > 0.f) {
+        int ids[27]; qnodes(qq, IP, cb, ids);
+        if (mode == 0) {
+            float xq[3] = {AF_BX[qq*4]/bm, AF_BX[qq*4+1]/bm, AF_BX[qq*4+2]/bm};
+            for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o]; for (int a=0;a<3;a++) xq[a] += w*U[id*3+a]; }
+            float d0 = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;
+            AF_BACT[qq] = (d0 < 0.f) ? 1 : 0;
+        } else if (AF_BACT[qq]) {
+            float s = 0.f;
+            for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+                s += w*((y[id*3]-U[id*3])*n0 + (y[id*3+1]-U[id*3+1])*n1 + (y[id*3+2]-U[id*3+2])*n2); }
+            s *= thinv;
+            if (s < 0.f) { double km = (double)cv*(double)bm; e = 0.5*km*(double)s*(double)s; c = (float)(km*(double)s)*thinv; h = (float)km*thinv*thinv; }
+        }
+        if (mode == 1 && !AF_BDET && (c != 0.f || h != 0.f)) for (int o=0;o<27;o++) { float w = BW[oc*27+o]; atomicAdd(&Gn[ids[o]], w*c); atomicAdd(&Kn[ids[o]], w*h); }
+    }
+    if (mode == 1) {
+        if (on && AF_BDET) { AF_BPG[qq] = c; AF_BPH[qq] = h; }
+        blocksum_add(e, E);
+    }
+}
+// 선탐색 후보 NC 개 (rt_bar_lsN 과 같은 후보 y = ŷ + T (η + c δ), c = 2^-i) 의 벌점 에너지 -> SC[40+i]
+__global__ void __launch_bounds__(128) rt_vres_lsN(const int* IP, const int* cb, const float* BW, const float* yh, const float* eta, const float* dl,
+                         const float* sk, const int* pm, const float* U, float thinv, float n0, float n1, float n2, float cv, double* SC, int NC, int i0, const double* gate) {
+    if (gate && *gate != 0.0) return;
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < IP[12]; int qq = on ? q : 0; int oc = qq & 7;
+    float bm = on ? AF_BX[qq*4+3] : 0.f;
+    bool act = bm > 0.f && AF_BACT[qq];
+    int ids[27]; qnodes(qq, IP, cb, ids);
+    double km = act ? (double)cv*(double)bm : 0.0;
+    float c = 1.f; for (int i=0;i<i0;i++) c *= 0.5f;
+    for (int i=i0;i<NC;i++) {
+        double e = 0.0;
+        if (act) {
+            float s = 0.f;
+            for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+                float ee[3]; for (int a=0;a<3;a++) ee[a] = eta[id*3+a] + c*dl[id*3+a];
+                float t[3]; Tapply(sk[id], pm[id], n0, n1, n2, ee, t);
+                s += w*((yh[id*3]+t[0]-U[id*3])*n0 + (yh[id*3+1]+t[1]-U[id*3+1])*n1 + (yh[id*3+2]+t[2]-U[id*3+2])*n2); }
+            s *= thinv;
+            if (s < 0.f) e = 0.5*km*(double)s*(double)s;
+        }
+        blocksum_add(e, &SC[40+i]);
+        c *= 0.5f;
+    }
+}
+'''
+
+
+def vresify(src, k):
+    """절 CM15 (--fl_vres k, 장벽 판의 표본점 버퍼 위): −z 저항 바닥 커널 (VRES_SRC) 을 모듈 끝에 붙임. 끄면 소스 그대로."""
+    if not k:
+        return src
+    i = src.rstrip().rfind("}")
+    return src[:i] + VRES_SRC + "\n}\n"
+
+
 def fstkify(src, on):
     """절 CM12 (장벽 판 위, --fl_stk): (A) 가우스 점 고착 (CM8 a 판 정의) 을 장벽 바닥과 함께 (AF_FSTK; (A) 노드 몫 버퍼 AF_ANA). 끄면 소스 그대로."""
     return src.replace('extern "C" {', 'extern "C" {\n#define AF_FSTK 1\n__device__ float* AF_ANA;', 1) if on else src
@@ -1986,6 +2058,7 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, 
         src = fstkify(src, floor.get("stk", False))
         src = bnodeify(src, floor.get("bnode", ""))
         src = becellify(src, floor.get("becell", False))
+        src = vresify(src, floor.get("vres", 0.0))
     return skipify(src) if adapt else src
 
 
@@ -2174,6 +2247,7 @@ class RTSolver(MG2.MG2Mixin):
         s.gqP = Z(capQ * 6) if getattr(s, "gqm", False) else None                     # 절 CM9: 팔분 점·칸 질량 가중 속도·가속도 합
         s.gqC = Z(s.capQc * 6) if getattr(s, "gqm", False) else None
         s.bar = bool(s.floor and s.floor.get("bar"))                                  # 장벽 판 (절 AN.19): 표본점 누적·점별 스칼라·노드 스칼라
+        s.vres = float(s.floor.get("vres", 0.0)) if (s.bar and s.floor) else 0.0      # 절 CM15: −z 저항 바닥 (장벽 판의 표본점 버퍼 위, 장벽 에너지 대신 벌점; 0 = 끔)
         if s.bar:
             s.bx = Z(capQ * 4); s.bpg = Z(capQ); s.bph = Z(capQ); s.bact = torch.zeros(capQ, device=dev, dtype=torch.int32); s.bGn = Z(s.capN); s.bKn = Z(s.capN)
             s.bfull = bool(s.floor.get("bfull", False))                               # 비덩어리 헤시안 곱 (절 AN.21)
@@ -2523,6 +2597,8 @@ class RTSolver(MG2.MG2Mixin):
                 s.k("rt_bc_box", capN, (P(IP), P(s.A), P(s.BP), i32(ib), P(s.fixd), P(s.vbc)), b=256)
         FL = s.floor
         nr = FL["NR"] if FL else [0.0, 0.0, 1.0]
+        VR = getattr(s, "vres", 0.0)                                                   # 절 CM15 −z 저항 바닥: 표본점 버퍼는 장벽 판 그대로, 장벽 에너지·실현 가능 보폭·시작점 섞기는 없음
+        barE = s.bar and not VR                                                        # 장벽 에너지가 있는 판 (VR 0 이면 s.bar 그대로)
         ST = s.stages(K or s.K)
         s.nstage = len(ST)
         for kstep, sg in enumerate(ST):
@@ -2570,14 +2646,18 @@ class RTSolver(MG2.MG2Mixin):
             y0s = s.y0ls and (sg["kind"] == "ga" or s.bar)
             if y0s:
                 s.dcopy(s.dl, s.eta)                                                   # 절 AN.22: η(Ũ) 보관
-            y0u_ = (sg["kind"] == "ga" or s.bar) and not (s.y0ut and not s.bar)       # 절 CM2 --y0ut: 장벽 없는 판은 시작점 = ŷ 그대로 (rt_floor_n 결과)
+            y0u_ = (sg["kind"] == "ga" or barE) and not (s.y0ut and not barE)         # 절 CM2 --y0ut: 장벽 없는 판은 시작점 = ŷ 그대로 (rt_floor_n 결과; 절 CM15 저항 바닥도 장벽 없는 판)
             if y0u_ and s.y0ut:                                                        # 장벽 판: ŷ·η_ŷ 보관 -> U 에서 장벽 활성 판정 -> U 에서 ŷ 쪽 실현 가능한 최대 2^-k
                 s.dcopy(s.ySv, s.y); s.dcopy(s.eS, s.eta)
             if y0u_:                                                                   # 장벽 판: 모든 적분기 시작점 = 걸음 시작 위치 (장벽 실현 가능)
                 s.k("rt_ga_y0", capN, (P(IP), P(s.U), P(s.yh), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.y)), b=256)
             if s.bar:
                 BA = (*[f(q) for q in nr], f(FL["PN"]), f(FL["DH"]), f(FL["KS"]))
-                s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), f(sg["thinv"]), *BA, i32(0), P(s.bGn), P(s.bKn), P(s.SC[10:])))
+                if VR:                                                                 # 절 CM15: c = k / (τ² thinv²) (관성 계수 기준), 걸음 시작 위치 x(U) 가 평면 아래인 표본점 판정
+                    VA = (*[f(q) for q in nr], f(FL["PN"]), f(VR / (sg["tau"] ** 2 * sg["thinv"] ** 2)))
+                    s.k("rt_vres_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.U), f(sg["thinv"]), *VA, i32(0), P(s.bGn), P(s.bKn), P(s.SC[10:])))
+                else:
+                    s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), f(sg["thinv"]), *BA, i32(0), P(s.bGn), P(s.bKn), P(s.SC[10:])))
                 if s.bnode:                                                            # 절 CM14: 노드 부피 V_n = Σ_q w V_q -> 걸음 시작 노드 판정 (같은 y)
                     BN = (*[f(q) for q in nr], f(FL["PN"]), f(FL["DHN"]), f(FL["KSN"]))
                     s.zf(s.bnv, 9, 1)
@@ -2586,7 +2666,7 @@ class RTSolver(MG2.MG2Mixin):
                     else:
                         s.k("rt_barn_vq", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.bnv)))
                     s.k("rt_barn_q", capN, (P(IP), P(s.y), P(s.U), f(sg["thinv"]), *BN, i32(0), P(s.bGn), P(s.bKn), P(s.SC[10:])), b=256)
-                if s.y0ut:
+                if s.y0ut and not VR:
                     s.zf(s.kk)
                     s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)))
                     if s.bnode:
@@ -2605,7 +2685,9 @@ class RTSolver(MG2.MG2Mixin):
                 s.k("rt_y0dir", capN, (P(IP), P(s.eta), P(s.dl)), b=256)
                 s.k("rt_lsyN", capN, (P(IP), P(s.mn), it2, P(s.eta), P(s.dl), P(s.g0buf), P(s.SC), NC0, P(None)), b=256)
                 s.k("rt_elem_lsN", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC), NC0, i32(0), P(None)))
-                if s.bar:
+                if s.bar and VR:
+                    s.k("rt_vres_lsN", capQ, (P(IP), P(s.cb), P(s.BW), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *VA, P(s.SC), NC0, i32(0), P(None)))
+                elif s.bar:
                     s.k("rt_bar_lsN", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BA[:4], BA[4], BA[5], P(s.SC), NC0, i32(0), P(None)))
                     if s.bnode:
                         s.k("rt_barn_lsN", capN, (P(IP), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BN, P(s.SC), NC0, i32(0), P(None)), b=256)
@@ -2624,7 +2706,10 @@ class RTSolver(MG2.MG2Mixin):
                                           i32(capQ), P(s.B)))
                 if s.bar:
                     s.zf(s.bGn); s.zf(s.bKn)
-                    s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), f(sg["thinv"]), *BA, i32(1), P(s.bGn), P(s.bKn), P(s.SC[10:])))
+                    if VR:                                                             # 절 CM15: 벌점 기울기·덩어리 헤시안 -> 같은 노드 스칼라
+                        s.k("rt_vres_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.U), f(sg["thinv"]), *VA, i32(1), P(s.bGn), P(s.bKn), P(s.SC[10:])))
+                    else:
+                        s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), f(sg["thinv"]), *BA, i32(1), P(s.bGn), P(s.bKn), P(s.SC[10:])))
                     if getattr(s, "det", False):
                         s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.bpg), P(s.bGn)), b=256)
                         s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.bph), P(s.bKn)), b=256)
@@ -2697,24 +2782,27 @@ class RTSolver(MG2.MG2Mixin):
                             s.lsy(capN, it2, NC, None)
                     EA = (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC), NC)
                     BB = (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BA[:4], BA[4], BA[5], P(s.SC), NC) if s.bar else None
+                    BLS = "rt_bar_lsN"
+                    if s.bar and VR:                                                   # 절 CM15: 선탐색 후보의 벌점 에너지 (장벽 몫 대신)
+                        BB = (P(IP), P(s.cb), P(s.BW), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *VA, P(s.SC), NC); BLS = "rt_vres_lsN"
                     BBN = (P(IP), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BN, P(s.SC), NC) if (s.bar and s.bnode) else None
                     if s.lsfast:                                                       # 절 AN.22: 후보 c = 1 먼저, 받아들여지면 (SC63 = 1) 나머지 후보 커널 생략 -- 고르는 보폭 같음
                         G63 = P(s.SC[63:])
                         s.k("rt_elem_lsN", capQ, EA[:-1] + (i32(1), i32(0), P(None)))
                         if s.bar:
-                            s.k("rt_bar_lsN", capQ, BB[:-1] + (i32(1), i32(0), P(None)))
+                            s.k(BLS, capQ, BB[:-1] + (i32(1), i32(0), P(None)))
                         if BBN:
                             s.k("rt_barn_lsN", capN, BBN[:-1] + (i32(1), i32(0), P(None)), b=256)
                         s.k("rt_lsgate", 1, (P(s.SC),), b=1)
                         s.k("rt_elem_lsN", capQ, EA + (i32(1), G63))
                         if s.bar:
-                            s.k("rt_bar_lsN", capQ, BB + (i32(1), G63))
+                            s.k(BLS, capQ, BB + (i32(1), G63))
                         if BBN:
                             s.k("rt_barn_lsN", capN, BBN + (i32(1), G63), b=256)
                     else:
                         s.k("rt_elem_lsN", capQ, EA + (i32(0), P(None)))
                         if s.bar:
-                            s.k("rt_bar_lsN", capQ, BB + (i32(0), P(None)))
+                            s.k(BLS, capQ, BB + (i32(0), P(None)))
                         if BBN:
                             s.k("rt_barn_lsN", capN, BBN + (i32(0), P(None)), b=256)
                     s.k("rt_lspickN", 1, (P(s.SC), NC), b=1)
@@ -2728,7 +2816,7 @@ class RTSolver(MG2.MG2Mixin):
                     s.k("rt_elem_ls", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC)))
                     s.k("rt_lspick", 1, (P(s.SC),), b=1)
                 s.dcopy(s.DG[2 * (kstep * s.nt + it) + 1], s.SC)                              # 진단: SC0 = r·z 끝, 5..8 관성, 9 g·δ, 10..13 탄성 E, 14 보폭
-                fbar = (not s.ls) and s.bar                                            # 절 CM2: 선탐색 없는 판 (재질) 의 장벽 -- 보폭 = 활성 표본점 d > 0 인 최대 2^-k
+                fbar = (not s.ls) and barE                                             # 절 CM2: 선탐색 없는 판 (재질) 의 장벽 -- 보폭 = 활성 표본점 d > 0 인 최대 2^-k
                 if fbar:
                     s.k("rt_ytry", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.yc)), b=256)
                     s.zf(s.kk)

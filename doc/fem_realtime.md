@@ -5531,3 +5531,34 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
   - wolf (mm, 프레임 50; 정답 · (A) · (B) · ½ · ¾): 질량중심 z 533.3 · 578.5 · 832.5 · 830.6 · 845.3, 최대 z 660.8 · 738.7 · 1467.9 · 1459.6 · 1473.6, 퍼짐 폭 1152.3 · 1335.2 · 815.7 · 806.3 · 817.3 -- 노드 장벽 판도 (B) 와 같이 무너지지 않음 (¾ 는 조금 더 높게 남음).
   - 읽기 (원인 확인 안 함): 노드 장벽은 바닥 위 노드의 이동을 막아, 바닥 가까운 칸의 B-스플라인 기저가 걸친 재료 전체를 노드 위치 기준으로 띄워 받친다 -- lego 가 정답보다 높게 떠 오차가 커진 것으로 보이나 높이 곡선은 lego 에서 재지 않았음.
 - 영상: result/anchorflow/v20261009/fem_barnode_lego_L000_cmp.mp4 (정답 | (B) | na5 | na7 | no5 | no7), fem_barnode_wolf_cmp.mp4 (정답 | (A) | (B) | na5 | na7 | no5 | no7). 출력 R2 lbours/fem_cm/barnode/<판>_<씬> (log·summary·fem.jsonl·drop_ana, wolf·L000 pred.pt·h5·vj).
+
+## CM15. −z 저항 바닥 (--fl_vres k, 사용자 승인 11-05 정의 변경) -- 채택 판 (B) 의 바닥 장벽·띠 고착 대신 "바닥 밑에서는 바닥 법선 반대 방향 속도에 저항" -- 가지 implicit-bspline, 묶음 vres (vast.ai A6000 1 장, exe/vast_vres.sh)
+### CM15.0 정의 (나머지는 절 CM8 b 판 명령 그대로: HHT ρ 0.8, K 2, 뉴턴 2, εN 1e-2 · εP 1e-1, PCG 상한 lego·낙하 4 · wolf 5, BA = exe/fem_cm3_scn.sh)
+- **명령**: (B) 의 바닥 글자 `--floor vel --fl_bar --fl_bst 1 --y0eb` 에서 장벽 `--fl_bar`·띠 고착 `--fl_bst 1`·장벽 기준 시작점 섞기 `--y0eb` 를 빼고 (= cm_scene `--v=a` 의 `--floor vel`) `--fl_vres k` 를 더함. 바닥 고착 몫 KEX = 0 (노드 고착 인자 1 -- 접선 자유, 마찰 없음; 걸음 끝 고착 가속도 0 도 없음).
+- **벌점**: 표본점 q = 장벽과 같은 팔분 칸 입자 질량 중심 x̄_q (프레임 시작 P2G, 풀이에 입자 안 들어감), 질량 m_q (그 팔분 입자 질량 합). 걸음 시작 위치 x_q(U) = x̄_q + Σ_o w_qo U_o 의 평면 부호 거리 d0 < 0 인 점만 그 걸음 활성 (걸음마다 다시 판정).
+  걸음 이동의 법선 성분 s_q = (x_q(y) − x_q(U))·n = thinv Σ_o w_qo (y_o − U_o)·n (= h v_n, 걸음 끝 위치는 장벽과 같은 식), **E = Σ_q ½ c m_q s_q² [s_q < 0]** = ½ c m_q h² min(0, v_n)² -- 위로 (+n) 움직이는 점, 접선 이동에는 0. 증분 포텐셜에 더함.
+  - 기울기 정확: ∂E/∂y_o = c m_q s_q thinv w_qo n -> 점 스칼라 c_q = c m_q s_q thinv 를 기저로 노드에 모아 f += G n (장벽 rt_bar_n 과 같은 경로; 결정적 판은 AF_BPG -> ao_gath_q 고정 순서). CPU 대조 (로컬 g++ 로 커널 그대로 실행, 무작위 40 점·60 노드): 기울기 대 중심 차분 최대 차 8.6e-4 (값 크기 30~40, f32), 선탐색 후보 에너지 = 그 y 의 에너지 (6 자리 같음).
+  - **헤시안 = 장벽처럼 덩어리** (행 합): 참 헤시안 c m_q thinv² (w wᵀ) ⊗ n nᵀ (s < 0) 대신 노드 대각 Σ_q w_qo c m_q thinv² n nᵀ (Σ_o w = 1 이라 diag(w) − w wᵀ ⪰ 0 -- 참보다 큼, 하강 방향 유지). 블록 대각 B·PCG 곱 (rt_ap --mgbar 몫)·거친 층 Kc 모두 장벽 덩어리와 같은 경로 (bKn).
+  - **c 는 관성 기준**: c = k / (τ² thinv²) -- 걸음 끝 이동 Δ 로 쓴 증분 포텐셜의 관성 몫 ½ m |Δ − Δ̂|² / (τ² thinv²) 의 계수와 같은 단위 (후퇴 오일러·θ 법 τ thinv = h 라 c = k/h², HHT ρ 0.8 (α_m 0, α_f 1/9, β 0.3086) 은 1/(τ² thinv²) = (1−α_f)(1−α_m)/(β h²) = 2.88/h² -> c = 2.88 k/h², h = 걸음 = 프레임/K).
+    근거: 탄성 없이 관성만 있는 점 하나가 한 걸음에 법선 아래로 Δ̂ 만큼 들어가려 하면 극소점은 Δ = Δ̂ / (1 + k) -- **강 k 9: 한 걸음에 들어가는 −n 이동 (속도) 의 90 % 를 없앰**, **약 k 0.9 (강의 1/10): 47 %** (사용자 지시 "c = 1/h² 계열로 대부분 없애는 강한 판과 그 1/10 판" 을 적분기 관성 계수로 맞춘 것; 노드 질량이 아니라 표본점 질량 m_q 로 걸리므로 몸 전체에서는 근사).
+    바닥 밑 점을 위로 밀어내는 힘은 없다 (아래로 가는 속도만 줄임) -- 정지한 몸은 중력으로 걸음마다 g h 씩 아래 속도를 얻고 저항이 그중 1/(1+k) 를 남기므로 바닥 밑에서 천천히 가라앉는 것이 정의상 가능 (그래서 프레임별 바닥 아래 점 수·최대 깊이를 잰다).
+- **선탐색·시작점 일관**: 장벽 몫만 뺌. 선탐색 후보 에너지에는 장벽 대신 벌점 (rt_vres_lsN, 후보 y = ŷ + T (η + c δ) 같은 식) -- 벌점은 유한이라 평면 통과를 막지 않음.
+  장벽 실현 가능 보폭 (rt_bar_kfe, 재질 판 wolf 의 선탐색 없는 보폭 포함)·장벽 에너지 기준 시작점 섞기 (--y0eb rt_bar_y0e)·걸음 시작 위치 시작점 (rt_ga_y0) 은 없음 -> 시작점은 장벽 없는 판 규칙 그대로 관성 예측 ŷ (rt_floor_n 결과, 절 CM2.0 (3)·CM8 a 판과 같음; 장벽 에너지가 0 인 --y0eb 의 극한 β = 1 과 같음). 재질 판 (wolf) 은 선탐색이 없어 뉴턴 보폭 1.
+- **끄면 같은 기계어**: 새 커널은 vresify 가 --fl_vres 일 때만 모듈 끝에 붙이고 (VRES_SRC: rt_vres_q·rt_vres_lsN), 호스트 호출도 모두 VR 분기 (VR = 0 이면 barE = s.bar 로 원래 식 그대로).
+  로컬 대조 (torch·cupy 없이 build_src 만): 플래그 없는 생성 CUDA 소스가 원래 커밋 (9f3af8f) 과 글자까지 같음 -- 장벽 (B)·고착 (A)·바닥 없음 x MG2 판·원래 판 6 가지. 실행 대조는 묶음 o_ 끝 해시 대 앞 인스턴스 해시.
+- 진단 `--pen` (결과 불변, 바닥 씬): 프레임마다 바닥 평면 아래 입자 수·최대 침투 깊이 (우리 np·dmax, 정답 gnp·gdmax), 저항 판은 마지막 걸음 시작 위치가 평면 아래인 표본점 수 nq -> fem.jsonl pen.
+- 구현: lib/anchorflow/fem_an_rt.py (VRES_SRC·vresify, RTSolver.vres, record 의 VR 분기), lib/anchorflow/fem_an_det.py (BS_KERNELS 에 rt_vres_q·rt_vres_lsN), exe/fem_an_rt_sim.py (--fl_vres·--pen; 장벽·고착 플래그와 함께 쓰면 assert). 재질 판 (wolf, MatRT) 도 같은 build_src·record 경로.
+### CM15.1 wolf 순차 방출 구속이 정답과 같은 정의인가 (코드 확인, 수정 안 함)
+- 정답 (PhysGaussian 공식 mpm_solver_warp.py release_particles_sequentially·enforce_particle_velocity_translation, mpm_utils.py selection_enforce_particle_velocity_translation, gs_simulation.py; github XPandora/PhysGaussian main 을 읽음): num_layers 인자를 무시하고 50 층, 층 i 는 상자 중심 (end_position 0.5, 1, 1)·반폭 (0.02 (50 − i), 1, 1) (normal x 축만), 끝 시각 1.5 (i + 1)/50 s, 시작 0.
+  구속 입자 선택은 **경계 조건 설정 시점 (시뮬 시작 전) 입자 위치**에서 |x − 중심| < 반폭 (세 축 모두, 엄격 부등호) 마스크 한 번. 매 서브스텝 (2e-5 s) P2G 전에 time ∈ [0, 끝) 이면 마스크 입자 v = 0 (APIC 아핀 C 는 그대로 둠), 위치 x 는 그 서브스텝 G2P 속도로 계속 갱신.
+- 우리 (B) 경로 (exe/fem_an_rt_sim.py `--pbc` -> lib/anchorflow/fem_mat_rt.py MatRT, 커널 lib/anchorflow/fem_ao_rt.py ao_vzero·ao_azero·ao_pbc_acc·ao_pbc_k + mt_floor_n·mt_akb): **층·상자·끝 시각·선택 식은 정답과 같은 정의** -- 같은 50 층 상수, 같은 중심·반폭·끝 시각 식, 선택 위치 = 정답 h5 프레임 0 (정답이 첫 서브스텝 전에 저장한 위치 = 마스크를 잡은 위치), 같은 엄격 부등호, 입자 풀림 시각 = 걸리는 층 끝 시각의 최대 (정답의 "어느 층이든 시각 안이면 v = 0" 과 같음).
+  **강제 방식은 다름** (정답 그대로가 아닌 몫 -- wolf 무너짐 차이의 후보로 기록, 확인은 안 함): (1) 시각 판정 단위 -- 입자 v = 0·입자 가속도 0 은 프레임 시작 (0.04 s) 에 한 번, 풀이 안 구속은 노드 몫 α_n = Σ w m [구속] / m_n 를 걸음마다 S = 4 표본 시각 (5 ms 간격) 에서 재어 k_n = exp(Σ_s (Δt/S)/dt_정답 log(1 − α_n)) 로 노드 속도를 0 쪽으로 감쇠 (정답 서브스텝마다 (1 − α) 섞기의 걸음 인자) -- 풀림 시각 해상도 5 ms (정답 20 µs).
+  (2) k_n < 1 노드는 세 성분 모두 감쇠·걸음 끝 가속도 0 (mt_akb) -- α 가 작아도 1000 서브스텝 몫 지수라 구속 영역 경계의 이웃 노드 (그 노드에 걸친 안 구속 입자 포함) 가 사실상 고정; 정답도 서브스텝마다 같은 (1 − α) 를 곱하므로 같은 방향이지만, 정답은 구속 입자 위치가 서브스텝 속도로 조금씩 움직이고 아핀 C 가 남는다 (우리 판은 PIC, 아핀 없음).
+  (3) 구속 질량 분모 m_n 은 입자 P2G 노드 질량 (--gq_mass 없음) -- 정답과 같은 기저. 바닥 (B) 의 장벽은 구속 노드에도 그대로 걸림 (정답 sticky 바닥과 구속은 독립).
+  -> 구속 입자 집합·풀림 순서·시각은 정답과 같고, 다른 것은 시간 해상도 (프레임/5 ms 대 서브스텝) 와 아핀 몫뿐이라 "구속 정의가 달라 wolf 가 안 무너진다" 는 근거는 코드에서 찾지 못함 (확인은 실행으로 안 함).
+### CM15.2 묶음 vres (exe/vast_vres.sh, 표 exe/fem_vres_table.py, 합성 exe/fem_vres_compose.py; 모두 결정적 --det, 카드 0 에 세 줄로 동시에 -- 시간 측정 아님)
+- 연기 3 프레임 (결정적 vs L000·vw wolf, 비결정 vs L000; 명령에 --fl_bar·--fl_bst·--y0eb 없는지 확인) -> 통과해야 본 묶음 (실패면 기록 올리고 destroy).
+- 판 vs = 강 (`--fl_vres 9`), vw = 약 (`--fl_vres 0.9`), 대조 o = (B) 그대로 (새 코드 플래그 없음 + --pen) x 씬 L000·0016·drop1·wolf. wolf·L000 은 + --hgt --pen --dump --dump_F --dump_part (영상·높이 곡선), 0016·drop1 은 + --pen.
+- (A) wolf = 절 CM12 barstick a_wolf (곡선·영상), (B) wolf 곡선·영상 = 절 CM10 barx x_wolf (o_wolf 해시가 같으면 같은 결과); 둘의 바닥 아래는 pred.pt 덤프에서 같은 정의로 잼.
+- 영상: lego L000 정답 | (B) | 강 | 약, wolf 정답 | (A) | (B) | 강 | 약 (3DGS 알파블렌딩, exe/lb_render.py; 가로 4096 이하·yuv420p·faststart) -> result/anchorflow/v20261009/fem_vres_{lego_L000,wolf}_cmp.mp4.
+- 출력 R2 lbours/fem_cm/vres/<판>_<씬>, 표 marks/vres_table.md, 로그 marks/vres.log, 끝 표식 marks/vres.END.
