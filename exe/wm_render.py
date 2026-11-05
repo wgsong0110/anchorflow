@@ -29,6 +29,11 @@ ap.add_argument("--mark", default="", help="사용자 10-30 발산 셀 입자 �
 ap.add_argument("--mark_fade", type=float, default=1.0, help="--mark: 표시 안 한 가우시안 불투명도 배율 (투시 칸)")
 ap.add_argument("--mark_size", type=float, default=1.0)
 ap.add_argument("--mark_px", default="", help="--mark: 프레임마다 표시 입자 화면 위치 -> json")
+ap.add_argument("--scalar_dir", default="", help="절 CM13.4 손상 색: 프레임 t 의 입자별 값 sc_<t:04d>.npy (h5 프레임 번호와 같음, 입자 순서 = h5). "
+                "가우시안 색만 컬러맵 (--vmin..--vmax 공통 범위, 밖은 끝 색) 으로 바꾸고 불투명도·공분산·위치는 그대로")
+ap.add_argument("--vmin", type=float, default=-0.2)
+ap.add_argument("--vmax", type=float, default=0.4)
+ap.add_argument("--cmap", default="viridis")
 a = ap.parse_args()
 sys.path.insert(0, a.gf); sys.path.insert(1, os.path.join(a.gf, "gaussian-splatting"))
 os.chdir(a.gf)
@@ -145,6 +150,12 @@ for t, fp in enumerate(fs):
     rast = initialize_resterize(cam, gaussians, pipeline, background)          # noqa: F405
     col = convert_SH(init_shs[ok], cam, gaussians, pos[ok], rot[ok])           # noqa: F405
     P_, C_, O_, col = pos[ok], c6[ok], init_opacity[ok], col.float()
+    if a.scalar_dir:                                                           # 절 CM13.4: 색만 바꿈 (모든 프레임 같은 범위, 프레임별 정규화 없음)
+        import matplotlib
+        _sv = np.load(f"{a.scalar_dir}/sc_{t:04d}.npy")[GIDX]
+        _sv = np.nan_to_num(_sv, nan=a.vmax, posinf=a.vmax, neginf=a.vmin)
+        _cm = matplotlib.colormaps[a.cmap]((np.clip(_sv, a.vmin, a.vmax) - a.vmin) / (a.vmax - a.vmin))[:, :3]
+        col = torch.as_tensor(_cm, device=dev).float()[ok]
     if MK is not None:                                                         # --mark: 색·불투명도만 (위치·공분산 그대로)
         mk_ = MK[ok]
         col = col.clone(); col[mk_] = torch.tensor(DCM.RED, device=dev)

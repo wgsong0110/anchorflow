@@ -37,6 +37,7 @@ ap.add_argument("--mg_levels", type=int, default=1, help="1 = 블록 야코비, 
 ap.add_argument("--mg_nc", type=int, default=8)
 ap.add_argument("--mg_pow", type=int, default=6)
 ap.add_argument("--dump", action="store_true")
+ap.add_argument("--dump_lj", action="store_true", help="절 CM13.4 (결과 불변): 프레임 끝 입자 logJp (NACC 경화 상태 ljp) 를 원래 입자 순서로 lj.pt 에, 손상 몫 al·ys 범위는 로그에")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--descent", action="store_true", help="하강 방향 보장: g·δ ≥ 0 이면 δ ← α0 M r0 (PCG 첫 방향)")
@@ -241,6 +242,7 @@ ITS = []
 div_at = None
 PRED = torch.empty(L, Np, 3) if a.dump else None
 FDMP = torch.empty(L, Np, 3, 3) if a.dump else None
+LJD = torch.empty(L, Np) if a.dump_lj else None
 for fi in range(L):
     kp = S.profile(fi * h) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None
     _xprev = S.x_orig().clone() if a.nan_step else None                               # 절 CM9.3: 이 프레임 시작 (= 직전 프레임 끝) 입자 위치, 원래 순서
@@ -312,6 +314,11 @@ for fi in range(L):
         PRED[fi] = xo.cpu()
         _Fo = torch.empty_like(S.F); _Fo[S.perm] = S.F
         FDMP[fi] = _Fo.reshape(Np, 3, 3).cpu()
+    if LJD is not None:                                                               # 절 CM13.4: 읽기만 (풀이 상태 안 건드림)
+        _lo = torch.empty_like(S.ljp); _lo[S.perm] = S.ljp
+        LJD[fi] = _lo.cpu()
+        if fi in (0, L - 1) or fi % 20 == 0:
+            print(f"  [logJp] 프레임 {fi + 1} 범위 {float(S.ljp.min()):.4g}~{float(S.ljp.max()):.4g} > 0 몫 {float((S.ljp > 0).float().mean()):.4f} | al 범위 {float(S.alp.min()):.4g}~{float(S.alp.max()):.4g} ys 범위 {float(S.ysp.min()):.4g}~{float(S.ysp.max()):.4g}", flush=True)
     if not fin or e > 2.0 or float(S.v.norm(dim=-1).max()) > 200.0:
         div_at = fi + 1
         _nf = {}
@@ -335,5 +342,7 @@ summ["x_sha1"] = hashlib.sha1(_xo.cpu().numpy().tobytes()).hexdigest()
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), indent=1, ensure_ascii=False)
 if PRED is not None:
     torch.save({"pred": PRED[:len(errs)], "F": FDMP[:len(errs)]}, os.path.join(a.out, "pred.pt"))
+if LJD is not None:
+    torch.save({"logJp": LJD[:len(errs)]}, os.path.join(a.out, "lj.pt"))
 print(f"[롤아웃] {a.tag} 실시간 판 셀 {a.cell} K {a.K} 뉴턴 {a.newton} PCG {a.cg}: {len(errs)}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%, "
       f"프레임당 {summ['ms_mean']} ms (재생 GPU 시간)", flush=True)
