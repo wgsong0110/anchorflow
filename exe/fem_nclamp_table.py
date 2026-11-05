@@ -126,11 +126,43 @@ if ref is None:
 cfg = json.load(open(CFG))
 pl = [b for b in cfg["boundary_conditions"] if b.get("type") == "surface_collider"][0]
 NR = np.array(pl["normal"], dtype=np.float64); NR /= np.linalg.norm(NR); PN = float(np.dot(np.array(pl["point"], dtype=np.float64), NR))
-try:
-    import torch
+def ld_np(p):
+    """torch 없는 곳 (로컬 arm64) 에서 torch.save zip 을 numpy 로 읽음 (텐서만; 결과는 .numpy() 를 가진 배열 감쌈)."""
+    import pickle
+    import zipfile
 
-    def ld(p):
-        return torch.load(p, map_location="cpu", weights_only=False)
+    class T(np.ndarray):
+        def numpy(self):
+            return np.asarray(self)
+    DT = {"FloatStorage": np.float32, "DoubleStorage": np.float64, "LongStorage": np.int64, "IntStorage": np.int32, "HalfStorage": np.float16, "BoolStorage": np.bool_, "ByteStorage": np.uint8}
+    z = zipfile.ZipFile(p)
+    root = z.namelist()[0].split("/")[0]
+
+    class U(pickle.Unpickler):
+        def find_class(self, mod, name):
+            if name in DT:
+                return name
+            if name == "_rebuild_tensor_v2":
+                return lambda st, off, size, stride, *a: np.lib.stride_tricks.as_strided(st[off:], shape=size, strides=[q * st.itemsize for q in stride]).copy().view(T)
+            if mod == "collections" and name == "OrderedDict":
+                import collections
+                return collections.OrderedDict
+            return lambda *a, **k: None
+
+        def persistent_load(self, pid):
+            _, typ, key, _, n = pid
+            return np.frombuffer(z.read(f"{root}/data/{key}"), dtype=DT[typ if isinstance(typ, str) else typ.__name__])[:n]
+    return U(z.open(f"{root}/data.pkl")).load()
+
+
+try:
+    try:
+        import torch
+
+        def ld(p):
+            return torch.load(p, map_location="cpu", weights_only=False)
+    except ImportError:
+        ld = ld_np
     G = ld(GTP)["x"]
     PR = {k: (ld(os.path.join(d, "pred.pt"))["pred"] if os.path.exists(os.path.join(d, "pred.pt")) else None) for k, d in WD}
 except Exception as ex:                                                              # torch 없는 곳에서는 폭·덤프 바닥 아래 칸 비움
@@ -177,7 +209,7 @@ for t in range(n):
     rows.append(dict(fr=t + 1, hg=hg, c=[g(JS[k], 0) for k in K], m=[g(JS[k], 1) for k in K],
                      w=[spread(G[t + 1].numpy()) if G is not None and t + 1 < G.shape[0] else float("nan")] + [sp(k) for k in K],
                      e=[JS[k][t].get("err") if t < len(JS[k]) else None for k in K],
-                     pn=[(f"{gp['gnp']} / {1000 * gp['gdmax']:.2f}" if gp else "-")] + [("-" if a is None else f"{a} / {1000 * b:.2f}") for a, b in pens]))
+                     pn=[(f"{gp['gnp']} / {1000 * gp['gdmax']:.2f}" if gp else "-")] + [("-" if a is None or b is None else f"{a} / {1000 * b:.2f}") for a, b in pens]))
 hd = " | ".join(VN[k] for k in K)
 for title, sel in (("4. wolf 곡선 요약 (프레임 10·20·30·40·50; mm, 바닥 아래 = 입자 수 / 최대 깊이 mm)", lambda R: R["fr"] % 10 == 0), ("5. wolf 곡선 프레임별 (mm)", lambda R: True)):
     print(f"## {title}")
