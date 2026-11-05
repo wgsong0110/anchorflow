@@ -203,10 +203,12 @@ if a.mode == "train":
     T.setup_seed(cfg.SEED)
     recorder = T.Recorder(arg.exp_id, cfg, rank=0, time_f=time.time())
     T.recorder = recorder
+    T.cfg, T.arg = cfg, arg                                                                      # 공식 __main__ 의 모듈 전역 (render_step·eval 이 전역 cfg 를 읽음; 절 S.8 셋째 연기 실패)
     exp_path = f"{recorder.exp_id}_{recorder.timestamp}"
     os.makedirs("checkpoints", exist_ok=True)
     static = os.path.exists(os.path.join(cfg.CHECKPOINTS_ROOT, "static_gaussians"))
     scene = T.Scene(cfg, exp_path, shuffle=False, load_static=not static)
+    T.scene = scene                                                                              # 공식 __main__ 전역 scene (render_step)
     t0 = time.time()
     if not static:
         T.logger.info("Begin Train Static...")
