@@ -562,7 +562,11 @@ __global__ void aq_gauss_s(const int* IP, const float* Sa, const float* Sc, floa
 __device__ __noinline__ void aq_tan9(int mat, float s0, float s1, float s2, const float* prm, float al, float* pe, float* D9) {
     // 절 AR 고침: 예전 판 (2 차원 배열 인자·동적 첨자 sp[j], forceinline) 은 aq_elem 안에서 D[0][0]·D[0][1] 이 (1, 0) 으로 덮여 접선이 틀렸다
     // (단위 시험에서는 맞고 커널 안에서만 -- 대조 --check_aq: 모래를 재질 커널로 돌리면 해석 커널과 계수 35 % 차). 열마다 따로 펼쳐 평탄 배열로.
+#ifdef AF_SNH
+    float a0 = s0, a1 = s1, a2 = s2;                                             // 절 CM13 판 (2): Stable Neo-Hookean 은 뒤집힌 σ 에서도 정의 -> 부호 그대로 (크기로 바꾸지 않음)
+#else
     float a0 = (mat == 7) ? fabsf(s0) : s0, a1 = (mat == 7) ? fabsf(s1) : s1, a2 = (mat == 7) ? fabsf(s2) : s2;   // neo-Hookean 은 J^{-2/3} 라 뒤집힌 시험 σ 에서 nan -> 크기로 (접선만)
+#endif
     float c[3] = {a0, a1, a2};
     pl_pi(mat, c, prm, al, pe);
     float Dt[9];
@@ -581,6 +585,22 @@ __device__ __noinline__ void aq_tan9(int mat, float s0, float s1, float s2, cons
     for (int k=0;k<9;k++) if (!isfinite(D9[k])) D9[k] = 0.f;
     for (int k=0;k<3;k++) if (!isfinite(pe[k])) pe[k] = 0.f;
 }
+#ifdef AF_JBAR
+// 절 CM13 판 (1) (사용자 승인 정의 변경): 가우스 점마다 J 로그 장벽 E_b = κ_J V_q φ(J), φ(J) = −log J + J − 1 (J = det X, X = 시험 변형 기울기).
+//   문턱 없음 (d̂ 없음): φ(1) = φ'(1) = 0 이라 쉼 상태 응력·위치는 그대로, J → 0⁺ 에서 +∞. κ_J = prm[13] (= --jbar x μ).
+//   주값: ∂φ/∂σ_i = (J − 1)/σ_i, ∂²φ/∂σ_i² = 1/σ_i², ∂²φ/∂σ_i∂σ_j = J/(σ_i σ_j) (i ≠ j); 비틀림 몫은 pe 를 통해 (아래 aq_elem 의 λ_t·λ_f 식, 음수는 0 으로 투영).
+//   J ≤ 0 (시험 X 가 이미 뒤집힘) 에서는 장벽이 정의되지 않아 몫 0 (그 점은 진단 q_inv 로 셈).
+__device__ __forceinline__ void aq_jbar_p(const float* S, const float* prm, float* p) {
+    float J = S[0]*S[1]*S[2], kJ = prm[13];
+    if (!(J > 0.f)) return;
+    for (int i=0;i<3;i++) p[i] += kJ*(J - 1.f)/S[i];
+}
+__device__ __forceinline__ void aq_jbar_t(const float* S, const float* prm, float* pe, float D[3][3]) {
+    float J = S[0]*S[1]*S[2], kJ = prm[13];
+    if (!(J > 0.f)) return;
+    for (int i=0;i<3;i++) { pe[i] += kJ*(J - 1.f)/S[i]; for (int j=0;j<3;j++) D[i][j] += (i == j) ? kJ/(S[i]*S[i]) : kJ*J/(S[i]*S[j]); }
+}
+#endif
 __device__ __forceinline__ void aq_tan(int mat, const float* ss0, const float* prm, float al, float* pe, float D[3][3]) {
     float D9[9]; aq_tan9(mat, ss0[0], ss0[1], ss0[2], prm, al, pe, D9);
     for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = D9[i*3+j];
@@ -619,6 +639,9 @@ __global__ void __launch_bounds__(128) aq_elem(const int* IP, const int* cb, con
     float Pe[3]; pl_pi(mat, se, prm, al, Pe);
     float ss[3], p[3];
     for (int i=0;i<3;i++) { ss[i] = (sev > 0.f) ? fmaxf(S[i], sev) : ((fabsf(S[i]) > 1e-6f) ? S[i] : ((S[i] < 0.f) ? -1e-6f : 1e-6f)); p[i] = Pe[i]*se[i]/ss[i]; }
+#ifdef AF_JBAR
+    aq_jbar_p(S, prm, p);                                                     // 절 CM13 판 (1): J 로그 장벽 몫 (시험 X 의 J > 0 일 때만 정의)
+#endif
     float vq = on ? Vq[qq] : 0.f;
     float Pm[9];
     for (int a=0;a<3;a++) for (int b=0;b<3;b++) Pm[a*3+b] = U[a*3]*p[0]*V[b*3] + U[a*3+1]*p[1]*V[b*3+1] + U[a*3+2]*p[2]*V[b*3+2];
@@ -642,6 +665,9 @@ __global__ void __launch_bounds__(128) aq_elem(const int* IP, const int* cb, con
     { float al0 = Sq[(size_t)qq*4+2];
       float pe[3], D[3][3], Ev[3][3], Dk[3][3];
       aq_tan(mat, ss, prm, al0, pe, D);
+#ifdef AF_JBAR
+      aq_jbar_t(S, prm, pe, D);                                               // 절 CM13 판 (1): 장벽 주값 헤시안·응력 (투영은 아래 그대로)
+#endif
       if (eta > 0.f) for (int i=0;i<3;i++) D[i][i] += 2.f*alI*eta*fabsf(Jx)/(ss[i]*ss[i]);
       for (int i=0;i<3;i++) for (int j=0;j<3;j++) Dk[i][j] = D[i][j];
       jac3f(D, Ev);
@@ -1009,7 +1035,7 @@ GQ_P2G_OLD = "    if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }\n   
 GQ_P2G_NEW = "    if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }\n    return;                                                                 // 절 CM9 --gq_mass: 노드 몫은 gq_q2n\n    float wx[3][3], dw[3][3];"
 
 
-def _src(tol=False, fqrl=False, gqm=False):
+def _src(tol=False, fqrl=False, gqm=False, elx=""):
     s = ART.SRC.rstrip()
     if gqm:                                                                          # 절 CM9 --gq_mass: rt_p2g 노드 몫 빼고 (가우스 점 경로 커널은 끝에 덧붙임)
         from .fem_an_det import _sub_in
@@ -1031,7 +1057,8 @@ def _src(tol=False, fqrl=False, gqm=False):
     i = s.rfind("}")
     head = DET.det_src(s[:i])
     head = "#include <cuda_fp16.h>\n" + head
-    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;", 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + "\n}\n"
+    assert elx in ("", "jbar", "snh"), elx                                          # 절 CM13 (재질 판 수박): jbar = J 로그 장벽 (AF_JBAR), snh = Stable Neo-Hookean 탄성 (AF_SNH); "" 이면 소스 글자 그대로
+    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx], 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + "\n}\n"
     return _skipify(r) if tol else r
 
 
@@ -1043,7 +1070,8 @@ def _gq_src():
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", **kw):
+        s.elx = str(elx)                                                                # 절 CM13: 수박 탄성 확장 ("" 끔, jbar, snh)
         s.gqm = bool(gqm)                                                               # 절 CM9 (정의 변경): 노드 질량·운동량·가속도 몫을 가우스 점에서
         assert not (s.gqm and det), "--gq_mass 는 이 실행기에서 비결정 판만"
         s.fqrl, s.lsend = bool(fqrl), bool(lsend)                                        # 절 AS: F_q 유클리드 대체 조건, 걸음 끝 변위 U_{n+1} 에서도 J > 0
@@ -1089,7 +1117,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
         s.ao_ready = True
@@ -1103,7 +1131,7 @@ class AORTSolver(DET.DetMixin):
 
     def nsd_on(s):
         """절 CM9.3 진단 켬 (--nan_step): 같은 정의의 소스 + 검사 커널을 따로 컴파일 (풀이 모듈은 그대로), 다음 프레임에 다시 캡처."""
-        s.nsdo = NSDM.NSD(s, _src(tol=False, fqrl=s.fqrl, gqm=s.gqm))
+        s.nsdo = NSDM.NSD(s, _src(tol=False, fqrl=s.fqrl, gqm=s.gqm, elx=getattr(s, "elx", "")))
         s.graph = None
         if hasattr(s, "graphs"):
             s.graphs.clear()

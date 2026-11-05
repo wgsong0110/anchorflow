@@ -5427,3 +5427,23 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - s_wolf ((B) + --fl_stk, 안 띄운 원래 초기 상태, + --hgt --bar_cnt --dump --dump_F)·s_L000·s_0016·s_drop1; 대조 o_wolf·o_L000·o_0016·o_drop1 ((B) 그대로 새 코드), o0_L000 (옛 커밋 cdda9bd), a_wolf ((A) = 절 CM8 a3 명령 --v=a --cg 3, + --hgt --dump --dump_F; 곡선·영상용).
 - (B) wolf 곡선·영상 = 절 CM10 barx x_wolf 재사용 (barx o_wolf 와 비트 같음). 영상 정답 | (A) | (B) | (B)+고착 -> result/anchorflow/v20261009/fem_barstick_wolf_cmp.mp4.
 - 출력 R2 lbours/fem_cm/barstick/<판>_<씬>, 표 marks/barstick_table.md, 로그 marks/barstick.log, 끝 표식 marks/barstick.END.
+
+## CM13. 수박 탄성의 J 처리 두 판 -- (1) 가우스 점 J 로그 장벽, (2) 음수 J 로 확장된 탄성 (Stable Neo-Hookean) (사용자 승인 11-05 정의 변경; 절 CM9.3 근원 = G2P 에서 퇴화한 외톨이 입자 F -> 그 칸 J ≤ 0 -> NHB J^(-2/3) 비유한 -> PCG 전체 NaN) -- 가지 implicit-bspline, 묶음 wmJ (vast.ai A6000, exe/vast_wmj.sh)
+### CM13.0 정의 (옛 재질 실행기 exe/fem_ao_rt_sim.py `--elx jbar|snh`, 수박 (재질 7) 만; 끄면 생성 CUDA 소스는 #ifdef 블록 추가뿐 -- 기계어 같음)
+- 나머지 명령은 절 CM9 w1a 그대로 (exe/fem_cm9_scn.sh wm + `--gq_mass --gq_chk --dump`: 셀 1.5, GF 바닥 z 0.02 미끄럼, HHT ρ 0.7 K 3 뉴턴 2 x PCG 5, 허용치 εN 1e-2 · εP 1e-1, 시작점 관성 예측, 거의 빈 노드 문턱 1e-3, 절 AS 전체 `--ls_inv --y0u --y0l --fq_rl --ls_end`). 소성·파괴 return mapping (GF NACC, logJp 경화) 은 두 판 모두 그대로.
+- **(1) `--elx jbar` J 로그 장벽**: 가우스 점 q (부피 V_q > 0) 마다 에너지에 E_b = κ_J V_q φ(J_q), φ(J) = −log J + J − 1, J_q = det X_q (X_q = (I + ∇U) F_q = 재질 커널 aq_elem 의 시험 변형 기울기 -- 뒤집힘 필터 --ls_inv 가 지키는 것과 같은 J).
+  문턱 없음 (IPC 의 d̂ 같은 임의 문턱 안 씀): −log J 에 (J − 1) 을 더해 φ(1) = φ'(1) = 0 -- 쉼 상태 응력 0 그대로, J → 0⁺ 에서 +∞, J > 0 전체에서 볼록 (φ'' = 1/J²).
+  주값 공간 (σ = X 의 부호 있는 특이값): 응력 몫 P_i += κ_J (J − 1)/σ_i, 헤시안 ∂²/∂σ_i² = κ_J/σ_i², ∂²/∂σ_i∂σ_j = κ_J J/(σ_i σ_j); 비틀림 몫은 같은 P_i 로 λ_t = (P_i + P_j)/(σ_i + σ_j), λ_f = (P_i − P_j)/(σ_i − σ_j). 재질 접선과 더한 뒤 기존 투영 (주값 행렬 고윳값 0 아래 자름, λ_t·λ_f 0 아래 자름) 그대로 -> 헤시안 곱·블록 대각 전처리에 들어감.
+  **κ_J = μ** (재질 전단 강성, `--jbar 1` 배; 수박 E 2000 · ν 0.38 -> μ 724.6, λ 2294.7, NHB κ = 2μ/3 + λ 2777.8): 작은 변형에서 φ'' (1) = 1 이라 부피 강성이 κ -> κ + κ_J (+26 %), 전단은 그대로 -- 장벽이 문턱 없이 쉼 상태 근처에도 있는 대가 (재질 강성 스케일 규칙에서 가장 작은 쪽을 고름).
+  J ≤ 0 인 점 (시험 X 가 이미 뒤집힘) 에서는 log 가 정의되지 않아 장벽 몫 0 -- 그런 점은 진단 q_inv 로 셈. 선탐색은 그대로 뒤집힘 필터 (에너지 없음): 걸음 시작에 J > 0 인 점은 필터가 J > 0 을 지키므로 장벽 값·기울기는 늘 유한.
+  구현: lib/anchorflow/fem_ao_rt.py aq_jbar_p·aq_jbar_t (`#ifdef AF_JBAR`, aq_elem 응력·접선), κ_J = prm[13]; 진단 lib/anchorflow/fem_nsd_diag.py nsd_q 도 같은 몫.
+- **(2) `--elx snh` Stable Neo-Hookean 탄성**: GF kirchoff_stress_neoHookeanBoarden (τ = μ J^(−2/3) dev B + κ/2 (J² − 1) I) 을 Smith et al. 2018 (Stable Neo-Hookean Flesh Simulation) 계열의 로그 항 없는 꼴 (Kim·Eberle 2022 Dynamic Deformables 의 표준형) 으로 바꿈:
+  Ψ = μ_s/2 (I_C − 3) − μ_s (J − 1) + λ_s/2 (J − 1)², P = μ_s F + (λ_s (J − 1) − μ_s) cof F -> 주값 P_i = μ_s σ_i + (λ_s (J − 1) − μ_s) σ_j σ_k. 다항식이라 J ≤ 0 (뒤집힘) 에서도 유한·매끄러움 -- 나눗셈·거듭제곱·클램프 없음.
+  같은 E·ν 대응: F = I + H 선형화 P ≈ μ_s (H + Hᵀ) + (λ_s − μ_s) tr H I 를 선형 탄성 μ (H + Hᵀ) + λ tr H I 와 맞춰 **μ_s = μ, λ_s = λ + μ** (E·ν 의 라메 상수 그대로; 쉼 상태 응력 0). 수박: μ_s 724.6, λ_s 3019.3.
+  접선은 기존대로 주값 중심 차분 (aq_tan9) -- NHB 판은 J^(−2/3) 때문에 |σ| 로 바꿔 쟀으나 SNH 는 부호 있는 σ 그대로. 응력을 시험 X 로 옮기는 식 (P_X = τ(σ̂) X^(−T), σ̂ = RM 결과) 과 RM 은 그대로 -- GF NACC RM 이 σ 를 max(σ, 0) 으로 받으므로 뒤집힌 방향은 σ̂ = 0 이 되어 그 방향 τ 몫 0 (이건 RM 의 정의, 이번 변경 밖).
+  구현: lib/anchorflow/fem_pl_cuda.py pl_pi 재질 7 가지 (`#ifdef AF_SNH`), fem_ao_rt.py aq_tan9.
+- 진단 (결과 불변, 재생 밖) `--jdiag`: 프레임 끝 커밋된 F_q (부피 > 0) det ≤ 0 수·최소, 입자 F det 최소·≤ 0 수·< 1e-3 수 (fem.jsonl jd). 기존 q_inv = 그 프레임 aq_elem 호출마다 시험 X 의 J ≤ 0 점-회, ls_inv[2] = 걸음 시작에 이미 뒤집힌 점-회. 발산하면 --nan_step (절 CM9.3) 덤프.
+### CM13.1 묶음 wmJ (exe/vast_wmj.sh, 표 exe/fem_wmj_table.py)
+- 판마다 두 번 (비결정): j_a·j_b (`--elx jbar`), s_a·s_b (`--elx snh`), 모두 `--dump --nan_step --jdiag`; 그 뒤 단독 시간 zj·zs (`--gq_mass --elx …` 만, 그 카드에 판 하나 -- 실행 중 그 카드 다른 계산 프로세스 수를 10 초마다 셈). 기준 = 절 CM9 w1a (x19)·w1b (x30) 재사용 (w1a 덤프에서 입자 F det 만 다시 잼).
+- 완주한 판이 있으면 영상 정답 | (1) | (2) (3DGS, GF wm_render; 발산한 판 칸은 발산 전 마지막 프레임에서 멈춤 + 표시) -> result/anchorflow/v20261009/fem_wmJ_cmp.mp4.
+- 출력 R2 lbours/fem_cm/wmJ/<판>, 표 lbours/fem_cm/marks/wmJ_table.md, 로그 marks/wmJ.log, 끝 표식 marks/wmJ.END.

@@ -219,6 +219,14 @@ __device__ __forceinline__ void pl_pi(int mat, const float* s, const float* prm,
         float tr = ep[0] + ep[1] + ep[2];
         for (int i=0;i<3;i++) Pi[i] = (2.f*mu*ep[i] + lam*tr)/sg[i];
     } else if (mat == 7) {                                          // GF kirchoff_stress_neoHookeanBoarden: τ = μ J^{-2/3} dev(B) + κ/2 (J² - 1) I
+#ifdef AF_SNH
+        // 절 CM13 판 (2) (사용자 승인 정의 변경): 탄성 부분을 Stable Neo-Hookean (Smith 2018 의 로그 항 없는 꼴, Kim·Eberle 2022) 으로 --
+        // Ψ = μ/2 (I_C − 3) − μ (J − 1) + λ_s/2 (J − 1)², P = μ F + (λ_s (J − 1) − μ) cof F -> 주값 P_i = μ σ_i + (λ_s (J − 1) − μ) σ_j σ_k.
+        // 다항식이라 J ≤ 0 에서도 유한·매끄러움 (나눗셈·거듭제곱 없음, 클램프 없음). 같은 E·ν 대응: 선형화 P ≈ μ (H + Hᵀ) + (λ_s − μ) tr H I -> μ_s = μ, λ_s = λ + μ (prm[0] μ, prm[1] λ).
+        { float lss = prm[1] + mu, J = s[0]*s[1]*s[2], cc = lss*(J - 1.f) - mu;
+          Pi[0] = mu*s[0] + cc*s[1]*s[2]; Pi[1] = mu*s[1] + cc*s[0]*s[2]; Pi[2] = mu*s[2] + cc*s[0]*s[1]; }
+        return;
+#endif
         float kap = prm[2];
         float J = s[0]*s[1]*s[2];
         float Bm = (s[0]*s[0] + s[1]*s[1] + s[2]*s[2])/3.f;

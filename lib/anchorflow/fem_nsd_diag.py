@@ -76,6 +76,9 @@ __global__ void nsd_q(const int* IP, const int* cb, const float* BG, const float
     float Pe[3]; pl_pi(mat, se, prm, al, Pe);
     float ss[3], p[3];
     for (int i=0;i<3;i++) { ss[i] = (sev > 0.f) ? fmaxf(S[i], sev) : ((fabsf(S[i]) > 1e-6f) ? S[i] : ((S[i] < 0.f) ? -1e-6f : 1e-6f)); p[i] = Pe[i]*se[i]/ss[i]; }
+#ifdef AF_JBAR
+    aq_jbar_p(S, prm, p);                                                     // 절 CM13 판 (1): aq_elem 과 같은 장벽 몫
+#endif
     for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = U[a*3]*p[0]*V[b*3] + U[a*3+1]*p[1]*V[b*3+1] + U[a*3+2]*p[2]*V[b*3+2]; if (!isfinite(t)) bad = true; }
     if (bad) mS[q] = code;
 }

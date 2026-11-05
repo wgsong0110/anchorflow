@@ -86,6 +86,9 @@ ap.add_argument("--y0l", action="store_true", help="절 AS: 시작점 보간에 
 ap.add_argument("--fq_rl", action="store_true", help="절 AS: 뒤집힌 입자가 있는 가우스 점 F_q 의 유클리드 평균 대체를 그 평균이 뒤집히지 않을 때만 (뒤집히면 회전·로그 평균)")
 ap.add_argument("--ls_end", action="store_true", help="절 AS: 보폭·시작점 필터가 걸음 끝 변위 U_{n+1} (HHT 외삽) 의 X 도 J > 0 로 유지")
 ap.add_argument("--y0z", action="store_true", help="절 AS: 뉴턴 시작점 = 영속도 위치 y_z (z0) 에서 지금 시작점 (관성 예측·고착) 쪽으로 뒤집힘 없는 최대 2^-k 만큼 (뒤집힘 없으면 그대로)")
+ap.add_argument("--elx", choices=["", "jbar", "snh"], default="", help="절 CM13 (사용자 승인 정의 변경, 재질 판 수박만): jbar = 가우스 점 J 로그 장벽 κ_J V_q (−log J + J − 1) 을 에너지에 (기울기·투영 헤시안), snh = 탄성 부분을 Stable Neo-Hookean (μ_s = μ, λ_s = λ + μ; RM 그대로). 끄면 같은 소스")
+ap.add_argument("--jbar", type=float, default=1.0, help="절 CM13 판 (1): κ_J = 이 값 x μ (재질 전단 강성)")
+ap.add_argument("--jdiag", action="store_true", help="절 CM13 진단 (결과 불변, 재생 밖): 프레임 끝 가우스 점 F_q (부피 > 0) det ≤ 0 수·최소, 입자 F det 최소·≤ 0 수·< 1e-3 수 (fem.jsonl jd)")
 ap.add_argument("--theta", type=float, default=None, help="θ 방식 (절 AN.err2 정의; 0.5 = 중점, 1 = 후퇴 오일러). 안 주면 --integ 그대로 (비트 동일)")
 a = ap.parse_args()
 if a.adaptK > 0:
@@ -188,6 +191,11 @@ if MATK is not None:                                                            
         PRM[15] = 1.0
     if a.nhb_eps > 0:
         PRM[14] = float(a.nhb_eps)
+    if a.elx:
+        assert MATK == 7, "--elx 는 수박 (watermelon) 재질 판만"
+        if a.elx == "jbar":
+            PRM[13] = float(a.jbar) * float(mu)
+        print(f"[절 CM13] --elx {a.elx}: " + (f"J 로그 장벽 κ_J = {a.jbar} x μ = {float(PRM[13]):.6g} (NHB κ {float(PRM[2]):.6g}, 작은 변형 부피 강성 κ + κ_J)" if a.elx == "jbar" else f"Stable Neo-Hookean μ_s = μ = {float(mu):.6g}, λ_s = λ + μ = {float(lam) + float(mu):.6g}"), flush=True)
     VISC = 0.0
     if a.visc_rpic and float(cfg.get("rpic_damping", 0.0)) > 0:
         _r = float(cfg["rpic_damping"])
@@ -196,7 +204,7 @@ if MATK is not None:                                                            
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
                         floor=FL, damp=DAMP, bc=BC, cdp=1.0, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det,
                         hspec=True, theta=a.theta, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None),
-                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass)
+                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx)
 elif SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
     _sk = {}
@@ -283,6 +291,13 @@ for fi in range(L):
             except Exception as _ex:
                 import traceback; traceback.print_exc(); print(f"[절 CM9.3 덤프 실패] {_ex!r}", flush=True)
             NSD_DUMPS += 1
+    if a.jdiag and int(S.IP[13]) == 0:                                                # 절 CM13 진단 (결과 불변): 프레임 끝 커밋된 F_q·입자 F 의 행렬식
+        _nq = int(S.IP[12]); _vq = S.Vq[:_nq] > 0
+        _dq = torch.linalg.det(S.Fq[:_nq].reshape(-1, 3, 3).double())[_vq]
+        _dp = torch.linalg.det(S.F.reshape(-1, 3, 3).double())
+        _fin = torch.isfinite(_dp)
+        c["jd"] = dict(q_le0=int((_dq <= 0).sum()), q_nf=int((~torch.isfinite(_dq)).sum()), q_min=float(_dq[torch.isfinite(_dq)].min()) if bool(torch.isfinite(_dq).any()) else None,
+                       p_min=float(_dp[_fin].min()) if bool(_fin.any()) else None, p_le0=int((_dp <= 0).sum()), p_lt1e3=int((_dp < 1e-3).sum()), p_nf=int((~_fin).sum()))
     if a.diag:
         c["diag"] = S.diag()
     if "it" in c:
