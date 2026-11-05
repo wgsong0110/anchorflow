@@ -32,7 +32,7 @@ mkdir -p /home/dkta/work /home/dkta/.conda/envs/af/bin /home/dkta/bin
 PYS=$(command -v python); ln -sf $PYS /home/dkta/.conda/envs/af/bin/python
 export HOME=/root PATH=/home/dkta/.conda/envs/af/bin:$PATH
 if [ ! -f /root/wj/pip.done ]; then
-  pip install -q "numpy<2" "warp-lang==0.10.1" "taichi==1.6.0" h5py scikit-image lpips cupy-cuda12x tqdm plyfile scipy imageio imageio-ffmpeg av opencv-python-headless matplotlib vastai 2>&1 | tail -2 | tee -a $LOG
+  pip install -q "numpy<2" "warp-lang==0.10.1" "taichi==1.6.0" h5py scikit-image lpips cupy-cuda12x tqdm plyfile scipy imageio imageio-ffmpeg av opencv-python-headless matplotlib vastai 2>&1 | tail -2 | tee -a $LOG; pip install -q --only-binary=:all: PyMCubes==0.1.6 2>&1 | tail -2 | tee -a $LOG
   cd /tmp && for f in diff_gaussian_rasterization-0.0.0-cp311-cp311-linux_x86_64.whl simple_knn-0.0.0-cp311-cp311-linux_x86_64.whl; do
     curl -sL -o $f "https://github.com/wgsong0110/anchorflow/releases/download/cuda-3dgs-torch251/$f"; done
   pip install -q --force-reinstall --no-deps /tmp/diff_gaussian_rasterization-0.0.0-cp311-cp311-linux_x86_64.whl /tmp/simple_knn-0.0.0-cp311-cp311-linux_x86_64.whl 2>&1 | tail -2 | tee -a $LOG
