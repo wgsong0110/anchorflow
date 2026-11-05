@@ -194,7 +194,7 @@ def claim_card():
                         continue
                     except (OSError, ValueError, IndexError):
                         pass
-                open(p, "w").write(f"{os.getpid()} stab {time.time()}\n")
+                open(p, "w").write(f"{os.getpid()}\n")                                # pid 만 (다른 에이전트 풀이 kill -0 "$(cat 파일)" 로 읽음)
                 return i
         time.sleep(30)
 
@@ -202,7 +202,7 @@ def claim_card():
 def release_card(i):
     with CLK:
         try:
-            if open(f"{CL}/{i}").read().split()[1] == "stab":
+            if open(f"{CL}/{i}").read().split()[0] == str(os.getpid()):
                 os.remove(f"{CL}/{i}")
         except (OSError, IndexError):
             pass
