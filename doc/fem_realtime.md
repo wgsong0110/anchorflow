@@ -5222,3 +5222,34 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 ### CM6.7 결과·이어서 할 지점
 - R2 lbours/fem_cm/cm6/·cm6b/·cm6c/ (판별 log·summary·fem.jsonl (hg·hp 높이, bk 보폭, cm6c 는 diag), r·stk·nost·cv·old·cv2 pred.pt), 표 marks/cm6_table.md·cm6b_table.md·cm6c_table.md, 끝 표식 marks/cm6.END·cm6b.END·cm6c.END, 풀 로그 marks/cm6*_pool.log, 일꾼 출력 w2/out/cm6*.log.
 - 할 일 (결정 뒤): 후보 (가)·(나) 중 고르면 wolf·bread (와 (나) 면 lego 21·drop1) 를 예산 규칙으로 상한 다시 골라 재판정 (exe/fem_cm4.sh 꼴) + 영상. 잡 130567 은 12:34 KST 만료 -- 다음 잡 제출은 하지 않음 (지시).
+
+## CM7. 재질 판 노드 상자 넘침 다시 할당 결함 (조정자 11-05; 절 BD.4·CM6.6 이어서, 정의 변경 없음) -- 가지 implicit-bspline, 커밋 2080051, 묶음 cm7 (잡 130567 일꾼 w2, 11-05 09:30 KST 띄움)
+### CM7.1 원인 (코드 + memcheck)
+- (가) **불법 접근**: 넘친 프레임에서 rt_box 는 IP[9] (노드 수) = 0 으로 두지만 상자 차원 IP[6..8] 은 큰 상자 그대로이고, rt_mg_dims 는 거친 층 차원을 그 큰 상자에서 셈 (거친 층은 +3 덧대기 덕에 대개 용량 안이라 수가 0 이 아님).
+  그래서 같은 그래프 재생 안에서 결정적 판 거친 점 누적 **ao_mg_acc_det** (층 1) 가 고운 칸 번호를 IP[6..8] 차원만 보고 만들어 cidx (용량 capC) 밖을 읽고, 그 쓰레기 값으로 Vsrc[cs*8+os] 를 읽음 -> 아무 주소.
+  제한 rt_mg_restrict·restrict2·restrict3 도 층 차원만 보고 고운 층 배열 (mn·r·bKn) 용량 밖을 읽음 (수 A[3] 은 안 봄). 거친 층만 넘친 경우 (IP[13] 2) 도 그 층 차원은 남아 다음 층 제한·비결정 판 rt_mg_acc 가 용량 밖을 읽고 씀.
+  읽히는 주소가 할당 경계 밖으로 나가는지는 버퍼 배치 (K 에 따라 Ust·pacc·DG 크기가 달라짐) 에 달려 K 8 프레임 40 에서만 죽고 K 1 프레임 9 는 살았던 것.
+  확인: s8old (옛 판 차원 AF_MGDIMS_OLD=1, wolf K 8 기본 용량, memcheck) -> 프레임 40 (0 부터 39) 그래프 재생에서 `Invalid __global__ read of size 4 bytes at ao_mg_acc_det` (가장 가까운 할당 690 MB 앞), 오류 2168, 끝.
+- (나) **결과가 바뀜**: alloc 이 `_wdone` 을 False 로 되돌려 다시 캡처의 데움 실행이 --mg_lreuse 거친 층 ω (W[1..]) 를 **그 프레임 상태에서** 다시 잼 (기본 판은 첫 프레임 값을 끝까지 씀). 다른 원인은 없음:
+  다시 할당 전 버퍼 내용 (H·H30 [성분][capQ], Ust [K][capN][3], 층 H [81][cq] 는 보폭 맞춰) 을 모두 새 버퍼 앞자리에 옮기는 진단 (AF_REDO_COPY=1) 이 ω 유지만 한 판과 비트 같음 -> 앞 프레임에서 남은 버퍼 값 (캐시된 칸·노드 번호, 압축 판 목록 밖 값) 은 결과에 안 들어감. CUDA 그래프는 다시 할당마다 alloc 이 graphs 를 비우고 다시 캡처하며, 장치 전역 포인터 (AF_BX·AF_MO·AO_*·AO_ACT) 는 alloc 끝의 oct_bind·det_bind·mat_bind 가 새 버퍼로 다시 묶음 -- 옛 주소를 무는 곳 없음. MG 층 용량은 새 상자 (nb0 다시 잼) 기준으로 다시 잡힘.
+### CM7.2 고친 것 (lib/anchorflow/fem_an_rt.py; 넘치지 않는 프레임의 계산은 그대로)
+- rt_mg_dims: 앞 단계에서 넘쳤거나 (IP[13]) 거친 층이 넘치면 **모든 층 (층 0 포함) 의 차원·수를 0** (그 프레임은 다시 하므로 값은 버림). rt_mg_acc 는 층 점 수 0 이면 바로 끝.
+- alloc: --mg_lreuse 이고 이미 잰 ω 가 있으면 W 를 새 버퍼에 옮기고 `_wdone` 유지 (거친 층 ω 는 다시 할당이 있든 없든 첫 프레임 값 -- 절 AN 정의 "첫 프레임 값" 그대로).
+- 진단 전용 (기본 꺼짐): AF_FORCE_REDO=프레임,.. (넘치지 않아도 그 프레임에서 다시 할당 경로), AF_REDO_COPY=1, AF_REDO_KEEPW=0 (옛 동작), AF_MGDIMS_OLD=1 (옛 차원, 대조용).
+### CM7.3 검증 묶음 cm7 (exe/fem_cm7.sh, 표 exe/fem_cm7_sum.py; 결정적, 빈 카드 1-6, 비측정; 명령 = 절 BD bigdt2 wolf·bread 줄 + 용량·진단 환경만 다름)
+| 판 | K | 용량 배수 | 다시 할당 프레임 (0 부터) | 평균 오차 % | 끝 해시 | 용량 4 판과 |
+|---|---|---|---|---|---|---|
+| wolf w1c4 · w1c2 | 1 | 4 · 2 | 없음 | 10.721 | 63676f85bc (= bigdt2 hhK1 wolf, 고친 코드가 다시 할당 없는 판을 안 바꿈) | 기준 · 프레임별 오차 비트 같음 |
+| wolf w1c1 | 1 | 1 | 8 | 10.721 | 63676f85bc | 비트 같음 (전 10.262 %) |
+| wolf w1f (강제 5·20·35) · w1fcp (+ 버퍼 옮김) · w1c1cp | 1 | 2 · 2 · 1 | 5,20,35 · 5,20,35 · 8 | 10.721 | 63676f85bc | 비트 같음 |
+| wolf w1c1nw (AF_REDO_KEEPW=0 = 옛 동작) | 1 | 1 | 8 | 10.262 | 0c57d0167d (= bigdt2m2 dgK1c1) | 프레임 8 부터 다름 -> 차이는 ω 다시 잼 하나 |
+| **wolf w8c2 (기본 용량)** | 8 | 2 | 39 | **4.409 (50/50 완주)** | 1fabd0bec8 | 비트 같음 (= bigdt2m2 hhK8 용량 4 판 4.41 %) |
+| wolf w8c4 · w8c2cp · w8f (강제 5·20) | 8 | 4 · 2 · 4 | 없음 · 39 · 5,20,41 | 4.409 | 1fabd0bec8 | 기준 · 비트 같음 · 비트 같음 |
+| bread b1c4 · b1c2 · b1c1 · b1f (강제 50·150) · b1c2cp | 1 | 4 · 2 · 1 · 4 · 2 | 없음 · 124 · 1,128 · 50,150 · 124 | 2.425 | 96d9cf6d32 | 모두 비트 같음 |
+| bread b8c4 · b8c2 | 8 | 4 · 2 | 없음 · 125 | 4.310 | e4da1d78a7 | 비트 같음 |
+| s8old (옛 차원, memcheck, 41 프레임) | 8 | 2 | (39 에서 죽음) | -- | -- | ao_mg_acc_det 용량 밖 읽기 2168 건 |
+- 기존 수치에 미치는 영향: 다시 할당이 있었던 판만 바뀜 -- bigdt2 bread hhK1 2.449 -> **2.425 %** (해시 1e70f7a865 -> 96d9cf6d32), hhK8 4.312 -> **4.310 %** (250acef724 -> e4da1d78a7); bread K 2·4 와 그 밖 다시 할당 판 (fem.jsonl redo) 은 다시 안 돌림. wolf K 1·2·4 와 lego·ficus (다시 할당 없음) 는 그대로.
+  CM6.6 의 dh4·s0p0·cvs 끝 프레임 죽음은 같은 경로로 보이나 다시 돌려 확인하지 않음 (cvs 는 입자 F 뒤집힘·상자 폭증 동반).
+### CM7.4 결과·이어서 할 지점
+- R2 lbours/fem_cm/cm7/ (판별 log·summary·fem.jsonl·run_info, list.txt, done.txt), 표 marks/cm7_table.md, 끝 표식 marks/cm7.END, 일꾼 출력 w2/out/cm7.log. memcheck 고친 판 s8new (wolf K 8 기본 용량 50 프레임) 는 표에 그 결과 (오류 수) 가 들어감.
+- 이어서 (필요하면): bigdt2 표의 bread K 1·2·4·8 칸을 커밋 2080051 로 다시 (exe/fem_an_bigdt2m2.sh 꼴, hhK* bread 줄 그대로) -- 위 K 1·8 값이 새 값.
