@@ -22,6 +22,7 @@ button{margin:2px 3px 2px 0}
 <label style="display:block"><input id="dim" type="checkbox" checked> 끈 항목도 옅게 남기기 (강조 모드)</label>
 <label style="display:block"><input id="gshow" type="checkbox" checked> 나머지 입자 (반투명 회색, <span id="ng"></span>)</label>
 <label style="display:block"><input id="jshow" type="checkbox"> 한 걸음 변위 증분 1 칸 넘는 노드 (검정 ×, <span id="nj"></span>개; 마우스 올리면 정보)</label>
+<label style="display:block"><input id="rshow" type="checkbox" checked> 근원 칸 (프레임 시작에 이미 뒤집힌 칸: 입자 = 노랑 큰 점, 그 칸 27 노드 = 주황; <span id="nr"></span>)</label>
 <label style="display:block"><input id="qshow" type="checkbox"> J ≤ 0 이 생긴 가우스 점 (보라, <span id="nq"></span>개)</label>
 <label style="display:block">점 크기 <input id="ps" type="range" min="1" max="8" step="0.5" value="2.5"></label>
 <span style="color:#666">좌클릭 드래그 회전 · 휠 확대 · 우클릭 드래그 이동 · 반투명 파란 평면 = 바닥 z 0.02</span>
@@ -32,10 +33,11 @@ button{margin:2px 3px 2px 0}
 import * as THREE from 'three';import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 const M=__META__;
 const f32=s=>{const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return new Float32Array(u.buffer)};
-const GRAY=f32("__GRAY__"),GR=__GROUPS__.map(f32),CA=__CAUSES__.map(f32),PJ=f32("__PJ__"),PQ=f32("__PQ__");
+const GRAY=f32("__GRAY__"),GR=__GROUPS__.map(f32),CA=__CAUSES__.map(f32),PJ=f32("__PJ__"),PQ=f32("__PQ__"),PR=f32("__PR__"),RN=f32("__RN__");
 const $=id=>document.getElementById(id);
 $('ttl').textContent=`수박 cm9 --gq_mass ${M.run} 발산 프레임 ${M.frame}: NaN 입자 ${M.n_nan.toLocaleString()} / ${M.N.toLocaleString()}`;
-$('sub').textContent=`K ${M.K} 걸음 x 뉴턴 ${M.nt}. 위치 = 프레임 ${M.frame-1} 끝.`;
+$('sub').textContent=`K ${M.K} 걸음 x 뉴턴 ${M.nt}. 위치 = 프레임 ${M.frame-1} 끝. NaN 입자 표시는 ${M.n_show.toLocaleString()} 개 균일 부분표본 (범례 수는 전체).`;
+$('nr').textContent=M.root.map(q=>`입자 ${q.p}, det ${q.Jmin.toExponential(2)}`).join(' · ')||'없음';
 $('ng').textContent=`${M.n_gray.toLocaleString()} 개 균일 부분표본, 전체 ${M.n_rest.toLocaleString()}`;$('nj').textContent=M.jump.n;$('nq').textContent=M.jq.n;
 THREE.Object3D.DEFAULT_UP.set(0,0,1);
 const r=new THREE.WebGLRenderer({antialias:true});r.setSize(innerWidth,innerHeight);r.setPixelRatio(devicePixelRatio);document.body.appendChild(r.domElement);
@@ -54,6 +56,7 @@ PT.forEach(p=>sc.add(p));PC.forEach(p=>sc.add(p));
 const jg=mk(PJ,0x000000,1,9);jg.material.depthTest=false;jg.renderOrder=5;
 {const c=document.createElement('canvas');c.width=c.height=32;const g=c.getContext('2d');g.strokeStyle='#000';g.lineWidth=5;g.beginPath();g.moveTo(4,4);g.lineTo(28,28);g.moveTo(28,4);g.lineTo(4,28);g.stroke();jg.material.map=new THREE.CanvasTexture(c);jg.material.alphaTest=0.3;}
 const qg=mk(PQ,0x8e24aa,0.95,6);qg.material.depthTest=false;qg.renderOrder=4;sc.add(jg,qg);
+const rg=mk(PR,0xffd400,1,16);rg.material.depthTest=false;rg.renderOrder=7;const rn=mk(RN,0xff7f0e,1,7);rn.material.depthTest=false;rn.renderOrder=6;sc.add(rg,rn);
 const ext=Math.max(HI[0]-LO[0],HI[1]-LO[1])*1.4+0.2;
 const fl=new THREE.Mesh(new THREE.PlaneGeometry(ext,ext),new THREE.MeshBasicMaterial({color:0x4a90d9,transparent:true,opacity:0.18,side:THREE.DoubleSide,depthWrite:false}));
 fl.position.set(C[0],C[1],0.02);sc.add(fl);
@@ -69,10 +72,10 @@ function legend(){const L=mode=='t'?M.groups:M.causes;const tot=M.n_nan;
 function apply(){const s=+$('ps').value,dim=$('dim').checked;
  [[PT,'t'],[PC,'c']].forEach(([A,m])=>A.forEach((p,i)=>{const act=mode==m;const o=on[m][i];
   p.visible=act&&(o||dim);p.material.opacity=o?0.9:0.05;p.material.size=o?s*1.3:s*0.8;p.renderOrder=o?3:1}));
- pg.visible=$('gshow').checked;jg.visible=$('jshow').checked;qg.visible=$('qshow').checked;}
+ pg.visible=$('gshow').checked;jg.visible=$('jshow').checked;qg.visible=$('qshow').checked;rg.visible=rn.visible=$('rshow').checked;}
 document.querySelectorAll('[name=md]').forEach(b=>b.onchange=()=>{mode=b.value;legend();apply()});
 $('all').onclick=()=>{on[mode]=on[mode].map(()=>true);legend();apply()};$('none').onclick=()=>{on[mode]=on[mode].map(()=>false);legend();apply()};
-['dim','gshow','jshow','qshow','ps'].forEach(id=>$(id).addEventListener('input',apply));
+['dim','gshow','jshow','qshow','rshow','ps'].forEach(id=>$(id).addEventListener('input',apply));
 legend();apply();view('front');
 const tip=$('tip'),v=new THREE.Vector3();
 r.domElement.addEventListener('pointermove',e=>{if(!jg.visible){tip.style.display='none';return}let best=-1,bd=10;

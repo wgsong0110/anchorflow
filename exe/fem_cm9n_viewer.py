@@ -82,6 +82,10 @@ def main():
     # 4. 큰 증분 노드
     jm, jk, mr = z["n_jm"], z["n_jk"], z["n_mrel"]
     lo, nb, A = z["n_lo"], z["n_nb"], z["A"]
+    root0 = np.where((z["p_cJ"] == 0) | (z["p_cS"] == 0) | (z["p_cQ"] == 0))[0]
+    md.append(f"\n## 3b. 근원 칸 (프레임 시작 P2G 에 이미 J ≤ 0 · 응력 비유한인 가우스 점의 칸)\n")
+    for p in root0[:10]:
+        md.append(f"- 입자 {p} (원래 순서), 위치 {[round(float(q), 4) for q in X[p]]} m, 칸 {int(z['p_cell'][p])}, 칸 안 입자 {int((z['p_cell'] == z['p_cell'][p]).sum())} 개, 칸 8 점 det X 최솟값 {float(z['p_Jmin'][p]):.3g}")
     md.append(f"\n## 4. 한 걸음 변위 증분이 큰 노드 (|U_k − U_(k−1)|, 칸 단위; 비유한 값은 빼고 유한한 걸음 중 최대)\n")
     md.append(f"질량 있는 노드 증분 중앙값 {np.median(jm[mr > 0]):.3f} 칸, 99.9 % {np.percentile(jm[mr > 0], 99.9):.3f} 칸; 1 칸 넘는 노드 {int((jm > 1).sum())}, 5 칸 넘는 노드 {int((jm > 5).sum())} (거의 빈 노드 문턱 = 질량 중앙값의 {float(z['mthr_rel'][0]):.0e} 배)\n")
     md.append("| 노드 | 증분 (칸) | 걸음 | 질량 / 중앙값 | 변위 비유한 시점 |\n|---|---|---|---|---|")
@@ -97,6 +101,13 @@ def main():
     gi = np.where(~nan & np.isfinite(X).all(1))[0]
     gs = np.sort(rng.choice(gi, min(200000, len(gi)), replace=False))
     ni = np.where(nan)[0]
+    if len(ni) > 300000:                                                               # 표시용 균일 부분표본 (표의 수는 전체)
+        ni = np.sort(rng.choice(ni, 300000, replace=False))
+    # 근원: 프레임 시작 (P2G) 에 이미 뒤집힘·응력 비유한인 칸의 입자, 그 칸의 27 노드
+    root = np.where((z["p_cJ"] == 0) | (z["p_cS"] == 0) | (z["p_cQ"] == 0))[0]
+    rc = np.unique(z["p_cell"][root])
+    RN = np.concatenate([(z["c_cb"][c] + lo + np.array([i, j, k])) @ A.T.astype(np.float64) for c in rc for i in range(3) for j in range(3) for k in range(3)]) if len(rc) else np.zeros((0, 3))
+    rinfo = [dict(p=int(p), x=[round(float(q), 4) for q in X[p]], Jmin=float(z["p_Jmin"][p])) for p in root[:20]]
     b64 = lambda a: base64.b64encode(np.ascontiguousarray(a).astype(np.float32).tobytes()).decode()
     # 시점 그룹 (뷰어 색 = 시점 순서 색표)
     G = []
@@ -123,11 +134,13 @@ def main():
                 jump=dict(n=len(jj), jm=[round(float(q), 2) for q in jm[jj]], st=[int(q) + 1 for q in jk[jj]], mr=[float(f"{q:.3g}") for q in mr[jj]],
                           nf=[decode(q, nt) or "유한" for q in z["n_mN"][jj]]),
                 jq=dict(n=len(qj), lab=[decode(q, nt) for q in z["q_mJ"][qj]]),
+                n_show=int(len(ni)), root=rinfo, n_root_cells=int(len(rc)),
                 lo=np.nanmin(X[gs], 0).tolist(), hi=np.nanmax(X[gs], 0).tolist())
     tpl = open(__file__.replace("fem_cm9n_viewer.py", "fem_cm9n_viewer_tpl.html")).read()
     html = (tpl.replace("__META__", json.dumps(meta, ensure_ascii=False)).replace("__GRAY__", b64(X[gs]))
             .replace("__GROUPS__", json.dumps([g["pos"] for g in G])).replace("__CAUSES__", json.dumps([c["pos"] for c in C]))
-            .replace("__PJ__", b64(PJ)).replace("__PQ__", b64(PQ)))
+            .replace("__PJ__", b64(PJ)).replace("__PQ__", b64(PQ))
+            .replace("__PR__", b64(X[root] if len(root) else np.zeros((0, 3)))).replace("__RN__", b64(RN)))
     open(out_html, "w").write(html)
     print(open(out_md).read())
     print(f"[뷰어] {out_html} {len(html) / 1e6:.1f} MB")
