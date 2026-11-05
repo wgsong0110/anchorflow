@@ -5470,3 +5470,21 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - (A) wolf = 절 CM12 barstick a_wolf (곡선·영상), (B) wolf 곡선·영상 = 절 CM10 barx x_wolf (o_wolf 해시가 같으면 같은 결과).
 - 영상: lego L000 정답 | (B) | na5 | na7 | no5 | no7, wolf 정답 | (A) | (B) | na5 | na7 | no5 | no7 (3DGS 알파블렌딩, exe/lb_render.py) -> result/anchorflow/v20261009/fem_barnode_{lego_L000,wolf}_cmp.mp4.
 - 출력 R2 lbours/fem_cm/barnode/<판>_<씬>, 표 marks/barnode_table.md, 로그 marks/barnode.log, 끝 표식 marks/barnode.END.
+### CM12.2 결과 (인스턴스 59233882 (offer 59229731, machine 144209 Virginia -- 절 CM10 과 같은 machine, 상향 2106 / 하향 2050 Mbps, 300 W = 기본값, blocklist hosts·machines 둘 다 걸러 없음), 08:25~08:31 UTC, rclone check 차이 0 -> 스스로 destroy; 표 R2 lbours/fem_cm/marks/barstick_table.md, 끝 표식 marks/barstick.END)
+- **끄면 같음**: o0_L000 (옛 커밋 cdda9bd) = o_L000 (새 코드, 플래그 없음) 끝 해시 c43a42c7d0 = 절 CM10 barx o_L000; o_wolf 9b119d8fd3 · o_drop1 de2e854bf7 도 barx o 와 같음.
+- 변수 바꿈 식 확인 (로컬 g++ 로 생성 소스의 Tapply·fstk_node·rt_ga_y0 를 CPU 실행, 무작위 1 만 개): k_n = k_t 일 때 원래 pm 0 경로, k_n = 1 일 때 pm 1 경로와 y·ŷ·η 최대 차 5e-7 (rt_ga_y0 pm 0 은 1/√k 증폭으로 3e-5).
+- 판정 (결정적; 칸 = 평균 오차 %, x = 발산 프레임; 낙하 정답 반발 0.750 · 튀어 오름 83.4 mm):
+
+| 씬 | (A) | (B) (이 인스턴스 o) | (B)+고착 s |
+|---|---|---|---|
+| wolf | 3.79 (a3 다시, 클러스터 cm8j a3 와 같은 값) | 10.37 | **x18** (발산 전 0.80) |
+| L000 | -- | 3.62 | 6.31 |
+| 0016 | -- | **x29** (발산 전 5.06; 클러스터 b4 는 x37) | 15.84 (완주) |
+| drop1 | -- | 2.97 / 반발 0.758 · 61.0 mm | 2.09 / 반발 0.582 · 55.6 mm |
+
+- wolf 곡선 (mm; 질량중심 z · 최대 z · 퍼짐 폭, 정답 / (A) / (B) / (B)+고착): f10 859.5 / 861.7 / 862.6 / 862.9 · 1499.8 / 1500 / 1500 / 1500 · 793.6 / 802.0 / 799.3 / 797.9;
+  f17 809.6 / 833.2 / 860.2 / 862.0 (최대 z 1493.1 넷 다 비슷); f18 794.4 / 824.3 / 860.6 / 860.0, 최대 z (B)+고착 4110 (입자가 튀어 나감) -> 발산. (A) f30 670.5 · f50 578.5 (정답 572.6 · 533.3), (B) f50 832.5.
+  -> **발산 전까지 (B)+고착 은 (B) 와 같은 높이로 안 무너지고 (가우스 점 고착을 더해도 무너짐 없음), 프레임 16 부터 뒤집힌 입자 (nbad 11·47) 와 날아가는 입자가 생겨 18 에서 발산**. 발산 기제 (고착된 법선 노드와 장벽 반력의 충돌인지 등) 는 확인 안 함.
+- lego: L000 3.62 -> 6.31 %, 0016 은 (B) 가 이 기계에서 프레임 29 발산인데 (B)+고착 은 완주 15.84 %; 낙하 반발 0.758 -> 0.582 (정답 0.750) -- 고착이 접촉 소산을 키움.
+- 영상: result/anchorflow/v20261009/fem_barstick_wolf_cmp.mp4 (3200x1000, 51 프레임, 정답 | (A) | (B) | (B)+고착; (B)+고착 칸은 프레임 18 뒤 정지 화면). 본 묶음은 발산으로 s_wolf 덤프가 없어 보충 묶음 (exe/vast_barstick_vid.sh, 인스턴스 59235064 같은 machine 144209, 300 W) 에서 같은 명령 + --dump_part (풀이 불변 -- 끝 해시 89f6cffde0 같음) 로 덤프·렌더 -> R2 lbours/fem_cm/barstick/s_wolf_dp.
+  그 인스턴스의 합성은 ffmpeg 가 정지 칸 (tpad 무한) 때문에 끝나지 않아 내가 그 ffmpeg 만 끄고 (스크립트는 R2 확인 차이 0 뒤 스스로 destroy), 합성 스크립트를 고쳐 (hstack shortest=1) 로컬에서 합성해 올림.

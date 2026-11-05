@@ -41,7 +41,7 @@ for k, (nm, e_, path, dv) in enumerate(cells):
         f_ += "," + dt(tf(f"c{k}b", e_), FB, 22, 16, 124, "0x1f4fbf")
     fl.append(f_ + f"[c{k}]")
 n = len(cells)
-fl.append("".join(f"[c{k}]" for k in range(n)) + f"hstack=inputs={n},"
+fl.append("".join(f"[c{k}]" for k in range(n)) + f"hstack=inputs={n}:shortest=1,"
           + ",".join(f"drawbox=x={800 * k - 1}:y=60:w=2:h=940:color=0xdddddd:t=fill" for k in range(1, n)) + ","
           + dt(tf("title", title), FR, 20, 16, 16, "0x444444") + "[o]")
 subprocess.run(["ffmpeg", "-v", "error", "-y", *ins, "-filter_complex", ";".join(fl), "-map", "[o]", "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-r", "30", "-shortest", out], check=True)
