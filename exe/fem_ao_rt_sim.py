@@ -277,9 +277,12 @@ for fi in range(L):
         c["nsd"] = S.nsdo.frame_counts()
         if (c["nsd"]["nN"] > 0 or not fin) and NSD_DUMPS < 3:                          # 노드 변위 비유한이 생긴 프레임 (발산 프레임 포함, 처음 3 개)
             _pz = os.path.join(a.out, f"nan_step_f{fi + 1}.npz")
-            S.nsdo.dump(_pz, _xprev, extra=dict(frame=np.array([fi + 1])))
+            try:
+                S.nsdo.dump(_pz, _xprev, extra=dict(frame=np.array([fi + 1])))
+                print(f"[절 CM9.3 덤프] {_pz} {json.dumps(c['nsd'])}", flush=True)
+            except Exception as _ex:
+                import traceback; traceback.print_exc(); print(f"[절 CM9.3 덤프 실패] {_ex!r}", flush=True)
             NSD_DUMPS += 1
-            print(f"[절 CM9.3 덤프] {_pz} {json.dumps(c['nsd'])}", flush=True)
     if a.diag:
         c["diag"] = S.diag()
     if "it" in c:

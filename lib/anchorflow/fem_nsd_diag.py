@@ -112,6 +112,7 @@ class NSD:
         assert r.endswith("}")
         s_.mod = ART.cp.RawModule(code=r[:-1] + NSD_SRC + "\n}\n", options=("--std=c++14",))
         s_.fn = {}
+        s_.cinv = np.float32(1.0 / float(S.A[:, 0].norm()))                            # 그래프 캡처 중 동기화 금지 -> 미리
         s_.alloc()
 
     def alloc(s_):
@@ -155,7 +156,7 @@ class NSD:
 
     def jump(s_, kstep):
         S = s_.S
-        s_.k("nsd_jump", S.capN, (P(S.IP), P(S.U), P(S.Ust[kstep - 1] if kstep > 0 else None), np.float32(1.0 / float(S.A[:, 0].norm())), P(s_.jm), P(s_.jk), np.int32(kstep)))
+        s_.k("nsd_jump", S.capN, (P(S.IP), P(S.U), P(S.Ust[kstep - 1] if kstep > 0 else None), s_.cinv, P(s_.jm), P(s_.jk), np.int32(kstep)))
 
     # ---- 프레임 뒤 (그래프 밖)
     def frame_counts(s_):

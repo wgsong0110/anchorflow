@@ -1,0 +1,85 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>수박 cm9 --gq_mass 발산 프레임 걸음·뉴턴 반복별 NaN 입자</title>
+<style>
+body{margin:0;background:#fff;font-family:sans-serif;overflow:hidden}
+#bar{position:absolute;top:8px;left:8px;background:#fffe;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:12.5px;line-height:1.5;width:430px;max-height:94vh;overflow:auto}
+#bar h3{margin:0 0 4px;font-size:14px}
+button{margin:2px 3px 2px 0}
+.lg{display:flex;align-items:center;margin:1px 0}.sw{display:inline-block;width:12px;height:12px;border-radius:6px;margin:0 6px 0 4px;flex:none}
+.def{color:#444;font-size:11.5px;background:#f6f6f6;padding:5px 6px;border-radius:4px;margin:5px 0}
+#tip{position:absolute;pointer-events:none;background:rgba(20,20,20,.88);color:#fff;padding:5px 8px;border-radius:4px;font-size:12px;display:none;white-space:nowrap}
+</style></head><body>
+<div id="bar">
+<h3 id="ttl"></h3>
+<div id="sub"></div>
+<div class="def"><b>정의</b>: 우리 틀은 프레임당 P2G 한 번 → 메시 (노드) 위 K 걸음 풀이 → G2P 한 번이라 입자 위치는 프레임 끝에서만 바뀐다. 그래서 입자마다 <b>그 입자가 속한 칸</b> (프레임 시작 위치 기준 B-스플라인 칸: 노드 27 개, 가우스 점 8 개) 의 상태로 판정한다.<br>
+<b>NaN 시점</b> = 칸의 27 노드 변위 (y 또는 U) 또는 8 가우스 점 상태 (F_q, S_q) 가 처음 비유한이 된 걸음·뉴턴 반복 (그 안 단계: 시작점 → 뉴턴 i 기울기 → 뉴턴 i 끝 → 걸음 끝 → 커밋). 칸 상태가 끝까지 유한하면 'G2P 에서 처음'.<br>
+<b>원인</b> = 칸에서 가장 먼저 생긴 것: (a) 노드 변위 비유한, (b) 가우스 점 시험 X = F_q + ∇U F_q 의 J ≤ 0 (유한), (c) 응력 (같은 식으로 다시 계산) 또는 노드 기울기 비유한, (d) 가우스 점 상태 비유한. 같은 시점이면 a > b > c > d.<br>
+위치 = 발산 프레임 직전 프레임 끝 (= 발산 프레임 시작) 입자 위치.</div>
+<button data-v="front">정면 (x–z)</button><button data-v="side">측면 (y–z)</button><button data-v="top">위 (x–y)</button><br>
+색 기준: <label><input type="radio" name="md" value="t" checked> NaN 시점 (걸음·반복)</label> <label><input type="radio" name="md" value="c"> 원인</label>
+<div id="leg" style="margin-top:4px"></div>
+<button id="all">모두 켜기</button><button id="none">모두 끄기</button>
+<label style="display:block"><input id="dim" type="checkbox" checked> 끈 항목도 옅게 남기기 (강조 모드)</label>
+<label style="display:block"><input id="gshow" type="checkbox" checked> 나머지 입자 (반투명 회색, <span id="ng"></span>)</label>
+<label style="display:block"><input id="jshow" type="checkbox"> 한 걸음 변위 증분 1 칸 넘는 노드 (검정 ×, <span id="nj"></span>개; 마우스 올리면 정보)</label>
+<label style="display:block"><input id="qshow" type="checkbox"> J ≤ 0 이 생긴 가우스 점 (보라, <span id="nq"></span>개)</label>
+<label style="display:block">점 크기 <input id="ps" type="range" min="1" max="8" step="0.5" value="2.5"></label>
+<span style="color:#666">좌클릭 드래그 회전 · 휠 확대 · 우클릭 드래그 이동 · 반투명 파란 평면 = 바닥 z 0.02</span>
+</div>
+<div id="tip"></div>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+const M=__META__;
+const f32=s=>{const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return new Float32Array(u.buffer)};
+const GRAY=f32("__GRAY__"),GR=__GROUPS__.map(f32),CA=__CAUSES__.map(f32),PJ=f32("__PJ__"),PQ=f32("__PQ__");
+const $=id=>document.getElementById(id);
+$('ttl').textContent=`수박 cm9 --gq_mass ${M.run} 발산 프레임 ${M.frame}: NaN 입자 ${M.n_nan.toLocaleString()} / ${M.N.toLocaleString()}`;
+$('sub').textContent=`K ${M.K} 걸음 x 뉴턴 ${M.nt}. 위치 = 프레임 ${M.frame-1} 끝.`;
+$('ng').textContent=`${M.n_gray.toLocaleString()} 개 균일 부분표본, 전체 ${M.n_rest.toLocaleString()}`;$('nj').textContent=M.jump.n;$('nq').textContent=M.jq.n;
+THREE.Object3D.DEFAULT_UP.set(0,0,1);
+const r=new THREE.WebGLRenderer({antialias:true});r.setSize(innerWidth,innerHeight);r.setPixelRatio(devicePixelRatio);document.body.appendChild(r.domElement);
+const sc=new THREE.Scene();sc.background=new THREE.Color(0xffffff);
+const cam=new THREE.PerspectiveCamera(40,innerWidth/innerHeight,0.001,100);const ct=new OrbitControls(cam,r.domElement);ct.enableDamping=true;
+const LO=M.lo,HI=M.hi,C=[(LO[0]+HI[0])/2,(LO[1]+HI[1])/2,(LO[2]+HI[2])/2];
+const mk=(a,col,op,sz)=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(a,3));
+ return new THREE.Points(g,new THREE.PointsMaterial({color:col,size:sz,sizeAttenuation:false,transparent:true,opacity:op,depthWrite:false}))};
+const pg=mk(GRAY,0x999999,0.18,1.5);sc.add(pg);
+// 시점 색: 순서대로 (P2G·걸음 1 = 파랑 계열 … 마지막 = 빨강), G2P = 검정
+const tcol=i=>{const n=M.groups.length;const lab=M.groups[i].label;if(lab.startsWith('G2P'))return new THREE.Color(0x222222);
+ const t=n>1?i/(n-1):0;const c=new THREE.Color();c.setHSL(0.66-0.66*t,0.85,0.48);return c;};
+const CCOL=[0xd62728,0x9467bd,0xff7f0e,0x2ca02c,0x222222];
+const PT=GR.map((a,i)=>mk(a,tcol(i),0.85,2.5)),PC=CA.map((a,i)=>mk(a,CCOL[i],0.85,2.5));
+PT.forEach(p=>sc.add(p));PC.forEach(p=>sc.add(p));
+const jg=mk(PJ,0x000000,1,9);jg.material.depthTest=false;jg.renderOrder=5;
+{const c=document.createElement('canvas');c.width=c.height=32;const g=c.getContext('2d');g.strokeStyle='#000';g.lineWidth=5;g.beginPath();g.moveTo(4,4);g.lineTo(28,28);g.moveTo(28,4);g.lineTo(4,28);g.stroke();jg.material.map=new THREE.CanvasTexture(c);jg.material.alphaTest=0.3;}
+const qg=mk(PQ,0x8e24aa,0.95,6);qg.material.depthTest=false;qg.renderOrder=4;sc.add(jg,qg);
+const ext=Math.max(HI[0]-LO[0],HI[1]-LO[1])*1.4+0.2;
+const fl=new THREE.Mesh(new THREE.PlaneGeometry(ext,ext),new THREE.MeshBasicMaterial({color:0x4a90d9,transparent:true,opacity:0.18,side:THREE.DoubleSide,depthWrite:false}));
+fl.position.set(C[0],C[1],0.02);sc.add(fl);
+const D=Math.max(HI[0]-LO[0],HI[1]-LO[1],HI[2]-LO[2])*2.6;
+function view(v){ct.target.set(C[0],C[1],C[2]);const p={front:[0,-1,0],side:[1,0,0],top:[0,-0.001,1]}[v];cam.position.set(C[0]+p[0]*D,C[1]+p[1]*D,C[2]+p[2]*D);ct.update()}
+document.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>view(b.dataset.v));
+let mode='t';const on={t:M.groups.map(()=>true),c:M.causes.map(()=>true)};
+function legend(){const L=mode=='t'?M.groups:M.causes;const tot=M.n_nan;
+ $('leg').innerHTML=L.map((g,i)=>{const col=mode=='t'?'#'+tcol(i).getHexString():'#'+CCOL[i].toString(16).padStart(6,'0');
+  return `<label class="lg"><input type="checkbox" data-i="${i}" ${on[mode][i]?'checked':''}><span class="sw" style="background:${col}"></span>${g.label} — ${g.n.toLocaleString()} (${(100*g.n/Math.max(tot,1)).toFixed(1)} %) <button data-o="${i}" style="margin-left:6px;font-size:11px">이것만</button></label>`}).join('');
+ $('leg').querySelectorAll('input').forEach(b=>b.onchange=()=>{on[mode][+b.dataset.i]=b.checked;apply()});
+ $('leg').querySelectorAll('button').forEach(b=>b.onclick=e=>{e.preventDefault();on[mode]=on[mode].map((_,j)=>j==+b.dataset.o);legend();apply()});}
+function apply(){const s=+$('ps').value,dim=$('dim').checked;
+ [[PT,'t'],[PC,'c']].forEach(([A,m])=>A.forEach((p,i)=>{const act=mode==m;const o=on[m][i];
+  p.visible=act&&(o||dim);p.material.opacity=o?0.9:0.05;p.material.size=o?s*1.3:s*0.8;p.renderOrder=o?3:1}));
+ pg.visible=$('gshow').checked;jg.visible=$('jshow').checked;qg.visible=$('qshow').checked;}
+document.querySelectorAll('[name=md]').forEach(b=>b.onchange=()=>{mode=b.value;legend();apply()});
+$('all').onclick=()=>{on[mode]=on[mode].map(()=>true);legend();apply()};$('none').onclick=()=>{on[mode]=on[mode].map(()=>false);legend();apply()};
+['dim','gshow','jshow','qshow','ps'].forEach(id=>$(id).addEventListener('input',apply));
+legend();apply();view('front');
+const tip=$('tip'),v=new THREE.Vector3();
+r.domElement.addEventListener('pointermove',e=>{if(!jg.visible){tip.style.display='none';return}let best=-1,bd=10;
+ for(let j=0;j<M.jump.n;j++){v.set(PJ[3*j],PJ[3*j+1],PJ[3*j+2]).project(cam);if(v.z>1)continue;const d=Math.hypot((v.x+1)/2*innerWidth-e.clientX,(1-v.y)/2*innerHeight-e.clientY);if(d<bd){bd=d;best=j}}
+ if(best<0){tip.style.display='none';return}
+ tip.innerHTML=`노드 증분 ${M.jump.jm[best]} 칸 (걸음 ${M.jump.st[best]})<br>질량 / 중앙값 ${M.jump.mr[best]}<br>변위 비유한 시점: ${M.jump.nf[best]}`;
+ tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY+12)+'px';tip.style.display='block'});
+onresize=()=>{r.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()};
+(function a(){requestAnimationFrame(a);ct.update();r.render(sc,cam)})();
+</script></body></html>
