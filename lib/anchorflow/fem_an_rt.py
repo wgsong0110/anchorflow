@@ -720,17 +720,30 @@ __global__ void rt_g2p_end(int N, const int* IP, const float* Ai, const int* pb,
 __global__ void rt_mg_dims(int* IP, int* LM, int nl, const int* capn, const int* capq) {
     int n0 = IP[6], n1 = IP[7], n2 = IP[8];
     LM[0] = n0; LM[1] = n1; LM[2] = n2; LM[3] = IP[9];
+    int ovf = 0;
     for (int l=1; l<nl; l++) {
         n0 = n0/2 + 3; n1 = n1/2 + 3; n2 = n2/2 + 3;
         int* o = LM + l*8; o[0] = n0; o[1] = n1; o[2] = n2; o[3] = n0*n1*n2; o[4] = n0-2; o[5] = n1-2; o[6] = n2-2; o[7] = (n0-2)*(n1-2)*(n2-2)*8;
-        if (o[3] > capn[l] || o[7] > capq[l]) { o[3] = 0; o[7] = 0; atomicOr(&IP[13], 2); }
+        if (o[3] > capn[l] || o[7] > capq[l]) ovf = 1;
     }
+    // 절 CM7: 넘친 프레임 (앞 단계 IP[13] 또는 거친 층) 이면 모든 층 차원·수를 0 -- 다시 할 프레임이라 값은 버림.
+    // 전에는 넘친 층의 수만 0 이라 (층 0 은 IP[9] = 0 이어도 차원 IP[6..8] 은 큰 상자 그대로) 제한 rt_mg_restrict*·ao_mg_acc_det 가
+    // 차원만 보고 용량 밖 칸 번호 (cidx·mn·r·bKn) 를 읽어 불법 접근 (wolf K 8 프레임 40 등).
+#ifndef AF_MGDIMS_OLD
+    if (ovf || IP[13]) { for (int l=0; l<nl; l++) for (int k=0;k<8;k++) LM[l*8+k] = 0; if (ovf) atomicOr(&IP[13], 2); }
+#else
+    for (int l=1; l<nl; l++) { int* o = LM + l*8; if (o[3] > capn[l] || o[7] > capq[l]) { o[3] = 0; o[7] = 0; atomicOr(&IP[13], 2); } }   // 옛 판 (진단 대조 전용)
+#endif
 }
 // 거친 층 l 가우스 점 누적: 출처 = 층 l−1 의 가우스 점 (위치 tq = 칸 좌표 + 팔분 위치, X = F, 가중 V)
 __global__ void rt_mg_acc(int l, const int* IP, const int* LM, const int* cbF, const float* Fsrc, const float* Vsrc, float* A, float* C, int* badq, int* badc) {
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     int nsrc = (l == 1) ? IP[12] : LM[(l-1)*8+7];
+#ifndef AF_MGDIMS_OLD
+    if (q >= nsrc || LM[l*8+7] == 0) return;                                          // 절 CM7: 넘친 프레임 (층 차원 0) 이면 쓰지 않음
+#else
     if (q >= nsrc) return;
+#endif
     float w = Vsrc[q]; if (!(w > 0.f)) return;
     int c = q >> 3, oc = q & 7;
     const float GG = 0.28867513459481287f;
@@ -1581,6 +1594,8 @@ def compactify(src):
 def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False):
     if ncomp:
         src = compactify(src)
+    if os.environ.get("AF_MGDIMS_OLD", "0") == "1":                                   # 절 CM7 진단 대조 전용: 넘친 프레임 MG 층 차원 옛 판 (불법 접근 재현)
+        src = src.replace('extern "C" {', 'extern "C" {\n#define AF_MGDIMS_OLD 1', 1)
     if hspec:
         src = src.replace('extern "C" {', 'extern "C" {\n#define AF_HSPEC 1', 1)
     if fk:
@@ -1593,6 +1608,12 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False):
         src = barify(src)
         src = bstify(src, floor.get("bst", 0), floor["DH"], floor.get("bfull", False))
     return skipify(src) if adapt else src
+
+
+def _force_redo_frames():
+    """절 CM7 진단: AF_FORCE_REDO="5,20,35" -> {5, 20, 35} (프레임 번호 0 부터; 그 프레임에서 넘치지 않아도 다시 할당 경로)."""
+    v = os.environ.get("AF_FORCE_REDO", "")
+    return {int(q) for q in v.split(",") if q.strip()}
 
 
 def P(t):
@@ -1756,6 +1777,9 @@ class RTSolver(MG2.MG2Mixin):
             s.nb0 = nb
         if not hasattr(s, "nb0"):
             s.nb0 = [round(need[0] ** (1 / 3))] * 3
+        # 절 CM7: --mg_lreuse 거친 층 ω (W[1..]) 는 첫 프레임 값 -- 다시 할당이 지우고 그 프레임에서 다시 재면 용량에 따라 결과가 달라진다 -> 옛 값 유지
+        keepW = (s.mg_lreuse and getattr(s, "_wdone", False) and getattr(s, "W", None) is not None and os.environ.get("AF_REDO_KEEPW", "1") == "1")
+        oldW = s.W.clone() if keepW else None
         s.capN, s.capC, s.capQc = [int(q * s.cap_mul) + 1024 for q in need]
         capQ = s.capQc * 8
         Z = lambda *sh: torch.zeros(*sh, device=dev, dtype=f32)
@@ -1819,6 +1843,9 @@ class RTSolver(MG2.MG2Mixin):
             s.capn_d = torch.tensor(capn, device=dev, dtype=torch.int32); s.capq_d = torch.tensor(capq, device=dev, dtype=torch.int32)
             s.LM = torch.zeros(s.nl * 8, device=dev, dtype=torch.int32)
             s.W = torch.zeros(s.nl, device=dev, dtype=torch.float64); s.SCM = torch.zeros(s.nl * 4, device=dev, dtype=torch.float64)
+            if oldW is not None and oldW.numel() == s.W.numel():
+                s.W.copy_(oldW)
+                s._wdone = True
             s.m0t = Z(s.capN, 3); s.m0u = Z(s.capN, 3); s.m0KT = Z(s.capN, 3); s.zo = Z(s.capN, 3); s.mnd = s.mn
             if s.mg2:                                                                  # 절 AN.20: 점유 칸 목록 용량 (지금 입자 상자에서 센 점유 칸 x cap_mul)
                 yb = torch.floor(s.x.double() @ s.Ai.double().T - 0.5)
@@ -2495,17 +2522,24 @@ class RTSolver(MG2.MG2Mixin):
         e1.record()
         redo = False
         tries = 0
-        while int(s.IP[13]) != 0:
+        fr = int(round(t / s.h))
+        force = fr in _force_redo_frames()                                             # 절 CM7 진단: AF_FORCE_REDO=프레임,.. (0 부터) 이면 넘치지 않아도 다시 할당 경로를 그대로 탐
+        while int(s.IP[13]) != 0 or force:
+            force = False
             if not bool(torch.isfinite(bk[0]).all()) or tries >= 3:                    # 비유한 상태 (발산) 면 상자가 정의되지 않아 매번 넘친다 -> 늘리지 않고 멈춤
                 s.x.fill_(float("nan"))
                 s.last_ms = float("nan")
                 return False
             tries += 1
             s._rs(bk)
+            snap = s._cap_snap() if os.environ.get("AF_REDO_COPY", "0") == "1" else None
             s.cap_mul = 1.5 + 0.5 * tries                                              # 필요량은 지금 상태에서 다시 재므로 배수는 작게 (두 배씩 키우면 메모리가 넘친다)
             s.alloc(None)
             s.capture()
             s._rs(bk)
+            if snap is not None:                                                       # 절 CM7 진단: 옛 버퍼 내용을 새 버퍼 앞자리에 (데움 실행이 쓴 것은 지움) -- 큰 용량 판과 같은 버퍼 상태
+                s._cap_put(snap)
+                del snap
             s.set_bc(t)
             e0.record()
             s.graph.replay()
@@ -2516,6 +2550,50 @@ class RTSolver(MG2.MG2Mixin):
         s.contact_prev = int(s.IP[14]) > 0
         s.last_K = s.Kcur
         return redo
+
+    _CAP_SKIP = ("capn_d", "capq_d", "mg_MP", "mg_MI", "IP", "SC", "CT", "CD", "BW", "BG", "BP", "A", "Ai")
+
+    def _cap_snap(s):
+        """절 CM7 진단 (AF_REDO_COPY=1): 다시 할당 전 버퍼 (이름 -> 텐서) 와 용량."""
+        d = {k: v for k, v in vars(s).items() if torch.is_tensor(v) and k not in s._CAP_SKIP}
+        ml = [{k: v for k, v in L.items() if torch.is_tensor(v)} for L in getattr(s, "ML", [])]
+        return d, ml, s.capN, s.capQc * 8, [L["capq"] for L in getattr(s, "ML", [])]
+
+    def _cap_put(s, snap):
+        """옛 버퍼 내용을 새 버퍼 앞자리에 (노드·칸·점 번호는 상자로만 정해져 용량과 무관). 용량 보폭 배열: H [81][capQ], H30·Hs [30][capQ], Ust [K][capN][3], 층 H [81][cq]."""
+        d, ml, N0, Q0, cq0 = snap
+        N1, Q1 = s.capN, s.capQc * 8
+
+        def put(new, old, rows=None, c0=None, c1=None):
+            if new is None or old is None or new is old or new.dtype != old.dtype:
+                return
+            new.zero_()
+            if rows is not None:
+                a, b = new.reshape(rows, c1), old.reshape(rows, c0)
+                m = min(c0, c1)
+                a[:, :m].copy_(b[:, :m])
+                return
+            m = min(new.numel(), old.numel())
+            new.view(-1)[:m].copy_(old.view(-1)[:m])
+        for k, old in d.items():
+            new = getattr(s, k, None)
+            if not torch.is_tensor(new):
+                continue
+            if k == "H":
+                put(new, old, 81, Q0, Q1)
+            elif k in ("H30", "Hs"):
+                put(new, old, 30, Q0, Q1)
+            elif k == "Ust":
+                put(new, old, s.K, N0 * 3, N1 * 3)
+            else:
+                put(new, old)
+        for l, (L, Lo) in enumerate(zip(getattr(s, "ML", []), ml)):
+            for k, old in Lo.items():
+                new = L.get(k)
+                if k == "H":
+                    put(new, old, 81, cq0[l], L["capq"])
+                else:
+                    put(new, old)
 
     def counts(s):
         ip = s.IP.cpu().tolist()
