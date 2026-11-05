@@ -110,13 +110,12 @@ fi
 OK=$(python - /dev/shm/dkta/lbours/stab_smoke/stab.json $MS $SC <<'PYX'
 import json, sys
 R = json.load(open(sys.argv[1])); ok = []
-for m in sys.argv[2].split(","):
-    good = True
+for m in sys.argv[2].split(","):                      # 한 씬이라도 칸이 다 차면 본 묶음에 (못 찬 씬은 본 묶음에서도 곧 실패로 끝나 표에 사유가 남음 -- 예 ficus 중력 0 에서 베이스라인 단위 변환 assert)
+    good = False
     for t in sys.argv[3].split(","):
         q = R.get(f"{m}_{t}") or {}
-        ns = q.get("nmin")
-        if ns is None or (q.get("time") or {}).get("ms") is None or (q.get("vis") or {}).get("psnr") is None:
-            good = False
+        if q.get("nmin") is not None and (q.get("time") or {}).get("ms") is not None and (q.get("vis") or {}).get("psnr") is not None:
+            good = True
     if good: ok.append(m)
 print(",".join(ok))
 PYX
@@ -141,7 +140,7 @@ if [ -n "$P3D" ]; then
     SGOK=$(python - /dev/shm/dkta/lbours/stab_smoke_sg/stab.json $SC <<'PYX'
 import json, sys
 R = json.load(open(sys.argv[1]))
-ok = all(((R.get(f"springgaus_{t}") or {}).get("nmin") is not None and ((R.get(f"springgaus_{t}") or {}).get("time") or {}).get("ms") is not None
+ok = any(((R.get(f"springgaus_{t}") or {}).get("nmin") is not None and ((R.get(f"springgaus_{t}") or {}).get("time") or {}).get("ms") is not None
           and ((R.get(f"springgaus_{t}") or {}).get("vis") or {}).get("psnr") is not None) for t in sys.argv[2].split(","))
 print("springgaus" if ok else "")
 PYX
