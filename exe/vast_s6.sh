@@ -41,10 +41,10 @@ if [ ! -f /root/s6/pip.done ]; then
   python -c "import torch, warp, cupy, h5py, lpips, diff_gaussian_rasterization, simple_knn; print('[pip] torch', torch.__version__, torch.cuda.is_available(), 'warp', warp.config.version, 'cupy', cupy.__version__)" 2>&1 | tail -1 | tee -a $LOG && touch /root/s6/pip.done
 fi
 # ---- 공개 코드 베이스라인 의존성 (절 S.3; 버리는 인스턴스라 이미지 python 에 의존성째 -- 바이너리 휠만, numpy<2 고정 (warp 0.10.1·taichi))
-if [ ! -f /root/s6/pipbl.done ]; then
-  pip install -q --only-binary=:all: "numpy<2" open3d scikit-learn cma kornia termcolor trimesh yacs pygltflib usd-core dataclasses-json plotly iopath 2>&1 | grep -v WARNING | tail -3 | tee -a $LOG
+if [ ! -f /root/s6/pipbl2.done ]; then
+  pip install -q --only-binary=:all: "numpy<2" matplotlib open3d scikit-learn cma kornia termcolor trimesh yacs pygltflib usd-core dataclasses-json plotly iopath 2>&1 | grep -v WARNING | tail -3 | tee -a $LOG
   python -c "import numpy, open3d, sklearn, pygltflib, dataclasses_json, pxr, kornia, cma, yacs, iopath; assert int(numpy.__version__.split('.')[0]) < 2; print('[pip bl] ok numpy', numpy.__version__, 'open3d', open3d.__version__)" 2>&1 | tail -1 | tee -a $LOG
-  python -c "import numpy, open3d, sklearn, pygltflib, dataclasses_json, pxr; assert int(numpy.__version__.split('.')[0]) < 2" 2>/dev/null && touch /root/s6/pipbl.done
+  python -c "import numpy, open3d, sklearn, pygltflib, dataclasses_json, pxr; assert int(numpy.__version__.split('.')[0]) < 2; import matplotlib" 2>/dev/null && touch /root/s6/pipbl2.done
 fi
 # ---- 자료 (R2 -> 클러스터 경로)
 W=/home/dkta/work; R=r2:storage/result/anchorflow
@@ -61,6 +61,9 @@ if [ ! -f /root/s6/data.done ]; then
   du -sh $W/* | tee -a $LOG
   [ -s $W/one/L000/L000.pt ] && [ -s $W/lbours/ficus_v0/data/F_pg_v0/F_pg_v0.pt ] && [ -f $W/lbdata/test_low/L000/meta.json ] && touch /root/s6/data.done
 fi
+# 렌더 meta.json 이 가리키는 처음 상태 h5 (L000 = stab/lego/init, ficus = topo/pg_ficus_elastic_v0; 클러스터에서 R2 _vastmirror 로 옮김)
+for p in stab/lego/init/sim_0000000000.h5 topo/pg_ficus_elastic_v0/simulation_ply/sim_0000000000.h5; do [ -s $W/$p ] || rclone copyto $R/_vastmirror/$p $W/$p -q; done
+[ -s $W/stab/lego/init/sim_0000000000.h5 ] && [ -s $W/topo/pg_ficus_elastic_v0/simulation_ply/sim_0000000000.h5 ] || say "[자료 경고] 처음 상태 h5 없음 -> 렌더 실패"
 [ -f /root/s6/data.done ] && [ -f /root/s6/pip.done ] || { say "[세팅 실패] pip $(ls /root/s6/pip.done 2>&1) data $(ls /root/s6/data.done 2>&1)"; exit 1; }
 # ---- 클러스터에서 R2 _vastmirror 로 옮긴 wolf·bread 정답·3DGS, 수박 3DGS·정답·GaussianFluent (로컬 ~/s6x/pull.sh, 끝 표식 pull.log PULL_END) -> 같은 클러스터 경로 (배경)
 MI=$R/_vastmirror

@@ -72,7 +72,7 @@ if [ -x $SIMP ]; then
     mkdir -p $LIB/simp18
     $SIMP -m pip install -q --no-deps --target $LIB/simp18 kaolin==0.18.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-${tv}_cu${cu}.html || BAD="$BAD simp_kaolin"
     need $SIMP simp18 pygltflib pygltflib; need $SIMP simp18 pxr usd-core   # kaolin 0.18.0 tools/requirements.txt 중 simp 에 없을 수 있는 것
-    PYTHONPATH=$LIB/simp18 $SIMP -c "import warp; assert int(warp.config.version.split('.')[0]) >= 1" 2>/dev/null || need $SIMP simp18 warp "warp-lang>=1.5,<1.10"
+    need $SIMP simp18 "warp; assert int(warp.config.version.split('.')[0]) >= 1; import warp.optim.linear" "warp-lang>=1.5,<1.10"   # 바탕 warp 0.10.1 이 import 는 되므로 판 확인까지
     SMP=$LIB/simp18
   fi
   PYTHONPATH=$SMP $SIMP -c "import kaolin; from kaolin.physics.simplicits import SimplicitsObject, SimplicitsScene; print('[bl_setup] kaolin', kaolin.__version__)" || BAD="$BAD simp_import"
