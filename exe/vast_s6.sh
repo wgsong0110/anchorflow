@@ -40,6 +40,12 @@ if [ ! -f /root/s6/pip.done ]; then
   pip install -q --force-reinstall --no-deps /tmp/diff_gaussian_rasterization-0.0.0-cp311-cp311-linux_x86_64.whl /tmp/simple_knn-0.0.0-cp311-cp311-linux_x86_64.whl 2>&1 | tail -2 | tee -a $LOG
   python -c "import torch, warp, cupy, h5py, lpips, diff_gaussian_rasterization, simple_knn; print('[pip] torch', torch.__version__, torch.cuda.is_available(), 'warp', warp.config.version, 'cupy', cupy.__version__)" 2>&1 | tail -1 | tee -a $LOG && touch /root/s6/pip.done
 fi
+# ---- 공개 코드 베이스라인 의존성 (절 S.3; 버리는 인스턴스라 이미지 python 에 의존성째 -- 바이너리 휠만, numpy<2 고정 (warp 0.10.1·taichi))
+if [ ! -f /root/s6/pipbl.done ]; then
+  pip install -q --only-binary=:all: "numpy<2" open3d scikit-learn cma kornia termcolor trimesh yacs pygltflib usd-core dataclasses-json plotly iopath 2>&1 | grep -v WARNING | tail -3 | tee -a $LOG
+  python -c "import numpy, open3d, sklearn, pygltflib, dataclasses_json, pxr, kornia, cma, yacs, iopath; assert int(numpy.__version__.split('.')[0]) < 2; print('[pip bl] ok numpy', numpy.__version__, 'open3d', open3d.__version__)" 2>&1 | tail -1 | tee -a $LOG
+  python -c "import numpy, open3d, sklearn, pygltflib, dataclasses_json, pxr; assert int(numpy.__version__.split('.')[0]) < 2" 2>/dev/null && touch /root/s6/pipbl.done
+fi
 # ---- 자료 (R2 -> 클러스터 경로)
 W=/home/dkta/work; R=r2:storage/result/anchorflow
 if [ ! -f /root/s6/data.done ]; then
