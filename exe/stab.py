@@ -100,6 +100,7 @@ BLENV = dict(phystwin=dict(PYTHONPATH=os.environ.get("ST_PT_PYPATH", "")), simpl
              springgaus=dict(PYTHONPATH=os.environ.get("ST_SG_PYPATH", "")))
 PT_REPO = os.environ.get("ST_PT_REPO", f"{W}/PhysTwin")
 SG_REPO = os.environ.get("ST_SG_REPO", f"{W}/Spring-Gaus")
+RETRY = int(os.environ.get("ST_RETRY", "4"))                                         # 덤프·시간 판 다시 시도 수 (절 S.8)
 VR_IT = 11                                                             # 논문 PG 비교 설정의 반복 수
 
 
@@ -503,13 +504,32 @@ def _one(m, t):
     rec["mono"] = mono
     best = rec["probes"][ns]
     E = best.get("E")
-    O = pdir(m, t, ns, "dump")
-    if os.path.exists(f"{O}/res.json") and not os.path.exists(f"{O}/pred.pt") and not os.path.exists(f"{O}/vis.json"):
-        os.remove(f"{O}/res.json")                                                       # 이어 돌리기: 덤프가 없으면 덤프 판 다시
-    rd = run_free(m, t, ns, "dump", O, E)
-    rec["dump"] = rd
-    rec["vis"] = visual(m, t, pdir(m, t, ns, "dump")) if rd else None
-    rec["time"] = run_excl(m, t, ns, pdir(m, t, ns, "time"), E)
+    # 덤프·시간 판: 같은 N* 를 다시 돌림 -- 비결정 실행기 (정답 MPM 원자 합) 는 경계 N* 에서 판정 판은 안정이어도 다음 판이 발산할 수 있어 (절 S.8),
+    # 발산·중단이면 다음 시도 (_r1 .. _r{RETRY}) 로 (정의 그대로: N* 와 판정은 판정 판, 덤프·시간은 같은 N 의 완주 판). 시도 수는 표 비고에.
+    rec["vis"], rec["dump"], rec["time"] = None, None, None
+    rec["dump_try"] = rec["time_try"] = 0
+    for k in range(RETRY + 1):
+        O = pdir(m, t, ns, "dump") + (f"_r{k}" if k else "")
+        if os.path.exists(f"{O}/vis.json"):
+            rec["dump"], rec["vis"], rec["dump_try"] = json.load(open(f"{O}/res.json")) if os.path.exists(f"{O}/res.json") else dict(stable=True), visual(m, t, O), k + 1
+            break
+        if os.path.exists(f"{O}/res.json") and json.load(open(f"{O}/res.json")).get("stable") and not os.path.exists(f"{O}/pred.pt"):
+            os.remove(f"{O}/res.json")                                                   # 이어 돌리기: 완주했는데 덤프가 없으면 그 판 다시
+        rd = run_free(m, t, ns, "dump", O, E)
+        rec["dump"], rec["dump_try"] = rd, k + 1
+        if rd is None:
+            break
+        if rd.get("stable"):
+            rec["vis"] = visual(m, t, O)
+            break
+    for k in range(RETRY + 1):
+        O = pdir(m, t, ns, "time") + (f"_r{k}" if k else "")
+        rt = run_excl(m, t, ns, O, E)
+        rec["time"], rec["time_try"] = rt, k + 1
+        if rt is None or (rt.get("stable") and rt.get("ms") is not None):
+            break
+    if rec["time"] and not (rec["time"].get("stable") and rec["time"].get("ms") is not None):
+        rec["time"] = dict(rec["time"], ms=None, ms_max=None)                             # 완주 못 한 시간 판은 표에 안 씀
     rec["state"] = "끝"
     say(f"[끝] {m} {t}: 최소 N {ns} (아래 {lo} 발산), 오차 {best['err']}, 시간 {(rec['time'] or {}).get('ms')}, 시각 {rec['vis']}")
 
@@ -558,6 +578,10 @@ def table():
                 nt.append(f"E {b['E']:.3g}")
             if tm.get("others"):
                 nt.append(f"시간 판 카드 0 다른 프로세스 {tm['others']}")
+            for kk, nm_ in (("dump_try", "덤프"), ("time_try", "시간")):
+                dd = q.get(kk.split("_")[0]) or {}
+                if q.get(kk, 0) > 1 or (q.get(kk) and not (dd.get("stable") and (kk == "dump_try" or dd.get("ms") is not None))):
+                    nt.append(f"{nm_} 판 {q[kk]} 번째" + (" 완주" if dd.get("stable") and (kk == "dump_try" or dd.get("ms") is not None) else " 까지 모두 발산·중단" + (f" (마지막 x{dd.get('div')})" if dd.get("div") else "")))
             if tm and tm.get("err") is not None and b.get("err") is not None and abs(tm["err"] - b["err"]) > 0.01:
                 nt.append(f"시간 판 오차 {tm['err']:.2f}")
             if q["state"] != "끝":

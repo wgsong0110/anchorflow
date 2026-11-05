@@ -13,6 +13,8 @@ echo "[stab.sh 시작] $C $(date '+%F %T') -> $R ($RR)" >> $R/stab.log
 df -h /dev/shm /tmp | tail -2 >> $R/stab.log; nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader >> $R/stab.log
 rclone copy $RR $R -q --exclude "p/*_prep/mv/**" --exclude "p/*_prep/data/**" --include "p/*/res.json" --include "p/*/vis.json" \
   --include "gt_*/done" --include "gt_*/png/**" --include "p/*_prep/**"          # 이어 돌리기 (판 결과 + 베이스라인 준비 판 산출물: 맞춘 물성·학습 체크포인트)
+for q in $(rclone lsf -R --files-only $RR/p --include "*_dump*/pred.pt" 2>/dev/null); do d=${q%/pred.pt}       # 덤프는 있고 시각 품질이 없는 판: 덤프를 내려받아 렌더만 (비결정 판을 다시 안 돌림; 절 S.8)
+  [ -f $R/p/$d/vis.json ] || [ -f $R/p/$d/pred.pt ] || rclone copy $RR/p/$d $R/p/$d -q --include "pred.pt" --include "res.json"; done
 bash exe/stab_bl_setup.sh /dev/shm/dkta/pylib/bl_env.sh > $R/bl_setup.log 2>&1; tail -1 $R/bl_setup.log >> $R/stab.log     # 베이스라인 환경 (절 S.3; 실패해도 다른 방법은 돎)
 [ -f /dev/shm/dkta/pylib/bl_env.sh ] && source /dev/shm/dkta/pylib/bl_env.sh
 sync_r2() { rclone copy $R $RR -q --exclude "*/h5/**" --exclude "code/**"; }

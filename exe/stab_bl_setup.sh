@@ -45,6 +45,7 @@ PYTHONPATH=$PTP $AF -c "import sys; sys.path.insert(0, '$PT'); import warp; warp
 # ---- Spring-Gaus (af 환경: 예전 벤치와 같음 -- pytorch3d · 그쪽 서브모듈 래스터라이저 · simple_knn)
 SGR=$(repo Spring-Gaus $W/Spring-Gaus https://github.com/Colmar-zlicheng/Spring-Gaus.git 62a1bb5); [ "$SGR" = FAIL ] && BAD="$BAD SG_repo"
 for m in yacs termcolor plyfile trimesh imageio open3d; do need $AF sg $m $m || true; done
+need $AF sg git gitpython gitdb smmap || true                                  # 공식 lib/utils/recorder.py 가 import (절 S.8: 첫 학습이 이것으로 멈춤)
 if PYTHONPATH=$LIB/sg $AF -c "import pytorch3d.ops" 2>/dev/null; then say "있음 sg: pytorch3d"
 elif [ -n "${ST_P3D_WHL:-}" ] && [ -s "${ST_P3D_WHL}" ]; then   # 미리 빌드한 휠 (GitHub Actions build-pytorch3d-torch251 -> R2 vastpkg) -- 빌드 없는 설치
   say "설치 sg: pytorch3d 휠 $ST_P3D_WHL"; $AF -m pip install -q --no-deps --target $LIB/sg "$ST_P3D_WHL" iopath portalocker || BAD="$BAD SG_pytorch3d_whl"

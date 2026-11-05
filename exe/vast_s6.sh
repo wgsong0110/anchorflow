@@ -42,7 +42,7 @@ if [ ! -f /root/s6/pip.done ]; then
 fi
 # ---- 공개 코드 베이스라인 의존성 (절 S.3; 버리는 인스턴스라 이미지 python 에 의존성째 -- 바이너리 휠만, numpy<2 고정 (warp 0.10.1·taichi))
 if [ ! -f /root/s6/pipbl2.done ]; then
-  pip install -q --only-binary=:all: "numpy<2" matplotlib open3d scikit-learn cma kornia termcolor trimesh yacs pygltflib usd-core dataclasses-json plotly iopath 2>&1 | grep -v WARNING | tail -3 | tee -a $LOG
+  pip install -q --only-binary=:all: "numpy<2" matplotlib open3d scikit-learn cma kornia termcolor trimesh yacs pygltflib usd-core dataclasses-json plotly iopath gitpython 2>&1 | grep -v WARNING | tail -3 | tee -a $LOG
   python -c "import numpy, open3d, sklearn, pygltflib, dataclasses_json, pxr, kornia, cma, yacs, iopath; assert int(numpy.__version__.split('.')[0]) < 2; print('[pip bl] ok numpy', numpy.__version__, 'open3d', open3d.__version__)" 2>&1 | tail -1 | tee -a $LOG
   python -c "import numpy, open3d, sklearn, pygltflib, dataclasses_json, pxr; assert int(numpy.__version__.split('.')[0]) < 2; import matplotlib" 2>/dev/null && touch /root/s6/pipbl2.done
 fi
@@ -94,7 +94,7 @@ say "[세팅 끝] $(git -C $D log --oneline -1)"
 cd $D
 # ---- (a) cm9
 PA=""
-[ "$PART" = stab ] || { ( if [ -n "$(rclone lsf $MK/cm9.done 2>/dev/null)" ]; then say "[cm9] 이미 끝 (표식)"; else
+[ "$PART" = stab ] || [ "$PART" = s8 ] || { ( if [ -n "$(rclone lsf $MK/cm9.done 2>/dev/null)" ]; then say "[cm9] 이미 끝 (표식)"; else
     say "[cm9 띄움]"; bash exe/fem_cm9.sh $C > /root/s6/cm9.out 2>&1; say "[cm9 끝] rc=$?"; rclone copy /dev/shm/dkta/lbours/fem_cm $R/lbours/fem_cm -q
     echo "$(date)" | rclone rcat $MK/cm9.done; fi
   # ---- (c) A 판 lego 영상 (cm9 뒤)
@@ -102,7 +102,13 @@ PA=""
     echo "$(date)" | rclone rcat $MK/cm8av.done; fi ) &
 PA=$!; }
 # ---- (b) stab 연기 -> 본 묶음
-if [ "$PART" != cm ]; then
+# ---- 절 S.8 묶음 (S6_PART=s8): wolf·bread 미러가 내려오면 exe/stab_s8.sh
+if [ "$PART" = s8 ]; then
+  for i in $(seq 480); do [ -f /root/s6/wb.done ] && break; kill -0 $MP 2>/dev/null || break; sleep 15; done
+  say "[s8 띄움] wolf·bread $(ls /root/s6/wb.done 2>&1)"
+  bash exe/stab_s8.sh $C > /root/s6/s8.out 2>&1; say "[s8 끝] rc=$?"
+fi
+if [ "$PART" != cm ] && [ "$PART" != s8 ]; then
 export ST_NO_BUILD=1
 MS="mpm,vrgs,bnv,ours,phystwin,simplicits"; SC="L000,ficus"
 if [ -z "$(rclone lsf $MK/stab_smoke.done 2>/dev/null)" ]; then
