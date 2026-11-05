@@ -65,11 +65,18 @@ def load_scene(a, dev="cpu"):
                 assert max(abs(float(q)) for q in bc["velocity"]) == 0.0
                 BOX.append(([float(q) for q in bc["point"]], [float(q) for q in bc["size"]]))
     g = [float(q) for q in cfg["g"]]
-    assert abs(g[0]) < 1e-12 and abs(g[1]) < 1e-12 and g[2] < 0, f"중력이 -z 가 아님 {g}"
+    assert abs(g[0]) < 1e-12 and abs(g[1]) < 1e-12 and g[2] <= 0, f"중력이 -z 또는 0 이 아님 {g}"   # ficus 공식 config = 0
     S = dict(d=d, cfg=cfg, L=L, x0=x0, X=d["x"][:L + 1], v0=d["v"][0].double(), vol=vol, rho=rho, mass=vol * rho,
              EXT=float((x0.max(0).values - x0.min(0).values).norm()), FZ=FZ, BOX=BOX, g=g, frame_dt=float(cfg["frame_dt"]),
              E=float(cfg["E"]), nu=float(cfg["nu"]))
     return S
+
+
+def time_scale(Kl, g):
+    """닮음 변환 시간 배율 (절 S.3 공식 밖 (1)): 길이 Kl 배일 때 중력이 9.8 이 되게 c = sqrt(Kl |g| / 9.8).
+    중력 0 (ficus 공식 config) 이면 맞출 중력이 없어 c = 1 (길이만 바꿈; 사용자 결정 11-05)."""
+    gz = abs(float(g[2]))
+    return (Kl * gz / 9.8) ** 0.5 if gz > 0 else 1.0
 
 
 def in_boxes(x, boxes):

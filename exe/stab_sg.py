@@ -12,6 +12,7 @@
 공식 밖 처리 (doc/pareto.md 절 S.3):
   (1) 단위: 공식 합성 데이터는 물체 ~0.4 를 [0,1] 상자 안에 (XYZ 0.3~0.7), 중력 9.8 -> 길이 Ks = 0.4 / (0 프레임 상자 최대 변) 배 (중심 0.5),
       시간 c = sqrt(Ks |g| / 9.8) 배 (닮음 변환; 영상은 카메라 위치만 같이 옮기면 그대로). 중력 z 축 (공식 코드가 BC 법선 축으로 z 지원).
+      config 중력 0 (ficus) 이면 c = 1 (길이만) 이고 단계 설정 G = [0, 0, 0] (정답 config 대로; 사용자 결정 11-05).
   (2) ficus: 바닥 없음 -> BC 바닥을 전 프레임 최저점 아래에 (닿지 않음). 화분 상자 안 앵커는 서브스텝마다 처음 위치·속도 0 (공식에 점별 고정 없음).
       초기 충격이 국소라 공식 균일 INIT_VELOCITY 로 표현 안 됨 -> 속도 단계를 건너뛰고 (공식 규약: init_velocity_100.json 이 있으면 건너뜀, 0 으로 씀)
       앵커 초기 속도 init_v = 정답 0 프레임 입자 속도의 앵커 최근접 8 개 평균 (학습 안 함).
@@ -58,7 +59,7 @@ if a.mode == "prep":
     assert mvm["n_frames"] == L + 1, f"다시점 영상 프레임 수 {mvm['n_frames']} != L+1 {L + 1}"
     side = float((x0.max(0).values - x0.min(0).values).max())
     Ks = 0.4 / side
-    c = (Ks * abs(S["g"][2]) / 9.8) ** 0.5
+    c = C.time_scale(Ks, S["g"])                                                                # 중력 0 (ficus) 이면 1
     ctr = [float(q) for q in mvm["ctr"]]
     json.dump(dict(Ks=Ks, c=c, ctr=ctr, side=side), open(XF, "w"), indent=1)
 xf = json.load(open(XF))
@@ -101,6 +102,7 @@ if a.mode == "prep":
         gz = float(Xs[..., 2].min()) - 0.05
         hit = L
     hit = max(2, min(hit, L))
+    GV = "[0, 0, -9.8]" if abs(S["g"][2]) > 0 else "[0, 0, 0]"                               # 닮음 변환 뒤 중력 (c 로 9.8 에 맞춤) / config 중력 0 이면 0
     VIT = 2 if a.smoke else 100                                                                 # 공식 VELOCITY.ITERATIONS
     SMK = "" if not a.smoke else f"""
 STATIC:
@@ -138,13 +140,13 @@ DATA:
   EVAL_FRAME: {L + 1}
 
 VELOCITY:
-  G: [0, 0, -9.8]
+  G: {GV}
   VIZ_INTERVAL: 999999
 """ + (f"""  ITERATIONS: {VIT}
   SAVE_INTERVAL: 1
-""" if a.smoke else "") + """
+""" if a.smoke else "") + f"""
 DYNAMIC:
-  G: [0, 0, -9.8]
+  G: {GV}
   VIZ_INTERVAL: 999999
 """ + ("""  ITERATIONS: 2
   ITER_REFINE: 10

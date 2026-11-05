@@ -11,7 +11,8 @@
 
 공식 밖 처리 (doc/pareto.md 절 S.3 목록):
   (1) 단위: PhysTwin 의 반경 범위 (0.01~0.05 m)·dt·복셀 0.005 m 는 실측 물체 ~0.25 m 기준 -> 길이를 K = 0.25 / (0 프레임 상자 최대 변) 배,
-      시간을 c = sqrt(K |g| / 9.8) 배 (닮음 변환: 중력이 코드에 박힌 9.8 과 같아짐; exe/phystwin_fit.py 와 같은 처리). 바닥 z = 0 이 되게 z 이동
+      시간을 c = sqrt(K |g| / 9.8) 배 (닮음 변환: 중력이 코드에 박힌 9.8 과 같아짐; exe/phystwin_fit.py 와 같은 처리; config 중력 0 (ficus) 이면
+      c = 1, 길이만 -- 사용자 결정 11-05). 바닥 z = 0 이 되게 z 이동
       (L000: config 바닥 0.48 -> 0; ficus: 바닥 없음 -> 전 프레임 최저점보다 아래).
   (2) ficus 화분 고정 = 공식 조작점 (controller points) 을 화분 상자 안 질량점으로, 모든 프레임 같은 위치 (새 기제 아님, 손잡이를 고정으로).
       그래서 ficus 는 조작점이 있는 공식 real 경로 (손실 정의가 L000 과 다름).
@@ -19,6 +20,8 @@
   (4) 질량점 = 정답 입자에서 무작위 11024 개 (rep_track2·fps_phystwin 과 같은 수, 씨앗 0) -> 공식 data_process_sample 복셀 0.005 m 처음 점.
       가우시안 이동의 뼈대에 ficus 조작점 (움직임 0) 을 더함 (화분 입자가 화분 조작점을 따라가게).
   (5) 렌더·대화형 전용 import (pynput·gaussian_splatting 렌더러·pyrender) 는 빈 모듈, ipdb.set_trace 는 예외 (보간 SVD 실패 = 발산으로 셈).
+  (6) config 중력 0 (ficus): 공식 커널 update_vel_from_force 의 박힌 중력 (0, 0, −9.8) 을 인자로 못 바꿔서, 중력 항만 뺀 같은 커널로
+      모듈 속성을 바꿔 끼움 (공식 파일은 안 고침; 중력 ≠ 0 인 L000 은 공식 커널 그대로).
 
   python exe/stab_phystwin.py --mode fit --data L000.pt --tag L000 --out FIT --frames 80 --floor vel
   python exe/stab_phystwin.py --mode run --fit FIT --N 167 --data L000.pt --tag L000 --out RUN --frames 80 --floor vel [--dump --dump_F]
@@ -63,7 +66,8 @@ P = x0.shape[0]
 # ---------- (1) 단위·좌표 ----------
 ext_side = float((x0.max(0).values - x0.min(0).values).max())
 K = 0.25 / ext_side
-c = (K * abs(S["g"][2]) / 9.8) ** 0.5
+c = C.time_scale(K, S["g"])                                    # 중력 0 (ficus) 이면 1
+G0 = abs(S["g"][2]) == 0.0                                     # 중력 0 -> 공식 커널의 박힌 9.8 대신 0 (아래 (6))
 FDT = S["frame_dt"] * c
 if S["FZ"] is not None:
     Z0 = S["FZ"]
@@ -164,6 +168,23 @@ import qqtt.data.simple_data as _sd                            # noqa: E402
 import qqtt.data.real_data as _rd                              # noqa: E402
 _sd.SimpleData.visualize_data = lambda self, visualize=False: None
 _rd.RealData.visualize_data = lambda self, visualize=False, save_gt=True: None
+import qqtt.model.diff_simulator.spring_mass_warp as _smw      # noqa: E402
+if G0:                                                         # (6) 정답 config 중력 0 -- 공식 커널에서 중력 항만 뺀 것 (나머지 줄 그대로)
+    @wp.kernel
+    def _update_vel_from_force_g0(v: wp.array(dtype=wp.vec3), f: wp.array(dtype=wp.vec3), masses: wp.array(dtype=wp.float32), dt: float,
+                                  drag_damping: float, reverse_factor: float, v_new: wp.array(dtype=wp.vec3)):
+        tid = wp.tid()
+        v0 = v[tid]
+        f0 = f[tid]
+        m0 = masses[tid]
+        drag_damping_factor = wp.exp(-dt * drag_damping)
+        all_force = f0
+        a = all_force / m0
+        v1 = v0 + a * dt
+        v2 = v1 * drag_damping_factor
+        v_new[tid] = v2
+    _smw.update_vel_from_force = _update_vel_from_force_g0
+    print("[PhysTwin] config 중력 0 -> 공식 커널의 중력 9.8 항 뺀 커널로", flush=True)
 from qqtt.engine.cma_optimize_warp import OptimizerCMA         # noqa: E402
 from qqtt.engine.trainer_warp import InvPhyTrainerWarp         # noqa: E402
 import wandb                                                   # noqa: E402
@@ -211,7 +232,7 @@ if a.mode == "fit":
         tr.train()
     best = sorted(glob.glob(f"{FIT}/train/best_*.pth"), key=lambda p: int(p.split("_")[-1].split(".")[0]))[-1]
     Y = torch.load(best, map_location="cpu")["spring_Y"].float()
-    json.dump(dict(tag=a.tag, N0=N0, K=K, c=c, Z0=Z0, FDT=FDT, real=REAL, n_mass=int(B.shape[1]), n_ctrl=int(CP.shape[0]),
+    json.dump(dict(tag=a.tag, N0=N0, K=K, c=c, g0=G0, Z0=Z0, FDT=FDT, real=REAL, n_mass=int(B.shape[1]), n_ctrl=int(CP.shape[0]),
                    optimal={k: float(v) for k, v in optimal.items()}, best=best, iterations=int(cfg.iterations), lr=float(cfg.base_lr),
                    spring_Y_median=float(Y.median()), spring_Y_min=float(Y.min()), spring_Y_max=float(Y.max()), n_springs=int(Y.numel()),
                    sec=time.time() - t0), open(f"{FIT}/fit.json", "w"), indent=1)

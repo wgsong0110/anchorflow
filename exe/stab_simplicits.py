@@ -67,7 +67,7 @@ torch.manual_seed(a.seed)
 dt = S["frame_dt"] / a.N
 scene = SimplicitsScene(timestep=dt)
 oid = scene.add_object(obj)
-scene.set_scene_gravity(acc_gravity=torch.tensor([0.0, 0.0, -S["g"][2]]))      # kaolin 규약: 양수 = 그 축 아래 방향 (공식 예제 [0, 0, 9.8])
+scene.set_scene_gravity(acc_gravity=torch.tensor([0.0, 0.0, 0.0 - S["g"][2]]))  # 정답 config g (ficus 0); kaolin 규약: 양수 = 그 축 아래 방향 (공식 예제 [0, 0, 9.8])
 if S["FZ"] is not None:
     scene.set_scene_floor(floor_height=S["FZ"], floor_axis=2)
 for bi, box in enumerate(S["BOX"]):
