@@ -44,7 +44,7 @@ blob = base64.b64encode(gzip.compress(q.tobytes() + vq.tobytes(), 9)).decode()
 S = json.load(open(a.stats))
 meta = dict(T=T, dx=dx, z0=z0, lo=lo.tolist(), hi=hi.tolist(), n=int(off), tab=TAB, vmin=a.vmin, vmax=a.vmax, cap=a.cap,
             gt0=[s["gt0"] for s in S["gt"]], ours0=[s["gt0"] for s in S["ours"]], lg=a.label_gt, lo_=a.label_ours,
-            ks=sorted({r[2] for r in TAB}))
+            ks=sorted({r[2] for r in TAB}), zstep=a.zstep)
 html = r"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>수박 단면 손상 변수 (logJp) -- 정답 | 우리</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <style>body{font-family:"Noto Sans KR",sans-serif;margin:12px;color:#0b0b0b;background:#fcfcfb}
@@ -65,7 +65,7 @@ async function load(){const bin=Uint8Array.from(atob(B64),c=>c.charCodeAt(0));
  const q=new Int16Array(buf,0,M.n*2);const vq=new Int16Array(buf,M.n*4,M.n);return {q,vq};}
 document.getElementById("info").innerHTML=
  "손상 변수 = 입자별 logJp (GF NACC return mapping 의 경화 상태, 처음 −0.04). logJp ≥ 0 이면 응집력 p0 = κ(1e-5 + sinh(ξ·max(−logJp,0))) 이 사라짐 = 손상 입자; GF 러너는 logJp > 0.4 입자를 렌더에서 숨김.<br>"+
- "단면 = 높이 z 를 중심으로 두께 "+M.dx.toFixed(5)+" (정답 MPM 격자 칸 dx = 2/300, 시뮬 공간 단위) 의 수평 층 입자, 위에서 본 (x, y). z = 바닥 0.02 + (k + ½)·dx.<br>"+
+ "단면 = 높이 z 를 중심으로 두께 "+M.dx.toFixed(5)+" (정답 MPM 격자 칸 dx = 2/300, 시뮬 공간 단위) 의 수평 층 입자, 위에서 본 (x, y). z = 바닥 0.02 + (k + ½)·dx, 슬라이더 한 칸 = "+M.zstep+" 층 ("+(M.zstep*M.dx).toFixed(5)+").<br>"+
  "색: viridis, 공통 범위 "+M.vmin+" ~ "+M.vmax+" (모든 프레임·모든 z·두 편 같음, 밖은 끝 색). 표시용 부분표본: 층마다 최대 "+M.cap+" 개 (고정 씨앗) -- 아래에 표시/전체 개수.<br>"+
  "정답 = GF 공식 러너를 같은 config·3DGS 로 다시 돌려 logJp 를 더 덤프한 궤적 (원래 정답 h5 에는 logJp 가 없음; GF 도 비결정이라 위치가 원래 정답과 조금 다름 -- doc 절 CM13.4).";
 const ts=document.getElementById("ts"),zs=document.getElementById("zs");ts.max=M.T-1;ts.value=0;

@@ -5473,6 +5473,32 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 판정: 수박 발산 (NaN) 은 탄성의 J ≤ 0 정의 문제였고 (2) 반전 안전 탄성으로 두 번 모두 막힘; (1) 로그 장벽은 J ≤ 0 이 G2P 입자 퇴화·걸음 사이 가벼운 노드의 큰 이동으로 풀이 밖에서 생겨 못 막음 (두 번 모두 발산, 경로 둘). 퇴화 자체 (det ≤ 0 입자) 는 (2) 에서도 남는다.
 - 이어서 (결정 필요, 안 함): (2) 를 수박 기본 판으로 할지, 파괴가 안 나는 원인 (NACC 경화 logJp 가 우리 판에서 얼마나 자라는지, 정답 대비) 측정.
 
+### CM13.4 손상 변수 색 렌더 -- 묶음 wmJd (exe/vast_wmd.sh, 사용자 11-05; R2 lbours/fem_cm/wmJd)
+- **손상 변수 정의**: 수박 재질 (GF NACC 이식, 재질 7) 이 입자마다 들고 있는 상태는 ys·logJp·al 셋인데, 재질 7 RM (lib/anchorflow/fem_pl_cuda.py pl_rm) 이 바꾸는 것은 **logJp (NACC 경화) 하나** -- al (손상 몫) 은 재질 5 만 쓰고 ys 는 재질 1 만 씀 (실측: 이번 판 100 프레임 내내 al 1~1, ys 0~0). 그래서 주 변수 = logJp, 보조 없음.
+  logJp 처음 −0.04 (GF 기본). 인장으로 Jp 가 커지면 logJp 증가, 압축 (압력 상한) 이면 감소 (다져짐). 응집력 p0 = κ(1e-5 + sinh(ξ·max(−logJp, 0))) 이라 **logJp ≥ 0 이면 p0 ≈ 0 = 인장 강도 없음 -> "손상 입자" = logJp > 0**. GF 러너 gs_simulation_watermelon.py 는 렌더 때 logJp > 0.4 입자를 숨김 (보조 문턱으로 곡선에 같이).
+  GF 쪽 같은 변수 = mpm_state.particle_Jp (GF mpm_utils.py 의 NACC 가 logJp 를 그대로 저장).
+- **정답 쪽**: 원래 정답 h5 (wm2/gf/simulation_ply: x·v·f_tensor·C·time) 와 wm.pt 에는 logJp 가 없음 -> GF 공식 러너를 같은 config (wm2/gf/config.json)·같은 3DGS (gfmodel/model/watermelon)·같은 코드 (R2 _vastmirror/GaussianFluent) 로 다시 돌리며 프레임마다 particle_Jp 만 더 덤프 (exe/gf_wm_jp.py: 러너가 가져가는 save_data_at_frame 을 감싸 원래 h5 저장 뒤 jp/sc_<t>.npy; GF 소스 수정 없음). 정답 데이터는 그대로 두고, 다시 돌린 궤적은 손상 색 렌더·곡선·단면에만 씀.
+  **다시 돌린 위치 대 원래 정답**: 입자 수·순서 같음 (1,379,914, 비유한 0 / 0), 평균 거리 / 장면 크기 (원래 정답 0 프레임 바운딩박스 대각선 1.4545 = 우리 오차 분모) 가 f1~f4 0.00 %, f10 0.28 %, f20 1.05 %, f100 1.32 % (전 프레임 평균 1.11 %, 최대 1.32 %) -- GF 원자 합 비결정 몫; 우리 오차 (29 %) 보다 한 자릿수 작음. 0 프레임 logJp = −0.04 그대로 (차 0).
+- **우리 쪽**: 절 CM13 s_a 명령 그대로 + `--dump_lj` (exe/fem_ao_rt_sim.py, 프레임 끝 S.ljp 를 원래 입자 순서로 lj.pt 에 -- 읽기만, 결과 불변): `--data wm.pt --frames 100 --floor vel --floor_plane 1,1,0.02,0,0,1 --floor_slip --cell 1.5 --mlow 1e-3 --integ mid --ga hht --rho 0.7 --ga_y0ut --tolN 1e-2 --tolP 1e-1 --K 3 --newton 2 --cg 5 --ls_inv --y0u --y0l --fq_rl --ls_end --gq_mass --gq_chk --dump --nan_step --jdiag --elx snh --dump_lj`.
+  판 s_d: 100 프레임 완주, 평균 오차 **29.27 %** (비결정: s_a 24.66 · s_b 18.95 · zs 20.16), 재생 118.6 ms. 코드는 6aad5a4 이후 fem_ao 경로 변경 없음 (fem_an_rt_v0·fem_ao_rt·fem_pl_cuda 같음).
+- **렌더**: exe/wm_render.py `--scalar_dir` -- GF wm_render 3DGS 알파블렌딩 그대로에서 가우시안 색만 viridis(logJp) 로 (불투명도·공분산·위치 그대로), **색 범위 −0.2 ~ 0.4 고정 = 모든 프레임·두 칸 공통** (밖은 끝 색; 미리 정한 범위: 아래 끝 −0.2 는 다져짐 쪽, 위 끝 0.4 = GF 숨김 문턱). 정답 칸은 다시 돌린 궤적의 x·F·logJp.
+  영상 **result/anchorflow/v20261009/fem_wmJ_damage_cmp.mp4** (1440x730, 101 프레임, yuv420p·faststart; 정답 손상 | 우리 손상 + 색 막대; 합성 exe/wmd_compose.py 로컬). 다시 돌린 정답의 일반 3DGS 렌더 R2 wmJd/gt_new_plain.mp4.
+- **곡선** result/anchorflow/v20261009/fem_wmJ_damage_frac.png (exe/wmd_curves.py; 분모 = 그 프레임 위치 유한 입자; 통계 exe/wmd_stats.py -> wmJd/wmd_stats.json):
+
+| 프레임 | 정답 logJp > 0 | 정답 > 0.4 | 정답 < −0.2 | 우리 > 0 | 우리 > 0.4 | 우리 < −0.2 |
+|---|---|---|---|---|---|---|
+| 4 | 0.03 % | 0.00 % | 2.7 % | 0.01 % | 0.00 % | 0.00 % |
+| 5 | 4.41 % | 2.21 % | 8.3 % | 0.01 % | 0.00 % | 0.00 % |
+| 10 | 7.05 % | 4.56 % | 8.4 % | 0.03 % | 0.01 % | 0.00 % |
+| 40 | 6.66 % | 4.19 % | 8.5 % | 0.28 % | 0.01 % | 0.00 % |
+| 100 | 6.51 % | 4.05 % | 8.5 % | 0.74 % | 0.02 % | 0.1 % |
+
+  -> 정답은 첫 바닥 접촉 (f4~f6) 에 손상 7 % · 다져짐 8 % 가 한꺼번에 생기고 그대로 남는데, 우리는 껍질 (표면 가우시안) 의 logJp 가 처음 값 −0.04 에서 거의 안 움직이고 손상은 안쪽 몇 곳에 f22·f66 에 0.3 → 0.8 % 로만 생김. 파괴 재현 실패 (절 CM13.3) 가 logJp 경화가 거의 안 일어나는 것과 같이 보임 (원인 -- 우리 판에서 RM 이 보는 F 가 정답보다 덜 늘어나는지 등 -- 은 확인 안 함).
+- **단면 뷰어** result/anchorflow/v20261009/fem_wmJ_damage_slice_viewer.html (exe/wmd_viewer.py, plotly CDN 단일 파일 19.8 MB): 프레임·z 슬라이더, 정답 | 우리 단면 나란히 (위에서 본 x·y), 같은 viridis·공통 범위 −0.2 ~ 0.4, 확대·이동, 입자 위 값 표시.
+  층 = z 중심 두께 **dx = 2/300 = 0.00667 (정답 MPM 격자 칸, 시뮬 공간 단위)** 의 수평 층, z_k = 0.02 + (k + ½) dx, 슬라이더는 두 층마다 (2 dx 간격). 층 자료는 인스턴스에서 exe/wmd_slices.py (층마다 최대 1500, R2 wmJd/wmd_slices.npz), 뷰어는 표시용으로 층마다 최대 300 개 부분표본 (고정 씨앗; 화면에 표시/층 전체 수).
+- 실행: vast 59248331 (offer 45242021, machine 26608 Delaware, A6000 x1, power.limit 300 W = 기본, 상향 4886 / 하향 7602 Mbps, blocklist hosts·machines 둘 다 걸러 없음), 커밋 9f3af8f -> 통계가 wm.pt 의 `_ext` 를 찾다 실패 (wm.pt 에 없음) 해 그 뒤 렌더도 연쇄 실패 -> 그 셸만 끄고 2b931b9 (장면 크기 = 원래 정답 0 프레임 대각선, 끝난 판 건너뛰는 이어 돌리기) 로 같은 인스턴스에서 이어서 (우리 판·GF 다시 돌림은 다시 안 돌림; s_d/run_info.txt 첫 줄 커밋 표기는 이어 돌린 2b931b9 로 덮였지만 실행은 9f3af8f). 10:32~11:25 UTC, rclone check 차이 0 -> 스스로 destroy (instances-v1 에서 사라짐 확인).
+  출력 R2 lbours/fem_cm/wmJd/{s_d (log·summary·fem.jsonl·pred.pt·lj.pt), gt_jp/sc_0000~0100.npy, gf.log, gt_lj.mp4, ours_lj.mp4, gt_new_plain.mp4, wmd_stats.json, wmd_slices.npz, 위 영상·곡선·뷰어 사본}, 로그 marks/wmJd.log. 다시 돌린 정답 h5 (13 GB) 는 안 올림 (위치 차는 통계에).
+
 ## CM14. 노드 위치 장벽 (--bar_node, 사용자 승인 11-05 정의 변경) -- 채택 판 (B) 의 장벽을 거는 점을 표본점에서 B-스플라인 노드 위치로 (더함·노드만 두 판) x d̂ 두 값 -- 가지 implicit-bspline, 묶음 barnode (vast.ai A6000 1 장, exe/vast_barnode.sh)
 ### CM14.0 정의 (나머지는 절 CM8 b 판 명령 그대로: 장벽 + --fl_bst 1 + --y0eb, HHT ρ 0.8, K 2, 뉴턴 2, εN 1e-2 · εP 1e-1, PCG 상한 lego·낙하 4 · wolf 5, BA = exe/fem_cm3_scn.sh)
 - **노드 장벽** (`--bar_node add|only --bar_ndh r`, --fl_bar 위): 노드가 바닥에 닿아 고정되는 것이 아니라, 노드 n 의 바닥 위 높이 d_n 에 표본점 장벽 (절 AN.19) 과 같은 IPC 거리 장벽 b(d) = −κ_n (d − d̂_n)² ln(d/d̂_n) (0 < d < d̂_n, 밖 0) 을 건다.
