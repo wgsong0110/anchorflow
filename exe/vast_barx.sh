@@ -69,6 +69,10 @@ run_one() { local V=$1 t=$2; shift 2
   if [ $V = x ] && [ $t = wolf ]; then rclone copy $O $RR/${V}_$t -q; else rclone copy $O $RR/${V}_$t -q --exclude pred.pt; fi
   table; }
 G="--ga hht --rho 0.8 --K 2 --newton 2"; T="--tolN 1e-2 --tolP 1e-1"
+if [ -n "${BARX_RENDER_ONLY:-}" ]; then                                              # 렌더만 다시 (첫 인스턴스에서 exe/pg_h5_to_pt.py 정렬 키 결함으로 대응 assert 실패): R2 의 판정 결과·x_wolf 덤프로
+  for v in d x o; do for t in wolf L000 drop1; do rclone copy $RR/${v}_$t $B/${v}_$t -q --exclude "h5/**" --exclude "vj/**" --exclude h5.log; done; done
+  say "[렌더만] R2 에서 받음 $(ls $B | tr '\n' ' ') x_wolf pred.pt $(du -sh $B/x_wolf/pred.pt 2>&1 | cut -f1)"
+else
 run_one d wolf  $G --cg 5 $T --det --hgt --bar_cnt --v=b
 run_one d L000  $G --cg 4 $T --det --bar_cnt --v=b
 run_one x wolf  $G --cg 5 $T --det --hgt --bar_cross --bar_cnt --dump --dump_F --v=b
@@ -78,6 +82,7 @@ run_one o wolf  $G --cg 5 $T --det --hgt --v=b
 run_one o L000  $G --cg 4 $T --det --v=b
 run_one o drop1 $G --cg 4 $T --det --v=b
 say "[판정 끝]"
+fi
 # ---- wolf 영상: x_wolf 덤프 -> h5 -> 3DGS 렌더 -> 정답 | 우리 합성
 O=$B/x_wolf; GT=/dev/shm/dkta/ag_data/gt_wolf; TF=/dev/shm/dkta/barxcmp; mkdir -p $TF /dev/shm/dkta/ag_data
 if [ -f $O/pred.pt ]; then
@@ -90,7 +95,7 @@ if [ -f $O/pred.pt ]; then
   if [ -f $O/vj/fem_wolf.mp4 ] && $PY exe/fem_barx_compose.py $TF/gt_wolf.mp4 $O/vj/fem_wolf.mp4 $O/summary.json $TF/fb.otf $TF/fr.otf $TF/fem_barx_wolf_cmp.mp4 $TF/txt > $TF/compose.log 2>&1; then
     rclone copyto $TF/fem_barx_wolf_cmp.mp4 $R/v20261009/fem_barx_wolf_cmp.mp4 -q && cp $TF/fem_barx_wolf_cmp.mp4 $O/vj/
     say "[영상] result/anchorflow/v20261009/fem_barx_wolf_cmp.mp4"
-  else say "[영상 실패] $(tail -3 $O/vj/r.log $O/h5.log $TF/compose.log 2>/dev/null | tr '\n' ' ' | cut -c1-600)"; fi
+  else say "[영상 실패] $(for q in $O/h5.log $O/vj/r.log $TF/compose.log; do [ -f $q ] && tail -n 3 $q; done | tr '\n' ' ' | cut -c1-600)"; fi
   rclone copy $O $RR/x_wolf -q
 else say "[영상 없음] x_wolf 덤프 없음"; fi
 table

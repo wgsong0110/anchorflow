@@ -33,7 +33,7 @@ ap.add_argument("--out_dir_n", type=int, default=0, help="--out_dir 에 앞 K �
 ap.add_argument("--out_dir", default="", help="lb_render·lb_roll_to_h5 용 궤적 디렉토리 (x (N,3), F (N,9), meta.json R=I)")
 a = ap.parse_args()
 fs = sorted(glob.glob(os.path.join(a.h5_dir, "**", "sim_*.h5"), recursive=True),
-            key=lambda p: int(re.findall(r"(\d+)", os.path.basename(p))[-1]))
+            key=lambda p: int(re.findall(r"(\d+)", os.path.splitext(os.path.basename(p))[0])[-1]))   # 절 CM10: 확장자 h5 의 5 를 빼고 (전엔 모든 파일 키가 5 라 glob 순서 그대로였음)
 assert fs, a.h5_dir
 cfg = json.load(open(a.config))
 cfg.setdefault("n_grid", 50)        # PG decode_param 기본값
