@@ -32,6 +32,7 @@ ap.add_argument("--region_density", action="store_true")
 ap.add_argument("--pg_vdamp", action="store_true")
 ap.add_argument("--no_graph", action="store_true")
 ap.add_argument("--dump", action="store_true")
+ap.add_argument("--dump_F", action="store_true", help="--dump 와 함께: 입자 F 도 pred.pt 에 (안정 서브스텝 표 렌더용, doc/pareto.md 절 S; 풀이 불변)")
 ap.add_argument("--tag", default="")
 ap.add_argument("--warm", type=int, default=2)
 ap.add_argument("--vfl_out", action="store_true", help="절 AK.31: 바닥 고착을 접선·안쪽 법선에만")
@@ -281,6 +282,7 @@ flog = open(os.path.join(a.out, "fem.jsonl"), "w")
 errs, secs = [], []
 div_at = None
 PRED = torch.empty(L, Np, 3) if a.dump else None
+PREDF = torch.empty(L, Np, 3, 3) if (a.dump and a.dump_F) else None
 for fi in range(L):
     torch.cuda.synchronize()
     t0 = time.perf_counter()
@@ -297,6 +299,8 @@ for fi in range(L):
     print(f"  프레임 {fi + 1}/{L} {1e3 * dt_:.2f} ms 오차 {100 * e:.3f}%" + (f" 가우스 점 {STAT.get('nq')} (입자 {Np}, 뒤집힌 입자 든 점 {STAT.get('nbad')}) det F_q {STAT.get('dq')} det F_p {STAT.get('dp')} max|F_q| {STAT.get('fqn')} max|v| {float(v2.norm(dim=-1).max()):.3g}" if a.gq else ""), flush=True)
     if PRED is not None:
         PRED[fi] = x2.cpu()
+    if PREDF is not None:
+        PREDF[fi] = F2.detach().float().reshape(Np, 3, 3).cpu()
     x, v, F = x2, v2, F2
     if not fin or e > 2.0:
         div_at = fi + 1
@@ -307,5 +311,5 @@ summ = dict(args=vars(a), frames=L, frames_done=len(errs), diverged=div_at, err_
             err_mean_done=float(np.nanmean(errs)), ms_mean=1e3 * float(np.mean(sc)) if sc else None, hs=hs)
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), indent=1, ensure_ascii=False)
 if PRED is not None and div_at is None:
-    torch.save({"pred": PRED}, os.path.join(a.out, "pred.pt"))
+    torch.save({"pred": PRED, **({"F": PREDF} if PREDF is not None else {})}, os.path.join(a.out, "pred.pt"))
 print(f"[롤아웃] {a.tag} B-스플라인 요소 CUDA N {a.N}: {len(errs)}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%, 프레임당 {summ['ms_mean']} ms", flush=True)

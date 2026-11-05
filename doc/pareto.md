@@ -37,3 +37,43 @@
 
 ## P.4 결과
 (묶음 pareto1 결과 받은 뒤 채움)
+
+## S. 안정 최소 서브스텝 표 (논문용; 조정자 11-05 사용자 지시) -- 가지 implicit-bspline, 실행기 exe/stab.py · exe/stab.sh · exe/stab_launch.sh
+지시: 방법별·씬별 "끝까지 발산하지 않는 최소 프레임당 서브스텝 수" N* 와 N* 에서의 지표 -- 위치 오차 (롤아웃 평균 |x−x_gt|/EXT), A6000 단독 프레임 시간, 시각 품질 PSNR·SSIM·LPIPS (3DGS 알파블렌딩, 정답 렌더와 같은 카메라). 씬 lego L000·ficus·wolf·bread (수박 제외). 탄성 전용 방법은 wolf·bread 에서 "해당 없음".
+### S.0 정의
+- 발산 = 기존 절 BD 정의 그대로: 프레임 위치 비유한 또는 프레임 오차 > 2 (= 200 %), 정답 MPM 은 추가로 서브스텝마다 입자가 격자 배열 밖 (`--sub_chk`). 실행기가 결과 파일 없이 죽으면 "중단" (발산 쪽으로 셈, 표에 따로).
+- 탐색: 사다리 N = 1, 2, 4, … (방법별 상한 hi, 상한은 마지막에 그대로) -> 처음 안정한 N_s 와 그 앞 (발산) 사이 정수 이분 -> N*. 표에 경계 양쪽 (N* 안정 오차, 바로 아래 시험한 N 의 발산 프레임) 을 남김. 안정이 N 에 단조라는 보장이 없어 (절 BD 표: 명시적 B-스플라인 L000 K 1·2·8 완주, K 4 발산) **N* 뒤 2N*·4N* 도 돌려 발산이 있으면 † (비단조)**.
+- N* 판의 오차 = 그 판정 판 (우리는 결정적 `--det`); 시간 = 같은 N 으로 카드 0 단독 판 (gpu0.lock, 시작 때 카드 0 의 다른 계산 프로세스 0 대기, 실행 중 5 초마다 기록, 첫 2 프레임 뺀 평균·최대; 우리는 비결정 판); 시각 품질 = 같은 N 의 덤프 판 (위치 + F) -> exe/lb_roll_to_h5.py -> exe/lb_render.py `--png` (정답 궤적과 같은 3DGS·같은 카메라 = cameras.json[0] 을 1.6 배 뒤로, 흰 배경) -> exe/stab_vis.py (프레임 1.. 평균, LPIPS alex). 정답 렌더 = 정답 h5 를 같은 렌더러로 (`--frames L`).
+- 렌더 공분산: 각 방법 공식 방식 -- MPM·우리·명시적 = 입자 F Σ0 Fᵀ, VR-GS = 결속 사면체 F Σ0 Fᵀ (논문).
+### S.1 방법별 설정 (상한 hi = 사다리 끝)
+| 방법 | 실행기 | 서브스텝 손잡이 | 물성 | hi | 공식 밖 처리 |
+|---|---|---|---|---|---|
+| 정답 MPM (PG) | exe/gt_sens.py `--sub_chk --rpic_cfg` (+ 이번에 `--time` = pareto_mpm.py 와 같은 계시, `--dump_pred`) | `--nsub N` (dt = frame_dt/N) | 공식 config | 공식 서브스텝 L000 833 · ficus 400 · wolf 1999 · bread 100 | 없음 |
+| VR-GS 직접 구현 | exe/pareto_vrgs.py (절 P.1) | 서브스텝 N, 반복 11 고정 (논문 PG 비교 설정) | **N 마다 E 를 논문 절차로 맞춤** (`--mode fit`, log10 E 황금분할 10 회; 안정 판정 = 맞춘 E 의 롤아웃) | L000 167 · ficus 400 (dt 1e-4 s) | 절 P.1 그대로 (케이지·ficus 고정 상자·초기 속도) |
+| 명시적 B-스플라인 | exe/fem_bsel_cuda_sim.py `--theta 0 --vfl_out` (절 BD 의 bnv, + `--dump_F`) | `--N` | 정답 config | 1024 | 없음 (우리 표현 그대로) |
+| 우리 (B) | exe/fem_an_rt_sim.py, 씬 인자 = exe/fem_cm8_scn.sh `cm_scene <씬> --v=b` (절 CM8 (B): 장벽 + `--y0eb`) + `--ga hht --rho 0.8 --newton 2 --tolN 1e-2 --tolP 1e-1`, PCG 상한 = cm8 (B) 고른 값 L000 4 · wolf 5, ficus 24 · bread 2 (cm4) | `--K N` (걸음 수) | 정답 config | 16 | 없음 |
+| PhysTwin | 미구현 (S.3) | num_substeps | CMA-ES + 경사 학습 (exe/phystwin_fit.py) | | S.3 |
+| Simplicits | 미구현 (S.3) | dt = frame_dt/N | 정답 config E·ν·ρ (논문은 물성을 주어진 값으로 씀) | | S.3 |
+| Spring-Gaus | 미구현 (S.3) | n_step | 공식 3 단계 학습 | | S.3 |
+| GausSim | 실행 안 함 (S.4) | | | | |
+- 명시적 B-스플라인은 이 실행기에 재질 식이 없어 wolf·bread 를 "해당 없음 (실행기에 재질 없음)" 으로 적음 -- 탄성 전용은 아니므로, 재질을 넣어 돌릴지는 사용자 결정.
+- 고친 실행기 (풀이 불변, 출력만): gt_sens.py `--time`·`--dump_pred`, fem_bsel_cuda_sim.py `--dump_F`, pareto_vrgs.py `--dump_F` (+ vrgs_xpbd.VRGS.F_part), lb_render.py `--png`.
+### S.2 실행과 이어서 할 지점
+- 로컬: `PA_DETACH=1 PA_JOB=<잡>.ECE-util1 PA_NODE=<노드> bash exe/stab_launch.sh stab1 'ST_UNTIL=<epoch> ST_HARD=<epoch> bash exe/stab.sh <커밋>'` (커밋 묶음 -> R2 lbours/stab/code -> 노드 /dev/shm/dkta/impwt/<커밋>). 먼저 연기 시험 `ST_OUT=/dev/shm/dkta/lbours/stab_smoke ST_ARGS="--smoke 3"` (방법 x 씬마다 상한 한 판 3 프레임 -> 덤프·렌더·시각·시간 경로) 를 같은 방법으로 띄우고 R2 lbours/stab_smoke/stab_table.md 로 확인.
+- 비측정 판은 빈 카드 1..7 (anerr_claim 규약 -- 다른 에이전트와 공유, 동시 6), 시간 판은 카드 0 하나씩.
+- 결과: R2 lbours/stab/ -- p/<방법>_<씬>_n<N>[_dump|_time]/ (log·res.json·실행기 출력·pred.pt·png·vis.json), gt_<씬>/png, stab.log·stab_main.log, 표 stab_table.md·stab_table.tex·stab.json (2 분마다), 끝 표식 stab.END.
+- 이어 돌리기: stab.sh 가 시작 때 R2 의 p/*/res.json·vis.json·gt_*/png 를 내려받아 끝난 판은 건너뜀 (덤프가 없으면 덤프 판만 다시). 같은 커밋으로 다시 띄우면 됨.
+- LaTeX: writing/anchorflow/fem_results.tex 끝 절 "안정 최소 서브스텝" 이 `~/r2/result/anchorflow/lbours/stab/stab_table.tex` 를 `\IfFileExists` 로 읽음 (잡 안 표가 갱신되면 다시 컴파일만).
+### S.3 PhysTwin · Simplicits · Spring-Gaus (아직 실행기 없음 -- 다음 할 일)
+- **PhysTwin** (공식 코드 ~/workspace/external/physics/PhysTwin, 클러스터 /home/dkta/work/PhysTwin): exe/phystwin_fit.py (공식 synthetic 경로: 1 단계 optimize_cma.py CMA-ES 12 매개 -> 2 단계 train_warp.py 스프링별 log Y Adam 200 반복) 를 L000·ficus 궤적에 공식 dt 5e-5 s (num_substeps = frame_dt/dt: L000 333, ficus 800) 로 맞춘 뒤, **맞춘 물성 그대로** num_substeps 만 사다리·이분 (dt 를 바꿀 때마다 다시 맞추는 것은 논문 절차가 아니므로 안 함 -- 갈래로 남김). 가우시안 이동 = 공식 interpolate_motions (이웃 16, 회전 Procrustes) -> 렌더 공분산 R Σ0 Rᵀ (F = R).
+  공식 밖: (1) 좌표 -- PhysTwin 은 z 위 중력·바닥 z = 0 이라 L000 을 바닥 0.48 이 0 이 되게 z 만 옮김 (phystwin_fit.py 와 같은 처리), (2) ficus 화분 고정 = PhysTwin 의 공식 조작점 (controller points) 을 화분 상자 안 점으로 두고 움직이지 않게 (새 기제 아님, 손잡이를 고정으로), (3) 초기 속도 = 공식 velocity 인자 (첫 두 프레임 차분).
+- **Simplicits** (kaolin 공식, 잡 안 별도 환경 simp; exe/simplicits_weights.py = create_trained 기본 인자): SimplicitsScene (공식 Newton 적분) 에 timestep = frame_dt/N, 물성 E·ν·ρ = 정답 config, 바닥 = 공식 set_scene_floor (L000), ficus 화분 = 공식 set_object_boundary_condition (상자 안 점 고정). 공식 밖: 초기 속도 -- 공식 API 에 없어 장면 상태 속도에 정답 0 프레임 속도를 핸들 공간으로 최소제곱 투영해 넣음 (구현 때 API 확인). 렌더 = 핸들 F Σ0 Fᵀ.
+- **Spring-Gaus** (공식 코드 github Colmar-zlicheng/Spring-Gaus 62a1bb5, 로컬 /tmp/cdemd/Spring-Gaus; config/mpm_synthetic/default.yaml): 공식 절차 = 다시점 영상 -> 정적 3DGS 30k -> 속도 100 반복 -> 동역학 300 반복 (N_STEP 100 에서 N_STEP_ITER [100, 200] 마다 +50). 필요 = 정답 L000·ficus 궤적을 공식 mpm_synthetic 형식 다시점 영상으로 렌더 (예전 exe/mk_sg_cameras.py·mk_sg_config.py·bench_sg.py 재사용), 형상당 수 시간 학습. 학습 뒤 n_step 만 사다리·이분 (학습 물성 그대로).
+  공식 밖: L000 은 lb_gen 초기 속도가 강체 병진이라 공식 INIT_VELOCITY (균일) 로 표현됨 -- 없음; 좌표는 공식이 y 위 중력이라 축 바꿈만. ficus 는 (1) 화분 점 고정 (공식에 점별 고정 경계 없음 -- 화분 상자 안 질량점 속도 0), (2) 초기 충격이 국소 (균일 아님) 라 정답 0 프레임 속도장을 질량점에 고정값으로 (학습 안 함) 둬야 함 -- 사용자 지시 (11-05: 화분 고정·초기 속도 표현 같은 공식 밖 처리는 최소한으로 하고 doc 에 명시) 에 따라 이 두 가지만 넣음 (예전 P.2 에서 멈춘 지점의 해소).
+### S.4 GausSim -- 직접 구현 가능성·비용 (실행 안 함)
+- 공개 저장소 (ftbabi/GausSim_ICCV2025 a85da5a, 로컬 ~/workspace/external/physics/GausSim_ICCV2025): README TODO "Full code" 미체크. 실제로 있는 것 -- 모델 (mmgs/models: 계층 MeshGraphNet backbones/meshgraphnet_hie.py, simulators/gs_simulator_hierarchy.py 의 forward_train, heads/acc_decoder.py 의 렌더·static·운동량 손실), 학습 API (mmgs/apis/train.py 141 행), 학습 config (configs/gssim/iccv/pudding.py: Adam 2e-4, 롤아웃 1 -> 16 단계 증가, EpochRunner), 다시점 영상 데이터셋 클래스. 없는 것 -- 학습 진입 스크립트 tools/train.py, 데이터 준비 (점 표본·계층 군집·pin_mask 만드는 코드; 공개 데이터는 pudding 데모 하나), 사전학습 가중치 외 체크포인트.
+- 즉 "직접 구현" = 진입 스크립트 (mmcv 표준 train 런처, 수십 행) + 우리 씬을 그쪽 데이터 형식 (다시점 영상 + 가우시안 + 군집 계층 + pin) 으로 만드는 변환. 이 프로젝트에 예전 재구성이 있음 (imp_wt/gaussim/train.py·make_dataset_from_mpm.py·apply_patches.py) -- 메모리 규칙대로 결과는 "GausSim 공개 조각으로 재구성한 학습" 으로만 보고 가능.
+- 서브스텝 개념: 학습된 시뮬레이터가 프레임 간격 (config dt 1/30) 한 걸음씩 -- 프레임당 서브스텝은 구조상 1 고정이라 "최소 서브스텝" 탐색 대상이 아님 (표에는 N = 1 의 발산 여부·지표만 가능).
+- 비용 추정: 논문 A800 4 장 batch 4 로 22 시간 수렴 (메모리 gaussim-official-facts) -> A6000 4 장 기준 씬당 하루 안팎 (확인 아님), L000·ficus 두 씬 = 카드 4 장 x 이틀. 3090 24GB 에서 롤아웃 16 OOM 기록 -> A6000 48GB 는 들어갈 가능성 (확인 아님). 데이터 변환·진입 스크립트 작업 반나절. 탄성 전용이라 wolf·bread 해당 없음.
+### S.5 진행 (11-05)
+- 13:27·13:3x KST: 로그인 노드 SSH 가 연결 거부 (`kex_exchange_identification: Connection reset by peer`, ControlMaster 소켓도 응답 없음) -> 잡 상태 확인 못 함. 코드만 준비 (위 S.1 실행기 수정 + exe/stab.py·stab.sh·stab_launch.sh·stab_go_tmpl.sh), 로컬 표 생성 함수만 가짜 결과로 확인 (GPU 실행 확인은 아직 -- 연기 시험이 첫 확인).

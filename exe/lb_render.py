@@ -34,6 +34,7 @@ ap.add_argument("--mark", default="", help="사용자 10-30 발산 셀 입자 �
                 "등방 가우시안 (축 = 가우시안 축 길이 중앙값 x --mark_size, 공분산 F s² Fᵀ) 을 더해 그린다). 나머지는 SH 그대로 (래스터라이저와 같은 식으로 colors_precomp)")
 ap.add_argument("--mark_fade", type=float, default=1.0, help="--mark: 표시 안 한 가우시안 불투명도 배율 (투시 칸, 1 = 그대로)")
 ap.add_argument("--mark_size", type=float, default=1.0)
+ap.add_argument("--png", default="", help="주면 프레임마다 무손실 PNG 도 이 폴더에 (%04d.png; 시각 품질 PSNR·SSIM·LPIPS 용, doc/pareto.md 절 S)")
 ap.add_argument("--mark_px", default="", help="--mark: 프레임마다 표시 입자 화면 위치 (중앙·범위 픽셀) -> json (확대 칸 중심)")
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
@@ -189,6 +190,9 @@ for fi, p in enumerate(files):
     if a.frame_label is not None:
         _fr = _label(_fr, a.frame_label + fi)
     WR.append_data(_fr)
+    if a.png:
+        os.makedirs(a.png, exist_ok=True)
+        imageio.imwrite(os.path.join(a.png, f"{fi:04d}.png"), _fr)
 WR.close()
 if MK is not None and a.mark_px:
     json.dump(dict(W=int(cam["width"]), H=int(cam["height"]), frames=PXL, n_gauss=int(MG.numel()), n_fill=int(MF.numel())), open(a.mark_px, "w"))

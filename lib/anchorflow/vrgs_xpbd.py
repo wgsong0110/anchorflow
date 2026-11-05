@@ -378,6 +378,12 @@ class VRGS:
         torch.cuda.synchronize()
         return e0.elapsed_time(e1)
 
+    def F_part(s):
+        """입자 (가우시안) 마다 결속 사면체의 변형 기울기 F = Ds Dm^-1 [Np,3,3] (렌더 공분산 F Σ0 Fᵀ, 논문 그대로; 시간 밖)."""
+        P = s.x[s.T.long()]
+        Ds = torch.stack([P[:, 1] - P[:, 0], P[:, 2] - P[:, 0], P[:, 3] - P[:, 0]], -1)
+        return (Ds @ s.Dmi.reshape(-1, 3, 3))[s.tid.long()]
+
     def info(s):
         return dict(h=s.h, nv=s.nv, nt=s.nt, ncolor=len(s.colors), nfixed=int(s.fixed.sum()), mass_cage=s.mass_cage, mass_part=s.mass_part,
                     bind_min=s.bind_min, N=s.N, iters=s.iters, dt=s.dt, damp=s.damp, E=s.E, nu=s.nu)

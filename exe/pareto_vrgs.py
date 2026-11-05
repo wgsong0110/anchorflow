@@ -39,6 +39,7 @@ ap.add_argument("--E", type=float, default=0.0, help="run: 고정 E (0 = fit_jso
 ap.add_argument("--nfit", type=int, default=10)
 ap.add_argument("--span", type=float, default=2.0, help="탐색 폭 (정답 E 의 10^±span)")
 ap.add_argument("--warm", type=int, default=2)
+ap.add_argument("--dump_F", action="store_true", help="run: 첫 설정 덤프에 입자 F (결속 사면체 F) 도 -> pred.pt {pred, F} (안정 서브스텝 표 렌더용, doc/pareto.md 절 S)")
 a = ap.parse_args()
 RTC.RAWPTR[0] = True
 os.makedirs(a.out, exist_ok=True)
@@ -85,6 +86,7 @@ def rollout(E, keep=False):
     S.set_E(E); S.reset()
     errs, ms = [], []
     P = torch.empty(L, S.Np, 3) if keep else None
+    PF = torch.empty(L, S.Np, 3, 3) if (keep and a.dump_F) else None
     div = None
     for f in range(L):
         t = S.frame()
@@ -98,9 +100,12 @@ def rollout(E, keep=False):
         errs.append(e); ms.append(t)
         if keep:
             P[f] = xo.cpu()
+        if PF is not None:
+            PF[f] = S.F_part().cpu()
     sc = ms[a.warm:] if len(ms) > a.warm else ms
     return dict(E=E, err=(float(np.mean(errs)) if div is None else None), err_done=(float(np.nanmean(errs)) if np.isfinite(errs).any() else None),
-                div=div, frames=len(errs), ms_mean=float(np.mean(sc)) if sc else None, ms_max=float(np.max(sc)) if sc else None, errs=errs), P
+                div=div, frames=len(errs), ms_mean=float(np.mean(sc)) if sc else None, ms_max=float(np.max(sc)) if sc else None, errs=errs), \
+        (P if PF is None else (P, PF))
 
 
 def obj(r):
@@ -151,7 +156,10 @@ elif a.mode == "run":
         r, P = rollout(E, keep=(N, it) == SETS[0])
         r.update(N=N, iters=it, dt=S.dt)
         res.append(r)
-        if P is not None:
+        if isinstance(P, tuple):
+            if r["div"] is None:
+                torch.save({"pred": P[0], "F": P[1]}, os.path.join(a.out, "pred.pt"))
+        elif P is not None:
             torch.save(P, os.path.join(a.out, f"pred_{N}x{it}.pt"))
         print(f"  [실행] {a.tag} N {N} 반복 {it} E {E:.4g}: 오차 {'발산 %d' % r['div'] if r['err'] is None else '%.3f%%' % (100 * r['err'])}, "
               f"프레임 {r['ms_mean']:.3f} ms (최대 {r['ms_max']:.3f})", flush=True)

@@ -27,6 +27,8 @@ ap.add_argument("--n_grid", type=int, default=0, help="0 = config 그대로 (100
 ap.add_argument("--floor_z", type=float, default=None, help="바닥 평면 높이 (정답 0.48)")
 ap.add_argument("--surface", default=None, help="바닥 종류 (정답 sticky)")
 ap.add_argument("--no_dump", action="store_true")
+ap.add_argument("--time", action="store_true", help="exe/pareto_mpm.py 와 같은 프레임 시간 (서브스텝 루프 앞뒤 동기화 벽시계); 이때 --sub_chk 격자 안 확인은 프레임 끝 한 번 (시간 밖)")
+ap.add_argument("--dump_pred", action="store_true", help="안정 서브스텝 표 (doc/pareto.md 절 S): 발산 없이 끝나면 pred.pt {pred [L,N,3], F [L,N,3,3]} (lb_roll_to_h5 -> 3DGS 렌더용; 풀이 불변)")
 ap.add_argument("--pg_cfg", action="store_true", help="절 AK.15: PhysGaussian gs_simulation 형식 정답 (ficus): config 재질 (additional_material_params 포함)·감쇠·경계조건 (decode_param.set_boundary_conditions) 그대로, 바닥 충돌 없음")
 ap.add_argument("--flip", type=float, default=0.0, help="절 AK.14 진단: 서브스텝마다 FLIP 섞기 v = v_PIC + α (v_old − v_s), v_s = 같은 서브스텝 시작 상태의 운동량만 P2G (APIC 같은 식, 힘·중력·경계 없음) -> G2P 속도 (0 = 원래 정답 솔버)")
 ap.add_argument("--sub_chk", action="store_true", help="큰 dt 실험 (절 BD): 서브스텝마다 입자 위치가 유한하고 격자 배열 안 (P2G 기저 노드 0 .. n_grid−1, x/dx ∈ (−0.5, n_grid−1.5)) 인지 확인 -- 벗어나면 그 프레임을 발산으로 적고 멈춤 (벗어난 채 다음 P2G 를 돌면 warp 커널이 배열 밖을 써서 CUDA 700/717 로 죽음). 프레임 오차 > 2 도 발산 (우리 실행기와 같은 규칙)")
@@ -172,6 +174,7 @@ else:
 sol.import_particle_v_from_torch(torch.as_tensor(v0).cuda().contiguous())
 os.makedirs(a.out, exist_ok=True)
 XD = None if a.no_dump else torch.empty(L, N, 3, dtype=torch.float32)
+FD = torch.empty(L, N, 3, 3, dtype=torch.float32) if a.dump_pred else None
 errs = []
 t0 = time.time()
 step = 0
@@ -220,7 +223,10 @@ def _out_of_grid():
     return None
 
 
+MS = []
 for f in range(1, L + 1):
+    if a.time:
+        torch.cuda.synchronize(); wp.synchronize(); _tf = time.perf_counter()
     for s in range(nsub):
         if a.flip > 0:                                                                # v_s: 서브스텝 시작 상태의 운동량만 왕복
             _gv.zero_()
@@ -235,11 +241,17 @@ for f in range(1, L + 1):
             vt = wp.to_torch(_st.particle_v)
             vt.add_(a.flip * (v_old - v_s))
         step += 1
-        if a.sub_chk:
+        if a.sub_chk and not a.time:
             _r = _out_of_grid()
             if _r:
                 DIV = dict(frame=f, substep=s + 1, reason=_r)
                 break
+    if a.time:
+        wp.synchronize(); torch.cuda.synchronize(); MS.append(1000.0 * (time.perf_counter() - _tf))
+        if a.sub_chk:
+            _r = _out_of_grid()
+            if _r:
+                DIV = dict(frame=f, substep=nsub, reason=_r)
     if DIV is not None:
         errs.append(float("nan"))
         print(f"[발산] 프레임 {f} 서브스텝 {DIV['substep']}/{nsub}: {DIV['reason']}", flush=True)
@@ -254,14 +266,18 @@ for f in range(1, L + 1):
     errs.append(e)
     if XD is not None:
         XD[f - 1] = xt.cpu()
+    if FD is not None:
+        FD[f - 1] = wp.to_torch(sol.mpm_state.particle_F_trial if hasattr(sol.mpm_state, "particle_F_trial") else sol.mpm_state.particle_F).float().reshape(-1, 3, 3).cpu()
     print(f"  프레임 {f}/{L} 오차 {100 * e:.3f}% (누적 평균 {100 * np.nanmean(errs):.3f}%) 최저 {float(xt[:, 2].min()):.5f} {time.time() - t0:.0f}s", flush=True)
     if not np.isfinite(e) or (a.sub_chk and e > 2.0):
         DIV = dict(frame=f, substep=nsub, reason="비유한" if not np.isfinite(e) else f"오차 {100 * e:.1f}% > 200%")
         print(f"[발산] 프레임 {f}", flush=True)
         break
 summ = dict(args=vars(a), nsub=nsub, dt=dt, n_grid=n_grid, floor=floor, EXT=EXT, frames_done=len(errs), err_mean=float(np.mean(errs)), div=DIV, err_mean_done=float(np.nanmean(errs)) if np.isfinite(errs).any() else None,
-            err=errs, sec=time.time() - t0, diag=DIAG)
+            err=errs, sec=time.time() - t0, diag=DIAG, ms=MS, ms_mean=(float(np.mean(MS[2:])) if len(MS) > 2 else None), ms_max=(float(np.max(MS[2:])) if len(MS) > 2 else None))
 json.dump(summ, open(os.path.join(a.out, "err.json"), "w"), ensure_ascii=False, indent=1)
 if XD is not None:
     torch.save(XD, os.path.join(a.out, "x.pt"))
+if FD is not None and DIV is None and XD is not None:
+    torch.save({"pred": XD, "F": FD}, os.path.join(a.out, "pred.pt"))
 print(f"[정답 민감도 결과] {os.path.basename(a.out)}: 평균 오차 {100 * summ['err_mean']:.3f}% ({len(errs)}/{L} 프레임), {summ['sec']:.0f}s", flush=True)
