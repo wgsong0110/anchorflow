@@ -67,16 +67,20 @@ for p in stab/lego/init/sim_0000000000.h5 topo/pg_ficus_elastic_v0/simulation_pl
 [ -f /root/s6/data.done ] && [ -f /root/s6/pip.done ] || { say "[세팅 실패] pip $(ls /root/s6/pip.done 2>&1) data $(ls /root/s6/data.done 2>&1)"; exit 1; }
 # ---- 클러스터에서 R2 _vastmirror 로 옮긴 wolf·bread 정답·3DGS, 수박 3DGS·정답·GaussianFluent (로컬 ~/s6x/pull.sh, 끝 표식 pull.log PULL_END) -> 같은 클러스터 경로 (배경)
 MI=$R/_vastmirror
-( for i in $(seq 480); do rclone cat $MI/pull.log 2>/dev/null | grep -q PULL_END && break; sleep 30; done
-  rclone cat $MI/pull.log > /root/s6/pull.log 2>&1; grep -q PULL_END /root/s6/pull.log || { say "[미러 없음] 4 h 안에 pull.log PULL_END 없음 -> wolf·bread·수박 영상 보류"; exit 0; }
+# wb.ok = wolf·bread 만 R2 에 다 올라간 표식 (로컬 ~/s6x/wbok.sh; 수박 PULL_END 를 기다리며 GPU 를 놀리지 않게). S6_MWAIT = 30 초 x 기다림 횟수 (기본 480 = 4 h).
+( for i in $(seq ${S6_MWAIT:-480}); do rclone cat $MI/pull.log 2>/dev/null | grep -q PULL_END && break; [ -n "$(rclone lsf $MI/wb.ok 2>/dev/null)" ] && break; sleep 30; done
+  rclone cat $MI/pull.log > /root/s6/pull.log 2>&1; WBOK=$(rclone cat $MI/wb.ok 2>/dev/null)
+  grep -q PULL_END /root/s6/pull.log || [ -n "$WBOK" ] || { say "[미러 없음] pull.log PULL_END·wb.ok 없음 -> wolf·bread·수박 영상 보류"; exit 0; }
   grep -q "rc=[^0]" /root/s6/pull.log && say "[미러 경고] $(grep 'rc=[^0]' /root/s6/pull.log | tr '\n' ' ')"
   for p in topo/bread_plastic_config.json PhysGaussian/config/wolf_config.json wm2/gf/config.json; do rclone copyto $MI/$p $W/$p -q; done
   for p in pgmodel/wolf_whitebg-trained pgmodel/bread-trained topo/pg_wolf_sand topo/pg_bread_plastic; do rclone copy $MI/$p $W/$p --transfers 16 -q; done
-  grep -q "check topo/pg_wolf_sand rc=0" /root/s6/pull.log && grep -q "check topo/pg_bread_plastic rc=0" /root/s6/pull.log && touch /root/s6/wb.done
+  { grep -q "check topo/pg_wolf_sand rc=0" /root/s6/pull.log && grep -q "check topo/pg_bread_plastic rc=0" /root/s6/pull.log; } || echo "$WBOK" | grep -q "^wb ok" && touch /root/s6/wb.done
+  grep -q PULL_END /root/s6/pull.log || { say "[미러 wolf·bread 만] $WBOK 표식 $(ls /root/s6/wb.done 2>&1) -- 수박은 PULL_END 전이라 보류"; exit 0; }
   say "[미러 wolf·bread] $(du -sh $W/topo/pg_wolf_sand $W/topo/pg_bread_plastic 2>&1 | tr '\n' ' ') 표식 $(ls /root/s6/wb.done 2>&1)"
   for p in gfmodel/model/watermelon GaussianFluent wm2/gf/simulation_ply; do rclone copy $MI/$p $W/$p --transfers 16 -q; done
   grep -q "check wm2/gf/simulation_ply rc=0" /root/s6/pull.log && touch /root/s6/wm.done
   say "[미러 수박] $(du -sh $W/gfmodel/model/watermelon $W/wm2/gf/simulation_ply $W/GaussianFluent 2>&1 | tr '\n' ' ') 표식 $(ls /root/s6/wm.done 2>&1)" ) &
+MP=$!
 export S6_WM_MARK=/root/s6/wm.done
 # ---- 코드 (github 공개 레포에서 clone/pull -> 커밋별 디렉토리; 인스턴스에서 편집 안 함)
 [ -d /root/af/.git ] || git clone -q https://github.com/wgsong0110/anchorflow.git /root/af
@@ -134,7 +138,7 @@ for i in $(seq 240); do
 done
 if [ -n "$P3D" ]; then
   rclone copy $R/vastpkg/$P3D /root/s6/ -q; export ST_P3D_WHL=/root/s6/$P3D; say "[pytorch3d 휠] $P3D"
-  if [ -z "$(rclone lsf $MK/stab_smoke_sg.done 2>/dev/null)" ]; then
+  if [ "$(rclone cat $MK/stab_smoke_sg.done 2>/dev/null | awk '{print $1}')" != springgaus ]; then    # 실패 표식은 다시 (회전 전처리 assert 고친 뒤)
     say "[Spring-Gaus 연기 띄움]"
     ST_OUT=/dev/shm/dkta/lbours/stab_smoke_sg ST_UNTIL=$(( $(date +%s) + 8 * 3600 )) ST_HARD=$(( $(date +%s) + 9 * 3600 )) ST_ARGS="--smoke 3 --par 3 --methods springgaus --scenes $SC" bash exe/stab.sh $C
     SGOK=$(python - /dev/shm/dkta/lbours/stab_smoke_sg/stab.json $SC <<'PYX'
@@ -151,7 +155,7 @@ PYX
   [ -n "$SGOK" ] && OK=${OK:+$OK,}springgaus
 else say "[pytorch3d 휠 없음] 4 h 안에 릴리스·R2 에 휠 없음 -> Spring-Gaus 보류"; fi
 # wolf·bread (정답 MPM·우리; 탄성 전용은 stab.py 가 해당 없음) -- 미러가 내려왔으면
-for i in $(seq 120); do [ -f /root/s6/wb.done ] && break; [ -n "$(jobs -rp)" ] || break; sleep 30; done
+for i in $(seq 120); do [ -f /root/s6/wb.done ] && break; kill -0 $MP 2>/dev/null || break; sleep 30; done    # 미러 내려받기 (배경) 가 끝나면 바로
 [ -f /root/s6/wb.done ] && SC="$SC,wolf,bread" || say "[wolf·bread 보류] 미러 표식 없음"
 if [ -n "$OK" ]; then
   say "[stab1 띄움] 방법 $OK 씬 $SC"
