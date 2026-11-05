@@ -2,7 +2,7 @@
 # 절 CM8 (A) 판 lego 영상 (조정자 11-05 요청): (A) 바닥 = 가우스 점 고착 (exe/fem_cm8_scn.sh --v=a), 나머지 절 CM8 판정 판 a6 와 같은 명령 (K 2 x 뉴턴 2 x PCG 6, εN 1e-2 · εP 1e-1, 결정적)
 #   + 덤프 (--dump --dump_F --dump_part: a6 판정에서 L000·0016 은 용량 늘려 다시 중 GPU 메모리 부족으로 멈췄다 -> 그때까지 프레임을 덤프, 풀이 불변)
 #   -> h5 (exe/lb_roll_to_h5.py) -> 3DGS 알파블렌딩 (exe/lb_render.py, 절 CM4 V 와 같은 인자) -> 정답 | 우리 합성 (ffmpeg; 우리 칸은 멈춘 프레임에서 정지).
-# 커밋 $1, 잡/인스턴스 안. 출력 R2 lbours/fem_cm/cm8av/v_<씬> (덤프·h5·영상 포함), 영상 result/anchorflow/v20261009/fem_cm8a_lego_{L000,0016}_cmp.mp4, 표식 lbours/fem_cm/marks/cm8av.END.
+# CM8_RENDER_ONLY=1: 덤프 단계 건너뛰고 R2 의 h5 로 렌더·합성만 (11-05 인스턴스에 matplotlib 이 없어 렌더가 실패했던 것 다시). 커밋 $1, 잡/인스턴스 안. 출력 R2 lbours/fem_cm/cm8av/v_<씬> (덤프·h5·영상 포함), 영상 result/anchorflow/v20261009/fem_cm8a_lego_{L000,0016}_cmp.mp4, 표식 lbours/fem_cm/marks/cm8av.END.
 export PATH=$HOME/bin:/home/dkta/.conda/envs/af/bin:$PATH PYTHONUTF8=1 OMP_NUM_THREADS=8
 C=$1; D=/dev/shm/dkta/impwt/$C; cd $D || exit 1
 PY=/home/dkta/.conda/envs/af/bin/python; W=/home/dkta/work
@@ -14,7 +14,8 @@ export CM_SCN=exe/fem_cm8_scn.sh
 G="--ga hht --rho 0.8 --K 2 --newton 2"; T="--tolN 1e-2 --tolP 1e-1"
 : > $L/j.txt; for t in L000 0016; do echo "v $t $G --cg 6 $T --det --v=a --dump --dump_F --dump_part" >> $L/j.txt; done
 cat $L/j.txt >> $LOG
-CM_CARDS="1 2 3 4 5 6" CM_PAR=2 CM_GAP=5 CM_TMO=3600 bash exe/fem_cm_pool.sh cm8av $L/j.txt > $M/cm8av_pool.log 2>&1
+[ -n "$CM8_RENDER_ONLY" ] || CM_CARDS="1 2 3 4 5 6" CM_PAR=2 CM_GAP=5 CM_TMO=3600 bash exe/fem_cm_pool.sh cm8av $L/j.txt > $M/cm8av_pool.log 2>&1
+if [ -n "$CM8_RENDER_ONLY" ]; then for t in L000 0016; do rclone copy $RR/v_$t $R/v_$t -q --exclude "vj/**" --exclude pred.pt; done; fi   # 렌더만 다시: h5·summary 를 R2 에서 (pred.pt 는 h5 가 있으면 불필요)
 say "[덤프 끝] $(date '+%T') $(cat $R/done.txt 2>/dev/null | tr '\n' ' ')"
 free_card() {
   local apps; apps=$(nvidia-smi --query-compute-apps=gpu_uuid --format=csv,noheader 2>/dev/null) || return
@@ -30,7 +31,7 @@ gtv() { case $1 in L000) echo lbours/fem2_lego/gt_lego.mp4;; 0016) echo lbours/f
 FF=$(command -v ffmpeg || $PY -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())")
 TF=/dev/shm/dkta/cm8avcmp; mkdir -p $TF; rclone copyto r2:storage/result/anchorflow/lbours/fem_cm/code/NotoSansCJKkr-Regular.otf $TF/font.otf -q
 rend() { local Gc=$1 t=$2; local O=$R/v_$t
-  [ -f $O/pred.pt ] || { say "[덤프 없음] v_$t: $(tail -2 $O/log.txt | tr '\n' ' ' | cut -c1-300)"; return; }
+  [ -f $O/pred.pt ] || [ -f $O/h5/meta.json ] || { say "[덤프 없음] v_$t: $(tail -2 $O/log.txt | tr '\n' ' ' | cut -c1-300)"; return; }
   local GTD; GTD=$(gtd $t)
   [ -f $O/h5/meta.json ] || $PY -u exe/lb_roll_to_h5.py --dump $O/pred.pt --traj $GTD --out $O/h5 > $O/h5.log 2>&1
   mkdir -p $O/vj
