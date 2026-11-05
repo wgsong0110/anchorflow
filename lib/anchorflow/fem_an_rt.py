@@ -361,6 +361,9 @@ __device__ __forceinline__ void Tapply(float sk, int pm, float n0, float n1, flo
     if (pm < 0) { float sn_ = __int_as_float(-pm - 1); float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2;          // 절 CM12: 접선 √k_t·법선 √k_n 따로 (pm = −1 − 비트(√k_n))
         o[0] = sk*(v[0]-vn_*n0) + sn_*vn_*n0; o[1] = sk*(v[1]-vn_*n1) + sn_*vn_*n1; o[2] = sk*(v[2]-vn_*n2) + sn_*vn_*n2; return; }
 #endif
+#ifdef AF_NCL
+    if (pm == 3) { float vn3 = v[0]*n0 + v[1]*n1 + v[2]*n2; o[0] = sk*(v[0]-vn3*n0); o[1] = sk*(v[1]-vn3*n1); o[2] = sk*(v[2]-vn3*n2); return; }   // 절 CM16 노드 법선 클램프: 접선 √k 만, 법선 0
+#endif
     if (pm == 2) { o[0] = o[1] = o[2] = 0.f; return; }
     if (pm == 0) { o[0] = sk*v[0]; o[1] = sk*v[1]; o[2] = sk*v[2]; return; }
     float vn = v[0]*n0 + v[1]*n1 + v[2]*n2;                                   // P v = v − (v·n) n (접선), (I − P) v = (v·n) n
@@ -555,6 +558,9 @@ __device__ __forceinline__ void Tmat(float sk, int pm, float n0, float n1, float
         float I = (a==b) ? 1.f : 0.f;
 #ifdef AF_FSTK
         if (pm < 0) { float Pab = I - nn[a]*nn[b]; T[a*3+b] = sk*Pab + __int_as_float(-pm - 1)*(I - Pab); continue; }
+#endif
+#ifdef AF_NCL
+        if (pm == 3) { T[a*3+b] = sk*(I - nn[a]*nn[b]); continue; }                  // 절 CM16 노드 법선 클램프 (Tapply pm 3 과 같은 T)
 #endif
         if (pm == 2) T[a*3+b] = 0.f; else if (pm == 0) T[a*3+b] = sk*I; else { float Pab = I - nn[a]*nn[b]; T[a*3+b] = sk*Pab + (I - Pab); }
     }
@@ -1988,6 +1994,72 @@ def vresify(src, k):
     return src[:i] + VRES_SRC + "\n}\n"
 
 
+NCL_SRC = r"""
+// ---- 절 CM16 노드 법선 하드 클램프 바닥 (--fl_nclamp, 사용자 지시 하드 클램프 11-05): 바닥 아래 노드의 걸음 변위 법선 성분이 음수면 0 (한쪽 구속, 위로·접선 자유, 마찰 없음) ----
+// 후보 (걸음마다, 걸음 시작에 판정): 걸음 시작 노드 위치 x_n(U) = A L_n + U_n 의 평면 부호 거리 d0 = (x_n − p)·n ≤ 0 이고 변수 바꿈이 pm 0·1 인 노드 (pm 2 고정 노드·pm < 0 은 제외).
+// 활성 집합 (고착·고정 노드와 같은 변수 바꿈 y = ŷ + T η 로 구속): 활성 노드는 pm 3 (T = √k P -- 법선 성분 0), ŷ 의 법선 성분 = U·n, η 법선 0 -> y·n = U·n (걸음 변위 법선 0).
+//   이 노드의 법선 방향은 뉴턴·PCG·선탐색에서 빠지고 (기울기 T f·헤시안 T K T·블록 대각·MG 층 0 모두 같은 T), 관성 몫의 법선 상수는 그 반복 안에서 같아 선탐색 비교에 영향 없음.
+// ncf: 0 비후보, 1 후보 (자유), 2 활성 (원래 pm 0), 3 활성 (원래 pm 1). yrn = 활성으로 바꿀 때의 원래 ŷ·n (풀 때 되돌림).
+// mode 0 걸음 시작 (시작점 정한 뒤): 후보 판정 + 넣기. mode 1 뉴턴 반복마다 (힘 f 뒤, rt_grad 앞): 빼기 -- 활성 노드의 자유 에너지 법선 기울기 g_n = Mi (y·n − yrn)/s_n² + f·n < 0
+//   (위로 가면 에너지가 줄어듦 = 구속 반력이 아래로 당겨야 하는 경우) 이면 풀어 원래 pm 로 (y 그대로). mode 2 뉴턴 반복마다 (갱신 rt_lsup 뒤): 넣기 -- 자유 후보의 (y − U)·n < 0 이면 법선 성분을 U·n 으로 투영하고 활성.
+// mode 3 걸음 끝 (진단, 결과 불변): 활성 노드 수. cnt[0] 후보 수, [1] 넣기 횟수, [2] 빼기 횟수, [3] 걸음 끝 활성 수 (모두 질량 > 0 노드; 정수 원자 -- 순서 무관).
+__device__ __forceinline__ void ncl_on(int n, float n0, float n1, float n2, const float* U, const float* sk, float* y, float* yh, float* eta, int* pm, int* ncf, float* yrn) {
+    float nn[3] = {n0, n1, n2};
+    float yhn = yh[n*3]*n0 + yh[n*3+1]*n1 + yh[n*3+2]*n2;
+    float un = U[n*3]*n0 + U[n*3+1]*n1 + U[n*3+2]*n2;
+    float en = eta[n*3]*n0 + eta[n*3+1]*n1 + eta[n*3+2]*n2;
+    float s = sk[n];
+    for (int a=0;a<3;a++) { yh[n*3+a] += (un - yhn)*nn[a]; eta[n*3+a] -= en*nn[a]; y[n*3+a] = yh[n*3+a] + s*eta[n*3+a]; }
+    ncf[n] = 2 + pm[n]; yrn[n] = yhn; pm[n] = 3;
+}
+__global__ void rt_ncl(const int* IP, int mode, const float* Am, float n0, float n1, float n2, float pn, const float* U, const float* mn, const float* meff, float itau2, const double* f,
+                       const float* sk, float* y, float* yh, float* eta, int* pm, int* ncf, float* yrn, int* cnt) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    bool mp = mn[n] > 0.f;
+    if (mode == 0) {
+        int nb1 = IP[7], nb2 = IP[8];
+        float L[3] = {(float)(IP[0] + n/(nb1*nb2)), (float)(IP[1] + (n/nb2)%nb1), (float)(IP[2] + n%nb2)};
+        float d0 = -pn; float nn[3] = {n0, n1, n2};
+        for (int a=0;a<3;a++) d0 += (Am[a*3]*L[0] + Am[a*3+1]*L[1] + Am[a*3+2]*L[2] + U[n*3+a])*nn[a];
+        int p = pm[n];
+        ncf[n] = (d0 <= 0.f && (p == 0 || p == 1)) ? 1 : 0;
+        if (ncf[n] && mp) atomicAdd(&cnt[0], 1);
+    }
+    if (mode == 0 || mode == 2) {
+        if (ncf[n] != 1) return;
+        float dn = (y[n*3]-U[n*3])*n0 + (y[n*3+1]-U[n*3+1])*n1 + (y[n*3+2]-U[n*3+2])*n2;
+        if (dn < 0.f) { ncl_on(n, n0, n1, n2, U, sk, y, yh, eta, pm, ncf, yrn); if (mp) atomicAdd(&cnt[1], 1); }
+        return;
+    }
+    if (mode == 1) {
+        int c = ncf[n]; if (c < 2) return;
+        int p0 = c - 2; float sn = (p0 == 0) ? sk[n] : 1.f;
+        if (!(sn > 1e-6f)) return;                                                       // 법선 √k ≈ 0 (구속으로 거의 고정) 은 풀지 않음
+        float yn = y[n*3]*n0 + y[n*3+1]*n1 + y[n*3+2]*n2;
+        float gn = meff[n]*itau2*(yn - yrn[n])/(sn*sn) + (float)(f[n*3]*n0 + f[n*3+1]*n1 + f[n*3+2]*n2);
+        if (!(gn < 0.f)) return;
+        float yhn = yh[n*3]*n0 + yh[n*3+1]*n1 + yh[n*3+2]*n2; float nn[3] = {n0, n1, n2};
+        float en = (yn - yrn[n])/sn;
+        for (int a=0;a<3;a++) { yh[n*3+a] += (yrn[n] - yhn)*nn[a]; eta[n*3+a] += en*nn[a]; }
+        pm[n] = p0; ncf[n] = 1;
+        if (mp) atomicAdd(&cnt[2], 1);
+        return;
+    }
+    if (mode == 3 && ncf[n] >= 2 && mp) atomicAdd(&cnt[3], 1);
+}
+"""
+
+
+def nclify(src, on):
+    """절 CM16 (--fl_nclamp): 노드 법선 하드 클램프 (AF_NCL -- Tapply·Tmat 의 pm 3, rt_ncl 커널). 끄면 소스 그대로."""
+    if not on:
+        return src
+    src = src.replace('extern "C" {', 'extern "C" {\n#define AF_NCL 1', 1)
+    i = src.rstrip().rfind("}")
+    return src[:i] + NCL_SRC + "\n}\n"
+
+
 def fstkify(src, on):
     """절 CM12 (장벽 판 위, --fl_stk): (A) 가우스 점 고착 (CM8 a 판 정의) 을 장벽 바닥과 함께 (AF_FSTK; (A) 노드 몫 버퍼 AF_ANA). 끄면 소스 그대로."""
     return src.replace('extern "C" {', 'extern "C" {\n#define AF_FSTK 1\n__device__ float* AF_ANA;', 1) if on else src
@@ -2059,6 +2131,8 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, 
         src = bnodeify(src, floor.get("bnode", ""))
         src = becellify(src, floor.get("becell", False))
         src = vresify(src, floor.get("vres", 0.0))
+    if floor and floor.get("nclamp"):                                                   # 절 CM16: 노드 법선 하드 클램프 (장벽 판 아님)
+        src = nclify(src, True)
     return skipify(src) if adapt else src
 
 
@@ -2267,6 +2341,10 @@ class RTSolver(MG2.MG2Mixin):
             if s.becell:
                 s.beC = Z(s.capN); s.beL = Z(s.capN); s.beM = Z(s.capN); s.beD = Z(s.capN, 3)
                 s.beT = torch.zeros(4 * max(s.K, s.Kc or 0) * 4, device=dev, dtype=torch.float64)
+        s.ncl = bool(s.floor and s.floor.get("nclamp"))                              # 절 CM16: 노드 법선 하드 클램프 (노드 표식·원래 ŷ·n·걸음별 수)
+        if s.ncl:
+            s.ncf = torch.zeros(s.capN, device=dev, dtype=torch.int32); s.yrn = Z(s.capN)
+            s.nccnt = torch.zeros(4 * max(s.K, s.Kc or 0) * 4, device=dev, dtype=torch.int32)
         s.Fq = Z(capQ, 9); s.Vq = Z(capQ); s.mq = Z(capQ); s.xq0 = Z(capQ, 3); s.H = Z(capQ, 81)
         if s.ncomp:                                                                    # 절 CM3: 노드 목록 (ACT[0] = 수), 블록별 수·자리
             nbk = (s.capN + 255) // 256 + 1
@@ -2577,6 +2655,8 @@ class RTSolver(MG2.MG2Mixin):
                 s.zf(s.bnf)                                                            # 절 CM14 진단: 프레임마다 노드 플래그 비움
             if s.becell:
                 s.zf(s.beM, 9, 1); s.zf(s.beT)                                         # 절 CM14.3 진단: 프레임 안 최대·걸음별 합 비움
+        if getattr(s, "ncl", False):
+            s.zf(s.nccnt)                                                              # 절 CM16 진단: 프레임마다 걸음별 수 비움
         if s.matk:
             s.mat_pre_p2g()                                                            # 절 CM2 재질 판: 구속 입자 v·a (순차 방출)
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv),
@@ -2694,6 +2774,10 @@ class RTSolver(MG2.MG2Mixin):
                 s.k("rt_y0pick", 1, (P(s.SC), NC0), b=1)
                 s.dcopy(s.Y0S[kstep], s.SC)                                            # 진단: 고른 c = SC14
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0)), b=256)
+            if getattr(s, "ncl", False):                                               # 절 CM16: 걸음 시작 후보 판정 (걸음 시작 노드 위치) + 시작점에서 첫 활성 집합
+                NCA = lambda mode_, it2_=it2: (P(IP), i32(mode_), P(s.A), *[f(q) for q in nr], f(FL["PN"]), P(s.U), P(s.mn), P(s.meff), it2_, P(s.f), P(s.sk), P(s.y), P(s.yh), P(s.eta), P(s.pm),
+                                              P(s.ncf), P(s.yrn), P(s.nccnt[4 * kstep:]))
+                s.k("rt_ncl", capN, NCA(0), b=256)
             s.ctl(1)
             for it in range(s.nt):
                 s.ctl(2, it)
@@ -2724,6 +2808,8 @@ class RTSolver(MG2.MG2Mixin):
                         s._mgb_on = True
                 if it == 0:
                     s.k("rt_meff", capN, (P(IP), P(s.mn), P(s.B), f(s.mfloor * sg["tau"] ** 2), P(s.meff)), b=256)
+                if getattr(s, "ncl", False):                                           # 절 CM16: 활성 집합 빼기 (자유 에너지 법선 기울기 < 0 이면 풂; y 그대로)
+                    s.k("rt_ncl", capN, NCA(1), b=256)
                 s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 s.ctl(3, it)
                 if s.nl > 1:                                                           # MG 전처리: z = V(r) 로 바꿔 시작
@@ -2826,7 +2912,11 @@ class RTSolver(MG2.MG2Mixin):
                     s.k("rt_kstep", 1, (P(s.kk), P(s.SC)), b=1)
                     s.dcopy(s.BSK[kstep * s.nt + it], s.kk)                           # 절 CM6 진단: 반복별 보폭 k
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.ls or fbar) else 1)), b=256)
+                if getattr(s, "ncl", False):                                           # 절 CM16: 활성 집합 넣기 (갱신 뒤 (y − U)·n < 0 인 자유 후보를 투영)
+                    s.k("rt_ncl", capN, NCA(2), b=256)
             s.ctl(8)
+            if getattr(s, "ncl", False):                                               # 절 CM16 진단 (결과 불변): 걸음 끝 활성 노드 수
+                s.k("rt_ncl", capN, NCA(3), b=256)
             if getattr(s, "becell", False):                                            # 절 CM14.3 진단 (결과 불변): 걸음 끝 y 에서 칸별 장벽 에너지 -> EL·EM, 걸음 합 -> beT[4 kstep ..]
                 s.k("rt_bare_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.U), f(sg["thinv"]), *BA, P(s.Vq), P(s.beC), P(s.beT[4 * kstep:])))
                 if s.bnode:
@@ -3157,6 +3247,11 @@ class RTSolver(MG2.MG2Mixin):
         cid = torch.arange(nq, device=fl.device) >> 3
         return dict(neng=int(eng.sum()), nocc=int(occ.sum()), ceng=int(torch.unique(cid[eng]).numel()), nc=nq // 8,
                     ccr=int(torch.unique(cid[cr]).numel()), ncr=int(cr.sum()), engcr=int((eng & cr).sum()))
+
+    def ncl_counts(s):
+        """절 CM16 진단: 걸음별 [후보 수, 넣기 횟수, 빼기 횟수, 걸음 끝 활성 수] (질량 > 0 노드)."""
+        c = s.nccnt[:4 * s.nstage].view(-1, 4).cpu().tolist()
+        return dict(cand=[q[0] for q in c], on=[q[1] for q in c], off=[q[2] for q in c], act=[q[3] for q in c])
 
     def barn_counts(s):
         """절 CM14 진단 (결과 불변): 이 프레임 노드 장벽이 걸린 노드 (어느 뉴턴 반복에서든 활성이고 d < d̂_n) 수, 부피 > 0 노드 수 (마지막 걸음 V_n), 어느 걸음 시작에서 d ≤ 0 이라 빠진 노드 수."""

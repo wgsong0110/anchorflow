@@ -5631,3 +5631,29 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
   -> **저항 바닥에서는 wolf 가 무너진다** (질량중심 z 가 프레임 30 까지 정답을 따라감: 강 607.8 대 정답 572.6, (B) 852.3) -- 순차 방출 구속은 (B) 와 같은 코드 그대로이므로, (B) 가 안 무너지는 차이는 구속이 아니라 바닥 (장벽·띠 고착) 쪽 몫으로 읽힘 (절 CM15.1 의 코드 대조와 맞음). 다만 접선 자유·밀어내는 힘 없음이라 바닥 밑으로 가라앉으며 (끝 421·980 mm) 옆으로 정답의 2~3 배 퍼짐.
 - lego: 저항 바닥은 몸을 바닥 위로 되돌리는 힘이 없어 L000·0016 이 계속 가라앉고 L000 은 두 판 모두 프레임 28~29, 0016 강은 24 에서 발산 (약 0016 은 완주하나 42 %). 낙하 반발은 강 0.43 (정답 0.75), 약은 튀지 않음.
 - 영상 (로컬 합성, exe/fem_vres_compose.py 그대로; 가로 2880·3600, yuv420p, faststart 확인): result/anchorflow/v20261009/fem_vres_lego_L000_cmp.mp4 (정답 | (B) | 강 | 약, 발산 판은 마지막 프레임 정지), fem_vres_wolf_cmp.mp4 (정답 | (A) | (B) | 강 | 약). 출력 R2 lbours/fem_cm/vres/<판>_<씬> (log·summary·fem.jsonl, wolf·L000·drop1 pred.pt, wolf·L000 h5·vj).
+## CM16. 노드 법선 하드 클램프 바닥 (--fl_nclamp, **사용자 지시 하드 클램프** 11-05 -- 이번 실험에 한해 클램프 허용) -- 채택 판 (B) 의 바닥 장벽·띠 고착 대신 "바닥 아래 노드는 바닥 쪽 (−n) 으로 못 움직임" -- 가지 implicit-bspline, 묶음 nclamp (vast.ai A6000 1 장, exe/vast_nclamp.sh)
+### CM16.0 정의 (나머지는 절 CM8 b 판 명령 그대로: HHT ρ 0.8, K 2, 뉴턴 2, εN 1e-2 · εP 1e-1, PCG 상한 lego·낙하 4 · wolf 5, BA = exe/fem_cm3_scn.sh)
+- **명령**: (B) 의 바닥 글자 `--floor vel --fl_bar --fl_bst 1 --y0eb` 에서 장벽 `--fl_bar`·띠 고착 `--fl_bst 1`·장벽 기준 시작점 섞기 `--y0eb` 를 빼고 (= cm_scene `--v=a` 의 `--floor vel`, 절 CM15 와 같은 기준) `--fl_nclamp` 를 더함.
+  바닥 고착 몫 KEX = 0 (플래그가 정함 -- 노드 고착 인자 1, 접선 자유, **마찰 없음**; 걸음 끝 고착 가속도 0 처치도 없음). 장벽 없는 판이라 시작점은 관성 예측 ŷ 그대로 (절 CM2.0 (3)·CM15 와 같음).
+- **판정 기준 = 걸음 시작 노드 위치**: 걸음마다 그 걸음 시작에 노드 위치 x_n(U) = A L_n + U_n (L_n = 노드 격자 좌표, 절 CM14 노드 장벽과 같은 식; U = 프레임 시작부터 그 걸음 시작까지의 노드 변위) 의 평면 부호 거리 d0 = (x_n − p)·n 이
+  **d0 ≤ 0 (평면 아래 또는 평면 위 0 거리)** 인 노드가 그 걸음의 **후보**. 변수 바꿈이 고정 (pm 2: 구속 상자·재질 판 거의 빈 노드) 인 노드는 후보에서 뺌. 후보 판정은 걸음 안에서 바꾸지 않음.
+- **클램프 (한쪽 구속)**: 후보 노드의 걸음 변위 법선 성분 (y − U)·n (걸음 끝 이동 thinv (y − U) 와 부호 같음) 이 음수면 0 으로 -- 위로 (+n)·접선 이동은 자유. 걸음 끝 HHT 속도·가속도 갱신 (rt_ga_end) 은 그대로 (클램프 노드에 따로 처치 없음).
+- **구현 = 고착·고정 노드와 같은 변수 바꿈 y = ŷ + T η 의 활성 집합** (lib/anchorflow/fem_an_rt.py NCL_SRC rt_ncl·nclify, Tapply·Tmat 의 pm 3 은 `#ifdef AF_NCL`):
+  활성 노드는 pm 3 -- T = √k P (P = I − n nᵀ, 법선 성분 0; 이 판은 √k = 1 이고 재질 판 구속 노드는 √k_구속), ŷ 의 법선 성분 = U·n, η 의 법선 성분 0 -> y·n = U·n.
+  그래서 이 노드의 법선 방향은 뉴턴 기울기 (T f)·PCG 곱 (T K T)·블록 대각 전처리·MG 층 0·선탐색 후보 (y = ŷ + T (η + c δ)) 에서 모두 빠짐 (고착 노드가 같은 T 경로로 묶이는 것과 같은 방식). 관성 몫의 법선 상수는 한 반복 안에서 활성 집합이 같아 선탐색 비교에 영향 없음.
+- **활성 집합 갱신 (뉴턴 반복마다)**:
+  (1) 걸음 시작 (시작점 정한 뒤, 뉴턴 전): 후보 판정 + 시작점의 (y − U)·n < 0 인 후보를 넣음 (법선 성분을 U·n 으로 투영).
+  (2) 뉴턴 반복마다 힘 f 계산 뒤·rt_grad 앞 = **빼기**: 활성 노드의 자유 에너지 법선 기울기 g_n = M_i (y·n − ŷ0·n)/s_n² + f·n (ŷ0 = 넣기 전 원래 ŷ, s_n = 원래 T 의 법선 배율) 가 **음수** (위로 가면 에너지가 줄어듦 = 구속 반력이 아래로 당겨야 하는 경우) 이면 풀어 원래 변수 바꿈으로 (y 는 그대로).
+  (3) 뉴턴 반복마다 갱신 rt_lsup 뒤 = **넣기**: 자유 후보 중 (y − U)·n < 0 이 된 노드를 투영해 넣음. 그래서 걸음 끝 y 는 늘 클램프를 만족 (마지막 반복 뒤에도 넣기). 선탐색 후보 자체는 투영하지 않음 (투영은 갱신 뒤).
+  허용치 조기 종료로 건너뛴 반복은 y 가 안 바뀌므로 갱신도 없음.
+- 진단 (결과 불변): fem.jsonl `ncl` = 걸음별 cand (후보 노드 수), on (넣기 횟수), off (빼기 횟수), act (걸음 끝 활성 노드 수) -- 모두 질량 > 0 노드. `--pen` (바닥 아래 입자 수·최대 깊이, 정답 포함).
+- **끄면 같은 기계어**: 플래그 없으면 build_src 가 AF_NCL 을 정의하지 않고 rt_ncl 을 붙이지 않음, 호스트 호출은 모두 `if s.ncl`. 로컬 대조: 원래 커밋 070341c 대비 생성 CUDA 소스 차이는 `#ifdef AF_NCL` 블록 두 개뿐이고
+  전처리 (g++ -E) 결과가 같음 -- 결정적 판·재질 판 x (B) 장벽·(A) 고착 4 가지. 실행 대조는 묶음 o_ 끝 해시 대 앞 인스턴스 해시 (wolf 9b119d8fd3 · L000 c43a42c7d0 · 0016 f89f6fb659 · drop1 de2e854bf7).
+  커널 단위 확인 (로컬 g++ 로 rt_ncl·Tapply 를 CPU 실행, 무작위 2 만 개): 넣기 뒤 y = ŷ + T η 와 (y − U)·n = 0, 접선 성분 그대로 (최대 차 5e-9), 빼기 뒤 y 그대로 (5.6e-9).
+- 구현 파일: lib/anchorflow/fem_an_rt.py (NCL_SRC·nclify, RTSolver.ncl·ncf·yrn·nccnt·ncl_counts, record 의 네 자리), exe/fem_an_rt_sim.py (--fl_nclamp; 장벽·고착·저항 플래그와 함께 쓰면 assert). 재질 판 (wolf, MatRT) 도 같은 build_src·record 경로.
+### CM16.1 묶음 nclamp (exe/vast_nclamp.sh, 표 exe/fem_nclamp_table.py, 합성 exe/fem_vres_compose.py 그대로 (로컬); 모두 결정적 --det, 카드 0 에 세 줄로 동시에 -- 시간 측정 아님)
+- 연기 3 프레임 (결정적 nc L000·wolf, 비결정 nc L000; 명령에 --fl_nclamp 있고 --fl_bar·--fl_bst·--y0eb·--fl_vres 없는지 확인) -> 통과해야 본 묶음 (실패면 기록 올리고 destroy).
+- 판 nc = 클램프, 대조 o = (B) 그대로 (새 코드 플래그 없음 + --pen) x 씬 L000·0016·drop1·wolf. nc wolf·L000 은 + --hgt --pen --dump --dump_F --dump_part (영상·높이 곡선), 나머지는 + --pen (o wolf 는 + --hgt). 세 줄 동시에서 GPU 메모리 부족이면 그 판만 단독으로 다시.
+- 비교 칸 재사용: (A) wolf = 절 CM12 barstick a_wolf, (B) wolf = 절 CM10 barx x_wolf, (B) L000 영상 = 절 CM15 vres o_L000, 저항 강 = 절 CM15 vres vs_<씬> (o 해시가 같으면 같은 결과).
+- 영상: lego L000 (정답 | (B) | 저항 강 | 클램프), wolf (정답 | (A) | (B) | 저항 강 | 클램프) (3DGS 알파블렌딩, exe/lb_render.py 는 인스턴스, 합성은 로컬; 가로 4096 이하·yuv420p·faststart) -> result/anchorflow/v20261009/fem_nclamp_{lego_L000,wolf}_cmp.mp4.
+- 출력 R2 lbours/fem_cm/nclamp/<판>_<씬>, 표 lbours/fem_cm/marks/nclamp_table.md, 로그 marks/nclamp.log, 끝 표식 marks/nclamp.END.

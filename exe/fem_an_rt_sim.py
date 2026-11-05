@@ -39,6 +39,7 @@ ap.add_argument("--bar_cnt", action="store_true", help="절 CM10 진단 (결과 
 ap.add_argument("--bar_node", default="", choices=["", "add", "only"], help="절 CM14 (--fl_bar 위, 사용자 승인 11-05 정의 변경): B-스플라인 노드 위치의 바닥 위 높이 d_n 에 같은 IPC 장벽 (κ_n = (λ+2μ) V_n / d̂_n², V_n = Σ_q w V_q; 노드 대각). add = 표본점 장벽에 더함, only = 노드 장벽만 (띠 고착은 표본점 그대로)")
 ap.add_argument("--bar_ecell", action="store_true", help="절 CM14.3 진단 (결과 불변, --fl_bar 위): 걸음 끝 장벽 에너지를 칸별로 (표본점 -> 그 칸, 노드 -> 노드가 가운데인 칸) -> fem.jsonl be (합) + bener.pt (프레임별 칸 목록: 가운데 노드·프레임 끝 EL·프레임 안 걸음 끝 최대 EM·꼭짓점 8 개)")
 ap.add_argument("--fl_vres", type=float, default=0.0, help="절 CM15 (사용자 승인 11-05 정의 변경, --fl_bar·--fl_bst·--y0eb 없이): 바닥 = 장벽·고착 대신 −z 저항 -- 걸음 시작 위치가 평면 아래인 표본점 (장벽과 같은 팔분 질량 중심) 의 법선 이동 s = (x(y) − x(U))·n < 0 에 E = ½ c m_q s², c = k / (τ² thinv²) (k = 이 값, 관성 계수 기준; 후퇴 오일러 k/h², HHT ρ 0.8 2.88 k/h²), 접선 자유")
+ap.add_argument("--fl_nclamp", action="store_true", help="절 CM16 (사용자 지시 하드 클램프 11-05, --fl_bar·--fl_bst·--y0eb 없이): 바닥 = 걸음 시작 노드 위치 (A L + U) 가 평면 위 0 거리 이하인 노드의 걸음 변위 법선 성분이 음수면 0 (한쪽 구속, 활성 집합을 뉴턴 반복마다 갱신; 위로·접선 자유, 마찰 없음 -- 고착 KEX 0)")
 ap.add_argument("--pen", action="store_true", help="절 CM15 진단 (결과 불변, 바닥 씬): 프레임마다 바닥 평면 아래 입자 수·최대 침투 깊이 (우리·정답), 저항 바닥이면 걸음 시작 위치가 평면 아래인 표본점 수 (마지막 걸음) -> fem.jsonl pen")
 ap.add_argument("--bar_ndh", type=float, default=0.5, help="절 CM14: 노드 장벽 두께 d̂_n = 이 값 x dx_정답 (기본 ½ = 표본점 장벽 d̂ 와 같음)")
 ap.add_argument("--bar_full", action="store_true", help="절 AN.21: 장벽 헤시안 곱을 덩어리 대신 점별 w wᵀ 참 꼴로 (블록 대각 전처리에는 덩어리 값)")
@@ -143,6 +144,9 @@ if a.floor == "vel":
     if a.fl_vres > 0:                                                                  # 절 CM15: 표본점 버퍼만 장벽 판 것을 씀 (bar), 장벽 에너지·고착 (KEX 0 -> 노드 고착 인자 1) 없음
         assert not (a.fl_bar or a.fl_bst or a.fl_stk or a.bar_node or a.bar_cross or a.bar_cnt or a.bar_ecell or a.bar_full or a.fl_pt or a.y0eb), "--fl_vres 는 장벽·고착 플래그 없이 (절 CM15)"
         FL.update(bar=True, vres=float(a.fl_vres), KEX=0.0, bst=0)
+    if a.fl_nclamp:                                                                    # 절 CM16: 노드 법선 하드 클램프 -- 장벽·고착 (KEX 0 -> 노드 고착 인자 1) 없음
+        assert not (a.fl_bar or a.fl_bst or a.fl_stk or a.bar_node or a.bar_cross or a.bar_cnt or a.bar_ecell or a.bar_full or a.fl_pt or a.y0eb or a.fl_vres), "--fl_nclamp 는 장벽·고착·저항 플래그 없이 (절 CM16)"
+        FL.update(nclamp=True, KEX=0.0, bst=0)
 BC = None
 if a.cfg_bc:
     BC = []
@@ -301,6 +305,8 @@ for fi in range(L):
         c["pen"] = dict(np=int((_hp < 0).sum()), dmax=float((-_hp.min()).clamp(min=0)) if _hp.numel() else None, gnp=int((_hg < 0).sum()), gdmax=float((-_hg.min()).clamp(min=0)))
         if getattr(S, "vres", 0.0):
             _nq = int(S.IP[12]); c["pen"]["nq"] = int(((S.bact[:_nq] > 0) & (S.bx[:_nq * 4].view(-1, 4)[:, 3] > 0)).sum())
+    if getattr(S, "ncl", False):                                                       # 절 CM16 진단 (결과 불변): 걸음별 후보·넣기·빼기·걸음 끝 활성 노드 수
+        c["ncl"] = S.ncl_counts()
     if S.y0ut and getattr(S, "bar", False) and not getattr(S, "vres", 0.0):           # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k, 0 = ŷ 그대로)
         c["y0k"] = S.Y0K[:S.nstage, 0].cpu().tolist()
         if not S.ls:                                                                   # 절 CM6 진단: 선탐색 없는 장벽 판 (재질) 뉴턴 반복별 보폭 k (상한까지 펼친 자리; 허용치로 건너뛴 반복은 앞 값)
