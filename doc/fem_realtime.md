@@ -5558,6 +5558,28 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
   - 읽기 (원인 확인 안 함): 노드 장벽은 바닥 위 노드의 이동을 막아, 바닥 가까운 칸의 B-스플라인 기저가 걸친 재료 전체를 노드 위치 기준으로 띄워 받친다 -- lego 가 정답보다 높게 떠 오차가 커진 것으로 보이나 높이 곡선은 lego 에서 재지 않았음.
 - 영상: result/anchorflow/v20261009/fem_barnode_lego_L000_cmp.mp4 (정답 | (B) | na5 | na7 | no5 | no7), fem_barnode_wolf_cmp.mp4 (정답 | (A) | (B) | na5 | na7 | no5 | no7). 출력 R2 lbours/fem_cm/barnode/<판>_<씬> (log·summary·fem.jsonl·drop_ana, wolf·L000 pred.pt·h5·vj).
 
+### CM14.3 장벽 에너지 칸 영상·곡선 (조정자 11-05 사용자 요청: 절 CM14 노드 장벽 비교 영상에 장벽 걸리는 칸을 에너지 크기 색으로 반투명 겹침 + 프레임별 에너지 곡선) -- 묶음 barnode_e (exe/vast_barnode_e.sh, 커밋 a8b2adb)
+- **진단 `--bar_ecell`** (exe/fem_an_rt_sim.py, lib/anchorflow/fem_an_rt.py BARE_SRC·becellify·RTSolver.bar_ecell; 결과 불변 -- 풀이 버퍼는 읽기만, 끄면 생성 CUDA 소스·그래프 그대로):
+  - 시점 = **걸음 끝** (뉴턴 고리 뒤 ctl(8), rt_ga_end 전): 풀이 장벽과 같은 식·같은 항 -- 활성 (AF_BACT / AF_BNACT) 이고 0 < d < d̂ 인 표본점·노드의 b(d) = −κ (d − d̂)² ln(d/d̂), 이동 = U + thinv (y − U). d ≤ 0 (풀이에서는 1e30) 은 에너지에 안 넣고 따로 셈 -- 이번 10 판 모두 0.
+  - **칸 배정**: 칸 = B-스플라인 칸 (L ∈ [b+½, b+1½)³, 입자 배정 범위, 가운데 노드 b+1). 표본점 장벽 -> 그 점이 속한 칸, **노드 장벽 -> 그 노드가 가운데인 칸** (base = 노드 − 1; 이차 B-스플라인에서 노드는 칸 꼭짓점이 아니라 칸 가운데라 "노드를 둘러싼 칸들에 나눔" 은 쓰지 않음, 칸에 입자가 없어도 그 칸).
+  - **프레임 값 두 가지**: 프레임 끝 = 마지막 걸음 끝 값 (EL), **프레임 안 최대 = 걸음 끝 (K = 2) 값의 칸별 최대 (EM)**; 합은 Eend = Σ EL, Emax = 걸음 끝 전체 합의 최대 -> fem.jsonl `be` (eq·en 걸음별 표본점·노드 몫, ncl·ncm 칸 수), 칸 목록 (가운데 노드 전역 좌표·EL·EM·프레임 끝 꼭짓점 8 개 = A L + 둘레 노드 8 개 이동 평균, 이차 기저의 꼭짓점 값) -> bener.pt.
+- **같은 명령으로 다시** (vast 59255761, offer 59184281 machine 24997 Virginia, 상향 787 / 하향 616 Mbps, A6000 300 W = 기본, blocklist hosts·machines 둘 다 걸러 없음; 11:35~12:01 UTC, R2 확인 차이 0 -> 스스로 destroy): CM14 의 L000·wolf 명령 그대로 + `--bar_ecell` (o_wolf 는 + --dump 류). **끝 해시 10 판 모두 CM14.2 와 같음** -- o c43a42c7d0 / 9b119d8fd3, na5 8fe29f5418 / 5e8d9b835c, na7 3ebad75624 / 097361f982, no5 3e9a81c639 / 5e8d9b835c, no7 2c66cf6816 / 097361f982 (L000 / wolf; 다른 machine 이어도 같음. 묶음 로그의 "0 / 10 같음" 은 해시 grep 틀 오류 -- summary.json 직접 대조).
+  앞 두 인스턴스 (59241594·59242010, machine 26359) 는 연기 렌더에서 실패 (--erange 음수 인자, cv2 polylines) -> 스스로 destroy; 그 연기 판 해시도 CM14 연기와 같음 (8dbcaa2dfc·3418ceb1d5). 같은 offer 다시 만들기 둘 (59254854·59255331) 은 시작 안 됨 -> destroy.
+- **영상** (3DGS 알파블렌딩 위에 같은 카메라로 칸 상자, exe/lb_render.py --cells + exe/cell_overlay.py): 색 = log10 EM (프레임 안 최대), inferno, **고정 범위 1e-6 ~ 1e2 = 두 씬·모든 판·모든 칸 공통** (모든 EM > 0 의 최대 올림 1e2, 1 백분위 내림이 1e-6 -- 정규화 없음), 알파 0.4, 먼 칸·먼 면부터 (가우시안과 깊이 가림 없음 -- 렌더 위에 겹침), 위치 = 프레임 끝 꼭짓점. 정답·(A) 칸은 장벽 없음이라 CM14 영상 그대로.
+  두 줄 격자 + 색 막대·정의 범례 (exe/fem_bener_compose.py, ffmpeg yuv420p faststart): result/anchorflow/v20261009/fem_barnode_lego_L000_energy_cmp.mp4 (2580x1730, 정답 | (B) | na5 / na7 | no5 | no7), fem_barnode_wolf_energy_cmp.mp4 (3300x1730, 정답 | (A) | (B) | na5 / na7 | no5 | no7). 판 이름의 d̂ 는 글꼴에 없어 "두께" 로 (로컬에서 같은 칸 영상으로 다시 합성한 것이 최종본).
+- **곡선**: result/anchorflow/v20261009/fem_barnode_energy_curve.png (exe/fem_bener_curve.py; 위 = 장벽 에너지 합 로그축, 실선 Eend · 점선 Emax, 아래 = 장벽 걸린 칸 수 실선 ncl · 점선 ncm; 판별 고정 색).
+- 수치 (프레임 평균; 에너지는 시뮬 단위):
+
+| 판 | L000 Eend · Emax | L000 칸 (끝 평균 / 최대) | wolf Eend · Emax | wolf 칸 (끝 평균 / 최대) |
+|---|---|---|---|---|
+| (B) o | 1.92 · 2.34 | 46 / 124 | 0.097 · 0.111 | 9 / 40 |
+| (가) na5 | 0.28 · 1.97 | 225 / 300 | 33.6 · 34.4 | 310 / 455 |
+| (가) na7 | 1.14 · 7.11 | 419 / 633 | 57.7 · 67.9 | 226 / 332 |
+| (나) no5 | 0.39 · 2.50 | 221 / 344 | = na5 | = na5 |
+| (나) no7 | 1.72 · 10.1 | 477 / 667 | = na7 | = na7 |
+
+  - 노드 장벽 판은 에너지가 거의 모두 노드 몫 (더함 판도 표본점 몫 ~0 -- CM14.2 의 "표본점은 띠에 거의 안 닿음" 과 같음). lego 노드 판은 걸린 칸이 (B) 의 5~10 배이고 Emax 가 Eend 의 6~7 배 -- 걸음 1 끝에 크고 걸음 2 끝에 줄어듦.
+  - wolf: (B) 는 프레임 19 부터 걸림 (0.01 ~ 0.3), 노드 판은 프레임 1 부터 34 ~ 135 (처음부터 바닥 가까운 노드가 띠 안) 로 2~3 자리 큼; ½ 판은 프레임 40 뒤 0.04 까지 줄고 ¾ 판은 1 ~ 10 에 남음.
 ## CM15. −z 저항 바닥 (--fl_vres k, 사용자 승인 11-05 정의 변경) -- 채택 판 (B) 의 바닥 장벽·띠 고착 대신 "바닥 밑에서는 바닥 법선 반대 방향 속도에 저항" -- 가지 implicit-bspline, 묶음 vres (vast.ai A6000 1 장, exe/vast_vres.sh)
 ### CM15.0 정의 (나머지는 절 CM8 b 판 명령 그대로: HHT ρ 0.8, K 2, 뉴턴 2, εN 1e-2 · εP 1e-1, PCG 상한 lego·낙하 4 · wolf 5, BA = exe/fem_cm3_scn.sh)
 - **명령**: (B) 의 바닥 글자 `--floor vel --fl_bar --fl_bst 1 --y0eb` 에서 장벽 `--fl_bar`·띠 고착 `--fl_bst 1`·장벽 기준 시작점 섞기 `--y0eb` 를 빼고 (= cm_scene `--v=a` 의 `--floor vel`) `--fl_vres k` 를 더함. 바닥 고착 몫 KEX = 0 (노드 고착 인자 1 -- 접선 자유, 마찰 없음; 걸음 끝 고착 가속도 0 도 없음).
