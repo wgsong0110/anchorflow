@@ -23,12 +23,11 @@ ap.add_argument("--lj0", type=float, default=-0.04)
 ap.add_argument("--gt_jp", required=True)
 ap.add_argument("--gt_new", required=True, help="다시 돌린 정답 h5 폴더")
 ap.add_argument("--gt_orig", required=True, help="원래 정답 h5 폴더")
-ap.add_argument("--data", required=True, help="wm.pt (_ext)")
+ap.add_argument("--data", default="", help="(안 씀)")
 ap.add_argument("--vmin", type=float, default=-0.2)
 ap.add_argument("--vmax", type=float, default=0.4)
 ap.add_argument("--out", required=True)
 a = ap.parse_args()
-EXT = float(torch.load(a.data, map_location="cpu", weights_only=False, mmap=True)["_ext"])
 
 
 def st(v, fin):
@@ -44,6 +43,9 @@ def h5x(p):
     return x.T if x.shape[0] == 3 else x
 
 
+fo = sorted(glob.glob(f"{a.gt_orig}/sim_*.h5")); fn = sorted(glob.glob(f"{a.gt_new}/sim_*.h5"))
+_x0 = h5x(fo[0]); _x0 = _x0[np.isfinite(_x0).all(1)]
+EXT = float(np.linalg.norm(_x0.max(0) - _x0.min(0)))          # deform_model.extent 와 같은 정의 (원래 정답 0 프레임 바운딩박스 대각선) = 우리 오차의 분모
 O = dict(ext=EXT, vmin=a.vmin, vmax=a.vmax, ours=[], gt=[], gt_pos=[])
 LJ = torch.load(a.ours_lj, map_location="cpu", weights_only=False)["logJp"].numpy()
 P = torch.load(a.ours_pred, map_location="cpu", weights_only=False, mmap=True)["pred"]
@@ -54,7 +56,6 @@ O["ours"].append(st(np.full(N, a.lj0, np.float32), np.ones(N, bool)))
 for i in range(LJ.shape[0]):
     np.save(f"{a.ours_sc}/sc_{i + 1:04d}.npy", LJ[i].astype(np.float32))
     O["ours"].append(st(LJ[i], np.isfinite(P[i].numpy()).all(1) & np.isfinite(LJ[i])))
-fo = sorted(glob.glob(f"{a.gt_orig}/sim_*.h5")); fn = sorted(glob.glob(f"{a.gt_new}/sim_*.h5"))
 for t in range(len(fn)):
     jp = np.load(f"{a.gt_jp}/sc_{t:04d}.npy"); xn = h5x(fn[t])
     O["gt"].append(st(jp, np.isfinite(xn).all(1) & np.isfinite(jp)))

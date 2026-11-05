@@ -76,12 +76,14 @@ O=$B/s_d; mkdir -p $O
 export CUPY_CACHE_DIR=/dev/shm/dkta/cache/cupy_wmd; mkdir -p $CUPY_CACHE_DIR
 cm_scene wm --gq_mass --gq_chk --dump --nan_step --jdiag --elx snh --dump_lj
 echo "$(cat .done) $(date '+%F %T') $SIM $DA $XA" > $O/run_info.txt
-CUDA_VISIBLE_DEVICES=0 timeout 3600 $PY -u $SIM --out $O --tag wm $DA $XA < /dev/null > $O/log.txt 2>&1; echo "rc=$? $(date '+%F %T')" >> $O/run_info.txt
+if [ -s $O/lj.pt ] && [ -s $O/pred.pt ]; then say "  [우리] 이미 있음 (이어 돌리기) $(grep -a '롤아웃' $O/log.txt | tail -1 | cut -c1-200)"; else
+CUDA_VISIBLE_DEVICES=0 timeout 3600 $PY -u $SIM --out $O --tag wm $DA $XA < /dev/null > $O/log.txt 2>&1; echo "rc=$? $(date '+%F %T')" >> $O/run_info.txt; fi
 say "  [우리] $(tail -1 $O/run_info.txt) $(grep -a '롤아웃\|발산\|rror' $O/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
 rclone copy $O $RR/s_d -q --transfers 8 &
 # ---- (나) 정답 GF 공식 러너 다시 (같은 config·러너·3DGS) + 프레임별 logJp 덤프
 G=/workspace/gfn; mkdir -p $G
-(cd $W/GaussianFluent && CUDA_VISIBLE_DEVICES=0 GF_MODEL_ROOT=$W/GaussianFluent/model timeout 7200 $PY -u $D/exe/gf_wm_jp.py --jp_out $G/jp -- $GFR --model_path $WMM --config $CFG --output_path $G/out --output_h5 < /dev/null > $G/gf.log 2>&1); echo "rc=$?" >> $G/gf.log
+if [ "$(ls $G/jp 2>/dev/null | wc -l)" = 101 ] && grep -q "^rc=0" $G/gf.log 2>/dev/null; then say "  [정답 다시] 이미 있음 (이어 돌리기)"; else
+(cd $W/GaussianFluent && CUDA_VISIBLE_DEVICES=0 GF_MODEL_ROOT=$W/GaussianFluent/model timeout 7200 $PY -u $D/exe/gf_wm_jp.py --jp_out $G/jp -- $GFR --model_path $WMM --config $CFG --output_path $G/out --output_h5 < /dev/null > $G/gf.log 2>&1); echo "rc=$?" >> $G/gf.log; fi
 say "  [정답 다시] $(tail -1 $G/gf.log) h5 $(ls $G/out/simulation_ply 2>/dev/null | wc -l) jp $(ls $G/jp 2>/dev/null | wc -l) $(grep -a '^\[jp\]' $G/gf.log | tail -1)"
 wait
 # ---- (다) 통계 + 렌더용 궤적 (GPU 렌더 둘 동시에)
