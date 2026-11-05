@@ -1,6 +1,6 @@
 #!/bin/bash
 # 절 S.8 묶음 (vast.ai A6000 4 장 인스턴스, exe/vast_s6.sh S6_PART=s8 가 세팅 뒤 부름; 커밋 $1 디렉토리에서):
-#   (1) 우리 (B) L000 K 4 발산 진단 exe/stab_k4diag.sh (카드 3 을 anerr_claim 으로 잡음) -> R2 lbours/stab_k4diag
+#   (1) 우리 (B) L000 K 4 발산 진단 exe/stab_k4diag.sh (마지막 카드를 anerr_claim 으로 잡음) -> R2 lbours/stab_k4diag
 #   (2) stab 빈칸 채우기 = exe/stab.sh 이어 돌리기 (방법 mpm·vrgs·bnv·ours·phystwin·simplicits x L000·ficus·wolf·bread; 끝난 판 건너뜀):
 #       정답 MPM L000·ficus 덤프·시간 판 다시 시도 (stab.py RETRY), wolf·bread 시각 품질 (pg_h5_to_pt 정렬 수정 8e478e0 뒤 정답 렌더 디렉토리 다시)
 #   (3) Spring-Gaus 연기 (L000·ficus, 3 프레임) -> 통과하면 본 판 (같은 R2 lbours/stab). 실패하면 /root/s6/sg_commit 에 고친 커밋이 들어올 때까지
@@ -24,12 +24,13 @@ mkdir -p /dev/shm/dkta/anerr_claim /dev/shm/dkta/pylib
 say "[시작] 커밋 $C pytorch3d ${P3D:-없음}"
 bash exe/stab_bl_setup.sh /dev/shm/dkta/pylib/bl_env.sh > /root/s6/bl_setup_s8.log 2>&1; say "[bl_setup] $(tail -1 /root/s6/bl_setup_s8.log)"
 rclone copy /root/s6/bl_setup_s8.log $R/lbours/stab_k4diag/ -q
-# ---- (1) 진단 (카드 3)
-( echo $BASHPID > /dev/shm/dkta/anerr_claim/3
+# ---- (1) 진단 (마지막 카드; 4 장이면 3)
+KC=$(( $(nvidia-smi -L | wc -l) - 1 ))
+( echo $BASHPID > /dev/shm/dkta/anerr_claim/$KC
   K4O=/dev/shm/dkta/lbours/stab_k4diag
   ( while true; do sleep 300; rclone copy $K4O $R/lbours/stab_k4diag -q; done ) & KS=$!
-  bash exe/stab_k4diag.sh 3 $K4O; kill $KS; rclone copy $K4O $R/lbours/stab_k4diag -q
-  rm -f /dev/shm/dkta/anerr_claim/3; echo "$(date)" | rclone rcat $MK/s8_k4diag.done; say "[k4diag 끝] $(tail -1 $K4O/k4diag.log)" ) &
+  bash exe/stab_k4diag.sh $KC $K4O; kill $KS; rclone copy $K4O $R/lbours/stab_k4diag -q
+  rm -f /dev/shm/dkta/anerr_claim/$KC; echo "$(date)" | rclone rcat $MK/s8_k4diag.done; say "[k4diag 끝] $(tail -1 $K4O/k4diag.log)" ) &
 K4=$!
 sleep 20
 # ---- (2) 빈칸 채우기
