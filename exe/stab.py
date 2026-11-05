@@ -6,11 +6,14 @@
      단조 확인: N* 를 찾은 뒤 2N*, 4N* (상한 이하) 도 돌려 발산이 있으면 표에 '비단조'.
   2. N* 에서 덤프 판 (입자 위치 + F) -> exe/lb_roll_to_h5.py -> exe/lb_render.py (3DGS 알파블렌딩, 정답 렌더와 같은 카메라·같은 3DGS) PNG -> exe/stab_vis.py (PSNR·SSIM·LPIPS alex, 프레임 1.. 평균).
   3. N* 에서 카드 0 단독 시간 판 (/home/dkta/work/gpu0.lock; 시작 때 카드 0 의 다른 계산 프로세스 0 을 기다리고 실행 중 5 초마다 기록).
+  공개 코드 베이스라인 (PhysTwin · Simplicits · Spring-Gaus, 절 S.3) 은 사다리 앞에 씬마다 한 번 준비 판 (p/<방법>_<씬>_prep/: 논문 절차 물성 맞춤·
+  가중치 학습·다시점 영상 + 3 단계 학습) -- 상한 hi 는 PhysTwin = 맞춤 때 서브스텝 N0 (공식 dt 5e-5), Spring-Gaus = 학습 끝 n_step, Simplicits = 64.
+  환경은 exe/stab_bl_setup.sh (stab.sh 가 먼저 부름) 가 ST_* 환경 변수로 넘김.
 비측정 판 (1·2) 은 빈 카드 1..7 (카드 0 제외; 계산 프로세스 0 이고 /dev/shm/dkta/anerr_claim/<카드> 의 pid 가 살아 있지 않은 카드 -- 다른 에이전트와 같은 규약).
 판 결과는 <out>/p/<방법>_<씬>_n<N>/res.json (있으면 다시 안 돎 -- 잡이 바뀌어도 R2 에서 내려받으면 이어 감).
 출력: <out>/stab_table.md, <out>/stab.json, 끝 표식 <out>/stab.END. R2 동기화는 exe/stab.sh.
 
-  python exe/stab.py --out /dev/shm/dkta/lbours/stab --until <epoch> --hard <epoch> [--methods mpm,vrgs,bnv,ours] [--scenes L000,ficus,wolf,bread]
+  python exe/stab.py --out /dev/shm/dkta/lbours/stab --until <epoch> --hard <epoch> [--methods mpm,vrgs,bnv,ours,phystwin,simplicits,springgaus] [--scenes L000,ficus,wolf,bread]
 """
 import argparse
 import fcntl
@@ -25,7 +28,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--out", required=True)
 ap.add_argument("--until", type=float, required=True, help="이 epoch 뒤에는 새 판을 띄우지 않음")
 ap.add_argument("--hard", type=float, required=True, help="이 epoch 에 돌던 판이 있어도 표·끝 표식")
-ap.add_argument("--methods", default="mpm,vrgs,bnv,ours")
+ap.add_argument("--methods", default="mpm,vrgs,bnv,ours,phystwin,simplicits,springgaus")
 ap.add_argument("--scenes", default="L000,ficus,wolf,bread")
 ap.add_argument("--cards", default="1 2 3 4 5 6 7")
 ap.add_argument("--par", type=int, default=6, help="동시 비측정 판 상한")
@@ -84,9 +87,19 @@ OURS_CAP = dict(L000=4, ficus=24, wolf=5, bread=2)
 HI = dict(mpm=dict(L000=833, ficus=400, wolf=1999, bread=100),       # 공식 config 서브스텝 (PG gs_simulation int(frame_dt/substep_dt))
           vrgs=dict(L000=167, ficus=400),                             # 논문 PG 비교 설정 dt 1e-4 s
           bnv=dict(L000=1024, ficus=1024),
-          ours=dict(L000=16, ficus=16, wolf=16, bread=16))
+          ours=dict(L000=16, ficus=16, wolf=16, bread=16),
+          phystwin=dict(L000=None, ficus=None),                       # 준비 판 fit.json 의 N0 (공식 dt 5e-5 를 프레임 간격에 맞춘 서브스텝)
+          simplicits=dict(L000=64, ficus=64),                         # 공식 서브스텝 개념 없음 (암시 뉴턴) -- 사다리 끝
+          springgaus=dict(L000=None, ficus=None))                     # 준비 판 sg_train.json 의 학습 끝 n_step
 NAME = dict(mpm="정답 MPM (PG warp, 공식 config)", vrgs="VR-GS (직접 구현, XPBD 케이지, 반복 11)", bnv="명시적 B-스플라인 (같은 표현, 명시적 적분)",
-            ours="우리 (채택 판 (B): 장벽 + --y0eb)")
+            ours="우리 (채택 판 (B): 장벽 + --y0eb)", phystwin="PhysTwin (공식 코드, CMA-ES + 경사 학습 물성)",
+            simplicits="Simplicits (kaolin 0.18 공식, 기본 가중치 학습)", springgaus="Spring-Gaus (공식 코드, 다시점 영상 3 단계 학습)")
+BL = ("phystwin", "simplicits", "springgaus")                          # 공개 코드 베이스라인 (절 S.3)
+PYS = os.environ.get("ST_SIMP_PY", "/home/dkta/.conda/envs/simp/bin/python")
+BLENV = dict(phystwin=dict(PYTHONPATH=os.environ.get("ST_PT_PYPATH", "")), simplicits=dict(PYTHONPATH=os.environ.get("ST_SIMP_PYPATH", "")),
+             springgaus=dict(PYTHONPATH=os.environ.get("ST_SG_PYPATH", "")))
+PT_REPO = os.environ.get("ST_PT_REPO", f"{W}/PhysTwin")
+SG_REPO = os.environ.get("ST_SG_REPO", f"{W}/Spring-Gaus")
 VR_IT = 11                                                             # 논문 PG 비교 설정의 반복 수
 
 
@@ -136,7 +149,75 @@ def build(m, t, N, mode, O, E=None):
         return [PY, "-u", "exe/fem_bsel_cuda_sim.py", "--out", O] + da_elastic(t)[:2] + da_elastic(t)[4:] + ["--tag", t, "--node_h", nh, "--theta", "0", "--vfl_out", "--N", str(N)] + x, D, {}
     if m == "ours":
         return ours_cmd(t, N, mode)[:3] + ["--out", O] + ours_cmd(t, N, mode)[3:], D, {}
+    if m in BL:
+        F = pdir(m, t, 0, "prep")
+        x = ["--dump", "--dump_F"] if mode == "dump" else []
+        if m == "phystwin":
+            return [PY, "-u", f"{D}/exe/stab_phystwin.py", "--mode", "run", "--phystwin", PT_REPO, "--fit", F, "--N", str(N), "--out", O] + da_elastic(t) + x, D, BLENV[m]
+        if m == "simplicits":
+            return [PYS, "-u", f"{D}/exe/stab_simplicits.py", "--mode", "run", "--fit", F, "--N", str(N), "--out", O] + da_elastic(t) + x, D, BLENV[m]
+        return [PY, "-u", f"{D}/exe/stab_sg.py", "--mode", "run", "--sg", SG_REPO, "--fit", F, "--N", str(N), "--out", O] + da_elastic(t) + x, D, BLENV[m]
     raise KeyError(m)
+
+
+def prep_cmds(m, t, F):
+    """공개 코드 베이스라인 준비 판 명령들 (차례로; 각 실행기가 끝난 단계는 건너뜀). 연기 시험은 반복 수만 줄임."""
+    if m == "phystwin":
+        sm = ["--cma_iter", "1", "--train_iters", "1"] if a.smoke else []
+        return [[PY, "-u", f"{D}/exe/stab_phystwin.py", "--mode", "fit", "--phystwin", PT_REPO, "--out", F] + da_elastic(t) + sm]
+    if m == "simplicits":
+        return [[PYS, "-u", f"{D}/exe/stab_simplicits.py", "--mode", "weights", "--out", F] + da_elastic(t)]
+    gd, cf = gt_render_dir(t)
+    sm = ["--smoke", "1"] if a.smoke else []
+    return [[PY, "-u", f"{D}/exe/stab_mv_render.py", "--sim", gd, "--config", cf, "--shape", GT[t][2], "--frames", str(a.smoke or FRAMES[t]), "--out", f"{F}/mv"],
+            [PY, "-u", f"{D}/exe/stab_sg.py", "--mode", "prep", "--sg", SG_REPO, "--fit", F, "--mv", f"{F}/mv", "--out", F] + da_elastic(t) + sm,
+            [PY, "-u", f"{D}/exe/stab_sg.py", "--mode", "train", "--sg", SG_REPO, "--fit", F, "--out", F] + da_elastic(t)]
+
+
+def prep(m, t, tmo=16 * 3600):
+    """씬마다 한 번 (빈 카드 하나). 반환: 상한 hi (실패·마감이면 None). 결과 p/<방법>_<씬>_prep/res.json."""
+    F = pdir(m, t, 0, "prep")
+    if os.path.exists(f"{F}/res.json"):
+        return json.load(open(f"{F}/res.json")).get("hi")
+    if time.time() >= a.until:
+        return None
+    with SEM:
+        G = claim_card()
+        try:
+            os.makedirs(F, exist_ok=True)
+            e = dict(os.environ, CUDA_VISIBLE_DEVICES=G, PYTHONUTF8="1", OMP_NUM_THREADS="8", WANDB_MODE="disabled",
+                     WARP_CACHE_PATH=f"/dev/shm/dkta/warp_cache_{G}_{m}")
+            if BLENV[m]["PYTHONPATH"]:
+                e["PYTHONPATH"] = BLENV[m]["PYTHONPATH"]
+            os.makedirs(e["WARP_CACHE_PATH"], exist_ok=True)
+            t0, rc = time.time(), 0
+            for k, cmd in enumerate(prep_cmds(m, t, F)):
+                open(f"{F}/card.txt", "a").write(f"카드 {G} {time.strftime('%F %T')} {' '.join(cmd)}\n")
+                with open(f"{F}/log_{k}.txt", "a") as lg:
+                    try:
+                        rc = subprocess.run(cmd, cwd=D, env=e, stdin=subprocess.DEVNULL, stdout=lg, stderr=subprocess.STDOUT,
+                                            timeout=max(60, tmo - (time.time() - t0))).returncode
+                    except subprocess.TimeoutExpired:
+                        rc = "timeout"
+                if rc != 0:
+                    break
+            hi = None
+            try:
+                if m == "phystwin":
+                    hi = int(json.load(open(f"{F}/fit.json"))["N0"])
+                elif m == "springgaus":
+                    hi = int(json.load(open(f"{F}/sg_train.json"))["n_step"])
+                elif os.path.exists(f"{F}/weights.json"):
+                    hi = HI[m][t]
+            except (OSError, ValueError, KeyError):
+                pass
+            r = dict(rc=rc, hi=(hi if rc == 0 else None), sec=time.time() - t0, card=G)
+            if rc == 0 and hi is not None:
+                json.dump(r, open(f"{F}/res.json", "w"), ensure_ascii=False, indent=1)
+            say(f"[준비] {m} {t} 카드 {G}: rc={rc} 상한 {hi} ({r['sec'] / 3600:.2f} h)")
+            return r["hi"]
+        finally:
+            release_card(G)
 
 
 def parse(m, O):
@@ -353,6 +434,8 @@ RES = {}
 
 
 def pdir(m, t, N, mode="probe"):
+    if mode == "prep":
+        return f"{OUT}/p/{m}_{t}_prep"
     return f"{OUT}/p/{m}_{t}_n{N}" + ("" if mode == "probe" else "_" + mode)
 
 
@@ -369,6 +452,12 @@ def _one(m, t):
     key = f"{m}_{t}"
     rec = RES.setdefault(key, dict(method=m, scene=t, probes={}, state="도는 중"))
     hi = HI[m][t]
+    if m in BL:
+        rec["state"] = "준비 중 (물성 맞춤·학습)"
+        hi = prep(m, t)
+        if hi is None:
+            rec["state"] = "준비 실패 또는 마감 (p/%s_%s_prep/log_*.txt)" % (m, t); return
+        rec.update(hi=hi, state="도는 중")
     probe = lambda N: run_free(m, t, N, "probe", pdir(m, t, N))                     # noqa: E731
     ladder = []
     N = 1
@@ -427,8 +516,7 @@ def _one(m, t):
 ALL = [("mpm", "정답 MPM (PG, 공식 설정)"), ("vrgs", "VR-GS (직접 구현)"), ("bnv", "명시적 B-스플라인"), ("phystwin", "PhysTwin"), ("simplicits", "Simplicits"),
        ("springgaus", "Spring-Gaus"), ("gaussim", "GausSim"), ("ours", "우리 (B)")]
 ELONLY = {"vrgs", "bnv", "phystwin", "simplicits", "springgaus", "gaussim"}           # 탄성 전용 (bnv 는 실행기에 재질 없음)
-TODO = dict(phystwin="미실행 -- 실행기 준비 중 (doc/pareto.md 절 S.3)", simplicits="미실행 -- 실행기 준비 중 (절 S.3)", springgaus="미실행 -- 정적·속도·동역학 학습 필요 (절 S.3)",
-            gaussim="실행 안 함 -- 공식 학습 코드 미공개 (절 S.4)")
+TODO = dict(gaussim="실행 안 함 -- 공식 학습 코드 미공개 (절 S.4)")
 
 
 def f2(x, k=2):

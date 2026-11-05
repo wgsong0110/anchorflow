@@ -11,7 +11,10 @@ mkdir -p $R
 UNTIL=${ST_UNTIL:-$(( $(date +%s) + 60 * 3600 ))}; HARD=${ST_HARD:-$(( $(date +%s) + 66 * 3600 ))}
 echo "[stab.sh 시작] $C $(date '+%F %T') -> $R ($RR)" >> $R/stab.log
 df -h /dev/shm /tmp | tail -2 >> $R/stab.log; nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader >> $R/stab.log
-rclone copy $RR $R -q --include "p/*/res.json" --include "p/*/vis.json" --include "gt_*/done" --include "gt_*/png/**"          # 이어 돌리기 (판 결과만)
+rclone copy $RR $R -q --exclude "p/*_prep/mv/**" --exclude "p/*_prep/data/**" --include "p/*/res.json" --include "p/*/vis.json" \
+  --include "gt_*/done" --include "gt_*/png/**" --include "p/*_prep/**"          # 이어 돌리기 (판 결과 + 베이스라인 준비 판 산출물: 맞춘 물성·학습 체크포인트)
+bash exe/stab_bl_setup.sh /dev/shm/dkta/pylib/bl_env.sh > $R/bl_setup.log 2>&1; tail -1 $R/bl_setup.log >> $R/stab.log     # 베이스라인 환경 (절 S.3; 실패해도 다른 방법은 돎)
+[ -f /dev/shm/dkta/pylib/bl_env.sh ] && source /dev/shm/dkta/pylib/bl_env.sh
 sync_r2() { rclone copy $R $RR -q --exclude "*/h5/**" --exclude "code/**"; }
 ( while true; do sleep 300; sync_r2; done ) & SY=$!
 $PY -u exe/stab.py --out $R --until $UNTIL --hard $HARD ${ST_ARGS:-} >> $R/stab_main.log 2>&1
