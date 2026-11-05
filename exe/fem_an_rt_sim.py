@@ -33,6 +33,7 @@ ap.add_argument("--ls", type=int, default=1)
 ap.add_argument("--no_vfl_out", action="store_true")
 ap.add_argument("--fl_bar", action="store_true", help="장벽 바닥 (절 AN.19, 정의 변경): 법선 = 팔분 표본점 IPC 거리 장벽 (d̂ = ½ dx_정답, κ = (λ+2μ) V_q / d̂²), 고착 = 정답 sticky 가중 (띠 제한 없음) 을 접선에만; --ls_n 선탐색 필요")
 ap.add_argument("--fl_bst", type=int, default=0, choices=[0, 1, 2], help="절 AN.21 (--fl_bar 위, 정의 변경): 띠 고착 -- 장벽 띠 안 (d < d̂) 표본점의 고착 몫 = 1 (정답 sticky 노드 v = 0 처럼 완전 고착, 접선); 띠 밖 1 = 0, 2 = 정답 sticky 가중 그대로")
+ap.add_argument("--fl_stk", action="store_true", help="절 CM12 (--fl_bar 위, 사용자 승인 정의 변경): 장벽 바닥 (B) 에 (A) 가우스 점 고착 (CM8 a 판 정의 그대로: 가우스 점 걸음 끝 위치 s < 0 의 정답 sticky 가중 -> 노드 k_A = (1 − r̄)^κ, 바깥 법선 이탈 아니면 세 성분, 고착 노드 가속도 0) 을 함께; 장벽 띠 고착 (접선) 과 곱")
 ap.add_argument("--bar_cross", action="store_true", help="절 CM10 (--fl_bar 위, 사용자 승인 정의 변경): 장벽을 바닥 평면을 관통하는 B-스플라인 칸 (칸 범위 = 코드의 칸 정의, 걸음 시작 위치에서 판정) 에 속한 표본점에만")
 ap.add_argument("--bar_cnt", action="store_true", help="절 CM10 진단 (결과 불변, --fl_bar 위): 프레임마다 장벽이 걸린 표본점 수·전체 대비·칸 수, 관통 칸 수를 fem.jsonl bc 에")
 ap.add_argument("--bar_full", action="store_true", help="절 AN.21: 장벽 헤시안 곱을 덩어리 대신 점별 w wᵀ 참 꼴로 (블록 대각 전처리에는 덩어리 값)")
@@ -121,7 +122,8 @@ if a.floor == "vel":
     pl = [b for b in cfg["boundary_conditions"] if b.get("type") == "surface_collider"][0]
     NR = np.array(pl["normal"], dtype=np.float64); NR = NR / np.linalg.norm(NR)
     PT = [float(q) for q in pl["point"]]
-    FL = dict(PT=PT, NR=NR.tolist(), PN=float(np.dot(PT, NR)), DXG=DXG, KEX=dt / float(cfg["substep_dt"]), vout=not a.no_vfl_out, pt=a.fl_pt, bar=a.fl_bar, bst=a.fl_bst, bfull=a.bar_full, bcross=a.bar_cross, bcnt=a.bar_cnt, DH=0.5 * DXG, KS=(lam + 2.0 * mu) / (0.5 * DXG) ** 2)
+    FL = dict(PT=PT, NR=NR.tolist(), PN=float(np.dot(PT, NR)), DXG=DXG, KEX=dt / float(cfg["substep_dt"]), vout=not a.no_vfl_out, pt=a.fl_pt, bar=a.fl_bar, bst=a.fl_bst, bfull=a.bar_full, bcross=a.bar_cross, bcnt=a.bar_cnt, stk=a.fl_stk, DH=0.5 * DXG, KS=(lam + 2.0 * mu) / (0.5 * DXG) ** 2)
+    assert a.fl_bar or not a.fl_stk, "--fl_stk 는 --fl_bar 위 (절 CM12)"
     if a.fl_nost:
         FL["KEX"] = 0.0
     if a.fl_dhm != 1.0:

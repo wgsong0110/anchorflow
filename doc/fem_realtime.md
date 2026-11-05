@@ -5412,3 +5412,18 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 읽기: 더 띄워도 wolf 는 무너지지 않는다 -- 뺀 값 질량 중심 f50 1h 814.5 -> 2h 801.8 -> 3h 798.5 mm (정답 533.3), 띄운 거리 20 mm 늘 때마다 13·3 mm 더 내려갈 뿐. 퍼짐 폭 f50 824 -> 827 -> 865 (정답 1152).
   3h 는 최대 z 가 처음보다 올라감 (뺀 값 프레임 23 부터 1500 위, 최대 1524.1 @ 프레임 31, f50 1482.0 -- 다른 판은 단조로 내려감); 원인은 확인 안 함. 처음 관통·관통 칸 밖 장벽 어느 쪽도 덜 무너짐 (절 CM6) 의 원인으로 보이지 않음.
 - 영상: result/anchorflow/v20261009/fem_lift2_wolf_cmp.mp4 (3200x1000, 51 프레임, 정답 | CM11 1h (B) | 2h bar_cross | 3h bar_cross) -- 우리 세 칸 모두 늑대 형상 그대로, 정답은 납작한 더미.
+
+## CM12. 장벽 + 가우스 점 고착 함께 (--fl_stk, 사용자 승인 11-05 정의 변경) -- 장벽 바닥 (B) 에 (A) 의 가우스 점 고착 바닥을 함께 켠 판 -- 가지 implicit-bspline, 묶음 barstick (vast.ai A6000 1 장, exe/vast_barstick.sh)
+### CM12.0 정의 (나머지는 절 CM8 b 판 명령 그대로: 장벽 + --fl_bst 1 + --y0eb, HHT ρ 0.8, K 2, 뉴턴 2, εN 1e-2 · εP 1e-1, PCG 상한 lego·낙하 4 · wolf 5, BA = exe/fem_cm3_scn.sh)
+- **--fl_stk** (--fl_bar 위): 법선은 장벽 (절 AN.19, 그대로), 장벽 띠 고착 (절 AN.21, 접선, 그대로) 에 더해 **(A) 가우스 점 고착 = 절 CM8 a 판 정의 그대로** 를 함께 건다.
+  - (A) 몫: 같은 커널 rt_floor_q 를 한 번 더 (dxg < 0 으로 불러 a 판 경로) -- 가우스 점 기준 위치 xq0 + 걸음 끝 (관성 예측 Ũ) 노드 이동의 기저 합, 평면 부호 거리 s < 0 인 점만, 정답 sticky 가중 w_st (띠 고착·표본점 위치 안 씀) -> 노드 질량 몫 r̄_A -> k_A = (1 − r̄_A)^κ (κ = Δt/dt_정답).
+    결정적 판은 같은 AO_MW·ao_gath_q 고정 순서. 노드 몫은 따로 버퍼 (AF_ANA).
+  - 노드 변수 바꿈: 접선 인자 k_t = k_B · k_A (k_B = 장벽 띠 고착 인자 그대로), 법선 인자 k_n = k_A (a 판처럼 바깥 법선 이탈 (vout, 관성 예측 법선 속도 > 0) 이면 1). k_n = 1 인 노드는 원래 (B) 경로 (pm 1) 그대로.
+    k_n < 1 인 노드만 새 일반 꼴: ŷ = Ũ + (1 − k_t) P d + (1 − k_n) (I − P) d, T = √k_t P + √k_n (I − P) (P = 접선 투영; pm = −1 − 비트(√k_n) 로 Tapply·Tmat·rt_ga_y0 가 읽음). 재질 판 구속 노드 (k_구속 < 1) 는 원래대로 세 성분 모두 k (pm 0).
+  - 걸음 끝 가속도: (A) 고착 노드 (r̄_A > 0) 는 a 판 그대로 세 성분 0, 나머지는 (B) 그대로 (띠 고착 노드 접선 성분 0).
+  - 끄면 같은 기계어: 새 코드는 모두 `#ifdef AF_FSTK` 안 -- 플래그 없는 생성 CUDA 소스 (재질 판·탄성 판, 장벽 판 설정) 를 전처리하면 원래 커밋 (cdda9bd) 과 글자까지 같음 (로컬 cpp 대조). 실행 대조: 같은 인스턴스에서 옛 커밋으로 o0_L000 과 새 코드 o_L000 끝 해시.
+- 구현: lib/anchorflow/fem_an_rt.py (rt_floor_q a 판 경로, fstk_node, rt_floor_n·rt_ga_y0·rt_ga_end·Tapply·Tmat 의 #ifdef 블록, fstkify, 버퍼 ana·전역 AF_ANA), lib/anchorflow/fem_mat_rt.py (mt_floor_n), exe/fem_an_rt_sim.py (--fl_stk).
+### CM12.1 묶음 barstick (exe/vast_barstick.sh, 표 exe/fem_barstick_table.py, 합성 exe/fem_barstick_compose.py; 모두 결정적 --det, 카드 0 에 두 줄로 동시에 -- 시간 측정 아님)
+- s_wolf ((B) + --fl_stk, 안 띄운 원래 초기 상태, + --hgt --bar_cnt --dump --dump_F)·s_L000·s_0016·s_drop1; 대조 o_wolf·o_L000·o_0016·o_drop1 ((B) 그대로 새 코드), o0_L000 (옛 커밋 cdda9bd), a_wolf ((A) = 절 CM8 a3 명령 --v=a --cg 3, + --hgt --dump --dump_F; 곡선·영상용).
+- (B) wolf 곡선·영상 = 절 CM10 barx x_wolf 재사용 (barx o_wolf 와 비트 같음). 영상 정답 | (A) | (B) | (B)+고착 -> result/anchorflow/v20261009/fem_barstick_wolf_cmp.mp4.
+- 출력 R2 lbours/fem_cm/barstick/<판>_<씬>, 표 marks/barstick_table.md, 로그 marks/barstick.log, 끝 표식 marks/barstick.END.

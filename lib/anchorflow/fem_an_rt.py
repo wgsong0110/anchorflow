@@ -314,16 +314,27 @@ __global__ void rt_floor_q(const int* IP, const int* cb, const float* BW, const 
                            float p0, float p1, float p2, float n0, float n1, float n2, float pn, float dxg, float* an) {
     int q = blockIdx.x*blockDim.x + threadIdx.x;
     if (q >= IP[12]) return;
+#ifdef AF_FSTK
+    bool qa_ = dxg < 0.f; dxg = fabsf(dxg);                                     // 절 CM12 (--fl_stk): dxg < 0 으로 부르면 (A) 가우스 점 고착 판정 (CM8 a 판 정의 그대로: 가우스 점 xq0, s < 0, 정답 sticky 가중)
+#endif
     int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
     float xq[3] = {xq0[q*3], xq0[q*3+1], xq0[q*3+2]};
 #ifdef AF_BAR
+#ifdef AF_FSTK
+    float bm_ = qa_ ? 0.f : AF_BX[q*4+3]; if (bm_ > 0.f) for (int a=0;a<3;a++) xq[a] = AF_BX[q*4+a]/bm_;
+#else
     float bm_ = AF_BX[q*4+3]; if (bm_ > 0.f) for (int a=0;a<3;a++) xq[a] = AF_BX[q*4+a]/bm_;   // 장벽 판: 고착 판정도 표본점 (팔분 입자 질량 중심) 에서
+#endif
 #endif
     for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
         for (int a=0;a<3;a++) { float ye = U[id*3+a] + thinv*(y[id*3+a] - U[id*3+a]); xq[a] += w*ye; } }
     float s = (xq[0]-p0)*n0 + (xq[1]-p1)*n1 + (xq[2]-p2)*n2;
 #ifdef AF_BAR
+#ifdef AF_FSTK
+    float sw_ = s; if (!qa_) s = (bm_ > 0.f) ? -1.f : 1.f;
+#else
     float sw_ = s; s = (bm_ > 0.f) ? -1.f : 1.f;                                 // 장벽 판: 정답 sticky 가중 전체 (평면 위 띠 포함), 빈 팔분 점 없음
+#endif
 #else
     float sw_ = s;
 #endif
@@ -332,6 +343,9 @@ __global__ void rt_floor_q(const int* IP, const int* cb, const float* BW, const 
     float w3[3] = {0.5f*(1.5f-f)*(1.5f-f), 0.75f-(f-1.f)*(f-1.f), 0.5f*(f-0.5f)*(f-0.5f)};
     float wst = 0.f; for (int i=0;i<3;i++) if ((bf + (float)i)*dxg - pn < 0.f) wst += w3[i];
 #ifdef AF_BST
+#ifdef AF_FSTK
+    if (qa_) ; else
+#endif
     if (sw_ < AF_BDHC) wst = 1.f;                                               // 띠 고착 (--fl_bst, 절 AN.21): 장벽 띠 안 (d < d̂, 평면 아래 포함) 표본점은 완전 고착 (정답 sticky 노드 v = 0 과 같은 몫 1)
     else if (AF_BST == 1) wst = 0.f;                                            //   1 = 띠 밖은 고착 없음, 2 = 띠 밖은 정답 sticky 가중 그대로
 #endif
@@ -343,16 +357,39 @@ __global__ void rt_floor_q(const int* IP, const int* cb, const float* BW, const 
 }
 // 노드: 고착 인자 k, 변수 바꿈 (sk, pm), ŷ, η, y = ŷ + T η. pm 0 = P I, 1 = P (I − nnᵀ) (바깥 법선 이탈), 2 = 고정 (T 0)
 __device__ __forceinline__ void Tapply(float sk, int pm, float n0, float n1, float n2, const float* v, float* o) {
+#ifdef AF_FSTK
+    if (pm < 0) { float sn_ = __int_as_float(-pm - 1); float vn_ = v[0]*n0 + v[1]*n1 + v[2]*n2;          // 절 CM12: 접선 √k_t·법선 √k_n 따로 (pm = −1 − 비트(√k_n))
+        o[0] = sk*(v[0]-vn_*n0) + sn_*vn_*n0; o[1] = sk*(v[1]-vn_*n1) + sn_*vn_*n1; o[2] = sk*(v[2]-vn_*n2) + sn_*vn_*n2; return; }
+#endif
     if (pm == 2) { o[0] = o[1] = o[2] = 0.f; return; }
     if (pm == 0) { o[0] = sk*v[0]; o[1] = sk*v[1]; o[2] = sk*v[2]; return; }
     float vn = v[0]*n0 + v[1]*n1 + v[2]*n2;                                   // P v = v − (v·n) n (접선), (I − P) v = (v·n) n
     o[0] = sk*(v[0]-vn*n0) + vn*n0; o[1] = sk*(v[1]-vn*n1) + vn*n1; o[2] = sk*(v[2]-vn*n2) + vn*n2;
 }
+#ifdef AF_FSTK
+// 절 CM12 노드 변수 바꿈 (접선 k_t, 법선 k_n 따로): ŷ = Ũ + (1 − k_t) P d + (1 − k_n) (I − P) d (d = z0' − Ũ), η = √k_t P (y − ŷ) + √k_n (I − P)(y − ŷ), y = ŷ + T η.
+// k_n = 1 이면 pm 1 경로와 같은 식, k_n = k_t 이면 pm 0 경로와 같은 식 (이 함수는 k_n ≠ 1 일 때만 부름).
+__device__ void fstk_node(int n, float kt, float kn, float n0, float n1, float n2, const float* d, const float* Ut, float* y, float* sk, int* pm, float* yh, float* eta) {
+    float st = sqrtf(kt), sn = sqrtf(kn);
+    float dn = d[0]*n0 + d[1]*n1 + d[2]*n2; float nn[3] = {n0, n1, n2};
+    float h[3]; for (int a=0;a<3;a++) h[a] = Ut[n*3+a] + (1.f-kt)*(d[a]-dn*nn[a]) + (1.f-kn)*dn*nn[a];
+    float e2[3]; for (int a=0;a<3;a++) e2[a] = y[n*3+a] - h[a];
+    float c2 = e2[0]*n0 + e2[1]*n1 + e2[2]*n2;
+    int pmv = -1 - __float_as_int(sn);
+    float et[3]; for (int a=0;a<3;a++) et[a] = st*(e2[a] - c2*nn[a]) + sn*c2*nn[a];
+    float ty[3]; Tapply(st, pmv, n0, n1, n2, et, ty);
+    for (int a=0;a<3;a++) { yh[n*3+a] = h[a]; eta[n*3+a] = et[a]; y[n*3+a] = h[a] + ty[a]; }
+    sk[n] = st; pm[n] = pmv;
+}
+#endif
 __global__ void rt_floor_n(const int* IP, const float* an, const float* mqn, float kex, int floor_, int vout, float al, float n0, float n1, float n2,
                            const unsigned char* fixd, const float* vbc, const float* U, float tau, const float* Ut, const float* z0, float* y, float* sk, int* pm, float* yh, float* eta) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
     float k = 1.f; int p = 0;
+#ifdef AF_FSTK
+    float kfn_ = 1.f;
+#endif
     if (floor_) {
         float r = (mqn[n] > 0.f) ? fminf(an[n]/mqn[n], 1.f) : 0.f;
         k = expf(kex*log1pf(-r));
@@ -364,8 +401,16 @@ __global__ void rt_floor_n(const int* IP, const float* an, const float* mqn, flo
 #ifdef AF_BAR
         p = 1;                                                                   // 장벽 판: 법선은 장벽, 고착은 접선에만
 #endif
+#ifdef AF_FSTK
+        float ra_ = (mqn[n] > 0.f) ? fminf(AF_ANA[n]/mqn[n], 1.f) : 0.f;       // 절 CM12: (A) 가우스 점 고착 몫 -> k_A = (1 − r̄_A)^κ, 법선은 바깥 이탈 (vout, vv > 0) 이 아니면 k_A
+        float ka_ = expf(kex*log1pf(-ra_));
+        kfn_ = (vout && vv > 0.f) ? 1.f : ka_; k *= ka_;
+#endif
     }
     if (fixd && fixd[n]) p = 2;
+#ifdef AF_FSTK
+    if (p != 2 && kfn_ != 1.f) { float dd_[3]; for (int a=0;a<3;a++) dd_[a] = z0[n*3+a] - Ut[n*3+a]; fstk_node(n, k, kfn_, n0, n1, n2, dd_, Ut, y, sk, pm, yh, eta); return; }
+#endif
     float s = sqrtf(k);
     float d[3], yy[3];
     for (int a=0;a<3;a++) d[a] = z0[n*3+a] - Ut[n*3+a];
@@ -508,6 +553,9 @@ __device__ __forceinline__ void Tmat(float sk, int pm, float n0, float n1, float
     float nn[3] = {n0, n1, n2};
     for (int a=0;a<3;a++) for (int b=0;b<3;b++) {
         float I = (a==b) ? 1.f : 0.f;
+#ifdef AF_FSTK
+        if (pm < 0) { float Pab = I - nn[a]*nn[b]; T[a*3+b] = sk*Pab + __int_as_float(-pm - 1)*(I - Pab); continue; }
+#endif
         if (pm == 2) T[a*3+b] = 0.f; else if (pm == 0) T[a*3+b] = sk*I; else { float Pab = I - nn[a]*nn[b]; T[a*3+b] = sk*Pab + (I - Pab); }
     }
 }
@@ -1273,6 +1321,10 @@ __global__ void rt_ga_y0(const int* IP, const float* U, const float* yh, const f
     float isk = (s > 1e-6f) ? 1.f/s : 0.f;
     float dd[3]; for (int a=0;a<3;a++) dd[a] = U[n*3+a] - yh[n*3+a];
     float e[3];
+#ifdef AF_FSTK
+    if (p < 0) { float sn_ = __int_as_float(-p - 1); float isn_ = (sn_ > 1e-6f) ? 1.f/sn_ : 0.f;               // 절 CM12: 법선 성분은 1/√k_n
+        float dn = dd[0]*n0 + dd[1]*n1 + dd[2]*n2; float nn[3] = {n0, n1, n2}; for (int a=0;a<3;a++) e[a] = isn_*dn*nn[a] + isk*(dd[a] - dn*nn[a]); } else
+#endif
     if (p == 0) { for (int a=0;a<3;a++) e[a] = isk*dd[a]; }
     else { float dn = dd[0]*n0 + dd[1]*n1 + dd[2]*n2; float nn[3] = {n0, n1, n2}; for (int a=0;a<3;a++) e[a] = dn*nn[a] + isk*(dd[a] - dn*nn[a]); }
     float t[3]; Tapply(s, p, n0, n1, n2, e, t);
@@ -1287,6 +1339,9 @@ __global__ void rt_ga_end(const int* IP, float dt, float gm, float be, float al,
     bool stk = areset && an && an[n] > 0.f;
 #ifdef AF_BAR
     bool stkb = stk; stk = false;                                               // 장벽 판: 고착은 접선뿐이라 가속도 0 도 접선 성분만 (법선 반동은 장벽 몫)
+#ifdef AF_FSTK
+    stk = areset && AF_ANA[n] > 0.f;                                            // 절 CM12: (A) 가우스 점 고착 노드는 a 판 그대로 세 성분 가속도 0
+#endif
 #endif
     for (int a=0;a<3;a++) {
         float u = U[n*3+a], v = vk[n*3+a], ac = ak[n*3+a];
@@ -1686,6 +1741,11 @@ def bstify(src, mode, dh, full):
     return src.replace('extern "C" {', 'extern "C" {' + add, 1) if add else src
 
 
+def fstkify(src, on):
+    """절 CM12 (장벽 판 위, --fl_stk): (A) 가우스 점 고착 (CM8 a 판 정의) 을 장벽 바닥과 함께 (AF_FSTK; (A) 노드 몫 버퍼 AF_ANA). 끄면 소스 그대로."""
+    return src.replace('extern "C" {', 'extern "C" {\n#define AF_FSTK 1\n__device__ float* AF_ANA;', 1) if on else src
+
+
 def bcrossify(src, cross, cnt):
     """절 CM10 (장벽 판 위): cross = 관통 칸 표본점에만 장벽 (AF_BCROSS, --bar_cross), cnt = 진단 표본점 플래그 (AF_BCNT, --bar_cnt; 결과 불변). 둘 다 끄면 소스 그대로."""
     add = ""
@@ -1748,6 +1808,7 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, 
         src = barify(src)
         src = bstify(src, floor.get("bst", 0), floor["DH"], floor.get("bfull", False))
         src = bcrossify(src, floor.get("bcross", False), floor.get("bcnt", False))
+        src = fstkify(src, floor.get("stk", False))
     return skipify(src) if adapt else src
 
 
@@ -1942,6 +2003,9 @@ class RTSolver(MG2.MG2Mixin):
             s.bcross = bool(s.floor.get("bcross", False)); s.bcnt = bool(s.floor.get("bcnt", False))   # 절 CM10: 관통 칸 장벽 / 진단 표본점 플래그
             if s.bcnt:
                 s.bcf = torch.zeros(capQ, device=dev, dtype=torch.int32)
+            s.fstk = bool(s.floor.get("stk", False))                                   # 절 CM12: (A) 가우스 점 고착 함께 -- (A) 노드 몫 버퍼
+            if s.fstk:
+                s.ana = Z(s.capN)
             if s.bfull:
                 s.bS = Z(s.capN); s.btq = Z(capQ)
         s.Fq = Z(capQ, 9); s.Vq = Z(capQ); s.mq = Z(capQ); s.xq0 = Z(capQ, 3); s.H = Z(capQ, 81)
@@ -2023,6 +2087,8 @@ class RTSolver(MG2.MG2Mixin):
                     g = mod.get_global("AF_BAM"); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(s.A.data_ptr())
                 if s.bcnt:
                     g = mod.get_global("AF_BCF"); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(s.bcf.data_ptr())
+                if getattr(s, "fstk", False):                                           # 절 CM12: (A) 가우스 점 고착 노드 몫
+                    g = mod.get_global("AF_ANA"); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(s.ana.data_ptr())
         if s.goct < 0:
             return
         for mod in s._mods():
@@ -2297,6 +2363,12 @@ class RTSolver(MG2.MG2Mixin):
             if FL and FL["KEX"] > 0:                                                   # 절 CM6 진단 --fl_nost: KEX 0 이면 고착 몫 0 (노드 고착 인자 1)
                 s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
                                          f(FL["PN"]), f(FL["DXG"]), P(s.an)))
+                if getattr(s, "fstk", False):                                          # 절 CM12: (A) 가우스 점 고착 몫 (dxg < 0 = a 판 판정) -> ana
+                    s.zf(s.ana, 9, 1)
+                    s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
+                                             f(FL["PN"]), f(-FL["DXG"]), P(s.ana)))
+            elif getattr(s, "fstk", False):
+                s.zf(s.ana, 9, 1)
             FA = (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] * (s.K / (K or s.K)) * sg["frac"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(sg["al"]), *[f(q) for q in nr],
                   P(s.fixd), P(s.vbc), P(s.U), f(sg["dtf"]), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta))
             if s.matk:

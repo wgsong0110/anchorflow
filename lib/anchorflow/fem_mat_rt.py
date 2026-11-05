@@ -28,6 +28,9 @@ __global__ void mt_floor_n(const int* IP, const float* an, const float* mqn, flo
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= IP[9]) return;
     float k = 1.f; int p = 0;
+#ifdef AF_FSTK
+    float kfn_ = 1.f;
+#endif
     if (floor_) {
         float r = (mqn[n] > 0.f) ? fminf(an[n]/mqn[n], 1.f) : 0.f;
         k = expf(kex*log1pf(-r));
@@ -39,12 +42,23 @@ __global__ void mt_floor_n(const int* IP, const float* an, const float* mqn, flo
 #ifdef AF_BAR
         p = 1;
 #endif
+#ifdef AF_FSTK
+        float ra_ = (mqn[n] > 0.f) ? fminf(AF_ANA[n]/mqn[n], 1.f) : 0.f;       // 절 CM12: (A) 가우스 점 고착 (rt_floor_n 과 같은 식)
+        float ka_ = expf(kex*log1pf(-ra_));
+        kfn_ = (vout && vv > 0.f) ? 1.f : ka_; k *= ka_;
+#endif
     }
     float vt[3] = {0.f, 0.f, 0.f};
+#ifdef AF_FSTK
+    if (kb) { float b = kb[n]; if (b < 1.f) { kfn_ = 1.f; } }                  // 구속 노드는 세 성분 모두 k (p 0 경로) -- 아래 원래 줄
+#endif
     if (kb) { float b = kb[n]; if (b < 1.f) { k *= b; p = 0; if (vbt) for (int a=0;a<3;a++) vt[a] = vbt[n*3+a]/al; } }
     if (fixd && fixd[n]) p = 2;
     if (p == 2) { for (int a=0;a<3;a++) { float yy = U[n*3+a] + tau*vbc[n*3+a]; yh[n*3+a] = yy; eta[n*3+a] = 0.f; y[n*3+a] = yy; } sk[n] = 0.f; pm[n] = 2; return; }
     if (mn[n] < mthr) { for (int a=0;a<3;a++) { float yy = Ut[n*3+a]; yh[n*3+a] = yy; eta[n*3+a] = 0.f; y[n*3+a] = yy; } sk[n] = 0.f; pm[n] = 2; return; }
+#ifdef AF_FSTK
+    if (kfn_ != 1.f) { float dd_[3]; for (int a=0;a<3;a++) dd_[a] = z0[n*3+a] + vt[a] - Ut[n*3+a]; fstk_node(n, k, kfn_, n0, n1, n2, dd_, Ut, y, sk, pm, yh, eta); return; }
+#endif
     float s = sqrtf(k);
     float d[3], Pd[3];
     for (int a=0;a<3;a++) d[a] = z0[n*3+a] + vt[a] - Ut[n*3+a];
