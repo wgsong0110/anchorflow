@@ -247,8 +247,12 @@ for f in range(1, L + 1):
                 DIV = dict(frame=f, substep=s + 1, reason=_r)
                 break
     if a.time:
-        wp.synchronize(); torch.cuda.synchronize(); MS.append(1000.0 * (time.perf_counter() - _tf))
-        if a.sub_chk:
+        try:
+            wp.synchronize(); torch.cuda.synchronize(); MS.append(1000.0 * (time.perf_counter() - _tf))
+        except RuntimeError as _ex:                                                   # 절 S.8: 서브스텝 격자 확인이 없는 시간 판의 격자 밖 쓰기 (CUDA 700) -> 그 프레임 발산, 그때까지 시간은 남김
+            DIV = dict(frame=f, substep=nsub, reason=f"CUDA 오류 (시간 판, 격자 밖 쓰기 추정): {str(_ex)[:80]}")
+            MS_PART = True
+        if a.sub_chk and DIV is None:
             _r = _out_of_grid()
             if _r:
                 DIV = dict(frame=f, substep=nsub, reason=_r)
@@ -273,6 +277,9 @@ for f in range(1, L + 1):
         DIV = dict(frame=f, substep=nsub, reason="비유한" if not np.isfinite(e) else f"오차 {100 * e:.1f}% > 200%")
         print(f"[발산] 프레임 {f}", flush=True)
         break
+if DIV is not None and a.time:                                                         # 절 S.8: 발산한 시간 판 -- 발산 프레임 전까지 시간 (warp 문맥이 깨졌을 수 있어 아래 내보내기 없이 바로 씀)
+    json.dump(dict(div=DIV, frames_done=len(MS), ms=MS, ms_mean=(float(np.mean(MS[2:])) if len(MS) > 2 else None), ms_max=(float(np.max(MS[2:])) if len(MS) > 2 else None)),
+              open(os.path.join(a.out, "time_part.json"), "w"), ensure_ascii=False, indent=1)
 summ = dict(args=vars(a), nsub=nsub, dt=dt, n_grid=n_grid, floor=floor, EXT=EXT, frames_done=len(errs), err_mean=float(np.mean(errs)), div=DIV, err_mean_done=float(np.nanmean(errs)) if np.isfinite(errs).any() else None,
             err=errs, sec=time.time() - t0, diag=DIAG, ms=MS, ms_mean=(float(np.mean(MS[2:])) if len(MS) > 2 else None), ms_max=(float(np.max(MS[2:])) if len(MS) > 2 else None))
 json.dump(summ, open(os.path.join(a.out, "err.json"), "w"), ensure_ascii=False, indent=1)

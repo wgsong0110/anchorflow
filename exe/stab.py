@@ -530,6 +530,15 @@ def _one(m, t):
             break
     if rec["time"] and not (rec["time"].get("stable") and rec["time"].get("ms") is not None):
         rec["time"] = dict(rec["time"], ms=None, ms_max=None)                             # 완주 못 한 시간 판은 표에 안 씀
+        if m == "mpm":                                                                     # 절 S.8: 정답 MPM 은 N* 에서 완주 판이 없으면 같은 N* 시간 판 하나 더 -- 발산 프레임 전까지 평균 (표에 프레임 수 적음)
+            O = pdir(m, t, ns, "time") + "_part"
+            rp = run_excl(m, t, ns, O, E)
+            try:
+                tp = json.load(open(f"{O}/time_part.json"))
+            except (OSError, ValueError):
+                tp = (json.load(open(f"{O}/err.json")) if os.path.exists(f"{O}/err.json") else {})
+            if tp.get("ms_mean") is not None:
+                rec["time"] = dict(rp or {}, ms=tp["ms_mean"], ms_max=tp["ms_max"], part=tp.get("frames_done"), part_div=(tp.get("div") or {}).get("frame"))
     rec["state"] = "끝"
     say(f"[끝] {m} {t}: 최소 N {ns} (아래 {lo} 발산), 오차 {best['err']}, 시간 {(rec['time'] or {}).get('ms')}, 시각 {rec['vis']}")
 
@@ -582,6 +591,8 @@ def table():
                 dd = q.get(kk.split("_")[0]) or {}
                 if q.get(kk, 0) > 1 or (q.get(kk) and not (dd.get("stable") and (kk == "dump_try" or dd.get("ms") is not None))):
                     nt.append(f"{nm_} 판 {q[kk]} 번째" + (" 완주" if dd.get("stable") and (kk == "dump_try" or dd.get("ms") is not None) else " 까지 모두 발산·중단" + (f" (마지막 x{dd.get('div')})" if dd.get("div") else "")))
+            if tm.get("part"):
+                nt.append(f"시간 = 완주 판 없어 N* 시간 판의 발산 (프레임 {tm.get('part_div')}) 전 {tm['part']} 프레임 (첫 2 뺌) 평균")
             if tm and tm.get("err") is not None and b.get("err") is not None and abs(tm["err"] - b["err"]) > 0.01:
                 nt.append(f"시간 판 오차 {tm['err']:.2f}")
             if q["state"] != "끝":
@@ -622,13 +633,13 @@ def tex():
                 b = q["probes"][ns]
                 bd = "--" if lo is None else (f"{lo} ($\\times${q['probes'][lo]['div']})" if q["probes"][lo]["stable"] is False else f"{lo} (중단)")
                 tm, v = q.get("time") or {}, q.get("vis") or {}
-                ms = "" if tm.get("ms") is None else f"{tm['ms']:.2f} ({tm['ms_max']:.2f})"
+                ms = "" if tm.get("ms") is None else f"{tm['ms']:.2f} ({tm['ms_max']:.2f})" + ("$^\\ddagger$" if tm.get("part") else "")
                 c += [str(ns) + ("$^\\dagger$" if q.get("mono") and any(s_ is False for _, s_ in q["mono"]) else ""), bd, f2(b["err"]), ms,
                       f2(v.get("psnr")), f2(v.get("ssim"), 3), f2(v.get("lpips"), 3)]
             T.append(" & ".join(c) + " \\\\")
     T += ["\\bottomrule", "\\end{tabular}\\end{center}",
           "{\\footnotesize 최소 $N$ = 끝까지 발산하지 않는 최소 프레임당 서브스텝 수 (사다리 다음 정수 이분), 발산 쪽 경계 = 바로 아래 시험한 $N$ (발산 프레임). "
-          "$\\dagger$ = $2N$ 또는 $4N$ 에서 발산 (비단조). 오차 = 롤아웃 평균 $|x-x_{gt}|/\\mathrm{EXT}$, ms = A6000 단독 프레임 시간, 시각 품질 = 3DGS 알파블렌딩, 정답 렌더와 같은 카메라."
+          "$\\dagger$ = $2N$ 또는 $4N$ 에서 발산 (비단조). $\\ddagger$ = $N^*$ 에서 완주한 시간 판이 없어 (판정 판만 완주, 비결정) 발산 프레임 전까지 평균. 오차 = 롤아웃 평균 $|x-x_{gt}|/\\mathrm{EXT}$, ms = A6000 단독 프레임 시간, 시각 품질 = 3DGS 알파블렌딩, 정답 렌더와 같은 카메라."
           + (f" 연기 시험 {a.smoke} 프레임." if a.smoke else "") + "}"]
     open(f"{OUT}/stab_table.tex", "w").write("\n".join(T) + "\n")
 
