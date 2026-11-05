@@ -15,6 +15,7 @@ from . import fem_an_rt_v0 as ART                                       # 가지
 from . import fem_det_rt as DET
 
 P = ART.P
+from . import fem_nsd_diag as NSDM                                                  # noqa: E402  절 CM9.3 진단
 
 AO_SRC = r'''
 __device__ __forceinline__ int ao_dpf(const float* S, float cdp, float* sgn, float* sg, float* ep, float* e, float& tr, float& rho, float& s) {
@@ -1100,6 +1101,13 @@ class AORTSolver(DET.DetMixin):
         s.trel = (trel[s.perm].float().contiguous() if s.has_pbc else None)
         s.graph = None
 
+    def nsd_on(s):
+        """절 CM9.3 진단 켬 (--nan_step): 같은 정의의 소스 + 검사 커널을 따로 컴파일 (풀이 모듈은 그대로), 다음 프레임에 다시 캡처."""
+        s.nsdo = NSDM.NSD(s, _src(tol=False, fqrl=s.fqrl, gqm=s.gqm))
+        s.graph = None
+        if hasattr(s, "graphs"):
+            s.graphs.clear()
+
     def _aw_end(s):
         """절 AS --ls_end: 걸음 끝 변위 U_{n+1} = e1 y + e0 U_n 계수 (HHT: y = (1−αf) U_{n+1} + αf U_n; 중점: U_{n+1} = 2y − U_n; 그 밖 y)."""
         if not s.lsend:
@@ -1147,6 +1155,8 @@ class AORTSolver(DET.DetMixin):
         s.kalloc = s.K
         s.K = K0
         s.graph = None
+        if getattr(s, "nsdo", None) is not None:                                       # 절 CM9.3 진단 버퍼도 새 용량으로
+            s.nsdo.alloc()
         if getattr(s, "ao_ready", False):
             s.bind_act()
 
@@ -1164,6 +1174,9 @@ class AORTSolver(DET.DetMixin):
         i32, f = np.int32, np.float32
         capN, capQ = s.capN, s.capQc * 8
         s.k("rt_reset", 1, (P(IP),), b=1)
+        D_ = getattr(s, "nsdo", None)                                                   # 절 CM9.3 진단 (--nan_step, 결과 불변): None 이면 커널 열 그대로
+        if D_ is not None:
+            D_.reset()
         s.ctl(0)
         s.zf(s.cnt)
         if s.aq:
@@ -1222,6 +1235,11 @@ class AORTSolver(DET.DetMixin):
             else:
                 s.k("aq_p2g_v", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.m), P(s.pvc), P(s.pmk), P(s.vm), P(s.cm)))
             s.k("aq_vbar", capN, (P(IP), P(s.cm), P(s.vm)), b=256)
+        if D_ is not None:                                                             # P2G 뒤 프레임 시작 상태
+            c_ = NSDM.code(-1, 0); D_.node(s.vk, D_.mV, c_)
+            if s.ga is not None:
+                D_.node(s.gaA, D_.mV, c_)
+            D_.q(None, c_)
         s.k("ao_act_reset", 1, (P(IP),), b=1)
         s.k("ao_act", capN, (P(IP), P(s.mn)), b=256)
         if s.warm:
@@ -1260,6 +1278,8 @@ class AORTSolver(DET.DetMixin):
                 s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.awyb), P(s.awdy), P(s.awk)) + s._aw_end())
                 s.k("aw_pick", 1, (P(s.awk), P(s.awb), P(s.awst[4:])), b=1)
                 s.k("aw_y0z_b", capN, (P(IP), P(s.awb), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.awez), P(s.eta), P(s.y), P(s.mn), f(s.mthr), i32(1 if s.y0l else 0), P(s.awyb), P(s.awdy)), b=256)
+            if D_ is not None:                                                         # 걸음 시작점
+                c_ = NSDM.code(kstep, 0); D_.node(s.y, D_.mN, c_); D_.q(s.y, c_)
             s.ctl(1)
             for it in range(s.nt):
                 s.ctl(2, it)
@@ -1274,6 +1294,8 @@ class AORTSolver(DET.DetMixin):
                     s.k("ao_elem_s" if s.hspec else "ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8 | (128 if s.hpack else 0) | (256 if s.bdsh else 0) | (512 if s.h16 else 0)), P(s.f), P(s.H), i32(capQ), P(s.B),
                                           P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None)))
                 s.k("rt_grad" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
+                if D_ is not None:                                                     # 뉴턴 it 기울기
+                    c_ = NSDM.code(kstep, it + 1, 0); D_.node(s.f, D_.mF, c_); D_.sc(c_)
                 s.ctl(3, it)
                 if s.warm and it == 0 and kstep > 0 and s.nl <= 1:                                      # PCG 첫 추정 = 앞 걸음 첫 뉴턴의 δ (프레임 첫 걸음은 0)
                     s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(1)), b=1)
@@ -1316,6 +1338,8 @@ class AORTSolver(DET.DetMixin):
                     s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), P(s.awtd), P(s.awk)) + s._aw_end())
                     s.k("aw_pick", 1, (P(s.awk), P(s.SC[14:]), P(s.awst)), b=1)
                 s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if s.lsinv else 1)), b=256)
+                if D_ is not None:                                                     # 뉴턴 it 끝
+                    c_ = NSDM.code(kstep, it + 1, 1); D_.node(s.y, D_.mN, c_); D_.q(s.y, c_); D_.sc(c_)
             s.ctl(8)
             if s.ga is not None:
                 c = s.ga_c
@@ -1324,11 +1348,18 @@ class AORTSolver(DET.DetMixin):
                 s.k("ao_stepend_th", capN, (P(IP), f(1.0 / s.th), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
             else:
                 s.k("rt_stepend", capN, (P(IP), i32(1 if s.mid else 0), f(s.tau), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
+            if D_ is not None:                                                         # 걸음 끝 (U, 속도, 가속도, 증분)
+                c_ = NSDM.code(kstep, s.nt + 1); D_.node(s.U, D_.mN, c_); D_.node(s.vk, D_.mV, c_)
+                if s.ga is not None:
+                    D_.node(s.gaA, D_.mV, c_)
+                D_.q(s.U, c_); D_.jump(kstep)
             s.Ust[kstep].copy_(s.U)
             if kstep < s.K - 1 and s.aq:
                 s.k("aq_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt)))
             elif kstep < s.K - 1:
                 s.k("ao_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), f(s.cdp)))
+            if D_ is not None and kstep < s.K - 1:                                     # 커밋된 F_q
+                D_.q(None, NSDM.code(kstep, s.nt + 2))
         if s.ga is not None:
             s.k("ao_g2p_a", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.gaA), P(s.pa)))
         if s.aq:

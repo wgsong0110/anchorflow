@@ -62,6 +62,7 @@ ap.add_argument("--no_warm", action="store_true")
 ap.add_argument("--F0_eye", action="store_true", help="초기 탄성 F = I (정답 MPM 시작 상태; 자료 F 가 항등이라 위치에서 되살린 F 대신)")
 ap.add_argument("--tolN", type=float, default=-1.0, help="공통 허용치 (절 AN.14 규칙): 뉴턴 |g_k| <= εN |T f(y0)| 이면 걸음 끝 (--newton 은 상한, 음수 = 끔)")
 ap.add_argument("--tolP", type=float, default=-1.0, help="PCG |r| <= εP min(|g_k|, |T f(y0)|) 이면 풀이 끝 (--cg 는 상한)")
+ap.add_argument("--nan_step", action="store_true", help="절 CM9.3 진단 (결과 불변, 재질 판만): 걸음·뉴턴 반복마다 노드 변위·기울기·가우스 점 뒤집힘·응력의 처음 비유한 시점을 기록, 발산 프레임에 nan_step_f<프레임>.npz (직전 프레임 위치 포함)")
 ap.add_argument("--nanchk", type=int, default=0, help="진단: 이 프레임 (1 부터) 을 그래프 밖에서 커널마다 비유한 검사 (그 프레임은 재생 대신)")
 ap.add_argument("--nhb_eps", type=float, default=0.0, help="수박 (NHB): 뒤집힌 시험 상태 바닥 -- 주값 σ̂ = max(σ, ε) 에서 RM·응력·접선, 커밋·G2P 도 (0 = 끔, 정답 식 그대로)")
 ap.add_argument("--no_vfill", action="store_true", help="질량 0 노드 속도·가속도 이웃 평균 끔 (예전 판: 0)")
@@ -211,6 +212,11 @@ else:
   S = AORT.RTAdapt(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent,
                  compact=a.ao_fast, warm=a.ao_fast and not a.no_warm, det=a.det)
+if a.nan_step:
+    assert MATK is not None and a.adaptK <= 0 and not a.det, "--nan_step 은 재질 판 (AORTSolver), 고정 걸음, 비결정 판만"
+    S.nsd_on()
+    print("[절 CM9.3 진단] --nan_step 켬 (걸음·뉴턴 반복별 처음 비유한·뒤집힘 시점, 결과 불변)", flush=True)
+NSD_DUMPS = 0
 if a.kmax <= 0:
     a.kmax = int(math.ceil(h / float(cfg["substep_dt"]) - 1e-9))
 S.kcap = a.K
@@ -229,6 +235,7 @@ PRED = torch.empty(L, Np, 3) if a.dump else None
 FDMP = torch.empty(L, Np, 3, 3) if a.dump else None
 for fi in range(L):
     kp = S.profile(fi * h) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None
+    _xprev = S.x_orig().clone() if a.nan_step else None                               # 절 CM9.3: 이 프레임 시작 (= 직전 프레임 끝) 입자 위치, 원래 순서
     torch.cuda.synchronize(); _t0 = time.perf_counter()
     if a.adaptK > 0:
         redo, KF, VMX = AORT.adapt_step(S, fi * h, h, CELL, float(cfg["substep_dt"]), a.kmax, a.adaptK)
@@ -266,6 +273,13 @@ for fi in range(L):
     if _nn > 0 and int(S.IP[13]) == 0:                                                 # 발산 진단: 노드 최대 변위 (칸 단위) 와 그 노드 질량 / 중앙값, 입자 최대 속력
         _ua = S.U[:_nn].norm(dim=-1); _ui = int(_ua.argmax()); _mm = S.mn[:_nn]; _md = float(_mm[_mm > 0].median())
         c.update(umax_cell=float(_ua[_ui]) / CELL, umax_mrel=float(_mm[_ui]) / _md, vpmax=float(S.v.norm(dim=-1).max()), mrel_min=float(_mm[_mm > 0].min()) / _md)
+    if a.nan_step:
+        c["nsd"] = S.nsdo.frame_counts()
+        if (c["nsd"]["nN"] > 0 or not fin) and NSD_DUMPS < 3:                          # 노드 변위 비유한이 생긴 프레임 (발산 프레임 포함, 처음 3 개)
+            _pz = os.path.join(a.out, f"nan_step_f{fi + 1}.npz")
+            S.nsdo.dump(_pz, _xprev, extra=dict(frame=np.array([fi + 1])))
+            NSD_DUMPS += 1
+            print(f"[절 CM9.3 덤프] {_pz} {json.dumps(c['nsd'])}", flush=True)
     if a.diag:
         c["diag"] = S.diag()
     if "it" in c:
