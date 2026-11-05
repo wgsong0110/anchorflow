@@ -36,6 +36,8 @@ ap.add_argument("--fl_bst", type=int, default=0, choices=[0, 1, 2], help="절 AN
 ap.add_argument("--fl_stk", action="store_true", help="절 CM12 (--fl_bar 위, 사용자 승인 정의 변경): 장벽 바닥 (B) 에 (A) 가우스 점 고착 (CM8 a 판 정의 그대로: 가우스 점 걸음 끝 위치 s < 0 의 정답 sticky 가중 -> 노드 k_A = (1 − r̄)^κ, 바깥 법선 이탈 아니면 세 성분, 고착 노드 가속도 0) 을 함께; 장벽 띠 고착 (접선) 과 곱")
 ap.add_argument("--bar_cross", action="store_true", help="절 CM10 (--fl_bar 위, 사용자 승인 정의 변경): 장벽을 바닥 평면을 관통하는 B-스플라인 칸 (칸 범위 = 코드의 칸 정의, 걸음 시작 위치에서 판정) 에 속한 표본점에만")
 ap.add_argument("--bar_cnt", action="store_true", help="절 CM10 진단 (결과 불변, --fl_bar 위): 프레임마다 장벽이 걸린 표본점 수·전체 대비·칸 수, 관통 칸 수를 fem.jsonl bc 에")
+ap.add_argument("--bar_node", default="", choices=["", "add", "only"], help="절 CM14 (--fl_bar 위, 사용자 승인 11-05 정의 변경): B-스플라인 노드 위치의 바닥 위 높이 d_n 에 같은 IPC 장벽 (κ_n = (λ+2μ) V_n / d̂_n², V_n = Σ_q w V_q; 노드 대각). add = 표본점 장벽에 더함, only = 노드 장벽만 (띠 고착은 표본점 그대로)")
+ap.add_argument("--bar_ndh", type=float, default=0.5, help="절 CM14: 노드 장벽 두께 d̂_n = 이 값 x dx_정답 (기본 ½ = 표본점 장벽 d̂ 와 같음)")
 ap.add_argument("--bar_full", action="store_true", help="절 AN.21: 장벽 헤시안 곱을 덩어리 대신 점별 w wᵀ 참 꼴로 (블록 대각 전처리에는 덩어리 값)")
 ap.add_argument("--fl_pt", action="store_true", help="점별 고착 (절 AN.17, 정의 변경): 고착 거듭제곱을 가우스 점에서 한 뒤 노드로 질량 평균 (be·HHT·GA 처럼 단계 frac 1 판만, --pk·--K_contact 와 함께 쓰지 않음)")
 ap.add_argument("--mg_levels", type=int, default=1, help="1 = 블록 야코비, 2 이상 = 그 층 수의 기하 멀티그리드 (거친 층 조밀 상자)")
@@ -128,6 +130,9 @@ if a.floor == "vel":
         FL["KEX"] = 0.0
     if a.fl_dhm != 1.0:
         FL["DH"] = a.fl_dhm * 0.5 * DXG; FL["KS"] = (lam + 2.0 * mu) / FL["DH"] ** 2
+    if a.bar_node:                                                                     # 절 CM14: 노드 장벽 (표본점 장벽 d̂·κ·띠 고착 문턱은 그대로)
+        assert a.fl_bar, "--bar_node 는 --fl_bar 위 (절 CM14)"
+        FL["bnode"] = a.bar_node; FL["DHN"] = a.bar_ndh * DXG; FL["KSN"] = (lam + 2.0 * mu) / FL["DHN"] ** 2
 BC = None
 if a.cfg_bc:
     BC = []
@@ -270,6 +275,8 @@ for fi in range(L):
         c["err_lift"] = c_lift
     if a.bar_cnt and getattr(S, "bar", False):                                         # 절 CM10 진단: 장벽 걸린 표본점·칸, 관통 칸
         c["bc"] = S.bar_counts()
+    if getattr(S, "bnode", ""):                                                        # 절 CM14 진단: 노드 장벽 걸린 노드 수·부피 > 0 노드 수·d ≤ 0 이라 빠진 노드 수
+        c["bn"] = S.barn_counts()
     if S.y0ut and getattr(S, "bar", False):                                            # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k, 0 = ŷ 그대로)
         c["y0k"] = S.Y0K[:S.nstage, 0].cpu().tolist()
         if not S.ls:                                                                   # 절 CM6 진단: 선탐색 없는 장벽 판 (재질) 뉴턴 반복별 보폭 k (상한까지 펼친 자리; 허용치로 건너뛴 반복은 앞 값)

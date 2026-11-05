@@ -1741,6 +1741,127 @@ def bstify(src, mode, dh, full):
     return src.replace('extern "C" {', 'extern "C" {' + add, 1) if add else src
 
 
+BARN_SRC = r'''
+// ---- 절 CM14 노드 장벽 (--bar_node add|only, 사용자 승인 11-05 정의 변경): B-스플라인 노드 위치의 바닥 위 높이 d_n 에 같은 IPC 거리 장벽 ----
+// 노드 위치 x_n = A L_n + U_n + thinv (y_n − U_n) (L_n = 노드 격자 좌표 IP[0..2] + 상자 번호, 표본점 이동과 같은 걸음 끝 식), d_n = (x_n − p)·n.
+// b(d) = −κ_n (d − d̂_n)² ln(d/d̂_n) (0 < d < d̂_n), κ_n = ks_n V_n, ks_n = (λ + 2μ)/d̂_n², V_n = Σ_q w_qn V_q (노드에 모이는 부피, Σ_n V_n = Σ_q V_q).
+// 노드 하나의 변위에만 걸리므로 기울기 c_n n (c_n = b' thinv)·헤시안 h_n n nᵀ (h_n = b'' thinv²) 은 노드 대각 (정확) -> 표본점 장벽의 노드 스칼라 bGn·bKn 에 더함.
+// 걸음 시작 d_n ≤ 0 (또는 V_n = 0) 인 노드는 그 걸음 장벽에서 뺌 (AF_BNACT 0; 표본점 규칙과 같음). AF_BNF: 진단 비트 1 = 이 프레임 장벽 걸림 (활성이고 d < d̂_n), 2 = 어느 걸음 시작에서 d ≤ 0.
+__device__ __forceinline__ float barn_d(int n, const int* IP, const float* y, const float* U, float thinv, float n0, float n1, float n2, float pn) {
+    int nb1 = IP[7], nb2 = IP[8];
+    float L[3] = {(float)(IP[0] + n/(nb1*nb2)), (float)(IP[1] + (n/nb2)%nb1), (float)(IP[2] + n%nb2)};
+    float x[3];
+    for (int a=0;a<3;a++) x[a] = AF_BAM[a*3]*L[0] + AF_BAM[a*3+1]*L[1] + AF_BAM[a*3+2]*L[2] + U[n*3+a] + thinv*(y[n*3+a] - U[n*3+a]);
+    return x[0]*n0 + x[1]*n1 + x[2]*n2 - pn;
+}
+__device__ __forceinline__ double barn_e(float d, float dh, double kap) {
+    if (!(d < dh)) return 0.0;
+    if (!(d > 0.f)) return 1e30;
+    double dd = (double)d - dh; return -kap*dd*dd*log((double)d/dh);
+}
+// 노드 부피 (비결정 판; 결정적 판은 ao_gath_q 고정 순서)
+__global__ void __launch_bounds__(128) rt_barn_vq(const int* IP, const int* cb, const float* BW, const float* Vq, float* Vn) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    float v = Vq[q]; if (!(v > 0.f)) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    for (int o=0;o<27;o++) atomicAdd(&Vn[ids[o]], BW[oc*27+o]*v);
+}
+// mode 0: 걸음 시작 판정; mode 1: Gn += c, Kn += h, 에너지 -> E
+__global__ void rt_barn_q(const int* IP, const float* y, const float* U, float thinv, float n0, float n1, float n2, float pn, float dh, float ks, int mode, float* Gn, float* Kn, double* E) {
+    if (blockIdx.x*blockDim.x >= IP[9]) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = n < IP[9];
+    float V = on ? AF_BNV[n] : 0.f;
+    double e = 0.0;
+    if (V > 0.f) {
+        float d = barn_d(n, IP, y, U, thinv, n0, n1, n2, pn);
+        if (mode == 0) { AF_BNACT[n] = (d > 0.f) ? 1 : 0; if (!(d > 0.f)) AF_BNF[n] |= 2; }
+        else if (AF_BNACT[n] && d < dh) {
+            AF_BNF[n] |= 1;
+            double kap = (double)ks*(double)V;
+            if (d > 0.f) {
+                double dd = (double)d - dh, L = log((double)d/dh);
+                e = -kap*dd*dd*L;
+                Gn[n] += (float)(-kap*(2.0*dd*L + dd*dd/d))*thinv;
+                Kn[n] += (float)(-kap*(2.0*L + 4.0*dd/d - dd*dd/((double)d*d)))*thinv*thinv;
+            } else e = 1e30;
+        }
+    } else if (on && mode == 0) AF_BNACT[n] = 0;
+    if (mode == 1) blocksum_add(e, E);
+}
+// 선탐색 후보 NC 개 (rt_bar_lsN 과 같은 후보 y = ŷ + T (η + c δ), c = 2^-i) 의 노드 장벽 에너지 -> SC[40+i]
+__global__ void rt_barn_lsN(const int* IP, const float* yh, const float* eta, const float* dl, const float* sk, const int* pm, const float* U, float thinv,
+                            float n0, float n1, float n2, float pn, float dh, float ks, double* SC, int NC, int i0, const double* gate) {
+    if (gate && *gate != 0.0) return;
+    if (blockIdx.x*blockDim.x >= IP[9]) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = n < IP[9]; int nn = on ? n : 0;
+    float V = on ? AF_BNV[nn] : 0.f;
+    bool act = V > 0.f && AF_BNACT[nn];
+    double kap = act ? (double)ks*(double)V : 0.0;
+    float c = 1.f; for (int i=0;i<i0;i++) c *= 0.5f;
+    for (int i=i0;i<NC;i++) {
+        double e = 0.0;
+        if (act) {
+            float ee[3]; for (int a=0;a<3;a++) ee[a] = eta[nn*3+a] + c*dl[nn*3+a];
+            float t[3]; Tapply(sk[nn], pm[nn], n0, n1, n2, ee, t);
+            float yy[3]; for (int a=0;a<3;a++) yy[a] = yh[nn*3+a] + t[a];
+            int nb1 = IP[7], nb2 = IP[8];
+            float L[3] = {(float)(IP[0] + nn/(nb1*nb2)), (float)(IP[1] + (nn/nb2)%nb1), (float)(IP[2] + nn%nb2)};
+            float x[3]; for (int a=0;a<3;a++) x[a] = AF_BAM[a*3]*L[0] + AF_BAM[a*3+1]*L[1] + AF_BAM[a*3+2]*L[2] + U[nn*3+a] + thinv*(yy[a] - U[nn*3+a]);
+            e = barn_e(x[0]*n0 + x[1]*n1 + x[2]*n2 - pn, dh, kap);
+        }
+        blocksum_add(e, &SC[40+i]);
+        c *= 0.5f;
+    }
+}
+// 실현 가능 보폭 (rt_bar_kfe 와 같은 식, 노드): y0 -> y1 의 β = 2^-k 에서 활성 노드 모두 d > 0 인 가장 작은 k -> kk (정수 원자 최대)
+__global__ void rt_barn_kfe(const int* IP, const float* y0, const float* y1, const float* U, float thinv, float n0, float n1, float n2, float pn, int* kk) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    if (!(AF_BNV[n] > 0.f) || !AF_BNACT[n]) return;
+    float d0 = barn_d(n, IP, y0, U, thinv, n0, n1, n2, pn), d1 = barn_d(n, IP, y1, U, thinv, n0, n1, n2, pn);
+    if (d1 > 0.f) return;
+    int k = 0; float c = 1.f;
+    while (true) { c *= 0.5f; k++; if (c == 0.f) break; if (d0 + c*(d1 - d0) > 0.f) break; }
+    atomicMax(kk, k);
+}
+// 시작점 섞기 β (--y0eb, rt_bar_y0e 와 같은 식, 노드): β = 0 -> SC[0], 후보 β_i = 2^-(k0+i) -> SC[1+i]
+__global__ void rt_barn_y0e(const int* IP, const float* y0, const float* y1, const float* U, float thinv, float n0, float n1, float n2, float pn, float dh, float ks, const int* kk, double* SC, int NE) {
+    if (blockIdx.x*blockDim.x >= IP[9]) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = n < IP[9]; int nn = on ? n : 0;
+    float V = on ? AF_BNV[nn] : 0.f;
+    bool act = V > 0.f && AF_BNACT[nn];
+    float d0 = 0.f, d1 = 0.f; double kap = 0.0;
+    if (act) { d0 = barn_d(nn, IP, y0, U, thinv, n0, n1, n2, pn); d1 = barn_d(nn, IP, y1, U, thinv, n0, n1, n2, pn); kap = (double)ks*(double)V; }
+    blocksum_add(act ? barn_e(d0, dh, kap) : 0.0, &SC[0]);
+    float c = ldexpf(1.f, -kk[0]);
+    for (int i=0;i<NE;i++) {
+        blocksum_add(act ? barn_e(d0 + c*(d1 - d0), dh, kap) : 0.0, &SC[1+i]);
+        c *= 0.5f;
+    }
+}
+'''
+
+
+def bnodeify(src, mode):
+    """절 CM14 (장벽 판 위, --bar_node add|only): 노드 위치 장벽 (AF_BNODE; 노드 부피·활성·진단 버퍼). only = 표본점 장벽을 끔 (걸음 시작 판정에서 모든 표본점 비활성 -> 기울기·헤시안·선탐색·실현 가능 보폭·시작점 섞기에서 빠짐; 띠 고착은 그대로). 끄면 소스 그대로."""
+    if not mode:
+        return src
+    add = "\n#define AF_BNODE 1\n__device__ float* AF_BNV;\n__device__ int* AF_BNACT;\n__device__ int* AF_BNF;"
+    if "__device__ const float* AF_BAM;" not in src:
+        add += "\n__device__ const float* AF_BAM;"
+    src = src.replace('extern "C" {', 'extern "C" {' + add, 1)
+    if mode == "only":
+        old = "if (mode == 0) AF_BACT[qq] = (d > 0.f) ? 1 : 0;"
+        assert src.count(old) == 1
+        src = src.replace(old, "if (mode == 0) AF_BACT[qq] = 0;                                             // 절 CM14 (나) 노드 장벽만: 표본점 장벽 끔", 1)
+    i = src.rstrip().rfind("}")
+    return src[:i] + BARN_SRC + "\n}\n"
+
+
 def fstkify(src, on):
     """절 CM12 (장벽 판 위, --fl_stk): (A) 가우스 점 고착 (CM8 a 판 정의) 을 장벽 바닥과 함께 (AF_FSTK; (A) 노드 몫 버퍼 AF_ANA). 끄면 소스 그대로."""
     return src.replace('extern "C" {', 'extern "C" {\n#define AF_FSTK 1\n__device__ float* AF_ANA;', 1) if on else src
@@ -1809,6 +1930,7 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, 
         src = bstify(src, floor.get("bst", 0), floor["DH"], floor.get("bfull", False))
         src = bcrossify(src, floor.get("bcross", False), floor.get("bcnt", False))
         src = fstkify(src, floor.get("stk", False))
+        src = bnodeify(src, floor.get("bnode", ""))
     return skipify(src) if adapt else src
 
 
@@ -2008,6 +2130,10 @@ class RTSolver(MG2.MG2Mixin):
                 s.ana = Z(s.capN)
             if s.bfull:
                 s.bS = Z(s.capN); s.btq = Z(capQ)
+            s.bnode = s.floor.get("bnode", "")                                       # 절 CM14: 노드 위치 장벽 (add = 표본점 장벽에 더함, only = 노드 장벽만)
+            if s.bnode:
+                assert not s.bfull, "--bar_node 는 덩어리 장벽 헤시안 판만 (노드 몫은 bKn 에 더함)"
+                s.bnv = Z(s.capN); s.bnact = torch.zeros(s.capN, device=dev, dtype=torch.int32); s.bnf = torch.zeros(s.capN, device=dev, dtype=torch.int32)
         s.Fq = Z(capQ, 9); s.Vq = Z(capQ); s.mq = Z(capQ); s.xq0 = Z(capQ, 3); s.H = Z(capQ, 81)
         if s.ncomp:                                                                    # 절 CM3: 노드 목록 (ACT[0] = 수), 블록별 수·자리
             nbk = (s.capN + 255) // 256 + 1
@@ -2089,6 +2215,9 @@ class RTSolver(MG2.MG2Mixin):
                     g = mod.get_global("AF_BCF"); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(s.bcf.data_ptr())
                 if getattr(s, "fstk", False):                                           # 절 CM12: (A) 가우스 점 고착 노드 몫
                     g = mod.get_global("AF_ANA"); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(s.ana.data_ptr())
+                if getattr(s, "bnode", ""):                                             # 절 CM14: 노드 장벽 버퍼·격자 행렬 A
+                    for nm, t in (("AF_BNV", s.bnv), ("AF_BNACT", s.bnact), ("AF_BNF", s.bnf), ("AF_BAM", s.A)):
+                        g = mod.get_global(nm); cp.ndarray((1,), dtype=cp.uint64, memptr=g)[0] = int(t.data_ptr())
         if s.goct < 0:
             return
         for mod in s._mods():
@@ -2311,6 +2440,8 @@ class RTSolver(MG2.MG2Mixin):
             s.zf(s.bx)
             if s.bcnt:
                 s.zf(s.bcf)                                                            # 절 CM10 진단: 프레임마다 표본점 플래그 비움
+            if s.bnode:
+                s.zf(s.bnf)                                                            # 절 CM14 진단: 프레임마다 노드 플래그 비움
         if s.matk:
             s.mat_pre_p2g()                                                            # 절 CM2 재질 판: 구속 입자 v·a (순차 방출)
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv),
@@ -2386,12 +2517,24 @@ class RTSolver(MG2.MG2Mixin):
             if s.bar:
                 BA = (*[f(q) for q in nr], f(FL["PN"]), f(FL["DH"]), f(FL["KS"]))
                 s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), f(sg["thinv"]), *BA, i32(0), P(s.bGn), P(s.bKn), P(s.SC[10:])))
+                if s.bnode:                                                            # 절 CM14: 노드 부피 V_n = Σ_q w V_q -> 걸음 시작 노드 판정 (같은 y)
+                    BN = (*[f(q) for q in nr], f(FL["PN"]), f(FL["DHN"]), f(FL["KSN"]))
+                    s.zf(s.bnv, 9, 1)
+                    if getattr(s, "det", False):
+                        s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.Vq), P(s.bnv)), b=256)
+                    else:
+                        s.k("rt_barn_vq", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.bnv)))
+                    s.k("rt_barn_q", capN, (P(IP), P(s.y), P(s.U), f(sg["thinv"]), *BN, i32(0), P(s.bGn), P(s.bKn), P(s.SC[10:])), b=256)
                 if s.y0ut:
                     s.zf(s.kk)
                     s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)))
+                    if s.bnode:
+                        s.k("rt_barn_kfe", capN, (P(IP), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)), b=256)
                     if s.y0eb:                                                         # 절 CM8 (B): 실현 가능 k 에서 더 줄여 장벽 에너지 ≤ 걸음 시작 (U) 의 장벽 에너지인 가장 큰 2^-k
                         s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
                         s.k("rt_bar_y0e", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *BA, P(s.kk), P(s.SC), i32(59)))
+                        if s.bnode:
+                            s.k("rt_barn_y0e", capN, (P(IP), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *BN, P(s.kk), P(s.SC), i32(59)), b=256)
                         s.k("rt_y0epick", 1, (P(s.SC), P(s.kk), i32(59)), b=1)
                     s.dcopy(s.Y0K[kstep], s.kk)                                        # 진단: 걸음별 시작점 k
                     s.k("rt_y0mix", capN, (P(IP), P(s.kk), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eS), P(s.eta), P(s.y)), b=256)
@@ -2403,6 +2546,8 @@ class RTSolver(MG2.MG2Mixin):
                 s.k("rt_elem_lsN", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC), NC0, i32(0), P(None)))
                 if s.bar:
                     s.k("rt_bar_lsN", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BA[:4], BA[4], BA[5], P(s.SC), NC0, i32(0), P(None)))
+                    if s.bnode:
+                        s.k("rt_barn_lsN", capN, (P(IP), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BN, P(s.SC), NC0, i32(0), P(None)), b=256)
                 s.k("rt_y0pick", 1, (P(s.SC), NC0), b=1)
                 s.dcopy(s.Y0S[kstep], s.SC)                                            # 진단: 고른 c = SC14
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0)), b=256)
@@ -2422,6 +2567,8 @@ class RTSolver(MG2.MG2Mixin):
                     if getattr(s, "det", False):
                         s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.bpg), P(s.bGn)), b=256)
                         s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.bph), P(s.bKn)), b=256)
+                    if s.bnode:                                                        # 절 CM14: 노드 장벽 기울기·헤시안 (노드 대각) 을 같은 노드 스칼라에
+                        s.k("rt_barn_q", capN, (P(IP), P(s.y), P(s.U), f(sg["thinv"]), *BN, i32(1), P(s.bGn), P(s.bKn), P(s.SC[10:])), b=256)
                     s.k("rt_bar_n", capN, (P(IP), P(s.bGn), P(s.bKn), *[f(q) for q in nr], P(s.f), P(s.B)), b=256)
                     if s.mgbar >= 2 and s.nl > 1 and s.mv2:                            # 절 AN.22: 거친 층 장벽 (Kc = R Kc_{l−1}, D_b 셔먼-모리슨)
                         for l_ in range(1, s.nl):
@@ -2489,19 +2636,26 @@ class RTSolver(MG2.MG2Mixin):
                             s.lsy(capN, it2, NC, None)
                     EA = (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), *[f(q) for q in nr], f(s.mu), f(s.lam), P(s.SC), NC)
                     BB = (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BA[:4], BA[4], BA[5], P(s.SC), NC) if s.bar else None
+                    BBN = (P(IP), P(s.yh), P(s.eta), P(s.dl), P(s.sk), P(s.pm), P(s.U), f(sg["thinv"]), *BN, P(s.SC), NC) if (s.bar and s.bnode) else None
                     if s.lsfast:                                                       # 절 AN.22: 후보 c = 1 먼저, 받아들여지면 (SC63 = 1) 나머지 후보 커널 생략 -- 고르는 보폭 같음
                         G63 = P(s.SC[63:])
                         s.k("rt_elem_lsN", capQ, EA[:-1] + (i32(1), i32(0), P(None)))
                         if s.bar:
                             s.k("rt_bar_lsN", capQ, BB[:-1] + (i32(1), i32(0), P(None)))
+                        if BBN:
+                            s.k("rt_barn_lsN", capN, BBN[:-1] + (i32(1), i32(0), P(None)), b=256)
                         s.k("rt_lsgate", 1, (P(s.SC),), b=1)
                         s.k("rt_elem_lsN", capQ, EA + (i32(1), G63))
                         if s.bar:
                             s.k("rt_bar_lsN", capQ, BB + (i32(1), G63))
+                        if BBN:
+                            s.k("rt_barn_lsN", capN, BBN + (i32(1), G63), b=256)
                     else:
                         s.k("rt_elem_lsN", capQ, EA + (i32(0), P(None)))
                         if s.bar:
                             s.k("rt_bar_lsN", capQ, BB + (i32(0), P(None)))
+                        if BBN:
+                            s.k("rt_barn_lsN", capN, BBN + (i32(0), P(None)), b=256)
                     s.k("rt_lspickN", 1, (P(s.SC), NC), b=1)
                 elif s.ls:
                     assert not s.bar, "장벽 판은 --ls_n 선탐색만"
@@ -2518,6 +2672,8 @@ class RTSolver(MG2.MG2Mixin):
                     s.k("rt_ytry", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.yc)), b=256)
                     s.zf(s.kk)
                     s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.yc), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)))
+                    if s.bnode:                                                        # 절 CM14: 노드도 d > 0 유지
+                        s.k("rt_barn_kfe", capN, (P(IP), P(s.y), P(s.yc), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)), b=256)
                     s.k("rt_kstep", 1, (P(s.kk), P(s.SC)), b=1)
                     s.dcopy(s.BSK[kstep * s.nt + it], s.kk)                           # 절 CM6 진단: 반복별 보폭 k
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.ls or fbar) else 1)), b=256)
@@ -2847,6 +3003,11 @@ class RTSolver(MG2.MG2Mixin):
         cid = torch.arange(nq, device=fl.device) >> 3
         return dict(neng=int(eng.sum()), nocc=int(occ.sum()), ceng=int(torch.unique(cid[eng]).numel()), nc=nq // 8,
                     ccr=int(torch.unique(cid[cr]).numel()), ncr=int(cr.sum()), engcr=int((eng & cr).sum()))
+
+    def barn_counts(s):
+        """절 CM14 진단 (결과 불변): 이 프레임 노드 장벽이 걸린 노드 (어느 뉴턴 반복에서든 활성이고 d < d̂_n) 수, 부피 > 0 노드 수 (마지막 걸음 V_n), 어느 걸음 시작에서 d ≤ 0 이라 빠진 노드 수."""
+        nn = int(s.IP[9]); fl = s.bnf[:nn]
+        return dict(nneng=int(((fl & 1) > 0).sum()), nnv=int((s.bnv[:nn] > 0).sum()), nnbelow=int(((fl & 2) > 0).sum()))
 
     def x_orig(s):
         o = torch.empty_like(s.x)

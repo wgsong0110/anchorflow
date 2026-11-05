@@ -325,7 +325,7 @@ def det_ao(ao_src):
     return s
 
 
-BS_KERNELS = {"rt_elem", "rt_grad", "rt_grad_c", "rt_ap", "rt_ap_c", "rt_cg1", "rt_cg1_c", "rt_lsy", "rt_lsy4", "rt_elem_ls", "ao_warm", "rt_fixdir", "rt_lsyN", "rt_elem_lsN", "rt_dotz", "rt_mg_pw1", "rt_bar_q", "rt_bar_lsN", "rt_lsyQ", "rt_bar_y0e"}
+BS_KERNELS = {"rt_elem", "rt_grad", "rt_grad_c", "rt_ap", "rt_ap_c", "rt_cg1", "rt_cg1_c", "rt_lsy", "rt_lsy4", "rt_elem_ls", "ao_warm", "rt_fixdir", "rt_lsyN", "rt_elem_lsN", "rt_dotz", "rt_mg_pw1", "rt_bar_q", "rt_bar_lsN", "rt_lsyQ", "rt_bar_y0e", "rt_barn_q", "rt_barn_lsN", "rt_barn_y0e"}
 
 
 class DetMixin(ART.RTSolver):

@@ -5447,3 +5447,26 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 판마다 두 번 (비결정): j_a·j_b (`--elx jbar`), s_a·s_b (`--elx snh`), 모두 `--dump --nan_step --jdiag`; 그 뒤 단독 시간 zj·zs (`--gq_mass --elx …` 만, 그 카드에 판 하나 -- 실행 중 그 카드 다른 계산 프로세스 수를 10 초마다 셈). 기준 = 절 CM9 w1a (x19)·w1b (x30) 재사용 (w1a 덤프에서 입자 F det 만 다시 잼).
 - 완주한 판이 있으면 영상 정답 | (1) | (2) (3DGS, GF wm_render; 발산한 판 칸은 발산 전 마지막 프레임에서 멈춤 + 표시) -> result/anchorflow/v20261009/fem_wmJ_cmp.mp4.
 - 출력 R2 lbours/fem_cm/wmJ/<판>, 표 lbours/fem_cm/marks/wmJ_table.md, 로그 marks/wmJ.log, 끝 표식 marks/wmJ.END.
+
+## CM14. 노드 위치 장벽 (--bar_node, 사용자 승인 11-05 정의 변경) -- 채택 판 (B) 의 장벽을 거는 점을 표본점에서 B-스플라인 노드 위치로 (더함·노드만 두 판) x d̂ 두 값 -- 가지 implicit-bspline, 묶음 barnode (vast.ai A6000 1 장, exe/vast_barnode.sh)
+### CM14.0 정의 (나머지는 절 CM8 b 판 명령 그대로: 장벽 + --fl_bst 1 + --y0eb, HHT ρ 0.8, K 2, 뉴턴 2, εN 1e-2 · εP 1e-1, PCG 상한 lego·낙하 4 · wolf 5, BA = exe/fem_cm3_scn.sh)
+- **노드 장벽** (`--bar_node add|only --bar_ndh r`, --fl_bar 위): 노드가 바닥에 닿아 고정되는 것이 아니라, 노드 n 의 바닥 위 높이 d_n 에 표본점 장벽 (절 AN.19) 과 같은 IPC 거리 장벽 b(d) = −κ_n (d − d̂_n)² ln(d/d̂_n) (0 < d < d̂_n, 밖 0) 을 건다.
+  - 노드 위치 x_n = A L_n + U_n + thinv (y_n − U_n) (L_n = 노드 격자 좌표 = 상자 원점 IP[0..2] + 노드 상자 번호, A = 격자 행렬; 이동은 표본점과 같은 걸음 끝 식), d_n = (x_n − p)·n.
+  - **κ_n = (λ + 2μ) V_n / d̂_n²**, V_n = Σ_q w_qn V_q (가우스 점 부피를 같은 이차 B-스플라인 기저로 노드에 모은 값; Σ_n V_n = Σ_q V_q) -- 표본점 κ_q = (λ + 2μ) V_q / d̂² 와 같은 강성 스케일 (점이 대표하는 재료 기둥 강성, 부피만 노드 몫). V_n 은 걸음마다 그 걸음 시작에 다시 모음 (결정적 판: ao_gath_q 고정 순서, 비결정 판: rt_barn_vq 원자 합).
+  - 노드 장벽은 그 노드 한 개 변위에만 걸리므로 기울기 c_n n (c_n = b′(d_n) thinv)·헤시안 h_n n nᵀ (h_n = b″(d_n) thinv²) 는 **노드 대각 (정확, 덩어리화 없음)** -- 표본점 장벽의 노드 스칼라 bGn·bKn 에 더해 같은 경로 (rt_bar_n: f += G n, 블록 대각 B += K n nᵀ; PCG 곱 rt_ap 의 --mgbar 몫·거친 층 제한 Kc 도 같은 bKn) 로 들어간다. --bar_full (비덩어리 표본점 헤시안) 과는 함께 쓰지 않음 (assert).
+  - **걸음 시작 판정·선탐색·시작점 섞기도 노드 기준으로 일관되게**: 걸음 시작 (rt_bar_q mode 0 과 같은 y = 시작점) 에 d_n ≤ 0 이거나 V_n = 0 인 노드는 그 걸음 장벽에서 뺀다 (AF_BNACT 0, 표본점 규칙과 같음).
+    선탐색 후보마다 노드 장벽 에너지 (d_n ≤ 0 이면 1e30) 를 표본점 장벽 에너지와 같은 칸 SC[40+i] 에 더함 (rt_barn_lsN) -> 활성 노드가 평면을 못 넘음. 선탐색 없는 재질 판 (wolf) 의 실현 가능 보폭과 시작점 실현 가능 k0 (rt_bar_kfe) 에 노드도 (rt_barn_kfe, 같은 kk 정수 최대),
+    시작점 섞기 --y0eb 의 β 후보 에너지 (SC[0], SC[1+i]) 에 노드 장벽 에너지를 더함 (rt_barn_y0e) -- "장벽 에너지 = 표본점 몫 + 노드 몫" 이 걸음 시작 값보다 크지 않은 가장 큰 2^-k.
+  - **(가) `--bar_node add`**: 표본점 장벽 (d̂ = ½ dx_정답, κ_q 그대로) 을 그대로 두고 노드 장벽을 더함. **(나) `--bar_node only`**: 노드 장벽만 -- 걸음 시작 판정에서 모든 표본점을 비활성 (AF_BACT 0) 으로 두어 표본점 장벽이 기울기·헤시안·선탐색·실현 가능 보폭·시작점 섞기에서 모두 빠짐.
+  - **d̂_n 두 값**: 지금 값 ½ dx_정답 (`--bar_ndh 0.5`, 표본점 d̂ 와 같음) 과 **¾ dx_정답** (`--bar_ndh 0.75`). ¾ 를 고른 근거: 사용자 지시 "여유를 살짝" -- 한 칸 (1 dx_정답) 까지 키우지 말고 지금 값보다 조금 큰 값 하나; ½ 와 1 dx 의 가운데 (1.5 배) 이고, 우리 노드 간격 h (lego √2 dx_정답, wolf 셀 2 -> 2√2 dx_정답) 보다 작아 한 노드 층 안에 머문다.
+    κ_n 은 각 판의 d̂_n 으로 (ks_n = (λ + 2μ)/d̂_n²; ¾ 판은 ½ 판보다 d̂_n² 비 0.44 배). 표본점 장벽의 d̂·κ (½ dx) 와 띠 고착 문턱 (AF_BDHC = ½ dx) 은 두 판 모두 바꾸지 않음.
+  - **접선 고착 (띠 고착, 절 AN.21 --fl_bst 1) 은 지금 정의 그대로 = 표본점 높이로 판정** (rt_floor_q, 걸음 시작 관성 예측 위치에서 표본점 d < ½ dx_정답 이면 고착 몫 1). 노드 높이로 바꾸는 판은 만들지 않음 (사용자 지시: 둘 다 가능하면 지금 그대로). (나) 노드만 판에서도 고착 판정은 표본점 그대로라, 표본점 장벽이 없어 표본점이 평면 아래로 내려가도 (d < ½ dx 이므로) 고착 몫 1.
+  - 진단 (결과 불변): fem.jsonl `bn` = nneng (이 프레임 어느 뉴턴 반복에서든 활성이고 d_n < d̂_n 인 노드 수), nnv (V_n > 0 노드 수, 마지막 걸음), nnbelow (어느 걸음 시작에서 d_n ≤ 0 이라 빠진 노드 수). 표본점은 --bar_cnt 의 bc.neng.
+  - 끄면 같은 기계어: 새 CUDA 는 bnodeify 가 --bar_node 일 때만 붙임 (AF_BNODE 정의·전역·커널 추가, only 판은 rt_bar_q mode 0 한 줄 바꿈), 호스트 커널 호출도 모두 `if s.bnode` -- 플래그 없는 생성 CUDA 소스가 원래 커밋 (4ebdea8) 과 글자까지 같음 (로컬 대조). 실행 대조는 묶음 o_ 끝 해시 대 앞 vast 인스턴스 해시.
+- 구현: lib/anchorflow/fem_an_rt.py (BARN_SRC: barn_d·rt_barn_vq·rt_barn_q·rt_barn_lsN·rt_barn_kfe·rt_barn_y0e, bnodeify, RTSolver 버퍼 bnv·bnact·bnf·전역 AF_BNV·AF_BNACT·AF_BNF·AF_BAM, barn_counts), lib/anchorflow/fem_an_det.py (BS_KERNELS 에 rt_barn_q·rt_barn_lsN·rt_barn_y0e -- 결정적 블록 합), exe/fem_an_rt_sim.py (--bar_node·--bar_ndh, FL DHN·KSN). 재질 판 (wolf, MatRT) 도 같은 build_src·record 경로.
+### CM14.1 묶음 barnode (exe/vast_barnode.sh, 표 exe/fem_barnode_table.py, 합성 exe/fem_barnode_compose.py; 모두 결정적 --det, 카드 0 에 세 줄로 동시에 -- 시간 측정 아님)
+- 연기 3 프레임 (결정적 na5 L000·no7 wolf, 비결정 na7 L000) -> 통과해야 본 묶음 (실패면 기록 올리고 destroy).
+- 판 na5 = (가) d̂_n ½, na7 = (가) ¾, no5 = (나) ½, no7 = (나) ¾, 대조 o = (B) 그대로 (새 코드 플래그 없음) x 씬 L000·0016·drop1·wolf. wolf·L000 은 + --hgt --bar_cnt --dump --dump_F --dump_part (영상·높이 곡선), 0016·drop1 은 + --bar_cnt.
+- (A) wolf = 절 CM12 barstick a_wolf (곡선·영상), (B) wolf 곡선·영상 = 절 CM10 barx x_wolf (o_wolf 해시가 같으면 같은 결과).
+- 영상: lego L000 정답 | (B) | na5 | na7 | no5 | no7, wolf 정답 | (A) | (B) | na5 | na7 | no5 | no7 (3DGS 알파블렌딩, exe/lb_render.py) -> result/anchorflow/v20261009/fem_barnode_{lego_L000,wolf}_cmp.mp4.
+- 출력 R2 lbours/fem_cm/barnode/<판>_<씬>, 표 marks/barnode_table.md, 로그 marks/barnode.log, 끝 표식 marks/barnode.END.
