@@ -92,6 +92,8 @@ ap.add_argument("--fl_dhm", type=float, default=1.0, help="절 CM6 진단 전용
 ap.add_argument("--hgt", action="store_true", help="절 CM6 진단 (결과 불변): 프레임마다 정답·우리 높이 (질량 중심·최대·99 백분위, 바닥 법선 방향) 를 fem.jsonl hg·hp 에")
 ap.add_argument("--gq_mass", action="store_true", help="절 CM9 (사용자 승인 정의 변경): 노드 질량·운동량 (HHT 입자 가속도 몫도) 을 입자 -> 자기 팔분 가우스 점 -> 노드 (힘과 같은 점 x_q·같은 가중·같은 기저 w_n(x_q)) 로. 끄면 예전과 비트 같음")
 ap.add_argument("--gq_chk", action="store_true", help="절 CM9 진단 (결과 불변): 프레임마다 노드 질량·운동량·가속도 몫 합 대 입자 합 상대 차를 fem.jsonl gqchk 에 (구속 입자 속도를 바꾸는 --pbc 씬은 뜻 없음)")
+ap.add_argument("--lift_cells", type=int, default=0, help="절 CM11 진단 (사용자 지시): 처음 입자 위치 전체를 바닥 법선 방향으로 이 정수 x B-스플라인 칸 크기 h (= 격자 행렬 A 의 열 길이) 만큼 띄워 시작 (초기 속도·질량·F·구속 입자 선택·빈 노드 문턱은 원래 위치로 그대로); 오차 err 는 정답 그대로 대비, err_lift 는 띄운 거리 빼고")
+ap.add_argument("--lift_auto", action="store_true", help="--lift_cells 와 함께: 처음 상태에서 바닥 평면을 관통하는 칸 (절 CM10 꼭짓점 판정, U = 0) 이 0 이 될 때까지 정수를 1 씩 올림")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
 a = ap.parse_args()
 dev = "cuda"
@@ -137,6 +139,30 @@ if a.cfg_bc:
             BC.append(([0.0, 0.0, 0.0], [1e9, 1e9, 1e9], [0.0, 0.0, 0.0], t1, t1 + 15.0 * h))
     BC = BC or None
 F0 = DM.traj_F(d, h, dev)[0].to(dev).double().reshape(Np, 9)
+X0 = d["x"][0].to(dev)
+LIFT = None
+if a.lift_cells or a.lift_auto:                                                       # 절 CM11: 물체 전체를 바닥 법선 방향으로 h 의 정수배 띄움 (질량·F·구속 선택·문턱은 원래 위치로 앞뒤에서 그대로)
+    assert FL is not None, "--lift_cells 는 바닥 씬만"
+    _nr = torch.tensor(FL["NR"], device=dev, dtype=torch.float64)
+    HC = float(lat.A[:, 0].norm())
+    _cs = torch.tensor([[i, j, k] for i in (0, 1) for j in (0, 1) for k in (0, 1)], device=dev, dtype=torch.float64)
+
+    def _ncross(xx):                                                                   # 절 CM10 관통 칸 정의 (U = 0): 점유 칸 꼭짓점 A (b + ½ + {0,1}³) 평면 부호 거리 최소 < 0 < 최대
+        _b = torch.unique(torch.floor(xx.double() @ lat.Ai.T - 0.5), dim=0)
+        _dd = ((_b[:, None, :] + 0.5 + _cs[None]) @ lat.A.T) @ _nr - FL["PN"]
+        _mn, _mx = _dd.min(1).values, _dd.max(1).values
+        return dict(cross=int(((_mn < 0) & (_mx > 0)).sum()), occ=int(_b.shape[0]), below=int((_mx <= 0).sum()), dmin_part=float((xx.double() @ _nr - FL["PN"]).min()), dmin_corner=float(_mn.min()))
+    _c0 = _ncross(X0)
+    _n = max(a.lift_cells, 1 if a.lift_auto else 0); _tr = []
+    while True:
+        _ci = _ncross(X0.double() + _n * HC * _nr); _tr.append(dict(n=_n, **_ci))
+        if not a.lift_auto or _ci["cross"] == 0:
+            break
+        _n += 1
+    LOFF = (_n * HC * _nr).to(X0.dtype)
+    X0 = X0 + LOFF
+    LIFT = dict(n=_n, h=HC, dist=_n * HC, normal=FL["NR"], orig=_c0, tried=_tr)
+    print(f"[절 CM11 띄움] 칸 h {HC:.5f} m x {_n} = {_n * HC:.5f} m (법선 {FL['NR']}); 처음 관통 칸 원래 {_c0['cross']} / 점유 {_c0['occ']} -> 띄운 뒤 {_tr[-1]['cross']} (시도 {[(q['n'], q['cross']) for q in _tr]})", flush=True)
 if a.det:
     from anchorflow import fem_an_det as ADET
 SOLVER = ADET.DetRT if a.det else ART.RTSolver
@@ -199,7 +225,7 @@ if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                     
     SOLVER = MRT.MatRT
     a.ls = 0                                                                           # 재질 판: 퍼텐셜 없음 -> 에너지 선탐색 없음 (절 AO.0; 장벽이면 실현 가능 보폭만)
     print(f"[절 CM2 재질 판] {MATNAME} {MATX.get('mat')} 구속 {TREL is not None} 구속 속도 {PVB is not None} 빈 노드 문턱 {MTHR:.3e} 점성 {MATX.get('visc', 0.0)}", flush=True)
-S = SOLVER(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
+S = SOLVER(X0, d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, gqm=a.gq_mass, **MATX)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, 적분기 {a.ga + ' ρ ' + str(a.rho) if a.ga else a.integ}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
@@ -227,6 +253,8 @@ for fi in range(L):
     _ok = torch.isfinite(gt).all(-1)                                                   # 정답 비유한 입자 (GF) 는 지표에서 거름 (탄성 씬은 모두 유한 -> 같은 값)
     e = float((xo[_ok] - gt[_ok]).norm(dim=-1).mean()) / EXT
     fin = bool(torch.isfinite(xo).all()) and math.isfinite(e)
+    if LIFT is not None:                                                               # 절 CM11: 띄운 거리 빼고 잰 오차 (참고)
+        c_lift = float(((xo[_ok] - LOFF.float()) - gt[_ok]).norm(dim=-1).mean()) / EXT
     errs.append(e if fin else float("nan")); ms.append(S.last_ms)
     c = S.counts()
     if a.diag:
@@ -236,6 +264,8 @@ for fi in range(L):
         _nn = int(S.IP[9]); _mn = S.mn[:_nn].double()
         c["gqchk"] = [abs(float(_mn.sum()) - _ps[0]) / _ps[0], float((S.mv[:_nn].double().sum(0) - _ps[1]).norm()) / max(_ps[3], 1e-30),
                       float((S.ma[:_nn].double().sum(0) - _ps[2]).norm()) / max(_ps[4], 1e-30) if S.ga else None]
+    if LIFT is not None:
+        c["err_lift"] = c_lift
     if a.bar_cnt and getattr(S, "bar", False):                                         # 절 CM10 진단: 장벽 걸린 표본점·칸, 관통 칸
         c["bc"] = S.bar_counts()
     if S.y0ut and getattr(S, "bar", False):                                            # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k, 0 = ŷ 그대로)
@@ -279,6 +309,10 @@ if S.adapt:                                                                     
         for kk in ("nN", "nP", "capN", "capP"):
             arr = np.array([q[kk] for q in its], dtype=float)
             summ["it_" + kk] = dict(mean=float(arr.mean()), p50=float(np.median(arr)), p90=float(np.percentile(arr, 90)), max=float(arr.max()), min=float(arr.min()))
+if LIFT is not None:
+    _el = [json.loads(l_).get("err_lift") for l_ in open(os.path.join(a.out, "fem.jsonl"))]
+    LIFT["err_lift_mean_done"] = float(np.nanmean([q for q in _el if q is not None])) if _el else None
+    summ["lift"] = LIFT
 summ["pk"] = getattr(S, "pk_info", None)
 if OOM:
     summ["oom"] = OOM

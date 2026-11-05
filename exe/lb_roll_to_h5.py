@@ -19,6 +19,7 @@ ap.add_argument("--traj", required=True, help="원래 lbdata 궤적 디렉토리
 ap.add_argument("--out", required=True)
 ap.add_argument("--first_from_dump", action="store_true",
                 help="프레임 0 을 원래 궤적 0 프레임 대신 덤프 pred[0]·F[0] 으로 (이어 돌리기 덤프: pred[0] = 시작 상태), 그 뒤 pred[1:]")
+ap.add_argument("--x0_add", default="", help="절 CM11: 원래 궤적 프레임 0 의 x 에 더할 벡터 \"dx,dy,dz\" (띄운 판의 처음 상태; F 는 그대로)")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
 d = torch.load(a.dump, weights_only=False)
@@ -35,7 +36,11 @@ if a.first_from_dump:
 else:
     with h5py.File(f"{a.traj}/sim_0000000000.h5") as h, h5py.File(f"{a.out}/sim_0000000000.h5", "w") as o:
         for k in ("x", "F"):
-            o.create_dataset(k, data=np.array(h[k]))
+            _v = np.array(h[k])
+            if k == "x" and a.x0_add:
+                _o = np.array([float(q) for q in a.x0_add.split(",")], dtype=_v.dtype)
+                _v = _v + (_o[:, None] if _v.shape[0] == 3 and _v.shape[1] != 3 else _o[None, :])
+            o.create_dataset(k, data=_v)
 for i in range(P.shape[0]):
     Fr = (F[i] @ R).reshape(-1, 9)
     with h5py.File(f"{a.out}/sim_{i + 1:010d}.h5", "w") as o:
