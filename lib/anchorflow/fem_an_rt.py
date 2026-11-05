@@ -1862,6 +1862,60 @@ def bnodeify(src, mode):
     return src[:i] + BARN_SRC + "\n}\n"
 
 
+BARE_SRC = r'''
+// ---- 절 CM14.3 진단 --bar_ecell (결과 불변: 풀이 버퍼는 읽기만, 쓰는 곳은 진단 버퍼 EC·EL·EM·ED·ET 뿐) ----
+// 걸음 끝 (뉴턴 고리 뒤, rt_ga_end 전 -- y = 걸음 끝 반복값, 이동 = U + thinv (y − U), 풀이 장벽과 같은 식) 의 장벽 에너지를 칸 단위로 모음.
+// 칸 = 표본점 칸 (qq >> 3) 의 가운데 노드 (ids[13] = 칸 base + (1,1,1)) 번호로 셈. 표본점 장벽 -> 그 점이 속한 칸, 노드 장벽 -> 그 노드가 가운데인 칸 (base = 노드 − 1).
+// 활성 (AF_BACT / AF_BNACT) 이고 0 < d < d̂ 인 점·노드만 (풀이 에너지와 같은 항); d ≤ 0 (풀이에서는 1e30) 은 에너지에 넣지 않고 ET[2]·ET[3] 에 셈.
+__global__ void __launch_bounds__(128) rt_bare_q(const int* IP, const int* cb, const float* BW, const float* y, const float* U, float thinv,
+                         float n0, float n1, float n2, float pn, float dh, float ks, const float* Vq, float* EC, double* ET) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    float bm = AF_BX[q*4+3];
+    if (!(bm > 0.f) || !AF_BACT[q]) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float xq[3] = {AF_BX[q*4]/bm, AF_BX[q*4+1]/bm, AF_BX[q*4+2]/bm};
+    for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+        for (int a=0;a<3;a++) xq[a] += w*(U[id*3+a] + thinv*(y[id*3+a] - U[id*3+a])); }
+    float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;
+    if (!(d < dh)) return;
+    if (!(d > 0.f)) { atomicAdd(&ET[2], 1.0); return; }
+    double kap = (double)ks*(double)Vq[q], dd = (double)d - dh;
+    double e = -kap*dd*dd*log((double)d/dh);
+    atomicAdd(&EC[ids[13]], (float)e); atomicAdd(&ET[0], e);
+}
+#ifdef AF_BNODE
+__global__ void rt_bare_n(const int* IP, const float* y, const float* U, float thinv, float n0, float n1, float n2, float pn, float dh, float ks, float* EC, double* ET) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float V = AF_BNV[n];
+    if (!(V > 0.f) || !AF_BNACT[n]) return;
+    float d = barn_d(n, IP, y, U, thinv, n0, n1, n2, pn);
+    if (!(d < dh)) return;
+    if (!(d > 0.f)) { atomicAdd(&ET[3], 1.0); return; }
+    double kap = (double)ks*(double)V, dd = (double)d - dh;
+    double e = -kap*dd*dd*log((double)d/dh);
+    atomicAdd(&EC[n], (float)e); atomicAdd(&ET[1], e);
+}
+#endif
+// 걸음 끝: EL = 이 걸음 칸 에너지 (마지막 걸음이면 프레임 끝 값), EM = 프레임 안 걸음 끝 최대, ED = 걸음 끝 노드 이동 (칸 꼭짓점 그리기용), EC 비움
+__global__ void rt_bare_acc(const int* IP, const float* y, const float* U, float thinv, float* EC, float* EL, float* EM, float* ED) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float e = EC[n]; EL[n] = e; EM[n] = fmaxf(EM[n], e); EC[n] = 0.f;
+    for (int a=0;a<3;a++) ED[n*3+a] = U[n*3+a] + thinv*(y[n*3+a] - U[n*3+a]);
+}
+'''
+
+
+def becellify(src, on):
+    """절 CM14.3 진단 (--bar_ecell, 결과 불변): 걸음 끝 장벽 에너지 칸별 모으기 커널 (BARE_SRC) 을 모듈 끝에 붙임 (노드 장벽 판이면 노드 커널도). 끄면 소스 그대로."""
+    if not on:
+        return src
+    i = src.rstrip().rfind("}")
+    return src[:i] + BARE_SRC + "\n}\n"
+
+
 def fstkify(src, on):
     """절 CM12 (장벽 판 위, --fl_stk): (A) 가우스 점 고착 (CM8 a 판 정의) 을 장벽 바닥과 함께 (AF_FSTK; (A) 노드 몫 버퍼 AF_ANA). 끄면 소스 그대로."""
     return src.replace('extern "C" {', 'extern "C" {\n#define AF_FSTK 1\n__device__ float* AF_ANA;', 1) if on else src
@@ -1931,6 +1985,7 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, 
         src = bcrossify(src, floor.get("bcross", False), floor.get("bcnt", False))
         src = fstkify(src, floor.get("stk", False))
         src = bnodeify(src, floor.get("bnode", ""))
+        src = becellify(src, floor.get("becell", False))
     return skipify(src) if adapt else src
 
 
@@ -2134,6 +2189,10 @@ class RTSolver(MG2.MG2Mixin):
             if s.bnode:
                 assert not s.bfull, "--bar_node 는 덩어리 장벽 헤시안 판만 (노드 몫은 bKn 에 더함)"
                 s.bnv = Z(s.capN); s.bnact = torch.zeros(s.capN, device=dev, dtype=torch.int32); s.bnf = torch.zeros(s.capN, device=dev, dtype=torch.int32)
+            s.becell = bool(s.floor.get("becell", False))                              # 절 CM14.3 진단: 칸별 걸음 끝 장벽 에너지 (결과 불변)
+            if s.becell:
+                s.beC = Z(s.capN); s.beL = Z(s.capN); s.beM = Z(s.capN); s.beD = Z(s.capN, 3)
+                s.beT = torch.zeros(4 * max(s.K, s.Kc or 0) * 4, device=dev, dtype=torch.float64)
         s.Fq = Z(capQ, 9); s.Vq = Z(capQ); s.mq = Z(capQ); s.xq0 = Z(capQ, 3); s.H = Z(capQ, 81)
         if s.ncomp:                                                                    # 절 CM3: 노드 목록 (ACT[0] = 수), 블록별 수·자리
             nbk = (s.capN + 255) // 256 + 1
@@ -2442,6 +2501,8 @@ class RTSolver(MG2.MG2Mixin):
                 s.zf(s.bcf)                                                            # 절 CM10 진단: 프레임마다 표본점 플래그 비움
             if s.bnode:
                 s.zf(s.bnf)                                                            # 절 CM14 진단: 프레임마다 노드 플래그 비움
+            if s.becell:
+                s.zf(s.beM, 9, 1); s.zf(s.beT)                                         # 절 CM14.3 진단: 프레임 안 최대·걸음별 합 비움
         if s.matk:
             s.mat_pre_p2g()                                                            # 절 CM2 재질 판: 구속 입자 v·a (순차 방출)
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv),
@@ -2678,6 +2739,11 @@ class RTSolver(MG2.MG2Mixin):
                     s.dcopy(s.BSK[kstep * s.nt + it], s.kk)                           # 절 CM6 진단: 반복별 보폭 k
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.ls or fbar) else 1)), b=256)
             s.ctl(8)
+            if getattr(s, "becell", False):                                            # 절 CM14.3 진단 (결과 불변): 걸음 끝 y 에서 칸별 장벽 에너지 -> EL·EM, 걸음 합 -> beT[4 kstep ..]
+                s.k("rt_bare_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.U), f(sg["thinv"]), *BA, P(s.Vq), P(s.beC), P(s.beT[4 * kstep:])))
+                if s.bnode:
+                    s.k("rt_bare_n", capN, (P(IP), P(s.y), P(s.U), f(sg["thinv"]), *BN, P(s.beC), P(s.beT[4 * kstep:])), b=256)
+                s.k("rt_bare_acc", capN, (P(IP), P(s.y), P(s.U), f(sg["thinv"]), P(s.beC), P(s.beL), P(s.beM), P(s.beD)), b=256)
             if s.gfin:                                                                 # 걸음 끝 y 에서 기울기 (같은 변수 바꿈) -> |g_끝|²
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
@@ -3008,6 +3074,36 @@ class RTSolver(MG2.MG2Mixin):
         """절 CM14 진단 (결과 불변): 이 프레임 노드 장벽이 걸린 노드 (어느 뉴턴 반복에서든 활성이고 d < d̂_n) 수, 부피 > 0 노드 수 (마지막 걸음 V_n), 어느 걸음 시작에서 d ≤ 0 이라 빠진 노드 수."""
         nn = int(s.IP[9]); fl = s.bnf[:nn]
         return dict(nneng=int(((fl & 1) > 0).sum()), nnv=int((s.bnv[:nn] > 0).sum()), nnbelow=int(((fl & 2) > 0).sum()))
+
+    def bar_ecell(s):
+        """절 CM14.3 진단 (--bar_ecell, 결과 불변): 이 프레임 칸별 장벽 에너지. 칸 = 가운데 노드 c (상자 번호) 의 칸 (base = c − 1, 범위 L ∈ [c − ½, c + ½)³).
+        돌려줌: 합 dict (걸음별 표본점·노드 에너지, d ≤ 0 수, 프레임 끝 합·프레임 안 최대 합·칸 수) 와 칸 목록 (가운데 노드 전역 격자 좌표, 프레임 끝 EL, 프레임 안 최대 EM,
+        걸음 끝 (= 프레임 끝) 꼭짓점 8 개 월드 위치 x = A L + 꼭짓점 둘레 노드 8 개 이동 평균 -- 이차 B-스플라인 기저의 꼭짓점 값 (½,½) 그대로)."""
+        nn = int(s.IP[9]); ip = s.IP[:9].cpu().tolist(); nb = ip[6:9]
+        EL, EM = s.beL[:nn], s.beM[:nn]
+        T = s.beT[:4 * s.nstage].view(-1, 4).cpu().numpy()
+        st = (T[:, 0] + T[:, 1]).tolist()
+        sel = torch.nonzero((EM > 0) | (EL > 0)).squeeze(1)
+        tot = dict(eq=T[:, 0].tolist(), en=T[:, 1].tolist(), dq0=T[:, 2].tolist(), dn0=T[:, 3].tolist(), Eend=st[-1], Emax=max(st), Ecm=float(EM.double().sum()),
+                   ncl=int((EL > 0).sum()), ncm=int((EM > 0).sum()))
+        i = sel // (nb[1] * nb[2]); j = (sel // nb[2]) % nb[1]; k = sel % nb[2]
+        cen = torch.stack([i, j, k], 1)
+        D = s.beD[:nn]
+        co = []
+        for cn in range(8):
+            ci = torch.tensor([(cn >> 2) & 1, (cn >> 1) & 1, cn & 1], device=sel.device)
+            acc = torch.zeros(sel.numel(), 3, device=sel.device)
+            for o in range(8):
+                oo = torch.tensor([(o >> 2) & 1, (o >> 1) & 1, o & 1], device=sel.device)
+                nd = cen - 1 + ci + oo
+                for a in range(3):
+                    nd[:, a] = nd[:, a].clamp(0, nb[a] - 1)
+                acc += D[(nd[:, 0] * nb[1] + nd[:, 1]) * nb[2] + nd[:, 2]]
+            L = (cen - 0.5 + ci).float() + torch.tensor(ip[0:3], device=sel.device, dtype=torch.float32)
+            co.append(L @ s.A.float().reshape(3, 3).T + acc / 8.0)
+        cells = dict(cen=(cen + torch.tensor(ip[0:3], device=sel.device)).int().cpu(), el=EL[sel].cpu(), em=EM[sel].cpu(),
+                     cor=(torch.stack(co, 1).cpu() if sel.numel() else torch.zeros(0, 8, 3)))
+        return tot, cells
 
     def x_orig(s):
         o = torch.empty_like(s.x)

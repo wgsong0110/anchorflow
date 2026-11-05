@@ -36,6 +36,11 @@ ap.add_argument("--mark_fade", type=float, default=1.0, help="--mark: 표시 안
 ap.add_argument("--mark_size", type=float, default=1.0)
 ap.add_argument("--png", default="", help="주면 프레임마다 무손실 PNG 도 이 폴더에 (%04d.png; 시각 품질 PSNR·SSIM·LPIPS 용, doc/pareto.md 절 S)")
 ap.add_argument("--mark_px", default="", help="--mark: 프레임마다 표시 입자 화면 위치 (중앙·범위 픽셀) -> json (확대 칸 중심)")
+ap.add_argument("--cells", default="", help="절 CM14.3: 칸별 장벽 에너지 bener.pt (exe/fem_an_rt_sim.py --bar_ecell) -- 렌더 위에 그 칸 (프레임 끝 꼭짓점 8 개) 을 같은 카메라로 반투명 상자 (보이는 면) 로 겹침, "
+                "색 = log10 에너지 (--cell_key) 를 --erange 고정 범위로 (칸별·판별 정규화 없음). 영상 프레임 fi (h5 상태 fi) 의 칸 = bener frames[fi − 1] (fi = 0 은 처음 상태라 없음)")
+ap.add_argument("--erange", default="-6,0", help="--cells: 색 범위 log10 에너지 \"lo,hi\" (범위 밖은 끝 색)")
+ap.add_argument("--cell_key", default="em", choices=["em", "el"], help="--cells: em = 프레임 안 걸음 끝 최대, el = 프레임 끝")
+ap.add_argument("--cell_alpha", type=float, default=0.4)
 a = ap.parse_args()
 import h5py                                                      # noqa: E402
 import imageio.v2 as imageio                                     # noqa: E402
@@ -134,6 +139,57 @@ if a.mark:
     FPROJ = (wv[None] @ pj[None])[0]
     print(f"[표시] {a.mark}: 가우시안 {MG.numel()} + 채움 입자 {MF.numel()} (등방 축 {S_EX:.4g}), 나머지 불투명도 x {a.mark_fade}", flush=True)
     PXL = []
+CEL = None
+if a.cells:                                                                         # 절 CM14.3: 칸 겹치기 준비
+    import cv2
+    import matplotlib
+    CEL = torch.load(a.cells, weights_only=False)["frames"]
+    _ELO, _EHI = [float(q) for q in a.erange.split(",")]
+    _CMAP = matplotlib.colormaps["inferno"]
+    _CPROJ = (wv[None] @ pj[None])[0]
+    _FACES = [(0, 1, 3, 2), (4, 5, 7, 6), (0, 1, 5, 4), (2, 3, 7, 6), (0, 2, 6, 4), (1, 3, 7, 5)]    # 꼭짓점 번호 cn = 4 i + 2 j + k
+    print(f"[칸 겹치기] {a.cells} {len(CEL)} 프레임, 색 log10 범위 {_ELO}~{_EHI} ({a.cell_key})", flush=True)
+
+    def ecol(e):
+        """에너지 -> RGB (0~255), log10 고정 범위, inferno 0.05~0.9 (흰 배경에서 보이게 밝은 끝 자름)."""
+        t = (np.log10(np.maximum(e, 1e-300)) - _ELO) / (_EHI - _ELO)
+        return (np.array(_CMAP(0.05 + 0.85 * np.clip(t, 0, 1)))[..., :3] * 255).astype(np.float32)
+
+    def _cells(fr, cl):
+        e = cl[a.cell_key].numpy().astype(np.float64)
+        keep = e > 0
+        if not keep.any():
+            return fr
+        cor = cl["cor"][torch.from_numpy(keep)].to(dev).float().reshape(-1, 3)
+        Pc = (cor - 1.0) / SO + MEAN
+        if ROT:
+            Pc = Pc @ _RT
+        ph = torch.cat([Pc, torch.ones_like(Pc[:, :1])], 1)
+        dep = (ph @ wv)[:, 2].reshape(-1, 8).cpu().numpy()
+        px = DCM_project(Pc, _CPROJ, fr.shape[1], fr.shape[0]).reshape(-1, 8, 2).cpu().numpy()
+        cols = ecol(e[keep])
+        out = fr.astype(np.float32)
+        Hh, Ww = fr.shape[:2]
+        for ci in np.argsort(-dep.mean(1)):                                          # 먼 칸부터 (화가 순서)
+            P8, d8 = px[ci], dep[ci]
+            for fc in sorted(_FACES, key=lambda q: -d8[list(q)].mean()):
+                poly = P8[list(fc)]
+                x0, y0 = np.floor(poly.min(0)).astype(int); x1, y1 = np.ceil(poly.max(0)).astype(int)
+                x0, y0 = max(x0, 0), max(y0, 0); x1, y1 = min(x1, Ww - 1), min(y1, Hh - 1)
+                if x1 < x0 or y1 < y0 or not np.isfinite(poly).all():
+                    continue
+                m = np.zeros((y1 - y0 + 1, x1 - x0 + 1), np.uint8)
+                cv2.fillPoly(m, [np.round(poly - [x0, y0]).astype(np.int32)], 1)
+                sub = out[y0:y1 + 1, x0:x1 + 1]
+                mk = m.astype(bool)
+                sub[mk] = sub[mk] * (1 - a.cell_alpha) + cols[ci] * a.cell_alpha
+                cv2.polylines(out, [np.round(poly).astype(np.int32)], True, [float(q) * 0.7 for q in cols[ci]], 1, cv2.LINE_AA)
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+    def DCM_project(pos, full_proj, W_, H_):
+        ph_ = torch.cat([pos, torch.ones_like(pos[:, :1])], 1) @ full_proj
+        nd = ph_[:, :3] / (ph_[:, 3:4] + 1e-7)
+        return torch.stack([((nd[:, 0] + 1.0) * W_ - 1.0) * 0.5, ((nd[:, 1] + 1.0) * H_ - 1.0) * 0.5], 1)
 for fi, p in enumerate(files):
     with h5py.File(p) as h:
         x = torch.as_tensor(np.array(h["x"][:NG]), device=dev).float()
@@ -187,6 +243,8 @@ for fi, p in enumerate(files):
     img = RAST(means3D=Pm, means2D=torch.zeros_like(Pm), shs=(SHS if _cp is None else None), colors_precomp=_cp, opacities=_op, scales=None,
                rotations=None, cov3D_precomp=cc)[0]
     _fr = (img.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+    if CEL is not None and fi >= 1 and fi - 1 < len(CEL):
+        _fr = _cells(_fr, CEL[fi - 1])
     if a.frame_label is not None:
         _fr = _label(_fr, a.frame_label + fi)
     WR.append_data(_fr)

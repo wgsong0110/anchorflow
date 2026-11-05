@@ -37,6 +37,7 @@ ap.add_argument("--fl_stk", action="store_true", help="절 CM12 (--fl_bar 위, �
 ap.add_argument("--bar_cross", action="store_true", help="절 CM10 (--fl_bar 위, 사용자 승인 정의 변경): 장벽을 바닥 평면을 관통하는 B-스플라인 칸 (칸 범위 = 코드의 칸 정의, 걸음 시작 위치에서 판정) 에 속한 표본점에만")
 ap.add_argument("--bar_cnt", action="store_true", help="절 CM10 진단 (결과 불변, --fl_bar 위): 프레임마다 장벽이 걸린 표본점 수·전체 대비·칸 수, 관통 칸 수를 fem.jsonl bc 에")
 ap.add_argument("--bar_node", default="", choices=["", "add", "only"], help="절 CM14 (--fl_bar 위, 사용자 승인 11-05 정의 변경): B-스플라인 노드 위치의 바닥 위 높이 d_n 에 같은 IPC 장벽 (κ_n = (λ+2μ) V_n / d̂_n², V_n = Σ_q w V_q; 노드 대각). add = 표본점 장벽에 더함, only = 노드 장벽만 (띠 고착은 표본점 그대로)")
+ap.add_argument("--bar_ecell", action="store_true", help="절 CM14.3 진단 (결과 불변, --fl_bar 위): 걸음 끝 장벽 에너지를 칸별로 (표본점 -> 그 칸, 노드 -> 노드가 가운데인 칸) -> fem.jsonl be (합) + bener.pt (프레임별 칸 목록: 가운데 노드·프레임 끝 EL·프레임 안 걸음 끝 최대 EM·꼭짓점 8 개)")
 ap.add_argument("--bar_ndh", type=float, default=0.5, help="절 CM14: 노드 장벽 두께 d̂_n = 이 값 x dx_정답 (기본 ½ = 표본점 장벽 d̂ 와 같음)")
 ap.add_argument("--bar_full", action="store_true", help="절 AN.21: 장벽 헤시안 곱을 덩어리 대신 점별 w wᵀ 참 꼴로 (블록 대각 전처리에는 덩어리 값)")
 ap.add_argument("--fl_pt", action="store_true", help="점별 고착 (절 AN.17, 정의 변경): 고착 거듭제곱을 가우스 점에서 한 뒤 노드로 질량 평균 (be·HHT·GA 처럼 단계 frac 1 판만, --pk·--K_contact 와 함께 쓰지 않음)")
@@ -97,6 +98,7 @@ ap.add_argument("--gq_mass", action="store_true", help="절 CM9 (사용자 승�
 ap.add_argument("--gq_chk", action="store_true", help="절 CM9 진단 (결과 불변): 프레임마다 노드 질량·운동량·가속도 몫 합 대 입자 합 상대 차를 fem.jsonl gqchk 에 (구속 입자 속도를 바꾸는 --pbc 씬은 뜻 없음)")
 ap.add_argument("--lift_cells", type=int, default=0, help="절 CM11 진단 (사용자 지시): 처음 입자 위치 전체를 바닥 법선 방향으로 이 정수 x B-스플라인 칸 크기 h (= 격자 행렬 A 의 열 길이) 만큼 띄워 시작 (초기 속도·질량·F·구속 입자 선택·빈 노드 문턱은 원래 위치로 그대로); 오차 err 는 정답 그대로 대비, err_lift 는 띄운 거리 빼고")
 ap.add_argument("--lift_auto", action="store_true", help="--lift_cells 와 함께: 처음 상태에서 바닥 평면을 관통하는 칸 (절 CM10 꼭짓점 판정, U = 0) 이 0 이 될 때까지 정수를 1 씩 올림")
+ap.add_argument("--pdiag", action="store_true", help="절 S.8 진단 (결과 불변): 프레임마다 입자 J = det F 최소·최대·J ≤ 0 수, 이상 입자 (J ≤ 0.05·J > 5·비유한) 수·바닥 위 높이·B-스플라인 칸 (바닥 관통 칸 여부)·오차 꼬리를 fem.jsonl pd 에, 처음 이상 프레임부터 5 프레임 이상 입자 번호를 pdiag_f<프레임>.npy 에")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
 a = ap.parse_args()
 dev = "cuda"
@@ -133,6 +135,9 @@ if a.floor == "vel":
     if a.bar_node:                                                                     # 절 CM14: 노드 장벽 (표본점 장벽 d̂·κ·띠 고착 문턱은 그대로)
         assert a.fl_bar, "--bar_node 는 --fl_bar 위 (절 CM14)"
         FL["bnode"] = a.bar_node; FL["DHN"] = a.bar_ndh * DXG; FL["KSN"] = (lam + 2.0 * mu) / FL["DHN"] ** 2
+    if a.bar_ecell:                                                                    # 절 CM14.3 진단 (결과 불변)
+        assert a.fl_bar, "--bar_ecell 은 --fl_bar 위"
+        FL["becell"] = True
 BC = None
 if a.cfg_bc:
     BC = []
@@ -240,7 +245,9 @@ flog = open(os.path.join(a.out, "fem.jsonl"), "w")
 errs, ms = [], []
 div_at = None
 OOM = None
+PD_ON = []
 PRED = torch.empty(L, Np, 3) if a.dump else None
+BEN = [] if a.bar_ecell else None                                                  # 절 CM14.3: 프레임별 칸 목록
 PREDF = torch.empty(L, Np, 3, 3) if (a.dump and a.dump_F) else None
 for fi in range(L):
     kp = ((S.pk_profile(fi * h) if a.pk else S.profile(fi * h)) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None)
@@ -275,12 +282,41 @@ for fi in range(L):
         c["err_lift"] = c_lift
     if a.bar_cnt and getattr(S, "bar", False):                                         # 절 CM10 진단: 장벽 걸린 표본점·칸, 관통 칸
         c["bc"] = S.bar_counts()
+    if BEN is not None and getattr(S, "bar", False):                                   # 절 CM14.3 진단: 칸별 걸음 끝 장벽 에너지
+        c["be"], _cl = S.bar_ecell()
+        BEN.append(_cl)
+        if fi % 10 == 9 or fi + 1 == L:
+            torch.save(dict(frames=BEN, A=S.A.float().reshape(3, 3).cpu()), os.path.join(a.out, "bener.pt"))
     if getattr(S, "bnode", ""):                                                        # 절 CM14 진단: 노드 장벽 걸린 노드 수·부피 > 0 노드 수·d ≤ 0 이라 빠진 노드 수
         c["bn"] = S.barn_counts()
     if S.y0ut and getattr(S, "bar", False):                                            # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k, 0 = ŷ 그대로)
         c["y0k"] = S.Y0K[:S.nstage, 0].cpu().tolist()
         if not S.ls:                                                                   # 절 CM6 진단: 선탐색 없는 장벽 판 (재질) 뉴턴 반복별 보폭 k (상한까지 펼친 자리; 허용치로 건너뛴 반복은 앞 값)
             c["bk"] = S.BSK[:S.nstage * S.nt, 0].cpu().tolist()
+    if a.pdiag:                                                                        # 절 S.8 진단 (결과 불변, 상태 안 바꿈)
+        _Fo = torch.empty_like(S.F); _Fo[S.perm] = S.F
+        _J = torch.linalg.det(_Fo.reshape(-1, 3, 3).double())
+        _ep = (xo.double() - gt.double()).norm(dim=-1) / EXT
+        _nr = torch.tensor(FL["NR"] if FL else [0.0, 0.0, 1.0], device=dev, dtype=torch.float64)
+        _hp = xo.double() @ _nr - (FL["PN"] if FL else 0.0)
+        _bd = ~torch.isfinite(_J) | (_J <= 0.05) | (_J > 5.0)
+        _pd = dict(Jmin=float(torch.nan_to_num(_J, nan=-1e30).min()), Jmax=float(torch.nan_to_num(_J, nan=1e30).max()), nJneg=int((_J <= 0).sum()), nbad=int(_bd.sum()),
+                   hmin=float(_hp.min()), e99=float(torch.quantile(torch.nan_to_num(_ep[::7], nan=1e3).float(), 0.99)), emax=float(torch.nan_to_num(_ep, nan=1e3).max()), n_e20=int((torch.nan_to_num(_ep, nan=1e3) > 0.2).sum()))
+        if int(_bd.sum()):
+            _hb = _hp[_bd]
+            _cl = torch.unique(torch.floor(xo.double()[_bd] @ lat.Ai.T.double() - 0.5), dim=0)
+            _cs = torch.tensor([[i, j, k] for i in (0, 1) for j in (0, 1) for k in (0, 1)], device=dev, dtype=torch.float64)
+            _dd = ((_cl[:, None, :] + 0.5 + _cs[None]) @ lat.A.T.double()) @ _nr - (FL["PN"] if FL else 0.0)
+            _w = int(torch.argmin(torch.nan_to_num(_J, nan=-1e30)))
+            _pd.update(bad_h=[float(_hb.min()), float(_hb.median()), float(_hb.max())], bad_ctr=xo.double()[_bd].mean(0).tolist(), bad_cells=int(_cl.shape[0]),
+                       bad_cells_cross=int(((_dd.min(1).values < 0) & (_dd.max(1).values > 0)).sum()), bad_cells_below=int((_dd.max(1).values <= 0).sum()),
+                       bad_in_band=int((_hb < FL["DH"]).sum()) if FL else None, worst=dict(p=_w, J=float(_J[_w]), x=xo[_w].tolist(), h=float(_hp[_w]), err=float(_ep[_w]),
+                       cell=torch.floor(xo.double()[_w] @ lat.Ai.T.double() - 0.5).tolist()))
+            PD_ON.append(fi + 1)
+            if len(PD_ON) <= 5:
+                np.save(os.path.join(a.out, f"pdiag_f{fi + 1}.npy"), torch.nonzero(_bd).squeeze(1).cpu().numpy()[:200000])
+            print(f"  [pdiag] 프레임 {fi + 1}: J 최소 {_pd['Jmin']:.3g} (J≤0 {_pd['nJneg']}), 이상 입자 {_pd['nbad']} 높이 {_pd['bad_h']}, 칸 {_pd['bad_cells']} (관통 {_pd['bad_cells_cross']}, 아래 {_pd['bad_cells_below']}), 최악 {_pd['worst']}", flush=True)
+        c["pd"] = _pd
     if a.gfin:
         c["grel"] = S.grel()
     if a.hgt and fin:                                                                  # 절 CM6 진단: 높이 (바닥 법선 방향, 바닥 없으면 z) -- 질량 중심·최대·99 백분위, 정답과 우리
@@ -330,6 +366,8 @@ summ["ms_p90"] = float(np.percentile(sc, 90)) if sc else None
 import hashlib                                                                        # noqa: E402
 summ["x_sha1"] = None if OOM else hashlib.sha1(S.x_orig().cpu().numpy().tobytes()).hexdigest()[:10]     # 끝 상태 해시 (결정성 확인)
 json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), indent=1, ensure_ascii=False)
+if BEN is not None:
+    torch.save(dict(frames=BEN, A=S.A.float().reshape(3, 3).cpu()), os.path.join(a.out, "bener.pt"))
 if PRED is not None and div_at is None:
     torch.save({"pred": PRED, **({"F": PREDF} if PREDF is not None else {})}, os.path.join(a.out, "pred.pt"))
 elif PRED is not None and a.dump_part and len(errs):
