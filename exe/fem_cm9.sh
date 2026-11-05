@@ -42,7 +42,8 @@ done
 say "[수박 켬 판 완주] $OK $(date '+%T')"
 if [ $OK = 1 ] && [ $(date +%s) -lt $NOSTART ]; then
   # 영상 카드 하나 잡기 (풀과 같은 잡기 규약) -> 회귀 풀은 나머지 카드
-  CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL; VC=6; echo $$ > $CL/$VC
+  CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL; VC=$(( $(nvidia-smi -L | wc -l) - 1 )); [ $VC -gt 6 ] && VC=6; echo $$ > $CL/$VC   # 클러스터 8 장이면 6 그대로, vast 4 장이면 3
+  if [ -n "${S6_WM_MARK:-}" ]; then for i in $(seq 240); do [ -f $S6_WM_MARK ] && break; sleep 30; done; say "[수박 자료] $(ls $S6_WM_MARK 2>&1)"; fi   # vast (절 S.6): 클러스터에서 R2 로 옮긴 수박 3DGS·정답이 내려올 때까지 (최대 2 h)
   ( O=$B/cm9/w1a_wm; W=/home/dkta/work; WMM=$W/gfmodel/watermelon; [ -d $WMM/point_cloud ] || WMM=$W/gfmodel/model/watermelon; CFG=$W/wm2/gf/config.json
     GTD=/tmp/dkta/ag_data/gt_wm; [ -f $GTD/meta.json ] || GTD=/dev/shm/dkta/ag_data/gt_wm
     if [ ! -f $GTD/meta.json ]; then mkdir -p /dev/shm/dkta/ag_data

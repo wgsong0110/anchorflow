@@ -1,0 +1,39 @@
+name: build-pytorch3d-torch251
+
+# Spring-Gaus (doc/pareto.md 절 S.3) 용 pytorch3d 휠 -- vast.ai 인스턴스 이미지 pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel (py3.11) 와 같은 ABI.
+# 공식 prebuilt 휠 (dl.fbaipublicfiles.com) 에 py311_cu121_pyt251 이 없어 (403; py310 만 있음) 여기서 빌드 (인스턴스 빌드 금지). GPU 불필요: FORCE_CUDA=1 + arch 목록.
+# Spring-Gaus 의 서브모듈 래스터라이저 (diff-gaussian-rasterization 59f5f77)·simple-knn (44f7642) 은 build-3dgs-torch251 휠과 같은 커밋이라 따로 안 빌드.
+on:
+  workflow_dispatch:
+  push:
+    branches: [implicit-bspline]
+    paths: ['.github/workflows/build-pytorch3d-torch251.yml']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pytorch3d wheel in torch 2.5.1 cu121 image
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/out" \
+            -e TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9" -e FORCE_CUDA=1 -e MAX_JOBS=4 \
+            pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel bash -c '
+              set -e
+              apt-get update -qq && apt-get install -y -qq git build-essential ninja-build >/dev/null 2>&1
+              pip install -q wheel iopath fvcore
+              git clone -q https://github.com/facebookresearch/pytorch3d.git /p3d
+              cd /p3d && git checkout -q stable && git log --oneline -1
+              pip wheel . -w /out --no-deps --no-build-isolation
+              ls -la /out/*.whl
+            '
+          sudo chown -R $(id -u):$(id -g) *.whl || true
+          ls -la *.whl
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pytorch3d-torch251
+          files: '*.whl'
+          fail_on_unmatched_files: true

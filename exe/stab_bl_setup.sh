@@ -45,13 +45,18 @@ PYTHONPATH=$PTP $AF -c "import sys; sys.path.insert(0, '$PT'); import warp; warp
 # ---- Spring-Gaus (af 환경: 예전 벤치와 같음 -- pytorch3d · 그쪽 서브모듈 래스터라이저 · simple_knn)
 SGR=$(repo Spring-Gaus $W/Spring-Gaus https://github.com/Colmar-zlicheng/Spring-Gaus.git 62a1bb5); [ "$SGR" = FAIL ] && BAD="$BAD SG_repo"
 for m in yacs termcolor plyfile trimesh imageio open3d; do need $AF sg $m $m || true; done
-if [ -n "${ST_NO_BUILD:-}" ]; then say "ST_NO_BUILD: Spring-Gaus 빌드 (pytorch3d·래스터라이저) 건너뜀 (vast.ai 인스턴스 빌드 금지)"; BAD="$BAD SG_build_skipped"
-elif ! PYTHONPATH=$LIB/sg $AF -c "import pytorch3d.ops" 2>/dev/null; then
+if PYTHONPATH=$LIB/sg $AF -c "import pytorch3d.ops" 2>/dev/null; then say "있음 sg: pytorch3d"
+elif [ -n "${ST_P3D_WHL:-}" ] && [ -s "${ST_P3D_WHL}" ]; then   # 미리 빌드한 휠 (GitHub Actions build-pytorch3d-torch251 -> R2 vastpkg) -- 빌드 없는 설치
+  say "설치 sg: pytorch3d 휠 $ST_P3D_WHL"; $AF -m pip install -q --no-deps --target $LIB/sg "$ST_P3D_WHL" iopath portalocker || BAD="$BAD SG_pytorch3d_whl"
+  PYTHONPATH=$LIB/sg $AF -c "import pytorch3d.ops" || BAD="$BAD SG_pytorch3d_import"
+elif [ -n "${ST_NO_BUILD:-}" ]; then say "ST_NO_BUILD: pytorch3d 휠 없음 -> Spring-Gaus 건너뜀 (vast.ai 인스턴스 빌드 금지)"; BAD="$BAD SG_build_skipped"
+else
   say "빌드 sg: pytorch3d (잡 안 빌드)"; $AF -m pip install -q --no-deps --no-build-isolation --target $LIB/sg "git+https://github.com/facebookresearch/pytorch3d.git@stable" || BAD="$BAD SG_pytorch3d"
 fi
 for sm in diff-gaussian-rasterization simple-knn; do
   mod=$([ $sm = simple-knn ] && echo simple_knn._C || echo diff_gaussian_rasterization)
-  if [ -z "${ST_NO_BUILD:-}" ] && ! PYTHONPATH=$LIB/sg $AF -c "import $mod" 2>/dev/null; then
+  if ! PYTHONPATH=$LIB/sg $AF -c "import $mod" 2>/dev/null; then
+    if [ -n "${ST_NO_BUILD:-}" ]; then BAD="$BAD SG_${sm}_missing"; continue; fi
     say "빌드 sg: $sm (Spring-Gaus 서브모듈)"; $AF -m pip install -q --no-deps --no-build-isolation --target $LIB/sg $SGR/submodules/$sm || BAD="$BAD SG_$sm"
   fi
 done
