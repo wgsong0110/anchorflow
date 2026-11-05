@@ -178,7 +178,9 @@ def prep(m, t, tmo=16 * 3600):
     """씬마다 한 번 (빈 카드 하나). 반환: 상한 hi (실패·마감이면 None). 결과 p/<방법>_<씬>_prep/res.json."""
     F = pdir(m, t, 0, "prep")
     if os.path.exists(f"{F}/res.json"):
-        return json.load(open(f"{F}/res.json")).get("hi")
+        h = json.load(open(f"{F}/res.json")).get("hi")
+        if h is not None:
+            return h                                                                   # 실패 판 (hi 없음) 은 다시 띄울 때 다시 (환경 고친 뒤)
     if time.time() >= a.until:
         return None
     with SEM:

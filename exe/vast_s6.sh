@@ -20,6 +20,7 @@ if ! command -v rclone >/dev/null; then
   curl -sL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rc.zip && unzip -q -o /tmp/rc.zip -d /tmp && cp /tmp/rclone-*/rclone /usr/local/bin/
 fi
 command -v ffmpeg >/dev/null || (apt-get update -qq && apt-get install -y -qq ffmpeg) >/dev/null 2>&1
+ldconfig -p | grep -q libEGL.so.1 || (apt-get update -qq && apt-get install -y -qq libegl1 libgl1 libgomp1) >/dev/null 2>&1   # open3d (PhysTwin·Spring-Gaus)
 mkdir -p ~/.config/rclone
 printf '[r2]\ntype = s3\nprovider = Cloudflare\naccess_key_id = %s\nsecret_access_key = %s\nendpoint = %s\nacl = private\nno_check_bucket = true\n' "$R2_ACCESS_KEY" "$R2_SECRET" "$R2_ENDPOINT" > ~/.config/rclone/rclone.conf
 say "[시작] 커밋 $C $(hostname)"
@@ -37,7 +38,7 @@ if [ ! -f /root/s6/pip.done ]; then
   cd /tmp && for f in diff_gaussian_rasterization-0.0.0-cp311-cp311-linux_x86_64.whl simple_knn-0.0.0-cp311-cp311-linux_x86_64.whl; do
     curl -sL -o $f "https://github.com/wgsong0110/anchorflow/releases/download/cuda-3dgs-torch251/$f"; done
   pip install -q --force-reinstall --no-deps /tmp/diff_gaussian_rasterization-0.0.0-cp311-cp311-linux_x86_64.whl /tmp/simple_knn-0.0.0-cp311-cp311-linux_x86_64.whl 2>&1 | tail -2 | tee -a $LOG
-  python -c "import torch, warp, cupy, h5py, lpips, diff_gaussian_rasterization, simple_knn; print('[pip] torch', torch.__version__, torch.cuda.is_available(), 'warp', warp.__version__, 'cupy', cupy.__version__)" 2>&1 | tail -1 | tee -a $LOG && touch /root/s6/pip.done
+  python -c "import torch, warp, cupy, h5py, lpips, diff_gaussian_rasterization, simple_knn; print('[pip] torch', torch.__version__, torch.cuda.is_available(), 'warp', warp.config.version, 'cupy', cupy.__version__)" 2>&1 | tail -1 | tee -a $LOG && touch /root/s6/pip.done
 fi
 # ---- 자료 (R2 -> 클러스터 경로)
 W=/home/dkta/work; R=r2:storage/result/anchorflow

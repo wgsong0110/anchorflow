@@ -36,7 +36,7 @@ need $AF pt kornia kornia kornia_rs
 need $AF pt termcolor termcolor
 need $AF pt open3d open3d
 need $AF pt trimesh trimesh
-need $AF pt sklearn scikit-learn
+need $AF pt sklearn scikit-learn joblib threadpoolctl
 need $AF pt cv2 opencv-python-headless
 need $AF pt yaml pyyaml
 PTP=$LIB/pt
@@ -54,7 +54,7 @@ else
   say "빌드 sg: pytorch3d (잡 안 빌드)"; $AF -m pip install -q --no-deps --no-build-isolation --target $LIB/sg "git+https://github.com/facebookresearch/pytorch3d.git@stable" || BAD="$BAD SG_pytorch3d"
 fi
 for sm in diff-gaussian-rasterization simple-knn; do
-  mod=$([ $sm = simple-knn ] && echo simple_knn._C || echo diff_gaussian_rasterization)
+  mod=$([ $sm = simple-knn ] && echo "torch, simple_knn._C" || echo "torch, diff_gaussian_rasterization")   # torch 먼저 (libc10)
   if ! PYTHONPATH=$LIB/sg $AF -c "import $mod" 2>/dev/null; then
     if [ -n "${ST_NO_BUILD:-}" ]; then BAD="$BAD SG_${sm}_missing"; continue; fi
     say "빌드 sg: $sm (Spring-Gaus 서브모듈)"; $AF -m pip install -q --no-deps --no-build-isolation --target $LIB/sg $SGR/submodules/$sm || BAD="$BAD SG_$sm"
@@ -71,6 +71,7 @@ if [ -x $SIMP ]; then
     say "simp kaolin $kv -> kaolin 0.18.0 (torch $tv cu$cu) 를 simp18 에"
     mkdir -p $LIB/simp18
     $SIMP -m pip install -q --no-deps --target $LIB/simp18 kaolin==0.18.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-${tv}_cu${cu}.html || BAD="$BAD simp_kaolin"
+    need $SIMP simp18 pygltflib pygltflib; need $SIMP simp18 pxr usd-core   # kaolin 0.18.0 tools/requirements.txt 중 simp 에 없을 수 있는 것
     PYTHONPATH=$LIB/simp18 $SIMP -c "import warp; assert int(warp.config.version.split('.')[0]) >= 1" 2>/dev/null || need $SIMP simp18 warp "warp-lang>=1.5,<1.10"
     SMP=$LIB/simp18
   fi
