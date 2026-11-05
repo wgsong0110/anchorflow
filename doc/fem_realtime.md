@@ -5278,3 +5278,27 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 이어서 (다음 잡에서, cm8.END 가 "마감 표" 이거나 표에 "도는 중"/빈 칸이 있으면): R2 lbours/fem_cm/cm8j·cm8z_a·cm8z_b·cm8s 를 /dev/shm/dkta/lbours/fem_cm/ 아래 같은 이름으로 내려받고 (풀은 rc= 있는 판을 건너뜀),
   exe/fem_cm8.sh 의 마감 시각 (NOSTART·TBL·TBL2) 을 새 잡 만료에 맞춰 고친 뒤 같은 커밋 코드로 job_run.sh (AF_JOB·AF_NODE 를 실제 값) 로 다시 띄움 -- 시간표는 원래 규칙 (c 3·6·12·24 -> c*±1 두 번) 으로 보충하고 고른 상한이 cm4 값과 다르면 그 c 로 판정 (스크립트 J 둘째).
   그 뒤 채택 후보로 영상 (exe/fem_cm4.sh V 꼴: lego L000·0016·wolf 덤프 -> 3DGS 렌더 -> exe/fem_cm4_compose.py).
+
+## CM9. 질량·운동량도 힘과 같은 가우스 점에서 (--gq_mass, 사용자 승인 11-05 정의 변경; 수박 발산 원인 = 지지 끝의 거의 빈 노드) -- 가지 implicit-bspline, 커밋 e84cc5c, 묶음 cm9
+### CM9.0 정의 (끄면 예전과 같은 기계어)
+- 지금: 노드 질량·운동량은 입자에서 m_n = Σ_p w_n(x_p) m_p (rt_p2g), 내부력은 가우스 점에서 f_n = Σ_q V_q τ_q ∇w_n(x_q). 입자가 노드 지지 끝에 있으면 w_n(x_p) → 0 인데 그 칸 가우스 점의 ∇w_n(x_q) 는 덜 작아 힘/질량 비가 커짐 (절 AT.1 의 +20 칸 노드).
+- `--gq_mass`: P2G 를 두 단계로 -- 입자 -> 자기 팔분 가우스 점 q: P_q = Σ_{p∈q} m_p (v_p, a_p), 칸 합 P_c; 점 몫 p_q = 점유 가중 판 (--gq_oct κ) 이면 (1 − κ) P_q + κ P_c / 8, 아니면 P_c / 8 -- **V_q·m_q (rt_gauss) 와 같은 가중** (m_q 는 rt_gauss 값 그대로: 점유 가중 판 (1 − κ) Σ_{p∈q} m_p + κ m_c / 8).
+  노드: m_n = Σ_q m_q w_n(x_q), (mv)_n = Σ_q p_q w_n(x_q), HHT 가속도 몫 (ma)_n 도 같은 경로 (x_q = 힘 계산과 같은 칸 안 2x2x2 가우스 점, w_n(x_q) = BW 표). 아핀 (APIC) 항은 원래 없음 (PIC).
+  Σ_n w_n(x_q) = 1 이라 질량·운동량 합 보존 (진단 `--gq_chk`: 프레임마다 노드 합 대 입자 합 상대 차 -> fem.jsonl gqchk). m_n 은 기존 판정 질량 mqn 과 같은 식 (원자 순서만 다름). G2P·질량 하한 --mlow (문턱 = 1e-3 x 첫 프레임 입자 P2G 노드 질량 중앙값) 은 그대로.
+  바꾸지 않은 것: 재질 판의 순차 방출 구속 몫 (ao_pbc_acc 구속 질량, aq_p2g_v 목표 속도) 은 입자 기저 그대로 -- 구속 비 α = 구속 질량 / m_n 의 m_n 만 새 정의 (wolf·bread 회귀에만 해당, 수박은 구속 없음).
+- 구현: lib/anchorflow/fem_an_rt.py GQ_SRC (gq_p2q 원자 / gq_p2q_d 결정적 칸 순서, gq_q2n 점 -> 노드 원자), rt_p2g 노드 몫을 `#ifndef AF_GQM` 로 (끄면 그대로), lib/anchorflow/fem_an_det.py gq_gath (결정적 판: 노드가 이웃 27 칸 x 8 점을 고정 순서), lib/anchorflow/fem_mat_rt.py (재질 판, 같은 경로),
+  lib/anchorflow/fem_ao_rt.py (옛 재질 실행기, 비결정 판만: rt_p2g 노드 몫 앞에서 return, 가속도 gaA 도 gq_q2n 이 채우고 ao_adiv 그대로). 진단 nlow (0 < m_n < 문턱 노드 수)·nact (m_n > 0 노드 수) 를 재질 판 fem.jsonl 에 (결과 불변).
+- 끄면 같은지: 생성 CUDA 소스를 원래 커밋과 대조 -- 옛 재질 실행기는 글자까지 같고, 새 실행기는 쓰지 않는 커널 추가와 `#ifndef AF_GQM` 두 줄뿐. 회귀 끔 판 r0 의 끝 해시를 절 CM8 (aa5a7ef) 해시와 대조 (표).
+### CM9.1 묶음 cm9 (exe/fem_cm9.sh, 씬 exe/fem_cm9_scn.sh, 표 exe/fem_cm9_table.py)
+- 수박 명령 = **지금 수박 판 (절 AS 전체 판, 절 AT at2 명령에서 진단 --nanchk·--at_diag 만 뺌)**: exe/fem_ao_rt_sim.py --frames 100 --floor vel --floor_plane 1,1,0.02,0,0,1 --floor_slip --cell 1.5 --mlow 1e-3 --integ mid --ga hht --rho 0.7 --ga_y0ut --tolN 1e-2 --tolP 1e-1 --K 3 --newton 2 --cg 5 --ls_inv --y0u --y0l --fq_rl --ls_end (+ --gq_mass).
+  채택 공통 설정 (절 CM8 (B): 새 실행기, ρ 0.8 K 2, 장벽 바닥 + --y0eb) 은 새 실행기에 바닥 평면·미끄럼 바닥·AS 필터가 없어 수박에 맞지 않음 -> 수박은 지금 판 그대로에서 --gq_mass 하나만 켜고 끔.
+- W: 끔 w0a·w0b, 켬 w1a (덤프)·w1b (비결정이라 두 번), 빈 카드 1-6; 동시에 카드 0 단독 시간 zw0a·zw1a·zw0b·zw1b (gpu0.lock, 판마다 카드 0 의 다른 계산 프로세스 0 일 때 시작).
+- R (켬 판 둘 다 100 프레임 완주일 때만): 새 실행기 채택 판 (B) (`--v=b`, 결정적) L000·0016·drop1 2x4, wolf 2x5, ficus 2x24, bread 2x2 를 끔 r0·켬 r1 (켬에 --gq_chk) + 수박 영상 (w1a 덤프 -> h5 -> GF 3DGS 알파블렌딩 wm_render -> 정답 | 우리 합성, R2 result/anchorflow/v20261009/fem_cm9_watermelon_cmp.mp4).
+  완주 못 하면 회귀·영상 안 함 -- 원인 수치는 표 수박 행 (발산 프레임, 거의 빈 노드 수, 최대 변위 노드 칸 수와 그 노드 질량 / 중앙값, 질량·운동량 합 차) 과 fem.jsonl.
+- 출력: R2 lbours/fem_cm/cm9 (판별 log·summary·fem.jsonl)·cm9z (단독 시간), 표 marks/cm9_table.md (5 분마다 다시 씀), 끝 표식 marks/cm9.END, 로그 marks/cm9.log·cm9w_pool.log·cm9r_pool.log·cm9z_q.log; 코드 묶음 lbours/fem_cm/code/imp_e84cc5c.bundle, 진입점 code/cm9_go.sh.
+### CM9.2 상태와 이어서 할 지점 (11-05 13:41 KST 기준, 실행 전)
+- 잡 130567 은 12:34 KST 만료. 다음 잡 (130784 등) 시작 여부를 qstat -u dkta 로 13:15·13:25·13:41 KST 에 확인하려 했으나 로그인 노드 SSH 가 90 초 안에 응답하지 않음 (세 번; 같은 시각 다른 세션의 ssh 도 매달려 있었음) -> **아직 안 띄움, 수치 없음**. 잡 제출은 안 함.
+- 코드 e84cc5c 는 커밋·묶음 R2 lbours/fem_cm/code/imp_e84cc5c.bundle, 진입점 틀 code/cm9_go.sh (`__UNTIL__` = 잡 만료 epoch 로 바꿈), 글꼴 code/NotoSansCJKkr-Regular.otf 까지 올림. GPU 에서 컴파일·실행한 적 없음 (새 커널은 g++ 문법 검사, 끈 판 생성 소스는 원래 커밋과 대조만).
+- 띄우는 법 (잡이 돌고 있을 때): cm9_go.sh 의 `__UNTIL__` 을 잡 만료 epoch 로 바꿔 /home/dkta/work/ao/go_cm9.sh 로 scp 한 뒤 로그인 노드에서
+  `AF_DETACH=1 AF_JOB=<id>.ECE-util1 AF_NODE=<노드> bash /home/dkta/work/anchorflow/exe/job_run.sh /home/dkta/work/ao/go_cm9.sh /home/dkta/work/ao/go_cm9.out` (exe/ao_launch.sh 와 같은 꼴). 표·끝 표식은 잡 안 스크립트가 알아서 씀.
+- 처음 몇 분 안에 볼 것 (marks/cm9.log·cm9w_pool.log): 새 커널 컴파일 오류, /dev/shm 여유 (w1a 덤프 약 7 GB), wm.pt 5 GB 내려받기.
