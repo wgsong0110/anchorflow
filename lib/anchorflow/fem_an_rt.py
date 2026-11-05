@@ -1526,6 +1526,44 @@ __global__ void __launch_bounds__(128) rt_bar_kfe(const int* IP, const int* cb, 
     while (true) { c *= 0.5f; k++; if (c == 0.f) break; if (d0 + c*(d1 - d0) > 0.f) break; }
     atomicMax(kk, k);
 }
+// 절 CM8 (B, --y0eb, 정의 변경): 시작점 섞기 β 를 장벽 에너지 기준으로 -- "장벽 에너지가 걸음 시작 위치 (β = 0, 시작점 U) 의 장벽 에너지보다 크지 않은 가장 큰 2^-k".
+// 후보 β_i = 2^-(k0+i) (k0 = rt_bar_kfe 의 실현 가능 k, i = 0..NE−1) 의 장벽 에너지 -> SC[1+i], β = 0 -> SC[0]. 활성 표본점 (U 에서 판정, AF_BACT) 의 d 는 y 에 선형
+// (y(β) = (1−β) y_U + β y_ŷ) 이라 두 끝 d0 (U)·d1 (ŷ) 만 모으고 후보마다 d = d0 + β (d1 − d0) (rt_bar_kfe 와 같은 식). 장벽 에너지는 β 에 볼록이라 조건을 만족하는 β 는 [0, β*] 구간.
+__global__ void __launch_bounds__(128) rt_bar_y0e(const int* IP, const int* cb, const float* BW, const float* Vq, const float* y0, const float* y1, const float* U, float thinv,
+                         float n0, float n1, float n2, float pn, float dh, float ks, const int* kk, double* SC, int NE) {
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    bool on = q < IP[12]; int qq = on ? q : 0; int oc = qq & 7;
+    float bm = on ? AF_BX[qq*4+3] : 0.f;
+    bool act = bm > 0.f && AF_BACT[qq];
+    float d0 = 0.f, d1 = 0.f; double kap = 0.0;
+    if (act) {
+        int ids[27]; qnodes(qq, IP, cb, ids);
+        float xa[3], xb[3];
+        for (int a=0;a<3;a++) { xa[a] = AF_BX[qq*4+a]/bm; xb[a] = xa[a]; }
+        for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+            for (int a=0;a<3;a++) { xa[a] += w*(U[id*3+a] + thinv*(y0[id*3+a] - U[id*3+a])); xb[a] += w*(U[id*3+a] + thinv*(y1[id*3+a] - U[id*3+a])); } }
+        d0 = xa[0]*n0 + xa[1]*n1 + xa[2]*n2 - pn; d1 = xb[0]*n0 + xb[1]*n1 + xb[2]*n2 - pn;
+        kap = (double)ks*(double)Vq[qq];
+    }
+    double e = 0.0;
+    if (act && d0 < dh) { if (d0 > 0.f) { double dd = (double)d0 - dh; e = -kap*dd*dd*log((double)d0/dh); } else e = 1e30; }
+    blocksum_add(e, &SC[0]);
+    float c = ldexpf(1.f, -kk[0]);
+    for (int i=0;i<NE;i++) {
+        e = 0.0;
+        if (act) { float d = d0 + c*(d1 - d0);
+            if (d < dh) { if (d > 0.f) { double dd = (double)d - dh; e = -kap*dd*dd*log((double)d/dh); } else e = 1e30; } }
+        blocksum_add(e, &SC[1+i]);
+        c *= 0.5f;
+    }
+}
+// 후보 중 E(β_i) ≤ E(0) 인 첫 i (가장 큰 β) -> kk = k0 + i; 없으면 β = 0 (kk 1000: ldexpf(1, −1000) = 0 -> rt_y0mix 가 η_U 그대로 = 시작점 U)
+__global__ void rt_y0epick(double* SC, int* kk, int NE) {
+    double E0 = SC[0]; int k0 = kk[0];
+    for (int i=0;i<NE;i++) { double E1 = SC[1+i]; if (isfinite(E1) && E1 <= E0) { kk[0] = k0 + i; return; } }
+    kk[0] = 1000;
+}
 __global__ void rt_mg_dbar(int l, const int* LM, const float* D, const float* Kc, float n0, float n1, float n2, float* Db) {
     int n = blockIdx.x*blockDim.x + threadIdx.x;
     if (n >= LM[l*8+3]) return;
@@ -1623,13 +1661,14 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False):
         s.dev = dev
         s.hspec = bool(hspec)                                                          # 절 CM3 (결과 정의 같음): 고운 층 헤시안 주값 분해 30 성분 저장·곱 (rt_mv2s; --mv2 필요)
         s.ncomp = bool(ncomp)                                                          # 절 CM3 (결과 정의 같음): PCG·층 0 V 순환 노드 커널을 점유 칸 이웃 노드 목록만
         assert not s.hspec or bool(mv2) or bool(mg_occ), "--hspec 은 --mv2 판만"
         assert not (s.ncomp and pk), "--ncomp 는 그래프 판만"
         assert not (s.hspec and (mg_fuse or mg_csolve)), "--hspec 은 거친 층 한 블록 판 (mg_fuse·mg_csolve) 과 함께 못 씀 (81 성분 읽음)"
+        s.y0eb = bool(y0eb)                                                            # 절 CM8 (B): 장벽 판 시작점 섞기 β = 장벽 에너지 ≤ 걸음 시작의 장벽 에너지인 가장 큰 2^-k
         s.y0ut = bool(y0ut)                                                            # 절 CM2 정의 변경 셋째: 뉴턴 시작점 = 관성 예측 ŷ (장벽 판은 걸음 시작 U 에서 ŷ 쪽 실현 가능한 최대 2^-k)
         s.matk = None                                                                  # 절 CM2: 재질 판 (lib/anchorflow/fem_mat_rt.py MatRT 가 채움)
         s.lsfast = bool(lsfast)                                                        # 절 AN.22: 선탐색 조기 판정 (결과 같음)
@@ -2158,6 +2197,10 @@ class RTSolver(MG2.MG2Mixin):
                 if s.y0ut:
                     s.zf(s.kk)
                     s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)))
+                    if s.y0eb:                                                         # 절 CM8 (B): 실현 가능 k 에서 더 줄여 장벽 에너지 ≤ 걸음 시작 (U) 의 장벽 에너지인 가장 큰 2^-k
+                        s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
+                        s.k("rt_bar_y0e", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *BA, P(s.kk), P(s.SC), i32(59)))
+                        s.k("rt_y0epick", 1, (P(s.SC), P(s.kk), i32(59)), b=1)
                     s.dcopy(s.Y0K[kstep], s.kk)                                        # 진단: 걸음별 시작점 k
                     s.k("rt_y0mix", capN, (P(IP), P(s.kk), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eS), P(s.eta), P(s.y)), b=256)
             if y0s:                                                                    # 절 AN.22 시작점 탐색: U 에서 Ũ 쪽 후보 2^-i 중 전체 에너지 최소 (장벽 활성 판정은 위 U 에서 그대로)
