@@ -72,10 +72,10 @@ print()
 print("| 씬 | 원래 (A) 기존 값 (절 CM8 a6) | " + " | ".join(VN[v] for v in VS) + " | 해시 " + " / ".join(VS) + " | a6 해시 |")
 print("|---|---|" + "---|" * (len(VS) + 2))
 for t in SCN:
-    H = [((sm(P(v, t)) or {}).get("x_sha1") or "-") for v in VS]
+    H = [(((sm(P(v, t)) or {}).get("x_sha1") or "-") if not (sm(P(v, t)) or {}).get("diverged") else "(발산)") for v in VS]   # 발산 판의 끝 상태 해시는 뜻 없음
     print(f"| {t} | {A6[t]} | " + " | ".join(state(P(v, t)) for v in VS) + " | " + " / ".join(H) + f" | {A6H.get(t, '-')} |")
 print()
-print("- 끄면 같은지: (A) 해시 대 절 CM8 a6 해시 (0000·0013·0018; L000 은 a6 가 메모리 부족으로 끝 해시 없음 -- 발산 프레임·발산 전 오차로 대조).")
+print("- 끄면 같은지: 바꾸기 전 커밋 a448383 의 같은 명령 (진단 플래그 있음·없음 둘 다) 과 (A) 해시 대조 = R2 lbours/fem_cm/astick/chk (marks/astick_chk.log). a6 해시는 절 CM8 (커밋 aa5a7ef, 클러스터) 값.")
 print()
 print("## 2. 바닥 아래·튀어 오름·법선 구속 (프레임 평균 / 최대)")
 print()
@@ -88,6 +88,10 @@ def mm(v, f="%.1f"):
     return ((f + " / " + f) % (np.mean(v), max(v))) if v else "-"
 
 
+GTB = {}
+for t in SCN:                                                                          # 정답 튀어 오름은 가장 길게 돈 판의 hg (정답은 판과 무관 -- 짧게 끝난 판에서 재면 잘림)
+    L_ = max((jl(P(v, t)) for v in VS), key=len)
+    GTB[t] = bounce([q["hg"][0] for q in L_ if "hg" in q])
 for t in SCN:
     for v in VS:
         J = jl(P(v, t))
@@ -95,17 +99,16 @@ for t in SCN:
             continue
         pe = [q["pen"] for q in J if "pen" in q]
         hp = [q["hp"][0] if "hp" in q else None for q in J]
-        hg = [q["hg"][0] for q in J if "hg" in q]
         fu = [q["fup"] for q in J if "fup" in q]
         act = [max(q["act"]) for q in fu if q["act"]]
         cand = [max(q["cand"]) for q in fu if q["cand"]]
         oo = [sum(q["on"]) for q in fu]; ff = [sum(q["off"]) for q in fu]
         print(f"| {t} | {VN[v]} | {mm([1000 * p['dmax'] for p in pe if p['dmax'] is not None], '%.2f')} | {mm([p['np'] for p in pe])} | {mm([1000 * p['gdmax'] for p in pe], '%.2f')} | "
-              f"{fmt_b(bounce(hp))} | {fmt_b(bounce(hg))} | {mm(act) if fu else '-'} | {mm(cand) if fu else '-'} | {('%.1f · %.1f' % (np.mean(oo), np.mean(ff))) if fu else '-'} |")
+              f"{fmt_b(bounce(hp))} ({len(J)} 프레임) | {fmt_b(GTB[t])} | {mm(act) if fu else '-'} | {mm(cand) if fu else '-'} | {('%.1f · %.1f' % (np.mean(oo), np.mean(ff))) if fu else '-'} |")
 print()
 print("## 3. 발산·멈춘 판 진단 (실행기 --pdiag: 이상 입자 = J ≤ 0.05·J > 5·비유한; 처음 이상 프레임과 마지막 프레임)")
 print()
-print("| 씬 | 판 | 멈춘 프레임 · 까닭 | 처음 이상 프레임: 이상 입자 수 · J≤0 수 · 중심 (x, y, z) · 바닥 위 높이 [최소, 중앙, 최대] | 마지막 프레임: 이상 입자 · J≤0 · 최악 입자 위치 · 높이 · 노드 상자 |")
+print("| 씬 | 판 | 멈춘 프레임 · 까닭 | 처음 이상 프레임: 이상 입자 수 · J≤0 수 · 중심 (x, y, z) · 바닥 위 높이 [최소, 중앙, 최대] | 마지막 유한 프레임: 이상 입자 · J≤0 · 최악 (J 최소) 입자 위치 · 바닥 위 높이 · 노드 상자 |")
 print("|---|---|---|---|---|")
 for t in SCN:
     for v in VS:
@@ -117,10 +120,11 @@ for t in SCN:
         first = next(((f, p) for f, p in pd if p.get("nbad")), None)
         c1 = "-" if first is None else "프레임 %d: %d · %d · (%s) · [%s]" % (first[0], first[1]["nbad"], first[1]["nJneg"], ", ".join("%.3f" % x for x in first[1].get("bad_ctr", [])),
                                                                      ", ".join("%.3f" % x for x in first[1].get("bad_h", [])))
-        lf, lp = pd[-1] if pd else (None, {})
+        pdf = [(f, p) for f, p in pd if (p.get("worst") or {}).get("x") and all(np.isfinite(p["worst"]["x"]))]   # 마지막 유한 프레임 (비유한 프레임 바로 앞)
+        lf, lp = pdf[-1] if pdf else (pd[-1] if pd else (None, {}))
         w = lp.get("worst") or {}
         c2 = "-" if not pd else "프레임 %d: %d · %d · (%s) · %s · %s" % (lf, lp.get("nbad", 0), lp.get("nJneg", 0), ", ".join("%.3f" % x for x in w.get("x", [])),
-                                                                     ("%.3f" % w["h"]) if "h" in w else "-", J[-1].get("nn", "-"))
+                                                                     ("%.3f" % w["h"]) if "h" in w else "-", next((q.get("nn", "-") for q in J if q["t"] + 1 == lf), "-"))
         print(f"| {t} | {VN[v]} | {s['diverged']} · {why} | {c1} | {c2} |")
 print()
 print("## 4. 프레임별 질량 중심 z (mm; 정답 / " + " / ".join(VN[v] for v in VS) + ") -- L000")
