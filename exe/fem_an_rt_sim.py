@@ -43,6 +43,7 @@ ap.add_argument("--fl_nclamp", action="store_true", help="절 CM16 (사용자 �
 ap.add_argument("--pen", action="store_true", help="절 CM15 진단 (결과 불변, 바닥 씬): 프레임마다 바닥 평면 아래 입자 수·최대 침투 깊이 (우리·정답), 저항 바닥이면 걸음 시작 위치가 평면 아래인 표본점 수 (마지막 걸음) -> fem.jsonl pen")
 ap.add_argument("--bar_ndh", type=float, default=0.5, help="절 CM14: 노드 장벽 두께 d̂_n = 이 값 x dx_정답 (기본 ½ = 표본점 장벽 d̂ 와 같음)")
 ap.add_argument("--bar_full", action="store_true", help="절 AN.21: 장벽 헤시안 곱을 덩어리 대신 점별 w wᵀ 참 꼴로 (블록 대각 전처리에는 덩어리 값)")
+ap.add_argument("--fl_up", type=int, default=0, choices=[0, 1, 2], help="절 CM17 (사용자 승인 11-06 정의 변경, --floor vel 의 (A) 가우스 점 고착 판만): 고착 몫의 법선 성분을 한쪽 구속으로 -- 걸음 변위 법선 성분이 음수일 때만 법선 고착 (활성 집합, 뉴턴 반복마다 갱신), 위 (+n) 는 자유; 1 = 접선은 지금처럼 고착, 2 = 접선도 자유 (마찰 없음). 0 = 끔 (원래와 같은 기계어)")
 ap.add_argument("--fl_pt", action="store_true", help="점별 고착 (절 AN.17, 정의 변경): 고착 거듭제곱을 가우스 점에서 한 뒤 노드로 질량 평균 (be·HHT·GA 처럼 단계 frac 1 판만, --pk·--K_contact 와 함께 쓰지 않음)")
 ap.add_argument("--mg_levels", type=int, default=1, help="1 = 블록 야코비, 2 이상 = 그 층 수의 기하 멀티그리드 (거친 층 조밀 상자)")
 ap.add_argument("--mg_nc", type=int, default=8)
@@ -147,6 +148,9 @@ if a.floor == "vel":
     if a.fl_nclamp:                                                                    # 절 CM16: 노드 법선 하드 클램프 -- 장벽·고착 (KEX 0 -> 노드 고착 인자 1) 없음
         assert not (a.fl_bar or a.fl_bst or a.fl_stk or a.bar_node or a.bar_cross or a.bar_cnt or a.bar_ecell or a.bar_full or a.fl_pt or a.y0eb or a.fl_vres), "--fl_nclamp 는 장벽·고착·저항 플래그 없이 (절 CM16)"
         FL.update(nclamp=True, KEX=0.0, bst=0)
+    if a.fl_up:                                                                        # 절 CM17: (A) 고착 몫 법선 한쪽 구속 -- 장벽·띠 고착·점별·클램프·저항 없이
+        assert not (a.fl_bar or a.fl_bst or a.fl_stk or a.bar_node or a.bar_cross or a.bar_cnt or a.bar_ecell or a.bar_full or a.fl_pt or a.y0eb or a.fl_vres or a.fl_nclamp or a.fl_nost), "--fl_up 은 (A) 가우스 점 고착 판 (--floor vel) 만 (절 CM17)"
+        FL["fup"] = int(a.fl_up)
 BC = None
 if a.cfg_bc:
     BC = []
@@ -305,6 +309,8 @@ for fi in range(L):
         c["pen"] = dict(np=int((_hp < 0).sum()), dmax=float((-_hp.min()).clamp(min=0)) if _hp.numel() else None, gnp=int((_hg < 0).sum()), gdmax=float((-_hg.min()).clamp(min=0)))
         if getattr(S, "vres", 0.0):
             _nq = int(S.IP[12]); c["pen"]["nq"] = int(((S.bact[:_nq] > 0) & (S.bx[:_nq * 4].view(-1, 4)[:, 3] > 0)).sum())
+    if getattr(S, "fup", 0):                                                           # 절 CM17 진단 (결과 불변): 걸음별 후보·넣기·빼기·걸음 끝 법선 고착 노드 수
+        c["fup"] = S.fup_counts()
     if getattr(S, "ncl", False):                                                       # 절 CM16 진단 (결과 불변): 걸음별 후보·넣기·빼기·걸음 끝 활성 노드 수
         c["ncl"] = S.ncl_counts()
     if S.y0ut and getattr(S, "bar", False) and not getattr(S, "vres", 0.0):           # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k, 0 = ŷ 그대로)

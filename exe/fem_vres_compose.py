@@ -12,6 +12,7 @@ rest = sys.argv[6:]
 assert len(rest) % 3 == 0, rest
 os.makedirs(TMP, exist_ok=True)
 H, TOP = 720, 180
+MAXW = int(os.environ.get("CMP_MAXW", "4096"))                                     # 절 CM17: 가로 상한 (기본 4096 그대로)
 
 
 def er(p):
@@ -49,6 +50,6 @@ for k, (nm, e_, path, dv) in enumerate(cells):
         f_ += "," + dt(tf(f"c{k}b", e_), FB, 20, 14, 110, "0x1f4fbf")
     fl.append(f_ + f"[c{k}]")
 n = len(cells)
-fl.append("".join(f"[c{k}]" for k in range(n)) + f"hstack=inputs={n}:shortest=1," + dt(tf("title", title), FR, 18, 14, 14, "0x444444") + ",scale=w='min(iw,4096)':h=-2[o]")
+fl.append("".join(f"[c{k}]" for k in range(n)) + f"hstack=inputs={n}:shortest=1," + dt(tf("title", title), FR, 18, 14, 14, "0x444444") + f",scale=w='min(iw,{MAXW})':h=-2[o]")
 subprocess.run(["ffmpeg", "-v", "error", "-y", *ins, "-filter_complex", ";".join(fl), "-map", "[o]", "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-r", "30", "-movflags", "+faststart", "-shortest", out], check=True)
 print("[저장]", out, n, "칸")
