@@ -103,6 +103,9 @@ ap.add_argument("--gq_chk", action="store_true", help="절 CM9 진단 (결과 �
 ap.add_argument("--lift_cells", type=int, default=0, help="절 CM11 진단 (사용자 지시): 처음 입자 위치 전체를 바닥 법선 방향으로 이 정수 x B-스플라인 칸 크기 h (= 격자 행렬 A 의 열 길이) 만큼 띄워 시작 (초기 속도·질량·F·구속 입자 선택·빈 노드 문턱은 원래 위치로 그대로); 오차 err 는 정답 그대로 대비, err_lift 는 띄운 거리 빼고")
 ap.add_argument("--lift_auto", action="store_true", help="--lift_cells 와 함께: 처음 상태에서 바닥 평면을 관통하는 칸 (절 CM10 꼭짓점 판정, U = 0) 이 0 이 될 때까지 정수를 1 씩 올림")
 ap.add_argument("--pdiag", action="store_true", help="절 S.8 진단 (결과 불변): 프레임마다 입자 J = det F 최소·최대·J ≤ 0 수, 이상 입자 (J ≤ 0.05·J > 5·비유한) 수·바닥 위 높이·B-스플라인 칸 (바닥 관통 칸 여부)·오차 꼬리를 fem.jsonl pd 에, 처음 이상 프레임부터 5 프레임 이상 입자 번호를 pdiag_f<프레임>.npy 에")
+ap.add_argument("--wdiag", type=int, default=-1, help="절 S.9 진단 (결과 불변, --tolN/--tolP 판): 프레임마다 가우스 점 det (걸음 시작점·뉴턴 반복 끝·걸음 끝 U)·뉴턴 |g|/F·PCG 반복·상한·보폭을 fem.jsonl wd 에, 이 프레임 (1 부터) 부터 --wdiag_end 까지 원자료 wd_f<프레임>.npz (lib/anchorflow/k4why_diag.py); --gfin 과 함께")
+ap.add_argument("--wdiag_end", type=int, default=10 ** 6)
+ap.add_argument("--fhash", action="store_true", help="절 S.9 (결과 불변, 호스트만): 프레임마다 입자 위치 해시 (sha1 앞 10 자리) 를 fem.jsonl xh 에 -- 진단 켬·끔 대조")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
 a = ap.parse_args()
 dev = "cuda"
@@ -251,7 +254,7 @@ if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                     
     a.ls = 0                                                                           # 재질 판: 퍼텐셜 없음 -> 에너지 선탐색 없음 (절 AO.0; 장벽이면 실현 가능 보폭만)
     print(f"[절 CM2 재질 판] {MATNAME} {MATX.get('mat')} 구속 {TREL is not None} 구속 속도 {PVB is not None} 빈 노드 문턱 {MTHR:.3e} 점성 {MATX.get('visc', 0.0)}", flush=True)
 S = SOLVER(X0, d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, gqm=a.gq_mass, **MATX)
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, gqm=a.gq_mass, **({"wd": True} if a.wdiag >= 0 else {}), **MATX)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, 적분기 {a.ga + ' ρ ' + str(a.rho) if a.ga else a.integ}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
@@ -266,6 +269,9 @@ for fi in range(L):
     kp = ((S.pk_profile(fi * h) if a.pk else S.profile(fi * h)) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None)
     if a.gq_chk:                                                                       # 절 CM9: 프레임 시작 입자 합 (f64)
         _m = S.m.double(); _ps = [float(_m.sum()), (_m[:, None] * S.v.double()).sum(0), (_m[:, None] * S.pa.double()).sum(0), float((_m * S.v.double().norm(dim=-1)).sum()), float((_m * S.pa.double().norm(dim=-1)).sum())]
+    if a.wdiag >= 0:                                                                   # 절 S.9: 프레임 시작 입자 det F·위치 (원래 순서)
+        _Fs = torch.empty_like(S.F); _Fs[S.perm] = S.F
+        _Jp0 = torch.linalg.det(_Fs.reshape(-1, 3, 3).double()); _x0o = S.x_orig().clone(); del _Fs
     if a.dump_part:                                                                    # 메모리 부족 = 그 프레임에서 멈춤 (발산 쪽으로 기록, 덤프는 앞 프레임까지)
         try:
             redo = S.step(fi * h)
@@ -343,6 +349,19 @@ for fi in range(L):
         c["pd"] = _pd
     if a.gfin:
         c["grel"] = S.grel()
+    if a.wdiag >= 0:                                                                   # 절 S.9 진단 (결과 불변, 상태 안 바꿈)
+        from anchorflow import k4why_diag as KWD
+        _Fe = torch.empty_like(S.F); _Fe[S.perm] = S.F
+        _Jp1 = torch.linalg.det(_Fe.reshape(-1, 3, 3).double()); del _Fe
+        _win = a.wdiag <= fi + 1 <= a.wdiag_end
+        c["wd"] = KWD.frame(S, fi, a.tolN, _Jp0, _Jp1, _x0o, FL["NR"] if FL else [0.0, 0.0, 1.0], FL["PN"] if FL else 0.0,
+                            out=os.path.join(a.out, f"wd_f{fi + 1}.npz") if _win else None)
+        if _win:
+            _w = c["wd"]
+            print(f"  [wdiag] 프레임 {fi + 1}: 점 det 최소 {_w['Jqmin']:.3g} (F_q {_w['Jq0min']:.3g}, ≤0 점 {_w['nqinv']}), 입자 det 최소 시작 {_w['Jp0min']:.3g} 끝 {_w['Jp1min']:.3g}, 걸음 끝 |g|/F {_w['gend']}, 보폭 최소 {_w['st_min']:.3g}", flush=True)
+    if a.fhash:
+        import hashlib as _hl
+        c["xh"] = _hl.sha1(xo.cpu().numpy().tobytes()).hexdigest()[:10]
     if a.hgt and fin:                                                                  # 절 CM6 진단: 높이 (바닥 법선 방향, 바닥 없으면 z) -- 질량 중심·최대·99 백분위, 정답과 우리
         _nh = torch.tensor(FL["NR"] if FL else [0.0, 0.0, 1.0], device=dev, dtype=torch.float32)
         _mw = m64.float() / float(m64.sum())
