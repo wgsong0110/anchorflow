@@ -141,17 +141,46 @@ fs = sorted(int(os.path.basename(p)[4:-4]) for p in glob.glob(os.path.join(B, "k
 tstar = None
 for t in fs:
     z = npz("k4w", t)
-    if (z["q_J"] <= 0).any() or (z["q_J0"] <= 0).any():
+    if ((np.minimum(z["q_J"].min(1), z["q_J0"]) <= 0) & (z["q_np"] > 0)).any():
         tstar = t
         break
-print("## 2. K 4 에서 처음 뒤집히는 가우스 점 (창 안 첫 프레임)\n")
+print("## 2a. 뒤집힌 점: 입자 있는 팔분 (찬) 대 빈 팔분 -- 판별 창 프레임 (찬 팔분 뒤집힘만 G2P 로 입자 F 에 옮겨짐)\n")
+print("| 판 | 찬 팔분 뒤집힘 (프레임: 수) | 빈 팔분 뒤집힘 합 |")
+print("|---|---|---|")
+for r, nm in RUNS:
+    fr, emp = [], 0
+    for t in range(W0, 69):
+        zz = npz(r, t)
+        if zz is None:
+            continue
+        Jm_ = np.minimum(zz["q_J"].min(1), zz["q_J0"]); oc_ = zz["q_np"] > 0
+        n_ = int(((Jm_ <= 0) & oc_).sum()); emp += int(((Jm_ <= 0) & ~oc_).sum())
+        if n_:
+            fr.append(f"{t}: {n_}")
+    print(f"| {r} | {', '.join(fr[:8])}{' …' if len(fr) > 8 else ''} | {emp} |")
+print()
+print("## 2b. 가벼운 노드 (질량 < 1e-3 x 중앙값) 대 무거운 노드 (≥ 0.1 x) -- 걸음 2.. 시작점 (관성 예측) 이동 |y0_k − U_k−1|·걸음 증분 |U_k − U_k−1| 최대 (칸)\n")
+print("| 판 | 프레임 | 시작점 이동 가벼운 · 무거운 | 걸음 증분 가벼운 · 무거운 | 1 칸 넘게 움직인 가벼운 노드 |")
+print("|---|---|---|---|---|")
+for r, nm in RUNS[:3]:
+    for t in range(max(W0, 46), 57):
+        zz = npz(r, t)
+        if zz is None:
+            continue
+        K_ = int(zz["K"][0]); h_ = float(zz["cellh"][0]); U_ = zz["n_U"]; Y_ = zz["n_Y0"]; m_ = zz["n_m"]
+        pm_ = np.max([np.linalg.norm(Y_[k] - U_[k - 1], axis=1) / h_ for k in range(1, K_)], 0)
+        im_ = np.max([np.linalg.norm(U_[k] - (U_[k - 1] if k else 0), axis=1) / h_ for k in range(K_)], 0)
+        Lm, Hm = m_ < 1e-3, m_ >= 0.1
+        print(f"| {r} | {t} | {f3(float(pm_[Lm].max()), 2)} · {f3(float(pm_[Hm].max()), 2)} | {f3(float(im_[Lm].max()), 2)} · {f3(float(im_[Hm].max()), 2)} | {int((im_[Lm] > 1).sum())} |")
+print()
+print("## 2. K 4 에서 처음 뒤집히는 찬 팔분 가우스 점 (창 안 첫 프레임; 빈 팔분 점은 2a 에만)\n")
 if tstar is None:
     print("창 안에 det ≤ 0 점 없음\n")
 else:
     z = npz("k4w", tstar)
     nt = int(z["nt"][0]); K = int(z["K"][0]); NS = z["q_J"].shape[1]
     Jm = np.minimum(z["q_J"].min(1), z["q_J0"])
-    bad = np.nonzero(Jm <= 0)[0]
+    bad = np.nonzero((Jm <= 0) & (z["q_np"] > 0))[0]
     first_si = [int(np.argmax(z["q_J"][q] <= 0)) if (z["q_J"][q] <= 0).any() else -1 for q in bad]
     s_first = min(first_si) if first_si else -1
     print(f"- 프레임 {tstar}: det ≤ 0 점 {len(bad)} 개 (부피 > 0 점 {len(Jm)} 중), F_q (프레임 시작) det ≤ 0 {int((z['q_J0'] <= 0).sum())}, 가장 이른 시점 = {snapname(s_first, nt) if s_first >= 0 else 'F_q'}")
@@ -210,6 +239,8 @@ else:
         zz = npz("k4w", t)
         if zz is None:
             continue
+        if not len(pp):
+            break
         row.append(f"{t}: {f3(float(zz['p_J0'][pp].min()))} → {f3(float(zz['p_J1'][pp].min()))} ({int((zz['p_J1'][pp] <= 0).sum())})")
     print("- " + ", ".join(row) + "\n")
 # ---- 3. 뉴턴·PCG 반복별 (K 4 기준, 뒤집힘 프레임 앞뒤) 와 K 2 같은 프레임
@@ -231,29 +262,19 @@ for r in ("k4w", "k2w", "hsw"):
                 s_.append(f"{q['k'] + 1}.{q['i'] + 1} {f3(q['gF'], 3)}·{q['nP']}{'*' if q['cap'] else ''}·{f3(q['rz'], 2)}·{f3(q['st'], 3)}")
         print(f"- 프레임 {t}: " + " | ".join(s_) + f" | 걸음 끝 |g|/F {' '.join(f3(q, 3) for q in w['gend'])}")
     print()
-# ---- 4. 위치 차 (판 사이): pred.pt
-print("## 4. 판 사이 입자 위치 차 (pred.pt, 같은 프레임) -- 평균 / 최대 (mm)\n")
-try:
-    import torch
-    P = {}
-    for r, _ in RUNS:
-        p = os.path.join(B, r, "pred.pt")
-        if os.path.exists(p):
-            P[r] = torch.load(p, map_location="cpu", weights_only=False)["pred"]
-    pairs = [("k4w", "k2w"), ("k4w", "hsw"), ("k4w", "mvw"), ("hsw", "k2w")]
-    ts = [1, 5, 10, 20, 30, 40, 45, 48, 50, 51, 52, 53, 54, 56, 58, 60, 63, 65, 67]
-    print("| 프레임 | " + " | ".join(f"{a} − {b}" for a, b in pairs) + " |")
-    print("|---|" + "---|" * len(pairs))
-    for t in ts:
-        row = []
-        for a_, b_ in pairs:
-            if a_ in P and b_ in P and t <= min(P[a_].shape[0], P[b_].shape[0]):
-                d = (P[a_][t - 1] - P[b_][t - 1]).norm(dim=-1) * 1000
-                d = d[torch.isfinite(d)]
-                row.append(f"{f3(float(d.mean()))} / {f3(float(d.max()))}" if d.numel() else "비유한")
-            else:
-                row.append("")
-        print(f"| {t} | " + " | ".join(row) + " |")
-    print()
-except Exception as ex:                                                                 # noqa: BLE001
-    print(f"(위치 차 실패: {ex})\n")
+# ---- 4. 위치 차 (판 사이, 창 프레임 시작 위치 p_x0)
+print("## 4. 판 사이 입자 위치 차 (프레임 시작 위치, 창 npz) -- 평균 / 최대 (mm)\n")
+pairs = [("k4w", "k2w"), ("k4w", "hsw"), ("k4w", "mvw"), ("hsw", "k2w")]
+print("| 프레임 | " + " | ".join(f"{a} − {b}" for a, b in pairs) + " |")
+print("|---|" + "---|" * len(pairs))
+for t in (40, 45, 48, 50, 51, 52, 53, 54, 56, 60, 65, 68):
+    row = []
+    for a_, b_ in pairs:
+        za, zb = npz(a_, t), npz(b_, t)
+        if za is None or zb is None:
+            row.append(""); continue
+        d = np.linalg.norm(za["p_x0"] - zb["p_x0"], axis=1) * 1000
+        d = d[np.isfinite(d)]
+        row.append(f"{f3(float(d.mean()), 1)} / {f3(float(d.max()), 0)}")
+    print(f"| {t} | " + " | ".join(row) + " |")
+print()
