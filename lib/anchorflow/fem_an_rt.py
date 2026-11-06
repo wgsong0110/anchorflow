@@ -453,11 +453,19 @@ __global__ void __launch_bounds__(128) rt_elem(const int* IP, const int* cb, con
     float gJ[3] = {S[1]*S[2], S[0]*S[2], S[0]*S[1]};
     float vq = on ? Vq[qq] : 0.f;
     if (mode & 4) {
+#ifdef AF_SNH
+        double e = on ? snh_e((double)vq, S, mu, lam) : 0.0;                    // 절 CM18 SNH
+#else
         double e = on ? (double)vq*((double)mu*(((double)S[0]-1.0)*((double)S[0]-1.0) + ((double)S[1]-1.0)*((double)S[1]-1.0) + ((double)S[2]-1.0)*((double)S[2]-1.0)) + 0.5*(double)lam*((double)J-1.0)*((double)J-1.0)) : 0.0;
+#endif
         blocksum_add(e, E);
     }
     if (mode & 1) {
+#ifdef AF_SNH
+        float ph[3]; snh_ph(S, mu, lam, ph);                                       // 절 CM18 SNH: P_i = μ σ_i + (λs (J − 1) − μ) ∂J/∂σ_i
+#else
         float ph[3]; for (int i=0;i<3;i++) ph[i] = 2.f*mu*(S[i]-1.f) + lam*(J-1.f)*gJ[i];
+#endif
         float P[9];
         for (int a=0;a<3;a++) for (int b=0;b<3;b++) P[a*3+b] = U[a*3]*ph[0]*V[b*3] + U[a*3+1]*ph[1]*V[b*3+1] + U[a*3+2]*ph[2]*V[b*3+2];
         for (int o=0;o<27;o++) { float g[3]; gqn(F, BG + (oc*27+o)*3, g);
@@ -469,7 +477,11 @@ __global__ void __launch_bounds__(128) rt_elem(const int* IP, const int* cb, con
         if (on) {
         float D[3][3], Ev[3][3];
         float Sg[3][3] = {{0.f, S[2], S[1]}, {S[2], 0.f, S[0]}, {S[1], S[0], 0.f}};
+#ifdef AF_SNH
+        snh_D(S, mu, lam, D);                                                      // 절 CM18 SNH: 주값 헤시안 (투영 전)
+#else
         for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = ((i==j) ? 2.f*mu : 0.f) + lam*gJ[i]*gJ[j] + lam*(J-1.f)*Sg[i][j];
+#endif
         jac3f(D, Ev);
         for (int m=0;m<3;m++) { float dm = fmaxf(D[m][m], 0.f); if (!(dm > 0.f)) continue;
             float e[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) e[a*3+b] = Ev[0][m]*U[a*3]*V[b*3] + Ev[1][m]*U[a*3+1]*V[b*3+1] + Ev[2][m]*U[a*3+2]*V[b*3+2];
@@ -477,7 +489,11 @@ __global__ void __launch_bounds__(128) rt_elem(const int* IP, const int* cb, con
         const int PI[3] = {0,0,1}, PJ[3] = {1,2,2}, PK[3] = {2,1,0};
         const float r2 = 0.70710678f;
         for (int pp=0; pp<3; pp++) { int i = PI[pp], j = PJ[pp], k = PK[pp];
+#ifdef AF_SNH
+            float lt, lf; snh_tf(S, k, mu, lam, &lt, &lf);                             // 절 CM18 SNH: 비틀림·뒤집힘 고윳값 (나눗셈 없음)
+#else
             float lt = 2.f*mu*(1.f - 2.f/(S[i]+S[j])) + lam*(J-1.f)*S[k]; float lf = 2.f*mu - lam*(J-1.f)*S[k];
+#endif
             lt = isfinite(lt) ? fmaxf(lt, 0.f) : 0.f; lf = fmaxf(lf, 0.f);
             float et[9], ef[9];
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float x1 = U[a*3+i]*V[b*3+j], x2 = U[a*3+j]*V[b*3+i]; et[a*3+b] = r2*(x1-x2); ef[a*3+b] = r2*(x1+x2); }
@@ -488,7 +504,11 @@ __global__ void __launch_bounds__(128) rt_elem(const int* IP, const int* cb, con
             const int RI[6] = {0,1,2,0,0,1}, RJ[6] = {0,1,2,1,2,2};
             for (int k=0;k<6;k++) { float t = 0.f; for (int m=0;m<3;m++) { float dm = fmaxf(D[m][m], 0.f); if (dm > 0.f) t += dm*Ev[RI[k]][m]*Ev[RJ[k]][m]; } Cs[k] = vq_*t; }
             for (int pp=0; pp<3; pp++) { int i = PI[pp], j = PJ[pp], k = PK[pp];
+#ifdef AF_SNH
+                float lt, lf; snh_tf(S, k, mu, lam, &lt, &lf);                             // 절 CM18 SNH: 비틀림·뒤집힘 고윳값 (나눗셈 없음)
+#else
                 float lt = 2.f*mu*(1.f - 2.f/(S[i]+S[j])) + lam*(J-1.f)*S[k]; float lf = 2.f*mu - lam*(J-1.f)*S[k];
+#endif
                 lt = isfinite(lt) ? fmaxf(lt, 0.f) : 0.f; lf = fmaxf(lf, 0.f);
                 Cs[6+pp] = vq_*0.5f*(lt + lf); Cs[9+pp] = vq_*0.5f*(lf - lt); }
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) H[(size_t)(9 + a*3+b)*capQ + qq] = F[a*3]*V[b] + F[a*3+1]*V[3+b] + F[a*3+2]*V[6+b];
@@ -731,7 +751,11 @@ __global__ void __launch_bounds__(128) rt_elem_ls(const int* IP, const int* cb, 
     for (int c=0;c<3;c++) {
         float U[9], S[3], V[9]; ssvdf(X[c], U, S, V);
         double J = (double)S[0]*S[1]*S[2];
+#ifdef AF_SNH
+        double e = on ? snh_e((double)vq, S, mu, lam) : 0.0;                    // 절 CM18 SNH
+#else
         double e = on ? (double)vq*((double)mu*(((double)S[0]-1.0)*((double)S[0]-1.0) + ((double)S[1]-1.0)*((double)S[1]-1.0) + ((double)S[2]-1.0)*((double)S[2]-1.0)) + 0.5*(double)lam*(J-1.0)*(J-1.0)) : 0.0;
+#endif
         blocksum_add(e, &SC[11+c]);
     }
 }
@@ -858,7 +882,11 @@ __global__ void __launch_bounds__(128) rt_mg_elem(int l, const int* LM, const fl
         float J = S[0]*S[1]*S[2]; float gJ[3] = {S[1]*S[2], S[0]*S[2], S[0]*S[1]};
         float D[3][3], Ev[3][3];
         float Sg[3][3] = {{0.f, S[2], S[1]}, {S[2], 0.f, S[0]}, {S[1], S[0], 0.f}};
+#ifdef AF_SNH
+        snh_D(S, mu, lam, D);                                                      // 절 CM18 SNH: 주값 헤시안 (투영 전)
+#else
         for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = ((i==j) ? 2.f*mu : 0.f) + lam*gJ[i]*gJ[j] + lam*(J-1.f)*Sg[i][j];
+#endif
         jac3f(D, Ev);
         for (int m=0;m<3;m++) { float dm = fmaxf(D[m][m], 0.f); if (!(dm > 0.f)) continue;
             float e[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) e[a*3+b] = Ev[0][m]*U[a*3]*V[b*3] + Ev[1][m]*U[a*3+1]*V[b*3+1] + Ev[2][m]*U[a*3+2]*V[b*3+2];
@@ -866,7 +894,11 @@ __global__ void __launch_bounds__(128) rt_mg_elem(int l, const int* LM, const fl
         const int PI[3] = {0,0,1}, PJ[3] = {1,2,2}, PK[3] = {2,1,0};
         const float r2 = 0.70710678f;
         for (int pp=0; pp<3; pp++) { int i = PI[pp], j = PJ[pp], k = PK[pp];
+#ifdef AF_SNH
+            float lt, lf; snh_tf(S, k, mu, lam, &lt, &lf);                             // 절 CM18 SNH: 비틀림·뒤집힘 고윳값 (나눗셈 없음)
+#else
             float lt = 2.f*mu*(1.f - 2.f/(S[i]+S[j])) + lam*(J-1.f)*S[k]; float lf = 2.f*mu - lam*(J-1.f)*S[k];
+#endif
             lt = isfinite(lt) ? fmaxf(lt, 0.f) : 0.f; lf = fmaxf(lf, 0.f);
             float et[9], ef[9];
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float x1 = U[a*3+i]*V[b*3+j], x2 = U[a*3+j]*V[b*3+i]; et[a*3+b] = r2*(x1-x2); ef[a*3+b] = r2*(x1+x2); }
@@ -877,7 +909,11 @@ __global__ void __launch_bounds__(128) rt_mg_elem(int l, const int* LM, const fl
             const int RI[6] = {0,1,2,0,0,1}, RJ[6] = {0,1,2,1,2,2};
             for (int k=0;k<6;k++) { float t = 0.f; for (int m=0;m<3;m++) { float dm = fmaxf(D[m][m], 0.f); if (dm > 0.f) t += dm*Ev[RI[k]][m]*Ev[RJ[k]][m]; } Cs[k] = vq*t; }
             for (int pp=0; pp<3; pp++) { int i = PI[pp], j = PJ[pp], k = PK[pp];
+#ifdef AF_SNH
+                float lt, lf; snh_tf(S, k, mu, lam, &lt, &lf);                             // 절 CM18 SNH: 비틀림·뒤집힘 고윳값 (나눗셈 없음)
+#else
                 float lt = 2.f*mu*(1.f - 2.f/(S[i]+S[j])) + lam*(J-1.f)*S[k]; float lf = 2.f*mu - lam*(J-1.f)*S[k];
+#endif
                 lt = isfinite(lt) ? fmaxf(lt, 0.f) : 0.f; lf = fmaxf(lf, 0.f);
                 Cs[6+pp] = vq*0.5f*(lt + lf); Cs[9+pp] = vq*0.5f*(lf - lt); }
             for (int a=0;a<3;a++) for (int b=0;b<3;b++) H[(size_t)(9 + a*3+b)*capQ + qq] = F[a*3]*V[b] + F[a*3+1]*V[3+b] + F[a*3+2]*V[6+b];
@@ -1169,7 +1205,11 @@ __global__ void __launch_bounds__(128) rt_elem_lsN(const int* IP, const int* cb,
             for (int a=0;a<3;a++) { float ya = yh[id*3+a] + t[a]; X[a*3] += ya*g[0]; X[a*3+1] += ya*g[1]; X[a*3+2] += ya*g[2]; } }
         float U[9], S[3], V[9]; ssvdf(X, U, S, V);
         double J = (double)S[0]*S[1]*S[2];
+#ifdef AF_SNH
+        double en = on ? snh_e((double)vq, S, mu, lam) : 0.0;                   // 절 CM18 SNH
+#else
         double en = on ? (double)vq*((double)mu*(((double)S[0]-1.0)*((double)S[0]-1.0) + ((double)S[1]-1.0)*((double)S[1]-1.0) + ((double)S[2]-1.0)*((double)S[2]-1.0)) + 0.5*(double)lam*(J-1.0)*(J-1.0)) : 0.0;
+#endif
         blocksum_add(en, &SC[40+i]);
         c *= 0.5f;
     }
@@ -2141,6 +2181,63 @@ __global__ void rt_fup(const int* IP, int mode, float n0, float n1, float n2, co
 """
 
 
+# 절 CM18 (--elx snh, 사용자 승인 11-06 정의 변경): lego 탄성 (FCR: Ψ = μ Σ (σ_i − 1)² + λ/2 (J − 1)²) 을 Stable Neo-Hookean 으로 -- 절 CM13 (2) 수박 --elx snh 와 같은 식·같은 매개변수 대응.
+# Ψ = μ_s/2 (I_C − 3) − μ_s (J − 1) + λ_s/2 (J − 1)², μ_s = μ, λ_s = λ + μ (F = I + H 선형화가 선형 탄성 μ (H + Hᵀ) + λ tr H I 와 같게; 쉼 상태 응력 0).
+# 주값 (부호 있는 σ, J = σ0 σ1 σ2): P_i = μ σ_i + c ∂J/∂σ_i, c = λ_s (J − 1) − μ; 헤시안 D_ii = μ + λ_s (∂J/∂σ_i)², D_ij = λ_s ∂J/∂σ_i ∂J/∂σ_j + c σ_k;
+# 비틀림 λ_t = (P_i + P_j)/(σ_i + σ_j) = μ + c σ_k, 뒤집힘 λ_f = (P_i − P_j)/(σ_i − σ_j) = μ − c σ_k (Kim·Eberle 2022 해석 고유계). 투영 (D 고윳값·λ_t·λ_f 0 아래 자름) 은 FCR 판 그대로.
+# 다항식이라 J ≤ 0 에서도 유한 -- 나눗셈·거듭제곱·클램프 없음. 끄면 (AF_SNH 정의 없음) 소스는 #ifdef 블록 추가뿐.
+SNH_SRC = r"""
+#define AF_SNH 1
+__device__ __forceinline__ double snh_e(double vq, const float* S, float mu, float lam) {
+    double ms = (double)mu, ls = (double)lam + (double)mu, J = (double)S[0]*(double)S[1]*(double)S[2];
+    return vq*(0.5*ms*((double)S[0]*S[0] + (double)S[1]*S[1] + (double)S[2]*S[2] - 3.0) - ms*(J - 1.0) + 0.5*ls*(J - 1.0)*(J - 1.0));
+}
+__device__ __forceinline__ void snh_ph(const float* S, float mu, float lam, float* ph) {
+    float ls = lam + mu, J = S[0]*S[1]*S[2], c = ls*(J - 1.f) - mu;
+    float gJ[3] = {S[1]*S[2], S[0]*S[2], S[0]*S[1]};
+    for (int i=0;i<3;i++) ph[i] = mu*S[i] + c*gJ[i];
+}
+__device__ __forceinline__ void snh_D(const float* S, float mu, float lam, float D[3][3]) {
+    float ls = lam + mu, J = S[0]*S[1]*S[2], c = ls*(J - 1.f) - mu;
+    float gJ[3] = {S[1]*S[2], S[0]*S[2], S[0]*S[1]};
+    float Sg[3][3] = {{0.f, S[2], S[1]}, {S[2], 0.f, S[0]}, {S[1], S[0], 0.f}};
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) D[i][j] = ((i==j) ? mu : 0.f) + ls*gJ[i]*gJ[j] + c*Sg[i][j];
+}
+__device__ __forceinline__ void snh_tf(const float* S, int k, float mu, float lam, float* lt, float* lf) {
+    float ls = lam + mu, J = S[0]*S[1]*S[2], c = ls*(J - 1.f) - mu;
+    *lt = mu + c*S[k]; *lf = mu - c*S[k];
+}
+"""
+
+
+def snhify(src, on):
+    """절 CM18 (--elx snh): 탄성 판 가우스 점 에너지·기울기·투영 헤시안 (rt_elem·rt_elem_ls·rt_elem_lsN·rt_mg_elem, --hspec 30 성분 포함) 을 SNH 로. 끄면 소스 그대로."""
+    return src.replace('extern "C" {', 'extern "C" {' + SNH_SRC, 1) if on else src
+
+
+# 절 CM18 진단 (--qjd, 결과 불변): 프레임 끝 커밋된 노드 변위 U 로 가우스 점 X_q = F_q + Σ_n U_n ⊗ G_qn 의 J = det X_q 와 위치 x_q = x_q0 + Σ_n w_qn U_n.
+# 풀이 모듈과 따로 컴파일 (풀이 커널·그래프는 그대로), 프레임 재생 뒤 읽기만.
+QJD_SRC = r"""
+extern "C" {
+__global__ void rt_qjd(const int* IP, const int* cb, const float* BG, const float* BW, const float* Fq, const float* xq0, const float* U, double* Jq, float* Xq) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    int c = q >> 3, oc = q & 7, nb1 = IP[7], nb2 = IP[8];
+    float F[9], X[9]; for (int k=0;k<9;k++) { F[k] = Fq[(size_t)q*9+k]; X[k] = F[k]; }
+    float xq[3] = {xq0[q*3], xq0[q*3+1], xq0[q*3+2]};
+    for (int o=0;o<27;o++) { int i = o/9, j = (o/3)%3, k = o%3; int id = ((cb[c*3]+i)*nb1 + (cb[c*3+1]+j))*nb2 + (cb[c*3+2]+k);
+        const float* bg = BG + (oc*27+o)*3;
+        float g[3] = {F[0]*bg[0] + F[3]*bg[1] + F[6]*bg[2], F[1]*bg[0] + F[4]*bg[1] + F[7]*bg[2], F[2]*bg[0] + F[5]*bg[1] + F[8]*bg[2]};
+        float w = BW[oc*27+o];
+        for (int a=0;a<3;a++) { float u = U[id*3+a]; X[a*3] += u*g[0]; X[a*3+1] += u*g[1]; X[a*3+2] += u*g[2]; xq[a] += w*u; } }
+    double x0 = X[0], x1 = X[1], x2 = X[2], x3 = X[3], x4 = X[4], x5 = X[5], x6 = X[6], x7 = X[7], x8 = X[8];
+    Jq[q] = x0*(x4*x8 - x5*x7) - x1*(x3*x8 - x5*x6) + x2*(x3*x7 - x4*x6);
+    for (int a=0;a<3;a++) Xq[q*3+a] = xq[a];
+}
+}
+"""
+
+
 def fupify(src, ver):
     """절 CM17 (--fl_up 1|2): (A) 가우스 점 고착 바닥의 법선 성분을 한쪽 구속으로 (AF_FUP -- Tapply·Tmat·rt_ga_y0 의 pm < 0 경로, rt_fup 커널). 끄면 소스 그대로."""
     if not ver:
@@ -2198,7 +2295,8 @@ def compactify(src):
     return s[:i] + "\n".join(out) + "\n}\n"
 
 
-def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False):
+def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False):
+    src = snhify(src, snh)                                                             # 절 CM18 --elx snh (끄면 소스 그대로)
     if gqm:                                                                            # 절 CM9 --gq_mass: rt_p2g 노드 몫 빼기 (노드 질량·운동량은 gq_q2n 이 가우스 점에서)
         src = src.replace('extern "C" {', 'extern "C" {\n#define AF_GQM 1', 1)
     if ncomp:
@@ -2241,7 +2339,7 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False, gqm=False, wd=False):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False, gqm=False, wd=False, snh=False):
         s.dev = dev
         s.gqm = bool(gqm)                                                              # 절 CM9 (정의 변경): 노드 질량·운동량을 가우스 점에서 (힘과 같은 점·가중·기저)
         assert not (s.gqm and pk), "--gq_mass 는 그래프 판만"
@@ -2284,6 +2382,7 @@ class RTSolver(MG2.MG2Mixin):
         s.m = m[pr].float().contiguous(); s.vol = vol[pr].float().contiguous()
         s.A = A.float().contiguous(); s.Ai = Ai.float().contiguous()
         s.mu, s.lam, s.g = float(mu), float(lam), [float(q) for q in g]
+        s.snh = bool(snh)                                                              # 절 CM18 --elx snh: 탄성 = Stable Neo-Hookean (μ_s = μ, λ_s = λ + μ; 커널 안에서)
         s.h = float(frame_dt); s.K = int(K); s.mid = integ == "mid"
         s.dt = s.h / s.K; s.tau = s.dt / 2 if s.mid else s.dt
         s.al = (2.0 / s.tau) if s.mid else (1.0 / s.tau)
@@ -2316,7 +2415,7 @@ class RTSolver(MG2.MG2Mixin):
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
@@ -3383,6 +3482,25 @@ class RTSolver(MG2.MG2Mixin):
         """절 CM16 진단: 걸음별 [후보 수, 넣기 횟수, 빼기 횟수, 걸음 끝 활성 수] (질량 > 0 노드)."""
         c = s.nccnt[:4 * s.nstage].view(-1, 4).cpu().tolist()
         return dict(cand=[q[0] for q in c], on=[q[1] for q in c], off=[q[2] for q in c], act=[q[3] for q in c])
+
+    def qjd(s, nr, pn):
+        """절 CM18 진단 (결과 불변): 프레임 끝 커밋된 U 로 가우스 점 J = det X_q (부피 > 0 점) -- J ≤ 0 수·비유한 수·최소·최소 점 위치·바닥 위 높이 (nr·x − pn)."""
+        if getattr(s, "_qjd_fn", None) is None:
+            s._qjd_fn = cp.RawModule(code=QJD_SRC, options=("--std=c++14",)).get_function("rt_qjd")
+        torch.cuda.synchronize()
+        nq = int(s.IP[12]); capQ = s.Fq.shape[0]
+        Jq = torch.full((capQ,), float("nan"), device=s.Fq.device, dtype=torch.float64); Xq = torch.zeros(capQ, 3, device=s.Fq.device, dtype=torch.float32)
+        s._qjd_fn(((nq + 127) // 128,), (128,), (P(s.IP), P(s.cb), P(s.BG), P(s.BW), P(s.Fq), P(s.xq0), P(s.U), P(Jq), P(Xq)))
+        cp.cuda.runtime.deviceSynchronize()
+        v = s.Vq[:nq] > 0; J = Jq[:nq][v]; X = Xq[:nq][v].double()
+        o = dict(nv=int(v.sum()), nneg=int((J <= 0).sum()), nnf=int((~torch.isfinite(J)).sum()))
+        if J.numel():
+            Jf = torch.nan_to_num(J, nan=-1e30); w = int(torch.argmin(Jf))
+            o.update(Jmin=float(Jf[w]), x=X[w].tolist(), h=float(X[w] @ torch.tensor(nr, device=X.device, dtype=torch.float64) - pn))
+            if o["nneg"]:
+                ng = J <= 0; hh = X[ng] @ torch.tensor(nr, device=X.device, dtype=torch.float64) - pn
+                o.update(neg_h=[float(hh.min()), float(hh.median()), float(hh.max())], neg_ctr=X[ng].mean(0).tolist())
+        return o
 
     def fup_counts(s):
         """절 CM17 진단: 걸음별 [후보 수, 넣기 횟수 (걸음 시작 구속 포함), 빼기 횟수, 걸음 끝 법선 고착 수] (질량 > 0 노드)."""
