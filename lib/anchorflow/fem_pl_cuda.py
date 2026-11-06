@@ -224,7 +224,14 @@ __device__ __forceinline__ void pl_pi(int mat, const float* s, const float* prm,
         // Ψ = μ/2 (I_C − 3) − μ (J − 1) + λ_s/2 (J − 1)², P = μ F + (λ_s (J − 1) − μ) cof F -> 주값 P_i = μ σ_i + (λ_s (J − 1) − μ) σ_j σ_k.
         // 다항식이라 J ≤ 0 에서도 유한·매끄러움 (나눗셈·거듭제곱 없음, 클램프 없음). 같은 E·ν 대응: 선형화 P ≈ μ (H + Hᵀ) + (λ_s − μ) tr H I -> μ_s = μ, λ_s = λ + μ (prm[0] μ, prm[1] λ).
         { float lss = prm[1] + mu, J = s[0]*s[1]*s[2], cc = lss*(J - 1.f) - mu;
-          Pi[0] = mu*s[0] + cc*s[1]*s[2]; Pi[1] = mu*s[1] + cc*s[0]*s[2]; Pi[2] = mu*s[2] + cc*s[0]*s[1]; }
+          Pi[0] = mu*s[0] + cc*s[1]*s[2]; Pi[1] = mu*s[1] + cc*s[0]*s[2]; Pi[2] = mu*s[2] + cc*s[0]*s[1];
+#ifdef AF_DMG
+          // 절 CM19 (사용자 승인 정의 변경): 손상 열화 ψ = g ψ⁺ + ψ⁻ (al = g = (1 − d)², 부르는 쪽 aq_elem 이 넘김). 분해 = 체적 압축 몫만 유지:
+          // ψ⁻ = κ/2 (J − 1)² (J < 1 일 때만, κ = λ + 2μ/3), ψ⁺ = Ψ_SNH − ψ⁻ -> P_i = g P_i^SNH + (1 − g) [J < 1] κ (J − 1) σ_j σ_k.
+          { float gd = al, cm = (J < 1.f) ? (1.f - gd)*prm[2]*(J - 1.f) : 0.f;
+            Pi[0] = gd*Pi[0] + cm*s[1]*s[2]; Pi[1] = gd*Pi[1] + cm*s[0]*s[2]; Pi[2] = gd*Pi[2] + cm*s[0]*s[1]; }
+#endif
+        }
         return;
 #endif
         float kap = prm[2];

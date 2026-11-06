@@ -558,6 +558,31 @@ __global__ void aq_gauss_s(const int* IP, const float* Sa, const float* Sc, floa
     float w = fmaxf(a[3], 1e-30f);
     Sq[(size_t)q*4] = a[0]/w; Sq[(size_t)q*4+1] = a[1]/w; Sq[(size_t)q*4+2] = a[2]/w; Sq[(size_t)q*4+3] = 0.f;
 }
+#ifdef AF_DMG
+// 절 CM19 (사용자 승인 정의 변경, 재질 판 수박 + --elx snh 만): 손상 모델을 B-스플라인 가우스 점 구조에 얹음. AF_DMG 1 = 연속체 손상 (CDM), 2 = 위상장 파괴 (AT2).
+//   ψ⁺ = Ψ_SNH(σ) − ψ⁻, ψ⁻ = κ/2 (J − 1)² [J < 1] (체적 압축 몫만 열화 안 함), σ = RM 뒤 주값 (탄성 상태). 구동량은 0 아래 자름, 넘침 막이 1e10 (물리 매개변수 아님).
+//   상태: CDM 은 입자 alp = d_p (이력 최대), 가우스 점 Sq[2] = 팔분 영역 부피 가중 평균 d (걸음 끝 커밋에서 최대 갱신);
+//         위상장은 입자 alp = H_p = max ψ⁺, 가우스 점 Sq[2] = 평균 H (커밋에서 최대 갱신), Sq[3] = 노드 d 의 그 점 보간 (pf_q), 입자 ysp = 노드 d 의 입자 보간 (출력만).
+//   prm[10] = CDM ψ_c / 위상장 G_c, prm[11] = 위상장 l0.
+__device__ __forceinline__ float dmg_psip(const float* s, const float* prm) {
+    float mu = prm[0], lss = prm[1] + mu, kap = prm[2];
+    float J = s[0]*s[1]*s[2], jm = J - 1.f;
+    float ps = 0.5f*mu*(s[0]*s[0] + s[1]*s[1] + s[2]*s[2] - 3.f) - mu*jm + 0.5f*lss*jm*jm;
+    if (J < 1.f) ps -= 0.5f*kap*jm*jm;
+    return (ps > 0.f) ? fminf(ps, 1e10f) : 0.f;                                 // NaN -> 0
+}
+// CDM 국소 법칙 (매개변수 ψ_c 하나): ψ⁺ ≤ ψ_c 이면 d = 0, 넘으면 g(d) = (1 − d)² = ψ_c / ψ⁺ -- 열화된 인장 에너지 g ψ⁺ 가 ψ_c 에 묶임 (응력 ∝ 1/변형으로 연화)
+__device__ __forceinline__ float dmg_cdm(float ps, float psc) { return (ps > psc) ? 1.f - sqrtf(psc/ps) : 0.f; }
+__device__ __forceinline__ float dmg_g(const float* Sq, size_t q) {
+#if AF_DMG == 1
+    float d = Sq[q*4+2];
+#else
+    float d = Sq[q*4+3];
+#endif
+    d = fminf(fmaxf(d, 0.f), 1.f);
+    return (1.f - d)*(1.f - d);
+}
+#endif
 // 탄성 주값 1 차 PK (시험 σ, RM 없음) 와 주값 공간 대칭 접선 (중심 차분)
 __device__ __noinline__ void aq_tan9(int mat, float s0, float s1, float s2, const float* prm, float al, float* pe, float* D9) {
     // 절 AR 고침: 예전 판 (2 차원 배열 인자·동적 첨자 sp[j], forceinline) 은 aq_elem 안에서 D[0][0]·D[0][1] 이 (1, 0) 으로 덮여 접선이 틀렸다
@@ -636,6 +661,9 @@ __global__ void __launch_bounds__(128) aq_elem(const int* IP, const int* cb, con
     float se[3]; for (int i=0;i<3;i++) se[i] = (sev > 0.f) ? fmaxf(S[i], sev) : S[i];
     bool ch = (prm[15] > 0.5f) ? false : pl_rm(mat, se, prm, ys, lj, al, dt);
     if (cnt && on && ch && mat != 7) atomicAdd(&cnt[0], 1);
+#ifdef AF_DMG
+    al = dmg_g(Sq, (size_t)qq);                                              // 절 CM19: 응력·접선의 al 자리에 열화 g (재질 7 RM 은 al 을 안 씀·안 바꿈)
+#endif
     float Pe[3]; pl_pi(mat, se, prm, al, Pe);
     float ss[3], p[3];
     for (int i=0;i<3;i++) { ss[i] = (sev > 0.f) ? fmaxf(S[i], sev) : ((fabsf(S[i]) > 1e-6f) ? S[i] : ((S[i] < 0.f) ? -1e-6f : 1e-6f)); p[i] = Pe[i]*se[i]/ss[i]; }
@@ -663,6 +691,9 @@ __global__ void __launch_bounds__(128) aq_elem(const int* IP, const int* cb, con
     float M[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) M[a*3+b] = F[a*3]*V[b] + F[a*3+1]*V[3+b] + F[a*3+2]*V[6+b];
     float C[12];
     { float al0 = Sq[(size_t)qq*4+2];
+#ifdef AF_DMG
+      al0 = al;
+#endif
       float pe[3], D[3][3], Ev[3][3], Dk[3][3];
       aq_tan(mat, ss, prm, al0, pe, D);
 #ifdef AF_JBAR
@@ -731,6 +762,15 @@ __global__ void aq_commit(const int* IP, const int* cb, const float* BG, float* 
     float ys = Sq[(size_t)q*4], lj = Sq[(size_t)q*4+1], al = Sq[(size_t)q*4+2];
     bool ch = (prm[15] > 0.5f) ? false : pl_rm(mat, s, prm, ys, lj, al, dt);
     Sq[(size_t)q*4] = ys; Sq[(size_t)q*4+1] = lj; Sq[(size_t)q*4+2] = al;
+#ifdef AF_DMG
+    { float ps = dmg_psip(s, prm);                                            // 절 CM19: RM 뒤 탄성 σ 의 ψ⁺ 로 가우스 점 이력 갱신 (비가역 최대)
+#if AF_DMG == 1
+      Sq[(size_t)q*4+2] = fmaxf(Sq[(size_t)q*4+2], dmg_cdm(ps, prm[10]));
+#else
+      Sq[(size_t)q*4+2] = fmaxf(Sq[(size_t)q*4+2], ps);
+#endif
+    }
+#endif
     if (!ch) return;
     float Y[9]; pl_usv(Uu, s, Vv, Y);
     float Xi[9]; inv3(X, Xi);
@@ -768,6 +808,15 @@ __global__ void aq_g2p(int N, const int* IP, const float* Ai, const int* pb, con
         float Uu[9], s[3], Vv[9]; ssvdf(Ft, Uu, s, Vv);
         if (mat == 7 && prm[14] > 0.f) for (int i=0;i<3;i++) s[i] = fmaxf(s[i], prm[14]);
         if (!(prm[15] > 0.5f) && pl_rm(mat, s, prm, ys, lj, al, dt)) { pl_usv(Uu, s, Vv, Fp); nrm++; } else for (int k=0;k<9;k++) Fp[k] = Ft[k];
+#ifdef AF_DMG
+        { float ps = dmg_psip(s, prm);                                        // 절 CM19: 입자 이력 (걸음마다, RM 뒤 탄성 σ)
+#if AF_DMG == 1
+          al = fmaxf(al, dmg_cdm(ps, prm[10]));
+#else
+          al = fmaxf(al, ps);
+#endif
+        }
+#endif
         for (int k=0;k<9;k++) Ap[k] = A[k];
     }
     for (int a=0;a<3;a++) { x[p*3+a] += u[a]; v[p*3+a] = vv[a]; }
@@ -777,6 +826,85 @@ __global__ void aq_g2p(int N, const int* IP, const float* Ai, const int* pb, con
     if (cnt && nrm && mat != 7) atomicAdd(&cnt[2], 1);
     if (cnt && a0 > 0.f && !(al > 0.f)) atomicAdd(&cnt[3], 1);
 }
+#if AF_DMG == 2
+// 절 CM19 위상장 (AT2, Miehe 2010 이력장): 노드 손상장 d (B-스플라인 기저 w_n), 가우스 점 적분 (기준 부피 V_q, 기준 기울기 ∇_X w = F_qᵀ ∇_x w):
+//   Σ_q V_q [ (G_c/l0 + 2 H_q) d_q w_n + G_c l0 ∇d_q·∇w_n ] = Σ_q V_q 2 H_q w_n  (대칭 양정치) -> 블록 야코비 (대각) PCG, 고정 반복 (그래프 안).
+__global__ void pf_asm(const int* IP, const int* cb, const float* BW, const float* BG, const float* Fq, const float* Vq, const float* Sq, const float* prm, float* rhs, float* dg) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    float vq = Vq[q]; if (!(vq > 0.f)) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)q*9+k];
+    float Gc = prm[10], l0 = prm[11], H = Sq[(size_t)q*4+2];
+    float aa = Gc/l0 + 2.f*H, bb = Gc*l0;
+    for (int o=0;o<27;o++) { float w = BW[oc*27+o]; float g[3]; gqn(F, BG + (oc*27+o)*3, g);
+        atomicAdd(&rhs[ids[o]], vq*2.f*H*w); atomicAdd(&dg[ids[o]], vq*(aa*w*w + bb*(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]))); }
+}
+__global__ void pf_mv(const int* IP, const int* cb, const float* BW, const float* BG, const float* Fq, const float* Vq, const float* Sq, const float* prm, const float* x, float* out) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    float vq = Vq[q]; if (!(vq > 0.f)) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)q*9+k];
+    float Gc = prm[10], l0 = prm[11], H = Sq[(size_t)q*4+2];
+    float aa = Gc/l0 + 2.f*H, bb = Gc*l0;
+    float xv = 0.f, gr[3] = {0.f, 0.f, 0.f};
+    for (int o=0;o<27;o++) { float w = BW[oc*27+o], xo = x[ids[o]]; float g[3]; gqn(F, BG + (oc*27+o)*3, g);
+        xv += w*xo; gr[0] += g[0]*xo; gr[1] += g[1]*xo; gr[2] += g[2]*xo; }
+    for (int o=0;o<27;o++) { float w = BW[oc*27+o]; float g[3]; gqn(F, BG + (oc*27+o)*3, g);
+        atomicAdd(&out[ids[o]], vq*(aa*xv*w + bb*(gr[0]*g[0] + gr[1]*g[1] + gr[2]*g[2]))); }
+}
+// r = b − A d, z = r / diag, p = z; SP[0] += r·z, SP[3] += b·b
+__global__ void pf_init(const int* IP, const float* rhs, const float* Ad, const float* dg, float* r, float* z, float* p, double* SP) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    double rz = 0.0, bb = 0.0;
+    if (n < IP[9]) { float rr = rhs[n] - Ad[n]; float zz = (dg[n] > 0.f) ? rr/dg[n] : 0.f; r[n] = rr; z[n] = zz; p[n] = zz; rz = (double)rr*zz; bb = (double)rhs[n]*rhs[n]; }
+    blocksum_add(rz, &SP[0]); blocksum_add(bb, &SP[3]);
+}
+__global__ void pf_dot(const int* IP, const float* p, const float* Ap, double* SP) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    double t = (n < IP[9]) ? (double)p[n]*Ap[n] : 0.0;
+    blocksum_add(t, &SP[1]);
+}
+__global__ void pf_up1(const int* IP, const double* SPc, const float* p, const float* Ap, const float* dg, float* d, float* r, float* z, double* SP) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    double rz = 0.0, rr2 = 0.0;
+    if (n < IP[9]) { double pa = SPc[1]; float al = (pa > 0.0) ? (float)(SPc[0]/pa) : 0.f;
+        d[n] += al*p[n]; float rr = r[n] - al*Ap[n]; r[n] = rr; float zz = (dg[n] > 0.f) ? rr/dg[n] : 0.f; z[n] = zz; rz = (double)rr*zz; rr2 = (double)rr*rr; }
+    blocksum_add(rz, &SP[2]); blocksum_add(rr2, &SP[4]);
+}
+__global__ void pf_up2(const int* IP, const double* SP, const float* z, float* p) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    double r0 = SP[0]; float be = (r0 > 0.0) ? (float)(SP[2]/r0) : 0.f;
+    p[n] = z[n] + be*p[n];
+}
+// 반복 끝: rz ← rz_new, 마지막 |r|² 를 SP[5] 에; res[k] = |r| / |b| (풀이 k 의 마지막 반복)
+__global__ void pf_roll(double* SP, float* res, int k) {
+    SP[0] = SP[2]; SP[2] = 0.0; SP[1] = 0.0; SP[5] = SP[4]; SP[4] = 0.0;
+    res[k] = (SP[3] > 0.0) ? (float)sqrt(SP[5]/SP[3]) : 0.f;
+}
+// 노드 d -> 가우스 점 d_q = clamp(Σ w_n d_n, 0, 1) (Sq[3])
+__global__ void pf_q(const int* IP, const int* cb, const float* BW, const float* d, float* Sq) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float s = 0.f; for (int o=0;o<27;o++) s += BW[oc*27+o]*d[ids[o]];
+    Sq[(size_t)q*4+3] = fminf(fmaxf(s, 0.f), 1.f);
+}
+// 노드 d -> 입자 (출력·지표만: ysp = d_p, 재질 7 은 ys 를 안 씀)
+__global__ void pf_g2p(int N, const int* IP, const int* pb, const float* fx, const float* d, float* dp) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N || IP[13]) return;
+    float w[3][3], dw[3][3];
+    for (int a=0;a<3;a++) bwf(fx[p*3+a], w[a], dw[a]);
+    int nb1 = IP[7], nb2 = IP[8];
+    float s = 0.f;
+    for (int o=0;o<27;o++) { int i = o/9, j = (o/3)%3, k = o%3;
+        s += w[0][i]*w[1][j]*w[2][k]*d[((pb[p*3]+i)*nb1 + (pb[p*3+1]+j))*nb2 + (pb[p*3+2]+k)]; }
+    dp[p] = fminf(fmaxf(s, 0.f), 1.f);
+}
+#endif
 // 0 아닌 구속 속도 (bread enforce_particle_translation): 프레임 시작 구속 입자 v = v_bc, 입자 구속 속도 pvc (풀린 입자 0) 와 구속 표시 pmk
 __global__ void aq_vset(int N, const float* Trel, const float* tbuf, const float* vbc, float* v, float* pvc, float* pmk) {
     int p = blockIdx.x*blockDim.x + threadIdx.x;
@@ -1035,7 +1163,7 @@ GQ_P2G_OLD = "    if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }\n   
 GQ_P2G_NEW = "    if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }\n    return;                                                                 // 절 CM9 --gq_mass: 노드 몫은 gq_q2n\n    float wx[3][3], dw[3][3];"
 
 
-def _src(tol=False, fqrl=False, gqm=False, elx=""):
+def _src(tol=False, fqrl=False, gqm=False, elx="", dmg=""):
     s = ART.SRC.rstrip()
     if gqm:                                                                          # 절 CM9 --gq_mass: rt_p2g 노드 몫 빼고 (가우스 점 경로 커널은 끝에 덧붙임)
         from .fem_an_det import _sub_in
@@ -1057,8 +1185,9 @@ def _src(tol=False, fqrl=False, gqm=False, elx=""):
     i = s.rfind("}")
     head = DET.det_src(s[:i])
     head = "#include <cuda_fp16.h>\n" + head
+    assert dmg in ("", "cdm", "pf") and (not dmg or elx == "snh"), (dmg, elx)      # 절 CM19: 손상 (cdm = AF_DMG 1, pf = AF_DMG 2) 은 SNH 판 위에만; "" 이면 소스 글자 그대로
     assert elx in ("", "jbar", "snh"), elx                                          # 절 CM13 (재질 판 수박): jbar = J 로그 장벽 (AF_JBAR), snh = Stable Neo-Hookean 탄성 (AF_SNH); "" 이면 소스 글자 그대로
-    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx], 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + "\n}\n"
+    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg], 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + "\n}\n"
     return _skipify(r) if tol else r
 
 
@@ -1070,8 +1199,10 @@ def _gq_src():
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", dmg="", pf_it=30, **kw):
         s.elx = str(elx)                                                                # 절 CM13: 수박 탄성 확장 ("" 끔, jbar, snh)
+        s.dmg, s.pf_it = str(dmg), int(pf_it)                                           # 절 CM19: 손상 ("" 끔, cdm, pf), 위상장 PCG 반복 수
+        assert not (s.dmg and det), "--dmg 는 비결정 판만"
         s.gqm = bool(gqm)                                                               # 절 CM9 (정의 변경): 노드 질량·운동량·가속도 몫을 가우스 점에서
         assert not (s.gqm and det), "--gq_mass 는 이 실행기에서 비결정 판만"
         s.fqrl, s.lsend = bool(fqrl), bool(lsend)                                        # 절 AS: F_q 유클리드 대체 조건, 걸음 끝 변위 U_{n+1} 에서도 J > 0
@@ -1117,7 +1248,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
         s.ao_ready = True
@@ -1131,7 +1262,7 @@ class AORTSolver(DET.DetMixin):
 
     def nsd_on(s):
         """절 CM9.3 진단 켬 (--nan_step): 같은 정의의 소스 + 검사 커널을 따로 컴파일 (풀이 모듈은 그대로), 다음 프레임에 다시 캡처."""
-        s.nsdo = NSDM.NSD(s, _src(tol=False, fqrl=s.fqrl, gqm=s.gqm, elx=getattr(s, "elx", "")))
+        s.nsdo = NSDM.NSD(s, _src(tol=False, fqrl=s.fqrl, gqm=s.gqm, elx=getattr(s, "elx", ""), dmg=getattr(s, "dmg", "")))
         s.graph = None
         if hasattr(s, "graphs"):
             s.graphs.clear()
@@ -1180,6 +1311,9 @@ class AORTSolver(DET.DetMixin):
         if getattr(s, "gqm", False):                                                   # 절 CM9: 팔분 점·칸 질량 가중 속도·가속도 합
             s.gqP = Z(s.capQc * 8 * 6); s.gqC = Z(s.capQc * 6)
         s.awez = Z(s.capN, 3); s.awyb = Z(s.capN, 3); s.awdy = Z(s.capN, 3); s.awtd = Z(s.capN, 3)                     # 절 AS 시작점 (--y0z)
+        if getattr(s, "dmg", "") == "pf":                                              # 절 CM19 위상장: 노드 d·PCG 벡터, 스칼라, 풀이별 상대 잔차
+            s.pfd, s.pfb, s.pfg, s.pfr, s.pfz, s.pfp, s.pfA = (Z(s.capN) for _ in range(7))
+            s.pfS = torch.zeros(8, device=s.dev, dtype=torch.float64); s.pfres = Z(max(s.K, 1))
         s.kalloc = s.K
         s.K = K0
         s.graph = None
@@ -1241,6 +1375,9 @@ class AORTSolver(DET.DetMixin):
             else:
                 s.k("aq_p2g_s", N, (i32(N), P(IP), P(s.fx), P(s.pcd), P(s.cidx), P(s.vol), P(s.ysp), P(s.ljp), P(s.alp), P(s.Sa), P(s.Sc)))
             s.k("aq_gauss_s", capQ, (P(IP), P(s.Sa), P(s.Sc), P(s.Sq)))
+            if s.dmg == "pf":                                                          # 절 CM19: 프레임 시작 d 풀이 (H_q = 입자 이력 평균, 시작 추정 0)
+                s.zf(s.pfd)
+                s.pf_solve(0)
         s.k("rt_vn", capN, (P(IP), P(s.mn), P(s.mv), P(s.vk), P(s.U)), b=256)
         if s.ga is not None:                                                           # 노드 가속도 = 입자 가속도 P2G (결정적 판은 노드가 이웃 칸 입자를 고정 순서로; 절 CM9 판은 위 gq_q2n 이 채움)
             if not s.gqm:
@@ -1384,6 +1521,8 @@ class AORTSolver(DET.DetMixin):
             s.Ust[kstep].copy_(s.U)
             if kstep < s.K - 1 and s.aq:
                 s.k("aq_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt)))
+                if s.dmg == "pf":                                                      # 절 CM19 엇갈림 풀이: 변위 풀이·커밋 (H_q 최대 갱신) 뒤 d 풀이 (시작 추정 = 앞 풀이)
+                    s.pf_solve(kstep + 1)
             elif kstep < s.K - 1:
                 s.k("ao_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), f(s.cdp)))
             if D_ is not None and kstep < s.K - 1:                                     # 커밋된 F_q
@@ -1392,8 +1531,27 @@ class AORTSolver(DET.DetMixin):
             s.k("ao_g2p_a", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.gaA), P(s.pa)))
         if s.aq:
             s.k("aq_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.Ust), i32(s.K), i32(capN), P(s.vk), i32(s.mat), P(s.prm), f(s.dt), P(s.x), P(s.v), P(s.F), P(s.ysp), P(s.ljp), P(s.alp), P(s.cnt)))
+            if s.dmg == "pf":                                                          # 절 CM19: 출력용 입자 d (마지막 풀이의 노드 d, 프레임 시작 위치 가중치)
+                s.k("pf_g2p", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.pfd), P(s.ysp)))
         else:
             s.k("ao_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.Ust), i32(s.K), i32(capN), P(s.vk), f(s.cdp), P(s.x), P(s.v), P(s.F), P(s.cnt)))
+
+    def pf_solve(s, kres):
+        """절 CM19 위상장 d 풀이 (그래프 안, 고정 반복 pf_it): 조립 (우변·대각) -> r = b − A d -> 야코비 PCG. 끝에 가우스 점 d_q (Sq[3]); 상대 잔차 pfres[kres]."""
+        IP, capN, capQ = s.IP, s.capN, s.capQc * 8
+        a0 = (P(IP), P(s.cb), P(s.BW), P(s.BG), P(s.Fq), P(s.Vq), P(s.Sq), P(s.prm))
+        s.zf(s.pfb); s.zf(s.pfg); s.zf(s.pfA); s.zf(s.pfS)
+        s.k("pf_asm", capQ, a0 + (P(s.pfb), P(s.pfg)))
+        s.k("pf_mv", capQ, a0 + (P(s.pfd), P(s.pfA)))
+        s.k("pf_init", capN, (P(IP), P(s.pfb), P(s.pfA), P(s.pfg), P(s.pfr), P(s.pfz), P(s.pfp), P(s.pfS)), b=256)
+        for _ in range(s.pf_it):
+            s.zf(s.pfA)
+            s.k("pf_mv", capQ, a0 + (P(s.pfp), P(s.pfA)))
+            s.k("pf_dot", capN, (P(IP), P(s.pfp), P(s.pfA), P(s.pfS)), b=256)
+            s.k("pf_up1", capN, (P(IP), P(s.pfS), P(s.pfp), P(s.pfA), P(s.pfg), P(s.pfd), P(s.pfr), P(s.pfz), P(s.pfS)), b=256)
+            s.k("pf_up2", capN, (P(IP), P(s.pfS), P(s.pfz), P(s.pfp)), b=256)
+            s.k("pf_roll", 1, (P(s.pfS), P(s.pfres), np.int32(kres)), b=1)
+        s.k("pf_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.pfd), P(s.Sq)))
 
     def bench(s, names, reps=200):
         """현재 상태에서 곱 커널 (이름 목록) 을 reps 번씩 실행해 회당 ms (CUDA 이벤트)."""

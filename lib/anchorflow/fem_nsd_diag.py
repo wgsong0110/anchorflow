@@ -73,6 +73,9 @@ __global__ void nsd_q(const int* IP, const int* cb, const float* BG, const float
     float sev = (mat == 7) ? prm[14] : 0.f;
     float se[3]; for (int i=0;i<3;i++) { se[i] = (sev > 0.f) ? fmaxf(S[i], sev) : S[i]; if (!isfinite(S[i])) bad = true; }
     if (!(prm[15] > 0.5f)) pl_rm(mat, se, prm, ys, lj, al, dt);
+#ifdef AF_DMG
+    al = dmg_g(Sq, (size_t)q);                                               // 절 CM19: aq_elem 과 같은 열화 g
+#endif
     float Pe[3]; pl_pi(mat, se, prm, al, Pe);
     float ss[3], p[3];
     for (int i=0;i<3;i++) { ss[i] = (sev > 0.f) ? fmaxf(S[i], sev) : ((fabsf(S[i]) > 1e-6f) ? S[i] : ((S[i] < 0.f) ? -1e-6f : 1e-6f)); p[i] = Pe[i]*se[i]/ss[i]; }

@@ -5743,3 +5743,33 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 영상 result/anchorflow/v20261009/fem_astick_snh_L000_cmp.mp4 (정답 | (A)+SNH | (i)+SNH | (ii)+SNH, 3DGS lb_render, 합성 로컬 exe/fem_astick_snh_compose_local.sh -> exe/fem_vres_compose.py CMP_MAXW 2400; 2400x750, yuv420p, faststart (moov 앞), 81 프레임, ~/vidcache/ ffprobe 확인; 발산 판은 마지막 유한 프레임에서 정지 -- (i) 은 비유한 프레임 20 을 뺌). 보이는 것: (A)·(i) 은 발산 직전 프레임에 몸통이 길게 늘어난 가우시안으로 화면을 덮고, (ii) 는 프레임 28 까지 모양을 유지하다 멈춤.
 - 출력 R2 lbours/fem_cm/astick_snh/{sa,su1,su2,fa,fu1,fu2}_L000 (log·summary·fem.jsonl (pen·hg·hp·pd·qj·fup)·pred.pt·h5·vj), cm17/ (대조용 절 CM17 사본), smoke_*; 로그 marks/astick_snh.log.
 - 판정: SNH 는 lego L000 의 A 바닥 세 판 발산을 못 막음. 처음 뒤집히는 가우스 점은 바닥에서 떨어진 몸통 안 (바닥 위 0.15~0.27 m; SNH (i) 만 28 mm) 에서 1 개로 시작해 번짐 -- 뒤집힘의 기제는 **확인 안 함**.
+
+## CM19. 수박 손상 모델 두 판 -- (1) 연속체 손상 (CDM), (2) 위상장 파괴 (AT2) 를 B-스플라인 가우스 점 구조에 얹음 + 셀 크기 1.5·2·2.5·3 (사용자 승인 11-06 정의 변경) -- 가지 implicit-bspline, 묶음 wmdmg (vast.ai A6000 x2, exe/vast_wmdmg.sh)
+### CM19.0 정의 (옛 재질 실행기 exe/fem_ao_rt_sim.py `--elx snh --dmg cdm|pf`, 수박 (재질 7) 만; 끄면 생성 CUDA 소스는 #if 블록 추가뿐 -- 전처리 결과 같음 24 조합 (tol·fq_rl·gq_mass x elx "" / jbar / snh, 520aece 대조))
+- 바탕 = 절 CM13 s_a 명령 그대로 (SNH 탄성 판, 100 프레임 완주 판): `--gq_mass --gq_chk --dump --nan_step --jdiag --elx snh` (+ `--dump_lj`, 결과 불변). **NACC return mapping (logJp 경화) 은 그대로 유지** -- 원래 수박 파괴 기제 위에 손상을 "얹음". 손상은 RM 을 바꾸지 않고 응력만 열화 (RM 은 탄성 늘임 σ 에, 손상은 그 σ 의 에너지에).
+- **열화와 분해** (두 판 공통): ψ = g(d) ψ⁺ + ψ⁻, g(d) = (1 − d)². SNH 에너지 Ψ = μ/2 (I_C − 3) − μ (J − 1) + λ_s/2 (J − 1)² (λ_s = λ + μ) 를 체적-나머지로 나눔: ψ⁻ = κ/2 (J − 1)² [J < 1] (체적 압축 몫, 열화 안 함), ψ⁺ = Ψ − ψ⁻ (편차 몫 + 체적 팽창 몫, 열화), κ = λ + 2μ/3 (= GF κ 2777.8).
+  작은 변형에서 Ψ ≈ μ|dev ε|² + κ/2 (tr ε)² 라 Amor (2009) 체적-편차 분해와 같고, 큰 변형에서는 ψ⁺ 의 체적 몫이 3 차부터 섞임 (그래서 구동량은 max(ψ⁺, 0)). 주값 응력 P_i = g P_i^SNH + (1 − g) [J < 1] κ (J − 1) σ_j σ_k (lib/anchorflow/fem_pl_cuda.py pl_pi `#ifdef AF_DMG`), 접선은 기존대로 같은 식의 주값 중심 차분.
+  구동량 ψ⁺ 는 **RM 뒤 탄성 σ** 에서 (dmg_psip; 넘침 막이 1e10 -- 물리 매개변수 아님). 응력 계산 (뉴턴 반복) 안에서 d 는 걸음 시작 값으로 고정 (걸음 사이 엇갈림).
+- **(1) CDM** (`--dmg cdm`): 입자마다 스칼라 d_p (alp 자리 -- 재질 7 은 al 을 안 씀), 이력 최대 국소 법칙 (Simo·Ju 1987 식 에너지 기준 손상, 매개변수 하나): ψ⁺ ≤ ψ_c 이면 d = 0, 넘으면 g(d) = ψ_c / H (H = 이력 최대 ψ⁺), 곧 d = 1 − √(ψ_c / H) -- 열화된 인장 에너지 g ψ⁺ 가 ψ_c 에 묶여 응력 ∝ 1/변형 으로 연화, 강도 σ_c = √(2 E ψ_c).
+  지금 구조에 맞춤: 입자 상태 -> 가우스 점은 logJp 와 같은 경로 (프레임 시작에 팔분 영역 부피 가중 평균 d_q, aq_p2g_s), 걸음 끝 커밋 (aq_commit, k < K−1) 에서 d_q = max(d_q, D(ψ⁺_q)), 입자는 G2P 걸음마다 d_p = max(d_p, D(ψ⁺_p)) (aq_g2p). 손상 입자 = d_p > 0.5.
+- **(2) 위상장 AT2** (`--dmg pf`, Miehe·Hofacker·Welschinger 2010 이력장): 손상장 d 를 **노드** (변위와 같은 2 차 B-스플라인 기저 w_n) 에, 이력 H = max ψ⁺ 를 입자 (alp) -> 가우스 점 (부피 가중 평균, 커밋에서 최대 갱신). 약형 (기준 배치, V_q·∇_X w = F_qᵀ ∇_x w):
+  Σ_q V_q [(G_c/l0 + 2H_q) d_q w_n + G_c l0 ∇d_q·∇w_n] = Σ_q V_q 2 H_q w_n -- 대칭 양정치, 노드 대각 PCG (야코비) 고정 30 반복 (그래프 안, `--pf_it`), 상대 잔차는 fem.jsonl dmg.pfres.
+  엇갈림: 프레임 시작 (P2G 뒤, 시작 추정 0) 에 한 번, 걸음 k 의 변위 풀이·커밋 뒤마다 한 번 (시작 추정 = 앞 풀이) -> 다음 걸음 응력이 가우스 점 d_q = clamp(Σ w_n d_n, 0, 1) 로 열화. 노드 d 는 프레임 사이에 남기지 않음 (노드 상자가 프레임마다 바뀜) -- 이력 형식이라 d 는 H 로 정해짐.
+  비가역성 = H 이력 최대 (AT2 표준). 출력·지표용 입자 d_p = 마지막 풀이 노드 d 의 입자 보간 (ysp 자리, 재질 7 은 ys 를 안 씀; 마지막 걸음 H 는 반영 안 된 한 걸음 늦은 값). l0 = 칸 크기 (B-스플라인 노드 간격, `--pf_l0 1`) -- 셀을 바꾸면 같은 규칙으로 l0 도 바뀜.
+- **매개변수 유도** (GF 수박 재질 E 2000, ν 0.38, β 1, ξ 3, 마찰각 45° -> M 1.8503, 처음 logJp −0.04 -> p0 = κ(1e-5 + sinh(ξ·0.04)) = 334.16; 정답 궤적에 맞추지 않음, 실행 전에 정함). 원래 재질의 탄성 한계 = NACC 항복면 -> 그 위 상태의 ψ⁺ 를 ψ_c 로. 근거 둘이라 두 값 판:
+  (가) `tens` 정수압 인장 꼭짓점 (인장 강도 p_t = β p0): J = Je = √(1 + 2βp0/κ) = 1.11382, 늘임 Je^{1/3} -> **ψ_c = 18.068** (선형 근사 p_t²/2κ = 20.10);
+  (나) `uni` 단축 인장 항복 (옆 NHB 응력 0, 늘임 1.16867·0.94315, τ₁ 336.3) -> **ψ_c = 26.174** (선형 근사 σ²/2E = 28.27). 참고: 순수 전단 (p = 0) 항복 ψ⁺ = 28.560.
+  CDM 은 ψ_c 그대로. 위상장 G_c 는 AT2 1 차원 균질 해의 강도 σ_c = (9/16) √(E G_c / (3 l0)) 를 같은 강도 σ_c = √(2 E ψ_c) 에 맞춤 (Tanné 등 2018 의 강도 맞춤) -> **G_c = 512/27 · ψ_c · l0**. 균질 해는 H = G_c/(6 l0) = 3.16 ψ_c 에서 최대 응력 (그때 d = 1/4).
+  실행기가 같은 식을 실행 시 PRM 에서 다시 계산해 로그·summary.json dmg 에 적음 (CDM prm[10] = ψ_c, 위상장 prm[10] = G_c, prm[11] = l0).
+- **미리 본 한계 (식에서, 실측 아님)**: RM 을 유지하므로 RM 뒤 탄성 σ 는 항복면 안에 있고, 처음 p0 에서 항복면 위 ψ⁺ 는 정수압 인장 18.1 ~ 순수 전단 28.6 사이에 묶임 (인장으로 logJp 가 커지면 p0 -> 0 이라 더 작아짐, 다져짐 (logJp ↓) 이면 p0 ↑ 로 커짐).
+  -> CDM (가) 는 전단 쪽 상태에서 d ≤ 1 − √(18.1/28.6) = 0.20 까지, (나) 는 거의 안 켜짐; d > 0.5 (H > 4 ψ_c) 는 다져진 점이나 RM 이 다루지 않는 퇴화 점 (σ̂ 하나가 0 -> J = 0, ψ⁺ ≈ μ/2 (σ₁² + σ₂² − 1) + μ/6 ≫ ψ_c) 에서만.
+  위상장은 문턱이 없어 어디서나 조금 켜지지만 균질 d = 2H/(2H + G_c/l0) ≤ 2·28.6/(2·28.6 + 18.96·18.1) = 0.14 (가). 곧 "탄성 에너지 구동 + RM 유지" 조합은 원리상 NACC 항복면이 손상을 막는다 -- 이 묶음은 그것이 실제 궤적에서 그런지 (퇴화·다져짐 점의 몫, 오차) 를 잰다.
+- 구현: lib/anchorflow/fem_ao_rt.py (`AF_DMG` 1·2: dmg_psip·dmg_cdm·dmg_g, aq_elem 의 al 자리 = g, aq_commit·aq_g2p 이력 갱신, 위상장 커널 pf_asm·pf_mv·pf_init·pf_dot·pf_up1·pf_up2·pf_roll·pf_q·pf_g2p, AORTSolver.pf_solve), fem_pl_cuda.py pl_pi, fem_nsd_diag.py (같은 g), exe/fem_ao_rt_sim.py (`--dmg --dmg_psic --pf_l0 --pf_it`, 손상 진단 fem.jsonl dmg = d>0.5·d>0.1·logJp>0·합집합 몫, 위상장 H·잔차; `--dump_lj` 가 lj.pt 에 d 도).
+  검증 (로컬, GPU 없음): 끄면 전처리 같음 (위), 켠 소스 g++ 문법 검사 (CUDA 흉내 머리), CPU 하네스에서 pf_asm 대각 = pf_mv 연산자 대각 (차 0)·연산자 대칭 (3.8e-6).
+### CM19.1 묶음 wmdmg (exe/vast_wmdmg.sh, 표 exe/fem_wmdmg_table.py, 통계·색 값 exe/wmdmg_stats.py, 합성 exe/wmdmg_compose.py 로컬)
+- 판 (이름 <판>_<셀>_<a|b>): s = SNH (절 CM13 s_a 명령), ct·cu = CDM (가)·(나), pt·pu = 위상장 (가)·(나); 셀 c15 (1.5, 각 2 회 -- 비결정) · c2·c25·c3 (2·2.5·3, 각 1 회 먼저, 남은 시간에 2 회째; 사용자 추가 지시) -- 카드 0 에 차례로.
+  단독 시간 z_<판>_<셀> (20 판): 카드 1 에 하나씩 (`--gq_mass --elx snh [--dmg ..]`, 진단·덤프 없음; 실행 중 그 카드 다른 계산 프로세스 수를 10 초마다 셈; 카드 0 의 판정 판과 동시라 CPU 는 나눠 씀).
+- 지표: 발산·프레임, 오차 곡선, 손상 입자 몫 (logJp > 0, d > 0.5, 합집합) 대 정답 logJp > 0 (절 CM13.4 다시 돌린 GF, f100 6.51 %), 가우스 점·노드 수, 단독 시간 (평균·최대).
+- 영상: 셀 1.5 와 "가장 빠르면서 발산 안 한 셀" (s·ct·pt 가 a 또는 b 로 완주한 셀 중 단독 시간 (셋 중 느린 판 평균) 이 가장 작은 셀) -- 2 줄 x 4 칸: 윗줄 logJp 색 (−0.2~0.4 공통) 정답 | SNH | CDM (가) | 위상장 (가), 아랫줄 정답·SNH 일반 3DGS | CDM·위상장 d 색 (0~1 공통). 판 고르기 = a 완주면 a, 아니면 b, 둘 다 발산이면 오래 간 판 (멈춘 칸).
+  정답 칸 = R2 lbours/fem_cm/wmJd/gt_lj.mp4·gt_new_plain.mp4 (절 CM13.4 그대로). -> result/anchorflow/v20261009/fem_wmdmg_cmp.mp4 (셀 1.5), fem_wmdmg_cmp_c<셀>.mp4.
+- 출력 R2 lbours/fem_cm/wmdmg/<판> (log·summary·fem.jsonl·pred.pt·lj.pt·dmg_stats.json·vid/), 표 marks/wmdmg_table.md, 로그 marks/wmdmg.log, 끝 표식 marks/wmdmg.END.

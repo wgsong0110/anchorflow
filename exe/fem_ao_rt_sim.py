@@ -88,6 +88,11 @@ ap.add_argument("--fq_rl", action="store_true", help="절 AS: 뒤집힌 입자�
 ap.add_argument("--ls_end", action="store_true", help="절 AS: 보폭·시작점 필터가 걸음 끝 변위 U_{n+1} (HHT 외삽) 의 X 도 J > 0 로 유지")
 ap.add_argument("--y0z", action="store_true", help="절 AS: 뉴턴 시작점 = 영속도 위치 y_z (z0) 에서 지금 시작점 (관성 예측·고착) 쪽으로 뒤집힘 없는 최대 2^-k 만큼 (뒤집힘 없으면 그대로)")
 ap.add_argument("--elx", choices=["", "jbar", "snh"], default="", help="절 CM13 (사용자 승인 정의 변경, 재질 판 수박만): jbar = 가우스 점 J 로그 장벽 κ_J V_q (−log J + J − 1) 을 에너지에 (기울기·투영 헤시안), snh = 탄성 부분을 Stable Neo-Hookean (μ_s = μ, λ_s = λ + μ; RM 그대로). 끄면 같은 소스")
+ap.add_argument("--dmg", choices=["", "cdm", "pf"], default="", help="절 CM19 (사용자 승인 정의 변경, 수박 --elx snh 위에만): cdm = 연속체 손상 (입자·가우스 점 스칼라 d, ψ = g(d) ψ⁺ + ψ⁻, g = (1−d)², d = 이력 최대 국소 법칙), "
+                "pf = 위상장 파괴 AT2 (노드 d, 이력장 H = max ψ⁺, 걸음마다 변위 풀이 뒤 d 풀이). NACC RM 그대로. 끄면 같은 소스")
+ap.add_argument("--dmg_psic", choices=["tens", "uni"], default="tens", help="절 CM19 ψ_c 근거: tens = NACC 정수압 인장 꼭짓점 (J = Je = √(1 + 2βp0/κ)) 의 ψ⁺, uni = NACC 단축 인장 항복 상태의 ψ⁺ (p0 = 처음 logJp 값)")
+ap.add_argument("--pf_l0", type=float, default=1.0, help="절 CM19 위상장 l0 = 이 값 x 칸 크기 (B-스플라인 노드 간격)")
+ap.add_argument("--pf_it", type=int, default=30, help="절 CM19 위상장 d 풀이 PCG 반복 수 (고정, 그래프 안)")
 ap.add_argument("--jbar", type=float, default=1.0, help="절 CM13 판 (1): κ_J = 이 값 x μ (재질 전단 강성)")
 ap.add_argument("--jdiag", action="store_true", help="절 CM13 진단 (결과 불변, 재생 밖): 프레임 끝 가우스 점 F_q (부피 > 0) det ≤ 0 수·최소, 입자 F det 최소·≤ 0 수·< 1e-3 수 (fem.jsonl jd)")
 ap.add_argument("--theta", type=float, default=None, help="θ 방식 (절 AN.err2 정의; 0.5 = 중점, 1 = 후퇴 오일러). 안 주면 --integ 그대로 (비트 동일)")
@@ -197,6 +202,50 @@ if MATK is not None:                                                            
         if a.elx == "jbar":
             PRM[13] = float(a.jbar) * float(mu)
         print(f"[절 CM13] --elx {a.elx}: " + (f"J 로그 장벽 κ_J = {a.jbar} x μ = {float(PRM[13]):.6g} (NHB κ {float(PRM[2]):.6g}, 작은 변형 부피 강성 κ + κ_J)" if a.elx == "jbar" else f"Stable Neo-Hookean μ_s = μ = {float(mu):.6g}, λ_s = λ + μ = {float(lam) + float(mu):.6g}"), flush=True)
+    DMGI = None
+    if a.dmg:                                                                         # 절 CM19: 손상 매개변수를 GF 수박 재질에서 유도 (정답 궤적에 맞추지 않음)
+        assert MATK == 7 and a.elx == "snh" and not a.det, "--dmg 는 수박 --elx snh, 비결정 판만"
+        _mu, _la, _ka, _M, _be, _xi = float(mu), float(lam), float(PRD["kappa"]), float(PRD["M"]), float(PRD["beta"]), float(PRD["xi"])
+        _ls = _la + _mu; _p0 = _ka * (1e-5 + math.sinh(_xi * max(-float(PRD["logJp0"]), 0.0)))
+
+        def _psip(sg):                                                                # dmg_psip 와 같은 식 (f64)
+            J = sg[0] * sg[1] * sg[2]
+            ps = 0.5 * _mu * (sum(q * q for q in sg) - 3.0) - _mu * (J - 1.0) + 0.5 * _ls * (J - 1.0) ** 2
+            return ps - (0.5 * _ka * (J - 1.0) ** 2 if J < 1.0 else 0.0)
+
+        def _yl(sg):                                                                  # pl_rm 재질 7 의 항복 함수 y (NHB 식)
+            J = sg[0] * sg[1] * sg[2]; B = [q * q for q in sg]; Bm = sum(B) / 3.0
+            sh = [_mu * J ** (-2.0 / 3.0) * (q - Bm) for q in B]; pt = 0.5 * _ka * (1.0 - J * J)
+            return 1.5 * (1 + 2 * _be) * sum(q * q for q in sh) + _M * _M * (pt + _be * _p0) * (pt - _p0)
+
+        def _bis(fn, lo, hi):
+            flo = fn(lo)
+            for _ in range(200):
+                md = 0.5 * (lo + hi); fm = fn(md)
+                if (fm > 0) == (flo > 0):
+                    lo, flo = md, fm
+                else:
+                    hi = md
+            return 0.5 * (lo + hi)
+        _Je = math.sqrt(1.0 + 2.0 * _be * _p0 / _ka)
+        PS_T = _psip([_Je ** (1.0 / 3.0)] * 3)                                       # (가) 정수압 인장 꼭짓점
+
+        def _tau(sg):                                                                 # NHB 키르히호프 주값 (옆 응력 0 조건)
+            J = sg[0] * sg[1] * sg[2]; B = [q * q for q in sg]; Bm = sum(B) / 3.0
+            return [_mu * J ** (-2.0 / 3.0) * (q - Bm) + 0.5 * _ka * (J * J - 1.0) for q in B]
+        _lat = lambda x: _bis(lambda b: _tau([x, b, b])[1], 0.5, 1.5)
+        _xu = _bis(lambda x: _yl([x, _lat(x), _lat(x)]), 1.0001, 1.5); _bu = _lat(_xu)
+        PS_U = _psip([_xu, _bu, _bu])                                                 # (나) 단축 인장 항복
+        _lsh = _bis(lambda x: _yl([x, 1.0 / x, 1.0]), 1.0001, 1.5)
+        PS_S = _psip([_lsh, 1.0 / _lsh, 1.0])                                         # 참고: 순수 전단 (p = 0) 항복 = 탄성 영역 안 ψ⁺ 최대 근처
+        PSC = PS_T if a.dmg_psic == "tens" else PS_U
+        CELL0 = float(lat.A[:, 0].norm()); L0 = a.pf_l0 * CELL0
+        GC = 512.0 / 27.0 * PSC * L0                                                 # AT2 1 차원 강도 σ_c = (9/16) √(E G_c / (3 l0)) 를 σ_c = √(2 E ψ_c) 에 맞춤
+        PRM[10] = float(PSC if a.dmg == "cdm" else GC); PRM[11] = float(L0)
+        DMGI = dict(kind=a.dmg, basis=a.dmg_psic, psi_tens=PS_T, psi_uni=PS_U, psi_shear=PS_S, psic=PSC, Je=_Je, p0=_p0, uni_stretch=[_xu, _bu], shear_stretch=_lsh, cell=CELL0, l0=L0, Gc=GC, pf_it=a.pf_it,
+                    pf_peakH=GC / (6.0 * L0), pf_dmax_at_psishear=(2 * PS_S) / (2 * PS_S + GC / L0))
+        print(f"[절 CM19] --dmg {a.dmg} 근거 {a.dmg_psic}: ψ⁺ 정수압 인장 꼭짓점 {PS_T:.4f} (Je {_Je:.5f}) · 단축 인장 항복 {PS_U:.4f} (늘임 {_xu:.5f}, {_bu:.5f}) · 순수 전단 항복 {PS_S:.4f}, p0 {_p0:.4f} -> ψ_c {PSC:.4f}"
+              + (f", 위상장 l0 {L0:.5f} m (칸 {CELL0:.5f} x {a.pf_l0}), G_c = 512/27 ψ_c l0 = {GC:.5g}, 반복 {a.pf_it}" if a.dmg == "pf" else ""), flush=True)
     VISC = 0.0
     if a.visc_rpic and float(cfg.get("rpic_damping", 0.0)) > 0:
         _r = float(cfg["rpic_damping"])
@@ -205,7 +254,7 @@ if MATK is not None:                                                            
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
                         floor=FL, damp=DAMP, bc=BC, cdp=1.0, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det,
                         hspec=True, theta=a.theta, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None),
-                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx)
+                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx, dmg=a.dmg, pf_it=a.pf_it)
 elif SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
     _sk = {}
@@ -221,6 +270,8 @@ else:
   S = AORT.RTAdapt(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent,
                  compact=a.ao_fast, warm=a.ao_fast and not a.no_warm, det=a.det)
+if a.dmg:                                                                             # 절 CM19: 처음 손상 d = 0 (cdm) / 이력 H = 0 (pf) -- 재질 7 은 al·ys 를 안 씀
+    S.alp.zero_(); S.ysp.zero_()
 if a.nan_step:
     assert MATK is not None and a.adaptK <= 0 and not a.det, "--nan_step 은 재질 판 (AORTSolver), 고정 걸음, 비결정 판만"
     S.nsd_on()
@@ -243,6 +294,7 @@ div_at = None
 PRED = torch.empty(L, Np, 3) if a.dump else None
 FDMP = torch.empty(L, Np, 3, 3) if a.dump else None
 LJD = torch.empty(L, Np) if a.dump_lj else None
+DD = torch.empty(L, Np) if (a.dump_lj and a.dmg) else None
 for fi in range(L):
     kp = S.profile(fi * h) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None
     _xprev = S.x_orig().clone() if a.nan_step else None                               # 절 CM9.3: 이 프레임 시작 (= 직전 프레임 끝) 입자 위치, 원래 순서
@@ -300,12 +352,19 @@ for fi in range(L):
         _fin = torch.isfinite(_dp)
         c["jd"] = dict(q_le0=int((_dq <= 0).sum()), q_nf=int((~torch.isfinite(_dq)).sum()), q_min=float(_dq[torch.isfinite(_dq)].min()) if bool(torch.isfinite(_dq).any()) else None,
                        p_min=float(_dp[_fin].min()) if bool(_fin.any()) else None, p_le0=int((_dp <= 0).sum()), p_lt1e3=int((_dp < 1e-3).sum()), p_nf=int((~_fin).sum()))
+    if a.dmg:                                                                         # 절 CM19 (결과 불변): 입자 손상 d (cdm = alp, pf = ysp 노드 d 보간), logJp, 이력 H (pf = alp)
+        _okp = torch.isfinite(S.x).all(-1); _dp = (S.alp if a.dmg == "cdm" else S.ysp)[_okp]; _lj = S.ljp[_okp]; _nn_ = max(int(_okp.sum()), 1)
+        c["dmg"] = dict(d05=float((_dp > 0.5).sum()) / _nn_, d01=float((_dp > 0.1).sum()) / _nn_, dmean=float(_dp.nan_to_num(0).mean()) if _dp.numel() else None, dmax=float(_dp.nan_to_num(0).max()) if _dp.numel() else None,
+                        lj0=float((_lj > 0).sum()) / _nn_, uni=float(((_dp > 0.5) | (_lj > 0)).sum()) / _nn_)
+        if a.dmg == "pf":
+            _H = S.alp[_okp]
+            c["dmg"].update(Hmax=float(_H.nan_to_num(0).max()) if _H.numel() else None, Hmean=float(_H.nan_to_num(0).mean()) if _H.numel() else None, pfres=[float(q) for q in S.pfres[:a.K].cpu()])
     if a.diag:
         c["diag"] = S.diag()
     if "it" in c:
         ITS.append(c["it"])
     flog.write(json.dumps(dict(t=fi, err=e, ms=S.last_ms, wall_ms=WALL, K=KF, vmax=VMX, redo=redo, **c, **({"kernel_ms": kp} if kp else {}))) + "\n"); flog.flush()
-    print(f"  프레임 {fi + 1}/{L} K {KF} v_max {VMX if VMX is None else round(VMX, 3)} 벽시계 {WALL:.1f} ms 재생 {S.last_ms:.2f} ms 오차 {100 * e:.3f}%{' (용량 늘려 다시)' if redo else ''} 점 {c['nq']} 노드 상자 {c['nn']} 유클리드 평균 점 {c['nbad']} 꼬리·꼭짓점 점 {c.get('q_tail')}·{c.get('q_apex')} 입자 RM {c.get('p_rm')}{(' 보폭(줄임·최대k·뒤집힌점·호출) ' + str(c.get('ls_inv')) + ' 시작 ' + str(c.get('y0z'))) if 'ls_inv' in c else ''}", flush=True)
+    print(f"  프레임 {fi + 1}/{L} K {KF} v_max {VMX if VMX is None else round(VMX, 3)} 벽시계 {WALL:.1f} ms 재생 {S.last_ms:.2f} ms 오차 {100 * e:.3f}%{' (용량 늘려 다시)' if redo else ''} 점 {c['nq']} 노드 상자 {c['nn']} 유클리드 평균 점 {c['nbad']} 꼬리·꼭짓점 점 {c.get('q_tail')}·{c.get('q_apex')} 입자 RM {c.get('p_rm')}{(' 보폭(줄임·최대k·뒤집힌점·호출) ' + str(c.get('ls_inv')) + ' 시작 ' + str(c.get('y0z'))) if 'ls_inv' in c else ''}{(' 손상 ' + json.dumps(c['dmg'])) if 'dmg' in c else ''}", flush=True)
     if a.bench_at and str(fi + 1) in a.bench_at.split(","):
         print(f"  [벤치] 프레임 {fi + 1} 점 {int(S.IP[12])} {json.dumps(S.bench(['ao_mv_c', 'ao_mv_q', 'ao_mv_q_na', 'ao_mv_q_ng', 'ao_mv_q_nh', 'ao_elem', 'ao_elem_s']))}", flush=True)
     if a.check_hspec and str(fi + 1) in a.check_hspec.split(","):
@@ -317,6 +376,9 @@ for fi in range(L):
     if LJD is not None:                                                               # 절 CM13.4: 읽기만 (풀이 상태 안 건드림)
         _lo = torch.empty_like(S.ljp); _lo[S.perm] = S.ljp
         LJD[fi] = _lo.cpu()
+        if DD is not None:
+            _do = torch.empty_like(S.alp); _do[S.perm] = (S.alp if a.dmg == "cdm" else S.ysp)
+            DD[fi] = _do.cpu()
         if fi in (0, L - 1) or fi % 20 == 0:
             print(f"  [logJp] 프레임 {fi + 1} 범위 {float(S.ljp.min()):.4g}~{float(S.ljp.max()):.4g} > 0 몫 {float((S.ljp > 0).float().mean()):.4f} | al 범위 {float(S.alp.min()):.4g}~{float(S.alp.max()):.4g} ys 범위 {float(S.ysp.min()):.4g}~{float(S.ysp.max()):.4g}", flush=True)
     if not fin or e > 2.0 or float(S.v.norm(dim=-1).max()) > 200.0:
@@ -330,7 +392,7 @@ for fi in range(L):
         print(f"[발산] 프레임 {div_at}", flush=True)
         break
 sc = [q for i, q in enumerate(ms) if i >= a.warm]
-summ = dict(args=vars(a), frames=L, frames_done=len(errs), diverged=div_at, err_mean=(float(np.mean(errs)) if div_at is None else None),
+summ = dict(args=vars(a), dmg=DMGI if MATK is not None else None, frames=L, frames_done=len(errs), diverged=div_at, err_mean=(float(np.mean(errs)) if div_at is None else None),
             err_mean_done=float(np.nanmean(errs)), ms_mean=float(np.mean(sc)) if sc else None, ms_min=float(np.min(sc)) if sc else None)
 if ITS:                                                                               # 허용치 판 반복 수 분포 (프레임당)
     for _k in ("nN", "nP", "capN", "capP"):
@@ -343,6 +405,6 @@ json.dump(summ, open(os.path.join(a.out, "summary.json"), "w"), indent=1, ensure
 if PRED is not None:
     torch.save({"pred": PRED[:len(errs)], "F": FDMP[:len(errs)]}, os.path.join(a.out, "pred.pt"))
 if LJD is not None:
-    torch.save({"logJp": LJD[:len(errs)]}, os.path.join(a.out, "lj.pt"))
+    torch.save({"logJp": LJD[:len(errs)], **({"d": DD[:len(errs)]} if DD is not None else {})}, os.path.join(a.out, "lj.pt"))
 print(f"[롤아웃] {a.tag} 실시간 판 셀 {a.cell} K {a.K} 뉴턴 {a.newton} PCG {a.cg}: {len(errs)}/{L} 프레임{' (발산 %d)' % div_at if div_at else ''}, 평균 {100 * summ['err_mean_done']:.3f}%, "
       f"프레임당 {summ['ms_mean']} ms (재생 GPU 시간)", flush=True)
