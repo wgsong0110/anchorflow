@@ -15,3 +15,10 @@ s1 nM_on3_c M n --cell 3 --sp2 31
 s1 nM_off3_a M n --cell 3
 s1 nM_off3_b M n --cell 3
 s1 nM_off3_c M n --cell 3
+# s2 (단독): 동기 벽시계 커널 프로파일 끔·켬, 시간 a·b·c 끔·켬 (셀 3 = 셀 규칙 (가)), 켬 판 최악 > 16.7 ms 이면 셀 3.5·4 (켬) a·b·c
+s2 qM_off3 M q --cell 3
+s2 qM_on3 M q --cell 3 --sp2 31
+s2 zM_off3 M z --cell 3
+s2 zM_on3 M z --cell 3 --sp2 31
+s2 zM_on35 M zc --cell 3.5 --sp2 31
+s2 zM_on4 M zc --cell 4 --sp2 31
