@@ -2418,7 +2418,7 @@ def cjueify(src):
     return src[:j] + k + src[j:]
 
 
-def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False, fpi=False, cj=False, cue=False):
+def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False, fpi=False, cj=False, cue=False, uel=0, ufw=False):
     if cj:                                                                             # 절 CM24 판정 커널 (끄면 소스 그대로)
         src = src.replace('extern "C" {', 'extern "C" {\n' + CJ_SRC, 1)
     src = snhify(src, snh)                                                             # 절 CM18 --elx snh (끄면 소스 그대로)
@@ -2458,6 +2458,11 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, 
         src = fupify(src, floor["fup"])
     if cue:
         src = cjueify(src)
+    if uel or ufw:                                                                     # 절 CM31 --ue_loc·--uf_w (끄면 소스 그대로)
+        from . import fem_common1 as C1
+        if uel:
+            src = C1.uelify(src)
+        src = C1.ulify(src, uel, ufw, bool(floor and floor.get("bar")))
     return skipify(src) if adapt else src
 
 
@@ -2477,6 +2482,9 @@ class RTSolver(MG2.MG2Mixin):
     def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", fpi=False, mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False, gqm=False, wd=False, snh=False, wdcap=2000000, cj=None):
         s.dev = dev
         s.cjj = bool(cj and cj.get("judge")); s.cjr = bool(cj and cj.get("res")); s.cue = {"": 0, "be": 1, "a0": 2, "beall": 3}[(cj or {}).get("ue", "")]           # 절 CM24: 걸음 수렴 판정 커널 (끄면 소스·커널 열 그대로)
+        s.uel = int((cj or {}).get("uel", 0)); s.ufw = bool((cj or {}).get("ufw", False))   # 절 CM31: 국소 후퇴 오일러 노드 집합 비트 / 판정 2 힘 척도에 무게
+        assert not s.uel or s.cue in (1, 2), "--ue_loc 는 --ue be·a0 위"
+        assert not s.ufw or s.cjr, "--uf_w 는 --uf_res 위"
         s.fpi = bool(fpi)                                                              # 절 CM20 (정의 변경): 입자 F 를 프레임 끝 가우스 점 F 의 칸 안 삼선형 보간으로 교체
         assert not (s.fpi and pk), "--fp_interp 는 그래프 판만"
         s.gqm = bool(gqm)                                                              # 절 CM9 (정의 변경): 노드 질량·운동량을 가우스 점에서 (힘과 같은 점·가중·기저)
@@ -2554,7 +2562,7 @@ class RTSolver(MG2.MG2Mixin):
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh, fpi=s.fpi, cj=s.cjj, cue=bool(s.cue)), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh, fpi=s.fpi, cj=s.cjj, cue=bool(s.cue), uel=s.uel, ufw=s.ufw), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
@@ -2719,7 +2727,11 @@ class RTSolver(MG2.MG2Mixin):
         s.DGF = torch.zeros(4 * max(s.K, s.Kc or 0, getattr(s, "kcap", 0)), 64, device=dev, dtype=torch.float64)
         if getattr(s, "cjj", False):                                                   # 절 CM24: 걸음별 보폭 최소·잔차 비·덜 풀림 (걸음 수 상한까지)
             _kc = max(s.K, s.Kc or 0, getattr(s, "kcap", 0))
-            s.cjs = torch.zeros(_kc, device=dev, dtype=torch.float32); s.cjg = torch.zeros(_kc, device=dev, dtype=torch.float32); s.cjl = torch.zeros(_kc, device=dev, dtype=torch.int32)    # 걸음 끝 SC (gfin: SC1 = |g_끝|²)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
+            s.cjs = torch.zeros(_kc, device=dev, dtype=torch.float32); s.cjg = torch.zeros(_kc, device=dev, dtype=torch.float32); s.cjl = torch.zeros(_kc, device=dev, dtype=torch.int32)
+            if getattr(s, "uel", 0):                                                   # 절 CM31 --ue_loc: 노드 집합 + 걸음별 [S 노드, 몸 노드, S∩몸, -]
+                s.ulm = torch.zeros(s.capN, device=dev, dtype=torch.int32); s.ULS = torch.zeros(_kc, 4, device=dev, dtype=torch.int32)
+            if getattr(s, "ufw", False):                                               # 절 CM31 --uf_w: 걸음별 Σ (m |g|)²
+                s.cjw = torch.zeros(_kc, device=dev, dtype=torch.float64)    # 걸음 끝 SC (gfin: SC1 = |g_끝|²)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
         s.wd_on = bool(getattr(s, "wd", False)) and s.capN <= getattr(s, "wdcap", 2000000)   # 절 S.10: 상자 폭증 뒤 용량이면 진단 끔 (복사 없음)
         for _nm in ("WY", "WY0", "WU", "WFE", "WBE", "WME"):
             if hasattr(s, _nm):
@@ -3167,6 +3179,8 @@ class RTSolver(MG2.MG2Mixin):
             s.ctl(1)
             if s.cjj:                                                                  # 절 CM24: 걸음 판정 초기화
                 s.k("cj_init", 1, (P(s.cjs), P(s.cjg), i32(kstep)), b=1)
+                if getattr(s, "ufw", False):                                           # 절 CM31 --uf_w: 걸음 시작 Σ (m |g|)² (블록 하나, 결정적)
+                    s.k("ul_wsum", 256, (P(IP), P(s.meff), f(math.sqrt(sum(q * q for q in s.g))), P(s.cjw), i32(kstep)), b=256)
             WD = getattr(s, "wd_on", False) and s.adapt
             if WD and len(s.wd_tau) < len(ST):
                 s.wd_tau.append(float(sg["tau"]))                                      # 절 S.10: 걸음별 τ (Mi = meff / τ²)
@@ -3216,7 +3230,10 @@ class RTSolver(MG2.MG2Mixin):
                 WW.ct(s, kstep, it, 0)                                                 # 절 CM25 진단: 제어 카운터 사본
                 PRD.grad(s, kstep, it)                                                 # 절 CM26 진단: y·η·잔차
                 if s.cjj and s.cjr and s.adapt:                                        # 절 CM24 판정 2: 이 반복 시작 ‖g‖²/F² (멈춘 반복은 AF_SKIP)
-                    s.k("cj_g", 1, (P(s.SC), P(s.CD), P(s.cjg), i32(kstep)), b=1)
+                    if getattr(s, "ufw", False):                                       # 절 CM31 --uf_w: F² = ‖T f_0‖² + Σ (m |g|)²
+                        s.k("ul_gw", 1, (P(s.SC), P(s.CD), P(s.cjw), P(s.cjg), i32(kstep)), b=1)
+                    else:
+                        s.k("cj_g", 1, (P(s.SC), P(s.CD), P(s.cjg), i32(kstep)), b=1)
                 if WD:
                     s.dcopy(s.WCT[2 * (kstep * s.nt + it)], s.CT); s.dcopy(s.WCD[2 * (kstep * s.nt + it)], s.CD)
                 if s.nl > 1:                                                           # MG 전처리: z = V(r) 로 바꿔 시작
@@ -3363,7 +3380,18 @@ class RTSolver(MG2.MG2Mixin):
                 s.dcopy(s.fvo, s.vk); s.dcopy(s.fao, s.ak)
             if sg["kind"] == "ga":
                 GE = (P(IP), f(sg["dt"]), f(sg["gm"]), f(sg["be"]), f(sg["al"]), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.ak), P(s.an if FL else None), i32(1 if s.areset else 0), P(s.fixd), P(s.vbc), dmp)
-                if getattr(s, "cue", 0):                                               # 절 CM24 (2)·(3): 덜 풀린 걸음 (cjl[k]) 갱신만 바꾼 같은 커널
+                if getattr(s, "uel", 0):                                               # 절 CM31 --ue_loc: 덜 풀린 걸음 갱신 바꿈을 노드 집합 S 에만
+                    s.k("ul_zero", capN, (P(IP), P(s.ulm)), b=256)
+                    if (s.uel & 1) and s.bar:
+                        s.k("ul_bar", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), f(FL["DH"]), P(s.ulm)))
+                    if (s.uel & 2) and getattr(s, "y0loc", 0):
+                        s.k("ul_kn", capN, (P(IP), P(s.ykn), P(s.ulm)), b=256)
+                    if s.uel & 4:
+                        s.k("ul_res", capN, (P(IP), P(s.g0buf), P(s.meff), f(math.sqrt(sum(q * q for q in s.g))), P(s.ulm)), b=256)
+                    s.k("rt_zero_i", 4, (np.int32(4), P(s.ULS[kstep])), b=256)
+                    s.k("ul_st", capN, (P(IP), P(s.ulm), P(s.mn), P(s.ULS[kstep])), b=256)
+                    s.k("rt_ga_end_ufl", capN, GE + (P(s.cjl[kstep:]), i32(s.cue), P(s.ulm)), b=256)
+                elif getattr(s, "cue", 0):                                             # 절 CM24 (2)·(3): 덜 풀린 걸음 (cjl[k]) 갱신만 바꾼 같은 커널
                     s.k("rt_ga_end_uf", capN, GE + (P(s.cjl[kstep:]), i32(s.cue)), b=256)
                 else:
                     s.k("rt_ga_end", capN, GE, b=256)

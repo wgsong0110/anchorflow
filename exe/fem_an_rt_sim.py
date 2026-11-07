@@ -114,6 +114,8 @@ ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널�
 ap.add_argument("--ksplit", type=int, default=0, help="절 CM24 (1b, 사용자 승인 11-07 정의 변경): 적응 걸음 쪼개기 -- K 1 로 풀고 덜 풀린 걸음 (판정 커널) 이 있으면 그 프레임을 버리고 K 두 배로 다시, 최대 K = 2^이 값 (0 = 끔)")
 ap.add_argument("--uf_res", action="store_true", help="절 CM24 판정 2: 덜 풀린 걸음 = 허용치 미달 & (보폭 < 1 또는 마지막으로 돈 뉴턴 반복 시작 ‖g‖ > F) (끄면 보폭 < 1 만)")
 ap.add_argument("--ue", choices=["", "be", "a0", "beall"], default="", help="절 CM24 (2)·(3) (사용자 승인 정의 변경, HHT 판): 덜 풀린 걸음 (판정 커널) 의 걸음 끝 갱신 -- be 후퇴 오일러 (U1 = y, v1 = (y − U)/h, 가속도 기억 0), a0 가속도 기억만 0, beall 모든 걸음 후퇴 오일러 갱신")
+ap.add_argument("--ue_loc", type=int, default=0, help="절 CM31 (정의 변경, --ue be·a0 위, lib/anchorflow/fem_common1.py): 덜 풀린 걸음 갱신 바꿈을 노드 집합에만 (비트 합: 1 걸음 끝 장벽 걸린 표본점 노드, 2 --y0loc 시작점 β < 1 노드, 4 잔차 힘 > 노드 무게) -- 0 = 몸 전체 (끄면 소스 그대로)")
+ap.add_argument("--uf_w", action="store_true", help="절 CM31 (정의 변경, --uf_res 위): 판정 2 의 힘 척도 F² = ‖T f_0‖² + Σ (m |g|)² (무게를 더함; 끄면 소스 그대로)")
 ap.add_argument("--ufrec", action="store_true", help="절 CM24 진단 (결과 불변): 판정 커널만 켜고 걸음별 덜 풀림을 fem.jsonl uf 에")
 ap.add_argument("--nrec", action="store_true", help="절 CM25 진단 (결과 불변, lib/anchorflow/fem_wolfwhy_diag.py): 걸음마다 시작점 실현 가능 k0·고른 k, 뉴턴 반복별 ‖g‖/F·멈춤·PCG 반복·상한·보폭 (자른 주체), 걸음 끝 ‖g‖/F (다시 잼, 버퍼 되돌림)·장벽 노드 기울기 합을 fem.jsonl nr 에")
 ap.add_argument("--prec", type=str, default="", help="절 CM26 진단 (결과 불변, --nrec 위, 재질 판 K 1 HHT, lib/anchorflow/fem_wolfprop_diag.py): 'f0:f1' 프레임 (1 부터, 양끝 포함) 의 뉴턴 반복·걸음 끝 노드 힘 몫 (탄성·소성, 장벽, 순차 방출 구속 반력, 바닥 고착 반력, 고정 노드, 잔차, 관성, 중력) 법선 합·속도 변화 분해 (몸 전체·바닥 근처·구속 노드), 방출 무리별 입자 높이 (우리·정답), 장벽 표본점 d/d̂ 분포를 prec.jsonl 에")
@@ -279,7 +281,7 @@ if a.prec:                                                                      
     ART.PRD.ON[0] = True
     PR_F0, PR_F1 = [int(q) for q in a.prec.split(":")]
 S = SOLVER(X0, d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, gqm=a.gq_mass, cj=(dict(judge=True, res=a.uf_res, ue=a.ue) if (a.ksplit > 0 or a.ufrec or a.ue) else None), **({"fpi": True} if a.fp_interp else {}), **({"wd": True, "wdcap": a.wdiag_cap} if a.wdiag >= 0 else {}), **MATX, **SNHX)
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, gqm=a.gq_mass, cj=(dict(judge=True, res=a.uf_res, ue=a.ue, **({"uel": a.ue_loc} if a.ue_loc else {}), **({"ufw": True} if a.uf_w else {})) if (a.ksplit > 0 or a.ufrec or a.ue) else None), **({"fpi": True} if a.fp_interp else {}), **({"wd": True, "wdcap": a.wdiag_cap} if a.wdiag >= 0 else {}), **MATX, **SNHX)
 if a.bar_nostep:
     assert getattr(S, "bar", False) and not S.ls, "--bar_nostep 은 선탐색 없는 장벽 판 (재질) 만"
     S.nobk = True
@@ -327,6 +329,8 @@ for fi in range(L):
     if getattr(S, "cjj", False):                                                      # 절 CM24 (결과 불변): 걸음별 덜 풀림·보폭 최소·잔차 비 (마지막 시도)
         _Kn = S.Kcur
         c["uf"] = dict(fail=[int(q) for q in S.cjl[:_Kn].cpu()], smin=[float(q) for q in S.cjs[:_Kn].cpu()], g2=[float(q) for q in S.cjg[:_Kn].cpu()] if S.cjr else None)
+        if getattr(S, "uel", 0):                                                       # 절 CM31: 걸음별 [S 노드, 몸 노드, S∩몸]
+            c["uf"]["ul"] = S.ULS[:_Kn, :3].cpu().tolist()
     if a.ksplit > 0:
         c["ks"] = dict(K=_KF, tries=[list(q) for q in _ktr])
     if a.diag:

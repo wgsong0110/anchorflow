@@ -19,3 +19,188 @@ s1 zL_off L z
 s1 zL_loc L z --y0loc 3
 s1 zL_d L z --y0loc 3 --ue be --uf_res
 s1 zW_d1 W z --y0loc 3 --ue be
+# s2: (3) 후보 -- (a) --ue_loc 국소 후퇴 오일러, (b) --uf_w 판정 2 힘 척도에 무게, (c) --ksplit 상한 낮춤·판정 1; 레고 결정적 + 비결정 6, wolf 결정적 + 비결정 2, 단독 시간 a·b; 기준 판 비결정 분포 (레고 off 20 (+ --nrec)·loc·ube·d 각 6)
+s2 L_off2 L d
+s2 W_off2 W d
+s2 L_A1 L d --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 L_A1_n1 L nd --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 L_A1_n2 L nd --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 L_A1_n3 L nd --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 L_A1_n4 L nd --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 L_A1_n5 L nd --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 L_A1_n6 L nd --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 W_A1 W d --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 W_A1_n1 W nd --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 W_A1_n2 W nd --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 L_A2 L d --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 L_A2_n1 L nd --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 L_A2_n2 L nd --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 L_A2_n3 L nd --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 L_A2_n4 L nd --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 L_A2_n5 L nd --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 L_A2_n6 L nd --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 W_A2 W d --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 W_A2_n1 W nd --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 W_A2_n2 W nd --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 L_A4 L d --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 L_A4_n1 L nd --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 L_A4_n2 L nd --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 L_A4_n3 L nd --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 L_A4_n4 L nd --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 L_A4_n5 L nd --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 L_A4_n6 L nd --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 W_A4 W d --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 W_A4_n1 W nd --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 W_A4_n2 W nd --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 L_A3 L d --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 L_A3_n1 L nd --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 L_A3_n2 L nd --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 L_A3_n3 L nd --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 L_A3_n4 L nd --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 L_A3_n5 L nd --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 L_A3_n6 L nd --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 W_A3 W d --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 W_A3_n1 W nd --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 W_A3_n2 W nd --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 L_A7 L d --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 L_A7_n1 L nd --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 L_A7_n2 L nd --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 L_A7_n3 L nd --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 L_A7_n4 L nd --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 L_A7_n5 L nd --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 L_A7_n6 L nd --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 W_A7 W d --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 W_A7_n1 W nd --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 W_A7_n2 W nd --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 L_B L d --y0loc 3 --ue be --uf_res --uf_w
+s2 L_B_n1 L nd --y0loc 3 --ue be --uf_res --uf_w
+s2 L_B_n2 L nd --y0loc 3 --ue be --uf_res --uf_w
+s2 L_B_n3 L nd --y0loc 3 --ue be --uf_res --uf_w
+s2 L_B_n4 L nd --y0loc 3 --ue be --uf_res --uf_w
+s2 L_B_n5 L nd --y0loc 3 --ue be --uf_res --uf_w
+s2 L_B_n6 L nd --y0loc 3 --ue be --uf_res --uf_w
+s2 W_B W d --y0loc 3 --ue be --uf_res --uf_w
+s2 W_B_n1 W nd --y0loc 3 --ue be --uf_res --uf_w
+s2 W_B_n2 W nd --y0loc 3 --ue be --uf_res --uf_w
+s2 L_AB3 L d --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 L_AB3_n1 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 L_AB3_n2 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 L_AB3_n3 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 L_AB3_n4 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 L_AB3_n5 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 L_AB3_n6 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 W_AB3 W d --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 W_AB3_n1 W nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 W_AB3_n2 W nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 L_C1 L d --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 L_C1_n1 L nd --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 L_C1_n2 L nd --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 L_C1_n3 L nd --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 L_C1_n4 L nd --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 L_C1_n5 L nd --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 L_C1_n6 L nd --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 W_C1 W d --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 W_C1_n1 W nd --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 W_C1_n2 W nd --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 L_C2 L d --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 L_C2_n1 L nd --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 L_C2_n2 L nd --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 L_C2_n3 L nd --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 L_C2_n4 L nd --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 L_C2_n5 L nd --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 L_C2_n6 L nd --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 W_C2 W d --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 W_C2_n1 W nd --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 W_C2_n2 W nd --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 L_C1j L d --ksplit 1 --y0loc 3 --ue be
+s2 L_C1j_n1 L nd --ksplit 1 --y0loc 3 --ue be
+s2 L_C1j_n2 L nd --ksplit 1 --y0loc 3 --ue be
+s2 L_C1j_n3 L nd --ksplit 1 --y0loc 3 --ue be
+s2 L_C1j_n4 L nd --ksplit 1 --y0loc 3 --ue be
+s2 L_C1j_n5 L nd --ksplit 1 --y0loc 3 --ue be
+s2 L_C1j_n6 L nd --ksplit 1 --y0loc 3 --ue be
+s2 W_C1j W d --ksplit 1 --y0loc 3 --ue be
+s2 W_C1j_n1 W nd --ksplit 1 --y0loc 3 --ue be
+s2 W_C1j_n2 W nd --ksplit 1 --y0loc 3 --ue be
+s2 L_C3j L d --ksplit 3 --y0loc 3 --ue be
+s2 L_C3j_n1 L nd --ksplit 3 --y0loc 3 --ue be
+s2 L_C3j_n2 L nd --ksplit 3 --y0loc 3 --ue be
+s2 L_C3j_n3 L nd --ksplit 3 --y0loc 3 --ue be
+s2 L_C3j_n4 L nd --ksplit 3 --y0loc 3 --ue be
+s2 L_C3j_n5 L nd --ksplit 3 --y0loc 3 --ue be
+s2 L_C3j_n6 L nd --ksplit 3 --y0loc 3 --ue be
+s2 W_C3j W d --ksplit 3 --y0loc 3 --ue be
+s2 W_C3j_n1 W nd --ksplit 3 --y0loc 3 --ue be
+s2 W_C3j_n2 W nd --ksplit 3 --y0loc 3 --ue be
+s2 L_off_n1 L nd --nrec
+s2 L_off_n2 L nd --nrec
+s2 L_off_n3 L nd --nrec
+s2 L_off_n4 L nd --nrec
+s2 L_off_n5 L nd --nrec
+s2 L_off_n6 L nd --nrec
+s2 L_off_n7 L nd --nrec
+s2 L_off_n8 L nd --nrec
+s2 L_off_n9 L nd --nrec
+s2 L_off_n10 L nd --nrec
+s2 L_off_n11 L nd --nrec
+s2 L_off_n12 L nd --nrec
+s2 L_off_n13 L nd --nrec
+s2 L_off_n14 L nd --nrec
+s2 L_off_n15 L nd --nrec
+s2 L_off_n16 L nd --nrec
+s2 L_off_n17 L nd --nrec
+s2 L_off_n18 L nd --nrec
+s2 L_off_n19 L nd --nrec
+s2 L_off_n20 L nd --nrec
+s2 L_loc_n1 L nd --y0loc 3
+s2 L_loc_n2 L nd --y0loc 3
+s2 L_loc_n3 L nd --y0loc 3
+s2 L_loc_n4 L nd --y0loc 3
+s2 L_loc_n5 L nd --y0loc 3
+s2 L_loc_n6 L nd --y0loc 3
+s2 L_ube_n1 L nd --ue be --uf_res
+s2 L_ube_n2 L nd --ue be --uf_res
+s2 L_ube_n3 L nd --ue be --uf_res
+s2 L_ube_n4 L nd --ue be --uf_res
+s2 L_ube_n5 L nd --ue be --uf_res
+s2 L_ube_n6 L nd --ue be --uf_res
+s2 L_d_n1 L nd --y0loc 3 --ue be --uf_res
+s2 L_d_n2 L nd --y0loc 3 --ue be --uf_res
+s2 L_d_n3 L nd --y0loc 3 --ue be --uf_res
+s2 L_d_n4 L nd --y0loc 3 --ue be --uf_res
+s2 L_d_n5 L nd --y0loc 3 --ue be --uf_res
+s2 L_d_n6 L nd --y0loc 3 --ue be --uf_res
+s2 L_d1_n1 L nd --y0loc 3 --ue be
+s2 L_d1_n2 L nd --y0loc 3 --ue be
+s2 L_d1_n3 L nd --y0loc 3 --ue be
+s2 L_d1_n4 L nd --y0loc 3 --ue be
+s2 L_d1_n5 L nd --y0loc 3 --ue be
+s2 L_d1_n6 L nd --y0loc 3 --ue be
+s2 W_d_n1 W nd --y0loc 3 --ue be --uf_res
+s2 W_off_n1 W nd
+s2 W_d_n2 W nd --y0loc 3 --ue be --uf_res
+s2 W_off_n2 W nd
+s2 zL_A1 L z --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 zW_A1 W z --y0loc 3 --ue be --uf_res --ue_loc 1
+s2 zL_A2 L z --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 zW_A2 W z --y0loc 3 --ue be --uf_res --ue_loc 2
+s2 zL_A4 L z --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 zW_A4 W z --y0loc 3 --ue be --uf_res --ue_loc 4
+s2 zL_A3 L z --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 zW_A3 W z --y0loc 3 --ue be --uf_res --ue_loc 3
+s2 zL_A7 L z --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 zW_A7 W z --y0loc 3 --ue be --uf_res --ue_loc 7
+s2 zL_B L z --y0loc 3 --ue be --uf_res --uf_w
+s2 zW_B W z --y0loc 3 --ue be --uf_res --uf_w
+s2 zL_AB3 L z --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 zW_AB3 W z --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3
+s2 zL_C1 L z --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 zW_C1 W z --ksplit 1 --y0loc 3 --ue be --uf_res
+s2 zL_C2 L z --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 zW_C2 W z --ksplit 2 --y0loc 3 --ue be --uf_res
+s2 zL_C1j L z --ksplit 1 --y0loc 3 --ue be
+s2 zW_C1j W z --ksplit 1 --y0loc 3 --ue be
+s2 zL_C3j L z --ksplit 3 --y0loc 3 --ue be
+s2 zW_C3j W z --ksplit 3 --y0loc 3 --ue be
+s2 zW_off W z
+s2 zW_d W z --y0loc 3 --ue be --uf_res

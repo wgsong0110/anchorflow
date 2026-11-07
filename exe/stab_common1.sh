@@ -54,7 +54,8 @@ run() {   # run 이름 씬 방식 카드 플래그
 SPEC=$(grep -v '^#' exe/common1_spec.txt | awk -v s=$STG '$1==s')
 # ---- 판정·비결정 판 (카드마다 하나)
 while read -r st n s md x; do
-  [ -z "$n" ] && continue; [ $md = z ] && continue
+  [ -z "$n" ] && continue; [ $md = z ] && continue; [ -f $O/$n/summary.json ] && continue
+  while [ $(jobs -rp | wc -l) -ge $NG ]; do sleep 5; done                               # 기다리는 판은 카드 수까지만
   ( g=$(claim_wait $BASHPID); run $n $s $md $g "$x"; rm -f $CL/$g ) & sleep 3
 done <<< "$SPEC"
 wait
