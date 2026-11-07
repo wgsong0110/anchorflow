@@ -38,7 +38,13 @@ dg_of() { case $1 in ks3|ks3r|ks5r|be) echo "$DG";; *) echo "$DG --frec 15";; es
 VARS="ks3 base noeb noy0u noend noinv noie ube ubeall be ua0"
 [ "$STG" = b ] && VARS="ks5r ks3r uber ua0r"
 log() { echo "[$(date '+%F %T')] $*" >> $O/wmk1fix.log; rclone copyto $O/wmk1fix.log $R/wmk1fix.log -q; }
-up() { rclone copy $O/$1 $R/$1 -q --transfers 8; }
+UPF="--transfers 8 --s3-upload-concurrency 16 --s3-chunk-size 64M"                       # 큰 덤프 (pred.pt 6.6 GB) 를 여러 조각 동시에 (기본 4 조각·5 MB 는 파일당 약 4 MB/s 였음)
+up() { rclone copy $O/$1 $R/$1 -q $UPF; }
+upr() {   # upr 이름: 올리고 R2 확인 차이 0 이면 노드 덤프 사본 지움 (카드는 이미 놓음)
+  local n=$1; up $n
+  local d=$(rclone check $O/$n $R/$n --one-way --size-only 2>&1 | grep -c ERROR)
+  if [ "$d" = 0 ] && [ -f $O/$n/pred.pt ]; then echo "pred.pt $(stat -c %s $O/$n/pred.pt) R2 확인 차이 0 -> 노드 사본 지움 $(date '+%F %T')" > $O/$n/pred_on_r2.txt; rm -f $O/$n/pred.pt; up $n; fi
+  log "$n R2 확인 차이 $d"; }
 CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL
 NG=$(nvidia-smi -L | wc -l)
 claim() { local me=$1 g f p
@@ -107,18 +113,16 @@ run() {   # run 이름 판 카드
   log "$n 카드 $g 시작"
   CUDA_VISIBLE_DEVICES=$g timeout 7200 $PY -u $c --out $O/$n < /dev/null > $O/$n/log.txt 2>&1
   local rc=$?
-  log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
-  up $n
-  local d=$(rclone check $O/$n $R/$n --one-way --size-only 2>&1 | grep -c ERROR)
-  if [ "$d" = 0 ] && [ -f $O/$n/pred.pt ]; then echo "pred.pt $(stat -c %s $O/$n/pred.pt) R2 확인 차이 0 -> 노드 사본 지움 $(date '+%F %T')" > $O/$n/pred_on_r2.txt; rm -f $O/$n/pred.pt; up $n; fi
-  log "$n R2 확인 차이 $d"; }
+  log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"; }
 lane() { local me=$BASHPID i ln g
   while :; do
     i=$(flock $O/qpos$STG.lock bash -c "i=\$(cat $O/qpos$STG); echo \$((i + 1)) > $O/qpos$STG; echo \$i")
     ln=$(sed -n "$((i + 1))p" $Q); [ -n "$ln" ] || break
     set -- $ln; [ -f $O/$1/summary.json ] && continue
     g=$(claim_wait $me); run $1 $2 $g; rm -f $CL/$g
-  done; }
+    upr $1 &                                                                          # 올리기는 카드를 놓은 뒤 뒤에서
+  done; wait; }
+for d in $O/*/; do n=$(basename $d); [ -f $O/$n/summary.json ] && [ -f $O/$n/pred.pt ] && [ ! -f $O/$n/pred_on_r2.txt ] && grep -qx "$n .*" $Q && upr $n & done   # 앞 실행에서 못 올린 덤프
 for l in $(seq 1 $NG); do lane & sleep 2; done
 wait
 log "판정 판 끝 $STG"

@@ -24,7 +24,7 @@ dg_of() { case $1 in                                                            
   B) echo "--det --pdiag --qjd --fhash";;
 esac; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/reg_$VN.log; rclone copyto $O/reg_$VN.log $R/reg_$VN.log -q; }
-up() { rclone copy $O/$1 $R/$1 -q --transfers 8; }
+up() { rclone copy $O/$1 $R/$1 -q --transfers 8 --s3-upload-concurrency 16 --s3-chunk-size 64M; }
 CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL
 NG=$(nvidia-smi -L | wc -l)
 claim() { local me=$1 g f p
