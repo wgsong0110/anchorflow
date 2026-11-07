@@ -147,7 +147,7 @@ class MatRT(ADET.DetMixin):
         s.extra_p = (("ysp", "ljp", "alp") if s.aq else ()) + (("pvb", "pvc", "pmk") if s.pvb is not None else ())
         s.tbuf = torch.zeros(1, device=s.dev, dtype=torch.float32)
         src = mat_module_src(getattr(s, "mg2", False))
-        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False), gqm=getattr(s, "gqm", False)), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False), gqm=getattr(s, "gqm", False), fpi=getattr(s, "fpi", False)), options=("--std=c++14",))
         s._src0 = src
         s.fn = {}
         s.ao_ready = True
@@ -276,7 +276,7 @@ class MatRT(ADET.DetMixin):
         if s.has_pbc and s.ar:
             s.k("mt_akb", capN, (P(IP), P(s.kb), P(s.ak)), b=256)
         s.dcopy(s.Ust[kstep], s.U)
-        if kstep < nst - 1:
+        if kstep < nst - 1 or getattr(s, "fpi", False):                                # 절 CM22 --fp_interp: 마지막 걸음도 가우스 점에서 커밋 (RM; plasticine 은 상태 Sq 도) -- 끄면 예전 그대로
             if s.aq:
                 s.k("aq_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), i32(s._mat), P(s.prm), P(s.Sq), f(s.dt)))
             else:
@@ -290,6 +290,11 @@ class MatRT(ADET.DetMixin):
                               P(s.ysp), P(s.ljp), P(s.alp), P(s.cnt)))
         else:
             s.k("ao_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.Ust), i32(s.K), i32(s.capN), P(s.vk), f(s.cdp), P(s.x), P(s.v), P(s.F), P(s.cnt)))
+        if getattr(s, "fpi", False):                                                   # 절 CM22 (절 CM20 정의를 재질 판에): 입자 F (+ plasticine 은 (ys, logJp, al)) = 프레임 끝 가우스 점 (마지막 걸음 커밋 RM 뒤) 값의 칸 안 삼선형 보간
+            capQ = s.capQc * 8                                                         # 모래 (mat 2) 는 소성 상태가 탄성 F 하나뿐 (PG Drucker-Prager 투영, 경화 변수 없음) -> F 교체가 곧 소성 상태 교체
+            s.k("fpi_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), P(s.Fe)))
+            s.k("fpi_p", N, (i32(N), P(IP), P(s.fx), P(s.pcd), P(s.cidx), P(s.Fe), i32(0), i32(0), P(s.F),
+                             P(s.Sq if s.aq else None), P(s.ysp if s.aq else None), P(s.ljp if s.aq else None), P(s.alp if s.aq else None)))
 
     def counts(s):
         o = super().counts()
