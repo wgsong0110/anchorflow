@@ -13,7 +13,7 @@ WMD=/tmp/dkta/ag_data; mkdir -p $WMD
 BASE="exe/fem_ao_rt_sim.py --data $WMD/wm.pt --frames 100 --floor vel --floor_plane 1,1,0.02,0,0,1 --cell 1.5 --mlow 1e-3 --integ mid --ga hht --rho 0.7 --ga_y0ut --tolN 1e-2 --tolP 1e-1 --newton 2 --cg 5 --ls_inv --y0u --y0l --fq_rl --ls_end --gq_mass --elx snh --fl_bar --fl_bst 1 --y0eb --lj_interp --fp_interp --tag wm --K 1"
 DG="--nrec --qjd --jdiag --bar_cnt --erec --ufrec --wi_rec 3,4,5,6"
 atom() { case $1 in
-    base) echo "";; ksit) echo "--ks_it 8,20";; node) echo "--wi node --wi_r 4";; jb) echo "--wi jbar";; noinv) echo "";;
+    base) echo "";; d) echo "";; ksit) echo "--ks_it 8,20";; node) echo "--wi node --wi_r 4";; jb) echo "--wi jbar";; noinv) echo "";;
     *) echo "??$1";; esac; }
 cmd_of() {   # 판 이름 -> 명령 (진단 없이); jb·noinv 는 --ls_inv 뺌
   local c="$BASE --ksplit 3" x

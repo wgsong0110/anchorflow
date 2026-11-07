@@ -9,7 +9,7 @@ import os
 import sys
 
 O = sys.argv[1]
-NAME = {"base": "기준 판 (--ksplit 3)", "ksit": "쪼갠 시도 뉴턴 8 x PCG 20", "node": "(a) 노드별 보폭", "jb": "(b) 필터 대신 걸린 점만 J 장벽", "noinv": "(c) 필터 끔 (SNH)"}
+NAME = {"base": "기준 판 (--ksplit 3)", "d": "진단 다시 (빈 팔분 높이)", "ksit": "쪼갠 시도 뉴턴 8 x PCG 20", "node": "(a) 노드별 보폭", "jb": "(b) 필터 대신 걸린 점만 J 장벽", "noinv": "(c) 필터 끔 (SNH)"}
 
 
 def js(p):
