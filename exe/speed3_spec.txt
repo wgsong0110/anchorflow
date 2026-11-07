@@ -1,0 +1,58 @@
+# 절 CM39 묶음 speed3 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_speed3.sh; 'D' = 공통 후보 D 플래그, 수박 M3 은 + --sp2 31)
+# D = --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1 (절 CM37 C + 절 CM38 X3c)
+# s1 (1) 프로파일·단독 시간 D, wolf 입자 이탈 진단 (u), 덜 풀린 걸음 뉴턴 상한 탐침 (--newton 5·4·3, 결과 바뀜; 시간 예산 설계용)
+s1 uW1 W u D
+s1 uW2 W u D
+s1 uW3 W u D
+s1 uW4 W u D
+s1 uW5 W u D
+s1 uW6 W u D
+s1 L_n5 L d D --newton 5
+s1 L_n4 L d D --newton 4
+s1 L_n3 L d D --newton 3
+s1 L_n5_1 L n D --newton 5
+s1 L_n5_2 L n D --newton 5
+s1 L_n5_3 L n D --newton 5
+s1 L_n4_1 L n D --newton 4
+s1 L_n4_2 L n D --newton 4
+s1 L_n4_3 L n D --newton 4
+s1 L_n3_1 L n D --newton 3
+s1 L_n3_2 L n D --newton 3
+s1 L_n3_3 L n D --newton 3
+s1 W_n5 W d D --newton 5
+s1 W_n4 W d D --newton 4
+s1 W_n3 W d D --newton 3
+s1 W_n5_1 W nd D --newton 5
+s1 W_n5_2 W nd D --newton 5
+s1 W_n4_1 W nd D --newton 4
+s1 W_n4_2 W nd D --newton 4
+s1 W_n3_1 W nd D --newton 3
+s1 W_n3_2 W nd D --newton 3
+s1 F_n5 F d D --newton 5
+s1 F_n4 F d D --newton 4
+s1 F_n3 F d D --newton 3
+s1 M_D_1 M3 b D
+s1 M_D_2 M3 b D
+s1 M_n5_1 M3 b D --newton 5
+s1 M_n5_2 M3 b D --newton 5
+s1 M_n4_1 M3 b D --newton 4
+s1 M_n4_2 M3 b D --newton 4
+s1 M_n3_1 M3 b D --newton 3
+s1 M_n3_2 M3 b D --newton 3
+s1 M_n3_3 M3 b D --newton 3
+s1 pL L p D
+s1 pW W p D
+s1 pF F p D
+s1 pB B p D
+s1 pM M3 p D
+s1 zL_D L z D
+s1 zW_D W z D
+s1 zF_D F z D
+s1 zB_D B z D
+s1 zM_D M3 z D
+s1 zL_n5 L z D --newton 5
+s1 zL_n4 L z D --newton 4
+s1 zF_n4 F z D --newton 4
+s1 zW_n4 W z D --newton 4
+s1 zM_n4 M3 z D --newton 4
+s1 zM_n3 M3 z D --newton 3
