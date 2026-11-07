@@ -48,7 +48,7 @@ if [ ! -f $SM/ok ]; then
   for r in K4 fa nc vs K2; do
     HO=$(grep -o '"xh": "[0-9a-f]*"' $SM/${r}_on_o/fem.jsonl 2>/dev/null | tr '\n' ' '); HW=$(grep -o '"xh": "[0-9a-f]*"' $SM/${r}_on_w/fem.jsonl 2>/dev/null | tr '\n' ' ')
     GC=$(grep -o '"gqchk": \[[^]]*\]' $SM/${r}_on_w/fem.jsonl 2>/dev/null | tail -1)
-    if [ -n "$HO" ] && [ "$HO" = "$HW" ] && [ $(echo $HO | wc -w) -eq 4 ]; then MSG="$MSG | $r 해시 같음 $GC"; else OK=0; MSG="$MSG | $r 다름/없음 o[$HO] w[$HW] $(tail -3 $SM/${r}_on_o/log.txt | tr '\n' ' ' | cut -c1-300)"; fi
+    if [ -n "$HO" ] && [ "$HO" = "$HW" ] && [ $(echo "$HO" | grep -o xh | wc -l) -eq 4 ]; then MSG="$MSG | $r 해시 같음 $GC"; else OK=0; MSG="$MSG | $r 다름/없음 o[$HO] w[$HW] $(tail -3 $SM/${r}_on_o/log.txt | tr '\n' ' ' | cut -c1-300)"; fi
   done
   echo "[$(date '+%F %T')] [연기] OK=$OK $MSG" >> $O/gqm.log
   [ $OK = 1 ] || { echo "연기 실패 $(date '+%F %T')" > $O/gqm.END; exit 1; }
