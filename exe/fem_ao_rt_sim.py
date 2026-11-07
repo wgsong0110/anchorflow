@@ -77,6 +77,12 @@ ap.add_argument("--gq_mass", action="store_true", help="절 CM9 (사용자 승�
 ap.add_argument("--gq_chk", action="store_true", help="절 CM9 진단 (결과 불변): 노드 질량·운동량·가속도 몫 합 대 입자 합 상대 차 (fem.jsonl gqchk; --pbc 씬은 뜻 없음)")
 ap.add_argument("--floor_plane", type=str, default="", help="바닥 평면 px,py,pz,nx,ny,nz (주면 config surface_collider 대신; 수박 = GF bounding_box)")
 ap.add_argument("--floor_slip", action="store_true", help="미끄럼 바닥 (들어가는 법선 성분만 고착 몫)")
+ap.add_argument("--fl_bar", action="store_true", help="절 CM21 (사용자 승인 11-07 정의 변경, 재질 판): 장벽 바닥 = 레고 (B) 정의 -- 팔분 표본점 (칸 입자 질량 중심) IPC 거리 장벽 (d̂ = ½ dx_정답, κ = (λ+2μ) V_q / d̂²), 법선 자유·고착은 접선에만, "
+                "보폭 = 뒤집힘 필터와 장벽 실현 가능 (활성 표본점 d > 0) 중 작은 쪽, HHT 고착 가속도 0 은 접선만 (--floor_slip 없이)")
+ap.add_argument("--fl_bst", type=int, default=0, choices=[0, 1], help="절 CM21 (--fl_bar 위): 1 = 띠 고착 (절 AN.21 bst 1: 표본점 d < d̂ 이면 고착 몫 1, 밖 0). 이 실행기는 1 만")
+ap.add_argument("--y0eb", action="store_true", help="절 CM21 (--fl_bar 위, 절 CM8 (B)): 시작점 = U 에서 관성 예측 쪽으로 장벽 에너지가 E(U) 이하인 가장 큰 2^-k (실현 가능 k 부터)")
+ap.add_argument("--bar_cnt", action="store_true", help="절 CM21 진단 (결과 불변, --fl_bar 위): 프레임마다 장벽 걸린 표본점 수 (어느 뉴턴 반복 기울기 위치에서든 활성이고 d < d̂) -> fem.jsonl bc")
+ap.add_argument("--lj_interp", action="store_true", help="절 CM21 (사용자 승인 11-07 정의 변경, 재질 판 수박): 마지막 걸음도 가우스 점에서 커밋 (RM·logJp) 한 뒤 입자 logJp 를 프레임 끝 가우스 점 logJp 의 칸 안 삼선형 보간 (절 CM20 과 같은 가중) 으로 교체. F 는 G2P 누적 그대로")
 ap.add_argument("--ga", choices=["hht", "ga"], default=None, help="HHT-α 또는 generalized-α (절 AN.err3 정의 + 처치 셋: 시작점 걸음 시작 위치, 끝 위치 Newmark 식, 고착·구속 노드 가속도 0)")
 ap.add_argument("--rho", type=float, default=0.7)
 ap.add_argument("--ga_y0ut", action="store_true", help="처치 (a) 끔: 뉴턴 시작점 관성 예측")
@@ -134,6 +140,13 @@ if a.floor == "vel":
         _fp = [float(q) for q in a.floor_plane.split(",")]
         PT = _fp[:3]; NR = np.array(_fp[3:], dtype=np.float64); NR = NR / np.linalg.norm(NR)
     FL = dict(PT=PT, NR=NR.tolist(), PN=float(np.dot(PT, NR)), DXG=DXG, KEX=dt / float(cfg["substep_dt"]), vout=not a.no_vfl_out)
+WBAR = None
+if a.fl_bar:                                                                          # 절 CM21: 장벽 바닥 (새 실행기 --fl_bar --fl_bst 1 --y0eb 와 같은 정의)
+    assert FL is not None and not a.floor_slip and a.fl_bst == 1 and a.ga_y0ut and not a.det, "--fl_bar 는 --floor vel, --floor_slip 없이, --fl_bst 1, --ga_y0ut, 비결정 판"
+    WBAR = dict(NR=FL["NR"], PN=FL["PN"], DH=0.5 * DXG, KS=(float(lam) + 2.0 * float(mu)) / (0.5 * DXG) ** 2, y0eb=a.y0eb)
+    print(f"[절 CM21 장벽 바닥] 평면 {FL['PT']} 법선 {FL['NR']} d̂ {0.5 * DXG:.6g} κ/V {WBAR['KS']:.6g} 띠 고착 bst 1 시작점 y0eb {a.y0eb}", flush=True)
+else:
+    assert not (a.fl_bst or a.y0eb or a.bar_cnt), "--fl_bst·--y0eb·--bar_cnt 는 --fl_bar 위"
 BC = None
 if a.cfg_bc:
     BC = []
@@ -256,7 +269,7 @@ if MATK is not None:                                                            
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
                         floor=FL, damp=DAMP, bc=BC, cdp=1.0, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det,
                         hspec=True, theta=a.theta, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None),
-                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx, dmg=a.dmg, pf_it=a.pf_it, fpi=a.fp_interp)
+                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx, dmg=a.dmg, pf_it=a.pf_it, fpi=a.fp_interp, wbar=WBAR, lji=a.lj_interp, bcnt=a.bar_cnt)
 elif SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
     _sk = {}
@@ -273,6 +286,7 @@ else:
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent,
                  compact=a.ao_fast, warm=a.ao_fast and not a.no_warm, det=a.det)
 assert not a.fp_interp or getattr(S, "fpi", False), "--fp_interp 는 재질 판 (AORTSolver aq 경로) 만"
+assert not (a.fl_bar or a.lj_interp) or MATK is not None, "--fl_bar·--lj_interp 는 재질 판 (AORTSolver) 만"
 if a.dmg:                                                                             # 절 CM19: 처음 손상 d = 0 (cdm) / 이력 H = 0 (pf) -- 재질 7 은 al·ys 를 안 씀
     S.alp.zero_(); S.ysp.zero_()
 if a.nan_step:
@@ -358,6 +372,15 @@ for fi in range(L):
         _fin = torch.isfinite(_dp)
         c["jd"] = dict(q_le0=int((_dq <= 0).sum()), q_nf=int((~torch.isfinite(_dq)).sum()), q_min=float(_dq[torch.isfinite(_dq)].min()) if bool(torch.isfinite(_dq).any()) else None,
                        p_min=float(_dp[_fin].min()) if bool(_fin.any()) else None, p_le0=int((_dp <= 0).sum()), p_lt1e3=int((_dp < 1e-3).sum()), p_nf=int((~_fin).sum()))
+    if FL is not None and int(S.IP[13]) == 0:                                         # 절 CM21 지표 (결과 불변): 바닥 아래 입자 최대 깊이·수 (평면 부호 거리 < 0), 장벽 걸린 표본점, 걸음별 시작점 k
+        _sd = xo.double() @ torch.tensor(FL["NR"], device=xo.device, dtype=torch.float64) - FL["PN"]
+        _sd = _sd[torch.isfinite(_sd)]
+        c["fd"] = dict(depth=float(max(0.0, -float(_sd.min()))) if _sd.numel() else None, nbelow=int((_sd < 0).sum()))
+        if WBAR is not None:
+            if a.bar_cnt:
+                _nq = int(S.IP[12]); _bf = S.bcf[:_nq]; _bm = S.bx[:4 * _nq].view(-1, 4)[:, 3] > 0
+                c["bc"] = dict(hit=int(((_bf & 1) > 0).sum()), nsamp=int(_bm.sum()), hit_cells=int(torch.unique(torch.nonzero((_bf & 1) > 0).flatten() // 8).numel()))
+            c["y0k"] = [int(q) for q in S.y0k[:a.K].cpu()]
     if a.dmg:                                                                         # 절 CM19 (결과 불변): 입자 손상 d (cdm = alp, pf = ysp 노드 d 보간), logJp, 이력 H (pf = alp)
         _okp = torch.isfinite(S.x).all(-1); _dp = (S.alp if a.dmg == "cdm" else S.ysp)[_okp]; _lj = S.ljp[_okp]; _nn_ = max(int(_okp.sum()), 1)
         c["dmg"] = dict(d05=float((_dp > 0.5).sum()) / _nn_, d01=float((_dp > 0.1).sum()) / _nn_, dmean=float(_dp.nan_to_num(0).mean()) if _dp.numel() else None, dmax=float(_dp.nan_to_num(0).max()) if _dp.numel() else None,

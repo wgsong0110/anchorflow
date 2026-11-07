@@ -1163,7 +1163,87 @@ GQ_P2G_OLD = "    if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }\n   
 GQ_P2G_NEW = "    if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }\n    return;                                                                 // 절 CM9 --gq_mass: 노드 몫은 gq_q2n\n    float wx[3][3], dw[3][3];"
 
 
-def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False):
+# ======== 절 CM21 (사용자 승인 11-07 정의 변경, 수박 재질 판): (1) 장벽 바닥 = 레고 (B) 정의 (절 AN.19·AN.21·CM8 (B): 팔분 표본점 IPC 장벽 + 띠 고착 --fl_bst 1 + --y0eb) 를 옛 재질 실행기에,
+#          (2) --lj_interp 입자 logJp 를 프레임 끝 가우스 점 logJp 의 칸 안 삼선형 보간으로 교체 (절 CM20 --fp_interp 와 같은 가중). 끄면 이 소스는 어디에도 들어가지 않는다.
+WB_SRC = r"""
+// ---- 절 CM21 장벽 바닥 (옛 재질 실행기): 표본점 = 팔분 칸 입자 질량 중심 (프레임 시작; 새 실행기 rt_p2g 의 AF_BAR 누적과 같은 식, 여기서는 따로 한 커널) ----
+__global__ void wb_p2q(int N, const int* IP, const float* x, const float* m, const float* fx, const int* pcd, const int* cidx) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N || IP[13]) return;
+    int c = cidx[pcd[p]];
+    int oc = (fx[p*3] >= 1.f ? 4 : 0) + (fx[p*3+1] >= 1.f ? 2 : 0) + (fx[p*3+2] >= 1.f ? 1 : 0);
+    int q = c*8 + oc;
+    for (int a=0;a<3;a++) atomicAdd(&AF_BX[q*4+a], m[p]*x[p*3+a]); atomicAdd(&AF_BX[q*4+3], m[p]);
+}
+// 띠 고착 (절 AN.21 --fl_bst 1): 걸음 시작 관성 예측 y 의 걸음 끝 위치 식에서 표본점 높이 d < d̂ (평면 아래 포함) 이면 고착 몫 1, 밖 0 -> 노드 몫 an (새 실행기 rt_floor_q AF_BAR·AF_BST 1 갈래와 같은 식)
+__global__ void wb_floor_q(const int* IP, const int* cb, const float* BW, const float* mq, const float* y, const float* U, float thinv, float n0, float n1, float n2, float pn, float dh, float* an) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    float bm = AF_BX[q*4+3]; if (!(bm > 0.f)) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float xq[3] = {AF_BX[q*4]/bm, AF_BX[q*4+1]/bm, AF_BX[q*4+2]/bm};
+    for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+        for (int a=0;a<3;a++) { float ye = U[id*3+a] + thinv*(y[id*3+a] - U[id*3+a]); xq[a] += w*ye; } }
+    float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;
+    if (!(d < dh)) return;
+    float mw = mq[q];
+    if (mw > 0.f) for (int o=0;o<27;o++) atomicAdd(&an[ids[o]], BW[oc*27+o]*mw);
+}
+// 보폭 = min(뒤집힘 필터 보폭 SC[14] (aw_pick), 장벽 실현 가능 보폭 2^-kk) -- 재질 판 장벽 (절 CM2 rt_kstep) 을 --ls_inv 와 함께
+__global__ void wb_kmin(const int* kk, double* SC, int has) { double b = (double)ldexpf(1.f, -kk[0]); SC[14] = has ? fmin(SC[14], b) : b; }
+// 진단 (--bar_cnt, 결과 불변): 장벽 기울기와 같은 y 에서 활성이고 d < d̂ 인 표본점 표시 (절 CM10 AF_BCNT 비트 1 과 같은 판정)
+__global__ void wb_cnt(const int* IP, const int* cb, const float* BW, const float* y, const float* U, float thinv, float n0, float n1, float n2, float pn, float dh, int* bcf) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    float bm = AF_BX[q*4+3]; if (!(bm > 0.f) || !AF_BACT[q]) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float xq[3] = {AF_BX[q*4]/bm, AF_BX[q*4+1]/bm, AF_BX[q*4+2]/bm};
+    for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+        for (int a=0;a<3;a++) xq[a] += w*(U[id*3+a] + thinv*(y[id*3+a] - U[id*3+a])); }
+    float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;
+    if (d < dh) bcf[q] |= 1;
+}
+"""
+LJI_SRC = r"""
+// ---- 절 CM21 --lj_interp: 입자 logJp = 프레임 끝 (마지막 걸음 커밋 RM 뒤) 가우스 점 logJp 의 칸 안 삼선형 보간 (절 CM20 fpi_p 와 같은 가중: t_a = clamp((fx_a − (1 − g)) / 2g, 0, 1), 외삽 없음) ----
+__global__ void lji_p(int N, const int* IP, const float* fx, const int* pcd, const int* cidx, const float* Sq, float* ljp) {
+    int p = blockIdx.x*blockDim.x + threadIdx.x;
+    if (p >= N || IP[13]) return;
+    int c = cidx[pcd[p]];
+    if (c < 0) return;
+    const float GG = 0.28867513459481287f;
+    float t[3]; for (int a=0;a<3;a++) t[a] = fminf(fmaxf((fx[p*3+a] - (1.f - GG)) / (2.f*GG), 0.f), 1.f);
+    float s = 0.f;
+    for (int oc=0; oc<8; oc++) {
+        float w = ((oc & 4) ? t[0] : 1.f - t[0]) * ((oc & 2) ? t[1] : 1.f - t[1]) * ((oc & 1) ? t[2] : 1.f - t[2]);
+        if (!(w > 0.f)) continue;
+        s += w*Sq[(size_t)(c*8 + oc)*4+1];
+    }
+    ljp[p] = s;
+}
+"""
+WB_FLN_OLD = "        if (slip) { if (vv > 0.f) { k = 1.f; p = 0; } else p = 3; }        // 미끄럼 바닥 (GF bounding_box): 들어가는 법선 성분만 고착 몫\n"
+WB_FLN_NEW = WB_FLN_OLD + "        p = 1;                                                                 // 절 CM21 장벽 바닥: 법선은 장벽, 고착은 접선에만 (절 AN.19)\n"
+WB_SE_OLD = "    bool st = (anf && mqn[n] > 0.f && anf[n] > 0.f) || (kb && kb[n] < 1.f);\n"
+WB_SE_NEW = "    bool stf_ = anf && mqn[n] > 0.f && anf[n] > 0.f; bool st = kb && kb[n] < 1.f;     // 절 CM21 장벽 바닥: 고착 노드 가속도 0 은 접선 성분만 (새 실행기 rt_ga_end AF_BAR 와 같음)\n"
+WB_SE2_OLD = "        ga[n*3+a] = st ? 0.f : a1;\n    }\n}\n"
+WB_SE2_NEW = "        ga[n*3+a] = st ? 0.f : a1;\n    }\n    if (stf_ && !st) { float an_ = ga[n*3]*WB_N0 + ga[n*3+1]*WB_N1 + ga[n*3+2]*WB_N2; ga[n*3] = an_*WB_N0; ga[n*3+1] = an_*WB_N1; ga[n*3+2] = an_*WB_N2; }\n}\n"
+
+
+def _wb_kernels():
+    """장벽 커널: 새 실행기 BAR_SRC 그대로 + 시작점·보폭 커널 넷 (rt_ga_y0·rt_y0mix·rt_ytry·rt_kstep, 새 실행기 SRC 에서 글자 그대로 잘라 옴) + WB_SRC."""
+    from . import fem_an_rt as ARTN
+    out = [ARTN.BAR_SRC]
+    for nm in ("rt_ga_y0", "rt_y0mix", "rt_ytry"):
+        i = ARTN.SRC.index("__global__ void " + nm + "(")
+        j = ARTN.SRC.index("\n}\n", i) + 3
+        out.append(ARTN.SRC[i:j])
+    i = ARTN.SRC.index("__global__ void rt_kstep(")
+    out.append(ARTN.SRC[i:ARTN.SRC.index("\n", i) + 1])
+    return "\n".join(out) + WB_SRC
+
+
+def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, lji=False):
     s = ART.SRC.rstrip()
     if gqm:                                                                          # 절 CM9 --gq_mass: rt_p2g 노드 몫 빼고 (가우스 점 경로 커널은 끝에 덧붙임)
         from .fem_an_det import _sub_in
@@ -1187,7 +1267,16 @@ def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False):
     head = "#include <cuda_fp16.h>\n" + head
     assert dmg in ("", "cdm", "pf") and (not dmg or elx == "snh"), (dmg, elx)      # 절 CM19: 손상 (cdm = AF_DMG 1, pf = AF_DMG 2) 은 SNH 판 위에만; "" 이면 소스 글자 그대로
     assert elx in ("", "jbar", "snh"), elx                                          # 절 CM13 (재질 판 수박): jbar = J 로그 장벽 (AF_JBAR), snh = Stable Neo-Hookean 탄성 (AF_SNH); "" 이면 소스 글자 그대로
-    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg], 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + (_fpi_src() if fpi else "") + "\n}\n"
+    ao = AO_SRC
+    wbh = ""
+    if bar is not None:                                                              # 절 CM21 장벽 바닥: ao_floor_n 법선 자유 (p 1), HHT 고착 가속도 0 은 접선만; 표본점 버퍼 전역 + 장벽 커널 (끄면 소스 글자 그대로)
+        for o_, n_ in ((WB_FLN_OLD, WB_FLN_NEW), (WB_SE_OLD, WB_SE_NEW), (WB_SE2_OLD, WB_SE2_NEW)):
+            assert ao.count(o_) == 1, o_
+            ao = ao.replace(o_, n_, 1)
+        nr_ = [float(q) for q in bar["NR"]]
+        wbh = ("\n__device__ float* AF_BX;\n__device__ float* AF_BPG;\n__device__ float* AF_BPH;\n__device__ int* AF_BACT;\n__device__ int AF_BDET;"
+               "\n#define WB_N0 %.9ef\n#define WB_N1 %.9ef\n#define WB_N2 %.9ef" % tuple(nr_))
+    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg] + wbh, 1) + _pl_funcs() + _mv_half(DET.det_ao(ao)) + DET.det_ao(ao) + _bench_variants(ao) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + (_fpi_src() if fpi else "") + (_wb_kernels() if bar is not None else "") + (LJI_SRC if lji else "") + "\n}\n"
     return _skipify(r) if tol else r
 
 
@@ -1204,13 +1293,17 @@ def _gq_src():
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", dmg="", pf_it=30, fpi=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", dmg="", pf_it=30, fpi=False, wbar=None, lji=False, bcnt=False, **kw):
         s.elx = str(elx)                                                                # 절 CM13: 수박 탄성 확장 ("" 끔, jbar, snh)
         s.dmg, s.pf_it = str(dmg), int(pf_it)                                           # 절 CM19: 손상 ("" 끔, cdm, pf), 위상장 PCG 반복 수
         assert not (s.dmg and det), "--dmg 는 비결정 판만"
         s.gqm = bool(gqm)                                                               # 절 CM9 (정의 변경): 노드 질량·운동량·가속도 몫을 가우스 점에서
         s.fpi = bool(fpi)                                                               # 절 CM20 (정의 변경): 마지막 걸음도 가우스 점 커밋 (RM) 뒤 입자 F·재질 상태 = 프레임 끝 가우스 점 값의 칸 안 삼선형 보간
         assert not (s.fpi and (dmg or det)), "--fp_interp 는 손상 없는 비결정 판만"
+        s.wbar = wbar                                                                   # 절 CM21: 장벽 바닥 (None 끔; dict NR·PN·DH·KS·y0eb) -- 레고 (B) 정의 (장벽 + 띠 고착 bst 1 + --y0eb)
+        s.lji = bool(lji)                                                               # 절 CM21: 입자 logJp = 프레임 끝 가우스 점 logJp 보간 (마지막 걸음도 가우스 점 커밋)
+        s.bcnt = bool(bcnt) and wbar is not None                                        # 절 CM21 진단 (결과 불변): 장벽 걸린 표본점 표시
+        assert not ((wbar is not None or s.lji) and (dmg or det)), "--fl_bar·--lj_interp 는 손상 없는 비결정 판만"
         assert not (s.gqm and det), "--gq_mass 는 이 실행기에서 비결정 판만"
         s.fqrl, s.lsend = bool(fqrl), bool(lsend)                                        # 절 AS: F_q 유클리드 대체 조건, 걸음 끝 변위 U_{n+1} 에서도 J > 0
         s.vfill = bool(vfill)
@@ -1255,7 +1348,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
         s.ao_ready = True
@@ -1316,6 +1409,11 @@ class AORTSolver(DET.DetMixin):
         s.Sa = Z(s.capQc * 32); s.Sc = Z(s.capQc * 4); s.Sq = Z(s.capQc * 32)
         s.vm = Z(s.capN, 3); s.cm = Z(s.capN, 3)
         s.Fe = Z(s.capQc * 8, 28) if getattr(s, "fpi", False) else None             # 절 CM20: 프레임 끝 가우스 점 R·log S·X·뒤집힘
+        if getattr(s, "wbar", None) is not None:                                      # 절 CM21 장벽 바닥: 표본점 (질량 x 위치, 질량), 활성, 노드 스칼라, 시작점 보관, 보폭 k
+            I = lambda *sh: torch.zeros(*sh, device=s.dev, dtype=torch.int32)
+            s.bx = Z(s.capQc * 8 * 4); s.bact = I(s.capQc * 8); s.bpg = Z(s.capQc * 8); s.bph = Z(s.capQc * 8); s.bcf = I(s.capQc * 8)
+            s.bGn = Z(s.capN); s.bKn = Z(s.capN); s.wbyc = Z(s.capN, 3); s.ySv = Z(s.capN, 3); s.eS = Z(s.capN, 3)
+            s.kk = I(2); s.bE = torch.zeros(4, device=s.dev, dtype=torch.float64); s.y0k = I(max(s.K, 1))
         if getattr(s, "gqm", False):                                                   # 절 CM9: 팔분 점·칸 질량 가중 속도·가속도 합
             s.gqP = Z(s.capQc * 8 * 6); s.gqC = Z(s.capQc * 6)
         s.awez = Z(s.capN, 3); s.awyb = Z(s.capN, 3); s.awdy = Z(s.capN, 3); s.awtd = Z(s.capN, 3)                     # 절 AS 시작점 (--y0z)
@@ -1333,6 +1431,9 @@ class AORTSolver(DET.DetMixin):
     def bind_act(s):
         g = s.mod.get_global("AO_ACT")
         ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(s.act.data_ptr())
+        if getattr(s, "wbar", None) is not None and hasattr(s, "bx"):                 # 절 CM21: 장벽 표본점 버퍼 전역 (다시 할당 뒤마다)
+            for nm, t in (("AF_BX", s.bx), ("AF_BPG", s.bpg), ("AF_BPH", s.bph), ("AF_BACT", s.bact)):
+                g = s.mod.get_global(nm); ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(t.data_ptr())
         s.det_bind()
 
     def set_bc(s, t):
@@ -1369,6 +1470,12 @@ class AORTSolver(DET.DetMixin):
             if s.ga is not None:
                 s.k("ao_azero", N, (i32(N), P(s.trel), P(s.tbuf), P(s.pa)))
         s.k("rt_p2g", N, (i32(N), P(s.x), P(s.v), P(s.F), P(s.m), P(s.vol), P(s.Np), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.mn), P(s.mv)))
+        WB = s.wbar
+        if WB is not None:                                                             # 절 CM21: 표본점 = 팔분 칸 입자 질량 중심 (프레임 시작 위치)
+            s.zf(s.bx, 12, 4)
+            if s.bcnt:
+                s.zf(s.bcf)
+            s.k("wb_p2q", N, (i32(N), P(IP), P(s.x), P(s.m), P(s.fx), P(s.pcd), P(s.cidx)))
         if s.gqm:                                                                      # 절 CM9: 입자 -> 팔분 점·칸 운동량 (가속도) 합
             s.k("gq_p2q", N, (i32(N), P(s.v), P(s.m), P(s.pa if s.ga is not None else None), P(s.fx), P(s.pcd), P(s.cidx), P(IP), P(s.gqP), P(s.gqC)))
         s.k("rt_gauss", capQ, (P(IP), P(s.Aacc), P(s.Cacc), P(s.badq), P(s.badc), P(s.cb), P(s.A), P(s.BW), P(s.Fq), P(s.Vq), P(s.mq), P(s.xq0), P(s.mqn), P(s.nbad)))
@@ -1437,7 +1544,11 @@ class AORTSolver(DET.DetMixin):
                 s.k("ao_step0_ga", capN, (P(IP), P(s.U), P(s.vk), P(s.gaA), f(s.dt), f(c["am"]), f(c["af"]), f(c["gm"]), f(c["be"]), f(s.tau), *[f(q) for q in s.g], P(s.Ut), P(s.z0), P(s.y)), b=256)
             else:
                 s.k("rt_step0", capN, (P(IP), P(s.U), P(s.vk), f(s.tau), f(s.beta), *[f(q) for q in s.g], P(s.fixd), P(s.vbc), P(s.Ut), P(s.z0), P(s.y)), b=256)
-            if FL:
+            thv = f((1.0 / (1.0 - s.ga_c["af"])) if s.ga is not None else ((1.0 / s.th) if s.th is not None else (2.0 if s.mid else 1.0)))
+            if FL and WB is not None:                                                  # 절 CM21: 띠 고착 (AN.21 bst 1) -- 관성 예측 위치에서 표본점 d < d̂ 이면 몫 1
+                s.zf(s.an, 9, 1)
+                s.k("wb_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.mq), P(s.y), P(s.U), thv, *[f(q) for q in nr], f(WB["PN"]), f(WB["DH"]), P(s.an)))
+            elif FL:
                 s.zf(s.an, 9, 1)
                 s.k("rt_floor_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.xq0), P(s.mq), P(s.y), P(s.U), f((1.0 / (1.0 - s.ga_c["af"])) if s.ga is not None else ((1.0 / s.th) if s.th is not None else (2.0 if s.mid else 1.0))), *[f(q) for q in FL["PT"]], *[f(q) for q in nr],
                                          f(FL["PN"]), f(FL["DXG"]), P(s.an)))
@@ -1446,6 +1557,19 @@ class AORTSolver(DET.DetMixin):
             s.k("ao_floor_n", capN, (P(IP), P(s.an), P(s.mqn), f(FL["KEX"] if FL else 1.0), i32(1 if FL else 0), i32(1 if (FL and FL["vout"]) else 0), f(s.al), *[f(q) for q in nr],
                                      P(s.fixd), P(s.vbc), P(s.U), f(s.tau), P(s.Ut), P(s.z0), P(s.y), P(s.sk), P(s.pm), P(s.yh), P(s.eta),
                                      P(s.kb if s.has_pbc else None), P(s.mn), f(s.mthr), i32(1 if (s.ga is not None and s.ga.get("y0uk", True)) else 0), P(s.vm if s.pvb is not None else None), i32(1 if s.slip else 0)), b=256)
+            if WB is not None:                                                         # 절 CM21 = 새 실행기 장벽 판 시작점 (절 CM8 (B)): ŷ 보관 -> y = U -> U 에서 활성 판정 -> 실현 가능 k0 -> --y0eb 장벽 에너지 기준 β -> 섞기
+                BA = (*[f(q) for q in nr], f(WB["PN"]), f(WB["DH"]), f(WB["KS"]))
+                s.ySv.copy_(s.y); s.eS.copy_(s.eta)
+                s.k("rt_ga_y0", capN, (P(IP), P(s.U), P(s.yh), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.y)), b=256)
+                s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), thv, *BA, i32(0), P(s.bGn), P(s.bKn), P(s.bE)))
+                s.zf(s.kk)
+                s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.ySv), P(s.U), thv, *[f(q) for q in nr], f(WB["PN"]), P(s.kk)))
+                if WB.get("y0eb", True):
+                    s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
+                    s.k("rt_bar_y0e", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.ySv), P(s.U), thv, *BA, P(s.kk), P(s.SC), i32(59)))
+                    s.k("rt_y0epick", 1, (P(s.SC), P(s.kk), i32(59)), b=1)
+                s.y0k[kstep:kstep + 1].copy_(s.kk[:1])                                 # 진단: 걸음별 시작점 k (1000 = β 0)
+                s.k("rt_y0mix", capN, (P(IP), P(s.kk), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eS), P(s.eta), P(s.y)), b=256)
             if s.y0z:                                                                  # 절 AS 시작점: y_z (영속도 위치) 에서 관성 시작점 쪽으로 뒤집힘 없는 최대 2^-k
                 s.k("aw_y0z_a", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.U if s.y0u else s.z0), P(s.y), P(s.awez), P(s.awyb), P(s.awdy), P(s.mn), f(s.mthr), i32(1 if s.y0l else 0)), b=256)
                 s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.awyb), P(s.awdy), P(s.awk)) + s._aw_end())
@@ -1466,6 +1590,12 @@ class AORTSolver(DET.DetMixin):
                 else:
                     s.k("ao_elem_s" if s.hspec else "ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8 | (128 if s.hpack else 0) | (256 if s.bdsh else 0) | (512 if s.h16 else 0)), P(s.f), P(s.H), i32(capQ), P(s.B),
                                           P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None)))
+                if WB is not None:                                                     # 절 CM21 장벽 기울기·덩어리 헤시안 (절 AN.19 그대로)
+                    s.zf(s.bGn, 9, 1); s.zf(s.bKn, 9, 1)
+                    s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), thv, *BA, i32(1), P(s.bGn), P(s.bKn), P(s.bE)))
+                    if s.bcnt:
+                        s.k("wb_cnt", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.U), thv, *[f(q) for q in nr], f(WB["PN"]), f(WB["DH"]), P(s.bcf)))
+                    s.k("rt_bar_n", capN, (P(IP), P(s.bGn), P(s.bKn), *[f(q) for q in nr], P(s.f), P(s.B)), b=256)
                 s.k("rt_grad" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 if D_ is not None:                                                     # 뉴턴 it 기울기
                     c_ = NSDM.code(kstep, it + 1, 0); D_.node(s.f, D_.mF, c_); D_.sc(c_)
@@ -1475,6 +1605,8 @@ class AORTSolver(DET.DetMixin):
                     s.k("ao_tvec", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.td)), b=256)
                     s.zf(s.KTd, 9, 3)
                     s.k(s.mvname(), capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.td), P(s.KTd), i32(capQ)) + ((f(2.0 * s.mu + s.lam),) if s.h16 else ()))
+                    if WB is not None:
+                        s.k("rt_bar_mv", capN, (P(IP), P(s.bKn), *[f(q) for q in nr], P(s.td), P(s.KTd)), b=256)
                     s.k("ao_warm", capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.KTd), P(s.Dinv), P(s.dl), P(s.r), P(s.z), P(s.p), P(s.Tp), P(s.SC)), b=256)
                 if s.nl > 1:
                     if kstep == 0 and it == 0:
@@ -1489,6 +1621,8 @@ class AORTSolver(DET.DetMixin):
                     s.ctl(5, ci)
                     s.zf(s.KTp, 9, 3)
                     s.k(s.mvname(), capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.H), P(s.Tp), P(s.KTp), i32(capQ)) + ((f(2.0 * s.mu + s.lam),) if s.h16 else ()))
+                    if WB is not None:                                                 # 절 CM21: 장벽 덩어리 헤시안 곱 K n (n·Tp)
+                        s.k("rt_bar_mv", capN, (P(IP), P(s.bKn), *[f(q) for q in nr], P(s.Tp), P(s.KTp)), b=256)
                     s.k("rt_ap" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.p), P(s.KTp), P(s.Ap), P(s.SC)), b=256)
                     if s.nl > 1:
                         s.k("rt_cg1m", capN, (P(IP), P(s.SC), P(s.p), P(s.Ap), P(s.dl), P(s.r)), b=256)
@@ -1510,7 +1644,12 @@ class AORTSolver(DET.DetMixin):
                         s.k("aw_tdir", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.dl), P(s.awtd)), b=256)
                     s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), P(s.awtd), P(s.awk)) + s._aw_end())
                     s.k("aw_pick", 1, (P(s.awk), P(s.SC[14:]), P(s.awst)), b=1)
-                s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if s.lsinv else 1)), b=256)
+                if WB is not None:                                                     # 절 CM21 = 절 CM2 재질 판 장벽 보폭: 온 걸음 후보에서 활성 표본점 d > 0 인 최대 2^-k, 뒤집힘 필터 보폭과 작은 쪽
+                    s.k("rt_ytry", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.wbyc)), b=256)
+                    s.zf(s.kk)
+                    s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.wbyc), P(s.U), thv, *[f(q) for q in nr], f(WB["PN"]), P(s.kk)))
+                    s.k("wb_kmin", 1, (P(s.kk), P(s.SC), i32(1 if s.lsinv else 0)), b=1)
+                s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.lsinv or WB is not None) else 1)), b=256)
                 if D_ is not None:                                                     # 뉴턴 it 끝
                     c_ = NSDM.code(kstep, it + 1, 1); D_.node(s.y, D_.mN, c_); D_.q(s.y, c_); D_.sc(c_)
             s.ctl(8)
@@ -1527,7 +1666,7 @@ class AORTSolver(DET.DetMixin):
                     D_.node(s.gaA, D_.mV, c_)
                 D_.q(s.U, c_); D_.jump(kstep)
             s.Ust[kstep].copy_(s.U)
-            if (kstep < s.K - 1 or s.fpi) and s.aq:                                    # 절 CM20 --fp_interp: 마지막 걸음도 가우스 점에서 커밋 (RM·상태 갱신)
+            if (kstep < s.K - 1 or s.fpi or s.lji) and s.aq:                           # 절 CM21 --lj_interp 도 마지막 걸음 가우스 점 커밋 (RM·logJp 갱신)                                    # 절 CM20 --fp_interp: 마지막 걸음도 가우스 점에서 커밋 (RM·상태 갱신)
                 s.k("aq_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt)))
                 if s.dmg == "pf":                                                      # 절 CM19 엇갈림 풀이: 변위 풀이·커밋 (H_q 최대 갱신) 뒤 d 풀이 (시작 추정 = 앞 풀이)
                     s.pf_solve(kstep + 1)
@@ -1541,6 +1680,8 @@ class AORTSolver(DET.DetMixin):
             s.k("aq_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.Ust), i32(s.K), i32(capN), P(s.vk), i32(s.mat), P(s.prm), f(s.dt), P(s.x), P(s.v), P(s.F), P(s.ysp), P(s.ljp), P(s.alp), P(s.cnt)))
             if s.dmg == "pf":                                                          # 절 CM19: 출력용 입자 d (마지막 풀이의 노드 d, 프레임 시작 위치 가중치)
                 s.k("pf_g2p", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.pfd), P(s.ysp)))
+            if s.lji and not s.fpi:                                                    # 절 CM21: 입자 logJp 만 프레임 끝 가우스 점 logJp 보간으로 교체 (F 는 G2P 누적 그대로; --fp_interp 가 켜져 있으면 fpi_p 가 같은 가중으로 logJp 까지 교체)
+                s.k("lji_p", N, (i32(N), P(IP), P(s.fx), P(s.pcd), P(s.cidx), P(s.Sq), P(s.ljp)))
             if s.fpi:                                                                  # 절 CM20: 입자 F·(ys, logJp, al) = 프레임 끝 가우스 점 (커밋 뒤) 값의 칸 안 삼선형 보간 (aq_g2p 의 입자 F·상태를 덮어씀)
                 s.k("fpi_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), P(s.Fe)))
                 s.k("fpi_p", N, (i32(N), P(IP), P(s.fx), P(s.pcd), P(s.cidx), P(s.Fe), i32(1 if s.fqrl else 0), i32(1), P(s.F), P(s.Sq), P(s.ysp), P(s.ljp), P(s.alp)))
