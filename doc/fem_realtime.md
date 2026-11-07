@@ -5874,3 +5874,45 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 영상 (3DGS, 정답 | 끔 | 켬, 2160x900, yuv420p, faststart; ~/vidcache 에서 ffprobe 확인): result/anchorflow/v20261009/fem_fint_lego_A_cmp.mp4 (81 프레임; 끔은 프레임 32 발산 뒤 정지), fem_fint_lego_BK2_cmp.mp4 (81), fem_fint_wm_cmp.mp4 (101; 끔 wm_off_a · 켬 wm_on_a, 32 fps 렌더를 30 으로 다시 읽어 프레임 빠짐 없음 -- exe/fem_vres_compose.py CMP_IN_R).
 - 판정: 입자 F 교체는 **입자 F 퇴화를 없앰** (레고 K 16 밖 모든 판, 수박 두 번 모두 입자 det ≤ 0 0) -> 장벽 K 4·8, (A) 고착, 클램프, 저항 발산이 사라짐. 그러나 (1) 채택 판 K 2 오차 3.58 -> 5.03 % (gq_mass 함께 3.94 -> 4.42), (2) 클램프·저항은 완주해도 오차 42 %, (A) 9.4 %, (3) K 16 은 가우스 점 자체 뒤집힘이 커져 그대로 발산 (29). 시간은 K 2 에서 +0.1~0.2 ms (12.5~12.7 -> 12.7).
 - 이어서 (결정 필요, 안 함): 기본 판으로 할지, 오차 증가 원인 (매 프레임 팔분 평균·삼선형 보간의 평활 몫) 측정.
+
+## CM22. wolf 새 기본 판 -- (B) 장벽 바닥 + 변형 구배 F·재질 상태 가우스 점 보간 교체 (--fp_interp, 절 CM20 정의를 새 실행기 재질 판에; 사용자 지시 11-07) -- 가지 wolfnew (origin/implicit-bspline 11f9b1d + 로컬 가지 fint 합침 8aced5f 위), 커밋 8c48063·b60ce07, 묶음 wolfnew (PBS 잡 133077, ece-a6gpu9, exe/stab_wolfnew.sh)
+### CM22.0 재질 경로에서 --fp_interp 가 무엇을 바꾸는가 (확인과 맞춤)
+- 확인 (커밋 5d9cabd 그대로): wolf (모래)·bread 는 새 실행기 exe/fem_an_rt_sim.py 의 재질 판 (lib/anchorflow/fem_mat_rt.py MatRT, 절 CM2) 으로 도는데, 그 경로에는 --fp_interp 가 **없었다** -- 실행기가 `assert not a.fp_interp` (재질 판), RTSolver.record 의 재질 G2P 앞에도 같은 assert. 절 CM20 의 재질 정의 (마지막 걸음도 가우스 점 커밋 RM 뒤 F·(ys, logJp, al) 교체) 는 옛 재질 실행기 (수박, fem_ao_rt.py) 에만 있었음.
+- 맞춤 (커밋 8c48063, 절 CM20·CM21 (3) 과 같은 규칙): MatRT 에서 켜면
+  (1) **마지막 걸음도 가우스 점에서 커밋** (mat_step_end: 모래 ao_commit, plasticine aq_commit -- X = A_K F_q -> RM -> F_q ← A_K⁻¹ RM(X); plasticine 은 상태 Sq (ys, logJp, al) 도 그 RM 으로 갱신),
+  (2) 입자 G2P (ao_g2p / aq_g2p: 위치·속도·걸음별 입자 RM) 뒤 fpi_q (F_q^end = A_K F_q = 마지막 걸음 RM 뒤 탄성 F, 부호 있는 SVD 로 R·log S·X·뒤집힘) -> fpi_p (입자 칸 2x2x2 가우스 점 삼선형 가중, 외삽 없음) 로 **입자 F 교체**, plasticine 은 같은 가중의 선형 평균으로 **(ys, logJp, al) 교체** -- 입자 RM 결과는 덮어써짐 (RM 은 가우스 점에서 한 번).
+  평균 규칙은 새 실행기 P2G 의 F_q 구성 (rt_gauss) 과 같은 rl 0 (rs_fin 실패 또는 가중 > 0 점 중 뒤집힘 있으면 유클리드 평균), 비유한 가드 없음 -- 레고 (새 실행기) 와 같음.
+- **모래의 소성 상태 = 탄성 F 하나**: 모래 RM (ao_rm3, PG Drucker-Prager 투영 -- 마찰각 상수 cdp, 경화 변수 없음) 은 F 만 읽고 쓰므로 입자 상태는 F^E 뿐 (입자 ys·logJp·al 배열은 plasticine (aq) 에만 있음). 따라서 모래에서는 F 교체가 곧 소성 상태 교체이고 따로 바꿀 변수가 없다.
+- 끄면 같음: 새 코드는 모두 `getattr(s, "fpi", False)` 조건 안 (MatRT build_src 에 fpi=False 면 생성 소스 그대로, 마지막 걸음 커밋·fpi 호출 없음). 실행 대조 = 묶음 b_off 끝 해시 대 절 CM8 cm8j b5_wolf fa318a68b4 (같은 클러스터).
+- 진단: --qjd 를 재질 판에도 허용 (결과 불변, 별도 읽기 전용 모듈) -- 프레임 끝 X_q = F_q + Σ U ⊗ G_qn 의 J; 끔 판은 마지막 걸음 RM 전 시험값, 켬 판은 커밋 RM 뒤 (모래 RM 은 특이값 부호 보존이라 J 부호 같음).
+### CM22.1 묶음 wolfnew (exe/stab_wolfnew.sh, 진입점 R2 lbours/wolfnew/code/go_wolfnew.sh, 표 exe/wolfnew_tab.py -> R2 lbours/wolfnew/wolfnew_table.md, 끝 표식 wolfnew.END, 합성 exe/fem_wolfnew_compose.py 로컬)
+- 명령 = 절 CM8 b 판 wolf (cm8j b5_wolf 그대로: 장벽 --fl_bar --fl_bst 1 --y0eb, HHT ρ 0.8, K 2, 뉴턴 2, PCG 5, εN 1e-2 · εP 1e-1, --pbc --mlow 1e-3, 셀 2, 결정적 --det) + 진단 --hgt --bar_cnt --pdiag --qjd --fhash --dump --dump_F (결과 불변).
+  b_off = 그대로, b_on = + --fp_interp. (A) 가우스 점 고착은 절 CM12 barstick a_wolf (vast, 3.79 %, 덤프) 재사용, (B) 영상은 절 CM10 barx x_wolf 렌더 재사용.
+- 연기 (3 프레임): 끔·켬 프레임 1 해시 같고 3 다름 (wolf 프레임 1·2 는 순차 방출 구속으로 뉴턴 0 이라 2 도 같음 -- 첫 띄움 판단 "2 부터 다름" 은 이 때문에 실패로 멈췄고 판단만 고쳐 다시 띄움).
+- 단독 시간: 판정 명령에서 --det·--hgt·진단·덤프 뺀 비결정 판, 카드 하나에 끔·켬 번갈아 두 번 (그 카드·노드 계산 프로세스 수 10 초마다). 카드는 공용 잡기 규약 (/dev/shm/dkta/anerr_claim).
+### CM22.2 결과 (잡 133077 ece-a6gpu9, 11-07 17:53~17:59 KST, 시작 때 카드 7 장 모두 계산 프로세스 0; 표 R2 lbours/wolfnew/wolfnew_table.md, 끝 표식 wolfnew.END "R2 차이 0")
+- **끄면 같음**: b_off 끝 해시 fa318a68b4 = 절 CM8 cm8j b5_wolf (오차 10.374 %) -> (B) 기존 결과 재사용 확인 (진단 --bar_cnt --pdiag --qjd --fhash·덤프를 켜도 같음). 연기: 끔·켬 프레임 1·2 해시 같고 3 부터 다름.
+- 판정 (결정적, 50 프레임; (A) = 절 CM12 barstick a_wolf 재사용 (vast), 입자 det 은 그 덤프에서, 가우스 점 J·장벽 기록 없음):
+
+| 판 | 결과 · 오차 % | 끝 해시 | 뒤집힌 가우스 점 | 뒤집힌 입자 | 입자 det F 최소 | 장벽 걸린 표본점 프레임 합 · 최대 | N·P /프레임 |
+|---|---|---|---|---|---|---|---|
+| (A) 가우스 점 고착 | 완주 · 3.79 | 10ece2bcf6 | - | 0 | 0.605 | - | 3.8·10.4 |
+| (B) 장벽 (b_off) | 완주 · 10.37 | fa318a68b4 | 1 프레임 · 1 (f26) | 0 | 0.605 | 472 · 42 | 3.8·18.1 |
+| **(B)+보간 교체 (b_on, 새 기본 판)** | **완주 · 10.34** | 093ee433d9 | 0 | 0 | 0.412 | 580 · 43 | 3.8·18.1 |
+
+- 곡선 (mm; 정답 / (A) / (B) / (B)+보간; 프레임별 전체는 표 2 절):
+
+| 프레임 | 질량중심 z | 최대 z | 퍼짐 폭 | 오차 % (A) · (B) · (B)+보간 |
+|---|---|---|---|---|
+| 20 | 758.3 / 801.9 / 859.8 / 859.6 | 1493.1 / 1493.1 / 1495.4 / 1493.1 | 882.5 / 860.0 / 815.0 / 813.5 | 2.43 · 5.40 · 5.39 |
+| 30 | 572.6 / 670.5 / 852.3 / 853.1 | 1112.3 / 1299.9 / 1490.3 / 1485.6 | 1022.2 / 1021.4 / 816.7 / 814.4 | 6.80 · 16.51 · 16.53 |
+| 40 | 535.6 / 600.0 / 840.6 / 837.1 | 664.4 / 860.9 / 1477.2 / 1468.8 | 1148.0 / 1178.5 / 816.2 / 812.6 | 6.36 · 19.38 · 19.18 |
+| 50 | 533.3 / 578.5 / 832.5 / 830.9 | 660.8 / 738.7 / 1467.9 / 1460.7 | 1152.3 / 1335.2 / 815.7 / 812.7 | 6.31 · 19.18 · 19.09 |
+
+- 단독 시간 (비결정, 카드 2 단독 -- 실행 중 그 카드·노드 계산 프로세스 자기 하나; 프레임당 재생 GPU ms 평균 (최대)): 끔 14.77 (15.41) · 14.81 (15.43), 켬 14.98 (15.69) · 14.93 (15.53) -- +0.1~0.2 ms, 최대 ≤ 16.7 ms. 비결정 판 오차 끔 10.37, 켬 10.33·10.34 %.
+- 영상: result/anchorflow/v20261009/fem_wolfnew_cmp.mp4 (3DGS, 정답 | (A) | (B) | (B)+보간 교체, 2400x750, 51 프레임, h264 yuv420p, faststart; ~/vidcache/wolfnew 에서 ffprobe 확인). (A) 칸 = barstick a_wolf 렌더, (B) 칸 = barx x_wolf 렌더 (vast, 그 기계에서 o_wolf 와 비트 같음), (B)+보간 = 이 묶음 b_on 렌더 (노드 카드 2).
+### CM22.3 판정
+- 새 기본 판 ((B) + --fp_interp) 에서도 **wolf 는 무너지지 않는다** -- (B) 와 거의 같음: 오차 10.37 -> 10.34 %, f50 질량 중심 832.5 -> 830.9 mm (정답 533.3, (A) 578.5), 최대 z 1467.9 -> 1460.7 (정답 660.8), 퍼짐 폭 815.7 -> 812.7 (정답 1152.3). 영상에서도 두 칸 모두 늑대 형상 그대로.
+- 퇴화 쪽: (B) 에서도 wolf 는 원래 입자 뒤집힘 0 (가우스 점 1 개 한 프레임) 이라 교체가 없앨 것이 거의 없음 -- 켬은 가우스 점 뒤집힘 0, 입자 det 최소는 0.605 -> 0.412 로 낮아짐 (보간 평균 몫; 원인은 따로 안 봄). 장벽 걸린 표본점 프레임 합 472 -> 580 (최대 42 -> 43).
+- 덜 무너짐의 원인 (절 CM6: 장벽 법선 몫, 반복으로도 느림) 은 입자 F·소성 상태의 운반 방식과 무관함을 뜻함 -- 모래 소성 상태 (탄성 F) 를 가우스 점 RM 값으로 교체해도 곡선이 1 % 안에서 같음.
+- 결과 R2 lbours/wolfnew/ (b_off·b_on: log·summary·fem.jsonl·pred.pt·cmd, b_on vj·h5; z_* 단독 시간; smoke/; wolfnew_table.md·wolfnew_curves.json·wolfnew.log·go.log·wolfnew.END; 첫 띄움 연기 판단 실패 기록 run1_smokefail.{log,END}; code/ bundle·go_wolfnew.sh).
