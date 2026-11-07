@@ -6,6 +6,7 @@
 O=$1; R=$2; VN=$3; VF="${*:4}"; mkdir -p $O
 PY=/home/dkta/.conda/envs/af/bin/python
 [ -n "$VF" ] || { echo "판 플래그 없음 ($VN)" > $O/wmk1fix.FAIL; exit 1; }
+rm -f $O/wmk1fix.FAIL                                                                     # 앞 회귀 연기 실패 표식 (결정적 판 모듈에 판정 커널이 빠졌던 것; fem_an_det 고침) -- 다른 단계 END 에 섞이지 않게
 # 앞 실행 (go 가 판 플래그를 안 넘김) 의 같은 이름 판은 플래그가 명령에 없으면 noflag/ 로 옮김 (지우지 않음, R2 도 같이)
 for s_ in L F W B; do for n in r_${s_}_$VN z_${s_}_${VN}_a z_${s_}_${VN}_b; do
   [ -f $O/$n/cmd.txt ] && ! grep -qF -- "$VF" $O/$n/cmd.txt && { mkdir -p $O/noflag; mv $O/$n $O/noflag/$n; rclone move $R/$n $R/noflag/$n -q; echo "[$(date '+%F %T')] $n 플래그 없는 앞 실행 -> noflag/" >> $O/reg_$VN.log; }
