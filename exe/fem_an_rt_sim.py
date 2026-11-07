@@ -364,7 +364,7 @@ for fi in range(L):
         _win = a.wdiag <= fi + 1 <= a.wdiag_end
         try:
             c["wd"] = KWD.frame(S, fi, a.tolN, _Jp0, _Jp1, _x0o, FL["NR"] if FL else [0.0, 0.0, 1.0], FL["PN"] if FL else 0.0,
-                                out=os.path.join(a.out, f"wd_f{fi + 1}.npz") if _win else None, pos=a.wdiag_pos)
+                                out=os.path.join(a.out, f"wd_f{fi + 1}.npz") if _win else None, wpos=a.wdiag_pos)
         except torch.OutOfMemoryError as _ex:                                          # 절 S.10: 진단 계산만 메모리 부족 (풀이 상태 안 바뀜) -> 이 프레임 진단 없음
             c["wd"] = dict(off=True, oom=str(_ex)[:120])
         torch.cuda.empty_cache()                                                       # 진단이 잡은 메모리를 돌려줌 (풀이 메모리 여유를 원래 판과 같게)

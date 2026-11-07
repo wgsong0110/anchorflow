@@ -22,3 +22,8 @@ echo "$PY -u $c --out $O --wdiag 21 --wdiag_end 22 --wdiag_pos --fhash" | tee $O
 CUDA_VISIBLE_DEVICES=$G timeout 3600 $PY -u $c --out $O --wdiag 21 --wdiag_end 22 --wdiag_pos --fhash < /dev/null > $O/log.txt 2>&1
 echo "rc=$? $(date '+%F %T')" > $O/rc.txt
 kill $SY; rclone copy $O $RR -q; echo 끝 > $O/END; rclone copy $O $RR -q
+# 재현 대조: divwhy (vast) 커밋 c484166 을 이 노드에서 4 프레임 (--fhash 만) -> 해시를 fao 와 위 실행에 대조 (환경 차인지 코드 차인지)
+W=/dev/shm/dkta/impwt/c484166; [ -d $W ] || { mkdir -p $W && git archive c484166 | tar -x -C $W; }
+O2=/dev/shm/dkta/lbours/divwhy_steps/c484166_f4; mkdir -p $O2
+(cd $W && CUDA_VISIBLE_DEVICES=$G timeout 900 $PY -u $c --frames 4 --out $O2 --fhash < /dev/null > $O2/log.txt 2>&1; echo "rc=$?" > $O2/rc.txt)
+rclone copy $O2 $R/lbours/divwhy_steps/c484166_f4 -q

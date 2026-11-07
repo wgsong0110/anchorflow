@@ -81,7 +81,7 @@ def _interp(S, x, snaps, nn, lo, nb, CH=262144):
     return out
 
 
-def frame(S, fi, tolN, Jp0, Jp1, x0o, nr, pn, out=None, pos=False):
+def frame(S, fi, tolN, Jp0, Jp1, x0o, nr, pn, out=None, wpos=False):
     """프레임 fi (0 부터) 뒤 진단. Jp0·Jp1 = 프레임 시작·끝 입자 det F (원래 순서), x0o = 프레임 시작 입자 위치 (원래 순서), nr·pn = 바닥 법선·평면 값.
     돌려줌: fem.jsonl 용 요약 dict. out 이 있으면 원자료 npz."""
     dev = S.x.device
@@ -199,7 +199,7 @@ def frame(S, fi, tolN, Jp0, Jp1, x0o, nr, pn, out=None, pos=False):
             **_s10_nodes(S, nn, nidx, K, nt),
             p_J0=Jp0.float().cpu().numpy(), p_J1=Jp1.float().cpu().numpy(), p_x0=x0o.float().cpu().numpy(), p_q=pq.int().cpu().numpy(),
             cellh=np.array([float(S.A.reshape(3, 3)[:, 0].norm())]), vmed=np.array([vmed]), mmed=np.array([mmed]))
-        if pos:                                                                        # 폭증 프레임 그림 (--wdiag_pos): 시점별 입자·뒤집힌 가우스 점 위치, 노드 월드 위치
+        if wpos:                                                                       # 폭증 프레임 그림 (--wdiag_pos): 시점별 입자·뒤집힌 가우스 점 위치, 노드 월드 위치
             nbl = [int(v) for v in ip[6:9]]
             px = _interp(S, x0o, snaps, nn, lo, nbl)
             qinv = torch.nonzero((Jn[sel] <= 0).any(1)).squeeze(1)                     # sel 안 순번 (q_* 배열 기준)
