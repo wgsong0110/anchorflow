@@ -22,7 +22,7 @@ def er(s):
 
 
 def ms(s):
-    return f"{s['ms_mean']:.2f}/{s['ms_max']:.2f}" if s and s.get("ms_mean") is not None else "-"
+    return (f"{s['ms_mean']:.2f}/{s.get('ms_max', float('nan')):.2f}" + (f" (발산 f{s['diverged']})" if s.get("diverged") else "")) if s and s.get("ms_mean") is not None else "-"
 
 
 def per(n):
