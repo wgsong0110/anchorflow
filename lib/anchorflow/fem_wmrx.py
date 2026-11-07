@@ -42,10 +42,12 @@ def apply(src):
         j = src.index("__global__", i + 10)
         body = src[i:j]
         assert body.count(A1G) == 1 and body.count(A2) == 1, f"--wrx: {nm} 글자가 바뀜"
-        src = src[:i] + ("" if head else HEAD) + body.replace(A1G, A1GN, 1).replace(A2, A2N, 1) + src[j:]
+        src = src[:i] + body.replace(A1G, A1GN, 1).replace(A2, A2N, 1) + src[j:]
         head = True
     assert head, "--wrx: 바닥 노드 커널 없음"
-    return src
+    i0 = min(src.index("__global__ void " + nm + "(") for nm in KNAMES if ("__global__ void " + nm + "(") in src)
+    i0 = src.rfind("\n", 0, i0) + 1                                                   # 전역 선언은 가장 앞 바닥 커널 앞 (재질 판은 mt_floor_n 이 rt_floor_n 보다 앞)
+    return src[:i0] + HEAD + src[i0:]
 
 
 def install(new=False):
