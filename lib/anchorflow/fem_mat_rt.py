@@ -108,6 +108,28 @@ __global__ void mt_h81(const int* IP, const float* Fq, const float* Vq, const fl
 '''
 
 
+# 절 CM27 (e) --pbc_phi (정의 변경, 순차 방출 구속 노드 이동도): 정답은 서브스텝 h 마다 구속 입자 v = 0 -> P2G 로 노드 속도가 (1 − α) 배, 힘 (중력·응력) 은 매 서브스텝 더해짐
+# (v ← (1 − α)(v + a h)). 걸음 dt 동안 λ = −log(1 − α)/h 의 선형 감쇠 dv/dt = a − λ v 의 닫힌 꼴: 일정 힘의 변위 = φ(x) · ½ a dt², φ(x) = 2 (x − 1 + e^−x)/x², x = λ dt
+# (지금 ao_pbc_k 는 k = e^−x 로 힘 몫까지 지움 -- 구속 질량 1 % 노드에서 φ 0.39 대 e^−x 0.02). 같은 표본 합 x = −expo Σ log(1 − α) 에서 k_구속 = φ(x).
+MT_PHI_SRC = r"""
+__global__ void mt_pbc_kphi(const int* IP, const float* mn, const float* acc, int K, int S, int k, float expo, float* kb) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float m = mn[n], lk = 0.f; int KS = K*S;
+    if (m > 0.f) {
+        float suf = 0.f;
+        for (int j=KS-1; j>=k*S; j--) { suf += acc[(size_t)n*KS + j]; if (j < (k+1)*S) { float al = fminf(suf/m, 1.f); lk += log1pf(-al); } }
+    }
+    float x = -lk*expo, r;
+    if (!(x > 0.f)) r = 1.f;
+    else if (x < 1e-3f) r = 1.f - x/3.f + x*x/12.f;
+    else if (x == INFINITY) r = 0.f;
+    else r = 2.f*(x - 1.f + expf(-x))/(x*x);
+    kb[n] = r;
+}
+"""
+
+
 def mat_module_src(mg2):
     src = ADET.det_module_src(mg2).rstrip()
     i = src.rfind("}")
@@ -121,7 +143,8 @@ class MatRT(ADET.DetMixin):
     """재질 판. 추가 인자: mat (2 모래, 5 plasticine, ...), cdp (모래 DP c), prm (재질 매개, fem_pl_cuda.params), visc (등가 점성), trel (입자 구속 끝 시각) / pvb (구속 속도),
     pbc_ns·dt_gt (구속 표본), mthr (거의 빈 노드 질량 문턱), ys0·lj0 (재질 입자 상태 처음 값), vfill, ar (구속 노드 가속도 0), det."""
 
-    def __init__(s, *args, mat=2, cdp=1.0, prm=None, visc=0.0, trel=None, pvb=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, ys0=0.0, lj0=0.0, vfill=True, ar=True, det=False, **kw):
+    def __init__(s, *args, mat=2, cdp=1.0, prm=None, visc=0.0, trel=None, pvb=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, ys0=0.0, lj0=0.0, vfill=True, ar=True, det=False, pbc_phi=False, **kw):
+        s.pbc_phi = bool(pbc_phi)                                                      # 절 CM27 (e): 구속 노드 이동도 φ(x) (끄면 소스·커널 그대로)
         s.det = bool(det)
         s.ao_ready = False
         s._mat, s.cdp, s.prm, s.visc = int(mat), float(cdp), prm, float(visc)
@@ -147,6 +170,10 @@ class MatRT(ADET.DetMixin):
         s.extra_p = (("ysp", "ljp", "alp") if s.aq else ()) + (("pvb", "pvc", "pmk") if s.pvb is not None else ())
         s.tbuf = torch.zeros(1, device=s.dev, dtype=torch.float32)
         src = mat_module_src(getattr(s, "mg2", False))
+        if s.pbc_phi:
+            assert s.has_pbc, "--pbc_phi 는 순차 방출 구속 씬만"
+            i_ = src.rstrip().rfind("}")
+            src = src[:i_] + MT_PHI_SRC + "\n}\n"
         s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False), gqm=getattr(s, "gqm", False), fpi=getattr(s, "fpi", False), cj=getattr(s, "cjj", False), cue=bool(getattr(s, "cue", 0))), options=("--std=c++14",))
         s._src0 = src
         s.fn = {}
@@ -254,7 +281,7 @@ class MatRT(ADET.DetMixin):
     def mat_floor_n(s, FA, kstep, capN):
         i32, f = np.int32, np.float32
         if s.has_pbc:
-            s.k("ao_pbc_k", capN, (P(s.IP), P(s.mn), P(s.pacc), i32(s.K), i32(s.pbc_ns), i32(kstep), f(s.dt / s.pbc_ns / s.dt_gt), P(s.kb)), b=256)
+            s.k("mt_pbc_kphi" if s.pbc_phi else "ao_pbc_k", capN, (P(s.IP), P(s.mn), P(s.pacc), i32(s.K), i32(s.pbc_ns), i32(kstep), f(s.dt / s.pbc_ns / s.dt_gt), P(s.kb)), b=256)
         s.k("mt_floor_n", capN, tuple(FA) + (P(s.kb if s.has_pbc else None), P(s.mn), f(s.mthr), P(s.vm if s.pvb is not None else None)), b=256)
 
     def mat_elem(s, kstep, it, nst, capQ):

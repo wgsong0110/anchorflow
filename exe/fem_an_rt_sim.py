@@ -117,6 +117,8 @@ ap.add_argument("--ue", choices=["", "be", "a0", "beall"], default="", help="절
 ap.add_argument("--ufrec", action="store_true", help="절 CM24 진단 (결과 불변): 판정 커널만 켜고 걸음별 덜 풀림을 fem.jsonl uf 에")
 ap.add_argument("--nrec", action="store_true", help="절 CM25 진단 (결과 불변, lib/anchorflow/fem_wolfwhy_diag.py): 걸음마다 시작점 실현 가능 k0·고른 k, 뉴턴 반복별 ‖g‖/F·멈춤·PCG 반복·상한·보폭 (자른 주체), 걸음 끝 ‖g‖/F (다시 잼, 버퍼 되돌림)·장벽 노드 기울기 합을 fem.jsonl nr 에")
 ap.add_argument("--prec", type=str, default="", help="절 CM26 진단 (결과 불변, --nrec 위, 재질 판 K 1 HHT, lib/anchorflow/fem_wolfprop_diag.py): 'f0:f1' 프레임 (1 부터, 양끝 포함) 의 뉴턴 반복·걸음 끝 노드 힘 몫 (탄성·소성, 장벽, 순차 방출 구속 반력, 바닥 고착 반력, 고정 노드, 잔차, 관성, 중력) 법선 합·속도 변화 분해 (몸 전체·바닥 근처·구속 노드), 방출 무리별 입자 높이 (우리·정답), 장벽 표본점 d/d̂ 분포를 prec.jsonl 에")
+ap.add_argument("--y0loc", type=int, default=0, help="절 CM27 (c) (정의 변경은 뉴턴 시작점뿐, --fl_bar --ga_y0ut 위): 시작점 섞기 β 를 몸 전체 스칼라 대신 노드별 -- 표본점마다 전역 규칙 (실현 가능 + --y0eb) 을 그 점에만 적용한 k 를 그 점이 걸친 노드에 (최대), 섞은 뒤 활성 표본점 d > 0 확인·고침 라운드 이 수, 그래도 어기면 전역 k (0 = 끔, 소스 그대로)")
+ap.add_argument("--pbc_phi", action="store_true", help="절 CM27 (e) (정의 변경, 재질 판 순차 방출 구속): 구속 노드 이동도 k_구속 = e^-x 대신 정답 서브스텝 반복 (구속 입자 v = 0 -> 노드 (1 − α) 배, 힘은 매 서브스텝) 의 닫힌 꼴 φ(x) = 2 (x − 1 + e^-x)/x² (끄면 소스 그대로)")
 ap.add_argument("--bar_nostep", action="store_true", help="절 CM25 대조 (진단 전용 정의 변경, 기본 판 아님): 선탐색 없는 장벽 판 (재질) 의 뉴턴 보폭 장벽 실현 가능 자름 (rt_bar_kfe) 끔 -- 보폭 1")
 a = ap.parse_args()
 dev = "cuda"
@@ -153,6 +155,9 @@ if a.floor == "vel":
     if a.bar_node:                                                                     # 절 CM14: 노드 장벽 (표본점 장벽 d̂·κ·띠 고착 문턱은 그대로)
         assert a.fl_bar, "--bar_node 는 --fl_bar 위 (절 CM14)"
         FL["bnode"] = a.bar_node; FL["DHN"] = a.bar_ndh * DXG; FL["KSN"] = (lam + 2.0 * mu) / FL["DHN"] ** 2
+    if a.y0loc:                                                                        # 절 CM27 (c)
+        assert a.fl_bar and a.ga_y0ut and not a.bar_node and not a.fl_vres, "--y0loc 는 --fl_bar --ga_y0ut 표본점 장벽 판만"
+        FL["y0loc"] = int(a.y0loc)
     if a.bar_ecell:                                                                    # 절 CM14.3 진단 (결과 불변)
         assert a.fl_bar, "--bar_ecell 은 --fl_bar 위"
         FL["becell"] = True
@@ -263,6 +268,9 @@ if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                     
             VISC = float(cfg["density"]) * _r * (2 - _r) * DXG ** 2 / (16.0 * float(cfg["substep_dt"]))
         MATX = dict(mat=_mat, prm=PRM, visc=VISC, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if _mat == 7 else 0.0))
     MATX.update(trel=TREL, pvb=PVB, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, vfill=not a.no_vfill, det=a.det)
+    if a.pbc_phi:                                                                      # 절 CM27 (e)
+        assert TREL is not None, "--pbc_phi 는 순차 방출 구속 씬만"
+        MATX["pbc_phi"] = True
     SOLVER = MRT.MatRT
     a.ls = 0                                                                           # 재질 판: 퍼텐셜 없음 -> 에너지 선탐색 없음 (절 AO.0; 장벽이면 실현 가능 보폭만)
     print(f"[절 CM2 재질 판] {MATNAME} {MATX.get('mat')} 구속 {TREL is not None} 구속 속도 {PVB is not None} 빈 노드 문턱 {MTHR:.3e} 점성 {MATX.get('visc', 0.0)}", flush=True)
@@ -355,6 +363,8 @@ for fi in range(L):
         c["y0k"] = S.Y0K[:S.nstage, 0].cpu().tolist()
         if not S.ls:                                                                   # 절 CM6 진단: 선탐색 없는 장벽 판 (재질) 뉴턴 반복별 보폭 k (상한까지 펼친 자리; 허용치로 건너뛴 반복은 앞 값)
             c["bk"] = S.BSK[:S.nstage * S.nt, 0].cpu().tolist()
+    if getattr(S, "y0loc", 0):                                                         # 절 CM27 (c) 진단: 걸음별 [k>0 노드, 최대 k, β0 노드, 몸 노드, 라운드별 어긴 점 수 ...]
+        c["yl"] = S.YLS[:S.nstage, :5 + S.y0loc].cpu().tolist()
     if a.prec and PR_F0 <= fi + 1 <= PR_F1:                                            # 절 CM26 진단 (결과 불변, 읽기만)
         if fi + 1 == PR_F0 or "PRC" not in globals():
             PRC = ART.PRD.Ctx(S, FL, [float(q) for q in cfg["g"]], TREL, X0.double(), h)

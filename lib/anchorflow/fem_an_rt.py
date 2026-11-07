@@ -2028,6 +2028,94 @@ __global__ void __launch_bounds__(128) rt_vres_lsN(const int* IP, const int* cb,
 '''
 
 
+Y0L_SRC = r"""
+// 절 CM27 (c) --y0loc (정의 변경은 뉴턴 시작점뿐): 장벽 판 시작점 섞기를 국소로 -- 몸 전체 스칼라 β 대신 노드별 β_n = 2^-kn[n].
+// 표본점마다 전역 규칙 (rt_bar_kfe 실현 가능 + --y0eb 장벽 에너지) 을 그 점 하나에만 적용한 k_q -> 그 점이 걸친 노드 (B-스플라인 가중 ≠ 0) 에 원자 최대.
+// 노드마다 β 가 달라 d 가 β 에 선형이 아니므로, 섞은 뒤 활성 표본점 d > 0 을 확인해 어긴 점의 노드를 (그 점 노드 최대 k) + 1 로 (라운드 R 번),
+// 마지막 확인에도 어긴 점이 있으면 모든 노드를 전역 k (지금 규칙) 로 (실현 가능 보장). 정수 원자만 -> 결정적.
+__device__ __forceinline__ double yl_e(float d, float dh, double kap) {
+    if (!(d < dh)) return 0.0;
+    if (!(d > 0.f)) return 1e30;
+    double dd = (double)d - dh; return -kap*dd*dd*log((double)d/dh);
+}
+__global__ void __launch_bounds__(128) yl_kq(const int* IP, const int* cb, const float* BW, const float* Vq, const float* y0, const float* y1, const float* U, float thinv,
+                         float n0, float n1, float n2, float pn, float dh, float ks, int eb, int* kn) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    float bm = AF_BX[q*4+3];
+    if (!(bm > 0.f) || !AF_BACT[q]) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float xa[3], xb[3];
+    for (int a=0;a<3;a++) { xa[a] = AF_BX[q*4+a]/bm; xb[a] = xa[a]; }
+    for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o];
+        for (int a=0;a<3;a++) { xa[a] += w*(U[id*3+a] + thinv*(y0[id*3+a] - U[id*3+a])); xb[a] += w*(U[id*3+a] + thinv*(y1[id*3+a] - U[id*3+a])); } }
+    float d0 = xa[0]*n0 + xa[1]*n1 + xa[2]*n2 - pn, d1 = xb[0]*n0 + xb[1]*n1 + xb[2]*n2 - pn;
+    int k = 0;
+    if (!(d1 > 0.f)) { float c = 1.f; while (true) { c *= 0.5f; k++; if (c == 0.f) break; if (d0 + c*(d1 - d0) > 0.f) break; } }
+    if (eb) {                                                                    // --y0eb 를 이 점 하나에: E_q(2^-(k+i)) ≤ E_q(0) 인 첫 i, 없으면 β 0
+        double kap = (double)ks*(double)Vq[q], E0 = yl_e(d0, dh, kap);
+        float c = ldexpf(1.f, -k); int i = 0;
+        for (; i<59; i++) { double E = yl_e(d0 + c*(d1 - d0), dh, kap); if (E <= E0) break; c *= 0.5f; }
+        k = (i == 59) ? 1000 : k + i;
+    }
+    if (k == 0) return;
+    for (int o=0;o<27;o++) if (BW[oc*27+o] != 0.f) atomicMax(&kn[ids[o]], k);
+}
+__global__ void yl_mix(const int* IP, const int* kn, const float* sk, const int* pm, float n0, float n1, float n2, const float* yh, const float* eU, const float* eS, float* eta, float* y) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    if (pm[n] == 2) return;
+    float be = ldexpf(1.f, -kn[n]);
+    float e[3]; for (int a=0;a<3;a++) { e[a] = (1.f - be)*eU[n*3+a] + be*eS[n*3+a]; eta[n*3+a] = e[a]; }
+    float t[3]; Tapply(sk[n], pm[n], n0, n1, n2, e, t);
+    for (int a=0;a<3;a++) y[n*3+a] = yh[n*3+a] + t[a];
+}
+__global__ void __launch_bounds__(128) yl_chk(const int* IP, const int* cb, const float* BW, const float* y, const float* U, float thinv, float n0, float n1, float n2, float pn,
+                         const int* kn, int* kn2, int* fl) {
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    if (q >= IP[12]) return;
+    float bm = AF_BX[q*4+3];
+    if (!(bm > 0.f) || !AF_BACT[q]) return;
+    int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+    float xa[3];
+    for (int a=0;a<3;a++) xa[a] = AF_BX[q*4+a]/bm;
+    for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o]; for (int a=0;a<3;a++) xa[a] += w*(U[id*3+a] + thinv*(y[id*3+a] - U[id*3+a])); }
+    if (xa[0]*n0 + xa[1]*n1 + xa[2]*n2 - pn > 0.f) return;
+    atomicAdd(fl, 1);
+    int km = 0; for (int o=0;o<27;o++) if (BW[oc*27+o] != 0.f) km = max(km, kn[ids[o]]);
+    int kt = (km >= 999) ? 1000 : km + 1;
+    for (int o=0;o<27;o++) if (BW[oc*27+o] != 0.f) atomicMax(&kn2[ids[o]], kt);
+}
+__global__ void yl_merge(const int* IP, int* kn, const int* kn2) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    kn[n] = max(kn[n], kn2[n]);
+}
+__global__ void yl_fb(const int* IP, const int* fl, const int* kk, int* kn) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9] || fl[0] == 0) return;
+    kn[n] = kk[0];
+}
+// 진단: [0] k > 0 노드 수, [1] 최대 k, [2] β 0 (k ≥ 1000) 노드 수, [3] 몸 노드 수 (질량 > 0)
+__global__ void yl_st(const int* IP, const int* kn, const float* mn, int* st) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    int k = kn[n];
+    if (k > 0) { atomicAdd(&st[0], 1); atomicMax(&st[1], k); }
+    if (k >= 1000) atomicAdd(&st[2], 1);
+    if (mn[n] > 0.f) atomicAdd(&st[3], 1);
+}
+"""
+
+
+def y0locify(src, on):
+    """절 CM27 (c) --y0loc: 국소 시작점 섞기 커널을 모듈 끝에 (끄면 소스 그대로)."""
+    if not on:
+        return src
+    i = src.rstrip().rfind("}")
+    return src[:i] + Y0L_SRC + "\n}\n"
+
+
 def vresify(src, k):
     """절 CM15 (--fl_vres k, 장벽 판의 표본점 버퍼 위): −z 저항 바닥 커널 (VRES_SRC) 을 모듈 끝에 붙임. 끄면 소스 그대로."""
     if not k:
@@ -2363,6 +2451,7 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, 
         src = bnodeify(src, floor.get("bnode", ""))
         src = becellify(src, floor.get("becell", False))
         src = vresify(src, floor.get("vres", 0.0))
+        src = y0locify(src, floor.get("y0loc", 0))                                  # 절 CM27 (c)
     if floor and floor.get("nclamp"):                                                   # 절 CM16: 노드 법선 하드 클램프 (장벽 판 아님)
         src = nclify(src, True)
     if floor and floor.get("fup"):                                                      # 절 CM17: (A) 고착 몫 법선 한쪽 구속 (장벽 판 아님)
@@ -2580,6 +2669,11 @@ class RTSolver(MG2.MG2Mixin):
             if s.bnode:
                 assert not s.bfull, "--bar_node 는 덩어리 장벽 헤시안 판만 (노드 몫은 bKn 에 더함)"
                 s.bnv = Z(s.capN); s.bnact = torch.zeros(s.capN, device=dev, dtype=torch.int32); s.bnf = torch.zeros(s.capN, device=dev, dtype=torch.int32)
+            s.y0loc = int(s.floor.get("y0loc", 0))                                   # 절 CM27 (c): 국소 시작점 섞기 (라운드 수)
+            if s.y0loc:
+                s.ykn = torch.zeros(s.capN, device=dev, dtype=torch.int32); s.ykn2 = torch.zeros(s.capN, device=dev, dtype=torch.int32)
+                s.ylU = Z(s.capN, 3); s.ylE = Z(s.capN, 3); s.yfl = torch.zeros(16, device=dev, dtype=torch.int32)
+                s.YLS = torch.zeros(4 * max(s.K, s.Kc or 0, getattr(s, "kcap", 0)), 24, device=dev, dtype=torch.int32)   # 걸음별 [0:4] yl_st, [4:4+R+1] 라운드별 어긴 점 수
             s.becell = bool(s.floor.get("becell", False))                              # 절 CM14.3 진단: 칸별 걸음 끝 장벽 에너지 (결과 불변)
             if s.becell:
                 s.beC = Z(s.capN); s.beL = Z(s.capN); s.beM = Z(s.capN); s.beD = Z(s.capN, 3)
@@ -3025,7 +3119,27 @@ class RTSolver(MG2.MG2Mixin):
                             s.k("rt_barn_y0e", capN, (P(IP), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *BN, P(s.kk), P(s.SC), i32(59)), b=256)
                         s.k("rt_y0epick", 1, (P(s.SC), P(s.kk), i32(59)), b=1)
                     s.dcopy(s.Y0K[kstep], s.kk)                                        # 진단: 걸음별 시작점 k
-                    s.k("rt_y0mix", capN, (P(IP), P(s.kk), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eS), P(s.eta), P(s.y)), b=256)
+                    if getattr(s, "y0loc", 0):                                         # 절 CM27 (c): 노드별 β (전역 kk 는 진단·되돌림용으로만)
+                        assert not s.bnode, "--y0loc 는 표본점 장벽 판만"
+                        R_ = s.y0loc
+                        YM = (P(IP), P(s.ykn), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.ylE), P(s.eS), P(s.eta), P(s.y))
+                        YC = lambda r_: (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.ykn), P(s.ykn2), P(s.yfl[r_:]))
+                        s.dcopy(s.ylU, s.y); s.dcopy(s.ylE, s.eta)
+                        s.zf(s.ykn); s.zf(s.ykn2); s.zf(s.yfl)
+                        s.k("yl_kq", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.ylU), P(s.ySv), P(s.U), f(sg["thinv"]), *BA, i32(1 if s.y0eb else 0), P(s.ykn)))
+                        for r_ in range(R_):
+                            s.k("yl_mix", capN, YM, b=256)
+                            s.k("yl_chk", capQ, YC(r_))
+                            s.k("yl_merge", capN, (P(IP), P(s.ykn), P(s.ykn2)), b=256)
+                        s.k("yl_mix", capN, YM, b=256)
+                        s.k("yl_chk", capQ, YC(R_))
+                        s.k("yl_fb", capN, (P(IP), P(s.yfl[R_:]), P(s.kk), P(s.ykn)), b=256)
+                        s.k("yl_mix", capN, YM, b=256)
+                        s.k("rt_zero_i", 4, (np.int32(4), P(s.YLS[kstep])), b=256)
+                        s.k("yl_st", capN, (P(IP), P(s.ykn), P(s.mn), P(s.YLS[kstep])), b=256)
+                        s.dcopy(s.YLS[kstep, 4:4 + R_ + 1], s.yfl[:R_ + 1])
+                    else:
+                        s.k("rt_y0mix", capN, (P(IP), P(s.kk), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eS), P(s.eta), P(s.y)), b=256)
             if y0s:                                                                    # 절 AN.22 시작점 탐색: U 에서 Ũ 쪽 후보 2^-i 중 전체 에너지 최소 (장벽 활성 판정은 위 U 에서 그대로)
                 NC0 = i32(s.ls_n)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
