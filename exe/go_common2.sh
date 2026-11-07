@@ -6,7 +6,7 @@ H=$1; STG=$2
 R=r2:storage/result/anchorflow/lbours/common2
 O=/dev/shm/dkta/lbours/common2; CB=/tmp/dkta/common2_code; C=$CB/$H
 EN=go_$STG.END
-mkdir -p $O $CB /dev/shm/dkta/cache /tmp/dkta; rm -f $O/$EN
+mkdir -p $O $CB /dev/shm/dkta/cache /tmp/dkta; rm -f $O/$EN $O/common2.FAIL
 L=$O/go_$STG.log; say() { echo "[go $(date '+%F %T')] $*" >> $L; rclone copyto $L $R/go_$STG.log -q; }
 say "시작 $(hostname) 커밋 $H 단계 $STG"
 [ -s $CB/common2_$H.bundle ] || rclone copyto $R/code/common2_$H.bundle $CB/common2_$H.bundle -q

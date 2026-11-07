@@ -61,7 +61,7 @@ SPEC=$(grep -v '^#' exe/common2_spec.txt | awk -v s=$STG '$1==s')
 while read -r st n s md x; do
   [ -z "$n" ] && continue; [ $md = z ] && continue; [ -f $O/$n/summary.json ] && continue
   while [ $(jobs -rp | wc -l) -ge $NG ]; do sleep 5; done
-  ( g=$(claim_wait $BASHPID); run $n $s $md $g "$x"; rm -f $CL/$g ) & sleep 3
+  ( me=$BASHPID; g=$(claim_wait $me); run $n $s $md $g "$x"; rm -f $CL/$g ) & sleep 3
 done <<< "$SPEC"
 wait
 log "판정 판 끝 $STG"
