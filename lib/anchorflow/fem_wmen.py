@@ -5,6 +5,8 @@
   ro  덜 풀린 걸음 판정을 잔차만으로 (--uf_ro, --uf_res 위): uf_end 의 '보폭 최소 < 1' 조건을 뺌 -> 덜 풀림 = 허용치로 안 멈췄고 마지막으로 돈 뉴턴 반복 시작 ‖g‖ > F.
   nl  국소 보폭으로 덜 간 노드만 걸음 끝 갱신을 실제 이동 기반으로 (--ue_nl, --ws_bar·--ue be 위): 이 걸음 어느 뉴턴 반복에서든 노드 k > 0 (2^-k 보폭) 이었던 노드 (ecut) 는
       위치는 HHT 그대로 U1 = U + dt v + dt² ((½−β) a0 + β a1) (= U + (y − U)/(1 − αf)), 속도 v1 = (U1 − U)/dt, 가속도 기억 0. 나머지 노드는 HHT (덜 풀린 걸음은 원래대로 후퇴 오일러).
+  mo  (d) 진단이 가리킨 것 -- 뉴턴 반복마다 증분 포텐셜 Φ(y) = ½ Σ m/τ² |y − ŷ|² + Σ V_q Ψ_SNH(RM(X_q(y))) + 장벽 (풀이와 같은 α 점·RM·장벽 식) 이 반복 시작보다
+      커지면 (상대 1e-5 넘게) 이 반복의 갱신 (노드별 국소 보폭 포함) 을 반복 시작 쪽으로 반씩 되돌림 (최대 6 번, 그래도 크면 갱신 버림, 보폭 SC[14] 도 같이 줄임) (--en_mo).
   xf  덜 풀린 걸음에서만 뉴턴 반복을 늘림 (--xit_from j, --newton N): 반복 j 의 시작 잔차를 잰 뒤 (uf_g) 그때까지 판정이 '덜 풀림' 이 아니면 그 걸음 나머지 반복을 건너뜀
       (허용치 멈춤과 같은 CT[0] = 1·AF_SKIP). ro 와 함께면 잔차만, 아니면 보폭 최소 < 1 또는 잔차.
 진단 (--enrec, 결과 불변 -- 그래프 안 사본 (Fq 커밋 앞) 과 절 CM23.4 --frec 버퍼를 프레임 뒤에 읽기만; 아래 EnCtx).
@@ -23,6 +25,67 @@ __global__ void en_cut(const int* IP, const int* kn, int* cut) {
     if (n >= IP[9]) return;
     if (kn[n] > cut[n]) cut[n] = kn[n];
 }
+__global__ void en_mo_set(int* MO, double* PH) { MO[0] = 1; PH[1] = 0.0; }
+__global__ void en_ph01(double* PH) { PH[0] = PH[1]; }
+// Φ 의 가우스 점 몫 (RM 뒤 SNH 탄성 + 장벽) -- aq_elem 과 같은 시험 X·RM (상태 지역 사본), rt_bar_q 와 같은 장벽 식
+__global__ void __launch_bounds__(128) en_phi_q(const int* IP, const int* cb, const float* BG, const float* BW, const float* Fq, const float* Vq, const float* y, const float* U, float thinv,
+                                                int mat, const float* prm, const float* Sq, float dt, float n0, float n1, float n2, float pn, float dh, float ks, const int* MO, double* PH) {
+    if (!MO[0]) return;
+    if (blockIdx.x*blockDim.x >= IP[12]) return;
+    int q = blockIdx.x*blockDim.x + threadIdx.x;
+    double e = 0.0;
+    if (q < IP[12]) {
+        int oc = q & 7; int ids[27]; qnodes(q, IP, cb, ids);
+        float vq = Vq[q];
+        if (vq > 0.f) {
+            float F[9]; for (int k=0;k<9;k++) F[k] = Fq[(size_t)q*9+k];
+            float A[9] = {0,0,0,0,0,0,0,0,0};
+            for (int o=0;o<27;o++) { const float* bg = BG + (oc*27+o)*3; int id = ids[o]; for (int a=0;a<3;a++) { float ya = y[id*3+a]; A[a*3] += ya*bg[0]; A[a*3+1] += ya*bg[1]; A[a*3+2] += ya*bg[2]; } }
+            float X[9]; for (int a=0;a<3;a++) for (int b=0;b<3;b++) X[a*3+b] = F[a*3+b] + A[a*3]*F[b] + A[a*3+1]*F[3+b] + A[a*3+2]*F[6+b];
+            float Uu[9], S[3], V[9]; ssvdf(X, Uu, S, V);
+            float sev = (mat == 7) ? prm[14] : 0.f;
+            float se[3]; for (int i=0;i<3;i++) se[i] = (sev > 0.f) ? fmaxf(S[i], sev) : S[i];
+            float ys = Sq[(size_t)q*4], lj = Sq[(size_t)q*4+1], al = Sq[(size_t)q*4+2];
+            if (!(prm[15] > 0.5f)) pl_rm(mat, se, prm, ys, lj, al, dt);
+            double mu = prm[0], ls = (double)prm[1] + mu;
+            double J = (double)se[0]*se[1]*se[2], ic = (double)se[0]*se[0] + (double)se[1]*se[1] + (double)se[2]*se[2];
+            double ps = 0.5*mu*(ic - 3.0) - mu*(J - 1.0) + 0.5*ls*(J - 1.0)*(J - 1.0);
+            e += (ps == ps) ? (double)vq*ps : 1e30;
+        }
+        float bm = AF_BX[q*4+3];
+        if (bm > 0.f && AF_BACT[q]) {
+            float xq[3] = {AF_BX[q*4]/bm, AF_BX[q*4+1]/bm, AF_BX[q*4+2]/bm};
+            for (int o=0;o<27;o++) { float w = BW[oc*27+o]; int id = ids[o]; for (int a=0;a<3;a++) xq[a] += w*(U[id*3+a] + thinv*(y[id*3+a] - U[id*3+a])); }
+            float d = xq[0]*n0 + xq[1]*n1 + xq[2]*n2 - pn;
+            if (d < dh) {
+                double kap = (double)ks*(double)vq;
+                if (d > 0.f) { double dd = (double)d - dh; e += -kap*dd*dd*log((double)d/dh); } else e += 1e30;
+            }
+        }
+    }
+    blocksum_add(e, &PH[1]);
+}
+__global__ void en_phi_n(const int* IP, const float* mn, float it2, const float* y, const float* yh, const int* MO, double* PH) {
+    if (!MO[0]) return;
+    if (blockIdx.x*blockDim.x >= IP[9]) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    double e = 0.0;
+    if (n < IP[9]) { double m = 0.5*(double)mn[n]*it2; for (int a=0;a<3;a++) { double d = (double)y[n*3+a] - yh[n*3+a]; e += m*d*d; } }
+    blocksum_add(e, &PH[1]);
+}
+__global__ void en_bt_chk(int* MO, const double* PH, double rtol) {
+    if (!MO[0]) return;
+    double a = PH[0], b = PH[1];
+    if (b == b && b <= a + rtol*fabs(a) + 1e-9) MO[0] = 0; else MO[1]++;
+}
+__global__ void en_bt_mix(const int* IP, const int* MO, const float* ysv, const float* esv, float* y, float* eta, float c) {
+    if (!MO[0]) return;
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    for (int a=0;a<3;a++) { y[n*3+a] = ysv[n*3+a] + c*(y[n*3+a] - ysv[n*3+a]); eta[n*3+a] = esv[n*3+a] + c*(eta[n*3+a] - esv[n*3+a]); }
+}
+__global__ void en_bt_sc(const int* MO, double* SC, double* PH) { if (!MO[0]) return; SC[14] *= 0.5; PH[1] = 0.0; }
+__global__ void en_bt_fin(int* MO, double* SC, double* PH) { if (MO[0]) { SC[14] = 0.0; PH[1] = PH[0]; MO[2]++; MO[0] = 0; } }
 __global__ void en_gate(int* CT, const float* ufs, const float* ufg, int k, int res, int ro) {
     if (CT[0]) return;
     bool cut = (!ro) && ufs[k] < 1.f, big = res && ufg[k] > 1.f;
@@ -74,12 +137,48 @@ def alloc(s):
     if not en:
         return
     s.ENcut = torch.zeros(s.capN, device=s.dev, dtype=torch.int32)
+    s.ENmo = torch.zeros(4, device=s.dev, dtype=torch.int32); s.ENph = torch.zeros(2, device=s.dev, dtype=torch.float64)
+    if en.get("mo"):
+        s.ENysv = torch.zeros(s.capN, 3, device=s.dev, dtype=torch.float32); s.ENesv = torch.zeros(s.capN, 3, device=s.dev, dtype=torch.float32)
     if en.get("diag"):
         s.ENFq = torch.zeros_like(s.Fq)
 
 
 def step0(s):
     s.zf(s.ENcut)
+    if get(s).get("mo"):
+        s.zf(s.ENmo)
+
+
+def _phi(s, capN, capQ, thv, WB, nr):
+    f = np.float32
+    s.k("en_mo_set", 1, (P(s.ENmo), P(s.ENph)), b=1)
+    s.k("en_phi_q", capQ, (P(s.IP), P(s.cb), P(s.BG), P(s.BW), P(s.Fq), P(s.Vq), P(s.y), P(s.U), thv, np.int32(s.mat), P(s.prm), P(s.Sq), f(s.dt), *[f(q) for q in nr],
+                           f(WB["PN"]), f(WB["DH"]), f(WB["KS"]), P(s.ENmo), P(s.ENph)), b=128)
+    s.k("en_phi_n", capN, (P(s.IP), P(s.mn), f(1.0 / (s.tau * s.tau)), P(s.y), P(s.yh), P(s.ENmo), P(s.ENph)), b=256)
+
+
+def mo_pre(s, it, capN, capQ, thv, WB, nr):
+    """(d) 이 반복 갱신 앞: y·η 사본, 반복 시작 Φ (첫 반복은 새로 재고, 뒤는 앞 반복 끝 값)."""
+    s.ENysv.copy_(s.y); s.ENesv.copy_(s.eta)
+    if it == 0:
+        _phi(s, capN, capQ, thv, WB, nr)
+    s.k("en_ph01", 1, (P(s.ENph),), b=1)
+
+
+def mo_post(s, capN, capQ, thv, WB, nr, R=6):
+    """(d) 갱신 뒤 Φ 를 재고, 시작보다 크면 반씩 되돌림 (최대 R 번), 그래도 크면 갱신 버림."""
+    _phi(s, capN, capQ, thv, WB, nr)
+    for _ in range(R):
+        s.k("en_bt_chk", 1, (P(s.ENmo), P(s.ENph), np.float64(1e-5)), b=1)
+        s.k("en_bt_mix", capN, (P(s.IP), P(s.ENmo), P(s.ENysv), P(s.ENesv), P(s.y), P(s.eta), np.float32(0.5)), b=256)
+        s.k("en_bt_sc", 1, (P(s.ENmo), P(s.SC), P(s.ENph)), b=1)
+        s.k("en_phi_q", capQ, (P(s.IP), P(s.cb), P(s.BG), P(s.BW), P(s.Fq), P(s.Vq), P(s.y), P(s.U), thv, np.int32(s.mat), P(s.prm), P(s.Sq), np.float32(s.dt), *[np.float32(q) for q in nr],
+                               np.float32(WB["PN"]), np.float32(WB["DH"]), np.float32(WB["KS"]), P(s.ENmo), P(s.ENph)), b=128)
+        s.k("en_phi_n", capN, (P(s.IP), P(s.mn), np.float32(1.0 / (s.tau * s.tau)), P(s.y), P(s.yh), P(s.ENmo), P(s.ENph)), b=256)
+    s.k("en_bt_chk", 1, (P(s.ENmo), P(s.ENph), np.float64(1e-5)), b=1)
+    s.k("en_bt_mix", capN, (P(s.IP), P(s.ENmo), P(s.ENysv), P(s.ENesv), P(s.y), P(s.eta), np.float32(0.0)), b=256)
+    s.k("en_bt_fin", 1, (P(s.ENmo), P(s.SC), P(s.ENph)), b=1)
 
 
 def gate(s, kstep, it):
@@ -202,7 +301,7 @@ class EnCtx:
         fel = S.FRfel[0, nt, :nn].double(); bgn = S.FRbg[0, nt, :nn].double()[:, None] * s.n[None, :]
         gph = (m / tau2)[:, None] * (y - yh) + fel + bgn
         pm = S.pm[:nn]; sk = S.sk[:nn].double()
-        free = has & (pm == 0) & (sk >= 1.0 - 1e-6)
+        free = has & ((pm == 0) | (pm == 1)) & (sk >= 1.0 - 1e-6)                     # T = I (장벽 바닥 판은 모든 노드 pm 1: 접선 고착 sk < 1 만 구속)
         con = has & ~free
         cut = (S.ENcut[:nn] > 0) & has
         L = torch.stack([torch.arange(nn, device=S.dev) // (IP[7] * IP[8]) + IP[0], (torch.arange(nn, device=S.dev) // IP[8]) % IP[7] + IP[1], torch.arange(nn, device=S.dev) % IP[8] + IP[2]], 1).double()

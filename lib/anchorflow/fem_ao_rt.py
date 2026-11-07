@@ -1831,7 +1831,11 @@ class AORTSolver(DET.DetMixin):
                 WSB = bool(s.wf.get("ws", {}).get("bar"))                                # 절 CM30 (b): 노드별 장벽 보폭이 원래 장벽 보폭·갱신을 대신함 (필터는 원래 전역 그대로)
                 if WSB:
                     from . import fem_wmsparse as WS, fem_wmfrac2 as W2              # 절 CM32: 필터도 국소 (fi)·시도별 기록 (rec) 이면 W2 (없으면 그대로)
+                    if ENW and ENW.get("mo"):                                          # 절 CM33 (d): 반복 시작 y·η·Φ
+                        EN.mo_pre(s, it, capN, capQ, thv, WB, nr)
                     (W2.newton if W2.on(s) else WS.newton)(s, kstep, it, capN, capQ, nr, thv, WB, NR)
+                    if ENW and ENW.get("mo"):                                          # 절 CM33 (d): Φ 가 늘면 이 반복 갱신을 반씩 되돌림
+                        EN.mo_post(s, capN, capQ, thv, WB, nr)
                     if ENW:                                                            # 절 CM33: 이 반복 노드 k 를 걸음 최대에
                         EN.after_newton(s, capN)
                 if WB is not None and not WIN and not WSB:                                         # 절 CM21 = 절 CM2 재질 판 장벽 보폭: 온 걸음 후보에서 활성 표본점 d > 0 인 최대 2^-k, 뒤집힘 필터 보폭과 작은 쪽

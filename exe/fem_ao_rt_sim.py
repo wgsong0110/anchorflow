@@ -142,6 +142,7 @@ ap.add_argument("--ks_it", type=str, default="", help="절 CM28 (e): --ksplit �
 ap.add_argument("--uf_ro", action="store_true", help="절 CM33 (a) (조정자 결정 11-08 정의 변경, --uf_res 위): 덜 풀린 걸음 판정을 잔차만으로 (보폭 최소 < 1 조건 뺌). lib/anchorflow/fem_wmen.py")
 ap.add_argument("--ue_nl", action="store_true", help="절 CM33 (b) (--ws_bar·--ue be 위): 이 걸음 국소 보폭으로 자른 노드만 걸음 끝 속도 = (U1 − U)/dt (U1 = HHT 위치), 가속도 기억 0")
 ap.add_argument("--xit_from", type=int, default=0, help="절 CM33 (c) (--uf_res·허용치 판 위): 반복 이 번째 (0 부터) 시작 잔차를 잰 뒤 그때까지 덜 풀림 판정이 아니면 나머지 반복 건너뜀 (--newton 이 상한); 0 = 끔")
+ap.add_argument("--en_mo", action="store_true", help="절 CM33 (d) (--ws_bar 위): 뉴턴 반복마다 증분 포텐셜 Φ (관성 + RM 뒤 SNH 탄성 + 장벽) 가 반복 시작보다 늘면 그 반복 갱신을 반씩 되돌림 (최대 6 번, 그래도 늘면 버림)")
 ap.add_argument("--enrec", type=int, default=0, help="절 CM33 진단 (결과 불변, --nrec 위, K 1 HHT): 프레임 1~이 값의 에너지 몫 분해 (P2G·잔차·고착·탄성·장벽·갱신식·커밋·G2P, 뉴턴 반복별 증분 포텐셜) -> fem.jsonl enb")
 a = ap.parse_args()
 if a.adaptK > 0:
@@ -298,13 +299,14 @@ if MATK is not None:                                                            
             assert a.ws_bar > 0, "--ws_fi·--w2rec 는 --ws_bar 위"
             WFD["ws"].update(fi=bool(a.ws_fi), rec=bool(a.w2rec))
         print(f"[절 CM30] {WFD['ws']}", flush=True)
-    if a.uf_ro or a.ue_nl or a.xit_from > 0 or a.enrec > 0:                             # 절 CM33 (끄면 키 없음 -- 그대로)
+    if a.uf_ro or a.ue_nl or a.xit_from > 0 or a.enrec > 0 or a.en_mo:                             # 절 CM33 (끄면 키 없음 -- 그대로)
         assert MATK == 7 and WBAR is not None and not a.det and a.ga == "hht", "절 CM33 은 수박 장벽 바닥 HHT 비결정 판"
         assert not a.uf_ro or (a.uf_res and (a.ue or a.ufrec or a.ksplit > 0)), "--uf_ro 는 --uf_res 판정 위"
         assert not a.ue_nl or (a.ue == "be" and a.ws_bar > 0), "--ue_nl 은 --ue be --ws_bar 위"
         assert a.xit_from <= 0 or (a.uf_res and a.tolN >= 0 and a.newton > a.xit_from and a.ksplit == 0), "--xit_from 은 --uf_res 허용치 판, --newton > 이 값, 쪼개기 없이"
         assert a.enrec <= 0 or (a.nrec and a.K == 1 and a.ksplit == 0), "--enrec 는 --nrec 위, K 1, 쪼개기 없이"
-        WFD["en"] = dict(ro=bool(a.uf_ro), nl=bool(a.ue_nl), xf=int(a.xit_from), diag=a.enrec > 0)
+        assert not a.en_mo or (a.ws_bar > 0 and a.elx == "snh"), "--en_mo 는 --ws_bar --elx snh 위"
+        WFD["en"] = dict(ro=bool(a.uf_ro), nl=bool(a.ue_nl), xf=int(a.xit_from), diag=a.enrec > 0, mo=bool(a.en_mo))
         print(f"[절 CM33] {WFD['en']}", flush=True)
     DMGI = None
     if a.dmg:                                                                         # 절 CM19: 손상 매개변수를 GF 수박 재질에서 유도 (정답 궤적에 맞추지 않음)
@@ -590,6 +592,8 @@ for fi in range(L):
             c["fr"] = FRC.frame(fi + 1)
         except Exception as _ex:
             import traceback; traceback.print_exc(); c["fr"] = dict(err=repr(_ex))
+    if a.en_mo:                                                                       # 절 CM33 (d) (읽기만): 이 프레임 되돌린 횟수·버린 반복 수
+        c["enmo"] = [int(q) for q in S.ENmo[1:3].cpu()]
     if ENC is not None and fi + 1 <= a.enrec and int(S.IP[13]) == 0:                  # 절 CM33 (결과 불변, 읽기만)
         try:
             c["enb"] = ENC.frame(fi + 1)

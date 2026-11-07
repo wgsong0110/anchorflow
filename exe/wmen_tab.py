@@ -10,7 +10,7 @@ import os
 import sys
 
 O = sys.argv[1]
-NAME = {"p2": "(2) 판", "dn": "(2) 판 − --y0loc", "ro": "(a) 판정 잔차만", "nl": "(b) 자른 노드 실제 이동 갱신", "x6": "(c) 덜 풀린 걸음 뉴턴 +4"}
+NAME = {"p2": "(2) 판", "dn": "(2) 판 − --y0loc", "ro": "(a) 판정 잔차만", "nl": "(b) 자른 노드 실제 이동 갱신", "x6": "(c) 덜 풀린 걸음 뉴턴 +4", "mo": "(d) Φ 늘면 되돌림"}
 CELLS = {"c25": "2.5", "c3": "3"}
 E0 = 7.13
 
@@ -77,14 +77,14 @@ def nN(rows):
     return sum(v) / len(v) if v else None
 
 
-ORD = ["p2", "dn", "ro", "nl", "x6"]
+ORD = ["p2", "dn", "ro", "nl", "x6", "mo"]
 vs = sorted({os.path.basename(p)[:-2] for p in glob.glob(os.path.join(O, "*_a")) if not os.path.basename(p).startswith("vid_")},
             key=lambda v: (float(cell(v)) if cell(v) != "?" else 9, [ORD.index(x) if x in ORD else 99 for x in v.split("+") if x not in CELLS]))
 print("# 절 CM33 묶음 wmen -- 수박 (2) 판 (절 CM32 --gq_oct 0 --ws_bar 4 --ws_fi + CM27 (d) --y0loc 3 --ue be --uf_res, 쪼개기 끔) 의 에너지 생성: 몫 분해 + 고침 후보\n")
 print(__doc__.split("\n", 1)[1])
 print("## 1. 판별 (각 판 비결정 두 번 a · b)\n")
-print("| 셀 | 판 | 결과 a · b | 오차 % a · b | 손상 % a · b | 최대 E J (프레임) a · b | 생긴 E J a · b | E f100 J a · b | 덜 풀린 걸음 a · b | 뉴턴 평균 a | ms 평균 · 최대 (b) |")
-print("|---|---|---|---|---|---|---|---|---|---|---|")
+print("| 셀 | 판 | 결과 a · b | 오차 % a · b | 손상 % a · b | 최대 E J (프레임) a · b | 생긴 E J a · b | E f100 J a · b | 덜 풀린 걸음 a · b | 뉴턴 평균 a | (d) 되돌림 · 버림 a | ms 평균 · 최대 (b) |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|")
 for v in vs:
     R = {r: load(f"{v}_{r}") for r in "ab"}
     if not R["a"][0] and not R["b"][0]:
@@ -98,10 +98,11 @@ for v in vs:
     c.append(" · ".join(fm(E((R[r][0] or [{}])[-1]) if R[r][0] else None, "{:.2f}") for r in "ab"))
     c.append(" · ".join(str(sum(sum((q.get("uf") or {}).get("fail") or []) for q in R[r][0])) if R[r][0] else "-" for r in "ab"))
     c.append(fm(nN(R["a"][0]), "{:.2f}"))
+    c.append(" · ".join(str(sum((q.get("enmo") or [0, 0])[i] for q in R["a"][0] or [])) for i in (0, 1)) if any("enmo" in q for q in R["a"][0] or []) else "-")
     m_, x_ = ms(R["b"][0]) if R["b"][0] else (None, None)
     c.append(f"{fm(m_, '{:.1f}')} · {fm(x_, '{:.0f}')}")
     print(f"| {cell(v)} | {nm(v)} | " + " | ".join(c) + " |")
-print("| - | 정답 | - | - | 6.51 | 23.79 (4) | - | - | - | - | - |")
+print("| - | 정답 | - | - | 6.51 | 23.79 (4) | - | - | - | - | - | - |")
 
 KEYS = [("P2G 운동", lambda e: e["p2g"]["KE"]), ("P2G 위치", lambda e: e["p2g"]["PE"]), ("P2G 탄성", lambda e: e["p2g"]["El"]),
         ("잔차 W_res", lambda e: e["step"]["Wres"]), ("고착·고정 W_con", lambda e: e["step"]["Wcon"]), ("탄성 C_el", lambda e: e["step"]["Cel"]),
