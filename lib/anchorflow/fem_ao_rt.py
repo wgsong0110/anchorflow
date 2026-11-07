@@ -1163,7 +1163,7 @@ GQ_P2G_OLD = "    if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }\n   
 GQ_P2G_NEW = "    if (ng) { atomicOr(&badq[q], 1); atomicOr(&badc[c], 1); }\n    return;                                                                 // 절 CM9 --gq_mass: 노드 몫은 gq_q2n\n    float wx[3][3], dw[3][3];"
 
 
-def _src(tol=False, fqrl=False, gqm=False, elx="", dmg=""):
+def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False):
     s = ART.SRC.rstrip()
     if gqm:                                                                          # 절 CM9 --gq_mass: rt_p2g 노드 몫 빼고 (가우스 점 경로 커널은 끝에 덧붙임)
         from .fem_an_det import _sub_in
@@ -1187,8 +1187,13 @@ def _src(tol=False, fqrl=False, gqm=False, elx="", dmg=""):
     head = "#include <cuda_fp16.h>\n" + head
     assert dmg in ("", "cdm", "pf") and (not dmg or elx == "snh"), (dmg, elx)      # 절 CM19: 손상 (cdm = AF_DMG 1, pf = AF_DMG 2) 은 SNH 판 위에만; "" 이면 소스 글자 그대로
     assert elx in ("", "jbar", "snh"), elx                                          # 절 CM13 (재질 판 수박): jbar = J 로그 장벽 (AF_JBAR), snh = Stable Neo-Hookean 탄성 (AF_SNH); "" 이면 소스 글자 그대로
-    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg], 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + "\n}\n"
+    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg], 1) + _pl_funcs() + _mv_half(DET.det_ao(AO_SRC)) + DET.det_ao(AO_SRC) + _bench_variants(AO_SRC) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + (_fpi_src() if fpi else "") + "\n}\n"
     return _skipify(r) if tol else r
+
+
+def _fpi_src():
+    from .fem_fpi import FPI_SRC                                                    # 절 CM20 --fp_interp (끄면 소스 글자 그대로)
+    return FPI_SRC
 
 
 def _gq_src():
@@ -1199,11 +1204,13 @@ def _gq_src():
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", dmg="", pf_it=30, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", dmg="", pf_it=30, fpi=False, **kw):
         s.elx = str(elx)                                                                # 절 CM13: 수박 탄성 확장 ("" 끔, jbar, snh)
         s.dmg, s.pf_it = str(dmg), int(pf_it)                                           # 절 CM19: 손상 ("" 끔, cdm, pf), 위상장 PCG 반복 수
         assert not (s.dmg and det), "--dmg 는 비결정 판만"
         s.gqm = bool(gqm)                                                               # 절 CM9 (정의 변경): 노드 질량·운동량·가속도 몫을 가우스 점에서
+        s.fpi = bool(fpi)                                                               # 절 CM20 (정의 변경): 마지막 걸음도 가우스 점 커밋 (RM) 뒤 입자 F·재질 상태 = 프레임 끝 가우스 점 값의 칸 안 삼선형 보간
+        assert not (s.fpi and (dmg or det)), "--fp_interp 는 손상 없는 비결정 판만"
         assert not (s.gqm and det), "--gq_mass 는 이 실행기에서 비결정 판만"
         s.fqrl, s.lsend = bool(fqrl), bool(lsend)                                        # 절 AS: F_q 유클리드 대체 조건, 걸음 끝 변위 U_{n+1} 에서도 J > 0
         s.vfill = bool(vfill)
@@ -1248,7 +1255,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
         s.ao_ready = True
@@ -1308,6 +1315,7 @@ class AORTSolver(DET.DetMixin):
         s.gaA = Z(s.capN, 3); s.gaM = Z(s.capN)
         s.Sa = Z(s.capQc * 32); s.Sc = Z(s.capQc * 4); s.Sq = Z(s.capQc * 32)
         s.vm = Z(s.capN, 3); s.cm = Z(s.capN, 3)
+        s.Fe = Z(s.capQc * 8, 28) if getattr(s, "fpi", False) else None             # 절 CM20: 프레임 끝 가우스 점 R·log S·X·뒤집힘
         if getattr(s, "gqm", False):                                                   # 절 CM9: 팔분 점·칸 질량 가중 속도·가속도 합
             s.gqP = Z(s.capQc * 8 * 6); s.gqC = Z(s.capQc * 6)
         s.awez = Z(s.capN, 3); s.awyb = Z(s.capN, 3); s.awdy = Z(s.capN, 3); s.awtd = Z(s.capN, 3)                     # 절 AS 시작점 (--y0z)
@@ -1519,7 +1527,7 @@ class AORTSolver(DET.DetMixin):
                     D_.node(s.gaA, D_.mV, c_)
                 D_.q(s.U, c_); D_.jump(kstep)
             s.Ust[kstep].copy_(s.U)
-            if kstep < s.K - 1 and s.aq:
+            if (kstep < s.K - 1 or s.fpi) and s.aq:                                    # 절 CM20 --fp_interp: 마지막 걸음도 가우스 점에서 커밋 (RM·상태 갱신)
                 s.k("aq_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt)))
                 if s.dmg == "pf":                                                      # 절 CM19 엇갈림 풀이: 변위 풀이·커밋 (H_q 최대 갱신) 뒤 d 풀이 (시작 추정 = 앞 풀이)
                     s.pf_solve(kstep + 1)
@@ -1533,7 +1541,11 @@ class AORTSolver(DET.DetMixin):
             s.k("aq_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.Ust), i32(s.K), i32(capN), P(s.vk), i32(s.mat), P(s.prm), f(s.dt), P(s.x), P(s.v), P(s.F), P(s.ysp), P(s.ljp), P(s.alp), P(s.cnt)))
             if s.dmg == "pf":                                                          # 절 CM19: 출력용 입자 d (마지막 풀이의 노드 d, 프레임 시작 위치 가중치)
                 s.k("pf_g2p", N, (i32(N), P(IP), P(s.Np), P(s.fx), P(s.pfd), P(s.ysp)))
+            if s.fpi:                                                                  # 절 CM20: 입자 F·(ys, logJp, al) = 프레임 끝 가우스 점 (커밋 뒤) 값의 칸 안 삼선형 보간 (aq_g2p 의 입자 F·상태를 덮어씀)
+                s.k("fpi_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), P(s.Fe)))
+                s.k("fpi_p", N, (i32(N), P(IP), P(s.fx), P(s.pcd), P(s.cidx), P(s.Fe), i32(1 if s.fqrl else 0), i32(1), P(s.F), P(s.Sq), P(s.ysp), P(s.ljp), P(s.alp)))
         else:
+            assert not s.fpi, "--fp_interp 는 재질 커널 경로 (수박) 만"
             s.k("ao_g2p", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.Ust), i32(s.K), i32(capN), P(s.vk), f(s.cdp), P(s.x), P(s.v), P(s.F), P(s.cnt)))
 
     def pf_solve(s, kres):
