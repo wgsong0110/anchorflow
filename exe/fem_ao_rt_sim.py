@@ -111,6 +111,12 @@ ap.add_argument("--frec_band", type=float, default=3.0, help="절 CM23.4: 바닥
 ap.add_argument("--bar_kmul", type=float, default=1.0, help="절 CM23.4 대조 (진단용 정의 변경): 장벽 강성 κ x 이 값")
 ap.add_argument("--bar_dhmul", type=float, default=1.0, help="절 CM23.4 대조 (진단용 정의 변경): 장벽 두께 d̂ x 이 값 (κ = (λ+2μ) V/d̂² 정의 그대로 따라 바뀜, --bar_dhk 면 κ 는 원래 d̂ 로)")
 ap.add_argument("--bar_dhk", action="store_true", help="절 CM23.4: --bar_dhmul 에서 κ 를 원래 d̂ 값으로 고정")
+ap.add_argument("--ksplit", type=int, default=0, help="절 CM24 (1b, 사용자 승인 11-07 정의 변경): 적응 걸음 쪼개기 -- K 1 로 풀고 덜 풀린 걸음 (판정 커널: 허용치 εN 으로 안 멈췄고 뉴턴 보폭 하나라도 < 1) 이 있으면 "
+                "그 프레임을 버리고 K 두 배 (걸음 간격 반) 로 다시, 최대 K = 2^이 값 (0 = 끔)")
+ap.add_argument("--ue", choices=["", "be", "a0", "beall"], default="", help="절 CM24 (2)·(3) (사용자 승인 정의 변경, HHT 판): 덜 풀린 걸음 (같은 판정) 의 걸음 끝 갱신 -- be = 후퇴 오일러 (U1 = y, v1 = (y − U)/h, 가속도 기억 0), "
+                "a0 = 속도·위치는 HHT 그대로·가속도 기억만 0, beall = 모든 걸음 후퇴 오일러 갱신 (비교). 빈 값 = 끔")
+ap.add_argument("--ufrec", action="store_true", help="절 CM24 진단 (결과 불변): 판정 커널만 켜고 걸음별 덜 풀림·보폭 최소를 fem.jsonl uf 에")
+ap.add_argument("--erec", action="store_true", help="절 CM24 진단 (결과 불변, 재생 밖): 프레임 끝 입자 운동·중력 위치·SNH 탄성 에너지, 질량중심 z·법선 속도 (fem.jsonl en)")
 a = ap.parse_args()
 if a.adaptK > 0:
     a.K = 8                                                                       # 버퍼·첫 캡처는 상한으로, 프레임마다 다시 정함
@@ -279,7 +285,8 @@ if MATK is not None:                                                            
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
                         floor=FL, damp=DAMP, bc=BC, cdp=1.0, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det,
                         hspec=True, theta=a.theta, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None),
-                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx, dmg=a.dmg, pf_it=a.pf_it, fpi=a.fp_interp, wbar=WBAR, lji=a.lj_interp, bcnt=a.bar_cnt)
+                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx, dmg=a.dmg, pf_it=a.pf_it, fpi=a.fp_interp, wbar=WBAR, lji=a.lj_interp, bcnt=a.bar_cnt,
+                        uf=(dict(judge=True, ue=a.ue) if (a.ksplit > 0 or a.ue or a.ufrec) else None))
 elif SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
     _sk = {}
@@ -297,6 +304,9 @@ else:
                  compact=a.ao_fast, warm=a.ao_fast and not a.no_warm, det=a.det)
 assert not a.fp_interp or getattr(S, "fpi", False), "--fp_interp 는 재질 판 (AORTSolver aq 경로) 만"
 assert not (a.fl_bar or a.lj_interp) or MATK is not None, "--fl_bar·--lj_interp 는 재질 판 (AORTSolver) 만"
+assert not (a.ksplit > 0 or a.ue or a.ufrec) or MATK is not None, "--ksplit·--ue·--ufrec 는 재질 판 (AORTSolver) 만"
+if a.ksplit > 0:                                                                      # 절 CM24 (1b): 버퍼는 걸음 수 상한 2^ksplit 으로
+    assert a.K == 1 and a.adaptK <= 0 and a.frec <= 0 and DAMP == 1.0 and a.ga, "--ksplit 은 K 1, 고정 걸음, --frec 없이, 감쇠 없는 HHT·GA 판만"
 if a.dmg:                                                                             # 절 CM19: 처음 손상 d = 0 (cdm) / 이력 H = 0 (pf) -- 재질 7 은 al·ys 를 안 씀
     S.alp.zero_(); S.ysp.zero_()
 if a.nrec:
@@ -318,6 +328,9 @@ NSD_DUMPS = 0
 if a.kmax <= 0:
     a.kmax = int(math.ceil(h / float(cfg["substep_dt"]) - 1e-9))
 S.kcap = a.K
+if a.ksplit > 0:
+    S.kcap = 1 << a.ksplit
+    S.alloc(None)
 CELL = float(lat.A[:, 0].norm())
 print(f"[절 AO 실시간 판] 적응 걸음 수 c {a.adaptK} 상한 {a.kmax}, 칸 {CELL:.4f} m")
 print(f"[절 AO 실시간 판] 모래 {SAND} 구속 {a.pbc} 빈 노드 문턱 {MTHR:.3e} (mlow {a.mlow})", flush=True)
@@ -357,7 +370,10 @@ for fi in range(L):
             if a.gq_chk:                                                               # 절 CM9: 프레임 시작 입자 합 (f64)
                 _m = S.m.double(); _pv = S.v.double(); _pp = S.pa.double() if S.pa is not None else torch.zeros_like(_pv)
                 _ps = [float(_m.sum()), (_m[:, None] * _pv).sum(0), (_m[:, None] * _pp).sum(0), float((_m * _pv.norm(dim=-1)).sum()), float((_m * _pp.norm(dim=-1)).sum())]
-            redo, KF, VMX = S.step(fi * h), a.K, None
+            if a.ksplit > 0:                                                           # 절 CM24 (1b): 덜 풀린 걸음이 있으면 K 두 배로 프레임 다시 (시간 = 모든 시도의 재생 GPU 시간 합)
+                redo, KF, _ktr = AORT.split_step(S, fi * h, h, float(cfg["substep_dt"]), a.ksplit); VMX = None
+            else:
+                redo, KF, VMX = S.step(fi * h), a.K, None
     torch.cuda.synchronize(); WALL = 1e3 * (time.perf_counter() - _t0)
     gt = d["x"][fi + 1].to(dev).float()
     xo = S.x_orig()
@@ -401,7 +417,7 @@ for fi in range(L):
             if a.bar_cnt:
                 _nq = int(S.IP[12]); _bf = S.bcf[:_nq]; _bm = S.bx[:4 * _nq].view(-1, 4)[:, 3] > 0
                 c["bc"] = dict(hit=int(((_bf & 1) > 0).sum()), nsamp=int(_bm.sum()), hit_cells=int(torch.unique(torch.nonzero((_bf & 1) > 0).flatten() // 8).numel()))
-            c["y0k"] = [int(q) for q in S.y0k[:a.K].cpu()]
+            c["y0k"] = [int(q) for q in S.y0k[:S.K].cpu()]
     if a.dmg:                                                                         # 절 CM19 (결과 불변): 입자 손상 d (cdm = alp, pf = ysp 노드 d 보간), logJp, 이력 H (pf = alp)
         _okp = torch.isfinite(S.x).all(-1); _dp = (S.alp if a.dmg == "cdm" else S.ysp)[_okp]; _lj = S.ljp[_okp]; _nn_ = max(int(_okp.sum()), 1)
         c["dmg"] = dict(d05=float((_dp > 0.5).sum()) / _nn_, d01=float((_dp > 0.1).sum()) / _nn_, dmean=float(_dp.nan_to_num(0).mean()) if _dp.numel() else None, dmax=float(_dp.nan_to_num(0).max()) if _dp.numel() else None,
@@ -411,8 +427,9 @@ for fi in range(L):
             c["dmg"].update(Hmax=float(_H.nan_to_num(0).max()) if _H.numel() else None, Hmean=float(_H.nan_to_num(0).mean()) if _H.numel() else None, pfres=[float(q) for q in S.pfres[:a.K].cpu()])
     if a.nrec and int(S.IP[13]) == 0:                                                # 절 CM23.3 (결과 불변): 걸음 k·뉴턴 i 별 기록
         _sc = S.NRsc.cpu().numpy(); _c3 = S.NRct3.cpu().numpy(); _c7 = S.NRct7.cpu().numpy(); _cd = S.NRcd.cpu().numpy(); _st = S.NRst.cpu().numpy(); _fn = S.NRfin.cpu().numpy()
-        _nt = S.nt; _rows = []; _gend = []
-        for _k in range(a.K):
+        _nt = S.nt; _rows = []; _gend = []; _KN = S.K
+        _si = S.NRsi.cpu().numpy(); _kb = S.NRkb.cpu().numpy(); _k0 = S.NRk0.cpu().numpy(); _y0b = S.NRy0b.cpu().numpy()
+        for _k in range(_KN):
             _F2 = float(_cd[_k * _nt][2]); _F = math.sqrt(_F2) if _F2 > 0 else float("nan")
             for _i in range(_nt):
                 _j = _k * _nt + _i
@@ -421,14 +438,29 @@ for fi in range(L):
                 _g = math.sqrt(max(float(_sc[_j][1]), 0.0)) if (_ran or _stp) else None
                 _r = dict(k=_k, i=_i, ran=_ran, stop=bool(_stp), gF=(_g / _F if _g is not None else None))
                 if _ran:
-                    _r.update(nP=int(_c7[_j][3] - _c3[_j][3]), capP=int(_c7[_j][5] - _c3[_j][5]), st=float(_st[_j]))
+                    _r.update(nP=int(_c7[_j][3] - _c3[_j][3]), capP=int(_c7[_j][5] - _c3[_j][5]), st=float(_st[_j]), si=float(_si[_j]), kb=int(_kb[_j]))
                 _rows.append(_r)
             _gend.append(math.sqrt(max(float(_fn[_k][0]), 0.0)) / _F)
-        c["nr"] = dict(F=[math.sqrt(max(float(_cd[_k * _nt][2]), 0.0)) for _k in range(a.K)], it=_rows, gend=_gend,
-                       conv=[bool(any(r_["stop"] for r_ in _rows if r_["k"] == _k) or _gend[_k] <= a.tolN) for _k in range(a.K)])
+        c["nr"] = dict(F=[math.sqrt(max(float(_cd[_k * _nt][2]), 0.0)) for _k in range(_KN)], it=_rows, gend=_gend,
+                       conv=[bool(any(r_["stop"] for r_ in _rows if r_["k"] == _k) or _gend[_k] <= a.tolN) for _k in range(_KN)],
+                       k0=[int(q) for q in _k0[:_KN]], y0b=[float(q) for q in _y0b[:_KN]])
     if a.nrec:                                                                        # 질량중심 z (우리·정답, 정답 비유한 입자는 둘 다 뺌)
         _w = m64[_ok].double(); _w = _w / _w.sum()
         c["com"] = dict(z=float((_w * xo[_ok][:, 2].double()).sum()), gz=float((_w * gt[_ok][:, 2].double()).sum()))
+    if getattr(S, "ufj", False):                                                     # 절 CM24 (결과 불변): 걸음별 덜 풀림·보폭 최소 (마지막 시도)
+        c["uf"] = dict(fail=[int(q) for q in S.ufl[:S.K].cpu()], smin=[float(q) for q in S.ufs[:S.K].cpu()])
+    if a.ksplit > 0:
+        c["ks"] = dict(K=KF, tries=[list(q) for q in _ktr])
+    if a.erec and int(S.IP[13]) == 0:                                                # 절 CM24 (결과 불변, 읽기만): 입자 에너지·질량중심
+        from anchorflow import fem_wmkick_diag as _FRD
+        _mp = S.m.double(); _xp = S.x.double(); _vp = S.v.double(); _ok2 = torch.isfinite(_xp).all(-1) & torch.isfinite(_vp).all(-1)
+        _gv = torch.tensor([float(q) for q in cfg["g"]], device=_xp.device, dtype=torch.float64)
+        _nv = torch.tensor(FL["NR"] if FL else [0.0, 0.0, 1.0], device=_xp.device, dtype=torch.float64)
+        _Ee = _FRD._snh(S.F[_ok2], S.vol[_ok2], float(mu), float(lam))[0] if a.elx == "snh" else None
+        _M = float(_mp[_ok2].sum())
+        c["en"] = dict(KE=float(0.5 * (_mp[_ok2] * (_vp[_ok2] ** 2).sum(1)).sum()), PE=float(-(_mp[_ok2] * (_xp[_ok2] @ _gv)).sum()), Eel=_Ee,
+                       zc=float((_mp[_ok2] * (_xp[_ok2] @ _nv)).sum()) / _M, vz=float((_mp[_ok2] * (_vp[_ok2] @ _nv)).sum()) / _M, nfin=int(_ok2.sum()),
+                       lj0=(float((S.ljp[_ok2] > 0).double().mean()) if MATK == 7 else None))     # 손상 몫 = logJp > 0 (분모 = 위치 유한 입자, exe/wmdmg_stats.py 와 같은 정의)
     if a.frec > 0 and fi + 1 <= a.frec and int(S.IP[13]) == 0:                        # 절 CM23.4 (결과 불변, 읽기만)
         try:
             c["fr"] = FRC.frame(fi + 1)

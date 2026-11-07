@@ -8,6 +8,8 @@
 - ao_floor_n: rt_floor_n + 구속 인자 곱 + 거의 빈 노드 (질량 < 문턱) 는 관성 예측 고정.
   근사 하나: 바닥 이탈 (바깥 법선) 노드가 구속도 받으면 (k_구속 < 1) 세 성분 모두 k_바닥 k_구속 으로 (torch 판은 법선 성분에 k_구속 만) -- 구속 노드는 k_구속 이 사실상 0 이라 차이가 없다.
 시각은 장치 버퍼 tbuf[0] (프레임 시작 시각) 로 그래프 밖에서 매 프레임 채운다 (그래프는 한 번만 캡처)."""
+import math
+
 import numpy as np
 import torch
 
@@ -1230,6 +1232,32 @@ WB_SE2_OLD = "        ga[n*3+a] = st ? 0.f : a1;\n    }\n}\n"
 WB_SE2_NEW = "        ga[n*3+a] = st ? 0.f : a1;\n    }\n    if (stf_ && !st) { float an_ = ga[n*3]*WB_N0 + ga[n*3+1]*WB_N1 + ga[n*3+2]*WB_N2; ga[n*3] = an_*WB_N0; ga[n*3+1] = an_*WB_N1; ga[n*3+2] = an_*WB_N2; }\n}\n"
 
 
+# 절 CM24 (1b)·(2)·(3): 걸음 수렴 판정 (덜 풀린 걸음 표시) + 덜 풀린 걸음의 걸음 끝 갱신 바꾸기. 끄면 소스에 안 들어감.
+# 덜 풀린 걸음 = 허용치 εN 으로 멈추지 않았고 (CT[0] = 0; 허용치 판이 아니면 이 조건 없음) 그 걸음 뉴턴 반복 중 하나라도 보폭 SC[14] < 1 (뒤집힘·장벽 필터가 뉴턴 걸음을 자름).
+# 비유한 보폭은 잘림 (0) 으로. ufs[k] = 걸음 k 보폭 최소, ufl[k] = 덜 풀림 (1) / 아님 (0).
+UF_SRC = r"""
+__global__ void uf_init(float* ufs, int k) { ufs[k] = 1.f; }
+__global__ void uf_min(const double* SC, float* ufs, int k) { float s = (float)SC[14]; if (!(s == s)) s = 0.f; ufs[k] = fminf(ufs[k], s); }
+__global__ void uf_end(const int* CT, const float* ufs, int* ufl, int k, int adapt) { ufl[k] = ((adapt ? (CT[0] == 0) : 1) && ufs[k] < 1.f) ? 1 : 0; }
+"""
+UF_SIG_OLD = "float damp) {\n"
+UF_SIG_NEW = "float damp, const int* ufl, int um) {\n    int uf_ = (um == 3) ? 1 : ufl[0];                                        // um 1 = 덜 풀린 걸음 후퇴 오일러, 2 = 덜 풀린 걸음 가속도 기억 0, 3 = 모든 걸음 후퇴 오일러 갱신\n"
+UF_U_OLD = "        U[n*3+a] = u + dt*v + dt*dt*((0.5f - be)*an + be*a1);\n"
+UF_U_NEW = ("        if (uf_ && um != 2) { v1 = (y[n*3+a] - u)/dt; U[n*3+a] = y[n*3+a]; } else U[n*3+a] = u + dt*v + dt*dt*((0.5f - be)*an + be*a1);   // 후퇴 오일러: U1 = y, v1 = (y − U)/h\n"
+            "        if (uf_) a1 = 0.f;                                                     // 가속도 기억 0 (후퇴 오일러·(3))\n")
+
+
+def _uf_src(ao):
+    """절 CM24: 판정 커널 + ao_stepend_ga (장벽 판이면 장벽 치환 뒤 글자) 를 복사해 덜 풀린 걸음 갱신만 바꾼 ao_stepend_uf."""
+    i = ao.index("__global__ void ao_stepend_ga(")
+    j = ao.index("\n}\n", i) + 3
+    k = ao[i:j].replace("ao_stepend_ga(", "ao_stepend_uf(", 1)
+    for o_, n_ in ((UF_SIG_OLD, UF_SIG_NEW), (UF_U_OLD, UF_U_NEW)):
+        assert k.count(o_) == 1, o_
+        k = k.replace(o_, n_, 1)
+    return UF_SRC + k
+
+
 def _wb_kernels():
     """장벽 커널: 새 실행기 BAR_SRC 그대로 + 시작점·보폭 커널 넷 (rt_ga_y0·rt_y0mix·rt_ytry·rt_kstep, 새 실행기 SRC 에서 글자 그대로 잘라 옴) + WB_SRC."""
     from . import fem_an_rt as ARTN
@@ -1243,7 +1271,7 @@ def _wb_kernels():
     return "\n".join(out) + WB_SRC
 
 
-def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, lji=False):
+def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, lji=False, uf=False):
     s = ART.SRC.rstrip()
     if gqm:                                                                          # 절 CM9 --gq_mass: rt_p2g 노드 몫 빼고 (가우스 점 경로 커널은 끝에 덧붙임)
         from .fem_an_det import _sub_in
@@ -1276,7 +1304,7 @@ def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, 
         nr_ = [float(q) for q in bar["NR"]]
         wbh = ("\n__device__ float* AF_BX;\n__device__ float* AF_BPG;\n__device__ float* AF_BPH;\n__device__ int* AF_BACT;\n__device__ int AF_BDET;"
                "\n#define WB_N0 %.9ef\n#define WB_N1 %.9ef\n#define WB_N2 %.9ef" % tuple(nr_))
-    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg] + wbh, 1) + _pl_funcs() + _mv_half(DET.det_ao(ao)) + DET.det_ao(ao) + _bench_variants(ao) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + (_fpi_src() if fpi else "") + (_wb_kernels() if bar is not None else "") + (LJI_SRC if lji else "") + "\n}\n"
+    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg] + wbh, 1) + _pl_funcs() + _mv_half(DET.det_ao(ao)) + DET.det_ao(ao) + _bench_variants(ao) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + (_fpi_src() if fpi else "") + (_wb_kernels() if bar is not None else "") + (LJI_SRC if lji else "") + (_uf_src(ao) if uf else "") + "\n}\n"
     return _skipify(r) if tol else r
 
 
@@ -1293,7 +1321,10 @@ def _gq_src():
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", dmg="", pf_it=30, fpi=False, wbar=None, lji=False, bcnt=False, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", dmg="", pf_it=30, fpi=False, wbar=None, lji=False, bcnt=False, uf=None, **kw):
+        s.ufj = bool(uf and uf.get("judge"))                                           # 절 CM24: 걸음 수렴 판정 커널 (덜 풀린 걸음 표시; 끄면 소스·커널 열 그대로)
+        s.ue = {"": 0, "be": 1, "a0": 2, "beall": 3}[(uf or {}).get("ue", "")]         # 절 CM24 (2)·(3): 덜 풀린 걸음 갱신 (1 후퇴 오일러, 2 가속도 기억 0, 3 모든 걸음 후퇴 오일러 갱신)
+        assert not s.ue or s.ufj, "--ue 는 판정 커널 위"
         s.elx = str(elx)                                                                # 절 CM13: 수박 탄성 확장 ("" 끔, jbar, snh)
         s.dmg, s.pf_it = str(dmg), int(pf_it)                                           # 절 CM19: 손상 ("" 끔, cdm, pf), 위상장 PCG 반복 수
         assert not (s.dmg and det), "--dmg 는 비결정 판만"
@@ -1348,7 +1379,8 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj), options=("--std=c++14",))
+        assert not s.ue or s.ga is not None, "--ue 는 HHT·GA 판만"
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
         s.ao_ready = True
@@ -1396,12 +1428,15 @@ class AORTSolver(DET.DetMixin):
                 setattr(s, q, Z(*sh))
 
     def _nr_alloc(s):
-        n = s.K * s.nt
+        KA = max(s.K, getattr(s, "kalloc", s.K))                                       # 절 CM24: 걸음 수 상한으로 (걸음 수별 그래프가 같은 버퍼를 가리키게; 고정 K 판은 같은 크기)
+        n = KA * s.nt
         d, dv = torch.float64, s.dev
         if getattr(s, "NRsc", None) is None or s.NRsc.shape[0] != n:
             s.NRsc = torch.zeros(n, 64, device=dv, dtype=d); s.NRcd = torch.zeros(n, 4, device=dv, dtype=d); s.NRst = torch.zeros(n, device=dv, dtype=d)
             s.NRct3 = torch.zeros(n, 16, device=dv, dtype=torch.int32); s.NRct7 = torch.zeros(n, 16, device=dv, dtype=torch.int32)
-            s.NRfin = torch.zeros(s.K, 2, device=dv, dtype=d)
+            s.NRfin = torch.zeros(KA, 2, device=dv, dtype=d)
+            s.NRsi = torch.full((n,), -1.0, device=dv, dtype=d); s.NRkb = torch.full((n,), -1, device=dv, dtype=torch.int32)        # 절 CM24 진단: 반복별 뒤집힘 필터 보폭·장벽 보폭 k
+            s.NRk0 = torch.full((KA,), -1, device=dv, dtype=torch.int32); s.NRy0b = torch.full((KA,), -1.0, device=dv, dtype=d)     # 걸음별 시작점 실현 가능 k0·시작점 뒤집힘 필터 β
         names = ["f", "B", "H", "Dinv", "r", "z", "p", "dl", "Tp", "g0buf", "SC", "qb", "CT", "CD"] + (["bGn", "bKn", "bE"] if getattr(s, "wbar", None) is not None else [])
         bk = getattr(s, "NRbk", None)
         if bk is None or any(bk[q].shape != getattr(s, q).shape or bk[q].data_ptr() == getattr(s, q).data_ptr() for q in names if q in bk) or set(bk) != set(names):
@@ -1458,6 +1493,8 @@ class AORTSolver(DET.DetMixin):
             s.kk = I(2); s.bE = torch.zeros(4, device=s.dev, dtype=torch.float64); s.y0k = I(max(s.K, 1))
         if getattr(s, "gqm", False):                                                   # 절 CM9: 팔분 점·칸 질량 가중 속도·가속도 합
             s.gqP = Z(s.capQc * 8 * 6); s.gqC = Z(s.capQc * 6)
+        if getattr(s, "ufj", False):                                                   # 절 CM24: 걸음별 보폭 최소·덜 풀림 표시
+            s.ufs = Z(max(s.K, 1)); s.ufl = torch.zeros(max(s.K, 1), device=s.dev, dtype=torch.int32)
         s.awez = Z(s.capN, 3); s.awyb = Z(s.capN, 3); s.awdy = Z(s.capN, 3); s.awtd = Z(s.capN, 3)                     # 절 AS 시작점 (--y0z)
         if getattr(s, "dmg", "") == "pf":                                              # 절 CM19 위상장: 노드 d·PCG 벡터, 스칼라, 풀이별 상대 잔차
             s.pfd, s.pfb, s.pfg, s.pfr, s.pfz, s.pfp, s.pfA = (Z(s.capN) for _ in range(7))
@@ -1613,6 +1650,8 @@ class AORTSolver(DET.DetMixin):
                 s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), thv, *BA, i32(0), P(s.bGn), P(s.bKn), P(s.bE)))
                 s.zf(s.kk)
                 s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.ySv), P(s.U), thv, *[f(q) for q in nr], f(WB["PN"]), P(s.kk)))
+                if NR:                                                                     # 절 CM24 진단: 시작점 실현 가능 k0 (0 = 관성 예측 ŷ 실현 가능)
+                    s.NRk0[kstep:kstep + 1].copy_(s.kk[:1])
                 if WB.get("y0eb", True):
                     s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
                     s.k("rt_bar_y0e", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.ySv), P(s.U), thv, *BA, P(s.kk), P(s.SC), i32(59)))
@@ -1623,10 +1662,14 @@ class AORTSolver(DET.DetMixin):
                 s.k("aw_y0z_a", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.U if s.y0u else s.z0), P(s.y), P(s.awez), P(s.awyb), P(s.awdy), P(s.mn), f(s.mthr), i32(1 if s.y0l else 0)), b=256)
                 s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.awyb), P(s.awdy), P(s.awk)) + s._aw_end())
                 s.k("aw_pick", 1, (P(s.awk), P(s.awb), P(s.awst[4:])), b=1)
+                if NR:                                                                     # 절 CM24 진단: 시작점 뒤집힘 필터 β
+                    s.NRy0b[kstep:kstep + 1].copy_(s.awb[:1])
                 s.k("aw_y0z_b", capN, (P(IP), P(s.awb), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.awez), P(s.eta), P(s.y), P(s.mn), f(s.mthr), i32(1 if s.y0l else 0), P(s.awyb), P(s.awdy)), b=256)
             if D_ is not None:                                                         # 걸음 시작점
                 c_ = NSDM.code(kstep, 0); D_.node(s.y, D_.mN, c_); D_.q(s.y, c_)
             s.ctl(1)
+            if s.ufj:
+                s.k("uf_init", 1, (P(s.ufs), i32(kstep)), b=1)
             for it in range(s.nt):
                 s.ctl(2, it)
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
@@ -1705,17 +1748,25 @@ class AORTSolver(DET.DetMixin):
                         s.k("aw_tdir", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.dl), P(s.awtd)), b=256)
                     s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), P(s.awtd), P(s.awk)) + s._aw_end())
                     s.k("aw_pick", 1, (P(s.awk), P(s.SC[14:]), P(s.awst)), b=1)
+                    if NR:                                                                 # 절 CM24 진단: 이 반복 뒤집힘 필터 보폭 (장벽과 작은 쪽 고르기 전)
+                        s.NRsi[kstep * s.nt + it:kstep * s.nt + it + 1].copy_(s.SC[14:15])
                 if WB is not None:                                                     # 절 CM21 = 절 CM2 재질 판 장벽 보폭: 온 걸음 후보에서 활성 표본점 d > 0 인 최대 2^-k, 뒤집힘 필터 보폭과 작은 쪽
                     s.k("rt_ytry", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.wbyc)), b=256)
                     s.zf(s.kk)
                     s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.wbyc), P(s.U), thv, *[f(q) for q in nr], f(WB["PN"]), P(s.kk)))
+                    if NR:                                                                 # 절 CM24 진단: 이 반복 장벽 실현 가능 보폭 k
+                        s.NRkb[kstep * s.nt + it:kstep * s.nt + it + 1].copy_(s.kk[:1])
                     s.k("wb_kmin", 1, (P(s.kk), P(s.SC), i32(1 if s.lsinv else 0)), b=1)
                 if NR:                                                                 # 절 CM23.3: 보폭 (rt_lsup 이 쓰는 SC[14])
                     s.NRst[kstep * s.nt + it:kstep * s.nt + it + 1].copy_(s.SC[14:15])
                 s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.lsinv or WB is not None) else 1)), b=256)
+                if s.ufj and (s.lsinv or WB is not None):                                 # 절 CM24: 이 반복 보폭 (SC[14]) 을 걸음 최소에 (허용치로 멈춘 반복은 AF_SKIP 으로 빠짐)
+                    s.k("uf_min", 1, (P(s.SC), P(s.ufs), i32(kstep)), b=1)
                 if D_ is not None:                                                     # 뉴턴 it 끝
                     c_ = NSDM.code(kstep, it + 1, 1); D_.node(s.y, D_.mN, c_); D_.q(s.y, c_); D_.sc(c_)
             s.ctl(8)
+            if s.ufj:                                                                      # 절 CM24: 걸음 끝 덜 풀림 판정 (허용치로 안 멈췄고 보폭 최소 < 1)
+                s.k("uf_end", 1, (P(s.CT), P(s.ufs), P(s.ufl), i32(kstep), i32(1 if s.adapt else 0)), b=1)
             if NR:                                                                     # 절 CM23.3: 마지막 뉴턴 뒤 |g|² 한 번 더 (같은 식), 덮어쓰는 버퍼는 사본으로 되돌림 -> 결과 불변
                 assert s.aq, "--nrec 는 재질 커널 경로만"
                 for q_, t_ in s.NRbk.items():
@@ -1743,7 +1794,10 @@ class AORTSolver(DET.DetMixin):
                     getattr(s, q_).copy_(t_)
             if s.ga is not None:
                 c = s.ga_c
-                s.k("ao_stepend_ga", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp)), b=256)
+                if s.ue:                                                                       # 절 CM24 (2)·(3): 덜 풀린 걸음 (ufl[k] = 1) 갱신만 바꾼 같은 커널
+                    s.k("ao_stepend_uf", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp), P(s.ufl[kstep:]), i32(s.ue)), b=256)
+                else:
+                    s.k("ao_stepend_ga", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp)), b=256)
                 if FR:                                                                 # 절 CM23.4: 걸음 끝 속도·가속도·변위
                     s.FRv1[kstep].copy_(s.vk[:s.capN]); s.FRa1[kstep].copy_(s.gaA[:s.capN]); s.FRU1[kstep].copy_(s.U[:s.capN])
             elif s.th is not None:
@@ -2114,6 +2168,42 @@ def set_K(s, K, h, sub_dt):
         s.set_th()
     if s.floor:
         s.floor["KEX"] = s.dt / sub_dt
+
+
+def set_K_ga(s, K, h, sub_dt):
+    """절 CM24 (1b): 걸음 수 K (걸음 간격 h/K 균일) -- HHT·GA 판의 τ·α 도 다시 (set_K 는 중점·후퇴 오일러 식만), 바닥 KEX. 그래프는 K 마다 캐시 (s.graphs)."""
+    s.K = int(K)
+    s.dt = h / s.K
+    if s.ga is not None:
+        s.set_ga()
+    elif getattr(s, "th", None) is not None:
+        s.set_th()
+    else:
+        s.tau = s.dt / 2 if s.mid else s.dt
+        s.al = (2.0 / s.tau) if s.mid else (1.0 / s.tau)
+    if s.floor:
+        s.floor["KEX"] = s.dt / sub_dt
+
+
+def split_step(s, t, h, sub_dt, depth):
+    """절 CM24 (1b) 적응 걸음 쪼개기: K = 1 로 프레임을 풀고, 덜 풀린 걸음 (ufl, 판정 커널) 이 하나라도 있으면 그 프레임을 버리고 (입자 상태 되돌림)
+    K 를 두 배로 (모든 걸음 간격 반) 다시 -- 최대 K = 2^depth (그 깊이에서도 덜 풀리면 그 결과를 받음). 돌려줌: (다시 했는지, K, 시도 목록 [(K, 덜 풀린 걸음 수, ms)])."""
+    bk = s._bk()
+    tries, tot, redo = [], 0.0, False
+    for dp in range(depth + 1):
+        K = 1 << dp
+        if dp > 0:
+            s._rs(bk)
+        set_K_ga(s, K, h, sub_dt)
+        redo = s.step(t) or redo
+        ms = float(s.last_ms)
+        nf = int(s.ufl[:K].sum())
+        tries.append((K, nf, ms))
+        tot += ms
+        if nf == 0 or not math.isfinite(ms):
+            break
+    s.last_ms = tot
+    return redo, K, tries
 
 
 def adapt_step(s, t, h, cell, sub_dt, kmax, c=1.0):
