@@ -78,7 +78,8 @@ class ULDiag:
 
 # ======================= (후보 T) 시간 예산 뉴턴 상한 (결과 바뀜, 정의 변경) =======================
 # 정의: 프레임 GPU 시계 (globaltimer, 프레임 첫 시도의 첫 커널부터) 로, 뉴턴 반복 it ≥ xf (--xit_from; 덜 풀린 걸음의 '추가' 반복과 그 판정 잔차) 를 시작하기 전에
-#   경과 + C_it + C_tail ≤ B − m  이 아니면 그 걸음 나머지 반복을 건너뜀 (허용치 멈춤과 같은 CT[0] = 1·AF_SKIP = 1; 판정은 마지막으로 돈 반복 시작 잔차·보폭으로).
+#   경과 + C_it + C_tail ≤ B − m  이 아니면 그 걸음 나머지 반복을 건너뜀 (CT[0] = 1·AF_SKIP = 1). 자른 걸음의 덜 풀림 판정은 '뉴턴 상한에 닿은 걸음' 과 같게
+#   (뉴턴 고리 끝에서 CT[0] 을 0 으로 되돌려 cj_end·uf_end 가 마지막으로 돈 반복 시작 잔차·보폭으로 판정 -- 허용치 멈춤으로 보지 않음).
 #   C_it = 최근 8 프레임에서 실제로 돈 뉴턴 반복 (반복 시작 -> 다음 반복 시작 또는 뉴턴 고리 끝) 시간 최대, C_tail = 최근 8 프레임 뉴턴 고리 끝 -> 프레임 끝 시간 최대.
 #   반복 0 .. xf−1 은 늘 돎 (D 와 같음). 걸음 수 K > 1 시도 (쪼갠 걸음) 에는 안 검 (D 와 같음). 쪼개기·X3c 다시 하기도 같은 프레임 시계 (첫 시도 시작부터).
 # 결과가 GPU 속도에 따라 달라짐 (결정적 판도 시계로 자르므로 비트 대조 대상 아님).
@@ -86,12 +87,12 @@ TB_SRC = r"""
 extern "C" {
 __device__ unsigned long long TB_T0, TB_TP, TB_TL, TB_TE;
 __device__ unsigned long long TB_MIT[8], TB_MTL[8];
-__device__ int TB_NEWF, TB_RUN, TB_CUT, TB_FR, TB_GATES;
+__device__ int TB_NEWF, TB_RUN, TB_CUT, TB_FR, TB_GATES, TB_CS;
 __device__ __forceinline__ unsigned long long tb_now() { unsigned long long t; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t)); return t; }
 __global__ void tb_t0() {
     unsigned long long n = tb_now();
     if (TB_NEWF) { TB_T0 = n; TB_NEWF = 0; TB_FR = (TB_FR + 1) & 7; TB_MIT[TB_FR] = 0ull; TB_MTL[TB_FR] = 0ull; TB_CUT = 0; TB_GATES = 0; }
-    TB_RUN = 0; TB_TP = n;
+    TB_RUN = 0; TB_TP = n; TB_CS = 0;
 }
 __global__ void tb_tick(const int* CT, int op) {
     unsigned long long n = tb_now();
@@ -104,8 +105,10 @@ __global__ void tb_gate(int* CT, int* SKIP, unsigned long long B) {
     unsigned long long ci = 0ull, ct = 0ull;
     for (int i = 0; i < 8; i++) { if (TB_MIT[i] > ci) ci = TB_MIT[i]; if (TB_MTL[i] > ct) ct = TB_MTL[i]; }
     TB_GATES++;
-    if (tb_now() - TB_T0 + ci + ct > B) { CT[0] = 1; *SKIP = 1; TB_CUT++; }
+    if (tb_now() - TB_T0 + ci + ct > B) { CT[0] = 1; *SKIP = 1; TB_CUT++; TB_CS = 1; }
 }
+// 예산으로 자른 걸음은 '허용치로 멈춤' 이 아니라 '반복 상한에 닿음' 과 같게 판정되도록 뉴턴 고리 끝 (ctl 8, 판정 cj_end·uf_end 앞) 에서 CT[0] 을 0 으로 되돌림
+__global__ void tb_unmark(int* CT) { if (TB_CS) { CT[0] = 0; TB_CS = 0; } }
 __global__ void tb_end() { unsigned long long n = tb_now(); unsigned long long d = n - TB_TL; if (TB_TL > TB_T0 && d > TB_MTL[TB_FR]) TB_MTL[TB_FR] = d; TB_TE = n; }
 }
 """
@@ -156,7 +159,7 @@ def tb_install(B, m, out):
     from . import fem_common3 as C3
     from . import fem_wmrx as WRX
     TB.mod = cp.RawModule(code=TB_SRC)
-    for nm in ("tb_t0", "tb_tick", "tb_gate", "tb_end"):                               # 캡처 밖에서 미리 적재
+    for nm in ("tb_t0", "tb_tick", "tb_gate", "tb_end", "tb_unmark"):                               # 캡처 밖에서 미리 적재
         TB.fn[nm] = TB.mod.get_function(nm)
     TB.B, TB.m = float(B), float(m)
     Bns = np.uint64(int(round((TB.B - TB.m) * 1e6)))
@@ -167,24 +170,29 @@ def tb_install(B, m, out):
 
         def record(s, t_frame, K=None):
             s._tbK = int(K if K is not None else getattr(s, "Kcur", getattr(s, "K", 1)))
-            TB.k("tb_t0", ())
+            s._tbcap = bool(torch.cuda.is_current_stream_capturing())                  # 그래프 캡처 때만 넣음 (데움·첫 프레임·프로파일 같은 그래프 밖 실행은 시계·기록 안 건드림)
+            if s._tbcap:
+                TB.k("tb_t0", ())
             r = o(s, t_frame, K)
-            TB.k("tb_end", ())
+            if s._tbcap:
+                TB.k("tb_end", ())
             return r
         cls.record = record
 
     def gate(s):
-        if getattr(s, "_tbK", 1) == 1:
+        if getattr(s, "_tbK", 1) == 1 and getattr(s, "_tbcap", False):
             TB.k("tb_gate", (P(s.CT), _skip_ptr(s), Bns))
 
     def wrap_ctl(cls, ready):
         o = cls.ctl
 
         def ctl(s, op, it=0):
-            on = getattr(s, "adapt", False) and ready(s)
+            on = getattr(s, "adapt", False) and ready(s) and getattr(s, "_tbcap", False)
             xf = _xf(s)
             if on and op == 2 and xf > 0 and it >= xf:
                 gate(s)
+            if on and op == 8:
+                TB.k("tb_unmark", (P(s.CT),))
             o(s, op, it)
             if on and op in (2, 8):
                 TB.k("tb_tick", (P(s.CT), np.int32(op)))
@@ -403,9 +411,51 @@ def frame_hook_install(out):
                 n = x3e_frame_n()
                 if n is not None:
                     rec["x3e"] = n
+                ic = inv_counts(s)
+                if ic is not None:
+                    rec["inv"] = ic
                 log.write(json.dumps(rec) + "\n"); log.flush()
             return r
         return w
     ART.split_step = outer(ART.split_step)
     AORT.split_step = outer(AORT.split_step)
     WRX.split_col = outer(WRX.split_col)
+
+
+# ======================= (가속 I, 결과 불변) 수박 국소 장벽 보폭 ws_inv_q 에 절 CM36 --sp2 비트 16 과 같은 f32 증명 빠른 길 =======================
+# ws_inv_q = aw_inv_q 글자 + 점별 kq 출력 (fem_wmsparse._inv_q). 증명 (det(X + tD) 하한 > 1e-3 m³) 이면 f64 경로도 k = 0 이라 kq[q] = 0 (부르기 전 0 으로 채움)·
+# atomicMax 없음 -- 바로 돌아가도 출력 같음. mode 2 = 확인: 빠른 길 없이 f64 경로를 다 돌고, 증명 참인데 k > 0 인 점 수를 S3_INVBAD 에 (0 이어야), 증명 참 점 수 S3_INVOK.
+def inv_install(mode):
+    from . import fem_ao_rt as AORT
+    from . import fem_speed2 as SP2
+    o_s = AORT._src
+
+    def _src(*a, **kw):
+        r = o_s(*a, **kw)
+        if "ws_inv_q(" not in r:
+            return r
+        i, j = SP2._kernel_span(r, "ws_inv_q")
+        if "sp_cert(" not in r[:i]:
+            r = r[:i] + SP2.CERT_SRC.lstrip("\n") + r[i:]
+        if int(mode) == 1:
+            return SP2._sub_in(r, "ws_inv_q", SP2.INV_OLD, SP2.INV_NEW)
+        new = SP2.INV_NEW.replace("        if (ok_) return;\n    }\n", "        cert_ = ok_;\n    }\n").replace("    if (sp_cert(X0f, Dxf)) {", "    bool cert_ = false;\n    if (sp_cert(X0f, Dxf)) {", 1)
+        r = SP2._sub_in(r, "ws_inv_q", SP2.INV_OLD, new)
+        r = SP2._sub_in(r, "ws_inv_q", "    kq[q] = k;\n", "    kq[q] = k;\n    if (cert_) { atomicAdd(&S3_INVOK, 1); if (k > 0) atomicAdd(&S3_INVBAD, 1); }\n")
+        return r.replace('extern "C" {', 'extern "C" {\n__device__ unsigned long long S3_INVOK, S3_INVBAD;', 1)
+    AORT._src = _src
+    INV.mode = int(mode)
+
+
+class INV:
+    mode = 0
+
+
+def inv_counts(s):
+    if INV.mode != 2:
+        return None
+    import cupy as cp
+    a = cp.ndarray((1,), dtype=cp.uint64, memptr=s.mod.get_global("S3_INVOK")); b = cp.ndarray((1,), dtype=cp.uint64, memptr=s.mod.get_global("S3_INVBAD"))
+    o = [int(a[0]), int(b[0])]
+    a[0] = 0; b[0] = 0
+    return o

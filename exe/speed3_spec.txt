@@ -136,3 +136,80 @@ s3 zW_E W z D @tb 16.7 @w1 1
 s3 zF_E F z D @tb 16.7 @w1 1
 s3 zB_E B z D @tb 16.7 @w1 1
 s3 zM_E M3 z D @tb 16.7 @w1 1 @x3e 1e6
+# s4 고친 후보 T (예산으로 자른 걸음 = 뉴턴 상한에 닿은 걸음으로 판정), W2 = --ue_dil 1·2 (S 를 27 이웃으로 넓혀 경계 띠도 후퇴 오일러 -- s1 진단: 이탈 시작 프레임 빠른 노드 비율이 S 경계 띠 (S 밖 S 이웃) 에서 S 의 60 배·나머지의 12 배), I = 수박 ws_inv_q f32 증명 (결과 불변, @inv 2 = 확인 판)
+s4 M_Ichk M3 b D @inv 2
+s4 M_I_1 M3 b D @inv 1
+s4 M_I_2 M3 b D @inv 1
+s4 M_I_3 M3 b D @inv 1
+s4 M_I_4 M3 b D @inv 1
+s4 L_T_1 L n D @tb 16.7
+s4 L_T_2 L n D @tb 16.7
+s4 L_T_3 L n D @tb 16.7
+s4 L_T_4 L n D @tb 16.7
+s4 L_T_5 L n D @tb 16.7
+s4 L_T_6 L n D @tb 16.7
+s4 L_TD1_1 L n D @tb 16.7 --ue_dil 1
+s4 L_TD1_2 L n D @tb 16.7 --ue_dil 1
+s4 L_TD1_3 L n D @tb 16.7 --ue_dil 1
+s4 L_TD1_4 L n D @tb 16.7 --ue_dil 1
+s4 L_TD1_5 L n D @tb 16.7 --ue_dil 1
+s4 L_TD1_6 L n D @tb 16.7 --ue_dil 1
+s4 L_TD2_1 L n D @tb 16.7 --ue_dil 2
+s4 L_TD2_2 L n D @tb 16.7 --ue_dil 2
+s4 L_TD2_3 L n D @tb 16.7 --ue_dil 2
+s4 hL_D1 L d D --ue_dil 1
+s4 W_T_1 W nd D @tb 16.7
+s4 W_T_2 W nd D @tb 16.7
+s4 W_T_3 W nd D @tb 16.7
+s4 W_T_4 W nd D @tb 16.7
+s4 W_T_5 W nd D @tb 16.7
+s4 W_T_6 W nd D @tb 16.7
+s4 W_TD1_1 W nd D @tb 16.7 --ue_dil 1
+s4 W_TD1_2 W nd D @tb 16.7 --ue_dil 1
+s4 W_TD1_3 W nd D @tb 16.7 --ue_dil 1
+s4 W_TD1_4 W nd D @tb 16.7 --ue_dil 1
+s4 W_TD1_5 W nd D @tb 16.7 --ue_dil 1
+s4 W_TD1_6 W nd D @tb 16.7 --ue_dil 1
+s4 W_TD2_1 W nd D @tb 16.7 --ue_dil 2
+s4 W_TD2_2 W nd D @tb 16.7 --ue_dil 2
+s4 W_TD2_3 W nd D @tb 16.7 --ue_dil 2
+s4 W_TD2_4 W nd D @tb 16.7 --ue_dil 2
+s4 W_D1_1 W nd D --ue_dil 1
+s4 W_D1_2 W nd D --ue_dil 1
+s4 W_D1_3 W nd D --ue_dil 1
+s4 W_D1_4 W nd D --ue_dil 1
+s4 hW_D1 W d D --ue_dil 1
+s4 F_T_1 F nd D @tb 16.7
+s4 F_TD1_1 F nd D @tb 16.7 --ue_dil 1
+s4 F_T_2 F nd D @tb 16.7
+s4 F_TD1_2 F nd D @tb 16.7 --ue_dil 1
+s4 B_T_1 B nd D @tb 16.7
+s4 B_TD1_1 B nd D @tb 16.7 --ue_dil 1
+s4 M_TXI_1 M3 b D @tb 16.7 @x3e 1e6 @inv 1
+s4 M_TXI_2 M3 b D @tb 16.7 @x3e 1e6 @inv 1
+s4 M_TXI_3 M3 b D @tb 16.7 @x3e 1e6 @inv 1
+s4 M_TXI_4 M3 b D @tb 16.7 @x3e 1e6 @inv 1
+s4 M_TXI_5 M3 b D @tb 16.7 @x3e 1e6 @inv 1
+s4 M_TXI_6 M3 b D @tb 16.7 @x3e 1e6 @inv 1
+s4 M_TXID1_1 M3 b D @tb 16.7 @x3e 1e6 @inv 1 --ue_dil 1
+s4 M_TXID1_2 M3 b D @tb 16.7 @x3e 1e6 @inv 1 --ue_dil 1
+s4 M_TXID1_3 M3 b D @tb 16.7 @x3e 1e6 @inv 1 --ue_dil 1
+s4 M_TXID1_4 M3 b D @tb 16.7 @x3e 1e6 @inv 1 --ue_dil 1
+s4 M_TXID1_5 M3 b D @tb 16.7 @x3e 1e6 @inv 1 --ue_dil 1
+s4 M_TXID1_6 M3 b D @tb 16.7 @x3e 1e6 @inv 1 --ue_dil 1
+s4 zL_T L z D @tb 16.7
+s4 zL_TD1 L z D @tb 16.7 --ue_dil 1
+s4 zW_T W z D @tb 16.7
+s4 zW_TD1 W z D @tb 16.7 --ue_dil 1
+s4 zF_T F z D @tb 16.7
+s4 zF_TD1 F z D @tb 16.7 --ue_dil 1
+s4 zB_T B z D @tb 16.7
+s4 zB_TD1 B z D @tb 16.7 --ue_dil 1
+s4 zM_TXI M3 z D @tb 16.7 @x3e 1e6 @inv 1
+s4 zM_TXID1 M3 z D @tb 16.7 @x3e 1e6 @inv 1 --ue_dil 1
+s4 zM_I M3 z D @inv 1
+# s4k 연기 (6 프레임): 고친 T·I 확인 판·X3e+I·W2
+s4k kM_Ichk M3 b D @inv 2 --frames 6
+s4k kM_TXI M3 b D @tb 16.7 @x3e 1e6 @inv 1 --frames 6
+s4k kL_T L n D @tb 16.7 --frames 6
+s4k kW_TD1 W n D @tb 16.7 --ue_dil 1 --frames 6

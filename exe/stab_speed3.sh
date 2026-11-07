@@ -70,6 +70,7 @@ run() {   # run 이름 씬 방식 카드 플래그
   [ $s = F ] && [ -f $O/$n/pred.pt ] && $PY exe/fem_p_period.py --data $FI --pred $O/$n/pred.pt > $O/$n/period.txt 2>&1
   log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) $(tail -2 $O/$n/period.txt 2>/dev/null | tr '\n' ' ') $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   up $n; }
+[ -f exe/speed3_pre_$STG.sh ] && { log "앞 단계 스크립트 speed3_pre_$STG.sh"; bash exe/speed3_pre_$STG.sh $O $RO > $O/pre_$STG.out 2>&1; rclone copy $O $RO -q --include "pre_$STG.out"; }
 SPEC=$(grep -v '^#' exe/speed3_spec.txt | awk -v s=$STG '$1==s')
 # ---- 판정·비결정·진단 판 (카드마다 하나)
 while read -r st n s md x; do
