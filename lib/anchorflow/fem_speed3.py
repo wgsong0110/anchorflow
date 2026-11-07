@@ -435,11 +435,11 @@ def inv_install(mode):
         if "ws_inv_q(" not in r:
             return r
         i, j = SP2._kernel_span(r, "ws_inv_q")
-        if "sp_cert(" not in r[:i]:
-            r = r[:i] + SP2.CERT_SRC.lstrip("\n") + r[i:]
+        r = r[:i] + SP2.CERT_SRC.lstrip("\n").replace("sp_cert(", "s3_cert(") + r[i:]               # 같은 식, 이름만 (--sp2 16 이 aw_inv_q 앞에 넣는 sp_cert 와 겹치지 않게)
+        inew = SP2.INV_NEW.replace("sp_cert(", "s3_cert(")
         if int(mode) == 1:
-            return SP2._sub_in(r, "ws_inv_q", SP2.INV_OLD, SP2.INV_NEW)
-        new = SP2.INV_NEW.replace("        if (ok_) return;\n    }\n", "        cert_ = ok_;\n    }\n").replace("    if (sp_cert(X0f, Dxf)) {", "    bool cert_ = false;\n    if (sp_cert(X0f, Dxf)) {", 1)
+            return SP2._sub_in(r, "ws_inv_q", SP2.INV_OLD, inew)
+        new = inew.replace("        if (ok_) return;\n    }\n", "        cert_ = ok_;\n    }\n").replace("    if (s3_cert(X0f, Dxf)) {", "    bool cert_ = false;\n    if (s3_cert(X0f, Dxf)) {", 1)
         r = SP2._sub_in(r, "ws_inv_q", SP2.INV_OLD, new)
         r = SP2._sub_in(r, "ws_inv_q", "    kq[q] = k;\n", "    kq[q] = k;\n    if (cert_) { atomicAdd(&S3_INVOK, 1); if (k > 0) atomicAdd(&S3_INVBAD, 1); }\n")
         return r.replace('extern "C" {', 'extern "C" {\n__device__ unsigned long long S3_INVOK, S3_INVBAD;', 1)

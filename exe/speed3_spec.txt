@@ -211,5 +211,5 @@ s4 zM_I M3 z D @inv 1
 # s4k 연기 (6 프레임): 고친 T·I 확인 판·X3e+I·W2
 s4k kM_Ichk M3 b D @inv 2 --frames 6
 s4k kM_TXI M3 b D @tb 16.7 @x3e 1e6 @inv 1 --frames 6
-s4k kL_T L n D @tb 16.7 --frames 6
+s4k kL_T4 L n D @tb 16.7 --frames 6
 s4k kW_TD1 W n D @tb 16.7 --ue_dil 1 --frames 6
