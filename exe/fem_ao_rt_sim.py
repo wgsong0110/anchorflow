@@ -129,6 +129,9 @@ ap.add_argument("--wi", choices=["", "node", "jbar", "rec"], default="", help="�
                 "jbar = 필터 대신 그 반복 필터가 걸 점에 J 로그 장벽 (κ_J = --wi_kj x μ, 프레임 끝까지 유지; --ls_inv 없이), rec = 진단만 (결과 불변). lib/anchorflow/fem_wminv.py")
 ap.add_argument("--wi_r", type=int, default=4, help="절 CM29 node: 확인 라운드 수")
 ap.add_argument("--wi_kj", type=float, default=1.0, help="절 CM29 jbar: κ_J = 이 값 x μ")
+ap.add_argument("--gq_oct", type=float, default=-1.0, help="절 CM30 (a) (조정자 결정 11-08 정의 변경, 수박 --gq_mass --fl_bar 위): 점유 가중 κ -- 가우스 점 부피·질량·운동량 = (1 − κ) 팔분 칸 실제 + κ 칸 합 / 8 (새 실행기 --gq_oct 와 같은 식), 입자 보간에서 빈 팔분 점 뺌; 음수 = 끔. lib/anchorflow/fem_wmsparse.py")
+ap.add_argument("--gq_ored", action="store_true", help="절 CM30 (a) 재분배 판: 빈 팔분 점 0, 칸 합을 입자 있는 팔분 점에 똑같이 (운동량도), 입자 보간에서 빈 팔분 점 뺌")
+ap.add_argument("--ws_bar", type=int, default=0, help="절 CM30 (b): 장벽 실현 가능 보폭 국소화 -- 관통할 표본점이 걸친 노드만 자름 (뒤집힘 필터는 원래 전역), 확인 라운드 이 수 (어기면 원래 전역 보폭); 0 = 끔")
 ap.add_argument("--wi_rec", type=str, default="", help="절 CM29 진단 (결과 불변): 원래 필터가 거는 가우스 점 기록할 프레임 (예 3,4,5; 1 부터) -> fem.jsonl wi·wi_rec_f<프레임>.npz")
 ap.add_argument("--ks_it", type=str, default="", help="절 CM28 (e): --ksplit 쪼갠 시도 (K > 1) 의 뉴턴,PCG 상한 (예 8,20; 빈 값 = 기본 그대로)")
 a = ap.parse_args()
@@ -276,6 +279,11 @@ if MATK is not None:                                                            
         assert a.wi != "jbar" or (not a.ls_inv and a.elx == "snh"), "--wi jbar 는 --ls_inv 없이, --elx snh 위"
         WFD["wi"] = dict(mode=("" if a.wi == "rec" else a.wi), R=int(a.wi_r), kj=float(a.wi_kj) * float(mu), rec=bool(a.wi_rec), rec_frames=tuple(int(q) for q in a.wi_rec.split(",") if q))
         print(f"[절 CM29] {WFD['wi']}", flush=True)
+    if a.gq_oct >= 0 or a.gq_ored or a.ws_bar > 0:                                     # 절 CM30
+        assert MATK == 7 and WBAR is not None and a.gq_mass and not a.det, "절 CM30 은 수박 --gq_mass --fl_bar 비결정 판"
+        assert a.ws_bar == 0 or a.ls_inv, "--ws_bar 는 --ls_inv 위 (필터는 전역 그대로, 장벽만 국소로)"
+        WFD["ws"] = dict(oct=(float(a.gq_oct) if a.gq_oct >= 0 else None), red=bool(a.gq_ored), bar=int(a.ws_bar))
+        print(f"[절 CM30] {WFD['ws']}", flush=True)
     DMGI = None
     if a.dmg:                                                                         # 절 CM19: 손상 매개변수를 GF 수박 재질에서 유도 (정답 궤적에 맞추지 않음)
         assert MATK == 7 and a.elx == "snh" and not a.det, "--dmg 는 수박 --elx snh, 비결정 판만"
@@ -518,6 +526,9 @@ for fi in range(L):
             c["wi"]["rec"] = [_WI.rec_summary(_t, _md, _npc, float(FL["PN"]), FL["NR"], CELL, _hc) for _t in S.wi_att]
             np.savez_compressed(os.path.join(a.out, f"wi_rec_f{fi + 1}.npz"), **{f"K{_t['K']}_rows": _t["rows"] for _t in S.wi_att}, **{f"K{_t['K']}_ck": _t["ck"] for _t in S.wi_att})
             S.wi_att.clear()
+    if a.ws_bar > 0:                                                                  # 절 CM30 (b) (결과 불변 읽기): 마지막 시도 통계
+        from anchorflow import fem_wmsparse as _WS
+        c["ws"] = dict(st=_WS.frame_stats(S))
     if a.erec and int(S.IP[13]) == 0:                                                # 절 CM24 (결과 불변, 읽기만): 입자 에너지·질량중심
         from anchorflow import fem_wmkick_diag as _FRD
         _mp = S.m.double(); _xp = S.x.double(); _vp = S.v.double(); _ok2 = torch.isfinite(_xp).all(-1) & torch.isfinite(_vp).all(-1)

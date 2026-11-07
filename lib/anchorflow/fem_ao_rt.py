@@ -1315,6 +1315,9 @@ def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, 
         if wf.get("wi"):                                                             # 절 CM29: 뒤집힘 필터 국소화 (끄면 소스 글자 그대로)
             from . import fem_wminv as WI
             r = WI.apply(r, wf["wi"])
+        if wf.get("ws"):                                                             # 절 CM30: 성긴 가우스 점 정의·장벽 보폭 국소화 (끄면 소스 글자 그대로)
+            from . import fem_wmsparse as WS
+            r = WS.apply(r, wf["ws"])
     return _skipify(r) if tol else r
 
 
@@ -1391,7 +1394,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj, wf={k_: v_ for k_, v_ in s.wf.items() if k_ in ("seedb", "ljq", "ljq_xi", "rmsub", "rmsnh", "wi")}), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj, wf={k_: v_ for k_, v_ in s.wf.items() if k_ in ("seedb", "ljq", "ljq_xi", "rmsub", "rmsnh", "wi", "ws")}), options=("--std=c++14",))
         assert not s.ue or s.ga is not None, "--ue 는 HHT·GA 판만"
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
@@ -1516,6 +1519,9 @@ class AORTSolver(DET.DetMixin):
         if getattr(s, "wf", {}).get("wi"):                                             # 절 CM29: 국소 필터 버퍼
             from . import fem_wminv as WI
             WI.alloc(s)
+        if getattr(s, "wf", {}).get("ws"):                                             # 절 CM30 (b): 장벽 보폭 국소화 버퍼
+            from . import fem_wmsparse as WS
+            WS.alloc(s)
         s.kalloc = s.K
         s.K = K0
         s.graph = None
@@ -1781,16 +1787,20 @@ class AORTSolver(DET.DetMixin):
                 if s.wf.get("wi"):                                                     # 절 CM29: 국소 필터·J 장벽 표시·진단 (lib/anchorflow/fem_wminv.py)
                     from . import fem_wminv as WI
                     WI.newton(s, s.K, kstep, it, capN, capQ, nr, thv, WB, NR, None)
-                if WB is not None and not WIN:                                         # 절 CM21 = 절 CM2 재질 판 장벽 보폭: 온 걸음 후보에서 활성 표본점 d > 0 인 최대 2^-k, 뒤집힘 필터 보폭과 작은 쪽
+                WSB = bool(s.wf.get("ws", {}).get("bar"))                                # 절 CM30 (b): 노드별 장벽 보폭이 원래 장벽 보폭·갱신을 대신함 (필터는 원래 전역 그대로)
+                if WSB:
+                    from . import fem_wmsparse as WS
+                    WS.newton(s, kstep, it, capN, capQ, nr, thv, WB, NR)
+                if WB is not None and not WIN and not WSB:                                         # 절 CM21 = 절 CM2 재질 판 장벽 보폭: 온 걸음 후보에서 활성 표본점 d > 0 인 최대 2^-k, 뒤집힘 필터 보폭과 작은 쪽
                     s.k("rt_ytry", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.wbyc)), b=256)
                     s.zf(s.kk)
                     s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.wbyc), P(s.U), thv, *[f(q) for q in nr], f(WB["PN"]), P(s.kk)))
                     if NR:                                                                 # 절 CM24 진단: 이 반복 장벽 실현 가능 보폭 k
                         s.NRkb[kstep * s.nt + it:kstep * s.nt + it + 1].copy_(s.kk[:1])
                     s.k("wb_kmin", 1, (P(s.kk), P(s.SC), i32(1 if s.lsinv else 0)), b=1)
-                if NR and not WIN:                                                     # 절 CM23.3: 보폭 (rt_lsup 이 쓰는 SC[14])
+                if NR and not WIN and not WSB:                                         # 절 CM23.3: 보폭 (rt_lsup 이 쓰는 SC[14])
                     s.NRst[kstep * s.nt + it:kstep * s.nt + it + 1].copy_(s.SC[14:15])
-                if not WIN:
+                if not WIN and not WSB:
                   s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.lsinv or WB is not None) else 1)), b=256)
                 if s.ufj and (s.lsinv or WB is not None):                                 # 절 CM24: 이 반복 보폭 (SC[14]) 을 걸음 최소에 (허용치로 멈춘 반복은 AF_SKIP 으로 빠짐)
                     s.k("uf_min", 1, (P(s.SC), P(s.ufs), i32(kstep)), b=1)
