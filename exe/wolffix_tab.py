@@ -11,7 +11,7 @@ import torch
 O, GTP = sys.argv[1:3]
 NAMES = {"base": "기본 판 (장벽 바닥 + 보간 교체)", "a_ube": "(a) 덜 풀린 걸음 후퇴 오일러 갱신 (--ue be, 판정 2)", "b_ua0": "(b) 덜 풀린 걸음 가속도 기억 0 (--ue a0, 판정 2)",
          "c_loc": "(c) 국소 시작점 섞기 (--y0loc 3)", "d_locube": "(d) (a)+(c)", "e_phi": "(e) 구속 이동도 φ (--pbc_phi)", "e_phiube": "(e)+(a)",
-         "e_philoc": "(e)+(c)", "e_all": "(e)+(a)+(c)", "f_ks": "적응 쪼개기 --ksplit 3", "f_ksloc": "--ksplit 3 + (c)", "f_ksphi": "--ksplit 3 + (e)", "f_ksall": "--ksplit 3 + (c)+(e)"}
+         "e_philoc": "(e)+(c)", "e_all": "(e)+(a)+(c)", "f_ks": "적응 쪼개기 --ksplit 3", "f_ksloc": "--ksplit 3 + (c)", "f_ksphi": "--ksplit 3 + (e)", "f_ksall": "--ksplit 3 + (c)+(e)", "g_dks": "--ksplit 3 (판정 2) + (d)"}
 RUNS = sys.argv[3].split(",") if len(sys.argv) > 3 else list(NAMES)
 REF_END = "6d716537dd"
 

@@ -25,6 +25,7 @@ vf() { case $1 in
   f_ksloc) echo "--ksplit 3 --y0loc 3";;
   f_ksphi) echo "--ksplit 3 --pbc_phi";;
   f_ksall) echo "--ksplit 3 --y0loc 3 --pbc_phi";;
+  g_dks) echo "--ksplit 3 --y0loc 3 --ue be --uf_res";;
 esac; }
 dgof() { local x="--det --hgt --fhash --bar_cnt --nrec --prec 10:$2"; case "$(vf $1)" in *--ue*|*--ksplit*) ;; *) x="$x --ufrec --uf_res";; esac; echo "$x"; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/wolffix.log; rclone copyto $O/wolffix.log $RO/wolffix.log -q; }

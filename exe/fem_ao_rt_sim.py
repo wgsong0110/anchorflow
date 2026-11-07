@@ -80,6 +80,7 @@ ap.add_argument("--floor_slip", action="store_true", help="미끄럼 바닥 (들
 ap.add_argument("--fl_bar", action="store_true", help="절 CM21 (사용자 승인 11-07 정의 변경, 재질 판): 장벽 바닥 = 레고 (B) 정의 -- 팔분 표본점 (칸 입자 질량 중심) IPC 거리 장벽 (d̂ = ½ dx_정답, κ = (λ+2μ) V_q / d̂²), 법선 자유·고착은 접선에만, "
                 "보폭 = 뒤집힘 필터와 장벽 실현 가능 (활성 표본점 d > 0) 중 작은 쪽, HHT 고착 가속도 0 은 접선만 (--floor_slip 없이)")
 ap.add_argument("--fl_bst", type=int, default=0, choices=[0, 1], help="절 CM21 (--fl_bar 위): 1 = 띠 고착 (절 AN.21 bst 1: 표본점 d < d̂ 이면 고착 몫 1, 밖 0). 이 실행기는 1 만")
+ap.add_argument("--y0loc", type=int, default=0, help="절 CM27 (c) (--fl_bar 위, 새 실행기 exe/fem_an_rt_sim.py --y0loc 와 같은 정의·커널): 시작점 섞기 노드별 β, 확인 라운드 이 수 (0 = 끔, 소스 그대로)")
 ap.add_argument("--y0eb", action="store_true", help="절 CM21 (--fl_bar 위, 절 CM8 (B)): 시작점 = U 에서 관성 예측 쪽으로 장벽 에너지가 E(U) 이하인 가장 큰 2^-k (실현 가능 k 부터)")
 ap.add_argument("--bar_cnt", action="store_true", help="절 CM21 진단 (결과 불변, --fl_bar 위): 프레임마다 장벽 걸린 표본점 수 (어느 뉴턴 반복 기울기 위치에서든 활성이고 d < d̂) -> fem.jsonl bc")
 ap.add_argument("--lj_interp", action="store_true", help="절 CM21 (사용자 승인 11-07 정의 변경, 재질 판 수박): 마지막 걸음도 가우스 점에서 커밋 (RM·logJp) 한 뒤 입자 logJp 를 프레임 끝 가우스 점 logJp 의 칸 안 삼선형 보간 (절 CM20 과 같은 가중) 으로 교체. F 는 G2P 누적 그대로")
@@ -175,6 +176,8 @@ if a.fl_bar:                                                                    
     assert FL is not None and not a.floor_slip and a.fl_bst == 1 and a.ga_y0ut and not a.det, "--fl_bar 는 --floor vel, --floor_slip 없이, --fl_bst 1, --ga_y0ut, 비결정 판"
     _dh = 0.5 * DXG * a.bar_dhmul                                                    # 절 CM23.4 대조: 기본 (x 1) 이면 같은 값
     WBAR = dict(NR=FL["NR"], PN=FL["PN"], DH=_dh, KS=(float(lam) + 2.0 * float(mu)) / ((0.5 * DXG) if a.bar_dhk else _dh) ** 2 * a.bar_kmul, y0eb=a.y0eb)
+    if a.y0loc:                                                                        # 절 CM27 (c)
+        WBAR["y0loc"] = int(a.y0loc)
     if a.bar_kmul != 1.0 or a.bar_dhmul != 1.0:
         print(f"[절 CM23.4 대조] 장벽 κ x {a.bar_kmul}, d̂ x {a.bar_dhmul} (κ {'원래 d̂ 로 고정' if a.bar_dhk else '정의대로 d̂ 따름'}) -> d̂ {_dh:.6g} κ/V {WBAR['KS']:.6g}", flush=True)
     print(f"[절 CM21 장벽 바닥] 평면 {FL['PT']} 법선 {FL['NR']} d̂ {0.5 * DXG:.6g} κ/V {WBAR['KS']:.6g} 띠 고착 bst 1 시작점 y0eb {a.y0eb}", flush=True)
@@ -480,6 +483,8 @@ for fi in range(L):
                 _nq = int(S.IP[12]); _bf = S.bcf[:_nq]; _bm = S.bx[:4 * _nq].view(-1, 4)[:, 3] > 0
                 c["bc"] = dict(hit=int(((_bf & 1) > 0).sum()), nsamp=int(_bm.sum()), hit_cells=int(torch.unique(torch.nonzero((_bf & 1) > 0).flatten() // 8).numel()))
             c["y0k"] = [int(q) for q in S.y0k[:S.K].cpu()]
+            if getattr(S, "ykn", None) is not None:                                        # 절 CM27 (c) 진단
+                c["yl"] = S.YLS[:S.K, :5 + int(a.y0loc)].cpu().tolist()
     if a.dmg:                                                                         # 절 CM19 (결과 불변): 입자 손상 d (cdm = alp, pf = ysp 노드 d 보간), logJp, 이력 H (pf = alp)
         _okp = torch.isfinite(S.x).all(-1); _dp = (S.alp if a.dmg == "cdm" else S.ysp)[_okp]; _lj = S.ljp[_okp]; _nn_ = max(int(_okp.sum()), 1)
         c["dmg"] = dict(d05=float((_dp > 0.5).sum()) / _nn_, d01=float((_dp > 0.1).sum()) / _nn_, dmean=float(_dp.nan_to_num(0).mean()) if _dp.numel() else None, dmax=float(_dp.nan_to_num(0).max()) if _dp.numel() else None,

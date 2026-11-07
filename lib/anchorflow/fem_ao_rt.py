@@ -1262,7 +1262,7 @@ def _uf_src(ao):
     return UF_SRC + k
 
 
-def _wb_kernels():
+def _wb_kernels(bar=None):
     """장벽 커널: 새 실행기 BAR_SRC 그대로 + 시작점·보폭 커널 넷 (rt_ga_y0·rt_y0mix·rt_ytry·rt_kstep, 새 실행기 SRC 에서 글자 그대로 잘라 옴) + WB_SRC."""
     from . import fem_an_rt as ARTN
     out = [ARTN.BAR_SRC]
@@ -1272,7 +1272,7 @@ def _wb_kernels():
         out.append(ARTN.SRC[i:j])
     i = ARTN.SRC.index("__global__ void rt_kstep(")
     out.append(ARTN.SRC[i:ARTN.SRC.index("\n", i) + 1])
-    return "\n".join(out) + WB_SRC
+    return "\n".join(out) + WB_SRC + (ARTN.Y0L_SRC if (bar or {}).get("y0loc") else "")      # 절 CM27 (c) --y0loc: 새 실행기 커널 글자 그대로 (끄면 소스 그대로)
 
 
 def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, lji=False, uf=False, wf=None):
@@ -1308,7 +1308,7 @@ def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, 
         nr_ = [float(q) for q in bar["NR"]]
         wbh = ("\n__device__ float* AF_BX;\n__device__ float* AF_BPG;\n__device__ float* AF_BPH;\n__device__ int* AF_BACT;\n__device__ int AF_BDET;"
                "\n#define WB_N0 %.9ef\n#define WB_N1 %.9ef\n#define WB_N2 %.9ef" % tuple(nr_))
-    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg] + wbh, 1) + _pl_funcs() + _mv_half(DET.det_ao(ao)) + DET.det_ao(ao) + _bench_variants(ao) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + (_fpi_src() if fpi else "") + (_wb_kernels() if bar is not None else "") + (LJI_SRC if lji else "") + (_uf_src(ao) if uf else "") + "\n}\n"
+    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg] + wbh, 1) + _pl_funcs() + _mv_half(DET.det_ao(ao)) + DET.det_ao(ao) + _bench_variants(ao) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + (_fpi_src() if fpi else "") + (_wb_kernels(bar) if bar is not None else "") + (LJI_SRC if lji else "") + (_uf_src(ao) if uf else "") + "\n}\n"
     if wf:                                                                           # 절 CM28 (a)~(d): 원본 NACC 차이 없애기 (끄면 소스 글자 그대로)
         from . import fem_wmfrac as WF
         r = WF.apply(r, wf)
@@ -1506,6 +1506,9 @@ class AORTSolver(DET.DetMixin):
             s.bx = Z(s.capQc * 8 * 4); s.bact = I(s.capQc * 8); s.bpg = Z(s.capQc * 8); s.bph = Z(s.capQc * 8); s.bcf = I(s.capQc * 8)
             s.bGn = Z(s.capN); s.bKn = Z(s.capN); s.wbyc = Z(s.capN, 3); s.ySv = Z(s.capN, 3); s.eS = Z(s.capN, 3)
             s.kk = I(2); s.bE = torch.zeros(4, device=s.dev, dtype=torch.float64); s.y0k = I(max(s.K, 1))
+            if s.wbar.get("y0loc"):                                                    # 절 CM27 (c): 노드별 시작점 k, 확인 라운드, 진단
+                s.ykn = I(s.capN); s.ykn2 = I(s.capN); s.ylU = Z(s.capN, 3); s.ylE = Z(s.capN, 3); s.yfl = I(16)
+                s.YLS = I(4 * max(s.K, getattr(s, "kcap", 0), 1), 24)
         if getattr(s, "gqm", False):                                                   # 절 CM9: 팔분 점·칸 질량 가중 속도·가속도 합
             s.gqP = Z(s.capQc * 8 * 6); s.gqC = Z(s.capQc * 6)
         if getattr(s, "ufj", False):                                                   # 절 CM24: 걸음별 보폭 최소·덜 풀림 표시
@@ -1687,7 +1690,26 @@ class AORTSolver(DET.DetMixin):
                     s.k("rt_bar_y0e", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.ySv), P(s.U), thv, *BA, P(s.kk), P(s.SC), i32(59)))
                     s.k("rt_y0epick", 1, (P(s.SC), P(s.kk), i32(59)), b=1)
                 s.y0k[kstep:kstep + 1].copy_(s.kk[:1])                                 # 진단: 걸음별 시작점 k (1000 = β 0)
-                s.k("rt_y0mix", capN, (P(IP), P(s.kk), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eS), P(s.eta), P(s.y)), b=256)
+                if WB.get("y0loc"):                                                    # 절 CM27 (c): 노드별 β (새 실행기 fem_an_rt 와 같은 순서·커널; 전역 kk 는 진단·되돌림용)
+                    R_ = int(WB["y0loc"])
+                    YM = (P(IP), P(s.ykn), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.ylE), P(s.eS), P(s.eta), P(s.y))
+                    YC = lambda r_: (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.U), thv, *[f(q) for q in nr], f(WB["PN"]), P(s.ykn), P(s.ykn2), P(s.yfl[r_:]))
+                    s.ylU.copy_(s.y); s.ylE.copy_(s.eta)
+                    s.zf(s.ykn); s.zf(s.ykn2); s.zf(s.yfl)
+                    s.k("yl_kq", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.ylU), P(s.ySv), P(s.U), thv, *BA, i32(1 if WB.get("y0eb", True) else 0), P(s.ykn)))
+                    for r_ in range(R_):
+                        s.k("yl_mix", capN, YM, b=256)
+                        s.k("yl_chk", capQ, YC(r_))
+                        s.k("yl_merge", capN, (P(IP), P(s.ykn), P(s.ykn2)), b=256)
+                    s.k("yl_mix", capN, YM, b=256)
+                    s.k("yl_chk", capQ, YC(R_))
+                    s.k("yl_fb", capN, (P(IP), P(s.yfl[R_:]), P(s.kk), P(s.ykn)), b=256)
+                    s.k("yl_mix", capN, YM, b=256)
+                    s.YLS[kstep, :4].zero_()
+                    s.k("yl_st", capN, (P(IP), P(s.ykn), P(s.mn), P(s.YLS[kstep])), b=256)
+                    s.YLS[kstep, 4:4 + R_ + 1].copy_(s.yfl[:R_ + 1])
+                else:
+                    s.k("rt_y0mix", capN, (P(IP), P(s.kk), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eS), P(s.eta), P(s.y)), b=256)
             if s.y0z:                                                                  # 절 AS 시작점: y_z (영속도 위치) 에서 관성 시작점 쪽으로 뒤집힘 없는 최대 2^-k
                 s.k("aw_y0z_a", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.U if s.y0u else s.z0), P(s.y), P(s.awez), P(s.awyb), P(s.awdy), P(s.mn), f(s.mthr), i32(1 if s.y0l else 0)), b=256)
                 s.k("aw_inv_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.awyb), P(s.awdy), P(s.awk)) + s._aw_end())
