@@ -38,7 +38,16 @@ def zms(n):
     return (f"{sum(ms) / len(ms):.2f} · {max(ms):.2f}") if ms else "-"
 
 
-print("## 4. 회귀 -- 레고·ficus·wolf·bread 기본 판 K 1 (결정적 판정 판; 단독 시간은 비결정 a · b, ms 평균 · 최대 (첫 2 프레임 뺌))\n")
+def zt(s, v, r):
+    if v != "off":
+        return zms(f"z_{s}_{v}_{r}")
+    out = [f"{w}: {zms(f'z_{s}_off{w}_{r}')}" for w in VS if os.path.exists(f"{O}/z_{s}_off{w}_{r}")]
+    if os.path.exists(f"{O}/z_{s}_off_{r}"):
+        out.append("ks3: " + zms(f"z_{s}_off_{r}"))
+    return "; ".join(out) or "-"
+
+
+print("## 4. 회귀 -- 레고·ficus·wolf·bread 기본 판 K 1 (결정적 판정 판; 단독 시간은 비결정 a · b, ms 평균 · 최대 (첫 2 프레임 뺌); off 단독 시간은 판 묶음마다 같은 카드에서 판과 번갈아 잰 값)\n")
 print("| 씬 | 판 | 결과 | 오차 % | 끝 해시 (off 는 k1new K1 과 대조) | 덜 풀린 걸음 프레임 / 프레임 | 최종 K 분포 | 단독 ms a | 단독 ms b |")
 print("|---|---|---|---|---|---|---|---|---|")
 for s, nm in SC:
@@ -59,4 +68,4 @@ for s, nm in SC:
             if os.path.exists(p):
                 per = " (" + " ".join(open(p).read().split("\n")[-3:]).strip()[:120] + ")"
         em = f"{100 * sm['err_mean_done']:.2f}" if sm else "-"
-        print(f"| {nm} | {'K 1 기본 판 (off)' if v == 'off' else v} | {res(sm)} | {em}{per} | {hs} | {f'{nf} / {len(rows)}' if uf else '-'} | {dict(sorted(ks.items())) if ks else '-'} | {zms(f'z_{s}_{v}_a')} | {zms(f'z_{s}_{v}_b')} |")
+        print(f"| {nm} | {'K 1 기본 판 (off)' if v == 'off' else v} | {res(sm)} | {em}{per} | {hs} | {f'{nf} / {len(rows)}' if uf else '-'} | {dict(sorted(ks.items())) if ks else '-'} | {zt(s, v, 'a')} | {zt(s, v, 'b')} |")

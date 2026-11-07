@@ -84,6 +84,6 @@ zrun() { local n=$1 s=$2 x=$3 g=$4 c
   kill $wp 2>/dev/null
   log "$n 카드 $g $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200)"; up $n; }
 ZG=$(claim_wait $$); log "단독 시간 카드 $ZG"
-for s in L F W B; do for r in a b; do zrun z_${s}_off_$r $s "" $ZG; zrun z_${s}_${VN}_$r $s "$VF" $ZG; done; done
+for s in L F W B; do for r in a b; do zrun z_${s}_off${VN}_$r $s "" $ZG; zrun z_${s}_${VN}_$r $s "$VF" $ZG; done; done          # off 시간도 판마다 (같은 카드에서 판과 번갈아; 판 묶음끼리 이름 안 겹침)
 rm -f $CL/$ZG
 log "단계 끝 reg $VN"
