@@ -1,0 +1,4 @@
+# 절 CM35 영상: 후보 BG (레고·wolf 결정적 덤프 3DGS, 수박 셀 1.5 손상 색)
+L_BG L --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+W_BG W --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+M15_BG M15 --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50

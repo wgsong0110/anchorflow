@@ -205,3 +205,14 @@ s3 W_BG0_n7 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls
 s3 W_BG0_n8 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
 s3 W_BG0_n9 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
 s3 W_BG0_n10 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+# s4: 후보 BG (--ue_loc 50) ficus·bread 회귀 (결정적 해시 대조) + 단독 시간 (레고·wolf·ficus·bread·수박 셀 1.5·3)
+s4 F_off F d
+s4 F_BG F d --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s4 B_off B d
+s4 B_BG B d --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s4 zL_BG L z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s4 zW_BG W z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s4 zF_BG F z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s4 zB_BG B z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s4 zM15_BG M15 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s4 zM3_BG M3 z --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
