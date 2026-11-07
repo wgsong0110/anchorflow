@@ -107,6 +107,7 @@ ap.add_argument("--qjd", action="store_true", help="절 CM18 진단 (결과 불�
 ap.add_argument("--pdiag", action="store_true", help="절 S.8 진단 (결과 불변): 프레임마다 입자 J = det F 최소·최대·J ≤ 0 수, 이상 입자 (J ≤ 0.05·J > 5·비유한) 수·바닥 위 높이·B-스플라인 칸 (바닥 관통 칸 여부)·오차 꼬리를 fem.jsonl pd 에, 처음 이상 프레임부터 5 프레임 이상 입자 번호를 pdiag_f<프레임>.npy 에")
 ap.add_argument("--wdiag", type=int, default=-1, help="절 S.9 진단 (결과 불변, --tolN/--tolP 판): 프레임마다 가우스 점 det (걸음 시작점·뉴턴 반복 끝·걸음 끝 U)·뉴턴 |g|/F·PCG 반복·상한·보폭을 fem.jsonl wd 에, 이 프레임 (1 부터) 부터 --wdiag_end 까지 원자료 wd_f<프레임>.npz (lib/anchorflow/k4why_diag.py); --gfin 과 함께")
 ap.add_argument("--wdiag_end", type=int, default=10 ** 6)
+ap.add_argument("--wdiag_pos", action="store_true", help="폭증 프레임 그림 (결과 불변): 원자료 창 프레임마다 시점별 입자·뒤집힌 가우스 점 위치 (노드 변위 보간)·노드 월드 위치를 wd_f<프레임>_pos.npz 로")
 ap.add_argument("--wdiag_cap", type=int, default=2000000, help="절 S.10: 노드 용량이 이보다 크면 (상자 폭증) 진단 버퍼·복사를 끔 (메모리만, 결과 불변)")
 ap.add_argument("--fhash", action="store_true", help="절 S.9 (결과 불변, 호스트만): 프레임마다 입자 위치 해시 (sha1 앞 10 자리) 를 fem.jsonl xh 에 -- 진단 켬·끔 대조")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
@@ -363,7 +364,7 @@ for fi in range(L):
         _win = a.wdiag <= fi + 1 <= a.wdiag_end
         try:
             c["wd"] = KWD.frame(S, fi, a.tolN, _Jp0, _Jp1, _x0o, FL["NR"] if FL else [0.0, 0.0, 1.0], FL["PN"] if FL else 0.0,
-                                out=os.path.join(a.out, f"wd_f{fi + 1}.npz") if _win else None)
+                                out=os.path.join(a.out, f"wd_f{fi + 1}.npz") if _win else None, pos=a.wdiag_pos)
         except torch.OutOfMemoryError as _ex:                                          # 절 S.10: 진단 계산만 메모리 부족 (풀이 상태 안 바뀜) -> 이 프레임 진단 없음
             c["wd"] = dict(off=True, oom=str(_ex)[:120])
         torch.cuda.empty_cache()                                                       # 진단이 잡은 메모리를 돌려줌 (풀이 메모리 여유를 원래 판과 같게)

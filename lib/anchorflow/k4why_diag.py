@@ -50,7 +50,38 @@ def _s10_nodes(S, nn, nidx, K, nt):
                 n_me=Me.cpu().numpy(), tau=np.array(S.wd_tau[:K] if S.wd_tau else [float("nan")] * K), n_mraw=S.mn[:nn][nidx].cpu().numpy())
 
 
-def frame(S, fi, tolN, Jp0, Jp1, x0o, nr, pn, out=None):
+def _interp(S, x, snaps, nn, lo, nb, CH=262144):
+    """폭증 프레임 그림용 (--wdiag_pos, 결과 불변): 점 x [n,3] (월드, 프레임 시작) 을 스냅샷 노드 변위 y 로 이차 B-스플라인 보간 -> [NS, n, 3] (월드).
+    G2P 와 같은 기저 (fb = floor(Ai x − 0.5), w = 0.5 (1.5−f)², 0.75−(f−1)², 0.5 (f−0.5)²); 상자 밖 노드는 0 (그런 점은 nan)."""
+    dev = x.device
+    Ai = S.Ai.double().reshape(3, 3)
+    NS = len(snaps)
+    out = torch.full((NS, x.shape[0], 3), float("nan"), device=dev, dtype=torch.float32)
+    nbt = torch.tensor(nb, device=dev)
+    for s0 in range(0, x.shape[0], CH):
+        s1 = min(x.shape[0], s0 + CH)
+        xx = x[s0:s1].double()
+        g = xx @ Ai.T
+        fb = torch.floor(g - 0.5)
+        fx = g - fb
+        rel = fb.long() - lo[None]
+        w = torch.stack([0.5 * (1.5 - fx) ** 2, 0.75 - (fx - 1) ** 2, 0.5 * (fx - 0.5) ** 2], 1)   # [m, 3 (기저), 3 (축)]
+        ok = ((rel >= 0) & (rel + 2 < nbt[None])).all(1)
+        acc = torch.zeros(NS, s1 - s0, 3, device=dev, dtype=torch.float64)
+        for o in range(27):
+            i_, j_, k_ = o // 9, (o // 3) % 3, o % 3
+            idx = ((rel[:, 0] + i_) * nb[1] + (rel[:, 1] + j_)) * nb[2] + (rel[:, 2] + k_)
+            idx = torch.where(ok, idx, torch.zeros_like(idx)).clamp(0, nn - 1)
+            ww = (w[:, i_, 0] * w[:, j_, 1] * w[:, k_, 2])[:, None]
+            for si, Y in enumerate(snaps):
+                acc[si] += ww * Y[:nn].double()[idx]
+        r = (xx[None] + acc).float()
+        r[:, ~ok] = float("nan")
+        out[:, s0:s1] = r
+    return out
+
+
+def frame(S, fi, tolN, Jp0, Jp1, x0o, nr, pn, out=None, pos=False):
     """프레임 fi (0 부터) 뒤 진단. Jp0·Jp1 = 프레임 시작·끝 입자 det F (원래 순서), x0o = 프레임 시작 입자 위치 (원래 순서), nr·pn = 바닥 법선·평면 값.
     돌려줌: fem.jsonl 용 요약 dict. out 이 있으면 원자료 npz."""
     dev = S.x.device
@@ -168,4 +199,14 @@ def frame(S, fi, tolN, Jp0, Jp1, x0o, nr, pn, out=None):
             **_s10_nodes(S, nn, nidx, K, nt),
             p_J0=Jp0.float().cpu().numpy(), p_J1=Jp1.float().cpu().numpy(), p_x0=x0o.float().cpu().numpy(), p_q=pq.int().cpu().numpy(),
             cellh=np.array([float(S.A.reshape(3, 3)[:, 0].norm())]), vmed=np.array([vmed]), mmed=np.array([mmed]))
+        if pos:                                                                        # 폭증 프레임 그림 (--wdiag_pos): 시점별 입자·뒤집힌 가우스 점 위치, 노드 월드 위치
+            nbl = [int(v) for v in ip[6:9]]
+            px = _interp(S, x0o, snaps, nn, lo, nbl)
+            qinv = torch.nonzero((Jn[sel] <= 0).any(1)).squeeze(1)                     # sel 안 순번 (q_* 배열 기준)
+            qx = _interp(S, xq[sel[qinv]], snaps, nn, lo, nbl)
+            A = S.A.double().reshape(3, 3)
+            np.savez_compressed(out.replace(".npz", "_pos.npz"), frame=np.array([fi + 1]), K=np.array([K]), nt=np.array([nt]), A=A.cpu().numpy(), nr=np.array(nr), pn=np.array([pn]),
+                                lo=np.array(ip[0:3]), nb=np.array(ip[6:9]), n_X=(ngc.double() @ A.T).float().cpu().numpy(), p_xs=px.cpu().numpy(), q_inv=qinv.int().cpu().numpy(),
+                                q_xs=qx.cpu().numpy(), p_x0=x0o.float().cpu().numpy())
+            del px, qx
     return o
