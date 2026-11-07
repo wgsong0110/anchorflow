@@ -68,7 +68,7 @@ say "[자료] wm.pt $(ls -la $WMD/wm.pt 2>&1 | awk '{print $5}') 3DGS $(du -sh $
 [ -s $WMD/wm.pt ] && [ -f $GTD/meta.json ] && [ -s $B/gt_wmd_stats.json ] || fail "[자료 실패] $(tail -3 /dev/shm/dkta/ag_data/cv_wm_rend.log 2>&1 | tr '\n' ' ')"
 NG=$(nvidia-smi -L | wc -l); C1=$(( NG > 1 ? 1 : 0 ))
 # ---- 연기: 새 커널 컴파일·3 프레임 (cdm·pf, 셀 1.5) -- 실패면 멈춤
-for v in cdm pf; do O=/root/wg/smoke_$v; mkdir -p $O; cm_scene wm --gq_mass --elx snh --dmg $v --frames 3
+for v in cdm pf; do O=/root/wg/smoke_$v; grep -q "롤아웃" $O/log.txt 2>/dev/null && continue; mkdir -p $O; cm_scene wm --gq_mass --elx snh --dmg $v --frames 3
   CUDA_VISIBLE_DEVICES=0 timeout 900 $PY -u $SIM --out $O --tag wm $DA $XA < /dev/null > $O/log.txt 2>&1
   say "  [연기 $v] rc=$? $(grep -a '절 CM19\|롤아웃\|rror' $O/log.txt | tail -3 | cut -c1-400 | tr '\n' ' ')"
   grep -q "롤아웃" $O/log.txt || { rclone copy $O $RR/smoke_$v -q; fail "[연기 실패] $v $(tail -5 $O/log.txt | tr '\n' ' ' | cut -c1-900)"; }
@@ -170,12 +170,13 @@ for c in c15 $FAST; do
   read RS FS < <(pick s $c); read RC FC < <(pick ct $c); read RP FP < <(pick pt $c)
   echo "$c $RS $FS $RC $FC $RP $FP" >> $B/video_runs.txt
   say "[렌더 판] 셀 $c: SNH $RS (완주 $FS) CDM $RC ($FC) 위상장 $RP ($FP)"
-  for r in $RS $RC $RP; do [ "$r" = - ] || { rclone copyto $RR/$r/pred.pt $B/$r/pred.pt -q & }; done; wait
-  # 차례로 셋씩 (카드 0·1 나눔)
-  ( [ "$RS" = - ] || { rend $RS lj 0; rend $RS plain 0; } ) &
-  ( [ "$RC" = - ] || { rend $RC lj $C1; rend $RC d $C1; } ) &
-  ( [ "$RP" = - ] || { rend $RP lj 0; rend $RP d $C1; } ) &
-  wait
+  # (고침: 인자 없는 wait 가 표 고리 (PT) 까지 기다려 멈춤 -> 이 단계 pid 만 기다림)
+  PD=""; for r in $RS $RC $RP; do [ "$r" = - ] || [ -s $B/$r/pred.pt ] || { rclone copyto $RR/$r/pred.pt $B/$r/pred.pt -q & PD="$PD $!"; }; done; [ -n "$PD" ] && wait $PD
+  # 셋 동시 (카드 0·1 나눔)
+  ( [ "$RS" = - ] || { rend $RS lj 0; rend $RS plain 0; } ) & P1=$!
+  ( [ "$RC" = - ] || { rend $RC lj $C1; rend $RC d $C1; } ) & P2=$!
+  ( [ "$RP" = - ] || { rend $RP lj 0; rend $RP d $C1; } ) & P3=$!
+  wait $P1 $P2 $P3
   for r in $RS $RC $RP; do rm -rf $B/$r/h5_fem $B/$r/sc_lj $B/$r/sc_d $B/$r/pred.pt; done
 done
 touch /root/wg/all.done; kill $PT 2>/dev/null
