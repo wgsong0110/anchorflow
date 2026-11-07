@@ -1324,7 +1324,7 @@ def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, 
         if wf.get("en"):                                                             # 절 CM33: 에너지 생성 고침 후보·진단 (끄면 소스 글자 그대로)
             from . import fem_wmen as EN
             r = EN.apply(r, wf["en"])
-    if c1 and (c1.get("dil") or (int(c1.get("uel", 0)) & 8)):                       # 절 CM35 --ue_dil·--ue_loc 비트 8 (끄면 소스 글자 그대로)
+    if c1 and (c1.get("dil") or (int(c1.get("uel", 0)) & 24)):                       # 절 CM35 --ue_dil·--ue_loc 비트 8 (끄면 소스 글자 그대로)
         from . import fem_common2 as C2
         r = C2.c2ify(r, True, False)
     return _skipify(r) if tol else r
@@ -1350,7 +1350,7 @@ class AORTSolver(DET.DetMixin):
         assert not s.ue or s.ufj, "--ue 는 판정 커널 위"
         s.uel = int((uf or {}).get("uel", 0)); s.ls0 = bool((uf or {}).get("ls0", False))   # 절 CM31 --ue_loc (2 만: --y0loc β<1 노드) · --ls0_keep
         s.udil = int((uf or {}).get("dil", 0))                                          # 절 CM35 --ue_dil (S 를 27 이웃으로 넓힘)
-        assert not s.uel or (s.ue in (1, 2) and s.uel in (2, 8, 10)), "옛 실행기 --ue_loc 는 2·8·10 (비트 8 절 CM35: 노드별 보폭으로 자른 노드), --ue be·a0 위"
+        assert not s.uel or (s.ue in (1, 2) and s.uel & 26 and not (s.uel & ~26)), "옛 실행기 --ue_loc 는 비트 2·8·16 합 (절 CM35: 8 노드별 보폭으로 자른 노드, 16 HHT 갱신이 속도를 뒤집는 노드), --ue be·a0 위"
         assert not s.udil or s.uel, "--ue_dil 은 --ue_loc 위"
         s.elx = str(elx)                                                                # 절 CM13: 수박 탄성 확장 ("" 끔, jbar, snh)
         s.dmg, s.pf_it = str(dmg), int(pf_it)                                           # 절 CM19: 손상 ("" 끔, cdm, pf), 위상장 PCG 반복 수
@@ -1899,6 +1899,8 @@ class AORTSolver(DET.DetMixin):
                     if s.uel & 8:                                                      # 절 CM35 비트 8: 이 걸음 노드별 국소 보폭으로 자른 노드 (절 CM33 en_cut)
                         assert ENW, "--ue_loc 비트 8 은 절 CM33 en 버퍼 (--xit_from·--en_mo 등) 위"
                         s.k("ul_cut", capN, (P(IP), P(s.ENcut), P(s.ulm)), b=256)
+                    if s.uel & 16:                                                     # 절 CM35 비트 16: HHT 갱신이 속도를 뒤집는 노드
+                        s.k("ul_flip", capN, (P(IP), f(s.al), P(s.y), P(s.z0), P(s.vk), P(s.ulm)), b=256)
                     if getattr(s, "udil", 0):                                          # 절 CM35 --ue_dil
                         from . import fem_common2 as C2
                         C2.dilate(s, capN, IP, s.udil)

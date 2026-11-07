@@ -27,7 +27,7 @@ nw() { case " $1 " in *" --newton "*) echo "$1" | sed 's/.*--newton \([0-9]*\).*
 dg_of() { local s=$1 md=$2 f=" $3 " x
   case $s in L) x="--det --hgt --fhash --pdiag --qjd --bar_cnt";; W) x="--det --hgt --fhash --bar_cnt";; F) x="--det --pdiag --qjd --fhash --dump";; B) x="--det --pdiag --qjd --fhash";; M*) x="";; esac
   case $s in M*) case $md in a) x="--qjd --jdiag --bar_cnt --erec --ufrec --nrec --enrec 100";; b|z) x="--erec";; esac; echo "$x"; return;; esac
-  case $md in nd) x="${x/--det /}";; z|n) x="";; esac
+  case $md in nd) x="${x/--det /}"; [ $s = W ] && x="$x --dump --dump_part";; z|n) x="";; esac   # wolf 비결정: 입자 이탈 진단용 덤프 (결과 불변)
   [ $md = z ] || [ $md = n ] || case "$f" in *" --ue "*|*" --ksplit "*) ;; *) x="$x --ufrec --uf_res";; esac
   echo "$x"; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/common2_$STG.log; rclone copyto $O/common2_$STG.log $RO/common2_$STG.log -q; }
@@ -53,6 +53,8 @@ run() {   # run 이름 씬 방식 카드 플래그
   CUDA_VISIBLE_DEVICES=$g timeout 7200 $PY -u $c --out $O/$n < /dev/null > $O/$n/log.txt 2>&1
   local rc=$?
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/$n/apps_at_end.txt 2>&1
+  if [ $s = W ] && [ -f $O/$n/pred.pt ]; then                                               # 입자 이탈·조밀 상자 (exe/speed1_bbox.py, 절 CM34 진단)
+    $PY exe/speed1_bbox.py $AG/wolf.pt $(grep -aom1 "셀 [0-9.]* m" $O/$n/log.txt | awk '{print $2}') $O/$n/pred.pt > $O/$n/bbox.txt 2>&1; fi
   [ $s = F ] && [ -f $O/$n/pred.pt ] && $PY exe/fem_p_period.py --data $FI --pred $O/$n/pred.pt > $O/$n/period.txt 2>&1
   log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) $(tail -2 $O/$n/period.txt 2>/dev/null | tr '\n' ' ') $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   up $n; }

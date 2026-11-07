@@ -104,8 +104,12 @@ for sc, title, ts in (("L", "레고 (80 프레임; 정답 질량중심 z f10 · 
     if not rows:
         continue
     print(f"## {title}\n")
-    print("| 판 | 플래그 | 결정적 오차 % | 덜 풀린 걸음 | 질량중심 z mm | 뉴턴 평균 | 비결정 오차 % 평균 [최소~최대] (n, 발산) | 단독 ms a · b (평균/최대) |")
-    print("|---|---|---|---|---|---|---|---|")
+    if sc == "W":
+        print("| 판 | 플래그 | 결정적 오차 % | 덜 풀린 걸음 | 질량중심 z mm | 뉴턴 평균 | 비결정 오차 % 평균 [최소~최대] (n, 발산) | 단독 ms a · b (평균/최대) | 비결정 입자 이탈 판 (몸 상자 4 칸 밖) | 비결정 노드 상자 최대 | 비결정 최악 프레임 ms (다른 카드 동시) |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|")
+    else:
+        print("| 판 | 플래그 | 결정적 오차 % | 덜 풀린 걸음 | 질량중심 z mm | 뉴턴 평균 | 비결정 오차 % 평균 [최소~최대] (n, 발산) | 단독 ms a · b (평균/최대) |")
+        print("|---|---|---|---|---|---|---|---|")
     for b, v in rows:
         r = rd(v["d"]) if v["d"] else None
         e, dv = err(v["d"]) if v["d"] else (None, None)
@@ -117,7 +121,20 @@ for sc, title, ts in (("L", "레고 (80 프레임; 정답 질량중심 z f10 · 
         ok = [x for x, d in ne if x is not None and not d]
         ndv = [d for x, d in ne if d]
         nd = "-" if not ne else (f"{sum(ok) / len(ok):.2f} [{min(ok):.2f}~{max(ok):.2f}] ({len(ne)}, {len(ndv)}{(' ' + ','.join(('f' + str(q)) if isinstance(q, int) else str(q) for q in ndv)) if ndv else ''})" if ok else f"- ({len(ne)}, {len(ndv)} {ndv})")
-        print(f"| {b} | `{flags(v['fl']) or '-'}` | {ed} | {fmt(nuf(r), 0) if r else '-'} | {cz} | {fmt(sum(nN) / len(nN)) if nN else '-'} | {nd} | {zcol(b, sc)} |")
+        wx = ""
+        if sc == "W":                                                                 # 절 CM34 조정자 요청: 입자 이탈·노드 상자 최대·최악 프레임 (비결정 판)
+            far, dm, nnm, msm = [], [], [], []
+            for n in v["n"]:
+                rr = rd(n) or []
+                nnm.append(max([x.get("nn", 0) for x in rr] or [0])); msm.append(max([x["ms"] for x in rr if x["t"] >= 2 and x.get("ms") is not None and math.isfinite(x["ms"])] or [0]))
+                p = os.path.join(O, n, "bbox.txt")
+                if os.path.exists(p):
+                    for l in open(p):
+                        if "pred.pt" in l:
+                            d_ = json.loads(l.split(" ", 1)[1]); far.append(max(z["nfar"] for z in d_.values())); dm.append(max(z["dmax"] for z in d_.values()))
+            nbad = sum(1 for z in far if z > 0)
+            wx = f" | {nbad}/{len(far)} (최대 {max(far) if far else '-'} 개, {max(dm) if dm else '-'} m) | {max(nnm) / 1e3 if nnm else 0:.0f} k (중앙 {sorted(nnm)[len(nnm) // 2] / 1e3 if nnm else 0:.0f} k) | {max(msm) if msm else 0:.1f}"
+        print(f"| {b} | `{flags(v['fl']) or '-'}` | {ed} | {fmt(nuf(r), 0) if r else '-'} | {cz} | {fmt(sum(nN) / len(nN)) if nN else '-'} | {nd} | {zcol(b, sc)}{wx} |")
     print()
 
 

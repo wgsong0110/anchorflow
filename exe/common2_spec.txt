@@ -93,3 +93,70 @@ s1 W_Bc_n2 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0
 s1 W_Bcd1 W d --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 10 --ue_dil 1
 s1 W_Bcd1_n1 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 10 --ue_dil 1
 s1 W_Bcd1_n2 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 10 --ue_dil 1
+# s2: 진단이 가리킨 후보 -- --ue_loc 비트 16 (HHT 갱신이 속도를 뒤집는 노드); wolf 비결정 10 회 (입자 이탈·노드 상자·최악 프레임, 절 CM34 조정자 요청)
+s2 M15_BF_a M15 a --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 M15_BF_b M15 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 M15_BFc_a M15 a --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 26
+s2 M15_BFc_b M15 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 26
+s2 M15_BF0_a M15 a --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 M15_BF0_b M15 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 M3_BF_a M3 a --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 M3_BF_b M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 M3_BFc_a M3 a --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 26
+s2 M3_BFc_b M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 26
+s2 M3_BF0_a M3 a --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 M3_BF0_b M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 L_BF L d --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 L_BF_n1 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 L_BF_n2 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 L_BF_n3 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 L_BF_n4 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 L_BF_n5 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 L_BF_n6 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 W_BF W d --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 W_BF_n1 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 W_BF_n2 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 W_BF_n3 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 W_BF_n4 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 W_BF_n5 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 W_BF_n6 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 W_BF_n7 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 W_BF_n8 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 W_BF_n9 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 W_BF_n10 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 18
+s2 L_BF0 L d --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 L_BF0_n1 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 L_BF0_n2 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 L_BF0_n3 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 L_BF0_n4 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 L_BF0_n5 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 L_BF0_n6 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_BF0 W d --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_BF0_n1 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_BF0_n2 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_BF0_n3 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_BF0_n4 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_BF0_n5 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_BF0_n6 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_BF0_n7 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_BF0_n8 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_BF0_n9 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_BF0_n10 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 16
+s2 W_A2k_n1 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s2 W_A2k_n2 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s2 W_A2k_n3 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s2 W_A2k_n4 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s2 W_A2k_n5 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s2 W_A2k_n6 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s2 W_A2k_n7 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s2 W_A2k_n8 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s2 W_A2k_n9 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s2 W_A2k_n10 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s2 W_Ba_n3 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep
+s2 W_Ba_n4 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep
+s2 W_Ba_n5 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep
+s2 W_Ba_n6 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep
+s2 W_Ba_n7 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep
+s2 W_Ba_n8 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep
+s2 W_Ba_n9 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep
+s2 W_Ba_n10 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep

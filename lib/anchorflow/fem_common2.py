@@ -7,6 +7,8 @@
 - 새 실행기 `--en_mo` (절 CM33 (d)): 새 실행기 선탐색 (--ls_n, 아르미호 E(c) ≤ E0 + 1e-4 c g·δ, 후보 2^0..2^-(ls_n−1), 없으면 보폭 0) 이 이미
   '반복 갱신이 증분 포텐셜 Φ = 관성 + 탄성 + 장벽 을 올리면 반씩 줄이고 그래도 오르면 버림' 을 (더 엄격하게) 함 -> 소스·커널 열 그대로, 선탐색 판인지만 확인.
 - `--ue_dil R` (--ue_loc 위, 두 실행기): 덜 풀린 걸음 후퇴 오일러 노드 집합 S 를 27 이웃으로 R 번 넓힘 (노드 상자 격자, 걸음마다).
+- `--ue_loc` 비트 16 (두 실행기, 절 CM35 진단이 가리킨 것): 덜 풀린 걸음 끝 HHT 갱신 속도 v1 = al (y − z0) 가 걸음 시작 속도와 반대 (v1·v0 < 0) 인 노드 --
+  수박 첫 접촉 (f4) 에서 S 밖 노드는 자른·안 자른 모두 ρ = −0.7~−0.83 으로 뒤집힘 (절 CM23.4 기제) -> 뒤집힐 노드만 후퇴 오일러로.
 - `--ue_loc` 비트 8 (옛 실행기만, --ws_bar 판 + 절 CM33 en 버퍼): 이 걸음 어느 뉴턴 반복이든 노드별 국소 보폭으로 자른 (k > 0) 노드.
   새 실행기는 노드별 보폭이 없어 (보폭은 몸 전체 스칼라) 비트 8 은 빈 집합 -- 받기만 함.
 진단 (결과 불변, 옛 실행기 --enrec 위): 노드 집합 S / S 밖 · 자른 노드 나눔 몫과 HHT 속도 뒤집기 척도 (split_s).
@@ -31,6 +33,14 @@ __global__ void ul_dil(const int* IP, const int* src, int* dst) {
     dst[n] = r;
 }
 __global__ void ul_cpy(const int* IP, const int* src, int* dst) { int n = blockIdx.x*blockDim.x + threadIdx.x; if (n < IP[9]) dst[n] = src[n]; }
+// 비트 16: 덜 풀린 걸음 끝 HHT 갱신이 노드 속도를 뒤집는 노드 (v1_HHT = al (y − z0), v1_HHT·v0 < 0) -- 두 실행기 걸음 끝 커널과 같은 v1 식, 갱신 전 vk = v0
+__global__ void ul_flip(const int* IP, float al, const float* y, const float* z0, const float* vk, int* m) {
+    int n = blockIdx.x*blockDim.x + threadIdx.x;
+    if (n >= IP[9]) return;
+    float d = 0.f, s = 0.f;
+    for (int a=0;a<3;a++) { float v0 = vk[n*3+a]; d += al*(y[n*3+a] - z0[n*3+a])*v0; s += v0*v0; }
+    if (s > 0.f && d < 0.f) m[n] = 1;
+}
 __global__ void ul_cut(const int* IP, const int* cut, int* m) { int n = blockIdx.x*blockDim.x + threadIdx.x; if (n < IP[9] && cut[n] > 0) m[n] = 1; }
 """
 
