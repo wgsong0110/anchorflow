@@ -1,0 +1,21 @@
+# 절 CM31 묶음 common1 판 목록: <단계> <이름> <씬 L·W·F·B·M> <방식 d·n·nd·z> <플래그...>
+# s1: (1) 레고 악화 가르기 (결정적) + (2) 레고 기본 판 비결정 발산 재현 (비결정 3 회 진단 없음 + 3 회 진단) + 단독 시간
+s1 L_off L d
+s1 L_loc L d --y0loc 3
+s1 L_ube L d --ue be --uf_res
+s1 L_ube1 L d --ue be
+s1 L_d L d --y0loc 3 --ue be --uf_res
+s1 L_d1 L d --y0loc 3 --ue be
+s1 W_off W d
+s1 W_d W d --y0loc 3 --ue be --uf_res
+s1 W_d1 W d --y0loc 3 --ue be
+s1 L_n1 L n
+s1 L_n2 L n
+s1 L_n3 L n
+s1 L_nd1 L nd
+s1 L_nd2 L nd
+s1 L_nd3 L nd
+s1 zL_off L z
+s1 zL_loc L z --y0loc 3
+s1 zL_d L z --y0loc 3 --ue be --uf_res
+s1 zW_d1 W z --y0loc 3 --ue be
