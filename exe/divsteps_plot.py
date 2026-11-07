@@ -139,8 +139,9 @@ def sheet(sel, c, r, path, sup):
 
 
 FS = "·".join(str(f) for f in FR)
-sheet(snaps, ctr, half, PNG + ".png", f"레고 (A) 원래 FCR{TAG}, 노드 상자 폭증 앞뒤 프레임 {FS} -- 걸음·뉴턴 시점별 (전체 범위)")
-sheet(snaps, zc, zh, PNG + "_zoom.png", f"같은 그림 확대{TAG} (프레임 {FR[0]} 시작 몸통 범위, 모든 칸 같은 범위)")
+if not os.environ.get("DS_NOPNG"):
+    sheet(snaps, ctr, half, PNG + ".png", f"레고 (A) 원래 FCR{TAG}, 노드 상자 폭증 앞뒤 프레임 {FS} -- 걸음·뉴턴 시점별 (전체 범위)")
+    sheet(snaps, zc, zh, PNG + "_zoom.png", f"같은 그림 확대{TAG} (프레임 {FR[0]} 시작 몸통 범위, 모든 칸 같은 범위)")
 
 # HTML (plotly.js, 시점 슬라이더)
 def b64(a, dt=np.float32):
@@ -150,7 +151,7 @@ def b64(a, dt=np.float32):
 J = []
 for s in snaps:
     px = s["px"]; okp = np.isfinite(px).all(1)
-    J.append(dict(name=s["name"], title=title(s).replace("\n", " · "), px=b64(px[okp]), qf=b64(s["qf"]), qe=b64(s["qe"]), a0=b64(s["a0"]), a1=b64(s["a1"]), amv=b64(s["amv"]),
+    J.append(dict(name=s["name"], title=title(s).replace("\n", " · "), px=b64(np.clip(np.round((px[okp] - (ctr - half)) / (2 * half) * 65535), 0, 65535), np.uint16), qf=b64(s["qf"]), qe=b64(s["qe"]), a0=b64(s["a0"]), a1=b64(s["a1"]), amv=b64(s["amv"]),
                   box=s["gbox"].tolist()))
 fq = floor_quad(snaps[0]["nr"], snaps[0]["pn"], ctr, half)
 meta = dict(c=ctr.tolist(), r=float(half), zc=zc.tolist(), zr=float(zh), vmax=float(vmax), edges=EDGES, floor=[q.tolist() for q in fq], up=up.tolist())
@@ -164,10 +165,11 @@ html = """<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>레�
 <script>
 const S=__S__, M=__M__;
 function f32(b){const u=Uint8Array.from(atob(b),c=>c.charCodeAt(0));return new Float32Array(u.buffer);}
+function u16(b){const u=Uint8Array.from(atob(b),c=>c.charCodeAt(0));const q=new Uint16Array(u.buffer),o=new Float32Array(q.length);for(let i=0;i<q.length;i++)o[i]=M.c[i%3]-M.r+q[i]/65535*2*M.r;return o;}
 function xyz(a){const x=[],y=[],z=[];for(let i=0;i<a.length;i+=3){x.push(a[i]);y.push(a[i+1]);z.push(a[i+2]);}return [x,y,z];}
 const cache={};
 function col(v){const t=Math.log(Math.max(v,1))/Math.log(M.vmax);const c=[[13,8,135],[126,3,168],[204,71,120],[248,149,64],[240,249,33]];const p=Math.min(t,0.9999)*(c.length-1),i=Math.floor(p),f=p-i;return 'rgb('+c[i].map((q,j)=>Math.round(q+(c[i+1][j]-q)*f)).join(',')+')';}
-function traces(k){const s=S[k];if(!cache[k]){const P=xyz(f32(s.px)),QF=xyz(f32(s.qf)),QE=xyz(f32(s.qe)),A0=f32(s.a0),A1=f32(s.a1),MV=f32(s.amv);
+function traces(k){const s=S[k];if(!cache[k]){const P=xyz(u16(s.px)),QF=xyz(f32(s.qf)),QE=xyz(f32(s.qe)),A0=f32(s.a0),A1=f32(s.a1),MV=f32(s.amv);
  const ax=[],ay=[],az=[],ac=[],mx=[],my=[],mz=[],mc=[],mt=[];
  for(let i=0;i<MV.length;i++){ax.push(A0[3*i],A1[3*i],null);ay.push(A0[3*i+1],A1[3*i+1],null);az.push(A0[3*i+2],A1[3*i+2],null);const c=col(MV[i]);ac.push(c,c,c);mx.push(A1[3*i]);my.push(A1[3*i+1]);mz.push(A1[3*i+2]);mc.push(Math.log10(MV[i]));mt.push('이동 '+MV[i].toFixed(2)+' 칸');}
  const bx=[],by=[],bz=[];for(const [a,b] of M.edges){bx.push(s.box[a][0],s.box[b][0],null);by.push(s.box[a][1],s.box[b][1],null);bz.push(s.box[a][2],s.box[b][2],null);}
