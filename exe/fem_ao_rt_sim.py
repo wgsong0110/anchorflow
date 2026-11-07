@@ -125,6 +125,11 @@ ap.add_argument("--ljq", choices=["", "p0", "max"], default="", help="절 CM28 (
 ap.add_argument("--rm_sub", type=int, default=0, help="절 CM28 (c): 걸음 안 소성 갱신을 가우스 점에서 n 등분 (걸음 시작 변위 -> 시험·끝 변위 선형 보간, 증분마다 RM; 0 = 끔)")
 ap.add_argument("--rm_snh", action="store_true", help="절 CM28 (d): NACC RM 판정·투영 식을 SNH 탄성 (--elx snh) 의 키르히호프 p·ŝ 와 맞춤 (Je = SNH 등방 압력의 근)")
 ap.add_argument("--ks_rho", type=float, default=-1.0, help="절 CM28 (e): --ksplit 쪼갠 시도 (K > 1) 의 HHT ρ∞ (음수 = 기본 --rho 그대로; 1 = 수치 감쇠 없음)")
+ap.add_argument("--wi", choices=["", "node", "jbar", "rec"], default="", help="절 CM29 (조정자 위임 11-08 풀이 방식 변경, 수박 재질 판): 뉴턴 뒤집힘 필터 국소화 -- node = 노드별 보폭 (걸친 가우스 점의 필터 k 만큼만 자름, 확인 라운드 --wi_r, 어기면 전역 보폭), "
+                "jbar = 필터 대신 그 반복 필터가 걸 점에 J 로그 장벽 (κ_J = --wi_kj x μ, 프레임 끝까지 유지; --ls_inv 없이), rec = 진단만 (결과 불변). lib/anchorflow/fem_wminv.py")
+ap.add_argument("--wi_r", type=int, default=4, help="절 CM29 node: 확인 라운드 수")
+ap.add_argument("--wi_kj", type=float, default=1.0, help="절 CM29 jbar: κ_J = 이 값 x μ")
+ap.add_argument("--wi_rec", type=str, default="", help="절 CM29 진단 (결과 불변): 원래 필터가 거는 가우스 점 기록할 프레임 (예 3,4,5; 1 부터) -> fem.jsonl wi·wi_rec_f<프레임>.npz")
 ap.add_argument("--ks_it", type=str, default="", help="절 CM28 (e): --ksplit 쪼갠 시도 (K > 1) 의 뉴턴,PCG 상한 (예 8,20; 빈 값 = 기본 그대로)")
 a = ap.parse_args()
 if a.adaptK > 0:
@@ -265,6 +270,12 @@ if MATK is not None:                                                            
             assert not a.nrec, "--ks_it 는 --nrec 없이 (반복 기록 버퍼가 기본 뉴턴 수)"
             WFD["ks_nt"], WFD["ks_cg"] = [int(q) for q in a.ks_it.split(",")]
         print(f"[절 CM28 (e)] 쪼갠 시도 설정 {WFD}", flush=True)
+    if a.wi or a.wi_rec:                                                              # 절 CM29
+        assert MATK == 7 and WBAR is not None and not a.det, "--wi 는 수박 장벽 바닥 비결정 판"
+        assert a.wi != "node" or a.ls_inv, "--wi node 는 --ls_inv 위 (그 필터를 국소로)"
+        assert a.wi != "jbar" or (not a.ls_inv and a.elx == "snh"), "--wi jbar 는 --ls_inv 없이, --elx snh 위"
+        WFD["wi"] = dict(mode=("" if a.wi == "rec" else a.wi), R=int(a.wi_r), kj=float(a.wi_kj) * float(mu), rec=bool(a.wi_rec), rec_frames=tuple(int(q) for q in a.wi_rec.split(",") if q))
+        print(f"[절 CM29] {WFD['wi']}", flush=True)
     DMGI = None
     if a.dmg:                                                                         # 절 CM19: 손상 매개변수를 GF 수박 재질에서 유도 (정답 궤적에 맞추지 않음)
         assert MATK == 7 and a.elx == "snh" and not a.det, "--dmg 는 수박 --elx snh, 비결정 판만"
@@ -494,6 +505,16 @@ for fi in range(L):
         c["uf"] = dict(fail=[int(q) for q in S.ufl[:S.K].cpu()], smin=[float(q) for q in S.ufs[:S.K].cpu()], g2=[float(q) for q in S.ufg[:S.K].cpu()] if S.ufr else None)
     if a.ksplit > 0:
         c["ks"] = dict(K=KF, tries=[list(q) for q in _ktr])
+    if a.wi or a.wi_rec:                                                             # 절 CM29 (결과 불변 읽기): 국소 필터 통계 (마지막 시도), 기록 프레임 요약
+        from anchorflow import fem_wminv as _WI
+        c["wi"] = dict(st=_WI.frame_stats(S))
+        if S.wi_att:
+            _mm = S.mn[:int(S.IP[9])]; _md = float(_mm[_mm > 0].median())
+            _ci = S.cidx[S.pcd.long()].long(); _ci = _ci[_ci >= 0]
+            _npc = torch.bincount(_ci, minlength=int(S.IP[12]) // 8 + 1).cpu().numpy()
+            c["wi"]["rec"] = [_WI.rec_summary(_t, _md, _npc, float(FL["PN"]), FL["NR"], CELL) for _t in S.wi_att]
+            np.savez_compressed(os.path.join(a.out, f"wi_rec_f{fi + 1}.npz"), **{f"K{_t['K']}_rows": _t["rows"] for _t in S.wi_att}, **{f"K{_t['K']}_ck": _t["ck"] for _t in S.wi_att})
+            S.wi_att.clear()
     if a.erec and int(S.IP[13]) == 0:                                                # 절 CM24 (결과 불변, 읽기만): 입자 에너지·질량중심
         from anchorflow import fem_wmkick_diag as _FRD
         _mp = S.m.double(); _xp = S.x.double(); _vp = S.v.double(); _ok2 = torch.isfinite(_xp).all(-1) & torch.isfinite(_vp).all(-1)

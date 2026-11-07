@@ -1312,6 +1312,9 @@ def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, 
     if wf:                                                                           # 절 CM28 (a)~(d): 원본 NACC 차이 없애기 (끄면 소스 글자 그대로)
         from . import fem_wmfrac as WF
         r = WF.apply(r, wf)
+        if wf.get("wi"):                                                             # 절 CM29: 뒤집힘 필터 국소화 (끄면 소스 글자 그대로)
+            from . import fem_wminv as WI
+            r = WI.apply(r, wf["wi"])
     return _skipify(r) if tol else r
 
 
@@ -1388,7 +1391,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj, wf={k_: v_ for k_, v_ in s.wf.items() if k_ in ("seedb", "ljq", "ljq_xi", "rmsub", "rmsnh")}), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj, wf={k_: v_ for k_, v_ in s.wf.items() if k_ in ("seedb", "ljq", "ljq_xi", "rmsub", "rmsnh", "wi")}), options=("--std=c++14",))
         assert not s.ue or s.ga is not None, "--ue 는 HHT·GA 판만"
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
@@ -1510,6 +1513,9 @@ class AORTSolver(DET.DetMixin):
             s.pfS = torch.zeros(8, device=s.dev, dtype=torch.float64); s.pfres = Z(max(s.K, 1))
         if int(getattr(s, "wf", {}).get("rmsub", 0)) > 0:                          # 절 CM28 (c): 걸음 시작 변위 사본
             s.Ub = Z(s.capN, 3)
+        if getattr(s, "wf", {}).get("wi"):                                             # 절 CM29: 국소 필터 버퍼
+            from . import fem_wminv as WI
+            WI.alloc(s)
         s.kalloc = s.K
         s.K = K0
         s.graph = None
@@ -1526,6 +1532,9 @@ class AORTSolver(DET.DetMixin):
                 g = s.mod.get_global(nm); ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(t.data_ptr())
         if int(getattr(s, "wf", {}).get("rmsub", 0)) > 0 and hasattr(s, "Ub"):        # 절 CM28 (c): 걸음 시작 변위 사본 전역
             g = s.mod.get_global("AQ_U0"); ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(s.Ub.data_ptr())
+        if getattr(s, "wf", {}).get("wi") and hasattr(s, "wiM"):                      # 절 CM29
+            from . import fem_wminv as WI
+            WI.bind(s)
         s.det_bind()
 
     def set_bc(s, t):
@@ -1758,7 +1767,8 @@ class AORTSolver(DET.DetMixin):
                     s.NRct7[kstep * s.nt + it].copy_(s.CT)
                 if s.warm and it == 0:
                     s.d0.copy_(s.dl)
-                if s.lsinv:                                                            # 절 AS: 보폭 = 모든 가우스 점 J > 0 인 최대 2^-k (SC[14])
+                WIN = bool(s.wf.get("wi")) and s.wf["wi"].get("mode") == "node"        # 절 CM29 (a): 노드별 보폭이 원래 필터·장벽 보폭·갱신을 대신함
+                if s.lsinv and not WIN:                                                # 절 AS: 보폭 = 모든 가우스 점 J > 0 인 최대 2^-k (SC[14])
                     if s.compact:                                                      # 방향 T δ 는 따로 둔 버퍼 (td 는 첫 추정 경로가 씀 -- 건드리면 비트가 바뀐다)
                         s.zf(s.awtd, 9, 3)
                         s.k("ao_tvec", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.dl), P(s.awtd)), b=256)
@@ -1768,16 +1778,20 @@ class AORTSolver(DET.DetMixin):
                     s.k("aw_pick", 1, (P(s.awk), P(s.SC[14:]), P(s.awst)), b=1)
                     if NR:                                                                 # 절 CM24 진단: 이 반복 뒤집힘 필터 보폭 (장벽과 작은 쪽 고르기 전)
                         s.NRsi[kstep * s.nt + it:kstep * s.nt + it + 1].copy_(s.SC[14:15])
-                if WB is not None:                                                     # 절 CM21 = 절 CM2 재질 판 장벽 보폭: 온 걸음 후보에서 활성 표본점 d > 0 인 최대 2^-k, 뒤집힘 필터 보폭과 작은 쪽
+                if s.wf.get("wi"):                                                     # 절 CM29: 국소 필터·J 장벽 표시·진단 (lib/anchorflow/fem_wminv.py)
+                    from . import fem_wminv as WI
+                    WI.newton(s, s.K, kstep, it, capN, capQ, nr, thv, WB, NR, None)
+                if WB is not None and not WIN:                                         # 절 CM21 = 절 CM2 재질 판 장벽 보폭: 온 걸음 후보에서 활성 표본점 d > 0 인 최대 2^-k, 뒤집힘 필터 보폭과 작은 쪽
                     s.k("rt_ytry", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.wbyc)), b=256)
                     s.zf(s.kk)
                     s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.wbyc), P(s.U), thv, *[f(q) for q in nr], f(WB["PN"]), P(s.kk)))
                     if NR:                                                                 # 절 CM24 진단: 이 반복 장벽 실현 가능 보폭 k
                         s.NRkb[kstep * s.nt + it:kstep * s.nt + it + 1].copy_(s.kk[:1])
                     s.k("wb_kmin", 1, (P(s.kk), P(s.SC), i32(1 if s.lsinv else 0)), b=1)
-                if NR:                                                                 # 절 CM23.3: 보폭 (rt_lsup 이 쓰는 SC[14])
+                if NR and not WIN:                                                     # 절 CM23.3: 보폭 (rt_lsup 이 쓰는 SC[14])
                     s.NRst[kstep * s.nt + it:kstep * s.nt + it + 1].copy_(s.SC[14:15])
-                s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.lsinv or WB is not None) else 1)), b=256)
+                if not WIN:
+                  s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.lsinv or WB is not None) else 1)), b=256)
                 if s.ufj and (s.lsinv or WB is not None):                                 # 절 CM24: 이 반복 보폭 (SC[14]) 을 걸음 최소에 (허용치로 멈춘 반복은 AF_SKIP 으로 빠짐)
                     s.k("uf_min", 1, (P(s.SC), P(s.ufs), i32(kstep)), b=1)
                 if D_ is not None:                                                     # 뉴턴 it 끝
