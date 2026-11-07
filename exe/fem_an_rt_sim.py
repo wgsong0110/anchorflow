@@ -111,6 +111,9 @@ ap.add_argument("--wdiag_end", type=int, default=10 ** 6)
 ap.add_argument("--wdiag_cap", type=int, default=2000000, help="절 S.10: 노드 용량이 이보다 크면 (상자 폭증) 진단 버퍼·복사를 끔 (메모리만, 결과 불변)")
 ap.add_argument("--fhash", action="store_true", help="절 S.9 (결과 불변, 호스트만): 프레임마다 입자 위치 해시 (sha1 앞 10 자리) 를 fem.jsonl xh 에 -- 진단 켬·끔 대조")
 ap.add_argument("--prof", type=int, default=0, help="이 프레임마다 커널별 시간 (그래프 밖 한 번, 상태 되돌림) 을 fem.jsonl 에")
+ap.add_argument("--ksplit", type=int, default=0, help="절 CM24 (1b, 사용자 승인 11-07 정의 변경): 적응 걸음 쪼개기 -- K 1 로 풀고 덜 풀린 걸음 (판정 커널) 이 있으면 그 프레임을 버리고 K 두 배로 다시, 최대 K = 2^이 값 (0 = 끔)")
+ap.add_argument("--uf_res", action="store_true", help="절 CM24 판정 2: 덜 풀린 걸음 = 허용치 미달 & (보폭 < 1 또는 마지막으로 돈 뉴턴 반복 시작 ‖g‖ > F) (끄면 보폭 < 1 만)")
+ap.add_argument("--ufrec", action="store_true", help="절 CM24 진단 (결과 불변): 판정 커널만 켜고 걸음별 덜 풀림을 fem.jsonl uf 에")
 a = ap.parse_args()
 dev = "cuda"
 RTC.RAWPTR[0] = True
@@ -260,7 +263,11 @@ if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                     
     a.ls = 0                                                                           # 재질 판: 퍼텐셜 없음 -> 에너지 선탐색 없음 (절 AO.0; 장벽이면 실현 가능 보폭만)
     print(f"[절 CM2 재질 판] {MATNAME} {MATX.get('mat')} 구속 {TREL is not None} 구속 속도 {PVB is not None} 빈 노드 문턱 {MTHR:.3e} 점성 {MATX.get('visc', 0.0)}", flush=True)
 S = SOLVER(X0, d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, gqm=a.gq_mass, **({"fpi": True} if a.fp_interp else {}), **({"wd": True, "wdcap": a.wdiag_cap} if a.wdiag >= 0 else {}), **MATX, **SNHX)
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, gqm=a.gq_mass, cj=(dict(judge=True, res=a.uf_res) if (a.ksplit > 0 or a.ufrec) else None), **({"fpi": True} if a.fp_interp else {}), **({"wd": True, "wdcap": a.wdiag_cap} if a.wdiag >= 0 else {}), **MATX, **SNHX)
+if a.ksplit > 0:                                                                      # 절 CM24 (1b): 버퍼는 걸음 수 상한 2^ksplit 으로, K 1 로 시작
+    assert a.K == 1 and not a.K_contact and not a.pk and a.ga, "--ksplit 은 K 1, --K_contact·--pk 없이, HHT·GA 판만"
+    S.kcap = 1 << a.ksplit
+    S.alloc(None)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, 적분기 {a.ga + ' ρ ' + str(a.rho) if a.ga else a.integ}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
@@ -285,6 +292,8 @@ for fi in range(L):
             div_at, OOM = fi + 1, str(_ex)[:200]
             print(f"[발산] 프레임 {div_at} (GPU 메모리 부족 -- 용량 늘려 다시 중)", flush=True)
             break
+    elif a.ksplit > 0:                                                                 # 절 CM24 (1b): 시간 = 모든 시도의 재생 GPU 시간 합
+        redo, _KF, _ktr = ART.split_step(S, fi * h, h, a.ksplit)
     else:
         redo = S.step(fi * h)
     gt = d["x"][fi + 1].to(dev).float()
@@ -296,6 +305,11 @@ for fi in range(L):
         c_lift = float(((xo[_ok] - LOFF.float()) - gt[_ok]).norm(dim=-1).mean()) / EXT
     errs.append(e if fin else float("nan")); ms.append(S.last_ms)
     c = S.counts()
+    if getattr(S, "cjj", False):                                                      # 절 CM24 (결과 불변): 걸음별 덜 풀림·보폭 최소·잔차 비 (마지막 시도)
+        _Kn = S.Kcur
+        c["uf"] = dict(fail=[int(q) for q in S.cjl[:_Kn].cpu()], smin=[float(q) for q in S.cjs[:_Kn].cpu()], g2=[float(q) for q in S.cjg[:_Kn].cpu()] if S.cjr else None)
+    if a.ksplit > 0:
+        c["ks"] = dict(K=_KF, tries=[list(q) for q in _ktr])
     if a.diag:
         c["diag"] = S.diag()
     c["K"] = S.last_K

@@ -2298,7 +2298,21 @@ def compactify(src):
 G2P_GA_FLINE = '    for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = 0.f; for (int k=0;k<3;k++) t += A[a*3+k]*Fp[k*3+b]; F[(size_t)p*9+a*3+b] = t; }\n'
 
 
-def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False, fpi=False):
+# 절 CM24 (수박 절 fem_ao_rt UF_SRC 와 같은 판정, 이름만 cj_): 덜 풀린 걸음 = 허용치 εN 으로 안 멈췄고 (CT[0] = 0) (뉴턴 보폭 SC[14] 최소 < 1 또는 (판정 2) 마지막으로 돈 뉴턴 반복 시작 ‖g‖ > F).
+# 끄면 소스에 안 들어감. cjs = 걸음 보폭 최소, cjg = 마지막 반복 ‖g‖²/F², cjl = 덜 풀림.
+CJ_SRC = r"""
+__global__ void cj_init(float* cjs, float* cjg, int k) { cjs[k] = 1.f; cjg[k] = 0.f; }
+__global__ void cj_min(const double* SC, float* cjs, int k) { float s = (float)SC[14]; if (!(s == s)) s = 0.f; cjs[k] = fminf(cjs[k], s); }
+__global__ void cj_g(const double* SC, const double* CD, float* cjg, int k) { double r = (CD[2] > 0.0) ? SC[1]/CD[2] : 0.0; cjg[k] = (r == r) ? (float)fmin(r, 3.0e38) : 3.0e38f; }
+__global__ void cj_end(const int* CT, const float* cjs, const float* cjg, int* cjl, int k, int adapt, int res) {
+    bool cut = cjs[k] < 1.f, big = res && cjg[k] > 1.f;
+    cjl[k] = ((adapt ? (CT[0] == 0) : 1) && (cut || big)) ? 1 : 0; }
+"""
+
+
+def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False, fpi=False, cj=False):
+    if cj:                                                                             # 절 CM24 판정 커널 (끄면 소스 그대로)
+        src = src.replace('extern "C" {', 'extern "C" {\n' + CJ_SRC, 1)
     src = snhify(src, snh)                                                             # 절 CM18 --elx snh (끄면 소스 그대로)
     if fpi:                                                                            # 절 CM20 --fp_interp: 입자 F = 프레임 끝 가우스 점 F 보간 (끄면 소스 그대로)
         from .fem_fpi import fpify
@@ -2349,8 +2363,9 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", fpi=False, mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False, gqm=False, wd=False, snh=False, wdcap=2000000):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", fpi=False, mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False, gqm=False, wd=False, snh=False, wdcap=2000000, cj=None):
         s.dev = dev
+        s.cjj = bool(cj and cj.get("judge")); s.cjr = bool(cj and cj.get("res"))           # 절 CM24: 걸음 수렴 판정 커널 (끄면 소스·커널 열 그대로)
         s.fpi = bool(fpi)                                                              # 절 CM20 (정의 변경): 입자 F 를 프레임 끝 가우스 점 F 의 칸 안 삼선형 보간으로 교체
         assert not (s.fpi and pk), "--fp_interp 는 그래프 판만"
         s.gqm = bool(gqm)                                                              # 절 CM9 (정의 변경): 노드 질량·운동량을 가우스 점에서 (힘과 같은 점·가중·기저)
@@ -2428,7 +2443,7 @@ class RTSolver(MG2.MG2Mixin):
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh, fpi=s.fpi), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh, fpi=s.fpi, cj=s.cjj), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
@@ -2546,16 +2561,16 @@ class RTSolver(MG2.MG2Mixin):
             s.becell = bool(s.floor.get("becell", False))                              # 절 CM14.3 진단: 칸별 걸음 끝 장벽 에너지 (결과 불변)
             if s.becell:
                 s.beC = Z(s.capN); s.beL = Z(s.capN); s.beM = Z(s.capN); s.beD = Z(s.capN, 3)
-                s.beT = torch.zeros(4 * max(s.K, s.Kc or 0) * 4, device=dev, dtype=torch.float64)
+                s.beT = torch.zeros(4 * max(s.K, s.Kc or 0, getattr(s, "kcap", 0)) * 4, device=dev, dtype=torch.float64)
         s.fup = int(s.floor.get("fup", 0)) if s.floor else 0                          # 절 CM17: (A) 고착 몫 법선 한쪽 구속 (1 = 접선 고착, 2 = 접선 자유)
         if s.fup:
             assert not s.bar and not s.y0ls and s.ga, "--fl_up 은 (A) 가우스 점 고착 판 (장벽 없음, HHT/GA, --y0ls 없음) 만"
             s.ufl = torch.zeros(s.capN, device=dev, dtype=torch.int32); s.fsk = Z(s.capN); s.fvo = Z(s.capN, 3); s.fao = Z(s.capN, 3)
-            s.fucnt = torch.zeros(4 * max(s.K, s.Kc or 0) * 4, device=dev, dtype=torch.int32)
+            s.fucnt = torch.zeros(4 * max(s.K, s.Kc or 0, getattr(s, "kcap", 0)) * 4, device=dev, dtype=torch.int32)
         s.ncl = bool(s.floor and s.floor.get("nclamp"))                              # 절 CM16: 노드 법선 하드 클램프 (노드 표식·원래 ŷ·n·걸음별 수)
         if s.ncl:
             s.ncf = torch.zeros(s.capN, device=dev, dtype=torch.int32); s.yrn = Z(s.capN)
-            s.nccnt = torch.zeros(4 * max(s.K, s.Kc or 0) * 4, device=dev, dtype=torch.int32)
+            s.nccnt = torch.zeros(4 * max(s.K, s.Kc or 0, getattr(s, "kcap", 0)) * 4, device=dev, dtype=torch.int32)
         s.Fq = Z(capQ, 9); s.Vq = Z(capQ); s.mq = Z(capQ); s.xq0 = Z(capQ, 3); s.H = Z(capQ, 81)
         if s.ncomp:                                                                    # 절 CM3: 노드 목록 (ACT[0] = 수), 블록별 수·자리
             nbk = (s.capN + 255) // 256 + 1
@@ -2581,17 +2596,20 @@ class RTSolver(MG2.MG2Mixin):
         if not hasattr(s, "pa"):
             s.pa = torch.zeros(s.N, 3, device=dev, dtype=torch.float32)
         s.meff = Z(s.capN); s.U0 = Z(s.capN, 3); s.v0 = Z(s.capN, 3); s.wb = Z(s.capN, 3); s.wvb = Z(s.capN, 3)
-        s.DG = torch.zeros(4 * max(s.K, s.Kc or 0) * s.nt, 64, device=dev, dtype=torch.float64)
-        s.Y0K = torch.zeros(4 * max(s.K, s.Kc or 0), 4, device=dev, dtype=torch.int32)          # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k)
-        s.BSK = torch.zeros(4 * max(s.K, s.Kc or 0) * s.nt, 4, device=dev, dtype=torch.int32)   # 절 CM6 진단: 선탐색 없는 장벽 판 뉴턴 반복별 보폭 k (보폭 2^-k; 결과 불변)
-        s.Y0S = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)       # 절 AN.22 시작점 탐색 진단 (걸음마다 SC: 14 = 고른 c, 21+i·40+i = 후보 에너지)
-        s.DGF = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)    # 걸음 끝 SC (gfin: SC1 = |g_끝|²)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
+        s.DG = torch.zeros(4 * max(s.K, s.Kc or 0, getattr(s, "kcap", 0)) * s.nt, 64, device=dev, dtype=torch.float64)
+        s.Y0K = torch.zeros(4 * max(s.K, s.Kc or 0, getattr(s, "kcap", 0)), 4, device=dev, dtype=torch.int32)          # 절 CM2 진단: 걸음별 시작점 k (β = 2^-k)
+        s.BSK = torch.zeros(4 * max(s.K, s.Kc or 0, getattr(s, "kcap", 0)) * s.nt, 4, device=dev, dtype=torch.int32)   # 절 CM6 진단: 선탐색 없는 장벽 판 뉴턴 반복별 보폭 k (보폭 2^-k; 결과 불변)
+        s.Y0S = torch.zeros(4 * max(s.K, s.Kc or 0, getattr(s, "kcap", 0)), 64, device=dev, dtype=torch.float64)       # 절 AN.22 시작점 탐색 진단 (걸음마다 SC: 14 = 고른 c, 21+i·40+i = 후보 에너지)
+        s.DGF = torch.zeros(4 * max(s.K, s.Kc or 0, getattr(s, "kcap", 0)), 64, device=dev, dtype=torch.float64)
+        if getattr(s, "cjj", False):                                                   # 절 CM24: 걸음별 보폭 최소·잔차 비·덜 풀림 (걸음 수 상한까지)
+            _kc = max(s.K, s.Kc or 0, getattr(s, "kcap", 0))
+            s.cjs = torch.zeros(_kc, device=dev, dtype=torch.float32); s.cjg = torch.zeros(_kc, device=dev, dtype=torch.float32); s.cjl = torch.zeros(_kc, device=dev, dtype=torch.int32)    # 걸음 끝 SC (gfin: SC1 = |g_끝|²)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
         s.wd_on = bool(getattr(s, "wd", False)) and s.capN <= getattr(s, "wdcap", 2000000)   # 절 S.10: 상자 폭증 뒤 용량이면 진단 끔 (복사 없음)
         for _nm in ("WY", "WY0", "WU", "WFE", "WBE", "WME"):
             if hasattr(s, _nm):
                 delattr(s, _nm)
         if s.wd_on:                                                                    # 절 S.9 진단 버퍼 (용량 다시 할당 때 같이)
-            KK = max(s.K, s.Kc or 0)
+            KK = max(s.K, s.Kc or 0, getattr(s, "kcap", 0))
             s.WY = Z(KK * s.nt, s.capN, 3); s.WY0 = Z(KK, s.capN, 3); s.WU = Z(KK, s.capN, 3)
             s.WCT = torch.zeros(KK * s.nt * 2 + KK, 16, device=dev, dtype=torch.int32); s.WCD = torch.zeros(KK * s.nt * 2, 4, device=dev, dtype=torch.float64)
             s.WFE = torch.zeros(KK * s.nt, s.capN, 3, device=dev, dtype=torch.float64)    # 절 S.10: 뉴턴 반복마다 rt_elem 직후 탄성 기울기 f = ∂Ψ/∂y (복원력 = −f)
@@ -3008,6 +3026,8 @@ class RTSolver(MG2.MG2Mixin):
                                               P(s.ufl), P(s.fsk), P(s.fucnt[4 * kstep:]), f(sg["dt"]), f(sg["gm"]), f(sg["al"]), P(s.fvo), P(s.fao), P(s.ak))
                 s.k("rt_fup", capN, FUA(0), b=256)
             s.ctl(1)
+            if s.cjj:                                                                  # 절 CM24: 걸음 판정 초기화
+                s.k("cj_init", 1, (P(s.cjs), P(s.cjg), i32(kstep)), b=1)
             WD = getattr(s, "wd_on", False) and s.adapt
             if WD and len(s.wd_tau) < len(ST):
                 s.wd_tau.append(float(sg["tau"]))                                      # 절 S.10: 걸음별 τ (Mi = meff / τ²)
@@ -3052,6 +3072,8 @@ class RTSolver(MG2.MG2Mixin):
                     s.k("rt_fup", capN, FUA(1), b=256)
                 s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 s.ctl(3, it)
+                if s.cjj and s.cjr and s.adapt:                                        # 절 CM24 판정 2: 이 반복 시작 ‖g‖²/F² (멈춘 반복은 AF_SKIP)
+                    s.k("cj_g", 1, (P(s.SC), P(s.CD), P(s.cjg), i32(kstep)), b=1)
                 if WD:
                     s.dcopy(s.WCT[2 * (kstep * s.nt + it)], s.CT); s.dcopy(s.WCD[2 * (kstep * s.nt + it)], s.CD)
                 if s.nl > 1:                                                           # MG 전처리: z = V(r) 로 바꿔 시작
@@ -3156,6 +3178,8 @@ class RTSolver(MG2.MG2Mixin):
                     s.k("rt_kstep", 1, (P(s.kk), P(s.SC)), b=1)
                     s.dcopy(s.BSK[kstep * s.nt + it], s.kk)                           # 절 CM6 진단: 반복별 보폭 k
                 s.k("rt_lsup", capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.ls or fbar) else 1)), b=256)
+                if s.cjj and (s.ls or fbar):                                           # 절 CM24: 이 반복 보폭 (선탐색·장벽 보폭 SC[14]) 을 걸음 최소에
+                    s.k("cj_min", 1, (P(s.SC), P(s.cjs), i32(kstep)), b=1)
                 if getattr(s, "ncl", False):                                           # 절 CM16: 활성 집합 넣기 (갱신 뒤 (y − U)·n < 0 인 자유 후보를 투영)
                     s.k("rt_ncl", capN, NCA(2), b=256)
                 if getattr(s, "fup", 0):                                               # 절 CM17: 넣기 (갱신 뒤 걸음 변위 법선 < 0 인 자유 후보에 법선 고착 사상)
@@ -3163,6 +3187,8 @@ class RTSolver(MG2.MG2Mixin):
                 if WD:
                     s.dcopy(s.WY[kstep * s.nt + it], s.y)                              # 절 S.9 진단: 뉴턴 반복 끝 y
             s.ctl(8)
+            if s.cjj:                                                                  # 절 CM24: 걸음 끝 덜 풀림 판정
+                s.k("cj_end", 1, (P(s.CT), P(s.cjs), P(s.cjg), P(s.cjl), i32(kstep), i32(1 if s.adapt else 0), i32(1 if s.cjr else 0)), b=1)
             if WD:
                 s.dcopy(s.WCT[2 * s.nt * len(ST) + kstep], s.CT)
             if getattr(s, "ncl", False):                                               # 절 CM16 진단 (결과 불변): 걸음 끝 활성 노드 수
@@ -3602,3 +3628,40 @@ class RTSolver(MG2.MG2Mixin):
         """마지막 프레임 걸음별 |g_끝| / |g_처음| (gfin 일 때)."""
         D, F = s.DG.cpu().numpy(), s.DGF.cpu().numpy()
         return [float(np.sqrt(max(F[k][1], 0.0) / max(D[2 * (k * s.nt)][1], 1e-300))) for k in range(getattr(s, "nstage", s.K))]
+
+
+# ---------------- 절 CM24 (1b) 적응 걸음 쪼개기 (수박 절 fem_ao_rt.split_step 과 같은 규칙) ----------------
+def set_K_an(s, K, h):
+    """걸음 수 K (간격 h/K 균일): s.K·s.dt, 바닥 고착 지수 KEX·감쇠는 처음 (K0) 값에서 비례 (KEX = dt/dt_정답, damp = VD^(dt/dt_정답)) -- 그래프는 K 마다 캐시."""
+    if not hasattr(s, "_k0"):
+        s._k0 = (s.K, (s.floor or {}).get("KEX"), s.damp)
+    K0, kex0, dmp0 = s._k0
+    s.K = int(K); s.dt = h / s.K
+    if s.floor and kex0 is not None:
+        s.floor["KEX"] = kex0 * K0 / s.K
+    s.damp = dmp0 ** (K0 / s.K) if dmp0 != 1.0 else 1.0
+
+
+def split_step(s, t, h, depth):
+    """K = 1 로 프레임을 풀고 덜 풀린 걸음 (cjl) 이 있으면 입자 상태를 되돌려 K 두 배 (최대 2^depth). 돌려줌: (다시 했는지, K, [(K, 덜 풀린 걸음 수, ms)])."""
+    if s.ga and getattr(s, "ga_first", False):                                      # 첫 프레임 a0 를 그래프 밖에서 따로 재는 판 (탄성 HHT): 그 프레임은 쪼개지 않음 (K 1 그대로)
+        set_K_an(s, 1, h)
+        redo = s.step(t)
+        return redo, 1, [(1, int(s.cjl[:1].sum()), float(s.last_ms))]
+    bk = s._bk()
+    tries, tot, redo = [], 0.0, False
+    for dp in range(depth + 1):
+        K = 1 << dp
+        if dp > 0:
+            s._rs(bk)
+        set_K_an(s, K, h)
+        redo = s.step(t) or redo
+        ms = float(s.last_ms)
+        nf = int(s.cjl[:K].sum())
+        tries.append((K, nf, ms))
+        tot += ms
+        if nf == 0 or not math.isfinite(ms):
+            break
+    s.last_ms = tot
+    return redo, K, tries
+

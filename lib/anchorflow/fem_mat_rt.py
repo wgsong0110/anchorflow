@@ -147,7 +147,7 @@ class MatRT(ADET.DetMixin):
         s.extra_p = (("ysp", "ljp", "alp") if s.aq else ()) + (("pvb", "pvc", "pmk") if s.pvb is not None else ())
         s.tbuf = torch.zeros(1, device=s.dev, dtype=torch.float32)
         src = mat_module_src(getattr(s, "mg2", False))
-        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False), gqm=getattr(s, "gqm", False), fpi=getattr(s, "fpi", False)), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False), gqm=getattr(s, "gqm", False), fpi=getattr(s, "fpi", False), cj=getattr(s, "cjj", False)), options=("--std=c++14",))
         s._src0 = src
         s.fn = {}
         s.ao_ready = True
@@ -163,14 +163,14 @@ class MatRT(ADET.DetMixin):
         Z = lambda *sh: torch.zeros(*sh, device=s.dev, dtype=torch.float32)
         I = lambda n_: torch.zeros(n_, device=s.dev, dtype=torch.int32)
         capQ = s.capQc * 8
-        s.Ust = Z(s.K, s.capN, 3)
+        s.Ust = Z(max(s.K, getattr(s, "kcap", 0)), s.capN, 3)                         # 절 CM24: 걸음 수 상한까지 (끄면 같은 크기)
         s.H30 = Z(capQ * 30) if s.aq else None
         s.Hs = s.H30 if (s.aq and s.hspec) else None                                   # 절 CM3 --hspec: plasticine 은 aq_elem 의 30 성분을 곱이 바로 (mt_h81 펼침 없음); 모래는 ao_elem_s 가 H 앞 30 성분에
         s.cnt = I(4); s.qb = I(4); s.act = I(s.capN)
         s.Sa = Z(s.capQc * 32); s.Sc = Z(s.capQc * 4); s.Sq = Z(s.capQc * 32)
         s.gaM = Z(s.capN)
         if s.has_pbc:
-            s.pacc = Z(s.capN * s.K * s.pbc_ns); s.kb = Z(s.capN)
+            s.pacc = Z(s.capN * max(s.K, getattr(s, "kcap", 0)) * s.pbc_ns); s.kb = Z(s.capN)
         if s._pvb_on:
             s.vm = Z(s.capN, 3); s.cm = Z(s.capN, 3)
         if getattr(s, "ao_ready", False):
