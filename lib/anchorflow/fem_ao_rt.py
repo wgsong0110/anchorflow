@@ -1318,6 +1318,9 @@ def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, 
         if wf.get("ws"):                                                             # 절 CM30: 성긴 가우스 점 정의·장벽 보폭 국소화 (끄면 소스 글자 그대로)
             from . import fem_wmsparse as WS
             r = WS.apply(r, wf["ws"])
+        if wf.get("en"):                                                             # 절 CM33: 에너지 생성 고침 후보·진단 (끄면 소스 글자 그대로)
+            from . import fem_wmen as EN
+            r = EN.apply(r, wf["en"])
     return _skipify(r) if tol else r
 
 
@@ -1394,7 +1397,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj, wf={k_: v_ for k_, v_ in s.wf.items() if k_ in ("seedb", "ljq", "ljq_xi", "rmsub", "rmsnh", "wi", "ws")}), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj, wf={k_: v_ for k_, v_ in s.wf.items() if k_ in ("seedb", "ljq", "ljq_xi", "rmsub", "rmsnh", "wi", "ws", "en")}), options=("--std=c++14",))
         assert not s.ue or s.ga is not None, "--ue 는 HHT·GA 판만"
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
@@ -1525,6 +1528,9 @@ class AORTSolver(DET.DetMixin):
         if getattr(s, "wf", {}).get("ws"):                                             # 절 CM30 (b): 장벽 보폭 국소화 버퍼
             from . import fem_wmsparse as WS
             WS.alloc(s)
+        if getattr(s, "wf", {}).get("en"):                                             # 절 CM33: 자른 노드 표시·커밋 앞 F_q 사본
+            from . import fem_wmen as EN
+            EN.alloc(s)
         s.kalloc = s.K
         s.K = K0
         s.graph = None
@@ -1723,6 +1729,10 @@ class AORTSolver(DET.DetMixin):
             if s.ufj:
                 s.k("uf_init", 1, (P(s.ufs), i32(kstep)), b=1)
                 s.zf(s.ufg[kstep:kstep + 1])
+            ENW = s.wf.get("en")                                                       # 절 CM33 (lib/anchorflow/fem_wmen.py; 없으면 그대로)
+            if ENW:
+                from . import fem_wmen as EN
+                EN.step0(s)
             for it in range(s.nt):
                 s.ctl(2, it)
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
@@ -1755,6 +1765,8 @@ class AORTSolver(DET.DetMixin):
                 s.ctl(3, it)
                 if s.ufj and s.ufr and s.adapt:                                           # 절 CM24 판정 2: 이 반복 시작 ‖g‖²/F² (허용치로 멈춘 반복은 AF_SKIP 으로 빠짐)
                     s.k("uf_g", 1, (P(s.SC), P(s.CD), P(s.ufg), i32(kstep)), b=1)
+                if ENW:                                                                # 절 CM33 (c): 덜 풀린 걸음만 반복 더 (아니면 나머지 반복 건너뜀)
+                    EN.gate(s, kstep, it)
                 if NR:
                     s.NRct3[kstep * s.nt + it].copy_(s.CT); s.NRcd[kstep * s.nt + it].copy_(s.CD)
                 if s.warm and it == 0 and kstep > 0 and s.nl <= 1:                                      # PCG 첫 추정 = 앞 걸음 첫 뉴턴의 δ (프레임 첫 걸음은 0)
@@ -1813,6 +1825,8 @@ class AORTSolver(DET.DetMixin):
                 if WSB:
                     from . import fem_wmsparse as WS, fem_wmfrac2 as W2              # 절 CM32: 필터도 국소 (fi)·시도별 기록 (rec) 이면 W2 (없으면 그대로)
                     (W2.newton if W2.on(s) else WS.newton)(s, kstep, it, capN, capQ, nr, thv, WB, NR)
+                    if ENW:                                                            # 절 CM33: 이 반복 노드 k 를 걸음 최대에
+                        EN.after_newton(s, capN)
                 if WB is not None and not WIN and not WSB:                                         # 절 CM21 = 절 CM2 재질 판 장벽 보폭: 온 걸음 후보에서 활성 표본점 d > 0 인 최대 2^-k, 뒤집힘 필터 보폭과 작은 쪽
                     s.k("rt_ytry", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.wbyc)), b=256)
                     s.zf(s.kk)
@@ -1858,7 +1872,9 @@ class AORTSolver(DET.DetMixin):
                     getattr(s, q_).copy_(t_)
             if s.ga is not None:
                 c = s.ga_c
-                if s.ue:                                                                       # 절 CM24 (2)·(3): 덜 풀린 걸음 (ufl[k] = 1) 갱신만 바꾼 같은 커널
+                if s.ue and ENW and ENW.get("nl"):                                             # 절 CM33 (b): 자른 노드만 실제 이동 기반 속도·가속도 기억 0
+                    s.k("en_stepend", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp), P(s.ufl[kstep:]), i32(s.ue), P(s.ENcut)), b=256)
+                elif s.ue:                                                                       # 절 CM24 (2)·(3): 덜 풀린 걸음 (ufl[k] = 1) 갱신만 바꾼 같은 커널
                     s.k("ao_stepend_uf", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp), P(s.ufl[kstep:]), i32(s.ue)), b=256)
                 else:
                     s.k("ao_stepend_ga", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp)), b=256)
@@ -1875,6 +1891,8 @@ class AORTSolver(DET.DetMixin):
                 D_.q(s.U, c_); D_.jump(kstep)
             s.Ust[kstep].copy_(s.U)
             if (kstep < s.K - 1 or s.fpi or s.lji) and s.aq:                           # 절 CM21 --lj_interp 도 마지막 걸음 가우스 점 커밋 (RM·logJp 갱신)                                    # 절 CM20 --fp_interp: 마지막 걸음도 가우스 점에서 커밋 (RM·상태 갱신)
+                if ENW:                                                                # 절 CM33 진단: 커밋 앞 F_q (K 1 = 프레임 시작 F_q)
+                    EN.pre_commit(s)
                 s.k("aq_commit", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt)))
                 if s.dmg == "pf":                                                      # 절 CM19 엇갈림 풀이: 변위 풀이·커밋 (H_q 최대 갱신) 뒤 d 풀이 (시작 추정 = 앞 풀이)
                     s.pf_solve(kstep + 1)

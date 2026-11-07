@@ -137,6 +137,10 @@ ap.add_argument("--wi_rec", type=str, default="", help="절 CM29 진단 (결과 
 ap.add_argument("--ws_fi", action="store_true", help="절 CM32 (조정자 결정 11-08 정의 변경, --ws_bar 위): 뒤집힘 필터도 노드별 국소 (절 CM29 (a)) -- 노드 보폭 시작 0, 필터·장벽 확인 라운드 --ws_bar + 1, 어기면 원래 전역 보폭. lib/anchorflow/fem_wmfrac2.py")
 ap.add_argument("--w2rec", action="store_true", help="절 CM32 진단 (결과 불변, --ws_bar 위): 시도 (K 1·2·4·8) 마다 뉴턴 반복별 전역 필터 kg·전역 장벽 kb·노드 k 최대·라운드별 어긴 표본점·가우스 점 수 -> fem.jsonl w2")
 ap.add_argument("--ks_it", type=str, default="", help="절 CM28 (e): --ksplit 쪼갠 시도 (K > 1) 의 뉴턴,PCG 상한 (예 8,20; 빈 값 = 기본 그대로)")
+ap.add_argument("--uf_ro", action="store_true", help="절 CM33 (a) (조정자 결정 11-08 정의 변경, --uf_res 위): 덜 풀린 걸음 판정을 잔차만으로 (보폭 최소 < 1 조건 뺌). lib/anchorflow/fem_wmen.py")
+ap.add_argument("--ue_nl", action="store_true", help="절 CM33 (b) (--ws_bar·--ue be 위): 이 걸음 국소 보폭으로 자른 노드만 걸음 끝 속도 = (U1 − U)/dt (U1 = HHT 위치), 가속도 기억 0")
+ap.add_argument("--xit_from", type=int, default=0, help="절 CM33 (c) (--uf_res·허용치 판 위): 반복 이 번째 (0 부터) 시작 잔차를 잰 뒤 그때까지 덜 풀림 판정이 아니면 나머지 반복 건너뜀 (--newton 이 상한); 0 = 끔")
+ap.add_argument("--enrec", type=int, default=0, help="절 CM33 진단 (결과 불변, --nrec 위, K 1 HHT): 프레임 1~이 값의 에너지 몫 분해 (P2G·잔차·고착·탄성·장벽·갱신식·커밋·G2P, 뉴턴 반복별 증분 포텐셜) -> fem.jsonl enb")
 a = ap.parse_args()
 if a.adaptK > 0:
     a.K = 8                                                                       # 버퍼·첫 캡처는 상한으로, 프레임마다 다시 정함
@@ -292,6 +296,14 @@ if MATK is not None:                                                            
             assert a.ws_bar > 0, "--ws_fi·--w2rec 는 --ws_bar 위"
             WFD["ws"].update(fi=bool(a.ws_fi), rec=bool(a.w2rec))
         print(f"[절 CM30] {WFD['ws']}", flush=True)
+    if a.uf_ro or a.ue_nl or a.xit_from > 0 or a.enrec > 0:                             # 절 CM33 (끄면 키 없음 -- 그대로)
+        assert MATK == 7 and WBAR is not None and not a.det and a.ga == "hht", "절 CM33 은 수박 장벽 바닥 HHT 비결정 판"
+        assert not a.uf_ro or (a.uf_res and (a.ue or a.ufrec or a.ksplit > 0)), "--uf_ro 는 --uf_res 판정 위"
+        assert not a.ue_nl or (a.ue == "be" and a.ws_bar > 0), "--ue_nl 은 --ue be --ws_bar 위"
+        assert a.xit_from <= 0 or (a.uf_res and a.tolN >= 0 and a.newton > a.xit_from and a.ksplit == 0), "--xit_from 은 --uf_res 허용치 판, --newton > 이 값, 쪼개기 없이"
+        assert a.enrec <= 0 or (a.nrec and a.K == 1 and a.ksplit == 0), "--enrec 는 --nrec 위, K 1, 쪼개기 없이"
+        WFD["en"] = dict(ro=bool(a.uf_ro), nl=bool(a.ue_nl), xf=int(a.xit_from), diag=a.enrec > 0)
+        print(f"[절 CM33] {WFD['en']}", flush=True)
     DMGI = None
     if a.dmg:                                                                         # 절 CM19: 손상 매개변수를 GF 수박 재질에서 유도 (정답 궤적에 맞추지 않음)
         assert MATK == 7 and a.elx == "snh" and not a.det, "--dmg 는 수박 --elx snh, 비결정 판만"
@@ -390,6 +402,13 @@ if a.frec > 0:
     FRC = FRD.FrecCtx(S, a, FL, WBAR, m64, vol64, float(mu), float(lam), [float(q) for q in cfg["g"]], float(lat.A[:, 0].norm()), MTHR,
                       DM.traj_F(d, h, dev) if not a.F0_eye else None, d["x"])
     print(f"[절 CM23.4 진단] --frec {a.frec} 켬 (노드 힘 몫·속도 변화 분해·장벽 표본점·det F·탄성 에너지, 결과 불변)", flush=True)
+ENC = None
+if a.enrec > 0:                                                                       # 절 CM33 진단 (결과 불변): --frec 사본 버퍼 + 커밋 앞 F_q 사본
+    if a.frec <= 0:
+        S.frec_on()
+    from anchorflow import fem_wmen as _EN
+    ENC = _EN.EnCtx(S, FL, WBAR, float(mu), float(lam), [float(q) for q in cfg["g"]], float(lat.A[:, 0].norm()))
+    print(f"[절 CM33 진단] --enrec {a.enrec} 켬 (프레임 에너지 몫 분해, 결과 불변)", flush=True)
 if a.nan_step:
     assert MATK is not None and a.adaptK <= 0 and not a.det, "--nan_step 은 재질 판 (AORTSolver), 고정 걸음, 비결정 판만"
     S.nsd_on()
@@ -422,6 +441,8 @@ DD = torch.empty(L, Np) if (a.dump_lj and a.dmg) else None
 for fi in range(L):
     kp = S.profile(fi * h) if (a.prof and fi >= a.warm and (fi - a.warm) % a.prof == 0) else None
     _xprev = S.x_orig().clone() if a.nan_step else None                               # 절 CM9.3: 이 프레임 시작 (= 직전 프레임 끝) 입자 위치, 원래 순서
+    if ENC is not None and fi + 1 <= a.enrec:                                          # 절 CM33: 프레임 시작 입자 에너지 (재생 밖)
+        ENC.pre()
     torch.cuda.synchronize(); _t0 = time.perf_counter()
     if a.adaptK > 0:
         redo, KF, VMX = AORT.adapt_step(S, fi * h, h, CELL, float(cfg["substep_dt"]), a.kmax, a.adaptK)
@@ -563,6 +584,11 @@ for fi in range(L):
             c["fr"] = FRC.frame(fi + 1)
         except Exception as _ex:
             import traceback; traceback.print_exc(); c["fr"] = dict(err=repr(_ex))
+    if ENC is not None and fi + 1 <= a.enrec and int(S.IP[13]) == 0:                  # 절 CM33 (결과 불변, 읽기만)
+        try:
+            c["enb"] = ENC.frame(fi + 1)
+        except Exception as _ex:
+            import traceback; traceback.print_exc(); c["enb"] = dict(err=repr(_ex))
     if a.diag:
         c["diag"] = S.diag()
     if "it" in c:
