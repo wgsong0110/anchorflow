@@ -35,6 +35,8 @@ def alloc(s):
         t = getattr(s, nm, None)
         if isinstance(t, torch.Tensor):
             s.NR_bk[nm] = torch.empty_like(t)
+    from . import fem_wolfprop_diag as PRD
+    PRD.alloc(s)                                                                    # 절 CM26 --prec (PRD.ON 일 때만)
 
 
 def y0f(s, kstep):
@@ -52,6 +54,7 @@ def end(s, kstep, sg, capQ, capN, it2, BA, nr, barE):
     if not getattr(s, "nrec", False):
         return
     from .fem_an_rt import P
+    from . import fem_wolfprop_diag as PRD
     i32, f = np.int32, np.float32
     IP = s.IP
     s.dcopy(s.NR_CD[kstep], s.CD)
@@ -61,6 +64,7 @@ def end(s, kstep, sg, capQ, capN, it2, BA, nr, barE):
     s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
     if s.matk:
         s.mat_elem(kstep, -1, 10 ** 6, capQ)                                       # it = −1 -> 마지막 반복 표시 아님 (cnt 안 셈)
+        PRD.fel(s, kstep, s.nt)                                                        # 절 CM26 진단: 걸음 끝 요소 기울기
     else:
         s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8), P(s.SC[10:]), P(s.f), P(s.H), i32(capQ), P(s.B)))
     if barE:
@@ -71,9 +75,11 @@ def end(s, kstep, sg, capQ, capN, it2, BA, nr, barE):
             s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.bpg), P(s.bGn)), b=256)
             s.k("ao_gath_q", capN, (P(IP), P(s.cidx), P(s.BW), P(s.bph), P(s.bKn)), b=256)
         s.dcopy(s.NR_GB[kstep], s.bGn)
+        PRD.bar(s, kstep, s.nt)
         s.k("rt_bar_n", capN, (P(IP), P(s.bGn), P(s.bKn), *[f(q) for q in nr], P(s.f), P(s.B)), b=256)
     s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
     s.dcopy(s.NR_SC[kstep], s.SC)
+    PRD.grad(s, kstep, s.nt)                                                       # 절 CM26 진단: 걸음 끝 y·η·잔차 (되돌리기 전)
     for nm, b in s.NR_bk.items():
         s.dcopy(getattr(s, nm), b)
 

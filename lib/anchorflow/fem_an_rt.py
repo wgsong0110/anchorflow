@@ -13,6 +13,7 @@ import torch
 from . import fem_rt_cuda as RTC
 from . import fem_an_mg2 as MG2
 from . import fem_wolfwhy_diag as WW                                            # 절 CM25 진단 --nrec (결과 불변)
+from . import fem_wolfprop_diag as PRD                                          # 절 CM26 진단 --prec (결과 불변, 사본만)
 
 SRC = r'''
 #define NQ8 8
@@ -3048,6 +3049,7 @@ class RTSolver(MG2.MG2Mixin):
                 FUA = lambda mode_, it2_=it2: (P(IP), i32(mode_), *[f(q) for q in nr], P(s.U), P(s.Ut), P(s.z0), P(s.an), P(s.mn), P(s.meff), it2_, P(s.f), P(s.sk), P(s.pm), P(s.y), P(s.yh), P(s.eta),
                                               P(s.ufl), P(s.fsk), P(s.fucnt[4 * kstep:]), f(sg["dt"]), f(sg["gm"]), f(sg["al"]), P(s.fvo), P(s.fao), P(s.ak))
                 s.k("rt_fup", capN, FUA(0), b=256)
+            PRD.start(s, kstep)                                                        # 절 CM26 진단: 걸음 시작 사본
             s.ctl(1)
             if s.cjj:                                                                  # 절 CM24: 걸음 판정 초기화
                 s.k("cj_init", 1, (P(s.cjs), P(s.cjg), i32(kstep)), b=1)
@@ -3065,6 +3067,7 @@ class RTSolver(MG2.MG2Mixin):
                 else:
                     s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8 | (4 if s.ls else 0)), P(s.SC[10:]), P(s.f), P(s.H),
                                           i32(capQ), P(s.B)))
+                PRD.fel(s, kstep, it)                                                  # 절 CM26 진단: 요소 기울기 (장벽 전)
                 if WD and not s.matk:
                     s.dcopy(s.WFE[kstep * s.nt + it], s.f); s.dcopy(s.WBE[kstep * s.nt + it], s.B)   # 절 S.10 진단: 탄성 기울기·블록 대각 (장벽·벌점 더하기 전)
                 if s.bar:
@@ -3085,6 +3088,7 @@ class RTSolver(MG2.MG2Mixin):
                             s.k("rt_mg_restrict3", Lc_["capn"] * 16, (i32(l_ - 1), P(s.LM), P(s.bKn if l_ == 1 else s.ML[l_ - 2]["Kb"]), P(Lc_["Kb"]), i32(1)), b=256)
                             s.k("rt_mg_dbar", Lc_["capn"], (i32(l_), P(s.LM), P(Lc_["D"]), P(Lc_["Kb"]), *[f(q) for q in nr], P(Lc_["Db"])), b=256)
                         s._mgb_on = True
+                PRD.bar(s, kstep, it)                                                  # 절 CM26 진단: 장벽 노드 스칼라
                 if it == 0:
                     s.k("rt_meff", capN, (P(IP), P(s.mn), P(s.B), f(s.mfloor * sg["tau"] ** 2), P(s.meff)), b=256)
                     if WD:
@@ -3096,6 +3100,7 @@ class RTSolver(MG2.MG2Mixin):
                 s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 s.ctl(3, it)
                 WW.ct(s, kstep, it, 0)                                                 # 절 CM25 진단: 제어 카운터 사본
+                PRD.grad(s, kstep, it)                                                 # 절 CM26 진단: y·η·잔차
                 if s.cjj and s.cjr and s.adapt:                                        # 절 CM24 판정 2: 이 반복 시작 ‖g‖²/F² (멈춘 반복은 AF_SKIP)
                     s.k("cj_g", 1, (P(s.SC), P(s.CD), P(s.cjg), i32(kstep)), b=1)
                 if WD:
@@ -3255,6 +3260,7 @@ class RTSolver(MG2.MG2Mixin):
                 s.k("rt_stepend_g", capN, (P(IP), f(sg["thinv"]), f(sg["al"]), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), dmp), b=256)
             if s.matk:
                 s.mat_step_end(kstep, len(ST), capN, capQ)                             # 절 CM2 재질 판: 구속 노드 가속도 0, 걸음 변위 보관, 걸음 사이 소성 커밋
+            PRD.end(s, kstep)                                                          # 절 CM26 진단: 걸음 끝 v·a·U
             if getattr(s, "wd_on", False) and s.adapt:
                 s.dcopy(s.WU[kstep], s.U)                                              # 절 S.9 진단: 걸음 끝 U
         sl = ST[-1]
