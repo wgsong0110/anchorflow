@@ -117,4 +117,5 @@ for l in $(seq 1 $NG); do lane & sleep 2; done
 wait
 log "판 끝 $STG"
 $PY exe/wmfrac_tab.py $O > $O/wmfrac_table.md 2> $O/wmfrac_table.err; rclone copy $O $R -q --include "wmfrac_table.*"
+[ "$STG" = s2 ] && bash exe/stab_wmfrac_vid.sh $O $R
 log "단계 끝 $STG"
