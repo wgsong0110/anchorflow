@@ -92,3 +92,15 @@ def ls0ify(src, on):
     assert k.count(LS0_OLD) == 1
     src = src[:i] + k.replace(LS0_OLD, LS0_NEW, 1) + src[j:]
     return src.replace('extern "C" {', 'extern "C" {\n__device__ int AF_L0N[2];', 1)
+
+
+def ao_uel_src(ufsrc):
+    """옛 실행기 (수박, fem_ao_rt) --ue_loc: _uf_src 가 만든 ao_stepend_uf 를 복사해 노드 집합 ulm 만 바꾸는 ao_stepend_ufl + UL 커널 (장벽 노드 판 1 은 없음 -- 2 만)."""
+    i = ufsrc.index("__global__ void ao_stepend_uf(")
+    j = ufsrc.index("\n}\n", i) + 3
+    k = ufsrc[i:j].replace("ao_stepend_uf(", "ao_stepend_ufl(", 1)
+    for o_, n_ in (("float damp, const int* ufl, int um) {", "float damp, const int* ufl, int um, const int* ulm) {"),
+                   ("    if (n >= IP[9]) return;\n", "    if (n >= IP[9]) return;\n    uf_ = uf_ && ulm[n];                                                        // 절 CM31 --ue_loc: 노드 집합만\n")):
+        assert k.count(o_) == 1, o_
+        k = k.replace(o_, n_, 1)
+    return k + UL_SRC

@@ -334,3 +334,10 @@ s4 zB_A2k B z --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
 s4 zW_A2k2 W z --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
 s4 zL_A2k2 L z --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
 s4 zW_d2 W z --y0loc 3 --ue be --uf_res
+# s5: 수박 회귀 (옛 실행기, 절 CM24 (2) 판 = k1new 수박 명령 + --ue be --uf_res 기준, 비결정 a·b + 단독 시간) -- 후보 A2k 같은 플래그
+s5 M_off_n1 M nd --ue be --uf_res
+s5 M_off_n2 M nd --ue be --uf_res
+s5 M_A2k_n1 M nd --ue be --uf_res --y0loc 3 --ue_loc 2 --ls0_keep
+s5 M_A2k_n2 M nd --ue be --uf_res --y0loc 3 --ue_loc 2 --ls0_keep
+s5 zM_off M z --ue be --uf_res
+s5 zM_A2k M z --ue be --uf_res --y0loc 3 --ue_loc 2 --ls0_keep

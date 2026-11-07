@@ -114,6 +114,8 @@ ap.add_argument("--bar_dhmul", type=float, default=1.0, help="절 CM23.4 대조 
 ap.add_argument("--bar_dhk", action="store_true", help="절 CM23.4: --bar_dhmul 에서 κ 를 원래 d̂ 값으로 고정")
 ap.add_argument("--ksplit", type=int, default=0, help="절 CM24 (1b, 사용자 승인 11-07 정의 변경): 적응 걸음 쪼개기 -- K 1 로 풀고 덜 풀린 걸음 (판정 커널: 허용치 εN 으로 안 멈췄고 뉴턴 보폭 하나라도 < 1) 이 있으면 "
                 "그 프레임을 버리고 K 두 배 (걸음 간격 반) 로 다시, 최대 K = 2^이 값 (0 = 끔)")
+ap.add_argument("--ue_loc", type=int, default=0, help="절 CM31 (새 실행기 --ue_loc 와 같은 정의, 옛 실행기는 2 만): 덜 풀린 걸음 갱신 바꿈을 --y0loc β<1 노드에만 (0 = 몸 전체, 소스 그대로)")
+ap.add_argument("--ls0_keep", action="store_true", help="절 CM31 (새 실행기와 같은 정의): 선탐색·장벽 보폭 0 반복은 η·y 그대로, 진단 fem.jsonl l0 (끄면 소스 그대로)")
 ap.add_argument("--ue", choices=["", "be", "a0", "beall"], default="", help="절 CM24 (2)·(3) (사용자 승인 정의 변경, HHT 판): 덜 풀린 걸음 (같은 판정) 의 걸음 끝 갱신 -- be = 후퇴 오일러 (U1 = y, v1 = (y − U)/h, 가속도 기억 0), "
                 "a0 = 속도·위치는 HHT 그대로·가속도 기억만 0, beall = 모든 걸음 후퇴 오일러 갱신 (비교). 빈 값 = 끔")
 ap.add_argument("--uf_res", action="store_true", help="절 CM24 판정 2: 덜 풀린 걸음 조건에 '마지막으로 돈 뉴턴 반복 시작 잔차 ‖g‖ > F (허용치 규칙 척도)' 를 더함 (또는; 끄면 보폭 < 1 만)")
@@ -357,7 +359,7 @@ if MATK is not None:                                                            
                         floor=FL, damp=DAMP, bc=BC, cdp=1.0, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det,
                         hspec=True, theta=a.theta, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None),
                         mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx, dmg=a.dmg, pf_it=a.pf_it, fpi=a.fp_interp, wbar=WBAR, lji=a.lj_interp, bcnt=a.bar_cnt,
-                        uf=(dict(judge=True, ue=a.ue, res=a.uf_res) if (a.ksplit > 0 or a.ue or a.ufrec) else None), wf=WFD)
+                        uf=(dict(judge=True, ue=a.ue, res=a.uf_res, uel=a.ue_loc, ls0=a.ls0_keep) if (a.ksplit > 0 or a.ue or a.ufrec) else (dict(ls0=True) if a.ls0_keep else None)), wf=WFD)
     if a.seedb:                                                                       # 절 CM28 (a): 입자 β (원래 순번 -> 풀이 순서 perm)
         _sd = np.load(a.seedb)
         _seed = torch.from_numpy(_sd["seed"].astype(np.bool_))
@@ -545,6 +547,10 @@ for fi in range(L):
         c["com"] = dict(z=float((_w * xo[_ok][:, 2].double()).sum()), gz=float((_w * gt[_ok][:, 2].double()).sum()))
     if getattr(S, "ufj", False):                                                     # 절 CM24 (결과 불변): 걸음별 덜 풀림·보폭 최소 (마지막 시도)
         c["uf"] = dict(fail=[int(q) for q in S.ufl[:S.K].cpu()], smin=[float(q) for q in S.ufs[:S.K].cpu()], g2=[float(q) for q in S.ufg[:S.K].cpu()] if S.ufr else None)
+        if getattr(S, "uel", 0):
+            c["uf"]["ul"] = S.ULS[:S.K, :3].cpu().tolist()
+    if a.ls0_keep:                                                                     # 절 CM31: 이 프레임 보폭 0 반복 수·δ 비유한 노드 수 (읽고 0)
+        _g = S.mod.get_global("AF_L0N"); _a = AORT.ART.cp.ndarray((2,), dtype=AORT.ART.cp.int32, memptr=_g); c["l0"] = [int(q) for q in _a.get()]; _a[:] = 0
     if a.ksplit > 0:
         c["ks"] = dict(K=KF, tries=[list(q) for q in _ktr])
     if a.wi or a.wi_rec:                                                             # 절 CM29 (결과 불변 읽기): 국소 필터 통계 (마지막 시도), 기록 프레임 요약

@@ -1275,8 +1275,11 @@ def _wb_kernels(bar=None):
     return "\n".join(out) + WB_SRC + (ARTN.Y0L_SRC if (bar or {}).get("y0loc") else "")      # 절 CM27 (c) --y0loc: 새 실행기 커널 글자 그대로 (끄면 소스 그대로)
 
 
-def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, lji=False, uf=False, wf=None):
+def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, lji=False, uf=False, wf=None, c1=None):
     s = ART.SRC.rstrip()
+    if c1 and c1.get("ls0"):                                                         # 절 CM31 --ls0_keep (rt_lsup·압축 판 rt_lsup_c 같은 글자; 끄면 소스 그대로)
+        from . import fem_common1 as C1
+        s = C1.ls0ify(s, True)
     if gqm:                                                                          # 절 CM9 --gq_mass: rt_p2g 노드 몫 빼고 (가우스 점 경로 커널은 끝에 덧붙임)
         from .fem_an_det import _sub_in
         s = _sub_in(s, "rt_p2g", GQ_P2G_OLD, GQ_P2G_NEW)
@@ -1308,7 +1311,7 @@ def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, 
         nr_ = [float(q) for q in bar["NR"]]
         wbh = ("\n__device__ float* AF_BX;\n__device__ float* AF_BPG;\n__device__ float* AF_BPH;\n__device__ int* AF_BACT;\n__device__ int AF_BDET;"
                "\n#define WB_N0 %.9ef\n#define WB_N1 %.9ef\n#define WB_N2 %.9ef" % tuple(nr_))
-    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg] + wbh, 1) + _pl_funcs() + _mv_half(DET.det_ao(ao)) + DET.det_ao(ao) + _bench_variants(ao) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + (_fpi_src() if fpi else "") + (_wb_kernels(bar) if bar is not None else "") + (LJI_SRC if lji else "") + (_uf_src(ao) if uf else "") + "\n}\n"
+    r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg] + wbh, 1) + _pl_funcs() + _mv_half(DET.det_ao(ao)) + DET.det_ao(ao) + _bench_variants(ao) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + (_fpi_src() if fpi else "") + (_wb_kernels(bar) if bar is not None else "") + (LJI_SRC if lji else "") + (_uf_src(ao) if uf else "") + (__import__("anchorflow.fem_common1", fromlist=["x"]).ao_uel_src(_uf_src(ao)) if (uf and c1 and c1.get("uel")) else "") + "\n}\n"
     if wf:                                                                           # 절 CM28 (a)~(d): 원본 NACC 차이 없애기 (끄면 소스 글자 그대로)
         from . import fem_wmfrac as WF
         r = WF.apply(r, wf)
@@ -1342,6 +1345,8 @@ class AORTSolver(DET.DetMixin):
         s.ufj = bool(uf and uf.get("judge"))                                           # 절 CM24: 걸음 수렴 판정 커널 (덜 풀린 걸음 표시; 끄면 소스·커널 열 그대로)
         s.ue = {"": 0, "be": 1, "a0": 2, "beall": 3}[(uf or {}).get("ue", "")]         # 절 CM24 (2)·(3): 덜 풀린 걸음 갱신 (1 후퇴 오일러, 2 가속도 기억 0, 3 모든 걸음 후퇴 오일러 갱신)
         assert not s.ue or s.ufj, "--ue 는 판정 커널 위"
+        s.uel = int((uf or {}).get("uel", 0)); s.ls0 = bool((uf or {}).get("ls0", False))   # 절 CM31 --ue_loc (2 만: --y0loc β<1 노드) · --ls0_keep
+        assert not s.uel or (s.ue in (1, 2) and s.uel == 2), "옛 실행기 --ue_loc 는 2 만, --ue be·a0 위"
         s.elx = str(elx)                                                                # 절 CM13: 수박 탄성 확장 ("" 끔, jbar, snh)
         s.dmg, s.pf_it = str(dmg), int(pf_it)                                           # 절 CM19: 손상 ("" 끔, cdm, pf), 위상장 PCG 반복 수
         assert not (s.dmg and det), "--dmg 는 비결정 판만"
@@ -1397,7 +1402,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj, wf={k_: v_ for k_, v_ in s.wf.items() if k_ in ("seedb", "ljq", "ljq_xi", "rmsub", "rmsnh", "wi", "ws", "en")}), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj, c1=dict(uel=s.uel, ls0=s.ls0), wf={k_: v_ for k_, v_ in s.wf.items() if k_ in ("seedb", "ljq", "ljq_xi", "rmsub", "rmsnh", "wi", "ws", "en")}), options=("--std=c++14",))
         assert not s.ue or s.ga is not None, "--ue 는 HHT·GA 판만"
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
@@ -1516,6 +1521,8 @@ class AORTSolver(DET.DetMixin):
             s.gqP = Z(s.capQc * 8 * 6); s.gqC = Z(s.capQc * 6)
         if getattr(s, "ufj", False):                                                   # 절 CM24: 걸음별 보폭 최소·덜 풀림 표시
             s.ufs = Z(max(s.K, 1)); s.ufg = Z(max(s.K, 1)); s.ufl = torch.zeros(max(s.K, 1), device=s.dev, dtype=torch.int32)
+            if getattr(s, "uel", 0):                                                   # 절 CM31 --ue_loc: 노드 집합 + 걸음별 [S 노드, 몸 노드, S∩몸, -]
+                s.ulm = torch.zeros(s.capN, device=s.dev, dtype=torch.int32); s.ULS = torch.zeros(max(s.K, 1), 4, device=s.dev, dtype=torch.int32)
         s.awez = Z(s.capN, 3); s.awyb = Z(s.capN, 3); s.awdy = Z(s.capN, 3); s.awtd = Z(s.capN, 3)                     # 절 AS 시작점 (--y0z)
         if getattr(s, "dmg", "") == "pf":                                              # 절 CM19 위상장: 노드 d·PCG 벡터, 스칼라, 풀이별 상대 잔차
             s.pfd, s.pfb, s.pfg, s.pfr, s.pfz, s.pfp, s.pfA = (Z(s.capN) for _ in range(7))
@@ -1874,6 +1881,13 @@ class AORTSolver(DET.DetMixin):
                 c = s.ga_c
                 if s.ue and ENW and ENW.get("nl"):                                             # 절 CM33 (b): 자른 노드만 실제 이동 기반 속도·가속도 기억 0
                     s.k("en_stepend", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp), P(s.ufl[kstep:]), i32(s.ue), P(s.ENcut)), b=256)
+                elif s.ue and getattr(s, "uel", 0):                                             # 절 CM31 --ue_loc 2: 덜 풀린 걸음 갱신 바꿈을 --y0loc β<1 노드에만
+                    s.k("ul_zero", capN, (P(IP), P(s.ulm)), b=256)
+                    if s.wbar and s.wbar.get("y0loc"):
+                        s.k("ul_kn", capN, (P(IP), P(s.ykn), P(s.ulm)), b=256)
+                    s.k("rt_zero_i", 4, (np.int32(4), P(s.ULS[kstep])), b=256)
+                    s.k("ul_st", capN, (P(IP), P(s.ulm), P(s.mn), P(s.ULS[kstep])), b=256)
+                    s.k("ao_stepend_ufl", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp), P(s.ufl[kstep:]), i32(s.ue), P(s.ulm)), b=256)
                 elif s.ue:                                                                       # 절 CM24 (2)·(3): 덜 풀린 걸음 (ufl[k] = 1) 갱신만 바꾼 같은 커널
                     s.k("ao_stepend_uf", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp), P(s.ufl[kstep:]), i32(s.ue)), b=256)
                 else:
