@@ -10,7 +10,7 @@ WD=/tmp/dkta/ag_data; [ -s $WD/wolf.pt ] || { WD=/dev/shm/dkta/ag_data; mkdir -p
 FB="--floor vel --fl_bar --fl_bst 1 --y0eb"
 REST="--pbc --mlow 1e-3 --cell 1 --mg_levels 4 --mg_nc 4 --ls_n 10 --descent --mg_wreuse --mg_lreuse --mv2 --lsfast --fk --gq_oct 0.1 --mgbar 2 --ga_y0ut --hspec --ncomp --ga hht --rho 0.8 --cell 2"
 IT="--newton 2 --cg 5"; TL="--tolN 1e-2 --tolP 1e-1"; TAIL="--fp_interp --tag wolf --K 1"
-VARS="base a_ube b_ua0 c_loc d_locube e_phi e_phiube e_philoc e_all"
+VARS="base a_ube b_ua0 c_loc d_locube e_phi e_phiube e_philoc e_all ${WF_EXTRA:-f_ks f_ksloc f_ksphi f_ksall}"
 vf() { case $1 in
   base) echo "";;
   a_ube) echo "--ue be --uf_res";;
@@ -21,8 +21,12 @@ vf() { case $1 in
   e_phiube) echo "--pbc_phi --ue be --uf_res";;
   e_philoc) echo "--pbc_phi --y0loc 3";;
   e_all) echo "--pbc_phi --y0loc 3 --ue be --uf_res";;
+  f_ks) echo "--ksplit 3";;
+  f_ksloc) echo "--ksplit 3 --y0loc 3";;
+  f_ksphi) echo "--ksplit 3 --pbc_phi";;
+  f_ksall) echo "--ksplit 3 --y0loc 3 --pbc_phi";;
 esac; }
-dgof() { local x="--det --hgt --fhash --bar_cnt --nrec --prec 10:$2"; case "$(vf $1)" in *--ue*) ;; *) x="$x --ufrec --uf_res";; esac; echo "$x"; }
+dgof() { local x="--det --hgt --fhash --bar_cnt --nrec --prec 10:$2"; case "$(vf $1)" in *--ue*|*--ksplit*) ;; *) x="$x --ufrec --uf_res";; esac; echo "$x"; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/wolffix.log; rclone copyto $O/wolffix.log $RO/wolffix.log -q; }
 up() { rclone copy $O/$1 $RO/$1 -q --transfers 8 --s3-upload-concurrency 16 --s3-chunk-size 64M; }
 CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL
