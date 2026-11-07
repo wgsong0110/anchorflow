@@ -1,7 +1,7 @@
 #!/bin/bash
 # 절 CM33 묶음 wmen (수박 (2) 판 = 절 CM32 fi + CM27 (d) 쪼개기 끔 의 에너지 생성: 몫 분해 진단 --enrec + 고침 후보). 판 = 원자를 + 로 이음.
 #   원자: p2 ((2) 판 = 기준 장벽 바닥 + 보간 교체 K 1 + --gq_oct 0 --ws_bar 4 --ws_fi --y0loc 3 --ue be --uf_res, 쪼개기 끔) · dn ((2) 에서 --y0loc 뺀 판)
-#   · mo (--en_mo: 뉴턴 반복마다 Φ 가 늘면 갱신 반씩 되돌림, 단계 s2) · ro (--uf_ro 판정 잔차만) · nl (--ue_nl 자른 노드만 실제 이동 기반 갱신) · x6 (--newton 6 --xit_from 2: 덜 풀린 걸음만 반복 4 번 더) · c25·c3 (셀 2.5·3).
+#   · cm (절 CM31 공통 후보 나머지 --ue_loc 2 --ls0_keep, 단계 s3) · mo (--en_mo: 뉴턴 반복마다 Φ 가 늘면 갱신 반씩 되돌림, 단계 s2) · ro (--uf_ro 판정 잔차만) · nl (--ue_nl 자른 노드만 실제 이동 기반 갱신) · x6 (--newton 6 --xit_from 2: 덜 풀린 걸음만 반복 4 번 더) · c25·c3 (셀 2.5·3).
 #   판마다 비결정 두 번: a = 진단 (결과 불변) --qjd --jdiag --bar_cnt --erec --ufrec --nrec --enrec 100 (+ --frec 30 p2·dn 단독 판), b = --erec 만 -- 시간은 b (한 줄, 카드 하나에 차례로).
 # 사용 (잡 안, 커밋 디렉토리에서): bash exe/stab_wmen.sh <출력> <R2> <단계 이름> <판 ...>
 O=$1; R=$2; STG=$3; shift 3; VARS="$*"; mkdir -p $O
@@ -12,7 +12,7 @@ WMD=/tmp/dkta/ag_data; mkdir -p $WMD
 BASE="exe/fem_ao_rt_sim.py --data $WMD/wm.pt --frames 100 --floor vel --floor_plane 1,1,0.02,0,0,1 --cell 1.5 --mlow 1e-3 --integ mid --ga hht --rho 0.7 --ga_y0ut --tolN 1e-2 --tolP 1e-1 --newton 2 --cg 5 --ls_inv --y0u --y0l --fq_rl --ls_end --gq_mass --elx snh --fl_bar --fl_bst 1 --y0eb --lj_interp --fp_interp --tag wm --K 1"
 atom() { case $1 in
     p2) echo "--gq_oct 0 --ws_bar 4 --ws_fi --y0loc 3 --ue be --uf_res";; dn) echo "--gq_oct 0 --ws_bar 4 --ws_fi --ue be --uf_res";;
-    ro) echo "--uf_ro";; nl) echo "--ue_nl";; x6) echo "--xit_from 2";; mo) echo "--en_mo";; c25|c3) echo "";;
+    ro) echo "--uf_ro";; nl) echo "--ue_nl";; x6) echo "--xit_from 2";; mo) echo "--en_mo";; cm) echo "--ue_loc 2 --ls0_keep";; c25|c3) echo "";;
     *) echo "??$1";; esac; }
 cmd_of() {   # 판 이름 -> 명령 (진단 없이; 모두 쪼개기 끔)
   local c="$BASE" x
@@ -22,7 +22,7 @@ cmd_of() {   # 판 이름 -> 명령 (진단 없이; 모두 쪼개기 끔)
 dg_of() { local n=$1 v=${1%_*} x
   case $n in *_b) echo "--erec"; return;; esac
   x="--qjd --jdiag --bar_cnt --erec --ufrec --nrec --enrec 100"
-  case "+$v+" in *+ro+*|*+nl+*|*+x6+*|*+mo+*) ;; *) x="$x --frec 30";; esac
+  case "+$v+" in *+ro+*|*+nl+*|*+x6+*|*+mo+*|*+cm+*) ;; *) x="$x --frec 30";; esac
   echo "$x"; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/wmen.log; rclone copyto $O/wmen.log $R/wmen.log -q; }
 up() { rclone copy $O/$1 $R/$1 -q; }
@@ -64,7 +64,7 @@ fi
 # ---- 1. 연기: 셀 3 의 (2) 판·모두 켠 판 6 프레임 (진단 포함, f4 첫 접촉 지남), enb 몫 합 대조
 SM=$O/smoke_$STG; mkdir -p $SM
 if [ ! -f $SM/ok ]; then
-  SV="c3+p2 c3+p2+ro+nl+x6 c3+p2+x6"; [ $STG = s1 ] || SV="c3+p2+mo c3+p2+x6+mo c3+p2+ro+nl+x6+mo"
+  SV="c3+p2 c3+p2+ro+nl+x6 c3+p2+x6"; [ $STG = s2 ] && SV="c3+p2+mo c3+p2+x6+mo c3+p2+ro+nl+x6+mo"; [ $STG = s3 ] && SV="c3+p2+cm c3+p2+x6+mo+cm"
   for v in $SV; do ( g=$(claim_wait $BASHPID); c="$(cmd_of $v | sed 's/--frames [0-9]*/--frames 6/') $(dg_of ${v}_a)"
     mkdir -p $SM/$v; echo "$PY -u $c --out $SM/$v" > $SM/$v/cmd.txt
     CUDA_VISIBLE_DEVICES=$g timeout 1800 $PY -u $c --out $SM/$v < /dev/null > $SM/$v/log.txt 2>&1; echo "rc=$? 카드 $g" > $SM/$v/rc.txt; rm -f $CL/$g ) & sleep 3; done

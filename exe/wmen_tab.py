@@ -10,7 +10,7 @@ import os
 import sys
 
 O = sys.argv[1]
-NAME = {"p2": "(2) 판", "dn": "(2) 판 − --y0loc", "ro": "(a) 판정 잔차만", "nl": "(b) 자른 노드 실제 이동 갱신", "x6": "(c) 덜 풀린 걸음 뉴턴 +4", "mo": "(d) Φ 늘면 되돌림"}
+NAME = {"p2": "(2) 판", "dn": "(2) 판 − --y0loc", "ro": "(a) 판정 잔차만", "nl": "(b) 자른 노드 실제 이동 갱신", "x6": "(c) 덜 풀린 걸음 뉴턴 +4", "mo": "(d) Φ 늘면 되돌림", "cm": "공통 후보 (--ue_loc 2 --ls0_keep)"}
 CELLS = {"c25": "2.5", "c3": "3"}
 E0 = 7.13
 
@@ -77,7 +77,7 @@ def nN(rows):
     return sum(v) / len(v) if v else None
 
 
-ORD = ["p2", "dn", "ro", "nl", "x6", "mo"]
+ORD = ["p2", "dn", "ro", "nl", "x6", "mo", "cm"]
 vs = sorted({os.path.basename(p)[:-2] for p in glob.glob(os.path.join(O, "*_a")) if not os.path.basename(p).startswith("vid_")},
             key=lambda v: (float(cell(v)) if cell(v) != "?" else 9, [ORD.index(x) if x in ORD else 99 for x in v.split("+") if x not in CELLS]))
 print("# 절 CM33 묶음 wmen -- 수박 (2) 판 (절 CM32 --gq_oct 0 --ws_bar 4 --ws_fi + CM27 (d) --y0loc 3 --ue be --uf_res, 쪼개기 끔) 의 에너지 생성: 몫 분해 + 고침 후보\n")
