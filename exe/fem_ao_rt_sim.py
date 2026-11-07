@@ -105,6 +105,12 @@ ap.add_argument("--jbar", type=float, default=1.0, help="절 CM13 판 (1): κ_J 
 ap.add_argument("--nrec", action="store_true", help="절 CM23.3 진단 (결과 불변, 재질 판만): 걸음·뉴턴 반복별 |g|/F (허용치 규칙 척도), 멈춤, PCG 반복·상한, 보폭, 마지막 뉴턴 뒤 |g|/F (fem.jsonl nr), 입자 질량중심 z 우리·정답 (com)")
 ap.add_argument("--jdiag", action="store_true", help="절 CM13 진단 (결과 불변, 재생 밖): 프레임 끝 가우스 점 F_q (부피 > 0) det ≤ 0 수·최소, 입자 F det 최소·≤ 0 수·< 1e-3 수 (fem.jsonl jd)")
 ap.add_argument("--theta", type=float, default=None, help="θ 방식 (절 AN.err2 정의; 0.5 = 중점, 1 = 후퇴 오일러). 안 주면 --integ 그대로 (비트 동일)")
+ap.add_argument("--frec", type=int, default=0, help="절 CM23.4 진단 (결과 불변, --nrec 위, K 1 만): 프레임 1~이 값의 뉴턴 반복별 노드 힘 몫 (탄성·장벽·관성·중력·잔차) 법선 성분 합 (몸 전체·바닥 위 --frec_band 칸), "
+                "걸음 속도 변화 몫 분해, 장벽 표본점 (걸린 수·에너지·최소 d/d̂), 프레임 끝 입자 det F 분포·SNH 탄성 에너지 (우리·정답 F) -> fem.jsonl fr")
+ap.add_argument("--frec_band", type=float, default=3.0, help="절 CM23.4: 바닥 근처 = 걸음 시작 노드 위치의 바닥 위 높이 < 이 값 x 칸")
+ap.add_argument("--bar_kmul", type=float, default=1.0, help="절 CM23.4 대조 (진단용 정의 변경): 장벽 강성 κ x 이 값")
+ap.add_argument("--bar_dhmul", type=float, default=1.0, help="절 CM23.4 대조 (진단용 정의 변경): 장벽 두께 d̂ x 이 값 (κ = (λ+2μ) V/d̂² 정의 그대로 따라 바뀜, --bar_dhk 면 κ 는 원래 d̂ 로)")
+ap.add_argument("--bar_dhk", action="store_true", help="절 CM23.4: --bar_dhmul 에서 κ 를 원래 d̂ 값으로 고정")
 a = ap.parse_args()
 if a.adaptK > 0:
     a.K = 8                                                                       # 버퍼·첫 캡처는 상한으로, 프레임마다 다시 정함
@@ -144,10 +150,13 @@ if a.floor == "vel":
 WBAR = None
 if a.fl_bar:                                                                          # 절 CM21: 장벽 바닥 (새 실행기 --fl_bar --fl_bst 1 --y0eb 와 같은 정의)
     assert FL is not None and not a.floor_slip and a.fl_bst == 1 and a.ga_y0ut and not a.det, "--fl_bar 는 --floor vel, --floor_slip 없이, --fl_bst 1, --ga_y0ut, 비결정 판"
-    WBAR = dict(NR=FL["NR"], PN=FL["PN"], DH=0.5 * DXG, KS=(float(lam) + 2.0 * float(mu)) / (0.5 * DXG) ** 2, y0eb=a.y0eb)
+    _dh = 0.5 * DXG * a.bar_dhmul                                                    # 절 CM23.4 대조: 기본 (x 1) 이면 같은 값
+    WBAR = dict(NR=FL["NR"], PN=FL["PN"], DH=_dh, KS=(float(lam) + 2.0 * float(mu)) / ((0.5 * DXG) if a.bar_dhk else _dh) ** 2 * a.bar_kmul, y0eb=a.y0eb)
+    if a.bar_kmul != 1.0 or a.bar_dhmul != 1.0:
+        print(f"[절 CM23.4 대조] 장벽 κ x {a.bar_kmul}, d̂ x {a.bar_dhmul} (κ {'원래 d̂ 로 고정' if a.bar_dhk else '정의대로 d̂ 따름'}) -> d̂ {_dh:.6g} κ/V {WBAR['KS']:.6g}", flush=True)
     print(f"[절 CM21 장벽 바닥] 평면 {FL['PT']} 법선 {FL['NR']} d̂ {0.5 * DXG:.6g} κ/V {WBAR['KS']:.6g} 띠 고착 bst 1 시작점 y0eb {a.y0eb}", flush=True)
 else:
-    assert not (a.fl_bst or a.y0eb or a.bar_cnt), "--fl_bst·--y0eb·--bar_cnt 는 --fl_bar 위"
+    assert not (a.fl_bst or a.y0eb or a.bar_cnt or a.bar_kmul != 1.0 or a.bar_dhmul != 1.0), "--fl_bst·--y0eb·--bar_cnt·--bar_kmul·--bar_dhmul 는 --fl_bar 위"
 BC = None
 if a.cfg_bc:
     BC = []
@@ -294,6 +303,13 @@ if a.nrec:
     assert MATK is not None and a.adaptK <= 0 and a.tolN >= 0, "--nrec 는 재질 판 (AORTSolver), 고정 걸음, 허용치 판만"
     S.nrec_on()
     print("[절 CM23.3 진단] --nrec 켬 (뉴턴 반복별 |g|/F·PCG·보폭·마지막 뉴턴 뒤 |g|/F, 결과 불변)", flush=True)
+if a.frec > 0:
+    assert a.nrec and a.K == 1 and a.ga == "hht", "--frec 는 --nrec 위, K 1, HHT 만"
+    S.frec_on()
+    from anchorflow import fem_wmkick_diag as FRD
+    FRC = FRD.FrecCtx(S, a, FL, WBAR, m64, vol64, float(mu), float(lam), [float(q) for q in cfg["g"]], float(lat.A[:, 0].norm()), MTHR,
+                      DM.traj_F(d, h, dev) if not a.F0_eye else None, d["x"])
+    print(f"[절 CM23.4 진단] --frec {a.frec} 켬 (노드 힘 몫·속도 변화 분해·장벽 표본점·det F·탄성 에너지, 결과 불변)", flush=True)
 if a.nan_step:
     assert MATK is not None and a.adaptK <= 0 and not a.det, "--nan_step 은 재질 판 (AORTSolver), 고정 걸음, 비결정 판만"
     S.nsd_on()
@@ -413,6 +429,11 @@ for fi in range(L):
     if a.nrec:                                                                        # 질량중심 z (우리·정답, 정답 비유한 입자는 둘 다 뺌)
         _w = m64[_ok].double(); _w = _w / _w.sum()
         c["com"] = dict(z=float((_w * xo[_ok][:, 2].double()).sum()), gz=float((_w * gt[_ok][:, 2].double()).sum()))
+    if a.frec > 0 and fi + 1 <= a.frec and int(S.IP[13]) == 0:                        # 절 CM23.4 (결과 불변, 읽기만)
+        try:
+            c["fr"] = FRC.frame(fi + 1)
+        except Exception as _ex:
+            import traceback; traceback.print_exc(); c["fr"] = dict(err=repr(_ex))
     if a.diag:
         c["diag"] = S.diag()
     if "it" in c:

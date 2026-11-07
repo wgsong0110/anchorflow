@@ -1375,6 +1375,26 @@ class AORTSolver(DET.DetMixin):
         if hasattr(s, "graphs"):
             s.graphs.clear()
 
+    def frec_on(s):
+        """절 CM23.4 진단 (--frec, 결과 불변, --nrec 위): 걸음·뉴턴 반복마다 노드 힘 몫 사본 -- 탄성 기울기 f (aq_elem 뒤, 장벽 더하기 전), 장벽 노드 스칼라 bGn (법선), 기울기 위치 y·η·잔차 r0 = −g (rt_grad 뒤);
+        걸음 끝 (마지막 뉴턴 뒤 다시 계산, --nrec 끝 블록 안) 같은 셋 + 걸음 시작 속도·가속도·z0·ŷ·질량, 걸음 끝 (ao_stepend_ga 뒤) 속도·가속도. 다음 프레임에 다시 캡처."""
+        s.fr_on = True
+        s.graph = None
+        if hasattr(s, "graphs"):
+            s.graphs.clear()
+
+    def _fr_alloc(s):
+        nt, K, cN = s.nt, s.K, s.capN
+        Z = lambda *sh: torch.zeros(*sh, device=s.dev, dtype=torch.float32)
+        need = dict(FRfel=(K, nt + 1, cN, 3), FRbg=(K, nt + 1, cN), FRy=(K, nt + 1, cN, 3), FReta=(K, nt + 1, cN, 3), FRr=(K, nt + 1, cN, 3),
+                    FRv0=(K, cN, 3), FRa0=(K, cN, 3), FRz0=(K, cN, 3), FRyh=(K, cN, 3), FRut=(K, cN, 3), FRv1=(K, cN, 3), FRa1=(K, cN, 3), FRU1=(K, cN, 3), FRmn=(cN,))
+        for q, sh in need.items():
+            t = getattr(s, q, None)
+            if t is None or tuple(t.shape) != sh:
+                if torch.cuda.is_current_stream_capturing():
+                    raise RuntimeError("--frec: 사본 버퍼는 데움 record 에서 잡아야 함")
+                setattr(s, q, Z(*sh))
+
     def _nr_alloc(s):
         n = s.K * s.nt
         d, dv = torch.float64, s.dev
@@ -1474,6 +1494,10 @@ class AORTSolver(DET.DetMixin):
         NR = getattr(s, "nr_on", False)
         if NR:
             s._nr_alloc()
+        FR = getattr(s, "fr_on", False)                                                 # 절 CM23.4 진단 (결과 불변): 노드 힘 몫 사본
+        if FR:
+            assert NR and s.aq, "--frec 는 --nrec 위, 재질 커널 경로만"
+            s._fr_alloc()
         s.zf(s.cnt)
         if s.aq:
             s.zf(s.qb)
@@ -1612,12 +1636,16 @@ class AORTSolver(DET.DetMixin):
                 if s.aq:
                     s.k("aq_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt), P(s.f), P(s.H), i32(capQ), P(s.B),
                                           P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None), P(s.z0), f(s.al), f(s.visc), P(s.qb)))
+                    if FR:                                                             # 절 CM23.4: 탄성 기울기 (장벽 더하기 전)
+                        s.FRfel[kstep, it].copy_(s.f[:s.capN])
                 else:
                     s.k("ao_elem_s" if s.hspec else "ao_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), f(s.cdp), i32(1 | 2 | 8 | (128 if s.hpack else 0) | (256 if s.bdsh else 0) | (512 if s.h16 else 0)), P(s.f), P(s.H), i32(capQ), P(s.B),
                                           P(s.cnt if (kstep == s.K - 1 and it == s.nt - 1) else None)))
                 if WB is not None:                                                     # 절 CM21 장벽 기울기·덩어리 헤시안 (절 AN.19 그대로)
                     s.zf(s.bGn, 9, 1); s.zf(s.bKn, 9, 1)
                     s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), thv, *BA, i32(1), P(s.bGn), P(s.bKn), P(s.bE)))
+                    if FR:
+                        s.FRbg[kstep, it].copy_(s.bGn[:s.capN])
                     if s.bcnt:
                         s.k("wb_cnt", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.U), thv, *[f(q) for q in nr], f(WB["PN"]), f(WB["DH"]), P(s.bcf)))
                     s.k("rt_bar_n", capN, (P(IP), P(s.bGn), P(s.bKn), *[f(q) for q in nr], P(s.f), P(s.B)), b=256)
@@ -1626,6 +1654,8 @@ class AORTSolver(DET.DetMixin):
                     c_ = NSDM.code(kstep, it + 1, 0); D_.node(s.f, D_.mF, c_); D_.sc(c_)
                 if NR:                                                                 # 절 CM23.3: 이 반복 |g|² (SC[1])·F² (SC[56])
                     s.NRsc[kstep * s.nt + it].copy_(s.SC)
+                if FR:                                                                 # 절 CM23.4: 기울기 위치 y·η, 잔차 r0 = −g
+                    s.FRy[kstep, it].copy_(s.y[:s.capN]); s.FReta[kstep, it].copy_(s.eta[:s.capN]); s.FRr[kstep, it].copy_(s.g0buf[:s.capN])
                 s.ctl(3, it)
                 if NR:
                     s.NRct3[kstep * s.nt + it].copy_(s.CT); s.NRcd[kstep * s.nt + it].copy_(s.CD)
@@ -1695,17 +1725,27 @@ class AORTSolver(DET.DetMixin):
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(56), i32(58)), b=1)
                 s.k("aq_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt), P(s.f), P(s.H), i32(capQ), P(s.B),
                                       P(None), P(s.z0), f(s.al), f(s.visc), P(s.qb)))
+                if FR:                                                                 # 절 CM23.4: 걸음 끝 탄성 기울기
+                    s.FRfel[kstep, s.nt].copy_(s.f[:s.capN])
                 if WB is not None:
                     s.zf(s.bGn, 9, 1); s.zf(s.bKn, 9, 1)
                     s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), thv, *BA, i32(1), P(s.bGn), P(s.bKn), P(s.bE)))
+                    if FR:
+                        s.FRbg[kstep, s.nt].copy_(s.bGn[:s.capN])
                     s.k("rt_bar_n", capN, (P(IP), P(s.bGn), P(s.bKn), *[f(q) for q in nr], P(s.f), P(s.B)), b=256)
                 s.k("rt_grad" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 s.NRfin[kstep, 0:1].copy_(s.SC[1:2]); s.NRfin[kstep, 1:2].copy_(s.SC[56:57])
+                if FR:                                                                 # 절 CM23.4: 걸음 끝 y·η·r0, 걸음 시작 속도·가속도·z0·ŷ·Ũ (ao_stepend_ga 앞이라 아직 시작 값), 질량
+                    s.FRy[kstep, s.nt].copy_(s.y[:s.capN]); s.FReta[kstep, s.nt].copy_(s.eta[:s.capN]); s.FRr[kstep, s.nt].copy_(s.g0buf[:s.capN])
+                    s.FRv0[kstep].copy_(s.vk[:s.capN]); s.FRa0[kstep].copy_(s.gaA[:s.capN]); s.FRz0[kstep].copy_(s.z0[:s.capN]); s.FRyh[kstep].copy_(s.yh[:s.capN]); s.FRut[kstep].copy_(s.Ut[:s.capN])
+                    s.FRmn.copy_(s.mn[:s.capN])
                 for q_, t_ in s.NRbk.items():
                     getattr(s, q_).copy_(t_)
             if s.ga is not None:
                 c = s.ga_c
                 s.k("ao_stepend_ga", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp)), b=256)
+                if FR:                                                                 # 절 CM23.4: 걸음 끝 속도·가속도·변위
+                    s.FRv1[kstep].copy_(s.vk[:s.capN]); s.FRa1[kstep].copy_(s.gaA[:s.capN]); s.FRU1[kstep].copy_(s.U[:s.capN])
             elif s.th is not None:
                 s.k("ao_stepend_th", capN, (P(IP), f(1.0 / s.th), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), f(s.damp)), b=256)
             else:
