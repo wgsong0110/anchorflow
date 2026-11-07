@@ -102,6 +102,7 @@ ap.add_argument("--dmg_psic", choices=["tens", "uni"], default="tens", help="절
 ap.add_argument("--pf_l0", type=float, default=1.0, help="절 CM19 위상장 l0 = 이 값 x 칸 크기 (B-스플라인 노드 간격)")
 ap.add_argument("--pf_it", type=int, default=30, help="절 CM19 위상장 d 풀이 PCG 반복 수 (고정, 그래프 안)")
 ap.add_argument("--jbar", type=float, default=1.0, help="절 CM13 판 (1): κ_J = 이 값 x μ (재질 전단 강성)")
+ap.add_argument("--nrec", action="store_true", help="절 CM23.3 진단 (결과 불변, 재질 판만): 걸음·뉴턴 반복별 |g|/F (허용치 규칙 척도), 멈춤, PCG 반복·상한, 보폭, 마지막 뉴턴 뒤 |g|/F (fem.jsonl nr), 입자 질량중심 z 우리·정답 (com)")
 ap.add_argument("--jdiag", action="store_true", help="절 CM13 진단 (결과 불변, 재생 밖): 프레임 끝 가우스 점 F_q (부피 > 0) det ≤ 0 수·최소, 입자 F det 최소·≤ 0 수·< 1e-3 수 (fem.jsonl jd)")
 ap.add_argument("--theta", type=float, default=None, help="θ 방식 (절 AN.err2 정의; 0.5 = 중점, 1 = 후퇴 오일러). 안 주면 --integ 그대로 (비트 동일)")
 a = ap.parse_args()
@@ -289,6 +290,10 @@ assert not a.fp_interp or getattr(S, "fpi", False), "--fp_interp 는 재질 판 
 assert not (a.fl_bar or a.lj_interp) or MATK is not None, "--fl_bar·--lj_interp 는 재질 판 (AORTSolver) 만"
 if a.dmg:                                                                             # 절 CM19: 처음 손상 d = 0 (cdm) / 이력 H = 0 (pf) -- 재질 7 은 al·ys 를 안 씀
     S.alp.zero_(); S.ysp.zero_()
+if a.nrec:
+    assert MATK is not None and a.adaptK <= 0 and a.tolN >= 0, "--nrec 는 재질 판 (AORTSolver), 고정 걸음, 허용치 판만"
+    S.nrec_on()
+    print("[절 CM23.3 진단] --nrec 켬 (뉴턴 반복별 |g|/F·PCG·보폭·마지막 뉴턴 뒤 |g|/F, 결과 불변)", flush=True)
 if a.nan_step:
     assert MATK is not None and a.adaptK <= 0 and not a.det, "--nan_step 은 재질 판 (AORTSolver), 고정 걸음, 비결정 판만"
     S.nsd_on()
@@ -388,6 +393,26 @@ for fi in range(L):
         if a.dmg == "pf":
             _H = S.alp[_okp]
             c["dmg"].update(Hmax=float(_H.nan_to_num(0).max()) if _H.numel() else None, Hmean=float(_H.nan_to_num(0).mean()) if _H.numel() else None, pfres=[float(q) for q in S.pfres[:a.K].cpu()])
+    if a.nrec and int(S.IP[13]) == 0:                                                # 절 CM23.3 (결과 불변): 걸음 k·뉴턴 i 별 기록
+        _sc = S.NRsc.cpu().numpy(); _c3 = S.NRct3.cpu().numpy(); _c7 = S.NRct7.cpu().numpy(); _cd = S.NRcd.cpu().numpy(); _st = S.NRst.cpu().numpy(); _fn = S.NRfin.cpu().numpy()
+        _nt = S.nt; _rows = []; _gend = []
+        for _k in range(a.K):
+            _F2 = float(_cd[_k * _nt][2]); _F = math.sqrt(_F2) if _F2 > 0 else float("nan")
+            for _i in range(_nt):
+                _j = _k * _nt + _i
+                _ran = int(_c3[_j][0]) == 0
+                _stp = (not _ran) and (_i == 0 or int(_c3[_j - 1][0]) == 0)
+                _g = math.sqrt(max(float(_sc[_j][1]), 0.0)) if (_ran or _stp) else None
+                _r = dict(k=_k, i=_i, ran=_ran, stop=bool(_stp), gF=(_g / _F if _g is not None else None))
+                if _ran:
+                    _r.update(nP=int(_c7[_j][3] - _c3[_j][3]), capP=int(_c7[_j][5] - _c3[_j][5]), st=float(_st[_j]))
+                _rows.append(_r)
+            _gend.append(math.sqrt(max(float(_fn[_k][0]), 0.0)) / _F)
+        c["nr"] = dict(F=[math.sqrt(max(float(_cd[_k * _nt][2]), 0.0)) for _k in range(a.K)], it=_rows, gend=_gend,
+                       conv=[bool(any(r_["stop"] for r_ in _rows if r_["k"] == _k) or _gend[_k] <= a.tolN) for _k in range(a.K)])
+    if a.nrec:                                                                        # 질량중심 z (우리·정답, 정답 비유한 입자는 둘 다 뺌)
+        _w = m64[_ok].double(); _w = _w / _w.sum()
+        c["com"] = dict(z=float((_w * xo[_ok][:, 2].double()).sum()), gz=float((_w * gt[_ok][:, 2].double()).sum()))
     if a.diag:
         c["diag"] = S.diag()
     if "it" in c:

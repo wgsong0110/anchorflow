@@ -1367,6 +1367,28 @@ class AORTSolver(DET.DetMixin):
         if hasattr(s, "graphs"):
             s.graphs.clear()
 
+    def nrec_on(s):
+        """절 CM23.3 진단 (--nrec, 결과 불변): 걸음·뉴턴 반복마다 rt_grad 뒤 SC 사본 (|g|²·탄성 힘 몫 F²), 허용치 제어 CT·CD 사본 (ctl 3·7 뒤), 보폭 SC[14] (rt_lsup 앞),
+        걸음 끝 (마지막 뉴턴 뒤) |g|² 를 한 번 더 계산 (aq_elem·장벽·rt_grad 를 다시 부르고, 덮어쓰는 풀이 버퍼는 앞뒤로 따로 둔 사본에서 되돌림). 다음 프레임에 다시 캡처."""
+        s.nr_on = True
+        s.graph = None
+        if hasattr(s, "graphs"):
+            s.graphs.clear()
+
+    def _nr_alloc(s):
+        n = s.K * s.nt
+        d, dv = torch.float64, s.dev
+        if getattr(s, "NRsc", None) is None or s.NRsc.shape[0] != n:
+            s.NRsc = torch.zeros(n, 64, device=dv, dtype=d); s.NRcd = torch.zeros(n, 4, device=dv, dtype=d); s.NRst = torch.zeros(n, device=dv, dtype=d)
+            s.NRct3 = torch.zeros(n, 16, device=dv, dtype=torch.int32); s.NRct7 = torch.zeros(n, 16, device=dv, dtype=torch.int32)
+            s.NRfin = torch.zeros(s.K, 2, device=dv, dtype=d)
+        names = ["f", "B", "H", "Dinv", "r", "z", "p", "dl", "Tp", "g0buf", "SC", "qb", "CT", "CD"] + (["bGn", "bKn", "bE"] if getattr(s, "wbar", None) is not None else [])
+        bk = getattr(s, "NRbk", None)
+        if bk is None or any(bk[q].shape != getattr(s, q).shape or bk[q].data_ptr() == getattr(s, q).data_ptr() for q in names if q in bk) or set(bk) != set(names):
+            if torch.cuda.is_current_stream_capturing():
+                raise RuntimeError("--nrec: 사본 버퍼는 데움 record 에서 잡아야 함")
+            s.NRbk = {q: torch.empty_like(getattr(s, q)) for q in names}
+
     def _aw_end(s):
         """절 AS --ls_end: 걸음 끝 변위 U_{n+1} = e1 y + e0 U_n 계수 (HHT: y = (1−αf) U_{n+1} + αf U_n; 중점: U_{n+1} = 2y − U_n; 그 밖 y)."""
         if not s.lsend:
@@ -1449,6 +1471,9 @@ class AORTSolver(DET.DetMixin):
         if D_ is not None:
             D_.reset()
         s.ctl(0)
+        NR = getattr(s, "nr_on", False)
+        if NR:
+            s._nr_alloc()
         s.zf(s.cnt)
         if s.aq:
             s.zf(s.qb)
@@ -1599,7 +1624,11 @@ class AORTSolver(DET.DetMixin):
                 s.k("rt_grad" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 if D_ is not None:                                                     # 뉴턴 it 기울기
                     c_ = NSDM.code(kstep, it + 1, 0); D_.node(s.f, D_.mF, c_); D_.sc(c_)
+                if NR:                                                                 # 절 CM23.3: 이 반복 |g|² (SC[1])·F² (SC[56])
+                    s.NRsc[kstep * s.nt + it].copy_(s.SC)
                 s.ctl(3, it)
+                if NR:
+                    s.NRct3[kstep * s.nt + it].copy_(s.CT); s.NRcd[kstep * s.nt + it].copy_(s.CD)
                 if s.warm and it == 0 and kstep > 0 and s.nl <= 1:                                      # PCG 첫 추정 = 앞 걸음 첫 뉴턴의 δ (프레임 첫 걸음은 0)
                     s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(1)), b=1)
                     s.k("ao_tvec", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.d0), P(s.td)), b=256)
@@ -1634,6 +1663,8 @@ class AORTSolver(DET.DetMixin):
                     s.k("rt_sc_roll", 1, (P(s.SC),), b=1)
                     s.ctl(6, ci)
                 s.ctl(7, it)
+                if NR:
+                    s.NRct7[kstep * s.nt + it].copy_(s.CT)
                 if s.warm and it == 0:
                     s.d0.copy_(s.dl)
                 if s.lsinv:                                                            # 절 AS: 보폭 = 모든 가우스 점 J > 0 인 최대 2^-k (SC[14])
@@ -1649,10 +1680,29 @@ class AORTSolver(DET.DetMixin):
                     s.zf(s.kk)
                     s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.wbyc), P(s.U), thv, *[f(q) for q in nr], f(WB["PN"]), P(s.kk)))
                     s.k("wb_kmin", 1, (P(s.kk), P(s.SC), i32(1 if s.lsinv else 0)), b=1)
+                if NR:                                                                 # 절 CM23.3: 보폭 (rt_lsup 이 쓰는 SC[14])
+                    s.NRst[kstep * s.nt + it:kstep * s.nt + it + 1].copy_(s.SC[14:15])
                 s.k("rt_lsup" + ("_c" if s.compact else ""), capN, (P(IP), P(s.SC), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(0 if (s.lsinv or WB is not None) else 1)), b=256)
                 if D_ is not None:                                                     # 뉴턴 it 끝
                     c_ = NSDM.code(kstep, it + 1, 1); D_.node(s.y, D_.mN, c_); D_.q(s.y, c_); D_.sc(c_)
             s.ctl(8)
+            if NR:                                                                     # 절 CM23.3: 마지막 뉴턴 뒤 |g|² 한 번 더 (같은 식), 덮어쓰는 버퍼는 사본으로 되돌림 -> 결과 불변
+                assert s.aq, "--nrec 는 재질 커널 경로만"
+                for q_, t_ in s.NRbk.items():
+                    t_.copy_(getattr(s, q_))
+                s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
+                s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(16)), b=1)
+                s.k("rt_sc_clear", 1, (P(s.SC), i32(56), i32(58)), b=1)
+                s.k("aq_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), i32(s.mat), P(s.prm), P(s.Sq), f(s.dt), P(s.f), P(s.H), i32(capQ), P(s.B),
+                                      P(None), P(s.z0), f(s.al), f(s.visc), P(s.qb)))
+                if WB is not None:
+                    s.zf(s.bGn, 9, 1); s.zf(s.bKn, 9, 1)
+                    s.k("rt_bar_q", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.U), thv, *BA, i32(1), P(s.bGn), P(s.bKn), P(s.bE)))
+                    s.k("rt_bar_n", capN, (P(IP), P(s.bGn), P(s.bKn), *[f(q) for q in nr], P(s.f), P(s.B)), b=256)
+                s.k("rt_grad" + ("_c" if s.compact else ""), capN, (P(IP), P(s.mn), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
+                s.NRfin[kstep, 0:1].copy_(s.SC[1:2]); s.NRfin[kstep, 1:2].copy_(s.SC[56:57])
+                for q_, t_ in s.NRbk.items():
+                    getattr(s, q_).copy_(t_)
             if s.ga is not None:
                 c = s.ga_c
                 s.k("ao_stepend_ga", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp)), b=256)
