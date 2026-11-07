@@ -147,7 +147,7 @@ class MatRT(ADET.DetMixin):
         s.extra_p = (("ysp", "ljp", "alp") if s.aq else ()) + (("pvb", "pvc", "pmk") if s.pvb is not None else ())
         s.tbuf = torch.zeros(1, device=s.dev, dtype=torch.float32)
         src = mat_module_src(getattr(s, "mg2", False))
-        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False), gqm=getattr(s, "gqm", False), fpi=getattr(s, "fpi", False), cj=getattr(s, "cjj", False)), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False), gqm=getattr(s, "gqm", False), fpi=getattr(s, "fpi", False), cj=getattr(s, "cjj", False), cue=bool(getattr(s, "cue", 0))), options=("--std=c++14",))
         s._src0 = src
         s.fn = {}
         s.ao_ready = True

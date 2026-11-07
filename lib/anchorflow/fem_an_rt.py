@@ -2310,7 +2310,25 @@ __global__ void cj_end(const int* CT, const float* cjs, const float* cjg, int* c
 """
 
 
-def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False, fpi=False, cj=False):
+CJ_SIG_OLD = "float damp) {\n"
+CJ_SIG_NEW = "float damp, const int* cjl, int um) {\n    int uf_ = (um == 3) ? 1 : cjl[0];                                         // 절 CM24: um 1 덜 풀린 걸음 후퇴 오일러, 2 가속도 기억 0, 3 모든 걸음 후퇴 오일러 갱신\n"
+CJ_U_OLD = "        U[n*3+a] = u + dt*v + dt*dt*((0.5f - be)*ac + be*a1);\n"
+CJ_U_NEW = ("        if (uf_ && um != 2 && !fx_) { v1 = (y[n*3+a] - u)/dt; U[n*3+a] = y[n*3+a]; } else U[n*3+a] = u + dt*v + dt*dt*((0.5f - be)*ac + be*a1);   // 후퇴 오일러: U1 = y, v1 = (y − U)/h\n"
+            "        if (uf_) a1 = 0.f;\n")
+
+
+def cjueify(src):
+    """절 CM24 (2)·(3): rt_ga_end (모든 치환 뒤 글자) 를 복사해 덜 풀린 걸음 갱신만 바꾼 rt_ga_end_uf 를 그 뒤에 (원래 커널 그대로)."""
+    i = src.index("__global__ void rt_ga_end(")
+    j = src.index("\n}\n", i) + 3
+    k = src[i:j].replace("rt_ga_end(", "rt_ga_end_uf(", 1)
+    for o_, n_ in ((CJ_SIG_OLD, CJ_SIG_NEW), (CJ_U_OLD, CJ_U_NEW)):
+        assert k.count(o_) == 1, o_
+        k = k.replace(o_, n_, 1)
+    return src[:j] + k + src[j:]
+
+
+def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False, fpi=False, cj=False, cue=False):
     if cj:                                                                             # 절 CM24 판정 커널 (끄면 소스 그대로)
         src = src.replace('extern "C" {', 'extern "C" {\n' + CJ_SRC, 1)
     src = snhify(src, snh)                                                             # 절 CM18 --elx snh (끄면 소스 그대로)
@@ -2347,6 +2365,8 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, 
         src = nclify(src, True)
     if floor and floor.get("fup"):                                                      # 절 CM17: (A) 고착 몫 법선 한쪽 구속 (장벽 판 아님)
         src = fupify(src, floor["fup"])
+    if cue:
+        src = cjueify(src)
     return skipify(src) if adapt else src
 
 
@@ -2365,7 +2385,7 @@ class RTSolver(MG2.MG2Mixin):
 
     def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", fpi=False, mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False, gqm=False, wd=False, snh=False, wdcap=2000000, cj=None):
         s.dev = dev
-        s.cjj = bool(cj and cj.get("judge")); s.cjr = bool(cj and cj.get("res"))           # 절 CM24: 걸음 수렴 판정 커널 (끄면 소스·커널 열 그대로)
+        s.cjj = bool(cj and cj.get("judge")); s.cjr = bool(cj and cj.get("res")); s.cue = {"": 0, "be": 1, "a0": 2, "beall": 3}[(cj or {}).get("ue", "")]           # 절 CM24: 걸음 수렴 판정 커널 (끄면 소스·커널 열 그대로)
         s.fpi = bool(fpi)                                                              # 절 CM20 (정의 변경): 입자 F 를 프레임 끝 가우스 점 F 의 칸 안 삼선형 보간으로 교체
         assert not (s.fpi and pk), "--fp_interp 는 그래프 판만"
         s.gqm = bool(gqm)                                                              # 절 CM9 (정의 변경): 노드 질량·운동량을 가우스 점에서 (힘과 같은 점·가중·기저)
@@ -2443,7 +2463,7 @@ class RTSolver(MG2.MG2Mixin):
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh, fpi=s.fpi, cj=s.cjj), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh, fpi=s.fpi, cj=s.cjj, cue=bool(s.cue)), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
@@ -3216,8 +3236,11 @@ class RTSolver(MG2.MG2Mixin):
             if sg["kind"] == "ga" and getattr(s, "fup", 0) and s.areset:              # 절 CM17: 걸음 시작 v·a 보관 (rt_ga_end 뒤 고착 가속도 0 을 묶인 성분에만)
                 s.dcopy(s.fvo, s.vk); s.dcopy(s.fao, s.ak)
             if sg["kind"] == "ga":
-                s.k("rt_ga_end", capN, (P(IP), f(sg["dt"]), f(sg["gm"]), f(sg["be"]), f(sg["al"]), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.ak),
-                                        P(s.an if FL else None), i32(1 if s.areset else 0), P(s.fixd), P(s.vbc), dmp), b=256)
+                GE = (P(IP), f(sg["dt"]), f(sg["gm"]), f(sg["be"]), f(sg["al"]), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.ak), P(s.an if FL else None), i32(1 if s.areset else 0), P(s.fixd), P(s.vbc), dmp)
+                if getattr(s, "cue", 0):                                               # 절 CM24 (2)·(3): 덜 풀린 걸음 (cjl[k]) 갱신만 바꾼 같은 커널
+                    s.k("rt_ga_end_uf", capN, GE + (P(s.cjl[kstep:]), i32(s.cue)), b=256)
+                else:
+                    s.k("rt_ga_end", capN, GE, b=256)
                 if getattr(s, "fup", 0) and s.areset:
                     s.k("rt_fup", capN, FUA(4), b=256)
             elif kstep < len(ST) - 1:
