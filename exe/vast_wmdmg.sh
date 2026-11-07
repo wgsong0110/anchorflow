@@ -144,6 +144,7 @@ PYX
 say "[영상 셀] c15 ${FAST:-(다른 셀 없음 -- 셋 다 완주·시간 있는 셀 없음)}"
 echo "c15 $FAST" > $B/video_cells.txt
 rend() { local r=$1 kind=$2 cd=$3; local O=$B/$r; local V=$O/vid; mkdir -p $V
+  [ -s $V/$kind.mp4 ] && { say "  [렌더 있음] $r $kind"; return; }
   [ -s $O/pred.pt ] || rclone copyto $RR/$r/pred.pt $O/pred.pt -q
   [ -d $O/h5_fem ] || { $PY - $O/pred.pt $O/pred_v.pt <<'PYX' > $V/pad.log 2>&1
 import sys, torch
@@ -178,6 +179,29 @@ for c in c15 $FAST; do
   ( [ "$RP" = - ] || { rend $RP lj 0; rend $RP d $C1; } ) & P3=$!
   wait $P1 $P2 $P3
   for r in $RS $RC $RP; do rm -rf $B/$r/h5_fem $B/$r/sc_lj $B/$r/sc_d $B/$r/pred.pt; done
+done
+# ---- 사용자 추가 (11-07): 셀 2·3 영상 -- 판 s·ct·cu·pt·pu 각각 a·b 중 마지막 프레임 손상 몫 (SNH = logJp > 0, 손상 판 = d > 0.5 또는 logJp > 0) 이 큰 실행
+pickd() { $PY - $B $1 $2 <<'PYX'
+import json, sys
+B, v, c = sys.argv[1:4]; best = None
+for r in "ab":
+    try:
+        st = json.load(open(f"{B}/{v}_{c}_{r}/dmg_stats.json")); sm = json.load(open(f"{B}/{v}_{c}_{r}/summary.json"))
+    except Exception: continue
+    fr = [q for q in st["frames"] if q["t"] <= max(st["n_fin_frames"], 1)] or st["frames"]
+    x = fr[-1]["lj0"] if v == "s" else fr[-1].get("uni", 0.0)
+    if best is None or x > best[1]: best = (f"{v}_{c}_{r}", x, sm.get("diverged") or 0)
+print(f"{best[0]} {best[1]:.6f} {best[2]}" if best else "- 0 0")
+PYX
+}
+for c in c2 c3; do
+  PL=""; for v in s ct cu pt pu; do read RR_ XX_ DV_ < <(pickd $v $c); echo "$c $v $RR_ $XX_ $DV_" >> $B/video6_runs.txt; PL="$PL $RR_"; done
+  say "[렌더 판 6] 셀 $c: $(grep "^$c " $B/video6_runs.txt | awk '{print $3"("$4","$5")"}' | tr '\n' ' ')"
+  set -- $PL
+  ( [ "$1" = - ] || rend $1 lj 0; [ "$2" = - ] || rend $2 d 0; [ "$3" = - ] || rend $3 d 0 ) & P1=$!
+  ( [ "$4" = - ] || rend $4 d $C1; [ "$5" = - ] || rend $5 d $C1 ) & P2=$!
+  wait $P1 $P2
+  for r in $PL; do rm -rf $B/$r/h5_fem $B/$r/sc_lj $B/$r/sc_d $B/$r/pred.pt; done
 done
 touch /root/wg/all.done; kill $PT 2>/dev/null
 table
