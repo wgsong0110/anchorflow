@@ -44,7 +44,7 @@ for i in range(0, len(rest), 3):
     cells.append((nm, e_, v, dv))
 ins, fl = [], []
 for k, (nm, e_, path, dv) in enumerate(cells):
-    ins += ["-i", path]
+    ins += (["-r", os.environ["CMP_IN_R"]] if os.environ.get("CMP_IN_R") else []) + ["-i", path]          # 절 CM20: 입력 프레임률을 출력 30 으로 다시 읽음 (수박 32 fps 렌더의 프레임 빠짐 막기; 없으면 그대로)
     f_ = f"[{k}:v]scale=-2:{H},pad=iw:{H + TOP}:0:{TOP}:white," + ("tpad=stop_mode=clone:stop=-1," if dv else "") + dt(tf(f"c{k}a", nm), FB, 26, 14, 62)
     if e_:
         f_ += "," + dt(tf(f"c{k}b", e_), FB, 20, 14, 110, "0x1f4fbf")

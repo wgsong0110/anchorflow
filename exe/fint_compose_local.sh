@@ -27,7 +27,7 @@ g $F/wm_vid_off.txt $WD/wm_vid_off.txt; g $F/wm_vid_on.txt $WD/wm_vid_on.txt
 WO=$(cat $WD/wm_vid_off.txt 2>/dev/null); WN=$(cat $WD/wm_vid_on.txt 2>/dev/null)
 if [ -n "$WO" ] && [ -n "$WN" ]; then get $WO fem_watermelon.mp4; get $WN fem_watermelon.mp4
   N=fem_fint_wm_cmp.mp4
-  CMP_MAXW=2400 python3 exe/fem_vres_compose.py $WD/$N "수박 · SNH 판 (절 CM13 s_a 명령), 100 프레임, 비결정 · 끔 = 입자 F·logJp 를 입자 RM 으로 누적 · 켬 = 마지막 걸음도 가우스 점 RM 뒤 F·logJp 를 칸 안 삼선형 보간으로 교체" $WD/fb.otf $WD/fr.otf $WD/tmp_wm \
+  CMP_IN_R=30 CMP_MAXW=2400 python3 exe/fem_vres_compose.py $WD/$N "수박 · SNH 판 (절 CM13 s_a 명령), 100 프레임, 비결정 · 끔 = 입자 F·logJp 를 입자 RM 으로 누적 · 켬 = 마지막 걸음도 가우스 점 RM 뒤 F·logJp 를 칸 안 삼선형 보간으로 교체" $WD/fb.otf $WD/fr.otf $WD/tmp_wm \
     "정답 (GF)" $WD/gt_wm.mp4 - "끔 ($WO)" $WD/$WO/vj/fem_watermelon.mp4 $WD/$WO/summary.json "켬 ($WN)" $WD/$WN/vj/fem_watermelon.mp4 $WD/$WN/summary.json > $WD/compose_wm.log 2>&1
   put $N; else echo "[수박 영상 칸 없음]"; fi
 echo "[끝]"
