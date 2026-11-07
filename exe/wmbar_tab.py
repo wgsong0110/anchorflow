@@ -14,7 +14,8 @@ O = sys.argv[1]
 WM = sys.argv[2] if len(sys.argv) > 2 else "/tmp/dkta/ag_data/wm.pt"
 PN, NR = 0.02, (0.0, 0.0, 1.0)
 GT_LJ0 = 0.0651
-NAME = {"s0": "지금 SNH 판 (미끄럼 바닥)", "b1": "(1) 장벽 바닥", "b2": "(2) (1) + logJp 보간", "b3": "(3) (2) + F 보간"}
+FINT = os.environ.get("FINT", "/dev/shm/dkta/lbours/fint")
+NAME = {"s0": "(참고) 지금 SNH 판 (미끄럼 바닥)", "b1": "(참고) (1) 장벽 바닥만", "b2": "(참고) (2) 장벽 + logJp 보간만", "b3": "(3) (2) + F 보간"}
 
 
 def jl(p):
@@ -74,6 +75,35 @@ def row(n):
     return dict(dv=dv, done=s.get("frames_done"), em=100 * s["err_mean_done"], curve=curve, dep=dep, nbm=nbm, bcs=bcs, ple=ple, lj=lj)
 
 
+def fint_fd(n):
+    """fint 판 (미끄럼 바닥 + --fp_interp) 의 바닥 아래 깊이: 덤프 pred.pt (원래 입자 순서) 에서 같은 식, OUT/fint_fd_<n>.json 에 한 번."""
+    p = f"{O}/fint_fd_{n}.json"
+    g = js(p)
+    if g is not None:
+        return g
+    src = f"{FINT}/{n}/pred.pt"; tmp = None
+    try:
+        import subprocess
+        import torch
+        if not os.path.exists(src):
+            tmp = f"{O}/_fint_{n}_pred.pt"
+            subprocess.run(["rclone", "copyto", f"r2:storage/result/anchorflow/lbours/fint/{n}/pred.pt", tmp, "-q"], check=True); src = tmp
+        P = torch.load(src, map_location="cpu", weights_only=False, mmap=True)["pred"]
+        dep, nb = [], []
+        for i in range(P.shape[0]):
+            z = P[i][:, 2].double() - PN
+            z = z[torch.isfinite(z)]
+            dep.append(max(0.0, -float(z.min())) if z.numel() else 0.0); nb.append(int((z < 0).sum()))
+        g = dict(depth=max(dep), nbm=max(nb))
+        json.dump(g, open(p, "w"))
+        return g
+    except Exception as e:
+        return dict(err=repr(e))
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def zrow(n):
     s = js(f"{O}/{n}/summary.json")
     if s is None:
@@ -92,9 +122,11 @@ def zrow(n):
 print("# wmbar -- 절 CM21 수박 장벽 바닥 + logJp 보간 (+ F 보간)\n")
 print("| 판 | 실행 | 발산 | 평균 오차 % | 오차 곡선 f4·10·30·50·70·100 % | logJp>0 % (정답 6.51) | 바닥 아래 최대 깊이 mm (아래 입자 최대) | 장벽 걸린 표본점 평균 · 최대 / 표본점 | det F ≤ 0 입자 최대 | 단독 시간 평균 · 최대 ms |")
 print("|---|---|---|---|---|---|---|---|---|---|")
-for v in ("s0", "b1", "b2", "b3"):
+for v in ("b3", "s0", "b1", "b2"):                                                   # (3) 이 새 기본 판; s0·b1·b2 는 사용자 판단 (11-07) 전 첫 실행에서 끝난 것만 참고로
     for r in "ab":
         x = row(f"{v}_{r}")
+        if x is None and v != "b3":
+            continue
         if x is None:
             print(f"| {NAME[v]} | {r} | 도는 중 / 없음 | | | | | | | {zrow('z_' + v) if r == 'a' else ''} |")
             continue
@@ -103,6 +135,28 @@ for v in ("s0", "b1", "b2", "b3"):
         dvs = f"x{x['dv']}" if x["dv"] else "완주"
         zs = zrow("z_" + v) if r == "a" else ""
         print(f"| {NAME[v]} | {r} | {dvs} | {x['em']:.2f} | {x['curve']} | {ljs} | {dps} ({x['nbm']}) | {x['bcs']} | {x['ple']} | {zs} |")
+print("\n비교: 절 CM20 fint 판 (미끄럼 바닥 + --fp_interp, 같은 SNH s_a 명령, 묶음 fint; logJp 덤프 없음)\n")
+print("| 판 | 발산 | 평균 오차 % | 오차 곡선 f4·10·30·50·70·100 % | 바닥 아래 최대 깊이 mm (아래 입자 최대) | det F ≤ 0 입자 최대 |")
+print("|---|---|---|---|---|---|")
+for n in ("wm_on_a", "wm_on_b"):
+    s_ = js(f"{FINT}/{n}/summary.json"); F_ = jl(f"{FINT}/{n}/fem.jsonl")
+    if s_ is None:
+        try:
+            import subprocess
+            os.makedirs(f"{O}/_fint/{n}", exist_ok=True)
+            for fn in ("summary.json", "fem.jsonl"):
+                subprocess.run(["rclone", "copyto", f"r2:storage/result/anchorflow/lbours/fint/{n}/{fn}", f"{O}/_fint/{n}/{fn}", "-q"])
+            s_ = js(f"{O}/_fint/{n}/summary.json"); F_ = jl(f"{O}/_fint/{n}/fem.jsonl")
+        except Exception:
+            pass
+    if s_ is None:
+        print(f"| fint {n} | 없음 | | | | |"); continue
+    er = {q["t"] + 1: q["err"] for q in F_}
+    cv = " · ".join(("x" if (t not in er or not (er[t] == er[t])) else f"{100 * er[t]:.1f}") for t in (4, 10, 30, 50, 70, 100))
+    jd = [q["jd"] for q in F_ if "jd" in q]
+    fd = fint_fd(n)
+    fds = f"{1e3 * fd['depth']:.2f} ({fd['nbm']})" if "depth" in fd else fd.get("err", "-")[:60]
+    print(f"| fint {n} | {'x' + str(s_['diverged']) if s_.get('diverged') else '완주'} | {100 * s_['err_mean_done']:.2f} | {cv} | {fds} | {max((q['p_le0'] for q in jd), default='-')} |")
 g = gt_fd()
 if "err" in g:
     print(f"\n정답 바닥 아래 깊이: 계산 실패 {g['err']}")

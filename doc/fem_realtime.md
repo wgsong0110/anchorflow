@@ -5874,3 +5874,26 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 영상 (3DGS, 정답 | 끔 | 켬, 2160x900, yuv420p, faststart; ~/vidcache 에서 ffprobe 확인): result/anchorflow/v20261009/fem_fint_lego_A_cmp.mp4 (81 프레임; 끔은 프레임 32 발산 뒤 정지), fem_fint_lego_BK2_cmp.mp4 (81), fem_fint_wm_cmp.mp4 (101; 끔 wm_off_a · 켬 wm_on_a, 32 fps 렌더를 30 으로 다시 읽어 프레임 빠짐 없음 -- exe/fem_vres_compose.py CMP_IN_R).
 - 판정: 입자 F 교체는 **입자 F 퇴화를 없앰** (레고 K 16 밖 모든 판, 수박 두 번 모두 입자 det ≤ 0 0) -> 장벽 K 4·8, (A) 고착, 클램프, 저항 발산이 사라짐. 그러나 (1) 채택 판 K 2 오차 3.58 -> 5.03 % (gq_mass 함께 3.94 -> 4.42), (2) 클램프·저항은 완주해도 오차 42 %, (A) 9.4 %, (3) K 16 은 가우스 점 자체 뒤집힘이 커져 그대로 발산 (29). 시간은 K 2 에서 +0.1~0.2 ms (12.5~12.7 -> 12.7).
 - 이어서 (결정 필요, 안 함): 기본 판으로 할지, 오차 증가 원인 (매 프레임 팔분 평균·삼선형 보간의 평활 몫) 측정.
+
+## CM21. 수박 장벽 바닥 + logJp 가우스 점 보간 (+ F 보간) -- (1) 바닥만 레고 (B) 장벽 바닥, (2) (1) + 입자 logJp 를 가우스 점 logJp 보간으로 교체 (--lj_interp), (3) (2) + 입자 F 도 교체 (--fp_interp, 절 CM20 그대로) (사용자 승인 11-07 정의 변경) -- 가지 wmbar (origin/implicit-bspline 11f9b1d + 로컬 가지 fint 합침), 커밋 39542e9, 묶음 wmbar (PBS 잡 133077, ece-a6gpu9, exe/stab_wmbar.sh)
+### CM21.0 정의 (옛 재질 실행기 exe/fem_ao_rt_sim.py, 수박 (재질 7) 만; 끄면 생성 CUDA 소스 글자 같음 -- tol x fq_rl x gq_mass x elx "" / jbar / snh 24 조합을 fint 120999e 와 sha1 대조)
+- 수박을 새 실행기 (exe/fem_an_rt_sim.py, 장벽 있음) 로 옮기지 않은 이유: 새 실행기 재질 판 (fem_mat_rt) 에는 SNH (--elx snh 는 탄성 판만), 절 AS 필터 (--ls_inv --y0u --y0l --fq_rl --ls_end), K 3 HHT ρ 0.7 수박 명령이 없어 "재질·SNH·--gq_mass 같은 정의" 를 지킬 수 없음 -> **장벽을 옛 재질 실행기에 이식** (새 실행기 커널을 글자 그대로 가져옴: BAR_SRC 전체 + rt_ga_y0·rt_y0mix·rt_ytry·rt_kstep).
+- 나머지 명령은 절 CM13 s_a 그대로 (exe/fem_cm9_scn.sh wm + `--gq_mass --elx snh`, 셀 1.5, HHT ρ 0.7 K 3, 뉴턴 2 x PCG 5, εN 1e-2 · εP 1e-1, 시작점 관성 예측, 거의 빈 노드 문턱 1e-3, --ls_inv --y0u --y0l --fq_rl --ls_end, NACC RM). 바닥 평면 = GF 정답과 같은 z 0.02 (--floor_plane 1,1,0.02,0,0,1).
+- **(1) `--fl_bar --fl_bst 1 --y0eb`** (`--floor_slip` 대신; 레고 (B) = 절 AN.19·AN.21·CM8 (B) 와 같은 정의):
+  - 표본점 = 점유 팔분 칸마다 그 팔분 입자의 질량 중심 x̄_q (프레임 시작 위치; 새 실행기는 rt_p2g 안 AF_BAR 누적, 여기서는 같은 식의 커널 wb_p2q 하나 -- rt_p2g 소스는 그대로). 걸음 안 이동 = 가우스 점 기저 Σ_o w_qo (U_o + thinv (y_o − U_o)), thinv = 1/(1 − αf).
+  - 법선: IPC 장벽 b(d) = −κ_q (d − d̂)² ln(d/d̂), d̂ = ½ dx_정답 (= ½ x 2/300), κ_q = (λ + 2μ) V_q / d̂² (λ·μ = E·ν 의 라메, SNH λ_s 아님 -- 레고와 같은 식). 기울기 정확, 헤시안 덩어리 (노드 K n nᵀ, 블록 대각 B 와 PCG 곱·PCG 첫 추정 곱에 더함). 걸음 시작 (y = U) 에 d ≤ 0 인 표본점은 그 걸음 장벽에서 뺌.
+  - 접선: 띠 고착 (bst 1) -- 걸음 시작 관성 예측 위치에서 d < d̂ (평면 아래 포함) 인 표본점 몫 1, 밖 0 -> 노드 k = (1 − r̄)^κ, **접선에만** (ao_floor_n p = 1, 법선 자유). HHT 걸음 끝 고착 노드 가속도 0 도 접선 성분만 (새 실행기 rt_ga_end AF_BAR 와 같음).
+  - 시작점 (--y0eb, --ga_y0ut 위): ŷ 보관 -> y = U (rt_ga_y0) -> U 에서 활성 판정 -> 실현 가능 k0 (rt_bar_kfe) -> 장벽 에너지 ≤ E(U) 인 가장 큰 2^-k (rt_bar_y0e·rt_y0epick) -> 섞기 (rt_y0mix). 그 뒤 절 AS 시작점 필터 (--y0u: U 에서 그 시작점 쪽으로 뒤집힘 없는 최대 2^-k) 를 그대로 -- 둘 다 U–ŷ 선분 위에서 줄이기만 하므로 장벽 실현 가능성 유지.
+  - 뉴턴 보폭 (이 실행기는 에너지 선탐색 없음): 새 실행기 재질 판 장벽 (절 CM2) 과 같은 "온 걸음 후보에서 활성 표본점 모두 d > 0 인 최대 2^-k" 를 뒤집힘 필터 보폭 (--ls_inv) 과 **작은 쪽** (wb_kmin).
+  - 진단 (결과 불변): `--bar_cnt` 장벽 걸린 표본점 = 어느 뉴턴 반복 기울기 위치에서든 활성이고 d < d̂ (절 CM10 비트 1 과 같은 판정) -> fem.jsonl bc (수·표본점 수·칸 수); 바닥 아래 입자 깊이·수 (fd), 걸음별 시작점 k (y0k, 1000 = β 0).
+- **(2) `--lj_interp`** ((1) 위): 손상 변수 logJp 를 입자별 누적 대신 가우스 점 값의 보간으로 교체.
+  - return mapping 은 **가우스 점에서** (지금 판의 걸음 k < K 커밋 aq_commit 과 같은 식) -- 켜면 마지막 걸음 (k = K) 도 가우스 점에서 커밋해 그 걸음 RM 의 logJp 를 반영 (풀이가 실제로 쓴 값 = 프레임 안 걸음마다 가우스 점이 들고 있던 logJp 의 끝값).
+  - 프레임 끝: 입자 logJp ← Σ_o w_o logJp_q(o) (lji_p), 가중 = 절 CM20 fpi_p 와 같은 칸 안 삼선형 (프레임 시작 위치의 칸, 2x2x2 가우스 점, t_a = clamp((fx_a − (1 − g)) / 2g, 0, 1), g = 1/(2√3), 외삽 없음 -- 가중 ≥ 0, 합 1), logJp 는 선형 평균 (CM20 의 재질 상태 규칙).
+  - 입자 쪽 G2P (aq_g2p) 는 그대로 걸음마다 입자 F 에 RM (입자 logJp 를 그 프레임 안에서만 씀 -- 시작값 = 앞 프레임 보간값) 하고 그 입자 logJp 결과는 덮어씀. F 는 누적 그대로. 다음 프레임 가우스 점 logJp = 팔분 입자 부피 가중 평균 (절 CM19 그대로).
+- **(3) `--lj_interp --fp_interp`**: (2) + 입자 F 도 프레임 끝 가우스 점 F (마지막 걸음 커밋 RM 뒤 A_K F_q) 의 같은 가중 보간 (회전·로그 신장 분리, --fq_rl 규칙) 으로 교체 -- 절 CM20 정의·플래그를 그대로 재사용 (로컬 가지 fint 5d9cabd, origin 에 없어 이 가지에 합침). fpi_p 가 같은 가중으로 (ys, logJp, al) 까지 교체하므로 lji_p 는 부르지 않음 (logJp 결과 같은 식).
+- 구현: lib/anchorflow/fem_ao_rt.py (WB_SRC: wb_p2q·wb_floor_q·wb_kmin·wb_cnt, LJI_SRC: lji_p, _wb_kernels = 새 실행기 BAR_SRC + 네 커널 글자 그대로, ao_floor_n·ao_stepend_ga 는 켤 때만 소스 치환), exe/fem_ao_rt_sim.py (`--fl_bar --fl_bst 1 --y0eb --bar_cnt --lj_interp`). 검증 (로컬): 끈 생성 소스 = fint 120999e (24 조합 sha1 같음), 켠 넷 조합 g++ 문법 검사 (CUDA 흉내 머리). GPU 검사 = 묶음 연기 (3 프레임).
+### CM21.1 묶음 wmbar (exe/stab_wmbar.sh, 진입점 R2 lbours/wmbar/code/go_wmbar.sh, 표 exe/wmbar_tab.py -> R2 lbours/wmbar/wmbar_table.md, 끝 표식 wmbar.END, 합성 exe/wmbar_compose.py 로컬)
+- 판 (비결정, 각 a·b): s0 = 지금 SNH 판 (같은 묶음 대조), b1 = (1), b2 = (2), b3 = (3); 진단 --gq_chk --dump --nan_step --jdiag --dump_lj (+ 장벽 판 --bar_cnt). 연기 b1·b3 3 프레임 먼저.
+- 단독 시간 z_<판>: --gq_mass --elx snh + 판 플래그만, 판정 판 끝난 뒤 카드 하나 잡고 차례로 (그 카드·노드 계산 프로세스 수 10 초마다; 다른 에이전트 판이 다른 카드에 있으면 CPU 는 나눔).
+- 카드: 공용 잡기 규약 (/dev/shm/dkta/anerr_claim, 그 카드 계산 프로세스 0 일 때만), 카드 하나에 판 하나; 판이 끝나면 바로 R2 lbours/wmbar/<판> (log·summary·fem.jsonl·lj.pt·dmg_stats.json·pred.pt).
+- 영상: 판마다 완주한 a 먼저 (없으면 b, 둘 다 발산이면 오래 간 판, 멈춘 칸) logJp 색 3DGS (GF wm_render, −0.2~0.4 공통) -> 로컬 합성 2 줄 x 3 칸 (정답 logJp | SNH | (1) / (2) | (3) | 정답 일반), 정답 칸 = R2 lbours/fem_cm/wmJd/gt_lj.mp4·gt_new_plain.mp4 -> result/anchorflow/v20261009/fem_wmbar_cmp.mp4.
