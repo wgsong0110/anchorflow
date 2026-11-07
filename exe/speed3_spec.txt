@@ -56,3 +56,83 @@ s1 zF_n4 F z D --newton 4
 s1 zW_n4 W z D --newton 4
 s1 zM_n4 M3 z D --newton 4
 s1 zM_n3 M3 z D --newton 3
+# s2k 연기 (12 프레임): 감싸개 후보 T (시간 예산 @tb), W1 (@w1), X3e (@x3e) 컴파일·훅
+s2k kL_T L n D @tb 16.7 --frames 12
+s2k kW_TW W n D @tb 16.7 @w1 1 --frames 12
+s2k kF_T F n D @tb 16.7 --frames 12
+s2k kB_T B n D @tb 16.7 --frames 12
+s2k kM_TWX M3 b D @tb 16.7 @w1 1 @x3e 1e6 --frames 12
+s2k kM_X M3 b D @x3e 1e6 --frames 12
+# s3 후보 판정. T = 시간 예산 16.7 ms (여유 0.5), W1 = 가속도 기억 0 몸 전체, X3e = 수박 무너짐 반복 0 판정 (옛 실행기만). E = D + T + W1 (+ 수박 X3e).
+# 훅 무간섭: 예산이 안 걸리는 @tb 1000 결정적 판 끝 해시 = D (레고 79d8524e26 · wolf 4874cab9e7 · ficus 6aa6b9d62b · bread 24a5f310e4)
+s3 hL_T L d D @tb 1000
+s3 hW_T W d D @tb 1000
+s3 hF_T F d D @tb 1000
+s3 hB_T B d D @tb 1000
+s3 hL_W1 L d D @w1 1
+s3 hW_W1 W d D @w1 1
+s3 hF_W1 F d D @w1 1
+s3 hB_W1 B d D @w1 1
+s3 L_T_1 L n D @tb 16.7
+s3 L_T_2 L n D @tb 16.7
+s3 L_T_3 L n D @tb 16.7
+s3 L_T_4 L n D @tb 16.7
+s3 L_T_5 L n D @tb 16.7
+s3 L_T_6 L n D @tb 16.7
+s3 L_E_1 L n D @tb 16.7 @w1 1
+s3 L_E_2 L n D @tb 16.7 @w1 1
+s3 L_E_3 L n D @tb 16.7 @w1 1
+s3 L_E_4 L n D @tb 16.7 @w1 1
+s3 L_E_5 L n D @tb 16.7 @w1 1
+s3 L_E_6 L n D @tb 16.7 @w1 1
+s3 L_W1_1 L n D @w1 1
+s3 L_W1_2 L n D @w1 1
+s3 L_W1_3 L n D @w1 1
+s3 W_T_1 W nd D @tb 16.7
+s3 W_T_2 W nd D @tb 16.7
+s3 W_T_3 W nd D @tb 16.7
+s3 W_T_4 W nd D @tb 16.7
+s3 W_T_5 W nd D @tb 16.7
+s3 W_T_6 W nd D @tb 16.7
+s3 W_E_1 W nd D @tb 16.7 @w1 1
+s3 W_E_2 W nd D @tb 16.7 @w1 1
+s3 W_E_3 W nd D @tb 16.7 @w1 1
+s3 W_E_4 W nd D @tb 16.7 @w1 1
+s3 W_E_5 W nd D @tb 16.7 @w1 1
+s3 W_E_6 W nd D @tb 16.7 @w1 1
+s3 W_W1_1 W nd D @w1 1
+s3 W_W1_2 W nd D @w1 1
+s3 W_W1_3 W nd D @w1 1
+s3 W_W1_4 W nd D @w1 1
+s3 W_W1_5 W nd D @w1 1
+s3 W_W1_6 W nd D @w1 1
+s3 F_T_1 F nd D @tb 16.7
+s3 F_T_2 F nd D @tb 16.7
+s3 F_E_1 F nd D @tb 16.7 @w1 1
+s3 F_E_2 F nd D @tb 16.7 @w1 1
+s3 B_T_1 B nd D @tb 16.7
+s3 B_E_1 B nd D @tb 16.7 @w1 1
+s3 M_X_1 M3 b D @x3e 1e6
+s3 M_X_2 M3 b D @x3e 1e6
+s3 M_X_3 M3 b D @x3e 1e6
+s3 M_X_4 M3 b D @x3e 1e6
+s3 M_TX_1 M3 b D @tb 16.7 @x3e 1e6
+s3 M_TX_2 M3 b D @tb 16.7 @x3e 1e6
+s3 M_TX_3 M3 b D @tb 16.7 @x3e 1e6
+s3 M_TX_4 M3 b D @tb 16.7 @x3e 1e6
+s3 M_E_1 M3 b D @tb 16.7 @w1 1 @x3e 1e6
+s3 M_E_2 M3 b D @tb 16.7 @w1 1 @x3e 1e6
+s3 M_E_3 M3 b D @tb 16.7 @w1 1 @x3e 1e6
+s3 M_E_4 M3 b D @tb 16.7 @w1 1 @x3e 1e6
+s3 M_E_5 M3 b D @tb 16.7 @w1 1 @x3e 1e6
+s3 M_E_6 M3 b D @tb 16.7 @w1 1 @x3e 1e6
+s3 zL_T L z D @tb 16.7
+s3 zW_T W z D @tb 16.7
+s3 zF_T F z D @tb 16.7
+s3 zB_T B z D @tb 16.7
+s3 zM_TX M3 z D @tb 16.7 @x3e 1e6
+s3 zL_E L z D @tb 16.7 @w1 1
+s3 zW_E W z D @tb 16.7 @w1 1
+s3 zF_E F z D @tb 16.7 @w1 1
+s3 zB_E B z D @tb 16.7 @w1 1
+s3 zM_E M3 z D @tb 16.7 @w1 1 @x3e 1e6

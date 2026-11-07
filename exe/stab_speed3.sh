@@ -49,11 +49,13 @@ idle_wait() {   # 단독: 노드 7 장 모두 계산 프로세스 0 이고 1 분
     sleep 20; done
   echo $(( $(date +%s) - t0 )); }
 run() {   # run 이름 씬 방식 카드 플래그
-  local n=$1 s=$2 md=$3 g=$4 x="$(dfl $2 "$5")" c b pre=""
+  local n=$1 s=$2 md=$3 g=$4 x="$(dfl $2 "$5")" c b pre="" wo=""
   [ -f $O/$n/summary.json ] && return
+  wo="$(echo " $x " | grep -o '@[a-z0-9_]* [0-9.e+-]*' | sed 's/^@/--/' | tr '\n' ' ')"; x="$(echo " $x " | sed 's/@[a-z0-9_]* [0-9.e+-]*//g')"   # '@tb 16.7' 따위 = 감싸개 인자
   b="$(base_of $s)"; [ -n "$(nw "$x")" ] && b="${b/--newton 2/--newton $(nw "$x")}" && x="$(echo "$x" | sed 's/--newton [0-9]*//g')"
   c="$b $(dg_of $s $md) $x"
-  [ $md = u ] && c="exe/speed3_wrap.py $c" && pre="AF_S3_UL=1"
+  [ $md = u ] && pre="AF_S3_UL=1"
+  { [ $md = u ] || [ -n "$wo" ]; } && c="exe/speed3_wrap.py $wo $c"
   [ $md = p ] && case $s in M*) c="exe/speed1_prof.py $c";; esac
   rm -rf $O/$n; mkdir -p $O/$n; echo "$pre $PY -u $c --out $O/$n" > $O/$n/cmd.txt
   nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader > $O/$n/apps_at_start.txt 2>&1; cat /proc/loadavg >> $O/$n/apps_at_start.txt
@@ -91,5 +93,11 @@ if echo "$SPEC" | awk '$4=="z" || $4=="p"' | grep -q .; then
   done
   for g in $GL; do rm -f $CL/$g; done
 fi
+case $STG in *k)                                                                            # 연기 단계 (이름 끝 k): 모든 판이 5 프레임 넘게 끝나야 (컴파일·훅 확인), 아니면 실패 표식 -> 다음 단계 안 함
+  OK=1; while read -r st n s md x; do [ -z "$n" ] && continue
+    $PY -c "import json,sys; s=json.load(open('$O/$n/summary.json')); sys.exit(0 if s['frames_done'] >= 5 and not s.get('diverged') else 1)" 2>/dev/null || OK=0
+  done <<< "$SPEC"
+  log "[연기] OK=$OK"; [ $OK = 1 ] || { echo "연기 실패 $STG $(date '+%F %T')" > $O/speed3.FAIL; rclone copy $O $RO -q --include speed3.FAIL; };;
+esac
 $PY exe/speed3_tab.py $O > $O/speed3_table.md 2> $O/speed3_table.err; rclone copy $O $RO -q --include "speed3_table.*"
 log "단계 끝 $STG"

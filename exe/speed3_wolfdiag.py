@@ -58,7 +58,7 @@ for rd in sys.argv[2:]:
         for f in sorted(set(R[:, 0].astype(int))):
             u = ul[f]; s_ = u["sfrac"].astype(np.float32); vp = u["vp"].astype(np.float32); vs = u["vspr"].astype(np.float32); vn = u["vnmax"].astype(np.float32)
             m = (R[:, 0] == f)
-            pop[f] = dict(nE=int(m.sum()), all_mixed_frac=round(float(((s_ > 1e-3) & (s_ < 1 - 1e-3)).mean()), 4), all_full_frac=round(float((s_ >= 1 - 1e-3).mean()), 4),
+            pop[int(f)] = dict(nE=int(m.sum()), all_mixed_frac=round(float(((s_ > 1e-3) & (s_ < 1 - 1e-3)).mean()), 4), all_full_frac=round(float((s_ >= 1 - 1e-3).mean()), 4),
                           E_mixed_frac=round(float(((R[m, 2] > 1e-3) & (R[m, 2] < 1 - 1e-3)).mean()), 3), E_full_frac=round(float((R[m, 2] >= 1 - 1e-3).mean()), 3),
                           vp_p50_p99_all=[round(float(np.percentile(vp, 50)), 3), round(float(np.percentile(vp, 99)), 3)], vp_med_E=round(float(np.median(R[m, 5])), 3),
                           vspr_p99_all=round(float(np.percentile(vs, 99)), 3), vspr_med_E=round(float(np.median(R[m, 3])), 3),
