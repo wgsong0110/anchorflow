@@ -116,6 +116,7 @@ ap.add_argument("--ksplit", type=int, default=0, help="절 CM24 (1b, 사용자 �
                 "그 프레임을 버리고 K 두 배 (걸음 간격 반) 로 다시, 최대 K = 2^이 값 (0 = 끔)")
 ap.add_argument("--ue_loc", type=int, default=0, help="절 CM31 (새 실행기 --ue_loc 와 같은 정의, 옛 실행기는 2 만): 덜 풀린 걸음 갱신 바꿈을 --y0loc β<1 노드에만 (0 = 몸 전체, 소스 그대로)")
 ap.add_argument("--ls0_keep", action="store_true", help="절 CM31 (새 실행기와 같은 정의): 선탐색·장벽 보폭 0 반복은 η·y 그대로, 진단 fem.jsonl l0 (끄면 소스 그대로)")
+ap.add_argument("--ue_bigT", type=float, default=1e6, help="절 CM35 --ue_loc 비트 32 문턱: 덜 풀린 걸음 ‖g‖²/F² 가 이 값 넘으면 몸 전체 후퇴 오일러")
 ap.add_argument("--ue_dil", type=int, default=0, help="절 CM35 (--ue_loc 위, lib/anchorflow/fem_common2.py): 덜 풀린 걸음 후퇴 오일러 노드 집합 S 를 27 이웃으로 이 번 넓힘 (0 = 끔, 소스 그대로)")
 ap.add_argument("--ue", choices=["", "be", "a0", "beall"], default="", help="절 CM24 (2)·(3) (사용자 승인 정의 변경, HHT 판): 덜 풀린 걸음 (같은 판정) 의 걸음 끝 갱신 -- be = 후퇴 오일러 (U1 = y, v1 = (y − U)/h, 가속도 기억 0), "
                 "a0 = 속도·위치는 HHT 그대로·가속도 기억만 0, beall = 모든 걸음 후퇴 오일러 갱신 (비교). 빈 값 = 끔")
@@ -366,7 +367,7 @@ if MATK is not None:                                                            
                         floor=FL, damp=DAMP, bc=BC, cdp=1.0, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det,
                         hspec=True, theta=a.theta, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None),
                         mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx, dmg=a.dmg, pf_it=a.pf_it, fpi=a.fp_interp, wbar=WBAR, lji=a.lj_interp, bcnt=a.bar_cnt,
-                        uf=(dict(judge=True, ue=a.ue, res=a.uf_res, uel=a.ue_loc, ls0=a.ls0_keep, **({"dil": a.ue_dil} if a.ue_dil > 0 else {})) if (a.ksplit > 0 or a.ue or a.ufrec) else (dict(ls0=True) if a.ls0_keep else None)), wf=WFD)
+                        uf=(dict(judge=True, ue=a.ue, res=a.uf_res, uel=a.ue_loc, ls0=a.ls0_keep, **({"dil": a.ue_dil} if a.ue_dil > 0 else {}), **({"bigT": a.ue_bigT} if a.ue_loc & 32 else {})) if (a.ksplit > 0 or a.ue or a.ufrec) else (dict(ls0=True) if a.ls0_keep else None)), wf=WFD)
     if a.seedb:                                                                       # 절 CM28 (a): 입자 β (원래 순번 -> 풀이 순서 perm)
         _sd = np.load(a.seedb)
         _seed = torch.from_numpy(_sd["seed"].astype(np.bool_))

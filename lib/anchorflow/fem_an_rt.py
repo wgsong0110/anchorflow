@@ -2493,8 +2493,9 @@ class RTSolver(MG2.MG2Mixin):
         assert not s.ufw or s.cjr, "--uf_w 는 --uf_res 위"
         s.ls0 = bool((cj or {}).get("ls0", False)) if cj else False
         s.c2 = {k_: (cj or {})[k_] for k_ in ("xf", "dil") if (cj or {}).get(k_)}
-        if s.uel & 16:
-            s.c2.setdefault("dil", 0)                                                   # 절 CM35 비트 16: ul_flip 커널 (C2 소스) 필요
+        if s.uel & 48:
+            s.c2.setdefault("dil", 0)
+            s.c2.setdefault("bigT", float((cj or {}).get("bigT", 1e6)))                                                   # 절 CM35 비트 16: ul_flip 커널 (C2 소스) 필요
         s.c2 = s.c2 or None   # 절 CM35: --xit_from (덜 풀린 걸음만 뉴턴 더) · --ue_dil (S 넓힘)
         assert not (s.c2 or {}).get("dil") or s.uel, "--ue_dil 은 --ue_loc 위"
         s.fpi = bool(fpi)                                                              # 절 CM20 (정의 변경): 입자 F 를 프레임 끝 가우스 점 F 의 칸 안 삼선형 보간으로 교체
@@ -3404,6 +3405,8 @@ class RTSolver(MG2.MG2Mixin):
                         s.k("ul_kn", capN, (P(IP), P(s.ykn), P(s.ulm)), b=256)
                     if s.uel & 4:
                         s.k("ul_res", capN, (P(IP), P(s.g0buf), P(s.meff), f(math.sqrt(sum(q * q for q in s.g))), P(s.ulm)), b=256)
+                    if s.uel & 32:                                                     # 절 CM35 비트 32: 풀이가 무너진 걸음 (‖g‖²/F² > T) 은 몸 전체
+                        s.k("ul_big", capN, (P(IP), P(s.cjg), i32(kstep), f(s.c2.get("bigT", 1e6)), P(s.ulm)), b=256)
                     if s.uel & 16:                                                     # 절 CM35 비트 16: HHT 갱신이 속도를 뒤집는 노드
                         s.k("ul_flip", capN, (P(IP), f(sg["al"]), P(s.y), P(s.z0), P(s.vk), P(s.ulm)), b=256)
                     if (getattr(s, "c2", None) or {}).get("dil"):                      # 절 CM35 --ue_dil: S 를 27 이웃으로 R 번 넓힘

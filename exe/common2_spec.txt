@@ -160,3 +160,48 @@ s2 W_Ba_n7 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0
 s2 W_Ba_n8 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep
 s2 W_Ba_n9 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep
 s2 W_Ba_n10 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep
+# s3: 비트 32 (풀이가 무너진 걸음 ‖g‖²/F² > 1e6 은 몸 전체 후퇴 오일러) + 비트 16 (+ 2)
+s3 M15_BG_a M15 a --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 M15_BG_b M15 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 M15_BG0_a M15 a --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 M15_BG0_b M15 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 M3_BG_a M3 a --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 M3_BG_b M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 M3_BG0_a M3 a --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 M3_BG0_b M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 L_BG L d --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 L_BG_n1 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 L_BG_n2 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 L_BG_n3 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 L_BG_n4 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 L_BG_n5 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 L_BG_n6 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 W_BG W d --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 W_BG_n1 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 W_BG_n2 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 W_BG_n3 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 W_BG_n4 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 W_BG_n5 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 W_BG_n6 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 W_BG_n7 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 W_BG_n8 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 W_BG_n9 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 W_BG_n10 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50
+s3 L_BG0 L d --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 L_BG0_n1 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 L_BG0_n2 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 L_BG0_n3 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 L_BG0_n4 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 L_BG0_n5 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 L_BG0_n6 L nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 W_BG0 W d --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 W_BG0_n1 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 W_BG0_n2 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 W_BG0_n3 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 W_BG0_n4 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 W_BG0_n5 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 W_BG0_n6 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 W_BG0_n7 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 W_BG0_n8 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 W_BG0_n9 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48
+s3 W_BG0_n10 W nd --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 48

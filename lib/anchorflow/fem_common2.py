@@ -9,6 +9,7 @@
 - `--ue_dil R` (--ue_loc 위, 두 실행기): 덜 풀린 걸음 후퇴 오일러 노드 집합 S 를 27 이웃으로 R 번 넓힘 (노드 상자 격자, 걸음마다).
 - `--ue_loc` 비트 16 (두 실행기, 절 CM35 진단이 가리킨 것): 덜 풀린 걸음 끝 HHT 갱신 속도 v1 = al (y − z0) 가 걸음 시작 속도와 반대 (v1·v0 < 0) 인 노드 --
   수박 첫 접촉 (f4) 에서 S 밖 노드는 자른·안 자른 모두 ρ = −0.7~−0.83 으로 뒤집힘 (절 CM23.4 기제) -> 뒤집힐 노드만 후퇴 오일러로.
+- `--ue_loc` 비트 32 (두 실행기, --ue_bigT T 기본 1e6): 덜 풀린 걸음의 판정 2 잔차 비 ‖g‖²/F² > T 이면 S = 몸 전체 (풀이가 무너진 걸음; s1·s2 실측 레고 ≤ 1e-3 대 (중앙 4e-4), wolf 최대 3.6e3, 수박 1e17~1e28).
 - `--ue_loc` 비트 8 (옛 실행기만, --ws_bar 판 + 절 CM33 en 버퍼): 이 걸음 어느 뉴턴 반복이든 노드별 국소 보폭으로 자른 (k > 0) 노드.
   새 실행기는 노드별 보폭이 없어 (보폭은 몸 전체 스칼라) 비트 8 은 빈 집합 -- 받기만 함.
 진단 (결과 불변, 옛 실행기 --enrec 위): 노드 집합 S / S 밖 · 자른 노드 나눔 몫과 HHT 속도 뒤집기 척도 (split_s).
@@ -41,6 +42,8 @@ __global__ void ul_flip(const int* IP, float al, const float* y, const float* z0
     for (int a=0;a<3;a++) { float v0 = vk[n*3+a]; d += al*(y[n*3+a] - z0[n*3+a])*v0; s += v0*v0; }
     if (s > 0.f && d < 0.f) m[n] = 1;
 }
+// 비트 32: 이 걸음 마지막으로 돈 뉴턴 반복 시작 ‖g‖²/F² (판정 2 값) 가 T 넘게 크면 (풀이가 무너진 걸음) 몸 전체
+__global__ void ul_big(const int* IP, const float* g2, int k, float T, int* m) { int n = blockIdx.x*blockDim.x + threadIdx.x; if (n < IP[9] && !(g2[k] <= T)) m[n] = 1; }
 __global__ void ul_cut(const int* IP, const int* cut, int* m) { int n = blockIdx.x*blockDim.x + threadIdx.x; if (n < IP[9] && cut[n] > 0) m[n] = 1; }
 """
 
