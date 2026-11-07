@@ -16,11 +16,11 @@ IT="--newton 2 --cg 5"; TL="--tolN 1e-2 --tolP 1e-1"; TAIL="--fp_interp --tag wo
 cmdof() {   # cmdof 판 -> 인자
   case $1 in
     base0)    echo "--data $WD/wolf.pt --frames 50 $FB $REST $IT $TL $TAIL --bar_cnt";;
-    base)     echo "--data $WD/wolf.pt --frames 50 $FB $REST $IT $TL $TAIL --bar_cnt --nrec --dump";;
-    a_noy0eb) echo "--data $WD/wolf.pt --frames 50 --floor vel --fl_bar --fl_bst 1 $REST $IT $TL $TAIL --bar_cnt --nrec --dump";;
+    base)     echo "--data $WD/wolf.pt --frames 50 $FB $REST $IT $TL $TAIL --bar_cnt --nrec --dump --dump_F";;
+    a_noy0eb) echo "--data $WD/wolf.pt --frames 50 --floor vel --fl_bar --fl_bst 1 $REST $IT $TL $TAIL --bar_cnt --nrec --dump --dump_F";;
     b_nostep) echo "--data $WD/wolf.pt --frames 50 $FB $REST $IT $TL $TAIL --bar_cnt --nrec --dump --bar_nostep";;
-    e_n8p20)  echo "--data $WD/wolf.pt --frames 50 $FB $REST --newton 8 --cg 20 $TL $TAIL --bar_cnt --nrec --dump";;
-    A_stick)  echo "--data $WD/wolf.pt --frames 50 --floor vel $REST $IT $TL $TAIL --nrec --dump";;
+    e_n8p20)  echo "--data $WD/wolf.pt --frames 50 $FB $REST --newton 8 --cg 20 $TL $TAIL --bar_cnt --nrec --dump --dump_F";;
+    A_stick)  echo "--data $WD/wolf.pt --frames 50 --floor vel $REST $IT $TL $TAIL --nrec --dump --dump_F";;
   esac; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/wolfwhy.log; rclone copyto $O/wolfwhy.log $RO/wolfwhy.log -q; }
 CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL
