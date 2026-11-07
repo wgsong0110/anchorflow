@@ -5773,3 +5773,27 @@ wolf (모래, 같은 실시간 판): 20 ms (K 2) 4.59 %, 10 ms (K 4) 3.37 %, 5 m
 - 영상: 셀 1.5 와 "가장 빠르면서 발산 안 한 셀" (s·ct·pt 가 a 또는 b 로 완주한 셀 중 단독 시간 (셋 중 느린 판 평균) 이 가장 작은 셀) -- 2 줄 x 4 칸: 윗줄 logJp 색 (−0.2~0.4 공통) 정답 | SNH | CDM (가) | 위상장 (가), 아랫줄 정답·SNH 일반 3DGS | CDM·위상장 d 색 (0~1 공통). 판 고르기 = a 완주면 a, 아니면 b, 둘 다 발산이면 오래 간 판 (멈춘 칸).
   정답 칸 = R2 lbours/fem_cm/wmJd/gt_lj.mp4·gt_new_plain.mp4 (절 CM13.4 그대로). -> result/anchorflow/v20261009/fem_wmdmg_cmp.mp4 (셀 1.5), fem_wmdmg_cmp_c<셀>.mp4.
 - 출력 R2 lbours/fem_cm/wmdmg/<판> (log·summary·fem.jsonl·pred.pt·lj.pt·dmg_stats.json·vid/), 표 marks/wmdmg_table.md, 로그 marks/wmdmg.log, 끝 표식 marks/wmdmg.END.
+
+## CM20. 입자 F 교체 -- 입자 변형 구배를 G2P 누적 대신 프레임 끝 가우스 점 변형 구배의 보간으로 (--fp_interp, 사용자 승인 11-07 정의 변경) -- 가지 fint (origin/implicit-bspline 679c0e2 위), 커밋 5d9cabd, 묶음 fint (PBS 잡 133077, ece-a6gpu9, exe/stab_fint.sh)
+### CM20.0 정의 (끄면 생성 CUDA 소스 글자 같음 -- 새 실행기 결정적·비결정 x tol x gq_mass x 바닥 넷 16 조합, 옛 재질 실행기 tol x gq_mass x elx 8 조합을 679c0e2 와 대조)
+- 지금: 입자 F 는 G2P 에서 F_p ← A(x_p) F_p (A = I + Σ_n U_n ⊗ ∇w_n(x_p), U = 프레임 끝 노드 변위) 로 누적, 재질 판은 걸음마다 F_p ← RM(A_k A_{k−1}⁻¹ F_p) (aq_g2p). 풀이 (응력) 는 가우스 점 X_q = A(x_q) F_q 에서 -- 입자 쪽 A(x_p) 는 풀이 밖 (절 CM9.3·CM13.2: 외톨이 입자 F 퇴화가 여기서 생김).
+- **켬 (`--fp_interp`)**: 위치를 노드 보간으로 새 값으로 바꾸듯 F 도 새 값으로 **교체**. 우리 틀은 노드를 프레임마다 다시 까니 노드 값만으로는 그 프레임 증분뿐 -> 교체 원천 = 풀이가 들고 있는 **가우스 점 상태**:
+  F_q^end = A(x_q) F_q^start = F_q + Σ_n U_n ⊗ (F_qᵀ ∇w_n(x_q)) -- 풀이가 응력을 계산한 바로 그 X (rt_elem·rt_qjd 와 같은 식, 프레임 끝 U).
+- **보간 = 삼선형 (B-스플라인 아님)**: 입자가 속한 B-스플라인 칸 (프레임 시작 위치, P2G 와 같은 칸) 의 2x2x2 가우스 점, 칸 좌표 fx ∈ [½, 3/2), 점 자리 1 ± g (g = 1/(2√3)):
+  t_a = clamp((fx_a − (1 − g)) / (2g), 0, 1), w_o = Π_a (o 의 a 비트 ? t_a : 1 − t_a). 고른 이유: (1) 칸 안 2 점/축이 받치는 다항 보간은 삼선형뿐 (2 차 B-스플라인은 축마다 3 점이 필요 -- 칸 8 점으로는 정의 안 됨);
+  (2) P2G 의 F_q 는 팔분 입자의 볼록 (부피 가중) 회전·로그 신장 평균이라 짝도 볼록 평균이어야 함 -> 점 밖 (팔분 바깥쪽 42 %/축) 은 외삽하지 않고 끝 값 고정 (가중 ≥ 0, 합 1); 팔분 바깥 구석 입자는 자기 팔분 점 값 그대로, 칸 가운데 쪽은 섞임.
+- **평균 규칙 = P2G F_q 구성 (rt_gauss) 그대로**: 점마다 부호 있는 SVD X = U S Vᵀ -> R = U Vᵀ, L = V log S Vᵀ (S_min ≤ 0 이면 L = 0 + 뒤집힘 표시), F_p = polar(Σ w R) · exp(sym Σ w L) (rs_fin), 대체 = Σ w X (유클리드):
+  새 실행기 (레고) = rs_fin 실패 또는 가중 > 0 점 중 뒤집힘 있으면 유클리드 (rt_gauss 의 bad·badq 규칙); 옛 재질 실행기 수박 (`--fq_rl` 판) = rs_fin 실패면 유클리드, 뒤집힘만 있으면 유클리드 평균 det > 0 일 때만 유클리드 (아니면 회전·로그 평균) -- 그 판 rt_gauss 와 같은 규칙.
+- 위치·속도·HHT 가속도 G2P 는 그대로 (x += Σ w U, v·a_p = Σ w v·a). 레고는 rt_g2p_ga 의 F 누적 줄만 빼고 (켤 때만 소스에서) fpi_q (점: X·R·L·뒤집힘) -> fpi_p (입자: 교체) -- 원자 연산 없음 (결정적 판도 그대로 결정적).
+- **재질 (소성) 경로 = return mapping 을 가우스 점에서** (수박): 지금 판은 걸음 k < K 끝에서만 가우스 점 커밋 (aq_commit: X = A_k F_q -> RM (logJp 갱신) -> F_q ← A_k⁻¹ RM(X)) 하고 마지막 걸음 RM 은 입자 G2P 에서만 함.
+  켬: **마지막 걸음도 가우스 점에서 커밋** 한 뒤 F_q^end = A_K F_q (= 마지막 걸음 RM 뒤 탄성 F) 를 보간해 입자 F 교체, 재질 상태 (ys, logJp, al) 도 같은 가중의 선형 평균으로 교체 -> 입자는 프레임 사이 가우스 점 상태의 운반자 (다음 프레임 P2G 가 다시 팔분 평균). 입자 RM (aq_g2p) 결과는 덮어써짐 (RM 은 가우스 점에서 한 번만 -- 두 번 하지 않음).
+  원본 GF 와의 관계: GF (MPM) 는 입자가 곧 적분점 -- 서브스텝마다 F_p ← (I + Δt ∇v) F_p 뒤 입자에서 NACC RM, logJp 도 입자 상태. 우리 틀은 적분점이 가우스 점이라, 켬 판은 프레임 안에서는 가우스 점이 상태 (F^E, logJp) 를 들고 RM 하고 입자는 프레임 사이에만 그 값을 옮김 -- 상태의 공간 해상도는 팔분 (칸/2) 이 되고 입자별 이력 (GF 처럼 입자마다 다른 logJp) 은 프레임마다 팔분 평균·삼선형 보간으로 섞임. 손상 판 (--dmg) 과는 같이 안 씀 (assert).
+- 구현: lib/anchorflow/fem_fpi.py (FPI_SRC: fpi_q·fpi_p, fpify), fem_an_rt.py (build_src fpi, RTSolver fpi, 버퍼 Fe [capQ, 28]), fem_an_det.py, fem_ao_rt.py (_src fpi, 마지막 걸음 aq_commit, fpi_p 에 Sq·상태), 실행기 exe/fem_an_rt_sim.py·exe/fem_ao_rt_sim.py `--fp_interp`; 진단 exe/fem_ao_rt_sim.py `--qjd` (프레임 끝 X_q J, 절 CM18 rt_qjd 그대로 -- 결과 불변).
+  검증 (로컬, GPU 없음): 끈 생성 소스 = 679c0e2 (위 24 조합 sha1 같음), 켠 커널 g++ 문법 검사 (CUDA 흉내 머리). GPU 검사는 묶음 연기 (끔 프레임 해시 = 절 S.11 기록, 켬 컴파일·실행).
+### CM20.1 묶음 fint (exe/stab_fint.sh, 진입점 R2 lbours/fint/code/go_fint.sh, 표 exe/fint_tab.py -> R2 lbours/fint/fint_table.md, 끝 표식 fint.END)
+- 레고 (데이터 L000, 모두 결정적, 원래 명령 = exe/stab_gqm.sh cmd_of 그대로 + 진단 --pdiag --qjd --fhash): (B) 장벽 K 2 (채택)·4·8·16, (A) 원래 고착 fa, 노드 −z 클램프 nc, −z 저항 강 vs -- 끔 / 켬; --gq_mass 함께 (B) K 2·4 -- gq_mass 만 / + --fp_interp.
+  끔 판 프레임 해시를 같은 노드 절 S.11 기록 (gqm <판>_off_w, gq_mass 는 <판>_on_w) 과 대조 (결정성·끄면 같음 확인).
+- 수박: 절 CM13 s_a 명령 그대로 (SNH, --gq_mass, 비결정) + 진단 --qjd, 끔·켬 두 번씩.
+- K 2 단독 시간: 판정 명령에서 --det·덤프 뺀 비결정 판, 잡은 카드 하나에 끔·켬 번갈아 두 번 (실행 중 그 카드·노드 계산 프로세스 수 10 초마다).
+- 카드: 다른 에이전트와 나눠 씀 -- 공용 잡기 규약 (/dev/shm/dkta/anerr_claim/<카드>, 그 카드 계산 프로세스 0 일 때만), 카드 하나에 판 하나.
+- 영상 (3DGS): 레고 (A) 원래 고착·(B) K 2 끔·켬 (lb_render), 수박 끔·켬 (GF wm_render; 완주한 a 먼저) -> 로컬 합성 정답 | 끔 | 켬 -> R2 v20261009/fem_fint_{lego_A,lego_BK2,wm}_cmp.mp4.
