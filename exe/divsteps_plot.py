@@ -1,4 +1,4 @@
-"""레고 (A) 원래 FCR 폭증 프레임 21·22 걸음·뉴턴 시점별 그림 (exe/stab_divsteps.sh 덤프 wd_f<프레임>.npz + _pos.npz).
+"""레고 (A) 원래 FCR 폭증 프레임 (인자, 기본 21·22) 걸음·뉴턴 시점별 그림 (exe/stab_divsteps.sh 덤프 wd_f<프레임>.npz + _pos.npz).
 사용: python exe/divsteps_plot.py <덤프 디렉토리> <PNG 경로 (확장자 빼고)> <HTML 경로>
 시점 = 프레임마다 걸음 1·2 x [시작점 (관성 예측), 뉴턴 1 끝, 뉴턴 2 끝, 걸음 끝]. 노드 이동 = 그 시점으로 들어온 노드 변위 변화 (앞 시점 대비; 프레임 첫 시점은 프레임 시작 대비).
 """
@@ -13,10 +13,16 @@ from matplotlib import colors as mcolors
 from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 import numpy as np
 
+from matplotlib import font_manager
+import os
+for _f in ("NotoSansCJKkr-Regular.otf", "NotoSansCJKkr-Bold.otf"):
+    if os.path.exists(os.path.expanduser(f"~/.fonts/{_f}")):
+        font_manager.fontManager.addfont(os.path.expanduser(f"~/.fonts/{_f}"))
 plt.rcParams["font.family"] = "Noto Sans CJK KR"
 plt.rcParams["axes.unicode_minus"] = False
 D, PNG, HTML = sys.argv[1], sys.argv[2], sys.argv[3]
-FR = (21, 22)
+FR = tuple(int(v) for v in sys.argv[4].split(",")) if len(sys.argv) > 4 else (21, 22)
+TAG = sys.argv[5] if len(sys.argv) > 5 else ""
 SN = ["시작점 (관성 예측)", "뉴턴 1 끝", "뉴턴 2 끝", "걸음 끝"]
 
 snaps = []                                                                        # 시점 목록
@@ -132,8 +138,9 @@ def sheet(sel, c, r, path, sup):
     print("저장", path)
 
 
-sheet(snaps, ctr, half, PNG + ".png", "레고 (A) 원래 FCR, 노드 상자 폭증 프레임 21·22 -- 걸음·뉴턴 시점별 (전체 범위)")
-sheet(snaps, zc, zh, PNG + "_zoom.png", "같은 그림 확대 (프레임 21 시작 몸통 범위, 모든 칸 같은 범위)")
+FS = "·".join(str(f) for f in FR)
+sheet(snaps, ctr, half, PNG + ".png", f"레고 (A) 원래 FCR{TAG}, 노드 상자 폭증 앞뒤 프레임 {FS} -- 걸음·뉴턴 시점별 (전체 범위)")
+sheet(snaps, zc, zh, PNG + "_zoom.png", f"같은 그림 확대{TAG} (프레임 {FR[0]} 시작 몸통 범위, 모든 칸 같은 범위)")
 
 # HTML (plotly.js, 시점 슬라이더)
 def b64(a, dt=np.float32):
@@ -147,11 +154,11 @@ for s in snaps:
                   box=s["gbox"].tolist()))
 fq = floor_quad(snaps[0]["nr"], snaps[0]["pn"], ctr, half)
 meta = dict(c=ctr.tolist(), r=float(half), zc=zc.tolist(), zr=float(zh), vmax=float(vmax), edges=EDGES, floor=[q.tolist() for q in fq], up=up.tolist())
-html = """<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>레고 (A) 원래 FCR 폭증 프레임 21·22 시점별</title>
+html = """<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>레고 (A) 원래 FCR 폭증 프레임 __FS__ 시점별</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <style>body{font-family:'Apple SD Gothic Neo','Noto Sans KR',sans-serif;margin:8px}#pl{width:100%;height:82vh}#t{font-size:14px;margin:4px 0}</style></head><body>
 <div>시점 <input type="range" id="s" min="0" max="__N__" value="0" style="width:60%"> <button id="pv">◀</button><button id="nx">▶</button>
- <label><input type="checkbox" id="zm"> 확대 (프레임 21 시작 몸통 범위)</label> <label><input type="checkbox" id="sp" checked> 입자 표시</label></div>
+ <b>__TAG__</b> <label><input type="checkbox" id="zm"> 확대 (프레임 __F0__ 시작 몸통 범위)</label> <label><input type="checkbox" id="sp" checked> 입자 표시</label></div>
 <div id="t"></div><div id="pl"></div>
 <div style="font-size:12px">회색 = 입자 (그 시점 노드 변위로 보간), 빨강 = 뒤집힌 가우스 점 (det ≤ 0) 찬 팔분, 주황 = 빈 팔분, 선 = 앞 시점 -> 이 시점 노드 위치 (1 칸 넘는 노드, 색 = 이동 칸, 로그, 모든 시점 공통 1~__VM__), 점선 = 노드 상자, 파랑 = 바닥. 축 범위 모든 시점 공통.</div>
 <script>
@@ -183,7 +190,7 @@ document.getElementById('pv').onclick=()=>{const e=document.getElementById('s');
 document.getElementById('nx').onclick=()=>{const e=document.getElementById('s');e.value=Math.min(S.length-1,+e.value+1);draw();};
 draw();
 </script></body></html>"""
-html = html.replace("__N__", str(len(snaps) - 1)).replace("__VM__", f"{vmax:.0f}").replace("__S__", json.dumps(J)).replace("__M__", json.dumps(meta))
+html = html.replace("__FS__", FS).replace("__TAG__", TAG).replace("__F0__", str(FR[0])).replace("__N__", str(len(snaps) - 1)).replace("__VM__", f"{vmax:.0f}").replace("__S__", json.dumps(J)).replace("__M__", json.dumps(meta))
 open(HTML, "w").write(html)
 print("저장", HTML)
 for s in snaps:
