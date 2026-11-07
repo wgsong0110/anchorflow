@@ -36,7 +36,7 @@ run() {    # run 이름 카드 추가인자...
   log "$n rc=$rc $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) 해시 $(grep -o '"x_sha1": "[0-9a-f]*"' $O/$n/summary.json 2>/dev/null) $(grep -a 'rror' $O/$n/log.txt | tail -2 | cut -c1-300 | tr '\n' ' ')"
   rclone copy $O/$n $RO/$n -q
 }
-# ---- 연기 (3 프레임): 켬 컴파일·실행, 끔·켬 프레임 1 해시 같고 (교체는 다음 프레임 P2G 부터) 2 부터 다름
+# ---- 연기 (3 프레임): 켬 컴파일·실행, 끔·켬 프레임 1 해시 같고 (교체는 다음 프레임 P2G 부터) 3 은 다름 (1·2 는 구속으로 풀이 없음)
 SM=$O/smoke; mkdir -p $SM
 smk() { local n=$1 g me=$BASHPID; shift
   g=$(claim_wait $me); mkdir -p $SM/$n
@@ -45,9 +45,9 @@ smk() { local n=$1 g me=$BASHPID; shift
 if [ ! -f $SM/ok ]; then
   smk off & sleep 5; smk on --fp_interp & wait
   HO=$(grep -o '"xh": "[0-9a-f]*"' $SM/off/fem.jsonl 2>/dev/null | cut -d'"' -f4 | tr '\n' ' '); HN=$(grep -o '"xh": "[0-9a-f]*"' $SM/on/fem.jsonl 2>/dev/null | cut -d'"' -f4 | tr '\n' ' ')
-  OK=1; set -- $HO; A1=$1; A2=$2; set -- $HN; N1=$1; N2=$2
+  OK=1; set -- $HO; A1=$1; A3=$3; set -- $HN; N1=$1; N3=$3
   [ -f $SM/off/summary.json ] && [ -f $SM/on/summary.json ] || OK=0
-  [ -n "$A1" ] && [ "$A1" = "$N1" ] && [ "$A2" != "$N2" ] || OK=0
+  [ -n "$A1" ] && [ -n "$A3" ] && [ "$A1" = "$N1" ] && [ "$A3" != "$N3" ] || OK=0           # wolf 는 프레임 1·2 가 순차 방출 구속으로 풀이 0 (뉴턴 0) -> 프레임 3 에서 달라야 함
   log "[연기] OK=$OK 끔 [$HO] 켬 [$HN] $(for q in off on; do grep -a 'rror\|Trace' $SM/$q/log.txt | tail -2 | cut -c1-300 | tr '\n' ' '; done)"
   rclone copy $SM $RO/smoke -q
   [ $OK = 1 ] || { echo "연기 실패 $(date '+%F %T')" > $O/wolfnew.FAIL; exit 1; }
