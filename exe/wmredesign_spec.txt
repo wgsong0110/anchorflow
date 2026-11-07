@@ -1,0 +1,14 @@
+# 절 CM38 묶음 wmredesign 판 목록: <단계> <이름> <씬> <방식> <플래그...> (exe/stab_wmredesign.sh). 수박 M3 = 셀 3 옛 실행기 (절 CM33 (2) 판 바탕 + --gq_oct 0 --ws_bar 4 --ws_fi).
+# BG = --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 (절 CM35 BG + 절 CM36 --sp2 31); C = BG + --ksplit 3 --ks_big --xg 1 (절 CM37).
+# s0 연기: 진단 훅 (--wrd) 5 프레임
+s0 s0_d M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --wrd 3-6 --frames 6
+# s1 원인 가르기 (--wrd: 그래프 밖 같은 커널 순서, 뉴턴 반복마다 잔차 분해·PCG 잔차·방향·접선 차분 대조; 결과 불변). 쪼개기 끔 (고정 K).
+s1 d_C1 M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --wrd 3-30 --frames 30
+s1 d_C1cg M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --cg 200 --wrd 3-30 --frames 30
+s1 d_C1cgN M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --cg 200 --newton 20 --wrd 3-12 --frames 12
+s1 d_C1nrm M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --no_rm --wrd 3-30 --frames 30
+s1 d_C1rs M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --rm_snh --wrd 3-30 --frames 30
+s1 d_C8 M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --K 8 --wrd 3-12 --frames 12
+s1 d_C8cg M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --K 8 --cg 200 --wrd 3-12 --frames 12
+s1 d_C32cg M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --K 32 --cg 100 --wrd 3-8 --frames 8
+s1 d_B1 M3 w --sp2 31 --wrd 3-12 --frames 12
