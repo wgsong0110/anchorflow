@@ -145,7 +145,11 @@ ap.add_argument("--ue_nl", action="store_true", help="절 CM33 (b) (--ws_bar·--
 ap.add_argument("--xit_from", type=int, default=0, help="절 CM33 (c) (--uf_res·허용치 판 위): 반복 이 번째 (0 부터) 시작 잔차를 잰 뒤 그때까지 덜 풀림 판정이 아니면 나머지 반복 건너뜀 (--newton 이 상한); 0 = 끔")
 ap.add_argument("--en_mo", action="store_true", help="절 CM33 (d) (--ws_bar 위): 뉴턴 반복마다 증분 포텐셜 Φ (관성 + RM 뒤 SNH 탄성 + 장벽) 가 반복 시작보다 늘면 그 반복 갱신을 반씩 되돌림 (최대 6 번, 그래도 늘면 버림)")
 ap.add_argument("--enrec", type=int, default=0, help="절 CM33 진단 (결과 불변, --nrec 위, K 1 HHT): 프레임 1~이 값의 에너지 몫 분해 (P2G·잔차·고착·탄성·장벽·갱신식·커밋·G2P, 뉴턴 반복별 증분 포텐셜) -> fem.jsonl enb")
+ap.add_argument("--sp2", type=int, default=0, help="절 CM36 (조정자 승인 11-08, 반올림 수준 커널 재작성): 수박 실행기 커널 비트 (1 칸 스캔 3 단계·2 0 블록 합 생략·4 칸 합 팔분 합·8 점->노드 칸 모으기·16 뒤집힘 필터 f32 증명; 0 = 끔, 글자 그대로). lib/anchorflow/fem_speed2.py")
 a = ap.parse_args()
+if a.sp2:                                                                       # 절 CM36: 소스·커널 실행 감싸기 (끄면 안 부름)
+    from anchorflow import fem_speed2 as SP2
+    SP2.install(a.sp2)
 if a.adaptK > 0:
     a.K = 8                                                                       # 버퍼·첫 캡처는 상한으로, 프레임마다 다시 정함
 dev = "cuda"

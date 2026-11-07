@@ -1,0 +1,17 @@
+# 절 CM36 묶음 speed2 판 목록: <단계> <이름> <씬> <방식> <플래그...>  (씬 M = 수박 옛 실행기, A2k 플래그 위; --cell·--frames 는 뒤에 덮음)
+# s1 (확인, 동시 비결정): 위치 대조 (6 프레임 덤프: 끔 a·b = 비결정 범위, 켬 a·b), 비트별 컴파일·실행 (12 프레임), 켬 100 프레임 3 판 (오차·손상 분포)
+s1 c_off_a M n --cell 3 --frames 6 --dump
+s1 c_off_b M n --cell 3 --frames 6 --dump
+s1 c_on_a M n --cell 3 --frames 6 --dump --sp2 31
+s1 c_on_b M n --cell 3 --frames 6 --dump --sp2 31
+s1 b1 M n --cell 3 --frames 12 --sp2 1
+s1 b2 M n --cell 3 --frames 12 --sp2 2
+s1 b4 M n --cell 3 --frames 12 --sp2 4
+s1 b8 M n --cell 3 --frames 12 --sp2 8
+s1 b16 M n --cell 3 --frames 12 --sp2 16
+s1 nM_on3_a M n --cell 3 --sp2 31
+s1 nM_on3_b M n --cell 3 --sp2 31
+s1 nM_on3_c M n --cell 3 --sp2 31
+s1 nM_off3_a M n --cell 3
+s1 nM_off3_b M n --cell 3
+s1 nM_off3_c M n --cell 3
