@@ -34,6 +34,9 @@ ap.add_argument("--scalar_dir", default="", help="절 CM13.4 손상 색: 프레�
 ap.add_argument("--vmin", type=float, default=-0.2)
 ap.add_argument("--vmax", type=float, default=0.4)
 ap.add_argument("--cmap", default="viridis")
+ap.add_argument("--cat_dir", default="", help="절 CM23 손상 상위 표시: 프레임 t 의 입자별 범주 cat_<t:04d>.npy (int8, 입자 순서 = h5; 0 나머지 · 1 상위 10 % · 2 10~20 % · 3 20~30 % · 4 비유한 logJp). "
+                "가우시안 색만 범주 색 (빨강·주황·노랑·보라), 0 은 회색 + 불투명도 x --cat_fade; 위치·공분산 그대로")
+ap.add_argument("--cat_fade", type=float, default=0.15)
 a = ap.parse_args()
 sys.path.insert(0, a.gf); sys.path.insert(1, os.path.join(a.gf, "gaussian-splatting"))
 os.chdir(a.gf)
@@ -156,6 +159,11 @@ for t, fp in enumerate(fs):
         _sv = np.nan_to_num(_sv, nan=a.vmax, posinf=a.vmax, neginf=a.vmin)
         _cm = matplotlib.colormaps[a.cmap]((np.clip(_sv, a.vmin, a.vmax) - a.vmin) / (a.vmax - a.vmin))[:, :3]
         col = torch.as_tensor(_cm, device=dev).float()[ok]
+    if a.cat_dir:                                                              # 절 CM23: 범주 색 (색·불투명도만)
+        _cv = torch.as_tensor(np.load(f"{a.cat_dir}/cat_{t:04d}.npy")[GIDX].astype(np.int64), device=dev)[ok]
+        _pal = torch.tensor([[0.55, 0.55, 0.55], [0.85, 0.10, 0.10], [1.00, 0.55, 0.00], [0.95, 0.85, 0.05], [0.55, 0.15, 0.75]], device=dev)
+        col = _pal[_cv]
+        O_ = O_.clone(); O_[_cv == 0] = O_[_cv == 0] * a.cat_fade
     if MK is not None:                                                         # --mark: 색·불투명도만 (위치·공분산 그대로)
         mk_ = MK[ok]
         col = col.clone(); col[mk_] = torch.tensor(DCM.RED, device=dev)
