@@ -1235,10 +1235,14 @@ WB_SE2_NEW = "        ga[n*3+a] = st ? 0.f : a1;\n    }\n    if (stf_ && !st) { 
 # 절 CM24 (1b)·(2)·(3): 걸음 수렴 판정 (덜 풀린 걸음 표시) + 덜 풀린 걸음의 걸음 끝 갱신 바꾸기. 끄면 소스에 안 들어감.
 # 덜 풀린 걸음 = 허용치 εN 으로 멈추지 않았고 (CT[0] = 0; 허용치 판이 아니면 이 조건 없음) 그 걸음 뉴턴 반복 중 하나라도 보폭 SC[14] < 1 (뒤집힘·장벽 필터가 뉴턴 걸음을 자름).
 # 비유한 보폭은 잘림 (0) 으로. ufs[k] = 걸음 k 보폭 최소, ufl[k] = 덜 풀림 (1) / 아님 (0).
+# --uf_res (판정 2): 위 조건 또는 마지막으로 돈 뉴턴 반복 시작 잔차 ‖g‖ > F (허용치 규칙과 같은 ‖g‖·F, 상대 잔차 1 = 힘 척도만큼 안 맞음) -- ufg[k] = ‖g‖²/F² (그 반복).
 UF_SRC = r"""
 __global__ void uf_init(float* ufs, int k) { ufs[k] = 1.f; }
 __global__ void uf_min(const double* SC, float* ufs, int k) { float s = (float)SC[14]; if (!(s == s)) s = 0.f; ufs[k] = fminf(ufs[k], s); }
-__global__ void uf_end(const int* CT, const float* ufs, int* ufl, int k, int adapt) { ufl[k] = ((adapt ? (CT[0] == 0) : 1) && ufs[k] < 1.f) ? 1 : 0; }
+__global__ void uf_g(const double* SC, const double* CD, float* ufg, int k) { double r = (CD[2] > 0.0) ? SC[1]/CD[2] : 0.0; ufg[k] = (r == r) ? (float)fmin(r, 3.0e38) : 3.0e38f; }
+__global__ void uf_end(const int* CT, const float* ufs, int* ufl, int k, int adapt, const float* ufg, int res) {
+    bool cut = ufs[k] < 1.f, big = res && ufg[k] > 1.f;
+    ufl[k] = ((adapt ? (CT[0] == 0) : 1) && (cut || big)) ? 1 : 0; }
 """
 UF_SIG_OLD = "float damp) {\n"
 UF_SIG_NEW = "float damp, const int* ufl, int um) {\n    int uf_ = (um == 3) ? 1 : ufl[0];                                        // um 1 = 덜 풀린 걸음 후퇴 오일러, 2 = 덜 풀린 걸음 가속도 기억 0, 3 = 모든 걸음 후퇴 오일러 갱신\n"
@@ -1322,6 +1326,7 @@ class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
     def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", dmg="", pf_it=30, fpi=False, wbar=None, lji=False, bcnt=False, uf=None, **kw):
+        s.ufr = bool(uf and uf.get("res"))                                             # 절 CM24 판정 2 (--uf_res): 잔차 조건 더함
         s.ufj = bool(uf and uf.get("judge"))                                           # 절 CM24: 걸음 수렴 판정 커널 (덜 풀린 걸음 표시; 끄면 소스·커널 열 그대로)
         s.ue = {"": 0, "be": 1, "a0": 2, "beall": 3}[(uf or {}).get("ue", "")]         # 절 CM24 (2)·(3): 덜 풀린 걸음 갱신 (1 후퇴 오일러, 2 가속도 기억 0, 3 모든 걸음 후퇴 오일러 갱신)
         assert not s.ue or s.ufj, "--ue 는 판정 커널 위"
@@ -1494,7 +1499,7 @@ class AORTSolver(DET.DetMixin):
         if getattr(s, "gqm", False):                                                   # 절 CM9: 팔분 점·칸 질량 가중 속도·가속도 합
             s.gqP = Z(s.capQc * 8 * 6); s.gqC = Z(s.capQc * 6)
         if getattr(s, "ufj", False):                                                   # 절 CM24: 걸음별 보폭 최소·덜 풀림 표시
-            s.ufs = Z(max(s.K, 1)); s.ufl = torch.zeros(max(s.K, 1), device=s.dev, dtype=torch.int32)
+            s.ufs = Z(max(s.K, 1)); s.ufg = Z(max(s.K, 1)); s.ufl = torch.zeros(max(s.K, 1), device=s.dev, dtype=torch.int32)
         s.awez = Z(s.capN, 3); s.awyb = Z(s.capN, 3); s.awdy = Z(s.capN, 3); s.awtd = Z(s.capN, 3)                     # 절 AS 시작점 (--y0z)
         if getattr(s, "dmg", "") == "pf":                                              # 절 CM19 위상장: 노드 d·PCG 벡터, 스칼라, 풀이별 상대 잔차
             s.pfd, s.pfb, s.pfg, s.pfr, s.pfz, s.pfp, s.pfA = (Z(s.capN) for _ in range(7))
@@ -1670,6 +1675,7 @@ class AORTSolver(DET.DetMixin):
             s.ctl(1)
             if s.ufj:
                 s.k("uf_init", 1, (P(s.ufs), i32(kstep)), b=1)
+                s.zf(s.ufg[kstep:kstep + 1])
             for it in range(s.nt):
                 s.ctl(2, it)
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
@@ -1700,6 +1706,8 @@ class AORTSolver(DET.DetMixin):
                 if FR:                                                                 # 절 CM23.4: 기울기 위치 y·η, 잔차 r0 = −g
                     s.FRy[kstep, it].copy_(s.y[:s.capN]); s.FReta[kstep, it].copy_(s.eta[:s.capN]); s.FRr[kstep, it].copy_(s.g0buf[:s.capN])
                 s.ctl(3, it)
+                if s.ufj and s.ufr and s.adapt:                                           # 절 CM24 판정 2: 이 반복 시작 ‖g‖²/F² (허용치로 멈춘 반복은 AF_SKIP 으로 빠짐)
+                    s.k("uf_g", 1, (P(s.SC), P(s.CD), P(s.ufg), i32(kstep)), b=1)
                 if NR:
                     s.NRct3[kstep * s.nt + it].copy_(s.CT); s.NRcd[kstep * s.nt + it].copy_(s.CD)
                 if s.warm and it == 0 and kstep > 0 and s.nl <= 1:                                      # PCG 첫 추정 = 앞 걸음 첫 뉴턴의 δ (프레임 첫 걸음은 0)
@@ -1766,7 +1774,7 @@ class AORTSolver(DET.DetMixin):
                     c_ = NSDM.code(kstep, it + 1, 1); D_.node(s.y, D_.mN, c_); D_.q(s.y, c_); D_.sc(c_)
             s.ctl(8)
             if s.ufj:                                                                      # 절 CM24: 걸음 끝 덜 풀림 판정 (허용치로 안 멈췄고 보폭 최소 < 1)
-                s.k("uf_end", 1, (P(s.CT), P(s.ufs), P(s.ufl), i32(kstep), i32(1 if s.adapt else 0)), b=1)
+                s.k("uf_end", 1, (P(s.CT), P(s.ufs), P(s.ufl), i32(kstep), i32(1 if s.adapt else 0), P(s.ufg), i32(1 if s.ufr else 0)), b=1)
             if NR:                                                                     # 절 CM23.3: 마지막 뉴턴 뒤 |g|² 한 번 더 (같은 식), 덮어쓰는 버퍼는 사본으로 되돌림 -> 결과 불변
                 assert s.aq, "--nrec 는 재질 커널 경로만"
                 for q_, t_ in s.NRbk.items():

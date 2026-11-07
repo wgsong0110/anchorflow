@@ -115,6 +115,7 @@ ap.add_argument("--ksplit", type=int, default=0, help="절 CM24 (1b, 사용자 �
                 "그 프레임을 버리고 K 두 배 (걸음 간격 반) 로 다시, 최대 K = 2^이 값 (0 = 끔)")
 ap.add_argument("--ue", choices=["", "be", "a0", "beall"], default="", help="절 CM24 (2)·(3) (사용자 승인 정의 변경, HHT 판): 덜 풀린 걸음 (같은 판정) 의 걸음 끝 갱신 -- be = 후퇴 오일러 (U1 = y, v1 = (y − U)/h, 가속도 기억 0), "
                 "a0 = 속도·위치는 HHT 그대로·가속도 기억만 0, beall = 모든 걸음 후퇴 오일러 갱신 (비교). 빈 값 = 끔")
+ap.add_argument("--uf_res", action="store_true", help="절 CM24 판정 2: 덜 풀린 걸음 조건에 '마지막으로 돈 뉴턴 반복 시작 잔차 ‖g‖ > F (허용치 규칙 척도)' 를 더함 (또는; 끄면 보폭 < 1 만)")
 ap.add_argument("--ufrec", action="store_true", help="절 CM24 진단 (결과 불변): 판정 커널만 켜고 걸음별 덜 풀림·보폭 최소를 fem.jsonl uf 에")
 ap.add_argument("--erec", action="store_true", help="절 CM24 진단 (결과 불변, 재생 밖): 프레임 끝 입자 운동·중력 위치·SNH 탄성 에너지, 질량중심 z·법선 속도 (fem.jsonl en)")
 a = ap.parse_args()
@@ -286,7 +287,7 @@ if MATK is not None:                                                            
                         floor=FL, damp=DAMP, bc=BC, cdp=1.0, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det,
                         hspec=True, theta=a.theta, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None),
                         mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx, dmg=a.dmg, pf_it=a.pf_it, fpi=a.fp_interp, wbar=WBAR, lji=a.lj_interp, bcnt=a.bar_cnt,
-                        uf=(dict(judge=True, ue=a.ue) if (a.ksplit > 0 or a.ue or a.ufrec) else None))
+                        uf=(dict(judge=True, ue=a.ue, res=a.uf_res) if (a.ksplit > 0 or a.ue or a.ufrec) else None))
 elif SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
     _sk = {}
@@ -448,7 +449,7 @@ for fi in range(L):
         _w = m64[_ok].double(); _w = _w / _w.sum()
         c["com"] = dict(z=float((_w * xo[_ok][:, 2].double()).sum()), gz=float((_w * gt[_ok][:, 2].double()).sum()))
     if getattr(S, "ufj", False):                                                     # 절 CM24 (결과 불변): 걸음별 덜 풀림·보폭 최소 (마지막 시도)
-        c["uf"] = dict(fail=[int(q) for q in S.ufl[:S.K].cpu()], smin=[float(q) for q in S.ufs[:S.K].cpu()])
+        c["uf"] = dict(fail=[int(q) for q in S.ufl[:S.K].cpu()], smin=[float(q) for q in S.ufs[:S.K].cpu()], g2=[float(q) for q in S.ufg[:S.K].cpu()] if S.ufr else None)
     if a.ksplit > 0:
         c["ks"] = dict(K=KF, tries=[list(q) for q in _ktr])
     if a.erec and int(S.IP[13]) == 0:                                                # 절 CM24 (결과 불변, 읽기만): 입자 에너지·질량중심
