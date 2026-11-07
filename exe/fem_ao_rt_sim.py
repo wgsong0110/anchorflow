@@ -512,7 +512,10 @@ for fi in range(L):
             _mm = S.mn[:int(S.IP[9])]; _md = float(_mm[_mm > 0].median())
             _ci = S.cidx[S.pcd.long()].long(); _ci = _ci[_ci >= 0]
             _npc = torch.bincount(_ci, minlength=int(S.IP[12]) // 8 + 1).cpu().numpy()
-            c["wi"]["rec"] = [_WI.rec_summary(_t, _md, _npc, float(FL["PN"]), FL["NR"], CELL) for _t in S.wi_att]
+            _ci2 = S.cidx[S.pcd.long()].long(); _ok3 = (_ci2 >= 0) & torch.isfinite(S.x).all(-1)        # 칸 입자 높이 평균 (프레임 끝 위치; 칸 번호는 이 프레임 것)
+            _hz = torch.zeros(len(_npc), device=S.x.device, dtype=torch.float64).index_add_(0, _ci2[_ok3], S.x[_ok3].double() @ torch.tensor(FL["NR"], device=S.x.device, dtype=torch.float64))
+            _hc = (_hz.cpu().numpy() / np.maximum(_npc, 1)) - float(FL["PN"])
+            c["wi"]["rec"] = [_WI.rec_summary(_t, _md, _npc, float(FL["PN"]), FL["NR"], CELL, _hc) for _t in S.wi_att]
             np.savez_compressed(os.path.join(a.out, f"wi_rec_f{fi + 1}.npz"), **{f"K{_t['K']}_rows": _t["rows"] for _t in S.wi_att}, **{f"K{_t['K']}_ck": _t["ck"] for _t in S.wi_att})
             S.wi_att.clear()
     if a.erec and int(S.IP[13]) == 0:                                                # 절 CM24 (결과 불변, 읽기만): 입자 에너지·질량중심

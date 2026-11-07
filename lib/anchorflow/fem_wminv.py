@@ -258,7 +258,7 @@ def newton(s, K, kstep, it, capN, capQ, nr, thv, WB, NR, BA):
     s.k("wi_lsup", capN, (P(IP), P(s.wikn), P(kb), P(s.sk), P(s.pm), *F3, P(s.yh), P(s.eta), P(s.dl), P(s.y), i32(1 if s.compact else 0)), b=256)
 
 
-def rec_summary(att, mn_med, nump_cell, floor_pn, nrm=(0.0, 0.0, 1.0), cell=None):
+def rec_summary(att, mn_med, nump_cell, floor_pn, nrm=(0.0, 0.0, 1.0), cell=None, hcell=None):
     """시도 기록 -> 요약 (호스트). nump_cell: 칸별 입자 수 (cpu numpy, 칸 번호 = q >> 3)."""
     rows = att["rows"]
     out = dict(frame=att["frame"], K=att["K"], n=att["n"], st=att["st"])
@@ -269,13 +269,16 @@ def rec_summary(att, mn_med, nump_cell, floor_pn, nrm=(0.0, 0.0, 1.0), cell=None
     q = np.ascontiguousarray(rows[:, 1]).view(np.int32)
     uq, first = np.unique(q, return_index=True)
     r = rows[first]
+    emp = r[:, 9] <= 0                                                               # 팔분에 입자 없음 (표본점 없음) -> 칸 입자 평균 높이 (프레임 끝)
     h = r[:, 10:13] @ np.asarray(nrm, dtype=np.float64) - floor_pn
+    if hcell is not None:
+        h = np.where(emp, hcell[(uq >> 3).clip(0, len(hcell) - 1)], h)
     npc = nump_cell[(uq >> 3).clip(0, len(nump_cell) - 1)] if nump_cell is not None else np.zeros(len(uq))
     mr = r[:, 7] / mn_med
     qs = lambda a: [float(x) for x in np.quantile(a, [0.0, 0.1, 0.5, 0.9, 1.0])] if len(a) else None
     out.update(nq=int(len(uq)), k=qs(r[:, 2]), J0=qs(r[:, 3]), J1=qs(r[:, 4]), Jmin=qs(r[:, 5]), Vq=qs(r[:, 6]), mmin_rel=qs(mr), msum_rel=qs(r[:, 8] / mn_med),
                h=qs(h), h_cells=(qs(h / cell) if cell else None), nump=qs(npc), detFq=qs(r[:, 13]),
                frac_np1=float((npc <= 1).mean()), frac_np2=float((npc <= 2).mean()), frac_h1=(float((h < cell).mean()) if cell else None),
-               frac_mr1e2=float((mr < 1e-2).mean()), frac_J0neg=float((r[:, 3] <= 0).mean()), frac_J1neg=float((r[:, 4] <= 0).mean()),
+               frac_mr1e2=float((mr < 1e-2).mean()), frac_oct_empty=float(emp.mean()), frac_J0neg=float((r[:, 3] <= 0).mean()), frac_J1neg=float((r[:, 4] <= 0).mean()),
                xyz_mean=[float(x) for x in r[:, 10:13].mean(0)], xyz_lo=[float(x) for x in r[:, 10:13].min(0)], xyz_hi=[float(x) for x in r[:, 10:13].max(0)])
     return out
