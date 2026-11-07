@@ -67,6 +67,9 @@ rm -rf $W/wm2/gf/simulation_ply                                                 
 say "[자료] wm.pt $(ls -la $WMD/wm.pt 2>&1 | awk '{print $5}') 3DGS $(du -sh $WMM $W/GaussianFluent 2>&1 | awk '{print $1}' | tr '\n' ' ') GTD $(ls $GTD | wc -l) 정답 통계 $(ls -la $B/gt_wmd_stats.json 2>&1 | awk '{print $5}')"
 [ -s $WMD/wm.pt ] && [ -f $GTD/meta.json ] && [ -s $B/gt_wmd_stats.json ] || fail "[자료 실패] $(tail -3 /dev/shm/dkta/ag_data/cv_wm_rend.log 2>&1 | tr '\n' ' ')"
 NG=$(nvidia-smi -L | wc -l); C1=$(( NG > 1 ? 1 : 0 ))
+# 이어 돌리기 (11-07: 첫 인스턴스가 렌더 단계에서 정지 -> 새 인스턴스): R2 에 이미 있는 판 디렉토리 (pred.pt 빼고) 를 받아 run1 이 건너뛰게
+rclone copy $RR $B -q --transfers 16 --exclude "*/pred.pt" --exclude "*/vid/**" --exclude "smoke_*/**"
+say "[이어 돌리기] R2 에서 받은 판 $(ls $B | grep -c _) 개 (summary.json $(ls $B/*/summary.json 2>/dev/null | wc -l))"
 # ---- 연기: 새 커널 컴파일·3 프레임 (cdm·pf, 셀 1.5) -- 실패면 멈춤
 for v in cdm pf; do O=/root/wg/smoke_$v; grep -q "롤아웃" $O/log.txt 2>/dev/null && continue; mkdir -p $O; cm_scene wm --gq_mass --elx snh --dmg $v --frames 3
   CUDA_VISIBLE_DEVICES=0 timeout 900 $PY -u $SIM --out $O --tag wm $DA $XA < /dev/null > $O/log.txt 2>&1
