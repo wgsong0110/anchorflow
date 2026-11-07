@@ -3203,8 +3203,7 @@ class RTSolver(MG2.MG2Mixin):
                 s.dcopy(s.WU[kstep], s.U)                                              # 절 S.9 진단: 걸음 끝 U
         sl = ST[-1]
         if s.matk:
-            assert not s.fpi, "--fp_interp 는 탄성 판만 (수박은 exe/fem_ao_rt_sim.py)"
-            s.mat_g2p()                                                                # 절 CM2 재질 판 G2P (입자 F 걸음별 RM, a_p)
+            s.mat_g2p()                                                                # 절 CM2 재질 판 G2P (입자 F 걸음별 RM, a_p); 절 CM22 --fp_interp 면 그 뒤 F·상태 교체
             return
         if sl["kind"] == "ga":
             s.k("rt_g2p_ga", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.U), P(s.vk), P(s.ak), P(s.x), P(s.v), P(s.pa), P(s.F)))
