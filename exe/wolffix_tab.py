@@ -71,7 +71,7 @@ for n in RUNS:
     com = [(r.get("hp") or [None])[0] for r in J]
     zmx = [(r.get("hp") or [None, None])[1] for r in J]
     w = [(spread(P[r["t"]].numpy()) if P is not None and r["t"] < P.shape[0] else None) for r in J]
-    if "hg" in J[0]:
+    if all("hg" in r for r in J) and len(J) > len(cur["gt"].get("com") or []):
         cur["gt"].update(com=[r["hg"][0] for r in J], zmax=[r["hg"][1] for r in J])
     uf = [sum((r.get("uf") or {}).get("fail") or []) for r in J]
     neng = [(r.get("bc") or {}).get("neng") for r in J]
