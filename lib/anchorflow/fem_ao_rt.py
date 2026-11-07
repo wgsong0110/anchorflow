@@ -1275,7 +1275,7 @@ def _wb_kernels():
     return "\n".join(out) + WB_SRC
 
 
-def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, lji=False, uf=False):
+def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, lji=False, uf=False, wf=None):
     s = ART.SRC.rstrip()
     if gqm:                                                                          # 절 CM9 --gq_mass: rt_p2g 노드 몫 빼고 (가우스 점 경로 커널은 끝에 덧붙임)
         from .fem_an_det import _sub_in
@@ -1309,6 +1309,9 @@ def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, 
         wbh = ("\n__device__ float* AF_BX;\n__device__ float* AF_BPG;\n__device__ float* AF_BPH;\n__device__ int* AF_BACT;\n__device__ int AF_BDET;"
                "\n#define WB_N0 %.9ef\n#define WB_N1 %.9ef\n#define WB_N2 %.9ef" % tuple(nr_))
     r = head.replace("extern \"C\" {", "extern \"C\" {\n__device__ int* AO_ACT;\n__device__ float* AQ_DBG;\n__device__ int AQ_DBGQ;" + {"": "", "jbar": "\n#define AF_JBAR 1", "snh": "\n#define AF_SNH 1"}[elx] + {"": "", "cdm": "\n#define AF_DMG 1", "pf": "\n#define AF_DMG 2"}[dmg] + wbh, 1) + _pl_funcs() + _mv_half(DET.det_ao(ao)) + DET.det_ao(ao) + _bench_variants(ao) + _compact(head) + _mv_packed(head) + DET.DET_SRC + AW_SRC + (TOL_CTL if tol else "") + (_gq_src() if gqm else "") + (_fpi_src() if fpi else "") + (_wb_kernels() if bar is not None else "") + (LJI_SRC if lji else "") + (_uf_src(ao) if uf else "") + "\n}\n"
+    if wf:                                                                           # 절 CM28 (a)~(d): 원본 NACC 차이 없애기 (끄면 소스 글자 그대로)
+        from . import fem_wmfrac as WF
+        r = WF.apply(r, wf)
     return _skipify(r) if tol else r
 
 
@@ -1325,7 +1328,7 @@ def _gq_src():
 class AORTSolver(DET.DetMixin):
     """모래 융합 판. 추가 인자: cdp (PG DP c), trel (입자별 구속 끝 시각 [N] 또는 None), pbc_ns (표본 수), dt_gt (정답 substep_dt), mthr (거의 빈 노드 질량 문턱, 절대값)."""
 
-    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", dmg="", pf_it=30, fpi=False, wbar=None, lji=False, bcnt=False, uf=None, **kw):
+    def __init__(s, *args, cdp=1.0, trel=None, pbc_ns=4, dt_gt=2e-5, mthr=0.0, compact=True, warm=True, det=False, hpack=False, bdsh=False, mvc=False, h16=False, theta=None, hspec=False, ga=None, mat=2, prm=None, eta=0.0, pvb=None, ys0=0.0, lj0=0.0, slip=False, tolN=-1.0, tolP=-1.0, vfill=True, aqk=False, lsinv=False, y0z=False, y0u=False, y0l=False, fqrl=False, lsend=False, gqm=False, elx="", dmg="", pf_it=30, fpi=False, wbar=None, lji=False, bcnt=False, uf=None, wf=None, **kw):
         s.ufr = bool(uf and uf.get("res"))                                             # 절 CM24 판정 2 (--uf_res): 잔차 조건 더함
         s.ufj = bool(uf and uf.get("judge"))                                           # 절 CM24: 걸음 수렴 판정 커널 (덜 풀린 걸음 표시; 끄면 소스·커널 열 그대로)
         s.ue = {"": 0, "be": 1, "a0": 2, "beall": 3}[(uf or {}).get("ue", "")]         # 절 CM24 (2)·(3): 덜 풀린 걸음 갱신 (1 후퇴 오일러, 2 가속도 기억 0, 3 모든 걸음 후퇴 오일러 갱신)
@@ -1337,6 +1340,7 @@ class AORTSolver(DET.DetMixin):
         s.fpi = bool(fpi)                                                               # 절 CM20 (정의 변경): 마지막 걸음도 가우스 점 커밋 (RM) 뒤 입자 F·재질 상태 = 프레임 끝 가우스 점 값의 칸 안 삼선형 보간
         assert not (s.fpi and (dmg or det)), "--fp_interp 는 손상 없는 비결정 판만"
         s.wbar = wbar                                                                   # 절 CM21: 장벽 바닥 (None 끔; dict NR·PN·DH·KS·y0eb) -- 레고 (B) 정의 (장벽 + 띠 고착 bst 1 + --y0eb)
+        s.wf = dict(wf or {})                                                           # 절 CM28: seedb·ljq·rmsub·rmsnh (소스) + ks_ga·ks_nt·ks_cg (쪼갠 걸음 설정)
         s.lji = bool(lji)                                                               # 절 CM21: 입자 logJp = 프레임 끝 가우스 점 logJp 보간 (마지막 걸음도 가우스 점 커밋)
         s.bcnt = bool(bcnt) and wbar is not None                                        # 절 CM21 진단 (결과 불변): 장벽 걸린 표본점 표시
         assert not ((wbar is not None or s.lji) and (dmg or det)), "--fl_bar·--lj_interp 는 손상 없는 비결정 판만"
@@ -1384,7 +1388,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj, wf={k_: v_ for k_, v_ in s.wf.items() if k_ in ("seedb", "ljq", "ljq_xi", "rmsub", "rmsnh")}), options=("--std=c++14",))
         assert not s.ue or s.ga is not None, "--ue 는 HHT·GA 판만"
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
@@ -1504,6 +1508,8 @@ class AORTSolver(DET.DetMixin):
         if getattr(s, "dmg", "") == "pf":                                              # 절 CM19 위상장: 노드 d·PCG 벡터, 스칼라, 풀이별 상대 잔차
             s.pfd, s.pfb, s.pfg, s.pfr, s.pfz, s.pfp, s.pfA = (Z(s.capN) for _ in range(7))
             s.pfS = torch.zeros(8, device=s.dev, dtype=torch.float64); s.pfres = Z(max(s.K, 1))
+        if int(getattr(s, "wf", {}).get("rmsub", 0)) > 0:                          # 절 CM28 (c): 걸음 시작 변위 사본
+            s.Ub = Z(s.capN, 3)
         s.kalloc = s.K
         s.K = K0
         s.graph = None
@@ -1518,6 +1524,8 @@ class AORTSolver(DET.DetMixin):
         if getattr(s, "wbar", None) is not None and hasattr(s, "bx"):                 # 절 CM21: 장벽 표본점 버퍼 전역 (다시 할당 뒤마다)
             for nm, t in (("AF_BX", s.bx), ("AF_BPG", s.bpg), ("AF_BPH", s.bph), ("AF_BACT", s.bact)):
                 g = s.mod.get_global(nm); ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(t.data_ptr())
+        if int(getattr(s, "wf", {}).get("rmsub", 0)) > 0 and hasattr(s, "Ub"):        # 절 CM28 (c): 걸음 시작 변위 사본 전역
+            g = s.mod.get_global("AQ_U0"); ART.cp.ndarray((1,), dtype=ART.cp.uint64, memptr=g)[0] = int(s.Ub.data_ptr())
         s.det_bind()
 
     def set_bc(s, t):
@@ -1630,6 +1638,8 @@ class AORTSolver(DET.DetMixin):
         it2 = f(1.0 / (s.tau * s.tau))
         expo = f(s.dt / s.pbc_ns / s.dt_gt)
         for kstep in range(s.K):
+            if s.aq and int(s.wf.get("rmsub", 0)) > 0:                                # 절 CM28 (c): 걸음 시작 변위 U0 (aq_elem·aq_commit 이 AQ_U0 로 읽음)
+                s.Ub.copy_(s.U)
             if s.ga is not None:
                 c = s.ga_c
                 s.k("ao_step0_ga", capN, (P(IP), P(s.U), P(s.vk), P(s.gaA), f(s.dt), f(c["am"]), f(c["af"]), f(c["gm"]), f(c["be"]), f(s.tau), *[f(q) for q in s.g], P(s.Ut), P(s.z0), P(s.y)), b=256)
@@ -2198,10 +2208,16 @@ def split_step(s, t, h, sub_dt, depth):
     K 를 두 배로 (모든 걸음 간격 반) 다시 -- 최대 K = 2^depth (그 깊이에서도 덜 풀리면 그 결과를 받음). 돌려줌: (다시 했는지, K, 시도 목록 [(K, 덜 풀린 걸음 수, ms)])."""
     bk = s._bk()
     tries, tot, redo = [], 0.0, False
+    wf = getattr(s, "wf", {})
+    base = (s.ga_c, s.nt, s.cg)
     for dp in range(depth + 1):
         K = 1 << dp
         if dp > 0:
             s._rs(bk)
+            if wf.get("ks_ga") is not None:                                          # 절 CM28 (e): 쪼갠 시도 (K > 1) 만 HHT 계수 바꿈 (그래프는 K 별 캐시라 K > 1 그래프는 늘 이 값)
+                s.ga_c = wf["ks_ga"]
+            if wf.get("ks_nt"):                                                      # 절 CM28 (e): 쪼갠 시도만 뉴턴·PCG 상한
+                s.nt, s.cg = int(wf["ks_nt"]), int(wf["ks_cg"])
         set_K_ga(s, K, h, sub_dt)
         redo = s.step(t) or redo
         ms = float(s.last_ms)
@@ -2210,6 +2226,7 @@ def split_step(s, t, h, sub_dt, depth):
         tot += ms
         if nf == 0 or not math.isfinite(ms):
             break
+    s.ga_c, s.nt, s.cg = base
     s.last_ms = tot
     return redo, K, tries
 

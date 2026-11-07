@@ -118,6 +118,14 @@ ap.add_argument("--ue", choices=["", "be", "a0", "beall"], default="", help="절
 ap.add_argument("--uf_res", action="store_true", help="절 CM24 판정 2: 덜 풀린 걸음 조건에 '마지막으로 돈 뉴턴 반복 시작 잔차 ‖g‖ > F (허용치 규칙 척도)' 를 더함 (또는; 끄면 보폭 < 1 만)")
 ap.add_argument("--ufrec", action="store_true", help="절 CM24 진단 (결과 불변): 판정 커널만 켜고 걸음별 덜 풀림·보폭 최소를 fem.jsonl uf 에")
 ap.add_argument("--erec", action="store_true", help="절 CM24 진단 (결과 불변, 재생 밖): 프레임 끝 입자 운동·중력 위치·SNH 탄성 에너지, 질량중심 z·법선 속도 (fem.jsonl en)")
+ap.add_argument("--seedb", type=str, default="", help="절 CM28 (a) (사용자 위임 11-08 정의 변경, 수박): 씨 영역 β -- exe/wm_seedmask.py 출력 npz (GF 러너 판정, 입자 순번) 의 씨 입자 β = --seedb_val, "
+                "가우스 점은 팔분 씨 입자 부피 과반이면 씨 β (입자 ys 자리에 β). 빈 값 = 끔")
+ap.add_argument("--seedb_val", type=float, default=3e9, help="절 CM28 (a): 씨 영역 β (GF 러너 3e9)")
+ap.add_argument("--ljq", choices=["", "p0", "max"], default="", help="절 CM28 (b): 가우스 점 logJp 모으기 -- p0 = 응집력 평균 (평균 sinh(ξ max(−logJp,0)) 의 역, 팔분 입자 모두 ≥ 0 이면 산술 평균), max = 최대. 빈 값 = 산술 평균 그대로")
+ap.add_argument("--rm_sub", type=int, default=0, help="절 CM28 (c): 걸음 안 소성 갱신을 가우스 점에서 n 등분 (걸음 시작 변위 -> 시험·끝 변위 선형 보간, 증분마다 RM; 0 = 끔)")
+ap.add_argument("--rm_snh", action="store_true", help="절 CM28 (d): NACC RM 판정·투영 식을 SNH 탄성 (--elx snh) 의 키르히호프 p·ŝ 와 맞춤 (Je = SNH 등방 압력의 근)")
+ap.add_argument("--ks_rho", type=float, default=-1.0, help="절 CM28 (e): --ksplit 쪼갠 시도 (K > 1) 의 HHT ρ∞ (음수 = 기본 --rho 그대로; 1 = 수치 감쇠 없음)")
+ap.add_argument("--ks_it", type=str, default="", help="절 CM28 (e): --ksplit 쪼갠 시도 (K > 1) 의 뉴턴,PCG 상한 (예 8,20; 빈 값 = 기본 그대로)")
 a = ap.parse_args()
 if a.adaptK > 0:
     a.K = 8                                                                       # 버퍼·첫 캡처는 상한으로, 프레임마다 다시 정함
@@ -234,6 +242,29 @@ if MATK is not None:                                                            
         if a.elx == "jbar":
             PRM[13] = float(a.jbar) * float(mu)
         print(f"[절 CM13] --elx {a.elx}: " + (f"J 로그 장벽 κ_J = {a.jbar} x μ = {float(PRM[13]):.6g} (NHB κ {float(PRM[2]):.6g}, 작은 변형 부피 강성 κ + κ_J)" if a.elx == "jbar" else f"Stable Neo-Hookean μ_s = μ = {float(mu):.6g}, λ_s = λ + μ = {float(lam) + float(mu):.6g}"), flush=True)
+    WFD = {}
+    if a.seedb or a.ljq or a.rm_sub > 0 or a.rm_snh:                                  # 절 CM28 (a)~(d)
+        assert MATK == 7 and not a.dmg and not a.det, "절 CM28 판은 수박 비결정, 손상 없이"
+        if a.seedb:
+            WFD["seedb"] = True; PRM[11] = float(a.seedb_val)
+        if a.ljq:
+            WFD["ljq"] = a.ljq; WFD["ljq_xi"] = float(PRD["xi"])
+        if a.rm_sub > 0:
+            assert a.fp_interp, "--rm_sub 는 --fp_interp 판 (입자 F·상태 = 가우스 점 보간) 만"
+            WFD["rmsub"] = int(a.rm_sub); PRM[12] = float(a.rm_sub)
+        if a.rm_snh:
+            assert a.elx == "snh", "--rm_snh 는 --elx snh 위에만"
+            WFD["rmsnh"] = True
+        print(f"[절 CM28] {WFD} β 씨 {a.seedb_val if a.seedb else '-'}", flush=True)
+    if a.ks_rho >= 0 or a.ks_it:                                                      # 절 CM28 (e): 쪼갠 시도만
+        assert a.ksplit > 0 and a.ga == "hht", "--ks_rho·--ks_it 는 --ksplit HHT 판만"
+        if a.ks_rho >= 0:
+            _r = float(a.ks_rho); _am, _af = 0.0, (1 - _r) / (1 + _r)
+            WFD["ks_ga"] = dict(am=_am, af=_af, gm=0.5 - _am + _af, be=0.25 * (1 - _am + _af) ** 2)
+        if a.ks_it:
+            assert not a.nrec, "--ks_it 는 --nrec 없이 (반복 기록 버퍼가 기본 뉴턴 수)"
+            WFD["ks_nt"], WFD["ks_cg"] = [int(q) for q in a.ks_it.split(",")]
+        print(f"[절 CM28 (e)] 쪼갠 시도 설정 {WFD}", flush=True)
     DMGI = None
     if a.dmg:                                                                         # 절 CM19: 손상 매개변수를 GF 수박 재질에서 유도 (정답 궤적에 맞추지 않음)
         assert MATK == 7 and a.elx == "snh" and not a.det, "--dmg 는 수박 --elx snh, 비결정 판만"
@@ -287,7 +318,18 @@ if MATK is not None:                                                            
                         floor=FL, damp=DAMP, bc=BC, cdp=1.0, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det,
                         hspec=True, theta=a.theta, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None),
                         mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx, dmg=a.dmg, pf_it=a.pf_it, fpi=a.fp_interp, wbar=WBAR, lji=a.lj_interp, bcnt=a.bar_cnt,
-                        uf=(dict(judge=True, ue=a.ue, res=a.uf_res) if (a.ksplit > 0 or a.ue or a.ufrec) else None))
+                        uf=(dict(judge=True, ue=a.ue, res=a.uf_res) if (a.ksplit > 0 or a.ue or a.ufrec) else None), wf=WFD)
+    if a.seedb:                                                                       # 절 CM28 (a): 입자 β (원래 순번 -> 풀이 순서 perm)
+        _sd = np.load(a.seedb)
+        _seed = torch.from_numpy(_sd["seed"].astype(np.bool_))
+        assert _seed.numel() == Np, ("씨 마스크 길이", _seed.numel(), Np)
+        _xg = torch.from_numpy(_sd["xyz"]).double(); _x0 = d["x"][0].double()          # 순번 대응 확인: 정답 0 프레임 위치 = 배율 x 원래 3DGS 좌표 + 이동 (최소제곱)
+        _xc, _gc = _x0 - _x0.mean(0), _xg - _xg.mean(0)
+        _sc = float((_xc * _gc).sum() / (_gc * _gc).sum())
+        _res = (_xc - _sc * _gc).norm(dim=1)
+        print(f"[절 CM28 (a)] 씨 입자 {int(_seed.sum())} / {Np} ({100 * float(_seed.double().mean()):.2f} %), 순번 대응: 배율 {_sc:.5f}, 잔차 최대 {float(_res.max()):.3e} 중앙 {float(_res.median()):.3e} (장면 단위)", flush=True)
+        _bp = torch.where(_seed, torch.tensor(float(a.seedb_val), dtype=torch.float64), torch.tensor(float(PRD["beta"]), dtype=torch.float64)).float()
+        S.ysp.copy_(_bp.to(dev)[S.perm])
 elif SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
     _sk = {}
@@ -462,6 +504,9 @@ for fi in range(L):
         c["en"] = dict(KE=float(0.5 * (_mp[_ok2] * (_vp[_ok2] ** 2).sum(1)).sum()), PE=float(-(_mp[_ok2] * (_xp[_ok2] @ _gv)).sum()), Eel=_Ee,
                        zc=float((_mp[_ok2] * (_xp[_ok2] @ _nv)).sum()) / _M, vz=float((_mp[_ok2] * (_vp[_ok2] @ _nv)).sum()) / _M, nfin=int(_ok2.sum()),
                        lj0=(float((S.ljp[_ok2] > 0).double().mean()) if MATK == 7 else None))     # 손상 몫 = logJp > 0 (분모 = 위치 유한 입자, exe/wmdmg_stats.py 와 같은 정의)
+        if MATK == 7 and fi + 1 <= 12:                                               # 절 CM28 (1) 첫 접촉 비교 통계 (읽기만): J 분포·SNH/NHB 탄성 에너지·바닥 띠·logJp 분포
+            from anchorflow import wmfrac_stats as _WFS
+            c["en"]["fs"] = _WFS.frame_stats(S.F, S.vol, S.x, S.ljp, float(mu), float(lam), FL["NR"] if FL else (0.0, 0.0, 1.0), float(FL["PN"]) if FL else 0.0)
     if a.frec > 0 and fi + 1 <= a.frec and int(S.IP[13]) == 0:                        # 절 CM23.4 (결과 불변, 읽기만)
         try:
             c["fr"] = FRC.frame(fi + 1)
