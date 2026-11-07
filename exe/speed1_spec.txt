@@ -10,3 +10,26 @@ s1 zM_A2k M z
 s1 zM_c2 M z --cell 2
 s1 zM_c25 M z --cell 2.5
 s1 zM_c3 M z --cell 3
+# s2: --mg_occ (절 AN.20, 거친 층 곱 점유 칸 목록만; 결정적 해시 같음 확인) · 동기 벽시계 프로파일 (q) · wolf 상자 진단 덤프 · 수박 결정적 지원 확인
+s2 W_A2k W d
+s2 W_occ W d --mg_occ
+s2 L_A2k L d
+s2 L_occ L d --mg_occ
+s2 F_A2k F d
+s2 F_occ F d --mg_occ
+s2 B_A2k B d
+s2 B_occ B d --mg_occ
+s2 W_dump W d --dump
+s2 W_dumpn1 W n --dump
+s2 W_dumpn2 W n --dump
+s2 M_c3_det1 M d --cell 3 --det
+s2 M_c3_det2 M d --cell 3 --det
+s2 qW_A2k W q
+s2 qM_A2k M q
+s2 qM_c3 M q --cell 3
+s2 zW_A2k W z
+s2 zW_A2k2 W z
+s2 zW_A2k3 W z
+s2 zW_occ W z --mg_occ
+s2 zW_occ2 W z --mg_occ
+s2 zW_occ3 W z --mg_occ
