@@ -2,7 +2,7 @@
 # 절 CM24 묶음 wmk1fix 진입점 (잡 133077 안 pbs_attach 로; exe/job_run.sh AF_DETACH=1). 코드 = R2 bundle -> /tmp, 결과 처음부터 /dev/shm -> R2 lbours/wmk1fix (5 분마다 통째 + 판 끝날 때마다).
 # 사용: bash go_wmk1fix.sh <커밋> <단계 스크립트 (exe/stab_wmk1fix.sh 등)> <끝 표식 이름> [단계 인자]
 export PATH=/home/dkta/bin:$PATH
-H=$1; ST=$2; EN=$3; SA=${4:-}
+H=$1; ST=$2; EN=$3; SA="${*:4}"                                                     # 단계 인자 전부 (판 플래그 포함 -- 앞 판은 ${4} 만 넘겨 회귀 판 플래그가 빠졌음)
 R=r2:storage/result/anchorflow/lbours/wmk1fix
 O=/dev/shm/dkta/lbours/wmk1fix; CB=/tmp/dkta/wmk1fix_code; C=$CB/$H
 mkdir -p $O $CB /dev/shm/dkta/cache /tmp/dkta; rm -f $O/$EN

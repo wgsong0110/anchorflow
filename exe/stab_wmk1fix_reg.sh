@@ -5,6 +5,12 @@
 # 잡 안, 커밋 디렉토리에서; 출력 $1, R2 $2, 판 이름 $3, 판 플래그 = 나머지 인자.
 O=$1; R=$2; VN=$3; VF="${*:4}"; mkdir -p $O
 PY=/home/dkta/.conda/envs/af/bin/python
+[ -n "$VF" ] || { echo "판 플래그 없음 ($VN)" > $O/wmk1fix.FAIL; exit 1; }
+# 앞 실행 (go 가 판 플래그를 안 넘김) 의 같은 이름 판은 플래그가 명령에 없으면 noflag/ 로 옮김 (지우지 않음, R2 도 같이)
+for s_ in L F W B; do for n in r_${s_}_$VN z_${s_}_${VN}_a z_${s_}_${VN}_b; do
+  [ -f $O/$n/cmd.txt ] && ! grep -qF -- "$VF" $O/$n/cmd.txt && { mkdir -p $O/noflag; mv $O/$n $O/noflag/$n; rclone move $R/$n $R/noflag/$n -q; echo "[$(date '+%F %T')] $n 플래그 없는 앞 실행 -> noflag/" >> $O/reg_$VN.log; }
+done; done
+[ -f $O/smoke_$VN/L/cmd.txt ] && ! grep -qF -- "$VF" $O/smoke_$VN/L/cmd.txt && { mkdir -p $O/noflag; mv $O/smoke_$VN $O/noflag/smoke_$VN; rclone move $R/smoke_$VN $R/noflag/smoke_$VN -q; }
 export PYTHONUTF8=1 OMP_NUM_THREADS=8
 source exe/fem_cm2_scn.sh
 for t in L000 ficus wolf bread; do cm_data $t; done
