@@ -148,10 +148,16 @@ ap.add_argument("--en_mo", action="store_true", help="절 CM33 (d) (--ws_bar 위
 ap.add_argument("--enrec", type=int, default=0, help="절 CM33 진단 (결과 불변, --nrec 위, K 1 HHT): 프레임 1~이 값의 에너지 몫 분해 (P2G·잔차·고착·탄성·장벽·갱신식·커밋·G2P, 뉴턴 반복별 증분 포텐셜) -> fem.jsonl enb")
 ap.add_argument("--sp2", type=int, default=0, help="절 CM36 (조정자 승인 11-08, 반올림 수준 커널 재작성): 수박 실행기 커널 비트 (1 칸 스캔 3 단계·2 0 블록 합 생략·4 칸 합 팔분 합·8 점->노드 칸 모으기·16 뒤집힘 필터 f32 증명; 0 = 끔, 글자 그대로). lib/anchorflow/fem_speed2.py")
 ap.add_argument("--ks_big", action="store_true", help="절 CM37 (조정자 결정 11-08 정의 변경, --ksplit 위, lib/anchorflow/fem_common3.py): 쪼개기 판정을 '덜 풀린 걸음 중 걸음 끝 잔차 비 ‖g‖²/F² > --ue_bigT (비트 32 와 같은 판정, 비유한 포함)' 인 걸음이 있을 때만으로 (끄면 판정 그대로)")
+ap.add_argument("--wrx", type=int, default=0, help="절 CM38 재설계 후보 비트 (lib/anchorflow/fem_wmrx.py; 0 이면 안 부름): 1 고착 상한 (√k < --wrx_skc 이면 0), 2 속도 수준 접촉 (띠 노드 들어가는 법선 이동을 띠 몫만큼 지움)")
+ap.add_argument("--wrx_skc", type=float, default=1e-2, help="절 CM38 후보 1 문턱")
+ap.add_argument("--wrx_col", type=int, default=0, help="절 CM38: 0 모든 걸음에 켬, 1 무너진 프레임만 (K 1 시도 ‖g‖²/F² > --ue_bigT 이면 되돌리고 켠 채 다시 쪼개기; --ksplit --ks_big 위)")
 ap.add_argument("--wrd", default="", help="절 CM38 진단 (결과 불변, lib/anchorflow/fem_wmrd.py): 이 프레임들 (1 부터, 예 3-30 또는 4,8) 을 그래프 밖 같은 커널 순서로 돌리며 뉴턴 반복마다 잔차 분해·PCG 상대 잔차·방향 크기·접선 일관성 -> wrd.jsonl")
 ap.add_argument("--wrd_fd", type=int, default=1, help="절 CM38: --wrd 에서 접선 차분 대조 (1) / 끔 (0)")
 ap.add_argument("--xg", type=int, default=0, help="절 CM37 (결과 불변, --xit_from 위, lib/anchorflow/fem_common3.py): 프레임 그래프를 걸음마다 반복 --xit_from 시작·판정 뒤·뉴턴 끝에서 나눠 캡처, 뒤 구간은 CT[0] = 0 (안 멈춤) 일 때만 재생 (1); 2 = 프로파일 (늘 재생, 건너뛸 구간 GPU 시간 따로); 0 = 끔 (그래프 그대로)")
 a = ap.parse_args()
+if a.wrx:                                                                       # 절 CM38 후보 (소스 바꾸기는 모듈 만들기 전에)
+    from anchorflow import fem_wmrx as WRX
+    WRX.install()
 if a.sp2:                                                                       # 절 CM36: 소스·커널 실행 감싸기 (끄면 안 부름)
     from anchorflow import fem_speed2 as SP2
     SP2.install(a.sp2)
@@ -452,6 +458,8 @@ print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
 _v0 = d["v"][0].double()
 print(f"[처음 속도] 평균 {[round(float(q), 4) for q in _v0.mean(0)]} 표준편차 {[round(float(q), 4) for q in _v0.std(0)]} 최대 편차 {float((_v0 - _v0.mean(0)).norm(dim=-1).max()):.4f}", flush=True)
+if a.wrx:                                                                             # 절 CM38 후보 장치 전역 (col 이면 처음 0, 무너진 프레임 다시 할 때만 1)
+    WRX.setup(S, a.wrx, a.wrx_skc); WRX.on(S, 0 if a.wrx_col else 1)
 WRD, WRD_F = None, set()
 if a.wrd:                                                                             # 절 CM38 진단
     from anchorflow import fem_wmrd as _WRD
@@ -495,7 +503,11 @@ for fi in range(L):
                 _m = S.m.double(); _pv = S.v.double(); _pp = S.pa.double() if S.pa is not None else torch.zeros_like(_pv)
                 _ps = [float(_m.sum()), (_m[:, None] * _pv).sum(0), (_m[:, None] * _pp).sum(0), float((_m * _pv.norm(dim=-1)).sum()), float((_m * _pp.norm(dim=-1)).sum())]
             if a.ksplit > 0:                                                           # 절 CM24 (1b): 덜 풀린 걸음이 있으면 K 두 배로 프레임 다시 (시간 = 모든 시도의 재생 GPU 시간 합)
-                redo, KF, _ktr = AORT.split_step(S, fi * h, h, float(cfg["substep_dt"]), a.ksplit); VMX = None
+                if a.wrx and a.wrx_col:                                                # 절 CM38: 무너진 프레임만 후보 켬
+                    redo, KF, _ktr4 = WRX.split_col(S, fi * h, h, float(cfg["substep_dt"]), a.ksplit); VMX = None
+                    _ktr = [q[:3] for q in _ktr4]; WRX_TR = _ktr4
+                else:
+                    redo, KF, _ktr = AORT.split_step(S, fi * h, h, float(cfg["substep_dt"]), a.ksplit); VMX = None
             else:
                 redo, KF, VMX = S.step(fi * h), a.K, None
     torch.cuda.synchronize(); WALL = 1e3 * (time.perf_counter() - _t0)
@@ -581,6 +593,8 @@ for fi in range(L):
         _g = S.mod.get_global("AF_L0N"); _a = AORT.ART.cp.ndarray((2,), dtype=AORT.ART.cp.int32, memptr=_g); c["l0"] = [int(q) for q in _a.get()]; _a[:] = 0
     if a.ksplit > 0:
         c["ks"] = dict(K=KF, tries=[list(q) for q in _ktr])
+        if a.wrx and a.wrx_col:                                                       # 절 CM38: 시도별 후보 켬
+            c["ks"]["on"] = [q[3] for q in WRX_TR]
     if a.xg:                                                                          # 절 CM37: 조건 구간 [건너뜀, 돎] (+ --xg 2 GPU ms [늘, 돈 조건, 건너뛸 조건])
         c["xg"] = _C3.frame_stats(S)
     if a.wi or a.wi_rec:                                                             # 절 CM29 (결과 불변 읽기): 국소 필터 통계 (마지막 시도), 기록 프레임 요약

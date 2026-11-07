@@ -17,3 +17,23 @@ s2 e_C1 M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_ke
 s2 e_C1cg M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --cg 200 --wrd 2-12 --frames 12 --wrd_fd 0
 s2 e_C8 M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --K 8 --wrd 2-6 --frames 6 --wrd_fd 0
 s2 e_B1 M3 w --sp2 31 --ufrec --uf_res --wrd 2-8 --frames 8 --wrd_fd 0
+# s3 후보 (lib/anchorflow/fem_wmrx.py): X1 고착 상한 (--wrx 1, √k < 1e-2 -> 0), X2 속도 수준 접촉 (--wrx 2), X3 = 둘 다, X3c = 둘 다 무너진 프레임만 (--wrx_col 1). 모두 C 위. 진단 판 f_* = BG + 후보 + --wrd (쪼개기 끔)
+s3 f_X1 M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --wrx 1 --wrd 2-12 --frames 12 --wrd_fd 0
+s3 f_X2 M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --wrx 2 --wrd 2-12 --frames 12 --wrd_fd 0
+s3 f_X3 M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --wrx 3 --wrd 2-12 --frames 12 --wrd_fd 0
+s3 X1_b1 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 1
+s3 X2_b1 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 2
+s3 X3_b1 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3
+s3 X3c_b1 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1
+s3 X1_b2 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 1
+s3 X2_b2 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 2
+s3 X3_b2 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3
+s3 X3c_b2 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1
+s3 X1_b3 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 1
+s3 X2_b3 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 2
+s3 X3_b3 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3
+s3 X3c_b3 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1
+s3 X1_b4 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 1
+s3 X2_b4 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 2
+s3 X3_b4 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3
+s3 X3c_b4 M3 b --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --ksplit 3 --ks_big --xg 1 --wrx 3 --wrx_col 1

@@ -114,6 +114,11 @@ class Rec:
             s.cur["start"] = dict(eta=st_(eta, cell), yhU=st_(yh - U, cell), yU=st_(y - U, cell), vdt=st_(S.vk.reshape(-1, 3)[:nn].double() * dt, cell),
                                   adt2=st_(S.gaA.reshape(-1, 3)[:nn].double() * dt * dt, cell) if getattr(S, "gaA", None) is not None else None,
                                   mmin_rel=float(mn[mn > 0].min()) / md if bool((mn > 0).any()) else 0.0, dt=dt)
+            sk = S.sk[:nn].double(); pm = S.pm[:nn]; en = eta.norm(dim=-1) / cell; je = int(torch.where(torch.isfinite(en), en, torch.zeros_like(en)).argmax())
+            bigE = en > 1
+            s.cur["start"]["eta_arg"] = dict(sk=float(sk[je]), pm=int(pm[je]), r=float(S.an[je] / S.mqn[je]) if float(S.mqn[je]) > 0 else -1.0)
+            s.cur["start"]["eta_big_sk"] = dict(n=int(bigE.sum()), sk_lt1e2=int((bigE & (sk < 1e-2)).sum()), sk_lt1=int((bigE & (sk < 0.999)).sum()), pm0=int((bigE & (pm == 0)).sum()))
+            s.cur["start"]["band"] = dict(n_sk_lt1=int((sk < 0.999).sum()), n_sk_lt1e2=int((sk < 1e-2).sum()), n_sk_lt1e6=int((sk < 1e-6).sum()))
             if s.ks == 0:                                                              # 프레임 시작 입자 속도·가속도
                 pv = S.v.reshape(-1, 3).double().norm(dim=-1)
                 s.cur["start"]["pv_max"] = float(pv[torch.isfinite(pv)].max())
