@@ -2418,7 +2418,7 @@ def cjueify(src):
     return src[:j] + k + src[j:]
 
 
-def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False, fpi=False, cj=False, cue=False, uel=0, ufw=False, ls0=False):
+def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False, fpi=False, cj=False, cue=False, uel=0, ufw=False, ls0=False, c2=None):
     if cj:                                                                             # 절 CM24 판정 커널 (끄면 소스 그대로)
         src = src.replace('extern "C" {', 'extern "C" {\n' + CJ_SRC, 1)
     src = snhify(src, snh)                                                             # 절 CM18 --elx snh (끄면 소스 그대로)
@@ -2466,6 +2466,9 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, 
     if ls0:                                                                            # 절 CM31 --ls0_keep (끄면 소스 그대로)
         from . import fem_common1 as C1
         src = C1.ls0ify(src, True)
+    if c2:                                                                             # 절 CM35 --ue_dil·--xit_from (끄면 소스 그대로)
+        from . import fem_common2 as C2
+        src = C2.c2ify(src, bool(c2.get("dil")), bool(c2.get("xf")))
     return skipify(src) if adapt else src
 
 
@@ -2489,6 +2492,8 @@ class RTSolver(MG2.MG2Mixin):
         assert not s.uel or s.cue in (1, 2), "--ue_loc 는 --ue be·a0 위"
         assert not s.ufw or s.cjr, "--uf_w 는 --uf_res 위"
         s.ls0 = bool((cj or {}).get("ls0", False)) if cj else False
+        s.c2 = {k_: (cj or {})[k_] for k_ in ("xf", "dil") if (cj or {}).get(k_)} or None   # 절 CM35: --xit_from (덜 풀린 걸음만 뉴턴 더) · --ue_dil (S 넓힘)
+        assert not (s.c2 or {}).get("dil") or s.uel, "--ue_dil 은 --ue_loc 위"
         s.fpi = bool(fpi)                                                              # 절 CM20 (정의 변경): 입자 F 를 프레임 끝 가우스 점 F 의 칸 안 삼선형 보간으로 교체
         assert not (s.fpi and pk), "--fp_interp 는 그래프 판만"
         s.gqm = bool(gqm)                                                              # 절 CM9 (정의 변경): 노드 질량·운동량을 가우스 점에서 (힘과 같은 점·가중·기저)
@@ -2566,7 +2571,7 @@ class RTSolver(MG2.MG2Mixin):
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh, fpi=s.fpi, cj=s.cjj, cue=bool(s.cue), uel=s.uel, ufw=s.ufw, ls0=s.ls0), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh, fpi=s.fpi, cj=s.cjj, cue=bool(s.cue), uel=s.uel, ufw=s.ufw, ls0=s.ls0, c2=s.c2), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
@@ -2734,6 +2739,8 @@ class RTSolver(MG2.MG2Mixin):
             s.cjs = torch.zeros(_kc, device=dev, dtype=torch.float32); s.cjg = torch.zeros(_kc, device=dev, dtype=torch.float32); s.cjl = torch.zeros(_kc, device=dev, dtype=torch.int32)
             if getattr(s, "uel", 0):                                                   # 절 CM31 --ue_loc: 노드 집합 + 걸음별 [S 노드, 몸 노드, S∩몸, -]
                 s.ulm = torch.zeros(s.capN, device=dev, dtype=torch.int32); s.ULS = torch.zeros(_kc, 4, device=dev, dtype=torch.int32)
+                if (getattr(s, "c2", None) or {}).get("dil"):                          # 절 CM35 --ue_dil: 넓힘 사본
+                    s.ulm2 = torch.zeros(s.capN, device=dev, dtype=torch.int32)
             if getattr(s, "ufw", False):                                               # 절 CM31 --uf_w: 걸음별 Σ (m |g|)²
                 s.cjw = torch.zeros(_kc, device=dev, dtype=torch.float64)    # 걸음 끝 SC (gfin: SC1 = |g_끝|²)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
         s.wd_on = bool(getattr(s, "wd", False)) and s.capN <= getattr(s, "wdcap", 2000000)   # 절 S.10: 상자 폭증 뒤 용량이면 진단 끔 (복사 없음)
@@ -3238,6 +3245,8 @@ class RTSolver(MG2.MG2Mixin):
                         s.k("ul_gw", 1, (P(s.SC), P(s.CD), P(s.cjw), P(s.cjg), i32(kstep)), b=1)
                     else:
                         s.k("cj_g", 1, (P(s.SC), P(s.CD), P(s.cjg), i32(kstep)), b=1)
+                if s.cjj and (getattr(s, "c2", None) or {}).get("xf") and it == int(s.c2["xf"]):   # 절 CM35 --xit_from: 덜 풀린 걸음이 아니면 나머지 반복 건너뜀
+                    s.k("c2_gate", 1, (P(s.CT), P(s.cjs), P(s.cjg), i32(kstep), i32(1 if s.cjr else 0)), b=1)
                 if WD:
                     s.dcopy(s.WCT[2 * (kstep * s.nt + it)], s.CT); s.dcopy(s.WCD[2 * (kstep * s.nt + it)], s.CD)
                 if s.nl > 1:                                                           # MG 전처리: z = V(r) 로 바꿔 시작
@@ -3392,6 +3401,9 @@ class RTSolver(MG2.MG2Mixin):
                         s.k("ul_kn", capN, (P(IP), P(s.ykn), P(s.ulm)), b=256)
                     if s.uel & 4:
                         s.k("ul_res", capN, (P(IP), P(s.g0buf), P(s.meff), f(math.sqrt(sum(q * q for q in s.g))), P(s.ulm)), b=256)
+                    if (getattr(s, "c2", None) or {}).get("dil"):                      # 절 CM35 --ue_dil: S 를 27 이웃으로 R 번 넓힘
+                        from . import fem_common2 as C2
+                        C2.dilate(s, capN, IP, s.c2["dil"])
                     s.k("rt_zero_i", 4, (np.int32(4), P(s.ULS[kstep])), b=256)
                     s.k("ul_st", capN, (P(IP), P(s.ulm), P(s.mn), P(s.ULS[kstep])), b=256)
                     s.k("rt_ga_end_ufl", capN, GE + (P(s.cjl[kstep:]), i32(s.cue), P(s.ulm)), b=256)

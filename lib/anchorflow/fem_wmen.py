@@ -327,6 +327,9 @@ class EnCtx:
         for nm_, R in (("cut", cut), ("uncut", has & ~cut), ("near", near), ("far", has & ~near)):
             split[nm_] = dict(n=int(R.sum()), m=float(m[R].sum()), Wres=reg(pr, R & free), Wcon=reg(pr, R & con), Rupd=reg(prr, R), Wupd=reg(pu, R),
                               dKE=float((0.5 * m * ((v1 ** 2).sum(1) - (v0 ** 2).sum(1)))[R].sum()))
+        if getattr(S, "ulm", None) is not None:                                        # 절 CM35 진단: 후퇴 오일러 노드 집합 S / S 밖 (자른·안 자른) 나눔, HHT 속도 뒤집기 척도
+            from . import fem_common2 as C2
+            split["S2"] = C2.split_s(S, m, has, v0, v1, y, U1, dt, free, cut, pr, pu, prr, gph)
         Fq0 = S.ENFq[:nq]; Fqc = S.Fq[:nq]
         E0, i0 = s.eq(Fq0, None, nq, q, ids)
         E1, i1 = s.eq(Fq0, U1, nq, q, ids)

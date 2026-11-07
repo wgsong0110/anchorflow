@@ -117,6 +117,9 @@ ap.add_argument("--ue", choices=["", "be", "a0", "beall"], default="", help="절
 ap.add_argument("--ue_loc", type=int, default=0, help="절 CM31 (정의 변경, --ue be·a0 위, lib/anchorflow/fem_common1.py): 덜 풀린 걸음 갱신 바꿈을 노드 집합에만 (비트 합: 1 걸음 끝 장벽 걸린 표본점 노드, 2 --y0loc 시작점 β < 1 노드, 4 잔차 힘 > 노드 무게) -- 0 = 몸 전체 (끄면 소스 그대로)")
 ap.add_argument("--uf_w", action="store_true", help="절 CM31 (정의 변경, --uf_res 위): 판정 2 의 힘 척도 F² = ‖T f_0‖² + Σ (m |g|)² (무게를 더함; 끄면 소스 그대로)")
 ap.add_argument("--ls0_keep", action="store_true", help="절 CM31 (기본 판 비결정 발산 고침 후보, lib/anchorflow/fem_common1.py): 선탐색·장벽 보폭 0 인 뉴턴 반복은 η·y 그대로 (지금은 η += 0·δ 라 δ 비유한이면 NaN); δ 유한이면 비트 같음, 보폭 0 반복 수·δ 비유한 노드 수를 fem.jsonl l0 에 (끄면 소스 그대로)")
+ap.add_argument("--xit_from", type=int, default=0, help="절 CM35 (절 CM33 (c) 를 새 실행기에, --uf_res 허용치 판 위, lib/anchorflow/fem_common2.py): 반복 이 번째 (0 부터) 시작 잔차를 잰 뒤 그때까지 덜 풀림 판정 (보폭 최소 < 1 또는 ‖g‖ > F) 이 아니면 나머지 반복 건너뜀 (--newton 이 덜 풀린 걸음 상한); 0 = 끔")
+ap.add_argument("--en_mo", action="store_true", help="절 CM35 (절 CM33 (d) 를 새 실행기에): 새 실행기는 선탐색 (--ls_n 아르미호, 없으면 보폭 0) 이 이미 반복마다 Φ 를 안 올림 -> 소스 그대로, 선탐색 판인지만 확인")
+ap.add_argument("--ue_dil", type=int, default=0, help="절 CM35 (--ue_loc 위, lib/anchorflow/fem_common2.py): 덜 풀린 걸음 후퇴 오일러 노드 집합 S 를 27 이웃으로 이 번 넓힘 (0 = 끔, 소스 그대로)")
 ap.add_argument("--ufrec", action="store_true", help="절 CM24 진단 (결과 불변): 판정 커널만 켜고 걸음별 덜 풀림을 fem.jsonl uf 에")
 ap.add_argument("--nrec", action="store_true", help="절 CM25 진단 (결과 불변, lib/anchorflow/fem_wolfwhy_diag.py): 걸음마다 시작점 실현 가능 k0·고른 k, 뉴턴 반복별 ‖g‖/F·멈춤·PCG 반복·상한·보폭 (자른 주체), 걸음 끝 ‖g‖/F (다시 잼, 버퍼 되돌림)·장벽 노드 기울기 합을 fem.jsonl nr 에")
 ap.add_argument("--prec", type=str, default="", help="절 CM26 진단 (결과 불변, --nrec 위, 재질 판 K 1 HHT, lib/anchorflow/fem_wolfprop_diag.py): 'f0:f1' 프레임 (1 부터, 양끝 포함) 의 뉴턴 반복·걸음 끝 노드 힘 몫 (탄성·소성, 장벽, 순차 방출 구속 반력, 바닥 고착 반력, 고정 노드, 잔차, 관성, 중력) 법선 합·속도 변화 분해 (몸 전체·바닥 근처·구속 노드), 방출 무리별 입자 높이 (우리·정답), 장벽 표본점 d/d̂ 분포를 prec.jsonl 에")
@@ -124,6 +127,9 @@ ap.add_argument("--y0loc", type=int, default=0, help="절 CM27 (c) (정의 변�
 ap.add_argument("--pbc_phi", action="store_true", help="절 CM27 (e) (정의 변경, 재질 판 순차 방출 구속): 구속 노드 이동도 k_구속 = e^-x 대신 정답 서브스텝 반복 (구속 입자 v = 0 -> 노드 (1 − α) 배, 힘은 매 서브스텝) 의 닫힌 꼴 φ(x) = 2 (x − 1 + e^-x)/x² (끄면 소스 그대로)")
 ap.add_argument("--bar_nostep", action="store_true", help="절 CM25 대조 (진단 전용 정의 변경, 기본 판 아님): 선탐색 없는 장벽 판 (재질) 의 뉴턴 보폭 장벽 실현 가능 자름 (rt_bar_kfe) 끔 -- 보폭 1")
 a = ap.parse_args()
+assert a.xit_from <= 0 or (a.uf_res and a.ue and a.tolN >= 0 and a.newton > a.xit_from and a.ksplit == 0), "--xit_from 은 --ue·--uf_res 허용치 판, --newton > 이 값, 쪼개기 없이"   # 절 CM35
+assert not a.en_mo or a.ls_n > 0, "--en_mo (새 실행기) 는 --ls_n 선탐색 판만 (선탐색이 (d) 를 이미 함)"                                          # 절 CM35
+assert a.ue_dil <= 0 or a.ue_loc, "--ue_dil 은 --ue_loc 위"
 dev = "cuda"
 RTC.RAWPTR[0] = True
 os.makedirs(a.out, exist_ok=True)
@@ -282,7 +288,7 @@ if a.prec:                                                                      
     ART.PRD.ON[0] = True
     PR_F0, PR_F1 = [int(q) for q in a.prec.split(":")]
 S = SOLVER(X0, d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
-                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, gqm=a.gq_mass, cj=({**(dict(judge=True, res=a.uf_res, ue=a.ue, **({"uel": a.ue_loc} if a.ue_loc else {}), **({"ufw": True} if a.uf_w else {})) if (a.ksplit > 0 or a.ufrec or a.ue) else {}), **({"ls0": True} if a.ls0_keep else {})} or None), **({"fpi": True} if a.fp_interp else {}), **({"wd": True, "wdcap": a.wdiag_cap} if a.wdiag >= 0 else {}), **MATX, **SNHX)
+                 floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, gqm=a.gq_mass, cj=({**(dict(judge=True, res=a.uf_res, ue=a.ue, **({"uel": a.ue_loc} if a.ue_loc else {}), **({"ufw": True} if a.uf_w else {}), **({"xf": a.xit_from} if a.xit_from > 0 else {}), **({"dil": a.ue_dil} if a.ue_dil > 0 else {})) if (a.ksplit > 0 or a.ufrec or a.ue) else {}), **({"ls0": True} if a.ls0_keep else {})} or None), **({"fpi": True} if a.fp_interp else {}), **({"wd": True, "wdcap": a.wdiag_cap} if a.wdiag >= 0 else {}), **MATX, **SNHX)
 if a.bar_nostep:
     assert getattr(S, "bar", False) and not S.ls, "--bar_nostep 은 선탐색 없는 장벽 판 (재질) 만"
     S.nobk = True

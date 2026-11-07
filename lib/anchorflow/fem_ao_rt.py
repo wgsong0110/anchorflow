@@ -1324,6 +1324,9 @@ def _src(tol=False, fqrl=False, gqm=False, elx="", dmg="", fpi=False, bar=None, 
         if wf.get("en"):                                                             # 절 CM33: 에너지 생성 고침 후보·진단 (끄면 소스 글자 그대로)
             from . import fem_wmen as EN
             r = EN.apply(r, wf["en"])
+    if c1 and (c1.get("dil") or (int(c1.get("uel", 0)) & 8)):                       # 절 CM35 --ue_dil·--ue_loc 비트 8 (끄면 소스 글자 그대로)
+        from . import fem_common2 as C2
+        r = C2.c2ify(r, True, False)
     return _skipify(r) if tol else r
 
 
@@ -1346,7 +1349,9 @@ class AORTSolver(DET.DetMixin):
         s.ue = {"": 0, "be": 1, "a0": 2, "beall": 3}[(uf or {}).get("ue", "")]         # 절 CM24 (2)·(3): 덜 풀린 걸음 갱신 (1 후퇴 오일러, 2 가속도 기억 0, 3 모든 걸음 후퇴 오일러 갱신)
         assert not s.ue or s.ufj, "--ue 는 판정 커널 위"
         s.uel = int((uf or {}).get("uel", 0)); s.ls0 = bool((uf or {}).get("ls0", False))   # 절 CM31 --ue_loc (2 만: --y0loc β<1 노드) · --ls0_keep
-        assert not s.uel or (s.ue in (1, 2) and s.uel == 2), "옛 실행기 --ue_loc 는 2 만, --ue be·a0 위"
+        s.udil = int((uf or {}).get("dil", 0))                                          # 절 CM35 --ue_dil (S 를 27 이웃으로 넓힘)
+        assert not s.uel or (s.ue in (1, 2) and s.uel in (2, 8, 10)), "옛 실행기 --ue_loc 는 2·8·10 (비트 8 절 CM35: 노드별 보폭으로 자른 노드), --ue be·a0 위"
+        assert not s.udil or s.uel, "--ue_dil 은 --ue_loc 위"
         s.elx = str(elx)                                                                # 절 CM13: 수박 탄성 확장 ("" 끔, jbar, snh)
         s.dmg, s.pf_it = str(dmg), int(pf_it)                                           # 절 CM19: 손상 ("" 끔, cdm, pf), 위상장 PCG 반복 수
         assert not (s.dmg and det), "--dmg 는 비결정 판만"
@@ -1402,7 +1407,7 @@ class AORTSolver(DET.DetMixin):
         s.th = None if theta is None else float(theta)                                  # θ 방식 (None = integ 의 중점/후퇴 오일러 그대로)
         if s.th is not None:
             s.set_th()
-        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj, c1=dict(uel=s.uel, ls0=s.ls0), wf={k_: v_ for k_, v_ in s.wf.items() if k_ in ("seedb", "ljq", "ljq_xi", "rmsub", "rmsnh", "wi", "ws", "en")}), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=_src(tol=s.adapt, fqrl=s.fqrl, gqm=s.gqm, elx=s.elx, dmg=s.dmg, fpi=s.fpi, bar=s.wbar, lji=s.lji, uf=s.ufj, c1=dict(uel=s.uel, ls0=s.ls0, **({"dil": s.udil} if s.udil else {})), wf={k_: v_ for k_, v_ in s.wf.items() if k_ in ("seedb", "ljq", "ljq_xi", "rmsub", "rmsnh", "wi", "ws", "en")}), options=("--std=c++14",))
         assert not s.ue or s.ga is not None, "--ue 는 HHT·GA 판만"
         s.CT = torch.zeros(16, device=s.dev, dtype=torch.int32); s.CD = torch.zeros(4, device=s.dev, dtype=torch.float64)
         s.fn = {}
@@ -1523,6 +1528,8 @@ class AORTSolver(DET.DetMixin):
             s.ufs = Z(max(s.K, 1)); s.ufg = Z(max(s.K, 1)); s.ufl = torch.zeros(max(s.K, 1), device=s.dev, dtype=torch.int32)
             if getattr(s, "uel", 0):                                                   # 절 CM31 --ue_loc: 노드 집합 + 걸음별 [S 노드, 몸 노드, S∩몸, -]
                 s.ulm = torch.zeros(s.capN, device=s.dev, dtype=torch.int32); s.ULS = torch.zeros(max(s.K, 1), 4, device=s.dev, dtype=torch.int32)
+                if getattr(s, "udil", 0):                                              # 절 CM35 --ue_dil: 넓힘 사본
+                    s.ulm2 = torch.zeros(s.capN, device=s.dev, dtype=torch.int32)
         s.awez = Z(s.capN, 3); s.awyb = Z(s.capN, 3); s.awdy = Z(s.capN, 3); s.awtd = Z(s.capN, 3)                     # 절 AS 시작점 (--y0z)
         if getattr(s, "dmg", "") == "pf":                                              # 절 CM19 위상장: 노드 d·PCG 벡터, 스칼라, 풀이별 상대 잔차
             s.pfd, s.pfb, s.pfg, s.pfr, s.pfz, s.pfp, s.pfA = (Z(s.capN) for _ in range(7))
@@ -1887,8 +1894,14 @@ class AORTSolver(DET.DetMixin):
                     s.k("en_stepend", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp), P(s.ufl[kstep:]), i32(s.ue), P(s.ENcut)), b=256)
                 elif s.ue and getattr(s, "uel", 0):                                             # 절 CM31 --ue_loc 2: 덜 풀린 걸음 갱신 바꿈을 --y0loc β<1 노드에만
                     s.k("ul_zero", capN, (P(IP), P(s.ulm)), b=256)
-                    if s.wbar and s.wbar.get("y0loc"):
+                    if s.wbar and s.wbar.get("y0loc") and (s.uel & 2):
                         s.k("ul_kn", capN, (P(IP), P(s.ykn), P(s.ulm)), b=256)
+                    if s.uel & 8:                                                      # 절 CM35 비트 8: 이 걸음 노드별 국소 보폭으로 자른 노드 (절 CM33 en_cut)
+                        assert ENW, "--ue_loc 비트 8 은 절 CM33 en 버퍼 (--xit_from·--en_mo 등) 위"
+                        s.k("ul_cut", capN, (P(IP), P(s.ENcut), P(s.ulm)), b=256)
+                    if getattr(s, "udil", 0):                                          # 절 CM35 --ue_dil
+                        from . import fem_common2 as C2
+                        C2.dilate(s, capN, IP, s.udil)
                     s.k("rt_zero_i", 4, (np.int32(4), P(s.ULS[kstep])), b=256)
                     s.k("ul_st", capN, (P(IP), P(s.ulm), P(s.mn), P(s.ULS[kstep])), b=256)
                     s.k("ao_stepend_ufl", capN, (P(IP), f(s.dt), f(c["gm"]), f(c["be"]), f(s.al), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.gaA), P(s.an if (FL and s.ga.get("ar", True)) else None), P(s.mqn), P(s.kb if (s.has_pbc and s.ga.get("ar", True)) else None), f(s.damp), P(s.ufl[kstep:]), i32(s.ue), P(s.ulm)), b=256)
