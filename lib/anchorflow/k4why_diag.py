@@ -32,11 +32,31 @@ def part_q(S, x_orig):
     return fb.long(), oc
 
 
+def _s10_nodes(S, nn, nidx, K, nt):
+    """절 S.10: 노드별 뉴턴 반복 끝 y, 탄성 기울기 f (= ∂Ψ/∂y, 복원력 −f), 블록 대각 B 의 대칭부 고윳값 최소·최대, 걸음별 유효 질량·τ."""
+    if not hasattr(S, "WFE"):
+        return {}
+    Y = torch.stack([S.WY[j][:nn][nidx] for j in range(K * nt)], 0)
+    Fv = torch.stack([S.WFE[j][:nn][nidx] for j in range(K * nt)], 0)
+    Bm = torch.stack([S.WBE[j][:nn][nidx] for j in range(K * nt)], 0).double().reshape(K * nt, -1, 3, 3)
+    Bm = 0.5 * (Bm + Bm.transpose(-1, -2))
+    Bm = torch.where(torch.isfinite(Bm).all(-1).all(-1)[..., None, None], Bm, torch.full_like(Bm, float("nan")))
+    ev = torch.full(Bm.shape[:-1], float("nan"), dtype=torch.float64, device=Bm.device)
+    ok = torch.isfinite(Bm).all(-1).all(-1)
+    if bool(ok.any()):
+        ev[ok] = torch.linalg.eigvalsh(Bm[ok])
+    Me = torch.stack([S.WME[k][:nn][nidx] for k in range(K)], 0)
+    return dict(n_Y=Y.cpu().numpy(), n_F=Fv.float().cpu().numpy(), n_Bmin=ev[..., 0].float().cpu().numpy(), n_Bmax=ev[..., 2].float().cpu().numpy(),
+                n_me=Me.cpu().numpy(), tau=np.array(S.wd_tau[:K] if S.wd_tau else [float("nan")] * K), n_mraw=S.mn[:nn][nidx].cpu().numpy())
+
+
 def frame(S, fi, tolN, Jp0, Jp1, x0o, nr, pn, out=None):
     """프레임 fi (0 부터) 뒤 진단. Jp0·Jp1 = 프레임 시작·끝 입자 det F (원래 순서), x0o = 프레임 시작 입자 위치 (원래 순서), nr·pn = 바닥 법선·평면 값.
     돌려줌: fem.jsonl 용 요약 dict. out 이 있으면 원자료 npz."""
     dev = S.x.device
     ip = S.IP.cpu().tolist()
+    if not getattr(S, "wd_on", True):                                                  # 절 S.10: 상자 폭증으로 노드 용량이 S.wdcap 을 넘어 진단 버퍼 끔
+        return dict(off=True, nn=ip[9], capN=int(S.capN))
     nn, nc, nq = ip[9], ip[11], ip[12]
     nb1, nb2 = ip[7], ip[8]
     lo = torch.tensor(ip[0:3], device=dev)
@@ -145,6 +165,7 @@ def frame(S, fi, tolN, Jp0, Jp1, x0o, nr, pn, out=None):
             q_x=xq[sel].cpu().numpy(), q_h=hq[sel].float().cpu().numpy(), q_ids=ids[cq[sel]].int().cpu().numpy(),
             n_idx=nidx.int().cpu().numpy(), n_cell=ngc.int().cpu().numpy(), n_m=(mn[nidx] / mmed).cpu().numpy(), n_mq=(S.mqn[:nn][nidx].float() / mmed).cpu().numpy(),
             n_U=torch.stack([S.WU[k][:nn][nidx] for k in range(K)], 0).cpu().numpy(), n_Y0=torch.stack([S.WY0[k][:nn][nidx] for k in range(K)], 0).cpu().numpy(),
+            **_s10_nodes(S, nn, nidx, K, nt),
             p_J0=Jp0.float().cpu().numpy(), p_J1=Jp1.float().cpu().numpy(), p_x0=x0o.float().cpu().numpy(), p_q=pq.int().cpu().numpy(),
             cellh=np.array([float(S.A.reshape(3, 3)[:, 0].norm())]), vmed=np.array([vmed]), mmed=np.array([mmed]))
     return o

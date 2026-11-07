@@ -2339,7 +2339,7 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False, gqm=False, wd=False, snh=False):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False, gqm=False, wd=False, snh=False, wdcap=2000000):
         s.dev = dev
         s.gqm = bool(gqm)                                                              # 절 CM9 (정의 변경): 노드 질량·운동량을 가우스 점에서 (힘과 같은 점·가중·기저)
         assert not (s.gqm and pk), "--gq_mass 는 그래프 판만"
@@ -2398,6 +2398,7 @@ class RTSolver(MG2.MG2Mixin):
         s.theta = float(theta) if scheme else (0.5 if s.mid else 1.0)
         s.mfloor = float(mfloor)
         s.gfin = bool(gfin)
+        s.wdcap = int(wdcap)                                                           # 절 S.10: 노드 용량이 이보다 크면 (상자 폭증) 진단 버퍼·복사를 끔 (메모리만, 결과 불변)
         s.wd = bool(wd)                                                                # 절 S.9 진단 (--wdiag, 결과 불변): 걸음·뉴턴 반복별 y·U·제어 카운터 사본 (그래프 안 복사만, 풀이 버퍼 읽기만)
         s.fuse2 = bool(fuse2)                                                          # 결과 불변 융합 2 판 (가장 거친 층 한 블록, 층 0 연장 보정 + T z, KTp 0 채우기를 cg2 에)
         s.mg_wreuse = bool(mg_wreuse)
@@ -2572,10 +2573,18 @@ class RTSolver(MG2.MG2Mixin):
         s.BSK = torch.zeros(4 * max(s.K, s.Kc or 0) * s.nt, 4, device=dev, dtype=torch.int32)   # 절 CM6 진단: 선탐색 없는 장벽 판 뉴턴 반복별 보폭 k (보폭 2^-k; 결과 불변)
         s.Y0S = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)       # 절 AN.22 시작점 탐색 진단 (걸음마다 SC: 14 = 고른 c, 21+i·40+i = 후보 에너지)
         s.DGF = torch.zeros(4 * max(s.K, s.Kc or 0), 64, device=dev, dtype=torch.float64)    # 걸음 끝 SC (gfin: SC1 = |g_끝|²)          # 진단: 뉴턴 반복마다 [PCG 시작 직후 SC, 선탐색 뒤 SC]
-        if getattr(s, "wd", False):                                                    # 절 S.9 진단 버퍼 (용량 다시 할당 때 같이)
+        s.wd_on = bool(getattr(s, "wd", False)) and s.capN <= getattr(s, "wdcap", 2000000)   # 절 S.10: 상자 폭증 뒤 용량이면 진단 끔 (복사 없음)
+        for _nm in ("WY", "WY0", "WU", "WFE", "WBE", "WME"):
+            if hasattr(s, _nm):
+                delattr(s, _nm)
+        if s.wd_on:                                                                    # 절 S.9 진단 버퍼 (용량 다시 할당 때 같이)
             KK = max(s.K, s.Kc or 0)
             s.WY = Z(KK * s.nt, s.capN, 3); s.WY0 = Z(KK, s.capN, 3); s.WU = Z(KK, s.capN, 3)
             s.WCT = torch.zeros(KK * s.nt * 2 + KK, 16, device=dev, dtype=torch.int32); s.WCD = torch.zeros(KK * s.nt * 2, 4, device=dev, dtype=torch.float64)
+            s.WFE = torch.zeros(KK * s.nt, s.capN, 3, device=dev, dtype=torch.float64)    # 절 S.10: 뉴턴 반복마다 rt_elem 직후 탄성 기울기 f = ∂Ψ/∂y (복원력 = −f)
+            s.WBE = Z(KK * s.nt, s.capN, 9)                                            # 절 S.10: 같은 때 블록 대각 B (탄성 헤시안 노드 블록)
+            s.WME = Z(KK, s.capN)                                                      # 절 S.10: 걸음마다 유효 질량 meff (rt_grad 의 Mi = meff / τ²)
+        s.wd_tau = []
         # 멀티그리드 층 (1 .. nl−1): 첫 프레임 상자에서 차원을 내려 잡고 cap_mul 배
         s.ML = []
         if s.nl > 1:
@@ -2986,7 +2995,9 @@ class RTSolver(MG2.MG2Mixin):
                                               P(s.ufl), P(s.fsk), P(s.fucnt[4 * kstep:]), f(sg["dt"]), f(sg["gm"]), f(sg["al"]), P(s.fvo), P(s.fao), P(s.ak))
                 s.k("rt_fup", capN, FUA(0), b=256)
             s.ctl(1)
-            WD = getattr(s, "wd", False) and s.adapt
+            WD = getattr(s, "wd_on", False) and s.adapt
+            if WD and len(s.wd_tau) < len(ST):
+                s.wd_tau.append(float(sg["tau"]))                                      # 절 S.10: 걸음별 τ (Mi = meff / τ²)
             if WD:
                 s.dcopy(s.WY0[kstep], s.y)                                             # 절 S.9 진단: 걸음 시작점 y
             for it in range(s.nt):
@@ -2998,6 +3009,8 @@ class RTSolver(MG2.MG2Mixin):
                 else:
                     s.k("rt_elem", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.Vq), P(s.y), f(s.mu), f(s.lam), i32(1 | 2 | 8 | (4 if s.ls else 0)), P(s.SC[10:]), P(s.f), P(s.H),
                                           i32(capQ), P(s.B)))
+                if WD and not s.matk:
+                    s.dcopy(s.WFE[kstep * s.nt + it], s.f); s.dcopy(s.WBE[kstep * s.nt + it], s.B)   # 절 S.10 진단: 탄성 기울기·블록 대각 (장벽·벌점 더하기 전)
                 if s.bar:
                     s.zf(s.bGn); s.zf(s.bKn)
                     if VR:                                                             # 절 CM15: 벌점 기울기·덩어리 헤시안 -> 같은 노드 스칼라
@@ -3018,6 +3031,8 @@ class RTSolver(MG2.MG2Mixin):
                         s._mgb_on = True
                 if it == 0:
                     s.k("rt_meff", capN, (P(IP), P(s.mn), P(s.B), f(s.mfloor * sg["tau"] ** 2), P(s.meff)), b=256)
+                    if WD:
+                        s.dcopy(s.WME[kstep], s.meff)                                  # 절 S.10 진단: 유효 질량
                 if getattr(s, "ncl", False):                                           # 절 CM16: 활성 집합 빼기 (자유 에너지 법선 기울기 < 0 이면 풂; y 그대로)
                     s.k("rt_ncl", capN, NCA(1), b=256)
                 if getattr(s, "fup", 0):                                               # 절 CM17: 빼기 (법선 자유 에너지 기울기 < 0 이면 법선 자유; y 그대로)
@@ -3171,7 +3186,7 @@ class RTSolver(MG2.MG2Mixin):
                 s.k("rt_stepend_g", capN, (P(IP), f(sg["thinv"]), f(sg["al"]), P(s.y), P(s.z0), P(s.U), P(s.vk), P(s.fixd), P(s.vbc), dmp), b=256)
             if s.matk:
                 s.mat_step_end(kstep, len(ST), capN, capQ)                             # 절 CM2 재질 판: 구속 노드 가속도 0, 걸음 변위 보관, 걸음 사이 소성 커밋
-            if getattr(s, "wd", False) and s.adapt:
+            if getattr(s, "wd_on", False) and s.adapt:
                 s.dcopy(s.WU[kstep], s.U)                                              # 절 S.9 진단: 걸음 끝 U
         sl = ST[-1]
         if s.matk:
