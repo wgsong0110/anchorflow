@@ -14,6 +14,7 @@ from . import fem_rt_cuda as RTC
 from . import fem_an_mg2 as MG2
 from . import fem_wolfwhy_diag as WW                                            # 절 CM25 진단 --nrec (결과 불변)
 from . import fem_wolfprop_diag as PRD                                          # 절 CM26 진단 --prec (결과 불변, 사본만)
+from . import fem_common3 as C3                                                 # 절 CM37 --xg·--ks_big (끄면 아무것도 안 함)
 
 SRC = r'''
 #define NQ8 8
@@ -3201,7 +3202,10 @@ class RTSolver(MG2.MG2Mixin):
                 s.wd_tau.append(float(sg["tau"]))                                      # 절 S.10: 걸음별 τ (Mi = meff / τ²)
             if WD:
                 s.dcopy(s.WY0[kstep], s.y)                                             # 절 S.9 진단: 걸음 시작점 y
+            _xg = int(getattr(s, "xg", 0)) and int((getattr(s, "c2", None) or {}).get("xf") or 0)   # 절 CM37 --xg: 나눈 그래프 경계 (끄면 0 -> 아무것도 안 함)
             for it in range(s.nt):
+                if _xg and it == _xg:
+                    C3.mark(s, "q")
                 s.ctl(2, it)
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
@@ -3251,6 +3255,8 @@ class RTSolver(MG2.MG2Mixin):
                         s.k("cj_g", 1, (P(s.SC), P(s.CD), P(s.cjg), i32(kstep)), b=1)
                 if s.cjj and (getattr(s, "c2", None) or {}).get("xf") and it == int(s.c2["xf"]):   # 절 CM35 --xit_from: 덜 풀린 걸음이 아니면 나머지 반복 건너뜀
                     s.k("c2_gate", 1, (P(s.CT), P(s.cjs), P(s.cjg), i32(kstep), i32(1 if s.cjr else 0)), b=1)
+                    if _xg:
+                        C3.mark(s, "g")
                 if WD:
                     s.dcopy(s.WCT[2 * (kstep * s.nt + it)], s.CT); s.dcopy(s.WCD[2 * (kstep * s.nt + it)], s.CD)
                 if s.nl > 1:                                                           # MG 전처리: z = V(r) 로 바꿔 시작
@@ -3365,6 +3371,8 @@ class RTSolver(MG2.MG2Mixin):
                     s.k("rt_fup", capN, FUA(2), b=256)
                 if WD:
                     s.dcopy(s.WY[kstep * s.nt + it], s.y)                              # 절 S.9 진단: 뉴턴 반복 끝 y
+            if _xg:
+                C3.mark(s, "e")
             s.ctl(8)
             WW.end(s, kstep, sg, capQ, capN, it2, BA if s.bar else None, nr, barE)  # 절 CM25 진단: 걸음 끝 ‖g‖ 다시 잼 (버퍼 되돌림)
             if s.cjj:                                                                  # 절 CM24: 걸음 끝 덜 풀림 판정
@@ -3859,7 +3867,7 @@ def split_step(s, t, h, depth):
         set_K_an(s, K, h)
         redo = s.step(t) or redo
         ms = float(s.last_ms)
-        nf = int(s.cjl[:K].sum())
+        nf = C3.nfail(s, s.cjl, s.cjg, K)                                               # 절 CM37 --ks_big: 무너진 걸음만 (끄면 덜 풀린 걸음 수 그대로)
         tries.append((K, nf, ms))
         tot += ms
         if nf == 0 or not math.isfinite(ms):

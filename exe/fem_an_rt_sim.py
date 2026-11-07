@@ -126,9 +126,11 @@ ap.add_argument("--nrec", action="store_true", help="절 CM25 진단 (결과 불
 ap.add_argument("--prec", type=str, default="", help="절 CM26 진단 (결과 불변, --nrec 위, 재질 판 K 1 HHT, lib/anchorflow/fem_wolfprop_diag.py): 'f0:f1' 프레임 (1 부터, 양끝 포함) 의 뉴턴 반복·걸음 끝 노드 힘 몫 (탄성·소성, 장벽, 순차 방출 구속 반력, 바닥 고착 반력, 고정 노드, 잔차, 관성, 중력) 법선 합·속도 변화 분해 (몸 전체·바닥 근처·구속 노드), 방출 무리별 입자 높이 (우리·정답), 장벽 표본점 d/d̂ 분포를 prec.jsonl 에")
 ap.add_argument("--y0loc", type=int, default=0, help="절 CM27 (c) (정의 변경은 뉴턴 시작점뿐, --fl_bar --ga_y0ut 위): 시작점 섞기 β 를 몸 전체 스칼라 대신 노드별 -- 표본점마다 전역 규칙 (실현 가능 + --y0eb) 을 그 점에만 적용한 k 를 그 점이 걸친 노드에 (최대), 섞은 뒤 활성 표본점 d > 0 확인·고침 라운드 이 수, 그래도 어기면 전역 k (0 = 끔, 소스 그대로)")
 ap.add_argument("--pbc_phi", action="store_true", help="절 CM27 (e) (정의 변경, 재질 판 순차 방출 구속): 구속 노드 이동도 k_구속 = e^-x 대신 정답 서브스텝 반복 (구속 입자 v = 0 -> 노드 (1 − α) 배, 힘은 매 서브스텝) 의 닫힌 꼴 φ(x) = 2 (x − 1 + e^-x)/x² (끄면 소스 그대로)")
+ap.add_argument("--ks_big", action="store_true", help="절 CM37 (조정자 결정 11-08 정의 변경, --ksplit 위, lib/anchorflow/fem_common3.py): 쪼개기 판정을 '덜 풀린 걸음 중 걸음 끝 잔차 비 ‖g‖²/F² > --ue_bigT (비트 32 와 같은 판정, 비유한 포함)' 인 걸음이 있을 때만으로 (끄면 판정 그대로)")
+ap.add_argument("--xg", type=int, default=0, help="절 CM37 (결과 불변, --xit_from 위, lib/anchorflow/fem_common3.py): 프레임 그래프를 걸음마다 반복 --xit_from 시작·판정 뒤·뉴턴 끝에서 나눠 캡처, 뒤 구간은 CT[0] = 0 (안 멈춤) 일 때만 재생 (1); 2 = 프로파일 (늘 재생, 건너뛸 구간 GPU 시간 따로); 0 = 끔 (그래프 그대로)")
 ap.add_argument("--bar_nostep", action="store_true", help="절 CM25 대조 (진단 전용 정의 변경, 기본 판 아님): 선탐색 없는 장벽 판 (재질) 의 뉴턴 보폭 장벽 실현 가능 자름 (rt_bar_kfe) 끔 -- 보폭 1")
 a = ap.parse_args()
-assert a.xit_from <= 0 or (a.uf_res and a.ue and a.tolN >= 0 and a.newton > a.xit_from and a.ksplit == 0), "--xit_from 은 --ue·--uf_res 허용치 판, --newton > 이 값, 쪼개기 없이"   # 절 CM35
+assert a.xit_from <= 0 or (a.uf_res and a.ue and a.tolN >= 0 and a.newton > a.xit_from and (a.ksplit == 0 or a.ks_big)), "--xit_from 은 --ue·--uf_res 허용치 판, --newton > 이 값, 쪼개기 없이 (절 CM37 --ks_big 은 허용)"   # 절 CM35
 assert not a.en_mo or a.ls_n > 0, "--en_mo (새 실행기) 는 --ls_n 선탐색 판만 (선탐색이 (d) 를 이미 함)"                                          # 절 CM35
 assert a.ue_dil <= 0 or a.ue_loc, "--ue_dil 은 --ue_loc 위"
 dev = "cuda"
@@ -297,6 +299,13 @@ if a.ksplit > 0:                                                                
     assert a.K == 1 and not a.K_contact and not a.pk and a.ga, "--ksplit 은 K 1, --K_contact·--pk 없이, HHT·GA 판만"
     S.kcap = 1 << a.ksplit
     S.alloc(None)
+if a.ks_big:                                                                          # 절 CM37: 무너진 걸음만 쪼개기 (문턱 = 비트 32 와 같은 --ue_bigT)
+    assert a.ksplit > 0 and a.uf_res and a.tolN >= 0, "--ks_big 은 --ksplit·--uf_res 허용치 판 위"
+    S.ksbig = float(a.ue_bigT)
+if a.xg:                                                                              # 절 CM37: 나눈 그래프 (결과 불변)
+    assert a.xit_from > 0 and a.tolN >= 0 and not getattr(a, "pk", 0), "--xg 는 --xit_from 허용치 그래프 판 위"
+    from anchorflow import fem_common3 as _C3
+    _C3.install(S, a.xg)
 print(f"[절 AN 실시간 판] 입자 {Np}, 프레임 {L}, 셀 {float(lat.A[:, 0].norm()):.4f} m (정답 dx {DXG} 의 {a.cell} 배), K {a.K} {a.integ}, 뉴턴 {a.newton} x PCG {a.cg}, 선탐색 {a.ls}, MG 층 {a.mg_levels}, 적분기 {a.ga + ' ρ ' + str(a.rho) if a.ga else a.integ}, "
       f"바닥 {a.floor}, 구속 {len(BC) if BC else 0}", flush=True)
 flog = open(os.path.join(a.out, "fem.jsonl"), "w")
@@ -316,7 +325,10 @@ for fi in range(L):
         _Jp0 = torch.linalg.det(_Fs.reshape(-1, 3, 3).double()); _x0o = S.x_orig().clone(); del _Fs
     if a.dump_part:                                                                    # 메모리 부족 = 그 프레임에서 멈춤 (발산 쪽으로 기록, 덤프는 앞 프레임까지)
         try:
-            redo = S.step(fi * h)
+            if a.ksplit > 0:                                                           # 절 CM37: 덤프 판도 쪼개기 경로 그대로
+                redo, _KF, _ktr = ART.split_step(S, fi * h, h, a.ksplit)
+            else:
+                redo = S.step(fi * h)
         except torch.OutOfMemoryError as _ex:
             div_at, OOM = fi + 1, str(_ex)[:200]
             print(f"[발산] 프레임 {div_at} (GPU 메모리 부족 -- 용량 늘려 다시 중)", flush=True)
@@ -341,6 +353,8 @@ for fi in range(L):
             c["uf"]["ul"] = S.ULS[:_Kn, :3].cpu().tolist()
     if a.ksplit > 0:
         c["ks"] = dict(K=_KF, tries=[list(q) for q in _ktr])
+    if a.xg:                                                                          # 절 CM37: 조건 구간 [건너뜀, 돎] (+ --xg 2 GPU ms [늘, 돈 조건, 건너뛸 조건])
+        c["xg"] = _C3.frame_stats(S)
     if a.ls0_keep:                                                                     # 절 CM31: 이 프레임 보폭 0 반복 수·δ 비유한 노드 수 (읽고 0)
         _g = S.mod.get_global("AF_L0N"); _a = ART.cp.ndarray((2,), dtype=ART.cp.int32, memptr=_g); c["l0"] = [int(q) for q in _a.get()]; _a[:] = 0
     if a.diag:

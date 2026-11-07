@@ -147,6 +147,8 @@ ap.add_argument("--xit_from", type=int, default=0, help="절 CM33 (c) (--uf_res�
 ap.add_argument("--en_mo", action="store_true", help="절 CM33 (d) (--ws_bar 위): 뉴턴 반복마다 증분 포텐셜 Φ (관성 + RM 뒤 SNH 탄성 + 장벽) 가 반복 시작보다 늘면 그 반복 갱신을 반씩 되돌림 (최대 6 번, 그래도 늘면 버림)")
 ap.add_argument("--enrec", type=int, default=0, help="절 CM33 진단 (결과 불변, --nrec 위, K 1 HHT): 프레임 1~이 값의 에너지 몫 분해 (P2G·잔차·고착·탄성·장벽·갱신식·커밋·G2P, 뉴턴 반복별 증분 포텐셜) -> fem.jsonl enb")
 ap.add_argument("--sp2", type=int, default=0, help="절 CM36 (조정자 승인 11-08, 반올림 수준 커널 재작성): 수박 실행기 커널 비트 (1 칸 스캔 3 단계·2 0 블록 합 생략·4 칸 합 팔분 합·8 점->노드 칸 모으기·16 뒤집힘 필터 f32 증명; 0 = 끔, 글자 그대로). lib/anchorflow/fem_speed2.py")
+ap.add_argument("--ks_big", action="store_true", help="절 CM37 (조정자 결정 11-08 정의 변경, --ksplit 위, lib/anchorflow/fem_common3.py): 쪼개기 판정을 '덜 풀린 걸음 중 걸음 끝 잔차 비 ‖g‖²/F² > --ue_bigT (비트 32 와 같은 판정, 비유한 포함)' 인 걸음이 있을 때만으로 (끄면 판정 그대로)")
+ap.add_argument("--xg", type=int, default=0, help="절 CM37 (결과 불변, --xit_from 위, lib/anchorflow/fem_common3.py): 프레임 그래프를 걸음마다 반복 --xit_from 시작·판정 뒤·뉴턴 끝에서 나눠 캡처, 뒤 구간은 CT[0] = 0 (안 멈춤) 일 때만 재생 (1); 2 = 프로파일 (늘 재생, 건너뛸 구간 GPU 시간 따로); 0 = 끔 (그래프 그대로)")
 a = ap.parse_args()
 if a.sp2:                                                                       # 절 CM36: 소스·커널 실행 감싸기 (끄면 안 부름)
     from anchorflow import fem_speed2 as SP2
@@ -309,7 +311,7 @@ if MATK is not None:                                                            
         assert MATK == 7 and WBAR is not None and not a.det and a.ga == "hht", "절 CM33 은 수박 장벽 바닥 HHT 비결정 판"
         assert not a.uf_ro or (a.uf_res and (a.ue or a.ufrec or a.ksplit > 0)), "--uf_ro 는 --uf_res 판정 위"
         assert not a.ue_nl or (a.ue == "be" and a.ws_bar > 0), "--ue_nl 은 --ue be --ws_bar 위"
-        assert a.xit_from <= 0 or (a.uf_res and a.tolN >= 0 and a.newton > a.xit_from and a.ksplit == 0), "--xit_from 은 --uf_res 허용치 판, --newton > 이 값, 쪼개기 없이"
+        assert a.xit_from <= 0 or (a.uf_res and a.tolN >= 0 and a.newton > a.xit_from and (a.ksplit == 0 or a.ks_big)), "--xit_from 은 --uf_res 허용치 판, --newton > 이 값, 쪼개기 없이 (절 CM37 --ks_big 은 허용)"
         assert a.enrec <= 0 or (a.nrec and a.K == 1 and a.ksplit == 0), "--enrec 는 --nrec 위, K 1, 쪼개기 없이"
         assert not a.en_mo or (a.ws_bar > 0 and a.elx == "snh"), "--en_mo 는 --ws_bar --elx snh 위"
         WFD["en"] = dict(ro=bool(a.uf_ro), nl=bool(a.ue_nl), xf=int(a.xit_from), diag=a.enrec > 0, mo=bool(a.en_mo))
@@ -430,6 +432,13 @@ S.kcap = a.K
 if a.ksplit > 0:
     S.kcap = 1 << a.ksplit
     S.alloc(None)
+if a.ks_big:                                                                          # 절 CM37: 무너진 걸음만 쪼개기 (문턱 = 비트 32 와 같은 --ue_bigT)
+    assert a.ksplit > 0 and a.uf_res and a.tolN >= 0, "--ks_big 은 --ksplit·--uf_res 허용치 판 위"
+    S.ksbig = float(a.ue_bigT)
+if a.xg:                                                                              # 절 CM37: 나눈 그래프 (결과 불변)
+    assert a.xit_from > 0 and a.tolN >= 0, "--xg 는 --xit_from 허용치 판 위"
+    from anchorflow import fem_common3 as _C3
+    _C3.install(S, a.xg)
 if a.w2rec:                                                                           # 절 CM32 진단 버퍼
     from anchorflow import fem_wmfrac2 as _W2
     _W2.rec_alloc(S)
@@ -561,6 +570,8 @@ for fi in range(L):
         _g = S.mod.get_global("AF_L0N"); _a = AORT.ART.cp.ndarray((2,), dtype=AORT.ART.cp.int32, memptr=_g); c["l0"] = [int(q) for q in _a.get()]; _a[:] = 0
     if a.ksplit > 0:
         c["ks"] = dict(K=KF, tries=[list(q) for q in _ktr])
+    if a.xg:                                                                          # 절 CM37: 조건 구간 [건너뜀, 돎] (+ --xg 2 GPU ms [늘, 돈 조건, 건너뛸 조건])
+        c["xg"] = _C3.frame_stats(S)
     if a.wi or a.wi_rec:                                                             # 절 CM29 (결과 불변 읽기): 국소 필터 통계 (마지막 시도), 기록 프레임 요약
         from anchorflow import fem_wminv as _WI
         c["wi"] = dict(st=_WI.frame_stats(S))

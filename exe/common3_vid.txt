@@ -1,0 +1,4 @@
+# 절 CM37 영상: 후보 C (레고·wolf 결정적 덤프, 수박 셀 3 --sp2 31 덤프 판)
+L_C L --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --ksplit 3 --ks_big --xg 1
+W_C W --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --ksplit 3 --ks_big --xg 1
+M3_C M3 --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --ksplit 3 --ks_big --xg 1 --sp2 31

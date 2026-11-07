@@ -15,6 +15,7 @@ import torch
 
 from . import fem_an_rt_v0 as ART                                       # 가지 합침 (절 CM): 이 판은 implicit-bspline 716dfbb 의 fem_an_rt 그대로 (그 뒤 절 AN 변경과 분리 -- 비트 같음)
 from . import fem_det_rt as DET
+from . import fem_common3 as C3                                                 # 절 CM37 --xg·--ks_big (끄면 아무것도 안 함)
 
 P = ART.P
 from . import fem_nsd_diag as NSDM                                                  # noqa: E402  절 CM9.3 진단
@@ -1748,7 +1749,10 @@ class AORTSolver(DET.DetMixin):
             if ENW:
                 from . import fem_wmen as EN
                 EN.step0(s)
+            _xg = int(getattr(s, "xg", 0)) and int((ENW or {}).get("xf") or 0)     # 절 CM37 --xg: 나눈 그래프 경계 (끄면 0 -> 아무것도 안 함)
             for it in range(s.nt):
+                if _xg and it == _xg:
+                    C3.mark(s, "q")
                 s.ctl(2, it)
                 s.zf(s.f, 9, 3); s.zf(s.B, 9, 9)
                 s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(16)), b=1)
@@ -1782,6 +1786,8 @@ class AORTSolver(DET.DetMixin):
                     s.k("uf_g", 1, (P(s.SC), P(s.CD), P(s.ufg), i32(kstep)), b=1)
                 if ENW:                                                                # 절 CM33 (c): 덜 풀린 걸음만 반복 더 (아니면 나머지 반복 건너뜀)
                     EN.gate(s, kstep, it)
+                    if _xg and it == _xg:
+                        C3.mark(s, "g")
                 if NR:
                     s.NRct3[kstep * s.nt + it].copy_(s.CT); s.NRcd[kstep * s.nt + it].copy_(s.CD)
                 if s.warm and it == 0 and kstep > 0 and s.nl <= 1:                                      # PCG 첫 추정 = 앞 걸음 첫 뉴턴의 δ (프레임 첫 걸음은 0)
@@ -1861,6 +1867,8 @@ class AORTSolver(DET.DetMixin):
                     s.k("uf_min", 1, (P(s.SC), P(s.ufs), i32(kstep)), b=1)
                 if D_ is not None:                                                     # 뉴턴 it 끝
                     c_ = NSDM.code(kstep, it + 1, 1); D_.node(s.y, D_.mN, c_); D_.q(s.y, c_); D_.sc(c_)
+            if _xg:
+                C3.mark(s, "e")
             s.ctl(8)
             if s.ufj:                                                                      # 절 CM24: 걸음 끝 덜 풀림 판정 (허용치로 안 멈췄고 보폭 최소 < 1)
                 s.k("uf_end", 1, (P(s.CT), P(s.ufs), P(s.ufl), i32(kstep), i32(1 if s.adapt else 0), P(s.ufg), i32(1 if s.ufr else 0)), b=1)
@@ -2321,7 +2329,7 @@ def split_step(s, t, h, sub_dt, depth):
         set_K_ga(s, K, h, sub_dt)
         redo = s.step(t) or redo
         ms = float(s.last_ms)
-        nf = int(s.ufl[:K].sum())
+        nf = C3.nfail(s, s.ufl, s.ufg, K)                                               # 절 CM37 --ks_big: 무너진 걸음만 (끄면 덜 풀린 걸음 수 그대로)
         tries.append((K, nf, ms))
         tot += ms
         if nf == 0 or not math.isfinite(ms):
