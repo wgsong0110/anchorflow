@@ -21,7 +21,14 @@ def er(p):
     s = json.load(open(p))
     dv = s.get("diverged")
     e = s.get("err_mean") if s.get("err_mean") is not None else s.get("err_mean_done")
-    return f"오차 {100 * e:.2f}%" + (f" · 프레임 {dv} 에서 발산 (뒤는 정지)" if dv else ""), dv
+    t = f"오차 {100 * e:.2f}%"
+    q = os.path.join(os.path.dirname(p), "period.txt")
+    if os.environ.get("CMP_PERIOD") and os.path.exists(q):                      # 절 CM23 ficus: period.txt (exe/fem_p_period.py) 의 주기 비·진폭 비 (CMP_PERIOD=1 일 때만)
+        import re
+        m = re.findall(r"정답 대비 ([0-9.]+)\)[^\n]*?진폭 [0-9.]+ m \(비 ([0-9.]+)\)", open(q).read())
+        if m:
+            t += f" · 주기 비 {m[-1][0]} · 진폭 비 {m[-1][1]}"
+    return t + (f" · 프레임 {dv} 에서 발산 (뒤는 정지)" if dv else ""), dv
 
 
 def tf(name, text):
