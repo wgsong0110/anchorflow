@@ -154,6 +154,9 @@ ap.add_argument("--wrx_col", type=int, default=0, help="절 CM38: 0 모든 걸�
 ap.add_argument("--wrd", default="", help="절 CM38 진단 (결과 불변, lib/anchorflow/fem_wmrd.py): 이 프레임들 (1 부터, 예 3-30 또는 4,8) 을 그래프 밖 같은 커널 순서로 돌리며 뉴턴 반복마다 잔차 분해·PCG 상대 잔차·방향 크기·접선 일관성 -> wrd.jsonl")
 ap.add_argument("--wrd_fd", type=int, default=1, help="절 CM38: --wrd 에서 접선 차분 대조 (1) / 끔 (0)")
 ap.add_argument("--xg", type=int, default=0, help="절 CM37 (결과 불변, --xit_from 위, lib/anchorflow/fem_common3.py): 프레임 그래프를 걸음마다 반복 --xit_from 시작·판정 뒤·뉴턴 끝에서 나눠 캡처, 뒤 구간은 CT[0] = 0 (안 멈춤) 일 때만 재생 (1); 2 = 프로파일 (늘 재생, 건너뛸 구간 GPU 시간 따로); 0 = 끔 (그래프 그대로)")
+ap.add_argument("--wsh_rec", type=int, default=0, help="절 CM40 진단 (결과 불변, lib/anchorflow/fem_wmshape.py): 프레임마다 몸 모양·logJp·응력 통계, 이 프레임까지 가우스 점 통계 -> fem.jsonl wsh (0 = 끔)")
+ap.add_argument("--wsh_sv", default="", help="절 CM40 진단: 이 프레임들 (쉼표) 입자 위치·logJp float16 -> wsh/xs_*.npz")
+ap.add_argument("--wsh_pl", type=int, default=0, help="절 CM40 후보: 1 = 입자 logJp = 프레임 시작 값 + 가우스 점 증분 보간 (--fp_interp 위; 0 이면 모듈 안 부름)")
 a = ap.parse_args()
 if a.wrx:                                                                       # 절 CM38 후보 (소스 바꾸기는 모듈 만들기 전에)
     from anchorflow import fem_wmrx as WRX
@@ -161,6 +164,9 @@ if a.wrx:                                                                       
 if a.sp2:                                                                       # 절 CM36: 소스·커널 실행 감싸기 (끄면 안 부름)
     from anchorflow import fem_speed2 as SP2
     SP2.install(a.sp2)
+if a.wsh_pl:                                                                    # 절 CM40 후보 (소스·커널 열 감싸기, 끄면 안 부름)
+    from anchorflow import fem_wmshape as WSHM
+    WSHM.install_pl()
 if a.adaptK > 0:
     a.K = 8                                                                       # 버퍼·첫 캡처는 상한으로, 프레임마다 다시 정함
 dev = "cuda"
@@ -467,6 +473,10 @@ if a.wrd:                                                                       
         _q = [int(q) for q in _p.split("-")]
         WRD_F.update(range(_q[0], _q[-1] + 1))
     WRD = _WRD.Rec(S, os.path.join(a.out, "wrd.jsonl"), fd=bool(a.wrd_fd))
+WSH = None
+if a.wsh_rec:                                                                         # 절 CM40 진단 (읽기만)
+    from anchorflow import fem_wmshape as WSHM
+    WSH = WSHM.Rec(S, a.out, mu, lam, float(PRD["xi"]), d["x"][0], a.wsh_rec, a.wsh_sv)
 errs, ms = [], []
 ITS = []
 div_at = None
@@ -641,6 +651,8 @@ for fi in range(L):
             c["enb"] = ENC.frame(fi + 1)
         except Exception as _ex:
             import traceback; traceback.print_exc(); c["enb"] = dict(err=repr(_ex))
+    if WSH is not None:                                                               # 절 CM40 진단 (읽기만)
+        c["wsh"] = WSH.frame(fi)
     if a.diag:
         c["diag"] = S.diag()
     if "it" in c:
