@@ -26,15 +26,41 @@ A2N = A2 + ("    if (AF_WRXON && (AF_WRXB & 2) && floor_) {                     
             "    }\n")
 
 
+KNAMES = ("ao_floor_n", "rt_floor_n", "mt_floor_n")                                 # 옛 실행기 (수박)·새 실행기 탄성·재질 판 바닥 노드 커널 (같은 식)
+A1G = "    float s = sqrtf(k);\n"
+A1GN = A1G + "    if (AF_WRXON && (AF_WRXB & 1) && s < AF_SKC) s = 0.f;                                  // 절 CM38 후보 1: 고착 상한\n"
+
+
 def apply(src):
-    i = src.index("__global__ void ao_floor_n")                                         # ao_floor_n 몸통 안에서만 바꿈
-    j = src.index("__global__", i + 10)
-    body = src[i:j]
-    assert body.count(A1) == 1 and body.count(A2) == 1, "--wrx: ao_floor_n 글자가 바뀜"
-    return src[:i] + HEAD + body.replace(A1, A1N, 1).replace(A2, A2N, 1) + src[j:]
+    """있는 바닥 노드 커널 몸통마다 같은 두 곳을 바꿈 (전역 선언은 첫 커널 앞 한 번)."""
+    out, pos, head = [], 0, False
+    for nm in KNAMES:
+        key = "__global__ void " + nm + "("
+        if key not in src:
+            continue
+        i = src.index(key)
+        j = src.index("__global__", i + 10)
+        body = src[i:j]
+        assert body.count(A1G) == 1 and body.count(A2) == 1, f"--wrx: {nm} 글자가 바뀜"
+        src = src[:i] + ("" if head else HEAD) + body.replace(A1G, A1GN, 1).replace(A2, A2N, 1) + src[j:]
+        head = True
+    assert head, "--wrx: 바닥 노드 커널 없음"
+    return src
 
 
-def install():
+def install(new=False):
+    """옛 실행기: fem_ao_rt._src 감쌈. new=True: 새 실행기 fem_an_rt.build_src 감쌈 (fem_mat_rt 도 같은 함수를 부름)."""
+    if new:
+        from . import fem_an_rt as ART
+        if getattr(ART, "_wrx_on", False):
+            return
+        ART._wrx_on = True
+        o_b = ART.build_src
+
+        def build_src(*a, **kw):
+            return apply(o_b(*a, **kw))
+        ART.build_src = build_src
+        return
     from . import fem_ao_rt as AORT
     if getattr(AORT, "_wrx_on", False):
         return
@@ -47,36 +73,38 @@ def install():
 
 
 def _set(s, name, val, dt):
-    from . import fem_ao_rt as AORT
+    from . import fem_an_rt as ART
     g = s.mod.get_global(name)
-    AORT.ART.cp.ndarray((1,), dtype=dt, memptr=g)[0] = val
+    ART.cp.ndarray((1,), dtype=dt, memptr=g)[0] = val
 
 
 def setup(s, bits, skc):
-    from . import fem_ao_rt as AORT
+    from . import fem_an_rt as ART
     s.wrx = dict(bits=int(bits), skc=float(skc))
-    _set(s, "AF_WRXB", int(bits), AORT.ART.cp.int32)
-    _set(s, "AF_SKC", float(skc), AORT.ART.cp.float32)
+    _set(s, "AF_WRXB", int(bits), ART.cp.int32)
+    _set(s, "AF_SKC", float(skc), ART.cp.float32)
 
 
 def on(s, v):
-    from . import fem_ao_rt as AORT
-    _set(s, "AF_WRXON", int(v), AORT.ART.cp.int32)
+    from . import fem_an_rt as ART
+    _set(s, "AF_WRXON", int(v), ART.cp.int32)
 
 
-def split_col(s, t, h, sub_dt, depth):
+def split_col(s, t, h, sub_dt, depth, fn=None):
     """무너진 프레임만 켬: 끈 채 K 1 -> (무너진 걸음 있으면) 되돌리고 켠 채 split_step (K 1 부터 2^depth 까지). 돌려줌: (다시 했는지, K, 시도 목록 [(K, 무너진 걸음, ms, 켬)])."""
-    from . import fem_ao_rt as AORT
+    if fn is None:                                                                     # 옛 실행기 split_step (t, h, sub_dt, depth); 새 실행기는 fn = lambda d: ART.split_step(s, t, h, d)
+        from . import fem_ao_rt as AORT
+        fn = lambda d: AORT.split_step(s, t, h, sub_dt, d)
     bk = s._bk()
     on(s, 0)
-    r0, K0, tr0 = AORT.split_step(s, t, h, sub_dt, 0)
+    r0, K0, tr0 = fn(0)
     tries = [(a, b, c, 0) for (a, b, c) in tr0]
     if tr0[-1][1] == 0 or not math.isfinite(tr0[-1][2]):
         return r0, K0, tries
     tot0 = sum(q[2] for q in tr0)
     s._rs(bk)
     on(s, 1)
-    r1, K1, tr1 = AORT.split_step(s, t, h, sub_dt, depth)
+    r1, K1, tr1 = fn(depth)
     on(s, 0)
     tries += [(a, b, c, 1) for (a, b, c) in tr1]
     s.last_ms = tot0 + float(s.last_ms)

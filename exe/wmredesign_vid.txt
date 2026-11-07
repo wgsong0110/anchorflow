@@ -1,0 +1,2 @@
+# 절 CM38 영상: 가장 좋은 후보 X3c (수박 셀 3 --sp2 31 덤프 판, 손상 색)
+M3_X3c M3 --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --ksplit 3 --ks_big --xg 1 --sp2 31 --wrx 3 --wrx_col 1

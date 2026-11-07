@@ -129,7 +129,13 @@ ap.add_argument("--pbc_phi", action="store_true", help="절 CM27 (e) (정의 변
 ap.add_argument("--ks_big", action="store_true", help="절 CM37 (조정자 결정 11-08 정의 변경, --ksplit 위, lib/anchorflow/fem_common3.py): 쪼개기 판정을 '덜 풀린 걸음 중 걸음 끝 잔차 비 ‖g‖²/F² > --ue_bigT (비트 32 와 같은 판정, 비유한 포함)' 인 걸음이 있을 때만으로 (끄면 판정 그대로)")
 ap.add_argument("--xg", type=int, default=0, help="절 CM37 (결과 불변, --xit_from 위, lib/anchorflow/fem_common3.py): 프레임 그래프를 걸음마다 반복 --xit_from 시작·판정 뒤·뉴턴 끝에서 나눠 캡처, 뒤 구간은 CT[0] = 0 (안 멈춤) 일 때만 재생 (1); 2 = 프로파일 (늘 재생, 건너뛸 구간 GPU 시간 따로); 0 = 끔 (그래프 그대로)")
 ap.add_argument("--bar_nostep", action="store_true", help="절 CM25 대조 (진단 전용 정의 변경, 기본 판 아님): 선탐색 없는 장벽 판 (재질) 의 뉴턴 보폭 장벽 실현 가능 자름 (rt_bar_kfe) 끔 -- 보폭 1")
+ap.add_argument("--wrx", type=int, default=0, help="절 CM38 재설계 후보 비트 (lib/anchorflow/fem_wmrx.py; 0 이면 안 부름): 1 고착 상한, 2 속도 수준 접촉 -- 바닥 노드 커널 rt_floor_n·mt_floor_n")
+ap.add_argument("--wrx_skc", type=float, default=1e-2, help="절 CM38 후보 1 문턱")
+ap.add_argument("--wrx_col", type=int, default=0, help="절 CM38: 0 모든 걸음, 1 무너진 프레임만 (--ksplit --ks_big 위)")
 a = ap.parse_args()
+if a.wrx:                                                                             # 절 CM38: 소스 바꾸기는 모듈 만들기 전에
+    from anchorflow import fem_wmrx as WRX
+    WRX.install(new=True)
 assert a.xit_from <= 0 or (a.uf_res and a.ue and a.tolN >= 0 and a.newton > a.xit_from and (a.ksplit == 0 or a.ks_big)), "--xit_from 은 --ue·--uf_res 허용치 판, --newton > 이 값, 쪼개기 없이 (절 CM37 --ks_big 은 허용)"   # 절 CM35
 assert not a.en_mo or a.ls_n > 0, "--en_mo (새 실행기) 는 --ls_n 선탐색 판만 (선탐색이 (d) 를 이미 함)"                                          # 절 CM35
 assert a.ue_dil <= 0 or a.ue_loc, "--ue_dil 은 --ue_loc 위"
@@ -295,6 +301,9 @@ S = SOLVER(X0, d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float
 if a.bar_nostep:
     assert getattr(S, "bar", False) and not S.ls, "--bar_nostep 은 선탐색 없는 장벽 판 (재질) 만"
     S.nobk = True
+if a.wrx:                                                                             # 절 CM38 후보 장치 전역 (col 이면 처음 0)
+    WRX.setup(S, a.wrx, a.wrx_skc); WRX.on(S, 0 if a.wrx_col else 1)
+_split = (lambda t_: WRX.split_col(S, t_, h, None, a.ksplit, fn=lambda d_: ART.split_step(S, t_, h, d_))) if (a.wrx and a.wrx_col) else (lambda t_: ART.split_step(S, t_, h, a.ksplit))
 if a.ksplit > 0:                                                                      # 절 CM24 (1b): 버퍼는 걸음 수 상한 2^ksplit 으로, K 1 로 시작
     assert a.K == 1 and not a.K_contact and not a.pk and a.ga, "--ksplit 은 K 1, --K_contact·--pk 없이, HHT·GA 판만"
     S.kcap = 1 << a.ksplit
@@ -326,7 +335,7 @@ for fi in range(L):
     if a.dump_part:                                                                    # 메모리 부족 = 그 프레임에서 멈춤 (발산 쪽으로 기록, 덤프는 앞 프레임까지)
         try:
             if a.ksplit > 0:                                                           # 절 CM37: 덤프 판도 쪼개기 경로 그대로
-                redo, _KF, _ktr = ART.split_step(S, fi * h, h, a.ksplit)
+                redo, _KF, _ktr = _split(fi * h)
             else:
                 redo = S.step(fi * h)
         except torch.OutOfMemoryError as _ex:
@@ -334,7 +343,7 @@ for fi in range(L):
             print(f"[발산] 프레임 {div_at} (GPU 메모리 부족 -- 용량 늘려 다시 중)", flush=True)
             break
     elif a.ksplit > 0:                                                                 # 절 CM24 (1b): 시간 = 모든 시도의 재생 GPU 시간 합
-        redo, _KF, _ktr = ART.split_step(S, fi * h, h, a.ksplit)
+        redo, _KF, _ktr = _split(fi * h)
     else:
         redo = S.step(fi * h)
     gt = d["x"][fi + 1].to(dev).float()
