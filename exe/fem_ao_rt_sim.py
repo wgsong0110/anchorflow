@@ -134,6 +134,8 @@ ap.add_argument("--gq_oct", type=float, default=-1.0, help="절 CM30 (a) (조정
 ap.add_argument("--gq_ored", action="store_true", help="절 CM30 (a) 재분배 판: 빈 팔분 점 0, 칸 합을 입자 있는 팔분 점에 똑같이 (운동량도), 입자 보간에서 빈 팔분 점 뺌")
 ap.add_argument("--ws_bar", type=int, default=0, help="절 CM30 (b): 장벽 실현 가능 보폭 국소화 -- 관통할 표본점이 걸친 노드만 자름 (뒤집힘 필터는 원래 전역), 확인 라운드 이 수 (어기면 원래 전역 보폭); 0 = 끔")
 ap.add_argument("--wi_rec", type=str, default="", help="절 CM29 진단 (결과 불변): 원래 필터가 거는 가우스 점 기록할 프레임 (예 3,4,5; 1 부터) -> fem.jsonl wi·wi_rec_f<프레임>.npz")
+ap.add_argument("--ws_fi", action="store_true", help="절 CM32 (조정자 결정 11-08 정의 변경, --ws_bar 위): 뒤집힘 필터도 노드별 국소 (절 CM29 (a)) -- 노드 보폭 시작 0, 필터·장벽 확인 라운드 --ws_bar + 1, 어기면 원래 전역 보폭. lib/anchorflow/fem_wmfrac2.py")
+ap.add_argument("--w2rec", action="store_true", help="절 CM32 진단 (결과 불변, --ws_bar 위): 시도 (K 1·2·4·8) 마다 뉴턴 반복별 전역 필터 kg·전역 장벽 kb·노드 k 최대·라운드별 어긴 표본점·가우스 점 수 -> fem.jsonl w2")
 ap.add_argument("--ks_it", type=str, default="", help="절 CM28 (e): --ksplit 쪼갠 시도 (K > 1) 의 뉴턴,PCG 상한 (예 8,20; 빈 값 = 기본 그대로)")
 a = ap.parse_args()
 if a.adaptK > 0:
@@ -286,6 +288,9 @@ if MATK is not None:                                                            
         assert MATK == 7 and WBAR is not None and a.gq_mass and not a.det, "절 CM30 은 수박 --gq_mass --fl_bar 비결정 판"
         assert a.ws_bar == 0 or a.ls_inv, "--ws_bar 는 --ls_inv 위 (필터는 전역 그대로, 장벽만 국소로)"
         WFD["ws"] = dict(oct=(float(a.gq_oct) if a.gq_oct >= 0 else None), red=bool(a.gq_ored), bar=int(a.ws_bar))
+        if a.ws_fi or a.w2rec:                                                        # 절 CM32 (끄면 키 없음 -- 그대로)
+            assert a.ws_bar > 0, "--ws_fi·--w2rec 는 --ws_bar 위"
+            WFD["ws"].update(fi=bool(a.ws_fi), rec=bool(a.w2rec))
         print(f"[절 CM30] {WFD['ws']}", flush=True)
     DMGI = None
     if a.dmg:                                                                         # 절 CM19: 손상 매개변수를 GF 수박 재질에서 유도 (정답 궤적에 맞추지 않음)
@@ -396,6 +401,9 @@ S.kcap = a.K
 if a.ksplit > 0:
     S.kcap = 1 << a.ksplit
     S.alloc(None)
+if a.w2rec:                                                                           # 절 CM32 진단 버퍼
+    from anchorflow import fem_wmfrac2 as _W2
+    _W2.rec_alloc(S)
 CELL = float(lat.A[:, 0].norm())
 print(f"[절 AO 실시간 판] 적응 걸음 수 c {a.adaptK} 상한 {a.kmax}, 칸 {CELL:.4f} m")
 print(f"[절 AO 실시간 판] 모래 {SAND} 구속 {a.pbc} 빈 노드 문턱 {MTHR:.3e} (mlow {a.mlow})", flush=True)
@@ -534,6 +542,9 @@ for fi in range(L):
     if a.ws_bar > 0:                                                                  # 절 CM30 (b) (결과 불변 읽기): 마지막 시도 통계
         from anchorflow import fem_wmsparse as _WS
         c["ws"] = dict(st=_WS.frame_stats(S))
+        if a.w2rec:                                                                   # 절 CM32 진단: 이 프레임 모든 시도
+            from anchorflow import fem_wmfrac2 as _W2
+            c["w2"] = _W2.frame_rec(S, _ktr if a.ksplit > 0 else [(KF, None, None)])
     if a.erec and int(S.IP[13]) == 0:                                                # 절 CM24 (결과 불변, 읽기만): 입자 에너지·질량중심
         from anchorflow import fem_wmkick_diag as _FRD
         _mp = S.m.double(); _xp = S.x.double(); _vp = S.v.double(); _ok2 = torch.isfinite(_xp).all(-1) & torch.isfinite(_vp).all(-1)

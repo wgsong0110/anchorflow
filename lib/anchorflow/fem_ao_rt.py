@@ -1811,8 +1811,8 @@ class AORTSolver(DET.DetMixin):
                     WI.newton(s, s.K, kstep, it, capN, capQ, nr, thv, WB, NR, None)
                 WSB = bool(s.wf.get("ws", {}).get("bar"))                                # 절 CM30 (b): 노드별 장벽 보폭이 원래 장벽 보폭·갱신을 대신함 (필터는 원래 전역 그대로)
                 if WSB:
-                    from . import fem_wmsparse as WS
-                    WS.newton(s, kstep, it, capN, capQ, nr, thv, WB, NR)
+                    from . import fem_wmsparse as WS, fem_wmfrac2 as W2              # 절 CM32: 필터도 국소 (fi)·시도별 기록 (rec) 이면 W2 (없으면 그대로)
+                    (W2.newton if W2.on(s) else WS.newton)(s, kstep, it, capN, capQ, nr, thv, WB, NR)
                 if WB is not None and not WIN and not WSB:                                         # 절 CM21 = 절 CM2 재질 판 장벽 보폭: 온 걸음 후보에서 활성 표본점 d > 0 인 최대 2^-k, 뒤집힘 필터 보폭과 작은 쪽
                     s.k("rt_ytry", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.wbyc)), b=256)
                     s.zf(s.kk)
