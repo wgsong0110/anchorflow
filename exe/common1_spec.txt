@@ -302,3 +302,35 @@ s3 zL_A1k L z --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
 s3 zW_A1k W z --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
 s3 zL_A2k L z --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
 s3 zW_A2k W z --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+# s4: 공통 세팅 후보 A2k = --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep -- wolf 비결정 10 더, 레고 비결정 10 더, ficus·bread 결정적 off·판 + 단독 시간 (수박은 옛 실행기에 --ue_loc·--ls0_keep 없음 -> 따로)
+s4 W_A2k_n3 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 W_A2k_n4 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 W_A2k_n5 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 W_A2k_n6 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 W_A2k_n7 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 W_A2k_n8 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 W_A2k_n9 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 W_A2k_n10 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 W_A2k_n11 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 W_A2k_n12 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 L_A2k_n11 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 L_A2k_n12 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 L_A2k_n13 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 L_A2k_n14 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 L_A2k_n15 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 L_A2k_n16 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 L_A2k_n17 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 L_A2k_n18 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 L_A2k_n19 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 L_A2k_n20 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 F_off F d
+s4 F_A2k F d --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 B_off B d
+s4 B_A2k B d --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 zF_off F z
+s4 zF_A2k F z --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 zB_off B z
+s4 zB_A2k B z --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 zW_A2k2 W z --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 zL_A2k2 L z --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s4 zW_d2 W z --y0loc 3 --ue be --uf_res

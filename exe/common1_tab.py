@@ -27,9 +27,14 @@ def summ(n):
     return json.load(open(p)) if os.path.exists(p) else None
 
 
-def err(r, s):
+def oom(n):
+    p = os.path.join(O, n, "log.txt")
+    return os.path.exists(p) and "OutOfMemoryError" in open(p, errors="replace").read()
+
+
+def err(r, s, n=None):
     if s is None:
-        return None, None
+        return (None, "메모리") if (n and oom(n)) else (None, None)
     e = s.get("err_mean_done", s.get("err_mean"))
     return (e * 100 if e is not None else None), s.get("diverged")
 
@@ -96,21 +101,21 @@ for sc, title in (("L", "레고 (80 프레임; 정답 질량중심 z f10 · f31 
     print("|---|---|---|---|---|---|---|---|---|")
     for b, v in rows:
         r = rd(v["d"]) if v["d"] else None
-        e, dv = err(r, summ(v["d"])) if v["d"] else (None, None)
-        ed = "-" if e is None else (f"{e:.2f}" + (f" (발산 f{dv})" if dv else ""))
+        e, dv = err(r, summ(v["d"]), v["d"]) if v["d"] else (None, None)
+        ed = ("발산 (메모리 폭증)" if dv == "메모리" else "-") if e is None else (f"{e:.2f}" + (f" (발산 f{dv})" if dv else ""))
         if sc == "L":
             cz = " · ".join(fmt(com(r, t)[0], 0) for t in (9, 30, 42))
         else:
             cz = " · ".join(fmt(com(r, t)[0], 1) for t in (29, 49))
-        ne = [(err(None, summ(n))) for n in v["n"]]
+        ne = [(err(None, summ(n), n)) for n in v["n"]]
         ok = [x for x, d in ne if x is not None and not d and math.isfinite(x)]
         ndv = [d for x, d in ne if d]
-        nd = "-" if not ne else (f"{sum(ok) / len(ok):.2f} [{min(ok):.2f}~{max(ok):.2f}] ({len(ne)}, {len(ndv)}{(' f' + ','.join(str(q) for q in ndv)) if ndv else ''})" if ok else f"- ({len(ne)}, {len(ndv)})")
+        nd = "-" if not ne else (f"{sum(ok) / len(ok):.2f} [{min(ok):.2f}~{max(ok):.2f}] ({len(ne)}, {len(ndv)}{(' ' + ','.join(('f' + str(q)) if q != '메모리' else '메모리 폭증' for q in ndv)) if ndv else ''})" if ok else f"- ({len(ne)}, {len(ndv)})")
         zz = []
         for z in v["z"]:
             zr = rd(z); zs = summ(z)
             if zs is None:
-                zz.append("-"); continue
+                zz.append("발산 (메모리 폭증)" if oom(z) else "-"); continue
             a_, m_ = ms(zr)
             zz.append(f"{fmt(a_)}/{fmt(m_)}" + (f" (발산 f{zs.get('diverged')})" if zs.get("diverged") else ""))
         print(f"| {b} | `{v['fl'] or '-'}` | {ed} | {fmt(nuf(r), 0) if r else '-'} | {fdiff(r, refL if sc == 'L' else refW) if r else '-'} | {cz} | {ksf(r) if r and ksf(r) is not None else '-'} | {nd} | {' · '.join(zz) if zz else '-'} |")
