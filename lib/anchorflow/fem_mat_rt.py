@@ -123,7 +123,7 @@ __global__ void mt_pbc_kphi(const int* IP, const float* mn, const float* acc, in
     float x = -lk*expo, r;
     if (!(x > 0.f)) r = 1.f;
     else if (x < 1e-3f) r = 1.f - x/3.f + x*x/12.f;
-    else if (x == INFINITY) r = 0.f;
+    else if (isinf(x)) r = 0.f;
     else r = 2.f*(x - 1.f + expf(-x))/(x*x);
     kb[n] = r;
 }

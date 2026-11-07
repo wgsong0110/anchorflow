@@ -268,8 +268,7 @@ if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                     
             VISC = float(cfg["density"]) * _r * (2 - _r) * DXG ** 2 / (16.0 * float(cfg["substep_dt"]))
         MATX = dict(mat=_mat, prm=PRM, visc=VISC, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if _mat == 7 else 0.0))
     MATX.update(trel=TREL, pvb=PVB, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, vfill=not a.no_vfill, det=a.det)
-    if a.pbc_phi:                                                                      # 절 CM27 (e)
-        assert TREL is not None, "--pbc_phi 는 순차 방출 구속 씬만"
+    if a.pbc_phi and TREL is not None:                                                 # 절 CM27 (e) (순차 방출 구속 없는 씬은 할 일 없음 -- 같은 플래그를 모든 씬에)
         MATX["pbc_phi"] = True
     SOLVER = MRT.MatRT
     a.ls = 0                                                                           # 재질 판: 퍼텐셜 없음 -> 에너지 선탐색 없음 (절 AO.0; 장벽이면 실현 가능 보폭만)
