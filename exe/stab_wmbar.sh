@@ -35,7 +35,11 @@ claim_wait() { local g; while :; do g=$(claim $1) && { echo $g; return; }; sleep
 log() { echo "[$(date '+%F %T')] $*" >> $O/wmbar.log; }
 run() {    # run 판 이름 카드 [frames]
   local r=$1 n=$2 g=$3 nf=${4:-} c
-  [ -f $O/$n/summary.json ] && return
+  if pgrep -f -- "--out $O/$n\$" > /dev/null || pgrep -f -- "--out $O/$n " > /dev/null; then   # 묶음을 다시 띄울 때 (사용자 판단 11-07): 앞 묶음이 띄운 그 판 프로세스가 살아 있으면 끝날 때까지 기다려 받음
+    log "$n 앞 묶음 프로세스 기다림"; while pgrep -f -- "--out $O/$n" > /dev/null; do sleep 20; done
+    [ -s $O/$n/lj.pt ] && [ -s $O/$n/pred.pt ] && $PY exe/wmdmg_stats.py --run $O/$n > $O/$n/dmg_stats.log 2>&1
+    log "$n (앞 묶음) $(grep -ah '롤아웃\]' $O/$n/log.txt | tail -1 | cut -c1-200) $(tail -1 $O/$n/dmg_stats.log 2>/dev/null | cut -c1-160)"; up $n; return; fi
+  [ -f $O/$n/summary.json ] && { [ -s $O/$n/pred.pt ] && { [ -s $O/$n/dmg_stats.json ] || $PY exe/wmdmg_stats.py --run $O/$n > $O/$n/dmg_stats.log 2>&1; up $n; }; return; }
   c="$WMC $(add_of $r) $(dg_of $r)"; [ -n "$nf" ] && c=$(echo "$c" | sed "s/--frames 100/--frames $nf/")
   rm -rf $O/$n; mkdir -p $O/$n
   echo "$PY -u exe/fem_ao_rt_sim.py $c --tag wm --out $O/$n" > $O/$n/cmd.txt
@@ -63,7 +67,8 @@ lane() { local me=$BASHPID i ln g
   while :; do
     i=$(flock $O/qpos.lock bash -c "i=\$(cat $O/qpos); echo \$((i + 1)) > $O/qpos; echo \$i")
     ln=$(sed -n "$((i + 1))p" $Q); [ -n "$ln" ] || break
-    set -- $ln; [ -f $O/$2/summary.json ] && continue
+    set -- $ln
+    if [ -f $O/$2/summary.json ] || pgrep -f -- "--out $O/$2" > /dev/null; then run $1 $2 -; continue; fi   # 끝났거나 앞 묶음 프로세스가 도는 판: 카드 안 잡고 받기만
     g=$(claim_wait $me); run $1 $2 $g; rm -f $CL/$g
   done; }
 for k in $(seq 1 $NL); do lane & sleep 3; done
