@@ -115,6 +115,8 @@ ap.add_argument("--ksplit", type=int, default=0, help="절 CM24 (1b, 사용자 �
 ap.add_argument("--uf_res", action="store_true", help="절 CM24 판정 2: 덜 풀린 걸음 = 허용치 미달 & (보폭 < 1 또는 마지막으로 돈 뉴턴 반복 시작 ‖g‖ > F) (끄면 보폭 < 1 만)")
 ap.add_argument("--ue", choices=["", "be", "a0", "beall"], default="", help="절 CM24 (2)·(3) (사용자 승인 정의 변경, HHT 판): 덜 풀린 걸음 (판정 커널) 의 걸음 끝 갱신 -- be 후퇴 오일러 (U1 = y, v1 = (y − U)/h, 가속도 기억 0), a0 가속도 기억만 0, beall 모든 걸음 후퇴 오일러 갱신")
 ap.add_argument("--ufrec", action="store_true", help="절 CM24 진단 (결과 불변): 판정 커널만 켜고 걸음별 덜 풀림을 fem.jsonl uf 에")
+ap.add_argument("--nrec", action="store_true", help="절 CM25 진단 (결과 불변, lib/anchorflow/fem_wolfwhy_diag.py): 걸음마다 시작점 실현 가능 k0·고른 k, 뉴턴 반복별 ‖g‖/F·멈춤·PCG 반복·상한·보폭 (자른 주체), 걸음 끝 ‖g‖/F (다시 잼, 버퍼 되돌림)·장벽 노드 기울기 합을 fem.jsonl nr 에")
+ap.add_argument("--bar_nostep", action="store_true", help="절 CM25 대조 (진단 전용 정의 변경, 기본 판 아님): 선탐색 없는 장벽 판 (재질) 의 뉴턴 보폭 장벽 실현 가능 자름 (rt_bar_kfe) 끔 -- 보폭 1")
 a = ap.parse_args()
 dev = "cuda"
 RTC.RAWPTR[0] = True
@@ -263,8 +265,12 @@ if MATNAME in ("sand", "foam", "plasticine", "watermelon"):                     
     SOLVER = MRT.MatRT
     a.ls = 0                                                                           # 재질 판: 퍼텐셜 없음 -> 에너지 선탐색 없음 (절 AO.0; 장벽이면 실현 가능 보폭만)
     print(f"[절 CM2 재질 판] {MATNAME} {MATX.get('mat')} 구속 {TREL is not None} 구속 속도 {PVB is not None} 빈 노드 문턱 {MTHR:.3e} 점성 {MATX.get('visc', 0.0)}", flush=True)
+ART.WW.ON[0] = bool(a.nrec)                                                          # 절 CM25: 버퍼는 alloc 에서
 S = SOLVER(X0, d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent, ls_n=a.ls_n, scheme=a.scheme, theta=a.theta, mfloor=a.mfloor, K_contact=a.K_contact or None, gfin=a.gfin, fuse2=not a.no_fuse2, mg_wreuse=a.mg_wreuse, mg_lreuse=a.mg_lreuse, mg_csolve=a.mg_csolve, ga=a.ga, rho=a.rho, areset=not a.no_areset, tolN=a.tolN, tolP=a.tolP, goct=a.gq_oct, pk=a.pk, pk_loc=a.pk_loc, pkb=a.pkb, pkminb=a.pkminb, mv2=a.mv2, mg_occ=a.mg_occ, mg_fuse=a.mg_fuse, y0ls=a.y0ls, lsfast=a.lsfast, mgbar=a.mgbar, cg_list=a.cg_list, fk=a.fk, y0ut=a.ga_y0ut, y0eb=a.y0eb, hspec=a.hspec, ncomp=a.ncomp, cap_mul=a.cap_mul, gqm=a.gq_mass, cj=(dict(judge=True, res=a.uf_res, ue=a.ue) if (a.ksplit > 0 or a.ufrec or a.ue) else None), **({"fpi": True} if a.fp_interp else {}), **({"wd": True, "wdcap": a.wdiag_cap} if a.wdiag >= 0 else {}), **MATX, **SNHX)
+if a.bar_nostep:
+    assert getattr(S, "bar", False) and not S.ls, "--bar_nostep 은 선탐색 없는 장벽 판 (재질) 만"
+    S.nobk = True
 if a.ksplit > 0:                                                                      # 절 CM24 (1b): 버퍼는 걸음 수 상한 2^ksplit 으로, K 1 로 시작
     assert a.K == 1 and not a.K_contact and not a.pk and a.ga, "--ksplit 은 K 1, --K_contact·--pk 없이, HHT·GA 판만"
     S.kcap = 1 << a.ksplit
@@ -344,6 +350,8 @@ for fi in range(L):
         c["y0k"] = S.Y0K[:S.nstage, 0].cpu().tolist()
         if not S.ls:                                                                   # 절 CM6 진단: 선탐색 없는 장벽 판 (재질) 뉴턴 반복별 보폭 k (상한까지 펼친 자리; 허용치로 건너뛴 반복은 앞 값)
             c["bk"] = S.BSK[:S.nstage * S.nt, 0].cpu().tolist()
+    if a.nrec:                                                                         # 절 CM25 진단 (결과 불변)
+        c["nr"] = ART.WW.frame(S, a.tolN)
     if a.pdiag:                                                                        # 절 S.8 진단 (결과 불변, 상태 안 바꿈)
         _Fo = torch.empty_like(S.F); _Fo[S.perm] = S.F
         _J = torch.linalg.det(_Fo.reshape(-1, 3, 3).double())

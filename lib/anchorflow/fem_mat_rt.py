@@ -176,6 +176,7 @@ class MatRT(ADET.DetMixin):
         if getattr(s, "ao_ready", False):
             s.det_bind()
             s.mat_bind()
+        ART.WW.alloc(s)                                                                # 절 CM25 진단 --nrec: 재질 버퍼 (H30) 까지 사본 (ON 일 때만)
 
     def mat_bind(s):
         for nm, t in (("AO_ACT", s.act), ("AQ_DBG", None)):

@@ -12,6 +12,7 @@ import torch
 
 from . import fem_rt_cuda as RTC
 from . import fem_an_mg2 as MG2
+from . import fem_wolfwhy_diag as WW                                            # 절 CM25 진단 --nrec (결과 불변)
 
 SRC = r'''
 #define NQ8 8
@@ -2669,6 +2670,7 @@ class RTSolver(MG2.MG2Mixin):
             s.pk_scr = torch.zeros(s.N * 9, device=dev, dtype=torch.float32)
         s.graph = None
         s.oct_bind()
+        WW.alloc(s)                                                                    # 절 CM25 진단 --nrec (WW.ON 일 때만 버퍼)
 
     def _mods(s):
         return [s.mod] + ([s.pkmod] if s.pkmod is not None else [])
@@ -3014,6 +3016,7 @@ class RTSolver(MG2.MG2Mixin):
                     s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)))
                     if s.bnode:
                         s.k("rt_barn_kfe", capN, (P(IP), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)), b=256)
+                    WW.y0f(s, kstep)                                                   # 절 CM25 진단: 실현 가능 k0 (--y0eb 전)
                     if s.y0eb:                                                         # 절 CM8 (B): 실현 가능 k 에서 더 줄여 장벽 에너지 ≤ 걸음 시작 (U) 의 장벽 에너지인 가장 큰 2^-k
                         s.k("rt_sc_clear", 1, (P(s.SC), i32(0), i32(60)), b=1)
                         s.k("rt_bar_y0e", capQ, (P(IP), P(s.cb), P(s.BW), P(s.Vq), P(s.y), P(s.ySv), P(s.U), f(sg["thinv"]), *BA, P(s.kk), P(s.SC), i32(59)))
@@ -3092,6 +3095,7 @@ class RTSolver(MG2.MG2Mixin):
                     s.k("rt_fup", capN, FUA(1), b=256)
                 s.k("rt_grad", capN, (P(IP), P(s.meff), it2, P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.eta), P(s.f), P(s.B), P(s.Dinv), P(s.r), P(s.z), P(s.p), P(s.dl), P(s.Tp), P(s.SC), P(s.g0buf)), b=256)
                 s.ctl(3, it)
+                WW.ct(s, kstep, it, 0)                                                 # 절 CM25 진단: 제어 카운터 사본
                 if s.cjj and s.cjr and s.adapt:                                        # 절 CM24 판정 2: 이 반복 시작 ‖g‖²/F² (멈춘 반복은 AF_SKIP)
                     s.k("cj_g", 1, (P(s.SC), P(s.CD), P(s.cjg), i32(kstep)), b=1)
                 if WD:
@@ -3137,6 +3141,7 @@ class RTSolver(MG2.MG2Mixin):
                     s.k("rt_sc_roll", 1, (P(s.SC),), b=1)
                     s.ctl(6, ci)
                 s.ctl(7, it)
+                WW.ct(s, kstep, it, 1)
                 if WD:
                     s.dcopy(s.WCT[2 * (kstep * s.nt + it) + 1], s.CT); s.dcopy(s.WCD[2 * (kstep * s.nt + it) + 1], s.CD)
                 # 선탐색: 기울기 곱 g·δ = −r0·δ (r0 = rt_grad 가 남긴 처음 잔차)
@@ -3192,7 +3197,8 @@ class RTSolver(MG2.MG2Mixin):
                 if fbar:
                     s.k("rt_ytry", capN, (P(IP), P(s.sk), P(s.pm), *[f(q) for q in nr], P(s.yh), P(s.eta), P(s.dl), P(s.yc)), b=256)
                     s.zf(s.kk)
-                    s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.yc), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)))
+                    if not getattr(s, "nobk", False):                                  # 절 CM25 대조 (진단 전용 --bar_nostep): 장벽 실현 가능 보폭 자름 끔 (보폭 1)
+                        s.k("rt_bar_kfe", capQ, (P(IP), P(s.cb), P(s.BW), P(s.y), P(s.yc), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)))
                     if s.bnode:                                                        # 절 CM14: 노드도 d > 0 유지
                         s.k("rt_barn_kfe", capN, (P(IP), P(s.y), P(s.yc), P(s.U), f(sg["thinv"]), *[f(q) for q in nr], f(FL["PN"]), P(s.kk)), b=256)
                     s.k("rt_kstep", 1, (P(s.kk), P(s.SC)), b=1)
@@ -3207,6 +3213,7 @@ class RTSolver(MG2.MG2Mixin):
                 if WD:
                     s.dcopy(s.WY[kstep * s.nt + it], s.y)                              # 절 S.9 진단: 뉴턴 반복 끝 y
             s.ctl(8)
+            WW.end(s, kstep, sg, capQ, capN, it2, BA if s.bar else None, nr, barE)  # 절 CM25 진단: 걸음 끝 ‖g‖ 다시 잼 (버퍼 되돌림)
             if s.cjj:                                                                  # 절 CM24: 걸음 끝 덜 풀림 판정
                 s.k("cj_end", 1, (P(s.CT), P(s.cjs), P(s.cjg), P(s.cjl), i32(kstep), i32(1 if s.adapt else 0), i32(1 if s.cjr else 0)), b=1)
             if WD:
