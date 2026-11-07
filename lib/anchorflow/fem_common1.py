@@ -73,3 +73,22 @@ def uelify(src):
         assert k.count(o_) == 1, o_
         k = k.replace(o_, n_, 1)
     return src[:j] + k + src[j:]
+
+
+# --ls0_keep (기본 판 비결정 발산 고침 후보): 선탐색·장벽 보폭이 0 (모든 후보 거절) 인 반복은 η·y 를 그대로 둠.
+# 지금 판은 η += 0·δ 라 δ 가 비유한 (PCG 붕괴) 이면 0·NaN = NaN 이 η·y 에 들어가 발산 (레고 비결정 f53: 첫 뉴턴 보폭 0 -> 둘째 반복 ‖g‖ NaN).
+# δ 가 유한하면 η + 0·δ = η 라 결과 같음 (비트 같음). AF_L0N[0] = 보폭 0 반복 수, [1] 그중 δ 비유한 노드 수 (프레임마다 읽고 0).
+LS0_OLD = "    float st = full ? 1.f : (float)SC[14];\n"
+LS0_NEW = ("    float st = full ? 1.f : (float)SC[14];\n"
+           "    if (!(st > 0.f)) { if (n == 0) atomicAdd(&AF_L0N[0], 1); if (!(isfinite(dl[n*3]) && isfinite(dl[n*3+1]) && isfinite(dl[n*3+2]))) atomicAdd(&AF_L0N[1], 1); return; }   // 절 CM31 --ls0_keep\n")
+
+
+def ls0ify(src, on):
+    if not on:
+        return src
+    i = src.index("__global__ void rt_lsup(")
+    j = src.index("\n}\n", i) + 3
+    k = src[i:j]
+    assert k.count(LS0_OLD) == 1
+    src = src[:i] + k.replace(LS0_OLD, LS0_NEW, 1) + src[j:]
+    return src.replace('extern "C" {', 'extern "C" {\n__device__ int AF_L0N[2];', 1)

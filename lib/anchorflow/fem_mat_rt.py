@@ -174,7 +174,7 @@ class MatRT(ADET.DetMixin):
             assert s.has_pbc, "--pbc_phi 는 순차 방출 구속 씬만"
             i_ = src.rstrip().rfind("}")
             src = src[:i_] + MT_PHI_SRC + "\n}\n"
-        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False), gqm=getattr(s, "gqm", False), fpi=getattr(s, "fpi", False), cj=getattr(s, "cjj", False), cue=bool(getattr(s, "cue", 0)), uel=getattr(s, "uel", 0), ufw=getattr(s, "ufw", False)), options=("--std=c++14",))
+        s.mod = ART.cp.RawModule(code=ART.build_src(src, s.adapt, s.goct, s.floor, fk=getattr(s, "fk", False), hspec=getattr(s, "hspec", False), ncomp=getattr(s, "ncomp", False), gqm=getattr(s, "gqm", False), fpi=getattr(s, "fpi", False), cj=getattr(s, "cjj", False), cue=bool(getattr(s, "cue", 0)), uel=getattr(s, "uel", 0), ufw=getattr(s, "ufw", False), ls0=getattr(s, "ls0", False)), options=("--std=c++14",))
         s._src0 = src
         s.fn = {}
         s.ao_ready = True

@@ -2418,7 +2418,7 @@ def cjueify(src):
     return src[:j] + k + src[j:]
 
 
-def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False, fpi=False, cj=False, cue=False, uel=0, ufw=False):
+def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False, fpi=False, cj=False, cue=False, uel=0, ufw=False, ls0=False):
     if cj:                                                                             # 절 CM24 판정 커널 (끄면 소스 그대로)
         src = src.replace('extern "C" {', 'extern "C" {\n' + CJ_SRC, 1)
     src = snhify(src, snh)                                                             # 절 CM18 --elx snh (끄면 소스 그대로)
@@ -2463,6 +2463,9 @@ def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, 
         if uel:
             src = C1.uelify(src)
         src = C1.ulify(src, uel, ufw, bool(floor and floor.get("bar")))
+    if ls0:                                                                            # 절 CM31 --ls0_keep (끄면 소스 그대로)
+        from . import fem_common1 as C1
+        src = C1.ls0ify(src, True)
     return skipify(src) if adapt else src
 
 
@@ -2485,6 +2488,7 @@ class RTSolver(MG2.MG2Mixin):
         s.uel = int((cj or {}).get("uel", 0)); s.ufw = bool((cj or {}).get("ufw", False))   # 절 CM31: 국소 후퇴 오일러 노드 집합 비트 / 판정 2 힘 척도에 무게
         assert not s.uel or s.cue in (1, 2), "--ue_loc 는 --ue be·a0 위"
         assert not s.ufw or s.cjr, "--uf_w 는 --uf_res 위"
+        s.ls0 = bool((cj or {}).get("ls0", False)) if cj else False
         s.fpi = bool(fpi)                                                              # 절 CM20 (정의 변경): 입자 F 를 프레임 끝 가우스 점 F 의 칸 안 삼선형 보간으로 교체
         assert not (s.fpi and pk), "--fp_interp 는 그래프 판만"
         s.gqm = bool(gqm)                                                              # 절 CM9 (정의 변경): 노드 질량·운동량을 가우스 점에서 (힘과 같은 점·가중·기저)
@@ -2562,7 +2566,7 @@ class RTSolver(MG2.MG2Mixin):
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh, fpi=s.fpi, cj=s.cjj, cue=bool(s.cue), uel=s.uel, ufw=s.ufw), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh, fpi=s.fpi, cj=s.cjj, cue=bool(s.cue), uel=s.uel, ufw=s.ufw, ls0=s.ls0), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)

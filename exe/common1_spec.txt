@@ -204,3 +204,101 @@ s2 zL_C3j L z --ksplit 3 --y0loc 3 --ue be
 s2 zW_C3j W z --ksplit 3 --y0loc 3 --ue be
 s2 zW_off W z
 s2 zW_d W z --y0loc 3 --ue be --uf_res
+# s3: --ls0_keep (보폭 0 반복 η·y 그대로) -- 기본 판 결정적 해시 대조 + 비결정 30, 후보 (A3·AB3·A1·A2) + --ls0_keep 레고 결정적 + 비결정 10, wolf 결정적 + 비결정 2, 단독 시간
+s3 L_off_k L d --ls0_keep
+s3 W_off_k W d --ls0_keep
+s3 L_off_k_n1 L nd --ls0_keep
+s3 L_off_k_n2 L nd --ls0_keep
+s3 L_off_k_n3 L nd --ls0_keep
+s3 L_off_k_n4 L nd --ls0_keep
+s3 L_off_k_n5 L nd --ls0_keep
+s3 L_off_k_n6 L nd --ls0_keep
+s3 L_off_k_n7 L nd --ls0_keep
+s3 L_off_k_n8 L nd --ls0_keep
+s3 L_off_k_n9 L nd --ls0_keep
+s3 L_off_k_n10 L nd --ls0_keep
+s3 L_off_k_n11 L nd --ls0_keep
+s3 L_off_k_n12 L nd --ls0_keep
+s3 L_off_k_n13 L nd --ls0_keep
+s3 L_off_k_n14 L nd --ls0_keep
+s3 L_off_k_n15 L nd --ls0_keep
+s3 L_off_k_n16 L nd --ls0_keep
+s3 L_off_k_n17 L nd --ls0_keep
+s3 L_off_k_n18 L nd --ls0_keep
+s3 L_off_k_n19 L nd --ls0_keep
+s3 L_off_k_n20 L nd --ls0_keep
+s3 L_off_k_n21 L nd --ls0_keep
+s3 L_off_k_n22 L nd --ls0_keep
+s3 L_off_k_n23 L nd --ls0_keep
+s3 L_off_k_n24 L nd --ls0_keep
+s3 L_off_k_n25 L nd --ls0_keep
+s3 L_off_k_n26 L nd --ls0_keep
+s3 L_off_k_n27 L nd --ls0_keep
+s3 L_off_k_n28 L nd --ls0_keep
+s3 L_off_k_n29 L nd --ls0_keep
+s3 L_off_k_n30 L nd --ls0_keep
+s3 L_A3k L d --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 L_A3k_n1 L nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 L_A3k_n2 L nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 L_A3k_n3 L nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 L_A3k_n4 L nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 L_A3k_n5 L nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 L_A3k_n6 L nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 L_A3k_n7 L nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 L_A3k_n8 L nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 L_A3k_n9 L nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 L_A3k_n10 L nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 W_A3k W d --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 W_A3k_n1 W nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 W_A3k_n2 W nd --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 L_AB3k L d --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 L_AB3k_n1 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 L_AB3k_n2 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 L_AB3k_n3 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 L_AB3k_n4 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 L_AB3k_n5 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 L_AB3k_n6 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 L_AB3k_n7 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 L_AB3k_n8 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 L_AB3k_n9 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 L_AB3k_n10 L nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 W_AB3k W d --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 W_AB3k_n1 W nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 W_AB3k_n2 W nd --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 L_A1k L d --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 L_A1k_n1 L nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 L_A1k_n2 L nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 L_A1k_n3 L nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 L_A1k_n4 L nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 L_A1k_n5 L nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 L_A1k_n6 L nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 L_A1k_n7 L nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 L_A1k_n8 L nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 L_A1k_n9 L nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 L_A1k_n10 L nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 W_A1k W d --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 W_A1k_n1 W nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 W_A1k_n2 W nd --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 L_A2k L d --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 L_A2k_n1 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 L_A2k_n2 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 L_A2k_n3 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 L_A2k_n4 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 L_A2k_n5 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 L_A2k_n6 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 L_A2k_n7 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 L_A2k_n8 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 L_A2k_n9 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 L_A2k_n10 L nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 W_A2k W d --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 W_A2k_n1 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 W_A2k_n2 W nd --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 zL_off_k L z --ls0_keep
+s3 zL_A3k L z --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 zW_A3k W z --y0loc 3 --ue be --uf_res --ue_loc 3 --ls0_keep
+s3 zL_AB3k L z --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 zW_AB3k W z --y0loc 3 --ue be --uf_res --uf_w --ue_loc 3 --ls0_keep
+s3 zL_A1k L z --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 zW_A1k W z --y0loc 3 --ue be --uf_res --ue_loc 1 --ls0_keep
+s3 zL_A2k L z --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
+s3 zW_A2k W z --y0loc 3 --ue be --uf_res --ue_loc 2 --ls0_keep
