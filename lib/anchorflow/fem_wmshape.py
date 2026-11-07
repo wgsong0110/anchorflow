@@ -146,7 +146,7 @@ class Rec:
         nq = int(S.IP[12])
         Sq = S.Sq.view(-1, 4)[:nq]
         Vq = S.Vq[:nq].double()
-        Fq = S.Fq[:nq].reshape(-1, 3, 3)
+        Fq = (S.Fe[:nq, 18:27] if getattr(S, "Fe", None) is not None else S.Fq[:nq]).reshape(-1, 3, 3)   # 프레임 끝 탄성 F_e = (I + ∇U) F_q (fpi_q 의 X; F_q 자체는 커밋 뒤 프레임 시작 기준)
         fx = S.fx.reshape(-1, 3)
         c = S.cidx[S.pcd.long()].long()
         ok = (c >= 0) & torch.isfinite(lprev_int)

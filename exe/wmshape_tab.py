@@ -1,7 +1,7 @@
 """절 CM40 묶음 wmshape 표: python exe/wmshape_tab.py <결과 디렉토리> <gt_jp 디렉토리> -> markdown (stdout) + <결과>/wmshape_curves.json.
 판 = exe/wmshape_spec.txt 의 방식 r (진단 --wsh_rec) 수박 판, 묶음 = 이름의 끝 _숫자 뺀 것 (비결정 반복). 정답 = <결과>/gt/gt_wmshape.json (exe/wmshape_gt.py).
 지표: 손상 = logJp > 0 몫 (정답 끝 6.51 %), 생긴 E = 전 구간 최대 (운동 + 중력 위치 + SNH 탄성) − 처음 7.13 J, 시간 = 첫 2 프레임 뺀 재생 GPU ms (같이 도는 판 있음; 단독은 z 판).
-높이 H = 바닥 (z 0.02) 위 99.5 % 분위, 퍼짐 r95 = 처음 질량중심 축에서 수평 거리 95 % 분위, 바닥 r95 = 바닥 위 3 cm 안 입자의 r95, 모양 오차 = f4~20 평균 |H − H_정답| / H0 · |r95 − r95_정답| / R0."""
+높이 H = 바닥 (z 0.02) 위 99.5 % 분위, 퍼짐 r95 = 처음 질량중심 축에서 수평 거리 95 % 분위, 바닥 r95 = 바닥 위 3 cm 안 입자의 r95, 모양 오차 = f4~20 평균 |H − H_정답| · |r95 − r95_정답| (m)."""
 import glob
 import itertools
 import json
@@ -17,7 +17,7 @@ E0 = 7.13
 FR = [3, 4, 5, 6, 8, 10, 15, 20, 30, 50, 100]
 spec = [l.split(None, 4) for l in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "wmshape_spec.txt")) if l.strip() and not l.startswith("#")]
 spec = [s + [""] * (5 - len(s)) for s in spec]
-runs = [(s[1], s[4]) for s in spec if s[3] == "r" and os.path.exists(os.path.join(O, s[1], "fem.jsonl"))]
+runs = [(s[1], s[4]) for s in spec if s[3] in ("r", "b", "e") and os.path.exists(os.path.join(O, s[1], "fem.jsonl"))]
 grp = {}
 for n, fl in runs:
     grp.setdefault(re.sub(r"_\d+$", "", n), []).append(n)
@@ -94,7 +94,7 @@ def shape_err(n):
     eh, er = [], []
     for t in range(4, 21):
         if t in W[n]["by"]:
-            eh.append(abs(val(n, t, "H") - G[t]["H"]) / REF["H0"]); er.append(abs(val(n, t, "r95") - G[t]["r95"]) / REF["R0"])
+            eh.append(abs(val(n, t, "H") - G[t]["H"])); er.append(abs(val(n, t, "r95") - G[t]["r95"]))
     return (float(np.mean(eh)) if eh else None, float(np.mean(er)) if er else None)
 
 
@@ -125,21 +125,23 @@ print("# 절 CM40 묶음 wmshape -- 수박 깨짐 모양 (정답 | D | 후보)\n
 print(__doc__.split("\n", 1)[1].strip() + "\n")
 print(f"처음: H0 {REF['H0']:.3f} m, R0 {REF['R0']:.3f} m, 질량중심 축 {REF['c0']}\n")
 print("## 1. 요약 (묶음마다 비결정 판들)\n")
-print("| 묶음 | 판 | 결과 | 끝 손상 % | f10 · f20 손상 % | 모양 오차 높이 · 퍼짐 (f4~20) | f10 H · r95 m | 생긴 E J | 오차 % | ms 평균 · 최대 (같이 돎) |")
-print("|---|---|---|---|---|---|---|---|---|---|")
-print(f"| 정답 | - | - | {100 * G[100]['d0']:.2f} | {100 * G[10]['d0']:.2f} · {100 * G[20]['d0']:.2f} | 0 · 0 | {G[10]['H']:.3f} · {G[10]['r95']:.3f} | (+16.7 첫 접촉) | - | - |")
+print("| 묶음 | 판 | 결과 | 노드 상자 최대 (백만) | 끝 손상 % | f10 · f20 손상 % | 모양 오차 높이 · 퍼짐 m (f4~20) | f10 H · r95 m | 생긴 E J | 오차 % | ms 평균 · 최대 (같이 돎) |")
+print("|---|---|---|---|---|---|---|---|---|---|---|")
+print(f"| 정답 | - | - | - | {100 * G[100]['d0']:.2f} | {100 * G[10]['d0']:.2f} · {100 * G[20]['d0']:.2f} | 0 · 0 | {G[10]['H']:.3f} · {G[10]['r95']:.3f} | (+16.7 첫 접촉) | - | - |")
 SUM = {}
 for g, ns in grp.items():
     last = []
     for n in ns:
         by = W[n]["by"]
-        last.append(by[max(by)]["d0"] if by else None)
+        lj_ = [q["en"]["lj0"] for q in W[n]["rows"] if (q.get("en") or {}).get("lj0") is not None]
+        last.append(by[max(by)]["d0"] if by else (lj_[-1] if lj_ else None))
     se = [shape_err(n) for n in ns]
     s_ = [W[n]["s"] for n in ns]
     er = [100 * s["err_mean_done"] for s in s_ if s]
     mm = [ms(n) for n in ns]
     SUM[g] = dict(last=last, se=se)
-    print(f"| {g} | {len(ns)} | {', '.join(res(n) for n in ns)} | {rng(last, 2, True)} | {rng([val(n, 10, 'd0') for n in ns], 2, True)} · {rng([val(n, 20, 'd0') for n in ns], 2, True)} | "
+    nnm = [max([q.get("nn") or 0 for q in W[n]["rows"]] + [0]) / 1e6 for n in ns]
+    print(f"| {g} | {len(ns)} | {', '.join(res(n) for n in ns)} | {', '.join(f'{q:.1f}' for q in nnm)} | {rng(last, 2, True)} | {rng([val(n, 10, 'd0') for n in ns], 2, True)} · {rng([val(n, 20, 'd0') for n in ns], 2, True)} | "
           f"{rng([q[0] for q in se], 3)} · {rng([q[1] for q in se], 3)} | {rng([val(n, 10, 'H') for n in ns])} · {rng([val(n, 10, 'r95') for n in ns])} | {rng([dE(n) for n in ns], 2)} | {rng(er, 2)} | "
           f"{rng([q[0] for q in mm], 1)} · {rng([q[1] for q in mm], 1)} |")
 
@@ -153,7 +155,7 @@ for title, k, sub, d, pct in (("높이 H (m)", "H", None, 3, False), ("퍼짐 r9
     for g, ns in grp.items():
         print(f"| {g} | " + " | ".join(rng([val(n, t, k, sub) for n in ns], d, pct) for t in FR) + " |")
 
-print("\n## 2. 손상 위치 (손상 입자 중 몫 %; 높이 = 바닥 위 / H0 구간 [0, 0.1, 0.2, 0.4, 0.6, 0.8, ∞], 반경 = 축 거리 / R0 구간 [0, 0.4, 0.7, 0.9, 1.1, ∞])\n")
+print("\n## 2. 손상 위치 (손상 입자 중 몫 %; 높이 = 바닥 위 cm 구간 [0, 13, 27, 53, 80, 106, ∞] (= 처음 꼭대기 높이 H0 1.33 m 의 0.1·0.2·0.4·0.6·0.8 배), 반경 = 축 거리 / R0 구간 [0, 0.4, 0.7, 0.9, 1.1, ∞])\n")
 print("| 묶음 | 프레임 | 손상 높이 분포 | 손상 반경 분포 | 새 손상 높이 분포 | 새 손상 반경 분포 | 새 손상 입자 |")
 print("|---|---|---|---|---|---|---|")
 P = lambda v: "-" if v is None else "/".join(f"{100 * q:.0f}" for q in v)

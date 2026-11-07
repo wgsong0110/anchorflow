@@ -15,7 +15,7 @@ WMB="exe/fem_ao_rt_sim.py --data $WMD/wm.pt --frames 100 --floor vel --floor_pla
 base_of() { case $1 in M3) echo "${WMB/--cell 1.5/--cell 3}";; esac; }
 nw() { case " $1 " in *" --newton "*) echo "$1" | sed 's/.*--newton \([0-9]*\).*/\1/';; *) echo "";; esac; }
 SVF=3,4,5,6,8,10,15,20,30,50,100
-dg_of() { case $1 in r) echo "--erec --wsh_rec 30 --wsh_sv $SVF";; z) echo "--erec";; esac; }
+dg_of() { case $1 in r) echo "--erec --wsh_rec 30 --wsh_sv $SVF";; z|b) echo "--erec";; e) echo "--erec --wsh_rec 30 --nrec --enrec 12";; esac; }
 log() { echo "[$(date '+%F %T')] $*" >> $O/wmshape_$STG.log; rclone copyto $O/wmshape_$STG.log $RO/wmshape_$STG.log -q; }
 up() { rclone copy $O/$1 $RO/$1 -q --transfers 8 --exclude pred.pt; }
 CL=/dev/shm/dkta/anerr_claim; mkdir -p $CL
