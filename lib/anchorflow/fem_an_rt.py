@@ -2295,8 +2295,18 @@ def compactify(src):
     return s[:i] + "\n".join(out) + "\n}\n"
 
 
-def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False):
+G2P_GA_FLINE = '    for (int a=0;a<3;a++) for (int b=0;b<3;b++) { float t = 0.f; for (int k=0;k<3;k++) t += A[a*3+k]*Fp[k*3+b]; F[(size_t)p*9+a*3+b] = t; }\n'
+
+
+def build_src(src, adapt, goct, floor=None, fk=False, hspec=False, ncomp=False, gqm=False, snh=False, fpi=False):
     src = snhify(src, snh)                                                             # 절 CM18 --elx snh (끄면 소스 그대로)
+    if fpi:                                                                            # 절 CM20 --fp_interp: 입자 F = 프레임 끝 가우스 점 F 보간 (끄면 소스 그대로)
+        from .fem_fpi import fpify
+        i_ = src.index("__global__ void rt_g2p_ga(")                                    # rt_g2p_ga 의 입자 F 누적 줄을 뺌 (fpi_p 가 교체)
+        j_ = src.index("\n}\n", i_) + 1
+        assert src[i_:j_].count(G2P_GA_FLINE) == 1
+        src = src[:i_] + src[i_:j_].replace(G2P_GA_FLINE, "", 1) + src[j_:]
+        src = fpify(src)
     if gqm:                                                                            # 절 CM9 --gq_mass: rt_p2g 노드 몫 빼기 (노드 질량·운동량은 gq_q2n 이 가우스 점에서)
         src = src.replace('extern "C" {', 'extern "C" {\n#define AF_GQM 1', 1)
     if ncomp:
@@ -2339,8 +2349,10 @@ def P(t):
 class RTSolver(MG2.MG2Mixin):
     """고정 용량 버퍼 + 프레임 CUDA 그래프. step(): 그래프 재생 한 번 = 한 프레임 (P2G -> K 걸음 x 뉴턴 n x PCG c -> G2P), 입자 상태 x·v·F 제자리 갱신."""
 
-    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False, gqm=False, wd=False, snh=False, wdcap=2000000):
+    def __init__(s, x, v, F, m, vol, A, Ai, mu, lam, g, frame_dt, K, integ, newton, cg, ls, floor=None, damp=1.0, bc=None, cap_mul=2.0, dev="cuda", fpi=False, mg_levels=1, mg_nc=8, mg_pow=6, mg_omega=1.0, descent=False, ls_n=0, scheme=None, theta=0.5, mfloor=0.0, K_contact=None, gfin=False, fuse2=True, mg_wreuse=False, mg_lreuse=False, mg_csolve=False, ga=None, rho=0.7, areset=True, tolN=-1.0, tolP=-1.0, goct=-1.0, pk=False, pk_loc=2, pkb=256, pkminb=1, mv2=False, mg_occ=False, mg_fuse=0, y0ls=False, lsfast=False, mgbar=False, cg_list=None, fk=False, y0ut=False, hspec=False, ncomp=False, y0eb=False, gqm=False, wd=False, snh=False, wdcap=2000000):
         s.dev = dev
+        s.fpi = bool(fpi)                                                              # 절 CM20 (정의 변경): 입자 F 를 프레임 끝 가우스 점 F 의 칸 안 삼선형 보간으로 교체
+        assert not (s.fpi and pk), "--fp_interp 는 그래프 판만"
         s.gqm = bool(gqm)                                                              # 절 CM9 (정의 변경): 노드 질량·운동량을 가우스 점에서 (힘과 같은 점·가중·기저)
         assert not (s.gqm and pk), "--gq_mass 는 그래프 판만"
         s.hspec = bool(hspec)                                                          # 절 CM3 (결과 정의 같음): 고운 층 헤시안 주값 분해 30 성분 저장·곱 (rt_mv2s; --mv2 필요)
@@ -2416,7 +2428,7 @@ class RTSolver(MG2.MG2Mixin):
         s.Kcur = s.K
         s.graphs = {}                                                                  # 걸음 수별 프레임 그래프 (접촉 적응)
         s.bc = bc                                                                      # [(center(3), size(3), vel(3), t0, t1)] cuboid 구속 또는 None
-        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh), options=("--std=c++14",))
+        s.mod = cp.RawModule(code=build_src(s._src0, s.adapt, s.goct, s.floor, fk=s.fk, hspec=s.hspec, ncomp=s.ncomp, gqm=s.gqm, snh=s.snh, fpi=s.fpi), options=("--std=c++14",))
         s.CT = torch.zeros(16, device=dev, dtype=torch.int32); s.CD = torch.zeros(4, device=dev, dtype=torch.float64)
         s.fn = {}
         # 팔분 8 가지 기저 표 (BW: 값, BG: 월드 기울기)
@@ -2513,6 +2525,7 @@ class RTSolver(MG2.MG2Mixin):
         s.Mo = Z(capQ) if s.goct >= 0 else None
         s.gqP = Z(capQ * 6) if getattr(s, "gqm", False) else None                     # 절 CM9: 팔분 점·칸 질량 가중 속도·가속도 합
         s.gqC = Z(s.capQc * 6) if getattr(s, "gqm", False) else None
+        s.Fe = Z(capQ, 28) if getattr(s, "fpi", False) else None                      # 절 CM20: 프레임 끝 가우스 점 R·log S·X·뒤집힘
         s.bar = bool(s.floor and s.floor.get("bar"))                                  # 장벽 판 (절 AN.19): 표본점 누적·점별 스칼라·노드 스칼라
         s.vres = float(s.floor.get("vres", 0.0)) if (s.bar and s.floor) else 0.0      # 절 CM15: −z 저항 바닥 (장벽 판의 표본점 버퍼 위, 장벽 에너지 대신 벌점; 0 = 끔)
         if s.bar:
@@ -3190,11 +3203,16 @@ class RTSolver(MG2.MG2Mixin):
                 s.dcopy(s.WU[kstep], s.U)                                              # 절 S.9 진단: 걸음 끝 U
         sl = ST[-1]
         if s.matk:
+            assert not s.fpi, "--fp_interp 는 탄성 판만 (수박은 exe/fem_ao_rt_sim.py)"
             s.mat_g2p()                                                                # 절 CM2 재질 판 G2P (입자 F 걸음별 RM, a_p)
             return
         if sl["kind"] == "ga":
             s.k("rt_g2p_ga", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.U), P(s.vk), P(s.ak), P(s.x), P(s.v), P(s.pa), P(s.F)))
+            if s.fpi:                                                                  # 절 CM20: 입자 F = 프레임 끝 가우스 점 F_q^end = A(x_q) F_q 의 칸 안 삼선형 보간 (회전·로그 신장 분리, rt_gauss 규칙)
+                s.k("fpi_q", capQ, (P(IP), P(s.cb), P(s.BG), P(s.Fq), P(s.U), P(s.Fe)))
+                s.k("fpi_p", N, (i32(N), P(IP), P(s.fx), P(s.pcd), P(s.cidx), P(s.Fe), i32(0), i32(0), P(s.F), P(None), P(None), P(None), P(None)))
             return
+        assert not s.fpi, "--fp_interp 는 generalized-α (--ga) 판만"
         s.k("rt_g2p_endg", N, (i32(N), P(IP), P(s.Ai), P(s.Np), P(s.fx), P(s.y), P(s.z0), P(s.U), f(sl["thinv"]), f(sl["al"]), P(s.fixd), P(s.vbc), dmp,
                                P(s.x), P(s.v), P(s.F)))
 

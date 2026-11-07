@@ -71,6 +71,8 @@ ap.add_argument("--mat_as", type=str, default="", help="진단: config 재질 �
 ap.add_argument("--no_rm", action="store_true", help="진단: 재질 판 RM 끔 (탄성 응력만, prm[15])")
 ap.add_argument("--ys_big", action="store_true", help="진단: 항복 응력을 아주 크게 (소성 없이 탄성만)")
 ap.add_argument("--visc_rpic", action="store_true", help="정답 config rpic_damping r -> 등가 점성 η = ρ r (2−r) Δx_gt² / (16 Δt_gt) (절 AG.20)")
+ap.add_argument("--qjd", action="store_true", help="절 CM20 진단 (결과 불변, 재질 판): 프레임 끝 U 로 가우스 점 X_q = F_q + Σ U ⊗ G_qn 의 J (절 CM18 rt_qjd 그대로, 따로 컴파일한 읽기 전용 커널) -- J ≤ 0 수·최소를 fem.jsonl qj 에")
+ap.add_argument("--fp_interp", action="store_true", help="절 CM20 (사용자 승인 11-07 정의 변경, 재질 판 수박): 마지막 걸음도 가우스 점에서 커밋 (RM·상태) 한 뒤 입자 F·(ys, logJp, al) 를 입자 G2P RM 누적 대신 프레임 끝 가우스 점 값의 칸 안 삼선형 보간 (회전·로그 신장 분리, --fq_rl 규칙) 으로 교체. 끄면 예전과 같음")
 ap.add_argument("--gq_mass", action="store_true", help="절 CM9 (사용자 승인 정의 변경): 노드 질량·운동량·가속도 몫을 입자 -> 자기 팔분 가우스 점 -> 노드 (힘과 같은 점 x_q·같은 V_q 가중 (칸 합 / 8)·같은 기저) 로. 비결정 판만, 끄면 예전과 같음")
 ap.add_argument("--gq_chk", action="store_true", help="절 CM9 진단 (결과 불변): 노드 질량·운동량·가속도 몫 합 대 입자 합 상대 차 (fem.jsonl gqchk; --pbc 씬은 뜻 없음)")
 ap.add_argument("--floor_plane", type=str, default="", help="바닥 평면 px,py,pz,nx,ny,nz (주면 config surface_collider 대신; 수박 = GF bounding_box)")
@@ -254,7 +256,7 @@ if MATK is not None:                                                            
     S = AORT.AORTSolver(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, 0,
                         floor=FL, damp=DAMP, bc=BC, cdp=1.0, trel=TREL, pbc_ns=a.pbc_ns, dt_gt=float(cfg["substep_dt"]), mthr=MTHR, compact=not a.no_compact, warm=not a.no_warm, det=a.det,
                         hspec=True, theta=a.theta, ga=(dict(kind=a.ga, rho=a.rho, y0uk=not a.ga_y0ut, ar=not a.ga_noar) if a.ga else None),
-                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx, dmg=a.dmg, pf_it=a.pf_it)
+                        mat=MATK, prm=PRM, eta=VISC, pvb=PVB, ys0=PRD["yield_stress"], lj0=(PRD["logJp0"] if MATK == 7 else 0.0), slip=a.floor_slip, tolN=a.tolN, tolP=a.tolP, vfill=not a.no_vfill, lsinv=a.ls_inv, y0z=a.y0z, y0u=a.y0u, y0l=a.y0l, fqrl=a.fq_rl, lsend=a.ls_end, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, gqm=a.gq_mass, elx=a.elx, dmg=a.dmg, pf_it=a.pf_it, fpi=a.fp_interp)
 elif SAND:
     CDP = AO.cdp_of(cfg, float(mu), float(lam))[0]
     _sk = {}
@@ -270,6 +272,7 @@ else:
   S = AORT.RTAdapt(d["x"][0].to(dev), d["v"][0].to(dev), F0, m64, vol64, lat.A, lat.Ai, mu, lam, [float(q) for q in cfg["g"]], h, a.K, a.integ, a.newton, a.cg, a.ls,
                  floor=FL, damp=DAMP, bc=BC, mg_levels=a.mg_levels, mg_nc=a.mg_nc, mg_pow=a.mg_pow, descent=a.descent,
                  compact=a.ao_fast, warm=a.ao_fast and not a.no_warm, det=a.det)
+assert not a.fp_interp or getattr(S, "fpi", False), "--fp_interp 는 재질 판 (AORTSolver aq 경로) 만"
 if a.dmg:                                                                             # 절 CM19: 처음 손상 d = 0 (cdm) / 이력 H = 0 (pf) -- 재질 7 은 al·ys 를 안 씀
     S.alp.zero_(); S.ysp.zero_()
 if a.nan_step:
@@ -345,6 +348,9 @@ for fi in range(L):
             except Exception as _ex:
                 import traceback; traceback.print_exc(); print(f"[절 CM9.3 덤프 실패] {_ex!r}", flush=True)
             NSD_DUMPS += 1
+    if a.qjd and int(S.IP[13]) == 0:                                                  # 절 CM20 진단 (결과 불변): 프레임 끝 가우스 점 J (새 실행기 rt_qjd 와 같은 커널·같은 버퍼 배치)
+        from anchorflow import fem_an_rt as _ARTN
+        c["qj"] = _ARTN.RTSolver.qjd(S, [0.0, 0.0, 1.0], 0.0)
     if a.jdiag and int(S.IP[13]) == 0:                                                # 절 CM13 진단 (결과 불변): 프레임 끝 커밋된 F_q·입자 F 의 행렬식
         _nq = int(S.IP[12]); _vq = S.Vq[:_nq] > 0
         _dq = torch.linalg.det(S.Fq[:_nq].reshape(-1, 3, 3).double())[_vq]
