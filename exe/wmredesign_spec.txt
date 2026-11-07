@@ -12,3 +12,8 @@ s1 d_C8 M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_ke
 s1 d_C8cg M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --K 8 --cg 200 --wrd 3-12 --frames 12
 s1 d_C32cg M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --K 32 --cg 100 --wrd 3-8 --frames 8
 s1 d_B1 M3 w --sp2 31 --wrd 3-12 --frames 12
+# s2 원인 가르기 2: 걸음 시작 η 출처 (ŷ − U · y − U · 노드 속도·가속도 기억) -- s1 에서 무너진 걸음 첫 반복 ‖g‖ 가 모두 관성 몫 (‖Mη/τ²‖ 1e10 N 이상)
+s2 e_C1 M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --wrd 2-12 --frames 12 --wrd_fd 0
+s2 e_C1cg M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --cg 200 --wrd 2-12 --frames 12 --wrd_fd 0
+s2 e_C8 M3 w --y0loc 3 --ue be --uf_res --newton 6 --xit_from 2 --en_mo --ls0_keep --ue_loc 50 --sp2 31 --K 8 --wrd 2-6 --frames 6 --wrd_fd 0
+s2 e_B1 M3 w --sp2 31 --ufrec --uf_res --wrd 2-8 --frames 8 --wrd_fd 0

@@ -99,6 +99,27 @@ class Rec:
                      r_F=_n(g) / max(s.F, 1e-300), r_W=_n(g) / max(s.W, 1e-300), SC1=float(S.SC[1]), SC56=float(S.SC[56]),
                      gmax=float(gn[j]), gmax_mrel=float(mn[j]) / md, light=int(((mn > 0) & (mn < 1e-2 * md)).sum()),
                      g_light=_n(g[(mn < 1e-2 * md)]) / max(_n(g), 1e-300))
+        if s.it == 0:                                                                  # 걸음 시작: η 가 어디서 오나 (관성 예측 ŷ − U, 시작점 y − U, 노드 속도·가속도 기억)
+            U = S.U.reshape(-1, 3)[:nn].double()
+            dt = float(S.dt)
+            def st_(v, sc):
+                vn = v.norm(dim=-1) / sc
+                fin = torch.isfinite(vn)
+                if not bool(fin.any()):
+                    return dict(nonfin=int((~fin).sum()))
+                vv = torch.where(fin, vn, torch.zeros_like(vn)); j_ = int(vv.argmax())
+                return dict(max=float(vv[j_]), q99=float(torch.quantile(vv.float()[fin][:16000000], 0.99)), gt1=int((vv > 1).sum()),
+                            gt1_mass=float(mn[vv > 1].sum() / mn.sum().clamp_min(1e-300)), arg_mrel=float(mn[j_]) / md, nonfin=int((~fin).sum()))
+            yh = S.yh.reshape(-1, 3)[:nn].double(); y = S.y.reshape(-1, 3)[:nn].double()
+            s.cur["start"] = dict(eta=st_(eta, cell), yhU=st_(yh - U, cell), yU=st_(y - U, cell), vdt=st_(S.vk.reshape(-1, 3)[:nn].double() * dt, cell),
+                                  adt2=st_(S.gaA.reshape(-1, 3)[:nn].double() * dt * dt, cell) if getattr(S, "gaA", None) is not None else None,
+                                  mmin_rel=float(mn[mn > 0].min()) / md if bool((mn > 0).any()) else 0.0, dt=dt)
+            if s.ks == 0:                                                              # 프레임 시작 입자 속도·가속도
+                pv = S.v.reshape(-1, 3).double().norm(dim=-1)
+                s.cur["start"]["pv_max"] = float(pv[torch.isfinite(pv)].max())
+                if getattr(S, "pa", None) is not None:
+                    pa = S.pa.reshape(-1, 3).double().norm(dim=-1)
+                    s.cur["start"]["pa_max"] = float(pa[torch.isfinite(pa)].max())
         s.y_prev = S.y.reshape(-1, 3)[:nn].clone()
 
     def pcg_end(s):
