@@ -118,6 +118,11 @@ if os.environ.get("AF_E3_DG", "0") == "1":
             w = w * s.mn[:nn].float()[nid]
             w = w / w.sum(1, keepdim=True).clamp_min(1e-30)
         zr = x0[:, 2] + (w * Uz[nid]).sum(1) if x0 is not None else None
+        if wq is not None and bool(has.any()):                                           # W̄ 를 파이썬으로 다시 모아 장치 값과 비교 (디버그)
+            wp = torch.zeros(nq, 27, device=x.device, dtype=torch.float64).index_add_(0, q, (w * m[:, None]).double())
+            wp = (wp / ms.clamp_min(1e-30)[:, None]).float()
+            rec["wq_py_err"] = float((wp - wq[:nq * 27].reshape(nq, 27).float())[has].abs().max())
+            rec["dpy_max"] = float((zbar + (wp * Uz[ids]).sum(1) - ZF - d_pm).abs()[has].max())
         ok = torch.isfinite(x).all(-1)
         if zr is not None:
             rec["g2p_err"] = float((x[:, 2] - zr).abs()[ok].max())
