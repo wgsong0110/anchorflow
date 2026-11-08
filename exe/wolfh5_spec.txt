@@ -4,6 +4,10 @@
 s0k kD W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5dg 1 --frames 8
 s0k kS W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5dg 1 --frames 8
 s0k kB B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 --frames 8
+# ---- s0k2 = s0k 다시 (가우스 점 진단 AF_BAR 안, κ 음수 고침)
+s0k2 kD2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5dg 1 --frames 8
+s0k2 kS2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 @w5dg 1 --frames 8
+s0k2 kB2 B nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5s 1 --frames 8
 # ---- s1 할 일 1 (진단: G'' 2 판, F 덤프 -> 입자 수준 대조) + 할 일 2·3 첫 정의 S_구속 4 판 (진단 켬, 첫 판 F 덤프); 앞 단계 = 정답 입자 대조 (CPU)
 s1 dG_1 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5dg 1 --dump_F
 s1 dG_2 W nd F P1X A3 @hc 5 @rr 1 @tc 8 @mf2 1 @w5dg 1 --dump_F

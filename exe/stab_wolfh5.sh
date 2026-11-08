@@ -125,7 +125,7 @@ log "판정 판 끝 $STG"
 # ---- 단독 (렌더 포함): 계산 프로세스 0 인 카드 하나를 잡아 그 카드에 차례로 a · b (연기 단계는 a 만)
 if echo "$SPEC" | awk '$4=="z"' | grep -q .; then
   ZG=$(claim_wait $$); log "단독 카드 $ZG (계산 프로세스 0 인 카드 하나)"
-  RS="a b"; case $STG in *k) RS="a";; esac
+  RS="a b"; case $STG in *k|*k2) RS="a";; esac
   for r in $RS; do
     while read -r st n s md x; do
       [ "$md" = z ] || continue
@@ -136,7 +136,7 @@ if echo "$SPEC" | awk '$4=="z"' | grep -q .; then
   done
   rm -f $CL/$ZG
 fi
-case $STG in *k)                                                                            # 연기 단계 (이름 끝 k): 모든 판이 5 프레임 넘게 끝나야 (컴파일·훅 확인), 아니면 실패 표식 -> 다음 단계 안 함
+case $STG in *k|*k2)                                                                            # 연기 단계 (이름 끝 k): 모든 판이 5 프레임 넘게 끝나야 (컴파일·훅 확인), 아니면 실패 표식 -> 다음 단계 안 함
   OK=1; while read -r st n s md x; do [ -z "$n" ] && continue
     [ $md = z ] && n=${n}_a
     $PY -c "import json,sys; s=json.load(open('$O/$n/summary.json')); sys.exit(0 if s['frames_done'] >= 5 and not s.get('diverged') else 1)" 2>/dev/null || { OK=0; log "[연기] $n 5 프레임 못 감/발산"; }
